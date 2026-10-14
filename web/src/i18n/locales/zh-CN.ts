@@ -216,6 +216,8 @@ export default {
         noVideoTask: "接口没有返回视频任务",
         videoDownloadFailed: "视频下载失败",
         localAssetReadFailed: "读取本地资产失败",
+        channelMissing: "所选模型所属的渠道已不存在，请在渠道配置中重新选择该模型",
+        responsesUnsupported: "该接口不支持 /v1/responses，已自动改用 /v1/chat/completions 重试，仍失败：{{message}}",
     },
     assets: {
         title: "我的资产",

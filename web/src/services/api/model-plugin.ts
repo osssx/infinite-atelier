@@ -1,7 +1,7 @@
 import axios, { type AxiosRequestConfig } from "axios";
 
 import i18n from "@/i18n";
-import { buildApiUrl, type AiConfig, type ModelCapability } from "@/stores/use-config-store";
+import { buildApiUrl, modelOptionName, type AiConfig, type ModelCapability } from "@/stores/use-config-store";
 import { proxyApiUrl } from "@/lib/api-proxy";
 
 type RequestOptions = { signal?: AbortSignal };
@@ -141,7 +141,9 @@ export async function runModelPlugin<T = unknown>(args: RunPluginArgs): Promise<
             args.images || [],
             args.messages || [],
             args.params || {},
-            config.model,
+            // Stripped defensively: callers pass an already-resolved config, but a raw
+            // "channelId::model" value here would leak the channel prefix into user scripts.
+            modelOptionName(config.model),
             config.baseUrl,
             config.apiKey,
             config.systemPrompt || "",

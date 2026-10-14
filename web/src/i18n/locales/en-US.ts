@@ -216,6 +216,8 @@ export default {
         noVideoTask: "The API did not return a video task",
         videoDownloadFailed: "Failed to download video",
         localAssetReadFailed: "Failed to read local asset",
+        channelMissing: "The provider that owned the selected model no longer exists. Re-select the model in the provider configuration.",
+        responsesUnsupported: "This API does not support /v1/responses. Retried with /v1/chat/completions, which also failed: {{message}}",
     },
     assets: {
         title: "My Assets",

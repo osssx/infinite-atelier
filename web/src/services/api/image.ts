@@ -97,6 +97,10 @@ type GeminiPayload = {
 type GeminiStreamState = { buffer: string; text: string; toolCalls: ResponseToolCall[]; error?: string };
 type RequestOptions = { signal?: AbortSignal };
 
+type ChatMessagePayload = { content?: unknown };
+type ChatChoice = { delta?: ChatMessagePayload; message?: ChatMessagePayload };
+type ChatStreamState = { buffer: string; raw: string; text: string; done?: boolean; error?: string };
+
 const QUALITY_BASE: Record<string, number> = {
     low: 1024,
     medium: 2048,
@@ -382,6 +386,32 @@ function readStatusError(status: number | undefined, fallback: string) {
     return status ? apiText("httpFailed", { status }) : fallback;
 }
 
+// Statuses that mean "this route is not served here", as opposed to a rejected request.
+const ROUTE_MISSING_STATUSES = [404, 405];
+
+/** An HTTP failure that carries its status, so a caller can pick a different route and retry. */
+class ApiHttpError extends Error {
+    constructor(readonly status: number, message: string) {
+        super(message);
+        // Never "AbortError": isGenerationCanceled() keys off that name to detect user cancellation.
+        this.name = "ApiHttpError";
+    }
+}
+
+function routeMissingStatus(error: unknown) {
+    return error instanceof ApiHttpError && ROUTE_MISSING_STATUSES.includes(error.status) ? error.status : null;
+}
+
+// Base URLs already observed to have no /v1/responses route. Relays that implement only
+// /v1/chat/completions are common, and without this every text generation would pay one wasted
+// 404 round trip. Session-only by design: a stale entry clears on reload, and editing the
+// channel's base URL or protocol produces a new key and re-probes.
+const responsesUnsupported = new Set<string>();
+
+function responsesRouteKey(config: Pick<AiConfig, "baseUrl" | "apiFormat">) {
+    return `${config.apiFormat}|${config.baseUrl.trim().replace(/\/+$/, "").toLowerCase()}`;
+}
+
 function withSystemPrompt(config: AiConfig, prompt: string) {
     const systemPrompt = config.systemPrompt.trim();
     return systemPrompt ? `${systemPrompt}\n\n${prompt}` : prompt;
@@ -477,7 +507,10 @@ function responseErrorMessage(value: unknown) {
     const error = isRecord(value.error) ? value.error : undefined;
     const response = isRecord(value.response) ? value.response : undefined;
     const responseError = response && isRecord(response.error) ? response.error : undefined;
-    return stringValue(value.msg) || stringValue(error?.message) || stringValue(responseError?.message);
+    // detail is FastAPI/Starlette's error field ("Not Found", validation errors). It is only
+    // read when it is a plain string: a validation error puts an array here, which must fall
+    // through to the status-based message instead of being stringified into the UI.
+    return stringValue(value.msg) || stringValue(value.detail) || stringValue(error?.message) || stringValue(responseError?.message);
 }
 
 function stringValue(value: unknown) {
@@ -504,13 +537,18 @@ async function readFetchError(response: Response, fallback: string) {
     }
 }
 
-function consumeResponseStreamBlock(block: string, state: ResponseStreamState, onDelta?: (text: string) => void) {
-    const data = block
+/** Concatenate the `data:` lines of one SSE block into its payload. */
+function extractSseData(block: string) {
+    return block
         .split(/\r?\n/)
         .filter((line) => line.startsWith("data:"))
         .map((line) => line.slice(5).replace(/^ /, ""))
         .join("\n")
         .trim();
+}
+
+function consumeResponseStreamBlock(block: string, state: ResponseStreamState, onDelta?: (text: string) => void) {
+    const data = extractSseData(block);
     if (!data || data === "[DONE]") return;
     const event = JSON.parse(data) as Record<string, unknown>;
     const type = stringValue(event.type);
@@ -553,7 +591,7 @@ async function requestStreamingResponse(config: AiConfig, body: Record<string, u
         body: JSON.stringify({ ...body, stream: true }),
         signal: options?.signal,
     });
-    if (!response.ok) throw new Error(await readFetchError(response, apiText("requestFailed")));
+    if (!response.ok) throw new ApiHttpError(response.status, await readFetchError(response, apiText("requestFailed")));
     if (!response.body) {
         const payload = (await response.json()) as ResponseApiPayload;
         validateResponsePayload(payload);
@@ -575,6 +613,190 @@ async function requestStreamingResponse(config: AiConfig, body: Record<string, u
     validateResponsePayload(state.payload);
     const result = parseToolResponse(state.payload);
     return { ...result, content: state.text || result.content };
+}
+
+type ChatRequestMessage = { role: string; content: unknown; tool_call_id?: string };
+
+/**
+ * Text of one Chat Completions message payload. Deliberately reads only `content`: DeepSeek-style
+ * relays put the chain of thought in `reasoning_content`, which must not reach the answer.
+ */
+function chatText(part: ChatMessagePayload | undefined) {
+    const content = part?.content;
+    if (typeof content === "string") return content;
+    if (!Array.isArray(content)) return "";
+    return content.map((item: unknown) => (isRecord(item) ? stringValue(item.text) : "")).join("");
+}
+
+/** Choices of a Chat Completions body, unwrapping a relay's own `data` envelope when present. */
+function chatChoices(payload: Record<string, unknown>) {
+    const data = payload.data;
+    const source = isRecord(data) && Array.isArray(data.choices) ? data : payload;
+    return Array.isArray(source.choices) ? (source.choices as ChatChoice[]) : [];
+}
+
+// A relay reports failure either with an `error` object or a non-zero numeric envelope `code`.
+// A string code such as "success" is ignored: Number() maps it to NaN, which is not 0.
+function chatErrorMessage(payload: Record<string, unknown>) {
+    const message = isRecord(payload.error) ? stringValue(payload.error.message) : "";
+    if (message) return message;
+    const code = Number(payload.code);
+    if (payload.code === undefined || Number.isNaN(code) || code === 0) return "";
+    return stringValue(payload.msg) || apiText("requestFailed");
+}
+
+function parseChatCompletionsPayload(payload: Record<string, unknown>): ToolResponseResult {
+    const errorMessage = chatErrorMessage(payload);
+    if (errorMessage) throw new Error(errorMessage);
+    return { content: chatChoices(payload).map((choice) => chatText(choice.delta || choice.message)).join(""), toolCalls: [] };
+}
+
+function consumeChatStreamBlock(block: string, state: ChatStreamState, onDelta?: (text: string) => void) {
+    const data = extractSseData(block);
+    if (!data) return;
+    if (data === "[DONE]") {
+        state.done = true;
+        return;
+    }
+    let event: unknown;
+    try {
+        event = JSON.parse(data);
+    } catch {
+        // Relays are the least reliable producer of well-formed SSE, and the flush path also runs
+        // over a non-SSE body that the caller still gets to interpret as a single JSON response.
+        return;
+    }
+    if (!isRecord(event)) return;
+    const errorMessage = chatErrorMessage(event);
+    if (errorMessage) {
+        state.error = errorMessage;
+        return;
+    }
+    const text = chatText(chatChoices(event)[0]?.delta);
+    if (text) {
+        state.text += text;
+        onDelta?.(state.text);
+    }
+}
+
+function consumeChatStreamText(state: ChatStreamState, text: string, onDelta?: (text: string) => void, flush = false) {
+    state.raw += text;
+    state.buffer += text;
+    for (;;) {
+        const match = state.buffer.match(/\r?\n\r?\n/);
+        if (!match) break;
+        const index = match.index ?? 0;
+        consumeChatStreamBlock(state.buffer.slice(0, index), state, onDelta);
+        state.buffer = state.buffer.slice(index + match[0].length);
+    }
+    if (flush && state.buffer.trim()) {
+        consumeChatStreamBlock(state.buffer, state, onDelta);
+        state.buffer = "";
+    }
+}
+
+/** Chat Completions content parts (text / image_url) already match AiTextMessage, so only the
+ *  Responses-specific item variants need converting here. */
+function toChatMessages(messages: ResponseInputMessage[]): ChatRequestMessage[] {
+    const result: ChatRequestMessage[] = [];
+    for (const message of messages) {
+        // Assistant function calls: this endpoint's callers never send tools, so a stray item is
+        // dropped rather than emitted as a malformed message.
+        if ("type" in message) continue;
+        if (message.role === "tool") {
+            result.push({ role: "tool", content: message.content, tool_call_id: message.tool_call_id });
+            continue;
+        }
+        result.push({ role: message.role, content: Array.isArray(message.content) ? message.content : String(message.content ?? "") });
+    }
+    return result;
+}
+
+async function requestChatCompletionsStreaming(config: AiConfig, messages: ResponseInputMessage[], onDelta?: (text: string) => void, options?: RequestOptions): Promise<ToolResponseResult> {
+    const response = await fetch(aiApiUrl(config, "/chat/completions"), {
+        method: "POST",
+        headers: { ...aiHeaders(config, "application/json"), Accept: "text/event-stream" },
+        body: JSON.stringify({
+            model: config.model,
+            messages: toChatMessages(withSystemMessage(config, messages)),
+            stream: true,
+            ...(config.reasoningEffort === "auto" ? {} : { reasoning_effort: config.reasoningEffort }),
+        }),
+        signal: options?.signal,
+    });
+    if (!response.ok) throw new ApiHttpError(response.status, await readFetchError(response, apiText("requestFailed")));
+    if (!response.body) {
+        const result = parseChatCompletionsPayload((await response.json()) as Record<string, unknown>);
+        if (result.content) onDelta?.(result.content);
+        return result;
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    const state: ChatStreamState = { buffer: "", raw: "", text: "" };
+    for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        consumeChatStreamText(state, decoder.decode(value, { stream: true }), onDelta);
+        if (state.error) throw new Error(state.error);
+        // Some relays keep the socket open after [DONE]; nothing useful can follow it.
+        if (state.done) break;
+    }
+    consumeChatStreamText(state, decoder.decode(), onDelta, true);
+    if (state.error) throw new Error(state.error);
+    if (state.text) return { content: state.text, toolCalls: [] };
+    // A relay may ignore stream:true and answer with one JSON object. Sniffing the content-type
+    // is unreliable in both directions; re-parsing the raw body is not.
+    if (state.raw.trim()) {
+        let parsed: unknown;
+        try {
+            parsed = JSON.parse(state.raw);
+        } catch {
+            parsed = undefined;
+        }
+        if (isRecord(parsed)) {
+            const result = parseChatCompletionsPayload(parsed);
+            if (result.content) onDelta?.(result.content);
+            return result;
+        }
+    }
+    return { content: "", toolCalls: [] };
+}
+
+/**
+ * Text call for OpenAI-format channels. Tries the Responses API first and, when that route simply
+ * is not served by the provider, retries once against Chat Completions with the same messages.
+ * Relays commonly implement only /v1/chat/completions, which used to surface as a bare 404.
+ */
+async function requestOpenAiText(config: AiConfig, messages: ResponseInputMessage[], onDelta?: (text: string) => void, options?: RequestOptions): Promise<ToolResponseResult> {
+    const routeKey = responsesRouteKey(config);
+    if (responsesUnsupported.has(routeKey)) return requestChatCompletionsStreaming(config, messages, onDelta, options);
+    try {
+        return await requestStreamingResponse(
+            config,
+            {
+                model: config.model,
+                input: toResponseInput(withSystemMessage(config, messages)),
+                ...(config.reasoningEffort === "auto" ? {} : { reasoning: { effort: config.reasoningEffort } }),
+            },
+            onDelta,
+            options,
+        );
+    } catch (error) {
+        // A failed route is the only thing worth retrying: a canceled request and a genuine API
+        // rejection (auth, rate limit, quota) must surface as-is, and nothing was streamed yet.
+        if (!routeMissingStatus(error) || options?.signal?.aborted) throw error;
+        responsesUnsupported.add(routeKey);
+        console.debug(`infinite-atelier: ${config.baseUrl} has no /v1/responses route, using /v1/chat/completions`);
+        try {
+            return await requestChatCompletionsStreaming(config, messages, onDelta, options);
+        } catch (fallbackError) {
+            // Both routes failed. When the retry failed for its own reason, that reason is far more
+            // useful than the original "Not Found", so only a second route miss gets rewritten.
+            if (!routeMissingStatus(fallbackError)) throw fallbackError;
+            throw new Error(apiText("responsesUnsupported", { message: fallbackError instanceof Error ? fallbackError.message : "" }));
+        }
+    }
 }
 
 function toGeminiBody(config: AiConfig, messages: ResponseInputMessage[], extra?: Record<string, unknown>) {
@@ -696,12 +918,7 @@ function consumeGeminiStreamText(state: GeminiStreamState, text: string, onDelta
 }
 
 function consumeGeminiStreamBlock(block: string, state: GeminiStreamState, onDelta?: (text: string) => void) {
-    const data = block
-        .split(/\r?\n/)
-        .filter((line) => line.startsWith("data:"))
-        .map((line) => line.slice(5).replace(/^ /, ""))
-        .join("\n")
-        .trim();
+    const data = extractSseData(block);
     if (!data || data === "[DONE]") return;
     const result = parseGeminiToolResponse(JSON.parse(data) as GeminiPayload);
     if (result.content) {
@@ -897,11 +1114,7 @@ export async function requestImageQuestion(config: AiConfig, messages: AiTextMes
             if (answer === apiText("noContent")) onDelta(answer);
             return answer;
         }
-        const answer = (await requestStreamingResponse(requestConfig, {
-            model: requestConfig.model,
-            input: toResponseInput(withSystemMessage(requestConfig, messages)),
-            ...(requestConfig.reasoningEffort === "auto" ? {} : { reasoning: { effort: requestConfig.reasoningEffort } }),
-        }, onDelta, options)).content || apiText("noContent");
+        const answer = (await requestOpenAiText(requestConfig, messages, onDelta, options)).content || apiText("noContent");
         if (answer === apiText("noContent")) onDelta(answer);
         return answer;
     } catch (error) {

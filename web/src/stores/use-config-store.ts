@@ -169,7 +169,7 @@ export function resolveModelScript(config: AiConfig, value: string) {
 
 function isAiConfigReady(config: AiConfig, model: string) {
     const channel = resolveModelChannel(config, model);
-    return Boolean(model.trim() && channel.baseUrl.trim() && channel.apiKey.trim());
+    return Boolean(model.trim() && channel?.baseUrl.trim() && channel?.apiKey.trim());
 }
 
 export const useConfigStore = create<ConfigStore>()(
@@ -303,15 +303,32 @@ export function normalizeModelOptionValue(value: string | undefined, channels: M
     return channel && channel.models.some((item) => item.name === model) ? encodeChannelModel(channel.id, model) : model;
 }
 
-export function resolveModelChannel(config: AiConfig, value: string) {
+function defaultChannelFromLegacyConfig(config: AiConfig) {
+    return createModelChannel({
+        id: "default",
+        name: i18n.t("config.channels.defaultName"),
+        baseUrl: config.baseUrl,
+        apiKey: config.apiKey,
+        apiFormat: config.apiFormat,
+        models: config.models.map(modelOptionName).map((name) => ({ name, capability: guessCapability(name) })),
+    });
+}
+
+/**
+ * Channel a model value belongs to. A prefixed value whose channel id no longer exists resolves to
+ * null rather than to some other channel: silently using channels[0] sent the request to an
+ * unrelated Base URL while the model name looked correct, which surfaced as a confusing 404.
+ * A bare, un-prefixed name keeps the legacy lookup so imported configs still work.
+ */
+export function resolveModelChannel(config: AiConfig, value: string): ModelChannel | null {
     const decoded = decodeChannelModel(value);
-    const model = decoded?.model || value;
-    const matched = decoded ? config.channels.find((channel) => channel.id === decoded.channelId) : config.channels.find((channel) => channel.models.some((item) => item.name === model));
-    return matched || config.channels[0] || createModelChannel({ id: "default", name: i18n.t("config.channels.defaultName"), baseUrl: config.baseUrl, apiKey: config.apiKey, apiFormat: config.apiFormat, models: config.models.map(modelOptionName).map((name) => ({ name, capability: guessCapability(name) })) });
+    if (decoded) return config.channels.find((channel) => channel.id === decoded.channelId) || null;
+    return config.channels.find((channel) => channel.models.some((item) => item.name === value)) || config.channels[0] || defaultChannelFromLegacyConfig(config);
 }
 
 export function resolveModelRequestConfig(config: AiConfig, value: string) {
     const channel = resolveModelChannel(config, value);
+    if (!channel) throw new Error(i18n.t("apiErrors.channelMissing"));
     return {
         ...config,
         model: modelOptionName(value || config.model),

@@ -10,12 +10,12 @@ import { useThemeStore } from "@/stores/use-theme-store";
 type CanvasZoomControlsProps = {
     scale: number;
     onScaleChange: (scale: number) => void;
-    onReset: () => void;
+    onFitView: () => void;
     isMiniMapOpen: boolean;
     onToggleMiniMap: () => void;
 };
 
-export function CanvasZoomControls({ scale, onScaleChange, onReset, isMiniMapOpen, onToggleMiniMap }: CanvasZoomControlsProps) {
+export function CanvasZoomControls({ scale, onScaleChange, onFitView, isMiniMapOpen, onToggleMiniMap }: CanvasZoomControlsProps) {
     const [shortcutsOpen, setShortcutsOpen] = useState(false);
     const { t } = useTranslation();
     const colorTheme = useThemeStore((state) => state.theme);
@@ -36,8 +36,8 @@ export function CanvasZoomControls({ scale, onScaleChange, onReset, isMiniMapOpe
                         aria-label={isMiniMapOpen ? t("canvas.miniMapClose") : t("canvas.miniMapOpen")}
                     />
                 </Tooltip>
-                <Tooltip title={t("canvas.resetView")}>
-                    <Button type="text" className="!h-8 !w-8 !min-w-8 !p-0" style={{ color: theme.toolbar.item }} icon={<Focus className="size-4" />} onClick={onReset} aria-label={t("canvas.resetView")} />
+                <Tooltip title={t("canvas.fitView")}>
+                    <Button type="text" className="!h-8 !w-8 !min-w-8 !p-0" style={{ color: theme.toolbar.item }} icon={<Focus className="size-4" />} onClick={onFitView} aria-label={t("canvas.fitView")} />
                 </Tooltip>
                 <Tooltip title={t("canvas.zoom")}>
                     <input

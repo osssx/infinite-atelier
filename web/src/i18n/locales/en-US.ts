@@ -314,7 +314,7 @@ export default {
         shortcuts: "Keyboard shortcuts",
         miniMapOpen: "Open minimap",
         miniMapClose: "Close minimap",
-        resetView: "Reset view",
+        fitView: "Fit to view",
         zoom: "Zoom canvas",
         connecting: "Connecting",
         nodeTypes: {

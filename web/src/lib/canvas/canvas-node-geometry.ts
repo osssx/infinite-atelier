@@ -1,4 +1,4 @@
-import { CanvasNodeType, type CanvasNodeData, type ConnectionHandle } from "@/types/canvas";
+import { CanvasNodeType, type CanvasNodeData, type ConnectionHandle, type ViewportTransform } from "@/types/canvas";
 
 export function nodeBounds(nodes: CanvasNodeData[]) {
     return nodes.reduce(
@@ -10,6 +10,28 @@ export function nodeBounds(nodes: CanvasNodeData[]) {
         }),
         { left: Infinity, top: Infinity, right: -Infinity, bottom: -Infinity },
     );
+}
+
+// Screen pixels kept clear on every side when fitting the canvas to its nodes. Symmetric by
+// necessity: asymmetric padding would stop the content from ending up centred. 80 clears the
+// 64px CanvasTopBar; the floating zoom dock / toolbar / minimap at the bottom-left can still
+// overlap content, which is a known trade-off rather than something padding can solve.
+export const FIT_VIEW_PADDING = 80;
+
+/** Viewport that shows every node, centred, never zoomed in past 100%. */
+export function fitViewportToNodes(nodes: CanvasNodeData[], size: { width: number; height: number }, padding = FIT_VIEW_PADDING): ViewportTransform {
+    const bounds = nodeBounds(nodes);
+    // nodeBounds returns ±Infinity for no nodes at all, and the midpoint of that is NaN rather
+    // than Infinity — the divisors below are guarded, this term is not, so bail out first.
+    if (!Number.isFinite(bounds.left)) return { x: size.width / 2, y: size.height / 2, k: 1 };
+    // max(..., 1) also absorbs a degenerate zero/negative width, where right < left.
+    const width = Math.max(bounds.right - bounds.left, 1);
+    const height = Math.max(bounds.bottom - bounds.top, 1);
+    // The 0.05 floor is shared with wheel/slider zoom, so a spread wider than 20x the container
+    // still overflows rather than being fully fitted. Lowering it only here would put the zoom
+    // slider out of range and snap on the next wheel event.
+    const k = Math.min(Math.max(Math.min((size.width - 2 * padding) / width, (size.height - 2 * padding) / height), 0.05), 1);
+    return { x: size.width / 2 - ((bounds.left + bounds.right) / 2) * k, y: size.height / 2 - ((bounds.top + bounds.bottom) / 2) * k, k };
 }
 
 export function findGroupDropTarget(movedIds: Set<string>, nodes: CanvasNodeData[]) {

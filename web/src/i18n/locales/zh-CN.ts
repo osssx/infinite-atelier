@@ -314,7 +314,7 @@ export default {
         shortcuts: "快捷键",
         miniMapOpen: "打开小地图",
         miniMapClose: "关闭小地图",
-        resetView: "重置视图",
+        fitView: "适应画布",
         zoom: "放大/缩小画布",
         connecting: "连接中",
         nodeTypes: {

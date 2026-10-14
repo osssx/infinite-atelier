@@ -45,7 +45,7 @@ import { useGenerationHistoryStore, type GenerationHistoryImage } from "@/stores
 import { buildNodeMentionReferences, type CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
 import { exportCanvasProjects } from "@/lib/canvas/canvas-export";
 import { applyNodeConfigPatch, audioMetadata, buildAudioGenerationMetadata, buildImageGenerationMetadata, createCanvasNode, imageMetadata, videoMetadata } from "@/lib/canvas/canvas-node-factory";
-import { findContainingGroupId, findGroupDropTarget, getConnectionTargetAnchor, normalizeConnection, snapNodesIntoGroup } from "@/lib/canvas/canvas-node-geometry";
+import { findContainingGroupId, findGroupDropTarget, fitViewportToNodes, getConnectionTargetAnchor, normalizeConnection, snapNodesIntoGroup } from "@/lib/canvas/canvas-node-geometry";
 import {
     audioExtension,
     buildAngleLabel,
@@ -232,7 +232,7 @@ function AtelierCanvasPage() {
     const connectionsRef = useRef(connections);
     const selectedNodeIdsRef = useRef(selectedNodeIds);
     const viewportRef = useRef(viewport);
-    const focusAnimRef = useRef<number | null>(null);
+    const viewportAnimRef = useRef<number | null>(null);
     const generateNodeRef = useRef<((nodeId: string, mode: CanvasNodeGenerationMode, prompt: string) => Promise<void>) | null>(null);
     const connectingParamsRef = useRef(connectingParams);
     const connectionTargetNodeIdRef = useRef(connectionTargetNodeId);
@@ -810,10 +810,47 @@ function AtelierCanvasPage() {
         return true;
     }, [getCanvasCenter]);
 
-    const resetViewport = useCallback(() => {
-        setViewport({ x: size.width / 2, y: size.height / 2, k: 1 });
+    const cancelViewportAnimation = useCallback(() => {
+        if (viewportAnimRef.current) cancelAnimationFrame(viewportAnimRef.current);
+        viewportAnimRef.current = null;
+    }, []);
+
+    // Shared 450ms ease-out tween. Fit and focus share one rAF handle, so starting either one
+    // cancels the other instead of the two fighting over the transform.
+    const animateViewport = useCallback(
+        (target: ViewportTransform) => {
+            cancelViewportAnimation();
+            const start = { ...viewportRef.current };
+            const duration = 450;
+            const easeOutCubic = (t: number) => 1 - Math.pow(1 - t, 3);
+            let startTime: number | null = null;
+            const step = (now: number) => {
+                if (startTime === null) startTime = now;
+                const t = easeOutCubic(Math.min((now - startTime) / duration, 1));
+                setViewport({ x: start.x + (target.x - start.x) * t, y: start.y + (target.y - start.y) * t, k: start.k + (target.k - start.k) * t });
+                viewportAnimRef.current = t < 1 ? requestAnimationFrame(step) : null;
+            };
+            viewportAnimRef.current = requestAnimationFrame(step);
+        },
+        [cancelViewportAnimation],
+    );
+
+    const handleViewportChange = useCallback(
+        (next: ViewportTransform) => {
+            // A user-driven pan/zoom has to win over an in-flight animation: wheel zoom and the
+            // minimap derive their next transform from the committed viewport, so letting the rAF
+            // keep writing would pull the canvas back to a stale target on the following frame.
+            cancelViewportAnimation();
+            setViewport(next);
+            setContextMenu(null);
+        },
+        [cancelViewportAnimation],
+    );
+
+    const fitViewport = useCallback(() => {
         setContextMenu(null);
-    }, [size.height, size.width]);
+        animateViewport(fitViewportToNodes(nodesRef.current, size));
+    }, [animateViewport, size.height, size.width]);
 
     const focusNode = useCallback(
         (nodeId: string) => {
@@ -826,28 +863,16 @@ function AtelierCanvasPage() {
             setSelectedNodeIds(new Set([nodeId]));
             setSelectedConnectionId(null);
             setContextMenu(null);
-
-            if (focusAnimRef.current) cancelAnimationFrame(focusAnimRef.current);
-            const start = { ...viewportRef.current };
-            const duration = 450;
-            const easeOutCubic = (t: number) => 1 - Math.pow(1 - t, 3);
-            let startTime: number | null = null;
-            const step = (now: number) => {
-                if (startTime === null) startTime = now;
-                const progress = Math.min((now - startTime) / duration, 1);
-                const t = easeOutCubic(progress);
-                setViewport({ x: start.x + (target.x - start.x) * t, y: start.y + (target.y - start.y) * t, k: start.k + (target.k - start.k) * t });
-                focusAnimRef.current = progress < 1 ? requestAnimationFrame(step) : null;
-            };
-            focusAnimRef.current = requestAnimationFrame(step);
+            animateViewport(target);
         },
-        [size.height, size.width],
+        [animateViewport, size.height, size.width],
     );
 
-    useEffect(() => () => void (focusAnimRef.current && cancelAnimationFrame(focusAnimRef.current)), []);
+    useEffect(() => () => void (viewportAnimRef.current && cancelAnimationFrame(viewportAnimRef.current)), []);
 
     const setZoomScale = useCallback(
         (scale: number) => {
+            cancelViewportAnimation();
             const nextScale = Math.min(Math.max(scale, 0.05), 5);
             setViewport((prev) => ({
                 x: size.width / 2 - ((size.width / 2 - prev.x) / prev.k) * nextScale,
@@ -856,7 +881,7 @@ function AtelierCanvasPage() {
             }));
             setContextMenu(null);
         },
-        [size.height, size.width],
+        [cancelViewportAnimation, size.height, size.width],
     );
 
     const applyHistory = useCallback((entry: CanvasHistoryEntry) => {
@@ -2807,10 +2832,7 @@ function AtelierCanvasPage() {
                     viewport={viewport}
                     tool={canvasTool}
                     backgroundMode={backgroundMode}
-                    onViewportChange={(next) => {
-                        setViewport(next);
-                        setContextMenu(null);
-                    }}
+                    onViewportChange={handleViewportChange}
                     onCanvasMouseDown={handleCanvasMouseDown}
                     onCanvasDeselect={deselectCanvas}
                     onCanvasDoubleClick={(event) => {
@@ -2969,9 +2991,9 @@ function AtelierCanvasPage() {
                     onShowImageInfoChange={setShowImageInfo}
                 />
 
-                {isMiniMapOpen ? <Minimap nodes={nodes} viewport={viewport} viewportSize={size} onViewportChange={setViewport} /> : null}
+                {isMiniMapOpen ? <Minimap nodes={nodes} viewport={viewport} viewportSize={size} onViewportChange={handleViewportChange} /> : null}
 
-                <CanvasZoomControls scale={viewport.k} onScaleChange={setZoomScale} onReset={resetViewport} isMiniMapOpen={isMiniMapOpen} onToggleMiniMap={() => setIsMiniMapOpen((value) => !value)} />
+                <CanvasZoomControls scale={viewport.k} onScaleChange={setZoomScale} onFitView={fitViewport} isMiniMapOpen={isMiniMapOpen} onToggleMiniMap={() => setIsMiniMapOpen((value) => !value)} />
 
                 {contextMenu ? (
                     <CanvasNodeContextMenu

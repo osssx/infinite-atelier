@@ -152,7 +152,6 @@ function AtelierCanvasPage() {
     const viewportSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const applyingHistoryRef = useRef(false);
     const historyPausedRef = useRef(false);
-    const didInitialCenterRef = useRef(false);
     const rafRef = useRef<number | null>(null);
     const nodeDraggingRef = useRef(false);
     const dragRef = useRef<{
@@ -423,6 +422,13 @@ function AtelierCanvasPage() {
         selectionBoxRef.current = selectionBox;
     }, [selectionBox]);
 
+    // Keyed on projectLoaded because the canvas is not in the tree until the project finishes
+    // loading (see the early return near the end of this component): a mount-only effect would
+    // always see a null ref, bail out, and leave `size` at its 1200x720 default forever. Every
+    // size-based centering (fit, focusNode, the zoom slider, the minimap viewport rect) would then
+    // measure against the wrong box and land off-centre toward the top-left. This must stay a
+    // measurement-only effect: it runs after the project-load effect that restores
+    // `project.viewport`, so setting a viewport here would clobber the saved one on every open.
     useEffect(() => {
         const el = containerRef.current;
         if (!el) return;
@@ -430,17 +436,13 @@ function AtelierCanvasPage() {
         const updateSize = () => {
             const rect = el.getBoundingClientRect();
             setSize({ width: rect.width, height: rect.height });
-            if (!didInitialCenterRef.current) {
-                didInitialCenterRef.current = true;
-                setViewport({ x: rect.width / 2, y: rect.height / 2, k: 1 });
-            }
         };
 
         updateSize();
         const resizeObserver = new ResizeObserver(updateSize);
         resizeObserver.observe(el);
         return () => resizeObserver.disconnect();
-    }, []);
+    }, [projectLoaded]);
 
     const screenToCanvas = useCallback((clientX: number, clientY: number) => {
         const rect = containerRef.current?.getBoundingClientRect();

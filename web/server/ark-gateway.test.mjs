@@ -179,6 +179,22 @@ test("Vite dev gateway has no Router-specific client route", async () => {
     assert.doesNotMatch(config, /api\/router-local|ARK_LOCAL_ROUTER_URL|x-router-origin/);
 });
 
+test("generic API proxy accepts trusted local channels and rejects cross-origin callers", async () => withLocalProxyLock(async () => {
+    const target = `${routerOrigin}/v1/models`;
+    const route = `${viteOrigin}/api-proxy?target=${encodeURIComponent(target)}`;
+    const valid = await localFetch("generic local API", route, { headers: localHeaders() });
+    assert.equal(valid.status, 200, await valid.clone().text());
+    assert.deepEqual(await valid.json(), { method: "GET", url: "/v1/models" });
+    const beforeBlocked = routerRequests.length;
+    const blocked = await localFetch("cross-origin generic API", route, { headers: localHeaders({ origin: "https://attacker.example" }) });
+    assert.equal(blocked.status, 403);
+    const noOrigin = await localFetch("unidentified generic API caller", route, {});
+    assert.equal(noOrigin.status, 403);
+    const unknownLocal = await localFetch("untrusted local API", `${viteOrigin}/api-proxy?target=${encodeURIComponent("http://127.0.0.1:1/v1/models")}`, { headers: localHeaders() });
+    assert.equal(unknownLocal.status, 403);
+    assert.equal(routerRequests.length, beforeBlocked);
+}));
+
 test("media upload rejects a private IP even when its hostname appears in configuration", async () => {
     const form = new FormData();
     form.append("file", new Blob(["tiny test file"]), "sample.mp4");

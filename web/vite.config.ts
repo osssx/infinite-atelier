@@ -7,11 +7,10 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
 import { defineConfig, loadEnv, type Plugin } from "vite";
-import { resolvePublicProxyAddresses } from "./server/api-proxy-policy";
+import { isLocalProxyCaller, trustedLocalOrigin, validateProxyTarget } from "./server/api-proxy-policy";
 
 const webDir = dirname(fileURLToPath(import.meta.url));
 const MAX_PROXY_BODY = 200 * 1024 * 1024;
-const DEFAULT_HOSTS = ["ark.cn-beijing.volces.com", "api.openai.com", "generativelanguage.googleapis.com"];
 const LOCAL_BODY_LIMIT = 200 * 1024 * 1024 + 256 * 1024;
 const LOCAL_RESPONSE_LIMIT = 200 * 1024 * 1024;
 type TrustedBase = { protocol: "http:" | "https:"; hostname: string; port: number; origin: string; pathname: string };
@@ -131,20 +130,9 @@ function configuredDevGatewayPlugin(rawBases: string | undefined, uploadUrl: str
     };
 }
 
-function allowedHosts(raw: string | undefined): Set<string> { return new Set((raw || DEFAULT_HOSTS.join(",")).split(",").map((host) => host.trim().toLowerCase()).filter(Boolean)); }
-
-async function validateTarget(raw: string, hosts: Set<string>) {
-    const target = new URL(raw);
-    if (target.protocol !== "https:" || target.username || target.password || target.port && target.port !== "443" ||
-        !hosts.has(target.hostname.toLowerCase()) || isIP(target.hostname)) {
-        throw new Error("target host is not allowed");
-    }
-    const addresses = await resolvePublicProxyAddresses(target.hostname);
-    return { target, addresses };
-}
-
-function apiProxyPlugin(rawAllowedHosts: string | undefined): Plugin {
-    const hosts = allowedHosts(rawAllowedHosts);
+function apiProxyPlugin(rawAllowedHosts: string | undefined, localOrigins: string[]): Plugin {
+    const listedHosts = (rawAllowedHosts || "").split(",").map(host => host.trim().toLowerCase()).filter(Boolean);
+    const policy = { allowedHosts: listedHosts.length ? new Set(listedHosts) : undefined, trustedLocalOrigins: new Set(localOrigins.map(trustedLocalOrigin)) };
     return {
         name: "canvas-api-proxy",
         apply: "serve",
@@ -152,22 +140,27 @@ function apiProxyPlugin(rawAllowedHosts: string | undefined): Plugin {
             server.middlewares.use("/api-proxy", (req, res) => {
                 void (async () => {
                     try {
+                        if (!isLocalProxyCaller({ remoteAddress: req.socket.remoteAddress || "", host: req.headers.host,
+                            origin: req.headers.origin, fetchSite: typeof req.headers["sec-fetch-site"] === "string" ? req.headers["sec-fetch-site"] : undefined })) {
+                            res.statusCode = 403; res.end("API proxy requires a same-origin browser request from this computer"); return;
+                        }
                         const url = new URL(req.url || "", "http://localhost");
                         const rawTarget = url.searchParams.get("target");
                         if (!rawTarget) throw new Error("missing target");
-                        const { target, addresses } = await validateTarget(rawTarget, hosts);
+                        const { target, addresses } = await validateProxyTarget(rawTarget, policy);
                         const method = req.method || "GET";
                         if (!["GET", "POST", "PUT", "PATCH", "DELETE"].includes(method)) throw new Error("method not allowed");
                         const body = ["POST", "PUT", "PATCH"].includes(method) ? await readRequestBody(req, MAX_PROXY_BODY) : undefined;
                         const headers: Record<string, string> = {};
                         for (const [key, value] of Object.entries(req.headers)) {
-                            if (!value || ["host", "connection", "content-length", "transfer-encoding", "cookie", "origin", "referer"].includes(key)) continue;
+                            if (!value || ["host", "connection", "content-length", "transfer-encoding", "cookie", "origin", "referer", "x-forwarded-for", "x-gateway-token"].includes(key) || key.startsWith("sec-fetch-")) continue;
                             headers[key] = Array.isArray(value) ? value.join(", ") : value;
                         }
                         headers.host = target.host;
                         headers["accept-encoding"] = "identity";
                         const upstream = await new Promise<IncomingMessage>((resolveResponse, reject) => {
-                            const request = httpsRequest(target, { method, headers,
+                            const transport = target.protocol === "https:" ? httpsRequest : httpRequest;
+                            const request = transport(target, { method, headers,
                                 lookup: (_hostname, options, callback) => options?.all ? callback(null, addresses) : callback(null, addresses[0].address, addresses[0].family),
                             }, resolveResponse);
                             request.setTimeout(120_000, () => request.destroy(new Error("upstream request timed out")));
@@ -188,7 +181,7 @@ function apiProxyPlugin(rawAllowedHosts: string | undefined): Plugin {
                         upstream.on("error", () => res.destroy());
                         upstream.pipe(res);
                     } catch (error) {
-                        res.statusCode = error instanceof Error && error.message === "target host is not allowed" ? 403 : 400;
+                        res.statusCode = error instanceof Error && /not allowed|non-public|require an HTTPS|outside loopback/.test(error.message) ? 403 : 400;
                         res.end(error instanceof Error ? error.message : "proxy error");
                     }
                 })();
@@ -217,9 +210,11 @@ export default defineConfig(({ mode }) => {
     const trustedBases = process.env.ARK_TRUSTED_BASE_URLS || env.ARK_TRUSTED_BASE_URLS;
     const mediaUploadUrl = process.env.MEDIA_UPLOAD_URL || env.MEDIA_UPLOAD_URL;
     const apiProxyAllowedHosts = process.env.VITE_API_PROXY_ALLOWED_HOSTS || env.VITE_API_PROXY_ALLOWED_HOSTS;
+    const localProxyOrigins = (process.env.API_PROXY_TRUSTED_LOCAL_ORIGINS || env.API_PROXY_TRUSTED_LOCAL_ORIGINS || "").split(",").map(value => value.trim()).filter(Boolean);
+    localProxyOrigins.push(...parseTrustedBases(trustedBases).map(base => base.origin));
     return {
         base: process.env.VITE_BASE || "/",
-        plugins: [react(), configuredDevGatewayPlugin(trustedBases, mediaUploadUrl), apiProxyPlugin(apiProxyAllowedHosts)],
+        plugins: [react(), configuredDevGatewayPlugin(trustedBases, mediaUploadUrl), apiProxyPlugin(apiProxyAllowedHosts, localProxyOrigins)],
         server: {
             proxy: {
                 "/media/ark": { target: process.env.MEDIA_GATEWAY_URL || "http://127.0.0.1:8787", changeOrigin: true, timeout: 90_000 },

@@ -27,6 +27,50 @@ const systemResolver: Resolver = {
     resolve6,
 };
 
+export function isLoopbackAddress(address: string): boolean {
+    const value = address.toLowerCase().replace(/^\[|\]$/g, "");
+    if (value.startsWith("::ffff:")) return isLoopbackAddress(value.slice(7));
+    return value === "::1" || (isIP(value) === 4 && value.startsWith("127."));
+}
+
+export function trustedLocalOrigin(raw: string): string {
+    const url = new URL(raw);
+    if (!["http:", "https:"].includes(url.protocol) ||
+        !(url.hostname === "localhost" || isLoopbackAddress(url.hostname)) ||
+        url.username || url.password || url.search || url.hash || url.pathname !== "/")
+        throw new Error("API_PROXY_TRUSTED_LOCAL_ORIGINS must contain loopback HTTP(S) origins without paths");
+    return url.origin;
+}
+
+export function isLocalProxyCaller(caller: { remoteAddress: string; host?: string; origin?: string; fetchSite?: string }): boolean {
+    if (!isLoopbackAddress(caller.remoteAddress) || !caller.host) return false;
+    if (caller.fetchSite && !["same-origin", "none"].includes(caller.fetchSite)) return false;
+    if (!caller.origin && !caller.fetchSite) return false;
+    try {
+        const host = new URL(`http://${caller.host}`);
+        if (!(host.hostname === "localhost" || isLoopbackAddress(host.hostname))) return false;
+        if (!caller.origin) return true;
+        const origin = new URL(caller.origin);
+        return ["http:", "https:"].includes(origin.protocol) && origin.origin === caller.origin && origin.host === host.host;
+    } catch { return false; }
+}
+
+export async function validateProxyTarget(raw: string, policy: { allowedHosts?: Set<string>; trustedLocalOrigins: Set<string> }, resolver: Resolver = systemResolver) {
+    const target = new URL(raw);
+    if (target.username || target.password || target.hash) throw new Error("API target cannot contain credentials or a fragment");
+    if (policy.trustedLocalOrigins.has(target.origin)) {
+        trustedLocalOrigin(target.origin);
+        const hostname = target.hostname.replace(/^\[|\]$/g, "");
+        const addresses = isIP(hostname) ? [{ address: hostname, family: isIP(hostname) }] : await resolver.lookup(hostname);
+        if (!addresses.length || addresses.some(({ address }) => !isLoopbackAddress(address))) throw new Error("trusted local API resolves outside loopback");
+        return { target, addresses };
+    }
+    if (target.protocol !== "https:" || isIP(target.hostname.replace(/^\[|\]$/g, "")))
+        throw new Error("Public API targets require an HTTPS hostname; configure API_PROXY_TRUSTED_LOCAL_ORIGINS for a local API");
+    if (policy.allowedHosts && !policy.allowedHosts.has(target.hostname.toLowerCase())) throw new Error("target host is not allowed by VITE_API_PROXY_ALLOWED_HOSTS");
+    return { target, addresses: await resolvePublicProxyAddresses(target.hostname, resolver) };
+}
+
 export async function resolvePublicProxyAddresses(hostname: string, resolver: Resolver = systemResolver): Promise<Address[]> {
     let addresses = await resolver.lookup(hostname);
     // TUN proxies may synthesize RFC 2544 addresses for the OS resolver. Query

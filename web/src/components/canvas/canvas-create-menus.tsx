@@ -1,33 +1,97 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
+import { createPortal } from "react-dom";
 import { ImageIcon, List, Music2, Settings2, Video, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { canvasThemes } from "@/lib/canvas-theme";
+import { canvasPopupPosition } from "@/lib/canvas/canvas-popup-position";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { listNodeDefinitions } from "@/lib/canvas/node-registry";
-import { CanvasNodeType, type ConnectionHandle, type Position } from "@/types/canvas";
+import { CanvasNodeType, type ConnectionHandle, type Position, type ViewportTransform } from "@/types/canvas";
 
 export type PendingConnectionCreate = {
     connection: ConnectionHandle;
     position: Position;
 };
 
+type CanvasMenuLocation = {
+    canvasRef: RefObject<HTMLDivElement | null>;
+    viewport: ViewportTransform;
+};
+
+/** Keep canvas-world anchors, but render menus as fixed-size screen overlays. */
+function useCanvasMenuPlacement(anchor: Position, { canvasRef, viewport }: CanvasMenuLocation) {
+    const menuRef = useRef<HTMLDivElement>(null);
+    const [screenPosition, setScreenPosition] = useState<Position | null>(null);
+
+    useLayoutEffect(() => {
+        const update = () => {
+            const container = canvasRef.current;
+            const menu = menuRef.current;
+            if (!container || !menu) return;
+            const next = canvasPopupPosition(
+                anchor,
+                viewport,
+                container.getBoundingClientRect(),
+                { width: menu.offsetWidth || 300, height: menu.offsetHeight || 400 },
+                { width: window.innerWidth, height: window.innerHeight },
+            );
+            setScreenPosition((current) => current?.x === next.x && current.y === next.y ? current : next);
+        };
+        update();
+        window.addEventListener("resize", update);
+        window.addEventListener("scroll", update, true);
+        const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(update) : null;
+        if (canvasRef.current) observer?.observe(canvasRef.current);
+        if (menuRef.current) observer?.observe(menuRef.current);
+        return () => {
+            window.removeEventListener("resize", update);
+            window.removeEventListener("scroll", update, true);
+            observer?.disconnect();
+        };
+    }, [anchor.x, anchor.y, canvasRef, viewport.k, viewport.x, viewport.y]);
+
+    return {
+        menuRef,
+        style: {
+            position: "fixed" as const,
+            left: screenPosition?.x ?? 0,
+            top: screenPosition?.y ?? 0,
+            visibility: screenPosition ? "visible" as const : "hidden" as const,
+        },
+    };
+}
+
 export function ConnectionCreateMenu({
     pending,
+    canvasRef,
+    viewport,
     onCreate,
     onClose,
 }: {
     pending: PendingConnectionCreate;
     onCreate: (type: CanvasNodeType.Image | CanvasNodeType.Text | CanvasNodeType.Config | CanvasNodeType.Video | CanvasNodeType.Audio) => void;
     onClose: () => void;
-}) {
+} & CanvasMenuLocation) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const { t } = useTranslation();
-    return (
+    const { menuRef, style } = useCanvasMenuPlacement(pending.position, { canvasRef, viewport });
+
+    useEffect(() => {
+        const closeOnOutsidePointer = (event: PointerEvent) => {
+            if (menuRef.current && !menuRef.current.contains(event.target as Node)) onClose();
+        };
+        document.addEventListener("pointerdown", closeOnOutsidePointer, true);
+        return () => document.removeEventListener("pointerdown", closeOnOutsidePointer, true);
+    }, [onClose, menuRef]);
+
+    return createPortal(
         <div
-            className="absolute z-[120] w-[300px] rounded-[18px] border p-3 shadow-2xl backdrop-blur"
+            ref={menuRef}
+            className="z-[1200] max-h-[calc(100vh-24px)] w-[300px] overflow-y-auto rounded-[18px] border p-3 shadow-2xl backdrop-blur"
             data-connection-create-menu
-            style={{ left: pending.position.x, top: pending.position.y, background: theme.node.panel, borderColor: theme.node.stroke, color: theme.node.text }}
+            data-canvas-no-zoom
+            style={{ ...style, background: theme.node.panel, borderColor: theme.node.stroke, color: theme.node.text }}
             onMouseDown={(event) => event.stopPropagation()}
             onPointerDown={(event) => event.stopPropagation()}
         >
@@ -46,7 +110,8 @@ export function ConnectionCreateMenu({
                 <ConnectionCreateOption theme={theme} icon={<Music2 className="size-5" />} title={t("canvas.createMenu.audio")} onClick={() => onCreate(CanvasNodeType.Audio)} />
                 <ConnectionCreateOption theme={theme} icon={<Settings2 className="size-5" />} title={t("canvas.createMenu.config")} description={t("canvas.createMenu.configDescription")} onClick={() => onCreate(CanvasNodeType.Config)} />
             </div>
-        </div>
+        </div>,
+        document.body,
     );
 }
 
@@ -75,26 +140,28 @@ export function ConnectionCreateOption({ theme, icon, title, description, onClic
     );
 }
 
-export function NodeCreateMenu({ position, onCreate, onClose }: { position: Position; onCreate: (type: string) => void; onClose: () => void }) {
+export function NodeCreateMenu({ position, canvasRef, viewport, onCreate, onClose }: { position: Position; onCreate: (type: string) => void; onClose: () => void } & CanvasMenuLocation) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const { t } = useTranslation();
-    const menuRef = useRef<HTMLDivElement>(null);
+    const { menuRef, style } = useCanvasMenuPlacement(position, { canvasRef, viewport });
     const definitions = listNodeDefinitions().filter((def) => def.showInCreateMenu !== false);
-    // Close automatically when clicking outside the menu.
+
     useEffect(() => {
         const handlePointerDown = (event: PointerEvent) => {
             if (menuRef.current && !menuRef.current.contains(event.target as Node)) onClose();
         };
         document.addEventListener("pointerdown", handlePointerDown, true);
         return () => document.removeEventListener("pointerdown", handlePointerDown, true);
-    }, [onClose]);
-    return (
+    }, [onClose, menuRef]);
+
+    return createPortal(
         <div
             ref={menuRef}
-            className="absolute z-[120] max-h-[70vh] w-[300px] overflow-y-auto rounded-[18px] border p-3 shadow-2xl backdrop-blur thin-scrollbar"
+            className="z-[1200] max-h-[70vh] w-[300px] overflow-y-auto rounded-[18px] border p-3 shadow-2xl backdrop-blur thin-scrollbar"
             data-canvas-no-zoom
-            style={{ left: position.x, top: position.y, background: theme.node.panel, borderColor: theme.node.stroke, color: theme.node.text }}
+            style={{ ...style, background: theme.node.panel, borderColor: theme.node.stroke, color: theme.node.text }}
             onPointerDown={(event) => event.stopPropagation()}
+            onMouseDown={(event) => event.stopPropagation()}
         >
             <div className="mb-2 flex items-center justify-between px-1">
                 <span className="text-sm font-medium" style={{ color: theme.node.muted }}>
@@ -109,6 +176,7 @@ export function NodeCreateMenu({ position, onCreate, onClose }: { position: Posi
                     <ConnectionCreateOption key={def.type} theme={theme} icon={def.icon} title={def.title} description={def.description} onClick={() => onCreate(def.type)} />
                 ))}
             </div>
-        </div>
+        </div>,
+        document.body,
     );
 }

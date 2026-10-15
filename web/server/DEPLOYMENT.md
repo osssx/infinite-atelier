@@ -67,6 +67,8 @@ Run the gateway with the same required configuration, then run Vite. Vite uses t
 
 ## Routes
 
+The development `/api-proxy` reads `VITE_API_PROXY_ALLOWED_HOSTS` from the process environment or `web/.env.local` (the process value takes precedence). For a Clinepass channel, include `api.cline.bot` alongside the default hostnames. When a TUN proxy returns a `198.18.0.0/15` Fake-IP, the proxy queries DNS for real A/AAAA records, validates that all returned addresses are public, and pins the HTTPS connection to those addresses. Private destinations and redirects remain blocked.
+
 - `POST /api/media/uploads`: generic multipart upload service; field `file`; returns `{ "url": "..." }`.
 - `POST /media/ark` and `/api/media/ark`: legacy upload aliases.
 - `POST /api/ark/contents/generations/tasks`: create an Ark task.

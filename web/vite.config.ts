@@ -2,12 +2,12 @@ import { lookup } from "node:dns/promises";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { isIP } from "node:net";
-import { Readable } from "node:stream";
 import type { IncomingMessage } from "node:http";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
 import { defineConfig, loadEnv, type Plugin } from "vite";
+import { resolvePublicProxyAddresses } from "./server/api-proxy-policy";
 
 const webDir = dirname(fileURLToPath(import.meta.url));
 const MAX_PROXY_BODY = 200 * 1024 * 1024;
@@ -131,37 +131,20 @@ function configuredDevGatewayPlugin(rawBases: string | undefined, uploadUrl: str
     };
 }
 
-function isPublicAddress(address: string): boolean {
-    if (isIP(address) === 4) {
-        const [a, b] = address.split(".").map(Number);
-        return !(a === 0 || a === 10 || a === 127 || (a === 169 && b === 254) ||
-            (a === 100 && b >= 64 && b <= 127) || (a === 172 && b >= 16 && b <= 31) ||
-            (a === 192 && (b === 0 || b === 168 || b === 88)) || (a === 198 && (b === 18 || b === 19 || b === 51)) ||
-            (a === 203 && b === 0) || a >= 224);
-    }
-    const value = address.toLowerCase();
-    if (value.startsWith("::ffff:")) {
-        const mapped = value.slice("::ffff:".length);
-        return isIP(mapped) === 4 && isPublicAddress(mapped);
-    }
-    return value.startsWith("2") && !value.startsWith("2001:db8:") && !value.startsWith("2001:10:");
-}
+function allowedHosts(raw: string | undefined): Set<string> { return new Set((raw || DEFAULT_HOSTS.join(",")).split(",").map((host) => host.trim().toLowerCase()).filter(Boolean)); }
 
-function allowedHosts(): Set<string> { return new Set((process.env.VITE_API_PROXY_ALLOWED_HOSTS || "ark.cn-beijing.volces.com,api.openai.com,generativelanguage.googleapis.com").split(",").map((host) => host.trim().toLowerCase()).filter(Boolean)); }
-
-async function validateTarget(raw: string): Promise<URL> {
+async function validateTarget(raw: string, hosts: Set<string>) {
     const target = new URL(raw);
-    const hosts = allowedHosts();
     if (target.protocol !== "https:" || target.username || target.password || target.port && target.port !== "443" ||
         !hosts.has(target.hostname.toLowerCase()) || isIP(target.hostname)) {
         throw new Error("target host is not allowed");
     }
-    const addresses = await lookup(target.hostname, { all: true, verbatim: true });
-    if (!addresses.length || addresses.some(({ address }) => !isPublicAddress(address))) throw new Error("target resolves to a non-public address");
-    return target;
+    const addresses = await resolvePublicProxyAddresses(target.hostname);
+    return { target, addresses };
 }
 
-function apiProxyPlugin(): Plugin {
+function apiProxyPlugin(rawAllowedHosts: string | undefined): Plugin {
+    const hosts = allowedHosts(rawAllowedHosts);
     return {
         name: "canvas-api-proxy",
         apply: "serve",
@@ -172,7 +155,7 @@ function apiProxyPlugin(): Plugin {
                         const url = new URL(req.url || "", "http://localhost");
                         const rawTarget = url.searchParams.get("target");
                         if (!rawTarget) throw new Error("missing target");
-                        const target = await validateTarget(rawTarget);
+                        const { target, addresses } = await validateTarget(rawTarget, hosts);
                         const method = req.method || "GET";
                         if (!["GET", "POST", "PUT", "PATCH", "DELETE"].includes(method)) throw new Error("method not allowed");
                         const body = ["POST", "PUT", "PATCH"].includes(method) ? await readRequestBody(req, MAX_PROXY_BODY) : undefined;
@@ -182,22 +165,28 @@ function apiProxyPlugin(): Plugin {
                             headers[key] = Array.isArray(value) ? value.join(", ") : value;
                         }
                         headers.host = target.host;
-                        const upstream = await fetch(target, { method, headers, body: body ? new Uint8Array(body) : undefined,
-                            redirect: "manual", signal: AbortSignal.timeout(120_000) });
-                        if (upstream.status >= 300 && upstream.status < 400) throw new Error("upstream redirects are not allowed");
-                        res.statusCode = upstream.status;
-                        upstream.headers.forEach((value, key) => {
-                            if (!["content-encoding", "content-length", "transfer-encoding", "connection", "set-cookie", "location"].includes(key)) res.setHeader(key, value);
+                        headers["accept-encoding"] = "identity";
+                        const upstream = await new Promise<IncomingMessage>((resolveResponse, reject) => {
+                            const request = httpsRequest(target, { method, headers,
+                                lookup: (_hostname, options, callback) => options?.all ? callback(null, addresses) : callback(null, addresses[0].address, addresses[0].family),
+                            }, resolveResponse);
+                            request.setTimeout(120_000, () => request.destroy(new Error("upstream request timed out")));
+                            request.on("error", reject);
+                            res.on("close", () => request.destroy());
+                            request.end(body);
                         });
-                        if (upstream.body) {
-                            const stream = Readable.fromWeb(upstream.body as import("node:stream/web").ReadableStream);
-                            let size = 0;
-                            stream.on("data", (chunk: Buffer) => {
-                                size += chunk.length;
-                                if (size > MAX_PROXY_BODY) { stream.destroy(); if (!res.headersSent) res.statusCode = 502; res.end("upstream response too large"); }
-                            });
-                            stream.pipe(res);
-                        } else res.end();
+                        if (upstream.statusCode && upstream.statusCode >= 300 && upstream.statusCode < 400) { upstream.resume(); throw new Error("upstream redirects are not allowed"); }
+                        res.statusCode = upstream.statusCode || 502;
+                        for (const [key, value] of Object.entries(upstream.headers)) {
+                            if (value !== undefined && !["content-length", "transfer-encoding", "connection", "set-cookie", "location"].includes(key)) res.setHeader(key, value);
+                        }
+                        let size = 0;
+                        upstream.on("data", (chunk: Buffer) => {
+                            size += chunk.length;
+                            if (size > MAX_PROXY_BODY) { upstream.destroy(); if (!res.headersSent) res.statusCode = 502; res.end("upstream response too large"); }
+                        });
+                        upstream.on("error", () => res.destroy());
+                        upstream.pipe(res);
                     } catch (error) {
                         res.statusCode = error instanceof Error && error.message === "target host is not allowed" ? 403 : 400;
                         res.end(error instanceof Error ? error.message : "proxy error");
@@ -227,9 +216,10 @@ export default defineConfig(({ mode }) => {
     const env = loadEnv(mode, webDir, "");
     const trustedBases = process.env.ARK_TRUSTED_BASE_URLS || env.ARK_TRUSTED_BASE_URLS;
     const mediaUploadUrl = process.env.MEDIA_UPLOAD_URL || env.MEDIA_UPLOAD_URL;
+    const apiProxyAllowedHosts = process.env.VITE_API_PROXY_ALLOWED_HOSTS || env.VITE_API_PROXY_ALLOWED_HOSTS;
     return {
         base: process.env.VITE_BASE || "/",
-        plugins: [react(), configuredDevGatewayPlugin(trustedBases, mediaUploadUrl), apiProxyPlugin()],
+        plugins: [react(), configuredDevGatewayPlugin(trustedBases, mediaUploadUrl), apiProxyPlugin(apiProxyAllowedHosts)],
         server: {
             proxy: {
                 "/media/ark": { target: process.env.MEDIA_GATEWAY_URL || "http://127.0.0.1:8787", changeOrigin: true, timeout: 90_000 },

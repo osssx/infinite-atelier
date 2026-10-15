@@ -114,7 +114,9 @@ function localHeaders(overrides = {}) {
 }
 
 async function localFetch(label, url, options) {
-    try { return await fetch(url, options); }
+    // Isolate requests from Undici's idle socket reuse while the Vite fixture
+    // starts/restarts its development middleware.
+    try { return await fetch(url, { ...options, headers: { ...options?.headers, connection: "close" } }); }
     catch (error) { throw new Error(`${label} failed: ${error instanceof Error ? error.message : String(error)}; router requests=${JSON.stringify(routerRequests)}`); }
 }
 

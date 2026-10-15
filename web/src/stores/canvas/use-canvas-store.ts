@@ -38,6 +38,15 @@ const CANVAS_STORE_KEY = "infinite-canvas:canvas_store";
 type PersistedCanvasState = Pick<CanvasStore, "projects">;
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 let queuedPersistState: PersistedCanvasState | null = null;
+let pendingPersist: { name: string; value: StorageValue<CanvasStore> } | null = null;
+
+export function flushCanvasStorePersistence() {
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = null;
+    const pending = pendingPersist;
+    pendingPersist = null;
+    if (pending) void localForageStorage.setItem(pending.name, JSON.stringify(pending.value));
+}
 
 const canvasStorage: PersistStorage<CanvasStore> = {
     getItem: async (name) => {
@@ -51,10 +60,10 @@ const canvasStorage: PersistStorage<CanvasStore> = {
         const nextState = value.state as PersistedCanvasState;
         if (queuedPersistState && queuedPersistState.projects === nextState.projects) return;
         queuedPersistState = nextState;
+        pendingPersist = { name, value };
         if (saveTimer) clearTimeout(saveTimer);
         saveTimer = setTimeout(() => {
-            saveTimer = null;
-            void localForageStorage.setItem(name, JSON.stringify(value));
+            flushCanvasStorePersistence();
         }, 400);
     },
     removeItem: (name) => localForageStorage.removeItem(name),

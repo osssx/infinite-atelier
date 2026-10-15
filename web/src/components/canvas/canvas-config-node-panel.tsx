@@ -1,29 +1,31 @@
 import type { CSSProperties } from "react";
 import { Image as ImageIcon, LoaderCircle, MessageSquare, Music2, Play, Settings2, Square, Video } from "lucide-react";
-import { Button, Segmented } from "antd";
+import { Button, Segmented, Select } from "antd";
 import { useTranslation } from "react-i18next";
 
 import { ModelPicker } from "@/components/model-picker";
-import { defaultConfig, resolveModelForCapability, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
+import { defaultConfig, resolveModelChannel, resolveModelForCapability, resolveModelScript, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { CanvasImageSettingsPopover } from "./canvas-image-settings-popover";
 import { CanvasAudioSettingsPopover, type CanvasAudioSettingKey } from "./canvas-audio-settings-popover";
 import { CanvasVideoSettingsPopover } from "./canvas-video-settings-popover";
 import { CanvasTextSettingsPopover } from "./canvas-text-settings-popover";
-import type { CanvasGenerationMode, CanvasNodeData, CanvasNodeMetadata } from "@/types/canvas";
+import type { CanvasGenerationMode, CanvasNodeData, CanvasNodeMetadata, CanvasVideoReference } from "@/types/canvas";
+import type { NodeGenerationInput } from "@/components/canvas/canvas-node-generation";
 
 type CanvasConfigNodePanelProps = {
     node: CanvasNodeData;
     isRunning: boolean;
     inputSummary: { textCount: number; imageCount: number; videoCount: number; audioCount: number };
+    videoInputs: NodeGenerationInput[];
     onConfigChange: (nodeId: string, patch: Partial<CanvasNodeMetadata>) => void;
     onGenerate: (nodeId: string) => void;
     onStop: (nodeId: string) => void;
     onComposerToggle: () => void;
 };
 
-export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigChange, onGenerate, onStop, onComposerToggle }: CanvasConfigNodePanelProps) {
+export function CanvasConfigNodePanel({ node, isRunning, inputSummary, videoInputs, onConfigChange, onGenerate, onStop, onComposerToggle }: CanvasConfigNodePanelProps) {
     const { t } = useTranslation();
     const globalConfig = useEffectiveConfig();
     const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
@@ -34,9 +36,28 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
     const hasAnyInput = Boolean(inputSummary.textCount || inputSummary.imageCount || inputSummary.videoCount || inputSummary.audioCount);
     const hasComposerContent = Boolean((node.metadata?.composerContent ?? node.metadata?.prompt ?? "").trim());
     const canGenerate = hasComposerContent || (mode === "audio" ? inputSummary.textCount > 0 : hasAnyInput);
+    const arkVideo = mode === "video" && resolveModelChannel(config, config.model)?.apiFormat === "volcengine_ark" && !resolveModelScript(config, config.model);
+    const mediaInputs = videoInputs.filter((input) => input.type === "image" || input.type === "video" || input.type === "audio");
+    const savedAssignments = node.metadata?.videoReferences || [];
+    const assignedById = new Map(savedAssignments.map((item) => [item.id, item]));
+    const orderedAssignments = [...savedAssignments, ...mediaInputs.filter((input) => !assignedById.has(input.nodeId)).map((input) => ({ id: input.nodeId, kind: input.type as "image" | "video" | "audio" }))];
+    const setRole = (id: string, kind: CanvasVideoReference["kind"], role: CanvasVideoReference["role"] | undefined) => {
+        const current = node.metadata?.videoReferences || [];
+        const next = role ? [...current.filter((item) => item.id !== id), { id, kind, role }] : current.filter((item) => item.id !== id);
+        onConfigChange(node.id, { videoReferences: next });
+    };
+    const moveRole = (id: string, delta: number) => {
+        const current = [...(node.metadata?.videoReferences || [])];
+        const index = current.findIndex((item) => item.id === id);
+        const nextIndex = Math.max(0, Math.min(current.length - 1, index + delta));
+        if (index < 0 || index === nextIndex) return;
+        const [item] = current.splice(index, 1);
+        current.splice(nextIndex, 0, item);
+        onConfigChange(node.id, { videoReferences: current });
+    };
 
     return (
-        <div className="flex h-full w-full cursor-move flex-col px-3 pb-3 pt-7 text-sm" style={{ color: theme.node.text }} onWheel={(event) => event.stopPropagation()}>
+        <div className="flex h-full min-h-0 w-full cursor-move flex-col overflow-y-auto overscroll-contain px-3 pb-3 pt-7 text-sm" style={{ color: theme.node.text }} onWheel={(event) => event.stopPropagation()}>
             <div className="mb-2 flex items-center justify-between gap-3">
                 <div className="shrink-0 text-sm font-semibold">{t("canvas.configNode.title")}</div>
                 <div className="cursor-default" onMouseDown={(event) => event.stopPropagation()}>
@@ -111,9 +132,32 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
                 )}
             </div>
 
+            {arkVideo ? (
+                <div className="mb-2 space-y-2 rounded-lg border p-2" style={{ borderColor: theme.node.stroke }} onMouseDown={(event) => event.stopPropagation()}>
+                    <div className="text-[11px] font-medium opacity-75">{t("canvas.configNode.seedanceInputs")}</div>
+                    {!mediaInputs.length ? <div className="text-[11px] opacity-60">{t("canvas.configNode.seedanceInputsEmpty")}</div> : orderedAssignments.map((item, index) => {
+                        const input = mediaInputs.find((entry) => entry.nodeId === item.id);
+                        if (!input) return null;
+                        const selection = assignedById.get(item.id);
+                        const kind = input.type as CanvasVideoReference["kind"];
+                        const roleOptions = config.videoMode === "text_to_video" ? [] : config.videoMode === "first_frame"
+                            ? kind === "image" ? [{ value: "first_frame", label: t("canvas.configNode.firstFrame") }] : []
+                            : config.videoMode === "first_last_frame"
+                              ? kind === "image" ? [{ value: "first_frame", label: t("canvas.configNode.firstFrame") }, { value: "last_frame", label: t("canvas.configNode.lastFrame") }] : []
+                              : [{ value: kind === "image" ? "reference_image" : kind === "video" ? "reference_video" : "reference_audio", label: t("canvas.configNode.omniReference") }];
+                        return <div key={input.nodeId} className="flex items-center gap-1.5">
+                            <span className="min-w-0 flex-1 truncate text-[11px]" title={input.title}>{input.title}</span>
+                            <Select size="small" className="w-32" value={selection?.role} placeholder={t("canvas.configNode.excludeInput")} options={roleOptions} allowClear onChange={(role) => setRole(input.nodeId, kind, role as CanvasVideoReference["role"] | undefined)} />
+                            {selection ? <><button type="button" aria-label={t("canvas.configNode.moveUp")} disabled={index === 0} className="px-1 disabled:opacity-30" onClick={() => moveRole(input.nodeId, -1)}>↑</button><button type="button" aria-label={t("canvas.configNode.moveDown")} disabled={index === savedAssignments.length - 1} className="px-1 disabled:opacity-30" onClick={() => moveRole(input.nodeId, 1)}>↓</button></> : null}
+                        </div>;
+                    })}
+                    <div className="text-[10px] opacity-55">{t("canvas.configNode.seedanceInputsHint")}</div>
+                </div>
+            ) : null}
+
             <Button
                 type="primary"
-                className="mt-auto !h-9 !w-full !cursor-pointer !rounded-lg"
+                className="sticky bottom-0 mt-auto !h-9 !w-full !shrink-0 !cursor-pointer !rounded-lg"
                 danger={isRunning}
                 disabled={!isRunning && !canGenerate}
                 onMouseDown={(event) => event.stopPropagation()}
@@ -156,6 +200,9 @@ function buildNodeConfig(globalConfig: AiConfig, node: CanvasNodeData, mode: Can
         size: node.metadata?.size || globalConfig.size || defaultConfig.size,
         background: node.metadata?.background ?? globalConfig.background ?? defaultConfig.background,
         videoSeconds: node.metadata?.seconds || globalConfig.videoSeconds || defaultConfig.videoSeconds,
+        videoMode: node.metadata?.videoMode || globalConfig.videoMode || defaultConfig.videoMode,
+        videoRatio: node.metadata?.videoRatio || globalConfig.videoRatio || defaultConfig.videoRatio,
+        videoReturnLastFrame: node.metadata?.returnLastFrame || globalConfig.videoReturnLastFrame || defaultConfig.videoReturnLastFrame,
         vquality: node.metadata?.vquality || globalConfig.vquality || defaultConfig.vquality,
         videoGenerateAudio: node.metadata?.generateAudio || globalConfig.videoGenerateAudio || defaultConfig.videoGenerateAudio,
         videoWatermark: node.metadata?.watermark || globalConfig.videoWatermark || defaultConfig.videoWatermark,
@@ -171,6 +218,7 @@ function videoConfigPatch(key: keyof AiConfig, value: string) {
     if (key === "videoSeconds") return { seconds: value };
     if (key === "videoGenerateAudio") return { generateAudio: value };
     if (key === "videoWatermark") return { watermark: value };
+    if (key === "videoReturnLastFrame") return { returnLastFrame: value };
     return { [key]: value };
 }
 

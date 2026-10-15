@@ -165,6 +165,8 @@ function readReferenceImage(node: CanvasNodeData): ReferenceImage | null {
         type: node.metadata.mimeType || "image/png",
         dataUrl: node.metadata.content,
         storageKey: node.metadata.storageKey,
+        width: node.metadata.naturalWidth,
+        height: node.metadata.naturalHeight,
     };
 }
 
@@ -192,5 +194,6 @@ function readReferenceAudio(node: CanvasNodeData): ReferenceAudio | null {
         url: node.metadata.content,
         storageKey: node.metadata.storageKey,
         durationMs: node.metadata.durationMs,
+        bytes: node.metadata.bytes,
     };
 }

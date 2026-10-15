@@ -5,14 +5,19 @@ import { nanoid } from "nanoid";
 
 import i18n from "@/i18n";
 
-export type ApiCallFormat = "openai" | "gemini";
+export type ApiCallFormat = "openai" | "gemini" | "volcengine_ark";
 export type ModelCapability = "image" | "video" | "text" | "audio";
 export type ReasoningEffort = "auto" | "low" | "medium" | "high" | "xhigh";
+export type SeedanceVideoMode = "text_to_video" | "first_frame" | "first_last_frame" | "omni_reference";
+export type SeedanceAdapter = "ark_official" | "router_local";
+export type VideoCapabilities = { resolutions?: string[]; durations?: number[]; ratios?: string[]; generateAudio?: boolean; watermark?: boolean; returnLastFrame?: boolean };
 
 export type ChannelModel = {
     name: string;
     capability: ModelCapability;
     script?: string;
+    videoPreset?: "seedance-2.0" | "seedance-2.0-fast" | "seedance-2.0-mini";
+    videoCapabilities?: VideoCapabilities;
 };
 
 export type ModelChannel = {
@@ -21,6 +26,7 @@ export type ModelChannel = {
     baseUrl: string;
     apiKey: string;
     apiFormat: ApiCallFormat;
+    seedanceAdapter?: SeedanceAdapter;
     models: ChannelModel[];
 };
 
@@ -40,6 +46,9 @@ export type AiConfig = {
     audioSpeed: string;
     audioInstructions: string;
     videoSeconds: string;
+    videoMode: SeedanceVideoMode;
+    videoRatio: string;
+    videoReturnLastFrame: string;
     vquality: string;
     videoGenerateAudio: string;
     videoWatermark: string;
@@ -59,6 +68,7 @@ export const CONFIG_STORE_KEY = "infinite-canvas:ai_config_store";
 const CHANNEL_MODEL_SEPARATOR = "::";
 const OPENAI_BASE_URL = "https://api.openai.com";
 const GEMINI_BASE_URL = "https://generativelanguage.googleapis.com";
+const ARK_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3";
 
 export const defaultConfig: AiConfig = {
     channelMode: "local",
@@ -90,6 +100,9 @@ export const defaultConfig: AiConfig = {
     audioSpeed: "1",
     audioInstructions: "",
     videoSeconds: "6",
+    videoMode: "text_to_video",
+    videoRatio: "adaptive",
+    videoReturnLastFrame: "false",
     vquality: "720",
     videoGenerateAudio: "true",
     videoWatermark: "false",
@@ -169,7 +182,8 @@ export function resolveModelScript(config: AiConfig, value: string) {
 
 function isAiConfigReady(config: AiConfig, model: string) {
     const channel = resolveModelChannel(config, model);
-    return Boolean(model.trim() && channel?.baseUrl.trim() && channel?.apiKey.trim());
+    const serverArkAuth = channel?.apiFormat === "volcengine_ark" && (Boolean(import.meta.env.VITE_MEDIA_GATEWAY_TOKEN) || import.meta.env.VITE_ARK_SERVER_AUTH === "true");
+    return Boolean(model.trim() && channel?.baseUrl.trim() && (channel?.apiKey.trim() || serverArkAuth));
 }
 
 export const useConfigStore = create<ConfigStore>()(
@@ -219,6 +233,9 @@ export const useConfigStore = create<ConfigStore>()(
                         audioInstructions: config.audioInstructions || "",
                         reasoningEffort: config.reasoningEffort || "auto",
                         videoSeconds: config.videoSeconds || "6",
+                        videoMode: isVideoMode(config.videoMode) ? config.videoMode : "text_to_video",
+                        videoRatio: config.videoRatio || "adaptive",
+                        videoReturnLastFrame: config.videoReturnLastFrame || "false",
                         vquality: config.vquality || "720",
                         videoGenerateAudio: config.videoGenerateAudio || "true",
                         videoWatermark: config.videoWatermark || "false",
@@ -245,21 +262,36 @@ export function normalizeChannelModels(models: Array<string | ChannelModel> | un
         seen.add(name);
         const capability = typeof item === "string" ? guessCapability(name) : item.capability || guessCapability(name);
         const script = typeof item === "string" ? undefined : item.script?.trim() || undefined;
-        result.push({ name, capability, script });
+        const videoPreset = typeof item === "string" ? undefined : item.videoPreset;
+        const videoCapabilities = typeof item === "string" ? undefined : item.videoCapabilities;
+        result.push({ name, capability, script, videoPreset, videoCapabilities });
     }
     return result;
 }
 
 export function createModelChannel(channel?: Partial<ModelChannel>): ModelChannel {
     const apiFormat = normalizeApiFormat(channel?.apiFormat);
+    const baseUrl = channel?.baseUrl?.trim() || defaultBaseUrlForApiFormat(apiFormat);
     return {
         id: channel?.id?.trim() || nanoid(),
         name: channel?.name?.trim() || i18n.t("config.channels.newName"),
-        baseUrl: channel?.baseUrl?.trim() || defaultBaseUrlForApiFormat(apiFormat),
+        baseUrl,
         apiKey: channel?.apiKey || "",
         apiFormat,
+        ...(apiFormat === "volcengine_ark" ? { seedanceAdapter: normalizeSeedanceAdapter(channel?.seedanceAdapter, baseUrl) } : {}),
         models: normalizeChannelModels(channel?.models),
     };
+}
+
+export function normalizeSeedanceAdapter(value: unknown, baseUrl: string): SeedanceAdapter {
+    if (value === "ark_official" || value === "router_local") return value;
+    try {
+        const hostname = new URL(baseUrl).hostname.toLowerCase();
+        if (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "127.0.0.01" || hostname === "::1" || hostname === "[::1]") return "router_local";
+    } catch {
+        // Invalid URLs stay on the official adapter; request validation will report the URL problem.
+    }
+    return "ark_official";
 }
 
 export function encodeChannelModel(channelId: string, model: string) {
@@ -365,11 +397,22 @@ function normalizeChannels(config: AiConfig) {
 
 export function defaultBaseUrlForApiFormat(apiFormat: ApiCallFormat) {
     if (apiFormat === "gemini") return GEMINI_BASE_URL;
+    if (apiFormat === "volcengine_ark") return ARK_BASE_URL;
     return OPENAI_BASE_URL;
 }
 
 function normalizeApiFormat(apiFormat: unknown): ApiCallFormat {
-    return apiFormat === "gemini" ? apiFormat : "openai";
+    return apiFormat === "gemini" || apiFormat === "volcengine_ark" ? apiFormat : "openai";
+}
+
+function isVideoMode(value: unknown): value is SeedanceVideoMode {
+    return value === "text_to_video" || value === "first_frame" || value === "first_last_frame" || value === "omni_reference";
+}
+
+export function buildArkApiUrl(baseUrl: string, path: string) {
+    const base = baseUrl.trim().replace(/\/+$/, "");
+    const apiBase = /\/api\/v3$/i.test(base) ? base : `${base}/api/v3`;
+    return `${apiBase}${path.startsWith("/") ? path : `/${path}`}`;
 }
 
 function uniqueModelOptions(models: string[]) {

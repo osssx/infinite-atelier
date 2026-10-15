@@ -17,4 +17,5 @@ export type ReferenceAudio = {
     url: string;
     storageKey?: string;
     durationMs?: number;
+    bytes?: number;
 };

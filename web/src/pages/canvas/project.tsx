@@ -7,8 +7,8 @@ import { useTranslation } from "react-i18next";
 
 import { requestEdit, requestGeneration, requestImageQuestion } from "@/services/api/image";
 import { requestAudioGeneration, storeGeneratedAudio } from "@/services/api/audio";
-import { requestVideoGeneration, storeGeneratedVideo } from "@/services/api/video";
-import { defaultConfig, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
+import { cancelVideoGenerationTask, pollVideoGenerationTask, requestVideoGeneration, retrySeedanceDownload, storeGeneratedVideo, type VideoGenerationRequest, type VideoGenerationTask } from "@/services/api/video";
+import { defaultConfig, resolveModelChannel, resolveModelScript, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
 import { uploadImage } from "@/services/image-storage";
 import { uploadMediaFile } from "@/services/file-storage";
 import { nanoid } from "nanoid";
@@ -40,7 +40,7 @@ import { AssetPickerModal, type InsertAssetPayload } from "@/components/canvas/a
 import { CanvasSidePanel } from "@/components/canvas/canvas-side-panel";
 import { CanvasZoomControls } from "@/components/canvas/canvas-zoom-controls";
 import { DirectorPanel } from "@/components/canvas/director-panel";
-import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
+import { flushCanvasStorePersistence, useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { useGenerationHistoryStore, type GenerationHistoryImage } from "@/stores/canvas/use-generation-history-store";
 import { buildNodeMentionReferences, type CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
 import { exportCanvasProjects } from "@/lib/canvas/canvas-export";
@@ -86,6 +86,7 @@ import {
 } from "@/types/canvas";
 import type { ReferenceImage } from "@/types/image";
 import type { ReferenceAudio } from "@/types/media";
+import type { ReferenceVideo } from "@/types/media";
 
 // Register built-in nodes in the shared registry once when the module loads.
 registerBuiltinNodes();
@@ -124,6 +125,59 @@ const NODE_STATUS_IDLE = "idle" as const;
 const NODE_STATUS_LOADING = "loading" as const;
 const NODE_STATUS_SUCCESS = "success" as const;
 const NODE_STATUS_ERROR = "error" as const;
+
+function abortableDelay(ms: number, signal: AbortSignal) {
+    return new Promise<void>((resolve) => {
+        if (signal.aborted) return resolve();
+        const timer = setTimeout(done, ms);
+        function done() { clearTimeout(timer); signal.removeEventListener("abort", done); resolve(); }
+        signal.addEventListener("abort", done, { once: true });
+    });
+}
+
+function isNativeArkVideo(config: typeof defaultConfig, modelOption: string) {
+    return resolveModelChannel(config, modelOption)?.apiFormat === "volcengine_ark" && !resolveModelScript(config, modelOption);
+}
+
+function isResumableSeedanceProvider(provider?: string): provider is "volcengine_ark" | "router_local" {
+    return provider === "volcengine_ark" || provider === "router_local";
+}
+
+function makeVideoGenerationRequest(config: typeof defaultConfig, prompt: string, modelOption: string, context: { referenceImages: ReferenceImage[]; referenceVideos: ReferenceVideo[]; referenceAudios: ReferenceAudio[] }, assignments?: CanvasNodeMetadata["videoReferences"], requireArkAssignments = isNativeArkVideo(config, modelOption)): VideoGenerationRequest {
+    const mode = config.videoMode || "text_to_video";
+    let references: VideoGenerationRequest["references"] = [
+        ...context.referenceImages.map((item) => ({ id: item.id, kind: "image" as const, role: "reference_image" as const, dataUrl: item.dataUrl, storageKey: item.storageKey, mimeType: item.type, width: item.width, height: item.height })),
+        ...context.referenceVideos.map((item) => ({ id: item.id, kind: "video" as const, role: "reference_video" as const, url: item.url, storageKey: item.storageKey, mimeType: item.type, bytes: item.bytes, durationMs: item.durationMs, width: item.width, height: item.height })),
+        ...context.referenceAudios.map((item) => ({ id: item.id, kind: "audio" as const, role: "reference_audio" as const, url: item.url, storageKey: item.storageKey, mimeType: item.type, durationMs: item.durationMs, bytes: item.bytes })),
+    ];
+    if (requireArkAssignments && mode === "text_to_video") references = [];
+    else if (requireArkAssignments && assignments !== undefined) {
+        const byId = new Map(references.map((item) => [item.id, item]));
+        references = assignments.flatMap((assignment) => {
+            const input = byId.get(assignment.id);
+            return input && assignment.role ? [{ ...input, role: assignment.role }] : [];
+        });
+    } else if (requireArkAssignments && references.length) {
+        throw new Error("Assign Seedance input roles and order in the configuration node before generating.");
+    }
+    return {
+        modelOption,
+        mode,
+        prompt,
+        references,
+        durationSeconds: Number(config.videoSeconds) === -1 ? -1 : Number(config.videoSeconds) || 6,
+        resolution: (config.vquality === "4k" ? "4k" : `${(config.vquality || "720").replace(/p$/i, "")}p`) as VideoGenerationRequest["resolution"],
+        ratio: (config.videoRatio || "adaptive") as VideoGenerationRequest["ratio"],
+        generateAudio: config.videoGenerateAudio !== "false",
+        watermark: config.videoWatermark === "true",
+        returnLastFrame: config.videoReturnLastFrame === "true",
+    };
+}
+
+async function saveArkLastFrame(blob: Blob) {
+    const image = await uploadImage(blob);
+    return { storageKey: image.storageKey, url: image.url, width: image.width, height: image.height, bytes: image.bytes, mimeType: image.mimeType };
+}
 export default function CanvasPage() {
     const [mounted, setMounted] = useState(false);
 
@@ -238,6 +292,15 @@ function AtelierCanvasPage() {
     const selectionBoxRef = useRef(selectionBox);
     const pendingConnectionCreateRef = useRef(pendingConnectionCreate);
     const generationRequestsRef = useRef(new Map<string, CanvasGenerationRequest>());
+    const resumedArkTasksRef = useRef(new Set<string>());
+
+    const persistVideoTask = useCallback((nodeId: string, task: VideoGenerationTask, status: "queued" | "running" | "succeeded" | "failed" | "cancelled" | "expired" = task.status || "queued") => {
+        const nodesWithTask = nodesRef.current.map((node) => node.id === nodeId ? { ...node, metadata: { ...node.metadata, videoTask: { provider: task.provider, channelId: task.channelId, model: task.model, taskId: task.id, startedAt: task.startedAt || Date.now(), status } } } : node);
+        nodesRef.current = nodesWithTask;
+        setNodes(nodesWithTask);
+        updateProject(projectId, { nodes: nodesWithTask });
+        flushCanvasStorePersistence();
+    }, [projectId, updateProject]);
 
     const createHistoryEntry = useCallback(
         (): CanvasHistoryEntry => ({
@@ -275,6 +338,12 @@ function AtelierCanvasPage() {
             const affectedNodeIds = new Set<string>();
             generationRequestsRef.current.forEach((request) => {
                 if (request.runningNodeId !== runningId) return;
+                const activeNode = nodesRef.current.find((node) => node.id === request.targetNodeId);
+                if (isResumableSeedanceProvider(activeNode?.metadata?.videoTask?.provider) && activeNode?.metadata?.videoTask?.status === "queued") {
+                    const saved = activeNode.metadata.videoTask;
+                    const task: VideoGenerationTask = { id: saved.taskId, provider: saved.provider, channelId: saved.channelId, model: saved.model, startedAt: saved.startedAt, status: saved.status };
+                    void cancelVideoGenerationTask(effectiveConfig, task).then((cancelled) => cancelled && persistVideoTask(activeNode.id, task, "cancelled")).catch(() => undefined);
+                }
                 request.controller.abort();
                 generationRequestsRef.current.delete(request.targetNodeId);
                 affectedNodeIds.add(request.targetNodeId);
@@ -298,7 +367,7 @@ function AtelierCanvasPage() {
                 ),
             );
         },
-        [t],
+        [effectiveConfig, persistVideoTask, t],
     );
 
     const confirmStopGeneration = useCallback(
@@ -318,6 +387,8 @@ function AtelierCanvasPage() {
     useEffect(() => {
         if (!hydrated) return;
         setProjectLoaded(false);
+        nodesRef.current = [];
+        connectionsRef.current = [];
         const project = openProject(projectId);
         if (!project) {
             navigate("/canvas", { replace: true });
@@ -327,6 +398,9 @@ function AtelierCanvasPage() {
         const restore = async () => {
             const restoredNodes = await hydrateCanvasImages(resetInterruptedGeneration(project.nodes));
             const restoredSessions = await hydrateAssistantImages(project.chatSessions || []);
+            if (cancelled) return;
+            nodesRef.current = restoredNodes;
+            connectionsRef.current = project.connections;
             setNodes(restoredNodes);
             setConnections(project.connections);
             setChatSessions(restoredSessions);
@@ -351,7 +425,74 @@ function AtelierCanvasPage() {
             setProjectLoaded(true);
         };
         void restore();
+        let cancelled = false;
+        return () => { cancelled = true; };
     }, [hydrated, navigate, openProject, projectId]);
+
+    useEffect(() => {
+        if (!projectLoaded) return;
+        const pending = nodesRef.current.filter((node) => node.type === CanvasNodeType.Video && node.metadata?.status === NODE_STATUS_LOADING && isResumableSeedanceProvider(node.metadata.videoTask?.provider) && !generationRequestsRef.current.has(node.id));
+        const controllers: Array<{ controller: AbortController; key: string }> = [];
+        pending.forEach((node) => {
+            const savedTask = node.metadata?.videoTask;
+            if (!savedTask) return;
+            const resumeKey = `${projectId}:${node.id}:${savedTask.taskId}`;
+            if (resumedArkTasksRef.current.has(resumeKey)) return;
+            resumedArkTasksRef.current.add(resumeKey);
+            const controller = new AbortController();
+            controllers.push({ controller, key: resumeKey });
+            const task: VideoGenerationTask = { id: savedTask.taskId, provider: savedTask.provider, channelId: savedTask.channelId, model: savedTask.model, startedAt: savedTask.startedAt, status: savedTask.status };
+            let lastRemoteStatus = savedTask.status;
+            const persistNode = (patch: Partial<CanvasNodeData>) => {
+                if (controller.signal.aborted || !nodesRef.current.some((current) => current.id === node.id)) return;
+                const nextNodes = nodesRef.current.map((current) => current.id === node.id ? { ...current, ...patch, metadata: { ...current.metadata, ...patch.metadata } } : current);
+                nodesRef.current = nextNodes;
+                setNodes(nextNodes);
+                updateProject(projectId, { nodes: nextNodes });
+                flushCanvasStorePersistence();
+            };
+            void (async () => {
+                let backoff = 2_000;
+                let queryFailures = 0;
+                while (!controller.signal.aborted) {
+                    if (!nodesRef.current.some((current) => current.id === node.id && current.metadata?.videoTask?.taskId === savedTask.taskId)) return;
+                    try {
+                        const resumeConfig = { ...buildGenerationConfig(effectiveConfig, node, "video"), model: savedTask.model };
+                        const state = await pollVideoGenerationTask(resumeConfig, task, { signal: controller.signal, onTaskStatus: (status) => { lastRemoteStatus = status; persistVideoTask(node.id, task, status); } });
+                        queryFailures = 0;
+                        if (state.providerStatus) persistVideoTask(node.id, task, state.providerStatus);
+                        if (state.status === "failed") {
+                            persistNode({ metadata: { status: NODE_STATUS_ERROR, errorDetails: state.error, videoTask: { ...savedTask, status: state.providerStatus || "failed" } } });
+                            return;
+                        }
+                        if (state.status === "completed") {
+                            const video = await storeGeneratedVideo(state.result);
+                            const dimensions = fitNodeSize(video.width || node.width, video.height || node.height, VIDEO_NODE_MAX_WIDTH, VIDEO_NODE_MAX_HEIGHT);
+                            const lastFrame = state.lastFrameBlob ? await saveArkLastFrame(state.lastFrameBlob) : undefined;
+                            persistNode({ width: dimensions.width, height: dimensions.height, metadata: { ...videoMetadata(video), status: NODE_STATUS_SUCCESS, errorDetails: undefined, videoDownloadError: undefined, videoTask: { ...savedTask, status: "succeeded" }, ...(state.lastFrameUrl ? { lastFrameUrl: state.lastFrameUrl } : {}), ...(lastFrame ? { lastFrame } : {}) } });
+                            return;
+                        }
+                        if (state.providerStatus) persistVideoTask(node.id, task, state.providerStatus);
+                        await abortableDelay(backoff, controller.signal);
+                        backoff = Math.min(30_000, Math.round(backoff * 1.35));
+                    } catch (error) {
+                        if (controller.signal.aborted) return;
+                        queryFailures += 1;
+                        if (queryFailures >= 8) {
+                            const details = error instanceof Error ? error.message : String(error);
+                            persistNode({ metadata: { status: NODE_STATUS_ERROR, errorDetails: details, videoDownloadError: lastRemoteStatus === "succeeded" ? details : undefined } });
+                            return;
+                        }
+                        await abortableDelay(backoff, controller.signal);
+                        backoff = Math.min(30_000, Math.round(backoff * 1.7));
+                    }
+                }
+            })().catch((error) => {
+                if (!controller.signal.aborted) console.error("Unable to resume Ark video task", error);
+            }).finally(() => resumedArkTasksRef.current.delete(resumeKey));
+        });
+        return () => controllers.forEach(({ controller, key }) => { controller.abort(); resumedArkTasksRef.current.delete(key); });
+    }, [effectiveConfig, projectId, projectLoaded, persistVideoTask, updateProject]);
 
     useEffect(() => {
         if (!projectLoaded || applyingHistoryRef.current || historyPausedRef.current) return;
@@ -2232,19 +2373,43 @@ function AtelierCanvasPage() {
                             vquality: generationConfig.vquality,
                             generateAudio: generationConfig.videoGenerateAudio,
                             watermark: generationConfig.videoWatermark,
+                            videoMode: generationConfig.videoMode,
+                            videoRatio: generationConfig.videoRatio,
+                            returnLastFrame: generationConfig.videoReturnLastFrame,
+                            videoReferences: makeVideoGenerationRequest(generationConfig, effectivePrompt, generationConfig.model, generationContext, sourceNode?.metadata?.videoReferences).references.map(({ id, kind, role, storageKey, url, mimeType, durationMs, bytes }) => ({ id, kind, role, storageKey, url, mimeType, durationMs, bytes })),
                             references: generationReferenceUrls(generationContext),
                         },
                     };
                     pendingChildIds = [videoId];
-                    setNodes((prev) =>
-                        isEmptyVideoNode
-                            ? prev.map((node) => (node.id === nodeId ? { ...node, ...videoNode } : node))
-                            : [...prev.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_SUCCESS } } : node)), videoNode],
-                    );
+                    const nextNodes = isEmptyVideoNode
+                        ? nodesRef.current.map((node) => (node.id === nodeId ? { ...node, ...videoNode } : node))
+                        : [...nodesRef.current.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_SUCCESS } } : node)), videoNode];
+                    nodesRef.current = nextNodes;
+                    setNodes(nextNodes);
                     if (!isEmptyVideoNode) setConnections((prev) => [...prev, { id: nanoid(), fromNodeId: nodeId, toNodeId: videoId }]);
                     const controller = startGenerationRequest(videoId, nodeId, nodeId, runController);
                     try {
-                        const video = await storeGeneratedVideo(await requestVideoGeneration(generationConfig, effectivePrompt, generationContext.referenceImages, { signal: controller.signal }));
+                        let generationTask: VideoGenerationTask | null = null;
+                        const request = makeVideoGenerationRequest(generationConfig, effectivePrompt, generationConfig.model, generationContext, sourceNode?.metadata?.videoReferences);
+                        if (isNativeArkVideo(generationConfig, generationConfig.model)) {
+                            const videoRequest = { ...request, references: request.references.map(({ dataUrl, storageKey, ...reference }) => ({ ...reference, ...(storageKey ? { storageKey } : dataUrl ? { dataUrl } : {}) })) };
+                            nodesRef.current = nodesRef.current.map((item) => item.id === videoId ? { ...item, metadata: { ...item.metadata, videoRequest } } : item);
+                            setNodes(nodesRef.current);
+                            updateProject(projectId, { nodes: nodesRef.current });
+                            flushCanvasStorePersistence();
+                        }
+                        const generatedVideo = await requestVideoGeneration(generationConfig, effectivePrompt, generationContext.referenceImages, {
+                            signal: controller.signal,
+                            request,
+                            onTaskCreated: (task) => {
+                                generationTask = task;
+                                persistVideoTask(videoId, task);
+                            },
+                            onTaskStatus: (status) => generationTask && persistVideoTask(videoId, { ...generationTask, status }, status),
+                        });
+                        const video = await storeGeneratedVideo(generatedVideo);
+                        const lastFrame = generatedVideo.lastFrameBlob ? await saveArkLastFrame(generatedVideo.lastFrameBlob) : undefined;
+                        if (generationTask) persistVideoTask(videoId, generationTask, "succeeded");
                         const videoSize = fitNodeSize(video.width || spec.width, video.height || spec.height, VIDEO_NODE_MAX_WIDTH, VIDEO_NODE_MAX_HEIGHT);
                         setNodes((prev) =>
                             prev.map((node) =>
@@ -2264,6 +2429,12 @@ function AtelierCanvasPage() {
                                               vquality: generationConfig.vquality,
                                               generateAudio: generationConfig.videoGenerateAudio,
                                               watermark: generationConfig.videoWatermark,
+                                              videoMode: generationConfig.videoMode,
+                                              videoRatio: generationConfig.videoRatio,
+                                              returnLastFrame: generationConfig.videoReturnLastFrame,
+                                              ...(generationTask ? { videoTask: { provider: generationTask.provider, channelId: generationTask.channelId, model: generationTask.model, taskId: generationTask.id, startedAt: generationTask.startedAt || Date.now(), status: "succeeded" as const } } : {}),
+                                              ...(generatedVideo.lastFrameUrl ? { lastFrameUrl: generatedVideo.lastFrameUrl } : {}),
+                                              ...(lastFrame ? { lastFrame } : {}),
                                               references: generationReferenceUrls(generationContext),
                                           },
                                       }
@@ -2376,7 +2547,7 @@ function AtelierCanvasPage() {
                 const errorDetails = error instanceof Error ? error.message : t("canvas.projectPage.generationFailed");
                 message.error(errorDetails);
                 setNodes((prev) =>
-                    prev.map((node) => (node.id === nodeId || pendingChildIds.includes(node.id) ? (node.id === nodeId && !markSourceStatus ? node : { ...node, metadata: { ...node.metadata, status: NODE_STATUS_ERROR, errorDetails } }) : node)),
+                    prev.map((node) => (node.id === nodeId || pendingChildIds.includes(node.id) ? (node.id === nodeId && !markSourceStatus ? node : { ...node, metadata: { ...node.metadata, status: NODE_STATUS_ERROR, errorDetails, ...(isResumableSeedanceProvider(node.metadata?.videoTask?.provider) && node.metadata?.videoTask?.status === "succeeded" ? { videoDownloadError: errorDetails } : {}) } }) : node)),
                 );
             } finally {
                 finishGenerationRequest(nodeId, runController);
@@ -2404,14 +2575,31 @@ function AtelierCanvasPage() {
                           background: savedImageMetadata.background ?? effectiveConfig.background,
                           count: "1",
                       }
-                    : { ...buildGenerationConfig(effectiveConfig, sourceNode, node.type === CanvasNodeType.Text ? "text" : node.type === CanvasNodeType.Video ? "video" : node.type === CanvasNodeType.Audio ? "audio" : "image"), count: "1" };
+                    : { ...buildGenerationConfig(effectiveConfig, node.type === CanvasNodeType.Video && node.metadata?.videoRequest ? node : sourceNode, node.type === CanvasNodeType.Text ? "text" : node.type === CanvasNodeType.Video ? "video" : node.type === CanvasNodeType.Audio ? "audio" : "image"), count: "1" };
             if (!isAiConfigReady(generationConfig, generationConfig.model)) {
                 openConfigDialog(true);
                 return;
             }
 
-            const context = hasSavedImageMetadata ? null : await hydrateNodeGenerationContext(buildNodeGenerationContext(sourceNode.id, nodesRef.current, connectionsRef.current, sourceNode.metadata?.prompt || node.metadata?.prompt || ""));
-            const prompt = (savedImageMetadata?.prompt || context?.prompt || "").trim();
+            if (node.type === CanvasNodeType.Video && isResumableSeedanceProvider(node.metadata?.videoTask?.provider) && node.metadata.videoTask.status === "succeeded" && node.metadata.videoDownloadError) {
+                const savedTask = node.metadata.videoTask;
+                const task: VideoGenerationTask = { id: savedTask.taskId, provider: savedTask.provider, channelId: savedTask.channelId, model: savedTask.model, startedAt: savedTask.startedAt, status: savedTask.status };
+                setNodes((prev) => prev.map((item) => item.id === node.id ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_LOADING, errorDetails: undefined } } : item));
+                try {
+                    const { video, lastFrameBlob, lastFrameUrl } = await retrySeedanceDownload(generationConfig, task);
+                    const lastFrame = lastFrameBlob ? await saveArkLastFrame(lastFrameBlob) : undefined;
+                    const dimensions = fitNodeSize(video.width || node.width, video.height || node.height, VIDEO_NODE_MAX_WIDTH, VIDEO_NODE_MAX_HEIGHT);
+                    setNodes((prev) => prev.map((item) => item.id === node.id ? { ...item, width: dimensions.width, height: dimensions.height, metadata: { ...item.metadata, ...videoMetadata(video), status: NODE_STATUS_SUCCESS, errorDetails: undefined, videoDownloadError: undefined, ...(lastFrameUrl ? { lastFrameUrl } : {}), ...(lastFrame ? { lastFrame } : {}) } } : item));
+                } catch (error) {
+                    const details = error instanceof Error ? error.message : String(error);
+                    setNodes((prev) => prev.map((item) => item.id === node.id ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_ERROR, errorDetails: details, videoDownloadError: details } } : item));
+                    message.error(details);
+                }
+                return;
+            }
+
+            const context = hasSavedImageMetadata || node.metadata?.videoRequest ? null : await hydrateNodeGenerationContext(buildNodeGenerationContext(sourceNode.id, nodesRef.current, connectionsRef.current, sourceNode.metadata?.prompt || node.metadata?.prompt || ""));
+            const prompt = (savedImageMetadata?.prompt || node.metadata?.videoRequest?.prompt || context?.prompt || "").trim();
             if (!prompt) {
                 message.warning(t("canvas.projectPage.retryPromptMissing"));
                 return;
@@ -2476,7 +2664,23 @@ function AtelierCanvasPage() {
                     return;
                 }
                 if (node.type === CanvasNodeType.Video) {
-                    const video = await storeGeneratedVideo(await requestVideoGeneration(generationConfig, prompt, retryImages, { signal: controller.signal }));
+                    const retryContext = context || { referenceImages: retryImages, referenceVideos: [], referenceAudios: [] };
+                    const request = node.metadata?.videoRequest || {
+                        ...makeVideoGenerationRequest(generationConfig, prompt, generationConfig.model, retryContext, node.metadata?.videoReferences || []),
+                    };
+                    let generationTask: VideoGenerationTask | null = null;
+                    const generatedVideo = await requestVideoGeneration(generationConfig, prompt, retryImages, {
+                        signal: controller.signal,
+                        request,
+                        onTaskCreated: (task) => {
+                            generationTask = task;
+                            persistVideoTask(node.id, task);
+                        },
+                        onTaskStatus: (status) => generationTask && persistVideoTask(node.id, { ...generationTask, status }, status),
+                    });
+                    const video = await storeGeneratedVideo(generatedVideo);
+                    const lastFrame = generatedVideo.lastFrameBlob ? await saveArkLastFrame(generatedVideo.lastFrameBlob) : undefined;
+                    if (generationTask) persistVideoTask(node.id, generationTask, "succeeded");
                     const videoSize = fitNodeSize(video.width || node.width, video.height || node.height, VIDEO_NODE_MAX_WIDTH, VIDEO_NODE_MAX_HEIGHT);
                     setNodes((prev) =>
                         prev.map((item) =>
@@ -2496,6 +2700,13 @@ function AtelierCanvasPage() {
                                           vquality: generationConfig.vquality,
                                           generateAudio: generationConfig.videoGenerateAudio,
                                           watermark: generationConfig.videoWatermark,
+                                          videoMode: generationConfig.videoMode,
+                                          videoRatio: generationConfig.videoRatio,
+                                          returnLastFrame: generationConfig.videoReturnLastFrame,
+                                          videoReferences: request.references.map(({ id, kind, role, storageKey, url, mimeType, durationMs, bytes }) => ({ id, kind, role, storageKey, url, mimeType, durationMs, bytes })),
+                                          ...(generationTask ? { videoTask: { provider: generationTask.provider, channelId: generationTask.channelId, model: generationTask.model, taskId: generationTask.id, startedAt: generationTask.startedAt || Date.now(), status: "succeeded" as const } } : {}),
+                                          ...(generatedVideo.lastFrameUrl ? { lastFrameUrl: generatedVideo.lastFrameUrl } : {}),
+                                          ...(lastFrame ? { lastFrame } : {}),
                                       },
                                   }
                                 : item,
@@ -2574,8 +2785,9 @@ function AtelierCanvasPage() {
                                   ...item,
                                   metadata: {
                                       ...item.metadata,
-                                      status: item.metadata?.content ? NODE_STATUS_SUCCESS : NODE_STATUS_ERROR,
-                                      errorDetails: item.metadata?.content ? undefined : errorDetails,
+                                      status: isResumableSeedanceProvider(item.metadata?.videoTask?.provider) && item.metadata.videoTask.status === "succeeded" ? NODE_STATUS_ERROR : item.metadata?.content ? NODE_STATUS_SUCCESS : NODE_STATUS_ERROR,
+                                      errorDetails: isResumableSeedanceProvider(item.metadata?.videoTask?.provider) && item.metadata.videoTask.status === "succeeded" ? errorDetails : item.metadata?.content ? undefined : errorDetails,
+                                      ...(isResumableSeedanceProvider(item.metadata?.videoTask?.provider) && item.metadata.videoTask.status === "succeeded" ? { videoDownloadError: errorDetails } : {}),
                                       images: item.metadata?.images?.map((image) => (image.id === imageId ? { ...image, status: NODE_STATUS_ERROR, errorDetails } : image)),
                                   },
                               }
@@ -2791,6 +3003,7 @@ function AtelierCanvasPage() {
                 node={contentNode}
                 isRunning={runningNodeId === contentNode.id}
                 inputSummary={getInputSummary(configInputsById.get(contentNode.id) || [])}
+                videoInputs={configInputsById.get(contentNode.id) || []}
                 onConfigChange={handleConfigNodeChange}
                 onComposerToggle={() => setDialogNodeId((current) => (current === contentNode.id ? null : contentNode.id))}
                 onStop={confirmStopGeneration}

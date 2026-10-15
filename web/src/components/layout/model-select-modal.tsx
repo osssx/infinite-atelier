@@ -6,6 +6,8 @@ import { useTranslation } from "react-i18next";
 import { fetchChannelModels } from "@/services/api/image";
 import type { ModelChannel } from "@/stores/use-config-store";
 
+const arkSeedanceModels = ["doubao-seedance-2-0-260128", "doubao-seedance-2-0-fast-260128"];
+
 // Channel model selector: fetch upstream models or add them manually, then include checked models in the channel list.
 export function ModelSelectModal({ open, channel, selectedNames, onConfirm, onClose }: { open: boolean; channel: ModelChannel | null; selectedNames: string[]; onConfirm: (names: string[]) => void; onClose: () => void }) {
     const { message } = App.useApp();
@@ -21,7 +23,7 @@ export function ModelSelectModal({ open, channel, selectedNames, onConfirm, onCl
     useEffect(() => {
         if (!open) return;
         setExisting(selectedNames);
-        setFetched([]);
+        setFetched(channel?.apiFormat === "volcengine_ark" ? (isLocalRouterChannel(channel) ? arkSeedanceModels.slice(0, 1) : arkSeedanceModels).filter((name) => !selectedNames.includes(name)) : []);
         setSelected(new Set(selectedNames));
         setActiveTab(selectedNames.length ? "existing" : "new");
         setSearch("");
@@ -61,6 +63,7 @@ export function ModelSelectModal({ open, channel, selectedNames, onConfirm, onCl
 
     const fetchModels = async () => {
         if (!channel) return;
+        if (channel.apiFormat === "volcengine_ark") return;
         if (!channel.baseUrl.trim() || !channel.apiKey.trim()) {
             message.error(t("config.modelSelect.missingConfig"));
             return;
@@ -107,13 +110,13 @@ export function ModelSelectModal({ open, channel, selectedNames, onConfirm, onCl
         >
             <div className="flex flex-wrap items-center gap-3">
                 <Input className="min-w-[200px] flex-1" value={search} onChange={(event) => setSearch(event.target.value)} placeholder={t("config.modelSelect.search")} prefix={<Search className="size-4 text-stone-400" />} allowClear />
-                <Input className="min-w-[180px] flex-1" value={manual} onChange={(event) => setManual(event.target.value)} onPressEnter={addManual} placeholder={t("config.modelSelect.modelName")} />
-                <Button onClick={addManual}>{t("config.modelSelect.add")}</Button>
-                <Button icon={<RefreshCw className="size-4" />} loading={loading} onClick={() => void fetchModels()}>
-                    {t("config.modelSelect.fetch")}
-                </Button>
+                {isLocalRouterChannel(channel) ? null : <>
+                    <Input className="min-w-[180px] flex-1" value={manual} onChange={(event) => setManual(event.target.value)} onPressEnter={addManual} placeholder={t("config.modelSelect.modelName")} />
+                    <Button onClick={addManual}>{t("config.modelSelect.add")}</Button>
+                </>}
+                {channel?.apiFormat === "volcengine_ark" ? null : <Button icon={<RefreshCw className="size-4" />} loading={loading} onClick={() => void fetchModels()}>{t("config.modelSelect.fetch")}</Button>}
             </div>
-            <div className="mt-2 text-xs text-stone-500">{t("config.modelSelect.description")}</div>
+            <div className="mt-2 text-xs text-stone-500">{t(channel?.apiFormat === "volcengine_ark" ? isLocalRouterChannel(channel) ? "config.modelSelect.routerDescription" : "config.modelSelect.arkDescription" : "config.modelSelect.description")}</div>
 
             <Tabs
                 className="mt-3"
@@ -152,4 +155,14 @@ export function ModelSelectModal({ open, channel, selectedNames, onConfirm, onCl
             )}
         </Modal>
     );
+}
+
+function isLocalRouterChannel(channel: ModelChannel | null) {
+    if (channel?.seedanceAdapter) return channel.seedanceAdapter === "router_local";
+    try {
+        const hostname = new URL(channel?.baseUrl || "").hostname.toLowerCase().replace(/^\[|\]$/g, "");
+        return hostname === "localhost" || hostname === "::1" || /^127(?:\.\d{1,3}){3}$/.test(hostname);
+    } catch {
+        return false;
+    }
 }

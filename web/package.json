@@ -8,6 +8,7 @@
         "build": "vite build",
         "build:monoform": "node scripts/build-monoform.mjs",
         "typecheck": "tsc --noEmit",
+        "test": "vitest run src",
         "start": "vite preview --host 0.0.0.0 --port 3000",
         "format": "prettier --write .",
         "format:check": "prettier --check ."
@@ -54,6 +55,7 @@
         "lightningcss-win32-x64-msvc": "1.32.0",
         "prettier": "^3.8.3",
         "typescript": "^5",
-        "vite": "^7.3.0"
+        "vite": "^7.3.0",
+        "vitest": "^5.0.4"
     }
 }

@@ -46,7 +46,9 @@ export async function hydrateCanvasImages(nodes: CanvasNodeData[]) {
     return Promise.all(
         nodes.map(async (node) => {
             const content = node.metadata?.content;
-            if ((node.type === CanvasNodeType.Video || node.type === CanvasNodeType.Audio) && node.metadata?.storageKey) return { ...node, metadata: { ...node.metadata, content: await resolveMediaUrl(node.metadata.storageKey, content) } };
+            const lastFrame = node.metadata?.lastFrame;
+            const hydratedLastFrame = lastFrame ? { ...lastFrame, url: await resolveImageUrl(lastFrame.storageKey, lastFrame.url) } : undefined;
+            if ((node.type === CanvasNodeType.Video || node.type === CanvasNodeType.Audio) && node.metadata?.storageKey) return { ...node, metadata: { ...node.metadata, content: await resolveMediaUrl(node.metadata.storageKey, content), ...(hydratedLastFrame ? { lastFrame: hydratedLastFrame } : {}) } };
             if (node.type !== CanvasNodeType.Image || !content) return node;
             const images = await Promise.all((node.metadata?.images || []).map(async (image) => (image.content ? { ...image, content: await resolveImageUrl(image.storageKey, image.content) } : image)));
             if (node.metadata?.storageKey) return { ...node, metadata: { ...node.metadata, content: await resolveImageUrl(node.metadata.storageKey, content), images } };
@@ -100,6 +102,9 @@ export function buildGenerationConfig(config: AiConfig, node: CanvasNodeData | u
         size: node?.metadata?.size || config.size || defaultConfig.size,
         background: node?.metadata?.background ?? config.background ?? defaultConfig.background,
         videoSeconds: node?.metadata?.seconds || config.videoSeconds || defaultConfig.videoSeconds,
+        videoMode: node?.metadata?.videoMode || config.videoMode || defaultConfig.videoMode,
+        videoRatio: node?.metadata?.videoRatio || config.videoRatio || defaultConfig.videoRatio,
+        videoReturnLastFrame: node?.metadata?.returnLastFrame || config.videoReturnLastFrame || defaultConfig.videoReturnLastFrame,
         vquality: node?.metadata?.vquality || config.vquality || defaultConfig.vquality,
         videoGenerateAudio: node?.metadata?.generateAudio || config.videoGenerateAudio || defaultConfig.videoGenerateAudio,
         videoWatermark: node?.metadata?.watermark || config.videoWatermark || defaultConfig.videoWatermark,
@@ -112,8 +117,12 @@ export function buildGenerationConfig(config: AiConfig, node: CanvasNodeData | u
 }
 
 export function resetInterruptedGeneration(nodes: CanvasNodeData[]) {
-    return nodes.map((node) =>
-        node.metadata?.status === "loading"
+    return nodes.map((node) => {
+        const hasStoredVideo = Boolean(node.metadata?.storageKey && node.metadata?.content);
+        const resumableArkTask = !hasStoredVideo && (node.metadata?.videoTask?.provider === "volcengine_ark" || node.metadata?.videoTask?.provider === "router_local") && ["queued", "running", "succeeded"].includes(node.metadata.videoTask.status);
+        return resumableArkTask
+            ? { ...node, metadata: { ...node.metadata, status: "loading" as const, errorDetails: undefined } }
+            : node.metadata?.status === "loading"
             ? {
                   ...node,
                   metadata: {
@@ -123,8 +132,8 @@ export function resetInterruptedGeneration(nodes: CanvasNodeData[]) {
                       images: node.metadata.images?.map((image) => (image.status === "loading" ? { ...image, status: "error" as const, errorDetails: i18n.t("canvas.generation.interrupted") } : image)),
                   },
               }
-            : node,
-    );
+            : node;
+    });
 }
 
 export function isGenerationCanceled(error: unknown) {

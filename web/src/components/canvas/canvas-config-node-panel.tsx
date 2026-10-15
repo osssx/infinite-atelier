@@ -6,6 +6,7 @@ import { useTranslation } from "react-i18next";
 import { ModelPicker } from "@/components/model-picker";
 import { defaultConfig, resolveModelChannel, resolveModelForCapability, resolveModelScript, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
 import { canvasThemes } from "@/lib/canvas-theme";
+import { resolveSeedanceInputAssignments } from "@/lib/canvas/seedance-input-assignments";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { CanvasImageSettingsPopover } from "./canvas-image-settings-popover";
 import { CanvasAudioSettingsPopover, type CanvasAudioSettingKey } from "./canvas-audio-settings-popover";
@@ -38,16 +39,14 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, videoInpu
     const canGenerate = hasComposerContent || (mode === "audio" ? inputSummary.textCount > 0 : hasAnyInput);
     const arkVideo = mode === "video" && resolveModelChannel(config, config.model)?.apiFormat === "volcengine_ark" && !resolveModelScript(config, config.model);
     const mediaInputs = videoInputs.filter((input) => input.type === "image" || input.type === "video" || input.type === "audio");
-    const savedAssignments = node.metadata?.videoReferences || [];
-    const assignedById = new Map(savedAssignments.map((item) => [item.id, item]));
-    const orderedAssignments = [...savedAssignments, ...mediaInputs.filter((input) => !assignedById.has(input.nodeId)).map((input) => ({ id: input.nodeId, kind: input.type as "image" | "video" | "audio" }))];
-    const setRole = (id: string, kind: CanvasVideoReference["kind"], role: CanvasVideoReference["role"] | undefined) => {
-        const current = node.metadata?.videoReferences || [];
-        const next = role ? [...current.filter((item) => item.id !== id), { id, kind, role }] : current.filter((item) => item.id !== id);
-        onConfigChange(node.id, { videoReferences: next });
+    const mediaReferences = mediaInputs.map((input) => ({ id: input.nodeId, kind: input.type as CanvasVideoReference["kind"] }));
+    const orderedAssignments = resolveSeedanceInputAssignments(config.videoMode || "text_to_video", mediaReferences, node.metadata?.videoReferences);
+    const assignedById = new Map(orderedAssignments.map((item) => [item.id, item]));
+    const setRole = (id: string, role: CanvasVideoReference["role"] | undefined) => {
+        onConfigChange(node.id, { videoReferences: orderedAssignments.map((item) => item.id === id ? { ...item, role } : item) });
     };
     const moveRole = (id: string, delta: number) => {
-        const current = [...(node.metadata?.videoReferences || [])];
+        const current = [...orderedAssignments];
         const index = current.findIndex((item) => item.id === id);
         const nextIndex = Math.max(0, Math.min(current.length - 1, index + delta));
         if (index < 0 || index === nextIndex) return;
@@ -147,10 +146,12 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, videoInpu
                               : [{ value: kind === "image" ? "reference_image" : kind === "video" ? "reference_video" : "reference_audio", label: t("canvas.configNode.omniReference") }];
                         return <div key={input.nodeId} className="flex items-center gap-1.5">
                             <span className="min-w-0 flex-1 truncate text-[11px]" title={input.title}>{input.title}</span>
-                            <Select size="small" className="w-32" value={selection?.role} placeholder={t("canvas.configNode.excludeInput")} options={roleOptions} allowClear onChange={(role) => setRole(input.nodeId, kind, role as CanvasVideoReference["role"] | undefined)} />
-                            {selection ? <><button type="button" aria-label={t("canvas.configNode.moveUp")} disabled={index === 0} className="px-1 disabled:opacity-30" onClick={() => moveRole(input.nodeId, -1)}>↑</button><button type="button" aria-label={t("canvas.configNode.moveDown")} disabled={index === savedAssignments.length - 1} className="px-1 disabled:opacity-30" onClick={() => moveRole(input.nodeId, 1)}>↓</button></> : null}
+                            <Select size="small" className="w-32" value={selection?.role || "exclude"} options={[{ value: "exclude", label: t("canvas.configNode.excludeInput") }, ...roleOptions]} onChange={(role) => setRole(input.nodeId, role === "exclude" ? undefined : role as CanvasVideoReference["role"])} />
+                            <button type="button" aria-label={t("canvas.configNode.moveUp")} disabled={index === 0} className="px-1 disabled:opacity-30" onClick={() => moveRole(input.nodeId, -1)}>↑</button>
+                            <button type="button" aria-label={t("canvas.configNode.moveDown")} disabled={index === orderedAssignments.length - 1} className="px-1 disabled:opacity-30" onClick={() => moveRole(input.nodeId, 1)}>↓</button>
                         </div>;
                     })}
+                    {config.videoMode === "text_to_video" && mediaInputs.some((input) => !node.metadata?.videoReferences?.some((entry) => entry.id === input.nodeId && !entry.role)) ? <div className="text-[11px] text-amber-600 dark:text-amber-400">{t("canvas.configNode.seedanceTextModeWarning")}</div> : null}
                     <div className="text-[10px] opacity-55">{t("canvas.configNode.seedanceInputsHint")}</div>
                 </div>
             ) : null}

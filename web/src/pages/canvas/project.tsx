@@ -65,6 +65,7 @@ import {
     sourceNodeReferenceImages,
 } from "@/lib/canvas/canvas-generation-helpers";
 import { getNodeDefinition, isBuiltinNodeType as isBuiltinType } from "@/lib/canvas/node-registry";
+import { assertSeedanceTextModeReferences, resolveSeedanceInputAssignments } from "@/lib/canvas/seedance-input-assignments";
 import { registerBuiltinNodes } from "@/components/canvas/nodes/builtin-nodes";
 import { CanvasRefreshShell } from "@/components/canvas/canvas-refresh-shell";
 import { CanvasTopBar } from "@/components/canvas/canvas-top-bar";
@@ -150,15 +151,13 @@ function makeVideoGenerationRequest(config: typeof defaultConfig, prompt: string
         ...context.referenceVideos.map((item) => ({ id: item.id, kind: "video" as const, role: "reference_video" as const, url: item.url, storageKey: item.storageKey, mimeType: item.type, bytes: item.bytes, durationMs: item.durationMs, width: item.width, height: item.height })),
         ...context.referenceAudios.map((item) => ({ id: item.id, kind: "audio" as const, role: "reference_audio" as const, url: item.url, storageKey: item.storageKey, mimeType: item.type, durationMs: item.durationMs, bytes: item.bytes })),
     ];
-    if (requireArkAssignments && mode === "text_to_video") references = [];
-    else if (requireArkAssignments && assignments !== undefined) {
+    if (requireArkAssignments) {
+        if (mode === "text_to_video") assertSeedanceTextModeReferences(references, assignments);
         const byId = new Map(references.map((item) => [item.id, item]));
-        references = assignments.flatMap((assignment) => {
+        references = resolveSeedanceInputAssignments(mode, references, assignments).flatMap((assignment) => {
             const input = byId.get(assignment.id);
             return input && assignment.role ? [{ ...input, role: assignment.role }] : [];
         });
-    } else if (requireArkAssignments && references.length) {
-        throw new Error("Assign Seedance input roles and order in the configuration node before generating.");
     }
     return {
         modelOption,

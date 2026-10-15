@@ -13,7 +13,7 @@ import axios from "axios";
 import { defaultConfig, buildArkApiUrl, normalizeChannelModels, useConfigStore, type AiConfig } from "@/stores/use-config-store";
 import { runModelPlugin } from "../model-plugin";
 import { uploadMediaFile } from "@/services/file-storage";
-import { createVideoGenerationTask, pollVideoGenerationTask, requestVideoGeneration, cancelVideoGenerationTask, storeGeneratedVideo, type VideoGenerationTask } from "../video";
+import { createVideoGenerationTask, pollVideoGenerationTask, requestVideoGeneration, cancelVideoGenerationTask, retrySeedanceDownload, storeGeneratedVideo, type VideoGenerationTask } from "../video";
 import { SEEDANCE_STANDARD, SEEDANCE_FAST } from "./model-capabilities";
 import type { VideoGenerationRequest } from "./types";
 import { buildGenerationConfig, resetInterruptedGeneration } from "@/lib/canvas/canvas-generation-helpers";
@@ -132,6 +132,29 @@ describe("independent Seedance acceptance", () => {
         vi.mocked(axios.get).mockResolvedValueOnce({ data: { id: "existing-task", status: "running" } });
         expect(await cancelVideoGenerationTask(config, taskFor(config))).toBe(false);
         expect(axios.delete).not.toHaveBeenCalled();
+    });
+
+    it("cancels a queued Ark task after confirming its current status", async () => {
+        const config = configFor();
+        vi.mocked(axios.get).mockResolvedValueOnce({ data: { id: "existing-task", status: "queued" } });
+        vi.mocked(axios.delete).mockResolvedValueOnce({ data: {} });
+        await expect(cancelVideoGenerationTask(config, taskFor(config))).resolves.toBe(true);
+        expect(axios.get).toHaveBeenCalledOnce();
+        expect(axios.delete).toHaveBeenCalledOnce();
+        expect(vi.mocked(axios.delete).mock.calls[0][0]).toContain("/contents/generations/tasks/existing-task");
+    });
+
+    it("retries a completed task download without creating a replacement", async () => {
+        const config = configFor();
+        const task = taskFor(config);
+        vi.mocked(axios.get)
+            .mockResolvedValueOnce({ data: { id: task.id, status: "succeeded", content: { video_url: "https://ark.cn-beijing.volces.com/result.mp4" } } })
+            .mockResolvedValueOnce({ data: new Blob(["video"], { type: "video/mp4" }) });
+        vi.mocked(uploadMediaFile).mockResolvedValueOnce({ url: "blob:stored", storageKey: "video:stored", bytes: 5, mimeType: "video/mp4" });
+        await expect(retrySeedanceDownload(config, task)).resolves.toMatchObject({ video: { storageKey: "video:stored" } });
+        expect(axios.get).toHaveBeenCalledTimes(2);
+        expect(axios.post).not.toHaveBeenCalled();
+        expect(uploadMediaFile).toHaveBeenCalledOnce();
     });
 
     it("retries a transient query failure without repeating create", async () => {

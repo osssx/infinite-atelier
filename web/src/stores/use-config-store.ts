@@ -9,7 +9,6 @@ export type ApiCallFormat = "openai" | "gemini" | "volcengine_ark";
 export type ModelCapability = "image" | "video" | "text" | "audio";
 export type ReasoningEffort = "auto" | "low" | "medium" | "high" | "xhigh";
 export type SeedanceVideoMode = "text_to_video" | "first_frame" | "first_last_frame" | "omni_reference";
-export type SeedanceAdapter = "ark_official" | "router_local";
 export type VideoCapabilities = { resolutions?: string[]; durations?: number[]; ratios?: string[]; generateAudio?: boolean; watermark?: boolean; returnLastFrame?: boolean };
 
 export type ChannelModel = {
@@ -26,7 +25,6 @@ export type ModelChannel = {
     baseUrl: string;
     apiKey: string;
     apiFormat: ApiCallFormat;
-    seedanceAdapter?: SeedanceAdapter;
     models: ChannelModel[];
 };
 
@@ -278,20 +276,8 @@ export function createModelChannel(channel?: Partial<ModelChannel>): ModelChanne
         baseUrl,
         apiKey: channel?.apiKey || "",
         apiFormat,
-        ...(apiFormat === "volcengine_ark" ? { seedanceAdapter: normalizeSeedanceAdapter(channel?.seedanceAdapter, baseUrl) } : {}),
         models: normalizeChannelModels(channel?.models),
     };
-}
-
-export function normalizeSeedanceAdapter(value: unknown, baseUrl: string): SeedanceAdapter {
-    if (value === "ark_official" || value === "router_local") return value;
-    try {
-        const hostname = new URL(baseUrl).hostname.toLowerCase();
-        if (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "127.0.0.01" || hostname === "::1" || hostname === "[::1]") return "router_local";
-    } catch {
-        // Invalid URLs stay on the official adapter; request validation will report the URL problem.
-    }
-    return "ark_official";
 }
 
 export function encodeChannelModel(channelId: string, model: string) {

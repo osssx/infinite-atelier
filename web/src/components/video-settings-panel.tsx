@@ -4,7 +4,7 @@ import { useTranslation } from "react-i18next";
 import i18n from "@/i18n";
 import { ImageSettingsTheme } from "@/components/image-settings-panel";
 import { type CanvasTheme } from "@/lib/canvas-theme";
-import { capabilitiesForModel, localRouterCapabilities } from "@/services/api/video/model-capabilities";
+import { capabilitiesForModel } from "@/services/api/video/model-capabilities";
 import { boolConfig, modelOptionName, resolveModelChannel, type AiConfig, type SeedanceVideoMode } from "@/stores/use-config-store";
 
 const resolutionOptions = [{ value: "720", label: "720p" }, { value: "480", label: "480p" }];
@@ -45,9 +45,8 @@ export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = 
     const channel = resolveModelChannel(config, activeVideoModel);
     const channelModel = channel?.models.find((item) => item.name === modelOptionName(activeVideoModel));
     const capabilities = channel && channelModel ? capabilitiesForModel(channel, channelModel) : null;
-    const routerLocal = channel?.apiFormat === "volcengine_ark" && channel.seedanceAdapter === "router_local";
-    const seedance = Boolean(capabilities) || routerLocal;
-    const effectiveCapabilities = routerLocal ? localRouterCapabilities : capabilities;
+    const seedance = Boolean(capabilities);
+    const effectiveCapabilities = capabilities;
     const supportedResolutions = effectiveCapabilities?.resolutions || [];
     const supportedRatios = effectiveCapabilities?.ratios || seedanceRatios;
     const supportedDurations = effectiveCapabilities?.durations || [-1, ...Array.from({ length: 12 }, (_, index) => index + 4)];
@@ -85,13 +84,12 @@ export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = 
                     <SettingGroup title={t("settingsPanels.video.output")} color={theme.node.muted}>
                         <div className="grid gap-2">
                             <ToggleOption label={t("settingsPanels.video.generateAudio")} checked={boolConfig(config.videoGenerateAudio, true)} disabled={effectiveCapabilities?.generateAudio === false} theme={theme} onChange={(value) => onConfigChange("videoGenerateAudio", String(value))} />
-                            {routerLocal ? null : <ToggleOption label={t("settingsPanels.video.watermark")} checked={boolConfig(config.videoWatermark, false)} disabled={effectiveCapabilities?.watermark === false} theme={theme} onChange={(value) => onConfigChange("videoWatermark", String(value))} />}
-                            {routerLocal ? null : <ToggleOption label={t("settingsPanels.video.returnLastFrame")} checked={boolConfig(config.videoReturnLastFrame, false)} disabled={effectiveCapabilities?.returnLastFrame === false} theme={theme} onChange={(value) => onConfigChange("videoReturnLastFrame", String(value))} />}
+                            <ToggleOption label={t("settingsPanels.video.watermark")} checked={boolConfig(config.videoWatermark, false)} disabled={effectiveCapabilities?.watermark === false} theme={theme} onChange={(value) => onConfigChange("videoWatermark", String(value))} />
+                            <ToggleOption label={t("settingsPanels.video.returnLastFrame")} checked={boolConfig(config.videoReturnLastFrame, false)} disabled={effectiveCapabilities?.returnLastFrame === false} theme={theme} onChange={(value) => onConfigChange("videoReturnLastFrame", String(value))} />
                         </div>
                     </SettingGroup>
-                    {seconds === "-1" ? <p className="text-xs opacity-70">{t(routerLocal ? "settingsPanels.video.routerDurationHint" : "settingsPanels.video.smartDurationHint")}</p> : null}
+                    {seconds === "-1" ? <p className="text-xs opacity-70">{t("settingsPanels.video.smartDurationHint")}</p> : null}
                     {resolution === "4k" ? <p className="text-xs opacity-70">{t("settingsPanels.video.4kHint")}</p> : null}
-                    {routerLocal && config.videoMode === "first_last_frame" ? <p className="text-xs opacity-70">{t("settingsPanels.video.routerFrameHint")}</p> : null}
                 </> : <>
                     <SettingGroup title={t("settingsPanels.video.quality")} color={theme.node.muted}>
                         <div className="grid grid-cols-3 gap-2.5">

@@ -1,5 +1,6 @@
 import { createServer } from "node:http";
 import { request as httpsRequest } from "node:https";
+import { request as httpRequest } from "node:http";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import { classifyMediaDownloadResponse } from "./media-download-policy.mjs";
@@ -14,20 +15,34 @@ const DEFAULT_ARK_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3";
 const DEFAULT_ARK_HOSTS = ["ark.cn-beijing.volces.com"];
 const ARK_ALLOWED_HOSTS = new Set((process.env.ARK_ALLOWED_HOSTS || DEFAULT_ARK_HOSTS.join(","))
     .split(",").map((host) => host.trim().toLowerCase()).filter(Boolean));
-const ARK_BASE_URL = parseArkBaseUrl(process.env.ARK_BASE_URL || DEFAULT_ARK_BASE_URL, ARK_ALLOWED_HOSTS);
 const UPLOAD_URL = process.env.MEDIA_UPLOAD_URL || "";
+const TRUSTED_LOOPBACK_BASES = (process.env.ARK_TRUSTED_BASE_URLS || "").split(",").map((value) => value.trim()).filter(Boolean).map((value) => parseTrustedLoopbackUrl(value));
+const ARK_BASE_URL = parseArkBaseUrl(process.env.ARK_BASE_URL || DEFAULT_ARK_BASE_URL, ARK_ALLOWED_HOSTS);
 const GATEWAY_TOKEN = process.env.GATEWAY_TOKEN || "";
 
 if (!GATEWAY_TOKEN) throw new Error("GATEWAY_TOKEN is required");
 
-function parseArkBaseUrl(raw, allowedHosts) {
-    const base = new URL(raw);
-    if (base.protocol !== "https:" || base.username || base.password || base.search || base.hash ||
-        (base.port && base.port !== "443") || isIP(base.hostname) || !allowedHosts.has(base.hostname.toLowerCase())) {
-        throw new Error("ARK_BASE_URL must be HTTPS and its exact hostname must appear in ARK_ALLOWED_HOSTS");
+function parseTrustedLoopbackUrl(raw) {
+    const url = new URL(raw);
+    if (!isLoopbackHost(url.hostname) || url.protocol !== "http:" || !url.port || url.username || url.password || url.search || url.hash || url.pathname === "/") {
+        throw new Error("ARK_TRUSTED_BASE_URLS entries must be explicit loopback URLs with a port and API path");
     }
+    url.pathname = url.pathname.replace(/\/+$/, "");
+    return url;
+}
+function isLoopbackHost(hostname) {
+    const host = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+    return host === "localhost" || host === "::1" || (isIP(host) === 4 && host.startsWith("127."));
+}
+function parseArkBaseUrl(raw, allowedHosts) {
+    let base;
+    try { base = new URL(raw); } catch { throw new Error("Ark Base URL is invalid"); }
+    if (base.username || base.password || base.search || base.hash) throw new Error("Ark Base URL cannot include credentials, query or fragment");
     base.pathname = base.pathname.replace(/\/+$/, "");
-    return base;
+    if (base.protocol === "https:" && (!base.port || base.port === "443") && !isIP(base.hostname) && allowedHosts.has(base.hostname.toLowerCase())) return base;
+    const trusted = TRUSTED_LOOPBACK_BASES.find((item) => item.href === base.href);
+    if (trusted) return new URL(trusted.href);
+    throw new Error("Ark Base URL must use an allowlisted HTTPS host or exactly match ARK_TRUSTED_BASE_URLS");
 }
 
 function arkBaseFromRequest(req) {
@@ -81,9 +96,10 @@ async function validateHttpsUrl(raw, allowedHosts) {
     return { url, ips };
 }
 
-function pinnedHttpsRequest(url, ips, maxBytes, timeoutMs, { method = "GET", headers = {}, body, allowHttpErrors = false } = {}) {
+function pinnedRequest(url, ips, maxBytes, timeoutMs, { method = "GET", headers = {}, body, allowHttpErrors = false } = {}) {
     return new Promise((resolve, reject) => {
-        const request = httpsRequest(url, {
+        const transport = url.protocol === "https:" ? httpsRequest : httpRequest;
+        const request = transport(url, {
             method,
             headers,
             lookup: (_hostname, options, callback) => {
@@ -112,6 +128,41 @@ function pinnedHttpsRequest(url, ips, maxBytes, timeoutMs, { method = "GET", hea
         request.on("error", reject);
         request.end(body);
     });
+}
+
+async function validateArkTarget(base, target) {
+    if (base.protocol === "https:") return validateHttpsUrl(target.href, ARK_ALLOWED_HOSTS);
+    if (!TRUSTED_LOOPBACK_BASES.some((item) => item.href === base.href) || target.origin !== base.origin || !target.pathname.startsWith(`${base.pathname}/`)) throw new Error("Ark route escaped its trusted base URL");
+    const hostname = base.hostname.replace(/^\[|\]$/g, "");
+    const addresses = isIP(hostname) ? [{ address: hostname, family: isIP(hostname) }] : await lookup(hostname, { all: true, verbatim: true });
+    if (!addresses.length || addresses.some(({ address }) => !isLoopbackHost(address))) throw new Error("trusted Ark destination resolved outside loopback");
+    return { url: target, ips: addresses };
+}
+async function validateConfiguredTarget(raw) {
+    const endpoint = new URL(raw);
+    if (endpoint.protocol === "https:") {
+        const allowedHosts = new Set((process.env.MEDIA_UPLOAD_ALLOWED_HOSTS || endpoint.hostname).split(",").map((v) => v.trim().toLowerCase()).filter(Boolean));
+        return validateHttpsUrl(endpoint.href, allowedHosts);
+    }
+    const uploadConfigured = UPLOAD_URL && new URL(UPLOAD_URL).href === endpoint.href;
+    const trustedBase = TRUSTED_LOOPBACK_BASES.some((item) => item.origin === endpoint.origin);
+    if (endpoint.protocol !== "http:" || !isLoopbackHost(endpoint.hostname) || (!uploadConfigured && !trustedBase) || endpoint.username || endpoint.password || endpoint.hash) throw new Error("HTTP destinations must match an explicitly trusted loopback configuration");
+    const hostname = endpoint.hostname.replace(/^\[|\]$/g, "");
+    const addresses = isIP(hostname) ? [{ address: hostname, family: isIP(hostname) }] : await lookup(hostname, { all: true, verbatim: true });
+    if (!addresses.length || addresses.some(({ address }) => !isLoopbackHost(address))) throw new Error("trusted loopback destination resolved outside loopback");
+    return { url: endpoint, ips: addresses };
+}
+async function validateMediaUrl(raw, publicHosts) {
+    const url = new URL(raw);
+    try { return await validateHttpsUrl(url.href, publicHosts); } catch (error) {
+        const uploadOrigin = UPLOAD_URL ? new URL(UPLOAD_URL).origin : "";
+        const trustedArkOrigin = TRUSTED_LOOPBACK_BASES.some((item) => item.origin === url.origin);
+        if (url.protocol !== "http:" || !isLoopbackHost(url.hostname) || (url.origin !== uploadOrigin && !trustedArkOrigin) || url.username || url.password || url.hash) throw error;
+        const hostname = url.hostname.replace(/^\[|\]$/g, "");
+        const addresses = isIP(hostname) ? [{ address: hostname, family: isIP(hostname) }] : await lookup(hostname, { all: true, verbatim: true });
+        if (!addresses.length || addresses.some(({ address }) => !isLoopbackHost(address))) throw new Error("signed media URL resolves outside loopback");
+        return { url, ips: addresses };
+    }
 }
 
 async function readBody(req, maxBytes) {
@@ -155,8 +206,8 @@ async function arkApi(req, res, requestUrl) {
     const authorization = arkAuthorization(base, req.headers.authorization);
     if (authorization) headers.authorization = authorization.value;
     else return send(res, 401, { error: "Ark API key is not configured for this destination" });
-    const { url, ips } = await validateHttpsUrl(target.href, ARK_ALLOWED_HOSTS);
-    const upstream = await pinnedHttpsRequest(url, ips, MAX_RESPONSE_BYTES, 120_000, { method: req.method, headers, body, allowHttpErrors: true });
+    const { url, ips } = await validateArkTarget(base, target);
+    const upstream = await pinnedRequest(url, ips, MAX_RESPONSE_BYTES, 120_000, { method: req.method, headers, body, allowHttpErrors: true });
     res.writeHead(upstream.statusCode, { "content-type": upstream.contentType, "cache-control": "no-store", "x-content-type-options": "nosniff" });
     res.end(upstream.body);
 }
@@ -173,14 +224,12 @@ async function uploadMedia(req, res) {
         return send(res, 400, { error: 'multipart field "file" is required' });
     }
     if (filePart.length > MAX_FILE_BYTES) return send(res, 413, { error: "file exceeds the upload size limit" });
-    const endpoint = new URL(UPLOAD_URL);
-    const allowedHosts = new Set((process.env.MEDIA_UPLOAD_ALLOWED_HOSTS || endpoint.hostname).split(",").map((v) => v.trim().toLowerCase()).filter(Boolean));
-    const { url: target, ips } = await validateHttpsUrl(endpoint.href, allowedHosts);
+    const { url: target, ips } = await validateConfiguredTarget(UPLOAD_URL);
     const method = process.env.MEDIA_UPLOAD_METHOD || "POST";
     if (!["POST", "PUT"].includes(method)) return send(res, 500, { error: "MEDIA_UPLOAD_METHOD must be POST or PUT" });
-    const upstream = await pinnedHttpsRequest(target, ips, 256 * 1024, Number(process.env.MEDIA_UPLOAD_TIMEOUT_MS || 60_000), {
+    const upstream = await pinnedRequest(target, ips, 256 * 1024, Number(process.env.MEDIA_UPLOAD_TIMEOUT_MS || 60_000), {
         method,
-        headers: { "content-type": type, ...(process.env.MEDIA_UPLOAD_TOKEN ? { authorization: `Bearer ${process.env.MEDIA_UPLOAD_TOKEN}` } : {}) },
+        headers: { "content-type": type, ...(process.env.MEDIA_UPLOAD_TOKEN ? { authorization: `Bearer ${process.env.MEDIA_UPLOAD_TOKEN}` } : process.env.MEDIA_UPLOAD_FORWARD_CLIENT_AUTH === "1" && typeof req.headers.authorization === "string" ? { authorization: req.headers.authorization } : {}) },
         body,
         allowHttpErrors: true,
     });
@@ -191,17 +240,21 @@ async function uploadMedia(req, res) {
     if (typeof result?.url !== "string") return send(res, 502, { error: "upload service response must contain a url" });
     const publicUrl = new URL(result.url);
     const publicHosts = new Set((process.env.MEDIA_PUBLIC_ALLOWED_HOSTS || target.hostname).split(",").map((v) => v.trim().toLowerCase()).filter(Boolean));
-    try { await validateHttpsUrl(publicUrl.href, publicHosts); }
-    catch { return send(res, 502, { error: "upload service returned a non-allowlisted media URL" }); }
+    const signedLocalUpload = target.protocol === "http:" && publicUrl.origin === target.origin && /^\/uploads\/[A-Fa-f0-9-]{36}(?:\.(?:png|jpg|webp|mp4|mov|webm|wav|mp3|flac|m4a))?$/.test(publicUrl.pathname) && Boolean(publicUrl.searchParams.get("exp") && publicUrl.searchParams.get("sig"));
+    try { if (!signedLocalUpload) await validateMediaUrl(publicUrl.href, publicHosts); }
+    catch { return send(res, 502, { error: "upload service returned an untrusted media URL" }); }
     send(res, 200, { url: publicUrl.href, ...(typeof result.expiresAt === "string" ? { expiresAt: result.expiresAt } : {}) });
 }
 
 async function downloadMedia(req, res, requestUrl) {
     const raw = requestUrl.searchParams.get("url");
     if (!raw) return send(res, 400, { error: "missing url" });
+    const parsed = new URL(raw);
+    const trustedLoopback = TRUSTED_LOOPBACK_BASES.some((item) => item.origin === parsed.origin) || (UPLOAD_URL && new URL(UPLOAD_URL).origin === parsed.origin);
+    if (trustedLoopback && (!/^\/(?:uploads\/[A-Fa-f0-9-]{36}(?:\.(?:png|jpg|webp|mp4|mov|webm|wav|mp3|flac|m4a))?|last-frame\/[A-Za-z0-9_-]+|media\/[A-Za-z0-9_-]+)$/.test(parsed.pathname) || !parsed.searchParams.get("exp") || !parsed.searchParams.get("sig"))) return send(res, 400, { error: "invalid signed media URL" });
     const hosts = new Set((process.env.MEDIA_DOWNLOAD_ALLOWED_HOSTS || "ark.cn-beijing.volces.com,ark-content-generation-cn-beijing.tos-cn-beijing.volces.com").split(",").map((v) => v.trim().toLowerCase()).filter(Boolean));
-    const { url, ips } = await validateHttpsUrl(raw, hosts);
-    const result = await pinnedHttpsRequest(url, ips, Number(process.env.MEDIA_DOWNLOAD_MAX_BYTES || 200 * 1024 * 1024), Number(process.env.MEDIA_DOWNLOAD_TIMEOUT_MS || 60_000), { allowHttpErrors: true });
+    const { url, ips } = await validateMediaUrl(raw, hosts);
+    const result = await pinnedRequest(url, ips, Number(process.env.MEDIA_DOWNLOAD_MAX_BYTES || 200 * 1024 * 1024), Number(process.env.MEDIA_DOWNLOAD_TIMEOUT_MS || 60_000), { allowHttpErrors: true });
     const decision = classifyMediaDownloadResponse({ statusCode: result.statusCode, contentType: result.contentType });
     if (!decision.ok) return send(res, decision.status, decision.body);
     res.writeHead(200, { "content-type": decision.contentType, "content-length": result.body.length, "content-disposition": "attachment", "cache-control": "no-store", "x-content-type-options": "nosniff" });
@@ -239,8 +292,8 @@ async function arkHealth(req, res) {
     const auth = arkAuthorization(base, req.headers.authorization);
     if (!auth) return send(res, 401, { error: "ark_key_missing" });
     const url = arkRouteUrl("contents/generations/tasks/codex-connectivity-check-never-created", "", base);
-    const { ips } = await validateHttpsUrl(url.href, ARK_ALLOWED_HOSTS);
-    const upstream = await pinnedHttpsRequest(url, ips, MAX_RESPONSE_BYTES, 15_000, { headers: { authorization: auth.value }, allowHttpErrors: true });
+    const { ips } = await validateArkTarget(base, url);
+    const upstream = await pinnedRequest(url, ips, MAX_RESPONSE_BYTES, 15_000, { headers: { authorization: auth.value }, allowHttpErrors: true });
     if ([401, 403].includes(upstream.statusCode)) return send(res, 401, { error: "ark_auth_failed" });
     // This task ID is intentionally never created. Ark's 404 confirms the API
     // route is reachable without creating a billable task.
@@ -253,11 +306,11 @@ async function arkHealth(req, res) {
 const server = createServer(async (req, res) => {
     try {
         const url = new URL(req.url || "/", "http://gateway.local");
-        const uploadRoute = req.method === "POST" && ["/media/ark", "/api/media/ark"].includes(url.pathname);
+        const uploadRoute = req.method === "POST" && ["/media/ark", "/api/media/ark", "/api/media/uploads"].includes(url.pathname);
         const bearerGatewayToken = req.headers.authorization === `Bearer ${GATEWAY_TOKEN}`;
         if (!authenticate(req) && !(uploadRoute && bearerGatewayToken)) return send(res, 401, { error: "unauthorized" });
         if (req.method === "GET" && url.pathname === "/api/ark/health") return await arkHealth(req, res);
-        if ((req.method === "POST" && ["/media/ark", "/api/media/ark"].includes(url.pathname))) return await uploadMedia(req, res);
+        if ((req.method === "POST" && ["/media/ark", "/api/media/ark", "/api/media/uploads"].includes(url.pathname))) return await uploadMedia(req, res);
         if (req.method === "GET" && url.pathname === "/api/ark/download") return await downloadMedia(req, res, url);
         if (["GET", "POST", "DELETE"].includes(req.method || "") && url.pathname.startsWith("/api/ark/")) return await arkApi(req, res, url);
         send(res, 404, { error: "route not found" });

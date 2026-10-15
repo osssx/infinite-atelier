@@ -158,7 +158,6 @@ export function ModelSelectModal({ open, channel, selectedNames, onConfirm, onCl
 }
 
 function isLocalRouterChannel(channel: ModelChannel | null) {
-    if (channel?.seedanceAdapter) return channel.seedanceAdapter === "router_local";
     try {
         const hostname = new URL(channel?.baseUrl || "").hostname.toLowerCase().replace(/^\[|\]$/g, "");
         return hostname === "localhost" || hostname === "::1" || /^127(?:\.\d{1,3}){3}$/.test(hostname);

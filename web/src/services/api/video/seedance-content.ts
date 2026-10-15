@@ -42,39 +42,6 @@ export function validateSeedanceRequest(request: VideoGenerationRequest, capabil
     for (const audio of audios) assertMedia(audio, 15 * 1024 * 1024, ["audio/mpeg", "audio/wav", "audio/x-wav"]);
 }
 
-export function validateLocalRouterRequest(request: VideoGenerationRequest, capabilities: VideoCapabilities) {
-    if (!request.prompt.trim()) throw new Error("A prompt is required.");
-    if (request.modelOption.split("::").at(-1) !== "doubao-seedance-2-0-260128") throw new Error("The local Router only supports doubao-seedance-2-0-260128; Fast and Mini aliases are not supported.");
-    if (request.durationSeconds === -1 || !Number.isInteger(request.durationSeconds) || request.durationSeconds < 4 || request.durationSeconds > 15) throw new Error("The local Router requires an integer duration from 4 to 15 seconds; smart duration is unsupported.");
-    if (request.watermark) throw new Error("The local Router does not support watermark=true.");
-    if (request.returnLastFrame) throw new Error("The local Router does not support returning the last frame.");
-    if (!capabilities.resolutions?.includes(request.resolution)) throw new Error(`Resolution ${request.resolution} is not supported by the local Router profile.`);
-    if (!capabilities.ratios?.includes(request.ratio)) throw new Error(`Ratio ${request.ratio} is not supported by the local Router profile.`);
-    const images = request.references.filter((item) => item.kind === "image");
-    const videos = request.references.filter((item) => item.kind === "video");
-    const audios = request.references.filter((item) => item.kind === "audio");
-    if (request.mode === "text_to_video" && request.references.length) throw new Error("Text-to-video does not accept references.");
-    if (request.mode === "first_frame" && (images.length !== 1 || images[0].role !== "first_frame" || videos.length + audios.length > 0)) throw new Error("First-frame mode requires exactly one first-frame image.");
-    if (request.mode === "first_last_frame" && (images.length !== 2 || !images.some((item) => item.role === "first_frame") || !images.some((item) => item.role === "last_frame") || videos.length + audios.length > 0)) throw new Error("First/last-frame mode requires one first-frame and one last-frame image.");
-    const roles = { image: "reference_image", video: "reference_video", audio: "reference_audio" } as const;
-    if (request.mode === "omni_reference" && (!request.references.length || request.references.some((item) => item.role !== roles[item.kind]))) throw new Error("Reference mode requires at least one image or video, and each input must have its matching reference role.");
-    if (images.length > 9 || videos.length > 3 || audios.length > 3) throw new Error("The local Router supports up to 9 images, 3 videos and 3 audio references.");
-    if (audios.length && !images.length && !videos.length) throw new Error("Audio references require at least one image or video reference.");
-    const totalDuration = (items: VideoInputMedia[]) => items.reduce((sum, item) => sum + (item.durationMs || 0), 0);
-    for (const item of [...videos, ...audios]) if (!item.durationMs || item.durationMs < 2_000 || item.durationMs > 15_000) throw new Error(`Reference ${item.kind} duration must be between 2 and 15 seconds.`);
-    if (totalDuration(videos) > 15_000 || totalDuration(audios) > 15_000) throw new Error("Each media type may total no more than 15 seconds.");
-    for (const image of images) assertLocalMedia(image, 8 * 1024 * 1024, ["image/png", "image/jpeg", "image/webp"]);
-    for (const video of videos) assertLocalMedia(video, 100 * 1024 * 1024, ["video/mp4", "video/quicktime", "video/webm"]);
-    for (const audio of audios) assertLocalMedia(audio, 30 * 1024 * 1024, ["audio/wav", "audio/x-wav", "audio/mpeg", "audio/flac", "audio/mp4", "audio/x-m4a"]);
-}
-
-function assertLocalMedia(media: VideoInputMedia, limit: number, types: string[]) {
-    if (media.bytes !== undefined && media.bytes > limit) throw new Error(`${media.kind} reference exceeds the local Router's size limit.`);
-    if (media.mimeType && !types.includes(media.mimeType.toLowerCase())) throw new Error(`The local Router does not accept ${media.mimeType} ${media.kind} references.`);
-    if (media.url?.startsWith("router-upload:")) return;
-    if (media.url && !media.url.startsWith("data:")) throw new Error("The local Router accepts local files or unexpired router-upload tokens only.");
-}
-
 export function buildSeedanceContent(prompt: string, references: Array<VideoInputMedia & { url: string }>): ArkContentItem[] {
     return [{ type: "text", text: prompt }, ...references.map((media) => {
         if (media.kind === "image") return { type: "image_url" as const, image_url: { url: media.url }, role: media.role || "reference_image" };

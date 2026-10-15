@@ -51,13 +51,16 @@ before(async () => {
     }));
     routerServer = createServer(async (req, res) => {
         for await (const _chunk of req) { /* consume request bodies before replying */ }
-        routerRequests.push({ method: req.method, url: req.url });
+        routerRequests.push({ method: req.method, url: req.url, authorization: req.headers.authorization });
         if (req.url === "/ready") {
             res.writeHead(200, { "content-type": "application/json" });
             res.end(JSON.stringify({ ready: true }));
         } else if (req.url?.startsWith("/media/")) {
             res.writeHead(200, { "content-type": "video/mp4" });
             res.end(Buffer.from("fake-media"));
+        } else if (req.url === "/api/v3/contents/uploads") {
+            res.writeHead(200, { "content-type": "application/json" });
+            res.end(JSON.stringify({ url: `${routerOrigin}/uploads/00000000-0000-0000-0000-000000000000.mp4?exp=2000000000&sig=test` }));
         } else {
             res.writeHead(200, { "content-type": "application/json" });
             res.end(JSON.stringify({ method: req.method, url: req.url }));
@@ -70,7 +73,7 @@ before(async () => {
     const viteCli = fileURLToPath(new URL("../node_modules/vite/bin/vite.js", import.meta.url));
     const vite = spawn(process.execPath, [viteCli, "--host", "127.0.0.1", "--port", String(vitePort), "--strictPort"], {
         cwd: fileURLToPath(new URL("..", import.meta.url)),
-        env: { ...process.env, ARK_LOCAL_ROUTER_URL: routerOrigin },
+        env: { ...process.env, ARK_TRUSTED_BASE_URLS: `${routerOrigin}/api/v3`, MEDIA_UPLOAD_URL: `${routerOrigin}/api/v3/contents/uploads` },
         stdio: ["ignore", "pipe", "pipe"],
     });
     children.push(vite);
@@ -107,7 +110,7 @@ async function reservePort() {
 }
 
 function localHeaders(overrides = {}) {
-    return { origin: viteOrigin, "sec-fetch-site": "same-origin", "x-router-origin": routerOrigin, ...overrides };
+    return { origin: viteOrigin, "sec-fetch-site": "same-origin", "x-ark-base-url": `${routerOrigin}/api/v3`, ...overrides };
 }
 
 async function localFetch(label, url, options) {
@@ -149,7 +152,7 @@ test("request-supplied Ark base URL cannot escape the configured host allowlist"
         },
     });
     assert.equal(response.status, 400);
-    assert.match((await response.json()).error, /ARK_BASE_URL/);
+    assert.match((await response.json()).error, /ARK_BASE_URL|ARK_TRUSTED_BASE_URLS/);
 });
 
 test("server Ark key is not available to request-selected custom destinations", async () => {
@@ -167,9 +170,11 @@ test("server Ark key is not available to request-selected custom destinations", 
     assert.match((await response.json()).error, /not configured for this destination/);
 });
 
-test("Vite's default local router target is the fixed loopback origin", async () => {
+test("Vite dev gateway has no Router-specific client route", async () => {
     const config = await readFile(new URL("../vite.config.ts", import.meta.url), "utf8");
-    assert.match(config, /\|\|\s*"http:\/\/127\.0\.0\.1:8189"/);
+    assert.match(config, /ARK_TRUSTED_BASE_URLS/);
+    assert.match(config, /MEDIA_UPLOAD_URL/);
+    assert.doesNotMatch(config, /api\/router-local|ARK_LOCAL_ROUTER_URL|x-router-origin/);
 });
 
 test("media upload rejects a private IP even when its hostname appears in configuration", async () => {
@@ -192,7 +197,7 @@ test("result downloads reject IP literals, credentials, HTTP and unlisted hosts"
     ];
     for (const url of urls) {
         const response = await fetch(`${origin}/api/ark/download?url=${encodeURIComponent(url)}`, { headers: token });
-        assert.equal(response.status, 502, url);
+        assert.ok([400, 502].includes(response.status), `${url} status=${response.status}`);
     }
 });
 
@@ -230,43 +235,37 @@ test("media download policy accepts media bytes and rejects HTML or JSON", () =>
     }
 });
 
-test("local router proxy only forwards the configured loopback routes", async () => withLocalProxyLock(async () => {
-    const ready = await localFetch("ready", `${viteOrigin}/api/router-local/ready`, { headers: localHeaders() });
-    assert.equal(ready.status, 200);
-    assert.deepEqual(await ready.json(), { ready: true });
-
-    const task = await localFetch("task create", `${viteOrigin}/api/router-local/api/v3/contents/generations/tasks`, {
-        method: "POST", headers: localHeaders({ "content-type": "application/json" }), body: JSON.stringify({ model: "sample" }),
+test("configured generic gateway uses exact trusted loopback Ark and upload targets", async () => withLocalProxyLock(async () => {
+    const task = await localFetch("task create", `${viteOrigin}/api/ark/contents/generations/tasks`, {
+        method: "POST", headers: localHeaders({ "content-type": "application/json", authorization: "Bearer selected-channel-key" }), body: JSON.stringify({ model: "sample" }),
     });
     assert.equal(task.status, 200, await task.clone().text());
     assert.deepEqual(await task.json(), { method: "POST", url: "/api/v3/contents/generations/tasks" });
-
-    const upload = await localFetch("media upload", `${viteOrigin}/api/router-local/api/v3/media/uploads`, {
-        method: "POST", headers: localHeaders({ "content-type": "application/octet-stream" }), body: "media",
+    const form = new FormData();
+    form.append("file", new Blob(["image-bytes"], { type: "image/png" }), "sample.png");
+    const upload = await localFetch("generic media upload", `${viteOrigin}/api/media/uploads`, {
+        method: "POST", headers: localHeaders({ authorization: "Bearer selected-channel-key" }), body: form,
     });
-    const uploadText = await upload.text();
-    assert.equal(upload.status, 200, uploadText);
-    assert.deepEqual(JSON.parse(uploadText), { method: "POST", url: "/api/v3/media/uploads" });
-
+    assert.equal(upload.status, 200, await upload.text());
+    assert.equal(routerRequests.at(-1).url, "/api/v3/contents/uploads");
+    assert.equal(routerRequests.at(-1).authorization, "Bearer selected-channel-key");
     const beforeUnknown = routerRequests.length;
-    const unknown = await localFetch("unknown route", `${viteOrigin}/api/router-local/api/v3/arbitrary?target=http://127.0.0.1`, { headers: localHeaders() });
+    const unknown = await localFetch("unknown route", `${viteOrigin}/api/ark/arbitrary?target=http://127.0.0.1`, { headers: localHeaders() });
     assert.equal(unknown.status, 404);
     assert.equal(routerRequests.length, beforeUnknown);
-
-    const wrongOrigin = await localFetch("wrong router origin", `${viteOrigin}/api/router-local/ready`, { headers: localHeaders({ "x-router-origin": "http://127.0.0.1:1" }) });
-    assert.equal(wrongOrigin.status, 403);
-    const crossOrigin = await localFetch("cross origin", `${viteOrigin}/api/router-local/ready`, { headers: localHeaders({ origin: "https://attacker.example" }) });
+    const wrongBase = await localFetch("untrusted base", `${viteOrigin}/api/ark/contents/generations/tasks`, { headers: localHeaders({ "x-ark-base-url": "http://127.0.0.1:1/api/v3" }) });
+    assert.equal(wrongBase.status, 403);
+    const crossOrigin = await localFetch("cross origin", `${viteOrigin}/api/ark/contents/generations/tasks`, { headers: localHeaders({ origin: "https://attacker.example" }) });
     assert.equal(crossOrigin.status, 403);
 }));
 
-test("local router download only accepts signed media URLs on its configured origin", async () => withLocalProxyLock(async () => {
+test("generic signed media download only accepts a configured loopback origin", async () => withLocalProxyLock(async () => {
     const signedUrl = `${routerOrigin}/media/video-1?exp=2000000000&sig=signature`;
-    const valid = await localFetch("signed media download", `${viteOrigin}/api/router-local/download?url=${encodeURIComponent(signedUrl)}`, { headers: localHeaders() });
+    const valid = await localFetch("signed media download", `${viteOrigin}/api/ark/download?url=${encodeURIComponent(signedUrl)}`, { headers: localHeaders() });
     assert.equal(valid.status, 200);
     assert.equal(valid.headers.get("content-type"), "video/mp4");
     assert.equal(await valid.text(), "fake-media");
-
     const invalidUrl = `https://example.com/media/video-1?exp=2000000000&sig=signature`;
-    const invalid = await localFetch("invalid signed URL", `${viteOrigin}/api/router-local/download?url=${encodeURIComponent(invalidUrl)}`, { headers: localHeaders() });
+    const invalid = await localFetch("invalid signed URL", `${viteOrigin}/api/ark/download?url=${encodeURIComponent(invalidUrl)}`, { headers: localHeaders() });
     assert.equal(invalid.status, 403);
 }));

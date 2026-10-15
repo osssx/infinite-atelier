@@ -12,7 +12,7 @@ import type { ReferenceImage } from "@/types/image";
 import type { ReferenceAudio, ReferenceVideo } from "@/types/media";
 import { resolveModelChannel } from "@/stores/use-config-store";
 import { capabilitiesForModel } from "./video/model-capabilities";
-import { buildSeedanceContent, validateLocalRouterRequest, validateSeedanceRequest } from "./video/seedance-content";
+import { buildSeedanceContent, validateSeedanceRequest } from "./video/seedance-content";
 import type { VideoGenerationRequest, VideoInputMedia, VideoTaskStatus } from "./video/types";
 export type { VideoGenerationRequest, VideoInputMedia } from "./video/types";
 
@@ -23,7 +23,7 @@ type RequestOptions = { signal?: AbortSignal; request?: VideoGenerationRequest; 
 const apiText = (key: string, options?: Record<string, unknown>) => i18n.t(`apiErrors.${key}`, options);
 
 export type VideoGenerationResult = { blob?: Blob; url?: string; mimeType?: string; lastFrameUrl?: string; lastFrameBlob?: Blob; requirePersistence?: boolean };
-export type VideoGenerationTask = { id: string; provider: "openai" | "plugin" | "volcengine_ark" | "router_local"; model: string; channelId?: string; startedAt?: number; status?: VideoTaskStatus };
+export type VideoGenerationTask = { id: string; provider: "openai" | "plugin" | "volcengine_ark"; model: string; channelId?: string; startedAt?: number; status?: VideoTaskStatus };
 export type VideoGenerationTaskState = { status: "pending"; providerStatus?: VideoTaskStatus } | { status: "completed"; result: VideoGenerationResult; providerStatus?: VideoTaskStatus; lastFrameUrl?: string; lastFrameBlob?: Blob } | { status: "failed"; error: string; providerStatus?: VideoTaskStatus };
 
 /** Results for scripted (plugin) video models, which run their own create+poll in one shot at task creation. */
@@ -83,27 +83,23 @@ export async function pollVideoGenerationTask(config: AiConfig, task: VideoGener
     }
     const requestConfig = resolveModelRequestConfig(config, task.model);
     assertVideoConfig(requestConfig, requestConfig.model);
-    if (task.provider === "volcengine_ark" || task.provider === "router_local") return pollSeedanceTask(requestConfig, task, options, task.provider === "router_local");
+    if (task.provider === "volcengine_ark" || (task.provider as string) === "router_local") return pollSeedanceTask(requestConfig, normalizeLegacySeedanceTask(task), options);
     return pollOpenAIVideoTask(requestConfig, task, options);
 }
 
 export async function cancelVideoGenerationTask(config: AiConfig, task: VideoGenerationTask) {
-    if (task.provider !== "volcengine_ark" && task.provider !== "router_local") return false;
+    if (task.provider !== "volcengine_ark" && (task.provider as string) !== "router_local") return false;
+    task = normalizeLegacySeedanceTask(task);
     const requestConfig = resolveModelRequestConfig(config, task.model);
-    const local = task.provider === "router_local";
-    const response = local
-        ? (await axios.get<SeedanceResponse>(routerLocalUrl(`/contents/generations/tasks/${encodeURIComponent(task.id)}`), { headers: routerLocalHeaders(requestConfig), timeout: 30_000 })).data
-        : (await axios.get<SeedanceResponse>(arkUrl(requestConfig, `/contents/generations/tasks/${encodeURIComponent(task.id)}`), { headers: arkHeaders(requestConfig) })).data;
-    const remote = local ? response : unwrapSeedanceResponse(response);
-    if (remote.status !== "queued") return false;
-    if (local) {
-        await axios.delete(routerLocalUrl(`/contents/generations/tasks/${encodeURIComponent(task.id)}`), { headers: routerLocalHeaders(requestConfig), timeout: 30_000 });
-    } else await axios.delete(arkUrl(requestConfig, `/contents/generations/tasks/${encodeURIComponent(task.id)}`), { headers: arkHeaders(requestConfig) });
+    const response = unwrapSeedanceResponse((await axios.get<SeedanceResponse>(arkUrl(requestConfig, `/contents/generations/tasks/${encodeURIComponent(task.id)}`), { headers: arkHeaders(requestConfig) })).data);
+    if (response.status !== "queued") return false;
+    await axios.delete(arkUrl(requestConfig, `/contents/generations/tasks/${encodeURIComponent(task.id)}`), { headers: arkHeaders(requestConfig) });
     return true;
 }
 
 export async function retrySeedanceDownload(config: AiConfig, task: VideoGenerationTask, options?: RequestOptions) {
-    if (task.provider !== "volcengine_ark" && task.provider !== "router_local") throw new Error("This is not a Seedance video task.");
+    if (task.provider !== "volcengine_ark" && (task.provider as string) !== "router_local") throw new Error("This is not a Seedance video task.");
+    task = normalizeLegacySeedanceTask(task);
     const state = await pollVideoGenerationTask(config, task, options);
     if (state.status !== "completed") throw new Error(state.status === "failed" ? state.error : "Video generation is still running.");
     return { video: await storeGeneratedVideo(state.result), lastFrameBlob: state.lastFrameBlob, lastFrameUrl: state.lastFrameUrl };
@@ -133,119 +129,12 @@ function arkHeaders(config: AiConfig, contentType?: string) {
     return { ...aiHeaders(config, contentType), "x-gateway-token": import.meta.env.VITE_MEDIA_GATEWAY_TOKEN || "", "x-ark-base-url": config.baseUrl };
 }
 
-export function buildRouterLocalApiPath(path: string) { return `/api/router-local/api/v3${path.startsWith("/") ? path : `/${path}`}`; }
-
-function routerOrigin(config: AiConfig) {
-    const url = new URL(config.baseUrl);
-    const hostname = url.hostname.toLowerCase();
-    if (!(hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1" || hostname === "[::1]") || !url.port || url.username || url.password || url.search || url.hash || (url.pathname !== "/" && url.pathname.replace(/\/+$/, "") !== "/api/v3")) {
-        throw new Error("Local Router adapter requires an explicit localhost or loopback origin with an explicit port and optional /api/v3 path.");
-    }
-    if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error("Local Router adapter only supports HTTP or HTTPS on loopback.");
-    return url.origin;
-}
-
-function routerLocalHeaders(config: AiConfig) {
-    return { Authorization: `Bearer ${config.apiKey}`, "x-router-origin": routerOrigin(config) };
-}
-
-function routerLocalUrl(path: string) { return buildRouterLocalApiPath(path); }
-
-class RouterLocalHttpError extends Error {
-    constructor(readonly status: number, message: string) { super(message); }
-}
-
-async function localRouterJson<T>(path: string, config: AiConfig, options?: { method?: string; body?: BodyInit; signal?: AbortSignal; contentType?: string }): Promise<T> {
-    const controller = new AbortController();
-    const onAbort = () => controller.abort(options?.signal?.reason);
-    const timeout = setTimeout(() => controller.abort(new DOMException("Local Router request timed out", "TimeoutError")), 120_000);
-    options?.signal?.addEventListener("abort", onAbort, { once: true });
-    if (options?.signal?.aborted) onAbort();
-    let response: Response;
-    try {
-        response = await fetch(buildRouterLocalApiPath(path), {
-            method: options?.method || "GET",
-            headers: { ...routerLocalHeaders(config), ...(options?.contentType ? { "Content-Type": options.contentType } : {}) },
-            ...(options?.body ? { body: options.body } : {}),
-            signal: controller.signal,
-            cache: "no-store",
-        });
-    } finally {
-        clearTimeout(timeout);
-        options?.signal?.removeEventListener("abort", onAbort);
-    }
-    const payload = await response.json().catch(() => ({})) as T & { error?: string | { message?: string; code?: string }; message?: string };
-    if (!response.ok) throw new RouterLocalHttpError(response.status, routerPayloadMessage(payload, response.status));
-    return payload;
-}
-
-function routerPayloadMessage(payload: { error?: string | { message?: string; code?: string }; message?: string }, status: number) {
-    return payload.message || (typeof payload.error === "string" ? payload.error : payload.error?.message) || `Local Router request failed (${status}).`;
-}
-
-async function createLocalRouterTask(rootConfig: AiConfig, config: AiConfig, channel: ReturnType<typeof resolveModelChannel> & {}, modelOption: string, capabilities: NonNullable<ReturnType<typeof capabilitiesForModel>>, request: VideoGenerationRequest, options?: RequestOptions): Promise<VideoGenerationTask> {
-    routerOrigin(config);
-    if (!channel || channel.seedanceAdapter !== "router_local") throw new Error("Select the local Router adapter on this channel.");
-    if (!config.apiKey.trim()) throw new Error("A local Router API key is required for media upload and task requests.");
-    if (modelOptionName(modelOption) !== "doubao-seedance-2-0-260128") throw new Error("The local Router only supports the standard Seedance 2.0 model alias.");
-    const staged = await Promise.all(request.references.map((reference) => stageRouterLocalMedia(reference)));
-    const stagedRequest = { ...request, references: staged.map((item) => item.reference) };
-    validateLocalRouterRequest(stagedRequest, capabilities);
-    const uploaded = await Promise.all(staged.map(async (item) => item.blob ? uploadRouterLocalMedia(config, item.reference, item.blob, item.fileName!, options?.signal) : item.reference));
-    const body = {
-        model: modelOptionName(modelOption),
-        content: buildSeedanceContent(stagedRequest.prompt, uploaded as Array<VideoInputMedia & { url: string }>),
-        ratio: stagedRequest.ratio,
-        resolution: stagedRequest.resolution,
-        duration: stagedRequest.durationSeconds,
-        generate_audio: stagedRequest.generateAudio,
-        ...(stagedRequest.watermark ? { watermark: true } : {}),
-    };
-    const created = await localRouterJson<SeedanceResponse>("/contents/generations/tasks", config, { method: "POST", body: JSON.stringify(body), contentType: "application/json", signal: options?.signal });
-    if (!created.id) throw new Error("Local Router did not return a task ID.");
-    return { id: created.id, provider: "router_local", model: modelOption, channelId: channel.id, startedAt: Date.now(), status: created.status || "queued" };
-}
-
-async function stageRouterLocalMedia(media: VideoInputMedia): Promise<{ reference: VideoInputMedia; blob?: Blob; fileName?: string }> {
-    if (media.url?.startsWith("router-upload:")) return { reference: media };
-    let blob: Blob | null = null;
-    if (media.kind === "image" && media.storageKey) blob = await getImageBlob(media.storageKey);
-    else if (media.kind !== "image" && media.storageKey) blob = await getMediaBlob(media.storageKey);
-    if (!blob && media.kind === "image") {
-        const data = media.dataUrl || (media.url?.startsWith("data:image/") ? media.url : "");
-        if (data) blob = await (await fetch(data)).blob();
-    }
-    if (!blob) throw new Error(`Local ${media.kind} reference is missing from browser storage; remote URLs and expired blob URLs are not accepted by the local Router.`);
-    const mimeType = blob.type || media.mimeType || "application/octet-stream";
-    const fileName = `${media.id || "reference"}.${extensionFor(mimeType)}`;
-    return { reference: { ...media, url: undefined, dataUrl: undefined, mimeType, bytes: blob.size }, blob, fileName };
-}
-
-async function uploadRouterLocalMedia(config: AiConfig, media: VideoInputMedia, blob: Blob, fileName: string, signal?: AbortSignal): Promise<VideoInputMedia & { url: string }> {
-    const form = new FormData();
-    form.append("file", blob, fileName);
-    let response;
-    try {
-        response = await axios.post<{ url?: string; type?: string; bytes?: number; duration_sec?: number }>(routerLocalUrl("/media/uploads"), form, { headers: routerLocalHeaders(config), signal, timeout: 120_000 });
-    } catch (error) {
-        if (axios.isAxiosError(error)) {
-            const payload = error.response?.data as { error?: string | { message?: string; code?: string }; message?: string } | undefined;
-            throw new RouterLocalHttpError(error.response?.status || 0, payload ? routerPayloadMessage(payload, error.response?.status || 0) : error.message || "Local Router media upload failed.");
-        }
-        throw error;
-    }
-    const payload = response.data;
-    if (!payload.url || !/^router-upload:[a-f0-9-]{36}\.(png|jpg|webp|mp4|mov|webm|wav|mp3|flac|m4a)$/i.test(payload.url)) throw new Error("Local Router returned an invalid router-upload token.");
-    return { ...media, url: payload.url, bytes: payload.bytes ?? blob.size, mimeType: media.mimeType || blob.type, durationMs: payload.duration_sec ? Math.round(payload.duration_sec * 1000) : media.durationMs };
-}
-
 async function createSeedanceTask(rootConfig: AiConfig, config: AiConfig, modelOption: string, request: VideoGenerationRequest, options?: RequestOptions): Promise<VideoGenerationTask> {
     const channel = resolveModelChannel(rootConfig, modelOption);
     const model = channel?.models.find((item) => item.name === modelOptionName(modelOption));
     const capabilities = channel && model ? capabilitiesForModel(channel, model) : null;
     if (!channel || !model || !capabilities) throw new Error("Select a Seedance model configured on an Ark channel.");
-    if (channel.seedanceAdapter === "router_local") return createLocalRouterTask(rootConfig, config, channel, modelOption, capabilities, request, options);
-    const media = await Promise.all(request.references.map((item) => resolveSeedanceMedia(item, options?.signal)));
+    const media = await Promise.all(request.references.map((item) => resolveSeedanceMedia(item, config, options?.signal)));
     const resolvedRequest = { ...request, references: media };
     validateSeedanceRequest(resolvedRequest, capabilities);
     const body = {
@@ -269,7 +158,7 @@ async function createSeedanceTask(rootConfig: AiConfig, config: AiConfig, modelO
     }
 }
 
-async function resolveSeedanceMedia(media: VideoInputMedia, signal?: AbortSignal): Promise<VideoInputMedia & { url: string }> {
+async function resolveSeedanceMedia(media: VideoInputMedia, config: AiConfig, signal?: AbortSignal): Promise<VideoInputMedia & { url: string }> {
     if (media.kind === "image") {
         let dataUrl = media.storageKey ? await imageToDataUrl({ storageKey: media.storageKey, url: media.url }) : media.dataUrl || media.url;
         if (dataUrl?.startsWith("data:image/")) {
@@ -286,19 +175,24 @@ async function resolveSeedanceMedia(media: VideoInputMedia, signal?: AbortSignal
     const blob = await getMediaBlob(media.storageKey);
     if (!blob) throw new Error(`Local ${media.kind} reference is missing from browser storage.`);
     if (media.kind === "audio" && blob.size <= 15 * 1024 * 1024) return { ...media, url: await blobToDataUrl(blob), bytes: blob.size, mimeType: blob.type || media.mimeType };
-    const form = new FormData();
-    form.append("file", blob, media.id || `reference.${extensionFor(blob.type)}`);
-    let response: Response;
-    try {
-        response = await fetch("/media/ark", { method: "POST", body: form, signal, headers: { "x-gateway-token": import.meta.env.VITE_MEDIA_GATEWAY_TOKEN || "" } });
-    } catch (error) {
-        throw new Error(`The Ark media gateway is unavailable: ${error instanceof Error ? error.message : String(error)}`);
-    }
-    if (!response.ok) throw new Error(`Ark media upload failed (${response.status}). Configure the secure media gateway before using local ${media.kind} references.`);
-    const payload = (await response.json()) as { url?: string };
-    if (!payload.url || !/^https:\/\//i.test(payload.url)) throw new Error("The media gateway returned no public HTTPS URL.");
-    return { ...media, url: payload.url, bytes: blob.size, mimeType: blob.type || media.mimeType };
+    const { url } = await uploadSeedanceMedia(blob, media.id || `reference.${extensionFor(blob.type)}`, config, signal);
+    return { ...media, url, bytes: blob.size, mimeType: blob.type || media.mimeType };
 }
+
+async function uploadSeedanceMedia(blob: Blob, fileName: string, config: AiConfig, signal?: AbortSignal): Promise<{ url: string }> {
+    const form = new FormData(); form.append("file", blob, fileName);
+    let response: Response;
+    try { response = await fetch("/api/media/uploads", { method: "POST", body: form, signal, headers: { "x-gateway-token": import.meta.env.VITE_MEDIA_GATEWAY_TOKEN || "", Authorization: `Bearer ${config.apiKey}` } }); }
+    catch (error) { throw new Error(`The media upload service is unavailable: ${ error instanceof Error ? error.message : String(error) }`); }
+    if (!response.ok) throw new Error(`Media upload failed (${response.status}). Configure the trusted media upload service before using local references.`);
+    const payload = await response.json() as { url?: string };
+    if (!payload.url) throw new Error("The media upload service returned no URL.");
+    let signedUrl: URL;
+    try { signedUrl = new URL(payload.url); } catch { throw new Error("The media upload service returned an invalid URL."); }
+    if (!["https:", "http:"].includes(signedUrl.protocol) || signedUrl.username || signedUrl.password) throw new Error("The media upload service returned an invalid URL.");
+    return { url: payload.url };
+}
+function normalizeLegacySeedanceTask(task: VideoGenerationTask): VideoGenerationTask { return (task.provider as string) === "router_local" ? { ...task, provider: "volcengine_ark" } : task; }
 
 async function blobToDataUrl(blob: Blob) {
     return new Promise<string>((resolve, reject) => {
@@ -320,19 +214,17 @@ function extensionFor(type: string) {
 }
 function estimateDataUrlBytes(value: string) { const base64 = value.slice(value.indexOf(",") + 1); return Math.floor((base64.length * 3) / 4); }
 
-async function pollSeedanceTask(config: AiConfig, task: VideoGenerationTask, options?: RequestOptions, local = false): Promise<VideoGenerationTaskState> {
+async function pollSeedanceTask(config: AiConfig, task: VideoGenerationTask, options?: RequestOptions): Promise<VideoGenerationTaskState> {
     try {
         const path = `/contents/generations/tasks/${encodeURIComponent(task.id)}`;
-        const remote = local
-            ? await localRouterJson<SeedanceResponse>(path, config, { signal: options?.signal })
-            : unwrapSeedanceResponse((await axios.get<SeedanceResponse>(arkUrl(config, path), { headers: arkHeaders(config), signal: options?.signal, timeout: 30_000 })).data);
+        const remote = unwrapSeedanceResponse((await axios.get<SeedanceResponse>(arkUrl(config, path), { headers: arkHeaders(config), signal: options?.signal, timeout: 30_000 })).data);
         if (remote.status) options?.onTaskStatus?.(remote.status);
         if (remote.status === "failed" || remote.status === "cancelled") return { status: "failed", error: remote.error?.message || remote.message || `Seedance task ${remote.status}.`, providerStatus: remote.status };
         if (remote.status === "succeeded") {
             if (!remote.content?.video_url) return { status: "failed", error: "Seedance task succeeded but returned no video URL.", providerStatus: "succeeded" };
             try {
-                const blob = await downloadResult(remote.content.video_url, options?.signal, local ? config : undefined);
-                const lastFrameBlob = remote.content.last_frame_url && (options?.request?.returnLastFrame || boolConfig(config.videoReturnLastFrame, false)) ? await downloadResult(remote.content.last_frame_url, options?.signal) : undefined;
+                const blob = await downloadResult(remote.content.video_url, options?.signal, config);
+                const lastFrameBlob = remote.content.last_frame_url && (options?.request?.returnLastFrame || boolConfig(config.videoReturnLastFrame, false)) ? await downloadResult(remote.content.last_frame_url, options?.signal, config) : undefined;
                 return { status: "completed", result: { blob, mimeType: blob.type || "video/mp4", lastFrameUrl: remote.content.last_frame_url, lastFrameBlob, requirePersistence: true }, providerStatus: "succeeded", lastFrameUrl: remote.content.last_frame_url, lastFrameBlob };
             } catch (error) {
                 throw new Error(`Video generation succeeded, but saving its temporary result failed. Retry download before the link expires: ${error instanceof Error ? error.message : String(error)}`);
@@ -340,7 +232,7 @@ async function pollSeedanceTask(config: AiConfig, task: VideoGenerationTask, opt
         }
         return { status: "pending", providerStatus: remote.status || "running" };
     } catch (error) {
-        const status = axios.isAxiosError(error) ? error.response?.status : error instanceof RouterLocalHttpError ? error.status : undefined;
+        const status = axios.isAxiosError(error) ? error.response?.status : undefined;
         if ([404, 410].includes(status || 0)) return { status: "failed", error: "This Seedance task has expired or is no longer available. Create a new task only if you want to generate another video.", providerStatus: "expired" };
         if (isRetryableQueryError(error)) throw Object.assign(new Error(readAxiosError(error, "Seedance task query failed.")), { retryable: true, cause: error });
         throw new Error(readAxiosError(error, "Seedance task query failed."));
@@ -349,7 +241,6 @@ async function pollSeedanceTask(config: AiConfig, task: VideoGenerationTask, opt
 
 function isRetryableQueryError(error: unknown) {
     if (error && typeof error === "object" && "retryable" in error && (error as { retryable?: unknown }).retryable === true) return true;
-    if (error instanceof RouterLocalHttpError) return error.status === 0 || error.status === 429 || error.status >= 500;
     if (error instanceof TypeError || (error instanceof DOMException && error.name === "TimeoutError")) return true;
     if (!axios.isAxiosError(error)) return false;
     const status = error.response?.status;
@@ -361,26 +252,10 @@ function unwrapSeedanceResponse(response: SeedanceResponse): SeedanceResponse {
     return response;
 }
 
-async function downloadResult(url: string, signal?: AbortSignal, localConfig?: AiConfig) {
-    if (localConfig) {
-        let parsed: URL;
-        try { parsed = new URL(url); } catch { throw new Error("Local Router returned an invalid media URL."); }
-        if (parsed.origin !== routerOrigin(localConfig) || !/^\/media\/[A-Za-z0-9_-]+$/.test(parsed.pathname) || !parsed.searchParams.get("exp") || !parsed.searchParams.get("sig") || parsed.username || parsed.password || parsed.hash) {
-            throw new Error("Local Router returned an untrusted signed media URL.");
-        }
-        let response;
-        try {
-            response = await axios.get<Blob>(`/api/router-local/download?url=${encodeURIComponent(parsed.toString())}`, { headers: routerLocalHeaders(localConfig), responseType: "blob", signal, timeout: 120_000 });
-        } catch (error) {
-            const status = axios.isAxiosError(error) ? error.response?.status : undefined;
-            if ([404, 410].includes(status || 0)) throw new Error("Video generation succeeded, but the local Router's signed video URL has expired. Retry download if the Router still has the file.");
-            if (status === 429 || (status !== undefined && status >= 500) || (axios.isAxiosError(error) && !error.response)) throw Object.assign(new Error(`Local Router result download failed: ${error instanceof Error ? error.message : String(error)}`), { retryable: true, cause: error });
-            throw error;
-        }
-        if (!response.data.size || response.data.type.includes("json")) throw new Error("The local Router result URL did not return a video file.");
-        return response.data;
-    }
-    if (!/^https:\/\//i.test(url)) throw new Error("Ark returned a non-HTTPS result URL.");
+async function downloadResult(url: string, signal?: AbortSignal, config?: AiConfig) {
+    let parsed: URL;
+    try { parsed = new URL(url); } catch { throw new Error("Ark returned an invalid result URL."); }
+    if (!["https:", "http:"].includes(parsed.protocol) || parsed.username || parsed.password) throw new Error("Ark returned an invalid result URL.");
     let response;
     try { response = await axios.get<Blob>(`/api/ark/download?url=${encodeURIComponent(url)}`, { headers: { "x-gateway-token": import.meta.env.VITE_MEDIA_GATEWAY_TOKEN || "" }, responseType: "blob", signal, timeout: 120_000 }); }
     catch (error) {
@@ -512,7 +387,6 @@ function normalizeVideoResolution(value: string) {
     if (value === "low") return "480p";
     if (value === "auto" || value === "high" || value === "medium") return "720p";
     const resolution = value.replace(/p$/i, "") || "720";
-    if (resolution === "768") return "768P";
     return `${resolution}p`;
 }
 

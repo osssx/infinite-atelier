@@ -20,7 +20,7 @@ export type VideoGenerationRequest = {
     prompt: string;
     references: VideoInputMedia[];
     durationSeconds: number | -1;
-    resolution: "480p" | "720p" | "768P" | "1080p" | "4k";
+    resolution: "480p" | "720p" | "1080p" | "4k";
     ratio: "adaptive" | "16:9" | "4:3" | "1:1" | "3:4" | "9:16" | "21:9";
     generateAudio: boolean;
     watermark: boolean;

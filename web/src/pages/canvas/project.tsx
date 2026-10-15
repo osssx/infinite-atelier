@@ -340,7 +340,7 @@ function AtelierCanvasPage() {
                 const activeNode = nodesRef.current.find((node) => node.id === request.targetNodeId);
                 if (isResumableSeedanceProvider(activeNode?.metadata?.videoTask?.provider) && activeNode?.metadata?.videoTask?.status === "queued") {
                     const saved = activeNode.metadata.videoTask;
-                    const task: VideoGenerationTask = { id: saved.taskId, provider: saved.provider, channelId: saved.channelId, model: saved.model, startedAt: saved.startedAt, status: saved.status };
+                    const task: VideoGenerationTask = { id: saved.taskId, provider: saved.provider === "router_local" ? "volcengine_ark" : saved.provider, channelId: saved.channelId, model: saved.model, startedAt: saved.startedAt, status: saved.status };
                     void cancelVideoGenerationTask(effectiveConfig, task).then((cancelled) => cancelled && persistVideoTask(activeNode.id, task, "cancelled")).catch(() => undefined);
                 }
                 request.controller.abort();
@@ -440,7 +440,7 @@ function AtelierCanvasPage() {
             resumedArkTasksRef.current.add(resumeKey);
             const controller = new AbortController();
             controllers.push({ controller, key: resumeKey });
-            const task: VideoGenerationTask = { id: savedTask.taskId, provider: savedTask.provider, channelId: savedTask.channelId, model: savedTask.model, startedAt: savedTask.startedAt, status: savedTask.status };
+            const task: VideoGenerationTask = { id: savedTask.taskId, provider: savedTask.provider === "router_local" ? "volcengine_ark" : savedTask.provider, channelId: savedTask.channelId, model: savedTask.model, startedAt: savedTask.startedAt, status: savedTask.status };
             let lastRemoteStatus = savedTask.status;
             const persistNode = (patch: Partial<CanvasNodeData>) => {
                 if (controller.signal.aborted || !nodesRef.current.some((current) => current.id === node.id)) return;
@@ -2582,7 +2582,7 @@ function AtelierCanvasPage() {
 
             if (node.type === CanvasNodeType.Video && isResumableSeedanceProvider(node.metadata?.videoTask?.provider) && node.metadata.videoTask.status === "succeeded" && node.metadata.videoDownloadError) {
                 const savedTask = node.metadata.videoTask;
-                const task: VideoGenerationTask = { id: savedTask.taskId, provider: savedTask.provider, channelId: savedTask.channelId, model: savedTask.model, startedAt: savedTask.startedAt, status: savedTask.status };
+                const task: VideoGenerationTask = { id: savedTask.taskId, provider: savedTask.provider === "router_local" ? "volcengine_ark" : savedTask.provider, channelId: savedTask.channelId, model: savedTask.model, startedAt: savedTask.startedAt, status: savedTask.status };
                 setNodes((prev) => prev.map((item) => item.id === node.id ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_LOADING, errorDetails: undefined } } : item));
                 try {
                     const { video, lastFrameBlob, lastFrameUrl } = await retrySeedanceDownload(generationConfig, task);

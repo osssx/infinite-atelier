@@ -1,7 +1,7 @@
 import { useCallback, useState, useSyncExternalStore } from "react";
 
 import {
-    CORE_SCENARIOS,
+    BASELINE_SCENARIOS,
     copyBaselineReport,
     downloadBaselineReport,
     formatBaselineReport,
@@ -27,7 +27,7 @@ import {
  * it neither takes part in the canvas layout nor sits inside the container the scripts hit-test.
  */
 export default function CanvasPerfPanel() {
-    const [scenarios] = useState<Scenario[]>(CORE_SCENARIOS);
+    const [scenarios] = useState<Scenario[]>(BASELINE_SCENARIOS);
     const [sessionLabel, setSessionLabel] = useState(() => getPerfSessionLabel());
     const session = useSyncExternalStore(subscribePerfSession, getPerfSessionState);
     const run = useCallback(() => void startPerfSession(scenarios), [scenarios]);

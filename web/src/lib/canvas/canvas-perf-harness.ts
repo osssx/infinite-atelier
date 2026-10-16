@@ -1304,7 +1304,10 @@ export function createOverviewZoomScenario(nodeCount = 3000, frames = 40): Scena
  * out — zoom, pan, drag, marquee, and pan with every node mounted. `zoom-burst` is here because it
  * directly exercises the wheel-composition fix; a single event per frame would not distinguish it.
  */
-export const CORE_SCENARIOS: Scenario[] = [
+/**
+ * Every scenario the harness can run, including the two fit-all-zoom ones.
+ */
+export const ALL_SCENARIOS: Scenario[] = [
     createIdleBaselineScenario(),
     createZoomScenario(),
     createZoomBurstScenario(),
@@ -1313,6 +1316,24 @@ export const CORE_SCENARIOS: Scenario[] = [
     createDragScenario(),
     createMarqueeScenario(),
     createOverviewPanScenario(),
+];
+
+/**
+ * The set used for the A/B baseline runs.
+ *
+ * The two `overview-*` scenarios are deliberately excluded. They measure a different problem — at
+ * ~2s a frame with every node mounted, A and B are both so far past usable that no change P0 made
+ * could show up as a difference, while together they consumed roughly a third of a session's
+ * runtime. Including them would dilute the comparison with two rows that cannot answer it. Their
+ * implementations are kept intact in `ALL_SCENARIOS` and in §3 of CANVAS_BASELINE.md.
+ */
+export const BASELINE_SCENARIOS: Scenario[] = [
+    createIdleBaselineScenario(),
+    createZoomScenario(),
+    createZoomBurstScenario(),
+    createPanScenario(),
+    createDragScenario(),
+    createMarqueeScenario(),
 ];
 
 /** Measured rounds per scenario unless the scenario overrides it. */
@@ -1388,7 +1409,7 @@ export type SessionCallbacks = {
  * idle baseline runs first and fixes the jank threshold from the median of its own rounds, before any
  * interactive scenario is judged.
  */
-export async function runSession(scenarios: Scenario[] = CORE_SCENARIOS, callbacks: SessionCallbacks = {}): Promise<SessionReport> {
+export async function runSession(scenarios: Scenario[] = BASELINE_SCENARIOS, callbacks: SessionCallbacks = {}): Promise<SessionReport> {
     const results: RoundResult[] = [];
     const summaries: ScenarioSummary[] = [];
     const invalid: InvalidSample[] = [];
@@ -1473,7 +1494,7 @@ export function subscribePerfSession(listener: () => void): () => void {
  * Starts a session. Lives here rather than in the panel so that a remount mid-run neither restarts
  * nor loses it; the guard also makes a double click harmless.
  */
-export async function startPerfSession(scenarios: Scenario[] = CORE_SCENARIOS): Promise<void> {
+export async function startPerfSession(scenarios: Scenario[] = BASELINE_SCENARIOS): Promise<void> {
     if (sessionState.status === "running") return;
     setSessionState({ status: "running", phase: "starting", progress: "", report: null, error: null });
     try {

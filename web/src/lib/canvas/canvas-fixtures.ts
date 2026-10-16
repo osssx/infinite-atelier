@@ -27,6 +27,20 @@ export type CanvasFixtureOptions = {
     connectionRatio?: number;
     /** How many of the leading nodes are Groups. */
     groupCount?: number;
+    /**
+     * What `metadata.content` the media nodes get.
+     *
+     * - `"remote"` (default) keeps the original behaviour: a URL on a host that does not exist. That
+     *   is fine for graph/DOM assertions but fires one failed request per mounted media node, so it
+     *   must not be used for a performance run.
+     * - `"static"` points image nodes at `staticMediaUrl`; video and audio get no content, so nothing
+     *   tries to decode a still image as video. Hydration leaves these untouched (neither
+     *   `data:image/` nor backed by a storage key), so loading stays free of network and blob writes.
+     * - `"none"` gives no media node any content — the most neutral option for graph and DOM cost.
+     */
+    mediaMode?: "remote" | "static" | "none";
+    /** Required when `mediaMode` is `"static"`. Must be a same-origin asset URL, never a data URL. */
+    staticMediaUrl?: string;
 };
 
 // A type with no registered definition, standing in for a plugin node: it must survive every path
@@ -38,7 +52,9 @@ const PLUGIN_NODE_TYPE = "plugin:fixture";
  * groups, negative coordinates, very large and very small nodes, cross-viewport edges, backwards
  * edges, media nodes, and nodes mid-generation.
  */
-export function buildCanvasFixture({ nodeCount, seed = 1, connectionRatio = 1.5, groupCount = 3 }: CanvasFixtureOptions): CanvasFixture {
+export function buildCanvasFixture(options: CanvasFixtureOptions): CanvasFixture {
+    const { nodeCount, seed = 1, connectionRatio = 1.5, groupCount = 3, mediaMode = "remote", staticMediaUrl } = options;
+    if (mediaMode === "static" && !staticMediaUrl) throw new Error('buildCanvasFixture: mediaMode "static" requires staticMediaUrl');
     const random = createSeededRandom(seed);
     const pick = <T>(items: readonly T[]) => items[Math.floor(random() * items.length)];
     const groups = Math.max(0, Math.min(groupCount, nodeCount));
@@ -56,7 +72,10 @@ export function buildCanvasFixture({ nodeCount, seed = 1, connectionRatio = 1.5,
 
         const type = pick([CanvasNodeType.Image, CanvasNodeType.Image, CanvasNodeType.Text, CanvasNodeType.Video, CanvasNodeType.Audio, CanvasNodeType.Config, PLUGIN_NODE_TYPE]);
         const isMedia = type === CanvasNodeType.Image || type === CanvasNodeType.Video || type === CanvasNodeType.Audio;
-        if (isMedia) metadata.content = `https://example.test/${id}`;
+        if (isMedia && mediaMode === "remote") metadata.content = `https://example.test/${id}`;
+        // Video and audio deliberately stay empty under "static": feeding a still image to <video>
+        // only produces decode errors, and it would not measure anything the image nodes do not.
+        if (type === CanvasNodeType.Image && mediaMode === "static") metadata.content = staticMediaUrl;
         if (type === CanvasNodeType.Text) metadata.content = `text ${index}`;
         if (type === CanvasNodeType.Config) metadata.prompt = `config ${index}`;
         if (random() < 0.15) metadata.status = "loading";

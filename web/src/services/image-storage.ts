@@ -4,6 +4,7 @@ import { nanoid } from "nanoid";
 import i18n from "@/i18n";
 import { readImageMeta } from "@/lib/image-utils";
 import { proxyApiUrl } from "@/lib/api-proxy";
+import { PERF_MODE } from "@/lib/perf-mode";
 
 export type UploadedImage = {
     url: string;
@@ -14,7 +15,7 @@ export type UploadedImage = {
     mimeType: string;
 };
 
-const store = localforage.createInstance({ name: "infinite-canvas", storeName: "image_files" });
+const store = localforage.createInstance({ name: PERF_MODE ? "infinite-canvas-perf" : "infinite-canvas", storeName: "image_files" });
 const objectUrls = new Map<string, string>();
 
 export async function uploadImage(input: string | Blob): Promise<UploadedImage> {

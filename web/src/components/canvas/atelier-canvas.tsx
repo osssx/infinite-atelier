@@ -29,20 +29,29 @@ export function AtelierCanvas({ containerRef, viewport, tool, backgroundMode = "
         hasMoved: false,
         startedOnBackground: false,
     });
-    const scaleRef = useRef(viewport.k);
+    // Latest viewport, kept in a ref so gesture handlers compose from the newest value instead of the
+    // last rendered prop. Wheel events arrive in bursts, and reading the prop made every event in a
+    // batch compute from the same base — the later one then discarded the earlier one's zoom.
+    const viewportRef = useRef(viewport);
     const frameRef = useRef<number | null>(null);
     const nextViewportRef = useRef<ViewportTransform | null>(null);
+    // Wheel zoom accumulates a factor between frames and flushes once, so a trackpad burst produces
+    // one state update per frame instead of one per event.
+    const wheelFrameRef = useRef<number | null>(null);
+    const wheelFactorRef = useRef(1);
+    const wheelAnchorRef = useRef<{ clientX: number; clientY: number } | null>(null);
     const [isSpacePressed, setIsSpacePressed] = useState(false);
     const [isControlPressed, setIsControlPressed] = useState(false);
     const [isPanning, setIsPanning] = useState(false);
 
     useEffect(() => {
-        scaleRef.current = viewport.k;
-    }, [viewport.k]);
+        viewportRef.current = viewport;
+    }, [viewport]);
 
     useEffect(
         () => () => {
             if (frameRef.current) cancelAnimationFrame(frameRef.current);
+            if (wheelFrameRef.current) cancelAnimationFrame(wheelFrameRef.current);
         },
         [],
     );
@@ -88,21 +97,35 @@ export function AtelierCanvas({ containerRef, viewport, tool, backgroundMode = "
         const target = event.target instanceof Element ? event.target : null;
         if (target?.closest("[data-canvas-no-zoom],.ant-modal,.ant-popover,.ant-dropdown,.ant-select-dropdown,.ant-picker-dropdown")) return;
 
-        const delta = -event.deltaY;
-        const factor = Math.pow(1.1, delta / 100);
-        const newScale = Math.min(Math.max(viewport.k * factor, 0.05), 5);
-        const rect = containerRef.current?.getBoundingClientRect();
-        if (!rect) return;
+        // Accumulate the zoom factor and the newest pointer position, then apply both once per frame.
+        wheelFactorRef.current *= Math.pow(1.1, -event.deltaY / 100);
+        wheelAnchorRef.current = { clientX: event.clientX, clientY: event.clientY };
+        if (wheelFrameRef.current) return;
+        wheelFrameRef.current = requestAnimationFrame(() => {
+            wheelFrameRef.current = null;
+            const anchor = wheelAnchorRef.current;
+            const factor = wheelFactorRef.current;
+            wheelFactorRef.current = 1;
+            wheelAnchorRef.current = null;
+            if (!anchor) return;
 
-        const mouseX = event.clientX - rect.left;
-        const mouseY = event.clientY - rect.top;
-        const worldX = (mouseX - viewport.x) / viewport.k;
-        const worldY = (mouseY - viewport.y) / viewport.k;
+            const rect = containerRef.current?.getBoundingClientRect();
+            if (!rect) return;
 
-        onViewportChange({
-            x: mouseX - worldX * newScale,
-            y: mouseY - worldY * newScale,
-            k: newScale,
+            // Anchored zoom: the world point under the pointer stays put. Computed from the base
+            // viewport, so an accumulated factor still anchors correctly.
+            const base = viewportRef.current;
+            const newScale = Math.min(Math.max(base.k * factor, 0.05), 5);
+            const mouseX = anchor.clientX - rect.left;
+            const mouseY = anchor.clientY - rect.top;
+            const worldX = (mouseX - base.x) / base.k;
+            const worldY = (mouseY - base.y) / base.k;
+            const next: ViewportTransform = { x: mouseX - worldX * newScale, y: mouseY - worldY * newScale, k: newScale };
+
+            // Write through immediately: a wheel event arriving before the next render has to compose
+            // from this value rather than from the stale prop.
+            viewportRef.current = next;
+            onViewportChange(next);
         });
     };
 
@@ -158,7 +181,7 @@ export function AtelierCanvas({ containerRef, viewport, tool, backgroundMode = "
             nextViewportRef.current = {
                 x: panState.current.initialX + dx,
                 y: panState.current.initialY + dy,
-                k: scaleRef.current,
+                k: viewportRef.current.k,
             };
             if (frameRef.current) return;
             frameRef.current = requestAnimationFrame(() => {

@@ -6,31 +6,35 @@ import { useTranslation } from "react-i18next";
 import { ModelPicker } from "@/components/model-picker";
 import { defaultConfig, resolveModelChannel, resolveModelForCapability, resolveModelScript, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
 import { canvasThemes } from "@/lib/canvas-theme";
+import { getInputSummary } from "@/lib/canvas/canvas-generation-helpers";
 import { resolveSeedanceInputAssignments } from "@/lib/canvas/seedance-input-assignments";
 import { useThemeStore } from "@/stores/use-theme-store";
+import { useNodeGenerationInputs } from "./canvas-graph-context";
 import { CanvasImageSettingsPopover } from "./canvas-image-settings-popover";
 import { CanvasAudioSettingsPopover, type CanvasAudioSettingKey } from "./canvas-audio-settings-popover";
 import { CanvasVideoSettingsPopover } from "./canvas-video-settings-popover";
 import { CanvasTextSettingsPopover } from "./canvas-text-settings-popover";
 import type { CanvasGenerationMode, CanvasNodeData, CanvasNodeMetadata, CanvasVideoReference } from "@/types/canvas";
-import type { NodeGenerationInput } from "@/components/canvas/canvas-node-generation";
 
 type CanvasConfigNodePanelProps = {
     node: CanvasNodeData;
     isRunning: boolean;
-    inputSummary: { textCount: number; imageCount: number; videoCount: number; audioCount: number };
-    videoInputs: NodeGenerationInput[];
     onConfigChange: (nodeId: string, patch: Partial<CanvasNodeMetadata>) => void;
     onGenerate: (nodeId: string) => void;
     onStop: (nodeId: string) => void;
     onComposerToggle: () => void;
 };
 
-export function CanvasConfigNodePanel({ node, isRunning, inputSummary, videoInputs, onConfigChange, onGenerate, onStop, onComposerToggle }: CanvasConfigNodePanelProps) {
+export function CanvasConfigNodePanel({ node, isRunning, onConfigChange, onGenerate, onStop, onComposerToggle }: CanvasConfigNodePanelProps) {
     const { t } = useTranslation();
     const globalConfig = useEffectiveConfig();
     const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    // Derived here rather than passed in, so the parent no longer has to build generation inputs for
+    // every Config node on the canvas on every change.
+    const inputs = useNodeGenerationInputs(node.id);
+    const inputSummary = getInputSummary(inputs);
+    const videoInputs = inputs;
     const mode = node.metadata?.generationMode || "image";
     const config = buildNodeConfig(globalConfig, node, mode);
     const chipStyle = { background: theme.node.fill, borderColor: theme.node.stroke, color: theme.node.text };

@@ -50,6 +50,30 @@ export function findGroupDropTarget(movedIds: Set<string>, nodes: CanvasNodeData
     );
 }
 
+/**
+ * Same result as `findGroupDropTarget`, but without materialising a preview copy of every node:
+ * the caller supplies the nodes being dragged (at their original positions), the candidate groups
+ * already reversed, and the drag delta. Used on the per-frame drag path, where rebuilding the full
+ * node array and rescanning it was O(N x M) per frame.
+ *
+ * Must stay behaviourally identical to `findGroupDropTarget` — see the equivalence test.
+ */
+export function findGroupDropTargetFromDelta(movedNodes: readonly CanvasNodeData[], reversedCandidateGroups: readonly CanvasNodeData[], dx: number, dy: number) {
+    // Dragging a group itself never re-parents it.
+    if (movedNodes.some((node) => node.type === CanvasNodeType.Group)) return null;
+    const movingNodes = movedNodes.filter((node) => node.type !== CanvasNodeType.Group);
+    if (!movingNodes.length) return null;
+    return (
+        reversedCandidateGroups.find((group) =>
+            movingNodes.some((node) => {
+                const centerX = node.position.x + dx + node.width / 2;
+                const centerY = node.position.y + dy + node.height / 2;
+                return centerX >= group.position.x && centerX <= group.position.x + group.width && centerY >= group.position.y && centerY <= group.position.y + group.height;
+            }),
+        ) || null
+    );
+}
+
 export function snapNodesIntoGroup(movedIds: Set<string>, nodes: CanvasNodeData[], group: CanvasNodeData) {
     const movingNodes = nodes.filter((node) => movedIds.has(node.id) && node.type !== CanvasNodeType.Group);
     if (!movingNodes.length) return nodes;
@@ -88,7 +112,21 @@ export function getConnectionTargetAnchor(node: CanvasNodeData, current: Connect
 export function normalizeConnection(firstNodeId: string, secondNodeId: string, nodes: CanvasNodeData[], firstHandleType: "source" | "target") {
     const first = nodes.find((node) => node.id === firstNodeId);
     const second = nodes.find((node) => node.id === secondNodeId);
-    if (!first || !second || first.id === second.id) return null;
+    if (!first || !second) return null;
+    return orientConnection(first, second, firstHandleType);
+}
+
+/** Index-backed variant — no linear scan. Used on the per-mousemove connect-drag path. */
+export function normalizeConnectionFromIndex(nodeById: ReadonlyMap<string, CanvasNodeData>, firstNodeId: string, secondNodeId: string, firstHandleType: "source" | "target") {
+    const first = nodeById.get(firstNodeId);
+    const second = nodeById.get(secondNodeId);
+    if (!first || !second) return null;
+    return orientConnection(first, second, firstHandleType);
+}
+
+/** Shared decision table, so the array and index entry points cannot drift apart. */
+function orientConnection(first: CanvasNodeData, second: CanvasNodeData, firstHandleType: "source" | "target") {
+    if (first.id === second.id) return null;
     if (first.type === CanvasNodeType.Group || second.type === CanvasNodeType.Group) return null;
     if (first.type === CanvasNodeType.Config && second.type === CanvasNodeType.Config) return null;
     if (second.type === CanvasNodeType.Config) return { fromNodeId: first.id, toNodeId: second.id };

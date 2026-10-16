@@ -7,16 +7,18 @@ import { formatBytes } from "@/lib/image-utils";
 import { getNodeDefinition } from "@/lib/canvas/node-registry";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { CanvasResourceMentionTextarea } from "./canvas-resource-mention-textarea";
-import { CanvasNodeType, type CanvasNodeData, type CanvasNodeImage, type Position } from "@/types/canvas";
-import type { CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
+import { useNodeMentionReferences } from "./canvas-graph-context";
+import { CanvasNodeType, type CanvasNodeData, type CanvasNodeImage, type Position, type ViewportTransform } from "@/types/canvas";
 import { useTranslation } from "react-i18next";
 
 type ResizeCorner = "top-left" | "top-right" | "bottom-left" | "bottom-right";
 const selectionBlue = "#2f80ff";
 
-type CanvasNodeProps = {
+export type CanvasNodeProps = {
     data: CanvasNodeData;
-    scale: number;
+    // A ref, not the viewport value: resize only needs the zoom at the moment the gesture starts,
+    // and a `scale` number prop re-rendered every visible node on every zoom frame.
+    viewportRef: React.RefObject<ViewportTransform>;
     isSelected: boolean;
     isRelated: boolean;
     isFocusRelated: boolean;
@@ -24,7 +26,6 @@ type CanvasNodeProps = {
     isConnecting: boolean;
     showPanel: boolean;
     showImageInfo: boolean;
-    mentionReferences?: CanvasResourceReference[];
     renderPanel?: (node: CanvasNodeData) => ReactNode;
     renderNodeContent?: (node: CanvasNodeData) => ReactNode;
     groupChildCount?: number;
@@ -62,7 +63,6 @@ type NodeContentRendererProps = {
     renderNodeContent?: (node: CanvasNodeData) => ReactNode;
     onContentChange: (nodeId: string, content: string) => void;
     onStopEditing: () => void;
-    mentionReferences: CanvasResourceReference[];
     onRetry?: (node: CanvasNodeData) => void;
     onGenerateImage?: (node: CanvasNodeData) => void;
     onToggleBatch?: () => void;
@@ -76,7 +76,7 @@ type NodeContentRendererProps = {
 
 export const CanvasNode = React.memo(function CanvasNode({
     data,
-    scale,
+    viewportRef,
     isSelected,
     isRelated,
     isFocusRelated,
@@ -84,7 +84,6 @@ export const CanvasNode = React.memo(function CanvasNode({
     isConnecting,
     showPanel,
     showImageInfo,
-    mentionReferences = [],
     renderPanel,
     renderNodeContent,
     groupChildCount = 0,
@@ -145,6 +144,10 @@ export const CanvasNode = React.memo(function CanvasNode({
         startHeight: 0,
         keepRatio: false,
         ratio: 1,
+        // Zoom is snapshotted at mousedown rather than passed as a prop: the prop changed on every
+        // zoom frame and re-rendered every visible node, while the resize math only ever needs the
+        // zoom the gesture started at (the mousemove listener is registered at mousedown anyway).
+        scale: 1,
     });
 
     useEffect(() => {
@@ -210,8 +213,8 @@ export const CanvasNode = React.memo(function CanvasNode({
         (event: MouseEvent) => {
             if (!resizeRef.current.isResizing) return;
 
-            const dx = (event.clientX - resizeRef.current.startX) / scale;
-            const dy = (event.clientY - resizeRef.current.startY) / scale;
+            const dx = (event.clientX - resizeRef.current.startX) / resizeRef.current.scale;
+            const dy = (event.clientY - resizeRef.current.startY) / resizeRef.current.scale;
             const minWidth = 220;
             const minHeight = 160;
             const startRight = resizeRef.current.startLeft + resizeRef.current.startWidth;
@@ -244,7 +247,7 @@ export const CanvasNode = React.memo(function CanvasNode({
                 y: fromTop ? startBottom - height : resizeRef.current.startTop,
             });
         },
-        [data.id, onResize, scale],
+        [data.id, onResize],
     );
 
     const handleResizeUp = useCallback(() => {
@@ -269,6 +272,7 @@ export const CanvasNode = React.memo(function CanvasNode({
             startHeight: data.height,
             keepRatio: (data.type === CanvasNodeType.Image && !data.metadata?.freeResize) || data.type === CanvasNodeType.Video || Boolean(definition?.keepAspectRatio?.(data)),
             ratio: (data.metadata?.naturalWidth || data.width) / (data.metadata?.naturalHeight || data.height || 1),
+            scale: viewportRef.current?.k || 1,
         };
         window.addEventListener("mousemove", handleResizeMove);
         window.addEventListener("mouseup", handleResizeUp);
@@ -389,7 +393,6 @@ export const CanvasNode = React.memo(function CanvasNode({
                         batchCount={batchCount}
                         batchExpanded={batchExpanded}
                         renderNodeContent={renderNodeContent}
-                        mentionReferences={mentionReferences}
                         onContentChange={onContentChange}
                         onStopEditing={() => setIsEditingContent(false)}
                         onRetry={onRetry}
@@ -421,7 +424,7 @@ export const CanvasNode = React.memo(function CanvasNode({
                 <ConnectionHandleDot side="right" visible={(definition?.hasSourceHandle ?? true) && data.type !== CanvasNodeType.Config && (hovered || isSelected || isConnecting)} onMouseDown={(event) => onConnectStart(event, data.id, "source")} />
             ) : null}
 
-            {showPanel && !isGroup && renderPanel ? <div className="absolute left-1/2 top-full z-[70] w-[600px] -translate-x-1/2 pt-4">{renderPanel(data)}</div> : null}
+            {showPanel && !isGroup && !definition?.hidePanel && renderPanel ? <div className="absolute left-1/2 top-full z-[70] w-[600px] -translate-x-1/2 pt-4">{renderPanel(data)}</div> : null}
         </div>
     );
 });
@@ -524,7 +527,7 @@ function MissingPluginContent({ theme, type }: Pick<NodeContentRendererProps, "t
     );
 }
 
-function TextContent({ node, theme, isEditingContent, textareaRef, mentionReferences, onContentChange, onStopEditing, onGenerateImage }: NodeContentRendererProps) {
+function TextContent({ node, theme, isEditingContent, textareaRef, onContentChange, onStopEditing, onGenerateImage }: NodeContentRendererProps) {
     const { t } = useTranslation();
     const fontSize = node.metadata?.fontSize || 14;
     const textStyle = { fontSize: `${fontSize}px`, lineHeight: `${Math.round(fontSize * 1.65)}px`, color: theme.node.text, boxSizing: "border-box" } as React.CSSProperties;
@@ -548,28 +551,49 @@ function TextContent({ node, theme, isEditingContent, textareaRef, mentionRefere
                 {t("canvas.node.generate")}
             </button>
             {isEditingContent ? (
-                <CanvasResourceMentionTextarea
-                    ref={textareaRef}
-                    className="thin-scrollbar block h-full w-full resize-none overflow-y-auto whitespace-pre-wrap break-words border-none bg-transparent pl-4 pr-14 pt-0 pb-4 m-0 font-mono outline-none select-text appearance-none"
-                    style={textStyle}
-                    value={node.metadata?.content || ""}
-                    references={mentionReferences}
-                    highlightLabels={false}
-                    onChange={(value) => onContentChange(node.id, value)}
-                    onBlur={onStopEditing}
-                    onKeyDown={(event) => {
-                        if (event.key === "Escape") onStopEditing();
-                    }}
-                    onMouseDown={(event) => event.stopPropagation()}
-                    onPointerDown={(event) => event.stopPropagation()}
-                    onWheel={(event) => event.stopPropagation()}
-                />
+                <EditableTextContent node={node} textStyle={textStyle} textareaRef={textareaRef} onContentChange={onContentChange} onStopEditing={onStopEditing} />
             ) : (
                 <div className="thin-scrollbar block h-full w-full overflow-y-auto whitespace-pre-wrap break-words bg-transparent pl-4 pr-14 pt-0 pb-4 font-mono" style={textStyle} onWheel={(event) => event.stopPropagation()}>
                     {node.metadata?.content || <span style={{ color: theme.node.placeholder }}>{t("canvas.node.editText")}</span>}
                 </div>
             )}
         </div>
+    );
+}
+
+// Mounted only while the node is being edited, so resource references are built for at most one
+// node at a time rather than for every text node on the canvas.
+function EditableTextContent({
+    node,
+    textStyle,
+    textareaRef,
+    onContentChange,
+    onStopEditing,
+}: {
+    node: CanvasNodeData;
+    textStyle: React.CSSProperties;
+    textareaRef: React.RefObject<HTMLTextAreaElement | null>;
+    onContentChange: (nodeId: string, content: string) => void;
+    onStopEditing: () => void;
+}) {
+    const mentionReferences = useNodeMentionReferences(node.id);
+    return (
+        <CanvasResourceMentionTextarea
+            ref={textareaRef}
+            className="thin-scrollbar block h-full w-full resize-none overflow-y-auto whitespace-pre-wrap break-words border-none bg-transparent pl-4 pr-14 pt-0 pb-4 m-0 font-mono outline-none select-text appearance-none"
+            style={textStyle}
+            value={node.metadata?.content || ""}
+            references={mentionReferences}
+            highlightLabels={false}
+            onChange={(value) => onContentChange(node.id, value)}
+            onBlur={onStopEditing}
+            onKeyDown={(event) => {
+                if (event.key === "Escape") onStopEditing();
+            }}
+            onMouseDown={(event) => event.stopPropagation()}
+            onPointerDown={(event) => event.stopPropagation()}
+            onWheel={(event) => event.stopPropagation()}
+        />
     );
 }
 

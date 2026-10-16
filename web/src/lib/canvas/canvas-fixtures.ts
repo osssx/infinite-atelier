@@ -1,0 +1,91 @@
+import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type CanvasNodeMetadata } from "@/types/canvas";
+
+/**
+ * Deterministic PRNG (mulberry32). Fixtures must never use Math.random — a failing case has to be
+ * reproducible from its seed alone.
+ */
+export function createSeededRandom(seed: number) {
+    let state = seed >>> 0;
+    return () => {
+        state = (state + 0x6d2b79f5) >>> 0;
+        let t = state;
+        t = Math.imul(t ^ (t >>> 15), t | 1);
+        t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+}
+
+export type CanvasFixture = {
+    nodes: CanvasNodeData[];
+    connections: CanvasConnection[];
+};
+
+export type CanvasFixtureOptions = {
+    nodeCount: number;
+    seed?: number;
+    /** Connections per node on average. */
+    connectionRatio?: number;
+    /** How many of the leading nodes are Groups. */
+    groupCount?: number;
+};
+
+// A type with no registered definition, standing in for a plugin node: it must survive every path
+// without being mistaken for a resource.
+const PLUGIN_NODE_TYPE = "plugin:fixture";
+
+/**
+ * A reproducible canvas graph covering the shapes the culling and reference logic have to survive:
+ * groups, negative coordinates, very large and very small nodes, cross-viewport edges, backwards
+ * edges, media nodes, and nodes mid-generation.
+ */
+export function buildCanvasFixture({ nodeCount, seed = 1, connectionRatio = 1.5, groupCount = 3 }: CanvasFixtureOptions): CanvasFixture {
+    const random = createSeededRandom(seed);
+    const pick = <T>(items: readonly T[]) => items[Math.floor(random() * items.length)];
+    const groups = Math.max(0, Math.min(groupCount, nodeCount));
+
+    const nodes: CanvasNodeData[] = [];
+    for (let index = 0; index < nodeCount; index += 1) {
+        const id = `node-${index}`;
+        const metadata: CanvasNodeMetadata = {};
+
+        // Groups lead the array, mirroring how they are created before their children.
+        if (index < groups) {
+            nodes.push({ id, type: CanvasNodeType.Group, title: `Group ${index}`, position: { x: (index % 3) * 1400 - 700, y: Math.floor(index / 3) * 1400 - 700 }, width: 900 + index * 40, height: 700 + index * 30, metadata });
+            continue;
+        }
+
+        const type = pick([CanvasNodeType.Image, CanvasNodeType.Image, CanvasNodeType.Text, CanvasNodeType.Video, CanvasNodeType.Audio, CanvasNodeType.Config, PLUGIN_NODE_TYPE]);
+        const isMedia = type === CanvasNodeType.Image || type === CanvasNodeType.Video || type === CanvasNodeType.Audio;
+        if (isMedia) metadata.content = `https://example.test/${id}`;
+        if (type === CanvasNodeType.Text) metadata.content = `text ${index}`;
+        if (type === CanvasNodeType.Config) metadata.prompt = `config ${index}`;
+        if (random() < 0.15) metadata.status = "loading";
+
+        // Spread nodes wide enough that plenty of edges cross the viewport, and let some sit far
+        // off in negative space. A few get extreme dimensions so group/bounds math is exercised.
+        const extreme = random() < 0.08;
+        const width = extreme ? 4000 + Math.floor(random() * 4000) : 160 + Math.floor(random() * 520);
+        const height = extreme ? 3000 + Math.floor(random() * 3000) : 120 + Math.floor(random() * 480);
+        const position = { x: Math.floor((random() - 0.5) * 12000), y: Math.floor((random() - 0.5) * 12000) };
+        if (groups > 0 && random() < 0.4) metadata.groupId = `node-${Math.floor(random() * groups)}`;
+
+        nodes.push({ id, type, title: `${type} ${index}`, position, width, height, metadata });
+    }
+
+    const connections: CanvasConnection[] = [];
+    const target = Math.round(nodeCount * connectionRatio);
+    const connectable = nodes.filter((node) => node.type !== CanvasNodeType.Group);
+    let attempts = 0;
+    while (connections.length < target && connectable.length > 1 && attempts < target * 20) {
+        attempts += 1;
+        const from = pick(connectable);
+        const to = pick(connectable);
+        if (from.id === to.id) continue;
+        // Deliberately unordered: a backwards edge (from a later node to an earlier one) is the case
+        // that breaks endpoint-only culling.
+        if (connections.some((connection) => connection.fromNodeId === from.id && connection.toNodeId === to.id)) continue;
+        connections.push({ id: `conn-${connections.length}`, fromNodeId: from.id, toNodeId: to.id });
+    }
+
+    return { nodes, connections };
+}

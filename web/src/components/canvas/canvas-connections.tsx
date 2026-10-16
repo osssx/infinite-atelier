@@ -1,4 +1,4 @@
-import type { MouseEvent as ReactMouseEvent } from "react";
+import { memo, type MouseEvent as ReactMouseEvent } from "react";
 import { Unlink2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
@@ -6,7 +6,9 @@ import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
 import type { CanvasConnection, CanvasNodeData, ConnectionHandle, Position } from "@/types/canvas";
 
-export function ConnectionPath({
+// Memoized, and the handlers take the connection id instead of being bound per edge: the caller can
+// then pass stable callbacks, which is what lets memo actually bail out when another edge changes.
+export const ConnectionPath = memo(function ConnectionPath({
     connection,
     from,
     to,
@@ -21,9 +23,9 @@ export function ConnectionPath({
     to: CanvasNodeData;
     active: boolean;
     selected: boolean;
-    onSelect: () => void;
-    onContextMenu?: (event: ReactMouseEvent<SVGPathElement>) => void;
-    onDelete: () => void;
+    onSelect: (connectionId: string) => void;
+    onContextMenu?: (event: ReactMouseEvent<SVGPathElement>, connectionId: string) => void;
+    onDelete: (connectionId: string) => void;
 }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const { t } = useTranslation();
@@ -48,12 +50,12 @@ export function ConnectionPath({
                 style={{ cursor: "pointer", pointerEvents: "stroke" }}
                 onClick={(event) => {
                     event.stopPropagation();
-                    onSelect();
+                    onSelect(connection.id);
                 }}
                 onContextMenu={(event) => {
                     event.preventDefault();
                     event.stopPropagation();
-                    onContextMenu?.(event);
+                    onContextMenu?.(event, connection.id);
                 }}
             />
             <path
@@ -76,7 +78,7 @@ export function ConnectionPath({
                         onPointerDown={(event) => event.stopPropagation()}
                         onClick={(event) => {
                             event.stopPropagation();
-                            onDelete();
+                            onDelete(connection.id);
                         }}
                     >
                         <Unlink2 className="size-4" />
@@ -85,7 +87,7 @@ export function ConnectionPath({
             ) : null}
         </g>
     );
-}
+});
 
 export function ActiveConnectionPath({ node, handle, mouseWorld, target }: { node?: CanvasNodeData; handle: ConnectionHandle; mouseWorld: Position; target?: CanvasNodeData }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];

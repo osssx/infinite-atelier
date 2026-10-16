@@ -7,11 +7,12 @@ import { useTranslation } from "react-i18next";
 import i18n from "@/i18n";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
+import { useNodeGenerationInputs } from "./canvas-graph-context";
 import type { NodeGenerationInput } from "./canvas-node-generation";
 
 type CanvasConfigComposerProps = {
+    nodeId: string;
     value: string;
-    inputs: NodeGenerationInput[];
     onChange: (value: string) => void;
     onClose: () => void;
 };
@@ -26,9 +27,12 @@ type MentionState = {
 
 export const CONFIG_REFERENCE_PATTERN = /@\[node:([^\]]+)\]/g;
 
-export function CanvasConfigComposer({ value, inputs, onChange, onClose }: CanvasConfigComposerProps) {
+export function CanvasConfigComposer({ nodeId, value, onChange, onClose }: CanvasConfigComposerProps) {
     const { t } = useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    // Derived here rather than passed in: this composer only mounts for the node whose panel is
+    // open, so inputs are built for one node instead of for every Config node on the canvas.
+    const inputs = useNodeGenerationInputs(nodeId);
     const editorRef = useRef<HTMLDivElement>(null);
     const composingRef = useRef(false);
     const [mention, setMention] = useState<MentionState | null>(null);

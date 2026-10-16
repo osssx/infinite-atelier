@@ -1,8 +1,8 @@
 import { imageReferenceLabel } from "@/lib/image-reference-prompt";
 import i18n from "@/i18n";
+import { buildCanvasGraphIndex, type CanvasGraphIndex } from "@/lib/canvas/canvas-graph-index";
 import { getNodeDefinition } from "@/lib/canvas/node-registry";
 import { getDataUrlByteSize, readImageMeta } from "@/lib/image-utils";
-import { imageToDataUrl } from "@/services/image-storage";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData } from "@/types/canvas";
 
 export type CanvasResourceKind = "image" | "video" | "audio" | "text";
@@ -19,7 +19,12 @@ export type CanvasResourceReference = {
 };
 
 export function buildNodeMentionReferences(node: CanvasNodeData, nodes: CanvasNodeData[], connections: CanvasConnection[]) {
-    return labelResourceNodes(getMentionResourceNodes(node.id, nodes, connections), true);
+    return buildNodeMentionReferencesFromIndex(buildCanvasGraphIndex(nodes, connections), node.id);
+}
+
+/** Index-backed variant — O(degree) instead of O(N+E) per call. */
+export function buildNodeMentionReferencesFromIndex(index: CanvasGraphIndex, nodeId: string) {
+    return labelResourceNodes(getMentionResourceNodesFromIndex(index, nodeId), true);
 }
 
 export function buildCanvasResourceReferences(nodes: CanvasNodeData[]) {
@@ -27,6 +32,9 @@ export function buildCanvasResourceReferences(nodes: CanvasNodeData[]) {
 }
 
 export async function resolveCanvasReferenceImages(references: CanvasResourceReference[], nodes: CanvasNodeData[]) {
+    // Imported lazily: image-storage constructs a localforage instance at module load, which would
+    // otherwise pull a browser-only dependency into every importer of this module.
+    const { imageToDataUrl } = await import("@/services/image-storage");
     const nodesById = new Map(nodes.map((node) => [node.id, node]));
     return Promise.all(references.filter((reference) => reference.kind === "image").map(async (reference) => {
         const node = nodesById.get(reference.nodeId);
@@ -51,33 +59,51 @@ export async function resolveCanvasReferenceImages(references: CanvasResourceRef
 }
 
 export function getMentionResourceNodes(nodeId: string, nodes: CanvasNodeData[], connections: CanvasConnection[]) {
-    const configInputs = getConnectedConfigResourceNodes(nodeId, nodes, connections);
+    return getMentionResourceNodesFromIndex(buildCanvasGraphIndex(nodes, connections), nodeId);
+}
+
+export function getMentionResourceNodesFromIndex(index: CanvasGraphIndex, nodeId: string) {
+    const configInputs = getConnectedConfigResourceNodesFromIndex(index, nodeId);
     if (configInputs.length) return configInputs;
-    const ownInputs = getContextResourceNodes(nodeId, nodes, connections);
+    const ownInputs = getContextResourceNodesFromIndex(index, nodeId);
     if (ownInputs.length) return ownInputs;
-    const node = nodes.find((item) => item.id === nodeId);
+    const node = index.nodeById.get(nodeId);
     return node && isResourceNode(node) ? [node] : [];
 }
 
 export function getGenerationResourceNodes(nodeId: string, nodes: CanvasNodeData[], connections: CanvasConnection[]) {
-    const configInputs = getConnectedConfigResourceNodes(nodeId, nodes, connections);
+    return getGenerationResourceNodesFromIndex(buildCanvasGraphIndex(nodes, connections), nodeId);
+}
+
+/**
+ * Same three tiers as the mention variant, minus the last one: generation has no self fallback.
+ * The two must stay separate — folding them together would change what gets sent for generation.
+ */
+export function getGenerationResourceNodesFromIndex(index: CanvasGraphIndex, nodeId: string) {
+    const configInputs = getConnectedConfigResourceNodesFromIndex(index, nodeId);
     if (configInputs.length) return configInputs;
-    const ownInputs = getContextResourceNodes(nodeId, nodes, connections);
+    const ownInputs = getContextResourceNodesFromIndex(index, nodeId);
     if (ownInputs.length) return ownInputs;
     return [];
 }
 
-function getContextResourceNodes(nodeId: string, nodes: CanvasNodeData[], connections: CanvasConnection[]) {
-    return connections
-        .filter((connection) => connection.toNodeId === nodeId)
-        .map((connection) => nodes.find((node) => node.id === connection.fromNodeId))
-        .filter((node): node is CanvasNodeData => Boolean(node && isResourceNode(node)));
+/** Inbound resource nodes, in `connections` array order — that order drives the reference labels. */
+function getContextResourceNodesFromIndex(index: CanvasGraphIndex, nodeId: string) {
+    const inbound = index.inboundByNodeId.get(nodeId);
+    if (!inbound) return [];
+    const result: CanvasNodeData[] = [];
+    for (const connection of inbound) {
+        const node = index.nodeById.get(connection.fromNodeId);
+        if (node && isResourceNode(node)) result.push(node);
+    }
+    return result;
 }
 
-function getConnectedConfigResourceNodes(nodeId: string, nodes: CanvasNodeData[], connections: CanvasConnection[]) {
-    const configConnection = connections.find((connection) => connection.fromNodeId === nodeId && nodes.find((node) => node.id === connection.toNodeId)?.type === CanvasNodeType.Config);
+function getConnectedConfigResourceNodesFromIndex(index: CanvasGraphIndex, nodeId: string) {
+    // First matching outbound edge wins, preserving the old `connections.find` semantics.
+    const configConnection = index.outboundByNodeId.get(nodeId)?.find((connection) => index.nodeById.get(connection.toNodeId)?.type === CanvasNodeType.Config);
     if (!configConnection) return [];
-    return getContextResourceNodes(configConnection.toNodeId, nodes, connections).filter((node) => node.id !== nodeId);
+    return getContextResourceNodesFromIndex(index, configConnection.toNodeId).filter((node) => node.id !== nodeId);
 }
 
 function labelResourceNodes(nodes: CanvasNodeData[], active: boolean) {
@@ -110,7 +136,7 @@ function labelForKind(kind: CanvasResourceKind, index: number) {
     return i18n.t("canvas.composer.resources.text", { index: index + 1 });
 }
 
-function isResourceNode(node: CanvasNodeData) {
+export function isResourceNode(node: CanvasNodeData) {
     return Boolean(resourceKind(node));
 }
 

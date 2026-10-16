@@ -16,24 +16,27 @@ import { getDataUrlByteSize, readImageMeta } from "@/lib/image-utils";
 import { canvasThemes, type CanvasBackgroundMode } from "@/lib/canvas-theme";
 import { useAssetStore } from "@/stores/use-asset-store";
 import { useThemeStore } from "@/stores/use-theme-store";
+import { cullConnections, worldViewRect } from "@/lib/canvas/canvas-connection-culling";
 import { cropDataUrl, splitDataUrl, upscaleDataUrl } from "@/lib/canvas/canvas-image-data";
 import { fitNodeSize, nodeSizeFromRatio } from "@/lib/canvas/canvas-node-size";
 import { App, Button, Modal } from "antd";
 import { NODE_DEFAULT_SIZE, getNodeSpec } from "@/constant/canvas";
-import { ActiveConnectionPath, ConnectionPath } from "@/components/canvas/canvas-connections";
+import { ActiveConnectionOverlay, ConnectionLayer } from "@/components/canvas/canvas-connection-layer";
 import { CanvasConfigComposer } from "@/components/canvas/canvas-config-composer";
 import { CanvasConfigNodePanel } from "@/components/canvas/canvas-config-node-panel";
+import { CanvasGraphIndexProvider } from "@/components/canvas/canvas-graph-context";
 import { CanvasNodeContextMenu } from "@/components/canvas/canvas-context-menu";
 import { CanvasNodeAngleDialog, type CanvasImageAngleParams } from "@/components/canvas/canvas-node-angle-dialog";
 import { CanvasNodeCropDialog, type CanvasImageCropRect } from "@/components/canvas/canvas-node-crop-dialog";
 import { CanvasNodeMaskEditDialog, type CanvasImageMaskEditPayload } from "@/components/canvas/canvas-node-mask-edit-dialog";
 import { CanvasNodeSplitDialog, type CanvasImageSplitParams } from "@/components/canvas/canvas-node-split-dialog";
 import { CanvasNodeUpscaleDialog, type CanvasImageUpscaleParams } from "@/components/canvas/canvas-node-upscale-dialog";
-import { buildNodeGenerationContext, buildNodeGenerationInputs, buildNodeResponseMessages, hydrateNodeGenerationContext, type NodeGenerationInput } from "@/components/canvas/canvas-node-generation";
+import { buildNodeGenerationContext, buildNodeResponseMessages, hydrateNodeGenerationContext } from "@/components/canvas/canvas-node-generation";
 import { CanvasNodeHoverToolbar, CanvasNodeInfoModal } from "@/components/canvas/canvas-node-hover-toolbar";
 import { AtelierCanvas } from "@/components/canvas/atelier-canvas";
 import { Minimap } from "@/components/canvas/canvas-mini-map";
-import { CanvasNode } from "@/components/canvas/canvas-node";
+import { NodeLayer, type SharedNodeProps } from "@/components/canvas/canvas-node-layer";
+import { SelectionOverlay } from "@/components/canvas/canvas-selection-overlay";
 import { CanvasNodePromptPanel, type CanvasNodeGenerationMode } from "@/components/canvas/canvas-node-prompt-panel";
 import { CanvasToolbar } from "@/components/canvas/canvas-toolbar";
 import { AssetPickerModal, type InsertAssetPayload } from "@/components/canvas/asset-picker-modal";
@@ -42,10 +45,10 @@ import { CanvasZoomControls } from "@/components/canvas/canvas-zoom-controls";
 import { DirectorPanel } from "@/components/canvas/director-panel";
 import { flushCanvasStorePersistence, useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { useGenerationHistoryStore, type GenerationHistoryImage } from "@/stores/canvas/use-generation-history-store";
-import { buildNodeMentionReferences, type CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
+import { buildCanvasGraphIndex } from "@/lib/canvas/canvas-graph-index";
 import { exportCanvasProjects } from "@/lib/canvas/canvas-export";
 import { applyNodeConfigPatch, audioMetadata, buildAudioGenerationMetadata, buildImageGenerationMetadata, createCanvasNode, imageMetadata, videoMetadata } from "@/lib/canvas/canvas-node-factory";
-import { findContainingGroupId, findGroupDropTarget, fitViewportToNodes, getConnectionTargetAnchor, normalizeConnection, snapNodesIntoGroup } from "@/lib/canvas/canvas-node-geometry";
+import { findContainingGroupId, findGroupDropTarget, findGroupDropTargetFromDelta, fitViewportToNodes, getConnectionTargetAnchor, normalizeConnection, normalizeConnectionFromIndex, snapNodesIntoGroup } from "@/lib/canvas/canvas-node-geometry";
 import {
     audioExtension,
     buildAngleLabel,
@@ -54,7 +57,6 @@ import {
     findRetrySourceNode,
     generationReferenceUrls,
     getGenerationCount,
-    getInputSummary,
     hydrateAssistantImages,
     hydrateCanvasImages,
     imageExtension,
@@ -118,10 +120,12 @@ type CanvasGenerationRequest = {
 
 const VIDEO_NODE_MAX_WIDTH = 420;
 const VIDEO_NODE_MAX_HEIGHT = 420;
-// Stable empty reference array prevents `... || []` from invalidating CanvasNode's React.memo on every render.
-const EMPTY_REFERENCES: CanvasResourceReference[] = [];
 const CONNECTION_HANDLE_HIT_RADIUS = 40;
 const CONNECTION_NODE_HIT_PADDING = 32;
+// Screen pixels of slack around the viewport when culling connections. An edge is then drawn
+// slightly before it scrolls in, so the cull boundary does not flicker. Divided by viewport.k to
+// become world units.
+const CONNECTION_CULL_MARGIN = 64;
 const NODE_STATUS_IDLE = "idle" as const;
 const NODE_STATUS_LOADING = "loading" as const;
 const NODE_STATUS_SUCCESS = "success" as const;
@@ -206,19 +210,35 @@ function AtelierCanvasPage() {
     const applyingHistoryRef = useRef(false);
     const historyPausedRef = useRef(false);
     const rafRef = useRef<number | null>(null);
+    // Marquee coalescing: pointermove only records the latest position, and one frame does the
+    // intersect pass plus at most one selection update.
+    const marqueeRafRef = useRef<number | null>(null);
+    const marqueePointerRef = useRef<{ clientX: number; clientY: number } | null>(null);
+    const marqueeSelectionRef = useRef<Set<string> | null>(null);
     const nodeDraggingRef = useRef(false);
     const dragRef = useRef<{
         isDraggingNode: boolean;
         hasMoved: boolean;
         startX: number;
         startY: number;
-        initialSelectedNodes: { id: string; x: number; y: number }[];
+        // Map, not an array: the per-frame update needs O(1) lookup per node, and the previous
+        // `initialPositions.find(...)` inside the node loop was O(N x M) every frame.
+        initialPositions: Map<string, { x: number; y: number }>;
+        // Snapshotted at drag start so the frame loop never rebuilds or rescans the whole node list.
+        movedNodes: CanvasNodeData[];
+        reversedCandidateGroups: CanvasNodeData[];
+        latestDelta: { dx: number; dy: number };
+        lastDropTargetId: string | null;
     }>({
         isDraggingNode: false,
         hasMoved: false,
         startX: 0,
         startY: 0,
-        initialSelectedNodes: [],
+        initialPositions: new Map(),
+        movedNodes: [],
+        reversedCandidateGroups: [],
+        latestDelta: { dx: 0, dy: 0 },
+        lastDropTargetId: null,
     });
 
     const config = useConfigStore((state) => state.config);
@@ -233,7 +253,10 @@ function AtelierCanvasPage() {
     const updateProject = useCanvasStore((state) => state.updateProject);
     const renameProject = useCanvasStore((state) => state.renameProject);
     const deleteProjects = useCanvasStore((state) => state.deleteProjects);
-    const currentProject = useCanvasStore((state) => state.projects.find((project) => project.id === projectId));
+    // Select only the title, never the project object: `updateProject` builds a fresh project object
+    // on every patch, and the persistence effect patches on every `nodes` change — i.e. every drag
+    // frame. Selecting the object made this whole page render a second time per frame.
+    const currentProjectTitle = useCanvasStore((state) => state.projects.find((project) => project.id === projectId)?.title);
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const [nodes, setNodes] = useState<CanvasNodeData[]>([]);
     const [connections, setConnections] = useState<CanvasConnection[]>([]);
@@ -262,7 +285,6 @@ function AtelierCanvasPage() {
     const [toolbarNodeId, setToolbarNodeId] = useState<string | null>(null);
     const [nodeImageSettingsOpen, setNodeImageSettingsOpen] = useState(false);
     const [dialogNodeId, setDialogNodeId] = useState<string | null>(null);
-    const directorPanelNode = nodes.find((node) => node.id === dialogNodeId && node.type === CanvasNodeType.Director);
     const [infoNodeId, setInfoNodeId] = useState<string | null>(null);
     const [cropNodeId, setCropNodeId] = useState<string | null>(null);
     const [maskEditNodeId, setMaskEditNodeId] = useState<string | null>(null);
@@ -284,6 +306,16 @@ function AtelierCanvasPage() {
     const connectionsRef = useRef(connections);
     const selectedNodeIdsRef = useRef(selectedNodeIds);
     const viewportRef = useRef(viewport);
+    // One adjacency index per graph revision. Everything that used to scan `nodes`/`connections`
+    // per item (id lookups, group children, resource references, generation inputs) reads from it.
+    // Declared before the effects below so they can mirror it for the window-level gesture handlers.
+    const graphIndex = useMemo(() => buildCanvasGraphIndex(nodes, connections), [nodes, connections]);
+    const graphIndexRef = useRef(graphIndex);
+    const directorPanelNode = dialogNodeId && graphIndex.nodeById.get(dialogNodeId)?.type === CanvasNodeType.Director ? graphIndex.nodeById.get(dialogNodeId) : undefined;
+    // Container rect cache. Screen-to-world conversion runs on every pointermove during drag,
+    // marquee and connect-drag; measuring the container there forces a synchronous layout each
+    // time. Kept fresh by the ResizeObserver effect and nulled on scroll (see that effect).
+    const containerRectRef = useRef<DOMRect | null>(null);
     const viewportAnimRef = useRef<number | null>(null);
     const generateNodeRef = useRef<((nodeId: string, mode: CanvasNodeGenerationMode, prompt: string) => Promise<void>) | null>(null);
     const connectingParamsRef = useRef(connectingParams);
@@ -553,10 +585,11 @@ function AtelierCanvasPage() {
         connectionsRef.current = connections;
         selectedNodeIdsRef.current = selectedNodeIds;
         viewportRef.current = viewport;
+        graphIndexRef.current = graphIndex;
         connectingParamsRef.current = connectingParams;
         connectionTargetNodeIdRef.current = connectionTargetNodeId;
         pendingConnectionCreateRef.current = pendingConnectionCreate;
-    }, [nodes, connections, selectedNodeIds, viewport, connectingParams, connectionTargetNodeId, pendingConnectionCreate]);
+    }, [nodes, connections, selectedNodeIds, viewport, graphIndex, connectingParams, connectionTargetNodeId, pendingConnectionCreate]);
 
     useLayoutEffect(() => {
         selectionBoxRef.current = selectionBox;
@@ -575,17 +608,29 @@ function AtelierCanvasPage() {
 
         const updateSize = () => {
             const rect = el.getBoundingClientRect();
+            containerRectRef.current = rect;
             setSize({ width: rect.width, height: rect.height });
+        };
+        // Scrolling an ancestor moves the container without changing its size, so the
+        // ResizeObserver alone would not notice. Drop the cache and re-measure on the next read.
+        const invalidateRect = () => {
+            containerRectRef.current = null;
         };
 
         updateSize();
         const resizeObserver = new ResizeObserver(updateSize);
         resizeObserver.observe(el);
-        return () => resizeObserver.disconnect();
+        window.addEventListener("resize", updateSize);
+        window.addEventListener("scroll", invalidateRect, true);
+        return () => {
+            resizeObserver.disconnect();
+            window.removeEventListener("resize", updateSize);
+            window.removeEventListener("scroll", invalidateRect, true);
+        };
     }, [projectLoaded]);
 
     const screenToCanvas = useCallback((clientX: number, clientY: number) => {
-        const rect = containerRef.current?.getBoundingClientRect();
+        const rect = containerRectRef.current ?? containerRef.current?.getBoundingClientRect();
         const currentViewport = viewportRef.current;
         const localX = clientX - (rect?.left || 0);
         const localY = clientY - (rect?.top || 0);
@@ -674,7 +719,13 @@ function AtelierCanvasPage() {
             let bestNodeId: string | null = null;
             let bestPriority = Number.POSITIVE_INFINITY;
 
-            [...nodesRef.current].reverse().forEach((node) => {
+            // Backwards so the first node in document order wins among equal priorities, matching
+            // the previous `[...nodes].reverse().forEach` with a strict `<` comparison. Walking the
+            // array in place also avoids allocating a reversed copy on every mousemove.
+            const allNodes = nodesRef.current;
+            const nodeById = graphIndexRef.current.nodeById;
+            for (let i = allNodes.length - 1; i >= 0; i -= 1) {
+                const node = allNodes[i];
                 const anchor = getConnectionTargetAnchor(node, current);
                 const dx = world.x - anchor.x;
                 const dy = world.y - anchor.y;
@@ -682,16 +733,16 @@ function AtelierCanvasPage() {
                 const hitsInside = world.x >= node.position.x && world.x <= node.position.x + node.width && world.y >= node.position.y && world.y <= node.position.y + node.height;
                 const hitsExpanded = world.x >= node.position.x - padding && world.x <= node.position.x + node.width + padding && world.y >= node.position.y - padding && world.y <= node.position.y + node.height + padding;
 
-                if (!hitsHandle && !hitsInside && !hitsExpanded) return;
+                if (!hitsHandle && !hitsInside && !hitsExpanded) continue;
                 isNearNode = true;
-                if (node.id === current.nodeId || !normalizeConnection(current.nodeId, node.id, nodesRef.current, current.handleType)) return;
+                if (node.id === current.nodeId || !normalizeConnectionFromIndex(nodeById, current.nodeId, node.id, current.handleType)) continue;
 
                 const priority = hitsInside ? 0 : hitsHandle ? 1 : 2;
                 if (priority < bestPriority) {
                     bestNodeId = node.id;
                     bestPriority = priority;
                 }
-            });
+            }
 
             return { nodeId: bestNodeId, isNearNode };
         },
@@ -700,18 +751,17 @@ function AtelierCanvasPage() {
 
     const visibleNodes = useMemo(() => {
         const padding = 280;
-        const rect = containerRef.current?.getBoundingClientRect();
-        const width = rect?.width || size.width;
-        const height = rect?.height || size.height;
+        // `size` is kept current by the ResizeObserver below. Measuring the container here instead
+        // would force a synchronous layout on every pan/zoom frame.
         const viewLeft = -viewport.x / viewport.k - padding;
         const viewTop = -viewport.y / viewport.k - padding;
-        const viewRight = viewLeft + width / viewport.k + padding * 2;
-        const viewBottom = viewTop + height / viewport.k + padding * 2;
+        const viewRight = viewLeft + size.width / viewport.k + padding * 2;
+        const viewBottom = viewTop + size.height / viewport.k + padding * 2;
 
         return nodes.filter((node) => node.position.x + node.width > viewLeft && node.position.x < viewRight && node.position.y + node.height > viewTop && node.position.y < viewBottom);
     }, [nodes, size.height, size.width, viewport.k, viewport.x, viewport.y]);
 
-    const nodeById = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes]);
+    const nodeById = graphIndex.nodeById;
     // The toolbar follows a single selected node selected by click, creation, marquee, or keyboard.
     // It stays hidden for multi-selection and while isNodeDragging is true.
     const singleSelectedNodeId = selectedNodeIds.size === 1 ? Array.from(selectedNodeIds)[0] : null;
@@ -727,14 +777,7 @@ function AtelierCanvasPage() {
     const previewContent = previewImageId ? previewNode?.metadata?.images?.find((image) => image.id === previewImageId)?.content : previewNode?.metadata?.content;
     const hasMultipleSelectedNodes = selectedNodeIds.size > 1;
     const activeNodeId = hasMultipleSelectedNodes ? null : hoveredNodeId || (selectedNodeIds.size === 1 ? Array.from(selectedNodeIds)[0] : null);
-    const groupChildCountById = useMemo(() => {
-        const map = new Map<string, number>();
-        nodes.forEach((node) => {
-            const groupId = node.metadata?.groupId;
-            if (groupId) map.set(groupId, (map.get(groupId) || 0) + 1);
-        });
-        return map;
-    }, [nodes]);
+    const groupChildCountById = graphIndex.groupChildCountById;
     const relatedHighlight = useMemo(() => {
         const nodeIds = new Set<string>();
         const connectionIds = new Set<string>();
@@ -752,19 +795,22 @@ function AtelierCanvasPage() {
         return { nodeIds, connectionIds };
     }, [activeNodeId, connections]);
 
-    const configInputsById = useMemo(() => {
-        const map = new Map<string, NodeGenerationInput[]>();
-        nodes.forEach((node) => {
-            if (node.type !== CanvasNodeType.Config) return;
-            map.set(node.id, buildNodeGenerationInputs(node.id, nodes, connections));
-        });
-        return map;
-    }, [connections, nodes]);
-    const mentionReferencesByNodeId = useMemo(() => {
-        const map = new Map<string, ReturnType<typeof buildNodeMentionReferences>>();
-        nodes.forEach((node) => map.set(node.id, buildNodeMentionReferences(node, nodes, connections)));
-        return map;
-    }, [connections, nodes]);
+    // Only rendering is culled. `connections` stays the source of truth for references, generation
+    // inputs and group logic, so an off-screen edge is still fully functional.
+    const visibleConnections = useMemo(
+        () =>
+            cullConnections(connections, nodeById, worldViewRect(viewport, size), {
+                margin: CONNECTION_CULL_MARGIN / viewport.k,
+                // Keep the selected edge so its inline disconnect button cannot vanish under the user.
+                keepIds: selectedConnectionId ? new Set([selectedConnectionId]) : undefined,
+            }),
+        [connections, nodeById, selectedConnectionId, size, viewport],
+    );
+
+    // Resource references and generation inputs used to be precomputed here for every node on every
+    // change, which was O(N x (N + E)) and re-ran on every drag frame. They are now derived per node
+    // by the panel components that show them (see canvas-graph-context.tsx).
+
     const createNode = useCallback(
         (type: CanvasNodeTypeId, position?: Position) => {
             const targetPosition = position || getCanvasCenter();
@@ -826,6 +872,19 @@ function AtelierCanvasPage() {
         setConnections((prev) => prev.filter((conn) => conn.id !== connectionId));
         setSelectedConnectionId((current) => (current === connectionId ? null : current));
         setContextMenu((current) => (current?.type === "connection" && current.connectionId === connectionId ? null : current));
+    }, []);
+
+    // Stable identities so memoized ConnectionPath instances bail out when only one edge changes.
+    const handleConnectionSelect = useCallback((connectionId: string) => {
+        setSelectedConnectionId(connectionId);
+        setSelectedNodeIds(new Set());
+        setContextMenu(null);
+    }, []);
+
+    const handleConnectionContextMenu = useCallback((event: ReactMouseEvent<SVGPathElement>, connectionId: string) => {
+        setSelectedConnectionId(connectionId);
+        setSelectedNodeIds(new Set());
+        setContextMenu({ type: "connection", x: event.clientX, y: event.clientY, connectionId });
     }, []);
 
     const deselectCanvas = useCallback(() => {
@@ -1111,6 +1170,8 @@ function AtelierCanvasPage() {
             };
             selectionBoxRef.current = nextSelectionBox;
             setSelectionBox(nextSelectionBox);
+            // Fresh gesture: let the first frame's result through the change guard.
+            marqueeSelectionRef.current = null;
             if (!event.shiftKey) {
                 setSelectedNodeIds(new Set());
             }
@@ -1155,25 +1216,40 @@ function AtelierCanvasPage() {
 
     const handleNodeMouseDown = useCallback((event: ReactMouseEvent, nodeId: string) => {
         event.stopPropagation();
+        // A frame from a previous gesture must never apply against the new drag state.
+        if (rafRef.current) {
+            cancelAnimationFrame(rafRef.current);
+            rafRef.current = null;
+        }
         // Capture already selected the node; this only starts dragging, with a fallback selection if capture did not run.
         const currentNodes = nodesRef.current;
         const nextSelected = pendingSelectionRef.current ?? selectNodeByEvent(event, nodeId).nextSelected;
         pendingSelectionRef.current = null;
         const dragIds = new Set(nextSelected);
-        currentNodes.forEach((node) => {
-            if (!nextSelected.has(node.id)) return;
-            if (node.type === CanvasNodeType.Group) {
-                currentNodes.forEach((child) => {
-                    if (child.metadata?.groupId === node.id) dragIds.add(child.id);
-                });
-            }
+        // Dragging a group takes its children along. Reads the adjacency index instead of rescanning
+        // every node once per selected group, which was O(N^2) for a group drag.
+        const index = graphIndexRef.current;
+        nextSelected.forEach((id) => {
+            if (index.nodeById.get(id)?.type !== CanvasNodeType.Group) return;
+            for (const child of index.groupChildrenByGroupId.get(id) ?? []) dragIds.add(child.id);
         });
+
+        const movedNodes = currentNodes.filter((node) => dragIds.has(node.id));
+        const initialPositions = new Map<string, { x: number; y: number }>();
+        for (const node of movedNodes) initialPositions.set(node.id, { x: node.position.x, y: node.position.y });
+
         dragRef.current = {
             isDraggingNode: true,
             hasMoved: false,
             startX: event.clientX,
             startY: event.clientY,
-            initialSelectedNodes: currentNodes.filter((node) => dragIds.has(node.id)).map((node) => ({ id: node.id, x: node.position.x, y: node.position.y })),
+            initialPositions,
+            movedNodes,
+            // Snapshotted once. Candidates are in reverse array order so the frame loop can take the
+            // first hit, matching `findGroupDropTarget`'s "last group in document order wins".
+            reversedCandidateGroups: currentNodes.filter((node) => node.type === CanvasNodeType.Group && !dragIds.has(node.id)).reverse(),
+            latestDelta: { dx: 0, dy: 0 },
+            lastDropTargetId: null,
         };
         historyPausedRef.current = true;
         nodeDraggingRef.current = true;
@@ -1185,24 +1261,26 @@ function AtelierCanvasPage() {
             cancelAnimationFrame(rafRef.current);
             rafRef.current = null;
         }
+        // Cleared before the early return so the flag cannot be stranded true (which would leave
+        // history and persistence permanently paused) if this runs without an active drag.
+        historyPausedRef.current = false;
         if (!dragRef.current.isDraggingNode) return;
 
-        const wasClick = !dragRef.current.hasMoved && dragRef.current.initialSelectedNodes.length === 1;
-        const clickedNodeId = dragRef.current.initialSelectedNodes[0]?.id;
+        const wasClick = !dragRef.current.hasMoved && dragRef.current.movedNodes.length === 1;
+        const clickedNodeId = dragRef.current.movedNodes[0]?.id;
         const currentViewport = viewportRef.current;
         const dx = clientX == null ? 0 : (clientX - dragRef.current.startX) / currentViewport.k;
         const dy = clientY == null ? 0 : (clientY - dragRef.current.startY) / currentViewport.k;
-        const initialPositions = dragRef.current.initialSelectedNodes;
+        const initialPositions = dragRef.current.initialPositions;
 
-        historyPausedRef.current = false;
         nodeDraggingRef.current = false;
         setIsNodeDragging(false);
         setDropTargetGroupId(null);
         if (dragRef.current.hasMoved && clientX != null && clientY != null) {
-            const movedIds = new Set(initialPositions.map((item) => item.id));
+            const movedIds = new Set(initialPositions.keys());
             setNodes((prev) => {
                 const moved = prev.map((node) => {
-                    const initial = initialPositions.find((item) => item.id === node.id);
+                    const initial = initialPositions.get(node.id);
                     return initial ? { ...node, position: { x: initial.x + dx, y: initial.y + dy } } : node;
                 });
                 const targetGroup = findGroupDropTarget(movedIds, moved);
@@ -1218,7 +1296,10 @@ function AtelierCanvasPage() {
 
         dragRef.current.isDraggingNode = false;
         dragRef.current.hasMoved = false;
-        dragRef.current.initialSelectedNodes = [];
+        dragRef.current.initialPositions = new Map();
+        dragRef.current.movedNodes = [];
+        dragRef.current.reversedCandidateGroups = [];
+        dragRef.current.lastDropTargetId = null;
         if (wasClick && clickedNodeId) {
             const clickedNode = nodesRef.current.find((node) => node.id === clickedNodeId);
             const clickedDefinition = clickedNode ? getNodeDefinition(clickedNode.type) : undefined;
@@ -1236,29 +1317,35 @@ function AtelierCanvasPage() {
             const currentViewport = viewportRef.current;
 
             if (dragRef.current.isDraggingNode) {
-                const dx = (event.clientX - dragRef.current.startX) / currentViewport.k;
-                const dy = (event.clientY - dragRef.current.startY) / currentViewport.k;
-                const initialPositions = dragRef.current.initialSelectedNodes;
-                if (Math.abs(event.clientX - dragRef.current.startX) > 3 || Math.abs(event.clientY - dragRef.current.startY) > 3) {
-                    dragRef.current.hasMoved = true;
+                const drag = dragRef.current;
+                const dx = (event.clientX - drag.startX) / currentViewport.k;
+                const dy = (event.clientY - drag.startY) / currentViewport.k;
+                if (Math.abs(event.clientX - drag.startX) > 3 || Math.abs(event.clientY - drag.startY) > 3) {
+                    drag.hasMoved = true;
                 }
+                drag.latestDelta = { dx, dy };
 
-                const movedIds = new Set(initialPositions.map((item) => item.id));
-                const previewNodes = nodesRef.current.map((node) => {
-                    const initial = initialPositions.find((item) => item.id === node.id);
-                    return initial ? { ...node, position: { x: initial.x + dx, y: initial.y + dy } } : node;
-                });
-                setDropTargetGroupId(findGroupDropTarget(movedIds, previewNodes)?.id || null);
-
-                if (rafRef.current) cancelAnimationFrame(rafRef.current);
+                // Coalesce rather than cancel-and-reschedule: under a high input rate the cancel/
+                // requeue pattern can starve the paint. One frame stays pending and always reads the
+                // newest delta. The expensive part (rebuilding the preview array and searching for a
+                // group target) now runs at most once per frame instead of once per mousemove.
+                if (rafRef.current) return;
                 rafRef.current = requestAnimationFrame(() => {
+                    rafRef.current = null;
+                    const { dx: frameDx, dy: frameDy } = drag.latestDelta;
+                    const initialPositions = drag.initialPositions;
                     setNodes((prev) =>
                         prev.map((node) => {
-                            const initial = initialPositions.find((item) => item.id === node.id);
-                            return initial ? { ...node, position: { x: initial.x + dx, y: initial.y + dy } } : node;
+                            const initial = initialPositions.get(node.id);
+                            return initial ? { ...node, position: { x: initial.x + frameDx, y: initial.y + frameDy } } : node;
                         }),
                     );
-                    rafRef.current = null;
+                    const targetId = findGroupDropTargetFromDelta(drag.movedNodes, drag.reversedCandidateGroups, frameDx, frameDy)?.id ?? null;
+                    // Only touch React state when the target actually changes.
+                    if (drag.lastDropTargetId !== targetId) {
+                        drag.lastDropTargetId = targetId;
+                        setDropTargetGroupId(targetId);
+                    }
                 });
                 return;
             }
@@ -1279,28 +1366,49 @@ function AtelierCanvasPage() {
             if (!currentSelection) return;
 
             if (event.buttons === 0) {
+                if (marqueeRafRef.current) {
+                    cancelAnimationFrame(marqueeRafRef.current);
+                    marqueeRafRef.current = null;
+                }
                 selectionBoxRef.current = null;
                 setSelectionBox(null);
                 return;
             }
 
-            const world = screenToCanvas(event.clientX, event.clientY);
-            const rectX = Math.min(currentSelection.startWorldX, world.x);
-            const rectY = Math.min(currentSelection.startWorldY, world.y);
-            const rectW = Math.abs(world.x - currentSelection.startWorldX);
-            const rectH = Math.abs(world.y - currentSelection.startWorldY);
-            const nextSelected = new Set<string>(currentSelection.additive ? currentSelection.initialSelectedNodeIds : []);
+            // Record and schedule; the intersect pass runs once per frame rather than per event.
+            marqueePointerRef.current = { clientX: event.clientX, clientY: event.clientY };
+            if (marqueeRafRef.current) return;
+            marqueeRafRef.current = requestAnimationFrame(() => {
+                marqueeRafRef.current = null;
+                const pointer = marqueePointerRef.current;
+                const box = selectionBoxRef.current;
+                if (!pointer || !box) return;
 
-            nodesRef.current.forEach((node) => {
-                const intersects = rectX < node.position.x + node.width && rectX + rectW > node.position.x && rectY < node.position.y + node.height && rectY + rectH > node.position.y;
+                const world = screenToCanvas(pointer.clientX, pointer.clientY);
+                const rectX = Math.min(box.startWorldX, world.x);
+                const rectY = Math.min(box.startWorldY, world.y);
+                const rectW = Math.abs(world.x - box.startWorldX);
+                const rectH = Math.abs(world.y - box.startWorldY);
+                const nextSelected = new Set<string>(box.additive ? box.initialSelectedNodeIds : []);
 
-                if (intersects) nextSelected.add(node.id);
+                for (const node of nodesRef.current) {
+                    const intersects = rectX < node.position.x + node.width && rectX + rectW > node.position.x && rectY < node.position.y + node.height && rectY + rectH > node.position.y;
+
+                    if (intersects) nextSelected.add(node.id);
+                }
+
+                const nextSelectionBox = { ...box, currentWorldX: world.x, currentWorldY: world.y };
+                selectionBoxRef.current = nextSelectionBox;
+                setSelectionBox(nextSelectionBox);
+
+                // Selection only changes when the marquee crosses a node edge, so most frames can
+                // skip the state update entirely.
+                const previous = marqueeSelectionRef.current;
+                if (!previous || previous.size !== nextSelected.size || [...nextSelected].some((id) => !previous.has(id))) {
+                    marqueeSelectionRef.current = nextSelected;
+                    setSelectedNodeIds(nextSelected);
+                }
             });
-
-            const nextSelectionBox = { ...currentSelection, currentWorldX: world.x, currentWorldY: world.y };
-            selectionBoxRef.current = nextSelectionBox;
-            setSelectionBox(nextSelectionBox);
-            setSelectedNodeIds(nextSelected);
         },
         [screenToCanvas],
     );
@@ -2092,9 +2200,9 @@ function AtelierCanvasPage() {
     );
 
     const startTitleEditing = useCallback(() => {
-        setTitleDraft(currentProject?.title || t("canvas.projectPage.untitledCanvas"));
+        setTitleDraft(currentProjectTitle || t("canvas.projectPage.untitledCanvas"));
         setTitleEditing(true);
-    }, [currentProject?.title, t]);
+    }, [currentProjectTitle, t]);
 
     const finishTitleEditing = useCallback(() => {
         const nextTitle = titleDraft.trim();
@@ -2948,8 +3056,8 @@ function AtelierCanvasPage() {
         (panelNode: CanvasNodeData) =>
             panelNode.type === CanvasNodeType.Director ? null : panelNode.type === CanvasNodeType.Config ? (
                 <CanvasConfigComposer
+                    nodeId={panelNode.id}
                     value={panelNode.metadata?.composerContent ?? panelNode.metadata?.prompt ?? ""}
-                    inputs={configInputsById.get(panelNode.id) || []}
                     onChange={(composerContent) => handleConfigNodeChange(panelNode.id, { composerContent })}
                     onClose={() => setDialogNodeId(null)}
                 />
@@ -2957,7 +3065,6 @@ function AtelierCanvasPage() {
                 <CanvasNodePromptPanel
                     node={panelNode}
                     isRunning={runningNodeId === panelNode.id}
-                    mentionReferences={mentionReferencesByNodeId.get(panelNode.id) || EMPTY_REFERENCES}
                     onPromptChange={handleNodePromptChange}
                     onConfigChange={handleConfigNodeChange}
                     onGenerate={handleGenerateNode}
@@ -2969,7 +3076,7 @@ function AtelierCanvasPage() {
                     }}
                 />
             ),
-        [configInputsById, confirmStopGeneration, handleConfigNodeChange, handleGenerateNode, handleNodePromptChange, mentionReferencesByNodeId, runningNodeId],
+        [confirmStopGeneration, handleConfigNodeChange, handleGenerateNode, handleNodePromptChange, runningNodeId],
     );
 
     const handleDirectorExport = useCallback(
@@ -3001,8 +3108,6 @@ function AtelierCanvasPage() {
             <CanvasConfigNodePanel
                 node={contentNode}
                 isRunning={runningNodeId === contentNode.id}
-                inputSummary={getInputSummary(configInputsById.get(contentNode.id) || [])}
-                videoInputs={configInputsById.get(contentNode.id) || []}
                 onConfigChange={handleConfigNodeChange}
                 onComposerToggle={() => setDialogNodeId((current) => (current === contentNode.id ? null : contentNode.id))}
                 onStop={confirmStopGeneration}
@@ -3012,7 +3117,59 @@ function AtelierCanvasPage() {
                 }}
             />
         ),
-        [configInputsById, confirmStopGeneration, handleConfigNodeChange, handleGenerateNode, runningNodeId],
+        [confirmStopGeneration, handleConfigNodeChange, handleGenerateNode, runningNodeId],
+    );
+
+    // Grouped so NodeLayer's prop list stays readable. The node still receives each entry as its own
+    // prop, so an entry that changes identity only re-renders the nodes it actually affects.
+    const sharedNodeProps = useMemo<SharedNodeProps>(
+        () => ({
+            viewportRef,
+            renderPanel: renderNodePanel,
+            renderNodeContent: renderNodeContentPanel,
+            onMouseDown: handleNodeMouseDown,
+            onSelectCapture: handleNodeSelectCapture,
+            onHoverStart: handleNodeHoverStart,
+            onHoverEnd: handleNodeHoverEnd,
+            onConnectStart: handleConnectStart,
+            onResizeStart: handleNodeResizeStart,
+            onResize: handleNodeResize,
+            onResizeEnd: handleNodeResizeEnd,
+            onContentChange: handleNodeContentChange,
+            onTitleChange: handleNodeTitleChange,
+            onToggleBatch: toggleBatchExpanded,
+            onSetBatchPrimary: setBatchPrimary,
+            onDuplicateBatchImage: duplicateBatchImage,
+            onRetryBatchImage: retryBatchImage,
+            onDeleteBatchImage: deleteBatchImage,
+            onRetry: handleNodeRetry,
+            onGenerateImage: generateImageFromTextNode,
+            onViewImage: handleNodeViewImage,
+            onContextMenu: handleNodeContextMenu,
+        }),
+        [
+            deleteBatchImage,
+            duplicateBatchImage,
+            generateImageFromTextNode,
+            handleConnectStart,
+            handleNodeContentChange,
+            handleNodeContextMenu,
+            handleNodeHoverEnd,
+            handleNodeHoverStart,
+            handleNodeMouseDown,
+            handleNodeResize,
+            handleNodeResizeEnd,
+            handleNodeResizeStart,
+            handleNodeRetry,
+            handleNodeSelectCapture,
+            handleNodeTitleChange,
+            handleNodeViewImage,
+            renderNodeContentPanel,
+            renderNodePanel,
+            retryBatchImage,
+            setBatchPrimary,
+            toggleBatchExpanded,
+        ],
     );
 
     if (!projectLoaded) return <CanvasRefreshShell />;
@@ -3022,7 +3179,7 @@ function AtelierCanvasPage() {
             <CanvasSidePanel nodes={nodes} selectedNodeIds={selectedNodeIds} onFocusNode={focusNode} onPreviewNode={setPreviewNodeId} onInsertAsset={handleAssetInsert} />
             <section className="relative min-w-0 flex-1 overflow-hidden">
                 <CanvasTopBar
-                    title={currentProject?.title || t("canvas.projectPage.untitledCanvas")}
+                    title={currentProjectTitle || t("canvas.projectPage.untitledCanvas")}
                     titleDraft={titleDraft}
                     isTitleEditing={titleEditing}
                     onTitleDraftChange={setTitleDraft}
@@ -3056,90 +3213,41 @@ function AtelierCanvasPage() {
                     onContextMenu={preventCanvasContextMenu}
                     onDrop={handleDrop}
                 >
-                    <svg className="absolute left-0 top-0 h-[10000px] w-[10000px] overflow-visible" style={{ pointerEvents: "none", transform: "translateZ(0)", zIndex: 0 }}>
-                        {connections.map((connection) => {
-                            const from = nodeById.get(connection.fromNodeId);
-                            const to = nodeById.get(connection.toNodeId);
-                            if (!from || !to) return null;
+                    <ConnectionLayer
+                        connections={visibleConnections}
+                        nodeById={nodeById}
+                        selectedConnectionId={selectedConnectionId}
+                        relatedConnectionIds={relatedHighlight.connectionIds}
+                        onSelect={handleConnectionSelect}
+                        onContextMenu={handleConnectionContextMenu}
+                        onDelete={deleteConnection}
+                    />
 
-                            return (
-                                <ConnectionPath
-                                    key={connection.id}
-                                    connection={connection}
-                                    from={from}
-                                    to={to}
-                                    active={selectedConnectionId === connection.id || relatedHighlight.connectionIds.has(connection.id)}
-                                    selected={selectedConnectionId === connection.id}
-                                    onSelect={() => {
-                                        setSelectedConnectionId(connection.id);
-                                        setSelectedNodeIds(new Set());
-                                        setContextMenu(null);
-                                    }}
-                                    onContextMenu={(event) => {
-                                        setSelectedConnectionId(connection.id);
-                                        setSelectedNodeIds(new Set());
-                                        setContextMenu({ type: "connection", x: event.clientX, y: event.clientY, connectionId: connection.id });
-                                    }}
-                                    onDelete={() => deleteConnection(connection.id)}
-                                />
-                            );
-                        })}
-                        {connectingParams ? <ActiveConnectionPath node={nodeById.get(connectingParams.nodeId)} handle={connectingParams} mouseWorld={mouseWorld} target={connectionTargetNodeId ? nodeById.get(connectionTargetNodeId) : undefined} /> : null}
-                    </svg>
+                    <ActiveConnectionOverlay connectingParams={connectingParams} mouseWorld={mouseWorld} connectionTargetNodeId={connectionTargetNodeId} nodeById={nodeById} />
 
-                    {visibleNodes.map((node) => (
-                        <CanvasNode
-                            key={node.id}
-                            data={node}
-                            scale={viewport.k}
-                            isSelected={selectedNodeIds.has(node.id)}
-                            isRelated={relatedHighlight.nodeIds.has(node.id)}
-                            isFocusRelated={activeNodeId === node.id}
-                            isConnectionTarget={connectionTargetNodeId === node.id}
+                    {/* Panels rendered inside a node's DOM read the graph through this context,
+                        instead of the controller precomputing references and generation inputs for
+                        every node on every change. */}
+                    <CanvasGraphIndexProvider index={graphIndex}>
+                        <NodeLayer
+                            nodes={visibleNodes}
+                            shared={sharedNodeProps}
+                            selectedNodeIds={selectedNodeIds}
+                            relatedNodeIds={relatedHighlight.nodeIds}
+                            activeNodeId={activeNodeId}
+                            connectionTargetNodeId={connectionTargetNodeId}
                             isConnecting={Boolean(connectingParams)}
-                            showPanel={!isNodeResizing && dialogNodeId === node.id && !selectionBox && !getNodeDefinition(node.type)?.hidePanel}
-                            groupChildCount={groupChildCountById.get(node.id) || 0}
-                            isGroupDropTarget={dropTargetGroupId === node.id}
-                            batchExpanded={expandedImageNodeIds.has(node.id)}
+                            panelNodeId={dialogNodeId}
+                            isNodeResizing={isNodeResizing}
+                            isMarqueeActive={Boolean(selectionBox)}
+                            dropTargetGroupId={dropTargetGroupId}
+                            expandedImageNodeIds={expandedImageNodeIds}
                             showImageInfo={showImageInfo}
-                            mentionReferences={mentionReferencesByNodeId.get(node.id) || EMPTY_REFERENCES}
-                            renderPanel={renderNodePanel}
-                            renderNodeContent={renderNodeContentPanel}
-                            onMouseDown={handleNodeMouseDown}
-                            onSelectCapture={handleNodeSelectCapture}
-                            onHoverStart={handleNodeHoverStart}
-                            onHoverEnd={handleNodeHoverEnd}
-                            onConnectStart={handleConnectStart}
-                            onResizeStart={handleNodeResizeStart}
-                            onResize={handleNodeResize}
-                            onResizeEnd={handleNodeResizeEnd}
-                            onContentChange={handleNodeContentChange}
-                            onTitleChange={handleNodeTitleChange}
-                            onToggleBatch={toggleBatchExpanded}
-                            onSetBatchPrimary={setBatchPrimary}
-                            onDuplicateBatchImage={duplicateBatchImage}
-                            onRetryBatchImage={retryBatchImage}
-                            onDeleteBatchImage={deleteBatchImage}
-                            onRetry={handleNodeRetry}
-                            onGenerateImage={generateImageFromTextNode}
-                            onViewImage={handleNodeViewImage}
-                            onContextMenu={handleNodeContextMenu}
+                            groupChildCountById={groupChildCountById}
                         />
-                    ))}
+                    </CanvasGraphIndexProvider>
 
-                    {selectionBox ? (
-                        <svg
-                            className="pointer-events-none absolute z-[100] overflow-visible"
-                            style={{
-                                left: Math.min(selectionBox.startWorldX, selectionBox.currentWorldX),
-                                top: Math.min(selectionBox.startWorldY, selectionBox.currentWorldY),
-                                width: Math.abs(selectionBox.currentWorldX - selectionBox.startWorldX),
-                                height: Math.abs(selectionBox.currentWorldY - selectionBox.startWorldY),
-                            }}
-                        >
-                            <rect width="100%" height="100%" fill={theme.canvas.selectionFill} stroke={theme.canvas.selectionStroke} strokeOpacity={0.55} strokeWidth={1 / viewport.k} strokeDasharray={`${6 / viewport.k} ${4 / viewport.k}`} />
-                        </svg>
-                    ) : null}
+                    <SelectionOverlay selectionBox={selectionBox} scale={viewport.k} />
                     {pendingConnectionCreate ? <ConnectionCreateMenu pending={pendingConnectionCreate} canvasRef={containerRef} viewport={viewport} onCreate={(type) => createConnectedNode(type, pendingConnectionCreate)} onClose={cancelPendingConnectionCreate} /> : null}
                     {nodeCreatePosition ? (
                         <NodeCreateMenu

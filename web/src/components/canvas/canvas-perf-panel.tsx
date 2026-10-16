@@ -2,6 +2,7 @@ import { useCallback, useState, useSyncExternalStore } from "react";
 
 import {
     BASELINE_SCENARIOS,
+    ZOOM_DIAGNOSTIC_SCENARIOS,
     copyBaselineReport,
     downloadBaselineReport,
     formatBaselineReport,
@@ -28,9 +29,10 @@ import {
  */
 export default function CanvasPerfPanel() {
     const [scenarios] = useState<Scenario[]>(BASELINE_SCENARIOS);
+    const [diagnostics] = useState<Scenario[]>(ZOOM_DIAGNOSTIC_SCENARIOS);
     const [sessionLabel, setSessionLabel] = useState(() => getPerfSessionLabel());
     const session = useSyncExternalStore(subscribePerfSession, getPerfSessionState);
-    const run = useCallback(() => void startPerfSession(scenarios), [scenarios]);
+    const run = useCallback((set: Scenario[]) => void startPerfSession(set), []);
 
     const running = session.status === "running";
     const markdown = session.report ? formatBaselineReport(session.report) : "";
@@ -60,11 +62,14 @@ export default function CanvasPerfPanel() {
                 />
             </div>
             <p className="mb-2 opacity-70">
-                {scenarios.length} scenarios: {scenarios.map((scenario) => `${scenario.id}×${scenario.repeats ?? 3}`).join(", ")} (+1 warm-up each, discarded)
+                baseline {scenarios.length}: {scenarios.map((scenario) => `${scenario.id}×${scenario.repeats ?? 3}`).join(", ")} (+1 warm-up each, discarded)
             </p>
             <div className="mb-3 flex flex-wrap gap-2">
-                <button type="button" onClick={run} disabled={running} className="rounded border px-2 py-1 font-medium disabled:opacity-50">
+                <button type="button" onClick={() => run(scenarios)} disabled={running} className="rounded border px-2 py-1 font-medium disabled:opacity-50">
                     {running ? "running…" : "Run session"}
+                </button>
+                <button type="button" onClick={() => run(diagnostics)} disabled={running} className="rounded border px-2 py-1 font-medium disabled:opacity-50">
+                    Run zoom diagnostics
                 </button>
                 <button type="button" disabled={!markdown} onClick={() => void copyBaselineReport(markdown)} className="rounded border px-2 py-1 font-medium disabled:opacity-50">
                     Copy markdown

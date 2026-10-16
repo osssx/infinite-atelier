@@ -464,6 +464,16 @@ export type Scenario = {
      * distance. These must not live only in the pass/fail verdict.
      */
     notes?: () => string[];
+    /**
+     * Diagnostic hook: runs once the round is ready and before sampling, and may return a function to
+     * undo whatever it changed.
+     *
+     * Exists for causal experiments — mutating one suspected cause in a way that provably leaves the
+     * painted output unchanged, then re-measuring. That answers "what should change", which an
+     * observational trace cannot, and it is the independent A/B the design doc asked for on the
+     * world-layer SVG.
+     */
+    mutateDom?: () => (() => void) | undefined;
 };
 
 /** State captured immediately before the scripted input, handed to `assert` so it needs no globals. */
@@ -502,6 +512,7 @@ export type RoundPhase = "resetting" | "waiting-ready" | "settling" | "setup" | 
  */
 export async function runRound(scenario: Scenario, jankThresholdMs: number, onPhase?: (phase: string) => void): Promise<ScenarioOutcome> {
     const phase = (next: RoundPhase) => onPhase?.(`${scenario.id}: ${next}`);
+    let undoDom: (() => void) | undefined;
     try {
         assertPageVisible();
         phase("resetting");
@@ -519,6 +530,10 @@ export async function runRound(scenario: Scenario, jankThresholdMs: number, onPh
         // would start sampling with a write still pending and attribute its cost to the scenario.
         phase("settling");
         await waitForIdle({ stableFrames: 2 });
+
+        // After the reset has settled, so the DOM being mutated is this round's, and before sampling,
+        // so the mutation is in place for every measured frame.
+        undoDom = scenario.mutateDom?.();
 
         phase("setup");
         await scenario.setup?.();
@@ -610,6 +625,10 @@ export async function runRound(scenario: Scenario, jankThresholdMs: number, onPh
     } catch (error) {
         if (error instanceof PerfInvalidSampleError) return { ok: false, reason: error.reason, detail: error.detail };
         return { ok: false, reason: "unexpected-error", detail: error instanceof Error ? error.message : String(error) };
+    } finally {
+        // Always restored: the next round remounts the page anyway, but a diagnostic variant must not
+        // leak into a subsequently measured scenario within the same run.
+        undoDom?.();
     }
 }
 
@@ -1059,6 +1078,124 @@ export function createZoomBurstScenario(nodeCount = 1000, frames = 20): Scenario
         notes: () => [`k ${baseK.toFixed(4)} -> ${readViewport().k.toFixed(4)}`, `${eventsPerFrame} wheel events per frame`],
     };
 }
+
+// ---------------------------------------------------------------------------
+// Zoom diagnostics: a causal experiment on the world-layer SVG
+// ---------------------------------------------------------------------------
+
+/**
+ * The world layer — the one element in the canvas sized `10000x10000`, which the connections are
+ * drawn into. Found by class rather than by a `data-` attribute so this diagnostic needs no change to
+ * application source (which would have to be mirrored into every measured tree).
+ */
+function worldLayerSvg(): SVGSVGElement {
+    const container = requireContainer();
+    for (const candidate of container.querySelectorAll("svg")) {
+        const classes = typeof candidate.className === "string" ? candidate.className : candidate.className.baseVal;
+        if (classes.includes("10000px")) return candidate as SVGSVGElement;
+    }
+    throw new PerfInvalidSampleError("no-world-layer", "could not find the 10000x10000 SVG inside the canvas");
+}
+
+export type ZoomDiagnosticVariant = "baseline" | "no-translatez" | "small-box" | "both" | "svg-hidden" | "nt-no-strokes" | "nt-no-visual-strokes" | "nt-no-hit-strokes";
+
+/** Sets an inline stroke-width on matching paths; returns an undo that clears it again. */
+function setStrokeWidths(svg: SVGSVGElement, matches: (path: SVGPathElement) => boolean, width: string): () => void {
+    const touched: SVGPathElement[] = [];
+    for (const candidate of svg.querySelectorAll("path")) {
+        const path = candidate as SVGPathElement;
+        if (!matches(path)) continue;
+        touched.push(path);
+        // Inline style beats the presentation attribute, which is how the app sets these.
+        path.style.strokeWidth = width;
+    }
+    return () => {
+        for (const path of touched) path.style.strokeWidth = "";
+    };
+}
+
+/**
+ * Each variant changes exactly one thing about the world layer, then the zoom scenario is re-measured.
+ *
+ * The first three are chosen to leave the painted output **identical**: the element is
+ * `overflow-visible`, so shrinking its own box to 1x1 changes nothing that is drawn — every path is
+ * still painted at the same world coordinates. `svg-hidden` is the exception and is labelled as such:
+ * it removes the edges entirely, so it does not isolate a cause, it only upper-bounds the whole
+ * layer's contribution. Compare each variant's `paths` count against the baseline to confirm the
+ * comparison was fair.
+ *
+ * The `nt-*` group decomposes what is left *after* `translateZ(0)` is removed — the largest remaining
+ * share was ~62%, and the question is whether that is the visible strokes or the 16px transparent hit
+ * paths. The hit paths are the more interesting answer, because they are pure implementation detail:
+ * nothing about them is visible, so they could be made cheaper without any visual change.
+ */
+function applyZoomVariant(variant: ZoomDiagnosticVariant): () => void {
+    const svg = worldLayerSvg();
+    const undos: (() => void)[] = [];
+    const original = { transform: svg.style.transform, width: svg.style.width, height: svg.style.height, display: svg.style.display };
+    undos.push(() => {
+        svg.style.transform = original.transform;
+        svg.style.width = original.width;
+        svg.style.height = original.height;
+        svg.style.display = original.display;
+    });
+
+    const isHitPath = (path: SVGPathElement) => path.getAttribute("stroke") === "transparent";
+
+    if (variant === "no-translatez" || variant === "both" || variant.startsWith("nt-")) svg.style.transform = "none";
+    if (variant === "small-box" || variant === "both") {
+        svg.style.width = "1px";
+        svg.style.height = "1px";
+    }
+    if (variant === "svg-hidden") svg.style.display = "none";
+    if (variant === "nt-no-strokes") undos.push(setStrokeWidths(svg, () => true, "0"));
+    if (variant === "nt-no-visual-strokes") undos.push(setStrokeWidths(svg, (path) => !isHitPath(path), "0"));
+    if (variant === "nt-no-hit-strokes") undos.push(setStrokeWidths(svg, isHitPath, "0"));
+
+    return () => {
+        for (const undo of undos) undo();
+    };
+}
+
+/**
+ * Frame count deliberately matches `createZoomScenario`'s default.
+ *
+ * An earlier version of this diagnostic used 40 frames to save time, and that silently changed the
+ * regime being measured: the zoom only reached k≈0.52 instead of k≈2.91, and the frame time was 26ms
+ * instead of 227ms. The cost of zooming is not a per-frame constant — it grows sharply with how far
+ * the view is zoomed — so a variant has to be compared at the same excursion as the measurement it is
+ * meant to explain. `zoom-diag:baseline` reproducing the measured `zoom-general` figure is the
+ * check that this diagnostic is not perturbing anything.
+ */
+export function createZoomDiagnosticScenario(variant: ZoomDiagnosticVariant, nodeCount = 1000): Scenario {
+    const base = createZoomScenario(nodeCount);
+    return {
+        ...base,
+        id: `zoom-diag:${variant}`,
+        label: `zoom diagnostic — ${variant}`,
+        repeats: 1,
+        mutateDom: () => applyZoomVariant(variant),
+    };
+}
+
+/**
+ * Run all variants and compare `p50` (and `paths`, to confirm the comparison was output-preserving).
+ *
+ * There is no `idle-baseline` in this set, so the jank threshold stays at its initial value and the
+ * `jank` column is meaningless here — the p50 and p95 columns are what to read.
+ *
+ * `small-box` and `both` have been dropped: they were measured and showed no benefit, which is a
+ * result (the fixed 10000x10000 box is not a cost), so re-running them only spends time. `baseline`
+ * and `no-translatez` are kept as references — they must reproduce the earlier figures, which is the
+ * check that this diagnostic is not perturbing the measurement.
+ */
+export const ZOOM_DIAGNOSTIC_SCENARIOS: Scenario[] = [
+    createZoomDiagnosticScenario("baseline"),
+    createZoomDiagnosticScenario("no-translatez"),
+    createZoomDiagnosticScenario("nt-no-strokes"),
+    createZoomDiagnosticScenario("nt-no-visual-strokes"),
+    createZoomDiagnosticScenario("nt-no-hit-strokes"),
+];
 
 // ---------------------------------------------------------------------------
 // Drag scenario

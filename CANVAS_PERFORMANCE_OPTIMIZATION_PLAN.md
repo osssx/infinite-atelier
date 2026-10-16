@@ -68,7 +68,11 @@
 > **落地情况**：已实现。`canvas-connection-culling.ts` 提供 `connectionControlHull`（四个控制点的 AABB；y 方向恰为两端点跨度，x 方向必须取四点的 min/max，否则回环连线漏绘）、`worldViewRect`、`cullConnections`。
 > 接入点：`canvas-connection-layer.tsx` 的 `ConnectionLayer`，margin 取 64 CSS px ÷ `viewport.k`，选中边通过 `keepIds` 始终保留。
 > `ConnectionPath` 已 memo，回调签名改为传 connectionId（`onSelect(id)` / `onContextMenu(event, id)` / `onDelete(id)`），父级用 `useCallback([])` 提供，否则 memo 无效。
-> **明确未做**：移除固定 10000×10000 SVG 与 `translateZ(0)`。原文档要求独立 A/B 实测，本轮无实测条件，故不碰坐标系统。
+> **已实测（原为「本轮未做」）**：`CANVAS_BASELINE.md` §6.1 用输出不变的因果实验把这一项拆开测了——
+> **移除固定 `10000×10000` 盒子：无收益**（−0.4%）；**移除 `translateZ(0)`：实测 −28.6%**
+> （`zoom-general` p50 226.80 → 162.00，p95 −47%），且 pan/marquee/drag/idle 全部无回退。**`translateZ(0)` 已移除；盒子保留。**
+> 未采纳的还有 `vector-effect="non-scaling-stroke"`（实测约 3.7%，在噪声内）。剩余唯一杠杆是视口裁剪，
+> 仍需先设计坐标系统改动。
 
 **P0-C：拖拽/框选热路径**。
 - 将 initialSelectedNodes 改为 Map<id, originalPos>，使查找 O(1)，不再在循环内 .find。

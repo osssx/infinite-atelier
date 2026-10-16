@@ -3,10 +3,12 @@ import { memo, type CSSProperties, type MouseEvent as ReactMouseEvent } from "re
 import type { CanvasConnection, CanvasNodeData, ConnectionHandle, Position } from "@/types/canvas";
 import { ActiveConnectionPath, ConnectionPath } from "./canvas-connections";
 
-// The world layer is a fixed 10000x10000 box; `overflow-visible` lets Bézier curves escape it and
-// `translateZ(0)` keeps the whole layer on one compositing layer.
+// The world layer is a fixed 10000x10000 box and `overflow-visible` lets Bézier curves escape it.
+// There is deliberately no `translateZ(0)`: forcing this element onto its own compositing layer made
+// every `scale` change re-rasterise the whole layer, which measured as ~31% of the cost of zooming.
+// (The 10000x10000 box itself was measured too and costs nothing — see CANVAS_BASELINE.md §6.1.)
 const WORLD_SVG_CLASS = "absolute left-0 top-0 h-[10000px] w-[10000px] overflow-visible";
-const WORLD_SVG_STYLE: CSSProperties = { pointerEvents: "none", transform: "translateZ(0)", zIndex: 0 };
+const WORLD_SVG_STYLE: CSSProperties = { pointerEvents: "none", zIndex: 0 };
 
 type ConnectionLayerProps = {
     /** Already culled to the viewport by the controller. */

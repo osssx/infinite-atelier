@@ -1,0 +1,1452 @@
+import perfPixelUrl from "@/assets/perf-pixel.svg?no-inline";
+
+import { router } from "@/router";
+import { canvasPerfBridgeState } from "@/lib/canvas/canvas-perf-bridge-state";
+import { buildCanvasFixture } from "@/lib/canvas/canvas-fixtures";
+import { PERF_MODE } from "@/lib/perf-mode";
+import { useCanvasStore, type CanvasProject } from "@/stores/canvas/use-canvas-store";
+import type { ViewportTransform } from "@/types/canvas";
+
+/** Bumped whenever the harness changes in a way that invalidates earlier measurements. */
+export const HARNESS_VERSION = "1";
+
+/** Every measured tree must use this seed so the three groups see the same graph. */
+export const PERF_SEED = 7;
+
+export const PERF_PROJECT_PREFIX = "perf-fixture";
+export const PERF_PROJECT_TITLE = "[perf] fixture";
+
+/**
+ * Shared fixture image. Imported with `?no-inline` on purpose: Vite would otherwise inline this small
+ * SVG as a `data:` URL, and `hydrateCanvasImages` sends any `data:image/` content through
+ * `uploadImage` — one blob write per image node. The acceptance check is that the built URL is a real
+ * same-origin HTTP URL, not a data URL.
+ */
+export const PERF_MEDIA_URL = perfPixelUrl;
+
+const HYDRATE_TIMEOUT_MS = 15_000;
+const READY_TIMEOUT_MS = 15_000;
+const IDLE_TIMEOUT_MS = 10_000;
+const UNMOUNT_TIMEOUT_MS = 10_000;
+/** Frames sampled after the last scripted input, so its work lands inside the measured window. */
+const SETTLE_FRAMES = 3;
+
+/** A sample that must not be counted. `reason` is recorded verbatim in the report. */
+export class PerfInvalidSampleError extends Error {
+    constructor(
+        readonly reason: string,
+        readonly detail?: string,
+    ) {
+        super(detail ? `${reason}: ${detail}` : reason);
+        this.name = "PerfInvalidSampleError";
+    }
+}
+
+export function isCanvasPerfEnabled(): boolean {
+    return PERF_MODE;
+}
+
+// ---------------------------------------------------------------------------
+// Pointer capture shim
+// ---------------------------------------------------------------------------
+
+// Synthetic PointerEvents have no active pointer behind them, so `setPointerCapture` throws
+// NotFoundError before the gesture state is assigned and the gesture never starts. The shim keeps
+// the fix out of application source: both measured trees get byte-identical behaviour, whereas a
+// source patch applied to only one of them would silently make one side unable to pan.
+let savedPointerCapture: { capture: typeof Element.prototype.setPointerCapture; has: typeof Element.prototype.hasPointerCapture; release: typeof Element.prototype.releasePointerCapture } | null = null;
+
+export function installPointerCaptureShim(): void {
+    if (!PERF_MODE || savedPointerCapture) return;
+    savedPointerCapture = {
+        capture: Element.prototype.setPointerCapture,
+        has: Element.prototype.hasPointerCapture,
+        release: Element.prototype.releasePointerCapture,
+    };
+    Element.prototype.setPointerCapture = function setPointerCapture() {};
+    Element.prototype.hasPointerCapture = function hasPointerCapture() {
+        return false;
+    };
+    Element.prototype.releasePointerCapture = function releasePointerCapture() {};
+}
+
+export function restorePointerCapture(): void {
+    if (!savedPointerCapture) return;
+    Element.prototype.setPointerCapture = savedPointerCapture.capture;
+    Element.prototype.hasPointerCapture = savedPointerCapture.has;
+    Element.prototype.releasePointerCapture = savedPointerCapture.release;
+    savedPointerCapture = null;
+}
+
+// ---------------------------------------------------------------------------
+// Fixture project
+// ---------------------------------------------------------------------------
+
+export function perfProjectId(nodeCount: number): string {
+    return `${PERF_PROJECT_PREFIX}-${nodeCount}`;
+}
+
+/**
+ * Injects the fixture as its own project. `replaceProjects` swaps the entire list, so the projects
+ * that are not ours are passed straight back through — replacing with just the fixture would delete
+ * the user's work. Re-running replaces rather than appends.
+ */
+export function provisionPerfProject(nodeCount: number, seed = PERF_SEED): string {
+    const { nodes, connections } = buildCanvasFixture({ nodeCount, seed, mediaMode: "static", staticMediaUrl: PERF_MEDIA_URL });
+    const id = perfProjectId(nodeCount);
+    const now = new Date().toISOString();
+    const project: CanvasProject = {
+        id,
+        title: `${PERF_PROJECT_TITLE} ${nodeCount}`,
+        createdAt: now,
+        updatedAt: now,
+        nodes,
+        connections,
+        chatSessions: [],
+        activeChatId: null,
+        backgroundMode: "lines",
+        showImageInfo: false,
+        // The load path assigns this with no fallback, so it must be a valid transform.
+        viewport: { x: 0, y: 0, k: 1 },
+    };
+    const others = useCanvasStore.getState().projects.filter((candidate) => !candidate.id.startsWith(PERF_PROJECT_PREFIX));
+    useCanvasStore.getState().replaceProjects([...others, project]);
+    return id;
+}
+
+/**
+ * Waits for the real hydrate. Never fakes `hydrated: true` as a shortcut: a hydrate arriving after
+ * the fixture was injected replaces `projects` wholesale and would silently drop it.
+ */
+export async function waitForHydration(timeoutMs = HYDRATE_TIMEOUT_MS): Promise<void> {
+    if (useCanvasStore.getState().hydrated) return;
+    await new Promise<void>((resolve, reject) => {
+        const timer = window.setTimeout(() => {
+            unsubscribe();
+            reject(new PerfInvalidSampleError("hydrate-timeout", `store did not hydrate within ${timeoutMs}ms`));
+        }, timeoutMs);
+        const unsubscribe = useCanvasStore.subscribe((state) => {
+            if (!state.hydrated) return;
+            window.clearTimeout(timer);
+            unsubscribe();
+            resolve();
+        });
+    });
+}
+
+/** Waits until the canvas page reports a load newer than `afterToken`. Returns the new token. */
+export async function waitForCanvasReady(afterToken: number, timeoutMs = READY_TIMEOUT_MS): Promise<number> {
+    await waitUntil(() => canvasPerfBridgeState.readyToken > afterToken, timeoutMs, "ready-timeout", `canvas did not become ready within ${timeoutMs}ms`);
+    return canvasPerfBridgeState.readyToken;
+}
+
+/** Waits until the canvas page has unmounted, so the next round provably remounts. */
+export async function waitForCanvasUnmount(timeoutMs = UNMOUNT_TIMEOUT_MS): Promise<void> {
+    await waitUntil(() => !canvasPerfBridgeState.container, timeoutMs, "unmount-timeout", `canvas did not unmount within ${timeoutMs}ms`);
+}
+
+// ---------------------------------------------------------------------------
+// Frame helpers
+// ---------------------------------------------------------------------------
+
+export function nextFrame(): Promise<number> {
+    return new Promise((resolve) => requestAnimationFrame(resolve));
+}
+
+/**
+ * Polls `predicate` once per frame until it holds.
+ *
+ * The abort flag is not optional: every wait in this harness used to be bounded only by a
+ * `performance.now()` comparison inside its own loop, which can never fire when rAF itself is
+ * throttled (hidden or occluded tab). The whole session would then hang with no visible reason. The
+ * deadline is therefore owned by a timer, and it flips this flag so the detached loop stops.
+ */
+async function pollUntil(predicate: () => boolean, signal: { aborted: boolean }): Promise<void> {
+    for (;;) {
+        if (predicate()) return;
+        if (signal.aborted) throw new PerfInvalidSampleError("aborted", "wait was abandoned by its deadline");
+        await nextFrame();
+    }
+}
+
+/** Rejects from a `setTimeout` rather than from the polling loop, so it still fires if rAF stalls. */
+function withDeadline<T>(work: Promise<T>, timeoutMs: number, reason: string, detail: string): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+        const timer = window.setTimeout(() => reject(new PerfInvalidSampleError(reason, detail)), timeoutMs);
+        work.then(
+            (value) => {
+                window.clearTimeout(timer);
+                resolve(value);
+            },
+            (error: unknown) => {
+                window.clearTimeout(timer);
+                reject(error);
+            },
+        );
+    });
+}
+
+/** rAF is paused in a hidden tab, which would silently freeze every wait and inflate every gap. */
+function assertPageVisible(): void {
+    if (document.visibilityState !== "visible") throw new PerfInvalidSampleError("page-not-visible", `document.visibilityState is "${document.visibilityState}"`);
+}
+
+async function waitUntil(predicate: () => boolean, timeoutMs: number, reason: string, detail: string): Promise<void> {
+    const signal = { aborted: false };
+    try {
+        await withDeadline(pollUntil(predicate, signal), timeoutMs, reason, detail);
+    } catch (error) {
+        signal.aborted = true;
+        throw error;
+    }
+}
+
+/**
+ * Runs `fn` once per animation frame. Pacing input from inside rAF is what makes the input sequence
+ * reproducible: the same frame index carries the same event in every group. It does not make frame
+ * *timing* comparable — that is what the statistics are for.
+ */
+export async function pumpFrames(count: number, fn: (index: number) => void): Promise<void> {
+    for (let index = 0; index < count; index += 1) {
+        await nextFrame();
+        // A hidden tab pauses rAF; without this the sequence would stall silently instead of failing.
+        assertPageVisible();
+        fn(index);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Synthetic input
+// ---------------------------------------------------------------------------
+
+export function requireContainer(): HTMLElement {
+    const container = canvasPerfBridgeState.container;
+    if (!container) throw new PerfInvalidSampleError("no-container", "canvas container is not mounted");
+    return container;
+}
+
+function pointerInit(clientX: number, clientY: number, overrides: PointerEventInit = {}): PointerEventInit {
+    return { bubbles: true, cancelable: true, composed: true, clientX, clientY, button: 0, buttons: 1, isPrimary: true, pointerId: 1, pointerType: "mouse", ...overrides };
+}
+
+export function dispatchPointer(target: EventTarget, type: string, clientX: number, clientY: number, overrides: PointerEventInit = {}): void {
+    target.dispatchEvent(new PointerEvent(type, pointerInit(clientX, clientY, overrides)));
+}
+
+export function dispatchMouse(target: EventTarget, type: string, clientX: number, clientY: number, overrides: MouseEventInit = {}): void {
+    target.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, composed: true, clientX, clientY, button: 0, buttons: 1, ...overrides }));
+}
+
+export function dispatchWheel(target: EventTarget, deltaY: number, clientX: number, clientY: number): void {
+    target.dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, composed: true, clientX, clientY, deltaY, deltaMode: 0 }));
+}
+
+/**
+ * Resolves the element a synthetic pointer press would actually hit. Asserted before every script so
+ * a scenario cannot silently drive the wrong element — a mistargeted press still "dispatches fine"
+ * and produces a plausible-looking frame number.
+ */
+export function hitTest(clientX: number, clientY: number, predicate: (element: Element) => boolean, description: string): Element {
+    const element = document.elementFromPoint(clientX, clientY);
+    if (!element) throw new PerfInvalidSampleError("hit-test-miss", `nothing at (${clientX}, ${clientY}) for ${description}`);
+    if (!predicate(element)) throw new PerfInvalidSampleError("hit-test-wrong-target", `${description} hit <${element.tagName.toLowerCase()}${element.className ? `.${String(element.className).split(" ")[0]}` : ""}> instead`);
+    return element;
+}
+
+// ---------------------------------------------------------------------------
+// Live counts
+// ---------------------------------------------------------------------------
+
+export type LiveCounts = {
+    /** Mounted node elements — NOT the same as nodes intersecting the viewport (culling adds padding). */
+    mountedNodes: number;
+    mountedEdges: number;
+    svgPaths: number;
+    domNodes: number;
+    mediaElements: number;
+};
+
+/**
+ * Heavy DOM snapshots. Kept out of the sampling window on purpose: `querySelectorAll` over the whole
+ * canvas every frame would cost more than the thing being measured.
+ */
+export function snapshotCounts(): LiveCounts {
+    const container = requireContainer();
+    return {
+        mountedNodes: container.querySelectorAll("[data-node-id]").length,
+        mountedEdges: container.querySelectorAll("[data-connection-id]").length,
+        svgPaths: container.querySelectorAll("svg path").length,
+        domNodes: container.querySelectorAll("*").length,
+        mediaElements: container.querySelectorAll("img[src], video[src], audio[src]").length,
+    };
+}
+
+/** Cheap per-frame count, safe to sample inside the sampling window. */
+export function mountedNodeCount(): number {
+    return canvasPerfBridgeState.container?.querySelectorAll("[data-node-id]").length ?? 0;
+}
+
+/** How many node elements a subtree contributes — 1 if it is one, otherwise however many it holds. */
+function countNodeElements(root: Node): number {
+    if (!(root instanceof Element)) return 0;
+    if (root.matches("[data-node-id]")) return 1;
+    return root.querySelectorAll("[data-node-id]").length;
+}
+
+let mountedCounter: { container: HTMLElement; count: number; observer: MutationObserver } | null = null;
+
+/**
+ * Mounted-node count maintained incrementally, for use inside the sampling window.
+ *
+ * Calling `querySelectorAll` once per frame — which this originally did — scans the whole canvas
+ * every frame and its cost lands inside the very interval being measured. The plan calls that out
+ * explicitly. So the count is seeded once, outside the window, and then adjusted by a MutationObserver.
+ */
+export function mountedNodeCountFast(): number {
+    const container = canvasPerfBridgeState.container;
+    if (!container) return 0;
+    if (mountedCounter?.container === container) return mountedCounter.count;
+
+    mountedCounter?.observer.disconnect();
+    const state = { container, count: container.querySelectorAll("[data-node-id]").length, observer: null as unknown as MutationObserver };
+    state.observer = new MutationObserver((records) => {
+        for (const record of records) {
+            for (const added of record.addedNodes) state.count += countNodeElements(added);
+            for (const removed of record.removedNodes) state.count -= countNodeElements(removed);
+        }
+    });
+    state.observer.observe(container, { childList: true, subtree: true });
+    mountedCounter = state;
+    return state.count;
+}
+
+export function readViewport(): ViewportTransform {
+    return canvasPerfBridgeState.viewport;
+}
+
+export function applyViewport(viewport: ViewportTransform): void {
+    const setViewport = canvasPerfBridgeState.setViewport;
+    if (!setViewport) throw new PerfInvalidSampleError("no-set-viewport", "the canvas has not published its viewport setter");
+    setViewport(viewport);
+}
+
+// ---------------------------------------------------------------------------
+// Idle protocol
+// ---------------------------------------------------------------------------
+
+export type IdleOptions = {
+    stableFrames?: number;
+    quietMs?: number;
+    timeoutMs?: number;
+};
+
+/**
+ * Waits for a round to actually finish.
+ *
+ * A quiet DOM is not proof: after a gesture stops, the save chain is a 500ms viewport timer, then
+ * `updateProject`, then a 400ms store debounce, then an async write. So this requires the DOM to stop
+ * changing AND a quiet window long enough to cover those timers, with a hard timeout so a stalled
+ * 5000-node round aborts instead of hanging.
+ */
+export async function waitForIdle({ stableFrames = 3, quietMs = 1200, timeoutMs = IDLE_TIMEOUT_MS }: IdleOptions = {}): Promise<void> {
+    let stable = 0;
+    let lastSignature = "";
+    let quietSince = performance.now();
+    await waitUntil(
+        () => {
+            const signature = `${mountedNodeCountFast()}|${canvasPerfBridgeState.selectedNodeIds.size}|${canvasPerfBridgeState.viewport.x}|${canvasPerfBridgeState.viewport.y}|${canvasPerfBridgeState.viewport.k}`;
+            if (signature === lastSignature) {
+                stable += 1;
+            } else {
+                stable = 0;
+                lastSignature = signature;
+                quietSince = performance.now();
+            }
+            return stable >= stableFrames && performance.now() - quietSince >= quietMs;
+        },
+        timeoutMs,
+        "idle-timeout",
+        `round did not settle within ${timeoutMs}ms`,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Recording
+// ---------------------------------------------------------------------------
+
+export type FrameStats = {
+    frames: number;
+    durationMs: number;
+    fps: number;
+    mean: number;
+    p50: number;
+    p95: number;
+    p99: number;
+    max: number;
+    /** Frames slower than `jankThresholdMs`, which comes from the idle baseline, not this sample. */
+    jank: number;
+    jankThresholdMs: number;
+};
+
+function percentile(sorted: readonly number[], fraction: number): number {
+    if (!sorted.length) return 0;
+    const rank = Math.min(sorted.length - 1, Math.max(0, Math.ceil(fraction * sorted.length) - 1));
+    return sorted[rank];
+}
+
+export function summariseFrames(deltas: readonly number[], durationMs: number, jankThresholdMs: number): FrameStats {
+    const sorted = [...deltas].sort((a, b) => a - b);
+    const mean = deltas.length ? deltas.reduce((total, value) => total + value, 0) / deltas.length : 0;
+    return {
+        frames: deltas.length,
+        durationMs,
+        fps: durationMs > 0 ? (deltas.length / durationMs) * 1000 : 0,
+        mean,
+        p50: percentile(sorted, 0.5),
+        p95: percentile(sorted, 0.95),
+        p99: percentile(sorted, 0.99),
+        max: sorted.length ? sorted[sorted.length - 1] : 0,
+        jank: deltas.filter((delta) => delta > jankThresholdMs).length,
+        jankThresholdMs,
+    };
+}
+
+export type LongTaskSummary = { count: number; totalMs: number; maxMs: number };
+
+export type RoundResult = {
+    scenarioId: string;
+    nodeCount: number;
+    frames: FrameStats;
+    longTasks: LongTaskSummary;
+    mountedNodes: { min: number; median: number; max: number };
+    counts: LiveCounts;
+    viewportBefore: ViewportTransform;
+    viewportAfter: ViewportTransform;
+    selectedBefore: number;
+    selectedAfter: number;
+    /**
+     * Raw frame intervals. Retained so the idle baseline's jank count can be recomputed once its own
+     * measurement has established the threshold — it runs first, so judging it against the initial 0
+     * marked every single frame as jank.
+     */
+    deltasMs: number[];
+    /** Scenario-specific facts that belong in the report regardless of the verdict. */
+    notes: string[];
+};
+
+export type Scenario = {
+    id: string;
+    label: string;
+    nodeCount: number;
+    /** Frames of scripted input. */
+    frames: number;
+    /** Set the viewport once the round is ready. */
+    setup?: () => Promise<void> | void;
+    /** One input event per frame. */
+    script: (frameIndex: number) => void;
+    /** Throw a PerfInvalidSampleError when the interaction demonstrably did not take effect. */
+    assert?: (context: RoundContext) => void;
+    /** The scenario provides its own jank threshold (the idle baseline does). */
+    measuresIdleBaseline?: boolean;
+    /**
+     * Facts the round should carry into the report even when it passes — the achieved density when a
+     * target was unreachable, how many zoom frames were clamped at a limit, expected vs actual drag
+     * distance. These must not live only in the pass/fail verdict.
+     */
+    notes?: () => string[];
+};
+
+/** State captured immediately before the scripted input, handed to `assert` so it needs no globals. */
+export type RoundContext = {
+    viewportBefore: ViewportTransform;
+    selectedBefore: number;
+};
+
+export type ScenarioOutcome = { ok: true; result: RoundResult } | { ok: false; reason: string; detail?: string };
+
+/** Median of an already-sorted-friendly list, used to aggregate repeats. */
+function medianOf(values: readonly number[]): number {
+    if (!values.length) return 0;
+    const sorted = [...values].sort((a, b) => a - b);
+    const middle = Math.floor(sorted.length / 2);
+    return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+}
+
+export function medianCounts(values: readonly number[]): { min: number; median: number; max: number } {
+    return { min: values.length ? Math.min(...values) : 0, median: medianOf(values), max: values.length ? Math.max(...values) : 0 };
+}
+
+// ---------------------------------------------------------------------------
+// Round orchestration
+// ---------------------------------------------------------------------------
+
+/** Where a round currently is. Surfaced to the panel so a slow round never looks like a frozen one. */
+export type RoundPhase = "resetting" | "waiting-ready" | "settling" | "setup" | "sampling" | "asserting";
+
+/**
+ * Runs one measured round: reset (navigate away and back so the page provably remounts), wait for
+ * ready, settle, run the script, assert it took effect, settle again.
+ *
+ * Returning a value object instead of throwing keeps an invalid sample out of the aggregates without
+ * aborting the whole session.
+ */
+export async function runRound(scenario: Scenario, jankThresholdMs: number, onPhase?: (phase: string) => void): Promise<ScenarioOutcome> {
+    const phase = (next: RoundPhase) => onPhase?.(`${scenario.id}: ${next}`);
+    try {
+        assertPageVisible();
+        phase("resetting");
+        const projectId = perfProjectId(scenario.nodeCount);
+        const tokenBefore = canvasPerfBridgeState.readyToken;
+        await router.navigate("/canvas");
+        await waitForCanvasUnmount();
+        provisionPerfProject(scenario.nodeCount);
+        await router.navigate(`/canvas/${projectId}`);
+        phase("waiting-ready");
+        const token = await waitForCanvasReady(tokenBefore);
+        if (token <= tokenBefore) throw new PerfInvalidSampleError("stale-ready-token", "ready token did not advance");
+        // The default quiet window (1200ms) is deliberate: it has to outlast the save chain of a
+        // 500ms viewport timer, then `updateProject`, then a 400ms store debounce. A shorter window
+        // would start sampling with a write still pending and attribute its cost to the scenario.
+        phase("settling");
+        await waitForIdle({ stableFrames: 2 });
+
+        phase("setup");
+        await scenario.setup?.();
+        await waitForIdle({ stableFrames: 2 });
+
+        const viewportBefore = { ...readViewport() };
+        const selectedBefore = canvasPerfBridgeState.selectedNodeIds.size;
+
+        const deltas: number[] = [];
+        const mounted: number[] = [];
+        const longTasks: number[] = [];
+        const observer = new PerformanceObserver((list) => {
+            for (const entry of list.getEntries()) longTasks.push(entry.duration);
+        });
+        observer.observe({ type: "longtask", buffered: false });
+
+        let previous = performance.now();
+        const startedAt = previous;
+        const sample = () => {
+            const now = performance.now();
+            deltas.push(now - previous);
+            previous = now;
+            mounted.push(mountedNodeCountFast());
+        };
+
+        phase("sampling");
+        // The deadline lives outside the loop on purpose: a frame-paced loop cannot time itself out
+        // when rAF is what stopped. The budget is generous because the fit-all-zoom case really can
+        // take hundreds of ms a frame — that is a measurement, not a hang.
+        const frameBudgetMs = Math.max(20_000, scenario.frames * 3000);
+        try {
+            await withDeadline(
+                pumpFrames(scenario.frames, (index) => {
+                    sample();
+                    scenario.script(index);
+                }),
+                frameBudgetMs,
+                "frame-stall",
+                `scripted input did not complete within ${frameBudgetMs}ms`,
+            );
+        } catch (error) {
+            // A stall IS the measurement. Report how far it got and how slow the frames were, rather
+            // than discarding the slowest scenario as a bare timeout — that loses the only number the
+            // scenario exists to produce. The sample still stays out of every median.
+            if (error instanceof PerfInvalidSampleError && error.reason === "frame-stall") {
+                const sorted = [...deltas].sort((a, b) => a - b);
+                const medianFrame = sorted.length ? sorted[Math.floor(sorted.length / 2)] : 0;
+                const worstFrame = sorted.length ? sorted[sorted.length - 1] : 0;
+                throw new PerfInvalidSampleError(
+                    "frame-stall",
+                    `${deltas.length}/${scenario.frames} frames in ${frameBudgetMs}ms; median frame ${medianFrame.toFixed(1)}ms, max ${worstFrame.toFixed(1)}ms — slower than the budget, not hung`,
+                );
+            }
+            throw error;
+        }
+
+        // Let the work the final input triggered land inside the window rather than after it.
+        await pumpFrames(SETTLE_FRAMES, sample);
+        observer.disconnect();
+
+        // The first delta spans the gap between the setup idle and the first scripted frame, so it
+        // measures the harness's own scheduling rather than the app's.
+        deltas.shift();
+
+        const durationMs = performance.now() - startedAt;
+
+        phase("asserting");
+        scenario.assert?.({ viewportBefore, selectedBefore });
+
+        const viewportAfter = { ...readViewport() };
+        return {
+            ok: true,
+            result: {
+                scenarioId: scenario.id,
+                nodeCount: scenario.nodeCount,
+                frames: summariseFrames(deltas, durationMs, jankThresholdMs),
+                longTasks: { count: longTasks.length, totalMs: longTasks.reduce((total, value) => total + value, 0), maxMs: longTasks.length ? Math.max(...longTasks) : 0 },
+                mountedNodes: medianCounts(mounted),
+                counts: snapshotCounts(),
+                viewportBefore,
+                viewportAfter,
+                selectedBefore,
+                selectedAfter: canvasPerfBridgeState.selectedNodeIds.size,
+                deltasMs: deltas,
+                notes: scenario.notes?.() ?? [],
+            },
+        };
+    } catch (error) {
+        if (error instanceof PerfInvalidSampleError) return { ok: false, reason: error.reason, detail: error.detail };
+        return { ok: false, reason: "unexpected-error", detail: error instanceof Error ? error.message : String(error) };
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Environment
+// ---------------------------------------------------------------------------
+
+export type PerfEnv = {
+    harnessVersion: string;
+    userAgent: string;
+    devicePixelRatio: number;
+    viewportWidth: number;
+    viewportHeight: number;
+    hardwareConcurrency: number;
+    canvasRect: { width: number; height: number } | null;
+    /** Reported because rAF is quantised to it, which is what the idle baseline measures. */
+    idleFrameMs: number | null;
+};
+
+export function snapshotEnvironment(idleFrameMs: number | null = null): PerfEnv {
+    const rect = canvasPerfBridgeState.container?.getBoundingClientRect() ?? null;
+    return {
+        harnessVersion: HARNESS_VERSION,
+        userAgent: navigator.userAgent,
+        devicePixelRatio: window.devicePixelRatio,
+        viewportWidth: window.innerWidth,
+        viewportHeight: window.innerHeight,
+        hardwareConcurrency: navigator.hardwareConcurrency ?? 0,
+        canvasRect: rect ? { width: Math.round(rect.width), height: Math.round(rect.height) } : null,
+        idleFrameMs,
+    };
+}
+
+// ---------------------------------------------------------------------------
+// Viewport solving
+// ---------------------------------------------------------------------------
+
+const MIN_K = 0.05;
+const MAX_K = 5;
+const CULL_PADDING = 280;
+
+function graphBounds() {
+    const nodes = canvasPerfBridgeState.nodes;
+    let left = Infinity;
+    let top = Infinity;
+    let right = -Infinity;
+    let bottom = -Infinity;
+    for (const node of nodes) {
+        left = Math.min(left, node.position.x);
+        top = Math.min(top, node.position.y);
+        right = Math.max(right, node.position.x + node.width);
+        bottom = Math.max(bottom, node.position.y + node.height);
+    }
+    if (!Number.isFinite(left)) return { left: 0, top: 0, right: 0, bottom: 0 };
+    return { left, top, right, bottom };
+}
+
+function canvasSize(): { width: number; height: number } {
+    const rect = requireContainer().getBoundingClientRect();
+    return { width: rect.width, height: rect.height };
+}
+
+/**
+ * Counts nodes whose padded bounding box overlaps the viewport — the same predicate the app's culling
+ * uses. Computed from graph data, not measured in the DOM, so it can drive a binary search without
+ * applying a viewport first.
+ */
+function countInViewport(viewport: ViewportTransform, size: { width: number; height: number }): number {
+    const viewLeft = -viewport.x / viewport.k - CULL_PADDING;
+    const viewTop = -viewport.y / viewport.k - CULL_PADDING;
+    const viewRight = viewLeft + size.width / viewport.k + CULL_PADDING * 2;
+    const viewBottom = viewTop + size.height / viewport.k + CULL_PADDING * 2;
+    let count = 0;
+    for (const node of canvasPerfBridgeState.nodes) {
+        if (node.position.x + node.width > viewLeft && node.position.x < viewRight && node.position.y + node.height > viewTop && node.position.y < viewBottom) count += 1;
+    }
+    return count;
+}
+
+/** Viewport centred on the graph's bounding box at a given zoom. */
+export function centredViewport(k: number): ViewportTransform {
+    const bounds = graphBounds();
+    const size = canvasSize();
+    const centreX = (bounds.left + bounds.right) / 2;
+    const centreY = (bounds.top + bounds.bottom) / 2;
+    return { x: size.width / 2 - centreX * k, y: size.height / 2 - centreY * k, k };
+}
+
+/** Smallest zoom that still fits the whole graph, clamped by the app's own ceiling. */
+export function fitViewport(): ViewportTransform {
+    const bounds = graphBounds();
+    const size = canvasSize();
+    const width = Math.max(bounds.right - bounds.left, 1);
+    const height = Math.max(bounds.bottom - bounds.top, 1);
+    const k = Math.min(Math.max(Math.min(size.width / width, size.height / height), MIN_K), MAX_K);
+    return centredViewport(k);
+}
+
+export type SolvedViewport = { viewport: ViewportTransform; predicted: number; achieved: boolean };
+
+/**
+ * Binary-searches the zoom that mounts roughly `target` nodes. Reports the predicted count and
+ * whether the target was reachable at all — the plan is explicit that a scenario must report the
+ * real number rather than force the target by adjusting the fixture.
+ */
+export function solveViewport(targetMounted: number): SolvedViewport {
+    const size = canvasSize();
+    let low = MIN_K;
+    let high = MAX_K;
+    let best = fitViewport();
+    for (let step = 0; step < 40; step += 1) {
+        const mid = (low + high) / 2;
+        const candidate = centredViewport(mid);
+        const predicted = countInViewport(candidate, size);
+        best = candidate;
+        if (predicted === targetMounted) return { viewport: candidate, predicted, achieved: true };
+        if (predicted > targetMounted) low = mid;
+        else high = mid;
+    }
+    const predicted = countInViewport(best, size);
+    return { viewport: best, predicted, achieved: Math.abs(predicted - targetMounted) <= Math.max(25, targetMounted * 0.15) };
+}
+
+// ---------------------------------------------------------------------------
+// Input targets
+// ---------------------------------------------------------------------------
+
+/**
+ * True for elements the canvas would treat as background. A connection's transparent hit path counts
+ * as foreground: pressing it selects the edge rather than starting a pan or marquee.
+ */
+function isBackgroundElement(element: Element): boolean {
+    return !element.closest("[data-node-id], [data-connection-id]");
+}
+
+/** A point inside the canvas that a press would actually land on the background, not on a node or edge. */
+export function findBackgroundPoint(): { x: number; y: number } {
+    const container = requireContainer();
+    const rect = container.getBoundingClientRect();
+    // A grid, not a handful of fixed candidates. This fixture mounts hundreds of nodes and — more to
+    // the point — the connection hit paths are 16px wide with 600+ edges crossing the view, so they
+    // cover most of the canvas. A few candidate points reliably landed on one and the round was
+    // rejected; scanning finds a genuinely free pixel instead of weakening the predicate.
+    const columns = 24;
+    const rows = 16;
+    for (let row = 1; row < rows; row += 1) {
+        for (let column = 1; column < columns; column += 1) {
+            const point = { x: rect.left + (rect.width * column) / columns, y: rect.top + (rect.height * row) / rows };
+            const element = document.elementFromPoint(point.x, point.y);
+            if (element && container.contains(element) && isBackgroundElement(element)) return point;
+        }
+    }
+    throw new PerfInvalidSampleError("no-background-point", `no free pixel on a ${columns}x${rows} grid over ${Math.round(rect.width)}x${Math.round(rect.height)}`);
+}
+
+/**
+ * Centre of a mounted image node. The drag handler is bound to the node's inner body, while
+ * `data-node-id` and the selection capture handler sit on the outer element — dispatching at the
+ * outer element only bubbles *up*, so it never reaches the handler that starts a drag.
+ */
+export function findDraggableNodeTarget(): { nodeId: string; x: number; y: number; target: Element } {
+    const container = requireContainer();
+    const nodes = [...container.querySelectorAll<HTMLElement>("[data-node-id]")];
+    for (const node of nodes) {
+        const rect = node.getBoundingClientRect();
+        if (rect.width < 40 || rect.height < 40) continue;
+        const x = rect.left + rect.width / 2;
+        const y = rect.top + rect.height / 2;
+        const element = document.elementFromPoint(x, y);
+        if (!element || !node.contains(element)) continue;
+        // Skip handles, dots, toolbars and editors: only the plain content body starts a drag.
+        if (element.closest("button, input, textarea, [data-canvas-no-zoom], [contenteditable='true']")) continue;
+        const nodeId = node.dataset.nodeId;
+        if (!nodeId) continue;
+        return { nodeId, x, y, target: element };
+    }
+    throw new PerfInvalidSampleError("no-draggable-node", "no mounted node offered a draggable body point");
+}
+
+// ---------------------------------------------------------------------------
+// Scenarios
+// ---------------------------------------------------------------------------
+
+const GENERAL_ZOOM_TARGET = 200;
+
+/** No input at all. Establishes the idle frame interval that the jank threshold is fixed against. */
+export function createIdleBaselineScenario(nodeCount = 1000): Scenario {
+    return {
+        id: "idle-baseline",
+        label: "idle (no input)",
+        nodeCount,
+        frames: 180,
+        script: () => {},
+        measuresIdleBaseline: true,
+    };
+}
+
+/** A point inside the canvas plus the element a press there would actually hit. */
+function pointInsideContainer(): { x: number; y: number; element: Element } {
+    const container = requireContainer();
+    const rect = container.getBoundingClientRect();
+    const point = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+    const element = document.elementFromPoint(point.x, point.y);
+    if (!element || !container.contains(element)) throw new PerfInvalidSampleError("no-canvas-point", "the canvas centre is not inside the container — is an overlay covering it?");
+    return { ...point, element };
+}
+
+/**
+ * Background drag, with the MIDDLE button.
+ *
+ * The app pans on `button === 1` regardless of what is under the cursor, and that matters here: at the
+ * zoom this scenario solves for, the viewport is genuinely covered — nodes plus 600-odd edges whose
+ * transparent hit paths are 16px wide. A 24x16 grid search found no free pixel, because there is not
+ * one; left-dragging empty space is not a gesture a user could perform at this density. Middle-drag
+ * is, and it takes exactly the same code path.
+ */
+export function createPanScenario(nodeCount = 1000, frames = 180): Scenario {
+    let origin: { x: number; y: number } | null = null;
+    return {
+        id: "pan-general",
+        label: "pan (middle drag), general zoom",
+        nodeCount,
+        frames,
+        setup: () => {
+            const solved = solveViewport(GENERAL_ZOOM_TARGET);
+            applyViewport(solved.viewport);
+        },
+        script: (frame) => {
+            if (frame === 0) {
+                const start = pointInsideContainer();
+                origin = { x: start.x, y: start.y };
+                dispatchPointer(start.element, "pointerdown", start.x, start.y, { button: 1, buttons: 4 });
+                return;
+            }
+            if (!origin) throw new PerfInvalidSampleError("pan-not-started", "frame 0 did not establish a drag origin");
+            const x = origin.x + frame * 2;
+            dispatchPointer(window, "pointermove", x, origin.y, { buttons: 4 });
+            if (frame === frames - 1) dispatchPointer(window, "pointerup", x, origin.y, { button: 1, buttons: 0 });
+        },
+        assert: ({ viewportBefore }) => {
+            const viewport = readViewport();
+            if (viewport.x === viewportBefore.x && viewport.y === viewportBefore.y) throw new PerfInvalidSampleError("pan-had-no-effect", "viewport did not move");
+        },
+    };
+}
+
+// ---------------------------------------------------------------------------
+// Node helpers
+// ---------------------------------------------------------------------------
+
+function nodePosition(nodeId: string): { x: number; y: number } | null {
+    const node = canvasPerfBridgeState.nodes.find((candidate) => candidate.id === nodeId);
+    return node ? { x: node.position.x, y: node.position.y } : null;
+}
+
+/** id -> rounded position, for "did anything else move?" comparisons. */
+function positionSignatures(): Map<string, string> {
+    return new Map(canvasPerfBridgeState.nodes.map((node) => [node.id, `${Math.round(node.position.x)},${Math.round(node.position.y)}`]));
+}
+
+function movedNodeIds(before: Map<string, string>): string[] {
+    const moved: string[] = [];
+    for (const node of canvasPerfBridgeState.nodes) {
+        const previous = before.get(node.id);
+        if (previous !== undefined && previous !== `${Math.round(node.position.x)},${Math.round(node.position.y)}`) moved.push(node.id);
+    }
+    return moved;
+}
+
+/** World point under a client coordinate, using the same convention as the app's screenToCanvas. */
+function worldUnder(clientX: number, clientY: number): { x: number; y: number } {
+    const rect = requireContainer().getBoundingClientRect();
+    const viewport = readViewport();
+    return { x: (clientX - rect.left - viewport.x) / viewport.k, y: (clientY - rect.top - viewport.y) / viewport.k };
+}
+
+// ---------------------------------------------------------------------------
+// Zoom scenarios
+// ---------------------------------------------------------------------------
+
+/** One wheel notch is `1.1^(-deltaY/100)`; a quarter notch keeps a 180-frame sweep inside 0.05–5. */
+const ZOOM_DELTA_PER_FRAME = 25;
+
+/**
+ * Anchor for wheel events: a coordinate that matters, plus the element to dispatch on.
+ *
+ * The element is deliberately the container, never whatever `elementFromPoint` returns at that
+ * coordinate. A hit-tested element can be culled away mid-sequence as the zoom changes, and an event
+ * dispatched on a detached node never reaches React's root listener — so the wheel events would stop
+ * being delivered and the round would fail with a small, baffling drift instead of a clear cause. The
+ * container is always mounted, and the app's own wheel guard (`closest("[data-canvas-no-zoom],...")`)
+ * passes for it exactly as it would for a genuinely empty pixel.
+ */
+function zoomAnchor(): { x: number; y: number; element: Element } {
+    const container = requireContainer();
+    const rect = container.getBoundingClientRect();
+    return { x: rect.left + rect.width * 0.4, y: rect.top + rect.height * 0.35, element: container };
+}
+
+/**
+ * Wheel zoom in, then the same distance back out.
+ *
+ * Two things are asserted, and both would have caught the wheel bug this harness was partly written to
+ * measure: k must return to where it started (a dropped delta would not cancel), and the world point
+ * under the anchor must not drift (that is what anchored zoom means). Frames where k did not move
+ * because a limit was reached are counted separately rather than averaged into the zoom cost.
+ */
+export function createZoomScenario(nodeCount = 1000, frames = 180): Scenario {
+    const half = Math.floor(frames / 2);
+    let anchor: { x: number; y: number; element: Element } | null = null;
+    let baseK = 0;
+    let anchorWorld: { x: number; y: number } | null = null;
+    let previousK: number | null = null;
+    let stalledFrames = 0;
+    let kAtTurn = 0;
+    let stepsUp = 0;
+    let stepsDown = 0;
+
+    const drift = () => (anchor && anchorWorld ? Math.hypot(worldUnder(anchor.x, anchor.y).x - anchorWorld.x, worldUnder(anchor.x, anchor.y).y - anchorWorld.y) : 0);
+    const expectedTurn = () => baseK * Math.pow(1.1, (ZOOM_DELTA_PER_FRAME / 100) * half);
+    /** How many zoom steps the turn reading is behind. A lagged read, not a lost event. */
+    const turnLagSteps = () => (kAtTurn > 0 && baseK > 0 ? Math.log(expectedTurn() / kAtTurn) / Math.log(Math.pow(1.1, ZOOM_DELTA_PER_FRAME / 100)) : 0);
+
+    return {
+        id: "zoom-general",
+        label: "wheel zoom in then out, general density",
+        nodeCount,
+        frames,
+        setup: () => {
+            applyViewport(solveViewport(GENERAL_ZOOM_TARGET).viewport);
+        },
+        script: (frame) => {
+            if (frame === 0) {
+                anchor = zoomAnchor();
+                baseK = readViewport().k;
+                anchorWorld = worldUnder(anchor.x, anchor.y);
+                previousK = baseK;
+                stalledFrames = 0;
+                kAtTurn = 0;
+                stepsUp = 0;
+                stepsDown = 0;
+            }
+            if (!anchor) throw new PerfInvalidSampleError("zoom-not-started", "frame 0 did not establish an anchor");
+            const kAtStart = readViewport().k;
+            // The app flushes one wheel step per frame, so a frame whose k did not move was clamped.
+            const moved = previousK !== null && Math.abs(kAtStart - previousK) > 1e-9;
+            if (previousK !== null && !moved) stalledFrames += 1;
+            if (moved) {
+                if (frame < half) stepsUp += 1;
+                else stepsDown += 1;
+            }
+            previousK = kAtStart;
+            // The zoom-in half must have been fully applied by now. Checking here turns "the deltas
+            // were not delivered" into a precise diagnosis instead of a vague percentage shortfall.
+            if (frame === half) kAtTurn = kAtStart;
+            dispatchWheel(anchor.element, frame < half ? -ZOOM_DELTA_PER_FRAME : ZOOM_DELTA_PER_FRAME, anchor.x, anchor.y);
+        },
+        assert: () => {
+            // Asymmetric bound: a lagged read can only make this lower, never higher. The bridge
+            // republishes its snapshot from a layout effect, and at ~200ms a frame that read can sit a
+            // couple of steps behind — a measurement lag, not a lost event.
+            const turn = expectedTurn();
+            if (kAtTurn > 0 && (kAtTurn > turn * 1.02 || kAtTurn < turn * 0.8)) {
+                throw new PerfInvalidSampleError("zoom-half-mismatch", `after ${half} zoom-in frames k is ${kAtTurn.toFixed(4)}, expected ~${turn.toFixed(4)} — wheel events were not delivered`);
+            }
+            // Tolerance of 3% (about one step) rather than 1%: this scenario has intermittently come
+            // back one step short, on identical code, and a single step is not worth burning a round
+            // over — the pre-fix bug this guards against lost more than half the deltas. The phase step
+            // counts in the notes are what localise the discrepancy.
+            const after = readViewport();
+            if (baseK > 0 && Math.abs(after.k - baseK) / baseK > 0.03) throw new PerfInvalidSampleError("zoom-did-not-return", `k went ${baseK.toFixed(4)} -> ${after.k.toFixed(4)}; wheel deltas were lost`);
+            const movedWorld = drift();
+            if (movedWorld > 1) throw new PerfInvalidSampleError("zoom-anchor-drifted", `the anchored world point moved ${movedWorld.toFixed(3)} world units`);
+        },
+        notes: () => [
+            `k ${baseK.toFixed(4)} -> ${kAtTurn.toFixed(4)} at the turn (expected ~${expectedTurn().toFixed(4)}, ~${turnLagSteps().toFixed(1)} steps of read lag) -> ${readViewport().k.toFixed(4)}`,
+            // Deliberately worded as "did not advance" rather than "clamped", and labelled unreliable:
+            // the count comes from comparing k between consecutive frame starts, so at ~200ms a frame
+            // several applied steps can merge into one observed change and the count only ever
+            // UNDER-reports. The round trip above is the trustworthy check — this is a hint, not proof.
+            `unreliable hint: frames where k did not advance ${stalledFrames}/${frames}; observed steps up ${stepsUp}, down ${stepsDown} (${half} dispatched each phase)`,
+            `anchor drift ${drift().toFixed(4)} world units`,
+        ],
+    };
+}
+
+/**
+ * Several wheel events inside ONE frame.
+ *
+ * This is the shape the old handler got wrong: it read `viewport` from props, so every event in a
+ * batch computed from the same base and only the last one survived. The composed zoom must equal the
+ * product of all of them.
+ */
+export function createZoomBurstScenario(nodeCount = 1000, frames = 20): Scenario {
+    const eventsPerFrame = 5;
+    const deltaPerEvent = -20; // 1.1^0.2 per event, so 1.1 per frame
+    let anchor: { x: number; y: number; element: Element } | null = null;
+    let baseK = 0;
+    return {
+        id: "zoom-burst",
+        label: "wheel burst (5 events per frame)",
+        nodeCount,
+        frames,
+        setup: () => {
+            applyViewport(solveViewport(GENERAL_ZOOM_TARGET).viewport);
+        },
+        script: (frame) => {
+            if (frame === 0) {
+                anchor = zoomAnchor();
+                baseK = readViewport().k;
+            }
+            if (!anchor) throw new PerfInvalidSampleError("zoom-not-started", "frame 0 did not establish an anchor");
+            for (let index = 0; index < eventsPerFrame; index += 1) dispatchWheel(anchor.element, deltaPerEvent, anchor.x, anchor.y);
+        },
+        assert: () => {
+            const expected = baseK * Math.pow(1.1, (-deltaPerEvent / 100) * eventsPerFrame * frames);
+            const actual = readViewport().k;
+            if (expected > 0 && Math.abs(actual - expected) / expected > 0.02) throw new PerfInvalidSampleError("zoom-burst-lost-deltas", `expected ~${expected.toFixed(4)}, got ${actual.toFixed(4)} — wheel events in one frame are overwriting each other`);
+        },
+        notes: () => [`k ${baseK.toFixed(4)} -> ${readViewport().k.toFixed(4)}`, `${eventsPerFrame} wheel events per frame`],
+    };
+}
+
+// ---------------------------------------------------------------------------
+// Drag scenario
+// ---------------------------------------------------------------------------
+
+/**
+ * Drags one image node.
+ *
+ * Mouse events only, never pointerdown: a pointerdown on a node also reaches AtelierCanvas and could
+ * start a pan, which would make this measure the wrong gesture. The press targets the node's inner
+ * body — the drag handler lives there, so dispatching at the `data-node-id` root would bubble upwards
+ * and never reach it.
+ */
+export function createDragScenario(nodeCount = 1000, frames = 180): Scenario {
+    const perFramePx = 3;
+    let draggable: { nodeId: string; x: number; y: number; target: Element } | null = null;
+    let before: Map<string, string> | null = null;
+    let startPosition: { x: number; y: number } | null = null;
+    let expectedDx = 0;
+    let moved: string[] = [];
+    return {
+        id: "drag-single",
+        label: "drag one image node",
+        nodeCount,
+        frames,
+        setup: () => {
+            applyViewport(solveViewport(GENERAL_ZOOM_TARGET).viewport);
+        },
+        script: (frame) => {
+            if (frame === 0) {
+                const found = findDraggableNodeTarget();
+                draggable = found;
+                before = positionSignatures();
+                startPosition = nodePosition(found.nodeId);
+                expectedDx = ((frames - 1) * perFramePx) / readViewport().k;
+                dispatchMouse(found.target, "mousedown", found.x, found.y);
+                return;
+            }
+            const active = draggable;
+            if (!active) throw new PerfInvalidSampleError("drag-not-started", "frame 0 did not find a draggable node");
+            const x = active.x + frame * perFramePx;
+            dispatchMouse(window, "mousemove", x, active.y);
+            if (frame === frames - 1) dispatchMouse(window, "mouseup", x, active.y, { buttons: 0 });
+        },
+        assert: () => {
+            const active = draggable;
+            const snapshot = before;
+            const start = startPosition;
+            if (!active || !snapshot || !start) throw new PerfInvalidSampleError("drag-assert-missing", "no drag context was captured");
+            const after = nodePosition(active.nodeId);
+            if (!after) throw new PerfInvalidSampleError("drag-node-vanished", active.nodeId);
+            if (after.x === start.x && after.y === start.y) throw new PerfInvalidSampleError("drag-had-no-effect", `${active.nodeId} did not move`);
+            moved = movedNodeIds(snapshot);
+            // Dropping into a group legitimately re-positions the node, so the distance is reported
+            // rather than asserted. What is asserted is that the intended node moved and no other did.
+            if (!moved.includes(active.nodeId)) throw new PerfInvalidSampleError("drag-wrong-node", `moved [${moved.join(", ")}] but not ${active.nodeId}`);
+            if (moved.length > 1) throw new PerfInvalidSampleError("drag-moved-extra-nodes", `also moved [${moved.filter((id) => id !== active.nodeId).join(", ")}]`);
+        },
+        notes: () => {
+            const active = draggable;
+            const start = startPosition;
+            const after = active ? nodePosition(active.nodeId) : null;
+            const actualDx = after && start ? after.x - start.x : 0;
+            return [`drag dx: expected ${expectedDx.toFixed(1)}, actual ${actualDx.toFixed(1)} (group snapping may adjust)`, `nodes moved: ${moved.length}`];
+        },
+    };
+}
+
+// ---------------------------------------------------------------------------
+// Marquee scenario
+// ---------------------------------------------------------------------------
+
+/**
+ * Marquee selection.
+ *
+ * Unlike pan this genuinely needs an empty pixel, because the app only starts a marquee on a
+ * background click (`isBackgroundClick`), and at pan's density the viewport is fully covered. So the
+ * setup steps the zoom down until a free pixel exists and reports the density it had to settle for,
+ * rather than quietly changing what the gesture means.
+ *
+ * Also note the gesture is mixed: it starts on `pointerdown` but ends on `mouseup`.
+ */
+export function createMarqueeScenario(nodeCount = 1000, frames = 180): Scenario {
+    const perFrameX = 6;
+    const perFrameY = 3;
+    let start: { x: number; y: number; element: Element } | null = null;
+    let mountedAtStart = 0;
+    let achievedTarget = 0;
+    let usedFallback = false;
+    return {
+        id: "marquee",
+        label: "marquee selection",
+        nodeCount,
+        frames,
+        setup: async () => {
+            for (const target of [GENERAL_ZOOM_TARGET, 120, 80, 50, 30, 15]) {
+                applyViewport(solveViewport(target).viewport);
+                // Two frames so React commits and paints before hit-testing; without this the
+                // elementFromPoint below would still see the previous layout.
+                await nextFrame();
+                await nextFrame();
+                try {
+                    const point = findBackgroundPoint();
+                    const element = document.elementFromPoint(point.x, point.y);
+                    if (!element) continue;
+                    start = { ...point, element };
+                    mountedAtStart = mountedNodeCount();
+                    achievedTarget = target;
+                    return;
+                } catch {
+                    // No genuinely free pixel at this density; try a lower one.
+                }
+            }
+
+            // Recorded fallback. This fixture covers the viewport at every density — nodes get fewer
+            // but much larger as the zoom rises, so shrinking the mounted count does not open a gap.
+            // Targeting the container reproduces exactly what the app does for a real background
+            // click: its test is `target.closest("[data-node-id],[data-connection-id]")`, which the
+            // container satisfies the same way an empty pixel would. The marquee still runs and is
+            // still measured; what is lost is the claim that a user could have started it there.
+            applyViewport(solveViewport(GENERAL_ZOOM_TARGET).viewport);
+            await nextFrame();
+            await nextFrame();
+            const container = requireContainer();
+            const rect = container.getBoundingClientRect();
+            start = { x: rect.left + rect.width * 0.15, y: rect.top + rect.height * 0.15, element: container };
+            mountedAtStart = mountedNodeCount();
+            achievedTarget = GENERAL_ZOOM_TARGET;
+            usedFallback = true;
+        },
+        script: (frame) => {
+            if (!start) throw new PerfInvalidSampleError("marquee-not-started", "setup did not find a background point");
+            if (frame === 0) {
+                // ctrl flips the temporary tool to "select", which is what routes this to the marquee
+                // branch instead of the pan branch.
+                dispatchPointer(start.element, "pointerdown", start.x, start.y, { button: 0, buttons: 1, ctrlKey: true });
+                return;
+            }
+            const x = start.x + frame * perFrameX;
+            const y = start.y + frame * perFrameY;
+            dispatchPointer(window, "pointermove", x, y, { buttons: 1 });
+            if (frame === frames - 1) dispatchMouse(window, "mouseup", x, y, { buttons: 0 });
+        },
+        assert: () => {
+            if (canvasPerfBridgeState.selectedNodeIds.size === 0) throw new PerfInvalidSampleError("marquee-selected-nothing", "the selection is still empty after the marquee");
+        },
+        notes: () => [
+            `mounted at start ${mountedAtStart} (target ${achievedTarget})`,
+            usedFallback ? "start press targeted the container: no density offered a genuinely free pixel" : "start press landed on a genuinely free pixel",
+            `selected ${canvasPerfBridgeState.selectedNodeIds.size}`,
+        ],
+    };
+}
+
+// ---------------------------------------------------------------------------
+// Overview scenarios
+// ---------------------------------------------------------------------------
+
+/**
+ * Drag at the fit-all zoom, where every node in the fixture is mounted at once.
+ *
+ * 60 frames, not 180: at this density frames cost hundreds of milliseconds each, so a 180-frame script
+ * cannot finish inside any sane budget and would only ever report a stall. 60 frames is ample to
+ * characterise the frame time. If it still stalls, the stall message carries the frames completed and
+ * the measured median.
+ */
+export function createOverviewPanScenario(nodeCount = 3000, frames = 40): Scenario {
+    let origin: { x: number; y: number } | null = null;
+    return {
+        id: "overview-pan",
+        label: "pan at fit-all zoom",
+        nodeCount,
+        frames,
+        setup: () => {
+            applyViewport(fitViewport());
+        },
+        script: (frame) => {
+            if (frame === 0) {
+                const start = pointInsideContainer();
+                origin = { x: start.x, y: start.y };
+                dispatchPointer(start.element, "pointerdown", start.x, start.y, { button: 1, buttons: 4 });
+                return;
+            }
+            if (!origin) throw new PerfInvalidSampleError("pan-not-started", "frame 0 did not establish a drag origin");
+            const x = origin.x + frame * 2;
+            dispatchPointer(window, "pointermove", x, origin.y, { buttons: 4 });
+            if (frame === frames - 1) dispatchPointer(window, "pointerup", x, origin.y, { button: 1, buttons: 0 });
+        },
+        assert: ({ viewportBefore }) => {
+            const viewport = readViewport();
+            if (viewport.x === viewportBefore.x && viewport.y === viewportBefore.y) throw new PerfInvalidSampleError("pan-had-no-effect", "viewport did not move");
+            if (mountedNodeCount() === 0) throw new PerfInvalidSampleError("overview-mounted-nothing", "nothing is mounted at the fit-all zoom");
+        },
+        notes: () => [`mounted ${mountedNodeCount()}`, `k ${readViewport().k.toFixed(4)}`],
+    };
+}
+
+/** Zooms out towards the 0.05 floor. Frames that no-op against the floor are counted, not averaged. */
+export function createOverviewZoomScenario(nodeCount = 3000, frames = 40): Scenario {
+    const deltaPerFrame = 18;
+    let anchor: { x: number; y: number; element: Element } | null = null;
+    let startK = 0;
+    let previousK: number | null = null;
+    let clampedFrames = 0;
+    return {
+        id: "overview-zoom",
+        label: "zoom out towards the floor, all nodes mounted",
+        nodeCount,
+        frames,
+        setup: () => {
+            applyViewport(centredViewport(0.12));
+        },
+        script: (frame) => {
+            if (frame === 0) {
+                anchor = zoomAnchor();
+                startK = readViewport().k;
+                previousK = startK;
+                clampedFrames = 0;
+            }
+            if (!anchor) throw new PerfInvalidSampleError("zoom-not-started", "frame 0 did not establish an anchor");
+            const kAtStart = readViewport().k;
+            if (previousK !== null && Math.abs(kAtStart - previousK) < 1e-9) clampedFrames += 1;
+            previousK = kAtStart;
+            dispatchWheel(anchor.element, deltaPerFrame, anchor.x, anchor.y);
+        },
+        assert: () => {
+            const after = readViewport().k;
+            if (!(after < startK * 0.9)) throw new PerfInvalidSampleError("overview-zoom-had-no-effect", `k stayed at ${after.toFixed(4)} from ${startK.toFixed(4)}`);
+            if (clampedFrames > frames / 2) throw new PerfInvalidSampleError("overview-zoom-mostly-clamped", `${clampedFrames}/${frames} frames hit the floor`);
+        },
+        notes: () => [`k ${startK.toFixed(4)} -> ${readViewport().k.toFixed(4)}`, `clamped frames ${clampedFrames}/${frames}`, `mounted ${mountedNodeCount()}`],
+    };
+}
+
+// ---------------------------------------------------------------------------
+// Session
+// ---------------------------------------------------------------------------
+
+export type SessionReport = {
+    env: PerfEnv;
+    results: RoundResult[];
+    invalid: { scenarioId: string; reason: string; detail?: string }[];
+};
+
+/**
+ * The core set: one silent scenario to fix the jank threshold, then one per interaction the plan calls
+ * out — zoom, pan, drag, marquee, and pan with every node mounted. `zoom-burst` is here because it
+ * directly exercises the wheel-composition fix; a single event per frame would not distinguish it.
+ */
+export const CORE_SCENARIOS: Scenario[] = [
+    createIdleBaselineScenario(),
+    createZoomScenario(),
+    createZoomBurstScenario(),
+    createOverviewZoomScenario(),
+    createPanScenario(),
+    createDragScenario(),
+    createMarqueeScenario(),
+    createOverviewPanScenario(),
+];
+
+export type SessionProgress = { scenarioId: string; index: number; total: number; ok: boolean; reason?: string };
+
+export type SessionCallbacks = {
+    /** Fired when a round finishes. */
+    onRound?: (progress: SessionProgress) => void;
+    /**
+     * Fired while a round is in flight. A round takes long enough (remount + settle + 180 frames)
+     * that silence is indistinguishable from a hang, so the panel gets a live phase instead.
+     */
+    onPhase?: (phase: string) => void;
+};
+
+export async function runSession(scenarios: Scenario[] = CORE_SCENARIOS, callbacks: SessionCallbacks = {}): Promise<SessionReport> {
+    const results: RoundResult[] = [];
+    const invalid: SessionReport["invalid"] = [];
+    let jankThresholdMs = 0;
+    let idleFrameMs: number | null = null;
+
+    for (const [index, scenario] of scenarios.entries()) {
+        const outcome = await runRound(scenario, jankThresholdMs, callbacks.onPhase);
+        if (scenario.measuresIdleBaseline && outcome.ok) {
+            idleFrameMs = outcome.result.frames.p50;
+            // Fixed from the idle median before any interactive scenario runs, so a sustained low
+            // frame rate cannot raise the bar it is judged against.
+            jankThresholdMs = Math.max(idleFrameMs * 1.5, 1);
+            // The idle round ran before that threshold existed (against 0, which counted every frame
+            // as jank). Now that it is known, re-judge that row so its number means something.
+            outcome.result.frames = summariseFrames(outcome.result.deltasMs, outcome.result.frames.durationMs, jankThresholdMs);
+        }
+        if (outcome.ok) results.push(outcome.result);
+        else invalid.push({ scenarioId: scenario.id, reason: outcome.reason, detail: outcome.detail });
+        // One update per round, never per frame — the panel must not perturb what it measures.
+        callbacks.onRound?.({ scenarioId: scenario.id, index, total: scenarios.length, ok: outcome.ok, reason: outcome.ok ? undefined : outcome.reason });
+    }
+
+    return { env: snapshotEnvironment(idleFrameMs), results, invalid };
+}
+
+// ---------------------------------------------------------------------------
+// Session state
+// ---------------------------------------------------------------------------
+
+export type PerfSessionState = {
+    status: "idle" | "running" | "done" | "error";
+    phase: string;
+    progress: string;
+    report: SessionReport | null;
+    error: string | null;
+};
+
+/**
+ * Module-level, not panel state, and that is load-bearing.
+ *
+ * The reset protocol navigates to the project list and back, which unmounts the whole canvas page —
+ * taking the panel with it. Anything the panel owns is destroyed mid-run (and its setState calls are
+ * silently dropped), so progress and the finished report have to outlive the component. A module
+ * singleton survives route changes within the same page load, and the panel just reads it.
+ */
+let sessionState: PerfSessionState = { status: "idle", phase: "", progress: "", report: null, error: null };
+const sessionListeners = new Set<() => void>();
+
+function setSessionState(patch: Partial<PerfSessionState>): void {
+    sessionState = { ...sessionState, ...patch };
+    for (const listener of sessionListeners) listener();
+}
+
+export function getPerfSessionState(): PerfSessionState {
+    return sessionState;
+}
+
+export function subscribePerfSession(listener: () => void): () => void {
+    sessionListeners.add(listener);
+    return () => {
+        sessionListeners.delete(listener);
+    };
+}
+
+/**
+ * Starts a session. Lives here rather than in the panel so that a remount mid-run neither restarts
+ * nor loses it; the guard also makes a double click harmless.
+ */
+export async function startPerfSession(scenarios: Scenario[] = CORE_SCENARIOS): Promise<void> {
+    if (sessionState.status === "running") return;
+    setSessionState({ status: "running", phase: "starting", progress: "", report: null, error: null });
+    try {
+        const report = await runSession(scenarios, {
+            onPhase: (phase) => setSessionState({ phase }),
+            onRound: ({ scenarioId, index, total, ok }) => setSessionState({ phase: "", progress: `${index + 1}/${total} ${scenarioId}${ok ? "" : " (rejected)"}` }),
+        });
+        setSessionState({ status: "done", report, phase: "", progress: "" });
+    } catch (thrown) {
+        setSessionState({ status: "error", error: thrown instanceof Error ? `${thrown.name}: ${thrown.message}` : String(thrown), phase: "", progress: "" });
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Bootstrap
+// ---------------------------------------------------------------------------
+
+const DEFAULT_NODE_COUNT = 1000;
+
+/**
+ * Entry point from `main.tsx`. Installs the shim, waits for the store's real hydrate, injects the
+ * fixture project and navigates to it — in that order, because the canvas page redirects away when
+ * the route id does not resolve, and because the route id has to resolve before it mounts.
+ */
+export async function bootstrapCanvasPerf(nodeCount = DEFAULT_NODE_COUNT): Promise<void> {
+    if (!PERF_MODE) return;
+    installPointerCaptureShim();
+    await waitForHydration();
+    const id = provisionPerfProject(nodeCount);
+    await router.navigate(`/canvas/${id}`);
+}
+
+// ---------------------------------------------------------------------------
+// Reporting
+// ---------------------------------------------------------------------------
+
+function fixed(value: number, digits = 1): string {
+    return Number.isFinite(value) ? value.toFixed(digits) : "n/a";
+}
+
+export function formatBaselineReport(report: SessionReport): string {
+    const lines: string[] = [];
+    lines.push(`# Canvas perf session`);
+    lines.push("");
+    lines.push(`- harness: v${report.env.harnessVersion}, seed ${PERF_SEED}`);
+    lines.push(`- UA: ${report.env.userAgent}`);
+    lines.push(`- window: ${report.env.viewportWidth}x${report.env.viewportHeight} @${report.env.devicePixelRatio}x, canvas ${report.env.canvasRect ? `${report.env.canvasRect.width}x${report.env.canvasRect.height}` : "n/a"}`);
+    lines.push(`- cores: ${report.env.hardwareConcurrency}; idle frame: ${report.env.idleFrameMs === null ? "n/a" : `${fixed(report.env.idleFrameMs, 2)} ms`}`);
+    lines.push("");
+    lines.push(`| scenario | total | mounted min/med/max | edges | paths | dom | media | fps | p50 | p95 | p99 | max | jank | longtasks |`);
+    lines.push(`| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |`);
+    for (const result of report.results) {
+        const m = result.mountedNodes;
+        lines.push(
+            `| ${result.scenarioId} | ${result.nodeCount} | ${m.min}/${fixed(m.median, 0)}/${m.max} | ${result.counts.mountedEdges} | ${result.counts.svgPaths} | ${result.counts.domNodes} | ${result.counts.mediaElements} | ${fixed(result.frames.fps)} | ${fixed(result.frames.p50, 2)} | ${fixed(result.frames.p95, 2)} | ${fixed(result.frames.p99, 2)} | ${fixed(result.frames.max, 2)} | ${result.frames.jank} | ${result.longTasks.count} |`,
+        );
+    }
+    if (report.invalid.length) {
+        lines.push("");
+        lines.push(`## Rejected samples (excluded from all figures above)`);
+        for (const item of report.invalid) lines.push(`- ${item.scenarioId}: ${item.reason}${item.detail ? ` — ${item.detail}` : ""}`);
+    }
+    const withNotes = report.results.filter((result) => result.notes.length);
+    if (withNotes.length) {
+        lines.push("");
+        lines.push(`## Scenario notes`);
+        for (const result of withNotes) lines.push(`- **${result.scenarioId}**: ${result.notes.join("; ")}`);
+    }
+    lines.push("");
+    lines.push(`Measured with scripted synthetic events. Not real user input: no OS-level event coalescing, no trackpad momentum, no real pointer capture. Absolute numbers are comparable only within this harness.`);
+    return lines.join("\n");
+}
+
+export async function copyBaselineReport(markdown: string): Promise<void> {
+    await navigator.clipboard.writeText(markdown);
+}
+
+export function downloadBaselineReport(markdown: string, filename = "canvas-perf-session.md"): void {
+    const blob = new Blob([markdown], { type: "text/markdown" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filename;
+    anchor.click();
+    URL.revokeObjectURL(url);
+}
+

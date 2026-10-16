@@ -9,6 +9,13 @@ import { AppProviders } from "@/components/layout/app-providers";
 import "@/i18n";
 import { router } from "@/router";
 
+// Perf-mode entry point. `import.meta.env.MODE` is inlined at build time, so in a normal build this
+// block — and the dynamic import inside it — is dead code, and no perf chunk is emitted.
+// Runs before the render below, but the bootstrap itself awaits hydration before it injects anything.
+if (import.meta.env.MODE === "perf") {
+    void import("@/lib/canvas/canvas-perf-harness").then((harness) => harness.bootstrapCanvasPerf());
+}
+
 document.body.style.fontFamily = '"SF Pro Display","SF Pro Text","PingFang SC","Microsoft YaHei","Helvetica Neue",sans-serif';
 
 createRoot(document.getElementById("root")!).render(

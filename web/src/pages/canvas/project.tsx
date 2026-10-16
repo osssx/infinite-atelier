@@ -26,6 +26,7 @@ import { CanvasActionsProvider, type CanvasActions } from "@/components/canvas/c
 import { CanvasConfigComposer } from "@/components/canvas/canvas-config-composer";
 import { CanvasConfigNodePanel } from "@/components/canvas/canvas-config-node-panel";
 import { CanvasGraphIndexProvider } from "@/components/canvas/canvas-graph-context";
+import { CanvasPerfBridge } from "@/components/canvas/canvas-perf-bridge";
 import { CanvasNodeContextMenu } from "@/components/canvas/canvas-context-menu";
 import { CanvasNodeAngleDialog, type CanvasImageAngleParams } from "@/components/canvas/canvas-node-angle-dialog";
 import { CanvasNodeCropDialog, type CanvasImageCropRect } from "@/components/canvas/canvas-node-crop-dialog";
@@ -3153,6 +3154,7 @@ function AtelierCanvasPage() {
 
     return (
         <main className="flex h-full min-h-0 overflow-hidden" style={{ background: theme.canvas.background, color: theme.node.text }}>
+            <CanvasPerfBridge containerRef={containerRef} viewport={viewport} setViewport={setViewport} selectedNodeIds={selectedNodeIds} nodes={nodes} connections={connections} />
             <CanvasSidePanel nodes={nodes} selectedNodeIds={selectedNodeIds} onFocusNode={focusNode} onPreviewNode={setPreviewNodeId} onInsertAsset={handleAssetInsert} />
             <section className="relative min-w-0 flex-1 overflow-hidden">
                 <CanvasTopBar

@@ -432,6 +432,8 @@ export type RoundResult = {
     deltasMs: number[];
     /** Scenario-specific facts that belong in the report regardless of the verdict. */
     notes: string[];
+    /** Which measured round this is, e.g. "2/3". Filled in by the session runner. */
+    round: string;
 };
 
 export type Scenario = {
@@ -448,6 +450,14 @@ export type Scenario = {
     assert?: (context: RoundContext) => void;
     /** The scenario provides its own jank threshold (the idle baseline does). */
     measuresIdleBaseline?: boolean;
+    /**
+     * Measured rounds, after the discarded warm-up. Defaults to `DEFAULT_REPEATS`.
+     *
+     * The fit-all-zoom scenarios set this to 1 on purpose: at ~2s a frame a single round already
+     * characterises them, and repeating them would cost minutes per session while adding nothing —
+     * the repeat budget is better spent on the scenarios whose A/B difference is actually in doubt.
+     */
+    repeats?: number;
     /**
      * Facts the round should carry into the report even when it passes — the achieved density when a
      * target was unreachable, how many zoom frames were clamped at a limit, expected vs actual drag
@@ -594,6 +604,7 @@ export async function runRound(scenario: Scenario, jankThresholdMs: number, onPh
                 selectedAfter: canvasPerfBridgeState.selectedNodeIds.size,
                 deltasMs: deltas,
                 notes: scenario.notes?.() ?? [],
+                round: "",
             },
         };
     } catch (error) {
@@ -616,7 +627,33 @@ export type PerfEnv = {
     canvasRect: { width: number; height: number } | null;
     /** Reported because rAF is quantised to it, which is what the idle baseline measures. */
     idleFrameMs: number | null;
+    /**
+     * Free-text session label, e.g. "A-1" for the first session on the pre-optimisation build.
+     *
+     * A browser session cannot detect which of three interleaved sessions it is, and a fresh
+     * `--user-data-dir` per session wipes anything that could count them — so the label is typed in.
+     * Without it the per-session results in CANVAS_BASELINE.md cannot be attributed or interleaved.
+     */
+    sessionLabel: string;
 };
+
+const SESSION_LABEL_KEY = "infinite-canvas-perf:session-label";
+
+export function getPerfSessionLabel(): string {
+    try {
+        return window.localStorage.getItem(SESSION_LABEL_KEY) ?? "";
+    } catch {
+        return "";
+    }
+}
+
+export function setPerfSessionLabel(value: string): void {
+    try {
+        window.localStorage.setItem(SESSION_LABEL_KEY, value);
+    } catch {
+        // A blocked storage backend only costs us the label surviving navigation within the session.
+    }
+}
 
 export function snapshotEnvironment(idleFrameMs: number | null = null): PerfEnv {
     const rect = canvasPerfBridgeState.container?.getBoundingClientRect() ?? null;
@@ -629,6 +666,7 @@ export function snapshotEnvironment(idleFrameMs: number | null = null): PerfEnv 
         hardwareConcurrency: navigator.hardwareConcurrency ?? 0,
         canvasRect: rect ? { width: Math.round(rect.width), height: Math.round(rect.height) } : null,
         idleFrameMs,
+        sessionLabel: getPerfSessionLabel(),
     };
 }
 
@@ -1194,6 +1232,7 @@ export function createOverviewPanScenario(nodeCount = 3000, frames = 40): Scenar
         label: "pan at fit-all zoom",
         nodeCount,
         frames,
+        repeats: 1,
         setup: () => {
             applyViewport(fitViewport());
         },
@@ -1230,6 +1269,7 @@ export function createOverviewZoomScenario(nodeCount = 3000, frames = 40): Scena
         label: "zoom out towards the floor, all nodes mounted",
         nodeCount,
         frames,
+        repeats: 1,
         setup: () => {
             applyViewport(centredViewport(0.12));
         },
@@ -1259,12 +1299,6 @@ export function createOverviewZoomScenario(nodeCount = 3000, frames = 40): Scena
 // Session
 // ---------------------------------------------------------------------------
 
-export type SessionReport = {
-    env: PerfEnv;
-    results: RoundResult[];
-    invalid: { scenarioId: string; reason: string; detail?: string }[];
-};
-
 /**
  * The core set: one silent scenario to fix the jank threshold, then one per interaction the plan calls
  * out — zoom, pan, drag, marquee, and pan with every node mounted. `zoom-burst` is here because it
@@ -1281,7 +1315,60 @@ export const CORE_SCENARIOS: Scenario[] = [
     createOverviewPanScenario(),
 ];
 
-export type SessionProgress = { scenarioId: string; index: number; total: number; ok: boolean; reason?: string };
+/** Measured rounds per scenario unless the scenario overrides it. */
+export const DEFAULT_REPEATS = 3;
+
+export type MetricSpread = { median: number; min: number; max: number };
+
+export type ScenarioSummary = {
+    scenarioId: string;
+    nodeCount: number;
+    /** Measured rounds that passed. Zero means every round was rejected. */
+    rounds: number;
+    fps: MetricSpread;
+    p50: MetricSpread;
+    p95: MetricSpread;
+    p99: MetricSpread;
+    maxFrame: MetricSpread;
+    jank: MetricSpread;
+    longTasks: MetricSpread;
+    mounted: MetricSpread;
+    notes: string[];
+};
+
+function spread(values: readonly number[]): MetricSpread {
+    return { median: medianOf(values), min: values.length ? Math.min(...values) : 0, max: values.length ? Math.max(...values) : 0 };
+}
+
+function summariseScenario(scenario: Scenario, rounds: readonly RoundResult[]): ScenarioSummary {
+    const notes = rounds.flatMap((round) => round.notes).filter((note, position, all) => all.indexOf(note) === position);
+    return {
+        scenarioId: scenario.id,
+        nodeCount: scenario.nodeCount,
+        rounds: rounds.length,
+        fps: spread(rounds.map((round) => round.frames.fps)),
+        p50: spread(rounds.map((round) => round.frames.p50)),
+        p95: spread(rounds.map((round) => round.frames.p95)),
+        p99: spread(rounds.map((round) => round.frames.p99)),
+        maxFrame: spread(rounds.map((round) => round.frames.max)),
+        jank: spread(rounds.map((round) => round.frames.jank)),
+        longTasks: spread(rounds.map((round) => round.longTasks.count)),
+        mounted: spread(rounds.map((round) => round.mountedNodes.median)),
+        notes,
+    };
+}
+
+export type InvalidSample = { scenarioId: string; round: string; reason: string; detail?: string };
+
+export type SessionReport = {
+    env: PerfEnv;
+    /** Per-round detail, kept so the spread can be checked rather than trusted. */
+    results: RoundResult[];
+    summaries: ScenarioSummary[];
+    invalid: InvalidSample[];
+};
+
+export type SessionProgress = { scenarioId: string; round: string; index: number; total: number; ok: boolean; reason?: string };
 
 export type SessionCallbacks = {
     /** Fired when a round finishes. */
@@ -1293,30 +1380,54 @@ export type SessionCallbacks = {
     onPhase?: (phase: string) => void;
 };
 
+/**
+ * Warm-up plus `repeats` measured rounds per scenario, then the next scenario.
+ *
+ * Every interaction scenario is run once and discarded first: the first touch of a graph pays JIT,
+ * first-paint of newly mounted nodes and cold caches, none of which the comparison is about. The
+ * idle baseline runs first and fixes the jank threshold from the median of its own rounds, before any
+ * interactive scenario is judged.
+ */
 export async function runSession(scenarios: Scenario[] = CORE_SCENARIOS, callbacks: SessionCallbacks = {}): Promise<SessionReport> {
     const results: RoundResult[] = [];
-    const invalid: SessionReport["invalid"] = [];
-    let jankThresholdMs = 0;
+    const summaries: ScenarioSummary[] = [];
+    const invalid: InvalidSample[] = [];
+    let jankThresholdMs = 1;
     let idleFrameMs: number | null = null;
 
     for (const [index, scenario] of scenarios.entries()) {
-        const outcome = await runRound(scenario, jankThresholdMs, callbacks.onPhase);
-        if (scenario.measuresIdleBaseline && outcome.ok) {
-            idleFrameMs = outcome.result.frames.p50;
-            // Fixed from the idle median before any interactive scenario runs, so a sustained low
-            // frame rate cannot raise the bar it is judged against.
-            jankThresholdMs = Math.max(idleFrameMs * 1.5, 1);
-            // The idle round ran before that threshold existed (against 0, which counted every frame
-            // as jank). Now that it is known, re-judge that row so its number means something.
-            outcome.result.frames = summariseFrames(outcome.result.deltasMs, outcome.result.frames.durationMs, jankThresholdMs);
+        const repeats = Math.max(1, scenario.repeats ?? DEFAULT_REPEATS);
+
+        // Discarded. Failures here are not recorded: a warm-up that cannot even start is reported by
+        // the measured rounds that follow it.
+        callbacks.onPhase?.(`${scenario.id}: warm-up (discarded)`);
+        await runRound(scenario, jankThresholdMs, callbacks.onPhase);
+
+        const rounds: RoundResult[] = [];
+        for (let attempt = 0; attempt < repeats; attempt += 1) {
+            const label = `${attempt + 1}/${repeats}`;
+            const outcome = await runRound(scenario, jankThresholdMs, callbacks.onPhase);
+            if (outcome.ok) {
+                outcome.result.round = label;
+                rounds.push(outcome.result);
+            } else invalid.push({ scenarioId: scenario.id, round: label, reason: outcome.reason, detail: outcome.detail });
+            // One update per round, never per frame — the panel must not perturb what it measures.
+            callbacks.onRound?.({ scenarioId: scenario.id, round: label, index, total: scenarios.length, ok: outcome.ok, reason: outcome.ok ? undefined : outcome.reason });
         }
-        if (outcome.ok) results.push(outcome.result);
-        else invalid.push({ scenarioId: scenario.id, reason: outcome.reason, detail: outcome.detail });
-        // One update per round, never per frame — the panel must not perturb what it measures.
-        callbacks.onRound?.({ scenarioId: scenario.id, index, total: scenarios.length, ok: outcome.ok, reason: outcome.ok ? undefined : outcome.reason });
+
+        if (scenario.measuresIdleBaseline && rounds.length) {
+            idleFrameMs = medianOf(rounds.map((round) => round.frames.p50));
+            jankThresholdMs = Math.max(idleFrameMs * 1.5, 1);
+            // These rounds ran before the threshold existed (against 1, which counted nearly every
+            // frame). Now that it is known, re-judge them so their jank numbers mean something.
+            for (const round of rounds) round.frames = summariseFrames(round.deltasMs, round.frames.durationMs, jankThresholdMs);
+        }
+
+        results.push(...rounds);
+        summaries.push(summariseScenario(scenario, rounds));
     }
 
-    return { env: snapshotEnvironment(idleFrameMs), results, invalid };
+    return { env: snapshotEnvironment(idleFrameMs), results, summaries, invalid };
 }
 
 // ---------------------------------------------------------------------------
@@ -1368,7 +1479,7 @@ export async function startPerfSession(scenarios: Scenario[] = CORE_SCENARIOS): 
     try {
         const report = await runSession(scenarios, {
             onPhase: (phase) => setSessionState({ phase }),
-            onRound: ({ scenarioId, index, total, ok }) => setSessionState({ phase: "", progress: `${index + 1}/${total} ${scenarioId}${ok ? "" : " (rejected)"}` }),
+            onRound: ({ scenarioId, round, index, total, ok }) => setSessionState({ phase: "", progress: `${index + 1}/${total} ${scenarioId} · round ${round}${ok ? "" : " (rejected)"}` }),
         });
         setSessionState({ status: "done", report, phase: "", progress: "" });
     } catch (thrown) {
@@ -1405,34 +1516,50 @@ function fixed(value: number, digits = 1): string {
 
 export function formatBaselineReport(report: SessionReport): string {
     const lines: string[] = [];
-    lines.push(`# Canvas perf session`);
+    lines.push(`# Canvas perf session${report.env.sessionLabel ? ` — ${report.env.sessionLabel}` : ""}`);
     lines.push("");
+    if (!report.env.sessionLabel) lines.push(`> **No session label was set.** Per-session results cannot be attributed or interleaved without one; fill the field in the panel before running.`);
     lines.push(`- harness: v${report.env.harnessVersion}, seed ${PERF_SEED}`);
     lines.push(`- UA: ${report.env.userAgent}`);
     lines.push(`- window: ${report.env.viewportWidth}x${report.env.viewportHeight} @${report.env.devicePixelRatio}x, canvas ${report.env.canvasRect ? `${report.env.canvasRect.width}x${report.env.canvasRect.height}` : "n/a"}`);
     lines.push(`- cores: ${report.env.hardwareConcurrency}; idle frame: ${report.env.idleFrameMs === null ? "n/a" : `${fixed(report.env.idleFrameMs, 2)} ms`}`);
     lines.push("");
-    lines.push(`| scenario | total | mounted min/med/max | edges | paths | dom | media | fps | p50 | p95 | p99 | max | jank | longtasks |`);
-    lines.push(`| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |`);
+    lines.push(`## Per-scenario summary`);
+    lines.push("");
+    lines.push(`Median across the measured rounds, with the observed range in brackets — read the range before believing a difference.`);
+    lines.push("");
+    lines.push(`| scenario | total | rounds | mounted (med) | fps (med) | p50 med [range] | p95 med [range] | jank (med) | longtasks (med) |`);
+    lines.push(`| --- | --- | --- | --- | --- | --- | --- | --- | --- |`);
+    for (const summary of report.summaries) {
+        const range = (metric: MetricSpread, digits = 2) => `${fixed(metric.median, digits)} [${fixed(metric.min, digits)}–${fixed(metric.max, digits)}]`;
+        lines.push(
+            `| ${summary.scenarioId} | ${summary.nodeCount} | ${summary.rounds} | ${fixed(summary.mounted.median, 0)} | ${fixed(summary.fps.median)} | ${range(summary.p50)} | ${range(summary.p95)} | ${fixed(summary.jank.median, 0)} | ${fixed(summary.longTasks.median, 0)} |`,
+        );
+    }
+    lines.push("");
+    lines.push(`## Per-round detail`);
+    lines.push("");
+    lines.push(`| scenario | round | node | mounted min/med/max | edges | paths | dom | media | fps | p50 | p95 | p99 | max | jank | longtasks |`);
+    lines.push(`| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |`);
     for (const result of report.results) {
         const m = result.mountedNodes;
         lines.push(
-            `| ${result.scenarioId} | ${result.nodeCount} | ${m.min}/${fixed(m.median, 0)}/${m.max} | ${result.counts.mountedEdges} | ${result.counts.svgPaths} | ${result.counts.domNodes} | ${result.counts.mediaElements} | ${fixed(result.frames.fps)} | ${fixed(result.frames.p50, 2)} | ${fixed(result.frames.p95, 2)} | ${fixed(result.frames.p99, 2)} | ${fixed(result.frames.max, 2)} | ${result.frames.jank} | ${result.longTasks.count} |`,
+            `| ${result.scenarioId} | ${result.round} | ${result.nodeCount} | ${m.min}/${fixed(m.median, 0)}/${m.max} | ${result.counts.mountedEdges} | ${result.counts.svgPaths} | ${result.counts.domNodes} | ${result.counts.mediaElements} | ${fixed(result.frames.fps)} | ${fixed(result.frames.p50, 2)} | ${fixed(result.frames.p95, 2)} | ${fixed(result.frames.p99, 2)} | ${fixed(result.frames.max, 2)} | ${result.frames.jank} | ${result.longTasks.count} |`,
         );
     }
     if (report.invalid.length) {
         lines.push("");
-        lines.push(`## Rejected samples (excluded from all figures above)`);
-        for (const item of report.invalid) lines.push(`- ${item.scenarioId}: ${item.reason}${item.detail ? ` — ${item.detail}` : ""}`);
+        lines.push(`## Rejected samples (excluded from every figure above)`);
+        for (const item of report.invalid) lines.push(`- ${item.scenarioId} round ${item.round}: ${item.reason}${item.detail ? ` — ${item.detail}` : ""}`);
     }
-    const withNotes = report.results.filter((result) => result.notes.length);
+    const withNotes = report.summaries.filter((summary) => summary.notes.length);
     if (withNotes.length) {
         lines.push("");
         lines.push(`## Scenario notes`);
-        for (const result of withNotes) lines.push(`- **${result.scenarioId}**: ${result.notes.join("; ")}`);
+        for (const summary of withNotes) lines.push(`- **${summary.scenarioId}**: ${summary.notes.join("; ")}`);
     }
     lines.push("");
-    lines.push(`Measured with scripted synthetic events. Not real user input: no OS-level event coalescing, no trackpad momentum, no real pointer capture. Absolute numbers are comparable only within this harness.`);
+    lines.push(`Measured with scripted synthetic events. Not real user input: no OS-level event coalescing, no trackpad momentum, no real pointer capture. Absolute numbers are comparable only within this harness, and one session is not a result — the plan requires at least three interleaved sessions per build.`);
     return lines.join("\n");
 }
 

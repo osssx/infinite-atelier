@@ -1,6 +1,18 @@
 import { useCallback, useState, useSyncExternalStore } from "react";
 
-import { CORE_SCENARIOS, copyBaselineReport, downloadBaselineReport, formatBaselineReport, getPerfSessionState, isCanvasPerfEnabled, startPerfSession, subscribePerfSession, type Scenario } from "@/lib/canvas/canvas-perf-harness";
+import {
+    CORE_SCENARIOS,
+    copyBaselineReport,
+    downloadBaselineReport,
+    formatBaselineReport,
+    getPerfSessionLabel,
+    getPerfSessionState,
+    isCanvasPerfEnabled,
+    setPerfSessionLabel,
+    startPerfSession,
+    subscribePerfSession,
+    type Scenario,
+} from "@/lib/canvas/canvas-perf-harness";
 
 /**
  * Perf-mode control panel. Only ever mounted through the bridge's dynamic import inside a
@@ -16,6 +28,7 @@ import { CORE_SCENARIOS, copyBaselineReport, downloadBaselineReport, formatBasel
  */
 export default function CanvasPerfPanel() {
     const [scenarios] = useState<Scenario[]>(CORE_SCENARIOS);
+    const [sessionLabel, setSessionLabel] = useState(() => getPerfSessionLabel());
     const session = useSyncExternalStore(subscribePerfSession, getPerfSessionState);
     const run = useCallback(() => void startPerfSession(scenarios), [scenarios]);
 
@@ -30,8 +43,24 @@ export default function CanvasPerfPanel() {
                 <strong className="text-sm">Canvas perf harness</strong>
                 <span className="rounded bg-amber-200 px-1.5 py-0.5 text-[10px] font-semibold text-amber-900">PERF BUILD</span>
             </div>
+            <div className="mb-2 flex items-center gap-2">
+                <label className="shrink-0 opacity-70" htmlFor="perf-session-label">
+                    Session
+                </label>
+                <input
+                    id="perf-session-label"
+                    value={sessionLabel}
+                    disabled={running}
+                    onChange={(event) => {
+                        setSessionLabel(event.target.value);
+                        setPerfSessionLabel(event.target.value);
+                    }}
+                    placeholder="e.g. A-1 (build / session number)"
+                    className="min-w-0 flex-1 rounded border border-stone-300 bg-transparent px-1.5 py-1 dark:border-stone-600"
+                />
+            </div>
             <p className="mb-2 opacity-70">
-                {scenarios.length} scenarios: {scenarios.map((scenario) => scenario.id).join(", ")}
+                {scenarios.length} scenarios: {scenarios.map((scenario) => `${scenario.id}×${scenario.repeats ?? 3}`).join(", ")} (+1 warm-up each, discarded)
             </p>
             <div className="mb-3 flex flex-wrap gap-2">
                 <button type="button" onClick={run} disabled={running} className="rounded border px-2 py-1 font-medium disabled:opacity-50">

@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { App, Button, Empty, Input, Popconfirm, Select, Spin, Tag } from "antd";
 import { useQuery } from "@tanstack/react-query";
 import { BookOpen, Check, ChevronRight, Clapperboard, Download, Eye, FileText, History as HistoryIcon, Image as ImageIcon, ListChecks, Music2, Plus, Search, Settings2, Square, Trash2, Type, Video } from "lucide-react";
@@ -156,12 +156,16 @@ function CanvasNodesTab({ nodes, selectedNodeIds, onFocusNode, onPreviewNode, th
         setSelectMode(false);
         setChecked(new Set());
     };
-    const toggleChecked = (id: string) =>
-        setChecked((prev) => {
-            const next = new Set(prev);
-            next.has(id) ? next.delete(id) : next.add(id);
-            return next;
-        });
+    // Stable so memoized rows are not invalidated on every parent render.
+    const toggleChecked = useCallback(
+        (id: string) =>
+            setChecked((prev) => {
+                const next = new Set(prev);
+                next.has(id) ? next.delete(id) : next.add(id);
+                return next;
+            }),
+        [],
+    );
     const allChecked = filtered.length > 0 && filtered.every((node) => checked.has(node.id));
     const toggleAll = () => setChecked(allChecked ? new Set() : new Set(filtered.map((node) => node.id)));
 
@@ -205,34 +209,19 @@ function CanvasNodesTab({ nodes, selectedNodeIds, onFocusNode, onPreviewNode, th
             <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
                 {filtered.length ? (
                     <div className="space-y-1.5">
-                        {filtered.map((node) => {
-                            const Icon = NODE_TYPE_ICON[node.type] || FileText;
-                            const isImage = node.type === CanvasNodeType.Image && node.metadata?.content;
-                            const isChecked = checked.has(node.id);
-                            const active = selectMode ? isChecked : selectedNodeIds.has(node.id);
-                            return (
-                                <div key={node.id} className={cn("group flex w-full items-center rounded-lg transition", active ? "" : "hover:bg-black/5 dark:hover:bg-white/5")} style={active ? { background: theme.toolbar.activeBg } : undefined}>
-                                    <button type="button" onClick={() => (selectMode ? toggleChecked(node.id) : onFocusNode(node.id))} className="flex min-w-0 flex-1 items-center gap-3 px-2 py-2 text-left" title={selectMode ? undefined : t("canvas.sidePanel.focusNode")}>
-                                        {selectMode ? <CheckMark checked={isChecked} theme={theme} /> : null}
-                                        <span className="grid size-10 shrink-0 place-items-center overflow-hidden rounded-md">
-                                            {isImage ? <img src={node.metadata!.content} alt={node.title} className="size-full object-cover" /> : <Icon className="size-5 opacity-60" />}
-                                        </span>
-                                        <span className="min-w-0 flex-1 space-y-0.5">
-                                            <span className="block truncate text-sm font-medium leading-snug">{node.title || getNodeDefinition(node.type)?.title || t("canvas.node.untitled")}</span>
-                                            <span className="block truncate text-xs leading-snug opacity-50">{nodePreviewText(node)}</span>
-                                        </span>
-                                        {node.metadata?.status && node.metadata.status !== "idle" ? <span className="size-1.5 shrink-0 rounded-full" style={{ background: STATUS_COLOR[node.metadata.status] || "transparent" }} /> : null}
-                                    </button>
-                                    {selectMode || !isImage ? null : (
-                                        <div className="flex shrink-0 flex-col items-center gap-0.5 pr-1.5">
-                                            <button type="button" onClick={() => onPreviewNode(node.id)} className="grid size-7 place-items-center rounded-md opacity-55 transition hover:bg-black/10 hover:opacity-100 dark:hover:bg-white/10" aria-label={t("canvas.sidePanel.preview")} title={t("canvas.sidePanel.preview")}>
-                                                <Eye className="size-3.5" />
-                                            </button>
-                                        </div>
-                                    )}
-                                </div>
-                            );
-                        })}
+                        {filtered.map((node) => (
+                            <NodeRow
+                                key={node.id}
+                                node={node}
+                                active={selectMode ? checked.has(node.id) : selectedNodeIds.has(node.id)}
+                                checked={checked.has(node.id)}
+                                selectMode={selectMode}
+                                theme={theme}
+                                onFocus={onFocusNode}
+                                onPreview={onPreviewNode}
+                                onToggleChecked={toggleChecked}
+                            />
+                        ))}
                     </div>
                 ) : (
                     <div className="pt-16 text-center text-sm opacity-40">{t("canvas.sidePanel.noNodes")}</div>
@@ -259,6 +248,57 @@ function CanvasNodesTab({ nodes, selectedNodeIds, onFocusNode, onPreviewNode, th
         </div>
     );
 }
+
+// One row per node. Memoized because a node drag replaces the `nodes` array on every frame, while a
+// row's rendered output only depends on fields a move does not touch (type, title, content, status).
+// Unmoved nodes keep their object identity, so their rows bail out instead of re-rendering — with a
+// few hundred nodes this was the whole list re-rendering on every drag frame.
+const NodeRow = memo(function NodeRow({
+    node,
+    active,
+    checked,
+    selectMode,
+    theme,
+    onFocus,
+    onPreview,
+    onToggleChecked,
+}: {
+    node: CanvasNodeData;
+    active: boolean;
+    checked: boolean;
+    selectMode: boolean;
+    theme: CanvasTheme;
+    onFocus: (nodeId: string) => void;
+    onPreview: (nodeId: string) => void;
+    onToggleChecked: (nodeId: string) => void;
+}) {
+    const { t } = useTranslation();
+    const Icon = NODE_TYPE_ICON[node.type] || FileText;
+    const isImage = node.type === CanvasNodeType.Image && node.metadata?.content;
+
+    return (
+        <div className={cn("group flex w-full items-center rounded-lg transition", active ? "" : "hover:bg-black/5 dark:hover:bg-white/5")} style={active ? { background: theme.toolbar.activeBg } : undefined}>
+            <button type="button" onClick={() => (selectMode ? onToggleChecked(node.id) : onFocus(node.id))} className="flex min-w-0 flex-1 items-center gap-3 px-2 py-2 text-left" title={selectMode ? undefined : t("canvas.sidePanel.focusNode")}>
+                {selectMode ? <CheckMark checked={checked} theme={theme} /> : null}
+                <span className="grid size-10 shrink-0 place-items-center overflow-hidden rounded-md">
+                    {isImage ? <img src={node.metadata!.content} alt={node.title} className="size-full object-cover" /> : <Icon className="size-5 opacity-60" />}
+                </span>
+                <span className="min-w-0 flex-1 space-y-0.5">
+                    <span className="block truncate text-sm font-medium leading-snug">{node.title || getNodeDefinition(node.type)?.title || t("canvas.node.untitled")}</span>
+                    <span className="block truncate text-xs leading-snug opacity-50">{nodePreviewText(node)}</span>
+                </span>
+                {node.metadata?.status && node.metadata.status !== "idle" ? <span className="size-1.5 shrink-0 rounded-full" style={{ background: STATUS_COLOR[node.metadata.status] || "transparent" }} /> : null}
+            </button>
+            {selectMode || !isImage ? null : (
+                <div className="flex shrink-0 flex-col items-center gap-0.5 pr-1.5">
+                    <button type="button" onClick={() => onPreview(node.id)} className="grid size-7 place-items-center rounded-md opacity-55 transition hover:bg-black/10 hover:opacity-100 dark:hover:bg-white/10" aria-label={t("canvas.sidePanel.preview")} title={t("canvas.sidePanel.preview")}>
+                        <Eye className="size-3.5" />
+                    </button>
+                </div>
+            )}
+        </div>
+    );
+});
 
 function CheckMark({ checked, theme }: { checked: boolean; theme: CanvasTheme }) {
     return (

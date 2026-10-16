@@ -22,6 +22,7 @@ import { fitNodeSize, nodeSizeFromRatio } from "@/lib/canvas/canvas-node-size";
 import { App, Button, Modal } from "antd";
 import { NODE_DEFAULT_SIZE, getNodeSpec } from "@/constant/canvas";
 import { ActiveConnectionOverlay, ConnectionLayer } from "@/components/canvas/canvas-connection-layer";
+import { CanvasActionsProvider, type CanvasActions } from "@/components/canvas/canvas-actions";
 import { CanvasConfigComposer } from "@/components/canvas/canvas-config-composer";
 import { CanvasConfigNodePanel } from "@/components/canvas/canvas-config-node-panel";
 import { CanvasGraphIndexProvider } from "@/components/canvas/canvas-graph-context";
@@ -3122,55 +3123,31 @@ function AtelierCanvasPage() {
 
     // Grouped so NodeLayer's prop list stays readable. The node still receives each entry as its own
     // prop, so an entry that changes identity only re-renders the nodes it actually affects.
-    const sharedNodeProps = useMemo<SharedNodeProps>(
-        () => ({
-            viewportRef,
-            renderPanel: renderNodePanel,
-            renderNodeContent: renderNodeContentPanel,
-            onMouseDown: handleNodeMouseDown,
-            onSelectCapture: handleNodeSelectCapture,
-            onHoverStart: handleNodeHoverStart,
-            onHoverEnd: handleNodeHoverEnd,
-            onConnectStart: handleConnectStart,
-            onResizeStart: handleNodeResizeStart,
-            onResize: handleNodeResize,
-            onResizeEnd: handleNodeResizeEnd,
-            onContentChange: handleNodeContentChange,
-            onTitleChange: handleNodeTitleChange,
-            onToggleBatch: toggleBatchExpanded,
-            onSetBatchPrimary: setBatchPrimary,
-            onDuplicateBatchImage: duplicateBatchImage,
-            onRetryBatchImage: retryBatchImage,
-            onDeleteBatchImage: deleteBatchImage,
-            onRetry: handleNodeRetry,
-            onGenerateImage: generateImageFromTextNode,
-            onViewImage: handleNodeViewImage,
-            onContextMenu: handleNodeContextMenu,
-        }),
-        [
-            deleteBatchImage,
-            duplicateBatchImage,
-            generateImageFromTextNode,
-            handleConnectStart,
-            handleNodeContentChange,
-            handleNodeContextMenu,
-            handleNodeHoverEnd,
-            handleNodeHoverStart,
-            handleNodeMouseDown,
-            handleNodeResize,
-            handleNodeResizeEnd,
-            handleNodeResizeStart,
-            handleNodeRetry,
-            handleNodeSelectCapture,
-            handleNodeTitleChange,
-            handleNodeViewImage,
-            renderNodeContentPanel,
-            renderNodePanel,
-            retryBatchImage,
-            setBatchPrimary,
-            toggleBatchExpanded,
-        ],
-    );
+    const sharedNodeProps = useMemo<SharedNodeProps>(() => ({ viewportRef, renderPanel: renderNodePanel, renderNodeContent: renderNodeContentPanel }), [renderNodeContentPanel, renderNodePanel]);
+
+    // Rebuilt every render on purpose: CanvasActionsProvider only reads it through a ref, so the
+    // identity that reaches consumers stays stable no matter how often these callbacks change.
+    const canvasActions: CanvasActions = {
+        onMouseDown: handleNodeMouseDown,
+        onSelectCapture: handleNodeSelectCapture,
+        onHoverStart: handleNodeHoverStart,
+        onHoverEnd: handleNodeHoverEnd,
+        onConnectStart: handleConnectStart,
+        onResizeStart: handleNodeResizeStart,
+        onResize: handleNodeResize,
+        onResizeEnd: handleNodeResizeEnd,
+        onContentChange: handleNodeContentChange,
+        onTitleChange: handleNodeTitleChange,
+        onContextMenu: handleNodeContextMenu,
+        onToggleBatch: toggleBatchExpanded,
+        onSetBatchPrimary: setBatchPrimary,
+        onDuplicateBatchImage: duplicateBatchImage,
+        onRetryBatchImage: retryBatchImage,
+        onDeleteBatchImage: deleteBatchImage,
+        onRetry: handleNodeRetry,
+        onGenerateImage: generateImageFromTextNode,
+        onViewImage: handleNodeViewImage,
+    };
 
     if (!projectLoaded) return <CanvasRefreshShell />;
 
@@ -3228,24 +3205,26 @@ function AtelierCanvasPage() {
                     {/* Panels rendered inside a node's DOM read the graph through this context,
                         instead of the controller precomputing references and generation inputs for
                         every node on every change. */}
-                    <CanvasGraphIndexProvider index={graphIndex}>
-                        <NodeLayer
-                            nodes={visibleNodes}
-                            shared={sharedNodeProps}
-                            selectedNodeIds={selectedNodeIds}
-                            relatedNodeIds={relatedHighlight.nodeIds}
-                            activeNodeId={activeNodeId}
-                            connectionTargetNodeId={connectionTargetNodeId}
-                            isConnecting={Boolean(connectingParams)}
-                            panelNodeId={dialogNodeId}
-                            isNodeResizing={isNodeResizing}
-                            isMarqueeActive={Boolean(selectionBox)}
-                            dropTargetGroupId={dropTargetGroupId}
-                            expandedImageNodeIds={expandedImageNodeIds}
-                            showImageInfo={showImageInfo}
-                            groupChildCountById={groupChildCountById}
-                        />
-                    </CanvasGraphIndexProvider>
+                    <CanvasActionsProvider actions={canvasActions}>
+                        <CanvasGraphIndexProvider index={graphIndex}>
+                            <NodeLayer
+                                nodes={visibleNodes}
+                                shared={sharedNodeProps}
+                                selectedNodeIds={selectedNodeIds}
+                                relatedNodeIds={relatedHighlight.nodeIds}
+                                activeNodeId={activeNodeId}
+                                connectionTargetNodeId={connectionTargetNodeId}
+                                isConnecting={Boolean(connectingParams)}
+                                panelNodeId={dialogNodeId}
+                                isNodeResizing={isNodeResizing}
+                                isMarqueeActive={Boolean(selectionBox)}
+                                dropTargetGroupId={dropTargetGroupId}
+                                expandedImageNodeIds={expandedImageNodeIds}
+                                showImageInfo={showImageInfo}
+                                groupChildCountById={groupChildCountById}
+                            />
+                        </CanvasGraphIndexProvider>
+                    </CanvasActionsProvider>
 
                     <SelectionOverlay selectionBox={selectionBox} scale={viewport.k} />
                     {pendingConnectionCreate ? <ConnectionCreateMenu pending={pendingConnectionCreate} canvasRef={containerRef} viewport={viewport} onCreate={(type) => createConnectedNode(type, pendingConnectionCreate)} onClose={cancelPendingConnectionCreate} /> : null}

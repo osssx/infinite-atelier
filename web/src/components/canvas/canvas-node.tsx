@@ -7,8 +7,9 @@ import { formatBytes } from "@/lib/image-utils";
 import { getNodeDefinition } from "@/lib/canvas/node-registry";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { CanvasResourceMentionTextarea } from "./canvas-resource-mention-textarea";
+import { useCanvasActions } from "./canvas-actions";
 import { useNodeMentionReferences } from "./canvas-graph-context";
-import { CanvasNodeType, type CanvasNodeData, type CanvasNodeImage, type Position, type ViewportTransform } from "@/types/canvas";
+import { CanvasNodeType, type CanvasNodeData, type CanvasNodeImage, type ViewportTransform } from "@/types/canvas";
 import { useTranslation } from "react-i18next";
 
 type ResizeCorner = "top-left" | "top-right" | "bottom-left" | "bottom-right";
@@ -31,25 +32,6 @@ export type CanvasNodeProps = {
     groupChildCount?: number;
     isGroupDropTarget?: boolean;
     batchExpanded?: boolean;
-    onMouseDown: (event: React.MouseEvent, nodeId: string) => void;
-    onSelectCapture?: (event: React.MouseEvent, nodeId: string) => void;
-    onHoverStart: (nodeId: string) => void;
-    onHoverEnd: (nodeId: string) => void;
-    onConnectStart: (event: React.MouseEvent, nodeId: string, handleType: "source" | "target") => void;
-    onResizeStart: (nodeId: string) => void;
-    onResize: (nodeId: string, width: number, height: number, position?: Position) => void;
-    onResizeEnd: (nodeId: string) => void;
-    onContentChange: (nodeId: string, content: string) => void;
-    onTitleChange: (nodeId: string, title: string) => void;
-    onToggleBatch?: (nodeId: string) => void;
-    onSetBatchPrimary?: (nodeId: string, imageId: string) => void;
-    onDuplicateBatchImage?: (node: CanvasNodeData, imageId: string) => void;
-    onRetryBatchImage?: (node: CanvasNodeData, imageId: string) => void;
-    onDeleteBatchImage?: (nodeId: string, imageId: string) => void;
-    onRetry?: (node: CanvasNodeData) => void;
-    onGenerateImage?: (node: CanvasNodeData) => void;
-    onViewImage?: (node: CanvasNodeData, imageId?: string) => void;
-    onContextMenu: (event: React.MouseEvent, nodeId: string) => void;
 };
 
 type NodeContentRendererProps = {
@@ -89,26 +71,31 @@ export const CanvasNode = React.memo(function CanvasNode({
     groupChildCount = 0,
     isGroupDropTarget = false,
     batchExpanded = false,
-    onMouseDown,
-    onSelectCapture,
-    onHoverStart,
-    onHoverEnd,
-    onConnectStart,
-    onResizeStart,
-    onResize,
-    onResizeEnd,
-    onContentChange,
-    onTitleChange,
-    onToggleBatch,
-    onSetBatchPrimary,
-    onDuplicateBatchImage,
-    onRetryBatchImage,
-    onDeleteBatchImage,
-    onRetry,
-    onGenerateImage,
-    onViewImage,
-    onContextMenu,
 }: CanvasNodeProps) {
+    // Destructured so the rest of the component reads the same as it did when these were props. The
+    // object itself is permanently stable (see CanvasActionsProvider), so it can never invalidate
+    // this component's React.memo the way an unstable callback prop used to.
+    const {
+        onMouseDown,
+        onSelectCapture,
+        onHoverStart,
+        onHoverEnd,
+        onConnectStart,
+        onResizeStart,
+        onResize,
+        onResizeEnd,
+        onContentChange,
+        onTitleChange,
+        onToggleBatch,
+        onSetBatchPrimary,
+        onDuplicateBatchImage,
+        onRetryBatchImage,
+        onDeleteBatchImage,
+        onRetry,
+        onGenerateImage,
+        onViewImage,
+        onContextMenu,
+    } = useCanvasActions();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const { t } = useTranslation();
     const [hovered, setHovered] = useState(false);

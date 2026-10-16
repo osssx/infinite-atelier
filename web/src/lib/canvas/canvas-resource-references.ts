@@ -3,6 +3,7 @@ import i18n from "@/i18n";
 import { buildCanvasGraphIndex, type CanvasGraphIndex } from "@/lib/canvas/canvas-graph-index";
 import { getNodeDefinition } from "@/lib/canvas/node-registry";
 import { getDataUrlByteSize, readImageMeta } from "@/lib/image-utils";
+import { imageToDataUrl } from "@/services/image-storage";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData } from "@/types/canvas";
 
 export type CanvasResourceKind = "image" | "video" | "audio" | "text";
@@ -32,9 +33,6 @@ export function buildCanvasResourceReferences(nodes: CanvasNodeData[]) {
 }
 
 export async function resolveCanvasReferenceImages(references: CanvasResourceReference[], nodes: CanvasNodeData[]) {
-    // Imported lazily: image-storage constructs a localforage instance at module load, which would
-    // otherwise pull a browser-only dependency into every importer of this module.
-    const { imageToDataUrl } = await import("@/services/image-storage");
     const nodesById = new Map(nodes.map((node) => [node.id, node]));
     return Promise.all(references.filter((reference) => reference.kind === "image").map(async (reference) => {
         const node = nodesById.get(reference.nodeId);

@@ -27,6 +27,7 @@ import { CanvasConfigComposer } from "@/components/canvas/canvas-config-composer
 import { CanvasConfigNodePanel } from "@/components/canvas/canvas-config-node-panel";
 import { CanvasGraphIndexProvider } from "@/components/canvas/canvas-graph-context";
 import { CanvasPerfBridge } from "@/components/canvas/canvas-perf-bridge";
+import { pipelineSink } from "@/lib/canvas/canvas-perf-bridge-state";
 import { CanvasNodeContextMenu } from "@/components/canvas/canvas-context-menu";
 import { CanvasNodeAngleDialog, type CanvasImageAngleParams } from "@/components/canvas/canvas-node-angle-dialog";
 import { CanvasNodeCropDialog, type CanvasImageCropRect } from "@/components/canvas/canvas-node-crop-dialog";
@@ -128,6 +129,9 @@ const CONNECTION_NODE_HIT_PADDING = 32;
 // slightly before it scrolls in, so the cull boundary does not flicker. Divided by viewport.k to
 // become world units.
 const CONNECTION_CULL_MARGIN = 64;
+// Spelled out inline so Vite inlines it before Rollup runs, making every guarded branch provably
+// dead in a normal build — the timing probes below must not exist outside a perf build.
+const CANVAS_PERF_MODE = import.meta.env.MODE === "perf";
 const NODE_STATUS_IDLE = "idle" as const;
 const NODE_STATUS_LOADING = "loading" as const;
 const NODE_STATUS_SUCCESS = "success" as const;
@@ -311,7 +315,14 @@ function AtelierCanvasPage() {
     // One adjacency index per graph revision. Everything that used to scan `nodes`/`connections`
     // per item (id lookups, group children, resource references, generation inputs) reads from it.
     // Declared before the effects below so they can mirror it for the window-level gesture handlers.
-    const graphIndex = useMemo(() => buildCanvasGraphIndex(nodes, connections), [nodes, connections]);
+    const graphIndex = useMemo(() => {
+        if (!CANVAS_PERF_MODE) return buildCanvasGraphIndex(nodes, connections);
+        const started = performance.now();
+        const built = buildCanvasGraphIndex(nodes, connections);
+        pipelineSink.addMs("graphIndexMs", performance.now() - started);
+        pipelineSink.count("graphIndexNodes", nodes.length);
+        return built;
+    }, [nodes, connections]);
     const graphIndexRef = useRef(graphIndex);
     const directorPanelNode = dialogNodeId && graphIndex.nodeById.get(dialogNodeId)?.type === CanvasNodeType.Director ? graphIndex.nodeById.get(dialogNodeId) : undefined;
     // Container rect cache. Screen-to-world conversion runs on every pointermove during drag,
@@ -760,7 +771,13 @@ function AtelierCanvasPage() {
         const viewRight = viewLeft + size.width / viewport.k + padding * 2;
         const viewBottom = viewTop + size.height / viewport.k + padding * 2;
 
-        return nodes.filter((node) => node.position.x + node.width > viewLeft && node.position.x < viewRight && node.position.y + node.height > viewTop && node.position.y < viewBottom);
+        const started = CANVAS_PERF_MODE ? performance.now() : 0;
+        const filtered = nodes.filter((node) => node.position.x + node.width > viewLeft && node.position.x < viewRight && node.position.y + node.height > viewTop && node.position.y < viewBottom);
+        if (CANVAS_PERF_MODE) {
+            pipelineSink.addMs("visibleNodesMs", performance.now() - started);
+            pipelineSink.count("visibleNodesCount", filtered.length);
+        }
+        return filtered;
     }, [nodes, size.height, size.width, viewport.k, viewport.x, viewport.y]);
 
     const nodeById = graphIndex.nodeById;
@@ -799,15 +816,19 @@ function AtelierCanvasPage() {
 
     // Only rendering is culled. `connections` stays the source of truth for references, generation
     // inputs and group logic, so an off-screen edge is still fully functional.
-    const visibleConnections = useMemo(
-        () =>
-            cullConnections(connections, nodeById, worldViewRect(viewport, size), {
-                margin: CONNECTION_CULL_MARGIN / viewport.k,
-                // Keep the selected edge so its inline disconnect button cannot vanish under the user.
-                keepIds: selectedConnectionId ? new Set([selectedConnectionId]) : undefined,
-            }),
-        [connections, nodeById, selectedConnectionId, size, viewport],
-    );
+    const visibleConnections = useMemo(() => {
+        const started = CANVAS_PERF_MODE ? performance.now() : 0;
+        const culled = cullConnections(connections, nodeById, worldViewRect(viewport, size), {
+            margin: CONNECTION_CULL_MARGIN / viewport.k,
+            // Keep the selected edge so its inline disconnect button cannot vanish under the user.
+            keepIds: selectedConnectionId ? new Set([selectedConnectionId]) : undefined,
+        });
+        if (CANVAS_PERF_MODE) {
+            pipelineSink.addMs("visibleConnectionsMs", performance.now() - started);
+            pipelineSink.count("visibleConnectionsCount", culled.length);
+        }
+        return culled;
+    }, [connections, nodeById, selectedConnectionId, size, viewport]);
 
     // Resource references and generation inputs used to be precomputed here for every node on every
     // change, which was O(N x (N + E)) and re-ran on every drag frame. They are now derived per node

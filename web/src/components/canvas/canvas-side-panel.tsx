@@ -16,11 +16,14 @@ import { useGenerationHistoryStore, type GenerationHistoryRecord } from "@/store
 import { CANVAS_SIDE_PANEL_MAX_WIDTH, CANVAS_SIDE_PANEL_MIN_WIDTH, CANVAS_SIDE_PANEL_MOTION_MS, useCanvasSidePanelStore } from "@/stores/use-canvas-side-panel-store";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
+import { pipelineSink } from "@/lib/canvas/canvas-perf-bridge-state";
 
 import type { InsertAssetPayload } from "./asset-picker-modal";
 
 const PANEL_MOTION_SECONDS = CANVAS_SIDE_PANEL_MOTION_MS / 1000;
 const PANEL_EASE = [0.22, 1, 0.36, 1] as const;
+// Inline so Vite inlines it before Rollup runs; the timing probe must not exist in a normal build.
+const CANVAS_PERF_MODE = import.meta.env.MODE === "perf";
 
 type PanelTab = "canvas" | "assets" | "history";
 
@@ -148,8 +151,14 @@ function CanvasNodesTab({ nodes, selectedNodeIds, onFocusNode, onPreviewNode, th
     const [exporting, setExporting] = useState(false);
 
     const filtered = useMemo(() => {
+        const started = CANVAS_PERF_MODE ? performance.now() : 0;
         const query = keyword.trim().toLowerCase();
-        return nodes.filter((node) => (typeFilter === "all" || node.type === typeFilter) && (!query || [node.title, node.metadata?.content, node.metadata?.prompt].filter(Boolean).join(" ").toLowerCase().includes(query)));
+        const list = nodes.filter((node) => (typeFilter === "all" || node.type === typeFilter) && (!query || [node.title, node.metadata?.content, node.metadata?.prompt].filter(Boolean).join(" ").toLowerCase().includes(query)));
+        if (CANVAS_PERF_MODE) {
+            pipelineSink.addMs("sidePanelMs", performance.now() - started);
+            pipelineSink.count("sidePanelCount", list.length);
+        }
+        return list;
     }, [nodes, keyword, typeFilter]);
 
     const exitSelect = () => {

@@ -112,6 +112,16 @@
 - 供 visible nodes、marquee、连接吸附、组 drop target 共用。屏幕 padding 按 CSS 像素转换成世界坐标，并用滞回机制降低虚拟化边界反复 mount/unmount。
 - 全局节点数据保持完整，**只裁剪渲染和命中测试**；不会将屏幕外节点误判为不存在。
 
+> **已实测否定，本轮不建（2026-10-19）**：`CANVAS_BASELINE.md` §9.3 用 perf-only 埋点把
+> `pan-general-3000` 的 874ms/帧拆开——**主线程在 182 帧里总共只忙了 13ms（0.0%）**，四处 O(N+E)
+> 扫描合计 141ms（0.1%），且 `buildCanvasGraphIndex` 在平移时**根本不重算**（0.0ms，因为平移只改
+> `viewport`）。全部 JS 成本（React 渲染 + 扫描 + longtask + 持久化写入）合计仅占 2.3%。
+> **索引在这条路径上不可能有帮助**——把扫描优化到 0，874ms 只会变成 873ms。
+> 该场景的成因在绘制/光栅/合成侧，需 trace 才能定位，见 §9.3 末段。
+>
+> 注意：这不否定索引在**其他**路径上的潜在价值（例如 5000 节点下的框选），但**目前没有任何
+> 测量支持那些路径是瓶颈**——1000 节点下平移与框选都已撞 vsync 上限。
+
 **P1-B：Transient interaction / commit on end**：
 - 拖拽期间以 ref/临时轻量 Store 保存 delta，按帧只刷新被拖动的节点 transform、相邻连线；mouseup 才原子性写入持久 nodes、更新索引、推入一条 Undo。
 - 对多节点/组拖动设置一次批处理；避免每帧写入完整 nodes 数组、更新全文引用。

@@ -1,7 +1,7 @@
 import perfPixelUrl from "@/assets/perf-pixel.svg?no-inline";
 
 import { router } from "@/router";
-import { canvasPerfBridgeState } from "@/lib/canvas/canvas-perf-bridge-state";
+import { canvasPerfBridgeState, drainPipelineTimings, type PipelineTimings } from "@/lib/canvas/canvas-perf-bridge-state";
 import { buildCanvasFixture } from "@/lib/canvas/canvas-fixtures";
 import { PERF_MODE } from "@/lib/perf-mode";
 import { drainPersistTimings, useCanvasStore, type CanvasProject } from "@/stores/canvas/use-canvas-store";
@@ -208,11 +208,27 @@ async function waitUntil(predicate: () => boolean, timeoutMs: number, reason: st
  */
 export async function pumpFrames(count: number, fn: (index: number) => void): Promise<void> {
     for (let index = 0; index < count; index += 1) {
-        await nextFrame();
+        const frameStart = await nextFrame();
         // A hidden tab pauses rAF; without this the sequence would stall silently instead of failing.
         assertPageVisible();
+        // Time the main thread actually spends inside this frame's callback. Compared against the gap
+        // between callbacks, this separates two very different causes of a slow frame: the main thread
+        // being busy, versus the main thread being idle while the browser produces frames slowly. Only
+        // the first is something the application code or an index could fix.
+        const busyStart = performance.now();
         fn(index);
+        frameBusyMs += performance.now() - busyStart;
+        if (frameStart > 0) void frameStart;
     }
+}
+
+/** Main-thread time spent inside sampled frame callbacks, accumulated for the current round. */
+let frameBusyMs = 0;
+
+export function drainFrameBusyMs(): number {
+    const value = frameBusyMs;
+    frameBusyMs = 0;
+    return value;
 }
 
 // ---------------------------------------------------------------------------
@@ -449,7 +465,18 @@ export type RoundResult = {
      * Persistence writes dispatched during this round, split into stringify and write time.
      * Only collected in perf mode; empty otherwise.
      */
-    persist: { writes: number; maxStringifyMs: number; totalStringifyMs: number; maxWriteMs: number; maxBytes: number };
+    persist: { writes: number; maxStringifyMs: number; totalStringifyMs: number; maxWriteMs: number; totalWriteMs: number; maxBytes: number };
+    /**
+     * Main-thread time inside sampled frame callbacks. Compare with `frames.durationMs`: if this is a
+     * small fraction, the thread was idle while the browser took its time producing frames, and no
+     * amount of application-code optimisation will move it.
+     */
+    frameBusyMs: number;
+    /**
+     * Where the main thread's time went during this round. The frame timings say how slow a frame was;
+     * only this says what made it slow, which is the difference between building an index and not.
+     */
+    pipeline: PipelineTimings;
 };
 
 export type Scenario = {
@@ -553,6 +580,8 @@ export async function runRound(scenario: Scenario, jankThresholdMs: number, onPh
 
         // Drop anything queued before this round so the write timings below belong to it alone.
         drainPersistTimings();
+        drainPipelineTimings();
+        drainFrameBusyMs();
 
         phase("setup");
         await scenario.setup?.();
@@ -637,6 +666,7 @@ export async function runRound(scenario: Scenario, jankThresholdMs: number, onPh
             maxStringifyMs: writes.length ? Math.max(...writes.map((write) => write.stringifyMs)) : 0,
             totalStringifyMs: writes.reduce((total, write) => total + write.stringifyMs, 0),
             maxWriteMs: writes.length ? Math.max(...writes.map((write) => write.writeMs)) : 0,
+            totalWriteMs: writes.reduce((total, write) => total + write.writeMs, 0),
             maxBytes: writes.length ? Math.max(...writes.map((write) => write.bytes)) : 0,
         };
 
@@ -658,6 +688,8 @@ export async function runRound(scenario: Scenario, jankThresholdMs: number, onPh
                 notes: scenario.notes?.() ?? [],
                 round: "",
                 persist,
+                pipeline: drainPipelineTimings(),
+                frameBusyMs: drainFrameBusyMs(),
             },
         };
     } catch (error) {
@@ -1928,6 +1960,33 @@ export function formatBaselineReport(report: SessionReport): string {
         lines.push("");
         lines.push(`## Scenario notes`);
         for (const summary of withNotes) lines.push(`- **${summary.scenarioId}**: ${summary.notes.join("; ")}`);
+    }
+
+    // Answers "what made the frames slow", which the frame timings alone cannot. See CANVAS_BASELINE.md
+    // §9.3 for the question this was added to settle.
+    const measured = report.results.filter((result) => result.frames.frames > 0);
+    if (measured.length) {
+        lines.push("");
+        lines.push(`## Main-thread attribution`);
+        lines.push("");
+        lines.push(`Totals across the whole round, not per frame. \`frame total\` is the sampled window's own duration, so the columns should be read against it.`);
+        lines.push("");
+        lines.push(`| scenario | round | frame total ms | frames | busy ms (share) | renders | render ms | graphIndex ms | visibleNodes ms (count) | visibleConnections ms (count) | sidePanel ms (count) | longtask ms | write ms | in-pipeline % |`);
+        lines.push(`| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |`);
+        for (const result of measured) {
+            const p = result.pipeline;
+            const pipelineMs = p.renderMs + p.graphIndexMs + p.visibleNodesMs + p.visibleConnectionsMs + p.sidePanelMs;
+            const share = result.frames.durationMs > 0 ? `${((pipelineMs / result.frames.durationMs) * 100).toFixed(1)}%` : "n/a";
+            const busyShare = result.frames.durationMs > 0 ? `${((result.frameBusyMs / result.frames.durationMs) * 100).toFixed(1)}%` : "n/a";
+            lines.push(
+                `| ${result.scenarioId} | ${result.round} | ${fixed(result.frames.durationMs, 0)} | ${result.frames.frames} | ${fixed(result.frameBusyMs, 0)} (${busyShare}) | ${p.renders} | ${fixed(p.renderMs, 1)} | ${fixed(p.graphIndexMs, 1)} | ${fixed(p.visibleNodesMs, 2)} (${p.visibleNodesCount}) | ${fixed(p.visibleConnectionsMs, 2)} (${p.visibleConnectionsCount}) | ${fixed(p.sidePanelMs, 2)} (${p.sidePanelCount}) | ${fixed(result.longTasks.totalMs, 0)} | ${fixed(result.persist.totalWriteMs, 0)} | ${share} |`,
+            );
+        }
+        lines.push("");
+        lines.push(`\`busy ms\` is the main thread's own time inside the sampled frame callbacks (which includes dispatching the input and the app's synchronous response). Compare it with \`frame total\`: if it is a small share, the thread was idle while the browser produced frames slowly, and no application-code change can fix that.`);
+        lines.push(`\`render ms\` is React render+commit measured from the perf bridge's own render body to its layout effect, so anything rendered before it is excluded — an approximation, not an exact figure.`);
+        lines.push(`\`longtask ms\` and \`write ms\` are main-thread/task costs that sit outside the pipeline columns above.`);
+        lines.push(`If every column here is small against \`frame total\`, the cost is not in JavaScript at all.`);
     }
     lines.push("");
     lines.push(`Measured with scripted synthetic events. Not real user input: no OS-level event coalescing, no trackpad momentum, no real pointer capture. Absolute numbers are comparable only within this harness, and one session is not a result — the plan requires at least three interleaved sessions per build.`);

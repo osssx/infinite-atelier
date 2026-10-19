@@ -1,6 +1,6 @@
-import { useEffect, useLayoutEffect, useState, type ComponentType, type RefObject } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ComponentType, type RefObject } from "react";
 
-import { canvasPerfBridgeState } from "@/lib/canvas/canvas-perf-bridge-state";
+import { canvasPerfBridgeState, pipelineSink } from "@/lib/canvas/canvas-perf-bridge-state";
 import type { CanvasConnection, CanvasNodeData, ViewportTransform } from "@/types/canvas";
 
 // Spelled out inline rather than imported from `perf-mode.ts`: Vite replaces this with `false` before
@@ -34,11 +34,20 @@ type CanvasPerfBridgeProps = {
  * because it renders only a fixed-position panel (or null) it takes part in no layout.
  */
 export function CanvasPerfBridge({ containerRef, viewport, setViewport, selectedNodeIds, nodes, connections }: CanvasPerfBridgeProps) {
+    // Start of this render pass. This component is the first child of the page's root element, so
+    // everything the canvas subtree renders afterwards is covered by the delta to the layout effect
+    // below. Not exact — anything rendered before this point is excluded — but it is what answers
+    // "is React itself the cost", which the frame timings alone cannot.
+    const renderStartRef = useRef(0);
+    if (PERF_MODE) renderStartRef.current = performance.now();
+
     // Republished after every render rather than subscribed to: the harness reads this on demand —
     // between frames, after paint — and the canvas's own state stays the single source of truth.
     // No dependency array on purpose; the values change constantly and are cheap to copy.
     useLayoutEffect(() => {
         if (!PERF_MODE) return;
+        pipelineSink.addMs("renderMs", performance.now() - renderStartRef.current);
+        pipelineSink.count("renders");
         canvasPerfBridgeState.viewport = viewport;
         canvasPerfBridgeState.selectedNodeIds = selectedNodeIds;
         canvasPerfBridgeState.nodes = nodes;

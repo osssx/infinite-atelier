@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 
 import { canvasThemes, type CanvasBackgroundMode } from "@/lib/canvas-theme";
+import { applyAnchoredWheelZoom } from "@/lib/canvas/canvas-wheel-zoom";
 import { useThemeStore } from "@/stores/use-theme-store";
 import type { ViewportTransform } from "@/types/canvas";
 
@@ -35,23 +36,25 @@ export function AtelierCanvas({ containerRef, viewport, tool, backgroundMode = "
     const viewportRef = useRef(viewport);
     const frameRef = useRef<number | null>(null);
     const nextViewportRef = useRef<ViewportTransform | null>(null);
-    // Wheel zoom accumulates a factor between frames and flushes once, so a trackpad burst produces
-    // one state update per frame instead of one per event.
+    // Wheel input is composed immediately into a pending viewport, but React is updated only once
+    // per frame. Keeping the complete transform (not just a zoom factor) respects changing anchors.
     const wheelFrameRef = useRef<number | null>(null);
-    const wheelFactorRef = useRef(1);
-    const wheelAnchorRef = useRef<{ clientX: number; clientY: number } | null>(null);
+    const pendingWheelViewportRef = useRef<ViewportTransform | null>(null);
+    const wheelRectRef = useRef<DOMRect | null>(null);
     const [isSpacePressed, setIsSpacePressed] = useState(false);
     const [isControlPressed, setIsControlPressed] = useState(false);
     const [isPanning, setIsPanning] = useState(false);
 
     useEffect(() => {
-        viewportRef.current = viewport;
+        // A React commit may land between two wheel events. Do not replace a more recent
+        // uncommitted wheel transform with props from an older render.
+        if (pendingWheelViewportRef.current === null) viewportRef.current = viewport;
     }, [viewport]);
 
     useEffect(
         () => () => {
             if (frameRef.current) cancelAnimationFrame(frameRef.current);
-            if (wheelFrameRef.current) cancelAnimationFrame(wheelFrameRef.current);
+            if (wheelFrameRef.current !== null) cancelAnimationFrame(wheelFrameRef.current);
         },
         [],
     );
@@ -97,35 +100,27 @@ export function AtelierCanvas({ containerRef, viewport, tool, backgroundMode = "
         const target = event.target instanceof Element ? event.target : null;
         if (target?.closest("[data-canvas-no-zoom],.ant-modal,.ant-popover,.ant-dropdown,.ant-select-dropdown,.ant-picker-dropdown")) return;
 
-        // Accumulate the zoom factor and the newest pointer position, then apply both once per frame.
-        wheelFactorRef.current *= Math.pow(1.1, -event.deltaY / 100);
-        wheelAnchorRef.current = { clientX: event.clientX, clientY: event.clientY };
-        if (wheelFrameRef.current) return;
+        const rect = wheelRectRef.current ?? containerRef.current?.getBoundingClientRect();
+        if (!rect) return;
+        wheelRectRef.current = rect;
+
+        // Compose synchronously, preserving every event even when several arrive before React
+        // commits. Neither a stale viewport prop nor a changed cursor anchor can lose a delta.
+        const next = applyAnchoredWheelZoom(
+            pendingWheelViewportRef.current ?? viewportRef.current,
+            event.deltaY,
+            event.clientX - rect.left,
+            event.clientY - rect.top,
+        );
+        pendingWheelViewportRef.current = next;
+        viewportRef.current = next;
+        if (wheelFrameRef.current !== null) return;
         wheelFrameRef.current = requestAnimationFrame(() => {
             wheelFrameRef.current = null;
-            const anchor = wheelAnchorRef.current;
-            const factor = wheelFactorRef.current;
-            wheelFactorRef.current = 1;
-            wheelAnchorRef.current = null;
-            if (!anchor) return;
-
-            const rect = containerRef.current?.getBoundingClientRect();
-            if (!rect) return;
-
-            // Anchored zoom: the world point under the pointer stays put. Computed from the base
-            // viewport, so an accumulated factor still anchors correctly.
-            const base = viewportRef.current;
-            const newScale = Math.min(Math.max(base.k * factor, 0.05), 5);
-            const mouseX = anchor.clientX - rect.left;
-            const mouseY = anchor.clientY - rect.top;
-            const worldX = (mouseX - base.x) / base.k;
-            const worldY = (mouseY - base.y) / base.k;
-            const next: ViewportTransform = { x: mouseX - worldX * newScale, y: mouseY - worldY * newScale, k: newScale };
-
-            // Write through immediately: a wheel event arriving before the next render has to compose
-            // from this value rather than from the stale prop.
-            viewportRef.current = next;
-            onViewportChange(next);
+            wheelRectRef.current = null;
+            const committed = pendingWheelViewportRef.current;
+            pendingWheelViewportRef.current = null;
+            if (committed) onViewportChange(committed);
         });
     };
 

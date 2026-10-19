@@ -38,7 +38,7 @@ export function CanvasZoomControls({ scale, onScaleChange, onFitView, isMiniMapO
                     />
                 </Tooltip>
                 <Tooltip title={t("canvas.fitView")}>
-                    <Button type="text" className="!h-8 !w-8 !min-w-8 !p-0" style={{ color: theme.toolbar.item }} icon={<Focus className="size-4" />} onClick={onFitView} aria-label={t("canvas.fitView")} />
+                    <Button type="text" className="!h-8 !w-8 !min-w-8 !p-0" style={{ color: theme.toolbar.item }} icon={<Focus className="size-4" />} onClick={onFitView} data-canvas-fit-view aria-label={t("canvas.fitView")} />
                 </Tooltip>
                 <Tooltip title={t("canvas.zoom")}>
                     <input

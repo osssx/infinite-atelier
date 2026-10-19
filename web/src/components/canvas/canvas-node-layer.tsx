@@ -1,6 +1,7 @@
 import { memo } from "react";
 
 import type { CanvasNodeData } from "@/types/canvas";
+import { shouldRenderFullNode } from "@/lib/canvas/canvas-lod";
 import { CanvasNode, type CanvasNodeProps } from "./canvas-node";
 import { CompactCanvasNode } from "./canvas-node-compact";
 
@@ -63,7 +64,7 @@ export const NodeLayer = memo(function NodeLayer({
             {nodes.map((node) => {
                 // Preserve full editing/connection affordances for the active target, but keep
                 // all other nodes as cheap DOM hit rectangles in overview mode.
-                const showFull = !compactMode || panelNodeId === node.id || connectionTargetNodeId === node.id || activeNodeId === node.id || (selectedNodeIds.size === 1 && selectedNodeIds.has(node.id));
+                const showFull = shouldRenderFullNode(node.id, compactMode, selectedNodeIds, activeNodeId, connectionTargetNodeId, panelNodeId);
                 if (!showFull) return (
                     <CompactCanvasNode
                         key={node.id}

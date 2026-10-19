@@ -135,7 +135,12 @@ export const CanvasNode = React.memo(function CanvasNode({
         // zoom frame and re-rendered every visible node, while the resize math only ever needs the
         // zoom the gesture started at (the mousemove listener is registered at mousedown anyway).
         scale: 1,
+        // Newest pointer position, so the single pending frame can read it instead of each event
+        // applying its own geometry.
+        latestX: 0,
+        latestY: 0,
     });
+    const resizeFrameRef = useRef<number | null>(null);
 
     useEffect(() => {
         setTitleDraft(data.title || "");
@@ -196,12 +201,13 @@ export const CanvasNode = React.memo(function CanvasNode({
         return () => window.removeEventListener("pointerdown", handleOutsidePointerDown, true);
     }, [isEditingContent]);
 
-    const handleResizeMove = useCallback(
-        (event: MouseEvent) => {
+    /** Applies the geometry for a pointer position, reading the gesture snapshot from `resizeRef`. */
+    const applyResizeAt = useCallback(
+        (clientX: number, clientY: number) => {
             if (!resizeRef.current.isResizing) return;
 
-            const dx = (event.clientX - resizeRef.current.startX) / resizeRef.current.scale;
-            const dy = (event.clientY - resizeRef.current.startY) / resizeRef.current.scale;
+            const dx = (clientX - resizeRef.current.startX) / resizeRef.current.scale;
+            const dy = (clientY - resizeRef.current.startY) / resizeRef.current.scale;
             const minWidth = 220;
             const minHeight = 160;
             const startRight = resizeRef.current.startLeft + resizeRef.current.startWidth;
@@ -237,12 +243,46 @@ export const CanvasNode = React.memo(function CanvasNode({
         [data.id, onResize],
     );
 
-    const handleResizeUp = useCallback(() => {
+    const cancelResizeFrame = useCallback(() => {
+        if (resizeFrameRef.current !== null) {
+            cancelAnimationFrame(resizeFrameRef.current);
+            resizeFrameRef.current = null;
+        }
+    }, []);
+
+    const handleResizeMove = useCallback(
+        (event: MouseEvent) => {
+            if (!resizeRef.current.isResizing) return;
+            resizeRef.current.latestX = event.clientX;
+            resizeRef.current.latestY = event.clientY;
+            // Coalesce instead of applying per event. Resize had no rAF throttling at all, so every
+            // raw mousemove rewrote the entire node array — the whole graph index, the visible-node
+            // filter, connection culling and the side panel all re-ran per pointer event rather than
+            // per frame. Same "one frame pending, newest position wins" shape the drag gesture uses.
+            if (resizeFrameRef.current !== null) return;
+            resizeFrameRef.current = requestAnimationFrame(() => {
+                resizeFrameRef.current = null;
+                applyResizeAt(resizeRef.current.latestX, resizeRef.current.latestY);
+            });
+        },
+        [applyResizeAt],
+    );
+
+    const endResize = useCallback(() => {
+        if (!resizeRef.current.isResizing) return;
+        cancelResizeFrame();
+        const { latestX, latestY, startX, startY } = resizeRef.current;
+        // Commit the final geometry synchronously so the pending frame cannot land after teardown,
+        // and only if the pointer actually moved — otherwise every click on a handle would write a
+        // redundant node update. Same contract `finishNodeDrag` has.
+        if (latestX !== startX || latestY !== startY) applyResizeAt(latestX, latestY);
         resizeRef.current.isResizing = false;
         window.removeEventListener("mousemove", handleResizeMove);
-        window.removeEventListener("mouseup", handleResizeUp);
+        window.removeEventListener("mouseup", endResize);
+        window.removeEventListener("blur", endResize);
+        window.removeEventListener("pointercancel", endResize);
         onResizeEnd(data.id);
-    }, [data.id, handleResizeMove, onResizeEnd]);
+    }, [applyResizeAt, cancelResizeFrame, data.id, handleResizeMove, onResizeEnd]);
 
     const handleResizeMouseDown = (event: React.MouseEvent, corner: ResizeCorner) => {
         event.stopPropagation();
@@ -253,6 +293,8 @@ export const CanvasNode = React.memo(function CanvasNode({
             corner,
             startX: event.clientX,
             startY: event.clientY,
+            latestX: event.clientX,
+            latestY: event.clientY,
             startLeft: data.position.x,
             startTop: data.position.y,
             startWidth: data.width,
@@ -262,15 +304,24 @@ export const CanvasNode = React.memo(function CanvasNode({
             scale: viewportRef.current?.k || 1,
         };
         window.addEventListener("mousemove", handleResizeMove);
-        window.addEventListener("mouseup", handleResizeUp);
+        window.addEventListener("mouseup", endResize);
+        // Without these, a lost mouseup (alt-tab, a dialog stealing focus) left the listeners attached
+        // and the node kept resizing on every later mousemove.
+        window.addEventListener("blur", endResize);
+        window.addEventListener("pointercancel", endResize);
     };
 
     useEffect(() => {
         return () => {
+            // Unmounting mid-gesture (the node being culled by a pan, or deleted) must not leave the
+            // window listeners behind or a frame pending against a gone component.
+            if (resizeFrameRef.current !== null) cancelAnimationFrame(resizeFrameRef.current);
             window.removeEventListener("mousemove", handleResizeMove);
-            window.removeEventListener("mouseup", handleResizeUp);
+            window.removeEventListener("mouseup", endResize);
+            window.removeEventListener("blur", endResize);
+            window.removeEventListener("pointercancel", endResize);
         };
-    }, [handleResizeMove, handleResizeUp]);
+    }, [handleResizeMove, endResize]);
 
     return (
         <div

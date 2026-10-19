@@ -1263,10 +1263,13 @@ function AtelierCanvasPage() {
             cancelAnimationFrame(rafRef.current);
             rafRef.current = null;
         }
-        // Cleared before the early return so the flag cannot be stranded true (which would leave
-        // history and persistence permanently paused) if this runs without an active drag.
-        historyPausedRef.current = false;
-        if (!dragRef.current.isDraggingNode) return;
+        // Cleared only if this call actually owns a drag. Resize now sets the same flag, and a window
+        // mouseup during a resize lands here too — clearing unconditionally would end the resize's
+        // transaction early. Drag start always sets `isDraggingNode` before any move can reach here,
+        // so scoping the clear to that cannot strand the flag.
+        const wasDragging = dragRef.current.isDraggingNode;
+        if (wasDragging) historyPausedRef.current = false;
+        if (!wasDragging) return;
 
         const wasClick = !dragRef.current.hasMoved && dragRef.current.movedNodes.length === 1;
         const clickedNodeId = dragRef.current.movedNodes[0]?.id;
@@ -1653,8 +1656,15 @@ function AtelierCanvasPage() {
 
     const handleNodeResizeStart = useCallback(() => {
         setIsNodeResizing(true);
+        // Same transaction boundary a node drag already has. Without it the history and persistence
+        // effects stay live through the gesture: the 180ms history debounce splits one continuous
+        // resize into several undo entries, and every settled frame re-serialises the whole store.
+        historyPausedRef.current = true;
     }, []);
-    const handleNodeResizeEnd = useCallback(() => setIsNodeResizing(false), []);
+    const handleNodeResizeEnd = useCallback(() => {
+        setIsNodeResizing(false);
+        historyPausedRef.current = false;
+    }, []);
 
     const toggleNodeFreeResize = useCallback((nodeId: string) => {
         setNodes((prev) =>

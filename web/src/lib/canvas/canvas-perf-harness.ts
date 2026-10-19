@@ -1708,6 +1708,44 @@ export const BASELINE_SCENARIOS: Scenario[] = [
     ...SCALE_SCENARIOS,
 ];
 
+/**
+ * 200-total-element acceptance workload. Each round opens the minimap after the normal project
+ * reset, so it measures the bitmap implementation under pan/zoom/drag/resize rather than silently
+ * benchmarking with the minimap closed (the app's default). The same mixed-media graph fixture,
+ * repeat/warm-up rules and invalid-sample checks as the baseline are reused.
+ */
+function with200NodeMinimap(scenario: Scenario): Scenario {
+    const originalSetup = scenario.setup;
+    const originalAssert = scenario.assert;
+    return {
+        ...scenario,
+        id: `${scenario.id}-200-minimap`,
+        label: `${scenario.label} (200 total nodes, minimap open)`,
+        setup: async () => {
+            const button = document.querySelector<HTMLButtonElement>("[data-canvas-minimap-toggle]");
+            if (!button) throw new PerfInvalidSampleError("minimap-toggle-missing", "no minimap toggle in current canvas");
+            button.click();
+            await originalSetup?.();
+        },
+        assert: (context) => {
+            if (!document.querySelector("canvas[data-canvas-minimap-bitmap]")) {
+                throw new PerfInvalidSampleError("minimap-missing", "the minimap did not render during the scenario");
+            }
+            originalAssert?.(context);
+        },
+    };
+}
+
+export const CANVAS_200_SCENARIOS: Scenario[] = [
+    createIdleBaselineScenario(200),
+    createPanScenario(200),
+    createZoomScenario(200),
+    createZoomBurstScenario(200),
+    createDragScenario(200),
+    createResizeScenario(200),
+    createMarqueeScenario(200),
+].map(with200NodeMinimap);
+
 /** Measured rounds per scenario unless the scenario overrides it. */
 export const DEFAULT_REPEATS = 3;
 

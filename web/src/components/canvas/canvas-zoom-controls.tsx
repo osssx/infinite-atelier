@@ -33,6 +33,7 @@ export function CanvasZoomControls({ scale, onScaleChange, onFitView, isMiniMapO
                         style={isMiniMapOpen ? activeStyle : { color: theme.toolbar.item }}
                         icon={<Compass className="size-4" />}
                         onClick={onToggleMiniMap}
+                        data-canvas-minimap-toggle
                         aria-label={isMiniMapOpen ? t("canvas.miniMapClose") : t("canvas.miniMapOpen")}
                     />
                 </Tooltip>

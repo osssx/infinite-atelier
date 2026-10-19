@@ -4,6 +4,7 @@ import { canvasPerfBridgeState } from "@/lib/canvas/canvas-perf-bridge-state";
 
 import {
     BASELINE_SCENARIOS,
+    CANVAS_200_SCENARIOS,
     ZOOM_DIAGNOSTIC_SCENARIOS,
     copyBaselineReport,
     downloadBaselineReport,
@@ -31,6 +32,7 @@ import {
  */
 export default function CanvasPerfPanel() {
     const [scenarios] = useState<Scenario[]>(BASELINE_SCENARIOS);
+    const [canvas200] = useState<Scenario[]>(CANVAS_200_SCENARIOS);
     const [diagnostics] = useState<Scenario[]>(ZOOM_DIAGNOSTIC_SCENARIOS);
     const [sessionLabel, setSessionLabel] = useState(() => getPerfSessionLabel());
     // Shown before running so the environment can be checked against the baseline rather than only
@@ -86,6 +88,9 @@ export default function CanvasPerfPanel() {
             <div className="mb-3 flex flex-wrap gap-2">
                 <button type="button" onClick={() => run(scenarios)} disabled={running} className="rounded border px-2 py-1 font-medium disabled:opacity-50">
                     {running ? "running…" : "Run session"}
+                </button>
+                <button type="button" onClick={() => run(canvas200)} disabled={running} className="rounded border px-2 py-1 font-medium disabled:opacity-50">
+                    Run 200 + minimap
                 </button>
                 <button type="button" onClick={() => run(diagnostics)} disabled={running} className="rounded border px-2 py-1 font-medium disabled:opacity-50">
                     Run zoom diagnostics

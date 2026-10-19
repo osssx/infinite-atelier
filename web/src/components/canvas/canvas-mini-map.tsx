@@ -1,93 +1,66 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef } from "react";
 
 import { canvasThemes } from "@/lib/canvas-theme";
 import { getNodeDefinition } from "@/lib/canvas/node-registry";
+import { getMinimapProjection, minimapNodeRect, minimapScreenToWorld, minimapWorldToScreen, MINIMAP_HEIGHT, MINIMAP_WIDTH } from "@/lib/canvas/canvas-minimap-geometry";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { type CanvasNodeData, type ViewportTransform } from "@/types/canvas";
 
+/**
+ * The minimap is a static bitmap plus one DOM outline. With the old per-node div approach,
+ * every viewport update reconciled hundreds of elements and every node drag laid out all of
+ * their rectangles again. Pan/zoom now only updates the viewport outline; node changes repaint
+ * one 240x160 bitmap without creating or laying out any per-node DOM.
+ */
 export function Minimap({ nodes, viewport, viewportSize, onViewportChange }: { nodes: CanvasNodeData[]; viewport: ViewportTransform; viewportSize: { width: number; height: number }; onViewportChange: (viewport: ViewportTransform) => void }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const containerRef = useRef<HTMLDivElement>(null);
-    const [isDragging, setIsDragging] = useState(false);
-    const width = 240;
-    const height = 160;
+    const bitmapRef = useRef<HTMLCanvasElement>(null);
+    const activePointerRef = useRef<number | null>(null);
+    const projection = useMemo(() => getMinimapProjection(nodes), [nodes]);
 
-    const { worldBounds, scale, offset } = useMemo(() => {
-        if (!nodes.length) {
-            return { worldBounds: { x: -500, y: -500, w: 1000, h: 1000 }, scale: 0.16, offset: { x: 40, y: 0 } };
+    // Repaint only when the graph or theme changes. Never redraw just because viewport x/y/k changed.
+    useEffect(() => {
+        const canvas = bitmapRef.current;
+        if (!canvas) return;
+        const context = canvas.getContext("2d");
+        if (!context) return;
+        // Bound the raster allocation on very high DPR displays (max 480x320 physical pixels).
+        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        const pixelWidth = Math.round(MINIMAP_WIDTH * dpr);
+        const pixelHeight = Math.round(MINIMAP_HEIGHT * dpr);
+        if (canvas.width !== pixelWidth) canvas.width = pixelWidth;
+        if (canvas.height !== pixelHeight) canvas.height = pixelHeight;
+        context.setTransform(dpr, 0, 0, dpr, 0, 0);
+        context.clearRect(0, 0, MINIMAP_WIDTH, MINIMAP_HEIGHT);
+        context.globalAlpha = 0.8;
+
+        const colors = new Map<string, string>();
+        for (const node of nodes) {
+            let color = colors.get(node.type);
+            if (!color) {
+                color = getNodeDefinition(node.type)?.minimapColor || theme.node.muted;
+                colors.set(node.type, color);
+            }
+            const rect = minimapNodeRect(projection, node);
+            context.fillStyle = color;
+            context.fillRect(rect.x, rect.y, rect.width, rect.height);
         }
-
-        let minX = Infinity;
-        let minY = Infinity;
-        let maxX = -Infinity;
-        let maxY = -Infinity;
-
-        nodes.forEach((node) => {
-            minX = Math.min(minX, node.position.x);
-            minY = Math.min(minY, node.position.y);
-            maxX = Math.max(maxX, node.position.x + node.width);
-            maxY = Math.max(maxY, node.position.y + node.height);
-        });
-
-        minX -= 500;
-        minY -= 500;
-        maxX += 500;
-        maxY += 500;
-
-        const boundsWidth = maxX - minX;
-        const boundsHeight = maxY - minY;
-        const nextScale = Math.min(width / boundsWidth, height / boundsHeight);
-        const mapContentW = boundsWidth * nextScale;
-        const mapContentH = boundsHeight * nextScale;
-
-        return {
-            worldBounds: { x: minX, y: minY, w: boundsWidth, h: boundsHeight },
-            scale: nextScale,
-            offset: { x: (width - mapContentW) / 2, y: (height - mapContentH) / 2 },
-        };
-    }, [nodes]);
-
-    const toMinimap = useCallback(
-        (worldX: number, worldY: number) => {
-            return {
-                x: (worldX - worldBounds.x) * scale + offset.x,
-                y: (worldY - worldBounds.y) * scale + offset.y,
-            };
-        },
-        [offset.x, offset.y, scale, worldBounds.x, worldBounds.y],
-    );
-
-    const toWorld = useCallback(
-        (minimapX: number, minimapY: number) => {
-            return {
-                x: (minimapX - offset.x) / scale + worldBounds.x,
-                y: (minimapY - offset.y) / scale + worldBounds.y,
-            };
-        },
-        [offset.x, offset.y, scale, worldBounds.x, worldBounds.y],
-    );
+        context.globalAlpha = 1;
+    }, [nodes, projection, theme.node.muted]);
 
     const viewportRect = useMemo(() => {
         const vx = -viewport.x / viewport.k;
         const vy = -viewport.y / viewport.k;
-        const vw = viewportSize.width / viewport.k;
-        const vh = viewportSize.height / viewport.k;
-        const p1 = toMinimap(vx, vy);
-        const p2 = toMinimap(vx + vw, vy + vh);
+        const p1 = minimapWorldToScreen(projection, vx, vy);
+        const p2 = minimapWorldToScreen(projection, vx + viewportSize.width / viewport.k, vy + viewportSize.height / viewport.k);
+        return { x: p1.x, y: p1.y, w: Math.max(p2.x - p1.x, 4), h: Math.max(p2.y - p1.y, 4) };
+    }, [projection, viewport.k, viewport.x, viewport.y, viewportSize.height, viewportSize.width]);
 
-        return {
-            x: p1.x,
-            y: p1.y,
-            w: Math.max(p2.x - p1.x, 4),
-            h: Math.max(p2.y - p1.y, 4),
-        };
-    }, [toMinimap, viewport.k, viewport.x, viewport.y, viewportSize.height, viewportSize.width]);
-
-    const updateViewportFromEvent = (event: React.PointerEvent) => {
+    const navigateToPointer = (event: React.PointerEvent) => {
         const rect = containerRef.current?.getBoundingClientRect();
         if (!rect) return;
-
-        const world = toWorld(event.clientX - rect.left, event.clientY - rect.top);
+        const world = minimapScreenToWorld(projection, event.clientX - rect.left, event.clientY - rect.top);
         onViewportChange({
             x: viewportSize.width / 2 - world.x * viewport.k,
             y: viewportSize.height / 2 - world.y * viewport.k,
@@ -95,41 +68,31 @@ export function Minimap({ nodes, viewport, viewportSize, onViewportChange }: { n
         });
     };
 
+    const stopPointer = (event: React.PointerEvent) => {
+        if (activePointerRef.current !== event.pointerId) return;
+        activePointerRef.current = null;
+        if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    };
+
     return (
-        <div className="absolute bottom-24 left-6 z-50 overflow-hidden rounded-lg border shadow-2xl backdrop-blur-sm" style={{ width, height, background: theme.toolbar.panel, borderColor: theme.toolbar.border }}>
+        <div className="absolute bottom-24 left-6 z-50 overflow-hidden rounded-lg border shadow-2xl backdrop-blur-sm" style={{ width: MINIMAP_WIDTH, height: MINIMAP_HEIGHT, background: theme.toolbar.panel, borderColor: theme.toolbar.border }}>
             <div
                 ref={containerRef}
                 className="relative h-full w-full cursor-crosshair"
                 onPointerDown={(event) => {
+                    if (event.button !== 0) return;
                     event.preventDefault();
+                    activePointerRef.current = event.pointerId;
                     event.currentTarget.setPointerCapture(event.pointerId);
-                    setIsDragging(true);
-                    updateViewportFromEvent(event);
+                    navigateToPointer(event);
                 }}
                 onPointerMove={(event) => {
-                    if (isDragging) updateViewportFromEvent(event);
+                    if (activePointerRef.current === event.pointerId) navigateToPointer(event);
                 }}
-                onPointerUp={() => setIsDragging(false)}
-                onPointerLeave={() => setIsDragging(false)}
+                onPointerUp={stopPointer}
+                onPointerCancel={stopPointer}
             >
-                {nodes.map((node) => {
-                    const pos = toMinimap(node.position.x, node.position.y);
-                    const color = getNodeDefinition(node.type)?.minimapColor || theme.node.muted;
-                    return (
-                        <div
-                            key={node.id}
-                            className="absolute rounded-[1px]"
-                            style={{
-                                left: pos.x,
-                                top: pos.y,
-                                width: Math.max(node.width * scale, 2),
-                                height: Math.max(node.height * scale, 2),
-                                backgroundColor: color,
-                                opacity: 0.8,
-                            }}
-                        />
-                    );
-                })}
+                <canvas ref={bitmapRef} data-canvas-minimap-bitmap width={MINIMAP_WIDTH} height={MINIMAP_HEIGHT} className="pointer-events-none absolute inset-0" aria-hidden="true" />
                 <div className="pointer-events-none absolute border" style={{ left: viewportRect.x, top: viewportRect.y, width: viewportRect.w, height: viewportRect.h, borderColor: theme.node.activeStroke, background: `${theme.node.activeStroke}18` }} />
             </div>
         </div>

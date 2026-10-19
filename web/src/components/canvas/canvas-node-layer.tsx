@@ -2,6 +2,7 @@ import { memo } from "react";
 
 import type { CanvasNodeData } from "@/types/canvas";
 import { CanvasNode, type CanvasNodeProps } from "./canvas-node";
+import { CompactCanvasNode } from "./canvas-node-compact";
 
 /**
  * Everything a node needs except its own data and the values the layer computes per node. Callers
@@ -17,6 +18,8 @@ export type SharedNodeProps = Omit<
 type NodeLayerProps = {
     /** Already culled to the viewport by the controller. */
     nodes: CanvasNodeData[];
+    /** Density-aware simplified render, without media and editor descendants. */
+    compactMode: boolean;
     shared: SharedNodeProps;
     selectedNodeIds: ReadonlySet<string>;
     relatedNodeIds: ReadonlySet<string>;
@@ -41,6 +44,7 @@ type NodeLayerProps = {
 export const NodeLayer = memo(function NodeLayer({
     nodes,
     shared,
+    compactMode,
     selectedNodeIds,
     relatedNodeIds,
     activeNodeId,
@@ -56,8 +60,20 @@ export const NodeLayer = memo(function NodeLayer({
 }: NodeLayerProps) {
     return (
         <>
-            {nodes.map((node) => (
-                <CanvasNode
+            {nodes.map((node) => {
+                // Preserve full editing/connection affordances for the active target, but keep
+                // all other nodes as cheap DOM hit rectangles in overview mode.
+                const showFull = !compactMode || panelNodeId === node.id || connectionTargetNodeId === node.id || activeNodeId === node.id || (selectedNodeIds.size === 1 && selectedNodeIds.has(node.id));
+                if (!showFull) return (
+                    <CompactCanvasNode
+                        key={node.id}
+                        data={node}
+                        isSelected={selectedNodeIds.has(node.id)}
+                        isRelated={relatedNodeIds.has(node.id)}
+                        isGroupDropTarget={dropTargetGroupId === node.id}
+                    />
+                );
+                return <CanvasNode
                     {...shared}
                     key={node.id}
                     data={node}
@@ -71,8 +87,8 @@ export const NodeLayer = memo(function NodeLayer({
                     isGroupDropTarget={dropTargetGroupId === node.id}
                     batchExpanded={expandedImageNodeIds.has(node.id)}
                     showImageInfo={showImageInfo}
-                />
-            ))}
+                />;
+            })}
         </>
     );
 });

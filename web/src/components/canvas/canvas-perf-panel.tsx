@@ -1,4 +1,6 @@
-import { useCallback, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
+
+import { canvasPerfBridgeState } from "@/lib/canvas/canvas-perf-bridge-state";
 
 import {
     BASELINE_SCENARIOS,
@@ -31,8 +33,22 @@ export default function CanvasPerfPanel() {
     const [scenarios] = useState<Scenario[]>(BASELINE_SCENARIOS);
     const [diagnostics] = useState<Scenario[]>(ZOOM_DIAGNOSTIC_SCENARIOS);
     const [sessionLabel, setSessionLabel] = useState(() => getPerfSessionLabel());
+    // Shown before running so the environment can be checked against the baseline rather than only
+    // discovered afterwards. Every measurement is scoped to a specific canvas size and side-panel
+    // state; a session that differs is not comparable and should be abandoned rather than recorded.
+    const [canvasSize, setCanvasSize] = useState<string>("(measuring)");
     const session = useSyncExternalStore(subscribePerfSession, getPerfSessionState);
     const run = useCallback((set: Scenario[]) => void startPerfSession(set), []);
+
+    useEffect(() => {
+        const measure = () => {
+            const rect = canvasPerfBridgeState.container?.getBoundingClientRect();
+            setCanvasSize(rect ? `${Math.round(rect.width)}x${Math.round(rect.height)}` : "(no canvas)");
+        };
+        measure();
+        const timer = window.setInterval(measure, 500);
+        return () => window.clearInterval(timer);
+    }, []);
 
     const running = session.status === "running";
     const markdown = session.report ? formatBaselineReport(session.report) : "";
@@ -61,6 +77,9 @@ export default function CanvasPerfPanel() {
                     className="min-w-0 flex-1 rounded border border-stone-300 bg-transparent px-1.5 py-1 dark:border-stone-600"
                 />
             </div>
+            <p className="mb-2 opacity-70">
+                canvas <strong>{canvasSize}</strong> · baseline is 1631x914 — leave the side panel untouched
+            </p>
             <p className="mb-2 opacity-70">
                 baseline {scenarios.length}: {scenarios.map((scenario) => `${scenario.id}×${scenario.repeats ?? 3}`).join(", ")} (+1 warm-up each, discarded)
             </p>

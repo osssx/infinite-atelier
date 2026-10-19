@@ -4,8 +4,8 @@ import { router } from "@/router";
 import { canvasPerfBridgeState } from "@/lib/canvas/canvas-perf-bridge-state";
 import { buildCanvasFixture } from "@/lib/canvas/canvas-fixtures";
 import { PERF_MODE } from "@/lib/perf-mode";
-import { useCanvasStore, type CanvasProject } from "@/stores/canvas/use-canvas-store";
-import type { ViewportTransform } from "@/types/canvas";
+import { drainPersistTimings, useCanvasStore, type CanvasProject } from "@/stores/canvas/use-canvas-store";
+import { CanvasNodeType, type CanvasNodeData, type ViewportTransform } from "@/types/canvas";
 
 /** Bumped whenever the harness changes in a way that invalidates earlier measurements. */
 export const HARNESS_VERSION = "1";
@@ -348,6 +348,17 @@ export type IdleOptions = {
  * changing AND a quiet window long enough to cover those timers, with a hard timeout so a stalled
  * 5000-node round aborts instead of hanging.
  */
+/**
+ * The idle deadline scales with the scenario's node count.
+ *
+ * A fixed 10s is fine at 1000 nodes but not at 3000, where a single frame measured 780ms and three
+ * stable frames plus the quiet window cannot fit — the round was rejected as `idle-timeout` even
+ * though it was making progress. The ceiling keeps a genuinely wedged round failing.
+ */
+function idleTimeoutFor(nodeCount: number): number {
+    return Math.min(60_000, Math.max(10_000, nodeCount * 12));
+}
+
 export async function waitForIdle({ stableFrames = 3, quietMs = 1200, timeoutMs = IDLE_TIMEOUT_MS }: IdleOptions = {}): Promise<void> {
     let stable = 0;
     let lastSignature = "";
@@ -434,6 +445,11 @@ export type RoundResult = {
     notes: string[];
     /** Which measured round this is, e.g. "2/3". Filled in by the session runner. */
     round: string;
+    /**
+     * Persistence writes dispatched during this round, split into stringify and write time.
+     * Only collected in perf mode; empty otherwise.
+     */
+    persist: { writes: number; maxStringifyMs: number; totalStringifyMs: number; maxWriteMs: number; maxBytes: number };
 };
 
 export type Scenario = {
@@ -529,15 +545,18 @@ export async function runRound(scenario: Scenario, jankThresholdMs: number, onPh
         // 500ms viewport timer, then `updateProject`, then a 400ms store debounce. A shorter window
         // would start sampling with a write still pending and attribute its cost to the scenario.
         phase("settling");
-        await waitForIdle({ stableFrames: 2 });
+        await waitForIdle({ stableFrames: 2, timeoutMs: idleTimeoutFor(scenario.nodeCount) });
 
         // After the reset has settled, so the DOM being mutated is this round's, and before sampling,
         // so the mutation is in place for every measured frame.
         undoDom = scenario.mutateDom?.();
 
+        // Drop anything queued before this round so the write timings below belong to it alone.
+        drainPersistTimings();
+
         phase("setup");
         await scenario.setup?.();
-        await waitForIdle({ stableFrames: 2 });
+        await waitForIdle({ stableFrames: 2, timeoutMs: idleTimeoutFor(scenario.nodeCount) });
 
         const viewportBefore = { ...readViewport() };
         const selectedBefore = canvasPerfBridgeState.selectedNodeIds.size;
@@ -598,10 +617,28 @@ export async function runRound(scenario: Scenario, jankThresholdMs: number, onPh
         // measures the harness's own scheduling rather than the app's.
         deltas.shift();
 
+        // A single frame this long is not the app being slow: it is the tab having been suspended, the
+        // machine having slept, or the process being descheduled. One such round produced a 176s "frame"
+        // and a p99 of 854ms while its median stayed at 16.7ms. Rejecting it keeps that contamination
+        // out of the aggregates rather than relying on the median to absorb it.
+        const worstFrame = deltas.length ? Math.max(...deltas) : 0;
+        if (worstFrame > 30_000) {
+            throw new PerfInvalidSampleError("frame-suspended", `a single frame lasted ${(worstFrame / 1000).toFixed(1)}s — the tab was suspended or the machine slept, so this is not a frame-time measurement`);
+        }
+
         const durationMs = performance.now() - startedAt;
 
         phase("asserting");
         scenario.assert?.({ viewportBefore, selectedBefore });
+
+        const writes = drainPersistTimings();
+        const persist = {
+            writes: writes.length,
+            maxStringifyMs: writes.length ? Math.max(...writes.map((write) => write.stringifyMs)) : 0,
+            totalStringifyMs: writes.reduce((total, write) => total + write.stringifyMs, 0),
+            maxWriteMs: writes.length ? Math.max(...writes.map((write) => write.writeMs)) : 0,
+            maxBytes: writes.length ? Math.max(...writes.map((write) => write.bytes)) : 0,
+        };
 
         const viewportAfter = { ...readViewport() };
         return {
@@ -620,6 +657,7 @@ export async function runRound(scenario: Scenario, jankThresholdMs: number, onPh
                 deltasMs: deltas,
                 notes: scenario.notes?.() ?? [],
                 round: "",
+                persist,
             },
         };
     } catch (error) {
@@ -1265,6 +1303,169 @@ export function createDragScenario(nodeCount = 1000, frames = 180): Scenario {
 }
 
 // ---------------------------------------------------------------------------
+// Resize scenario
+// ---------------------------------------------------------------------------
+
+/**
+ * The bottom-right resize handle of the node the setup centred on, located in the DOM.
+ *
+ * The node is chosen from the graph data by `findIsolatedResizeNode`, so this only has to find the
+ * element and confirm the press really reaches it — a cheap final check that the paint agrees with the
+ * geometry. The handle carries no `data-` attribute and adding one would be an app-source change made
+ * purely for the harness, so its cursor class is the identifier.
+ */
+function findResizeHandle(): { nodeId: string; x: number; y: number; element: Element } {
+    const container = requireContainer();
+    const mounted = [...container.querySelectorAll<HTMLElement>("[data-node-id]")];
+    let sawHandle = false;
+    for (const node of mounted) {
+        const nodeId = node.dataset.nodeId;
+        if (!nodeId) continue;
+        const handle = node.querySelector(".cursor-nwse-resize");
+        if (!handle) continue;
+        sawHandle = true;
+        const rect = handle.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) continue;
+        const x = rect.left + rect.width / 2;
+        const y = rect.top + rect.height / 2;
+        if (document.elementFromPoint(x, y) !== handle) continue;
+        return { nodeId, x, y, element: handle };
+    }
+    throw new PerfInvalidSampleError(
+        "no-resize-handle",
+        sawHandle ? `handles are mounted but none is reachable among ${mounted.length} nodes` : `no resize handle is mounted among ${mounted.length} nodes`,
+    );
+}
+
+/**
+ * A normal-sized node whose bottom-right corner nothing else can cover.
+ *
+ * Picked from the graph data rather than by hit-testing, because the reason every earlier attempt failed
+ * is geometric, not a threshold:
+ *
+ * - A node root carries `transform`, which creates a stacking context. The resize handle's `z-50` is
+ *   therefore scoped *inside* its own node and cannot lift it above a sibling node — so any overlapping
+ *   neighbour, painted later, covers the handle outright.
+ * - The handle sits 14px outside the node's corner, so it is the easiest part to cover, and the
+ *   fixture's extreme nodes (4000-8000 wide) reach across the whole viewport.
+ *
+ * So the only reliable way is to require that no other node's rectangle reaches into the corner region
+ * at all. `handleMargin` covers the 14px overhang plus the 28px handle itself.
+ */
+function findIsolatedResizeNode(handleMargin = 24): CanvasNodeData {
+    const nodes = canvasPerfBridgeState.nodes;
+    const isNormal = (node: CanvasNodeData) => node.type !== CanvasNodeType.Group && node.width >= 120 && node.width <= 600 && node.height >= 80 && node.height <= 500;
+    const overlaps = (a: { left: number; top: number; right: number; bottom: number }, b: { left: number; top: number; right: number; bottom: number }) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+
+    for (const candidate of nodes) {
+        if (!isNormal(candidate)) continue;
+        // The corner region: the node's own box plus the handle overhang, and nothing else may enter it.
+        const corner = {
+            left: candidate.position.x - handleMargin,
+            top: candidate.position.y - handleMargin,
+            right: candidate.position.x + candidate.width + handleMargin,
+            bottom: candidate.position.y + candidate.height + handleMargin,
+        };
+        const obstructed = nodes.some(
+            (other) =>
+                other.id !== candidate.id &&
+                overlaps(corner, { left: other.position.x, top: other.position.y, right: other.position.x + other.width, bottom: other.position.y + other.height }),
+        );
+        if (!obstructed) return candidate;
+    }
+    throw new PerfInvalidSampleError("no-isolated-node", `no normally-sized node among ${nodes.length} had an unobstructed bottom-right corner`);
+}
+
+function nodeSize(nodeId: string): { width: number; height: number } | null {
+    const node = canvasPerfBridgeState.nodes.find((candidate) => candidate.id === nodeId);
+    return node ? { width: node.width, height: node.height } : null;
+}
+
+/**
+ * Drags a node's bottom-right resize handle.
+ *
+ * Its own scenario rather than a drag variant because resize takes a different code path: the handle
+ * stops propagation, so the capture handler still selects the node but no node-drag begins. It is
+ * also the gesture that until now had neither rAF coalescing nor a history pause.
+ */
+export function createResizeScenario(nodeCount = 1000, frames = 60): Scenario {
+    const perFramePx = 2;
+    let handle: { nodeId: string; x: number; y: number; element: Element } | null = null;
+    let before: { width: number; height: number } | null = null;
+    let after: { width: number; height: number } | null = null;
+    let expectedGrow = 0;
+    return {
+        id: "resize-single",
+        label: "resize one node from its bottom-right handle",
+        nodeCount,
+        frames,
+        setup: async () => {
+            // Centre on an isolated normal-sized node at k=1.
+            //
+            // Not a dense view: this scenario needs exactly one usable handle, and the fixture's extreme
+            // nodes (4000-8000 wide) blanket the viewport at k=1, covering everything's corners. Picking
+            // from the graph data instead — a node nothing else reaches into the corner of — is the only
+            // way that is not luck.
+            const target = findIsolatedResizeNode();
+            const size = canvasSize();
+            applyViewport({ x: size.width / 2 - (target.position.x + target.width / 2), y: size.height / 2 - (target.position.y + target.height / 2), k: 1 });
+            // Two frames so React commits and paints before the handle is hit-tested.
+            await nextFrame();
+            await nextFrame();
+        },
+        script: (frame) => {
+            if (frame === 0) {
+                const found = findResizeHandle();
+                handle = found;
+                before = nodeSize(found.nodeId);
+                expectedGrow = ((frames - 1) * perFramePx) / readViewport().k;
+                dispatchMouse(found.element, "mousedown", found.x, found.y);
+                return;
+            }
+            const active = handle;
+            if (!active) throw new PerfInvalidSampleError("resize-not-started", "frame 0 did not find a resize handle");
+            const x = active.x + frame * perFramePx;
+            const y = active.y + frame * perFramePx;
+            dispatchMouse(window, "mousemove", x, y);
+            if (frame === frames - 1) dispatchMouse(window, "mouseup", x, y, { buttons: 0 });
+        },
+        assert: () => {
+            const active = handle;
+            const start = before;
+            if (!active || !start) throw new PerfInvalidSampleError("resize-assert-missing", "no resize context was captured");
+            after = nodeSize(active.nodeId);
+            if (!after) throw new PerfInvalidSampleError("resize-node-vanished", active.nodeId);
+            if (after.width === start.width && after.height === start.height) {
+                throw new PerfInvalidSampleError("resize-had-no-effect", `${active.nodeId} stayed ${start.width}x${start.height}`);
+            }
+            // Direction is deliberately not asserted. Aspect-locked nodes derive the other dimension
+            // from whichever axis moved more, so an outward drag can legitimately change a node in a
+            // way that is not monotonic in width — asserting "must grow" rejected three good rounds.
+            // What matters for the measurement is that the gesture drove geometry at all.
+        },
+        notes: () => {
+            const start = before;
+            const end = after;
+            if (!start || !end) return [];
+            return [`size ${start.width}x${start.height} -> ${Math.round(end.width)}x${Math.round(end.height)} (dispatched +${expectedGrow.toFixed(0)} world units)`];
+        },
+    };
+}
+
+/**
+ * The same gesture at 3000 total nodes, to answer one question the 1000-node scenarios cannot: whether
+ * the per-frame O(N+E) rebuilds (graph index, visible nodes, connection culling) cost anything. At 1000
+ * nodes pan and marquee already sit on the vsync ceiling, so a spatial index would have no headroom to
+ * win; if 3000 is also flat, a spatial index is not worth building.
+ *
+ * Only the pan variant is kept. `drag-single-3000` was removed: at this density a single frame reached
+ * **13.6s**, so the settle wait could not complete inside any sane deadline and the round was only ever
+ * rejected as `idle-timeout`. It can be run on demand (`createDragScenario(3000)`) when the machine is
+ * free of the other scenarios; shipping it in the default set just wastes minutes.
+ */
+export const SCALE_SCENARIOS: Scenario[] = [{ ...createPanScenario(3000), id: "pan-general-3000", label: "pan, 3000 total nodes", repeats: 1 }];
+
+// ---------------------------------------------------------------------------
 // Marquee scenario
 // ---------------------------------------------------------------------------
 
@@ -1470,7 +1671,9 @@ export const BASELINE_SCENARIOS: Scenario[] = [
     createZoomBurstScenario(),
     createPanScenario(),
     createDragScenario(),
+    createResizeScenario(),
     createMarqueeScenario(),
+    ...SCALE_SCENARIOS,
 ];
 
 /** Measured rounds per scenario unless the scenario overrides it. */
@@ -1490,6 +1693,14 @@ export type ScenarioSummary = {
     maxFrame: MetricSpread;
     jank: MetricSpread;
     longTasks: MetricSpread;
+    /**
+     * Total and worst long-task duration. Printed alongside the count because the count alone can be
+     * self-contradictory: 179 tasks of >50ms cannot fit in a 5.5s window whose p50 frame is 28.6ms.
+     * Either the count is wrong or the durations are far below the long-task threshold; only these
+     * two make that distinguishable.
+     */
+    longTaskMs: MetricSpread;
+    longTaskMaxMs: MetricSpread;
     mounted: MetricSpread;
     notes: string[];
 };
@@ -1511,6 +1722,8 @@ function summariseScenario(scenario: Scenario, rounds: readonly RoundResult[]): 
         maxFrame: spread(rounds.map((round) => round.frames.max)),
         jank: spread(rounds.map((round) => round.frames.jank)),
         longTasks: spread(rounds.map((round) => round.longTasks.count)),
+        longTaskMs: spread(rounds.map((round) => round.longTasks.totalMs)),
+        longTaskMaxMs: spread(rounds.map((round) => round.longTasks.maxMs)),
         mounted: spread(rounds.map((round) => round.mountedNodes.median)),
         notes,
     };
@@ -1686,23 +1899,23 @@ export function formatBaselineReport(report: SessionReport): string {
     lines.push("");
     lines.push(`Median across the measured rounds, with the observed range in brackets — read the range before believing a difference.`);
     lines.push("");
-    lines.push(`| scenario | total | rounds | mounted (med) | fps (med) | p50 med [range] | p95 med [range] | jank (med) | longtasks (med) |`);
-    lines.push(`| --- | --- | --- | --- | --- | --- | --- | --- | --- |`);
+    lines.push(`| scenario | total | rounds | mounted (med) | fps (med) | p50 med [range] | p95 med [range] | jank (med) | longtasks (med) | longtask ms (med) |`);
+    lines.push(`| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |`);
     for (const summary of report.summaries) {
         const range = (metric: MetricSpread, digits = 2) => `${fixed(metric.median, digits)} [${fixed(metric.min, digits)}–${fixed(metric.max, digits)}]`;
         lines.push(
-            `| ${summary.scenarioId} | ${summary.nodeCount} | ${summary.rounds} | ${fixed(summary.mounted.median, 0)} | ${fixed(summary.fps.median)} | ${range(summary.p50)} | ${range(summary.p95)} | ${fixed(summary.jank.median, 0)} | ${fixed(summary.longTasks.median, 0)} |`,
+            `| ${summary.scenarioId} | ${summary.nodeCount} | ${summary.rounds} | ${fixed(summary.mounted.median, 0)} | ${fixed(summary.fps.median)} | ${range(summary.p50)} | ${range(summary.p95)} | ${fixed(summary.jank.median, 0)} | ${fixed(summary.longTasks.median, 0)} | ${fixed(summary.longTaskMs.median, 1)} |`,
         );
     }
     lines.push("");
     lines.push(`## Per-round detail`);
     lines.push("");
-    lines.push(`| scenario | round | node | mounted min/med/max | edges | paths | dom | media | fps | p50 | p95 | p99 | max | jank | longtasks |`);
-    lines.push(`| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |`);
+    lines.push(`| scenario | round | node | mounted min/med/max | edges | paths | dom | media | fps | p50 | p95 | p99 | max | jank | longtasks | longtask total ms | longtask max ms | persist writes | stringify max ms |`);
+    lines.push(`| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |`);
     for (const result of report.results) {
         const m = result.mountedNodes;
         lines.push(
-            `| ${result.scenarioId} | ${result.round} | ${result.nodeCount} | ${m.min}/${fixed(m.median, 0)}/${m.max} | ${result.counts.mountedEdges} | ${result.counts.svgPaths} | ${result.counts.domNodes} | ${result.counts.mediaElements} | ${fixed(result.frames.fps)} | ${fixed(result.frames.p50, 2)} | ${fixed(result.frames.p95, 2)} | ${fixed(result.frames.p99, 2)} | ${fixed(result.frames.max, 2)} | ${result.frames.jank} | ${result.longTasks.count} |`,
+            `| ${result.scenarioId} | ${result.round} | ${result.nodeCount} | ${m.min}/${fixed(m.median, 0)}/${m.max} | ${result.counts.mountedEdges} | ${result.counts.svgPaths} | ${result.counts.domNodes} | ${result.counts.mediaElements} | ${fixed(result.frames.fps)} | ${fixed(result.frames.p50, 2)} | ${fixed(result.frames.p95, 2)} | ${fixed(result.frames.p99, 2)} | ${fixed(result.frames.max, 2)} | ${result.frames.jank} | ${result.longTasks.count} | ${fixed(result.longTasks.totalMs, 1)} | ${fixed(result.longTasks.maxMs, 1)} | ${result.persist.writes} | ${fixed(result.persist.maxStringifyMs, 2)} |`,
         );
     }
     if (report.invalid.length) {

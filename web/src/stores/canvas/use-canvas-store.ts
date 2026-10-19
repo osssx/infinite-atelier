@@ -4,6 +4,7 @@ import { persist, type PersistStorage, type StorageValue } from "zustand/middlew
 import { nanoid } from "nanoid";
 import i18n from "@/i18n";
 import { localForageStorage } from "@/lib/localforage-storage";
+import { PERF_MODE } from "@/lib/perf-mode";
 import type { CanvasBackgroundMode } from "@/lib/canvas-theme";
 import type { CanvasAssistantSession, CanvasConnection, CanvasNodeData, ViewportTransform } from "@/types/canvas";
 
@@ -40,13 +41,74 @@ let saveTimer: ReturnType<typeof setTimeout> | null = null;
 let queuedPersistState: PersistedCanvasState | null = null;
 let pendingPersist: { name: string; value: StorageValue<CanvasStore> } | null = null;
 
+/** Perf-mode only: one record per write, exposed to the harness for its persistence report. */
+export type PersistTiming = {
+    sequence: number;
+    /** Synchronous cost of `JSON.stringify` over every project. This is what can block a frame. */
+    stringifyMs: number;
+    bytes: number;
+    /** Call to Promise settlement of the IndexedDB write. Asynchronous, so it should not block. */
+    writeMs: number;
+    /** True when the write was dispatched by a `pagehide` flush rather than the normal debounce. */
+    onHide: boolean;
+};
+
+const persistTimings: PersistTiming[] = [];
+let persistSequence = 0;
+let hiding = false;
+
+/** Snapshots and clears the collected timings. Called by the harness at the end of a round. */
+export function drainPersistTimings(): PersistTiming[] {
+    return persistTimings.splice(0, persistTimings.length);
+}
+
 export function flushCanvasStorePersistence() {
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = null;
     const pending = pendingPersist;
     pendingPersist = null;
-    if (pending) void localForageStorage.setItem(pending.name, JSON.stringify(pending.value));
+    if (!pending) return;
+
+    // The normal path stays byte-for-byte what it was: no `performance.now()` calls on a hot write.
+    if (!PERF_MODE) {
+        void localForageStorage.setItem(pending.name, JSON.stringify(pending.value));
+        return;
+    }
+
+    // Timed separately on purpose: `JSON.stringify` serialises *every* project synchronously on the
+    // main thread, so it is the only one of the two that can stall a frame. `setItem` is async and
+    // should not. Without the split there is no way to tell which one a slow frame belongs to.
+    const stringifyStarted = performance.now();
+    const payload = JSON.stringify(pending.value);
+    const stringifyMs = performance.now() - stringifyStarted;
+
+    const writeStarted = performance.now();
+    void Promise.resolve(localForageStorage.setItem(pending.name, payload)).finally(() => {
+        persistTimings.push({ sequence: persistSequence++, stringifyMs, bytes: payload.length, writeMs: performance.now() - writeStarted, onHide: hiding });
+        // Bound the buffer: a long session writes often and only the tail is interesting.
+        if (persistTimings.length > 200) persistTimings.splice(0, persistTimings.length - 200);
+    });
 }
+
+/**
+ * Flushes the debounced write when the page goes away.
+ *
+ * Without this, anything changed within the 400ms debounce window is simply lost on tab close or
+ * navigation — there was no `pagehide`/`beforeunload` handler anywhere in the app. `pagehide` rather
+ * than `beforeunload`: the latter is unreliable on mobile and is skipped when a page enters the
+ * bfcache. Only the existing flush is called; no new synchronous storage call is introduced, since
+ * one that could not finish before teardown would be worse than nothing — it would look saved.
+ */
+function installCanvasStoreFlushOnHide() {
+    if (typeof window === "undefined") return;
+    window.addEventListener("pagehide", () => {
+        hiding = true;
+        flushCanvasStorePersistence();
+        hiding = false;
+    });
+}
+
+installCanvasStoreFlushOnHide();
 
 const canvasStorage: PersistStorage<CanvasStore> = {
     getItem: async (name) => {

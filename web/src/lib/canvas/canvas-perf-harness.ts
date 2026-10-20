@@ -93,9 +93,9 @@ export function perfProjectId(nodeCount: number): string {
  * that are not ours are passed straight back through — replacing with just the fixture would delete
  * the user's work. Re-running replaces rather than appends.
  */
-export function provisionPerfProject(nodeCount: number, seed = PERF_SEED, mediaMode: "static" | "decoded" = perfFixtureMediaMode): string {
+export function provisionPerfProject(nodeCount: number, seed = PERF_SEED, mediaMode: "static" | "decoded" = perfFixtureMediaMode, layout: "spread" | "clustered" = "spread"): string {
     const { nodes, connections } = buildCanvasFixture({
-        nodeCount, seed, mediaMode,
+        nodeCount, seed, mediaMode, layout,
         staticMediaUrl: mediaMode === "decoded" ? "/perf-media/sample-photo.jpg" : PERF_MEDIA_URL,
         staticVideoUrl: "/perf-media/sample-video.mp4",
         staticAudioUrl: "/perf-media/sample-audio.mp3",
@@ -388,7 +388,8 @@ export async function waitForIdle({ stableFrames = 3, quietMs = 1200, timeoutMs 
     let quietSince = performance.now();
     await waitUntil(
         () => {
-            const signature = `${mountedNodeCountFast()}|${canvasPerfBridgeState.selectedNodeIds.size}|${canvasPerfBridgeState.viewport.x}|${canvasPerfBridgeState.viewport.y}|${canvasPerfBridgeState.viewport.k}`;
+            const recovering = Boolean(canvasPerfBridgeState.container?.querySelector("[data-canvas-lod-recovering]"));
+            const signature = `${mountedNodeCountFast()}|${canvasPerfBridgeState.selectedNodeIds.size}|${canvasPerfBridgeState.viewport.x}|${canvasPerfBridgeState.viewport.y}|${canvasPerfBridgeState.viewport.k}|${recovering}`;
             if (signature === lastSignature) {
                 stable += 1;
             } else {
@@ -396,7 +397,7 @@ export async function waitForIdle({ stableFrames = 3, quietMs = 1200, timeoutMs 
                 lastSignature = signature;
                 quietSince = performance.now();
             }
-            return stable >= stableFrames && performance.now() - quietSince >= quietMs;
+            return !recovering && stable >= stableFrames && performance.now() - quietSince >= quietMs;
         },
         timeoutMs,
         "idle-timeout",
@@ -1946,12 +1947,12 @@ const DEFAULT_NODE_COUNT = 1000;
  * fixture project and navigates to it — in that order, because the canvas page redirects away when
  * the route id does not resolve, and because the route id has to resolve before it mounts.
  */
-export async function bootstrapCanvasPerf(nodeCount = DEFAULT_NODE_COUNT, mediaMode: "static" | "decoded" = "static"): Promise<void> {
+export async function bootstrapCanvasPerf(nodeCount = DEFAULT_NODE_COUNT, mediaMode: "static" | "decoded" = "static", layout: "spread" | "clustered" = "spread"): Promise<void> {
     if (!PERF_MODE) return;
     installPointerCaptureShim();
     perfFixtureMediaMode = mediaMode;
     await waitForHydration();
-    const id = provisionPerfProject(nodeCount, PERF_SEED, mediaMode);
+    const id = provisionPerfProject(nodeCount, PERF_SEED, mediaMode, layout);
     await router.navigate(`/canvas/${id}`);
 }
 

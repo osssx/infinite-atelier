@@ -27,6 +27,8 @@ export type CanvasFixtureOptions = {
     connectionRatio?: number;
     /** How many of the leading nodes are Groups. */
     groupCount?: number;
+    /** Optional dense scene for perf-only LOD recovery smoke tests. */
+    layout?: "spread" | "clustered";
     /**
      * What `metadata.content` the media nodes get.
      *
@@ -56,7 +58,7 @@ const PLUGIN_NODE_TYPE = "plugin:fixture";
  * edges, media nodes, and nodes mid-generation.
  */
 export function buildCanvasFixture(options: CanvasFixtureOptions): CanvasFixture {
-    const { nodeCount, seed = 1, connectionRatio = 1.5, groupCount = 3, mediaMode = "remote", staticMediaUrl, staticVideoUrl, staticAudioUrl } = options;
+    const { nodeCount, seed = 1, connectionRatio = 1.5, groupCount = 3, layout = "spread", mediaMode = "remote", staticMediaUrl, staticVideoUrl, staticAudioUrl } = options;
     if (mediaMode === "static" && !staticMediaUrl) throw new Error('buildCanvasFixture: mediaMode "static" requires staticMediaUrl');
     if (mediaMode === "decoded" && (!staticMediaUrl || !staticVideoUrl || !staticAudioUrl)) throw new Error('buildCanvasFixture: decoded media mode requires all three same-origin asset URLs');
     const random = createSeededRandom(seed);
@@ -95,6 +97,16 @@ export function buildCanvasFixture(options: CanvasFixtureOptions): CanvasFixture
         if (groups > 0 && random() < 0.4) metadata.groupId = `node-${Math.floor(random() * groups)}`;
 
         nodes.push({ id, type, title: `${type} ${index}`, position, width, height, metadata });
+    }
+
+    if (layout === "clustered") {
+        // Preserve the graph, types, metadata and edge count. Only layout density
+        // changes so a perf browser can observe 24+ full nodes restoring in one view.
+        nodes.forEach((node, index) => {
+            node.position = { x: (index % 10) * 142 - 640, y: Math.floor(index / 10) * 94 - 800 };
+            node.width = Math.min(node.width, 220);
+            node.height = Math.min(node.height, 180);
+        });
     }
 
     const connections: CanvasConnection[] = [];

@@ -1,8 +1,10 @@
-import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import type { CanvasNodeData } from "@/types/canvas";
 import { shouldPromoteHoveredNode, shouldRenderFullNode, shouldUseCompactNodeLayer } from "@/lib/canvas/canvas-lod";
 import { shouldShowCompactImage } from "@/lib/canvas/canvas-lod-preview";
+import { choosePromotionBatch, orderNodePromotions } from "@/lib/canvas/canvas-node-promotion";
+import { PERF_MODE } from "@/lib/perf-mode";
 import type { CanvasNodeProps } from "./canvas-node";
 import { CanvasNodeHandoff } from "./canvas-node-handoff";
 
@@ -24,6 +26,11 @@ type NodeLayerProps = {
     wheelZoomActive: boolean;
     /** A primitive scale used only to decide when tiny image previews become legible. */
     scale: number;
+    /** World-space viewport center for gradual promotion of nearby editors first. */
+    centerX: number;
+    centerY: number;
+    /** Avoid mounting media/editors in the middle of pan, drag, resize or marquee. */
+    pausePromotions: boolean;
     shared: SharedNodeProps;
     selectedNodeIds: ReadonlySet<string>;
     relatedNodeIds: ReadonlySet<string>;
@@ -51,6 +58,9 @@ export const NodeLayer = memo(function NodeLayer({
     wheelZoomActive,
     scale,
     selectedNodeIds,
+    centerX,
+    centerY,
+    pausePromotions,
     relatedNodeIds,
     activeNodeId,
     connectionTargetNodeId,
@@ -81,27 +91,85 @@ export const NodeLayer = memo(function NodeLayer({
     const compactMode = shouldUseCompactNodeLayer(nodes.length, scale, wheelZoomActive, compactRef.current);
     compactRef.current = compactMode;
 
-    // After a dense zoom we must not mount every JPEG/video/editor in the same frame.
-    // Revealing a few full nodes per paint distributes decode and DOM creation over frames,
-    // including the post-wheel settling period (which the interactive zoom sample misses).
-    const [revealedCount, setRevealedCount] = useState(Number.POSITIVE_INFINITY);
+    // Pause new hydration during a gesture, but retain editors already mounted:
+    // unmounting an active text editor or a multi-selected drag source is destructive.
+    const [promotedIds, setPromotedIds] = useState<ReadonlySet<string>>(() => new Set());
+    const previousFrameRef = useRef<number | null>(null);
+    const lastCommitMsRef = useRef(0);
+    const renderStartRef = useRef(performance.now());
+    renderStartRef.current = performance.now();
+    useLayoutEffect(() => {
+        lastCommitMsRef.current = performance.now() - renderStartRef.current;
+    });
+
     useEffect(() => {
-        if (compactMode) setRevealedCount(0);
+        if (!compactMode) return;
+        previousFrameRef.current = null;
+        setPromotedIds((previous) => previous.size ? new Set() : previous);
     }, [compactMode]);
+
+    const priorityIds = useMemo(() => {
+        const ids = new Set(playingNodeIds);
+        if (selectedNodeIds.size === 1) for (const id of selectedNodeIds) ids.add(id);
+        if (activeNodeId) ids.add(activeNodeId);
+        if (connectionTargetNodeId) ids.add(connectionTargetNodeId);
+        if (panelNodeId) ids.add(panelNodeId);
+        return ids;
+    }, [playingNodeIds, selectedNodeIds, activeNodeId, connectionTargetNodeId, panelNodeId]);
+
+    // Directly pinned editors have already paid the mount cost. Record them so a
+    // hover/selection release cannot immediately tear them down during recovery.
     useEffect(() => {
-        if (compactMode || revealedCount >= nodes.length) return;
-        const frame = requestAnimationFrame(() => {
-            setRevealedCount((count) => Math.min(count + 2, nodes.length));
+        if (compactMode || nodes.length < 24 || !priorityIds.size) return;
+        const visible = new Set(nodes.map(({ id }) => id));
+        setPromotedIds((previous) => {
+            const missing = [...priorityIds].filter((id) => visible.has(id) && !previous.has(id));
+            if (!missing.length) return previous;
+            const next = new Set(previous);
+            for (const id of missing) next.add(id);
+            return next;
+        });
+    }, [compactMode, nodes, priorityIds]);
+
+    // Do not sort the node list on every pan/zoom frame when editors are
+    // intentionally compact or admission is paused.
+    const candidates = useMemo(
+        () => compactMode || pausePromotions || nodes.length < 24
+            ? []
+            : orderNodePromotions(nodes, centerX, centerY, priorityIds),
+        [compactMode, pausePromotions, nodes, centerX, centerY, priorityIds],
+    );
+
+    // Keep a single pending rAF. React commits report a rough render+commit cost;
+    // together with frame spacing this bounds promotion to 1-4 weighted units.
+    useEffect(() => {
+        if (compactMode || pausePromotions || nodes.length < 24) return;
+        if (candidates.every((candidate) => promotedIds.has(candidate.id))) return;
+        const frame = requestAnimationFrame((now) => {
+            const interval = previousFrameRef.current == null ? 16.7 : Math.min(100, now - previousFrameRef.current);
+            previousFrameRef.current = now;
+            const batch = choosePromotionBatch(candidates, promotedIds, interval, lastCommitMsRef.current);
+            if (!batch.length) return;
+            setPromotedIds((previous) => {
+                if (batch.every((id) => previous.has(id))) return previous;
+                const next = new Set(previous);
+                for (const id of batch) next.add(id);
+                return next;
+            });
         });
         return () => cancelAnimationFrame(frame);
-    }, [compactMode, revealedCount, nodes.length]);
+    }, [compactMode, pausePromotions, candidates, promotedIds, nodes.length]);
+    // data-node-id stays constant through promotion; expose a perf-only settling marker.
+    const isRecovering = PERF_MODE && !compactMode && nodes.length >= 24 &&
+        (pausePromotions || candidates.some(({ id }) => !promotedIds.has(id)));
 
     return (
         <>
-            {nodes.map((node, index) => {
+            {PERF_MODE && isRecovering ? <span hidden data-canvas-lod-recovering="" /> : null}
+            {nodes.map((node) => {
                 // Preserve full editing/connection affordances for the active target, but keep
                 // all other nodes as cheap DOM hit rectangles in overview mode.
-                const stagedCompact = compactMode || index >= revealedCount;
+                const stagedCompact = compactMode || (nodes.length >= 24 && !promotedIds.has(node.id));
                 // Hover-only promotion is suspended during wheel input. An otherwise pinned
                 // heavy media/editor node can stall zoom; selection and playing media still win.
                 const hoveredForPromotion = shouldPromoteHoveredNode(scale, node.width, node.height, wheelZoomActive) ? activeNodeId : null;

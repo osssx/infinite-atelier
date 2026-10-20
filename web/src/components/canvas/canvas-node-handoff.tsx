@@ -3,6 +3,7 @@ import { memo, useCallback, useEffect, useState } from "react";
 import type { CanvasNodeData } from "@/types/canvas";
 import { CanvasNodeType } from "@/types/canvas";
 import { getCompactImageSource } from "@/lib/canvas/canvas-lod-preview";
+import { keepCompactDuringHandoff } from "@/lib/canvas/canvas-node-handoff";
 import { CanvasNode } from "./canvas-node";
 import { CompactCanvasNode } from "./canvas-node-compact";
 import type { SharedNodeProps } from "./canvas-node-layer";
@@ -51,12 +52,14 @@ export const CanvasNodeHandoff = memo(function CanvasNodeHandoff({
     const visualKey = mediaSource || data.type;
     const [visualReadyKey, setVisualReadyKey] = useState<string | null>(null);
     const [shownKey, setShownKey] = useState<string | null>(null);
+    const [settledKey, setSettledKey] = useState<string | null>(null);
     const onVisualReady = useCallback(() => setVisualReadyKey(visualKey), [visualKey]);
 
     useEffect(() => {
         if (!showFull) {
             setVisualReadyKey(null);
             setShownKey(null);
+            setSettledKey(null);
         }
     }, [showFull]);
 
@@ -68,17 +71,29 @@ export const CanvasNodeHandoff = memo(function CanvasNodeHandoff({
 
     const interactiveFull = showFull && shownKey === visualKey;
 
+    // Preserve the preview for the complete CSS opacity transition (160ms), then
+    // release its image/DOM until the next source change or compact downgrade.
+    useEffect(() => {
+        if (!interactiveFull || settledKey === visualKey) return;
+        const timer = setTimeout(() => setSettledKey(visualKey), 185);
+        return () => clearTimeout(timer);
+    }, [interactiveFull, settledKey, visualKey]);
+
+    const keepCompact = keepCompactDuringHandoff(showFull, visualKey, shownKey, settledKey);
+
     return (
         <>
-            <CompactCanvasNode
-                data={data}
-                isSelected={isSelected}
-                isRelated={isRelated}
-                isGroupDropTarget={isGroupDropTarget}
-                groupChildCount={groupChildCount}
-                showImagePreview={showImagePreview}
-                hitActive={!interactiveFull}
-            />
+            {keepCompact ? (
+                <CompactCanvasNode
+                    data={data}
+                    isSelected={isSelected}
+                    isRelated={isRelated}
+                    isGroupDropTarget={isGroupDropTarget}
+                    groupChildCount={groupChildCount}
+                    showImagePreview={showImagePreview}
+                    hitActive={!interactiveFull}
+                />
+            ) : null}
             {showFull ? (
                 <CanvasNode
                     {...shared}

@@ -272,6 +272,7 @@ function AtelierCanvasPage() {
     const [activeChatId, setActiveChatId] = useState<string | null>(null);
     const [viewport, setViewport] = useState<ViewportTransform>({ x: 0, y: 0, k: 1 });
     const [isWheelZooming, setIsWheelZooming] = useState(false);
+    const [isCanvasPanning, setIsCanvasPanning] = useState(false);
     const [canvasTool, setCanvasTool] = useState<"select" | "pan">("pan");
     const [size, setSize] = useState({ width: 1200, height: 720 });
     const [selectedNodeIds, setSelectedNodeIds] = useState<Set<string>>(new Set());
@@ -3241,6 +3242,7 @@ function AtelierCanvasPage() {
                     backgroundMode={backgroundMode}
                     onViewportChange={handleViewportChange}
                     onWheelActivityChange={setIsWheelZooming}
+                    onPanActivityChange={setIsCanvasPanning}
                     onCanvasMouseDown={handleCanvasMouseDown}
                     onCanvasDeselect={deselectCanvas}
                     onCanvasDoubleClick={(event) => {
@@ -3271,6 +3273,9 @@ function AtelierCanvasPage() {
                                 nodes={visibleNodes}
                                 wheelZoomActive={isWheelZooming}
                                 scale={viewport.k}
+                                centerX={(size.width / 2 - viewport.x) / viewport.k}
+                                centerY={(size.height / 2 - viewport.y) / viewport.k}
+                                pausePromotions={isCanvasPanning || isNodeDragging || isNodeResizing || Boolean(selectionBox) || isWheelZooming || Boolean(connectingParams)}
                                 shared={sharedNodeProps}
                                 selectedNodeIds={selectedNodeIds}
                                 relatedNodeIds={relatedHighlight.nodeIds}

@@ -14,6 +14,7 @@ type AtelierCanvasProps = {
     onViewportChange: (viewport: ViewportTransform) => void;
     /** Marks the short wheel gesture window so media nodes can defer expensive LOD promotion. */
     onWheelActivityChange?: (active: boolean) => void;
+    onPanActivityChange?: (active: boolean) => void;
     onCanvasMouseDown?: (event: React.PointerEvent<HTMLDivElement>) => void;
     onCanvasDeselect?: () => void;
     onCanvasDoubleClick?: (event: React.MouseEvent<HTMLDivElement>) => void;
@@ -22,7 +23,7 @@ type AtelierCanvasProps = {
     children: React.ReactNode;
 };
 
-export function AtelierCanvas({ containerRef, viewport, tool, backgroundMode = "lines", onViewportChange, onWheelActivityChange, onCanvasMouseDown, onCanvasDeselect, onCanvasDoubleClick, onContextMenu, onDrop, children }: AtelierCanvasProps) {
+export function AtelierCanvas({ containerRef, viewport, tool, backgroundMode = "lines", onViewportChange, onWheelActivityChange, onPanActivityChange, onCanvasMouseDown, onCanvasDeselect, onCanvasDoubleClick, onContextMenu, onDrop, children }: AtelierCanvasProps) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const panState = useRef({
         isPanning: false,
@@ -90,6 +91,7 @@ export function AtelierCanvas({ containerRef, viewport, tool, backgroundMode = "
             setIsControlPressed(false);
             panState.current.isPanning = false;
             setPreviewGenerationSuspended(false, "pan");
+            onPanActivityChange?.(false);
             setIsPanning(false);
             document.body.style.cursor = "";
         };
@@ -102,7 +104,7 @@ export function AtelierCanvas({ containerRef, viewport, tool, backgroundMode = "
             window.removeEventListener("keyup", handleKeyUp);
             window.removeEventListener("blur", handleBlur);
         };
-    }, []);
+    }, [onPanActivityChange]);
 
     const handleWheel = (event: React.WheelEvent<HTMLDivElement>) => {
         const target = event.target instanceof Element ? event.target : null;
@@ -166,6 +168,7 @@ export function AtelierCanvas({ containerRef, viewport, tool, backgroundMode = "
             };
             setIsPanning(true);
             setPreviewGenerationSuspended(true, "pan");
+            onPanActivityChange?.(true);
             document.body.style.cursor = "grabbing";
             return;
         }
@@ -213,6 +216,7 @@ export function AtelierCanvas({ containerRef, viewport, tool, backgroundMode = "
             }
             panState.current.isPanning = false;
             setPreviewGenerationSuspended(false, "pan");
+            onPanActivityChange?.(false);
             setIsPanning(false);
             document.body.style.cursor = "";
         };
@@ -226,7 +230,7 @@ export function AtelierCanvas({ containerRef, viewport, tool, backgroundMode = "
             window.removeEventListener("pointercancel", handlePointerUp);
             document.body.style.cursor = "";
         };
-    }, [onCanvasDeselect, onViewportChange]);
+    }, [onCanvasDeselect, onViewportChange, onPanActivityChange]);
 
     useEffect(() => {
         const container = containerRef.current;

@@ -18,7 +18,8 @@ if (import.meta.env.MODE === "perf") {
     const requested = Number(new URLSearchParams(window.location.search).get("perfNodes"));
     const nodes = Number.isInteger(requested) && requested >= 1 && requested <= 3000 ? requested : 1000;
     const mediaMode = new URLSearchParams(window.location.search).get("perfMedia") === "decoded" ? "decoded" : "static";
-    void import("@/lib/canvas/canvas-perf-harness").then((harness) => harness.bootstrapCanvasPerf(nodes, mediaMode));
+    const layout = new URLSearchParams(window.location.search).get("perfLayout") === "clustered" ? "clustered" : "spread";
+    void import("@/lib/canvas/canvas-perf-harness").then((harness) => harness.bootstrapCanvasPerf(nodes, mediaMode, layout));
 }
 
 document.body.style.fontFamily = '"SF Pro Display","SF Pro Text","PingFang SC","Microsoft YaHei","Helvetica Neue",sans-serif';

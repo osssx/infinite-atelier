@@ -5,6 +5,7 @@ import { canvasPerfBridgeState } from "@/lib/canvas/canvas-perf-bridge-state";
 import {
     BASELINE_SCENARIOS,
     CANVAS_200_SCENARIOS,
+    CANVAS_200_DENSE_RECOVERY_SCENARIOS,
     ZOOM_DIAGNOSTIC_SCENARIOS,
     copyBaselineReport,
     downloadBaselineReport,
@@ -33,6 +34,7 @@ import {
 export default function CanvasPerfPanel() {
     const [scenarios] = useState<Scenario[]>(BASELINE_SCENARIOS);
     const [canvas200] = useState<Scenario[]>(CANVAS_200_SCENARIOS);
+    const [denseRecovery] = useState<Scenario[]>(CANVAS_200_DENSE_RECOVERY_SCENARIOS);
     const [diagnostics] = useState<Scenario[]>(ZOOM_DIAGNOSTIC_SCENARIOS);
     const [sessionLabel, setSessionLabel] = useState(() => getPerfSessionLabel());
     // Shown before running so the environment can be checked against the baseline rather than only
@@ -91,6 +93,9 @@ export default function CanvasPerfPanel() {
                 </button>
                 <button type="button" onClick={() => run(canvas200)} disabled={running} className="rounded border px-2 py-1 font-medium disabled:opacity-50">
                     Run 200 + minimap
+                </button>
+                <button type="button" onClick={() => run(denseRecovery)} disabled={running} className="rounded border px-2 py-1 font-medium disabled:opacity-50">
+                    Run dense LOD recovery
                 </button>
                 <button type="button" onClick={() => run(diagnostics)} disabled={running} className="rounded border px-2 py-1 font-medium disabled:opacity-50">
                     Run zoom diagnostics

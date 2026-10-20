@@ -3,6 +3,19 @@ import { CanvasNodeType } from "@/types/canvas";
 
 export type NodePromotionCandidate = { id: string; cost: number; distanceSq: number; priority: number };
 
+/** Avoid a decoder/editor-mount burst in the same paint as pointer release. */
+export const PROMOTION_GESTURE_QUIET_MS = 120;
+
+/** Edits and active gestures always take priority over opportunistic hydration. */
+export function canScheduleNodePromotions(
+    compactMode: boolean,
+    gestureActive: boolean,
+    gestureSettled: boolean,
+    visibleCount: number,
+): boolean {
+    return !compactMode && !gestureActive && gestureSettled && visibleCount >= 24;
+}
+
 function estimateCost(node: CanvasNodeData): number {
     // Approximate DOM + decoder pressure, not an asserted millisecond duration.
     if (node.type === CanvasNodeType.Video) return 3;

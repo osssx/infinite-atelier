@@ -1,11 +1,20 @@
 import { describe, expect, it } from "vitest";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
-import { choosePromotionBatch, orderNodePromotions } from "./canvas-node-promotion";
+import { canScheduleNodePromotions, choosePromotionBatch, orderNodePromotions, PROMOTION_GESTURE_QUIET_MS } from "./canvas-node-promotion";
 
 const make = (id: string, x: number, type: CanvasNodeData["type"] = CanvasNodeType.Image): CanvasNodeData =>
     ({ id, type, position: { x, y: 0 }, width: 100, height: 100, title: id, metadata: {} }) as CanvasNodeData;
 
 describe("canvas full-node promotion scheduler", () => {
+    it("keeps dense-node hydration out of active gestures and their release paint", () => {
+        expect(PROMOTION_GESTURE_QUIET_MS).toBeGreaterThanOrEqual(100);
+        expect(canScheduleNodePromotions(false, false, true, 200)).toBe(true);
+        expect(canScheduleNodePromotions(false, true, true, 200)).toBe(false);
+        expect(canScheduleNodePromotions(false, false, false, 200)).toBe(false);
+        expect(canScheduleNodePromotions(true, false, true, 200)).toBe(false);
+        expect(canScheduleNodePromotions(false, false, true, 23)).toBe(false);
+    });
+
     it("prioritizes interaction targets then nearest nodes and preserves deterministic ties", () => {
         const candidates = orderNodePromotions([make("far", 1000), make("near", 0), make("selected", 2000), make("tie", 0)], 50, 50, new Set(["selected"]));
         expect(candidates.map(({ id }) => id)).toEqual(["selected", "near", "tie", "far"]);

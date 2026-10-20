@@ -1,9 +1,9 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import type { CanvasNodeData } from "@/types/canvas";
 import { shouldPromoteHoveredNode, shouldRenderFullNode, shouldUseCompactNodeLayer } from "@/lib/canvas/canvas-lod";
 import { shouldShowCompactImage } from "@/lib/canvas/canvas-lod-preview";
-import { choosePromotionBatch, orderNodePromotions } from "@/lib/canvas/canvas-node-promotion";
+import { canScheduleNodePromotions, choosePromotionBatch, orderNodePromotions, PROMOTION_GESTURE_QUIET_MS } from "@/lib/canvas/canvas-node-promotion";
 import { PERF_MODE } from "@/lib/perf-mode";
 import type { CanvasNodeProps } from "./canvas-node";
 import { CanvasNodeHandoff } from "./canvas-node-handoff";
@@ -94,6 +94,21 @@ export const NodeLayer = memo(function NodeLayer({
     // Pause new hydration during a gesture, but retain editors already mounted:
     // unmounting an active text editor or a multi-selected drag source is destructive.
     const [promotedIds, setPromotedIds] = useState<ReadonlySet<string>>(() => new Set());
+    const [gestureSettled, setGestureSettled] = useState(!pausePromotions);
+    const promotionEpochRef = useRef(0);
+    // Any previously queued transition becomes stale as soon as the user
+    // starts another pan, wheel zoom or edit.
+    useLayoutEffect(() => {
+        if (compactMode || pausePromotions) promotionEpochRef.current += 1;
+    }, [compactMode, pausePromotions]);
+    useEffect(() => {
+        if (pausePromotions) {
+            setGestureSettled(false);
+            return;
+        }
+        const timer = window.setTimeout(() => setGestureSettled(true), PROMOTION_GESTURE_QUIET_MS);
+        return () => window.clearTimeout(timer);
+    }, [pausePromotions]);
     const previousFrameRef = useRef<number | null>(null);
     const lastCommitMsRef = useRef(0);
     const renderStartRef = useRef(performance.now());
@@ -143,25 +158,30 @@ export const NodeLayer = memo(function NodeLayer({
     // Keep a single pending rAF. React commits report a rough render+commit cost;
     // together with frame spacing this bounds promotion to 1-4 weighted units.
     useEffect(() => {
-        if (compactMode || pausePromotions || nodes.length < 24) return;
+        if (!canScheduleNodePromotions(compactMode, pausePromotions, gestureSettled, nodes.length)) return;
         if (candidates.every((candidate) => promotedIds.has(candidate.id))) return;
         const frame = requestAnimationFrame((now) => {
             const interval = previousFrameRef.current == null ? 16.7 : Math.min(100, now - previousFrameRef.current);
             previousFrameRef.current = now;
             const batch = choosePromotionBatch(candidates, promotedIds, interval, lastCommitMsRef.current);
             if (!batch.length) return;
-            setPromotedIds((previous) => {
-                if (batch.every((id) => previous.has(id))) return previous;
-                const next = new Set(previous);
-                for (const id of batch) next.add(id);
-                return next;
+            const epoch = promotionEpochRef.current;
+            // Hydration is non-urgent: pointer input and viewport movement win.
+            // Ignore a transition that resolves after a new gesture began.
+            startTransition(() => {
+                setPromotedIds((previous) => {
+                    if (epoch !== promotionEpochRef.current || batch.every((id) => previous.has(id))) return previous;
+                    const next = new Set(previous);
+                    for (const id of batch) next.add(id);
+                    return next;
+                });
             });
         });
         return () => cancelAnimationFrame(frame);
-    }, [compactMode, pausePromotions, candidates, promotedIds, nodes.length]);
+    }, [compactMode, pausePromotions, gestureSettled, candidates, promotedIds, nodes.length]);
     // data-node-id stays constant through promotion; expose a perf-only settling marker.
     const isRecovering = PERF_MODE && !compactMode && nodes.length >= 24 &&
-        (pausePromotions || candidates.some(({ id }) => !promotedIds.has(id)));
+        (pausePromotions || !gestureSettled || candidates.some(({ id }) => !promotedIds.has(id)));
 
     return (
         <>

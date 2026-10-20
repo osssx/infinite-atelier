@@ -491,6 +491,8 @@ export type Scenario = {
     id: string;
     label: string;
     nodeCount: number;
+    /** Optional alternate geometry for dense LOD recovery workloads. */
+    fixtureLayout?: "spread" | "clustered";
     /** Frames of scripted input. */
     frames: number;
     /** Set the viewport once the round is ready. */
@@ -571,7 +573,7 @@ export async function runRound(scenario: Scenario, jankThresholdMs: number, onPh
         const tokenBefore = canvasPerfBridgeState.readyToken;
         await router.navigate("/canvas");
         await waitForCanvasUnmount();
-        provisionPerfProject(scenario.nodeCount);
+        provisionPerfProject(scenario.nodeCount, PERF_SEED, perfFixtureMediaMode, scenario.fixtureLayout ?? "spread");
         await router.navigate(`/canvas/${projectId}`);
         phase("waiting-ready");
         const token = await waitForCanvasReady(tokenBefore);
@@ -1753,6 +1755,74 @@ export const CANVAS_200_SCENARIOS: Scenario[] = [
     createResizeScenario(200),
     createMarqueeScenario(200),
 ].map(with200NodeMinimap);
+
+/**
+ * Repeatable 200-node LOD tail-frame measurement.
+ *
+ * The input is finished by frame 20, but the sample deliberately continues
+ * for 190 more rAFs: it includes the wheel-idle debounce, gesture quiet period,
+ * staged full-node hydration and the final paint. The old 20-frame zoom-burst
+ * scenario stops too early to see this work.
+ */
+export function createDenseZoomRecoveryScenario(nodeCount = 200, frames = 210): Scenario {
+    const burstFrames = 10;
+    let anchor: ReturnType<typeof zoomAnchor> | null = null;
+    let baseScale = 1;
+    let minFull = Number.POSITIVE_INFINITY;
+    let maxFull = 0;
+    let settledAt: number | null = null;
+    return {
+        id: "dense-zoom-recovery",
+        label: "200 dense nodes: wheel out/back + post-gesture hydration",
+        nodeCount,
+        fixtureLayout: "clustered",
+        frames,
+        repeats: 3,
+        setup: () => applyViewport({ x: 0, y: 0, k: 1 }),
+        script: (frame) => {
+            if (frame === 0) {
+                anchor = zoomAnchor();
+                baseScale = readViewport().k;
+                minFull = Number.POSITIVE_INFINITY;
+                maxFull = 0;
+                settledAt = null;
+            }
+            if (!anchor) throw new PerfInvalidSampleError("no-zoom-anchor", "missing zoom anchor");
+            if (frame < burstFrames * 2) {
+                const delta = frame < burstFrames ? 145 : -145;
+                dispatchWheel(anchor.element, delta, anchor.x, anchor.y);
+                return;
+            }
+            const full = requireContainer().querySelectorAll("[data-canvas-full-node]").length;
+            minFull = Math.min(minFull, full);
+            maxFull = Math.max(maxFull, full);
+            if (settledAt === null && full >= 80 && !requireContainer().querySelector("[data-canvas-lod-recovering]")) {
+                settledAt = frame;
+            }
+        },
+        assert: () => {
+            const current = readViewport().k;
+            if (Math.abs(current - baseScale) / baseScale > 0.04) {
+                throw new PerfInvalidSampleError("zoom-not-restored", `scale ${baseScale.toFixed(3)} -> ${current.toFixed(3)} after wheel roundtrip`);
+            }
+            if (settledAt === null || requireContainer().querySelector("[data-canvas-lod-recovering]")) {
+                throw new PerfInvalidSampleError("lod-not-settled", `LOD still recovering after ${frames} sampled frames`);
+            }
+        },
+        notes: () => [
+            `full-node range during recovery ${Number.isFinite(minFull) ? minFull : 0}..${maxFull}`,
+            `LOD settled at scripted frame ${settledAt ?? "unsettled"}/${frames}, after wheel input ended at frame ${burstFrames * 2}`,
+        ],
+    };
+}
+
+/** Separate from the existing spread-layout 200-node/minimap regression set. */
+export const CANVAS_200_DENSE_RECOVERY_SCENARIOS: Scenario[] = [
+    // A matching dense idle baseline is necessary: otherwise the jank threshold
+    // defaults to zero and incorrectly marks every ordinary 16.7ms frame as jank.
+    { ...createIdleBaselineScenario(200), fixtureLayout: "clustered", label: "dense idle baseline" },
+    createDenseZoomRecoveryScenario(),
+];
 
 /** Measured rounds per scenario unless the scenario overrides it. */
 export const DEFAULT_REPEATS = 3;

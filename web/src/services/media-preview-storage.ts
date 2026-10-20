@@ -11,8 +11,13 @@ const urls = new Map<string, string>();
 const inFlight = new Map<string, Promise<string | null>>();
 const pending: Array<() => Promise<void>> = [];
 let working = false;
-let zoomSuspended = false;
-export function setPreviewGenerationSuspended(active: boolean) { zoomSuspended = active; }
+// Independent gesture owners must not resume decoding while another is active.
+const suspendedBy = new Set<string>();
+export function setPreviewGenerationSuspended(active: boolean, reason: "wheel" | "pan" | "canvas-edit" = "wheel") {
+    if (active) suspendedBy.add(reason);
+    else suspendedBy.delete(reason);
+}
+export function isPreviewGenerationSuspended() { return suspendedBy.size > 0; }
 const versions = new Map<string, number>();
 const keyOf = (kind: PreviewKind, key: string) => `preview:v1:${kind}:${key}`;
 
@@ -34,7 +39,7 @@ async function drain() {
             if (typeof requestIdleCallback === "function") requestIdleCallback(() => resolve(), { timeout: 3000 });
             else setTimeout(resolve, 180);
         });
-        if (zoomSuspended) { await new Promise<void>((resolve) => setTimeout(resolve, 180)); continue; }
+        if (isPreviewGenerationSuspended()) { await new Promise<void>((resolve) => setTimeout(resolve, 180)); continue; }
         try { await pending.shift()?.(); } catch { /* Failed posters remain placeholders. */ }
         await new Promise<void>((resolve) => setTimeout(resolve, 100));
     }
@@ -124,7 +129,10 @@ export async function resolveMediaPreview(
     const task = new Promise<string | null>((resolve) => {
         queueIdle(async () => {
             try {
+                // Deleted/replaced previews must not reopen obsolete originals.
+                if ((versions.get(id) || 0) !== version) { resolve(null); return; }
                 let blob = await previews.getItem<Blob>(id);
+                if ((versions.get(id) || 0) !== version) { resolve(null); return; }
                 if (!blob) {
                     const original = await loadBlob();
                     if (!original) { resolve(null); return; }

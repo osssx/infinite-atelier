@@ -11,6 +11,9 @@ import { getNodeDefinition } from "@/lib/canvas/node-registry";
 import { cn } from "@/lib/utils";
 import { uploadMediaFile } from "@/services/file-storage";
 import { resolveImageUrl, uploadImage } from "@/services/image-storage";
+import { getImageBlob } from "@/services/image-storage";
+import { resolveMediaPreview } from "@/services/media-preview-storage";
+import { CANVAS_SIDEBAR_ROW_HEIGHT, CANVAS_SIDEBAR_ROW_STRIDE, canvasSidebarWindow } from "@/lib/canvas/canvas-side-panel-window";
 import { useAssetStore, type Asset, type AssetKind } from "@/stores/use-asset-store";
 import { useGenerationHistoryStore, type GenerationHistoryRecord } from "@/stores/canvas/use-generation-history-store";
 import { CANVAS_SIDE_PANEL_MAX_WIDTH, CANVAS_SIDE_PANEL_MIN_WIDTH, CANVAS_SIDE_PANEL_MOTION_MS, useCanvasSidePanelStore } from "@/stores/use-canvas-side-panel-store";
@@ -149,6 +152,23 @@ function CanvasNodesTab({ nodes, selectedNodeIds, onFocusNode, onPreviewNode, th
     const [selectMode, setSelectMode] = useState(false);
     const [checked, setChecked] = useState<Set<string>>(new Set());
     const [exporting, setExporting] = useState(false);
+    const listRef = useRef<HTMLDivElement>(null);
+    const [listHeight, setListHeight] = useState(450);
+    const [scrollTop, setScrollTop] = useState(0);
+    useEffect(() => {
+        const container = listRef.current;
+        if (!container) return;
+        const measure = () => setListHeight((previous) => previous === container.clientHeight ? previous : container.clientHeight);
+        measure();
+        if (typeof ResizeObserver === "undefined") return;
+        const observer = new ResizeObserver(measure);
+        observer.observe(container);
+        return () => observer.disconnect();
+    }, []);
+    useEffect(() => {
+        if (listRef.current) listRef.current.scrollTop = 0;
+        setScrollTop(0);
+    }, [keyword, typeFilter]);
 
     const filtered = useMemo(() => {
         const started = CANVAS_PERF_MODE ? performance.now() : 0;
@@ -160,6 +180,8 @@ function CanvasNodesTab({ nodes, selectedNodeIds, onFocusNode, onPreviewNode, th
         }
         return list;
     }, [nodes, keyword, typeFilter]);
+    const listWindow = canvasSidebarWindow(filtered.length, scrollTop, listHeight);
+    const windowedNodes = filtered.slice(listWindow.start, listWindow.end);
 
     const exitSelect = () => {
         setSelectMode(false);
@@ -215,21 +237,22 @@ function CanvasNodesTab({ nodes, selectedNodeIds, onFocusNode, onPreviewNode, th
             <div className="px-3 pb-2.5">
                 <Input size="small" allowClear prefix={<Search className="size-3.5 text-stone-400" />} placeholder={t("canvas.sidePanel.searchNodes")} value={keyword} onChange={(e) => setKeyword(e.target.value)} />
             </div>
-            <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
+            <div ref={listRef} onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)} className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
                 {filtered.length ? (
-                    <div className="space-y-1.5">
-                        {filtered.map((node) => (
-                            <NodeRow
-                                key={node.id}
-                                node={node}
-                                active={selectMode ? checked.has(node.id) : selectedNodeIds.has(node.id)}
-                                checked={checked.has(node.id)}
-                                selectMode={selectMode}
-                                theme={theme}
-                                onFocus={onFocusNode}
-                                onPreview={onPreviewNode}
-                                onToggleChecked={toggleChecked}
-                            />
+                    <div className="relative" style={{ height: listWindow.totalHeight }} data-canvas-sidebar-total={filtered.length}>
+                        {windowedNodes.map((node, index) => (
+                            <div key={node.id} className="absolute inset-x-0" style={{ top: (listWindow.start + index) * CANVAS_SIDEBAR_ROW_STRIDE, height: CANVAS_SIDEBAR_ROW_HEIGHT }}>
+                                <NodeRow
+                                    node={node}
+                                    active={selectMode ? checked.has(node.id) : selectedNodeIds.has(node.id)}
+                                    checked={checked.has(node.id)}
+                                    selectMode={selectMode}
+                                    theme={theme}
+                                    onFocus={onFocusNode}
+                                    onPreview={onPreviewNode}
+                                    onToggleChecked={toggleChecked}
+                                />
+                            </div>
                         ))}
                     </div>
                 ) : (
@@ -283,14 +306,17 @@ const NodeRow = memo(function NodeRow({
 }) {
     const { t } = useTranslation();
     const Icon = NODE_TYPE_ICON[node.type] || FileText;
-    const isImage = node.type === CanvasNodeType.Image && node.metadata?.content;
+    const primary = node.metadata?.images?.find((image) => image.id === (node.metadata?.primaryImageId || node.metadata?.images?.[0]?.id));
+    const imageSource = primary?.content || node.metadata?.content;
+    const imageStorageKey = primary?.storageKey || node.metadata?.storageKey;
+    const isImage = node.type === CanvasNodeType.Image && Boolean(imageSource || imageStorageKey);
 
     return (
-        <div className={cn("group flex w-full items-center rounded-lg transition", active ? "" : "hover:bg-black/5 dark:hover:bg-white/5")} style={active ? { background: theme.toolbar.activeBg } : undefined}>
+        <div className={cn("group flex h-full w-full items-center rounded-lg transition", active ? "" : "hover:bg-black/5 dark:hover:bg-white/5")} style={active ? { background: theme.toolbar.activeBg } : undefined}>
             <button type="button" onClick={() => (selectMode ? onToggleChecked(node.id) : onFocus(node.id))} className="flex min-w-0 flex-1 items-center gap-3 px-2 py-2 text-left" title={selectMode ? undefined : t("canvas.sidePanel.focusNode")}>
                 {selectMode ? <CheckMark checked={checked} theme={theme} /> : null}
                 <span className="grid size-10 shrink-0 place-items-center overflow-hidden rounded-md">
-                    {isImage ? <img src={node.metadata!.content} alt={node.title} className="size-full object-cover" /> : <Icon className="size-5 opacity-60" />}
+                    {isImage ? <CanvasSidebarThumbnail storageKey={imageStorageKey} source={imageSource} title={node.title} /> : <Icon className="size-5 opacity-60" />}
                 </span>
                 <span className="min-w-0 flex-1 space-y-0.5">
                     <span className="block truncate text-sm font-medium leading-snug">{node.title || getNodeDefinition(node.type)?.title || t("canvas.node.untitled")}</span>
@@ -307,6 +333,23 @@ const NodeRow = memo(function NodeRow({
             )}
         </div>
     );
+});
+
+/** Only mounted (visible) sidebar rows request 256px previews. Stored assets never decode originals here. */
+const CanvasSidebarThumbnail = memo(function CanvasSidebarThumbnail({ storageKey, source, title }: { storageKey?: string; source?: string; title: string }) {
+    const [preview, setPreview] = useState<{ key: string; url: string } | null>(null);
+    useEffect(() => {
+        if (!storageKey) return;
+        let active = true;
+        void resolveMediaPreview("image", storageKey, () => getImageBlob(storageKey))
+            .then((url) => { if (active && url) setPreview({ key: storageKey, url }); });
+        return () => { active = false; };
+    }, [storageKey]);
+    // Preserve legacy/external image thumbnails where no storageKey exists; virtualization limits concurrent decodes.
+    const url = storageKey ? (preview?.key === storageKey ? preview.url : null) : source;
+    return url
+        ? <img data-canvas-sidebar-preview src={url} alt={title} loading="lazy" decoding="async" className="size-full object-cover" />
+        : <ImageIcon className="size-5 opacity-40" />;
 });
 
 function CheckMark({ checked, theme }: { checked: boolean; theme: CanvasTheme }) {

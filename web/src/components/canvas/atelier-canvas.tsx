@@ -60,7 +60,8 @@ export function AtelierCanvas({ containerRef, viewport, tool, backgroundMode = "
             if (frameRef.current) cancelAnimationFrame(frameRef.current);
             if (wheelFrameRef.current !== null) cancelAnimationFrame(wheelFrameRef.current);
             if (wheelIdleTimerRef.current !== null) clearTimeout(wheelIdleTimerRef.current);
-            setPreviewGenerationSuspended(false);
+            setPreviewGenerationSuspended(false, "wheel");
+            setPreviewGenerationSuspended(false, "pan");
         },
         [],
     );
@@ -88,6 +89,7 @@ export function AtelierCanvas({ containerRef, viewport, tool, backgroundMode = "
             setIsSpacePressed(false);
             setIsControlPressed(false);
             panState.current.isPanning = false;
+            setPreviewGenerationSuspended(false, "pan");
             setIsPanning(false);
             document.body.style.cursor = "";
         };
@@ -109,7 +111,7 @@ export function AtelierCanvas({ containerRef, viewport, tool, backgroundMode = "
         const rect = wheelRectRef.current ?? containerRef.current?.getBoundingClientRect();
         if (!rect) return;
         wheelRectRef.current = rect;
-        setPreviewGenerationSuspended(true);
+        setPreviewGenerationSuspended(true, "wheel");
 
         // Cancel mass media promotion during wheel bursts. Do not schedule React updates for
         // each wheel event: one "start" update and one "idle" update per gesture is enough.
@@ -118,7 +120,7 @@ export function AtelierCanvas({ containerRef, viewport, tool, backgroundMode = "
         wheelIdleTimerRef.current = setTimeout(() => {
             wheelIdleTimerRef.current = null;
             onWheelActivityChange?.(false);
-            setPreviewGenerationSuspended(false);
+            setPreviewGenerationSuspended(false, "wheel");
         }, 180);
 
         // Compose synchronously, preserving every event even when several arrive before React
@@ -163,6 +165,7 @@ export function AtelierCanvas({ containerRef, viewport, tool, backgroundMode = "
                 startedOnBackground: isBackgroundClick,
             };
             setIsPanning(true);
+            setPreviewGenerationSuspended(true, "pan");
             document.body.style.cursor = "grabbing";
             return;
         }
@@ -209,6 +212,7 @@ export function AtelierCanvas({ containerRef, viewport, tool, backgroundMode = "
                 onCanvasDeselect?.();
             }
             panState.current.isPanning = false;
+            setPreviewGenerationSuspended(false, "pan");
             setIsPanning(false);
             document.body.style.cursor = "";
         };

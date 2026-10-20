@@ -11,6 +11,7 @@ import { cancelVideoGenerationTask, pollVideoGenerationTask, requestVideoGenerat
 import { defaultConfig, resolveModelChannel, resolveModelScript, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
 import { uploadImage } from "@/services/image-storage";
 import { uploadMediaFile } from "@/services/file-storage";
+import { setPreviewGenerationSuspended } from "@/services/media-preview-storage";
 import { nanoid } from "nanoid";
 import { getDataUrlByteSize, readImageMeta } from "@/lib/image-utils";
 import { canvasThemes, type CanvasBackgroundMode } from "@/lib/canvas-theme";
@@ -309,6 +310,11 @@ function AtelierCanvasPage() {
     const [isNodeDragging, setIsNodeDragging] = useState(false);
     const [isNodeResizing, setIsNodeResizing] = useState(false);
     const [dropTargetGroupId, setDropTargetGroupId] = useState<string | null>(null);
+    const editingGestureActive = isNodeDragging || isNodeResizing || selectionBox !== null;
+    useEffect(() => {
+        setPreviewGenerationSuspended(editingGestureActive, "canvas-edit");
+        return () => setPreviewGenerationSuspended(false, "canvas-edit");
+    }, [editingGestureActive]);
 
     const nodesRef = useRef(nodes);
     const connectionsRef = useRef(connections);

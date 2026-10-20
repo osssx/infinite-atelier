@@ -295,6 +295,19 @@ export default {
         selectAll: "全选",
     },
     canvas: {
+        skillPicker: {
+            missingVersionTitle: "原 Skill 版本已不存在",
+            missingVersionContent: "Skill {{id}} 的历史版本 {{version}} 已丢失。是否明确改用当前已安装的版本重新生成？原有结果在确认前不会修改。",
+            useCurrent: "改用当前版本",
+            title: "Skill 技能",
+            off: "关闭",
+            manual: "手动选择",
+            auto: "自动（即将支持）",
+            missing: "已移除",
+            placeholder: "选择已启用的 Skill",
+            hint: "生成时加载选中的 Skill；输出节点将固定对应版本，重试不会自动切换。",
+        },
+
         defaultTitle: "创作画布 {{count}}",
         library: "画布库",
         title: "Infinite Atelier",

@@ -6,6 +6,7 @@ import { saveAs } from "file-saver";
 import { useTranslation } from "react-i18next";
 
 import { requestEdit, requestGeneration, requestImageQuestion } from "@/services/api/image";
+import { MissingSkillVersionError, resolveManualSkillContext, withManualSkillMessages, type ManualSkillContext } from "@/features/skills/skill-manual";
 import { requestAudioGeneration, storeGeneratedAudio } from "@/services/api/audio";
 import { cancelVideoGenerationTask, pollVideoGenerationTask, requestVideoGeneration, retrySeedanceDownload, storeGeneratedVideo, type VideoGenerationRequest, type VideoGenerationTask } from "@/services/api/video";
 import { defaultConfig, resolveModelChannel, resolveModelScript, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
@@ -2655,6 +2656,12 @@ function AtelierCanvasPage() {
                     return;
                 }
 
+                const manualSkills = await resolveManualSkillContext(sourceNode?.metadata?.skillBinding);
+                if (runController.signal.aborted) return;
+                const skillMessages = withManualSkillMessages(
+                    buildNodeResponseMessages({ ...generationContext, prompt: effectivePrompt }),
+                    manualSkills,
+                );
                 let streamed = "";
                 const isConfigNode = sourceNode?.type === CanvasNodeType.Config;
                 const textCount = getGenerationCount(String(sourceNode?.metadata?.textCount || 1));
@@ -2674,7 +2681,7 @@ function AtelierCanvasPage() {
                         },
                         width: textConfig.width,
                         height: textConfig.height,
-                        metadata: { prompt: effectivePrompt, status: NODE_STATUS_LOADING, fontSize: 14, model: generationConfig.model, reasoningEffort: generationConfig.reasoningEffort },
+                        metadata: { prompt: effectivePrompt, status: NODE_STATUS_LOADING, fontSize: 14, model: generationConfig.model, reasoningEffort: generationConfig.reasoningEffort, skillRun: manualSkills?.snapshot },
                     }));
                     setNodes((prev) => [...prev.map((node) => (node.id === nodeId && isConfigNode ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_LOADING, errorDetails: undefined } } : node)), ...childNodes]);
                     setConnections((prev) => [...prev, ...childIds.map((childId) => ({ id: nanoid(), fromNodeId: nodeId, toNodeId: childId }))]);
@@ -2688,7 +2695,7 @@ function AtelierCanvasPage() {
                         let localStreamed = "";
                         return requestImageQuestion(
                             generationConfig,
-                            buildNodeResponseMessages({ ...generationContext, prompt: effectivePrompt }),
+                            skillMessages,
                             (text) => {
                                 localStreamed = text;
                                 streamed = text;
@@ -2714,7 +2721,7 @@ function AtelierCanvasPage() {
                                       ...node,
                                       type: CanvasNodeType.Text,
                                       title: prompt.slice(0, 32) || "Generated Text",
-                                      metadata: { ...node.metadata, content: answerByNodeId.get(node.id) || streamed, model: generationConfig.model, reasoningEffort: generationConfig.reasoningEffort, status: NODE_STATUS_SUCCESS },
+                                      metadata: { ...node.metadata, content: answerByNodeId.get(node.id) || streamed, model: generationConfig.model, reasoningEffort: generationConfig.reasoningEffort, skillRun: manualSkills?.snapshot, status: NODE_STATUS_SUCCESS },
                                   }
                                 : node,
                     ),
@@ -2806,6 +2813,38 @@ function AtelierCanvasPage() {
             }
             const retryImages = retryReferenceImages || [];
 
+            // Resolve pinned Skills before setting the node to loading: the user may
+            // decline replacing a removed version, leaving the existing output intact.
+            let retryManualSkills: ManualSkillContext | null = null;
+            if (node.type === CanvasNodeType.Text) {
+                try {
+                    retryManualSkills = await resolveManualSkillContext(sourceNode.metadata?.skillBinding, node.metadata?.skillRun);
+                } catch (error) {
+                    if (error instanceof MissingSkillVersionError && node.metadata?.skillRun) {
+                        const replaceVersion = await new Promise<boolean>((resolve) => {
+                            modal.confirm({
+                                title: t("canvas.skillPicker.missingVersionTitle"),
+                                content: t("canvas.skillPicker.missingVersionContent", { id: error.skillId, version: error.version }),
+                                okText: t("canvas.skillPicker.useCurrent"),
+                                cancelText: t("common.cancel"),
+                                onOk: () => resolve(true),
+                                onCancel: () => resolve(false),
+                            });
+                        });
+                        if (!replaceVersion) return;
+                        try {
+                            retryManualSkills = await resolveManualSkillContext({ mode: "manual", skillIds: node.metadata.skillRun.skillIds });
+                        } catch (nextError) {
+                            message.error(nextError instanceof Error ? nextError.message : String(nextError));
+                            return;
+                        }
+                    } else {
+                        message.error(error instanceof Error ? error.message : String(error));
+                        return;
+                    }
+                }
+            }
+
             setRunningNodeId(node.id);
             setNodes((prev) =>
                 prev.map((item) =>
@@ -2827,17 +2866,19 @@ function AtelierCanvasPage() {
             try {
                 if (node.type === CanvasNodeType.Text) {
                     if (!context) return;
+                    const manualSkills = retryManualSkills;
+                    if (controller.signal.aborted) return;
                     let streamed = "";
                     const answer = await requestImageQuestion(
                         generationConfig,
-                        buildNodeResponseMessages({ ...context, prompt }),
+                        withManualSkillMessages(buildNodeResponseMessages({ ...context, prompt }), manualSkills),
                         (text) => {
                             streamed = text;
                             setNodes((prev) => prev.map((item) => (item.id === node.id ? { ...item, type: CanvasNodeType.Text, metadata: { ...item.metadata, content: text, status: NODE_STATUS_LOADING } } : item)));
                         },
                         { signal: controller.signal },
                     );
-                    setNodes((prev) => prev.map((item) => (item.id === node.id ? { ...item, type: CanvasNodeType.Text, metadata: { ...item.metadata, content: answer || streamed, prompt, status: NODE_STATUS_SUCCESS } } : item)));
+                    setNodes((prev) => prev.map((item) => (item.id === node.id ? { ...item, type: CanvasNodeType.Text, metadata: { ...item.metadata, content: answer || streamed, prompt, skillRun: manualSkills?.snapshot, status: NODE_STATUS_SUCCESS } } : item)));
                     return;
                 }
                 if (node.type === CanvasNodeType.Video) {
@@ -2976,7 +3017,7 @@ function AtelierCanvasPage() {
                 setRunningNodeId(null);
             }
         },
-        [effectiveConfig, finishGenerationRequest, isAiConfigReady, message, openConfigDialog, startGenerationRequest, t],
+        [effectiveConfig, finishGenerationRequest, isAiConfigReady, message, modal, openConfigDialog, startGenerationRequest, t],
     );
 
     const deleteBatchImage = useCallback((nodeId: string, imageId: string) => {

@@ -295,6 +295,19 @@ export default {
         selectAll: "Select all",
     },
     canvas: {
+        skillPicker: {
+            missingVersionTitle: "Pinned Skill version is missing",
+            missingVersionContent: "The previous version {{version}} of Skill {{id}} is no longer installed. Retry with the currently installed version instead? Existing output will stay unchanged until you confirm.",
+            useCurrent: "Use current version",
+            title: "Skills",
+            off: "Off",
+            manual: "Manual",
+            auto: "Auto (coming soon)",
+            missing: "Missing",
+            placeholder: "Select enabled Skills",
+            hint: "Selected Skill instructions are loaded for generation. Result nodes pin their versions for retries.",
+        },
+
         defaultTitle: "Creative Canvas {{count}}",
         library: "Canvas library",
         title: "Infinite Atelier",

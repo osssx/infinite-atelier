@@ -56,6 +56,10 @@ export type CanvasNodeMetadata = {
     background?: string;
     count?: number;
     textCount?: number;
+    /** User's selection on Config nodes, not automatically inherited by unrelated nodes. */
+    skillBinding?: import("@/features/skills/types").SkillBinding;
+    /** Immutable version snapshot attached to generated text for deterministic retries. */
+    skillRun?: import("@/features/skills/skill-manual").AppliedSkillSnapshot;
     seconds?: string;
     vquality?: string;
     generateAudio?: string;

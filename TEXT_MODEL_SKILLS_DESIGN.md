@@ -1,6 +1,6 @@
 # infinite-atelier：文本模型 Skill 调用功能设计（V1）
 
-> 状态：P0/P1 已完成首轮实现并通过测试、TypeScript 和生产构建；P2–P5 尚未实施。日期：2026-10-20。
+> 状态：P0/P1/P2 已完成首轮实现与自动化验证；P3–P5 尚未实施。日期：2026-10-20。
 > 目标：在现有文本模型、画布配置节点及文本生成工作流上增加可管理、可选择、可由模型按需加载的 Agent Skills 能力。
 
 ## 1. 范围与决策
@@ -261,3 +261,14 @@ description: 将短剧文本转换成镜头清单；当用户要求分镜、镜�
 - 全量应用备份的 v1 manifest 新增可选 skills 节点，保留旧备份兼容；新备份包含已注册包与全部版本，恢复前校验内容哈希和元信息，并在失败时尝试回滚。
 - 新增 Skill 测试 9 项、备份校验测试 1 项；npm run typecheck、npm test（27 文件/154 项）、npm run build 均通过。
 - 尚未实现：Skill 在画布文本生成节点的绑定与手动注入（P2）、自动 activate_skill/read_skill_resource Agent Dispatcher 与完整自动调用闭环（P3）。备份恢复的真实浏览器持久化端到端场景仍需后续验证。
+
+
+## 14. P2 实施记录（2026-10-20）
+
+- web/src/types/canvas.ts 为节点元数据加入 skillBinding（配置节点选择）和 skillRun（生成结果使用的 Skill ID/版本快照）。
+- 新增 web/src/features/skills/skill-picker.tsx，仅文本模式显示关闭/手动 Skill 选择、多选已启用 Skill；自动模式先禁用，避免错误宣传未实现能力。
+- 新增 web/src/features/skills/skill-manual.ts：解析已启用 Skill 与历史版本，按需提取 SKILL.md，限制单轮最多 12 个 Skill、合计指令长度 120,000 字符，不自动读取 references，不执行 scripts；将导入内容置于 user 级上下文，保留全局 system prompt 的优先级。
+- web/src/pages/canvas/project.tsx 文本生成分支在创建结果节点前一次性解析 Skill，给并行文本生成任务共享只读指令，并在每个输出节点的 metadata 中写入 skillRun 快照。无绑定时保持旧请求。
+- 结果节点重试优先读取 skillRun.versionPins，与源配置节点后续改动解耦；若原版本丢失，弹窗要求显式授权后才以当前已安装版本重试，且更新本次生成快照；用户取消不会修改原输出。Skill 被禁用/删除时给出错误，不执行隐式恢复。
+- 新增 web/src/features/skills/skill-manual.test.ts 的 7 项用例，覆盖正常无 Skill、多个 Skill、版本固定、旧版缺失、禁用/删除、并发隔离、长度/数量限制；TypeScript 检查通过，全量 Vitest 共 28 文件/161 项通过。
+- P3 待做：Skill 自动模式、activate_skill/read_skill_resource Tool Dispatcher、模型能力探测与运行记录。P2 仍需在实际浏览器中使用配置的真实模型端到端试用，现有自动化验收使用 mock + 编译回归。

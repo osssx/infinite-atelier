@@ -613,6 +613,8 @@ function MissingPluginContent({ theme, type }: Pick<NodeContentRendererProps, "t
 function TextContent({ node, theme, isEditingContent, textareaRef, onContentChange, onStopEditing, onGenerateImage }: NodeContentRendererProps) {
     const { t } = useTranslation();
     const fontSize = node.metadata?.fontSize || 14;
+    const skillTrace = node.metadata?.skillTrace || [];
+    const activated = [...new Set(skillTrace.filter((entry) => entry.type === "activated").map((entry) => entry.skillId))];
     const textStyle = { fontSize: `${fontSize}px`, lineHeight: `${Math.round(fontSize * 1.65)}px`, color: theme.node.text, boxSizing: "border-box" } as React.CSSProperties;
 
     return (
@@ -640,6 +642,18 @@ function TextContent({ node, theme, isEditingContent, textareaRef, onContentChan
                     {node.metadata?.content || <span style={{ color: theme.node.placeholder }}>{t("canvas.node.editText")}</span>}
                 </div>
             )}
+            {skillTrace.length > 0 ? (
+                <div
+                    className="shrink-0 truncate border-t px-3 py-1 text-[10px] opacity-70"
+                    style={{ borderColor: theme.node.stroke }}
+                    title={skillTrace.map((entry) => entry.type === "error" ? "Error: " + entry.error :
+                        entry.skillId + "@" + entry.version + (entry.path ? "/" + entry.path : "")).join("\n")}
+                >
+                    {activated.length
+                        ? t("canvas.skillPicker.autoUsed", { count: activated.length })
+                        : t("canvas.skillPicker.autoTrace")}
+                </div>
+            ) : null}
         </div>
     );
 }

@@ -7,6 +7,7 @@ import { useTranslation } from "react-i18next";
 
 import { requestEdit, requestGeneration, requestImageQuestion } from "@/services/api/image";
 import { MissingSkillVersionError, resolveManualSkillContext, withManualSkillMessages, type ManualSkillContext } from "@/features/skills/skill-manual";
+import { prepareAutomaticSkillCatalog, withAutomaticSkillCatalog, isUnsupportedSkillToolsError, type AutomaticSkillPlan } from "@/features/skills/skill-auto";
 import { extractSkillMentions, resolvePromptSkillBinding, showLegacySkillMentions } from "@/features/skills/skill-mentions";
 import { requestAudioGeneration, storeGeneratedAudio } from "@/services/api/audio";
 import { cancelVideoGenerationTask, pollVideoGenerationTask, requestVideoGeneration, retrySeedanceDownload, storeGeneratedVideo, type VideoGenerationRequest, type VideoGenerationTask } from "@/services/api/video";
@@ -2658,12 +2659,16 @@ function AtelierCanvasPage() {
                     return;
                 }
 
-                const manualSkills = await resolveManualSkillContext(resolvePromptSkillBinding(prompt, sourceNode?.metadata?.skillBinding));
+                const requestedSkills = resolvePromptSkillBinding(prompt, sourceNode?.metadata?.skillBinding);
+                const manualSkills = requestedSkills?.mode === "manual" ? await resolveManualSkillContext(requestedSkills) : null;
+                const autoPlan = !manualSkills && !resolveModelScript(generationConfig, generationConfig.model)
+                    ? await prepareAutomaticSkillCatalog(requestedSkills?.mode === "auto" ? requestedSkills : undefined)
+                    : null;
                 if (runController.signal.aborted) return;
-                const skillMessages = withManualSkillMessages(
-                    buildNodeResponseMessages({ ...generationContext, prompt: effectivePrompt }),
-                    manualSkills,
-                );
+                const defaultMessages = buildNodeResponseMessages({ ...generationContext, prompt: effectivePrompt });
+                const skillMessages = manualSkills ? withManualSkillMessages(defaultMessages, manualSkills)
+                    : autoPlan ? withAutomaticSkillCatalog(defaultMessages, autoPlan) : defaultMessages;
+                const initialSkillRun = manualSkills?.snapshot || autoPlan?.snapshot();
                 let streamed = "";
                 const isConfigNode = sourceNode?.type === CanvasNodeType.Config;
                 const textCount = getGenerationCount(String(sourceNode?.metadata?.textCount || 1));
@@ -2683,7 +2688,7 @@ function AtelierCanvasPage() {
                         },
                         width: textConfig.width,
                         height: textConfig.height,
-                        metadata: { prompt: effectivePrompt, status: NODE_STATUS_LOADING, fontSize: 14, model: generationConfig.model, reasoningEffort: generationConfig.reasoningEffort, skillRun: manualSkills?.snapshot },
+                        metadata: { prompt: effectivePrompt, status: NODE_STATUS_LOADING, fontSize: 14, model: generationConfig.model, reasoningEffort: generationConfig.reasoningEffort, skillRun: initialSkillRun },
                     }));
                     setNodes((prev) => [...prev.map((node) => (node.id === nodeId && isConfigNode ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_LOADING, errorDetails: undefined } } : node)), ...childNodes]);
                     setConnections((prev) => [...prev, ...childIds.map((childId) => ({ id: nanoid(), fromNodeId: nodeId, toNodeId: childId }))]);
@@ -2693,29 +2698,55 @@ function AtelierCanvasPage() {
                 const textTargetIds = childIds.length ? childIds : [nodeId];
                 textTargetIds.forEach((targetNodeId) => startGenerationRequest(targetNodeId, nodeId, nodeId, controller));
                 const answers = await Promise.all(
-                    textTargetIds.map((targetNodeId) => {
+                    textTargetIds.map(async (targetNodeId) => {
                         let localStreamed = "";
-                        return requestImageQuestion(
-                            generationConfig,
-                            skillMessages,
-                            (text) => {
-                                localStreamed = text;
-                                streamed = text;
-                                if (isConfigNode) return;
-                                setNodes((prev) => prev.map((node) => (node.id === targetNodeId ? { ...node, type: CanvasNodeType.Text, metadata: { ...node.metadata, content: text, status: NODE_STATUS_LOADING } } : node)));
-                            },
-                            { signal: controller.signal },
-                        )
-                            .then((answer) => ({ nodeId: targetNodeId, content: answer || localStreamed }))
-                            .finally(() => finishGenerationRequest(targetNodeId, controller));
+                        const autoRun = autoPlan?.createRun();
+                        let toolStarted = false;
+                        let toolUnsupported = false;
+                        const onText = (text: string) => {
+                            localStreamed = text;
+                            streamed = text;
+                            if (isConfigNode) return;
+                            setNodes((prev) => prev.map((node) => (node.id === targetNodeId ? { ...node, type: CanvasNodeType.Text, metadata: { ...node.metadata, content: text, status: NODE_STATUS_LOADING } } : node)));
+                        };
+                        try {
+                            let answer: string;
+                            try {
+                                answer = await requestImageQuestion(generationConfig, skillMessages, onText,
+                                    { signal: controller.signal, ...(autoRun ? { agent: {
+                                        tools: autoRun.tools, executeTool: autoRun.executeTool,
+                                        maxToolRounds: 6, maxToolCalls: 12, maxToolOutputChars: 32768,
+                                        onEvent: (event) => {
+                                            if (event.type === "tool_start") toolStarted = true;
+                                            autoRun.onEvent(event);
+                                        },
+                                    } } : {}) });
+                            } catch (error) {
+                                if (!autoRun || toolStarted || controller.signal.aborted || !isUnsupportedSkillToolsError(error)) throw error;
+                                // Only unsupported tool/function schemas trigger fallback; keep the original prompt.
+                                toolUnsupported = true;
+                                answer = await requestImageQuestion(generationConfig, defaultMessages, onText, { signal: controller.signal });
+                            }
+                            return { nodeId: targetNodeId, content: answer || localStreamed,
+                                skillRun: toolUnsupported ? undefined : autoRun?.snapshot() || manualSkills?.snapshot,
+                                skillTrace: toolUnsupported ? undefined : autoRun?.trace(),
+                            };
+                        } finally {
+                            finishGenerationRequest(targetNodeId, controller);
+                        }
                     }),
                 );
                 if (controller.signal.aborted) return;
-                const answerByNodeId = new Map(answers.map((item) => [item.nodeId, item.content]));
+                const answerByNodeId = new Map(answers.map((item) => [item.nodeId, item]));
+                const answerText = (id: string) => answerByNodeId.get(id)?.content || streamed;
+                const skillResult = (id: string) => ({
+                    skillRun: answerByNodeId.get(id)?.skillRun,
+                    skillTrace: answerByNodeId.get(id)?.skillTrace,
+                });
                 setNodes((prev) =>
                     prev.map((node) =>
                         childIds.includes(node.id)
-                            ? { ...node, metadata: { ...node.metadata, content: answerByNodeId.get(node.id) || streamed, status: NODE_STATUS_SUCCESS } }
+                            ? { ...node, metadata: { ...node.metadata, content: answerText(node.id), ...skillResult(node.id), status: NODE_STATUS_SUCCESS } }
                             : node.id === nodeId && isConfigNode
                               ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_SUCCESS } }
                               : node.id === nodeId && !editingTextNode
@@ -2723,7 +2754,7 @@ function AtelierCanvasPage() {
                                       ...node,
                                       type: CanvasNodeType.Text,
                                       title: prompt.slice(0, 32) || "Generated Text",
-                                      metadata: { ...node.metadata, content: answerByNodeId.get(node.id) || streamed, model: generationConfig.model, reasoningEffort: generationConfig.reasoningEffort, skillRun: manualSkills?.snapshot, status: NODE_STATUS_SUCCESS },
+                                      metadata: { ...node.metadata, content: answerText(node.id), model: generationConfig.model, reasoningEffort: generationConfig.reasoningEffort, ...skillResult(node.id), status: NODE_STATUS_SUCCESS },
                                   }
                                 : node,
                     ),
@@ -2818,14 +2849,22 @@ function AtelierCanvasPage() {
             // Resolve pinned Skills before setting the node to loading: the user may
             // decline replacing a removed version, leaving the existing output intact.
             let retryManualSkills: ManualSkillContext | null = null;
+            let retryAutoPlan: AutomaticSkillPlan | null = null;
             if (node.type === CanvasNodeType.Text) {
+                const inlinePrompt = sourceNode.type === CanvasNodeType.Config
+                    ? sourceNode.metadata?.composerContent ?? sourceNode.metadata?.prompt ?? ""
+                    : node.metadata?.composerContent ?? node.metadata?.prompt ?? "";
+                const requestedSkills = resolvePromptSkillBinding(inlinePrompt, sourceNode.metadata?.skillBinding);
+                const oldRun = node.metadata?.skillRun;
+                const canAuto = !resolveModelScript(generationConfig, generationConfig.model);
                 try {
-                    const inlinePrompt = sourceNode.type === CanvasNodeType.Config
-                        ? sourceNode.metadata?.composerContent ?? sourceNode.metadata?.prompt ?? ""
-                        : node.metadata?.composerContent ?? node.metadata?.prompt ?? "";
-                    retryManualSkills = await resolveManualSkillContext(resolvePromptSkillBinding(inlinePrompt, sourceNode.metadata?.skillBinding), node.metadata?.skillRun);
+                    if (oldRun?.mode === "manual" || (!oldRun && requestedSkills?.mode === "manual")) {
+                        retryManualSkills = await resolveManualSkillContext(requestedSkills, oldRun?.mode === "manual" ? oldRun : undefined);
+                    } else if (canAuto) {
+                        retryAutoPlan = await prepareAutomaticSkillCatalog(undefined, oldRun?.mode === "auto" ? oldRun : undefined);
+                    }
                 } catch (error) {
-                    if (error instanceof MissingSkillVersionError && node.metadata?.skillRun) {
+                    if (error instanceof MissingSkillVersionError && oldRun) {
                         const replaceVersion = await new Promise<boolean>((resolve) => {
                             modal.confirm({
                                 title: t("canvas.skillPicker.missingVersionTitle"),
@@ -2838,7 +2877,11 @@ function AtelierCanvasPage() {
                         });
                         if (!replaceVersion) return;
                         try {
-                            retryManualSkills = await resolveManualSkillContext({ mode: "manual", skillIds: node.metadata.skillRun.skillIds });
+                            if (oldRun.mode === "manual") {
+                                retryManualSkills = await resolveManualSkillContext({ mode: "manual", skillIds: oldRun.skillIds });
+                            } else if (canAuto) {
+                                retryAutoPlan = await prepareAutomaticSkillCatalog({ mode: "auto", skillIds: oldRun.skillIds });
+                            }
                         } catch (nextError) {
                             message.error(nextError instanceof Error ? nextError.message : String(nextError));
                             return;
@@ -2871,19 +2914,44 @@ function AtelierCanvasPage() {
             try {
                 if (node.type === CanvasNodeType.Text) {
                     if (!context) return;
-                    const manualSkills = retryManualSkills;
                     if (controller.signal.aborted) return;
+                    const baseMessages = buildNodeResponseMessages({ ...context, prompt: extractSkillMentions(prompt).text });
+                    const messages = retryManualSkills ? withManualSkillMessages(baseMessages, retryManualSkills)
+                        : retryAutoPlan ? withAutomaticSkillCatalog(baseMessages, retryAutoPlan) : baseMessages;
+                    const autoRun = retryAutoPlan?.createRun();
+                    let toolStarted = false;
+                    let toolUnsupported = false;
                     let streamed = "";
-                    const answer = await requestImageQuestion(
-                        generationConfig,
-                        withManualSkillMessages(buildNodeResponseMessages({ ...context, prompt: extractSkillMentions(prompt).text }), manualSkills),
-                        (text) => {
-                            streamed = text;
-                            setNodes((prev) => prev.map((item) => (item.id === node.id ? { ...item, type: CanvasNodeType.Text, metadata: { ...item.metadata, content: text, status: NODE_STATUS_LOADING } } : item)));
+                    const onDelta = (text: string) => {
+                        streamed = text;
+                        setNodes((prev) => prev.map((item) => (item.id === node.id ? { ...item, type: CanvasNodeType.Text, metadata: { ...item.metadata, content: text, status: NODE_STATUS_LOADING } } : item)));
+                    };
+                    let answer: string;
+                    try {
+                        answer = await requestImageQuestion(generationConfig, messages, onDelta, {
+                            signal: controller.signal,
+                            ...(autoRun ? { agent: {
+                                tools: autoRun.tools, executeTool: autoRun.executeTool,
+                                maxToolRounds: 6, maxToolCalls: 12, maxToolOutputChars: 32768,
+                                onEvent: (event) => {
+                                    if (event.type === "tool_start") toolStarted = true;
+                                    autoRun.onEvent(event);
+                                },
+                            } } : {}),
+                        });
+                    } catch (error) {
+                        if (!autoRun || toolStarted || controller.signal.aborted || !isUnsupportedSkillToolsError(error)) throw error;
+                        toolUnsupported = true;
+                        answer = await requestImageQuestion(generationConfig, baseMessages, onDelta, { signal: controller.signal });
+                    }
+                    setNodes((prev) => prev.map((item) => (item.id === node.id ? {
+                        ...item, type: CanvasNodeType.Text,
+                        metadata: { ...item.metadata, content: answer || streamed, prompt,
+                            skillRun: toolUnsupported ? undefined : autoRun?.snapshot() || retryManualSkills?.snapshot,
+                            skillTrace: toolUnsupported ? undefined : autoRun?.trace(),
+                            status: NODE_STATUS_SUCCESS,
                         },
-                        { signal: controller.signal },
-                    );
-                    setNodes((prev) => prev.map((item) => (item.id === node.id ? { ...item, type: CanvasNodeType.Text, metadata: { ...item.metadata, content: answer || streamed, prompt, skillRun: manualSkills?.snapshot, status: NODE_STATUS_SUCCESS } } : item)));
+                    } : item)));
                     return;
                 }
                 if (node.type === CanvasNodeType.Video) {
@@ -3177,7 +3245,9 @@ function AtelierCanvasPage() {
                         ? showLegacySkillMentions(panelNode.metadata?.composerContent ?? panelNode.metadata?.prompt ?? "", panelNode.metadata?.skillBinding)
                         : panelNode.metadata?.composerContent ?? panelNode.metadata?.prompt ?? ""}
                     enableSkills={panelNode.metadata?.generationMode === "text"}
-                    onChange={(composerContent) => handleConfigNodeChange(panelNode.id, { composerContent, skillBinding: { mode: "off", skillIds: [] } })}
+                    onChange={(composerContent) => handleConfigNodeChange(panelNode.id, panelNode.metadata?.skillBinding?.mode === "manual"
+                        ? { composerContent, skillBinding: { mode: "off", skillIds: [] } }
+                        : { composerContent })}
                     onClose={() => setDialogNodeId(null)}
                 />
             ) : (

@@ -296,6 +296,8 @@ export default {
     },
     canvas: {
         skillPicker: {
+            autoUsed: "Auto Skills: {{count}} activated",
+            autoTrace: "Skill execution trace",
             missingVersionTitle: "Pinned Skill version is missing",
             missingVersionContent: "The previous version {{version}} of Skill {{id}} is no longer installed. Retry with the currently installed version instead? Existing output will stay unchanged until you confirm.",
             useCurrent: "Use current version",

@@ -8,6 +8,7 @@ import { useTranslation } from "react-i18next";
 import { requestEdit, requestGeneration, requestImageQuestion } from "@/services/api/image";
 import { MissingSkillVersionError, resolveManualSkillContext, withManualSkillMessages, type ManualSkillContext } from "@/features/skills/skill-manual";
 import { prepareAutomaticSkillCatalog, withAutomaticSkillCatalog, isUnsupportedSkillToolsError, type AutomaticSkillPlan } from "@/features/skills/skill-auto";
+import { isSkillToolsKnownUnsupported, rememberSupportedSkillTools, rememberUnsupportedSkillTools } from "@/features/skills/skill-tool-capability";
 import { extractSkillMentions, resolvePromptSkillBinding, showLegacySkillMentions } from "@/features/skills/skill-mentions";
 import { requestAudioGeneration, storeGeneratedAudio } from "@/services/api/audio";
 import { cancelVideoGenerationTask, pollVideoGenerationTask, requestVideoGeneration, retrySeedanceDownload, storeGeneratedVideo, type VideoGenerationRequest, type VideoGenerationTask } from "@/services/api/video";
@@ -2661,8 +2662,8 @@ function AtelierCanvasPage() {
 
                 const requestedSkills = resolvePromptSkillBinding(prompt, sourceNode?.metadata?.skillBinding);
                 const manualSkills = requestedSkills?.mode === "manual" ? await resolveManualSkillContext(requestedSkills) : null;
-                const autoPlan = !manualSkills && !resolveModelScript(generationConfig, generationConfig.model)
-                    ? await prepareAutomaticSkillCatalog(requestedSkills?.mode === "auto" ? requestedSkills : undefined)
+                const autoPlan = !manualSkills && !resolveModelScript(generationConfig, generationConfig.model) && !isSkillToolsKnownUnsupported(generationConfig)
+                    ? await prepareAutomaticSkillCatalog(requestedSkills?.mode === "auto" ? requestedSkills : undefined, undefined, effectivePrompt)
                     : null;
                 if (runController.signal.aborted) return;
                 const defaultMessages = buildNodeResponseMessages({ ...generationContext, prompt: effectivePrompt });
@@ -2721,15 +2722,18 @@ function AtelierCanvasPage() {
                                             autoRun.onEvent(event);
                                         },
                                     } } : {}) });
+                                if (autoRun) rememberSupportedSkillTools(generationConfig);
                             } catch (error) {
                                 if (!autoRun || toolStarted || controller.signal.aborted || !isUnsupportedSkillToolsError(error)) throw error;
                                 // Only unsupported tool/function schemas trigger fallback; keep the original prompt.
+                                rememberUnsupportedSkillTools(generationConfig);
                                 toolUnsupported = true;
                                 answer = await requestImageQuestion(generationConfig, defaultMessages, onText, { signal: controller.signal });
                             }
                             return { nodeId: targetNodeId, content: answer || localStreamed,
                                 skillRun: toolUnsupported ? undefined : autoRun?.snapshot() || manualSkills?.snapshot,
                                 skillTrace: toolUnsupported ? undefined : autoRun?.trace(),
+                                skillMetrics: toolUnsupported ? undefined : autoRun?.metrics(),
                             };
                         } finally {
                             finishGenerationRequest(targetNodeId, controller);
@@ -2742,6 +2746,7 @@ function AtelierCanvasPage() {
                 const skillResult = (id: string) => ({
                     skillRun: answerByNodeId.get(id)?.skillRun,
                     skillTrace: answerByNodeId.get(id)?.skillTrace,
+                    skillMetrics: answerByNodeId.get(id)?.skillMetrics,
                 });
                 setNodes((prev) =>
                     prev.map((node) =>
@@ -2860,8 +2865,8 @@ function AtelierCanvasPage() {
                 try {
                     if (oldRun?.mode === "manual" || (!oldRun && requestedSkills?.mode === "manual")) {
                         retryManualSkills = await resolveManualSkillContext(requestedSkills, oldRun?.mode === "manual" ? oldRun : undefined);
-                    } else if (canAuto) {
-                        retryAutoPlan = await prepareAutomaticSkillCatalog(undefined, oldRun?.mode === "auto" ? oldRun : undefined);
+                    } else if (canAuto && !isSkillToolsKnownUnsupported(generationConfig)) {
+                        retryAutoPlan = await prepareAutomaticSkillCatalog(undefined, oldRun?.mode === "auto" ? oldRun : undefined, prompt);
                     }
                 } catch (error) {
                     if (error instanceof MissingSkillVersionError && oldRun) {
@@ -2880,7 +2885,7 @@ function AtelierCanvasPage() {
                             if (oldRun.mode === "manual") {
                                 retryManualSkills = await resolveManualSkillContext({ mode: "manual", skillIds: oldRun.skillIds });
                             } else if (canAuto) {
-                                retryAutoPlan = await prepareAutomaticSkillCatalog({ mode: "auto", skillIds: oldRun.skillIds });
+                                retryAutoPlan = await prepareAutomaticSkillCatalog({ mode: "auto", skillIds: oldRun.skillIds }, undefined, prompt);
                             }
                         } catch (nextError) {
                             message.error(nextError instanceof Error ? nextError.message : String(nextError));
@@ -2939,8 +2944,10 @@ function AtelierCanvasPage() {
                                 },
                             } } : {}),
                         });
+                        if (autoRun) rememberSupportedSkillTools(generationConfig);
                     } catch (error) {
                         if (!autoRun || toolStarted || controller.signal.aborted || !isUnsupportedSkillToolsError(error)) throw error;
+                        rememberUnsupportedSkillTools(generationConfig);
                         toolUnsupported = true;
                         answer = await requestImageQuestion(generationConfig, baseMessages, onDelta, { signal: controller.signal });
                     }
@@ -2949,6 +2956,7 @@ function AtelierCanvasPage() {
                         metadata: { ...item.metadata, content: answer || streamed, prompt,
                             skillRun: toolUnsupported ? undefined : autoRun?.snapshot() || retryManualSkills?.snapshot,
                             skillTrace: toolUnsupported ? undefined : autoRun?.trace(),
+                            skillMetrics: toolUnsupported ? undefined : autoRun?.metrics(),
                             status: NODE_STATUS_SUCCESS,
                         },
                     } : item)));

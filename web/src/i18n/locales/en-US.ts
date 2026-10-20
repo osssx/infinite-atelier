@@ -298,6 +298,7 @@ export default {
         skillPicker: {
             autoUsed: "Auto Skills: {{count}} activated",
             autoTrace: "Skill execution trace",
+            traceMetrics: "Catalog {{chars}} chars (~{{tokens}} tokens) · {{calls}} tool calls · {{ms}}ms tool time",
             missingVersionTitle: "Pinned Skill version is missing",
             missingVersionContent: "The previous version {{version}} of Skill {{id}} is no longer installed. Retry with the currently installed version instead? Existing output will stay unchanged until you confirm.",
             useCurrent: "Use current version",

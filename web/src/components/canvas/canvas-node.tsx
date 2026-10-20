@@ -614,7 +614,20 @@ function TextContent({ node, theme, isEditingContent, textareaRef, onContentChan
     const { t } = useTranslation();
     const fontSize = node.metadata?.fontSize || 14;
     const skillTrace = node.metadata?.skillTrace || [];
+    const skillMetrics = node.metadata?.skillMetrics;
     const activated = [...new Set(skillTrace.filter((entry) => entry.type === "activated").map((entry) => entry.skillId))];
+    const traceTooltip = [
+        ...(skillMetrics ? [t("canvas.skillPicker.traceMetrics", {
+            chars: skillMetrics.catalogChars,
+            tokens: skillMetrics.catalogEstimatedTokens,
+            calls: skillMetrics.toolCalls,
+            ms: skillMetrics.toolDurationMs,
+        })] : []),
+        ...skillTrace.map((entry) => entry.type === "error" ? "Error: " + entry.error :
+            entry.type === "search" ? "search_skills: " + entry.query :
+            entry.skillId + "@" + entry.version + (entry.path ? "/" + entry.path : "") +
+            (entry.durationMs === undefined ? "" : " (" + entry.durationMs + "ms)")),
+    ].join("\n");
     const textStyle = { fontSize: `${fontSize}px`, lineHeight: `${Math.round(fontSize * 1.65)}px`, color: theme.node.text, boxSizing: "border-box" } as React.CSSProperties;
 
     return (
@@ -642,12 +655,11 @@ function TextContent({ node, theme, isEditingContent, textareaRef, onContentChan
                     {node.metadata?.content || <span style={{ color: theme.node.placeholder }}>{t("canvas.node.editText")}</span>}
                 </div>
             )}
-            {skillTrace.length > 0 ? (
+            {skillTrace.length > 0 || skillMetrics ? (
                 <div
                     className="shrink-0 truncate border-t px-3 py-1 text-[10px] opacity-70"
                     style={{ borderColor: theme.node.stroke }}
-                    title={skillTrace.map((entry) => entry.type === "error" ? "Error: " + entry.error :
-                        entry.skillId + "@" + entry.version + (entry.path ? "/" + entry.path : "")).join("\n")}
+                    title={traceTooltip}
                 >
                     {activated.length
                         ? t("canvas.skillPicker.autoUsed", { count: activated.length })

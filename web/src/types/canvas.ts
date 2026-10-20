@@ -62,6 +62,7 @@ export type CanvasNodeMetadata = {
     skillRun?: import("@/features/skills/skill-manual").AppliedSkillSnapshot | import("@/features/skills/skill-auto").AutoSkillSnapshot;
     /** Small, persisted read-only Skill tool audit summary, not intermediate model content. */
     skillTrace?: import("@/features/skills/skill-auto").SkillTraceEvent[];
+    skillMetrics?: import("@/features/skills/skill-auto").SkillRunMetrics;
     seconds?: string;
     vquality?: string;
     generateAudio?: string;

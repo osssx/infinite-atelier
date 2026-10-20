@@ -298,6 +298,7 @@ export default {
         skillPicker: {
             autoUsed: "自动 Skill：已调用 {{count}} 个技能",
             autoTrace: "Skill 调用记录",
+            traceMetrics: "目录 {{chars}} 字符（约 {{tokens}} Token） · {{calls}} 次工具调用 · {{ms}}ms 工具耗时",
             missingVersionTitle: "原 Skill 版本已不存在",
             missingVersionContent: "Skill {{id}} 的历史版本 {{version}} 已丢失。是否明确改用当前已安装的版本重新生成？原有结果在确认前不会修改。",
             useCurrent: "改用当前版本",

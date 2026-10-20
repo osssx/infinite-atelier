@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { defaultConfig } from "@/stores/use-config-store";
 import { runTextAgent } from "@/services/api/text-agent-runner";
 import { getSkillPackage, listSkills } from "./skill-registry";
-import { isUnsupportedSkillToolsError, prepareAutomaticSkillCatalog, withAutomaticSkillCatalog } from "./skill-auto";
+import { MAX_CATALOG_CHARS, isUnsupportedSkillToolsError, prepareAutomaticSkillCatalog, withAutomaticSkillCatalog } from "./skill-auto";
 import type { SkillCatalogEntry, SkillPackage } from "./types";
 
 vi.mock("@/i18n", () => ({ default: { t: (key: string) => key } }));
@@ -40,7 +40,7 @@ describe("P3 default automatic Skill selection and safe tool dispatcher", () => 
         expect(messages[0].role).toBe("user");
         expect(messages[0].content).toContain("Make a shot list");
         const run = plan.createRun();
-        expect(run.tools.map((tool) => tool.name)).toEqual(["activate_skill", "read_skill_resource"]);
+        expect(run.tools.map((tool) => tool.name)).toEqual(["activate_skill", "read_skill_resource", "search_skills"]);
         expect(run.snapshot().activatedSkillIds).toEqual([]);
     });
     it("allows only activation before reading references and records versions and trace", async () => {
@@ -70,6 +70,19 @@ describe("P3 default automatic Skill selection and safe tool dispatcher", () => 
         expect(a.snapshot().activatedSkillIds).toEqual([id]);
         expect(b.snapshot().activatedSkillIds).toEqual([]);
         await expect(b.executeTool(call("read_skill_resource", { skill_id: id, path: "references/guide.md" }), {})).rejects.toThrow(/activated/);
+    });
+    it("shares immutable package fetches across concurrent runs, not activation permissions", async () => {
+        const plan = (await prepareAutomaticSkillCatalog())!;
+        const first = plan.createRun(), second = plan.createRun();
+        await Promise.all([
+            first.executeTool(call("activate_skill", { skill_id: id }, "a"), {}),
+            second.executeTool(call("activate_skill", { skill_id: id }, "b"), {}),
+        ]);
+        expect(getSkillPackage).toHaveBeenCalledTimes(1);
+        expect(first.snapshot().activatedSkillIds).toEqual([id]);
+        expect(second.snapshot().activatedSkillIds).toEqual([id]);
+        expect(first.trace()).toHaveLength(1);
+        expect(second.trace()).toHaveLength(1);
     });
     it("cancels before returning sensitive stored content", async () => {
         const plan = (await prepareAutomaticSkillCatalog())!, run = plan.createRun();
@@ -105,6 +118,55 @@ describe("P3 default automatic Skill selection and safe tool dispatcher", () => 
         const finalMessages = generateTurn.mock.calls[2][0].messages;
         expect(finalMessages.filter((item: { role: string }) => item.role === "tool")).toHaveLength(2);
         expect(run.trace().map((e) => e.type)).toEqual(["activated", "reference"]);
+    });
+    it("caps large catalogs and ranks query-relevant Skills for direct discovery", async () => {
+        const many = Array.from({ length: 95 }, (_, index): SkillCatalogEntry => ({
+            ...active, id: "skill-" + String(index).padStart(3, "0"),
+            name: "skill-" + String(index).padStart(3, "0"),
+            description: "General purpose workflow " + "example ".repeat(25),
+        }));
+        many.push({ ...active, id: "cinematic-storyboards", name: "cinematic-storyboards",
+            description: "Make cinematic storyboard shots and camera directions" });
+        vi.mocked(listSkills).mockResolvedValue(many);
+        const plan = (await prepareAutomaticSkillCatalog(undefined, undefined, "cinematic storyboard shots"))!;
+        expect(plan.catalogMessage.length).toBeLessThanOrEqual(MAX_CATALOG_CHARS);
+        expect(plan.catalogMessage).toContain("cinematic-storyboards");
+        expect(plan.catalogMessage).toContain("96 authorized Skills");
+        expect(plan.catalogMessage).not.toContain("skill-094");
+        const run = plan.createRun();
+        const out = JSON.parse(await run.executeTool(call("search_skills", { query: "general workflow" }), {}));
+        expect(out.total).toBe(96);
+        expect(out.matches.length).toBeLessThanOrEqual(8);
+        expect(out.matches.some((item: { skill_id: string }) => item.skill_id.startsWith("skill-"))).toBe(true);
+        expect(run.snapshot().skillIds).toHaveLength(96);
+        expect(getSkillPackage).not.toHaveBeenCalled();
+    });
+    it("search_skills enforces authorization, size limit and CJK relevance", async () => {
+        vi.mocked(listSkills).mockResolvedValue([active, { ...active, id: "chinese-guide", name: "chinese-guide",
+            description: "为电影镜头和分镜提供专业指导" }]);
+        const run = (await prepareAutomaticSkillCatalog())!.createRun();
+        const result = JSON.parse(await run.executeTool(call("search_skills", { query: "电影分镜" }), {}));
+        expect(result.matches[0].skill_id).toBe("chinese-guide");
+        expect(result.matches).toHaveLength(1);
+        await expect(run.executeTool(call("search_skills", { query: "x".repeat(201) }), {})).rejects.toThrow(/200/);
+        await expect(run.executeTool(call("search_skills", { query: "test", execute: true }), {})).rejects.toThrow(/schema/);
+    });
+    it("tracks bounded per-request tool metadata separately across runs", async () => {
+        const plan = (await prepareAutomaticSkillCatalog())!;
+        const first = plan.createRun(), second = plan.createRun();
+        const generateTurn = vi.fn().mockResolvedValueOnce({
+            text: "", toolCalls: [call("search_skills", { query: "storyboard" })],
+        }).mockResolvedValueOnce({ text: "No skill required", toolCalls: [] });
+        await runTextAgent({ config: { ...defaultConfig, systemPrompt: "" }, messages: [{ role: "user", content: "test" }],
+            tools: first.tools, executeTool: first.executeTool, onEvent: first.onEvent, generateTurn });
+        expect(first.metrics().catalogChars).toBe(plan.catalogMessage.length);
+        expect(first.metrics().catalogEstimatedTokens).toBe(Math.ceil(plan.catalogMessage.length / 4));
+        expect(first.metrics().toolCalls).toBe(1);
+        expect(first.metrics().rounds).toBe(1);
+        expect(first.metrics().toolDurationMs).toBeGreaterThanOrEqual(0);
+        expect(second.metrics().toolCalls).toBe(0);
+        expect(first.trace().map((item) => item.type)).toEqual(["search"]);
+        expect(second.trace()).toEqual([]);
     });
     it("only treats explicit unsupported tool schema errors as fallback-safe", () => {
         expect(isUnsupportedSkillToolsError(new Error("tools not supported by this model"))).toBe(true);

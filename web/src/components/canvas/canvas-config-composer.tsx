@@ -324,10 +324,10 @@ function createSkillChip(skillId: string, label: string, theme: (typeof canvasTh
     const wrapper = document.createElement("span");
     wrapper.contentEditable = "false";
     wrapper.dataset.skillId = skillId;
-    wrapper.className = "mx-px inline-flex h-7 max-w-44 items-center overflow-hidden rounded-md border px-1.5 text-xs leading-none align-middle";
+    wrapper.className = "mx-px inline-flex h-7 max-w-44 items-center overflow-hidden rounded-md border px-1.5 text-xs font-bold leading-none align-middle";
     Object.assign(wrapper.style, chipStyle(theme));
-    wrapper.title = "/" + label;
-    wrapper.textContent = "/" + label;
+    wrapper.title = label;
+    wrapper.textContent = label;
     return wrapper;
 }
 

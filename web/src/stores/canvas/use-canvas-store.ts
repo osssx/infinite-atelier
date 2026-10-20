@@ -1,5 +1,7 @@
 import { create } from "zustand";
 import { persist, type PersistStorage, type StorageValue } from "zustand/middleware";
+import localforage from "localforage";
+import { CanvasProjectRecords } from "./canvas-project-records";
 
 import { nanoid } from "nanoid";
 import i18n from "@/i18n";
@@ -37,19 +39,27 @@ type CanvasStore = {
 const initialViewport: ViewportTransform = { x: 0, y: 0, k: 1 };
 const CANVAS_STORE_KEY = "infinite-canvas:canvas_store";
 type PersistedCanvasState = Pick<CanvasStore, "projects">;
+const persistenceDb = PERF_MODE ? "infinite-canvas-perf" : "infinite-canvas";
+const projectRecords = new CanvasProjectRecords(
+    localforage.createInstance({ name: persistenceDb, storeName: "canvas_projects" }),
+    localforage.createInstance({ name: persistenceDb, storeName: "canvas_meta" }),
+);
+
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
+let retryTimer: ReturnType<typeof setTimeout> | null = null;
+let retryDelay = 1000;
 let queuedPersistState: PersistedCanvasState | null = null;
 let pendingPersist: { name: string; value: StorageValue<CanvasStore> } | null = null;
+let latestState: PersistedCanvasState | null = null;
+let writeQueue: Promise<void> = Promise.resolve();
+let lastWriteError: unknown = null;
 
-/** Perf-mode only: one record per write, exposed to the harness for its persistence report. */
 export type PersistTiming = {
     sequence: number;
-    /** Synchronous cost of `JSON.stringify` over every project. This is what can block a frame. */
+    /** Only changed projects are serialized; this excludes unchanged projects. */
     stringifyMs: number;
     bytes: number;
-    /** Call to Promise settlement of the IndexedDB write. Asynchronous, so it should not block. */
     writeMs: number;
-    /** True when the write was dispatched by a `pagehide` flush rather than the normal debounce. */
     onHide: boolean;
 };
 
@@ -57,9 +67,41 @@ const persistTimings: PersistTiming[] = [];
 let persistSequence = 0;
 let hiding = false;
 
-/** Snapshots and clears the collected timings. Called by the harness at the end of a round. */
 export function drainPersistTimings(): PersistTiming[] {
     return persistTimings.splice(0, persistTimings.length);
+}
+
+function queueProjectWrite(state: PersistedCanvasState, onHide: boolean) {
+    latestState = state;
+    writeQueue = writeQueue.then(async () => {
+        const result = await projectRecords.save(state.projects);
+        if (latestState === state) {
+            retryDelay = 1000;
+            lastWriteError = null;
+            if (retryTimer) clearTimeout(retryTimer);
+            retryTimer = null;
+        }
+        if (PERF_MODE) {
+            persistTimings.push({
+                sequence: persistSequence++,
+                stringifyMs: result.stringifyMs,
+                bytes: result.bytes,
+                writeMs: result.writeMs,
+                onHide,
+            });
+            if (persistTimings.length > 200) persistTimings.splice(0, persistTimings.length - 200);
+        }
+    }).catch((error: unknown) => {
+        // Never claim success or delete the legacy backup when IndexedDB is unavailable.
+        console.error("Canvas project persistence failed; the latest state will be retried", error);
+        if (latestState === state) lastWriteError = error;
+        if (latestState !== state || retryTimer) return;
+        retryTimer = setTimeout(() => {
+            retryTimer = null;
+            if (latestState === state) queueProjectWrite(state, false);
+        }, retryDelay);
+        retryDelay = Math.min(retryDelay * 2, 30_000);
+    });
 }
 
 export function flushCanvasStorePersistence() {
@@ -68,43 +110,26 @@ export function flushCanvasStorePersistence() {
     const pending = pendingPersist;
     pendingPersist = null;
     if (!pending) return;
-
-    // The normal path stays byte-for-byte what it was: no `performance.now()` calls on a hot write.
-    if (!PERF_MODE) {
-        void localForageStorage.setItem(pending.name, JSON.stringify(pending.value));
-        return;
-    }
-
-    // Timed separately on purpose: `JSON.stringify` serialises *every* project synchronously on the
-    // main thread, so it is the only one of the two that can stall a frame. `setItem` is async and
-    // should not. Without the split there is no way to tell which one a slow frame belongs to.
-    const stringifyStarted = performance.now();
-    const payload = JSON.stringify(pending.value);
-    const stringifyMs = performance.now() - stringifyStarted;
-
-    const writeStarted = performance.now();
-    void Promise.resolve(localForageStorage.setItem(pending.name, payload)).finally(() => {
-        persistTimings.push({ sequence: persistSequence++, stringifyMs, bytes: payload.length, writeMs: performance.now() - writeStarted, onHide: hiding });
-        // Bound the buffer: a long session writes often and only the tail is interesting.
-        if (persistTimings.length > 200) persistTimings.splice(0, persistTimings.length - 200);
-    });
+    queueProjectWrite(pending.value.state as PersistedCanvasState, hiding);
 }
 
-/**
- * Flushes the debounced write when the page goes away.
- *
- * Without this, anything changed within the 400ms debounce window is simply lost on tab close or
- * navigation — there was no `pagehide`/`beforeunload` handler anywhere in the app. `pagehide` rather
- * than `beforeunload`: the latter is unreliable on mobile and is skipped when a page enters the
- * bfcache. Only the existing flush is called; no new synchronous storage call is introduced, since
- * one that could not finish before teardown would be worse than nothing — it would look saved.
- */
+/** Await in tests / explicit save flows; a pagehide event alone cannot guarantee an async IDB commit. */
+export async function awaitCanvasStorePersistence(): Promise<void> {
+    flushCanvasStorePersistence();
+    await writeQueue;
+    if (lastWriteError) throw lastWriteError;
+}
+
 function installCanvasStoreFlushOnHide() {
     if (typeof window === "undefined") return;
-    window.addEventListener("pagehide", () => {
+    const flush = () => {
         hiding = true;
         flushCanvasStorePersistence();
         hiding = false;
+    };
+    window.addEventListener("pagehide", flush);
+    document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "hidden") flush();
     });
 }
 
@@ -112,23 +137,44 @@ installCanvasStoreFlushOnHide();
 
 const canvasStorage: PersistStorage<CanvasStore> = {
     getItem: async (name) => {
-        const value = await localForageStorage.getItem(name);
-        if (!value) return null;
-        const parsed = JSON.parse(value) as StorageValue<CanvasStore>;
-        queuedPersistState = parsed.state as PersistedCanvasState;
-        return parsed;
+        const split = await projectRecords.load();
+        if (split) {
+            const state: PersistedCanvasState = { projects: split };
+            queuedPersistState = state;
+            return { state: state as CanvasStore, version: 0 };
+        }
+
+        // Read the legacy monolithic record only when no split manifest exists yet.
+        // Keep it indefinitely for recovery / older versions; never overwrite it after migration.
+        const json = await localForageStorage.getItem(name);
+        if (!json) return null;
+        const old = JSON.parse(json) as StorageValue<CanvasStore>;
+        if (!Array.isArray(old?.state?.projects)) throw new Error("Invalid legacy canvas store");
+        queuedPersistState = old.state as PersistedCanvasState;
+        queueProjectWrite(queuedPersistState, false);
+        return old;
     },
     setItem: (name, value) => {
-        const nextState = value.state as PersistedCanvasState;
-        if (queuedPersistState && queuedPersistState.projects === nextState.projects) return;
-        queuedPersistState = nextState;
+        const next = value.state as PersistedCanvasState;
+        if (queuedPersistState?.projects === next.projects) return;
+        queuedPersistState = next;
         pendingPersist = { name, value };
         if (saveTimer) clearTimeout(saveTimer);
-        saveTimer = setTimeout(() => {
-            flushCanvasStorePersistence();
-        }, 400);
+        saveTimer = setTimeout(flushCanvasStorePersistence, 400);
     },
-    removeItem: (name) => localForageStorage.removeItem(name),
+    removeItem: async (name) => {
+        if (saveTimer) clearTimeout(saveTimer);
+        if (retryTimer) clearTimeout(retryTimer);
+        saveTimer = null;
+        retryTimer = null;
+        pendingPersist = null;
+        latestState = null;
+        await writeQueue;
+        lastWriteError = null;
+        await projectRecords.clear();
+        await localForageStorage.removeItem(name);
+        queuedPersistState = null;
+    },
 };
 
 export const useCanvasStore = create<CanvasStore>()(
@@ -198,7 +244,11 @@ export const useCanvasStore = create<CanvasStore>()(
                 ({
                     projects: state.projects,
                 }) as StorageValue<CanvasStore>["state"],
-            onRehydrateStorage: () => () => {
+            onRehydrateStorage: () => (_state, error) => {
+                if (error) {
+                    console.error("Canvas storage could not be safely restored", error);
+                    return; // Fail closed; never show an empty project list after corrupt storage.
+                }
                 useCanvasStore.setState({ hydrated: true });
             },
         },

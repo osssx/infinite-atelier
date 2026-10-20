@@ -4,6 +4,7 @@ import i18n from "@/i18n";
 import { buildApiUrl, resolveModelRequestConfig, resolveModelScript, type AiConfig, type ModelChannel } from "@/stores/use-config-store";
 import { proxyApiUrl } from "@/lib/api-proxy";
 import { normalizePluginImages, runModelPlugin } from "./model-plugin";
+import { runTextAgent, type TextAgentInput } from "./text-agent-runner";
 import { nanoid } from "nanoid";
 import { dataUrlToFile } from "@/lib/image-utils";
 import { buildImageReferencePromptText } from "@/lib/image-reference-prompt";
@@ -1088,9 +1089,16 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
     }
 }
 
-export async function requestImageQuestion(config: AiConfig, messages: AiTextMessage[], onDelta: (text: string) => void, options?: RequestOptions) {
+/** Optional tool-enabled path; legacy no-tool requests preserve their original provider behavior. */
+export type TextAgentRequestOptions = Pick<TextAgentInput, "tools" | "executeTool" | "onEvent" | "maxToolRounds" | "maxToolCalls" | "maxToolOutputChars">;
+
+export async function requestImageQuestion(config: AiConfig, messages: AiTextMessage[], onDelta: (text: string) => void, options?: RequestOptions & { agent?: TextAgentRequestOptions }) {
     const requestConfig = resolveModelRequestConfig(config, config.model || config.textModel);
     const script = resolveModelScript(config, config.model || config.textModel);
+    if (options?.agent) {
+        if (script) throw new Error("Tool calling requires a structured model adapter; custom text scripts currently support manual Skill injection only.");
+        return runTextAgent({ config: requestConfig, messages, tools: options.agent.tools, executeTool: options.agent.executeTool, onEvent: options.agent.onEvent, maxToolRounds: options.agent.maxToolRounds, maxToolCalls: options.agent.maxToolCalls, maxToolOutputChars: options.agent.maxToolOutputChars, signal: options.signal, onText: onDelta });
+    }
     if (script) {
         try {
             const answer = await runModelPlugin<string>({

@@ -8,6 +8,8 @@ import { validateBackup, type AppBackupFile, type BackupItem } from "@/services/
 import { awaitCanvasStorePersistence, useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { awaitAssetStorePersistence, useAssetStore } from "@/stores/use-asset-store";
 import { useConfigStore } from "@/stores/use-config-store";
+import { exportSkill, restoreSkillSnapshot, snapshotSkills, type SkillBackupSnapshot } from "@/features/skills/skill-registry";
+import { importSkillFile } from "@/features/skills/skill-import";
 
 const imageStore = localforage.createInstance({ name: "infinite-canvas", storeName: "image_files" });
 const mediaStore = localforage.createInstance({ name: "infinite-canvas", storeName: "media_files" });
@@ -44,9 +46,18 @@ export async function exportAppBackup() {
         const zipFiles: { name: string; data: BlobPart }[] = [];
         await collectStoreFiles(imageStore, files, zipFiles);
         await collectStoreFiles(mediaStore, files, zipFiles);
+        const skillSnapshot = await snapshotSkills();
+        const skillRecords: NonNullable<AppBackupFile["skills"]>["packages"] = [];
+        for (const pkg of skillSnapshot.packages) {
+            const { id, version } = pkg.manifest;
+            const path = "skills/" + id + "/" + version + ".zip";
+            zipFiles.push({ name: path, data: await exportSkill(id, version) });
+            skillRecords.push({ id, version, path });
+        }
         const data: AppBackupFile = {
             app: "infinite-canvas", version: 1, exportedAt: new Date().toISOString(),
             projects, assets, config, files,
+            skills: { catalog: skillSnapshot.catalog, packages: skillRecords },
         };
         // Never export a ZIP with dangling local media references.
         validateBackup(data, new Map(zipFiles.map(({ name, data }) => [name, new Blob([data])])));
@@ -70,11 +81,32 @@ export async function importAppBackup(file: File) {
         try { parsed = JSON.parse(await manifest.text()); }
         catch { throw new Error("Invalid application backup: invalid JSON manifest"); }
         const data = validateBackup(parsed, zip);
+        // Validate every nested SKILL ZIP and its claimed version before mutating browser data.
+        let skillsToRestore: SkillBackupSnapshot | undefined;
+        if (data.skills) {
+            const packages = [];
+            for (const entry of data.skills.packages) {
+                const blob = zip.get(entry.path)!;
+                const pkg = await importSkillFile(Object.assign(blob, { name: entry.id + ".zip" }));
+                if (pkg.manifest.id !== entry.id || pkg.manifest.version !== entry.version) {
+                    throw new Error("Invalid application backup: Skill content hash mismatch");
+                }
+                packages.push(pkg);
+            }
+            for (const entry of data.skills.catalog) {
+                const active = packages.find((pkg) => pkg.manifest.id === entry.id && pkg.manifest.version === entry.activeVersion);
+                if (!active || active.manifest.name !== entry.name || active.manifest.description !== entry.description) {
+                    throw new Error("Invalid application backup: Skill catalog metadata mismatch");
+                }
+            }
+            skillsToRestore = { catalog: data.skills.catalog, packages };
+        }
         await synchronizeCanvas();
         const old = {
             projects: useCanvasStore.getState().projects,
             assets: useAssetStore.getState().assets,
             config: useConfigStore.getState().config,
+            skills: await snapshotSkills(),
         };
         // Save only keys that will be overwritten. These are Blob references, not decoded media.
         const originals = new Map<string, Blob | null>();
@@ -86,6 +118,7 @@ export async function importAppBackup(file: File) {
         const written: string[] = [];
         let changedProjects = false;
         let changedAssets = false;
+        let changedSkills = false;
         try {
             for (const item of data.files) {
                 const blob = zip.get(item.path)!; // Every entry was checked by validateBackup.
@@ -101,6 +134,10 @@ export async function importAppBackup(file: File) {
             useAssetStore.getState().replaceAssets(data.assets);
             await awaitAssetStorePersistence();
             useConfigStore.setState({ config: data.config });
+            if (skillsToRestore) {
+                changedSkills = true;
+                await restoreSkillSnapshot(skillsToRestore);
+            }
         } catch (error) {
             const rollbackErrors: unknown[] = [];
             if (changedProjects) {
@@ -116,6 +153,10 @@ export async function importAppBackup(file: File) {
                 } catch (cause) { rollbackErrors.push(cause); }
             }
             useConfigStore.setState({ config: old.config });
+            if (changedSkills) {
+                try { await restoreSkillSnapshot(old.skills); }
+                catch (cause) { rollbackErrors.push(cause); }
+            }
             for (const key of [...new Set(written)].reverse()) {
                 try {
                     const prior = originals.get(key);

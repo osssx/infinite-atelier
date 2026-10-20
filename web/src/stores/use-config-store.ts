@@ -60,7 +60,7 @@ export type AiConfig = {
     canvasImageCount: string;
 };
 
-export type ConfigTabKey = "channels" | "preferences" | "backup";
+export type ConfigTabKey = "channels" | "preferences" | "skills" | "backup";
 
 export const CONFIG_STORE_KEY = "infinite-canvas:ai_config_store";
 const CHANNEL_MODEL_SEPARATOR = "::";

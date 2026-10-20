@@ -42,6 +42,20 @@ describe("logical v1 application backup validation", () => {
         expect(() => validateBackup(backup, blobs())).toThrow(/duplicate project/);
         expect(() => validateBackup({ ...sample(), files: null }, blobs())).toThrow(/format/);
     });
+    it("validates optional Skill archive references and accepts legacy backups without them", () => {
+        const backup = sample();
+        expect(validateBackup(backup, blobs()).skills).toBeUndefined();
+        const version = "abc123abc123";
+        const skillEntry = { id: "my-skill", name: "my-skill", description: "Skill description", enabled: true, activeVersion: version, versions: [version], updatedAt: "2026-10-20" };
+        const path = "skills/my-skill/" + version + ".zip";
+        backup.skills = { catalog: [skillEntry], packages: [{ id: "my-skill", version, path }] };
+        expect(() => validateBackup(backup, blobs())).toThrow(/missing Skill package/);
+        const zip = blobs();
+        zip.set(path, new Blob(["archive"]));
+        expect(validateBackup(backup, zip).skills?.catalog[0].id).toBe("my-skill");
+        backup.skills.packages.push({ id: "my-skill", version, path });
+        expect(() => validateBackup(backup, zip)).toThrow(/duplicate/);
+    });
     it("does not require generated previews or media for remote-only URLs", () => {
         const backup = sample();
         backup.projects[0].nodes[0].metadata = { content: "https://example.com/image.png" };

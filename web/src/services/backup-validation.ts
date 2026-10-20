@@ -1,6 +1,7 @@
 import type { CanvasProject } from "@/stores/canvas/use-canvas-store";
 import type { Asset } from "@/stores/use-asset-store";
 import type { AiConfig } from "@/stores/use-config-store";
+import type { SkillCatalogEntry } from "@/features/skills/types";
 
 export type BackupItem = { storageKey: string; path: string; mimeType: string };
 export type AppBackupFile = {
@@ -11,6 +12,11 @@ export type AppBackupFile = {
     assets: Asset[];
     config: AiConfig;
     files: BackupItem[];
+    /** Optional to preserve compatibility with pre-Skill v1 backups. */
+    skills?: {
+        catalog: SkillCatalogEntry[];
+        packages: Array<{ id: string; version: string; path: string }>;
+    };
 };
 
 /** v1 was a logical data backup, not an IndexedDB snapshot. Preserve this format. */
@@ -37,6 +43,33 @@ export function validateBackup(data: unknown, zip: ReadonlyMap<string, Blob>): A
         if (!zip.has(item.path)) return invalid(`missing media file: ${item.path}`);
         keys.add(item.storageKey);
         paths.add(item.path);
+    }
+    if (file.skills !== undefined) {
+        const skills = file.skills;
+        if (!Array.isArray(skills.catalog) || !Array.isArray(skills.packages) || skills.catalog.length > 100 || skills.packages.length > 500) return invalid("invalid Skill manifest");
+        const registered = new Set<string>();
+        for (const entry of skills.catalog) {
+            if (!entry || typeof entry.id !== "string" || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(entry.id) ||
+                registered.has(entry.id) || typeof entry.description !== "string" || typeof entry.enabled !== "boolean" ||
+                typeof entry.activeVersion !== "string" || !Array.isArray(entry.versions) ||
+                entry.versions.length < 1 || entry.versions.length > 30 || !entry.versions.includes(entry.activeVersion) ||
+                new Set(entry.versions).size !== entry.versions.length) return invalid("invalid Skill catalog");
+            registered.add(entry.id);
+        }
+        const expected = new Set(skills.catalog.flatMap((entry) => entry.versions.map((version) => entry.id + ":" + version)));
+        const found = new Set<string>();
+        for (const entry of skills.packages) {
+            if (!entry || !registered.has(entry.id) || typeof entry.version !== "string" ||
+                !/^[0-9a-f]{12}$/.test(entry.version) ||
+                entry.path !== "skills/" + entry.id + "/" + entry.version + ".zip" || !zip.has(entry.path)) {
+                return invalid("invalid or missing Skill package");
+            }
+            const key = entry.id + ":" + entry.version;
+            if (found.has(key) || !expected.has(key)) return invalid("duplicate or unexpected Skill package");
+            found.add(key);
+            if (zip.get(entry.path)!.size > 5 * 1024 * 1024) return invalid("Skill archive exceeds 5 MiB");
+        }
+        if (found.size !== expected.size) return invalid("missing Skill package");
     }
     // Local media references must have corresponding blobs. Ignore other plugin-specific
     // arbitrary storageKey strings and external URLs, which are not local media records.

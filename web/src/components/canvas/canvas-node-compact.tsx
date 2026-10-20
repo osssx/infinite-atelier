@@ -107,7 +107,7 @@ export const CompactCanvasNode = memo(function CompactCanvasNode({
                     </div>
                 ) : null}
                 {data.type === CanvasNodeType.Text ? (
-                    <div className="pointer-events-none h-full w-full overflow-hidden whitespace-pre-wrap break-words pl-4 pr-14 pt-8 pb-4 font-mono"
+                    <div className="pointer-events-none h-full w-full overflow-hidden whitespace-pre-wrap break-words px-4 pt-12 pb-4 font-mono"
                         style={{ color: theme.node.text, fontSize: data.metadata?.fontSize || 14, lineHeight: 1.65 }}>
                         {(data.metadata?.content || data.title).slice(0,900)}
                     </div>

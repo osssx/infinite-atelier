@@ -602,7 +602,7 @@ function TextContent({ node, theme, isEditingContent, textareaRef, onContentChan
     const textStyle = { fontSize: `${fontSize}px`, lineHeight: `${Math.round(fontSize * 1.65)}px`, color: theme.node.text, boxSizing: "border-box" } as React.CSSProperties;
 
     return (
-        <div className="flex h-full w-full flex-col overflow-hidden pt-8">
+        <div className="flex h-full w-full flex-col overflow-hidden pt-12">
             <button
                 type="button"
                 className="absolute right-3 top-3 z-20 inline-flex h-8 items-center gap-1 rounded-full border px-2.5 text-xs font-medium opacity-85 backdrop-blur-md transition hover:scale-[1.02] hover:opacity-100"
@@ -622,7 +622,7 @@ function TextContent({ node, theme, isEditingContent, textareaRef, onContentChan
             {isEditingContent ? (
                 <EditableTextContent node={node} textStyle={textStyle} textareaRef={textareaRef} onContentChange={onContentChange} onStopEditing={onStopEditing} />
             ) : (
-                <div className="thin-scrollbar block h-full w-full overflow-y-auto whitespace-pre-wrap break-words bg-transparent pl-4 pr-14 pt-0 pb-4 font-mono" style={textStyle} onWheel={(event) => event.stopPropagation()}>
+                <div className="thin-scrollbar block h-full w-full overflow-y-auto whitespace-pre-wrap break-words bg-transparent px-4 pt-0 pb-4 font-mono" style={textStyle} onWheel={(event) => event.stopPropagation()}>
                     {node.metadata?.content || <span style={{ color: theme.node.placeholder }}>{t("canvas.node.editText")}</span>}
                 </div>
             )}
@@ -649,7 +649,7 @@ function EditableTextContent({
     return (
         <CanvasResourceMentionTextarea
             ref={textareaRef}
-            className="thin-scrollbar block h-full w-full resize-none overflow-y-auto whitespace-pre-wrap break-words border-none bg-transparent pl-4 pr-14 pt-0 pb-4 m-0 font-mono outline-none select-text appearance-none"
+            className="thin-scrollbar block h-full w-full resize-none overflow-y-auto whitespace-pre-wrap break-words border-none bg-transparent px-4 pt-0 pb-4 m-0 font-mono outline-none select-text appearance-none"
             style={textStyle}
             value={node.metadata?.content || ""}
             references={mentionReferences}

@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 
 import { canvasThemes, type CanvasBackgroundMode } from "@/lib/canvas-theme";
 import { applyAnchoredWheelZoom } from "@/lib/canvas/canvas-wheel-zoom";
+import { setPreviewGenerationSuspended } from "@/services/media-preview-storage";
 import { useThemeStore } from "@/stores/use-theme-store";
 import type { ViewportTransform } from "@/types/canvas";
 
@@ -59,6 +60,7 @@ export function AtelierCanvas({ containerRef, viewport, tool, backgroundMode = "
             if (frameRef.current) cancelAnimationFrame(frameRef.current);
             if (wheelFrameRef.current !== null) cancelAnimationFrame(wheelFrameRef.current);
             if (wheelIdleTimerRef.current !== null) clearTimeout(wheelIdleTimerRef.current);
+            setPreviewGenerationSuspended(false);
         },
         [],
     );
@@ -107,6 +109,7 @@ export function AtelierCanvas({ containerRef, viewport, tool, backgroundMode = "
         const rect = wheelRectRef.current ?? containerRef.current?.getBoundingClientRect();
         if (!rect) return;
         wheelRectRef.current = rect;
+        setPreviewGenerationSuspended(true);
 
         // Cancel mass media promotion during wheel bursts. Do not schedule React updates for
         // each wheel event: one "start" update and one "idle" update per gesture is enough.
@@ -115,6 +118,7 @@ export function AtelierCanvas({ containerRef, viewport, tool, backgroundMode = "
         wheelIdleTimerRef.current = setTimeout(() => {
             wheelIdleTimerRef.current = null;
             onWheelActivityChange?.(false);
+            setPreviewGenerationSuspended(false);
         }, 180);
 
         // Compose synchronously, preserving every event even when several arrive before React

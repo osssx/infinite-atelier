@@ -1,5 +1,6 @@
 import localforage from "localforage";
 import { nanoid } from "nanoid";
+import { deleteMediaPreview, resolveMediaPreview } from "./media-preview-storage";
 
 export type UploadedFile = { url: string; storageKey: string; bytes: number; mimeType: string; width?: number; height?: number; durationMs?: number };
 
@@ -13,6 +14,7 @@ export async function uploadMediaFile(input: string | Blob, prefix = "file"): Pr
     const url = URL.createObjectURL(blob);
     objectUrls.set(storageKey, url);
     const meta = blob.type.startsWith("video/") ? await readVideoMeta(url) : blob.type.startsWith("audio/") ? await readAudioMeta(url) : {};
+    if (blob.type.startsWith("video/")) void resolveMediaPreview("video", storageKey, async () => blob);
     return { url, storageKey, bytes: blob.size, mimeType: blob.type || "application/octet-stream", ...meta };
 }
 
@@ -32,9 +34,11 @@ export async function getMediaBlob(storageKey: string) {
 }
 
 export async function setMediaBlob(storageKey: string, blob: Blob) {
+    await deleteMediaPreview("video", storageKey);
     await store.setItem(storageKey, blob);
     const url = URL.createObjectURL(blob);
     objectUrls.set(storageKey, url);
+    if (blob.type.startsWith("video/")) void resolveMediaPreview("video", storageKey, async () => blob);
     return url;
 }
 
@@ -45,6 +49,7 @@ export async function deleteStoredMedia(keys: Iterable<string>) {
             if (url) URL.revokeObjectURL(url);
             objectUrls.delete(key);
             await store.removeItem(key);
+            await deleteMediaPreview("video", key);
         }),
     );
 }
@@ -55,7 +60,7 @@ export async function cleanupUnusedMedia(usedData: unknown) {
     await store.iterate((_value, key) => {
         if (!usedKeys.has(key)) unused.push(key);
     });
-    await Promise.all(unused.map((key) => store.removeItem(key)));
+    await deleteStoredMedia(unused);
 }
 
 export function collectMediaStorageKeys(value: unknown, keys = new Set<string>()) {

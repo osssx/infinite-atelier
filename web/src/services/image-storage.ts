@@ -5,6 +5,7 @@ import i18n from "@/i18n";
 import { readImageMeta } from "@/lib/image-utils";
 import { proxyApiUrl } from "@/lib/api-proxy";
 import { PERF_MODE } from "@/lib/perf-mode";
+import { deleteMediaPreview, resolveMediaPreview } from "./media-preview-storage";
 
 export type UploadedImage = {
     url: string;
@@ -25,6 +26,8 @@ export async function uploadImage(input: string | Blob): Promise<UploadedImage> 
     const url = URL.createObjectURL(blob);
     objectUrls.set(storageKey, url);
     const meta = await readImageMeta(url);
+    // Generate once while idle; do not block the asset import or create thumbnails during zoom.
+    void resolveMediaPreview("image", storageKey, async () => blob, { width: meta.width, height: meta.height });
     return { url, storageKey, width: meta.width, height: meta.height, bytes: blob.size, mimeType: blob.type || meta.mimeType };
 }
 
@@ -44,9 +47,11 @@ export async function getImageBlob(storageKey: string) {
 }
 
 export async function setImageBlob(storageKey: string, blob: Blob) {
+    await deleteMediaPreview("image", storageKey);
     await store.setItem(storageKey, blob);
     const url = URL.createObjectURL(blob);
     objectUrls.set(storageKey, url);
+    void resolveMediaPreview("image", storageKey, async () => blob);
     return url;
 }
 
@@ -63,6 +68,7 @@ export async function deleteStoredImages(keys: Iterable<string>) {
             if (url) URL.revokeObjectURL(url);
             objectUrls.delete(key);
             await store.removeItem(key);
+            await deleteMediaPreview("image", key);
         }),
     );
 }

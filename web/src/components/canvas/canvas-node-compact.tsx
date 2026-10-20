@@ -1,8 +1,11 @@
-import { memo } from "react";
+import { memo, useEffect, useState } from "react";
 
 import { canvasThemes } from "@/lib/canvas-theme";
 import { getNodeDefinition } from "@/lib/canvas/node-registry";
 import { getCompactImageSource } from "@/lib/canvas/canvas-lod-preview";
+import { getImageBlob } from "@/services/image-storage";
+import { getMediaBlob } from "@/services/file-storage";
+import { resolveMediaPreview } from "@/services/media-preview-storage";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
 import { useCanvasActions } from "./canvas-actions";
@@ -28,6 +31,23 @@ export const CompactCanvasNode = memo(function CompactCanvasNode({
     const isVideo = data.type === CanvasNodeType.Video;
     const isAudio = data.type === CanvasNodeType.Audio;
     const imageSource = getCompactImageSource(data);
+    const primary = data.metadata?.images?.find((item) => item.id === (data.metadata?.primaryImageId || data.metadata?.images?.[0]?.id));
+    const storageKey = isImage ? (primary?.storageKey || data.metadata?.storageKey) : isVideo ? data.metadata?.storageKey : undefined;
+    const kind = isVideo ? "video" as const : "image" as const;
+    const [preview, setPreview] = useState<{ key: string; url: string } | null>(null);
+    // A persisted 256px preview is looked up by source storage key. The full original
+    // is NOT passed to an <img> in the overview. Legacy blobs backfill only while idle.
+    useEffect(() => {
+        if (!showImagePreview || !storageKey || (!isImage && !isVideo)) return;
+        let active = true;
+        const load = kind === "image" ? () => getImageBlob(storageKey) : () => getMediaBlob(storageKey);
+        void resolveMediaPreview(kind, storageKey, load, isImage && data.metadata?.naturalWidth && data.metadata.naturalHeight
+            ? { width: data.metadata.naturalWidth, height: data.metadata.naturalHeight } : undefined)
+            .then((url) => { if (active && url) setPreview({ key: storageKey, url }); });
+        return () => { active = false; };
+    }, [showImagePreview, storageKey, kind, isImage, isVideo, data.metadata?.naturalWidth, data.metadata?.naturalHeight]);
+    const previewUrl = storageKey ? (preview?.key === storageKey ? preview.url : null) : imageSource;
+
     const hasImage = Boolean(imageSource);
     const active = isSelected || isGroupDropTarget;
     const accent = definition?.minimapColor || theme.node.muted;
@@ -57,20 +77,25 @@ export const CompactCanvasNode = memo(function CompactCanvasNode({
                     }
                 }}
             >
-                {isImage && imageSource && showImagePreview ? (
-                    <img key={imageSource} data-canvas-compact-image src={imageSource} alt="" draggable={false} loading="lazy" decoding="async"
+                {isImage && previewUrl && showImagePreview ? (
+                    <img key={previewUrl} data-canvas-compact-image src={previewUrl} alt="" draggable={false} loading="lazy" decoding="async"
                         className={`pointer-events-none block h-full w-full select-none ${data.metadata?.freeResize ? "object-fill" : "object-contain"}`}
                         style={{ opacity: 0, transition: "opacity 160ms ease-out" }}
                         onLoad={(event) => { event.currentTarget.style.opacity = "1"; }}
                     />
                 ) : null}
-                {isImage && imageSource && !showImagePreview ? (
+                {isImage && imageSource && (!showImagePreview || !previewUrl) ? (
                     <div className="pointer-events-none absolute inset-0 opacity-50" style={{ background: accent + "26" }} />
                 ) : null}
                 {isImage && !imageSource ? <div className="pointer-events-none grid h-full w-full place-items-center" style={{ color: theme.node.placeholder }}><span className="text-2xl opacity-40">▧</span></div> : null}
                 {isVideo ? (
                     <div className="pointer-events-none flex h-full w-full items-center justify-center" style={{ background: data.metadata?.content ? "#000" : theme.node.fill }}>
-                        <span className="grid size-12 place-items-center rounded-full border border-white/30 bg-white/15 text-white/85">
+                        {showImagePreview && previewUrl && isVideo ? (
+                            <img src={previewUrl} alt="" draggable={false} decoding="async"
+                                data-canvas-compact-poster
+                                className="pointer-events-none absolute inset-0 h-full w-full object-contain" />
+                        ) : null}
+                        <span className="relative z-[1] grid size-12 place-items-center rounded-full border border-white/30 bg-white/15 text-white/85">
                             <span className="ml-1 h-0 w-0 border-y-[8px] border-y-transparent border-l-[12px] border-l-current" />
                         </span>
                     </div>

@@ -11,6 +11,8 @@ import { useCanvasActions } from "./canvas-actions";
 import { useNodeMentionReferences } from "./canvas-graph-context";
 import { CanvasNodeType, type CanvasNodeData, type CanvasNodeImage, type ViewportTransform } from "@/types/canvas";
 import { useTranslation } from "react-i18next";
+import { getMediaBlob } from "@/services/file-storage";
+import { resolveMediaPreview } from "@/services/media-preview-storage";
 
 type ResizeCorner = "top-left" | "top-right" | "bottom-left" | "bottom-right";
 const selectionBlue = "#2f80ff";
@@ -696,20 +698,98 @@ function EmptyImageContent({ theme }: NodeContentRendererProps) {
 
 function VideoNodeContent({ node, theme, onMediaPlaybackChange }: NodeContentRendererProps) {
     const { t } = useTranslation();
-    // Culling deliberately unmounts offscreen media. Clear the LOD playback pin on unmount.
+    const source = node.metadata?.content;
+    const storageKey = node.metadata?.storageKey;
+    const videoRef = useRef<HTMLVideoElement>(null);
+    const [cover, setCover] = useState<{ key: string; url: string } | null>(null);
+    const [requested, setRequested] = useState(false);
+    const [frameReady, setFrameReady] = useState(false);
+    const [failed, setFailed] = useState(false);
+
+    // An offscreen video is intentionally unmounted. The lightweight poster is a separately
+    // persisted WebP, so panning back does not re-open a video decoder or native loading UI.
+    useEffect(() => {
+        if (!storageKey || !source) return;
+        let alive = true;
+        void resolveMediaPreview("video", storageKey, () => getMediaBlob(storageKey))
+            .then((url) => { if (alive && url) setCover({ key: storageKey, url }); });
+        return () => { alive = false; };
+    }, [source, storageKey]);
     useEffect(() => () => onMediaPlaybackChange?.(node.id, false), [node.id, onMediaPlaybackChange]);
-    if (!node.metadata?.content)
+
+    // When generation changes the video source on an existing node, discard its old frame.
+    useEffect(() => {
+        setRequested(false);
+        setFrameReady(false);
+        setFailed(false);
+        const video = videoRef.current;
+        if (video?.hasAttribute("src")) {
+            video.pause();
+            video.removeAttribute("src");
+            video.load();
+        }
+    }, [source]);
+
+    const beginPlayback = () => {
+        const video = videoRef.current;
+        if (!source || !video) return;
+        setFailed(false);
+        setRequested(true);
+        // Set the source and call play synchronously inside the user gesture. Delaying play
+        // to a React effect would lose gesture activation in browsers that restrict autoplay.
+        if (video.getAttribute("src") !== source) video.src = source;
+        else if (video.error || failed) video.load();
+        void video.play().catch(() => {
+            // Unsupported files / network failures remain on the poster with a retry affordance.
+            setFailed(true);
+            setRequested(false);
+            onMediaPlaybackChange?.(node.id, false);
+        });
+    };
+
+    if (!source)
         return (
             <div className="flex h-full w-full flex-col items-center justify-center gap-3" style={{ color: theme.node.placeholder }}>
                 <Video className="size-7 opacity-35" />
                 <span className="text-sm">{t("canvas.node.emptyVideo")}</span>
             </div>
         );
-    return <video src={node.metadata.content} controls preload="none"
-        onPlay={() => onMediaPlaybackChange?.(node.id, true)}
-        onPause={() => onMediaPlaybackChange?.(node.id, false)}
-        onEnded={() => onMediaPlaybackChange?.(node.id, false)}
-        className="h-full w-full rounded-[18px] bg-black object-contain" data-canvas-no-zoom />;
+
+    const poster = storageKey && cover?.key === storageKey ? cover.url : null;
+    return (
+        <div className="relative h-full w-full overflow-hidden rounded-[18px] bg-black" data-canvas-video-shell>
+            <video ref={videoRef}
+                controls={frameReady}
+                preload="none"
+                playsInline
+                onLoadedData={() => setFrameReady(true)}
+                onPlay={() => onMediaPlaybackChange?.(node.id, true)}
+                onPause={() => onMediaPlaybackChange?.(node.id, false)}
+                onEnded={() => onMediaPlaybackChange?.(node.id, false)}
+                onError={() => { setFailed(true); setRequested(false); setFrameReady(false); onMediaPlaybackChange?.(node.id, false); }}
+                className={`h-full w-full object-contain ${frameReady ? "opacity-100" : "opacity-0"}`}
+                style={{ pointerEvents: frameReady ? undefined : "none" }}
+                data-canvas-no-zoom
+                data-canvas-video-player
+            />
+            {!frameReady ? (
+                <button type="button" data-canvas-video-cover data-canvas-no-zoom
+                    className="absolute inset-0 flex h-full w-full items-center justify-center overflow-hidden bg-black text-white"
+                    onClick={(event) => { event.stopPropagation(); if (!requested) beginPlayback(); }}
+                    onMouseDown={(event) => event.stopPropagation()}
+                    aria-label={failed ? "Retry video playback" : requested ? "Loading video" : "Play video"}
+                >
+                    {poster ? <img src={poster} alt="" draggable={false}
+                        className="pointer-events-none absolute inset-0 h-full w-full object-contain" /> : null}
+                    <span className="relative z-10 grid size-12 place-items-center rounded-full border border-white/40 bg-black/50">
+                        {requested ? <span className="text-xs">···</span> : failed
+                            ? <RefreshCw className="size-5" />
+                            : <span className="ml-1 h-0 w-0 border-y-[8px] border-y-transparent border-l-[12px] border-l-white" />}
+                    </span>
+                </button>
+            ) : null}
+        </div>
+    );
 }
 
 function AudioNodeContent({ node, theme, onMediaPlaybackChange }: NodeContentRendererProps) {

@@ -861,6 +861,10 @@ export default {
             backup: "Backup",
         },
         skills: {
+            scopeGlobal: "Global",
+            scopeLabel: "Skill availability scope",
+            missingProject: "Deleted project",
+
             description: "Import SKILL.md or ZIP packages; enable skills and manage versions. V1 never executes scripts; packages stay in your browser.",
             import: "Import Skill",
             imported: "Skill imported",

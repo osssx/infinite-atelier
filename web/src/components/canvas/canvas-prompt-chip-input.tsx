@@ -5,7 +5,7 @@ import { Image } from "antd";
 import { SkillSlashMenu } from "@/features/skills/skill-slash-menu";
 import { activeSkillSlash, skillMentionToken } from "@/features/skills/skill-mentions";
 import { useSkillStore } from "@/stores/use-skill-store";
-import type { SkillCatalogEntry } from "@/features/skills/types";
+import { isEnabledSkillInProject, type SkillCatalogEntry } from "@/features/skills/types";
 import { FileText, Image as ImageIcon, Music2, Video } from "lucide-react";
 
 import i18n from "@/i18n";
@@ -24,6 +24,7 @@ type Props = {
     style?: CSSProperties;
     placeholder?: string;
     enableSkills?: boolean;
+    projectId?: string;
 };
 
 type MentionState = {
@@ -39,7 +40,7 @@ type Token =
 
 // Prompt-panel contentEditable input: @ references embed thumbnail chips instead of plain label text.
 // Serialization converts chips back to reference labels so the generated value matches the former textarea semantics.
-export function CanvasPromptChipInput({ value, references, onChange, onSubmit, className, style, placeholder, enableSkills = false }: Props) {
+export function CanvasPromptChipInput({ value, references, onChange, onSubmit, className, style, placeholder, enableSkills = false, projectId }: Props) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const catalog = useSkillStore((state) => state.catalog);
     const loaded = useSkillStore((state) => state.loaded);
@@ -69,8 +70,8 @@ export function CanvasPromptChipInput({ value, references, onChange, onSubmit, c
     const skillCandidates = useMemo(() => {
         if (!mention || mention.kind !== "skill") return [];
         const q = mention.query.trim().toLowerCase();
-        return catalog.filter((entry) => entry.enabled && (!q || (entry.name + " " + entry.description).toLowerCase().includes(q)));
-    }, [catalog, mention]);
+        return catalog.filter((entry) => isEnabledSkillInProject(entry, projectId) && (!q || (entry.name + " " + entry.description).toLowerCase().includes(q)));
+    }, [catalog, mention, projectId]);
 
     // Rebuild the DOM from value when unfocused, or when a focused value is an external change rather than an emitted echo.
     useEffect(() => {

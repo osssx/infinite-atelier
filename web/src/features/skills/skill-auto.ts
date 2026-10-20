@@ -4,7 +4,7 @@ import type { TextToolCall, TextToolSpec } from "@/services/api/text-model-adapt
 import { getSkillPackage, listSkills } from "./skill-registry";
 import { validateSkillPath } from "./skill-parser";
 import { MissingSkillVersionError } from "./skill-manual";
-import type { SkillBinding, SkillCatalogEntry, SkillPackage } from "./types";
+import { isSkillInProjectScope, type SkillBinding, type SkillCatalogEntry, type SkillPackage } from "./types";
 
 export type AutoSkillSnapshot = {
     mode: "auto";
@@ -111,11 +111,11 @@ function snapshotFor(entries: SkillCatalogEntry[], pins: Record<string, string>,
  * P3 discovery: freeze the explicitly allowed, enabled catalog and version pins.
  * Import content stays in IndexedDB until the model explicitly invokes activate_skill.
  */
-export async function prepareAutomaticSkillCatalog(binding?: SkillBinding, previous?: AutoSkillSnapshot, prompt = ""): Promise<AutomaticSkillPlan | null> {
+export async function prepareAutomaticSkillCatalog(binding?: SkillBinding, previous?: AutoSkillSnapshot, prompt = "", projectId?: string): Promise<AutomaticSkillPlan | null> {
     const catalog = await listSkills();
     const entriesById = new Map(catalog.map((entry) => [entry.id, entry]));
     const ids = previous?.skillIds.length ? previous.skillIds :
-        binding?.skillIds.length ? [...new Set(binding.skillIds)] : catalog.filter((entry) => entry.enabled).map((entry) => entry.id);
+        binding?.skillIds.length ? [...new Set(binding.skillIds)] : catalog.filter((entry) => entry.enabled && isSkillInProjectScope(entry, projectId)).map((entry) => entry.id);
     if (!ids.length && !previous) return null;
     if (!ids.length) throw new Error("Pinned automatic Skill catalog is empty");
     if (ids.length > MAX_CATALOG) throw new Error("Automatic Skill catalog exceeds 100 Skills");
@@ -125,6 +125,7 @@ export async function prepareAutomaticSkillCatalog(binding?: SkillBinding, previ
         const entry = entriesById.get(id);
         if (!entry) throw new Error("Automatic Skill '" + id + "' has been removed");
         if (!entry.enabled) throw new Error("Automatic Skill '" + id + "' is disabled");
+        if (!isSkillInProjectScope(entry, projectId)) throw new Error("Automatic Skill '" + id + "' is not available in this project");
         const version = previous?.versionPins[id] || binding?.versionPins?.[id] || entry.activeVersion;
         if (!entry.versions.includes(version)) throw new MissingSkillVersionError(id, version);
         if (previous) {

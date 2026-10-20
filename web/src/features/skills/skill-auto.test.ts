@@ -23,6 +23,32 @@ beforeEach(() => {
 afterEach(() => vi.resetAllMocks());
 
 describe("P3 default automatic Skill selection and safe tool dispatcher", () => {
+    it("filters project-scoped Skills for automatic discovery and full search authorization", async () => {
+        const global = active;
+        const thisProject: SkillCatalogEntry = { ...active, id: "project-guidance", name: "project-guidance",
+            description: "In-project instructions", scope: { type: "project", projectId: "project-a" } };
+        const otherProject: SkillCatalogEntry = { ...active, id: "private-guide", name: "private-guide",
+            description: "Private instructions in another project", scope: { type: "project", projectId: "project-b" } };
+        vi.mocked(listSkills).mockResolvedValue([global, thisProject, otherProject]);
+        const plan = (await prepareAutomaticSkillCatalog(undefined, undefined, "guidance", "project-a"))!;
+        expect(plan.snapshot().skillIds).toEqual([id, "project-guidance"]);
+        expect(plan.catalogMessage).not.toContain("private-guide");
+        const found = JSON.parse(await plan.createRun().executeTool(call("search_skills", { query: "private" }), {}));
+        expect(found.matches).toEqual([]);
+        await expect(plan.createRun().executeTool(call("activate_skill", { skill_id: "private-guide" }), {}))
+            .rejects.toThrow(/not authorized/);
+        const globalOnly = (await prepareAutomaticSkillCatalog(undefined, undefined, "guidance"))!;
+        expect(globalOnly.snapshot().skillIds).toEqual([id]);
+    });
+    it("rejects cross-project IDs injected into old bindings and pinned auto snapshots", async () => {
+        vi.mocked(listSkills).mockResolvedValue([{ ...active, scope: { type: "project", projectId: "project-b" } }]);
+        await expect(prepareAutomaticSkillCatalog({ mode: "auto", skillIds: [id] }, undefined, "storyboard", "project-a"))
+            .rejects.toThrow(/not available in this project/);
+        await expect(prepareAutomaticSkillCatalog(undefined,
+            { mode: "auto", skillIds: [id], versionPins: { [id]: version }, activatedSkillIds: [id] },
+            "storyboard", "project-a")).rejects.toThrow(/not available in this project/);
+        expect(getSkillPackage).not.toHaveBeenCalled();
+    });
     it("is a no-op with an empty enabled catalog, and ignores disabled Skills", async () => {
         vi.mocked(listSkills).mockResolvedValue([{ ...active, enabled: false }]);
         expect(await prepareAutomaticSkillCatalog()).toBeNull();

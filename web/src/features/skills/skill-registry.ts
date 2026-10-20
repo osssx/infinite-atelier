@@ -2,12 +2,14 @@ import localforage from "localforage";
 import { createZip } from "@/lib/zip";
 import { PERF_MODE } from "@/lib/perf-mode";
 import { validateSkillPath } from "./skill-parser";
-import { type SkillCatalogEntry, type SkillPackage } from "./types";
+import { type SkillCatalogEntry, type SkillPackage, type SkillScope } from "./types";
 
 const store = localforage.createInstance({ name: PERF_MODE ? "infinite-canvas-perf" : "infinite-canvas", storeName: "skill_packages" });
 const CATALOG_KEY = "catalog:v1";
 const packageKey = (id: string, version: string) => "package:" + id + ":" + version;
-const copyCatalog = (entries: SkillCatalogEntry[]) => entries.map((item) => ({ ...item, versions: [...item.versions] }));
+const copyCatalog = (entries: SkillCatalogEntry[]) => entries.map((item) => ({
+    ...item, versions: [...item.versions], ...(item.scope ? { scope: { ...item.scope } } : {}),
+}));
 
 // Mutating transactions are serialized so parallel imports cannot overwrite catalog changes.
 let operation = Promise.resolve();
@@ -41,7 +43,9 @@ export async function registerSkill(pkg: SkillPackage): Promise<SkillCatalogEntr
         await store.setItem(packageKey(manifest.id, version), pkg);
         const next: SkillCatalogEntry = {
             id: manifest.id, name: manifest.name, description: manifest.description,
-            enabled: existing?.enabled ?? true, activeVersion: version,
+            enabled: existing?.enabled ?? true,
+            ...(existing?.scope ? { scope: { ...existing.scope } } : {}),
+            activeVersion: version,
             versions: [...new Set([...(existing?.versions || []), version])],
             updatedAt: new Date().toISOString(),
         };
@@ -57,6 +61,21 @@ export async function setSkillEnabled(id: string, enabled: boolean) {
         const entry = catalog.find((skill) => skill.id === id);
         if (!entry) throw new Error("Skill does not exist");
         entry.enabled = enabled;
+        await store.setItem(CATALOG_KEY, catalog);
+    });
+}
+/** Scope changes are serialized alongside all catalog mutations. */
+export async function setSkillScope(id: string, scope: SkillScope) {
+    if (scope.type !== "global" && (scope.type !== "project" || !scope.projectId || scope.projectId.length > 256)) {
+        throw new Error("Invalid Skill project scope");
+    }
+    return serialize(async () => {
+        const catalog = await rawCatalog();
+        const entry = catalog.find((skill) => skill.id === id);
+        if (!entry) throw new Error("Skill does not exist");
+        if (scope.type === "global") delete entry.scope;
+        else entry.scope = { type: "project", projectId: scope.projectId };
+        entry.updatedAt = new Date().toISOString();
         await store.setItem(CATALOG_KEY, catalog);
     });
 }

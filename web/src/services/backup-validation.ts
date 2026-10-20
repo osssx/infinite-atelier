@@ -53,7 +53,13 @@ export function validateBackup(data: unknown, zip: ReadonlyMap<string, Blob>): A
                 registered.has(entry.id) || typeof entry.description !== "string" || typeof entry.enabled !== "boolean" ||
                 typeof entry.activeVersion !== "string" || !Array.isArray(entry.versions) ||
                 entry.versions.length < 1 || entry.versions.length > 30 || !entry.versions.includes(entry.activeVersion) ||
-                new Set(entry.versions).size !== entry.versions.length) return invalid("invalid Skill catalog");
+                new Set(entry.versions).size !== entry.versions.length ||
+                (entry.scope !== undefined &&
+                    (typeof entry.scope !== "object" || entry.scope === null ||
+                    (entry.scope.type !== "global" &&
+                    (entry.scope.type !== "project" || typeof entry.scope.projectId !== "string" ||
+                     !entry.scope.projectId.trim() || entry.scope.projectId.length > 256)))))
+                return invalid("invalid Skill catalog");
             registered.add(entry.id);
         }
         const expected = new Set(skills.catalog.flatMap((entry) => entry.versions.map((version) => entry.id + ":" + version)));

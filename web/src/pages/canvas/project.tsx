@@ -2032,7 +2032,7 @@ function AtelierCanvasPage() {
                 setRunningNodeId(null);
             }
         },
-        [effectiveConfig, finishGenerationRequest, isAiConfigReady, message, openConfigDialog, startGenerationRequest, t],
+        [effectiveConfig, finishGenerationRequest, isAiConfigReady, message, openConfigDialog, projectId, startGenerationRequest, t],
     );
 
     const upscaleImageNode = useCallback(async (node: CanvasNodeData, params: CanvasImageUpscaleParams) => {
@@ -2661,9 +2661,9 @@ function AtelierCanvasPage() {
                 }
 
                 const requestedSkills = resolvePromptSkillBinding(prompt, sourceNode?.metadata?.skillBinding);
-                const manualSkills = requestedSkills?.mode === "manual" ? await resolveManualSkillContext(requestedSkills) : null;
+                const manualSkills = requestedSkills?.mode === "manual" ? await resolveManualSkillContext(requestedSkills, undefined, projectId) : null;
                 const autoPlan = !manualSkills && !resolveModelScript(generationConfig, generationConfig.model) && !isSkillToolsKnownUnsupported(generationConfig)
-                    ? await prepareAutomaticSkillCatalog(requestedSkills?.mode === "auto" ? requestedSkills : undefined, undefined, effectivePrompt)
+                    ? await prepareAutomaticSkillCatalog(requestedSkills?.mode === "auto" ? requestedSkills : undefined, undefined, effectivePrompt, projectId)
                     : null;
                 if (runController.signal.aborted) return;
                 const defaultMessages = buildNodeResponseMessages({ ...generationContext, prompt: effectivePrompt });
@@ -2776,7 +2776,7 @@ function AtelierCanvasPage() {
                 setRunningNodeId(null);
             }
         },
-        [effectiveConfig, finishGenerationRequest, isAiConfigReady, message, openConfigDialog, startGenerationRequest, t],
+        [effectiveConfig, finishGenerationRequest, isAiConfigReady, message, openConfigDialog, projectId, startGenerationRequest, t],
     );
     useEffect(() => {
         generateNodeRef.current = handleGenerateNode;
@@ -2864,9 +2864,9 @@ function AtelierCanvasPage() {
                 const canAuto = !resolveModelScript(generationConfig, generationConfig.model);
                 try {
                     if (oldRun?.mode === "manual" || (!oldRun && requestedSkills?.mode === "manual")) {
-                        retryManualSkills = await resolveManualSkillContext(requestedSkills, oldRun?.mode === "manual" ? oldRun : undefined);
+                        retryManualSkills = await resolveManualSkillContext(requestedSkills, oldRun?.mode === "manual" ? oldRun : undefined, projectId);
                     } else if (canAuto && !isSkillToolsKnownUnsupported(generationConfig)) {
-                        retryAutoPlan = await prepareAutomaticSkillCatalog(undefined, oldRun?.mode === "auto" ? oldRun : undefined, prompt);
+                        retryAutoPlan = await prepareAutomaticSkillCatalog(undefined, oldRun?.mode === "auto" ? oldRun : undefined, prompt, projectId);
                     }
                 } catch (error) {
                     if (error instanceof MissingSkillVersionError && oldRun) {
@@ -2883,9 +2883,9 @@ function AtelierCanvasPage() {
                         if (!replaceVersion) return;
                         try {
                             if (oldRun.mode === "manual") {
-                                retryManualSkills = await resolveManualSkillContext({ mode: "manual", skillIds: oldRun.skillIds });
+                                retryManualSkills = await resolveManualSkillContext({ mode: "manual", skillIds: oldRun.skillIds }, undefined, projectId);
                             } else if (canAuto) {
-                                retryAutoPlan = await prepareAutomaticSkillCatalog({ mode: "auto", skillIds: oldRun.skillIds }, undefined, prompt);
+                                retryAutoPlan = await prepareAutomaticSkillCatalog({ mode: "auto", skillIds: oldRun.skillIds }, undefined, prompt, projectId);
                             }
                         } catch (nextError) {
                             message.error(nextError instanceof Error ? nextError.message : String(nextError));
@@ -3098,7 +3098,7 @@ function AtelierCanvasPage() {
                 setRunningNodeId(null);
             }
         },
-        [effectiveConfig, finishGenerationRequest, isAiConfigReady, message, modal, openConfigDialog, startGenerationRequest, t],
+        [effectiveConfig, finishGenerationRequest, isAiConfigReady, message, modal, openConfigDialog, projectId, startGenerationRequest, t],
     );
 
     const deleteBatchImage = useCallback((nodeId: string, imageId: string) => {
@@ -3249,6 +3249,7 @@ function AtelierCanvasPage() {
             panelNode.type === CanvasNodeType.Director ? null : panelNode.type === CanvasNodeType.Config ? (
                 <CanvasConfigComposer
                     nodeId={panelNode.id}
+                    projectId={projectId}
                     value={panelNode.metadata?.generationMode === "text"
                         ? showLegacySkillMentions(panelNode.metadata?.composerContent ?? panelNode.metadata?.prompt ?? "", panelNode.metadata?.skillBinding)
                         : panelNode.metadata?.composerContent ?? panelNode.metadata?.prompt ?? ""}
@@ -3261,6 +3262,7 @@ function AtelierCanvasPage() {
             ) : (
                 <CanvasNodePromptPanel
                     node={panelNode}
+                    projectId={projectId}
                     isRunning={runningNodeId === panelNode.id}
                     onPromptChange={handleNodePromptChange}
                     onConfigChange={handleConfigNodeChange}
@@ -3273,7 +3275,7 @@ function AtelierCanvasPage() {
                     }}
                 />
             ),
-        [confirmStopGeneration, handleConfigNodeChange, handleGenerateNode, handleNodePromptChange, runningNodeId],
+        [confirmStopGeneration, handleConfigNodeChange, handleGenerateNode, handleNodePromptChange, projectId, runningNodeId],
     );
 
     const handleDirectorExport = useCallback(

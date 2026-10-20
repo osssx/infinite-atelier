@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { importSkillFile } from "@/features/skills/skill-import";
-import { activateSkillVersion, listSkills, registerSkill, removeSkill, setSkillEnabled, type SkillBackupSnapshot } from "@/features/skills/skill-registry";
-import type { SkillCatalogEntry } from "@/features/skills/types";
+import { activateSkillVersion, listSkills, registerSkill, removeSkill, setSkillEnabled, setSkillScope } from "@/features/skills/skill-registry";
+import type { SkillCatalogEntry, SkillScope } from "@/features/skills/types";
 
 type SkillStore = {
     catalog: SkillCatalogEntry[];
@@ -11,6 +11,7 @@ type SkillStore = {
     importFile: (file: File) => Promise<void>;
     toggle: (id: string, enabled: boolean) => Promise<void>;
     changeVersion: (id: string, version: string) => Promise<void>;
+    changeScope: (id: string, scope: SkillScope) => Promise<void>;
     remove: (id: string) => Promise<void>;
 };
 let loading: Promise<void> | null = null;
@@ -33,6 +34,7 @@ export const useSkillStore = create<SkillStore>((set, get) => {
         importFile: (file) => change(async () => registerSkill(await importSkillFile(file))),
         toggle: (id, enabled) => change(() => setSkillEnabled(id, enabled)),
         changeVersion: (id, version) => change(() => activateSkillVersion(id, version)),
+        changeScope: (id, scope) => change(() => setSkillScope(id, scope)),
         remove: (id) => change(() => removeSkill(id)),
     };
 });

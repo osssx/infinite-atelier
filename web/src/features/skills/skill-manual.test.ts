@@ -37,6 +37,18 @@ beforeEach(() => {
 afterEach(() => vi.resetAllMocks());
 
 describe("P2 manual Skill binding and pinned generation", () => {
+    it("rejects manually selected and previously pinned Skills moved into other projects", async () => {
+        const privateSkill = { ...catalog("storyboard"), scope: { type: "project" as const, projectId: "project-b" } };
+        vi.mocked(listSkills).mockResolvedValue([privateSkill]);
+        await expect(resolveManualSkillContext(manual(["storyboard"]), undefined, "project-a"))
+            .rejects.toThrow(/not available in this project/);
+        await expect(resolveManualSkillContext(manual(["storyboard"]), {
+            mode: "manual", skillIds: ["storyboard"], versionPins: { storyboard: firstVersion },
+        }, "project-a")).rejects.toThrow(/not available in this project/);
+        expect(getSkillPackage).not.toHaveBeenCalled();
+        expect((await resolveManualSkillContext(manual(["storyboard"]), undefined, "project-b"))?.snapshot.skillIds)
+            .toEqual(["storyboard"]);
+    });
     it("does not change normal generation without a Skill", async () => {
         expect(await resolveManualSkillContext(undefined)).toBeNull();
         expect(await resolveManualSkillContext({ mode: "off", skillIds: ["storyboard"] })).toBeNull();

@@ -9,11 +9,22 @@ export type SkillManifest = {
     resources: string[];
     warnings: string[];
 };
+export type SkillScope = { type: "global" } | { type: "project"; projectId: string };
+/** Older Skill entries have no scope; those are globally available by default. */
+export function isSkillInProjectScope(skill: Pick<SkillCatalogEntry, "scope">, projectId?: string): boolean {
+    const scope = skill.scope;
+    return !scope || scope.type === "global" || (scope.type === "project" && Boolean(projectId) && scope.projectId === projectId);
+}
+export function isEnabledSkillInProject(skill: Pick<SkillCatalogEntry, "enabled" | "scope">, projectId?: string): boolean {
+    return skill.enabled && isSkillInProjectScope(skill, projectId);
+}
 export type SkillCatalogEntry = {
     id: string;
     name: string;
     description: string;
     enabled: boolean;
+    /** Optional for compatibility with pre-P4 global Skills. */
+    scope?: SkillScope;
     activeVersion: string;
     versions: string[];
     updatedAt: string;

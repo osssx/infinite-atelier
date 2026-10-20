@@ -56,6 +56,22 @@ describe("logical v1 application backup validation", () => {
         backup.skills.packages.push({ id: "my-skill", version, path });
         expect(() => validateBackup(backup, zip)).toThrow(/duplicate/);
     });
+    it("keeps legacy Skills global and validates optional project scope in backups", () => {
+        const backup = sample();
+        const version = "abc123abc123", path = "skills/my-skill/" + version + ".zip";
+        const baseEntry = { id: "my-skill", name: "my-skill", description: "Guidance", enabled: true,
+            activeVersion: version, versions: [version], updatedAt: "2026-10-20" };
+        backup.skills = { catalog: [baseEntry], packages: [{ id: "my-skill", version, path }] };
+        const zip = blobs();
+        zip.set(path, new Blob(["package"]));
+        expect(validateBackup(backup, zip).skills?.catalog[0].scope).toBeUndefined();
+        backup.skills.catalog[0].scope = { type: "project", projectId: backup.projects[0].id };
+        expect(validateBackup(backup, zip).skills?.catalog[0].scope).toEqual({ type: "project", projectId: backup.projects[0].id });
+        backup.skills.catalog[0].scope = { type: "project", projectId: "" };
+        expect(() => validateBackup(backup, zip)).toThrow(/invalid Skill catalog/);
+        backup.skills.catalog[0] = { ...backup.skills.catalog[0], scope: { type: "unexpected" } } as unknown as typeof backup.skills.catalog[number];
+        expect(() => validateBackup(backup, zip)).toThrow(/invalid Skill catalog/);
+    });
     it("does not require generated previews or media for remote-only URLs", () => {
         const backup = sample();
         backup.projects[0].nodes[0].metadata = { content: "https://example.com/image.png" };

@@ -860,6 +860,10 @@ export default {
             backup: "数据备份",
         },
         skills: {
+            scopeGlobal: "全局可用",
+            scopeLabel: "技能使用范围",
+            missingProject: "已删除的项目",
+
             description: "导入 SKILL.md 或 ZIP 技能包，按需启用并管理版本。V1 不执行技能脚本；文件仅保存在本地浏览器。",
             import: "导入 Skill",
             imported: "Skill 已导入",

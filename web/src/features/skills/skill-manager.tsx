@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { exportSkill, getSkillPackage } from "./skill-registry";
 import { useSkillStore } from "@/stores/use-skill-store";
+import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
 
 export function SkillManager() {
     const { t } = useTranslation();
@@ -20,6 +21,12 @@ export function SkillManager() {
     const toggle = useSkillStore((state) => state.toggle);
     const remove = useSkillStore((state) => state.remove);
     const changeVersion = useSkillStore((state) => state.changeVersion);
+    const changeScope = useSkillStore((state) => state.changeScope);
+    const projects = useCanvasStore((state) => state.projects);
+    const scopeOptions = [
+        { value: "global", label: t("config.skills.scopeGlobal") },
+        ...projects.map((project) => ({ value: "project:" + project.id, label: project.title || project.id })),
+    ];
     useEffect(() => { void refresh().catch((error) => message.error(String(error))); }, [refresh, message]);
     const execute = async (action: () => Promise<unknown>, success?: string) => {
         try { await action(); if (success) message.success(success); }
@@ -49,6 +56,13 @@ export function SkillManager() {
                         <Switch disabled={busy} checked={skill.enabled} checkedChildren={t("config.skills.enabled")} unCheckedChildren={t("config.skills.disabled")} onChange={(checked) => void execute(() => toggle(skill.id, checked))} />
                     </div>
                     <div className="mt-3 flex flex-wrap items-center gap-2">
+                        <Select size="small" disabled={busy} value={skill.scope?.type === "project" ? "project:" + skill.scope.projectId : "global"}
+                            aria-label={t("config.skills.scopeLabel")}
+                            options={skill.scope?.type === "project" && !projects.some((project) => project.id === (skill.scope?.type === "project" ? skill.scope.projectId : undefined))
+                                ? [...scopeOptions, { value: "project:" + skill.scope.projectId, label: t("config.skills.missingProject") + " (" + skill.scope.projectId + ")" }]
+                                : scopeOptions}
+                            onChange={(scopeId) => void execute(() => changeScope(skill.id, scopeId === "global" ? { type: "global" } : { type: "project", projectId: scopeId.slice(8) }))}
+                            style={{ minWidth: 148, maxWidth: 220 }} />
                         <Select size="small" disabled={busy} value={skill.activeVersion} options={skill.versions.map((version) => ({ value: version, label: version }))} onChange={(version) => void execute(() => changeVersion(skill.id, version))} style={{ minWidth: 144 }} />
                         <Button size="small" icon={<Eye className="size-3.5" />} onClick={() => void execute(async () => {
                             const data = await getSkillPackage(skill.id);

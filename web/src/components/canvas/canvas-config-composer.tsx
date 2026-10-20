@@ -6,7 +6,7 @@ import { FileText, Image as ImageIcon, Music2, Video, X } from "lucide-react";
 import { SkillSlashMenu } from "@/features/skills/skill-slash-menu";
 import { activeSkillSlash, skillMentionToken } from "@/features/skills/skill-mentions";
 import { useSkillStore } from "@/stores/use-skill-store";
-import type { SkillCatalogEntry } from "@/features/skills/types";
+import { isEnabledSkillInProject, type SkillCatalogEntry } from "@/features/skills/types";
 import { useTranslation } from "react-i18next";
 
 import i18n from "@/i18n";
@@ -22,6 +22,7 @@ type CanvasConfigComposerProps = {
     onChange: (value: string) => void;
     onClose: () => void;
     enableSkills?: boolean;
+    projectId?: string;
 };
 
 type Token =
@@ -37,7 +38,7 @@ type MentionState = {
 
 export const CONFIG_REFERENCE_PATTERN = /@\[node:([^\]]+)\]/g;
 
-export function CanvasConfigComposer({ nodeId, value, onChange, onClose, enableSkills = false }: CanvasConfigComposerProps) {
+export function CanvasConfigComposer({ nodeId, value, onChange, onClose, enableSkills = false, projectId }: CanvasConfigComposerProps) {
     const { t } = useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const catalog = useSkillStore((state) => state.catalog);
@@ -65,8 +66,8 @@ export function CanvasConfigComposer({ nodeId, value, onChange, onClose, enableS
     const skillCandidates = useMemo(() => {
         if (!mention || mention.kind !== "skill") return [];
         const q = mention.query.trim().toLowerCase();
-        return catalog.filter((entry) => entry.enabled && (!q || (entry.name + " " + entry.description).toLowerCase().includes(q)));
-    }, [catalog, mention]);
+        return catalog.filter((entry) => isEnabledSkillInProject(entry, projectId) && (!q || (entry.name + " " + entry.description).toLowerCase().includes(q)));
+    }, [catalog, mention, projectId]);
 
     useEffect(() => {
         if (document.activeElement === editorRef.current) return;

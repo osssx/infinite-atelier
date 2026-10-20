@@ -1,6 +1,6 @@
 import type { AiTextMessage } from "@/services/api/image";
 import { getSkillPackage, listSkills } from "./skill-registry";
-import type { SkillBinding } from "./types";
+import { isSkillInProjectScope, type SkillBinding } from "./types";
 
 export type AppliedSkillSnapshot = {
     mode: "manual";
@@ -30,6 +30,7 @@ export class MissingSkillVersionError extends Error {
 export async function resolveManualSkillContext(
     binding?: SkillBinding,
     previous?: AppliedSkillSnapshot,
+    projectId?: string,
 ): Promise<ManualSkillContext | null> {
     const selection: SkillBinding | undefined = previous || binding;
     if (!selection || selection.mode === "off") return null;
@@ -45,6 +46,7 @@ export async function resolveManualSkillContext(
         const selected = catalog.find((item) => item.id === id);
         if (!selected) throw new Error("Skill '" + id + "' is no longer installed. Reinstall its original version or change the node selection.");
         if (!selected.enabled) throw new Error("Skill '" + id + "' is disabled; enable it before generating or retrying.");
+        if (!isSkillInProjectScope(selected, projectId)) throw new Error("Skill '" + id + "' is not available in this project");
         const version = selection.versionPins?.[id] || selected.activeVersion;
         const pkg = await getSkillPackage(id, version);
         if (!pkg) throw new MissingSkillVersionError(id, version);

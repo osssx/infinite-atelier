@@ -1,6 +1,6 @@
 # infinite-atelier：文本模型 Skill 调用功能设计（V1）
 
-> 状态：P0–P3 已完成；P4 已完成第一轮性能与兼容优化并经自动化验证，项目/全局作用域与自定义脚本结构化 Adapter 尚待推进；P5 未实施。日期：2026-10-20。
+> 状态：P0–P3 已完成；P4 已完成前两轮（性能/兼容与项目/全局作用域）自动化验证，自定义脚本结构化 Adapter 尚待推进；P5 未实施。日期：2026-10-20。
 > 目标：在现有文本模型、画布配置节点及文本生成工作流上增加可管理、可选择、可由模型按需加载的 Agent Skills 能力。
 
 ## 1. 范围与决策
@@ -304,3 +304,14 @@ description: 将短剧文本转换成镜头清单；当用户要求分镜、镜�
 - Skill 执行摘要新增 skillMetrics：目录字符数、估算 Token（字符数/4，仅粗估，非真实 API usage）、工具调用次数、工具调用耗时、轮次数；tooltip 同时显示搜索动作和单次调用耗时。不在 token delta 阶段写入全画布状态，只在成功节点最终写入。
 - skill-auto.test.ts 扩展大目录、中文搜索、权限/大小限制、并发只读缓存与指标测试；新增 skill-tool-capability.test.ts 验证过期、模型与端点隔离、无存储持久化；TypeScript + 全量 33 文件 193 测试通过。
 - 后续 P4 尚需项目/全局 Skill 作用域、结构化自定义模型脚本 Adapter，以及真实模型端到端 Token/延迟基准和对 200 节点画布帧时间的验证。模型调用中途失败、认证或网络错误仍不会盲目降级。
+
+
+## 18. P4 第二轮：全局 / 项目 Skill 作用域（2026-10-20）
+
+- SkillCatalogEntry 新增可选 scope 字段，未填写的旧目录条目继续视为 global，无需迁移。project 范围绑定当前画布项目 ID，其他项目和无项目上下文均看不到该技能。
+- Skill Registry 新增串行化的 setSkillScope，保留 activeVersion 与各历史版本；重新导入同名 Skill 新版本时沿用既有 scope。默认全局和项目级不会产生第二份重复 Skill 包。
+- 设置 → Skills 管理列表增加作用域选择（Global / 已有项目）；丢失的项目仍显示原 ID，供用户恢复为全局或重新分配。只在设置列表提供这一项，文本生成侧继续默认自动启用、无额外开关。
+- 两种文本编辑器的 /Skill 候选只显示当前项目可用且启用的 Skill。自动 prepareAutomaticSkillCatalog 的初始目录、search_skills 工具可见集合、旧版快照重试、手动 resolveManualSkillContext 均复核项目作用域。直接输入其他项目的 /[skill:id] 或把旧节点迁移到其他项目都不会绕过访问限制。
+- 项目 ID 由 canvas/project.tsx 传给编辑器和技能解析分支，未改变 @图片的引用或非文本模型调用。
+- 应用备份 v1 schema 允许可选 scope 元数据，拒绝非法 projectId 或未知范围；老备份缺少 scope 时仍可恢复，完整 Skill 备份和回滚随 catalog 一起保存该字段。
+- 新增 Skill Registry 范围持久化测试（4）、自动发现/权限测试（2）、手动重试隔离测试（1）、备份格式测试（1）；后续 P4 剩余工作：结构化自定义模型脚本 TextTurn Adapter（旧脚本必须保持返回 string 的向后兼容），以及真实浏览器跨项目/备份恢复 E2E 验证。

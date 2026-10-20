@@ -5,6 +5,7 @@ import { ChevronRight, Clapperboard, Copy, Group, Image as ImageIcon, Music2, Pu
 import { canvasThemes } from "@/lib/canvas-theme";
 import { formatBytes } from "@/lib/image-utils";
 import { getNodeDefinition } from "@/lib/canvas/node-registry";
+import { CANVAS_CONTENT_VISIBILITY_STYLE, shouldContainCanvasContent } from "@/lib/canvas/canvas-content-visibility";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { CanvasResourceMentionTextarea } from "./canvas-resource-mention-textarea";
 import { useCanvasActions } from "./canvas-actions";
@@ -444,10 +445,14 @@ export const CanvasNode = React.memo(function CanvasNode({
             >
                 <div
                     className={`relative flex h-full w-full items-center justify-center rounded-[inherit] ${isBatchRoot ? "overflow-visible" : "overflow-hidden"}`}
+                    data-canvas-content-contained={shouldContainCanvasContent(data.type, isBatchRoot, isEditingContent) ? "" : undefined}
                     style={
                         {
                             background: isGroup ? "transparent" : hasImageContent || hasVideoContent || transparentBg ? "transparent" : theme.node.fill,
                             pointerEvents: contentInteractive ? undefined : "none",
+                            // This clipped interior can skip offscreen descendants without
+                            // clipping connector handles, expanded batches, or custom panels.
+                            ...(shouldContainCanvasContent(data.type, isBatchRoot, isEditingContent) ? CANVAS_CONTENT_VISIBILITY_STYLE : {}),
                         } as React.CSSProperties
                     }
                 >

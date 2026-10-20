@@ -18,6 +18,7 @@ import { canvasThemes, type CanvasBackgroundMode } from "@/lib/canvas-theme";
 import { useAssetStore } from "@/stores/use-asset-store";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { cullConnections, worldViewRect } from "@/lib/canvas/canvas-connection-culling";
+import { reuseCanvasVisibleList } from "@/lib/canvas/canvas-visible-list";
 import { cropDataUrl, splitDataUrl, upscaleDataUrl } from "@/lib/canvas/canvas-image-data";
 import { fitNodeSize, nodeSizeFromRatio } from "@/lib/canvas/canvas-node-size";
 import { App, Button, Modal } from "antd";
@@ -789,6 +790,11 @@ function AtelierCanvasPage() {
         [screenToCanvas],
     );
 
+    // Returning the previous list by reference lets memoized node/edge layers
+    // skip reconciliation while the viewport transform moves unchanged items.
+    const visibleNodesCacheRef = useRef<CanvasNodeData[]>([]);
+    const visibleConnectionsCacheRef = useRef<CanvasConnection[]>([]);
+
     const visibleNodes = useMemo(() => {
         const padding = 280;
         // `size` is kept current by the ResizeObserver below. Measuring the container here instead
@@ -804,7 +810,9 @@ function AtelierCanvasPage() {
             pipelineSink.addMs("visibleNodesMs", performance.now() - started);
             pipelineSink.count("visibleNodesCount", filtered.length);
         }
-        return filtered;
+        const stable = reuseCanvasVisibleList(visibleNodesCacheRef.current, filtered);
+        visibleNodesCacheRef.current = stable;
+        return stable;
     }, [nodes, size.height, size.width, viewport.k, viewport.x, viewport.y]);
 
     const nodeById = graphIndex.nodeById;
@@ -854,7 +862,9 @@ function AtelierCanvasPage() {
             pipelineSink.addMs("visibleConnectionsMs", performance.now() - started);
             pipelineSink.count("visibleConnectionsCount", culled.length);
         }
-        return culled;
+        const stable = reuseCanvasVisibleList(visibleConnectionsCacheRef.current, culled);
+        visibleConnectionsCacheRef.current = stable;
+        return stable;
     }, [connections, nodeById, selectedConnectionId, size, viewport]);
 
     // Resource references and generation inputs used to be precomputed here for every node on every
@@ -3273,8 +3283,11 @@ function AtelierCanvasPage() {
                                 nodes={visibleNodes}
                                 wheelZoomActive={isWheelZooming}
                                 scale={viewport.k}
-                                centerX={(size.width / 2 - viewport.x) / viewport.k}
-                                centerY={(size.height / 2 - viewport.y) / viewport.k}
+                                // Only promotion ordering needs the center. Freeze it while
+                                // gestures pause promotion so ordinary pans cannot invalidate
+                                // every memoized NodeLayer child.
+                                centerX={isCanvasPanning || isNodeDragging || isNodeResizing || Boolean(selectionBox) || isWheelZooming || Boolean(connectingParams) ? 0 : (size.width / 2 - viewport.x) / viewport.k}
+                                centerY={isCanvasPanning || isNodeDragging || isNodeResizing || Boolean(selectionBox) || isWheelZooming || Boolean(connectingParams) ? 0 : (size.height / 2 - viewport.y) / viewport.k}
                                 pausePromotions={isCanvasPanning || isNodeDragging || isNodeResizing || Boolean(selectionBox) || isWheelZooming || Boolean(connectingParams)}
                                 shared={sharedNodeProps}
                                 selectedNodeIds={selectedNodeIds}

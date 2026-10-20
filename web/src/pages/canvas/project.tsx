@@ -3246,6 +3246,7 @@ function AtelierCanvasPage() {
                             <NodeLayer
                                 nodes={visibleNodes}
                                 compactMode={shouldUseCompactNodeLayer(visibleNodes.length, viewport.k, isWheelZooming)}
+                                scale={viewport.k}
                                 shared={sharedNodeProps}
                                 selectedNodeIds={selectedNodeIds}
                                 relatedNodeIds={relatedHighlight.nodeIds}

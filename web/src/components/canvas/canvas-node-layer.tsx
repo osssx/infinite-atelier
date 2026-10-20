@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useState } from "react";
 
 import type { CanvasNodeData } from "@/types/canvas";
 import { shouldRenderFullNode } from "@/lib/canvas/canvas-lod";
+import { shouldShowCompactImage } from "@/lib/canvas/canvas-lod-preview";
 import { CanvasNode, type CanvasNodeProps } from "./canvas-node";
 import { CompactCanvasNode } from "./canvas-node-compact";
 
@@ -21,6 +22,8 @@ type NodeLayerProps = {
     nodes: CanvasNodeData[];
     /** Density-aware simplified render, without media and editor descendants. */
     compactMode: boolean;
+    /** A primitive scale used only to decide when tiny image previews become legible. */
+    scale: number;
     shared: SharedNodeProps;
     selectedNodeIds: ReadonlySet<string>;
     relatedNodeIds: ReadonlySet<string>;
@@ -46,7 +49,8 @@ export const NodeLayer = memo(function NodeLayer({
     nodes,
     shared,
     compactMode,
-    selectedNodeIds,
+    selectedNodeIds,    scale,
+
     relatedNodeIds,
     activeNodeId,
     connectionTargetNodeId,
@@ -99,6 +103,8 @@ export const NodeLayer = memo(function NodeLayer({
                         key={node.id}
                         data={node}
                         isSelected={selectedNodeIds.has(node.id)}
+                        showImagePreview={shouldShowCompactImage(scale, node.width, node.height)}
+                        groupChildCount={groupChildCountById.get(node.id) || 0}
                         isRelated={relatedNodeIds.has(node.id)}
                         isGroupDropTarget={dropTargetGroupId === node.id}
                     />

@@ -4,6 +4,7 @@ import { createPortal } from "react-dom";
 import { FileText, Image as ImageIcon, Music2, Video } from "lucide-react";
 
 import { canvasThemes } from "@/lib/canvas-theme";
+import { canvasMentionPosition } from "@/lib/canvas/canvas-mention-position";
 import { isImeComposing, isPlainEnterKey } from "@/lib/keyboard-event";
 import { useThemeStore } from "@/stores/use-theme-store";
 import type { CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
@@ -181,6 +182,7 @@ export const CanvasResourceMentionTextarea = forwardRef<HTMLTextAreaElement, Pro
                 }}
                 onScroll={(event) => {
                     syncOverlayScroll();
+                    closeMention();
                     props.onScroll?.(event);
                 }}
                 onBlur={(event) => {
@@ -216,21 +218,19 @@ function MentionHighlightText({ value, labels, placeholder }: { value: string; l
 function MentionMenu({ textarea, caretIndex, references, activeIndex, theme, onSelect }: { textarea: HTMLTextAreaElement; caretIndex: number; references: CanvasResourceReference[]; activeIndex: number; theme: (typeof canvasThemes)[keyof typeof canvasThemes]; onSelect: (reference: CanvasResourceReference) => void }) {
     const selectedRef = useRef(false);
     const rect = textarea.getBoundingClientRect();
-    const boundary = textarea.closest(".ant-modal-content")?.getBoundingClientRect() || { left: 8, top: 8, right: window.innerWidth - 8, bottom: window.innerHeight - 8 };
-    const menuWidth = 256;
-    const maxMenuHeight = 224;
-    const gap = 6;
-    // Anchor the menu to the pixel position of the @ caret instead of the textarea edge.
-    // The canvas may be scaled: rect uses scaled coordinates while mirror measurements use layout coordinates, so apply the scale.
+    // The textarea can be scaled by the canvas: mirror coordinates are unscaled,
+    // while getBoundingClientRect() already uses fixed, viewport coordinates.
     const scale = textarea.offsetWidth ? rect.width / textarea.offsetWidth : 1;
     const computed = window.getComputedStyle(textarea);
     const lineHeight = (parseFloat(computed.lineHeight) || parseFloat(computed.fontSize) * 1.4 || 20) * scale;
     const caret = getCaretPoint(textarea, caretIndex);
     const caretLeft = rect.left + (caret.left - textarea.scrollLeft) * scale;
     const caretTop = rect.top + (caret.top - textarea.scrollTop) * scale;
-    const left = clamp(caretLeft, boundary.left + 8, boundary.right - menuWidth - 8);
-    const showAbove = caretTop + lineHeight + gap + maxMenuHeight > boundary.bottom && caretTop - gap - maxMenuHeight >= boundary.top;
-    const top = clamp(showAbove ? caretTop - gap - maxMenuHeight : caretTop + lineHeight + gap, boundary.top + 8, boundary.bottom - maxMenuHeight - 8);
+    const placement = canvasMentionPosition(
+        { left: caretLeft, top: caretTop, bottom: caretTop + lineHeight },
+        { width: window.innerWidth, height: window.innerHeight },
+        { width: 256, maxHeight: 224 },
+    );
 
     const stopCanvasInteraction = (event: PointerEvent | MouseEvent) => {
         event.stopPropagation();
@@ -244,8 +244,8 @@ function MentionMenu({ textarea, caretIndex, references, activeIndex, theme, onS
     return createPortal(
         <div
             data-canvas-resource-mention-menu="true"
-            className="fixed z-[120] max-h-56 w-64 overflow-y-auto rounded-xl border p-1 shadow-2xl backdrop-blur-md"
-            style={{ left, top, background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.text }}
+            className="fixed z-[1200] overflow-y-auto rounded-xl border p-1 shadow-2xl backdrop-blur-md"
+            style={{ ...placement, background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.text }}
             onPointerDown={stopCanvasInteraction}
             onMouseDown={stopCanvasInteraction}
             onClick={(event) => event.stopPropagation()}
@@ -288,11 +288,6 @@ function ReferencePreview({ reference }: { reference: CanvasResourceReference })
             <Icon className="size-4" />
         </span>
     );
-}
-
-function clamp(value: number, min: number, max: number) {
-    if (max < min) return min;
-    return Math.min(Math.max(value, min), max);
 }
 
 // Mirror the textarea layout in a div to measure the caret at index in unscaled layout coordinates.

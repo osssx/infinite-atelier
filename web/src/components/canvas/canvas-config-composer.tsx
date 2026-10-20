@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, KeyboardEvent, MouseEvent, PointerEvent } from "react";
 import { Button, Image } from "antd";
+import { createPortal } from "react-dom";
 import { FileText, Image as ImageIcon, Music2, Video, X } from "lucide-react";
 import { SkillSlashMenu } from "@/features/skills/skill-slash-menu";
 import { activeSkillSlash, skillMentionToken } from "@/features/skills/skill-mentions";
@@ -10,6 +11,7 @@ import { useTranslation } from "react-i18next";
 
 import i18n from "@/i18n";
 import { canvasThemes } from "@/lib/canvas-theme";
+import { canvasMentionPosition, keepMentionOptionVisible } from "@/lib/canvas/canvas-mention-position";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { useNodeGenerationInputs } from "./canvas-graph-context";
 import type { NodeGenerationInput } from "./canvas-node-generation";
@@ -230,9 +232,10 @@ export function CanvasConfigComposer({ nodeId, value, onChange, onClose, enableS
                         }
                         requestAnimationFrame(syncMention);
                     }}
+                    onScroll={closeMention}
                     onBlur={() => window.setTimeout(closeMention, 120)}
                 />
-                {mention?.kind === "node" && candidates.length ? <MentionMenu inputs={candidates} allInputs={inputs} activeIndex={Math.min(activeIndex, candidates.length - 1)} theme={theme} onSelect={insertReference} /> : null}
+                {mention?.kind === "node" && candidates.length ? <MentionMenu rect={mention.rect} inputs={candidates} allInputs={inputs} activeIndex={Math.min(activeIndex, candidates.length - 1)} theme={theme} onSelect={insertReference} /> : null}
                 {mention?.kind === "skill" ? <SkillSlashMenu entries={skillCandidates} activeIndex={Math.min(activeIndex, Math.max(0, skillCandidates.length - 1))} rect={mention.rect} theme={theme} onSelect={insertSkill} /> : null}
             </div>
             {imagePreview ? <Image src={imagePreview} alt={t("canvas.composer.imagePreview")} style={{ display: "none" }} preview={{ visible: true, src: imagePreview, onVisibleChange: (visible) => !visible && setImagePreview(null) }} /> : null}
@@ -241,12 +244,13 @@ export function CanvasConfigComposer({ nodeId, value, onChange, onClose, enableS
 
 }
 
-function MentionMenu({ inputs, allInputs, activeIndex, theme, onSelect }: { inputs: NodeGenerationInput[]; allInputs: NodeGenerationInput[]; activeIndex: number; theme: (typeof canvasThemes)[keyof typeof canvasThemes]; onSelect: (input: NodeGenerationInput) => void }) {
+function MentionMenu({ rect, inputs, allInputs, activeIndex, theme, onSelect }: { rect: DOMRect | null; inputs: NodeGenerationInput[]; allInputs: NodeGenerationInput[]; activeIndex: number; theme: (typeof canvasThemes)[keyof typeof canvasThemes]; onSelect: (input: NodeGenerationInput) => void }) {
     const selectedRef = useRef(false);
     const activeItemRef = useRef<HTMLButtonElement | null>(null);
+    const menuRef = useRef<HTMLDivElement | null>(null);
 
     useEffect(() => {
-        activeItemRef.current?.scrollIntoView({ block: "nearest" });
+        keepMentionOptionVisible(menuRef.current, activeItemRef.current);
     }, [activeIndex, inputs]);
 
     const selectInput = (input: NodeGenerationInput) => {
@@ -255,8 +259,17 @@ function MentionMenu({ inputs, allInputs, activeIndex, theme, onSelect }: { inpu
         onSelect(input);
     };
 
-    return (
-        <div className="absolute left-2 top-[calc(100%+6px)] z-[90] max-h-56 w-64 overflow-y-auto rounded-xl border p-1 shadow-2xl" style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border }}>
+    const placement = canvasMentionPosition(rect || new DOMRect(16, 16, 0, 0), { width: window.innerWidth, height: window.innerHeight }, { width: 256, maxHeight: 224 });
+    return createPortal(
+        <div
+            data-canvas-resource-mention-menu="true"
+            ref={menuRef}
+            className="fixed z-[1200] overflow-y-auto rounded-xl border p-1 shadow-2xl backdrop-blur-md"
+            style={{ ...placement, background: theme.toolbar.panel, borderColor: theme.toolbar.border }}
+            onPointerDown={(event) => event.stopPropagation()}
+            onMouseDown={(event) => event.stopPropagation()}
+            onClick={(event) => event.stopPropagation()}
+        >
             {inputs.map((input, index) => (
                 <button
                     key={input.nodeId}
@@ -264,7 +277,12 @@ function MentionMenu({ inputs, allInputs, activeIndex, theme, onSelect }: { inpu
                     type="button"
                     className="flex w-full min-w-0 items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs transition"
                     style={{ background: index === activeIndex ? theme.toolbar.activeBg : "transparent", color: index === activeIndex ? theme.toolbar.activeText : theme.node.text }}
-                    onMouseDown={(event) => {
+                    onPointerDown={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        selectInput(input);
+                    }}
+                    onClick={(event) => {
                         event.preventDefault();
                         event.stopPropagation();
                         selectInput(input);
@@ -277,7 +295,8 @@ function MentionMenu({ inputs, allInputs, activeIndex, theme, onSelect }: { inpu
                     </span>
                 </button>
             ))}
-        </div>
+        </div>,
+        document.body,
     );
 }
 
@@ -333,9 +352,11 @@ function createSkillChip(skillId: string, label: string, theme: (typeof canvasTh
 
 function caretRect(editor: HTMLElement | null): DOMRect | null {
     const selection = window.getSelection();
-    if (selection?.rangeCount) {
-        const rect = selection.getRangeAt(0).getBoundingClientRect();
-        if (rect.width || rect.height) return rect;
+    if (selection?.rangeCount && editor?.contains(selection.anchorNode)) {
+        const range = selection.getRangeAt(0).cloneRange();
+        range.collapse(true);
+        const rect = range.getBoundingClientRect();
+        if (rect.width || rect.height || rect.left || rect.top) return rect;
     }
     return editor?.getBoundingClientRect() || null;
 }

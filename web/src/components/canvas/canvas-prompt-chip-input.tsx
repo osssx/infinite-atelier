@@ -10,6 +10,7 @@ import { FileText, Image as ImageIcon, Music2, Video } from "lucide-react";
 
 import i18n from "@/i18n";
 import { canvasThemes } from "@/lib/canvas-theme";
+import { canvasMentionPosition, keepMentionOptionVisible } from "@/lib/canvas/canvas-mention-position";
 import { isImeComposing, isPlainEnterKey } from "@/lib/keyboard-event";
 import { useThemeStore } from "@/stores/use-theme-store";
 import type { CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
@@ -236,6 +237,7 @@ export function CanvasPromptChipInput({ value, references, onChange, onSubmit, c
                     }
                     requestAnimationFrame(syncMention);
                 }}
+                onScroll={closeMention}
                 onBlur={() => window.setTimeout(closeMention, 120)}
             />
             {mention?.kind === "reference" && candidates.length ? (
@@ -250,9 +252,10 @@ export function CanvasPromptChipInput({ value, references, onChange, onSubmit, c
 function MentionMenu({ rect, references, activeIndex, theme, onSelect }: { rect: DOMRect | null; references: CanvasResourceReference[]; activeIndex: number; theme: (typeof canvasThemes)[keyof typeof canvasThemes]; onSelect: (reference: CanvasResourceReference) => void }) {
     const selectedRef = useRef(false);
     const activeItemRef = useRef<HTMLButtonElement | null>(null);
+    const menuRef = useRef<HTMLDivElement | null>(null);
 
     useEffect(() => {
-        activeItemRef.current?.scrollIntoView({ block: "nearest" });
+        keepMentionOptionVisible(menuRef.current, activeItemRef.current);
     }, [activeIndex, references]);
 
     const selectReference = (reference: CanvasResourceReference) => {
@@ -263,19 +266,14 @@ function MentionMenu({ rect, references, activeIndex, theme, onSelect }: { rect:
 
     const stopCanvasInteraction = (event: PointerEvent | MouseEvent) => event.stopPropagation();
 
-    const menuWidth = 256;
-    const maxMenuHeight = 224;
-    const gap = 6;
-    const anchor = rect || new DOMRect(16, 16, 0, 0);
-    const left = clamp(anchor.left, 8, window.innerWidth - menuWidth - 8);
-    const showAbove = anchor.bottom + gap + maxMenuHeight > window.innerHeight && anchor.top - gap - maxMenuHeight >= 0;
-    const top = showAbove ? anchor.top - gap - maxMenuHeight : anchor.bottom + gap;
+    const placement = canvasMentionPosition(rect || new DOMRect(16, 16, 0, 0), { width: window.innerWidth, height: window.innerHeight }, { width: 256, maxHeight: 224 });
 
     return createPortal(
         <div
             data-canvas-resource-mention-menu="true"
-            className="fixed z-[1100] max-h-56 w-64 overflow-y-auto rounded-xl border p-1 shadow-2xl backdrop-blur-md"
-            style={{ left, top, background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.text }}
+            ref={menuRef}
+            className="fixed z-[1200] overflow-y-auto rounded-xl border p-1 shadow-2xl backdrop-blur-md"
+            style={{ ...placement, background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.text }}
             onPointerDown={stopCanvasInteraction}
             onMouseDown={stopCanvasInteraction}
             onClick={(event) => event.stopPropagation()}

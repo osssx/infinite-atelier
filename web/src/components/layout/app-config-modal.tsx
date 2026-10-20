@@ -274,13 +274,18 @@ function ConfigBackupTab() {
     const { message, modal } = App.useApp();
     const { t } = useTranslation();
     const inputRef = useRef<HTMLInputElement>(null);
+    const [exporting, setExporting] = useState(false);
 
     const handleBackup = async () => {
+        setExporting(true);
+
         try {
             await exportAppBackup();
             message.success(t("config.backup.exported"));
         } catch (error) {
             message.error(error instanceof Error ? error.message : t("config.backup.exportFailed"));
+        } finally {
+            setExporting(false);
         }
     };
 
@@ -297,8 +302,12 @@ function ConfigBackupTab() {
                     try {
                         await importAppBackup(file);
                         message.success(t("config.backup.imported"));
+                        // Reload only after IndexedDB commits: the open editor otherwise keeps
+                        // stale local node/viewport state and stale blob URLs from before restore.
+                        window.location.reload();
                     } catch (error) {
                         message.error(error instanceof Error ? error.message : t("config.backup.importFailed"));
+                        throw error; // Ant Design keeps confirmation open if restore fails.
                     }
                 },
             });
@@ -312,10 +321,10 @@ function ConfigBackupTab() {
             <div className="mb-1 text-sm font-semibold">{t("config.backup.title")}</div>
             <div className="mb-3 text-xs text-stone-500">{t("config.backup.description")}</div>
             <div className="flex flex-wrap items-center gap-2">
-                <Button icon={<Download className="size-4" />} onClick={() => void handleBackup()}>
+                <Button loading={exporting} disabled={exporting} icon={<Download className="size-4" />} onClick={() => void handleBackup()}>
                     {t("config.backup.export")}
                 </Button>
-                <Button icon={<FileUp className="size-4" />} onClick={() => inputRef.current?.click()}>
+                <Button disabled={exporting} icon={<FileUp className="size-4" />} onClick={() => inputRef.current?.click()}>
                     {t("config.backup.import")}
                 </Button>
             </div>

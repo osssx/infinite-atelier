@@ -37,6 +37,14 @@ type AssetStore = {
 
 const ASSET_STORE_KEY = "infinite-canvas:asset_store";
 
+// Keep import/rollback asset writes ordered and expose a durability barrier.
+let assetWriteQueue: Promise<void> = Promise.resolve();
+let lastAssetWriteError: unknown = null;
+export async function awaitAssetStorePersistence() {
+    await assetWriteQueue;
+    if (lastAssetWriteError) throw lastAssetWriteError;
+}
+
 const assetStorage: PersistStorage<AssetStore> = {
     getItem: async (name) => {
         const value = await localForageStorage.getItem(name);
@@ -59,7 +67,17 @@ const assetStorage: PersistStorage<AssetStore> = {
         );
         return parsed;
     },
-    setItem: (name, value) => localForageStorage.setItem(name, JSON.stringify(value)),
+    setItem: (name, value) => {
+        const save = assetWriteQueue.then(async () => {
+            await localForageStorage.setItem(name, JSON.stringify(value));
+            lastAssetWriteError = null;
+        }).catch((error: unknown) => {
+            lastAssetWriteError = error;
+            throw error;
+        });
+        assetWriteQueue = save.catch(() => {});
+        return save;
+    },
     removeItem: (name) => localForageStorage.removeItem(name),
 };
 

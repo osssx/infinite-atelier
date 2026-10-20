@@ -47,6 +47,7 @@ import { CanvasSidePanel } from "@/components/canvas/canvas-side-panel";
 import { CanvasZoomControls } from "@/components/canvas/canvas-zoom-controls";
 import { DirectorPanel } from "@/components/canvas/director-panel";
 import { flushCanvasStorePersistence, useCanvasStore } from "@/stores/canvas/use-canvas-store";
+import { registerCanvasBackupFlush } from "@/services/canvas-backup-sync";
 import { useGenerationHistoryStore, type GenerationHistoryImage } from "@/stores/canvas/use-generation-history-store";
 import { buildCanvasGraphIndex } from "@/lib/canvas/canvas-graph-index";
 import { exportCanvasProjects } from "@/lib/canvas/canvas-export";
@@ -581,6 +582,24 @@ function AtelierCanvasPage() {
     useEffect(() => {
         if (!dialogNodeId) setNodeImageSettingsOpen(false);
     }, [dialogNodeId]);
+
+    // Settings backup must include local edits and the viewport before debounce fires.
+    useEffect(() => {
+        if (!projectLoaded) return;
+        return registerCanvasBackupFlush(() => {
+            if (viewportSaveTimerRef.current) clearTimeout(viewportSaveTimerRef.current);
+            viewportSaveTimerRef.current = null;
+            updateProject(projectId, {
+                nodes: nodesRef.current,
+                connections: connectionsRef.current,
+                chatSessions,
+                activeChatId,
+                backgroundMode,
+                showImageInfo,
+                viewport: viewportRef.current,
+            });
+        });
+    }, [projectLoaded, projectId, updateProject, chatSessions, activeChatId, backgroundMode, showImageInfo]);
 
     useEffect(() => {
         if (!projectLoaded) return;

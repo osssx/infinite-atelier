@@ -17,7 +17,8 @@ if (import.meta.env.MODE === "perf") {
     // Do not change the default 1000-node benchmark workload.
     const requested = Number(new URLSearchParams(window.location.search).get("perfNodes"));
     const nodes = Number.isInteger(requested) && requested >= 1 && requested <= 3000 ? requested : 1000;
-    void import("@/lib/canvas/canvas-perf-harness").then((harness) => harness.bootstrapCanvasPerf(nodes));
+    const mediaMode = new URLSearchParams(window.location.search).get("perfMedia") === "decoded" ? "decoded" : "static";
+    void import("@/lib/canvas/canvas-perf-harness").then((harness) => harness.bootstrapCanvasPerf(nodes, mediaMode));
 }
 
 document.body.style.fontFamily = '"SF Pro Display","SF Pro Text","PingFang SC","Microsoft YaHei","Helvetica Neue",sans-serif';

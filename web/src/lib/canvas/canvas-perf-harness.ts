@@ -23,6 +23,8 @@ export const PERF_PROJECT_TITLE = "[perf] fixture";
  * same-origin HTTP URL, not a data URL.
  */
 export const PERF_MEDIA_URL = perfPixelUrl;
+/** Kept in the perf module across per-round project remounts. */
+let perfFixtureMediaMode: "static" | "decoded" = "static";
 
 const HYDRATE_TIMEOUT_MS = 15_000;
 const READY_TIMEOUT_MS = 15_000;
@@ -91,8 +93,13 @@ export function perfProjectId(nodeCount: number): string {
  * that are not ours are passed straight back through — replacing with just the fixture would delete
  * the user's work. Re-running replaces rather than appends.
  */
-export function provisionPerfProject(nodeCount: number, seed = PERF_SEED): string {
-    const { nodes, connections } = buildCanvasFixture({ nodeCount, seed, mediaMode: "static", staticMediaUrl: PERF_MEDIA_URL });
+export function provisionPerfProject(nodeCount: number, seed = PERF_SEED, mediaMode: "static" | "decoded" = perfFixtureMediaMode): string {
+    const { nodes, connections } = buildCanvasFixture({
+        nodeCount, seed, mediaMode,
+        staticMediaUrl: mediaMode === "decoded" ? "/perf-media/sample-photo.jpg" : PERF_MEDIA_URL,
+        staticVideoUrl: "/perf-media/sample-video.mp4",
+        staticAudioUrl: "/perf-media/sample-audio.mp3",
+    });
     const id = perfProjectId(nodeCount);
     const now = new Date().toISOString();
     const project: CanvasProject = {
@@ -1939,11 +1946,12 @@ const DEFAULT_NODE_COUNT = 1000;
  * fixture project and navigates to it — in that order, because the canvas page redirects away when
  * the route id does not resolve, and because the route id has to resolve before it mounts.
  */
-export async function bootstrapCanvasPerf(nodeCount = DEFAULT_NODE_COUNT): Promise<void> {
+export async function bootstrapCanvasPerf(nodeCount = DEFAULT_NODE_COUNT, mediaMode: "static" | "decoded" = "static"): Promise<void> {
     if (!PERF_MODE) return;
     installPointerCaptureShim();
+    perfFixtureMediaMode = mediaMode;
     await waitForHydration();
-    const id = provisionPerfProject(nodeCount);
+    const id = provisionPerfProject(nodeCount, PERF_SEED, mediaMode);
     await router.navigate(`/canvas/${id}`);
 }
 

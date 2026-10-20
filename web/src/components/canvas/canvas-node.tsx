@@ -29,6 +29,7 @@ export type CanvasNodeProps = {
     showImageInfo: boolean;
     renderPanel?: (node: CanvasNodeData) => ReactNode;
     renderNodeContent?: (node: CanvasNodeData) => ReactNode;
+    onMediaPlaybackChange?: (nodeId: string, playing: boolean) => void;
     groupChildCount?: number;
     isGroupDropTarget?: boolean;
     batchExpanded?: boolean;
@@ -53,6 +54,7 @@ type NodeContentRendererProps = {
     onRetryBatchImage?: (imageId: string) => void;
     onDeleteBatchImage?: (imageId: string) => void;
     onViewBatchImage?: (imageId: string) => void;
+    onMediaPlaybackChange?: (nodeId: string, playing: boolean) => void;
     groupChildCount: number;
 };
 
@@ -71,6 +73,7 @@ export const CanvasNode = React.memo(function CanvasNode({
     groupChildCount = 0,
     isGroupDropTarget = false,
     batchExpanded = false,
+    onMediaPlaybackChange,
 }: CanvasNodeProps) {
     // Destructured so the rest of the component reads the same as it did when these were props. The
     // object itself is permanently stable (see CanvasActionsProvider), so it can never invalidate
@@ -441,6 +444,7 @@ export const CanvasNode = React.memo(function CanvasNode({
                         onRetryBatchImage={(imageId) => onRetryBatchImage?.(data, imageId)}
                         onDeleteBatchImage={(imageId) => onDeleteBatchImage?.(data.id, imageId)}
                         onViewBatchImage={(imageId) => onViewImage?.(data, imageId)}
+                        onMediaPlaybackChange={onMediaPlaybackChange}
                         groupChildCount={groupChildCount}
                     />
                 </div>
@@ -664,8 +668,10 @@ function EmptyImageContent({ theme }: NodeContentRendererProps) {
     );
 }
 
-function VideoNodeContent({ node, theme }: NodeContentRendererProps) {
+function VideoNodeContent({ node, theme, onMediaPlaybackChange }: NodeContentRendererProps) {
     const { t } = useTranslation();
+    // Culling deliberately unmounts offscreen media. Clear the LOD playback pin on unmount.
+    useEffect(() => () => onMediaPlaybackChange?.(node.id, false), [node.id, onMediaPlaybackChange]);
     if (!node.metadata?.content)
         return (
             <div className="flex h-full w-full flex-col items-center justify-center gap-3" style={{ color: theme.node.placeholder }}>
@@ -673,11 +679,16 @@ function VideoNodeContent({ node, theme }: NodeContentRendererProps) {
                 <span className="text-sm">{t("canvas.node.emptyVideo")}</span>
             </div>
         );
-    return <video src={node.metadata.content} controls preload="none" className="h-full w-full rounded-[18px] bg-black object-contain" data-canvas-no-zoom />;
+    return <video src={node.metadata.content} controls preload="none"
+        onPlay={() => onMediaPlaybackChange?.(node.id, true)}
+        onPause={() => onMediaPlaybackChange?.(node.id, false)}
+        onEnded={() => onMediaPlaybackChange?.(node.id, false)}
+        className="h-full w-full rounded-[18px] bg-black object-contain" data-canvas-no-zoom />;
 }
 
-function AudioNodeContent({ node, theme }: NodeContentRendererProps) {
+function AudioNodeContent({ node, theme, onMediaPlaybackChange }: NodeContentRendererProps) {
     const { t } = useTranslation();
+    useEffect(() => () => onMediaPlaybackChange?.(node.id, false), [node.id, onMediaPlaybackChange]);
     if (!node.metadata?.content)
         return (
             <div className="flex h-full w-full flex-col items-center justify-center gap-2" style={{ color: theme.node.placeholder }}>
@@ -691,7 +702,11 @@ function AudioNodeContent({ node, theme }: NodeContentRendererProps) {
                 <Music2 className="size-4 shrink-0" />
                 <span className="truncate">{t("canvas.node.audio")}</span>
             </div>
-            <audio src={node.metadata.content} controls preload="none" className="w-full" data-canvas-no-zoom />
+            <audio src={node.metadata.content} controls preload="none"
+                onPlay={() => onMediaPlaybackChange?.(node.id, true)}
+                onPause={() => onMediaPlaybackChange?.(node.id, false)}
+                onEnded={() => onMediaPlaybackChange?.(node.id, false)}
+                className="w-full" data-canvas-no-zoom />
         </div>
     );
 }

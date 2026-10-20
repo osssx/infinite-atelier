@@ -270,6 +270,7 @@ function AtelierCanvasPage() {
     const [chatSessions, setChatSessions] = useState<CanvasAssistantSession[]>([]);
     const [activeChatId, setActiveChatId] = useState<string | null>(null);
     const [viewport, setViewport] = useState<ViewportTransform>({ x: 0, y: 0, k: 1 });
+    const [isWheelZooming, setIsWheelZooming] = useState(false);
     const [canvasTool, setCanvasTool] = useState<"select" | "pan">("pan");
     const [size, setSize] = useState({ width: 1200, height: 720 });
     const [selectedNodeIds, setSelectedNodeIds] = useState<Set<string>>(new Set());
@@ -3215,6 +3216,7 @@ function AtelierCanvasPage() {
                     tool={canvasTool}
                     backgroundMode={backgroundMode}
                     onViewportChange={handleViewportChange}
+                    onWheelActivityChange={setIsWheelZooming}
                     onCanvasMouseDown={handleCanvasMouseDown}
                     onCanvasDeselect={deselectCanvas}
                     onCanvasDoubleClick={(event) => {
@@ -3243,7 +3245,7 @@ function AtelierCanvasPage() {
                         <CanvasGraphIndexProvider index={graphIndex}>
                             <NodeLayer
                                 nodes={visibleNodes}
-                                compactMode={shouldUseCompactNodeLayer(visibleNodes.length, viewport.k)}
+                                compactMode={shouldUseCompactNodeLayer(visibleNodes.length, viewport.k, isWheelZooming)}
                                 shared={sharedNodeProps}
                                 selectedNodeIds={selectedNodeIds}
                                 relatedNodeIds={relatedHighlight.nodeIds}

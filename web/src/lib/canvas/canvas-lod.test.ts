@@ -22,6 +22,20 @@ describe("overview node LOD threshold", () => {
         expect(shouldRenderFullNode("image-a", false, none, null, null, null)).toBe(true);
     });
 
+    it("defers heavy LOD hydration during active wheel zoom but not for a tiny view", () => {
+        expect(shouldUseCompactNodeLayer(200, 0.6, true)).toBe(true);
+        expect(shouldUseCompactNodeLayer(24, 0.8, true)).toBe(true);
+        expect(shouldUseCompactNodeLayer(23, 0.8, true)).toBe(false);
+        expect(shouldUseCompactNodeLayer(200, 0.6, false)).toBe(false);
+    });
+
+    it("keeps actively playing video or audio full even after hover and selection end", () => {
+        const none = new Set<string>();
+        expect(shouldRenderFullNode("video-1", true, none, null, null, null, true)).toBe(true);
+        expect(shouldRenderFullNode("video-1", true, none, null, null, null, false)).toBe(false);
+        expect(shouldRenderFullNode("audio-1", true, none, null, null, null, true)).toBe(true);
+    });
+
     it("retains full nodes at readable zoom even when 200 are visible", () => {
         expect(shouldUseCompactNodeLayer(200, 0.35)).toBe(false);
         expect(shouldUseCompactNodeLayer(200, 1)).toBe(false);

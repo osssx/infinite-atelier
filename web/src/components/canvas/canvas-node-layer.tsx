@@ -1,4 +1,4 @@
-import { memo } from "react";
+import { memo, useCallback, useEffect, useState } from "react";
 
 import type { CanvasNodeData } from "@/types/canvas";
 import { shouldRenderFullNode } from "@/lib/canvas/canvas-lod";
@@ -59,12 +59,41 @@ export const NodeLayer = memo(function NodeLayer({
     showImageInfo,
     groupChildCountById,
 }: NodeLayerProps) {
+    // Pin actively playing media in the full node while it is visible, even after selection
+    // and hover end. Otherwise compact LOD unmounts the <video>/<audio>, losing playback.
+    const [playingNodeIds, setPlayingNodeIds] = useState<ReadonlySet<string>>(() => new Set());
+    const onMediaPlaybackChange = useCallback((nodeId: string, playing: boolean) => {
+        setPlayingNodeIds((previous) => {
+            if (previous.has(nodeId) === playing) return previous;
+            const next = new Set(previous);
+            if (playing) next.add(nodeId);
+            else next.delete(nodeId);
+            return next;
+        });
+    }, []);
+
+    // After a dense zoom we must not mount every JPEG/video/editor in the same frame.
+    // Revealing a few full nodes per paint distributes decode and DOM creation over frames,
+    // including the post-wheel settling period (which the interactive zoom sample misses).
+    const [revealedCount, setRevealedCount] = useState(Number.POSITIVE_INFINITY);
+    useEffect(() => {
+        if (compactMode) setRevealedCount(0);
+    }, [compactMode]);
+    useEffect(() => {
+        if (compactMode || revealedCount >= nodes.length) return;
+        const frame = requestAnimationFrame(() => {
+            setRevealedCount((count) => Math.min(count + 2, nodes.length));
+        });
+        return () => cancelAnimationFrame(frame);
+    }, [compactMode, revealedCount, nodes.length]);
+
     return (
         <>
-            {nodes.map((node) => {
+            {nodes.map((node, index) => {
                 // Preserve full editing/connection affordances for the active target, but keep
                 // all other nodes as cheap DOM hit rectangles in overview mode.
-                const showFull = shouldRenderFullNode(node.id, compactMode, selectedNodeIds, activeNodeId, connectionTargetNodeId, panelNodeId);
+                const stagedCompact = compactMode || index >= revealedCount;
+                const showFull = shouldRenderFullNode(node.id, stagedCompact, selectedNodeIds, activeNodeId, connectionTargetNodeId, panelNodeId, playingNodeIds.has(node.id));
                 if (!showFull) return (
                     <CompactCanvasNode
                         key={node.id}
@@ -77,6 +106,7 @@ export const NodeLayer = memo(function NodeLayer({
                 return <CanvasNode
                     {...shared}
                     key={node.id}
+                    onMediaPlaybackChange={onMediaPlaybackChange}
                     data={node}
                     isSelected={selectedNodeIds.has(node.id)}
                     isRelated={relatedNodeIds.has(node.id)}

@@ -38,9 +38,12 @@ export type CanvasFixtureOptions = {
      *   `data:image/` nor backed by a storage key), so loading stays free of network and blob writes.
      * - `"none"` gives no media node any content — the most neutral option for graph and DOM cost.
      */
-    mediaMode?: "remote" | "static" | "none";
+    mediaMode?: "remote" | "static" | "decoded" | "none";
     /** Required when `mediaMode` is `"static"`. Must be a same-origin asset URL, never a data URL. */
     staticMediaUrl?: string;
+    /** Real encoded media assets for repeatable image/video/audio decode tests (perf fixture only). */
+    staticVideoUrl?: string;
+    staticAudioUrl?: string;
 };
 
 // A type with no registered definition, standing in for a plugin node: it must survive every path
@@ -53,8 +56,9 @@ const PLUGIN_NODE_TYPE = "plugin:fixture";
  * edges, media nodes, and nodes mid-generation.
  */
 export function buildCanvasFixture(options: CanvasFixtureOptions): CanvasFixture {
-    const { nodeCount, seed = 1, connectionRatio = 1.5, groupCount = 3, mediaMode = "remote", staticMediaUrl } = options;
+    const { nodeCount, seed = 1, connectionRatio = 1.5, groupCount = 3, mediaMode = "remote", staticMediaUrl, staticVideoUrl, staticAudioUrl } = options;
     if (mediaMode === "static" && !staticMediaUrl) throw new Error('buildCanvasFixture: mediaMode "static" requires staticMediaUrl');
+    if (mediaMode === "decoded" && (!staticMediaUrl || !staticVideoUrl || !staticAudioUrl)) throw new Error('buildCanvasFixture: decoded media mode requires all three same-origin asset URLs');
     const random = createSeededRandom(seed);
     const pick = <T>(items: readonly T[]) => items[Math.floor(random() * items.length)];
     const groups = Math.max(0, Math.min(groupCount, nodeCount));
@@ -75,7 +79,9 @@ export function buildCanvasFixture(options: CanvasFixtureOptions): CanvasFixture
         if (isMedia && mediaMode === "remote") metadata.content = `https://example.test/${id}`;
         // Video and audio deliberately stay empty under "static": feeding a still image to <video>
         // only produces decode errors, and it would not measure anything the image nodes do not.
-        if (type === CanvasNodeType.Image && mediaMode === "static") metadata.content = staticMediaUrl;
+        if (type === CanvasNodeType.Image && (mediaMode === "static" || mediaMode === "decoded")) metadata.content = staticMediaUrl;
+        if (type === CanvasNodeType.Video && mediaMode === "decoded") metadata.content = staticVideoUrl;
+        if (type === CanvasNodeType.Audio && mediaMode === "decoded") metadata.content = staticAudioUrl;
         if (type === CanvasNodeType.Text) metadata.content = `text ${index}`;
         if (type === CanvasNodeType.Config) metadata.prompt = `config ${index}`;
         if (random() < 0.15) metadata.status = "loading";

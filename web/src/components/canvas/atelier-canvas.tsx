@@ -11,6 +11,8 @@ type AtelierCanvasProps = {
     tool: "select" | "pan";
     backgroundMode?: CanvasBackgroundMode;
     onViewportChange: (viewport: ViewportTransform) => void;
+    /** Marks the short wheel gesture window so media nodes can defer expensive LOD promotion. */
+    onWheelActivityChange?: (active: boolean) => void;
     onCanvasMouseDown?: (event: React.PointerEvent<HTMLDivElement>) => void;
     onCanvasDeselect?: () => void;
     onCanvasDoubleClick?: (event: React.MouseEvent<HTMLDivElement>) => void;
@@ -19,7 +21,7 @@ type AtelierCanvasProps = {
     children: React.ReactNode;
 };
 
-export function AtelierCanvas({ containerRef, viewport, tool, backgroundMode = "lines", onViewportChange, onCanvasMouseDown, onCanvasDeselect, onCanvasDoubleClick, onContextMenu, onDrop, children }: AtelierCanvasProps) {
+export function AtelierCanvas({ containerRef, viewport, tool, backgroundMode = "lines", onViewportChange, onWheelActivityChange, onCanvasMouseDown, onCanvasDeselect, onCanvasDoubleClick, onContextMenu, onDrop, children }: AtelierCanvasProps) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const panState = useRef({
         isPanning: false,
@@ -41,6 +43,7 @@ export function AtelierCanvas({ containerRef, viewport, tool, backgroundMode = "
     const wheelFrameRef = useRef<number | null>(null);
     const pendingWheelViewportRef = useRef<ViewportTransform | null>(null);
     const wheelRectRef = useRef<DOMRect | null>(null);
+    const wheelIdleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const [isSpacePressed, setIsSpacePressed] = useState(false);
     const [isControlPressed, setIsControlPressed] = useState(false);
     const [isPanning, setIsPanning] = useState(false);
@@ -55,6 +58,7 @@ export function AtelierCanvas({ containerRef, viewport, tool, backgroundMode = "
         () => () => {
             if (frameRef.current) cancelAnimationFrame(frameRef.current);
             if (wheelFrameRef.current !== null) cancelAnimationFrame(wheelFrameRef.current);
+            if (wheelIdleTimerRef.current !== null) clearTimeout(wheelIdleTimerRef.current);
         },
         [],
     );
@@ -103,6 +107,15 @@ export function AtelierCanvas({ containerRef, viewport, tool, backgroundMode = "
         const rect = wheelRectRef.current ?? containerRef.current?.getBoundingClientRect();
         if (!rect) return;
         wheelRectRef.current = rect;
+
+        // Cancel mass media promotion during wheel bursts. Do not schedule React updates for
+        // each wheel event: one "start" update and one "idle" update per gesture is enough.
+        if (wheelIdleTimerRef.current === null) onWheelActivityChange?.(true);
+        else clearTimeout(wheelIdleTimerRef.current);
+        wheelIdleTimerRef.current = setTimeout(() => {
+            wheelIdleTimerRef.current = null;
+            onWheelActivityChange?.(false);
+        }, 180);
 
         // Compose synchronously, preserving every event even when several arrive before React
         // commits. Neither a stale viewport prop nor a changed cursor anchor can lose a delta.

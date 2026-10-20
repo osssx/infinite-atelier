@@ -1,3 +1,4 @@
+import { isNativeDescendantEvent } from "@/lib/canvas/canvas-portal-events";
 import React, { useEffect, useRef, useState } from "react";
 
 import { canvasThemes, type CanvasBackgroundMode } from "@/lib/canvas-theme";
@@ -146,6 +147,10 @@ export function AtelierCanvas({ containerRef, viewport, tool, backgroundMode = "
     };
 
     const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+        // Ant Design dropdowns are portaled to document.body; React still bubbles
+        // their events through the canvas component tree. Do not capture the pointer
+        // or deselect nodes when the real DOM target is outside this canvas.
+        if (!isNativeDescendantEvent(event.currentTarget, event.target)) return;
         const target = event.target instanceof Element ? event.target : null;
         if (target?.closest("[data-canvas-no-zoom]")) return;
         if (target?.closest("[data-connection-create-menu]")) return;

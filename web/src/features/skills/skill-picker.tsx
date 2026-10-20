@@ -21,7 +21,7 @@ export function SkillPicker({ binding, onChange }: { binding?: SkillBinding; onC
     for (const id of selection.skillIds) if (!known.has(id)) options.push({ label: id + " (" + t("canvas.skillPicker.missing") + ")", value: id, disabled: true });
 
     return (
-        <div className="mb-2 min-w-0 cursor-default rounded-lg border border-stone-200/80 p-2 dark:border-stone-700/80" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="mb-2 min-w-0 cursor-default rounded-lg border border-stone-200/80 p-2 dark:border-stone-700/80" onMouseDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
             <div className="mb-1.5 text-[11px] font-medium">{t("canvas.skillPicker.title")}</div>
             <Segmented size="small" value={selection.mode} options={[
                 { value: "off", label: t("canvas.skillPicker.off") },

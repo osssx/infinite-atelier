@@ -1,3 +1,4 @@
+import { isNativeDescendantEvent } from "@/lib/canvas/canvas-portal-events";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { ChevronRight, Clapperboard, Copy, Group, Image as ImageIcon, Music2, Puzzle, RefreshCw, Star, Trash2, Video } from "lucide-react";
@@ -372,7 +373,12 @@ export const CanvasNode = React.memo(function CanvasNode({
                 setHovered(false);
                 onHoverEnd(data.id);
             }}
-            onMouseDownCapture={(event) => onSelectCapture?.(event, data.id)}
+            onMouseDownCapture={(event) => {
+                // A Select option in an Ant Design Portal is not a click on this node,
+                // even though React dispatches its synthetic capture handlers here.
+                if (!isNativeDescendantEvent(event.currentTarget, event.target)) return;
+                onSelectCapture?.(event, data.id);
+            }}
             onContextMenu={(event) => onContextMenu(event, data.id)}
         >
             {(isSelected || hovered || isEditingTitle) && (
@@ -431,7 +437,10 @@ export const CanvasNode = React.memo(function CanvasNode({
                     borderStyle: isGroup ? "dashed" : "solid",
                     boxShadow: isGroupDropTarget ? `0 0 0 2px ${selectionBlue}66, inset 0 0 0 999px ${selectionBlue}10` : isActive ? `0 0 0 1px ${selectionBlue}55` : isRelated ? `0 0 0 1px ${theme.node.muted}55, 0 18px 48px rgba(0,0,0,.14)` : undefined,
                 }}
-                onMouseDown={(event) => onMouseDown(event, data.id)}
+                onMouseDown={(event) => {
+                    if (!isNativeDescendantEvent(event.currentTarget, event.target)) return;
+                    onMouseDown(event, data.id);
+                }}
                 onDoubleClick={(event) => {
                     if (data.type === CanvasNodeType.Image && hasImageContent) {
                         event.stopPropagation();

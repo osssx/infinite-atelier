@@ -14,7 +14,7 @@ import { CanvasImageSettingsPopover } from "./canvas-image-settings-popover";
 import { CanvasAudioSettingsPopover, type CanvasAudioSettingKey } from "./canvas-audio-settings-popover";
 import { CanvasVideoSettingsPopover } from "./canvas-video-settings-popover";
 import { CanvasTextSettingsPopover } from "./canvas-text-settings-popover";
-import { SkillPicker } from "@/features/skills/skill-picker";
+
 import type { CanvasGenerationMode, CanvasNodeData, CanvasNodeMetadata, CanvasVideoReference } from "@/types/canvas";
 
 type CanvasConfigNodePanelProps = {
@@ -135,10 +135,6 @@ export function CanvasConfigNodePanel({ node, isRunning, onConfigChange, onGener
                     <CanvasTextSettingsPopover config={config} count={node.metadata?.textCount || 1} placement="topRight" buttonClassName="canvas-compact-control !h-10 !w-full !justify-start !rounded-lg !px-2" onConfigChange={(_, value) => onConfigChange(node.id, { reasoningEffort: value })} onCountChange={(textCount) => onConfigChange(node.id, { textCount })} />
                 )}
             </div>
-
-            {mode === "text" ? (
-                <SkillPicker binding={node.metadata?.skillBinding} onChange={(skillBinding) => onConfigChange(node.id, { skillBinding })} />
-            ) : null}
 
             {arkVideo ? (
                 <div className="mb-2 space-y-2 rounded-lg border p-2" style={{ borderColor: theme.node.stroke }} onMouseDown={(event) => event.stopPropagation()}>

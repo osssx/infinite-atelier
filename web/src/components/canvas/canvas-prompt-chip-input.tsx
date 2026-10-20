@@ -2,6 +2,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, KeyboardEvent, MouseEvent, PointerEvent } from "react";
 import { createPortal } from "react-dom";
 import { Image } from "antd";
+import { SkillSlashMenu } from "@/features/skills/skill-slash-menu";
+import { activeSkillSlash, skillMentionToken } from "@/features/skills/skill-mentions";
+import { useSkillStore } from "@/stores/use-skill-store";
+import type { SkillCatalogEntry } from "@/features/skills/types";
 import { FileText, Image as ImageIcon, Music2, Video } from "lucide-react";
 
 import i18n from "@/i18n";
@@ -18,21 +22,28 @@ type Props = {
     className?: string;
     style?: CSSProperties;
     placeholder?: string;
+    enableSkills?: boolean;
 };
 
 type MentionState = {
+    kind: "reference" | "skill";
     query: string;
     rect: DOMRect | null;
 };
 
 type Token =
     | { type: "text"; value: string }
-    | { type: "reference"; label: string };
+    | { type: "reference"; label: string }
+    | { type: "skill"; skillId: string };
 
 // Prompt-panel contentEditable input: @ references embed thumbnail chips instead of plain label text.
 // Serialization converts chips back to reference labels so the generated value matches the former textarea semantics.
-export function CanvasPromptChipInput({ value, references, onChange, onSubmit, className, style, placeholder }: Props) {
+export function CanvasPromptChipInput({ value, references, onChange, onSubmit, className, style, placeholder, enableSkills = false }: Props) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const catalog = useSkillStore((state) => state.catalog);
+    const loaded = useSkillStore((state) => state.loaded);
+    const refreshSkills = useSkillStore((state) => state.refresh);
+    useEffect(() => { if (enableSkills && !loaded) void refreshSkills().catch(() => undefined); }, [enableSkills, loaded, refreshSkills]);
     const editorRef = useRef<HTMLDivElement>(null);
     const composingRef = useRef(false);
     // Track the last value emitted to the parent. An identical focused value is this component's own echo,
@@ -49,11 +60,16 @@ export function CanvasPromptChipInput({ value, references, onChange, onSubmit, c
     const tokens = useMemo(() => parseTokens(value, activeLabels), [value, activeLabels]);
 
     const candidates = useMemo(() => {
-        if (!mention) return [];
+        if (!mention || mention.kind !== "reference") return [];
         const query = mention.query.trim().toLowerCase();
         if (!query) return activeReferences;
         return activeReferences.filter((item) => `${item.label} ${item.title} ${item.kind} ${item.text || ""}`.toLowerCase().includes(query));
     }, [mention, activeReferences]);
+    const skillCandidates = useMemo(() => {
+        if (!mention || mention.kind !== "skill") return [];
+        const q = mention.query.trim().toLowerCase();
+        return catalog.filter((entry) => entry.enabled && (!q || (entry.name + " " + entry.description).toLowerCase().includes(q)));
+    }, [catalog, mention]);
 
     // Rebuild the DOM from value when unfocused, or when a focused value is an external change rather than an emitted echo.
     useEffect(() => {
@@ -66,12 +82,16 @@ export function CanvasPromptChipInput({ value, references, onChange, onSubmit, c
                 editor.append(document.createTextNode(token.value));
                 return;
             }
+            if (token.type === "skill") {
+                editor.append(createSkillChip(token.skillId, catalog.find((entry) => entry.id === token.skillId)?.name || token.skillId, theme));
+                return;
+            }
             const reference = referenceByLabel.get(token.label);
             if (reference) editor.append(createReferenceChip(reference, theme, setImagePreview));
             else editor.append(document.createTextNode(token.label));
         });
         lastEmittedRef.current = value;
-    }, [tokens, referenceByLabel, theme, value]);
+    }, [tokens, referenceByLabel, catalog, theme, value]);
 
     const emit = (next: string) => {
         lastEmittedRef.current = next;
@@ -87,12 +107,11 @@ export function CanvasPromptChipInput({ value, references, onChange, onSubmit, c
 
     const syncMention = () => {
         const text = textBeforeCaret();
-        const match = /@([^\s@]*)$/.exec(text);
-        if (!match || !activeReferences.length) {
-            closeMention();
-            return;
-        }
-        setMention({ query: match[1] || "", rect: caretRect() });
+        const slash = enableSkills ? activeSkillSlash(text) : null;
+        const at = /@([^\s@]*)$/.exec(text);
+        if (slash !== null) setMention({ kind: "skill", query: slash, rect: caretRect() });
+        else if (at && activeReferences.length) setMention({ kind: "reference", query: at[1] || "", rect: caretRect() });
+        else { closeMention(); return; }
         setActiveIndex(0);
     };
 
@@ -104,7 +123,7 @@ export function CanvasPromptChipInput({ value, references, onChange, onSubmit, c
     const insertReference = (reference: CanvasResourceReference) => {
         const editor = editorRef.current;
         if (!editor) return;
-        removeActiveMention();
+        removeActiveMention("reference");
         const chip = createReferenceChip(reference, theme, setImagePreview);
         const space = document.createTextNode(" ");
         const selection = window.getSelection();
@@ -124,6 +143,28 @@ export function CanvasPromptChipInput({ value, references, onChange, onSubmit, c
         emit(serializeEditor(editor));
     };
 
+    const insertSkill = (skill: SkillCatalogEntry) => {
+        const editor = editorRef.current;
+        if (!editor) return;
+        removeActiveMention("skill");
+        const chip = createSkillChip(skill.id, skill.name, theme);
+        const space = document.createTextNode(" ");
+        const selection = window.getSelection();
+        const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
+        if (range) {
+            range.insertNode(space);
+            range.insertNode(chip);
+            range.setStartAfter(space);
+            range.collapse(true);
+            selection?.removeAllRanges();
+            selection?.addRange(range);
+        } else {
+            editor.append(chip, space);
+            placeCaretAtEnd(editor);
+        }
+        closeMention();
+        emit(serializeEditor(editor));
+    };
     const showPlaceholder = !value.trim();
 
     return (
@@ -154,20 +195,27 @@ export function CanvasPromptChipInput({ value, references, onChange, onSubmit, c
                 onKeyDown={(event: KeyboardEvent<HTMLDivElement>) => {
                     event.stopPropagation();
                     if (isImeComposing(event)) return;
-                    if (mention && candidates.length) {
+                    if (mention && event.key === "Escape") {
+                        event.preventDefault();
+                        closeMention();
+                        return;
+                    }
+                    const menuSize = mention?.kind === "skill" ? skillCandidates.length : candidates.length;
+                    if (mention && menuSize) {
                         if (event.key === "ArrowDown") {
                             event.preventDefault();
-                            setActiveIndex((index) => (index + 1) % candidates.length);
+                            setActiveIndex((index) => (index + 1) % menuSize);
                             return;
                         }
                         if (event.key === "ArrowUp") {
                             event.preventDefault();
-                            setActiveIndex((index) => (index - 1 + candidates.length) % candidates.length);
+                            setActiveIndex((index) => (index - 1 + menuSize) % menuSize);
                             return;
                         }
                         if (event.key === "Enter") {
                             event.preventDefault();
-                            insertReference(candidates[Math.min(activeIndex, candidates.length - 1)]);
+                            if (mention.kind === "skill") insertSkill(skillCandidates[Math.min(activeIndex, skillCandidates.length - 1)]);
+                            else insertReference(candidates[Math.min(activeIndex, candidates.length - 1)]);
                             return;
                         }
                         if (event.key === "Escape") {
@@ -190,9 +238,10 @@ export function CanvasPromptChipInput({ value, references, onChange, onSubmit, c
                 }}
                 onBlur={() => window.setTimeout(closeMention, 120)}
             />
-            {mention && candidates.length ? (
+            {mention?.kind === "reference" && candidates.length ? (
                 <MentionMenu rect={mention.rect} references={candidates} activeIndex={Math.min(activeIndex, candidates.length - 1)} theme={theme} onSelect={insertReference} />
             ) : null}
+            {mention?.kind === "skill" ? <SkillSlashMenu rect={mention.rect} entries={skillCandidates} activeIndex={Math.min(activeIndex, Math.max(0, skillCandidates.length - 1))} theme={theme} onSelect={insertSkill} /> : null}
             {imagePreview ? <Image src={imagePreview} alt={i18n.t("canvas.composer.imagePreview")} style={{ display: "none" }} preview={{ visible: true, src: imagePreview, onVisibleChange: (visible) => !visible && setImagePreview(null) }} /> : null}
         </div>
     );
@@ -300,6 +349,17 @@ function createReferenceChip(reference: CanvasResourceReference, theme: (typeof 
     return wrapper;
 }
 
+function createSkillChip(skillId: string, label: string, theme: (typeof canvasThemes)[keyof typeof canvasThemes]) {
+    const wrapper = document.createElement("span");
+    wrapper.contentEditable = "false";
+    wrapper.dataset.skillId = skillId;
+    wrapper.className = "mx-px inline-flex h-6 max-w-44 items-center justify-center overflow-hidden rounded-md border px-1 text-xs leading-none align-middle";
+    Object.assign(wrapper.style, { background: theme.toolbar.panel, borderColor: theme.node.stroke, color: theme.node.text });
+    wrapper.title = "/" + label;
+    wrapper.textContent = "/" + label;
+    return wrapper;
+}
+
 function serializeEditor(editor: HTMLElement) {
     return serializeNodes(editor.childNodes).replace(/﻿/g, "");
 }
@@ -311,18 +371,19 @@ function serializeNodes(nodes: NodeListOf<ChildNode>) {
         if (!(node instanceof HTMLElement)) return;
         const label = node.dataset.refLabel;
         if (label) result += label;
+        else if (node.dataset.skillId) result += skillMentionToken(node.dataset.skillId);
         else if (node.tagName === "BR") result += "\n";
         else result += serializeNodes(node.childNodes);
     });
     return result;
 }
 
-function removeActiveMention() {
+function removeActiveMention(kind: "reference" | "skill") {
     const selection = window.getSelection();
     if (!selection?.rangeCount) return;
     const range = selection.getRangeAt(0);
     const text = textBeforeCaret();
-    const match = /@([^\s@]*)$/.exec(text);
+    const match = kind === "skill" ? /(?:^|\s)\/([^\s/]*)$/.exec(text) : /@([^\s@]*)$/.exec(text);
     if (!match) return;
     range.setStart(range.startContainer, Math.max(0, range.startOffset - (match[1] || "").length - 1));
     range.deleteContents();
@@ -360,7 +421,7 @@ function adjacentReferenceNode(range: Range, key: string) {
 function findReferenceSibling(node: Node, previous: boolean, includeSelf = false): HTMLElement | null {
     let current: Node | null = includeSelf ? node : previous ? node.previousSibling : node.nextSibling;
     while (current && current.nodeType === Node.TEXT_NODE && !(current.textContent || "").trim()) current = previous ? current.previousSibling : current.nextSibling;
-    return current instanceof HTMLElement && current.dataset.refLabel ? current : null;
+    return current instanceof HTMLElement && (current.dataset.refLabel || current.dataset.skillId) ? current : null;
 }
 
 function textBeforeCaret() {
@@ -401,15 +462,16 @@ function placeCaretAtEnd(element: HTMLElement) {
 
 // Split value into text fragments and matching active labels, which are already sorted by descending length.
 function parseTokens(value: string, labels: string[]): Token[] {
-    if (!labels.length) return value ? [{ type: "text", value }] : [];
+    if (!value) return [];
     const escaped = labels.map(escapeRegExp).join("|");
-    const pattern = new RegExp(`(${escaped})`, "g");
+    const pattern = new RegExp("(/\\[skill:[a-z0-9]+(?:-[a-z0-9]+)*\\]" + (escaped ? "|" + escaped : "") + ")", "g");
     const tokens: Token[] = [];
     let lastIndex = 0;
     for (const match of value.matchAll(pattern)) {
         if (match.index === undefined) continue;
         if (match.index > lastIndex) tokens.push({ type: "text", value: value.slice(lastIndex, match.index) });
-        tokens.push({ type: "reference", label: match[0] });
+        if (match[0].startsWith("/[skill:")) tokens.push({ type: "skill", skillId: match[0].slice(8, -1) });
+        else tokens.push({ type: "reference", label: match[0] });
         lastIndex = match.index + match[0].length;
     }
     if (lastIndex < value.length) tokens.push({ type: "text", value: value.slice(lastIndex) });

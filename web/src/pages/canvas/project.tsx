@@ -7,6 +7,7 @@ import { useTranslation } from "react-i18next";
 
 import { requestEdit, requestGeneration, requestImageQuestion } from "@/services/api/image";
 import { MissingSkillVersionError, resolveManualSkillContext, withManualSkillMessages, type ManualSkillContext } from "@/features/skills/skill-manual";
+import { extractSkillMentions, resolvePromptSkillBinding, showLegacySkillMentions } from "@/features/skills/skill-mentions";
 import { requestAudioGeneration, storeGeneratedAudio } from "@/services/api/audio";
 import { cancelVideoGenerationTask, pollVideoGenerationTask, requestVideoGeneration, retrySeedanceDownload, storeGeneratedVideo, type VideoGenerationRequest, type VideoGenerationTask } from "@/services/api/video";
 import { defaultConfig, resolveModelChannel, resolveModelScript, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
@@ -2291,6 +2292,7 @@ function AtelierCanvasPage() {
         async (nodeId: string, mode: CanvasNodeGenerationMode, prompt: string) => {
             const sourceNode = nodesRef.current.find((node) => node.id === nodeId);
             const generationConfig = buildGenerationConfig(effectiveConfig, sourceNode, mode);
+            const promptText = mode === "text" ? extractSkillMentions(prompt).text : prompt;
             if (!isAiConfigReady(generationConfig, generationConfig.model)) {
                 openConfigDialog(true);
                 return;
@@ -2342,7 +2344,7 @@ function AtelierCanvasPage() {
             const sourceTextContent = sourceNode?.type === CanvasNodeType.Text ? sourceNode.metadata?.content?.trim() || "" : "";
             const editingTextNode = mode === "text" && Boolean(sourceTextContent);
             const generationContext = await hydrateNodeGenerationContext(
-                buildNodeGenerationContext(nodeId, nodesRef.current, connectionsRef.current, editingTextNode ? t("canvas.projectPage.editTextPrompt", { source: sourceTextContent, prompt }) : prompt),
+                buildNodeGenerationContext(nodeId, nodesRef.current, connectionsRef.current, editingTextNode ? t("canvas.projectPage.editTextPrompt", { source: sourceTextContent, prompt: promptText }) : promptText),
             );
             const effectivePrompt = generationContext.prompt.trim();
             if (runController.signal.aborted) {
@@ -2656,7 +2658,7 @@ function AtelierCanvasPage() {
                     return;
                 }
 
-                const manualSkills = await resolveManualSkillContext(sourceNode?.metadata?.skillBinding);
+                const manualSkills = await resolveManualSkillContext(resolvePromptSkillBinding(prompt, sourceNode?.metadata?.skillBinding));
                 if (runController.signal.aborted) return;
                 const skillMessages = withManualSkillMessages(
                     buildNodeResponseMessages({ ...generationContext, prompt: effectivePrompt }),
@@ -2818,7 +2820,10 @@ function AtelierCanvasPage() {
             let retryManualSkills: ManualSkillContext | null = null;
             if (node.type === CanvasNodeType.Text) {
                 try {
-                    retryManualSkills = await resolveManualSkillContext(sourceNode.metadata?.skillBinding, node.metadata?.skillRun);
+                    const inlinePrompt = sourceNode.type === CanvasNodeType.Config
+                        ? sourceNode.metadata?.composerContent ?? sourceNode.metadata?.prompt ?? ""
+                        : node.metadata?.composerContent ?? node.metadata?.prompt ?? "";
+                    retryManualSkills = await resolveManualSkillContext(resolvePromptSkillBinding(inlinePrompt, sourceNode.metadata?.skillBinding), node.metadata?.skillRun);
                 } catch (error) {
                     if (error instanceof MissingSkillVersionError && node.metadata?.skillRun) {
                         const replaceVersion = await new Promise<boolean>((resolve) => {
@@ -2871,7 +2876,7 @@ function AtelierCanvasPage() {
                     let streamed = "";
                     const answer = await requestImageQuestion(
                         generationConfig,
-                        withManualSkillMessages(buildNodeResponseMessages({ ...context, prompt }), manualSkills),
+                        withManualSkillMessages(buildNodeResponseMessages({ ...context, prompt: extractSkillMentions(prompt).text }), manualSkills),
                         (text) => {
                             streamed = text;
                             setNodes((prev) => prev.map((item) => (item.id === node.id ? { ...item, type: CanvasNodeType.Text, metadata: { ...item.metadata, content: text, status: NODE_STATUS_LOADING } } : item)));
@@ -3168,8 +3173,11 @@ function AtelierCanvasPage() {
             panelNode.type === CanvasNodeType.Director ? null : panelNode.type === CanvasNodeType.Config ? (
                 <CanvasConfigComposer
                     nodeId={panelNode.id}
-                    value={panelNode.metadata?.composerContent ?? panelNode.metadata?.prompt ?? ""}
-                    onChange={(composerContent) => handleConfigNodeChange(panelNode.id, { composerContent })}
+                    value={panelNode.metadata?.generationMode === "text"
+                        ? showLegacySkillMentions(panelNode.metadata?.composerContent ?? panelNode.metadata?.prompt ?? "", panelNode.metadata?.skillBinding)
+                        : panelNode.metadata?.composerContent ?? panelNode.metadata?.prompt ?? ""}
+                    enableSkills={panelNode.metadata?.generationMode === "text"}
+                    onChange={(composerContent) => handleConfigNodeChange(panelNode.id, { composerContent, skillBinding: { mode: "off", skillIds: [] } })}
                     onClose={() => setDialogNodeId(null)}
                 />
             ) : (

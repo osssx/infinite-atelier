@@ -94,8 +94,10 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
                     <span className="text-[11px] opacity-45">{t("canvas.promptPanel.mentionHint")}</span>
                 </div>
             ) : null}
+            {mode === "text" ? <div className="mb-1 text-[11px] opacity-60">{t("canvas.skillPicker.slashHint")}</div> : null}
             <CanvasPromptChipInput
                 value={prompt}
+                enableSkills={mode === "text"}
                 references={mentionReferences}
                 onChange={updatePrompt}
                 onSubmit={submit}
@@ -163,6 +165,7 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
                 <div data-canvas-no-zoom className="pt-2" onWheelCapture={(event) => event.stopPropagation()}>
                     <CanvasPromptChipInput
                         value={prompt}
+                        enableSkills={mode === "text"}
                         references={mentionReferences}
                         onChange={updatePrompt}
                         className="thin-scrollbar h-[52dvh] min-h-80 w-full cursor-text overflow-y-auto rounded-xl border p-4 text-[15px] leading-6 outline-none"

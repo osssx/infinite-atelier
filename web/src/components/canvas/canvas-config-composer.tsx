@@ -2,6 +2,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, KeyboardEvent, MouseEvent, PointerEvent } from "react";
 import { Button, Image } from "antd";
 import { FileText, Image as ImageIcon, Music2, Video, X } from "lucide-react";
+import { SkillSlashMenu } from "@/features/skills/skill-slash-menu";
+import { activeSkillSlash, skillMentionToken } from "@/features/skills/skill-mentions";
+import { useSkillStore } from "@/stores/use-skill-store";
+import type { SkillCatalogEntry } from "@/features/skills/types";
 import { useTranslation } from "react-i18next";
 
 import i18n from "@/i18n";
@@ -15,21 +19,31 @@ type CanvasConfigComposerProps = {
     value: string;
     onChange: (value: string) => void;
     onClose: () => void;
+    enableSkills?: boolean;
 };
 
 type Token =
     | { type: "text"; value: string }
-    | { type: "reference"; nodeId: string };
+    | { type: "reference"; nodeId: string }
+    | { type: "skill"; skillId: string };
 
 type MentionState = {
+    kind: "node" | "skill";
     query: string;
+    rect: DOMRect | null;
 };
 
 export const CONFIG_REFERENCE_PATTERN = /@\[node:([^\]]+)\]/g;
 
-export function CanvasConfigComposer({ nodeId, value, onChange, onClose }: CanvasConfigComposerProps) {
+export function CanvasConfigComposer({ nodeId, value, onChange, onClose, enableSkills = false }: CanvasConfigComposerProps) {
     const { t } = useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const catalog = useSkillStore((state) => state.catalog);
+    const loaded = useSkillStore((state) => state.loaded);
+    const refreshSkills = useSkillStore((state) => state.refresh);
+    useEffect(() => {
+        if (enableSkills && !loaded) void refreshSkills().catch(() => undefined);
+    }, [enableSkills, loaded, refreshSkills]);
     // Derived here rather than passed in: this composer only mounts for the node whose panel is
     // open, so inputs are built for one node instead of for every Config node on the canvas.
     const inputs = useNodeGenerationInputs(nodeId);
@@ -41,11 +55,16 @@ export function CanvasConfigComposer({ nodeId, value, onChange, onClose }: Canva
     const tokens = useMemo(() => parseComposerTokens(value), [value]);
     const referenceById = useMemo(() => new Map(inputs.map((input) => [input.nodeId, input])), [inputs]);
     const candidates = useMemo(() => {
-        if (!mention) return [];
+        if (!mention || mention.kind !== "node") return [];
         const query = (mention.query || "").trim().toLowerCase();
         if (!query) return inputs;
         return inputs.filter((input) => `${resourceLabel(input, inputs)} ${input.title} ${input.text || ""}`.toLowerCase().includes(query));
     }, [inputs, mention]);
+    const skillCandidates = useMemo(() => {
+        if (!mention || mention.kind !== "skill") return [];
+        const q = mention.query.trim().toLowerCase();
+        return catalog.filter((entry) => entry.enabled && (!q || (entry.name + " " + entry.description).toLowerCase().includes(q)));
+    }, [catalog, mention]);
 
     useEffect(() => {
         if (document.activeElement === editorRef.current) return;
@@ -57,10 +76,15 @@ export function CanvasConfigComposer({ nodeId, value, onChange, onClose }: Canva
                 editor.append(document.createTextNode(token.value));
                 return;
             }
+            if (token.type === "skill") {
+                editor.append(createSkillChip(token.skillId, catalog.find((entry) => entry.id === token.skillId)?.name || token.skillId, theme));
+                return;
+            }
             const input = referenceById.get(token.nodeId);
             if (input) editor.append(createReferenceChip(input, inputs, theme, setImagePreview));
+            else editor.append(document.createTextNode("@[node:" + token.nodeId + "]"));
         });
-    }, [inputs, referenceById, theme, tokens]);
+    }, [inputs, catalog, referenceById, theme, tokens]);
 
     const syncFromEditor = () => {
         const editor = editorRef.current;
@@ -72,12 +96,11 @@ export function CanvasConfigComposer({ nodeId, value, onChange, onClose }: Canva
 
     const syncMention = () => {
         const text = textBeforeCaret();
-        const match = /@([^\s@]*)$/.exec(text);
-        if (!match || !inputs.length) {
-            closeMention();
-            return;
-        }
-        setMention({ query: match[1] || "" });
+        const slash = enableSkills ? activeSkillSlash(text) : null;
+        const at = /@([^\s@]*)$/.exec(text);
+        if (slash !== null) setMention({ kind: "skill", query: slash, rect: caretRect(editorRef.current) });
+        else if (at && inputs.length) setMention({ kind: "node", query: at[1] || "", rect: caretRect(editorRef.current) });
+        else { closeMention(); return; }
         setActiveIndex(0);
     };
 
@@ -89,8 +112,31 @@ export function CanvasConfigComposer({ nodeId, value, onChange, onClose }: Canva
     const insertReference = (input: NodeGenerationInput) => {
         const editor = editorRef.current;
         if (!editor) return;
-        removeActiveMention();
+        removeActiveMention("node");
         const chip = createReferenceChip(input, inputs, theme, setImagePreview);
+        const space = document.createTextNode(" ");
+        const selection = window.getSelection();
+        const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
+        if (range) {
+            range.insertNode(space);
+            range.insertNode(chip);
+            range.setStartAfter(space);
+            range.collapse(true);
+            selection?.removeAllRanges();
+            selection?.addRange(range);
+        } else {
+            editor.append(chip, space);
+            placeCaretAtEnd(editor);
+        }
+        closeMention();
+        onChange(serializeEditor(editor));
+    };
+
+    const insertSkill = (skill: SkillCatalogEntry) => {
+        const editor = editorRef.current;
+        if (!editor) return;
+        removeActiveMention("skill");
+        const chip = createSkillChip(skill.id, skill.name, theme);
         const space = document.createTextNode(" ");
         const selection = window.getSelection();
         const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
@@ -127,6 +173,7 @@ export function CanvasConfigComposer({ nodeId, value, onChange, onClose }: Canva
                 </div>
                 <Button size="small" type="text" className="!h-7 !w-7 !min-w-7 !p-0" icon={<X className="size-3.5" />} onClick={onClose} />
             </div>
+            {enableSkills ? <div className="mb-1 text-[11px] opacity-65">{t("canvas.skillPicker.slashHint")}</div> : null}
             <div className="relative rounded-xl">
                 {!value.trim() ? <div className="pointer-events-none absolute left-3 top-2 text-sm leading-7" style={{ color: theme.node.placeholder }}>{t("canvas.composer.placeholder")}</div> : null}
                 <div
@@ -147,20 +194,27 @@ export function CanvasConfigComposer({ nodeId, value, onChange, onClose }: Canva
                     }}
                     onKeyDown={(event: KeyboardEvent<HTMLDivElement>) => {
                         event.stopPropagation();
-                        if (mention && candidates.length) {
+                        if (mention && event.key === "Escape") {
+                            event.preventDefault();
+                            closeMention();
+                            return;
+                        }
+                        const menuSize = mention?.kind === "skill" ? skillCandidates.length : candidates.length;
+                        if (mention && menuSize) {
                             if (event.key === "ArrowDown") {
                                 event.preventDefault();
-                                setActiveIndex((index) => (index + 1) % candidates.length);
+                                setActiveIndex((index) => (index + 1) % menuSize);
                                 return;
                             }
                             if (event.key === "ArrowUp") {
                                 event.preventDefault();
-                                setActiveIndex((index) => (index - 1 + candidates.length) % candidates.length);
+                                setActiveIndex((index) => (index - 1 + menuSize) % menuSize);
                                 return;
                             }
                             if (event.key === "Enter") {
                                 event.preventDefault();
-                                insertReference(candidates[Math.min(activeIndex, candidates.length - 1)]);
+                                if (mention.kind === "skill") insertSkill(skillCandidates[Math.min(activeIndex, skillCandidates.length - 1)]);
+                                else insertReference(candidates[Math.min(activeIndex, candidates.length - 1)]);
                                 return;
                             }
                             if (event.key === "Escape") {
@@ -178,7 +232,8 @@ export function CanvasConfigComposer({ nodeId, value, onChange, onClose }: Canva
                     }}
                     onBlur={() => window.setTimeout(closeMention, 120)}
                 />
-                {mention && candidates.length ? <MentionMenu inputs={candidates} allInputs={inputs} activeIndex={Math.min(activeIndex, candidates.length - 1)} theme={theme} onSelect={insertReference} /> : null}
+                {mention?.kind === "node" && candidates.length ? <MentionMenu inputs={candidates} allInputs={inputs} activeIndex={Math.min(activeIndex, candidates.length - 1)} theme={theme} onSelect={insertReference} /> : null}
+                {mention?.kind === "skill" ? <SkillSlashMenu entries={skillCandidates} activeIndex={Math.min(activeIndex, Math.max(0, skillCandidates.length - 1))} rect={mention.rect} theme={theme} onSelect={insertSkill} /> : null}
             </div>
             {imagePreview ? <Image src={imagePreview} alt={t("canvas.composer.imagePreview")} style={{ display: "none" }} preview={{ visible: true, src: imagePreview, onVisibleChange: (visible) => !visible && setImagePreview(null) }} /> : null}
         </div>
@@ -265,6 +320,26 @@ function createReferenceChip(input: NodeGenerationInput, inputs: NodeGenerationI
     return wrapper;
 }
 
+function createSkillChip(skillId: string, label: string, theme: (typeof canvasThemes)[keyof typeof canvasThemes]) {
+    const wrapper = document.createElement("span");
+    wrapper.contentEditable = "false";
+    wrapper.dataset.skillId = skillId;
+    wrapper.className = "mx-px inline-flex h-7 max-w-44 items-center overflow-hidden rounded-md border px-1.5 text-xs leading-none align-middle";
+    Object.assign(wrapper.style, chipStyle(theme));
+    wrapper.title = "/" + label;
+    wrapper.textContent = "/" + label;
+    return wrapper;
+}
+
+function caretRect(editor: HTMLElement | null): DOMRect | null {
+    const selection = window.getSelection();
+    if (selection?.rangeCount) {
+        const rect = selection.getRangeAt(0).getBoundingClientRect();
+        if (rect.width || rect.height) return rect;
+    }
+    return editor?.getBoundingClientRect() || null;
+}
+
 function serializeEditor(editor: HTMLElement) {
     return serializeNodes(editor.childNodes).replace(/\uFEFF/g, "");
 }
@@ -276,18 +351,19 @@ function serializeNodes(nodes: NodeListOf<ChildNode>) {
         if (!(node instanceof HTMLElement)) return;
         const nodeId = node.dataset.referenceNodeId;
         if (nodeId) result += `@[node:${nodeId}]`;
+        else if (node.dataset.skillId) result += skillMentionToken(node.dataset.skillId);
         else if (node.tagName === "BR") result += "\n";
         else result += serializeNodes(node.childNodes);
     });
     return result;
 }
 
-function removeActiveMention() {
+function removeActiveMention(kind: "node" | "skill") {
     const selection = window.getSelection();
     if (!selection?.rangeCount) return;
     const range = selection.getRangeAt(0);
     const text = textBeforeCaret();
-    const match = /@([^\s@]*)$/.exec(text);
+    const match = kind === "skill" ? /(?:^|\s)\/([^\s/]*)$/.exec(text) : /@([^\s@]*)$/.exec(text);
     if (!match) return;
     range.setStart(range.startContainer, Math.max(0, range.startOffset - (match[1] || "").length - 1));
     range.deleteContents();
@@ -324,7 +400,7 @@ function adjacentReferenceNode(range: Range, key: string) {
 function findReferenceSibling(node: Node, previous: boolean, includeSelf = false): HTMLElement | null {
     let current: Node | null = includeSelf ? node : previous ? node.previousSibling : node.nextSibling;
     while (current && current.nodeType === Node.TEXT_NODE && !(current.textContent || "").trim()) current = previous ? current.previousSibling : current.nextSibling;
-    return current instanceof HTMLElement && current.dataset.referenceNodeId ? current : null;
+    return current instanceof HTMLElement && (current.dataset.referenceNodeId || current.dataset.skillId) ? current : null;
 }
 
 function textBeforeCaret() {
@@ -354,10 +430,12 @@ function placeCaretAtEnd(element: HTMLElement) {
 function parseComposerTokens(value: string): Token[] {
     const tokens: Token[] = [];
     let lastIndex = 0;
-    for (const match of value.matchAll(CONFIG_REFERENCE_PATTERN)) {
+    const combined = /@\[node:([^\]]+)\]|\/\[skill:([a-z0-9]+(?:-[a-z0-9]+)*)\]/g;
+    for (const match of value.matchAll(combined)) {
         if (match.index === undefined) continue;
         if (match.index > lastIndex) tokens.push({ type: "text", value: value.slice(lastIndex, match.index) });
-        tokens.push({ type: "reference", nodeId: match[1] });
+        if (match[1]) tokens.push({ type: "reference", nodeId: match[1] });
+        else tokens.push({ type: "skill", skillId: match[2] });
         lastIndex = match.index + match[0].length;
     }
     if (lastIndex < value.length) tokens.push({ type: "text", value: value.slice(lastIndex) });

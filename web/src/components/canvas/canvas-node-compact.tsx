@@ -9,7 +9,7 @@ import { useCanvasActions } from "./canvas-actions";
 
 /** Same-sized visual shell and semantic content as the full node, without editing DOM or media decoders. */
 export const CompactCanvasNode = memo(function CompactCanvasNode({
-    data, isSelected, isRelated, isGroupDropTarget, showImagePreview = false, groupChildCount = 0,
+    data, isSelected, isRelated, isGroupDropTarget, showImagePreview = false, groupChildCount = 0, hitActive = true,
 }: {
     data: CanvasNodeData;
     isSelected: boolean;
@@ -17,6 +17,8 @@ export const CompactCanvasNode = memo(function CompactCanvasNode({
     isGroupDropTarget: boolean;
     showImagePreview?: boolean;
     groupChildCount?: number;
+    /** Handoff: do not duplicate hit targets once the full node becomes interactive. */
+    hitActive?: boolean;
 }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const { onMouseDown, onSelectCapture, onHoverStart, onHoverEnd, onContextMenu, onViewImage } = useCanvasActions();
@@ -34,11 +36,14 @@ export const CompactCanvasNode = memo(function CompactCanvasNode({
     const background = isGroup ? `${theme.toolbar.panel}66` : hasImage || (isVideo && data.metadata?.content) || transparent ? "transparent" : theme.node.fill;
 
     return (
-        <div data-node-id={data.id} data-canvas-compact-node title={data.title}
+        <div data-node-id={hitActive ? data.id : undefined} data-canvas-compact-node={hitActive ? "" : undefined} data-canvas-lod-node={data.id} title={data.title}
             className={`node-element absolute select-none ${isGroup ? "z-[5]" : isSelected ? "z-50" : "z-10"}`}
-            style={{ transform: `translate(${data.position.x}px, ${data.position.y}px)`, width: data.width, height: data.height, contain: "layout style" }}
+            style={{ transform: `translate(${data.position.x}px, ${data.position.y}px)`, width: data.width, height: data.height, contain: "layout style", pointerEvents: hitActive ? undefined : "none" }}
             onMouseEnter={() => onHoverStart(data.id)}
-            onMouseLeave={() => onHoverEnd(data.id)}
+            onMouseLeave={(event) => {
+                const nextNode = event.relatedTarget instanceof Element ? event.relatedTarget.closest("[data-canvas-lod-node]") : null;
+                if (nextNode?.getAttribute("data-canvas-lod-node") !== data.id) onHoverEnd(data.id);
+            }}
             onMouseDownCapture={(event) => onSelectCapture(event, data.id)}
             onContextMenu={(event) => onContextMenu(event, data.id)}
         >

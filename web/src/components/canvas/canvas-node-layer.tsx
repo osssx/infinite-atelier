@@ -1,10 +1,10 @@
-import { memo, useCallback, useEffect, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 
 import type { CanvasNodeData } from "@/types/canvas";
-import { shouldRenderFullNode } from "@/lib/canvas/canvas-lod";
+import { shouldPromoteHoveredNode, shouldRenderFullNode, shouldUseCompactNodeLayer } from "@/lib/canvas/canvas-lod";
 import { shouldShowCompactImage } from "@/lib/canvas/canvas-lod-preview";
-import { CanvasNode, type CanvasNodeProps } from "./canvas-node";
-import { CompactCanvasNode } from "./canvas-node-compact";
+import type { CanvasNodeProps } from "./canvas-node";
+import { CanvasNodeHandoff } from "./canvas-node-handoff";
 
 /**
  * Everything a node needs except its own data and the values the layer computes per node. Callers
@@ -20,8 +20,8 @@ export type SharedNodeProps = Omit<
 type NodeLayerProps = {
     /** Already culled to the viewport by the controller. */
     nodes: CanvasNodeData[];
-    /** Density-aware simplified render, without media and editor descendants. */
-    compactMode: boolean;
+    /** Wheel activity temporarily pins crowded scenes in lightweight mode. */
+    wheelZoomActive: boolean;
     /** A primitive scale used only to decide when tiny image previews become legible. */
     scale: number;
     shared: SharedNodeProps;
@@ -48,9 +48,9 @@ type NodeLayerProps = {
 export const NodeLayer = memo(function NodeLayer({
     nodes,
     shared,
-    compactMode,
-    selectedNodeIds,    scale,
-
+    wheelZoomActive,
+    scale,
+    selectedNodeIds,
     relatedNodeIds,
     activeNodeId,
     connectionTargetNodeId,
@@ -76,6 +76,11 @@ export const NodeLayer = memo(function NodeLayer({
         });
     }, []);
 
+    // Keep a stable decision across 0.30–0.42 zoom and moderate visible-count changes.
+    const compactRef = useRef(false);
+    const compactMode = shouldUseCompactNodeLayer(nodes.length, scale, wheelZoomActive, compactRef.current);
+    compactRef.current = compactMode;
+
     // After a dense zoom we must not mount every JPEG/video/editor in the same frame.
     // Revealing a few full nodes per paint distributes decode and DOM creation over frames,
     // including the post-wheel settling period (which the interactive zoom sample misses).
@@ -97,26 +102,19 @@ export const NodeLayer = memo(function NodeLayer({
                 // Preserve full editing/connection affordances for the active target, but keep
                 // all other nodes as cheap DOM hit rectangles in overview mode.
                 const stagedCompact = compactMode || index >= revealedCount;
-                const showFull = shouldRenderFullNode(node.id, stagedCompact, selectedNodeIds, activeNodeId, connectionTargetNodeId, panelNodeId, playingNodeIds.has(node.id));
-                if (!showFull) return (
-                    <CompactCanvasNode
-                        key={node.id}
-                        data={node}
-                        isSelected={selectedNodeIds.has(node.id)}
-                        showImagePreview={shouldShowCompactImage(scale, node.width, node.height)}
-                        groupChildCount={groupChildCountById.get(node.id) || 0}
-                        isRelated={relatedNodeIds.has(node.id)}
-                        isGroupDropTarget={dropTargetGroupId === node.id}
-                    />
-                );
-                return <CanvasNode
-                    {...shared}
+                // Hover-only promotion is suspended during wheel input. An otherwise pinned
+                // heavy media/editor node can stall zoom; selection and playing media still win.
+                const hoveredForPromotion = shouldPromoteHoveredNode(scale, node.width, node.height, wheelZoomActive) ? activeNodeId : null;
+                const showFull = shouldRenderFullNode(node.id, stagedCompact, selectedNodeIds, hoveredForPromotion, connectionTargetNodeId, panelNodeId, playingNodeIds.has(node.id));
+                return <CanvasNodeHandoff
                     key={node.id}
-                    onMediaPlaybackChange={onMediaPlaybackChange}
+                    shared={shared}
                     data={node}
+                    showFull={showFull}
+                    showImagePreview={shouldShowCompactImage(scale, node.width, node.height)}
                     isSelected={selectedNodeIds.has(node.id)}
                     isRelated={relatedNodeIds.has(node.id)}
-                    isFocusRelated={activeNodeId === node.id}
+                    isFocusRelated={hoveredForPromotion === node.id}
                     isConnectionTarget={connectionTargetNodeId === node.id}
                     isConnecting={isConnecting}
                     showPanel={!isNodeResizing && panelNodeId === node.id && !isMarqueeActive}
@@ -124,6 +122,7 @@ export const NodeLayer = memo(function NodeLayer({
                     isGroupDropTarget={dropTargetGroupId === node.id}
                     batchExpanded={expandedImageNodeIds.has(node.id)}
                     showImageInfo={showImageInfo}
+                    onMediaPlaybackChange={onMediaPlaybackChange}
                 />;
             })}
         </>

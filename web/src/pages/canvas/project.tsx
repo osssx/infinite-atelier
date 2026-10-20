@@ -39,7 +39,6 @@ import { CanvasNodeHoverToolbar, CanvasNodeInfoModal } from "@/components/canvas
 import { AtelierCanvas } from "@/components/canvas/atelier-canvas";
 import { Minimap } from "@/components/canvas/canvas-mini-map";
 import { NodeLayer, type SharedNodeProps } from "@/components/canvas/canvas-node-layer";
-import { shouldUseCompactNodeLayer } from "@/lib/canvas/canvas-lod";
 import { SelectionOverlay } from "@/components/canvas/canvas-selection-overlay";
 import { CanvasNodePromptPanel, type CanvasNodeGenerationMode } from "@/components/canvas/canvas-node-prompt-panel";
 import { CanvasToolbar } from "@/components/canvas/canvas-toolbar";
@@ -3245,7 +3244,7 @@ function AtelierCanvasPage() {
                         <CanvasGraphIndexProvider index={graphIndex}>
                             <NodeLayer
                                 nodes={visibleNodes}
-                                compactMode={shouldUseCompactNodeLayer(visibleNodes.length, viewport.k, isWheelZooming)}
+                                wheelZoomActive={isWheelZooming}
                                 scale={viewport.k}
                                 shared={sharedNodeProps}
                                 selectedNodeIds={selectedNodeIds}

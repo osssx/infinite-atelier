@@ -31,6 +31,10 @@ export type CanvasNodeProps = {
     renderNodeContent?: (node: CanvasNodeData) => ReactNode;
     onMediaPlaybackChange?: (nodeId: string, playing: boolean) => void;
     groupChildCount?: number;
+    /** Handoff: fade heavy content in only after its visual content has loaded. */
+    onVisualReady?: () => void;
+    visualShown?: boolean;
+    handoffActive?: boolean;
     isGroupDropTarget?: boolean;
     batchExpanded?: boolean;
 };
@@ -56,6 +60,7 @@ type NodeContentRendererProps = {
     onViewBatchImage?: (imageId: string) => void;
     onMediaPlaybackChange?: (nodeId: string, playing: boolean) => void;
     groupChildCount: number;
+    onVisualReady?: () => void;
 };
 
 export const CanvasNode = React.memo(function CanvasNode({
@@ -74,6 +79,9 @@ export const CanvasNode = React.memo(function CanvasNode({
     isGroupDropTarget = false,
     batchExpanded = false,
     onMediaPlaybackChange,
+    onVisualReady,
+    visualShown = true,
+    handoffActive = false,
 }: CanvasNodeProps) {
     // Destructured so the rest of the component reads the same as it did when these were props. The
     // object itself is permanently stable (see CanvasActionsProvider), so it can never invalidate
@@ -326,22 +334,38 @@ export const CanvasNode = React.memo(function CanvasNode({
         };
     }, [handleResizeMove, endResize]);
 
+    // For images with actual pixels, the <img> controls visual readiness; other node
+    // contents can be revealed after their first DOM commit (video preload is "none").
+    const primaryImage = data.metadata?.images?.find((item) => item.id === (data.metadata?.primaryImageId || data.metadata?.images?.[0]?.id));
+    const isWaitingForImage = data.type === CanvasNodeType.Image &&
+        data.metadata?.status !== "loading" && data.metadata?.status !== "error" &&
+        Boolean(primaryImage?.content || data.metadata?.content);
+    useEffect(() => {
+        if (!isWaitingForImage) onVisualReady?.();
+    }, [isWaitingForImage, onVisualReady]);
+
     return (
         <div
-            data-node-id={data.id}
+            data-node-id={!handoffActive || visualShown ? data.id : undefined}
+            data-canvas-full-node
+            data-canvas-lod-node={data.id}
             className={`node-element absolute flex select-none flex-col transition-shadow duration-200 ${isGroup ? "z-[5]" : isSelected ? "z-50" : "z-10"}`}
             style={{
                 transform: `translate(${data.position.x}px, ${data.position.y}px)`,
                 width: data.width,
                 height: data.height,
-                transition: "box-shadow 200ms ease",
+                transition: handoffActive ? "opacity 160ms ease-out, box-shadow 200ms ease" : "box-shadow 200ms ease",
+                opacity: visualShown ? 1 : 0,
+                pointerEvents: visualShown ? undefined : "none",
                 contain: "layout style",
             }}
             onMouseEnter={() => {
                 setHovered(true);
                 onHoverStart(data.id);
             }}
-            onMouseLeave={() => {
+            onMouseLeave={(event) => {
+                const nextNode = event.relatedTarget instanceof Element ? event.relatedTarget.closest("[data-canvas-lod-node]") : null;
+                if (nextNode?.getAttribute("data-canvas-lod-node") === data.id) return;
                 setHovered(false);
                 onHoverEnd(data.id);
             }}
@@ -446,6 +470,7 @@ export const CanvasNode = React.memo(function CanvasNode({
                         onViewBatchImage={(imageId) => onViewImage?.(data, imageId)}
                         onMediaPlaybackChange={onMediaPlaybackChange}
                         groupChildCount={groupChildCount}
+                        onVisualReady={onVisualReady}
                     />
                 </div>
 
@@ -652,6 +677,7 @@ function ImageNodeContent(props: NodeContentRendererProps) {
             onRetryBatchImage={props.onRetryBatchImage}
             onDeleteBatchImage={props.onDeleteBatchImage}
             onViewBatchImage={props.onViewBatchImage}
+            onVisualReady={props.onVisualReady}
         />
     );
 }
@@ -720,10 +746,13 @@ function ImageContent({
     onRetryBatchImage,
     onDeleteBatchImage,
     onViewBatchImage,
+    onVisualReady,
 }: {
     node: CanvasNodeData;
+
     batchExpanded: boolean;
     onToggleBatch?: () => void;
+    onVisualReady?: () => void;
     onSetBatchPrimary?: (imageId: string) => void;
     onDuplicateBatchImage?: (imageId: string) => void;
     onRetryBatchImage?: (imageId: string) => void;
@@ -763,6 +792,8 @@ function ImageContent({
                     <img
                         src={primaryContent}
                         decoding="async"
+                        onLoad={onVisualReady}
+                        onError={onVisualReady}
                         alt={node.title}
                         draggable={false}
                         onDragStart={(event) => event.preventDefault()}

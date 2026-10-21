@@ -25,72 +25,154 @@
 .canvas-node-markdown :not(pre) > code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; background: var(--canvas-md-surface); border: 1px solid var(--canvas-md-border); border-radius: .25em; padding: .08em .27em; font-size: .88em; }
 .canvas-node-markdown pre { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre; font-size: .85em; overflow-x: auto; max-width: 100%; background: var(--canvas-md-surface); border: 1px solid var(--canvas-md-border); border-radius: .5em; padding: .6em .7em; }
 .canvas-node-markdown pre code { background: transparent; border: 0; padding: 0; }
-/* Keep Streamdown's native copy action and our wrap toggle in the SAME header row.
-   Streamdown places the copy actions in a sticky negative-margin row after the
-   language header; positioning only the wrap button previously split the tools. */
-.canvas-node-markdown .canvas-md-code-block { position: relative; min-width: 0; }
-.canvas-node-markdown .canvas-md-code-block [data-streamdown="code-block"] { position: static; min-width: 0; }
+/* One inset code surface that belongs to the node, rather than Streamdown's
+   default bright card + second bordered editor. The tokens come from CanvasTheme. */
+.canvas-node-markdown .canvas-md-code-block {
+    position: relative;
+    min-width: 0;
+    margin: .35em 0 .8em;
+}
+.canvas-node-markdown .canvas-md-code-block [data-streamdown="code-block"] {
+    position: static;
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    min-width: 0;
+    gap: 0;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    border: 1px solid var(--canvas-md-code-border);
+    border-radius: .625rem;
+    background: var(--canvas-md-code-surface);
+    box-shadow: none;
+}
 .canvas-node-markdown .canvas-md-code-block [data-streamdown="code-block-header"] {
     display: flex;
     align-items: center;
-    min-height: 2rem;
-    padding-right: 5rem;
+    min-height: 2.25rem;
+    height: 2.25rem;
+    padding: 0 4.5rem 0 .8rem;
+    background: var(--canvas-md-code-header);
+    border: 0;
+    border-bottom: 1px solid var(--canvas-md-code-border);
+    color: var(--canvas-md-code-muted);
+    font-size: .75rem;
+    line-height: 1;
 }
+.canvas-node-markdown .canvas-md-code-block [data-streamdown="code-block-header"] > span {
+    margin-left: 0;
+}
+/* Keep both actions in Streamdown's original toolbar; no independent vertical offsets. */
 .canvas-node-markdown .canvas-md-code-block [data-streamdown="code-block"] > div:has(> [data-streamdown="code-block-actions"]) {
     position: absolute;
-    inset: .35rem .45rem auto auto;
+    inset: .3125rem .5rem auto auto;
     z-index: 21;
     display: flex;
     align-items: center;
     justify-content: flex-end;
-    height: 1.75rem;
+    height: 1.625rem;
     margin: 0;
     padding: 0;
+    background: transparent;
+    border: 0;
     pointer-events: auto;
 }
 .canvas-node-markdown .canvas-md-code-block [data-streamdown="code-block-actions"] {
     display: flex;
     align-items: center;
-    justify-content: center;
-    height: 1.75rem;
-    min-width: 1.75rem;
-    gap: .375rem;
+    justify-content: flex-end;
+    height: 1.625rem;
+    min-width: 1.625rem;
+    gap: .25rem;
     padding: 0;
     border: 0;
+    border-radius: 0;
     background: transparent;
+    box-shadow: none;
+    backdrop-filter: none;
 }
 .canvas-node-markdown .canvas-md-code-wrap-toggle,
 .canvas-node-markdown .canvas-md-code-block [data-streamdown="code-block-actions"] > button {
-    display: flex;
+    display: inline-flex;
+    flex: 0 0 1.625rem;
     align-items: center;
     justify-content: center;
-    width: 1.75rem;
-    height: 1.75rem;
+    width: 1.625rem;
+    height: 1.625rem;
+    margin: 0;
     padding: 0;
-    border: 1px solid var(--canvas-md-border);
-    border-radius: .35rem;
-    background: var(--canvas-md-surface);
-    color: inherit;
-    opacity: .85;
+    border: 1px solid var(--canvas-md-code-border);
+    border-radius: .375rem;
+    background: var(--canvas-md-code-control);
+    color: var(--canvas-md-code-muted);
+    opacity: 1;
+    box-shadow: none;
     cursor: pointer;
 }
-.canvas-node-markdown .canvas-md-code-wrap-toggle {
-    flex: 0 0 1.75rem;
-    order: -1;
+.canvas-node-markdown .canvas-md-code-wrap-toggle { order: -1; }
+.canvas-node-markdown .canvas-md-code-wrap-toggle svg,
+.canvas-node-markdown .canvas-md-code-block [data-streamdown="code-block-actions"] > button svg {
+    width: .875rem;
+    height: .875rem;
 }
 .canvas-node-markdown .canvas-md-code-wrap-toggle:hover,
 .canvas-node-markdown .canvas-md-code-wrap-toggle[aria-pressed="true"],
 .canvas-node-markdown .canvas-md-code-block [data-streamdown="code-block-actions"] > button:hover {
-    opacity: 1;
-    background: var(--canvas-md-border);
+    background: var(--canvas-md-code-control-hover);
+    color: var(--canvas-md-code-text);
 }
 .canvas-node-markdown .canvas-md-code-wrap-toggle:focus-visible,
 .canvas-node-markdown .canvas-md-code-block [data-streamdown="code-block-actions"] > button:focus-visible {
-    outline: 2px solid currentColor;
+    outline: 2px solid var(--canvas-md-code-text);
     outline-offset: 2px;
 }
-.canvas-node-markdown [data-canvas-code-wrap="on"] [data-streamdown="code-block-body"] { overflow-x: hidden; }
+/* The body alone scrolls horizontally; avoid nested borders, padding and scrollbars. */
+.canvas-node-markdown .canvas-md-code-block [data-streamdown="code-block-body"] {
+    max-width: 100%;
+    min-width: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    border: 0;
+    border-radius: 0;
+    background: var(--canvas-md-code-surface);
+    padding: .65rem .8rem .7rem;
+    color: var(--canvas-md-code-text);
+    scrollbar-width: thin;
+    scrollbar-color: var(--canvas-md-code-scrollbar) transparent;
+}
+.canvas-node-markdown .canvas-md-code-block [data-streamdown="code-block-body"]::-webkit-scrollbar { height: 6px; }
+.canvas-node-markdown .canvas-md-code-block [data-streamdown="code-block-body"]::-webkit-scrollbar-thumb {
+    background: var(--canvas-md-code-scrollbar);
+    border-radius: 999px;
+}
+.canvas-node-markdown .canvas-md-code-block pre {
+    display: block;
+    min-width: 100%;
+    width: max-content;
+    max-width: none;
+    margin: 0;
+    padding: 0;
+    overflow: visible;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+    color: inherit;
+    line-height: 1.55;
+}
+.canvas-node-markdown .canvas-md-code-block pre code {
+    background: transparent;
+    border: 0;
+    padding: 0;
+    color: inherit;
+}
+.canvas-node-markdown [data-canvas-code-wrap="on"] [data-streamdown="code-block-body"] {
+    overflow-x: hidden;
+}
 .canvas-node-markdown [data-canvas-code-wrap="on"] [data-streamdown="code-block-body"] :is(pre, code) {
+    width: 100%;
+    min-width: 0;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
     word-break: break-word;

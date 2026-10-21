@@ -13,6 +13,24 @@ describe("CanvasTextMarkdown code wrapping", () => {
         expect(link).not.toContain("data-canvas-plain-markdown");
     });
 
+
+    it("exposes matching code-block palette tokens for both canvas themes", () => {
+        const content = "```text\nlong code line\n```";
+        const light = renderToStaticMarkup(<CanvasTextMarkdown content={content} theme={canvasThemes.light} />);
+        const dark = renderToStaticMarkup(<CanvasTextMarkdown content={content} theme={canvasThemes.dark} />);
+        for (const mode of ["light", "dark"] as const) {
+            const theme = canvasThemes[mode];
+            const html = mode === "light" ? light : dark;
+            expect(html).toContain(`--canvas-md-code-surface:${theme.node.code.surface}`);
+            expect(html).toContain(`--canvas-md-code-header:${theme.node.code.header}`);
+            expect(html).toContain(`--canvas-md-code-border:${theme.node.code.stroke}`);
+            expect(html).toContain(`--canvas-md-code-text:${theme.node.code.text}`);
+            expect(html).toContain(`--canvas-md-code-control:${theme.node.code.control}`);
+            expect(html).toContain('data-streamdown="code-block"');
+        }
+        expect(canvasThemes.light.node.code.surface).not.toBe(canvasThemes.dark.node.code.surface);
+    });
+
     it("creates separate code toolbar targets for fenced blocks, not inline code", () => {
         const content = [
             "Inline `value` remains inline.",

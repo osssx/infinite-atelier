@@ -106,6 +106,14 @@ export const CanvasTextMarkdown = memo(function CanvasTextMarkdown({
                 "--canvas-md-border": theme.node.stroke,
                 "--canvas-md-muted": theme.node.muted,
                 "--canvas-md-surface": theme.node.panel,
+                "--canvas-md-code-surface": theme.node.code.surface,
+                "--canvas-md-code-header": theme.node.code.header,
+                "--canvas-md-code-border": theme.node.code.stroke,
+                "--canvas-md-code-text": theme.node.code.text,
+                "--canvas-md-code-muted": theme.node.code.muted,
+                "--canvas-md-code-control": theme.node.code.control,
+                "--canvas-md-code-control-hover": theme.node.code.controlHover,
+                "--canvas-md-code-scrollbar": theme.node.code.scrollbar,
             } as React.CSSProperties}
         >
             {isSimpleCanvasText(content) ? (

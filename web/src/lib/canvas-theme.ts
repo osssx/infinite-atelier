@@ -20,6 +20,16 @@ export const canvasThemes = {
             text: "#292524",
             muted: "#78716c",
             faint: "#a8a29e",
+            code: {
+                surface: "#f1efe9",
+                header: "#ebe8e1",
+                stroke: "#d3cfc5",
+                text: "#403b36",
+                muted: "#756f67",
+                control: "#f6f4ef",
+                controlHover: "#e0ddd5",
+                scrollbar: "#b6b0a6",
+            },
         },
         toolbar: {
             panel: "rgba(251,250,247,.96)",
@@ -48,6 +58,16 @@ export const canvasThemes = {
             text: "#f5f5f4",
             muted: "#d6d3d1",
             faint: "#78716c",
+            code: {
+                surface: "#24211f",
+                header: "#2d2926",
+                stroke: "#49433d",
+                text: "#ebe7e1",
+                muted: "#b2a99f",
+                control: "#39342f",
+                controlHover: "#49423c",
+                scrollbar: "#625a52",
+            },
         },
         toolbar: {
             panel: "rgba(31,29,26,.96)",

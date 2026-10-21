@@ -7,6 +7,7 @@ import { canvasThemes } from "@/lib/canvas-theme";
 import { formatBytes } from "@/lib/image-utils";
 import { getNodeDefinition } from "@/lib/canvas/node-registry";
 import { CANVAS_CONTENT_VISIBILITY_STYLE, shouldContainCanvasContent } from "@/lib/canvas/canvas-content-visibility";
+import { isSimpleCanvasText } from "@/lib/canvas/canvas-markdown-plain";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { CanvasResourceMentionTextarea } from "./canvas-resource-mention-textarea";
 import { useCanvasActions } from "./canvas-actions";
@@ -663,9 +664,11 @@ function TextContent({ node, theme, isEditingContent, textareaRef, onContentChan
                     onWheel={(event) => event.stopPropagation()}
                 >
                     {node.metadata?.content ? (
-                        <React.Suspense fallback={<div className="whitespace-pre-wrap">{node.metadata.content}</div>}>
-                            <LazyCanvasTextMarkdown content={node.metadata.content} theme={theme} />
-                        </React.Suspense>
+                        isSimpleCanvasText(node.metadata.content)
+                            ? <p data-canvas-plain-markdown className="whitespace-pre-wrap">{node.metadata.content}</p>
+                            : <React.Suspense fallback={<div className="whitespace-pre-wrap">{node.metadata.content}</div>}>
+                                <LazyCanvasTextMarkdown content={node.metadata.content} theme={theme} />
+                            </React.Suspense>
                     ) : <span style={{ color: theme.node.placeholder }}>{t("canvas.node.editText")}</span>}
                 </div>
             )}

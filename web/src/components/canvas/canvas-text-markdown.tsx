@@ -4,6 +4,8 @@ import { WrapText } from "lucide-react";
 import { Streamdown, type Components } from "streamdown";
 import type { CanvasTheme } from "@/lib/canvas-theme";
 import { safeCanvasMarkdownHref, safeCanvasMarkdownImageSrc } from "@/lib/canvas/canvas-markdown-utils";
+import { cachedCanvasMarkdownBlocks } from "@/lib/canvas/canvas-markdown-block-cache";
+import { isSimpleCanvasText } from "@/lib/canvas/canvas-markdown-plain";
 import "./canvas-text-markdown.css";
 
 /** Preserve Streamdown's built-in fenced code renderer (highlighting/copy) while
@@ -106,15 +108,20 @@ export const CanvasTextMarkdown = memo(function CanvasTextMarkdown({
                 "--canvas-md-surface": theme.node.panel,
             } as React.CSSProperties}
         >
-            <Streamdown
-                mode="static"
-                controls={{ code: { copy: true, download: false }, table: false, mermaid: false }}
-                skipHtml
-                parseIncompleteMarkdown={false}
-                components={markdownComponents}
-            >
-                {content}
-            </Streamdown>
+            {isSimpleCanvasText(content) ? (
+                <p data-canvas-plain-markdown>{content}</p>
+            ) : (
+                <Streamdown
+                    mode="static"
+                    controls={{ code: { copy: true, download: false }, table: false, mermaid: false }}
+                    skipHtml
+                    parseIncompleteMarkdown={false}
+                    parseMarkdownIntoBlocksFn={cachedCanvasMarkdownBlocks}
+                    components={markdownComponents}
+                >
+                    {content}
+                </Streamdown>
+            )}
         </div>
     );
 });

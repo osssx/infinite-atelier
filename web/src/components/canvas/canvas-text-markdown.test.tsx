@@ -5,6 +5,14 @@ import { canvasThemes } from "@/lib/canvas-theme";
 import { CanvasTextMarkdown } from "./canvas-text-markdown";
 
 describe("CanvasTextMarkdown code wrapping", () => {
+    it("renders literal single-line text without Streamdown blocks", () => {
+        const markup = renderToStaticMarkup(<CanvasTextMarkdown content="A 6-second shot: quiet room." theme={canvasThemes.light} />);
+        expect(markup).toContain('data-canvas-plain-markdown');
+        expect(markup).not.toContain('data-streamdown="code-block"');
+        const link = renderToStaticMarkup(<CanvasTextMarkdown content="Visit https://example.com" theme={canvasThemes.light} />);
+        expect(link).not.toContain("data-canvas-plain-markdown");
+    });
+
     it("creates separate code toolbar targets for fenced blocks, not inline code", () => {
         const content = [
             "Inline `value` remains inline.",

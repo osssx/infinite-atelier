@@ -564,7 +564,9 @@ function GroupNodeContent({ node, theme, groupChildCount }: NodeContentRendererP
                 <span className="grid size-8 place-items-center rounded-xl" style={{ background: theme.toolbar.activeBg, color: theme.node.muted }}>
                     <Group className="size-4" />
                 </span>
-                <span>{t("canvas.node.group")}</span>
+                <span className="min-w-0 flex-1 truncate" title={node.title || t("canvas.node.group")}>
+                    {node.title || t("canvas.node.group")}
+                </span>
                 <span className="ml-auto rounded-full px-2 py-1 text-[11px] font-medium" style={{ background: theme.node.fill, color: theme.node.muted }}>
                     {t("canvas.node.nodeCount", { count: groupChildCount })}
                 </span>

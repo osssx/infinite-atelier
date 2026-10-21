@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { Compass, Focus, HelpCircle } from "lucide-react";
+import { Compass, Focus, HelpCircle, LocateFixed } from "lucide-react";
 import { useState } from "react";
 import { Button, Modal, Tooltip } from "antd";
 import { useTranslation } from "react-i18next";
@@ -11,11 +11,13 @@ type CanvasZoomControlsProps = {
     scale: number;
     onScaleChange: (scale: number) => void;
     onFitView: () => void;
+    canFocusSelected: boolean;
+    onFocusSelected: () => void;
     isMiniMapOpen: boolean;
     onToggleMiniMap: () => void;
 };
 
-export function CanvasZoomControls({ scale, onScaleChange, onFitView, isMiniMapOpen, onToggleMiniMap }: CanvasZoomControlsProps) {
+export function CanvasZoomControls({ scale, onScaleChange, onFitView, canFocusSelected, onFocusSelected, isMiniMapOpen, onToggleMiniMap }: CanvasZoomControlsProps) {
     const [shortcutsOpen, setShortcutsOpen] = useState(false);
     const { t } = useTranslation();
     const colorTheme = useThemeStore((state) => state.theme);
@@ -39,6 +41,9 @@ export function CanvasZoomControls({ scale, onScaleChange, onFitView, isMiniMapO
                 </Tooltip>
                 <Tooltip title={t("canvas.fitView")}>
                     <Button type="text" className="!h-8 !w-8 !min-w-8 !p-0" style={{ color: theme.toolbar.item }} icon={<Focus className="size-4" />} onClick={onFitView} data-canvas-fit-view aria-label={t("canvas.fitView")} />
+                </Tooltip>
+                <Tooltip title={t("canvas.focusSelectedHint")}>
+                    <Button type="text" className="!h-8 !w-8 !min-w-8 !p-0" style={{ color: canFocusSelected ? theme.toolbar.item : undefined }} icon={<LocateFixed className="size-4" />} onClick={onFocusSelected} disabled={!canFocusSelected} data-canvas-focus-selected aria-label={t("canvas.focusSelected")} aria-keyshortcuts="F" />
                 </Tooltip>
                 <Tooltip title={t("canvas.zoom")}>
                     <input
@@ -68,6 +73,7 @@ export function CanvasZoomControls({ scale, onScaleChange, onFitView, isMiniMapO
                     <Shortcut label={`Shift / Cmd + ${t("canvas.shortcut.click")}`} value={t("canvas.shortcut.addSelection")} />
                     <Shortcut label="Ctrl / Cmd + C / V" value={t("canvas.shortcut.copyPasteNodes")} />
                     <Shortcut label="G" value={t("canvas.shortcut.groupSelected")} />
+                    <Shortcut label="F" value={t("canvas.focusSelected")} />
                     <Shortcut label="Delete / Backspace" value={t("canvas.shortcut.delete")} />
                 </div>
             </Modal>

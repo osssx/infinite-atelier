@@ -336,6 +336,8 @@ export default {
         miniMapOpen: "打开小地图",
         miniMapClose: "关闭小地图",
         fitView: "适应画布",
+        focusSelected: "聚焦选中节点",
+        focusSelectedHint: "聚焦选中节点（F）",
         zoom: "放大/缩小画布",
         connecting: "连接中",
         nodeTypes: {

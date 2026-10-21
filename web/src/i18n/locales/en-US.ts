@@ -336,6 +336,8 @@ export default {
         miniMapOpen: "Open minimap",
         miniMapClose: "Close minimap",
         fitView: "Fit to view",
+        focusSelected: "Focus selected nodes",
+        focusSelectedHint: "Focus selected nodes (F)",
         zoom: "Zoom canvas",
         connecting: "Connecting",
         nodeTypes: {

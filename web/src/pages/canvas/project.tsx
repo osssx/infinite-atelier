@@ -25,6 +25,7 @@ import { cullConnections, worldViewRect } from "@/lib/canvas/canvas-connection-c
 import { reuseCanvasVisibleList } from "@/lib/canvas/canvas-visible-list";
 import { cropDataUrl, splitDataUrl, upscaleDataUrl } from "@/lib/canvas/canvas-image-data";
 import { fitNodeSize, nodeSizeFromRatio } from "@/lib/canvas/canvas-node-size";
+import { focusSelectionViewport, isFocusSelectionBlocked, isFocusSelectionKey } from "@/lib/canvas/canvas-focus-selection";
 import { App, Button, Modal } from "antd";
 import { NODE_DEFAULT_SIZE, getNodeSpec } from "@/constant/canvas";
 import { ActiveConnectionOverlay, ConnectionLayer } from "@/components/canvas/canvas-connection-layer";
@@ -1151,6 +1152,13 @@ function AtelierCanvasPage() {
         animateViewport(fitViewportToNodes(nodesRef.current, size));
     }, [animateViewport, size.height, size.width]);
 
+    const focusSelectedNodes = useCallback(() => {
+        const target = focusSelectionViewport(nodesRef.current, selectedNodeIdsRef.current, size);
+        if (!target) return false;
+        animateViewport(target);
+        return true;
+    }, [animateViewport, size.height, size.width]);
+
     const focusNode = useCallback(
         (nodeId: string) => {
             const node = nodesRef.current.find((item) => item.id === nodeId);
@@ -1668,6 +1676,12 @@ function AtelierCanvasPage() {
             const key = event.key.toLowerCase();
             const isModifierShortcut = event.metaKey || event.ctrlKey;
 
+            if (isFocusSelectionKey(event)) {
+                if (editingGestureActive || isCanvasPanning || contextMenu || nodeCreatePosition || pendingConnectionCreate || isFocusSelectionBlocked(target)) return;
+                if (focusSelectedNodes()) event.preventDefault();
+                return;
+            }
+
             if (isModifierShortcut && key === "c" && window.getSelection()?.toString()) return;
 
             if (isModifierShortcut && !event.altKey && key === "z") {
@@ -1738,7 +1752,7 @@ function AtelierCanvasPage() {
 
         window.addEventListener("keydown", handleKeyDown);
         return () => window.removeEventListener("keydown", handleKeyDown);
-    }, [copySelectedNodes, deleteConnection, deleteNodes, groupSelectedNodes, pasteCopiedNodes, pasteSystemClipboard, redoCanvas, selectedConnectionId, setConnecting, undoCanvas]);
+    }, [contextMenu, copySelectedNodes, deleteConnection, deleteNodes, editingGestureActive, focusSelectedNodes, groupSelectedNodes, isCanvasPanning, nodeCreatePosition, pendingConnectionCreate, pasteCopiedNodes, pasteSystemClipboard, redoCanvas, selectedConnectionId, setConnecting, undoCanvas]);
 
     const handleConnectStart = useCallback(
         (event: ReactMouseEvent, nodeId: string, handleType: "source" | "target") => {
@@ -3587,7 +3601,7 @@ function AtelierCanvasPage() {
 
                 {isMiniMapOpen ? <Minimap nodes={nodes} viewport={viewport} viewportSize={size} onViewportChange={handleViewportChange} /> : null}
 
-                <CanvasZoomControls scale={viewport.k} onScaleChange={setZoomScale} onFitView={fitViewport} isMiniMapOpen={isMiniMapOpen} onToggleMiniMap={() => setIsMiniMapOpen((value) => !value)} />
+                <CanvasZoomControls scale={viewport.k} onScaleChange={setZoomScale} onFitView={fitViewport} canFocusSelected={nodes.some((node) => selectedNodeIds.has(node.id))} onFocusSelected={focusSelectedNodes} isMiniMapOpen={isMiniMapOpen} onToggleMiniMap={() => setIsMiniMapOpen((value) => !value)} />
 
                 {contextMenu ? (
                     <CanvasNodeContextMenu

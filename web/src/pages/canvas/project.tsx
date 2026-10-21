@@ -13,7 +13,7 @@ import { extractSkillMentions, resolvePromptSkillBinding, showLegacySkillMention
 import { requestAudioGeneration, storeGeneratedAudio } from "@/services/api/audio";
 import { cancelVideoGenerationTask, pollVideoGenerationTask, requestVideoGeneration, retrySeedanceDownload, storeGeneratedVideo, type VideoGenerationRequest, type VideoGenerationTask } from "@/services/api/video";
 import { defaultConfig, resolveModelChannel, resolveModelScript, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
-import { uploadImage } from "@/services/image-storage";
+import { deleteStoredImages, uploadImage } from "@/services/image-storage";
 import { uploadMediaFile } from "@/services/file-storage";
 import { setPreviewGenerationSuspended } from "@/services/media-preview-storage";
 import { nanoid } from "nanoid";
@@ -39,6 +39,7 @@ import { CanvasNodeAngleDialog, type CanvasImageAngleParams } from "@/components
 import { CanvasNodeCropDialog, type CanvasImageCropRect } from "@/components/canvas/canvas-node-crop-dialog";
 import { CanvasNodeMaskEditDialog, type CanvasImageMaskEditPayload } from "@/components/canvas/canvas-node-mask-edit-dialog";
 import { CanvasNodeSplitDialog, type CanvasImageSplitParams } from "@/components/canvas/canvas-node-split-dialog";
+import { CanvasVideoFrameDialog } from "@/components/canvas/canvas-video-frame-dialog";
 import { CanvasNodeUpscaleDialog, type CanvasImageUpscaleParams } from "@/components/canvas/canvas-node-upscale-dialog";
 import { buildNodeGenerationContext, buildNodeResponseMessages, hydrateNodeGenerationContext } from "@/components/canvas/canvas-node-generation";
 import { CanvasNodeHoverToolbar, CanvasNodeInfoModal } from "@/components/canvas/canvas-node-hover-toolbar";
@@ -120,6 +121,10 @@ type CanvasHistoryEntry = Pick<CanvasClipboard, "nodes" | "connections"> & {
     backgroundMode: CanvasBackgroundMode;
     showImageInfo: boolean;
 };
+
+function sameCanvasHistoryEntry(left: CanvasHistoryEntry | null, right: CanvasHistoryEntry) {
+    return Boolean(left && left.nodes === right.nodes && left.connections === right.connections && left.chatSessions === right.chatSessions && left.activeChatId === right.activeChatId && left.backgroundMode === right.backgroundMode && left.showImageInfo === right.showImageInfo);
+}
 
 type CanvasGenerationRequest = {
     targetNodeId: string;
@@ -302,6 +307,8 @@ function AtelierCanvasPage() {
     const [dialogNodeId, setDialogNodeId] = useState<string | null>(null);
     const [infoNodeId, setInfoNodeId] = useState<string | null>(null);
     const [cropNodeId, setCropNodeId] = useState<string | null>(null);
+    const [videoFrameNodeId, setVideoFrameNodeId] = useState<string | null>(null);
+    const videoFrameIdentityRef = useRef<string | null>(null);
     const [maskEditNodeId, setMaskEditNodeId] = useState<string | null>(null);
     const [splitNodeId, setSplitNodeId] = useState<string | null>(null);
     const [upscaleNodeId, setUpscaleNodeId] = useState<string | null>(null);
@@ -323,8 +330,14 @@ function AtelierCanvasPage() {
     }, [editingGestureActive]);
 
     const nodesRef = useRef(nodes);
+    const activeProjectIdRef = useRef(projectId);
+    const pageMountedRef = useRef(true);
     const connectionsRef = useRef(connections);
     const selectedNodeIdsRef = useRef(selectedNodeIds);
+    useEffect(() => {
+        pageMountedRef.current = true;
+        return () => { pageMountedRef.current = false; };
+    }, []);
     const viewportRef = useRef(viewport);
     // One adjacency index per graph revision. Everything that used to scan `nodes`/`connections`
     // per item (id lookups, group children, resource references, generation inputs) reads from it.
@@ -556,15 +569,7 @@ function AtelierCanvasPage() {
         if (!projectLoaded || applyingHistoryRef.current || historyPausedRef.current) return;
         const next = createHistoryEntry();
         const previous = lastHistoryRef.current;
-        if (
-            previous?.nodes === next.nodes &&
-            previous.connections === next.connections &&
-            previous.chatSessions === next.chatSessions &&
-            previous.activeChatId === next.activeChatId &&
-            previous.backgroundMode === next.backgroundMode &&
-            previous.showImageInfo === next.showImageInfo
-        )
-            return;
+        if (sameCanvasHistoryEntry(previous, next)) return;
 
         if (historyCommitTimerRef.current) clearTimeout(historyCommitTimerRef.current);
         historyCommitTimerRef.current = setTimeout(() => {
@@ -626,6 +631,7 @@ function AtelierCanvasPage() {
     }, [projectId, projectLoaded, updateProject, viewport]);
 
     useLayoutEffect(() => {
+        activeProjectIdRef.current = projectId;
         nodesRef.current = nodes;
         connectionsRef.current = connections;
         selectedNodeIdsRef.current = selectedNodeIds;
@@ -826,6 +832,12 @@ function AtelierCanvasPage() {
     const toolbarNode = (toolbarNodeId ? nodeById.get(toolbarNodeId) || null : null) || (singleSelectedNodeId ? nodeById.get(singleSelectedNodeId) || null : null);
     const infoNode = infoNodeId ? nodeById.get(infoNodeId) || null : null;
     const cropNode = cropNodeId ? nodeById.get(cropNodeId) || null : null;
+    const videoFrameNode = videoFrameNodeId ? nodeById.get(videoFrameNodeId) || null : null;
+    useLayoutEffect(() => {
+        if (!videoFrameNodeId) return;
+        const identity = videoFrameNode ? `${projectId}:${videoFrameNode.id}:${videoFrameNode.metadata?.storageKey || ""}:${videoFrameNode.metadata?.content || ""}` : null;
+        if (identity !== videoFrameIdentityRef.current) setVideoFrameNodeId(null);
+    }, [projectId, videoFrameNodeId, videoFrameNode]);
     const maskEditNode = maskEditNodeId ? nodeById.get(maskEditNodeId) || null : null;
     const splitNode = splitNodeId ? nodeById.get(splitNodeId) || null : null;
     const upscaleNode = upscaleNodeId ? nodeById.get(upscaleNodeId) || null : null;
@@ -1974,6 +1986,44 @@ function AtelierCanvasPage() {
         setDialogNodeId(childId);
         setCropNodeId(null);
     }, []);
+
+    const captureVideoFrame = useCallback(async (source: CanvasNodeData, blob: Blob, timeMs: number) => {
+        const projectAtStart = projectId;
+        const sourceContent = source.metadata?.content;
+        const sourceStorageKey = source.metadata?.storageKey;
+        const liveSource = nodesRef.current.find((item) => item.id === source.id);
+        if (!pageMountedRef.current || !sourceContent || activeProjectIdRef.current !== projectAtStart || !liveSource || liveSource.type !== CanvasNodeType.Video || liveSource.metadata?.content !== sourceContent || liveSource.metadata?.storageKey !== sourceStorageKey) return;
+        const image = await uploadImage(blob);
+        const stillCurrent = pageMountedRef.current && activeProjectIdRef.current === projectAtStart && nodesRef.current.some((item) => item.id === source.id && item.type === CanvasNodeType.Video && item.metadata?.content === sourceContent && item.metadata?.storageKey === sourceStorageKey);
+        if (!stillCurrent) { await deleteStoredImages([image.storageKey]); return; }
+        const size = fitNodeSize(image.width, image.height, VIDEO_NODE_MAX_WIDTH, VIDEO_NODE_MAX_HEIGHT);
+        const placed = findVideoFramePosition(source, size, nodesRef.current);
+        const id = nanoid();
+        const stamp = `${Math.floor(timeMs / 60000)}:${((timeMs % 60000) / 1000).toFixed(2).padStart(5, "0")}`;
+        const child: CanvasNodeData = {
+            id, type: CanvasNodeType.Image,
+            title: t("canvas.projectPage.videoFrameNodeTitle", { name: source.title || t("canvas.node.video"), time: stamp }),
+            position: placed, width: size.width, height: size.height,
+            metadata: { ...imageMetadata(image), videoFrame: { sourceNodeId: source.id, timeMs } },
+        };
+        if (historyCommitTimerRef.current) { clearTimeout(historyCommitTimerRef.current); historyCommitTimerRef.current = null; }
+        const previous = createHistoryEntry();
+        const baseline = lastHistoryRef.current;
+        const past = [...historyRef.current.past];
+        if (baseline && !sameCanvasHistoryEntry(baseline, previous)) past.push(baseline);
+        past.push(previous);
+        historyRef.current.past = past.slice(-50);
+        historyRef.current.future = [];
+        setHistoryState({ canUndo: true, canRedo: false });
+        const nextNodes = [...nodesRef.current, child];
+        const nextConnections = [...connectionsRef.current, { id: nanoid(), fromNodeId: source.id, toNodeId: id }];
+        const nextHistory: CanvasHistoryEntry = { ...previous, nodes: nextNodes, connections: nextConnections };
+        lastHistoryRef.current = nextHistory;
+        nodesRef.current = nextNodes; connectionsRef.current = nextConnections;
+        setNodes(nextNodes); setConnections(nextConnections);
+        setSelectedNodeIds(new Set([id])); setSelectedConnectionId(null);
+        message.success(t("canvas.videoFrame.captureSuccess"));
+    }, [createHistoryEntry, message, projectId, t]);
 
     const splitImageNode = useCallback(
         async (node: CanvasNodeData, params: CanvasImageSplitParams) => {
@@ -3497,6 +3547,7 @@ function AtelierCanvasPage() {
                     onSaveAsset={(node) => void saveNodeAsset(node)}
                     onMaskEdit={(node) => setMaskEditNodeId(node.id)}
                     onCrop={(node) => setCropNodeId(node.id)}
+                    onCaptureVideoFrame={(node) => { videoFrameIdentityRef.current = `${projectId}:${node.id}:${node.metadata?.storageKey || ""}:${node.metadata?.content || ""}`; setVideoFrameNodeId(node.id); }}
                     onSplit={(node) => setSplitNodeId(node.id)}
                     onUpscale={(node) => setUpscaleNodeId(node.id)}
                     onSuperResolve={(node) => setSuperResolveNodeId(node.id)}
@@ -3562,6 +3613,8 @@ function AtelierCanvasPage() {
 
                 <CanvasNodeInfoModal node={infoNode} open={Boolean(infoNode)} onClose={() => setInfoNodeId(null)} />
 
+                {videoFrameNode ? <CanvasVideoFrameDialog key={`${projectId}:${videoFrameNode.id}:${videoFrameNode.metadata?.storageKey || ""}:${videoFrameNode.metadata?.content || ""}`} node={videoFrameNode} open onClose={() => setVideoFrameNodeId(null)} onCapture={(blob, timeMs) => captureVideoFrame(videoFrameNode, blob, timeMs)} /> : null}
+
                 {cropNode?.metadata?.content ? <CanvasNodeCropDialog dataUrl={cropNode.metadata.content} open={Boolean(cropNode)} onClose={() => setCropNodeId(null)} onConfirm={(crop) => void cropImageNode(cropNode!, crop)} /> : null}
 
                 {maskEditNode?.metadata?.content ? (
@@ -3613,4 +3666,16 @@ function AtelierCanvasPage() {
             </section>
         </main>
     );
+}
+
+function findVideoFramePosition(source: CanvasNodeData, size: { width: number; height: number }, nodes: CanvasNodeData[]): Position {
+    const gap = 24;
+    const x = source.position.x + source.width + 96;
+    let y = source.position.y;
+    for (let attempt = 0; attempt < nodes.length + 1; attempt += 1) {
+        const collisions = nodes.filter((node) => node.type !== CanvasNodeType.Group && x < node.position.x + node.width + gap && x + size.width + gap > node.position.x && y < node.position.y + node.height + gap && y + size.height + gap > node.position.y);
+        if (!collisions.length) return { x, y };
+        y = Math.max(...collisions.map((node) => node.position.y + node.height + gap));
+    }
+    return { x, y };
 }

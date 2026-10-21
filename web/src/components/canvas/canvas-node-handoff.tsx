@@ -12,6 +12,7 @@ type Props = {
     data: CanvasNodeData;
     showFull: boolean;
     showImagePreview: boolean;
+    preferImageThumbnail: boolean;
     isSelected: boolean;
     isRelated: boolean;
     isFocusRelated: boolean;
@@ -36,7 +37,7 @@ type Props = {
  * Unlike swapping keyed components, the compact image stays mounted throughout hydration.
  */
 export const CanvasNodeHandoff = memo(function CanvasNodeHandoff({
-    data, showFull, showImagePreview, isSelected, isRelated, isFocusRelated,
+    data, showFull, showImagePreview, preferImageThumbnail, isSelected, isRelated, isFocusRelated,
     isConnectionTarget, isConnecting, showPanel, groupChildCount, isGroupDropTarget,
     batchExpanded, showImageInfo, shared, onMediaPlaybackChange,
 }: Props) {
@@ -111,6 +112,7 @@ export const CanvasNodeHandoff = memo(function CanvasNodeHandoff({
                     onMediaPlaybackChange={onMediaPlaybackChange}
                     onVisualReady={onVisualReady}
                     visualShown={interactiveFull}
+                    preferImageThumbnail={preferImageThumbnail}
                     handoffActive
                 />
             ) : null}

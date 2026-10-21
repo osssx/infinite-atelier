@@ -9,6 +9,37 @@ const previews = localforage.createInstance({
 });
 const urls = new Map<string, string>();
 const inFlight = new Map<string, Promise<string | null>>();
+const cachedLookups = new Map<string, Promise<string | null>>();
+
+/** Read only a persisted preview. Unlike resolveMediaPreview, this never decodes
+ * the original image or queues preview generation as a side effect of mounting
+ * an image node. It can safely be used in a 200-node full canvas view. */
+export async function getExistingMediaPreview(kind: PreviewKind, storageKey: string): Promise<string | null> {
+    if (!storageKey) return null;
+    const id = keyOf(kind, storageKey);
+    const present = urls.get(id);
+    if (present) return present;
+    const pendingLookup = cachedLookups.get(id);
+    if (pendingLookup) return pendingLookup;
+    const version = versions.get(id) || 0;
+    const lookup = (async () => {
+        try {
+            const blob = await previews.getItem<Blob>(id);
+            if (!blob || (versions.get(id) || 0) !== version) return null;
+            const existing = urls.get(id);
+            if (existing) return existing;
+            const url = URL.createObjectURL(blob);
+            urls.set(id, url);
+            return url;
+        } catch {
+            return null;
+        }
+    })();
+    cachedLookups.set(id, lookup);
+    try { return await lookup; }
+    finally { if (cachedLookups.get(id) === lookup) cachedLookups.delete(id); }
+}
+
 const pending: Array<() => Promise<void>> = [];
 let working = false;
 // Independent gesture owners must not resume decoding while another is active.
@@ -105,6 +136,7 @@ export async function deleteMediaPreview(kind: PreviewKind, storageKey: string) 
     const id = keyOf(kind, storageKey);
     versions.set(id, (versions.get(id) || 0) + 1);
     inFlight.delete(id);
+    cachedLookups.delete(id);
     const url = urls.get(id);
     if (url) URL.revokeObjectURL(url);
     urls.delete(id);

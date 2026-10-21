@@ -1,8 +1,10 @@
 import { memo, startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
-import type { CanvasNodeData } from "@/types/canvas";
+import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
 import { shouldPromoteHoveredNode, shouldRenderFullNode, shouldUseCompactNodeLayer } from "@/lib/canvas/canvas-lod";
 import { shouldShowCompactImage } from "@/lib/canvas/canvas-lod-preview";
+import { shouldUseOriginalCanvasImage } from "@/lib/canvas/canvas-image-resolution";
+
 import { canScheduleNodePromotions, choosePromotionBatch, orderNodePromotions, PROMOTION_GESTURE_QUIET_MS } from "@/lib/canvas/canvas-node-promotion";
 import { PERF_MODE } from "@/lib/perf-mode";
 import type { CanvasNodeProps } from "./canvas-node";
@@ -90,6 +92,10 @@ export const NodeLayer = memo(function NodeLayer({
     const compactRef = useRef(false);
     const compactMode = shouldUseCompactNodeLayer(nodes.length, scale, wheelZoomActive, compactRef.current);
     compactRef.current = compactMode;
+    // Resolution tiers change only at a threshold, not on every wheel event.
+    const originalImageIds = useRef<Set<string>>(new Set());
+    const viewportWidth = typeof window === "undefined" ? 1280 : window.innerWidth;
+    const viewportHeight = typeof window === "undefined" ? 800 : window.innerHeight;
 
     // Pause new hydration during a gesture, but retain editors already mounted:
     // unmounting an active text editor or a multi-selected drag source is destructive.
@@ -194,12 +200,21 @@ export const NodeLayer = memo(function NodeLayer({
                 // heavy media/editor node can stall zoom; selection and playing media still win.
                 const hoveredForPromotion = shouldPromoteHoveredNode(scale, node.width, node.height, wheelZoomActive) ? activeNodeId : null;
                 const showFull = shouldRenderFullNode(node.id, stagedCompact, selectedNodeIds, hoveredForPromotion, connectionTargetNodeId, panelNodeId, playingNodeIds.has(node.id));
+
+                const hasOriginal = originalImageIds.current.has(node.id);
+                const wantOriginal = node.type === CanvasNodeType.Image && shouldUseOriginalCanvasImage(
+                    scale, node.width, node.height, viewportWidth, viewportHeight, hasOriginal,
+                );
+                if (wantOriginal) originalImageIds.current.add(node.id);
+                else originalImageIds.current.delete(node.id);
+                const preferImageThumbnail = node.type === CanvasNodeType.Image && !wantOriginal;
                 return <CanvasNodeHandoff
                     key={node.id}
                     shared={shared}
                     data={node}
                     showFull={showFull}
                     showImagePreview={shouldShowCompactImage(scale, node.width, node.height)}
+                    preferImageThumbnail={preferImageThumbnail}
                     isSelected={selectedNodeIds.has(node.id)}
                     isRelated={relatedNodeIds.has(node.id)}
                     isFocusRelated={hoveredForPromotion === node.id}

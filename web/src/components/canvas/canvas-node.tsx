@@ -15,7 +15,7 @@ import { useNodeMentionReferences } from "./canvas-graph-context";
 import { CanvasNodeType, type CanvasNodeData, type CanvasNodeImage, type ViewportTransform } from "@/types/canvas";
 import { useTranslation } from "react-i18next";
 import { getMediaBlob } from "@/services/file-storage";
-import { resolveMediaPreview } from "@/services/media-preview-storage";
+import { getExistingMediaPreview, resolveMediaPreview } from "@/services/media-preview-storage";
 
 // Parsing rich Markdown is only needed for full, non-editing text nodes. Keep its
 // parser out of the initial canvas bundle and all compact LOD representations.
@@ -31,6 +31,7 @@ export type CanvasNodeProps = {
     // A ref, not the viewport value: resize only needs the zoom at the moment the gesture starts,
     // and a `scale` number prop re-rendered every visible node on every zoom frame.
     viewportRef: React.RefObject<ViewportTransform>;
+    preferImageThumbnail?: boolean;
     isSelected: boolean;
     isRelated: boolean;
     isFocusRelated: boolean;
@@ -56,6 +57,7 @@ type NodeContentRendererProps = {
     isEditingContent: boolean;
     textareaRef: React.RefObject<HTMLTextAreaElement | null>;
     isBatchRoot: boolean;
+    preferImageThumbnail?: boolean;
     batchCount: number;
     batchExpanded: boolean;
     renderNodeContent?: (node: CanvasNodeData) => ReactNode;
@@ -78,6 +80,7 @@ export const CanvasNode = React.memo(function CanvasNode({
     data,
     viewportRef,
     isSelected,
+    preferImageThumbnail = false,
     isRelated,
     isFocusRelated,
     isConnectionTarget,
@@ -475,6 +478,7 @@ export const CanvasNode = React.memo(function CanvasNode({
                     <NodeContent
                         node={data}
                         theme={theme}
+                        preferImageThumbnail={preferImageThumbnail}
                         isEditingContent={isEditingContent}
                         textareaRef={textareaRef}
                         isBatchRoot={isBatchRoot}
@@ -731,6 +735,7 @@ function ImageNodeContent(props: NodeContentRendererProps) {
     return (
         <ImageContent
             node={props.node}
+            preferImageThumbnail={props.preferImageThumbnail}
             batchExpanded={props.batchExpanded}
             onToggleBatch={props.onToggleBatch}
             onSetBatchPrimary={props.onSetBatchPrimary}
@@ -878,6 +883,7 @@ function AudioNodeContent({ node, theme, onMediaPlaybackChange }: NodeContentRen
 
 function ImageContent({
     node,
+    preferImageThumbnail = false,
     batchExpanded,
     onToggleBatch,
     onSetBatchPrimary,
@@ -890,6 +896,7 @@ function ImageContent({
     node: CanvasNodeData;
 
     batchExpanded: boolean;
+    preferImageThumbnail?: boolean;
     onToggleBatch?: () => void;
     onVisualReady?: () => void;
     onSetBatchPrimary?: (imageId: string) => void;
@@ -906,6 +913,26 @@ function ImageContent({
     const primaryImageId = node.metadata?.primaryImageId || images[0]?.id;
     const primaryImage = images.find((image) => image.id === primaryImageId);
     const primaryContent = primaryImage?.content || node.metadata?.content;
+    const primaryStorageKey = primaryImage?.storageKey || node.metadata?.storageKey || "";
+    const [preview, setPreview] = useState<{ key: string; url: string | null } | null>(null);
+    const [badPreview, setBadPreview] = useState<string | null>(null);
+    const needsPreview = preferImageThumbnail && Boolean(primaryContent && primaryStorageKey);
+    useEffect(() => {
+        if (!needsPreview) return;
+        let active = true;
+        void getExistingMediaPreview("image", primaryStorageKey).then((url) => {
+            if (active) setPreview({ key: primaryStorageKey, url });
+        });
+        return () => { active = false; };
+    }, [needsPreview, primaryStorageKey]);
+    // Putting an original URL into <img> can start full decoding even if scaled down.
+    const previewUrl = needsPreview && badPreview !== primaryStorageKey && preview?.key === primaryStorageKey
+        ? preview.url : null;
+    const imageSource = !needsPreview || badPreview === primaryStorageKey
+        ? primaryContent
+        : preview?.key === primaryStorageKey
+            ? (previewUrl || primaryContent)
+            : undefined;
 
     return (
         <BatchFrame batchCount={batchCount} batchExpanded={batchExpanded}>
@@ -927,18 +954,22 @@ function ImageContent({
                       ))
                 : null}
             <div className="h-full w-full overflow-hidden rounded-3xl">
-                {primaryContent ? (
+                {imageSource ? (
                     <img
-                        src={primaryContent}
+                        data-canvas-image-quality={imageSource === previewUrl ? "preview" : "original"}
+                        src={imageSource}
                         decoding="async"
                         onLoad={onVisualReady}
-                        onError={onVisualReady}
+                        onError={() => {
+                            if (imageSource === previewUrl) setBadPreview(primaryStorageKey);
+                            else onVisualReady?.();
+                        }}
                         alt={node.title}
                         draggable={false}
                         onDragStart={(event) => event.preventDefault()}
                         className={`pointer-events-none block h-full w-full select-none ${node.metadata?.freeResize ? "object-fill" : "object-contain"}`}
                     />
-                ) : (
+                ) : primaryContent ? null : (
                     <ImageSlotStatus image={primaryImage} />
                 )}
             </div>

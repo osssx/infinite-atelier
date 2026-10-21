@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
 import { createSeededRandom } from "./canvas-fixtures";
-import { findGroupDropTarget, findGroupDropTargetFromDelta } from "./canvas-node-geometry";
+import { findGroupDropTarget, findGroupDropTargetFromDelta, groupSelectedCanvasNodes } from "./canvas-node-geometry";
 
 const group = (id: string, x: number, y: number, width: number, height: number): CanvasNodeData => ({ id, type: CanvasNodeType.Group, title: id, position: { x, y }, width, height, metadata: {} });
 const image = (id: string, x: number, y: number, width = 200, height = 150): CanvasNodeData => ({ id, type: CanvasNodeType.Image, title: id, position: { x, y }, width, height, metadata: {} });
@@ -74,6 +74,59 @@ describe("findGroupDropTargetFromDelta", () => {
 
         expect(legacy?.id).toBe("g-1");
         expect(next?.id).toBe("g-1");
+    });
+});
+
+
+
+describe("groupSelectedCanvasNodes", () => {
+    it("creates a padded group around selected nodes without moving or altering connections", () => {
+        const first = image("a", -120, 75, 200, 150);
+        const second = image("b", 240, 260, 100, 90);
+        second.metadata = { groupId: "old-group", status: "success" };
+        const untouched = image("other", 900, 700);
+        const existing = group("old-group", 1000, 1000, 450, 320);
+        const source = [first, second, untouched, existing];
+        const { group: resultGroup, nodes } = groupSelectedCanvasNodes(source, new Set(["a", "b"]), group("new-group", 0, 0, 760, 480))!;
+
+        expect(resultGroup.position).toEqual({ x: -156, y: -5 });
+        expect(resultGroup.width).toBe(532);
+        expect(resultGroup.height).toBe(391);
+        expect(nodes).toHaveLength(5);
+        expect(nodes[4]).toBe(resultGroup);
+        expect(nodes[0].metadata?.groupId).toBe("new-group");
+        expect(nodes[1].metadata?.groupId).toBe("new-group");
+        expect(nodes[1].metadata?.status).toBe("success");
+        expect(nodes[0].position).toEqual(first.position);
+        expect(nodes[1].position).toEqual(second.position);
+        expect(nodes[2]).toBe(untouched);
+        expect(nodes[3]).toBe(existing);
+        expect(source[0].metadata?.groupId).toBeUndefined();
+        expect(source[1].metadata?.groupId).toBe("old-group");
+    });
+
+    it("requires two valid nodes and does not nest selected group nodes", () => {
+        const first = image("a", 0, 0);
+        const existing = group("existing", 400, 0, 760, 480);
+        const target = group("target", 0, 0, 760, 480);
+        expect(groupSelectedCanvasNodes([first], new Set(["a"]), target)).toBeNull();
+        expect(groupSelectedCanvasNodes([first], new Set(["a", "missing"]), target)).toBeNull();
+        expect(groupSelectedCanvasNodes([first, existing], new Set(["a", "existing"]), target)).toBeNull();
+        expect(groupSelectedCanvasNodes([first], new Set(["a", "a"]), target)).toBeNull();
+        expect(groupSelectedCanvasNodes([first, existing], new Set(["a", "missing"]), target)).toBeNull();
+        expect(groupSelectedCanvasNodes([first, existing], new Set(["a", "existing"]), first)).toBeNull();
+        expect(groupSelectedCanvasNodes([first, existing], new Set(["a", "existing"]), existing)).toBeNull();
+    });
+
+    it("uses minimum bounds for nearby small nodes and ignores non-finite positions", () => {
+        const a = image("a", 0, 0, 10, 10);
+        const b = image("b", 12, 20, 10, 10);
+        const result = groupSelectedCanvasNodes([a, b], new Set(["a", "b"]), group("g", 0, 0, 760, 480))!;
+        expect(result.group.width).toBe(260);
+        expect(result.group.height).toBe(180);
+        expect(result.group.position).toEqual({ x: -36, y: -80 });
+        const invalid = image("bad", Number.NaN, 0);
+        expect(groupSelectedCanvasNodes([a, invalid], new Set(["a", "bad"]), group("g", 0, 0, 760, 480))).toBeNull();
     });
 });
 

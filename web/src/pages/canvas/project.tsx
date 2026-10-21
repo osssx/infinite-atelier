@@ -58,7 +58,7 @@ import { useGenerationHistoryStore, type GenerationHistoryImage } from "@/stores
 import { buildCanvasGraphIndex } from "@/lib/canvas/canvas-graph-index";
 import { exportCanvasProjects } from "@/lib/canvas/canvas-export";
 import { applyNodeConfigPatch, audioMetadata, buildAudioGenerationMetadata, buildImageGenerationMetadata, createCanvasNode, imageMetadata, videoMetadata } from "@/lib/canvas/canvas-node-factory";
-import { findContainingGroupId, findGroupDropTarget, findGroupDropTargetFromDelta, fitViewportToNodes, getConnectionTargetAnchor, normalizeConnection, normalizeConnectionFromIndex, snapNodesIntoGroup } from "@/lib/canvas/canvas-node-geometry";
+import { findContainingGroupId, findGroupDropTarget, findGroupDropTargetFromDelta, fitViewportToNodes, getConnectionTargetAnchor, groupSelectedCanvasNodes, normalizeConnection, normalizeConnectionFromIndex, snapNodesIntoGroup } from "@/lib/canvas/canvas-node-geometry";
 import {
     audioExtension,
     buildAngleLabel,
@@ -834,6 +834,11 @@ function AtelierCanvasPage() {
     const previewNode = previewNodeId ? nodeById.get(previewNodeId) || null : null;
     const previewContent = previewImageId ? previewNode?.metadata?.images?.find((image) => image.id === previewImageId)?.content : previewNode?.metadata?.content;
     const hasMultipleSelectedNodes = selectedNodeIds.size > 1;
+    const canGroupSelectedNodes = hasMultipleSelectedNodes &&
+        [...selectedNodeIds].every((id) => {
+            const node = nodeById.get(id);
+            return node !== undefined && node.type !== CanvasNodeType.Group;
+        });
     const activeNodeId = hasMultipleSelectedNodes ? null : hoveredNodeId || (selectedNodeIds.size === 1 ? Array.from(selectedNodeIds)[0] : null);
     const groupChildCountById = graphIndex.groupChildCountById;
     const relatedHighlight = useMemo(() => {
@@ -900,6 +905,23 @@ function AtelierCanvasPage() {
         },
         [effectiveConfig.canvasImageCount, effectiveConfig.count, effectiveConfig.imageModel, effectiveConfig.model, effectiveConfig.size, getCanvasCenter],
     );
+
+    const groupSelectedNodes = useCallback(() => {
+        const selected = selectedNodeIdsRef.current;
+        if (selected.size < 2) return false;
+        const template = createCanvasNode(CanvasNodeType.Group, { x: 0, y: 0 });
+        const result = groupSelectedCanvasNodes(nodesRef.current, selected, template);
+        if (!result) return false;
+
+        setNodes(result.nodes);
+        setSelectedNodeIds(new Set([result.group.id]));
+        setSelectedConnectionId(null);
+        setContextMenu(null);
+        setSelectionBox(null);
+        setToolbarNodeId(null);
+        setDialogNodeId(null);
+        return true;
+    }, []);
 
     const deleteNodes = useCallback(
         (ids: Set<string>) => {
@@ -1670,6 +1692,12 @@ function AtelierCanvasPage() {
                 return;
             }
 
+            if (key === "g" && !isModifierShortcut && !event.altKey && !event.shiftKey &&
+                !event.repeat && !event.isComposing && !target?.closest("button,[role='dialog'],.ant-modal,.ant-popover,.ant-dropdown")) {
+                if (groupSelectedNodes()) event.preventDefault();
+                return;
+            }
+
             if (event.key === "Delete" || event.key === "Backspace") {
                 event.preventDefault();
                 if (selectedNodeIdsRef.current.size) {
@@ -1698,7 +1726,7 @@ function AtelierCanvasPage() {
 
         window.addEventListener("keydown", handleKeyDown);
         return () => window.removeEventListener("keydown", handleKeyDown);
-    }, [copySelectedNodes, deleteConnection, deleteNodes, pasteCopiedNodes, pasteSystemClipboard, redoCanvas, selectedConnectionId, setConnecting, undoCanvas]);
+    }, [copySelectedNodes, deleteConnection, deleteNodes, groupSelectedNodes, pasteCopiedNodes, pasteSystemClipboard, redoCanvas, selectedConnectionId, setConnecting, undoCanvas]);
 
     const handleConnectStart = useCallback(
         (event: ReactMouseEvent, nodeId: string, handleType: "source" | "target") => {
@@ -3481,6 +3509,7 @@ function AtelierCanvasPage() {
 
                 <CanvasToolbar
                     selectedCount={selectedNodeIds.size}
+                    canGroupSelected={canGroupSelectedNodes}
                     canvasTool={canvasTool}
                     canUndo={historyState.canUndo}
                     canRedo={historyState.canRedo}
@@ -3492,6 +3521,7 @@ function AtelierCanvasPage() {
                     onAddText={() => createNode(CanvasNodeType.Text)}
                     onAddConfig={() => createNode(CanvasNodeType.Config)}
                     onAddGroup={() => createNode(CanvasNodeType.Group)}
+                    onGroupSelected={groupSelectedNodes}
                     onAddDirector={() => createNode(CanvasNodeType.Director)}
                     onUndo={undoCanvas}
                     onRedo={redoCanvas}

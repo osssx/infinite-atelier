@@ -356,6 +356,7 @@ export default {
             audio: "Audio",
             config: "Generation config",
             group: "Group",
+            groupSelected: "Group selected nodes (G)",
             director: "Director",
             upload: "Upload assets",
             appearance: "Canvas appearance",

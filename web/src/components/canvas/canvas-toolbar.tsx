@@ -10,6 +10,7 @@ import { useTranslation } from "react-i18next";
 
 export function CanvasToolbar({
     selectedCount,
+    canGroupSelected,
     canvasTool,
     canUndo,
     canRedo,
@@ -21,6 +22,7 @@ export function CanvasToolbar({
     onAddText,
     onAddConfig,
     onAddGroup,
+    onGroupSelected,
     onAddDirector,
     onUndo,
     onRedo,
@@ -32,6 +34,7 @@ export function CanvasToolbar({
     onShowImageInfoChange,
 }: {
     selectedCount: number;
+    canGroupSelected: boolean;
     canvasTool: "select" | "pan";
     canUndo: boolean;
     canRedo: boolean;
@@ -43,6 +46,7 @@ export function CanvasToolbar({
     onAddText: () => void;
     onAddConfig: () => void;
     onAddGroup: () => void;
+    onGroupSelected: () => void;
     onAddDirector: () => void;
     onUndo: () => void;
     onRedo: () => void;
@@ -139,6 +143,11 @@ export function CanvasToolbar({
                 {selectedCount ? (
                     <>
                         <Divider theme={theme} />
+                        {selectedCount > 1 ? (
+                            <ToolbarButton id="tool-group-selected" label={t("canvas.toolbar.groupSelected")} disabled={!canGroupSelected} hovered={hovered} hoverStyle={hoverStyle} wrapRef={wrapRef} onTipX={setTipX} onHover={setHovered} onClick={onGroupSelected}>
+                                <Group className="size-4.5" />
+                            </ToolbarButton>
+                        ) : null}
                         <ToolbarButton id="tool-delete" label={t("canvas.deleteSelected")} hovered={hovered} hoverStyle={hoverStyle} wrapRef={wrapRef} onTipX={setTipX} onHover={setHovered} onClick={onDelete} danger>
                             <Trash2 className="size-4.5" />
                         </ToolbarButton>
@@ -307,6 +316,7 @@ function toolLabel(id: string, t: (key: string) => string) {
     if (id === "tool-audio") return t("canvas.toolbar.audio");
     if (id === "tool-config") return t("canvas.toolbar.config");
     if (id === "tool-group") return t("canvas.toolbar.group");
+    if (id === "tool-group-selected") return t("canvas.toolbar.groupSelected");
     if (id === "tool-director") return t("canvas.toolbar.director");
     if (id === "tool-upload") return t("canvas.toolbar.upload");
     if (id === "tool-style") return t("canvas.toolbar.appearance");

@@ -34,6 +34,39 @@ export function fitViewportToNodes(nodes: CanvasNodeData[], size: { width: numbe
     return { x: size.width / 2 - ((bounds.left + bounds.right) / 2) * k, y: size.height / 2 - ((bounds.top + bounds.bottom) / 2) * k, k };
 }
 
+/**
+ * Wrap an existing multi-selection in a new group without moving its nodes.
+ *
+ * Coordinates are absolute in this canvas, so the group is placed behind the
+ * selected contents and each child receives only a parent group ID.
+ * Group nesting is not supported by the current drag/reparent system.
+ */
+export function groupSelectedCanvasNodes(
+    nodes: readonly CanvasNodeData[],
+    selectedIds: ReadonlySet<string>,
+    groupTemplate: CanvasNodeData,
+): { nodes: CanvasNodeData[]; group: CanvasNodeData } | null {
+    if (groupTemplate.type !== CanvasNodeType.Group || nodes.some((node) => node.id === groupTemplate.id)) return null;
+    const selected = nodes.filter((node) => selectedIds.has(node.id));
+    if (selected.length < 2 || selected.length !== selectedIds.size || selected.some((node) => node.type === CanvasNodeType.Group)) return null;
+    const bounds = nodeBounds(selected);
+    if (![bounds.left, bounds.top, bounds.right, bounds.bottom].every(Number.isFinite)) return null;
+
+    const horizontalPadding = 36;
+    const topPadding = 80; // Keep space for the group header.
+    const bottomPadding = 36;
+    const group: CanvasNodeData = {
+        ...groupTemplate,
+        position: { x: bounds.left - horizontalPadding, y: bounds.top - topPadding },
+        width: Math.max(260, bounds.right - bounds.left + horizontalPadding * 2),
+        height: Math.max(180, bounds.bottom - bounds.top + topPadding + bottomPadding),
+    };
+    const updated = nodes.map((node) => selectedIds.has(node.id)
+        ? { ...node, metadata: { ...node.metadata, groupId: group.id } }
+        : node);
+    return { nodes: [...updated, group], group };
+}
+
 export function findGroupDropTarget(movedIds: Set<string>, nodes: CanvasNodeData[]) {
     if (nodes.some((node) => movedIds.has(node.id) && node.type === CanvasNodeType.Group)) return null;
     const movingNodes = nodes.filter((node) => movedIds.has(node.id) && node.type !== CanvasNodeType.Group);

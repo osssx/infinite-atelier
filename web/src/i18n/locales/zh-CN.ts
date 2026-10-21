@@ -356,6 +356,7 @@ export default {
             audio: "音频",
             config: "生成配置",
             group: "组",
+            groupSelected: "将所选节点打组 (G)",
             director: "导演台",
             upload: "上传资产",
             appearance: "画布外观",

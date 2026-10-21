@@ -24,6 +24,10 @@ type AtelierCanvasProps = {
     children: React.ReactNode;
 };
 
+// Capture node wheel gestures before bubbling handlers can swallow them.
+// Preserve native scrolling for editors and menus.
+const canvasWheelExcludedSelector = "[data-canvas-no-zoom],.ant-modal,.ant-popover,.ant-dropdown,.ant-select-dropdown,.ant-picker-dropdown,textarea,[contenteditable='true']";
+
 export function AtelierCanvas({ containerRef, viewport, tool, backgroundMode = "lines", onViewportChange, onWheelActivityChange, onPanActivityChange, onCanvasMouseDown, onCanvasDeselect, onCanvasDoubleClick, onContextMenu, onDrop, children }: AtelierCanvasProps) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const panState = useRef({
@@ -108,8 +112,10 @@ export function AtelierCanvas({ containerRef, viewport, tool, backgroundMode = "
     }, [onPanActivityChange]);
 
     const handleWheel = (event: React.WheelEvent<HTMLDivElement>) => {
+        // React can forward portal events through ancestors outside their actual DOM tree.
+        if (!isNativeDescendantEvent(event.currentTarget, event.target)) return;
         const target = event.target instanceof Element ? event.target : null;
-        if (target?.closest("[data-canvas-no-zoom],.ant-modal,.ant-popover,.ant-dropdown,.ant-select-dropdown,.ant-picker-dropdown")) return;
+        if (target?.closest(canvasWheelExcludedSelector)) return;
 
         const rect = wheelRectRef.current ?? containerRef.current?.getBoundingClientRect();
         if (!rect) return;
@@ -244,7 +250,7 @@ export function AtelierCanvas({ containerRef, viewport, tool, backgroundMode = "
         // Prevent canvas scrolling from moving the page while preserving native scrolling inside overlays and dialogs.
         const preventWheelScroll = (event: WheelEvent) => {
             const target = event.target instanceof Element ? event.target : null;
-            if (target?.closest("[data-canvas-no-zoom],.ant-modal,.ant-popover,.ant-dropdown,.ant-select-dropdown,.ant-picker-dropdown")) return;
+            if (target?.closest(canvasWheelExcludedSelector)) return;
             event.preventDefault();
         };
         container.addEventListener("wheel", preventWheelScroll, { passive: false });
@@ -262,7 +268,7 @@ export function AtelierCanvas({ containerRef, viewport, tool, backgroundMode = "
             style={{ background: theme.canvas.background, cursor }}
             onPointerDown={handlePointerDown}
             onDoubleClick={handleDoubleClick}
-            onWheel={handleWheel}
+            onWheelCapture={handleWheel}
             onContextMenu={onContextMenu}
             onDragOver={(event) => event.preventDefault()}
             onDrop={onDrop}

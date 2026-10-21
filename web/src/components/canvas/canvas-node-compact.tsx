@@ -3,6 +3,7 @@ import { memo, useEffect, useState } from "react";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { getNodeDefinition } from "@/lib/canvas/node-registry";
 import { getCompactImageSource } from "@/lib/canvas/canvas-lod-preview";
+import { compactCanvasMarkdown } from "@/lib/canvas/canvas-markdown-utils";
 import { getImageBlob } from "@/services/image-storage";
 import { getMediaBlob } from "@/services/file-storage";
 import { resolveMediaPreview } from "@/services/media-preview-storage";
@@ -109,7 +110,7 @@ export const CompactCanvasNode = memo(function CompactCanvasNode({
                 {data.type === CanvasNodeType.Text ? (
                     <div className="pointer-events-none h-full w-full overflow-hidden whitespace-pre-wrap break-words px-4 pt-12 pb-4 font-mono"
                         style={{ color: theme.node.text, fontSize: data.metadata?.fontSize || 14, lineHeight: 1.65 }}>
-                        {(data.metadata?.content || data.title).slice(0,900)}
+                        {compactCanvasMarkdown(data.metadata?.content || data.title)}
                     </div>
                 ) : null}
                 {isGroup ? (

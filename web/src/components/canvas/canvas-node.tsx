@@ -16,6 +16,12 @@ import { useTranslation } from "react-i18next";
 import { getMediaBlob } from "@/services/file-storage";
 import { resolveMediaPreview } from "@/services/media-preview-storage";
 
+// Parsing rich Markdown is only needed for full, non-editing text nodes. Keep its
+// parser out of the initial canvas bundle and all compact LOD representations.
+const LazyCanvasTextMarkdown = React.lazy(() => import("./canvas-text-markdown").then(
+    ({ CanvasTextMarkdown }) => ({ default: CanvasTextMarkdown }),
+));
+
 type ResizeCorner = "top-left" | "top-right" | "bottom-left" | "bottom-right";
 const selectionBlue = "#2f80ff";
 
@@ -651,8 +657,16 @@ function TextContent({ node, theme, isEditingContent, textareaRef, onContentChan
             {isEditingContent ? (
                 <EditableTextContent node={node} textStyle={textStyle} textareaRef={textareaRef} onContentChange={onContentChange} onStopEditing={onStopEditing} />
             ) : (
-                <div className="thin-scrollbar block h-full w-full overflow-y-auto whitespace-pre-wrap break-words bg-transparent px-4 pt-0 pb-4 font-mono" style={textStyle} onWheel={(event) => event.stopPropagation()}>
-                    {node.metadata?.content || <span style={{ color: theme.node.placeholder }}>{t("canvas.node.editText")}</span>}
+                <div className="thin-scrollbar block h-full w-full overflow-y-auto break-words bg-transparent px-4 pt-0 pb-4"
+                    data-canvas-text-preview
+                    style={textStyle}
+                    onWheel={(event) => event.stopPropagation()}
+                >
+                    {node.metadata?.content ? (
+                        <React.Suspense fallback={<div className="whitespace-pre-wrap">{node.metadata.content}</div>}>
+                            <LazyCanvasTextMarkdown content={node.metadata.content} theme={theme} />
+                        </React.Suspense>
+                    ) : <span style={{ color: theme.node.placeholder }}>{t("canvas.node.editText")}</span>}
                 </div>
             )}
             {skillTrace.length > 0 || skillMetrics ? (

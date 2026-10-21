@@ -25,6 +25,77 @@
 .canvas-node-markdown :not(pre) > code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; background: var(--canvas-md-surface); border: 1px solid var(--canvas-md-border); border-radius: .25em; padding: .08em .27em; font-size: .88em; }
 .canvas-node-markdown pre { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre; font-size: .85em; overflow-x: auto; max-width: 100%; background: var(--canvas-md-surface); border: 1px solid var(--canvas-md-border); border-radius: .5em; padding: .6em .7em; }
 .canvas-node-markdown pre code { background: transparent; border: 0; padding: 0; }
+/* Keep Streamdown's native copy action and our wrap toggle in the SAME header row.
+   Streamdown places the copy actions in a sticky negative-margin row after the
+   language header; positioning only the wrap button previously split the tools. */
+.canvas-node-markdown .canvas-md-code-block { position: relative; min-width: 0; }
+.canvas-node-markdown .canvas-md-code-block [data-streamdown="code-block"] { position: static; min-width: 0; }
+.canvas-node-markdown .canvas-md-code-block [data-streamdown="code-block-header"] {
+    display: flex;
+    align-items: center;
+    min-height: 2rem;
+    padding-right: 5rem;
+}
+.canvas-node-markdown .canvas-md-code-block [data-streamdown="code-block"] > div:has(> [data-streamdown="code-block-actions"]) {
+    position: absolute;
+    inset: .35rem .45rem auto auto;
+    z-index: 21;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    height: 1.75rem;
+    margin: 0;
+    padding: 0;
+    pointer-events: auto;
+}
+.canvas-node-markdown .canvas-md-code-block [data-streamdown="code-block-actions"] {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 1.75rem;
+    min-width: 1.75rem;
+    gap: .375rem;
+    padding: 0;
+    border: 0;
+    background: transparent;
+}
+.canvas-node-markdown .canvas-md-code-wrap-toggle,
+.canvas-node-markdown .canvas-md-code-block [data-streamdown="code-block-actions"] > button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.75rem;
+    height: 1.75rem;
+    padding: 0;
+    border: 1px solid var(--canvas-md-border);
+    border-radius: .35rem;
+    background: var(--canvas-md-surface);
+    color: inherit;
+    opacity: .85;
+    cursor: pointer;
+}
+.canvas-node-markdown .canvas-md-code-wrap-toggle {
+    flex: 0 0 1.75rem;
+    order: -1;
+}
+.canvas-node-markdown .canvas-md-code-wrap-toggle:hover,
+.canvas-node-markdown .canvas-md-code-wrap-toggle[aria-pressed="true"],
+.canvas-node-markdown .canvas-md-code-block [data-streamdown="code-block-actions"] > button:hover {
+    opacity: 1;
+    background: var(--canvas-md-border);
+}
+.canvas-node-markdown .canvas-md-code-wrap-toggle:focus-visible,
+.canvas-node-markdown .canvas-md-code-block [data-streamdown="code-block-actions"] > button:focus-visible {
+    outline: 2px solid currentColor;
+    outline-offset: 2px;
+}
+.canvas-node-markdown [data-canvas-code-wrap="on"] [data-streamdown="code-block-body"] { overflow-x: hidden; }
+.canvas-node-markdown [data-canvas-code-wrap="on"] [data-streamdown="code-block-body"] :is(pre, code) {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+
 .canvas-node-markdown :is(table, th, td) { border: 1px solid var(--canvas-md-border); }
 .canvas-node-markdown table { border-collapse: collapse; width: max-content; min-width: 100%; font-size: .92em; }
 .canvas-node-markdown th, .canvas-node-markdown td { padding: .28em .55em; text-align: left; }

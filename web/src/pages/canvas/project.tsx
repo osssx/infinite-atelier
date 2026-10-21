@@ -14,7 +14,7 @@ import { requestAudioGeneration, storeGeneratedAudio } from "@/services/api/audi
 import { cancelVideoGenerationTask, pollVideoGenerationTask, requestVideoGeneration, retrySeedanceDownload, storeGeneratedVideo, type VideoGenerationRequest, type VideoGenerationTask } from "@/services/api/video";
 import { defaultConfig, resolveModelChannel, resolveModelScript, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
 import { deleteStoredImages, uploadImage } from "@/services/image-storage";
-import { uploadMediaFile } from "@/services/file-storage";
+import { deleteStoredMedia, uploadMediaFile } from "@/services/file-storage";
 import { setPreviewGenerationSuspended } from "@/services/media-preview-storage";
 import { nanoid } from "nanoid";
 import { getDataUrlByteSize, readImageMeta } from "@/lib/image-utils";
@@ -41,6 +41,7 @@ import { CanvasNodeCropDialog, type CanvasImageCropRect } from "@/components/can
 import { CanvasNodeMaskEditDialog, type CanvasImageMaskEditPayload } from "@/components/canvas/canvas-node-mask-edit-dialog";
 import { CanvasNodeSplitDialog, type CanvasImageSplitParams } from "@/components/canvas/canvas-node-split-dialog";
 import { CanvasVideoFrameDialog } from "@/components/canvas/canvas-video-frame-dialog";
+import { CanvasAudioTrimDialog } from "@/components/canvas/canvas-audio-trim-dialog";
 import { CanvasNodeUpscaleDialog, type CanvasImageUpscaleParams } from "@/components/canvas/canvas-node-upscale-dialog";
 import { buildNodeGenerationContext, buildNodeResponseMessages, hydrateNodeGenerationContext } from "@/components/canvas/canvas-node-generation";
 import { CanvasNodeHoverToolbar, CanvasNodeInfoModal } from "@/components/canvas/canvas-node-hover-toolbar";
@@ -310,6 +311,8 @@ function AtelierCanvasPage() {
     const [cropNodeId, setCropNodeId] = useState<string | null>(null);
     const [videoFrameNodeId, setVideoFrameNodeId] = useState<string | null>(null);
     const videoFrameIdentityRef = useRef<string | null>(null);
+    const [audioTrimNodeId, setAudioTrimNodeId] = useState<string | null>(null);
+    const audioTrimIdentityRef = useRef<string | null>(null);
     const [maskEditNodeId, setMaskEditNodeId] = useState<string | null>(null);
     const [splitNodeId, setSplitNodeId] = useState<string | null>(null);
     const [upscaleNodeId, setUpscaleNodeId] = useState<string | null>(null);
@@ -834,11 +837,17 @@ function AtelierCanvasPage() {
     const infoNode = infoNodeId ? nodeById.get(infoNodeId) || null : null;
     const cropNode = cropNodeId ? nodeById.get(cropNodeId) || null : null;
     const videoFrameNode = videoFrameNodeId ? nodeById.get(videoFrameNodeId) || null : null;
+    const audioTrimNode = audioTrimNodeId ? nodeById.get(audioTrimNodeId) || null : null;
     useLayoutEffect(() => {
         if (!videoFrameNodeId) return;
         const identity = videoFrameNode ? `${projectId}:${videoFrameNode.id}:${videoFrameNode.metadata?.storageKey || ""}:${videoFrameNode.metadata?.content || ""}` : null;
         if (identity !== videoFrameIdentityRef.current) setVideoFrameNodeId(null);
     }, [projectId, videoFrameNodeId, videoFrameNode]);
+    useLayoutEffect(() => {
+        if (!audioTrimNodeId) return;
+        const identity = audioTrimNode ? `${projectId}:${audioTrimNode.id}:${audioTrimNode.metadata?.storageKey || ""}:${audioTrimNode.metadata?.content || ""}` : null;
+        if (identity !== audioTrimIdentityRef.current) setAudioTrimNodeId(null);
+    }, [projectId, audioTrimNodeId, audioTrimNode]);
     const maskEditNode = maskEditNodeId ? nodeById.get(maskEditNodeId) || null : null;
     const splitNode = splitNodeId ? nodeById.get(splitNodeId) || null : null;
     const upscaleNode = upscaleNodeId ? nodeById.get(upscaleNodeId) || null : null;
@@ -2037,6 +2046,40 @@ function AtelierCanvasPage() {
         setNodes(nextNodes); setConnections(nextConnections);
         setSelectedNodeIds(new Set([id])); setSelectedConnectionId(null);
         message.success(t("canvas.videoFrame.captureSuccess"));
+    }, [createHistoryEntry, message, projectId, t]);
+
+    const trimAudioNode = useCallback(async (source: CanvasNodeData, blob: Blob, startMs: number, endMs: number, durationMs: number, signal: AbortSignal) => {
+        const projectAtStart = projectId;
+        const sourceContent = source.metadata?.content;
+        const sourceStorageKey = source.metadata?.storageKey;
+        const isCurrent = () => pageMountedRef.current && activeProjectIdRef.current === projectAtStart && nodesRef.current.some((item) => item.id === source.id && item.type === CanvasNodeType.Audio && item.metadata?.content === sourceContent && item.metadata?.storageKey === sourceStorageKey);
+        if (!sourceContent || !isCurrent()) return;
+        let audio: Awaited<ReturnType<typeof uploadMediaFile>> | null = null;
+        try {
+            audio = await uploadMediaFile(blob, "audio");
+            if (signal.aborted || !isCurrent()) { await deleteStoredMedia([audio.storageKey]); return; }
+            const id = nanoid();
+            const startLabel = `${Math.floor(startMs / 60000)}:${((startMs % 60000) / 1000).toFixed(2).padStart(5, "0")}`;
+            const endLabel = `${Math.floor(endMs / 60000)}:${((endMs % 60000) / 1000).toFixed(2).padStart(5, "0")}`;
+            const baseName = (source.title || t("canvas.node.audio")).replace(/\.\w+$/, "");
+            const width = NODE_DEFAULT_SIZE[CanvasNodeType.Audio].width;
+            const height = NODE_DEFAULT_SIZE[CanvasNodeType.Audio].height;
+            const position = findVideoFramePosition(source, { width, height }, nodesRef.current);
+            const trimmedAudio = { ...audio, durationMs };
+            const child: CanvasNodeData = { id, type: CanvasNodeType.Audio, title: t("canvas.audioTrim.nodeTitle", { name: baseName, start: startLabel, end: endLabel }), position, width, height, metadata: { ...audioMetadata(trimmedAudio), audioTrim: { sourceNodeId: source.id, startMs, endMs } } };
+            if (historyCommitTimerRef.current) { clearTimeout(historyCommitTimerRef.current); historyCommitTimerRef.current = null; }
+            const previous = createHistoryEntry(); const baseline = lastHistoryRef.current; const past = [...historyRef.current.past];
+            if (baseline && !sameCanvasHistoryEntry(baseline, previous)) past.push(baseline);
+            past.push(previous); historyRef.current.past = past.slice(-50); historyRef.current.future = []; setHistoryState({ canUndo: true, canRedo: false });
+            const nextNodes = [...nodesRef.current, child]; const nextConnections = [...connectionsRef.current, { id: nanoid(), fromNodeId: source.id, toNodeId: id }];
+            lastHistoryRef.current = { ...previous, nodes: nextNodes, connections: nextConnections };
+            nodesRef.current = nextNodes; connectionsRef.current = nextConnections; setNodes(nextNodes); setConnections(nextConnections);
+            setSelectedNodeIds(new Set([id])); setSelectedConnectionId(null);
+            message.success(t("canvas.audioTrim.success"));
+        } catch {
+            if (audio) await deleteStoredMedia([audio.storageKey]);
+            message.error(t("canvas.audioTrim.failed"));
+        }
     }, [createHistoryEntry, message, projectId, t]);
 
     const splitImageNode = useCallback(
@@ -3562,6 +3605,7 @@ function AtelierCanvasPage() {
                     onMaskEdit={(node) => setMaskEditNodeId(node.id)}
                     onCrop={(node) => setCropNodeId(node.id)}
                     onCaptureVideoFrame={(node) => { videoFrameIdentityRef.current = `${projectId}:${node.id}:${node.metadata?.storageKey || ""}:${node.metadata?.content || ""}`; setVideoFrameNodeId(node.id); }}
+                    onTrimAudio={(node) => { audioTrimIdentityRef.current = `${projectId}:${node.id}:${node.metadata?.storageKey || ""}:${node.metadata?.content || ""}`; document.querySelectorAll<HTMLElement>("[data-node-id]").forEach((element) => { if (element.dataset.nodeId === node.id) element.querySelector("audio")?.pause(); }); setAudioTrimNodeId(node.id); }}
                     onSplit={(node) => setSplitNodeId(node.id)}
                     onUpscale={(node) => setUpscaleNodeId(node.id)}
                     onSuperResolve={(node) => setSuperResolveNodeId(node.id)}
@@ -3628,6 +3672,8 @@ function AtelierCanvasPage() {
                 <CanvasNodeInfoModal node={infoNode} open={Boolean(infoNode)} onClose={() => setInfoNodeId(null)} />
 
                 {videoFrameNode ? <CanvasVideoFrameDialog key={`${projectId}:${videoFrameNode.id}:${videoFrameNode.metadata?.storageKey || ""}:${videoFrameNode.metadata?.content || ""}`} node={videoFrameNode} open onClose={() => setVideoFrameNodeId(null)} onCapture={(blob, timeMs) => captureVideoFrame(videoFrameNode, blob, timeMs)} /> : null}
+
+                {audioTrimNode ? <CanvasAudioTrimDialog key={`${projectId}:${audioTrimNode.id}:${audioTrimNode.metadata?.storageKey || ""}:${audioTrimNode.metadata?.content || ""}`} node={audioTrimNode} open onClose={() => setAudioTrimNodeId(null)} onTrim={(blob, startMs, endMs, durationMs, signal) => trimAudioNode(audioTrimNode, blob, startMs, endMs, durationMs, signal)} /> : null}
 
                 {cropNode?.metadata?.content ? <CanvasNodeCropDialog dataUrl={cropNode.metadata.content} open={Boolean(cropNode)} onClose={() => setCropNodeId(null)} onConfirm={(crop) => void cropImageNode(cropNode!, crop)} /> : null}
 

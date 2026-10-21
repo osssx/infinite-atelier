@@ -42,6 +42,7 @@ export type CanvasNodeImage = {
 
 export type CanvasNodeMetadata = {
     videoFrame?: { sourceNodeId: string; timeMs: number };
+    audioTrim?: { sourceNodeId: string; startMs: number; endMs: number };
     content?: string;
     composerContent?: string;
     prompt?: string;

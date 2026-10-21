@@ -29,6 +29,7 @@ type CanvasNodeHoverToolbarProps = {
     onCrop: (node: CanvasNodeData) => void;
     onSplit: (node: CanvasNodeData) => void;
     onCaptureVideoFrame: (node: CanvasNodeData) => void;
+    onTrimAudio: (node: CanvasNodeData) => void;
     onUpscale: (node: CanvasNodeData) => void;
     onSuperResolve: (node: CanvasNodeData) => void;
     onAngle: (node: CanvasNodeData) => void;
@@ -66,6 +67,7 @@ export function CanvasNodeHoverToolbar({
     onCrop,
     onSplit,
     onCaptureVideoFrame,
+    onTrimAudio,
     onUpscale,
     onSuperResolve,
     onAngle,
@@ -143,6 +145,7 @@ export function CanvasNodeHoverToolbar({
         ...(hasImage || hasVideo || hasAudio ? [{ id: "download", title: t(hasAudio ? "canvas.nodeToolbar.downloadAudio" : hasVideo ? "canvas.nodeToolbar.downloadVideo" : "canvas.nodeToolbar.downloadImage"), label: t("common.download"), icon: <Download className="size-4" />, onClick: () => onDownload(node) }] : []),
         ...(isVideo ? [{ id: "edit", title: t("common.edit"), label: t("common.edit"), icon: <MessageSquare className="size-4" />, onClick: () => onToggleDialog(node) }] : []),
         ...(hasVideo ? [{ id: "captureFrame", title: t("canvas.videoFrame.capture"), label: t("canvas.videoFrame.capture"), icon: <Scissors className="size-4" />, onClick: () => onCaptureVideoFrame(node) }] : []),
+        ...(hasAudio ? [{ id: "trimAudio", title: t("canvas.audioTrim.open"), label: t("canvas.audioTrim.open"), icon: <Scissors className="size-4" />, onClick: () => onTrimAudio(node) }] : []),
         ...(isText ? [{ id: "generateImage", title: t("canvas.node.generateImage"), label: t("canvas.node.generate"), icon: <ImageIcon className="size-4" />, onClick: () => onGenerateImage(node) }] : []),
         ...(isConfig ? [{ id: "config", title: t("canvas.configNode.title"), label: t("canvas.configNode.title"), icon: <Settings2 className="size-4" />, onClick: () => onToggleDialog(node) }] : []),
         ...(node.type === CanvasNodeType.Director ? [{ id: "director", title: t("canvas.director.title"), label: t("canvas.director.title"), icon: <Clapperboard className="size-4" />, onClick: () => onToggleDialog(node) }] : []),

@@ -737,6 +737,7 @@ export default {
             selectAll: "全选节点",
             copyPaste: "复制 / 粘贴节点，或粘贴剪切板文本/图片",
             copyPasteNodes: "复制 / 粘贴节点",
+            groupSelected: "将两个或更多选中的普通节点打组",
             delete: "删除选中",
             escape: "取消选择并关闭浮层",
             dropMedia: "拖入图片/视频/音频",

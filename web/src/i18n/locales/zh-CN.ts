@@ -548,6 +548,11 @@ export default {
             captureSuccess: "已将视频帧添加到画布",
         },
         audioTrim: {
+            zoomIn: "放大时间轴",
+            zoomOut: "缩小时间轴",
+            showAll: "显示全部",
+            fitSelection: "适应选区",
+            panTimeline: "横向浏览时间轴",
             open: "裁剪音频",
             title: "裁剪音频",
             loading: "正在加载音频…",

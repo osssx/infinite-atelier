@@ -548,6 +548,11 @@ export default {
             captureSuccess: "Video frame added to the canvas",
         },
         audioTrim: {
+            zoomIn: "Zoom in timeline",
+            zoomOut: "Zoom out timeline",
+            showAll: "Show all",
+            fitSelection: "Fit selection",
+            panTimeline: "Pan timeline",
             open: "Trim audio",
             title: "Trim audio",
             loading: "Loading audio…",

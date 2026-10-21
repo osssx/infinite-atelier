@@ -6,6 +6,8 @@ import { getMediaBlob } from "@/services/file-storage";
 import { proxyApiUrl } from "@/lib/api-proxy";
 import { encodePcm16WavAsync, formatAudioTime, getAudioSampleRange, snapAudioTrimRange, summarizeAudioPeaks } from "@/lib/canvas/audio-trim";
 import type { CanvasNodeData } from "@/types/canvas";
+import { AUDIO_TIMELINE_PEAK_BUCKETS } from "@/lib/canvas/audio-timeline";
+import { CanvasAudioTrimTimeline } from "./canvas-audio-trim-timeline";
 
 const TIMEOUT = 30_000;
 export function CanvasAudioTrimDialog({ node, open, onClose, onTrim }: { node: CanvasNodeData | null; open: boolean; onClose: () => void; onTrim: (blob: Blob, startMs: number, endMs: number, durationMs: number, signal: AbortSignal) => Promise<void> }) {
@@ -27,7 +29,6 @@ export function CanvasAudioTrimDialog({ node, open, onClose, onTrim }: { node: C
     const aliveRef = useRef(true);
     const cancelEncodeRef = useRef(false);
     const trimAbortRef = useRef<AbortController | null>(null);
-    const selectionDragRef = useRef<{ mode: "move" | "start" | "end"; x: number; start: number; end: number; moved: boolean } | null>(null);
     const rangeRef = useRef({ start, end });
     rangeRef.current = { start, end };
     const sourceContent = node?.metadata?.content || "";
@@ -92,7 +93,7 @@ export function CanvasAudioTrimDialog({ node, open, onClose, onTrim }: { node: C
                     return;
                 }
                 setBuffer(decoded);
-                setPeaks(summarizeAudioPeaks(decoded));
+                setPeaks(summarizeAudioPeaks(decoded, AUDIO_TIMELINE_PEAK_BUCKETS));
                 setEnd(decoded.duration);
                 setLoading(false);
             } catch {
@@ -231,136 +232,36 @@ export function CanvasAudioTrimDialog({ node, open, onClose, onTrim }: { node: C
         >
             <div data-canvas-no-zoom data-canvas-shortcuts-ignore className="space-y-5" onPointerDown={(event) => event.stopPropagation()} onWheel={(event) => event.stopPropagation()}>
                 <div className="text-sm opacity-70">{node?.title}</div>
-                <div className="relative flex min-h-[220px] items-center overflow-visible rounded-lg border border-slate-200 bg-slate-50 px-3 pb-8 dark:border-slate-700 dark:bg-slate-900">
-                    {loading ? (
-                        <div className="mx-auto flex items-center gap-3">
-                            <Spin />
-                            {t("canvas.audioTrim.loading")}
-                        </div>
-                    ) : error ? (
-                        <div className="mx-auto flex flex-col items-center gap-3">
-                            {t("canvas.audioTrim.loadError")}
-                            <Button onClick={() => setAttempt((v) => v + 1)}>{t("canvas.audioTrim.retry")}</Button>
-                        </div>
-                    ) : peaks ? (
-                        <div
-                            className="relative h-40 w-full select-none touch-none"
-                            onPointerDown={(event) => {
-                                if (disabled || !buffer) return;
-                                const rect = event.currentTarget.getBoundingClientRect();
-                                if (!selectionDragRef.current) {
-                                    const at = Math.max(0, Math.min(duration, ((event.clientX - rect.left) / rect.width) * duration));
-                                    stop();
-                                    setCursor(at);
-                                }
-                            }}
-                            onPointerMove={(event) => {
-                                const drag = selectionDragRef.current;
-                                if (!drag || !buffer || disabled) return;
-                                const rect = event.currentTarget.getBoundingClientRect();
-                                if (drag.mode === "move" && !drag.moved && Math.abs(event.clientX - drag.x) < 4) return;
-                                const delta = ((event.clientX - drag.x) / rect.width) * duration;
-                                let next: { start: number; end: number };
-                                if (drag.mode === "move") {
-                                    const length = drag.end - drag.start;
-                                    const moved = Math.max(0, Math.min(duration - length, drag.start + delta));
-                                    next = updateRange(moved, moved + length, "both");
-                                    selectionDragRef.current = { ...drag, moved: true };
-                                } else if (drag.mode === "start") {
-                                    const moved = Math.max(0, Math.min(drag.end - 1 / buffer.sampleRate, drag.start + delta));
-                                    next = updateRange(moved, drag.end, "start");
-                                    selectionDragRef.current = { ...drag, moved: true };
-                                } else {
-                                    const moved = Math.min(duration, Math.max(drag.start + 1 / buffer.sampleRate, drag.end + delta));
-                                    next = updateRange(drag.start, moved, "end");
-                                    selectionDragRef.current = { ...drag, moved: true };
-                                }
-                            }}
-                            onPointerUp={(event) => {
-                                const drag = selectionDragRef.current;
-                                if (drag?.mode === "move" && !drag.moved && !disabled) {
-                                    const rect = event.currentTarget.getBoundingClientRect();
-                                    const at = Math.max(drag.start, Math.min(drag.end, ((event.clientX - rect.left) / rect.width) * duration));
-                                    stop();
-                                    setCursor(at);
-                                }
-                                selectionDragRef.current = null;
-                            }}
-                            onPointerCancel={() => {
-                                selectionDragRef.current = null;
-                            }}
-                        >
-                            <svg className="h-full w-full" viewBox={`0 0 ${peaks.length} 100`} preserveAspectRatio="none">
-                                {Array.from(peaks, (peak, index) => (
-                                    <rect
-                                        key={index}
-                                        x={index}
-                                        y={50 - Math.max(1, peak * 46)}
-                                        width="0.72"
-                                        height={Math.max(2, peak * 92)}
-                                        rx="0.3"
-                                        fill={(index / peaks.length) * duration >= start && (index / peaks.length) * duration <= end ? "#7c3aed" : "#94a3b8"}
-                                    />
-                                ))}
-                            </svg>
-                            <div
-                                className="absolute inset-y-0 cursor-grab bg-violet-500/10"
-                                style={{ left: `${(start / duration) * 100}%`, width: `${((end - start) / duration) * 100}%` }}
-                                onPointerDown={(event) => {
-                                    if (disabled) return;
-                                    event.stopPropagation();
-                                    event.currentTarget.setPointerCapture(event.pointerId);
-                                    selectionDragRef.current = { mode: "move", x: event.clientX, start, end, moved: false };
-                                }}
-                                onPointerCancel={() => {
-                                    selectionDragRef.current = null;
-                                }}
-                            />
-                            <button
-                                type="button"
-                                aria-label={t("canvas.audioTrim.start")}
-                                className="absolute inset-y-0 z-10 w-3 -translate-x-1/2 cursor-ew-resize border-l-2 border-violet-700 bg-violet-500/40"
-                                style={{ left: `${(start / duration) * 100}%` }}
-                                onPointerDown={(event) => {
-                                    if (disabled) return;
-                                    event.stopPropagation();
-                                    event.currentTarget.setPointerCapture(event.pointerId);
-                                    selectionDragRef.current = { mode: "start", x: event.clientX, start, end, moved: false };
-                                }}
-                                onPointerUp={() => {
-                                    selectionDragRef.current = null;
-                                }}
-                                onPointerCancel={() => {
-                                    selectionDragRef.current = null;
-                                }}
-                            />
-                            <button
-                                type="button"
-                                aria-label={t("canvas.audioTrim.end")}
-                                className="absolute inset-y-0 z-10 w-3 -translate-x-1/2 cursor-ew-resize border-r-2 border-violet-700 bg-violet-500/40"
-                                style={{ left: `${(end / duration) * 100}%` }}
-                                onPointerDown={(event) => {
-                                    if (disabled) return;
-                                    event.stopPropagation();
-                                    event.currentTarget.setPointerCapture(event.pointerId);
-                                    selectionDragRef.current = { mode: "end", x: event.clientX, start, end, moved: false };
-                                }}
-                                onPointerUp={() => {
-                                    selectionDragRef.current = null;
-                                }}
-                                onPointerCancel={() => {
-                                    selectionDragRef.current = null;
-                                }}
-                            />
-                            <div className="pointer-events-none absolute inset-y-0 w-px bg-red-500" style={{ left: `${(cursor / duration) * 100}%` }} />
-                            <div className="absolute inset-x-0 -bottom-8 flex justify-between font-mono text-xs opacity-60">
-                                <span>00:00</span>
-                                <span>{formatAudioTime(duration / 2)}</span>
-                                <span>{formatAudioTime(duration)}</span>
+                {peaks && buffer ? (
+                    <CanvasAudioTrimTimeline
+                        peaks={peaks}
+                        duration={duration}
+                        sampleRate={buffer.sampleRate}
+                        start={start}
+                        end={end}
+                        cursor={cursor}
+                        disabled={disabled}
+                        onRangeChange={updateRange}
+                        onSeek={(time) => {
+                            stop();
+                            setCursor(time);
+                        }}
+                    />
+                ) : (
+                    <div className="flex min-h-[220px] items-center justify-center rounded-lg border border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-900">
+                        {loading ? (
+                            <div className="flex items-center gap-3">
+                                <Spin />
+                                {t("canvas.audioTrim.loading")}
                             </div>
-                        </div>
-                    ) : null}
-                </div>
+                        ) : error ? (
+                            <div className="flex flex-col items-center gap-3">
+                                {t("canvas.audioTrim.loadError")}
+                                <Button onClick={() => setAttempt((v) => v + 1)}>{t("canvas.audioTrim.retry")}</Button>
+                            </div>
+                        ) : null}
+                    </div>
+                )}
                 <div className="flex flex-wrap items-center gap-3 pt-2">
                     <Button aria-label={playing ? t("canvas.audioTrim.pause") : t("canvas.audioTrim.play")} icon={playing ? <Pause className="size-4" /> : <Play className="size-4" />} disabled={disabled} onClick={() => void togglePlayback()} />
                     <span className="font-mono text-sm tabular-nums">

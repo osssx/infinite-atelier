@@ -1,8 +1,9 @@
 import { isNativeDescendantEvent } from "@/lib/canvas/canvas-portal-events";
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { canvasThemes, type CanvasBackgroundMode } from "@/lib/canvas-theme";
 import { applyAnchoredWheelZoom } from "@/lib/canvas/canvas-wheel-zoom";
+import { canFastPanAtScale, FAST_PAN_COMMIT_INTERVAL_MS, gridPositionForViewport, worldTransformForViewport } from "@/lib/canvas/canvas-pan-fast-path";
 import { setPreviewGenerationSuspended } from "@/services/media-preview-storage";
 import { useThemeStore } from "@/stores/use-theme-store";
 import type { ViewportTransform } from "@/types/canvas";
@@ -43,6 +44,14 @@ export function AtelierCanvas({ containerRef, viewport, tool, backgroundMode = "
     // last rendered prop. Wheel events arrive in bursts, and reading the prop made every event in a
     // batch compute from the same base — the later one then discarded the earlier one's zoom.
     const viewportRef = useRef(viewport);
+    const worldRef = useRef<HTMLDivElement | null>(null);
+    const gridRef = useRef<HTMLDivElement | null>(null);
+    const fastPanRef = useRef(false);
+    const lastPanCommitRef = useRef(0);
+    const applyPanVisual = (next: ViewportTransform) => {
+        if (worldRef.current) worldRef.current.style.transform = worldTransformForViewport(next);
+        if (gridRef.current) gridRef.current.style.backgroundPosition = gridPositionForViewport(next);
+    };
     const frameRef = useRef<number | null>(null);
     const nextViewportRef = useRef<ViewportTransform | null>(null);
     // Wheel input is composed immediately into a pending viewport, but React is updated only once
@@ -58,12 +67,17 @@ export function AtelierCanvas({ containerRef, viewport, tool, backgroundMode = "
     useEffect(() => {
         // A React commit may land between two wheel events. Do not replace a more recent
         // uncommitted wheel transform with props from an older render.
-        if (pendingWheelViewportRef.current === null) viewportRef.current = viewport;
+        if (!fastPanRef.current && pendingWheelViewportRef.current === null) viewportRef.current = viewport;
     }, [viewport]);
+
+    useLayoutEffect(() => {
+        // A React commit may carry a slightly older viewport than the latest drag event.
+        if (fastPanRef.current) applyPanVisual(viewportRef.current);
+    });
 
     useEffect(
         () => () => {
-            if (frameRef.current) cancelAnimationFrame(frameRef.current);
+            if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
             if (wheelFrameRef.current !== null) cancelAnimationFrame(wheelFrameRef.current);
             if (wheelIdleTimerRef.current !== null) clearTimeout(wheelIdleTimerRef.current);
             setPreviewGenerationSuspended(false, "wheel");
@@ -92,6 +106,16 @@ export function AtelierCanvas({ containerRef, viewport, tool, backgroundMode = "
         };
 
         const handleBlur = () => {
+            if (panState.current.isPanning) {
+                if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
+                frameRef.current = null;
+                const finalViewport = nextViewportRef.current ?? viewportRef.current;
+                nextViewportRef.current = null;
+                viewportRef.current = finalViewport;
+                if (fastPanRef.current) applyPanVisual(finalViewport);
+                fastPanRef.current = false;
+                onViewportChange(finalViewport);
+            }
             setIsSpacePressed(false);
             setIsControlPressed(false);
             panState.current.isPanning = false;
@@ -109,7 +133,7 @@ export function AtelierCanvas({ containerRef, viewport, tool, backgroundMode = "
             window.removeEventListener("keyup", handleKeyUp);
             window.removeEventListener("blur", handleBlur);
         };
-    }, [onPanActivityChange]);
+    }, [onPanActivityChange, onViewportChange]);
 
     const handleWheel = (event: React.WheelEvent<HTMLDivElement>) => {
         // React can forward portal events through ancestors outside their actual DOM tree.
@@ -134,6 +158,16 @@ export function AtelierCanvas({ containerRef, viewport, tool, backgroundMode = "
 
         // Compose synchronously, preserving every event even when several arrive before React
         // commits. Neither a stale viewport prop nor a changed cursor anchor can lose a delta.
+        if (fastPanRef.current) {
+            // A wheel gesture must compose from the latest directly positioned viewport.
+            if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
+            frameRef.current = null;
+            const latest = nextViewportRef.current ?? viewportRef.current;
+            nextViewportRef.current = null;
+            viewportRef.current = latest;
+            fastPanRef.current = false;
+            onViewportChange(latest);
+        }
         const next = applyAnchoredWheelZoom(
             pendingWheelViewportRef.current ?? viewportRef.current,
             event.deltaY,
@@ -172,11 +206,14 @@ export function AtelierCanvas({ containerRef, viewport, tool, backgroundMode = "
                 isPanning: true,
                 startX: event.clientX,
                 startY: event.clientY,
-                initialX: viewport.x,
-                initialY: viewport.y,
+                initialX: viewportRef.current.x,
+                initialY: viewportRef.current.y,
                 hasMoved: false,
                 startedOnBackground: isBackgroundClick,
             };
+
+            fastPanRef.current = canFastPanAtScale(viewportRef.current.k);
+            lastPanCommitRef.current = performance.now();
             setIsPanning(true);
             setPreviewGenerationSuspended(true, "pan");
             onPanActivityChange?.(true);
@@ -212,10 +249,19 @@ export function AtelierCanvas({ containerRef, viewport, tool, backgroundMode = "
                 y: panState.current.initialY + dy,
                 k: viewportRef.current.k,
             };
-            if (frameRef.current) return;
-            frameRef.current = requestAnimationFrame(() => {
+            if (frameRef.current !== null) return;
+            frameRef.current = requestAnimationFrame((time) => {
                 frameRef.current = null;
-                if (nextViewportRef.current) onViewportChange(nextViewportRef.current);
+                const next = nextViewportRef.current;
+                nextViewportRef.current = null;
+                if (!next) return;
+                viewportRef.current = next;
+                if (fastPanRef.current) {
+                    applyPanVisual(next);
+                    if (time - lastPanCommitRef.current < FAST_PAN_COMMIT_INTERVAL_MS) return;
+                    lastPanCommitRef.current = time;
+                }
+                onViewportChange(next);
             });
         };
 
@@ -225,6 +271,18 @@ export function AtelierCanvas({ containerRef, viewport, tool, backgroundMode = "
             if (!panState.current.hasMoved && panState.current.startedOnBackground) {
                 onCanvasDeselect?.();
             }
+            // Commit the most recent position before clearing gesture state.
+            // The final pointermove may still be waiting for its rAF.
+            if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
+            frameRef.current = null;
+            const finalViewport = nextViewportRef.current ?? viewportRef.current;
+            nextViewportRef.current = null;
+            if (finalViewport.x !== panState.current.initialX || finalViewport.y !== panState.current.initialY) {
+                viewportRef.current = finalViewport;
+                if (fastPanRef.current) applyPanVisual(finalViewport);
+                onViewportChange(finalViewport);
+            }
+            fastPanRef.current = false;
             panState.current.isPanning = false;
             setPreviewGenerationSuspended(false, "pan");
             onPanActivityChange?.(false);
@@ -273,11 +331,12 @@ export function AtelierCanvas({ containerRef, viewport, tool, backgroundMode = "
             onDragOver={(event) => event.preventDefault()}
             onDrop={onDrop}
         >
-            <CanvasGrid viewport={viewport} mode={backgroundMode} />
+            <CanvasGrid viewport={viewport} mode={backgroundMode} gridRef={gridRef} />
             <div
+                ref={worldRef}
                 className="absolute origin-top-left"
                 style={{
-                    transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.k})`,
+                    transform: worldTransformForViewport(viewport),
                 }}
             >
                 {children}
@@ -286,7 +345,7 @@ export function AtelierCanvas({ containerRef, viewport, tool, backgroundMode = "
     );
 }
 
-function CanvasGrid({ viewport, mode }: { viewport: ViewportTransform; mode: CanvasBackgroundMode }) {
+function CanvasGrid({ viewport, mode, gridRef }: { viewport: ViewportTransform; mode: CanvasBackgroundMode; gridRef: React.RefObject<HTMLDivElement | null> }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     if (mode === "blank") return null;
 
@@ -299,6 +358,7 @@ function CanvasGrid({ viewport, mode }: { viewport: ViewportTransform; mode: Can
 
     return (
         <div
+            ref={gridRef}
             className="pointer-events-none absolute inset-0 opacity-40"
             style={{
                 backgroundImage,

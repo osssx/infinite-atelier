@@ -3421,6 +3421,7 @@ function AtelierCanvasPage() {
                 >
                     <ConnectionLayer
                         connections={visibleConnections}
+                        scale={viewport.k}
                         nodeById={nodeById}
                         selectedConnectionId={selectedConnectionId}
                         relatedConnectionIds={relatedHighlight.connectionIds}

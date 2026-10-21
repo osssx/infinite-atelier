@@ -295,9 +295,10 @@ export type LiveCounts = {
  */
 export function snapshotCounts(): LiveCounts {
     const container = requireContainer();
+    const batchedEdges = container.querySelector("[data-canvas-overview-edge-count]");
     return {
         mountedNodes: container.querySelectorAll("[data-node-id]").length,
-        mountedEdges: container.querySelectorAll("[data-connection-id]").length,
+        mountedEdges: batchedEdges ? Number(batchedEdges.getAttribute("data-canvas-overview-edge-count")) : container.querySelectorAll("[data-connection-id]").length,
         svgPaths: container.querySelectorAll("svg path").length,
         domNodes: container.querySelectorAll("*").length,
         mediaElements: container.querySelectorAll("img[src], video[src], audio[src]").length,

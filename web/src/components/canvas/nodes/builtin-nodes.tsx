@@ -1,9 +1,10 @@
-import { Clapperboard, FileText, Group, Image as ImageIcon, Music2, Settings2, Video } from "lucide-react";
+import { Clapperboard, FileText, Group, Image as ImageIcon, Music2, Settings2, Video, Workflow } from "lucide-react";
 
 import i18n from "@/i18n";
 
 import { NODE_SPECS } from "@/constant/canvas";
 import { registerNodeDefinitions } from "@/lib/canvas/node-registry";
+import { COMFY_WORKFLOW_MOCK_TYPE, MOCK_COMFY_PORTS } from "@/lib/canvas/canvas-ports";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
 import type { CanvasNodeDefinition, CanvasNodeResource } from "@/types/canvas-plugin";
 
@@ -36,5 +37,18 @@ let registered = false;
 export function registerBuiltinNodes() {
     if (registered) return;
     registered = true;
-    registerNodeDefinitions(BUILTIN_DEFINITIONS);
+    registerNodeDefinitions([
+        ...BUILTIN_DEFINITIONS,
+        {
+            type: COMFY_WORKFLOW_MOCK_TYPE,
+            title: "ComfyUI Workflow (Mock)",
+            description: "Phase A: connect typed ports; execution is not yet available",
+            icon: <Workflow className={iconClass} />,
+            minimapColor: "#8b5cf6",
+            defaultSize: { width: 360, height: 265 },
+            defaultMetadata: { comfyPorts: MOCK_COMFY_PORTS },
+            ports: (node: CanvasNodeData) => node.metadata?.comfyPorts || MOCK_COMFY_PORTS,
+            hidePanel: true,
+        },
+    ]);
 }

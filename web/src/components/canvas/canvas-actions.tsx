@@ -14,7 +14,7 @@ export type CanvasActions = {
     onSelectCapture: (event: ReactMouseEvent, nodeId: string) => void;
     onHoverStart: (nodeId: string) => void;
     onHoverEnd: (nodeId: string) => void;
-    onConnectStart: (event: ReactMouseEvent, nodeId: string, handleType: "source" | "target") => void;
+    onConnectStart: (event: ReactMouseEvent, nodeId: string, handleType: "source" | "target", portId?: string) => void;
     onResizeStart: (nodeId: string) => void;
     onResize: (nodeId: string, width: number, height: number, position?: Position) => void;
     onResizeEnd: (nodeId: string) => void;
@@ -52,7 +52,7 @@ export function CanvasActionsProvider({ actions, children }: { actions: CanvasAc
             onSelectCapture: (event, nodeId) => latest.current.onSelectCapture(event, nodeId),
             onHoverStart: (nodeId) => latest.current.onHoverStart(nodeId),
             onHoverEnd: (nodeId) => latest.current.onHoverEnd(nodeId),
-            onConnectStart: (event, nodeId, handleType) => latest.current.onConnectStart(event, nodeId, handleType),
+            onConnectStart: (event, nodeId, handleType, portId) => latest.current.onConnectStart(event, nodeId, handleType, portId),
             onResizeStart: (nodeId) => latest.current.onResizeStart(nodeId),
             onResize: (nodeId, width, height, position) => latest.current.onResize(nodeId, width, height, position),
             onResizeEnd: (nodeId) => latest.current.onResizeEnd(nodeId),

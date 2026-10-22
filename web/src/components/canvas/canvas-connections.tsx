@@ -4,6 +4,8 @@ import { useTranslation } from "react-i18next";
 
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
+import { getCanvasPortAnchor, pickCanvasDropHandle } from "@/lib/canvas/canvas-ports";
+import { connectionControlPoints } from "@/lib/canvas/canvas-connection-culling";
 import type { CanvasConnection, CanvasNodeData, ConnectionHandle, Position } from "@/types/canvas";
 
 // Memoized, and the handlers take the connection id instead of being bound per edge: the caller can
@@ -29,13 +31,8 @@ export const ConnectionPath = memo(function ConnectionPath({
 }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const { t } = useTranslation();
-    const startX = from.position.x + from.width;
-    const startY = from.position.y + from.height / 2;
-    const endX = to.position.x;
-    const endY = to.position.y + to.height / 2;
-    const dx = Math.abs(endX - startX);
-    const curvature = Math.max(dx * 0.5, 50);
-    const pathD = `M ${startX} ${startY} C ${startX + curvature} ${startY}, ${endX - curvature} ${endY}, ${endX} ${endY}`;
+    const { startX, startY, endX, endY, control1X, control2X } = connectionControlPoints(from, to, connection);
+    const pathD = `M ${startX} ${startY} C ${control1X} ${startY}, ${control2X} ${endY}, ${endX} ${endY}`;
     const midpointX = (startX + endX) / 2;
     const midpointY = (startY + endY) / 2;
 
@@ -93,14 +90,13 @@ export function ActiveConnectionPath({ node, handle, mouseWorld, target }: { nod
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     if (!node) return null;
 
-    const startX = handle.handleType === "source" ? node.position.x + node.width : mouseWorld.x;
-    const startY = handle.handleType === "source" ? node.position.y + node.height / 2 : mouseWorld.y;
-    const endX = handle.handleType === "source" ? mouseWorld.x : node.position.x;
-    const endY = handle.handleType === "source" ? mouseWorld.y : node.position.y + node.height / 2;
-    const snappedStartX = handle.handleType === "target" && target ? target.position.x + target.width : startX;
-    const snappedStartY = handle.handleType === "target" && target ? target.position.y + target.height / 2 : startY;
-    const snappedEndX = handle.handleType === "source" && target ? target.position.x : endX;
-    const snappedEndY = handle.handleType === "source" && target ? target.position.y + target.height / 2 : endY;
+    const origin = getCanvasPortAnchor(node, handle.handleType, handle.portId);
+    const hoveredPort = target ? pickCanvasDropHandle(target, handle, mouseWorld.y) : null;
+    const snapped = target && hoveredPort ? getCanvasPortAnchor(target, hoveredPort.handleType, hoveredPort.portId) : null;
+    const snappedStartX = handle.handleType === "source" ? origin.x : snapped?.x ?? mouseWorld.x;
+    const snappedStartY = handle.handleType === "source" ? origin.y : snapped?.y ?? mouseWorld.y;
+    const snappedEndX = handle.handleType === "target" ? origin.x : snapped?.x ?? mouseWorld.x;
+    const snappedEndY = handle.handleType === "target" ? origin.y : snapped?.y ?? mouseWorld.y;
     const distance = Math.abs(snappedEndX - snappedStartX);
     const pathD = `M ${snappedStartX} ${snappedStartY} C ${snappedStartX + distance * 0.5} ${snappedStartY}, ${snappedEndX - distance * 0.5} ${snappedEndY}, ${snappedEndX} ${snappedEndY}`;
 

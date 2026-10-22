@@ -2,12 +2,14 @@ import i18n from "@/i18n";
 
 import type { CanvasNodeDefinition } from "@/types/canvas-plugin";
 import { CanvasNodeType } from "@/types/canvas";
+import { registerCanvasPortResolver } from "@/lib/canvas/canvas-ports";
 
 const definitions = new Map<string, CanvasNodeDefinition>();
 
 export function registerNodeDefinitions(defs: CanvasNodeDefinition[]) {
     defs.forEach((def) => {
         definitions.set(def.type, def);
+        registerCanvasPortResolver(def.type, def.ports);
     });
 }
 

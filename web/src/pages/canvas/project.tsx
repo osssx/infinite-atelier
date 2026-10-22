@@ -59,6 +59,8 @@ import { flushCanvasStorePersistence, useCanvasStore } from "@/stores/canvas/use
 import { registerCanvasBackupFlush } from "@/services/canvas-backup-sync";
 import { useGenerationHistoryStore, type GenerationHistoryImage } from "@/stores/canvas/use-generation-history-store";
 import { buildCanvasGraphIndex } from "@/lib/canvas/canvas-graph-index";
+import { prepareCanvasPortConnection } from "@/lib/canvas/canvas-port-connections";
+import { pickCanvasDropHandle } from "@/lib/canvas/canvas-ports";
 import { exportCanvasProjects } from "@/lib/canvas/canvas-export";
 import { applyNodeConfigPatch, audioMetadata, buildAudioGenerationMetadata, buildImageGenerationMetadata, createCanvasNode, imageMetadata, videoMetadata } from "@/lib/canvas/canvas-node-factory";
 import { findContainingGroupId, findGroupDropTarget, findGroupDropTargetFromDelta, fitViewportToNodes, getConnectionTargetAnchor, groupSelectedCanvasNodes, normalizeConnection, normalizeConnectionFromIndex, snapNodesIntoGroup } from "@/lib/canvas/canvas-node-geometry";
@@ -114,6 +116,7 @@ type CanvasClipboard = {
 
 type ConnectionDropTarget = {
     nodeId: string | null;
+    handle: ConnectionHandle | null;
     isNearNode: boolean;
 };
 
@@ -721,19 +724,23 @@ function AtelierCanvasPage() {
     const hideNodeToolbar = useCallback(() => {}, []);
 
     const connectNodes = useCallback(
-        (current: ConnectionHandle, targetNodeId: string) => {
-            if (current.nodeId === targetNodeId) return;
-
-            const connection = normalizeConnection(current.nodeId, targetNodeId, nodesRef.current, current.handleType);
-            if (!connection) {
-                message.warning(t("canvas.projectPage.configConnection"));
+        (current: ConnectionHandle, target: ConnectionHandle) => {
+            if (current.nodeId === target.nodeId) return;
+            const result = prepareCanvasPortConnection(current, target, nodesRef.current, connectionsRef.current);
+            if (result.error === "duplicate") return;
+            if (!result.connection) {
+                message.warning(result.error === "multiple_sources_for_input" ? "输入端口已连接；请先断开原连接"
+                    : result.error === "incompatible_port_type" ? "端口类型不匹配"
+                    : result.error === "cycle" ? "工作流连接不能形成循环"
+                    : result.error === "legacy_target_not_supported" ? "工作流输出只能连接到类型化工作流输入端口"
+                    : t("canvas.projectPage.configConnection"));
                 return;
             }
-            const { fromNodeId, toNodeId } = connection;
-            const exists = connectionsRef.current.some((conn) => conn.fromNodeId === fromNodeId && conn.toNodeId === toNodeId);
-            if (!exists) {
-                setConnections((prev) => [...prev, { id: `conn-${Date.now()}`, fromNodeId, toNodeId }]);
-            }
+            // Revalidate against the latest queued state: rapid user gestures must not bypass single-input rules.
+            setConnections((prev) => {
+                const next = prepareCanvasPortConnection(current, target, nodesRef.current, prev);
+                return next.connection ? [...prev, { id: nanoid(), ...next.connection }] : prev;
+            });
             setContextMenu(null);
         },
         [message, t],
@@ -743,13 +750,16 @@ function AtelierCanvasPage() {
         (type: CanvasNodeType.Image | CanvasNodeType.Text | CanvasNodeType.Config | CanvasNodeType.Video | CanvasNodeType.Audio, pending: PendingConnectionCreate) => {
             const metadata = type === CanvasNodeType.Config ? { model: effectiveConfig.imageModel || effectiveConfig.model, size: effectiveConfig.size, count: getGenerationCount(effectiveConfig.canvasImageCount || effectiveConfig.count) } : undefined;
             const newNode = createCanvasNode(type, pending.position, metadata);
-            const connection = normalizeConnection(pending.connection.nodeId, newNode.id, [...nodesRef.current, newNode], pending.connection.handleType);
-            if (!connection) {
-                message.warning(t("canvas.projectPage.configConnection"));
+            const otherHandle: ConnectionHandle = { nodeId: newNode.id, handleType: pending.connection.handleType === "source" ? "target" : "source" };
+            const resolved = prepareCanvasPortConnection(pending.connection, otherHandle, [...nodesRef.current, newNode], connectionsRef.current);
+            if (!resolved.connection) {
+                message.warning(resolved.error === "legacy_target_not_supported"
+                    ? "请连接到具有类型化输入端口的工作流节点"
+                    : t("canvas.projectPage.configConnection"));
                 return;
             }
             setNodes((prev) => [...prev, newNode]);
-            setConnections((prev) => [...prev, { id: nanoid(), ...connection }]);
+            setConnections((prev) => [...prev, { id: nanoid(), ...resolved.connection! }]);
             setSelectedNodeIds(new Set([newNode.id]));
             setSelectedConnectionId(null);
             if (type !== CanvasNodeType.Text && type !== CanvasNodeType.Audio) setDialogNodeId(newNode.id);
@@ -772,6 +782,7 @@ function AtelierCanvasPage() {
             const handleRadius = CONNECTION_HANDLE_HIT_RADIUS / scale;
             let isNearNode = false;
             let bestNodeId: string | null = null;
+            let bestHandle: ConnectionHandle | null = null;
             let bestPriority = Number.POSITIVE_INFINITY;
 
             // Backwards so the first node in document order wins among equal priorities, matching
@@ -781,7 +792,8 @@ function AtelierCanvasPage() {
             const nodeById = graphIndexRef.current.nodeById;
             for (let i = allNodes.length - 1; i >= 0; i -= 1) {
                 const node = allNodes[i];
-                const anchor = getConnectionTargetAnchor(node, current);
+                const candidate = pickCanvasDropHandle(node, current, world.y);
+                const anchor = getConnectionTargetAnchor(node, current, candidate?.portId);
                 const dx = world.x - anchor.x;
                 const dy = world.y - anchor.y;
                 const hitsHandle = dx * dx + dy * dy <= handleRadius * handleRadius;
@@ -790,16 +802,17 @@ function AtelierCanvasPage() {
 
                 if (!hitsHandle && !hitsInside && !hitsExpanded) continue;
                 isNearNode = true;
-                if (node.id === current.nodeId || !normalizeConnectionFromIndex(nodeById, current.nodeId, node.id, current.handleType)) continue;
+                if (!candidate || node.id === current.nodeId || !normalizeConnectionFromIndex(nodeById, current.nodeId, node.id, current.handleType)) continue;
 
                 const priority = hitsInside ? 0 : hitsHandle ? 1 : 2;
                 if (priority < bestPriority) {
                     bestNodeId = node.id;
+                    bestHandle = candidate;
                     bestPriority = priority;
                 }
             }
 
-            return { nodeId: bestNodeId, isNearNode };
+            return { nodeId: bestNodeId, handle: bestHandle, isNearNode };
         },
         [screenToCanvas],
     );
@@ -1543,8 +1556,8 @@ function AtelierCanvasPage() {
             const currentConnection = connectingParamsRef.current;
             if (currentConnection) {
                 const dropTarget = getConnectionDropTarget(event.clientX, event.clientY, currentConnection);
-                if (dropTarget.nodeId) {
-                    connectNodes(currentConnection, dropTarget.nodeId);
+                if (dropTarget.handle) {
+                    connectNodes(currentConnection, dropTarget.handle);
                     setConnecting(null);
                 } else if (dropTarget.isNearNode) {
                     setConnecting(null);
@@ -1764,10 +1777,10 @@ function AtelierCanvasPage() {
     }, [contextMenu, copySelectedNodes, deleteConnection, deleteNodes, editingGestureActive, focusSelectedNodes, groupSelectedNodes, isCanvasPanning, nodeCreatePosition, pendingConnectionCreate, pasteCopiedNodes, pasteSystemClipboard, redoCanvas, selectedConnectionId, setConnecting, undoCanvas]);
 
     const handleConnectStart = useCallback(
-        (event: ReactMouseEvent, nodeId: string, handleType: "source" | "target") => {
+        (event: ReactMouseEvent, nodeId: string, handleType: "source" | "target", portId?: string) => {
             event.stopPropagation();
             setMouseWorld(screenToCanvas(event.clientX, event.clientY));
-            setConnecting({ nodeId, handleType });
+            setConnecting({ nodeId, handleType, portId });
             connectionTargetNodeIdRef.current = null;
             setConnectionTargetNodeId(null);
             setSelectedConnectionId(null);

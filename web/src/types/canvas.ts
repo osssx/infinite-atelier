@@ -22,6 +22,16 @@ export enum CanvasNodeType {
 // Node types are open strings: built-ins use CanvasNodeType and plugins use "<pluginId>:<name>".
 export type CanvasNodeTypeId = CanvasNodeType | (string & {});
 
+/** Only explicit port-aware edges use these descriptors. Existing edges keep legacy semantics. */
+export type CanvasPortValueKind = "STRING" | "INT" | "FLOAT" | "BOOLEAN" | "IMAGE" | "MASK" | "LATENT" | "CONDITIONING" | "VIDEO" | "AUDIO" | "JSON";
+export type CanvasPortDescriptor = {
+    id: string;
+    label: string;
+    direction: "source" | "target";
+    valueKind: CanvasPortValueKind;
+    required?: boolean;
+};
+
 export type CanvasNodeStatus = "idle" | "success" | "loading" | "error";
 export type CanvasGenerationMode = "text" | "image" | "video" | "audio";
 export type CanvasImageGenerationType = "generation" | "edit";
@@ -94,6 +104,8 @@ export type CanvasNodeMetadata = {
     durationMs?: number;
     groupId?: string;
     interactive?: boolean; // Plugin node interaction/move state; see CanvasNodeDefinition.interactionToggle.
+    /** Phase A mock ports; real templates will resolve ports from immutable revisions. */
+    comfyPorts?: CanvasPortDescriptor[];
 };
 
 export type CanvasNodeData = {
@@ -110,6 +122,9 @@ export type CanvasConnection = {
     id: string;
     fromNodeId: string;
     toNodeId: string;
+    /** Missing port IDs preserve the exact legacy canvas connection behavior. */
+    fromPortId?: string;
+    toPortId?: string;
 };
 
 export type CanvasAssistantReference = {
@@ -149,6 +164,7 @@ export type CanvasAssistantSession = {
 export type ConnectionHandle = {
     nodeId: string;
     handleType: "source" | "target";
+    portId?: string;
 };
 
 export type SelectionBox = {

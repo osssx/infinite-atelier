@@ -6,6 +6,7 @@ import { ChevronRight, Clapperboard, Copy, Group, Image as ImageIcon, Music2, Pu
 import { canvasThemes } from "@/lib/canvas-theme";
 import { formatBytes } from "@/lib/image-utils";
 import { getNodeDefinition } from "@/lib/canvas/node-registry";
+import { COMFY_WORKFLOW_MOCK_TYPE, getCanvasPortOffset } from "@/lib/canvas/canvas-ports";
 import { CANVAS_CONTENT_VISIBILITY_STYLE, shouldContainCanvasContent } from "@/lib/canvas/canvas-content-visibility";
 import { isSimpleCanvasText } from "@/lib/canvas/canvas-markdown-plain";
 import { useThemeStore } from "@/stores/use-theme-store";
@@ -513,8 +514,19 @@ export const CanvasNode = React.memo(function CanvasNode({
                 <ResizeHandle corner="bottom-right" onMouseDown={handleResizeMouseDown} />
             </div>
 
-            {!isGroup ? <ConnectionHandleDot side="left" visible={hovered || isSelected || isConnecting} onMouseDown={(event) => onConnectStart(event, data.id, "target")} /> : null}
-            {!isGroup ? (
+            {!isGroup && definition?.ports ? definition.ports(data).map((port) => (
+                <ConnectionHandleDot
+                    key={port.direction + ":" + port.id}
+                    side={port.direction === "target" ? "left" : "right"}
+                    visible={hovered || isSelected || isConnecting}
+                    top={getCanvasPortOffset(data, port.direction, port.id)}
+                    label={port.label}
+                    valueKind={port.valueKind}
+                    onMouseDown={(event) => onConnectStart(event, data.id, port.direction, port.id)}
+                />
+            )) : null}
+            {!isGroup && !definition?.ports ? <ConnectionHandleDot side="left" visible={hovered || isSelected || isConnecting} onMouseDown={(event) => onConnectStart(event, data.id, "target")} /> : null}
+            {!isGroup && !definition?.ports ? (
                 <ConnectionHandleDot side="right" visible={(definition?.hasSourceHandle ?? true) && data.type !== CanvasNodeType.Config && (hovered || isSelected || isConnecting)} onMouseDown={(event) => onConnectStart(event, data.id, "source")} />
             ) : null}
 
@@ -524,6 +536,13 @@ export const CanvasNode = React.memo(function CanvasNode({
 });
 
 function NodeContent(props: NodeContentRendererProps) {
+    if (props.node.type === COMFY_WORKFLOW_MOCK_TYPE) return (
+        <div className="pointer-events-none flex h-full w-full flex-col items-center justify-center gap-2 p-5 text-center">
+            <Puzzle className="size-9 opacity-60" />
+            <span className="text-sm font-semibold">ComfyUI Workflow (Mock)</span>
+            <span className="max-w-48 text-xs opacity-60">Phase A: typed ports only. Execution is not implemented.</span>
+        </div>
+    );
     if (props.node.type === CanvasNodeType.Config && props.renderNodeContent) return props.renderNodeContent(props.node);
     if (props.isBatchRoot) return <ImageNodeContent {...props} />;
     if (props.node.metadata?.status === "loading") return <LoadingContent theme={props.theme} />;
@@ -1177,7 +1196,7 @@ function ResizeHandle({ corner, onMouseDown }: { corner: ResizeCorner; onMouseDo
     return <div className={`absolute z-50 size-7 ${positionClass}`} onMouseDown={(event) => onMouseDown(event, corner)} />;
 }
 
-function ConnectionHandleDot({ side, visible, onMouseDown }: { side: "left" | "right"; visible: boolean; onMouseDown: (event: React.MouseEvent) => void }) {
+function ConnectionHandleDot({ side, visible, onMouseDown, top, label, valueKind }: { side: "left" | "right"; visible: boolean; onMouseDown: (event: React.MouseEvent) => void; top?: number; label?: string; valueKind?: string }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
 
     return (
@@ -1186,8 +1205,12 @@ function ConnectionHandleDot({ side, visible, onMouseDown }: { side: "left" | "r
                 side === "left" ? "-left-6" : "-right-6"
             } ${visible ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"}`}
             onMouseDown={onMouseDown}
+            data-port-label={label}
+            title={label ? `${label} · ${valueKind}` : undefined}
+            style={top === undefined ? undefined : { top }}
         >
             <div className="size-3 rounded-full border-2 transition-all hover:scale-125" style={{ background: theme.node.panel, borderColor: theme.node.muted }} />
+            {label ? <span className={`pointer-events-none absolute max-w-32 truncate whitespace-nowrap rounded px-1 text-[10px] font-medium ${side === "left" ? "left-9" : "right-9"}`} style={{ background: theme.node.panel, color: theme.node.text }}>{label}<span className="ml-1 opacity-50">{valueKind}</span></span> : null}
         </div>
     );
 }

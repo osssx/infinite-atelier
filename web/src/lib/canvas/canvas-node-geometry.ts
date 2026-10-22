@@ -1,4 +1,5 @@
 import { CanvasNodeType, type CanvasNodeData, type ConnectionHandle, type ViewportTransform } from "@/types/canvas";
+import { getCanvasPortAnchor } from "@/lib/canvas/canvas-ports";
 
 export function nodeBounds(nodes: CanvasNodeData[]) {
     return nodes.reduce(
@@ -135,11 +136,8 @@ export function findContainingGroupId(node: CanvasNodeData, nodes: CanvasNodeDat
     );
 }
 
-export function getConnectionTargetAnchor(node: CanvasNodeData, current: ConnectionHandle) {
-    return {
-        x: current.handleType === "source" ? node.position.x : node.position.x + node.width,
-        y: node.position.y + node.height / 2,
-    };
+export function getConnectionTargetAnchor(node: CanvasNodeData, current: ConnectionHandle, targetPortId?: string) {
+    return getCanvasPortAnchor(node, current.handleType === "source" ? "target" : "source", targetPortId);
 }
 
 export function normalizeConnection(firstNodeId: string, secondNodeId: string, nodes: CanvasNodeData[], firstHandleType: "source" | "target") {

@@ -36,7 +36,7 @@ export function buildOverviewConnectionPaths(
         const from = nodeById.get(connection.fromNodeId);
         const to = nodeById.get(connection.toNodeId);
         if (!from || !to) continue;
-        const p = connectionControlPoints(from, to);
+        const p = connectionControlPoints(from, to, connection);
         const d = `M ${p.startX} ${p.startY} C ${p.control1X} ${p.control1Y}, ${p.control2X} ${p.control2Y}, ${p.endX} ${p.endY}`;
         (highlightedIds.has(connection.id) ? highlighted : ordinary).push(d);
         hit.push(d);

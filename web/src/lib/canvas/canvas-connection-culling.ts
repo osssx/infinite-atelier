@@ -1,4 +1,5 @@
 import type { CanvasConnection, CanvasNodeData, ViewportTransform } from "@/types/canvas";
+import { getCanvasPortAnchor } from "./canvas-ports";
 
 export type WorldRect = { left: number; top: number; right: number; bottom: number };
 
@@ -23,11 +24,13 @@ export function worldViewRect(viewport: ViewportTransform, size: { width: number
  *   M start C (start.x + curvature, start.y), (end.x - curvature, end.y), end
  * where curvature = max(|end.x - start.x| / 2, 50).
  */
-export function connectionControlPoints(from: CanvasNodeData, to: CanvasNodeData) {
-    const startX = from.position.x + from.width;
-    const startY = from.position.y + from.height / 2;
-    const endX = to.position.x;
-    const endY = to.position.y + to.height / 2;
+export function connectionControlPoints(from: CanvasNodeData, to: CanvasNodeData, connection?: CanvasConnection) {
+    const start = getCanvasPortAnchor(from, "source", connection?.fromPortId);
+    const end = getCanvasPortAnchor(to, "target", connection?.toPortId);
+    const startX = start.x;
+    const startY = start.y;
+    const endX = end.x;
+    const endY = end.y;
     const curvature = Math.max(Math.abs(endX - startX) * 0.5, 50);
     return {
         startX,
@@ -48,8 +51,8 @@ export function connectionControlPoints(from: CanvasNodeData, to: CanvasNodeData
  * The endpoints alone are not enough — a backwards connection (end.x < start.x) bulges past both
  * of them, and such a curve can cross the viewport while both endpoints sit outside it.
  */
-export function connectionControlHull(from: CanvasNodeData, to: CanvasNodeData): WorldRect {
-    const { startX, startY, endX, endY, control1X, control2X } = connectionControlPoints(from, to);
+export function connectionControlHull(from: CanvasNodeData, to: CanvasNodeData, connection?: CanvasConnection): WorldRect {
+    const { startX, startY, endX, endY, control1X, control2X } = connectionControlPoints(from, to, connection);
     // Both control y's are endpoint y's, so the y range is exactly the endpoints' span (the
     // Bernstein weights are non-negative and sum to 1). Only x needs all four points.
     return {
@@ -85,6 +88,6 @@ export function cullConnections(
         const to = nodeById.get(connection.toNodeId);
         if (!from || !to) return false;
         if (keepIds?.has(connection.id)) return true;
-        return rectsIntersect(connectionControlHull(from, to), rect);
+        return rectsIntersect(connectionControlHull(from, to, connection), rect);
     });
 }

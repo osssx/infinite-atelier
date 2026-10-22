@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 
-import type { CanvasNodeData, CanvasNodeMetadata } from "@/types/canvas";
+import type { CanvasNodeData, CanvasNodeMetadata, CanvasPortDescriptor } from "@/types/canvas";
 import type { CanvasResourceKind } from "@/lib/canvas/canvas-resource-references";
 
 // Resource emitted when a node is consumed as an upstream input.
@@ -32,4 +32,6 @@ export type CanvasNodeDefinition = {
     forceInteractive?: (node: CanvasNodeData) => boolean;
     keepAspectRatio?: (node: CanvasNodeData) => boolean;
     resource?: (node: CanvasNodeData) => CanvasNodeResource | null;
+    /** Optional dynamic typed ports. Existing nodes without it use their original handles. */
+    ports?: (node: CanvasNodeData) => readonly CanvasPortDescriptor[];
 };

@@ -18,6 +18,7 @@
 - `web/src/features/comfy-workflow/run-client.ts`：读取画布冻结快照、真实 Blob 上传，保存 `RunRequestV1` 在浏览器 localStorage 后提交；如果 POST 响应丢失，可使用同一幂等 key 恢复未确认的提交。
 - `web/src/features/comfy-workflow/comfy-workflow-instance-panel.tsx`：允许实例选择/验证、IMAGE root 选择、运行、状态轮询、主动刷新与取消意图。
 - `web/src/pages/canvas/project.tsx`：从 run artifact 下载 Blob，调用现有 `uploadImage` 保存 IndexedDB 并创建 Image 节点；根据 artifactId 检测重复导入，保留 `runId/workflowNodeId/portId` 溯源。
+- `web/src/features/comfy-workflow/artifact-layout.ts`：单 run 多图分格布局，采用实际图片比例生成画布节点尺寸，避免异步批次导入时图片节点相互重叠。
 
 ## 本机启动（PowerShell）
 
@@ -66,9 +67,19 @@ npm run typecheck
 npm run test
 npm run build
 ```
+需要复现真实 GPU 端到端验收时（仅在确认 Comfy `/queue` 为空后运行；会产生真实 GPU 请求及 Comfy output 文件），在项目根目录执行：
 
-6 个专项用例覆盖 CF-01、中间 IMAGE 捕获、单节点 Image→LoadImage、输入重复来源拒绝、0/空串优先级、SQLite 同 key 幂等与 409、staging/restart、单次 prompt 提交、两张结果、下载中断恢复、running+promptId 重启恢复、`submission_unknown` 不重发。前端 Vitest 全量 52 文件 / 303 个测试通过；类型检查和构建通过。**尚无真实 GPU E2E 证据**：本轮开发机器探测默认 127.0.0.1:8188 `/object_info` 超时；目前的 `/prompt` 与 `/history` 验证使用模拟 Comfy 服务。需要真实实例上测试 Text→文生图、Image→图生图/放大和多图捕获后，才能宣称真实 ComfyUI 联调完成。
+```powershell
+$env:COMFY_LIVE_TEST = "1"
+node web/server/comfy-workflow/comfy-workflow.live-smoke.mjs
+```
+
+脚本检查实际安装的 class 和模型，创建隔离临时 SQLite、经后端接口提交两个小工作流，并验证三张图片的产物引用、下载与 SHA-256。默认未设置 `COMFY_LIVE_TEST` 时不会提交 GPU 工作。
+
+6 个专项用例覆盖 CF-01、中间 IMAGE 捕获、单节点 Image→LoadImage、输入重复来源拒绝、0/空串优先级、SQLite 同 key 幂等与 409、staging/restart、单次 prompt 提交、两张结果、下载中断恢复、running+promptId 重启恢复、`submission_unknown` 不重发。前端 Vitest 全量 52 文件 / 303 个测试通过；类型检查和构建通过。**真实 ComfyUI 后端 E2E 已通过（2026-10-23）**：项目执行环境实际连接 `127.0.0.1:8188` 上的 ComfyUI 0.42.0，`/system_stats`、`/object_info`、`/queue` 返回 200（`/object_info` 约 5 MB、响应约 4.6 秒，原先 2 秒测试超时为误判）。使用已安装的 `dreamshaperXL_lightningDPMSDE.safetensors`，真实 Text→文生图以 256×256、4 steps、batch=2 成功采集 2 张 PNG；随后通过 `/api/comfy/inputs` 上传第一张图，真实 `LoadImage`→`ImageScaleBy` 放大成功采集 1 张 PNG。两次实际 `/prompt` 均获得 promptId、完成 `/history` 追踪及图片下载/哈希校验。该测试直接驱动服务端 `createComfyService` 和本地 HTTP 服务，**未验证完整浏览器画布 UI 和 Vite/Ark 网关代理链路**。
+
+补充使用隔离临时目录及随机网关 token 启动真实 `ark-gateway.mjs` 路由做 HTTP 鉴权与实例发现验证：未授权请求 HTTP 401、`x-gateway-token` 正确的请求 HTTP 200、`comfy-local` 可达且发现 `SaveImage`。**Vite 浏览器真实画布点击与图片可视化尚未进行自动化 E2E**；多图节点重叠问题已改为确定性分格排布并通过 2 项布局测试。
 
 ## 下一步（先闭环验证，再合并）
 
-真实 Comfy UI API Format 示例 + 真实 GPU smoke，验证 `SaveImage` 的多图产物、`LoadImage` 上传命名和插件节点能力；随后补充 unknown 提交关联/人工 reconciliation、上传与 artifact 容量/保留策略、未打开面板时的完成通知；再逐步放宽多个 workflow socket 和 rootOutputs，**不要改变 RunRequestV1 历史 schema**。
+真实 GPU smoke 已跑通。下一步对浏览器画布进行交互验收，包括工作流绑定、文本/图片连线、点击运行、进度轮询、两个输出 Image 节点不重叠，以及页面重载后的已采集产物恢复。随后补充 unknown 提交关联/人工 reconciliation、上传与 artifact 容量/保留策略、未打开面板时的完成通知；最后才逐步放宽多 workflow socket 和 rootOutputs，**不要改变 RunRequestV1 历史 schema**。

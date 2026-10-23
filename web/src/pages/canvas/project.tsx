@@ -88,6 +88,7 @@ const ComfyWorkflowInstancePanel = lazy(() => import("@/features/comfy-workflow/
 import { COMFY_WORKFLOW_MOCK_TYPE } from "@/lib/canvas/canvas-ports";
 import { validateCanvasPortConnections } from "@/lib/canvas/canvas-port-connections";
 import type { ComfyRunArtifact } from "@/features/comfy-workflow/run-client";
+import { placeComfyImageArtifact } from "@/features/comfy-workflow/artifact-layout";
 import { CanvasRefreshShell } from "@/components/canvas/canvas-refresh-shell";
 import { CanvasTopBar } from "@/components/canvas/canvas-top-bar";
 import { ConnectionCreateMenu, NodeCreateMenu, type PendingConnectionCreate } from "@/components/canvas/canvas-create-menus";
@@ -3398,6 +3399,7 @@ function AtelierCanvasPage() {
 
 
     const handleComfyArtifacts = useCallback(async (artifacts: ComfyRunArtifact[]) => {
+        const indexByRun = new Map<string, number>();
         for (const artifact of artifacts) {
             if (nodesRef.current.some(n=>n.metadata?.comfyArtifact?.artifactId===artifact.artifactId))continue;
             const source=nodesRef.current.find(n=>n.id===artifact.workflowNodeId);
@@ -3407,14 +3409,17 @@ function AtelierCanvasPage() {
             const blob=await res.blob();
             if(!blob.type.startsWith("image/"))throw new Error("ComfyUI 产物类型不是图片");
             const uploaded=await uploadImage(blob);
-            const index=nodesRef.current.filter(n=>n.metadata?.comfyArtifact?.runId===artifact.runId).length;
-            const center={x:source.position.x+source.width+uploaded.width/2+48,
-                y:source.position.y+Math.min(index,8)*(Math.min(uploaded.height,270)+24)+uploaded.height/2};
-            const created=createCanvasNode(CanvasNodeType.Image,center,{
+            const index=indexByRun.get(artifact.runId) ??
+                nodesRef.current.filter(n=>n.metadata?.comfyArtifact?.runId===artifact.runId).length;
+            const placement=placeComfyImageArtifact(source,index,uploaded.width,uploaded.height);
+            const created=createCanvasNode(CanvasNodeType.Image,placement.center,{
                 ...imageMetadata(uploaded),
                 comfyArtifact:{runId:artifact.runId,artifactId:artifact.artifactId,
                     workflowNodeId:artifact.workflowNodeId,portId:artifact.portId}
             });
+            created.width=placement.width;
+            created.height=placement.height;
+            indexByRun.set(artifact.runId,index+1);
             setNodes(prev=>prev.some(n=>n.metadata?.comfyArtifact?.artifactId===artifact.artifactId)?prev:[...prev,created]);
         }
     },[]);

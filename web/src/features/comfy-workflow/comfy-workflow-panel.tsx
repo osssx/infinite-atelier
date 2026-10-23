@@ -88,6 +88,8 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
     const outputPorts = draft?.ports.filter((port)=>port.direction==="source")||[];
     const savedValue = node.metadata?.comfyWorkflow?.templateId && node.metadata?.comfyWorkflow?.templateRevision
         ? node.metadata.comfyWorkflow.templateId+"@"+node.metadata.comfyWorkflow.templateRevision : "";
+    const selectedPreset=presets.find(p=>p.templateId+"@"+p.revision===savedValue);
+    const hasKreaPreset=presets.some(p=>p.templateId===KREA2_TURBO_TEMPLATE_ID);
 
     useEffect(()=>{
         let alive=true;
@@ -251,24 +253,37 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
                 <label className={buttonClass+" cursor-pointer"}><FileUp size={14}/> Import API JSON
                     <input type="file" accept=".json,application/json" className="sr-only" onChange={(e)=>void uploadGraph(e)}/>
                 </label>
-                <button type="button" className={buttonClass} disabled={busy} onClick={()=>void installKrea2Preset()} title="加载项目 workflows/image_krea2_turbo_t2i_int8.json 并安装预配置端口">Krea 2 Turbo 预设</button>
+                <select aria-label="加载预设" data-comfy-preset-picker
+                    className={inputClass+" !w-auto min-w-[160px] max-w-[260px] flex-1"}
+                    disabled={busy}
+                    value={selectedPreset ? "preset:"+selectedPreset.id
+                        : savedValue.startsWith(KREA2_TURBO_TEMPLATE_ID+"@") && !hasKreaPreset
+                            ? "builtin:krea2" : ""}
+                    onChange={(e)=>{
+                        const value=e.target.value;
+                        if(value==="builtin:krea2"){void installKrea2Preset();return;}
+                        if(!value.startsWith("preset:"))return;
+                        const preset=presets.find(p=>p.id===value.slice("preset:".length));
+                        if(!preset)return;
+                        setBusy(true);setError("");
+                        void getComfyTemplate(preset.templateId,preset.revision)
+                            .then(t=>{if(!t)throw new Error("预设模板版本不存在");applySaved(t);})
+                            .catch(cause=>setError(String(cause)))
+                            .finally(()=>setBusy(false));
+                    }}>
+                    <option value="">{savedValue && draft && !selectedPreset
+                        ? "当前绑定："+draft.name : "加载预设"}</option>
+                    {!hasKreaPreset
+                        ? <optgroup label="内置预设">
+                            <option value="builtin:krea2">Krea 2 Turbo INT8 · 文生图</option>
+                        </optgroup> : null}
+                    {presets.length>0?<optgroup label="全局预设">
+                        {presets.map(p=><option key={p.id} value={"preset:"+p.id}>{p.name}</option>)}
+                    </optgroup>:null}
+                </select>
                 <label className={buttonClass+" cursor-pointer"}>Load /object_info
                     <input type="file" accept=".json,application/json" className="sr-only" onChange={(e)=>void uploadInfo(e)}/>
                 </label>
-                <select aria-label="选择预设工作流" className={inputClass+" !w-auto max-w-[260px] flex-1"}
-                    value={presets.find(p=>p.templateId+"@"+p.revision===savedValue)?.id??""}
-                    onChange={(e)=>{
-                        const preset=presets.find(p=>p.id===e.target.value);
-                        if(!preset)return;
-                        void getComfyTemplate(preset.templateId,preset.revision)
-                            .then(t=>{if(!t)throw new Error("预设模板版本不存在");applySaved(t);})
-                            .catch(cause=>setError(String(cause)));
-                    }}>
-                    <option value="">{savedValue && draft && !presets.some(p=>p.templateId+"@"+p.revision===savedValue)
-                        ? "当前绑定：" + draft.name
-                        : "选择全局预设工作流"}</option>
-                    {presets.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
-                </select>
                 {draft?<span className="ml-auto text-[11px] text-[var(--comfy-muted)]">{items.length} nodes · {draft.ports.length} canvas ports</span>:null}
             </div>
 

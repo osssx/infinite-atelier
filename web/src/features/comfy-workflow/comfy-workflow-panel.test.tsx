@@ -22,9 +22,16 @@ describe("Comfy workflow binding selector",()=>{
             node,onChange:()=>true,onClose:()=>undefined
         };
         const html=renderToStaticMarkup(createElement(ComfyWorkflowPanel,props));
-        expect(html).toContain('aria-label="选择预设工作流"');
-        expect(html).toContain("选择全局预设工作流");
+        expect(html).toContain('aria-label="加载预设"');
+        expect(html).toContain("data-comfy-preset-picker");
+        expect(html).toContain("加载预设");
+        expect(html).toContain('value="builtin:krea2"');
+        expect(html).toContain("Krea 2 Turbo INT8 · 文生图");
+        expect(html).toContain("Import API JSON");
+        expect(html).toContain("Load /object_info");
+        expect(html).not.toContain(">Krea 2 Turbo 预设</button>");
         expect(html).not.toContain("Saved template versions");
         expect(html).not.toContain("已保存的所有模板版本");
+        expect((html.match(/data-comfy-preset-picker/g)||[])).toHaveLength(1);
     });
 });

@@ -7,7 +7,9 @@ import {useThemeStore} from "@/stores/use-theme-store";
 import type {CanvasNodeData,CanvasNodeMetadata} from "@/types/canvas";
 import {ComfyWorkflowPanel} from "./comfy-workflow-panel";
 import {deleteComfyInstance,listComfyInstances,saveComfyInstance,type ComfyInstance} from "./run-client";
-import {deleteComfyPreset,listComfyPresets,saveComfyPreset,type ComfyPreset} from "./preset-registry";
+import {saveComfyPreset,type ComfyPreset} from "./preset-registry";
+import {installBundledKrea2Template,listComfyPresetCatalog,resetBundledComfyPreset,type ComfyCatalogPreset} from "./preset-catalog";
+import {deleteComfyPreset} from "./preset-registry";
 import {getComfyTemplate} from "./template-registry";
 
 const localDefault="http://127.0.0.1:8188";
@@ -28,8 +30,9 @@ export function ComfySettingsTab() {
     const [loading,setLoading]=useState(false);
     const [editingInstance,setEditingInstance]=useState<{originalId?:string;id:string;url:string}|null>(null);
     const [busy,setBusy]=useState(false);
-    const [presets,setPresets]=useState<ComfyPreset[]>([]);
+    const [presets,setPresets]=useState<ComfyCatalogPreset[]>([]);
     const [presetsBusy,setPresetsBusy]=useState(false);
+    const [presetActionBusy,setPresetActionBusy]=useState<string|null>(null);
     const [editor,setEditor]=useState<{key:string;node:CanvasNodeData;name:string}|null>(null);
 
     const reloadInstances=useCallback(async()=>{
@@ -40,7 +43,7 @@ export function ComfySettingsTab() {
     },[]);
     const reloadPresets=useCallback(async()=>{
         setPresetsBusy(true);
-        try {setPresets(await listComfyPresets());}
+        try {setPresets(await listComfyPresetCatalog());}
         catch(error){message.error(error instanceof Error?error.message:String(error));}
         finally{setPresetsBusy(false);}
     },[message]);
@@ -65,9 +68,27 @@ export function ComfySettingsTab() {
             message.success("已删除实例");await reloadInstances();
         }catch(error){message.error(error instanceof Error?error.message:String(error));}
     };
-    const openPreset=(preset?:ComfyPreset)=>{
+    const openPreset=async(preset?:ComfyCatalogPreset)=>{
+        if(preset?.builtIn) {
+            setPresetActionBusy(preset.id);
+            try {
+                // Bundled defaults are visible before ever writing to IndexedDB.
+                // Materialize their immutable template only when the user edits.
+                await installBundledKrea2Template();
+            }catch(error){message.error("加载内置预设失败："+String(error));return;}
+            finally{setPresetActionBusy(null);}
+        }
         setEditor({key:preset?.id??crypto.randomUUID(),name:preset?.name??"新预设",
             node:makeTemplateNode(preset)});
+    };
+    const resetBuiltin=async(preset:ComfyCatalogPreset)=>{
+        setPresetActionBusy(preset.id);
+        try{
+            await resetBundledComfyPreset();
+            await reloadPresets();
+            message.success("已重置为内置默认工作流与端口绑定；已绑定的画布节点不受影响");
+        }catch(error){message.error("重置内置预设失败："+String(error));}
+        finally{setPresetActionBusy(null);}
     };
     const bindPreset=(patch:Partial<CanvasNodeMetadata>):boolean=>{
         const binding=patch.comfyWorkflow;
@@ -83,8 +104,9 @@ export function ComfySettingsTab() {
         }).catch(error=>message.error("预设保存失败："+String(error)));
         return true;
     };
-    const removePreset=async(preset:ComfyPreset)=>{
-        try{await deleteComfyPreset(preset.id);message.success("已移除预设（不影响现有画布节点）");await reloadPresets();}
+    const removePreset=async(preset:ComfyCatalogPreset)=>{
+        try{if(preset.builtIn)throw Error("内置预设不可删除，可使用重置默认");
+            await deleteComfyPreset(preset.id);message.success("已移除预设（不影响现有画布节点）");await reloadPresets();}
         catch(error){message.error(String(error));}
     };
     const themeVars={
@@ -122,16 +144,26 @@ export function ComfySettingsTab() {
         <section className="border-t border-stone-200 pt-5 dark:border-stone-800">
             <div className="mb-3 flex items-center justify-between gap-2">
                 <h3 className="text-base font-semibold">预设工作流</h3>
-                <Button size="small" icon={<Plus size={13}/>} onClick={()=>openPreset()}>新增 / 导入工作流</Button>
+                <Button size="small" icon={<Plus size={13}/>} onClick={()=>void openPreset()}>新增 / 导入工作流</Button>
             </div>
             <div className="overflow-hidden rounded-lg border border-stone-200 dark:border-stone-800">
-                <div className="grid grid-cols-[minmax(130px,1fr)_minmax(120px,2fr)_100px] gap-3 bg-stone-50 px-3 py-2 text-xs text-stone-500 dark:bg-stone-900"><span>名称</span><span>模板 revision</span><span>绑定编辑</span></div>
-                {presets.map(preset=><div className="grid grid-cols-[minmax(130px,1fr)_minmax(120px,2fr)_100px] items-center gap-3 border-t border-stone-200 px-3 py-2 text-xs dark:border-stone-800" key={preset.id}>
-                    <span className="truncate font-medium" title={preset.name}>{preset.name}</span>
+                <div className="grid grid-cols-[minmax(130px,1fr)_minmax(120px,2fr)_180px] gap-3 bg-stone-50 px-3 py-2 text-xs text-stone-500 dark:bg-stone-900"><span>名称</span><span>模板 revision</span><span>绑定编辑</span></div>
+                {presets.map(preset=><div className="grid grid-cols-[minmax(130px,1fr)_minmax(120px,2fr)_180px] items-center gap-3 border-t border-stone-200 px-3 py-2 text-xs dark:border-stone-800" key={preset.id} data-comfy-preset={preset.id}>
+                    <span className="flex min-w-0 items-center gap-1.5">
+                        <span className="truncate font-medium" title={preset.name}>{preset.name}</span>
+                        {preset.builtIn?<Tag className="!mr-0">内置</Tag>:null}
+                        {preset.modified?<Tag color="orange" className="!mr-0">已修改</Tag>:null}
+                    </span>
                     <span className="truncate font-mono text-stone-500" title={preset.templateId+"@"+preset.revision}>{preset.templateId} · {preset.revision.slice(0,12)}</span>
-                    <span className="flex gap-1">
-                        <Button type="link" size="small" className="!px-0" onClick={()=>openPreset(preset)}>编辑绑定</Button>
-                        <Popconfirm title="移除该预设？" onConfirm={()=>void removePreset(preset)}><Button danger size="small" type="text" aria-label={"移除预设 "+preset.name} icon={<Trash2 size={13}/>} /></Popconfirm>
+                    <span className="flex items-center gap-1">
+                        <Button type="link" size="small" className="!px-0" loading={presetActionBusy===preset.id}
+                            onClick={()=>void openPreset(preset)}>编辑绑定</Button>
+                        {preset.builtIn
+                            ? preset.modified?<Button size="small" type="link" className="!px-0" disabled={presetActionBusy!==null}
+                                onClick={()=>void resetBuiltin(preset)}>重置默认</Button>:null
+                            : <Popconfirm title="移除该预设？" onConfirm={()=>void removePreset(preset)}>
+                                <Button danger size="small" type="text" aria-label={"移除预设 "+preset.name} icon={<Trash2 size={13}/>} />
+                              </Popconfirm>}
                     </span>
                 </div>)}
                 {!presets.length?<p className="px-3 py-4 text-xs text-stone-500">{presetsBusy?"正在加载…":"尚无预设。可导入 ComfyUI API JSON，编辑输入/输出端口并保存。"}</p>:null}

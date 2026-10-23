@@ -10,7 +10,8 @@ import {
 } from "./binding-picker";
 import { templatePayloadFromGraph, validateComfyApiGraph, type ComfyInputBinding, type ComfyNodeTarget, type ComfyObjectInfo, type ComfyTemplatePayload, type ComfyTemplatePort, type ComfyWorkflowTemplate } from "./template-schema";
 import { getComfyTemplate, saveComfyTemplateVersion } from "./template-registry";
-import { listComfyPresets, upsertComfyPresetForTemplate, type ComfyPreset } from "./preset-registry";
+import { upsertComfyPresetForTemplate } from "./preset-registry";
+import { listComfyPresetCatalog, type ComfyCatalogPreset } from "./preset-catalog";
 import { buildKrea2TurboTemplate, isKrea2TurboT2IWorkflow, krea2TurboBundledTemplate, KREA2_TURBO_TEMPLATE_ID } from "./krea2-turbo-preset";
 
 const KINDS: CanvasPortValueKind[] = ["STRING","INT","FLOAT","BOOLEAN","IMAGE","MASK","LATENT","CONDITIONING","VIDEO","AUDIO","JSON"];
@@ -68,7 +69,7 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
         "--comfy-accent":theme.node.activeStroke,
     } as CSSProperties;
 
-    const [presets,setPresets] = useState<ComfyPreset[]>([]);
+    const [presets,setPresets] = useState<ComfyCatalogPreset[]>([]);
     const [draft,setDraft] = useState<ComfyTemplatePayload|null>(null);
     const [templateId,setTemplateId] = useState("");
     const [objectInfo,setObjectInfo] = useState<ComfyObjectInfo>();
@@ -89,11 +90,10 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
     const savedValue = node.metadata?.comfyWorkflow?.templateId && node.metadata?.comfyWorkflow?.templateRevision
         ? node.metadata.comfyWorkflow.templateId+"@"+node.metadata.comfyWorkflow.templateRevision : "";
     const selectedPreset=presets.find(p=>p.templateId+"@"+p.revision===savedValue);
-    const hasKreaPreset=presets.some(p=>p.templateId===KREA2_TURBO_TEMPLATE_ID);
 
     useEffect(()=>{
         let alive=true;
-        void listComfyPresets().then(values=>{if(alive)setPresets(values);}).catch(cause=>{if(alive)setError(String(cause));});
+        void listComfyPresetCatalog().then(values=>{if(alive)setPresets(values);}).catch(cause=>{if(alive)setError(String(cause));});
         const binding=node.metadata?.comfyWorkflow;
         if(binding?.templateId && binding.templateRevision) {
             void getComfyTemplate(binding.templateId,binding.templateRevision).then(bound=>{
@@ -189,7 +189,7 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
             if(applySaved(template)) {
                 if(context==="node") {
                     await upsertComfyPresetForTemplate(template);
-                    setPresets(await listComfyPresets());
+                    setPresets(await listComfyPresetCatalog());
                 }
                 setSelectedNodeId("55");setSelectedPortId("prompt");setNodeSearch("");
                 setStatus("Krea 2 Turbo INT8 preset saved and bound: 11 inputs + image output. Instance verification still required.");
@@ -227,7 +227,7 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
             const template=await saveComfyTemplateVersion(templateId,draft,objectInfo);
             if(applySaved(template) && context==="node") {
                 await upsertComfyPresetForTemplate(template);
-                setPresets(await listComfyPresets());
+                setPresets(await listComfyPresetCatalog());
             }
         }catch(cause){setError(String(cause));}finally{setBusy(false);}
     };
@@ -256,15 +256,14 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
                 <select aria-label="加载预设" data-comfy-preset-picker
                     className={inputClass+" !w-auto min-w-[160px] max-w-[260px] flex-1"}
                     disabled={busy}
-                    value={selectedPreset ? "preset:"+selectedPreset.id
-                        : savedValue.startsWith(KREA2_TURBO_TEMPLATE_ID+"@") && !hasKreaPreset
-                            ? "builtin:krea2" : ""}
+                    value={selectedPreset ? "preset:"+selectedPreset.id : ""}
                     onChange={(e)=>{
                         const value=e.target.value;
                         if(value==="builtin:krea2"){void installKrea2Preset();return;}
                         if(!value.startsWith("preset:"))return;
                         const preset=presets.find(p=>p.id===value.slice("preset:".length));
                         if(!preset)return;
+                        if(preset.builtIn && !preset.modified){void installKrea2Preset();return;}
                         setBusy(true);setError("");
                         void getComfyTemplate(preset.templateId,preset.revision)
                             .then(t=>{if(!t)throw new Error("预设模板版本不存在");applySaved(t);})
@@ -273,12 +272,14 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
                     }}>
                     <option value="">{savedValue && draft && !selectedPreset
                         ? "当前绑定："+draft.name : "加载预设"}</option>
-                    {!hasKreaPreset
-                        ? <optgroup label="内置预设">
-                            <option value="builtin:krea2">Krea 2 Turbo INT8 · 文生图</option>
-                        </optgroup> : null}
-                    {presets.length>0?<optgroup label="全局预设">
-                        {presets.map(p=><option key={p.id} value={"preset:"+p.id}>{p.name}</option>)}
+                    <optgroup label="内置预设">
+                        {presets.filter(p=>p.builtIn).map(p=><option key={p.id} value={"preset:"+p.id}>
+                            {p.name}{p.modified?"（已修改）":""}
+                        </option>)}
+                        {!presets.length?<option value="builtin:krea2">Krea 2 Turbo INT8 · 文生图</option>:null}
+                    </optgroup>
+                    {presets.some(p=>!p.builtIn)?<optgroup label="全局预设">
+                        {presets.filter(p=>!p.builtIn).map(p=><option key={p.id} value={"preset:"+p.id}>{p.name}</option>)}
                     </optgroup>:null}
                 </select>
                 <label className={buttonClass+" cursor-pointer"}>Load /object_info

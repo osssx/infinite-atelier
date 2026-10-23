@@ -4,7 +4,6 @@ import { fileURLToPath } from "node:url";
 import { createComfyStore } from "./store.mjs";
 import { compileSingleWorkflow, verifyTemplate, validateSingleRequest, fingerprintRequest, canonical, sha256, validateGraph } from "./compiler.mjs";
 
-const defaultClasses = "CheckpointLoaderSimple,CLIPTextEncode,EmptyLatentImage,KSampler,VAEDecode,VAEEncode,LoadImage,SaveImage,ImageScale,ImageScaleBy,ImageInvert,ImageBlur,PreviewImage,Reroute,CLIPSetLastLayer,LatentUpscale,LatentUpscaleBy,ImageToMask,MaskToImage,ImageCompositeMasked";
 const statusError = (code,status=422)=>Object.assign(new Error(code),{status,code});
 const isImage = (b,mime)=>mime==="image/png" && b.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10])) ||
     mime==="image/jpeg" && b[0]===255 && b[1]===216 && b[2]===255 ||
@@ -86,7 +85,8 @@ export function createComfyService({
 }={}) {
     const store=createComfyStore(root);
     const instances=store.loadInstances(configureInstances(env));
-    const allowClasses=new Set((env.COMFY_ALLOWED_CLASSES||defaultClasses).split(",").map(x=>x.trim()).filter(Boolean));
+    // Trust all installed ComfyUI classes, including custom nodes. Validate against live /object_info.
+    const activeStates=["queued","preparing","submitting","submission_unknown","running","collecting"];
     if(resume)store.resumeAfterRestart();
     let closed=false,busy=false;
     const infoFor=async(instance)=>fetchInfo?fetchInfo(instance):upstreamCall(instance,"/object_info");
@@ -114,7 +114,7 @@ export function createComfyService({
             const instance=instanceFor(req.instanceId), info=await infoFor(instance);
             const imageFiles={};
             for (const input of req.externalInputs.filter(x=>x.kind==="asset")) imageFiles[input.assetId]=await putImage(run,input,instance);
-            const compiled=compileSingleWorkflow(req,template,{info,allowClasses,imageFiles});
+            const compiled=compileSingleWorkflow(req,template,{info,imageFiles});
             const attemptId=randomUUID(),marker=randomUUID();
             // Transactional barrier: graph, capture map and submission marker land BEFORE /prompt.
             if (!store.cas(run.id,"preparing","submitting",{
@@ -197,7 +197,7 @@ export function createComfyService({
             if(method==="GET" && path==="/api/comfy/instances") {
                 const results=[];
                 for(const instance of instances.values()) {
-                    try {const info=await infoFor(instance);results.push({...instance,reachable:true,classTypes:Object.keys(info).filter(x=>allowClasses.has(x))});}
+                    try {const info=await infoFor(instance);results.push({...instance,reachable:true,classTypes:Object.keys(info)});}
                     catch{results.push({...instance,reachable:false,classTypes:[]});}
                 }
                 // Browser must detect a gateway process left running from before instance CRUD existed.
@@ -207,7 +207,7 @@ export function createComfyService({
             // Refuse any mutation while a queued / uncertain / executing GPU run might resolve this ID.
             if(["POST","PUT","DELETE"].includes(method) &&
                 (path==="/api/comfy/instances" || path.startsWith("/api/comfy/instances/"))) {
-                if(store.listStatuses(["queued","preparing","submitting","submission_unknown","running","collecting"]).length)
+                if(store.listStatuses(activeStates).length)
                     throw statusError("comfy_instances_locked_during_pending_runs",409);
                 const oldId=path.startsWith("/api/comfy/instances/")?decodeURIComponent(path.slice("/api/comfy/instances/".length)):"";
                 if(method==="DELETE") {
@@ -228,7 +228,7 @@ export function createComfyService({
                 const template=verifyTemplate(input.template);
                 const instance=instanceFor(input.instanceId);
                 const info=await infoFor(instance);
-                validateGraph(template.apiGraph,info,allowClasses);
+                validateGraph(template.apiGraph,info);
                 for(const port of template.ports.filter(x=>x.direction==="source")) {
                     const s=template.apiGraph[port.outputBinding.nodeId];
                     if(info[s.class_type]?.output?.[port.outputBinding.outputIndex]!==port.valueKind) throw statusError("template_output_capability_mismatch");
@@ -269,7 +269,7 @@ export function createComfyService({
                 // Fail fast on immutable graph errors before acknowledging the durable queued job.
                 const info=await infoFor(instance);
                 const files=Object.fromEntries(input.externalInputs.filter(x=>x.kind==="asset").map(x=>[x.assetId,"dryrun.png"]));
-                const compiled=compileSingleWorkflow(input,template,{info,allowClasses,imageFiles:files});
+                const compiled=compileSingleWorkflow(input,template,{info,imageFiles:files});
                 if(path==="/api/comfy/graphs/validate") {
                     return send(res,200,{valid:true,graphHash:compiled.graphHash,captureMap:compiled.captureMap,
                         note:"Validated against live ComfyUI capabilities; dryrun.png is a placeholder, not an uploaded file."});

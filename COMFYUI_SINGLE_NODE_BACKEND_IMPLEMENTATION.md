@@ -36,7 +36,6 @@ npm run dev:comfy
 ```powershell
 $env:GATEWAY_TOKEN = "<generate-a-long-secret>"
 $env:COMFY_INSTANCES_JSON = '[{"id":"comfy-local","url":"http://127.0.0.1:8188"}]'
-$env:COMFY_ALLOWED_CLASSES = "CheckpointLoaderSimple,CLIPTextEncode,EmptyLatentImage,KSampler,VAEDecode,VAEEncode,LoadImage,SaveImage,ImageScale,ImageScaleBy"
 $env:COMFY_DATA_DIR = "H:\\WebDev\\infinite-atelier\\web\\.comfy-workflow-data"
 node server/ark-gateway.mjs
 ```
@@ -55,13 +54,13 @@ node server/ark-gateway.mjs
 
 
 
-白名单实例目前 **仅接受配置明确的 127.0.0.1 或 ::1 HTTP 原点**；端口必填。使用非内置 class 的工作流，需由受信任管理员显式扩展 `COMFY_ALLOWED_CLASSES`。默认白名单在 `service.mjs` 中配置，优先考虑显式环境配置而不是任意自定义节点。
+**不限制 ComfyUI 节点 class 白名单**：所有由目标 ComfyUI `/object_info` 公布的节点类别均可用于模板和运行，包括本机安装的自定义节点（例如 `ComfySwitchNode`、`TextGenerate`）。仍校验 class 是否实际安装、必填输入、合法输入名（包含 `COMFY_DYNAMICCOMBO_V3` 的选项依赖子输入）、连接引用、输出槽及环路；不接受随意伪造的节点类型或输入。`COMFY_ALLOWED_CLASSES` 已不再使用。注意：ComfyUI 自定义节点可以执行本机代码，请只连接可信的本机 ComfyUI 环境，并保护网关令牌和访问边界。
 
 ## API 契约
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/comfy/instances` | 实例 ID / loopback URL / 可达性 / allowlisted class 清单 |
+| GET | `/api/comfy/instances` | 实例 ID / loopback URL / 可达性 / 已安装 class 清单 |
 | POST / PUT / DELETE | `/api/comfy/instances[/:id]` | 添加、修改、删除受限本机实例；有未完成 GPU 任务时 HTTP 409 |
 | POST | `/api/comfy/templates` | `{instanceId, template}`，按 SHA 保存固定不可变 revision |
 | GET | `/api/comfy/templates` | 服务端已有版本 |

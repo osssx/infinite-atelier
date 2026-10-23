@@ -67,10 +67,7 @@ const textTemplate=template("text",textGraph,textPorts),upscaleTemplate=template
 const dir=mkdtempSync(join(tmpdir(),"atelier-live-smoke-"));
 const instanceId="comfy-local",projectId="comfy-smoke";
 const service=createComfyService({root:dir,tickMs:1000,fetchInfo:async()=>info,
-    env:{COMFY_INSTANCES_JSON:JSON.stringify([{id:instanceId,url:COMFY}]),
-        COMFY_ALLOWED_CLASSES:[...new Set(Object.values({...textGraph,...upscaleGraph}).map(n=>n.class_type)),
-            "CheckpointLoaderSimple","KSampler","CLIPTextEncode","EmptyLatentImage","VAEDecode",
-            "LoadImage","SaveImage","ImageScaleBy"].join(",")}});
+    env:{COMFY_INSTANCES_JSON:JSON.stringify([{id:instanceId,url:COMFY}])}});
 const server=createServer((req,res)=>void service.handle(req,res,new URL(req.url,"http://smoke.local")));
 await new Promise(resolve=>server.listen(0,"127.0.0.1",resolve));
 const base="http://127.0.0.1:"+server.address().port;

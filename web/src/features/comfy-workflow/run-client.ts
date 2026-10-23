@@ -28,6 +28,8 @@ async function comfyRequest<T>(path:string,init?:RequestInit):Promise<T> {
     if(!data||typeof data!=="object"||Array.isArray(data))throw new Error("ComfyUI API 返回无效 JSON（HTTP "+response.status+"）");
     if(!response.ok) {
         const reason="error" in data && typeof data.error==="string"?data.error:"Comfy HTTP "+response.status;
+        if(reason.startsWith("comfy_missing_class:"))
+            throw new Error("ComfyUI 尚未安装工作流依赖节点："+reason.slice("comfy_missing_class:".length)+"。请在 ComfyUI 中安装相应节点后重试。");
         if(response.status===401||response.status===403)throw new Error("ComfyUI 网关鉴权失败（HTTP "+response.status+"），请确保网关与 Vite 配置相同 GATEWAY_TOKEN。"+reason);
         throw new Error(reason);
     }

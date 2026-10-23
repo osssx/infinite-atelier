@@ -6,7 +6,7 @@ const testRoot = join(process.cwd(),"web","node_modules",".comfy-test-fixtures")
 mkdirSync(testRoot,{recursive:true});
 import { join } from "node:path";
 import { createServer } from "node:http";
-import { canonical,sha256,compileSingleWorkflow } from "./compiler.mjs";
+import { canonical,sha256,compileSingleWorkflow,validateGraph } from "./compiler.mjs";
 import { createComfyStore } from "./store.mjs";
 import { createComfyService } from "./service.mjs";
 
@@ -54,8 +54,40 @@ function req(asset) {
         idempotencyKey:"click-001",runOptions:{}
     };
 }
-const classes=new Set(Object.keys(info));
-const options=(asset)=>({info,allowClasses:classes,imageFiles:asset?{[asset.assetId]:"staged.png"}:{}});
+const options=(asset)=>({info,imageFiles:asset?{[asset.assetId]:"staged.png"}:{}});
+test("all installed classes including custom nodes are accepted, but missing classes rejected",()=>{
+    const customInfo={
+        ComfySwitchNode:{input:{required:{select:["BOOLEAN",{}],image:["IMAGE",{}]}},output:["IMAGE"]},
+        SolidImage:info.SolidImage
+    };
+    const graph={
+        "1":{class_type:"SolidImage",inputs:{}},
+        "2":{class_type:"ComfySwitchNode",inputs:{select:true,image:["1",0]}}
+    };
+    assert.doesNotThrow(()=>validateGraph(graph,customInfo));
+    assert.throws(()=>validateGraph(graph,{SolidImage:info.SolidImage}),/comfy_missing_class:ComfySwitchNode/);
+});
+
+test("dynamic COMFY_DYNAMICCOMBO_V3 dotted inputs follow selected option schema",()=>{
+    const sample={
+        TextGenerate:{input:{required:{
+            sampling_mode:["COMFY_DYNAMICCOMBO_V3",{options:[
+                {key:"on",inputs:{required:{temperature:["FLOAT",{}]},optional:{presence_penalty:["FLOAT",{}]}}},
+                {key:"off",inputs:{required:{}}}
+            ]}]
+        }},output:["STRING"]}
+    };
+    const graph={"1":{class_type:"TextGenerate",inputs:{
+        sampling_mode:"on","sampling_mode.temperature":0.7,"sampling_mode.presence_penalty":0
+    }}};
+    assert.doesNotThrow(()=>validateGraph(graph,sample));
+    graph["1"].inputs["sampling_mode.undocumented"]=3;
+    assert.throws(()=>validateGraph(graph,sample),/comfy_unknown_input:sampling_mode.undocumented/);
+    delete graph["1"].inputs["sampling_mode.undocumented"];
+    graph["1"].inputs.sampling_mode="off";
+    assert.throws(()=>validateGraph(graph,sample),/comfy_unknown_input:sampling_mode.temperature/);
+});
+
 test("CF-01 selected intermediate IMAGE captures before prune, one graph and zero/empty frozen input",()=>{
     const t=template(), r=req();
     const before=canonical(t);
@@ -129,7 +161,7 @@ test("HTTP template + staging + submit once + two captured images + interrupted 
         throw Error("unexpected upstream "+path);
     };
     const service=createComfyService({root:dir,upstreamCall:mock,tickMs:0,
-        env:{COMFY_ALLOWED_CLASSES:[...classes].join(",")}});
+        env:{}});
     const server=createServer((incoming,out)=>{void service.handle(incoming,out,new URL(incoming.url,"http://test"));});
     await new Promise(resolve=>server.listen(0,"127.0.0.1",resolve));
     const base="http://127.0.0.1:"+server.address().port;
@@ -195,7 +227,7 @@ test("restart running with persisted promptId resumes history and multi-image co
     db.close();
     let posts=0;
     const service=createComfyService({root:dir,tickMs:0,
-        env:{COMFY_ALLOWED_CLASSES:[...classes].join(",")},
+        env:{},
         upstreamCall:async(_instance,path,opts={})=>{
             if(path.startsWith("/history/"))return {"persisted-A":{
                 status:{status_str:"success",completed:true},outputs:{
@@ -222,7 +254,7 @@ test("restart running with persisted promptId resumes history and multi-image co
 test("uncertain /prompt never automatically resubmits and freezes future queue",async()=>{
     const dir=mkdtempSync(join(testRoot,"atelier-comfy-unknown-"));let submits=0;
     const service=createComfyService({root:dir,tickMs:0,
-        env:{COMFY_ALLOWED_CLASSES:[...classes].join(",")},
+        env:{},
         upstreamCall:async(_inst,path,opts={})=>{
             if(path==="/object_info")return info;
             if(path==="/prompt"){submits++;throw Error("response lost after acceptance");}

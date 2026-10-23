@@ -70,20 +70,31 @@ export function verifyTemplate(template) {
     return template;
 }
 
-export function validateGraph(graph, info, allowClasses) {
+// ComfyUI custom widgets can publish input schemas under a selected dynamic-combo option.
+// The API graph encodes these as dotted input names (e.g. sampling_mode.temperature).
+// Only accept suffixes declared for the currently selected option; never wildcard arbitrary inputs.
+function hasDeclaredInput(node,schema,input) {
+    if (has(schema?.input?.required ?? {},input) || has(schema?.input?.optional ?? {},input)) return true;
+    const dot=input.indexOf(".");
+    if(dot<=0)return false;
+    const root=input.slice(0,dot),suffix=input.slice(dot+1);
+    const selector=schema?.input?.required?.[root] ?? schema?.input?.optional?.[root];
+    if(selector?.[0]!=="COMFY_DYNAMICCOMBO_V3" || typeof node.inputs[root]!=="string")return false;
+    const option=selector[1]?.options?.find(o=>o.key===node.inputs[root]);
+    return Boolean(option && (has(option.inputs?.required??{},suffix) || has(option.inputs?.optional??{},suffix)));
+}
+export function validateGraph(graph, info) {
     const visiting = new Set(), seen = new Set();
     function visit(id) {
         if (visiting.has(id)) fail("comfy_graph_cycle");
         if (seen.has(id)) return;
         const node = graph[id];
         if (!node) fail("comfy_graph_dangling");
-        if (allowClasses && !allowClasses.has(node.class_type)) fail("comfy_class_not_allowlisted:" + node.class_type);
         const schema = info?.[node.class_type];
         if (info && !schema) fail("comfy_missing_class:" + node.class_type);
         visiting.add(id);
         for (const [input,v] of Object.entries(node.inputs)) {
-            const spec = schema?.input;
-            if (schema && !has(spec?.required ?? {},input) && !has(spec?.optional ?? {},input)) fail("comfy_unknown_input:" + input);
+            if (schema && !hasDeclaredInput(node,schema,input)) fail("comfy_unknown_input:" + input);
             if (isLink(v)) {
                 if (v[1] < 0 || !has(graph,v[0])) fail("comfy_graph_dangling");
                 const out = info?.[graph[v[0]].class_type]?.output;
@@ -230,7 +241,7 @@ export function compileSingleWorkflow(req, template, opts = {}) {
     };
     visit(captureId);
     for (const id of Object.keys(graph)) if (!reachable.has(id)) delete graph[id];
-    validateGraph(graph,opts.info,opts.allowClasses);
+    validateGraph(graph,opts.info);
     if (Object.keys(graph).length>500) fail("compiled_graph_too_large");
     return {graph,graphHash:sha256(canonical(graph)),captureMap:[{workflowNodeId:node.id,portId:output.id,captureNodeId:captureId}],decisions};
 }

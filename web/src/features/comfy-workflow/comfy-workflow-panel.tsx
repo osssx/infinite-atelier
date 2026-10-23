@@ -9,8 +9,8 @@ import {
     usedComfyInputTarget,
 } from "./binding-picker";
 import { templatePayloadFromGraph, validateComfyApiGraph, type ComfyInputBinding, type ComfyNodeTarget, type ComfyObjectInfo, type ComfyTemplatePayload, type ComfyTemplatePort, type ComfyWorkflowTemplate } from "./template-schema";
-import { listComfyTemplates, saveComfyTemplateVersion } from "./template-registry";
-import { listComfyPresets, type ComfyPreset } from "./preset-registry";
+import { getComfyTemplate, saveComfyTemplateVersion } from "./template-registry";
+import { listComfyPresets, upsertComfyPresetForTemplate, type ComfyPreset } from "./preset-registry";
 import { buildKrea2TurboTemplate, isKrea2TurboT2IWorkflow, krea2TurboBundledTemplate, KREA2_TURBO_TEMPLATE_ID } from "./krea2-turbo-preset";
 
 const KINDS: CanvasPortValueKind[] = ["STRING","INT","FLOAT","BOOLEAN","IMAGE","MASK","LATENT","CONDITIONING","VIDEO","AUDIO","JSON"];
@@ -68,7 +68,6 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
         "--comfy-accent":theme.node.activeStroke,
     } as CSSProperties;
 
-    const [templates,setTemplates] = useState<ComfyWorkflowTemplate[]>([]);
     const [presets,setPresets] = useState<ComfyPreset[]>([]);
     const [draft,setDraft] = useState<ComfyTemplatePayload|null>(null);
     const [templateId,setTemplateId] = useState("");
@@ -92,19 +91,17 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
 
     useEffect(()=>{
         let alive=true;
-        void listComfyPresets().then(values=>{if(alive)setPresets(values);}).catch(()=>undefined);
-        void listComfyTemplates().then((values)=>{
-            if (!alive) return;
-            setTemplates(values);
-            const bound=values.find((t)=>t.id===node.metadata?.comfyWorkflow?.templateId &&
-                t.revision===node.metadata?.comfyWorkflow?.templateRevision);
-            if (bound) {
+        void listComfyPresets().then(values=>{if(alive)setPresets(values);}).catch(cause=>{if(alive)setError(String(cause));});
+        const binding=node.metadata?.comfyWorkflow;
+        if(binding?.templateId && binding.templateRevision) {
+            void getComfyTemplate(binding.templateId,binding.templateRevision).then(bound=>{
+                if(!alive || !bound)return;
                 setDraft({name:bound.name,apiGraph:bound.apiGraph,ports:bound.ports,requirements:bound.requirements});
                 setTemplateId(bound.id);
                 setSelectedNodeId(Object.keys(bound.apiGraph)[0]||"");
                 setSelectedPortId(bound.ports[0]?.id||null);
-            }
-        }).catch((cause)=>{if(alive)setError(String(cause));});
+            }).catch(cause=>{if(alive)setError(String(cause));});
+        }
         return ()=>{alive=false;};
     },[node.id]);
 
@@ -187,8 +184,11 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
             const payload=krea2TurboBundledTemplate();
             // User-provided /object_info is not automatically trusted to describe the target instance.
             const template=await saveComfyTemplateVersion(KREA2_TURBO_TEMPLATE_ID,payload);
-            setTemplates(await listComfyTemplates());
             if(applySaved(template)) {
+                if(context==="node") {
+                    await upsertComfyPresetForTemplate(template);
+                    setPresets(await listComfyPresets());
+                }
                 setSelectedNodeId("55");setSelectedPortId("prompt");setNodeSearch("");
                 setStatus("Krea 2 Turbo INT8 preset saved and bound: 11 inputs + image output. Instance verification still required.");
             }
@@ -223,8 +223,10 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
         try {
             setBusy(true);setError("");
             const template=await saveComfyTemplateVersion(templateId,draft,objectInfo);
-            setTemplates(await listComfyTemplates());
-            applySaved(template);
+            if(applySaved(template) && context==="node") {
+                await upsertComfyPresetForTemplate(template);
+                setPresets(await listComfyPresets());
+            }
         }catch(cause){setError(String(cause));}finally{setBusy(false);}
     };
 
@@ -253,20 +255,19 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
                 <label className={buttonClass+" cursor-pointer"}>Load /object_info
                     <input type="file" accept=".json,application/json" className="sr-only" onChange={(e)=>void uploadInfo(e)}/>
                 </label>
-                <select aria-label="Saved template versions" className={inputClass+" !w-auto max-w-[260px] flex-1"}
-                    value={savedValue && templates.some((t)=>t.id+"@"+t.revision===savedValue)?savedValue:""}
+                <select aria-label="选择预设工作流" className={inputClass+" !w-auto max-w-[260px] flex-1"}
+                    value={presets.find(p=>p.templateId+"@"+p.revision===savedValue)?.id??""}
                     onChange={(e)=>{
-                        const t=templates.find((item)=>item.id+"@"+item.revision===e.target.value);
-                        if(t)applySaved(t);
+                        const preset=presets.find(p=>p.id===e.target.value);
+                        if(!preset)return;
+                        void getComfyTemplate(preset.templateId,preset.revision)
+                            .then(t=>{if(!t)throw new Error("预设模板版本不存在");applySaved(t);})
+                            .catch(cause=>setError(String(cause)));
                     }}>
-                    <option value="">Saved template versions</option>
-                    <optgroup label="全局预设工作流">
-                        {presets.map(p=><option key={"preset-"+p.id} value={p.templateId+"@"+p.revision}>{p.name} · {p.revision.slice(0,8)}</option>)}
-                    </optgroup>
-
-                    {templates.map((t)=><option key={t.id+"@"+t.revision} value={t.id+"@"+t.revision}>
-                        {t.name} · {t.revision.slice(0,10)}
-                    </option>)}
+                    <option value="">{savedValue && draft && !presets.some(p=>p.templateId+"@"+p.revision===savedValue)
+                        ? "当前绑定：" + draft.name
+                        : "选择全局预设工作流"}</option>
+                    {presets.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
                 </select>
                 {draft?<span className="ml-auto text-[11px] text-[var(--comfy-muted)]">{items.length} nodes · {draft.ports.length} canvas ports</span>:null}
             </div>

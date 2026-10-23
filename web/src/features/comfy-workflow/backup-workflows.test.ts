@@ -16,7 +16,7 @@ const tpl = async (id="example"): Promise<ComfyWorkflowTemplate> => {
 };
 const project = (template: ComfyWorkflowTemplate, id="p"): CanvasProject => ({
     id,title:id,createdAt:"2026",updatedAt:"2026",viewport:{x:0,y:0,k:1},
-    backgroundMode:"lines",showImageInfo:false,chatSessions:[],activeChatId:null,connections:[],
+    backgroundMode:"lines",showImageInfo:false,comfyInstanceId:"remote-other-host",chatSessions:[],activeChatId:null,connections:[],
     nodes:[{id:"wf-"+id,type:"comfy:workflow",title:"WF",width:340,height:260,position:{x:0,y:0},
         metadata:{comfyPorts:[{id:"injected",direction:"source",label:"Untrusted",valueKind:"IMAGE"}],
             comfyWorkflow:{templateId:template.id,templateRevision:template.revision,instanceId:"remote-other-host",
@@ -62,6 +62,7 @@ describe("Phase B: self-contained ComfyUI v2 backups", () => {
         const restored=unbindImportedComfyProjects([project(a)],[a]);
         const meta=restored[0].nodes[0].metadata!;
         expect(meta.comfyWorkflow?.instanceId).toBeUndefined();
+        expect(restored[0].comfyInstanceId).toBeUndefined();
         expect(meta.comfyWorkflow?.bindingState).toBe("needs-instance-binding");
         expect(meta.comfyPorts).toMatchObject([{id:"image",direction:"source",valueKind:"IMAGE"}]);
         expect(()=>unbindImportedComfyProjects([project(a)],[])).toThrow(/Missing template/);

@@ -22,7 +22,16 @@
 
 ## 本机启动（PowerShell）
 
-建议在 `web` 目录运行 Node 24+（`node:sqlite`）：
+建议使用 Node 24+（`node:sqlite`），本地开发可在 `web` 目录直接运行：
+
+```powershell
+npm run dev:comfy
+```
+
+它将启动 `ark-gateway` 和 Vite（开发代理共用自动生成的网关 token，默认后端 Comfy 实例 `comfy-local = http://127.0.0.1:8188`）。只用于本地开发，不替代生产网关身份认证。若需要分开启动，则按下面方式配置：
+
+若 `3000` 端口已被原有 Vite 占用，请先停止旧的前端开发进程；或在 PowerShell 设置 `$env:COMFY_DEV_PORT = "3902"` 再执行 `npm run dev:comfy`（前端在相应端口）。本命令启用 Vite `--strictPort`，不会悄悄换端口。已使用真实本机网关验证 Vite → `/api/comfy/templates` 通过鉴权并返回 HTTP 200 JSON；此检查不提交 GPU 任务。
+
 
 ```powershell
 $env:GATEWAY_TOKEN = "<generate-a-long-secret>"
@@ -33,6 +42,10 @@ node server/ark-gateway.mjs
 ```
 
 另开一个终端并设置相同 `GATEWAY_TOKEN`，然后在 `web` 目录运行 `npm run dev`；`MEDIA_GATEWAY_URL` 未设置时指向 `http://127.0.0.1:8787`。生产环境应由受认证的反向代理承载 `/api/comfy/*`，不能把网关 token 放到浏览器应用配置中。
+画布下方工具栏的**「外观」→「ComfyUI 实例（当前画布）」**选择网关允许的实例，可刷新在线状态。该设置按项目保存（撤销/重做受支持），所有工作流节点共享；已有节点旧版的实例绑定一致时将自动迁移。节点参数面板不再重复选择实例或 IMAGE 输出，运行自动采用工作流模板的第一个可捕获 IMAGE 端口。跨机器导入的画布需要重新选择本机实例，不信任备份中原机器的实例 ID。
+
+如果看到 Comfy backend returned invalid response 或提示网关不可用，请先检查 `127.0.0.1:8787` 的 ark-gateway 和 Vite 的同一个 `GATEWAY_TOKEN`。只有 ComfyUI 的 `8188` 服务在线还不够，浏览器会通过项目网关提交任务。
+
 
 白名单实例目前 **仅接受配置明确的 127.0.0.1 或 ::1 HTTP 原点**；端口必填。使用非内置 class 的工作流，需由受信任管理员显式扩展 `COMFY_ALLOWED_CLASSES`。默认白名单在 `service.mjs` 中配置，优先考虑显式环境配置而不是任意自定义节点。
 

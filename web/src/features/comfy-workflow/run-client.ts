@@ -12,9 +12,25 @@ export type ComfyRunState = {
     workflowNodeId:string;artifacts:ComfyRunArtifact[];
 };
 async function comfyRequest<T>(path:string,init?:RequestInit):Promise<T> {
-    const response=await fetch("/api/comfy"+path,{...init,cache:"no-store"});
-    const data=await response.json().catch(()=>({error:"Comfy backend returned invalid response"}));
-    if(!response.ok)throw new Error(data.error||("Comfy HTTP "+response.status));
+    let response:Response;
+    try {
+        response=await fetch("/api/comfy"+path,{...init,cache:"no-store"});
+    } catch {
+        throw new Error("无法连接 ComfyUI 网关，请确认 ark-gateway（默认 127.0.0.1:8787）已启动且前端开发代理可访问。");
+    }
+    const contentType=response.headers.get("content-type")??"";
+    if(!contentType.toLowerCase().includes("application/json")) {
+        if([500,502,503,504].includes(response.status))
+            throw new Error("ComfyUI 网关不可用（HTTP "+response.status+"）。请先启动 ark-gateway（默认 127.0.0.1:8787），并检查 Vite 代理的 GATEWAY_TOKEN 配置。");
+        throw new Error("ComfyUI API 返回非 JSON 响应（HTTP "+response.status+"，"+(contentType||"无 Content-Type")+"）。请确认请求到达 /api/comfy 网关，而非前端页面或其它服务。");
+    }
+    const data:unknown=await response.json().catch(()=>null);
+    if(!data||typeof data!=="object"||Array.isArray(data))throw new Error("ComfyUI API 返回无效 JSON（HTTP "+response.status+"）");
+    if(!response.ok) {
+        const reason="error" in data && typeof data.error==="string"?data.error:"Comfy HTTP "+response.status;
+        if(response.status===401||response.status===403)throw new Error("ComfyUI 网关鉴权失败（HTTP "+response.status+"），请确保网关与 Vite 配置相同 GATEWAY_TOKEN。"+reason);
+        throw new Error(reason);
+    }
     return data as T;
 }
 

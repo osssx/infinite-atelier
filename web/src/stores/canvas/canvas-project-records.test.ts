@@ -38,6 +38,19 @@ const setup = () => {
 const current = (meta: FakeStore) => meta.items.get("current") as CanvasManifest;
 
 describe("canvas per-project atomic IndexedDB persistence", () => {
+    it("commits canvas-wide ComfyUI instance selection and restores it after reload", async () => {
+        const {docs,meta,repository}=setup();
+        const original=project("comfy-canvas");
+        await repository.save([original]);
+        const revised={...original,comfyInstanceId:"comfy-local"};
+        const saved=await repository.save([revised]);
+        expect(saved.changedProjects).toBe(1);
+        expect((await new CanvasProjectRecords(docs,meta).load())?.[0].comfyInstanceId).toBe("comfy-local");
+        const cleared=await repository.save([{...revised,comfyInstanceId:undefined}]);
+        expect(cleared.changedProjects).toBe(1);
+        expect((await new CanvasProjectRecords(docs,meta).load())?.[0].comfyInstanceId).toBeUndefined();
+    });
+
     it("writes only a changed project even when 100 large projects exist", async () => {
         const { docs, meta, repository } = setup();
         const all = Array.from({ length: 100 }, (_, i) => project("p" + i, 70_000));

@@ -5,6 +5,7 @@
     "type": "module",
     "scripts": {
         "dev": "vite --host 0.0.0.0 --port 3000",
+        "dev:comfy": "node scripts/dev-with-comfy.mjs",
         "build": "vite build",
         "build:perf": "vite build --mode perf && node scripts/copy-perf-media.mjs",
         "build:monoform": "node scripts/build-monoform.mjs",

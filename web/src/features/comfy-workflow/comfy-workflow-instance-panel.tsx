@@ -10,7 +10,7 @@ import {
 } from "./instance-parameters";
 import { getComfyTemplate } from "./template-registry";
 import type { ComfyWorkflowTemplate } from "./template-schema";
-import { cancelComfyRun, getComfyRun, hasPendingComfyRun, recoverPendingComfyRun, listComfyInstances, registerComfyTemplate, startComfyWorkflowRun, type ComfyRunArtifact, type ComfyRunState } from "./run-client";
+import { cancelComfyRun, getComfyRun, hasPendingComfyRun, recoverPendingComfyRun, startComfyWorkflowRun, type ComfyRunArtifact, type ComfyRunState } from "./run-client";
 import { ComfyWorkflowPanel } from "./comfy-workflow-panel";
 
 type Props = {
@@ -18,6 +18,8 @@ type Props = {
     connections: readonly CanvasConnection[];
     getCanvasSnapshot: () => {nodes: readonly CanvasNodeData[]; connections: readonly CanvasConnection[]};
     projectId: string;
+    /** Chosen in this canvas's appearance/settings panel, shared by all workflow nodes. */
+    comfyInstanceId?: string;
     onArtifacts: (artifacts: ComfyRunArtifact[]) => Promise<void>;
     onChange: (patch: Partial<CanvasNodeMetadata>) => void;
     onTemplateChange: (patch: Partial<CanvasNodeMetadata>) => boolean;
@@ -105,7 +107,7 @@ function ComfyScalarInput({field,onSet,onClear}:{
 }
 
 /** The regular workflow node inspector; template editing is an explicit secondary action. */
-export function ComfyWorkflowInstancePanel({node,connections,getCanvasSnapshot,projectId,onArtifacts,onChange,onTemplateChange,onClose}:Props) {
+export function ComfyWorkflowInstancePanel({node,connections,getCanvasSnapshot,projectId,comfyInstanceId,onArtifacts,onChange,onTemplateChange,onClose}:Props) {
     const themeName=useThemeStore((state)=>state.theme);
     const theme=canvasThemes[themeName];
     const colors={
@@ -121,9 +123,6 @@ export function ComfyWorkflowInstancePanel({node,connections,getCanvasSnapshot,p
     const [loading,setLoading]=useState(false);
     const [error,setError]=useState("");
     const [editingTemplate,setEditingTemplate]=useState(false);
-    const [instances,setInstances]=useState<Array<{id:string;reachable:boolean;classTypes:string[]}>>([]);
-    const [instanceId,setInstanceId]=useState(binding?.instanceId??"");
-    const [selectedOutput,setSelectedOutput]=useState("");
     const [run,setRun]=useState<ComfyRunState|null>(null);
     const [runBusy,setRunBusy]=useState(false);
     const [runError,setRunError]=useState("");
@@ -131,9 +130,6 @@ export function ComfyWorkflowInstancePanel({node,connections,getCanvasSnapshot,p
     useEffect(()=>{setPending(hasPendingComfyRun(projectId,node.id));},[projectId,node.id]);
     const importedRef=useRef(new Set<string>());
     const outputs=useMemo(()=>template?.ports.filter(p=>p.direction==="source" && p.valueKind==="IMAGE" && p.capture?.kind==="image" && p.capture.adapterId==="SaveImage")??[],[template]);
-    useEffect(()=>{setInstanceId(binding?.instanceId??"");},[binding?.instanceId,node.id]);
-    useEffect(()=>{let active=true;listComfyInstances().then(value=>{if(active)setInstances(value);}).catch(cause=>{if(active)setRunError(String(cause));});return ()=>{active=false;};},[]);
-    useEffect(()=>{setSelectedOutput(current=>outputs.some(p=>p.id===current)?current:(outputs[0]?.id??""));},[outputs]);
     useEffect(()=>{
         let active=true;
         setRun(null);
@@ -152,23 +148,14 @@ export function ComfyWorkflowInstancePanel({node,connections,getCanvasSnapshot,p
         importedRef.current.add(run.runId);
         void onArtifacts(run.artifacts).catch(cause=>{importedRef.current.delete(run.runId);setRunError("导入画布失败："+String(cause));});
     },[run,onArtifacts]);
-    const bindInstance=async()=>{
-        if(!binding||!template||!instanceId)return;
-        setRunBusy(true);setRunError("");
-        try{
-            await registerComfyTemplate(template,instanceId);
-            onChange({comfyWorkflow:{...binding,instanceId,bindingState:"bound"}});
-        }catch(cause){setRunError("实例验证失败："+String(cause));}
-        finally{setRunBusy(false);}
-    };
     const execute=async()=>{
-        if(!template||!instanceId||!selectedOutput||!binding)return;
+        if(!template||!comfyInstanceId||!outputs[0]||!binding)return;
         setRunBusy(true);setRunError("");
         try{
             const result=await startComfyWorkflowRun({
-                projectId,workflowNode:node,...getCanvasSnapshot(),template,instanceId,outputPortId:selectedOutput
+                projectId,workflowNode:node,...getCanvasSnapshot(),template,instanceId:comfyInstanceId,outputPortId:outputs[0].id
             });
-            onChange({comfyWorkflow:{...binding,instanceId,bindingState:"bound",lastRunId:result.runId}});
+            onChange({comfyWorkflow:{...binding,lastRunId:result.runId}});
             setRun(result);
         }catch(cause){setRunError("提交失败："+String(cause));}
         finally{setPending(hasPendingComfyRun(projectId,node.id));setRunBusy(false);}
@@ -223,7 +210,7 @@ export function ComfyWorkflowInstancePanel({node,connections,getCanvasSnapshot,p
             <button type="button" aria-label="关闭参数面板" className={buttonClass} onClick={onClose}><X size={14}/></button>
         </header>
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
-            {binding?.bindingState!=="bound"?<p className="mb-3 rounded-lg bg-[var(--comfy-fill)] px-3 py-2 text-[11px] text-[var(--comfy-muted)]">请选择允许的 ComfyUI 实例并验证绑定，运行时会再次校验版本与能力。</p>:null}
+            {!comfyInstanceId?<p className="mb-3 rounded-lg bg-[var(--comfy-fill)] px-3 py-2 text-[11px] text-[var(--comfy-muted)]">请在画布底部工具栏的「外观 / 画布设置」中配置 ComfyUI 实例，所有工作流节点共用此配置。</p>:null}
             {loading?<p className="text-xs text-[var(--comfy-muted)]">正在加载模板版本…</p>
             :error?<p role="alert" className="rounded-md p-2 text-xs text-red-500">{error}</p>
             :!binding?.templateId?<div className="flex flex-col items-center gap-3 py-8 text-center text-xs text-[var(--comfy-muted)]">
@@ -237,21 +224,12 @@ export function ComfyWorkflowInstancePanel({node,connections,getCanvasSnapshot,p
         </div>
 
         <div className="shrink-0 space-y-2 border-t border-[var(--comfy-border)] px-4 py-3 text-xs">
-            <div className="flex items-center gap-2">
-                <span className="shrink-0">ComfyUI 实例</span>
-                <select aria-label="ComfyUI 实例" className={inputClass} value={instanceId}
-                    onChange={e=>setInstanceId(e.target.value)}>
-                    <option value="">选择实例</option>
-                    {instances.map(inst=><option key={inst.id} value={inst.id} disabled={!inst.reachable}>{inst.id} {inst.reachable?"":"(离线)"}</option>)}
-                </select>
-                <button type="button" className={buttonClass} disabled={!template||!instanceId||runBusy} onClick={()=>void bindInstance()}>验证绑定</button>
-            </div>
-            <div className="flex items-center gap-2">
-                <span className="shrink-0">IMAGE 输出</span>
-                <select aria-label="ComfyUI IMAGE 输出" className={inputClass} value={selectedOutput} onChange={e=>setSelectedOutput(e.target.value)}>
-                    {outputs.map(port=><option value={port.id} key={port.id}>{port.label}</option>)}
-                </select>
-                <button type="button" className={buttonClass} disabled={!template||!instanceId||!selectedOutput||!projectId||runBusy}
+            <div className="flex items-center justify-between gap-3">
+                <span className="min-w-0 truncate text-[11px] text-[var(--comfy-muted)]" title={comfyInstanceId||""}>
+                    {comfyInstanceId?`画布实例：${comfyInstanceId}`:"画布尚未配置 ComfyUI 实例"}
+                    {outputs[0]?` · 输出：${outputs[0].label}`:" · 缺少 IMAGE 输出"}
+                </span>
+                <button type="button" className={buttonClass} disabled={!template||!comfyInstanceId||!outputs[0]||!projectId||runBusy}
                     onClick={()=>void execute()}>{runBusy?"处理中…":"运行工作流"}</button>
             </div>
             {run?<div className="flex flex-wrap items-center gap-2 text-[11px] text-[var(--comfy-muted)]">

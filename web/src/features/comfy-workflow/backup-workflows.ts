@@ -66,7 +66,7 @@ export async function verifyComfyBackupTemplates(records: readonly ComfyBackupRe
 /** Never trust another machine's local ComfyUI instance IDs. Preserve ports for read-only inspection. */
 export function unbindImportedComfyProjects(projects: readonly CanvasProject[], templates: readonly ComfyWorkflowTemplate[]): CanvasProject[] {
     const byKey = new Map(templates.map((t) => [t.id + "@" + t.revision, t]));
-    return projects.map((project) => ({ ...project, nodes:project.nodes.map((node) => {
+    return projects.map((project) => ({ ...project, comfyInstanceId:undefined, nodes:project.nodes.map((node) => {
         if (node.type !== "comfy:workflow" || !node.metadata?.comfyWorkflow) return node;
         const binding = node.metadata.comfyWorkflow;
         const template = byKey.get(binding.templateId + "@" + binding.templateRevision);

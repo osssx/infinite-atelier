@@ -89,6 +89,7 @@ import { COMFY_WORKFLOW_MOCK_TYPE } from "@/lib/canvas/canvas-ports";
 import { validateCanvasPortConnections } from "@/lib/canvas/canvas-port-connections";
 import type { ComfyRunArtifact } from "@/features/comfy-workflow/run-client";
 import { placeComfyImageArtifact } from "@/features/comfy-workflow/artifact-layout";
+import { resolveCanvasComfyInstance } from "@/features/comfy-workflow/canvas-instance";
 import { CanvasRefreshShell } from "@/components/canvas/canvas-refresh-shell";
 import { CanvasTopBar } from "@/components/canvas/canvas-top-bar";
 import { ConnectionCreateMenu, NodeCreateMenu, type PendingConnectionCreate } from "@/components/canvas/canvas-create-menus";
@@ -130,10 +131,11 @@ type CanvasHistoryEntry = Pick<CanvasClipboard, "nodes" | "connections"> & {
     activeChatId: string | null;
     backgroundMode: CanvasBackgroundMode;
     showImageInfo: boolean;
+    comfyInstanceId?: string;
 };
 
 function sameCanvasHistoryEntry(left: CanvasHistoryEntry | null, right: CanvasHistoryEntry) {
-    return Boolean(left && left.nodes === right.nodes && left.connections === right.connections && left.chatSessions === right.chatSessions && left.activeChatId === right.activeChatId && left.backgroundMode === right.backgroundMode && left.showImageInfo === right.showImageInfo);
+    return Boolean(left && left.nodes === right.nodes && left.connections === right.connections && left.chatSessions === right.chatSessions && left.activeChatId === right.activeChatId && left.backgroundMode === right.backgroundMode && left.showImageInfo === right.showImageInfo && left.comfyInstanceId === right.comfyInstanceId);
 }
 
 type CanvasGenerationRequest = {
@@ -309,6 +311,7 @@ function AtelierCanvasPage() {
     const [isMiniMapOpen, setIsMiniMapOpen] = useState(false);
     const [backgroundMode, setBackgroundMode] = useState<CanvasBackgroundMode>("lines");
     const [showImageInfo, setShowImageInfo] = useState(false);
+    const [comfyInstanceId, setComfyInstanceId] = useState<string | undefined>(undefined);
     const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
     const [assetPickerOpen, setAssetPickerOpen] = useState(false);
     const [projectLoaded, setProjectLoaded] = useState(false);
@@ -393,8 +396,9 @@ function AtelierCanvasPage() {
             activeChatId,
             backgroundMode,
             showImageInfo,
+            comfyInstanceId,
         }),
-        [activeChatId, backgroundMode, chatSessions, showImageInfo],
+        [activeChatId, backgroundMode, chatSessions, showImageInfo, comfyInstanceId],
     );
 
     const cleanupCanvasFiles = useCallback(
@@ -490,6 +494,7 @@ function AtelierCanvasPage() {
             setActiveChatId(project.activeChatId || null);
             setBackgroundMode(project.backgroundMode);
             setShowImageInfo(project.showImageInfo || false);
+            setComfyInstanceId(resolveCanvasComfyInstance(project));
             setViewport(project.viewport);
             historyRef.current = { past: [], future: [] };
             if (historyCommitTimerRef.current) {
@@ -503,6 +508,7 @@ function AtelierCanvasPage() {
                 activeChatId: project.activeChatId || null,
                 backgroundMode: project.backgroundMode,
                 showImageInfo: project.showImageInfo || false,
+                comfyInstanceId: project.comfyInstanceId,
             };
             setHistoryState({ canUndo: false, canRedo: false });
             setProjectLoaded(true);
@@ -601,12 +607,12 @@ function AtelierCanvasPage() {
                 historyCommitTimerRef.current = null;
             }
         };
-    }, [activeChatId, backgroundMode, chatSessions, connections, createHistoryEntry, nodes, projectLoaded, showImageInfo]);
+    }, [activeChatId, backgroundMode, chatSessions, connections, createHistoryEntry, nodes, projectLoaded, showImageInfo, comfyInstanceId]);
 
     useEffect(() => {
         if (!projectLoaded || historyPausedRef.current) return;
-        updateProject(projectId, { nodes, connections, chatSessions, activeChatId, backgroundMode, showImageInfo });
-    }, [activeChatId, backgroundMode, chatSessions, connections, nodes, projectId, projectLoaded, showImageInfo, updateProject]);
+        updateProject(projectId, { nodes, connections, chatSessions, activeChatId, backgroundMode, showImageInfo, comfyInstanceId });
+    }, [activeChatId, backgroundMode, chatSessions, connections, nodes, projectId, projectLoaded, showImageInfo, comfyInstanceId, updateProject]);
 
     useEffect(() => {
         if (!dialogNodeId) setNodeImageSettingsOpen(false);
@@ -625,10 +631,11 @@ function AtelierCanvasPage() {
                 activeChatId,
                 backgroundMode,
                 showImageInfo,
+                comfyInstanceId,
                 viewport: viewportRef.current,
             });
         });
-    }, [projectLoaded, projectId, updateProject, chatSessions, activeChatId, backgroundMode, showImageInfo]);
+    }, [projectLoaded, projectId, updateProject, chatSessions, activeChatId, backgroundMode, showImageInfo, comfyInstanceId]);
 
     useEffect(() => {
         if (!projectLoaded) return;
@@ -1230,6 +1237,7 @@ function AtelierCanvasPage() {
         setActiveChatId(entry.activeChatId);
         setBackgroundMode(entry.backgroundMode);
         setShowImageInfo(entry.showImageInfo);
+        setComfyInstanceId(entry.comfyInstanceId);
         setSelectedNodeIds(new Set());
         setSelectedConnectionId(null);
         setContextMenu(null);
@@ -3434,6 +3442,7 @@ function AtelierCanvasPage() {
                         getCanvasSnapshot={() => ({nodes:nodesRef.current,connections:connectionsRef.current})}
                         projectId={projectId}
                         onArtifacts={handleComfyArtifacts}
+                        comfyInstanceId={comfyInstanceId}
                         onChange={(patch) => handleConfigNodeChange(panelNode.id, patch)}
                         onTemplateChange={(patch) => {
                             const candidate = applyNodeConfigPatch(panelNode, patch);
@@ -3694,6 +3703,8 @@ function AtelierCanvasPage() {
                     backgroundMode={backgroundMode}
                     showImageInfo={showImageInfo}
                     onAddImage={() => createNode(CanvasNodeType.Image)}
+                    comfyInstanceId={comfyInstanceId}
+                    onComfyInstanceChange={setComfyInstanceId}
                     onAddVideo={() => createNode(CanvasNodeType.Video)}
                     onAddAudio={() => createNode(CanvasNodeType.Audio)}
                     onAddText={() => createNode(CanvasNodeType.Text)}

@@ -35,7 +35,8 @@ function unchangedExceptViewport(previous: CanvasProject | undefined, next: Canv
         previous.chatSessions === next.chatSessions &&
         previous.activeChatId === next.activeChatId &&
         previous.backgroundMode === next.backgroundMode &&
-        previous.showImageInfo === next.showImageInfo);
+        previous.showImageInfo === next.showImageInfo &&
+        previous.comfyInstanceId === next.comfyInstanceId);
 }
 
 function sameViewport(a: ViewportTransform | undefined, b: ViewportTransform): boolean {

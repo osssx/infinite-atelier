@@ -10,15 +10,15 @@ import {
 } from "./instance-parameters";
 import { getComfyTemplate } from "./template-registry";
 import type { ComfyWorkflowTemplate } from "./template-schema";
-import { cancelComfyRun, getComfyRun, hasPendingComfyRun, recoverPendingComfyRun, startComfyWorkflowRun, type ComfyRunState } from "./run-client";
+import { cancelComfyRun, getComfyRun, hasPendingComfyRun, recoverPendingComfyRun, type ComfyRunState } from "./run-client";
 import { isComfyRunActive } from "./run-status";
 import { ComfyWorkflowPanel } from "./comfy-workflow-panel";
 
 type Props = {
     node: CanvasNodeData;
     connections: readonly CanvasConnection[];
-    getCanvasSnapshot: () => {nodes: readonly CanvasNodeData[]; connections: readonly CanvasConnection[]};
     projectId: string;
+    onExecute: () => Promise<ComfyRunState>;
     /** Chosen in the global ComfyUI settings tab, shared by all workflow nodes. */
     comfyInstanceId?: string;
     onExecutionChange: (execution: NonNullable<CanvasNodeMetadata["comfyExecution"]>) => void;
@@ -108,7 +108,7 @@ function ComfyScalarInput({field,onSet,onClear}:{
 }
 
 /** The regular workflow node inspector; template editing is an explicit secondary action. */
-export function ComfyWorkflowInstancePanel({node,connections,getCanvasSnapshot,projectId,comfyInstanceId,onExecutionChange,onChange,onTemplateChange,onClose}:Props) {
+export function ComfyWorkflowInstancePanel({node,connections,projectId,comfyInstanceId,onExecute,onExecutionChange,onChange,onTemplateChange,onClose}:Props) {
     const themeName=useThemeStore((state)=>state.theme);
     const theme=canvasThemes[themeName];
     const colors={
@@ -146,15 +146,10 @@ export function ComfyWorkflowInstancePanel({node,connections,getCanvasSnapshot,p
     const execute=async()=>{
         if(!template||!comfyInstanceId||!outputs[0]||!binding)return;
         setRunBusy(true);setRunError("");
-        onExecutionChange({status:"submitting"});
         try{
-            const result=await startComfyWorkflowRun({
-                projectId,workflowNode:node,...getCanvasSnapshot(),template,instanceId:comfyInstanceId,outputPortId:outputs[0].id
-            });
-            onChange({comfyWorkflow:{...binding,lastRunId:result.runId}});
+            const result=await onExecute();
             setRun(result);
-            onExecutionChange({runId:result.runId,status:result.status,error:result.error||undefined});
-        }catch(cause){setRunError("提交失败："+String(cause));onExecutionChange({status:"failed",error:String(cause)});}
+        }catch(cause){setRunError("提交失败："+String(cause));}
         finally{setPending(hasPendingComfyRun(projectId,node.id));setRunBusy(false);}
     };
     const recoverSubmission=async()=>{
@@ -228,7 +223,7 @@ export function ComfyWorkflowInstancePanel({node,connections,getCanvasSnapshot,p
                     {comfyInstanceId?`画布实例：${comfyInstanceId}`:"画布尚未配置 ComfyUI 实例"}
                     {outputs[0]?` · 输出：${outputs[0].label}`:" · 缺少 IMAGE 输出"}
                 </span>
-                <button type="button" className={buttonClass} disabled={!template||!comfyInstanceId||!outputs[0]||!projectId||runBusy||isComfyRunActive(run?.status)}
+                <button type="button" className={buttonClass} disabled={!template||!comfyInstanceId||!outputs[0]||!projectId||runBusy||isComfyRunActive(run?.status)||isComfyRunActive(node.metadata?.comfyExecution?.status)}
                     onClick={()=>void execute()}>{runBusy?"处理中…":isComfyRunActive(run?.status)?"正在执行…":"运行工作流"}</button>
             </div>
             {run?<div className="flex flex-wrap items-center gap-2 text-[11px] text-[var(--comfy-muted)]">
@@ -239,7 +234,7 @@ export function ComfyWorkflowInstancePanel({node,connections,getCanvasSnapshot,p
                     ?<button type="button" className={buttonClass} onClick={()=>void cancelComfyRun(run.runId).then(setRun).catch(e=>setRunError(String(e)))}>取消请求</button>:null}
                 <button type="button" className={buttonClass} onClick={()=>void getComfyRun(run.runId).then(setRun).catch(e=>setRunError(String(e)))}>刷新状态</button>
             </div>:null}
-            {pending?<button type="button" className={buttonClass} disabled={runBusy} onClick={()=>void recoverSubmission()}>恢复待确认提交（复用同一个幂等 key）</button>:null}
+            {pending?<button type="button" className={buttonClass} disabled={runBusy||isComfyRunActive(node.metadata?.comfyExecution?.status)} onClick={()=>void recoverSubmission()}>恢复待确认提交（复用同一个幂等 key）</button>:null}
             {runError?<div className="text-[11px] text-red-500" role="alert">{runError}</div>:null}
             <p className="text-[10px] text-[var(--comfy-muted)]">首版仅支持一个工作流、Text / Image 输入与一个 IMAGE 输出；提交不确定时不会自动重发。</p>
         </div>

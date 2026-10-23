@@ -20,6 +20,7 @@
 - `web/src/pages/canvas/project.tsx`：画布级任务观察（2.5 秒轮询，独立于参数面板），更新节点运行状态 `comfyExecution`；收到成功回调后下载 Blob，通过 `uploadImage` 保存 IndexedDB 并创建 Image 节点。每张产物同时建立从工作流对应 IMAGE 输出端口到生成 Image 节点左侧的**真实画布连线**，按 artifactId 防重复；画布重载时恢复运行任务并为旧图片补全丢失的来源连线。
 - `web/src/features/comfy-workflow/artifact-layout.ts`：同一工作流跨多次 run 的多图分格布局，采用实际图片比例生成画布节点尺寸，避免异步批次导入、再次运行时图片节点重叠。
 - `web/src/features/comfy-workflow/run-status.ts` 与 `web/src/components/canvas/canvas-node.tsx`：工作流节点显示真实提交/排队/执行/回收/导入状态的转圈动画；成功、失败、取消和不确定提交时停止旋转并显示状态/错误。
+- **选中工作流节点的顶部工具栏**新增「执行」按钮（播放图标），可直接运行，不必打开参数面板。顶部按钮与参数面板按钮共用画布级执行入口：加载已绑定的不可变模板、选择 IMAGE 捕获输出、冻结当前 Text/Image 端口连线和参数、使用全局默认实例提交。同步防重锁覆盖异步准备阶段；重载后先确认上个任务已结束。存在待恢复幂等请求时仍沿用原请求恢复，不生成第二份 GPU 作业。运行中按钮禁用并显示旋转图标。
 - `web/src/lib/canvas/canvas-port-connections.ts`：仅对匹配 `comfyArtifact` 溯源且源端口为 IMAGE 的产物图像开放工作流到普通 Image 节点的类型化来源连线；其他工作流输出仍不得任意连接普通资源节点。恢复旧画布时幂等回填此类边。
 
 ## 本机启动（PowerShell）

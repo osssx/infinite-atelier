@@ -87,8 +87,9 @@ import { registerBuiltinNodes } from "@/components/canvas/nodes/builtin-nodes";
 const ComfyWorkflowInstancePanel = lazy(() => import("@/features/comfy-workflow/comfy-workflow-instance-panel").then((m) => ({default:m.ComfyWorkflowInstancePanel})));
 import { COMFY_WORKFLOW_MOCK_TYPE } from "@/lib/canvas/canvas-ports";
 import { validateCanvasPortConnections } from "@/lib/canvas/canvas-port-connections";
-import { getComfyRun, type ComfyRunArtifact } from "@/features/comfy-workflow/run-client";
-import { isComfyRunTerminal } from "@/features/comfy-workflow/run-status";
+import { getComfyRun, hasPendingComfyRun, recoverPendingComfyRun, startComfyWorkflowRun, type ComfyRunArtifact, type ComfyRunState } from "@/features/comfy-workflow/run-client";
+import { getComfyTemplate } from "@/features/comfy-workflow/template-registry";
+import { isComfyRunActive, isComfyRunTerminal } from "@/features/comfy-workflow/run-status";
 import { nextComfyArtifactTileIndex, placeComfyImageArtifact } from "@/features/comfy-workflow/artifact-layout";
 import { resolveCanvasComfyInstance } from "@/features/comfy-workflow/canvas-instance";
 import { CanvasRefreshShell } from "@/components/canvas/canvas-refresh-shell";
@@ -382,6 +383,7 @@ function AtelierCanvasPage() {
     const generationRequestsRef = useRef(new Map<string, CanvasGenerationRequest>());
     const resumedArkTasksRef = useRef(new Set<string>());
     const comfyArtifactImportsRef = useRef(new Set<string>());
+    const comfyExecuteLocksRef = useRef(new Set<string>());
 
     const persistVideoTask = useCallback((nodeId: string, task: VideoGenerationTask, status: "queued" | "running" | "succeeded" | "failed" | "cancelled" | "expired" = task.status || "queued") => {
         const nodesWithTask = nodesRef.current.map((node) => node.id === nodeId ? { ...node, metadata: { ...node.metadata, videoTask: { provider: task.provider, channelId: task.channelId, model: task.model, taskId: task.id, startedAt: task.startedAt || Date.now(), status } } } : node);
@@ -3410,6 +3412,68 @@ function AtelierCanvasPage() {
     }, []);
 
 
+    // Both the node toolbar and inspector submit through one durable path.
+    // A synchronous per-node lock covers template lookup, staging and the HTTP request.
+    const executeComfyWorkflow = useCallback(async (nodeId:string):Promise<ComfyRunState>=>{
+        const key=projectId+":"+nodeId;
+        if(comfyExecuteLocksRef.current.has(key))throw new Error("该工作流正在提交，请勿重复点击");
+        comfyExecuteLocksRef.current.add(key);
+        let started=false;
+        const patchExecution=(status:string,error?:string,runId?:string)=>{
+            if(activeProjectIdRef.current!==projectId || !pageMountedRef.current)return;
+            setNodes(prev=>prev.map(n=>n.id===nodeId ? {
+                ...n,metadata:{...n.metadata,comfyExecution:{runId,status,error}}
+            }:n));
+        };
+        try {
+            if(!projectLoaded)throw new Error("画布尚未加载完成");
+            const snapshot={nodes:nodesRef.current,connections:connectionsRef.current};
+            const workflowNode=snapshot.nodes.find(n=>n.id===nodeId);
+            if(!workflowNode || workflowNode.type!==COMFY_WORKFLOW_MOCK_TYPE)
+                throw new Error("工作流节点不存在");
+            const binding=workflowNode.metadata?.comfyWorkflow;
+            if(!binding?.templateId || !binding.templateRevision)
+                throw new Error("请先在工作流参数面板绑定预设模板");
+            if(!globalComfyInstanceId)throw new Error("请先在全局 ComfyUI 设置中选择默认实例");
+            if(isComfyRunActive(workflowNode.metadata?.comfyExecution?.status))
+                throw new Error("该工作流正在执行或导入图片，请先等待完成");
+            const pending=hasPendingComfyRun(projectId,nodeId);
+            if(!pending && binding.lastRunId) {
+                // Metadata can be stale after reload: never duplicate a running GPU job.
+                const previous=await getComfyRun(binding.lastRunId);
+                if(!isComfyRunTerminal(previous.status) || previous.status==="submission_unknown")
+                    throw new Error("上一次工作流任务尚未结束或提交结果未确认，不能再次提交");
+            }
+            if(activeProjectIdRef.current!==projectId || !pageMountedRef.current)
+                throw new Error("画布已切换，停止提交");
+            patchExecution("submitting");
+            started=true;
+            const result=pending ? await recoverPendingComfyRun(projectId,nodeId) : await (async()=>{
+                const template=await getComfyTemplate(binding.templateId,binding.templateRevision);
+                if(!template)throw new Error("绑定的工作流模板版本不存在，请重新导入");
+                const output=template.ports.find(p=>p.direction==="source"&&p.valueKind==="IMAGE"&&
+                    p.capture?.kind==="image"&&p.capture.adapterId==="SaveImage");
+                if(!output)throw new Error("工作流模板缺少可采集的 IMAGE 输出端口");
+                if(activeProjectIdRef.current!==projectId || !pageMountedRef.current)
+                    throw new Error("画布已切换，停止提交");
+                return startComfyWorkflowRun({
+                    projectId,workflowNode,...snapshot,template,instanceId:globalComfyInstanceId,outputPortId:output.id
+                });
+            })();
+            if(activeProjectIdRef.current===projectId && pageMountedRef.current)
+                setNodes(prev=>prev.map(n=>n.id===nodeId ? {...n,metadata:{
+                    ...n.metadata,
+                    comfyWorkflow:n.metadata?.comfyWorkflow ? {...n.metadata.comfyWorkflow,lastRunId:result.runId} : undefined,
+                    comfyExecution:{runId:result.runId,status:result.status,error:result.error||undefined}
+                }}:n));
+            return result;
+        }catch(cause) {
+            if(started)
+                patchExecution(hasPendingComfyRun(projectId,nodeId)?"submission_unknown":"failed",String(cause));
+            throw cause;
+        }finally{comfyExecuteLocksRef.current.delete(key);}
+    },[globalComfyInstanceId,projectId,projectLoaded]);
+
     const handleComfyArtifacts = useCallback(async (artifacts: ComfyRunArtifact[]) => {
         const indexByWorkflow = new Map<string, number>();
         for (const artifact of artifacts) {
@@ -3455,6 +3519,9 @@ function AtelierCanvasPage() {
             try{
                 const workflows=nodesRef.current.filter(node=>node.type===COMFY_WORKFLOW_MOCK_TYPE &&
                     node.metadata?.comfyWorkflow?.lastRunId &&
+                    // Do not let polling of an earlier run overwrite a newer submission.
+                    !(["submitting","submission_unknown"].includes(node.metadata?.comfyExecution?.status||"") &&
+                      node.metadata?.comfyExecution?.runId!==node.metadata?.comfyWorkflow?.lastRunId) &&
                     (first || node.metadata.comfyExecution?.runId!==node.metadata.comfyWorkflow.lastRunId ||
                         !isComfyRunTerminal(node.metadata.comfyExecution?.status)));
                 for(const workflow of workflows) {
@@ -3503,7 +3570,7 @@ function AtelierCanvasPage() {
                     <ComfyWorkflowInstancePanel
                         node={panelNode}
                         connections={connections}
-                        getCanvasSnapshot={() => ({nodes:nodesRef.current,connections:connectionsRef.current})}
+                        onExecute={() => executeComfyWorkflow(panelNode.id)}
                         projectId={projectId}
                         onExecutionChange={(execution)=>handleConfigNodeChange(panelNode.id,{comfyExecution:execution})}
                         comfyInstanceId={globalComfyInstanceId}
@@ -3551,7 +3618,7 @@ function AtelierCanvasPage() {
                     }}
                 />
             ),
-        [confirmStopGeneration, connections, globalComfyInstanceId, handleConfigNodeChange, handleGenerateNode, handleNodePromptChange, message, projectId, runningNodeId],
+        [confirmStopGeneration, connections, executeComfyWorkflow, globalComfyInstanceId, handleConfigNodeChange, handleGenerateNode, handleNodePromptChange, message, projectId, runningNodeId],
     );
 
     const handleDirectorExport = useCallback(
@@ -3740,6 +3807,8 @@ function AtelierCanvasPage() {
                     onIncreaseFont={(node) => handleFontSizeChange(node.id, Math.min(32, (node.metadata?.fontSize || 14) + 2))}
                     onToggleDialog={(node) => setDialogNodeId((current) => (current === node.id ? null : node.id))}
                     onGenerateImage={generateImageFromTextNode}
+                    onExecuteComfy={(node) => void executeComfyWorkflow(node.id).catch((cause) => message.error("工作流执行失败："+(cause instanceof Error?cause.message:String(cause))))}
+                    comfyExecuteDisabled={!projectLoaded || !globalComfyInstanceId || (toolbarNode?.id?comfyExecuteLocksRef.current.has(projectId+":"+toolbarNode.id):false)}
                     onUpload={(node) => handleUploadRequest(node.id)}
                     onDownload={downloadNodeImage}
                     onSaveAsset={(node) => void saveNodeAsset(node)}

@@ -2,8 +2,6 @@ import {useCallback,useEffect,useMemo,useState} from "react";
 import {App,Button,Input,Modal,Popconfirm,Select,Switch,Tag,Typography} from "antd";
 import {Pencil,Plus,RefreshCw,Trash2} from "lucide-react";
 import {useConfigStore} from "@/stores/use-config-store";
-import {canvasThemes} from "@/lib/canvas-theme";
-import {useThemeStore} from "@/stores/use-theme-store";
 import type {CanvasNodeData,CanvasNodeMetadata} from "@/types/canvas";
 import {ComfyWorkflowPanel} from "./comfy-workflow-panel";
 import {deleteComfyInstance,listComfyInstances,saveComfyInstance,type ComfyInstance} from "./run-client";
@@ -23,8 +21,6 @@ export function ComfySettingsTab() {
     const {message}=App.useApp();
     const config=useConfigStore(state=>state.config);
     const update=useConfigStore(state=>state.updateConfig);
-    const themeName=useThemeStore(state=>state.theme);
-    const theme=canvasThemes[themeName];
     const [instances,setInstances]=useState<ComfyInstance[]>([]);
     const [instanceError,setInstanceError]=useState("");
     const [loading,setLoading]=useState(false);
@@ -109,12 +105,6 @@ export function ComfySettingsTab() {
             await deleteComfyPreset(preset.id);message.success("已移除预设（不影响现有画布节点）");await reloadPresets();}
         catch(error){message.error(String(error));}
     };
-    const themeVars={
-        "--comfy-panel":theme.node.panel,"--comfy-fill":theme.node.fill,
-        "--comfy-border":theme.node.stroke,"--comfy-text":theme.node.text,
-        "--comfy-muted":theme.node.muted,"--comfy-faint":theme.node.faint,
-        "--comfy-accent":theme.node.activeStroke,
-    } as React.CSSProperties;
     return <div className="space-y-6 pb-5" data-comfy-settings-tab>
         <section>
             <div className="mb-3 flex items-center justify-between gap-2">
@@ -192,9 +182,23 @@ export function ComfySettingsTab() {
                 <p className="text-xs text-stone-500">安全限制：仅支持 127.0.0.1 或 [::1] 的 HTTP 完整端口地址。运行中的任务会阻止修改实例。</p>
             </div>
         </Modal>
-        <Modal open={!!editor} width={1000} centered footer={null} destroyOnHidden title={"预设工作流：编辑模板与端口绑定"} onCancel={()=>{setEditor(null);void reloadPresets();}}
-            styles={{body:{padding:0,maxHeight:"min(780px,75vh)",overflowY:"auto"}}}>
-            {editor?<div style={themeVars} className="min-w-0">
+        <Modal
+            className="comfy-preset-editor-modal"
+            open={!!editor}
+            width="min(1080px, calc(100vw - 32px))"
+            centered
+            footer={null}
+            destroyOnHidden
+            title={<div className="min-w-0 pr-6">
+                <div className="text-base font-semibold">编辑预设工作流</div>
+                <div className="mt-1 text-xs font-normal text-stone-500 dark:text-stone-400">
+                    编辑内部节点参数、画布输入端口和 IMAGE 输出绑定
+                </div>
+            </div>}
+            onCancel={()=>{setEditor(null);void reloadPresets();}}
+            styles={{body:{padding:0,height:"min(720px, calc(100dvh - 160px))",minHeight:260,overflow:"hidden"}}}
+        >
+            {editor?<div className="h-full min-h-0 min-w-0 w-full" data-comfy-preset-editor-content>
                 <ComfyWorkflowPanel key={editor.key} context="preset" node={editor.node} onChange={bindPreset} onClose={()=>{setEditor(null);void reloadPresets();}} />
             </div>:null}
         </Modal>

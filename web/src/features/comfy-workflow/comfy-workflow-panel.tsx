@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type ChangeEvent, type CSSProperties } from "react";
 import { Check, ChevronDown, ChevronRight, FileUp, Link2, Plus, Save, Search, Trash2, X } from "lucide-react";
 import { canvasThemes } from "@/lib/canvas-theme";
+import { theme as antdTheme } from "antd";
 import { useThemeStore } from "@/stores/use-theme-store";
 import type { CanvasNodeData, CanvasNodeMetadata, CanvasPortValueKind } from "@/types/canvas";
 import {
@@ -59,6 +60,7 @@ function displayValue(value:unknown):string {
 export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props) {
     const themeName = useThemeStore((s)=>s.theme);
     const theme = canvasThemes[themeName];
+    const {token} = antdTheme.useToken();
     const colors = {
         "--comfy-panel":theme.node.panel,
         "--comfy-fill":theme.node.fill,
@@ -68,6 +70,16 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
         "--comfy-faint":theme.node.faint,
         "--comfy-accent":theme.node.activeStroke,
     } as CSSProperties;
+    const presetColors={
+        "--comfy-panel":token.colorBgContainer,
+        "--comfy-fill":token.colorFillSecondary,
+        "--comfy-border":token.colorBorderSecondary,
+        "--comfy-text":token.colorText,
+        "--comfy-muted":token.colorTextSecondary,
+        "--comfy-faint":token.colorTextTertiary,
+        "--comfy-accent":token.colorPrimary,
+    } as CSSProperties;
+    const embedded = context==="preset";
 
     const [presets,setPresets] = useState<ComfyCatalogPreset[]>([]);
     const [draft,setDraft] = useState<ComfyTemplatePayload|null>(null);
@@ -234,22 +246,28 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
 
     return (
         <section
-            className="pointer-events-auto flex min-h-0 cursor-default flex-col overflow-hidden rounded-[18px] border border-[var(--comfy-border)] bg-[var(--comfy-panel)] text-[var(--comfy-text)] shadow-2xl"
-            style={{...colors,colorScheme:themeName,accentColor:theme.node.activeStroke,width:"min(940px, calc(100vw - 32px))",maxHeight:"min(780px, calc(100vh - 32px))"}}
-            data-canvas-no-zoom data-comfy-bindings-panel
+            className={embedded
+                ? "flex h-full min-h-0 min-w-0 w-full cursor-default flex-col overflow-hidden bg-[var(--comfy-panel)] text-[var(--comfy-text)]"
+                : "pointer-events-auto flex min-h-0 cursor-default flex-col overflow-hidden rounded-[18px] border border-[var(--comfy-border)] bg-[var(--comfy-panel)] text-[var(--comfy-text)] shadow-2xl"}
+            style={embedded
+                ? {...presetColors,accentColor:token.colorPrimary}
+                : {...colors,colorScheme:themeName,accentColor:theme.node.activeStroke,width:"min(940px, calc(100vw - 32px))",maxHeight:"min(780px, calc(100vh - 32px))"}}
+            data-canvas-no-zoom data-comfy-bindings-panel data-comfy-editor-layout={embedded?"settings":"canvas"}
             onMouseDown={(event)=>event.stopPropagation()}
             onPointerDown={(event)=>event.stopPropagation()}
             onWheel={(event)=>event.stopPropagation()}
         >
-            <header className="flex shrink-0 items-start justify-between gap-4 border-b border-[var(--comfy-border)] px-5 py-4">
+            {!embedded?<header className="flex shrink-0 items-start justify-between gap-4 border-b border-[var(--comfy-border)] px-5 py-4">
                 <div className="min-w-0">
                     <div className="text-sm font-semibold">ComfyUI Workflow <span className="font-normal text-[var(--comfy-muted)]">/ Template bindings</span></div>
-                    <div className="mt-1 text-[11px] text-[var(--comfy-muted)]">{context==="preset"?"编辑全局预设的内部参数、画布输入端口和 IMAGE 输出绑定":"Expose internal inputs and output sockets to canvas ports · Execution unavailable"}</div>
+                    <div className="mt-1 text-[11px] text-[var(--comfy-muted)]">Expose internal inputs and output sockets to canvas ports · Execution unavailable</div>
                 </div>
                 <button type="button" className={buttonClass+" !size-8 !shrink-0 !px-0"} onClick={onClose} aria-label="Close template editor"><X size={15}/></button>
-            </header>
+            </header>:null}
 
-            <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-[var(--comfy-border)] px-5 py-3">
+            <div className={embedded
+                ? "flex min-w-0 shrink-0 flex-wrap items-center gap-2 border-b border-[var(--comfy-border)] px-4 py-3 sm:px-5"
+                : "flex shrink-0 flex-wrap items-center gap-2 border-b border-[var(--comfy-border)] px-5 py-3"}>
                 <label className={buttonClass+" cursor-pointer"}><FileUp size={14}/> Import API JSON
                     <input type="file" accept=".json,application/json" className="sr-only" onChange={(e)=>void uploadGraph(e)}/>
                 </label>
@@ -292,8 +310,10 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
             {status?<div role="status" className="mx-5 mt-2 shrink-0 text-xs text-[var(--comfy-muted)]">{status}</div>:null}
 
             {draft ? (
-                <div className="flex min-h-0 flex-1 flex-col md:flex-row">
-                    <aside className="flex min-h-[200px] w-full shrink-0 flex-col border-b border-[var(--comfy-border)] md:min-h-0 md:w-[290px] md:border-b-0 md:border-r">
+                <div className="flex min-h-0 min-w-0 flex-1 flex-col md:flex-row" data-comfy-editor-workspace>
+                    <aside className={embedded
+                        ? "flex min-h-[128px] max-h-[35%] w-full shrink-0 flex-col border-b border-[var(--comfy-border)] md:max-h-none md:min-h-0 md:w-[255px] md:border-b-0 md:border-r"
+                        : "flex min-h-[200px] w-full shrink-0 flex-col border-b border-[var(--comfy-border)] md:min-h-0 md:w-[290px] md:border-b-0 md:border-r"} data-comfy-node-list>
                         <div className="shrink-0 px-3 pb-2 pt-4">
                             <div className="flex items-center justify-between px-1">
                                 <span className={captionClass}>COMFYUI NODES</span>
@@ -347,7 +367,7 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
                         </div>
                     </aside>
 
-                    <main className="flex min-h-0 min-w-0 flex-1 flex-col">
+                    <main className="flex min-h-0 min-w-0 flex-1 flex-col" data-comfy-binding-editor>
                         <div className="shrink-0 border-b border-[var(--comfy-border)] px-4 pb-3 pt-4">
                             <div className="flex items-center justify-between gap-2">
                                 <span className={captionClass}>CANVAS PORTS</span>
@@ -521,7 +541,9 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
                 <p>Or select a saved immutable template revision above.</p>
             </div>}
 
-            {draft?<div className="shrink-0 border-t border-[var(--comfy-border)] bg-[var(--comfy-panel)] px-5 py-3">
+            {draft?<div className={embedded
+                ? "max-h-[38%] shrink-0 overflow-y-auto border-t border-[var(--comfy-border)] bg-[var(--comfy-panel)] px-4 py-3 sm:px-5"
+                : "shrink-0 border-t border-[var(--comfy-border)] bg-[var(--comfy-panel)] px-5 py-3"} data-comfy-save-footer>
                 <details open={expandedAdvanced} onToggle={(e)=>setExpandedAdvanced((e.currentTarget as HTMLDetailsElement).open)} className="mb-3">
                     <summary className="cursor-pointer text-[11px] font-medium text-[var(--comfy-muted)]">Template settings · Name, ID & model requirements</summary>
                     <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
@@ -536,7 +558,7 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
                 <div className="flex flex-wrap items-center justify-between gap-3">
                     <span className="max-w-[440px] text-[11px] text-[var(--comfy-muted)]">{objectInfo?"Offline /object_info loaded":"Socket types unverified · load /object_info for accurate matching"}</span>
                     <button type="button" className="inline-flex min-h-9 items-center gap-2 rounded-lg px-4 py-2 text-xs font-semibold transition hover:opacity-85 disabled:cursor-wait disabled:opacity-75"
-                        style={{ backgroundColor: theme.node.activeStroke, color: theme.node.panel }}
+                        style={embedded?{backgroundColor:token.colorPrimary,color:token.colorTextLightSolid}:{backgroundColor:theme.node.activeStroke,color:theme.node.panel}}
                         disabled={busy} onClick={()=>void save()}><Save size={14}/>{busy?"Saving…":context==="preset"?"保存预设版本与绑定":"Save revision & bind node"}</button>
                 </div>
             </div>:null}

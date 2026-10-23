@@ -9,6 +9,29 @@ vi.mock("@/stores/use-theme-store",()=>({
 import { ComfyWorkflowPanel } from "./comfy-workflow-panel";
 
 describe("Comfy workflow binding selector",()=>{
+    it("renders an embedded settings editor without the canvas floating header or fixed width",()=>{
+        const node:CanvasNodeData={
+            id:"preset",title:"预设工作流",type:"comfy:workflow",
+            position:{x:0,y:0},width:400,height:300,metadata:{},
+        };
+        const props:ComponentProps<typeof ComfyWorkflowPanel>={
+            node,context:"preset",onChange:()=>true,onClose:()=>undefined,
+        };
+        const html=renderToStaticMarkup(createElement(ComfyWorkflowPanel,props));
+        expect(html).toContain('data-comfy-editor-layout="settings"');
+        expect(html).toContain("h-full min-h-0 min-w-0 w-full");
+        expect(html).not.toContain("Close template editor");
+        expect(html).not.toContain("ComfyUI Workflow <span");
+        expect(html).not.toContain("shadow-2xl");
+        expect(html).not.toContain("min(940px");
+        expect(html).toContain('data-comfy-bindings-panel');
+        const canvasHtml=renderToStaticMarkup(createElement(ComfyWorkflowPanel,{
+            ...props,context:"node",
+        }));
+        expect(canvasHtml).toContain('data-comfy-editor-layout="canvas"');
+        expect(canvasHtml).toContain("Close template editor");
+        expect(canvasHtml).toContain("ComfyUI Workflow");
+    });
     it("only presents the global preset selector; no saved-version history group",()=>{
         const node:CanvasNodeData={
             id:"wf",title:"Krea 2 Turbo",type:"comfy:workflow",

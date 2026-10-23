@@ -50,6 +50,7 @@ node server/ark-gateway.mjs
 - 实例列表经受 token 保护的网关管理，`POST /api/comfy/instances` 新增、`PUT /api/comfy/instances/:id` 修改、`DELETE /api/comfy/instances/:id` 删除；SQLite 持久保存并在网关重启后恢复。只能添加 `http://127.0.0.1:<port>` 或 `http://[::1]:<port>` 的精确 HTTP 本机地址，拒绝凭据、路径、query、非本机以及 HTTPS。存在 queued/preparing/submitting/submission_unknown/running/collecting 任务时拒绝变更实例，避免重定向未完成的 GPU 请求。
 - 全局预设列表和节点「Template bindings」下拉使用同一个预设目录，**始终包含内置的 Krea 2 Turbo INT8 文生图**（即使当前 IndexedDB 从未保存该模板），再合并用户显式管理的预设。内置项首次进入「编辑绑定」时才写入其默认不可变模板。用户保存内置预设修改时，在内置行显示「已修改」和单击可用的「重置默认」按钮；重置重新安装并指向打包的原始 workflow + 默认端口绑定，旧 revision 保留供已绑定画布使用。内置项不可删除，自定义项可删除；同一 templateId 的内置与用户修改版本只显示一条。新增/编辑预设复用 ComfyWorkflowPanel，可以导入 ComfyUI API JSON、修改暴露的输入参数与 socket、选择 IMAGE 输出以及 SaveImage 捕获；保存新版本时，更新对应预设 revision 指针而不累积历史项。旧项目固定使用先前的 revision，仍可用 ID@revision 加载；历史模板数据保留，不做不可恢复删除。
   - 绑定面板顶部统一使用一个「加载预设」下拉菜单，按「内置预设」（Krea 2 Turbo INT8 文生图）和「全局预设」分组；同一个 Krea 工作流已加入全局预设时不再重复出现内置项。取消原有单独的「Krea 2 Turbo 预设」按钮及第二个全局预设选择入口。选择条目直接加载对应模板及画布端口绑定；保留「Import API JSON」「Load /object_info」独立功能。
+  - 全局设置中的「编辑绑定」使用嵌入式 ComfyWorkflowPanel 布局，由 Ant Design Modal 统一管理标题和关闭按钮，子编辑器不再重复显示画布浮窗标题、边框与阴影；通过 Ant Design theme token 与设置页保持一致的亮/暗配色。窗口宽度自适应、编辑区左右分栏独立滚动，避免整体横向滚动；画布节点内部打开的独立绑定编辑器维持原来的视觉布局。
 - 默认实例及“启动时检测实例”的偏好写入全局 AiConfig，跟随 JSON 配置导入/导出；跨设备备份不自动信任另一台机器的网关地址、认证 token 或旧画布实例 ID。预设别名存于本机 IndexedDB；模板版本的项目备份策略独立于全局偏好。
 
 

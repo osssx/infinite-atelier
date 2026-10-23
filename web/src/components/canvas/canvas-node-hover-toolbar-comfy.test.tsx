@@ -57,6 +57,13 @@ describe("ComfyUI workflow selected-node toolbar",()=>{
         unbound.metadata={};
         expect(render(unbound)).toMatch(/disabled=""[^>]*aria-label="执行 ComfyUI 工作流"/);
     });
+    it("disables the execute shortcut for VIDEO-only imported presets",()=>{
+        const node=workflow();
+        node.metadata={...node.metadata,comfyPorts:[{id:"video",direction:"source",valueKind:"VIDEO",label:"生成视频"}]};
+        const html=render(node);
+        expect(html).toMatch(/disabled=""[^>]*aria-label="VIDEO 输出暂不支持画布执行"/);
+        expect(html).not.toContain('aria-label="执行 ComfyUI 工作流"');
+    });
     it("does not add Execute to unrelated canvas nodes",()=>{
         expect(render({...workflow(),type:"text"})).not.toContain('aria-label="执行 ComfyUI 工作流"');
     });

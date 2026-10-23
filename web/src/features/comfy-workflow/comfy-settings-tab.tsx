@@ -6,7 +6,8 @@ import type {CanvasNodeData,CanvasNodeMetadata} from "@/types/canvas";
 import {ComfyWorkflowPanel} from "./comfy-workflow-panel";
 import {deleteComfyInstance,listComfyInstances,saveComfyInstance,type ComfyInstance} from "./run-client";
 import {saveComfyPreset,type ComfyPreset} from "./preset-registry";
-import {installBundledKrea2Template,listComfyPresetCatalog,resetBundledComfyPreset,type ComfyCatalogPreset} from "./preset-catalog";
+import {installBundledComfyTemplate,listComfyPresetCatalog,resetBundledComfyPreset,type ComfyCatalogPreset} from "./preset-catalog";
+import {MINIMAX_H3_I2V_TEMPLATE_ID} from "./minimax-h3-i2v-preset";
 import {deleteComfyPreset} from "./preset-registry";
 import {getComfyTemplate} from "./template-registry";
 
@@ -70,7 +71,7 @@ export function ComfySettingsTab() {
             try {
                 // Bundled defaults are visible before ever writing to IndexedDB.
                 // Materialize their immutable template only when the user edits.
-                await installBundledKrea2Template();
+                await installBundledComfyTemplate(preset.builtinId!);
             }catch(error){message.error("加载内置预设失败："+String(error));return;}
             finally{setPresetActionBusy(null);}
         }
@@ -80,7 +81,7 @@ export function ComfySettingsTab() {
     const resetBuiltin=async(preset:ComfyCatalogPreset)=>{
         setPresetActionBusy(preset.id);
         try{
-            await resetBundledComfyPreset();
+            await resetBundledComfyPreset(preset.builtinId!);
             await reloadPresets();
             message.success("已重置为内置默认工作流与端口绑定；已绑定的画布节点不受影响");
         }catch(error){message.error("重置内置预设失败："+String(error));}
@@ -142,6 +143,7 @@ export function ComfySettingsTab() {
                     <span className="flex min-w-0 items-center gap-1.5">
                         <span className="truncate font-medium" title={preset.name}>{preset.name}</span>
                         {preset.builtIn?<Tag className="!mr-0">内置</Tag>:null}
+                        {preset.builtinId===MINIMAX_H3_I2V_TEMPLATE_ID?<Tag className="!mr-0">视频 · 暂不支持画布执行</Tag>:null}
                         {preset.modified?<Tag color="orange" className="!mr-0">已修改</Tag>:null}
                     </span>
                     <span className="truncate font-mono text-stone-500" title={preset.templateId+"@"+preset.revision}>{preset.templateId} · {preset.revision.slice(0,12)}</span>

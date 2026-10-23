@@ -13,7 +13,9 @@ import { templatePayloadFromGraph, validateComfyApiGraph, type ComfyInputBinding
 import { getComfyTemplate, saveComfyTemplateVersion } from "./template-registry";
 import { upsertComfyPresetForTemplate } from "./preset-registry";
 import { listComfyPresetCatalog, type ComfyCatalogPreset } from "./preset-catalog";
-import { buildKrea2TurboTemplate, isKrea2TurboT2IWorkflow, krea2TurboBundledTemplate, KREA2_TURBO_TEMPLATE_ID } from "./krea2-turbo-preset";
+import { buildKrea2TurboTemplate, isKrea2TurboT2IWorkflow, KREA2_TURBO_TEMPLATE_ID } from "./krea2-turbo-preset";
+import { buildMiniMaxH3I2VPreset, isMiniMaxH3I2VWorkflow, MINIMAX_H3_I2V_TEMPLATE_ID } from "./minimax-h3-i2v-preset";
+import { installBundledComfyTemplate } from "./preset-catalog";
 
 const KINDS: CanvasPortValueKind[] = ["STRING","INT","FLOAT","BOOLEAN","IMAGE","MASK","LATENT","CONDITIONING","VIDEO","AUDIO","JSON"];
 const CAPTURES = ["none","image","video","audio","text"] as const;
@@ -185,26 +187,32 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
             const parsed=await safeRead(file);
             const graph=validateComfyApiGraph(parsed);
             const krea2=isKrea2TurboT2IWorkflow(graph);
-            const next=krea2?buildKrea2TurboTemplate(graph):templatePayloadFromGraph(file.name.replace(/\.json$/i,""),graph,objectInfo);
-            setDraft(next);setTemplateId(krea2?KREA2_TURBO_TEMPLATE_ID:"comfy-"+newId());setSelectedNodeId(krea2?"55":Object.keys(next.apiGraph)[0]||"");
+            const minimax=isMiniMaxH3I2VWorkflow(graph);
+            const next=krea2?buildKrea2TurboTemplate(graph):minimax?buildMiniMaxH3I2VPreset(graph)
+                :templatePayloadFromGraph(file.name.replace(/\.json$/i,""),graph,objectInfo);
+            setDraft(next);setTemplateId(krea2?KREA2_TURBO_TEMPLATE_ID:minimax?MINIMAX_H3_I2V_TEMPLATE_ID:"comfy-"+newId());setSelectedNodeId(krea2?"55":minimax?"105_104":Object.keys(next.apiGraph)[0]||"");
             setSelectedPortId(next.ports[0]?.id||null);setNodeSearch("");setError("");
-            setStatus(krea2?"Krea 2 Turbo INT8 bindings configured. Review ports then save the revision.":"Workflow loaded. Click a node parameter to expose it as an input port.");
+            setStatus(krea2?"Krea 2 Turbo INT8 bindings configured. Review ports then save the revision."
+                :minimax?"MiniMax H3 I2V 已配置图片、提示词和 VIDEO 输出绑定。当前画布执行仅支持 IMAGE 产物。"
+                :"Workflow loaded. Click a node parameter to expose it as an input port.");
         }catch(cause){setError(String(cause));}
     };
-    const installKrea2Preset=async()=>{
+    const installBuiltinPreset=async(id:string)=>{
         if(busy)return;
         try {
             setBusy(true);setError("");
-            const payload=krea2TurboBundledTemplate();
-            // User-provided /object_info is not automatically trusted to describe the target instance.
-            const template=await saveComfyTemplateVersion(KREA2_TURBO_TEMPLATE_ID,payload);
+            // Bundled JSON is version-pinned; no upload or GPU execution is triggered.
+            const template=await installBundledComfyTemplate(id);
             if(applySaved(template)) {
                 if(context==="node") {
                     await upsertComfyPresetForTemplate(template);
                     setPresets(await listComfyPresetCatalog());
                 }
-                setSelectedNodeId("55");setSelectedPortId("prompt");setNodeSearch("");
-                setStatus("Krea 2 Turbo INT8 preset saved and bound: 11 inputs + image output. Instance verification still required.");
+                setSelectedNodeId(id===KREA2_TURBO_TEMPLATE_ID?"55":"105_104");
+                setSelectedPortId(id===KREA2_TURBO_TEMPLATE_ID?"prompt":"first_frame");setNodeSearch("");
+                setStatus(id===MINIMAX_H3_I2V_TEMPLATE_ID
+                    ?"MiniMax H3 I2V 预设已载入（VIDEO 输出；当前画布执行链路暂不支持视频）。"
+                    :"Krea 2 Turbo INT8 preset saved and bound: 11 inputs + image output. Instance verification still required.");
             }
         }catch(cause){setError(String(cause));}finally{setBusy(false);}
     };
@@ -277,11 +285,12 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
                     value={selectedPreset ? "preset:"+selectedPreset.id : ""}
                     onChange={(e)=>{
                         const value=e.target.value;
-                        if(value==="builtin:krea2"){void installKrea2Preset();return;}
+                        if(value==="builtin:krea2"){void installBuiltinPreset(KREA2_TURBO_TEMPLATE_ID);return;}
+                        if(value==="builtin:minimax"){void installBuiltinPreset(MINIMAX_H3_I2V_TEMPLATE_ID);return;}
                         if(!value.startsWith("preset:"))return;
                         const preset=presets.find(p=>p.id===value.slice("preset:".length));
                         if(!preset)return;
-                        if(preset.builtIn && !preset.modified){void installKrea2Preset();return;}
+                        if(preset.builtIn && !preset.modified){void installBuiltinPreset(preset.builtinId!);return;}
                         setBusy(true);setError("");
                         void getComfyTemplate(preset.templateId,preset.revision)
                             .then(t=>{if(!t)throw new Error("预设模板版本不存在");applySaved(t);})
@@ -294,7 +303,10 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
                         {presets.filter(p=>p.builtIn).map(p=><option key={p.id} value={"preset:"+p.id}>
                             {p.name}{p.modified?"（已修改）":""}
                         </option>)}
-                        {!presets.length?<option value="builtin:krea2">Krea 2 Turbo INT8 · 文生图</option>:null}
+                        {!presets.length?<>
+                            <option value="builtin:krea2">Krea 2 Turbo INT8 · 文生图</option>
+                            <option value="builtin:minimax">MiniMax H3 I2V Turbo · 图生视频</option>
+                        </>:null}
                     </optgroup>
                     {presets.some(p=>!p.builtIn)?<optgroup label="全局预设">
                         {presets.filter(p=>!p.builtIn).map(p=><option key={p.id} value={"preset:"+p.id}>{p.name}</option>)}

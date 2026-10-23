@@ -3,14 +3,16 @@
 > 状态：设计方案，**尚未实现**。适用项目：`infinite-atelier`；基于 2026-10-23 的实际代码。
 >
 > 核心决策：**一个工作流执行器 + 一份产物清单 + 可插拔的捕获/归档/画布回填适配器**。执行不按媒体类型分叉；媒体类型仅影响输入暂存（若需要）、输出捕获、校验、归档和画布具象化。
+>
+> **版本策略：直接替换，不兼容旧工程。** 新协议仅接受 `schemaVersion=2`，新建工程与持久化结构以统一产物契约为准；不实现旧工程加载、旧任务/产物迁移、旧节点/连线兼容或旧模板 revision 兼容。ComfyUI 原生 API Graph JSON 仍可作为新工作流模板导入。
 
 ## 1. 目标与非目标
 
 - **统一执行**：一个 Comfy API Graph、一次 `POST /prompt`，同一组任务状态、幂等提交、重启恢复、`/history/{promptId}` 轮询和取消语义；无 `imageRunner/videoRunner/audioRunner/textRunner`。
 - **四类产物**：`IMAGE` → 图片、`VIDEO` → 视频、`AUDIO` → 音频、`STRING` → 文本；允许一个端口返回多项，一次运行含多个不同类型的输出端口。
 - **绑定驱动**：只有预设/节点明确选择的 `source` 端口产生用户产物；不靠文件扩展名猜测模板的主要输出，也不把中间预览文件误算为产物。
-- **可恢复性不退化**：冻结模板 revision 与请求快照、上传输入、持久化 compiled graph / capture manifest / submission marker 后才提交 GPU；提交未知时**绝不自动重投**。
-- **兼容旧工程**：继续读取 schemaVersion=1、旧 SaveImage 捕获记录和带 `metadata.comfyArtifact` 的 Image 节点；旧画布连线与历史文件不清理。
+- **新任务可恢复**：冻结新模板 revision 与请求快照、上传输入、持久化 compiled graph / capture manifest / submission marker 后才提交 GPU；提交未知时**绝不自动重投**。仅保证采用新协议创建的任务可以恢复。
+- **允许破坏性升级**：旧 `schemaVersion=1` 工程、旧 SaveImage 捕获记录和旧画布溯源结构不进入新协议；不提供兼容读取、自动迁移、双写或历史数据保留承诺。
 - **非目标（本阶段）**：多工作流编排（工作流输出连到另一个工作流输入）、多 worker lease、流式中间图像、对任意第三方自定义节点不经适配就承诺可捕获。不改变 Comfy 本身的生成/采样/编码算法。
 
 ## 2. 执行主干——完全无媒体分支
@@ -60,7 +62,7 @@ interface CanvasArtifactAdapter {
 
 ### 3.1 输出端口声明
 
-沿用 `ComfyTemplatePort`，把目前已存在的 `capture.kind`（`image/video/audio/text/none`）作为**绑定契约**，补齐策略并显式列出一个或多个输出根：
+以 `ComfyTemplatePort` 为基础直接统一输出绑定契约：可捕获的 `source` 端口必须声明 `capture`（`image/video/audio/text`），非捕获辅助端口可以标记 `none`，并显式选择一个或多个产物输出根：
 
 ```ts
 type ArtifactKind = "image" | "video" | "audio" | "text";
@@ -91,7 +93,7 @@ type WorkflowOutputPortV2 = {
 - 一个端口的 `valueKind` 是 Comfy 数据流类型，`artifact.kind` 是应用级可保存资源类型；两者通过 adapter 映射，不依赖 MIME/文件扩展名推断。
 - `capture.kind=none` 仍允许作为“不回填”内部辅助端口，但不能被选为必须回传的 `rootOutputs`。
 
-### 3.2 请求 V2 与兼容规则
+### 3.2 唯一请求协议（schemaVersion=2）
 
 ```ts
 type RunRequestV2 = {
@@ -110,8 +112,8 @@ type RunRequestV2 = {
 ```
 
 - 仍是一份不可变模板、一个节点，多个输出只是**一个 Comfy 图中的多个根**；绝非多次 `POST /prompt`。
-- `fingerprintRequest()` 包含选择的端口列表及其绑定配置快照；`rootOutputs` 排序规范化，避免顺序变化被误判为不同请求；`idempotencyKey` 与 transient `canvasRevision` 延续当前规则。
-- 旧 schemaVersion=1 的 `rootOutputs.length === 1`、`IMAGE/SaveImage` 按原逻辑解释；新 schemaVersion=2 引入多类型，多输出；不可直接改写旧 revision 的 hash。
+- `fingerprintRequest()` 包含选择的端口列表及其绑定配置快照；`rootOutputs` 排序规范化，避免顺序变化被误判为不同请求；`idempotencyKey` 用于新协议内的请求去重，`canvasRevision` 标识提交时的画布快照。
+- **只接受 `schemaVersion=2`**。收到旧 `schemaVersion=1` 请求直接返回 `unsupported_schema_version`，不做自动转换或回退；新模板导入时按统一契约重新生成 revision/hash，不承认旧模板 revision 为有效的新模板快照。
 - V2 的多端口数设硬上限（建议 16）；编译后节点上限继续 500。若实际业务要求“一次仅选一个输出端口”，UI 可先维持单选，协议仍支持多选。
 
 ### 3.3 CaptureManifest：提交之前即冻结
@@ -187,7 +189,7 @@ type ComfyArtifactV2 = {
 };
 ```
 
-- V1 `artifacts` 表已存 `run_id,workflow_node_id,port_id,capture_node_id,file_key,mime,sha256,size,path`；V2 加 `kind,index,metadata_json,adapter_id` 等列，不移除旧列，老数据迁移为 `kind=image`。
+- **直接采用新表结构**：`artifacts` 一开始就包含 `run_id,workflow_node_id,port_id,capture_node_id,item_key,kind,index,mime,sha256,size,path,metadata_json,adapter_id` 等所需列，`CaptureManifest` 与任务快照按新协议持久化。不保留 `file_key` 等旧列作为兼容别名，也不编写 V1→V2 的 ALTER/backfill 迁移。实施切换时使用新的 Comfy 持久化命名空间或重建仅属于 Comfy 的表；共库时不得删除非 Comfy 数据。
 - 幂等主键建议 `UNIQUE(run_id,port_id,item_key)`；`itemKey` 来自当前绑定的 history file descriptor 或 inline 文本项的稳定索引/摘要。重复轮询和中途重启不能新增重复资源。
 - 底层统一按字节流存储（文本也以 UTF-8 字节归档），先临时文件写入 + hash + size + fsync + 原子 rename，再提交 SQLite 记录，失败可重试。下载统一 `GET /api/comfy/runs/:id/artifacts/:artifactId`，只根据 MIME 正确返回 Content-Type / Content-Disposition，绝不暴露任意本地路径。
 - 图片可以多图、音频多段、视频多条、文本多条；`run.artifacts` 为全局扁平数组，但带 `portId/index/kind`，UI 可以按端口分组。
@@ -251,7 +253,7 @@ async function importComfyArtifacts(run: RunStateV2): Promise<void> {
     if (canvas.hasProvenance(artifact.artifactId)) continue;
     const importer = canvasArtifactRegistry.require(artifact.kind);
     const created = await importer.createNode(artifact);
-    // 保留原有 {runId,artifactId,workflowNodeId,portId} 溯源
+    // 写入唯一新溯源契约 {runId,artifactId,workflowNodeId,portId,kind,index}
     await canvas.upsertGeneratedNodeAndProvenanceEdge(created, artifact);
   }
 }
@@ -261,7 +263,7 @@ async function importComfyArtifacts(run: RunStateV2): Promise<void> {
 - 视频：使用项目现有 Video 节点媒体存储/视频元数据服务（`durationMs, mimeType, poster`），不要强制转成 GIF 或图片。
 - 音频：使用项目现有 Audio 节点存储/波形能力，按实际格式保留 MIME。
 - 文本：Text 节点使用 **Comfy 实际输出内容** 的 UTF-8 文本，不能误用请求提示词作为输出。
-- 统一溯源结构 `metadata.comfyArtifact` 仍含 `artifactId,runId,workflowNodeId,portId`，新增 `kind/index` 可选字段；更新 `prepareCanvasPortConnection` 和 `reconcileComfyArtifactConnections`：工作流 `IMAGE/VIDEO/AUDIO/STRING` 输出只能连接由本次捕获产生且类型匹配的对应资源节点；原有图片连线仍有效。
+- 统一溯源结构 `metadata.comfyArtifact` **强制**包含 `artifactId,runId,workflowNodeId,portId,kind,index`，不再将 `kind/index` 视为兼容性可选字段。更新 `prepareCanvasPortConnection` 和 `reconcileComfyArtifactConnections`：工作流 `IMAGE/VIDEO/AUDIO/STRING` 输出只能连接由对应捕获产生且类型匹配的资源节点；不实现旧 Image 节点溯源结构或旧画布连线修复分支。
 - 图片、视频、音频、文本混合输出按端口分组排布，不互相覆盖；节点数量、内存及异步导入需增量处理，不能把整段大视频解为内存中的 data URL。
 - **前端回填失败独立于 GPU run 状态**：服务端 `succeeded` 表示所有产物可靠归档；前端每个 `artifactId` 有 `importing/imported/failed` 状态，可逐项重试，不重新发 GPU 任务。关闭面板、重载画布也可继续未完成回填。
 
@@ -271,11 +273,11 @@ async function importComfyArtifacts(run: RunStateV2): Promise<void> {
 |---|---|
 | `web/server/comfy-workflow/compiler.mjs` | `compileSingleWorkflow` 拆为共享绑定编译与 `captureRegistry`，多 root union 剪枝，不再检查 `single_image_capture_required` |
 | `web/server/comfy-workflow/service.mjs` | `prepareSubmit` 继续只 POST 一次；`collect()` 改按 capture manifest 遍历 adapter；媒体流式下载 |
-| `web/server/comfy-workflow/store.mjs` | `artifacts.kind/index/metadata` 迁移、按 `portId+itemKey` 幂等保存，保留旧图片记录 |
-| `web/src/features/comfy-workflow/template-schema.ts` | 已有 image/video/audio/text 类型契约扩展捕获策略；既有模板 revision 不变 |
+| `web/server/comfy-workflow/store.mjs` | 按统一契约直接定义 Comfy 持久化表和任务快照；`kind/index/metadata/adapter_id/item_key` 为新结构必要字段；按 `portId+itemKey` 幂等保存，不做旧表迁移 |
+| `web/src/features/comfy-workflow/template-schema.ts` | 收敛为唯一四类产物绑定契约和捕获策略；新模板生成新的 revision/hash，不维护旧 revision 解码分支 |
 | `web/src/features/comfy-workflow/run-client.ts` | `RunRequestV2`、`ComfyArtifactV2`、按媒体类型分发上传；图执行请求统一 |
 | `web/src/pages/canvas/project.tsx` | `handleComfyArtifacts` 变四类型 `importComfyArtifacts`，支持多端口回填与逐项恢复 |
-| `web/src/lib/canvas/canvas-port-connections.ts` | 类型化来源连线与四类资源节点修复 |
+| `web/src/lib/canvas/canvas-port-connections.ts` | 只处理新 `metadata.comfyArtifact` 结构的类型化来源连线与四类资源节点回填，不兼容旧 Image 连线 |
 | `web/src/features/comfy-workflow/comfy-workflow-instance-panel.tsx` | 不再仅选择 IMAGE 输出；显示产物集合、按类型计数与进度 |
 | `web/src/features/comfy-workflow/minimax-h3-i2v-preset.ts` | 已声明 `VIDEO/SaveVideo`，无需重新为视频编写执行器 |
 
@@ -289,11 +291,11 @@ async function importComfyArtifacts(run: RunStateV2): Promise<void> {
 
 | 阶段 | 变更 | 验收 |
 |---|---|---|
-| **P0：协议与兼容** | 四类型 `ArtifactKind` / `CaptureBinding` / SQLite 迁移；IMAGE 通过旧流程等价回归；可创建多 root 但先不开放 UI | 旧图片 run、历史项目、idempotency 和恢复测试不退化 |
+| **P0：新协议与数据结构** | 确定唯一 `schemaVersion=2`、四类型 `ArtifactKind` / `CaptureBinding`；直接建立新 Comfy 数据表与模板 revision；统一 IMAGE 捕获实现，可创建多 root 但 UI 可暂不开放 | 新版 IMAGE 端到端成功；旧版请求明确拒绝；新任务幂等、重启恢复与提交未知状态测试通过；不验证旧工程 |
 | **P1：VIDEO 端到端** | `SaveVideo` history adapter、`/view` 媒体流式下载、Video 回填与连线；开放 MiniMax H3 I2V 的执行按钮 | **仅一次 POST /prompt**、保存完整 mp4、Video 节点可播放、断网后只恢复下载不再采样 |
 | **P2：AUDIO + TEXT** | `SaveAudio`/音频 adapter、`SaveText` 或明确输出约定、对应资源节点 | 同一 executor 可跑音频或文本预设；空文本、长文本、多个文件均有确定语义 |
 | **P3：混合多端口** | 同时捕获 IMAGE + VIDEO + AUDIO + TEXT；并集裁剪；逐项导入 | 一次 prompt 产出四类、保留各自 source port、缺项不虚报成功 |
-| **P4：资源和回归** | 磁盘配额、Range、超时、adapter 插件契约与修复工具 | 大视频内存峰值受控；重启/错误/删除/重复导入/恶意路径测试通过 |
+| **P4：资源与新架构回归** | 磁盘配额、Range、超时、adapter 插件契约与修复工具 | 大视频内存峰值受控；新协议重启/错误/删除/重复导入/恶意路径测试通过 |
 
 **必须具备的自动测试**：
 1. 编译 4 个 root：只有 1 次 `/prompt`，图包含全部 capture sink；剪枝后不丢任何输出链。
@@ -303,7 +305,8 @@ async function importComfyArtifacts(run: RunStateV2): Promise<void> {
 5. `/prompt` 已到 Comfy 但响应丢失：`submission_unknown`，**不重投**；只允许用已保存 promptId 恢复 history。
 6. 视频大文件边下载边 SHA-256 校验；中断后恢复 `collecting`，不再触发 GPU。
 7. `status=succeeded` 但前端 IndexedDB 保存失败：仅修复导入，不降低服务器状态也不重新生成。
-8. 四种节点创建正确、类型化溯源连线和老 Image 项目迁移正确；恶意文件名/超大文本/伪造 MIME 被拒绝。
+8. 四种节点创建正确；新 `metadata.comfyArtifact` 的 `kind/index` 必填，类型化溯源连线正确；恶意文件名/超大文本/伪造 MIME 被拒绝。
+9. 旧 `schemaVersion=1` 请求被明确拒绝，新持久化结构没有兼容列、旧任务读取或 V1 数据回填逻辑；Comfy 表重建不会触碰共库的非 Comfy 数据。
 
 ## 11. 已确认的项目约束
 
@@ -316,4 +319,4 @@ async function importComfyArtifacts(run: RunStateV2): Promise<void> {
 - ComfyUI SaveText 官方嵌入文档：https://github.com/Comfy-Org/embedded-docs/blob/main/comfyui_embedded_docs/docs/SaveText/en.md
 - MiniMax H3 API 对 SaveVideo history 的实例说明：https://github.com/TheTerrasque/minimax-h3-frontend/blob/main/resources/COMFYUI_API_GUIDE.md
 
-**结论**：改变的是 `capturing / materializing` 两侧，不是 `executing` 中间。四类产物应共享一个稳定的 `Run → ArtifactManifest[]` 协议，不要出现四条独立的 ComfyUI 后端执行链。
+**结论**：新版本直接统一 `capturing / materializing` 两侧，不拆分 `executing` 主干。四类产物共享唯一 `Run → ArtifactManifest[]` 协议，不出现四条独立的 ComfyUI 后端执行链，也不背负旧工程兼容层。

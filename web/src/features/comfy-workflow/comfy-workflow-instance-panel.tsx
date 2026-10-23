@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState, type CSSProperties, type KeyboardEvent } from "react";
-import { ChevronLeft, Dices, Link2, RotateCcw, Settings2, X } from "lucide-react";
+import { ArrowUp, Check, Dices, LoaderCircle, Link2, RotateCcw, Settings2, X } from "lucide-react";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
+import { Button } from "antd";
 import type { CanvasConnection, CanvasNodeData, CanvasNodeMetadata } from "@/types/canvas";
 import {
     generateComfySafeSeed, getComfyInstanceScalarFields, parseComfyScalarOverride,
@@ -11,7 +12,7 @@ import {
 import { getComfyTemplate } from "./template-registry";
 import type { ComfyWorkflowTemplate } from "./template-schema";
 import { cancelComfyRun, getComfyRun, hasPendingComfyRun, recoverPendingComfyRun, type ComfyRunState } from "./run-client";
-import { isComfyRunActive } from "./run-status";
+import { comfyRunStatusLabel, isComfyRunActive } from "./run-status";
 import { ComfyWorkflowPanel } from "./comfy-workflow-panel";
 
 type Props = {
@@ -120,6 +121,7 @@ export function ComfyWorkflowInstancePanel({node,connections,projectId,comfyInst
         "--comfy-accent":theme.node.activeStroke,
     } as CSSProperties;
     const binding=node.metadata?.comfyWorkflow;
+    const liveExecution=node.metadata?.comfyExecution;
     const [template,setTemplate]=useState<ComfyWorkflowTemplate|null>(null);
     const [loading,setLoading]=useState(false);
     const [error,setError]=useState("");
@@ -128,11 +130,11 @@ export function ComfyWorkflowInstancePanel({node,connections,projectId,comfyInst
     const [runBusy,setRunBusy]=useState(false);
     const [runError,setRunError]=useState("");
     const [pending,setPending]=useState(()=>hasPendingComfyRun(projectId,node.id));
-    useEffect(()=>{setPending(hasPendingComfyRun(projectId,node.id));},[projectId,node.id]);
+    useEffect(()=>{setPending(hasPendingComfyRun(projectId,node.id));},[projectId,node.id,liveExecution?.status]);
     const outputs=useMemo(()=>template?.ports.filter(p=>p.direction==="source" && p.valueKind==="IMAGE" && p.capture?.kind==="image" && p.capture.adapterId==="SaveImage")??[],[template]);
     useEffect(()=>{
         let active=true;
-        setRun(null);
+        setRun(null);setRunError("");
         if(binding?.lastRunId)void getComfyRun(binding.lastRunId)
             .then(value=>{if(active)setRun(value);})
             .catch(cause=>{if(active)setRunError("恢复任务失败："+String(cause));});
@@ -186,6 +188,18 @@ export function ComfyWorkflowInstancePanel({node,connections,projectId,comfyInst
         if(!binding || connections.some((edge)=>edge.toNodeId===node.id && edge.toPortId===portId))return;
         onChange({comfyWorkflow:{...binding,inputOverrides:removeComfyInstanceOverride(binding.inputOverrides??{},portId)}});
     };
+    // Do not show details belonging to an older run after a newer submission has begun.
+    // Canvas-level progress also updates when a run was triggered from the selected-node toolbar.
+    const currentRun=run?.runId===binding?.lastRunId?run:null;
+    const status=liveExecution?.status||currentRun?.status;
+    const active=isComfyRunActive(status)||runBusy;
+    const imageCount=currentRun?.status==="succeeded" ? currentRun.artifacts.length : 0;
+    const statusLabel=pending?"提交待确认":status==="succeeded"
+        ? `已完成${imageCount?` · ${imageCount} 张图片`:""}`
+        :status?comfyRunStatusLabel(status):"待执行";
+    const statusError=runError||liveExecution?.error||(currentRun?.error??"");
+    const canCancel=Boolean(currentRun && ["queued","preparing","running","collecting","submitting"].includes(currentRun.status));
+    const disabled=!template||!comfyInstanceId||!outputs[0]||!projectId||active||pending;
     if(editingTemplate) return <ComfyWorkflowPanel node={node} onChange={(patch)=>{
         const applied=onTemplateChange(patch);
         if(applied)setEditingTemplate(false);
@@ -217,30 +231,23 @@ export function ComfyWorkflowInstancePanel({node,connections,projectId,comfyInst
             </div>:<p className="text-xs text-[var(--comfy-muted)]">模板没有可编辑的标量输入。可在模板绑定编辑器中暴露 STRING、INT、FLOAT 或 BOOLEAN 输入。</p>}
         </div>
 
-        <div className="shrink-0 space-y-2 border-t border-[var(--comfy-border)] px-4 py-3 text-xs">
-            <div className="flex items-center justify-between gap-3">
-                <span className="min-w-0 truncate text-[11px] text-[var(--comfy-muted)]" title={comfyInstanceId||""}>
-                    {comfyInstanceId?`画布实例：${comfyInstanceId}`:"画布尚未配置 ComfyUI 实例"}
-                    {outputs[0]?` · 输出：${outputs[0].label}`:" · 缺少 IMAGE 输出"}
-                </span>
-                <button type="button" className={buttonClass} disabled={!template||!comfyInstanceId||!outputs[0]||!projectId||runBusy||isComfyRunActive(run?.status)||isComfyRunActive(node.metadata?.comfyExecution?.status)}
-                    onClick={()=>void execute()}>{runBusy?"处理中…":isComfyRunActive(run?.status)?"正在执行…":"运行工作流"}</button>
+        <footer className="shrink-0 space-y-2 border-t border-[var(--comfy-border)] px-4 py-3" data-comfy-run-footer>
+            <div className="flex min-w-0 items-center justify-between gap-3">
+                <div className="flex min-w-0 items-center gap-1.5 text-xs text-[var(--comfy-muted)]" role="status" aria-live="polite">
+                    {active?<LoaderCircle size={14} className="shrink-0 animate-spin" aria-hidden="true"/>
+                        :status==="succeeded"?<Check size={14} className="shrink-0" aria-hidden="true"/>:null}
+                    <span className="truncate">{statusLabel}</span>
+                </div>
+                <Button type="primary" className="!h-10 !min-w-16 shrink-0 !rounded-full !px-3"
+                    disabled={disabled} onClick={()=>void execute()} aria-label="运行工作流">
+                    {active?<LoaderCircle className="size-4 animate-spin" aria-hidden="true"/>:<ArrowUp className="size-4" aria-hidden="true"/>}
+                </Button>
             </div>
-            {run?<div className="flex flex-wrap items-center gap-2 text-[11px] text-[var(--comfy-muted)]">
-                <span>任务 {run.runId.slice(0,8)} · {run.status}{run.promptId?" · prompt "+run.promptId:""}</span>
-                {run.status==="succeeded"?<span>已采集 {run.artifacts.length} 张图片（自动导入画布）</span>:null}
-                {run.error?<span className="text-red-500">{run.error}</span>:null}
-                {["queued","preparing","running","collecting","submitting"].includes(run.status)
-                    ?<button type="button" className={buttonClass} onClick={()=>void cancelComfyRun(run.runId).then(setRun).catch(e=>setRunError(String(e)))}>取消请求</button>:null}
-                <button type="button" className={buttonClass} onClick={()=>void getComfyRun(run.runId).then(setRun).catch(e=>setRunError(String(e)))}>刷新状态</button>
-            </div>:null}
-            {pending?<button type="button" className={buttonClass} disabled={runBusy||isComfyRunActive(node.metadata?.comfyExecution?.status)} onClick={()=>void recoverSubmission()}>恢复待确认提交（复用同一个幂等 key）</button>:null}
-            {runError?<div className="text-[11px] text-red-500" role="alert">{runError}</div>:null}
-            <p className="text-[10px] text-[var(--comfy-muted)]">首版仅支持一个工作流、Text / Image 输入与一个 IMAGE 输出；提交不确定时不会自动重发。</p>
-        </div>
-        <footer className="flex shrink-0 items-center justify-between gap-2 border-t border-[var(--comfy-border)] px-4 py-3 text-[11px] text-[var(--comfy-muted)]">
-            <span>{fields.length} 个标量参数 · {fields.filter((x)=>x.source==="edge").length} 个由连线控制</span>
-            <span className="inline-flex items-center gap-1"><ChevronLeft size={12}/>参数自动保存</span>
+            {canCancel?<button type="button" className="text-[11px] text-[var(--comfy-muted)] hover:underline"
+                onClick={()=>void cancelComfyRun(currentRun!.runId).then(setRun).catch(e=>setRunError(String(e)))}>取消请求</button>:null}
+            {pending?<button type="button" className={buttonClass} disabled={runBusy}
+                onClick={()=>void recoverSubmission()}>恢复待确认提交</button>:null}
+            {statusError?<p className="break-words text-[11px] text-red-500" role="alert">{statusError}</p>:null}
         </footer>
     </section>;
 }

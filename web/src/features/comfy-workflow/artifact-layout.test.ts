@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { placeComfyImageArtifact } from "./artifact-layout";
+import { nextComfyArtifactTileIndex, placeComfyImageArtifact } from "./artifact-layout";
 import type { CanvasNodeData } from "@/types/canvas";
 
 const workflow: CanvasNodeData = {
@@ -17,6 +17,13 @@ describe("Comfy multi-image artifact canvas placement",()=>{
         expect(results[0].width).toBe(420);
         expect(results[0].height).toBeCloseTo(236.25);
         expect(results[4].center.x).toBeGreaterThan(results[0].center.x);
+    });
+    it("counts older generated images so a second run does not overlap first-run outputs",()=>{
+        const older:CanvasNodeData={...workflow,id:"img1",type:"image",metadata:{comfyArtifact:{
+            runId:"previous-run",artifactId:"art-1",workflowNodeId:"wf",portId:"generated"
+        }}};
+        expect(nextComfyArtifactTileIndex([workflow,older],"wf")).toBe(1);
+        expect(nextComfyArtifactTileIndex([workflow,older],"other")).toBe(0);
     });
     it("preserves small image dimensions and puts the first result right of its workflow",()=>{
         const first=placeComfyImageArtifact(workflow,0,256,256);

@@ -1,6 +1,6 @@
 import { normalizeConnection } from "@/lib/canvas/canvas-node-geometry";
 import { getCanvasNodePorts, getCanvasPort, getCanvasResourceOutputPort, isPortAwareCanvasNode } from "@/lib/canvas/canvas-ports";
-import type { CanvasConnection, CanvasNodeData, ConnectionHandle } from "@/types/canvas";
+import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type ConnectionHandle } from "@/types/canvas";
 
 export type CanvasPortConnectionError =
     | "missing_node" | "invalid_handle" | "missing_port" | "incompatible_port_type"
@@ -48,7 +48,22 @@ export function prepareCanvasPortConnection(
     const srcHandle = first.handleType === "source" ? first : second;
     const dstHandle = first.handleType === "target" ? first : second;
     const src = nodeById.get(srcHandle.nodeId)!, dst = nodeById.get(dstHandle.nodeId)!;
-    if (!isPortAwareCanvasNode(dst)) return { error: "legacy_target_not_supported" };
+    if (!isPortAwareCanvasNode(dst)) {
+        // Generated images are materialized outputs of a durable Comfy run, not
+        // arbitrary workflow inputs. Their provenance permits a typed visual
+        // connection to the normal image node's left legacy handle.
+        const provenance = dst.type === CanvasNodeType.Image ? dst.metadata?.comfyArtifact : undefined;
+        const sourcePort = getCanvasPort(src, "source", srcHandle.portId);
+        if (!provenance || !sourcePort || sourcePort.valueKind !== "IMAGE" ||
+            provenance.workflowNodeId !== src.id || provenance.portId !== sourcePort.id ||
+            !isPortAwareCanvasNode(src)) return { error: "legacy_target_not_supported" };
+        const candidate = {fromNodeId:src.id,fromPortId:sourcePort.id,toNodeId:dst.id,toPortId:"comfy-artifact"};
+        if(existing.some(c=>c.fromNodeId===candidate.fromNodeId && c.fromPortId===candidate.fromPortId &&
+            c.toNodeId===candidate.toNodeId && c.toPortId===candidate.toPortId)) return {error:"duplicate"};
+        if(existing.some(c=>c.toNodeId===dst.id)) return {error:"multiple_sources_for_input"};
+        if(createsCycle(src.id,dst.id,existing)) return {error:"cycle"};
+        return {connection:candidate};
+    }
     const srcPort = isPortAwareCanvasNode(src)
         ? getCanvasPort(src, "source", srcHandle.portId)
         : getCanvasResourceOutputPort(src);
@@ -61,6 +76,29 @@ export function prepareCanvasPortConnection(
     if (existing.some((c) => c.toNodeId === dst.id && c.toPortId === dstPort.id)) return { error: "multiple_sources_for_input" };
     if (createsCycle(src.id, dst.id, existing)) return { error: "cycle" };
     return { connection: candidate };
+}
+
+/** Add missing provenance edges from Comfy output ports to their generated Image nodes.
+ * Idempotent for retries, hydration and multi-image fan-out.
+ */
+export function reconcileComfyArtifactConnections(
+    nodes: readonly CanvasNodeData[],
+    existing: readonly CanvasConnection[],
+    makeId: () => string,
+): CanvasConnection[] {
+    let result: CanvasConnection[] = [...existing];
+    const byId=new Map(nodes.map(n=>[n.id,n]));
+    for(const image of nodes) {
+        const origin=image.metadata?.comfyArtifact;
+        if(image.type!==CanvasNodeType.Image || !origin)continue;
+        const source=byId.get(origin.workflowNodeId);
+        if(!source)continue;
+        const link=prepareCanvasPortConnection(
+            {nodeId:source.id,handleType:"source",portId:origin.portId},
+            {nodeId:image.id,handleType:"target"},nodes,result);
+        if(link.connection)result=[...result,{id:makeId(),...link.connection}];
+    }
+    return result;
 }
 
 /** Reject malformed persisted/imported port-aware graphs before any eventual execution. */

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
+import { useEffect, useMemo, useState, type CSSProperties, type KeyboardEvent } from "react";
 import { ChevronLeft, Dices, Link2, RotateCcw, Settings2, X } from "lucide-react";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
@@ -10,7 +10,8 @@ import {
 } from "./instance-parameters";
 import { getComfyTemplate } from "./template-registry";
 import type { ComfyWorkflowTemplate } from "./template-schema";
-import { cancelComfyRun, getComfyRun, hasPendingComfyRun, recoverPendingComfyRun, startComfyWorkflowRun, type ComfyRunArtifact, type ComfyRunState } from "./run-client";
+import { cancelComfyRun, getComfyRun, hasPendingComfyRun, recoverPendingComfyRun, startComfyWorkflowRun, type ComfyRunState } from "./run-client";
+import { isComfyRunActive } from "./run-status";
 import { ComfyWorkflowPanel } from "./comfy-workflow-panel";
 
 type Props = {
@@ -18,9 +19,9 @@ type Props = {
     connections: readonly CanvasConnection[];
     getCanvasSnapshot: () => {nodes: readonly CanvasNodeData[]; connections: readonly CanvasConnection[]};
     projectId: string;
-    /** Chosen in this canvas's appearance/settings panel, shared by all workflow nodes. */
+    /** Chosen in the global ComfyUI settings tab, shared by all workflow nodes. */
     comfyInstanceId?: string;
-    onArtifacts: (artifacts: ComfyRunArtifact[]) => Promise<void>;
+    onExecutionChange: (execution: NonNullable<CanvasNodeMetadata["comfyExecution"]>) => void;
     onChange: (patch: Partial<CanvasNodeMetadata>) => void;
     onTemplateChange: (patch: Partial<CanvasNodeMetadata>) => boolean;
     onClose: () => void;
@@ -107,7 +108,7 @@ function ComfyScalarInput({field,onSet,onClear}:{
 }
 
 /** The regular workflow node inspector; template editing is an explicit secondary action. */
-export function ComfyWorkflowInstancePanel({node,connections,getCanvasSnapshot,projectId,comfyInstanceId,onArtifacts,onChange,onTemplateChange,onClose}:Props) {
+export function ComfyWorkflowInstancePanel({node,connections,getCanvasSnapshot,projectId,comfyInstanceId,onExecutionChange,onChange,onTemplateChange,onClose}:Props) {
     const themeName=useThemeStore((state)=>state.theme);
     const theme=canvasThemes[themeName];
     const colors={
@@ -128,7 +129,6 @@ export function ComfyWorkflowInstancePanel({node,connections,getCanvasSnapshot,p
     const [runError,setRunError]=useState("");
     const [pending,setPending]=useState(()=>hasPendingComfyRun(projectId,node.id));
     useEffect(()=>{setPending(hasPendingComfyRun(projectId,node.id));},[projectId,node.id]);
-    const importedRef=useRef(new Set<string>());
     const outputs=useMemo(()=>template?.ports.filter(p=>p.direction==="source" && p.valueKind==="IMAGE" && p.capture?.kind==="image" && p.capture.adapterId==="SaveImage")??[],[template]);
     useEffect(()=>{
         let active=true;
@@ -143,31 +143,30 @@ export function ComfyWorkflowInstancePanel({node,connections,getCanvasSnapshot,p
         const timer=setInterval(()=>{void getComfyRun(run.runId).then(setRun).catch(cause=>setRunError(String(cause)));},2500);
         return ()=>clearInterval(timer);
     },[run?.runId,run?.status]);
-    useEffect(()=>{
-        if(run?.status!=="succeeded" || !run.artifacts?.length || importedRef.current.has(run.runId))return;
-        importedRef.current.add(run.runId);
-        void onArtifacts(run.artifacts).catch(cause=>{importedRef.current.delete(run.runId);setRunError("导入画布失败："+String(cause));});
-    },[run,onArtifacts]);
     const execute=async()=>{
         if(!template||!comfyInstanceId||!outputs[0]||!binding)return;
         setRunBusy(true);setRunError("");
+        onExecutionChange({status:"submitting"});
         try{
             const result=await startComfyWorkflowRun({
                 projectId,workflowNode:node,...getCanvasSnapshot(),template,instanceId:comfyInstanceId,outputPortId:outputs[0].id
             });
             onChange({comfyWorkflow:{...binding,lastRunId:result.runId}});
             setRun(result);
-        }catch(cause){setRunError("提交失败："+String(cause));}
+            onExecutionChange({runId:result.runId,status:result.status,error:result.error||undefined});
+        }catch(cause){setRunError("提交失败："+String(cause));onExecutionChange({status:"failed",error:String(cause)});}
         finally{setPending(hasPendingComfyRun(projectId,node.id));setRunBusy(false);}
     };
     const recoverSubmission=async()=>{
         if(!binding)return;
         setRunBusy(true);setRunError("");
+        onExecutionChange({status:"submitting"});
         try{
             const result=await recoverPendingComfyRun(projectId,node.id);
             onChange({comfyWorkflow:{...binding,lastRunId:result.runId}});
             setRun(result);
-        }catch(cause){setRunError("无法恢复提交："+String(cause));}
+            onExecutionChange({runId:result.runId,status:result.status,error:result.error||undefined});
+        }catch(cause){setRunError("无法恢复提交："+String(cause));onExecutionChange({status:"submission_unknown",error:String(cause)});}
         finally{setPending(hasPendingComfyRun(projectId,node.id));setRunBusy(false);}
     };
 
@@ -229,8 +228,8 @@ export function ComfyWorkflowInstancePanel({node,connections,getCanvasSnapshot,p
                     {comfyInstanceId?`画布实例：${comfyInstanceId}`:"画布尚未配置 ComfyUI 实例"}
                     {outputs[0]?` · 输出：${outputs[0].label}`:" · 缺少 IMAGE 输出"}
                 </span>
-                <button type="button" className={buttonClass} disabled={!template||!comfyInstanceId||!outputs[0]||!projectId||runBusy}
-                    onClick={()=>void execute()}>{runBusy?"处理中…":"运行工作流"}</button>
+                <button type="button" className={buttonClass} disabled={!template||!comfyInstanceId||!outputs[0]||!projectId||runBusy||isComfyRunActive(run?.status)}
+                    onClick={()=>void execute()}>{runBusy?"处理中…":isComfyRunActive(run?.status)?"正在执行…":"运行工作流"}</button>
             </div>
             {run?<div className="flex flex-wrap items-center gap-2 text-[11px] text-[var(--comfy-muted)]">
                 <span>任务 {run.runId.slice(0,8)} · {run.status}{run.promptId?" · prompt "+run.promptId:""}</span>

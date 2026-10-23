@@ -2,7 +2,7 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/i18n", () => ({ default: { t: (key: string) => key } }));
 import { registerBuiltinNodes } from "@/components/canvas/nodes/builtin-nodes";
-import { prepareCanvasPortConnection, validateCanvasPortConnections } from "./canvas-port-connections";
+import { prepareCanvasPortConnection, reconcileComfyArtifactConnections, validateCanvasPortConnections } from "./canvas-port-connections";
 import { prepareCanvasExternalInputSnapshot, resolveCanvasInputValue } from "./canvas-external-input-snapshot";
 import { COMFY_WORKFLOW_MOCK_TYPE, CANVAS_PORT_EDGE_PADDING, CANVAS_PORT_MIN_PITCH, getCanvasPortAnchor, getCanvasPortHitSize, getCanvasPortOffset, getMinimumCanvasPortNodeHeight, MOCK_COMFY_PORTS, pickCanvasDropHandle } from "./canvas-ports";
 import { applyNodeConfigPatch } from "./canvas-node-factory";
@@ -97,6 +97,51 @@ describe("Phase A: port-aware canvas connection contract", () => {
         expect(edge.connection).toMatchObject({ fromPortId:"text", toPortId:"prompt" });
         const config = n("cfg", CanvasNodeType.Config);
         expect(link(h("text", "source"), h("cfg", "target"), [text, config], []).connection).toEqual({ fromNodeId:"text",toNodeId:"cfg" });
+    });
+});
+
+
+describe("durable Comfy IMAGE output to materialized Image nodes",()=>{
+    const workflow=n("wf",COMFY_WORKFLOW_MOCK_TYPE,{
+        comfyPorts:[{id:"generated",label:"Result",direction:"source",valueKind:"IMAGE"}],
+    });
+    const image=(id:string,artifactId=id):CanvasNodeData=>n(id,CanvasNodeType.Image,{
+        content:"blob:mock",comfyArtifact:{runId:"run-1",artifactId,workflowNodeId:"wf",portId:"generated"},
+    });
+    it("connects two generated images from exactly the bound IMAGE output socket",()=>{
+        const nodes=[workflow,image("img-1"),image("img-2")];
+        const edges=reconcileComfyArtifactConnections(nodes,[],(()=>{let counter=0;return ()=>"edge-"+(++counter);})());
+        expect(edges).toEqual([
+            {id:"edge-1",fromNodeId:"wf",fromPortId:"generated",toNodeId:"img-1",toPortId:"comfy-artifact"},
+            {id:"edge-2",fromNodeId:"wf",fromPortId:"generated",toNodeId:"img-2",toPortId:"comfy-artifact"},
+        ]);
+        expect(validateCanvasPortConnections(nodes,edges)).toEqual([]);
+        expect(reconcileComfyArtifactConnections(nodes,edges,()=>{throw Error("duplicate")}))
+            .toEqual(edges);
+        expect(getCanvasPortAnchor(workflow,"source","generated").x).toBe(workflow.position.x+workflow.width);
+        expect(getCanvasPortAnchor(nodes[1],"target","comfy-artifact").x).toBe(nodes[1].position.x);
+    });
+    it("refuses unowned images, invalid output port, and duplicate producers",()=>{
+        const wrong=n("other",CanvasNodeType.Image,{content:"a"});
+        const nodes=[workflow,image("img"),wrong];
+        expect(link(h("wf","source","generated"),h("other","target"),nodes,[]).error).toBe("legacy_target_not_supported");
+        expect(link(h("wf","source","missing"),h("img","target"),nodes,[]).error).toBe("legacy_target_not_supported");
+        const attached=reconcileComfyArtifactConnections(nodes,[],()=> "linked");
+        expect(attached).toHaveLength(1);
+        expect(link(h("wf","source","generated"),h("img","target"),nodes,attached).error).toBe("duplicate");
+        const foreign=n("foreign",COMFY_WORKFLOW_MOCK_TYPE,{comfyPorts:[
+            {id:"generated",label:"Result",direction:"source",valueKind:"IMAGE"}
+        ]});
+        expect(link(h("foreign","source","generated"),h("img","target"),[...nodes,foreign],[]).error).toBe("legacy_target_not_supported");
+    });
+    it("repairs orphaned images from older saved canvases without changing their metadata",()=>{
+        const nodes=[workflow,image("img1"),image("img2")];
+        const old=[{id:"unrelated",fromNodeId:"t",toNodeId:"s"}];
+        const repaired=reconcileComfyArtifactConnections(nodes,old,(()=>{let id=0;return ()=>"new-"+(++id);})());
+        expect(repaired).toHaveLength(3);
+        expect(repaired[0]).toEqual(old[0]);
+        expect(reconcileComfyArtifactConnections(nodes,repaired,()=>{throw Error("should not create")}))
+            .toHaveLength(3);
     });
 });
 

@@ -16,9 +16,11 @@
 - `web/server/ark-gateway.mjs`：使用网关原有 `GATEWAY_TOKEN` 鉴权承载 `/api/comfy/*`。
 - `web/vite.config.ts`：开发环境限制 loopback + same-origin，并仅在服务器代理层注入 `GATEWAY_TOKEN`；凭据不会下发浏览器。
 - `web/src/features/comfy-workflow/run-client.ts`：读取画布冻结快照、真实 Blob 上传，保存 `RunRequestV1` 在浏览器 localStorage 后提交；如果 POST 响应丢失，可使用同一幂等 key 恢复未确认的提交。
-- `web/src/features/comfy-workflow/comfy-workflow-instance-panel.tsx`：允许实例选择/验证、IMAGE root 选择、运行、状态轮询、主动刷新与取消意图。
-- `web/src/pages/canvas/project.tsx`：从 run artifact 下载 Blob，调用现有 `uploadImage` 保存 IndexedDB 并创建 Image 节点；根据 artifactId 检测重复导入，保留 `runId/workflowNodeId/portId` 溯源。
-- `web/src/features/comfy-workflow/artifact-layout.ts`：单 run 多图分格布局，采用实际图片比例生成画布节点尺寸，避免异步批次导入时图片节点相互重叠。
+- `web/src/features/comfy-workflow/comfy-workflow-instance-panel.tsx`：单工作流参数配置与运行、状态刷新与取消；默认实例由全局 ComfyUI 设置统一指定，输出自动采用模板的 IMAGE 端口。启动运行时即写入节点 `comfyExecution`，并保存 `lastRunId`。
+- `web/src/pages/canvas/project.tsx`：画布级任务观察（2.5 秒轮询，独立于参数面板），更新节点运行状态 `comfyExecution`；收到成功回调后下载 Blob，通过 `uploadImage` 保存 IndexedDB 并创建 Image 节点。每张产物同时建立从工作流对应 IMAGE 输出端口到生成 Image 节点左侧的**真实画布连线**，按 artifactId 防重复；画布重载时恢复运行任务并为旧图片补全丢失的来源连线。
+- `web/src/features/comfy-workflow/artifact-layout.ts`：同一工作流跨多次 run 的多图分格布局，采用实际图片比例生成画布节点尺寸，避免异步批次导入、再次运行时图片节点重叠。
+- `web/src/features/comfy-workflow/run-status.ts` 与 `web/src/components/canvas/canvas-node.tsx`：工作流节点显示真实提交/排队/执行/回收/导入状态的转圈动画；成功、失败、取消和不确定提交时停止旋转并显示状态/错误。
+- `web/src/lib/canvas/canvas-port-connections.ts`：仅对匹配 `comfyArtifact` 溯源且源端口为 IMAGE 的产物图像开放工作流到普通 Image 节点的类型化来源连线；其他工作流输出仍不得任意连接普通资源节点。恢复旧画布时幂等回填此类边。
 
 ## 本机启动（PowerShell）
 

@@ -106,6 +106,8 @@ export type CanvasNodeMetadata = {
     interactive?: boolean; // Plugin node interaction/move state; see CanvasNodeDefinition.interactionToggle.
     /** Provenance of an image captured by a durable ComfyUI workflow run. */
     comfyArtifact?: { runId: string; artifactId: string; workflowNodeId: string; portId: string };
+    /** Durable workflow run observation, independent of whether its inspector is mounted. */
+    comfyExecution?: { runId?: string; status: string; error?: string };
     /** Phase A mock ports; real templates will resolve ports from immutable revisions. */
     comfyPorts?: CanvasPortDescriptor[];
     /** Immutable ComfyUI template reference; API graph bytes reside in template storage. */

@@ -1,6 +1,11 @@
 import type { CanvasNodeData } from "@/types/canvas";
 import { fitNodeSize } from "@/lib/canvas/canvas-node-size";
 
+/** Count materialized outputs across all runs of this workflow, not only the latest batch. */
+export function nextComfyArtifactTileIndex(nodes: readonly CanvasNodeData[], workflowNodeId:string) {
+    return nodes.filter(node=>node.metadata?.comfyArtifact?.workflowNodeId===workflowNodeId).length;
+}
+
 /** Stable non-overlapping tile placement for multi-image outputs from one Comfy run. */
 export function placeComfyImageArtifact(source: CanvasNodeData, index: number, naturalWidth: number, naturalHeight: number) {
     const tileSize = 420, gap = 24, rows = 4;

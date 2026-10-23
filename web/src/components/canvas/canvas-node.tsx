@@ -17,6 +17,7 @@ import { CanvasNodeType, type CanvasNodeData, type CanvasNodeImage, type Viewpor
 import { useTranslation } from "react-i18next";
 import { getMediaBlob } from "@/services/file-storage";
 import { getExistingMediaPreview, resolveMediaPreview } from "@/services/media-preview-storage";
+import { comfyRunStatusLabel, isComfyRunActive } from "@/features/comfy-workflow/run-status";
 
 // Parsing rich Markdown is only needed for full, non-editing text nodes. Keep its
 // parser out of the initial canvas bundle and all compact LOD representations.
@@ -538,18 +539,26 @@ export const CanvasNode = React.memo(function CanvasNode({
 });
 
 function NodeContent(props: NodeContentRendererProps) {
-    if (props.node.type === COMFY_WORKFLOW_MOCK_TYPE) return (
-        <div className="pointer-events-none flex h-full w-full flex-col items-center justify-center gap-2 p-5 text-center">
-            <Puzzle className="size-9 opacity-60" />
+    if (props.node.type === COMFY_WORKFLOW_MOCK_TYPE) {
+        const execution=props.node.metadata?.comfyExecution;
+        const spinning=isComfyRunActive(execution?.status);
+        return <div className="pointer-events-none flex h-full w-full flex-col items-center justify-center gap-2 p-5 text-center"
+            data-comfy-execution-status={execution?.status||"idle"} role={spinning?"status":undefined} aria-live="polite">
+            {spinning
+                ? <div className="size-9 animate-spin rounded-full border-[3px]" aria-label="ComfyUI 工作流运行中"
+                    style={{borderColor:props.theme.node.stroke,borderTopColor:props.theme.node.activeStroke}}/>
+                : <Puzzle className="size-9 opacity-60" />}
             <span className="text-sm font-semibold">ComfyUI Workflow</span>
-            <span className="max-w-48 text-xs opacity-60">
-                {props.node.metadata?.comfyWorkflow?.templateId
-                    ? `已绑定模板 · ${Object.keys(props.node.metadata.comfyWorkflow.inputOverrides ?? {}).length} 个实例参数`
-                    : "点击导入工作流模板"}
+            <span className="max-w-48 truncate text-xs opacity-70">
+                {execution?.status
+                    ? comfyRunStatusLabel(execution.status)
+                    : props.node.metadata?.comfyWorkflow?.templateId
+                        ? `已绑定模板 · ${Object.keys(props.node.metadata.comfyWorkflow.inputOverrides ?? {}).length} 个实例参数`
+                        : "点击导入工作流模板"}
             </span>
-            <span className="text-[11px] opacity-45">执行功能尚未接入</span>
-        </div>
-    );
+            {execution?.error?<span title={execution.error} className="max-w-48 truncate text-[11px] text-red-500">{execution.error}</span>:null}
+        </div>;
+    }
     if (props.node.type === CanvasNodeType.Config && props.renderNodeContent) return props.renderNodeContent(props.node);
     if (props.isBatchRoot) return <ImageNodeContent {...props} />;
     if (props.node.metadata?.status === "loading") return <LoadingContent theme={props.theme} />;

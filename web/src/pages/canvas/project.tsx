@@ -59,7 +59,7 @@ import { flushCanvasStorePersistence, useCanvasStore } from "@/stores/canvas/use
 import { registerCanvasBackupFlush } from "@/services/canvas-backup-sync";
 import { useGenerationHistoryStore, type GenerationHistoryImage } from "@/stores/canvas/use-generation-history-store";
 import { buildCanvasGraphIndex } from "@/lib/canvas/canvas-graph-index";
-import { prepareCanvasPortConnection } from "@/lib/canvas/canvas-port-connections";
+import { prepareCanvasPortConnection, reconcileComfyArtifactConnections } from "@/lib/canvas/canvas-port-connections";
 import { pickCanvasDropHandle } from "@/lib/canvas/canvas-ports";
 import { exportCanvasProjects } from "@/lib/canvas/canvas-export";
 import { applyNodeConfigPatch, audioMetadata, buildAudioGenerationMetadata, buildImageGenerationMetadata, createCanvasNode, imageMetadata, videoMetadata } from "@/lib/canvas/canvas-node-factory";
@@ -87,8 +87,9 @@ import { registerBuiltinNodes } from "@/components/canvas/nodes/builtin-nodes";
 const ComfyWorkflowInstancePanel = lazy(() => import("@/features/comfy-workflow/comfy-workflow-instance-panel").then((m) => ({default:m.ComfyWorkflowInstancePanel})));
 import { COMFY_WORKFLOW_MOCK_TYPE } from "@/lib/canvas/canvas-ports";
 import { validateCanvasPortConnections } from "@/lib/canvas/canvas-port-connections";
-import type { ComfyRunArtifact } from "@/features/comfy-workflow/run-client";
-import { placeComfyImageArtifact } from "@/features/comfy-workflow/artifact-layout";
+import { getComfyRun, type ComfyRunArtifact } from "@/features/comfy-workflow/run-client";
+import { isComfyRunTerminal } from "@/features/comfy-workflow/run-status";
+import { nextComfyArtifactTileIndex, placeComfyImageArtifact } from "@/features/comfy-workflow/artifact-layout";
 import { resolveCanvasComfyInstance } from "@/features/comfy-workflow/canvas-instance";
 import { CanvasRefreshShell } from "@/components/canvas/canvas-refresh-shell";
 import { CanvasTopBar } from "@/components/canvas/canvas-top-bar";
@@ -380,6 +381,7 @@ function AtelierCanvasPage() {
     const pendingConnectionCreateRef = useRef(pendingConnectionCreate);
     const generationRequestsRef = useRef(new Map<string, CanvasGenerationRequest>());
     const resumedArkTasksRef = useRef(new Set<string>());
+    const comfyArtifactImportsRef = useRef(new Set<string>());
 
     const persistVideoTask = useCallback((nodeId: string, task: VideoGenerationTask, status: "queued" | "running" | "succeeded" | "failed" | "cancelled" | "expired" = task.status || "queued") => {
         const nodesWithTask = nodesRef.current.map((node) => node.id === nodeId ? { ...node, metadata: { ...node.metadata, videoTask: { provider: task.provider, channelId: task.channelId, model: task.model, taskId: task.id, startedAt: task.startedAt || Date.now(), status } } } : node);
@@ -487,10 +489,11 @@ function AtelierCanvasPage() {
             const restoredNodes = await hydrateCanvasImages(resetInterruptedGeneration(project.nodes));
             const restoredSessions = await hydrateAssistantImages(project.chatSessions || []);
             if (cancelled) return;
+            const restoredConnections=reconcileComfyArtifactConnections(restoredNodes,project.connections,nanoid);
             nodesRef.current = restoredNodes;
-            connectionsRef.current = project.connections;
+            connectionsRef.current = restoredConnections;
             setNodes(restoredNodes);
-            setConnections(project.connections);
+            setConnections(restoredConnections);
             setChatSessions(restoredSessions);
             setActiveChatId(project.activeChatId || null);
             setBackgroundMode(project.backgroundMode);
@@ -504,7 +507,7 @@ function AtelierCanvasPage() {
             }
             lastHistoryRef.current = {
                 nodes: restoredNodes,
-                connections: project.connections,
+                connections: restoredConnections,
                 chatSessions: restoredSessions,
                 activeChatId: project.activeChatId || null,
                 backgroundMode: project.backgroundMode,
@@ -3408,30 +3411,90 @@ function AtelierCanvasPage() {
 
 
     const handleComfyArtifacts = useCallback(async (artifacts: ComfyRunArtifact[]) => {
-        const indexByRun = new Map<string, number>();
+        const indexByWorkflow = new Map<string, number>();
         for (const artifact of artifacts) {
-            if (nodesRef.current.some(n=>n.metadata?.comfyArtifact?.artifactId===artifact.artifactId))continue;
-            const source=nodesRef.current.find(n=>n.id===artifact.workflowNodeId);
-            if(!source)throw new Error("工作流节点已被删除，无法自动导入");
-            const res=await fetch(artifact.url,{cache:"no-store"});
-            if(!res.ok)throw new Error("无法下载 ComfyUI 产物："+res.status);
-            const blob=await res.blob();
-            if(!blob.type.startsWith("image/"))throw new Error("ComfyUI 产物类型不是图片");
-            const uploaded=await uploadImage(blob);
-            const index=indexByRun.get(artifact.runId) ??
-                nodesRef.current.filter(n=>n.metadata?.comfyArtifact?.runId===artifact.runId).length;
-            const placement=placeComfyImageArtifact(source,index,uploaded.width,uploaded.height);
-            const created=createCanvasNode(CanvasNodeType.Image,placement.center,{
-                ...imageMetadata(uploaded),
-                comfyArtifact:{runId:artifact.runId,artifactId:artifact.artifactId,
-                    workflowNodeId:artifact.workflowNodeId,portId:artifact.portId}
-            });
-            created.width=placement.width;
-            created.height=placement.height;
-            indexByRun.set(artifact.runId,index+1);
-            setNodes(prev=>prev.some(n=>n.metadata?.comfyArtifact?.artifactId===artifact.artifactId)?prev:[...prev,created]);
+            if (comfyArtifactImportsRef.current.has(artifact.artifactId)) continue;
+            comfyArtifactImportsRef.current.add(artifact.artifactId);
+            try {
+                if (nodesRef.current.some(n=>n.metadata?.comfyArtifact?.artifactId===artifact.artifactId))continue;
+                const source=nodesRef.current.find(n=>n.id===artifact.workflowNodeId);
+                if(!source)throw new Error("工作流节点已被删除，无法自动导入");
+                const res=await fetch(artifact.url,{cache:"no-store"});
+                if(!res.ok)throw new Error("无法下载 ComfyUI 产物："+res.status);
+                const blob=await res.blob();
+                if(!blob.type.startsWith("image/"))throw new Error("ComfyUI 产物类型不是图片");
+                const uploaded=await uploadImage(blob);
+                const index=indexByWorkflow.get(source.id) ?? nextComfyArtifactTileIndex(nodesRef.current,source.id);
+                const placement=placeComfyImageArtifact(source,index,uploaded.width,uploaded.height);
+                const created=createCanvasNode(CanvasNodeType.Image,placement.center,{
+                    ...imageMetadata(uploaded),
+                    comfyArtifact:{runId:artifact.runId,artifactId:artifact.artifactId,
+                        workflowNodeId:artifact.workflowNodeId,portId:artifact.portId}
+                });
+                created.width=placement.width;
+                created.height=placement.height;
+                indexByWorkflow.set(source.id,index+1);
+                setNodes(prev=>prev.some(n=>n.metadata?.comfyArtifact?.artifactId===artifact.artifactId)?prev:[...prev,created]);
+                // The IMAGE output edge is a persisted canvas connection, not merely
+                // a visual placement next to the workflow. It also fans out for batches.
+                setConnections(prev=>reconcileComfyArtifactConnections([...nodesRef.current,created],prev,nanoid));
+            } finally {
+                comfyArtifactImportsRef.current.delete(artifact.artifactId);
+            }
         }
     },[]);
+
+    // Monitor durable Comfy jobs at canvas scope, not inside the short-lived inspector.
+    // Closing the inspector or reloading the canvas cannot stop progress or image import.
+    useEffect(()=>{
+        if(!projectLoaded)return;
+        let disposed=false,checking=false;
+        const observe=async(first=false)=>{
+            if(checking || disposed)return;
+            checking=true;
+            try{
+                const workflows=nodesRef.current.filter(node=>node.type===COMFY_WORKFLOW_MOCK_TYPE &&
+                    node.metadata?.comfyWorkflow?.lastRunId &&
+                    (first || node.metadata.comfyExecution?.runId!==node.metadata.comfyWorkflow.lastRunId ||
+                        !isComfyRunTerminal(node.metadata.comfyExecution?.status)));
+                for(const workflow of workflows) {
+                    if(disposed)break;
+                    const runId=workflow.metadata!.comfyWorkflow!.lastRunId!;
+                    try {
+                        const run=await getComfyRun(runId);
+                        if(disposed)break;
+                        if(run.status==="succeeded" && run.artifacts.length) {
+                            setNodes(prev=>prev.map(node=>node.id===workflow.id &&
+                                node.metadata?.comfyWorkflow?.lastRunId===runId
+                                ? {...node,metadata:{...node.metadata,comfyExecution:{runId,status:"importing"}}}:node));
+                            try {
+                                await handleComfyArtifacts(run.artifacts);
+                            }catch(cause) {
+                                if(!disposed)setNodes(prev=>prev.map(node=>node.id===workflow.id &&
+                                    node.metadata?.comfyWorkflow?.lastRunId===runId
+                                    ? {...node,metadata:{...node.metadata,comfyExecution:{runId,status:"import_failed",error:String(cause)}}}:node));
+                                continue;
+                            }
+                        }
+                        if(!disposed)setNodes(prev=>prev.map(node=>{
+                            if(node.id!==workflow.id || node.metadata?.comfyWorkflow?.lastRunId!==runId)return node;
+                            const next={runId,status:run.status,error:run.error||undefined};
+                            const current=node.metadata?.comfyExecution;
+                            if(current?.runId===next.runId && current.status===next.status && current.error===next.error)return node;
+                            return {...node,metadata:{...node.metadata,comfyExecution:next}};
+                        }));
+                    }catch(cause){
+                        // A transient network problem must not erase the persisted runId
+                        // or cause a potentially duplicative GPU resubmission.
+                        console.warn("ComfyUI 状态检查失败：",cause);
+                    }
+                }
+            }finally{checking=false;}
+        };
+        void observe(true);
+        const timer=window.setInterval(()=>void observe(),2500);
+        return ()=>{disposed=true;window.clearInterval(timer);};
+    },[handleComfyArtifacts,projectId,projectLoaded]);
 
     const renderNodePanel = useCallback(
         (panelNode: CanvasNodeData) =>
@@ -3442,7 +3505,7 @@ function AtelierCanvasPage() {
                         connections={connections}
                         getCanvasSnapshot={() => ({nodes:nodesRef.current,connections:connectionsRef.current})}
                         projectId={projectId}
-                        onArtifacts={handleComfyArtifacts}
+                        onExecutionChange={(execution)=>handleConfigNodeChange(panelNode.id,{comfyExecution:execution})}
                         comfyInstanceId={globalComfyInstanceId}
                         onChange={(patch) => handleConfigNodeChange(panelNode.id, patch)}
                         onTemplateChange={(patch) => {
@@ -3488,7 +3551,7 @@ function AtelierCanvasPage() {
                     }}
                 />
             ),
-        [confirmStopGeneration, connections, handleComfyArtifacts, handleConfigNodeChange, handleGenerateNode, handleNodePromptChange, message, projectId, runningNodeId],
+        [confirmStopGeneration, connections, globalComfyInstanceId, handleConfigNodeChange, handleGenerateNode, handleNodePromptChange, message, projectId, runningNodeId],
     );
 
     const handleDirectorExport = useCallback(

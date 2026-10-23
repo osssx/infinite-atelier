@@ -530,7 +530,7 @@ export const CanvasNode = React.memo(function CanvasNode({
                 <ConnectionHandleDot side="right" visible={(definition?.hasSourceHandle ?? true) && data.type !== CanvasNodeType.Config && (hovered || isSelected || isConnecting)} onMouseDown={(event) => onConnectStart(event, data.id, "source")} />
             ) : null}
 
-            {showPanel && !isGroup && !definition?.hidePanel && renderPanel ? <div className="absolute left-1/2 top-full z-[70] w-[600px] -translate-x-1/2 pt-4">{renderPanel(data)}</div> : null}
+            {showPanel && !isGroup && !definition?.hidePanel && renderPanel ? <div className={"absolute left-1/2 top-full z-[70] -translate-x-1/2 pt-3 "+(data.type === COMFY_WORKFLOW_MOCK_TYPE ? "pointer-events-none w-[min(940px,calc(100vw-32px))]" : "w-[600px]")}>{renderPanel(data)}</div> : null}
         </div>
     );
 });
@@ -539,8 +539,13 @@ function NodeContent(props: NodeContentRendererProps) {
     if (props.node.type === COMFY_WORKFLOW_MOCK_TYPE) return (
         <div className="pointer-events-none flex h-full w-full flex-col items-center justify-center gap-2 p-5 text-center">
             <Puzzle className="size-9 opacity-60" />
-            <span className="text-sm font-semibold">ComfyUI Workflow (Mock)</span>
-            <span className="max-w-48 text-xs opacity-60">Phase A: typed ports only. Execution is not implemented.</span>
+            <span className="text-sm font-semibold">ComfyUI Workflow</span>
+            <span className="max-w-48 text-xs opacity-60">
+                {props.node.metadata?.comfyWorkflow?.templateId
+                    ? `已绑定模板 · ${Object.keys(props.node.metadata.comfyWorkflow.inputOverrides ?? {}).length} 个实例参数`
+                    : "点击导入工作流模板"}
+            </span>
+            <span className="text-[11px] opacity-45">执行功能尚未接入</span>
         </div>
     );
     if (props.node.type === CanvasNodeType.Config && props.renderNodeContent) return props.renderNodeContent(props.node);

@@ -2,16 +2,19 @@ import type { CanvasProject } from "@/stores/canvas/use-canvas-store";
 import type { Asset } from "@/stores/use-asset-store";
 import type { AiConfig } from "@/stores/use-config-store";
 import type { SkillCatalogEntry } from "@/features/skills/types";
+import { referencedComfyVersions, type ComfyBackupRecord } from "@/features/comfy-workflow/backup-workflows";
 
 export type BackupItem = { storageKey: string; path: string; mimeType: string };
 export type AppBackupFile = {
     app: "infinite-canvas";
-    version: 1;
+    version: 1 | 2;
     exportedAt: string;
     projects: CanvasProject[];
     assets: Asset[];
     config: AiConfig;
     files: BackupItem[];
+    /** Version 2: required immutable template dependencies, deduplicated by content revision. */
+    comfyWorkflows?: ComfyBackupRecord[];
     /** Optional to preserve compatibility with pre-Skill v1 backups. */
     skills?: {
         catalog: SkillCatalogEntry[];
@@ -24,9 +27,9 @@ export function validateBackup(data: unknown, zip: ReadonlyMap<string, Blob>): A
     const invalid = (detail: string): never => { throw new Error(`Invalid application backup: ${detail}`); };
     if (!data || typeof data !== "object") return invalid("missing manifest");
     const file = data as Partial<AppBackupFile>;
-    if (file.app !== "infinite-canvas" || file.version !== 1 ||
+    if (file.app !== "infinite-canvas" || (file.version !== 1 && file.version !== 2) ||
         !Array.isArray(file.projects) || !Array.isArray(file.assets) ||
-        !file.config || typeof file.config !== "object" || !Array.isArray(file.files)) return invalid("unsupported v1 format");
+        !file.config || typeof file.config !== "object" || !Array.isArray(file.files)) return invalid("unsupported v1/v2 format");
     const ids = new Set<string>();
     for (const project of file.projects) {
         if (!project || typeof project.id !== "string" || !project.id || ids.has(project.id) ||
@@ -76,6 +79,27 @@ export function validateBackup(data: unknown, zip: ReadonlyMap<string, Blob>): A
             if (zip.get(entry.path)!.size > 5 * 1024 * 1024) return invalid("Skill archive exceeds 5 MiB");
         }
         if (found.size !== expected.size) return invalid("missing Skill package");
+    }
+    const references = referencedComfyVersions(file.projects);
+    if (file.version === 1 && (references.length || file.comfyWorkflows !== undefined)) return invalid("v1 backup lacks Comfy workflow dependencies");
+    if (file.version === 2) {
+        if (!Array.isArray(file.comfyWorkflows) || file.comfyWorkflows.length > 500) return invalid("invalid Comfy workflow manifest");
+        const found = new Set<string>(), expected = new Set(references.map((r) => r.templateId + "@" + r.revision));
+        const pathsToHash = new Map<string, string>();
+        for (const record of file.comfyWorkflows) {
+            if (!record || typeof record.templateId !== "string" || !/^[a-zA-Z0-9_.:-]{1,128}$/.test(record.templateId) ||
+                typeof record.revision !== "string" || !/^[0-9a-f]{64}$/.test(record.revision) ||
+                record.sha256 !== record.revision || record.path !== "workflows/" + record.revision + ".json" ||
+                !Array.isArray(record.requiredClassTypes) || !Array.isArray(record.requiredModelAssets) ||
+                record.requiredClassTypes.some((c) => typeof c !== "string") ||
+                record.requiredModelAssets.some((c) => typeof c !== "string") || !zip.has(record.path) ||
+                zip.get(record.path)!.size > 2_000_000) return invalid("invalid or missing Comfy workflow package");
+            const key = record.templateId + "@" + record.revision;
+            if (!expected.has(key) || found.has(key) || (pathsToHash.has(record.path) && pathsToHash.get(record.path) !== record.sha256))
+                return invalid("duplicate or unexpected Comfy workflow package");
+            found.add(key); pathsToHash.set(record.path, record.sha256);
+        }
+        if (found.size !== expected.size) return invalid("missing Comfy workflow dependencies");
     }
     // Local media references must have corresponding blobs. Ignore other plugin-specific
     // arbitrary storageKey strings and external URLs, which are not local media records.

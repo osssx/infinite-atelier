@@ -106,6 +106,15 @@ export type CanvasNodeMetadata = {
     interactive?: boolean; // Plugin node interaction/move state; see CanvasNodeDefinition.interactionToggle.
     /** Phase A mock ports; real templates will resolve ports from immutable revisions. */
     comfyPorts?: CanvasPortDescriptor[];
+    /** Immutable ComfyUI template reference; API graph bytes reside in template storage. */
+    comfyWorkflow?: {
+        templateId: string;
+        templateRevision: string;
+        instanceId?: string;
+        bindingState: "bound" | "needs-instance-binding" | "incompatible";
+        inputOverrides: Record<string, unknown>;
+        lastRunId?: string;
+    };
 };
 
 export type CanvasNodeData = {

@@ -10,6 +10,8 @@ import { awaitAssetStorePersistence, useAssetStore } from "@/stores/use-asset-st
 import { useConfigStore } from "@/stores/use-config-store";
 import { exportSkill, restoreSkillSnapshot, snapshotSkills, type SkillBackupSnapshot } from "@/features/skills/skill-registry";
 import { importSkillFile } from "@/features/skills/skill-import";
+import { exportComfyBackupTemplates, verifyComfyBackupTemplates, unbindImportedComfyProjects } from "@/features/comfy-workflow/backup-workflows";
+import { installComfyBackupVersions } from "@/features/comfy-workflow/template-registry";
 
 const imageStore = localforage.createInstance({ name: "infinite-canvas", storeName: "image_files" });
 const mediaStore = localforage.createInstance({ name: "infinite-canvas", storeName: "media_files" });
@@ -54,10 +56,13 @@ export async function exportAppBackup() {
             zipFiles.push({ name: path, data: await exportSkill(id, version) });
             skillRecords.push({ id, version, path });
         }
+        const comfy = await exportComfyBackupTemplates(projects);
+        for (const [name, blob] of comfy.files) zipFiles.push({ name, data: blob });
         const data: AppBackupFile = {
-            app: "infinite-canvas", version: 1, exportedAt: new Date().toISOString(),
+            app: "infinite-canvas", version: comfy.records.length ? 2 : 1, exportedAt: new Date().toISOString(),
             projects, assets, config, files,
             skills: { catalog: skillSnapshot.catalog, packages: skillRecords },
+            ...(comfy.records.length ? { comfyWorkflows: comfy.records } : {}),
         };
         // Never export a ZIP with dangling local media references.
         validateBackup(data, new Map(zipFiles.map(({ name, data }) => [name, new Blob([data])])));
@@ -74,13 +79,15 @@ export async function exportAppBackup() {
 export async function importAppBackup(file: File) {
     return exclusive(async () => {
         await ensureReady();
-        const zip = await readZip(file);
+        const zip = await readZip(file, { maxFiles: 10000, maxUncompressedBytes: 2 * 1024 ** 3, maxEntryBytes: 512 * 1024 ** 2, maxArchiveBytes: 2 * 1024 ** 3 });
         const manifest = zip.get("backup.json");
         if (!manifest) throw new Error("Invalid application backup: missing backup.json");
         let parsed: unknown;
         try { parsed = JSON.parse(await manifest.text()); }
         catch { throw new Error("Invalid application backup: invalid JSON manifest"); }
         const data = validateBackup(parsed, zip);
+        // Validate actual content hashes and every Comfy graph/port binding BEFORE any project or Blob mutation.
+        const comfyToRestore = data.version === 2 ? await verifyComfyBackupTemplates(data.comfyWorkflows || [], zip) : [];
         // Validate every nested SKILL ZIP and its claimed version before mutating browser data.
         let skillsToRestore: SkillBackupSnapshot | undefined;
         if (data.skills) {
@@ -119,7 +126,11 @@ export async function importAppBackup(file: File) {
         let changedProjects = false;
         let changedAssets = false;
         let changedSkills = false;
+        let rollbackComfyTemplates: (() => Promise<void>) | undefined;
         try {
+            // Install immutable versions exactly once, before any browser media/project mutations.
+            // If later writes fail, remove only versions introduced by this import.
+            rollbackComfyTemplates = await installComfyBackupVersions(comfyToRestore);
             for (const item of data.files) {
                 const blob = zip.get(item.path)!; // Every entry was checked by validateBackup.
                 const restored = blob.slice(0, blob.size, item.mimeType || "application/octet-stream");
@@ -128,7 +139,7 @@ export async function importAppBackup(file: File) {
                 else await setMediaBlob(item.storageKey, restored);
             }
             changedProjects = true;
-            useCanvasStore.getState().replaceProjects(data.projects);
+            useCanvasStore.getState().replaceProjects(data.version === 2 ? unbindImportedComfyProjects(data.projects, comfyToRestore) : data.projects);
             await awaitCanvasStorePersistence();
             changedAssets = true;
             useAssetStore.getState().replaceAssets(data.assets);
@@ -140,6 +151,10 @@ export async function importAppBackup(file: File) {
             }
         } catch (error) {
             const rollbackErrors: unknown[] = [];
+            if (rollbackComfyTemplates) {
+                try { await rollbackComfyTemplates(); }
+                catch (cause) { rollbackErrors.push(cause); }
+            }
             if (changedProjects) {
                 try {
                     useCanvasStore.getState().replaceProjects(old.projects);

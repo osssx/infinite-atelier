@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent as ReactChangeEvent, DragEvent as ReactDragEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { Group, Video } from "lucide-react";
@@ -84,6 +84,9 @@ import {
 import { getNodeDefinition, isBuiltinNodeType as isBuiltinType } from "@/lib/canvas/node-registry";
 import { assertSeedanceTextModeReferences, resolveSeedanceInputAssignments } from "@/lib/canvas/seedance-input-assignments";
 import { registerBuiltinNodes } from "@/components/canvas/nodes/builtin-nodes";
+const ComfyWorkflowInstancePanel = lazy(() => import("@/features/comfy-workflow/comfy-workflow-instance-panel").then((m) => ({default:m.ComfyWorkflowInstancePanel})));
+import { COMFY_WORKFLOW_MOCK_TYPE } from "@/lib/canvas/canvas-ports";
+import { validateCanvasPortConnections } from "@/lib/canvas/canvas-port-connections";
 import { CanvasRefreshShell } from "@/components/canvas/canvas-refresh-shell";
 import { CanvasTopBar } from "@/components/canvas/canvas-top-bar";
 import { ConnectionCreateMenu, NodeCreateMenu, type PendingConnectionCreate } from "@/components/canvas/canvas-create-menus";
@@ -935,7 +938,7 @@ function AtelierCanvasPage() {
             // Display-only plugin nodes with hidePanel do not open a panel; custom Panels require autoOpenPanel on creation.
             // Plugin nodes declaring useBuiltinPanel open the built-in generation panel on creation, like image nodes.
             // Built-in image, video, and config nodes retain their existing open-on-create behavior.
-            const wantsPanel = definition?.hidePanel ? false : definition?.useBuiltinPanel ? true : isBuiltinType(type) && type !== CanvasNodeType.Text && type !== CanvasNodeType.Audio && type !== CanvasNodeType.Group;
+            const wantsPanel = definition?.hidePanel ? false : definition?.autoOpenPanel || definition?.useBuiltinPanel ? true : isBuiltinType(type) && type !== CanvasNodeType.Text && type !== CanvasNodeType.Audio && type !== CanvasNodeType.Group;
             if (wantsPanel) setDialogNodeId(newNode.id);
         },
         [effectiveConfig.canvasImageCount, effectiveConfig.count, effectiveConfig.imageModel, effectiveConfig.model, effectiveConfig.size, getCanvasCenter],
@@ -3394,7 +3397,27 @@ function AtelierCanvasPage() {
 
     const renderNodePanel = useCallback(
         (panelNode: CanvasNodeData) =>
-            panelNode.type === CanvasNodeType.Director ? null : panelNode.type === CanvasNodeType.Config ? (
+            panelNode.type === CanvasNodeType.Director ? null : panelNode.type === COMFY_WORKFLOW_MOCK_TYPE ? (
+                <Suspense fallback={<div className="rounded-xl p-4">正在加载工作流参数…</div>}>
+                    <ComfyWorkflowInstancePanel
+                        node={panelNode}
+                        connections={connections}
+                        onChange={(patch) => handleConfigNodeChange(panelNode.id, patch)}
+                        onTemplateChange={(patch) => {
+                            const candidate = applyNodeConfigPatch(panelNode, patch);
+                            const candidateNodes = nodesRef.current.map((n) => n.id === panelNode.id ? candidate : n);
+                            const errors = validateCanvasPortConnections(candidateNodes, connectionsRef.current);
+                            if (errors.length) {
+                                message.error("Template ports conflict with existing connections: " + errors[0].error);
+                                return false;
+                            }
+                            handleConfigNodeChange(panelNode.id, patch);
+                            return true;
+                        }}
+                        onClose={() => setDialogNodeId(null)}
+                    />
+                </Suspense>
+            ) : panelNode.type === CanvasNodeType.Config ? (
                 <CanvasConfigComposer
                     nodeId={panelNode.id}
                     projectId={projectId}
@@ -3423,7 +3446,7 @@ function AtelierCanvasPage() {
                     }}
                 />
             ),
-        [confirmStopGeneration, handleConfigNodeChange, handleGenerateNode, handleNodePromptChange, projectId, runningNodeId],
+        [confirmStopGeneration, connections, handleConfigNodeChange, handleGenerateNode, handleNodePromptChange, message, projectId, runningNodeId],
     );
 
     const handleDirectorExport = useCallback(

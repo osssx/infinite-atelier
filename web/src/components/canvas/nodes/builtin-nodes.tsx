@@ -41,14 +41,14 @@ export function registerBuiltinNodes() {
         ...BUILTIN_DEFINITIONS,
         {
             type: COMFY_WORKFLOW_MOCK_TYPE,
-            title: "ComfyUI Workflow (Mock)",
-            description: "Phase A: connect typed ports; execution is not yet available",
+            title: "ComfyUI Workflow",
+            description: "Import API workflows and expose bound input/output ports (execution unavailable)",
             icon: <Workflow className={iconClass} />,
             minimapColor: "#8b5cf6",
             defaultSize: { width: 360, height: 265 },
             defaultMetadata: { comfyPorts: MOCK_COMFY_PORTS },
             ports: (node: CanvasNodeData) => node.metadata?.comfyPorts || MOCK_COMFY_PORTS,
-            hidePanel: true,
+            autoOpenPanel: true,
         },
     ]);
 }

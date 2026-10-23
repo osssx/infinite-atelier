@@ -4,6 +4,7 @@ import { request as httpRequest } from "node:http";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import { classifyMediaDownloadResponse } from "./media-download-policy.mjs";
+import { createComfyService } from "./comfy-workflow/service.mjs";
 
 const PORT = Number(process.env.PORT || 8787);
 const HOST = process.env.GATEWAY_HOST || "127.0.0.1";
@@ -303,12 +304,15 @@ async function arkHealth(req, res) {
     return send(res, 502, { error: "ark_upstream_unexpected_status", status: upstream.statusCode });
 }
 
+const comfyWorkflowService = createComfyService();
+
 const server = createServer(async (req, res) => {
     try {
         const url = new URL(req.url || "/", "http://gateway.local");
         const uploadRoute = req.method === "POST" && ["/media/ark", "/api/media/ark", "/api/media/uploads"].includes(url.pathname);
         const bearerGatewayToken = req.headers.authorization === `Bearer ${GATEWAY_TOKEN}`;
         if (!authenticate(req) && !(uploadRoute && bearerGatewayToken)) return send(res, 401, { error: "unauthorized" });
+        if (url.pathname === "/api/comfy" || url.pathname.startsWith("/api/comfy/")) return await comfyWorkflowService.handle(req, res, url);
         if (req.method === "GET" && url.pathname === "/api/ark/health") return await arkHealth(req, res);
         if ((req.method === "POST" && ["/media/ark", "/api/media/ark", "/api/media/uploads"].includes(url.pathname))) return await uploadMedia(req, res);
         if (req.method === "GET" && url.pathname === "/api/ark/download") return await downloadMedia(req, res, url);

@@ -16,3 +16,5 @@ web/dist
 web/.fix-tmp/
 web/.playwright-cli/
 web/output/
+# Durable local ComfyUI workflow snapshots, uploads, and captured artifacts
+.comfy-workflow-data/

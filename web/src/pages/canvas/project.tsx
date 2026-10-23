@@ -87,6 +87,7 @@ import { registerBuiltinNodes } from "@/components/canvas/nodes/builtin-nodes";
 const ComfyWorkflowInstancePanel = lazy(() => import("@/features/comfy-workflow/comfy-workflow-instance-panel").then((m) => ({default:m.ComfyWorkflowInstancePanel})));
 import { COMFY_WORKFLOW_MOCK_TYPE } from "@/lib/canvas/canvas-ports";
 import { validateCanvasPortConnections } from "@/lib/canvas/canvas-port-connections";
+import type { ComfyRunArtifact } from "@/features/comfy-workflow/run-client";
 import { CanvasRefreshShell } from "@/components/canvas/canvas-refresh-shell";
 import { CanvasTopBar } from "@/components/canvas/canvas-top-bar";
 import { ConnectionCreateMenu, NodeCreateMenu, type PendingConnectionCreate } from "@/components/canvas/canvas-create-menus";
@@ -3395,6 +3396,29 @@ function AtelierCanvasPage() {
         setContextMenu({ type: "node", x: event.clientX, y: event.clientY, nodeId });
     }, []);
 
+
+    const handleComfyArtifacts = useCallback(async (artifacts: ComfyRunArtifact[]) => {
+        for (const artifact of artifacts) {
+            if (nodesRef.current.some(n=>n.metadata?.comfyArtifact?.artifactId===artifact.artifactId))continue;
+            const source=nodesRef.current.find(n=>n.id===artifact.workflowNodeId);
+            if(!source)throw new Error("工作流节点已被删除，无法自动导入");
+            const res=await fetch(artifact.url,{cache:"no-store"});
+            if(!res.ok)throw new Error("无法下载 ComfyUI 产物："+res.status);
+            const blob=await res.blob();
+            if(!blob.type.startsWith("image/"))throw new Error("ComfyUI 产物类型不是图片");
+            const uploaded=await uploadImage(blob);
+            const index=nodesRef.current.filter(n=>n.metadata?.comfyArtifact?.runId===artifact.runId).length;
+            const center={x:source.position.x+source.width+uploaded.width/2+48,
+                y:source.position.y+Math.min(index,8)*(Math.min(uploaded.height,270)+24)+uploaded.height/2};
+            const created=createCanvasNode(CanvasNodeType.Image,center,{
+                ...imageMetadata(uploaded),
+                comfyArtifact:{runId:artifact.runId,artifactId:artifact.artifactId,
+                    workflowNodeId:artifact.workflowNodeId,portId:artifact.portId}
+            });
+            setNodes(prev=>prev.some(n=>n.metadata?.comfyArtifact?.artifactId===artifact.artifactId)?prev:[...prev,created]);
+        }
+    },[]);
+
     const renderNodePanel = useCallback(
         (panelNode: CanvasNodeData) =>
             panelNode.type === CanvasNodeType.Director ? null : panelNode.type === COMFY_WORKFLOW_MOCK_TYPE ? (
@@ -3402,6 +3426,9 @@ function AtelierCanvasPage() {
                     <ComfyWorkflowInstancePanel
                         node={panelNode}
                         connections={connections}
+                        getCanvasSnapshot={() => ({nodes:nodesRef.current,connections:connectionsRef.current})}
+                        projectId={projectId}
+                        onArtifacts={handleComfyArtifacts}
                         onChange={(patch) => handleConfigNodeChange(panelNode.id, patch)}
                         onTemplateChange={(patch) => {
                             const candidate = applyNodeConfigPatch(panelNode, patch);
@@ -3446,7 +3473,7 @@ function AtelierCanvasPage() {
                     }}
                 />
             ),
-        [confirmStopGeneration, connections, handleConfigNodeChange, handleGenerateNode, handleNodePromptChange, message, projectId, runningNodeId],
+        [confirmStopGeneration, connections, handleComfyArtifacts, handleConfigNodeChange, handleGenerateNode, handleNodePromptChange, message, projectId, runningNodeId],
     );
 
     const handleDirectorExport = useCallback(

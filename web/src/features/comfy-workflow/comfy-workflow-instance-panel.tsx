@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type CSSProperties, type KeyboardEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
 import { ChevronLeft, Dices, Link2, RotateCcw, Settings2, X } from "lucide-react";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
@@ -10,11 +10,15 @@ import {
 } from "./instance-parameters";
 import { getComfyTemplate } from "./template-registry";
 import type { ComfyWorkflowTemplate } from "./template-schema";
+import { cancelComfyRun, getComfyRun, hasPendingComfyRun, recoverPendingComfyRun, listComfyInstances, registerComfyTemplate, startComfyWorkflowRun, type ComfyRunArtifact, type ComfyRunState } from "./run-client";
 import { ComfyWorkflowPanel } from "./comfy-workflow-panel";
 
 type Props = {
     node: CanvasNodeData;
     connections: readonly CanvasConnection[];
+    getCanvasSnapshot: () => {nodes: readonly CanvasNodeData[]; connections: readonly CanvasConnection[]};
+    projectId: string;
+    onArtifacts: (artifacts: ComfyRunArtifact[]) => Promise<void>;
     onChange: (patch: Partial<CanvasNodeMetadata>) => void;
     onTemplateChange: (patch: Partial<CanvasNodeMetadata>) => boolean;
     onClose: () => void;
@@ -101,7 +105,7 @@ function ComfyScalarInput({field,onSet,onClear}:{
 }
 
 /** The regular workflow node inspector; template editing is an explicit secondary action. */
-export function ComfyWorkflowInstancePanel({node,connections,onChange,onTemplateChange,onClose}:Props) {
+export function ComfyWorkflowInstancePanel({node,connections,getCanvasSnapshot,projectId,onArtifacts,onChange,onTemplateChange,onClose}:Props) {
     const themeName=useThemeStore((state)=>state.theme);
     const theme=canvasThemes[themeName];
     const colors={
@@ -117,6 +121,69 @@ export function ComfyWorkflowInstancePanel({node,connections,onChange,onTemplate
     const [loading,setLoading]=useState(false);
     const [error,setError]=useState("");
     const [editingTemplate,setEditingTemplate]=useState(false);
+    const [instances,setInstances]=useState<Array<{id:string;reachable:boolean;classTypes:string[]}>>([]);
+    const [instanceId,setInstanceId]=useState(binding?.instanceId??"");
+    const [selectedOutput,setSelectedOutput]=useState("");
+    const [run,setRun]=useState<ComfyRunState|null>(null);
+    const [runBusy,setRunBusy]=useState(false);
+    const [runError,setRunError]=useState("");
+    const [pending,setPending]=useState(()=>hasPendingComfyRun(projectId,node.id));
+    useEffect(()=>{setPending(hasPendingComfyRun(projectId,node.id));},[projectId,node.id]);
+    const importedRef=useRef(new Set<string>());
+    const outputs=useMemo(()=>template?.ports.filter(p=>p.direction==="source" && p.valueKind==="IMAGE" && p.capture?.kind==="image" && p.capture.adapterId==="SaveImage")??[],[template]);
+    useEffect(()=>{setInstanceId(binding?.instanceId??"");},[binding?.instanceId,node.id]);
+    useEffect(()=>{let active=true;listComfyInstances().then(value=>{if(active)setInstances(value);}).catch(cause=>{if(active)setRunError(String(cause));});return ()=>{active=false;};},[]);
+    useEffect(()=>{setSelectedOutput(current=>outputs.some(p=>p.id===current)?current:(outputs[0]?.id??""));},[outputs]);
+    useEffect(()=>{
+        let active=true;
+        setRun(null);
+        if(binding?.lastRunId)void getComfyRun(binding.lastRunId)
+            .then(value=>{if(active)setRun(value);})
+            .catch(cause=>{if(active)setRunError("恢复任务失败："+String(cause));});
+        return ()=>{active=false;};
+    },[binding?.lastRunId,node.id]);
+    useEffect(()=>{
+        if(!run?.runId || ["succeeded","failed","cancelled","submission_unknown","timed_out"].includes(run.status))return;
+        const timer=setInterval(()=>{void getComfyRun(run.runId).then(setRun).catch(cause=>setRunError(String(cause)));},2500);
+        return ()=>clearInterval(timer);
+    },[run?.runId,run?.status]);
+    useEffect(()=>{
+        if(run?.status!=="succeeded" || !run.artifacts?.length || importedRef.current.has(run.runId))return;
+        importedRef.current.add(run.runId);
+        void onArtifacts(run.artifacts).catch(cause=>{importedRef.current.delete(run.runId);setRunError("导入画布失败："+String(cause));});
+    },[run,onArtifacts]);
+    const bindInstance=async()=>{
+        if(!binding||!template||!instanceId)return;
+        setRunBusy(true);setRunError("");
+        try{
+            await registerComfyTemplate(template,instanceId);
+            onChange({comfyWorkflow:{...binding,instanceId,bindingState:"bound"}});
+        }catch(cause){setRunError("实例验证失败："+String(cause));}
+        finally{setRunBusy(false);}
+    };
+    const execute=async()=>{
+        if(!template||!instanceId||!selectedOutput||!binding)return;
+        setRunBusy(true);setRunError("");
+        try{
+            const result=await startComfyWorkflowRun({
+                projectId,workflowNode:node,...getCanvasSnapshot(),template,instanceId,outputPortId:selectedOutput
+            });
+            onChange({comfyWorkflow:{...binding,instanceId,bindingState:"bound",lastRunId:result.runId}});
+            setRun(result);
+        }catch(cause){setRunError("提交失败："+String(cause));}
+        finally{setPending(hasPendingComfyRun(projectId,node.id));setRunBusy(false);}
+    };
+    const recoverSubmission=async()=>{
+        if(!binding)return;
+        setRunBusy(true);setRunError("");
+        try{
+            const result=await recoverPendingComfyRun(projectId,node.id);
+            onChange({comfyWorkflow:{...binding,lastRunId:result.runId}});
+            setRun(result);
+        }catch(cause){setRunError("无法恢复提交："+String(cause));}
+        finally{setPending(hasPendingComfyRun(projectId,node.id));setRunBusy(false);}
+    };
+
     useEffect(()=>{
         let active=true;
         setTemplate(null);setError("");
@@ -156,7 +223,7 @@ export function ComfyWorkflowInstancePanel({node,connections,onChange,onTemplate
             <button type="button" aria-label="关闭参数面板" className={buttonClass} onClick={onClose}><X size={14}/></button>
         </header>
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
-            {binding?.bindingState!=="bound"?<p className="mb-3 rounded-lg bg-[var(--comfy-fill)] px-3 py-2 text-[11px] text-[var(--comfy-muted)]">当前仅支持设置参数。ComfyUI 实例尚未验证，暂不能执行工作流。</p>:null}
+            {binding?.bindingState!=="bound"?<p className="mb-3 rounded-lg bg-[var(--comfy-fill)] px-3 py-2 text-[11px] text-[var(--comfy-muted)]">请选择允许的 ComfyUI 实例并验证绑定，运行时会再次校验版本与能力。</p>:null}
             {loading?<p className="text-xs text-[var(--comfy-muted)]">正在加载模板版本…</p>
             :error?<p role="alert" className="rounded-md p-2 text-xs text-red-500">{error}</p>
             :!binding?.templateId?<div className="flex flex-col items-center gap-3 py-8 text-center text-xs text-[var(--comfy-muted)]">
@@ -167,6 +234,37 @@ export function ComfyWorkflowInstancePanel({node,connections,onChange,onTemplate
                 {fields.map((field)=><ComfyScalarInput key={field.port.id} field={field}
                     onSet={(value)=>updateOverride(field.port.id,value)} onClear={()=>resetOverride(field.port.id)}/>)}
             </div>:<p className="text-xs text-[var(--comfy-muted)]">模板没有可编辑的标量输入。可在模板绑定编辑器中暴露 STRING、INT、FLOAT 或 BOOLEAN 输入。</p>}
+        </div>
+
+        <div className="shrink-0 space-y-2 border-t border-[var(--comfy-border)] px-4 py-3 text-xs">
+            <div className="flex items-center gap-2">
+                <span className="shrink-0">ComfyUI 实例</span>
+                <select aria-label="ComfyUI 实例" className={inputClass} value={instanceId}
+                    onChange={e=>setInstanceId(e.target.value)}>
+                    <option value="">选择实例</option>
+                    {instances.map(inst=><option key={inst.id} value={inst.id} disabled={!inst.reachable}>{inst.id} {inst.reachable?"":"(离线)"}</option>)}
+                </select>
+                <button type="button" className={buttonClass} disabled={!template||!instanceId||runBusy} onClick={()=>void bindInstance()}>验证绑定</button>
+            </div>
+            <div className="flex items-center gap-2">
+                <span className="shrink-0">IMAGE 输出</span>
+                <select aria-label="ComfyUI IMAGE 输出" className={inputClass} value={selectedOutput} onChange={e=>setSelectedOutput(e.target.value)}>
+                    {outputs.map(port=><option value={port.id} key={port.id}>{port.label}</option>)}
+                </select>
+                <button type="button" className={buttonClass} disabled={!template||!instanceId||!selectedOutput||!projectId||runBusy}
+                    onClick={()=>void execute()}>{runBusy?"处理中…":"运行工作流"}</button>
+            </div>
+            {run?<div className="flex flex-wrap items-center gap-2 text-[11px] text-[var(--comfy-muted)]">
+                <span>任务 {run.runId.slice(0,8)} · {run.status}{run.promptId?" · prompt "+run.promptId:""}</span>
+                {run.status==="succeeded"?<span>已采集 {run.artifacts.length} 张图片（自动导入画布）</span>:null}
+                {run.error?<span className="text-red-500">{run.error}</span>:null}
+                {["queued","preparing","running","collecting","submitting"].includes(run.status)
+                    ?<button type="button" className={buttonClass} onClick={()=>void cancelComfyRun(run.runId).then(setRun).catch(e=>setRunError(String(e)))}>取消请求</button>:null}
+                <button type="button" className={buttonClass} onClick={()=>void getComfyRun(run.runId).then(setRun).catch(e=>setRunError(String(e)))}>刷新状态</button>
+            </div>:null}
+            {pending?<button type="button" className={buttonClass} disabled={runBusy} onClick={()=>void recoverSubmission()}>恢复待确认提交（复用同一个幂等 key）</button>:null}
+            {runError?<div className="text-[11px] text-red-500" role="alert">{runError}</div>:null}
+            <p className="text-[10px] text-[var(--comfy-muted)]">首版仅支持一个工作流、Text / Image 输入与一个 IMAGE 输出；提交不确定时不会自动重发。</p>
         </div>
         <footer className="flex shrink-0 items-center justify-between gap-2 border-t border-[var(--comfy-border)] px-4 py-3 text-[11px] text-[var(--comfy-muted)]">
             <span>{fields.length} 个标量参数 · {fields.filter((x)=>x.source==="edge").length} 个由连线控制</span>

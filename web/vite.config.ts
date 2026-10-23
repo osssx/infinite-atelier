@@ -220,6 +220,27 @@ export default defineConfig(({ mode }) => {
                 "/media/ark": { target: process.env.MEDIA_GATEWAY_URL || "http://127.0.0.1:8787", changeOrigin: true, timeout: 90_000 },
                 "/api/media/ark": { target: process.env.MEDIA_GATEWAY_URL || "http://127.0.0.1:8787", changeOrigin: true, timeout: 90_000 },
                 "/api/media/uploads": { target: process.env.MEDIA_GATEWAY_URL || "http://127.0.0.1:8787", changeOrigin: true, timeout: 130_000 },
+                "/api/comfy": {
+                    target: process.env.MEDIA_GATEWAY_URL || "http://127.0.0.1:8787",
+                    changeOrigin: true, timeout: 130_000,
+                    configure(proxy) {
+                        // Do not expose the gateway credential to browser JavaScript.
+                        const token = process.env.GATEWAY_TOKEN || env.GATEWAY_TOKEN;
+                        proxy.on("proxyReq", (proxyReq, req) => {
+                            const origin = req.headers.origin;
+                            const host = req.headers.host;
+                            const site = req.headers["sec-fetch-site"];
+                            let validOrigin = !origin;
+                            if (origin && host) { try { validOrigin = new URL(origin).host === host; } catch { validOrigin = false; } }
+                            if (!token || !isLoopback(req.socket.remoteAddress || "") || !validOrigin || (site && !["same-origin","none"].includes(String(site)))) {
+                                proxyReq.destroy(new Error("ComfyUI dev proxy requires configured gateway token and same-origin browser"));
+                                return;
+                            }
+                            proxyReq.setHeader("x-gateway-token",token);
+                            proxyReq.removeHeader("authorization");
+                        });
+                    }
+                },
                 "/api/ark": { target: process.env.MEDIA_GATEWAY_URL || "http://127.0.0.1:8787", changeOrigin: true, timeout: 130_000 },
             },
         },

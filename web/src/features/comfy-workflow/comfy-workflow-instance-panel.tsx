@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type CSSProperties, type KeyboardEvent } from "react";
-import { ArrowUp, Check, Dices, LoaderCircle, Link2, RotateCcw, Settings2, X } from "lucide-react";
+import { Check, Dices, LoaderCircle, Link2, Play, RotateCcw, Settings2, X } from "lucide-react";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { Button } from "antd";
@@ -238,13 +238,16 @@ export function ComfyWorkflowInstancePanel({node,connections,projectId,comfyInst
                         :status==="succeeded"?<Check size={14} className="shrink-0" aria-hidden="true"/>:null}
                     <span className="truncate">{statusLabel}</span>
                 </div>
-                <Button type="primary" className="!h-10 !min-w-16 shrink-0 !rounded-full !px-3"
-                    disabled={disabled} onClick={()=>void execute()} aria-label="运行工作流">
-                    {active?<LoaderCircle className="size-4 animate-spin" aria-hidden="true"/>:<ArrowUp className="size-4" aria-hidden="true"/>}
-                </Button>
+                {canCancel?<button type="button" className="shrink-0 text-[11px] text-[var(--comfy-muted)] hover:underline"
+                    onClick={()=>void cancelComfyRun(currentRun!.runId).then(setRun).catch(e=>setRunError(String(e)))}>取消请求</button>:null}
             </div>
-            {canCancel?<button type="button" className="text-[11px] text-[var(--comfy-muted)] hover:underline"
-                onClick={()=>void cancelComfyRun(currentRun!.runId).then(setRun).catch(e=>setRunError(String(e)))}>取消请求</button>:null}
+            <Button type="primary" className="sticky bottom-0 mt-auto !h-9 !w-full !shrink-0 !cursor-pointer !rounded-lg"
+                disabled={disabled} onClick={()=>void execute()} aria-label="开始生成">
+                <span className="inline-flex items-center gap-1.5">
+                    {active?<><LoaderCircle className="size-4 animate-spin" aria-hidden="true"/><span>生成中…</span></>
+                        :<><Play className="size-4" aria-hidden="true"/><span>开始生成</span></>}
+                </span>
+            </Button>
             {pending?<button type="button" className={buttonClass} disabled={runBusy}
                 onClick={()=>void recoverSubmission()}>恢复待确认提交</button>:null}
             {statusError?<p className="break-words text-[11px] text-red-500" role="alert">{statusError}</p>:null}

@@ -42,12 +42,17 @@ function footer(status?:string,error?:string) {
 }
 afterEach(()=>{pendingFlag.value=false;});
 describe("compact ComfyUI inspector execution footer",()=>{
-    it("matches the ordinary config node primary pill generate button",()=>{
+    it("matches the config node full-width rectangular Start Generation button",()=>{
         const html=footer();
-        expect(html).toContain("!h-10");
-        expect(html).toContain("!min-w-16");
-        expect(html).toContain("!rounded-full");
-        expect(html).toContain('aria-label="运行工作流"');
+        expect(html).toContain("!h-9");
+        expect(html).toContain("!w-full");
+        expect(html).toContain("!rounded-lg");
+        expect(html).toContain("!shrink-0");
+        expect(html).toContain("sticky bottom-0 mt-auto");
+        expect(html).toContain('aria-label="开始生成"');
+        expect(html).toContain("开始生成");
+        expect(html).toContain("lucide-play");
+        expect(html).not.toContain("!rounded-full");
         expect(html).toContain("待执行");
         expect(html).not.toContain("画布实例");
         expect(html).not.toContain("prompt");
@@ -59,14 +64,15 @@ describe("compact ComfyUI inspector execution footer",()=>{
         const html=footer("running");
         expect(html).toContain("生成中");
         expect(html).toContain("animate-spin");
-        expect(html).toMatch(/disabled=""[^>]*aria-label="运行工作流"/);
+        expect(html).toContain("生成中…");
+        expect(html).toMatch(/disabled=""[^>]*aria-label="开始生成"/);
     });
     it("keeps only the needed recovery control for uncertain submissions",()=>{
         pendingFlag.value=true;
         const html=footer("submission_unknown");
         expect(html).toContain("提交待确认");
         expect(html).toContain("恢复待确认提交");
-        expect(html).toMatch(/disabled=""[^>]*aria-label="运行工作流"/);
+        expect(html).toMatch(/disabled=""[^>]*aria-label="开始生成"/);
         expect(html).not.toContain("幂等 key");
     });
     it("shows compact finished and failure statuses without raw task identifiers",()=>{

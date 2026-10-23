@@ -27,7 +27,14 @@ test("Comfy instance CRUD persists across gateway restarts and rejects SSRF targ
         try{
             const initial=await a.request("/instances");
             assert.equal(initial.status,200);
+            assert.equal(initial.value.instanceManagement,true);
+            assert.equal(initial.value.apiVersion,2);
             assert.equal(initial.value.instances[0].url,"http://127.0.0.1:8188");
+            const unchanged=await a.request("/instances/comfy-local","PUT",{
+                id:"comfy-local",url:"http://127.0.0.1:8188"
+            });
+            assert.equal(unchanged.status,200);
+            assert.equal(unchanged.value.instance.url,"http://127.0.0.1:8188");
             for(const url of ["https://127.0.0.1:8188","http://localhost:8188","http://192.168.1.2:8188",
                 "http://127.0.0.1:8188/a","http://127.0.0.1:8188?x=1","http://user:pass@127.0.0.1:8188"]){
                 const out=await a.request("/instances","POST",{id:"bad",url});

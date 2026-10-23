@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 vi.mock("@/services/image-storage",()=>({getImageBlob:vi.fn()}));
-import { listComfyInstances } from "./run-client";
+import { deleteComfyInstance, listComfyInstances, saveComfyInstance } from "./run-client";
 
 afterEach(()=>vi.unstubAllGlobals());
 
@@ -23,11 +23,38 @@ describe("ComfyUI browser gateway responses",()=>{
         })));
         await expect(listComfyInstances()).rejects.toThrow(/鉴权失败.*GATEWAY_TOKEN/);
     });
+
+    it("identifies an older live gateway from missing instance-management capability",async()=>{
+        vi.stubGlobal("fetch",vi.fn().mockResolvedValue(new Response(JSON.stringify({
+            instances:[{id:"comfy-local",reachable:false,classTypes:[]}]
+        }),{headers:{"content-type":"application/json"}})));
+        await expect(listComfyInstances()).rejects.toThrow(/网关版本过旧.*重新运行 npm run dev:comfy/);
+    });
+    it("turns the real old PUT route 404 into a restart instruction",async()=>{
+        const fetchMock=vi.fn().mockImplementation(async()=>new Response(JSON.stringify({error:"comfy_route_not_found"}),{
+            status:404,headers:{"content-type":"application/json"}
+        }));
+        vi.stubGlobal("fetch",fetchMock);
+        await expect(saveComfyInstance("comfy-local","http://127.0.0.1:8188","comfy-local"))
+            .rejects.toThrow(/网关版本过旧.*重新运行 npm run dev:comfy/);
+        expect(fetchMock).toHaveBeenCalledWith("/api/comfy/instances/comfy-local",expect.objectContaining({
+            method:"PUT",body:JSON.stringify({id:"comfy-local",url:"http://127.0.0.1:8188"})
+        }));
+        await expect(deleteComfyInstance("comfy-local")).rejects.toThrow(/网关版本过旧.*重新运行 npm run dev:comfy/);
+    });
+    it("accepts a new gateway and successfully stores an edited instance",async()=>{
+        const fetchMock=vi.fn().mockResolvedValue(new Response(JSON.stringify({
+            instance:{id:"comfy-local",url:"http://127.0.0.1:8189"}
+        }),{headers:{"content-type":"application/json"}}));
+        vi.stubGlobal("fetch",fetchMock);
+        await expect(saveComfyInstance("comfy-local","http://127.0.0.1:8189","comfy-local"))
+            .resolves.toMatchObject({instance:{url:"http://127.0.0.1:8189"}});
+    });
     it("handles unreachable Vite proxy and normal instance list",async()=>{
         vi.stubGlobal("fetch",vi.fn().mockRejectedValue(new TypeError("Failed to fetch")));
         await expect(listComfyInstances()).rejects.toThrow(/无法连接.*8787/);
         vi.stubGlobal("fetch",vi.fn().mockResolvedValue(new Response(JSON.stringify({
-            instances:[{id:"comfy-local",reachable:true,classTypes:["SaveImage"]}]
+            apiVersion:2,instanceManagement:true,instances:[{id:"comfy-local",url:"http://127.0.0.1:8188",reachable:true,classTypes:["SaveImage"]}]
         }),{headers:{"content-type":"application/json; charset=utf-8"}})));
         await expect(listComfyInstances()).resolves.toMatchObject([{id:"comfy-local",reachable:true}]);
     });

@@ -200,7 +200,8 @@ export function createComfyService({
                     try {const info=await infoFor(instance);results.push({...instance,reachable:true,classTypes:Object.keys(info).filter(x=>allowClasses.has(x))});}
                     catch{results.push({...instance,reachable:false,classTypes:[]});}
                 }
-                return send(res,200,{instances:results});
+                // Browser must detect a gateway process left running from before instance CRUD existed.
+                return send(res,200,{apiVersion:2,instanceManagement:true,instances:results});
             }
             // Instance editing is permitted only for the authenticated loopback gateway.
             // Refuse any mutation while a queued / uncertain / executing GPU run might resolve this ID.

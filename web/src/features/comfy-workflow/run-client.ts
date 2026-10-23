@@ -50,17 +50,35 @@ export async function recoverPendingComfyRun(projectId:string,nodeId:string):Pro
     return result;
 }
 export type ComfyInstance = {id:string;url:string;reachable:boolean;classTypes:string[]};
+export const COMFY_GATEWAY_UPGRADE_MESSAGE =
+    "当前运行的 ComfyUI 网关版本过旧，不支持实例编辑。请在终端停止旧的 npm run dev:comfy（或 ark-gateway），然后在 web 目录重新运行 npm run dev:comfy；仅刷新网页无法更新后台进程。";
 export async function listComfyInstances():Promise<ComfyInstance[]> {
-    const value=await comfyRequest<{instances:ComfyInstance[]}>("/instances");
+    const value=await comfyRequest<{apiVersion?:number;instanceManagement?:boolean;instances:ComfyInstance[]}>("/instances");
+    if(value.instanceManagement!==true || !Array.isArray(value.instances) ||
+        value.instances.some(item=>typeof item.id!=="string" || typeof item.url!=="string")) {
+        throw new Error(COMFY_GATEWAY_UPGRADE_MESSAGE);
+    }
     return value.instances;
 }
 export async function saveComfyInstance(id:string,url:string,oldId?:string) {
-    return comfyRequest<{instance:{id:string;url:string}}>(oldId?"/instances/"+encodeURIComponent(oldId):"/instances",{
-        method:oldId?"PUT":"POST",headers:{"content-type":"application/json"},body:JSON.stringify({id,url})
-    });
+    try {
+        return await comfyRequest<{instance:{id:string;url:string}}>(oldId?"/instances/"+encodeURIComponent(oldId):"/instances",{
+            method:oldId?"PUT":"POST",headers:{"content-type":"application/json"},body:JSON.stringify({id,url})
+        });
+    } catch(error) {
+        if(error instanceof Error && /comfy_route_not_found/.test(error.message))
+            throw new Error(COMFY_GATEWAY_UPGRADE_MESSAGE);
+        throw error;
+    }
 }
 export async function deleteComfyInstance(id:string) {
-    return comfyRequest<{deleted:string}>("/instances/"+encodeURIComponent(id),{method:"DELETE"});
+    try {
+        return await comfyRequest<{deleted:string}>("/instances/"+encodeURIComponent(id),{method:"DELETE"});
+    } catch(error) {
+        if(error instanceof Error && /comfy_route_not_found/.test(error.message))
+            throw new Error(COMFY_GATEWAY_UPGRADE_MESSAGE);
+        throw error;
+    }
 }
 export async function registerComfyTemplate(template:ComfyWorkflowTemplate,instanceId:string) {
     return comfyRequest<{result:string;instanceId:string}>("/templates",{

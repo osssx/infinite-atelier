@@ -51,6 +51,9 @@ node server/ark-gateway.mjs
 
 如果看到 Comfy backend returned invalid response 或提示网关不可用，请先检查 `127.0.0.1:8787` 的 ark-gateway 和 Vite 的同一个 `GATEWAY_TOKEN`。只有 ComfyUI 的 `8188` 服务在线还不够，浏览器会通过项目网关提交任务。
 
+**旧进程版本问题（`comfy_route_not_found`）**：如果前端已经更新，但仍在运行加入实例管理接口之前启动的 `ark-gateway` 进程，`PUT /api/comfy/instances/:id` 会收到旧服务 HTTP 404 `comfy_route_not_found`。请在原来启动 `npm run dev:comfy` 的终端按 Ctrl+C，待进程停止，再在 `web` 目录运行 `npm run dev:comfy`。**单纯刷新浏览器或热更新 Vite 并不会重载 Node 后端模块**。新网关 `GET /api/comfy/instances` 返回 `apiVersion:2`、`instanceManagement:true`、以及每个实例的 `url`；浏览器会先检查能力，若连接到旧进程将提示明确的重启操作，不再让用户编辑后得到原始 `comfy_route_not_found`。重启前如果有实际 GPU 任务，应等待其结束或先确认其安全恢复状态，避免中途终止后出现 `submission_unknown`。
+
+
 
 白名单实例目前 **仅接受配置明确的 127.0.0.1 或 ::1 HTTP 原点**；端口必填。使用非内置 class 的工作流，需由受信任管理员显式扩展 `COMFY_ALLOWED_CLASSES`。默认白名单在 `service.mjs` 中配置，优先考虑显式环境配置而不是任意自定义节点。
 

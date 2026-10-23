@@ -52,21 +52,20 @@ export function getCanvasPort(node: CanvasNodeData, direction: "source" | "targe
 export const CANVAS_PORT_MIN_PITCH = 30;
 export const CANVAS_PORT_HIT_MAX = 28;
 export const CANVAS_PORT_HIT_GAP = 2;
-export const CANVAS_PORT_TOP_PADDING = 65;
-export const CANVAS_PORT_BOTTOM_PADDING = 22;
+/** Equal top/bottom inset centers every typed port group on the legacy handle's Y midpoint. */
+export const CANVAS_PORT_EDGE_PADDING = 40;
 
 export function getMinimumCanvasPortNodeHeight(ports: readonly CanvasPortDescriptor[]): number {
     const inputs = ports.filter((port) => port.direction === "target").length;
     const outputs = ports.filter((port) => port.direction === "source").length;
     const maxCount = Math.max(inputs, outputs);
-    return Math.max(160, CANVAS_PORT_TOP_PADDING + CANVAS_PORT_BOTTOM_PADDING + Math.max(0, maxCount - 1) * CANVAS_PORT_MIN_PITCH);
+    return Math.max(160, CANVAS_PORT_EDGE_PADDING * 2 + Math.max(0, maxCount - 1) * CANVAS_PORT_MIN_PITCH);
 }
 
 export function getCanvasPortHitSize(node: CanvasNodeData, direction: "source" | "target"): number {
     const count = getCanvasNodePorts(node).filter((port) => port.direction === direction).length;
     if (count <= 1) return CANVAS_PORT_HIT_MAX;
-    const top = Math.min(CANVAS_PORT_TOP_PADDING, Math.max(22, node.height * 0.22));
-    const pitch = Math.max(0, node.height - top - CANVAS_PORT_BOTTOM_PADDING) / (count - 1);
+    const pitch = Math.max(0, node.height - CANVAS_PORT_EDGE_PADDING * 2) / (count - 1);
     // Never let one port's hover hitbox cover its neighbour on compact old nodes.
     return Math.max(1, Math.min(CANVAS_PORT_HIT_MAX, pitch - CANVAS_PORT_HIT_GAP));
 }
@@ -76,9 +75,11 @@ export function getCanvasPortOffset(node: CanvasNodeData, direction: "source" | 
     const ports = getCanvasNodePorts(node).filter((port) => port.direction === direction);
     const index = ports.findIndex((port) => port.id === portId);
     if (index < 0) return node.height / 2;
-    const top = Math.min(CANVAS_PORT_TOP_PADDING, Math.max(22, node.height * 0.22));
-    const space = Math.max(0, node.height - top - CANVAS_PORT_BOTTOM_PADDING);
-    return top + (ports.length === 1 ? space / 2 : (space * index) / (ports.length - 1));
+    // A single typed port uses exactly the same Y anchor as an ordinary node.
+    if (ports.length === 1) return node.height / 2;
+    const space = Math.max(0, node.height - CANVAS_PORT_EDGE_PADDING * 2);
+    // Symmetric distribution: (first + last) / 2 == node.height / 2.
+    return node.height / 2 - space / 2 + (space * index) / (ports.length - 1);
 }
 
 export function getCanvasPortAnchor(node: CanvasNodeData, direction: "source" | "target", portId?: string) {

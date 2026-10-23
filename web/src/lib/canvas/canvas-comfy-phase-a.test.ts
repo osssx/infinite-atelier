@@ -4,7 +4,7 @@ vi.mock("@/i18n", () => ({ default: { t: (key: string) => key } }));
 import { registerBuiltinNodes } from "@/components/canvas/nodes/builtin-nodes";
 import { prepareCanvasPortConnection, validateCanvasPortConnections } from "./canvas-port-connections";
 import { prepareCanvasExternalInputSnapshot, resolveCanvasInputValue } from "./canvas-external-input-snapshot";
-import { COMFY_WORKFLOW_MOCK_TYPE, CANVAS_PORT_MIN_PITCH, getCanvasPortAnchor, getCanvasPortHitSize, getCanvasPortOffset, getMinimumCanvasPortNodeHeight, MOCK_COMFY_PORTS, pickCanvasDropHandle } from "./canvas-ports";
+import { COMFY_WORKFLOW_MOCK_TYPE, CANVAS_PORT_EDGE_PADDING, CANVAS_PORT_MIN_PITCH, getCanvasPortAnchor, getCanvasPortHitSize, getCanvasPortOffset, getMinimumCanvasPortNodeHeight, MOCK_COMFY_PORTS, pickCanvasDropHandle } from "./canvas-ports";
 import { applyNodeConfigPatch } from "./canvas-node-factory";
 import { connectionControlPoints, connectionControlHull } from "./canvas-connection-culling";
 import { cullConnections } from "./canvas-connection-culling";
@@ -137,7 +137,45 @@ describe("Dense Comfy port hover hitboxes", () => {
         expectIndependentHitboxes(bound);
         const resized={...bound,height:bound.height+150};
         expect(applyNodeConfigPatch(resized,{comfyPorts:ports}).height).toBe(resized.height);
-        expect(bound.height).toBeGreaterThanOrEqual(65 + 22 + (inputPorts.length-1)*CANVAS_PORT_MIN_PITCH);
+        expect(bound.height).toBeGreaterThanOrEqual(CANVAS_PORT_EDGE_PADDING * 2 + (inputPorts.length-1)*CANVAS_PORT_MIN_PITCH);
+    });
+
+    it("1 typed output is at the exact vertical center of the node, same as legacy single handle", () => {
+        const typed = n("typed", COMFY_WORKFLOW_MOCK_TYPE, {comfyPorts: [{id:"out",label:"Output",direction:"source",valueKind:"IMAGE"}]});
+        const legacy = n("legacy",CanvasNodeType.Image);
+        expect(getCanvasPortOffset(typed,"source","out")).toBe(typed.height/2);
+        expect(getCanvasPortAnchor(typed,"source","out").y).toBe(getCanvasPortAnchor(legacy,"source").y);
+        expect(pickCanvasDropHandle(typed,h("other","target"),typed.position.y+typed.height/2)?.portId).toBe("out");
+    });
+
+    it("2 ports are symmetric about the node's vertical midpoint, with centered hit regions", () => {
+        const typed = n("typed", COMFY_WORKFLOW_MOCK_TYPE, {comfyPorts: [
+            {id:"a",label:"A",direction:"target",valueKind:"STRING"},
+            {id:"b",label:"B",direction:"target",valueKind:"STRING"},
+        ]});
+        const a = getCanvasPortOffset(typed,"target","a");
+        const b = getCanvasPortOffset(typed,"target","b");
+        expect((a+b)/2).toBe(typed.height/2);
+        expect(a).toBe(CANVAS_PORT_EDGE_PADDING);
+        expect(b).toBe(typed.height-CANVAS_PORT_EDGE_PADDING);
+        expect(getCanvasPortAnchor(typed,"target","a").y).toBe(typed.position.y+a);
+        expect(getCanvasPortAnchor(typed,"target","b").y).toBe(typed.position.y+b);
+    });
+
+    it("11 inputs and one output all share the legacy vertical midpoint as the center of their port groups", () => {
+        for(const height of [265,getMinimumCanvasPortNodeHeight(ports),520]){
+            const typed={...n("centered",COMFY_WORKFLOW_MOCK_TYPE,{comfyPorts:ports}),height};
+            const first=getCanvasPortOffset(typed,"target","input-0");
+            const last=getCanvasPortOffset(typed,"target","input-10");
+            const middle=getCanvasPortOffset(typed,"target","input-5");
+            expect((first+last)/2).toBe(typed.height/2);
+            expect(middle).toBe(typed.height/2);
+            expect(getCanvasPortOffset(typed,"source","image")).toBe(typed.height/2);
+            const legacy=n("legacy",CanvasNodeType.Text);
+            legacy.height=height;
+            expect(getCanvasPortAnchor(typed,"source","image").y).toBe(getCanvasPortAnchor(legacy,"source").y);
+            expectIndependentHitboxes(typed);
+        }
     });
 
     it("legacy connector geometry/size and sparse Comfy connectors are unaffected", () => {

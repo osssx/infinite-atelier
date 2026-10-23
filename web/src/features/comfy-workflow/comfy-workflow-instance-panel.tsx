@@ -210,7 +210,7 @@ export function ComfyWorkflowInstancePanel({node,connections,getCanvasSnapshot,p
             <button type="button" aria-label="关闭参数面板" className={buttonClass} onClick={onClose}><X size={14}/></button>
         </header>
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
-            {!comfyInstanceId?<p className="mb-3 rounded-lg bg-[var(--comfy-fill)] px-3 py-2 text-[11px] text-[var(--comfy-muted)]">请在画布底部工具栏的「外观 / 画布设置」中配置 ComfyUI 实例，所有工作流节点共用此配置。</p>:null}
+            {!comfyInstanceId?<p className="mb-3 rounded-lg bg-[var(--comfy-fill)] px-3 py-2 text-[11px] text-[var(--comfy-muted)]">请在右上角「配置与用户偏好 → ComfyUI」中选择默认实例，所有画布工作流节点共用此配置。</p>:null}
             {loading?<p className="text-xs text-[var(--comfy-muted)]">正在加载模板版本…</p>
             :error?<p role="alert" className="rounded-md p-2 text-xs text-red-500">{error}</p>
             :!binding?.templateId?<div className="flex flex-col items-center gap-3 py-8 text-center text-xs text-[var(--comfy-muted)]">

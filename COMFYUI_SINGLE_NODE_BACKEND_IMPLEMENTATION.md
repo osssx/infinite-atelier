@@ -42,7 +42,12 @@ node server/ark-gateway.mjs
 ```
 
 另开一个终端并设置相同 `GATEWAY_TOKEN`，然后在 `web` 目录运行 `npm run dev`；`MEDIA_GATEWAY_URL` 未设置时指向 `http://127.0.0.1:8787`。生产环境应由受认证的反向代理承载 `/api/comfy/*`，不能把网关 token 放到浏览器应用配置中。
-画布下方工具栏的**「外观」→「ComfyUI 实例（当前画布）」**选择网关允许的实例，可刷新在线状态。该设置按项目保存（撤销/重做受支持），所有工作流节点共享；已有节点旧版的实例绑定一致时将自动迁移。节点参数面板不再重复选择实例或 IMAGE 输出，运行自动采用工作流模板的第一个可捕获 IMAGE 端口。跨机器导入的画布需要重新选择本机实例，不信任备份中原机器的实例 ID。
+**全局 ComfyUI 设置（新界面）**：右上角「配置与用户偏好」→「ComfyUI」集中管理本地实例、预设工作流以及默认实例。画布底部的「外观」面板已移除 ComfyUI 配置；所有工作流节点读取同一个全局默认实例，节点参数面板不再提供实例/输出选择。默认图片输出自动采用当前模板第一个 SaveImage 捕获的 IMAGE 端口。
+
+- 实例列表经受 token 保护的网关管理，`POST /api/comfy/instances` 新增、`PUT /api/comfy/instances/:id` 修改、`DELETE /api/comfy/instances/:id` 删除；SQLite 持久保存并在网关重启后恢复。只能添加 `http://127.0.0.1:<port>` 或 `http://[::1]:<port>` 的精确 HTTP 本机地址，拒绝凭据、路径、query、非本机以及 HTTPS。存在 queued/preparing/submitting/submission_unknown/running/collecting 任务时拒绝变更实例，避免重定向未完成的 GPU 请求。
+- 预设工作流列表显示本地 IndexedDB 保存的不可变模板版本。新增/编辑预设复用 ComfyWorkflowPanel，可以导入 ComfyUI API JSON、修改暴露的输入参数与 socket、选择 IMAGE 输出以及 SaveImage 捕获，并将新 revision 绑定到可更新的预设别名。现有节点保持旧 revision；节点内的模板绑定编辑器可以选择全局预设并明确切换。
+- 默认实例及“启动时检测实例”的偏好写入全局 AiConfig，跟随 JSON 配置导入/导出；跨设备备份不自动信任另一台机器的网关地址、认证 token 或旧画布实例 ID。预设别名存于本机 IndexedDB；模板版本的项目备份策略独立于全局偏好。
+
 
 如果看到 Comfy backend returned invalid response 或提示网关不可用，请先检查 `127.0.0.1:8787` 的 ark-gateway 和 Vite 的同一个 `GATEWAY_TOKEN`。只有 ComfyUI 的 `8188` 服务在线还不够，浏览器会通过项目网关提交任务。
 
@@ -53,7 +58,8 @@ node server/ark-gateway.mjs
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/comfy/instances` | 实例 ID / 可达性 / allowlisted class 清单 |
+| GET | `/api/comfy/instances` | 实例 ID / loopback URL / 可达性 / allowlisted class 清单 |
+| POST / PUT / DELETE | `/api/comfy/instances[/:id]` | 添加、修改、删除受限本机实例；有未完成 GPU 任务时 HTTP 409 |
 | POST | `/api/comfy/templates` | `{instanceId, template}`，按 SHA 保存固定不可变 revision |
 | GET | `/api/comfy/templates` | 服务端已有版本 |
 | POST | `/api/comfy/inputs` | raw image bytes + 精确 `Content-Type: image/png/jpeg/webp`；返回持久 `assetId,sha256` |

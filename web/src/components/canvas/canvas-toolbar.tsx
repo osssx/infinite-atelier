@@ -7,7 +7,6 @@ import { canvasThemes, type CanvasBackgroundMode, type CanvasColorTheme, type Ca
 import { useThemeStore } from "@/stores/use-theme-store";
 import { AnimatedThemeToggler } from "@/components/ui/animated-theme-toggler";
 import { useTranslation } from "react-i18next";
-import { listComfyInstances } from "@/features/comfy-workflow/run-client";
 
 export function CanvasToolbar({
     selectedCount,
@@ -17,9 +16,7 @@ export function CanvasToolbar({
     canRedo,
     backgroundMode,
     showImageInfo,
-    onAddImage,    comfyInstanceId,
-    onComfyInstanceChange,
-
+    onAddImage,
     onAddVideo,
     onAddAudio,
     onAddText,
@@ -43,8 +40,6 @@ export function CanvasToolbar({
     canRedo: boolean;
     backgroundMode: CanvasBackgroundMode;
     showImageInfo: boolean;
-    comfyInstanceId?: string;
-    onComfyInstanceChange: (value: string | undefined) => void;
     onAddImage: () => void;
     onAddVideo: () => void;
     onAddAudio: () => void;
@@ -72,23 +67,6 @@ export function CanvasToolbar({
     const [tipX, setTipX] = useState(0);
     const [appearanceOpen, setAppearanceOpen] = useState(false);
     const [panelX, setPanelX] = useState(0);
-    const [comfyInstances, setComfyInstances] = useState<Array<{id:string;reachable:boolean;classTypes:string[]}>>([]);
-    const [comfyLoading, setComfyLoading] = useState(false);
-    const [comfyError, setComfyError] = useState("");
-    const [comfyRefresh, setComfyRefresh] = useState(0);
-    useEffect(() => {
-        if (!appearanceOpen) return;
-        let active = true;
-        setComfyLoading(true);
-        setComfyError("");
-        void listComfyInstances().then(value => {
-            if(active) setComfyInstances(value);
-        }).catch(error => {
-            if(active) {setComfyInstances([]);setComfyError(error instanceof Error ? error.message : String(error));}
-        }).finally(() => {if(active) setComfyLoading(false);});
-        return () => {active=false;};
-    }, [appearanceOpen,comfyRefresh]);
-
     const dockStyle = { background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.toolbar.item, boxShadow: colorTheme === "dark" ? "0 18px 45px rgba(0,0,0,.32)" : "0 16px 40px rgba(28,25,23,.12)" };
     const hoverStyle = { background: theme.toolbar.itemHover, color: theme.toolbar.activeText };
     const activeStyle = { background: theme.toolbar.activeBg, color: theme.toolbar.activeText };
@@ -183,7 +161,7 @@ export function CanvasToolbar({
 
             {appearanceOpen ? (
                 <div
-                    className="pointer-events-auto absolute bottom-[72px] z-30 w-[296px] max-w-[calc(100vw-32px)] -translate-x-1/2 rounded-xl border p-2.5 shadow-xl backdrop-blur"
+                    className="pointer-events-auto absolute bottom-[72px] z-30 w-[248px] -translate-x-1/2 rounded-xl border p-2.5 shadow-xl backdrop-blur"
                     style={{ left: panelX || "50%", background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.toolbar.item }}
                 >
                     <div className="px-1 pb-2 text-sm font-medium opacity-65">{t("canvas.toolbar.appearance")}</div>
@@ -237,30 +215,6 @@ export function CanvasToolbar({
                             {t("canvas.toolbar.imageInfo")}
                         </span>
                         <Switch size="small" checked={showImageInfo} onChange={onShowImageInfoChange} />
-                    </div>
-                    <div className="mt-3 border-t px-1 pt-3" style={{borderColor:theme.toolbar.border}}>
-                        <div className="mb-1.5 flex items-center justify-between gap-2">
-                            <label htmlFor="canvas-comfy-instance" className="text-xs font-medium">ComfyUI 实例（当前画布）</label>
-                            <button type="button" disabled={comfyLoading} onClick={()=>setComfyRefresh(n=>n+1)}
-                                className="text-[11px] opacity-65 transition hover:opacity-100 disabled:opacity-35">刷新</button>
-                        </div>
-                        <select id="canvas-comfy-instance" aria-label="画布 ComfyUI 实例"
-                            className="w-full min-w-0 rounded-lg border px-2 py-2 text-xs outline-none"
-                            style={{background:theme.toolbar.panel,borderColor:theme.toolbar.border,color:theme.node.text}}
-                            value={comfyInstanceId??""}
-                            onChange={e=>onComfyInstanceChange(e.target.value||undefined)}>
-                            <option value="">选择 ComfyUI 实例</option>
-                            {comfyInstanceId&&!comfyInstances.some(inst=>inst.id===comfyInstanceId)
-                                ?<option value={comfyInstanceId}>{comfyInstanceId}（当前未发现）</option>:null}
-                            {comfyInstances.map(inst=><option key={inst.id} value={inst.id} disabled={!inst.reachable}>
-                                {inst.id}{inst.reachable?"":"（离线）"}
-                            </option>)}
-                        </select>
-                        {comfyLoading?<p className="mt-1 text-[11px] opacity-60">正在检查网关…</p>:null}
-                        {comfyError?<p role="alert" className="mt-1.5 break-words text-[11px] text-red-500">{comfyError}</p>
-                            :comfyInstanceId&&!comfyInstances.some(inst=>inst.id===comfyInstanceId&&inst.reachable)&&!comfyLoading
-                                ?<p role="status" className="mt-1 text-[11px] text-amber-600">该实例当前不可用，请刷新或重新选择。</p>
-                                :<p className="mt-1 text-[11px] opacity-60">所有工作流节点共用，随画布保存；实例地址在网关配置。</p>}
                     </div>
 
                 </div>

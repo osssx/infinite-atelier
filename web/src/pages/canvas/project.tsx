@@ -275,6 +275,7 @@ function AtelierCanvasPage() {
     const effectiveConfig = useEffectiveConfig();
     const isAiConfigReady = useConfigStore((state) => state.isAiConfigReady);
     const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
+    const globalComfyInstanceId = useConfigStore((state) => state.config.comfyInstanceId);
     const addAsset = useAssetStore((state) => state.addAsset);
     const cleanupAssetImages = useAssetStore((state) => state.cleanupImages);
     const hydrated = useCanvasStore((state) => state.hydrated);
@@ -3442,7 +3443,7 @@ function AtelierCanvasPage() {
                         getCanvasSnapshot={() => ({nodes:nodesRef.current,connections:connectionsRef.current})}
                         projectId={projectId}
                         onArtifacts={handleComfyArtifacts}
-                        comfyInstanceId={comfyInstanceId}
+                        comfyInstanceId={globalComfyInstanceId}
                         onChange={(patch) => handleConfigNodeChange(panelNode.id, patch)}
                         onTemplateChange={(patch) => {
                             const candidate = applyNodeConfigPatch(panelNode, patch);
@@ -3703,8 +3704,6 @@ function AtelierCanvasPage() {
                     backgroundMode={backgroundMode}
                     showImageInfo={showImageInfo}
                     onAddImage={() => createNode(CanvasNodeType.Image)}
-                    comfyInstanceId={comfyInstanceId}
-                    onComfyInstanceChange={setComfyInstanceId}
                     onAddVideo={() => createNode(CanvasNodeType.Video)}
                     onAddAudio={() => createNode(CanvasNodeType.Audio)}
                     onAddText={() => createNode(CanvasNodeType.Text)}

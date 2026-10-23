@@ -1,7 +1,7 @@
 import { saveAs } from "file-saver";
 
 import i18n from "@/i18n";
-import { useConfigStore, type AiConfig } from "@/stores/use-config-store";
+import { defaultConfig, useConfigStore, type AiConfig } from "@/stores/use-config-store";
 
 type AppConfigFile = {
     app: "infinite-canvas";
@@ -24,5 +24,6 @@ export async function importAppConfig(file: File) {
         throw new Error(i18n.t("config.invalidFile"));
     }
     if (data.app !== "infinite-canvas" || data.version !== 1 || !data.config) throw new Error(i18n.t("config.invalidFile"));
-    useConfigStore.setState({ config: data.config });
+    // Keep newly introduced preferences when loading an older settings export.
+    useConfigStore.setState({ config: { ...defaultConfig, ...data.config } });
 }

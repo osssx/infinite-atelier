@@ -26,6 +26,15 @@ function configureInstances(env) {
     return instances;
 }
 
+function validInstance(raw) {
+    if(!raw || typeof raw.id!=="string" || !/^[\w:-]{1,64}$/.test(raw.id) || typeof raw.url!=="string")throw statusError("invalid_comfy_instance",400);
+    let url;
+    try { url=new URL(raw.url); }catch {throw statusError("invalid_comfy_instance_url",400);}
+    if(url.protocol!=="http:" || !["127.0.0.1","[::1]"].includes(url.hostname) ||
+        !url.port || url.pathname!=="/" || url.username || url.password || url.search || url.hash)
+        throw statusError("comfy_instance_must_be_exact_loopback_origin",400);
+    return {id:raw.id,url:url.origin};
+}
 async function upstream(instance,path,{method="GET",body,timeoutMs=45000,expectBinary=false}={}) {
     const controller=new AbortController();
     const timer=setTimeout(()=>controller.abort(),timeoutMs);
@@ -75,9 +84,9 @@ export function createComfyService({
     env=process.env,root=env.COMFY_DATA_DIR || fileURLToPath(new URL("../../.comfy-workflow-data/",import.meta.url)),
     fetchInfo, upstreamCall=upstream, tickMs=2500, resume=true, principal="local-owner"
 }={}) {
-    const instances=configureInstances(env);
-    const allowClasses=new Set((env.COMFY_ALLOWED_CLASSES||defaultClasses).split(",").map(x=>x.trim()).filter(Boolean));
     const store=createComfyStore(root);
+    const instances=store.loadInstances(configureInstances(env));
+    const allowClasses=new Set((env.COMFY_ALLOWED_CLASSES||defaultClasses).split(",").map(x=>x.trim()).filter(Boolean));
     if(resume)store.resumeAfterRestart();
     let closed=false,busy=false;
     const infoFor=async(instance)=>fetchInfo?fetchInfo(instance):upstreamCall(instance,"/object_info");
@@ -188,10 +197,30 @@ export function createComfyService({
             if(method==="GET" && path==="/api/comfy/instances") {
                 const results=[];
                 for(const instance of instances.values()) {
-                    try {const info=await infoFor(instance);results.push({...instance,url:undefined,reachable:true,classTypes:Object.keys(info).filter(x=>allowClasses.has(x))});}
-                    catch{results.push({id:instance.id,reachable:false,classTypes:[]});}
+                    try {const info=await infoFor(instance);results.push({...instance,reachable:true,classTypes:Object.keys(info).filter(x=>allowClasses.has(x))});}
+                    catch{results.push({...instance,reachable:false,classTypes:[]});}
                 }
                 return send(res,200,{instances:results});
+            }
+            // Instance editing is permitted only for the authenticated loopback gateway.
+            // Refuse any mutation while a queued / uncertain / executing GPU run might resolve this ID.
+            if(["POST","PUT","DELETE"].includes(method) &&
+                (path==="/api/comfy/instances" || path.startsWith("/api/comfy/instances/"))) {
+                if(store.listStatuses(["queued","preparing","submitting","submission_unknown","running","collecting"]).length)
+                    throw statusError("comfy_instances_locked_during_pending_runs",409);
+                const oldId=path.startsWith("/api/comfy/instances/")?decodeURIComponent(path.slice("/api/comfy/instances/".length)):"";
+                if(method==="DELETE") {
+                    if(!oldId || !instances.has(oldId))throw statusError("instance_not_found",404);
+                    store.deleteInstance(oldId);instances.delete(oldId);
+                    return send(res,200,{deleted:oldId});
+                }
+                if(method==="PUT" && !oldId || method==="POST" && oldId)throw statusError("invalid_instance_route",400);
+                const raw=JSON.parse((await requestBytes(req,1024)).toString("utf8"));
+                const instance=validInstance(raw);
+                store.changeInstance(instance,oldId||undefined);
+                if(oldId)instances.delete(oldId);
+                instances.set(instance.id,instance);
+                return send(res,200,{instance});
             }
             if(method==="POST" && path==="/api/comfy/templates") {
                 const input=JSON.parse((await requestBytes(req,2_100_000)).toString("utf8"));

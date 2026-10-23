@@ -1,11 +1,12 @@
 import { App, Button, Form, Input, Modal, Select, Tabs } from "antd";
 import { Download, FileUp, Pencil, Plus, Trash2, Upload } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { ModelPicker } from "@/components/model-picker";
 import { ChannelEditorDrawer } from "@/components/layout/channel-editor-drawer";
 import { SkillManager } from "@/features/skills/skill-manager";
+const ComfySettingsTab = lazy(() => import("@/features/comfy-workflow/comfy-settings-tab").then(module => ({ default: module.ComfySettingsTab })));
 import { exportAppConfig, importAppConfig } from "@/services/config-file";
 import { exportAppBackup, importAppBackup } from "@/services/backup-restore";
 import { audioFormatOptions, audioVoiceOptions, normalizeAudioSpeedValue } from "@/lib/audio-generation";
@@ -198,6 +199,11 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
                         key: "skills",
                         label: t("config.tabs.skills"),
                         children: <SkillManager />,
+                    },
+                    {
+                        key: "comfyui",
+                        label: "ComfyUI",
+                        children: <Suspense fallback={<div className="py-6 text-xs text-stone-500">正在加载 ComfyUI 配置…</div>}><ComfySettingsTab /></Suspense>,
                     },
                     {
                         key: "backup",

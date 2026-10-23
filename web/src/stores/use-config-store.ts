@@ -58,9 +58,12 @@ export type AiConfig = {
     background: string;
     count: string;
     canvasImageCount: string;
+    /** Default local gateway instance used by all canvas workflows. */
+    comfyInstanceId: string;
+    comfyAutoDetect: boolean;
 };
 
-export type ConfigTabKey = "channels" | "preferences" | "skills" | "backup";
+export type ConfigTabKey = "channels" | "preferences" | "skills" | "comfyui" | "backup";
 
 export const CONFIG_STORE_KEY = "infinite-canvas:ai_config_store";
 const CHANNEL_MODEL_SEPARATOR = "::";
@@ -112,6 +115,8 @@ export const defaultConfig: AiConfig = {
     background: "",
     count: "1",
     canvasImageCount: "3",
+    comfyInstanceId: "comfy-local",
+    comfyAutoDetect: true,
 };
 
 type ConfigStore = {

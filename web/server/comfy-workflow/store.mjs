@@ -9,6 +9,8 @@ export function createComfyStore(root) {
     const db = new DatabaseSync(join(root,"jobs.sqlite"));
     db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;
     CREATE TABLE IF NOT EXISTS templates(id TEXT NOT NULL, revision TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(id,revision));
+    CREATE TABLE IF NOT EXISTS comfy_instances(id TEXT PRIMARY KEY, url TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS comfy_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS assets(id TEXT PRIMARY KEY, sha256 TEXT NOT NULL, mime TEXT NOT NULL, size INTEGER NOT NULL, path TEXT NOT NULL, created_at INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS runs(
       id TEXT PRIMARY KEY, principal TEXT NOT NULL, project TEXT NOT NULL, idem_key TEXT NOT NULL,
@@ -43,6 +45,36 @@ export function createComfyStore(root) {
         writeFileSync(temp,bytes);
         const fd=openSync(temp,"r+");try{fsyncSync(fd);}finally{closeSync(fd);}
         renameSync(temp,path);
+    }
+    function loadInstances(initial) {
+        return atomic(()=>{
+            const seeded=q("SELECT value FROM comfy_meta WHERE key='instances_initialized'").get();
+            if(!seeded) {
+                for(const item of initial.values())q("INSERT INTO comfy_instances(id,url) VALUES(?,?)").run(item.id,item.url);
+                q("INSERT INTO comfy_meta(key,value) VALUES('instances_initialized','1')").run();
+            }
+            return new Map(q("SELECT id,url FROM comfy_instances ORDER BY id").all().map(item=>[item.id,item]));
+        });
+    }
+    function changeInstance(instance,oldId) {
+        return atomic(()=>{
+            const total=q("SELECT COUNT(*) AS n FROM comfy_instances").get().n;
+            if(oldId) {
+                if(!q("SELECT id FROM comfy_instances WHERE id=?").get(oldId))throw Object.assign(new Error("instance_not_found"),{status:404});
+                if(instance.id!==oldId && q("SELECT id FROM comfy_instances WHERE id=?").get(instance.id))throw Object.assign(new Error("instance_id_conflict"),{status:409});
+                q("UPDATE comfy_instances SET id=?,url=? WHERE id=?").run(instance.id,instance.url,oldId);
+            }else {
+                if(total>=16)throw Object.assign(new Error("instance_limit_reached"),{status:409});
+                if(q("SELECT id FROM comfy_instances WHERE id=?").get(instance.id))throw Object.assign(new Error("instance_id_conflict"),{status:409});
+                q("INSERT INTO comfy_instances(id,url) VALUES(?,?)").run(instance.id,instance.url);
+            }
+        });
+    }
+    function deleteInstance(id) {
+        return atomic(()=>{
+            if(!q("SELECT id FROM comfy_instances WHERE id=?").get(id))throw Object.assign(new Error("instance_not_found"),{status:404});
+            q("DELETE FROM comfy_instances WHERE id=?").run(id);
+        });
     }
     function addTemplate(template) {
         const content=canonical(template);
@@ -118,5 +150,5 @@ export function createComfyStore(root) {
     const artifacts=(id)=>q("SELECT id,run_id,workflow_node_id,port_id,capture_node_id,mime,sha256,size FROM artifacts WHERE run_id=? ORDER BY rowid").all(id);
     const artifact=(runId,id)=>q("SELECT * FROM artifacts WHERE id=? AND run_id=?").get(id,runId);
     const close=()=>db.close();
-    return {db,root,addTemplate,getTemplate,addAsset,asset,findByKey,addRun,read,cas,listStatuses,resumeAfterRestart,addArtifact,artifacts,artifact,close};
+    return {db,root,loadInstances,changeInstance,deleteInstance,addTemplate,getTemplate,addAsset,asset,findByKey,addRun,read,cas,listStatuses,resumeAfterRestart,addArtifact,artifacts,artifact,close};
 }

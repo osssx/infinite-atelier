@@ -10,6 +10,7 @@ import {
 } from "./binding-picker";
 import { templatePayloadFromGraph, validateComfyApiGraph, type ComfyInputBinding, type ComfyNodeTarget, type ComfyObjectInfo, type ComfyTemplatePayload, type ComfyTemplatePort, type ComfyWorkflowTemplate } from "./template-schema";
 import { listComfyTemplates, saveComfyTemplateVersion } from "./template-registry";
+import { listComfyPresets, type ComfyPreset } from "./preset-registry";
 import { buildKrea2TurboTemplate, isKrea2TurboT2IWorkflow, krea2TurboBundledTemplate, KREA2_TURBO_TEMPLATE_ID } from "./krea2-turbo-preset";
 
 const KINDS: CanvasPortValueKind[] = ["STRING","INT","FLOAT","BOOLEAN","IMAGE","MASK","LATENT","CONDITIONING","VIDEO","AUDIO","JSON"];
@@ -22,6 +23,7 @@ const selectableClass = "w-full min-w-0 rounded-md px-2 py-1.5 text-left text-xs
 
 type Props = {
     node: CanvasNodeData;
+    context?: "node" | "preset";
     onChange: (patch: Partial<CanvasNodeMetadata>) => boolean;
     onClose: () => void;
 };
@@ -53,7 +55,7 @@ function displayValue(value:unknown):string {
     return Array.isArray(value)?"Array": "Object";
 }
 
-export function ComfyWorkflowPanel({node,onChange,onClose}:Props) {
+export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props) {
     const themeName = useThemeStore((s)=>s.theme);
     const theme = canvasThemes[themeName];
     const colors = {
@@ -67,6 +69,7 @@ export function ComfyWorkflowPanel({node,onChange,onClose}:Props) {
     } as CSSProperties;
 
     const [templates,setTemplates] = useState<ComfyWorkflowTemplate[]>([]);
+    const [presets,setPresets] = useState<ComfyPreset[]>([]);
     const [draft,setDraft] = useState<ComfyTemplatePayload|null>(null);
     const [templateId,setTemplateId] = useState("");
     const [objectInfo,setObjectInfo] = useState<ComfyObjectInfo>();
@@ -89,6 +92,7 @@ export function ComfyWorkflowPanel({node,onChange,onClose}:Props) {
 
     useEffect(()=>{
         let alive=true;
+        void listComfyPresets().then(values=>{if(alive)setPresets(values);}).catch(()=>undefined);
         void listComfyTemplates().then((values)=>{
             if (!alive) return;
             setTemplates(values);
@@ -211,7 +215,7 @@ export function ComfyWorkflowPanel({node,onChange,onClose}:Props) {
         setDraft({name:template.name,apiGraph:template.apiGraph,ports:template.ports,requirements:template.requirements});
         setTemplateId(template.id);setSelectedNodeId(Object.keys(template.apiGraph)[0]||"");
         setSelectedPortId(template.ports[0]?.id||null);setError("");
-        setStatus("Revision pinned to canvas node; Comfy instance must still be verified before execution.");
+        setStatus("已保存新的不可变模板版本。运行时使用全局 ComfyUI 默认实例进行能力验证。");
         return true;
     };
     const save=async()=>{
@@ -236,7 +240,7 @@ export function ComfyWorkflowPanel({node,onChange,onClose}:Props) {
             <header className="flex shrink-0 items-start justify-between gap-4 border-b border-[var(--comfy-border)] px-5 py-4">
                 <div className="min-w-0">
                     <div className="text-sm font-semibold">ComfyUI Workflow <span className="font-normal text-[var(--comfy-muted)]">/ Template bindings</span></div>
-                    <div className="mt-1 text-[11px] text-[var(--comfy-muted)]">Expose internal inputs and output sockets to canvas ports · Execution unavailable</div>
+                    <div className="mt-1 text-[11px] text-[var(--comfy-muted)]">{context==="preset"?"编辑全局预设的内部参数、画布输入端口和 IMAGE 输出绑定":"Expose internal inputs and output sockets to canvas ports · Execution unavailable"}</div>
                 </div>
                 <button type="button" className={buttonClass+" !size-8 !shrink-0 !px-0"} onClick={onClose} aria-label="Close template editor"><X size={15}/></button>
             </header>
@@ -256,6 +260,10 @@ export function ComfyWorkflowPanel({node,onChange,onClose}:Props) {
                         if(t)applySaved(t);
                     }}>
                     <option value="">Saved template versions</option>
+                    <optgroup label="全局预设工作流">
+                        {presets.map(p=><option key={"preset-"+p.id} value={p.templateId+"@"+p.revision}>{p.name} · {p.revision.slice(0,8)}</option>)}
+                    </optgroup>
+
                     {templates.map((t)=><option key={t.id+"@"+t.revision} value={t.id+"@"+t.revision}>
                         {t.name} · {t.revision.slice(0,10)}
                     </option>)}
@@ -512,7 +520,7 @@ export function ComfyWorkflowPanel({node,onChange,onClose}:Props) {
                     <span className="max-w-[440px] text-[11px] text-[var(--comfy-muted)]">{objectInfo?"Offline /object_info loaded":"Socket types unverified · load /object_info for accurate matching"}</span>
                     <button type="button" className="inline-flex min-h-9 items-center gap-2 rounded-lg px-4 py-2 text-xs font-semibold transition hover:opacity-85 disabled:cursor-wait disabled:opacity-75"
                         style={{ backgroundColor: theme.node.activeStroke, color: theme.node.panel }}
-                        disabled={busy} onClick={()=>void save()}><Save size={14}/>{busy?"Saving…":"Save revision & bind node"}</button>
+                        disabled={busy} onClick={()=>void save()}><Save size={14}/>{busy?"Saving…":context==="preset"?"保存预设版本与绑定":"Save revision & bind node"}</button>
                 </div>
             </div>:null}
         </section>

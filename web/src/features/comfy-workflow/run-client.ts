@@ -49,9 +49,18 @@ export async function recoverPendingComfyRun(projectId:string,nodeId:string):Pro
     localStorage.removeItem(key);
     return result;
 }
-export async function listComfyInstances():Promise<Array<{id:string;reachable:boolean;classTypes:string[]}>> {
-    const value=await comfyRequest<{instances:Array<{id:string;reachable:boolean;classTypes:string[]}>}>("/instances");
+export type ComfyInstance = {id:string;url:string;reachable:boolean;classTypes:string[]};
+export async function listComfyInstances():Promise<ComfyInstance[]> {
+    const value=await comfyRequest<{instances:ComfyInstance[]}>("/instances");
     return value.instances;
+}
+export async function saveComfyInstance(id:string,url:string,oldId?:string) {
+    return comfyRequest<{instance:{id:string;url:string}}>(oldId?"/instances/"+encodeURIComponent(oldId):"/instances",{
+        method:oldId?"PUT":"POST",headers:{"content-type":"application/json"},body:JSON.stringify({id,url})
+    });
+}
+export async function deleteComfyInstance(id:string) {
+    return comfyRequest<{deleted:string}>("/instances/"+encodeURIComponent(id),{method:"DELETE"});
 }
 export async function registerComfyTemplate(template:ComfyWorkflowTemplate,instanceId:string) {
     return comfyRequest<{result:string;instanceId:string}>("/templates",{

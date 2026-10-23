@@ -4,7 +4,8 @@ vi.mock("@/i18n", () => ({ default: { t: (key: string) => key } }));
 import { registerBuiltinNodes } from "@/components/canvas/nodes/builtin-nodes";
 import { prepareCanvasPortConnection, validateCanvasPortConnections } from "./canvas-port-connections";
 import { prepareCanvasExternalInputSnapshot, resolveCanvasInputValue } from "./canvas-external-input-snapshot";
-import { COMFY_WORKFLOW_MOCK_TYPE, getCanvasPortAnchor, getCanvasPortOffset, MOCK_COMFY_PORTS, pickCanvasDropHandle } from "./canvas-ports";
+import { COMFY_WORKFLOW_MOCK_TYPE, CANVAS_PORT_MIN_PITCH, getCanvasPortAnchor, getCanvasPortHitSize, getCanvasPortOffset, getMinimumCanvasPortNodeHeight, MOCK_COMFY_PORTS, pickCanvasDropHandle } from "./canvas-ports";
+import { applyNodeConfigPatch } from "./canvas-node-factory";
 import { connectionControlPoints, connectionControlHull } from "./canvas-connection-culling";
 import { cullConnections } from "./canvas-connection-culling";
 import { buildOverviewConnectionPaths } from "./canvas-overview-connections";
@@ -96,6 +97,53 @@ describe("Phase A: port-aware canvas connection contract", () => {
         expect(edge.connection).toMatchObject({ fromPortId:"text", toPortId:"prompt" });
         const config = n("cfg", CanvasNodeType.Config);
         expect(link(h("text", "source"), h("cfg", "target"), [text, config], []).connection).toEqual({ fromNodeId:"text",toNodeId:"cfg" });
+    });
+});
+
+describe("Dense Comfy port hover hitboxes", () => {
+    const inputPorts: CanvasPortDescriptor[] = Array.from({ length: 11 }, (_, index) => ({
+        id: "input-" + index, label: "Input " + index, direction: "target" as const, valueKind: "INT" as const,
+    }));
+    const outputPort: CanvasPortDescriptor = {id:"image",label:"Image",direction:"source",valueKind:"IMAGE"};
+    const ports = [...inputPorts,outputPort];
+
+    function expectIndependentHitboxes(node: CanvasNodeData) {
+        const hit = getCanvasPortHitSize(node, "target");
+        const ys = inputPorts.map((port) => getCanvasPortOffset(node, "target", port.id));
+        for (let index=0;index<ys.length;index++) {
+            // Every circle and its hit region must be independent, including the last few ports.
+            const picked = pickCanvasDropHandle(node, h("source", "source", "value"), node.position.y + ys[index]);
+            expect(picked?.portId).toBe(inputPorts[index].id);
+            expect(getCanvasPortAnchor(node, "target", inputPorts[index].id).y).toBe(node.position.y + ys[index]);
+            if (index) expect(ys[index] - ys[index-1]).toBeGreaterThanOrEqual(hit + 1.9);
+        }
+    }
+
+    it("older saved 265px nodes with 11 ports have non-overlapping hitboxes on every interface", () => {
+        const old = n("dense", COMFY_WORKFLOW_MOCK_TYPE, {comfyPorts:ports});
+        expect(old.height).toBe(265);
+        const hit = getCanvasPortHitSize(old, "target");
+        expect(hit).toBeGreaterThan(12);
+        expect(hit).toBeLessThan(20); // previously fixed 48px and overlapped almost 3 ports
+        expectIndependentHitboxes(old);
+    });
+
+    it("binding 11 inputs grows node to ergonomic port spacing, and repeated edits do not shrink it", () => {
+        const old = n("dense", COMFY_WORKFLOW_MOCK_TYPE);
+        const bound = applyNodeConfigPatch(old, {comfyPorts:ports});
+        expect(bound.height).toBe(getMinimumCanvasPortNodeHeight(ports));
+        expect(bound.position).toEqual(old.position);
+        expect(getCanvasPortHitSize(bound,"target")).toBe(28);
+        expectIndependentHitboxes(bound);
+        const resized={...bound,height:bound.height+150};
+        expect(applyNodeConfigPatch(resized,{comfyPorts:ports}).height).toBe(resized.height);
+        expect(bound.height).toBeGreaterThanOrEqual(65 + 22 + (inputPorts.length-1)*CANVAS_PORT_MIN_PITCH);
+    });
+
+    it("legacy connector geometry/size and sparse Comfy connectors are unaffected", () => {
+        expect(getCanvasPortHitSize(n("legacy",CanvasNodeType.Text),"source")).toBe(28);
+        expect(getMinimumCanvasPortNodeHeight(MOCK_COMFY_PORTS)).toBe(160);
+        expect(getCanvasPortOffset(n("legacy",CanvasNodeType.Text),"source","missing")).toBe(132.5);
     });
 });
 

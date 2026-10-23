@@ -6,7 +6,7 @@ import { ChevronRight, Clapperboard, Copy, Group, Image as ImageIcon, Music2, Pu
 import { canvasThemes } from "@/lib/canvas-theme";
 import { formatBytes } from "@/lib/image-utils";
 import { getNodeDefinition } from "@/lib/canvas/node-registry";
-import { COMFY_WORKFLOW_MOCK_TYPE, getCanvasPortOffset } from "@/lib/canvas/canvas-ports";
+import { COMFY_WORKFLOW_MOCK_TYPE, getCanvasPortHitSize, getCanvasPortOffset, getMinimumCanvasPortNodeHeight } from "@/lib/canvas/canvas-ports";
 import { CANVAS_CONTENT_VISIBILITY_STYLE, shouldContainCanvasContent } from "@/lib/canvas/canvas-content-visibility";
 import { isSimpleCanvasText } from "@/lib/canvas/canvas-markdown-plain";
 import { useThemeStore } from "@/stores/use-theme-store";
@@ -235,7 +235,7 @@ export const CanvasNode = React.memo(function CanvasNode({
             const dx = (clientX - resizeRef.current.startX) / resizeRef.current.scale;
             const dy = (clientY - resizeRef.current.startY) / resizeRef.current.scale;
             const minWidth = 220;
-            const minHeight = 160;
+            const minHeight = definition?.ports ? getMinimumCanvasPortNodeHeight(definition.ports(data)) : 160;
             const startRight = resizeRef.current.startLeft + resizeRef.current.startWidth;
             const startBottom = resizeRef.current.startTop + resizeRef.current.startHeight;
             const fromLeft = resizeRef.current.corner.includes("left");
@@ -519,7 +519,9 @@ export const CanvasNode = React.memo(function CanvasNode({
                     key={port.direction + ":" + port.id}
                     side={port.direction === "target" ? "left" : "right"}
                     visible={hovered || isSelected || isConnecting}
-                    top={getCanvasPortOffset(data, port.direction, port.id)}
+                    top={getCanvasPortOffset(data, port.direction, port.id)}                    hitSize={getCanvasPortHitSize(data, port.direction)}
+                    portId={port.id}
+                    portDirection={port.direction}
                     label={port.label}
                     valueKind={port.valueKind}
                     onMouseDown={(event) => onConnectStart(event, data.id, port.direction, port.id)}
@@ -1201,20 +1203,22 @@ function ResizeHandle({ corner, onMouseDown }: { corner: ResizeCorner; onMouseDo
     return <div className={`absolute z-50 size-7 ${positionClass}`} onMouseDown={(event) => onMouseDown(event, corner)} />;
 }
 
-function ConnectionHandleDot({ side, visible, onMouseDown, top, label, valueKind }: { side: "left" | "right"; visible: boolean; onMouseDown: (event: React.MouseEvent) => void; top?: number; label?: string; valueKind?: string }) {
+function ConnectionHandleDot({ side, visible, onMouseDown, top, hitSize, portId, portDirection, label, valueKind }: { side: "left" | "right"; visible: boolean; onMouseDown: (event: React.MouseEvent) => void; top?: number; hitSize?: number; portId?: string; portDirection?: "source" | "target"; label?: string; valueKind?: string }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
 
     return (
         <div
-            className={`absolute top-1/2 z-30 flex size-12 -translate-y-1/2 cursor-crosshair items-center justify-center transition-opacity duration-150 ${
+            className={`group/port absolute top-1/2 z-30 flex -translate-y-1/2 cursor-crosshair items-center justify-center transition-opacity duration-150 ${
                 side === "left" ? "-left-6" : "-right-6"
             } ${visible ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"}`}
             onMouseDown={onMouseDown}
             data-port-label={label}
+            data-port-id={portId}
+            data-port-direction={portDirection}
             title={label ? `${label} · ${valueKind}` : undefined}
-            style={top === undefined ? undefined : { top }}
+            style={{ ...(top === undefined ? {} : { top }), width: hitSize ?? 48, height: hitSize ?? 48, left: side === "left" ? -(hitSize ?? 48) / 2 : undefined, right: side === "right" ? -(hitSize ?? 48) / 2 : undefined }}
         >
-            <div className="size-3 rounded-full border-2 transition-all hover:scale-125" style={{ background: theme.node.panel, borderColor: theme.node.muted }} />
+            <div className="pointer-events-none size-3 rounded-full border-2 transition-transform group-hover/port:scale-125" style={{ background: theme.node.panel, borderColor: theme.node.muted }} />
             {label ? <span className={`pointer-events-none absolute max-w-32 truncate whitespace-nowrap rounded px-1 text-[10px] font-medium ${side === "left" ? "left-9" : "right-9"}`} style={{ background: theme.node.panel, color: theme.node.text }}>{label}<span className="ml-1 opacity-50">{valueKind}</span></span> : null}
         </div>
     );

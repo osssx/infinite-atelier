@@ -44,13 +44,40 @@ export function getCanvasPort(node: CanvasNodeData, direction: "source" | "targe
     return direction === "source" && getCanvasResourceOutputPort(node)?.id === portId ? getCanvasResourceOutputPort(node) : undefined;
 }
 
+/**
+ * Dense Comfy inputs must remain separately hit-testable. The old 48px hit regions
+ * overlapped when 11 ports were squeezed into a 265px node (roughly 18px apart).
+ * New bindings expand the node; older persisted nodes get collision-free hit regions.
+ */
+export const CANVAS_PORT_MIN_PITCH = 30;
+export const CANVAS_PORT_HIT_MAX = 28;
+export const CANVAS_PORT_HIT_GAP = 2;
+export const CANVAS_PORT_TOP_PADDING = 65;
+export const CANVAS_PORT_BOTTOM_PADDING = 22;
+
+export function getMinimumCanvasPortNodeHeight(ports: readonly CanvasPortDescriptor[]): number {
+    const inputs = ports.filter((port) => port.direction === "target").length;
+    const outputs = ports.filter((port) => port.direction === "source").length;
+    const maxCount = Math.max(inputs, outputs);
+    return Math.max(160, CANVAS_PORT_TOP_PADDING + CANVAS_PORT_BOTTOM_PADDING + Math.max(0, maxCount - 1) * CANVAS_PORT_MIN_PITCH);
+}
+
+export function getCanvasPortHitSize(node: CanvasNodeData, direction: "source" | "target"): number {
+    const count = getCanvasNodePorts(node).filter((port) => port.direction === direction).length;
+    if (count <= 1) return CANVAS_PORT_HIT_MAX;
+    const top = Math.min(CANVAS_PORT_TOP_PADDING, Math.max(22, node.height * 0.22));
+    const pitch = Math.max(0, node.height - top - CANVAS_PORT_BOTTOM_PADDING) / (count - 1);
+    // Never let one port's hover hitbox cover its neighbour on compact old nodes.
+    return Math.max(1, Math.min(CANVAS_PORT_HIT_MAX, pitch - CANVAS_PORT_HIT_GAP));
+}
+
 /** Shared DOM + SVG port layout: no DOM measurement, stable during pan/zoom. */
 export function getCanvasPortOffset(node: CanvasNodeData, direction: "source" | "target", portId: string): number {
     const ports = getCanvasNodePorts(node).filter((port) => port.direction === direction);
     const index = ports.findIndex((port) => port.id === portId);
     if (index < 0) return node.height / 2;
-    const top = Math.min(65, Math.max(22, node.height * 0.22));
-    const space = Math.max(0, node.height - top - 22);
+    const top = Math.min(CANVAS_PORT_TOP_PADDING, Math.max(22, node.height * 0.22));
+    const space = Math.max(0, node.height - top - CANVAS_PORT_BOTTOM_PADDING);
     return top + (ports.length === 1 ? space / 2 : (space * index) / (ports.length - 1));
 }
 

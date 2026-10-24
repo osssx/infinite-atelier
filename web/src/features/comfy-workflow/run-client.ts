@@ -45,9 +45,14 @@ async function comfyRequest<T>(path:string,init?:RequestInit):Promise<T> {
             throw new Error("ComfyUI 尚未安装工作流依赖节点："+reason.slice("comfy_missing_class:".length)+"。请在 ComfyUI 中安装相应节点后重试。");
         if(response.status===401||response.status===403)throw new Error("ComfyUI 网关鉴权失败（HTTP "+response.status+"），请确保网关与 Vite 配置相同 GATEWAY_TOKEN。"+reason);
         const missing=reason.match(/^(?:media_input_requires_connection|untrusted_template_file):(.+)$/);
-        const description=missing
-            ? "缺少工作流媒体输入 "+missing[1]+"：请将图片/媒体节点连接到该输入端口。不能直接使用模板中的示例文件名。"
-            : reason;
+        const model=reason.match(/^comfy_model_(missing|ambiguous):([^:]+):(.+)$/);
+        const description=model
+            ? model[1]==="missing"
+                ? "ComfyUI 当前实例没有找到 LoRA 模型："+model[3]+"。请检查模型目录及 ComfyUI 的模型列表，或在工作流模板中选择已安装的 LoRA。"
+                : "ComfyUI 中有多个同名 LoRA："+model[3]+"。请在工作流模板中明确选择包含目录的完整模型路径。"
+            : missing
+                ? "缺少工作流媒体输入 "+missing[1]+"：请将图片/媒体节点连接到该输入端口。不能直接使用模板中的示例文件名。"
+                : reason;
         throw Object.assign(new Error(description),{httpStatus:response.status});
     }
     return data as T;

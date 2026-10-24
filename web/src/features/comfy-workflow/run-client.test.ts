@@ -75,6 +75,15 @@ describe("Comfy media input preflight and submission recovery",()=>{
 
 
 describe("ComfyUI browser gateway responses",()=>{
+    it.each([
+        ["missing","ComfyUI 当前实例没有找到 LoRA 模型"],
+        ["ambiguous","ComfyUI 中有多个同名 LoRA"],
+    ])("explains unavailable or ambiguous LoRA choices (%s)",async(type,message)=>{
+        vi.stubGlobal("fetch",vi.fn().mockResolvedValue(new Response(JSON.stringify({
+            error:"comfy_model_"+type+":LoraLoaderModelOnly.lora_name:kera2\\test.safetensors"
+        }),{status:422,headers:{"content-type":"application/json"}})));
+        await expect(listComfyInstances()).rejects.toThrow(message);
+    });
     it("explains a Vite proxy / missing gateway 502 instead of invalid JSON",async()=>{
         vi.stubGlobal("fetch",vi.fn().mockResolvedValue(new Response("<html>Bad Gateway</html>",{
             status:502,headers:{"content-type":"text/html"}

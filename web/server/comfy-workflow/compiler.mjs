@@ -124,6 +124,20 @@ function normalizeComfyEnumInputs(graph, info, trustedImageFields) {
                 declaration[0].every(choice=>typeof choice==="string") ? declaration[0] : null;
             if(!choices)continue;
             if(choices.includes(value))continue;
+            // Comfy's resource widgets require the installed path exactly. Re-imported
+            // templates can retain stale directory names; resolve only if the model
+            // filename identifies exactly one installed resource (never fuzzy matching).
+            if(node.class_type==="LoraLoaderModelOnly" && key==="lora_name" &&
+                /\.safetensors$/i.test(value)) {
+                const norm=s=>s.replaceAll("\\","/").toLowerCase();
+                const fullMatches=choices.filter(choice=>norm(choice)===norm(value));
+                const basename=s=>norm(s).split("/").at(-1);
+                const matches=fullMatches.length ? fullMatches :
+                    choices.filter(choice=>basename(choice)===basename(value));
+                if(matches.length===1){node.inputs[key]=matches[0];continue;}
+                const error=matches.length>1?"comfy_model_ambiguous:":"comfy_model_missing:";
+                fail(error+node.class_type+"."+key+":"+value);
+            }
             const candidates=/^\d{1,3}:\d{1,3}$/.test(value)
                 ? choices.filter(choice=>choice.startsWith(value+" (")) : [];
             if(candidates.length===1) node.inputs[key]=candidates[0];

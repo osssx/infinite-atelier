@@ -16,8 +16,8 @@ describe("Krea 2 Turbo INT8 API workflow bindings", () => {
         const configured = krea2TurboBundledTemplate();
         expect(configured.apiGraph).toEqual(raw);
         expect(configured.requirements.modelAssets).toEqual([
-            "kera2\\KNP_000003000.safetensors",
-            "kera2\\krea2filterbypass3.safetensors",
+            "krea2\\KNP_000003000.safetensors",
+            "krea2\\krea2filterbypass3.safetensors",
             "krea2_turbo_int8_convrot.safetensors",
             "qwen3vl_4b_fp8_scaled.safetensors",
             "qwen_image_vae.safetensors",

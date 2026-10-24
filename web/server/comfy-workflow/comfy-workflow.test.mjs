@@ -195,6 +195,43 @@ test("image staged LoadImage replaces internal IMAGE link, multi-source rejects"
     const multi=req();multi.nodes.push({...multi.nodes[0],id:"wf-2"});
     assert.throws(()=>compileSingleWorkflow(multi,template(),options()),/single_workflow_request_required/);
 });
+
+test("Krea2 LoRA path typo resolves to the unique installed exact enum without changing saved templates",()=>{
+    const t=template();
+    t.apiGraph["model"]={class_type:"ModelNode",inputs:{}};
+    t.apiGraph["lora"]={class_type:"LoraLoaderModelOnly",inputs:{
+        model:["model",0],lora_name:"kera2\\krea2filterbypass3.safetensors",strength_model:0.8
+    }};
+    t.apiGraph["20"].inputs.model=["lora",0];
+    t.requirements.classTypes=[...new Set(Object.values(t.apiGraph).map(n=>n.class_type))].sort();
+    t.revision=sha256(canonical({name:t.name,apiGraph:t.apiGraph,ports:t.ports,requirements:t.requirements}));
+    const r=req();r.nodes[0].templateRevision=t.revision;
+    const options=["krea2\\KNP_000003000.safetensors","krea2\\krea2filterbypass3.safetensors"];
+    const live={...info,
+        Generate:{...info.Generate,input:{...info.Generate.input,optional:{model:["MODEL",{}]}}},
+        ModelNode:{input:{required:{}},output:["MODEL"]},
+        LoraLoaderModelOnly:{input:{required:{
+            model:["MODEL",{}],strength_model:["FLOAT",{}],lora_name:[options,{}]
+        }},output:["MODEL"]}
+    };
+    const compiled=compileSingleWorkflow(r,t,{info:live});
+    assert.equal(compiled.graph["w_wf-1__lora"].inputs.lora_name,options[1]);
+    assert.equal(t.apiGraph.lora.inputs.lora_name,"kera2\\krea2filterbypass3.safetensors");
+    const withPath=(path,details=live)=>{
+        const copy=structuredClone(t);
+        copy.apiGraph.lora.inputs.lora_name=path;
+        copy.revision=sha256(canonical({name:copy.name,apiGraph:copy.apiGraph,ports:copy.ports,requirements:copy.requirements}));
+        const request=structuredClone(r);
+        request.nodes[0].templateRevision=copy.revision;
+        return compileSingleWorkflow(request,copy,{info:details});
+    };
+    assert.equal(withPath("KREA2/krea2filterbypass3.safetensors").graph["w_wf-1__lora"].inputs.lora_name,options[1]);
+    assert.throws(()=>withPath("kera2\\unknown-filter.safetensors"),/comfy_model_missing:LoraLoaderModelOnly.lora_name/);
+    const ambiguous={...live,LoraLoaderModelOnly:{...live.LoraLoaderModelOnly,
+        input:{required:{...live.LoraLoaderModelOnly.input.required,
+            lora_name:[[options[1],"other\\krea2filterbypass3.safetensors"],{}]}}}};
+    assert.throws(()=>compileSingleWorkflow(r,t,{info:ambiguous}),/comfy_model_ambiguous:LoraLoaderModelOnly.lora_name/);
+});
 test("ResolutionSelector short aspect ratio is normalized to the live ComfyUI enum before /prompt",()=>{
     const choices=["1:1 (Square)","3:4 (Portrait Standard)","9:16 (Portrait Widescreen)","16:9 (Widescreen)","21:9 (Ultrawide)"];
     const t=template();

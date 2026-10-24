@@ -18,6 +18,7 @@ import { useTranslation } from "react-i18next";
 import { getMediaBlob } from "@/services/file-storage";
 import { getExistingMediaPreview, resolveMediaPreview } from "@/services/media-preview-storage";
 import { comfyRunStatusLabel, isComfyRunActive } from "@/features/comfy-workflow/run-status";
+import { shouldPlayVideoCoverClick, videoCoverPressDragged, type VideoCoverPress } from "./canvas-video-cover-gesture";
 
 // Parsing rich Markdown is only needed for full, non-editing text nodes. Keep its
 // parser out of the initial canvas bundle and all compact LOD representations.
@@ -800,6 +801,7 @@ function VideoNodeContent({ node, theme, onMediaPlaybackChange }: NodeContentRen
     const source = node.metadata?.content;
     const storageKey = node.metadata?.storageKey;
     const videoRef = useRef<HTMLVideoElement>(null);
+    const coverPressRef = useRef<VideoCoverPress | null>(null);
     const [cover, setCover] = useState<{ key: string; url: string } | null>(null);
     const [requested, setRequested] = useState(false);
     const [frameReady, setFrameReady] = useState(false);
@@ -874,8 +876,26 @@ function VideoNodeContent({ node, theme, onMediaPlaybackChange }: NodeContentRen
             {!frameReady ? (
                 <button type="button" data-canvas-video-cover data-canvas-no-zoom
                     className="absolute inset-0 flex h-full w-full items-center justify-center overflow-hidden bg-black text-white"
-                    onClick={(event) => { event.stopPropagation(); if (!requested) beginPlayback(); }}
-                    onMouseDown={(event) => event.stopPropagation()}
+                    onMouseDown={(event) => {
+                        // Bubble to the canvas node's drag handler. The cover also acts as
+                        // a drag surface; it must not consume mouse down until playback.
+                        coverPressRef.current = event.button === 0
+                            ? { startX:event.clientX, startY:event.clientY, dragged:false } : null;
+                    }}
+                    onMouseMove={(event) => {
+                        if (coverPressRef.current && (event.buttons & 1))
+                            coverPressRef.current.dragged = videoCoverPressDragged(
+                                coverPressRef.current, event.clientX, event.clientY,
+                            );
+                    }}
+                    onClick={(event) => {
+                        event.stopPropagation();
+                        const press = coverPressRef.current;
+                        coverPressRef.current = null;
+                        // Keyboard activation has no mouse press. Do not play on a
+                        // completed node drag (including moving out and back).
+                        if (shouldPlayVideoCoverClick(press,event) && !requested) beginPlayback();
+                    }}
                     aria-label={failed ? "Retry video playback" : requested ? "Loading video" : "Play video"}
                 >
                     {poster ? <img src={poster} alt="" draggable={false}

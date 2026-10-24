@@ -254,6 +254,8 @@ function AtelierCanvasPage() {
         hasMoved: boolean;
         startX: number;
         startY: number;
+        /** A video cover click starts playback without opening the node inspector. */
+        suppressClickPanel: boolean;
         // Map, not an array: the per-frame update needs O(1) lookup per node, and the previous
         // `initialPositions.find(...)` inside the node loop was O(N x M) every frame.
         initialPositions: Map<string, { x: number; y: number }>;
@@ -267,6 +269,7 @@ function AtelierCanvasPage() {
         hasMoved: false,
         startX: 0,
         startY: 0,
+        suppressClickPanel: false,
         initialPositions: new Map(),
         movedNodes: [],
         reversedCandidateGroups: [],
@@ -1391,6 +1394,7 @@ function AtelierCanvasPage() {
             hasMoved: false,
             startX: event.clientX,
             startY: event.clientY,
+            suppressClickPanel: Boolean((event.target as HTMLElement).closest?.("[data-canvas-video-cover]")),
             initialPositions,
             movedNodes,
             // Snapshotted once. Candidates are in reverse array order so the frame loop can take the
@@ -1417,7 +1421,7 @@ function AtelierCanvasPage() {
         if (wasDragging) historyPausedRef.current = false;
         if (!wasDragging) return;
 
-        const wasClick = !dragRef.current.hasMoved && dragRef.current.movedNodes.length === 1;
+        const wasClick = !dragRef.current.hasMoved && !dragRef.current.suppressClickPanel && dragRef.current.movedNodes.length === 1;
         const clickedNodeId = dragRef.current.movedNodes[0]?.id;
         const currentViewport = viewportRef.current;
         const dx = clientX == null ? 0 : (clientX - dragRef.current.startX) / currentViewport.k;
@@ -1448,6 +1452,7 @@ function AtelierCanvasPage() {
         dragRef.current.isDraggingNode = false;
         dragRef.current.hasMoved = false;
         dragRef.current.initialPositions = new Map();
+        dragRef.current.suppressClickPanel = false;
         dragRef.current.movedNodes = [];
         dragRef.current.reversedCandidateGroups = [];
         dragRef.current.lastDropTargetId = null;

@@ -90,7 +90,8 @@ import { validateCanvasPortConnections } from "@/lib/canvas/canvas-port-connecti
 import { getComfyRun, hasPendingComfyRun, recoverPendingComfyRun, startComfyWorkflowRun, type ComfyRunArtifact, type ComfyRunState } from "@/features/comfy-workflow/run-client";
 import { getComfyTemplate } from "@/features/comfy-workflow/template-registry";
 import { isComfyRunActive, isComfyRunTerminal } from "@/features/comfy-workflow/run-status";
-import { nextComfyArtifactTileIndex, placeComfyImageArtifact } from "@/features/comfy-workflow/artifact-layout";
+import { nextComfyArtifactTileIndex } from "@/features/comfy-workflow/artifact-layout";
+import { importComfyArtifact } from "@/features/comfy-workflow/artifact-importers";
 import { resolveCanvasComfyInstance } from "@/features/comfy-workflow/canvas-instance";
 import { CanvasRefreshShell } from "@/components/canvas/canvas-refresh-shell";
 import { CanvasTopBar } from "@/components/canvas/canvas-top-bar";
@@ -3436,7 +3437,7 @@ function AtelierCanvasPage() {
                 throw new Error("请先在工作流参数面板绑定预设模板");
             if(!globalComfyInstanceId)throw new Error("请先在全局 ComfyUI 设置中选择默认实例");
             if(isComfyRunActive(workflowNode.metadata?.comfyExecution?.status))
-                throw new Error("该工作流正在执行或导入图片，请先等待完成");
+                throw new Error("该工作流正在执行或导入产物，当前不可重复提交");
             const pending=hasPendingComfyRun(projectId,nodeId);
             if(!pending && binding.lastRunId) {
                 // Metadata can be stale after reload: never duplicate a running GPU job.
@@ -3451,13 +3452,13 @@ function AtelierCanvasPage() {
             const result=pending ? await recoverPendingComfyRun(projectId,nodeId) : await (async()=>{
                 const template=await getComfyTemplate(binding.templateId,binding.templateRevision);
                 if(!template)throw new Error("绑定的工作流模板版本不存在，请重新导入");
-                const output=template.ports.find(p=>p.direction==="source"&&p.valueKind==="IMAGE"&&
-                    p.capture?.kind==="image"&&p.capture.adapterId==="SaveImage");
-                if(!output)throw new Error("工作流模板缺少可采集的 IMAGE 输出端口");
+                const outputs=template.ports.filter(p=>p.direction==="source" && p.capture?.kind!=="none" &&
+                    !!p.capture?.adapterId);
+                if(!outputs.length)throw new Error("工作流模板没有可捕获的输出端口");
                 if(activeProjectIdRef.current!==projectId || !pageMountedRef.current)
                     throw new Error("画布已切换，停止提交");
                 return startComfyWorkflowRun({
-                    projectId,workflowNode,...snapshot,template,instanceId:globalComfyInstanceId,outputPortId:output.id
+                    projectId,workflowNode,...snapshot,template,instanceId:globalComfyInstanceId,outputPortIds:outputs.map(p=>p.id)
                 });
             })();
             if(activeProjectIdRef.current===projectId && pageMountedRef.current)
@@ -3486,20 +3487,10 @@ function AtelierCanvasPage() {
                 const res=await fetch(artifact.url,{cache:"no-store"});
                 if(!res.ok)throw new Error("无法下载 ComfyUI 产物："+res.status);
                 const blob=await res.blob();
-                if(!blob.type.startsWith("image/"))throw new Error("ComfyUI 产物类型不是图片");
-                const uploaded=await uploadImage(blob);
                 const index=indexByWorkflow.get(source.id) ?? nextComfyArtifactTileIndex(nodesRef.current,source.id);
-                const placement=placeComfyImageArtifact(source,index,uploaded.width,uploaded.height);
-                const created=createCanvasNode(CanvasNodeType.Image,placement.center,{
-                    ...imageMetadata(uploaded),
-                    comfyArtifact:{runId:artifact.runId,artifactId:artifact.artifactId,
-                        workflowNodeId:artifact.workflowNodeId,portId:artifact.portId}
-                });
-                created.width=placement.width;
-                created.height=placement.height;
-                indexByWorkflow.set(source.id,index+1);
+                const created=await importComfyArtifact(artifact,blob,source,index);                indexByWorkflow.set(source.id,index+1);
                 setNodes(prev=>prev.some(n=>n.metadata?.comfyArtifact?.artifactId===artifact.artifactId)?prev:[...prev,created]);
-                // The IMAGE output edge is a persisted canvas connection, not merely
+                // The typed output edge is a persisted canvas connection, not merely
                 // a visual placement next to the workflow. It also fans out for batches.
                 setConnections(prev=>reconcileComfyArtifactConnections([...nodesRef.current,created],prev,nanoid));
             } finally {
@@ -3509,7 +3500,7 @@ function AtelierCanvasPage() {
     },[]);
 
     // Monitor durable Comfy jobs at canvas scope, not inside the short-lived inspector.
-    // Closing the inspector or reloading the canvas cannot stop progress or image import.
+    // Closing the inspector or reloading the canvas cannot stop progress or artifact import.
     useEffect(()=>{
         if(!projectLoaded)return;
         let disposed=false,checking=false;

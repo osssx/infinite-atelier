@@ -37,6 +37,40 @@ describe("Phase B: ComfyUI API graph and immutable bindings", () => {
         const cycle = graph(); (cycle["10"].inputs as Record<string,unknown>).text=["20",0];
         expect(() => validateComfyApiGraph(cycle)).toThrow(/cycle/);
     });
+    it("handles ComfyMathExpression COMFY_AUTOGROW_V3 named leaves, not a literal parent",()=>{
+        const descriptor:ComfyObjectInfo={
+            PrimitiveFloat:{input:{required:{value:["FLOAT",{}]}},output:["FLOAT"]},
+            ComfyMathExpression:{input:{required:{
+                expression:["STRING",{}],
+                values:["COMFY_AUTOGROW_V3",{template:{names:["a","b","c"],min:1,
+                    input:{required:{value:["FLOAT,INT,BOOLEAN",{}]}}}}]
+            }},output:["FLOAT","INT","BOOLEAN"]}
+        };
+        const graph={
+            "1":{class_type:"PrimitiveFloat",inputs:{value:5}},
+            "2":{class_type:"ComfyMathExpression",inputs:{expression:"a * 2","values.a":["1",0]}}
+        };
+        expect(() => validateComfyApiGraph(graph,descriptor)).not.toThrow();
+        const unknown=structuredClone(graph) as Record<string,{class_type:string;inputs:Record<string,unknown>}>;
+        unknown["2"].inputs["values.z"]=7;
+        expect(() => validateComfyApiGraph(unknown,descriptor)).toThrow(/unknown input 2.values.z/);
+        delete unknown["2"].inputs["values.z"];
+        delete unknown["2"].inputs["values.a"];
+        expect(() => validateComfyApiGraph(unknown,descriptor)).toThrow(/required field missing: 2.values.a/);
+        unknown["2"].inputs.values={a:5};
+        expect(() => validateComfyApiGraph(unknown,descriptor)).toThrow(/unknown input 2.values/);
+    });
+    it("handles COMFY_AUTOGROW_V3 prefix with min and max",()=>{
+        const descriptor:ComfyObjectInfo={
+            Grow:{input:{required:{values:["COMFY_AUTOGROW_V3",{template:{
+                prefix:"input",max:3,min:1,input:{required:{value:["INT",{}]}}
+            }}]}},output:["INT"]}
+        };
+        const graph={"1":{class_type:"Grow",inputs:{"values.input0":5,"values.input2":7}}};
+        expect(() => validateComfyApiGraph(graph,descriptor)).not.toThrow();
+        expect(() => validateComfyApiGraph({"1":{class_type:"Grow",inputs:{"values.input3":5}}},descriptor))
+            .toThrow(/unknown input 1.values.input3/);
+    });
     it("requires distinct input claims and valid mapping target types", () => {
         const duplicate = payload();
         duplicate.ports.push({id:"other",label:"Other",direction:"target",valueKind:"STRING",

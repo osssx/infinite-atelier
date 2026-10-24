@@ -106,7 +106,7 @@ describe("durable Comfy IMAGE output to materialized Image nodes",()=>{
         comfyPorts:[{id:"generated",label:"Result",direction:"source",valueKind:"IMAGE"}],
     });
     const image=(id:string,artifactId=id):CanvasNodeData=>n(id,CanvasNodeType.Image,{
-        content:"blob:mock",comfyArtifact:{runId:"run-1",artifactId,workflowNodeId:"wf",portId:"generated"},
+        content:"blob:mock",comfyArtifact:{runId:"run-1",artifactId,workflowNodeId:"wf",portId:"generated",kind:"image",index:0},
     });
     it("connects two generated images from exactly the bound IMAGE output socket",()=>{
         const nodes=[workflow,image("img-1"),image("img-2")];
@@ -134,7 +134,7 @@ describe("durable Comfy IMAGE output to materialized Image nodes",()=>{
         ]});
         expect(link(h("foreign","source","generated"),h("img","target"),[...nodes,foreign],[]).error).toBe("legacy_target_not_supported");
     });
-    it("repairs orphaned images from older saved canvases without changing their metadata",()=>{
+    it("reconciles generated outputs after canvas hydration without changing metadata",()=>{
         const nodes=[workflow,image("img1"),image("img2")];
         const old=[{id:"unrelated",fromNodeId:"t",toNodeId:"s"}];
         const repaired=reconcileComfyArtifactConnections(nodes,old,(()=>{let id=0;return ()=>"new-"+(++id);})());
@@ -142,6 +142,39 @@ describe("durable Comfy IMAGE output to materialized Image nodes",()=>{
         expect(repaired[0]).toEqual(old[0]);
         expect(reconcileComfyArtifactConnections(nodes,repaired,()=>{throw Error("should not create")}))
             .toHaveLength(3);
+    });
+});
+
+describe("typed Comfy outputs attach only to the matching generated resource",()=>{
+    const kinds=[
+        {kind:"image" as const,type:CanvasNodeType.Image,port:"i",socket:"IMAGE" as const},
+        {kind:"video" as const,type:CanvasNodeType.Video,port:"v",socket:"VIDEO" as const},
+        {kind:"audio" as const,type:CanvasNodeType.Audio,port:"a",socket:"AUDIO" as const},
+        {kind:"text" as const,type:CanvasNodeType.Text,port:"t",socket:"STRING" as const},
+    ];
+    const wf=n("workflow",COMFY_WORKFLOW_MOCK_TYPE,{comfyPorts:kinds.map(item=>({
+        id:item.port,label:item.port,direction:"source" as const,valueKind:item.socket
+    }))});
+    const targets=kinds.map((item,index)=>n("item-"+index,item.type,{comfyArtifact:{
+        runId:"run-v2",artifactId:"artifact-"+index,workflowNodeId:"workflow",
+        portId:item.port,kind:item.kind,index
+    }}));
+    it("connects all four kinds and is idempotent",()=>{
+        const nodes=[wf,...targets];
+        const edges=reconcileComfyArtifactConnections(nodes,[],(()=>{let i=0;return ()=>"typed-"+(++i);})());
+        expect(edges).toHaveLength(4);
+        expect(validateCanvasPortConnections(nodes,edges)).toEqual([]);
+        expect(reconcileComfyArtifactConnections(nodes,edges,()=>{throw Error("already materialized");})).toEqual(edges);
+    });
+    it("rejects media-kind mismatch and missing new-contract index",()=>{
+        const invalid={...targets[1],metadata:{...targets[1].metadata,comfyArtifact:{
+            ...targets[1].metadata!.comfyArtifact!,kind:"image" as const
+        }}};
+        const nodes=[wf,invalid];
+        expect(reconcileComfyArtifactConnections(nodes,[],()=> "not-used")).toHaveLength(0);
+        expect(prepareCanvasPortConnection(
+            {nodeId:wf.id,handleType:"source",portId:"v"},
+            {nodeId:invalid.id,handleType:"target"},nodes,[]).error).toBe("legacy_target_not_supported");
     });
 });
 

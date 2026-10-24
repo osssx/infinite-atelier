@@ -5,12 +5,25 @@ import type { ComfyWorkflowTemplate } from "./template-schema";
 
 export type ComfyRunArtifact = {
     artifactId:string;runId:string;workflowNodeId:string;portId:string;
+    kind:"image"|"video"|"audio"|"text";index:number;filename?:string;
+    metadata?:{width?:number;height?:number;durationMs?:number;fps?:number;sampleRate?:number;channels?:number};
     mimeType:string;sha256:string;byteSize:number;url:string;
 };
 export type ComfyRunState = {
     runId:string;status:string;promptId?:string|null;error?:string|null;
     workflowNodeId:string;artifacts:ComfyRunArtifact[];
 };
+/** Only an explicit 4xx API rejection proves that no GPU run was accepted. */
+export function isComfySubmissionRejected(error:unknown):boolean {
+    return error instanceof Error && "httpStatus" in error &&
+        [400,404,413,415,422].includes((error as Error & {httpStatus:number}).httpStatus);
+}
+/** File/media inputs never fall back to a filename embedded in the imported API graph. */
+export function missingComfyMediaInputs(template:ComfyWorkflowTemplate,workflowNodeId:string,
+    connections:readonly CanvasConnection[]) {
+    return template.ports.filter(port=>port.direction==="target" && port.inputBinding?.mode==="media-file" &&
+        !connections.some(edge=>edge.toNodeId===workflowNodeId && edge.toPortId===port.id));
+}
 async function comfyRequest<T>(path:string,init?:RequestInit):Promise<T> {
     let response:Response;
     try {
@@ -31,12 +44,16 @@ async function comfyRequest<T>(path:string,init?:RequestInit):Promise<T> {
         if(reason.startsWith("comfy_missing_class:"))
             throw new Error("ComfyUI 尚未安装工作流依赖节点："+reason.slice("comfy_missing_class:".length)+"。请在 ComfyUI 中安装相应节点后重试。");
         if(response.status===401||response.status===403)throw new Error("ComfyUI 网关鉴权失败（HTTP "+response.status+"），请确保网关与 Vite 配置相同 GATEWAY_TOKEN。"+reason);
-        throw new Error(reason);
+        const missing=reason.match(/^(?:media_input_requires_connection|untrusted_template_file):(.+)$/);
+        const description=missing
+            ? "缺少工作流媒体输入 "+missing[1]+"：请将图片/媒体节点连接到该输入端口。不能直接使用模板中的示例文件名。"
+            : reason;
+        throw Object.assign(new Error(description),{httpStatus:response.status});
     }
     return data as T;
 }
 
-const pendingKey=(projectId:string,nodeId:string)=>"comfy_pending_v1:"+projectId+":"+nodeId;
+const pendingKey=(projectId:string,nodeId:string)=>"comfy_pending_v2:"+projectId+":"+nodeId;
 export function hasPendingComfyRun(projectId:string,nodeId:string) {
     return Boolean(localStorage.getItem(pendingKey(projectId,nodeId)));
 }
@@ -45,11 +62,18 @@ export async function recoverPendingComfyRun(projectId:string,nodeId:string):Pro
     const key=pendingKey(projectId,nodeId);
     const payload=localStorage.getItem(key);
     if(!payload)throw new Error("没有需要恢复的提交快照");
-    const result=await comfyRequest<ComfyRunState>("/runs",{
-        method:"POST",headers:{"content-type":"application/json"},body:payload
-    });
-    localStorage.removeItem(key);
-    return result;
+    try {
+        const result=await comfyRequest<ComfyRunState>("/runs",{
+            method:"POST",headers:{"content-type":"application/json"},body:payload
+        });
+        localStorage.removeItem(key);
+        return result;
+    }catch(error) {
+        // A definitive validation rejection cannot be recovered. Do not strand the user in
+        // submission_unknown. Network failures, timeouts and 5xx MUST retain this snapshot.
+        if(isComfySubmissionRejected(error))localStorage.removeItem(key);
+        throw error;
+    }
 }
 export type ComfyInstance = {id:string;url:string;reachable:boolean;classTypes:string[]};
 export const COMFY_GATEWAY_UPGRADE_MESSAGE =
@@ -97,12 +121,17 @@ export async function cancelComfyRun(runId:string) {
 export async function startComfyWorkflowRun(args:{
     projectId:string;workflowNode:CanvasNodeData;nodes:readonly CanvasNodeData[];
     connections:readonly CanvasConnection[];template:ComfyWorkflowTemplate;instanceId:string;
-    outputPortId:string;
+    outputPortIds:readonly string[];
 }):Promise<ComfyRunState> {
-    const {projectId,workflowNode,template,instanceId,outputPortId}=args;
+    const {projectId,workflowNode,template,instanceId,outputPortIds}=args;
+    if(outputPortIds.length<1 || outputPortIds.length>16 || new Set(outputPortIds).size!==outputPortIds.length ||
+        outputPortIds.some(id=>!template.ports.some(port=>port.id===id && port.direction==="source" && port.capture?.kind!=="none" && !!port.capture?.adapterId)))
+        throw new Error("必须选择至少一个有效的产物输出端口，最多 16 个");
     const binding=workflowNode.metadata?.comfyWorkflow;
     if(!binding || binding.templateId!==template.id || binding.templateRevision!==template.revision)throw new Error("工作流模板版本不匹配");
     if(hasPendingComfyRun(projectId,workflowNode.id))throw new Error("存在未确认的提交，请先使用“恢复待确认提交”以相同 key 查询/恢复，避免重复 GPU 执行");
+    const missingMedia=missingComfyMediaInputs(template,workflowNode.id,args.connections);
+    if(missingMedia.length)throw new Error("请先连接媒体输入："+missingMedia.map(port=>port.label+" ("+port.id+")").join("、")+"。请从画布图片节点的输出端口连到工作流输入端口，模板中的示例文件不能直接使用。");
     const incoming=args.connections.filter(edge=>edge.toNodeId===workflowNode.id);
     if (incoming.some(edge=>!edge.fromPortId||!edge.toPortId))throw new Error("工作流只能使用显式端口连线");
     const externalNodes=args.nodes.filter(n=>n.id!==workflowNode.id);
@@ -111,8 +140,8 @@ export async function startComfyWorkflowRun(args:{
     // Freeze the entire canvas-derived view before the first async upload.
     const prepared=prepareCanvasExternalInputSnapshot(args.nodes,incoming);
     const frozen={
-        schemaVersion:1,projectId,canvasRevision:String(Date.now()),instanceId,
-        rootOutputs:[{nodeId:workflowNode.id,portId:outputPortId}],
+        schemaVersion:2,projectId,canvasRevision:String(Date.now()),instanceId,
+        rootOutputs:outputPortIds.map(portId=>({nodeId:workflowNode.id,portId})),
         nodes:[{id:workflowNode.id,templateId:template.id,templateRevision:template.revision,
             inputOverrides:structuredClone(binding.inputOverrides??{})}],
         edges:incoming.map(edge=>({

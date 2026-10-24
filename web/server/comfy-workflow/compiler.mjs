@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { prepareCapture } from "./capture-adapters.mjs";
 
 const has = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
 const fail = (code, status = 422) => { throw Object.assign(new Error(code), { code, status }); };
@@ -60,7 +61,15 @@ export function verifyTemplate(template) {
                 if (claims.has(key)) fail("template_duplicate_claim");
                 claims.add(key);
             }
-        } else if (!port.outputBinding || !has(apiGraph,port.outputBinding.nodeId) || !Number.isInteger(port.outputBinding.outputIndex) || port.outputBinding.outputIndex < 0) fail("template_output_invalid");
+        } else {
+            if(!port.outputBinding || !has(apiGraph,port.outputBinding.nodeId) ||
+                !Number.isInteger(port.outputBinding.outputIndex) || port.outputBinding.outputIndex<0)fail("template_output_invalid");
+            if(!port.capture || !["none","image","video","audio","text"].includes(port.capture.kind))fail("template_capture_invalid");
+            if(port.capture.kind!=="none" && ({image:"IMAGE",video:"VIDEO",audio:"AUDIO",text:"STRING"})[port.capture.kind]!==port.valueKind)
+                fail("template_capture_kind_mismatch");
+            if(port.capture.kind!=="none" && !["SaveImage","SaveVideo","SaveAudio","SaveText"].includes(port.capture.adapterId))
+                fail("capture_adapter_unsupported");
+        }
     }
     const {id,revision,...payload} = template;
     if (sha256(canonical({name:payload.name,apiGraph:payload.apiGraph,ports:payload.ports,requirements:payload.requirements})) !== revision) fail("template_revision_mismatch");
@@ -70,18 +79,57 @@ export function verifyTemplate(template) {
     return template;
 }
 
-// ComfyUI custom widgets can publish input schemas under a selected dynamic-combo option.
-// The API graph encodes these as dotted input names (e.g. sampling_mode.temperature).
-// Only accept suffixes declared for the currently selected option; never wildcard arbitrary inputs.
+// V3 dynamic inputs serialize as dotted leaf keys; their declaration is in /object_info.
+// AUTOGROW has no parent value: "values.a" exists, "values" does not.
+// Only accept schema-declared names / prefixes, never arbitrary dotted inputs.
+function autogrowSlots(selector) {
+    if(selector?.[0]!=="COMFY_AUTOGROW_V3")return null;
+    const template=selector[1]?.template;
+    const min=template?.min;
+    const names=Array.isArray(template?.names) ? template.names :
+        typeof template?.prefix==="string" && Number.isInteger(template.max) && template.max>=1 && template.max<=100
+            ? Array.from({length:template.max},(_,i)=>template.prefix+i) : null;
+    if(!Number.isInteger(min) || min<0 || !names || names.length>100 || min>names.length ||
+        names.some(name=>!validId(name)) || new Set(names).size!==names.length)
+        fail("comfy_autogrow_schema_invalid");
+    return {names,min};
+}
 function hasDeclaredInput(node,schema,input) {
-    if (has(schema?.input?.required ?? {},input) || has(schema?.input?.optional ?? {},input)) return true;
+    const direct=schema?.input?.required?.[input] ?? schema?.input?.optional?.[input];
+    if(direct)return direct[0]!=="COMFY_AUTOGROW_V3";
     const dot=input.indexOf(".");
     if(dot<=0)return false;
     const root=input.slice(0,dot),suffix=input.slice(dot+1);
     const selector=schema?.input?.required?.[root] ?? schema?.input?.optional?.[root];
+    if(selector?.[0]==="COMFY_AUTOGROW_V3")return autogrowSlots(selector).names.includes(suffix);
     if(selector?.[0]!=="COMFY_DYNAMICCOMBO_V3" || typeof node.inputs[root]!=="string")return false;
     const option=selector[1]?.options?.find(o=>o.key===node.inputs[root]);
     return Boolean(option && (has(option.inputs?.required??{},suffix) || has(option.inputs?.optional??{},suffix)));
+}
+/** Resolve readable aspect-ratio shortcuts against this ComfyUI instance's live
+ * COMBO choices. Do not invent labels or widen acceptance of unrelated strings.
+ */
+function normalizeComfyEnumInputs(graph, info, trustedImageFields) {
+    if(!info)return;
+    for(const [nodeId,node] of Object.entries(graph)) {
+        const schema=info[node.class_type]?.input;
+        for(const [key,value] of Object.entries(node.inputs)) {
+            if(typeof value!=="string")continue;
+            // /object_info lists files known when it was fetched. A verified /upload/image
+            // filename may not appear in that stale list (dry-run uses dryrun.png).
+            // Only inputs rewritten from an authenticated staged image may bypass it.
+            if(node.class_type==="LoadImage" && key==="image" && trustedImageFields.has(nodeId+"\0"+key))continue;
+            const declaration=schema?.required?.[key] ?? schema?.optional?.[key];
+            const choices=Array.isArray(declaration?.[0]) &&
+                declaration[0].every(choice=>typeof choice==="string") ? declaration[0] : null;
+            if(!choices)continue;
+            if(choices.includes(value))continue;
+            const candidates=/^\d{1,3}:\d{1,3}$/.test(value)
+                ? choices.filter(choice=>choice.startsWith(value+" (")) : [];
+            if(candidates.length===1) node.inputs[key]=candidates[0];
+            else fail("comfy_option_invalid:"+node.class_type+"."+key+":"+value);
+        }
+    }
 }
 export function validateGraph(graph, info) {
     const visiting = new Set(), seen = new Set();
@@ -102,8 +150,12 @@ export function validateGraph(graph, info) {
                 visit(v[0]);
             }
         }
-        if (schema?.input?.required) for (const name of Object.keys(schema.input.required)) {
-            if (!has(node.inputs,name)) fail("comfy_required_input_missing:" + name);
+        if (schema?.input?.required) for (const [name,selector] of Object.entries(schema.input.required)) {
+            const autogrow=autogrowSlots(selector);
+            if(autogrow) {
+                for(const slot of autogrow.names.slice(0,autogrow.min))
+                    if(!has(node.inputs,name+"."+slot))fail("comfy_required_input_missing:"+name+"."+slot);
+            } else if(!has(node.inputs,name))fail("comfy_required_input_missing:"+name);
         }
         visiting.delete(id);seen.add(id);
     }
@@ -111,18 +163,19 @@ export function validateGraph(graph, info) {
 }
 
 export function validateSingleRequest(req) {
-    if (!object(req) || req.schemaVersion !== 1 || !validId(req.projectId) || !validId(req.instanceId) ||
+    if(!object(req) || req.schemaVersion!==2)fail("unsupported_schema_version",400);
+    if (!validId(req.projectId) || !validId(req.instanceId) ||
         typeof req.canvasRevision !== "string" || req.canvasRevision.length > 128 ||
         !validId(req.idempotencyKey) || !Array.isArray(req.nodes) || req.nodes.length !== 1 ||
-        !Array.isArray(req.rootOutputs) || req.rootOutputs.length !== 1 ||
+        !Array.isArray(req.rootOutputs) || req.rootOutputs.length<1 || req.rootOutputs.length>16 ||
         !Array.isArray(req.edges) || req.edges.length > 64 || !Array.isArray(req.externalInputs) || req.externalInputs.length > 64)
         fail("single_workflow_request_required",400);
     if (Buffer.byteLength(canonical(req)) > 1_000_000) fail("run_request_too_large",413);
-    const node = req.nodes[0], root = req.rootOutputs[0];
+    const node=req.nodes[0], roots=req.rootOutputs;
     if (!validId(node.id) || !validId(node.templateId) || !validSha(node.templateRevision) ||
-        !object(node.inputOverrides) || root.nodeId !== node.id || !validId(root.portId)) fail("run_node_invalid");
-    if (!object(req.runOptions) || Object.keys(req.runOptions).some(k => k !== "captureFormat")) fail("run_options_unsupported");
-    if (req.runOptions.captureFormat && req.runOptions.captureFormat !== "png") fail("capture_format_unsupported");
+        !object(node.inputOverrides) || roots.some(root=>root.nodeId!==node.id || !validId(root.portId)) ||
+        new Set(roots.map(root=>root.portId)).size!==roots.length)fail("run_node_invalid");
+    if (!object(req.runOptions) || Object.keys(req.runOptions).length) fail("run_options_unsupported");
     const inputs = new Map(), targetEdges = new Map();
     for (const x of req.externalInputs) {
         if (!object(x) || !validId(x.sourceNodeId) || !validId(x.sourcePortId) ||
@@ -144,7 +197,7 @@ export function validateSingleRequest(req) {
         targetEdges.set(e.toPortId,inputs.get(source));used.add(source);
     }
     if (used.size !== inputs.size) fail("unreferenced_external_input");
-    return {node,root,targetEdges};
+    return {node,roots,targetEdges};
 }
 
 export function fingerprintRequest(req) {
@@ -153,21 +206,24 @@ export function fingerprintRequest(req) {
     delete stable.idempotencyKey;
     delete stable.canvasRevision;
     for (const x of stable.externalInputs) if (x.kind === "asset") delete x.assetId;
+    stable.rootOutputs.sort((a,b)=>canonical(a).localeCompare(canonical(b)));
     stable.edges.sort((a,b)=>canonical(a).localeCompare(canonical(b)));
     stable.externalInputs.sort((a,b)=>canonical(a).localeCompare(canonical(b)));
     return sha256(canonical(stable));
 }
 
-/** Single pinned workflow graph, explicit IMAGE capture and only selected output root. */
+/** One pinned Comfy graph, one /prompt, any selected combination of supported output roots. */
 export function compileSingleWorkflow(req, template, opts = {}) {
-    const {node,root,targetEdges} = validateSingleRequest(req);
+    const {node,roots,targetEdges} = validateSingleRequest(req);
     verifyTemplate(template);
     if (node.templateId !== template.id || node.templateRevision !== template.revision) fail("template_revision_unavailable");
     const ports = new Map(template.ports.map(p=>[p.id,p]));
-    const output = ports.get(root.portId);
-    if (!output || output.direction !== "source" || output.valueKind !== "IMAGE" ||
-        output.capture?.kind !== "image" || output.capture.adapterId !== "SaveImage") fail("single_image_capture_required");
-    if (!opts.info?.SaveImage?.input?.required?.images) fail("capture_adapter_missing");
+    const outputs=roots.map(root=>{
+        const output=ports.get(root.portId);
+        if(!output || output.direction!=="source" || !output.capture || output.capture.kind==="none")
+            fail("capture_output_invalid:"+root.portId);
+        return output;
+    });
     if (!opts.info?.LoadImage?.output?.includes("IMAGE") && req.externalInputs.some(x=>x.kind==="asset")) fail("image_loader_missing");
     const graph = Object.create(null);
     for (const [id,n] of Object.entries(template.apiGraph)) {
@@ -176,6 +232,7 @@ export function compileSingleWorkflow(req, template, opts = {}) {
         graph[nodeKey(node.id,id)] = {...n, inputs};
     }
     const decisions = Object.create(null);
+    const trustedImageFields=new Set();
     for (const p of template.ports.filter(p=>p.direction==="target")) {
         const binding=p.inputBinding;
         const edge=targetEdges.get(p.id);
@@ -192,7 +249,8 @@ export function compileSingleWorkflow(req, template, opts = {}) {
         if (choice === "template") {
             if (p.required && binding.targets.some(t => graph[nodeKey(node.id,t.nodeId)]?.inputs[t.inputName] === undefined))
                 fail("required_input_missing:"+p.id);
-            if (binding.mode === "media-file") fail("untrusted_template_file:"+p.id);
+            // A template filename is not an uploaded, immutable input. Require a typed canvas edge.
+            if (binding.mode === "media-file") fail("media_input_requires_connection:"+p.id);
             continue;
         }
         const v = choice === "edge" ? edge : choice === "override" ? node.inputOverrides[p.id] : p.defaultValue;
@@ -213,23 +271,26 @@ export function compileSingleWorkflow(req, template, opts = {}) {
             const loaderId=nodeKey(node.id,"loader_"+p.id);
             if (graph[loaderId]) fail("generated_node_collision");
             graph[loaderId]={class_type:"LoadImage",inputs:{image:filename}};
+            trustedImageFields.add(loaderId+"\0image");
             resolved=[loaderId,0];
         } else fail("unsupported_binding_mode");
         for (const t of binding.targets) {
             const target=graph[nodeKey(node.id,t.nodeId)];
             if (!target || !has(target.inputs,t.inputName)) fail("binding_target_missing");
             target.inputs[t.inputName]=resolved;
+            if(binding.mode==="media-file" && target.class_type==="LoadImage" && t.inputName==="image")
+                trustedImageFields.add(nodeKey(node.id,t.nodeId)+"\0"+t.inputName);
         }
     }
     for (const targetId of targetEdges.keys()) if (!ports.has(targetId) || ports.get(targetId).direction!=="target") fail("input_port_not_found");
-    const binding=output.outputBinding;
-    const src=nodeKey(node.id,binding.nodeId);
-    if (!graph[src]) fail("capture_source_missing");
-    const slot=opts.info[graph[src].class_type]?.output;
-    if (!slot || slot[binding.outputIndex] !== "IMAGE") fail("capture_source_type_invalid");
-    const captureId=nodeKey(node.id,"capture_"+output.id);
-    if (graph[captureId]) fail("generated_node_collision");
-    graph[captureId]={class_type:"SaveImage",inputs:{images:[src,binding.outputIndex],filename_prefix:"infinite_atelier"}};
+    const captures=[];
+    for(const output of outputs) {
+        const binding=output.outputBinding, src=nodeKey(node.id,binding.nodeId);
+        if(!graph[src])fail("capture_source_missing");
+        const actual=opts.info?.[graph[src].class_type]?.output?.[binding.outputIndex];
+        if(actual!==output.valueKind && actual!=="*")fail("capture_source_type_invalid");
+        captures.push(prepareCapture(graph,output,src,"w_"+node.id+"__",opts.info));
+    }
     // Capture root injection is deliberately BEFORE reachability pruning.
     const reachable=new Set();
     const visit=(id)=>{
@@ -239,9 +300,10 @@ export function compileSingleWorkflow(req, template, opts = {}) {
         reachable.add(id);
         for (const v of Object.values(n.inputs)) if (isLink(v)) visit(v[0]);
     };
-    visit(captureId);
+    for(const cap of captures)visit(cap.captureNodeId);
     for (const id of Object.keys(graph)) if (!reachable.has(id)) delete graph[id];
+    normalizeComfyEnumInputs(graph,opts.info,trustedImageFields);
     validateGraph(graph,opts.info);
     if (Object.keys(graph).length>500) fail("compiled_graph_too_large");
-    return {graph,graphHash:sha256(canonical(graph)),captureMap:[{workflowNodeId:node.id,portId:output.id,captureNodeId:captureId}],decisions};
+    return {graph,graphHash:sha256(canonical(graph)),captureMap:captures,decisions};
 }

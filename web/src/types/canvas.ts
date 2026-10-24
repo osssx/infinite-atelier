@@ -104,8 +104,9 @@ export type CanvasNodeMetadata = {
     durationMs?: number;
     groupId?: string;
     interactive?: boolean; // Plugin node interaction/move state; see CanvasNodeDefinition.interactionToggle.
-    /** Provenance of an image captured by a durable ComfyUI workflow run. */
-    comfyArtifact?: { runId: string; artifactId: string; workflowNodeId: string; portId: string };
+    /** Provenance of any durable ComfyUI artifact (single V2 contract; no legacy fields). */
+    comfyArtifact?: { runId: string; artifactId: string; workflowNodeId: string; portId: string;
+        kind: "image" | "video" | "audio" | "text"; index: number };
     /** Durable workflow run observation, independent of whether its inspector is mounted. */
     comfyExecution?: { runId?: string; status: string; error?: string };
     /** Phase A mock ports; real templates will resolve ports from immutable revisions. */

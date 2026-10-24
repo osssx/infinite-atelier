@@ -1,12 +1,16 @@
 import { DatabaseSync } from "node:sqlite";
-import { mkdirSync, writeFileSync, renameSync, readFileSync, existsSync, openSync, closeSync, fsyncSync } from "node:fs";
+import { mkdirSync, writeFileSync, renameSync, unlinkSync, openSync, closeSync, fsyncSync } from "node:fs";
+import { open, rename, unlink } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { detectArtifactMime, captureLimits } from "./capture-adapters.mjs";
 import { join, dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 import { canonical, sha256 } from "./compiler.mjs";
 
-export function createComfyStore(root) {
+export function createComfyStore(root,{maxRunBytes=4_000_000_000}={}) {
+    if(!Number.isSafeInteger(maxRunBytes) || maxRunBytes<1)throw new Error("invalid_comfy_run_quota");
     mkdirSync(root,{recursive:true});
-    const db = new DatabaseSync(join(root,"jobs.sqlite"));
+    const db = new DatabaseSync(join(root,"jobs-v2.sqlite"));
     db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;
     CREATE TABLE IF NOT EXISTS templates(id TEXT NOT NULL, revision TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(id,revision));
     CREATE TABLE IF NOT EXISTS comfy_instances(id TEXT PRIMARY KEY, url TEXT NOT NULL);
@@ -18,13 +22,15 @@ export function createComfyStore(root) {
       compiled TEXT, capture_map TEXT, graph_hash TEXT, image_files TEXT,
       prompt_id TEXT, attempt_id TEXT, submit_marker TEXT, submission_started_at INTEGER,
       error TEXT, cancel_requested INTEGER NOT NULL DEFAULT 0,
+      capture_attempts INTEGER NOT NULL DEFAULT 0, next_collect_at INTEGER NOT NULL DEFAULT 0,
       created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
       UNIQUE(principal,project,idem_key));
     CREATE TABLE IF NOT EXISTS artifacts(
       id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(id), workflow_node_id TEXT NOT NULL,
-      port_id TEXT NOT NULL, capture_node_id TEXT NOT NULL, file_key TEXT NOT NULL, mime TEXT NOT NULL,
-      sha256 TEXT NOT NULL, size INTEGER NOT NULL, path TEXT NOT NULL,
-      UNIQUE(run_id,capture_node_id,file_key));
+      port_id TEXT NOT NULL, capture_node_id TEXT NOT NULL, item_key TEXT NOT NULL,
+      item_index INTEGER NOT NULL, kind TEXT NOT NULL, adapter_id TEXT NOT NULL, metadata_json TEXT NOT NULL,
+      mime TEXT NOT NULL, sha256 TEXT NOT NULL, size INTEGER NOT NULL, path TEXT NOT NULL,
+      UNIQUE(run_id,port_id,item_key));
     CREATE INDEX IF NOT EXISTS runs_status_idx ON runs(status,created_at);`);
     const now=()=>Date.now();
     const q=(sql)=>db.prepare(sql);
@@ -118,7 +124,7 @@ export function createComfyStore(root) {
             const existing=q("SELECT status FROM runs WHERE id=?").get(id);
             if (!existing||!allowed.includes(existing.status)) return false;
             const fields=Object.entries(values).map(([key])=>key);
-            if (fields.some(k=>!["compiled","capture_map","graph_hash","image_files","prompt_id","attempt_id","submit_marker","submission_started_at","error","cancel_requested"].includes(k))) throw new Error("illegal_run_update");
+            if (fields.some(k=>!["compiled","capture_map","graph_hash","image_files","prompt_id","attempt_id","submit_marker","submission_started_at","error","cancel_requested","capture_attempts","next_collect_at"].includes(k))) throw new Error("illegal_run_update");
             q(`UPDATE runs SET status=?,updated_at=?${fields.map(k=>", "+k+"=?").join("")} WHERE id=?`).run(next,now(),...fields.map(k=>values[k]),id);
             return true;
         });
@@ -128,26 +134,75 @@ export function createComfyStore(root) {
         return q(`SELECT * FROM runs WHERE status IN (${statuses.map(()=>"?").join(",")}) ORDER BY created_at`).all(...statuses).map(row);
     }
     function resumeAfterRestart() {
-        // submitting is NEVER re-sent automatically: the response may have been lost.
+        // A previous gateway's "comfy_upstream_400" means a real HTTP validation response
+        // arrived from /prompt: Comfy did not enqueue the job. Repair only that provable case.
+        // All transport/5xx uncertainties stay locked; never risk submitting the same GPU job twice.
         return atomic(()=>{
+            q("UPDATE runs SET status='failed', updated_at=? WHERE status='submission_unknown' AND prompt_id IS NULL AND error IN (?,?)")
+                .run(now(),"Error: comfy_upstream_400","Error: comfy_upstream_422");
             q("UPDATE runs SET status='submission_unknown', updated_at=? WHERE status='submitting'").run(now());
             q("UPDATE runs SET status='queued', updated_at=? WHERE status='preparing'").run(now());
         });
     }
-    function addArtifact(run,cap,fileKey,bytes,mime) {
-        const existing=q("SELECT * FROM artifacts WHERE run_id=? AND capture_node_id=? AND file_key=?")
-            .get(run.id,cap.captureNodeId,fileKey);
+    async function addArtifact(run,cap,itemKey,index,source,reportedMime,metadata={}) {
+        const existing=q("SELECT * FROM artifacts WHERE run_id=? AND port_id=? AND item_key=?")
+            .get(run.id,cap.portId,itemKey);
         if(existing)return existing;
-        const id=randomUUID(),digest=sha256(bytes),ext=mime==="image/png"?"png":mime==="image/jpeg"?"jpg":"webp";
-        const path=join(root,"artifacts",id+"."+ext);
-        durableFile(path,bytes);
-        return atomic(()=>{
-            q("INSERT OR IGNORE INTO artifacts(id,run_id,workflow_node_id,port_id,capture_node_id,file_key,mime,sha256,size,path) VALUES(?,?,?,?,?,?,?,?,?,?)")
-                .run(id,run.id,cap.workflowNodeId,cap.portId,cap.captureNodeId,fileKey,mime,digest,bytes.length,path);
-            return q("SELECT * FROM artifacts WHERE run_id=? AND capture_node_id=? AND file_key=?").get(run.id,cap.captureNodeId,fileKey);
-        });
+        const alreadyStored=q("SELECT COALESCE(SUM(size),0) AS total FROM artifacts WHERE run_id=?").get(run.id).total;
+        const id=randomUUID(),tmp=join(root,"artifacts",id+".part"),digest=createHash("sha256");
+        mkdirSync(dirname(tmp),{recursive:true});
+        const handle=await open(tmp,"wx");
+        let size=0,head=Buffer.alloc(0),saved=false,detected;
+        const decoder=cap.kind==="text"?new TextDecoder("utf-8",{fatal:true}):null;
+        const input=Buffer.isBuffer(source)?[source]:source;
+        try {
+            for await(const raw of input) {
+                const bytes=Buffer.from(raw);
+                size+=bytes.length;
+                if(size>captureLimits[cap.kind] || alreadyStored+size>maxRunBytes)
+                    throw Object.assign(new Error("quota_exceeded"),{code:"quota_exceeded"});
+                if(head.length<64)head=Buffer.concat([head,bytes.subarray(0,64-head.length)]);
+                if(decoder) {
+                    decoder.decode(bytes,{stream:true});
+                    if(bytes.includes(0))throw Object.assign(new Error("invalid_text_content"),{code:"invalid_text_content"});
+                }
+                digest.update(bytes);
+                await handle.writeFile(bytes);
+            }
+            if(decoder)decoder.decode();
+            if(!size && cap.kind!=="text")throw Object.assign(new Error("capture_empty"),{code:"capture_empty"});
+            detected=detectArtifactMime(cap.kind,head,reportedMime);
+            const validExtensions={
+                "image/png":["png"],"image/jpeg":["jpg","jpeg"],"image/webp":["webp"],
+                "video/mp4":["mp4","m4v"],"video/webm":["webm"],"video/x-matroska":["mkv"],
+                "audio/wav":["wav"],"audio/flac":["flac"],"audio/ogg":["ogg","oga"],
+                "audio/mpeg":["mp3"],"text/plain":["txt","text"]
+            };
+            if(metadata.filename && !validExtensions[detected]?.includes(metadata.filename.split(".").pop().toLowerCase()))
+                throw Object.assign(new Error("captured_extension_mismatch"),{code:"captured_extension_mismatch"});
+            await handle.sync();await handle.close();
+            const ext=({"image/png":"png","image/jpeg":"jpg","image/webp":"webp",
+                "video/mp4":"mp4","video/webm":"webm","video/x-matroska":"mkv",
+                "audio/wav":"wav","audio/flac":"flac","audio/ogg":"ogg","audio/mpeg":"mp3",
+                "text/plain":"txt"})[detected];
+            const file=join(root,"artifacts",id+"."+ext);
+            await rename(tmp,file);saved=true;
+            return atomic(()=>{
+                q("INSERT OR IGNORE INTO artifacts(id,run_id,workflow_node_id,port_id,capture_node_id,item_key,item_index,kind,adapter_id,metadata_json,mime,sha256,size,path) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+                    .run(id,run.id,cap.workflowNodeId,cap.portId,cap.captureNodeId,itemKey,index,
+                        cap.kind,cap.adapterId,canonical(metadata),detected,digest.digest("hex"),size,file);
+                const row=q("SELECT * FROM artifacts WHERE run_id=? AND port_id=? AND item_key=?")
+                    .get(run.id,cap.portId,itemKey);
+                if(row.id!==id)unlinkSync(file);
+                return row;
+            });
+        } catch(error) {
+            try {await handle.close();}catch {}
+            try {await unlink(tmp);}catch {}
+            throw error;
+        }
     }
-    const artifacts=(id)=>q("SELECT id,run_id,workflow_node_id,port_id,capture_node_id,mime,sha256,size FROM artifacts WHERE run_id=? ORDER BY rowid").all(id);
+    const artifacts=(id)=>q("SELECT id,run_id,workflow_node_id,port_id,capture_node_id,item_key,item_index,kind,adapter_id,metadata_json,mime,sha256,size FROM artifacts WHERE run_id=? ORDER BY port_id,item_index").all(id);
     const artifact=(runId,id)=>q("SELECT * FROM artifacts WHERE id=? AND run_id=?").get(id,runId);
     const close=()=>db.close();
     return {db,root,loadInstances,changeInstance,deleteInstance,addTemplate,getTemplate,addAsset,asset,findByKey,addRun,read,cas,listStatuses,resumeAfterRestart,addArtifact,artifacts,artifact,close};

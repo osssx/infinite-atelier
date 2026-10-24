@@ -71,6 +71,41 @@ export function isComfyLink(input: unknown, graph: ComfyApiGraph): input is [str
     return Array.isArray(input) && input.length === 2 && typeof input[0] === "string" &&
         has(graph, input[0]) && Number.isInteger(input[1]) && input[1] >= 0;
 }
+/** V3 autogrow: a declared marker expands to dotted leaves, never a literal parent value. */
+function comfyAutogrowSlots(spec: unknown): { names: string[]; min: number } | null {
+    if (!Array.isArray(spec) || spec[0] !== "COMFY_AUTOGROW_V3") return null;
+    const template = isObject(spec[1]) ? spec[1].template : undefined;
+    if (!isObject(template)) fail("invalid autogrow schema");
+    const min = template.min;
+    const names = Array.isArray(template.names) ? template.names :
+        typeof template.prefix === "string" && Number.isInteger(template.max) &&
+        (template.max as number) >= 1 && (template.max as number) <= 100
+            ? Array.from({ length: template.max as number }, (_, i) => template.prefix + String(i)) : null;
+    if (!Number.isInteger(min) || (min as number) < 0 || !names || names.length > 100 ||
+        (min as number) > names.length || names.some((name:unknown) => typeof name !== "string" || !safeId(name)) ||
+        new Set(names).size !== names.length) fail("invalid autogrow schema");
+    return { names: names as string[], min: min as number };
+}
+function comfyDeclaredInput(node: ComfyNode, info: ComfyObjectInfo[string], key: string): boolean {
+    const direct = info.input?.required?.[key] ?? info.input?.optional?.[key];
+    if (direct !== undefined) return comfyAutogrowSlots(direct) === null;
+    const dot = key.indexOf(".");
+    if (dot <= 0) return false;
+    const root = key.slice(0,dot), leaf = key.slice(dot+1);
+    const spec = info.input?.required?.[root] ?? info.input?.optional?.[root];
+    const autogrow = comfyAutogrowSlots(spec);
+    if (autogrow) return autogrow.names.includes(leaf);
+    if (!Array.isArray(spec) || spec[0] !== "COMFY_DYNAMICCOMBO_V3" ||
+        typeof node.inputs[root] !== "string") return false;
+    const details = isObject(spec[1]) ? spec[1] : null;
+    const choices = Array.isArray(details?.options) ? details.options : [];
+    const selected = choices.find((choice:unknown) => isObject(choice) && choice.key === node.inputs[root]);
+    const fields = isObject(selected) && isObject(selected.inputs) ? selected.inputs : null;
+    return Boolean(fields && (
+        isObject(fields.required) && has(fields.required,leaf) ||
+        isObject(fields.optional) && has(fields.optional,leaf)
+    ));
+}
 export function validateComfyApiGraph(raw: unknown, info?: ComfyObjectInfo): ComfyApiGraph {
     if (!isObject(raw) || Object.keys(raw).length === 0 || Object.keys(raw).length > MAX_GRAPH_NODES) fail("invalid API format graph size");
     if (new TextEncoder().encode(JSON.stringify(raw)).length > MAX_PAYLOAD_BYTES) fail("graph too large");
@@ -87,11 +122,17 @@ export function validateComfyApiGraph(raw: unknown, info?: ComfyObjectInfo): Com
                 const outputs = info?.[graph[value[0]].class_type]?.output;
                 if (outputs && value[1] >= outputs.length) fail("output slot out of range");
             }
-            if (info && !has(info[node.class_type]?.input?.required ?? {}, key) && !has(info[node.class_type]?.input?.optional ?? {}, key))
+            if (info && !comfyDeclaredInput(node,info[node.class_type],key))
                 fail("unknown input " + id + "." + key);
         }
         const required = info?.[node.class_type]?.input?.required;
-        if (required) for (const key of Object.keys(required)) if (!has(node.inputs, key)) fail("required field missing: " + id + "." + key);
+        if (required) for (const [key,spec] of Object.entries(required)) {
+            const autogrow = comfyAutogrowSlots(spec);
+            if (autogrow) {
+                for (const name of autogrow.names.slice(0,autogrow.min))
+                    if (!has(node.inputs,key+"."+name)) fail("required field missing: " + id + "." + key + "." + name);
+            } else if (!has(node.inputs,key)) fail("required field missing: " + id + "." + key);
+        }
     }
     // Comfy execution links form a DAG, not a graph with feedback loops.
     const visiting = new Set<string>(), done = new Set<string>();

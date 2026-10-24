@@ -87,7 +87,7 @@ async function waitForRun(runId,label){
     throw Error(label+" timed out; run="+runId+" (look up Comfy queue; DO NOT blindly retry)");
 }
 function request(t,nodeId,edges,externalInputs,overrides={}){
-    return {schemaVersion:1,projectId,canvasRevision:"smoke-v1",instanceId,idempotencyKey:randomUUID(),
+    return {schemaVersion:2,projectId,canvasRevision:"smoke-v1",instanceId,idempotencyKey:randomUUID(),
         rootOutputs:[{nodeId,portId:"result"}],
         nodes:[{id:nodeId,templateId:t.id,templateRevision:t.revision,inputOverrides:overrides}],
         edges,externalInputs,runOptions:{}};

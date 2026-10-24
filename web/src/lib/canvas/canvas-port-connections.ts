@@ -52,10 +52,13 @@ export function prepareCanvasPortConnection(
         // Generated images are materialized outputs of a durable Comfy run, not
         // arbitrary workflow inputs. Their provenance permits a typed visual
         // connection to the normal image node's left legacy handle.
-        const provenance = dst.type === CanvasNodeType.Image ? dst.metadata?.comfyArtifact : undefined;
+        const provenance = dst.metadata?.comfyArtifact;
+        const targetKind = getCanvasResourceOutputPort(dst)?.valueKind;
         const sourcePort = getCanvasPort(src, "source", srcHandle.portId);
-        if (!provenance || !sourcePort || sourcePort.valueKind !== "IMAGE" ||
-            provenance.workflowNodeId !== src.id || provenance.portId !== sourcePort.id ||
+        const originKind=provenance?({image:"IMAGE",video:"VIDEO",audio:"AUDIO",text:"STRING"} as const)[provenance.kind]:undefined;
+        if (!provenance || !sourcePort || !targetKind || sourcePort.valueKind!==targetKind ||
+            originKind!==targetKind || !Number.isInteger(provenance.index) || provenance.index<0 ||
+            provenance.workflowNodeId!==src.id || provenance.portId!==sourcePort.id ||
             !isPortAwareCanvasNode(src)) return { error: "legacy_target_not_supported" };
         const candidate = {fromNodeId:src.id,fromPortId:sourcePort.id,toNodeId:dst.id,toPortId:"comfy-artifact"};
         if(existing.some(c=>c.fromNodeId===candidate.fromNodeId && c.fromPortId===candidate.fromPortId &&
@@ -78,8 +81,8 @@ export function prepareCanvasPortConnection(
     return { connection: candidate };
 }
 
-/** Add missing provenance edges from Comfy output ports to their generated Image nodes.
- * Idempotent for retries, hydration and multi-image fan-out.
+/** Repair only new typed Comfy provenance edges for all four artifact kinds.
+ * Idempotent for retries, hydration and multi-item fan-out.
  */
 export function reconcileComfyArtifactConnections(
     nodes: readonly CanvasNodeData[],
@@ -88,14 +91,14 @@ export function reconcileComfyArtifactConnections(
 ): CanvasConnection[] {
     let result: CanvasConnection[] = [...existing];
     const byId=new Map(nodes.map(n=>[n.id,n]));
-    for(const image of nodes) {
-        const origin=image.metadata?.comfyArtifact;
-        if(image.type!==CanvasNodeType.Image || !origin)continue;
+    for(const target of nodes) {
+        const origin=target.metadata?.comfyArtifact;
+        if(!origin || !["image","video","audio","text"].includes(origin.kind))continue;
         const source=byId.get(origin.workflowNodeId);
         if(!source)continue;
         const link=prepareCanvasPortConnection(
             {nodeId:source.id,handleType:"source",portId:origin.portId},
-            {nodeId:image.id,handleType:"target"},nodes,result);
+            {nodeId:target.id,handleType:"target"},nodes,result);
         if(link.connection)result=[...result,{id:makeId(),...link.connection}];
     }
     return result;

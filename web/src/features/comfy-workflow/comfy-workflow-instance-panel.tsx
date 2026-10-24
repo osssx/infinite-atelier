@@ -11,7 +11,7 @@ import {
 } from "./instance-parameters";
 import { getComfyTemplate } from "./template-registry";
 import type { ComfyWorkflowTemplate } from "./template-schema";
-import { cancelComfyRun, getComfyRun, hasPendingComfyRun, recoverPendingComfyRun, type ComfyRunState } from "./run-client";
+import { cancelComfyRun, getComfyRun, hasPendingComfyRun, missingComfyMediaInputs, recoverPendingComfyRun, type ComfyRunState } from "./run-client";
 import { comfyRunStatusLabel, isComfyRunActive } from "./run-status";
 import { ComfyWorkflowPanel } from "./comfy-workflow-panel";
 
@@ -131,7 +131,8 @@ export function ComfyWorkflowInstancePanel({node,connections,projectId,comfyInst
     const [runError,setRunError]=useState("");
     const [pending,setPending]=useState(()=>hasPendingComfyRun(projectId,node.id));
     useEffect(()=>{setPending(hasPendingComfyRun(projectId,node.id));},[projectId,node.id,liveExecution?.status]);
-    const outputs=useMemo(()=>template?.ports.filter(p=>p.direction==="source" && p.valueKind==="IMAGE" && p.capture?.kind==="image" && p.capture.adapterId==="SaveImage")??[],[template]);
+    const outputs=useMemo(()=>template?.ports.filter(p=>p.direction==="source" && !!p.capture?.adapterId && p.capture.kind!=="none")??[],[template]);
+    const missingMedia=useMemo(()=>template?missingComfyMediaInputs(template,node.id,connections):[],[template,node.id,connections]);
     useEffect(()=>{
         let active=true;
         setRun(null);setRunError("");
@@ -163,7 +164,10 @@ export function ComfyWorkflowInstancePanel({node,connections,projectId,comfyInst
             onChange({comfyWorkflow:{...binding,lastRunId:result.runId}});
             setRun(result);
             onExecutionChange({runId:result.runId,status:result.status,error:result.error||undefined});
-        }catch(cause){setRunError("无法恢复提交："+String(cause));onExecutionChange({status:"submission_unknown",error:String(cause)});}
+        }catch(cause){
+            setRunError("无法恢复提交："+String(cause));
+            onExecutionChange({status:hasPendingComfyRun(projectId,node.id)?"submission_unknown":"failed",error:String(cause)});
+        }
         finally{setPending(hasPendingComfyRun(projectId,node.id));setRunBusy(false);}
     };
 
@@ -193,13 +197,16 @@ export function ComfyWorkflowInstancePanel({node,connections,projectId,comfyInst
     const currentRun=run?.runId===binding?.lastRunId?run:null;
     const status=liveExecution?.status||currentRun?.status;
     const active=isComfyRunActive(status)||runBusy;
-    const imageCount=currentRun?.status==="succeeded" ? currentRun.artifacts.length : 0;
+    const artifactSummary=currentRun?.status==="succeeded" ?
+        Object.entries(currentRun.artifacts.reduce<Record<string,number>>((acc,item)=>{
+            acc[item.kind]=(acc[item.kind]??0)+1;return acc;
+        },{})).map(([kind,count])=>count+({image:" 张图片",video:" 段视频",audio:" 段音频",text:" 条文本"} as Record<string,string>)[kind]).join(" · ") : "";
     const statusLabel=pending?"提交待确认":status==="succeeded"
-        ? `已完成${imageCount?` · ${imageCount} 张图片`:""}`
+        ? `已完成${artifactSummary?` · ${artifactSummary}`:""}`
         :status?comfyRunStatusLabel(status):"待执行";
     const statusError=runError||liveExecution?.error||(currentRun?.error??"");
     const canCancel=Boolean(currentRun && ["queued","preparing","running","collecting","submitting"].includes(currentRun.status));
-    const disabled=!template||!comfyInstanceId||!outputs[0]||!projectId||active||pending;
+    const disabled=!template||!comfyInstanceId||!outputs[0]||!projectId||active||pending||missingMedia.length>0;
     if(editingTemplate) return <ComfyWorkflowPanel node={node} onChange={(patch)=>{
         const applied=onTemplateChange(patch);
         if(applied)setEditingTemplate(false);
@@ -219,8 +226,12 @@ export function ComfyWorkflowInstancePanel({node,connections,projectId,comfyInst
         </header>
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
             {!comfyInstanceId?<p className="mb-3 rounded-lg bg-[var(--comfy-fill)] px-3 py-2 text-[11px] text-[var(--comfy-muted)]">请在右上角「配置与用户偏好 → ComfyUI」中选择默认实例，所有画布工作流节点共用此配置。</p>:null}
-            {template?.ports.some(p=>p.direction==="source"&&p.valueKind==="VIDEO") && !outputs[0]
-                ? <p role="note" className="mb-3 rounded-lg border border-[var(--comfy-border)] bg-[var(--comfy-fill)] px-3 py-2 text-xs text-[var(--comfy-muted)]">此预设输出 VIDEO：已支持导入和端口绑定，但当前画布执行与产物回填仅支持 IMAGE，视频生成按钮暂不可用。</p> : null}
+            {outputs.length>0?<p role="note" className="mb-3 text-[11px] text-[var(--comfy-muted)]">
+                本次执行将捕获 {outputs.map(port=>port.label+" ("+port.valueKind+")").join("、")}，所有输出共享一次 ComfyUI 生成任务。
+            </p>:null}
+            {missingMedia.length>0?<p role="alert" className="mb-3 rounded-lg border border-[var(--comfy-border)] bg-[var(--comfy-fill)] px-3 py-2 text-xs text-amber-600 dark:text-amber-400">
+                请先连接输入：{missingMedia.map(port=>port.label+" ("+port.id+")").join("、")}。从画布的图片节点连接到对应端口，模板自带的示例文件名不可直接用于生成。
+            </p>:null}
             {loading?<p className="text-xs text-[var(--comfy-muted)]">正在加载模板版本…</p>
             :error?<p role="alert" className="rounded-md p-2 text-xs text-red-500">{error}</p>
             :!binding?.templateId?<div className="flex flex-col items-center gap-3 py-8 text-center text-xs text-[var(--comfy-muted)]">

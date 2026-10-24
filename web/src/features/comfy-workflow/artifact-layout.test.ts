@@ -20,7 +20,7 @@ describe("Comfy multi-image artifact canvas placement",()=>{
     });
     it("counts older generated images so a second run does not overlap first-run outputs",()=>{
         const older:CanvasNodeData={...workflow,id:"img1",type:"image",metadata:{comfyArtifact:{
-            runId:"previous-run",artifactId:"art-1",workflowNodeId:"wf",portId:"generated"
+            runId:"previous-run",artifactId:"art-1",workflowNodeId:"wf",portId:"generated",kind:"image",index:0
         }}};
         expect(nextComfyArtifactTileIndex([workflow,older],"wf")).toBe(1);
         expect(nextComfyArtifactTileIndex([workflow,older],"other")).toBe(0);

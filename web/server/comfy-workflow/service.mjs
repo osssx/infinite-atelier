@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync,createReadStream } from "node:fs";
+import { stat } from "node:fs/promises";
+import { extractCapture } from "./capture-adapters.mjs";
 import { fileURLToPath } from "node:url";
 import { createComfyStore } from "./store.mjs";
 import { compileSingleWorkflow, verifyTemplate, validateSingleRequest, fingerprintRequest, canonical, sha256, validateGraph } from "./compiler.mjs";
@@ -34,7 +36,7 @@ function validInstance(raw) {
         throw statusError("comfy_instance_must_be_exact_loopback_origin",400);
     return {id:raw.id,url:url.origin};
 }
-async function upstream(instance,path,{method="GET",body,timeoutMs=45000,expectBinary=false}={}) {
+async function upstream(instance,path,{method="GET",body,timeoutMs=45000,expectBinary=false,receive}={}) {
     const controller=new AbortController();
     const timer=setTimeout(()=>controller.abort(),timeoutMs);
     try {
@@ -43,7 +45,35 @@ async function upstream(instance,path,{method="GET",body,timeoutMs=45000,expectB
             headers:body && typeof body==="string"?{"content-type":"application/json"}:undefined
         });
         if (result.status>=300 && result.status<400) throw statusError("comfy_redirect_rejected",502);
-        if (!result.ok) throw statusError("comfy_upstream_"+result.status,502);
+        if (!result.ok) {
+            if(path==="/prompt" && method==="POST" && [400,422].includes(result.status)) {
+                // A received validation rejection is definitive: ComfyUI did NOT queue the graph.
+                // Bound untrusted ComfyUI error text; preserve the diagnostic for the user.
+                let detail="invalid_prompt";
+                try {
+                    const chunks=[];let length=0;
+                    if(result.body)for await(const chunk of result.body) {
+                        length+=chunk.length;
+                        if(length>32_768)break;
+                        chunks.push(Buffer.from(chunk));
+                    }
+                    const payload=JSON.parse(Buffer.concat(chunks).toString("utf8"));
+                    const message=typeof payload?.error?.message==="string"?payload.error.message:
+                        typeof payload?.error?.type==="string"?payload.error.type:
+                        typeof payload?.error==="string"?payload.error:"invalid_prompt";
+                    const problems=Object.entries(payload?.node_errors??{}).flatMap(([node,entry])=>
+                        Array.isArray(entry?.errors)?entry.errors.slice(0,2).map(err=>node+":"+(err?.details||err?.message||"invalid")):[]);
+                    detail=[message,...problems].join(" | ").replace(/[\r\n]+/g," ").slice(0,1000);
+                }catch {}
+                throw Object.assign(statusError("comfy_prompt_rejected:"+detail,422),{promptRejected:true});
+            }
+            throw statusError("comfy_upstream_"+result.status,502);
+        }
+        if(expectBinary && receive) {
+            if(!result.body)throw statusError("comfy_empty_response",502);
+            const mime=(result.headers.get("content-type")||"").split(";")[0];
+            return {saved:await receive(result.body,mime),mime};
+        }
         const max=expectBinary?40_000_000:8_000_000;
         const chunks=[];let size=0;
         if (result.body) for await(const chunk of result.body) {
@@ -75,7 +105,8 @@ function publicRun(run,store) {
         createdAt:run.created_at,updatedAt:run.updated_at,
         artifacts:store.artifacts(run.id).map(a=>({
             artifactId:a.id,runId:run.id,workflowNodeId:a.workflow_node_id,portId:a.port_id,
-            mimeType:a.mime,sha256:a.sha256,byteSize:a.size,
+            kind:a.kind,index:a.item_index,filename:a.id,
+            metadata:JSON.parse(a.metadata_json),mimeType:a.mime,sha256:a.sha256,byteSize:a.size,
             url:`/api/comfy/runs/${run.id}/artifacts/${a.id}`
         }))};
 }
@@ -83,7 +114,7 @@ export function createComfyService({
     env=process.env,root=env.COMFY_DATA_DIR || fileURLToPath(new URL("../../.comfy-workflow-data/",import.meta.url)),
     fetchInfo, upstreamCall=upstream, tickMs=2500, resume=true, principal="local-owner"
 }={}) {
-    const store=createComfyStore(root);
+    const store=createComfyStore(root,{maxRunBytes:Number(env.COMFY_MAX_RUN_BYTES??4_000_000_000)});
     const instances=store.loadInstances(configureInstances(env));
     // Trust all installed ComfyUI classes, including custom nodes. Validate against live /object_info.
     const activeStates=["queued","preparing","submitting","submission_unknown","running","collecting"];
@@ -126,18 +157,27 @@ export function createComfyService({
                 const submitted=await upstreamCall(instance,"/prompt",{method:"POST",body:JSON.stringify({
                     prompt:compiled.graph,client_id:attemptId,extra_data:{infinite_atelier_submit_marker:marker}
                 }),timeoutMs:45000});
+                if(submitted?.error && !submitted?.prompt_id) {
+                    const text=typeof submitted.error==="string"?submitted.error:
+                        submitted.error?.message||submitted.error?.type||"invalid_prompt";
+                    throw Object.assign(statusError("comfy_prompt_rejected:"+String(text).slice(0,500)),{promptRejected:true});
+                }
                 if (typeof submitted?.prompt_id!=="string" || !/^[\w-]{1,128}$/.test(submitted.prompt_id))
                     throw statusError("comfy_prompt_id_missing",502);
                 store.cas(run.id,"submitting","running",{prompt_id:submitted.prompt_id});
             }catch(error) {
-                // A timeout, rejected connection, malformed response or worker crash may follow a received POST.
-                store.cas(run.id,"submitting","submission_unknown",{error:String(error)});
+                // Only a received 400/422 or explicit Comfy validation payload proves non-submission.
+                // A timeout, 5xx, dropped response or malformed success MUST remain uncertain.
+                const rejected=error?.promptRejected===true ||
+                    ["comfy_upstream_400","comfy_upstream_422"].includes(error?.code);
+                store.cas(run.id,"submitting",rejected?"failed":"submission_unknown",{error:String(error)});
             }
         } catch(e) {
             store.cas(run.id,"preparing","failed",{error:String(e)});
         }
     }
     async function collect(run) {
+        if(run.next_collect_at && run.next_collect_at>Date.now())return;
         const instance=instanceFor(run.request.instanceId);
         try {
             const history=await upstreamCall(instance,"/history/"+encodeURIComponent(run.prompt_id));
@@ -151,31 +191,43 @@ export function createComfyService({
             if (entry.status?.completed!==true && entry.status?.status_str!=="success") return;
             if (run.status==="running") store.cas(run.id,"running","collecting");
             const latest=store.read(run.id);
-            const jobs=[];
-            for (const cap of latest.captureMap) {
-                const images=entry.outputs?.[cap.captureNodeId]?.images;
-                if(!Array.isArray(images)||images.length===0)throw statusError("capture_images_missing");
-                for(const im of images) {
-                    if(typeof im.filename!=="string" || !/^[^\\/\u0000-\u001f]{1,180}$/.test(im.filename) ||
-                        typeof(im.subfolder??"")!=="string" || !/^[\w./-]{0,120}$/.test(im.subfolder??"") ||
-                        (im.subfolder??"").includes("..") || !["output","temp"].includes(im.type))throw statusError("unsafe_output_filename");
-                    const fileKey=canonical({filename:im.filename,subfolder:im.subfolder??"",type:im.type});
-                    const params=new URLSearchParams({filename:im.filename,subfolder:im.subfolder??"",type:im.type});
-                    jobs.push({cap,fileKey,params});
+            for(const cap of latest.captureMap) {
+                const candidates=extractCapture(entry.outputs?.[cap.captureNodeId],cap);
+                if(!candidates.length && cap.required)throw statusError("capture_missing:"+cap.portId);
+                for(const [index,item] of candidates.entries()) {
+                    // Identity includes the selected output port even when multiple ports reuse one Save node.
+                    if(store.artifacts(run.id).some(x=>x.port_id===cap.portId && x.item_key===item.key))continue;
+                    if(item.type==="inline") {
+                        await store.addArtifact(latest,cap,item.key,index,Buffer.from(item.text,"utf8"),"text/plain");
+                    } else {
+                        const params=new URLSearchParams({filename:item.filename,subfolder:item.subfolder,type:item.fileType});
+                        const result=await upstreamCall(instance,"/view?"+params.toString(),{
+                            expectBinary:true,timeoutMs:120000,
+                            receive:(stream,mime)=>store.addArtifact(latest,cap,item.key,index,stream,mime,{filename:item.filename})
+                        });
+                        if(!result?.saved) {
+                            if(!result || !(result.bytes || result.stream))throw statusError("capture_download_invalid",502);
+                            await store.addArtifact(latest,cap,item.key,index,result.stream??result.bytes,result.mime,{filename:item.filename});
+                        }
+                    }
                 }
             }
-            for(const {cap,fileKey,params} of jobs) {
-                if(store.artifacts(run.id).some(x=>x.capture_node_id===cap.captureNodeId &&
-                    store.artifact(run.id,x.id)?.file_key===fileKey))continue;
-                const result=await upstreamCall(instance,"/view?"+params.toString(),{expectBinary:true,timeoutMs:90000});
-                const mime=result.mime;
-                if (!["image/png","image/jpeg","image/webp"].includes(mime) || !isImage(result.bytes,mime))throw statusError("captured_image_invalid");
-                store.addArtifact(latest,cap,fileKey,result.bytes,mime);
-            }
-            store.cas(run.id,"collecting","succeeded");
+            store.cas(run.id,"collecting","succeeded",{error:null,capture_attempts:0,next_collect_at:0});
         }catch(e) {
-            // Transient download / upstream failure is recoverable; incomplete collection never becomes success.
-            store.cas(run.id,["running","collecting"],"collecting",{error:String(e)});
+            const code=e?.code || e?.message || "capture_failed";
+            const terminal=/(capture_adapter_unsupported|capture_history_shape_invalid|invalid_media|captured_mime_mismatch|captured_extension_mismatch|unsafe_output_filename|invalid_text_content|capture_empty|quota_exceeded)/.test(code);
+            const attempts=(store.read(run.id)?.capture_attempts??0)+1;
+            if(terminal || attempts>=8) {
+                store.cas(run.id,["running","collecting"],"failed",{
+                    error:terminal?String(e):"capture_retry_exhausted:"+String(e),capture_attempts:attempts
+                });
+            }else {
+                // Retry collection only; never submit another GPU graph. A failed first retry is immediate.
+                store.cas(run.id,["running","collecting"],"collecting",{
+                    error:String(e),capture_attempts:attempts,
+                    next_collect_at:Date.now()+(attempts===1?0:Math.min(60_000,1000*(2**(attempts-2))))
+                });
+            }
         }
     }
     async function tick() {
@@ -291,11 +343,41 @@ export function createComfyService({
                 if(method==="GET" && match[3]) {
                     const a=store.artifact(run.id,match[3]);
                     if(!a)throw statusError("artifact_not_found",404);
-                    const bytes=readFileSync(a.path);
-                    if(sha256(bytes)!==a.sha256)throw statusError("artifact_hash_mismatch",500);
-                    res.writeHead(200,{"content-type":a.mime,"content-length":bytes.length,"cache-control":"private, no-store",
-                        "x-content-type-options":"nosniff","content-disposition":`inline; filename="${a.id}.${a.mime.split("/")[1]}"`});
-                    res.end(bytes);return;
+                    const fileStat=await stat(a.path);
+                    if(fileStat.size!==a.size)throw statusError("artifact_size_mismatch",500);
+                    const size=fileStat.size,range=req.headers.range;
+                    const headers={"content-type":a.mime,"cache-control":"private, no-store",
+                        "x-content-type-options":"nosniff","accept-ranges":"bytes",
+                        "content-disposition":'inline; filename="'+a.id+'"'} ;
+                    if(size===0) {
+                        if(range)res.writeHead(416,{...headers,"content-range":"bytes */0"});
+                        else res.writeHead(200,{...headers,"content-length":0});
+                        res.end();return;
+                    }
+                    let start=0,end=size-1,code=200;
+                    if(range) {
+                        const match=/^bytes=(\d*)-(\d*)$/.exec(range);
+                        if(!match || (!match[1] && !match[2])) {
+                            res.writeHead(416,{...headers,"content-range":"bytes */"+size});res.end();return;
+                        }
+                        if(!match[1]) {
+                            const suffix=Number(match[2]);start=suffix>0?Math.max(0,size-suffix):size;
+                        } else {
+                            start=Number(match[1]);if(match[2])end=Number(match[2]);
+                        }
+                        if(!Number.isSafeInteger(start) || !Number.isSafeInteger(end) ||
+                           start>=size || start<0 || end<start) {
+                            res.writeHead(416,{...headers,"content-range":"bytes */"+size});res.end();return;
+                        }
+                        end=Math.min(end,size-1);code=206;
+                        headers["content-range"]="bytes "+start+"-"+end+"/"+size;
+                    }
+                    headers["content-length"]=end-start+1;
+                    res.writeHead(code,headers);
+                    const stream=createReadStream(a.path,{start,end});
+                    stream.on("error",()=>res.destroy());
+                    stream.pipe(res);
+                    return;
                 }
             }
             return send(res,404,{error:"comfy_route_not_found"});

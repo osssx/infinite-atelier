@@ -17,6 +17,7 @@ const cachedLookups = new Map<string, Promise<string | null>>();
 export async function getExistingMediaPreview(kind: PreviewKind, storageKey: string): Promise<string | null> {
     if (!storageKey) return null;
     const id = keyOf(kind, storageKey);
+    if(/^cas:[0-9a-f]{64}$/.test(storageKey))return urls.get(id)??null; // memory only
     const present = urls.get(id);
     if (present) return present;
     const pendingLookup = cachedLookups.get(id);
@@ -132,6 +133,7 @@ async function videoPoster(blob: Blob): Promise<Blob | null> {
 }
 
 export async function deleteMediaPreview(kind: PreviewKind, storageKey: string) {
+    if(/^cas:[0-9a-f]{64}$/.test(storageKey))return;
     if (!storageKey) return;
     const id = keyOf(kind, storageKey);
     versions.set(id, (versions.get(id) || 0) + 1);
@@ -153,6 +155,32 @@ export async function resolveMediaPreview(
 ): Promise<string | null> {
     if (!storageKey) return null;
     const id = keyOf(kind, storageKey);
+    if(/^cas:[0-9a-f]{64}$/.test(storageKey)){
+        // No IndexedDB reads/writes. Overview images get idle 256px thumbnails
+        // cached for this tab; video remains a placeholder until server posters.
+        if(kind!=="image")return null;
+        const present=urls.get(id);
+        if(present)return present;
+        const inProgress=inFlight.get(id);
+        if(inProgress)return inProgress;
+        const version=versions.get(id)||0;
+        const task=new Promise<string|null>(resolve=>{
+            queueIdle(async()=>{
+                try{
+                    if((versions.get(id)||0)!==version){resolve(null);return}
+                    const original=await loadBlob();
+                    if(!original){resolve(null);return}
+                    const preview=await imagePreview(original,dimensions);
+                    if(!preview||(versions.get(id)||0)!==version){resolve(null);return}
+                    const created=URL.createObjectURL(preview);
+                    urls.set(id,created);
+                    resolve(created);
+                }catch{resolve(null)}
+            });
+        });
+        inFlight.set(id,task);
+        try{return await task}finally{if(inFlight.get(id)===task)inFlight.delete(id)}
+    }
     const url = urls.get(id);
     if (url) return url;
     const current = inFlight.get(id);

@@ -1,6 +1,7 @@
 import localforage from "localforage";
 import { nanoid } from "nanoid";
 import { deleteMediaPreview, resolveMediaPreview } from "./media-preview-storage";
+import {canvasCasUrl,getCanvasBlob,isCanvasCasKey} from "@/features/backend-sync/canvas-cas";
 
 export type UploadedFile = { url: string; storageKey: string; bytes: number; mimeType: string; width?: number; height?: number; durationMs?: number };
 
@@ -20,6 +21,8 @@ export async function uploadMediaFile(input: string | Blob, prefix = "file"): Pr
 
 export async function resolveMediaUrl(storageKey?: string, fallback = "") {
     if (!storageKey) return fallback;
+    const fromBackend=canvasCasUrl(storageKey);
+    if(fromBackend)return fromBackend;
     const cached = objectUrls.get(storageKey);
     if (cached) return cached;
     const blob = await store.getItem<Blob>(storageKey);
@@ -30,10 +33,12 @@ export async function resolveMediaUrl(storageKey?: string, fallback = "") {
 }
 
 export async function getMediaBlob(storageKey: string) {
+    if(isCanvasCasKey(storageKey))return getCanvasBlob(storageKey);
     return store.getItem<Blob>(storageKey);
 }
 
 export async function setMediaBlob(storageKey: string, blob: Blob) {
+    if(isCanvasCasKey(storageKey))throw Error("immutable_canvas_blob_key");
     await deleteMediaPreview("video", storageKey);
     await store.setItem(storageKey, blob);
     const url = URL.createObjectURL(blob);
@@ -45,6 +50,7 @@ export async function setMediaBlob(storageKey: string, blob: Blob) {
 export async function deleteStoredMedia(keys: Iterable<string>) {
     await Promise.all(
         Array.from(new Set(keys)).map(async (key) => {
+            if(isCanvasCasKey(key))return; // Backend CAS GC requires reachability
             const url = objectUrls.get(key);
             if (url) URL.revokeObjectURL(url);
             objectUrls.delete(key);
@@ -70,7 +76,7 @@ export function collectMediaStorageKeys(value: unknown, keys = new Set<string>()
     return keys;
 }
 
-function readVideoMeta(url: string) {
+export function readVideoMeta(url: string) {
     return new Promise<{ width?: number; height?: number; durationMs?: number }>((resolve) => {
         const video = document.createElement("video");
         video.preload = "metadata";
@@ -99,7 +105,7 @@ function readVideoMeta(url: string) {
     });
 }
 
-function readAudioMeta(url: string) {
+export function readAudioMeta(url: string) {
     return new Promise<{ durationMs?: number }>((resolve) => {
         const audio = document.createElement("audio");
         audio.preload = "metadata";

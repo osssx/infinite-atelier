@@ -2,13 +2,15 @@ import { beforeEach,describe,expect,it,vi } from "vitest";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
 import type { ComfyRunArtifact } from "./run-client";
 
-vi.mock("@/services/image-storage",()=>({uploadImage:vi.fn(async()=>({
-    url:"blob:image",storageKey:"image:stored",width:256,height:128,bytes:8,mimeType:"image/png"
-}))}));
-vi.mock("@/services/file-storage",()=>({uploadMediaFile:vi.fn(async(_blob:Blob,kind:string)=>({
-    url:"blob:media",storageKey:kind+":stored",width:1280,height:720,durationMs:2000,bytes:64,
-    mimeType:kind==="video"?"video/mp4":"audio/wav"
-}))}));
+vi.mock("@/features/backend-sync/canvas-media",()=>({
+    uploadCanvasImage:vi.fn(async()=>({
+      url:"/api/v1/blobs/abc",storageKey:"cas:"+"a".repeat(64),width:256,height:128,bytes:8,mimeType:"image/png"
+    })),
+    uploadCanvasMedia:vi.fn(async(_blob:Blob,kind:string)=>({
+      url:"/api/v1/blobs/def",storageKey:"cas:"+"b".repeat(64),width:1280,height:720,durationMs:2000,bytes:64,
+      mimeType:kind==="video"?"video/mp4":"audio/wav"
+    }))
+}));
 vi.mock("@/lib/canvas/canvas-node-factory",()=>({
     createCanvasNode:vi.fn((type:CanvasNodeType,position:{x:number;y:number},metadata:unknown)=>({
         id:"node-"+type,type,title:type,position,width:100,height:100,metadata
@@ -18,8 +20,7 @@ vi.mock("@/lib/canvas/canvas-node-factory",()=>({
     audioMetadata:(item:unknown)=>item,
 }));
 import { importComfyArtifact } from "./artifact-importers";
-import { uploadImage } from "@/services/image-storage";
-import { uploadMediaFile } from "@/services/file-storage";
+import { uploadCanvasImage,uploadCanvasMedia } from "@/features/backend-sync/canvas-media";
 
 const workflow:CanvasNodeData={
     id:"workflow-1",type:"comfy:workflow",title:"Comfy",position:{x:100,y:100},width:320,height:210
@@ -45,13 +46,13 @@ describe("Comfy canvas artifact import adapters",()=>{
             runId:"run-1",artifactId:"artifact-"+port,workflowNodeId:"workflow-1",
             portId:port,kind,index:3
         });
-        if(kind==="image")expect(uploadImage).toHaveBeenCalledOnce();
-        if(kind==="video" || kind==="audio")expect(uploadMediaFile).toHaveBeenCalledWith(blob,kind);
+        if(kind==="image")expect(uploadCanvasImage).toHaveBeenCalledOnce();
+        if(kind==="video" || kind==="audio")expect(uploadCanvasMedia).toHaveBeenCalledWith(blob,kind);
         if(kind==="text")expect(node.metadata?.content).toBe("model result");
     });
     it("rejects a mismatched media content type before persisting",async()=>{
         await expect(importComfyArtifact(artifact("video","video"),new Blob(["x"],{type:"image/png"}),workflow,0))
             .rejects.toThrow(/MIME/);
-        expect(uploadMediaFile).not.toHaveBeenCalled();
+        expect(uploadCanvasMedia).not.toHaveBeenCalled();
     });
 });

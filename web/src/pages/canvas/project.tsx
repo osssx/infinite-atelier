@@ -10,11 +10,13 @@ import { MissingSkillVersionError, resolveManualSkillContext, withManualSkillMes
 import { prepareAutomaticSkillCatalog, withAutomaticSkillCatalog, isUnsupportedSkillToolsError, type AutomaticSkillPlan } from "@/features/skills/skill-auto";
 import { isSkillToolsKnownUnsupported, rememberSupportedSkillTools, rememberUnsupportedSkillTools } from "@/features/skills/skill-tool-capability";
 import { extractSkillMentions, resolvePromptSkillBinding, showLegacySkillMentions } from "@/features/skills/skill-mentions";
-import { requestAudioGeneration, storeGeneratedAudio } from "@/services/api/audio";
-import { cancelVideoGenerationTask, pollVideoGenerationTask, requestVideoGeneration, retrySeedanceDownload, storeGeneratedVideo, type VideoGenerationRequest, type VideoGenerationTask } from "@/services/api/video";
+import { requestAudioGeneration } from "@/services/api/audio";
+import { cancelVideoGenerationTask, pollVideoGenerationTask, requestVideoGeneration, retrySeedanceDownload, type VideoGenerationRequest, type VideoGenerationTask } from "@/services/api/video";
 import { defaultConfig, resolveModelChannel, resolveModelScript, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
-import { deleteStoredImages, uploadImage } from "@/services/image-storage";
-import { deleteStoredMedia, uploadMediaFile } from "@/services/file-storage";
+import { deleteStoredImages,getImageBlob } from "@/services/image-storage";
+import { deleteStoredMedia,getMediaBlob } from "@/services/file-storage";
+import {uploadCanvasImage as uploadImage,uploadCanvasMedia,storeCanvasGeneratedVideo as storeGeneratedVideo,storeCanvasGeneratedAudio as storeGeneratedAudio,isCanvasCasKey,canvasCasUrl} from "@/features/backend-sync/canvas-media";
+const uploadMediaFile=(input:string|Blob,prefix="video")=>uploadCanvasMedia(input,prefix==="audio"?"audio":"video");
 import { setPreviewGenerationSuspended } from "@/services/media-preview-storage";
 import { nanoid } from "nanoid";
 import { getDataUrlByteSize, readImageMeta } from "@/lib/image-utils";
@@ -3511,33 +3513,45 @@ function AtelierCanvasPage() {
     );
 
     const handleAssetInsert = useCallback(
-        (payload: InsertAssetPayload) => {
-            if (payload.kind === "text") {
-                insertAssistantText(payload.content, payload.title);
-            } else if (payload.kind === "video") {
-                const spec = NODE_DEFAULT_SIZE[CanvasNodeType.Video];
-                const center = screenToCanvas((containerRef.current?.getBoundingClientRect().left || 0) + size.width / 2, (containerRef.current?.getBoundingClientRect().top || 0) + size.height / 2);
-                const id = `video-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-                const nextSize = fitNodeSize(payload.width || spec.width, payload.height || spec.height, VIDEO_NODE_MAX_WIDTH, VIDEO_NODE_MAX_HEIGHT);
-                setNodes((prev) => [
-                    ...prev,
-                    {
-                        id,
-                        type: CanvasNodeType.Video,
-                        title: payload.title,
+        async (payload: InsertAssetPayload) => {
+            try {
+                if (payload.kind === "text") {
+                    insertAssistantText(payload.content, payload.title);
+                } else if (payload.kind === "video") {
+                    // Assets may still live in the legacy Asset library. Ingest
+                    // explicitly when INSERTING into the SQLite-owned canvas.
+                    const original = payload.storageKey && !isCanvasCasKey(payload.storageKey)
+                        ? await getMediaBlob(payload.storageKey) : null;
+                    const media = payload.storageKey && isCanvasCasKey(payload.storageKey)
+                        ? { storageKey: payload.storageKey, url: canvasCasUrl(payload.storageKey)!, width: payload.width, height: payload.height }
+                        : await uploadCanvasMedia(original || payload.url, "video");
+                    const spec = NODE_DEFAULT_SIZE[CanvasNodeType.Video];
+                    const center = screenToCanvas((containerRef.current?.getBoundingClientRect().left || 0) + size.width / 2, (containerRef.current?.getBoundingClientRect().top || 0) + size.height / 2);
+                    const id = `video-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+                    const nextSize = fitNodeSize(media.width || spec.width, media.height || spec.height, VIDEO_NODE_MAX_WIDTH, VIDEO_NODE_MAX_HEIGHT);
+                    setNodes((prev) => [...prev, {
+                        id, type: CanvasNodeType.Video, title: payload.title,
                         position: { x: center.x - nextSize.width / 2, y: center.y - nextSize.height / 2 },
-                        width: nextSize.width,
-                        height: nextSize.height,
-                        metadata: { content: payload.url, storageKey: payload.storageKey, status: NODE_STATUS_SUCCESS, naturalWidth: payload.width, naturalHeight: payload.height },
-                    },
-                ]);
-                setSelectedNodeIds(new Set([id]));
-            } else {
-                insertAssistantImage({ id: `asset-${Date.now()}`, prompt: payload.title, dataUrl: payload.dataUrl, storageKey: payload.storageKey });
+                        width: nextSize.width, height: nextSize.height,
+                        metadata: { content: media.url, storageKey: media.storageKey, status: NODE_STATUS_SUCCESS,
+                            naturalWidth: media.width, naturalHeight: media.height },
+                    }]);
+                    setSelectedNodeIds(new Set([id]));
+                } else {
+                    const original = payload.storageKey && !isCanvasCasKey(payload.storageKey)
+                        ? await getImageBlob(payload.storageKey) : null;
+                    const image = payload.storageKey && isCanvasCasKey(payload.storageKey)
+                        ? { storageKey: payload.storageKey, url: canvasCasUrl(payload.storageKey)! }
+                        : await uploadImage(original || payload.dataUrl);
+                    await insertAssistantImage({ id: `asset-${Date.now()}`, prompt: payload.title,
+                        dataUrl: image.url, storageKey: image.storageKey });
+                }
+                setAssetPickerOpen(false);
+            } catch (error) {
+                message.error("导入画布媒体失败，未写入节点："+String(error));
             }
-            setAssetPickerOpen(false);
         },
-        [insertAssistantImage, insertAssistantText, screenToCanvas, size.height, size.width],
+        [insertAssistantImage, insertAssistantText, message, screenToCanvas, size.height, size.width],
     );
 
     // Memoize every callback and render function passed to CanvasNode.

@@ -1,7 +1,6 @@
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
 import { createCanvasNode, imageMetadata, videoMetadata, audioMetadata } from "@/lib/canvas/canvas-node-factory";
-import { uploadImage } from "@/services/image-storage";
-import { uploadMediaFile } from "@/services/file-storage";
+import {uploadCanvasImage as uploadImage,uploadCanvasMedia} from "@/features/backend-sync/canvas-media";
 import { placeComfyImageArtifact } from "./artifact-layout";
 import type { ComfyRunArtifact } from "./run-client";
 
@@ -25,13 +24,13 @@ export const canvasArtifactImporters:Readonly<Record<ComfyRunArtifact["kind"],Ar
         });
     },
     video:async(artifact,blob,source,index)=>{
-        const item=await uploadMediaFile(blob,"video");
+        const item=await uploadCanvasMedia(blob,"video");
         return createPlacedNode(CanvasNodeType.Video,source,index,item.width||1280,item.height||720,{
             ...videoMetadata(item),comfyArtifact:provenance(artifact)
         });
     },
     audio:async(artifact,blob,source,index)=>{
-        const item=await uploadMediaFile(blob,"audio");
+        const item=await uploadCanvasMedia(blob,"audio");
         return createPlacedNode(CanvasNodeType.Audio,source,index,520,220,{
             ...audioMetadata(item),comfyArtifact:provenance(artifact)
         });

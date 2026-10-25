@@ -6,6 +6,7 @@ import { readImageMeta } from "@/lib/image-utils";
 import { proxyApiUrl } from "@/lib/api-proxy";
 import { PERF_MODE } from "@/lib/perf-mode";
 import { deleteMediaPreview, resolveMediaPreview } from "./media-preview-storage";
+import {canvasCasUrl,getCanvasBlob,isCanvasCasKey} from "@/features/backend-sync/canvas-cas";
 
 export type UploadedImage = {
     url: string;
@@ -33,6 +34,8 @@ export async function uploadImage(input: string | Blob): Promise<UploadedImage> 
 
 export async function resolveImageUrl(storageKey?: string, fallback = "") {
     if (!storageKey) return fallback;
+    const fromBackend=canvasCasUrl(storageKey);
+    if(fromBackend)return fromBackend;
     const cached = objectUrls.get(storageKey);
     if (cached) return cached;
     const blob = await store.getItem<Blob>(storageKey);
@@ -43,10 +46,12 @@ export async function resolveImageUrl(storageKey?: string, fallback = "") {
 }
 
 export async function getImageBlob(storageKey: string) {
+    if(isCanvasCasKey(storageKey))return getCanvasBlob(storageKey);
     return store.getItem<Blob>(storageKey);
 }
 
 export async function setImageBlob(storageKey: string, blob: Blob) {
+    if(isCanvasCasKey(storageKey))throw Error("immutable_canvas_blob_key");
     await deleteMediaPreview("image", storageKey);
     await store.setItem(storageKey, blob);
     const url = URL.createObjectURL(blob);
@@ -64,6 +69,7 @@ export async function imageToDataUrl(image: { url?: string; dataUrl?: string; st
 export async function deleteStoredImages(keys: Iterable<string>) {
     await Promise.all(
         Array.from(new Set(keys)).map(async (key) => {
+            if(isCanvasCasKey(key))return; // Backend CAS GC requires reachability
             const url = objectUrls.get(key);
             if (url) URL.revokeObjectURL(url);
             objectUrls.delete(key);

@@ -1,6 +1,6 @@
 # Infinite Atelier 画布 SQLite-only 架构设计
 
-状态：**P0、P1 已落地，P2 的独立视口/聊天存储和并发保存队列已实施**。针对单机单用户；浏览器本地旧画布不迁移、不兼容。**P3 统一媒体 BlobStore、P4 统一生成、P5 清理/备份仍未完成**。
+状态：**P0、P1、P2 已落地；P3 的画布媒体 CAS 上传与读取纵向链路已完成第一轮**。针对单机单用户；旧浏览器画布不迁移、不兼容。**P3 服务端缩略图与媒体生命周期、P4 统一任务执行、P5 清理/备份仍待完成**。
 
 ## 当前可运行代码（首轮实施）
 
@@ -11,7 +11,9 @@
 - 旧画布“手动连接同步”与“共享后端项目库”入口从可见页面隐藏；原项目浏览器 ZIP 导入/导出暂时关闭，以免在媒体未后端化前生成不完整的项目。
 - **P2 已实施**：SQLite schema v7 使用 `project_viewports` 和 `project_chats` 独立存储，v6→v7 升级只从现存 **后端**项目 JSON 抽取必要状态，旧浏览器项目不迁移；新建项目时三类数据在同一事务初始化。后端 `GET/PUT /api/v1/projects/:id/viewport`、`GET/PUT /api/v1/projects/:id/chats` 各有独立 revision，图 `PATCH` 不携带这两类数据；Chat、Viewport、Graph 分开防抖与串行保存。首次读取项目并行 GET 三组状态，只有全部成功才初始化 React。
 - **P2 竞态修复**：第一笔 viewport/chat `PUT` 执行时若继续编辑，服务器回包只更新 revision，不把旧 payload 写回本地当前值；后续 pending 内容在新 revision 上提交。409 冲突与失败保留草稿并阻止误认为已保存。
-- **当前保留的限制**：`image-storage.ts`、`file-storage.ts` 和视频生成等仍存在旧浏览器媒体路径；完整 SQLite-only 不能在 P3/P4 完成前宣告达成。跨标签页自动应用 Materializer 增量、生产静态站点统一托管、聊天按会话行拆分（目前按项目一个聊天 JSON 行）仍在后续计划。
+- **P3 第一轮已实施**：`canvas-media.ts` 经由同源 `POST /api/v1/blobs` 将画布图片、视频、音频和生成结果上传后端 CAS，返回稳定 `cas:<sha256>` 键与 `/api/v1/blobs/<sha256>` URL；`canvas-cas.ts` 统一解析并读取后端文件（支持原后端 Range）。前端通用媒体读取函数能解析 CAS，Canvas 页面导入/生成、Comfy V2 导入产物和图像水合改走后端上传；素材库仍保留自身的旧存储，**将素材插入画布时显式复制到 CAS**，不直接把其 IndexedDB 键保存进 SQLite 图。CAS 图片缩略图仅在浏览器内存中空闲生成，不持久写浏览器 IndexedDB。
+- **P3 已验证**：图片、视频、音频经真实 Fastify 上传，重复内容得到 200 去重，MP4 Range 返回 206；SQLite 后端关闭再启动，画布 CAS 引用和图片字节均能重新获取。错误 MIME、无效返回值和 Comfy 混合产物导入有前端回归。
+- **尚待完成**：服务端缩略图/视频封面、CAS 媒体引用计数与安全 GC、全媒体项目备份/导入、浏览器端其他非 Canvas 素材/配置数据收口；`services/api/video` 等公用非 Canvas 入口仍可能使用旧素材库存储。跨标签页自动应用 Materializer 增量、生产静态站点统一托管、聊天按会话行拆分（目前按项目一个聊天 JSON 行）仍在后续计划。**P4/P5 完成前不可宣告整个产品 SQLite-only 全部完成。**
 
 在已有 `npm run dev:backend` 运行时，先安全停止旧服务（不要中断正在提交的 GPU 任务），再用 `npm run dev` 启动；不要同时启动两个后端进程争用端口 8788 和数据库进程锁。
 

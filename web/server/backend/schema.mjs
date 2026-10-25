@@ -1,5 +1,5 @@
 import{JOB_STATUSES,EXECUTION_MODES,ARTIFACT_KINDS}from"./contracts.mjs";
-export const SCHEMA_VERSION=1;
+export const SCHEMA_VERSION=2;
 const quoted=x=>x.map(s=>"'"+s+"'").join(",");
 export const INITIAL_SCHEMA_SQL=`
 CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY,applied_at INTEGER NOT NULL);
@@ -36,12 +36,44 @@ CREATE TABLE IF NOT EXISTS materializations(id TEXT PRIMARY KEY,job_id TEXT NOT 
 CREATE TABLE IF NOT EXISTS job_events(seq INTEGER PRIMARY KEY AUTOINCREMENT,job_id TEXT NOT NULL REFERENCES jobs(id),kind TEXT NOT NULL,payload_json TEXT NOT NULL CHECK(json_valid(payload_json)),created_at INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS ix_job_events_job_seq ON job_events(job_id,seq);
 `;
+
+/** Schema v2: versioned encrypted credentials. Cipher bytes are never in
+ * channel configuration JSON or the jobs snapshot. Old versions are retained
+ * across rotations for already-frozen jobs unless explicitly revoked.
+ */
+export const CREDENTIAL_SCHEMA_SQL=`
+CREATE TABLE IF NOT EXISTS channels(
+ id TEXT PRIMARY KEY,
+ provider TEXT NOT NULL,
+ display_name TEXT NOT NULL,
+ current_version_id TEXT,
+ created_at INTEGER NOT NULL,
+ updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS credential_versions(
+ id TEXT PRIMARY KEY,
+ channel_id TEXT NOT NULL REFERENCES channels(id),
+ version_num INTEGER NOT NULL CHECK(version_num>0),
+ ciphertext BLOB NOT NULL CHECK(length(ciphertext)>0),
+ created_at INTEGER NOT NULL,
+ revoked_at INTEGER,
+ UNIQUE(channel_id,version_num)
+);
+CREATE INDEX IF NOT EXISTS ix_credential_versions_channel ON credential_versions(channel_id,version_num);
+CREATE TRIGGER IF NOT EXISTS credential_cipher_immutable
+ BEFORE UPDATE OF ciphertext,channel_id,version_num ON credential_versions
+ BEGIN SELECT RAISE(ABORT,'immutable_credential_version'); END;
+CREATE TRIGGER IF NOT EXISTS credential_version_no_delete
+ BEFORE DELETE ON credential_versions
+ BEGIN SELECT RAISE(ABORT,'immutable_credential_version'); END;
+`;
 export function initializeSchema(db){
  db.exec("PRAGMA foreign_keys=ON;PRAGMA busy_timeout=5000;BEGIN IMMEDIATE");
  try{
   db.exec(INITIAL_SCHEMA_SQL);
   const version=db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v??0;
   if(version>SCHEMA_VERSION)throw Error("database_schema_too_new");
+  if(version<2)db.exec(CREDENTIAL_SCHEMA_SQL);
   if(version<SCHEMA_VERSION)db.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)").run(SCHEMA_VERSION,Date.now());
   db.exec("COMMIT");
  }catch(e){db.exec("ROLLBACK");throw e}

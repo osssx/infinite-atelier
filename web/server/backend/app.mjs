@@ -13,6 +13,18 @@ const jobBody={type:"object",required:["idempotencyKey","requestFingerprint","ex
  snapshot:{type:"object"},projectId:idSchema,targetNodeId:idSchema,expectedProjectRevision:{type:"integer",minimum:1},
  sourceNodeFingerprint:nonempty
 },additionalProperties:false};
+
+const channelCreateBody={type:"object",required:["provider","displayName","apiKey"],
+ properties:{id:idSchema,provider:{type:"string",minLength:1,maxLength:64},
+  displayName:{type:"string",minLength:1,maxLength:128},
+  apiKey:{type:"string",minLength:1,maxLength:8192}},additionalProperties:false};
+const channelRotateBody={type:"object",required:["apiKey","expectedKeyVersion"],
+ properties:{apiKey:{type:"string",minLength:1,maxLength:8192},
+  expectedKeyVersion:{anyOf:[{type:"string",minLength:1,maxLength:128},{type:"null"}]}},
+ additionalProperties:false};
+const channelRouteParams={type:"object",required:["id"],properties:{id:idSchema},additionalProperties:false};
+const credentialRouteParams={type:"object",required:["id","versionId"],
+ properties:{id:idSchema,versionId:{type:"string",minLength:1,maxLength:128}},additionalProperties:false};
 function localHost(host){
  try{const u=new URL("http://"+host);return ["127.0.0.1","localhost","[::1]"].includes(u.hostname)&&!u.username&&!u.password}catch{return false}
 }
@@ -35,7 +47,7 @@ function cursorOf(value){
  if(!/^(0|[1-9][0-9]*)$/.test(v)||!Number.isSafeInteger(Number(v)))throw Object.assign(Error("invalid_event_cursor"),{statusCode:400,code:"invalid_event_cursor"});
  return Number(v);
 }
-export function buildApp({db,authorize,sessionAuth,blobStore,logger=false,streamPollMs=200}={}){
+export function buildApp({db,authorize,sessionAuth,blobStore,vault,logger=false,streamPollMs=200}={}){
  if(!db||(!sessionAuth&&typeof authorize!=="function"))throw Error("backend_authorizer_required");
  const app=Fastify({logger,bodyLimit:5*1024*1024,trustProxy:false,genReqId:()=>randomUUID()});
  if(blobStore)app.addContentTypeParser("application/octet-stream",(req,stream,done)=>done(null,stream));
@@ -54,7 +66,11 @@ export function buildApp({db,authorize,sessionAuth,blobStore,logger=false,stream
    "invalid_event_cursor","event_cursor_expired","raw_credentials_forbidden",
    "invalid_bootstrap_token","unsupported_blob_mime","invalid_sha256","blob_quota_exceeded",
    "empty_blob","blob_mime_mismatch","blob_digest_mismatch","blob_identity_conflict",
-   "blob_not_found","blob_missing_on_disk","blob_integrity_error","invalid_blob_range"]);
+   "blob_not_found","blob_missing_on_disk","blob_integrity_error","invalid_blob_range",
+   "channel_not_found","channel_id_conflict","invalid_channel_config","invalid_credential_value",
+   "expected_credential_version_required","credential_version_conflict",
+   "credential_reference_required","credential_missing","credential_revoked",
+   "credential_protection_unavailable","credential_decryption_failed"]);
   const code=error.validation?"invalid_request":(publicCodes.has(error.code)?error.code:
     (status===400?"invalid_request":"internal_error"));
   reply.code(status).send({code,message:code,requestId:req.id,...(code==="project_revision_conflict"&&error.details?{details:error.details}:{})});
@@ -108,6 +124,30 @@ export function buildApp({db,authorize,sessionAuth,blobStore,logger=false,stream
   });
  }
 
+
+ if(vault){
+  app.get("/api/v1/channels",(req,reply)=>{
+   reply.header("Cache-Control","no-store");return {channels:vault.list()};
+  });
+  app.post("/api/v1/channels",{schema:{body:channelCreateBody}},async(req,reply)=>{
+   const record=vault.create(req.body);reply.header("Cache-Control","no-store").code(201);return record;
+  });
+  app.get("/api/v1/channels/:id",{schema:{params:channelRouteParams}},async(req,reply)=>{
+   reply.header("Cache-Control","no-store");return vault.get(req.params.id);
+  });
+  app.get("/api/v1/channels/:id/versions",{schema:{params:channelRouteParams}},async(req,reply)=>{
+   reply.header("Cache-Control","no-store");return {versions:vault.listVersions(req.params.id)};
+  });
+  app.patch("/api/v1/channels/:id/credential",{schema:{params:channelRouteParams,body:channelRotateBody}},async(req,reply)=>{
+   const record=vault.rotate(req.params.id,req.body);reply.header("Cache-Control","no-store");return record;
+  });
+  app.post("/api/v1/channels/:id/versions/:versionId/revoke",{
+   schema:{params:credentialRouteParams,body:{type:"object",additionalProperties:false}}
+  },async(req,reply)=>{
+   const record=vault.revoke(req.params.id,req.params.versionId);
+   reply.header("Cache-Control","no-store");return record;
+  });
+ }
  app.post("/api/v1/projects",{schema:{body:projectBody}},async(req,reply)=>{
   const created=createProject(db,req.body);reply.header("ETag",'"'+created.revision+'"').code(201);return created;
  });
@@ -121,6 +161,8 @@ export function buildApp({db,authorize,sessionAuth,blobStore,logger=false,stream
   const project=patchProject(db,{id:req.params.id,...req.body});reply.header("ETag",'"'+project.revision+'"');return project;
  });
  app.post("/api/v1/jobs",{schema:{body:jobBody}},async(req,reply)=>{
+  // Validation of secretVersionRef occurs inside repository's write transaction,
+  // preserving idempotent replies even if a version is later revoked.
   const result=submitJob(db,req.body),row=db.prepare("SELECT * FROM jobs WHERE id=?").get(result.jobId);
   reply.code(result.existing?200:201);return {...jobView(row),existing:result.existing};
  });

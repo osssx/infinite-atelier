@@ -65,6 +65,18 @@ export function submitJob(db,{jobId=randomUUID(),principal="local-owner",project
   const existing=db.prepare("SELECT id,request_fingerprint,execution_mode,snapshot_json,target_node_id,expected_project_revision,source_fingerprint FROM jobs WHERE principal=? AND project_scope=? AND idempotency_key=?").get(principal,scope,idempotencyKey);
   // Do not trust only the caller-provided request fingerprint: compare the actual frozen payload and source fence.
   if(existing){if(existing.request_fingerprint!==requestFingerprint||existing.execution_mode!==executionMode||existing.snapshot_json!==stableJson(snapshot)||existing.target_node_id!==targetNodeId||existing.expected_project_revision!==expectedProjectRevision||existing.source_fingerprint!==sourceNodeFingerprint)throw problem("idempotency_key_conflict");return{jobId:existing.id,existing:true}}
+  // The immutable credential reference is checked under the same write
+  // transaction as inserting the JobSnapshot, after idempotency lookup.
+  if(snapshot.channelId!==undefined||snapshot.secretVersionRef!==undefined){
+   if(typeof snapshot.channelId!=="string"||!snapshot.channelId||
+      typeof snapshot.secretVersionRef!=="string"||!snapshot.secretVersionRef)
+    throw invalid("credential_reference_required");
+   const credential=db.prepare("SELECT channel_id,revoked_at FROM credential_versions WHERE id=?")
+     .get(snapshot.secretVersionRef);
+   if(!credential||credential.channel_id!==snapshot.channelId)
+    throw Object.assign(Error("credential_missing"),{code:"credential_missing",statusCode:404});
+   if(credential.revoked_at!==null)throw problem("credential_revoked");
+  }
   if(projectId!==null){
    const project=db.prepare("SELECT document_json,revision,deleted_at FROM projects WHERE id=?").get(projectId);
    if(!project||project.deleted_at!==null||project.revision!==expectedProjectRevision||fingerprintSource(JSON.parse(project.document_json),targetNodeId)!==sourceNodeFingerprint)throw problem("stale_generation_source");

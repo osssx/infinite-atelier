@@ -8,10 +8,22 @@ export type LocalSessionResponse={csrfToken:string;expiresAt:number};
 export type BlobUploadResponse={blobId:string;sha256:string;byteSize:number;mimeType:string;existing:boolean};
 export type BackendBlobMime="image/png"|"image/jpeg"|"image/webp"|"video/mp4"|"video/webm"|"audio/wav"|"audio/flac"|"audio/ogg"|"audio/mpeg"|"text/plain";
 
+
+export type BackendChannelMetadata={
+ id:string;provider:string;displayName:string;hasKey:boolean;
+ keyVersion:string|null;createdAt:number;updatedAt:number;
+};
+export type BackendCredentialVersion={
+ id:string;channelId:string;version:number;createdAt:number;revokedAt:number|null;
+};
+export type BackendChannelCreateRequest={
+ id?:string;provider:string;displayName:string;apiKey:string;
+};
+export type BackendCredentialRotateRequest={apiKey:string;expectedKeyVersion:string|null};
 export type BackendJobSnapshot={
  jobId:string;idempotencyKey:string;requestFingerprint:string;executionMode:JobExecutionMode;
  projectId?:string;targetNodeId?:string;expectedProjectRevision?:number;sourceNodeFingerprint?:string;
- secretVersionRef:string;adapterVersion:string;modelSnapshot:Record<string,unknown>;
+ channelId?:string;secretVersionRef?:string;adapterVersion:string;modelSnapshot:Record<string,unknown>;
  frozenInputs:readonly {blobId:string;sha256:string}[];options:Record<string,unknown>;
 };
 export type BackendJobEvent={eventId:number;jobId:string;kind:string;timestamp:number;payload:unknown};

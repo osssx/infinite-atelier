@@ -7,6 +7,8 @@ import {acquireInstanceLock} from "./instance-lock.mjs";
 import {createLocalSessionAuth} from "./session.mjs";
 import {createBlobStore} from "./blob-store.mjs";
 import {buildApp} from "./app.mjs";
+import {createWindowsDpapiProtector} from "./credential-protection.mjs";
+import {createCredentialVault} from "./credential-vault.mjs";
 /** Resolve the user-data directory; reject worktree paths and junction aliases. */
 const sourceRoot=realpathSync(fileURLToPath(new URL("../../../",import.meta.url)));
 export function resolveLocalDataDir(dataDir=process.env.ATELIER_DATA_DIR){
@@ -32,10 +34,13 @@ export function createLocalBackend({dataDir,streamPollMs=200}={}){
  let db;
  try{
   db=openMainDatabase(root);
+  // Fail closed if CurrentUser DPAPI is unavailable; no plaintext fallback.
+  const protector=createWindowsDpapiProtector();
+  const vault=createCredentialVault({db,protector});
   const sessionAuth=createLocalSessionAuth(),blobStore=createBlobStore({dataDir:root,db});
-  const app=buildApp({db,sessionAuth,blobStore,streamPollMs});
+  const app=buildApp({db,sessionAuth,blobStore,vault,streamPollMs});
   let closed=false;
-  return {app,db,sessionAuth,lock,async close(){
+  return {app,db,sessionAuth,vault,lock,async close(){
    if(closed)return;closed=true;
    try{await app.close()}finally{try{db.close()}finally{lock.release()}}
   }};

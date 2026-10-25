@@ -102,6 +102,7 @@ import { startBackendComfyWorkflowRun, assertNoActiveBackendComfyJob } from "@/f
 import {createSqliteComfyBridge} from "@/features/backend-sync/sqlite-comfy-bridge";
 import {watchSqliteComfyJob} from "@/features/backend-sync/sqlite-comfy-job-watch";
 import {canvasApi} from "@/features/backend-sync/canvas-api";
+import {preserveValidCanvasViewport} from "@/features/backend-sync/canvas-state-persistence";
 import { CanvasTopBar } from "@/components/canvas/canvas-top-bar";
 import { ConnectionCreateMenu, NodeCreateMenu, type PendingConnectionCreate } from "@/components/canvas/canvas-create-menus";
 import {
@@ -1327,7 +1328,7 @@ function AtelierCanvasPage() {
             const step = (now: number) => {
                 if (startTime === null) startTime = now;
                 const t = easeOutCubic(Math.min((now - startTime) / duration, 1));
-                setViewport({ x: start.x + (target.x - start.x) * t, y: start.y + (target.y - start.y) * t, k: start.k + (target.k - start.k) * t });
+                setViewport(previous=>preserveValidCanvasViewport({ x: start.x + (target.x - start.x) * t, y: start.y + (target.y - start.y) * t, k: start.k + (target.k - start.k) * t },previous));
                 viewportAnimRef.current = t < 1 ? requestAnimationFrame(step) : null;
             };
             viewportAnimRef.current = requestAnimationFrame(step);
@@ -1341,7 +1342,7 @@ function AtelierCanvasPage() {
             // minimap derive their next transform from the committed viewport, so letting the rAF
             // keep writing would pull the canvas back to a stale target on the following frame.
             cancelViewportAnimation();
-            setViewport(next);
+            setViewport(previous=>preserveValidCanvasViewport(next,previous));
             setContextMenu(null);
         },
         [cancelViewportAnimation],
@@ -1381,11 +1382,11 @@ function AtelierCanvasPage() {
         (scale: number) => {
             cancelViewportAnimation();
             const nextScale = Math.min(Math.max(scale, 0.05), 5);
-            setViewport((prev) => ({
+            setViewport((prev) => preserveValidCanvasViewport({
                 x: size.width / 2 - ((size.width / 2 - prev.x) / prev.k) * nextScale,
                 y: size.height / 2 - ((size.height / 2 - prev.y) / prev.k) * nextScale,
                 k: nextScale,
-            }));
+            },prev));
             setContextMenu(null);
         },
         [cancelViewportAnimation, size.height, size.width],
@@ -3962,8 +3963,8 @@ function AtelierCanvasPage() {
                     onCancelTitleEditing={() => setTitleEditing(false)}
                     canUndo={historyState.canUndo}
                     canRedo={historyState.canRedo}
-                    onHome={()=>{void awaitCanvasStorePersistence().then(()=>navigate("/")).catch(error=>message.error("未保存，无法离开："+String(error)))}}
-                    onProjects={()=>{void awaitCanvasStorePersistence().then(()=>navigate("/canvas")).catch(error=>message.error("未保存，无法离开："+String(error)))}}
+                    onHome={()=>{void awaitCanvasStorePersistence(projectId).then(()=>navigate("/")).catch(error=>message.error("未保存，无法离开："+String(error)))}}
+                    onProjects={()=>{void awaitCanvasStorePersistence(projectId).then(()=>navigate("/canvas")).catch(error=>message.error("未保存，无法离开："+String(error)))}}
                     onCreateProject={createAndOpenProject}
                     onDeleteProject={deleteCurrentProject}
                     onExportProject={()=>message.warning("完整 SQLite + BlobStore 项目导出将在媒体后端化阶段开放")}

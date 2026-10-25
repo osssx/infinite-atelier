@@ -1,6 +1,19 @@
 /** Single-user local Canvas backend. No origin-local project storage. */
+export type CanvasRequestDiagnostic={
+ lane?:"graph"|"viewport"|"chats";
+ field?:string;keyword?:string;
+};
+const laneLabel={graph:"节点图",viewport:"视口",chats:"聊天"};
 export class CanvasApiError extends Error{
- constructor(readonly code:string,readonly status:number){super(code)}
+ constructor(readonly code:string,readonly status:number,
+  readonly method?:string,readonly endpoint?:string,readonly details?:CanvasRequestDiagnostic){
+  const field=details?.field&&details.field!=="/"?
+   details.field:details?.keyword==="required"?"/（缺少必填字段）":"";
+  const where=details?.lane?laneLabel[details.lane]+"保存":
+   method&&endpoint?method+" "+endpoint.replace(/\/api\/v1\/projects\/[^/]+/,"/api/v1/projects/:id"):"";
+  super(code+(where?" ["+where+(field?" "+field:"")+"]":""));
+  this.name="CanvasApiError";
+ }
 }
 let csrf:string|null=null,initializing:Promise<string>|null=null;
 export async function canvasSession(force=false):Promise<string>{
@@ -30,7 +43,14 @@ export async function canvasApi<T>(path:string,method="GET",payload?:unknown):Pr
   const data:unknown=await response.json().catch(()=>null);
   if(!response.ok){
    const code=(data&&typeof data==="object"&&"code" in data&&typeof data.code==="string")?data.code:"backend_http_error";
-   throw new CanvasApiError(code,response.status);
+   const details=data&&typeof data==="object"&&"details" in data?
+    (data as {details?:unknown}).details:null;
+   const safe=details&&typeof details==="object"&&!Array.isArray(details)?
+    details as CanvasRequestDiagnostic:undefined;
+   throw new CanvasApiError(code,response.status,method,path,
+    safe&&["graph","viewport","chats"].includes(safe.lane??"")&&
+     typeof safe.field==="string"&&safe.field.length<=128&&
+     typeof safe.keyword==="string"&&safe.keyword.length<=32?safe:undefined);
   }
   if(!data||typeof data!=="object")throw new CanvasApiError("backend_invalid_json",response.status);
   return data as T;

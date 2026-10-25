@@ -3,6 +3,16 @@ import {canvasApi,CanvasApiError} from "./canvas-api";
 type Api=typeof canvasApi;
 export type CanvasViewportState={viewport:ViewportTransform;revision:number};
 export type CanvasChatsState={sessions:CanvasAssistantSession[];activeChatId:string|null;revision:number};
+/** A broken zoom animation can produce NaN/Infinity. JSON.stringify turns
+ * them into null and Fastify rejects the viewport PUT. Keep the last valid
+ * transform so a temporary render failure cannot poison project autosave. */
+export function preserveValidCanvasViewport(next:ViewportTransform,previous:ViewportTransform):ViewportTransform{
+ return next&&typeof next==="object"&&
+  Number.isFinite(next.x)&&Math.abs(next.x)<=1e9&&
+  Number.isFinite(next.y)&&Math.abs(next.y)<=1e9&&
+  Number.isFinite(next.k)&&next.k>0&&next.k<=100?next:previous;
+}
+
 type Kind="viewport"|"chats";
 type Entry={viewport:CanvasViewportState;chats:CanvasChatsState;pending:Set<Kind>;
  timers:Partial<Record<Kind,ReturnType<typeof setTimeout>>>;
@@ -79,7 +89,12 @@ export function createCanvasStatePersistence(
   },
   updateViewport(id:string,viewport:ViewportTransform){
    const entry=entries.get(id);if(!entry)return;
-   entry.viewport={...entry.viewport,viewport};entry.pending.add("viewport");
+   // Defense in depth even for callers outside the SQLite Canvas Store.
+   const next=preserveValidCanvasViewport(viewport,entry.viewport.viewport);
+   if(next===entry.viewport.viewport||
+     (next.x===entry.viewport.viewport.x&&next.y===entry.viewport.viewport.y&&
+      next.k===entry.viewport.viewport.k))return;
+   entry.viewport={...entry.viewport,viewport:next};entry.pending.add("viewport");
    schedule(id,"viewport",650);
   },
   updateChats(id:string,sessions:CanvasAssistantSession[],activeChatId:string|null){

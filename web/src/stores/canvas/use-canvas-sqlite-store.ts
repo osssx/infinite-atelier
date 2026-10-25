@@ -4,7 +4,7 @@ import i18n from "@/i18n";
 import type {CanvasBackgroundMode} from "@/lib/canvas-theme";
 import type {CanvasAssistantSession,CanvasConnection,CanvasNodeData,ViewportTransform} from "@/types/canvas";
 import {canvasApi,type CanvasBackendProject,type CanvasBackendSummary} from "@/features/backend-sync/canvas-api";
-import {createCanvasStatePersistence} from "@/features/backend-sync/canvas-state-persistence";
+import {createCanvasStatePersistence,preserveValidCanvasViewport} from "@/features/backend-sync/canvas-state-persistence";
 import {safeRemoteCanvasMerge} from "@/features/backend-sync/canvas-backend-sync";
 import {canonicalBackendGraph} from "@/features/backend-sync/backend-source-fingerprint";
 
@@ -97,16 +97,23 @@ async function saveProject(id:string):Promise<void>{
  activeWrites.set(id,run);
  try{await run}finally{if(activeWrites.get(id)===run)activeWrites.delete(id)}
 }
-export function flushCanvasStorePersistence():void{
- for(const [id,timer] of timers){clearTimeout(timer);timers.delete(id)}
- for(const id of dirty)void saveProject(id).catch(()=>{});
- void auxiliary.flush().catch(()=>{});
+export function flushCanvasStorePersistence(projectId?:string):void{
+ for(const [id,timer] of timers){
+  if(projectId&&id!==projectId)continue;
+  clearTimeout(timer);timers.delete(id);
+ }
+ for(const id of dirty)if(!projectId||id===projectId)void saveProject(id).catch(()=>{});
+ void auxiliary.flush(projectId).catch(()=>{});
 }
-export async function awaitCanvasStorePersistence():Promise<void>{
- flushCanvasStorePersistence();
- for(const id of new Set([...activeWrites.keys(),...dirty]))await saveProject(id);
- await auxiliary.flush();
- if(lastErrors.size)throw lastErrors.values().next().value;
+export async function awaitCanvasStorePersistence(projectId?:string):Promise<void>{
+ flushCanvasStorePersistence(projectId);
+ for(const id of new Set([...activeWrites.keys(),...dirty]))
+  if(!projectId||id===projectId)await saveProject(id);
+ await auxiliary.flush(projectId);
+ if(projectId){
+  const failure=lastErrors.get(projectId);
+  if(failure)throw failure;
+ }else if(lastErrors.size)throw lastErrors.values().next().value;
 }
 function updateCached(id:string,update:(project:CanvasProject)=>CanvasProject){
  useCanvasStore.setState(state=>state.projects.some(p=>p.id===id)?
@@ -213,18 +220,30 @@ export const useCanvasStore=create<CanvasStore>((set,get)=>({
  updateProject:(id,patch)=>{
   const {viewport,chatSessions,activeChatId,...graphPatch}=patch;
   const existing=get().openProject(id);
+  const validViewport=viewport===undefined?undefined:
+   preserveValidCanvasViewport(viewport,existing?.viewport??initialViewport);
+  const viewportChanged=validViewport!==undefined&&(
+   validViewport.x!==existing?.viewport.x||
+   validViewport.y!==existing?.viewport.y||
+   validViewport.k!==existing?.viewport.k);
   // Reapplying the exact authoritative arrays after a materialization must
   // not create another redundant PATCH and move its server revision.
   const graphChanged=Object.entries(graphPatch).some(([key,value])=>
    existing?.[key as keyof CanvasProject]!==value);
-  if(!graphChanged&&viewport===undefined&&chatSessions===undefined&&activeChatId===undefined)return;
+  const chatsChanged=(activeChatId!==undefined&&activeChatId!==existing?.activeChatId)||
+   (chatSessions!==undefined&&JSON.stringify(chatSessions)!==
+    JSON.stringify(existing?.chatSessions));
+  // The page's initial hydration effect often replays []/null unchanged.
+  // It must not advance the chats revision or create an unnecessary PUT.
+  if(!graphChanged&&!viewportChanged&&!chatsChanged)return;
   useCanvasStore.setState(state=>state.projects.some(project=>project.id===id)?
    {projects:state.projects.map(project=>project.id===id?
-    {...project,...patch,updatedAt:graphChanged?now():project.updatedAt}:project)}:state);
+    {...project,...patch,...(validViewport!==undefined?{viewport:validViewport}:{}),
+     updatedAt:graphChanged?now():project.updatedAt}:project)}:state);
   if(!loaded.has(id))return;
   if(graphChanged){dirty.add(id);schedule(id)}
-  if(viewport!==undefined)auxiliary.updateViewport(id,viewport);
-  if(chatSessions!==undefined||activeChatId!==undefined){
+  if(viewportChanged&&validViewport!==undefined)auxiliary.updateViewport(id,validViewport);
+  if(chatsChanged){
    const project=useCanvasStore.getState().openProject(id);
    if(project)auxiliary.updateChats(id,project.chatSessions,project.activeChatId);
   }

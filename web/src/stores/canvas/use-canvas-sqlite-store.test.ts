@@ -81,6 +81,26 @@ describe("SQLite-only Canvas store",()=>{
   expect(useCanvasStore.getState().projects.some(project=>project.id===id)).toBe(false);
  });
 
+ it("does not PUT chats when Canvas hydration replays the unchanged empty []/null selection",async()=>{
+  fake.rejectPatch=false;
+  const id=await useCanvasStore.getState().createProject("No assistant chat yet");
+  fake.methods.length=0;
+  useCanvasStore.getState().updateProject(id,{chatSessions:[],activeChatId:null});
+  await awaitCanvasStorePersistence(id);
+  expect(fake.methods.filter(method=>method==="PUT /api/v1/projects/"+id+"/chats")).toHaveLength(0);
+  expect(fake.chats.get(id)).toMatchObject({revision:1,sessions:[],activeChatId:null});
+  useCanvasStore.getState().updateProject(id,{chatSessions:[
+   {id:"c1",title:"Hello",messages:[],createdAt:"today",updatedAt:"today"}
+  ],activeChatId:"c1"});
+  await awaitCanvasStorePersistence(id);
+  expect(fake.chats.get(id)?.revision).toBe(2);
+  fake.methods.length=0;
+  const unchanged=useCanvasStore.getState().openProject(id)!;
+  useCanvasStore.getState().updateProject(id,{chatSessions:
+   JSON.parse(JSON.stringify(unchanged.chatSessions)),activeChatId:unchanged.activeChatId});
+  await awaitCanvasStorePersistence(id);
+  expect(fake.methods.filter(method=>method==="PUT /api/v1/projects/"+id+"/chats")).toHaveLength(0);
+ });
  it("persists rapid viewport and chat edits without graph PATCH or graph revision increments",async()=>{
   fake.rejectPatch=false;fake.methods.length=0;
   const id=await useCanvasStore.getState().createProject("Independent state");
@@ -133,6 +153,36 @@ describe("SQLite-only Canvas store",()=>{
    {nodes:after.nodes,connections:after.connections},next)).toBe(false);
   await awaitCanvasStorePersistence();
   expect(useCanvasStore.getState().openProject(id)?.nodes[0].title).toBe("Local edit");
+ });
+ it("keeps a valid saved viewport when a zoom calculation produces NaN or Infinity",async()=>{
+  fake.rejectPatch=false;
+  const id=await useCanvasStore.getState().createProject("Viewport error");
+  fake.methods.length=0;
+  useCanvasStore.getState().updateProject(id,{viewport:{x:NaN,y:Infinity,k:NaN}});
+  await awaitCanvasStorePersistence(id);
+  expect(useCanvasStore.getState().openProject(id)?.viewport).toEqual({x:0,y:0,k:1});
+  expect(fake.methods.filter(path=>path==="PUT /api/v1/projects/"+id+"/viewport")).toHaveLength(0);
+  useCanvasStore.getState().updateProject(id,{viewport:{x:45,y:-13,k:2}});
+  await awaitCanvasStorePersistence(id);
+  expect(fake.views.get(id)?.viewport).toEqual({x:45,y:-13,k:2});
+ });
+ it("does not let another project's failed save block this Canvas navigation fence",async()=>{
+  fake.rejectPatch=false;
+  const old=await useCanvasStore.getState().createProject("Old project");
+  useCanvasStore.getState().updateProject(old,{nodes:[{
+   id:"old-draft",type:"text",title:"draft",width:200,height:100,position:{x:0,y:0}
+  }]});
+  fake.rejectPatch=true;
+  await expect(awaitCanvasStorePersistence(old)).rejects.toThrow("project_revision_conflict");
+  fake.rejectPatch=false;
+  const current=await useCanvasStore.getState().createProject("Current project");
+  useCanvasStore.getState().updateProject(current,{nodes:[{
+   id:"saved-current",type:"text",title:"current",width:100,height:100,position:{x:0,y:0}
+  }]});
+  await expect(awaitCanvasStorePersistence(current)).resolves.toBeUndefined();
+  expect((fake.projects.get(current)?.document.nodes as any[])[0].id).toBe("saved-current");
+  expect(useCanvasStore.getState().openProject(old)?.nodes[0].id).toBe("old-draft");
+  await expect(awaitCanvasStorePersistence(old)).resolves.toBeUndefined();
  });
  it("preserves in-memory dirty draft and reports stale SQLite revision",async()=>{
   fake.rejectPatch=false;

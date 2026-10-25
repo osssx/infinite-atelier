@@ -47,6 +47,70 @@ test("SQLite job snapshot exposes workflow source for duplicate GPU protection",
  assert.equal(again.statusCode,200,again.body);
  assert.equal(again.json().id,submitted.json().id);
 });
+test("Canvas save validation pinpoints lane and schema field without echoing content",async t=>{
+ const {call}=await fixture(t);
+ const created=await call("POST","/api/v1/projects",{id:"validation-lanes",document:doc()});
+ assert.equal(created.statusCode,201,created.body);
+ const cases=[
+  {url:"/api/v1/projects/validation-lanes",method:"PATCH",
+   payload:{expectedRevision:1,document:{nodes:{"private":"not disclosed"},connections:[]}},
+   lane:"graph",field:"/document/nodes",keyword:"type"},
+  {url:"/api/v1/projects/validation-lanes/viewport",method:"PUT",
+   payload:{expectedRevision:1,viewport:{x:0,y:0,k:null}},
+   lane:"viewport",field:"/viewport/k",keyword:"exclusiveMinimum"},
+  {url:"/api/v1/projects/validation-lanes/chats",method:"PUT",
+   payload:{expectedRevision:1,sessions:[]},
+   lane:"chats",field:"/activeChatId",keyword:"required"}
+ ];
+ for(const item of cases){
+  const response=await call(item.method,item.url,item.payload);
+  assert.equal(response.statusCode,400,response.body);
+  const body=response.json();
+  assert.equal(body.code,"invalid_request");
+  assert.equal(body.details.lane,item.lane);
+  assert.equal(body.details.field,item.field);
+  assert.equal(body.details.keyword,item.keyword);
+  assert.doesNotMatch(response.body,/not disclosed|private/);
+ }
+ assert.equal((await call("GET","/api/v1/projects/validation-lanes")).json().revision,1);
+});
+test("an empty Canvas chat selection preserves null and saves without invalid_request",async t=>{
+ const {call}=await fixture(t);
+ assert.equal((await call("POST","/api/v1/projects",{
+  id:"empty-chat",document:doc()
+ })).statusCode,201);
+ // The Canvas page has no assistant conversation until the user creates one.
+ // Fastify/Ajv must not coerce null to the empty string in this JSON schema.
+ const initial=await call("PUT","/api/v1/projects/empty-chat/chats",{
+  expectedRevision:1,sessions:[],activeChatId:null
+ });
+ assert.equal(initial.statusCode,200,initial.body);
+ assert.equal(initial.json().activeChatId,null);
+ assert.equal(initial.json().revision,2);
+ const fresh=(await call("GET","/api/v1/projects/empty-chat/chats")).json();
+ assert.equal(fresh.activeChatId,null);
+ assert.deepEqual(fresh.sessions,[]);
+ const withChat=await call("PUT","/api/v1/projects/empty-chat/chats",{
+  expectedRevision:2,
+  sessions:[{id:"chat1",title:"Conversation",messages:[]}],
+  activeChatId:"chat1"
+ });
+ assert.equal(withChat.statusCode,200,withChat.body);
+ const unselect=await call("PUT","/api/v1/projects/empty-chat/chats",{
+  expectedRevision:3,
+  sessions:[{id:"chat1",title:"Conversation",messages:[]}],
+  activeChatId:null
+ });
+ assert.equal(unselect.statusCode,200,unselect.body);
+ assert.equal(unselect.json().activeChatId,null);
+ const invalid=await call("PUT","/api/v1/projects/empty-chat/chats",{
+  expectedRevision:4,sessions:[],activeChatId:""
+ });
+ assert.equal(invalid.statusCode,400,invalid.body);
+ assert.equal(invalid.json().code,"invalid_canvas_chats");
+ // Failed request never advances the stored revision or overwrites messages.
+ assert.equal((await call("GET","/api/v1/projects/empty-chat/chats")).json().revision,4);
+});
 test("SQLite-only local sessions auto-issue on same-origin GET and protect CRUD",async t=>{
  const db=new DatabaseSync(":memory:");initializeSchema(db);
  const sessionAuth=createLocalSessionAuth();

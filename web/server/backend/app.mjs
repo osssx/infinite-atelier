@@ -19,7 +19,7 @@ const viewportBody={type:"object",required:["expectedRevision","viewport"],
  }},additionalProperties:false};
 const chatsBody={type:"object",required:["expectedRevision","sessions","activeChatId"],
  properties:{expectedRevision:{type:"integer",minimum:1},sessions:{type:"array"},
- activeChatId:{anyOf:[{type:"string"},{type:"null"}]}},additionalProperties:false};
+ activeChatId:{type:["string","null"]}},additionalProperties:false};
 
 const jobBody={type:"object",required:["idempotencyKey","requestFingerprint","executionMode","snapshot"],properties:{
  idempotencyKey:nonempty,requestFingerprint:nonempty,executionMode:{type:"string",enum:[...EXECUTION_MODES]},
@@ -77,6 +77,8 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
   const status=error.statusCode>=400&&error.statusCode<500?error.statusCode:500;
   const publicCodes=new Set(["project_revision_conflict","project_not_found","project_id_conflict","invalid_project_document",
    "invalid_project_id","project_document_too_large","expected_revision_required","invalid_project_reference",
+   "invalid_canvas_chats","invalid_canvas_viewport","canvas_chats_too_large",
+   "chats_revision_conflict","viewport_revision_conflict",
    "stale_generation_source","cyclic_generation_source","generation_save_barrier_required","invalid_job_request","idempotency_key_conflict",
    "invalid_event_cursor","event_cursor_expired","raw_credentials_forbidden",
    "invalid_bootstrap_token","unsupported_blob_mime","invalid_sha256","blob_quota_exceeded",
@@ -96,7 +98,24 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
    "credential_protection_unavailable","credential_decryption_failed"]);
   const code=error.validation?"invalid_request":(publicCodes.has(error.code)?error.code:
     (status===400?"invalid_request":"internal_error"));
-  reply.code(status).send({code,message:code,requestId:req.id,...(["project_revision_conflict","invalid_project_document"].includes(code)&&error.details?{details:error.details}:{})});
+  // Field names and request lanes are safe to reveal; values and user media
+  // are not. Avoid logging or echoing the rejected request body (keys/media).
+  const invalidField=error.validation?.[0];
+  const saveLane=req.url.match(/^\/api\/v1\/projects\/[^/?]+(?:\/(viewport|chats))?(?:\?.*)?$/);
+  const validationDetails=code==="invalid_request"&&invalidField&&saveLane
+    ?{lane:saveLane[1]??"graph",
+      field:invalidField.instancePath||
+       (invalidField.keyword==="required"&&
+        /^(expectedRevision|document|nodes|connections|viewport|x|y|k|sessions|activeChatId)$/.test(
+         invalidField.params?.missingProperty??"")
+        ?"/"+invalidField.params.missingProperty:"/"),
+      keyword:invalidField.keyword==="required"?"required":invalidField.keyword==="type"?"type":
+       invalidField.keyword==="additionalProperties"?"additionalProperties":
+       invalidField.keyword==="minimum"?"minimum":invalidField.keyword==="exclusiveMinimum"?"exclusiveMinimum":"validation"}
+    :undefined;
+  reply.code(status).send({code,message:code,requestId:req.id,
+   ...(validationDetails?{details:validationDetails}:{}),
+   ...(["project_revision_conflict","invalid_project_document"].includes(code)&&error.details?{details:error.details}:{})});
  });
  app.get("/health",()=>({ok:true}));
  if(sessionAuth){

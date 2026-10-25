@@ -35,26 +35,79 @@ function cursorOf(value){
  if(!/^(0|[1-9][0-9]*)$/.test(v)||!Number.isSafeInteger(Number(v)))throw Object.assign(Error("invalid_event_cursor"),{statusCode:400,code:"invalid_event_cursor"});
  return Number(v);
 }
-export function buildApp({db,authorize,logger=false,streamPollMs=200}={}){
- if(!db||typeof authorize!=="function")throw Error("backend_authorizer_required");
+export function buildApp({db,authorize,sessionAuth,blobStore,logger=false,streamPollMs=200}={}){
+ if(!db||(!sessionAuth&&typeof authorize!=="function"))throw Error("backend_authorizer_required");
  const app=Fastify({logger,bodyLimit:5*1024*1024,trustProxy:false,genReqId:()=>randomUUID()});
+ if(blobStore)app.addContentTypeParser("application/octet-stream",(req,stream,done)=>done(null,stream));
  app.addHook("onRequest",async(req,reply)=>{
   const violation=localRequestError(req);
   if(violation){reply.code(403).send({code:violation,message:violation,requestId:req.id});return}
-  if(req.url==="/health")return;
-  if(!await authorize(req))reply.code(401).send({code:"unauthorized",message:"unauthorized",requestId:req.id});
+  if(req.url==="/health" || (sessionAuth&&req.url==="/api/v1/session"&&req.method==="POST"))return;
+  if(!(sessionAuth?sessionAuth.authorize(req):await authorize(req)))
+   reply.code(401).send({code:"unauthorized",message:"unauthorized",requestId:req.id});
  });
  app.setErrorHandler((error,req,reply)=>{
   const status=error.statusCode>=400&&error.statusCode<500?error.statusCode:500;
   const publicCodes=new Set(["project_revision_conflict","project_not_found","project_id_conflict","invalid_project_document",
    "invalid_project_id","project_document_too_large","expected_revision_required","invalid_project_reference",
    "stale_generation_source","cyclic_generation_source","generation_save_barrier_required","invalid_job_request","idempotency_key_conflict",
-   "invalid_event_cursor","event_cursor_expired","raw_credentials_forbidden"]);
+   "invalid_event_cursor","event_cursor_expired","raw_credentials_forbidden",
+   "invalid_bootstrap_token","unsupported_blob_mime","invalid_sha256","blob_quota_exceeded",
+   "empty_blob","blob_mime_mismatch","blob_digest_mismatch","blob_identity_conflict",
+   "blob_not_found","blob_missing_on_disk","blob_integrity_error","invalid_blob_range"]);
   const code=error.validation?"invalid_request":(publicCodes.has(error.code)?error.code:
     (status===400?"invalid_request":"internal_error"));
   reply.code(status).send({code,message:code,requestId:req.id,...(code==="project_revision_conflict"&&error.details?{details:error.details}:{})});
  });
  app.get("/health",()=>({ok:true}));
+ if(sessionAuth){
+  app.post("/api/v1/session",{schema:{body:{type:"object",additionalProperties:false}}},async(req,reply)=>{
+   const header=req.headers.authorization;
+   const token=typeof header==="string"&&header.startsWith("Bearer ")?header.slice(7):"";
+   const result=sessionAuth.exchange(token);
+   reply.header("Set-Cookie",sessionAuth.cookie(result.id,{secure:req.protocol==="https"}))
+    .header("Cache-Control","no-store").code(201);
+   return {csrfToken:result.csrf,expiresAt:result.expiresAt};
+  });
+  app.get("/api/v1/session",(req,reply)=>{
+   const result=sessionAuth.current(req);
+   reply.header("Cache-Control","no-store");
+   return {csrfToken:result.csrf,expiresAt:result.expiresAt};
+  });
+  app.delete("/api/v1/session",(req,reply)=>{
+   sessionAuth.revoke(req);
+   reply.header("Set-Cookie",sessionAuth.clearCookie({secure:req.protocol==="https"})).code(204);
+   return "";
+  });
+ }
+ if(blobStore){
+  app.post("/api/v1/blobs",{bodyLimit:blobStore.maxBlobBytes+1},async(req,reply)=>{
+   const stored=await blobStore.put(req.body,{mime:req.headers["x-atelier-mime"],
+    expectedSha256:req.headers["x-content-sha256"]});
+   reply.code(stored.existing?200:201);return stored;
+  });
+  app.get("/api/v1/blobs/:id",{schema:{params:{type:"object",required:["id"],
+   properties:{id:{type:"string",pattern:"^[0-9a-f]{64}$"}}}}},async(req,reply)=>{
+   const blob=await blobStore.stat(req.params.id);
+   reply.header("Content-Type",blob.mimeType).header("X-Content-Type-Options","nosniff")
+    .header("Accept-Ranges","bytes").header("ETag",'"'+blob.sha256+'"')
+    .header("Cache-Control","private, max-age=86400");
+   let range;
+   try{range=blobStore.parseRange(req.headers.range,blob.byteSize)}
+   catch(e){if(e.code==="invalid_blob_range")reply.header("Content-Range","bytes */"+blob.byteSize);throw e}
+   if(range)reply.code(206).header("Content-Range",`bytes ${range.start}-${range.end}/${blob.byteSize}`);
+   const size=range?range.end-range.start+1:blob.byteSize;
+   reply.header("Content-Length",String(size));
+   if(req.method==="HEAD"){
+    reply.hijack();
+    reply.raw.writeHead(reply.statusCode,reply.getHeaders());
+    reply.raw.end();
+    return;
+   }
+   return reply.send(blobStore.getStream(blob,range??{}));
+  });
+ }
+
  app.post("/api/v1/projects",{schema:{body:projectBody}},async(req,reply)=>{
   const created=createProject(db,req.body);reply.header("ETag",'"'+created.revision+'"').code(201);return created;
  });
@@ -108,7 +161,7 @@ export function buildApp({db,authorize,logger=false,streamPollMs=200}={}){
   };
   raw.write(": connected\n\n");push();
   if(req.query.once==="1"){closed=true;raw.end();return}
-  const timer=setInterval(()=>{if(closed)return;push();if(!closed)raw.write(": heartbeat\n\n")},streamPollMs);
+  const timer=setInterval(()=>{if(closed)return;if(sessionAuth&&!sessionAuth.authorize(req)){closed=true;raw.end();return}push();if(!closed)raw.write(": heartbeat\n\n")},streamPollMs);
   timer.unref?.();raw.on("close",()=>{closed=true;clearInterval(timer)});
  });
  return app;

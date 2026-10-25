@@ -12,7 +12,7 @@
         "typecheck": "tsc --noEmit",
         "test": "vitest run src",
         "test:backend-contracts": "node --test server/backend/contracts.test.mjs",
-        "test:backend": "node --test server/backend/contracts.test.mjs server/backend/app.test.mjs",
+        "test:backend": "node --test server/backend/contracts.test.mjs server/backend/app.test.mjs server/backend/security-storage.test.mjs",
         "start": "vite preview --host 0.0.0.0 --port 3000",
         "format": "prettier --write .",
         "format:check": "prettier --check ."

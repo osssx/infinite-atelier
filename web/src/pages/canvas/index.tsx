@@ -1,4 +1,4 @@
-import {useEffect} from "react";
+import {useEffect,useRef,useState} from "react";
 import {useNavigate} from "react-router-dom";
 import {App,Button} from "antd";
 import {Plus} from "lucide-react";
@@ -7,6 +7,7 @@ import {CanvasDeleteProjectsDialog} from "@/components/canvas/canvas-delete-proj
 import {CanvasProjectCard} from "@/components/canvas/canvas-project-card";
 import {useCanvasStore} from "@/stores/canvas/use-canvas-store";
 import {useCanvasUiStore} from "@/stores/canvas/use-canvas-ui-store";
+import {importSqliteCanvasProject} from "@/features/backend-sync/canvas-project-archive";
 
 /** Single library: SQLite. Legacy browser projects are never loaded. */
 export default function CanvasPage(){
@@ -18,6 +19,18 @@ export default function CanvasPage(){
  const createProject=useCanvasStore(state=>state.createProject);
  const selectedIds=useCanvasUiStore(state=>state.selectedProjectIds);
  const setDeleteIds=useCanvasUiStore(state=>state.setDeleteProjectIds);
+ const importRef=useRef<HTMLInputElement>(null);
+ const [importing,setImporting]=useState(false);
+ const importArchive=async(file:File)=>{
+  setImporting(true);
+  try{
+   const imported=await importSqliteCanvasProject(file);
+   await loadProjects();
+   message.success("已从 SQLite 项目归档恢复："+imported.title);
+   navigate("/canvas/"+imported.id);
+  }catch(error){message.error("项目归档导入失败："+String(error))}
+  finally{setImporting(false)}
+ };
  useEffect(()=>{void loadProjects().catch(()=>{})},[loadProjects]);
  const createAndEnter=async()=>{
   try{
@@ -35,6 +48,14 @@ export default function CanvasPage(){
       onClick={()=>setDeleteIds(selectedIds)}>{t("canvas.deleteSelected")}</Button>:null}
      {projects.length?<Button disabled={!hydrated||!!backendError}
       onClick={()=>setDeleteIds(projects.map(item=>item.id))}>{t("canvas.deleteAll")}</Button>:null}
+     <input ref={importRef} className="hidden" type="file" accept=".zip,application/zip"
+      aria-label="选择 SQLite 项目归档" onChange={event=>{
+       const file=event.target.files?.[0];
+       event.currentTarget.value="";
+       if(file)void importArchive(file);
+      }}/>
+     <Button disabled={!hydrated||!!backendError||importing} loading={importing}
+      onClick={()=>importRef.current?.click()}>导入项目归档</Button>
      <Button disabled={!hydrated||!!backendError} type="primary" icon={<Plus className="size-4"/>}
       onClick={()=>void createAndEnter()}>{t("canvas.create")}</Button>
     </div>

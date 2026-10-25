@@ -6,6 +6,7 @@ import {openMainDatabase} from "./database.mjs";
 import {acquireInstanceLock} from "./instance-lock.mjs";
 import {createLocalSessionAuth} from "./session.mjs";
 import {createBlobStore} from "./blob-store.mjs";
+import {createProjectArchive} from "./project-archive.mjs";
 import {createMediaPreviewStore} from "./media-preview.mjs";
 import {createBlobGarbageCollector} from "./blob-gc.mjs";
 import {buildApp} from "./app.mjs";
@@ -46,6 +47,7 @@ export function createLocalBackend({dataDir,streamPollMs=200,adapters,comfyInsta
   const sessionAuth=createLocalSessionAuth(),blobStore=createBlobStore({dataDir:root,db,maxBlobBytes:blobMaxBytes});
   const mediaPreview=createMediaPreviewStore({dataDir:root,blobStore});
   const blobGc=createBlobGarbageCollector({db,blobStore});
+  const projectArchive=createProjectArchive({db,blobStore});
   // Explicit opt-in only: no adapters means no scheduling/real generation calls.
   // Startup recovery requires the exclusive instance lock acquired above.
   if(comfyInstances&&adapters?.comfy)throw Error("duplicate_comfy_adapter_configuration");
@@ -58,11 +60,11 @@ export function createLocalBackend({dataDir,streamPollMs=200,adapters,comfyInsta
   coordinator?.recoverAtStartup();
   const materializer=createCanvasMaterializer({db,blobStore});
   const worker=autoDispatch?createBackendWorker({coordinator,materializer,intervalMs:dispatchIntervalMs}):null;
-  const app=buildApp({db,sessionAuth,autoLocalSession,blobStore,mediaPreview,blobGc,vault,coordinator,materializer,worker,
+  const app=buildApp({db,sessionAuth,autoLocalSession,blobStore,mediaPreview,blobGc,projectArchive,vault,coordinator,materializer,worker,
    comfyInstanceIds:comfyInstances?.map(item=>item.id)??[],streamPollMs});
   worker?.start();
   let closed=false;
-  return {app,db,sessionAuth,vault,blobStore,mediaPreview,blobGc,coordinator,materializer,worker,lock,async close(){
+  return {app,db,sessionAuth,vault,blobStore,mediaPreview,blobGc,projectArchive,coordinator,materializer,worker,lock,async close(){
    if(closed)return;closed=true;
    try{await worker?.stop();await coordinator?.stop();await app.close()}
    finally{try{db.close()}finally{lock.release()}}

@@ -6,6 +6,7 @@ import { useTranslation } from "react-i18next";
 import { useCanvasStore, type CanvasProject } from "@/stores/canvas/use-canvas-store";
 import { useCanvasUiStore } from "@/stores/canvas/use-canvas-ui-store";
 import { exportCanvasProjects } from "@/lib/canvas/canvas-export";
+import {exportSqliteCanvasProject} from "@/features/backend-sync/canvas-project-archive";
 
 export function CanvasProjectCard({ project }: { project: CanvasProject }) {
     const { i18n, t } = useTranslation();
@@ -68,7 +69,11 @@ export function CanvasProjectCard({ project }: { project: CanvasProject }) {
                         </>
                     ) : (
                         <>
-                            {/* Portable export is disabled until backend media backup is implemented. */}
+                            <Button type="text" size="small" shape="circle" icon={<Download className="size-4"/>}
+                              onClick={()=>void exportSqliteCanvasProject(project.id,project.title)
+                               .then(()=>message.success("项目归档已导出"))
+                               .catch(error=>message.error("项目归档导出失败："+String(error)))}
+                              aria-label="导出包含媒体的 SQLite 项目归档"/>
                             <Button type="text" size="small" shape="circle" icon={<Pencil className="size-4" />} onClick={() => startEditing(project.id, project.title)} aria-label={t("canvas.project.rename")} />
                             <Button type="text" size="small" shape="circle" icon={<Trash2 className="size-4" />} onClick={() => setDeleteIds([project.id])} aria-label={t("canvas.project.delete")} />
                         </>

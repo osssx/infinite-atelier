@@ -5,6 +5,7 @@ import {getCanvasViewport,putCanvasViewport,getCanvasChats,putCanvasChats} from 
 import {submitJob,readJobsSnapshot,readEventsAfter} from "./repository.mjs";
 import {EXECUTION_MODES} from "./contracts.mjs";
 import {CANVAS_NODE_ID_PATTERN} from "../canvas-node-id.mjs";
+import {ARCHIVE_MAX_BYTES} from "./project-archive.mjs";
 const nonempty={type:"string",minLength:1,maxLength:256};
 const idSchema={type:"string",pattern:"^[A-Za-z0-9_-]{1,128}$"};
 const canvasNodeIdSchema={type:"string",pattern:CANVAS_NODE_ID_PATTERN};
@@ -59,10 +60,11 @@ function cursorOf(value){
  if(!/^(0|[1-9][0-9]*)$/.test(v)||!Number.isSafeInteger(Number(v)))throw Object.assign(Error("invalid_event_cursor"),{statusCode:400,code:"invalid_event_cursor"});
  return Number(v);
 }
-export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobStore,mediaPreview,blobGc,vault,coordinator,materializer,worker,comfyInstanceIds=[],logger=false,streamPollMs=200}={}){
+export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobStore,mediaPreview,blobGc,projectArchive,vault,coordinator,materializer,worker,comfyInstanceIds=[],logger=false,streamPollMs=200}={}){
  if(!db||(!sessionAuth&&typeof authorize!=="function"))throw Error("backend_authorizer_required");
  const app=Fastify({logger,bodyLimit:5*1024*1024,trustProxy:false,genReqId:()=>randomUUID()});
  if(blobStore)app.addContentTypeParser("application/octet-stream",(req,stream,done)=>done(null,stream));
+ if(projectArchive)app.addContentTypeParser("application/zip",(req,stream,done)=>done(null,stream));
  app.addHook("onRequest",async(req,reply)=>{
   const violation=localRequestError(req);
   if(violation){reply.code(403).send({code:violation,message:violation,requestId:req.id});return}
@@ -84,6 +86,10 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
    "preview_render_failed","preview_invalid_output","preview_busy",
    "gc_confirmation_required","invalid_gc_limit","gc_upload_in_progress",
    "gc_blob_integrity_error","gc_delete_race",
+   "archive_nonportable_media_reference","archive_invalid_manifest",
+   "archive_media_manifest_mismatch","archive_size_exceeded","archive_file_limit_exceeded",
+   "archive_invalid_entry","archive_invalid_zip","archive_unexpected_files",
+   "archive_media_integrity_error","archive_blob_integrity_error",
    "channel_not_found","channel_id_conflict","invalid_channel_config","invalid_credential_value",
    "expected_credential_version_required","credential_version_conflict",
    "credential_reference_required","credential_missing","credential_revoked",
@@ -245,6 +251,20 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
  app.get("/api/v1/projects/:id/chats",{schema:{params:canvasParams}},req=>getCanvasChats(db,req.params.id));
  app.put("/api/v1/projects/:id/chats",{schema:{params:canvasParams,body:chatsBody}},req=>
   putCanvasChats(db,req.params.id,req.body));
+ if(projectArchive){
+  app.get("/api/v1/projects/:id/archive",{schema:{params:canvasParams}},async(req,reply)=>{
+   const archive=await projectArchive.exportProject(req.params.id);
+   reply.header("Content-Type","application/zip")
+    .header("Content-Disposition",'attachment; filename="'+archive.fileName+'"')
+    .header("Cache-Control","no-store").header("X-Content-Type-Options","nosniff");
+   return reply.send(archive.stream);
+  });
+  app.post("/api/v1/projects/import-archive",{bodyLimit:ARCHIVE_MAX_BYTES+1},async(req,reply)=>{
+   const imported=await projectArchive.importProject(req.body);
+   reply.header("Cache-Control","no-store").code(201);
+   return imported;
+  });
+ }
  app.delete("/api/v1/projects/:id",{schema:{params:{type:"object",required:["id"],properties:{id:idSchema}}}},async(req,reply)=>{
   const result=deleteProject(db,req.params.id);
   reply.header("Cache-Control","no-store");return result;

@@ -14,13 +14,13 @@ const temp=()=>mkdtempSync(join(tmpdir(),"atelier-credential-"));
 const fakeToken="TEST_ONLY_KEY_NEVER_PERSIST_IN_CLEAR_VAULT_29374";
 const protectorFactory=()=>createWindowsDpapiProtector();
 
-test("v1 database migrates to credential schema v2 without overwriting projects/jobs",t=>{
+test("v1 database migrates through credential schema v2 to coordinator schema v3 without losing projects/jobs",t=>{
  const db=new DatabaseSync(":memory:");t.after(()=>db.close());
  db.exec(INITIAL_SCHEMA_SQL);
  db.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES(1,1)").run();
  db.prepare("INSERT INTO projects(id,document_json,revision) VALUES(?,?,?)").run("keep",'{"nodes":[],"connections":[]}',12);
  initializeSchema(db);initializeSchema(db);
- assert.equal(db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v,2);
+ assert.equal(db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v,5);
  assert.equal(db.prepare("SELECT revision FROM projects WHERE id='keep'").get().revision,12);
  assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE name='credential_versions'").get().name,"credential_versions");
  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM schema_migrations").get().n,2);

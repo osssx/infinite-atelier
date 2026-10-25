@@ -9,6 +9,10 @@ import {createBlobStore} from "./blob-store.mjs";
 import {buildApp} from "./app.mjs";
 import {createWindowsDpapiProtector} from "./credential-protection.mjs";
 import {createCredentialVault} from "./credential-vault.mjs";
+import {createJobCoordinator} from "./job-coordinator.mjs";
+import {createComfyV2Adapters} from "./comfy-v2-adapter.mjs";
+import {createCanvasMaterializer} from "./canvas-materializer.mjs";
+import {createBackendWorker} from "./worker.mjs";
 /** Resolve the user-data directory; reject worktree paths and junction aliases. */
 const sourceRoot=realpathSync(fileURLToPath(new URL("../../../",import.meta.url)));
 export function resolveLocalDataDir(dataDir=process.env.ATELIER_DATA_DIR){
@@ -29,7 +33,7 @@ export function resolveLocalDataDir(dataDir=process.env.ATELIER_DATA_DIR){
  return actual;
 }
 /** Explicit opt-in backend assembly. Does not replace existing dev/start or Comfy gateway. */
-export function createLocalBackend({dataDir,streamPollMs=200}={}){
+export function createLocalBackend({dataDir,streamPollMs=200,adapters,comfyInstances,comfyUpstreamCall,blobMaxBytes=2_000_000_000,autoDispatch=false,dispatchIntervalMs=250}={}){
  const root=resolveLocalDataDir(dataDir),lock=acquireInstanceLock(root);
  let db;
  try{
@@ -37,12 +41,26 @@ export function createLocalBackend({dataDir,streamPollMs=200}={}){
   // Fail closed if CurrentUser DPAPI is unavailable; no plaintext fallback.
   const protector=createWindowsDpapiProtector();
   const vault=createCredentialVault({db,protector});
-  const sessionAuth=createLocalSessionAuth(),blobStore=createBlobStore({dataDir:root,db});
-  const app=buildApp({db,sessionAuth,blobStore,vault,streamPollMs});
+  const sessionAuth=createLocalSessionAuth(),blobStore=createBlobStore({dataDir:root,db,maxBlobBytes:blobMaxBytes});
+  // Explicit opt-in only: no adapters means no scheduling/real generation calls.
+  // Startup recovery requires the exclusive instance lock acquired above.
+  if(comfyInstances&&adapters?.comfy)throw Error("duplicate_comfy_adapter_configuration");
+  const comfy=comfyInstances?createComfyV2Adapters({instances:comfyInstances,db,blobStore,
+    upstreamCall:comfyUpstreamCall}):null;
+  const configured=comfy?{...adapters,comfy}:adapters;
+  if(autoDispatch&&!configured)throw Error("auto_dispatch_requires_adapters");
+  const coordinator=configured?createJobCoordinator({db,adapters:configured,
+   retryPolicy:autoDispatch?{pollMs:500,collectMs:1000,maxMs:60000}:null}):null;
+  coordinator?.recoverAtStartup();
+  const materializer=createCanvasMaterializer({db,blobStore});
+  const worker=autoDispatch?createBackendWorker({coordinator,materializer,intervalMs:dispatchIntervalMs}):null;
+  const app=buildApp({db,sessionAuth,blobStore,vault,coordinator,materializer,worker,streamPollMs});
+  worker?.start();
   let closed=false;
-  return {app,db,sessionAuth,vault,lock,async close(){
+  return {app,db,sessionAuth,vault,coordinator,materializer,worker,lock,async close(){
    if(closed)return;closed=true;
-   try{await app.close()}finally{try{db.close()}finally{lock.release()}}
+   try{await worker?.stop();await coordinator?.stop();await app.close()}
+   finally{try{db.close()}finally{lock.release()}}
   }};
  }catch(e){db?.close();lock.release();throw e}
 }

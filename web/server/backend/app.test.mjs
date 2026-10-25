@@ -129,9 +129,9 @@ test("SSE reports expired event cursor after retained history is pruned",async t
 });
 test("disk main db creates schema and remains reusable after close",t=>{
  const dir=mkdtempSync(join(tmpdir(),"atelier-main-"));t.after(()=>rmSync(dir,{recursive:true,force:true}));
- const db=openMainDatabase(dir);assert.equal(db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v,2);
+ const db=openMainDatabase(dir);assert.equal(db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v,5);
  db.close();const reopened=openMainDatabase(dir);
- assert.equal(reopened.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v,2);reopened.close();
+ assert.equal(reopened.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v,5);reopened.close();
 });
 test("startServer rejects wide-area binding",async t=>{
  const{app}=await fixture(t);

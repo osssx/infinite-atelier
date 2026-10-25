@@ -74,6 +74,15 @@ test("BlobStore validates signatures, SHA-256, deduplicates, caps bytes, guards 
  const utf8=Buffer.from("你好","utf8");
  const textResult=await store.put([utf8.subarray(0,1),utf8.subarray(1,3),utf8.subarray(3)],{mime:"text/plain"});
  assert.equal(textResult.byteSize,utf8.length);
+ const empty=await store.put([Buffer.alloc(0)],{mime:"text/plain"});
+ assert.equal(empty.byteSize,0);
+ assert.equal((await store.stat(empty.blobId)).byteSize,0);
+ const mkv=Buffer.concat([Buffer.from([26,69,223,163]),Buffer.from("matroska")]);
+ const video=await store.put([mkv],{mime:"video/x-matroska"});
+ assert.equal(video.mimeType,"video/x-matroska");
+ const emptyChunks=[];
+ for await(const chunk of store.getStream(await store.stat(empty.blobId)))emptyChunks.push(chunk);
+ assert.equal(Buffer.concat(emptyChunks).length,0);
  assert.deepEqual(readdirSync(join(dir,"tmp")),[]);
 });
 test("runtime rejects source worktree data roots before creating a lock",()=>{
@@ -123,6 +132,14 @@ test("isolated local backend enforces cookie/CSRF and streams uploaded bytes wit
  assert.equal(head.statusCode,200);
  assert.equal(head.body,"");
  assert.equal(head.headers["content-length"],"16");
+ const emptyText=await createBlobStore({dataDir,db:runtime.db}).put([Buffer.alloc(0)],{mime:"text/plain"});
+ const textResponse=await app.inject({method:"GET",url:"/api/v1/blobs/"+emptyText.blobId,headers});
+ assert.equal(textResponse.statusCode,200,textResponse.body);
+ assert.equal(textResponse.body,"");
+ assert.equal(textResponse.headers["content-length"],"0");
+ const textHead=await app.inject({method:"HEAD",url:"/api/v1/blobs/"+emptyText.blobId,headers});
+ assert.equal(textHead.statusCode,200);
+ assert.equal(textHead.headers["content-length"],"0");
  const bad=await app.inject({method:"GET",url:"/api/v1/blobs/"+blobId,headers:{...headers,range:"bytes=999-"}});
  assert.equal(bad.statusCode,416,bad.body);
  assert.equal(bad.headers["content-range"],"bytes */16");

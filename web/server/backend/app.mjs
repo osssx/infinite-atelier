@@ -40,14 +40,14 @@ function localRequestError(req){
  }
  return null;
 }
-const jobView=row=>({id:row.id,projectId:row.project_id,status:row.status,executionMode:row.execution_mode,createdAt:row.created_at,updatedAt:row.updated_at,upstreamTaskId:row.upstream_task_id});
+const jobView=row=>({id:row.id,projectId:row.project_id,status:row.status,executionMode:row.execution_mode,createdAt:row.created_at,updatedAt:row.updated_at,upstreamTaskId:row.upstream_task_id,attemptId:row.attempt_id,submitMarker:row.submit_marker,submissionStartedAt:row.submission_started_at});
 const eventView=row=>({eventId:row.seq,jobId:row.job_id,kind:row.kind,timestamp:row.created_at,payload:JSON.parse(row.payload_json)});
 function cursorOf(value){
  const v=String(value??"0");
  if(!/^(0|[1-9][0-9]*)$/.test(v)||!Number.isSafeInteger(Number(v)))throw Object.assign(Error("invalid_event_cursor"),{statusCode:400,code:"invalid_event_cursor"});
  return Number(v);
 }
-export function buildApp({db,authorize,sessionAuth,blobStore,vault,logger=false,streamPollMs=200}={}){
+export function buildApp({db,authorize,sessionAuth,blobStore,vault,coordinator,materializer,worker,logger=false,streamPollMs=200}={}){
  if(!db||(!sessionAuth&&typeof authorize!=="function"))throw Error("backend_authorizer_required");
  const app=Fastify({logger,bodyLimit:5*1024*1024,trustProxy:false,genReqId:()=>randomUUID()});
  if(blobStore)app.addContentTypeParser("application/octet-stream",(req,stream,done)=>done(null,stream));
@@ -165,6 +165,49 @@ export function buildApp({db,authorize,sessionAuth,blobStore,vault,logger=false,
   // preserving idempotent replies even if a version is later revoked.
   const result=submitJob(db,req.body),row=db.prepare("SELECT * FROM jobs WHERE id=?").get(result.jobId);
   reply.code(result.existing?200:201);return {...jobView(row),existing:result.existing};
+ });
+
+ app.get("/api/v1/jobs/:id/attempts",{schema:{params:{type:"object",required:["id"],
+  properties:{id:idSchema},additionalProperties:false}}},async(req,reply)=>{
+  const job=db.prepare("SELECT id FROM jobs WHERE id=?").get(req.params.id);
+  if(!job){reply.code(404);return {code:"job_not_found",message:"job_not_found",requestId:req.id}}
+  const rows=db.prepare("SELECT id,job_id,phase,upstream_task_id,started_at,finished_at,outcome FROM job_attempts WHERE job_id=? ORDER BY started_at,id").all(req.params.id);
+  return {attempts:rows.map(row=>({id:row.id,jobId:row.job_id,phase:row.phase,
+   upstreamTaskId:row.upstream_task_id,startedAt:row.started_at,finishedAt:row.finished_at,outcome:row.outcome}))};
+ });
+ if(coordinator)app.get("/api/v1/coordinator/status",()=>coordinator.status());
+ if(worker)app.get("/api/v1/worker/status",()=>worker.status());
+ if(materializer){
+  app.get("/api/v1/jobs/:id/materializations",{schema:{params:{type:"object",required:["id"],
+   properties:{id:idSchema},additionalProperties:false}}},async(req,reply)=>{
+   if(!db.prepare("SELECT id FROM jobs WHERE id=?").get(req.params.id)){
+    reply.code(404);return {code:"job_not_found",message:"job_not_found",requestId:req.id}
+   }
+   return {materializations:materializer.status({jobId:req.params.id})};
+  });
+  app.post("/api/v1/projects/:id/materializations/:artifactId/retry",{
+   schema:{params:{type:"object",required:["id","artifactId"],
+    properties:{id:idSchema,artifactId:idSchema},additionalProperties:false},
+    body:{type:"object",additionalProperties:false}}
+  },async(req,reply)=>{
+   if(!materializer.retryBlocked({projectId:req.params.id,artifactId:req.params.artifactId})){
+    reply.code(409);return {code:"materialization_not_blocked",message:"materialization_not_blocked",requestId:req.id}
+   }
+   return {requeued:true};
+  });
+ }
+
+
+ app.get("/api/v1/jobs/:id/artifacts",{schema:{params:{type:"object",required:["id"],
+  properties:{id:idSchema},additionalProperties:false}}},async(req,reply)=>{
+  const exists=db.prepare("SELECT id FROM jobs WHERE id=?").get(req.params.id);
+  if(!exists){reply.code(404);return{code:"job_not_found",message:"job_not_found",requestId:req.id}}
+  const rows=db.prepare("SELECT id,job_id,port_id,item_key,blob_id,kind,mime,sha256,metadata_json FROM artifacts WHERE job_id=? ORDER BY port_id,item_key").all(req.params.id);
+  return {artifacts:rows.map(row=>({
+   artifactId:row.id,jobId:row.job_id,portId:row.port_id,itemKey:row.item_key,
+   blobId:row.blob_id,kind:row.kind,mimeType:row.mime,sha256:row.sha256,
+   metadata:JSON.parse(row.metadata_json)
+  }))};
  });
  app.get("/api/v1/jobs/snapshot",()=>{
   const {jobs,eventCursor}=readJobsSnapshot(db);return {jobs:jobs.map(jobView),eventCursor};

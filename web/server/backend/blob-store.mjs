@@ -1,19 +1,23 @@
 import {createHash,randomUUID} from "node:crypto";
 import {createReadStream} from "node:fs";
+import {Readable} from "node:stream";
+import {captureLimits} from "../comfy-workflow/capture-adapters.mjs";
 import {open,mkdir,link,unlink,lstat} from "node:fs/promises";
 import {join,isAbsolute,resolve,dirname} from "node:path";
 import {writeTransaction} from "./repository.mjs";
 
-const recognized=new Set(["image/png","image/jpeg","image/webp","video/mp4","video/webm",
+const recognized=new Set(["image/png","image/jpeg","image/webp","video/mp4","video/webm","video/x-matroska",
  "audio/wav","audio/flac","audio/ogg","audio/mpeg","text/plain"]);
 const failure=(code,statusCode)=>Object.assign(Error(code),{code,statusCode});
+const mimeKind=mime=>mime.startsWith("image/")?"image":mime.startsWith("video/")?"video":
+ mime.startsWith("audio/")?"audio":"text";
 const sig=(b,prefix)=>b.subarray(0,prefix.length).equals(Buffer.from(prefix));
 function sniff(data,mime){
  if(mime==="image/png")return data.length>=8&&sig(data,[137,80,78,71,13,10,26,10]);
  if(mime==="image/jpeg")return data.length>=3&&sig(data,[255,216,255]);
  if(mime==="image/webp")return data.length>=12&&data.toString("ascii",0,4)==="RIFF"&&data.toString("ascii",8,12)==="WEBP";
  if(mime==="video/mp4")return data.length>=12&&data.toString("ascii",4,8)==="ftyp";
- if(mime==="video/webm")return data.length>=4&&sig(data,[26,69,223,163]);
+ if(mime==="video/webm"||mime==="video/x-matroska")return data.length>=4&&sig(data,[26,69,223,163]);
  if(mime==="audio/wav")return data.length>=12&&data.toString("ascii",0,4)==="RIFF"&&data.toString("ascii",8,12)==="WAVE";
  if(mime==="audio/flac")return data.length>=4&&data.toString("ascii",0,4)==="fLaC";
  if(mime==="audio/ogg")return data.length>=4&&data.toString("ascii",0,4)==="OggS";
@@ -50,7 +54,7 @@ export function createBlobStore({dataDir,db,maxBlobBytes=64*1024*1024}={}){
    for await(const raw of source){
     const chunk=Buffer.isBuffer(raw)?raw:Buffer.from(raw);
     size+=chunk.length;
-    if(size>maxBlobBytes)throw failure("blob_quota_exceeded",413);
+    if(size>Math.min(maxBlobBytes,captureLimits[mimeKind(mime)]))throw failure("blob_quota_exceeded",413);
     if(decoder){
      if(chunk.includes(0))throw failure("blob_mime_mismatch",415);
      try{decoder.decode(chunk,{stream:true})}catch{throw failure("blob_mime_mismatch",415)}
@@ -59,7 +63,7 @@ export function createBlobStore({dataDir,db,maxBlobBytes=64*1024*1024}={}){
     if(retained<4096){fragments.push(chunk.subarray(0,4096-retained));retained+=Math.min(chunk.length,4096-retained)}
     await file.writeFile(chunk);
    }
-   if(size===0)throw failure("empty_blob",400);
+   if(size===0&&mime!=="text/plain")throw failure("empty_blob",400);
    if(decoder){try{decoder.decode()}catch{throw failure("blob_mime_mismatch",415)}}
    if(!sniff(Buffer.concat(fragments),mime))throw failure("blob_mime_mismatch",415);
    const id=sha.digest("hex");
@@ -93,7 +97,9 @@ export function createBlobStore({dataDir,db,maxBlobBytes=64*1024*1024}={}){
    throw failure("blob_integrity_error",503);
   return {id,path,byteSize:record.byte_size,mimeType:record.mime,sha256:record.sha256};
  }
- function getStream(record,{start=0,end=record.byteSize-1}={}){return createReadStream(record.path,{start,end})}
+ function getStream(record,{start=0,end=record.byteSize-1}={}){
+  return record.byteSize===0?Readable.from([]):createReadStream(record.path,{start,end});
+ }
  function parseRange(range,total){
   if(range===undefined)return null;
   if(typeof range!=="string"||!/^bytes=\d*-\d*$/.test(range))throw failure("invalid_blob_range",416);

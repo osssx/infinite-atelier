@@ -1,5 +1,5 @@
 import{JOB_STATUSES,EXECUTION_MODES,ARTIFACT_KINDS}from"./contracts.mjs";
-export const SCHEMA_VERSION=2;
+export const SCHEMA_VERSION=5;
 const quoted=x=>x.map(s=>"'"+s+"'").join(",");
 export const INITIAL_SCHEMA_SQL=`
 CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY,applied_at INTEGER NOT NULL);
@@ -67,6 +67,47 @@ CREATE TRIGGER IF NOT EXISTS credential_version_no_delete
  BEFORE DELETE ON credential_versions
  BEGIN SELECT RAISE(ABORT,'immutable_credential_version'); END;
 `;
+
+/** v3 durable ownership, restart receipt and the explicit submit barrier.
+ * Leases are never reclaimed on timeout inside a live process: only the
+ * exclusively locked replacement process performs startup recovery.
+ */
+export const COORDINATOR_SCHEMA_SQL=`
+ALTER TABLE jobs ADD COLUMN lease_owner TEXT;
+ALTER TABLE jobs ADD COLUMN lease_acquired_at INTEGER;
+ALTER TABLE jobs ADD COLUMN lease_expires_at INTEGER;
+ALTER TABLE jobs ADD COLUMN recovery_receipt_json TEXT CHECK(recovery_receipt_json IS NULL OR json_valid(recovery_receipt_json));
+CREATE INDEX IF NOT EXISTS ix_jobs_lease ON jobs(lease_owner,status,created_at);
+CREATE INDEX IF NOT EXISTS ix_job_attempts_job ON job_attempts(job_id,started_at);
+`;
+
+/** Compilation is pinned before /prompt. No recompilation in submit or restart paths. */
+export const COMFY_PREPARATIONS_SCHEMA_SQL=`
+CREATE TABLE IF NOT EXISTS comfy_job_preparations(
+ job_id TEXT PRIMARY KEY REFERENCES jobs(id),
+ graph_json TEXT NOT NULL CHECK(json_valid(graph_json)),
+ capture_map_json TEXT NOT NULL CHECK(json_valid(capture_map_json)),
+ graph_hash TEXT NOT NULL,
+ image_files_json TEXT NOT NULL CHECK(json_valid(image_files_json)),
+ workflow_node_id TEXT NOT NULL,
+ created_at INTEGER NOT NULL
+);
+`;
+
+/** Persisted poll and collection due-times. Never schedules a second submit. */
+export const JOB_SCHEDULE_SCHEMA_SQL=`
+ALTER TABLE materializations ADD COLUMN next_due_at INTEGER;
+ALTER TABLE materializations ADD COLUMN fail_count INTEGER NOT NULL DEFAULT 0;
+CREATE TABLE IF NOT EXISTS job_schedules(
+ job_id TEXT PRIMARY KEY REFERENCES jobs(id),
+ due_at INTEGER NOT NULL DEFAULT 0,
+ poll_failures INTEGER NOT NULL DEFAULT 0,
+ collect_failures INTEGER NOT NULL DEFAULT 0,
+ last_reason TEXT,
+ CHECK(poll_failures>=0 AND collect_failures>=0)
+);
+CREATE INDEX IF NOT EXISTS ix_job_schedules_due ON job_schedules(due_at);
+`;
 export function initializeSchema(db){
  db.exec("PRAGMA foreign_keys=ON;PRAGMA busy_timeout=5000;BEGIN IMMEDIATE");
  try{
@@ -74,6 +115,9 @@ export function initializeSchema(db){
   const version=db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v??0;
   if(version>SCHEMA_VERSION)throw Error("database_schema_too_new");
   if(version<2)db.exec(CREDENTIAL_SCHEMA_SQL);
+  if(version<3)db.exec(COORDINATOR_SCHEMA_SQL);
+  if(version<4)db.exec(COMFY_PREPARATIONS_SCHEMA_SQL);
+  if(version<5)db.exec(JOB_SCHEDULE_SCHEMA_SQL);
   if(version<SCHEMA_VERSION)db.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)").run(SCHEMA_VERSION,Date.now());
   db.exec("COMMIT");
  }catch(e){db.exec("ROLLBACK");throw e}

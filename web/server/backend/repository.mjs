@@ -1,6 +1,7 @@
 import{randomUUID,createHash}from"node:crypto";
 import{EXECUTION_MODES,assertJobTransition}from"./contracts.mjs";
 const problem=code=>Object.assign(new Error(code),{code,statusCode:409});
+const invalid=code=>Object.assign(new Error(code),{code,statusCode:400});
 export function writeTransaction(db,fn){
  db.exec("BEGIN IMMEDIATE");
  try{
@@ -15,22 +16,50 @@ export function stableJson(value){
  if(value===undefined)throw Error("undefined_in_frozen_snapshot");
  return JSON.stringify(value);
 }
-/** Conservative one-hop source projection. Deeper dependencies will require a full graph snapshot in P2. */
+/** The frozen job payload must not carry a provider key into the task database. */
+export function assertNoRawCredentials(value,depth=0){
+ if(depth>40)throw Object.assign(Error("invalid_job_request"),{code:"invalid_job_request",statusCode:400});
+ if(!value||typeof value!=="object")return;
+ if(Array.isArray(value)){for(const item of value)assertNoRawCredentials(item,depth+1);return}
+ for(const [key,nested] of Object.entries(value)){
+  if(/^(api[_-]?key|access[_-]?token|refresh[_-]?token|authorization|password|private[_-]?key|secret)$/i.test(key))
+   throw Object.assign(Error("raw_credentials_forbidden"),{code:"raw_credentials_forbidden",statusCode:400});
+  assertNoRawCredentials(nested,depth+1);
+ }
+}
+/** Fingerprints the target plus every transitive input, independent of canvas array ordering. */
 export function fingerprintSource(document,targetNodeId){
  if(!Array.isArray(document?.nodes)||!Array.isArray(document?.connections))throw problem("invalid_project_document");
- const target=document.nodes.find(n=>n.id===targetNodeId);
- if(!target)throw problem("stale_generation_source");
- const incoming=document.connections.filter(e=>e.toNodeId===targetNodeId).sort((a,b)=>stableJson(a).localeCompare(stableJson(b)));
- const ids=new Set([targetNodeId,...incoming.map(e=>e.fromNodeId)]);
- const nodes=document.nodes.filter(n=>ids.has(n.id)).sort((a,b)=>a.id.localeCompare(b.id));
- if(nodes.length!==ids.size)throw problem("stale_generation_source");
+ const byId=new Map(document.nodes.map(node=>[node.id,node]));
+ if(byId.size!==document.nodes.length||!byId.has(targetNodeId))throw problem("stale_generation_source");
+ const parents=new Map();
+ for(const edge of document.connections){
+  if(!byId.has(edge.fromNodeId)||!byId.has(edge.toNodeId))throw problem("stale_generation_source");
+  const edges=parents.get(edge.toNodeId)||[];
+  edges.push(edge);parents.set(edge.toNodeId,edges);
+ }
+ const ids=new Set(),visiting=new Set(),incoming=[];
+ function visit(id){
+  if(visiting.has(id))throw problem("cyclic_generation_source");
+  if(ids.has(id))return;
+  visiting.add(id);
+  for(const edge of parents.get(id)||[]){
+   incoming.push(edge);
+   visit(edge.fromNodeId);
+  }
+  visiting.delete(id);ids.add(id);
+ }
+ visit(targetNodeId);
+ const nodes=[...ids].sort().map(id=>byId.get(id));
+ incoming.sort((a,b)=>stableJson(a).localeCompare(stableJson(b)));
  return createHash("sha256").update(stableJson({nodes,incoming})).digest("hex");
 }
 const emit=(db,jobId,kind,payload)=>db.prepare("INSERT INTO job_events(job_id,kind,payload_json,created_at) VALUES(?,?,?,?)").run(jobId,kind,stableJson(payload),Date.now());
 export function submitJob(db,{jobId=randomUUID(),principal="local-owner",projectId=null,targetNodeId=null,expectedProjectRevision=null,sourceNodeFingerprint=null,idempotencyKey,requestFingerprint,executionMode,snapshot}){
- if(!idempotencyKey||!requestFingerprint||!EXECUTION_MODES.includes(executionMode)||!snapshot||typeof snapshot!=="object")throw Error("invalid_job_request");
- if(projectId===null&&(targetNodeId!==null||expectedProjectRevision!==null||sourceNodeFingerprint!==null))throw Error("invalid_project_reference");
- if(projectId!==null&&(!targetNodeId||!Number.isSafeInteger(expectedProjectRevision)||!sourceNodeFingerprint))throw Error("generation_save_barrier_required");
+ if(!idempotencyKey||!requestFingerprint||!EXECUTION_MODES.includes(executionMode)||!snapshot||typeof snapshot!=="object")throw invalid("invalid_job_request");
+ assertNoRawCredentials(snapshot);
+ if(projectId===null&&(targetNodeId!==null||expectedProjectRevision!==null||sourceNodeFingerprint!==null))throw invalid("invalid_project_reference");
+ if(projectId!==null&&(!targetNodeId||!Number.isSafeInteger(expectedProjectRevision)||!sourceNodeFingerprint))throw invalid("generation_save_barrier_required");
  return writeTransaction(db,()=>{
   const scope=projectId??"";
   const existing=db.prepare("SELECT id,request_fingerprint,execution_mode,snapshot_json,target_node_id,expected_project_revision,source_fingerprint FROM jobs WHERE principal=? AND project_scope=? AND idempotency_key=?").get(principal,scope,idempotencyKey);

@@ -1,0 +1,120 @@
+import Fastify from "fastify";
+import {randomUUID} from "node:crypto";
+import {createProject,getProject,patchProject} from "./projects.mjs";
+import {submitJob,readJobsSnapshot,readEventsAfter} from "./repository.mjs";
+import {EXECUTION_MODES} from "./contracts.mjs";
+const nonempty={type:"string",minLength:1,maxLength:256};
+const idSchema={type:"string",pattern:"^[A-Za-z0-9_-]{1,128}$"};
+const documentSchema={type:"object",required:["nodes","connections"],properties:{nodes:{type:"array"},connections:{type:"array"}},additionalProperties:true};
+const projectBody={type:"object",required:["document"],properties:{id:idSchema,document:documentSchema},additionalProperties:false};
+const editBody={type:"object",required:["expectedRevision","document"],properties:{expectedRevision:{type:"integer",minimum:1},document:documentSchema},additionalProperties:false};
+const jobBody={type:"object",required:["idempotencyKey","requestFingerprint","executionMode","snapshot"],properties:{
+ idempotencyKey:nonempty,requestFingerprint:nonempty,executionMode:{type:"string",enum:[...EXECUTION_MODES]},
+ snapshot:{type:"object"},projectId:idSchema,targetNodeId:idSchema,expectedProjectRevision:{type:"integer",minimum:1},
+ sourceNodeFingerprint:nonempty
+},additionalProperties:false};
+function localHost(host){
+ try{const u=new URL("http://"+host);return ["127.0.0.1","localhost","[::1]"].includes(u.hostname)&&!u.username&&!u.password}catch{return false}
+}
+function localRequestError(req){
+ if(!localHost(req.headers.host||"localhost"))return "invalid_host";
+ if(req.headers["sec-fetch-site"]==="cross-site")return "cross_site_request";
+ if(["POST","PATCH","PUT","DELETE"].includes(req.method)){
+  if(req.headers.origin){
+   try{const origin=new URL(req.headers.origin),own=new URL("http://"+(req.headers.host||"localhost"));
+    if(origin.protocol!==own.protocol||origin.host!==own.host)return "cross_site_request";
+   }catch{return "cross_site_request"}
+  }else if(req.headers.cookie)return "origin_required";
+ }
+ return null;
+}
+const jobView=row=>({id:row.id,projectId:row.project_id,status:row.status,executionMode:row.execution_mode,createdAt:row.created_at,updatedAt:row.updated_at,upstreamTaskId:row.upstream_task_id});
+const eventView=row=>({eventId:row.seq,jobId:row.job_id,kind:row.kind,timestamp:row.created_at,payload:JSON.parse(row.payload_json)});
+function cursorOf(value){
+ const v=String(value??"0");
+ if(!/^(0|[1-9][0-9]*)$/.test(v)||!Number.isSafeInteger(Number(v)))throw Object.assign(Error("invalid_event_cursor"),{statusCode:400,code:"invalid_event_cursor"});
+ return Number(v);
+}
+export function buildApp({db,authorize,logger=false,streamPollMs=200}={}){
+ if(!db||typeof authorize!=="function")throw Error("backend_authorizer_required");
+ const app=Fastify({logger,bodyLimit:5*1024*1024,trustProxy:false,genReqId:()=>randomUUID()});
+ app.addHook("onRequest",async(req,reply)=>{
+  const violation=localRequestError(req);
+  if(violation){reply.code(403).send({code:violation,message:violation,requestId:req.id});return}
+  if(req.url==="/health")return;
+  if(!await authorize(req))reply.code(401).send({code:"unauthorized",message:"unauthorized",requestId:req.id});
+ });
+ app.setErrorHandler((error,req,reply)=>{
+  const status=error.statusCode>=400&&error.statusCode<500?error.statusCode:500;
+  const publicCodes=new Set(["project_revision_conflict","project_not_found","project_id_conflict","invalid_project_document",
+   "invalid_project_id","project_document_too_large","expected_revision_required","invalid_project_reference",
+   "stale_generation_source","cyclic_generation_source","generation_save_barrier_required","invalid_job_request","idempotency_key_conflict",
+   "invalid_event_cursor","event_cursor_expired","raw_credentials_forbidden"]);
+  const code=error.validation?"invalid_request":(publicCodes.has(error.code)?error.code:
+    (status===400?"invalid_request":"internal_error"));
+  reply.code(status).send({code,message:code,requestId:req.id,...(code==="project_revision_conflict"&&error.details?{details:error.details}:{})});
+ });
+ app.get("/health",()=>({ok:true}));
+ app.post("/api/v1/projects",{schema:{body:projectBody}},async(req,reply)=>{
+  const created=createProject(db,req.body);reply.header("ETag",'"'+created.revision+'"').code(201);return created;
+ });
+ app.get("/api/v1/projects/:id",{schema:{params:{type:"object",required:["id"],properties:{id:idSchema}}}},async(req,reply)=>{
+  const project=getProject(db,req.params.id);reply.header("ETag",'"'+project.revision+'"');return project;
+ });
+ app.patch("/api/v1/projects/:id",{schema:{params:{type:"object",required:["id"],properties:{id:idSchema}},body:editBody}},async(req,reply)=>{
+  if(req.headers["if-match"]!==undefined&&req.headers["if-match"]!=='"'+req.body.expectedRevision+'"'){
+   reply.code(400);return {code:"revision_header_mismatch",message:"revision_header_mismatch",requestId:req.id};
+  }
+  const project=patchProject(db,{id:req.params.id,...req.body});reply.header("ETag",'"'+project.revision+'"');return project;
+ });
+ app.post("/api/v1/jobs",{schema:{body:jobBody}},async(req,reply)=>{
+  const result=submitJob(db,req.body),row=db.prepare("SELECT * FROM jobs WHERE id=?").get(result.jobId);
+  reply.code(result.existing?200:201);return {...jobView(row),existing:result.existing};
+ });
+ app.get("/api/v1/jobs/snapshot",()=>{
+  const {jobs,eventCursor}=readJobsSnapshot(db);return {jobs:jobs.map(jobView),eventCursor};
+ });
+ app.get("/api/v1/jobs/:id",{schema:{params:{type:"object",required:["id"],properties:{id:idSchema}}}},async(req,reply)=>{
+  const row=db.prepare("SELECT * FROM jobs WHERE id=?").get(req.params.id);
+  if(!row){reply.code(404);return{code:"job_not_found",message:"job_not_found",requestId:req.id}}
+  return jobView(row);
+ });
+ // Replaying committed database events from the last seq on every poll has no subscribe/replay race.
+ app.get("/api/v1/events",{schema:{querystring:{type:"object",properties:{
+  after:{type:"string",pattern:"^(0|[1-9][0-9]*)$"},once:{type:"string",enum:["1"]}
+ },additionalProperties:false}}},async(req,reply)=>{
+  const after=cursorOf(req.headers["last-event-id"]??req.query.after??0);
+  const {eventCursor}=readJobsSnapshot(db);
+  const first=db.prepare("SELECT MIN(seq) AS first FROM job_events").get().first;
+  if(after>eventCursor)throw Object.assign(Error("invalid_event_cursor"),{statusCode:400,code:"invalid_event_cursor"});
+  if(first!==null&&after<first-1)throw Object.assign(Error("event_cursor_expired"),{statusCode:409,code:"event_cursor_expired"});
+  const raw=reply.raw;reply.hijack();
+  raw.writeHead(200,{"Content-Type":"text/event-stream; charset=utf-8","Cache-Control":"no-cache, no-transform","Connection":"keep-alive","X-Accel-Buffering":"no"});
+  let cursor=after,closed=false,pushing=false;
+  const push=()=>{
+   if(closed||pushing)return;
+   pushing=true;
+   try{
+    let page;
+    do{
+     page=readEventsAfter(db,cursor,200);
+     for(const row of page){
+      const event=eventView(row);
+      raw.write("id: "+event.eventId+"\nevent: job\ndata: "+JSON.stringify(event)+"\n\n");
+      cursor=event.eventId;
+     }
+    }while(page.length===200&&!closed);
+   }catch{closed=true;raw.destroy()}finally{pushing=false}
+  };
+  raw.write(": connected\n\n");push();
+  if(req.query.once==="1"){closed=true;raw.end();return}
+  const timer=setInterval(()=>{if(closed)return;push();if(!closed)raw.write(": heartbeat\n\n")},streamPollMs);
+  timer.unref?.();raw.on("close",()=>{closed=true;clearInterval(timer)});
+ });
+ return app;
+}
+export async function startServer(app,{host="127.0.0.1",port=0}={}){
+ if(!["127.0.0.1","::1"].includes(host))throw Error("loopback_only");
+ return app.listen({host,port});
+}
+export async function stopServer(app){await app.close()}

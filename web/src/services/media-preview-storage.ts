@@ -1,5 +1,6 @@
 import localforage from "localforage";
 import { PERF_MODE } from "@/lib/perf-mode";
+import {canvasCasPreviewUrl} from "@/features/backend-sync/canvas-cas";
 
 export type PreviewKind = "image" | "video";
 export const PREVIEW_EDGE = 256;
@@ -17,7 +18,25 @@ const cachedLookups = new Map<string, Promise<string | null>>();
 export async function getExistingMediaPreview(kind: PreviewKind, storageKey: string): Promise<string | null> {
     if (!storageKey) return null;
     const id = keyOf(kind, storageKey);
-    if(/^cas:[0-9a-f]{64}$/.test(storageKey))return urls.get(id)??null; // memory only
+    if(canvasCasPreviewUrl(storageKey)){
+        const existing=urls.get(id);
+        if(existing)return existing;
+        const ongoing=inFlight.get(id);
+        if(ongoing)return ongoing;
+        const task=(async()=>{
+            try{
+                const response=await fetch(canvasCasPreviewUrl(storageKey)!,{credentials:"same-origin"});
+                if(!response.ok)return null;
+                const blob=await response.blob();
+                if(blob.type!=="image/png")return null;
+                const object=URL.createObjectURL(blob);
+                urls.set(id,object);
+                return object;
+            }catch{return null}
+        })();
+        inFlight.set(id,task);
+        try{return await task}finally{if(inFlight.get(id)===task)inFlight.delete(id)}
+    }
     const present = urls.get(id);
     if (present) return present;
     const pendingLookup = cachedLookups.get(id);
@@ -155,26 +174,23 @@ export async function resolveMediaPreview(
 ): Promise<string | null> {
     if (!storageKey) return null;
     const id = keyOf(kind, storageKey);
-    if(/^cas:[0-9a-f]{64}$/.test(storageKey)){
-        // No IndexedDB reads/writes. Overview images get idle 256px thumbnails
-        // cached for this tab; video remains a placeholder until server posters.
-        if(kind!=="image")return null;
-        const present=urls.get(id);
-        if(present)return present;
-        const inProgress=inFlight.get(id);
-        if(inProgress)return inProgress;
-        const version=versions.get(id)||0;
+    if(canvasCasPreviewUrl(storageKey)){
+        // Low-LOD nodes never decode full videos/images in the browser.
+        // Fetch an immutable server thumbnail once and cache only an object URL in memory.
+        const existing=urls.get(id);
+        if(existing)return existing;
+        const ongoing=inFlight.get(id);
+        if(ongoing)return ongoing;
         const task=new Promise<string|null>(resolve=>{
             queueIdle(async()=>{
                 try{
-                    if((versions.get(id)||0)!==version){resolve(null);return}
-                    const original=await loadBlob();
-                    if(!original){resolve(null);return}
-                    const preview=await imagePreview(original,dimensions);
-                    if(!preview||(versions.get(id)||0)!==version){resolve(null);return}
-                    const created=URL.createObjectURL(preview);
-                    urls.set(id,created);
-                    resolve(created);
+                    const response=await fetch(canvasCasPreviewUrl(storageKey)!,{credentials:"same-origin"});
+                    if(!response.ok){resolve(null);return}
+                    const blob=await response.blob();
+                    if(blob.type!=="image/png"){resolve(null);return}
+                    const object=URL.createObjectURL(blob);
+                    urls.set(id,object);
+                    resolve(object);
                 }catch{resolve(null)}
             });
         });

@@ -33,6 +33,7 @@ export function createBlobStore({dataDir,db,maxBlobBytes=64*1024*1024}={}){
  if(!Number.isSafeInteger(maxBlobBytes)||maxBlobBytes<1)throw Error("invalid_blob_quota");
  const root=resolve(dataDir),blobsRoot=join(root,"blobs"),tmpRoot=join(root,"tmp");
  const digestPath=id=>join(blobsRoot,id.slice(0,2),id);
+ let activeUploads=0;
  async function verifyExistingFile(path,id,size){
   const info=await lstat(path);
   if(!info.isFile()||info.isSymbolicLink()||info.size!==size)
@@ -42,7 +43,11 @@ export function createBlobStore({dataDir,db,maxBlobBytes=64*1024*1024}={}){
   if(seen!==size||digest.digest("hex")!==id)throw failure("blob_integrity_error",503);
  }
 
- async function put(source,{mime,expectedSha256}={}){
+ async function put(source,options={}){
+  activeUploads++;
+  try{return await putInternal(source,options)}finally{activeUploads--}
+ }
+ async function putInternal(source,{mime,expectedSha256}={}){
   if(!recognized.has(mime))throw failure("unsupported_blob_mime",415);
   if(expectedSha256!==undefined&&!/^[a-f0-9]{64}$/.test(expectedSha256))throw failure("invalid_sha256",400);
   await mkdir(tmpRoot,{recursive:true,mode:0o700});
@@ -118,5 +123,7 @@ export function createBlobStore({dataDir,db,maxBlobBytes=64*1024*1024}={}){
   if(start>=total||start<0||end<start)throw failure("invalid_blob_range",416);
   return {start,end};
  }
- return {put,stat,getStream,parseRange,maxBlobBytes};
+ return {put,stat,getStream,parseRange,maxBlobBytes,
+  hasActiveUploads:()=>activeUploads>0,
+  pathFor:id=>/^[a-f0-9]{64}$/.test(id)?digestPath(id):null};
 }

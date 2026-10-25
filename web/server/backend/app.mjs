@@ -59,7 +59,7 @@ function cursorOf(value){
  if(!/^(0|[1-9][0-9]*)$/.test(v)||!Number.isSafeInteger(Number(v)))throw Object.assign(Error("invalid_event_cursor"),{statusCode:400,code:"invalid_event_cursor"});
  return Number(v);
 }
-export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobStore,vault,coordinator,materializer,worker,comfyInstanceIds=[],logger=false,streamPollMs=200}={}){
+export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobStore,mediaPreview,blobGc,vault,coordinator,materializer,worker,comfyInstanceIds=[],logger=false,streamPollMs=200}={}){
  if(!db||(!sessionAuth&&typeof authorize!=="function"))throw Error("backend_authorizer_required");
  const app=Fastify({logger,bodyLimit:5*1024*1024,trustProxy:false,genReqId:()=>randomUUID()});
  if(blobStore)app.addContentTypeParser("application/octet-stream",(req,stream,done)=>done(null,stream));
@@ -80,6 +80,10 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
    "invalid_bootstrap_token","unsupported_blob_mime","invalid_sha256","blob_quota_exceeded",
    "empty_blob","blob_mime_mismatch","blob_digest_mismatch","blob_identity_conflict",
    "blob_not_found","blob_missing_on_disk","blob_integrity_error","invalid_blob_range",
+   "preview_unsupported_mime","preview_transcoder_unavailable","preview_timeout",
+   "preview_render_failed","preview_invalid_output","preview_busy",
+   "gc_confirmation_required","invalid_gc_limit","gc_upload_in_progress",
+   "gc_blob_integrity_error","gc_delete_race",
    "channel_not_found","channel_id_conflict","invalid_channel_config","invalid_credential_value",
    "expected_credential_version_required","credential_version_conflict",
    "credential_reference_required","credential_missing","credential_revoked",
@@ -124,6 +128,14 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
     expectedSha256:req.headers["x-content-sha256"]});
    reply.code(stored.existing?200:201);return stored;
   });
+  if(mediaPreview)app.get("/api/v1/blobs/:id/preview",{schema:{params:{
+   type:"object",required:["id"],properties:{id:{type:"string",pattern:"^[0-9a-f]{64}$"}}
+  }}},async(req,reply)=>{
+   const bytes=await mediaPreview.get(req.params.id);
+   reply.header("Content-Type","image/png").header("X-Content-Type-Options","nosniff")
+    .header("Cache-Control","private, max-age=86400").header("Content-Length",String(bytes.length));
+   return reply.send(bytes);
+  });
   app.get("/api/v1/blobs/:id",{schema:{params:{type:"object",required:["id"],
    properties:{id:{type:"string",pattern:"^[0-9a-f]{64}$"}}}}},async(req,reply)=>{
    const blob=await blobStore.stat(req.params.id);
@@ -146,6 +158,10 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
   });
  }
 
+
+ if(blobGc)app.post("/api/v1/storage/gc",{schema:{body:{type:"object",
+  properties:{dryRun:{type:"boolean"},confirmation:{type:"string"}},additionalProperties:false}
+ }},req=>blobGc.sweep(req.body??{}));
 
  if(vault){
   app.get("/api/v1/channels",(req,reply)=>{

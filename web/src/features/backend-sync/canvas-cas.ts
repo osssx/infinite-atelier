@@ -1,6 +1,7 @@
 /** Backend-owned immutable media identity; shared by Canvas & media readers. */
 const RE=/^cas:([a-f0-9]{64})$/;
 export const isCanvasCasKey=(key:string)=>RE.test(key);
+export const canvasCasPreviewUrl=(key:string)=>RE.test(key)?"/api/v1/blobs/"+key.slice(4)+"/preview":null;
 export function canvasCasUrl(storageKey:string):string|null{
  const match=storageKey.match(RE);
  return match?"/api/v1/blobs/"+match[1]:null;

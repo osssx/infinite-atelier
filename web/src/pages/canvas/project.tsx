@@ -756,10 +756,16 @@ function AtelierCanvasPage() {
         };
     }, [activeChatId, backgroundMode, chatSessions, connections, createHistoryEntry, nodes, projectLoaded, showImageInfo, comfyInstanceId]);
 
+    // Independent persistence lanes: typing into chat must not write a 200-node
+    // graph, and viewport movement must never advance the graph revision.
     useEffect(() => {
         if (!projectLoaded || historyPausedRef.current) return;
-        updateProject(projectId, { nodes, connections, chatSessions, activeChatId, backgroundMode, showImageInfo, comfyInstanceId });
-    }, [activeChatId, backgroundMode, chatSessions, connections, nodes, projectId, projectLoaded, showImageInfo, comfyInstanceId, updateProject]);
+        updateProject(projectId, { nodes, connections, backgroundMode, showImageInfo, comfyInstanceId });
+    }, [backgroundMode, connections, nodes, projectId, projectLoaded, showImageInfo, comfyInstanceId, updateProject]);
+    useEffect(() => {
+        if (!projectLoaded || historyPausedRef.current) return;
+        updateProject(projectId, { chatSessions, activeChatId });
+    }, [activeChatId, chatSessions, projectId, projectLoaded, updateProject]);
 
     useEffect(() => {
         if (!dialogNodeId) setNodeImageSettingsOpen(false);

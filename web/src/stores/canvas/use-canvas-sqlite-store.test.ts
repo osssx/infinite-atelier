@@ -3,6 +3,8 @@ import {CanvasApiError} from "@/features/backend-sync/canvas-api";
 vi.mock("@/i18n",()=>({default:{t:(key:string)=>key}}));
 const fake=vi.hoisted(()=>({
  projects:new Map<string,{id:string;revision:number;document:Record<string,unknown>}>(),
+ views:new Map<string,{viewport:{x:number;y:number;k:number};revision:number}>(),
+ chats:new Map<string,{sessions:any[];activeChatId:string|null;revision:number}>(),
  methods:[] as string[],
  rejectPatch:false
 }));
@@ -10,19 +12,37 @@ vi.mock("@/features/backend-sync/canvas-api",async importOriginal=>{
  const actual=await importOriginal<typeof import("@/features/backend-sync/canvas-api")>();
  return {...actual,canvasApi:vi.fn(async(path:string,method="GET",payload?:any)=>{
   fake.methods.push(method+" "+path);
+  const match=path.match(/^\/api\/v1\/projects\/([^/]+)\/(viewport|chats)$/);
+  if(match){
+   const id=decodeURIComponent(match[1]),kind=match[2];
+   const store=kind==="viewport"?fake.views:fake.chats;
+   const current=store.get(id);
+   if(!current)throw new actual.CanvasApiError("project_not_found",404);
+   if(method==="GET")return current;
+   if(method==="PUT"){
+    if(payload.expectedRevision!==current.revision)throw new actual.CanvasApiError(kind+"_revision_conflict",409);
+    const next={...current,...payload,revision:current.revision+1};
+    store.set(id,next as never);return next;
+   }
+  }
+
   if(path==="/api/v1/projects"&&method==="GET")return {projects:[...fake.projects.values()].map(project=>({
    id:project.id,title:project.document.title,revision:project.revision,nodeCount:(project.document.nodes as any[]).length,
    connectionCount:(project.document.connections as any[]).length
   }))};
   if(path==="/api/v1/projects"&&method==="POST"){
    const row={id:payload.id,revision:1,document:payload.document};
-   fake.projects.set(row.id,row);return row;
+   fake.projects.set(row.id,row);
+   fake.views.set(row.id,{viewport:payload.document.viewport??{x:0,y:0,k:1},revision:1});
+   fake.chats.set(row.id,{sessions:payload.document.chatSessions??[],activeChatId:payload.document.activeChatId??null,revision:1});
+   return row;
+
   }
   const id=decodeURIComponent(path.split("/").at(-1)!);
   const current=fake.projects.get(id);
   if(!current)throw new actual.CanvasApiError("project_not_found",404);
   if(method==="GET")return current;
-  if(method==="DELETE"){fake.projects.delete(id);return {deleted:true}};
+  if(method==="DELETE"){fake.projects.delete(id);fake.views.delete(id);fake.chats.delete(id);return {deleted:true}};
   if(method==="PATCH"){
    if(fake.rejectPatch||payload.expectedRevision!==current.revision)
     throw new actual.CanvasApiError("project_revision_conflict",409);
@@ -59,6 +79,27 @@ describe("SQLite-only Canvas store",()=>{
   await useCanvasStore.getState().deleteProjects([id]);
   expect(fake.projects.has(id)).toBe(false);
   expect(useCanvasStore.getState().projects.some(project=>project.id===id)).toBe(false);
+ });
+
+ it("persists rapid viewport and chat edits without graph PATCH or graph revision increments",async()=>{
+  fake.rejectPatch=false;fake.methods.length=0;
+  const id=await useCanvasStore.getState().createProject("Independent state");
+  fake.methods.length=0;
+  const chat={id:"c1",title:"Chat",messages:[],createdAt:"today",updatedAt:"today"};
+  useCanvasStore.getState().updateProject(id,{viewport:{x:10,y:22,k:1.5}});
+  useCanvasStore.getState().updateProject(id,{viewport:{x:20,y:45,k:2}});
+  useCanvasStore.getState().updateProject(id,{chatSessions:[chat],activeChatId:"c1"});
+  await awaitCanvasStorePersistence();
+  expect(fake.views.get(id)).toMatchObject({revision:2,viewport:{x:20,y:45,k:2}});
+  expect(fake.chats.get(id)).toMatchObject({revision:2,activeChatId:"c1"});
+  expect(fake.projects.get(id)?.revision).toBe(1);
+  expect(fake.methods.filter(method=>method==="PATCH /api/v1/projects/"+id)).toHaveLength(0);
+  expect(fake.methods.filter(method=>method==="PUT /api/v1/projects/"+id+"/viewport")).toHaveLength(1);
+  expect(fake.methods.filter(method=>method==="PUT /api/v1/projects/"+id+"/chats")).toHaveLength(1);
+  const reloaded=await useCanvasStore.getState().loadProject(id);
+  expect(reloaded.viewport).toEqual({x:20,y:45,k:2});
+  expect(reloaded.chatSessions).toHaveLength(1);
+  expect(reloaded.activeChatId).toBe("c1");
  });
  it("preserves in-memory dirty draft and reports stale SQLite revision",async()=>{
   fake.rejectPatch=false;

@@ -1,5 +1,5 @@
 import{JOB_STATUSES,EXECUTION_MODES,ARTIFACT_KINDS}from"./contracts.mjs";
-export const SCHEMA_VERSION=6;
+export const SCHEMA_VERSION=7;
 const quoted=x=>x.map(s=>"'"+s+"'").join(",");
 export const INITIAL_SCHEMA_SQL=`
 CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY,applied_at INTEGER NOT NULL);
@@ -118,6 +118,16 @@ CREATE TABLE IF NOT EXISTS project_events(
 );
 CREATE INDEX IF NOT EXISTS ix_project_events_project ON project_events(project_id,seq);
 `;
+/** Dedicated P2 state; graph revisions never change for viewport/chat updates. */
+export const CANVAS_STATE_SCHEMA_SQL=`
+CREATE TABLE IF NOT EXISTS project_chats(
+ project_id TEXT PRIMARY KEY REFERENCES projects(id),
+ sessions_json TEXT NOT NULL CHECK(json_valid(sessions_json)),
+ active_chat_id TEXT,
+ revision INTEGER NOT NULL DEFAULT 1 CHECK(revision>0),
+ updated_at INTEGER NOT NULL
+);
+`;
 export function initializeSchema(db){
  db.exec("PRAGMA foreign_keys=ON;PRAGMA busy_timeout=5000;BEGIN IMMEDIATE");
  try{
@@ -129,6 +139,21 @@ export function initializeSchema(db){
   if(version<4)db.exec(COMFY_PREPARATIONS_SCHEMA_SQL);
   if(version<5)db.exec(JOB_SCHEDULE_SCHEMA_SQL);
   if(version<6)db.exec(PROJECT_EVENTS_SCHEMA_SQL);
+  if(version<7){
+   db.exec(CANVAS_STATE_SCHEMA_SQL);
+   db.prepare(`INSERT OR IGNORE INTO project_viewports(project_id,viewport_json,revision)
+    SELECT id, CASE WHEN json_type(document_json,'$.viewport')='object'
+      THEN json_extract(document_json,'$.viewport') ELSE '{"x":0,"y":0,"k":1}' END,1
+    FROM projects`).run();
+   db.prepare(`INSERT OR IGNORE INTO project_chats(project_id,sessions_json,active_chat_id,revision,updated_at)
+    SELECT id,
+      CASE WHEN json_type(document_json,'$.chatSessions')='array'
+        THEN json_extract(document_json,'$.chatSessions') ELSE '[]' END,
+      CASE WHEN json_type(document_json,'$.activeChatId')='text'
+        THEN json_extract(document_json,'$.activeChatId') ELSE NULL END,
+      1,?
+    FROM projects`).run(Date.now());
+  }
   if(version<SCHEMA_VERSION)db.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)").run(SCHEMA_VERSION,Date.now());
   db.exec("COMMIT");
  }catch(e){db.exec("ROLLBACK");throw e}

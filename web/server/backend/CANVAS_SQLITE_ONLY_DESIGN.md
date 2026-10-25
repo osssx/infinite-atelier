@@ -1,6 +1,6 @@
 # Infinite Atelier 画布 SQLite-only 架构设计
 
-状态：**分阶段实施中（已落地 P0 开发链路、P1 核心 CRUD 与基本图自动保存）**。针对单机单用户；浏览器本地旧画布不迁移、不兼容。**P2 细粒度视口/聊天保存、P3 统一媒体 BlobStore、P4 统一生成、P5 清理/备份仍未完成**。
+状态：**P0、P1 已落地，P2 的独立视口/聊天存储和并发保存队列已实施**。针对单机单用户；浏览器本地旧画布不迁移、不兼容。**P3 统一媒体 BlobStore、P4 统一生成、P5 清理/备份仍未完成**。
 
 ## 当前可运行代码（首轮实施）
 
@@ -9,7 +9,9 @@
 - 项目 API 增加软删；项目页面的创建、列表、查看、改名和删除通过后端 API。
 - `use-canvas-store.ts` 仅 re-export 新的 `use-canvas-sqlite-store.ts`；**不打开旧 Canvas IndexedDB**。Store 保留内存图，450ms 防抖，串行 `PATCH expectedRevision`，失败明确提示且草稿不被覆盖。
 - 旧画布“手动连接同步”与“共享后端项目库”入口从可见页面隐藏；原项目浏览器 ZIP 导入/导出暂时关闭，以免在媒体未后端化前生成不完整的项目。
-- **当前保留的限制**：`image-storage.ts`、`file-storage.ts` 和视频生成等仍存在旧浏览器媒体路径；完整 SQLite-only 不能在 P3/P4 完成前宣告达成。跨两个标签页的异步 Materializer 刷新、聊天独立表、单项轻量 viewport 持久化、生产静态站点统一托管也尚未接线。
+- **P2 已实施**：SQLite schema v7 使用 `project_viewports` 和 `project_chats` 独立存储，v6→v7 升级只从现存 **后端**项目 JSON 抽取必要状态，旧浏览器项目不迁移；新建项目时三类数据在同一事务初始化。后端 `GET/PUT /api/v1/projects/:id/viewport`、`GET/PUT /api/v1/projects/:id/chats` 各有独立 revision，图 `PATCH` 不携带这两类数据；Chat、Viewport、Graph 分开防抖与串行保存。首次读取项目并行 GET 三组状态，只有全部成功才初始化 React。
+- **P2 竞态修复**：第一笔 viewport/chat `PUT` 执行时若继续编辑，服务器回包只更新 revision，不把旧 payload 写回本地当前值；后续 pending 内容在新 revision 上提交。409 冲突与失败保留草稿并阻止误认为已保存。
+- **当前保留的限制**：`image-storage.ts`、`file-storage.ts` 和视频生成等仍存在旧浏览器媒体路径；完整 SQLite-only 不能在 P3/P4 完成前宣告达成。跨标签页自动应用 Materializer 增量、生产静态站点统一托管、聊天按会话行拆分（目前按项目一个聊天 JSON 行）仍在后续计划。
 
 在已有 `npm run dev:backend` 运行时，先安全停止旧服务（不要中断正在提交的 GPU 任务），再用 `npm run dev` 启动；不要同时启动两个后端进程争用端口 8788 和数据库进程锁。
 

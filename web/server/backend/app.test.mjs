@@ -55,6 +55,63 @@ test("SQLite-only local sessions auto-issue on same-origin GET and protect CRUD"
  assert.deepEqual((await app.inject({method:"GET",url:"/api/v1/projects",headers:owner})).json().projects,[]);
  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM projects WHERE deleted_at IS NOT NULL").get().n,1);
 });
+
+
+test("SQLite schema v6 upgrades old backend viewport/chat JSON without losing graph revision",t=>{
+ const db=new DatabaseSync(":memory:");t.after(()=>db.close());
+ initializeSchema(db);
+ db.exec("DROP TABLE project_chats");
+ db.exec("DELETE FROM schema_migrations WHERE version=7");
+ db.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES(6,0)").run();
+ const legacy={...doc("legacy"),title:"Keep",viewport:{x:50,y:-70,k:1.3},
+  chatSessions:[{id:"legacy-chat",title:"Old",messages:[]}],activeChatId:"legacy-chat"};
+ db.prepare("INSERT INTO projects(id,document_json,revision) VALUES(?,?,?)")
+  .run("old-backend",JSON.stringify(legacy),18);
+ initializeSchema(db);initializeSchema(db);
+ assert.equal(db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v,7);
+ assert.equal(db.prepare("SELECT revision FROM projects WHERE id='old-backend'").get().revision,18);
+ assert.deepEqual(JSON.parse(db.prepare("SELECT viewport_json AS v FROM project_viewports WHERE project_id='old-backend'").get().v),
+  legacy.viewport);
+ assert.equal(db.prepare("SELECT active_chat_id AS id FROM project_chats WHERE project_id='old-backend'").get().id,"legacy-chat");
+});
+test("viewport and chats have independent SQLite revisions and do not modify the graph",async t=>{
+ const{call,db}=await fixture(t);
+ const original={...doc(),title:"P2",viewport:{x:3,y:5,k:0.5},
+  chatSessions:[{id:"a",title:"A",messages:[],createdAt:"today",updatedAt:"today"}],activeChatId:"a"};
+ const created=await call("POST","/api/v1/projects",{id:"p2",document:original});
+ assert.equal(created.statusCode,201,created.body);
+ assert.equal("chatSessions" in created.json().document,false);
+ assert.equal("viewport" in created.json().document,false);
+ assert.deepEqual((await call("GET","/api/v1/projects/p2/viewport")).json(),
+  {revision:1,viewport:original.viewport});
+ assert.deepEqual((await call("GET","/api/v1/projects/p2/chats")).json(),
+  {revision:1,sessions:original.chatSessions,activeChatId:"a"});
+ const view=await call("PUT","/api/v1/projects/p2/viewport",
+  {expectedRevision:1,viewport:{x:100,y:-20,k:1.25}});
+ assert.equal(view.statusCode,200,view.body);
+ assert.equal(view.json().revision,2);
+ const changedChats=await call("PUT","/api/v1/projects/p2/chats",
+  {expectedRevision:1,sessions:[{...original.chatSessions[0],messages:[{role:"user",content:"changed"}]}],activeChatId:"a"});
+ assert.equal(changedChats.statusCode,200,changedChats.body);
+ assert.equal((await call("GET","/api/v1/projects/p2")).json().revision,1);
+ const sameGraph=await call("PATCH","/api/v1/projects/p2",{expectedRevision:1,document:doc("modified")});
+ assert.equal(sameGraph.statusCode,200,sameGraph.body);
+ assert.equal((await call("GET","/api/v1/projects/p2")).json().revision,2);
+ assert.equal((await call("GET","/api/v1/projects/p2/viewport")).json().revision,2);
+ assert.equal((await call("GET","/api/v1/projects/p2/chats")).json().revision,2);
+ const stale=await call("PUT","/api/v1/projects/p2/viewport",{expectedRevision:1,viewport:{x:0,y:0,k:1}});
+ assert.equal(stale.statusCode,409);
+ const bad=await call("PUT","/api/v1/projects/p2/chats",{expectedRevision:2,sessions:[],activeChatId:"unknown"});
+ assert.equal(bad.statusCode,400);
+ assert.equal((await call("GET","/api/v1/projects/p2/chats")).json().sessions[0].messages.length,1);
+ const injection=await call("PUT","/api/v1/projects/p2/chats",{
+  expectedRevision:2,sessions:[{id:"evil",title:"x",messages:[],apiKey:"secret"}],activeChatId:"evil"});
+ assert.equal(injection.statusCode,400);
+ const gone=await call("DELETE","/api/v1/projects/p2");
+ assert.equal(gone.statusCode,200);
+ assert.equal((await call("GET","/api/v1/projects/p2/chats")).statusCode,404);
+ assert.equal(db.prepare("SELECT COUNT(*) AS n FROM project_chats WHERE project_id='p2'").get().n,1);
+});
 test("project endpoints preserve CAS and reject invalid references",async t=>{
  const{call}=await fixture(t);
  let r=await call("POST","/api/v1/projects",{id:"p",document:doc()});
@@ -226,9 +283,9 @@ test("SSE reports expired event cursor after retained history is pruned",async t
 });
 test("disk main db creates schema and remains reusable after close",t=>{
  const dir=mkdtempSync(join(tmpdir(),"atelier-main-"));t.after(()=>rmSync(dir,{recursive:true,force:true}));
- const db=openMainDatabase(dir);assert.equal(db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v,6);
+ const db=openMainDatabase(dir);assert.equal(db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v,7);
  db.close();const reopened=openMainDatabase(dir);
- assert.equal(reopened.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v,6);reopened.close();
+ assert.equal(reopened.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v,7);reopened.close();
 });
 test("startServer rejects wide-area binding",async t=>{
  const{app}=await fixture(t);

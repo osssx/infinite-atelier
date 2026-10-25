@@ -1,6 +1,7 @@
 import Fastify from "fastify";
 import {randomUUID} from "node:crypto";
 import {createProject,getProject,patchProject,deleteProject,listProjectSummaries,projectEventCursor} from "./projects.mjs";
+import {getCanvasViewport,putCanvasViewport,getCanvasChats,putCanvasChats} from "./canvas-state.mjs";
 import {submitJob,readJobsSnapshot,readEventsAfter} from "./repository.mjs";
 import {EXECUTION_MODES} from "./contracts.mjs";
 import {CANVAS_NODE_ID_PATTERN} from "../canvas-node-id.mjs";
@@ -10,6 +11,15 @@ const canvasNodeIdSchema={type:"string",pattern:CANVAS_NODE_ID_PATTERN};
 const documentSchema={type:"object",required:["nodes","connections"],properties:{nodes:{type:"array"},connections:{type:"array"}},additionalProperties:true};
 const projectBody={type:"object",required:["document"],properties:{id:idSchema,document:documentSchema},additionalProperties:false};
 const editBody={type:"object",required:["expectedRevision","document"],properties:{expectedRevision:{type:"integer",minimum:1},document:documentSchema},additionalProperties:false};
+const viewportBody={type:"object",required:["expectedRevision","viewport"],
+ properties:{expectedRevision:{type:"integer",minimum:1},viewport:{
+  type:"object",required:["x","y","k"],additionalProperties:false,
+  properties:{x:{type:"number"},y:{type:"number"},k:{type:"number",exclusiveMinimum:0}}
+ }},additionalProperties:false};
+const chatsBody={type:"object",required:["expectedRevision","sessions","activeChatId"],
+ properties:{expectedRevision:{type:"integer",minimum:1},sessions:{type:"array"},
+ activeChatId:{anyOf:[{type:"string"},{type:"null"}]}},additionalProperties:false};
+
 const jobBody={type:"object",required:["idempotencyKey","requestFingerprint","executionMode","snapshot"],properties:{
  idempotencyKey:nonempty,requestFingerprint:nonempty,executionMode:{type:"string",enum:[...EXECUTION_MODES]},
  snapshot:{type:"object"},projectId:idSchema,targetNodeId:canvasNodeIdSchema,expectedProjectRevision:{type:"integer",minimum:1},
@@ -209,6 +219,16 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
   }
   const project=patchProject(db,{id:req.params.id,...req.body});reply.header("ETag",'"'+project.revision+'"');return project;
  });
+
+ // These independent revisions never increment the graph revision or pollute
+ // JobSnapshot source fingerprints; P2 canvas autosave owns them separately.
+ const canvasParams={type:"object",required:["id"],properties:{id:idSchema}};
+ app.get("/api/v1/projects/:id/viewport",{schema:{params:canvasParams}},req=>getCanvasViewport(db,req.params.id));
+ app.put("/api/v1/projects/:id/viewport",{schema:{params:canvasParams,body:viewportBody}},req=>
+  putCanvasViewport(db,req.params.id,req.body));
+ app.get("/api/v1/projects/:id/chats",{schema:{params:canvasParams}},req=>getCanvasChats(db,req.params.id));
+ app.put("/api/v1/projects/:id/chats",{schema:{params:canvasParams,body:chatsBody}},req=>
+  putCanvasChats(db,req.params.id,req.body));
  app.delete("/api/v1/projects/:id",{schema:{params:{type:"object",required:["id"],properties:{id:idSchema}}}},async(req,reply)=>{
   const result=deleteProject(db,req.params.id);
   reply.header("Cache-Control","no-store");return result;

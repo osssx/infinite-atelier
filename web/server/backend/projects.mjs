@@ -1,8 +1,17 @@
 import {randomUUID} from "node:crypto";
 import {stableJson,writeTransaction,assertNoRawCredentials} from "./repository.mjs";
 import {validCanvasNodeId} from "../canvas-node-id.mjs";
+import {initialCanvasState} from "./canvas-state.mjs";
 const problem=(code,statusCode=400,details)=>Object.assign(new Error(code),{code,statusCode,details});
 const validId=id=>typeof id==="string"&&/^[A-Za-z0-9_-]{1,128}$/.test(id);
+/** Separate project graph from P2 state. The old document fields never
+ * become a second writable copy of viewport/chat after schema v7. */
+const graphDocument=doc=>{
+ if(!doc||typeof doc!=="object"||Array.isArray(doc))return doc;
+ const {viewport,chatSessions,activeChatId,...graph}=doc;
+ return graph;
+};
+
 export function validateProjectDocument(document){
  if(!document||typeof document!=="object"||Array.isArray(document)||!Array.isArray(document.nodes)||!Array.isArray(document.connections))throw problem("invalid_project_document",400,{reason:"graph_shape"});
  assertNoRawCredentials(document);
@@ -45,10 +54,11 @@ export function projectEventCursor(db){
 
 export function createProject(db,{id=randomUUID(),document}){
  if(!validId(id))throw problem("invalid_project_id");
- const content=validateProjectDocument(document);
+ const content=validateProjectDocument(graphDocument(document));
  return writeTransaction(db,()=>{
   if(db.prepare("SELECT id FROM projects WHERE id=?").get(id))throw problem("project_id_conflict",409);
   db.prepare("INSERT INTO projects(id,document_json,revision) VALUES(?,?,1)").run(id,content);
+  initialCanvasState(db,id,document);
   emitProjectEvent(db,{id,revision:1,kind:"created"});
   return map(db.prepare("SELECT * FROM projects WHERE id=?").get(id));
  });
@@ -72,7 +82,7 @@ export function deleteProject(db,id){
 }
 export function patchProject(db,{id,expectedRevision,document}){
  if(!Number.isSafeInteger(expectedRevision)||expectedRevision<1)throw problem("expected_revision_required");
- const content=validateProjectDocument(document);
+ const content=validateProjectDocument(graphDocument(document));
  return writeTransaction(db,()=>{
   const changed=db.prepare("UPDATE projects SET document_json=?,revision=revision+1 WHERE id=? AND revision=? AND deleted_at IS NULL").run(content,id,expectedRevision);
   if(!changed.changes){

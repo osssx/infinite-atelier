@@ -4,6 +4,7 @@ import i18n from "@/i18n";
 import type {CanvasBackgroundMode} from "@/lib/canvas-theme";
 import type {CanvasAssistantSession,CanvasConnection,CanvasNodeData,ViewportTransform} from "@/types/canvas";
 import {canvasApi,type CanvasBackendProject,type CanvasBackendSummary} from "@/features/backend-sync/canvas-api";
+import {createCanvasStatePersistence} from "@/features/backend-sync/canvas-state-persistence";
 
 /** Backend is authoritative. No IndexedDB, localStorage, or browser backup
  * participates in loading/saving canvas projects. */
@@ -33,6 +34,10 @@ const revisions=new Map<string,number>(),loaded=new Set<string>(),dirty=new Set<
 const timers=new Map<string,ReturnType<typeof setTimeout>>();
 const activeWrites=new Map<string,Promise<void>>();
 const lastErrors=new Map<string,unknown>();
+const auxiliary=createCanvasStatePersistence(error=>{
+ if(error===null&&lastErrors.size)return;
+ useCanvasStore.setState({error:error instanceof Error?error.message:null});
+});
 export type PersistTiming={sequence:number;stringifyMs:number;bytes:number;writeMs:number;onHide:boolean};
 export const drainPersistTimings=():PersistTiming[]=>[];
 const now=()=>new Date().toISOString();
@@ -54,10 +59,9 @@ function asProject(remote:CanvasBackendProject):CanvasProject{
 }
 const asDocument=(value:CanvasProject)=>({
  title:value.title,createdAt:value.createdAt,updatedAt:value.updatedAt,
- nodes:value.nodes,connections:value.connections,chatSessions:value.chatSessions,
- activeChatId:value.activeChatId,backgroundMode:value.backgroundMode,
- showImageInfo:value.showImageInfo,comfyInstanceId:value.comfyInstanceId,
- viewport:value.viewport
+ nodes:value.nodes,connections:value.connections,
+ backgroundMode:value.backgroundMode,showImageInfo:value.showImageInfo,
+ comfyInstanceId:value.comfyInstanceId
 });
 function schedule(id:string){
  const timer=timers.get(id);if(timer)clearTimeout(timer);
@@ -79,7 +83,7 @@ async function saveProject(id:string):Promise<void>{
      expectedRevision:revision,document:asDocument(project)
     });
     revisions.set(id,response.revision);lastErrors.delete(id);
-    useCanvasStore.setState({error:null});
+    if(!auxiliary.hasPending())useCanvasStore.setState({error:null});
    }catch(error){
     dirty.add(id);lastErrors.set(id,error);
     useCanvasStore.setState({error:error instanceof Error?error.message:"project_save_failed"});
@@ -93,10 +97,12 @@ async function saveProject(id:string):Promise<void>{
 export function flushCanvasStorePersistence():void{
  for(const [id,timer] of timers){clearTimeout(timer);timers.delete(id)}
  for(const id of dirty)void saveProject(id).catch(()=>{});
+ void auxiliary.flush().catch(()=>{});
 }
 export async function awaitCanvasStorePersistence():Promise<void>{
  flushCanvasStorePersistence();
  for(const id of new Set([...activeWrites.keys(),...dirty]))await saveProject(id);
+ await auxiliary.flush();
  if(lastErrors.size)throw lastErrors.values().next().value;
 }
 function updateCached(id:string,update:(project:CanvasProject)=>CanvasProject){
@@ -106,7 +112,7 @@ function updateCached(id:string,update:(project:CanvasProject)=>CanvasProject){
 }
 if(typeof window!=="undefined"){
  window.addEventListener("beforeunload",event=>{
-  if(dirty.size===0&&activeWrites.size===0)return;
+  if(dirty.size===0&&activeWrites.size===0&&!auxiliary.hasPending())return;
   event.preventDefault();
   event.returnValue="";
  });
@@ -128,9 +134,12 @@ export const useCanvasStore=create<CanvasStore>((set,get)=>({
   }catch(error){set({loading:false,error:error instanceof Error?error.message:"backend_unavailable"});throw error}
  },
  loadProject:async id=>{
-  if(dirty.has(id))throw Error("project_unsaved_local_edits");
-  const remote=await canvasApi<CanvasBackendProject>("/api/v1/projects/"+encodeURIComponent(id));
-  const project=asProject(remote);
+  if(dirty.has(id)||activeWrites.has(id)||auxiliary.hasPending(id))throw Error("project_unsaved_local_edits");
+  const [remote,state]=await Promise.all([
+   canvasApi<CanvasBackendProject>("/api/v1/projects/"+encodeURIComponent(id)),
+   auxiliary.load(id)
+  ]);
+  const project={...asProject(remote),viewport:state.viewport,chatSessions:state.sessions,activeChatId:state.activeChatId};
   revisions.set(id,remote.revision);loaded.add(id);lastErrors.delete(id);
   set(state=>({projects:[...state.projects.filter(item=>item.id!==id),project],error:null,hydrated:true}));
   return project;
@@ -142,6 +151,7 @@ export const useCanvasStore=create<CanvasStore>((set,get)=>({
   const response=await canvasApi<CanvasBackendProject>("/api/v1/projects","POST",{id,document});
   revisions.set(id,response.revision);loaded.add(id);
   set(state=>({projects:[asProject(response),...state.projects],error:null,hydrated:true}));
+  auxiliary.initialize(id,{viewport:initialViewport,sessions:[],activeChatId:null});
   return id;
  },
  importProject:async source=>{
@@ -154,6 +164,7 @@ export const useCanvasStore=create<CanvasStore>((set,get)=>({
   const response=await canvasApi<CanvasBackendProject>("/api/v1/projects","POST",{id,document});
   revisions.set(id,response.revision);loaded.add(id);
   set(state=>({projects:[asProject(response),...state.projects]}));
+  auxiliary.initialize(id,{viewport:source.viewport??initialViewport,sessions:source.chatSessions??[],activeChatId:source.activeChatId??null});
   return id;
  },
  adoptBackendProject:()=>false,
@@ -170,9 +181,23 @@ export const useCanvasStore=create<CanvasStore>((set,get)=>({
    // Each committed DELETE is reflected immediately, even if a later item fails.
    set(state=>({projects:state.projects.filter(item=>item.id!==id)}));
    loaded.delete(id);dirty.delete(id);revisions.delete(id);lastErrors.delete(id);
+   auxiliary.discard(id);
    const timer=timers.get(id);if(timer)clearTimeout(timer);timers.delete(id);
   }
  },
  replaceProjects:()=>{throw Error("canvas_legacy_browser_restore_not_supported")},
- updateProject:(id,patch)=>updateCached(id,project=>({...project,...patch,updatedAt:now()}))
+ updateProject:(id,patch)=>{
+  const {viewport,chatSessions,activeChatId,...graphPatch}=patch;
+  const graphChanged=Object.keys(graphPatch).length>0;
+  useCanvasStore.setState(state=>state.projects.some(project=>project.id===id)?
+   {projects:state.projects.map(project=>project.id===id?
+    {...project,...patch,updatedAt:graphChanged?now():project.updatedAt}:project)}:state);
+  if(!loaded.has(id))return;
+  if(graphChanged){dirty.add(id);schedule(id)}
+  if(viewport!==undefined)auxiliary.updateViewport(id,viewport);
+  if(chatSessions!==undefined||activeChatId!==undefined){
+   const project=useCanvasStore.getState().openProject(id);
+   if(project)auxiliary.updateChats(id,project.chatSessions,project.activeChatId);
+  }
+ }
 }));

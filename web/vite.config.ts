@@ -205,10 +205,24 @@ function readRequestBody(req: IncomingMessage, limit: number): Promise<Buffer> {
     });
 }
 
+
+/** The new cookie/CSRF backend is opt-in. Keep the browser origin/Host intact
+ * so Fastify can verify the actual same-origin request (changeOrigin:false).
+ * Never proxy this private API to another machine, even on a LAN dev server.
+ */
+export function validateLocalBackendTarget(raw: string | undefined): string | null {
+    if (!raw) return null;
+    const u = new URL(raw);
+    if (u.protocol !== "http:" || !u.port || !["127.0.0.1","[::1]"].includes(u.hostname) ||
+        u.pathname !== "/" || u.username || u.password || u.search || u.hash)
+        throw new Error("ATELIER_BACKEND_URL must be an exact loopback HTTP origin with an explicit port");
+    return u.origin;
+}
 export default defineConfig(({ mode }) => {
     const env = loadEnv(mode, webDir, "");
     const trustedBases = process.env.ARK_TRUSTED_BASE_URLS || env.ARK_TRUSTED_BASE_URLS;
     const mediaUploadUrl = process.env.MEDIA_UPLOAD_URL || env.MEDIA_UPLOAD_URL;
+    const backendTarget = validateLocalBackendTarget(process.env.ATELIER_BACKEND_URL || env.ATELIER_BACKEND_URL);
     const apiProxyAllowedHosts = process.env.VITE_API_PROXY_ALLOWED_HOSTS || env.VITE_API_PROXY_ALLOWED_HOSTS;
     const localProxyOrigins = (process.env.API_PROXY_TRUSTED_LOCAL_ORIGINS || env.API_PROXY_TRUSTED_LOCAL_ORIGINS || "").split(",").map(value => value.trim()).filter(Boolean);
     localProxyOrigins.push(...parseTrustedBases(trustedBases).map(base => base.origin));
@@ -217,6 +231,29 @@ export default defineConfig(({ mode }) => {
         plugins: [react(), configuredDevGatewayPlugin(trustedBases, mediaUploadUrl), apiProxyPlugin(apiProxyAllowedHosts, localProxyOrigins)],
         server: {
             proxy: {
+                ...(backendTarget ? {"/api/v1": {
+                    target: backendTarget,
+                    changeOrigin: false,
+                    timeout: 0,
+                    proxyTimeout: 0,
+                    configure(proxy) {
+                        proxy.on("proxyReq", (upstreamRequest, req) => {
+                            const origin = req.headers.origin;
+                            const host = req.headers.host;
+                            const site = req.headers["sec-fetch-site"];
+                            let allowedOrigin = !origin;
+                            if (origin && host) {
+                                try { allowedOrigin = new URL(origin).host === host; }
+                                catch { allowedOrigin = false; }
+                            }
+                            if (!isLoopback(req.socket.remoteAddress || "") || !allowedOrigin ||
+                                (site && !["same-origin","none"].includes(String(site)))) {
+                                upstreamRequest.destroy(new Error("Private backend proxy requires same-origin localhost"));
+                            }
+                        });
+                    },
+                }} : {}),
+
                 "/media/ark": { target: process.env.MEDIA_GATEWAY_URL || "http://127.0.0.1:8787", changeOrigin: true, timeout: 90_000 },
                 "/api/media/ark": { target: process.env.MEDIA_GATEWAY_URL || "http://127.0.0.1:8787", changeOrigin: true, timeout: 90_000 },
                 "/api/media/uploads": { target: process.env.MEDIA_GATEWAY_URL || "http://127.0.0.1:8787", changeOrigin: true, timeout: 130_000 },

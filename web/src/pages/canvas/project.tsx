@@ -26,7 +26,7 @@ import { reuseCanvasVisibleList } from "@/lib/canvas/canvas-visible-list";
 import { cropDataUrl, splitDataUrl, upscaleDataUrl } from "@/lib/canvas/canvas-image-data";
 import { fitNodeSize, nodeSizeFromRatio } from "@/lib/canvas/canvas-node-size";
 import { focusSelectionViewport, isFocusSelectionBlocked, isFocusSelectionKey } from "@/lib/canvas/canvas-focus-selection";
-import { App, Button, Modal } from "antd";
+import { App, Button, Input, Modal } from "antd";
 import { NODE_DEFAULT_SIZE, getNodeSpec } from "@/constant/canvas";
 import { ActiveConnectionOverlay, ConnectionLayer } from "@/components/canvas/canvas-connection-layer";
 import { CanvasActionsProvider, type CanvasActions } from "@/components/canvas/canvas-actions";
@@ -94,6 +94,7 @@ import { nextComfyArtifactTileIndex } from "@/features/comfy-workflow/artifact-l
 import { importComfyArtifact } from "@/features/comfy-workflow/artifact-importers";
 import { resolveCanvasComfyInstance } from "@/features/comfy-workflow/canvas-instance";
 import { CanvasRefreshShell } from "@/components/canvas/canvas-refresh-shell";
+import { createCanvasBackendSync, type BackendSyncStatus } from "@/features/backend-sync/canvas-backend-sync";
 import { CanvasTopBar } from "@/components/canvas/canvas-top-bar";
 import { ConnectionCreateMenu, NodeCreateMenu, type PendingConnectionCreate } from "@/components/canvas/canvas-create-menus";
 import {
@@ -322,6 +323,8 @@ function AtelierCanvasPage() {
     const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
     const [assetPickerOpen, setAssetPickerOpen] = useState(false);
     const [projectLoaded, setProjectLoaded] = useState(false);
+    const [backendSyncStatus, setBackendSyncStatus] = useState<BackendSyncStatus>("disabled");
+    const backendSyncRef = useRef<ReturnType<typeof createCanvasBackendSync> | null>(null);
     const [toolbarNodeId, setToolbarNodeId] = useState<string | null>(null);
     const [nodeImageSettingsOpen, setNodeImageSettingsOpen] = useState(false);
     const [dialogNodeId, setDialogNodeId] = useState<string | null>(null);
@@ -480,6 +483,96 @@ function AtelierCanvasPage() {
         [modal, stopGenerationByRunningId, t],
     );
 
+
+    // Manual opt-in. Legacy local project remains authoritative until the
+    // user connects and the backend's saved graph baseline matches.
+    const toggleBackendSync = useCallback(() => {
+        const current = backendSyncRef.current;
+        if (current) {
+            current.disconnect();
+            backendSyncRef.current = null;
+            setBackendSyncStatus("disabled");
+            return;
+        }
+        modal.confirm({
+            title: "连接本地后端项目同步（实验性）",
+            content: "仅连接同源且已登录的本地后端。首次连接会创建对应后端项目；已有远端项目如与本地草稿不一致，将停止同步并保留本地编辑。此操作不改变旧版 ComfyUI 生成入口。",
+            okText: "连接", cancelText: "取消",
+            onOk: async () => {
+                const bridge = createCanvasBackendSync({
+                    projectId,
+                    getLocalGraph: () => ({ nodes: nodesRef.current, connections: connectionsRef.current }),
+                    applyRemoteGraph: (graph) => {
+                        if (!pageMountedRef.current || activeProjectIdRef.current !== projectId) return;
+                        nodesRef.current = graph.nodes;
+                        connectionsRef.current = graph.connections;
+                        setNodes(graph.nodes);
+                        setConnections(graph.connections);
+                        updateProject(projectId, { nodes: graph.nodes, connections: graph.connections });
+                        flushCanvasStorePersistence();
+                    },
+
+                    requestBootstrap: () => new Promise<string | null>((resolve) => {
+                        let oneTimeToken = "";
+                        modal.confirm({
+                            title: "输入本地后端的一次性启动凭据",
+                            content: <Input.Password
+                                autoComplete="off"
+                                placeholder="粘贴 dev:backend 终端中的一次性 Token"
+                                onChange={(event) => { oneTimeToken = event.target.value; }}
+                            />,
+                            okText: "建立会话", cancelText: "取消",
+                            onOk: () => {
+                                const value = oneTimeToken.trim();
+                                oneTimeToken = "";
+                                resolve(value || null);
+                            },
+                            onCancel: () => { oneTimeToken = ""; resolve(null); },
+                        });
+                    }),
+                    onStatus: ({ status, message: details }) => {
+                        if (!pageMountedRef.current || activeProjectIdRef.current !== projectId) return;
+                        setBackendSyncStatus(status);
+                        if (status === "conflict")message.warning("后端项目同步冲突：本地草稿已保留，需先协调项目版本。");
+                        if (status === "error")message.error("本地后端同步不可用：" + (details || "请确认本地后端与会话已启动"));
+                    },
+                });
+                backendSyncRef.current = bridge;
+                await bridge.connect();
+                if (bridge.state.status === "connected") message.success("已连接本地后端项目同步");
+                else if (bridge.state.status !== "conflict"){
+                    bridge.disconnect();backendSyncRef.current = null;
+                }
+            },
+        });
+    }, [message, modal, projectId, updateProject]);
+
+
+    const reconcileBackendSync = useCallback(() => {
+        const bridge=backendSyncRef.current;
+        if(!bridge)return;
+        modal.confirm({
+            title:"安全合并后端生成产物",
+            content:"仅当后端的变化都是新增生成产物，且本地对应工作流源节点未修改时才会合并；保留其他本地编辑并通过 revision 校验保存。无法安全合并时不会覆盖任何草稿。",
+            okText:"尝试合并",cancelText:"取消",
+            onOk:async()=>{
+                const resolved=await bridge.reconcileConflict();
+                if(resolved)message.success("后端生成产物已安全合并");
+                else message.warning("无法自动安全合并，草稿仍完整保留");
+            },
+        });
+    },[message,modal]);
+
+    useEffect(() => () => {
+        backendSyncRef.current?.disconnect();
+        backendSyncRef.current = null;
+        setBackendSyncStatus("disabled");
+    }, [projectId]);
+
+    useEffect(() => {
+        if (!projectLoaded) return;
+        backendSyncRef.current?.scheduleSave();
+    }, [nodes, connections, projectLoaded]);
     useEffect(() => {
         if (!hydrated) return;
         setProjectLoaded(false);
@@ -3711,6 +3804,9 @@ function AtelierCanvasPage() {
                     onImportImage={() => handleUploadRequest()}
                     onUndo={undoCanvas}
                     onRedo={redoCanvas}
+                    backendSyncStatus={backendSyncStatus}
+                    onBackendSyncToggle={toggleBackendSync}
+                    onBackendSyncReconcile={reconcileBackendSync}
                 />
 
                 <AtelierCanvas

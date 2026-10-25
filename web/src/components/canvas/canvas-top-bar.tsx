@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Download, Home, Images, Menu, PanelLeftClose, PanelLeftOpen, Plus, Redo2, Trash2, Undo2, Upload } from "lucide-react";
 import { Dropdown, Modal, Tooltip } from "antd";
 import { useTranslation } from "react-i18next";
+import type {BackendSyncStatus} from "@/features/backend-sync/canvas-backend-sync";
 
 import { UserStatusActions } from "@/components/layout/user-status-actions";
 import { canvasThemes } from "@/lib/canvas-theme";
@@ -26,6 +27,9 @@ export function CanvasTopBar({
     onImportImage,
     onUndo,
     onRedo,
+    backendSyncStatus = "disabled",
+    onBackendSyncToggle,
+    onBackendSyncReconcile,
 }: {
     title: string;
     titleDraft: string;
@@ -44,6 +48,9 @@ export function CanvasTopBar({
     onImportImage: () => void;
     onUndo: () => void;
     onRedo: () => void;
+    backendSyncStatus?: BackendSyncStatus;
+    onBackendSyncToggle?: () => void;
+    onBackendSyncReconcile?: () => void;
 }) {
     const colorTheme = useThemeStore((state) => state.theme);
     const { t } = useTranslation();
@@ -90,6 +97,23 @@ export function CanvasTopBar({
                                 { key: "import", icon: <Upload className="size-4" />, label: t("canvas.importAsset"), onClick: onImportImage },
                                 { key: "export", icon: <Download className="size-4" />, label: t("canvas.exportCurrent"), onClick: onExportProject },
                                 { type: "divider" },
+
+                                ...(onBackendSyncToggle ? [
+                                    { type: "divider" as const },
+                                    { key: "backend-sync", label: backendSyncStatus === "disabled"
+                                        ? "连接本地后端同步（实验性）"
+                                        : backendSyncStatus === "connected"
+                                            ? "本地后端同步：已连接（点击断开）"
+                                            : backendSyncStatus === "conflict"
+                                                ? "后端同步冲突（点击断开）"
+                                                : "后端同步：" + backendSyncStatus + "（点击断开）",
+                                      onClick: onBackendSyncToggle },
+                                ] : []),
+
+                                ...(backendSyncStatus === "conflict" && onBackendSyncReconcile ? [
+                                    { key: "backend-sync-reconcile", label: "尝试安全合并后端生成产物",
+                                      onClick: onBackendSyncReconcile },
+                                ] : []),
                                 { key: "undo", disabled: !canUndo, icon: <Undo2 className="size-4" />, label: <MenuLabel text={t("canvas.undo")} shortcut="⌘ Z" />, onClick: onUndo },
                                 { key: "redo", disabled: !canRedo, icon: <Redo2 className="size-4" />, label: <MenuLabel text={t("canvas.redo")} shortcut="⌘ ⇧ Z / ⌘ Y" />, onClick: onRedo },
                             ],
@@ -101,6 +125,8 @@ export function CanvasTopBar({
                     </Dropdown>
 
                     <div ref={titleRef} className="flex min-w-0 items-center gap-2">
+                        {backendSyncStatus === "connected" ? <span className="rounded-md border px-1.5 py-0.5 text-xs opacity-70" title="已连接本地后端（项目修订同步）">已同步</span> : null}
+                        {backendSyncStatus === "conflict" ? <span className="rounded-md border px-1.5 py-0.5 text-xs" title="本地编辑与远端文档冲突，草稿已保留">同步冲突</span> : null}
                         {isTitleEditing ? (
                             <input
                                 autoFocus

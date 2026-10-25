@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { prepareCapture } from "./capture-adapters.mjs";
+import {validCanvasNodeId} from "../canvas-node-id.mjs";
 
 const has = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
 const fail = (code, status = 422) => { throw Object.assign(new Error(code), { code, status }); };
@@ -186,13 +187,13 @@ export function validateSingleRequest(req) {
         fail("single_workflow_request_required",400);
     if (Buffer.byteLength(canonical(req)) > 1_000_000) fail("run_request_too_large",413);
     const node=req.nodes[0], roots=req.rootOutputs;
-    if (!validId(node.id) || !validId(node.templateId) || !validSha(node.templateRevision) ||
+    if (!validCanvasNodeId(node.id) || !validId(node.templateId) || !validSha(node.templateRevision) ||
         !object(node.inputOverrides) || roots.some(root=>root.nodeId!==node.id || !validId(root.portId)) ||
         new Set(roots.map(root=>root.portId)).size!==roots.length)fail("run_node_invalid");
     if (!object(req.runOptions) || Object.keys(req.runOptions).length) fail("run_options_unsupported");
     const inputs = new Map(), targetEdges = new Map();
     for (const x of req.externalInputs) {
-        if (!object(x) || !validId(x.sourceNodeId) || !validId(x.sourcePortId) ||
+        if (!object(x) || !validCanvasNodeId(x.sourceNodeId) || !validId(x.sourcePortId) ||
             x.sourceNodeId === node.id || !["text","image"].includes(x.sourcePortId) ||
             !["scalar","asset"].includes(x.kind)) fail("external_input_invalid");
         if (x.kind === "scalar" && (x.sourcePortId !== "text" || x.valueKind !== "STRING" || !matchValue("STRING",x.value))) fail("external_scalar_invalid");
@@ -203,7 +204,7 @@ export function validateSingleRequest(req) {
     }
     const used = new Set();
     for (const e of req.edges) {
-        if (!object(e) || !validId(e.fromNodeId) || !validId(e.fromPortId) ||
+        if (!object(e) || !validCanvasNodeId(e.fromNodeId) || !validId(e.fromPortId) ||
             e.toNodeId !== node.id || !validId(e.toPortId) || e.fromNodeId === node.id) fail("only_external_source_edges_allowed");
         const source=e.fromNodeId+"\0"+e.fromPortId;
         if (!inputs.has(source)) fail("missing_external_snapshot");

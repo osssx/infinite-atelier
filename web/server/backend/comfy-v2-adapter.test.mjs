@@ -9,11 +9,14 @@ import {createServer} from "node:http";
 import {randomUUID} from "node:crypto";
 import {initializeSchema} from "./schema.mjs";
 import {submitJob} from "./repository.mjs";
+import {fingerprintSource} from "./repository.mjs";
 import {createJobCoordinator} from "./job-coordinator.mjs";
 import {createBlobStore} from "./blob-store.mjs";
 import {createComfyV2Adapters} from "./comfy-v2-adapter.mjs";
 import {createLocalBackend} from "./runtime.mjs";
-import {canonical,sha256} from "../comfy-workflow/compiler.mjs";
+import {createProject,getProject} from "./projects.mjs";
+import {createCanvasMaterializer} from "./canvas-materializer.mjs";
+import {canonical,sha256,validateSingleRequest,compileSingleWorkflow} from "../comfy-workflow/compiler.mjs";
 
 const png=Buffer.from("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000b49444154789c636000020000050001a5f645400000000049454e44ae426082","hex");
 const mp4=Buffer.from("000000186674797069736f6d0000020069736f6d69736f32","hex");
@@ -91,7 +94,7 @@ function fixture(t,{transport,requestOverride,reference=false}={}){
  const row=id=>db.prepare("SELECT * FROM jobs WHERE id=?").get(id);
  return {db,dir,blobStore,queue,adapters,row,tplt,req};
 }
-function mockTransport({errorAt,failDownloadOnce=false}={}){
+function mockTransport({errorAt,failDownloadOnce=false,workflowNodeId="wf-1"}={}){
  const calls=[],prompts=[];let historyCount=0,downloadFailed=false;
  const mock=async(instance,path,opts={})=>{
   assert.equal(instance.url,"http://127.0.0.1:8188");
@@ -108,12 +111,12 @@ function mockTransport({errorAt,failDownloadOnce=false}={}){
    historyCount++;
    if(errorAt==="pending"&&historyCount===1)return {};
    return {"remote-test":{status:{completed:true,status_str:"success"},outputs:{
-    "w_wf-1__capture_image":{images:[
+    ["w_"+workflowNodeId+"__capture_image"]:{images:[
      {filename:"one.png",subfolder:"",type:"output"},
      {filename:"two.png",subfolder:"",type:"output"}]},
-    "w_wf-1__5":{images:[{filename:"movie.mp4",type:"output"}]},
-    "w_wf-1__6":{audio:[{filename:"sound.wav",type:"output"}]},
-    "w_wf-1__7":{text:["generated text",""]}
+    ["w_"+workflowNodeId+"__5"]:{images:[{filename:"movie.mp4",type:"output"}]},
+    ["w_"+workflowNodeId+"__6"]:{audio:[{filename:"sound.wav",type:"output"}]},
+    ["w_"+workflowNodeId+"__7"]:{text:["generated text",""]}
    }}};
   }
   if(path.startsWith("/view?")){
@@ -131,6 +134,54 @@ function mockTransport({errorAt,failDownloadOnce=false}={}){
  };
  return {mock,calls,prompts};
 }
+
+test("Comfy compiler preserves colon-prefixed Canvas node IDs in capture mapping",()=>{
+ const tplt=template(),req=request(tplt);
+ const nodeId="comfy:workflow-1792758417919-co36n";
+ req.nodes[0].id=nodeId;
+ req.rootOutputs=req.rootOutputs.map(out=>({...out,nodeId}));
+ assert.doesNotThrow(()=>validateSingleRequest(req));
+ const compiled=compileSingleWorkflow(req,tplt,{info,imageFiles:{}});
+ assert.equal(compiled.captureMap.length,4);
+ assert.ok(compiled.captureMap.every(cap=>cap.workflowNodeId===nodeId));
+ assert.ok(Object.keys(compiled.graph).some(id=>id.startsWith("w_"+nodeId+"__capture_")));
+});
+
+test("colon-prefixed workflow project can submit, capture and materialize all six artifacts",async t=>{
+ const workflowNodeId="comfy:workflow-1792758417919-co36n";
+ const transport=mockTransport({workflowNodeId});
+ const f=fixture(t,{transport:transport.mock});
+ const projectId="import-demo";
+ const source={id:workflowNodeId,type:"comfy:workflow",title:"Imported workflow",
+  position:{x:100,y:200},width:450,height:360,
+  metadata:{comfyPorts:f.tplt.ports.map(port=>({id:port.id,label:port.label,
+   direction:port.direction,valueKind:port.valueKind}))}
+ };
+ const document={nodes:[source],connections:[]};
+ const project=createProject(f.db,{id:projectId,document});
+ assert.equal(project.revision,1);
+ const req=structuredClone(f.req);
+ req.projectId=projectId;req.idempotencyKey="colon-import";
+ req.nodes[0].id=workflowNodeId;
+ req.rootOutputs=req.rootOutputs.map(item=>({...item,nodeId:workflowNodeId}));
+ const jobId=submitJob(f.db,{projectId,targetNodeId:workflowNodeId,expectedProjectRevision:1,
+  sourceNodeFingerprint:fingerprintSource(document,workflowNodeId),
+  idempotencyKey:"colon-import",requestFingerprint:"colon-import",executionMode:"poll",
+  snapshot:{adapterKind:"comfy",instanceId:"comfy-local",comfyTemplate:f.tplt,comfyRequest:req}
+ }).jobId;
+ const coordinator=createJobCoordinator({db:f.db,adapters:{comfy:f.adapters}});
+ coordinator.recoverAtStartup();await coordinator.tick();await coordinator.tick();
+ assert.equal(f.row(jobId).status,"succeeded");
+ const materializer=createCanvasMaterializer({db:f.db,blobStore:f.blobStore});
+ const results=await materializer.runOnce();
+ assert.equal(results.filter(item=>item.status==="materialized").length,6,JSON.stringify(results));
+ const updated=getProject(f.db,projectId);
+ assert.equal(updated.document.nodes.length,7);
+ assert.equal(updated.document.connections.length,6);
+ assert.ok(updated.document.connections.every(edge=>edge.fromNodeId===workflowNodeId));
+ assert.equal(updated.document.nodes[0].id,workflowNodeId);
+ assert.equal(transport.prompts.length,1);
+});
 test("adapter factory rejects external and malformed Comfy instance destinations",t=>{
  const f=fixture(t,{transport:async()=>info});
  for(const url of ["http://8.8.8.8:8188","https://127.0.0.1:8188",
@@ -312,4 +363,66 @@ test("native Comfy HTTP transport submits exactly once and streams four outputs"
  assert.equal(posts,1);assert.equal(views,3);
  assert.equal(f.db.prepare("SELECT COUNT(*) AS n FROM artifacts WHERE job_id=?").get(id).n,4);
 });
-
+test("Demo HTTP save barrier -> auto Comfy dispatch -> typed CanvasMaterializer and SSE",async t=>{
+ if(process.platform!=="win32")return;
+ const dir=mkdtempSync(join(tmpdir(),"atelier-comfy-demo-e2e-"));
+ const transport=mockTransport(),tplt=template();
+ let runtime;
+ try{
+  runtime=createLocalBackend({dataDir:dir,autoDispatch:true,dispatchIntervalMs:25,
+   comfyInstances:[{id:"comfy-local",url:"http://127.0.0.1:8188"}],
+   comfyUpstreamCall:transport.mock});
+  const app=runtime.app,token=runtime.sessionAuth.bootstrapToken;
+  const login=await app.inject({method:"POST",url:"/api/v1/session",payload:{},headers:{
+   host:"localhost",origin:"http://localhost",authorization:"Bearer "+token}});
+  assert.equal(login.statusCode,201);
+  const headers={host:"localhost",origin:"http://localhost",
+   cookie:login.headers["set-cookie"].split(";")[0],"x-atelier-csrf":login.json().csrfToken};
+  const capabilities=await app.inject({method:"GET",url:"/api/v1/execution/capabilities",headers});
+  assert.deepEqual(capabilities.json(),{autoDispatch:true,comfyInstanceIds:["comfy-local"]});
+  const node={id:"wf-1",type:"comfy:workflow",title:"Demo",width:410,height:290,
+   position:{x:10,y:20},metadata:{
+    comfyWorkflow:{templateId:tplt.id,templateRevision:tplt.revision,bindingState:"bound",inputOverrides:{}},
+    comfyPorts:tplt.ports.map(port=>({id:port.id,label:port.label,
+     direction:port.direction,valueKind:port.valueKind}))
+   }};
+  const doc={nodes:[node],connections:[]},projectId="demo-project";
+  const created=await app.inject({method:"POST",url:"/api/v1/projects",headers,
+   payload:{id:projectId,document:doc}});
+  assert.equal(created.statusCode,201,created.body);
+  const req=request(tplt);
+  req.projectId=projectId;req.canvasRevision="1";req.idempotencyKey="demo-click";
+  const payload={projectId,targetNodeId:"wf-1",expectedProjectRevision:1,
+   sourceNodeFingerprint:fingerprintSource(doc,"wf-1"),idempotencyKey:"demo-click",
+   requestFingerprint:"demo-click",executionMode:"poll",
+   snapshot:{adapterKind:"comfy",instanceId:"comfy-local",comfyRequest:req,comfyTemplate:tplt}};
+  const stale=await app.inject({method:"POST",url:"/api/v1/jobs",headers,
+   payload:{...payload,idempotencyKey:"stale-click",requestFingerprint:"stale-click",
+    expectedProjectRevision:3,snapshot:{...payload.snapshot,
+     comfyRequest:{...req,idempotencyKey:"stale-click"}}}});
+  assert.equal(stale.statusCode,409);
+  assert.equal(transport.prompts.length,0);
+  const queued=await app.inject({method:"POST",url:"/api/v1/jobs",headers,payload});
+  assert.equal(queued.statusCode,201,queued.body);
+  let project;
+  for(let i=0;i<160;i++){
+   await new Promise(resolve=>setTimeout(resolve,25));
+   const result=await app.inject({method:"GET",url:"/api/v1/projects/"+projectId,headers});
+   project=result.json();
+   if(project.revision===7)break;
+  }
+  assert.equal(project?.revision,7,JSON.stringify(project));
+  assert.deepEqual(project.document.nodes.slice(1).map(n=>n.type).sort(),
+   ["audio","image","image","text","text","video"]);
+  assert.equal(project.document.connections.length,6);
+  assert.ok(project.document.connections.every(edge=>edge.fromNodeId==="wf-1"&&
+   edge.toPortId==="comfy-artifact"));
+  assert.equal(transport.prompts.length,1);
+  const events=await app.inject({method:"GET",url:"/api/v1/events?after=0&once=1",headers});
+  assert.equal(events.statusCode,200);assert.match(events.body,/artifact_materialized/);
+  const replay=await app.inject({method:"POST",url:"/api/v1/jobs",headers,payload});
+  assert.equal(replay.statusCode,200,replay.body);
+  assert.equal(replay.json().id,queued.json().id);
+  assert.equal(transport.prompts.length,1);
+ }finally{if(runtime)await runtime.close();rmSync(dir,{recursive:true,force:true})}
+});

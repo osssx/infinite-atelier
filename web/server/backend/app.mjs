@@ -1,16 +1,18 @@
 import Fastify from "fastify";
 import {randomUUID} from "node:crypto";
-import {createProject,getProject,patchProject} from "./projects.mjs";
+import {createProject,getProject,patchProject,deleteProject,listProjectSummaries,projectEventCursor} from "./projects.mjs";
 import {submitJob,readJobsSnapshot,readEventsAfter} from "./repository.mjs";
 import {EXECUTION_MODES} from "./contracts.mjs";
+import {CANVAS_NODE_ID_PATTERN} from "../canvas-node-id.mjs";
 const nonempty={type:"string",minLength:1,maxLength:256};
 const idSchema={type:"string",pattern:"^[A-Za-z0-9_-]{1,128}$"};
+const canvasNodeIdSchema={type:"string",pattern:CANVAS_NODE_ID_PATTERN};
 const documentSchema={type:"object",required:["nodes","connections"],properties:{nodes:{type:"array"},connections:{type:"array"}},additionalProperties:true};
 const projectBody={type:"object",required:["document"],properties:{id:idSchema,document:documentSchema},additionalProperties:false};
 const editBody={type:"object",required:["expectedRevision","document"],properties:{expectedRevision:{type:"integer",minimum:1},document:documentSchema},additionalProperties:false};
 const jobBody={type:"object",required:["idempotencyKey","requestFingerprint","executionMode","snapshot"],properties:{
  idempotencyKey:nonempty,requestFingerprint:nonempty,executionMode:{type:"string",enum:[...EXECUTION_MODES]},
- snapshot:{type:"object"},projectId:idSchema,targetNodeId:idSchema,expectedProjectRevision:{type:"integer",minimum:1},
+ snapshot:{type:"object"},projectId:idSchema,targetNodeId:canvasNodeIdSchema,expectedProjectRevision:{type:"integer",minimum:1},
  sourceNodeFingerprint:nonempty
 },additionalProperties:false};
 
@@ -47,14 +49,15 @@ function cursorOf(value){
  if(!/^(0|[1-9][0-9]*)$/.test(v)||!Number.isSafeInteger(Number(v)))throw Object.assign(Error("invalid_event_cursor"),{statusCode:400,code:"invalid_event_cursor"});
  return Number(v);
 }
-export function buildApp({db,authorize,sessionAuth,blobStore,vault,coordinator,materializer,worker,logger=false,streamPollMs=200}={}){
+export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobStore,vault,coordinator,materializer,worker,comfyInstanceIds=[],logger=false,streamPollMs=200}={}){
  if(!db||(!sessionAuth&&typeof authorize!=="function"))throw Error("backend_authorizer_required");
  const app=Fastify({logger,bodyLimit:5*1024*1024,trustProxy:false,genReqId:()=>randomUUID()});
  if(blobStore)app.addContentTypeParser("application/octet-stream",(req,stream,done)=>done(null,stream));
  app.addHook("onRequest",async(req,reply)=>{
   const violation=localRequestError(req);
   if(violation){reply.code(403).send({code:violation,message:violation,requestId:req.id});return}
-  if(req.url==="/health" || (sessionAuth&&req.url==="/api/v1/session"&&req.method==="POST"))return;
+  if(req.url==="/health" || (sessionAuth&&req.url==="/api/v1/session"&&
+    (req.method==="POST"||(autoLocalSession&&req.method==="GET"))))return;
   if(!(sessionAuth?sessionAuth.authorize(req):await authorize(req)))
    reply.code(401).send({code:"unauthorized",message:"unauthorized",requestId:req.id});
  });
@@ -73,7 +76,7 @@ export function buildApp({db,authorize,sessionAuth,blobStore,vault,coordinator,m
    "credential_protection_unavailable","credential_decryption_failed"]);
   const code=error.validation?"invalid_request":(publicCodes.has(error.code)?error.code:
     (status===400?"invalid_request":"internal_error"));
-  reply.code(status).send({code,message:code,requestId:req.id,...(code==="project_revision_conflict"&&error.details?{details:error.details}:{})});
+  reply.code(status).send({code,message:code,requestId:req.id,...(["project_revision_conflict","invalid_project_document"].includes(code)&&error.details?{details:error.details}:{})});
  });
  app.get("/health",()=>({ok:true}));
  if(sessionAuth){
@@ -86,7 +89,16 @@ export function buildApp({db,authorize,sessionAuth,blobStore,vault,coordinator,m
    return {csrfToken:result.csrf,expiresAt:result.expiresAt};
   });
   app.get("/api/v1/session",(req,reply)=>{
-   const result=sessionAuth.current(req);
+   let result=sessionAuth.current(req);
+   if(!result&&autoLocalSession){
+    const site=req.headers["sec-fetch-site"];
+    if(site&&site!=="same-origin"&&site!=="none")
+     throw Object.assign(Error("cross_site_request"),{statusCode:403});
+    const issued=sessionAuth.issueLocalSession();
+    reply.header("Set-Cookie",sessionAuth.cookie(issued.id,{secure:req.protocol==="https"}));
+    result=issued;
+   }
+   if(!result)throw Object.assign(Error("unauthorized"),{code:"unauthorized",statusCode:401});
    reply.header("Cache-Control","no-store");
    return {csrfToken:result.csrf,expiresAt:result.expiresAt};
   });
@@ -148,6 +160,43 @@ export function buildApp({db,authorize,sessionAuth,blobStore,vault,coordinator,m
    reply.header("Cache-Control","no-store");return record;
   });
  }
+
+ // Project library and its own transactional change cursor (job SSE is separate).
+ app.get("/api/v1/projects",()=>({projects:listProjectSummaries(db),eventCursor:projectEventCursor(db)}));
+ app.get("/api/v1/projects/events",{schema:{querystring:{type:"object",properties:{
+  after:{type:"string",pattern:"^(0|[1-9][0-9]*)$"},once:{type:"string",enum:["1"]}
+ },additionalProperties:false}}},async(req,reply)=>{
+  const after=cursorOf(req.headers["last-event-id"]??req.query.after??0);
+  const latest=projectEventCursor(db);
+  const first=db.prepare("SELECT MIN(seq) AS first FROM project_events").get().first;
+  if(after>latest)throw Object.assign(Error("invalid_event_cursor"),{code:"invalid_event_cursor",statusCode:400});
+  if(first!==null&&after<first-1)throw Object.assign(Error("event_cursor_expired"),{code:"event_cursor_expired",statusCode:409});
+  const raw=reply.raw;reply.hijack();
+  raw.writeHead(200,{"Content-Type":"text/event-stream; charset=utf-8","Cache-Control":"no-cache, no-transform",
+   "Connection":"keep-alive","X-Accel-Buffering":"no"});
+  let cursor=after,closed=false;
+  const push=()=>{
+   if(closed)return;
+   let rows;
+   do{
+    rows=db.prepare("SELECT seq,project_id,revision,kind,created_at FROM project_events WHERE seq>? ORDER BY seq LIMIT 200").all(cursor);
+    for(const item of rows){
+     const data={eventId:item.seq,projectId:item.project_id,revision:item.revision,
+      kind:item.kind,timestamp:item.created_at};
+     raw.write("id: "+item.seq+"\nevent: project\ndata: "+JSON.stringify(data)+"\n\n");
+     cursor=item.seq;
+    }
+   }while(rows.length===200&&!closed);
+  };
+  raw.write(": connected\n\n");push();
+  if(req.query.once==="1"){closed=true;raw.end();return}
+  const timer=setInterval(()=>{
+   if(closed)return;
+   if(sessionAuth&&!sessionAuth.authorize(req)){closed=true;raw.end();return}
+   try{push();if(!closed)raw.write(": heartbeat\n\n")}catch{closed=true;raw.destroy()}
+  },streamPollMs);
+  timer.unref?.();raw.on("close",()=>{closed=true;clearInterval(timer)});
+ });
  app.post("/api/v1/projects",{schema:{body:projectBody}},async(req,reply)=>{
   const created=createProject(db,req.body);reply.header("ETag",'"'+created.revision+'"').code(201);return created;
  });
@@ -159,6 +208,10 @@ export function buildApp({db,authorize,sessionAuth,blobStore,vault,coordinator,m
    reply.code(400);return {code:"revision_header_mismatch",message:"revision_header_mismatch",requestId:req.id};
   }
   const project=patchProject(db,{id:req.params.id,...req.body});reply.header("ETag",'"'+project.revision+'"');return project;
+ });
+ app.delete("/api/v1/projects/:id",{schema:{params:{type:"object",required:["id"],properties:{id:idSchema}}}},async(req,reply)=>{
+  const result=deleteProject(db,req.params.id);
+  reply.header("Cache-Control","no-store");return result;
  });
  app.post("/api/v1/jobs",{schema:{body:jobBody}},async(req,reply)=>{
   // Validation of secretVersionRef occurs inside repository's write transaction,
@@ -177,6 +230,7 @@ export function buildApp({db,authorize,sessionAuth,blobStore,vault,coordinator,m
  });
  if(coordinator)app.get("/api/v1/coordinator/status",()=>coordinator.status());
  if(worker)app.get("/api/v1/worker/status",()=>worker.status());
+ app.get("/api/v1/execution/capabilities",()=>({autoDispatch:Boolean(worker),comfyInstanceIds:[...comfyInstanceIds]}));
  if(materializer){
   app.get("/api/v1/jobs/:id/materializations",{schema:{params:{type:"object",required:["id"],
    properties:{id:idSchema},additionalProperties:false}}},async(req,reply)=>{

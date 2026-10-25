@@ -30,6 +30,8 @@ export function CanvasTopBar({
     backendSyncStatus = "disabled",
     onBackendSyncToggle,
     onBackendSyncReconcile,
+    backendComfyEnabled = false,
+    onBackendComfyToggle,
 }: {
     title: string;
     titleDraft: string;
@@ -51,6 +53,8 @@ export function CanvasTopBar({
     backendSyncStatus?: BackendSyncStatus;
     onBackendSyncToggle?: () => void;
     onBackendSyncReconcile?: () => void;
+    backendComfyEnabled?: boolean;
+    onBackendComfyToggle?: () => void;
 }) {
     const colorTheme = useThemeStore((state) => state.theme);
     const { t } = useTranslation();
@@ -114,6 +118,13 @@ export function CanvasTopBar({
                                     { key: "backend-sync-reconcile", label: "尝试安全合并后端生成产物",
                                       onClick: onBackendSyncReconcile },
                                 ] : []),
+
+                                ...(backendSyncStatus === "connected" && onBackendComfyToggle ? [
+                                    { key: "backend-comfy", label: backendComfyEnabled
+                                        ? "ComfyUI 执行：新 JobCoordinator（点击切回 V2）"
+                                        : "ComfyUI 执行：原 V2（点击试用新后端）",
+                                      onClick: onBackendComfyToggle },
+                                ] : []),
                                 { key: "undo", disabled: !canUndo, icon: <Undo2 className="size-4" />, label: <MenuLabel text={t("canvas.undo")} shortcut="⌘ Z" />, onClick: onUndo },
                                 { key: "redo", disabled: !canRedo, icon: <Redo2 className="size-4" />, label: <MenuLabel text={t("canvas.redo")} shortcut="⌘ ⇧ Z / ⌘ Y" />, onClick: onRedo },
                             ],
@@ -126,6 +137,7 @@ export function CanvasTopBar({
 
                     <div ref={titleRef} className="flex min-w-0 items-center gap-2">
                         {backendSyncStatus === "connected" ? <span className="rounded-md border px-1.5 py-0.5 text-xs opacity-70" title="已连接本地后端（项目修订同步）">已同步</span> : null}
+                        {backendSyncStatus === "connected" && backendComfyEnabled ? <span className="rounded-md border px-1.5 py-0.5 text-xs opacity-70" title="此页面 ComfyUI 生成使用 JobCoordinator；重载后重置为 V2">新后端执行</span> : null}
                         {backendSyncStatus === "conflict" ? <span className="rounded-md border px-1.5 py-0.5 text-xs" title="本地编辑与远端文档冲突，草稿已保留">同步冲突</span> : null}
                         {isTitleEditing ? (
                             <input

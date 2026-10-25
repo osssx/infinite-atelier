@@ -3,6 +3,7 @@ import {readFile} from "node:fs/promises";
 import {fingerprintSource,stableJson,writeTransaction} from "./repository.mjs";
 import {validateProjectDocument} from "./projects.mjs";
 import {makeComfyArtifactProvenance} from "./comfy-provenance.mjs";
+import {emitProjectEvent} from "./projects.mjs";
 
 const requiredKind={image:"IMAGE",video:"VIDEO",audio:"AUDIO",text:"STRING"};
 const dims={image:[420,420],video:[420,236],audio:[520,220],text:[420,320]};
@@ -107,6 +108,7 @@ export function createCanvasMaterializer({db,blobStore}={}){
     const content=validateProjectDocument(doc);
     db.prepare("UPDATE projects SET document_json=?,revision=revision+1 WHERE id=? AND revision=?")
       .run(content,artifact.project_id,project.revision);
+    emitProjectEvent(db,{id:artifact.project_id,revision:project.revision+1,kind:"materialized"});
     if(prior)db.prepare("UPDATE materializations SET status='materialized',node_id=?,reason=NULL,fail_count=0,next_due_at=NULL WHERE id=?")
       .run(nodeId,prior.id);
     else db.prepare("INSERT INTO materializations(id,job_id,artifact_id,project_id,status,node_id) VALUES(?,?,?,?,?,?)")

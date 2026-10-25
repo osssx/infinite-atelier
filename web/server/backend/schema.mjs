@@ -1,5 +1,5 @@
 import{JOB_STATUSES,EXECUTION_MODES,ARTIFACT_KINDS}from"./contracts.mjs";
-export const SCHEMA_VERSION=5;
+export const SCHEMA_VERSION=6;
 const quoted=x=>x.map(s=>"'"+s+"'").join(",");
 export const INITIAL_SCHEMA_SQL=`
 CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY,applied_at INTEGER NOT NULL);
@@ -108,6 +108,16 @@ CREATE TABLE IF NOT EXISTS job_schedules(
 );
 CREATE INDEX IF NOT EXISTS ix_job_schedules_due ON job_schedules(due_at);
 `;
+export const PROJECT_EVENTS_SCHEMA_SQL=`
+CREATE TABLE IF NOT EXISTS project_events(
+ seq INTEGER PRIMARY KEY AUTOINCREMENT,
+ project_id TEXT NOT NULL REFERENCES projects(id),
+ revision INTEGER NOT NULL CHECK(revision>0),
+ kind TEXT NOT NULL CHECK(kind IN ('created','updated','materialized')),
+ created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_project_events_project ON project_events(project_id,seq);
+`;
 export function initializeSchema(db){
  db.exec("PRAGMA foreign_keys=ON;PRAGMA busy_timeout=5000;BEGIN IMMEDIATE");
  try{
@@ -118,6 +128,7 @@ export function initializeSchema(db){
   if(version<3)db.exec(COORDINATOR_SCHEMA_SQL);
   if(version<4)db.exec(COMFY_PREPARATIONS_SCHEMA_SQL);
   if(version<5)db.exec(JOB_SCHEDULE_SCHEMA_SQL);
+  if(version<6)db.exec(PROJECT_EVENTS_SCHEMA_SQL);
   if(version<SCHEMA_VERSION)db.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)").run(SCHEMA_VERSION,Date.now());
   db.exec("COMMIT");
  }catch(e){db.exec("ROLLBACK");throw e}

@@ -55,7 +55,7 @@ import { AssetPickerModal, type InsertAssetPayload } from "@/components/canvas/a
 import { CanvasSidePanel } from "@/components/canvas/canvas-side-panel";
 import { CanvasZoomControls } from "@/components/canvas/canvas-zoom-controls";
 import { DirectorPanel } from "@/components/canvas/director-panel";
-import { flushCanvasStorePersistence, useCanvasStore } from "@/stores/canvas/use-canvas-store";
+import { flushCanvasStorePersistence,awaitCanvasStorePersistence,useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { registerCanvasBackupFlush } from "@/services/canvas-backup-sync";
 import { useGenerationHistoryStore, type GenerationHistoryImage } from "@/stores/canvas/use-generation-history-store";
 import { buildCanvasGraphIndex } from "@/lib/canvas/canvas-graph-index";
@@ -94,7 +94,9 @@ import { nextComfyArtifactTileIndex } from "@/features/comfy-workflow/artifact-l
 import { importComfyArtifact } from "@/features/comfy-workflow/artifact-importers";
 import { resolveCanvasComfyInstance } from "@/features/comfy-workflow/canvas-instance";
 import { CanvasRefreshShell } from "@/components/canvas/canvas-refresh-shell";
-import { createCanvasBackendSync, type BackendSyncStatus } from "@/features/backend-sync/canvas-backend-sync";
+import { createCanvasBackendSync, explainBackendSyncError, type BackendSyncStatus } from "@/features/backend-sync/canvas-backend-sync";
+import {prefersBackendProject,setBackendProjectPreference} from "@/features/backend-sync/backend-preferences";
+import { startBackendComfyWorkflowRun, assertNoActiveBackendComfyJob } from "@/features/backend-sync/backend-comfy-run";
 import { CanvasTopBar } from "@/components/canvas/canvas-top-bar";
 import { ConnectionCreateMenu, NodeCreateMenu, type PendingConnectionCreate } from "@/components/canvas/canvas-create-menus";
 import {
@@ -286,6 +288,9 @@ function AtelierCanvasPage() {
     const addAsset = useAssetStore((state) => state.addAsset);
     const cleanupAssetImages = useAssetStore((state) => state.cleanupImages);
     const hydrated = useCanvasStore((state) => state.hydrated);
+    const loadProjects = useCanvasStore((state) => state.loadProjects);
+    const loadProject = useCanvasStore((state) => state.loadProject);
+    const backendSaveError=useCanvasStore((state)=>state.error);
     const createProject = useCanvasStore((state) => state.createProject);
     const openProject = useCanvasStore((state) => state.openProject);
     const updateProject = useCanvasStore((state) => state.updateProject);
@@ -323,8 +328,12 @@ function AtelierCanvasPage() {
     const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
     const [assetPickerOpen, setAssetPickerOpen] = useState(false);
     const [projectLoaded, setProjectLoaded] = useState(false);
+    const [projectLoadError,setProjectLoadError]=useState<string|null>(null);
+    const [projectLoadAttempt,setProjectLoadAttempt]=useState(0);
     const [backendSyncStatus, setBackendSyncStatus] = useState<BackendSyncStatus>("disabled");
+    const [backendComfyEnabled,setBackendComfyEnabled] = useState(false);
     const backendSyncRef = useRef<ReturnType<typeof createCanvasBackendSync> | null>(null);
+    const sharedOpenPromptRef=useRef<string|null>(null);
     const [toolbarNodeId, setToolbarNodeId] = useState<string | null>(null);
     const [nodeImageSettingsOpen, setNodeImageSettingsOpen] = useState(false);
     const [dialogNodeId, setDialogNodeId] = useState<string | null>(null);
@@ -484,12 +493,16 @@ function AtelierCanvasPage() {
     );
 
 
+    // SQLite-only: connect in the background, never ask the user to sync.
+    useEffect(()=>{if(!hydrated)void loadProjects().catch(()=>{});},[hydrated,loadProjects]);
+
     // Manual opt-in. Legacy local project remains authoritative until the
     // user connects and the backend's saved graph baseline matches.
     const toggleBackendSync = useCallback(() => {
         const current = backendSyncRef.current;
         if (current) {
             current.disconnect();
+            setBackendProjectPreference(projectId,false);
             backendSyncRef.current = null;
             setBackendSyncStatus("disabled");
             return;
@@ -502,6 +515,15 @@ function AtelierCanvasPage() {
                 const bridge = createCanvasBackendSync({
                     projectId,
                     getLocalGraph: () => ({ nodes: nodesRef.current, connections: connectionsRef.current }),
+                    applyRemoteTitle: (title)=>{
+                        if (!pageMountedRef.current || activeProjectIdRef.current !== projectId) return;
+                        const local=useCanvasStore.getState().openProject(projectId);
+                        if(local&&local.title!==title)renameProject(projectId,title);
+                    },
+                    getLocalMetadata:()=>{
+                        const local=useCanvasStore.getState().openProject(projectId);
+                        return {title:local?.title};
+                    },
                     applyRemoteGraph: (graph) => {
                         if (!pageMountedRef.current || activeProjectIdRef.current !== projectId) return;
                         nodesRef.current = graph.nodes;
@@ -515,10 +537,10 @@ function AtelierCanvasPage() {
                     requestBootstrap: () => new Promise<string | null>((resolve) => {
                         let oneTimeToken = "";
                         modal.confirm({
-                            title: "输入本地后端的一次性启动凭据",
+                            title: "输入本地后端的一次性 Token（有效期 5 分钟）",
                             content: <Input.Password
                                 autoComplete="off"
-                                placeholder="粘贴 dev:backend 终端中的一次性 Token"
+                                placeholder="后端终端中输入 r 回车获取新 Token"
                                 onChange={(event) => { oneTimeToken = event.target.value; }}
                             />,
                             okText: "建立会话", cancelText: "取消",
@@ -534,19 +556,34 @@ function AtelierCanvasPage() {
                         if (!pageMountedRef.current || activeProjectIdRef.current !== projectId) return;
                         setBackendSyncStatus(status);
                         if (status === "conflict")message.warning("后端项目同步冲突：本地草稿已保留，需先协调项目版本。");
-                        if (status === "error")message.error("本地后端同步不可用：" + (details || "请确认本地后端与会话已启动"));
+                        if (status === "error")message.error({ content: "本地后端同步不可用：" + explainBackendSyncError(details || "backend_unreachable"), duration: 12 });
                     },
                 });
                 backendSyncRef.current = bridge;
                 await bridge.connect();
-                if (bridge.state.status === "connected") message.success("已连接本地后端项目同步");
+                if (bridge.state.status === "connected"){
+                    setBackendProjectPreference(projectId,true);
+                    message.success("已连接本地后端项目同步");
+                }
                 else if (bridge.state.status !== "conflict"){
                     bridge.disconnect();backendSyncRef.current = null;
                 }
             },
         });
-    }, [message, modal, projectId, updateProject]);
+    }, [message, modal, projectId, renameProject, updateProject]);
 
+
+
+    const toggleBackendComfy = useCallback(() => {
+        if (backendSyncRef.current?.state.status !== "connected") {
+            message.warning("请先连接本地后端项目同步");
+            return;
+        }
+        setBackendComfyEnabled(value=>!value);
+    },[message]);
+    useEffect(() => {
+        if(backendSyncStatus!=="connected")setBackendComfyEnabled(false);
+    },[backendSyncStatus]);
 
     const reconcileBackendSync = useCallback(() => {
         const bridge=backendSyncRef.current;
@@ -563,6 +600,11 @@ function AtelierCanvasPage() {
         });
     },[message,modal]);
 
+
+    // Opening a project through the shared library opts in only after the
+    // local IndexedDB cache is hydrated. Confirmation is still required.
+    // Obsolete manual backend bridge must not run alongside SQLite autosave.
+
     useEffect(() => () => {
         backendSyncRef.current?.disconnect();
         backendSyncRef.current = null;
@@ -572,19 +614,21 @@ function AtelierCanvasPage() {
     useEffect(() => {
         if (!projectLoaded) return;
         backendSyncRef.current?.scheduleSave();
-    }, [nodes, connections, projectLoaded]);
+    }, [nodes, connections, projectLoaded, currentProjectTitle]);
     useEffect(() => {
         if (!hydrated) return;
         setProjectLoaded(false);
         nodesRef.current = [];
+        setProjectLoadError(null);
         connectionsRef.current = [];
-        const project = openProject(projectId);
-        if (!project) {
-            navigate("/canvas", { replace: true });
-            return;
-        }
-
         const restore = async () => {
+            let project;
+            try{project=await loadProject(projectId)}
+            catch(error){
+                if(!cancelled)setProjectLoadError(String(error));
+                return; // Backend is mandatory; never load origin-local projects.
+            }
+            if(cancelled)return;
             const restoredNodes = await hydrateCanvasImages(resetInterruptedGeneration(project.nodes));
             const restoredSessions = await hydrateAssistantImages(project.chatSessions || []);
             if (cancelled) return;
@@ -619,7 +663,7 @@ function AtelierCanvasPage() {
         void restore();
         let cancelled = false;
         return () => { cancelled = true; };
-    }, [hydrated, navigate, openProject, projectId]);
+    }, [hydrated, loadProject, projectId,projectLoadAttempt]);
 
     useEffect(() => {
         if (!projectLoaded) return;
@@ -1367,16 +1411,18 @@ function AtelierCanvasPage() {
         applyHistory(next);
     }, [applyHistory]);
 
-    const createAndOpenProject = useCallback(() => {
-        const id = createProject(t("canvas.defaultTitle", { count: useCanvasStore.getState().projects.length + 1 }));
-        navigate(`/canvas/${id}`);
-    }, [createProject, navigate, t]);
+    const createAndOpenProject = useCallback(async () => {
+        try{
+            await awaitCanvasStorePersistence();
+            const id=await createProject(t("canvas.defaultTitle",{count:useCanvasStore.getState().projects.length+1}));
+            navigate("/canvas/"+id);
+        }catch(error){message.error("SQLite 项目创建失败："+String(error))}
+    },[createProject,message,navigate,t]);
 
-    const deleteCurrentProject = useCallback(() => {
-        deleteProjects([projectId]);
-        cleanupAssetImages();
-        navigate("/canvas");
-    }, [cleanupAssetImages, deleteProjects, navigate, projectId]);
+    const deleteCurrentProject = useCallback(async () => {
+        try{await deleteProjects([projectId]);navigate("/canvas")}
+        catch(error){message.error("SQLite 项目删除失败："+String(error))}
+    },[deleteProjects,message,navigate,projectId]);
 
     const exportCurrentProject = useCallback(async () => {
         const project = useCanvasStore.getState().projects.find((item) => item.id === projectId);
@@ -3536,6 +3582,25 @@ function AtelierCanvasPage() {
             if(!globalComfyInstanceId)throw new Error("请先在全局 ComfyUI 设置中选择默认实例");
             if(isComfyRunActive(workflowNode.metadata?.comfyExecution?.status))
                 throw new Error("该工作流正在执行或导入产物，当前不可重复提交");
+            if(backendComfyEnabled) {
+                const bridge=backendSyncRef.current;
+                if(!bridge||bridge.state.status!=="connected")
+                    throw new Error("请先连接本地后端同步再执行");
+                const template=await getComfyTemplate(binding.templateId,binding.templateRevision);
+                if(!template)throw new Error("绑定的工作流模板版本不存在");
+                const outputs=template.ports.filter(port=>port.direction==="source"&&
+                    !!port.capture?.adapterId&&port.capture.kind!=="none");
+                if(!outputs.length)throw new Error("工作流没有可捕获的输出端口");
+                const job=await startBackendComfyWorkflowRun({
+                    bridge,projectId,workflowNode,...snapshot,template,
+                    instanceId:globalComfyInstanceId,outputPortIds:outputs.map(port=>port.id)
+                });
+                message.info("新后端任务已排队："+job.id+"。完成后将通过画布同步自动接线。");
+                return {runId:job.id,status:job.status,workflowNodeId:nodeId,artifacts:[]};
+            }
+            // Cross-executor lock: never issue a legacy GPU request while a
+            // new-backend submission is pending/unknown/running.
+            await assertNoActiveBackendComfyJob(projectId,nodeId);
             const pending=hasPendingComfyRun(projectId,nodeId);
             if(!pending && binding.lastRunId) {
                 // Metadata can be stale after reload: never duplicate a running GPU job.
@@ -3571,7 +3636,7 @@ function AtelierCanvasPage() {
                 patchExecution(hasPendingComfyRun(projectId,nodeId)?"submission_unknown":"failed",String(cause));
             throw cause;
         }finally{comfyExecuteLocksRef.current.delete(key);}
-    },[globalComfyInstanceId,projectId,projectLoaded]);
+    },[backendComfyEnabled,globalComfyInstanceId,message,projectId,projectLoaded]);
 
     const handleComfyArtifacts = useCallback(async (artifacts: ComfyRunArtifact[]) => {
         const indexByWorkflow = new Map<string, number>();
@@ -3660,6 +3725,7 @@ function AtelierCanvasPage() {
                         node={panelNode}
                         connections={connections}
                         onExecute={() => executeComfyWorkflow(panelNode.id)}
+                        backendExecution={backendComfyEnabled}
                         projectId={projectId}
                         onExecutionChange={(execution)=>handleConfigNodeChange(panelNode.id,{comfyExecution:execution})}
                         comfyInstanceId={globalComfyInstanceId}
@@ -3707,7 +3773,7 @@ function AtelierCanvasPage() {
                     }}
                 />
             ),
-        [confirmStopGeneration, connections, executeComfyWorkflow, globalComfyInstanceId, handleConfigNodeChange, handleGenerateNode, handleNodePromptChange, message, projectId, runningNodeId],
+        [backendComfyEnabled,confirmStopGeneration, connections, executeComfyWorkflow, globalComfyInstanceId, handleConfigNodeChange, handleGenerateNode, handleNodePromptChange, message, projectId, runningNodeId],
     );
 
     const handleDirectorExport = useCallback(
@@ -3779,13 +3845,17 @@ function AtelierCanvasPage() {
         onViewImage: handleNodeViewImage,
     };
 
-    if (!projectLoaded) return <CanvasRefreshShell />;
+    if (!projectLoaded) return projectLoadError||backendSaveError ? <div className="flex h-full items-center justify-center gap-3 p-8">SQLite 后端不可用：{projectLoadError||backendSaveError}<Button onClick={()=>{void loadProjects().then(()=>setProjectLoadAttempt(n=>n+1)).catch(error=>setProjectLoadError(String(error)))}}>重试</Button></div> : <CanvasRefreshShell />;
 
     return (
         <main className="flex h-full min-h-0 overflow-hidden" style={{ background: theme.canvas.background, color: theme.node.text }}>
             <CanvasPerfBridge containerRef={containerRef} viewport={viewport} setViewport={setViewport} selectedNodeIds={selectedNodeIds} nodes={nodes} connections={connections} />
             <CanvasSidePanel nodes={nodes} selectedNodeIds={selectedNodeIds} onFocusNode={focusNode} onPreviewNode={setPreviewNodeId} onInsertAsset={handleAssetInsert} />
             <section className="relative min-w-0 flex-1 overflow-hidden">
+                {backendSaveError?<div role="alert" className="absolute right-4 top-16 z-[100] rounded-lg border border-red-500 bg-background p-3 text-sm shadow-lg">
+                    SQLite 自动保存失败：{backendSaveError}
+                    <Button size="small" className="ml-2" onClick={()=>{void awaitCanvasStorePersistence().catch(error=>message.error(String(error)))}}>重试保存</Button>
+                </div>:null}
                 <CanvasTopBar
                     title={currentProjectTitle || t("canvas.projectPage.untitledCanvas")}
                     titleDraft={titleDraft}
@@ -3796,17 +3866,19 @@ function AtelierCanvasPage() {
                     onCancelTitleEditing={() => setTitleEditing(false)}
                     canUndo={historyState.canUndo}
                     canRedo={historyState.canRedo}
-                    onHome={() => navigate("/")}
-                    onProjects={() => navigate("/canvas")}
+                    onHome={()=>{void awaitCanvasStorePersistence().then(()=>navigate("/")).catch(error=>message.error("未保存，无法离开："+String(error)))}}
+                    onProjects={()=>{void awaitCanvasStorePersistence().then(()=>navigate("/canvas")).catch(error=>message.error("未保存，无法离开："+String(error)))}}
                     onCreateProject={createAndOpenProject}
                     onDeleteProject={deleteCurrentProject}
-                    onExportProject={exportCurrentProject}
+                    onExportProject={()=>message.warning("完整 SQLite + BlobStore 项目导出将在媒体后端化阶段开放")}
                     onImportImage={() => handleUploadRequest()}
                     onUndo={undoCanvas}
                     onRedo={redoCanvas}
                     backendSyncStatus={backendSyncStatus}
-                    onBackendSyncToggle={toggleBackendSync}
-                    onBackendSyncReconcile={reconcileBackendSync}
+                    onBackendSyncToggle={undefined}
+                    onBackendSyncReconcile={undefined}
+                    backendComfyEnabled={backendComfyEnabled}
+                    onBackendComfyToggle={undefined}
                 />
 
                 <AtelierCanvas

@@ -7,6 +7,7 @@ import {join} from "node:path";
 import {initializeSchema} from "./schema.mjs";
 import {openMainDatabase} from "./database.mjs";
 import {buildApp,startServer} from "./app.mjs";
+import {createLocalSessionAuth} from "./session.mjs";
 import {fingerprintSource,transitionJob} from "./repository.mjs";
 const doc=(prompt="hello")=>({nodes:[{id:"text",type:"text",metadata:{prompt}}],connections:[]});
 async function fixture(t){
@@ -23,6 +24,36 @@ test("application fail-closed auth and localhost origin rules",async t=>{
  assert.equal((await call("GET","/health")).statusCode,200);
  assert.equal((await call("GET","/api/v1/jobs/snapshot",undefined,{"host":"attacker.example"})).statusCode,403);
  assert.equal((await call("POST","/api/v1/projects",{document:doc()},{"origin":"https://evil.example"})).statusCode,403);
+});
+
+test("SQLite-only local sessions auto-issue on same-origin GET and protect CRUD",async t=>{
+ const db=new DatabaseSync(":memory:");initializeSchema(db);
+ const sessionAuth=createLocalSessionAuth();
+ const app=buildApp({db,sessionAuth,autoLocalSession:true});
+ t.after(async()=>{await app.close();db.close()});
+ const unauth=await app.inject({method:"GET",url:"/api/v1/projects"});
+ assert.equal(unauth.statusCode,401);
+ const cross=await app.inject({method:"GET",url:"/api/v1/session",headers:{"sec-fetch-site":"cross-site"}});
+ assert.equal(cross.statusCode,403);
+ const initial=await app.inject({method:"GET",url:"/api/v1/session",headers:{host:"localhost:3000","sec-fetch-site":"same-origin"}});
+ assert.equal(initial.statusCode,200,initial.body);
+ const first=initial.json();
+ assert.equal(typeof first.csrfToken,"string");
+ const cookie=initial.headers["set-cookie"].split(";")[0];
+ const owner={host:"localhost:3000",cookie,origin:"http://localhost:3000","x-atelier-csrf":first.csrfToken};
+ const same=await app.inject({method:"GET",url:"/api/v1/session",headers:owner});
+ assert.equal(same.statusCode,200);
+ assert.equal(same.json().csrfToken,first.csrfToken);
+ const noCsrf=await app.inject({method:"POST",url:"/api/v1/projects",headers:{cookie,host:"localhost:3000",origin:"http://localhost:3000"},payload:{document:doc()}});
+ assert.equal(noCsrf.statusCode,401);
+ const created=await app.inject({method:"POST",url:"/api/v1/projects",headers:owner,payload:{id:"sqlite-only",document:doc()}});
+ assert.equal(created.statusCode,201,created.body);
+ const deleted=await app.inject({method:"DELETE",url:"/api/v1/projects/sqlite-only",headers:owner});
+ assert.equal(deleted.statusCode,200,deleted.body);
+ assert.equal(deleted.json().deleted,true);
+ assert.equal((await app.inject({method:"GET",url:"/api/v1/projects/sqlite-only",headers:owner})).statusCode,404);
+ assert.deepEqual((await app.inject({method:"GET",url:"/api/v1/projects",headers:owner})).json().projects,[]);
+ assert.equal(db.prepare("SELECT COUNT(*) AS n FROM projects WHERE deleted_at IS NOT NULL").get().n,1);
 });
 test("project endpoints preserve CAS and reject invalid references",async t=>{
  const{call}=await fixture(t);
@@ -42,6 +73,72 @@ test("project endpoints preserve CAS and reject invalid references",async t=>{
  }});
  assert.equal(unsafe.statusCode,400);
  assert.equal(unsafe.json().code,"raw_credentials_forbidden");
+});
+
+
+test("two browser origins share project summaries and revision events but never overwrite on stale PATCH",async t=>{
+ const {call,db}=await fixture(t);
+ const hostA={host:"127.0.0.1:3000",origin:"http://127.0.0.1:3000"};
+ const hostB={host:"localhost:3000",origin:"http://localhost:3000"};
+ const created=await call("POST","/api/v1/projects",{id:"shared-1",document:{...doc("A"),title:"共享画布"}},hostA);
+ assert.equal(created.statusCode,201,created.body);
+ const listingA=await call("GET","/api/v1/projects",undefined,hostA);
+ const listingB=await call("GET","/api/v1/projects",undefined,hostB);
+ assert.equal(listingA.statusCode,200);
+ assert.deepEqual(listingA.json(),listingB.json());
+ assert.deepEqual(listingA.json().projects,[{id:"shared-1",revision:1,title:"共享画布",nodeCount:1,connectionCount:0}]);
+ assert.equal(listingA.json().eventCursor,1);
+ const afterSnapshot=listingB.json().eventCursor;
+ const edited=await call("PATCH","/api/v1/projects/shared-1",{
+  expectedRevision:1,document:{...doc("B"),title:"共享画布"}
+ },{"if-match":'"1"',...hostA});
+ assert.equal(edited.statusCode,200);
+ const stale=await call("PATCH","/api/v1/projects/shared-1",{expectedRevision:1,document:doc("lost")},
+  {"if-match":'"1"',...hostB});
+ assert.equal(stale.statusCode,409);
+ assert.equal((await call("GET","/api/v1/projects/shared-1",undefined,hostB)).json().document.nodes[0].metadata.prompt,"B");
+ const stream=await call("GET","/api/v1/projects/events?after="+afterSnapshot+"&once=1",undefined,hostB);
+ assert.equal(stream.statusCode,200,stream.body);
+ assert.match(stream.body,/event: project/);
+ const values=stream.body.split("\n").filter(line=>line.startsWith("data: ")).map(line=>JSON.parse(line.slice(6)));
+ assert.deepEqual(values.map(item=>[item.kind,item.projectId,item.revision]),[["updated","shared-1",2]]);
+ assert.equal(db.prepare("SELECT COUNT(*) AS n FROM project_events WHERE project_id=?").get("shared-1").n,2);
+ assert.equal((await call("GET","/api/v1/projects",undefined,hostB)).json().projects[0].revision,2);
+ const replay=await call("GET","/api/v1/projects/events?after=0&once=1",undefined,hostA);
+ assert.equal(replay.statusCode,200);assert.match(replay.body,/"kind":"created"/);
+ const future=await call("GET","/api/v1/projects/events?after=99&once=1",undefined,hostB);
+ assert.equal(future.statusCode,400);
+});
+test("real canvas Comfy/plugin IDs preserve graph and allow guarded job enqueue",async t=>{
+ const {call,db}=await fixture(t);
+ const comfyId="comfy:workflow-1792758417919-co36n",pluginId="@plugin/image-177:abc";
+ const graph={nodes:[
+  {id:comfyId,type:"comfy:workflow",title:"W",position:{x:300,y:0},width:420,height:320,
+   metadata:{comfyPorts:[{id:"image",label:"Image",direction:"source",valueKind:"IMAGE"}]}},
+  {id:pluginId,type:"@plugin/image",title:"Source",position:{x:0,y:0},width:200,height:200,
+   metadata:{storageKey:"image:local-abc",content:"blob:example"}}
+ ],connections:[{id:"c-1",fromNodeId:pluginId,fromPortId:"image",toNodeId:comfyId,toPortId:"first_frame"}]};
+ const created=await call("POST","/api/v1/projects",{id:"p-canvas",document:graph});
+ assert.equal(created.statusCode,201,created.body);
+ assert.deepEqual(created.json().document,graph);
+ const job=await call("POST","/api/v1/jobs",{projectId:"p-canvas",targetNodeId:comfyId,
+  expectedProjectRevision:1,sourceNodeFingerprint:fingerprintSource(graph,comfyId),
+  executionMode:"poll",idempotencyKey:"canvas-id-1",requestFingerprint:"canvas-id-1",snapshot:{model:"dummy"}});
+ assert.equal(job.statusCode,201,job.body);
+ const edited={...graph,nodes:graph.nodes.map(n=>n.id===comfyId?{...n,title:"W edited"}:n)};
+ const patch=await call("PATCH","/api/v1/projects/p-canvas",{expectedRevision:1,document:edited},{"if-match":'"1"'});
+ assert.equal(patch.statusCode,200,patch.body);
+ assert.deepEqual(patch.json().document,edited);
+ const invalid=await call("POST","/api/v1/projects",{id:"bad-html",document:{
+  nodes:[{id:"<img src=x>",type:"image"}],connections:[]}});
+ assert.equal(invalid.statusCode,400);
+ assert.equal(invalid.json().code,"invalid_project_document");
+ assert.deepEqual(invalid.json().details,{reason:"node_id",nodeIndex:0});
+ const missing=await call("POST","/api/v1/projects",{id:"bad-link",document:{
+  nodes:[{id:"safe",type:"image"}],connections:[{fromNodeId:"safe",toNodeId:"deleted"}]}});
+ assert.equal(missing.statusCode,400);
+ assert.deepEqual(missing.json().details,{reason:"dangling_connection",connectionIndex:0});
+ assert.equal(db.prepare("SELECT COUNT(*) AS n FROM projects").get().n,1);
 });
 test("project save barrier before job enqueue and persistent idempotency",async t=>{
  const{call,db}=await fixture(t);
@@ -129,9 +226,9 @@ test("SSE reports expired event cursor after retained history is pruned",async t
 });
 test("disk main db creates schema and remains reusable after close",t=>{
  const dir=mkdtempSync(join(tmpdir(),"atelier-main-"));t.after(()=>rmSync(dir,{recursive:true,force:true}));
- const db=openMainDatabase(dir);assert.equal(db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v,5);
+ const db=openMainDatabase(dir);assert.equal(db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v,6);
  db.close();const reopened=openMainDatabase(dir);
- assert.equal(reopened.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v,5);reopened.close();
+ assert.equal(reopened.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v,6);reopened.close();
 });
 test("startServer rejects wide-area binding",async t=>{
  const{app}=await fixture(t);

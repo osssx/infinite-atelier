@@ -75,6 +75,7 @@ test("four artifact kinds become typed connected nodes and project revision adva
  assert.equal((await f.materializer.runOnce()).length,0);
  assert.equal(getProject(f.db,"project-1").revision,5);
  assert.equal(readEventsAfter(f.db,0).filter(e=>e.kind==="artifact_materialized").length,4);
+ assert.equal(f.db.prepare("SELECT COUNT(*) AS n FROM project_events WHERE project_id=? AND kind=?").get("project-1","materialized").n,4);
 });
 test("materializer replays after interruption; doesn't duplicate nodes/connections",async t=>{
  const f=fixture(t),{jobId}=await f.addArtifacts();

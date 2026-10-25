@@ -33,7 +33,7 @@ export function resolveLocalDataDir(dataDir=process.env.ATELIER_DATA_DIR){
  return actual;
 }
 /** Explicit opt-in backend assembly. Does not replace existing dev/start or Comfy gateway. */
-export function createLocalBackend({dataDir,streamPollMs=200,adapters,comfyInstances,comfyUpstreamCall,blobMaxBytes=2_000_000_000,autoDispatch=false,dispatchIntervalMs=250}={}){
+export function createLocalBackend({dataDir,streamPollMs=200,adapters,comfyInstances,comfyUpstreamCall,blobMaxBytes=2_000_000_000,autoDispatch=false,autoLocalSession=false,dispatchIntervalMs=250}={}){
  const root=resolveLocalDataDir(dataDir),lock=acquireInstanceLock(root);
  let db;
  try{
@@ -54,7 +54,8 @@ export function createLocalBackend({dataDir,streamPollMs=200,adapters,comfyInsta
   coordinator?.recoverAtStartup();
   const materializer=createCanvasMaterializer({db,blobStore});
   const worker=autoDispatch?createBackendWorker({coordinator,materializer,intervalMs:dispatchIntervalMs}):null;
-  const app=buildApp({db,sessionAuth,blobStore,vault,coordinator,materializer,worker,streamPollMs});
+  const app=buildApp({db,sessionAuth,autoLocalSession,blobStore,vault,coordinator,materializer,worker,
+   comfyInstanceIds:comfyInstances?.map(item=>item.id)??[],streamPollMs});
   worker?.start();
   let closed=false;
   return {app,db,sessionAuth,vault,coordinator,materializer,worker,lock,async close(){

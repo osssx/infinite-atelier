@@ -218,6 +218,30 @@ export function validateLocalBackendTarget(raw: string | undefined): string | nu
         throw new Error("ATELIER_BACKEND_URL must be an exact loopback HTTP origin with an explicit port");
     return u.origin;
 }
+
+/** Without an explicit private backend target, serve a clear JSON diagnostic
+ * instead of letting the SPA fallback answer /api/v1/session with index.html.
+ */
+function localBackendProxyDiagnostic(target: string | null): Plugin {
+    return {
+        name: "atelier-local-backend-proxy-diagnostic",
+        apply: "serve",
+        configureServer(server) {
+            if (target) return;
+            server.middlewares.use((req, res, next) => {
+                const pathname = new URL(req.url || "/", "http://vite.local").pathname;
+                if (pathname !== "/api/v1" && !pathname.startsWith("/api/v1/")) return next();
+                res.statusCode = 503;
+                res.setHeader("Content-Type", "application/json; charset=utf-8");
+                res.setHeader("Cache-Control", "no-store");
+                res.end(JSON.stringify({
+                    code: "backend_proxy_not_configured",
+                    message: "Set ATELIER_BACKEND_URL to an explicit loopback backend origin and restart Vite",
+                }));
+            });
+        },
+    };
+}
 export default defineConfig(({ mode }) => {
     const env = loadEnv(mode, webDir, "");
     const trustedBases = process.env.ARK_TRUSTED_BASE_URLS || env.ARK_TRUSTED_BASE_URLS;
@@ -228,7 +252,7 @@ export default defineConfig(({ mode }) => {
     localProxyOrigins.push(...parseTrustedBases(trustedBases).map(base => base.origin));
     return {
         base: process.env.VITE_BASE || "/",
-        plugins: [react(), configuredDevGatewayPlugin(trustedBases, mediaUploadUrl), apiProxyPlugin(apiProxyAllowedHosts, localProxyOrigins)],
+        plugins: [react(), localBackendProxyDiagnostic(backendTarget), configuredDevGatewayPlugin(trustedBases, mediaUploadUrl), apiProxyPlugin(apiProxyAllowedHosts, localProxyOrigins)],
         server: {
             proxy: {
                 ...(backendTarget ? {"/api/v1": {

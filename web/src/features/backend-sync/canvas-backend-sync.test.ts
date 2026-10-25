@@ -1,6 +1,6 @@
 import {describe,expect,it,vi} from "vitest";
 import type {CanvasNodeData} from "@/types/canvas";
-import {createCanvasBackendSync,safeRemoteCanvasMerge,type BackendCanvasGraph} from "./canvas-backend-sync";
+import {createCanvasBackendSync,explainBackendSyncError,safeRemoteCanvasMerge,type BackendCanvasGraph} from "./canvas-backend-sync";
 
 const original:BackendCanvasGraph={
  nodes:[{id:"wf-1",type:"comfy:workflow",title:"Workflow",position:{x:0,y:0},width:360,height:260,
@@ -27,12 +27,12 @@ class FakeStream {
   (this.listeners[type]??=[]).push(callback);
  }
  close(){this.closed=true}
- send(data:unknown){
-  this.listeners.job?.forEach(fn=>fn({data:JSON.stringify(data)} as MessageEvent<string>));
+ send(data:unknown,type="job"){
+  this.listeners[type]?.forEach(fn=>fn({data:JSON.stringify(data)} as MessageEvent<string>));
  }
 }
 function mockBackend({existing=true}={}){
- let project: {id:string;revision:number;document:BackendCanvasGraph}|null =
+ let project: {id:string;revision:number;document:BackendCanvasGraph&{title?:string}}|null =
   existing?{id:"p1",revision:1,document:copy(original)}:null;
  let cursor=7,replayStatus=200,patches=0,creates=0,authorized=true;
  const calls:FetchCall[]=[];
@@ -50,7 +50,11 @@ function mockBackend({existing=true}={}){
    return authorized?json({csrfToken:"csrf-local"}):json({code:"unauthorized"},401);
   }
   if(path==="/api/v1/jobs/snapshot")return json({jobs:[],eventCursor:cursor});
-  if(path.startsWith("/api/v1/events?")){
+  if(path==="/api/v1/projects"&&(!init?.method||init.method==="GET"))
+   return json({projects:project?[{id:project.id,revision:project.revision,
+    title:project.id,nodeCount:project.document.nodes.length,
+    connectionCount:project.document.connections.length}]:[],eventCursor:cursor});
+  if(path.startsWith("/api/v1/events?")||path.startsWith("/api/v1/projects/events?")){
    if(replayStatus===409)return json({code:"event_cursor_expired"},409);
    return new Response("",{status:200,headers:{"content-type":"text/event-stream"}});
   }
@@ -74,13 +78,13 @@ function mockBackend({existing=true}={}){
   throw Error("Unexpected API "+path+" "+init?.method);
  });
  const openEventStream=vi.fn((url:string)=>{
-  expect(url).toContain("/api/v1/events?after=");
+  expect(url).toMatch(/^\/api\/v1\/(events|projects\/events)\?after=/);
   const stream=new FakeStream();streams.push(stream);return stream;
  });
  return {
   fetcher,openEventStream,calls,streams,
   get project(){return project},
-  set project(value:{id:string;revision:number;document:BackendCanvasGraph}|null){project=value},
+  set project(value:{id:string;revision:number;document:BackendCanvasGraph&{title?:string}}|null){project=value},
   set cursor(v:number){cursor=v},set replayStatus(v:number){replayStatus=v},
   set authorized(v:boolean){authorized=v},
   get patches(){return patches},get creates(){return creates}
@@ -91,6 +95,81 @@ const stateWait=async(fn:()=>boolean)=>{
  throw Error("expected async synchronization did not settle");
 };
 describe("backend canvas sync opt-in, revisions and events",()=>{
+ it("shows safe project validation details without exposing node IDs",async()=>{
+  const local=copy(original);
+  const bridge=createCanvasBackendSync({
+   projectId:"p1",getLocalGraph:()=>local,applyRemoteGraph:()=>{},
+   fetcher:async(path)=>{
+    const response=(status:number,body:unknown)=>new Response(JSON.stringify(body),{
+     status,headers:{"content-type":"application/json"}
+    });
+    if(path==="/api/v1/session")return response(200,{csrfToken:"csrf"});
+    if(path==="/api/v1/jobs/snapshot")return response(200,{jobs:[],eventCursor:0});
+    if(path==="/api/v1/projects/p1")return response(404,{code:"project_not_found"});
+    return response(400,{code:"invalid_project_document",details:{reason:"dangling_connection",connectionIndex:2}});
+   }
+  });
+  await bridge.connect();
+  expect(bridge.state.status).toBe("error");
+  expect(bridge.state.message).toBe("invalid_project_document:dangling_connection:2");
+  expect(explainBackendSyncError(bridge.state.message??"")).toContain("第 3 条连接");
+  bridge.disconnect();
+ });
+
+ it("invalid or expired bootstrap token explains safe local-terminal renewal",async()=>{
+  const local=copy(original);
+  const bridge=createCanvasBackendSync({
+   projectId:"p1",getLocalGraph:()=>local,applyRemoteGraph:()=>{},
+   requestBootstrap:async()=> "expired",
+   fetcher:async(_url,init)=>{
+    if(init?.method==="POST")return new Response(JSON.stringify({
+     code:"invalid_bootstrap_token",message:"invalid_bootstrap_token"
+    }),{status:401,headers:{"content-type":"application/json"}});
+    return new Response(JSON.stringify({code:"unauthorized"}),{
+     status:401,headers:{"content-type":"application/json"}
+    });
+   }
+  });
+  await bridge.connect();
+  expect(bridge.state.status).toBe("error");
+  expect(bridge.state.message).toBe("invalid_bootstrap_token");
+  expect(explainBackendSyncError(bridge.state.message??"")).toContain("r");
+  expect(explainBackendSyncError(bridge.state.message??"")).toContain("5 分钟");
+  bridge.disconnect();
+ });
+
+ it("identifies the HTML Vite SPA fallback as a missing backend proxy, not invalid project JSON",async()=>{
+  const local=copy(original);
+  let bootstrapRequested=false;
+  const bridge=createCanvasBackendSync({
+   projectId:"p1",getLocalGraph:()=>local,applyRemoteGraph:()=>{},
+   fetcher:async()=>new Response("<!doctype html><html><body>Canvas UI</body></html>",{
+    status:200,headers:{"content-type":"text/html; charset=utf-8"}
+   }),
+   requestBootstrap:async()=>{bootstrapRequested=true;return "should-not-be-used"}
+  });
+  await bridge.connect();
+  expect(bridge.state.status).toBe("error");
+  expect(bridge.state.message).toBe("backend_proxy_not_configured");
+  expect(explainBackendSyncError(bridge.state.message??"")).toContain("ATELIER_BACKEND_URL");
+  expect(bootstrapRequested).toBe(false);
+  bridge.disconnect();
+ });
+ it("displays the explicit JSON diagnostic when the Vite proxy is disabled",async()=>{
+  const local=copy(original);
+  const bridge=createCanvasBackendSync({
+   projectId:"p1",getLocalGraph:()=>local,applyRemoteGraph:()=>{},
+   fetcher:async()=>new Response(JSON.stringify({code:"backend_proxy_not_configured",
+    message:"Set ATELIER_BACKEND_URL"}),{
+    status:503,headers:{"content-type":"application/json; charset=utf-8"}
+   })
+  });
+  await bridge.connect();
+  expect(bridge.state.status).toBe("error");
+  expect(bridge.state.message).toBe("backend_proxy_not_configured");
+  bridge.disconnect();
+ });
+
  it("accepts a canonicalized project graph independent of JSON property ordering",()=>{
   const remote=JSON.parse(JSON.stringify(original)) as BackendCanvasGraph;
   const node=remote.nodes[0];
@@ -173,6 +252,69 @@ describe("backend canvas sync opt-in, revisions and events",()=>{
   server.streams[0].send({eventId:9,jobId:"job-1",kind:"artifact_materialized",
    payload:{projectId:"p1"},timestamp:0});
   expect(applied).toBe(1);
+  bridge.disconnect();
+ });
+
+ it("applies ordinary remote text and node movement on project SSE when local draft is clean",async()=>{
+  const server=mockBackend();
+  let local=copy(original),applied=0;
+  const bridge=createCanvasBackendSync({projectId:"p1",getLocalGraph:()=>local,
+   applyRemoteGraph:graph=>{local=copy(graph);applied++},
+   fetcher:server.fetcher,openEventStream:server.openEventStream});
+  await bridge.connect();
+  expect(server.streams).toHaveLength(2);
+  const modified=copy(original);
+  modified.nodes[0].title="remote user typed this";
+  modified.nodes[0].position={x:255,y:190};
+  server.project={id:"p1",revision:2,document:modified};
+  server.streams[1].send({eventId:8,projectId:"p1",revision:2,kind:"updated",timestamp:0},"project");
+  await stateWait(()=>applied===1);
+  expect(local.nodes[0].position.x).toBe(255);
+  expect(local.nodes[0].title).toBe("remote user typed this");
+  expect(bridge.state.revision).toBe(2);
+  bridge.disconnect();
+ });
+
+ it("syncs project rename and guards a competing local title draft",async()=>{
+  const server=mockBackend();
+  server.project={id:"p1",revision:1,document:{...copy(original),title:"First"}};
+  let title="First",local=copy(original);
+  const bridge=createCanvasBackendSync({projectId:"p1",
+   getLocalGraph:()=>local,applyRemoteGraph:graph=>{local=copy(graph)},
+   getLocalMetadata:()=>({title}),applyRemoteTitle:next=>{title=next},
+   fetcher:server.fetcher,openEventStream:server.openEventStream,debounceMs:10000});
+  await bridge.connect();
+  title="Local rename";
+  bridge.scheduleSave();await bridge.flush();
+  expect(server.project?.document.title).toBe("Local rename");
+  expect(server.project?.revision).toBe(2);
+  server.project={id:"p1",revision:3,document:{...copy(original),title:"Other origin rename"}};
+  server.streams[1].send({eventId:9,projectId:"p1",revision:3,kind:"updated",timestamp:0},"project");
+  await stateWait(()=>title==="Other origin rename");
+  expect(bridge.state.revision).toBe(3);
+  title="Local unsaved rename";
+  server.project={id:"p1",revision:4,document:{...copy(original),title:"Remote again"}};
+  server.streams[1].send({eventId:10,projectId:"p1",revision:4,kind:"updated",timestamp:0},"project");
+  await stateWait(()=>bridge.state.status==="conflict");
+  expect(title).toBe("Local unsaved rename");
+  bridge.disconnect();
+ });
+ it("incoming project edit preserves a dirty local draft with explicit revision conflict",async()=>{
+  const server=mockBackend();
+  let local=copy(original);
+  const bridge=createCanvasBackendSync({projectId:"p1",getLocalGraph:()=>local,
+   applyRemoteGraph:graph=>{local=copy(graph)},fetcher:server.fetcher,
+   openEventStream:server.openEventStream,debounceMs:10000});
+  await bridge.connect();
+  local.nodes[0]={...local.nodes[0],title:"my offline edit"};
+  const remote=copy(original);
+  remote.nodes[0].title="other origin edit";
+  server.project={id:"p1",revision:2,document:remote};
+  server.streams[1].send({eventId:8,projectId:"p1",revision:2,kind:"updated",timestamp:0},"project");
+  await stateWait(()=>bridge.state.status==="conflict");
+  expect(local.nodes[0].title).toBe("my offline edit");
+  expect(server.project.document.nodes[0].title).toBe("other origin edit");
+  expect(server.patches).toBe(0);
   bridge.disconnect();
  });
  it("does not overwrite dirty local edits when materialization arrives",async()=>{
@@ -261,6 +403,62 @@ describe("backend canvas sync opt-in, revisions and events",()=>{
   expect(await bridge.reconcileConflict()).toBe(false);
   expect(server.patches).toBe(0);
   expect(local.nodes[0].title).toBe("Edited workflow");
+  bridge.disconnect();
+ });
+
+ it("saveProjectNow fences a frozen dirty source with durable revision before generation",async()=>{
+  const server=mockBackend();let local=copy(original);
+  const bridge=createCanvasBackendSync({projectId:"p1",getLocalGraph:()=>local,
+   applyRemoteGraph:graph=>{local=copy(graph)},fetcher:server.fetcher,openEventStream:server.openEventStream});
+  await bridge.connect();
+  local={...local,nodes:[{...local.nodes[0],title:"Updated prompt"}]};
+  const frozen=copy(local);
+  const result=await bridge.saveProjectNow(frozen,"wf-1");
+  expect(result.projectId).toBe("p1");
+  expect(result.revision).toBe(2);
+  expect(result.sourceNodeFingerprint).toHaveLength(64);
+  expect(server.project?.document.nodes[0].title).toBe("Updated prompt");
+  expect(server.patches).toBe(1);
+  bridge.disconnect();
+ });
+ it("concurrent local changes during asynchronous save block generation",async()=>{
+  const server=mockBackend();let local=copy(original);
+  let allowPatch:()=>void=()=>{};
+  const gate=new Promise<void>(resolve=>{allowPatch=resolve});
+  const fetcher=async(path:string,init?:RequestInit)=>{
+   if(init?.method==="PATCH")await gate;
+   return server.fetcher(path,init);
+  };
+  const bridge=createCanvasBackendSync({projectId:"p1",getLocalGraph:()=>local,
+   applyRemoteGraph:graph=>{local=copy(graph)},fetcher,openEventStream:server.openEventStream});
+  await bridge.connect();
+  local={...local,nodes:[{...local.nodes[0],title:"First draft"}]};
+  const first=copy(local);
+  const saving=bridge.saveProjectNow(first,"wf-1");
+  await Promise.resolve();
+  local={...local,nodes:[{...local.nodes[0],title:"Second draft"}]};
+  allowPatch();
+  await expect(saving).rejects.toThrow("generation_save_barrier_required");
+  expect(local.nodes[0].title).toBe("Second draft");
+  expect(server.project?.document.nodes[0].title).toBe("First draft");
+  bridge.disconnect();
+ });
+ it("capabilities reject unconfigured or non-dispatching Comfy instances",async()=>{
+  const server=mockBackend();let local=copy(original),ready=false;
+  const fetcher=async(path:string,init?:RequestInit)=>{
+   if(path==="/api/v1/execution/capabilities")
+    return new Response(JSON.stringify({autoDispatch:ready,comfyInstanceIds:["comfy-local"]}),{
+     headers:{"content-type":"application/json"}
+    });
+   return server.fetcher(path,init);
+  };
+  const bridge=createCanvasBackendSync({projectId:"p1",getLocalGraph:()=>local,
+   applyRemoteGraph:graph=>{local=copy(graph)},fetcher,openEventStream:server.openEventStream});
+  await bridge.connect();
+  await expect(bridge.assertComfyReady("comfy-local")).rejects.toThrow("backend_comfy_instance_not_ready");
+  ready=true;
+  await expect(bridge.assertComfyReady("different")).rejects.toThrow("backend_comfy_instance_not_ready");
+  await expect(bridge.assertComfyReady("comfy-local")).resolves.toBeUndefined();
   bridge.disconnect();
  });
  it("existing remote mismatches remain untouched and never create a second project",async()=>{

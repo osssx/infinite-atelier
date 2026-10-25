@@ -6,7 +6,14 @@ const port=Number(raw);
 if(!Number.isInteger(port)||port<1024||port>65535){
  throw Error("ATELIER_BACKEND_PORT must be between 1024 and 65535");
 }
-const runtime=createLocalBackend(); // local-only; no adapter/autoDispatch unless explicitly configured
+// Real Comfy is intentionally opt-in. Without both variables this remains
+// the safe project-sync-only backend and never initiates GPU submissions.
+const comfyId=process.env.ATELIER_COMFY_INSTANCE_ID;
+const comfyUrl=process.env.ATELIER_COMFY_URL;
+if(Boolean(comfyId)!==Boolean(comfyUrl))
+ throw Error("ATELIER_COMFY_INSTANCE_ID and ATELIER_COMFY_URL must be set together");
+const comfyInstances=comfyId&&comfyUrl?[{id:comfyId,url:comfyUrl}]:undefined;
+const runtime=createLocalBackend({comfyInstances,autoDispatch:Boolean(comfyInstances),autoLocalSession:true});
 let stopped=false;
 async function shutdown(){
  if(stopped)return;
@@ -22,9 +29,9 @@ for(const signal of ["SIGINT","SIGTERM"])process.on(signal,()=>{
 try{
  const address=await startServer(runtime.app,{host:"127.0.0.1",port});
  console.log("Infinite Atelier private backend ready:",address);
- console.log("One-time session bootstrap token (copy to Canvas sync dialog; never commit or share):");
- console.log(runtime.sessionAuth.bootstrapToken);
- console.log("Start Vite with ATELIER_BACKEND_URL=http://127.0.0.1:"+port);
+ console.log("Comfy backend GPU dispatch:",comfyInstances?"enabled (explicit opt-in)":"disabled");
+ console.log("Canvas sessions: automatic same-origin loopback login (no manual token).");
+ console.log("API origin: http://127.0.0.1:"+port);
 }catch(error){
  await shutdown();
  throw error;

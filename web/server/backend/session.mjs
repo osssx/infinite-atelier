@@ -6,13 +6,16 @@ export function createLocalSessionAuth({sessionLifetimeMs=12*60*60*1000,bootstra
  const equal=(a,b)=>typeof a==="string"&&typeof b==="string"&&timingSafeEqual(hash(a),hash(b));
  let bootstrap=token(),issuedAt=clock();const sessions=new Map();
  function issueBootstrapToken(){bootstrap=token();issuedAt=clock();return bootstrap}
+ function issueLocalSession(){
+  const id=token(),csrf=token(),expiresAt=clock()+sessionLifetimeMs;
+  sessions.set(hash(id).toString("hex"),{csrf,expiresAt});
+  return {id,csrf,expiresAt};
+ }
  function exchange(provided){
   if(issuedAt===0||!equal(provided,bootstrap)||clock()-issuedAt>bootstrapLifetimeMs)
    throw Object.assign(Error("invalid_bootstrap_token"),{code:"invalid_bootstrap_token",statusCode:401});
   issuedAt=0;bootstrap=token();
-  const id=token(),csrf=token(),expiresAt=clock()+sessionLifetimeMs;
-  sessions.set(hash(id).toString("hex"),{csrf,expiresAt});
-  return {id,csrf,expiresAt};
+  return issueLocalSession();
  }
  function cookies(header){
   const out=new Map();
@@ -37,5 +40,5 @@ export function createLocalSessionAuth({sessionLifetimeMs=12*60*60*1000,bootstra
  function revoke(req){const record=current(req);if(record)sessions.delete(hash(record.id).toString("hex"))}
  const cookie=(id,{secure=false}={})=>"atelier_session="+id+"; HttpOnly; SameSite=Strict; Path=/; Max-Age="+Math.floor(sessionLifetimeMs/1000)+(secure?"; Secure":"");
  const clearCookie=({secure=false}={})=>"atelier_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"+(secure?"; Secure":"");
- return {get bootstrapToken(){return issuedAt?bootstrap:null},issueBootstrapToken,exchange,current,authorize,revoke,cookie,clearCookie};
+ return {get bootstrapToken(){return issuedAt?bootstrap:null},issueBootstrapToken,issueLocalSession,exchange,current,authorize,revoke,cookie,clearCookie};
 }

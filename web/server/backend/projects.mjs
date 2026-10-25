@@ -1,24 +1,55 @@
 import {randomUUID} from "node:crypto";
 import {stableJson,writeTransaction,assertNoRawCredentials} from "./repository.mjs";
+import {validCanvasNodeId} from "../canvas-node-id.mjs";
 const problem=(code,statusCode=400,details)=>Object.assign(new Error(code),{code,statusCode,details});
 const validId=id=>typeof id==="string"&&/^[A-Za-z0-9_-]{1,128}$/.test(id);
 export function validateProjectDocument(document){
- if(!document||typeof document!=="object"||Array.isArray(document)||!Array.isArray(document.nodes)||!Array.isArray(document.connections))throw problem("invalid_project_document");
+ if(!document||typeof document!=="object"||Array.isArray(document)||!Array.isArray(document.nodes)||!Array.isArray(document.connections))throw problem("invalid_project_document",400,{reason:"graph_shape"});
  assertNoRawCredentials(document);
  const ids=new Set();
- for(const n of document.nodes){if(!n||!validId(n.id)||ids.has(n.id)||typeof n.type!=="string")throw problem("invalid_project_document");ids.add(n.id)}
- for(const c of document.connections){if(!c||!ids.has(c.fromNodeId)||!ids.has(c.toNodeId)||c.fromNodeId===c.toNodeId)throw problem("invalid_project_document")}
+ for(const [index,n] of document.nodes.entries()){
+  if(!n||!validCanvasNodeId(n.id))
+   throw problem("invalid_project_document",400,{reason:"node_id",nodeIndex:index});
+  if(ids.has(n.id))
+   throw problem("invalid_project_document",400,{reason:"duplicate_node_id",nodeIndex:index});
+  if(typeof n.type!=="string")
+   throw problem("invalid_project_document",400,{reason:"node_type",nodeIndex:index});
+  ids.add(n.id);
+ }
+ for(const [index,c] of document.connections.entries()){
+  if(!c||!ids.has(c.fromNodeId)||!ids.has(c.toNodeId))
+   throw problem("invalid_project_document",400,{reason:"dangling_connection",connectionIndex:index});
+  if(c.fromNodeId===c.toNodeId)
+   throw problem("invalid_project_document",400,{reason:"self_connection",connectionIndex:index});
+ }
  const json=stableJson(document);
  if(Buffer.byteLength(json)>4*1024*1024)throw problem("project_document_too_large",413);
  return json;
 }
 const map=row=>row?{id:row.id,revision:row.revision,document:JSON.parse(row.document_json),deletedAt:row.deleted_at}:null;
+export function emitProjectEvent(db,{id,revision,kind}){
+ db.prepare("INSERT INTO project_events(project_id,revision,kind,created_at) VALUES(?,?,?,?)")
+  .run(id,revision,kind,Date.now());
+}
+export function listProjectSummaries(db){
+ return db.prepare("SELECT id,revision,document_json FROM projects WHERE deleted_at IS NULL ORDER BY id").all()
+  .map(row=>{
+   const doc=JSON.parse(row.document_json);
+   return {id:row.id,revision:row.revision,title:typeof doc.title==="string"&&doc.title.trim()?doc.title:row.id,
+    nodeCount:doc.nodes.length,connectionCount:doc.connections.length};
+  });
+}
+export function projectEventCursor(db){
+ return db.prepare("SELECT COALESCE(MAX(seq),0) AS cursor FROM project_events").get().cursor;
+}
+
 export function createProject(db,{id=randomUUID(),document}){
  if(!validId(id))throw problem("invalid_project_id");
  const content=validateProjectDocument(document);
  return writeTransaction(db,()=>{
   if(db.prepare("SELECT id FROM projects WHERE id=?").get(id))throw problem("project_id_conflict",409);
   db.prepare("INSERT INTO projects(id,document_json,revision) VALUES(?,?,1)").run(id,content);
+  emitProjectEvent(db,{id,revision:1,kind:"created"});
   return map(db.prepare("SELECT * FROM projects WHERE id=?").get(id));
  });
 }
@@ -26,6 +57,18 @@ export function getProject(db,id){
  const row=db.prepare("SELECT * FROM projects WHERE id=? AND deleted_at IS NULL").get(id);
  if(!row)throw problem("project_not_found",404);
  return map(row);
+}
+export function deleteProject(db,id){
+ if(!validId(id))throw problem("invalid_project_id");
+ return writeTransaction(db,()=>{
+  const current=db.prepare("SELECT revision FROM projects WHERE id=? AND deleted_at IS NULL").get(id);
+  if(!current)throw problem("project_not_found",404);
+  db.prepare("UPDATE projects SET deleted_at=?,revision=revision+1 WHERE id=? AND deleted_at IS NULL")
+   .run(Date.now(),id);
+  // v6 event-kind constraint: the list consumer re-fetches after any update.
+  emitProjectEvent(db,{id,revision:current.revision+1,kind:"updated"});
+  return {id,deleted:true};
+ });
 }
 export function patchProject(db,{id,expectedRevision,document}){
  if(!Number.isSafeInteger(expectedRevision)||expectedRevision<1)throw problem("expected_revision_required");
@@ -37,6 +80,7 @@ export function patchProject(db,{id,expectedRevision,document}){
    if(!current||current.deleted_at!==null)throw problem("project_not_found",404);
    throw problem("project_revision_conflict",409,{currentRevision:current.revision});
   }
+  emitProjectEvent(db,{id,revision:expectedRevision+1,kind:"updated"});
   return map(db.prepare("SELECT * FROM projects WHERE id=?").get(id));
  });
 }

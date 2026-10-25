@@ -1,6 +1,6 @@
 # Infinite Atelier 画布 SQLite-only 架构设计
 
-状态：**P0、P1、P2 已落地；P3 画布 CAS、服务端媒体预览、保守型 GC、自包含单项目 ZIP 归档与恢复已落地**。针对单机单用户；旧浏览器画布不迁移、不兼容。**P3 大文件流式导入/完整备份策略、P4 统一生成、P5 整体清理仍待完成**。
+状态：**P0、P1、P2 已落地；P3 CAS、媒体预览、保守 GC、单项目 ZIP 归档及 2 GiB 以内磁盘流式恢复已落地**。单机单用户；不迁移旧浏览器画布。**P4 统一 JobCoordinator 执行、P5 全库备份与残余清理仍待完成**。
 
 ## 当前可运行代码（首轮实施）
 
@@ -15,9 +15,11 @@
 - **P3 已验证**：图片、视频、音频经真实 Fastify 上传，重复内容得到 200 去重，MP4 Range 返回 206；SQLite 后端关闭再启动，画布 CAS 引用和图片字节均能重新获取。错误 MIME、无效返回值和 Comfy 混合产物导入有前端回归。
 - **P3 第二轮（服务端预览）**：`media-preview.mjs` 使用本地系统 FFmpeg（需要在 PATH 中可执行）对已验证的 CAS 图片/视频生成 **256px PNG**，保存在 `data/previews/<sha256>.png`；`GET /api/v1/blobs/:id/preview` 只对已登记 Blob 生效且沿用会话鉴权。单个哈希并发请求只转码一次，最多两个 FFmpeg 进程同时运行，最多排队 256 个请求；FFmpeg 缺失、媒体损坏或转换超时返回明确错误，原始媒体接口不受影响。低缩放节点和视频封面优先读取此接口，CAS 缩略图不写 IndexedDB。已有真实 FFmpeg 生成 MP4 → PNG 的验证。
 - **P3 第二轮（保守 GC）**：`blob-gc.mjs` 扫描所有活动项目 JSON、聊天、所有冻结任务快照、Comfy 编译输入、历史 artifacts、事件中的哈希；宁可保留假阳性也不删除可疑引用。`POST /api/v1/storage/gc` 默认只 dry-run；实际删除必须提交 `{"dryRun":false,"confirmation":"DELETE_UNREFERENCED"}`，且仅检查创建/修改已超过 **7 天** 的文件，每轮最多 50 项。每项删除前重查引用、SQLite 外键、文件状态；上传进行中拒绝回收。**不会定时自动执行**，删除前请备份后端数据目录。
-- **P3 第三轮（自包含单项目归档）**：`project-archive.mjs` 新增 `GET /api/v1/projects/:id/archive`（流式导出）与 `POST /api/v1/projects/import-archive`（原始 application/zip 上传）。ZIP 由 `manifest.json`（graph、title、viewport、chat sessions、引用媒体的 SHA-256/MIME/长度清单）和 `blobs/<sha256>` 组成，按内容哈希去重。导入时严格限制路径与文件数量，只接受此版的 ZIP32 **无压缩文件条目**，要求有效中央目录结尾并逐项校验 SHA-256、尺寸、MIME；校验全部完成后入 CAS，最后单事务创建**新项目 ID**。任何校验失败均不会创建项目；前置 CAS 写失败可能留下孤立但可回收的 CAS。**V1 单归档上限 128 MiB（包括所有媒体和元数据），最多 127 个 CAS 文件**，超限返回 413，不会产出不完整备份。项目列表恢复了“导入项目归档”，项目卡恢复了“导出包含媒体的项目归档”按钮；导出/导入前须确认内存中的自动保存队列已提交成功。此归档**不包含**历史生成任务、凭据 Vault、其他项目、用户个性化设置或完整 SQLite WAL 备份。
+- **P3 第三轮（自包含单项目归档）**：`project-archive.mjs` 新增 `GET /api/v1/projects/:id/archive`（流式导出）与 `POST /api/v1/projects/import-archive`（原始 application/zip 上传）。ZIP 由 `manifest.json`（graph、title、viewport、chat sessions、引用媒体的 SHA-256/MIME/长度清单）和 `blobs/<sha256>` 组成，按内容哈希去重。导入时严格限制路径与文件数量，只接受此版的 ZIP32 **无压缩文件条目**，要求有效中央目录结尾并逐项校验 SHA-256、尺寸、MIME；校验全部完成后入 CAS，最后单事务创建**新项目 ID**。任何校验失败均不会创建项目；前置 CAS 写失败可能留下孤立但可回收的 CAS。**V1 已升级单归档上限为 2 GiB（包括所有媒体和元数据），最多 127 个 CAS 文件**，超限返回 413，不会产出不完整备份。项目列表恢复了“导入项目归档”，项目卡恢复了“导出包含媒体的项目归档”按钮；导出/导入前须确认内存中的自动保存队列已提交成功。此归档**不包含**历史生成任务、凭据 Vault、其他项目、用户个性化设置或完整 SQLite WAL 备份。
 - **P3 自检**：真实 Fastify 通过 HTTP 导出→软删原项目→导入新项目→关闭重启 SQLite→重新读取节点、视口、聊天和原始图片/音频 bytes；另测试路径穿越、文件丢失、媒体 SHA 变化、ZIP 尾部截断、旧 origin-local media key、未鉴权请求的失败保护。
-- **尚待完成**：超 128 MiB 的超大视频分段/流式入库和全量 SQLite 数据库备份、派生预览文件清理与失效缓存重建、强一致的持久引用台账和意外断电恢复（当前 GC 是人工确认的保守 mark/sweep，不承诺磁盘故障下原子文件系统事务）、浏览器端其他非 Canvas 素材/配置数据收口；`services/api/video` 等公用非 Canvas 入口仍可能使用旧素材库。跨标签页 Materializer 增量刷新、生产静态站点托管、聊天按会话行拆分仍在后续计划。**P4/P5 完成前不可宣告整个产品 SQLite-only 全部完成。**
+- **P3 第四轮（大媒体流式归档）**：ZIP32 STORE 最大归档 2 GiB，至多 127 个 CAS 对象。导出保留逐文件 SHA-256 与响应背压；`project-archive-import.mjs` 只把最多 5 MiB 的 manifest 放入 RAM，媒体分块写入私有临时目录并同步计算 SHA-256，校验 ZIP32 结束目录、路径白名单、压缩方式、数量、大小及 manifest 完整性；**所有文件确认完整后才逐个导入 CAS，最后单事务创建 SQLite 项目**。异常时关闭文件流、删除临时目录。前端在支持 File System Access API 的 Chrome/Edge 上直接写入用户选中的 ZIP 文件，不再读取整包 Blob；其他浏览器只允许不超过 128 MiB 的内存下载，超出显式报错。文件选择器需在用户点击的事件上下文中打开。本轮使用 **130 MiB 视频** 完成真实磁盘 ZIP 导出、导入、图与视口恢复。归档限制并非 BlobStore 生成捕获限制，两者仍独立验证。ZIP64（单归档超过 4 GiB）及流式跨项目全库备份不在此范围。
+- **P4 依赖审计**：普通 Canvas Comfy 工作流目前在 `executeComfyWorkflow` 中默认使用旧 V2 执行；新的 `startBackendComfyWorkflowRun` 要求已经隐藏的手动同步桥 `backendSyncRef.current`，且旧途径以 localStorage 保存 pending 键。必须先改为直接使用 SQLite 项目和项目修订屏障、后端 JobCoordinator 提交及服务端可恢复提交状态，然后再移除旧 V2 的 Canvas 执行分支。不能简单把 `backendComfyEnabled` 默认设 true。
+- **尚待完成**：超过 2 GiB 的 ZIP64/大文件分段归档与全量 SQLite 数据库备份、派生预览文件清理与失效缓存重建、强一致的持久引用台账和意外断电恢复（当前 GC 是人工确认的保守 mark/sweep，不承诺磁盘故障下原子文件系统事务）、浏览器端其他非 Canvas 素材/配置数据收口；`services/api/video` 等公用非 Canvas 入口仍可能使用旧素材库。跨标签页 Materializer 增量刷新、生产静态站点托管、聊天按会话行拆分仍在后续计划。**P4/P5 完成前不可宣告整个产品 SQLite-only 全部完成。**
 
 在已有 `npm run dev:backend` 运行时，先安全停止旧服务（不要中断正在提交的 GPU 任务），再用 `npm run dev` 启动；不要同时启动两个后端进程争用端口 8788 和数据库进程锁。
 

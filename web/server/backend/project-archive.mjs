@@ -1,7 +1,8 @@
 import {randomUUID,createHash} from "node:crypto";
 import {createReadStream} from "node:fs";
-import {Readable,PassThrough} from "node:stream";
-import {Zip,ZipPassThrough,Unzip} from "fflate";
+import {PassThrough} from "node:stream";
+import {Zip,ZipPassThrough} from "fflate";
+import {importStreamedArchive} from "./project-archive-import.mjs";
 import {createProject,getProject,validateProjectDocument} from "./projects.mjs";
 import {getCanvasViewport,getCanvasChats} from "./canvas-state.mjs";
 import {assertNoRawCredentials} from "./repository.mjs";
@@ -11,7 +12,7 @@ const mediaPathRe=/^blobs\/([a-f0-9]{64})$/;
 const casRe=/^cas:([a-f0-9]{64})$/;
 const blobUrlRe=/^\/api\/v1\/blobs\/([a-f0-9]{64})$/;
 const manifestName="manifest.json";
-export const ARCHIVE_MAX_BYTES=128*1024*1024;
+export const ARCHIVE_MAX_BYTES=2*1024*1024*1024;
 export const ARCHIVE_MAX_FILES=128;
 const error=(code,statusCode=400)=>Object.assign(Error(code),{code,statusCode});
 const stable=(x)=>JSON.stringify(x);
@@ -131,76 +132,18 @@ export function createProjectArchive({db,blobStore}={}){
   return {stream,fileName:project.id+".atelier.zip"};
  }
  async function importProject(source){
-  const files=new Map(),opened=new Set();
-  let totalCompressed=0,totalExtracted=0,fileCount=0,tail=Buffer.alloc(0);
-  let extractError=null;
-  const unzip=new Unzip(entry=>{
-   if(extractError)return;
-   const name=entry.name;
-   if(name!==manifestName&&!mediaPathRe.test(name)){
-    extractError=error("archive_invalid_entry");return;
+  return importStreamedArchive(source,{
+   limit:ARCHIVE_MAX_BYTES,maxFiles:ARCHIVE_MAX_FILES,
+   validateManifest:validatedManifest,blobStore,
+   create:(manifest,media)=>{
+    const p=manifest.project;
+    const created=createProject(db,{id:randomUUID(),document:{
+     ...p.document,title:p.title,
+     viewport:p.viewport,chatSessions:p.chats.sessions,activeChatId:p.chats.activeChatId
+    }});
+    return {id:created.id,revision:created.revision,mediaCount:media.size,title:p.title};
    }
-   if(entry.compression!==0||opened.has(name)||++fileCount>ARCHIVE_MAX_FILES){
-    extractError=error("archive_invalid_entry");return;
-   }
-   opened.add(name);
-   const chunks=[];let size=0;
-   entry.ondata=(err,chunk,final)=>{
-    if(err){extractError=error("archive_invalid_zip");return}
-    size+=chunk.length;totalExtracted+=chunk.length;
-    if(totalExtracted>ARCHIVE_MAX_BYTES){extractError=error("archive_size_exceeded",413);return}
-    chunks.push(Buffer.from(chunk));
-    if(final)files.set(name,Buffer.concat(chunks,size));
-   };
-   entry.start();
   });
-  try{
-   for await(const chunk of source){
-    totalCompressed+=chunk.length;assertQuota(totalCompressed);
-    tail=Buffer.concat([tail,chunk]).subarray(-22);
-    if(extractError)throw extractError;
-    unzip.push(chunk,false);
-    if(extractError)throw extractError;
-   }
-   // fflate's streaming Unzip can emit entries even if the central directory
-   // is truncated. Require an exact ZIP32 EOCD (our exporter has no comments)
-   // before permitting any durable CAS/project writes.
-   if(tail.length!==22||tail.readUInt32LE(0)!==0x06054b50||
-    tail.readUInt16LE(4)!==0||tail.readUInt16LE(6)!==0||
-    tail.readUInt16LE(8)!==fileCount||tail.readUInt16LE(10)!==fileCount||
-    tail.readUInt16LE(20)!==0||
-    tail.readUInt32LE(16)+tail.readUInt32LE(12)!==totalCompressed-22)
-    throw error("archive_invalid_zip");
-   unzip.push(new Uint8Array(),true);
-   if(extractError)throw extractError;
-  }catch(e){throw e?.code?e:error("archive_invalid_zip")}
-  const manifestBytes=files.get(manifestName);
-  if(!manifestBytes||manifestBytes.length>5*1024*1024)throw error("archive_invalid_manifest");
-  let manifest;
-  try{manifest=JSON.parse(new TextDecoder("utf-8",{fatal:true}).decode(manifestBytes))}
-  catch{throw error("archive_invalid_manifest")}
-  const media=validatedManifest(manifest);
-  if(files.size!==media.size+1)throw error("archive_unexpected_files");
-  for(const item of media.values()){
-   const bytes=files.get(item.path);
-   if(!bytes||bytes.length!==item.bytes||
-    createHash("sha256").update(bytes).digest("hex")!==item.sha256)
-    throw error("archive_media_integrity_error",422);
-  }
-  // All entries checked, then CAS is uploaded/validated, finally exactly one
-  // SQLite project transaction. A failed upload never creates a partial project.
-  for(const item of media.values()){
-   const result=await blobStore.put([files.get(item.path)],{
-    mime:item.mimeType,expectedSha256:item.sha256
-   });
-   if(result.blobId!==item.sha256)throw error("archive_media_integrity_error",422);
-  }
-  const p=manifest.project;
-  const created=createProject(db,{id:randomUUID(),document:{
-   ...p.document,title:p.title,
-   viewport:p.viewport,chatSessions:p.chats.sessions,activeChatId:p.chats.activeChatId
-  }});
-  return {id:created.id,revision:created.revision,mediaCount:media.size,title:p.title};
  }
  return {exportProject,importProject};
 }

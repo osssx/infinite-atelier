@@ -5,6 +5,9 @@ import {mkdtempSync,rmSync} from "node:fs";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {Readable} from "node:stream";
+import {createReadStream,createWriteStream} from "node:fs";
+import {open,stat} from "node:fs/promises";
+import {pipeline} from "node:stream/promises";
 import {zipSync,unzipSync,strToU8} from "fflate";
 import {initializeSchema} from "./schema.mjs";
 import {createBlobStore} from "./blob-store.mjs";
@@ -16,10 +19,10 @@ import {buildApp} from "./app.mjs";
 async function fixture(t){
  const dir=mkdtempSync(join(tmpdir(),"atelier-archive-"));
  const db=new DatabaseSync(":memory:");initializeSchema(db);
- const blobStore=createBlobStore({db,dataDir:dir});
+ const blobStore=createBlobStore({db,dataDir:dir,maxBlobBytes:2_000_000_000});
  const archive=createProjectArchive({db,blobStore});
  t.after(()=>{db.close();rmSync(dir,{recursive:true,force:true,maxRetries:6,retryDelay:80})});
- return {db,blobStore,archive};
+ return {db,dir,blobStore,archive};
 }
 const png=Buffer.from([137,80,78,71,13,10,26,10,0,0,0,0,0,0,0,0]);
 const mp4=Buffer.concat([Buffer.alloc(4),Buffer.from("ftyp"),Buffer.from("isom0000"),Buffer.alloc(20,3)]);
@@ -60,6 +63,29 @@ test("complete ZIP roundtrip restores graph, separate viewport/chat and both med
  assert.equal(secondExport.fileName,first.id+".atelier.zip");
  assert.ok(Buffer.concat(await Array.fromAsync(secondExport.stream)).length>0);
  assert.deepEqual((await f.blobStore.stat(vid.blobId)).byteSize,mp4.length);
+});
+
+test("130 MiB video exports and restores with disk-streamed ZIP without in-RAM media arrays",async t=>{
+ const f=await fixture(t);
+ const video=join(f.dir,"large-video.mp4"),zipped=join(f.dir,"large-backup.zip");
+ const file=await open(video,"w",0o600);
+ try{
+  await file.write(mp4);
+  await file.truncate(130*1024*1024);
+ }finally{await file.close()}
+ const asset=await f.blobStore.put(createReadStream(video),{mime:"video/mp4"});
+ createProject(f.db,{id:"large",document:{
+  title:"Large",nodes:[{id:"v",type:"video",metadata:{
+   storageKey:"cas:"+asset.blobId,content:"/api/v1/blobs/"+asset.blobId}}],connections:[],
+  viewport:{x:50,y:12,k:1},chatSessions:[],activeChatId:null
+ }});
+ const backup=await f.archive.exportProject("large");
+ await pipeline(backup.stream,createWriteStream(zipped));
+ assert.ok((await stat(zipped)).size>128*1024*1024);
+ const restored=await f.archive.importProject(createReadStream(zipped));
+ assert.equal(restored.mediaCount,1);
+ assert.equal(getProject(f.db,restored.id).document.nodes[0].metadata.storageKey,"cas:"+asset.blobId);
+ assert.equal(getCanvasViewport(f.db,restored.id).viewport.x,50);
 });
 test("rejects missing media and altered bytes before making any SQLite project",async t=>{
  const f=await fixture(t);await seed(f);

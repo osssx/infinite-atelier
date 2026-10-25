@@ -36,6 +36,24 @@ describe("SQLite Canvas ZIP UI transport",()=>{
   expect(state.saveAs).toHaveBeenCalledOnce();
   expect(state.saveAs.mock.calls[0][1]).toBe("Some_Thing_.atelier.zip");
  });
+
+ it("streams ZIP response directly to the browser disk writer when supported",async()=>{
+  const chunks:Uint8Array[]=[];
+  const close=vi.fn(async()=>{}),abort=vi.fn(async()=>{});
+  const picker=vi.fn(async()=>({createWritable:async()=>({
+   write:async(bytes:Uint8Array)=>{chunks.push(bytes)},close,abort
+  })}));
+  vi.stubGlobal("window",{showSaveFilePicker:picker});
+  vi.stubGlobal("fetch",vi.fn(async()=>new Response(new ReadableStream({
+   start(controller){controller.enqueue(new Uint8Array([80,75,3,4]));controller.enqueue(new Uint8Array([6,7,8]));controller.close()}
+  }),{status:200,headers:{"content-type":"application/zip"}})));
+  await exportSqliteCanvasProject("project_large","Very Large");
+  expect(picker).toHaveBeenCalledOnce();
+  expect(chunks.map(chunk=>[...chunk])).toEqual([[80,75,3,4],[6,7,8]]);
+  expect(close).toHaveBeenCalledOnce();
+  expect(abort).not.toHaveBeenCalled();
+  expect(state.saveAs).not.toHaveBeenCalled();
+ });
  it("uploads the exact archive with CSRF and returns a new backend ID",async()=>{
   const file=new File(["ZIP"],"project.atelier.zip",{type:"application/zip"});
   vi.stubGlobal("fetch",vi.fn(async(url:string,init:RequestInit)=>{
@@ -55,7 +73,7 @@ describe("SQLite Canvas ZIP UI transport",()=>{
   expect(state.flush).toHaveBeenCalledOnce();
  });
  it("fails locally on oversized input, preserving existing project list",async()=>{
-  const fake={name:"large.zip",size:128*1024*1024+1} as File;
+  const fake={name:"large.zip",size:2*1024*1024*1024+1} as File;
   const fetcher=vi.fn();
   vi.stubGlobal("fetch",fetcher);
   await expect(importSqliteCanvasProject(fake)).rejects.toThrow("archive_invalid_file_or_size");

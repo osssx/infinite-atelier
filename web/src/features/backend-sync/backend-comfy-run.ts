@@ -7,6 +7,7 @@ import type {BlobUploadResponse,BackendJobView} from "@/types/backend-contracts"
 
 type Submitter={
  state:{status:string};
+ assertNoActiveJob?:(nodeId:string)=>Promise<void>;
  assertComfyReady:(instanceId:string)=>Promise<void>;
  saveProjectNow:(draft:BackendCanvasGraph,nodeId:string)=>Promise<{projectId:string;revision:number;sourceNodeFingerprint:string}>;
  uploadFrozenBlob:(blob:Blob,mime:string)=>Promise<BlobUploadResponse>;
@@ -24,6 +25,8 @@ export type BackendComfyWorkflowArgs={
  readBlob?:(storageKey:string)=>Promise<Blob|null>;
  getBlob?:(url:string)=>Promise<Blob|null>;
  pending?:PendingStore;newKey?:()=>string;
+ /** SQLite job snapshot is authoritative: never persist a browser pending payload. */
+ serverAuthoritative?:boolean;
 };
 async function fromBrowserUrl(url:string):Promise<Blob|null>{
  if(!url.startsWith("blob:")&&!url.startsWith("data:"))return null;
@@ -61,22 +64,27 @@ export async function startBackendComfyWorkflowRun(args:BackendComfyWorkflowArgs
  const {bridge,projectId,workflowNode,template,instanceId,outputPortIds}=args;
  if(bridge.state.status!=="connected")throw Error("backend_sync_not_connected");
  await bridge.assertComfyReady(instanceId);
- const pending=args.pending??localStorage;
+ // SQLite-only flow never records frozen GPU requests in localStorage.
+ // A lost HTTP response is recovered from the DB snapshot on the next click.
+ const pending=args.serverAuthoritative?null:(args.pending??localStorage);
  const key=backendPendingKey(projectId,workflowNode.id);
- const older=pending.getItem(key);
- if(older){
-  // Exact idempotent replay; DO NOT regenerate seed, reupload or change project revision.
-  const payload=JSON.parse(older) as Record<string,unknown>;
-  if(payload.projectId!==projectId||payload.targetNodeId!==workflowNode.id)
-   throw Error("backend_pending_invalid");
-  const result=await bridge.submitFrozenJob(payload);
-  pending.removeItem(key);
-  pending.setItem(backendLastJobKey(projectId,workflowNode.id),result.id);
-  return result;
+ if(args.serverAuthoritative){
+  if(!bridge.assertNoActiveJob)throw Error("backend_sqlite_job_guard_missing");
+  await bridge.assertNoActiveJob(workflowNode.id);
+ }else{
+  const older=pending!.getItem(key);
+  if(older){
+   // Exact legacy opt-in replay with immutable idempotency key.
+   const payload=JSON.parse(older) as Record<string,unknown>;
+   if(payload.projectId!==projectId||payload.targetNodeId!==workflowNode.id)
+    throw Error("backend_pending_invalid");
+   const result=await bridge.submitFrozenJob(payload);
+   pending!.removeItem(key);
+   pending!.setItem(backendLastJobKey(projectId,workflowNode.id),result.id);
+   return result;
+  }
+  await assertNoActiveBackendComfyJob(projectId,workflowNode.id,{storage:pending!});
  }
- // A new click may not bypass a previously accepted backend task.
- // Exact pending-payload recovery above is the only exception.
- await assertNoActiveBackendComfyJob(projectId,workflowNode.id,{storage:pending});
  if(!instanceId||outputPortIds.length<1||outputPortIds.length>16||
     new Set(outputPortIds).size!==outputPortIds.length||
     outputPortIds.some(id=>!template.ports.some(port=>port.id===id&&port.direction==="source"&&
@@ -137,9 +145,11 @@ export async function startBackendComfyWorkflowRun(args:BackendComfyWorkflowArgs
  };
  // Persist the SAME frozen payload before the first POST. A lost HTTP response
  // can be safely repeated with the same key and snapshot, never a new GPU job.
- pending.setItem(key,JSON.stringify(payload));
+ if(pending)pending.setItem(key,JSON.stringify(payload));
  const result=await bridge.submitFrozenJob(payload);
- pending.removeItem(key);
- pending.setItem(backendLastJobKey(projectId,workflowNode.id),result.id);
+ if(pending){
+  pending.removeItem(key);
+  pending.setItem(backendLastJobKey(projectId,workflowNode.id),result.id);
+ }
  return result;
 }

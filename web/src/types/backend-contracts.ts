@@ -32,7 +32,7 @@ export type BackendJobAttempt={
  startedAt:number;finishedAt:number|null;outcome:string|null;
 };
 export type BackendJobView={
- id:string;projectId:string|null;status:JobStatus;executionMode:JobExecutionMode;
+ id:string;projectId:string|null;targetNodeId?:string|null;status:JobStatus;executionMode:JobExecutionMode;
  createdAt:number;updatedAt:number;upstreamTaskId:string|null;
  attemptId:string|null;submitMarker:string|null;submissionStartedAt:number|null;
 };

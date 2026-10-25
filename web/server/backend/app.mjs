@@ -53,7 +53,7 @@ function localRequestError(req){
  }
  return null;
 }
-const jobView=row=>({id:row.id,projectId:row.project_id,status:row.status,executionMode:row.execution_mode,createdAt:row.created_at,updatedAt:row.updated_at,upstreamTaskId:row.upstream_task_id,attemptId:row.attempt_id,submitMarker:row.submit_marker,submissionStartedAt:row.submission_started_at});
+const jobView=row=>({id:row.id,projectId:row.project_id,targetNodeId:row.target_node_id,status:row.status,executionMode:row.execution_mode,createdAt:row.created_at,updatedAt:row.updated_at,upstreamTaskId:row.upstream_task_id,attemptId:row.attempt_id,submitMarker:row.submit_marker,submissionStartedAt:row.submission_started_at});
 const eventView=row=>({eventId:row.seq,jobId:row.job_id,kind:row.kind,timestamp:row.created_at,payload:JSON.parse(row.payload_json)});
 function cursorOf(value){
  const v=String(value??"0");

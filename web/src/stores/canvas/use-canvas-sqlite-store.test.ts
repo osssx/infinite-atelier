@@ -101,6 +101,39 @@ describe("SQLite-only Canvas store",()=>{
   expect(reloaded.chatSessions).toHaveLength(1);
   expect(reloaded.activeChatId).toBe("c1");
  });
+ it("adopts typed server artifacts without a redundant graph PATCH and preserves local edits on conflict",async()=>{
+  fake.rejectPatch=false;fake.methods.length=0;
+  const id=await useCanvasStore.getState().createProject("Materialized result");
+  const wf={id:"wf",type:"comfy:workflow",title:"Workflow",
+   position:{x:0,y:0},width:450,height:220,
+   metadata:{comfyPorts:[{id:"output",label:"Output",direction:"source" as const,valueKind:"IMAGE" as const}]}};
+  useCanvasStore.getState().updateProject(id,{nodes:[wf]});
+  await awaitCanvasStorePersistence();
+  const before=useCanvasStore.getState().openProject(id)!;
+  const artifact={id:"artifact-one",type:"image",title:"Produced",position:{x:500,y:0},width:420,height:420,
+   metadata:{comfyArtifact:{artifactId:"a1",workflowNodeId:"wf",portId:"output",kind:"image"}}};
+  const connection={id:"link",fromNodeId:"wf",fromPortId:"output",toNodeId:"artifact-one",toPortId:"comfy-artifact"};
+  const current=fake.projects.get(id)!;
+  const remote={...current,revision:current.revision+1,
+   document:{...current.document,nodes:[wf,artifact],connections:[connection]}};
+  fake.projects.set(id,remote);
+  fake.methods.length=0;
+  const adopted=useCanvasStore.getState().adoptMaterializedGraph(id,
+   {nodes:before.nodes,connections:before.connections},remote);
+  expect(adopted).toBe(true);
+  const after=useCanvasStore.getState().openProject(id)!;
+  expect(after.nodes).toHaveLength(2);
+  useCanvasStore.getState().updateProject(id,{nodes:after.nodes,connections:after.connections});
+  await awaitCanvasStorePersistence();
+  expect(fake.methods.filter(path=>path==="PATCH /api/v1/projects/"+id)).toHaveLength(0);
+  const changed={...after.nodes[0],title:"Local edit"};
+  useCanvasStore.getState().updateProject(id,{nodes:[changed,...after.nodes.slice(1)]});
+  const next={...remote,revision:remote.revision+1};
+  expect(useCanvasStore.getState().adoptMaterializedGraph(id,
+   {nodes:after.nodes,connections:after.connections},next)).toBe(false);
+  await awaitCanvasStorePersistence();
+  expect(useCanvasStore.getState().openProject(id)?.nodes[0].title).toBe("Local edit");
+ });
  it("preserves in-memory dirty draft and reports stale SQLite revision",async()=>{
   fake.rejectPatch=false;
   const id=await useCanvasStore.getState().createProject("Revision check");

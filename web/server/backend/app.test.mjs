@@ -26,6 +26,27 @@ test("application fail-closed auth and localhost origin rules",async t=>{
  assert.equal((await call("POST","/api/v1/projects",{document:doc()},{"origin":"https://evil.example"})).statusCode,403);
 });
 
+test("SQLite job snapshot exposes workflow source for duplicate GPU protection",async t=>{
+ const{call}=await fixture(t);
+ assert.equal((await call("POST","/api/v1/projects",{id:"p4-source",document:doc()})).statusCode,201);
+ const payload={idempotencyKey:"same-job",requestFingerprint:"same-job",executionMode:"poll",
+  projectId:"p4-source",targetNodeId:"text",expectedProjectRevision:1,
+  sourceNodeFingerprint:fingerprintSource(doc(),"text"),
+  snapshot:{adapterKind:"comfy",instanceId:"comfy-local"}
+ };
+ const submitted=await call("POST","/api/v1/jobs",payload);
+ assert.equal(submitted.statusCode,201,submitted.body);
+ assert.equal(submitted.json().targetNodeId,"text");
+ const snapshot=await call("GET","/api/v1/jobs/snapshot");
+ assert.equal(snapshot.statusCode,200,snapshot.body);
+ const queued=snapshot.json().jobs.find(job=>job.id===submitted.json().id);
+ assert.equal(queued.projectId,"p4-source");
+ assert.equal(queued.targetNodeId,"text");
+ assert.equal(queued.status,"queued");
+ const again=await call("POST","/api/v1/jobs",payload);
+ assert.equal(again.statusCode,200,again.body);
+ assert.equal(again.json().id,submitted.json().id);
+});
 test("SQLite-only local sessions auto-issue on same-origin GET and protect CRUD",async t=>{
  const db=new DatabaseSync(":memory:");initializeSchema(db);
  const sessionAuth=createLocalSessionAuth();

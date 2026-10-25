@@ -1,6 +1,6 @@
 # Infinite Atelier 画布 SQLite-only 架构设计
 
-状态：**P0、P1、P2 已落地；P3 CAS、媒体预览、保守 GC、单项目 ZIP 归档及 2 GiB 以内磁盘流式恢复已落地**。单机单用户；不迁移旧浏览器画布。**P4 统一 JobCoordinator 执行、P5 全库备份与残余清理仍待完成**。
+状态：**P0–P3 已落地；P4 普通 Canvas ComfyUI 的 SQLite JobCoordinator 自动执行/提交与产物接线纵向链路已落地第一轮**。单机单用户；不迁移旧浏览器画布。**P4 移除旧 V2 双执行、扩大媒体外部输入与任务历史管理，P5 全库备份/残余清理仍待完成**。
 
 ## 当前可运行代码（首轮实施）
 
@@ -18,7 +18,9 @@
 - **P3 第三轮（自包含单项目归档）**：`project-archive.mjs` 新增 `GET /api/v1/projects/:id/archive`（流式导出）与 `POST /api/v1/projects/import-archive`（原始 application/zip 上传）。ZIP 由 `manifest.json`（graph、title、viewport、chat sessions、引用媒体的 SHA-256/MIME/长度清单）和 `blobs/<sha256>` 组成，按内容哈希去重。导入时严格限制路径与文件数量，只接受此版的 ZIP32 **无压缩文件条目**，要求有效中央目录结尾并逐项校验 SHA-256、尺寸、MIME；校验全部完成后入 CAS，最后单事务创建**新项目 ID**。任何校验失败均不会创建项目；前置 CAS 写失败可能留下孤立但可回收的 CAS。**V1 已升级单归档上限为 2 GiB（包括所有媒体和元数据），最多 127 个 CAS 文件**，超限返回 413，不会产出不完整备份。项目列表恢复了“导入项目归档”，项目卡恢复了“导出包含媒体的项目归档”按钮；导出/导入前须确认内存中的自动保存队列已提交成功。此归档**不包含**历史生成任务、凭据 Vault、其他项目、用户个性化设置或完整 SQLite WAL 备份。
 - **P3 自检**：真实 Fastify 通过 HTTP 导出→软删原项目→导入新项目→关闭重启 SQLite→重新读取节点、视口、聊天和原始图片/音频 bytes；另测试路径穿越、文件丢失、媒体 SHA 变化、ZIP 尾部截断、旧 origin-local media key、未鉴权请求的失败保护。
 - **P3 第四轮（大媒体流式归档）**：ZIP32 STORE 最大归档 2 GiB，至多 127 个 CAS 对象。导出保留逐文件 SHA-256 与响应背压；`project-archive-import.mjs` 只把最多 5 MiB 的 manifest 放入 RAM，媒体分块写入私有临时目录并同步计算 SHA-256，校验 ZIP32 结束目录、路径白名单、压缩方式、数量、大小及 manifest 完整性；**所有文件确认完整后才逐个导入 CAS，最后单事务创建 SQLite 项目**。异常时关闭文件流、删除临时目录。前端在支持 File System Access API 的 Chrome/Edge 上直接写入用户选中的 ZIP 文件，不再读取整包 Blob；其他浏览器只允许不超过 128 MiB 的内存下载，超出显式报错。文件选择器需在用户点击的事件上下文中打开。本轮使用 **130 MiB 视频** 完成真实磁盘 ZIP 导出、导入、图与视口恢复。归档限制并非 BlobStore 生成捕获限制，两者仍独立验证。ZIP64（单归档超过 4 GiB）及流式跨项目全库备份不在此范围。
-- **P4 依赖审计**：普通 Canvas Comfy 工作流目前在 `executeComfyWorkflow` 中默认使用旧 V2 执行；新的 `startBackendComfyWorkflowRun` 要求已经隐藏的手动同步桥 `backendSyncRef.current`，且旧途径以 localStorage 保存 pending 键。必须先改为直接使用 SQLite 项目和项目修订屏障、后端 JobCoordinator 提交及服务端可恢复提交状态，然后再移除旧 V2 的 Canvas 执行分支。不能简单把 `backendComfyEnabled` 默认设 true。
+- **P4 第一轮（直接 SQLite Comfy 执行）**：`sqlite-comfy-bridge.ts` 已将普通 Canvas 工作流的 `startBackendComfyWorkflowRun` 直接接入 `use-canvas-sqlite-store`（无需 `createCanvasBackendSync`、手动连接或单独本地项目缓存）。执行前验证实时图与冻结图完全一致，显式写入 Store、等待三通道保存，读取后端项目再次验证图、revision 与源节点 SHA-256 指纹。参考图片上传后端 CAS，任务 `POST /api/v1/jobs` 使用冻结输入及幂等键。后端 `/jobs/snapshot` 增加 `targetNodeId`；SQLite-only 新路径提交前检查同一项目、工作流是否存在非终态任务，HTTP 响应丢失后从服务器查询恢复，**不再将新的生成请求或待确认 payload 保存在 localStorage**。页面载入后自动扫描 SQLite 后端活跃任务及最近最多 40 个缺失产物的成功任务，`sqlite-comfy-job-watch.ts` 检查任务/Materialization 并仅在安全的追加式合并条件满足时自动接入图；Store 同步升级 revision、杜绝重复 PATCH。本轮测试涵盖源图冻结期间发生修改、服务端图不匹配、二次提交拦截、CAS 上传以及 typed 产物合并。旧 V2 已启动的任务仍须终结后才能切到新路径，避免同节点重复 GPU 调度。
+- **开发入口**：启动后端前须在同一 PowerShell 中设置 `$env:ATELIER_COMFY_INSTANCE_ID="本地 Comfy 实例 ID"` 和 `$env:ATELIER_COMFY_URL="http://127.0.0.1:8188"`，然后在 `web` 目录运行 `npm run dev`。全局 ComfyUI 实例选择 ID 必须与后端配置一致。前端在 `GET /api/v1/execution/capabilities` 确认 `autoDispatch=true` 且实例可执行时自动启用 SQLite JobCoordinator，无需手动开关；否则目前保留旧 V2 路径避免打断已存在的工作流。需要实际本机 ComfyUI 与生产模板进行完整 GPU 联调；当前已验证前端与 Fastify/SQLite 任务提交 API、重启恢复和模拟执行，**不宣称已实测真实 GPU 生成**。
+- **P4 后续**：完全停用 Canvas V2 双执行与废弃手动同步代码；普通图/视频/音频 API 的统一 JobCoordinator 化、后端模板持久化、视频和音频作为外部 Comfy 输入、客户端自动任务历史/终态异常的 UX、分页任务订阅、Materializer blocked 重试与更完整端到端 Comfy 真机验证。SQLite-only 的“项目数据”已完全后端化，但素材库和设置持久化仍在 P5 单独处理。
 - **尚待完成**：超过 2 GiB 的 ZIP64/大文件分段归档与全量 SQLite 数据库备份、派生预览文件清理与失效缓存重建、强一致的持久引用台账和意外断电恢复（当前 GC 是人工确认的保守 mark/sweep，不承诺磁盘故障下原子文件系统事务）、浏览器端其他非 Canvas 素材/配置数据收口；`services/api/video` 等公用非 Canvas 入口仍可能使用旧素材库。跨标签页 Materializer 增量刷新、生产静态站点托管、聊天按会话行拆分仍在后续计划。**P4/P5 完成前不可宣告整个产品 SQLite-only 全部完成。**
 
 在已有 `npm run dev:backend` 运行时，先安全停止旧服务（不要中断正在提交的 GPU 任务），再用 `npm run dev` 启动；不要同时启动两个后端进程争用端口 8788 和数据库进程锁。

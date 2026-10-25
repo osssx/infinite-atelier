@@ -99,6 +99,9 @@ import { CanvasRefreshShell } from "@/components/canvas/canvas-refresh-shell";
 import { createCanvasBackendSync, explainBackendSyncError, type BackendSyncStatus } from "@/features/backend-sync/canvas-backend-sync";
 import {prefersBackendProject,setBackendProjectPreference} from "@/features/backend-sync/backend-preferences";
 import { startBackendComfyWorkflowRun, assertNoActiveBackendComfyJob } from "@/features/backend-sync/backend-comfy-run";
+import {createSqliteComfyBridge} from "@/features/backend-sync/sqlite-comfy-bridge";
+import {watchSqliteComfyJob} from "@/features/backend-sync/sqlite-comfy-job-watch";
+import {canvasApi} from "@/features/backend-sync/canvas-api";
 import { CanvasTopBar } from "@/components/canvas/canvas-top-bar";
 import { ConnectionCreateMenu, NodeCreateMenu, type PendingConnectionCreate } from "@/components/canvas/canvas-create-menus";
 import {
@@ -402,6 +405,7 @@ function AtelierCanvasPage() {
     const resumedArkTasksRef = useRef(new Set<string>());
     const comfyArtifactImportsRef = useRef(new Set<string>());
     const comfyExecuteLocksRef = useRef(new Set<string>());
+    const sqliteJobWatchesRef=useRef(new Map<string,AbortController>());
 
     const persistVideoTask = useCallback((nodeId: string, task: VideoGenerationTask, status: "queued" | "running" | "succeeded" | "failed" | "cancelled" | "expired" = task.status || "queued") => {
         const nodesWithTask = nodesRef.current.map((node) => node.id === nodeId ? { ...node, metadata: { ...node.metadata, videoTask: { provider: task.provider, channelId: task.channelId, model: task.model, taskId: task.id, startedAt: task.startedAt || Date.now(), status } } } : node);
@@ -576,16 +580,23 @@ function AtelierCanvasPage() {
 
 
 
-    const toggleBackendComfy = useCallback(() => {
-        if (backendSyncRef.current?.state.status !== "connected") {
-            message.warning("请先连接本地后端项目同步");
-            return;
-        }
-        setBackendComfyEnabled(value=>!value);
-    },[message]);
-    useEffect(() => {
-        if(backendSyncStatus!=="connected")setBackendComfyEnabled(false);
-    },[backendSyncStatus]);
+    // SQLite-only Canvas: execution capability is discovered automatically.
+    // No manual sync connection and no separate browser project revision.
+    useEffect(()=>{
+        if(!projectLoaded||!globalComfyInstanceId){setBackendComfyEnabled(false);return}
+        let cancelled=false;
+        void canvasApi<{autoDispatch:boolean;comfyInstanceIds:string[]}>(
+            "/api/v1/execution/capabilities"
+        ).then(capability=>{
+            if(!cancelled)setBackendComfyEnabled(Boolean(
+                capability.autoDispatch&&capability.comfyInstanceIds.includes(globalComfyInstanceId)
+            ));
+        }).catch(()=>{if(!cancelled)setBackendComfyEnabled(false)});
+        return ()=>{cancelled=true};
+    },[projectLoaded,globalComfyInstanceId]);
+
+    useEffect(()=>()=>{for(const watch of sqliteJobWatchesRef.current.values())watch.abort();
+        sqliteJobWatchesRef.current.clear()},[projectId]);
 
     const reconcileBackendSync = useCallback(() => {
         const bridge=backendSyncRef.current;
@@ -3577,6 +3588,54 @@ function AtelierCanvasPage() {
     }, []);
 
 
+    const monitorSqliteJob=useCallback((jobId:string)=>{
+        if(sqliteJobWatchesRef.current.has(jobId))return;
+        const controller=new AbortController();
+        sqliteJobWatchesRef.current.set(jobId,controller);
+        void watchSqliteComfyJob({
+            projectId,jobId,signal:controller.signal,
+            getLocalGraph:()=>({nodes:nodesRef.current,connections:connectionsRef.current}),
+            applyGraph:graph=>{
+                if(activeProjectIdRef.current!==projectId||!pageMountedRef.current)return;
+                nodesRef.current=graph.nodes;connectionsRef.current=graph.connections;
+                setNodes(graph.nodes);setConnections(graph.connections);
+            },
+            onStatus:(status,details)=>{
+                if(controller.signal.aborted||activeProjectIdRef.current!==projectId)return;
+                if(status==="materialized")message.success("ComfyUI 产物已写入 SQLite 画布");
+                else if(status==="blocked"||status==="unavailable"||status==="needs_refresh")
+                    message.warning("后端任务产物需要检查或刷新画布："+(details??status));
+                else if(status==="failed"||status==="cancelled")
+                    message.error("ComfyUI 后端任务："+status);
+            }
+        }).finally(()=>{
+            if(sqliteJobWatchesRef.current.get(jobId)===controller)
+                sqliteJobWatchesRef.current.delete(jobId);
+        });
+    },[message,projectId]);
+
+    // Refreshing the page must recover already-submitted jobs from SQLite,
+    // including succeeded jobs whose materialization has not completed.
+    useEffect(()=>{
+        if(!projectLoaded||!backendComfyEnabled)return;
+        let cancelled=false;
+        void canvasApi<{jobs:Array<{id:string;projectId:string|null;status:string}>}>(
+            "/api/v1/jobs/snapshot"
+        ).then(snapshot=>{
+            if(cancelled)return;
+            const active=snapshot.jobs.filter(job=>job.projectId===projectId&&
+                !["succeeded","failed","cancelled"].includes(job.status));
+            // A historical succeeded task may still await Materializer, but do
+            // not start thousands of pollers for completed lifetime history.
+            const recent=snapshot.jobs.filter(job=>job.projectId===projectId&&
+                job.status==="succeeded"&&
+                !nodesRef.current.some(node=>node.metadata?.comfyArtifact?.runId===job.id))
+                .slice(-40);
+            for(const job of [...active,...recent])monitorSqliteJob(job.id);
+        }).catch(()=>{});
+        return ()=>{cancelled=true};
+    },[projectLoaded,backendComfyEnabled,monitorSqliteJob,projectId]);
+
     // Both the node toolbar and inspector submit through one durable path.
     // A synchronous per-node lock covers template lookup, staging and the HTTP request.
     const executeComfyWorkflow = useCallback(async (nodeId:string):Promise<ComfyRunState>=>{
@@ -3603,9 +3662,21 @@ function AtelierCanvasPage() {
             if(isComfyRunActive(workflowNode.metadata?.comfyExecution?.status))
                 throw new Error("该工作流正在执行或导入产物，当前不可重复提交");
             if(backendComfyEnabled) {
-                const bridge=backendSyncRef.current;
-                if(!bridge||bridge.state.status!=="connected")
-                    throw new Error("请先连接本地后端同步再执行");
+                // One node must not run both executors concurrently.
+                // A pending legacy POST or an unverifiable legacy run fails
+                // closed rather than risking a second GPU submission.
+                if(hasPendingComfyRun(projectId,nodeId))
+                    throw new Error("旧 ComfyUI V2 提交尚未确认，请先恢复该任务");
+                if(binding.lastRunId){
+                    const old=await getComfyRun(binding.lastRunId);
+                    if(!isComfyRunTerminal(old.status)||old.status==="submission_unknown")
+                        throw new Error("原 V2 任务尚未结束，不能再提交新后端任务");
+                }
+                const bridge=createSqliteComfyBridge({
+                    projectId,getLocalGraph:()=>({
+                        nodes:nodesRef.current,connections:connectionsRef.current
+                    })
+                });
                 const template=await getComfyTemplate(binding.templateId,binding.templateRevision);
                 if(!template)throw new Error("绑定的工作流模板版本不存在");
                 const outputs=template.ports.filter(port=>port.direction==="source"&&
@@ -3613,13 +3684,18 @@ function AtelierCanvasPage() {
                 if(!outputs.length)throw new Error("工作流没有可捕获的输出端口");
                 const job=await startBackendComfyWorkflowRun({
                     bridge,projectId,workflowNode,...snapshot,template,
-                    instanceId:globalComfyInstanceId,outputPortIds:outputs.map(port=>port.id)
+                    instanceId:globalComfyInstanceId,outputPortIds:outputs.map(port=>port.id),
+                    serverAuthoritative:true
                 });
-                message.info("新后端任务已排队："+job.id+"。完成后将通过画布同步自动接线。");
+                message.info("SQLite 生成任务已提交："+job.id+"。完成后自动恢复产物节点。");
+                monitorSqliteJob(job.id);
                 return {runId:job.id,status:job.status,workflowNodeId:nodeId,artifacts:[]};
             }
-            // Cross-executor lock: never issue a legacy GPU request while a
-            // new-backend submission is pending/unknown/running.
+            // The fallback legacy V2 executor must also consult SQLite: an
+            // already accepted backend task can outlive instance configuration.
+            await createSqliteComfyBridge({projectId,getLocalGraph:()=>({
+                nodes:nodesRef.current,connections:connectionsRef.current
+            })}).assertNoActiveJob(nodeId);
             await assertNoActiveBackendComfyJob(projectId,nodeId);
             const pending=hasPendingComfyRun(projectId,nodeId);
             if(!pending && binding.lastRunId) {
@@ -3656,7 +3732,7 @@ function AtelierCanvasPage() {
                 patchExecution(hasPendingComfyRun(projectId,nodeId)?"submission_unknown":"failed",String(cause));
             throw cause;
         }finally{comfyExecuteLocksRef.current.delete(key);}
-    },[backendComfyEnabled,globalComfyInstanceId,message,projectId,projectLoaded]);
+    },[backendComfyEnabled,globalComfyInstanceId,message,projectId,projectLoaded,monitorSqliteJob]);
 
     const handleComfyArtifacts = useCallback(async (artifacts: ComfyRunArtifact[]) => {
         const indexByWorkflow = new Map<string, number>();

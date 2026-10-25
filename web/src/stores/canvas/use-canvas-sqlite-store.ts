@@ -5,6 +5,8 @@ import type {CanvasBackgroundMode} from "@/lib/canvas-theme";
 import type {CanvasAssistantSession,CanvasConnection,CanvasNodeData,ViewportTransform} from "@/types/canvas";
 import {canvasApi,type CanvasBackendProject,type CanvasBackendSummary} from "@/features/backend-sync/canvas-api";
 import {createCanvasStatePersistence} from "@/features/backend-sync/canvas-state-persistence";
+import {safeRemoteCanvasMerge} from "@/features/backend-sync/canvas-backend-sync";
+import {canonicalBackendGraph} from "@/features/backend-sync/backend-source-fingerprint";
 
 /** Backend is authoritative. No IndexedDB, localStorage, or browser backup
  * participates in loading/saving canvas projects. */
@@ -28,6 +30,7 @@ type CanvasStore={
  deleteProjects:(ids:string[])=>Promise<void>;
  replaceProjects:(projects:CanvasProject[])=>void;
  updateProject:(id:string,patch:Patch)=>void;
+ adoptMaterializedGraph:(id:string,expected:{nodes:CanvasNodeData[];connections:CanvasConnection[]},remote:CanvasBackendProject)=>boolean;
 };
 const initialViewport:ViewportTransform={x:0,y:0,k:1};
 const revisions=new Map<string,number>(),loaded=new Set<string>(),dirty=new Set<string>();
@@ -185,10 +188,36 @@ export const useCanvasStore=create<CanvasStore>((set,get)=>({
    const timer=timers.get(id);if(timer)clearTimeout(timer);timers.delete(id);
   }
  },
+ adoptMaterializedGraph:(id,expected,remote)=>{
+  if(remote.id!==id||dirty.has(id)||activeWrites.has(id)||!loaded.has(id))return false;
+  const revision=revisions.get(id);
+  if(revision===undefined||remote.revision<=revision)return false;
+  const project=get().openProject(id);
+  if(!project)return false;
+  const current={nodes:project.nodes,connections:project.connections};
+  if(canonicalBackendGraph(current)!==canonicalBackendGraph(expected))return false;
+  if(!Array.isArray(remote.document.nodes)||!Array.isArray(remote.document.connections))return false;
+  const merged=safeRemoteCanvasMerge(current,{
+   nodes:remote.document.nodes as CanvasNodeData[],
+   connections:remote.document.connections as CanvasConnection[]
+  });
+  if(!merged)return false;
+  // Single synchronous Store commit: accepted server revision + graph always
+  // advance together. No PATCH: this is a backend-authoritative materialization.
+  revisions.set(id,remote.revision);
+  set(state=>({projects:state.projects.map(item=>item.id===id?
+   {...item,nodes:merged.nodes,connections:merged.connections}:item)}));
+  return true;
+ },
  replaceProjects:()=>{throw Error("canvas_legacy_browser_restore_not_supported")},
  updateProject:(id,patch)=>{
   const {viewport,chatSessions,activeChatId,...graphPatch}=patch;
-  const graphChanged=Object.keys(graphPatch).length>0;
+  const existing=get().openProject(id);
+  // Reapplying the exact authoritative arrays after a materialization must
+  // not create another redundant PATCH and move its server revision.
+  const graphChanged=Object.entries(graphPatch).some(([key,value])=>
+   existing?.[key as keyof CanvasProject]!==value);
+  if(!graphChanged&&viewport===undefined&&chatSessions===undefined&&activeChatId===undefined)return;
   useCanvasStore.setState(state=>state.projects.some(project=>project.id===id)?
    {projects:state.projects.map(project=>project.id===id?
     {...project,...patch,updatedAt:graphChanged?now():project.updatedAt}:project)}:state);

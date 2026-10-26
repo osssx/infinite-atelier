@@ -4,11 +4,13 @@ import {homedir} from "node:os";
 import {fileURLToPath} from "node:url";
 import {openMainDatabase} from "./database.mjs";
 import {acquireInstanceLock} from "./instance-lock.mjs";
+import {acquireDatasetGuard} from "./dataset-activation.mjs";
 import {createLocalSessionAuth} from "./session.mjs";
 import {createBlobStore} from "./blob-store.mjs";
 import {createProjectArchive} from "./project-archive.mjs";
 import {createMediaPreviewStore} from "./media-preview.mjs";
 import {createBlobGarbageCollector} from "./blob-gc.mjs";
+import {rebuildBlobReferenceLedger} from "./blob-reference-ledger.mjs";
 import {buildApp} from "./app.mjs";
 import {createWindowsDpapiProtector} from "./credential-protection.mjs";
 import {createCredentialVault} from "./credential-vault.mjs";
@@ -39,11 +41,15 @@ export function resolveLocalDataDir(dataDir=process.env.ATELIER_DATA_DIR){
  return actual;
 }
 /** Explicit opt-in backend assembly. Does not replace existing dev/start or Comfy gateway. */
-export function createLocalBackend({dataDir,streamPollMs=200,adapters,comfyInstances,comfyUpstreamCall,enableOpenAiModels=false,modelUpstreamCall,enableArkVideos=false,arkUpstreamCall,arkAssetConfig,arkAssetUpstreamCall,arkTosClient,blobMaxBytes=2_000_000_000,autoDispatch=false,autoLocalSession=false,dispatchIntervalMs=250}={}){
+export function createLocalBackend({dataDir,streamPollMs=200,adapters,comfyInstances,comfyUpstreamCall,enableOpenAiModels=false,modelUpstreamCall,enableArkVideos=false,arkUpstreamCall,arkAssetConfig,arkAssetUpstreamCall,arkTosClient,blobMaxBytes=2_000_000_000,autoDispatch=false,autoLocalSession=false,dispatchIntervalMs=250,activationRoot}={}){
  const root=resolveLocalDataDir(dataDir),lock=acquireInstanceLock(root);
- let db;
+ let db,datasetGuard;
  try{
+  datasetGuard=acquireDatasetGuard(root,{activationRoot});
   db=openMainDatabase(root);
+  // Durable owner/hash ledger rebuilt on safe startup after schema migration,
+  // before any worker can collect or garbage-collect media.
+  rebuildBlobReferenceLedger(db);
   // Fail closed if CurrentUser DPAPI is unavailable; no plaintext fallback.
   const protector=createWindowsDpapiProtector();
   const vault=createCredentialVault({db,protector});
@@ -87,7 +93,7 @@ export function createLocalBackend({dataDir,streamPollMs=200,adapters,comfyInsta
   return {app,db,sessionAuth,vault,blobStore,assetManager,mediaPreview,blobGc,projectArchive,coordinator,materializer,worker,lock,async close(){
    if(closed)return;closed=true;
    try{await worker?.stop();await coordinator?.stop();await app.close()}
-   finally{try{db.close()}finally{lock.release()}}
+   finally{try{db.close()}finally{try{datasetGuard.release()}finally{lock.release()}}}
   }};
- }catch(e){db?.close();lock.release();throw e}
+ }catch(e){try{db?.close()}finally{try{datasetGuard?.release()}finally{lock.release()}}throw e}
 }

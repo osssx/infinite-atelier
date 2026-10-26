@@ -36,7 +36,7 @@ test("P5.1 cold backup copies SQLite plus all ready BlobStore bytes, verifies, a
  const result=await createColdBackup({dataDir:f.source,backupDir:f.destination});
  assert.equal(result.blobCount,2);
  assert.equal(result.blobBytes,png.length+Buffer.byteLength("hello from the Canvas\n"));
- assert.equal(result.schemaVersion,9);
+ assert.equal(result.schemaVersion,10);
  assert.equal(existsSync(join(f.destination,"db","atelier.sqlite")),true);
  assert.equal(existsSync(join(f.destination,"manifest.json")),true);
  const check=await verifyColdBackup({backupDir:f.destination});
@@ -68,6 +68,21 @@ test("P5.1 offline CLI verify command inspects a completed backup",async t=>{
  assert.equal(result.ok,true);
  assert.equal(result.operation,"verify");
  assert.equal(result.blobCount,2);
+});
+test("P5.2 CLI activate requires explicit confirmation and promotes only restored standby",async t=>{
+ const f=await fixture(t);
+ await createColdBackup({dataDir:f.source,backupDir:f.destination});
+ await restoreColdBackup({backupDir:f.destination,dataDir:f.restore});
+ assert.throws(()=>execFileSync(process.execPath,
+  ["scripts/canvas-data-backup.mjs","activate",f.restore,"INCORRECT"],{
+   cwd:process.cwd(),encoding:"utf8",timeout:30000}),/dataset_confirmation_required/);
+ const output=execFileSync(process.execPath,
+  ["scripts/canvas-data-backup.mjs","activate",f.restore,"ACTIVATE_RESTORED_DATASET"],{
+   cwd:process.cwd(),encoding:"utf8",timeout:30000});
+ const promoted=JSON.parse(output);
+ assert.equal(promoted.ok,true);
+ assert.equal(promoted.operation,"activate");
+ assert.equal(promoted.activeRoot,f.restore);
 });
 test("P5.1 SQLite backup API includes committed WAL sidecar transactions in quiescent database",async t=>{
  const f=await fixture(t);

@@ -1,36 +1,11 @@
 import {lstatSync,unlinkSync} from "node:fs";
 import {writeTransaction} from "./repository.mjs";
+import {currentBlobReferences,persistedBlobReferences,rebuildBlobReferenceLedger,blobReferenceLedgerStatus} from "./blob-reference-ledger.mjs";
 
-const HASH=/[a-f0-9]{64}/g;
 const fail=(code,statusCode=409)=>Object.assign(Error(code),{code,statusCode});
 const DAY=86400000;
 const MAX_PER_SWEEP=50;
-/** Conservative reachability: unknown JSON forms retain matching hashes rather
- * than deleting assets referenced by a feature that lacks FK constraints.
- * Project soft deletes cease to retain media, but ALL frozen jobs/artifacts
- * keep their hashes until job-history retention gets an explicit policy.
- */
-export function referencedBlobHashes(db){
- const found=new Set();
- const add=text=>{
-  if(typeof text!=="string")return;
-  for(const hash of text.matchAll(HASH))found.add(hash[0]);
- };
- const statements=[
-  "SELECT document_json AS body FROM projects WHERE deleted_at IS NULL",
-  "SELECT c.sessions_json AS body FROM project_chats c JOIN projects p ON p.id=c.project_id WHERE p.deleted_at IS NULL",
-  "SELECT snapshot_json AS body FROM jobs",
-  "SELECT graph_json AS body FROM comfy_job_preparations",
-  "SELECT image_files_json AS body FROM comfy_job_preparations",
-  "SELECT blob_id AS body FROM artifacts",
-  "SELECT metadata_json AS body FROM artifacts",
-  "SELECT payload_json AS body FROM job_events"
- ];
- for(const sql of statements){
-  for(const row of db.prepare(sql).all())add(row.body);
- }
- return found;
-}
+export const referencedBlobHashes=currentBlobReferences;
 /** Explicit maintenance only: dry-run by default, no background deletions.
  * Apply requires exact confirmation and at least seven days of inactivity.
  * Each candidate has a synchronous write transaction, with a fresh reference
@@ -44,9 +19,13 @@ export function createBlobGarbageCollector({db,blobStore}={}){
   if(!dryRun&&confirmation!=="DELETE_UNREFERENCED")throw fail("gc_confirmation_required",400);
   if(!Number.isSafeInteger(limit)||limit<1||limit>MAX_PER_SWEEP)throw fail("invalid_gc_limit",400);
   if(blobStore.hasActiveUploads())throw fail("gc_upload_in_progress",409);
+  // Rebuild dirty persisted ownership records before evaluating deletions.
+  // Dry runs never delete media; a ledger refresh is a SQLite-only audit write.
+  if(blobReferenceLedgerStatus(db).dirty)rebuildBlobReferenceLedger(db);
   function scan(){
    if(blobStore.hasActiveUploads())throw fail("gc_upload_in_progress",409);
    const referenced=referencedBlobHashes(db);
+   for(const hash of persistedBlobReferences(db))referenced.add(hash);
    const rows=db.prepare("SELECT id,byte_size,mime,status FROM blobs WHERE status='ready' ORDER BY id").all();
    const candidates=[];let totalBytes=0,kept=0,protectedRecent=0,missing=0;
    for(const row of rows){
@@ -75,7 +54,8 @@ export function createBlobGarbageCollector({db,blobStore}={}){
   for(const item of inspection.candidates){
    const deleted=writeTransaction(db,()=>{
     if(blobStore.hasActiveUploads())throw fail("gc_upload_in_progress");
-    if(referencedBlobHashes(db).has(item.id))return false;
+    if(blobReferenceLedgerStatus(db).dirty)throw fail('gc_reference_ledger_dirty');
+    if(referencedBlobHashes(db).has(item.id)||persistedBlobReferences(db).has(item.id))return false;
     const row=db.prepare("SELECT byte_size FROM blobs WHERE id=? AND status='ready'").get(item.id);
     if(!row)return false;
     const path=blobStore.pathFor(item.id),info=lstatSync(path);

@@ -1,5 +1,5 @@
 import{JOB_STATUSES,EXECUTION_MODES,ARTIFACT_KINDS}from"./contracts.mjs";
-export const SCHEMA_VERSION=9;
+export const SCHEMA_VERSION=10;
 const quoted=x=>x.map(s=>"'"+s+"'").join(",");
 export const INITIAL_SCHEMA_SQL=`
 CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY,applied_at INTEGER NOT NULL);
@@ -159,6 +159,72 @@ CREATE TABLE IF NOT EXISTS comfy_presets(
 );
 CREATE INDEX IF NOT EXISTS ix_comfy_presets_template ON comfy_presets(template_id,revision);
 `;
+/** v10: Conservative persisted CAS references. Triggers only mark dirty in
+ * the SAME SQLite transaction as source edits. A maintenance rebuild produces
+ * the exact owner/hash rows; GC also rescans live sources before unlinking.
+ */
+export const BLOB_REF_LEDGER_SCHEMA_SQL=`
+CREATE TABLE IF NOT EXISTS blob_ref_ledger_state(
+ id INTEGER PRIMARY KEY CHECK(id=1),dirty INTEGER NOT NULL CHECK(dirty IN (0,1)),
+ change_seq INTEGER NOT NULL DEFAULT 0,rebuilt_seq INTEGER NOT NULL DEFAULT 0,
+ rebuilt_at INTEGER
+);
+INSERT OR IGNORE INTO blob_ref_ledger_state(id,dirty,change_seq,rebuilt_seq)
+ VALUES(1,1,0,0);
+CREATE TABLE IF NOT EXISTS blob_ref_ledger(
+ source_kind TEXT NOT NULL,source_id TEXT NOT NULL,blob_id TEXT NOT NULL,
+ PRIMARY KEY(source_kind,source_id,blob_id)
+);
+CREATE INDEX IF NOT EXISTS ix_blob_ref_ledger_blob ON blob_ref_ledger(blob_id);
+CREATE TRIGGER IF NOT EXISTS blob_ref_dirty_projects_insert AFTER INSERT ON projects
+ BEGIN UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1; END;
+CREATE TRIGGER IF NOT EXISTS blob_ref_dirty_projects_update AFTER UPDATE ON projects
+ BEGIN UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1; END;
+CREATE TRIGGER IF NOT EXISTS blob_ref_dirty_projects_delete AFTER DELETE ON projects
+ BEGIN UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1; END;
+CREATE TRIGGER IF NOT EXISTS blob_ref_dirty_project_chats_insert AFTER INSERT ON project_chats
+ BEGIN UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1; END;
+CREATE TRIGGER IF NOT EXISTS blob_ref_dirty_project_chats_update AFTER UPDATE ON project_chats
+ BEGIN UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1; END;
+CREATE TRIGGER IF NOT EXISTS blob_ref_dirty_project_chats_delete AFTER DELETE ON project_chats
+ BEGIN UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1; END;
+CREATE TRIGGER IF NOT EXISTS blob_ref_dirty_jobs_insert AFTER INSERT ON jobs
+ BEGIN UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1; END;
+CREATE TRIGGER IF NOT EXISTS blob_ref_dirty_jobs_update AFTER UPDATE ON jobs
+ BEGIN UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1; END;
+CREATE TRIGGER IF NOT EXISTS blob_ref_dirty_jobs_delete AFTER DELETE ON jobs
+ BEGIN UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1; END;
+CREATE TRIGGER IF NOT EXISTS blob_ref_dirty_comfy_job_preparations_insert AFTER INSERT ON comfy_job_preparations
+ BEGIN UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1; END;
+CREATE TRIGGER IF NOT EXISTS blob_ref_dirty_comfy_job_preparations_update AFTER UPDATE ON comfy_job_preparations
+ BEGIN UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1; END;
+CREATE TRIGGER IF NOT EXISTS blob_ref_dirty_comfy_job_preparations_delete AFTER DELETE ON comfy_job_preparations
+ BEGIN UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1; END;
+CREATE TRIGGER IF NOT EXISTS blob_ref_dirty_artifacts_insert AFTER INSERT ON artifacts
+ BEGIN UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1; END;
+CREATE TRIGGER IF NOT EXISTS blob_ref_dirty_artifacts_update AFTER UPDATE ON artifacts
+ BEGIN UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1; END;
+CREATE TRIGGER IF NOT EXISTS blob_ref_dirty_artifacts_delete AFTER DELETE ON artifacts
+ BEGIN UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1; END;
+CREATE TRIGGER IF NOT EXISTS blob_ref_dirty_job_events_insert AFTER INSERT ON job_events
+ BEGIN UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1; END;
+CREATE TRIGGER IF NOT EXISTS blob_ref_dirty_job_events_update AFTER UPDATE ON job_events
+ BEGIN UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1; END;
+CREATE TRIGGER IF NOT EXISTS blob_ref_dirty_job_events_delete AFTER DELETE ON job_events
+ BEGIN UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1; END;
+CREATE TRIGGER IF NOT EXISTS blob_ref_dirty_comfy_template_versions_insert AFTER INSERT ON comfy_template_versions
+ BEGIN UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1; END;
+CREATE TRIGGER IF NOT EXISTS blob_ref_dirty_comfy_template_versions_update AFTER UPDATE ON comfy_template_versions
+ BEGIN UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1; END;
+CREATE TRIGGER IF NOT EXISTS blob_ref_dirty_comfy_template_versions_delete AFTER DELETE ON comfy_template_versions
+ BEGIN UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1; END;
+CREATE TRIGGER IF NOT EXISTS blob_ref_dirty_ark_asset_uploads_insert AFTER INSERT ON ark_asset_uploads
+ BEGIN UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1; END;
+CREATE TRIGGER IF NOT EXISTS blob_ref_dirty_ark_asset_uploads_update AFTER UPDATE ON ark_asset_uploads
+ BEGIN UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1; END;
+CREATE TRIGGER IF NOT EXISTS blob_ref_dirty_ark_asset_uploads_delete AFTER DELETE ON ark_asset_uploads
+ BEGIN UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1; END;
+`;
 export function initializeSchema(db){
  db.exec("PRAGMA foreign_keys=ON;PRAGMA busy_timeout=5000;BEGIN IMMEDIATE");
  try{
@@ -187,6 +253,7 @@ export function initializeSchema(db){
   }
   if(version<8)db.exec(ARK_ASSET_SCHEMA_SQL);
   if(version<9)db.exec(COMFY_REGISTRY_SCHEMA_SQL);
+  if(version<10)db.exec(BLOB_REF_LEDGER_SCHEMA_SQL);
   if(version<SCHEMA_VERSION)db.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)").run(SCHEMA_VERSION,Date.now());
   db.exec("COMMIT");
  }catch(e){db.exec("ROLLBACK");throw e}

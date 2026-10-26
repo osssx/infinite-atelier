@@ -4,6 +4,7 @@ import {copyFile,mkdir,mkdtemp,readFile,rename,rm,writeFile,lstat} from "node:fs
 import {basename,dirname,isAbsolute,join,relative,resolve,sep} from "node:path";
 import {DatabaseSync,backup as sqliteBackup} from "node:sqlite";
 import {acquireInstanceLock} from "./instance-lock.mjs";
+import {acquireDatasetGuard,installStandbyIdentity} from "./dataset-activation.mjs";
 import {resolveLocalDataDir} from "./runtime.mjs";
 
 const HASH=/^[a-f0-9]{64}$/;
@@ -90,11 +91,14 @@ async function parseManifest(backupDir){
   throw error("backup_manifest_invalid");
  const input=JSON.parse(await readFile(path,"utf8"));
  if(!input||typeof input!=="object"||Array.isArray(input)||
-  input.format!=="infinite-atelier-cold-backup"||input.version!==1||
+  input.format!=="infinite-atelier-cold-backup"||![1,2].includes(input.version)||
   !Number.isSafeInteger(input.createdAt)||input.createdAt<1||
   !Number.isSafeInteger(input.schemaVersion)||input.schemaVersion<1||
   !HASH.test(input.databaseSha256)||!Number.isSafeInteger(input.databaseBytes)||
   input.databaseBytes<0||!Array.isArray(input.blobs)||input.blobs.length>MAX_BLOBS)
+  throw error("backup_manifest_invalid");
+ if(input.version===2&&(!/^[0-9a-f-]{36}$/i.test(input.lineageId??"")||
+  typeof input.originRoot!=="string"||!isAbsolute(input.originRoot)))
   throw error("backup_manifest_invalid");
  let previous="";
  for(const blob of input.blobs){
@@ -137,15 +141,16 @@ export async function verifyColdBackup({backupDir}={}){
  * SQLite backup() captures committed WAL data; CAS publication is quiescent
  * while the lock is held. No HTTP/worker snapshot can claim this guarantee.
  */
-export async function createColdBackup({dataDir,backupDir}={}){
+export async function createColdBackup({dataDir,backupDir,activationRoot}={}){
  const source=location(dataDir),target=location(backupDir);
  disjoint(source,target);
  if(!existsSync(join(source,"db","atelier.sqlite")))
   throw error("backup_source_database_missing");
  await mustAbsent(target);
  const guard=acquireInstanceLock(source,{recoverStale:false});
- let stage=null,db=null;
+ let stage=null,db=null,datasetGuard=null;
  try{
+  datasetGuard=acquireDatasetGuard(source,{activationRoot});
   stage=await stageFor(target);
   db=new DatabaseSync(join(source,"db","atelier.sqlite"));
   await mustRealDirectory(join(source,"db"));
@@ -170,7 +175,8 @@ export async function createColdBackup({dataDir,backupDir}={}){
   }
   const dbHash=await hashedFile(join(stage,"db","atelier.sqlite"));
   const manifest={
-   format:"infinite-atelier-cold-backup",version:1,createdAt:Date.now(),
+   format:"infinite-atelier-cold-backup",version:2,createdAt:Date.now(),
+   lineageId:datasetGuard.identity.lineageId,originRoot:datasetGuard.identity.originRoot,
    schemaVersion:copy.version,databaseSha256:dbHash.sha256,
    databaseBytes:dbHash.bytes,blobs:copy.blobs
   };
@@ -182,7 +188,7 @@ export async function createColdBackup({dataDir,backupDir}={}){
  }finally{
   try{db?.close()}finally{
    if(stage)await rm(stage,{recursive:true,force:true});
-   guard.release();
+   try{datasetGuard?.release()}finally{guard.release()}
   }
  }
 }
@@ -197,6 +203,7 @@ export async function restoreColdBackup({backupDir,dataDir}={}){
  await mustAbsent(target);
  const expected=await verifyColdBackup({backupDir:source});
  const manifest=await parseManifest(source);
+ if(manifest.version!==2)throw error("backup_activation_identity_required");
  let stage=null;
  try{
   stage=await stageFor(target);
@@ -210,6 +217,7 @@ export async function restoreColdBackup({backupDir,dataDir}={}){
   await writeFile(join(stage,"manifest.json"),JSON.stringify(manifest)+"\n",{flag:"wx",mode:0o600});
   const checked=await verifyColdBackup({backupDir:stage});
   if(JSON.stringify(expected)!==JSON.stringify(checked))throw error("backup_restore_verification_failed");
+  installStandbyIdentity(stage,{lineageId:manifest.lineageId,originRoot:manifest.originRoot});
   // Only user data is published; backup manifest is kept in the source copy.
   await rm(join(stage,"manifest.json"));
   await mustAbsent(target);

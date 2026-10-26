@@ -7,6 +7,7 @@ import {EXECUTION_MODES} from "./contracts.mjs";
 import {CANVAS_NODE_ID_PATTERN} from "../canvas-node-id.mjs";
 import {ARCHIVE_MAX_BYTES} from "./project-archive.mjs";
 import {createComfyRegistry} from "./comfy-registry.mjs";
+import {listProjectJobs} from "./project-job-history.mjs";
 const nonempty={type:"string",minLength:1,maxLength:256};
 const idSchema={type:"string",pattern:"^[A-Za-z0-9_-]{1,128}$"};
 const canvasNodeIdSchema={type:"string",pattern:CANVAS_NODE_ID_PATTERN};
@@ -91,7 +92,7 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
    "invalid_project_id","project_document_too_large","expected_revision_required","invalid_project_reference",
    "invalid_canvas_chats","invalid_canvas_viewport","canvas_chats_too_large",
    "chats_revision_conflict","viewport_revision_conflict",
-   "stale_generation_source","cyclic_generation_source","generation_save_barrier_required","invalid_job_request","idempotency_key_conflict","backend_prior_job_not_terminal","job_not_found",
+   "stale_generation_source","cyclic_generation_source","generation_save_barrier_required","invalid_job_request","idempotency_key_conflict","backend_prior_job_not_terminal","job_not_found","invalid_project_job_history_request","invalid_project_job_history_cursor",
    "invalid_event_cursor","event_cursor_expired","raw_credentials_forbidden",
    "invalid_bootstrap_token","unsupported_blob_mime","invalid_sha256","blob_quota_exceeded",
    "empty_blob","blob_mime_mismatch","blob_digest_mismatch","blob_identity_conflict",
@@ -379,6 +380,22 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
    }
    return {materializations:materializer.status({jobId:req.params.id})};
   });
+  app.post("/api/v1/projects/:id/materializations/:artifactId/recover",{
+   schema:{params:{type:"object",required:["id","artifactId"],
+    properties:{id:idSchema,artifactId:idSchema},additionalProperties:false},
+    body:{type:"object",additionalProperties:false}}
+  },async(req,reply)=>{
+   // Direct Materializer replay only. No Coordinator tick / provider submit.
+   const recovered=await materializer.recoverPending({
+    projectId:req.params.id,artifactId:req.params.artifactId});
+   if(!recovered){
+    reply.code(409);
+    return {code:"materialization_not_pending",message:"materialization_not_pending",requestId:req.id};
+   }
+   reply.header("Cache-Control","no-store");
+   return {artifactId:recovered.artifactId,status:recovered.status,
+    reason:recovered.reason??null};
+  });
   app.post("/api/v1/projects/:id/materializations/:artifactId/retry",{
    schema:{params:{type:"object",required:["id","artifactId"],
     properties:{id:idSchema,artifactId:idSchema},additionalProperties:false},
@@ -402,6 +419,19 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
    blobId:row.blob_id,kind:row.kind,mimeType:row.mime,sha256:row.sha256,
    metadata:JSON.parse(row.metadata_json)
   }))};
+ });
+ app.get("/api/v1/projects/:id/jobs",{
+  schema:{
+   params:{type:"object",required:["id"],properties:{id:idSchema},additionalProperties:false},
+   querystring:{type:"object",properties:{
+    limit:{type:"integer",minimum:1,maximum:50},
+    before:idSchema
+   },additionalProperties:false}
+  }
+ },(req,reply)=>{
+  reply.header("Cache-Control","no-store");
+  return listProjectJobs(db,{projectId:req.params.id,
+   limit:req.query.limit??20,before:req.query.before});
  });
  app.get("/api/v1/jobs/snapshot",()=>{
   const {jobs,eventCursor}=readJobsSnapshot(db);return {jobs:jobs.map(jobView),eventCursor};

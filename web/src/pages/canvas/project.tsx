@@ -102,6 +102,8 @@ import {capabilitiesForModel} from "@/services/api/video/model-capabilities";
 import {validateSeedanceRequest} from "@/services/api/video/seedance-content";
 import {ensureSqliteModelChannel,modelChannelProvider} from "@/features/backend-sync/model-channel-autoroute";
 import {watchSqliteComfyJob} from "@/features/backend-sync/sqlite-comfy-job-watch";
+import {refreshSqliteComfyArtifacts} from "@/features/backend-sync/sqlite-comfy-job-watch";
+import {CanvasJobHistory} from "@/features/backend-sync/canvas-job-history";
 import {canvasApi} from "@/features/backend-sync/canvas-api";
 import {preserveValidCanvasViewport} from "@/features/backend-sync/canvas-state-persistence";
 import { CanvasTopBar } from "@/components/canvas/canvas-top-bar";
@@ -329,6 +331,7 @@ function AtelierCanvasPage() {
     const [nodeCreatePosition, setNodeCreatePosition] = useState<Position | null>(null);
     const [runningNodeId, setRunningNodeId] = useState<string | null>(null);
     const [isMiniMapOpen, setIsMiniMapOpen] = useState(false);
+    const [jobHistoryOpen,setJobHistoryOpen]=useState(false);
     const [backgroundMode, setBackgroundMode] = useState<CanvasBackgroundMode>("lines");
     const [showImageInfo, setShowImageInfo] = useState(false);
     const [comfyInstanceId, setComfyInstanceId] = useState<string | undefined>(undefined);
@@ -3912,6 +3915,21 @@ function AtelierCanvasPage() {
                     onUndo={undoCanvas}
                     onRedo={redoCanvas}
                     backendComfyEnabled={backendComfyEnabled}
+                    onOpenJobHistory={()=>setJobHistoryOpen(true)}
+                />
+
+                <CanvasJobHistory projectId={projectId} open={jobHistoryOpen}
+                    onClose={()=>setJobHistoryOpen(false)}
+                    onObserveJob={jobId=>monitorSqliteJobRef.current(jobId)}
+                    onRefreshCanvas={()=>refreshSqliteComfyArtifacts({
+                        projectId,
+                        getLocalGraph:()=>({nodes:nodesRef.current,connections:connectionsRef.current}),
+                        applyGraph:graph=>{
+                            if(activeProjectIdRef.current!==projectId||!pageMountedRef.current)return;
+                            nodesRef.current=graph.nodes;connectionsRef.current=graph.connections;
+                            setNodes(graph.nodes);setConnections(graph.connections);
+                        }
+                    })}
                 />
 
                 <AtelierCanvas

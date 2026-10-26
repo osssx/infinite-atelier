@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Download, Home, Images, Menu, PanelLeftClose, PanelLeftOpen, Plus, Redo2, Trash2, Undo2, Upload } from "lucide-react";
+import { Clock3, Download, Home, Images, Menu, PanelLeftClose, PanelLeftOpen, Plus, Redo2, Trash2, Undo2, Upload } from "lucide-react";
 import { Dropdown, Modal, Tooltip } from "antd";
 import { useTranslation } from "react-i18next";
 
@@ -27,6 +27,7 @@ export function CanvasTopBar({
     onUndo,
     onRedo,
     backendComfyEnabled = false,
+    onOpenJobHistory,
 }: {
     title: string;
     titleDraft: string;
@@ -45,6 +46,7 @@ export function CanvasTopBar({
     onImportImage: () => void;
     onUndo: () => void;
     onRedo: () => void;
+    onOpenJobHistory: () => void;
     backendComfyEnabled?: boolean;
 }) {
     const colorTheme = useThemeStore((state) => state.theme);
@@ -131,6 +133,13 @@ export function CanvasTopBar({
                 </div>
 
                 <div className="pointer-events-auto flex items-center gap-1.5">
+                    <Tooltip title="SQLite 任务历史与异常落图恢复">
+                        <button type="button" onClick={onOpenJobHistory} aria-label="SQLite 任务历史"
+                            className="grid size-7 place-items-center rounded-full transition hover:bg-black/5 dark:hover:bg-white/10"
+                            style={{ color: theme.node.text }}>
+                            <Clock3 className="size-4"/>
+                        </button>
+                    </Tooltip>
                     <UserStatusActions variant="canvas" onOpenShortcuts={() => setShortcutsOpen(true)} />
                 </div>
             </div>

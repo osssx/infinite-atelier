@@ -12,6 +12,7 @@ import {fingerprintSource,submitJob,appendArtifact,transitionJob,readEventsAfter
 import {createJobCoordinator} from "./job-coordinator.mjs";
 import {createBackendWorker} from "./worker.mjs";
 import {createLocalBackend} from "./runtime.mjs";
+import {buildApp} from "./app.mjs";
 import {randomUUID} from "node:crypto";
 
 const png=Buffer.from([137,80,78,71,13,10,26,10,0,0,0,0,73,72,68,82]);
@@ -105,6 +106,68 @@ test("source mutation blocks materialization while GPU success and artifacts rem
  const result=await f.materializer.runOnce();
  assert.equal(result[0].status,"materialized");
  assert.equal(getProject(f.db,"project-1").document.nodes.length,2);
+});
+test("P4.7 pending artifact recover processes only stored Blob, never generates again",async t=>{
+ const f=fixture(t),{jobId,created}=await f.addArtifacts({count:1});
+ const app=buildApp({db:f.db,materializer:f.materializer,
+  authorize:req=>req.headers["x-test-owner"]==="owner"});
+ t.after(async()=>app.close());
+ const call=(project="project-1",headers={"x-test-owner":"owner"})=>app.inject({
+  method:"POST",url:"/api/v1/projects/"+project+"/materializations/"+created[0]+"/recover",
+  headers,payload:{}
+ });
+ assert.equal((await call("another-project")).statusCode,409);
+ assert.equal((await call("project-1",{})).statusCode,401);
+ assert.equal((await call("project-1",{"x-test-owner":"owner",origin:"https://other.example"})).statusCode,403);
+ f.db.prepare("UPDATE jobs SET status='submission_unknown' WHERE id=?").run(jobId);
+ assert.equal((await call()).statusCode,409,"ambiguous remote submission cannot materialize");
+ f.db.prepare("UPDATE jobs SET status='succeeded' WHERE id=?").run(jobId);
+ const first=await call();
+ assert.equal(first.statusCode,200,first.body);
+ assert.equal(first.json().status,"materialized");
+ assert.equal((await call()).statusCode,409,"already materialized cannot run twice");
+ assert.equal(getProject(f.db,"project-1").document.nodes.length,2);
+ assert.equal(f.db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n,1);
+ assert.equal(f.db.prepare("SELECT status FROM jobs WHERE id=?").get(jobId).status,"succeeded");
+});
+test("P4.7 retry endpoint only requeues a succeeded blocked artifact, never GPU submission",async t=>{
+ const f=fixture(t),{jobId,created}=await f.addArtifacts({count:1});
+ const current=getProject(f.db,"project-1");
+ current.document.nodes[0].metadata.comfyPorts[0].valueKind="STRING";
+ patchProject(f.db,{id:"project-1",expectedRevision:1,document:current.document});
+ assert.equal((await f.materializer.runOnce())[0].status,"blocked");
+ const app=buildApp({db:f.db,materializer:f.materializer,
+  authorize:req=>req.headers["x-test-owner"]==="owner"});
+ t.after(async()=>app.close());
+ const post=(project="project-1",headers={"x-test-owner":"owner"})=>app.inject({
+  method:"POST",url:"/api/v1/projects/"+project+"/materializations/"+created[0]+"/retry",
+  headers,payload:{}
+ });
+ const before=(await app.inject({method:"GET",url:"/api/v1/projects/project-1/jobs",
+  headers:{"x-test-owner":"owner"}})).json().jobs[0];
+ assert.equal(before.artifacts[0].status,"blocked");
+ assert.equal(before.artifacts[0].reason,"materialization_port_mismatch");
+ assert.equal((await post("other-project")).statusCode,409);
+ assert.equal((await post("project-1",{})).statusCode,401);
+ assert.equal((await post("project-1",{"x-test-owner":"owner",origin:"https://attacker.example"})).statusCode,403);
+ const fixed=getProject(f.db,"project-1");
+ fixed.document.nodes[0].metadata.comfyPorts[0].valueKind="IMAGE";
+ patchProject(f.db,{id:"project-1",expectedRevision:2,document:fixed.document});
+ const retry=await post();
+ assert.equal(retry.statusCode,200,retry.body);
+ assert.equal(retry.json().requeued,true);
+ assert.equal((await post()).statusCode,409,"double click cannot requeue twice");
+ const requeued=(await app.inject({method:"GET",url:"/api/v1/projects/project-1/jobs",
+  headers:{"x-test-owner":"owner"}})).json().jobs[0];
+ assert.equal(requeued.artifacts[0].status,"retry");
+ assert.equal((await f.materializer.runOnce())[0].status,"materialized");
+ const restored=getProject(f.db,"project-1");
+ assert.equal(restored.document.nodes.length,2);
+ assert.equal(restored.document.connections.length,1);
+ assert.equal((await f.materializer.runOnce()).length,0);
+ assert.equal(f.db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n,1);
+ assert.equal(f.db.prepare("SELECT status FROM jobs WHERE id=?").get(jobId).status,"succeeded");
+ assert.equal(readEventsAfter(f.db,0).filter(x=>x.kind==="artifact_materialization_requeued").length,1);
 });
 test("deleted workflow or invalid port fails closed without rolling back generation",async t=>{
  const f=fixture(t),{jobId}=await f.addArtifacts({count:1});

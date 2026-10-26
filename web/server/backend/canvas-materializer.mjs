@@ -15,13 +15,14 @@ const validId=id=>typeof id==="string"&&/^[a-zA-Z0-9_-]{1,128}$/.test(id);
  */
 export function createCanvasMaterializer({db,blobStore}={}){
  if(!db||!blobStore)throw Error("invalid_canvas_materializer");
- const select=()=>db.prepare(`SELECT a.*,j.project_id,j.target_node_id,j.source_fingerprint,j.status AS job_status,
+ const select=({projectId=null,artifactId=null}={})=>db.prepare(`SELECT a.*,j.project_id,j.target_node_id,j.source_fingerprint,j.status AS job_status,
   m.id AS materialization_id,m.status AS materialization_status
   FROM artifacts a JOIN jobs j ON j.id=a.job_id
   LEFT JOIN materializations m ON m.artifact_id=a.id AND m.project_id=j.project_id
   WHERE j.status='succeeded' AND j.project_id IS NOT NULL
+    AND (? IS NULL OR j.project_id=?) AND (? IS NULL OR a.id=?)
     AND (m.id IS NULL OR m.status IN ('pending','retry') AND (m.next_due_at IS NULL OR m.next_due_at<=CAST(strftime('%s','now') AS INTEGER)*1000))
-  ORDER BY j.created_at,a.port_id,a.item_key,a.id`).all();
+  ORDER BY j.created_at,a.port_id,a.item_key,a.id`).all(projectId,projectId,artifactId,artifactId);
  function mark(artifact,code,status){
   return writeTransaction(db,()=>{
    const current=db.prepare("SELECT id,status,fail_count FROM materializations WHERE project_id=? AND artifact_id=?")
@@ -155,14 +156,36 @@ export function createCanvasMaterializer({db,blobStore}={}){
   for(const item of rows)out.push(await processArtifact(item));
   return out;
  }
+ /** Processes only an already-collected succeeded artifact. No model submit. */
+ async function recoverPending({projectId,artifactId}={}){
+  if(!validId(projectId)||!validId(artifactId))throw fail("invalid_materialization_reference");
+  const row=select({projectId,artifactId})[0];
+  if(!row)return false;
+  return processArtifact(row);
+ }
  function retryBlocked({projectId,artifactId}={}){
   if(!validId(projectId)||!validId(artifactId))throw fail("invalid_materialization_reference");
-  return writeTransaction(db,()=>db.prepare("UPDATE materializations SET status='retry',reason=NULL,next_due_at=NULL,fail_count=0 WHERE project_id=? AND artifact_id=? AND status='blocked'")
-   .run(projectId,artifactId).changes===1);
+  // This is ONLY a replay of an already-collected immutable artifact.
+  // Never requeue a GPU/remote job, and never bypass the source fingerprint
+  // or graph validation in processArtifact.
+  return writeTransaction(db,()=>{
+   const row=db.prepare(`SELECT m.id,m.job_id FROM materializations m
+    JOIN jobs j ON j.id=m.job_id
+    WHERE m.project_id=? AND m.artifact_id=? AND m.status='blocked'
+     AND j.status='succeeded' AND j.project_id=?`)
+    .get(projectId,artifactId,projectId);
+   if(!row)return false;
+   db.prepare("UPDATE materializations SET status='retry',reason=NULL,next_due_at=NULL,fail_count=0 WHERE id=?")
+    .run(row.id);
+   db.prepare("INSERT INTO job_events(job_id,kind,payload_json,created_at) VALUES(?,?,?,?)")
+    .run(row.job_id,"artifact_materialization_requeued",
+     stableJson({projectId,artifactId,status:"retry"}),Date.now());
+   return true;
+  });
  }
  function status({jobId}={}){
   return jobId?db.prepare("SELECT id,artifact_id,project_id,status,node_id,reason FROM materializations WHERE job_id=? ORDER BY artifact_id").all(jobId):
    db.prepare("SELECT status,COUNT(*) AS count FROM materializations GROUP BY status").all();
  }
- return {runOnce,retryBlocked,status};
+ return {runOnce,recoverPending,retryBlocked,status};
 }

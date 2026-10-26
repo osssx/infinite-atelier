@@ -67,41 +67,58 @@ export function createCanvasMaterializer({db,blobStore}={}){
     const doc=JSON.parse(project.document_json);
     const source=doc.nodes.find(n=>n.id===artifact.target_node_id);
     if(!source)throw fail("materialization_source_deleted");
+    const job=db.prepare("SELECT snapshot_json FROM jobs WHERE id=?").get(artifact.job_id);
+    const snapshot=job?JSON.parse(job.snapshot_json):null;
+    const isModel=snapshot?.adapterKind==="model"&&snapshot.provider==="openai"&&
+     snapshot.task?.kind===artifact.kind&&artifact.port_id===artifact.kind&&
+     (["config","text"].includes(source.type)||
+      source.type===artifact.kind&&["image","audio"].includes(source.type));
     const hasPort=source.type==="comfy:workflow"&&source.metadata?.comfyPorts?.some(p=>
      p.id===artifact.port_id&&p.direction==="source"&&p.valueKind===requiredKind[artifact.kind]);
-    if(!hasPort)throw fail("materialization_port_mismatch");
+    if(!hasPort&&!isModel)throw fail("materialization_port_mismatch");
     if(fingerprintSource(doc,source.id)!==artifact.source_fingerprint)
      throw fail("materialization_source_changed");
     const metadata=JSON.parse(artifact.metadata_json);
+    if(isModel&&metadata?.modelGeneration?.kind!==artifact.kind)
+     throw fail("materialization_port_mismatch");
     const index=metadata?.comfyArtifact?.index;
-    const origin=makeComfyArtifactProvenance({runId:artifact.job_id,artifactId:artifact.id,
-     workflowNodeId:source.id,portId:artifact.port_id,kind:artifact.kind,index});
+    const origin=isModel?{jobId:artifact.job_id,artifactId:artifact.id,sourceNodeId:source.id,
+     kind:artifact.kind,model:snapshot.task.model}:
+     makeComfyArtifactProvenance({runId:artifact.job_id,artifactId:artifact.id,
+      workflowNodeId:source.id,portId:artifact.port_id,kind:artifact.kind,index});
     const nodeId="artifact-"+artifact.id,edgeId="artifact-edge-"+artifact.id;
     if(!validId(nodeId)||!validId(edgeId))throw fail("materialization_invalid_id");
-    const matches=doc.nodes.filter(n=>n.metadata?.comfyArtifact?.artifactId===artifact.id);
+    const matches=doc.nodes.filter(n=>(isModel?n.metadata?.modelArtifact?.artifactId:
+     n.metadata?.comfyArtifact?.artifactId)===artifact.id);
     if(matches.length>1||(matches.length===1&&matches[0].id!==nodeId))
      throw fail("materialization_identity_conflict");
     const other=doc.nodes.find(n=>n.id===nodeId);
     if(other&&!matches.includes(other))throw fail("materialization_node_collision");
     const [width,height]=dims[artifact.kind];
-    const existingCount=doc.nodes.filter(n=>n.metadata?.comfyArtifact?.workflowNodeId===source.id).length;
+    const existingCount=doc.nodes.filter(n=>isModel?n.metadata?.modelArtifact?.sourceNodeId===source.id:
+     n.metadata?.comfyArtifact?.workflowNodeId===source.id).length;
     const column=Math.floor(existingCount/4),row=existingCount%4;
     const node=other??{
      id:nodeId,type:artifact.kind,title:"Generated "+artifact.kind,
      position:{x:source.position.x+source.width+48+column*444,
       y:source.position.y+row*444},width,height,
-     metadata:{status:"success",mimeType:artifact.mime,comfyArtifact:origin,
+     metadata:{status:"success",mimeType:artifact.mime,
+      ...(isModel?{modelArtifact:origin}:{comfyArtifact:origin}),
       ...(artifact.kind==="text"?{content:contents}:{content:"/api/v1/blobs/"+artifact.blob_id,
+       storageKey:"cas:"+artifact.blob_id,
        bytes:db.prepare("SELECT byte_size FROM blobs WHERE id=?").get(artifact.blob_id).byte_size})}
     };
     if(!other)doc.nodes.push(node);
     const existingLink=doc.connections.find(c=>c.toNodeId===nodeId);
     if(existingLink&&!(existingLink.fromNodeId===source.id&&
-       existingLink.fromPortId===artifact.port_id&&existingLink.toPortId==="comfy-artifact"))
+       (isModel?existingLink.fromPortId===undefined&&existingLink.toPortId===undefined:
+        existingLink.fromPortId===artifact.port_id&&existingLink.toPortId==="comfy-artifact")))
       throw fail("materialization_link_conflict");
     if(doc.connections.some(c=>c.id===edgeId&&!(
       c.fromNodeId===source.id&&c.toNodeId===nodeId)))throw fail("materialization_edge_collision");
-    if(!existingLink)doc.connections.push({
+    if(!existingLink)doc.connections.push(isModel?{
+     id:edgeId,fromNodeId:source.id,toNodeId:nodeId
+    }:{
      id:edgeId,fromNodeId:source.id,fromPortId:artifact.port_id,
      toNodeId:nodeId,toPortId:"comfy-artifact"
     });

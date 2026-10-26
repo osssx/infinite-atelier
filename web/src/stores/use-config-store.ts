@@ -26,6 +26,8 @@ export type ModelChannel = {
     apiKey: string;
     apiFormat: ApiCallFormat;
     models: ChannelModel[];
+    /** Explicit binding to local DPAPI-backed OpenAI JobCoordinator. */
+    backendExecution?: boolean;
 };
 
 export type AiConfig = {
@@ -281,6 +283,7 @@ export function createModelChannel(channel?: Partial<ModelChannel>): ModelChanne
         baseUrl,
         apiKey: channel?.apiKey || "",
         apiFormat,
+        backendExecution: channel?.backendExecution === true,
         models: normalizeChannelModels(channel?.models),
     };
 }

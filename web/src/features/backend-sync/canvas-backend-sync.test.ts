@@ -94,6 +94,31 @@ const stateWait=async(fn:()=>boolean)=>{
  for(let i=0;i<30;i++){if(fn())return;await new Promise(resolve=>setTimeout(resolve,2))}
  throw Error("expected async synchronization did not settle");
 };
+describe("P4.4 ordinary SQLite model artifact merge",()=>{
+ it("accepts only append-only model artifact nodes with a portless edge",()=>{
+  const local:BackendCanvasGraph={nodes:[{id:"text-1",type:"text",title:"Prompt",position:{x:0,y:0},
+   width:300,height:200,metadata:{content:"hello"}}],connections:[]};
+  const image:CanvasNodeData={id:"artifact-model-1",type:"image",title:"Generated",position:{x:350,y:0},
+   width:420,height:420,metadata:{storageKey:"cas:"+"a".repeat(64),
+    content:"/api/v1/blobs/"+"a".repeat(64),
+    modelArtifact:{jobId:"job-1",artifactId:"model-1",sourceNodeId:"text-1",
+     kind:"image",model:"gpt-image-2"}}};
+  const remote:BackendCanvasGraph={nodes:[...local.nodes,image],connections:[
+   {id:"artifact-edge-model-1",fromNodeId:"text-1",toNodeId:image.id}
+  ]};
+  expect(safeRemoteCanvasMerge(local,remote)).toEqual(remote);
+  expect(safeRemoteCanvasMerge(local,{...remote,connections:[{
+   ...remote.connections[0],fromPortId:"spoofed"
+  }]})).toBeNull();
+  expect(safeRemoteCanvasMerge(local,{...remote,nodes:[
+   {...local.nodes[0],metadata:{content:"tampered"}},image
+  ]})).toBeNull();
+  expect(safeRemoteCanvasMerge(local,{...remote,nodes:[local.nodes[0],{
+   ...image,metadata:{...image.metadata,modelArtifact:{...image.metadata!.modelArtifact!,
+    sourceNodeId:"other"}}
+  }]})).toBeNull();
+ });
+});
 describe("backend canvas sync opt-in, revisions and events",()=>{
  it("shows safe project validation details without exposing node IDs",async()=>{
   const local=copy(original);

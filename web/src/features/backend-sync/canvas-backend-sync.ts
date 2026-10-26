@@ -30,7 +30,7 @@ const cloneGraph=(graph:BackendCanvasGraph):BackendCanvasGraph=>JSON.parse(JSON.
  nodes:graph.nodes,connections:graph.connections
 })) as BackendCanvasGraph;
 const graphString=(graph:BackendCanvasGraph)=>canonicalBackendGraph(graph);
-const isGenerated=(n:CanvasNodeData)=>Boolean(n.metadata?.comfyArtifact?.artifactId);
+const isGenerated=(n:CanvasNodeData)=>Boolean(n.metadata?.comfyArtifact?.artifactId||n.metadata?.modelArtifact?.artifactId);
 function canonical(value:unknown):string{
  if(Array.isArray(value))return "["+value.map(canonical).join(",")+"]";
  if(value&&typeof value==="object"){
@@ -61,18 +61,35 @@ export function safeRemoteCanvasMerge(local:BackendCanvasGraph,remote:BackendCan
  const newNodes=remote.nodes.filter(n=>!localNodes.has(n.id));
  const newIds=new Set(newNodes.map(n=>n.id));
  for(const node of newNodes){
+  if(!isGenerated(node))return null;
   const origin=node.metadata?.comfyArtifact;
-  if(!origin||!isGenerated(node)||!localNodes.has(origin.workflowNodeId)||
+  const model=node.metadata?.modelArtifact;
+  if(origin){
+   if(!localNodes.has(origin.workflowNodeId)||
     !["image","video","audio","text"].includes(origin.kind)||
-    node.type!==origin.kind) return null;
-  const existing=local.nodes.find(n=>n.metadata?.comfyArtifact?.artifactId===origin.artifactId);
-  if(existing)return null;
-  if(!remote.connections.some(e=>e.fromNodeId===origin.workflowNodeId&&e.fromPortId===origin.portId&&
-     e.toNodeId===node.id&&e.toPortId==="comfy-artifact"))return null;
+    node.type!==origin.kind)return null;
+   if(local.nodes.some(n=>n.metadata?.comfyArtifact?.artifactId===origin.artifactId))return null;
+   if(!remote.connections.some(e=>e.fromNodeId===origin.workflowNodeId&&e.fromPortId===origin.portId&&
+      e.toNodeId===node.id&&e.toPortId==="comfy-artifact"))return null;
+  }else if(model){
+   if(!/^[a-zA-Z0-9_-]{1,128}$/.test(model.artifactId)||
+    !/^[a-zA-Z0-9_-]{1,128}$/.test(model.jobId)||
+    node.id!=="artifact-"+model.artifactId||
+    !localNodes.has(model.sourceNodeId)||node.type!==model.kind||
+    !["image","audio","text"].includes(model.kind))return null;
+   if(local.nodes.some(n=>n.metadata?.modelArtifact?.artifactId===model.artifactId))return null;
+   if(!remote.connections.some(e=>e.fromNodeId===model.sourceNodeId&&
+     e.toNodeId===node.id&&!e.fromPortId&&!e.toPortId))return null;
+  }else return null;
  }
  for(const edge of remote.connections.filter(e=>!localEdges.has(e.id))){
-  if(!newIds.has(edge.toNodeId)||edge.toPortId!=="comfy-artifact"||
-     !localNodes.has(edge.fromNodeId))return null;
+  if(!newIds.has(edge.toNodeId)||!localNodes.has(edge.fromNodeId))return null;
+  const target=remoteNodes.get(edge.toNodeId);
+  const comfy=target?.metadata?.comfyArtifact;
+  const model=target?.metadata?.modelArtifact;
+  if(comfy?edge.toPortId!=="comfy-artifact"||edge.fromPortId!==comfy.portId:
+   model?Boolean(edge.fromPortId||edge.toPortId)||edge.fromNodeId!==model.sourceNodeId:true)
+    return null;
  }
  return cloneGraph(remote);
 }

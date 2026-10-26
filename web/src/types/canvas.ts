@@ -105,6 +105,9 @@ export type CanvasNodeMetadata = {
     groupId?: string;
     interactive?: boolean; // Plugin node interaction/move state; see CanvasNodeDefinition.interactionToggle.
     /** Provenance of any durable ComfyUI artifact (single V2 contract; no legacy fields). */
+    /** SQLite JobCoordinator output from a non-Comfy model job. */
+    modelArtifact?: {jobId:string;artifactId:string;sourceNodeId:string;
+        kind:"image"|"audio"|"text";model:string};
     comfyArtifact?: { runId: string; artifactId: string; workflowNodeId: string; portId: string;
         kind: "image" | "video" | "audio" | "text"; index: number };
     /** Durable workflow run observation, independent of whether its inspector is mounted. */

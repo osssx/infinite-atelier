@@ -12,7 +12,7 @@ import { isSkillToolsKnownUnsupported, rememberSupportedSkillTools, rememberUnsu
 import { extractSkillMentions, resolvePromptSkillBinding, showLegacySkillMentions } from "@/features/skills/skill-mentions";
 import { requestAudioGeneration } from "@/services/api/audio";
 import { cancelVideoGenerationTask, pollVideoGenerationTask, requestVideoGeneration, retrySeedanceDownload, type VideoGenerationRequest, type VideoGenerationTask } from "@/services/api/video";
-import { defaultConfig, resolveModelChannel, resolveModelScript, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
+import { defaultConfig, resolveModelChannel, resolveModelScript, modelOptionName, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
 import { deleteStoredImages,getImageBlob } from "@/services/image-storage";
 import { deleteStoredMedia,getMediaBlob } from "@/services/file-storage";
 import {uploadCanvasImage as uploadImage,uploadCanvasMedia,storeCanvasGeneratedVideo as storeGeneratedVideo,storeCanvasGeneratedAudio as storeGeneratedAudio,isCanvasCasKey,canvasCasUrl} from "@/features/backend-sync/canvas-media";
@@ -95,6 +95,7 @@ import { resolveCanvasComfyInstance } from "@/features/comfy-workflow/canvas-ins
 import { CanvasRefreshShell } from "@/components/canvas/canvas-refresh-shell";
 import { startBackendComfyWorkflowRun } from "@/features/backend-sync/backend-comfy-run";
 import {createSqliteComfyBridge} from "@/features/backend-sync/sqlite-comfy-bridge";
+import {startSqliteModelGeneration,openAiImageSize} from "@/features/backend-sync/sqlite-model-generation";
 import {watchSqliteComfyJob} from "@/features/backend-sync/sqlite-comfy-job-watch";
 import {canvasApi} from "@/features/backend-sync/canvas-api";
 import {preserveValidCanvasViewport} from "@/features/backend-sync/canvas-state-persistence";
@@ -398,6 +399,7 @@ function AtelierCanvasPage() {
     const resumedArkTasksRef = useRef(new Set<string>());
     const comfyExecuteLocksRef = useRef(new Set<string>());
     const sqliteJobWatchesRef=useRef(new Map<string,AbortController>());
+    const monitorSqliteJobRef=useRef<(jobId:string)=>void>(()=>{});
 
     const persistVideoTask = useCallback((nodeId: string, task: VideoGenerationTask, status: "queued" | "running" | "succeeded" | "failed" | "cancelled" | "expired" = task.status || "queued") => {
         const nodesWithTask = nodesRef.current.map((node) => node.id === nodeId ? { ...node, metadata: { ...node.metadata, videoTask: { provider: task.provider, channelId: task.channelId, model: task.model, taskId: task.id, startedAt: task.startedAt || Date.now(), status } } } : node);
@@ -2514,6 +2516,57 @@ function AtelierCanvasPage() {
             const sourceNode = nodesRef.current.find((node) => node.id === nodeId);
             const generationConfig = buildGenerationConfig(effectiveConfig, sourceNode, mode);
             const promptText = mode === "text" ? extractSkillMentions(prompt).text : prompt;
+            const selectedChannel=resolveModelChannel(effectiveConfig,generationConfig.model);
+            // Explicit user opt-in to the official OpenAI DPAPI channel.
+            // Never silently fallback to browser API calls for that channel.
+            if(selectedChannel?.backendExecution){
+                try{
+                    if(selectedChannel.apiFormat!=="openai"||
+                      !/^https:\/\/api\.openai\.com(?:\/v1)?\/?$/.test(selectedChannel.baseUrl.trim()))
+                        throw Error("该渠道的后端执行只能使用官方 OpenAI API，请检查渠道地址");
+                    if(!projectLoaded)throw Error("画布项目尚未加载完成");
+                    if(mode==="video")throw Error("SQLite 模型队列尚未支持普通视频 API；请先关闭该渠道的后端执行");
+                    if(!sourceNode||!["text","config","image","audio"].includes(sourceNode.type)||
+                      sourceNode.type==="image"&&mode!=="image"||
+                      sourceNode.type==="audio"&&mode!=="audio")
+                        throw Error("当前节点类型不支持 SQLite 普通模型生成");
+                    if(resolveModelScript(effectiveConfig,generationConfig.model))
+                        throw Error("自定义模型脚本尚未接入 SQLite JobCoordinator");
+                    if(sourceNode.metadata?.skillBinding&&sourceNode.metadata.skillBinding.mode!=="off")
+                        throw Error("Skill 生成尚未接入 SQLite JobCoordinator");
+                    if(mode==="image"&&getGenerationCount(generationConfig.count)!==1)
+                        throw Error("SQLite 普通生图目前每次仅支持一张，请将数量设置为 1");
+                    const original=sourceNode.type===CanvasNodeType.Text?
+                      sourceNode.metadata?.content?.trim():"";
+                    const context=buildNodeGenerationContext(nodeId,nodesRef.current,connectionsRef.current,
+                      mode==="text"&&original?t("canvas.projectPage.editTextPrompt",{source:original,prompt:promptText}):promptText);
+                    if(context.referenceImages.length||context.referenceVideos.length||context.referenceAudios.length)
+                        throw Error("SQLite 普通模型当前只支持纯文本输入，参考媒体请使用 Comfy 工作流");
+                    const text=context.prompt.trim();
+                    if(!text)throw Error("请输入生成提示词");
+                    const model=modelOptionName(generationConfig.model);
+                    const kind=mode as "image"|"audio"|"text";
+                    const format=generationConfig.audioFormat;
+                    if(kind==="audio"&&!["mp3","wav","flac"].includes(format))
+                        throw Error("SQLite 语音生成目前仅支持 MP3、WAV 或 FLAC");
+                    const job=await startSqliteModelGeneration({
+                        projectId,sourceNodeId:nodeId,
+                        nodes:[...nodesRef.current],connections:[...connectionsRef.current],
+                        channelId:selectedChannel.id,
+                        bridge:createSqliteComfyBridge({projectId,
+                          getLocalGraph:()=>({nodes:nodesRef.current,connections:connectionsRef.current})}),
+                        task:{kind,model,prompt:text,
+                          ...(kind==="image"?{size:openAiImageSize(generationConfig.size),
+                            quality:["auto","low","medium","high"].includes(generationConfig.quality)?
+                              generationConfig.quality:"auto"}:{}),
+                          ...(kind==="audio"?{voice:generationConfig.audioVoice,format,
+                            speed:Number(generationConfig.audioSpeed)||1}:{})}
+                    });
+                    message.info("SQLite 模型任务已提交："+job.id+"，完成后自动追加产物节点");
+                    monitorSqliteJobRef.current(job.id);
+                }catch(error){message.error(error instanceof Error?error.message:String(error))}
+                return;
+            }
             if (!isAiConfigReady(generationConfig, generationConfig.model)) {
                 openConfigDialog(true);
                 return;
@@ -3490,17 +3543,19 @@ function AtelierCanvasPage() {
             },
             onStatus:(status,details)=>{
                 if(controller.signal.aborted||activeProjectIdRef.current!==projectId)return;
-                if(status==="materialized")message.success("ComfyUI 产物已写入 SQLite 画布");
+                if(status==="materialized")message.success("后端任务产物已写入 SQLite 画布");
                 else if(status==="blocked"||status==="unavailable"||status==="needs_refresh")
                     message.warning("后端任务产物需要检查或刷新画布："+(details??status));
                 else if(status==="failed"||status==="cancelled")
-                    message.error("ComfyUI 后端任务："+status);
+                    message.error("SQLite 后端任务："+status);
             }
         }).finally(()=>{
             if(sqliteJobWatchesRef.current.get(jobId)===controller)
                 sqliteJobWatchesRef.current.delete(jobId);
         });
     },[message,projectId]);
+
+    // Refreshing the page must recover already-submitted jobs from SQLite,    useEffect(()=>{monitorSqliteJobRef.current=monitorSqliteJob},[monitorSqliteJob]);
 
     // Refreshing the page must recover already-submitted jobs from SQLite,
     // including succeeded jobs whose materialization has not completed.

@@ -7,6 +7,7 @@ import { seedancePresets } from "@/services/api/video/model-capabilities";
 import { defaultBaseUrlForApiFormat, guessCapability, normalizeChannelModels, type ApiCallFormat, type ChannelModel, type ModelCapability, type ModelChannel } from "@/stores/use-config-store";
 import { ModelScriptEditor } from "./model-script-editor";
 import { ModelSelectModal } from "./model-select-modal";
+import {canvasApi,CanvasApiError} from "@/features/backend-sync/canvas-api";
 
 type ScriptTarget = { name: string; capability: ModelCapability; value: string };
 
@@ -17,6 +18,7 @@ export function ChannelEditorDrawer({ open, channel, onSave, onClose }: { open: 
     const [selectOpen, setSelectOpen] = useState(false);
     const [scriptTarget, setScriptTarget] = useState<ScriptTarget | null>(null);
     const [checkingArk, setCheckingArk] = useState(false);
+    const [registeringBackend,setRegisteringBackend]=useState(false);
     const apiFormatOptions: Array<{ label: string; value: ApiCallFormat }> = [
         { label: "OpenAI", value: "openai" },
         { label: "Gemini", value: "gemini" },
@@ -35,7 +37,7 @@ export function ChannelEditorDrawer({ open, channel, onSave, onClose }: { open: 
 
     const changeApiFormat = (apiFormat: ApiCallFormat) => {
         const baseUrl = !draft.baseUrl.trim() || draft.baseUrl.trim() === defaultBaseUrlForApiFormat(draft.apiFormat) ? defaultBaseUrlForApiFormat(apiFormat) : draft.baseUrl;
-        patch({ apiFormat, baseUrl });
+        patch({ apiFormat, baseUrl, backendExecution:false });
     };
 
     const applySelection = (names: string[]) => {
@@ -53,6 +55,10 @@ export function ChannelEditorDrawer({ open, channel, onSave, onClose }: { open: 
     const removeModel = (name: string) => setModels(draft.models.filter((model) => model.name !== name));
 
     const save = () => {
+        if(draft.backendExecution&&draft.apiKey.trim()){
+            message.warning("请点击「更新 SQLite 后端密钥」，不要将新密钥保存回浏览器配置");
+            return;
+        }
         onSave({ ...draft, name: draft.name.trim() || t("config.channels.unnamed"), models: normalizeChannelModels(draft.models) });
         onClose();
     };
@@ -83,6 +89,39 @@ export function ChannelEditorDrawer({ open, channel, onSave, onClose }: { open: 
         } finally {
             setCheckingArk(false);
         }
+    };
+
+    const registerBackendChannel=async()=>{
+        if(draft.apiFormat!=="openai"||
+          !/^https:\/\/api\.openai\.com(?:\/v1)?\/?$/.test(draft.baseUrl.trim())){
+            message.error("SQLite 模型执行仅支持官方 https://api.openai.com 渠道");return;
+        }
+        if(!draft.apiKey.trim()){message.error("请先填写此渠道的 API Key");return}
+        setRegisteringBackend(true);
+        try{
+            const capabilities=await canvasApi<{autoDispatch:boolean;modelKinds?:string[]}>(
+              "/api/v1/execution/capabilities");
+            if(!capabilities.autoDispatch||!capabilities.modelKinds?.includes("image"))
+              throw Error("请在启动后端前设置 ATELIER_OPENAI_MODELS=1");
+            type ChannelView={id:string;provider:string;keyVersion:string|null};
+            let existing:ChannelView|null=null;
+            try{existing=await canvasApi<ChannelView>("/api/v1/channels/"+encodeURIComponent(draft.id))}
+            catch(error){if(!(error instanceof CanvasApiError&&error.status===404))throw error}
+            if(existing&&existing.provider!=="openai")throw Error("同名后端渠道不是 OpenAI，请另建渠道");
+            if(existing){
+                await canvasApi("/api/v1/channels/"+encodeURIComponent(draft.id)+"/credential","PATCH",{
+                  apiKey:draft.apiKey,expectedKeyVersion:existing.keyVersion
+                });
+            }else{
+                await canvasApi("/api/v1/channels","POST",{id:draft.id,provider:"openai",
+                  displayName:draft.name,apiKey:draft.apiKey});
+            }
+            // Once vaulted, scrub this channel key from Zustand persistence.
+            const enabled={...draft,backendExecution:true,apiKey:""};
+            setDraft(enabled);onSave(enabled);
+            message.success("已将渠道密钥写入本地后端加密 Vault，并启用 SQLite 模型任务");
+        }catch(error){message.error(error instanceof Error?error.message:String(error))}
+        finally{setRegisteringBackend(false)}
     };
 
     return (
@@ -122,6 +161,22 @@ export function ChannelEditorDrawer({ open, channel, onSave, onClose }: { open: 
                     <span className="mb-1 block text-sm font-medium">API Key</span>
                     <Input.Password value={draft.apiKey} onChange={(event) => patch({ apiKey: event.target.value })} placeholder="sk-..." />
                     {draft.apiFormat === "volcengine_ark" ? <div className="mt-2 flex flex-wrap items-center gap-2"><Button size="small" loading={checkingArk} onClick={() => void checkArkConnection()}>{t("config.channelEditor.testArkConnection")}</Button><span className="text-xs text-stone-500">{t("config.channelEditor.arkConnectionHint")}</span></div> : null}
+                    {draft.apiFormat === "openai" ? <div className="mt-2 space-y-1">
+                        <div className="flex flex-wrap gap-2">
+                            <Button size="small" loading={registeringBackend}
+                                onClick={()=>void registerBackendChannel()}>
+                                {draft.backendExecution?"更新 SQLite 后端密钥":"启用 SQLite 后端模型生成"}
+                            </Button>
+                            {draft.backendExecution?<Button size="small" onClick={()=>{
+                                const disabled={...draft,backendExecution:false};
+                                setDraft(disabled);onSave(disabled);
+                            }}>停用后端生成</Button>:null}
+                        </div>
+                        <div className="text-xs text-stone-500">
+                            仅限官方 OpenAI API；明确点击后将密钥写入本机 DPAPI Vault。
+                            注册成功后将清空此渠道的浏览器配置密钥；历史备份与其他渠道仍需单独清理。
+                        </div>
+                    </div> : null}
                 </label>
             </div>
 

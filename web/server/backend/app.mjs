@@ -60,7 +60,7 @@ function cursorOf(value){
  if(!/^(0|[1-9][0-9]*)$/.test(v)||!Number.isSafeInteger(Number(v)))throw Object.assign(Error("invalid_event_cursor"),{statusCode:400,code:"invalid_event_cursor"});
  return Number(v);
 }
-export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobStore,mediaPreview,blobGc,projectArchive,vault,coordinator,materializer,worker,comfyInstanceIds=[],logger=false,streamPollMs=200}={}){
+export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobStore,mediaPreview,blobGc,projectArchive,vault,coordinator,materializer,worker,comfyInstanceIds=[],modelKinds=[],logger=false,streamPollMs=200}={}){
  if(!db||(!sessionAuth&&typeof authorize!=="function"))throw Error("backend_authorizer_required");
  const app=Fastify({logger,bodyLimit:5*1024*1024,trustProxy:false,genReqId:()=>randomUUID()});
  if(blobStore)app.addContentTypeParser("application/octet-stream",(req,stream,done)=>done(null,stream));
@@ -305,7 +305,8 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
  });
  if(coordinator)app.get("/api/v1/coordinator/status",()=>coordinator.status());
  if(worker)app.get("/api/v1/worker/status",()=>worker.status());
- app.get("/api/v1/execution/capabilities",()=>({autoDispatch:Boolean(worker),comfyInstanceIds:[...comfyInstanceIds]}));
+ app.get("/api/v1/execution/capabilities",()=>({autoDispatch:Boolean(worker),comfyInstanceIds:[...comfyInstanceIds],
+  ...(modelKinds.length?{modelKinds:[...modelKinds]}:{})}));
  if(materializer){
   app.get("/api/v1/jobs/:id/materializations",{schema:{params:{type:"object",required:["id"],
    properties:{id:idSchema},additionalProperties:false}}},async(req,reply)=>{

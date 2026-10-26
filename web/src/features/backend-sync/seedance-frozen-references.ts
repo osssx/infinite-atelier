@@ -36,14 +36,15 @@ export async function freezeSeedanceReferences(
    throw Error("Seedance 参考素材角色与类型不匹配");
   const stored=ref.storageKey;
   const assetUrl=ref.kind==="video"&&ref.url?.startsWith("asset://")?ref.url:undefined;
-  // Official Ark accepts video URL or asset://, not a base64 video upload.
-  // Private loopback /api/v1/blobs/... cannot be fetched from Ark.
-  if(ref.kind==="video"&&!assetUrl)
-   throw Error("本地视频不能直接作为方舟参考视频：请先上传至方舟素材库取得 asset:// 素材 ID");
+  // Existing Ark video assets can be passed through. Otherwise freeze local
+  // video bytes into immutable CAS; the backend publishes them to TOS and
+  // creates an Ark Asset before submitting the billable Seedance task.
+  if(ref.kind==="video"&&!assetUrl&&!stored&&!ref.url)
+   throw Error("本地参考视频文件不存在");
   if(assetUrl&&!/^asset:\/\/[A-Za-z0-9_-]{1,160}$/.test(assetUrl))
    throw Error("方舟视频素材 ID 无效");
   let blobId:string|undefined,mimeType:string|undefined,bytes:number|undefined;
-  if(stored&&isCanvasCasKey(stored)){
+  if(!assetUrl&&stored&&isCanvasCasKey(stored)){
    const response=await fetcher(canvasCasUrl(stored)!,{
     method:"HEAD",credentials:"same-origin",cache:"no-store"
    });
@@ -52,7 +53,7 @@ export async function freezeSeedanceReferences(
    bytes=Number(response.headers.get("content-length"));
    if(!Number.isSafeInteger(bytes)||bytes<=0)throw Error("参考媒体大小无效");
    blobId=stored.slice(4);
-  }else if(stored||ref.dataUrl||ref.url&&!assetUrl){
+  }else if(!assetUrl&&(stored||ref.dataUrl||ref.url)){
    let blob=stored?await(ref.kind==="image"?(deps.readImage??getImageBlob)(stored):
      (deps.readMedia??getMediaBlob)(stored)):null;
    const url=ref.kind==="image"?ref.dataUrl??ref.url:ref.url;
@@ -70,6 +71,7 @@ export async function freezeSeedanceReferences(
    if(uploaded.blobId!==uploaded.sha256)throw Error("参考媒体 CAS 校验失败");
    blobId=uploaded.blobId;
   }else if(!assetUrl)throw Error("参考媒体缺少文件");
+  if(ref.kind==="video"&&!assetUrl&&!blobId)throw Error("参考视频冻结到 CAS 失败");
   if(mimeType&&!allowed[ref.kind].includes(mimeType))
    throw Error("参考媒体格式不受支持："+mimeType);
   if(bytes&&(ref.kind==="image"&&bytes>=30*1024*1024||

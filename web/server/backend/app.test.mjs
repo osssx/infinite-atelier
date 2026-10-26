@@ -146,14 +146,14 @@ test("SQLite schema v6 upgrades old backend viewport/chat JSON without losing gr
  const db=new DatabaseSync(":memory:");t.after(()=>db.close());
  initializeSchema(db);
  db.exec("DROP TABLE project_chats");
- db.exec("DELETE FROM schema_migrations WHERE version=7");
+ db.exec("DELETE FROM schema_migrations WHERE version>=7");
  db.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES(6,0)").run();
  const legacy={...doc("legacy"),title:"Keep",viewport:{x:50,y:-70,k:1.3},
   chatSessions:[{id:"legacy-chat",title:"Old",messages:[]}],activeChatId:"legacy-chat"};
  db.prepare("INSERT INTO projects(id,document_json,revision) VALUES(?,?,?)")
   .run("old-backend",JSON.stringify(legacy),18);
  initializeSchema(db);initializeSchema(db);
- assert.equal(db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v,7);
+ assert.equal(db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v,8);
  assert.equal(db.prepare("SELECT revision FROM projects WHERE id='old-backend'").get().revision,18);
  assert.deepEqual(JSON.parse(db.prepare("SELECT viewport_json AS v FROM project_viewports WHERE project_id='old-backend'").get().v),
   legacy.viewport);
@@ -368,9 +368,9 @@ test("SSE reports expired event cursor after retained history is pruned",async t
 });
 test("disk main db creates schema and remains reusable after close",t=>{
  const dir=mkdtempSync(join(tmpdir(),"atelier-main-"));t.after(()=>rmSync(dir,{recursive:true,force:true}));
- const db=openMainDatabase(dir);assert.equal(db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v,7);
+ const db=openMainDatabase(dir);assert.equal(db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v,8);
  db.close();const reopened=openMainDatabase(dir);
- assert.equal(reopened.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v,7);reopened.close();
+ assert.equal(reopened.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v,8);reopened.close();
 });
 test("startServer rejects wide-area binding",async t=>{
  const{app}=await fixture(t);

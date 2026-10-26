@@ -6,7 +6,7 @@ import {open,mkdir,link,unlink,lstat} from "node:fs/promises";
 import {join,isAbsolute,resolve,dirname} from "node:path";
 import {writeTransaction} from "./repository.mjs";
 
-const recognized=new Set(["image/png","image/jpeg","image/webp","video/mp4","video/webm","video/x-matroska",
+const recognized=new Set(["image/png","image/jpeg","image/webp","video/mp4","video/quicktime","video/webm","video/x-matroska",
  "audio/wav","audio/flac","audio/ogg","audio/mpeg","text/plain"]);
 const failure=(code,statusCode)=>Object.assign(Error(code),{code,statusCode});
 const mimeKind=mime=>mime.startsWith("image/")?"image":mime.startsWith("video/")?"video":
@@ -16,7 +16,7 @@ function sniff(data,mime){
  if(mime==="image/png")return data.length>=8&&sig(data,[137,80,78,71,13,10,26,10]);
  if(mime==="image/jpeg")return data.length>=3&&sig(data,[255,216,255]);
  if(mime==="image/webp")return data.length>=12&&data.toString("ascii",0,4)==="RIFF"&&data.toString("ascii",8,12)==="WEBP";
- if(mime==="video/mp4")return data.length>=12&&data.toString("ascii",4,8)==="ftyp";
+ if(mime==="video/mp4"||mime==="video/quicktime")return data.length>=12&&data.toString("ascii",4,8)==="ftyp";
  if(mime==="video/webm"||mime==="video/x-matroska")return data.length>=4&&sig(data,[26,69,223,163]);
  if(mime==="audio/wav")return data.length>=12&&data.toString("ascii",0,4)==="RIFF"&&data.toString("ascii",8,12)==="WAVE";
  if(mime==="audio/flac")return data.length>=4&&data.toString("ascii",0,4)==="fLaC";

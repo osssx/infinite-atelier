@@ -469,7 +469,7 @@ test("Demo HTTP save barrier -> auto Comfy dispatch -> typed CanvasMaterializer 
   const headers={host:"localhost",origin:"http://localhost",
    cookie:login.headers["set-cookie"].split(";")[0],"x-atelier-csrf":login.json().csrfToken};
   const capabilities=await app.inject({method:"GET",url:"/api/v1/execution/capabilities",headers});
-  assert.deepEqual(capabilities.json(),{autoDispatch:true,comfyInstanceIds:["comfy-local"]});
+  assert.deepEqual(capabilities.json(),{autoDispatch:true,comfyInstanceIds:["comfy-local"],arkAssetUploadReady:false});
   const node={id:"wf-1",type:"comfy:workflow",title:"Demo",width:410,height:290,
    position:{x:10,y:20},metadata:{
     comfyWorkflow:{templateId:tplt.id,templateRevision:tplt.revision,bindingState:"bound",inputOverrides:{}},

@@ -45,16 +45,42 @@ describe("P4.4 frozen Seedance media references",()=>{
   expect(JSON.stringify(refs)).not.toContain("wav-content");
   expect(refs[1].durationMs).toBe(3200);
  });
- it("accepts Ark asset identity for reference video; refuses private loopback video",async()=>{
+ it("accepts Ark asset identity for reference video; automatically freezes private local video into CAS",async()=>{
   const bridge=asBridge();
   const frozen=await freezeSeedanceReferences(request("omni_reference",[
    {id:"v",kind:"video",role:"reference_video",url:"asset://ark-media-1",durationMs:4000}
   ]),bridge);
   expect(frozen).toEqual([{kind:"video",role:"reference_video",
    assetUrl:"asset://ark-media-1",durationMs:4000}]);
-  await expect(freezeSeedanceReferences(request("omni_reference",[
-   {id:"v",kind:"video",role:"reference_video",url:"/api/v1/blobs/"+hash,storageKey:cas}
-  ]),bridge)).rejects.toThrow("请先上传至方舟素材库");
+  const fetcher=vi.fn(async()=>new Response(null,{status:200,headers:{
+   "content-type":"video/mp4","content-length":"123456"
+  }}));
+  const cached=await freezeSeedanceReferences(request("omni_reference",[
+   {id:"v",kind:"video",role:"reference_video",url:"/api/v1/blobs/"+hash,storageKey:cas,
+    durationMs:4000}
+  ]),bridge,{fetcher:fetcher as unknown as typeof fetch});
+  expect(cached).toEqual([{kind:"video",role:"reference_video",mimeType:"video/mp4",
+    blobId:hash,sha256:hash,durationMs:4000}]);
+  expect(bridge.uploadFrozenBlob).not.toHaveBeenCalled();
+  const raw=new Blob(["local test bytes"],{type:"video/mp4"});
+  const pinned=await freezeSeedanceReferences(request("omni_reference",[
+    {id:"local",kind:"video",role:"reference_video",storageKey:"media:local",durationMs:3000}
+  ]),bridge,{readMedia:async()=>raw});
+  expect(pinned[0]).toMatchObject({kind:"video",role:"reference_video",blobId:hash,
+    mimeType:"video/mp4",durationMs:3000});
+  expect(bridge.uploadFrozenBlob).toHaveBeenCalledTimes(1);
+ });
+ it("prefers explicit Ark asset identity over leftover local storage metadata",async()=>{
+  const bridge=asBridge();
+  const fetcher=vi.fn();
+  const refs=await freezeSeedanceReferences(request("omni_reference",[
+   {id:"video",kind:"video",role:"reference_video",url:"asset://ready123",
+    storageKey:cas,durationMs:4000}
+  ]),bridge,{fetcher:fetcher as unknown as typeof fetch});
+  expect(refs).toEqual([{kind:"video",role:"reference_video",
+   assetUrl:"asset://ready123",durationMs:4000}]);
+  expect(fetcher).not.toHaveBeenCalled();
+  expect(bridge.uploadFrozenBlob).not.toHaveBeenCalled();
  });
  it("fails before GPU generation on missing CAS or MIME/role mismatch",async()=>{
   const bridge=asBridge();

@@ -8,6 +8,7 @@ import {initializeSchema} from "./schema.mjs";
 import {createBlobStore} from "./blob-store.mjs";
 import {createCredentialVault} from "./credential-vault.mjs";
 import {createArkVideoAdapter,verifyArkVideoUrl,validateArkVideoSnapshot} from "./ark-video-adapter.mjs";
+import {createArkAssetManager} from "./ark-asset-manager.mjs";
 import {createJobCoordinator} from "./job-coordinator.mjs";
 import {submitJob,fingerprintSource} from "./repository.mjs";
 import {createCanvasMaterializer} from "./canvas-materializer.mjs";
@@ -163,6 +164,63 @@ test("P4.4 third round mixed image audio Ark asset video are pinned and wrong ro
  const forged=structuredClone(f.task);
  forged.references[0].sha256="0".repeat(64);
  assert.throws(()=>validateArkVideoSnapshot(f.snapshot(forged)),/ark_video_reference_digest_invalid/);
+});
+test("P4.4 ordinary local MP4 becomes Ark asset before a single billable Seedance POST; survives restart",async t=>{
+ const calls=[],tosUploads=[];
+ const f=fixture(t,async()=>{throw Error("unused upstream fixture")});
+ const clip=await f.blobStore.put([mp4],{mime:"video/mp4"});
+ f.task.mode="omni_reference";
+ f.task.references=[{kind:"video",role:"reference_video",blobId:clip.blobId,
+  sha256:clip.sha256,mimeType:"video/mp4",durationMs:3000}];
+ const tos={uploadFile:async details=>{tosUploads.push(details);return {data:{}}},
+  getPreSignedUrl:({bucket,key})=>"https://"+bucket+".tos-cn-beijing.volces.com/"+
+    key+"?X-Tos-Signature=test-only"};
+ let polls=0,creations=0,submits=0;
+ const assetUpstream=async(url,init)=>{
+  calls.push("asset:"+new URL(url).searchParams.get("Action"));
+  if(url.includes("Action=CreateAsset")){
+   creations++;
+   return response({Result:{Id:"asset-local-video"}});
+  }
+  if(url.includes("Action=GetAsset")){
+   polls++;
+   return response({Result:{Id:"asset-local-video",Status:polls===1?"Processing":"Active"}});
+  }
+  throw Error("unexpected asset API");
+ };
+ const manager=createArkAssetManager({db:f.db,blobStore:f.blobStore,client:tos,
+  config:{accessKeyId:"AKLTTESTONLY123",secretAccessKey:"safe-test-secret",
+   groupId:"group-example",bucket:"atelier-testing",projectName:"default"},
+  upstreamCall:assetUpstream,delay:async()=>{},maxPolls:4,pollIntervalMs:1});
+ const videoUpstream=async(url,init)=>{
+  calls.push("video:"+init.method);
+  if(init.method==="POST"){
+   submits++;
+   const body=JSON.parse(init.body);
+   assert.equal(body.content[1].video_url.url,"asset://asset-local-video");
+   assert.ok(!init.body.includes("/api/v1/blobs/"));
+   return response({id:"cgt-local-video"});
+  }
+  if(url.endsWith("/cgt-local-video"))
+   return response({id:"cgt-local-video",status:"succeeded",content:{video_url:trustedUrl}});
+  if(url===trustedUrl)return new Response(mp4);
+  throw Error("unexpected video");
+ };
+ const adapter=createArkVideoAdapter({db:f.db,vault:f.vault,blobStore:f.blobStore,
+  assetManager:manager,upstreamCall:videoUpstream});
+ const id=f.add("local-reference");
+ const first=createJobCoordinator({db:f.db,adapters:{model:adapter}});
+ first.recoverAtStartup();await first.tick();
+ assert.equal(f.db.prepare("SELECT status FROM jobs WHERE id=?").get(id).status,"running");
+ assert.equal(f.db.prepare("SELECT upstream_task_id FROM jobs WHERE id=?").get(id).upstream_task_id,"cgt-local-video");
+ assert.equal(creations,1);assert.equal(submits,1);assert.equal(tosUploads.length,1);
+ assert.deepEqual(calls.slice(0,4),["asset:CreateAsset","asset:GetAsset","asset:GetAsset","video:POST"]);
+ const restarted=createJobCoordinator({db:f.db,adapters:{model:adapter}});
+ restarted.recoverAtStartup();await restarted.tick();
+ assert.equal(f.db.prepare("SELECT status FROM jobs WHERE id=?").get(id).status,"succeeded");
+ assert.equal(creations,1);assert.equal(submits,1);assert.equal(tosUploads.length,1);
+ const row=manager.record(clip.blobId);
+ assert.equal(row.status,"active");assert.equal(row.asset_id,"asset-local-video");
 });
 test("P4.4 failed download retries only signed TOS GET, never another generation POST",async t=>{
  let submits=0,downloads=0;

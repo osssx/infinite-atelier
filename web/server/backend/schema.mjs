@@ -1,5 +1,5 @@
 import{JOB_STATUSES,EXECUTION_MODES,ARTIFACT_KINDS}from"./contracts.mjs";
-export const SCHEMA_VERSION=7;
+export const SCHEMA_VERSION=8;
 const quoted=x=>x.map(s=>"'"+s+"'").join(",");
 export const INITIAL_SCHEMA_SQL=`
 CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY,applied_at INTEGER NOT NULL);
@@ -128,6 +128,24 @@ CREATE TABLE IF NOT EXISTS project_chats(
  updated_at INTEGER NOT NULL
 );
 `;
+/** P4.4 local video -> TOS -> CreateAsset -> GetAsset.
+ * 'creating' is an irreversible submit barrier; unknown outcomes must never
+ * cause a second CreateAsset after an unclean restart.
+ */
+export const ARK_ASSET_SCHEMA_SQL=`
+CREATE TABLE IF NOT EXISTS ark_asset_uploads(
+ blob_id TEXT NOT NULL REFERENCES blobs(id),
+ bucket TEXT NOT NULL,
+ project_name TEXT NOT NULL,
+ group_id TEXT NOT NULL,
+ status TEXT NOT NULL CHECK(status IN ('staged','creating','processing','active','failed')),
+ asset_id TEXT,
+ object_key TEXT NOT NULL,
+ updated_at INTEGER NOT NULL,
+ PRIMARY KEY(blob_id,bucket,project_name,group_id)
+);
+CREATE INDEX IF NOT EXISTS ix_ark_asset_uploads_status ON ark_asset_uploads(status);
+`;
 export function initializeSchema(db){
  db.exec("PRAGMA foreign_keys=ON;PRAGMA busy_timeout=5000;BEGIN IMMEDIATE");
  try{
@@ -154,6 +172,7 @@ export function initializeSchema(db){
       1,?
     FROM projects`).run(Date.now());
   }
+  if(version<8)db.exec(ARK_ASSET_SCHEMA_SQL);
   if(version<SCHEMA_VERSION)db.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)").run(SCHEMA_VERSION,Date.now());
   db.exec("COMMIT");
  }catch(e){db.exec("ROLLBACK");throw e}

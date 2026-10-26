@@ -28,7 +28,7 @@ export function validateArkReferences(task){
    throw fail("ark_video_reference_invalid",true);
   const asset=ref.kind==="video"&&typeof ref.assetUrl==="string"&&
    /^asset:\/\/[A-Za-z0-9_-]{1,160}$/.test(ref.assetUrl);
-  if((ref.kind==="video"&&!asset)||ref.kind!=="video"&&ref.assetUrl!==undefined)
+  if((ref.kind==="video"&&!asset&&ref.blobId===undefined)||ref.kind!=="video"&&ref.assetUrl!==undefined)
    throw fail("ark_video_reference_asset_invalid",true);
   if(ref.blobId!==undefined||ref.sha256!==undefined){
    if(!/^[a-f0-9]{64}$/.test(ref.blobId)||ref.blobId!==ref.sha256||
@@ -94,12 +94,16 @@ async function responseJson(response){
  try{return JSON.parse(Buffer.concat(parts).toString("utf8"))}
  catch{throw fail("ark_video_invalid_json")}
 }
-async function pinnedArkContent(task,blobStore){
+async function pinnedArkContent(task,blobStore,assetManager){
  const refs=validateArkReferences(task);
  const items=[{type:"text",text:task.prompt}];
  let total=Buffer.byteLength(task.prompt,"utf8");
  for(const ref of refs){
   let url=ref.assetUrl;
+  if(ref.kind==="video"&&ref.blobId){
+   if(!assetManager)throw fail("ark_asset_upload_not_configured",true);
+   url=assetManager.readyUrl(ref);
+  }
   if(ref.blobId){
    const blob=await blobStore.stat(ref.blobId);
    const max=ref.kind==="image"?30*1024*1024:ref.kind==="audio"?15*1024*1024:200*1024*1024;
@@ -125,7 +129,7 @@ async function pinnedArkContent(task,blobStore){
  * signed Ark-owned TOS media into CAS on successful completion. A download
  * failure retries only GET, never another billable generation POST.
  */
-export function createArkVideoAdapter({db,vault,blobStore,upstreamCall=fetch}={}){
+export function createArkVideoAdapter({db,vault,blobStore,assetManager=null,upstreamCall=fetch}={}){
  if(!db||!vault||!blobStore||typeof upstreamCall!=="function")
   throw Error("ark_video_adapter_dependencies_required");
  const validate=job=>{
@@ -144,10 +148,17 @@ export function createArkVideoAdapter({db,vault,blobStore,upstreamCall=fetch}={}
    headers:{...(init.headers||{}),authorization},
    signal:AbortSignal.timeout(120000)});
  }
- async function prepare({job}){validate(job)}
+ async function prepare({job}){
+  const {task}=validate(job);
+  for(const ref of task.references??[]){
+   if(ref.kind!=="video"||!ref.blobId)continue;
+   if(!assetManager)throw fail("ark_asset_upload_not_configured",true);
+   await assetManager.ensureReady(ref);
+  }
+ }
  async function submit({job}){
   const {task}=validate(job);
-  const content=await pinnedArkContent(task,blobStore);
+  const content=await pinnedArkContent(task,blobStore,assetManager);
   const body={model:task.model,
    content,
    ratio:task.ratio,resolution:task.resolution,duration:task.duration,

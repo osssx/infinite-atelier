@@ -2590,6 +2590,13 @@ function AtelierCanvasPage() {
                         const caps=modelConfig?capabilitiesForModel(selectedChannel,modelConfig):null;
                         if(caps)validateSeedanceRequest(request,caps);
                         seedanceMode=request.mode;
+                        if(request.references.some(ref=>ref.kind==="video"&&
+                            !ref.url?.startsWith("asset://"))){
+                            const capability=await canvasApi<{arkAssetUploadReady:boolean}>(
+                                "/api/v1/execution/capabilities");
+                            if(!capability.arkAssetUploadReady)
+                                throw Error("本地视频上传方舟素材库尚未配置：请配置方舟 AK/SK、素材组和 TOS Bucket 后重启后端");
+                        }
                         frozenReferences=await freezeSeedanceReferences(request,bridge);
                     }
                     const job=await startSqliteModelGeneration({

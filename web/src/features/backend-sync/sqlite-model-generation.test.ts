@@ -67,6 +67,28 @@ describe("P4.4 ordinary SQLite model submit",()=>{
    .rejects.toThrow("generation_save_barrier_required");
   expect(valid.mock.calls.some(args=>args[0]==="/api/v1/jobs")).toBe(false);
  });
+ it("submits Ark async video with frozen remote credential version and poll mode",async()=>{
+  const requests:Array<{path:string;method:string;payload?:unknown}>=[];
+  const api=vi.fn(async(path:string,method="GET",payload?:unknown)=>{
+   requests.push({path,method,payload});
+   if(path==="/api/v1/execution/capabilities")return {autoDispatch:true,modelKinds:["video"]};
+   if(path==="/api/v1/channels/ark-test")
+    return {id:"ark-test",provider:"volcengine_ark",hasKey:true,keyVersion:"v2"};
+   if(path==="/api/v1/jobs")return fakeJob;
+   throw Error("Unexpected API");
+  });
+  const video={kind:"video" as const,model:"doubao-seedance-2-0-260128",prompt:"snow",
+   duration:6,ratio:"16:9",resolution:"720p",generateAudio:true,watermark:false};
+  await startSqliteModelGeneration({projectId:"p1",sourceNodeId:"text-1",
+   nodes,connections,channelId:"ark-test",provider:"volcengine_ark",
+   task:video,bridge:bridge(),api:api as unknown as typeof canvasApi});
+  const payload=requests.find(r=>r.path==="/api/v1/jobs")?.payload;
+  expect(payload).toMatchObject({executionMode:"poll",snapshot:{
+   adapterKind:"model",provider:"volcengine_ark",channelId:"ark-test",
+   secretVersionRef:"v2",task:video
+  }});
+  expect(JSON.stringify(payload)).not.toContain("apiKey");
+ });
  it("normalizes Canvas ratio shortcuts to supported OpenAI image size",()=>{
   expect(openAiImageSize("1:1")).toBe("1024x1024");
   expect(openAiImageSize("16:9")).toBe("1536x1024");

@@ -8,26 +8,30 @@ import {createSqliteComfyBridge} from "./sqlite-comfy-bridge";
  * This V1 supports one output, text-only inputs, and the official OpenAI API.
  */
 export async function startSqliteModelGeneration({
- projectId,sourceNodeId,nodes,connections,channelId,task,
+ projectId,sourceNodeId,nodes,connections,channelId,provider="openai",task,
  api=canvasApi,bridge=createSqliteComfyBridge({projectId,
   getLocalGraph:()=>({nodes:[...nodes],connections:[...connections]})})
 }:{
  projectId:string;sourceNodeId:string;
  nodes:readonly CanvasNodeData[];connections:readonly CanvasConnection[];
- channelId:string;
- task:{kind:"image"|"audio"|"text";model:string;prompt:string;
-  size?:string;quality?:string;voice?:string;format?:string;speed?:number};
+ channelId:string;provider?:"openai"|"volcengine_ark";
+ task:{kind:"image"|"audio"|"text"|"video";model:string;prompt:string;
+  size?:string;quality?:string;voice?:string;format?:string;speed?:number;
+  duration?:number;ratio?:string;resolution?:string;generateAudio?:boolean;watermark?:boolean};
  api?:typeof canvasApi;bridge?:ReturnType<typeof createSqliteComfyBridge>;
 }):Promise<BackendJobView>{
  if(!nodes.some(node=>node.id===sourceNodeId))throw Error("model_source_node_missing");
+ if((provider==="openai"&&task.kind==="video")||
+    (provider==="volcengine_ark"&&task.kind!=="video"))
+  throw Error("model_provider_kind_unsupported");
  const capability=await api<{autoDispatch:boolean;modelKinds?:string[]}>(
   "/api/v1/execution/capabilities");
  if(!capability.autoDispatch||!capability.modelKinds?.includes(task.kind))
-  throw Error("SQLite OpenAI 模型执行不可用，请设置 ATELIER_OPENAI_MODELS=1 并重启后端");
+  throw Error("本地 SQLite 模型执行服务不可用，请确认本地后端已启动并更新到当前版本");
  const channel=await api<{id:string;provider:string;hasKey:boolean;keyVersion:string|null}>(
   "/api/v1/channels/"+encodeURIComponent(channelId));
- if(channel.id!==channelId||channel.provider!=="openai"||!channel.hasKey||!channel.keyVersion)
-  throw Error("SQLite 后端未配置此 OpenAI 渠道的加密密钥");
+ if(channel.id!==channelId||channel.provider!==provider||!channel.hasKey||!channel.keyVersion)
+  throw Error("SQLite 后端未配置此模型渠道的加密密钥");
  await bridge.assertNoActiveJob(sourceNodeId);
  const frozen={nodes:[...nodes],connections:[...connections]};
  const fence=await bridge.saveProjectNow(frozen,sourceNodeId);
@@ -35,8 +39,8 @@ export async function startSqliteModelGeneration({
  return api<BackendJobView>("/api/v1/jobs","POST",{
   projectId,targetNodeId:sourceNodeId,
   expectedProjectRevision:fence.revision,sourceNodeFingerprint:fence.sourceNodeFingerprint,
-  idempotencyKey,requestFingerprint:idempotencyKey,executionMode:"immediate",
-  snapshot:{adapterKind:"model",provider:"openai",channelId,
+  idempotencyKey,requestFingerprint:idempotencyKey,executionMode:task.kind==="video"?"poll":"immediate",
+  snapshot:{adapterKind:"model",provider,channelId,
    secretVersionRef:channel.keyVersion,task}
  });
 }

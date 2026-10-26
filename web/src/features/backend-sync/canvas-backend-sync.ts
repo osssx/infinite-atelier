@@ -76,7 +76,7 @@ export function safeRemoteCanvasMerge(local:BackendCanvasGraph,remote:BackendCan
     !/^[a-zA-Z0-9_-]{1,128}$/.test(model.jobId)||
     node.id!=="artifact-"+model.artifactId||
     !localNodes.has(model.sourceNodeId)||node.type!==model.kind||
-    !["image","audio","text"].includes(model.kind))return null;
+    !["image","audio","text","video"].includes(model.kind))return null;
    if(local.nodes.some(n=>n.metadata?.modelArtifact?.artifactId===model.artifactId))return null;
    if(!remote.connections.some(e=>e.fromNodeId===model.sourceNodeId&&
      e.toNodeId===node.id&&!e.fromPortId&&!e.toPortId))return null;

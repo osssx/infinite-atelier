@@ -79,7 +79,7 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
    "invalid_project_id","project_document_too_large","expected_revision_required","invalid_project_reference",
    "invalid_canvas_chats","invalid_canvas_viewport","canvas_chats_too_large",
    "chats_revision_conflict","viewport_revision_conflict",
-   "stale_generation_source","cyclic_generation_source","generation_save_barrier_required","invalid_job_request","idempotency_key_conflict",
+   "stale_generation_source","cyclic_generation_source","generation_save_barrier_required","invalid_job_request","idempotency_key_conflict","job_not_found",
    "invalid_event_cursor","event_cursor_expired","raw_credentials_forbidden",
    "invalid_bootstrap_token","unsupported_blob_mime","invalid_sha256","blob_quota_exceeded",
    "empty_blob","blob_mime_mismatch","blob_digest_mismatch","blob_identity_conflict",
@@ -293,6 +293,13 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
   // preserving idempotent replies even if a version is later revoked.
   const result=submitJob(db,req.body),row=db.prepare("SELECT * FROM jobs WHERE id=?").get(result.jobId);
   reply.code(result.existing?200:201);return {...jobView(row),existing:result.existing};
+ });
+ if(coordinator)app.post("/api/v1/jobs/:id/cancel",{
+  schema:{params:{type:"object",required:["id"],properties:{id:idSchema},additionalProperties:false},
+   body:{type:"object",additionalProperties:false}}
+ },async(req,reply)=>{
+  reply.header("Cache-Control","no-store");
+  return coordinator.cancel(req.params.id);
  });
 
  app.get("/api/v1/jobs/:id/attempts",{schema:{params:{type:"object",required:["id"],

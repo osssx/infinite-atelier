@@ -72,7 +72,10 @@ export function createJobCoordinator({
   if(!policy)return;
   const previous=db.prepare("SELECT poll_failures,collect_failures FROM job_schedules WHERE job_id=?").get(jobId);
   const failures=failed?(phase==="poll"?previous?.poll_failures??0:previous?.collect_failures??0)+1:0;
-  const base=phase==="poll"?policy.pollMs:policy.collectMs;
+  const task=db.prepare("SELECT snapshot_json FROM jobs WHERE id=?").get(jobId);
+  const isArkVideo=task&&JSON.parse(task.snapshot_json).provider==="volcengine_ark";
+  const base=phase==="poll"&&isArkVideo?Math.max(policy.pollMs,10000):
+   phase==="poll"?policy.pollMs:policy.collectMs;
   const delay=Math.min(policy.maxMs,base*2**Math.min(20,failures));
   db.prepare("INSERT INTO job_schedules(job_id,due_at,poll_failures,collect_failures,last_reason) VALUES(?,?,?,?,?) ON CONFLICT(job_id) DO UPDATE SET due_at=excluded.due_at,poll_failures=excluded.poll_failures,collect_failures=excluded.collect_failures,last_reason=excluded.last_reason")
     .run(jobId,clock()+delay,phase==="poll"?failures:previous?.poll_failures??0,
@@ -204,6 +207,9 @@ export function createJobCoordinator({
    if(result?.kind==="failed"){
     transition(db,row,"failed");return "failed";
    }
+   if(result?.kind==="cancelled"){
+    transition(db,row,"cancelled");return "cancelled";
+   }
    if(result?.kind==="completed"){
     const receipt=saveReceipt(result.receipt??{remoteTaskId:row.upstream_task_id});
     db.prepare("UPDATE jobs SET recovery_receipt_json=?,status='collecting',updated_at=? WHERE id=?")
@@ -312,6 +318,59 @@ export function createJobCoordinator({
   return work.length;
  }
 
+ /** Cancel a queued local job atomically or confirm Ark remote cancellation.
+  * A temporary lease prevents dispatch while we check remote queued status.
+  * Never mark a running video cancelled unless upstream DELETE confirms it.
+  */
+ async function cancel(jobId){
+  const lease=randomUUID();
+  const reserved=writeTransaction(db,()=>{
+   const row=db.prepare("SELECT * FROM jobs WHERE id=?").get(jobId);
+   if(!row)throw Object.assign(Error("job_not_found"),{code:"job_not_found",statusCode:404});
+   if(row.status==="queued"&&!row.lease_owner){
+    transition(db,row,"cancelled");
+    db.prepare("DELETE FROM job_schedules WHERE job_id=?").run(jobId);
+    return {state:"cancelled"};
+   }
+   if(row.status!=="running"||row.lease_owner||!row.upstream_task_id)
+    return {state:"not_cancellable",reason:"job_not_queued"};
+   const snapshot=JSON.parse(row.snapshot_json);
+   if(snapshot.provider!=="volcengine_ark"||snapshot.task?.kind!=="video")
+    return {state:"not_cancellable",reason:"remote_cancel_not_supported"};
+   const instance=adapterFor(route(row));
+   if(typeof instance?.cancel!=="function")
+    return {state:"not_cancellable",reason:"remote_cancel_not_available"};
+   const updated=db.prepare("UPDATE jobs SET lease_owner=?,lease_acquired_at=?,lease_expires_at=? WHERE id=? AND lease_owner IS NULL AND status='running'")
+    .run(lease,clock(),clock()+leaseMs,jobId);
+   if(!updated.changes)return {state:"not_cancellable",reason:"job_busy"};
+   return {state:"reserved",job:parse({...row,lease_owner:lease}),instance};
+  });
+  if(reserved.state==="cancelled")return {cancelled:true,remoteCancelled:false};
+  if(reserved.state!=="reserved")return {cancelled:false,reason:reserved.reason};
+  try{
+   let confirmed=false,reason="remote_cancel_unconfirmed";
+   try{
+    const result=await reserved.instance.cancel({job:reserved.job,remoteTaskId:reserved.job.upstream_task_id});
+    confirmed=result?.cancelled===true;
+    if(!confirmed)reason=result?.reason??reason;
+   }catch{reason="remote_cancel_unconfirmed"}
+   return writeTransaction(db,()=>{
+    const current=db.prepare("SELECT * FROM jobs WHERE id=?").get(jobId);
+    if(!current||current.lease_owner!==lease||current.status!=="running")
+     return {cancelled:false,reason:"cancel_lease_lost"};
+    if(confirmed){
+     transition(db,current,"cancelled");
+     db.prepare("DELETE FROM job_schedules WHERE job_id=?").run(jobId);
+    }
+    return {cancelled:confirmed,remoteCancelled:confirmed,reason:confirmed?undefined:reason};
+   });
+  }finally{
+   writeTransaction(db,()=>{
+    db.prepare("UPDATE jobs SET lease_owner=NULL,lease_acquired_at=NULL,lease_expires_at=NULL WHERE id=? AND lease_owner=?")
+     .run(jobId,lease);
+   });
+  }
+ }
  async function stop(){
   stopping=true; // stop new claims, then settle existing adapter calls before DB closes.
   await Promise.allSettled([...inFlight.values()]);
@@ -324,5 +383,5 @@ export function createJobCoordinator({
   return db.prepare("SELECT id,job_id,phase,upstream_task_id,started_at,finished_at,outcome FROM job_attempts WHERE job_id=? ORDER BY started_at,id")
    .all(jobId);
  }
- return {instanceId,recoverAtStartup,tick,status,attempts,stop};
+ return {instanceId,recoverAtStartup,tick,status,attempts,cancel,stop};
 }

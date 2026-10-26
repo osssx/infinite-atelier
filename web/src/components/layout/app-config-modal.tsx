@@ -56,7 +56,7 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
 
     const finishConfig = () => {
         const ready = config.channels.some((channel) => channel.baseUrl.trim() &&
-            (channel.apiKey.trim()||channel.backendExecution) && channel.models.length);
+            channel.models.length);
         setConfigDialogOpen(false);
         if (!ready) return;
         message.success(t(shouldPromptContinue ? "config.savedContinue" : "config.saved"));
@@ -255,7 +255,7 @@ function withChannels(config: AiConfig, channels: ModelChannel[]): AiConfig {
         channels,
         models: modelOptionsFromChannels(channels),
         baseUrl: channels[0]?.baseUrl || config.baseUrl,
-        apiKey: channels[0]?.apiKey || config.apiKey,
+        apiKey: channels[0]?.apiKey ?? "",
         apiFormat: channels[0]?.apiFormat || config.apiFormat,
     };
     return {

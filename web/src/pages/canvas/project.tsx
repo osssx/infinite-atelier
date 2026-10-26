@@ -96,6 +96,7 @@ import { CanvasRefreshShell } from "@/components/canvas/canvas-refresh-shell";
 import { startBackendComfyWorkflowRun } from "@/features/backend-sync/backend-comfy-run";
 import {createSqliteComfyBridge} from "@/features/backend-sync/sqlite-comfy-bridge";
 import {startSqliteModelGeneration,openAiImageSize} from "@/features/backend-sync/sqlite-model-generation";
+import {ensureSqliteModelChannel,modelChannelProvider} from "@/features/backend-sync/model-channel-autoroute";
 import {watchSqliteComfyJob} from "@/features/backend-sync/sqlite-comfy-job-watch";
 import {canvasApi} from "@/features/backend-sync/canvas-api";
 import {preserveValidCanvasViewport} from "@/features/backend-sync/canvas-state-persistence";
@@ -400,6 +401,7 @@ function AtelierCanvasPage() {
     const comfyExecuteLocksRef = useRef(new Set<string>());
     const sqliteJobWatchesRef=useRef(new Map<string,AbortController>());
     const monitorSqliteJobRef=useRef<(jobId:string)=>void>(()=>{});
+    const sqliteGenerationJobsRef=useRef(new Map<string,string>());
 
     const persistVideoTask = useCallback((nodeId: string, task: VideoGenerationTask, status: "queued" | "running" | "succeeded" | "failed" | "cancelled" | "expired" = task.status || "queued") => {
         const nodesWithTask = nodesRef.current.map((node) => node.id === nodeId ? { ...node, metadata: { ...node.metadata, videoTask: { provider: task.provider, channelId: task.channelId, model: task.model, taskId: task.id, startedAt: task.startedAt || Date.now(), status } } } : node);
@@ -486,10 +488,24 @@ function AtelierCanvasPage() {
                 okText: t("canvas.projectPage.stop"),
                 cancelText: t("canvas.projectPage.continue"),
                 okButtonProps: { danger: true },
-                onOk: () => stopGenerationByRunningId(nodeId),
+                onOk: async () => {
+                    const jobId=sqliteGenerationJobsRef.current.get(nodeId);
+                    if(!jobId){stopGenerationByRunningId(nodeId);return}
+                    try{
+                        const result=await canvasApi<{cancelled:boolean;reason?:string}>(
+                          "/api/v1/jobs/"+encodeURIComponent(jobId)+"/cancel","POST",{});
+                        if(result.cancelled){
+                            sqliteGenerationJobsRef.current.delete(nodeId);
+                            setRunningNodeId(current=>current===nodeId?null:current);
+                            message.success("SQLite 任务已确认取消");
+                        }else{
+                            message.warning("无法取消已开始生成的云端任务："+(result.reason||"not_queued"));
+                        }
+                    }catch(error){message.error(error instanceof Error?error.message:String(error))}
+                },
             });
         },
-        [modal, stopGenerationByRunningId, t],
+        [modal, stopGenerationByRunningId, t, message],
     );
 
 
@@ -2517,18 +2533,29 @@ function AtelierCanvasPage() {
             const generationConfig = buildGenerationConfig(effectiveConfig, sourceNode, mode);
             const promptText = mode === "text" ? extractSkillMentions(prompt).text : prompt;
             const selectedChannel=resolveModelChannel(effectiveConfig,generationConfig.model);
-            // Explicit user opt-in to the official OpenAI DPAPI channel.
-            // Never silently fallback to browser API calls for that channel.
-            if(selectedChannel?.backendExecution){
+            // Supported official channels always execute via SQLite. No toggle,
+            // no implicit browser fallback on a failed backend/credential check.
+            const sqliteProvider=modelChannelProvider(selectedChannel,mode);
+            if(sqliteProvider&&selectedChannel){
                 try{
-                    if(selectedChannel.apiFormat!=="openai"||
-                      !/^https:\/\/api\.openai\.com(?:\/v1)?\/?$/.test(selectedChannel.baseUrl.trim()))
-                        throw Error("该渠道的后端执行只能使用官方 OpenAI API，请检查渠道地址");
                     if(!projectLoaded)throw Error("画布项目尚未加载完成");
-                    if(mode==="video")throw Error("SQLite 模型队列尚未支持普通视频 API；请先关闭该渠道的后端执行");
-                    if(!sourceNode||!["text","config","image","audio"].includes(sourceNode.type)||
+                    await ensureSqliteModelChannel(selectedChannel,sqliteProvider);
+                    // Existing pre-SQLite browser keys are imported to DPAPI on
+                    // first use, then scrubbed from the persisted config.
+                    if(selectedChannel.apiKey.trim()){
+                        const state=useConfigStore.getState();
+                        const current=state.config;
+                        state.updateConfig("channels",current.channels.map(channel=>
+                            channel.id===selectedChannel.id&&channel.apiKey===selectedChannel.apiKey
+                              ?{...channel,apiKey:""}:channel));
+                        if(current.apiKey===selectedChannel.apiKey)
+                            state.updateConfig("apiKey","");
+                    }
+                    if(!sourceNode||!["text","config","image","audio","video"].includes(sourceNode.type)||
                       sourceNode.type==="image"&&mode!=="image"||
-                      sourceNode.type==="audio"&&mode!=="audio")
+                      sourceNode.type==="audio"&&mode!=="audio"||
+                      sourceNode.type==="video"&&mode!=="video"||
+                      ["image","audio","video"].includes(sourceNode.type)&&Boolean(sourceNode.metadata?.content))
                         throw Error("当前节点类型不支持 SQLite 普通模型生成");
                     if(resolveModelScript(effectiveConfig,generationConfig.model))
                         throw Error("自定义模型脚本尚未接入 SQLite JobCoordinator");
@@ -2545,7 +2572,7 @@ function AtelierCanvasPage() {
                     const text=context.prompt.trim();
                     if(!text)throw Error("请输入生成提示词");
                     const model=modelOptionName(generationConfig.model);
-                    const kind=mode as "image"|"audio"|"text";
+                    const kind=mode as "image"|"audio"|"text"|"video";
                     const format=generationConfig.audioFormat;
                     if(kind==="audio"&&!["mp3","wav","flac"].includes(format))
                         throw Error("SQLite 语音生成目前仅支持 MP3、WAV 或 FLAC");
@@ -2553,6 +2580,7 @@ function AtelierCanvasPage() {
                         projectId,sourceNodeId:nodeId,
                         nodes:[...nodesRef.current],connections:[...connectionsRef.current],
                         channelId:selectedChannel.id,
+                        provider:sqliteProvider,
                         bridge:createSqliteComfyBridge({projectId,
                           getLocalGraph:()=>({nodes:nodesRef.current,connections:connectionsRef.current})}),
                         task:{kind,model,prompt:text,
@@ -2560,9 +2588,16 @@ function AtelierCanvasPage() {
                             quality:["auto","low","medium","high"].includes(generationConfig.quality)?
                               generationConfig.quality:"auto"}:{}),
                           ...(kind==="audio"?{voice:generationConfig.audioVoice,format,
-                            speed:Number(generationConfig.audioSpeed)||1}:{})}
+                            speed:Number(generationConfig.audioSpeed)||1}:{}),
+                          ...(kind==="video"?{duration:Math.max(4,Math.min(15,Math.floor(Number(generationConfig.videoSeconds)||6))),
+                            ratio:["16:9","9:16","1:1","4:3","3:4","21:9"].includes(generationConfig.videoRatio)?generationConfig.videoRatio:"adaptive",
+                            resolution:["480p","720p","1080p"].includes(generationConfig.vquality)?generationConfig.vquality:
+                              ["480","720","1080"].includes(generationConfig.vquality)?generationConfig.vquality+"p":"720p",
+                            generateAudio:generationConfig.videoGenerateAudio!=="false",
+                            watermark:generationConfig.videoWatermark==="true"}:{})}
                     });
                     message.info("SQLite 模型任务已提交："+job.id+"，完成后自动追加产物节点");
+                    if(kind==="video"){sqliteGenerationJobsRef.current.set(nodeId,job.id);setRunningNodeId(nodeId)}
                     monitorSqliteJobRef.current(job.id);
                 }catch(error){message.error(error instanceof Error?error.message:String(error))}
                 return;
@@ -3543,6 +3578,13 @@ function AtelierCanvasPage() {
             },
             onStatus:(status,details)=>{
                 if(controller.signal.aborted||activeProjectIdRef.current!==projectId)return;
+                if(["succeeded","failed","cancelled","submission_unknown","blocked_credential"].includes(status)){
+                    for(const [sourceId,activeJobId] of sqliteGenerationJobsRef.current){
+                        if(activeJobId!==jobId)continue;
+                        sqliteGenerationJobsRef.current.delete(sourceId);
+                        setRunningNodeId(current=>current===sourceId?null:current);
+                    }
+                }
                 if(status==="materialized")message.success("后端任务产物已写入 SQLite 画布");
                 else if(status==="blocked"||status==="unavailable"||status==="needs_refresh")
                     message.warning("后端任务产物需要检查或刷新画布："+(details??status));
@@ -3555,7 +3597,7 @@ function AtelierCanvasPage() {
         });
     },[message,projectId]);
 
-    // Refreshing the page must recover already-submitted jobs from SQLite,    useEffect(()=>{monitorSqliteJobRef.current=monitorSqliteJob},[monitorSqliteJob]);
+    useEffect(()=>{monitorSqliteJobRef.current=monitorSqliteJob},[monitorSqliteJob]);
 
     // Refreshing the page must recover already-submitted jobs from SQLite,
     // including succeeded jobs whose materialization has not completed.
@@ -3572,7 +3614,7 @@ function AtelierCanvasPage() {
             // not start thousands of pollers for completed lifetime history.
             const recent=snapshot.jobs.filter(job=>job.projectId===projectId&&
                 job.status==="succeeded"&&
-                !nodesRef.current.some(node=>node.metadata?.comfyArtifact?.runId===job.id))
+                !nodesRef.current.some(node=>node.metadata?.comfyArtifact?.runId===job.id||node.metadata?.modelArtifact?.jobId===job.id))
                 .slice(-40);
             for(const job of [...active,...recent])monitorSqliteJob(job.id);
         }).catch(()=>{});

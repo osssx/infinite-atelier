@@ -118,6 +118,27 @@ describe("P4.4 ordinary SQLite model artifact merge",()=>{
     sourceNodeId:"other"}}
   }]})).toBeNull();
  });
+ it("accepts Ark model video CAS node only with original source and a plain edge",()=>{
+  const prompt:CanvasNodeData={id:"prompt1",type:"text",title:"Prompt",
+   position:{x:0,y:0},width:300,height:160,metadata:{content:"snow"}};
+  const movie:CanvasNodeData={id:"artifact-vid1",type:"video",title:"Generated video",
+   position:{x:360,y:0},width:420,height:236,
+   metadata:{status:"success",storageKey:"cas:"+"b".repeat(64),
+    content:"/api/v1/blobs/"+"b".repeat(64),mimeType:"video/mp4",
+    modelArtifact:{jobId:"job-ark",artifactId:"vid1",sourceNodeId:"prompt1",
+     kind:"video",model:"doubao-seedance-2-0-260128"}}};
+  const local:BackendCanvasGraph={nodes:[prompt],connections:[]};
+  const remote:BackendCanvasGraph={nodes:[prompt,movie],connections:[{
+   id:"artifact-edge-vid1",fromNodeId:"prompt1",toNodeId:"artifact-vid1"
+  }]};
+  expect(safeRemoteCanvasMerge(local,remote)).toEqual(remote);
+  expect(safeRemoteCanvasMerge(local,{...remote,nodes:[prompt,{
+   ...movie,metadata:{...movie.metadata,modelArtifact:{...movie.metadata!.modelArtifact!,kind:"image"}}
+  }]})).toBeNull();
+  expect(safeRemoteCanvasMerge(local,{...remote,connections:[{
+   ...remote.connections[0],fromPortId:"video"
+  }]})).toBeNull();
+ });
 });
 describe("backend canvas sync opt-in, revisions and events",()=>{
  it("shows safe project validation details without exposing node IDs",async()=>{

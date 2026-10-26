@@ -1,5 +1,6 @@
 import {randomUUID} from "node:crypto";
-import {readFile} from "node:fs/promises";
+import {createReadStream,openAsBlob} from "node:fs";
+import {createHash} from "node:crypto";
 import {Readable} from "node:stream";
 import {compileSingleWorkflow,verifyTemplate,validateSingleRequest,canonical,sha256} from "../comfy-workflow/compiler.mjs";
 import {extractCapture,detectArtifactMime,captureLimits} from "../comfy-workflow/capture-adapters.mjs";
@@ -124,27 +125,40 @@ export function createComfyV2Adapter({instance,db,blobStore,upstreamCall=comfyUp
   const request=snapshot.comfyRequest,template=snapshot.comfyTemplate;
   const info=await upstreamCall(trusted,"/object_info");
   // Names are content-derived and uploads can safely be repeated before /prompt.
-  const imageFiles={};
+  const mediaFiles={};
+  const allowed={
+   IMAGE:{"image/png":"png","image/jpeg":"jpg","image/webp":"webp"},
+   VIDEO:{"video/mp4":"mp4","video/webm":"webm","video/x-matroska":"mkv"},
+   AUDIO:{"audio/wav":"wav","audio/flac":"flac","audio/ogg":"ogg","audio/mpeg":"mp3"}
+  };
+  const sizes={IMAGE:captureLimits.image,VIDEO:captureLimits.video,AUDIO:captureLimits.audio};
   const items=request.externalInputs.filter(x=>x.kind==="asset");
   for(const item of items){
    const blobId=snapshot.comfyAssetBlobs?.[item.assetId]??item.assetId;
    if(blobId!==item.sha256)throw fail("comfy_asset_snapshot_mismatch",400);
    const blob=await blobStore.stat(blobId);
-   if(blob.sha256!==item.sha256||!["image/png","image/jpeg","image/webp"].includes(blob.mimeType))
+   const extension=allowed[item.valueKind]?.[blob.mimeType];
+   if(blob.sha256!==item.sha256||!extension)
     throw fail("comfy_asset_reference_invalid",400);
-   if(blob.byteSize>captureLimits.image)throw fail("comfy_asset_too_large",413);
-   const extension=({"image/png":"png","image/jpeg":"jpg","image/webp":"webp"})[blob.mimeType];
-   imageFiles[item.assetId]="atelier_"+item.sha256+"."+extension;
+   if(blob.byteSize>sizes[item.valueKind])throw fail("comfy_asset_too_large",413);
+   mediaFiles[item.assetId]="atelier_"+item.sha256+"."+extension;
   }
-  const compiled=compileSingleWorkflow(request,template,{info,imageFiles});
+  // Compilation validates every port and target binding BEFORE any upload.
+  const compiled=compileSingleWorkflow(request,template,{info,mediaFiles});
   for(const item of items){
    const blobId=snapshot.comfyAssetBlobs?.[item.assetId]??item.assetId;
-   const blob=await blobStore.stat(blobId),bytes=await readFile(blob.path);
-   if(sha256(bytes)!==item.sha256)throw fail("comfy_staged_asset_corrupted",409);
-   const filename=imageFiles[item.assetId];
+   const blob=await blobStore.stat(blobId);
+   // Stream verification prevents a large video/audio reference from loading
+   // into Node memory. openAsBlob keeps multipart upload disk-backed.
+   const hash=createHash("sha256");
+   for await(const bytes of createReadStream(blob.path))hash.update(bytes);
+   if(hash.digest("hex")!==item.sha256)throw fail("comfy_staged_asset_corrupted",409);
+   const filename=mediaFiles[item.assetId];
    const form=new FormData();
-   form.set("image",new Blob([bytes],{type:blob.mimeType}),filename);
+   form.set("image",await openAsBlob(blob.path,{type:blob.mimeType}),filename);
    form.set("type","input");form.set("overwrite","true");
+   // ComfyUI's local /upload/image saves arbitrary input media files. The
+   // template must explicitly bind a media-file target to use this filename.
    const response=await upstreamCall(trusted,"/upload/image",{method:"POST",body:form,timeoutMs:120000});
    if(response?.name!==filename||response?.type&&response.type!=="input"||response?.subfolder)
     throw fail("comfy_upload_filename_mismatch",502);
@@ -157,7 +171,7 @@ export function createComfyV2Adapter({instance,db,blobStore,upstreamCall=comfyUp
    db.prepare(`INSERT INTO comfy_job_preparations
     (job_id,graph_json,capture_map_json,graph_hash,image_files_json,workflow_node_id,created_at)
     VALUES (?,?,?,?,?,?,?)`).run(job.id,canonical(compiled.graph),
-     canonical(compiled.captureMap),compiled.graphHash,canonical(imageFiles),
+     canonical(compiled.captureMap),compiled.graphHash,canonical(mediaFiles),
      request.nodes[0].id,Date.now());
   });
  }

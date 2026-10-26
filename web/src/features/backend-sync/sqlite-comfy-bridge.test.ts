@@ -177,6 +177,15 @@ describe("P4 SQLite-only Comfy generation bridge",()=>{
   expect(await refreshSqliteComfyArtifacts({projectId:"p1",getLocalGraph:get,applyGraph:apply,api:h.api})).toBe(false);
   expect(apply).not.toHaveBeenCalled();
  });
+ it("treats materializations already present in SQLite Canvas as a successful no-op",async()=>{
+  h.api.mockResolvedValue(project(5));
+  h.adopt.mockReturnValue(false);
+  const apply=vi.fn();
+  expect(await refreshSqliteComfyArtifacts({projectId:"p1",getLocalGraph:()=>graph,
+   applyGraph:apply,api:h.api})).toBe(true);
+  expect(h.adopt).not.toHaveBeenCalled();
+  expect(apply).not.toHaveBeenCalled();
+ });
  it("watches a succeeded backend job and invokes artifact refresh once",async()=>{
   h.api.mockImplementation(async(path:string)=>{
    if(path.endsWith("/materializations"))return {materializations:[{artifactId:"artifact-one",status:"materialized"}]};

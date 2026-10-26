@@ -1,7 +1,6 @@
 import { createElement, type ComponentProps, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
-const pendingFlag=vi.hoisted(()=>({value:false}));
 import type { CanvasNodeData } from "@/types/canvas";
 
 vi.mock("antd", () => ({
@@ -12,12 +11,7 @@ vi.mock("antd", () => ({
 vi.mock("@/stores/use-theme-store",()=>({
     useThemeStore:(select:(state:{theme:"light"})=>unknown)=>select({theme:"light"}),
 }));
-vi.mock("./run-client",()=>({
-    hasPendingComfyRun:()=>pendingFlag.value,
-    getComfyRun:vi.fn(),
-    cancelComfyRun:vi.fn(),
-    recoverPendingComfyRun:vi.fn(),
-}));
+vi.mock("./run-client",()=>({missingComfyMediaInputs:()=>[]}));
 vi.mock("./template-registry",()=>({getComfyTemplate:vi.fn()}));
 vi.mock("./comfy-workflow-panel",()=>({ComfyWorkflowPanel:()=>null}));
 
@@ -33,14 +27,13 @@ const node=(status?:string,error?:string):CanvasNodeData=>({
 function footer(status?:string,error?:string) {
     const noop=()=>undefined;
     const props:ComponentProps<typeof ComfyWorkflowInstancePanel>={
-        node:node(status,error),connections:[],projectId:"p",comfyInstanceId:"comfy-local",
+        node:node(status,error),connections:[],projectId:"p",comfyInstanceId:"comfy-local",backendExecution:true,
         onExecute:async()=>{throw Error("not expected");},onExecutionChange:noop,
         onChange:noop,onTemplateChange:()=>true,onClose:noop,
     };
     const html=renderToStaticMarkup(createElement(ComfyWorkflowInstancePanel,props));
     return html.split("data-comfy-run-footer")[1]?.split("</footer>")[0]??"";
 }
-afterEach(()=>{pendingFlag.value=false;});
 describe("compact ComfyUI inspector execution footer",()=>{
     it("matches the config node full-width rectangular Start Generation button",()=>{
         const html=footer();
@@ -67,13 +60,12 @@ describe("compact ComfyUI inspector execution footer",()=>{
         expect(html).toContain("生成中…");
         expect(html).toMatch(/disabled=""[^>]*aria-label="开始生成"/);
     });
-    it("keeps only the needed recovery control for uncertain submissions",()=>{
-        pendingFlag.value=true;
+    it("blocks uncertain submissions without legacy browser payload recovery",()=>{
         const html=footer("submission_unknown");
         expect(html).toContain("提交待确认");
-        expect(html).toContain("恢复待确认提交");
+        expect(html).toContain("SQLite 后端会恢复任务");
         expect(html).toMatch(/disabled=""[^>]*aria-label="开始生成"/);
-        expect(html).not.toContain("幂等 key");
+        expect(html).not.toContain("恢复待确认提交");
     });
     it("shows compact finished and failure statuses without raw task identifiers",()=>{
         expect(footer("succeeded")).toContain("已完成");

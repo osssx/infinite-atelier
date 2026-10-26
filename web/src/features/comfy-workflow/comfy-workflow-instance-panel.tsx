@@ -11,10 +11,11 @@ import {
 } from "./instance-parameters";
 import { getComfyTemplate } from "./template-registry";
 import type { ComfyWorkflowTemplate } from "./template-schema";
-import { cancelComfyRun, getComfyRun, hasPendingComfyRun, missingComfyMediaInputs, recoverPendingComfyRun, type ComfyRunState } from "./run-client";
+import {missingComfyMediaInputs,type ComfyRunState} from "./run-client";
+import type {BackendJobView} from "@/types/backend-contracts";
+import {canvasApi} from "@/features/backend-sync/canvas-api";
 import { comfyRunStatusLabel, isComfyRunActive } from "./run-status";
 import { ComfyWorkflowPanel } from "./comfy-workflow-panel";
-import {backendLastJobKey,backendPendingKey} from "@/features/backend-sync/backend-comfy-run";
 
 type Props = {
     node: CanvasNodeData;
@@ -131,70 +132,36 @@ export function ComfyWorkflowInstancePanel({node,connections,projectId,comfyInst
     const [run,setRun]=useState<ComfyRunState|null>(null);
     const [runBusy,setRunBusy]=useState(false);
     const [runError,setRunError]=useState("");
-    const [pending,setPending]=useState(()=>hasPendingComfyRun(projectId,node.id));
-    useEffect(()=>{setPending(backendExecution?
-        Boolean(localStorage.getItem(backendPendingKey(projectId,node.id))):
-        hasPendingComfyRun(projectId,node.id));},[backendExecution,projectId,node.id,liveExecution?.status]);
+
     const outputs=useMemo(()=>template?.ports.filter(p=>p.direction==="source" && !!p.capture?.adapterId && p.capture.kind!=="none")??[],[template]);
     const missingMedia=useMemo(()=>template?missingComfyMediaInputs(template,node.id,connections):[],[template,node.id,connections]);
+    // The SQLite job table is authoritative. No origin-specific localStorage,
+    // no V2 gateway recovery, and no task lifecycle tied to inspector mount.
     useEffect(()=>{
         let active=true;
-        setRun(null);setRunError("");
-        if(!backendExecution&&binding?.lastRunId)void getComfyRun(binding.lastRunId)
-            .then(value=>{if(active)setRun(value);})
-            .catch(cause=>{if(active)setRunError("恢复任务失败："+String(cause));});
-        if(backendExecution){
-            const id=localStorage.getItem(backendLastJobKey(projectId,node.id));
-            if(id){
-                const jobId=id;
-                void fetch("/api/v1/jobs/"+encodeURIComponent(jobId),{
-                    credentials:"same-origin",cache:"no-store"
-                }).then(async response=>{if(!response.ok)throw Error("HTTP "+response.status);return response.json()})
-                  .then(job=>{if(active)setRun({runId:jobId,workflowNodeId:node.id,status:job.status,artifacts:[]})})
-                  .catch(cause=>{if(active)setRunError("恢复新后端任务失败："+String(cause))});
-            }
-        }
-        return ()=>{active=false;};
-    },[backendExecution,binding?.lastRunId,projectId,node.id]);
-    useEffect(()=>{
-        if(!run?.runId || ["succeeded","failed","cancelled","submission_unknown","timed_out"].includes(run.status))return;
-        const timer=setInterval(()=>{
-            if(!backendExecution){
-                void getComfyRun(run.runId).then(setRun).catch(cause=>setRunError(String(cause)));
-                return;
-            }
-            void fetch("/api/v1/jobs/"+encodeURIComponent(run.runId),{
-                credentials:"same-origin",cache:"no-store"
-            }).then(async response=>{if(!response.ok)throw Error("HTTP "+response.status);return response.json()})
-              .then(job=>setRun(prev=>prev&&prev.runId===run.runId?{...prev,status:job.status}:prev))
-              .catch(cause=>setRunError(String(cause)));
-        },2500);
-        return ()=>clearInterval(timer);
-    },[backendExecution,run?.runId,run?.status]);
+        const refresh=async()=>{
+            try{
+                const snapshot=await canvasApi<{jobs:BackendJobView[]}>("/api/v1/jobs/snapshot");
+                if(!active)return;
+                const latest=snapshot.jobs.filter(job=>job.projectId===projectId&&
+                    job.targetNodeId===node.id).sort((a,b)=>Number(b.createdAt)-Number(a.createdAt))[0];
+                if(!latest)return;
+                setRun(previous=>previous?.runId===latest.id&&previous.status===latest.status?
+                    previous:{runId:latest.id,workflowNodeId:node.id,status:latest.status,artifacts:[]});
+            }catch(cause){if(active)setRunError("读取 SQLite 任务状态失败："+String(cause))}
+        };
+        void refresh();
+        const timer=setInterval(()=>void refresh(),2500);
+        return ()=>{active=false;clearInterval(timer)};
+    },[projectId,node.id]);
     const execute=async()=>{
-        if(!template||!comfyInstanceId||!outputs[0]||!binding)return;
+        if(!template||!comfyInstanceId||!outputs[0]||!binding||!backendExecution)return;
         setRunBusy(true);setRunError("");
-        try{
-            const result=await onExecute();
-            setRun(result);
-        }catch(cause){setRunError("提交失败："+String(cause));}
-        finally{setPending(backendExecution?Boolean(localStorage.getItem(backendPendingKey(projectId,node.id))):hasPendingComfyRun(projectId,node.id));setRunBusy(false);}
+        try{setRun(await onExecute())}
+        catch(cause){setRunError("提交失败："+String(cause))}
+        finally{setRunBusy(false)}
     };
-    const recoverSubmission=async()=>{
-        if(!binding)return;
-        setRunBusy(true);setRunError("");
-        onExecutionChange({status:"submitting"});
-        try{
-            const result=await recoverPendingComfyRun(projectId,node.id);
-            onChange({comfyWorkflow:{...binding,lastRunId:result.runId}});
-            setRun(result);
-            onExecutionChange({runId:result.runId,status:result.status,error:result.error||undefined});
-        }catch(cause){
-            setRunError("无法恢复提交："+String(cause));
-            onExecutionChange({status:hasPendingComfyRun(projectId,node.id)?"submission_unknown":"failed",error:String(cause)});
-        }
-        finally{setPending(backendExecution?Boolean(localStorage.getItem(backendPendingKey(projectId,node.id))):hasPendingComfyRun(projectId,node.id));setRunBusy(false);}
-    };
+
 
     useEffect(()=>{
         let active=true;
@@ -219,19 +186,18 @@ export function ComfyWorkflowInstancePanel({node,connections,projectId,comfyInst
     };
     // Do not show details belonging to an older run after a newer submission has begun.
     // Canvas-level progress also updates when a run was triggered from the selected-node toolbar.
-    const currentRun=backendExecution?run:run?.runId===binding?.lastRunId?run:null;
-    const status=backendExecution?currentRun?.status:liveExecution?.status||currentRun?.status;
+    const currentRun=run;
+    const status=currentRun?.status||liveExecution?.status;
     const active=isComfyRunActive(status)||runBusy;
     const artifactSummary=currentRun?.status==="succeeded" ?
         Object.entries(currentRun.artifacts.reduce<Record<string,number>>((acc,item)=>{
             acc[item.kind]=(acc[item.kind]??0)+1;return acc;
         },{})).map(([kind,count])=>count+({image:" 张图片",video:" 段视频",audio:" 段音频",text:" 条文本"} as Record<string,string>)[kind]).join(" · ") : "";
-    const statusLabel=pending?"提交待确认":status==="succeeded"
+    const statusLabel=status==="submission_unknown"?"提交待确认":status==="succeeded"
         ? `已完成${artifactSummary?` · ${artifactSummary}`:""}`
         :status?comfyRunStatusLabel(status):"待执行";
     const statusError=runError||liveExecution?.error||(currentRun?.error??"");
-    const canCancel=!backendExecution&&Boolean(currentRun && ["queued","preparing","running","collecting","submitting"].includes(currentRun.status));
-    const disabled=!template||!comfyInstanceId||!outputs[0]||!projectId||active||pending||missingMedia.length>0;
+    const disabled=!backendExecution||!template||!comfyInstanceId||!outputs[0]||!projectId||active||status==="submission_unknown"||missingMedia.length>0;
     if(editingTemplate) return <ComfyWorkflowPanel node={node} onChange={(patch)=>{
         const applied=onTemplateChange(patch);
         if(applied)setEditingTemplate(false);
@@ -276,8 +242,6 @@ export function ComfyWorkflowInstancePanel({node,connections,projectId,comfyInst
                         :status==="succeeded"?<Check size={14} className="shrink-0" aria-hidden="true"/>:null}
                     <span className="truncate">{statusLabel}</span>
                 </div>
-                {canCancel?<button type="button" className="shrink-0 text-[11px] text-[var(--comfy-muted)] hover:underline"
-                    onClick={()=>void cancelComfyRun(currentRun!.runId).then(setRun).catch(e=>setRunError(String(e)))}>取消请求</button>:null}
             </div>
             <Button type="primary" className="sticky bottom-0 mt-auto !h-9 !w-full !shrink-0 !cursor-pointer !rounded-lg"
                 disabled={disabled} onClick={()=>void execute()} aria-label="开始生成">
@@ -286,8 +250,8 @@ export function ComfyWorkflowInstancePanel({node,connections,projectId,comfyInst
                         :<><Play className="size-4" aria-hidden="true"/><span>开始生成</span></>}
                 </span>
             </Button>
-            {pending?<button type="button" className={buttonClass} disabled={runBusy}
-                onClick={()=>void (backendExecution?execute():recoverSubmission())}>恢复待确认提交</button>:null}
+            {status==="submission_unknown"?<p className="text-xs text-amber-500">提交结果尚未确认；SQLite 后端会恢复任务，禁止重复运行。</p>:null}
+            {!backendExecution?<p className="text-xs text-amber-500" role="alert">SQLite JobCoordinator 不可用；请启动并配置本地 ComfyUI 后端，不会回退旧 V2。</p>:null}
             {statusError?<p className="break-words text-[11px] text-red-500" role="alert">{statusError}</p>:null}
         </footer>
     </section>;

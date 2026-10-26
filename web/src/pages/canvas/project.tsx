@@ -28,7 +28,7 @@ import { reuseCanvasVisibleList } from "@/lib/canvas/canvas-visible-list";
 import { cropDataUrl, splitDataUrl, upscaleDataUrl } from "@/lib/canvas/canvas-image-data";
 import { fitNodeSize, nodeSizeFromRatio } from "@/lib/canvas/canvas-node-size";
 import { focusSelectionViewport, isFocusSelectionBlocked, isFocusSelectionKey } from "@/lib/canvas/canvas-focus-selection";
-import { App, Button, Input, Modal } from "antd";
+import { App, Button, Modal } from "antd";
 import { NODE_DEFAULT_SIZE, getNodeSpec } from "@/constant/canvas";
 import { ActiveConnectionOverlay, ConnectionLayer } from "@/components/canvas/canvas-connection-layer";
 import { CanvasActionsProvider, type CanvasActions } from "@/components/canvas/canvas-actions";
@@ -89,16 +89,11 @@ import { registerBuiltinNodes } from "@/components/canvas/nodes/builtin-nodes";
 const ComfyWorkflowInstancePanel = lazy(() => import("@/features/comfy-workflow/comfy-workflow-instance-panel").then((m) => ({default:m.ComfyWorkflowInstancePanel})));
 import { COMFY_WORKFLOW_MOCK_TYPE } from "@/lib/canvas/canvas-ports";
 import { validateCanvasPortConnections } from "@/lib/canvas/canvas-port-connections";
-import { getComfyRun, hasPendingComfyRun, recoverPendingComfyRun, startComfyWorkflowRun, type ComfyRunArtifact, type ComfyRunState } from "@/features/comfy-workflow/run-client";
+import type {ComfyRunState} from "@/features/comfy-workflow/run-client";
 import { getComfyTemplate } from "@/features/comfy-workflow/template-registry";
-import { isComfyRunActive, isComfyRunTerminal } from "@/features/comfy-workflow/run-status";
-import { nextComfyArtifactTileIndex } from "@/features/comfy-workflow/artifact-layout";
-import { importComfyArtifact } from "@/features/comfy-workflow/artifact-importers";
 import { resolveCanvasComfyInstance } from "@/features/comfy-workflow/canvas-instance";
 import { CanvasRefreshShell } from "@/components/canvas/canvas-refresh-shell";
-import { createCanvasBackendSync, explainBackendSyncError, type BackendSyncStatus } from "@/features/backend-sync/canvas-backend-sync";
-import {prefersBackendProject,setBackendProjectPreference} from "@/features/backend-sync/backend-preferences";
-import { startBackendComfyWorkflowRun, assertNoActiveBackendComfyJob } from "@/features/backend-sync/backend-comfy-run";
+import { startBackendComfyWorkflowRun } from "@/features/backend-sync/backend-comfy-run";
 import {createSqliteComfyBridge} from "@/features/backend-sync/sqlite-comfy-bridge";
 import {watchSqliteComfyJob} from "@/features/backend-sync/sqlite-comfy-job-watch";
 import {canvasApi} from "@/features/backend-sync/canvas-api";
@@ -336,10 +331,7 @@ function AtelierCanvasPage() {
     const [projectLoaded, setProjectLoaded] = useState(false);
     const [projectLoadError,setProjectLoadError]=useState<string|null>(null);
     const [projectLoadAttempt,setProjectLoadAttempt]=useState(0);
-    const [backendSyncStatus, setBackendSyncStatus] = useState<BackendSyncStatus>("disabled");
     const [backendComfyEnabled,setBackendComfyEnabled] = useState(false);
-    const backendSyncRef = useRef<ReturnType<typeof createCanvasBackendSync> | null>(null);
-    const sharedOpenPromptRef=useRef<string|null>(null);
     const [toolbarNodeId, setToolbarNodeId] = useState<string | null>(null);
     const [nodeImageSettingsOpen, setNodeImageSettingsOpen] = useState(false);
     const [dialogNodeId, setDialogNodeId] = useState<string | null>(null);
@@ -404,7 +396,6 @@ function AtelierCanvasPage() {
     const pendingConnectionCreateRef = useRef(pendingConnectionCreate);
     const generationRequestsRef = useRef(new Map<string, CanvasGenerationRequest>());
     const resumedArkTasksRef = useRef(new Set<string>());
-    const comfyArtifactImportsRef = useRef(new Set<string>());
     const comfyExecuteLocksRef = useRef(new Set<string>());
     const sqliteJobWatchesRef=useRef(new Map<string,AbortController>());
 
@@ -505,80 +496,6 @@ function AtelierCanvasPage() {
 
     // Manual opt-in. Legacy local project remains authoritative until the
     // user connects and the backend's saved graph baseline matches.
-    const toggleBackendSync = useCallback(() => {
-        const current = backendSyncRef.current;
-        if (current) {
-            current.disconnect();
-            setBackendProjectPreference(projectId,false);
-            backendSyncRef.current = null;
-            setBackendSyncStatus("disabled");
-            return;
-        }
-        modal.confirm({
-            title: "连接本地后端项目同步（实验性）",
-            content: "仅连接同源且已登录的本地后端。首次连接会创建对应后端项目；已有远端项目如与本地草稿不一致，将停止同步并保留本地编辑。此操作不改变旧版 ComfyUI 生成入口。",
-            okText: "连接", cancelText: "取消",
-            onOk: async () => {
-                const bridge = createCanvasBackendSync({
-                    projectId,
-                    getLocalGraph: () => ({ nodes: nodesRef.current, connections: connectionsRef.current }),
-                    applyRemoteTitle: (title)=>{
-                        if (!pageMountedRef.current || activeProjectIdRef.current !== projectId) return;
-                        const local=useCanvasStore.getState().openProject(projectId);
-                        if(local&&local.title!==title)renameProject(projectId,title);
-                    },
-                    getLocalMetadata:()=>{
-                        const local=useCanvasStore.getState().openProject(projectId);
-                        return {title:local?.title};
-                    },
-                    applyRemoteGraph: (graph) => {
-                        if (!pageMountedRef.current || activeProjectIdRef.current !== projectId) return;
-                        nodesRef.current = graph.nodes;
-                        connectionsRef.current = graph.connections;
-                        setNodes(graph.nodes);
-                        setConnections(graph.connections);
-                        updateProject(projectId, { nodes: graph.nodes, connections: graph.connections });
-                        flushCanvasStorePersistence();
-                    },
-
-                    requestBootstrap: () => new Promise<string | null>((resolve) => {
-                        let oneTimeToken = "";
-                        modal.confirm({
-                            title: "输入本地后端的一次性 Token（有效期 5 分钟）",
-                            content: <Input.Password
-                                autoComplete="off"
-                                placeholder="后端终端中输入 r 回车获取新 Token"
-                                onChange={(event) => { oneTimeToken = event.target.value; }}
-                            />,
-                            okText: "建立会话", cancelText: "取消",
-                            onOk: () => {
-                                const value = oneTimeToken.trim();
-                                oneTimeToken = "";
-                                resolve(value || null);
-                            },
-                            onCancel: () => { oneTimeToken = ""; resolve(null); },
-                        });
-                    }),
-                    onStatus: ({ status, message: details }) => {
-                        if (!pageMountedRef.current || activeProjectIdRef.current !== projectId) return;
-                        setBackendSyncStatus(status);
-                        if (status === "conflict")message.warning("后端项目同步冲突：本地草稿已保留，需先协调项目版本。");
-                        if (status === "error")message.error({ content: "本地后端同步不可用：" + explainBackendSyncError(details || "backend_unreachable"), duration: 12 });
-                    },
-                });
-                backendSyncRef.current = bridge;
-                await bridge.connect();
-                if (bridge.state.status === "connected"){
-                    setBackendProjectPreference(projectId,true);
-                    message.success("已连接本地后端项目同步");
-                }
-                else if (bridge.state.status !== "conflict"){
-                    bridge.disconnect();backendSyncRef.current = null;
-                }
-            },
-        });
-    }, [message, modal, projectId, renameProject, updateProject]);
-
 
 
     // SQLite-only Canvas: execution capability is discovered automatically.
@@ -599,36 +516,6 @@ function AtelierCanvasPage() {
     useEffect(()=>()=>{for(const watch of sqliteJobWatchesRef.current.values())watch.abort();
         sqliteJobWatchesRef.current.clear()},[projectId]);
 
-    const reconcileBackendSync = useCallback(() => {
-        const bridge=backendSyncRef.current;
-        if(!bridge)return;
-        modal.confirm({
-            title:"安全合并后端生成产物",
-            content:"仅当后端的变化都是新增生成产物，且本地对应工作流源节点未修改时才会合并；保留其他本地编辑并通过 revision 校验保存。无法安全合并时不会覆盖任何草稿。",
-            okText:"尝试合并",cancelText:"取消",
-            onOk:async()=>{
-                const resolved=await bridge.reconcileConflict();
-                if(resolved)message.success("后端生成产物已安全合并");
-                else message.warning("无法自动安全合并，草稿仍完整保留");
-            },
-        });
-    },[message,modal]);
-
-
-    // Opening a project through the shared library opts in only after the
-    // local IndexedDB cache is hydrated. Confirmation is still required.
-    // Obsolete manual backend bridge must not run alongside SQLite autosave.
-
-    useEffect(() => () => {
-        backendSyncRef.current?.disconnect();
-        backendSyncRef.current = null;
-        setBackendSyncStatus("disabled");
-    }, [projectId]);
-
-    useEffect(() => {
-        if (!projectLoaded) return;
-        backendSyncRef.current?.scheduleSave();
-    }, [nodes, connections, projectLoaded, currentProjectTitle]);
     useEffect(() => {
         if (!hydrated) return;
         setProjectLoaded(false);
@@ -3618,7 +3505,7 @@ function AtelierCanvasPage() {
     // Refreshing the page must recover already-submitted jobs from SQLite,
     // including succeeded jobs whose materialization has not completed.
     useEffect(()=>{
-        if(!projectLoaded||!backendComfyEnabled)return;
+        if(!projectLoaded)return;
         let cancelled=false;
         void canvasApi<{jobs:Array<{id:string;projectId:string|null;status:string}>}>(
             "/api/v1/jobs/snapshot"
@@ -3635,184 +3522,52 @@ function AtelierCanvasPage() {
             for(const job of [...active,...recent])monitorSqliteJob(job.id);
         }).catch(()=>{});
         return ()=>{cancelled=true};
-    },[projectLoaded,backendComfyEnabled,monitorSqliteJob,projectId]);
+    },[projectLoaded,monitorSqliteJob,projectId]);
 
     // Both the node toolbar and inspector submit through one durable path.
     // A synchronous per-node lock covers template lookup, staging and the HTTP request.
-    const executeComfyWorkflow = useCallback(async (nodeId:string):Promise<ComfyRunState>=>{
+
+    // One SQLite JobCoordinator path for toolbar and inspector. No V2 fallback.
+    const executeComfyWorkflow=useCallback(async(nodeId:string):Promise<ComfyRunState>=>{
         const key=projectId+":"+nodeId;
-        if(comfyExecuteLocksRef.current.has(key))throw new Error("该工作流正在提交，请勿重复点击");
+        if(comfyExecuteLocksRef.current.has(key))
+            throw new Error("该工作流正在提交，请勿重复点击");
         comfyExecuteLocksRef.current.add(key);
-        let started=false;
-        const patchExecution=(status:string,error?:string,runId?:string)=>{
-            if(activeProjectIdRef.current!==projectId || !pageMountedRef.current)return;
-            setNodes(prev=>prev.map(n=>n.id===nodeId ? {
-                ...n,metadata:{...n.metadata,comfyExecution:{runId,status,error}}
-            }:n));
-        };
-        try {
+        try{
             if(!projectLoaded)throw new Error("画布尚未加载完成");
+            if(!globalComfyInstanceId)throw new Error("请先在全局 ComfyUI 设置中选择默认实例");
+            if(!backendComfyEnabled)
+                throw new Error("SQLite JobCoordinator 不可用：请启动并配置本地 ComfyUI 后端；不会回退旧 V2 执行");
             const snapshot={nodes:nodesRef.current,connections:connectionsRef.current};
-            const workflowNode=snapshot.nodes.find(n=>n.id===nodeId);
-            if(!workflowNode || workflowNode.type!==COMFY_WORKFLOW_MOCK_TYPE)
+            const workflowNode=snapshot.nodes.find(node=>node.id===nodeId);
+            if(!workflowNode||workflowNode.type!==COMFY_WORKFLOW_MOCK_TYPE)
                 throw new Error("工作流节点不存在");
             const binding=workflowNode.metadata?.comfyWorkflow;
-            if(!binding?.templateId || !binding.templateRevision)
+            if(!binding?.templateId||!binding.templateRevision)
                 throw new Error("请先在工作流参数面板绑定预设模板");
-            if(!globalComfyInstanceId)throw new Error("请先在全局 ComfyUI 设置中选择默认实例");
-            if(isComfyRunActive(workflowNode.metadata?.comfyExecution?.status))
-                throw new Error("该工作流正在执行或导入产物，当前不可重复提交");
-            if(backendComfyEnabled) {
-                // One node must not run both executors concurrently.
-                // A pending legacy POST or an unverifiable legacy run fails
-                // closed rather than risking a second GPU submission.
-                if(hasPendingComfyRun(projectId,nodeId))
-                    throw new Error("旧 ComfyUI V2 提交尚未确认，请先恢复该任务");
-                if(binding.lastRunId){
-                    const old=await getComfyRun(binding.lastRunId);
-                    if(!isComfyRunTerminal(old.status)||old.status==="submission_unknown")
-                        throw new Error("原 V2 任务尚未结束，不能再提交新后端任务");
-                }
-                const bridge=createSqliteComfyBridge({
-                    projectId,getLocalGraph:()=>({
-                        nodes:nodesRef.current,connections:connectionsRef.current
-                    })
-                });
-                const template=await getComfyTemplate(binding.templateId,binding.templateRevision);
-                if(!template)throw new Error("绑定的工作流模板版本不存在");
-                const outputs=template.ports.filter(port=>port.direction==="source"&&
-                    !!port.capture?.adapterId&&port.capture.kind!=="none");
-                if(!outputs.length)throw new Error("工作流没有可捕获的输出端口");
-                const job=await startBackendComfyWorkflowRun({
-                    bridge,projectId,workflowNode,...snapshot,template,
-                    instanceId:globalComfyInstanceId,outputPortIds:outputs.map(port=>port.id),
-                    serverAuthoritative:true
-                });
+            const template=await getComfyTemplate(binding.templateId,binding.templateRevision);
+            if(!template)throw new Error("绑定的工作流模板版本不存在");
+            const outputs=template.ports.filter(port=>port.direction==="source"&&
+                !!port.capture?.adapterId&&port.capture.kind!=="none");
+            if(!outputs.length)throw new Error("工作流没有可捕获的输出端口");
+            if(activeProjectIdRef.current!==projectId||!pageMountedRef.current)
+                throw new Error("画布已切换，停止提交");
+            const bridge=createSqliteComfyBridge({
+                projectId,getLocalGraph:()=>({nodes:nodesRef.current,connections:connectionsRef.current})
+            });
+            const job=await startBackendComfyWorkflowRun({
+                bridge,projectId,workflowNode,...snapshot,template,
+                instanceId:globalComfyInstanceId,outputPortIds:outputs.map(port=>port.id),
+                serverAuthoritative:true
+            });
+            if(activeProjectIdRef.current===projectId&&pageMountedRef.current){
                 message.info("SQLite 生成任务已提交："+job.id+"。完成后自动恢复产物节点。");
                 monitorSqliteJob(job.id);
-                return {runId:job.id,status:job.status,workflowNodeId:nodeId,artifacts:[]};
             }
-            // The fallback legacy V2 executor must also consult SQLite: an
-            // already accepted backend task can outlive instance configuration.
-            await createSqliteComfyBridge({projectId,getLocalGraph:()=>({
-                nodes:nodesRef.current,connections:connectionsRef.current
-            })}).assertNoActiveJob(nodeId);
-            await assertNoActiveBackendComfyJob(projectId,nodeId);
-            const pending=hasPendingComfyRun(projectId,nodeId);
-            if(!pending && binding.lastRunId) {
-                // Metadata can be stale after reload: never duplicate a running GPU job.
-                const previous=await getComfyRun(binding.lastRunId);
-                if(!isComfyRunTerminal(previous.status) || previous.status==="submission_unknown")
-                    throw new Error("上一次工作流任务尚未结束或提交结果未确认，不能再次提交");
-            }
-            if(activeProjectIdRef.current!==projectId || !pageMountedRef.current)
-                throw new Error("画布已切换，停止提交");
-            patchExecution("submitting");
-            started=true;
-            const result=pending ? await recoverPendingComfyRun(projectId,nodeId) : await (async()=>{
-                const template=await getComfyTemplate(binding.templateId,binding.templateRevision);
-                if(!template)throw new Error("绑定的工作流模板版本不存在，请重新导入");
-                const outputs=template.ports.filter(p=>p.direction==="source" && p.capture?.kind!=="none" &&
-                    !!p.capture?.adapterId);
-                if(!outputs.length)throw new Error("工作流模板没有可捕获的输出端口");
-                if(activeProjectIdRef.current!==projectId || !pageMountedRef.current)
-                    throw new Error("画布已切换，停止提交");
-                return startComfyWorkflowRun({
-                    projectId,workflowNode,...snapshot,template,instanceId:globalComfyInstanceId,outputPortIds:outputs.map(p=>p.id)
-                });
-            })();
-            if(activeProjectIdRef.current===projectId && pageMountedRef.current)
-                setNodes(prev=>prev.map(n=>n.id===nodeId ? {...n,metadata:{
-                    ...n.metadata,
-                    comfyWorkflow:n.metadata?.comfyWorkflow ? {...n.metadata.comfyWorkflow,lastRunId:result.runId} : undefined,
-                    comfyExecution:{runId:result.runId,status:result.status,error:result.error||undefined}
-                }}:n));
-            return result;
-        }catch(cause) {
-            if(started)
-                patchExecution(hasPendingComfyRun(projectId,nodeId)?"submission_unknown":"failed",String(cause));
-            throw cause;
-        }finally{comfyExecuteLocksRef.current.delete(key);}
-    },[backendComfyEnabled,globalComfyInstanceId,message,projectId,projectLoaded,monitorSqliteJob]);
+            return {runId:job.id,status:job.status,workflowNodeId:nodeId,artifacts:[]};
+        }finally{comfyExecuteLocksRef.current.delete(key)}
+    },[backendComfyEnabled,globalComfyInstanceId,message,monitorSqliteJob,projectId,projectLoaded]);
 
-    const handleComfyArtifacts = useCallback(async (artifacts: ComfyRunArtifact[]) => {
-        const indexByWorkflow = new Map<string, number>();
-        for (const artifact of artifacts) {
-            if (comfyArtifactImportsRef.current.has(artifact.artifactId)) continue;
-            comfyArtifactImportsRef.current.add(artifact.artifactId);
-            try {
-                if (nodesRef.current.some(n=>n.metadata?.comfyArtifact?.artifactId===artifact.artifactId))continue;
-                const source=nodesRef.current.find(n=>n.id===artifact.workflowNodeId);
-                if(!source)throw new Error("工作流节点已被删除，无法自动导入");
-                const res=await fetch(artifact.url,{cache:"no-store"});
-                if(!res.ok)throw new Error("无法下载 ComfyUI 产物："+res.status);
-                const blob=await res.blob();
-                const index=indexByWorkflow.get(source.id) ?? nextComfyArtifactTileIndex(nodesRef.current,source.id);
-                const created=await importComfyArtifact(artifact,blob,source,index);                indexByWorkflow.set(source.id,index+1);
-                setNodes(prev=>prev.some(n=>n.metadata?.comfyArtifact?.artifactId===artifact.artifactId)?prev:[...prev,created]);
-                // The typed output edge is a persisted canvas connection, not merely
-                // a visual placement next to the workflow. It also fans out for batches.
-                setConnections(prev=>reconcileComfyArtifactConnections([...nodesRef.current,created],prev,nanoid));
-            } finally {
-                comfyArtifactImportsRef.current.delete(artifact.artifactId);
-            }
-        }
-    },[]);
-
-    // Monitor durable Comfy jobs at canvas scope, not inside the short-lived inspector.
-    // Closing the inspector or reloading the canvas cannot stop progress or artifact import.
-    useEffect(()=>{
-        if(!projectLoaded)return;
-        let disposed=false,checking=false;
-        const observe=async(first=false)=>{
-            if(checking || disposed)return;
-            checking=true;
-            try{
-                const workflows=nodesRef.current.filter(node=>node.type===COMFY_WORKFLOW_MOCK_TYPE &&
-                    node.metadata?.comfyWorkflow?.lastRunId &&
-                    // Do not let polling of an earlier run overwrite a newer submission.
-                    !(["submitting","submission_unknown"].includes(node.metadata?.comfyExecution?.status||"") &&
-                      node.metadata?.comfyExecution?.runId!==node.metadata?.comfyWorkflow?.lastRunId) &&
-                    (first || node.metadata.comfyExecution?.runId!==node.metadata.comfyWorkflow.lastRunId ||
-                        !isComfyRunTerminal(node.metadata.comfyExecution?.status)));
-                for(const workflow of workflows) {
-                    if(disposed)break;
-                    const runId=workflow.metadata!.comfyWorkflow!.lastRunId!;
-                    try {
-                        const run=await getComfyRun(runId);
-                        if(disposed)break;
-                        if(run.status==="succeeded" && run.artifacts.length) {
-                            setNodes(prev=>prev.map(node=>node.id===workflow.id &&
-                                node.metadata?.comfyWorkflow?.lastRunId===runId
-                                ? {...node,metadata:{...node.metadata,comfyExecution:{runId,status:"importing"}}}:node));
-                            try {
-                                await handleComfyArtifacts(run.artifacts);
-                            }catch(cause) {
-                                if(!disposed)setNodes(prev=>prev.map(node=>node.id===workflow.id &&
-                                    node.metadata?.comfyWorkflow?.lastRunId===runId
-                                    ? {...node,metadata:{...node.metadata,comfyExecution:{runId,status:"import_failed",error:String(cause)}}}:node));
-                                continue;
-                            }
-                        }
-                        if(!disposed)setNodes(prev=>prev.map(node=>{
-                            if(node.id!==workflow.id || node.metadata?.comfyWorkflow?.lastRunId!==runId)return node;
-                            const next={runId,status:run.status,error:run.error||undefined};
-                            const current=node.metadata?.comfyExecution;
-                            if(current?.runId===next.runId && current.status===next.status && current.error===next.error)return node;
-                            return {...node,metadata:{...node.metadata,comfyExecution:next}};
-                        }));
-                    }catch(cause){
-                        // A transient network problem must not erase the persisted runId
-                        // or cause a potentially duplicative GPU resubmission.
-                        console.warn("ComfyUI 状态检查失败：",cause);
-                    }
-                }
-            }finally{checking=false;}
-        };
-        void observe(true);
-        const timer=window.setInterval(()=>void observe(),2500);
-        return ()=>{disposed=true;window.clearInterval(timer);};
-    },[handleComfyArtifacts,projectId,projectLoaded]);
 
     const renderNodePanel = useCallback(
         (panelNode: CanvasNodeData) =>
@@ -3971,11 +3726,7 @@ function AtelierCanvasPage() {
                     onImportImage={() => handleUploadRequest()}
                     onUndo={undoCanvas}
                     onRedo={redoCanvas}
-                    backendSyncStatus={backendSyncStatus}
-                    onBackendSyncToggle={undefined}
-                    onBackendSyncReconcile={undefined}
                     backendComfyEnabled={backendComfyEnabled}
-                    onBackendComfyToggle={undefined}
                 />
 
                 <AtelierCanvas

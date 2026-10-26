@@ -3,16 +3,12 @@ import type {BackendJobView} from "@/types/backend-contracts";
 import {canvasApi,type CanvasBackendProject} from "./canvas-api";
 import {canonicalBackendGraph} from "./backend-source-fingerprint";
 import {awaitCanvasStorePersistence,useCanvasStore} from "@/stores/canvas/use-canvas-store";
+import {subscribeSqliteJobEvents} from "./sqlite-job-events";
 
 type Graph={nodes:CanvasNodeData[];connections:CanvasConnection[]};
 type Row={artifactId:string;status:string;reason?:string};
 const closed=new Set(["failed","cancelled"]);
-const delay=(ms:number,signal:AbortSignal)=>new Promise<void>(resolve=>{
- if(signal.aborted){resolve();return}
- const timer=setTimeout(()=>{signal.removeEventListener("abort",stop);resolve()},ms);
- const stop=()=>{clearTimeout(timer);resolve()};
- signal.addEventListener("abort",stop,{once:true});
-});
+
 /** Recover the server-owned artifact graph by advancing the SQLite Store's
  * revision and applying only additive materializations. Never replace a local
  * dirty draft or overwrite modified source nodes.
@@ -24,11 +20,17 @@ export async function refreshSqliteComfyArtifacts({
  api?:typeof canvasApi
 }):Promise<boolean>{
  const frozen=canonicalBackendGraph(getLocalGraph());
- await awaitCanvasStorePersistence();
+ await awaitCanvasStorePersistence(projectId);
  if(canonicalBackendGraph(getLocalGraph())!==frozen)return false;
  const remote=await api<CanvasBackendProject>("/api/v1/projects/"+encodeURIComponent(projectId));
  if(canonicalBackendGraph(getLocalGraph())!==frozen)return false;
  const snapshot=getLocalGraph();
+ // Reopened Canvas may already include every server artifact. A no-op is
+ // success, not a conflict and never triggers an extra SQLite PATCH.
+ if(canonicalBackendGraph({
+  nodes:remote.document.nodes as CanvasNodeData[],
+  connections:remote.document.connections as CanvasConnection[]
+ })===frozen)return true;
  if(!useCanvasStore.getState().adoptMaterializedGraph(projectId,snapshot,remote))return false;
  const updated=useCanvasStore.getState().openProject(projectId);
  if(!updated)return false;
@@ -41,7 +43,7 @@ export async function refreshSqliteComfyArtifacts({
 }
 export async function watchSqliteComfyJob({
  projectId,jobId,signal,getLocalGraph,applyGraph,
- onStatus,api=canvasApi,pollMs=1750,
+ onStatus,api=canvasApi,pollMs=15000,
 }:{
  projectId:string;jobId:string;signal:AbortSignal;
  getLocalGraph:()=>Graph;applyGraph:(graph:Graph)=>void;
@@ -49,8 +51,15 @@ export async function watchSqliteComfyJob({
  api?:typeof canvasApi;pollMs?:number;
 }):Promise<void>{
  const root="/api/v1/jobs/"+encodeURIComponent(jobId);
- let previous="",failures=0;
+ let previous="",failures=0,eventRevision=0;
+ let wake:(()=>void)|null=null;
+ const unsubscribe=subscribeSqliteJobEvents(jobId,()=>{
+  eventRevision++;
+  wake?.();
+ });
+ try{
  while(!signal.aborted){
+  const observedRevision=eventRevision;
   try{
    const job=await api<BackendJobView>(root);
    if(signal.aborted)return;
@@ -82,6 +91,22 @@ export async function watchSqliteComfyJob({
    failures++;
    if(failures>=6){onStatus?.("unavailable",String(error));return}
   }
-  await delay(Math.min(15000,pollMs*(2**Math.min(failures,4))),signal);
+  if(eventRevision!==observedRevision)continue;
+  await new Promise<void>(resolve=>{
+   if(signal.aborted){resolve();return}
+   let done=false;
+   const complete=()=>{
+    if(done)return;
+    done=true;clearTimeout(timer);
+    signal.removeEventListener("abort",complete);
+    if(wake===complete)wake=null;
+    resolve();
+   };
+   const timer=setTimeout(complete,Math.min(60000,pollMs*(2**Math.min(failures,4))));
+   wake=complete;
+   signal.addEventListener("abort",complete,{once:true});
+   if(eventRevision!==observedRevision)complete();
+  });
  }
+ }finally{unsubscribe()}
 }

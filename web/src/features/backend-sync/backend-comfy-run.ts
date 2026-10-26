@@ -3,6 +3,7 @@ import type {ComfyWorkflowTemplate} from "@/features/comfy-workflow/template-sch
 import {prepareCanvasExternalInputSnapshot} from "@/lib/canvas/canvas-external-input-snapshot";
 import type {BackendCanvasGraph} from "./canvas-backend-sync";
 import {canonicalBackendGraph} from "./backend-source-fingerprint";
+import {canvasCasUrl,isCanvasCasKey} from "./canvas-cas";
 import type {BlobUploadResponse,BackendJobView} from "@/types/backend-contracts";
 
 type Submitter={
@@ -103,27 +104,47 @@ export async function startBackendComfyWorkflowRun(args:BackendComfyWorkflowArgs
  if(missing.length)throw Error("请先连接媒体输入："+missing.map(p=>p.label).join("、"));
  if(incoming.some(edge=>!edge.toPortId||!edge.fromPortId))
   throw Error("工作流只能使用显式端口连线");
- if(incoming.some(edge=>!graph.nodes.some(n=>n.id===edge.fromNodeId&&["text","image"].includes(n.type))))
-  throw Error("首版新后端仅支持 Text / Image 外部输入");
+ if(incoming.some(edge=>!graph.nodes.some(n=>n.id===edge.fromNodeId&&["text","image","video","audio"].includes(n.type))))
+  throw Error("工作流外部输入仅支持 Text / Image / Video / Audio 节点");
  const external=prepareCanvasExternalInputSnapshot(graph.nodes,incoming);
  const externalInputs:Array<Record<string,unknown>>=[];
  for(const value of external){
   if(value.kind==="scalar"){
    externalInputs.push({...value});continue;
   }
-  if(value.valueKind!=="IMAGE")throw Error("首版新后端不支持视频或音频参考输入");
+  const accepted:Record<"IMAGE"|"VIDEO"|"AUDIO",readonly string[]>={
+   IMAGE:["image/png","image/jpeg","image/webp"],
+   VIDEO:["video/mp4","video/webm","video/x-matroska"],
+   AUDIO:["audio/wav","audio/flac","audio/ogg","audio/mpeg"]
+  };
+  // Canvas media already lives in immutable backend CAS. Verify its MIME and
+  // size using HEAD; never download a multi-GB video into the browser solely
+  // to upload the identical bytes back to the same backend.
+  if(value.storageKey&&isCanvasCasKey(value.storageKey)){
+   const id=value.storageKey.slice(4),url=canvasCasUrl(value.storageKey)!;
+   const response=await fetch(url,{method:"HEAD",credentials:"same-origin",cache:"no-store"});
+   if(!response.ok)throw Error("外部 CAS 媒体不存在："+response.status);
+   const mime=(response.headers.get("content-type")??"").split(";")[0].trim();
+   const size=Number(response.headers.get("content-length"));
+   if(!accepted[value.valueKind].includes(mime)||!Number.isSafeInteger(size)||size<=0)
+    throw Error("外部 CAS 媒体类型或大小无效："+value.valueKind);
+   externalInputs.push({kind:"asset",sourceNodeId:value.sourceNodeId,sourcePortId:value.sourcePortId,
+    valueKind:value.valueKind,assetId:id,sha256:id});
+   continue;
+  }
   let blob=value.storageKey?await (args.readBlob??(async(key:string)=>
-   (await import("@/services/image-storage")).getImageBlob(key)))(value.storageKey):null;
+   value.valueKind==="IMAGE"
+    ? (await import("@/services/image-storage")).getImageBlob(key)
+    : (await import("@/services/file-storage")).getMediaBlob(key)))(value.storageKey):null;
   if(!blob&&value.url)blob=await (args.getBlob??fromBrowserUrl)(value.url);
-  if(!blob)throw Error("图片源 Blob 不存在，请重新导入图片");
+  if(!blob)throw Error("外部媒体源 Blob 不存在，请重新导入文件");
   const mime=blob.type||value.mimeType||"";
-  if(!["image/png","image/jpeg","image/webp"].includes(mime))
-   throw Error("ComfyUI 仅接受 PNG/JPEG/WebP 参考图");
+  if(!accepted[value.valueKind].includes(mime))
+   throw Error("ComfyUI 外部媒体格式与端口类型不匹配："+value.valueKind);
   const uploaded=await bridge.uploadFrozenBlob(blob,mime);
-  // The server uses content-hash as both assetId and immutable Blob reference.
   if(uploaded.blobId!==uploaded.sha256)throw Error("backend_asset_hash_mismatch");
   externalInputs.push({kind:"asset",sourceNodeId:value.sourceNodeId,sourcePortId:value.sourcePortId,
-   valueKind:"IMAGE",assetId:uploaded.blobId,sha256:uploaded.sha256});
+   valueKind:value.valueKind,assetId:uploaded.blobId,sha256:uploaded.sha256});
  }
  if(canonicalBackendGraph(graph)!==original)throw Error("backend_frozen_graph_mutated");
  const fence=await bridge.saveProjectNow(graph,workflowNode.id);
@@ -143,8 +164,8 @@ export async function startBackendComfyWorkflowRun(args:BackendComfyWorkflowArgs
   executionMode:"poll",idempotencyKey,requestFingerprint:idempotencyKey,
   snapshot:{adapterKind:"comfy",instanceId,comfyRequest,comfyTemplate:copy(template)}
  };
- // Persist the SAME frozen payload before the first POST. A lost HTTP response
- // can be safely repeated with the same key and snapshot, never a new GPU job.
+ // Only legacy callers use browser pending storage. SQLite-only calls never
+ // persist the payload in browser storage; recovery queries server jobs.
  if(pending)pending.setItem(key,JSON.stringify(payload));
  const result=await bridge.submitFrozenJob(payload);
  if(pending){

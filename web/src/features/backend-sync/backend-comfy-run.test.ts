@@ -110,6 +110,113 @@ describe("backend save fence + frozen Comfy submission",()=>{
   expect(bridge.uploadFrozenBlob).toHaveBeenCalledTimes(1);
   registerCanvasPortResolver("comfy:workflow");
  });
+ it("freezes typed VIDEO and AUDIO Canvas assets before SQLite /jobs submission",async()=>{
+  registerCanvasPortResolver("comfy:workflow",node=>node.metadata?.comfyPorts??[]);
+  const clip:CanvasNodeData={id:"clip",type:"video",title:"Clip",width:420,height:260,
+   position:{x:0,y:0},metadata:{storageKey:"cas:clip",mimeType:"video/mp4",content:"/api/v1/blobs/clip"}};
+  const sound:CanvasNodeData={id:"sound",type:"audio",title:"Sound",width:420,height:160,
+   position:{x:0,y:300},metadata:{storageKey:"cas:sound",mimeType:"audio/wav",content:"/api/v1/blobs/sound"}};
+  const target={...workflow,metadata:{...workflow.metadata,comfyPorts:[
+   {id:"clip_input",label:"Video",direction:"target" as const,valueKind:"VIDEO" as const},
+   {id:"sound_input",label:"Audio",direction:"target" as const,valueKind:"AUDIO" as const},
+   {id:"image",label:"Image",direction:"source" as const,valueKind:"IMAGE" as const}
+  ]}};
+  const connected:ComfyWorkflowTemplate={...template,ports:[
+   {id:"clip_input",label:"Video",direction:"target",valueKind:"VIDEO",required:true,
+    inputBinding:{mode:"media-file",mediaKind:"VIDEO",targets:[{nodeId:"1",inputName:"video"}]}},
+   {id:"sound_input",label:"Audio",direction:"target",valueKind:"AUDIO",required:true,
+    inputBinding:{mode:"media-file",mediaKind:"AUDIO",targets:[{nodeId:"1",inputName:"audio"}]}},
+   ...template.ports
+  ]};
+  const edges:CanvasConnection[]=[
+   {id:"v",fromNodeId:"clip",fromPortId:"video",toNodeId:"wf-1",toPortId:"clip_input"},
+   {id:"a",fromNodeId:"sound",fromPortId:"audio",toNodeId:"wf-1",toPortId:"sound_input"}
+  ];
+  const pending=pendingStorage(),trace:string[]=[];
+  const uploaded=vi.fn(async(_blob:Blob,mime:string)=>{
+   trace.push("upload:"+mime);
+   const blobId=mime==="video/mp4"?"a".repeat(64):"b".repeat(64);
+   return {blobId,sha256:blobId,mimeType:mime,byteSize:17,existing:false};
+  });
+  const bridge={
+   state:{status:"connected"},
+   assertComfyReady:vi.fn(async()=>{}),
+   saveProjectNow:vi.fn(async()=>{trace.push("save");return {projectId:"p1",revision:5,sourceNodeFingerprint:"fence"}}),
+   uploadFrozenBlob:uploaded,
+   submitFrozenJob:vi.fn(async(payload:Record<string,unknown>)=>{
+    trace.push("post");
+    expect((payload.snapshot as any).comfyRequest.externalInputs).toEqual([
+     {kind:"asset",sourceNodeId:"clip",sourcePortId:"video",valueKind:"VIDEO",
+      assetId:"a".repeat(64),sha256:"a".repeat(64)},
+     {kind:"asset",sourceNodeId:"sound",sourcePortId:"audio",valueKind:"AUDIO",
+      assetId:"b".repeat(64),sha256:"b".repeat(64)}
+    ]);
+    return expectedJob;
+   })
+  };
+  try{
+   await startBackendComfyWorkflowRun({bridge,projectId:"p1",workflowNode:target,
+    nodes:[target,clip,sound],connections:edges,template:connected,instanceId:"comfy-local",
+    outputPortIds:["image"],pending,newKey:()=>"media-frozen",
+    readBlob:async key=>key==="cas:clip"?new Blob(["clip"],{type:"video/mp4"}):
+     key==="cas:sound"?new Blob(["sound"],{type:"audio/wav"}):null
+   });
+   expect(trace).toEqual(["upload:video/mp4","upload:audio/wav","save","post"]);
+   expect(uploaded).toHaveBeenCalledTimes(2);
+   await expect(startBackendComfyWorkflowRun({bridge,projectId:"p1",workflowNode:target,
+    nodes:[target,clip,sound],connections:edges,template:connected,instanceId:"comfy-local",
+    outputPortIds:["image"],pending:pendingStorage(),
+    readBlob:async()=>new Blob(["bad"],{type:"image/png"})
+   })).rejects.toThrow("格式与端口类型不匹配");
+  }finally{registerCanvasPortResolver("comfy:workflow")}
+ });
+ it("reuses an existing video CAS hash after HEAD without loading or reuploading the media",async()=>{
+  registerCanvasPortResolver("comfy:workflow",node=>node.metadata?.comfyPorts??[]);
+  const sha="c".repeat(64);
+  const source:CanvasNodeData={id:"cached-video",type:"video",title:"Cached",
+   width:320,height:200,position:{x:0,y:0},
+   metadata:{storageKey:"cas:"+sha,mimeType:"video/mp4",content:"/api/v1/blobs/"+sha}};
+  const target:CanvasNodeData={...workflow,metadata:{...workflow.metadata,
+   comfyPorts:[{id:"video_input",label:"Video",direction:"target",valueKind:"VIDEO"},{
+    id:"image",label:"Image",direction:"source",valueKind:"IMAGE"}]}};
+  const connected:ComfyWorkflowTemplate={...template,ports:[{
+   id:"video_input",label:"Video",direction:"target",valueKind:"VIDEO",required:true,
+   inputBinding:{mode:"media-file",mediaKind:"VIDEO",targets:[{nodeId:"1",inputName:"video"}]}
+  },...template.ports]};
+  const readBlob=vi.fn(async()=>{throw Error("should not read cached video bytes")});
+  const head=vi.fn(async(url:string,options:RequestInit)=>{
+   expect(url).toBe("/api/v1/blobs/"+sha);
+   expect(options.method).toBe("HEAD");
+   return new Response(null,{status:200,headers:{
+    "content-type":"video/mp4","content-length":"134217728"
+   }});
+  });
+  vi.stubGlobal("fetch",head);
+  const bridge={
+   state:{status:"connected"},
+   assertComfyReady:vi.fn(async()=>{}),
+   saveProjectNow:vi.fn(async()=>({projectId:"p1",revision:17,sourceNodeFingerprint:"fence"})),
+   uploadFrozenBlob:vi.fn(async()=>{throw Error("CAS must not re-upload")}),
+   submitFrozenJob:vi.fn(async(payload:Record<string,unknown>)=>{
+    expect((payload.snapshot as any).comfyRequest.externalInputs).toMatchObject([
+     {kind:"asset",valueKind:"VIDEO",assetId:sha,sha256:sha}
+    ]);
+    return expectedJob;
+   })
+  };
+  try{
+   await startBackendComfyWorkflowRun({bridge,projectId:"p1",workflowNode:target,
+    nodes:[target,source],connections:[{
+     id:"v",fromNodeId:"cached-video",fromPortId:"video",toNodeId:"wf-1",toPortId:"video_input"
+    }],template:connected,instanceId:"comfy-local",outputPortIds:["image"],
+    readBlob,pending:pendingStorage(),newKey:()=>"cas-pinned"
+   });
+   expect(head).toHaveBeenCalledOnce();
+   expect(readBlob).not.toHaveBeenCalled();
+   expect(bridge.uploadFrozenBlob).not.toHaveBeenCalled();
+   expect(bridge.submitFrozenJob).toHaveBeenCalledOnce();
+  }finally{registerCanvasPortResolver("comfy:workflow");vi.unstubAllGlobals()}
+ });
  it("lost POST response preserves exact payload and replays same idempotency key without new staging",async()=>{
   const pending=pendingStorage();let calls=0;
   const bridge={

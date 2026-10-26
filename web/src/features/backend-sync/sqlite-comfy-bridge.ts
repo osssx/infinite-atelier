@@ -47,7 +47,7 @@ export function createSqliteComfyBridge({
     nodes:JSON.parse(JSON.stringify(frozenGraph.nodes)) as CanvasNodeData[],
     connections:JSON.parse(JSON.stringify(frozenGraph.connections)) as CanvasConnection[]
    });
-   await awaitCanvasStorePersistence();
+   await awaitCanvasStorePersistence(projectId);
    if(compare(getLive())!==expected)throw Error("generation_draft_changed");
    const result=await api<CanvasBackendProject>(projectPath);
    const stored={nodes:result.document.nodes,connections:result.document.connections} as BackendCanvasGraph;
@@ -58,7 +58,8 @@ export function createSqliteComfyBridge({
    return {projectId,revision:result.revision,sourceNodeFingerprint};
   },
   async uploadFrozenBlob(blob:Blob,mimeType:string):Promise<BlobUploadResponse>{
-   if(!["image/png","image/jpeg","image/webp"].includes(mimeType))
+   if(!["image/png","image/jpeg","image/webp","video/mp4","video/webm","video/x-matroska",
+    "audio/wav","audio/flac","audio/ogg","audio/mpeg"].includes(mimeType))
     throw Error("unsupported_blob_mime");
    for(let attempt=0;attempt<2;attempt++){
     const csrf=await session(attempt>0);

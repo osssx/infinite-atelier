@@ -110,16 +110,16 @@ function hasDeclaredInput(node,schema,input) {
 /** Resolve readable aspect-ratio shortcuts against this ComfyUI instance's live
  * COMBO choices. Do not invent labels or widen acceptance of unrelated strings.
  */
-function normalizeComfyEnumInputs(graph, info, trustedImageFields) {
+function normalizeComfyEnumInputs(graph, info, trustedStagedFields) {
     if(!info)return;
     for(const [nodeId,node] of Object.entries(graph)) {
         const schema=info[node.class_type]?.input;
         for(const [key,value] of Object.entries(node.inputs)) {
             if(typeof value!=="string")continue;
-            // /object_info lists files known when it was fetched. A verified /upload/image
-            // filename may not appear in that stale list (dry-run uses dryrun.png).
-            // Only inputs rewritten from an authenticated staged image may bypass it.
-            if(node.class_type==="LoadImage" && key==="image" && trustedImageFields.has(nodeId+"\0"+key))continue;
+            // /object_info was fetched before staged media arrived. Only a
+            // precisely bound field replaced with an authenticated CAS filename
+            // may bypass a stale upload-widget enum; never other template fields.
+            if(trustedStagedFields.has(nodeId+"\0"+key))continue;
             const declaration=schema?.required?.[key] ?? schema?.optional?.[key];
             const choices=Array.isArray(declaration?.[0]) &&
                 declaration[0].every(choice=>typeof choice==="string") ? declaration[0] : null;
@@ -194,10 +194,10 @@ export function validateSingleRequest(req) {
     const inputs = new Map(), targetEdges = new Map();
     for (const x of req.externalInputs) {
         if (!object(x) || !validCanvasNodeId(x.sourceNodeId) || !validId(x.sourcePortId) ||
-            x.sourceNodeId === node.id || !["text","image"].includes(x.sourcePortId) ||
+            x.sourceNodeId === node.id || !["text","image","video","audio"].includes(x.sourcePortId) ||
             !["scalar","asset"].includes(x.kind)) fail("external_input_invalid");
         if (x.kind === "scalar" && (x.sourcePortId !== "text" || x.valueKind !== "STRING" || !matchValue("STRING",x.value))) fail("external_scalar_invalid");
-        if (x.kind === "asset" && (x.sourcePortId !== "image" || x.valueKind !== "IMAGE" || !validId(x.assetId) || !validSha(x.sha256))) fail("external_asset_invalid");
+        if (x.kind === "asset" && (({image:"IMAGE",video:"VIDEO",audio:"AUDIO"})[x.sourcePortId] !== x.valueKind || !validId(x.assetId) || !validSha(x.sha256))) fail("external_asset_invalid");
         const key = x.sourceNodeId+"\0"+x.sourcePortId;
         if (inputs.has(key)) fail("duplicate_external_source");
         inputs.set(key,x);
@@ -239,7 +239,9 @@ export function compileSingleWorkflow(req, template, opts = {}) {
             fail("capture_output_invalid:"+root.portId);
         return output;
     });
-    if (!opts.info?.LoadImage?.output?.includes("IMAGE") && req.externalInputs.some(x=>x.kind==="asset")) fail("image_loader_missing");
+    if (!opts.info?.LoadImage?.output?.includes("IMAGE") &&
+        template.ports.some(p=>p.direction==="target"&&p.valueKind==="IMAGE"&&
+         p.inputBinding?.mode==="socket"&&targetEdges.has(p.id))) fail("image_loader_missing");
     const graph = Object.create(null);
     for (const [id,n] of Object.entries(template.apiGraph)) {
         const inputs = JSON.parse(canonical(n.inputs));
@@ -247,7 +249,7 @@ export function compileSingleWorkflow(req, template, opts = {}) {
         graph[nodeKey(node.id,id)] = {...n, inputs};
     }
     const decisions = Object.create(null);
-    const trustedImageFields=new Set();
+    const trustedStagedFields=new Set();
     for (const p of template.ports.filter(p=>p.direction==="target")) {
         const binding=p.inputBinding;
         const edge=targetEdges.get(p.id);
@@ -275,18 +277,21 @@ export function compileSingleWorkflow(req, template, opts = {}) {
             resolved = choice === "edge" ? v.value : v;
             if (!matchValue(p.valueKind,resolved) || (choice === "edge" && v.kind !== "scalar")) fail("literal_input_invalid:"+p.id);
         } else if (binding.mode === "media-file") {
-            if (!edge || edge.kind !== "asset" || p.valueKind !== "IMAGE" || binding.mediaKind !== "IMAGE") fail("media_file_binding_invalid:"+p.id);
-            resolved = opts.imageFiles?.[edge.assetId];
-            if (!resolved || !/^[A-Za-z0-9_.-]{1,160}$/.test(resolved)) fail("staged_image_not_uploaded");
+            if (!edge || edge.kind !== "asset" || !["IMAGE","VIDEO","AUDIO"].includes(p.valueKind) ||
+                binding.mediaKind !== p.valueKind) fail("media_file_binding_invalid:"+p.id);
+            resolved = (opts.mediaFiles??opts.imageFiles)?.[edge.assetId];
+            if (!resolved || !/^[A-Za-z0-9_.-]{1,160}$/.test(resolved)) fail("staged_media_not_uploaded");
+            for (const t of binding.targets)
+                trustedStagedFields.add(nodeKey(node.id,t.nodeId)+"\0"+t.inputName);
         } else if (binding.mode === "socket") {
             if (!edge || edge.kind !== "asset" || p.valueKind !== "IMAGE" ||
                 (!binding.replaceInternalLink && binding.targets.some(t=>isLink(template.apiGraph[t.nodeId].inputs[t.inputName])))) fail("socket_bridge_invalid:"+p.id);
-            const filename=opts.imageFiles?.[edge.assetId];
+            const filename=(opts.mediaFiles??opts.imageFiles)?.[edge.assetId];
             if (!filename || !/^[A-Za-z0-9_.-]{1,160}$/.test(filename)) fail("staged_image_not_uploaded");
             const loaderId=nodeKey(node.id,"loader_"+p.id);
             if (graph[loaderId]) fail("generated_node_collision");
             graph[loaderId]={class_type:"LoadImage",inputs:{image:filename}};
-            trustedImageFields.add(loaderId+"\0image");
+            trustedStagedFields.add(loaderId+"\0image");
             resolved=[loaderId,0];
         } else fail("unsupported_binding_mode");
         for (const t of binding.targets) {
@@ -294,7 +299,7 @@ export function compileSingleWorkflow(req, template, opts = {}) {
             if (!target || !has(target.inputs,t.inputName)) fail("binding_target_missing");
             target.inputs[t.inputName]=resolved;
             if(binding.mode==="media-file" && target.class_type==="LoadImage" && t.inputName==="image")
-                trustedImageFields.add(nodeKey(node.id,t.nodeId)+"\0"+t.inputName);
+                trustedStagedFields.add(nodeKey(node.id,t.nodeId)+"\0"+t.inputName);
         }
     }
     for (const targetId of targetEdges.keys()) if (!ports.has(targetId) || ports.get(targetId).direction!=="target") fail("input_port_not_found");
@@ -317,7 +322,7 @@ export function compileSingleWorkflow(req, template, opts = {}) {
     };
     for(const cap of captures)visit(cap.captureNodeId);
     for (const id of Object.keys(graph)) if (!reachable.has(id)) delete graph[id];
-    normalizeComfyEnumInputs(graph,opts.info,trustedImageFields);
+    normalizeComfyEnumInputs(graph,opts.info,trustedStagedFields);
     validateGraph(graph,opts.info);
     if (Object.keys(graph).length>500) fail("compiled_graph_too_large");
     return {graph,graphHash:sha256(canonical(graph)),captureMap:captures,decisions};

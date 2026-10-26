@@ -135,6 +135,96 @@ function mockTransport({errorAt,failDownloadOnce=false,workflowNodeId="wf-1"}={}
  return {mock,calls,prompts};
 }
 
+
+test("VIDEO/AUDIO media-file inputs compile only with matching verified staged media, never author filenames",async t=>{
+ const upstream=[];
+ const extraInfo={
+  ...info,
+  VHS_LoadVideo:{input:{required:{video:[["author_clip.mp4"],{"video_upload":true}]}},output:["VIDEO"]},
+  LoadAudio:{input:{required:{audio:[["author_audio.wav"],{"audio_upload":true}]}},output:["AUDIO"]}
+ };
+ const mock=async(_instance,path,opts={})=>{
+  if(path==="/object_info")return extraInfo;
+  if(path==="/upload/image"){
+   const entry=opts.body.get("image");
+   upstream.push({name:entry.name,mime:entry.type,bytes:Buffer.from(await entry.arrayBuffer())});
+   return {name:entry.name,type:"input",subfolder:""};
+  }
+  if(path==="/prompt")return {prompt_id:"accepted-media"};
+  throw Error("unexpected upstream "+path);
+ };
+ const f=fixture(t,{transport:mock});
+ const video=await f.blobStore.put(Readable.from([mp4]),{mime:"video/mp4"});
+ const audio=await f.blobStore.put(Readable.from([wav]),{mime:"audio/wav"});
+ f.tplt.apiGraph["8"]={class_type:"VHS_LoadVideo",inputs:{video:"author_clip.mp4"}};
+ f.tplt.apiGraph["9"]={class_type:"LoadAudio",inputs:{audio:"author_audio.wav"}};
+ f.tplt.ports.find(port=>port.id==="video").outputBinding={nodeId:"8",outputIndex:0};
+ f.tplt.ports.find(port=>port.id==="audio").outputBinding={nodeId:"9",outputIndex:0};
+ f.tplt.ports.push(
+  {id:"video_input",label:"Clip",direction:"target",valueKind:"VIDEO",required:true,
+   inputBinding:{mode:"media-file",mediaKind:"VIDEO",targets:[{nodeId:"8",inputName:"video"}]}},
+  {id:"audio_input",label:"Sound",direction:"target",valueKind:"AUDIO",required:true,
+   inputBinding:{mode:"media-file",mediaKind:"AUDIO",targets:[{nodeId:"9",inputName:"audio"}]}}
+ );
+ f.tplt.requirements.classTypes=[...new Set(Object.values(f.tplt.apiGraph).map(node=>node.class_type))].sort();
+ f.tplt.revision=sha256(canonical({name:f.tplt.name,apiGraph:f.tplt.apiGraph,
+  ports:f.tplt.ports,requirements:f.tplt.requirements}));
+ f.req.nodes[0].templateRevision=f.tplt.revision;
+ f.req.edges.push(
+  {fromNodeId:"clip",fromPortId:"video",toNodeId:"wf-1",toPortId:"video_input"},
+  {fromNodeId:"sound",fromPortId:"audio",toNodeId:"wf-1",toPortId:"audio_input"}
+ );
+ f.req.externalInputs.push(
+  {kind:"asset",sourceNodeId:"clip",sourcePortId:"video",valueKind:"VIDEO",assetId:video.blobId,sha256:video.sha256},
+  {kind:"asset",sourceNodeId:"sound",sourcePortId:"audio",valueKind:"AUDIO",assetId:audio.blobId,sha256:audio.sha256}
+ );
+ assert.doesNotThrow(()=>validateSingleRequest(f.req));
+ assert.throws(()=>compileSingleWorkflow(f.req,f.tplt,{info:extraInfo,mediaFiles:{}}),/staged_media_not_uploaded/);
+ const pinned={
+  [video.blobId]:"atelier_"+video.sha256+".mp4",
+  [audio.blobId]:"atelier_"+audio.sha256+".wav"
+ };
+ const compiled=compileSingleWorkflow(f.req,f.tplt,{info:extraInfo,mediaFiles:pinned});
+ assert.equal(compiled.graph["w_wf-1__8"].inputs.video,pinned[video.blobId]);
+ assert.equal(compiled.graph["w_wf-1__9"].inputs.audio,pinned[audio.blobId]);
+ assert.equal(compiled.graph["w_wf-1__8"].class_type,"VHS_LoadVideo");
+ const withoutImageLoader=structuredClone(extraInfo);
+ delete withoutImageLoader.LoadImage;
+ assert.doesNotThrow(()=>compileSingleWorkflow(f.req,f.tplt,{info:withoutImageLoader,mediaFiles:pinned}));
+ const invalid=structuredClone(f.req);
+ invalid.externalInputs[0].valueKind="IMAGE";
+ assert.throws(()=>validateSingleRequest(invalid),/external_asset_invalid/);
+ // The compiler binds filenames by asset ID; the adapter independently
+ // validates immutable CAS SHA-256 and media MIME before any upstream upload.
+ const id=f.queue("media-input");
+ const coordinator=createJobCoordinator({db:f.db,adapters:{comfy:f.adapters}});
+ coordinator.recoverAtStartup();
+ await coordinator.tick();
+ assert.equal(f.row(id).status,"running");
+ assert.equal(upstream.length,2);
+ assert.deepEqual(upstream.map(file=>file.mime).sort(),["audio/wav","video/mp4"]);
+ assert.ok(upstream.some(file=>file.bytes.equals(mp4)));
+ assert.ok(upstream.some(file=>file.bytes.equals(wav)));
+ assert.equal(JSON.parse(f.db.prepare("SELECT graph_json FROM comfy_job_preparations WHERE job_id=?").get(id).graph_json)["w_wf-1__8"].inputs.video,pinned[video.blobId]);
+});
+test("backend rejects a CAS video masquerading as IMAGE before any Comfy upload or GPU submit",async t=>{
+ const calls=[];
+ const f=fixture(t,{reference:true,transport:async(_instance,path)=>{
+  calls.push(path);
+  if(path==="/object_info")return info;
+  throw Error("upstream must never receive invalid media: "+path);
+ }});
+ const video=await f.blobStore.put(Readable.from([mp4]),{mime:"video/mp4"});
+ f.req.edges.push({fromNodeId:"image-source",fromPortId:"image",toNodeId:"wf-1",toPortId:"source"});
+ f.req.externalInputs.push({kind:"asset",sourceNodeId:"image-source",sourcePortId:"image",
+  valueKind:"IMAGE",assetId:video.blobId,sha256:video.sha256});
+ const id=f.queue("wrong-media-kind");
+ const coordinator=createJobCoordinator({db:f.db,adapters:{comfy:f.adapters}});
+ coordinator.recoverAtStartup();await coordinator.tick();
+ assert.equal(f.row(id).status,"failed");
+ assert.deepEqual(calls,["/object_info"]);
+ assert.equal(f.db.prepare("SELECT COUNT(*) AS n FROM comfy_job_preparations WHERE job_id=?").get(id).n,0);
+});
 test("Comfy compiler preserves colon-prefixed Canvas node IDs in capture mapping",()=>{
  const tplt=template(),req=request(tplt);
  const nodeId="comfy:workflow-1792758417919-co36n";

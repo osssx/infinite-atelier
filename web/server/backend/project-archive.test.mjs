@@ -65,6 +65,37 @@ test("complete ZIP roundtrip restores graph, separate viewport/chat and both med
  assert.deepEqual((await f.blobStore.stat(vid.blobId)).byteSize,mp4.length);
 });
 
+test("P4.5 project archive embeds immutable Comfy versions and restores them in another SQLite database",async t=>{
+ const {createHash}=await import("node:crypto");
+ const {createComfyRegistry}=await import("./comfy-registry.mjs");
+ const payload={name:"Portable workflow",
+  apiGraph:{"1":{class_type:"TestCapture",inputs:{seed:13}}},
+  ports:[{id:"output",label:"Result",direction:"source",valueKind:"IMAGE",
+   outputBinding:{nodeId:"1",outputIndex:0},capture:{kind:"none"}}],
+  requirements:{classTypes:["TestCapture"]}};
+ const stable=v=>Array.isArray(v)?v.map(stable):v&&typeof v==="object"?
+  Object.fromEntries(Object.keys(v).sort().map(k=>[k,stable(v[k])])):v;
+ const revision=createHash("sha256").update(JSON.stringify(stable(payload))).digest("hex");
+ const tmpl={id:"portable-workflow",revision,...payload};
+ const source=await fixture(t);
+ createComfyRegistry(source.db).installMany([tmpl]);
+ createProject(source.db,{id:"bound",document:{title:"Bound",nodes:[
+  {id:"w",type:"comfy:workflow",
+   metadata:{comfyWorkflow:{templateId:tmpl.id,templateRevision:tmpl.revision}}}
+ ],connections:[]}});
+ const zip=Buffer.concat(await Array.fromAsync((await source.archive.exportProject("bound")).stream));
+ const entries=unzipSync(zip);
+ const manifest=JSON.parse(Buffer.from(entries["manifest.json"]).toString("utf8"));
+ assert.deepEqual(manifest.templates,[tmpl]);
+ const fresh=await fixture(t);
+ await assert.rejects(()=>fresh.archive.importProject(Readable.from([Buffer.from(zipSync({
+  ...entries,"manifest.json":strToU8(JSON.stringify({...manifest,templates:[]}))
+ },{level:0}))])),/archive_template_missing/);
+ assert.equal(fresh.db.prepare("SELECT COUNT(*) AS n FROM projects").get().n,0);
+ const result=await fresh.archive.importProject(Readable.from([zip]));
+ assert.equal(getProject(fresh.db,result.id).document.nodes[0].metadata.comfyWorkflow.templateRevision,revision);
+ assert.deepEqual(createComfyRegistry(fresh.db).find(tmpl.id,revision),tmpl);
+});
 test("130 MiB video exports and restores with disk-streamed ZIP without in-RAM media arrays",async t=>{
  const f=await fixture(t);
  const video=join(f.dir,"large-video.mp4"),zipped=join(f.dir,"large-backup.zip");

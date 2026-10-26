@@ -4,16 +4,11 @@ import { MINIMAX_H3_I2V_TEMPLATE_ID } from "./minimax-h3-i2v-preset";
 
 const userPresets=vi.hoisted(()=>new Map<string,unknown>());
 const storedTemplates=vi.hoisted(()=>new Map<string,unknown>());
-vi.mock("localforage",()=>({
-    default:{createInstance:()=>({
-        getItem:async (key:string)=>userPresets.get(key)??null,
-        setItem:async (key:string,value:unknown)=>{userPresets.set(key,structuredClone(value));},
-        removeItem:async (key:string)=>{userPresets.delete(key);},
-        iterate:async(callback:(value:unknown,key:string)=>void)=>{
-            for(const [key,value] of userPresets)callback(value,key);
-        },
-    })}
-}));
+vi.mock("@/features/backend-sync/canvas-api",()=>({canvasApi:vi.fn(async(path:string,method="GET",value?:any)=>{
+    if(method==="GET")return {presets:[...userPresets.values()]};
+    if(method==="PUT"){userPresets.set(value.id,structuredClone(value));return value}
+    if(method==="DELETE"){userPresets.delete(decodeURIComponent(path.split("/").pop()!));return {deleted:true}}
+})}));
 vi.mock("./template-registry",()=>({
     getComfyTemplate:async (id:string,revision:string)=>
         storedTemplates.get(id+"@"+revision)??null,

@@ -6,6 +6,7 @@ import {submitJob,readJobsSnapshot,readEventsAfter} from "./repository.mjs";
 import {EXECUTION_MODES} from "./contracts.mjs";
 import {CANVAS_NODE_ID_PATTERN} from "../canvas-node-id.mjs";
 import {ARCHIVE_MAX_BYTES} from "./project-archive.mjs";
+import {createComfyRegistry} from "./comfy-registry.mjs";
 const nonempty={type:"string",minLength:1,maxLength:256};
 const idSchema={type:"string",pattern:"^[A-Za-z0-9_-]{1,128}$"};
 const canvasNodeIdSchema={type:"string",pattern:CANVAS_NODE_ID_PATTERN};
@@ -102,10 +103,13 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
    "archive_nonportable_media_reference","archive_invalid_manifest",
    "archive_media_manifest_mismatch","archive_size_exceeded","archive_file_limit_exceeded",
    "archive_invalid_entry","archive_invalid_zip","archive_unexpected_files",
-   "archive_media_integrity_error","archive_blob_integrity_error",
+   "archive_media_integrity_error","archive_blob_integrity_error","archive_template_missing",
    "channel_not_found","channel_id_conflict","invalid_channel_config","invalid_credential_value",
    "expected_credential_version_required","credential_version_conflict",
    "credential_reference_required","credential_missing","credential_revoked",
+   "comfy_template_invalid","comfy_template_too_large","comfy_template_revision_mismatch",
+   "comfy_template_immutable_conflict","comfy_template_not_found","comfy_template_in_use",
+   "comfy_preset_invalid","comfy_preset_not_found",
    "credential_protection_unavailable","credential_decryption_failed"]);
   const code=error.validation?"invalid_request":(publicCodes.has(error.code)?error.code:
     (status===400?"invalid_request":"internal_error"));
@@ -223,6 +227,47 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
   });
  }
 
+ const registry=createComfyRegistry(db);
+ const registryParams={type:"object",required:["id","revision"],
+  properties:{id:{type:"string",minLength:1,maxLength:128},revision:{type:"string",pattern:"^[a-f0-9]{64}$"}},
+  additionalProperties:false};
+ const presetParams={type:"object",required:["id"],properties:{id:{type:"string",pattern:"^[A-Za-z0-9_:.-]{1,128}$"}},additionalProperties:false};
+ app.get("/api/v1/comfy/templates",(req,reply)=>{
+  reply.header("Cache-Control","no-store");return {templates:registry.listTemplates()};
+ });
+ app.get("/api/v1/comfy/templates/:id/:revision",{schema:{params:registryParams}},(req,reply)=>{
+  const template=registry.find(req.params.id,req.params.revision);
+  if(!template){reply.code(404);return {code:"comfy_template_not_found"}}
+  reply.header("Cache-Control","no-store");return {template};
+ });
+ app.post("/api/v1/comfy/templates/batch",{bodyLimit:5*1024*1024,
+  schema:{body:{type:"object",required:["templates"],
+   properties:{templates:{type:"array",maxItems:128}},additionalProperties:false}}
+ },(req,reply)=>{
+  reply.header("Cache-Control","no-store");
+  return {results:registry.installMany(req.body.templates)};
+ });
+ app.post("/api/v1/comfy/templates",{bodyLimit:2*1024*1024+4096,
+  schema:{body:{type:"object",required:["template"],properties:{template:{type:"object"}},additionalProperties:false}}
+ },(req,reply)=>{
+  const result=registry.installMany([req.body.template])[0];
+  reply.header("Cache-Control","no-store").code(result.status==="installed"?201:200);
+  return result;
+ });
+ app.delete("/api/v1/comfy/templates/:id/:revision",{schema:{params:registryParams}},(req,reply)=>
+  registry.deleteTemplate(req.params.id,req.params.revision));
+ app.get("/api/v1/comfy/presets",(req,reply)=>{
+  reply.header("Cache-Control","no-store");return {presets:registry.listPresets()};
+ });
+ app.put("/api/v1/comfy/presets/:id",{schema:{params:presetParams,
+  body:{type:"object",required:["id","name","templateId","revision"],
+   properties:{id:{type:"string"},name:{type:"string"},templateId:{type:"string"},revision:{type:"string"}},
+   additionalProperties:false}}},(req,reply)=>{
+  if(req.params.id!==req.body.id)throw Object.assign(Error("comfy_preset_invalid"),{code:"comfy_preset_invalid",statusCode:400});
+  reply.header("Cache-Control","no-store");return registry.savePreset(req.body);
+ });
+ app.delete("/api/v1/comfy/presets/:id",{schema:{params:presetParams}},(req,reply)=>
+  registry.deletePreset(req.params.id));
  // Project library and its own transactional change cursor (job SSE is separate).
  app.get("/api/v1/projects",()=>({projects:listProjectSummaries(db),eventCursor:projectEventCursor(db)}));
  app.get("/api/v1/projects/events",{schema:{querystring:{type:"object",properties:{

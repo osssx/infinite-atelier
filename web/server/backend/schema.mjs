@@ -1,5 +1,5 @@
 import{JOB_STATUSES,EXECUTION_MODES,ARTIFACT_KINDS}from"./contracts.mjs";
-export const SCHEMA_VERSION=8;
+export const SCHEMA_VERSION=9;
 const quoted=x=>x.map(s=>"'"+s+"'").join(",");
 export const INITIAL_SCHEMA_SQL=`
 CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY,applied_at INTEGER NOT NULL);
@@ -146,6 +146,19 @@ CREATE TABLE IF NOT EXISTS ark_asset_uploads(
 );
 CREATE INDEX IF NOT EXISTS ix_ark_asset_uploads_status ON ark_asset_uploads(status);
 `;
+/** P4.5: immutable Comfy workflow versions with replaceable named preset pointers. */
+export const COMFY_REGISTRY_SCHEMA_SQL=`
+CREATE TABLE IF NOT EXISTS comfy_template_versions(
+ template_id TEXT NOT NULL,revision TEXT NOT NULL,payload_json TEXT NOT NULL CHECK(json_valid(payload_json)),
+ created_at INTEGER NOT NULL,PRIMARY KEY(template_id,revision)
+);
+CREATE TABLE IF NOT EXISTS comfy_presets(
+ id TEXT PRIMARY KEY,name TEXT NOT NULL,template_id TEXT NOT NULL,revision TEXT NOT NULL,
+ updated_at INTEGER NOT NULL,
+ FOREIGN KEY(template_id,revision) REFERENCES comfy_template_versions(template_id,revision)
+);
+CREATE INDEX IF NOT EXISTS ix_comfy_presets_template ON comfy_presets(template_id,revision);
+`;
 export function initializeSchema(db){
  db.exec("PRAGMA foreign_keys=ON;PRAGMA busy_timeout=5000;BEGIN IMMEDIATE");
  try{
@@ -173,6 +186,7 @@ export function initializeSchema(db){
     FROM projects`).run(Date.now());
   }
   if(version<8)db.exec(ARK_ASSET_SCHEMA_SQL);
+  if(version<9)db.exec(COMFY_REGISTRY_SCHEMA_SQL);
   if(version<SCHEMA_VERSION)db.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)").run(SCHEMA_VERSION,Date.now());
   db.exec("COMMIT");
  }catch(e){db.exec("ROLLBACK");throw e}

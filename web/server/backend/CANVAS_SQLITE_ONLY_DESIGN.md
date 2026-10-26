@@ -1,6 +1,6 @@
 # Infinite Atelier 画布 SQLite-only 架构设计
 
-状态：**P0–P3 已落地；P4.2 Comfy JobCoordinator + SSE；P4.3 视频/音频 media-file CAS；P4.4 OpenAI 图/音频/文本、Ark Seedance 异步视频及第三轮首帧/首尾帧、图音多模态 CAS 冻结和重启取消入口已接通**。单机单用户，不迁移旧浏览器画布，官方模型适配器默认启用。**本地 MP4/MOV → TOS → Ark CreateAsset/GetAsset 的代码链路及 SQLite 素材 ID 缓存已落地（需要用户自备 TOS Bucket、素材组和 AK/SK）；第三方代理/其他模型、真实计费生成验收以及 P5 完整备份/设置收口仍待完成**。
+状态：**P0–P3 已落地；P4.2 Comfy JobCoordinator + SSE；P4.3 视频/音频 media-file CAS；P4.4 OpenAI 图/音频/文本、Ark Seedance 异步视频及第三轮首帧/首尾帧、图音多模态 CAS 冻结和重启取消入口已接通**。单机单用户，不迁移旧浏览器画布，官方模型适配器默认启用。**本地 MP4/MOV → TOS → Ark CreateAsset/GetAsset 的代码链路及 SQLite 素材 ID 缓存已落地；P4.5 工作流模板与预设存储已迁入主 SQLite v9，并为单项目归档补齐模板依赖（需要用户自备 TOS Bucket、素材组和 AK/SK）；第三方代理/其他模型、真实计费生成验收以及 P5 完整备份/设置收口仍待完成**。
 
 ## 当前可运行代码（首轮实施）
 **P4.4 默认执行策略（2026-10-26 最新）**：`npm run dev` 启动本地后端时默认加载 OpenAI 和火山方舟视频模型适配器，**无需 `ATELIER_OPENAI_MODELS=1`、`ATELIER_ARK_VIDEO_MODELS=1` 或渠道单独的“启用 SQLite”开关**。普通 Canvas 根据模型的渠道协议、官方固定 HTTPS Base URL 和生成类型自动走 JobCoordinator：OpenAI 图/音频/文本、火山方舟 Seedance 纯文本视频。渠道正常点「保存」时自动把填写的 Key 注册/轮换到 DPAPI Vault，并从浏览器当前渠道配置移除；旧配置第一次在 Canvas 使用时也自动注册并清理本地配置，若后端不可用则**明确报错、不回退浏览器请求**。暂未实现 SQLite 后端适配器的其他渠道、参考媒体、第三方代理 URL 仍走已有 API 路径；不代表它们已经后端化。`createLocalBackend` 测试/嵌入式 API 保持显式 adapter 组装，默认启用仅指实际本地开发启动脚本。不迁移旧浏览器画布，历史浏览器备份不会在此轮强制删除。
@@ -37,7 +37,7 @@
   ```
 
   上传必须符合方舟输入对时长/尺寸/编码/200 MiB 大小限制，当前代码对媒体头/MIME、大小、已有冻结元数据做校验，真实视频编码、时长、帧率和方舟模型权限需通过服务端审核与真机测试确认。模拟 TOS SDK/方舟控制面/Seedance 数据面的 SQLite 集成回归覆盖去重、Processing 重启恢复、未知 CreateAsset 防重复、素材 Active 后单次视频任务提交，**尚未使用真实 AK/SK、TOS 和付费 Seedance 联调**。
-- **P4 后续**：完全停用 Canvas V2 双执行与废弃手动同步代码；普通图/视频/音频 API 的统一 JobCoordinator 化、后端模板持久化、视频和音频作为外部 Comfy 输入、客户端自动任务历史/终态异常的 UX、分页任务订阅、Materializer blocked 重试与更完整端到端 Comfy 真机验证。SQLite-only 的“项目数据”已完全后端化，但素材库和设置持久化仍在 P5 单独处理。
+- **P4.5（2026-10-26，custom）ComfyUI 模板与预设 SQLite-only**：主数据库 schema **v9** 新增 `comfy_template_versions` 与 `comfy_presets`，`comfy-registry.mjs` 通过 canonical SHA-256 验证不可变模板、事务批量安装、预设引用和被项目/预设引用的版本删除保护；同源 `/api/v1/comfy/templates`、`/api/v1/comfy/presets` 走既有本机鉴权、CSRF 和 Host/Origin 校验。前端 `template-registry.ts`、`preset-registry.ts` 已改为只通过 SQLite API 读写，后端不可用不会回退到 IndexedDB；设置提供显式“导入浏览器旧预设”入口，仅在用户操作时读取原 LocalForage，保留原数据、冲突不覆盖。项目 `.atelier.zip` manifest 内嵌引用的不可变工作流模板版本，导出遇到缺失依赖直接报错，导入先验证哈希与引用一致性再恢复模板和图。未将模型密钥、所有设置及其他非 Canvas 素材迁入 SQLite；全库/WAL 一致性快照仍属于 P5。\n- **P4 后续**：完全停用 Canvas V2 双执行与废弃手动同步代码；普通图/视频/音频 API 的统一 JobCoordinator 化、后端模板持久化、视频和音频作为外部 Comfy 输入、客户端自动任务历史/终态异常的 UX、分页任务订阅、Materializer blocked 重试与更完整端到端 Comfy 真机验证。SQLite-only 的“项目数据”已完全后端化，但素材库和设置持久化仍在 P5 单独处理。
 - **尚待完成**：超过 2 GiB 的 ZIP64/大文件分段归档与全量 SQLite 数据库备份、派生预览文件清理与失效缓存重建、强一致的持久引用台账和意外断电恢复（当前 GC 是人工确认的保守 mark/sweep，不承诺磁盘故障下原子文件系统事务）、浏览器端其他非 Canvas 素材/配置数据收口；`services/api/video` 等公用非 Canvas 入口仍可能使用旧素材库。跨标签页 Materializer 增量刷新、生产静态站点托管、聊天按会话行拆分仍在后续计划。**P4/P5 完成前不可宣告整个产品 SQLite-only 全部完成。**
 
 在已有 `npm run dev:backend` 运行时，先安全停止旧服务（不要中断正在提交的 GPU 任务），再用 `npm run dev` 启动；不要同时启动两个后端进程争用端口 8788 和数据库进程锁。
@@ -73,7 +73,7 @@
 
 ## 3. SQLite schema 规划
 
-采用 schema v7（以当前 v6 为基线）：
+主数据库现已升级到 **schema v9**（v7 画布状态分离、v8 方舟素材、v9 ComfyUI 模板与预设）。下表保留早期结构规划，其中聊天逐会话拆表等仍属于后续阶段：
 
 | 数据 | 规划 |
 |---|---|

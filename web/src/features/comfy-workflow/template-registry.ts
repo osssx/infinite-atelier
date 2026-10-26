@@ -1,72 +1,42 @@
-import localforage from "localforage";
-import { createComfyTemplate, verifyComfyTemplate, type ComfyObjectInfo, type ComfyTemplatePayload, type ComfyWorkflowTemplate } from "./template-schema";
-
-const db = localforage.createInstance({ name: "infinite-canvas", storeName: "comfy_templates" });
-const prefix = "v1:";
-export const comfyTemplateStorageKey = (id: string, revision: string) => prefix + id + "@" + revision;
-
-export async function listComfyTemplates(): Promise<ComfyWorkflowTemplate[]> {
-    const found: ComfyWorkflowTemplate[] = [];
-    await db.iterate<ComfyWorkflowTemplate, void>((value, key) => {
-        if (key.startsWith(prefix) && value) found.push(value);
-    });
-    return found.sort((a, b) => a.name.localeCompare(b.name) || a.revision.localeCompare(b.revision));
+import {canvasApi} from "@/features/backend-sync/canvas-api";
+import {createComfyTemplate,verifyComfyTemplate,type ComfyObjectInfo,type ComfyTemplatePayload,type ComfyWorkflowTemplate} from "./template-schema";
+const base="/api/v1/comfy/templates";
+export const comfyTemplateStorageKey=(id:string,revision:string)=>"v1:"+id+"@"+revision;
+export async function listComfyTemplates():Promise<ComfyWorkflowTemplate[]>{
+ const {templates}=await canvasApi<{templates:ComfyWorkflowTemplate[]}>(base);
+ if(!Array.isArray(templates))throw Error("comfy_templates_invalid_response");
+ await Promise.all(templates.map(verifyComfyTemplate));return templates;
 }
-
-export async function getComfyTemplate(id: string, revision: string): Promise<ComfyWorkflowTemplate | null> {
-    const value = await db.getItem<ComfyWorkflowTemplate>(comfyTemplateStorageKey(id, revision));
-    if (value) await verifyComfyTemplate(value);
-    return value;
+export async function getComfyTemplate(id:string,revision:string):Promise<ComfyWorkflowTemplate|null>{
+ try{
+  const {template}=await canvasApi<{template:ComfyWorkflowTemplate}>(base+"/"+encodeURIComponent(id)+"/"+encodeURIComponent(revision));
+  await verifyComfyTemplate(template);return template;
+ }catch(e){
+  if(e&&typeof e==="object"&&"code" in e&&e.code==="comfy_template_not_found")return null;
+  throw e;
+ }
 }
-
-/** A new revision is added; existing bytes are never overwritten. */
-export async function installComfyTemplate(template: ComfyWorkflowTemplate): Promise<"installed" | "existing"> {
-    await verifyComfyTemplate(template);
-    const key = comfyTemplateStorageKey(template.id, template.revision);
-    const existing = await db.getItem<ComfyWorkflowTemplate>(key);
-    if (existing) {
-        await verifyComfyTemplate(existing);
-        return "existing";
-    }
-    await db.setItem(key, structuredClone(template));
-    return "installed";
+export async function installComfyTemplate(template:ComfyWorkflowTemplate):Promise<"installed"|"existing">{
+ await verifyComfyTemplate(template);
+ const result=await canvasApi<{status:"installed"|"existing"}>(base,"POST",{template});
+ return result.status;
 }
-
-export async function saveComfyTemplateVersion(
-    id: string, payload: ComfyTemplatePayload, info?: ComfyObjectInfo,
-): Promise<ComfyWorkflowTemplate> {
-    const template = await createComfyTemplate(id, payload, info);
-    await installComfyTemplate(template);
-    return template;
+export async function saveComfyTemplateVersion(id:string,payload:ComfyTemplatePayload,info?:ComfyObjectInfo){
+ const template=await createComfyTemplate(id,payload,info);
+ await installComfyTemplate(template);return template;
 }
-
-export async function removeComfyTemplateVersion(id: string, revision: string) {
-    await db.removeItem(comfyTemplateStorageKey(id, revision));
+export async function removeComfyTemplateVersion(id:string,revision:string){
+ await canvasApi<{deleted:boolean}>(base+"/"+encodeURIComponent(id)+"/"+encodeURIComponent(revision),"DELETE");
 }
-
-/** Dependency-staging rollback, not deletion of pre-existing versions. */
-export async function installComfyBackupVersions(templates: readonly ComfyWorkflowTemplate[]) {
-    const added: Array<{id:string;revision:string}> = [];
-    try {
-        for (const template of templates) {
-            const status = await installComfyTemplate(template);
-            if (status === "installed") added.push({ id:template.id, revision:template.revision });
-        }
-    } catch (error) {
-        const rollbackErrors: unknown[] = [];
-        for (const item of added.reverse()) {
-            try { await removeComfyTemplateVersion(item.id, item.revision); }
-            catch (cause) { rollbackErrors.push(cause); }
-        }
-        if (rollbackErrors.length) throw new AggregateError([error,...rollbackErrors], "Template install failed and rollback was incomplete");
-        throw error;
-    }
-    return async () => {
-        const errors: unknown[] = [];
-        for (const item of added.reverse()) {
-            try { await removeComfyTemplateVersion(item.id, item.revision); }
-            catch (cause) { errors.push(cause); }
-        }
-        if (errors.length) throw new AggregateError(errors, "Comfy template rollback was incomplete");
-    };
+/** Atomic batch install; cleanup affects only new versions and refuses deleting referenced versions. */
+export async function installComfyBackupVersions(templates:readonly ComfyWorkflowTemplate[]){
+ for(const template of templates)await verifyComfyTemplate(template);
+ const {results}=await canvasApi<{results:Array<{id:string;revision:string;status:"installed"|"existing"}>}>(
+  base+"/batch","POST",{templates});
+ const added=results.filter(x=>x.status==="installed").reverse();
+ return async()=>{
+  const errors:unknown[]=[];
+  for(const item of added)try{await removeComfyTemplateVersion(item.id,item.revision)}catch(e){errors.push(e)}
+  if(errors.length)throw new AggregateError(errors,"Template rollback incomplete");
+ };
 }

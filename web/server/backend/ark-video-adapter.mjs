@@ -1,4 +1,6 @@
 import {Readable} from "node:stream";
+import {readFile} from "node:fs/promises";
+import {createHash} from "node:crypto";
 import {appendArtifact} from "./repository.mjs";
 
 const ARK_BASE="https://ark.cn-beijing.volces.com/api/v3";
@@ -9,6 +11,52 @@ const validId=id=>typeof id==="string"&&/^[a-zA-Z0-9_-]{1,160}$/.test(id);
 const safeModel=model=>typeof model==="string"&&
  /^([a-zA-Z0-9][a-zA-Z0-9._-]{0,127})$/.test(model);
 
+const roles={image:["first_frame","last_frame","reference_image"],
+ video:["reference_video"],audio:["reference_audio"]};
+const mimeTypes={image:["image/png","image/jpeg","image/webp"],
+ video:["video/mp4","video/quicktime"],audio:["audio/wav","audio/mpeg"]};
+export function validateArkReferences(task){
+ const refs=task.references??[];
+ const mode=task.mode??"text_to_video";
+ if(!Array.isArray(refs)||refs.length>15||
+  !["text_to_video","first_frame","first_last_frame","omni_reference"].includes(mode))
+  throw fail("ark_video_references_invalid",true);
+ const types={image:[],video:[],audio:[]};
+ for(const ref of refs){
+  if(!ref||typeof ref!=="object"||!roles[ref.kind]?.includes(ref.role)||
+    Object.keys(ref).some(k=>!["kind","role","blobId","sha256","mimeType","assetUrl","durationMs","width","height"].includes(k)))
+   throw fail("ark_video_reference_invalid",true);
+  const asset=ref.kind==="video"&&typeof ref.assetUrl==="string"&&
+   /^asset:\/\/[A-Za-z0-9_-]{1,160}$/.test(ref.assetUrl);
+  if((ref.kind==="video"&&!asset)||ref.kind!=="video"&&ref.assetUrl!==undefined)
+   throw fail("ark_video_reference_asset_invalid",true);
+  if(ref.blobId!==undefined||ref.sha256!==undefined){
+   if(!/^[a-f0-9]{64}$/.test(ref.blobId)||ref.blobId!==ref.sha256||
+     !mimeTypes[ref.kind].includes(ref.mimeType))
+    throw fail("ark_video_reference_digest_invalid",true);
+  }else if(ref.kind!=="video"||!asset||ref.mimeType!==undefined)
+   throw fail("ark_video_reference_missing_cas",true);
+  if(ref.durationMs!==undefined&&(!Number.isInteger(ref.durationMs)||
+    ref.durationMs<2000||ref.durationMs>15000))throw fail("ark_video_reference_duration_invalid",true);
+  if(ref.width!==undefined&&(!Number.isInteger(ref.width)||ref.width<300||ref.width>6000)||
+     ref.height!==undefined&&(!Number.isInteger(ref.height)||ref.height<300||ref.height>6000))
+   throw fail("ark_video_reference_dimensions_invalid",true);
+  types[ref.kind].push(ref);
+ }
+ const imgs=types.image,vids=types.video,auds=types.audio;
+ if(imgs.length>9||vids.length>3||auds.length>3||
+    vids.reduce((sum,r)=>sum+(r.durationMs??0),0)>15000||
+    auds.reduce((sum,r)=>sum+(r.durationMs??0),0)>15000)
+  throw fail("ark_video_reference_limit",true);
+ if(mode==="text_to_video"&&refs.length||
+    mode==="first_frame"&&(refs.length!==1||imgs[0]?.role!=="first_frame")||
+    mode==="first_last_frame"&&(refs.length!==2||imgs.filter(r=>r.role==="first_frame").length!==1||
+      imgs.filter(r=>r.role==="last_frame").length!==1)||
+    mode==="omni_reference"&&(!refs.length||refs.some(r=>r.role!=="reference_"+r.kind)||
+       auds.length>0&&imgs.length+vids.length===0))
+  throw fail("ark_video_reference_mode_invalid",true);
+ return refs;
+}
 export function validateArkVideoSnapshot(snapshot){
  if(snapshot?.adapterKind!=="model"||snapshot.provider!=="volcengine_ark"||
   !validId(snapshot.channelId)||!validId(snapshot.secretVersionRef))
@@ -17,12 +65,13 @@ export function validateArkVideoSnapshot(snapshot){
  if(!task||task.kind!=="video"||!safeModel(task.model)||
   typeof task.prompt!=="string"||!task.prompt.trim()||
   Buffer.byteLength(task.prompt,"utf8")>16000||
-  Object.keys(task).some(key=>!["kind","model","prompt","duration","ratio","resolution","generateAudio","watermark"].includes(key))||
+  Object.keys(task).some(key=>!["kind","model","prompt","duration","ratio","resolution","generateAudio","watermark","mode","references"].includes(key))||
   !Number.isInteger(task.duration)||task.duration<4||task.duration>15||
   !["adaptive","16:9","9:16","1:1","4:3","3:4","21:9"].includes(task.ratio)||
   !["480p","720p","1080p"].includes(task.resolution)||
   typeof task.generateAudio!=="boolean"||typeof task.watermark!=="boolean")
   throw fail("ark_video_task_invalid",true);
+ validateArkReferences(task);
  return task;
 }
 export function verifyArkVideoUrl(raw){
@@ -44,6 +93,33 @@ async function responseJson(response){
  }
  try{return JSON.parse(Buffer.concat(parts).toString("utf8"))}
  catch{throw fail("ark_video_invalid_json")}
+}
+async function pinnedArkContent(task,blobStore){
+ const refs=validateArkReferences(task);
+ const items=[{type:"text",text:task.prompt}];
+ let total=Buffer.byteLength(task.prompt,"utf8");
+ for(const ref of refs){
+  let url=ref.assetUrl;
+  if(ref.blobId){
+   const blob=await blobStore.stat(ref.blobId);
+   const max=ref.kind==="image"?30*1024*1024:ref.kind==="audio"?15*1024*1024:200*1024*1024;
+   if(blob.sha256!==ref.sha256||blob.mimeType!==ref.mimeType||blob.byteSize>=max)
+    throw fail("ark_video_reference_cas_invalid",true);
+   // Never emit localhost: the cloud needs immutable bytes, not an authenticated
+   // loopback URL. For video Ark requires an uploaded asset:// ID.
+   if(ref.kind!=="video"){
+    const bytes=await readFile(blob.path);
+    if(createHash("sha256").update(bytes).digest("hex")!==ref.sha256)
+     throw fail("ark_video_reference_corrupt",true);
+    url="data:"+blob.mimeType+";base64,"+bytes.toString("base64");
+    total+=url.length;
+   }
+  }
+  if(!url||total>60*1024*1024)throw fail("ark_video_reference_request_too_large",true);
+  const type=ref.kind+"_url";
+  items.push({type,[type]:{url},role:ref.role});
+ }
+ return items;
 }
 /** Seedance async adapter: POST once, persist task id before any poll, download
  * signed Ark-owned TOS media into CAS on successful completion. A download
@@ -71,8 +147,9 @@ export function createArkVideoAdapter({db,vault,blobStore,upstreamCall=fetch}={}
  async function prepare({job}){validate(job)}
  async function submit({job}){
   const {task}=validate(job);
+  const content=await pinnedArkContent(task,blobStore);
   const body={model:task.model,
-   content:[{type:"text",text:task.prompt}],
+   content,
    ratio:task.ratio,resolution:task.resolution,duration:task.duration,
    generate_audio:task.generateAudio,watermark:task.watermark};
   let response;

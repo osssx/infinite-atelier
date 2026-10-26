@@ -96,6 +96,9 @@ import { CanvasRefreshShell } from "@/components/canvas/canvas-refresh-shell";
 import { startBackendComfyWorkflowRun } from "@/features/backend-sync/backend-comfy-run";
 import {createSqliteComfyBridge} from "@/features/backend-sync/sqlite-comfy-bridge";
 import {startSqliteModelGeneration,openAiImageSize} from "@/features/backend-sync/sqlite-model-generation";
+import {freezeSeedanceReferences} from "@/features/backend-sync/seedance-frozen-references";
+import {capabilitiesForModel} from "@/services/api/video/model-capabilities";
+import {validateSeedanceRequest} from "@/services/api/video/seedance-content";
 import {ensureSqliteModelChannel,modelChannelProvider} from "@/features/backend-sync/model-channel-autoroute";
 import {watchSqliteComfyJob} from "@/features/backend-sync/sqlite-comfy-job-watch";
 import {canvasApi} from "@/features/backend-sync/canvas-api";
@@ -2567,8 +2570,8 @@ function AtelierCanvasPage() {
                       sourceNode.metadata?.content?.trim():"";
                     const context=buildNodeGenerationContext(nodeId,nodesRef.current,connectionsRef.current,
                       mode==="text"&&original?t("canvas.projectPage.editTextPrompt",{source:original,prompt:promptText}):promptText);
-                    if(context.referenceImages.length||context.referenceVideos.length||context.referenceAudios.length)
-                        throw Error("SQLite 普通模型当前只支持纯文本输入，参考媒体请使用 Comfy 工作流");
+                    if(mode!=="video"&&(context.referenceImages.length||context.referenceVideos.length||context.referenceAudios.length))
+                        throw Error("SQLite 图片/音频/文本模型当前仅支持纯文本输入，媒体参考请使用 Comfy 工作流");
                     const text=context.prompt.trim();
                     if(!text)throw Error("请输入生成提示词");
                     const model=modelOptionName(generationConfig.model);
@@ -2576,13 +2579,25 @@ function AtelierCanvasPage() {
                     const format=generationConfig.audioFormat;
                     if(kind==="audio"&&!["mp3","wav","flac"].includes(format))
                         throw Error("SQLite 语音生成目前仅支持 MP3、WAV 或 FLAC");
+                    const bridge=createSqliteComfyBridge({projectId,
+                        getLocalGraph:()=>({nodes:nodesRef.current,connections:connectionsRef.current})});
+                    let seedanceMode:"text_to_video"|"first_frame"|"first_last_frame"|"omni_reference"|undefined;
+                    let frozenReferences:Awaited<ReturnType<typeof freezeSeedanceReferences>>|undefined;
+                    if(kind==="video"){
+                        const request=makeVideoGenerationRequest(generationConfig,text,generationConfig.model,context,
+                            sourceNode.metadata?.videoReferences);
+                        const modelConfig=selectedChannel.models.find(entry=>entry.name===model);
+                        const caps=modelConfig?capabilitiesForModel(selectedChannel,modelConfig):null;
+                        if(caps)validateSeedanceRequest(request,caps);
+                        seedanceMode=request.mode;
+                        frozenReferences=await freezeSeedanceReferences(request,bridge);
+                    }
                     const job=await startSqliteModelGeneration({
                         projectId,sourceNodeId:nodeId,
                         nodes:[...nodesRef.current],connections:[...connectionsRef.current],
                         channelId:selectedChannel.id,
                         provider:sqliteProvider,
-                        bridge:createSqliteComfyBridge({projectId,
-                          getLocalGraph:()=>({nodes:nodesRef.current,connections:connectionsRef.current})}),
+                        bridge,
                         task:{kind,model,prompt:text,
                           ...(kind==="image"?{size:openAiImageSize(generationConfig.size),
                             quality:["auto","low","medium","high"].includes(generationConfig.quality)?
@@ -2594,7 +2609,8 @@ function AtelierCanvasPage() {
                             resolution:["480p","720p","1080p"].includes(generationConfig.vquality)?generationConfig.vquality:
                               ["480","720","1080"].includes(generationConfig.vquality)?generationConfig.vquality+"p":"720p",
                             generateAudio:generationConfig.videoGenerateAudio!=="false",
-                            watermark:generationConfig.videoWatermark==="true"}:{})}
+                            watermark:generationConfig.videoWatermark==="true",
+                            mode:seedanceMode,references:frozenReferences}:{})}
                     });
                     message.info("SQLite 模型任务已提交："+job.id+"，完成后自动追加产物节点");
                     if(kind==="video"){sqliteGenerationJobsRef.current.set(nodeId,job.id);setRunningNodeId(nodeId)}
@@ -3599,17 +3615,28 @@ function AtelierCanvasPage() {
 
     useEffect(()=>{monitorSqliteJobRef.current=monitorSqliteJob},[monitorSqliteJob]);
 
+    // A route change must never carry another project’s cancel target.
+    useEffect(()=>{sqliteGenerationJobsRef.current.clear()},[projectId]);
+
     // Refreshing the page must recover already-submitted jobs from SQLite,
     // including succeeded jobs whose materialization has not completed.
     useEffect(()=>{
         if(!projectLoaded)return;
         let cancelled=false;
-        void canvasApi<{jobs:Array<{id:string;projectId:string|null;status:string}>}>(
+        void canvasApi<{jobs:Array<{id:string;projectId:string|null;targetNodeId?:string|null;status:string;modelKind?:string}>}>(
             "/api/v1/jobs/snapshot"
         ).then(snapshot=>{
             if(cancelled)return;
             const active=snapshot.jobs.filter(job=>job.projectId===projectId&&
                 !["succeeded","failed","cancelled"].includes(job.status));
+            // Restore cancel actions after reload from authoritative SQLite,
+            // not browser storage. Running cloud tasks may report not queued.
+            for(const job of active){
+                if(job.modelKind!=="video"||!job.targetNodeId||
+                  !nodesRef.current.some(node=>node.id===job.targetNodeId))continue;
+                sqliteGenerationJobsRef.current.set(job.targetNodeId,job.id);
+                setRunningNodeId(current=>current??job.targetNodeId!);
+            }
             // A historical succeeded task may still await Materializer, but do
             // not start thousands of pollers for completed lifetime history.
             const recent=snapshot.jobs.filter(job=>job.projectId===projectId&&

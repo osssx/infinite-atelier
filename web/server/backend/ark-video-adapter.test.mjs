@@ -79,6 +79,91 @@ test("P4.4 Ark video POST once, persist remote task id, resume GET-only after re
  assert.equal(project.document.connections.length,1);
  assert.equal((await materializer.runOnce()).length,0);
 });
+test("P4.4 third round frozen CAS first and last frame survive restart without browser and never leak signed bytes in job view",async t=>{
+ const png=Buffer.from("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000b49444154789c636000020000050001a5f645400000000049454e44ae426082","hex");
+ const calls=[];
+ const f=fixture(t,async(url,init)=>{
+  calls.push({url,method:init.method,body:init.body});
+  if(init.method==="POST")return response({id:"cgt-frames"});
+  if(url===root+"/cgt-frames")return response({id:"cgt-frames",status:"succeeded",content:{video_url:trustedUrl}});
+  if(url===trustedUrl)return new Response(mp4);
+  throw Error("unexpected Ark URL");
+ });
+ const first=await f.blobStore.put([png],{mime:"image/png"});
+ f.task.mode="first_last_frame";
+ f.task.references=[
+  {kind:"image",role:"first_frame",blobId:first.blobId,sha256:first.sha256,mimeType:"image/png",width:512,height:512},
+  {kind:"image",role:"last_frame",blobId:first.blobId,sha256:first.sha256,mimeType:"image/png",width:512,height:512}
+ ];
+ const id=f.add("frames");
+ const app=buildApp({db:f.db,authorize:()=>true});
+ try{
+  const view=await app.inject({method:"GET",url:"/api/v1/jobs/snapshot"});
+  assert.equal(view.statusCode,200);
+  assert.equal(view.json().jobs.find(row=>row.id===id).modelKind,"video");
+  assert.ok(!view.body.includes(first.blobId));
+  assert.ok(!view.body.includes("first_frame"));
+  assert.ok(!view.body.includes("fixture-key-do-not-persist"));
+ }finally{await app.close()}
+ const c=createJobCoordinator({db:f.db,adapters:{model:f.makeAdapter(async(url,init)=>{
+  calls.push({url,method:init.method,body:init.body});
+  if(init.method==="POST")return response({id:"cgt-frames"});
+  if(url===root+"/cgt-frames")return response({id:"cgt-frames",status:"succeeded",content:{video_url:trustedUrl}});
+  if(url===trustedUrl)return new Response(mp4);
+  throw Error("unexpected Ark URL");
+ })}});
+ c.recoverAtStartup();await c.tick();
+ const post=calls.find(call=>call.method==="POST");
+ const json=JSON.parse(post.body);
+ assert.deepEqual(json.content.map(item=>item.role??"prompt"),["prompt","first_frame","last_frame"]);
+ assert.equal(json.content[1].image_url.url,"data:image/png;base64,"+png.toString("base64"));
+ assert.equal(json.content[2].image_url.url,json.content[1].image_url.url);
+ assert.ok(!post.body.includes("/api/v1/blobs"));
+ assert.equal(f.db.prepare("SELECT upstream_task_id FROM jobs WHERE id=?").get(id).upstream_task_id,"cgt-frames");
+ const restarted=createJobCoordinator({db:f.db,adapters:{model:f.makeAdapter(async(url,init)=>{
+  calls.push({url,method:init.method});
+  if(url===root+"/cgt-frames")return response({id:"cgt-frames",status:"succeeded",content:{video_url:trustedUrl}});
+  if(url===trustedUrl)return new Response(mp4);
+  throw Error("restart must not POST");
+ })}});
+ restarted.recoverAtStartup();await restarted.tick();
+ assert.equal(calls.filter(call=>call.method==="POST").length,1);
+ assert.equal(f.db.prepare("SELECT status FROM jobs WHERE id=?").get(id).status,"succeeded");
+});
+test("P4.4 third round mixed image audio Ark asset video are pinned and wrong roles rejected before billable submit",async t=>{
+ const png=Buffer.from("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000b49444154789c636000020000050001a5f645400000000049454e44ae426082","hex");
+ const wav=Buffer.from("524946460800000057415645666d7420","hex");
+ let submitted=0,body;
+ const f=fixture(t,async(url,init)=>{
+  if(init.method==="POST"){submitted++;body=JSON.parse(init.body);return response({id:"cgt-mixed"})}
+  if(url===root+"/cgt-mixed")return response({id:"cgt-mixed",status:"queued"});
+  throw Error("unexpected");
+ });
+ const image=await f.blobStore.put([png],{mime:"image/png"});
+ const audio=await f.blobStore.put([wav],{mime:"audio/wav"});
+ f.task.mode="omni_reference";
+ f.task.references=[
+  {kind:"image",role:"reference_image",blobId:image.blobId,sha256:image.sha256,mimeType:"image/png"},
+  {kind:"video",role:"reference_video",assetUrl:"asset://ark-video-123",durationMs:3000},
+  {kind:"audio",role:"reference_audio",blobId:audio.blobId,sha256:audio.sha256,mimeType:"audio/wav",durationMs:3000}
+ ];
+ const c=createJobCoordinator({db:f.db,adapters:{model:f.makeAdapter(async(url,init)=>{
+  if(init.method==="POST"){submitted++;body=JSON.parse(init.body);return response({id:"cgt-mixed"})}
+  if(url===root+"/cgt-mixed")return response({id:"cgt-mixed",status:"queued"});
+ })}});
+ const id=f.add("multi");
+ c.recoverAtStartup();await c.tick();
+ assert.equal(submitted,1);
+ assert.equal(f.db.prepare("SELECT status FROM jobs WHERE id=?").get(id).status,"running");
+ assert.equal(body.content[2].video_url.url,"asset://ark-video-123");
+ assert.equal(body.content[3].audio_url.url,"data:audio/wav;base64,"+wav.toString("base64"));
+ const bad=structuredClone(f.task);
+ bad.references[1].role="last_frame";
+ assert.throws(()=>validateArkVideoSnapshot(f.snapshot(bad)),/ark_video_reference_invalid/);
+ const forged=structuredClone(f.task);
+ forged.references[0].sha256="0".repeat(64);
+ assert.throws(()=>validateArkVideoSnapshot(f.snapshot(forged)),/ark_video_reference_digest_invalid/);
+});
 test("P4.4 failed download retries only signed TOS GET, never another generation POST",async t=>{
  let submits=0,downloads=0;
  const f=fixture(t,async(url,init)=>{

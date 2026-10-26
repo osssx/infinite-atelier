@@ -53,7 +53,18 @@ function localRequestError(req){
  }
  return null;
 }
-const jobView=row=>({id:row.id,projectId:row.project_id,targetNodeId:row.target_node_id,status:row.status,executionMode:row.execution_mode,createdAt:row.created_at,updatedAt:row.updated_at,upstreamTaskId:row.upstream_task_id,attemptId:row.attempt_id,submitMarker:row.submit_marker,submissionStartedAt:row.submission_started_at});
+const jobView=row=>{
+ const snapshot=JSON.parse(row.snapshot_json);
+ return {id:row.id,projectId:row.project_id,targetNodeId:row.target_node_id,
+ status:row.status,executionMode:row.execution_mode,createdAt:row.created_at,
+ updatedAt:row.updated_at,upstreamTaskId:row.upstream_task_id,
+ attemptId:row.attempt_id,submitMarker:row.submit_marker,
+ submissionStartedAt:row.submission_started_at,
+ // Expose only the task category needed for UI restoration. Never leak a
+ // frozen model prompt, media reference, channel ID or credential version.
+ ...(snapshot.adapterKind==="model"?{modelKind:snapshot.task?.kind}:{}),
+ };
+};
 const eventView=row=>({eventId:row.seq,jobId:row.job_id,kind:row.kind,timestamp:row.created_at,payload:JSON.parse(row.payload_json)});
 function cursorOf(value){
  const v=String(value??"0");

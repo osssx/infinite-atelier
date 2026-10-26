@@ -2,6 +2,7 @@ import type {CanvasConnection,CanvasNodeData} from "@/types/canvas";
 import type {BackendJobView} from "@/types/backend-contracts";
 import {canvasApi} from "./canvas-api";
 import {createSqliteComfyBridge} from "./sqlite-comfy-bridge";
+import type {FrozenArkReference} from "./seedance-frozen-references";
 
 /** Ordinary OpenAI calls use the same SQLite revision/source-fingerprint fence
  * as Comfy, with encrypted backend channel references (never raw API keys).
@@ -17,7 +18,9 @@ export async function startSqliteModelGeneration({
  channelId:string;provider?:"openai"|"volcengine_ark";
  task:{kind:"image"|"audio"|"text"|"video";model:string;prompt:string;
   size?:string;quality?:string;voice?:string;format?:string;speed?:number;
-  duration?:number;ratio?:string;resolution?:string;generateAudio?:boolean;watermark?:boolean};
+  duration?:number;ratio?:string;resolution?:string;generateAudio?:boolean;watermark?:boolean;
+  mode?:"text_to_video"|"first_frame"|"first_last_frame"|"omni_reference";
+  references?:FrozenArkReference[]};
  api?:typeof canvasApi;bridge?:ReturnType<typeof createSqliteComfyBridge>;
 }):Promise<BackendJobView>{
  if(!nodes.some(node=>node.id===sourceNodeId))throw Error("model_source_node_missing");

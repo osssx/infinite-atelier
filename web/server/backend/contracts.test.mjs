@@ -43,6 +43,31 @@ test("generation cannot enqueue until revision and frozen source match",t=>{
  db.prepare("UPDATE projects SET revision=7 WHERE id='p'").run();
  assert.equal(submitJob(db,req).existing,false);
 });
+test("P4.6 concurrent official model jobs are serialized per Canvas producer in SQLite",t=>{
+ const db=fixture();t.after(()=>db.close());
+ const graph={nodes:[{id:"source",type:"text",metadata:{prompt:"hello"}},
+  {id:"other",type:"text",metadata:{prompt:"other"}}],connections:[]};
+ db.prepare("INSERT INTO projects(id,document_json,revision) VALUES(?,?,?)")
+  .run("canvas-p",JSON.stringify(graph),1);
+ const make=(key,targetNodeId="source")=>({projectId:"canvas-p",targetNodeId,
+  expectedProjectRevision:1,sourceNodeFingerprint:fingerprintSource(graph,targetNodeId),
+  idempotencyKey:key,requestFingerprint:key,executionMode:"immediate",
+  snapshot:{adapterKind:"model",provider:"openai",task:{kind:"image",model:"test",prompt:"hello"}}});
+ const first=submitJob(db,make("first"));
+ assert.equal(first.existing,false);
+ assert.equal(submitJob(db,make("first")).jobId,first.jobId);
+ assert.throws(()=>submitJob(db,make("second")),/backend_prior_job_not_terminal/);
+ assert.equal(submitJob(db,make("other","other")).existing,false);
+ transitionJob(db,first.jobId,"cancelled");
+ const second=submitJob(db,make("second"));
+ assert.equal(second.existing,false);
+ transitionJob(db,second.jobId,"preparing");
+ transitionJob(db,second.jobId,"submitting");
+ transitionJob(db,second.jobId,"submission_unknown");
+ assert.throws(()=>submitJob(db,make("third")),/backend_prior_job_not_terminal/);
+ assert.equal(submitJob(db,make("second")).jobId,second.jobId);
+ assert.equal(db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE target_node_id='source'").get().n,2);
+});
 test("mode and submission safety",()=>{
  assertJobTransition("submitting","collecting",{executionMode:"immediate"});
  assertJobTransition("submitting","running",{executionMode:"poll"});

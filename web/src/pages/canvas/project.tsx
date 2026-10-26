@@ -96,6 +96,7 @@ import { CanvasRefreshShell } from "@/components/canvas/canvas-refresh-shell";
 import { startBackendComfyWorkflowRun } from "@/features/backend-sync/backend-comfy-run";
 import {createSqliteComfyBridge} from "@/features/backend-sync/sqlite-comfy-bridge";
 import {startSqliteModelGeneration,openAiImageSize} from "@/features/backend-sync/sqlite-model-generation";
+import {findSqliteModelRetrySource} from "@/features/backend-sync/sqlite-model-retry-source";
 import {freezeSeedanceReferences} from "@/features/backend-sync/seedance-frozen-references";
 import {capabilitiesForModel} from "@/services/api/video/model-capabilities";
 import {validateSeedanceRequest} from "@/services/api/video/seedance-content";
@@ -405,6 +406,7 @@ function AtelierCanvasPage() {
     const sqliteJobWatchesRef=useRef(new Map<string,AbortController>());
     const monitorSqliteJobRef=useRef<(jobId:string)=>void>(()=>{});
     const sqliteGenerationJobsRef=useRef(new Map<string,string>());
+    const sqliteModelSubmitLocksRef=useRef(new Set<string>());
 
     const persistVideoTask = useCallback((nodeId: string, task: VideoGenerationTask, status: "queued" | "running" | "succeeded" | "failed" | "cancelled" | "expired" = task.status || "queued") => {
         const nodesWithTask = nodesRef.current.map((node) => node.id === nodeId ? { ...node, metadata: { ...node.metadata, videoTask: { provider: task.provider, channelId: task.channelId, model: task.model, taskId: task.id, startedAt: task.startedAt || Date.now(), status } } } : node);
@@ -2531,15 +2533,21 @@ function AtelierCanvasPage() {
     }, []);
 
     const handleGenerateNode = useCallback(
-        async (nodeId: string, mode: CanvasNodeGenerationMode, prompt: string) => {
+        async (nodeId: string, mode: CanvasNodeGenerationMode, prompt: string, retryConfig?: typeof defaultConfig) => {
             const sourceNode = nodesRef.current.find((node) => node.id === nodeId);
-            const generationConfig = buildGenerationConfig(effectiveConfig, sourceNode, mode);
+            const generationConfig = retryConfig ?? buildGenerationConfig(effectiveConfig, sourceNode, mode);
             const promptText = mode === "text" ? extractSkillMentions(prompt).text : prompt;
             const selectedChannel=resolveModelChannel(effectiveConfig,generationConfig.model);
             // Supported official channels always execute via SQLite. No toggle,
             // no implicit browser fallback on a failed backend/credential check.
             const sqliteProvider=modelChannelProvider(selectedChannel,mode);
             if(sqliteProvider&&selectedChannel){
+                const submissionKey=projectId+":"+nodeId;
+                if(sqliteModelSubmitLocksRef.current.has(submissionKey)){
+                    message.warning("该来源节点的 SQLite 生成任务正在提交，请勿重复点击");
+                    return;
+                }
+                sqliteModelSubmitLocksRef.current.add(submissionKey);
                 try{
                     if(!projectLoaded)throw Error("画布项目尚未加载完成");
                     await ensureSqliteModelChannel(selectedChannel,sqliteProvider);
@@ -2623,6 +2631,7 @@ function AtelierCanvasPage() {
                     if(kind==="video"){sqliteGenerationJobsRef.current.set(nodeId,job.id);setRunningNodeId(nodeId)}
                     monitorSqliteJobRef.current(job.id);
                 }catch(error){message.error(error instanceof Error?error.message:String(error))}
+                finally{sqliteModelSubmitLocksRef.current.delete(submissionKey)}
                 return;
             }
             if (!isAiConfigReady(generationConfig, generationConfig.model)) {
@@ -3128,11 +3137,6 @@ function AtelierCanvasPage() {
                           count: "1",
                       }
                     : { ...buildGenerationConfig(effectiveConfig, node.type === CanvasNodeType.Video && node.metadata?.videoRequest ? node : sourceNode, node.type === CanvasNodeType.Text ? "text" : node.type === CanvasNodeType.Video ? "video" : node.type === CanvasNodeType.Audio ? "audio" : "image"), count: "1" };
-            if (!isAiConfigReady(generationConfig, generationConfig.model)) {
-                openConfigDialog(true);
-                return;
-            }
-
             if (node.type === CanvasNodeType.Video && isResumableSeedanceProvider(node.metadata?.videoTask?.provider) && node.metadata.videoTask.status === "succeeded" && node.metadata.videoDownloadError) {
                 const savedTask = node.metadata.videoTask;
                 const task: VideoGenerationTask = { id: savedTask.taskId, provider: savedTask.provider === "router_local" ? "volcengine_ark" : savedTask.provider, channelId: savedTask.channelId, model: savedTask.model, startedAt: savedTask.startedAt, status: savedTask.status };
@@ -3147,6 +3151,56 @@ function AtelierCanvasPage() {
                     setNodes((prev) => prev.map((item) => item.id === node.id ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_ERROR, errorDetails: details, videoDownloadError: details } } : item));
                     message.error(details);
                 }
+                return;
+            }
+
+            // Official providers never retry through browser requestGeneration /
+            // requestEdit / requestVideoGeneration. Retry means a NEW persistent
+            // append-only job from the original source; keep the old result and
+            // its error/history instead of silently overwriting it.
+            const retryMode:CanvasNodeGenerationMode=node.type===CanvasNodeType.Text?"text":
+                node.type===CanvasNodeType.Video?"video":
+                node.type===CanvasNodeType.Audio?"audio":"image";
+            const retryChannel=resolveModelChannel(effectiveConfig,generationConfig.model);
+            if(modelChannelProvider(retryChannel,retryMode)){
+                const sqliteSource=findSqliteModelRetrySource(node,nodesRef.current,connectionsRef.current);
+                const retryPrompt=(
+                    savedImageMetadata?.prompt||
+                    node.metadata?.videoRequest?.prompt||
+                    node.metadata?.prompt||
+                    sqliteSource.metadata?.composerContent||
+                    sqliteSource.metadata?.prompt||""
+                ).trim();
+                if(!retryPrompt){
+                    message.warning(t("canvas.projectPage.retryPromptMissing"));
+                    return;
+                }
+                if(node.type===CanvasNodeType.Image&&savedImageMetadata?.generationType==="edit"){
+                    message.error("官方模型参考图编辑尚未接入 SQLite；不会回退浏览器直接请求");
+                    return;
+                }
+                // Historical result snapshots may carry references not present
+                // in the current producer's dependency graph. Never replace
+                // such a retry with an accidental text-only paid video job.
+                if(node.type===CanvasNodeType.Video&&node.metadata?.videoRequest?.references?.length){
+                    message.error("历史视频包含参考素材；请在原始来源节点重新确认参考素材后生成，不能直接重放旧请求");
+                    return;
+                }
+                if(node.type===CanvasNodeType.Text&&node.metadata?.skillRun){
+                    message.error("原任务包含 Skill 运行记录；请从来源节点重新执行，不能将 Skill 重试改为普通模型请求");
+                    return;
+                }
+                if(sqliteSource===node&&Boolean(sqliteSource.metadata?.content)&&
+                   sqliteSource.type!==CanvasNodeType.Text){
+                    message.error("原始生成来源节点已不存在，不能安全重试；请从上游配置节点重新生成");
+                    return;
+                }
+                if(imageId)message.info("SQLite 重试将创建新的产物节点，原批次图片保持不变");
+                await handleGenerateNode(sqliteSource.id,retryMode,retryPrompt,generationConfig);
+                return;
+            }
+            if (!isAiConfigReady(generationConfig, generationConfig.model)) {
+                openConfigDialog(true);
                 return;
             }
 

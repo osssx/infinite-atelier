@@ -16,6 +16,23 @@ describe("P4.2 SQLite-only Canvas execution boundary",()=>{
   expect(page).not.toContain("backendSyncRef");
   expect(page).toContain("不会回退旧 V2");
  });
+ it("P4.6 official retry cannot fall into the legacy browser generation branch",()=>{
+  const retry=page.slice(page.indexOf("const handleRetryNode = useCallback("),
+   page.indexOf("const deleteBatchImage = useCallback("));
+  const sqliteRoute=retry.indexOf("if(modelChannelProvider(retryChannel,retryMode))");
+  const durableSubmit=retry.indexOf("await handleGenerateNode(sqliteSource.id,retryMode,retryPrompt,generationConfig)");
+  const legacyVideo=retry.indexOf("await requestVideoGeneration(");
+  const legacyAudio=retry.indexOf("await requestAudioGeneration(");
+  const legacyImage=retry.indexOf("await requestGeneration(");
+  expect(sqliteRoute).toBeGreaterThan(0);
+  expect(durableSubmit).toBeGreaterThan(sqliteRoute);
+  expect(legacyVideo).toBeGreaterThan(durableSubmit);
+  expect(legacyAudio).toBeGreaterThan(durableSubmit);
+  expect(legacyImage).toBeGreaterThan(durableSubmit);
+  expect(retry.slice(durableSubmit,legacyVideo)).toMatch(/return;\s*}\s*if \(!isAiConfigReady/);
+  expect(page).toContain("sqliteModelSubmitLocksRef.current.add(submissionKey)");
+  expect(page).toContain("finally{sqliteModelSubmitLocksRef.current.delete(submissionKey)}");
+ });
  it("keeps run state in SQLite, not a browser-local pending payload",()=>{
   expect(panel).toContain('"/api/v1/jobs/snapshot"');
   expect(panel).not.toMatch(/localStorage\s*\.|sessionStorage\s*\.|indexedDB\s*\./);

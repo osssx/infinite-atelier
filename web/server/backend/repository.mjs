@@ -65,6 +65,15 @@ export function submitJob(db,{jobId=randomUUID(),principal="local-owner",project
   const existing=db.prepare("SELECT id,request_fingerprint,execution_mode,snapshot_json,target_node_id,expected_project_revision,source_fingerprint FROM jobs WHERE principal=? AND project_scope=? AND idempotency_key=?").get(principal,scope,idempotencyKey);
   // Do not trust only the caller-provided request fingerprint: compare the actual frozen payload and source fence.
   if(existing){if(existing.request_fingerprint!==requestFingerprint||existing.execution_mode!==executionMode||existing.snapshot_json!==stableJson(snapshot)||existing.target_node_id!==targetNodeId||existing.expected_project_revision!==expectedProjectRevision||existing.source_fingerprint!==sourceNodeFingerprint)throw problem("idempotency_key_conflict");return{jobId:existing.id,existing:true}}
+  // P4.6: cross-tab model runs must never pass two independent client-side
+  // "no active job" checks and both bill the same source. BEGIN IMMEDIATE
+  // serializes this check with the insert across SQLite connections.
+  // Existing idempotency replays above still recover their original job.
+  if(projectId!==null&&snapshot.adapterKind==="model"){
+   const active=db.prepare("SELECT id FROM jobs WHERE principal=? AND project_id=? AND target_node_id=? AND status NOT IN ('succeeded','failed','cancelled') LIMIT 1")
+    .get(principal,projectId,targetNodeId);
+   if(active)throw problem("backend_prior_job_not_terminal");
+  }
   // The immutable credential reference is checked under the same write
   // transaction as inserting the JobSnapshot, after idempotency lookup.
   if(snapshot.channelId!==undefined||snapshot.secretVersionRef!==undefined){

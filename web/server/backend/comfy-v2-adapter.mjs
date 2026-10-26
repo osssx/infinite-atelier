@@ -205,6 +205,39 @@ export function createComfyV2Adapter({instance,db,blobStore,upstreamCall=comfyUp
    return {kind:"accepted",remoteTaskId:result.prompt_id};
   }finally{sending.delete(job.id)}
  }
+ /**
+  * Human-initiated reconciliation is GET-only. A manually supplied prompt ID
+  * cannot be trusted unless Comfy's recorded submission marker AND the exact
+  * immutable prepared graph both match this specific job. A missing history
+  * entry is never proof that /prompt was not accepted.
+  */
+ async function reconcile({job,remoteTaskId}){
+  snapshotOf(job,trusted.id);
+  if(!validRemoteId(remoteTaskId))throw fail("comfy_remote_task_invalid",400);
+  const prepared=getPreparation(db,job.id);
+  if(!prepared||!job.submit_marker||!job.submission_started_at)
+   throw fail("comfy_reconciliation_evidence_missing",409);
+  const history=await upstreamCall(trusted,"/history/"+encodeURIComponent(remoteTaskId));
+  const entry=historyEntry(history,remoteTaskId);
+  if(!entry)return {kind:"unverified"};
+  const recorded=entry.prompt;
+  const extra=Array.isArray(recorded)?recorded[2]:null;
+  const marker=extra?.extra_data?.infinite_atelier_submit_marker;
+  // Comfy's history prompt tuple is [queue_number,prompt,extra_data,...].
+  if(!Array.isArray(recorded)||recorded.length<3||
+     canonical(recorded[1])!==prepared.graph_json||marker!==job.submit_marker)
+   return {kind:"mismatch"};
+  if(extra?.client_id!==undefined&&extra.client_id!==job.attempt_id){
+   // attempt_id may have been cleared on startup recovery; the recorded
+   // submit marker and graph are authoritative in that case.
+   const submitted=db.prepare("SELECT id FROM job_attempts WHERE job_id=? AND phase IN ('submitting','running') AND id=?")
+    .get(job.id,extra.client_id);
+   if(!submitted)return {kind:"mismatch"};
+  }
+  if(failed(entry))return {kind:"failed"};
+  if(successful(entry))return {kind:"completed"};
+  return {kind:"pending"};
+ }
  async function poll({job,remoteTaskId}){
   snapshotOf(job,trusted.id);
   if(!validRemoteId(remoteTaskId))throw fail("comfy_remote_task_invalid",400);
@@ -253,7 +286,7 @@ export function createComfyV2Adapter({instance,db,blobStore,upstreamCall=comfyUp
    }
   }
  }
- return {prepare,submit,poll,collect,instance:trusted};
+ return {prepare,submit,poll,collect,reconcile,instance:trusted};
 }
 export function createComfyV2Adapters({instances,db,blobStore,upstreamCall}={}){
  if(!Array.isArray(instances)||instances.length>16)throw fail("invalid_comfy_instances",400);

@@ -318,6 +318,60 @@ export function createJobCoordinator({
   return work.length;
  }
 
+ /** Human-supplied task identity is NEVER sufficient by itself.
+  * Only the Comfy adapter can attest remote history against the original
+  * immutable graph + 128-bit submit marker. No adapter.submit is reachable.
+  * Unknown/mismatching evidence remains unknown, even after a network error.
+  */
+ async function reconcileUnknown({jobId,projectId,remoteTaskId}={}){
+  if(typeof jobId!=="string"||!/^[A-Za-z0-9_-]{1,128}$/.test(jobId)||
+     typeof projectId!=="string"||!/^[A-Za-z0-9_-]{1,128}$/.test(projectId)||
+     typeof remoteTaskId!=="string"||!/^[A-Za-z0-9_-]{1,128}$/.test(remoteTaskId))
+   throw blocked("reconciliation_invalid_input");
+  const row=db.prepare("SELECT * FROM jobs WHERE id=? AND project_id=?").get(jobId,projectId);
+  if(!row)throw Object.assign(Error("job_not_found"),{code:"job_not_found",statusCode:404});
+  if(!recovered||stopping||row.status!=="submission_unknown"||row.lease_owner||
+     row.execution_mode!=="poll"||!row.submit_marker||!row.submission_started_at)
+   throw blocked("reconciliation_not_eligible");
+  const lane=route(row);
+  if(lane.kind!=="comfy")throw blocked("reconciliation_provider_unsupported");
+  if(!db.prepare("SELECT 1 FROM comfy_job_preparations WHERE job_id=?").get(jobId))
+   throw blocked("reconciliation_not_eligible");
+  const adapter=adapterFor(lane);
+  if(typeof adapter?.reconcile!=="function"||typeof adapter.poll!=="function")
+   throw blocked("reconciliation_adapter_unavailable");
+  let proof;
+  try{proof=await adapter.reconcile({job:parse(row),remoteTaskId})}
+  catch{throw Object.assign(Error("reconciliation_upstream_unavailable"),
+   {code:"reconciliation_upstream_unavailable",statusCode:503})}
+  return writeTransaction(db,()=>{
+   const current=db.prepare("SELECT * FROM jobs WHERE id=? AND project_id=?").get(jobId,projectId);
+   if(!current||current.status!=="submission_unknown"||current.lease_owner||
+      current.submit_marker!==row.submit_marker||current.updated_at!==row.updated_at)
+    throw blocked("reconciliation_state_changed");
+   if(!["pending","completed","failed"].includes(proof?.kind)){
+    const reason=proof?.kind==="mismatch"?"remote_evidence_mismatch":"remote_evidence_absent";
+    event(db,jobId,"job_reconciliation_checked",{verified:false,reason});
+    return {verified:false,status:"submission_unknown",reason};
+   }
+   const linked=db.prepare("SELECT id FROM jobs WHERE upstream_task_id=? AND id<>? LIMIT 1").get(remoteTaskId,jobId);
+   if(linked)throw blocked("reconciliation_remote_already_linked");
+   const next=proof.kind==="pending"?"running":
+     proof.kind==="completed"?"collecting":"failed";
+   assertJobTransition(current.status,next,{
+    executionMode:current.execution_mode,trustedRemoteMatch:true
+   });
+   const receipt=next==="collecting"?saveReceipt({remoteTaskId}):null;
+   db.prepare("UPDATE jobs SET status=?,upstream_task_id=?,recovery_receipt_json=?,updated_at=? WHERE id=?")
+    .run(next,remoteTaskId,receipt,clock(),jobId);
+   // Clear stale schedules: this job's next tick is a read-only poll
+   // or artifact collection. It can never re-enter the 'queued' path.
+   db.prepare("DELETE FROM job_schedules WHERE job_id=?").run(jobId);
+   event(db,jobId,"job_reconciliation_verified",{verified:true,from:"submission_unknown",
+    to:next,remoteTaskVerified:true});
+   return {verified:true,status:next};
+  });
+ }
  /** Cancel a queued local job atomically or confirm Ark remote cancellation.
   * A temporary lease prevents dispatch while we check remote queued status.
   * Never mark a running video cancelled unless upstream DELETE confirms it.
@@ -383,5 +437,5 @@ export function createJobCoordinator({
   return db.prepare("SELECT id,job_id,phase,upstream_task_id,started_at,finished_at,outcome FROM job_attempts WHERE job_id=? ORDER BY started_at,id")
    .all(jobId);
  }
- return {instanceId,recoverAtStartup,tick,status,attempts,cancel,stop};
+ return {instanceId,recoverAtStartup,tick,status,attempts,cancel,reconcileUnknown,stop};
 }

@@ -40,9 +40,14 @@ export function listProjectJobs(db,{projectId,limit=20,before}={}){
   }));
   const attempt=db.prepare("SELECT outcome FROM job_attempts WHERE job_id=? AND outcome IS NOT NULL ORDER BY started_at DESC,id DESC LIMIT 1").get(job.id);
   const lastOutcome=outcomes.has(attempt?.outcome)?attempt.outcome:null;
+  const reconciliationEligible=job.status==="submission_unknown"&&
+   snapshot.adapterKind==="comfy"&&job.execution_mode==="poll"&&
+   typeof job.submit_marker==="string"&&!!job.submit_marker&&
+   job.submission_started_at!==null&&job.lease_owner===null&&
+   !!db.prepare("SELECT 1 FROM comfy_job_preparations WHERE job_id=?").get(job.id);
   return {id:job.id,projectId,sourceNodeId:job.target_node_id,
    createdAt:job.created_at,updatedAt:job.updated_at,status:job.status,lastOutcome,
-   executionMode:job.execution_mode,
+   executionMode:job.execution_mode,reconciliationEligible,
    kind:snapshot.adapterKind==="model"?"model":
     snapshot.adapterKind==="comfy"?"comfy":"other",
    modelKind:snapshot.adapterKind==="model"?

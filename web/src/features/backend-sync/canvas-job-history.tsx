@@ -1,5 +1,5 @@
 import {useCallback,useEffect,useRef,useState} from "react";
-import {Alert,App,Button,Drawer,Empty,Spin,Tag,Tooltip} from "antd";
+import {Alert,App,Button,Drawer,Empty,Input,Spin,Tag,Tooltip} from "antd";
 import {RefreshCw} from "lucide-react";
 import {canvasApi} from "./canvas-api";
 
@@ -8,6 +8,7 @@ export type CanvasJobHistoryItem={
  id:string;projectId:string;sourceNodeId:string|null;
  createdAt:number;updatedAt:number;status:string;lastOutcome:string|null;executionMode:string;
  kind:"model"|"comfy"|"other";modelKind:string|null;
+ reconciliationEligible:boolean;
  artifacts:CanvasJobArtifact[];artifactsTruncated:boolean;
 };
 type Page={jobs:CanvasJobHistoryItem[];nextBefore:string|null};
@@ -40,6 +41,8 @@ const reasons:Record<string,string>={
 };
 export const canRetryCanvasMaterialization=(job:CanvasJobHistoryItem,artifact:CanvasJobArtifact)=>
  job.status==="succeeded"&&artifact.status==="blocked";
+export const canReconcileUnknownJob=(job:CanvasJobHistoryItem)=>
+ job.kind==="comfy"&&job.status==="submission_unknown"&&job.reconciliationEligible;
 export async function getCanvasJobHistory(projectId:string,before?:string):Promise<Page>{
  return canvasApi<Page>("/api/v1/projects/"+encodeURIComponent(projectId)+
   "/jobs?limit=20"+(before?"&before="+encodeURIComponent(before):""));
@@ -56,11 +59,17 @@ export async function recoverCanvasPendingMaterialization(
  return canvasApi("/api/v1/projects/"+encodeURIComponent(projectId)+
   "/materializations/"+encodeURIComponent(artifactId)+"/recover","POST",{});
 }
+export async function reconcileCanvasUnknownJob(
+ projectId:string,jobId:string,remoteTaskId:string
+):Promise<{verified:boolean;status:string;reason?:string}>{
+ return canvasApi("/api/v1/projects/"+encodeURIComponent(projectId)+"/jobs/"+
+  encodeURIComponent(jobId)+"/reconcile","POST",{remoteTaskId});
+}
 export function CanvasJobHistory({projectId,open,onClose,onObserveJob,onRefreshCanvas}:{
  projectId:string;open:boolean;onClose:()=>void;
  onObserveJob:(jobId:string)=>void;onRefreshCanvas:()=>Promise<boolean>;
 }){
- const {message}=App.useApp();
+ const {message,modal}=App.useApp();
  const currentProject=useRef(projectId);
  currentProject.current=projectId;
  const [jobs,setJobs]=useState<CanvasJobHistoryItem[]>([]);
@@ -68,6 +77,8 @@ export function CanvasJobHistory({projectId,open,onClose,onObserveJob,onRefreshC
  const [loading,setLoading]=useState(false);
  const [error,setError]=useState<string|null>(null);
  const [working,setWorking]=useState<string|null>(null);
+ const [reconcilingJob,setReconcilingJob]=useState<string|null>(null);
+ const [remoteTaskInput,setRemoteTaskInput]=useState("");
  const inflight=useRef(new Set<string>());
  const refresh=useCallback(async(silent=false)=>{
   if(!silent)setLoading(true);
@@ -98,6 +109,33 @@ export function CanvasJobHistory({projectId,open,onClose,onObserveJob,onRefreshC
    setNextBefore(page.nextBefore);setError(null);
   }catch(e){setError(String(e))}
   finally{setLoading(false)}
+ }
+ function confirmReconcile(job:CanvasJobHistoryItem){
+  if(!canReconcileUnknownJob(job)||!remoteTaskInput.trim()||working)return;
+  const remoteTaskId=remoteTaskInput.trim();
+  if(!/^[A-Za-z0-9_-]{1,128}$/.test(remoteTaskId)){
+   message.error("远端任务 ID 格式无效");return;
+  }
+  modal.confirm({
+   title:"核实已有 ComfyUI 任务",
+   content:"只查询本地 ComfyUI 的历史记录，要求工作流图和原始随机提交标记均匹配。证据匹配后恢复轮询/收集，不会重新提交 /prompt。任务 ID 错误或历史记录尚未出现时将保持未知。",
+   okText:"验证远端历史",cancelText:"取消",
+   onOk:async()=>{
+    setWorking(job.id);
+    try{
+     const result=await reconcileCanvasUnknownJob(projectId,job.id,remoteTaskId);
+     if(result.verified){
+      message.success("已核实原始远端任务，恢复已有任务的状态观察");
+      onObserveJob(job.id);
+      setReconcilingJob(null);setRemoteTaskInput("");
+     }else message.warning(result.reason==="remote_evidence_absent"?
+      "尚未找到远端任务历史；不能判断是否提交成功":
+      "远端历史与原始任务不匹配，已拒绝恢复");
+     await refresh();
+    }catch(e){message.error("人工对账失败："+String(e));throw e}
+    finally{setWorking(null)}
+   }
+  });
  }
  async function retry(job:CanvasJobHistoryItem,artifact:CanvasJobArtifact){
   if(!canRetryCanvasMaterialization(job,artifact)||inflight.current.has(artifact.artifactId))return;
@@ -170,9 +208,26 @@ export function CanvasJobHistory({projectId,open,onClose,onObserveJob,onRefreshC
     </Tooltip>
     {job.lastOutcome&&job.lastOutcome!=="succeeded"?
      <div className="text-xs opacity-70">最近执行结果：{attemptReasons[job.lastOutcome]??job.lastOutcome}</div>:null}
+    {canReconcileUnknownJob(job)?
+     <div className="space-y-2">
+      <Button size="small" onClick={()=>{
+       setReconcilingJob(current=>current===job.id?null:job.id);
+       setRemoteTaskInput("");
+      }}>人工核对 ComfyUI 任务</Button>
+      {reconcilingJob===job.id?
+       <div className="space-y-2">
+        <div className="text-xs opacity-70">从 ComfyUI 的 History 查找原任务 ID。禁止使用另一任务 ID 替代原任务。</div>
+        <Input size="small" placeholder="ComfyUI prompt_id"
+         value={remoteTaskInput} maxLength={128}
+         onChange={event=>setRemoteTaskInput(event.target.value)} />
+        <Button size="small" type="primary" loading={working===job.id}
+         disabled={!remoteTaskInput.trim()}
+         onClick={()=>confirmReconcile(job)}>核实并恢复原任务</Button>
+       </div>:null}
+     </div>:null}
     {job.status==="submission_unknown"?
      <Alert type="warning" showIcon message="远程是否接收尚未核实；禁止重新提交"
-      description="请检查后端原任务与远程任务回执。此处不提供可能重复收费的重新生成按钮。"/>:null}
+      description="只有原始 ComfyUI 提交标记与冻结工作流图均匹配才能恢复。其他渠道或证据不足时保持未知，不会重新提交收费任务。"/>:null}
     {job.status==="blocked_credential"?
      <Alert type="warning" showIcon message="密钥不可用"
       description="核查后端渠道密钥及原任务状态，不要将其作为新任务重发。"/>:null}

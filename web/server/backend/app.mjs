@@ -92,7 +92,7 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
    "invalid_project_id","project_document_too_large","expected_revision_required","invalid_project_reference",
    "invalid_canvas_chats","invalid_canvas_viewport","canvas_chats_too_large",
    "chats_revision_conflict","viewport_revision_conflict",
-   "stale_generation_source","cyclic_generation_source","generation_save_barrier_required","invalid_job_request","idempotency_key_conflict","backend_prior_job_not_terminal","job_not_found","invalid_project_job_history_request","invalid_project_job_history_cursor",
+   "stale_generation_source","cyclic_generation_source","generation_save_barrier_required","invalid_job_request","idempotency_key_conflict","backend_prior_job_not_terminal","job_not_found","invalid_project_job_history_request","invalid_project_job_history_cursor","reconciliation_invalid_input","reconciliation_not_eligible","reconciliation_provider_unsupported","reconciliation_adapter_unavailable","reconciliation_state_changed","reconciliation_upstream_unavailable","reconciliation_remote_already_linked",
    "invalid_event_cursor","event_cursor_expired","raw_credentials_forbidden",
    "invalid_bootstrap_token","unsupported_blob_mime","invalid_sha256","blob_quota_exceeded",
    "empty_blob","blob_mime_mismatch","blob_digest_mismatch","blob_identity_conflict",
@@ -359,6 +359,18 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
   return coordinator.cancel(req.params.id);
  });
 
+ if(coordinator)app.post("/api/v1/projects/:id/jobs/:jobId/reconcile",{
+  schema:{
+   params:{type:"object",required:["id","jobId"],
+    properties:{id:idSchema,jobId:idSchema},additionalProperties:false},
+   body:{type:"object",required:["remoteTaskId"],
+    properties:{remoteTaskId:idSchema},additionalProperties:false}
+  }
+ },async(req,reply)=>{
+  reply.header("Cache-Control","no-store");
+  return coordinator.reconcileUnknown({projectId:req.params.id,
+   jobId:req.params.jobId,remoteTaskId:req.body.remoteTaskId});
+ });
  app.get("/api/v1/jobs/:id/attempts",{schema:{params:{type:"object",required:["id"],
   properties:{id:idSchema},additionalProperties:false}}},async(req,reply)=>{
   const job=db.prepare("SELECT id FROM jobs WHERE id=?").get(req.params.id);

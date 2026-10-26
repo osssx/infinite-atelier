@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {DatabaseSync} from "node:sqlite";
 import {initializeSchema,INITIAL_SCHEMA_SQL,CREDENTIAL_SCHEMA_SQL} from "./schema.mjs";
-import {submitJob,appendArtifact,readEventsAfter} from "./repository.mjs";
+import {submitJob,appendArtifact,readEventsAfter,fingerprintSource} from "./repository.mjs";
 import {createJobCoordinator} from "./job-coordinator.mjs";
 import {createLocalBackend} from "./runtime.mjs";
 import {mkdtempSync,rmSync} from "node:fs";
@@ -101,6 +101,74 @@ test("provider attestation of rejection permits failed, but ambiguous results ne
  assert.equal(f.row(a).status,"failed");
  assert.equal(f.row(b).status,"submission_unknown");
  assert.equal(count,2);
+});
+const projectJob=(f,key,{executionMode="poll",kind="comfy",instanceId="local"}={})=>{
+ const graph={nodes:[{id:"node",type:"text",metadata:{prompt:"reconcile"}}],connections:[]};
+ f.db.prepare("INSERT OR IGNORE INTO projects(id,document_json,revision) VALUES(?,?,?)")
+  .run("p",JSON.stringify(graph),1);
+ const result=submitJob(f.db,{
+  projectId:"p",targetNodeId:"node",expectedProjectRevision:1,
+  sourceNodeFingerprint:fingerprintSource(graph,"node"),
+  idempotencyKey:key,requestFingerprint:key,executionMode,
+  snapshot:{adapterKind:kind,...(kind==="comfy"?{instanceId}:{})}
+ }).jobId;
+ if(kind==="comfy")f.db.prepare("INSERT INTO comfy_job_preparations(job_id,graph_json,capture_map_json,graph_hash,image_files_json,workflow_node_id,created_at) VALUES(?,?,?,?,?,?,?)")
+  .run(result,"{}","[]","digest","{}","node",Date.now());
+ return result;
+};
+test("P4.8 manual reconciliation requires attested Comfy evidence; never submits twice",async t=>{
+ const f=fixture(t);
+ const id=projectJob(f,"proof",{executionMode:"poll",kind:"comfy",instanceId:"local"});
+ let submits=0,polls=0,collects=0,proof="unverified",remoteCalls=0;
+ const adapter={
+  async submit(){submits++;throw Error("submit response lost")},
+  async reconcile({job,remoteTaskId}){
+   remoteCalls++;
+   assert.equal(job.id,id);
+   assert.equal(remoteTaskId,"remote-1");
+   return {kind:proof};
+  },
+  async poll(){polls++;return {kind:"completed",receipt:{remoteTaskId:"remote-1"}}},
+  async collect({job}){collects++;f.addArtifact(job.id)}
+ };
+ const c=createJobCoordinator({db:f.db,adapters:{comfy:{local:adapter}}});
+ c.recoverAtStartup();await c.tick();
+ assert.equal(f.row(id).status,"submission_unknown");
+ assert.equal(submits,1);
+ assert.equal((await c.reconcileUnknown({jobId:id,projectId:"p",remoteTaskId:"remote-1"})).verified,false);
+ assert.equal(f.row(id).status,"submission_unknown");
+ await assert.rejects(c.reconcileUnknown({jobId:id,projectId:"p",remoteTaskId:"remote/evil"}),/reconciliation_invalid_input/);
+ proof="mismatch";
+ assert.equal((await c.reconcileUnknown({jobId:id,projectId:"p",remoteTaskId:"remote-1"})).reason,"remote_evidence_mismatch");
+ assert.equal(f.row(id).status,"submission_unknown");
+ proof="pending";
+ assert.equal((await c.reconcileUnknown({jobId:id,projectId:"p",remoteTaskId:"remote-1"})).status,"running");
+ assert.equal(f.row(id).upstream_task_id,"remote-1");
+ assert.equal(f.row(id).status,"running");
+ await assert.rejects(c.reconcileUnknown({jobId:id,projectId:"p",remoteTaskId:"remote-1"}),/reconciliation_not_eligible/);
+ await c.tick();
+ assert.equal(f.row(id).status,"succeeded");
+ assert.equal(submits,1);assert.equal(polls,1);assert.equal(collects,1);
+ assert.equal(remoteCalls,3);
+ const events=readEventsAfter(f.db,0).filter(x=>x.job_id===id);
+ assert.equal(events.filter(x=>x.kind==="job_reconciliation_checked").length,2);
+ assert.equal(events.filter(x=>x.kind==="job_reconciliation_verified").length,1);
+});
+test("P4.8 denies unsupported provider, immediate mode, cross-project and unmarked unknown jobs",async t=>{
+ const f=fixture(t),now=projectJob(f,"model",{executionMode:"poll",kind:"model"});
+ let checks=0;
+ const c=createJobCoordinator({db:f.db,adapters:{model:{async submit(){throw Error("lost")},async reconcile(){checks++}}}});
+ c.recoverAtStartup();await c.tick();
+ assert.equal(f.row(now).status,"submission_unknown");
+ await assert.rejects(c.reconcileUnknown({jobId:now,projectId:"wrong",remoteTaskId:"task-1"}),/job_not_found/);
+ await assert.rejects(c.reconcileUnknown({jobId:now,projectId:"p",remoteTaskId:"task-1"}),/reconciliation_provider_unsupported/);
+ assert.equal(checks,0);
+ const id=projectJob(f,"immediate",{executionMode:"immediate",kind:"comfy",instanceId:"local"});
+ f.db.prepare("UPDATE jobs SET status='submission_unknown',submit_marker='marker',submission_started_at=123 WHERE id=?").run(id);
+ await assert.rejects(c.reconcileUnknown({jobId:id,projectId:"p",remoteTaskId:"task-1"}),/reconciliation_not_eligible/);
+ const poll=projectJob(f,"no-marker",{kind:"comfy",instanceId:"local",executionMode:"poll"});
+ f.db.prepare("UPDATE jobs SET status='submission_unknown' WHERE id=?").run(poll);
+ await assert.rejects(c.reconcileUnknown({jobId:poll,projectId:"p",remoteTaskId:"task-1"}),/reconciliation_not_eligible/);
 });
 test("asynchronous remote task resumes polling and collection after restart; no resubmit",async t=>{
  const f=fixture(t),id=f.queued("poll",{executionMode:"poll"});let posts=0,polls=0,collects=0;

@@ -136,6 +136,86 @@ function mockTransport({errorAt,failDownloadOnce=false,workflowNodeId="wf-1"}={}
 }
 
 
+test("P4.8 Comfy unknown response reconciles only matching history marker and exact frozen graph",async t=>{
+ const base=mockTransport({errorAt:"lost_response"});
+ let scenario="absent";
+ const transport=async(instance,path,opts)=>{
+  if(path==="/history/remote-test"){
+   if(scenario==="absent")return {};
+   const original=await base.mock(instance,path,opts);
+   const entry=original["remote-test"];
+   const sent=base.prompts[0];
+   const proof={...sent.extra_data};
+   if(scenario==="wrong-marker")proof.infinite_atelier_submit_marker="wrong";
+   const graph=scenario==="wrong-graph"?{...sent.prompt,rogue:{class_type:"unrelated"}}:sent.prompt;
+   const extra={client_id:sent.client_id,extra_data:proof};
+   if(scenario==="wrong-client")extra.client_id="unknown-client";
+   return {"remote-test":{...entry,prompt:[0,graph,extra],
+    ...(scenario==="pending"?{status:{status_str:"running",completed:false}}:{})}};
+  }
+  return base.mock(instance,path,opts);
+ };
+ const f=fixture(t,{transport});
+ const workflow={id:"wf-1",type:"comfy:workflow",title:"workflow",
+  position:{x:0,y:0},width:400,height:280,
+  metadata:{comfyPorts:f.tplt.ports.map(port=>({
+   id:port.id,label:port.label,direction:port.direction,valueKind:port.valueKind}))}};
+ const document={nodes:[workflow],connections:[]};
+ createProject(f.db,{id:"test-project",document});
+ const id=submitJob(f.db,{projectId:"test-project",targetNodeId:"wf-1",
+  expectedProjectRevision:1,sourceNodeFingerprint:fingerprintSource(document,"wf-1"),
+  idempotencyKey:"test-click",requestFingerprint:"test-click",executionMode:"poll",
+  snapshot:{adapterKind:"comfy",instanceId:"comfy-local",comfyTemplate:f.tplt,
+   comfyRequest:structuredClone(f.req)}}).jobId;
+ const coordinator=createJobCoordinator({db:f.db,adapters:{comfy:f.adapters}});
+ coordinator.recoverAtStartup();await coordinator.tick();
+ assert.equal(f.row(id).status,"submission_unknown");
+ assert.equal(base.prompts.length,1);
+ const reconcile=()=>coordinator.reconcileUnknown({jobId:id,projectId:"test-project",remoteTaskId:"remote-test"});
+ assert.equal((await reconcile()).reason,"remote_evidence_absent");
+ for(const name of ["wrong-marker","wrong-graph","wrong-client"]){
+  scenario=name;
+  assert.equal((await reconcile()).reason,"remote_evidence_mismatch",name);
+  assert.equal(f.row(id).status,"submission_unknown");
+ }
+ scenario="pending";
+ assert.deepEqual(await reconcile(),{verified:true,status:"running"});
+ assert.equal(f.row(id).upstream_task_id,"remote-test");
+ scenario="success";
+ await coordinator.tick();
+ assert.equal(f.row(id).status,"succeeded");
+ assert.equal(base.prompts.length,1,"no second Comfy /prompt after user reconciliation");
+ assert.equal(f.db.prepare("SELECT COUNT(*) AS n FROM artifacts WHERE job_id=?").get(id).n,6);
+ const restored=createCanvasMaterializer({db:f.db,blobStore:f.blobStore});
+ assert.equal((await restored.runOnce()).filter(row=>row.status==="materialized").length,6);
+});
+test("P4.8 Comfy matched failed history confirms original failure without another submit",async t=>{
+ const base=mockTransport({errorAt:"lost_response"});
+ const transport=async(instance,path,opts)=>{
+  if(path==="/history/remote-test")return {"remote-test":{
+   prompt:[0,base.prompts[0].prompt,{
+    client_id:base.prompts[0].client_id,extra_data:base.prompts[0].extra_data
+   }],status:{status_str:"error",completed:false},outputs:{}
+  }};
+  return base.mock(instance,path,opts);
+ };
+ const f=fixture(t,{transport});
+ const document={nodes:[{id:"wf-1",type:"comfy:workflow",
+  position:{x:0,y:0},width:400,height:280,metadata:{}}],connections:[]};
+ createProject(f.db,{id:"test-project",document});
+ const id=submitJob(f.db,{projectId:"test-project",targetNodeId:"wf-1",
+  expectedProjectRevision:1,sourceNodeFingerprint:fingerprintSource(document,"wf-1"),
+  idempotencyKey:"test-click",requestFingerprint:"test-click",executionMode:"poll",
+  snapshot:{adapterKind:"comfy",instanceId:"comfy-local",comfyTemplate:f.tplt,
+   comfyRequest:structuredClone(f.req)}}).jobId;
+ const c=createJobCoordinator({db:f.db,adapters:{comfy:f.adapters}});
+ c.recoverAtStartup();await c.tick();
+ assert.equal(f.row(id).status,"submission_unknown");
+ assert.deepEqual(await c.reconcileUnknown({jobId:id,projectId:"test-project",
+  remoteTaskId:"remote-test"}),{verified:true,status:"failed"});
+ assert.equal(f.row(id).status,"failed");
+ assert.equal(base.prompts.length,1);
+});
 test("VIDEO/AUDIO media-file inputs compile only with matching verified staged media, never author filenames",async t=>{
  const upstream=[];
  const extraInfo={

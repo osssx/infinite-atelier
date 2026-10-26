@@ -6,14 +6,17 @@ const port=Number(raw);
 if(!Number.isInteger(port)||port<1024||port>65535){
  throw Error("ATELIER_BACKEND_PORT must be between 1024 and 65535");
 }
-// Real Comfy is intentionally opt-in. Without both variables this remains
-// the safe project-sync-only backend and never initiates GPU submissions.
+// Local SQLite model adapters are available by default. Generation itself
+// remains user-triggered and requires an authorized DPAPI channel key.
 const comfyId=process.env.ATELIER_COMFY_INSTANCE_ID;
 const comfyUrl=process.env.ATELIER_COMFY_URL;
 if(Boolean(comfyId)!==Boolean(comfyUrl))
  throw Error("ATELIER_COMFY_INSTANCE_ID and ATELIER_COMFY_URL must be set together");
 const comfyInstances=comfyId&&comfyUrl?[{id:comfyId,url:comfyUrl}]:undefined;
-const runtime=createLocalBackend({comfyInstances,autoDispatch:Boolean(comfyInstances),autoLocalSession:true});
+const enableOpenAiModels=true;
+const enableArkVideos=true;
+const runtime=createLocalBackend({comfyInstances,enableOpenAiModels,enableArkVideos,
+ autoDispatch:Boolean(comfyInstances)||enableOpenAiModels||enableArkVideos,autoLocalSession:true});
 let stopped=false;
 async function shutdown(){
  if(stopped)return;
@@ -30,6 +33,7 @@ try{
  const address=await startServer(runtime.app,{host:"127.0.0.1",port});
  console.log("Infinite Atelier private backend ready:",address);
  console.log("Comfy backend GPU dispatch:",comfyInstances?"enabled (explicit opt-in)":"disabled");
+ console.log("SQLite OpenAI / Volcengine Ark model adapters: enabled by default (DPAPI channel required).");
  console.log("Canvas sessions: automatic same-origin loopback login (no manual token).");
  console.log("API origin: http://127.0.0.1:"+port);
 }catch(error){

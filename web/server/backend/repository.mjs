@@ -44,6 +44,9 @@ function generationNode(node){
  if(safe.comfyWorkflow){
   safe.comfyWorkflow={...safe.comfyWorkflow};
   delete safe.comfyWorkflow.lastRunId;
+  // Validation status can be cleared by backup/import or an unavailable instance;
+  // the actual template, inputs and explicit instance identity stay fingerprinted.
+  delete safe.comfyWorkflow.bindingState;
  }
  if(Array.isArray(safe.images))safe.images=safe.images.map(image=>{
   const {status,errorDetails,...stable}=image;return stable;
@@ -99,7 +102,12 @@ function matchesLegacyStandaloneComfy(document,targetNodeId,snapshot){
  const source=document.nodes.find(n=>n.id===targetNodeId);
  if(source?.type!=="comfy:workflow")return false;
  const binding=source.metadata?.comfyWorkflow;
- if(!binding||binding.bindingState!=="bound"||
+ // A backup/import can clear the local instance binding AFTER this GPU job
+ // succeeded. That prohibits a NEW submit, not adoption of an already-collected
+ // artifact when the exact frozen template, overrides, and input graph match.
+ const validBinding=binding?.bindingState==="bound"||
+  binding?.bindingState==="needs-instance-binding"&&binding.instanceId===undefined;
+ if(!validBinding||
    binding.templateId!==request.nodes[0].templateId||
    binding.templateRevision!==request.nodes[0].templateRevision||
    binding.templateId!==snapshot.comfyTemplate.id||

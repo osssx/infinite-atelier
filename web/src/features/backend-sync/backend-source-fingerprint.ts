@@ -28,6 +28,7 @@ function generationNode(node:BackendCanvasGraph["nodes"][number]){
  if(safe.comfyWorkflow&&typeof safe.comfyWorkflow==="object"){
   safe.comfyWorkflow={...safe.comfyWorkflow};
   delete (safe.comfyWorkflow as Record<string,unknown>).lastRunId;
+  delete (safe.comfyWorkflow as Record<string,unknown>).bindingState;
  }
  if(Array.isArray(safe.images))safe.images=safe.images.map((image:Record<string,unknown>)=>{
   const {status,errorDetails,...stable}=image;return stable;

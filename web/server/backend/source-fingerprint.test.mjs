@@ -30,6 +30,7 @@ test("v2 source fingerprint agrees with browser, remains stable under cosmetic a
   doc.nodes[0].metadata.comfyExecution={runId:"another",status:"succeeded"};
   doc.nodes[1].metadata.images[0].status="error";
   doc.nodes[2].metadata.comfyWorkflow.lastRunId="recent";
+  doc.nodes[2].metadata.comfyWorkflow.bindingState="needs-instance-binding";
   doc.connections[0].id="regenerated-ui-id";
  });
  assert.notEqual(fingerprintSourceLegacy(shifted,"comfy"),fingerprintSourceLegacy(base,"comfy"));
@@ -72,6 +73,22 @@ test("legacy already-collected standalone Comfy request can recover only verifie
  altered.nodes[0].title="Moved";
  assert.notEqual(fingerprintSourceLegacy(altered,"comfy"),legacy);
  assert.equal(matchesSourceFingerprint(altered,"comfy",legacy,frozen),true);
+ // Observed from the real 2026-10-27 blocked job: a previous successful
+ // standalone job has no current instanceId and is now marked unbound.
+ const unbound=structuredClone(altered);
+ unbound.nodes[0].metadata.comfyWorkflow.bindingState="needs-instance-binding";
+ delete unbound.nodes[0].metadata.comfyWorkflow.instanceId;
+ assert.equal(matchesSourceFingerprint(unbound,"comfy",legacy,frozen),true);
+ // Changing the actual GPU target or overriding a prompt remains prohibited.
+ const changedInstance=structuredClone(unbound);
+ changedInstance.nodes[0].metadata.comfyWorkflow.instanceId="different-instance";
+ assert.equal(matchesSourceFingerprint(changedInstance,"comfy",legacy,frozen),false);
+ const incompatible=structuredClone(unbound);
+ incompatible.nodes[0].metadata.comfyWorkflow.bindingState="incompatible";
+ assert.equal(matchesSourceFingerprint(incompatible,"comfy",legacy,frozen),false);
+ const tamperedPrompt=structuredClone(unbound);
+ tamperedPrompt.nodes[0].metadata.comfyWorkflow.inputOverrides.prompt="different";
+ assert.equal(matchesSourceFingerprint(tamperedPrompt,"comfy",legacy,frozen),false);
  const unsafe=structuredClone(altered);unsafe.nodes[0].metadata.comfyWorkflow.inputOverrides.seed=2;
  assert.equal(matchesSourceFingerprint(unsafe,"comfy",legacy,frozen),false);
  assert.equal(matchesSourceFingerprint(altered,"comfy",legacy,{

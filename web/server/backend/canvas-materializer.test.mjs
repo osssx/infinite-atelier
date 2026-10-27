@@ -147,6 +147,10 @@ test("already-blocked legacy standalone Comfy artifact retries after cosmetic ch
  assert.equal(f.materializer.status({jobId})[0].status,"blocked");
  const restored=getProject(f.db,"project-1").document;
  restored.nodes[0].metadata.comfyWorkflow.inputOverrides.seed=1;
+ // Backup migration made this otherwise unchanged successful workflow unbound.
+ // Frozen instanceId/template/inputs still verify; do not make another GPU call.
+ restored.nodes[0].metadata.comfyWorkflow.bindingState="needs-instance-binding";
+ delete restored.nodes[0].metadata.comfyWorkflow.instanceId;
  patchProject(f.db,{id:"project-1",expectedRevision:3,document:restored});
  assert.equal(f.materializer.retryBlocked({projectId:"project-1",artifactId}),true);
  assert.equal((await f.materializer.runOnce())[0].status,"materialized");

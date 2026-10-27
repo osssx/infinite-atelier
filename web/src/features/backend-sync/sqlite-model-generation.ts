@@ -3,13 +3,17 @@ import type {BackendJobView} from "@/types/backend-contracts";
 import {canvasApi} from "./canvas-api";
 import {createSqliteComfyBridge} from "./sqlite-comfy-bridge";
 import type {FrozenArkReference} from "./seedance-frozen-references";
+import type {ReferenceImage} from "@/types/image";
+import {freezeModelImages,type FrozenModelImage} from "./frozen-model-images";
 
 /** Ordinary OpenAI calls use the same SQLite revision/source-fingerprint fence
  * as Comfy, with encrypted backend channel references (never raw API keys).
- * This V1 supports one output, text-only inputs, and the official OpenAI API.
+ * P5.4d allows frozen CAS images for official OpenAI image edits or text
+ * questions, retaining a single output and no browser credential references.
  */
 export async function startSqliteModelGeneration({
  projectId,sourceNodeId,nodes,connections,channelId,provider="openai",task,
+ referenceImages=[],maskImage,
  api=canvasApi,bridge=createSqliteComfyBridge({projectId,
   getLocalGraph:()=>({nodes:[...nodes],connections:[...connections]})})
 }:{
@@ -20,7 +24,9 @@ export async function startSqliteModelGeneration({
   size?:string;quality?:string;voice?:string;format?:string;speed?:number;
   duration?:number;ratio?:string;resolution?:string;generateAudio?:boolean;watermark?:boolean;
   mode?:"text_to_video"|"first_frame"|"first_last_frame"|"omni_reference";
-  references?:FrozenArkReference[]};
+  references?:FrozenArkReference[];
+  operation?:"edit";images?:FrozenModelImage[];mask?:FrozenModelImage};
+ referenceImages?:readonly ReferenceImage[];maskImage?:ReferenceImage;
  api?:typeof canvasApi;bridge?:ReturnType<typeof createSqliteComfyBridge>;
 }):Promise<BackendJobView>{
  if(!nodes.some(node=>node.id===sourceNodeId))throw Error("model_source_node_missing");
@@ -35,6 +41,16 @@ export async function startSqliteModelGeneration({
   "/api/v1/channels/"+encodeURIComponent(channelId));
  if(channel.id!==channelId||channel.provider!==provider||!channel.hasKey||!channel.keyVersion)
   throw Error("SQLite 后端未配置此模型渠道的加密密钥");
+ if((referenceImages.length||maskImage)&&provider!=="openai")
+  throw Error("model_provider_image_inputs_unsupported");
+ if((referenceImages.length||maskImage)&&!["image","text"].includes(task.kind))
+  throw Error("model_image_inputs_kind_unsupported");
+ if(maskImage&&(task.kind!=="image"||referenceImages.length!==1))
+  throw Error("model_image_mask_inputs_invalid");
+ if(task.images||task.mask||task.operation)
+  throw Error("model_task_references_must_be_frozen");
+ const images=referenceImages.length?await freezeModelImages(referenceImages,bridge):[];
+ const mask=maskImage?(await freezeModelImages([maskImage],bridge))[0]:undefined;
  await bridge.assertNoActiveJob(sourceNodeId);
  const frozen={nodes:[...nodes],connections:[...connections]};
  const fence=await bridge.saveProjectNow(frozen,sourceNodeId);
@@ -44,7 +60,10 @@ export async function startSqliteModelGeneration({
   expectedProjectRevision:fence.revision,sourceNodeFingerprint:fence.sourceNodeFingerprint,
   idempotencyKey,requestFingerprint:idempotencyKey,executionMode:task.kind==="video"?"poll":"immediate",
   snapshot:{adapterKind:"model",provider,channelId,
-   secretVersionRef:channel.keyVersion,task}
+   secretVersionRef:channel.keyVersion,task:{...task,
+    ...(images.length?{images}:{}),
+    ...(images.length&&task.kind==="image"?{operation:"edit"}:{}),
+    ...(mask?{mask}:{})}}
  });
 }
 export function openAiImageSize(value:string):"auto"|"1024x1024"|"1536x1024"|"1024x1536"{

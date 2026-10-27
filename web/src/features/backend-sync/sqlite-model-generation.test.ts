@@ -1,5 +1,7 @@
 import {describe,it,expect,vi,afterEach} from "vitest";
 vi.mock("./sqlite-comfy-bridge",()=>({createSqliteComfyBridge:vi.fn()}));
+vi.mock("./frozen-model-images",()=>({freezeModelImages:vi.fn(async()=>[
+ {blobId:"a".repeat(64),mimeType:"image/png"}])}));
 import {startSqliteModelGeneration,openAiImageSize} from "./sqlite-model-generation";
 import type {CanvasConnection,CanvasNodeData} from "@/types/canvas";
 import type {BackendJobView} from "@/types/backend-contracts";
@@ -88,6 +90,72 @@ describe("P4.4 ordinary SQLite model submit",()=>{
    secretVersionRef:"v2",task:video
   }});
   expect(JSON.stringify(payload)).not.toContain("apiKey");
+ });
+ it("P5.4d freezes reference images for image edits before save fence, never sends inline image bytes",async()=>{
+  const events:string[]=[];
+  const reference={id:"image-1",name:"reference",type:"image/png",dataUrl:"data:image/png;base64,UNSAFE"};
+  const uploaded=bridge();
+  uploaded.saveProjectNow.mockImplementationOnce(async()=>{
+   events.push("save");
+   return {projectId:"p1",revision:5,sourceNodeFingerprint:"ref"};
+  });
+  const api=vi.fn(async(path:string,method="GET",payload?:unknown)=>{
+   if(path==="/api/v1/execution/capabilities")
+    return {autoDispatch:true,modelKinds:["image","text"]};
+   if(path==="/api/v1/channels/openai-channel")
+    return {id:"openai-channel",provider:"openai",hasKey:true,keyVersion:"v1"};
+   if(path==="/api/v1/jobs"){
+    events.push("submit");
+    expect(payload).toMatchObject({snapshot:{task:{
+     kind:"image",operation:"edit",images:[{blobId:"a".repeat(64),mimeType:"image/png"}]
+    }}});
+    expect(JSON.stringify(payload)).not.toContain("UNSAFE");
+    expect(JSON.stringify(payload)).not.toContain("data:image");
+    return fakeJob;
+   }
+   throw Error("unexpected");
+  });
+  await startSqliteModelGeneration({projectId:"p1",sourceNodeId:"text-1",
+   nodes,connections,channelId:"openai-channel",referenceImages:[reference],
+   task:{kind:"image",model:"gpt-image-2",prompt:"add stars"},
+   bridge:uploaded,api:api as unknown as typeof canvasApi});
+  expect(events).toEqual(["save","submit"]);
+ });
+ it("P5.4d image questions freeze multimodal references while leaving generation kind text",async()=>{
+  const api=vi.fn(async(path:string,_method="GET",payload?:unknown)=>{
+   if(path.includes("capabilities"))return {autoDispatch:true,modelKinds:["text"]};
+   if(path.includes("/channels/"))return {id:"openai-channel",provider:"openai",hasKey:true,keyVersion:"v1"};
+   if(path==="/api/v1/jobs"){
+    expect(payload).toMatchObject({snapshot:{task:{
+     kind:"text",images:[{blobId:"a".repeat(64),mimeType:"image/png"}]
+    }}});
+    expect((payload as {snapshot:{task:{operation?:string}}}).snapshot.task.operation).toBeUndefined();
+    return fakeJob;
+   }
+   throw Error("unexpected");
+  });
+  await startSqliteModelGeneration({projectId:"p1",sourceNodeId:"text-1",
+   nodes,connections,channelId:"openai-channel",referenceImages:[{
+    id:"image-1",name:"image",type:"image/png",dataUrl:"data:image/png;base64,x"}],
+   task:{kind:"text",model:"gpt-4o-mini",prompt:"What is in this image?"},
+   bridge:bridge(),api:api as unknown as typeof canvasApi});
+ });
+ it("P5.4d rejects forged frozen refs and illegal mask capability before saving",async()=>{
+  const b=bridge();
+  const api=vi.fn(async(path:string)=>path.includes("capabilities")?
+   {autoDispatch:true,modelKinds:["image","text"]}:
+   {id:"openai-channel",provider:"openai",hasKey:true,keyVersion:"v1"});
+  const common={projectId:"p1",sourceNodeId:"text-1",nodes,connections,
+   channelId:"openai-channel",bridge:b,api:api as unknown as typeof canvasApi};
+  await expect(startSqliteModelGeneration({...common,task:{
+   kind:"image",model:"gpt-image-2",prompt:"edit",images:[{blobId:"a".repeat(64),mimeType:"image/png"}]
+  }})).rejects.toThrow("references_must_be_frozen");
+  await expect(startSqliteModelGeneration({...common,
+   referenceImages:[{id:"x",type:"image/png",name:"a",dataUrl:"x"}],
+   maskImage:{id:"mask",type:"image/png",name:"mask",dataUrl:"x"},
+   task:{kind:"text",model:"gpt-4o-mini",prompt:"ask"},
+  })).rejects.toThrow("mask_inputs_invalid");
+  expect(b.saveProjectNow).not.toHaveBeenCalled();
  });
  it("normalizes Canvas ratio shortcuts to supported OpenAI image size",()=>{
   expect(openAiImageSize("1:1")).toBe("1024x1024");

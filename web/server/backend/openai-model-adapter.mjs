@@ -1,3 +1,6 @@
+import {createHash} from "node:crypto";
+import {readFile} from "node:fs/promises";
+import {Blob} from "node:buffer";
 import {Readable} from "node:stream";
 import {appendArtifact} from "./repository.mjs";
 
@@ -9,20 +12,46 @@ const validModel=value=>typeof value==="string"&&/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,1
 const validPrompt=value=>typeof value==="string"&&value.trim().length>0&&
  Buffer.byteLength(value,"utf8")<=16000;
 
+const imageMimes=new Set(["image/png","image/jpeg","image/webp"]);
+const MAX_INPUT_IMAGE_BYTES=20*1024*1024,MAX_TOTAL_IMAGE_BYTES=64*1024*1024;
+function validateImageInputs(task){
+ const images=task.images??[];
+ if(!Array.isArray(images)||images.length>8||
+  images.some(ref=>!ref||typeof ref!=="object"||Array.isArray(ref)||
+    Object.keys(ref).some(k=>!["blobId","mimeType"].includes(k))||
+    typeof ref.blobId!=="string"||!/^[a-f0-9]{64}$/.test(ref.blobId)||
+    !imageMimes.has(ref.mimeType)))throw failure("model_image_inputs_invalid");
+ const mask=task.mask;
+ if(mask!==undefined&&(!mask||typeof mask!=="object"||Array.isArray(mask)||
+    Object.keys(mask).some(k=>!["blobId","mimeType"].includes(k))||
+    typeof mask.blobId!=="string"||!/^[a-f0-9]{64}$/.test(mask.blobId)||
+    mask.mimeType!=="image/png"))throw failure("model_image_mask_invalid");
+ if(task.kind==="image"){
+  if(task.operation!==undefined&&task.operation!=="edit")throw failure("model_task_invalid");
+  if(task.operation==="edit"&&!images.length||images.length&&task.operation!=="edit"||
+   mask!==undefined&&(task.operation!=="edit"||images.length!==1))
+   throw failure("model_image_inputs_invalid");
+ }else if(task.kind==="text"){
+  if(task.operation!==undefined||mask!==undefined)throw failure("model_task_invalid");
+ }else if(images.length||mask!==undefined||task.operation!==undefined)
+  throw failure("model_task_invalid");
+ return images;
+}
 export function validateModelSnapshot(snapshot){
  if(!snapshot||snapshot.adapterKind!=="model"||snapshot.provider!=="openai"||
   typeof snapshot.channelId!=="string"||!/^[-\w]{1,128}$/.test(snapshot.channelId)||
   typeof snapshot.secretVersionRef!=="string"||!/^[-\w]{1,128}$/.test(snapshot.secretVersionRef))
   throw failure("model_snapshot_invalid");
  const task=snapshot.task;
- if(!task||typeof task!=="object"||!supported.has(task.kind)||
+ if(!task||typeof task!=="object"||Array.isArray(task)||!supported.has(task.kind)||
   !validModel(task.model)||!validPrompt(task.prompt)||
-  Object.keys(task).some(key=>!["kind","model","prompt","size","quality","voice","format","speed"].includes(key)))
+  Object.keys(task).some(key=>!["kind","model","prompt","size","quality","voice","format","speed","operation","images","mask"].includes(key)))
   throw failure("model_task_invalid");
- const allowed=task.kind==="image"?["kind","model","prompt","size","quality"]:
+ const allowed=task.kind==="image"?["kind","model","prompt","size","quality","operation","images","mask"]:
   task.kind==="audio"?["kind","model","prompt","voice","format","speed"]:
-  ["kind","model","prompt"];
+  ["kind","model","prompt","images"];
  if(Object.keys(task).some(key=>!allowed.includes(key)))throw failure("model_task_invalid");
+ validateImageInputs(task);
  if(task.kind==="image"&&
    (task.size!==undefined&&!["auto","1024x1024","1024x1536","1536x1024"].includes(task.size)||
     task.quality!==undefined&&!["auto","low","medium","high"].includes(task.quality)))
@@ -72,16 +101,63 @@ export function createOpenAiModelAdapter({db,blobStore,vault,upstreamCall=fetch}
   vault.checkReference(snapshot.secretVersionRef,snapshot.channelId);
   return {snapshot,task};
  };
- async function prepare({job}){check(job)}
+ async function readFrozenInputs(task){
+  const refs=[...(task.images??[]),...(task.mask?[task.mask]:[])],inputs=[];
+  let total=0;
+  for(const ref of refs){
+   const stat=await blobStore.stat(ref.blobId);
+   if(stat.mimeType!==ref.mimeType||!imageMimes.has(stat.mimeType)||
+    stat.byteSize<1||stat.byteSize>MAX_INPUT_IMAGE_BYTES||
+    (total+=stat.byteSize)>MAX_TOTAL_IMAGE_BYTES)
+    throw failure("model_image_input_invalid",422);
+   inputs.push(stat);
+  }
+  return inputs;
+ }
+ async function prepare({job}){
+  const {task}=check(job);
+  await readFrozenInputs(task); // reject missing, oversized or wrong-MIME frozen CAS
+ }
  async function submit({job}){
   const {snapshot,task}=check(job);
   const image=task.kind==="image",audio=task.kind==="audio";
-  const path=image?"/images/generations":audio?"/audio/speech":"/chat/completions";
-  const body=image?{model:task.model,prompt:task.prompt,n:1,
-   ...(task.size?{size:task.size}:{}),...(task.quality?{quality:task.quality}:{})}:
-   audio?{model:task.model,input:task.prompt,voice:task.voice,
-    response_format:task.format,...(task.speed?{speed:task.speed}:{})}:
-    {model:task.model,messages:[{role:"user",content:task.prompt}],stream:false};
+  const edit=image&&task.operation==="edit";
+  const path=image?(edit?"/images/edits":"/images/generations"):audio?"/audio/speech":"/chat/completions";
+  const frozen=await readFrozenInputs(task);
+  const data=[];
+  for(const stat of frozen){
+   const bytes=await readFile(stat.path);
+   if(bytes.length!==stat.byteSize||createHash("sha256").update(bytes).digest("hex")!==stat.id)
+    throw failure("model_image_input_integrity_failed",503);
+   data.push(bytes);
+  }
+  let body,headers={"content-type":"application/json"};
+  if(edit){
+   const form=new FormData();
+   form.set("model",task.model);form.set("prompt",task.prompt);form.set("n","1");
+   if(task.size)form.set("size",task.size);
+   if(task.quality)form.set("quality",task.quality);
+   for(let i=0;i<task.images.length;i++){
+    const ref=task.images[i];
+    const ext=ref.mimeType==="image/png"?"png":ref.mimeType==="image/webp"?"webp":"jpg";
+    form.append("image",new Blob([data[i]],{type:ref.mimeType}),"reference-"+i+"."+ext);
+   }
+   if(task.mask)form.set("mask",new Blob([data[data.length-1]],{type:"image/png"}),"mask.png");
+   body=form;headers={};
+  }else if(image){
+   body=JSON.stringify({model:task.model,prompt:task.prompt,n:1,
+    ...(task.size?{size:task.size}:{}),...(task.quality?{quality:task.quality}:{})});
+  }else if(audio){
+   body=JSON.stringify({model:task.model,input:task.prompt,voice:task.voice,
+    response_format:task.format,...(task.speed?{speed:task.speed}:{})});
+  }else{
+   const content=task.images?.length?[
+    {type:"text",text:task.prompt},
+    ...task.images.map((ref,i)=>({type:"image_url",image_url:{
+     url:"data:"+ref.mimeType+";base64,"+data[i].toString("base64")}}))
+   ]:task.prompt;
+   body=JSON.stringify({model:task.model,messages:[{role:"user",content}],stream:false});
+  }
   // Copy an unprotected key into an HTTP header only within the consumer.
   // The vault zeros the temporary Buffer immediately after returning.
   const authorization=vault.withSecretVersion(snapshot.secretVersionRef,
@@ -89,8 +165,7 @@ export function createOpenAiModelAdapter({db,blobStore,vault,upstreamCall=fetch}
   let response;
   try{
    response=await upstreamCall("https://api.openai.com/v1"+path,{
-    method:"POST",redirect:"manual",headers:{"authorization":authorization,
-     "content-type":"application/json"},body:JSON.stringify(body),
+    method:"POST",redirect:"manual",headers:{"authorization":authorization,...headers},body,
     signal:AbortSignal.timeout(120000)
    });
   }catch{throw failure("model_submission_uncertain",502)}

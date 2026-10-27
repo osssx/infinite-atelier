@@ -46,9 +46,19 @@ SQLite v10 在主库中额外维护保守的 `blob_ref_ledger` 和脏标记，�
 
 ## P5.4b：非敏感模型设置与主题冷备份
 
-SQLite schema v12 的 `ui_settings` 包含模型通道元数据、模型选项、非敏感生成偏好和深浅色主题，并自动随 `backup:data` 冷备份与新目录恢复。`model_config`、`theme` 分别有独立的 revision；后端会拒绝任何 JSON 内出现的 `apiKey`、令牌、凭据、密码、模型脚本字段。旧浏览器配置和主题**不会自动覆盖** SQLite：用户可以在配置与用户偏好页面确认“导入旧浏览器设置”，仅默认空库/初始主题允许迁移，失败时保留原浏览器资料。普通配置 JSON、旧版整应用 ZIP 输出会剔除 API Key 与模型脚本。
+SQLite schema v12 的 `ui_settings` 包含模型通道元数据、模型选项、非敏感生成偏好和深浅色主题，并自动随 `backup:data` 冷备份与新目录恢复。`model_config`、`theme` 分别有独立的 revision；后端会拒绝任何 JSON 内出现的 `apiKey`、令牌、凭据、密码、模型脚本字段。旧浏览器模型设置和主题不会自动覆盖 SQLite；设置页也不提供旧浏览器数据迁移按钮。普通配置 JSON、旧版整应用 ZIP 输出会剔除 API Key 与模型脚本。
 
-**密钥边界**：用于旧浏览器直连 API 的 Key 与脚本暂存于浏览器原配置与过渡性的 `atelier:local-credentials` 本地记录（明文、仅浏览器端、非备份内容），不会同步到 `ui_settings`。这不是 DPAPI 加密，也不是最终密钥迁移。`channels` / `credential_versions` 服务端 DPAPI Vault 是另一套已经存在的后端渠道凭据；只有该服务端凭据体系支持加密持久化，尚未将所有旧前端直连通道自动接入。请在清除浏览器存储或更换电脑前单独规划凭据重配；后续 P5.4c 才应彻底迁出旧明文 Key 并移除明文残留。
+**密钥边界**：用于旧浏览器直连 API 的 Key 与脚本暂存于浏览器原配置与过渡性的 `atelier:local-credentials` 本地记录（明文、仅浏览器端、非备份内容），不会同步到 `ui_settings`。这不是 DPAPI 加密，也不是最终密钥迁移。`channels` / `credential_versions` 服务端 DPAPI Vault 是另一套已经存在的后端渠道凭据；只有该服务端凭据体系支持加密持久化，尚未将所有旧前端直连通道自动接入。在清除浏览器存储或更换电脑前请自行核对浏览器直连渠道，按需在渠道编辑器重新配置密钥。
+
+## P5.4c：渠道凭据的保存边界（不提供迁移入口）
+
+设置页的“导入旧浏览器设置”和“加密迁移旧 API Key”按钮及其执行逻辑已经移除。普通渠道编辑仍可以向后端 DPAPI Vault 保存或轮换密钥；未更改的渠道密钥若已在 Vault 有可用版本，则避免重复轮换。浏览器直连 API 所需密钥继续由浏览器本地保存，不会因普通渠道保存或启动而自动批量转移、清除。
+
+为兼容历史版本，如果本地已经存在 `atelier:vaulted-model-channels` 标记，配置读取和本地保存仍会尊重这些标记，避免重新使用曾确认迁至 Vault 的旧明文 Key；但**不再创建新标记或执行批量迁移**。旧浏览器明文不属于 SQLite 冷备份；DPAPI 密文绑定当前 Windows 用户，跨用户/设备恢复需重新配置密钥。
+
+## P5.4d：图片编辑与带图文本问答参考素材冷备份
+
+普通 Canvas 官方 OpenAI 图片编辑和带图问答所需的参考图片，在模型提交前冻结为后端 BlobStore CAS，Jobs 只保留图片 SHA-256/MIME 与文本 Prompt，不存储原始 Base64 图片或渠道 API Key。作业快照内 CAS 哈希参与 P5.3 引用台账保留与 backup:data 冷备份，即使任务成功但 Materializer 尚未追加产物节点，输入与输出仍可找回。异设备恢复需按 Windows DPAPI 上下文重新配置密钥。旧浏览器独立媒体、非 Canvas 直连功能仍不在该闭环。
 
 ## 安全与范围边界
 

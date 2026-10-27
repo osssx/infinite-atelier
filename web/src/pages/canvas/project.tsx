@@ -2235,15 +2235,65 @@ function AtelierCanvasPage() {
         [message, t],
     );
 
+    /** Mask edits and angle redraws also use the existing model JobCoordinator.
+     * The materializer creates the resulting child node; no optimistic duplicate.
+     */
+    const submitSqliteImageEdit = useCallback(async (
+        node: CanvasNodeData, generationConfig: typeof defaultConfig,
+        prompt: string, source: ReferenceImage, mask?: ReferenceImage,
+    ) => {
+        const channel=resolveModelChannel(effectiveConfig,generationConfig.model);
+        const provider=modelChannelProvider(channel,"image");
+        if(!provider||!channel)throw Error("sqlite_image_edit_provider_unsupported");
+        if(!projectLoaded)throw Error("画布项目尚未加载完成");
+        if(resolveModelScript(effectiveConfig,generationConfig.model))
+            throw Error("自定义模型脚本尚未接入 SQLite 图片编辑");
+        const submissionKey=projectId+":"+node.id;
+        if(sqliteModelSubmitLocksRef.current.has(submissionKey))
+            throw Error("该节点已有模型任务正在提交");
+        sqliteModelSubmitLocksRef.current.add(submissionKey);
+        try {
+            await ensureSqliteModelChannel(channel,provider);
+            const bridge=createSqliteComfyBridge({projectId,
+                getLocalGraph:()=>({nodes:nodesRef.current,connections:connectionsRef.current})});
+            const job=await startSqliteModelGeneration({
+                projectId,sourceNodeId:node.id,nodes:[...nodesRef.current],
+                connections:[...connectionsRef.current],channelId:channel.id,provider,
+                referenceImages:[source],...(mask?{maskImage:mask}:{}),bridge,
+                task:{kind:"image",model:modelOptionName(generationConfig.model),prompt,
+                    size:openAiImageSize(generationConfig.size),
+                    quality:["auto","low","medium","high"].includes(generationConfig.quality)?
+                        generationConfig.quality:"auto"},
+            });
+            monitorSqliteJobRef.current(job.id);
+            message.info("SQLite 图片编辑任务已提交："+job.id+"，完成后自动追加图片节点");
+        } finally {
+            sqliteModelSubmitLocksRef.current.delete(submissionKey);
+        }
+    },[effectiveConfig,projectId,projectLoaded,message]);
+
     const maskEditImageNode = useCallback(
         async (node: CanvasNodeData, payload: CanvasImageMaskEditPayload) => {
             if (!node.metadata?.content) return;
             const generationConfig = { ...buildGenerationConfig(effectiveConfig, node, "image"), count: "1", size: node.metadata?.size || "auto" };
+            const userPrompt = payload.prompt.trim();
+            if(modelChannelProvider(resolveModelChannel(effectiveConfig,generationConfig.model),"image")){
+                const editPrompt=t("canvas.projectPage.maskPrompt",{prompt:userPrompt});
+                const source:ReferenceImage={id:node.id,name:node.title||node.id,
+                    type:node.metadata.mimeType||"image/png",dataUrl:node.metadata.content,
+                    storageKey:node.metadata.storageKey};
+                const mask:ReferenceImage={id:node.id+"-mask",name:"mask.png",type:"image/png",
+                    dataUrl:payload.maskDataUrl};
+                try{
+                    await submitSqliteImageEdit(node,generationConfig,editPrompt,source,mask);
+                    setMaskEditNodeId(null);
+                }catch(error){message.error(error instanceof Error?error.message:String(error))}
+                return;
+            }
             if (!isAiConfigReady(generationConfig, generationConfig.model)) {
                 openConfigDialog(true);
                 return;
             }
-            const userPrompt = payload.prompt.trim();
             const prompt = t("canvas.projectPage.maskPrompt", { prompt: userPrompt });
             const childId = nanoid();
             const source = { id: node.id, name: `${node.title || node.id}.png`, type: node.metadata.mimeType || "image/png", dataUrl: node.metadata.content, storageKey: node.metadata.storageKey };
@@ -2282,7 +2332,7 @@ function AtelierCanvasPage() {
                 setRunningNodeId(null);
             }
         },
-        [effectiveConfig, finishGenerationRequest, isAiConfigReady, message, openConfigDialog, projectId, startGenerationRequest, t],
+        [effectiveConfig, finishGenerationRequest, isAiConfigReady, message, openConfigDialog, projectId, startGenerationRequest, submitSqliteImageEdit, t],
     );
 
     const upscaleImageNode = useCallback(async (node: CanvasNodeData, params: CanvasImageUpscaleParams) => {
@@ -2314,6 +2364,16 @@ function AtelierCanvasPage() {
         async (node: CanvasNodeData, params: CanvasImageAngleParams) => {
             if (!node.metadata?.content) return;
             const generationConfig = { ...buildGenerationConfig(effectiveConfig, node, "image"), count: "1" };
+            if(modelChannelProvider(resolveModelChannel(effectiveConfig,generationConfig.model),"image")){
+                const source:ReferenceImage={id:node.id,name:node.title||node.id,
+                    type:node.metadata.mimeType||"image/png",dataUrl:node.metadata.content,
+                    storageKey:node.metadata.storageKey};
+                try{
+                    await submitSqliteImageEdit(node,generationConfig,buildAnglePrompt(params),source);
+                    setAngleNodeId(null);
+                }catch(error){message.error(error instanceof Error?error.message:String(error))}
+                return;
+            }
             if (!isAiConfigReady(generationConfig, generationConfig.model)) {
                 openConfigDialog(true);
                 return;
@@ -2363,7 +2423,7 @@ function AtelierCanvasPage() {
                 setRunningNodeId(null);
             }
         },
-        [effectiveConfig, finishGenerationRequest, openConfigDialog, startGenerationRequest, t],
+        [effectiveConfig, finishGenerationRequest, message, openConfigDialog, startGenerationRequest, submitSqliteImageEdit, t],
     );
 
     const handleFontSizeChange = useCallback((nodeId: string, fontSize: number) => {
@@ -2586,8 +2646,9 @@ function AtelierCanvasPage() {
                       sourceNode.metadata?.content?.trim():"";
                     const context=buildNodeGenerationContext(nodeId,nodesRef.current,connectionsRef.current,
                       mode==="text"&&original?t("canvas.projectPage.editTextPrompt",{source:original,prompt:promptText}):promptText);
-                    if(mode!=="video"&&(context.referenceImages.length||context.referenceVideos.length||context.referenceAudios.length))
-                        throw Error("SQLite 图片/音频/文本模型当前仅支持纯文本输入，媒体参考请使用 Comfy 工作流");
+                    if(mode!=="video"&&(context.referenceVideos.length||context.referenceAudios.length||
+                        mode==="audio"&&context.referenceImages.length))
+                        throw Error("SQLite 当前仅支持图片生成/编辑与文本问答的图片参考输入；视频、音频参考请使用对应工作流");
                     const text=context.prompt.trim();
                     if(!text)throw Error("请输入生成提示词");
                     const model=modelOptionName(generationConfig.model);
@@ -2621,6 +2682,7 @@ function AtelierCanvasPage() {
                         channelId:selectedChannel.id,
                         provider:sqliteProvider,
                         bridge,
+                        ...(kind==="image"||kind==="text"?{referenceImages:context.referenceImages}:{}),
                         task:{kind,model,prompt:text,
                           ...(kind==="image"?{size:openAiImageSize(generationConfig.size),
                             quality:["auto","low","medium","high"].includes(generationConfig.quality)?

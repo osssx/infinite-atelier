@@ -222,3 +222,159 @@ test("P4.4 provider 4xx is confirmed failure; 5xx or network uncertainty is not 
  assert.equal(f.db.prepare("SELECT status FROM jobs WHERE id=?").get(id).status,"failed");
  assert.equal(calls,1);
 });
+test("P5.4d image edits use frozen CAS files, official multipart endpoint and DPAPI key",async t=>{
+ const calls=[];
+ const f=fixture(t,async(url,options)=>{
+  calls.push({url,options});
+  return new Response(JSON.stringify({data:[{b64_json:png.toString("base64")}]}),{status:200});
+ });
+ const input=await f.blobStore.put([png],{mime:"image/png"});
+ const task={kind:"image",model:"gpt-image-2",prompt:"Add a hat",operation:"edit",
+  images:[{blobId:input.blobId,mimeType:"image/png"}],size:"1024x1024",quality:"low"};
+ const id=f.enqueue("edit-one",task);
+ f.coordinator.recoverAtStartup();await f.coordinator.tick();
+ assert.equal(f.db.prepare("SELECT status FROM jobs WHERE id=?").get(id).status,"succeeded");
+ assert.equal(calls.length,1);
+ assert.equal(calls[0].url,"https://api.openai.com/v1/images/edits");
+ const opts=calls[0].options;
+ assert.equal(opts.headers.authorization,"Bearer fixture-only-not-a-real-secret");
+ assert.equal(opts.headers["content-type"],undefined);
+ assert.ok(opts.body instanceof FormData);
+ assert.equal(opts.body.get("prompt"),"Add a hat");
+ assert.equal(opts.body.get("model"),"gpt-image-2");
+ assert.equal(opts.body.getAll("image").length,1);
+ assert.deepEqual(Buffer.from(await opts.body.get("image").arrayBuffer()),png);
+ assert.ok(!f.db.prepare("SELECT snapshot_json FROM jobs WHERE id=?").get(id).snapshot_json
+  .includes(png.toString("base64")));
+ const output=f.db.prepare("SELECT * FROM artifacts WHERE job_id=?").get(id);
+ assert.equal(output.kind,"image");
+ assert.equal((await f.blobStore.stat(output.blob_id)).mimeType,"image/png");
+});
+test("P5.4d optional frozen PNG mask remains isolated to image editing",async t=>{
+ let submitted;
+ const f=fixture(t,async(_url,options)=>{
+  submitted=options.body;
+  return new Response(JSON.stringify({data:[{b64_json:png.toString("base64")}]}),{status:200});
+ });
+ const input=await f.blobStore.put([png],{mime:"image/png"});
+ f.enqueue("masked-edit",{kind:"image",model:"gpt-image-2",prompt:"replace background",
+  operation:"edit",images:[{blobId:input.blobId,mimeType:"image/png"}],
+  mask:{blobId:input.blobId,mimeType:"image/png"}});
+ f.coordinator.recoverAtStartup();await f.coordinator.tick();
+ assert.ok(submitted instanceof FormData);
+ assert.equal(submitted.getAll("image").length,1);
+ assert.deepEqual(Buffer.from(await submitted.get("mask").arrayBuffer()),png);
+});
+test("P5.4d vision question sends CAS-backed multimodal Chat Completions with no browser key",async t=>{
+ let sent;
+ const f=fixture(t,async(url,options)=>{
+  sent={url,body:JSON.parse(options.body),authorization:options.headers.authorization};
+  return new Response(JSON.stringify({choices:[{message:{content:"It is a fox."}}]}),{status:200});
+ });
+ const input=await f.blobStore.put([png],{mime:"image/png"});
+ const id=f.enqueue("vision-text",{kind:"text",model:"gpt-4o-mini",
+  prompt:"Describe this image",images:[{blobId:input.blobId,mimeType:"image/png"}]});
+ f.coordinator.recoverAtStartup();await f.coordinator.tick();
+ assert.equal(f.db.prepare("SELECT status FROM jobs WHERE id=?").get(id).status,"succeeded");
+ assert.equal(sent.url,"https://api.openai.com/v1/chat/completions");
+ assert.equal(sent.authorization,"Bearer fixture-only-not-a-real-secret");
+ assert.deepEqual(sent.body.messages,[{role:"user",content:[
+  {type:"text",text:"Describe this image"},
+  {type:"image_url",image_url:{url:"data:image/png;base64,"+png.toString("base64")}}
+ ]}]);
+ const artifact=f.db.prepare("SELECT * FROM artifacts WHERE job_id=?").get(id);
+ assert.equal(artifact.kind,"text");
+ const {readFile}=await import("node:fs/promises");
+ const stored=await f.blobStore.stat(artifact.blob_id);
+ const content=await readFile(stored.path,"utf8");
+ assert.equal(content,"It is a fox.");
+ assert.ok(!f.db.prepare("SELECT snapshot_json FROM jobs WHERE id=?").get(id).snapshot_json.includes("base64"));
+});
+
+test("P5.4d full SQLite image edit materializes an immutable child, retains CAS input",async t=>{
+ const f=fixture(t,async(url,options)=>{
+  assert.equal(url,"https://api.openai.com/v1/images/edits");
+  assert.ok(options.body instanceof FormData);
+  return new Response(JSON.stringify({data:[{b64_json:png.toString("base64")}]}),{status:200});
+ });
+ const ref=await f.blobStore.put([png],{mime:"image/png"});
+ const source={id:"source-image",type:"image",title:"Original",
+  position:{x:0,y:0},width:420,height:400,
+  metadata:{storageKey:"cas:"+ref.blobId,content:"/api/v1/blobs/"+ref.blobId,mimeType:"image/png"}};
+ const doc={nodes:[source],connections:[]};
+ createProject(f.db,{id:"edit-canvas",document:doc});
+ const key="edit-canvas-job";
+ const job=submitJob(f.db,{idempotencyKey:key,requestFingerprint:key,
+  executionMode:"immediate",projectId:"edit-canvas",targetNodeId:"source-image",
+  expectedProjectRevision:1,sourceNodeFingerprint:fingerprintSource(doc,"source-image"),
+  snapshot:f.snapshot({kind:"image",model:"gpt-image-2",prompt:"add a cat",
+   operation:"edit",images:[{blobId:ref.blobId,mimeType:"image/png"}]})}).jobId;
+ f.coordinator.recoverAtStartup();await f.coordinator.tick();
+ const materializer=createCanvasMaterializer({db:f.db,blobStore:f.blobStore});
+ const first=await materializer.runOnce();
+ assert.equal(first.length,1);
+ assert.equal(first[0].status,"materialized");
+ const project=getProject(f.db,"edit-canvas");
+ assert.equal(project.document.nodes.length,2);
+ assert.equal(project.document.nodes[1].metadata.modelArtifact.jobId,job);
+ assert.equal(project.document.nodes[1].type,"image");
+ assert.equal(project.document.connections.length,1);
+ assert.equal(f.db.prepare("SELECT status FROM jobs WHERE id=?").get(job).status,"succeeded");
+ assert.equal((await materializer.runOnce()).length,0);
+ const {currentBlobReferences}=await import("./blob-reference-ledger.mjs");
+ assert.ok(currentBlobReferences(f.db).has(ref.blobId));
+});
+test("P5.4d multimodal question saves text node and input CAS is still referenced",async t=>{
+ const f=fixture(t,async(url,options)=>{
+  assert.equal(url,"https://api.openai.com/v1/chat/completions");
+  assert.match(options.body,/data:image\/png;base64,/);
+  return new Response(JSON.stringify({choices:[{message:{content:"A fox on snow."}}]}),{status:200});
+ });
+ const ref=await f.blobStore.put([png],{mime:"image/png"});
+ const doc={nodes:[{id:"question",type:"text",title:"Question",
+  position:{x:0,y:0},width:330,height:220,metadata:{content:"What is in this image?"}}],connections:[]};
+ createProject(f.db,{id:"vision-canvas",document:doc});
+ const key="vision-canvas-job";
+ submitJob(f.db,{idempotencyKey:key,requestFingerprint:key,
+  executionMode:"immediate",projectId:"vision-canvas",targetNodeId:"question",
+  expectedProjectRevision:1,sourceNodeFingerprint:fingerprintSource(doc,"question"),
+  snapshot:f.snapshot({kind:"text",model:"gpt-4o-mini",prompt:"What is in this image?",
+   images:[{blobId:ref.blobId,mimeType:"image/png"}]})});
+ f.coordinator.recoverAtStartup();await f.coordinator.tick();
+ const materializer=createCanvasMaterializer({db:f.db,blobStore:f.blobStore});
+ assert.equal((await materializer.runOnce())[0].status,"materialized");
+ const nodes=getProject(f.db,"vision-canvas").document.nodes;
+ assert.equal(nodes.length,2);assert.equal(nodes[1].type,"text");
+ assert.equal(nodes[1].metadata.content,"A fox on snow.");
+ const {currentBlobReferences}=await import("./blob-reference-ledger.mjs");
+ assert.ok(currentBlobReferences(f.db).has(ref.blobId));
+});
+test("P5.4d rejects raw inline media, unauthorized mime, invalid task fields and missing CAS before upstream",async t=>{
+ let posted=0;
+ const f=fixture(t,async()=>{posted++;return new Response("{}",{status:200})});
+ const base={kind:"text",model:"gpt-4o-mini",prompt:"What is this"};
+ const goodId="a".repeat(64),ref={blobId:goodId,mimeType:"image/png"};
+ for(const task of [
+  {...base,images:[{...ref,dataUrl:"data:image/png;base64,secret"}]},
+  {...base,images:[{blobId:"https://evil.example/pic",mimeType:"image/png"}]},
+  {...base,images:[{blobId:goodId,mimeType:"text/html"}]},
+  {...base,images:Array.from({length:9},()=>ref)},
+  {kind:"image",model:"gpt-image-2",prompt:"edit",images:[ref]},
+  {kind:"image",model:"gpt-image-2",prompt:"edit",operation:"edit",images:[ref],mask:{...ref,mimeType:"image/jpeg"}},
+  {...base,mask:ref}
+ ])assert.throws(()=>validateModelSnapshot(f.snapshot(task)));
+ const id=f.enqueue("missing-image",{...base,images:[ref]});
+ f.coordinator.recoverAtStartup();await f.coordinator.tick();
+ assert.notEqual(f.db.prepare("SELECT status FROM jobs WHERE id=?").get(id).status,"succeeded");
+ assert.equal(posted,0);
+});
+test("P5.4d rejects CAS MIME mismatch before making any billable API call",async t=>{
+ let posted=0;
+ const f=fixture(t,async()=>{posted++;return new Response("{}",{status:200})});
+ const image=await f.blobStore.put([png],{mime:"image/png"});
+ const id=f.enqueue("invalid-mime",{kind:"image",model:"gpt-image-2",prompt:"edit",
+  operation:"edit",images:[{blobId:image.blobId,mimeType:"image/jpeg"}]});
+ f.coordinator.recoverAtStartup();await f.coordinator.tick();
+ assert.notEqual(f.db.prepare("SELECT status FROM jobs WHERE id=?").get(id).status,"succeeded");
+ assert.equal(posted,0);
+});

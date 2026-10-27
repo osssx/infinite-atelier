@@ -190,7 +190,7 @@ export default function AssetsPage() {
 
     const confirmLegacyImport = () => modal.confirm({
         title: "导入浏览器旧素材库",
-        content: "仅在 SQLite 素材库为空时导入。图片和视频先上传到后端 BlobStore，旧浏览器数据保留且不会自动删除；导入前请确认本地后端可用。",
+        content: "仅在 本地素材库为空时导入。图片和视频先上传到后端 BlobStore，旧浏览器数据保留且不会自动删除；导入前请确认本地后端可用。",
         okText: "导入",cancelText: "取消",
         onOk: async () => {
             try {

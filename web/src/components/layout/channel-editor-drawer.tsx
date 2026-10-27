@@ -142,7 +142,7 @@ export function ChannelEditorDrawer({ open, channel, onSave, onClose }: { open: 
                     <Input.Password value={draft.apiKey} onChange={(event) => patch({ apiKey: event.target.value })} placeholder="sk-..." />
                     {draft.apiFormat === "volcengine_ark" ? <div className="mt-2 flex flex-wrap items-center gap-2"><Button size="small" loading={checkingArk} onClick={() => void checkArkConnection()}>{t("config.channelEditor.testArkConnection")}</Button><span className="text-xs text-stone-500">{t("config.channelEditor.arkConnectionHint")}</span></div> : null}
                     {modelChannelProvider(draft) ? <div className="mt-2 text-xs text-stone-500">
-                        本地 SQLite 模型执行默认启用。保存时自动将填写的密钥写入本机加密 Vault，
+                        本地模型执行默认启用。保存时自动将填写的密钥写入本机加密 Vault，
                         在确认所有直接调用路径已接入后端前，浏览器直连密钥暂时保留；可在“偏好设置”显式安全迁移。
                     </div> : null}
                 </label>

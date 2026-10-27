@@ -45,7 +45,7 @@ describe("P4 Skill registry global and project scope persistence", () => {
         const backup = await snapshotSkills();
         await setSkillScope("storyboard", { type: "global" });
         expect((await listSkills())[0].scope).toBeUndefined();
-        await expect(restoreSkillSnapshot(backup)).rejects.toThrow("SQLite Skill");
+        await expect(restoreSkillSnapshot(backup)).rejects.toThrow("本地 Skill");
         await setSkillScope("storyboard", { type: "project", projectId: "project-a" });
         expect((await listSkills())[0].scope).toEqual({ type: "project", projectId: "project-a" });
         await setSkillScope("storyboard", { type: "global" });

@@ -5,7 +5,6 @@
     "type": "module",
     "scripts": {
         "dev": "node scripts/dev-with-backend.mjs",
-        "dev:comfy": "node scripts/dev-with-comfy.mjs",
         "dev:backend": "node scripts/dev-local-backend.mjs",
         "backup:data": "node scripts/canvas-data-backup.mjs",
         "build": "vite build",

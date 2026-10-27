@@ -73,7 +73,7 @@ export function CanvasProjectCard({ project }: { project: CanvasProject }) {
                               onClick={()=>void exportSqliteCanvasProject(project.id,project.title)
                                .then(()=>message.success("项目归档已导出"))
                                .catch(error=>message.error("项目归档导出失败："+String(error)))}
-                              aria-label="导出包含媒体的 SQLite 项目归档"/>
+                              aria-label="导出包含媒体的项目归档"/>
                             <Button type="text" size="small" shape="circle" icon={<Pencil className="size-4" />} onClick={() => startEditing(project.id, project.title)} aria-label={t("canvas.project.rename")} />
                             <Button type="text" size="small" shape="circle" icon={<Trash2 className="size-4" />} onClick={() => setDeleteIds([project.id])} aria-label={t("canvas.project.delete")} />
                         </>

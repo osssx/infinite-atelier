@@ -119,7 +119,7 @@ export function ComfySettingsTab() {
             Modal.confirm({
                 title:"从当前浏览器导入旧 ComfyUI 工作流？",
                 content:"发现 "+snapshot.templates.length+" 个历史模板版本、"+
-                    snapshot.presets.length+" 个预设。将复制到后端 SQLite；原浏览器数据不会删除。已有同 ID 的不同预设会拒绝覆盖。",
+                    snapshot.presets.length+" 个预设。将复制到本地后端；原浏览器数据不会删除。已有同 ID 的不同预设会拒绝覆盖。",
                 okText:"确认导入",cancelText:"取消",
                 onOk:async()=>{
                     try{
@@ -135,7 +135,7 @@ export function ComfySettingsTab() {
     return <div className="space-y-6 pb-5" data-comfy-settings-tab>
         <section>
             <div className="mb-3 flex items-center justify-between gap-2">
-                <h3 className="text-base font-semibold">ComfyUI 本地实例配置（SQLite 执行端）</h3>
+                <h3 className="text-base font-semibold">ComfyUI 本地实例配置</h3>
                 <div className="flex gap-2">
                     <Button size="small" icon={<RefreshCw size={13}/>} loading={loading} onClick={()=>void reloadInstances()}>测试连接</Button>
                     <Button size="small" icon={<Plus size={13}/>} onClick={()=>setEditingInstance({id:"",url:localDefault})}>新增实例</Button>
@@ -157,7 +157,7 @@ export function ComfySettingsTab() {
                 {!instances.length?<p className="px-3 py-4 text-xs text-stone-500">{instanceError||"暂无实例，点击新增实例"}</p>:null}
             </div>
             {instanceError&&instances.length?<p role="alert" className="mt-2 text-xs text-red-500">{instanceError}</p>:null}
-            <p className="mt-2 text-xs text-stone-500">实例配置保存在 SQLite 后端，修改后可直接执行，无需重启；实例未连接时请先启动对应 ComfyUI 服务。</p>
+            <p className="mt-2 text-xs text-stone-500">实例配置保存在本地后端，修改后可直接执行，无需重启；实例未连接时请先启动对应 ComfyUI 服务。</p>
         </section>
         <section className="border-t border-stone-200 pt-5 dark:border-stone-800">
             <div className="mb-3 flex items-center justify-between gap-2">

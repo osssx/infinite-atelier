@@ -43,11 +43,11 @@ export async function startSqliteModelGeneration({
  const capability=await api<{autoDispatch:boolean;modelKinds?:string[]}>(
   "/api/v1/execution/capabilities");
  if(!capability.autoDispatch||!capability.modelKinds?.includes(task.kind))
-  throw Error("本地 SQLite 模型执行服务不可用，请确认本地后端已启动并更新到当前版本");
+  throw Error("本地模型执行服务不可用，请确认本地后端已启动并更新到当前版本");
  const channel=await api<{id:string;provider:string;hasKey:boolean;keyVersion:string|null}>(
   "/api/v1/channels/"+encodeURIComponent(channelId));
  if(channel.id!==channelId||channel.provider!==provider||!channel.hasKey||!channel.keyVersion)
-  throw Error("SQLite 后端未配置此模型渠道的加密密钥");
+  throw Error("本地后端未配置此模型渠道的加密密钥");
  if((referenceImages.length||maskImage)&&provider!=="openai")
   throw Error("model_provider_image_inputs_unsupported");
  if((referenceImages.length||maskImage)&&!["image","text"].includes(task.kind))

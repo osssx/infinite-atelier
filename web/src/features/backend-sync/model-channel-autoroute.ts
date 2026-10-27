@@ -22,7 +22,7 @@ export type VaultChannelView={id:string;provider:string;hasKey:boolean;keyVersio
 export async function ensureSqliteModelChannel(channel:ModelChannel,
  provider:SqliteModelProvider,api:typeof canvasApi=canvasApi):Promise<ModelChannel>{
  if(!/^[a-zA-Z0-9_-]{1,128}$/.test(channel.id))throw Error("后端渠道 ID 不符合要求");
- if(modelChannelProvider(channel)!==provider)throw Error("SQLite 渠道地址不受支持");
+ if(modelChannelProvider(channel)!==provider)throw Error("该渠道地址不受本地后端支持");
  let existing:VaultChannelView|null=null;
  try{existing=await api<VaultChannelView>("/api/v1/channels/"+encodeURIComponent(channel.id))}
  catch(error){
@@ -52,13 +52,13 @@ export async function ensureSqliteModelChannel(channel:ModelChannel,
  */
 export async function ensureSqliteModelChannelForExecution(channel:ModelChannel,
  provider:SqliteModelProvider,api:typeof canvasApi=canvasApi):Promise<void>{
- if(modelChannelProvider(channel)!==provider)throw Error("SQLite 渠道地址不受支持");
+ if(modelChannelProvider(channel)!==provider)throw Error("该渠道地址不受本地后端支持");
  let existing:VaultChannelView|null=null;
  try{existing=await api<VaultChannelView>("/api/v1/channels/"+encodeURIComponent(channel.id))}
  catch(error){if(!(error instanceof CanvasApiError&&error.status===404))throw error}
  if(existing&&existing.provider!==provider)throw Error("后端渠道 ID 已被其他模型服务占用");
  if(existing?.hasKey&&existing.keyVersion)return;
- if(!channel.apiKey.trim())throw Error("SQLite 后端未配置此模型渠道的加密密钥");
+ if(!channel.apiKey.trim())throw Error("本地后端未配置此模型渠道的加密密钥");
  await ensureSqliteModelChannel(channel,provider,api);
 }
 /** Ordinary editor save is not an explicit key rotation. If the browser key

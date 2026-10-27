@@ -26,7 +26,7 @@ export default function CanvasPage(){
   try{
    const imported=await importSqliteCanvasProject(file);
    await loadProjects();
-   message.success("已从 SQLite 项目归档恢复："+imported.title);
+   message.success("已从项目归档恢复："+imported.title);
    navigate("/canvas/"+imported.id);
   }catch(error){message.error("项目归档导入失败："+String(error))}
   finally{setImporting(false)}
@@ -36,7 +36,7 @@ export default function CanvasPage(){
   try{
    const id=await createProject(t("canvas.defaultTitle",{count:projects.length+1}));
    navigate("/canvas/"+id);
-  }catch(error){message.error("SQLite 项目创建失败："+String(error))}
+  }catch(error){message.error("项目创建失败："+String(error))}
  };
  return <main className="h-full overflow-auto bg-background text-stone-950 dark:text-stone-100">
   <div className="mx-auto flex w-full max-w-6xl flex-col gap-8 px-6 py-10">
@@ -49,7 +49,7 @@ export default function CanvasPage(){
      {projects.length?<Button disabled={!hydrated||!!backendError}
       onClick={()=>setDeleteIds(projects.map(item=>item.id))}>{t("canvas.deleteAll")}</Button>:null}
      <input ref={importRef} className="hidden" type="file" accept=".zip,application/zip"
-      aria-label="选择 SQLite 项目归档" onChange={event=>{
+      aria-label="选择项目归档" onChange={event=>{
        const file=event.target.files?.[0];
        event.currentTarget.value="";
        if(file)void importArchive(file);
@@ -61,7 +61,7 @@ export default function CanvasPage(){
     </div>
    </header>
    {backendError?<section role="alert" className="rounded-xl border border-red-500/50 p-5">
-    SQLite 后端不可用或保存失败：{backendError}
+    本地后端不可用或保存失败：{backendError}
     <Button className="ml-3" onClick={()=>void loadProjects().catch(()=>{})}>重试连接</Button>
    </section>:null}
    {!hydrated?<section className="flex min-h-[360px] items-center justify-center border-y border-stone-200 text-sm text-stone-500 dark:border-stone-800">{t("canvas.loading")}</section>:

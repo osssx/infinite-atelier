@@ -63,7 +63,7 @@ describe("compact ComfyUI inspector execution footer",()=>{
     it("blocks uncertain submissions without legacy browser payload recovery",()=>{
         const html=footer("submission_unknown");
         expect(html).toContain("提交待确认");
-        expect(html).toContain("SQLite 后端会恢复任务");
+        expect(html).toContain("本地后端会恢复任务");
         expect(html).toMatch(/disabled=""[^>]*aria-label="开始生成"/);
         expect(html).not.toContain("恢复待确认提交");
     });

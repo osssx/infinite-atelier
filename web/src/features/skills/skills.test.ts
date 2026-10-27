@@ -39,7 +39,7 @@ describe("P1 Skill import, catalog and safe references", () => {
         expect((await getSkillPackage(saved.id))?.manifest.description).toBe("Create structured storyboards");
         await setSkillEnabled(saved.id, false);
         expect((await listSkills())[0].enabled).toBe(false);
-        await expect(restoreSkillSnapshot(snapshot)).rejects.toThrow("SQLite Skill");
+        await expect(restoreSkillSnapshot(snapshot)).rejects.toThrow("本地 Skill");
         expect((await listSkills())[0].versions).toHaveLength(2);
         await activateSkillVersion(saved.id, saved.activeVersion);
         await removeSkill(saved.id);

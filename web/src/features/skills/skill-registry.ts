@@ -116,5 +116,5 @@ export async function snapshotSkills():Promise<SkillBackupSnapshot>{
  * Never let a legacy browser ZIP overwrite the authoritative registry.
  */
 export async function restoreSkillSnapshot(_snapshot:SkillBackupSnapshot):Promise<never>{
- throw Error("SQLite Skill 注册表不支持旧浏览器快照覆盖；请使用 backup:data 恢复完整数据库");
+ throw Error("本地 Skill 注册表不支持旧浏览器快照覆盖；请使用 backup:data 恢复完整数据库");
 }

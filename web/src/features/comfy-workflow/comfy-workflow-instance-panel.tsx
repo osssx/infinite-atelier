@@ -148,7 +148,7 @@ export function ComfyWorkflowInstancePanel({node,connections,projectId,comfyInst
                 if(!latest)return;
                 setRun(previous=>previous?.runId===latest.id&&previous.status===latest.status?
                     previous:{runId:latest.id,workflowNodeId:node.id,status:latest.status,artifacts:[]});
-            }catch(cause){if(active)setRunError("读取 SQLite 任务状态失败："+String(cause))}
+            }catch(cause){if(active)setRunError("读取任务状态失败："+String(cause))}
         };
         void refresh();
         const timer=setInterval(()=>void refresh(),2500);
@@ -250,8 +250,8 @@ export function ComfyWorkflowInstancePanel({node,connections,projectId,comfyInst
                         :<><Play className="size-4" aria-hidden="true"/><span>开始生成</span></>}
                 </span>
             </Button>
-            {status==="submission_unknown"?<p className="text-xs text-amber-500">提交结果尚未确认；SQLite 后端会恢复任务，禁止重复运行。</p>:null}
-            {!backendExecution?<p className="text-xs text-amber-500" role="alert">SQLite JobCoordinator 不可用；请启动并配置本地 ComfyUI 后端，不会回退旧 V2。</p>:null}
+            {status==="submission_unknown"?<p className="text-xs text-amber-500">提交结果尚未确认；本地后端会恢复任务，禁止重复运行。</p>:null}
+            {!backendExecution?<p className="text-xs text-amber-500" role="alert">任务调度服务不可用；请启动并配置本地 ComfyUI 后端，不会回退旧 V2。</p>:null}
             {statusError?<p className="break-words text-[11px] text-red-500" role="alert">{statusError}</p>:null}
         </footer>
     </section>;

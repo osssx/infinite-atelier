@@ -1,4 +1,3 @@
-import { lookup } from "node:dns/promises";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { isIP } from "node:net";
@@ -11,125 +10,27 @@ import { isLocalProxyCaller, trustedLocalOrigin, validateProxyTarget } from "./s
 
 const webDir = dirname(fileURLToPath(import.meta.url));
 const MAX_PROXY_BODY = 200 * 1024 * 1024;
-const LOCAL_BODY_LIMIT = 200 * 1024 * 1024 + 256 * 1024;
-const LOCAL_RESPONSE_LIMIT = 200 * 1024 * 1024;
-type TrustedBase = { protocol: "http:" | "https:"; hostname: string; port: number; origin: string; pathname: string };
-
-function parseTrustedBases(raw: string | undefined): TrustedBase[] {
-    return (raw || "").split(",").map((value) => value.trim()).filter(Boolean).map((value) => {
-        const url = new URL(value);
-        const hostname = url.hostname.replace(/^\[|\]$/g, "").toLowerCase();
-        const loopback = hostname === "localhost" || hostname === "::1" || (isIP(hostname) === 4 && hostname.startsWith("127."));
-        if (!loopback || url.protocol !== "http:" || !url.port || url.username || url.password || url.search || url.hash || url.pathname === "/") throw new Error("ARK_TRUSTED_BASE_URLS entries must be explicit loopback URLs with port and API path");
-        return { protocol: url.protocol as TrustedBase["protocol"], hostname, port: Number(url.port), origin: url.origin, pathname: url.pathname.replace(/\/+$/, "") };
-    });
+function isLoopback(address: string) {
+ const value=address.toLowerCase();
+ return value==="::1"||value.startsWith("::ffff:127.")||(isIP(value)===4&&value.startsWith("127."));
 }
-function isLoopback(address: string) { const value = address.toLowerCase(); return value === "::1" || value.startsWith("::ffff:127.") || (isIP(value) === 4 && value.startsWith("127.")); }
-
-function configuredDevGatewayPlugin(rawBases: string | undefined, uploadUrl: string | undefined): Plugin {
-    const bases = parseTrustedBases(rawBases);
-    const upload = uploadUrl ? new URL(uploadUrl) : null;
-    return {
-        name: "configured-media-gateway-dev",
-        apply: "serve",
-        configureServer(server) {
-            server.middlewares.use((req, res, next) => {
-                const incoming = new URL(req.url || "/", "http://vite.local");
-                if (!incoming.pathname.startsWith("/api/ark/") && incoming.pathname !== "/api/ark" && incoming.pathname !== "/api/media/uploads") return next();
-                void (async () => {
-                    if (!isLoopback(req.socket.remoteAddress || "")) { res.statusCode = 403; res.end("loopback client required"); return; }
-                    const origin = req.headers.origin;
-                    const fetchSite = req.headers["sec-fetch-site"];
-                    let sameOrigin = false;
-                    if (origin && req.headers.host) { try { const parsedOrigin = new URL(origin); sameOrigin = parsedOrigin.host.toLowerCase() === req.headers.host.toLowerCase() && parsedOrigin.origin === origin; } catch { sameOrigin = false; } }
-                    if ((origin && !sameOrigin) || (fetchSite && !["same-origin", "none"].includes(fetchSite)) || (!origin && !fetchSite)) { res.statusCode = 403; res.end("same-origin request required"); return; }
-                    const method = req.method || "GET";
-                    let target: URL | null = null;
-                    let addresses: Array<{ address: string; family: number }> = [];
-                    if (incoming.pathname === "/api/media/uploads" && method === "POST") {
-                        if (!upload) { res.statusCode = 503; res.end("MEDIA_UPLOAD_URL is not configured"); return; }
-                        target = upload;
-                    } else if (incoming.pathname === "/api/ark/download" && method === "GET") {
-                        const raw = incoming.searchParams.get("url");
-                        if (!raw) { res.statusCode = 400; res.end("missing signed media URL"); return; }
-                        const mediaUrl = new URL(raw);
-                        const base = bases.find((item) => item.origin === mediaUrl.origin) || (upload && upload.origin === mediaUrl.origin ? { protocol: upload.protocol as TrustedBase["protocol"], hostname: upload.hostname, port: Number(upload.port), origin: upload.origin, pathname: upload.pathname.split("/contents/")[0] } satisfies TrustedBase : null);
-                        if (!base) {
-                            const publicHosts = new Set((process.env.MEDIA_DOWNLOAD_ALLOWED_HOSTS || "ark.cn-beijing.volces.com,ark-content-generation-cn-beijing.tos-cn-beijing.volces.com").split(",").map((host) => host.trim().toLowerCase()));
-                            if (mediaUrl.protocol === "https:" && publicHosts.has(mediaUrl.hostname.toLowerCase())) return next();
-                            res.statusCode = 403; res.end("untrusted signed media URL"); return;
-                        }
-                        if (!/^\/(?:uploads\/[A-Fa-f0-9-]{36}(?:\.(?:png|jpg|webp|mp4|mov|webm|wav|mp3|flac|m4a))?|last-frame\/[A-Za-z0-9_-]+|media\/[A-Za-z0-9_-]+)$/.test(mediaUrl.pathname) || !mediaUrl.searchParams.get("exp") || !mediaUrl.searchParams.get("sig")) { res.statusCode = 403; res.end("untrusted signed media URL"); return; }
-                        target = mediaUrl;
-                    } else {
-                        const rawBase = req.headers["x-ark-base-url"];
-                        if (typeof rawBase !== "string") { res.statusCode = 503; res.end("Configure ARK_TRUSTED_BASE_URLS for direct local generation"); return; }
-                        let requestedBase: URL;
-                        try { requestedBase = new URL(rawBase); } catch { return next(); }
-                        const base = bases.find((item) => requestedBase.href.replace(/\/$/, "") === `${item.origin}${item.pathname}`);
-                        if (!base) {
-                            const candidate = new URL(rawBase);
-                            if (candidate.protocol === "http:" || isLoopback(candidate.hostname)) { res.statusCode = 403; res.end("Ark Base URL is not an exact trusted loopback URL"); return; }
-                            return next();
-                        }
-                        let suffix = incoming.pathname.slice("/api/ark".length);
-                        if (suffix === "/health") suffix = "/contents/generations/tasks/codex-connectivity-check-never-created";
-                        if (suffix === "/download") { res.statusCode = 400; res.end("invalid route"); return; }
-                        const collection = suffix === "/contents/generations/tasks" && method === "POST";
-                        const task = /^\/contents\/generations\/tasks\/[A-Za-z0-9_-]+$/.test(suffix) && ["GET", "DELETE"].includes(method);
-                        if (!collection && !task && !(suffix.endsWith("codex-connectivity-check-never-created") && method === "GET")) { res.statusCode = 404; res.end("route not found"); return; }
-                        target = new URL(`${base.pathname}${suffix}${incoming.search}`, base.origin);
-                    }
-                    if (!target) return;
-                    const hostname = target.hostname.replace(/^\[|\]$/g, "");
-                    const ips = isIP(hostname) ? [{ address: hostname, family: isIP(hostname) }] : await lookup(hostname, { all: true, verbatim: true });
-                    if (!ips.length || ips.some(({ address }) => !isLoopback(address))) { res.statusCode = 403; res.end("configured target must resolve to loopback"); return; }
-                    addresses = ips;
-                    const body = ["POST", "PUT", "PATCH"].includes(method) ? await readRequestBody(req, LOCAL_BODY_LIMIT) : undefined;
-                    const headers: Record<string, string> = {};
-                    for (const [key, value] of Object.entries(req.headers)) {
-                        if (!value || ["host", "connection", "content-length", "transfer-encoding", "cookie", "origin", "referer", "x-forwarded-for", "x-gateway-token", "x-ark-base-url"].includes(key)) continue;
-                        headers[key] = Array.isArray(value) ? value.join(", ") : value;
-                    }
-                    if (body) headers["content-length"] = String(body.length);
-                    const transport = target.protocol === "https:" ? httpsRequest : httpRequest;
-                    const response = await new Promise<{ statusCode: number; headers: Record<string, string | string[] | number | undefined>; body: Buffer }>((resolveResponse, reject) => {
-                        const request = transport({ protocol: target!.protocol, hostname: target!.hostname, port: target!.port, path: `${target!.pathname}${target!.search}`, method, headers, lookup: (_host, options, callback) => options?.all ? callback(null, addresses) : callback(null, addresses[0].address, addresses[0].family) }, (upstream) => {
-                            const statusCode = upstream.statusCode || 502;
-                            if (statusCode >= 300 && statusCode < 400) { upstream.resume(); reject(new Error("configured destination redirects are blocked")); return; }
-                            const chunks: Buffer[] = []; let size = 0;
-                            upstream.on("data", (chunk: Buffer) => { size += chunk.length; if (size > LOCAL_RESPONSE_LIMIT) request.destroy(new Error("configured response too large")); else chunks.push(chunk); });
-                            upstream.on("end", () => resolveResponse({ statusCode, headers: upstream.headers, body: Buffer.concat(chunks, size) })); upstream.on("error", reject);
-                        });
-                        request.setTimeout(120_000, () => request.destroy(new Error("configured request timed out"))); request.on("error", reject); request.end(body);
-                    });
-                    res.statusCode = response.statusCode;
-                    if (incoming.pathname === "/api/ark/health" && response.statusCode === 404) {
-                        res.statusCode = 200;
-                        res.setHeader("content-type", "application/json; charset=utf-8");
-                        res.end(JSON.stringify({ reachable: true, authenticated: true }));
-                        return;
-                    }
-                    if (incoming.pathname === "/api/media/uploads" && response.statusCode >= 200 && response.statusCode < 300) {
-                        let payload: { url?: string; expiresAt?: string };
-                        try { payload = JSON.parse(response.body.toString("utf8")); } catch { res.statusCode = 502; res.end("upload service returned invalid JSON"); return; }
-                        if (typeof payload.url !== "string") { res.statusCode = 502; res.end("upload service returned no URL"); return; }
-                        let returned: URL;
-                        try { returned = new URL(payload.url); } catch { res.statusCode = 502; res.end("upload service returned invalid URL"); return; }
-                        const publicHosts = new Set((process.env.MEDIA_PUBLIC_ALLOWED_HOSTS || upload!.hostname).split(",").map((host) => host.trim().toLowerCase()));
-                        const publicHttps = returned.protocol === "https:" && !returned.username && !returned.password && publicHosts.has(returned.hostname.toLowerCase());
-                        const localSigned = returned.origin === upload!.origin && isLoopback(returned.hostname) && /^\/uploads\/[A-Fa-f0-9-]{36}(?:\.(?:png|jpg|webp|mp4|mov|webm|wav|mp3|flac|m4a))?$/.test(returned.pathname) && Boolean(returned.searchParams.get("exp") && returned.searchParams.get("sig"));
-                        if (!publicHttps && !localSigned) { res.statusCode = 502; res.end("upload service returned an untrusted URL"); return; }
-                        response.body = Buffer.from(JSON.stringify({ url: returned.href, ...(typeof payload.expiresAt === "string" ? { expiresAt: payload.expiresAt } : {}) }));
-                    }
-                    const contentType = response.headers["content-type"]; if (contentType) res.setHeader("content-type", contentType);
-                    res.setHeader("cache-control", "no-store"); res.end(response.body);
-                })().catch((error) => { if (!res.headersSent) res.statusCode = 502; res.end(error instanceof Error ? error.message : "configured gateway error"); });
-            });
-        },
-    };
+/** Old Gateway routes must never silently fall through to the SPA page. */
+function retiredGatewayRoutesPlugin(): Plugin {
+ return {
+  name:"atelier-retired-gateway-routes",apply:"serve",
+  configureServer(server){
+   server.middlewares.use((req,res,next)=>{
+    const pathname=new URL(req.url||"/","http://vite.local").pathname;
+    if(!["/api/comfy","/api/ark","/api/media/uploads","/api/media/ark","/media/ark"]
+        .some(prefix=>pathname===prefix||pathname.startsWith(prefix+"/")))return next();
+    res.statusCode=410;
+    res.setHeader("Content-Type","application/json; charset=utf-8");
+    res.setHeader("Cache-Control","no-store");
+    res.end(JSON.stringify({code:"gateway_removed",message:"Use the authenticated /api/v1 backend."}));
+   });
+  }
+ };
 }
-
 function apiProxyPlugin(rawAllowedHosts: string | undefined, localOrigins: string[]): Plugin {
     const listedHosts = (rawAllowedHosts || "").split(",").map(host => host.trim().toLowerCase()).filter(Boolean);
     const policy = { allowedHosts: listedHosts.length ? new Set(listedHosts) : undefined, trustedLocalOrigins: new Set(localOrigins.map(trustedLocalOrigin)) };
@@ -244,15 +145,12 @@ function localBackendProxyDiagnostic(target: string | null): Plugin {
 }
 export default defineConfig(({ mode }) => {
     const env = loadEnv(mode, webDir, "");
-    const trustedBases = process.env.ARK_TRUSTED_BASE_URLS || env.ARK_TRUSTED_BASE_URLS;
-    const mediaUploadUrl = process.env.MEDIA_UPLOAD_URL || env.MEDIA_UPLOAD_URL;
     const backendTarget = validateLocalBackendTarget(process.env.ATELIER_BACKEND_URL || env.ATELIER_BACKEND_URL);
     const apiProxyAllowedHosts = process.env.VITE_API_PROXY_ALLOWED_HOSTS || env.VITE_API_PROXY_ALLOWED_HOSTS;
     const localProxyOrigins = (process.env.API_PROXY_TRUSTED_LOCAL_ORIGINS || env.API_PROXY_TRUSTED_LOCAL_ORIGINS || "").split(",").map(value => value.trim()).filter(Boolean);
-    localProxyOrigins.push(...parseTrustedBases(trustedBases).map(base => base.origin));
     return {
         base: process.env.VITE_BASE || "/",
-        plugins: [react(), localBackendProxyDiagnostic(backendTarget), configuredDevGatewayPlugin(trustedBases, mediaUploadUrl), apiProxyPlugin(apiProxyAllowedHosts, localProxyOrigins)],
+        plugins: [react(), localBackendProxyDiagnostic(backendTarget), retiredGatewayRoutesPlugin(), apiProxyPlugin(apiProxyAllowedHosts, localProxyOrigins)],
         server: {
             proxy: {
                 ...(backendTarget ? {"/api/v1": {
@@ -278,31 +176,6 @@ export default defineConfig(({ mode }) => {
                     },
                 }} : {}),
 
-                "/media/ark": { target: process.env.MEDIA_GATEWAY_URL || "http://127.0.0.1:8787", changeOrigin: true, timeout: 90_000 },
-                "/api/media/ark": { target: process.env.MEDIA_GATEWAY_URL || "http://127.0.0.1:8787", changeOrigin: true, timeout: 90_000 },
-                "/api/media/uploads": { target: process.env.MEDIA_GATEWAY_URL || "http://127.0.0.1:8787", changeOrigin: true, timeout: 130_000 },
-                "/api/comfy": {
-                    target: process.env.MEDIA_GATEWAY_URL || "http://127.0.0.1:8787",
-                    changeOrigin: true, timeout: 130_000,
-                    configure(proxy) {
-                        // Do not expose the gateway credential to browser JavaScript.
-                        const token = process.env.GATEWAY_TOKEN || env.GATEWAY_TOKEN;
-                        proxy.on("proxyReq", (proxyReq, req) => {
-                            const origin = req.headers.origin;
-                            const host = req.headers.host;
-                            const site = req.headers["sec-fetch-site"];
-                            let validOrigin = !origin;
-                            if (origin && host) { try { validOrigin = new URL(origin).host === host; } catch { validOrigin = false; } }
-                            if (!token || !isLoopback(req.socket.remoteAddress || "") || !validOrigin || (site && !["same-origin","none"].includes(String(site)))) {
-                                proxyReq.destroy(new Error("ComfyUI dev proxy requires configured gateway token and same-origin browser"));
-                                return;
-                            }
-                            proxyReq.setHeader("x-gateway-token",token);
-                            proxyReq.removeHeader("authorization");
-                        });
-                    }
-                },
-                "/api/ark": { target: process.env.MEDIA_GATEWAY_URL || "http://127.0.0.1:8787", changeOrigin: true, timeout: 130_000 },
             },
         },
         resolve: { alias: { "@": resolve(webDir, "src") } },

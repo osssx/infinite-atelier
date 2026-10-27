@@ -3,18 +3,14 @@ import { nanoid } from "nanoid";
 
 import i18n from "@/i18n";
 import { dataUrlToFile } from "@/lib/image-utils";
-import { getMediaBlob, uploadMediaFile, type UploadedFile } from "@/services/file-storage";
-import { getImageBlob, imageToDataUrl } from "@/services/image-storage";
+import { uploadMediaFile, type UploadedFile } from "@/services/file-storage";
+import { imageToDataUrl } from "@/services/image-storage";
 import { boolConfig, buildApiUrl, modelOptionName, resolveModelRequestConfig, resolveModelScript, type AiConfig } from "@/stores/use-config-store";
 import { proxyApiUrl } from "@/lib/api-proxy";
-import {canvasApi} from "@/features/backend-sync/canvas-api";
 import { runModelPlugin } from "./model-plugin";
 import type { ReferenceImage } from "@/types/image";
 import type { ReferenceAudio, ReferenceVideo } from "@/types/media";
-import { resolveModelChannel } from "@/stores/use-config-store";
-import { capabilitiesForModel } from "./video/model-capabilities";
-import { buildSeedanceContent, validateSeedanceRequest } from "./video/seedance-content";
-import type { VideoGenerationRequest, VideoInputMedia, VideoTaskStatus } from "./video/types";
+import type { VideoGenerationRequest, VideoTaskStatus } from "./video/types";
 export type { VideoGenerationRequest, VideoInputMedia } from "./video/types";
 
 type VideoResponse = { id: string; status?: string; error?: { message?: string }; url?: string; result_url?: string; video_url?: string; content?: { video_url?: string; url?: string } | null };
@@ -67,216 +63,48 @@ export async function requestVideoGeneration(config: AiConfig, prompt: string, r
     throw new Error(apiText("videoTimeout", { provider: "" }));
 }
 
+/** Official Ark video generation runs exclusively through Canvas SQLite
+ * JobCoordinator. This browser API has no project revision, frozen sources or
+ * durable idempotency key, so it must never create a billable Ark task.
+ */
 export async function createVideoGenerationTask(config: AiConfig, prompt: string, references: ReferenceImage[] = [], options?: RequestOptions): Promise<VideoGenerationTask> {
-    const selectedModel = (config.model || config.videoModel).trim();
-    const requestConfig = resolveModelRequestConfig(config, selectedModel);
-    const script = resolveModelScript(config, selectedModel);
-    if (script) return createPluginVideoTask(requestConfig, selectedModel, script, prompt, references, options);
-    assertVideoConfig(requestConfig, requestConfig.model);
-    if (requestConfig.apiFormat === "volcengine_ark") return createSeedanceTask(config, requestConfig, selectedModel, options?.request || legacySeedanceRequest(config, selectedModel, prompt, references), options);
-    return createOpenAIVideoTask(requestConfig, selectedModel, prompt, references, options);
+    const selectedModel=(config.model||config.videoModel).trim();
+    const requestConfig=resolveModelRequestConfig(config,selectedModel);
+    const script=resolveModelScript(config,selectedModel);
+    if(script)return createPluginVideoTask(requestConfig,selectedModel,script,prompt,references,options);
+    if(requestConfig.apiFormat==="volcengine_ark")
+        throw new Error("Ark 视频生成仅支持通过画布的官方方舟渠道提交后端任务；不支持旧 Gateway 或自定义 Ark 地址。");
+    assertVideoConfig(requestConfig,requestConfig.model);
+    return createOpenAIVideoTask(requestConfig,selectedModel,prompt,references,options);
 }
 
 export async function pollVideoGenerationTask(config: AiConfig, task: VideoGenerationTask, options?: RequestOptions): Promise<VideoGenerationTaskState> {
-    if (task.provider === "plugin") {
-        const result = pluginVideoResults.get(task.id);
-        return result ? { status: "completed", result } : { status: "failed", error: apiText("pluginVideoExpired") };
+    if(task.provider==="plugin"){
+        const result=pluginVideoResults.get(task.id);
+        return result?{status:"completed",result}:{status:"failed",error:apiText("pluginVideoExpired")};
     }
-    const requestConfig = resolveModelRequestConfig(config, task.model);
-    assertVideoConfig(requestConfig, requestConfig.model);
-    if (task.provider === "volcengine_ark" || (task.provider as string) === "router_local") return pollSeedanceTask(requestConfig, normalizeLegacySeedanceTask(task), options);
-    return pollOpenAIVideoTask(requestConfig, task, options);
+    if(task.provider==="volcengine_ark"||(task.provider as string)==="router_local")
+        throw new Error("旧 Ark 任务不再由浏览器恢复；已提交的后端任务请在「任务历史」中查看，不会自动创建替代任务。");
+    const requestConfig=resolveModelRequestConfig(config,task.model);
+    assertVideoConfig(requestConfig,requestConfig.model);
+    return pollOpenAIVideoTask(requestConfig,task,options);
 }
 
-export async function cancelVideoGenerationTask(config: AiConfig, task: VideoGenerationTask) {
-    if (task.provider !== "volcengine_ark" && (task.provider as string) !== "router_local") return false;
-    task = normalizeLegacySeedanceTask(task);
-    const requestConfig = resolveModelRequestConfig(config, task.model);
-    const response = unwrapSeedanceResponse((await axios.get<SeedanceResponse>(arkUrl(requestConfig, `/contents/generations/tasks/${encodeURIComponent(task.id)}`), { headers: arkHeaders(requestConfig) })).data);
-    if (response.status !== "queued") return false;
-    await axios.delete(arkUrl(requestConfig, `/contents/generations/tasks/${encodeURIComponent(task.id)}`), { headers: arkHeaders(requestConfig) });
-    return true;
+export async function cancelVideoGenerationTask(_config: AiConfig, _task: VideoGenerationTask) {
+    // Browser-controlled Ark cancellation bypasses the server-owned job status
+    // and may race an unknown submission. Only SQLite may cancel its own job.
+    return false;
 }
 
-export async function retrySeedanceDownload(config: AiConfig, task: VideoGenerationTask, options?: RequestOptions) {
-    if (task.provider !== "volcengine_ark" && (task.provider as string) !== "router_local") throw new Error("This is not a Seedance video task.");
-    task = normalizeLegacySeedanceTask(task);
-    const state = await pollVideoGenerationTask(config, task, options);
-    if (state.status !== "completed") throw new Error(state.status === "failed" ? state.error : "Video generation is still running.");
-    return { video: await storeGeneratedVideo(state.result), lastFrameBlob: state.lastFrameBlob, lastFrameUrl: state.lastFrameUrl };
+export async function retrySeedanceDownload(_config: AiConfig, _task: VideoGenerationTask, _options?: RequestOptions): Promise<{video:UploadedFile;lastFrameBlob?:Blob;lastFrameUrl?:string}> {
+    throw new Error("旧 Ark 任务未迁移。已收集的媒体产物请在「任务历史」中重试落图。");
 }
-
-function legacySeedanceRequest(config: AiConfig, modelOption: string, prompt: string, references: ReferenceImage[]): VideoGenerationRequest {
-    const resolution = normalizeVideoResolution(config.vquality);
-    const validResolution = (["480p", "720p", "1080p", "4k"].includes(resolution) ? resolution : "720p") as VideoGenerationRequest["resolution"];
-    const mode = references.length ? (config.videoMode === "first_frame" || config.videoMode === "first_last_frame" || config.videoMode === "omni_reference" ? config.videoMode : "omni_reference") : "text_to_video";
-    return {
-        modelOption,
-        mode,
-        prompt,
-        references: references.map((image) => ({ id: image.id, kind: "image", role: mode === "first_frame" ? "first_frame" : mode === "first_last_frame" ? (references[0] === image ? "first_frame" : "last_frame") : "reference_image", dataUrl: image.dataUrl, storageKey: image.storageKey, mimeType: image.type })),
-        durationSeconds: Number(config.videoSeconds) === -1 ? -1 : Number(config.videoSeconds) || 6,
-        resolution: validResolution,
-        ratio: (config.videoRatio || "adaptive") as VideoGenerationRequest["ratio"],
-        generateAudio: boolConfig(config.videoGenerateAudio, true),
-        watermark: boolConfig(config.videoWatermark, false),
-        returnLastFrame: boolConfig(config.videoReturnLastFrame, false),
-    };
-}
-
-type SeedanceResponse = { id?: string; status?: VideoTaskStatus; content?: { video_url?: string; last_frame_url?: string }; error?: { message?: string }; message?: string; code?: string | number };
-function arkUrl(config: AiConfig, path: string) { return `/api/ark${path}`; }
-function arkHeaders(config: AiConfig, contentType?: string) {
-    return { ...aiHeaders(config, contentType), "x-gateway-token": import.meta.env.VITE_MEDIA_GATEWAY_TOKEN || "", "x-ark-base-url": config.baseUrl };
-}
-
-async function createSeedanceTask(rootConfig: AiConfig, config: AiConfig, modelOption: string, request: VideoGenerationRequest, options?: RequestOptions): Promise<VideoGenerationTask> {
-    const channel = resolveModelChannel(rootConfig, modelOption);
-    const model = channel?.models.find((item) => item.name === modelOptionName(modelOption));
-    const capabilities = channel && model ? capabilitiesForModel(channel, model) : null;
-    if (!channel || !model || !capabilities) throw new Error("Select a Seedance model configured on an Ark channel.");
-    const media = await Promise.all(request.references.map((item) => resolveSeedanceMedia(item, config, options?.signal)));
-    const resolvedRequest = { ...request, references: media };
-    validateSeedanceRequest(resolvedRequest, capabilities);
-    const body = {
-        model: modelOptionName(modelOption),
-        content: buildSeedanceContent(resolvedRequest.prompt, media),
-        ratio: resolvedRequest.ratio,
-        resolution: resolvedRequest.resolution,
-        duration: resolvedRequest.durationSeconds,
-        generate_audio: resolvedRequest.generateAudio,
-        watermark: resolvedRequest.watermark,
-        return_last_frame: Boolean(resolvedRequest.returnLastFrame),
-    };
-    if (new Blob([JSON.stringify(body)]).size > 64 * 1024 * 1024) throw new Error("Seedance 2.0 request JSON exceeds the 64 MB limit.");
-    try {
-        const response = await axios.post<SeedanceResponse>(arkUrl(config, "/contents/generations/tasks"), body, { headers: arkHeaders(config, "application/json"), signal: options?.signal, timeout: 60_000 });
-        const created = unwrapSeedanceResponse(response.data);
-        if (!created.id) throw new Error("Ark did not return a task ID.");
-        return { id: created.id, provider: "volcengine_ark", model: modelOption, channelId: channel.id, startedAt: Date.now(), status: "queued" };
-    } catch (error) {
-        throw new Error(readAxiosError(error, "Seedance task creation failed."));
-    }
-}
-
-async function resolveSeedanceMedia(media: VideoInputMedia, config: AiConfig, signal?: AbortSignal): Promise<VideoInputMedia & { url: string }> {
-    if (media.kind === "image") {
-        let dataUrl = media.storageKey ? await imageToDataUrl({ storageKey: media.storageKey, url: media.url }) : media.dataUrl || media.url;
-        if (dataUrl?.startsWith("data:image/")) {
-            const dimensions = media.width && media.height ? {} : await readImageDimensions(dataUrl);
-            return { ...media, ...dimensions, url: dataUrl, mimeType: media.mimeType || dataUrl.slice(5, dataUrl.indexOf(";")), bytes: media.bytes || estimateDataUrlBytes(dataUrl) };
-        }
-        if (media.url && (/^https:\/\//i.test(media.url) || /^asset:\/\/[A-Za-z0-9_-]+$/i.test(media.url))) return { ...media, url: media.url };
-        throw new Error("Image reference is unavailable or cannot be read as a data URL.");
-    }
-    if (media.kind === "audio" && media.dataUrl?.startsWith("data:audio/")) return { ...media, url: media.dataUrl };
-    const remote = media.url || "";
-    if (/^asset:\/\//i.test(remote) || /^https:\/\//i.test(remote)) return { ...media, url: remote };
-    if (!media.storageKey) throw new Error(`${media.kind} references require an Ark asset ID or an HTTPS URL reachable by Volcano Engine.`);
-    const blob = await getMediaBlob(media.storageKey);
-    if (!blob) throw new Error(`Local ${media.kind} reference is missing from browser storage.`);
-    if (media.kind === "audio" && blob.size <= 15 * 1024 * 1024) return { ...media, url: await blobToDataUrl(blob), bytes: blob.size, mimeType: blob.type || media.mimeType };
-    const { url } = await uploadSeedanceMedia(blob, media.id || `reference.${extensionFor(blob.type)}`, config, signal);
-    return { ...media, url, bytes: blob.size, mimeType: blob.type || media.mimeType };
-}
-
-async function uploadSeedanceMedia(blob: Blob, fileName: string, config: AiConfig, signal?: AbortSignal): Promise<{ url: string }> {
-    const form = new FormData(); form.append("file", blob, fileName);
-    let response: Response;
-    try { response = await fetch("/api/media/uploads", { method: "POST", body: form, signal, headers: { "x-gateway-token": import.meta.env.VITE_MEDIA_GATEWAY_TOKEN || "", Authorization: `Bearer ${config.apiKey}` } }); }
-    catch (error) { throw new Error(`The media upload service is unavailable: ${ error instanceof Error ? error.message : String(error) }`); }
-    if (!response.ok) throw new Error(`Media upload failed (${response.status}). Configure the trusted media upload service before using local references.`);
-    const payload = await response.json() as { url?: string };
-    if (!payload.url) throw new Error("The media upload service returned no URL.");
-    let signedUrl: URL;
-    try { signedUrl = new URL(payload.url); } catch { throw new Error("The media upload service returned an invalid URL."); }
-    if (!["https:", "http:"].includes(signedUrl.protocol) || signedUrl.username || signedUrl.password) throw new Error("The media upload service returned an invalid URL.");
-    return { url: payload.url };
-}
-function normalizeLegacySeedanceTask(task: VideoGenerationTask): VideoGenerationTask { return (task.provider as string) === "router_local" ? { ...task, provider: "volcengine_ark" } : task; }
-
-async function blobToDataUrl(blob: Blob) {
-    return new Promise<string>((resolve, reject) => {
-        const reader = new FileReader(); reader.onload = () => typeof reader.result === "string" ? resolve(reader.result) : reject(new Error("Unable to read reference media.")); reader.onerror = () => reject(reader.error || new Error("Unable to read reference media.")); reader.readAsDataURL(blob);
-    });
-}
-async function readImageDimensions(dataUrl: string) {
-    return new Promise<{ width: number; height: number }>((resolve, reject) => {
-        const image = new Image();
-        image.onload = () => resolve({ width: image.naturalWidth, height: image.naturalHeight });
-        image.onerror = () => reject(new Error("Seedance image dimensions could not be verified."));
-        image.src = dataUrl;
-    });
-}
-function extensionFor(type: string) {
-    const mime = type.toLowerCase().split(";")[0].trim();
-    const extensions: Record<string, string> = { "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp", "video/quicktime": "mov", "video/mp4": "mp4", "video/webm": "webm", "audio/wav": "wav", "audio/x-wav": "wav", "audio/mpeg": "mp3", "audio/flac": "flac", "audio/x-flac": "flac", "audio/mp4": "m4a", "audio/x-m4a": "m4a" };
-    return extensions[mime] || "bin";
-}
-function estimateDataUrlBytes(value: string) { const base64 = value.slice(value.indexOf(",") + 1); return Math.floor((base64.length * 3) / 4); }
-
-async function pollSeedanceTask(config: AiConfig, task: VideoGenerationTask, options?: RequestOptions): Promise<VideoGenerationTaskState> {
-    try {
-        const path = `/contents/generations/tasks/${encodeURIComponent(task.id)}`;
-        const remote = unwrapSeedanceResponse((await axios.get<SeedanceResponse>(arkUrl(config, path), { headers: arkHeaders(config), signal: options?.signal, timeout: 30_000 })).data);
-        if (remote.status) options?.onTaskStatus?.(remote.status);
-        if (remote.status === "failed" || remote.status === "cancelled") return { status: "failed", error: remote.error?.message || remote.message || `Seedance task ${remote.status}.`, providerStatus: remote.status };
-        if (remote.status === "succeeded") {
-            if (!remote.content?.video_url) return { status: "failed", error: "Seedance task succeeded but returned no video URL.", providerStatus: "succeeded" };
-            try {
-                const blob = await downloadResult(remote.content.video_url, options?.signal, config);
-                const lastFrameBlob = remote.content.last_frame_url && (options?.request?.returnLastFrame || boolConfig(config.videoReturnLastFrame, false)) ? await downloadResult(remote.content.last_frame_url, options?.signal, config) : undefined;
-                return { status: "completed", result: { blob, mimeType: blob.type || "video/mp4", lastFrameUrl: remote.content.last_frame_url, lastFrameBlob, requirePersistence: true }, providerStatus: "succeeded", lastFrameUrl: remote.content.last_frame_url, lastFrameBlob };
-            } catch (error) {
-                throw new Error(`Video generation succeeded, but saving its temporary result failed. Retry download before the link expires: ${error instanceof Error ? error.message : String(error)}`);
-            }
-        }
-        return { status: "pending", providerStatus: remote.status || "running" };
-    } catch (error) {
-        const status = axios.isAxiosError(error) ? error.response?.status : undefined;
-        if ([404, 410].includes(status || 0)) return { status: "failed", error: "This Seedance task has expired or is no longer available. Create a new task only if you want to generate another video.", providerStatus: "expired" };
-        if (isRetryableQueryError(error)) throw Object.assign(new Error(readAxiosError(error, "Seedance task query failed.")), { retryable: true, cause: error });
-        throw new Error(readAxiosError(error, "Seedance task query failed."));
-    }
-}
-
 function isRetryableQueryError(error: unknown) {
     if (error && typeof error === "object" && "retryable" in error && (error as { retryable?: unknown }).retryable === true) return true;
     if (error instanceof TypeError || (error instanceof DOMException && error.name === "TimeoutError")) return true;
     if (!axios.isAxiosError(error)) return false;
     const status = error.response?.status;
     return !error.response || status === 429 || (status !== undefined && status >= 500);
-}
-
-function unwrapSeedanceResponse(response: SeedanceResponse): SeedanceResponse {
-    if (response.code !== undefined && response.code !== 0 && response.code !== "0") throw new Error(response.message || `Ark API error ${response.code}`);
-    return response;
-}
-
-/** Saved video and last-frame bytes are now imported by the authenticated
- * Fastify media service, not proxied through /api/ark/download. The signed
- * upstream URL never becomes a playable browser URL or a persisted reference.
- */
-async function downloadResult(url: string, signal?: AbortSignal, _config?: AiConfig) {
-    let parsed: URL;
-    try { parsed = new URL(url); } catch { throw new Error("Ark returned an invalid result URL."); }
-    if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.hash)
-        throw new Error("Ark returned an invalid result URL.");
-    if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
-    const stored=await canvasApi<{blobId:string;mimeType:string;byteSize:number}>(
-        "/api/v1/media/download","POST",{url}
-    );
-    if(!/^[a-f0-9]{64}$/.test(stored.blobId) || stored.byteSize<1 ||
-        !/^(?:video|image)\//.test(stored.mimeType))
-        throw new Error("Ark result import returned an invalid CAS reference.");
-    const response=await fetch("/api/v1/blobs/"+stored.blobId,{
-        credentials:"same-origin",cache:"no-store",signal
-    });
-    if(!response.ok)throw new Error("Unable to read stored Ark result (HTTP "+response.status+").");
-    const blob=await response.blob();
-    if(blob.size!==stored.byteSize || blob.type!==stored.mimeType)
-        throw new Error("Ark CAS download did not match the stored media metadata.");
-    return blob;
 }
 
 async function createPluginVideoTask(config: AiConfig, model: string, script: string, prompt: string, references: ReferenceImage[], options?: RequestOptions): Promise<VideoGenerationTask> {
@@ -380,7 +208,7 @@ async function videoResultFromUrl(url: string, options?: RequestOptions): Promis
 function assertVideoConfig(config: AiConfig, model: string) {
     if (!model) throw new Error(apiText("videoModelRequired"));
     if (!config.baseUrl.trim()) throw new Error(apiText("baseUrlRequired"));
-    if (!config.apiKey.trim() && !(config.apiFormat === "volcengine_ark" && (import.meta.env.VITE_MEDIA_GATEWAY_TOKEN || import.meta.env.VITE_ARK_SERVER_AUTH === "true"))) throw new Error(apiText("apiKeyRequired"));
+    if (!config.apiKey.trim()) throw new Error(apiText("apiKeyRequired"));
     if (config.apiFormat === "gemini") throw new Error(apiText("geminiVideoUnsupported"));
 }
 

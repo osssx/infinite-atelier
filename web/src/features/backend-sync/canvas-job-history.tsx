@@ -298,7 +298,7 @@ export function CanvasJobHistory({projectId,open,onClose,onObserveJob,onRefreshC
   if(!canRemoveCanvasJobHistory(job)||working)return;
   modal.confirm({
    title:"删除这条任务历史？",
-   content:"仅从历史列表移除。SQLite 原始任务记录、生成产物和已写入的画布节点将保留。移除后无法再从历史列表恢复该任务的受阻产物。",
+   content:"仅从历史列表移除。原始任务记录、生成产物和已写入的画布节点将保留。移除后无法再从历史列表恢复该任务的受阻产物。",
    okText:"删除记录",okType:"danger",cancelText:"取消",
    onOk:async()=>{
     setWorking(job.id);
@@ -332,7 +332,7 @@ export function CanvasJobHistory({projectId,open,onClose,onObserveJob,onRefreshC
    const result=await recoverCanvasPendingMaterialization(projectId,artifact.artifactId);
    if(result.status==="materialized"){
     const applied=await onRefreshCanvas();
-    if(!applied)message.warning("产物已安全写入 SQLite，但当前画布存在更改，需手动刷新");
+    if(!applied)message.warning("产物已安全保存，但当前画布存在更改，需手动刷新");
     else message.success("已有产物已落图；未重新提交模型生成");
    }else message.warning("落图处理结果："+(statuses[result.status]??result.status)+
     (result.reason?"（"+(reasons[result.reason]??result.reason)+"）":""));
@@ -345,10 +345,10 @@ export function CanvasJobHistory({projectId,open,onClose,onObserveJob,onRefreshC
   setWorking("refresh");
   try{
    const applied=await onRefreshCanvas();
-   if(applied)message.success("已检查 SQLite 画布；现有产物已同步");
+   if(applied)message.success("已检查画布；现有产物已同步");
    else message.warning("当前画布有未保存更改或节点冲突，无法安全刷新；请先保存并检查原始来源节点");
    await refresh();
-  }catch(e){message.error("刷新 SQLite 画布失败："+String(e))}
+  }catch(e){message.error("刷新画布失败："+String(e))}
   finally{setWorking(null)}
  }
  return <Drawer title="任务历史" open={open} width={540} onClose={onClose}

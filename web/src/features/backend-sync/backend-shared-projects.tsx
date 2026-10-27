@@ -117,7 +117,7 @@ export function BackendSharedProjects(){
   <div className="flex flex-wrap items-center justify-between gap-3">
    <div>
     <h2 className="font-semibold">共享后端项目库（实验性）</h2>
-    <p className="mt-1 text-sm text-stone-500">同一 SQLite 项目库可从 localhost 和 127.0.0.1 分别登录使用。现有本地项目不会被覆盖。</p>
+    <p className="mt-1 text-sm text-stone-500">同一本地项目库可从 localhost 和 127.0.0.1 分别登录使用。现有本地项目不会被覆盖。</p>
    </div>
    {enabled?<Button loading={loading} onClick={()=>void refresh().catch(e=>setError(String(e)))}>刷新共享项目</Button>:
     <Button loading={loading} onClick={()=>void connect()}>连接共享项目库</Button>}

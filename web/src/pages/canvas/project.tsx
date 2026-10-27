@@ -506,7 +506,7 @@ function AtelierCanvasPage() {
                         if(result.cancelled){
                             sqliteGenerationJobsRef.current.delete(nodeId);
                             setRunningNodeId(current=>current===nodeId?null:current);
-                            message.success("SQLite 任务已确认取消");
+                            message.success("任务已取消");
                         }else{
                             message.warning("无法取消已开始生成的云端任务："+(result.reason||"not_queued"));
                         }
@@ -1357,12 +1357,12 @@ function AtelierCanvasPage() {
             await awaitCanvasStorePersistence();
             const id=await createProject(t("canvas.defaultTitle",{count:useCanvasStore.getState().projects.length+1}));
             navigate("/canvas/"+id);
-        }catch(error){message.error("SQLite 项目创建失败："+String(error))}
+        }catch(error){message.error("项目创建失败："+String(error))}
     },[createProject,message,navigate,t]);
 
     const deleteCurrentProject = useCallback(async () => {
         try{await deleteProjects([projectId]);navigate("/canvas")}
-        catch(error){message.error("SQLite 项目删除失败："+String(error))}
+        catch(error){message.error("项目删除失败："+String(error))}
     },[deleteProjects,message,navigate,projectId]);
 
     const exportCurrentProject = useCallback(async () => {
@@ -2255,7 +2255,7 @@ function AtelierCanvasPage() {
         if(!provider||!channel)throw Error("sqlite_image_edit_provider_unsupported");
         if(!projectLoaded)throw Error("画布项目尚未加载完成");
         if(resolveModelScript(effectiveConfig,generationConfig.model))
-            throw Error("自定义模型脚本尚未接入 SQLite 图片编辑");
+            throw Error("自定义模型脚本暂不支持图片编辑");
         const submissionKey=projectId+":"+node.id;
         if(sqliteModelSubmitLocksRef.current.has(submissionKey))
             throw Error("该节点已有模型任务正在提交");
@@ -2274,7 +2274,7 @@ function AtelierCanvasPage() {
                         generationConfig.quality:"auto"},
             });
             monitorSqliteJobRef.current(job.id);
-            message.info("SQLite 图片编辑任务已提交："+job.id+"，完成后自动追加图片节点");
+            message.info("图片编辑任务已提交："+job.id+"，完成后自动追加图片节点");
         } finally {
             sqliteModelSubmitLocksRef.current.delete(submissionKey);
         }
@@ -2620,7 +2620,7 @@ function AtelierCanvasPage() {
             if(sqliteProvider&&selectedChannel){
                 const submissionKey=projectId+":"+nodeId;
                 if(sqliteModelSubmitLocksRef.current.has(submissionKey)){
-                    message.warning("该来源节点的 SQLite 生成任务正在提交，请勿重复点击");
+                    message.warning("该来源节点的生成任务正在提交，请勿重复点击");
                     return;
                 }
                 sqliteModelSubmitLocksRef.current.add(submissionKey);
@@ -2632,27 +2632,27 @@ function AtelierCanvasPage() {
                       sourceNode.type==="audio"&&mode!=="audio"||
                       sourceNode.type==="video"&&mode!=="video"||
                       ["image","audio","video"].includes(sourceNode.type)&&Boolean(sourceNode.metadata?.content))
-                        throw Error("当前节点类型不支持 SQLite 普通模型生成");
+                        throw Error("当前节点类型不支持此模型生成");
                     if(resolveModelScript(effectiveConfig,generationConfig.model))
-                        throw Error("自定义模型脚本尚未接入 SQLite JobCoordinator");
+                        throw Error("自定义模型脚本尚未接入后端任务服务");
                     if(mode!=="text"&&sourceNode.metadata?.skillBinding&&sourceNode.metadata.skillBinding.mode!=="off")
                         throw Error("Skill 目前仅支持文本模型的手动指令模式");
                     if(mode==="image"&&getGenerationCount(generationConfig.count)!==1)
-                        throw Error("SQLite 普通生图目前每次仅支持一张，请将数量设置为 1");
+                        throw Error("当前图片生成每次仅支持一张，请将数量设置为 1");
                     const original=sourceNode.type===CanvasNodeType.Text?
                       sourceNode.metadata?.content?.trim():"";
                     const context=buildNodeGenerationContext(nodeId,nodesRef.current,connectionsRef.current,
                       mode==="text"&&original?t("canvas.projectPage.editTextPrompt",{source:original,prompt:promptText}):promptText);
                     if(mode!=="video"&&(context.referenceVideos.length||context.referenceAudios.length||
                         mode==="audio"&&context.referenceImages.length))
-                        throw Error("SQLite 当前仅支持图片生成/编辑与文本问答的图片参考输入；视频、音频参考请使用对应工作流");
+                        throw Error("当前仅支持图片生成/编辑与文本问答的图片参考输入；视频、音频参考请使用对应工作流");
                     const text=context.prompt.trim();
                     if(!text)throw Error("请输入生成提示词");
                     const model=modelOptionName(generationConfig.model);
                     const kind=mode as "image"|"audio"|"text"|"video";
                     const format=generationConfig.audioFormat;
                     if(kind==="audio"&&!["mp3","wav","flac"].includes(format))
-                        throw Error("SQLite 语音生成目前仅支持 MP3、WAV 或 FLAC");
+                        throw Error("语音生成目前仅支持 MP3、WAV 或 FLAC");
                     const bridge=createSqliteComfyBridge({projectId,
                         getLocalGraph:()=>({nodes:nodesRef.current,connections:connectionsRef.current})});
                     let skillAuthorizationId:string|undefined;
@@ -2722,7 +2722,7 @@ function AtelierCanvasPage() {
                             watermark:generationConfig.videoWatermark==="true",
                             mode:seedanceMode,references:frozenReferences}:{})}
                     });
-                    message.info("SQLite 模型任务已提交："+job.id+"，完成后自动追加产物节点");
+                    message.info("模型任务已提交："+job.id+"，完成后自动追加产物节点");
                     if(kind==="video"){sqliteGenerationJobsRef.current.set(nodeId,job.id);setRunningNodeId(nodeId)}
                     monitorSqliteJobRef.current(job.id);
                 }catch(error){message.error(error instanceof Error?error.message:String(error))}
@@ -3271,7 +3271,7 @@ function AtelierCanvasPage() {
                     return;
                 }
                 if(node.type===CanvasNodeType.Image&&savedImageMetadata?.generationType==="edit"){
-                    message.error("官方模型参考图编辑尚未接入 SQLite；不会回退浏览器直接请求");
+                    message.error("官方模型参考图编辑尚未接入后端任务服务；不会回退浏览器直接请求");
                     return;
                 }
                 // Historical result snapshots may carry references not present
@@ -3286,7 +3286,7 @@ function AtelierCanvasPage() {
                     try{
                         await canvasApi("/api/v1/projects/"+encodeURIComponent(projectId)+
                             "/jobs/"+encodeURIComponent(originalJobId)+"/skill-audit");
-                        message.warning("此结果使用了冻结 Skill 版本。请在「SQLite 任务历史」中查看原任务并明确确认「使用冻结版本创建新任务」，以免误用当前 Skill。");
+                        message.warning("此结果使用了冻结 Skill 版本。请在「任务历史」中查看原任务并明确确认「使用冻结版本创建新任务」，以免误用当前 Skill。");
                         return;
                     }catch(error){
                         if(!(error instanceof Error&&"code" in error&&
@@ -3305,7 +3305,7 @@ function AtelierCanvasPage() {
                     message.error("原始生成来源节点已不存在，不能安全重试；请从上游配置节点重新生成");
                     return;
                 }
-                if(imageId)message.info("SQLite 重试将创建新的产物节点，原批次图片保持不变");
+                if(imageId)message.info("重试将创建新的产物节点，原批次图片保持不变");
                 await handleGenerateNode(sqliteSource.id,retryMode,retryPrompt,generationConfig);
                 return;
             }
@@ -3795,11 +3795,11 @@ function AtelierCanvasPage() {
                         setRunningNodeId(current=>current===sourceId?null:current);
                     }
                 }
-                if(status==="materialized")message.success("后端任务产物已写入 SQLite 画布");
+                if(status==="materialized")message.success("任务产物已写入画布");
                 else if(status==="blocked"||status==="unavailable"||status==="needs_refresh")
                     message.warning("后端任务产物需要检查或刷新画布："+(details??status));
                 else if(status==="failed"||status==="cancelled")
-                    message.error("SQLite 后端任务："+status);
+                    message.error("后端任务："+status);
             }
         }).finally(()=>{
             message.destroy(progressKey);
@@ -3856,7 +3856,7 @@ function AtelierCanvasPage() {
             if(!projectLoaded)throw new Error("画布尚未加载完成");
             if(!globalComfyInstanceId)throw new Error("请先在全局 ComfyUI 设置中选择默认实例");
             if(!backendComfyEnabled)
-                throw new Error("SQLite JobCoordinator 不可用：请启动并配置本地 ComfyUI 后端；不会回退旧 V2 执行");
+                throw new Error("任务调度服务不可用：请启动并配置本地 ComfyUI 后端；不会回退旧 V2 执行");
             const snapshot={nodes:nodesRef.current,connections:connectionsRef.current};
             const workflowNode=snapshot.nodes.find(node=>node.id===nodeId);
             if(!workflowNode||workflowNode.type!==COMFY_WORKFLOW_MOCK_TYPE)
@@ -3880,7 +3880,7 @@ function AtelierCanvasPage() {
                 serverAuthoritative:true
             });
             if(activeProjectIdRef.current===projectId&&pageMountedRef.current){
-                message.info("SQLite 生成任务已提交："+job.id+"。完成后自动恢复产物节点。");
+                message.info("生成任务已提交："+job.id+"。完成后自动恢复产物节点。");
                 monitorSqliteJob(job.id);
             }
             return {runId:job.id,status:job.status,workflowNodeId:nodeId,artifacts:[]};
@@ -4016,7 +4016,7 @@ function AtelierCanvasPage() {
         onViewImage: handleNodeViewImage,
     };
 
-    if (!projectLoaded) return projectLoadError||backendSaveError ? <div className="flex h-full items-center justify-center gap-3 p-8">SQLite 后端不可用：{projectLoadError||backendSaveError}<Button onClick={()=>{void loadProjects().then(()=>setProjectLoadAttempt(n=>n+1)).catch(error=>setProjectLoadError(String(error)))}}>重试</Button></div> : <CanvasRefreshShell />;
+    if (!projectLoaded) return projectLoadError||backendSaveError ? <div className="flex h-full items-center justify-center gap-3 p-8">本地后端不可用：{projectLoadError||backendSaveError}<Button onClick={()=>{void loadProjects().then(()=>setProjectLoadAttempt(n=>n+1)).catch(error=>setProjectLoadError(String(error)))}}>重试</Button></div> : <CanvasRefreshShell />;
 
     return (
         <main className="flex h-full min-h-0 overflow-hidden" style={{ background: theme.canvas.background, color: theme.node.text }}>
@@ -4024,7 +4024,7 @@ function AtelierCanvasPage() {
             <CanvasSidePanel nodes={nodes} selectedNodeIds={selectedNodeIds} onFocusNode={focusNode} onPreviewNode={setPreviewNodeId} onInsertAsset={handleAssetInsert} />
             <section className="relative min-w-0 flex-1 overflow-hidden">
                 {backendSaveError?<div role="alert" className="absolute right-4 top-16 z-[100] rounded-lg border border-red-500 bg-background p-3 text-sm shadow-lg">
-                    SQLite 自动保存失败：{backendSaveError}
+                    画布自动保存失败：{backendSaveError}
                     <Button size="small" className="ml-2" onClick={()=>{void awaitCanvasStorePersistence().catch(error=>message.error(String(error)))}}>重试保存</Button>
                 </div>:null}
                 <CanvasTopBar
@@ -4041,7 +4041,7 @@ function AtelierCanvasPage() {
                     onProjects={()=>{void awaitCanvasStorePersistence(projectId).then(()=>navigate("/canvas")).catch(error=>message.error("未保存，无法离开："+String(error)))}}
                     onCreateProject={createAndOpenProject}
                     onDeleteProject={deleteCurrentProject}
-                    onExportProject={()=>message.warning("完整 SQLite + BlobStore 项目导出将在媒体后端化阶段开放")}
+                    onExportProject={()=>message.warning("完整项目导出将在媒体后端化阶段开放")}
                     onImportImage={() => handleUploadRequest()}
                     onUndo={undoCanvas}
                     onRedo={redoCanvas}

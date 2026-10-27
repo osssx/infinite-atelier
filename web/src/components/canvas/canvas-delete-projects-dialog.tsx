@@ -15,7 +15,7 @@ export function CanvasDeleteProjectsDialog() {
     const cleanupImages = useAssetStore((state) => state.cleanupImages);
     const confirm = async () => {
         try{await deleteProjects(ids);removeSelectedIds(ids);setDeleteIds([])}
-        catch(error){message.error("SQLite 项目删除失败："+String(error))}
+        catch(error){message.error("项目删除失败："+String(error))}
     };
 
     return (

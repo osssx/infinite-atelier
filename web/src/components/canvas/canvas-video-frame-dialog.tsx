@@ -22,6 +22,7 @@ export function CanvasVideoFrameDialog({ node, open, onClose, onCapture }: { nod
     const [ready, setReady] = useState(false);
     const [busy, setBusy] = useState(false);
     const [seeking, setSeeking] = useState(false);
+    const [scrubbing, setScrubbing] = useState(false);
     const [error, setError] = useState(false);
     const [duration, setDuration] = useState(0);
     const [time, setTime] = useState(0);
@@ -38,7 +39,7 @@ export function CanvasVideoFrameDialog({ node, open, onClose, onCapture }: { nod
         let cancelled = false;
         const controller = new AbortController();
         sourceAbortRef.current = controller;
-        setReady(false); setError(false); setLoading(true); setBusy(false); setSeeking(false); setTime(0); setSeekTarget(null); setDuration(0); setPlaying(false);
+        setReady(false); setError(false); setLoading(true); setBusy(false); setSeeking(false); setScrubbing(false); setTime(0); setSeekTarget(null); setDuration(0); setPlaying(false);
         loadTimeoutRef.current = window.setTimeout(() => { controller.abort(); if (!cancelled) { setError(true); setLoading(false); } }, OPERATION_TIMEOUT_MS);
         void (async () => {
             try {
@@ -76,7 +77,7 @@ export function CanvasVideoFrameDialog({ node, open, onClose, onCapture }: { nod
         if (loadTimeoutRef.current !== null) clearTimeout(loadTimeoutRef.current);
         loadTimeoutRef.current = null;
         video.pause(); video.currentTime = 0;
-        setDuration(Number.isFinite(video.duration) ? video.duration : 0); setTime(0); setSeekTarget(null); setReady(true); setLoading(false); setError(false);
+        setDuration(Number.isFinite(video.duration) ? video.duration : 0); setTime(0); setSeekTarget(null); setScrubbing(false); setReady(true); setLoading(false); setError(false);
     };
     const onVideoError = () => {
         if (!sourceAbortRef.current || sourceAbortRef.current.signal.aborted) return;
@@ -112,7 +113,7 @@ export function CanvasVideoFrameDialog({ node, open, onClose, onCapture }: { nod
 
     const seek = async (requested: number) => {
         const video = videoRef.current;
-        if (!video || !ready || busy) return;
+        if (!video || !ready || busy || !Number.isFinite(requested)) return;
         const target = Math.max(0, Math.min(duration || 0, requested));
         setSeekTarget(target); setSeeking(true); video.pause(); setPlaying(false);
         const seeker = getSeeker(video);
@@ -123,7 +124,7 @@ export function CanvasVideoFrameDialog({ node, open, onClose, onCapture }: { nod
 
     const capture = async () => {
         const video = videoRef.current;
-        if (!video || !ready || busy || seeking || video.seeking || video.readyState < 2 || !node) return;
+        if (!video || !ready || busy || seeking || scrubbing || video.seeking || video.readyState < 2 || !node) return;
         setBusy(true); video.pause(); setPlaying(false);
         const token = sourceRevision.current;
         const sourceUrl = video.currentSrc;
@@ -145,9 +146,25 @@ export function CanvasVideoFrameDialog({ node, open, onClose, onCapture }: { nod
     };
 
     const togglePlayback = () => {
-        const video = videoRef.current; if (!video || busy || seeking) return;
+        const video = videoRef.current; if (!video || busy || seeking || scrubbing) return;
         if (video.paused) void video.play().then(() => setPlaying(true)).catch(() => setPlaying(false));
         else { video.pause(); setPlaying(false); }
+    };
+    // During pointer movement update the UI only. Decode the selected frame
+    // once on release instead of scheduling a seek for every slider event.
+    // The existing time label shows the precise selection without a popup.
+    const onScrubChange = (value: number) => {
+        if (!ready || busy || !Number.isFinite(value)) return;
+        const target = Math.max(0, Math.min(duration, value));
+        setScrubbing(true);
+        setSeekTarget(target);
+        videoRef.current?.pause();
+        setPlaying(false);
+    };
+    const onScrubComplete = (value: number) => {
+        setScrubbing(false);
+        if (!Number.isFinite(value)) { setSeekTarget(null); return; }
+        void seek(value);
     };
     const retry = () => { setError(false); setLoading(true); setReady(false); setLoadAttempt((value) => value + 1); };
 
@@ -159,12 +176,12 @@ export function CanvasVideoFrameDialog({ node, open, onClose, onCapture }: { nod
                 {error ? <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/70 text-white"><span>{t("canvas.videoFrame.loadError")}</span><Button onClick={retry}>{t("canvas.videoFrame.retry")}</Button></div> : null}
             </div>
             <div className="flex items-center gap-3">
-                <Button aria-label={playing ? t("canvas.videoFrame.pause") : t("canvas.videoFrame.play")} icon={playing ? <Pause className="size-4" /> : <Play className="size-4" />} disabled={!ready || busy || seeking} onClick={togglePlayback} />
+                <Button aria-label={playing ? t("canvas.videoFrame.pause") : t("canvas.videoFrame.play")} icon={playing ? <Pause className="size-4" /> : <Play className="size-4" />} disabled={!ready || busy || seeking || scrubbing} onClick={togglePlayback} />
                 <span className="min-w-32 text-center font-mono text-sm tabular-nums">{formatTime(seekTarget ?? time)} / {formatTime(duration)}</span>
-                <Slider className="m-0 flex-1" min={0} max={duration || 0} step={0.01} value={Math.min(seekTarget ?? time, duration || 0)} disabled={!ready || busy} onChange={(value) => { void seek(Number(value)); }} />
-                <InputNumber aria-label={t("canvas.videoFrame.time")} min={0} max={duration || 0} step={0.01} precision={2} value={Number((seekTarget ?? time).toFixed(2))} disabled={!ready || busy} onChange={(value) => { if (value !== null) void seek(value); }} addonAfter="s" className="w-32" />
+                <Slider className="m-0 flex-1" min={0} max={duration || 0} step={0.01} value={Math.min(seekTarget ?? time, duration || 0)} disabled={!ready || busy} tooltip={{ open: false, formatter: null }} onChange={onScrubChange} onChangeComplete={onScrubComplete} />
+                <InputNumber aria-label={t("canvas.videoFrame.time")} min={0} max={duration || 0} step={0.01} precision={2} value={Number((seekTarget ?? time).toFixed(2))} disabled={!ready || busy || scrubbing} onChange={(value) => { if (value !== null) void seek(value); }} addonAfter="s" className="w-32" />
             </div>
-            <div className="flex justify-end gap-2"><Button onClick={onClose} disabled={busy}>{t("canvas.videoFrame.close")}</Button><Button type="primary" icon={<Scissors className="size-4" />} loading={busy} disabled={!ready || busy || seeking} onClick={() => void capture()}>{t("canvas.videoFrame.capture")}</Button></div>
+            <div className="flex justify-end gap-2"><Button onClick={onClose} disabled={busy}>{t("canvas.videoFrame.close")}</Button><Button type="primary" icon={<Scissors className="size-4" />} loading={busy} disabled={!ready || busy || seeking || scrubbing} onClick={() => void capture()}>{t("canvas.videoFrame.capture")}</Button></div>
         </div>
     </Modal>;
 }

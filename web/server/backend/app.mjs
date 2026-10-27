@@ -8,7 +8,7 @@ import {CANVAS_NODE_ID_PATTERN} from "../canvas-node-id.mjs";
 import {ARCHIVE_MAX_BYTES} from "./project-archive.mjs";
 import {createComfyRegistry} from "./comfy-registry.mjs";
 import {freezeAuthorizedSkillGrant} from "./skill-job-grants.mjs";
-import {getProjectSkillAudit,replayProjectSkillJob} from "./skill-job-audit.mjs";
+import {getProjectSkillAudit,replayProjectSkillJob,lookupProjectSkillReplay} from "./skill-job-audit.mjs";
 import {listProjectJobs} from "./project-job-history.mjs";
 import {getAssetCatalog,putAssetCatalog} from "./asset-catalog.mjs";
 import {listSkillRegistry,getSkillRegistryPackage,getAuthorizedSkillCatalog,registerSqliteSkill,updateSqliteSkill,deleteSqliteSkill} from "./sqlite-skill-registry.mjs";
@@ -121,6 +121,7 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
    "comfy_template_immutable_conflict","comfy_template_not_found","comfy_template_in_use",
    "comfy_preset_invalid","comfy_preset_not_found",
    "skill_freeze_unavailable","skill_freeze_integrity_failed","skill_grant_required","skill_grant_invalid",
+   "skill_grant_gc_invalid","skill_replay_identity_mismatch",
    "skill_grant_already_used","skill_grant_expired","skill_grant_stale","skill_grant_not_applicable",
    "skill_authorization_invalid","skill_project_not_found",
    "skill_authorization_changed","skill_snapshot_limit_exceeded",
@@ -550,6 +551,18 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
   },async(req,reply)=>{
    reply.header("Cache-Control","no-store");
    return getProjectSkillAudit(db,blobStore,{projectId:req.params.id,jobId:req.params.jobId});
+  });
+  app.get("/api/v1/projects/:id/jobs/:jobId/replay-status",{
+   schema:{params:projectSkillParams,querystring:{
+    type:"object",required:["idempotencyKey"],properties:{idempotencyKey:idSchema},
+    additionalProperties:false
+   }}
+  },(req,reply)=>{
+   reply.header("Cache-Control","no-store");
+   return lookupProjectSkillReplay(db,{
+    projectId:req.params.id,jobId:req.params.jobId,
+    idempotencyKey:req.query.idempotencyKey
+   });
   });
   app.post("/api/v1/projects/:id/jobs/:jobId/replay-skills",{
    schema:{params:projectSkillParams,

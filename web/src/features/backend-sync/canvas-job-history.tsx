@@ -1,7 +1,7 @@
 import {useCallback,useEffect,useRef,useState} from "react";
 import {Alert,App,Button,Drawer,Empty,Input,Spin,Tag,Tooltip} from "antd";
 import {RefreshCw} from "lucide-react";
-import {canvasApi} from "./canvas-api";
+import {canvasApi,CanvasApiError} from "./canvas-api";
 
 export type CanvasJobArtifact={artifactId:string;kind:string;status:string;reason:string|null;nodeId:string|null};
 export type CanvasJobHistoryItem={
@@ -21,13 +21,107 @@ export async function getCanvasSkillAudit(projectId:string,jobId:string):Promise
  return canvasApi("/api/v1/projects/"+encodeURIComponent(projectId)+"/jobs/"+
   encodeURIComponent(jobId)+"/skill-audit");
 }
-export async function replayCanvasSkillJob(projectId:string,jobId:string):Promise<{id:string;existing?:boolean}>{
+type ReplayIntent={idempotencyKey:string;expectedProjectRevision:number};
+const replayIntents=new Map<string,ReplayIntent>();
+const keyFor=(projectId:string,jobId:string)=>
+ "atelier:skill-replay:v1:"+encodeURIComponent(projectId)+":"+encodeURIComponent(jobId);
+const validReplayIntent=(x:unknown):x is ReplayIntent=>
+ !!x&&typeof x==="object"&&"idempotencyKey" in x&&
+ typeof x.idempotencyKey==="string"&&/^[0-9a-f-]{36}$/.test(x.idempotencyKey)&&
+ "expectedProjectRevision" in x&&typeof x.expectedProjectRevision==="number"&&
+ Number.isSafeInteger(x.expectedProjectRevision)&&x.expectedProjectRevision>0;
+function loadReplayIntent(projectId:string,jobId:string):ReplayIntent|null{
+ const key=keyFor(projectId,jobId);
+ if(replayIntents.has(key))return replayIntents.get(key)!;
+ let saved:string|null=null;
+ try{saved=localStorage.getItem(key)}
+ catch{try{saved=sessionStorage.getItem(key)}catch{/* memory-only fallback */}}
+ if(saved===null)return null;
+ let obj:unknown;
+ try{obj=JSON.parse(saved)}catch{throw Error("skill_replay_intent_corrupt")}
+ if(!validReplayIntent(obj))throw Error("skill_replay_intent_corrupt");
+ replayIntents.set(key,obj);return obj;
+}
+function saveReplayIntent(projectId:string,jobId:string,intent:ReplayIntent){
+ const key=keyFor(projectId,jobId);
+ replayIntents.set(key,intent);
+ try{localStorage.setItem(key,JSON.stringify(intent))}
+ catch{try{sessionStorage.setItem(key,JSON.stringify(intent))}catch{/* memory-only fallback */}}
+}
+function clearReplayIntent(projectId:string,jobId:string){
+ const key=keyFor(projectId,jobId);
+ replayIntents.delete(key);
+ try{localStorage.removeItem(key)}catch{/* memory-only fallback */}
+ try{sessionStorage.removeItem(key)}catch{/* memory-only fallback */}
+}
+export function hasPendingSkillReplay(projectId:string,jobId:string){
+ try{return loadReplayIntent(projectId,jobId)!==null}
+ catch{return true} // Corrupt persisted intent fails closed, never creates a new POST.
+}
+type ReplayResult={found:boolean;jobId?:string;status?:string};
+async function lookupReplayResult(projectId:string,jobId:string,key:string){
+ return canvasApi<ReplayResult>("/api/v1/projects/"+encodeURIComponent(projectId)+
+  "/jobs/"+encodeURIComponent(jobId)+"/replay-status?idempotencyKey="+
+  encodeURIComponent(key));
+}
+/** A pending request is resolved only via read-only GET; it is NEVER
+ * retransmitted automatically with a fresh paid idempotency key.
+ */
+export async function lookupPendingSkillReplay(projectId:string,jobId:string):
+ Promise<{id:string;existing:true;status?:string}>{
+ const intent=loadReplayIntent(projectId,jobId);
+ if(!intent)throw Error("skill_replay_no_pending_request");
+ const result=await lookupReplayResult(projectId,jobId,intent.idempotencyKey);
+ if(!result.found||typeof result.jobId!=="string")
+  throw Error("skill_replay_result_unknown：请求可能仍在处理，已保留原幂等键；不会重复提交。");
+ clearReplayIntent(projectId,jobId);
+ return {id:result.jobId,existing:true,status:result.status};
+}
+const replayInFlight=new Map<string,Promise<{id:string;existing?:boolean}>>();
+async function performCanvasSkillReplay(projectId:string,jobId:string):Promise<{id:string;existing?:boolean}>{
+ // A browser retry/reload must not turn an uncertain response into a second paid Job.
+ if(hasPendingSkillReplay(projectId,jobId))
+  return lookupPendingSkillReplay(projectId,jobId);
  const project=await canvasApi<{revision:number}>("/api/v1/projects/"+encodeURIComponent(projectId));
- const idempotencyKey=crypto.randomUUID();
- return canvasApi("/api/v1/projects/"+encodeURIComponent(projectId)+"/jobs/"+
-  encodeURIComponent(jobId)+"/replay-skills","POST",{
-   expectedProjectRevision:project.revision,idempotencyKey,requestFingerprint:idempotencyKey
-  });
+ const intent={expectedProjectRevision:project.revision,idempotencyKey:crypto.randomUUID()};
+ saveReplayIntent(projectId,jobId,intent); // record before ANY potentially billable HTTP POST
+ try{
+  const result=await canvasApi<{id:string;existing?:boolean}>(
+   "/api/v1/projects/"+encodeURIComponent(projectId)+"/jobs/"+
+   encodeURIComponent(jobId)+"/replay-skills","POST",{
+    expectedProjectRevision:intent.expectedProjectRevision,
+    idempotencyKey:intent.idempotencyKey,requestFingerprint:intent.idempotencyKey
+   });
+  clearReplayIntent(projectId,jobId);
+  return result;
+ }catch(e){
+  try{return await lookupPendingSkillReplay(projectId,jobId)}
+  catch(lookupError){
+   // Only a definitive non-ambiguous HTTP rejection can safely reset a
+   // pending request; timeouts/5xx/network errors retain the original intent.
+   if(e instanceof CanvasApiError&&e.status>=400&&e.status<500&&
+      e.status!==408&&e.status!==429&&
+      lookupError instanceof Error&&lookupError.message.startsWith("skill_replay_result_unknown")){
+    clearReplayIntent(projectId,jobId);
+    throw e;
+   }
+   throw Error("冻结 Skill 重放提交结果未知。已保留原幂等键，请重新打开任务历史点击『核实提交结果』；不会自动创建另一笔付费任务。");
+  }
+ }
+}
+/** One browser tab also joins an in-flight confirmation rather than racing
+ * two distinct UUIDs before the first project revision GET finishes.
+ */
+export async function replayCanvasSkillJob(projectId:string,jobId:string):
+ Promise<{id:string;existing?:boolean}>{
+ const key=keyFor(projectId,jobId);
+ const current=replayInFlight.get(key);
+ if(current)return current;
+ const pending=performCanvasSkillReplay(projectId,jobId);
+ replayInFlight.set(key,pending);
+ try{return await pending}finally{
+  if(replayInFlight.get(key)===pending)replayInFlight.delete(key);
+ }
 }
 type Page={jobs:CanvasJobHistoryItem[];nextBefore:string|null};
 const statuses:Record<string,string>={
@@ -142,19 +236,26 @@ export function CanvasJobHistory({projectId,open,onClose,onObserveJob,onRefreshC
  }
  function confirmSkillReplay(job:CanvasJobHistoryItem){
   if(!skillAudits[job.id]?.canReplay||working)return;
+  const pending=hasPendingSkillReplay(projectId,job.id);
   modal.confirm({
-   title:"使用冻结 Skill 版本重新生成？",
-   content:"将使用原任务保存的 Skill 内容、模型、提示词及密钥版本，新建一次可能收费的模型任务。仅原任务成功且来源节点及其上游输入未改变时允许。结果作为新节点追加；不修改或重试旧任务。",
-   okText:"确认新建付费任务",cancelText:"取消",
+   title:pending?"核实已有冻结 Skill 提交结果？":"使用冻结 Skill 版本重新生成？",
+   content:pending?"此前一次付费任务的提交回执不确定。本次只读查询该请求的幂等键，不会重新提交或产生新的计费请求。":
+    "将使用原任务保存的 Skill 内容、模型、提示词及密钥版本，新建一次可能收费的模型任务。仅原任务成功且来源节点及其上游输入未改变时允许。结果作为新节点追加；不修改或重试旧任务。",
+   okText:pending?"只查询提交结果":"确认新建付费任务",cancelText:"取消",
    onOk:async()=>{
     setWorking(job.id);
     try{
      const started=await replayCanvasSkillJob(projectId,job.id);
-     message.success("已创建新的冻结 Skill 任务："+started.id);
+     message.success((pending||started.existing?"已确认已有冻结 Skill 任务：":"已创建新的冻结 Skill 任务：")+started.id);
      onObserveJob(started.id);
      await refresh();
-    }catch(e){message.error("冻结 Skill 重生成失败："+String(e));throw e}
-    finally{setWorking(null)}
+    }catch(e){
+     if(hasPendingSkillReplay(projectId,job.id)){
+      message.warning("提交结果尚未确认，已保留原请求标识。请使用『核实待确认提交结果』只读查询；不会重新付费提交。");
+      return; // close the charged-submit dialog; next action is read-only
+     }
+     message.error("冻结 Skill 重生成失败："+String(e));throw e
+    }finally{setWorking(null)}
    }
   });
  }
@@ -277,7 +378,7 @@ export function CanvasJobHistory({projectId,open,onClose,onObserveJob,onRefreshC
       <div className="text-xs opacity-60">仅展示只读工具名称、轮数与固定版本；不显示工具参数、Skill 正文或 API Key。</div>
       {skillAudits[job.id].canReplay?<Button size="small" type="primary"
        loading={working===job.id} onClick={()=>confirmSkillReplay(job)}>
-       使用冻结版本创建新任务
+       {hasPendingSkillReplay(projectId,job.id)?"核实待确认提交结果（不重新执行）":"使用冻结版本创建新任务"}
       </Button>:<div className="opacity-60">原任务未成功，不允许从未知提交状态重新执行。</div>}
      </div>:null}
     </div>:null}

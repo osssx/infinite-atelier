@@ -28,6 +28,28 @@ export async function getProjectSkillAudit(db,blobStore,{projectId,jobId}){
   canReplay:job.status==="succeeded",versionPins,toolEvents,
   ...(completion?{summary:JSON.parse(completion.payload_json)}:{})};
 }
+/** Read-only resolution of a potentially committed replay request.
+ * No submit, no source reread/credential check, no accidental billing.
+ * Match the original immutable snapshot/source so unrelated jobs are excluded.
+ */
+export function lookupProjectSkillReplay(db,{
+ projectId,jobId,idempotencyKey
+}){
+ if(!valid(idempotencyKey))throw bad("skill_replay_invalid_request",400);
+ const {job,snapshot}=mustFind(db,projectId,jobId);
+ const row=db.prepare(`SELECT * FROM jobs
+  WHERE principal=? AND project_scope=? AND idempotency_key=?`)
+  .get(job.principal,projectId,idempotencyKey);
+ if(!row)return {found:false};
+ if(row.id===job.id||row.project_id!==projectId||
+    row.target_node_id!==job.target_node_id||
+    row.source_fingerprint!==job.source_fingerprint||
+    row.execution_mode!=="immediate"||
+    row.snapshot_json!==job.snapshot_json||
+    row.request_fingerprint!==idempotencyKey)
+  throw bad("skill_replay_identity_mismatch",409);
+ return {found:true,jobId:row.id,status:row.status,createdAt:row.created_at};
+}
 /** Explicit paid NEW job. Same project, unchanged source fingerprint and
  * immutable prior snapshot. No retries of unknown/failed submissions.
  */

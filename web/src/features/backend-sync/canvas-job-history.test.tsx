@@ -1,9 +1,12 @@
-import {describe,it,expect,vi,beforeEach} from "vitest";
+import {describe,it,expect,vi,beforeEach,afterEach} from "vitest";
 const api=vi.hoisted(()=>vi.fn());
-vi.mock("./canvas-api",()=>({canvasApi:api}));
-import {canRetryCanvasMaterialization,canReconcileUnknownJob,getCanvasJobHistory,getCanvasSkillAudit,replayCanvasSkillJob,retryCanvasMaterialization,recoverCanvasPendingMaterialization,reconcileCanvasUnknownJob,
+vi.mock("./canvas-api",async(importOriginal)=>({
+ ...(await importOriginal<typeof import("./canvas-api")>()),canvasApi:api
+}));
+import {canRetryCanvasMaterialization,canReconcileUnknownJob,getCanvasJobHistory,getCanvasSkillAudit,replayCanvasSkillJob,hasPendingSkillReplay,lookupPendingSkillReplay,retryCanvasMaterialization,recoverCanvasPendingMaterialization,reconcileCanvasUnknownJob,
  type CanvasJobHistoryItem,type CanvasJobArtifact} from "./canvas-job-history";
 
+afterEach(()=>vi.unstubAllGlobals());
 const job:CanvasJobHistoryItem={
  id:"job-1",projectId:"p1",sourceNodeId:"node-1",
  createdAt:1,updatedAt:2,status:"succeeded",lastOutcome:null,executionMode:"poll",
@@ -64,6 +67,87 @@ describe("P4.7 Canvas job history and recovery boundary",()=>{
   const submitted=api.mock.calls[2][2] as {idempotencyKey:string;requestFingerprint:string};
   expect(submitted.requestFingerprint).toBe(submitted.idempotencyKey);
   expect(api.mock.calls.some(args=>args[0]==="/api/v1/jobs")).toBe(false);
+ });
+ it("P5.4l resolves a lost paid replay reply with read-only lookup",async()=>{
+  const project="p-lost",source="original-1";
+  api.mockResolvedValueOnce({revision:8})
+   .mockRejectedValueOnce(new Error("transport_closed"))
+   .mockResolvedValueOnce({found:true,jobId:"accepted-123",status:"queued"});
+  const started=await replayCanvasSkillJob(project,source);
+  expect(started).toEqual({id:"accepted-123",existing:true,status:"queued"});
+  expect(hasPendingSkillReplay(project,source)).toBe(false);
+  expect(api.mock.calls.filter(args=>String(args[0]).includes("/replay-skills"))).toHaveLength(1);
+  expect(api.mock.calls[2][0]).toContain("/replay-status?idempotencyKey=");
+  const submitted=api.mock.calls[1][2] as {idempotencyKey:string};
+  expect(api.mock.calls[2][0]).toContain(submitted.idempotencyKey);
+ });
+ it("P5.4l unknown replay stays pending across repeat clicks and never sends second POST",async()=>{
+  const project="p-unknown",source="original-2";
+  api.mockResolvedValueOnce({revision:9})
+   .mockRejectedValueOnce(new Error("network_timeout"))
+   .mockResolvedValueOnce({found:false});
+  await expect(replayCanvasSkillJob(project,source))
+   .rejects.toThrow("已保留原幂等键");
+  expect(hasPendingSkillReplay(project,source)).toBe(true);
+  api.mockResolvedValueOnce({found:false});
+  await expect(replayCanvasSkillJob(project,source))
+   .rejects.toThrow("不会重复提交");
+  expect(api.mock.calls.filter(args=>String(args[0]).includes("/replay-skills"))).toHaveLength(1);
+  const lookupUrls=api.mock.calls.filter(args=>String(args[0]).includes("/replay-status"));
+  expect(lookupUrls).toHaveLength(2);
+  expect(lookupUrls[0][0]).toBe(lookupUrls[1][0]);
+  api.mockResolvedValueOnce({found:true,jobId:"confirmed",status:"running"});
+  expect((await lookupPendingSkillReplay(project,source)).id).toBe("confirmed");
+  expect(hasPendingSkillReplay(project,source)).toBe(false);
+ });
+ it("P5.4l definitive rejected replay with negative lookup can safely clear intent",async()=>{
+  const project="p-rejected",source="original-3";
+  const {CanvasApiError}=await import("./canvas-api");
+  api.mockResolvedValueOnce({revision:3})
+   .mockRejectedValueOnce(new CanvasApiError("skill_replay_source_changed",409))
+   .mockResolvedValueOnce({found:false});
+  await expect(replayCanvasSkillJob(project,source))
+   .rejects.toMatchObject({code:"skill_replay_source_changed"});
+  expect(hasPendingSkillReplay(project,source)).toBe(false);
+ });
+ it("P5.4l joins simultaneous clicks before a project GET can create two paid intents",async()=>{
+  const project="p-same-tab",source="original-double";
+  let resolveProject!:(value:{revision:number})=>void;
+  const waiting=new Promise<{revision:number}>(resolve=>{resolveProject=resolve});
+  api.mockImplementationOnce(()=>waiting).mockResolvedValueOnce({id:"only-one"});
+  const first=replayCanvasSkillJob(project,source);
+  const second=replayCanvasSkillJob(project,source);
+  resolveProject({revision:5});
+  expect(await first).toMatchObject({id:"only-one"});
+  expect(await second).toMatchObject({id:"only-one"});
+  expect(api.mock.calls.filter(call=>String(call[0]).includes("/replay-skills"))).toHaveLength(1);
+  expect(api.mock.calls.filter(call=>call[0]==="/api/v1/projects/"+project)).toHaveLength(1);
+ });
+ it("P5.4l persists nonsecret replay UUID for reload and corrupt storage never triggers POST",async()=>{
+  const saved=new Map<string,string>();
+  vi.stubGlobal("localStorage",{
+   getItem:(key:string)=>saved.get(key)??null,
+   setItem:(key:string,value:string)=>{saved.set(key,value)},
+   removeItem:(key:string)=>{saved.delete(key)}
+  });
+  const project="p-store",source="original-forever";
+  api.mockResolvedValueOnce({revision:17})
+   .mockRejectedValueOnce(new Error("connection lost"))
+   .mockResolvedValueOnce({found:false});
+  await expect(replayCanvasSkillJob(project,source)).rejects.toThrow("已保留原幂等键");
+  expect(saved.size).toBe(1);
+  const [key,intent]=[...saved.entries()][0];
+  expect(JSON.parse(intent)).toEqual({
+   idempotencyKey:expect.any(String),expectedProjectRevision:17
+  });
+  expect(intent).not.toContain("prompt");
+  api.mockResolvedValueOnce({found:true,jobId:"recovered-job",status:"running"});
+  expect((await lookupPendingSkillReplay(project,source)).id).toBe("recovered-job");
+  expect(saved.size).toBe(0);
+  saved.set(key,"corrupt JSON");
+  expect(hasPendingSkillReplay(project,source)).toBe(true);
+  await expect(replayCanvasSkillJob(project,source)).rejects.toThrow("skill_replay_intent_corrupt");
+  expect(api.mock.calls.filter(call=>String(call[0]).includes("/replay-skills"))).toHaveLength(1);
  });
  it("pending artifact recovery only invokes the direct Materializer endpoint",async()=>{
   api.mockResolvedValueOnce({artifactId:"artifact-1",status:"materialized",reason:null});

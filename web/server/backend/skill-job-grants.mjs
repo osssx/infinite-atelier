@@ -6,6 +6,30 @@ const shaId=/^[a-f0-9]{64}$/;
 const idPattern=/^[0-9a-f-]{36}$/;
 const TEN_MINUTES=10*60*1000;
 
+const PRUNE_GRACE_MS=24*60*60*1000;
+function deleteExpiredUnclaimedInTransaction(db,{now,limit,graceMs}){
+ const cutoff=now-graceMs;
+ const result=db.prepare(`DELETE FROM skill_job_grants WHERE id IN (
+  SELECT id FROM skill_job_grants
+  WHERE job_id IS NULL AND expires_at<?
+  ORDER BY expires_at,id LIMIT ?
+ )`).run(cutoff,limit);
+ return result.changes;
+}
+/** Limited SQLite-only collection. Never delete granted/referenced job rows
+ * or CAS blobs (blobs may be shared by historical snapshots).
+ */
+export function pruneExpiredUnclaimedSkillGrants(db,{
+ now=Date.now(),limit=100,graceMs=PRUNE_GRACE_MS
+}={}){
+ if(!Number.isSafeInteger(now)||now<0||
+    !Number.isSafeInteger(limit)||limit<1||limit>500||
+    !Number.isSafeInteger(graceMs)||graceMs<0)
+  throw reject("skill_grant_gc_invalid",400);
+ return writeTransaction(db,()=>({removed:deleteExpiredUnclaimedInTransaction(db,{
+  now,limit,graceMs
+ })}));
+}
 /** The server, not the browser, writes the sole authorized Skill CAS.
  * Recheck the registry revision inside the grant write transaction after
  * asynchronous filesystem publishing; stale data can never be granted.
@@ -25,6 +49,10 @@ export async function freezeAuthorizedSkillGrant(db,blobStore,selection){
  return writeTransaction(db,()=>{
   // Concurrent scope, enabled or version changes invalidate this grant.
   getAuthorizedSkillCatalog(db,selection);
+  // At most 100 unclaimed expired grants per successful freeze; this is
+  // scoped to metadata, never removes CAS bytes or committed job references.
+  deleteExpiredUnclaimedInTransaction(db,{now:Date.now(),limit:100,
+   graceMs:PRUNE_GRACE_MS});
   const id=randomUUID(),now=Date.now();
   db.prepare("INSERT INTO skill_job_grants(id,project_id,blob_id,registry_revision,issued_at,expires_at) VALUES(?,?,?,?,?,?)")
    .run(id,selection.projectId,stored.blobId,selection.expectedRevision,now,now+TEN_MINUTES);

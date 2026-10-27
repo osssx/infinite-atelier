@@ -11,6 +11,7 @@ import {fingerprintSource} from "./repository.mjs";
 import {listSkillRegistry,registerSqliteSkill} from "./sqlite-skill-registry.mjs";
 import {calculateNormalizedSkillHash} from "./skill-package-integrity.mjs";
 import {loadFrozenSkillCatalog} from "./sqlite-skill-agent.mjs";
+import {pruneExpiredUnclaimedSkillGrants} from "./skill-job-grants.mjs";
 import {createOpenAiModelAdapter} from "./openai-model-adapter.mjs";
 import {createJobCoordinator} from "./job-coordinator.mjs";
 import {createColdBackup,restoreColdBackup,verifyColdBackup} from "./cold-backup.mjs";
@@ -75,6 +76,79 @@ function fixture(t){
  return {db,blobStore,call,selection,freeze,job,revision,coordinator,close,
   root:parent,getUpstreamCalls:()=>upstreamCalls};
 }
+test("P5.4l bounded GC removes only old unclaimed grants, never jobs or shared CAS",async t=>{
+ const f=fixture(t);
+ const old1=(await f.freeze()).json(),old2=(await f.freeze()).json();
+ const recent=(await f.freeze()).json(),claimed=(await f.freeze()).json();
+ const result=await f.call("POST","/api/v1/jobs",f.job(claimed,"project-a","claim-job"));
+ assert.equal(result.statusCode,201,result.body);
+ const cutoff=Date.now()-2*24*60*60*1000;
+ f.db.prepare("UPDATE skill_job_grants SET expires_at=? WHERE id IN (?,?,?)")
+  .run(cutoff,old1.authorizationId,old2.authorizationId,claimed.authorizationId);
+ f.db.prepare("UPDATE skill_job_grants SET expires_at=? WHERE id=?")
+  .run(Date.now()-1000,recent.authorizationId);
+ assert.deepEqual(pruneExpiredUnclaimedSkillGrants(f.db,{limit:1}),{removed:1});
+ assert.equal(f.db.prepare("SELECT COUNT(*) n FROM skill_job_grants WHERE job_id IS NULL AND expires_at=?")
+  .get(cutoff).n,1);
+ assert.deepEqual(pruneExpiredUnclaimedSkillGrants(f.db,{limit:100}),{removed:1});
+ assert.equal(f.db.prepare("SELECT COUNT(*) n FROM skill_job_grants").get().n,2);
+ assert.equal(f.db.prepare("SELECT job_id FROM skill_job_grants WHERE id=?")
+  .get(claimed.authorizationId).job_id,result.json().id);
+ assert.equal(f.db.prepare("SELECT COUNT(*) n FROM jobs").get().n,1);
+ assert.equal(f.db.prepare("SELECT COUNT(*) n FROM blobs").get().n,1); // shared immutable CAS
+ assert.throws(()=>pruneExpiredUnclaimedSkillGrants(f.db,{limit:501}),
+  {code:"skill_grant_gc_invalid"});
+ // A successful new freeze opportunistically removes remaining stale metadata,
+ // without ever deleting CAS bytes or claimed rows.
+ f.db.prepare("UPDATE skill_job_grants SET expires_at=? WHERE id=?")
+  .run(cutoff,recent.authorizationId);
+ const again=await f.freeze();
+ assert.equal(again.statusCode,200,again.body);
+ assert.equal(f.db.prepare("SELECT COUNT(*) n FROM skill_job_grants WHERE id=?")
+  .get(recent.authorizationId).n,0);
+ assert.equal(f.db.prepare("SELECT COUNT(*) n FROM skill_job_grants WHERE id=?")
+  .get(claimed.authorizationId).n,1);
+});
+test("P5.4l replay lookup is scoped and read-only after server accepts a paid Job",async t=>{
+ const f=fixture(t);
+ const granted=(await f.freeze()).json();
+ const original=await f.call("POST","/api/v1/jobs",f.job(granted,"project-a","original-run"));
+ assert.equal(original.statusCode,201,original.body);
+ f.db.prepare("UPDATE jobs SET status='succeeded' WHERE id=?").run(original.json().id);
+ const url="/api/v1/projects/project-a/jobs/"+original.json().id;
+ const initial=await f.call("GET",url+"/replay-status?idempotencyKey=replay-once");
+ assert.equal(initial.statusCode,200,initial.body);
+ assert.deepEqual(initial.json(),{found:false});
+ const replayBody={expectedProjectRevision:1,idempotencyKey:"replay-once",
+  requestFingerprint:"replay-once"};
+ const accepted=await f.call("POST",url+"/replay-skills",replayBody);
+ assert.equal(accepted.statusCode,201,accepted.body);
+ const checked=await f.call("GET",url+"/replay-status?idempotencyKey=replay-once");
+ assert.equal(checked.statusCode,200,checked.body);
+ assert.equal(checked.json().found,true);
+ assert.equal(checked.json().jobId,accepted.json().id);
+ assert.equal(checked.json().status,"queued");
+ const existing=await f.call("POST",url+"/replay-skills",replayBody);
+ assert.equal(existing.statusCode,200,existing.body);
+ assert.equal(existing.json().id,accepted.json().id);
+ assert.equal(f.db.prepare("SELECT COUNT(*) n FROM jobs").get().n,2);
+ const otherProject=await f.call("GET","/api/v1/projects/project-b/jobs/"+
+  original.json().id+"/replay-status?idempotencyKey=replay-once");
+ assert.equal(otherProject.statusCode,404,otherProject.body);
+ const mismatch=await f.call("GET",url+"/replay-status?idempotencyKey=original-run");
+ assert.equal(mismatch.statusCode,409,mismatch.body);
+ assert.equal(mismatch.json().code,"skill_replay_identity_mismatch");
+ // Even if the graph changes after the accepted POST, read-only status remains
+ // resolvable; it must not call submitJob or create a second billable Job.
+ const project=f.db.prepare("SELECT document_json FROM projects WHERE id='project-a'").get();
+ const graph=JSON.parse(project.document_json);
+ graph.nodes[0].title="Changed since replay";
+ f.db.prepare("UPDATE projects SET revision=revision+1,document_json=? WHERE id='project-a'")
+  .run(JSON.stringify(graph));
+ const again=await f.call("GET",url+"/replay-status?idempotencyKey=replay-once");
+ assert.equal(again.json().jobId,accepted.json().id);
+ assert.equal(f.db.prepare("SELECT COUNT(*) n FROM jobs").get().n,2);
+});
 test("P5.4k server freeze writes verifiable CAS and one-use project grant",async t=>{
  const f=fixture(t);
  const freeze=await f.freeze();assert.equal(freeze.statusCode,200,freeze.body);

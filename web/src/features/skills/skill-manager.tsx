@@ -3,7 +3,7 @@ import { Download, Eye, FileUp, Trash2 } from "lucide-react";
 import { saveAs } from "file-saver";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { exportSkill, getSkillPackage } from "./skill-registry";
+import { exportSkill, getSkillPackage, SKILL_REGISTRY_CHANNEL } from "./skill-registry";
 import { useSkillStore } from "@/stores/use-skill-store";
 import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
 
@@ -28,6 +28,34 @@ export function SkillManager() {
         ...projects.map((project) => ({ value: "project:" + project.id, label: project.title || project.id })),
     ];
     useEffect(() => { void refresh().catch((error) => message.error(String(error))); }, [refresh, message]);
+    useEffect(() => {
+        const sync = () => { void refresh().catch(() => {
+            // Avoid recurring toasts while offline; explicit actions show errors.
+        }); };
+        const onVisibility = () => {
+            if (document.visibilityState === "visible") sync();
+        };
+        window.addEventListener("focus", sync);
+        document.addEventListener("visibilitychange", onVisibility);
+        const poll = window.setInterval(() => {
+            if (document.visibilityState === "visible") sync();
+        }, 10000);
+        let channel: BroadcastChannel | null = null;
+        if (typeof BroadcastChannel !== "undefined") {
+            try {
+                channel = new BroadcastChannel(SKILL_REGISTRY_CHANNEL);
+                channel.onmessage = event => {
+                    if(event.data && event.data.kind === "changed") sync();
+                };
+            } catch { /* visibility and polling remain available */ }
+        }
+        return () => {
+            window.removeEventListener("focus", sync);
+            document.removeEventListener("visibilitychange", onVisibility);
+            window.clearInterval(poll);
+            channel?.close();
+        };
+    }, [refresh]);
     const execute = async (action: () => Promise<unknown>, success?: string) => {
         try { await action(); if (success) message.success(success); }
         catch (error) { message.error(error instanceof Error ? error.message : String(error)); }

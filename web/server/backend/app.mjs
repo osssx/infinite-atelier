@@ -120,6 +120,7 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
    "comfy_template_immutable_conflict","comfy_template_not_found","comfy_template_in_use",
    "comfy_preset_invalid","comfy_preset_not_found",
    "skill_revision_required","skill_revision_conflict",
+   "skill_package_integrity_failed",
    "skill_package_invalid","skill_package_too_large","skill_catalog_full","skill_version_conflict",
    "skill_versions_full","skill_update_invalid","skill_not_found","skill_version_not_found",
    "credential_protection_unavailable","credential_decryption_failed",

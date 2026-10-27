@@ -26,35 +26,49 @@ function serialize<T>(run:()=>Promise<T>):Promise<T>{
  operation=current.then(()=>undefined,()=>undefined);
  return current;
 }
-export async function listSkills():Promise<SkillCatalogEntry[]>{
+export const SKILL_REGISTRY_CHANNEL="infinite-atelier:skill-registry:v13";
+export type SkillRegistrySnapshot={revision:number;skills:SkillCatalogEntry[]};
+/** Best-effort same-origin notification only; SQLite remains authoritative. */
+function announce(){
+ if(typeof BroadcastChannel==="undefined")return;
+ try{
+  const channel=new BroadcastChannel(SKILL_REGISTRY_CHANNEL);
+  channel.postMessage({kind:"changed"});
+  channel.close();
+ }catch{/* session/focus revalidation is the fallback */}
+}
+export async function getSkillRegistrySnapshot():Promise<SkillRegistrySnapshot>{
  await operation;
- const result=await canvasApi<{revision:number;skills:SkillCatalogEntry[]}>("/api/v1/skills");
- return result.skills;
+ return canvasApi<SkillRegistrySnapshot>("/api/v1/skills");
+}
+export async function listSkills():Promise<SkillCatalogEntry[]>{
+ return (await getSkillRegistrySnapshot()).skills;
 }
 async function revision():Promise<number>{
  const result=await canvasApi<{revision:number}>("/api/v1/skills");
  if(!Number.isSafeInteger(result.revision)||result.revision<1)throw Error("skill_revision_invalid");
  return result.revision;
 }
-export async function registerSkill(pkg:SkillPackage):Promise<SkillCatalogEntry>{
+export async function registerSkill(pkg:SkillPackage,expectedRevision?:number):Promise<SkillCatalogEntry>{
  return serialize(async()=>{
   const {sourceArchive,...rest}=pkg;
   const body={...rest,...(sourceArchive?{sourceArchiveBase64:await encodeArchive(sourceArchive)}:{})};
-  const result=await canvasApi<{entry:SkillCatalogEntry}>("/api/v1/skills","POST",{expectedRevision:await revision(),package:body});
+  const result=await canvasApi<{entry:SkillCatalogEntry}>("/api/v1/skills","POST",{expectedRevision:expectedRevision??await revision(),package:body});
+  announce();
   return result.entry;
  });
 }
-export async function setSkillEnabled(id:string,enabled:boolean):Promise<void>{
- await serialize(async()=>{await canvasApi("/api/v1/skills/"+segment(id),"PATCH",{action:"enabled",enabled,expectedRevision:await revision()})});
+export async function setSkillEnabled(id:string,enabled:boolean,expectedRevision?:number):Promise<void>{
+ await serialize(async()=>{await canvasApi("/api/v1/skills/"+segment(id),"PATCH",{action:"enabled",enabled,expectedRevision:expectedRevision??await revision()});announce()});
 }
-export async function setSkillScope(id:string,scope:SkillScope):Promise<void>{
- await serialize(async()=>{await canvasApi("/api/v1/skills/"+segment(id),"PATCH",{action:"scope",scope,expectedRevision:await revision()})});
+export async function setSkillScope(id:string,scope:SkillScope,expectedRevision?:number):Promise<void>{
+ await serialize(async()=>{await canvasApi("/api/v1/skills/"+segment(id),"PATCH",{action:"scope",scope,expectedRevision:expectedRevision??await revision()});announce()});
 }
-export async function activateSkillVersion(id:string,version:string):Promise<void>{
- await serialize(async()=>{await canvasApi("/api/v1/skills/"+segment(id),"PATCH",{action:"activate",version,expectedRevision:await revision()})});
+export async function activateSkillVersion(id:string,version:string,expectedRevision?:number):Promise<void>{
+ await serialize(async()=>{await canvasApi("/api/v1/skills/"+segment(id),"PATCH",{action:"activate",version,expectedRevision:expectedRevision??await revision()});announce()});
 }
-export async function removeSkill(id:string):Promise<void>{
- await serialize(async()=>{await canvasApi("/api/v1/skills/"+segment(id),"DELETE",{expectedRevision:await revision()})});
+export async function removeSkill(id:string,expectedRevision?:number):Promise<void>{
+ await serialize(async()=>{await canvasApi("/api/v1/skills/"+segment(id),"DELETE",{expectedRevision:expectedRevision??await revision()});announce()});
 }
 export async function getSkillPackage(id:string,version?:string):Promise<SkillPackage|null>{
  const list=await listSkills();

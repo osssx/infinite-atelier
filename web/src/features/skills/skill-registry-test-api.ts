@@ -13,7 +13,7 @@ export async function skillTestApi(path:string,method="GET",payload?:unknown):Pr
   return {revision,skills:clone([...entries.values()])};
  const body=payload as Record<string,any>|undefined;
  if(method!=="GET"&&body?.expectedRevision!==revision)
-  throw Error("skill_revision_conflict");
+  throw Object.assign(Error("skill_revision_conflict"),{code:"skill_revision_conflict",status:409});
  if(path==="/api/v1/skills"&&method==="POST"){
   const pkg=clone(body?.package as StoredPackage),m=pkg.manifest;
   const existing=entries.get(m.id);

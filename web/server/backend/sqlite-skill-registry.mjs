@@ -1,3 +1,4 @@
+import {verifySkillPackageContent} from "./skill-package-integrity.mjs";
 import {writeTransaction} from "./repository.mjs";
 const problem=(code,statusCode=400)=>Object.assign(Error(code),{code,statusCode});
 const idRule=/^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -65,6 +66,7 @@ function validatePackage(value){
   if(archive.length<4||archive.readUInt32LE(0)!==0x04034b50)
    throw problem("skill_package_invalid");
  }
+ verifySkillPackageContent(value,archive);
  return {manifest:m,skillMd:value.skillMd,resources:value.resources,archive};
 }
 function listRows(db){
@@ -97,9 +99,13 @@ export function getSkillRegistryPackage(db,id,version){
  if(!row)throw problem("skill_not_found",404);
  const selected=version??row.active_version;
  if(!versionRule.test(selected))throw problem("skill_version_not_found",404);
- const pkg=readVersionRow(db.prepare("SELECT * FROM skill_versions WHERE skill_id=? AND version=?")
-  .get(id,selected));
- if(!pkg)throw problem("skill_version_not_found",404);
+ const record=db.prepare("SELECT * FROM skill_versions WHERE skill_id=? AND version=?")
+  .get(id,selected);
+ if(!record)throw problem("skill_version_not_found",404);
+ const pkg=readVersionRow(record);
+ verifySkillPackageContent(pkg,record.archive_bytes);
+ if(pkg.manifest.hash!==record.hash||pkg.manifest.version!==record.version)
+  throw problem("skill_package_integrity_failed",422);
  return {package:pkg};
 }
 export function registerSqliteSkill(db,raw,expectedRevision){

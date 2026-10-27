@@ -11,6 +11,7 @@ import {createBlobStore} from "./blob-store.mjs";
 import {acquireInstanceLock} from "./instance-lock.mjs";
 import {createColdBackup,verifyColdBackup,restoreColdBackup} from "./cold-backup.mjs";
 import {getAssetCatalog,putAssetCatalog} from "./asset-catalog.mjs";
+import {calculateNormalizedSkillHash} from "./skill-package-integrity.mjs";
 import {getSkillRegistryPackage,listSkillRegistry,registerSqliteSkill} from "./sqlite-skill-registry.mjs";
 import {getUiSetting,putUiSetting} from "./ui-settings.mjs";
 
@@ -34,11 +35,14 @@ async function fixture(t){
  putAssetCatalog(db,{expectedRevision:1,assets:[{id:"asset-from-backup",kind:"image",title:"CAS image",coverUrl:"/api/v1/blobs/"+blob.blobId,tags:[],createdAt:"2026-10-27",updatedAt:"2026-10-27",data:{storageKey:"cas:"+blob.blobId,dataUrl:"/api/v1/blobs/"+blob.blobId,width:1,height:1,bytes:blob.byteSize,mimeType:blob.mimeType}}]});
  putUiSetting(db,"theme",{expectedRevision:1,value:"light"});
  putUiSetting(db,"model_config",{expectedRevision:1,value:{textModel:"one::gpt",channels:[{id:"one",name:"Provider",baseUrl:"https://api.example.test",apiFormat:"openai",models:[{name:"gpt",capability:"text"}]}]}});
- registerSqliteSkill(db,{manifest:{id:"backup-skill",name:"Backup Skill",
-  description:"Protected Skill in SQLite",hash:"d".repeat(64),version:"d".repeat(12),
-  resources:["references/guide.md"],warnings:[]},
-  skillMd:"---\nname: backup-skill\ndescription: Protected Skill in SQLite\n---\nUse guide",
-  resources:{"references/guide.md":"Frozen guide data"}},listSkillRegistry(db).revision);
+ const md="---\nname: backup-skill\ndescription: Protected Skill in SQLite\n---\nUse guide";
+ const guide="Frozen guide data";
+ const hash=calculateNormalizedSkillHash(new Map([["SKILL.md",Buffer.from(md)],
+  ["references/guide.md",Buffer.from(guide)]]));
+ registerSqliteSkill(db,{manifest:{id:"backup-skill",name:"backup-skill",
+  description:"Protected Skill in SQLite",hash,version:hash.slice(0,12),
+  resources:["references/guide.md"],warnings:[]},skillMd:md,
+  resources:{"references/guide.md":guide}},listSkillRegistry(db).revision);
  db.close();
  return {parent,source,destination,restore,blob,text};
 }
@@ -70,7 +74,7 @@ test("P5.1 cold backup copies SQLite plus all ready BlobStore bytes, verifies, a
   const skills=listSkillRegistry(db);
   assert.equal(skills.skills.length,1);
   assert.equal(skills.skills[0].id,"backup-skill");
-  assert.equal(getSkillRegistryPackage(db,"backup-skill","d".repeat(12)).package.resources["references/guide.md"],
+  assert.equal(getSkillRegistryPackage(db,"backup-skill",db.prepare("SELECT active_version FROM skill_entries WHERE id=\'backup-skill\'").get().active_version).package.resources["references/guide.md"],
    "Frozen guide data");
   assert.equal(db.prepare("PRAGMA integrity_check").get().integrity_check,"ok");
  }finally{db.close()}

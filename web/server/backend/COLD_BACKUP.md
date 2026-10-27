@@ -76,6 +76,10 @@ SQLite schema v12 的 `ui_settings` 包含模型通道元数据、模型选项�
 
 现在 Skill 目录、启用状态、项目 scope、活跃版本、历史版本正文以及原始导入 ZIP（存在时）保存在 SQLite `skill_entries` / `skill_versions`；`backup:data create|verify|restore` 随数据库快照整体备份它们。自动 Skill 生成时另有按任务冻结的 CAS 快照，即使现在删除目录条目也不会修改历史任务 CAS。服务端的修订号 CAS 使不同浏览器标签页的过期更新被明确拒绝，不会回退到旧 IndexedDB。**注意：Skill 正文和 ZIP 属于用户数据，会以明文存放在 SQLite 冷备份中，权限/磁盘加密同样适用**。本轮没有自动从旧 IndexedDB 搬运原有 Skills，也不删除旧字节；如原数据只存在于旧浏览器数据库，需要从可信原始 `.zip` / `SKILL.md` 使用现有管理器重新导入。旧版整应用浏览器 ZIP 的 Skill 区块不能作为 SQLite v13 的恢复来源或覆盖当前目录；涉及 Skill 的完整备份/恢复仅使用 `backup:data`。原始 ZIP 内被视为惰性的脚本和素材只是保存字节供导出，不授予模型执行能力。
 
+## P5.4i：Skill 字节完整性与多标签页写入一致性
+
+服务端在新增版本和读取指定版本时，依照前端 Skill ZIP 归一化路径规则重算包括非执行性 scripts/assets 的全量原始文件 SHA-256；`manifest.hash/version`、YAML 元数据、references 内容与 warnings 必须一致。若现存 Skill 行被篡改或归档无法复验，读请求返回 `skill_package_integrity_failed`，不会静默返回不一致正文。冷备份仍对数据库文件进行常规哈希/SQLite 完整性检查，但**不具备对原始 ZIP 来源真实性或作者签名的认证**。多标签页的通知是只读重新刷新提示，不替代 SQLite 的事务化 `expectedRevision` 比对；失去广播时，Skill 管理器在重新聚焦或可见状态定期轮询权威目录。旧 IndexedDB 中未导入的原始 Skills 不在 SQLite 冷备份范围内。
+
 ## 安全与范围边界
 
 - 数据库包括 Canvas 项目、聊天、任务状态、Comfy 模板/预设、渠道记录和凭据的 DPAPI **加密密文**。恢复不触发模型 API，不会重发 `submission_unknown` 请求。

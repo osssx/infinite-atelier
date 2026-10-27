@@ -1,10 +1,11 @@
 import { create } from "zustand";
 import { importSkillFile } from "@/features/skills/skill-import";
-import { activateSkillVersion, listSkills, registerSkill, removeSkill, setSkillEnabled, setSkillScope } from "@/features/skills/skill-registry";
+import { activateSkillVersion, getSkillRegistrySnapshot, registerSkill, removeSkill, setSkillEnabled, setSkillScope } from "@/features/skills/skill-registry";
 import type { SkillCatalogEntry, SkillScope } from "@/features/skills/types";
 
 type SkillStore = {
     catalog: SkillCatalogEntry[];
+    catalogRevision: number;
     loaded: boolean;
     busy: boolean;
     refresh: () => Promise<void>;
@@ -17,24 +18,33 @@ type SkillStore = {
 let loading: Promise<void> | null = null;
 export const useSkillStore = create<SkillStore>((set, get) => {
     const refresh = async () => {
-        const catalog = await listSkills();
-        set({ catalog, loaded: true });
+        const snapshot = await getSkillRegistrySnapshot();
+        if (snapshot.revision >= get().catalogRevision)
+            set({ catalog: snapshot.skills, catalogRevision: snapshot.revision, loaded: true });
     };
-    const change = async (run: () => Promise<unknown>) => {
+    const change = async (run: (revision: number | undefined) => Promise<unknown>) => {
+        const capturedRevision = get().catalogRevision || undefined;
         set({ busy: true });
-        try { await run(); await refresh(); }
-        finally { set({ busy: false }); }
+        try { await run(capturedRevision); await refresh(); }
+        catch (error) {
+            // A stale tab must not silently update a newer Skill version/scope.
+            try { await refresh(); } catch { /* preserve original failure */ }
+            if(error instanceof Error && "code" in error &&
+                error.code === "skill_revision_conflict")
+                throw Error("Skills 已在其他标签页发生修改，目录已刷新；请检查后重新操作");
+            throw error;
+        } finally { set({ busy: false }); }
     };
     return {
-        catalog: [], loaded: false, busy: false,
+        catalog: [], catalogRevision: 0, loaded: false, busy: false,
         refresh: async () => {
             if (!loading) loading = refresh().finally(() => { loading = null; });
             await loading;
         },
-        importFile: (file) => change(async () => registerSkill(await importSkillFile(file))),
-        toggle: (id, enabled) => change(() => setSkillEnabled(id, enabled)),
-        changeVersion: (id, version) => change(() => activateSkillVersion(id, version)),
-        changeScope: (id, scope) => change(() => setSkillScope(id, scope)),
-        remove: (id) => change(() => removeSkill(id)),
+        importFile: (file) => change(async rev => registerSkill(await importSkillFile(file), rev)),
+        toggle: (id, enabled) => change(rev => setSkillEnabled(id, enabled, rev)),
+        changeVersion: (id, version) => change(rev => activateSkillVersion(id, version, rev)),
+        changeScope: (id, scope) => change(rev => setSkillScope(id, scope, rev)),
+        remove: (id) => change(rev => removeSkill(id, rev)),
     };
 });

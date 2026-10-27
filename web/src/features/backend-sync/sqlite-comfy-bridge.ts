@@ -59,7 +59,7 @@ export function createSqliteComfyBridge({
   },
   async uploadFrozenBlob(blob:Blob,mimeType:string):Promise<BlobUploadResponse>{
    if(!["image/png","image/jpeg","image/webp","video/mp4","video/quicktime","video/webm","video/x-matroska",
-    "audio/wav","audio/flac","audio/ogg","audio/mpeg"].includes(mimeType))
+    "audio/wav","audio/flac","audio/ogg","audio/mpeg","text/plain"].includes(mimeType))
     throw Error("unsupported_blob_mime");
    for(let attempt=0;attempt<2;attempt++){
     const csrf=await session(attempt>0);

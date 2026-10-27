@@ -223,6 +223,107 @@ test("P4.4 provider 4xx is confirmed failure; 5xx or network uncertainty is not 
  assert.equal(calls,1);
 });
 
+
+const skillPack={format:"atelier-skill-snapshot-v1",entries:[{
+ id:"shot-style",version:"a".repeat(12),hash:"a".repeat(64),
+ name:"Shot Style",description:"Film shot list and cinematic lighting",
+ skillMd:"---\\nname: shot-style\\ndescription: Shot Style\\n---\\nUse soft light",
+ resources:{"references/camera.md":"Camera: 35mm"}}
+]};
+const toolCall=(id,name,args)=>({id,type:"function",function:{name,arguments:JSON.stringify(args)}});
+const skillResponse=(tools,text="")=>new Response(JSON.stringify({choices:[{
+ finish_reason:tools.length?"tool_calls":"stop",
+ message:{role:"assistant",content:text,tool_calls:tools}
+}]}),{status:200});
+test("P5.4f SQLite Skill agent executes authorized read-only tool rounds and saves one CAS text artifact",async t=>{
+ const requests=[];
+ const f=fixture(t,async(url,options)=>{
+  assert.equal(url,"https://api.openai.com/v1/chat/completions");
+  const body=JSON.parse(options.body);requests.push(body);
+  assert.equal(body.stream,false);
+  assert.deepEqual(body.tools.map(t=>t.function.name),
+   ["search_skills","activate_skill","read_skill_resource"]);
+  if(requests.length===1)return skillResponse([
+   toolCall("a1","search_skills",{query:"lighting"})]);
+  if(requests.length===2)return skillResponse([
+   toolCall("a2","activate_skill",{skill_id:"shot-style"})]);
+  if(requests.length===3)return skillResponse([
+   toolCall("a3","read_skill_resource",{skill_id:"shot-style",path:"references/camera.md"})]);
+  assert.equal(body.messages.at(-1).role,"tool");
+  assert.ok(body.messages.at(-1).content.includes("35mm"));
+  return skillResponse([],"Use 35mm film and soft light.");
+ });
+ const input=Buffer.from(JSON.stringify(skillPack));
+ const stored=await f.blobStore.put([input],{mime:"text/plain"});
+ const id=f.enqueue("auto-skills",{
+  kind:"text",model:"gpt-4o-mini",prompt:"Write a shot list",stream:false,
+  messages:[{role:"user",content:"Write a shot list"}],
+  skills:{blobId:stored.blobId}
+ });
+ f.coordinator.recoverAtStartup();await f.coordinator.tick();await f.coordinator.tick();
+ assert.equal(f.db.prepare("SELECT status FROM jobs WHERE id=?").get(id).status,"succeeded");
+ const artifact=f.db.prepare("SELECT * FROM artifacts WHERE job_id=?").get(id);
+ assert.equal(artifact.kind,"text");
+ const {readFile}=await import("node:fs/promises");
+ assert.equal(await readFile((await f.blobStore.stat(artifact.blob_id)).path,"utf8"),
+  "Use 35mm film and soft light.");
+ const log=f.db.prepare("SELECT payload_json FROM job_events WHERE job_id=? AND kind='skill_tool'").all(id);
+ assert.equal(log.length,6); // 3 started + 3 completed, no Skill body
+ assert.ok(log.every(e=>!e.payload_json.includes("Camera: 35mm")));
+ assert.equal(requests.length,4);
+ assert.ok(!JSON.stringify(requests).includes("fixture-only-not-a-real-secret"));
+ const snapshot=f.db.prepare("SELECT snapshot_json FROM jobs WHERE id=?").get(id).snapshot_json;
+ assert.ok(snapshot.includes(stored.blobId));
+ assert.ok(!snapshot.includes("Shot Style"));
+ assert.equal(f.enqueue("auto-skills",{
+  kind:"text",model:"gpt-4o-mini",prompt:"Write a shot list",stream:false,
+  messages:[{role:"user",content:"Write a shot list"}],
+  skills:{blobId:stored.blobId}
+ }),id);
+ assert.equal(requests.length,4);
+});
+test("P5.4f unauthorized function requests never invoke arbitrary tools or retry upstream",async t=>{
+ let calls=0;
+ const f=fixture(t,async()=>{calls++;return skillResponse([toolCall("evil","exec_shell",{cmd:"whoami"})])});
+ const stored=await f.blobStore.put([Buffer.from(JSON.stringify(skillPack))],{mime:"text/plain"});
+ const id=f.enqueue("unauthorized-skill",{
+  kind:"text",model:"gpt-4o-mini",prompt:"Check",stream:false,
+  messages:[{role:"user",content:"Check"}],skills:{blobId:stored.blobId}
+ });
+ f.coordinator.recoverAtStartup();await f.coordinator.tick();await f.coordinator.tick();
+ assert.equal(f.db.prepare("SELECT status FROM jobs WHERE id=?").get(id).status,"submission_unknown");
+ assert.equal(f.db.prepare("SELECT COUNT(*) AS n FROM artifacts WHERE job_id=?").get(id).n,0);
+ assert.equal(calls,1);
+});
+test("P5.4f unauthorized path and unactivated skill reference fail closed",async t=>{
+ let calls=0;
+ const f=fixture(t,async()=>{
+  calls++;return skillResponse([toolCall("r1","read_skill_resource",{
+   skill_id:"shot-style",path:"../../secrets.txt"})]);
+ });
+ const stored=await f.blobStore.put([Buffer.from(JSON.stringify(skillPack))],{mime:"text/plain"});
+ const id=f.enqueue("path-skill",{
+  kind:"text",model:"gpt-4o-mini",prompt:"Check",stream:false,
+  messages:[{role:"user",content:"Check"}],skills:{blobId:stored.blobId}
+ });
+ f.coordinator.recoverAtStartup();await f.coordinator.tick();
+ assert.equal(f.db.prepare("SELECT status FROM jobs WHERE id=?").get(id).status,"submission_unknown");
+ assert.equal(calls,1);
+});
+test("P5.4f invalid/missing CAS snapshots are rejected before any billable call",async t=>{
+ let calls=0;
+ const f=fixture(t,async()=>{calls++;return skillResponse([],"ok")});
+ const base={kind:"text",model:"gpt-4o-mini",prompt:"task",stream:false,
+  messages:[{role:"user",content:"task"}]};
+ for(const invalid of [
+  {skills:{blobId:"ab"}},{skills:{blobId:"a".repeat(64),apiKey:"inject"}},
+  {skills:{blobId:"a".repeat(64)},stream:true}
+ ])assert.throws(()=>validateModelSnapshot(f.snapshot({...base,...invalid})));
+ const id=f.enqueue("skill-missing",{...base,skills:{blobId:"a".repeat(64)}});
+ f.coordinator.recoverAtStartup();await f.coordinator.tick();
+ assert.equal(f.db.prepare("SELECT status FROM jobs WHERE id=?").get(id).status,"failed");
+ assert.equal(calls,0);
+});
 test("P5.4e frozen multi-turn history with past Skill tool results maps safely to OpenAI chat roles",async t=>{
  let sent;
  const f=fixture(t,async(url,opts)=>{

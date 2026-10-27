@@ -97,6 +97,7 @@ import { startBackendComfyWorkflowRun } from "@/features/backend-sync/backend-co
 import {createSqliteComfyBridge} from "@/features/backend-sync/sqlite-comfy-bridge";
 import {startSqliteModelGeneration,openAiImageSize} from "@/features/backend-sync/sqlite-model-generation";
 import {findSqliteModelRetrySource} from "@/features/backend-sync/sqlite-model-retry-source";
+import {freezeSqliteSkillCatalog,type FrozenSqliteSkillCatalog} from "@/features/backend-sync/frozen-sqlite-skills";
 import {freezeSeedanceReferences} from "@/features/backend-sync/seedance-frozen-references";
 import {capabilitiesForModel} from "@/services/api/video/model-capabilities";
 import {validateSeedanceRequest} from "@/services/api/video/seedance-content";
@@ -2645,25 +2646,31 @@ function AtelierCanvasPage() {
                     const format=generationConfig.audioFormat;
                     if(kind==="audio"&&!["mp3","wav","flac"].includes(format))
                         throw Error("SQLite 语音生成目前仅支持 MP3、WAV 或 FLAC");
+                    const bridge=createSqliteComfyBridge({projectId,
+                        getLocalGraph:()=>({nodes:nodesRef.current,connections:connectionsRef.current})});
+                    let skillCatalog:FrozenSqliteSkillCatalog|undefined;
                     let textMessages:import("@/features/backend-sync/sqlite-model-generation").FrozenTextTurn[]|undefined;
                     if(kind==="text"){
                         const skillBinding=resolvePromptSkillBinding(prompt,sourceNode.metadata?.skillBinding);
-                        if(skillBinding?.mode==="auto")
-                            throw Error("SQLite 文本自动 Skill 工具调用尚未接通；请选择手动模式");
+                        if(skillBinding?.mode==="auto"&&context.referenceImages.length)
+                            throw Error("自动 Skill 文本任务暂不支持同时附带参考图");
+                        const auto=skillBinding?.mode==="auto"?
+                            await freezeSqliteSkillCatalog(skillBinding,text,projectId,bridge):null;
+                        skillCatalog=auto?.catalog;
                         const manual=skillBinding?.mode==="manual"?
                             await resolveManualSkillContext(skillBinding,undefined,projectId):null;
-                        const adapted=withManualSkillMessages([{role:"user",content:text}],manual);
-                        const compiled=adapted[0]?.content;
+                        const adapted=manual?withManualSkillMessages([{role:"user",content:text}],manual):null;
+                        const compiled=auto?
+                            auto.catalogMessage+"\n\n<user-request>\n"+text+"\n</user-request>":
+                            adapted?.[0]?.content??text;
                         if(typeof compiled!=="string"||new TextEncoder().encode(compiled).length>16000)
-                            throw Error("文本提示词与手动 Skill 指令合计超过 16 KB 限制");
+                            throw Error("文本提示词与 Skill 上下文合计超过 16 KB 限制");
                         textMessages=[
                             ...(generationConfig.systemPrompt.trim()?[
                                 {role:"system" as const,content:generationConfig.systemPrompt.trim()}]:[]),
                             {role:"user",content:compiled}
                         ];
                     }
-                    const bridge=createSqliteComfyBridge({projectId,
-                        getLocalGraph:()=>({nodes:nodesRef.current,connections:connectionsRef.current})});
                     let seedanceMode:"text_to_video"|"first_frame"|"first_last_frame"|"omni_reference"|undefined;
                     let frozenReferences:Awaited<ReturnType<typeof freezeSeedanceReferences>>|undefined;
                     if(kind==="video"){
@@ -2690,7 +2697,8 @@ function AtelierCanvasPage() {
                         bridge,
                         ...(kind==="image"||kind==="text"?{referenceImages:context.referenceImages}:{}),
                         task:{kind,model,prompt:kind==="text"?textMessages!.at(-1)!.content:text,
-                          ...(kind==="text"?{stream:true,messages:textMessages}:{}),
+                          ...(kind==="text"?{stream:!skillCatalog,messages:textMessages,
+                            ...(skillCatalog?{skills:skillCatalog}:{})}:{}),
                           ...(kind==="image"?{size:openAiImageSize(generationConfig.size),
                             quality:["auto","low","medium","high"].includes(generationConfig.quality)?
                               generationConfig.quality:"auto"}:{}),
@@ -3737,6 +3745,11 @@ function AtelierCanvasPage() {
                 recentText=(recentText+delta).slice(-512);
                 message.open({key:progressKey,type:"loading",duration:0,
                     content:"文本生成中："+recentText.slice(-120)});
+            },
+            onSkillTool:event=>{
+                if(controller.signal.aborted||activeProjectIdRef.current!==projectId)return;
+                message.open({key:progressKey,type:"loading",duration:0,
+                    content:"Skill "+event.name+"："+(event.status==="completed"?"已完成":"执行中")});
             },
             onStatus:(status,details)=>{
                 if(controller.signal.aborted||activeProjectIdRef.current!==projectId)return;

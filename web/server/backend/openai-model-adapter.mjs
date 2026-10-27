@@ -2,6 +2,7 @@ import {createHash} from "node:crypto";
 import {readFile} from "node:fs/promises";
 import {Blob} from "node:buffer";
 import {Readable} from "node:stream";
+import {validateSkillRef,loadFrozenSkillCatalog,runSqliteSkillAgent} from "./sqlite-skill-agent.mjs";
 import {appendArtifact} from "./repository.mjs";
 
 const failure=(code,statusCode=400,confirmedNotAccepted=false)=>
@@ -158,14 +159,19 @@ export function validateModelSnapshot(snapshot){
  const task=snapshot.task;
  if(!task||typeof task!=="object"||Array.isArray(task)||!supported.has(task.kind)||
   !validModel(task.model)||!validPrompt(task.prompt)||
-  Object.keys(task).some(key=>!["kind","model","prompt","size","quality","voice","format","speed","operation","images","mask","messages","stream"].includes(key)))
+  Object.keys(task).some(key=>!["kind","model","prompt","size","quality","voice","format","speed","operation","images","mask","messages","stream","skills"].includes(key)))
   throw failure("model_task_invalid");
  const allowed=task.kind==="image"?["kind","model","prompt","size","quality","operation","images","mask"]:
   task.kind==="audio"?["kind","model","prompt","voice","format","speed"]:
-  ["kind","model","prompt","images","messages","stream"];
+  ["kind","model","prompt","images","messages","stream","skills"];
  if(Object.keys(task).some(key=>!allowed.includes(key)))throw failure("model_task_invalid");
  if(task.kind==="text"){
   if(task.stream!==undefined&&typeof task.stream!=="boolean")throw failure("model_task_invalid");
+  if(task.skills){
+   validateSkillRef(task.skills);
+   if(!task.messages||task.stream!==false||task.images?.length)
+    throw failure("model_skill_task_invalid");
+  }
   validateTextHistory(task);
  }
  validateImageInputs(task);
@@ -233,6 +239,7 @@ export function createOpenAiModelAdapter({db,blobStore,vault,upstreamCall=fetch}
  }
  async function prepare({job}){
   const {task}=check(job);
+  if(task.skills)await loadFrozenSkillCatalog(blobStore,task.skills);
   await readFrozenInputs(task); // reject missing, oversized or wrong-MIME frozen CAS
  }
  async function submit({job}){
@@ -283,6 +290,16 @@ export function createOpenAiModelAdapter({db,blobStore,vault,upstreamCall=fetch}
   // The vault zeros the temporary Buffer immediately after returning.
   const authorization=vault.withSecretVersion(snapshot.secretVersionRef,
    bytes=>"Bearer "+bytes.toString("utf8"),{channelId:snapshot.channelId});
+  if(task.skills){
+   const skills=await loadFrozenSkillCatalog(blobStore,task.skills);
+   const content=await runSqliteSkillAgent({task,jobId:job.id,db,skills,
+    authorization,upstreamCall,messages:chatHistory(task.messages)});
+   const blob=await blobStore.put([Buffer.from(content,"utf8")],{mime:"text/plain"});
+   appendArtifact(db,{jobId:job.id,portId:"text",itemKey:"0",
+    blobId:blob.blobId,sha256:blob.sha256,mime:blob.mimeType,kind:"text",
+    metadata:{modelGeneration:{kind:"text",model:task.model}}});
+   return {kind:"completed",receipt:{artifactReady:true}};
+  }
   let response;
   try{
    response=await upstreamCall("https://api.openai.com/v1"+path,{

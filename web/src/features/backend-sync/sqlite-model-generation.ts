@@ -31,7 +31,7 @@ export async function startSqliteModelGeneration({
   mode?:"text_to_video"|"first_frame"|"first_last_frame"|"omni_reference";
   references?:FrozenArkReference[];
   operation?:"edit";images?:FrozenModelImage[];mask?:FrozenModelImage;
-  messages?:FrozenTextTurn[];stream?:boolean};
+  messages?:FrozenTextTurn[];stream?:boolean;skills?:{blobId:string}};
  referenceImages?:readonly ReferenceImage[];maskImage?:ReferenceImage;
  api?:typeof canvasApi;bridge?:ReturnType<typeof createSqliteComfyBridge>;
 }):Promise<BackendJobView>{
@@ -62,6 +62,11 @@ export async function startSqliteModelGeneration({
    throw Error("model_text_history_invalid");
  }else if(task.messages||task.stream!==undefined)
   throw Error("model_text_options_kind_invalid");
+ if(task.skills&&referenceImages.length)
+  throw Error("model_skill_images_unsupported");
+ if(task.skills&&(task.kind!=="text"||provider!=="openai"||
+   !/^[a-f0-9]{64}$/.test(task.skills.blobId)))
+  throw Error("model_skill_catalog_invalid");
  const images=referenceImages.length?await freezeModelImages(referenceImages,bridge):[];
  const mask=maskImage?(await freezeModelImages([maskImage],bridge))[0]:undefined;
  await bridge.assertNoActiveJob(sourceNodeId);

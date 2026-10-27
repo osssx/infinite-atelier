@@ -64,6 +64,10 @@ SQLite schema v12 的 `ui_settings` 包含模型通道元数据、模型选项�
 
 官方 OpenAI 文本任务经 SQLite JobCoordinator 提交，历史 system/user/assistant 消息和已经执行过的工具结果可冻结在 JobSnapshot（不含 API Key）。模型流式输出的部分片段会作为有数量与大小上限的 model_text_delta 事件写入 SQLite，前端经同源 SSE 显示临时预览；只有确认完成的最终文本才存入 CAS 并追加 Canvas 节点。临时片段属于**可能含有用户敏感内容的明文 SQLite 数据**，随冷备份保存，不是加密的凭据 Vault。若 upstream SSE 在完成前截断，即使已收到部分文字仍为 submission_unknown，恢复不会再次调用计费 API。自动 Skill 工具实际执行尚未后端化，手动选定 Skill 指令仅作为用户级内容处理。
 
+## P5.4f：自动 Skill 冻结任务与冷备份
+
+自动 Skill 任务的经用户选择/启用且符合项目作用域的只读 Skill 包，提交前冻结为 SHA-256 CAS `text/plain` JSON。SQLite JobSnapshot 保存哈希引用；P5.3 的保守 CAS 引用台账和冷备份会保护对应内容，即使仅完成了一部分模型回合。JobEvents 只保存工具名称、调用 ID、轮数、已开始/完成状态，不存正文或请求参数。**注意：冻结 Skill 本文可包含敏感信息，CAS 与冷备份并未额外加密**，必须用操作系统访问控制保护。原本存放于浏览器 IndexedDB 的 Skill 目录/全部历史包尚未迁入 SQLite：备份仅保证被 JobSnapshot 引用的已冻结版本。整个 Agent 的多次上游 POST 被同一个 JobCoordinator submit barrier 封装；若服务意外停止或任何一次响应未知，恢复标记为 `submission_unknown`，不自动重试、不再次收费提交，也不假设能够恢复中断的工具回合。服务端仅只读解释三个白名单 Skill 工具，不执行第三方 Skills 的可执行文件或网络请求。
+
 ## 安全与范围边界
 
 - 数据库包括 Canvas 项目、聊天、任务状态、Comfy 模板/预设、渠道记录和凭据的 DPAPI **加密密文**。恢复不触发模型 API，不会重发 `submission_unknown` 请求。

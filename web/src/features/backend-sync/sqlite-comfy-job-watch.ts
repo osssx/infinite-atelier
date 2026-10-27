@@ -43,12 +43,13 @@ export async function refreshSqliteComfyArtifacts({
 }
 export async function watchSqliteComfyJob({
  projectId,jobId,signal,getLocalGraph,applyGraph,
- onStatus,onTextDelta,api=canvasApi,pollMs=15000,
+ onStatus,onTextDelta,onSkillTool,api=canvasApi,pollMs=15000,
 }:{
  projectId:string;jobId:string;signal:AbortSignal;
  getLocalGraph:()=>Graph;applyGraph:(graph:Graph)=>void;
  onStatus?:(status:string,message?:string)=>void;
  onTextDelta?:(delta:string)=>void;
+ onSkillTool?:(event:{name:string;status:"started"|"completed"})=>void;
  api?:typeof canvasApi;pollMs?:number;
 }):Promise<void>{
  const root="/api/v1/jobs/"+encodeURIComponent(jobId);
@@ -59,6 +60,13 @@ export async function watchSqliteComfyJob({
     event.payload&&typeof event.payload==="object"&&
     "delta" in event.payload&&typeof event.payload.delta==="string"&&
     event.payload.delta.length<=4096)onTextDelta(event.payload.delta);
+  if(event.kind==="skill_tool"&&onSkillTool&&event.payload&&
+    typeof event.payload==="object"&&
+    "name" in event.payload&&typeof event.payload.name==="string"&&
+    ["search_skills","activate_skill","read_skill_resource"].includes(event.payload.name)&&
+    "status" in event.payload&&
+    (event.payload.status==="started"||event.payload.status==="completed"))
+   onSkillTool({name:event.payload.name,status:event.payload.status});
   eventRevision++;
   wake?.();
  });

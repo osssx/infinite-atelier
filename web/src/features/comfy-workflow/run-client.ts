@@ -29,12 +29,12 @@ async function comfyRequest<T>(path:string,init?:RequestInit):Promise<T> {
     try {
         response=await fetch("/api/comfy"+path,{...init,cache:"no-store"});
     } catch {
-        throw new Error("无法连接 ComfyUI 网关，请确认 ark-gateway（默认 127.0.0.1:8787）已启动且前端开发代理可访问。");
+        throw new Error("无法连接 ComfyUI 网关。请在 web 目录重新运行 npm run dev（自动启动网关，默认 127.0.0.1:8787），并检查终端错误。");
     }
     const contentType=response.headers.get("content-type")??"";
     if(!contentType.toLowerCase().includes("application/json")) {
         if([500,502,503,504].includes(response.status))
-            throw new Error("ComfyUI 网关不可用（HTTP "+response.status+"）。请先启动 ark-gateway（默认 127.0.0.1:8787），并检查 Vite 代理的 GATEWAY_TOKEN 配置。");
+            throw new Error("ComfyUI 网关不可用（HTTP "+response.status+"）。请在 web 目录重新运行 npm run dev（自动启动网关，默认 127.0.0.1:8787）；独立运行时请检查 Vite 与网关的 GATEWAY_TOKEN。");
         throw new Error("ComfyUI API 返回非 JSON 响应（HTTP "+response.status+"，"+(contentType||"无 Content-Type")+"）。请确认请求到达 /api/comfy 网关，而非前端页面或其它服务。");
     }
     const data:unknown=await response.json().catch(()=>null);
@@ -82,7 +82,7 @@ export async function recoverPendingComfyRun(projectId:string,nodeId:string):Pro
 }
 export type ComfyInstance = {id:string;url:string;reachable:boolean;classTypes:string[]};
 export const COMFY_GATEWAY_UPGRADE_MESSAGE =
-    "当前运行的 ComfyUI 网关版本过旧，不支持实例编辑。请在终端停止旧的 npm run dev:comfy（或 ark-gateway），然后在 web 目录重新运行 npm run dev:comfy；仅刷新网页无法更新后台进程。";
+    "当前运行的 ComfyUI 网关版本过旧，不支持实例编辑。请停止旧的开发服务或 ark-gateway，在 web 目录重新运行 npm run dev（也可独立运行 npm run dev:comfy）；仅刷新网页无法更新后台进程。";
 export async function listComfyInstances():Promise<ComfyInstance[]> {
     const value=await comfyRequest<{apiVersion?:number;instanceManagement?:boolean;instances:ComfyInstance[]}>("/instances");
     if(value.instanceManagement!==true || !Array.isArray(value.instances) ||

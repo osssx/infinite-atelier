@@ -90,6 +90,12 @@ describe("ComfyUI browser gateway responses",()=>{
         })));
         await expect(listComfyInstances()).rejects.toThrow(/网关不可用.*8787/);
     });
+    it("explains HTTP 500 from the Vite proxy and gives the default startup command",async()=>{
+        vi.stubGlobal("fetch",vi.fn().mockResolvedValue(new Response("Internal Server Error",{
+            status:500,headers:{"content-type":"text/plain"}
+        })));
+        await expect(listComfyInstances()).rejects.toThrow(/网关不可用.*npm run dev/);
+    });
     it("recognizes an SPA HTML fallback even when it responds 200",async()=>{
         vi.stubGlobal("fetch",vi.fn().mockResolvedValue(new Response("<html>SPA</html>",{
             status:200,headers:{"content-type":"text/html"}
@@ -107,7 +113,7 @@ describe("ComfyUI browser gateway responses",()=>{
         vi.stubGlobal("fetch",vi.fn().mockResolvedValue(new Response(JSON.stringify({
             instances:[{id:"comfy-local",reachable:false,classTypes:[]}]
         }),{headers:{"content-type":"application/json"}})));
-        await expect(listComfyInstances()).rejects.toThrow(/网关版本过旧.*重新运行 npm run dev:comfy/);
+        await expect(listComfyInstances()).rejects.toThrow(/网关版本过旧.*重新运行 npm run dev/);
     });
     it("turns the real old PUT route 404 into a restart instruction",async()=>{
         const fetchMock=vi.fn().mockImplementation(async()=>new Response(JSON.stringify({error:"comfy_route_not_found"}),{
@@ -115,11 +121,11 @@ describe("ComfyUI browser gateway responses",()=>{
         }));
         vi.stubGlobal("fetch",fetchMock);
         await expect(saveComfyInstance("comfy-local","http://127.0.0.1:8188","comfy-local"))
-            .rejects.toThrow(/网关版本过旧.*重新运行 npm run dev:comfy/);
+            .rejects.toThrow(/网关版本过旧.*重新运行 npm run dev/);
         expect(fetchMock).toHaveBeenCalledWith("/api/comfy/instances/comfy-local",expect.objectContaining({
             method:"PUT",body:JSON.stringify({id:"comfy-local",url:"http://127.0.0.1:8188"})
         }));
-        await expect(deleteComfyInstance("comfy-local")).rejects.toThrow(/网关版本过旧.*重新运行 npm run dev:comfy/);
+        await expect(deleteComfyInstance("comfy-local")).rejects.toThrow(/网关版本过旧.*重新运行 npm run dev/);
     });
     it("accepts a new gateway and successfully stores an edited instance",async()=>{
         const fetchMock=vi.fn().mockResolvedValue(new Response(JSON.stringify({

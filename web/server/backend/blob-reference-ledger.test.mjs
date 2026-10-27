@@ -19,7 +19,7 @@ function fixture(t){
 }
 test("v10 ledger migration survives restart and source mutations mark dirty in same SQLite transaction",async t=>{
  const f=fixture(t);
- assert.equal(f.db.prepare("SELECT MAX(version) AS n FROM schema_migrations").get().n,11);
+ assert.equal(f.db.prepare("SELECT MAX(version) AS n FROM schema_migrations").get().n,12);
  assert.equal(blobReferenceLedgerStatus(f.db).dirty,true);
  let row=rebuildBlobReferenceLedger(f.db);
  assert.equal(row.dirty,false);

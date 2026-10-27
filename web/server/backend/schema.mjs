@@ -1,5 +1,5 @@
 import{JOB_STATUSES,EXECUTION_MODES,ARTIFACT_KINDS}from"./contracts.mjs";
-export const SCHEMA_VERSION=11;
+export const SCHEMA_VERSION=12;
 const quoted=x=>x.map(s=>"'"+s+"'").join(",");
 export const INITIAL_SCHEMA_SQL=`
 CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY,applied_at INTEGER NOT NULL);
@@ -239,6 +239,20 @@ INSERT OR IGNORE INTO asset_catalog(id,revision,assets_json) VALUES(1,1,'[]');
 CREATE TRIGGER IF NOT EXISTS blob_ref_dirty_asset_catalog_update AFTER UPDATE ON asset_catalog
  BEGIN UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1; END;
 `;
+/** v12: non-secret, revision-fenced UI settings. Encrypted credentials
+ * remain exclusively in the existing vault; raw API keys are never settings.
+ */
+export const UI_SETTINGS_SCHEMA_SQL=`
+CREATE TABLE IF NOT EXISTS ui_settings(
+ name TEXT PRIMARY KEY CHECK(name IN ('model_config','theme')),
+ revision INTEGER NOT NULL CHECK(revision>0),
+ value_json TEXT NOT NULL CHECK(json_valid(value_json))
+);
+INSERT OR IGNORE INTO ui_settings(name,revision,value_json)
+ VALUES('model_config',1,'{}');
+INSERT OR IGNORE INTO ui_settings(name,revision,value_json)
+ VALUES('theme',1,'"dark"');
+`;
 export function initializeSchema(db){
  db.exec("PRAGMA foreign_keys=ON;PRAGMA busy_timeout=5000;BEGIN IMMEDIATE");
  try{
@@ -269,6 +283,7 @@ export function initializeSchema(db){
   if(version<9)db.exec(COMFY_REGISTRY_SCHEMA_SQL);
   if(version<10)db.exec(BLOB_REF_LEDGER_SCHEMA_SQL);
   if(version<11)db.exec(ASSET_CATALOG_SCHEMA_SQL);
+  if(version<12)db.exec(UI_SETTINGS_SCHEMA_SQL);
   if(version<SCHEMA_VERSION)db.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)").run(SCHEMA_VERSION,Date.now());
   db.exec("COMMIT");
  }catch(e){db.exec("ROLLBACK");throw e}

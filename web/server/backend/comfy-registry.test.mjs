@@ -61,9 +61,9 @@ test("P4.5 template batch install atomic rollback, schema v8 migration",async t=
  const older=new DatabaseSync(":memory:");
  t.after(()=>older.close());
  initializeSchema(older);
- older.prepare("UPDATE schema_migrations SET version=8 WHERE version=11").run();
+ older.prepare("UPDATE schema_migrations SET version=8 WHERE version=12").run();
  older.exec("DROP TABLE comfy_presets;DROP TABLE comfy_template_versions");
  initializeSchema(older);
- assert.equal(older.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v,11);
+ assert.equal(older.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v,12);
  assert.ok(older.prepare("SELECT name FROM sqlite_master WHERE name='comfy_presets'").get());
 });

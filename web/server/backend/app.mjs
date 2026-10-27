@@ -9,6 +9,7 @@ import {ARCHIVE_MAX_BYTES} from "./project-archive.mjs";
 import {createComfyRegistry} from "./comfy-registry.mjs";
 import {listProjectJobs} from "./project-job-history.mjs";
 import {getAssetCatalog,putAssetCatalog} from "./asset-catalog.mjs";
+import {getUiSetting,putUiSetting} from "./ui-settings.mjs";
 const nonempty={type:"string",minLength:1,maxLength:256};
 const idSchema={type:"string",pattern:"^[A-Za-z0-9_-]{1,128}$"};
 const canvasNodeIdSchema={type:"string",pattern:CANVAS_NODE_ID_PATTERN};
@@ -94,6 +95,8 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
    "invalid_canvas_chats","invalid_canvas_viewport","canvas_chats_too_large",
    "chats_revision_conflict","viewport_revision_conflict",
    "stale_generation_source","cyclic_generation_source","generation_save_barrier_required","invalid_job_request","idempotency_key_conflict","backend_prior_job_not_terminal","job_not_found","invalid_project_job_history_request","invalid_project_job_history_cursor","reconciliation_invalid_input","reconciliation_not_eligible","reconciliation_provider_unsupported","reconciliation_adapter_unavailable","reconciliation_state_changed","reconciliation_upstream_unavailable","reconciliation_remote_already_linked",
+   "ui_setting_invalid","ui_setting_secret_forbidden","ui_setting_too_large","ui_setting_not_found",
+   "ui_setting_revision_required","ui_setting_revision_conflict",
    "asset_catalog_invalid","asset_catalog_too_large","asset_catalog_media_not_portable",
    "asset_catalog_blob_missing","asset_catalog_media_mismatch","asset_catalog_revision_required","asset_catalog_revision_conflict",
    "invalid_event_cursor","event_cursor_expired","raw_credentials_forbidden",
@@ -272,6 +275,18 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
  });
  app.delete("/api/v1/comfy/presets/:id",{schema:{params:presetParams}},(req,reply)=>
   registry.deletePreset(req.params.id));
+ // P5.4b: Non-secret user preferences. Credential values are prohibited.
+ const settingParams={type:"object",required:["name"],
+  properties:{name:{type:"string",enum:["theme","model_config"]}},additionalProperties:false};
+ app.get("/api/v1/ui-settings/:name",{schema:{params:settingParams}},(req,reply)=>{
+  reply.header("Cache-Control","no-store");return getUiSetting(db,req.params.name);
+ });
+ app.put("/api/v1/ui-settings/:name",{bodyLimit:256*1024,
+  schema:{params:settingParams,body:{type:"object",required:["expectedRevision","value"],
+   additionalProperties:false,properties:{expectedRevision:{type:"integer",minimum:1},value:{}}}}},(req,reply)=>{
+  reply.header("Cache-Control","no-store");
+  return putUiSetting(db,req.params.name,req.body);
+ });
  // Non-Canvas Asset Library metadata is now backed by the same SQLite snapshot
  // and immutable BlobStore as the Canvas. All writes are revision fenced.
  const assetCatalogBody={type:"object",required:["expectedRevision","assets"],additionalProperties:false,

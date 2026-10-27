@@ -157,6 +157,42 @@ describe("P4.4 ordinary SQLite model submit",()=>{
   })).rejects.toThrow("mask_inputs_invalid");
   expect(b.saveProjectNow).not.toHaveBeenCalled();
  });
+ it("P5.4e freezes multi-turn transcript and stream flag without browser key",async()=>{
+  const messages=[
+   {role:"system" as const,content:"Brief answers"},
+   {role:"user" as const,content:"First question"},
+   {role:"assistant" as const,content:"First answer"},
+   {role:"user" as const,content:"Follow-up"}
+  ];
+  const api=vi.fn(async(path:string,method="GET",payload?:unknown)=>{
+   if(path.includes("capabilities"))return {autoDispatch:true,modelKinds:["text"]};
+   if(path.includes("/channels/"))return {id:"openai-channel",provider:"openai",hasKey:true,keyVersion:"v2"};
+   if(path==="/api/v1/jobs"){
+    expect(payload).toMatchObject({snapshot:{adapterKind:"model",
+      secretVersionRef:"v2",task:{kind:"text",stream:true,messages}}});
+    expect(JSON.stringify(payload)).not.toContain("apiKey");
+    return fakeJob;
+   }
+   throw Error("unexpected");
+  });
+  await startSqliteModelGeneration({projectId:"p1",sourceNodeId:"text-1",
+   nodes,connections,channelId:"openai-channel",
+   task:{kind:"text",model:"gpt-4o-mini",prompt:"Follow-up",stream:true,messages},
+   bridge:bridge(),api:api as unknown as typeof canvasApi});
+ });
+ it("P5.4e blocks inline media inside serialized chat messages",async()=>{
+  const api=vi.fn(async(path:string)=>path.includes("capabilities")?
+   {autoDispatch:true,modelKinds:["text"]}:
+   {id:"openai-channel",provider:"openai",hasKey:true,keyVersion:"v2"});
+  const b=bridge();
+  await expect(startSqliteModelGeneration({projectId:"p1",sourceNodeId:"text-1",
+   nodes,connections,channelId:"openai-channel",
+   task:{kind:"text",model:"gpt-4o-mini",prompt:"Ask",
+    messages:[{role:"user",content:"data:image/png;base64,EXFIL"}]},
+   bridge:b,api:api as unknown as typeof canvasApi})
+  ).rejects.toThrow("model_text_history_invalid");
+  expect(b.saveProjectNow).not.toHaveBeenCalled();
+ });
  it("normalizes Canvas ratio shortcuts to supported OpenAI image size",()=>{
   expect(openAiImageSize("1:1")).toBe("1024x1024");
   expect(openAiImageSize("16:9")).toBe("1536x1024");

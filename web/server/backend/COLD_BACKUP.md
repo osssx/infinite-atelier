@@ -60,6 +60,10 @@ SQLite schema v12 的 `ui_settings` 包含模型通道元数据、模型选项�
 
 普通 Canvas 官方 OpenAI 图片编辑和带图问答所需的参考图片，在模型提交前冻结为后端 BlobStore CAS，Jobs 只保留图片 SHA-256/MIME 与文本 Prompt，不存储原始 Base64 图片或渠道 API Key。作业快照内 CAS 哈希参与 P5.3 引用台账保留与 backup:data 冷备份，即使任务成功但 Materializer 尚未追加产物节点，输入与输出仍可找回。异设备恢复需按 Windows DPAPI 上下文重新配置密钥。旧浏览器独立媒体、非 Canvas 直连功能仍不在该闭环。
 
+## P5.4e：流式文本任务的恢复与备份
+
+官方 OpenAI 文本任务经 SQLite JobCoordinator 提交，历史 system/user/assistant 消息和已经执行过的工具结果可冻结在 JobSnapshot（不含 API Key）。模型流式输出的部分片段会作为有数量与大小上限的 model_text_delta 事件写入 SQLite，前端经同源 SSE 显示临时预览；只有确认完成的最终文本才存入 CAS 并追加 Canvas 节点。临时片段属于**可能含有用户敏感内容的明文 SQLite 数据**，随冷备份保存，不是加密的凭据 Vault。若 upstream SSE 在完成前截断，即使已收到部分文字仍为 submission_unknown，恢复不会再次调用计费 API。自动 Skill 工具实际执行尚未后端化，手动选定 Skill 指令仅作为用户级内容处理。
+
 ## 安全与范围边界
 
 - 数据库包括 Canvas 项目、聊天、任务状态、Comfy 模板/预设、渠道记录和凭据的 DPAPI **加密密文**。恢复不触发模型 API，不会重发 `submission_unknown` 请求。

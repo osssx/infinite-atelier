@@ -43,17 +43,22 @@ export async function refreshSqliteComfyArtifacts({
 }
 export async function watchSqliteComfyJob({
  projectId,jobId,signal,getLocalGraph,applyGraph,
- onStatus,api=canvasApi,pollMs=15000,
+ onStatus,onTextDelta,api=canvasApi,pollMs=15000,
 }:{
  projectId:string;jobId:string;signal:AbortSignal;
  getLocalGraph:()=>Graph;applyGraph:(graph:Graph)=>void;
  onStatus?:(status:string,message?:string)=>void;
+ onTextDelta?:(delta:string)=>void;
  api?:typeof canvasApi;pollMs?:number;
 }):Promise<void>{
  const root="/api/v1/jobs/"+encodeURIComponent(jobId);
  let previous="",failures=0,eventRevision=0;
  let wake:(()=>void)|null=null;
- const unsubscribe=subscribeSqliteJobEvents(jobId,()=>{
+ const unsubscribe=subscribeSqliteJobEvents(jobId,event=>{
+  if(event.kind==="model_text_delta"&&onTextDelta&&
+    event.payload&&typeof event.payload==="object"&&
+    "delta" in event.payload&&typeof event.payload.delta==="string"&&
+    event.payload.delta.length<=4096)onTextDelta(event.payload.delta);
   eventRevision++;
   wake?.();
  });

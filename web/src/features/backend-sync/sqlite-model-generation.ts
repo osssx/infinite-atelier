@@ -6,6 +6,11 @@ import type {FrozenArkReference} from "./seedance-frozen-references";
 import type {ReferenceImage} from "@/types/image";
 import {freezeModelImages,type FrozenModelImage} from "./frozen-model-images";
 
+export type FrozenTextTurn=
+ | {role:"system"|"user"|"assistant";content:string}
+ | {role:"assistant";content:string;toolCalls:{id:string;name:string;argumentsJson:string}[]}
+ | {role:"tool";content:string;callId:string;name:string};
+
 /** Ordinary OpenAI calls use the same SQLite revision/source-fingerprint fence
  * as Comfy, with encrypted backend channel references (never raw API keys).
  * P5.4d allows frozen CAS images for official OpenAI image edits or text
@@ -25,7 +30,8 @@ export async function startSqliteModelGeneration({
   duration?:number;ratio?:string;resolution?:string;generateAudio?:boolean;watermark?:boolean;
   mode?:"text_to_video"|"first_frame"|"first_last_frame"|"omni_reference";
   references?:FrozenArkReference[];
-  operation?:"edit";images?:FrozenModelImage[];mask?:FrozenModelImage};
+  operation?:"edit";images?:FrozenModelImage[];mask?:FrozenModelImage;
+  messages?:FrozenTextTurn[];stream?:boolean};
  referenceImages?:readonly ReferenceImage[];maskImage?:ReferenceImage;
  api?:typeof canvasApi;bridge?:ReturnType<typeof createSqliteComfyBridge>;
 }):Promise<BackendJobView>{
@@ -49,6 +55,13 @@ export async function startSqliteModelGeneration({
   throw Error("model_image_mask_inputs_invalid");
  if(task.images||task.mask||task.operation)
   throw Error("model_task_references_must_be_frozen");
+ if(task.kind==="text"){
+  if(task.messages&&(!Array.isArray(task.messages)||task.messages.length>32||
+    task.messages.some(item=>typeof item.content!=="string"||
+      item.content.includes("data:image/")||item.content.length>32768)))
+   throw Error("model_text_history_invalid");
+ }else if(task.messages||task.stream!==undefined)
+  throw Error("model_text_options_kind_invalid");
  const images=referenceImages.length?await freezeModelImages(referenceImages,bridge):[];
  const mask=maskImage?(await freezeModelImages([maskImage],bridge))[0]:undefined;
  await bridge.assertNoActiveJob(sourceNodeId);

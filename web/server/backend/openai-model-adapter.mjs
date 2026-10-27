@@ -37,6 +37,119 @@ function validateImageInputs(task){
   throw failure("model_task_invalid");
  return images;
 }
+const MAX_HISTORY=32,MAX_HISTORY_BYTES=128*1024,MAX_TOOL_OUTPUT=32768;
+const textRoles=new Set(["system","user","assistant","tool"]);
+function validateTextHistory(task){
+ if(task.messages===undefined)return null;
+ if(!Array.isArray(task.messages)||task.messages.length<1||task.messages.length>MAX_HISTORY)
+  throw failure("model_text_history_invalid");
+ let total=0,last="",pending=new Map();
+ const normalized=[];
+ for(const item of task.messages){
+  if(!item||typeof item!=="object"||Array.isArray(item)||!textRoles.has(item.role))
+   throw failure("model_text_history_invalid");
+  const keys=item.role==="assistant"?["role","content","toolCalls"]:
+   item.role==="tool"?["role","content","callId","name"]:["role","content"];
+  if(Object.keys(item).some(key=>!keys.includes(key))||
+   typeof item.content!=="string"||item.content.length>MAX_TOOL_OUTPUT||
+   (total+=Buffer.byteLength(item.content,"utf8"))>MAX_HISTORY_BYTES)
+   throw failure("model_text_history_invalid");
+  if(item.role==="assistant"&&item.toolCalls!==undefined){
+   if(!Array.isArray(item.toolCalls)||item.toolCalls.length<1||item.toolCalls.length>12||
+    item.toolCalls.some(call=>!call||typeof call!=="object"||Array.isArray(call)||
+     Object.keys(call).some(k=>!["id","name","argumentsJson"].includes(k))||
+     typeof call.id!=="string"||!/^[-\w]{1,128}$/.test(call.id)||
+     typeof call.name!=="string"||!/^[a-zA-Z][a-zA-Z0-9_]{0,63}$/.test(call.name)||
+     typeof call.argumentsJson!=="string"||call.argumentsJson.length>8192))
+     throw failure("model_text_history_invalid");
+   for(const call of item.toolCalls){
+    if(pending.has(call.id))throw failure("model_text_history_invalid");
+    let args;
+    try{args=JSON.parse(call.argumentsJson)}catch{throw failure("model_text_history_invalid")}
+    if(!args||typeof args!=="object"||Array.isArray(args))throw failure("model_text_history_invalid");
+    total+=Buffer.byteLength(call.argumentsJson,"utf8");
+    if(total>MAX_HISTORY_BYTES)throw failure("model_text_history_invalid");
+    pending.set(call.id,call.name);
+   }
+  }
+  if(item.role==="tool"){
+   if(typeof item.callId!=="string"||typeof item.name!=="string"||
+    pending.get(item.callId)!==item.name)throw failure("model_text_history_invalid");
+   pending.delete(item.callId);
+  }
+  if(item.role==="user")last=item.content;
+  normalized.push(item);
+ }
+ if(pending.size||task.messages.at(-1).role!=="user"||
+  !last.trim()||last!==task.prompt)throw failure("model_text_history_invalid");
+ return normalized;
+}
+function chatHistory(messages){
+ return messages.map(item=>item.role==="tool"?
+  {role:"tool",tool_call_id:item.callId,content:item.content}:
+  item.role==="assistant"&&item.toolCalls?.length?
+   {role:"assistant",content:item.content||null,tool_calls:item.toolCalls.map(call=>({
+     id:call.id,type:"function",function:{name:call.name,arguments:call.argumentsJson}
+   }))}:
+   {role:item.role,content:item.content});
+}
+async function streamOpenAiText(response,db,jobId){
+ if(!response.body)throw failure("model_text_stream_missing",502);
+ const decoder=new TextDecoder("utf-8",{fatal:true}),reader=response.body.getReader();
+ let buffer="",text="",seenDone=false,finished=false,events=0,lastPublished=0,chars=0;
+ const publish=()=>{
+  if(events>=96||text.length===lastPublished)return;
+  const delta=text.slice(lastPublished);
+  const sample=delta.slice(0,4096);
+  if(!sample)return;
+  db.prepare("INSERT INTO job_events(job_id,kind,payload_json,created_at) VALUES(?,?,?,?)")
+   .run(jobId,"model_text_delta",JSON.stringify({delta:sample}),Date.now());
+  events++;lastPublished+=sample.length;
+ };
+ function frame(block){
+  const json=block.split(/\r?\n/).filter(line=>line.startsWith("data:"))
+   .map(line=>line.slice(5).trimStart()).join("\n").trim();
+  if(!json)return;
+  if(json==="[DONE]"){seenDone=true;return}
+  let value;
+  try{value=JSON.parse(json)}catch{throw failure("model_text_stream_invalid",502)}
+  if(value?.error)throw failure("model_text_stream_error",502);
+  const choice=value?.choices?.[0];
+  if(choice?.delta?.tool_calls?.length||choice?.message?.tool_calls?.length)
+   throw failure("model_text_tools_not_supported",502);
+  if(choice?.finish_reason!==undefined&&choice.finish_reason!==null){
+   if(choice.finish_reason!=="stop")throw failure("model_text_incomplete",502);
+   finished=true;
+  }
+  const next=choice?.delta?.content??choice?.message?.content??"";
+  if(typeof next!=="string")throw failure("model_text_stream_invalid",502);
+  text+=next;
+  chars+=next.length;
+  if(Buffer.byteLength(text,"utf8")>2_000_000||chars>2_000_000)
+   throw failure("model_text_invalid",502);
+  if(text.length-lastPublished>=1024)publish();
+ }
+ try{
+  for(;;){
+   const {done,value}=await reader.read();
+   if(done)break;
+   buffer+=decoder.decode(value,{stream:true});
+   if(buffer.length>65536)throw failure("model_text_stream_invalid",502);
+   for(;;){
+    const split=/\r?\n\r?\n/.exec(buffer);
+    if(!split)break;
+    const block=buffer.slice(0,split.index);
+    buffer=buffer.slice(split.index+split[0].length);
+    frame(block);
+   }
+  }
+  buffer+=decoder.decode();
+  if(buffer.trim())frame(buffer);
+ }finally{reader.releaseLock()}
+ if(!seenDone||!finished||!text)throw failure("model_text_stream_incomplete",502);
+ publish();
+ return text;
+}
 export function validateModelSnapshot(snapshot){
  if(!snapshot||snapshot.adapterKind!=="model"||snapshot.provider!=="openai"||
   typeof snapshot.channelId!=="string"||!/^[-\w]{1,128}$/.test(snapshot.channelId)||
@@ -45,12 +158,16 @@ export function validateModelSnapshot(snapshot){
  const task=snapshot.task;
  if(!task||typeof task!=="object"||Array.isArray(task)||!supported.has(task.kind)||
   !validModel(task.model)||!validPrompt(task.prompt)||
-  Object.keys(task).some(key=>!["kind","model","prompt","size","quality","voice","format","speed","operation","images","mask"].includes(key)))
+  Object.keys(task).some(key=>!["kind","model","prompt","size","quality","voice","format","speed","operation","images","mask","messages","stream"].includes(key)))
   throw failure("model_task_invalid");
  const allowed=task.kind==="image"?["kind","model","prompt","size","quality","operation","images","mask"]:
   task.kind==="audio"?["kind","model","prompt","voice","format","speed"]:
-  ["kind","model","prompt","images"];
+  ["kind","model","prompt","images","messages","stream"];
  if(Object.keys(task).some(key=>!allowed.includes(key)))throw failure("model_task_invalid");
+ if(task.kind==="text"){
+  if(task.stream!==undefined&&typeof task.stream!=="boolean")throw failure("model_task_invalid");
+  validateTextHistory(task);
+ }
  validateImageInputs(task);
  if(task.kind==="image"&&
    (task.size!==undefined&&!["auto","1024x1024","1024x1536","1536x1024"].includes(task.size)||
@@ -156,7 +273,11 @@ export function createOpenAiModelAdapter({db,blobStore,vault,upstreamCall=fetch}
     ...task.images.map((ref,i)=>({type:"image_url",image_url:{
      url:"data:"+ref.mimeType+";base64,"+data[i].toString("base64")}}))
    ]:task.prompt;
-   body=JSON.stringify({model:task.model,messages:[{role:"user",content}],stream:false});
+   const messages=task.messages?chatHistory(task.messages):[{role:"user",content}];
+   if(task.messages&&task.images?.length){
+    messages[messages.length-1]={role:"user",content};
+   }
+   body=JSON.stringify({model:task.model,messages,stream:task.stream===true});
   }
   // Copy an unprotected key into an HTTP header only within the consumer.
   // The vault zeros the temporary Buffer immediately after returning.
@@ -178,13 +299,13 @@ export function createOpenAiModelAdapter({db,blobStore,vault,upstreamCall=fetch}
    const blob=await blobStore.put(Readable.fromWeb(response.body),{mime});
    record={...blob,kind:"audio"};
   }else{
-   const json=await boundedJson(response);
+   const json=task.kind==="text"&&task.stream===true?null:await boundedJson(response);
    if(image){
     const data=decodeImage(json?.data?.[0]?.b64_json);
     const blob=await blobStore.put([data.bytes],{mime:data.mime});
     record={...blob,kind:"image"};
    }else{
-    const content=json?.choices?.[0]?.message?.content;
+    const content=task.stream===true?await streamOpenAiText(response,db,job.id):json?.choices?.[0]?.message?.content;
     if(typeof content!=="string"||Buffer.byteLength(content,"utf8")>2_000_000)
      throw failure("model_text_invalid",502);
     const blob=await blobStore.put([Buffer.from(content,"utf8")],{mime:"text/plain"});

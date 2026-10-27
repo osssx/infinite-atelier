@@ -222,6 +222,93 @@ test("P4.4 provider 4xx is confirmed failure; 5xx or network uncertainty is not 
  assert.equal(f.db.prepare("SELECT status FROM jobs WHERE id=?").get(id).status,"failed");
  assert.equal(calls,1);
 });
+
+test("P5.4e frozen multi-turn history with past Skill tool results maps safely to OpenAI chat roles",async t=>{
+ let sent;
+ const f=fixture(t,async(url,opts)=>{
+  sent={url,body:JSON.parse(opts.body)};
+  return new Response(JSON.stringify({choices:[{message:{content:"Done."}}]}),{status:200});
+ });
+ const messages=[
+  {role:"system",content:"Be concise."},
+  {role:"user",content:"Locate a suitable Skill."},
+  {role:"assistant",content:"",toolCalls:[{id:"call_a1",name:"search_skills",argumentsJson:'{"query":"style"}'}]},
+  {role:"tool",callId:"call_a1",name:"search_skills",content:'{"matches":[]}'},
+  {role:"user",content:"Write the final answer"}
+ ];
+ const id=f.enqueue("multiturn",{
+  kind:"text",model:"gpt-4o-mini",prompt:"Write the final answer",messages
+ });
+ f.coordinator.recoverAtStartup();await f.coordinator.tick();
+ assert.equal(f.db.prepare("SELECT status FROM jobs WHERE id=?").get(id).status,"succeeded");
+ assert.equal(sent.url,"https://api.openai.com/v1/chat/completions");
+ assert.deepEqual(sent.body.messages,[messages[0],messages[1],{
+  role:"assistant",content:null,tool_calls:[{id:"call_a1",type:"function",
+   function:{name:"search_skills",arguments:'{"query":"style"}'}}]
+ },{role:"tool",tool_call_id:"call_a1",content:'{"matches":[]}'},messages[4]]);
+ assert.ok(!JSON.stringify(sent).includes("fixture-only-not-a-real-secret"));
+});
+test("P5.4e accepts fragmented SSE, records bounded replayable deltas, and materializes only complete text",async t=>{
+ let calls=0;
+ const f=fixture(t,async(url,opts)=>{
+  calls++;
+  assert.equal(url,"https://api.openai.com/v1/chat/completions");
+  assert.equal(JSON.parse(opts.body).stream,true);
+  const encoder=new TextEncoder();
+  const chunks=[
+   'data: {"choices":[{"delta":{"content":"Hello"},"finish_reason":null}]}\n',
+   '\ndata: {"choices":[{"delta":{"content":" world"},"finish_reason":null}]}\n\n',
+   'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n',
+   'data: [DONE]\n\n'
+  ];
+  return new Response(new ReadableStream({
+   start(ctrl){for(const chunk of chunks)ctrl.enqueue(encoder.encode(chunk));ctrl.close()}
+  }),{status:200,headers:{"content-type":"text/event-stream"}});
+ });
+ const id=f.enqueue("stream-text",{
+  kind:"text",model:"gpt-4o-mini",prompt:"Say hello",stream:true
+ });
+ f.coordinator.recoverAtStartup();await f.coordinator.tick();
+ assert.equal(f.db.prepare("SELECT status FROM jobs WHERE id=?").get(id).status,"succeeded");
+ const artifact=f.db.prepare("SELECT * FROM artifacts WHERE job_id=?").get(id);
+ const {readFile}=await import("node:fs/promises");
+ assert.equal(await readFile((await f.blobStore.stat(artifact.blob_id)).path,"utf8"),"Hello world");
+ const events=f.db.prepare("SELECT * FROM job_events WHERE job_id=? AND kind='model_text_delta' ORDER BY seq").all(id);
+ assert.ok(events.length>0);
+ assert.equal(events.map(e=>JSON.parse(e.payload_json).delta).join(""),"Hello world");
+ assert.equal(calls,1);
+ const {readEventsAfter}=await import("./repository.mjs");
+ assert.ok(readEventsAfter(f.db,0).some(e=>e.kind==="model_text_delta"));
+});
+test("P5.4e truncated SSE is submission_unknown, not successful or retried",async t=>{
+ let calls=0;
+ const f=fixture(t,async()=>{calls++;return new Response(
+  'data: {"choices":[{"delta":{"content":"partial"},"finish_reason":null}]}\n\n',{status:200});
+ });
+ const id=f.enqueue("stream-truncated",{kind:"text",model:"gpt-4o-mini",prompt:"test",stream:true});
+ f.coordinator.recoverAtStartup();await f.coordinator.tick();await f.coordinator.tick();
+ assert.equal(f.db.prepare("SELECT status FROM jobs WHERE id=?").get(id).status,"submission_unknown");
+ assert.equal(f.db.prepare("SELECT count(*) AS n FROM artifacts WHERE job_id=?").get(id).n,0);
+ assert.equal(calls,1);
+});
+test("P5.4e rejects fabricated/unsafe conversation transcripts before billing",async t=>{
+ let calls=0;
+ const f=fixture(t,async()=>{calls++;return new Response("{}",{status:200})});
+ const base={kind:"text",model:"gpt-4o-mini",prompt:"Now"};
+ const variants=[
+  [{role:"system",content:"rules"}],
+  [{role:"user",content:"not equal"}],
+  [{role:"user",content:"Now",apiKey:"leak"}],
+  [{role:"assistant",content:"",toolCalls:[{id:"id",name:"tool",argumentsJson:"not-json"}]},{role:"user",content:"Now"}],
+  [{role:"tool",content:"invented",callId:"fake",name:"search_skills"},{role:"user",content:"Now"}],
+  [{role:"assistant",content:"",toolCalls:[{id:"id",name:"tool",argumentsJson:"{}"}]},{role:"user",content:"Now"}],
+  Array.from({length:33},()=>({role:"user",content:"Now"}))
+ ];
+ for(const messages of variants)
+  assert.throws(()=>validateModelSnapshot(f.snapshot({...base,messages})),/history_invalid/);
+ assert.throws(()=>validateModelSnapshot(f.snapshot({...base,stream:"yes"})),/model_task_invalid/);
+ assert.equal(calls,0);
+});
 test("P5.4d image edits use frozen CAS files, official multipart endpoint and DPAPI key",async t=>{
  const calls=[];
  const f=fixture(t,async(url,options)=>{

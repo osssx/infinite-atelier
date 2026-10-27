@@ -100,7 +100,7 @@ import {findSqliteModelRetrySource} from "@/features/backend-sync/sqlite-model-r
 import {freezeSeedanceReferences} from "@/features/backend-sync/seedance-frozen-references";
 import {capabilitiesForModel} from "@/services/api/video/model-capabilities";
 import {validateSeedanceRequest} from "@/services/api/video/seedance-content";
-import {ensureSqliteModelChannel,modelChannelProvider} from "@/features/backend-sync/model-channel-autoroute";
+import {ensureSqliteModelChannelForExecution,modelChannelProvider} from "@/features/backend-sync/model-channel-autoroute";
 import {watchSqliteComfyJob} from "@/features/backend-sync/sqlite-comfy-job-watch";
 import {refreshSqliteComfyArtifacts} from "@/features/backend-sync/sqlite-comfy-job-watch";
 import {CanvasJobHistory} from "@/features/backend-sync/canvas-job-history";
@@ -2253,7 +2253,7 @@ function AtelierCanvasPage() {
             throw Error("该节点已有模型任务正在提交");
         sqliteModelSubmitLocksRef.current.add(submissionKey);
         try {
-            await ensureSqliteModelChannel(channel,provider);
+            await ensureSqliteModelChannelForExecution(channel,provider);
             const bridge=createSqliteComfyBridge({projectId,
                 getLocalGraph:()=>({nodes:nodesRef.current,connections:connectionsRef.current})});
             const job=await startSqliteModelGeneration({
@@ -2618,18 +2618,7 @@ function AtelierCanvasPage() {
                 sqliteModelSubmitLocksRef.current.add(submissionKey);
                 try{
                     if(!projectLoaded)throw Error("画布项目尚未加载完成");
-                    await ensureSqliteModelChannel(selectedChannel,sqliteProvider);
-                    // Existing pre-SQLite browser keys are imported to DPAPI on
-                    // first use, then scrubbed from the persisted config.
-                    if(selectedChannel.apiKey.trim()){
-                        const state=useConfigStore.getState();
-                        const current=state.config;
-                        state.updateConfig("channels",current.channels.map(channel=>
-                            channel.id===selectedChannel.id&&channel.apiKey===selectedChannel.apiKey
-                              ?{...channel,apiKey:""}:channel));
-                        if(current.apiKey===selectedChannel.apiKey)
-                            state.updateConfig("apiKey","");
-                    }
+                    await ensureSqliteModelChannelForExecution(selectedChannel,sqliteProvider);
                     if(!sourceNode||!["text","config","image","audio","video"].includes(sourceNode.type)||
                       sourceNode.type==="image"&&mode!=="image"||
                       sourceNode.type==="audio"&&mode!=="audio"||
@@ -2638,8 +2627,8 @@ function AtelierCanvasPage() {
                         throw Error("当前节点类型不支持 SQLite 普通模型生成");
                     if(resolveModelScript(effectiveConfig,generationConfig.model))
                         throw Error("自定义模型脚本尚未接入 SQLite JobCoordinator");
-                    if(sourceNode.metadata?.skillBinding&&sourceNode.metadata.skillBinding.mode!=="off")
-                        throw Error("Skill 生成尚未接入 SQLite JobCoordinator");
+                    if(mode!=="text"&&sourceNode.metadata?.skillBinding&&sourceNode.metadata.skillBinding.mode!=="off")
+                        throw Error("Skill 目前仅支持文本模型的手动指令模式");
                     if(mode==="image"&&getGenerationCount(generationConfig.count)!==1)
                         throw Error("SQLite 普通生图目前每次仅支持一张，请将数量设置为 1");
                     const original=sourceNode.type===CanvasNodeType.Text?
@@ -2656,6 +2645,23 @@ function AtelierCanvasPage() {
                     const format=generationConfig.audioFormat;
                     if(kind==="audio"&&!["mp3","wav","flac"].includes(format))
                         throw Error("SQLite 语音生成目前仅支持 MP3、WAV 或 FLAC");
+                    let textMessages:import("@/features/backend-sync/sqlite-model-generation").FrozenTextTurn[]|undefined;
+                    if(kind==="text"){
+                        const skillBinding=resolvePromptSkillBinding(prompt,sourceNode.metadata?.skillBinding);
+                        if(skillBinding?.mode==="auto")
+                            throw Error("SQLite 文本自动 Skill 工具调用尚未接通；请选择手动模式");
+                        const manual=skillBinding?.mode==="manual"?
+                            await resolveManualSkillContext(skillBinding,undefined,projectId):null;
+                        const adapted=withManualSkillMessages([{role:"user",content:text}],manual);
+                        const compiled=adapted[0]?.content;
+                        if(typeof compiled!=="string"||new TextEncoder().encode(compiled).length>16000)
+                            throw Error("文本提示词与手动 Skill 指令合计超过 16 KB 限制");
+                        textMessages=[
+                            ...(generationConfig.systemPrompt.trim()?[
+                                {role:"system" as const,content:generationConfig.systemPrompt.trim()}]:[]),
+                            {role:"user",content:compiled}
+                        ];
+                    }
                     const bridge=createSqliteComfyBridge({projectId,
                         getLocalGraph:()=>({nodes:nodesRef.current,connections:connectionsRef.current})});
                     let seedanceMode:"text_to_video"|"first_frame"|"first_last_frame"|"omni_reference"|undefined;
@@ -2683,7 +2689,8 @@ function AtelierCanvasPage() {
                         provider:sqliteProvider,
                         bridge,
                         ...(kind==="image"||kind==="text"?{referenceImages:context.referenceImages}:{}),
-                        task:{kind,model,prompt:text,
+                        task:{kind,model,prompt:kind==="text"?textMessages!.at(-1)!.content:text,
+                          ...(kind==="text"?{stream:true,messages:textMessages}:{}),
                           ...(kind==="image"?{size:openAiImageSize(generationConfig.size),
                             quality:["auto","low","medium","high"].includes(generationConfig.quality)?
                               generationConfig.quality:"auto"}:{}),
@@ -3715,6 +3722,8 @@ function AtelierCanvasPage() {
         if(sqliteJobWatchesRef.current.has(jobId))return;
         const controller=new AbortController();
         sqliteJobWatchesRef.current.set(jobId,controller);
+        let recentText="";
+        const progressKey="sqlite-text-"+jobId;
         void watchSqliteComfyJob({
             projectId,jobId,signal:controller.signal,
             getLocalGraph:()=>({nodes:nodesRef.current,connections:connectionsRef.current}),
@@ -3723,8 +3732,16 @@ function AtelierCanvasPage() {
                 nodesRef.current=graph.nodes;connectionsRef.current=graph.connections;
                 setNodes(graph.nodes);setConnections(graph.connections);
             },
+            onTextDelta:delta=>{
+                if(controller.signal.aborted||activeProjectIdRef.current!==projectId)return;
+                recentText=(recentText+delta).slice(-512);
+                message.open({key:progressKey,type:"loading",duration:0,
+                    content:"文本生成中："+recentText.slice(-120)});
+            },
             onStatus:(status,details)=>{
                 if(controller.signal.aborted||activeProjectIdRef.current!==projectId)return;
+                if(["succeeded","failed","cancelled","submission_unknown","blocked_credential","materialized","blocked","unavailable","needs_refresh"].includes(status))
+                    message.destroy(progressKey);
                 if(["succeeded","failed","cancelled","submission_unknown","blocked_credential"].includes(status)){
                     for(const [sourceId,activeJobId] of sqliteGenerationJobsRef.current){
                         if(activeJobId!==jobId)continue;
@@ -3739,6 +3756,7 @@ function AtelierCanvasPage() {
                     message.error("SQLite 后端任务："+status);
             }
         }).finally(()=>{
+            message.destroy(progressKey);
             if(sqliteJobWatchesRef.current.get(jobId)===controller)
                 sqliteJobWatchesRef.current.delete(jobId);
         });

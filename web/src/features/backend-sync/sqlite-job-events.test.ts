@@ -13,9 +13,9 @@ class FakeEventSource{
  addEventListener(event:string,callback:(event:{data:string})=>void){
   this.handlers.set(event,[...(this.handlers.get(event)??[]),callback]);
  }
- send(jobId:string){
+ send(jobId:string,kind="state_changed",payload?:unknown){
   for(const handler of this.handlers.get("job")??[])
-   handler({data:JSON.stringify({jobId,kind:"state_changed",eventId:28})});
+   handler({data:JSON.stringify({jobId,kind,eventId:28,payload})});
  }
  close(){this.closed=true}
 }
@@ -36,10 +36,25 @@ describe("P4.2 shared SQLite SSE subscription",()=>{
   expect(second).not.toHaveBeenCalled();
   stream.send("job-b");
   expect(second).toHaveBeenCalledOnce();
+  stream.send("job-a","model_text_delta",{delta:"hello"});
+  expect(first).toHaveBeenLastCalledWith(expect.objectContaining({
+   jobId:"job-a",kind:"model_text_delta",payload:{delta:"hello"}
+  }));
+  expect(first).toHaveBeenCalledTimes(2);
+  expect(second).toHaveBeenCalledTimes(1);
   offA();
   expect(stream.closed).toBe(false);
   offB();
   expect(stream.closed).toBe(true);
+ });
+ it("invalid event payloads never dispatch model progress",async()=>{
+  vi.stubGlobal("EventSource",FakeEventSource);
+  const fn=vi.fn(),off=subscribeSqliteJobEvents("job-a",fn);
+  await vi.waitFor(()=>expect(FakeEventSource.instances).toHaveLength(1));
+  for(const handler of FakeEventSource.instances[0].handlers.get("job")??[])
+   handler({data:JSON.stringify({jobId:"job-a",kind:"model_text_delta",eventId:"invalid",payload:{delta:"unsafe"}})});
+  expect(fn).not.toHaveBeenCalled();
+  off();
  });
  it("rejects unsafe IDs without creating any stream",()=>{
   expect(()=>subscribeSqliteJobEvents("../../other",vi.fn())).toThrow("invalid_job_id");

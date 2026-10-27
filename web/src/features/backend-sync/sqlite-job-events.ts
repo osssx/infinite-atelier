@@ -4,7 +4,8 @@ import {canvasApi} from "./canvas-api";
  * Server replays events newer than the snapshot cursor: no subscribe gap.
  * Browser EventSource reconnects with Last-Event-ID; polling remains fallback.
  */
-const subscribers=new Map<string,Set<()=>void>>();
+export type SqliteJobEvent={jobId:string;kind:string;eventId:number;payload?:unknown};
+const subscribers=new Map<string,Set<(event:SqliteJobEvent)=>void>>();
 let source:EventSource|null=null;
 let startGeneration=0;
 let connecting=false;
@@ -20,15 +21,16 @@ function start(){
   source=next;
   next.addEventListener("job",(raw)=>{
    try{
-    const row=JSON.parse((raw as MessageEvent).data) as {jobId?:string};
-    if(typeof row.jobId!=="string")return;
-    for(const callback of subscribers.get(row.jobId)??[])callback();
+    const row=JSON.parse((raw as MessageEvent).data) as SqliteJobEvent;
+    if(typeof row.jobId!=="string"||typeof row.kind!=="string"||
+      !Number.isSafeInteger(row.eventId))return;
+    for(const callback of subscribers.get(row.jobId)??[])callback(row);
    }catch{/* malformed event never mutates Canvas state */}
   });
  }).catch(()=>{/* backend unavailable: watchers continue polling */})
   .finally(()=>{if(generation===startGeneration)connecting=false});
 }
-export function subscribeSqliteJobEvents(jobId:string,callback:()=>void):()=>void{
+export function subscribeSqliteJobEvents(jobId:string,callback:(event:SqliteJobEvent)=>void):()=>void{
  if(!/^[A-Za-z0-9_-]{1,128}$/.test(jobId))throw Error("invalid_job_id");
  let listeners=subscribers.get(jobId);
  if(!listeners){listeners=new Set();subscribers.set(jobId,listeners)}

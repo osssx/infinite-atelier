@@ -1,6 +1,6 @@
 import {describe,it,expect,vi} from "vitest";
 import {CanvasApiError} from "./canvas-api";
-import {ensureSqliteModelChannel,saveSqliteModelChannelFromEditor,modelChannelProvider} from "./model-channel-autoroute";
+import {ensureSqliteModelChannel,ensureSqliteModelChannelForExecution,saveSqliteModelChannelFromEditor,modelChannelProvider} from "./model-channel-autoroute";
 import type {ModelChannel} from "@/stores/use-config-store";
 import type {canvasApi} from "./canvas-api";
 
@@ -67,6 +67,25 @@ describe("default SQLite model routing and automatic DPAPI provisioning",()=>{
   const updated=await saveSqliteModelChannelFromEditor(changed,original,"openai",api as unknown as typeof canvasApi);
   expect(updated.apiKey).toBe("");
   expect(requests.filter(r=>r.method==="PATCH")).toHaveLength(1);
+ });
+ it("P5.4e normal generation reuses vault without rotating unchanged local browser key",async()=>{
+  const request=vi.fn(async(_path:string,method="GET")=>{
+   expect(method).toBe("GET");
+   return {id:"channel123",provider:"openai",hasKey:true,keyVersion:"stable"};
+  });
+  await ensureSqliteModelChannelForExecution(channel(),"openai",request as unknown as typeof canvasApi);
+  await ensureSqliteModelChannelForExecution(channel(),"openai",request as unknown as typeof canvasApi);
+  expect(request).toHaveBeenCalledTimes(2);
+ });
+ it("P5.4e normal generation provisions only absent vaulted keys",async()=>{
+  const requests:string[]=[];
+  const request=vi.fn(async(path:string,method="GET")=>{
+   requests.push(method);
+   if(method==="GET")throw new CanvasApiError("missing",404,"GET",path);
+   return {id:"channel123",provider:"openai",hasKey:true,keyVersion:"first"};
+  });
+  await ensureSqliteModelChannelForExecution(channel(),"openai",request as unknown as typeof canvasApi);
+  expect(requests).toEqual(["GET","GET","POST"]);
  });
  it("reuses vaulted key without needing to reenter it or call a separate enable button",async()=>{
   const api=vi.fn(async()=>({id:"channel123",provider:"openai",hasKey:true,keyVersion:"current"}));

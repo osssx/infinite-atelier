@@ -80,6 +80,10 @@ SQLite schema v12 的 `ui_settings` 包含模型通道元数据、模型选项�
 
 服务端在新增版本和读取指定版本时，依照前端 Skill ZIP 归一化路径规则重算包括非执行性 scripts/assets 的全量原始文件 SHA-256；`manifest.hash/version`、YAML 元数据、references 内容与 warnings 必须一致。若现存 Skill 行被篡改或归档无法复验，读请求返回 `skill_package_integrity_failed`，不会静默返回不一致正文。冷备份仍对数据库文件进行常规哈希/SQLite 完整性检查，但**不具备对原始 ZIP 来源真实性或作者签名的认证**。多标签页的通知是只读重新刷新提示，不替代 SQLite 的事务化 `expectedRevision` 比对；失去广播时，Skill 管理器在重新聚焦或可见状态定期轮询权威目录。旧 IndexedDB 中未导入的原始 Skills 不在 SQLite 冷备份范围内。
 
+## P5.4j：授权快照与端到端冷恢复验收
+
+普通 Canvas 自动 Skill 任务在写 CAS 前必须通过 SQLite 当前目录的单次批量权限校验，校验在请求中声明的旧 revision、防止规划到冻结期间被另一个标签页修改启用/作用域；授权成功之后的已冻结任务遵循不可变快照语义，即便后来禁用或删除目录条目，历史 Job 仍可依赖原 CAS 复验。新跨模块测试使用**模拟**官方 OpenAI 多轮工具响应验证一份数据库中的项目/Skill、CAS 快照、Job 产物、任务日志与 `backup:data` 新目录恢复后完整可读；第二轮网络断链进入 `submission_unknown` 并经 Coordinator 重建确认没有再次付费提交。恢复不会自动向模型发送请求。生产真实付费 API、浏览器双标签页人工 GUI、DPAPI 跨设备恢复仍需独立验收。标准 UI 的授权快照校验不等于后端 Job API 具备独立授权票据防伪能力，当前只能对具备本地会话权限的客户端进行信任，下一轮可将端到端授权凭证持久化并在 Job prepare 再校验。
+
 ## 安全与范围边界
 
 - 数据库包括 Canvas 项目、聊天、任务状态、Comfy 模板/预设、渠道记录和凭据的 DPAPI **加密密文**。恢复不触发模型 API，不会重发 `submission_unknown` 请求。

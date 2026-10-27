@@ -10,7 +10,7 @@ import {createComfyRegistry} from "./comfy-registry.mjs";
 import {getProjectSkillAudit,replayProjectSkillJob} from "./skill-job-audit.mjs";
 import {listProjectJobs} from "./project-job-history.mjs";
 import {getAssetCatalog,putAssetCatalog} from "./asset-catalog.mjs";
-import {listSkillRegistry,getSkillRegistryPackage,registerSqliteSkill,updateSqliteSkill,deleteSqliteSkill} from "./sqlite-skill-registry.mjs";
+import {listSkillRegistry,getSkillRegistryPackage,getAuthorizedSkillCatalog,registerSqliteSkill,updateSqliteSkill,deleteSqliteSkill} from "./sqlite-skill-registry.mjs";
 import {getUiSetting,putUiSetting} from "./ui-settings.mjs";
 const nonempty={type:"string",minLength:1,maxLength:256};
 const idSchema={type:"string",pattern:"^[A-Za-z0-9_-]{1,128}$"};
@@ -119,6 +119,8 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
    "comfy_template_invalid","comfy_template_too_large","comfy_template_revision_mismatch",
    "comfy_template_immutable_conflict","comfy_template_not_found","comfy_template_in_use",
    "comfy_preset_invalid","comfy_preset_not_found",
+   "skill_authorization_invalid","skill_project_not_found",
+   "skill_authorization_changed","skill_snapshot_limit_exceeded",
    "skill_revision_required","skill_revision_conflict",
    "skill_package_integrity_failed",
    "skill_package_invalid","skill_package_too_large","skill_catalog_full","skill_version_conflict",
@@ -307,6 +309,17 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
    properties:{id:skillId,version:skillVersion},additionalProperties:false}}
  },(req,reply)=>{
   reply.header("Cache-Control","no-store");return getSkillRegistryPackage(db,req.params.id,req.params.version);
+ });
+ app.post("/api/v1/skills/authorized-catalog",{bodyLimit:32*1024,
+  schema:{body:{type:"object",required:["projectId","expectedRevision","skillIds","versionPins"],
+   properties:{
+    projectId:idSchema,expectedRevision:{type:"integer",minimum:1},
+    skillIds:{type:"array",minItems:1,maxItems:100,items:skillId},
+    versionPins:{type:"object",additionalProperties:skillVersion}
+   },additionalProperties:false}}
+ },(req,reply)=>{
+  reply.header("Cache-Control","no-store");
+  return getAuthorizedSkillCatalog(db,req.body);
  });
  app.post("/api/v1/skills",{bodyLimit:8*1024*1024,
   schema:{body:{type:"object",required:["package","expectedRevision"],properties:{package:{type:"object"},expectedRevision:{type:"integer",minimum:1}},additionalProperties:false}}

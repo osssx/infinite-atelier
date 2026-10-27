@@ -108,6 +108,51 @@ export function getSkillRegistryPackage(db,id,version){
   throw problem("skill_package_integrity_failed",422);
  return {package:pkg};
 }
+/** One SQLite read fence: all pinned versions and their current enabled/project
+ * permission are checked together. No prompt, API key, or archive bytes leave
+ * this endpoint. A later revoke does not mutate a previously frozen CAS job.
+ */
+export function getAuthorizedSkillCatalog(db,{projectId,expectedRevision,skillIds,versionPins}){
+ if(typeof projectId!=="string"||!projectRule.test(projectId)||
+    !Number.isSafeInteger(expectedRevision)||expectedRevision<1||
+    !Array.isArray(skillIds)||!skillIds.length||skillIds.length>100||
+    !plain(versionPins)||Object.keys(versionPins).length!==skillIds.length)
+  throw problem("skill_authorization_invalid");
+ const project=db.prepare("SELECT deleted_at FROM projects WHERE id=?").get(projectId);
+ if(!project||project.deleted_at!==null)throw problem("skill_project_not_found",404);
+ requireRevision(db,expectedRevision);
+ const unique=new Set(),entries=[];
+ let size=0;
+ for(const id of skillIds){
+  if(typeof id!=="string"||!idRule.test(id)||id.length>80||unique.has(id)||
+    !Object.hasOwn(versionPins,id)||typeof versionPins[id]!=="string"||
+    !versionRule.test(versionPins[id]))
+   throw problem("skill_authorization_invalid");
+  unique.add(id);
+  const row=db.prepare("SELECT enabled,scope_project_id FROM skill_entries WHERE id=?").get(id);
+  if(!row||row.enabled!==1||
+    row.scope_project_id!==null&&row.scope_project_id!==projectId)
+   throw problem("skill_authorization_changed",409);
+  const version=versionPins[id];
+  const record=db.prepare("SELECT * FROM skill_versions WHERE skill_id=? AND version=?")
+   .get(id,version);
+  if(!record)throw problem("skill_authorization_changed",409);
+  const pkg=readVersionRow(record);
+  verifySkillPackageContent(pkg,record.archive_bytes);
+  if(pkg.manifest.hash!==record.hash||pkg.manifest.version!==record.version)
+   throw problem("skill_package_integrity_failed",422);
+  const {manifest,skillMd,resources}=pkg;
+  if(skillMd.length>24000||Object.keys(resources).length>99||
+    Object.values(resources).some(value=>typeof value!=="string"||value.length>24000))
+   throw problem("skill_snapshot_limit_exceeded",413);
+  const entry={id,version,hash:manifest.hash,name:manifest.name,
+   description:manifest.description,skillMd,resources};
+  size+=Buffer.byteLength(JSON.stringify(entry),"utf8");
+  if(size>950000)throw problem("skill_snapshot_limit_exceeded",413);
+  entries.push(entry);
+ }
+ return {revision:expectedRevision,entries};
+}
 export function registerSqliteSkill(db,raw,expectedRevision){
  const pkg=validatePackage(raw);
  return writeTransaction(db,()=>{

@@ -798,6 +798,7 @@ function EmptyImageContent({ theme }: NodeContentRendererProps) {
 
 function VideoNodeContent({ node, theme, onMediaPlaybackChange }: NodeContentRendererProps) {
     const { t } = useTranslation();
+    const {onVideoDimensions}=useCanvasActions();
     const source = node.metadata?.content;
     const storageKey = node.metadata?.storageKey;
     const videoRef = useRef<HTMLVideoElement>(null);
@@ -862,6 +863,11 @@ function VideoNodeContent({ node, theme, onMediaPlaybackChange }: NodeContentRen
             <video ref={videoRef}
                 controls={frameReady}
                 preload="none"
+                onLoadedMetadata={(event)=>{
+                    const video=event.currentTarget;
+                    if(node.metadata?.comfyArtifact||node.metadata?.modelArtifact)
+                        onVideoDimensions(node.id,video.videoWidth,video.videoHeight,"video");
+                }}
                 playsInline
                 onLoadedData={() => setFrameReady(true)}
                 onPlay={() => onMediaPlaybackChange?.(node.id, true)}
@@ -899,6 +905,14 @@ function VideoNodeContent({ node, theme, onMediaPlaybackChange }: NodeContentRen
                     aria-label={failed ? "Retry video playback" : requested ? "Loading video" : "Play video"}
                 >
                     {poster ? <img src={poster} alt="" draggable={false}
+                        onLoad={(event)=>{
+                            if((node.metadata?.comfyArtifact||node.metadata?.modelArtifact)&&
+                               !node.metadata?.legacyVideoAspectRecovered&&
+                               !node.metadata?.naturalWidth&&!node.metadata?.naturalHeight&&
+                               node.width===420&&node.height===236)
+                                onVideoDimensions(node.id,event.currentTarget.naturalWidth,
+                                    event.currentTarget.naturalHeight,"poster");
+                        }}
                         className="pointer-events-none absolute inset-0 h-full w-full object-contain" /> : null}
                     <span className="relative z-10 grid size-12 place-items-center rounded-full border border-white/40 bg-black/50">
                         {requested ? <span className="text-xs">···</span> : failed

@@ -95,6 +95,8 @@ export type CanvasNodeMetadata = {
     references?: string[];
     naturalWidth?: number;
     naturalHeight?: number;
+    /** Legacy 420x236 generated video was sized from the poster or native metadata. */
+    legacyVideoAspectRecovered?: boolean;
     freeResize?: boolean;
     images?: CanvasNodeImage[];
     primaryImageId?: string;

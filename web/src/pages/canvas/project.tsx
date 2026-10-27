@@ -14,6 +14,7 @@ import { requestAudioGeneration } from "@/services/api/audio";
 import { cancelVideoGenerationTask, pollVideoGenerationTask, requestVideoGeneration, retrySeedanceDownload, type VideoGenerationRequest, type VideoGenerationTask } from "@/services/api/video";
 import { defaultConfig, resolveModelChannel, resolveModelScript, modelOptionName, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
 import {recoverLegacyGeneratedImageSize} from "@/lib/canvas/canvas-generated-image-size";
+import {recoverLegacyGeneratedVideoSize} from "@/lib/canvas/canvas-generated-video-size";
 import { deleteStoredImages,getImageBlob } from "@/services/image-storage";
 import { deleteStoredMedia,getMediaBlob } from "@/services/file-storage";
 import {uploadCanvasImage as uploadImage,uploadCanvasMedia,storeCanvasGeneratedVideo as storeGeneratedVideo,storeCanvasGeneratedAudio as storeGeneratedAudio,isCanvasCasKey,canvasCasUrl} from "@/features/backend-sync/canvas-media";
@@ -1903,6 +1904,18 @@ function AtelierCanvasPage() {
             const next=prev.map(node=>{
                 if(node.id!==nodeId)return node;
                 const recovered=recoverLegacyGeneratedImageSize(node,width,height);
+                if(recovered!==node)changed=true;
+                return recovered;
+            });
+            return changed?next:prev;
+        });
+    },[]);
+    const handleGeneratedVideoDimensions = useCallback((nodeId:string,width:number,height:number,source:"poster"|"video")=>{
+        setNodes(prev=>{
+            let changed=false;
+            const next=prev.map(node=>{
+                if(node.id!==nodeId)return node;
+                const recovered=recoverLegacyGeneratedVideoSize(node,width,height,source);
                 if(recovered!==node)changed=true;
                 return recovered;
             });
@@ -4016,6 +4029,7 @@ function AtelierCanvasPage() {
         onResizeStart: handleNodeResizeStart,
         onResize: handleNodeResize,
         onImageDimensions: handleGeneratedImageDimensions,
+        onVideoDimensions: handleGeneratedVideoDimensions,
         onResizeEnd: handleNodeResizeEnd,
         onContentChange: handleNodeContentChange,
         onTitleChange: handleNodeTitleChange,

@@ -118,6 +118,45 @@ test("landscape and portrait captured images create correctly proportioned nodes
   });
  }
 });
+test("generated portrait and landscape video nodes respect real dimensions, persist and never resubmit",async t=>{
+ for(const {title,dimensions,expected} of [
+  {title:"portrait 9:16",dimensions:{width:768,height:1344},expected:{width:240,height:420}},
+  {title:"landscape 16:9",dimensions:{width:1344,height:768},expected:{width:420,height:240}},
+  {title:"square",dimensions:{width:1024,height:1024},expected:{width:420,height:420}},
+  {title:"missing ffprobe fallback",dimensions:null,expected:{width:420,height:236}}
+ ]){
+  await t.test(title,async child=>{
+   const f=fixture(child),{jobId,created}=await f.addArtifacts({key:"video-ratio",count:2});
+   const seen=[];
+   const sized=createCanvasMaterializer({db:f.db,blobStore:f.blobStore,
+    videoDimensionReader:async(path,mime)=>{
+     seen.push(mime);
+     assert.equal(mime,"video/mp4");
+     assert.ok(path);
+     return dimensions;
+    }});
+   assert.deepEqual((await sized.runOnce()).map(x=>x.status),["materialized","materialized"]);
+   assert.deepEqual(seen,["video/mp4"]);
+   const document=getProject(f.db,"project-1").document;
+   const output=document.nodes.find(n=>n.id==="artifact-"+created[1]);
+   assert.equal(output.type,"video");
+   assert.deepEqual({width:output.width,height:output.height},expected);
+   if(dimensions){
+    assert.equal(output.metadata.naturalWidth,dimensions.width);
+    assert.equal(output.metadata.naturalHeight,dimensions.height);
+   }else{
+    assert.equal(output.metadata.naturalWidth,undefined);
+    assert.equal(output.metadata.naturalHeight,undefined);
+   }
+   const link=document.connections.find(c=>c.toNodeId===output.id);
+   assert.equal(link.fromNodeId,"wf-1");
+   assert.equal(link.fromPortId,"video");
+   assert.equal(getProject(f.db,"project-1").document.nodes.find(n=>n.id===output.id).height,expected.height);
+   assert.equal((await sized.runOnce()).length,0,"no duplicate videos or tasks");
+   assert.equal(f.db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE id=?").get(jobId).n,1);
+  });
+ }
+});
 test("source mutation blocks materialization while GPU success and artifacts remain durable",async t=>{
  const f=fixture(t),{jobId,created}=await f.addArtifacts({count:1});
  const doc=getProject(f.db,"project-1");

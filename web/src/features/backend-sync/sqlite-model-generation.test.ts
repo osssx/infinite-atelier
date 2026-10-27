@@ -193,6 +193,43 @@ describe("P4.4 ordinary SQLite model submit",()=>{
   ).rejects.toThrow("model_text_history_invalid");
   expect(b.saveProjectNow).not.toHaveBeenCalled();
  });
+ it("P5.4k carries the server grant only outside immutable text JobSnapshot",async()=>{
+  const id="11111111-1111-4111-a111-111111111111";
+  const cas="a".repeat(64);
+  const b=bridge();
+  const api=vi.fn(async(path:string,method="GET",payload?:unknown)=>{
+   if(path.includes("capabilities"))return {autoDispatch:true,modelKinds:["text"]};
+   if(path.includes("/channels/"))return {
+    id:"openai-channel",provider:"openai",hasKey:true,keyVersion:"v1"
+   };
+   if(path==="/api/v1/jobs"){
+    expect(payload).toMatchObject({
+     skillAuthorizationId:id,
+     snapshot:{adapterKind:"model",task:{
+      kind:"text",skills:{blobId:cas},prompt:"Show camera moves"
+     }}
+    });
+    expect(JSON.stringify((payload as {snapshot:unknown}).snapshot)).not.toContain(id);
+    return fakeJob;
+   }
+   throw Error("unexpected API");
+  });
+  await startSqliteModelGeneration({
+   projectId:"p1",sourceNodeId:"text-1",nodes,connections,
+   channelId:"openai-channel",skillAuthorizationId:id,
+   task:{kind:"text",model:"gpt-4o-mini",prompt:"Show camera moves",
+    stream:true,messages:[{role:"user",content:"Show camera moves"}],
+    skills:{blobId:cas}},
+   bridge:b,api:api as unknown as typeof canvasApi
+  });
+  expect(api.mock.calls.some(call=>call[0]==="/api/v1/jobs")).toBe(true);
+  await expect(startSqliteModelGeneration({
+   projectId:"p1",sourceNodeId:"text-1",nodes,connections,
+   channelId:"openai-channel",
+   task:{kind:"text",model:"gpt-4o-mini",prompt:"Show camera moves",
+    skills:{blobId:cas}},bridge:b,api:api as unknown as typeof canvasApi
+  })).rejects.toThrow("skill_grant_required");
+ });
  it("normalizes Canvas ratio shortcuts to supported OpenAI image size",()=>{
   expect(openAiImageSize("1:1")).toBe("1024x1024");
   expect(openAiImageSize("16:9")).toBe("1536x1024");

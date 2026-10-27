@@ -84,6 +84,10 @@ SQLite schema v12 的 `ui_settings` 包含模型通道元数据、模型选项�
 
 普通 Canvas 自动 Skill 任务在写 CAS 前必须通过 SQLite 当前目录的单次批量权限校验，校验在请求中声明的旧 revision、防止规划到冻结期间被另一个标签页修改启用/作用域；授权成功之后的已冻结任务遵循不可变快照语义，即便后来禁用或删除目录条目，历史 Job 仍可依赖原 CAS 复验。新跨模块测试使用**模拟**官方 OpenAI 多轮工具响应验证一份数据库中的项目/Skill、CAS 快照、Job 产物、任务日志与 `backup:data` 新目录恢复后完整可读；第二轮网络断链进入 `submission_unknown` 并经 Coordinator 重建确认没有再次付费提交。恢复不会自动向模型发送请求。生产真实付费 API、浏览器双标签页人工 GUI、DPAPI 跨设备恢复仍需独立验收。标准 UI 的授权快照校验不等于后端 Job API 具备独立授权票据防伪能力，当前只能对具备本地会话权限的客户端进行信任，下一轮可将端到端授权凭证持久化并在 Job prepare 再校验。
 
+## P5.4k：SQLite v14 一次性授权收口
+
+`POST /api/v1/skills/freeze` 由服务器直接创建 CAS（不再信任浏览器上传 Skill 冻结内容）并在 `skill_job_grants` 签发十分钟有效的一次性授权。普通 HTTP `/api/v1/jobs` 要求 `skillAuthorizationId` 与同项目、相同 blobId、有效期内、目录 revision 未改变的签发记录严格对应；授权 Job 绑定与 Job 插入共用一个事务。重复请求若同一 idempotencyKey 和完整快照一致，只回报原 Job 而不重发；不同 key 无法重用授权。冷备份携带已签发的授权表、对应 CAS BlobStore 和 Job 记录，不恢复后自动提交任务，过期授权不会因恢复续期。历史已成功 Job 的显式受控重放由独立后端服务校验原始成功任务和源指纹，不重新使用已消费的授权 ID。凭据 DPAPI 可携带的范围仍受原用户/系统限制；未通过真实计费 OpenAI 与人工双浏览器 E2E。未消费的过期票据目前保持在 SQLite，后续可以考虑受限清理。
+
 ## 安全与范围边界
 
 - 数据库包括 Canvas 项目、聊天、任务状态、Comfy 模板/预设、渠道记录和凭据的 DPAPI **加密密文**。恢复不触发模型 API，不会重发 `submission_unknown` 请求。

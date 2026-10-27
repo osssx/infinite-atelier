@@ -1,4 +1,5 @@
 import{randomUUID,createHash}from"node:crypto";
+import {claimSkillJobGrant} from "./skill-job-grants.mjs";
 import{EXECUTION_MODES,assertJobTransition}from"./contracts.mjs";
 const problem=code=>Object.assign(new Error(code),{code,statusCode:409});
 const invalid=code=>Object.assign(new Error(code),{code,statusCode:400});
@@ -55,7 +56,7 @@ export function fingerprintSource(document,targetNodeId){
  return createHash("sha256").update(stableJson({nodes,incoming})).digest("hex");
 }
 const emit=(db,jobId,kind,payload)=>db.prepare("INSERT INTO job_events(job_id,kind,payload_json,created_at) VALUES(?,?,?,?)").run(jobId,kind,stableJson(payload),Date.now());
-export function submitJob(db,{jobId=randomUUID(),principal="local-owner",projectId=null,targetNodeId=null,expectedProjectRevision=null,sourceNodeFingerprint=null,idempotencyKey,requestFingerprint,executionMode,snapshot}){
+export function submitJob(db,{jobId=randomUUID(),principal="local-owner",projectId=null,targetNodeId=null,expectedProjectRevision=null,sourceNodeFingerprint=null,idempotencyKey,requestFingerprint,executionMode,snapshot,skillAuthorizationId,requireSkillGrant=false}){
  if(!idempotencyKey||!requestFingerprint||!EXECUTION_MODES.includes(executionMode)||!snapshot||typeof snapshot!=="object")throw invalid("invalid_job_request");
  assertNoRawCredentials(snapshot);
  if(projectId===null&&(targetNodeId!==null||expectedProjectRevision!==null||sourceNodeFingerprint!==null))throw invalid("invalid_project_reference");
@@ -93,6 +94,8 @@ export function submitJob(db,{jobId=randomUUID(),principal="local-owner",project
   const now=Date.now();
   db.prepare(`INSERT INTO jobs(id,principal,project_scope,project_id,target_node_id,expected_project_revision,source_fingerprint,idempotency_key,request_fingerprint,snapshot_json,execution_mode,status,created_at,updated_at)
   VALUES(?,?,?,?,?,?,?,?,?,?,?,'queued',?,?)`).run(jobId,principal,scope,projectId,targetNodeId,expectedProjectRevision,sourceNodeFingerprint,idempotencyKey,requestFingerprint,stableJson(snapshot),executionMode,now,now);
+  // The FK points to the new Job; both operations still commit or roll back together.
+  if(requireSkillGrant)claimSkillJobGrant(db,{projectId,snapshot,skillAuthorizationId,jobId});
   emit(db,jobId,"job_queued",{status:"queued"});return{jobId,existing:false};
  });
 }

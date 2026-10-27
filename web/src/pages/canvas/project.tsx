@@ -2648,6 +2648,7 @@ function AtelierCanvasPage() {
                         throw Error("SQLite 语音生成目前仅支持 MP3、WAV 或 FLAC");
                     const bridge=createSqliteComfyBridge({projectId,
                         getLocalGraph:()=>({nodes:nodesRef.current,connections:connectionsRef.current})});
+                    let skillAuthorizationId:string|undefined;
                     let skillCatalog:FrozenSqliteSkillCatalog|undefined;
                     let textMessages:import("@/features/backend-sync/sqlite-model-generation").FrozenTextTurn[]|undefined;
                     if(kind==="text"){
@@ -2657,6 +2658,7 @@ function AtelierCanvasPage() {
                         const auto=skillBinding?.mode==="auto"?
                             await freezeSqliteSkillCatalog(skillBinding,text,projectId,bridge):null;
                         skillCatalog=auto?.catalog;
+                        skillAuthorizationId=auto?.authorizationId;
                         const manual=skillBinding?.mode==="manual"?
                             await resolveManualSkillContext(skillBinding,undefined,projectId):null;
                         const adapted=manual?withManualSkillMessages([{role:"user",content:text}],manual):null;
@@ -2694,6 +2696,7 @@ function AtelierCanvasPage() {
                         nodes:[...nodesRef.current],connections:[...connectionsRef.current],
                         channelId:selectedChannel.id,
                         provider:sqliteProvider,
+                        ...(skillAuthorizationId?{skillAuthorizationId}:{}),
                         bridge,
                         ...(kind==="image"||kind==="text"?{referenceImages:context.referenceImages}:{}),
                         task:{kind,model,prompt:kind==="text"?textMessages!.at(-1)!.content:text,

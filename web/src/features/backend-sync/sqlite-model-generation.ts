@@ -18,7 +18,7 @@ export type FrozenTextTurn=
  */
 export async function startSqliteModelGeneration({
  projectId,sourceNodeId,nodes,connections,channelId,provider="openai",task,
- referenceImages=[],maskImage,
+ skillAuthorizationId,referenceImages=[],maskImage,
  api=canvasApi,bridge=createSqliteComfyBridge({projectId,
   getLocalGraph:()=>({nodes:[...nodes],connections:[...connections]})})
 }:{
@@ -32,6 +32,7 @@ export async function startSqliteModelGeneration({
   references?:FrozenArkReference[];
   operation?:"edit";images?:FrozenModelImage[];mask?:FrozenModelImage;
   messages?:FrozenTextTurn[];stream?:boolean;skills?:{blobId:string}};
+ skillAuthorizationId?:string;
  referenceImages?:readonly ReferenceImage[];maskImage?:ReferenceImage;
  api?:typeof canvasApi;bridge?:ReturnType<typeof createSqliteComfyBridge>;
 }):Promise<BackendJobView>{
@@ -67,6 +68,9 @@ export async function startSqliteModelGeneration({
  if(task.skills&&(task.kind!=="text"||provider!=="openai"||
    !/^[a-f0-9]{64}$/.test(task.skills.blobId)))
   throw Error("model_skill_catalog_invalid");
+ if(task.skills&&!skillAuthorizationId)throw Error("skill_grant_required");
+ if(skillAuthorizationId&&(!task.skills||!/^[0-9a-f-]{36}$/.test(skillAuthorizationId)))
+  throw Error("skill_grant_invalid");
  const images=referenceImages.length?await freezeModelImages(referenceImages,bridge):[];
  const mask=maskImage?(await freezeModelImages([maskImage],bridge))[0]:undefined;
  await bridge.assertNoActiveJob(sourceNodeId);
@@ -74,6 +78,7 @@ export async function startSqliteModelGeneration({
  const fence=await bridge.saveProjectNow(frozen,sourceNodeId);
  const idempotencyKey=crypto.randomUUID();
  return api<BackendJobView>("/api/v1/jobs","POST",{
+  ...(skillAuthorizationId?{skillAuthorizationId}:{}),
   projectId,targetNodeId:sourceNodeId,
   expectedProjectRevision:fence.revision,sourceNodeFingerprint:fence.sourceNodeFingerprint,
   idempotencyKey,requestFingerprint:idempotencyKey,executionMode:task.kind==="video"?"poll":"immediate",

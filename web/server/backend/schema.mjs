@@ -1,5 +1,5 @@
 import{JOB_STATUSES,EXECUTION_MODES,ARTIFACT_KINDS}from"./contracts.mjs";
-export const SCHEMA_VERSION=13;
+export const SCHEMA_VERSION=14;
 const quoted=x=>x.map(s=>"'"+s+"'").join(",");
 export const INITIAL_SCHEMA_SQL=`
 CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY,applied_at INTEGER NOT NULL);
@@ -278,6 +278,21 @@ CREATE TABLE IF NOT EXISTS skill_versions(
  PRIMARY KEY(skill_id,version)
 );
 `;
+/** v14 short-lived server-issued authorization bound to exact CAS bytes.
+ * Grant consumption and Job insertion are in a single SQLite transaction.
+ */
+export const SKILL_GRANT_SCHEMA_SQL=`
+CREATE TABLE IF NOT EXISTS skill_job_grants(
+ id TEXT PRIMARY KEY,
+ project_id TEXT NOT NULL REFERENCES projects(id),
+ blob_id TEXT NOT NULL REFERENCES blobs(id),
+ registry_revision INTEGER NOT NULL,
+ issued_at INTEGER NOT NULL,
+ expires_at INTEGER NOT NULL,
+ job_id TEXT UNIQUE REFERENCES jobs(id)
+);
+CREATE INDEX IF NOT EXISTS ix_skill_job_grants_project ON skill_job_grants(project_id,expires_at);
+`;
 export function initializeSchema(db){
  db.exec("PRAGMA foreign_keys=ON;PRAGMA busy_timeout=5000;BEGIN IMMEDIATE");
  try{
@@ -310,6 +325,7 @@ export function initializeSchema(db){
   if(version<11)db.exec(ASSET_CATALOG_SCHEMA_SQL);
   if(version<12)db.exec(UI_SETTINGS_SCHEMA_SQL);
   if(version<13)db.exec(SKILL_REGISTRY_SCHEMA_SQL);
+  if(version<14)db.exec(SKILL_GRANT_SCHEMA_SQL);
   if(version<SCHEMA_VERSION)db.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)").run(SCHEMA_VERSION,Date.now());
   db.exec("COMMIT");
  }catch(e){db.exec("ROLLBACK");throw e}

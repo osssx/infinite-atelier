@@ -9,7 +9,7 @@ import {ARCHIVE_MAX_BYTES} from "./project-archive.mjs";
 import {createComfyRegistry} from "./comfy-registry.mjs";
 import {freezeAuthorizedSkillGrant} from "./skill-job-grants.mjs";
 import {getProjectSkillAudit,replayProjectSkillJob,lookupProjectSkillReplay} from "./skill-job-audit.mjs";
-import {listProjectJobs} from "./project-job-history.mjs";
+import {listProjectJobs,hideProjectJobHistory} from "./project-job-history.mjs";
 import {getAssetCatalog,putAssetCatalog} from "./asset-catalog.mjs";
 import {listSkillRegistry,getSkillRegistryPackage,getAuthorizedSkillCatalog,registerSqliteSkill,updateSqliteSkill,deleteSqliteSkill} from "./sqlite-skill-registry.mjs";
 import {getUiSetting,putUiSetting} from "./ui-settings.mjs";
@@ -97,7 +97,7 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
    "invalid_project_id","project_document_too_large","expected_revision_required","invalid_project_reference",
    "invalid_canvas_chats","invalid_canvas_viewport","canvas_chats_too_large",
    "chats_revision_conflict","viewport_revision_conflict",
-   "stale_generation_source","cyclic_generation_source","generation_save_barrier_required","invalid_job_request","idempotency_key_conflict","backend_prior_job_not_terminal","job_not_found","invalid_project_job_history_request","invalid_project_job_history_cursor","reconciliation_invalid_input","reconciliation_not_eligible","reconciliation_provider_unsupported","reconciliation_adapter_unavailable","reconciliation_state_changed","reconciliation_upstream_unavailable","reconciliation_remote_already_linked",
+   "stale_generation_source","cyclic_generation_source","generation_save_barrier_required","invalid_job_request","idempotency_key_conflict","backend_prior_job_not_terminal","job_not_found","invalid_project_job_history_request","invalid_project_job_history_cursor","project_job_not_found","project_job_not_terminal","reconciliation_invalid_input","reconciliation_not_eligible","reconciliation_provider_unsupported","reconciliation_adapter_unavailable","reconciliation_state_changed","reconciliation_upstream_unavailable","reconciliation_remote_already_linked",
    "ui_setting_invalid","ui_setting_secret_forbidden","ui_setting_too_large","ui_setting_not_found",
    "ui_setting_revision_required","ui_setting_revision_conflict",
    "asset_catalog_invalid","asset_catalog_too_large","asset_catalog_media_not_portable",
@@ -566,6 +566,13 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
   reply.header("Cache-Control","no-store");
   return listProjectJobs(db,{projectId:req.params.id,
    limit:req.query.limit??20,before:req.query.before});
+ });
+ app.delete("/api/v1/projects/:id/jobs/:jobId/history",{
+  schema:{params:{type:"object",required:["id","jobId"],
+   properties:{id:idSchema,jobId:idSchema},additionalProperties:false}}
+ },(req,reply)=>{
+  reply.header("Cache-Control","no-store");
+  return hideProjectJobHistory(db,{projectId:req.params.id,jobId:req.params.jobId});
  });
  if(blobStore){
   const projectSkillParams={type:"object",required:["id","jobId"],properties:{

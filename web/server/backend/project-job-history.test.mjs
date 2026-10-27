@@ -1,11 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {DatabaseSync} from "node:sqlite";
+import {mkdtempSync,rmSync} from "node:fs";
+import {tmpdir} from "node:os";
+import {join} from "node:path";
 import {initializeSchema} from "./schema.mjs";
 import {createProject} from "./projects.mjs";
 import {fingerprintSource,submitJob,appendArtifact} from "./repository.mjs";
 import {buildApp} from "./app.mjs";
-import {listProjectJobs} from "./project-job-history.mjs";
+import {listProjectJobs,hideProjectJobHistory} from "./project-job-history.mjs";
 
 const doc={nodes:[{id:"producer",type:"text",metadata:{prompt:"source"},
  position:{x:0,y:0},width:300,height:200}],connections:[]};
@@ -67,6 +70,93 @@ test("P4.7 job diagnostics whitelist coordinator outcomes but never arbitrary se
  const response=await f.call("/api/v1/projects/p1/jobs");
  assert.equal(response.json().jobs[0].lastOutcome,null);
  assert.doesNotMatch(response.body,/SECRET_TOKEN_98765|PRIVATE PROMPT/);
+});
+test("history DELETE is project-scoped, authorized, terminal-only and hides without deleting durable task state",async t=>{
+ const f=fixture(t),finished=f.make("finished"),foreign=f.make("foreign","p2");
+ const active=f.make("active");
+ f.db.prepare("UPDATE jobs SET status='running' WHERE id=?").run(active);
+ f.db.prepare("INSERT INTO blobs(id,sha256,byte_size,mime,relative_path,status) VALUES(?,?,?,?,?,?)")
+  .run("b-history","b-history",1,"image/png","blob-history","ready");
+ appendArtifact(f.db,{id:"a-history",jobId:finished,portId:"image",itemKey:"image-0",blobId:"b-history",
+  kind:"image",mime:"image/png",sha256:"b-history"});
+ f.db.prepare("INSERT INTO materializations(id,job_id,artifact_id,project_id,status,reason) VALUES(?,?,?,?,?,?)")
+  .run("m-history",finished,"a-history","p1","blocked","materialization_source_changed");
+ const prefix="/api/v1/projects/p1/jobs/",suffix="/history";
+ const del=(url,headers={"x-test-owner":"owner"})=>f.app.inject({method:"DELETE",url,headers});
+ assert.equal((await del(prefix+finished+suffix,{})).statusCode,401);
+ assert.equal((await del(prefix+finished+suffix,{"x-test-owner":"owner",origin:"https://attacker.example"})).statusCode,403);
+ assert.equal((await del(prefix+foreign+suffix)).statusCode,404);
+ assert.equal((await del("/api/v1/projects/missing/jobs/"+finished+suffix)).statusCode,404);
+ assert.equal((await del(prefix+active+suffix)).statusCode,409);
+ for(const status of ["submission_unknown","blocked_credential","collecting"]){
+  f.db.prepare("UPDATE jobs SET status=? WHERE id=?").run(status,active);
+  assert.equal((await del(prefix+active+suffix)).statusCode,409);
+ }
+ assert.equal(f.db.prepare("SELECT COUNT(*) n FROM job_history_hidden").get().n,0);
+ const result=await del(prefix+finished+suffix);
+ assert.equal(result.statusCode,200,result.body);
+ assert.deepEqual(result.json(),{hidden:true,jobId:finished});
+ assert.equal((await del(prefix+finished+suffix)).statusCode,200,"idempotent history removal");
+ const items=(await f.call("/api/v1/projects/p1/jobs")).json().jobs;
+ assert.deepEqual(items.map(x=>x.id),[active]);
+ assert.equal((await f.call("/api/v1/projects/p2/jobs")).json().jobs[0].id,foreign);
+ assert.equal(f.db.prepare("SELECT status FROM jobs WHERE id=?").get(finished).status,"succeeded");
+ assert.equal(f.db.prepare("SELECT status FROM materializations WHERE job_id=?").get(finished).status,"blocked");
+ assert.equal(f.db.prepare("SELECT COUNT(*) n FROM artifacts WHERE job_id=?").get(finished).n,1);
+ assert.ok(f.db.prepare("SELECT id FROM blobs WHERE id=?").get("b-history"));
+ assert.equal((await f.call("/api/v1/jobs/"+finished)).statusCode,200);
+ const replay=submitJob(f.db,{projectId:"p1",targetNodeId:"producer",expectedProjectRevision:1,
+  sourceNodeFingerprint:fingerprintSource(doc,"producer"),idempotencyKey:"finished",
+  requestFingerprint:"finished",executionMode:"immediate",snapshot:{adapterKind:"model",provider:"openai",
+   task:{kind:"image",prompt:"PRIVATE PROMPT NEVER RETURN",model:"test"}}});
+ assert.equal(replay.existing,true,"same idempotency key cannot submit a second paid job");
+ assert.equal(replay.jobId,finished);
+});
+
+test("history pagination excludes hidden records across page boundaries",async t=>{
+ const f=fixture(t),ids=[];
+ for(let i=0;i<8;i++){
+  ids.push(f.make("pagination-"+i));
+  f.db.prepare("UPDATE jobs SET created_at=? WHERE id=?").run(100+i,ids[i]);
+ }
+ const del=(id)=>f.app.inject({method:"DELETE",url:"/api/v1/projects/p1/jobs/"+id+"/history",
+  headers:{"x-test-owner":"owner"}});
+ assert.equal((await del(ids[6])).statusCode,200);
+ assert.equal((await del(ids[4])).statusCode,200);
+ const first=(await f.call("/api/v1/projects/p1/jobs?limit=3")).json();
+ const second=(await f.call("/api/v1/projects/p1/jobs?limit=3&before="+first.nextBefore)).json();
+ assert.deepEqual([...first.jobs,...second.jobs].map(x=>x.id),[ids[7],ids[5],ids[3],ids[2],ids[1],ids[0]]);
+ assert.equal(second.nextBefore,null);
+ assert.equal(f.db.prepare("SELECT COUNT(*) n FROM job_history_hidden").get().n,2);
+ initializeSchema(f.db);
+ assert.equal((await f.call("/api/v1/projects/p1/jobs")).json().jobs.length,6);
+});
+test("v15 database migrates to v16 and remembers removed history after reopening disk",t=>{
+ const dir=mkdtempSync(join(tmpdir(),"atelier-history-"));
+ t.after(()=>rmSync(dir,{recursive:true,force:true}));
+ const file=join(dir,"history.sqlite");
+ let db=new DatabaseSync(file);
+ try{
+  initializeSchema(db);
+  createProject(db,{id:"p1",document:doc});
+  const id=submitJob(db,{projectId:"p1",targetNodeId:"producer",expectedProjectRevision:1,
+   sourceNodeFingerprint:fingerprintSource(doc,"producer"),idempotencyKey:"disk",
+   requestFingerprint:"disk",executionMode:"immediate",snapshot:{adapterKind:"model"}}).jobId;
+  db.prepare("UPDATE jobs SET status='failed' WHERE id=?").run(id);
+  // Simulate opening an existing v15 database without this new table.
+  db.exec("DROP TABLE job_history_hidden");
+  db.prepare("DELETE FROM schema_migrations WHERE version=16").run();
+  db.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES(15,1)").run();
+  db.close();db=new DatabaseSync(file);
+  initializeSchema(db);
+  assert.equal(db.prepare("SELECT MAX(version) v FROM schema_migrations").get().v,16);
+  assert.equal(listProjectJobs(db,{projectId:"p1"}).jobs.length,1);
+  assert.deepEqual(hideProjectJobHistory(db,{projectId:"p1",jobId:id}),{hidden:true,jobId:id});
+  db.close();db=new DatabaseSync(file);
+  initializeSchema(db);
+  assert.equal(listProjectJobs(db,{projectId:"p1"}).jobs.length,0);
+  assert.equal(db.prepare("SELECT status FROM jobs WHERE id=?").get(id).status,"failed");
+ }finally{db.close()}
 });
 test("P4.8 authenticated project-scoped human reconciliation remains read-only until verified",async t=>{
  const db=new DatabaseSync(":memory:");initializeSchema(db);

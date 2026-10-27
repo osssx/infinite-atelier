@@ -3,7 +3,7 @@ const api=vi.hoisted(()=>vi.fn());
 vi.mock("./canvas-api",async(importOriginal)=>({
  ...(await importOriginal<typeof import("./canvas-api")>()),canvasApi:api
 }));
-import {canRetryCanvasMaterialization,canReconcileUnknownJob,getCanvasJobHistory,getCanvasSkillAudit,replayCanvasSkillJob,hasPendingSkillReplay,lookupPendingSkillReplay,retryCanvasMaterialization,recoverCanvasPendingMaterialization,reconcileCanvasUnknownJob,
+import {canRetryCanvasMaterialization,canReconcileUnknownJob,getCanvasJobHistory,getCanvasSkillAudit,replayCanvasSkillJob,hasPendingSkillReplay,lookupPendingSkillReplay,retryCanvasMaterialization,recoverCanvasPendingMaterialization,reconcileCanvasUnknownJob,canRemoveCanvasJobHistory,removeCanvasJobHistory,
  type CanvasJobHistoryItem,type CanvasJobArtifact} from "./canvas-job-history";
 
 afterEach(()=>vi.unstubAllGlobals());
@@ -32,6 +32,17 @@ describe("P4.7 Canvas job history and recovery boundary",()=>{
   api.mockResolvedValueOnce({jobs:[],nextBefore:null});
   await getCanvasJobHistory("p1","job-1");
   expect(api).toHaveBeenNthCalledWith(2,"/api/v1/projects/p1/jobs?limit=20&before=job-1");
+ });
+ it("only terminal tasks expose removal, pending/uncertain tasks remain protected",()=>{
+  for(const status of ["succeeded","failed","cancelled"])
+   expect(canRemoveCanvasJobHistory({...job,status})).toBe(true);
+  for(const status of ["queued","preparing","submitting","running","collecting","submission_unknown","blocked_credential"])
+   expect(canRemoveCanvasJobHistory({...job,status})).toBe(false);
+ });
+ it("history removal only sends scoped DELETE; no paid generation or artifact deletion",async()=>{
+  api.mockResolvedValueOnce({hidden:true,jobId:"job-1"});
+  await removeCanvasJobHistory("p1","job-1");
+  expect(api).toHaveBeenCalledExactlyOnceWith("/api/v1/projects/p1/jobs/job-1/history","DELETE");
  });
  it("P4.8 only eligible unknown Comfy task offers human reconciliation",()=>{
   const ready={...job,status:"submission_unknown",kind:"comfy" as const,reconciliationEligible:true};

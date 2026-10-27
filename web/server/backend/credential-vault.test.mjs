@@ -20,7 +20,7 @@ test("v1 database migrates through credential schema v2 to coordinator schema v3
  db.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES(1,1)").run();
  db.prepare("INSERT INTO projects(id,document_json,revision) VALUES(?,?,?)").run("keep",'{"nodes":[],"connections":[]}',12);
  initializeSchema(db);initializeSchema(db);
- assert.equal(db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v,15);
+ assert.equal(db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v,16);
  assert.equal(db.prepare("SELECT revision FROM projects WHERE id='keep'").get().revision,12);
  assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE name='credential_versions'").get().name,"credential_versions");
  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM schema_migrations").get().n,2);

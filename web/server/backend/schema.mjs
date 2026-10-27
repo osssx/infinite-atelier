@@ -1,5 +1,5 @@
 import{JOB_STATUSES,EXECUTION_MODES,ARTIFACT_KINDS}from"./contracts.mjs";
-export const SCHEMA_VERSION=15;
+export const SCHEMA_VERSION=16;
 const quoted=x=>x.map(s=>"'"+s+"'").join(",");
 export const INITIAL_SCHEMA_SQL=`
 CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY,applied_at INTEGER NOT NULL);
@@ -303,6 +303,15 @@ CREATE TABLE IF NOT EXISTS comfy_instance_registry_state(
  id INTEGER PRIMARY KEY CHECK(id=1)
 );
 `;
+/** v16: history removal is an isolated visibility tombstone. Jobs, idempotency,
+ * remote submission receipts, collected CAS artifacts and provenance remain intact.
+ */
+export const JOB_HISTORY_HIDDEN_SCHEMA_SQL=`
+CREATE TABLE IF NOT EXISTS job_history_hidden(
+ job_id TEXT PRIMARY KEY REFERENCES jobs(id),
+ hidden_at INTEGER NOT NULL
+);
+`;
 export function initializeSchema(db){
  db.exec("PRAGMA foreign_keys=ON;PRAGMA busy_timeout=5000;BEGIN IMMEDIATE");
  try{
@@ -337,6 +346,7 @@ export function initializeSchema(db){
   if(version<13)db.exec(SKILL_REGISTRY_SCHEMA_SQL);
   if(version<14)db.exec(SKILL_GRANT_SCHEMA_SQL);
   if(version<15)db.exec(COMFY_INSTANCES_SCHEMA_SQL);
+  if(version<16)db.exec(JOB_HISTORY_HIDDEN_SCHEMA_SQL);
   if(version<SCHEMA_VERSION)db.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)").run(SCHEMA_VERSION,Date.now());
   db.exec("COMMIT");
  }catch(e){db.exec("ROLLBACK");throw e}

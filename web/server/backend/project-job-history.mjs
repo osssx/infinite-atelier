@@ -4,6 +4,27 @@
  */
 const invalid=(code,statusCode=400)=>Object.assign(Error(code),{code,statusCode});
 const validId=id=>typeof id==="string"&&/^[A-Za-z0-9_-]{1,128}$/.test(id);
+const terminal=new Set(["succeeded","failed","cancelled"]);
+/** Hide a finished task from this project's history without destroying the
+ * immutable execution/idempotency fence, CAS, materializations or Canvas nodes.
+ * Uncertain submissions and active jobs are deliberately never hidden.
+ */
+export function hideProjectJobHistory(db,{projectId,jobId}={}){
+ if(!validId(projectId)||!validId(jobId))throw invalid("invalid_project_job_history_request");
+ // Use the same database transaction as the status check: no race with worker
+ // state transitions or a concurrent restore/reconcile operation.
+ db.exec("BEGIN IMMEDIATE");
+ try{
+  const project=db.prepare("SELECT id FROM projects WHERE id=? AND deleted_at IS NULL").get(projectId);
+  const job=project?db.prepare("SELECT status FROM jobs WHERE id=? AND project_id=?").get(jobId,projectId):null;
+  if(!job)throw invalid("project_job_not_found",404);
+  if(!terminal.has(job.status))throw invalid("project_job_not_terminal",409);
+  db.prepare("INSERT OR IGNORE INTO job_history_hidden(job_id,hidden_at) VALUES(?,?)").run(jobId,Date.now());
+  db.exec("COMMIT");
+ }catch(error){db.exec("ROLLBACK");throw error}
+ return {hidden:true,jobId};
+}
+
 // Only allow coordinator-owned outcome codes into the public task history.
 const outcomes=new Set(["prepare_failed","not_accepted","remote_failed","submission_unknown","blocked_credential","process_restarted","poll_failed","collect_pending","remote_pending","interrupted","succeeded"]);
 export function listProjectJobs(db,{projectId,limit=20,before}={}){
@@ -18,9 +39,12 @@ export function listProjectJobs(db,{projectId,limit=20,before}={}){
  }
  const rows=cursor?
   db.prepare(`SELECT * FROM jobs WHERE project_id=? AND
+   NOT EXISTS(SELECT 1 FROM job_history_hidden h WHERE h.job_id=jobs.id) AND
    (created_at<? OR (created_at=? AND id<?)) ORDER BY created_at DESC,id DESC LIMIT ?`)
    .all(projectId,cursor.created_at,cursor.created_at,cursor.id,limit+1):
-  db.prepare("SELECT * FROM jobs WHERE project_id=? ORDER BY created_at DESC,id DESC LIMIT ?")
+  db.prepare(`SELECT * FROM jobs WHERE project_id=? AND
+   NOT EXISTS(SELECT 1 FROM job_history_hidden h WHERE h.job_id=jobs.id)
+   ORDER BY created_at DESC,id DESC LIMIT ?`)
    .all(projectId,limit+1);
  const hasMore=rows.length>limit;
  const jobs=rows.slice(0,limit).map(job=>{

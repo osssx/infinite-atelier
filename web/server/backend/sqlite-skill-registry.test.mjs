@@ -39,7 +39,7 @@ function fixture(t){
 }
 test("P5.4i v13 hashes Skill.md and complete ZIP; persists immutable versions, scope and archive",async t=>{
  const {db,dir,request,app}=fixture(t);
- assert.equal(SCHEMA_VERSION,15);
+ assert.equal(SCHEMA_VERSION,16);
  const initialPkg=skill(),nextPkg=skill("Updated",true);
  const oldVersion=initialPkg.manifest.version,nextVersion=nextPkg.manifest.version;
  const initial=await request("POST","/api/v1/skills",{package:initialPkg});
@@ -137,6 +137,6 @@ test("P5.4h existing v12 SQLite settings survive v13 schema restart",async t=>{
  const {db}=fixture(t);
  const old=db.prepare("SELECT * FROM ui_settings WHERE name='theme'").get();
  initializeSchema(db);
- assert.equal(db.prepare("SELECT MAX(version) v FROM schema_migrations").get().v,15);
+ assert.equal(db.prepare("SELECT MAX(version) v FROM schema_migrations").get().v,16);
  assert.deepEqual(db.prepare("SELECT * FROM ui_settings WHERE name='theme'").get(),old);
 });

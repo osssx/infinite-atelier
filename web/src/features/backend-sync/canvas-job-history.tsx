@@ -1,6 +1,6 @@
 import {useCallback,useEffect,useRef,useState} from "react";
 import {Alert,App,Button,Drawer,Empty,Input,Spin,Tag,Tooltip} from "antd";
-import {RefreshCw} from "lucide-react";
+import {RefreshCw,Trash2} from "lucide-react";
 import {canvasApi,CanvasApiError} from "./canvas-api";
 
 export type CanvasJobArtifact={artifactId:string;kind:string;status:string;reason:string|null;nodeId:string|null};
@@ -155,6 +155,14 @@ export const canRetryCanvasMaterialization=(job:CanvasJobHistoryItem,artifact:Ca
  job.status==="succeeded"&&artifact.status==="blocked";
 export const canReconcileUnknownJob=(job:CanvasJobHistoryItem)=>
  job.kind==="comfy"&&job.status==="submission_unknown"&&job.reconciliationEligible;
+/** Only completed jobs can leave history; uncertain and active tasks must stay visible. */
+export const canRemoveCanvasJobHistory=(job:CanvasJobHistoryItem)=>
+ ["succeeded","failed","cancelled"].includes(job.status);
+export async function removeCanvasJobHistory(projectId:string,jobId:string):Promise<void>{
+ await canvasApi<{hidden:true;jobId:string}>("/api/v1/projects/"+encodeURIComponent(projectId)+
+  "/jobs/"+encodeURIComponent(jobId)+"/history","DELETE");
+}
+
 export async function getCanvasJobHistory(projectId:string,before?:string):Promise<Page>{
  return canvasApi<Page>("/api/v1/projects/"+encodeURIComponent(projectId)+
   "/jobs?limit=20"+(before?"&before="+encodeURIComponent(before):""));
@@ -286,6 +294,25 @@ export function CanvasJobHistory({projectId,open,onClose,onObserveJob,onRefreshC
    }
   });
  }
+ function confirmRemove(job:CanvasJobHistoryItem){
+  if(!canRemoveCanvasJobHistory(job)||working)return;
+  modal.confirm({
+   title:"删除这条任务历史？",
+   content:"仅从历史列表移除。SQLite 原始任务记录、生成产物和已写入的画布节点将保留。移除后无法再从历史列表恢复该任务的受阻产物。",
+   okText:"删除记录",okType:"danger",cancelText:"取消",
+   onOk:async()=>{
+    setWorking(job.id);
+    try{
+     await removeCanvasJobHistory(projectId,job.id);
+     message.success("已从任务历史列表移除，生成产物仍保留");
+     setSkillAuditOpen(current=>current===job.id?null:current);
+     setSkillAudits(old=>{const next={...old};delete next[job.id];return next});
+     await refresh();
+    }catch(error){message.error("删除任务历史失败："+String(error));throw error}
+    finally{setWorking(null)}
+   }
+  });
+ }
  async function retry(job:CanvasJobHistoryItem,artifact:CanvasJobArtifact){
   if(!canRetryCanvasMaterialization(job,artifact)||inflight.current.has(artifact.artifactId))return;
   inflight.current.add(artifact.artifactId);setWorking(artifact.artifactId);
@@ -335,7 +362,7 @@ export function CanvasJobHistory({projectId,open,onClose,onObserveJob,onRefreshC
    </div>
    {error?<Alert type="error" showIcon message="读取任务失败" description={error}/>:null}
    {loading&&!jobs.length?<div className="py-8 text-center"><Spin/></div>:null}
-   {!loading&&!error&&!jobs.length?<Empty description="尚无 SQLite 任务记录"/>:null}
+   {!loading&&!error&&!jobs.length?<Empty description="暂无任务记录"/>:null}
    {jobs.map(job=><div key={job.id} className="rounded-lg border p-3 space-y-2"
     style={{borderColor:"var(--ant-color-border-secondary)"}}>
     <div className="flex items-center justify-between gap-2">
@@ -343,10 +370,17 @@ export function CanvasJobHistory({projectId,open,onClose,onObserveJob,onRefreshC
       {job.kind==="comfy"?"ComfyUI 工作流":job.kind==="model"?
        "模型"+(job.modelKind?" · "+job.modelKind:""):"任务"}
      </span>
-     <Tag color={job.status==="succeeded"?"success":job.status==="failed"?"error":
-      ["submission_unknown","blocked_credential"].includes(job.status)?"warning":"default"}>
-      {statuses[job.status]??job.status}
-     </Tag>
+     <div className="flex items-center gap-1">
+      <Tag color={job.status==="succeeded"?"success":job.status==="failed"?"error":
+       ["submission_unknown","blocked_credential"].includes(job.status)?"warning":"default"}>
+       {statuses[job.status]??job.status}
+      </Tag>
+      <Tooltip title={canRemoveCanvasJobHistory(job)?"删除历史记录":"任务尚未结束，不能删除"}>
+       <Button type="text" size="small" danger icon={<Trash2 size={14}/>}
+        aria-label="删除历史记录" disabled={!canRemoveCanvasJobHistory(job)||Boolean(working)}
+        loading={working===job.id} onClick={()=>confirmRemove(job)}/>
+      </Tooltip>
+     </div>
     </div>
     <div className="text-xs opacity-65">
      {new Date(job.createdAt).toLocaleString()} · 来源 {job.sourceNodeId??"无"}

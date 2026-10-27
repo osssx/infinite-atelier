@@ -3,6 +3,7 @@ import {describe,expect,it} from "vitest";
 
 const page=readFileSync(new URL("../../pages/canvas/project.tsx",import.meta.url),"utf8");
 const panel=readFileSync(new URL("../comfy-workflow/comfy-workflow-instance-panel.tsx",import.meta.url),"utf8");
+const runTypes=readFileSync(new URL("../comfy-workflow/run-types.ts",import.meta.url),"utf8");
 
 describe("P4.2 SQLite-only Canvas execution boundary",()=>{
  it("routes the ordinary Canvas producer exclusively through JobCoordinator",()=>{
@@ -32,6 +33,11 @@ describe("P4.2 SQLite-only Canvas execution boundary",()=>{
   expect(retry.slice(durableSubmit,legacyVideo)).toMatch(/return;\s*}\s*if \(!isAiConfigReady/);
   expect(page).toContain("sqliteModelSubmitLocksRef.current.add(submissionKey)");
   expect(page).toContain("finally{sqliteModelSubmitLocksRef.current.delete(submissionKey)}");
+ });
+ it("does not leave a browser Gateway Runner or duplicate submission and input store",()=>{
+  expect(runTypes).not.toMatch(/\/api\/comfy|\/runs|\/inputs|localStorage|fetch\(/);
+  expect(panel).toContain('from "./run-types"');
+  expect(page).toContain('from "@/features/comfy-workflow/run-types"');
  });
  it("keeps run state in SQLite, not a browser-local pending payload",()=>{
   expect(panel).toContain('"/api/v1/jobs/snapshot"');

@@ -1,5 +1,5 @@
 import {canvasApi,CanvasApiError} from "@/features/backend-sync/canvas-api";
-import type {ComfyInstance} from "./run-client";
+import type {ComfyInstance} from "./run-types";
 
 function explain(error:unknown):never{
  if(error instanceof CanvasApiError){

@@ -4,7 +4,7 @@ import {DatabaseSync} from "node:sqlite";
 import {mkdtempSync,rmSync,existsSync} from "node:fs";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
-import {initializeSchema} from "./schema.mjs";
+import {initializeSchema,SCHEMA_VERSION} from "./schema.mjs";
 import {createBlobStore} from "./blob-store.mjs";
 import {createBlobGarbageCollector} from "./blob-gc.mjs";
 import {createProject,patchProject} from "./projects.mjs";
@@ -19,7 +19,7 @@ function fixture(t){
 }
 test("v10 ledger migration survives restart and source mutations mark dirty in same SQLite transaction",async t=>{
  const f=fixture(t);
- assert.equal(f.db.prepare("SELECT MAX(version) AS n FROM schema_migrations").get().n,14);
+ assert.equal(f.db.prepare("SELECT MAX(version) AS n FROM schema_migrations").get().n,SCHEMA_VERSION);
  assert.equal(blobReferenceLedgerStatus(f.db).dirty,true);
  let row=rebuildBlobReferenceLedger(f.db);
  assert.equal(row.dirty,false);

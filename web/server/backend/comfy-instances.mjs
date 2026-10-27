@@ -71,6 +71,14 @@ export function createComfyInstanceRegistry({db,blobStore,upstreamCall=comfyUpst
   instances.delete(id);delete adapters[id];
   return {deleted:id};
  }
+ async function objectInfo(id){
+  const instance=instances.get(id);
+  if(!instance)throw fail("comfy_instance_not_found",404);
+  const info=await upstreamCall(instance,"/object_info",{timeoutMs:10000});
+  if(!info||typeof info!=="object"||Array.isArray(info))
+   throw fail("comfy_object_info_invalid",502);
+  return {instanceId:id,objectInfo:info};
+ }
  async function checkedList(){
   return Promise.all(list().map(async(instance)=>{
    try{
@@ -80,5 +88,5 @@ export function createComfyInstanceRegistry({db,blobStore,upstreamCall=comfyUpst
    }catch{return {...instance,reachable:false,classTypes:[]}}
   }));
  }
- return {adapters,list,checkedList,save,remove};
+ return {adapters,list,checkedList,objectInfo,save,remove};
 }

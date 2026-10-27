@@ -11,7 +11,7 @@ import {
 } from "./instance-parameters";
 import { getComfyTemplate } from "./template-registry";
 import type { ComfyWorkflowTemplate } from "./template-schema";
-import {missingComfyMediaInputs,type ComfyRunState} from "./run-client";
+import {missingComfyMediaInputs,type ComfyRunState} from "./run-types";
 import type {BackendJobView} from "@/types/backend-contracts";
 import {canvasApi} from "@/features/backend-sync/canvas-api";
 import { comfyRunStatusLabel, isComfyRunActive } from "./run-status";

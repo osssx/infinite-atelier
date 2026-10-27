@@ -19,6 +19,8 @@ import {createComfyV2Adapters} from "./comfy-v2-adapter.mjs";
 import {createComfyInstanceRegistry} from "./comfy-instances.mjs";
 import {createOpenAiModelAdapter} from "./openai-model-adapter.mjs";
 import {createArkVideoAdapter} from "./ark-video-adapter.mjs";
+import {createArkChannelHealth} from "./ark-channel-health.mjs";
+import {createTrustedMediaDownloader} from "./trusted-media-download.mjs";
 import {readArkAssetConfig,createArkAssetManager} from "./ark-asset-manager.mjs";
 import {createCanvasMaterializer} from "./canvas-materializer.mjs";
 import {createBackendWorker} from "./worker.mjs";
@@ -89,7 +91,9 @@ export function createLocalBackend({dataDir,streamPollMs=200,adapters,comfyInsta
   coordinator?.recoverAtStartup();
   const materializer=createCanvasMaterializer({db,blobStore});
   const worker=autoDispatch?createBackendWorker({coordinator,materializer,intervalMs:dispatchIntervalMs}):null;
-  const app=buildApp({db,sessionAuth,autoLocalSession,blobStore,mediaPreview,blobGc,projectArchive,vault,coordinator,materializer,worker,
+  const app=buildApp({db,sessionAuth,autoLocalSession,blobStore,mediaPreview,blobGc,projectArchive,vault,
+   arkChannelHealth:createArkChannelHealth({vault}),
+   mediaDownloader:createTrustedMediaDownloader({blobStore}),coordinator,materializer,worker,
    comfyRegistry,comfyInstanceIds:comfyRegistry?()=>comfyRegistry.list().map(item=>item.id):comfyInstances?.map(item=>item.id)??[],modelKinds:[...(enableOpenAiModels?["image","audio","text"]:[]),...(enableArkVideos?["video"]:[])],arkAssetUploadReady:Boolean(assetManager),streamPollMs});
   worker?.start();
   let closed=false;

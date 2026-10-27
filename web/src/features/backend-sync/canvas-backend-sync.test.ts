@@ -462,7 +462,7 @@ describe("backend canvas sync opt-in, revisions and events",()=>{
   const result=await bridge.saveProjectNow(frozen,"wf-1");
   expect(result.projectId).toBe("p1");
   expect(result.revision).toBe(2);
-  expect(result.sourceNodeFingerprint).toHaveLength(64);
+  expect(result.sourceNodeFingerprint).toMatch(/^v2:[0-9a-f]{64}$/);
   expect(server.project?.document.nodes[0].title).toBe("Updated prompt");
   expect(server.patches).toBe(1);
   bridge.disconnect();

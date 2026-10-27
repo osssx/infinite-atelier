@@ -44,7 +44,8 @@ describe("backend save fence + frozen Comfy submission",()=>{
   const hash=await fingerprintBackendSource(graph,"wf-1");
   expect(hash).toBe(fingerprintSource(copy(graph),"wf-1"));
   expect(hash).toBe(await fingerprintBackendSource({nodes:[...graph.nodes].reverse(),connections:[...connections].reverse()},"wf-1"));
-  expect(hash).not.toBe(await fingerprintBackendSource({...graph,nodes:graph.nodes.map(n=>n.id==="scalar"?{...n,title:"new"}:n)},"wf-1"));
+  expect(hash).toBe(await fingerprintBackendSource({...graph,nodes:graph.nodes.map(n=>n.id==="scalar"?{...n,title:"new"}:n)},"wf-1"));
+  expect(hash).not.toBe(await fingerprintBackendSource({...graph,nodes:graph.nodes.map(n=>n.id==="scalar"?{...n,metadata:{...n.metadata,content:"new input"}}:n)},"wf-1"));
   expect(canonicalBackendGraph(graph)).toContain('"nodes"');
   await expect(fingerprintBackendSource({...graph,connections:[...connections,{id:"three",fromNodeId:"wf-1",toNodeId:"scalar"}]},"wf-1"))
    .rejects.toThrow("cyclic_generation_source");

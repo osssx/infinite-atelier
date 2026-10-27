@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/i18n", () => ({ default: { t: (key: string) => key } }));
 vi.mock("@/lib/api-proxy", () => ({ proxyApiUrl: (url: string) => url }));
+vi.mock("@/features/backend-sync/canvas-api",()=>({canvasApi:vi.fn()}));
 vi.mock("@/lib/image-utils", () => ({ dataUrlToFile: vi.fn() }));
 vi.mock("@/services/file-storage", () => ({ getMediaBlob: vi.fn(), uploadMediaFile: vi.fn() }));
 vi.mock("@/services/image-storage", () => ({ imageToDataUrl: vi.fn() }));
@@ -10,6 +11,7 @@ vi.mock("../model-plugin", () => ({ runModelPlugin: vi.fn() }));
 vi.mock("axios", () => ({ default: { post: vi.fn(), get: vi.fn(), delete: vi.fn(), isCancel: () => false, isAxiosError: (error: unknown) => Boolean((error as { isAxiosError?: boolean })?.isAxiosError) } }));
 
 import axios from "axios";
+import {canvasApi} from "@/features/backend-sync/canvas-api";
 import { defaultConfig, buildArkApiUrl, normalizeChannelModels, useConfigStore, type AiConfig } from "@/stores/use-config-store";
 import { runModelPlugin } from "../model-plugin";
 import { uploadMediaFile } from "@/services/file-storage";
@@ -27,7 +29,7 @@ const requestFor = (config: AiConfig): VideoGenerationRequest => ({ modelOption:
 const taskFor = (config: AiConfig): VideoGenerationTask => ({ id: "existing-task", provider: "volcengine_ark", model: config.model, channelId: "acceptance", startedAt: 1, status: "queued" });
 
 beforeEach(() => vi.clearAllMocks());
-afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); });
+afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); vi.unstubAllGlobals(); });
 
 describe("independent Seedance acceptance", () => {
     it("retains a locally saved successful video across refresh", () => {
@@ -147,14 +149,33 @@ describe("independent Seedance acceptance", () => {
     it("retries a completed task download without creating a replacement", async () => {
         const config = configFor();
         const task = taskFor(config);
-        vi.mocked(axios.get)
-            .mockResolvedValueOnce({ data: { id: task.id, status: "succeeded", content: { video_url: "https://ark.cn-beijing.volces.com/result.mp4" } } })
-            .mockResolvedValueOnce({ data: new Blob(["video"], { type: "video/mp4" }) });
+        vi.mocked(axios.get).mockResolvedValueOnce({ data: { id: task.id, status: "succeeded", content: { video_url: "https://ark.cn-beijing.volces.com/result.mp4" } } });
+        vi.mocked(canvasApi).mockResolvedValueOnce({blobId:"a".repeat(64),mimeType:"video/mp4",byteSize:5});
+        const mediaFetch=vi.fn().mockResolvedValue(new Response(new Blob(["video"],{type:"video/mp4"}),{
+            headers:{"content-type":"video/mp4"}
+        }));
+        vi.stubGlobal("fetch",mediaFetch);
         vi.mocked(uploadMediaFile).mockResolvedValueOnce({ url: "blob:stored", storageKey: "video:stored", bytes: 5, mimeType: "video/mp4" });
         await expect(retrySeedanceDownload(config, task)).resolves.toMatchObject({ video: { storageKey: "video:stored" } });
-        expect(axios.get).toHaveBeenCalledTimes(2);
+        expect(canvasApi).toHaveBeenCalledWith("/api/v1/media/download","POST",{url:"https://ark.cn-beijing.volces.com/result.mp4"});
+        expect(mediaFetch).toHaveBeenCalledWith("/api/v1/blobs/"+"a".repeat(64),expect.objectContaining({credentials:"same-origin"}));
+        expect(axios.get).toHaveBeenCalledOnce();
         expect(axios.post).not.toHaveBeenCalled();
         expect(uploadMediaFile).toHaveBeenCalledOnce();
+    });
+    it("rejects an incorrect stored CAS result without creating a replacement paid task",async()=>{
+        const config=configFor();
+        vi.mocked(axios.get).mockResolvedValueOnce({data:{id:"existing-task",status:"succeeded",
+            content:{video_url:"https://ark.cn-beijing.volces.com/result.mp4"}}});
+        vi.mocked(canvasApi).mockResolvedValueOnce({blobId:"a".repeat(64),mimeType:"video/mp4",byteSize:99});
+        const fetchMock=vi.fn().mockResolvedValue(new Response(new Blob(["bad"],{type:"video/mp4"}),{
+            headers:{"content-type":"video/mp4"}
+        }));
+        vi.stubGlobal("fetch",fetchMock);
+        await expect(retrySeedanceDownload(config,taskFor(config)))
+            .rejects.toThrow(/CAS download did not match/);
+        expect(axios.post).not.toHaveBeenCalled();
+        expect(uploadMediaFile).not.toHaveBeenCalled();
     });
 
     it("retries a transient query failure without repeating create", async () => {

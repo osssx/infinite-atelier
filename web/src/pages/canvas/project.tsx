@@ -89,7 +89,7 @@ import { registerBuiltinNodes } from "@/components/canvas/nodes/builtin-nodes";
 const ComfyWorkflowInstancePanel = lazy(() => import("@/features/comfy-workflow/comfy-workflow-instance-panel").then((m) => ({default:m.ComfyWorkflowInstancePanel})));
 import { COMFY_WORKFLOW_MOCK_TYPE } from "@/lib/canvas/canvas-ports";
 import { validateCanvasPortConnections } from "@/lib/canvas/canvas-port-connections";
-import type {ComfyRunState} from "@/features/comfy-workflow/run-client";
+import type {ComfyRunState} from "@/features/comfy-workflow/run-types";
 import { getComfyTemplate } from "@/features/comfy-workflow/template-registry";
 import { resolveCanvasComfyInstance } from "@/features/comfy-workflow/canvas-instance";
 import { CanvasRefreshShell } from "@/components/canvas/canvas-refresh-shell";

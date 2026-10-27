@@ -4,6 +4,7 @@ import {mkdtempSync,rmSync,existsSync,readFileSync,unlinkSync,writeFileSync,mkdi
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {openMainDatabase} from "./database.mjs";
+import {SCHEMA_VERSION} from "./schema.mjs";
 import {createBlobStore} from "./blob-store.mjs";
 import {createColdBackup,verifyColdBackup,restoreColdBackup} from "./cold-backup.mjs";
 import {acquireDatasetGuard,activateRestoredDataset,readDatasetIdentity} from "./dataset-activation.mjs";
@@ -29,7 +30,7 @@ test("P5.2 restored copy is standby; original and restored can never both acquir
  assert.equal(original.status,"active");assert.equal(clone.status,"standby");
  assert.equal(clone.lineageId,original.lineageId);
  assert.notEqual(clone.replicaId,original.replicaId);
- assert.equal((await verifyColdBackup({backupDir:f.backupDir})).schemaVersion,14);
+ assert.equal((await verifyColdBackup({backupDir:f.backupDir})).schemaVersion,SCHEMA_VERSION);
  assert.throws(()=>acquireDatasetGuard(f.clone,{activationRoot:f.activationRoot}),/instance_already_running|dataset_not_active/);
  const guard=acquireDatasetGuard(f.source,{activationRoot:f.activationRoot});
  try{

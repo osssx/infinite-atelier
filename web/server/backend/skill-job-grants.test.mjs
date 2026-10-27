@@ -4,6 +4,7 @@ import {mkdtempSync,rmSync} from "node:fs";
 import {join} from "node:path";
 import {tmpdir} from "node:os";
 import {openMainDatabase} from "./database.mjs";
+import {SCHEMA_VERSION} from "./schema.mjs";
 import {createBlobStore} from "./blob-store.mjs";
 import {buildApp} from "./app.mjs";
 import {createProject} from "./projects.mjs";
@@ -190,7 +191,7 @@ test("P5.4k server freeze writes verifiable CAS and one-use project grant",async
  await f.close();
  const archive=join(f.root,"archive"),restored=join(f.root,"restore");
  await createColdBackup({dataDir:join(f.root,"data"),backupDir:archive});
- assert.equal((await verifyColdBackup({backupDir:archive})).schemaVersion,14);
+ assert.equal((await verifyColdBackup({backupDir:archive})).schemaVersion,SCHEMA_VERSION);
  await restoreColdBackup({backupDir:archive,dataDir:restored});
  const recovered=new DatabaseSync(join(restored,"db","atelier.sqlite"),{readOnly:true});
  try{

@@ -78,7 +78,8 @@ function cursorOf(value){
  if(!/^(0|[1-9][0-9]*)$/.test(v)||!Number.isSafeInteger(Number(v)))throw Object.assign(Error("invalid_event_cursor"),{statusCode:400,code:"invalid_event_cursor"});
  return Number(v);
 }
-export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobStore,mediaPreview,blobGc,projectArchive,vault,coordinator,materializer,worker,comfyRegistry,comfyInstanceIds=[],modelKinds=[],arkAssetUploadReady=false,logger=false,streamPollMs=200}={}){
+export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobStore,mediaPreview,blobGc,projectArchive,vault,coordinator,materializer,worker,comfyRegistry,comfyInstanceIds=[],modelKinds=[],arkAssetUploadReady=false,
+ arkChannelHealth,mediaDownloader,logger=false,streamPollMs=200}={}){
  if(!db||(!sessionAuth&&typeof authorize!=="function"))throw Error("backend_authorizer_required");
  const app=Fastify({logger,bodyLimit:5*1024*1024,trustProxy:false,genReqId:()=>randomUUID()});
  if(blobStore)app.addContentTypeParser("application/octet-stream",(req,stream,done)=>done(null,stream));
@@ -115,6 +116,11 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
    "archive_invalid_entry","archive_invalid_zip","archive_unexpected_files",
    "archive_media_integrity_error","archive_blob_integrity_error","archive_template_missing",
    "channel_not_found","channel_id_conflict","invalid_channel_config","invalid_credential_value",
+   "ark_channel_provider_invalid","ark_channel_key_missing",
+   "upstream_url_invalid","upstream_destination_forbidden","upstream_dns_unavailable",
+   "upstream_dns_destination_forbidden","MEDIA_URL_EXPIRED","MEDIA_DOWNLOAD_FAILED",
+   "MEDIA_NOT_MEDIA","media_download_too_large","media_download_mime_unsupported",
+   "media_download_timeout","media_download_unavailable",
    "expected_credential_version_required","credential_version_conflict",
    "credential_reference_required","credential_missing","credential_revoked",
    "comfy_template_invalid","comfy_template_too_large","comfy_template_revision_mismatch",
@@ -123,6 +129,7 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
    "invalid_comfy_instance","invalid_comfy_instance_url","comfy_instance_must_be_exact_loopback_origin",
    "comfy_instance_not_found","comfy_instance_conflict","comfy_instance_limit_reached",
    "comfy_instance_has_pending_jobs","invalid_comfy_instances",
+   "comfy_object_info_invalid",
    "skill_freeze_unavailable","skill_freeze_integrity_failed","skill_grant_required","skill_grant_invalid",
    "skill_grant_gc_invalid","skill_replay_identity_mismatch",
    "skill_grant_already_used","skill_grant_expired","skill_grant_stale","skill_grant_not_applicable",
@@ -186,6 +193,15 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
    return "";
   });
  }
+ if(mediaDownloader)app.post("/api/v1/media/download",{
+  bodyLimit:8192,
+  schema:{body:{type:"object",required:["url"],
+   properties:{url:{type:"string",minLength:1,maxLength:4096}},additionalProperties:false}}
+ },async(req,reply)=>{
+  const stored=await mediaDownloader.importUrl(req.body.url);
+  reply.header("Cache-Control","no-store").code(stored.existing?200:201);
+  return stored;
+ });
  if(blobStore){
   app.post("/api/v1/blobs",{bodyLimit:blobStore.maxBlobBytes+1},async(req,reply)=>{
    const stored=await blobStore.put(req.body,{mime:req.headers["x-atelier-mime"],
@@ -236,6 +252,12 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
   });
   app.get("/api/v1/channels/:id",{schema:{params:channelRouteParams}},async(req,reply)=>{
    reply.header("Cache-Control","no-store");return vault.get(req.params.id);
+  });
+  if(arkChannelHealth)app.get("/api/v1/channels/:id/health",{
+   schema:{params:channelRouteParams}
+  },async(req,reply)=>{
+   reply.header("Cache-Control","no-store");
+   return arkChannelHealth(req.params.id);
   });
   app.get("/api/v1/channels/:id/versions",{schema:{params:channelRouteParams}},async(req,reply)=>{
    reply.header("Cache-Control","no-store");return {versions:vault.listVersions(req.params.id)};
@@ -489,6 +511,10 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
   app.get("/api/v1/comfy/instances",async(req,reply)=>{
    reply.header("Cache-Control","no-store");
    return {instances:await comfyRegistry.checkedList()};
+  });
+  app.get("/api/v1/comfy/instances/:id/object-info",{schema:{params:routeParams}},async(req,reply)=>{
+   reply.header("Cache-Control","no-store");
+   return comfyRegistry.objectInfo(req.params.id);
   });
   app.post("/api/v1/comfy/instances",{schema:{body:instanceBody}},(req,reply)=>{
    reply.header("Cache-Control","no-store");

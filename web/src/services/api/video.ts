@@ -7,6 +7,7 @@ import { getMediaBlob, uploadMediaFile, type UploadedFile } from "@/services/fil
 import { getImageBlob, imageToDataUrl } from "@/services/image-storage";
 import { boolConfig, buildApiUrl, modelOptionName, resolveModelRequestConfig, resolveModelScript, type AiConfig } from "@/stores/use-config-store";
 import { proxyApiUrl } from "@/lib/api-proxy";
+import {canvasApi} from "@/features/backend-sync/canvas-api";
 import { runModelPlugin } from "./model-plugin";
 import type { ReferenceImage } from "@/types/image";
 import type { ReferenceAudio, ReferenceVideo } from "@/types/media";
@@ -252,18 +253,30 @@ function unwrapSeedanceResponse(response: SeedanceResponse): SeedanceResponse {
     return response;
 }
 
-async function downloadResult(url: string, signal?: AbortSignal, config?: AiConfig) {
+/** Saved video and last-frame bytes are now imported by the authenticated
+ * Fastify media service, not proxied through /api/ark/download. The signed
+ * upstream URL never becomes a playable browser URL or a persisted reference.
+ */
+async function downloadResult(url: string, signal?: AbortSignal, _config?: AiConfig) {
     let parsed: URL;
     try { parsed = new URL(url); } catch { throw new Error("Ark returned an invalid result URL."); }
-    if (!["https:", "http:"].includes(parsed.protocol) || parsed.username || parsed.password) throw new Error("Ark returned an invalid result URL.");
-    let response;
-    try { response = await axios.get<Blob>(`/api/ark/download?url=${encodeURIComponent(url)}`, { headers: { "x-gateway-token": import.meta.env.VITE_MEDIA_GATEWAY_TOKEN || "" }, responseType: "blob", signal, timeout: 120_000 }); }
-    catch (error) {
-        if (axios.isAxiosError(error) && [404, 410].includes(error.response?.status || 0)) throw new Error("Ark's temporary video URL has expired. This task cannot be downloaded again; create a new generation if you still need the video.");
-        throw error;
-    }
-    if (!response.data.size || response.data.type.includes("json")) throw new Error("The result URL did not return a video file.");
-    return response.data;
+    if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.hash)
+        throw new Error("Ark returned an invalid result URL.");
+    if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+    const stored=await canvasApi<{blobId:string;mimeType:string;byteSize:number}>(
+        "/api/v1/media/download","POST",{url}
+    );
+    if(!/^[a-f0-9]{64}$/.test(stored.blobId) || stored.byteSize<1 ||
+        !/^(?:video|image)\//.test(stored.mimeType))
+        throw new Error("Ark result import returned an invalid CAS reference.");
+    const response=await fetch("/api/v1/blobs/"+stored.blobId,{
+        credentials:"same-origin",cache:"no-store",signal
+    });
+    if(!response.ok)throw new Error("Unable to read stored Ark result (HTTP "+response.status+").");
+    const blob=await response.blob();
+    if(blob.size!==stored.byteSize || blob.type!==stored.mimeType)
+        throw new Error("Ark CAS download did not match the stored media metadata.");
+    return blob;
 }
 
 async function createPluginVideoTask(config: AiConfig, model: string, script: string, prompt: string, references: ReferenceImage[], options?: RequestOptions): Promise<VideoGenerationTask> {

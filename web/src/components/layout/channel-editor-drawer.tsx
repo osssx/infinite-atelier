@@ -8,6 +8,7 @@ import { defaultBaseUrlForApiFormat, guessCapability, normalizeChannelModels, ty
 import { ModelScriptEditor } from "./model-script-editor";
 import { ModelSelectModal } from "./model-select-modal";
 import {saveSqliteModelChannelFromEditor,modelChannelProvider} from "@/features/backend-sync/model-channel-autoroute";
+import {canvasApi} from "@/features/backend-sync/canvas-api";
 
 type ScriptTarget = { name: string; capability: ModelCapability; value: string };
 
@@ -80,24 +81,22 @@ export function ChannelEditorDrawer({ open, channel, onSave, onClose }: { open: 
     const checkArkConnection = async () => {
         setCheckingArk(true);
         try {
-            const response = await fetch("/api/ark/health", {
-                headers: {
-                    "x-gateway-token": import.meta.env.VITE_MEDIA_GATEWAY_TOKEN || "",
-                    "x-ark-base-url": draft.baseUrl,
-                    ...(draft.apiKey.trim() ? { Authorization: `Bearer ${draft.apiKey.trim()}` } : {}),
-                },
-                cache: "no-store",
-            });
-            const result = (await response.json().catch(() => ({}))) as { error?: string; reachable?: boolean; apiKeySource?: string };
-            if (response.ok && result.reachable) {
-                message.success(t("config.channelEditor.arkConnectionPassed"));
-            } else if (result.error === "ark_auth_failed" || result.error === "ark_key_missing") {
-                message.error(t("config.channelEditor.arkConnectionAuthFailed"));
-            } else if (response.status === 401 && result.error === "unauthorized") {
-                message.error(t("config.channelEditor.arkGatewayAuthFailed"));
-            } else {
-                message.error(t("config.channelEditor.arkConnectionFailed", { detail: result.error || response.status }));
+            if(modelChannelProvider(draft)!=="volcengine_ark") {
+                message.warning("当前连通性检查仅支持官方方舟 API 地址");
+                return;
             }
+            if(!channel || channel.apiKey!==draft.apiKey || channel.baseUrl!==draft.baseUrl) {
+                message.warning("请先保存渠道及 API Key，再测试连接");
+                return;
+            }
+            const result=await canvasApi<{reachable:boolean;authenticated:boolean;reason?:string}>(
+                "/api/v1/channels/"+encodeURIComponent(draft.id)+"/health"
+            );
+            if(result.reachable&&result.authenticated)
+                message.success(t("config.channelEditor.arkConnectionPassed"));
+            else if(result.reason==="ark_auth_failed")
+                message.error(t("config.channelEditor.arkConnectionAuthFailed"));
+            else message.error(t("config.channelEditor.arkConnectionFailed", {detail:result.reason||"unavailable"}));
         } catch (error) {
             message.error(t("config.channelEditor.arkConnectionFailed", { detail: error instanceof Error ? error.message : String(error) }));
         } finally {

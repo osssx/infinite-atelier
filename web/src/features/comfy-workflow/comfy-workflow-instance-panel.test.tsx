@@ -11,7 +11,7 @@ vi.mock("antd", () => ({
 vi.mock("@/stores/use-theme-store",()=>({
     useThemeStore:(select:(state:{theme:"light"})=>unknown)=>select({theme:"light"}),
 }));
-vi.mock("./run-client",()=>({missingComfyMediaInputs:()=>[]}));
+vi.mock("./run-types",()=>({missingComfyMediaInputs:()=>[]}));
 vi.mock("./template-registry",()=>({getComfyTemplate:vi.fn()}));
 vi.mock("./comfy-workflow-panel",()=>({ComfyWorkflowPanel:()=>null}));
 

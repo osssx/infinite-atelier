@@ -1,6 +1,6 @@
 import { beforeEach,describe,expect,it,vi } from "vitest";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
-import type { ComfyRunArtifact } from "./run-client";
+import type { ComfyRunArtifact } from "./run-types";
 
 vi.mock("@/features/backend-sync/canvas-media",()=>({
     uploadCanvasImage:vi.fn(async()=>({
@@ -28,7 +28,7 @@ const workflow:CanvasNodeData={
 const artifact=(kind:ComfyRunArtifact["kind"],portId:string,index=0):ComfyRunArtifact=>({
     artifactId:"artifact-"+portId,runId:"run-1",workflowNodeId:"workflow-1",portId,kind,index,
     mimeType:({image:"image/png",video:"video/mp4",audio:"audio/wav",text:"text/plain"})[kind],
-    sha256:"a".repeat(64),byteSize:4,url:"/api/comfy/runs/run-1/artifacts/a"
+    sha256:"a".repeat(64),byteSize:4,url:"/api/v1/blobs/"+"a".repeat(64)
 });
 describe("Comfy canvas artifact import adapters",()=>{
     beforeEach(()=>vi.clearAllMocks());

@@ -2,7 +2,7 @@ import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
 import { createCanvasNode, imageMetadata, videoMetadata, audioMetadata } from "@/lib/canvas/canvas-node-factory";
 import {uploadCanvasImage as uploadImage,uploadCanvasMedia} from "@/features/backend-sync/canvas-media";
 import { placeComfyImageArtifact } from "./artifact-layout";
-import type { ComfyRunArtifact } from "./run-client";
+import type { ComfyRunArtifact } from "./run-types";
 
 export type ArtifactImporter = (artifact:ComfyRunArtifact,blob:Blob,source:CanvasNodeData,index:number)=>Promise<CanvasNodeData>;
 const provenance=(artifact:ComfyRunArtifact)=>({

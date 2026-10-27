@@ -4,7 +4,7 @@ import {Pencil,Plus,RefreshCw,Trash2} from "lucide-react";
 import {useConfigStore} from "@/stores/use-config-store";
 import type {CanvasNodeData,CanvasNodeMetadata} from "@/types/canvas";
 import {ComfyWorkflowPanel} from "./comfy-workflow-panel";
-import type {ComfyInstance} from "./run-client";
+import type {ComfyInstance} from "./run-types";
 import {deleteSqliteComfyInstance,listSqliteComfyInstances,saveSqliteComfyInstance} from "./sqlite-instances-client";
 import {saveComfyPreset,type ComfyPreset} from "./preset-registry";
 import {installBundledComfyTemplate,listComfyPresetCatalog,resetBundledComfyPreset,type ComfyCatalogPreset} from "./preset-catalog";

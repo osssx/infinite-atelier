@@ -18,6 +18,7 @@ export type CanvasActions = {
     onResizeStart: (nodeId: string) => void;
     onResize: (nodeId: string, width: number, height: number, position?: Position) => void;
     onResizeEnd: (nodeId: string) => void;
+    onImageDimensions: (nodeId: string, width: number, height: number) => void;
     onContentChange: (nodeId: string, content: string) => void;
     onTitleChange: (nodeId: string, title: string) => void;
     onContextMenu: (event: ReactMouseEvent, nodeId: string) => void;
@@ -56,6 +57,7 @@ export function CanvasActionsProvider({ actions, children }: { actions: CanvasAc
             onResizeStart: (nodeId) => latest.current.onResizeStart(nodeId),
             onResize: (nodeId, width, height, position) => latest.current.onResize(nodeId, width, height, position),
             onResizeEnd: (nodeId) => latest.current.onResizeEnd(nodeId),
+            onImageDimensions: (nodeId, width, height) => latest.current.onImageDimensions(nodeId, width, height),
             onContentChange: (nodeId, content) => latest.current.onContentChange(nodeId, content),
             onTitleChange: (nodeId, title) => latest.current.onTitleChange(nodeId, title),
             onContextMenu: (event, nodeId) => latest.current.onContextMenu(event, nodeId),

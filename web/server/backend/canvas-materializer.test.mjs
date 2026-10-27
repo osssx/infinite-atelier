@@ -87,6 +87,37 @@ test("materializer replays after interruption; doesn't duplicate nodes/connectio
  assert.equal(getProject(f.db,"project-1").document.nodes.length,5);
  assert.equal(restart.status({jobId}).filter(x=>x.status==="materialized").length,4);
 });
+test("landscape and portrait captured images create correctly proportioned nodes and persistent natural dimensions",async t=>{
+ for(const {title,w,h,expected} of [
+  {title:"portrait 9:16",w:768,h:1344,expected:{width:240,height:420}},
+  {title:"landscape 16:9",w:1344,h:768,expected:{width:420,height:240}},
+  {title:"square",w:1024,h:1024,expected:{width:420,height:420}}
+ ]){
+  await t.test(title,async child=>{
+   const f=fixture(child),{created}=await f.addArtifacts({count:1,key:"sized"});
+   const bytes=Buffer.alloc(33);
+   png.copy(bytes,0,0,8);
+   bytes.writeUInt32BE(13,8);
+   bytes.write("IHDR",12,"ascii");
+   bytes.writeUInt32BE(w,16);bytes.writeUInt32BE(h,20);
+   const saved=await f.blobStore.put([bytes],{mime:"image/png"});
+   f.db.prepare("UPDATE artifacts SET blob_id=?,sha256=? WHERE id=?")
+    .run(saved.blobId,saved.sha256,created[0]);
+   assert.equal((await f.materializer.runOnce())[0].status,"materialized");
+   const after=getProject(f.db,"project-1").document;
+   const generated=after.nodes.find(n=>n.id==="artifact-"+created[0]);
+   assert.deepEqual({width:generated.width,height:generated.height},expected);
+   assert.equal(generated.metadata.naturalWidth,w);
+   assert.equal(generated.metadata.naturalHeight,h);
+   assert.equal(generated.metadata.content,"/api/v1/blobs/"+saved.blobId);
+   assert.equal(after.connections.find(c=>c.toNodeId===generated.id).fromNodeId,"wf-1");
+   assert.equal((await f.materializer.runOnce()).length,0,"no repeated processing");
+   const reloaded=getProject(f.db,"project-1").document.nodes.find(n=>n.id===generated.id);
+   assert.equal(reloaded.width,expected.width);
+   assert.equal(reloaded.height,expected.height);
+  });
+ }
+});
 test("source mutation blocks materialization while GPU success and artifacts remain durable",async t=>{
  const f=fixture(t),{jobId,created}=await f.addArtifacts({count:1});
  const doc=getProject(f.db,"project-1");

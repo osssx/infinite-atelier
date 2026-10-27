@@ -4,6 +4,7 @@ import {matchesSourceFingerprint,stableJson,writeTransaction} from "./repository
 import {validateProjectDocument} from "./projects.mjs";
 import {makeComfyArtifactProvenance} from "./comfy-provenance.mjs";
 import {emitProjectEvent} from "./projects.mjs";
+import {imageNodeSize,readRasterImageDimensions} from "./image-dimensions.mjs";
 
 const requiredKind={image:"IMAGE",video:"VIDEO",audio:"AUDIO",text:"STRING"};
 const dims={image:[420,420],video:[420,236],audio:[520,220],text:[420,320]};
@@ -41,12 +42,13 @@ export function createCanvasMaterializer({db,blobStore}={}){
   });
  }
  async function processArtifact(artifact){
-  let contents=null;
+  let contents=null,imageDimensions=null;
   try{
    if(!validId(artifact.project_id)||!artifact.target_node_id||!artifact.port_id||
       !Object.hasOwn(requiredKind,artifact.kind))throw fail("materialization_source_missing");
    const blob=await blobStore.stat(artifact.blob_id);
    if(blob.sha256!==artifact.sha256||blob.mimeType!==artifact.mime)throw fail("materialization_blob_mismatch");
+   if(artifact.kind==="image")imageDimensions=await readRasterImageDimensions(blob.path,blob.mimeType);
    if(artifact.kind==="text"){
     if(blob.byteSize>2_000_000)throw fail("materialization_text_too_large");
     const bytes=await readFile(blob.path);
@@ -96,7 +98,8 @@ export function createCanvasMaterializer({db,blobStore}={}){
      throw fail("materialization_identity_conflict");
     const other=doc.nodes.find(n=>n.id===nodeId);
     if(other&&!matches.includes(other))throw fail("materialization_node_collision");
-    const [width,height]=dims[artifact.kind];
+    const {width,height}=artifact.kind==="image"?imageNodeSize(imageDimensions):
+     {width:dims[artifact.kind][0],height:dims[artifact.kind][1]};
     const existingCount=doc.nodes.filter(n=>isModel?n.metadata?.modelArtifact?.sourceNodeId===source.id:
      n.metadata?.comfyArtifact?.workflowNodeId===source.id).length;
     const column=Math.floor(existingCount/4),row=existingCount%4;
@@ -105,6 +108,7 @@ export function createCanvasMaterializer({db,blobStore}={}){
      position:{x:source.position.x+source.width+48+column*444,
       y:source.position.y+row*444},width,height,
      metadata:{status:"success",mimeType:artifact.mime,
+      ...(imageDimensions?{naturalWidth:imageDimensions.width,naturalHeight:imageDimensions.height}:{}),
       ...(isModel?{modelArtifact:origin}:{comfyArtifact:origin}),
       ...(artifact.kind==="text"?{content:contents}:{content:"/api/v1/blobs/"+artifact.blob_id,
        storageKey:"cas:"+artifact.blob_id,

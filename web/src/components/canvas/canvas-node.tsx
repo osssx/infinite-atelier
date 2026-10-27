@@ -963,6 +963,7 @@ function ImageContent({
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const { t } = useTranslation();
     const images = node.metadata?.images || [];
+    const {onImageDimensions}=useCanvasActions();
     const batchCount = images.length;
     const isBatchRoot = batchCount > 1;
     const primaryImageId = node.metadata?.primaryImageId || images[0]?.id;
@@ -1014,7 +1015,16 @@ function ImageContent({
                         data-canvas-image-quality={imageSource === previewUrl ? "preview" : "original"}
                         src={imageSource}
                         decoding="async"
-                        onLoad={onVisualReady}
+                        onLoad={(event) => {
+                            onVisualReady?.();
+                            // Only legacy generated nodes with untouched 420x420 geometry
+                            // are changed by the handler; normal uploads/manual resize stay intact.
+                            if((node.metadata?.comfyArtifact||node.metadata?.modelArtifact) &&
+                               node.width===420 && node.height===420 && !node.metadata?.naturalWidth &&
+                               !node.metadata?.naturalHeight && !node.metadata?.freeResize &&
+                               !node.metadata?.images?.length)
+                                onImageDimensions(node.id,event.currentTarget.naturalWidth,event.currentTarget.naturalHeight);
+                        }}
                         onError={() => {
                             if (imageSource === previewUrl) setBadPreview(primaryStorageKey);
                             else onVisualReady?.();

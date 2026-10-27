@@ -55,6 +55,24 @@ export function verifyTemplate(template) {
         ids.add(port.id);
         if (port.direction === "target") {
             const b = port.inputBinding;
+            if(has(port,"choices")){
+                if(b?.mode!=="literal"||!["STRING","INT","FLOAT"].includes(port.valueKind)||
+                    !Array.isArray(port.choices)||port.choices.length<1||port.choices.length>64)
+                    fail("template_enum_kind_invalid");
+                const seen=new Set();
+                for(const option of port.choices){
+                    if(!object(option)||typeof option.label!=="string"||!option.label.trim()||
+                        option.label.length>90||/[|\r\n]/.test(option.label)||
+                        (port.valueKind==="STRING"&&/[\r\n]/.test(option.value))||
+                        !matchValue(port.valueKind,option.value))
+                        fail("template_enum_value_invalid");
+                    const key=typeof option.value+":"+String(option.value);
+                    if(seen.has(key))fail("template_enum_duplicate_value");
+                    seen.add(key);
+                }
+                if(has(port,"defaultValue")&&!port.choices.some(o=>Object.is(o.value,port.defaultValue)))
+                    fail("template_enum_default_invalid");
+            }
             if (!b || !["literal","media-file","socket"].includes(b.mode) || !Array.isArray(b.targets) || !b.targets.length) fail("template_input_binding_invalid");
             for (const t of b.targets) {
                 if (!has(apiGraph,t.nodeId) || !has(apiGraph[t.nodeId].inputs,t.inputName)) fail("template_binding_missing");
@@ -63,6 +81,7 @@ export function verifyTemplate(template) {
                 claims.add(key);
             }
         } else {
+            if(has(port,"choices"))fail("template_enum_output_invalid");
             if(!port.outputBinding || !has(apiGraph,port.outputBinding.nodeId) ||
                 !Number.isInteger(port.outputBinding.outputIndex) || port.outputBinding.outputIndex<0)fail("template_output_invalid");
             if(!port.capture || !["none","image","video","audio","text"].includes(port.capture.kind))fail("template_capture_invalid");
@@ -264,6 +283,13 @@ export function compileSingleWorkflow(req, template, opts = {}) {
             continue;
         }
         if (choice === "template") {
+            if(p.choices){
+                for(const t of binding.targets){
+                    const current=graph[nodeKey(node.id,t.nodeId)]?.inputs[t.inputName];
+                    if(!p.choices.some(item=>Object.is(item.value,current)))
+                        fail("literal_enum_selection_required:"+p.id);
+                }
+            }
             if (p.required && binding.targets.some(t => graph[nodeKey(node.id,t.nodeId)]?.inputs[t.inputName] === undefined))
                 fail("required_input_missing:"+p.id);
             // A template filename is not an uploaded, immutable input. Require a typed canvas edge.
@@ -276,6 +302,8 @@ export function compileSingleWorkflow(req, template, opts = {}) {
         if (binding.mode === "literal") {
             resolved = choice === "edge" ? v.value : v;
             if (!matchValue(p.valueKind,resolved) || (choice === "edge" && v.kind !== "scalar")) fail("literal_input_invalid:"+p.id);
+            if(choice==="override" && p.choices && !p.choices.some(item=>Object.is(item.value,resolved)))
+                fail("literal_enum_value_invalid:"+p.id);
         } else if (binding.mode === "media-file") {
             if (!edge || edge.kind !== "asset" || !["IMAGE","VIDEO","AUDIO"].includes(p.valueKind) ||
                 binding.mediaKind !== p.valueKind) fail("media_file_binding_invalid:"+p.id);

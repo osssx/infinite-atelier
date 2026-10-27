@@ -16,6 +16,8 @@ import { listComfyPresetCatalog, type ComfyCatalogPreset } from "./preset-catalo
 import { buildKrea2TurboTemplate, isKrea2TurboT2IWorkflow, KREA2_TURBO_TEMPLATE_ID } from "./krea2-turbo-preset";
 import { buildMiniMaxH3I2VPreset, isMiniMaxH3I2VWorkflow, MINIMAX_H3_I2V_TEMPLATE_ID } from "./minimax-h3-i2v-preset";
 import { installBundledComfyTemplate } from "./preset-catalog";
+import {formatComfyChoiceLines,parseComfyChoiceLines,type ComfyChoiceKind} from "./choice-options";
+import type {ComfyScalarChoice} from "./template-schema";
 
 const KINDS: CanvasPortValueKind[] = ["STRING","INT","FLOAT","BOOLEAN","IMAGE","MASK","LATENT","CONDITIONING","VIDEO","AUDIO","JSON"];
 const CAPTURES = ["none","image","video","audio","text"] as const;
@@ -59,6 +61,41 @@ function displayValue(value:unknown):string {
     return Array.isArray(value)?"Array": "Object";
 }
 
+/** Deliberately scoped to one selected port, so incomplete numeric typing
+ * does not rewrite a saved immutable template revision.
+ */
+function ComfyChoiceEditor({port,onUpdate,onDirtyChange}:{
+    port:ComfyTemplatePort;
+    onUpdate:(choices:ComfyScalarChoice[])=>void;
+    onDirtyChange:(dirty:boolean)=>void;
+}) {
+    const [text,setText]=useState(()=>formatComfyChoiceLines(port.choices??[]));
+    const [error,setError]=useState("");
+    useEffect(()=>{
+        setText(formatComfyChoiceLines(port.choices??[]));setError("");
+    },[port.id,port.choices]);
+    const commit=()=>{
+        const parsed=parseComfyChoiceLines(port.valueKind as ComfyChoiceKind,text);
+        if(!parsed.ok){setError(parsed.error);onDirtyChange(true);return;}
+        setError("");
+        onUpdate(parsed.choices);
+        onDirtyChange(false);
+    };
+    return <div className="mt-3 space-y-2" data-comfy-choice-editor>
+        <label className={captionClass} htmlFor={"comfy-choices-"+port.id}>候选数组 · 每行：实际值 或 显示名称 | 实际值</label>
+        <textarea id={"comfy-choices-"+port.id} aria-label="候选数组内容" rows={Math.max(3,Math.min(8,text.split("\n").length+1))}
+            spellCheck={false} className={inputClass+" font-mono"}
+            placeholder={port.valueKind==="STRING"?"cinematic\n写实 | realistic":port.valueKind==="FLOAT"?"0.25\n标准 | 0.5\n0.75":"8\n标准 | 16\n32"}
+            value={text} onChange={e=>{setText(e.target.value);setError("");onDirtyChange(true);}}
+            onBlur={commit} onKeyDown={e=>{if(e.key==="Escape")e.currentTarget.blur();}}/>
+        <div className="flex items-center justify-between gap-2">
+            <p className="text-[11px] text-[var(--comfy-muted)]">数组只用于参数下拉显示；工作流执行时仍发送所选的 {port.valueKind} 单值。</p>
+            <button type="button" className={buttonClass} onClick={commit}>应用候选项</button>
+        </div>
+        {error?<p role="alert" className="text-xs text-red-500">{error}</p>:null}
+    </div>;
+}
+
 export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props) {
     const themeName = useThemeStore((s)=>s.theme);
     const theme = canvasThemes[themeName];
@@ -89,6 +126,8 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
     const [objectInfo,setObjectInfo] = useState<ComfyObjectInfo>();
     const [selectedNodeId,setSelectedNodeId] = useState("");
     const [selectedPortId,setSelectedPortId] = useState<string|null>(null);
+    const [choiceDirty,setChoiceDirty] = useState(false);
+    useEffect(()=>setChoiceDirty(false),[selectedPortId]);
     const [nodeSearch,setNodeSearch] = useState("");
     const [expandedAdvanced,setExpandedAdvanced] = useState(false);
     const [busy,setBusy] = useState(false);
@@ -175,9 +214,16 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
             setError("Choose IMAGE, VIDEO or AUDIO as the port type before selecting media-file.");
             return;
         }
-        patchPort(port.id,{inputBinding:mode==="socket"?{mode,targets,replaceInternalLink:false}
+        const inputBinding:ComfyInputBinding=mode==="socket"?{mode,targets,replaceInternalLink:false}
             :mode==="media-file"?{mode,targets,mediaKind:port.valueKind as "IMAGE"|"VIDEO"|"AUDIO"}
-            :{mode,targets}});
+            :{mode,targets};
+        if(mode!=="literal" && port.choices){
+            edit(current=>({...current,ports:current.ports.map(p=>{
+                if(p.id!==port.id)return p;
+                const {choices:_old,...rest}=p;
+                return {...rest,inputBinding};
+            })}));
+        }else patchPort(port.id,{inputBinding});
         setError("");
     };
     const uploadGraph=async(e:ChangeEvent<HTMLInputElement>)=>{
@@ -242,6 +288,7 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
     };
     const save=async()=>{
         if(!draft||busy)return;
+        if(choiceDirty){setError("请先修正并应用候选数组，再保存模板");return;}
         try {
             setBusy(true);setError("");
             const template=await saveComfyTemplateVersion(templateId,draft,objectInfo);
@@ -413,7 +460,19 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
                                             const patch:Partial<ComfyTemplatePort>={valueKind};
                                             if(activePort.inputBinding?.mode==="media-file" && ["IMAGE","VIDEO","AUDIO"].includes(valueKind))
                                                 patch.inputBinding={...activePort.inputBinding,mediaKind:valueKind as "IMAGE"|"VIDEO"|"AUDIO"};
-                                            patchPort(activePort.id,patch);
+                                            if(activePort.valueKind!==valueKind){
+                                                edit(current=>({...current,ports:current.ports.map(p=>{
+                                                    if(p.id!==activePort.id)return p;
+                                                    // Switching scalar types invalidates the enum's typed values.
+                                                    // Remove only the stale editor configuration, not the binding target.
+                                                    const {choices:_old,defaultValue:_oldDefault,...rest}=p;
+                                                    const compatible=typeof p.defaultValue==="string"?valueKind==="STRING":
+                                                        typeof p.defaultValue==="boolean"?valueKind==="BOOLEAN":
+                                                        typeof p.defaultValue==="number"?valueKind==="FLOAT"||
+                                                            valueKind==="INT"&&Number.isSafeInteger(p.defaultValue):false;
+                                                    return {...rest,...patch,...(compatible?{defaultValue:p.defaultValue}:{})};
+                                                })}));
+                                            }else patchPort(activePort.id,patch);
                                         }}>{KINDS.map((k)=><option key={k} value={k}>{k}</option>)}</select>
                                     </label>
                                     <button type="button" aria-label="Delete selected port" className={buttonClass+" mt-5 !px-2.5"}
@@ -469,16 +528,52 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
                                         <input type="checkbox" checked={activePort.inputBinding.replaceInternalLink} onChange={(e)=>patchPort(activePort.id,{inputBinding:{...activePort.inputBinding!,mode:"socket",replaceInternalLink:e.target.checked} as ComfyInputBinding})}/>
                                         Replace an existing internal socket connection
                                     </label>:null}
+                                    {activePort.inputBinding?.mode==="literal" && ["STRING","INT","FLOAT"].includes(activePort.valueKind)
+                                        ?<div className="mt-4 rounded-lg border border-[var(--comfy-border)] p-3">
+                                            <label className="inline-flex items-center gap-2 text-xs">
+                                                <input type="checkbox" aria-label="启用候选数组下拉"
+                                                    checked={!!activePort.choices}
+                                                    onChange={e=>{setChoiceDirty(false);edit(current=>({...current,ports:current.ports.map(p=>{
+                                                        if(p.id!==activePort.id)return p;
+                                                        if(!e.target.checked){const {choices:_old,...rest}=p;return rest;}
+                                                        const candidate=p.defaultValue ?? current.apiGraph[p.inputBinding!.targets[0]?.nodeId]?.inputs[
+                                                            p.inputBinding!.targets[0]?.inputName];
+                                                        const value=p.valueKind==="STRING"
+                                                            ?typeof candidate==="string"?candidate:""
+                                                            :typeof candidate==="number"&&Number.isFinite(candidate)?candidate:0;
+                                                        return {...p,choices:[{label:String(value)||"默认",value}]};
+                                                    })}));}}/>
+                                                使用候选数组（节点参数显示下拉选择）
+                                            </label>
+                                            {activePort.choices?<ComfyChoiceEditor key={activePort.id} port={activePort}
+                                                onDirtyChange={setChoiceDirty}
+                                                onUpdate={choices=>edit(current=>({...current,ports:current.ports.map(p=>
+                                                    p.id!==activePort.id?p:{
+                                                        ...p,choices,
+                                                        ...(Object.prototype.hasOwnProperty.call(p,"defaultValue") &&
+                                                            !choices.some(c=>Object.is(c.value,p.defaultValue))
+                                                            ?{defaultValue:choices[0].value}:{}),
+                                                    })}))}/>:null}
+                                        </div>:null}
                                     {activePort.inputBinding?.mode==="literal"?<div className="mt-4">
                                         <label className="inline-flex items-center gap-2 text-xs"><input type="checkbox"
                                             checked={Object.prototype.hasOwnProperty.call(activePort,"defaultValue")}
                                             onChange={(e)=>edit((d)=>({...d,ports:d.ports.map((p)=>{
                                                 if(p.id!==activePort.id)return p;
                                                 if(!e.target.checked){const {defaultValue:_removed,...rest}=p;return rest;}
-                                                const defaultValue=p.valueKind==="BOOLEAN"?false:p.valueKind==="INT"||p.valueKind==="FLOAT"?0:"";
+                                                const defaultValue=p.choices?.[0]?.value ?? (p.valueKind==="BOOLEAN"?false:p.valueKind==="INT"||p.valueKind==="FLOAT"?0:"");
                                                 return {...p,defaultValue};
                                             })}))}/> Use a default value</label>
-                                        {Object.prototype.hasOwnProperty.call(activePort,"defaultValue")?<input className={inputClass+" mt-2"}
+                                        {Object.prototype.hasOwnProperty.call(activePort,"defaultValue")?activePort.choices?.length?
+                                            <select className={inputClass+" mt-2"} aria-label="Default input value"
+                                                value={String(activePort.choices.findIndex(c=>Object.is(c.value,activePort.defaultValue)))}
+                                                onChange={e=>{
+                                                    const selected=activePort.choices?.[Number(e.target.value)];
+                                                    if(selected)patchPort(activePort.id,{defaultValue:selected.value});
+                                                }}>
+                                                {activePort.choices.map((c,index)=><option key={index} value={String(index)}>{c.label}</option>)}
+                                            </select>
+                                            :<input className={inputClass+" mt-2"}
                                             aria-label="Default input value" value={String(activePort.defaultValue??"")}
                                             onChange={(e)=>patchPort(activePort.id,{defaultValue:activePort.valueKind==="BOOLEAN"?e.target.value==="true"
                                                 :activePort.valueKind==="INT"||activePort.valueKind==="FLOAT"?Number(e.target.value):e.target.value})}/>:null}

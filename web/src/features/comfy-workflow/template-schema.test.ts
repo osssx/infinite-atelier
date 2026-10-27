@@ -101,6 +101,38 @@ describe("Phase B: ComfyUI API graph and immutable bindings", () => {
         good.ports[3].capture={kind:"video",adapterId:"SaveVideo"};
         expect(() => validateComfyTemplatePayload(good)).toThrow(/capture requires/);
     });
+    it("preserves typed STRING/FLOAT choice lists across immutable template revisions",async()=>{
+        const sample=payload();
+        sample.ports[0].choices=[{label:"快速",value:"fast"},{label:"慢速",value:"slow"}];
+        sample.ports[1].choices=[{label:"精确",value:0.25},{label:"宽松",value:0.75}];
+        sample.ports[1].defaultValue=0.25;
+        const created=await createComfyTemplate("choice-sample",sample);
+        expect(created.ports[0].choices).toEqual(sample.ports[0].choices);
+        expect(created.ports[1].choices).toEqual(sample.ports[1].choices);
+        await expect(verifyComfyTemplate(created)).resolves.toBeUndefined();
+        const updated=structuredClone(sample);
+        updated.ports[0].choices![0].label="极速";
+        expect((await createComfyTemplate("choice-sample",updated)).revision).not.toBe(created.revision);
+    });
+    it("fails closed on invalid choice type, duplicate, default mismatch and non-scalar bindings",()=>{
+        const sample=payload();
+        sample.ports[0].choices=[{label:"A",value:"ok"},{label:"B",value:"ok"}];
+        expect(()=>validateComfyTemplatePayload(sample)).toThrow(/duplicate enum choice/);
+        sample.ports[0].choices=[{label:"A",value:1}];
+        expect(()=>validateComfyTemplatePayload(sample)).toThrow(/label\/value type mismatch/);
+        sample.ports[0].choices=[{label:"A",value:"ok"}];
+        sample.ports[0].defaultValue="not-a-choice";
+        expect(()=>validateComfyTemplatePayload(sample)).toThrow(/default value must match/);
+        delete sample.ports[0].defaultValue;
+        sample.ports[2].choices=[{label:"bad",value:"x"}];
+        expect(()=>validateComfyTemplatePayload(sample)).toThrow(/enum choices require/);
+        delete sample.ports[2].choices;
+        sample.ports[0].inputBinding={mode:"socket",replaceInternalLink:true,targets:[{nodeId:"10",inputName:"text"}]};
+        expect(()=>validateComfyTemplatePayload(sample)).toThrow(/enum choices require/);
+        sample.ports[0].inputBinding={mode:"literal",targets:[{nodeId:"10",inputName:"text"}]};
+        sample.ports[0].choices=Array.from({length:65},(_,i)=>({label:String(i),value:String(i)}));
+        expect(()=>validateComfyTemplatePayload(sample)).toThrow(/1–64 choices/);
+    });
     it("content SHA-256 is stable under object key reorder; modifying graph/port invalidates revision", async () => {
         const created=await createComfyTemplate("image-pipeline",payload(),info);
         expect(created.revision).toMatch(/^[0-9a-f]{64}$/);

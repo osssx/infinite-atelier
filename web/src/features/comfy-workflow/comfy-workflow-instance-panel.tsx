@@ -48,7 +48,7 @@ function isSeed(port: ComfyInstanceScalarField["port"]) {
     return port.valueKind==="INT" && /seed|随机种子/i.test(port.id+" "+port.label);
 }
 
-function ComfyScalarInput({field,onSet,onClear}:{
+export function ComfyScalarInput({field,onSet,onClear}:{
     field:ComfyInstanceScalarField;
     onSet:(value:string|number|boolean)=>void;
     onClear:()=>void;
@@ -82,7 +82,22 @@ function ComfyScalarInput({field,onSet,onClear}:{
             <span className="truncate">{field.connectedFrom?.nodeId}{field.connectedFrom?.portId?" · "+field.connectedFrom.portId:""} 控制此输入；本地值暂不生效</span>
         </div>:null}
         {invalidLinks?<p role="alert" className="mb-2 text-xs text-red-500">一个输入端口不能连接多个来源，请先修复连线。</p>:null}
-        {kind==="BOOLEAN" ? <label className="flex items-center gap-2.5">
+        {field.port.choices?.length?<select
+            id={"comfy-instance-"+field.port.id}
+            aria-label={field.port.label+" 候选项"}
+            className={inputClass}
+            disabled={!editable}
+            value={String(field.port.choices.findIndex(option=>Object.is(option.value,value)))}
+            onChange={e=>{
+                const index=Number(e.target.value);
+                const selected=field.port.choices?.[index];
+                if(selected){onSet(selected.value);setError("");}
+            }}>
+            {field.port.choices.every(option=>!Object.is(option.value,value))?
+                <option value="-1" disabled>{noValue?"请选择候选项":"当前值不在候选项中，请重新选择"}</option>:null}
+            {field.port.choices.map((option,index)=><option key={index} value={String(index)}>{option.label}</option>)}
+        </select>:
+        kind==="BOOLEAN" ? <label className="flex items-center gap-2.5">
             <input id={"comfy-instance-"+field.port.id} type="checkbox" checked={value===true} disabled={!editable}
                 onChange={(e)=>onSet(e.target.checked)} className="size-4 accent-[var(--comfy-accent)]" />
             <span className="text-xs text-[var(--comfy-text)]">{value===true?"开启":"关闭"}{noValue?"（未配置）":""}</span>
@@ -175,6 +190,9 @@ export function ComfyWorkflowInstancePanel({node,connections,projectId,comfyInst
         return ()=>{active=false;};
     },[binding?.templateId,binding?.templateRevision,node.id]);
     const fields=useMemo(()=>template?getComfyInstanceScalarFields(template,node,connections):[],[template,node,connections]);
+    const missingChoiceSelections=fields.filter(field=>field.port.choices?.length && !field.connectedFrom &&
+        (field.localValue.source==="disconnect" ||
+         !field.port.choices.some(option=>Object.is(option.value,field.localValue.source==="disconnect"?undefined:field.localValue.value))));
     const updateOverride=(portId:string,value:string|number|boolean)=>{
         if(!binding || connections.some((edge)=>edge.toNodeId===node.id && edge.toPortId===portId))return;
         const current = binding.inputOverrides??{};
@@ -197,7 +215,7 @@ export function ComfyWorkflowInstancePanel({node,connections,projectId,comfyInst
         ? `已完成${artifactSummary?` · ${artifactSummary}`:""}`
         :status?comfyRunStatusLabel(status):"待执行";
     const statusError=runError||liveExecution?.error||(currentRun?.error??"");
-    const disabled=!backendExecution||!template||!comfyInstanceId||!outputs[0]||!projectId||active||status==="submission_unknown"||missingMedia.length>0;
+    const disabled=!backendExecution||!template||!comfyInstanceId||!outputs[0]||!projectId||active||status==="submission_unknown"||missingMedia.length>0||missingChoiceSelections.length>0;
     if(editingTemplate) return <ComfyWorkflowPanel node={node} onChange={(patch)=>{
         const applied=onTemplateChange(patch);
         if(applied)setEditingTemplate(false);
@@ -222,6 +240,9 @@ export function ComfyWorkflowInstancePanel({node,connections,projectId,comfyInst
             </p>:null}
             {missingMedia.length>0?<p role="alert" className="mb-3 rounded-lg border border-[var(--comfy-border)] bg-[var(--comfy-fill)] px-3 py-2 text-xs text-amber-600 dark:text-amber-400">
                 请先连接输入：{missingMedia.map(port=>port.label+" ("+port.id+")").join("、")}。从画布的图片节点连接到对应端口，模板自带的示例文件名不可直接用于生成。
+            </p>:null}
+            {missingChoiceSelections.length>0?<p role="alert" className="mb-3 rounded-lg border border-[var(--comfy-border)] bg-[var(--comfy-fill)] px-3 py-2 text-xs text-amber-600 dark:text-amber-400">
+                请先选择候选参数：{missingChoiceSelections.map(field=>field.port.label).join("、")}。
             </p>:null}
             {loading?<p className="text-xs text-[var(--comfy-muted)]">正在加载模板版本…</p>
             :error?<p role="alert" className="rounded-md p-2 text-xs text-red-500">{error}</p>

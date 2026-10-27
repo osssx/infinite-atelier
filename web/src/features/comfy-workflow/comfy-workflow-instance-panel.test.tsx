@@ -15,7 +15,8 @@ vi.mock("./run-types",()=>({missingComfyMediaInputs:()=>[]}));
 vi.mock("./template-registry",()=>({getComfyTemplate:vi.fn()}));
 vi.mock("./comfy-workflow-panel",()=>({ComfyWorkflowPanel:()=>null}));
 
-import { ComfyWorkflowInstancePanel } from "./comfy-workflow-instance-panel";
+import { ComfyWorkflowInstancePanel,ComfyScalarInput } from "./comfy-workflow-instance-panel";
+import type {ComfyInstanceScalarField} from "./instance-parameters";
 
 const node=(status?:string,error?:string):CanvasNodeData=>({
     id:"wf",type:"comfy:workflow",title:"Workflow",position:{x:0,y:0},width:420,height:300,
@@ -34,6 +35,37 @@ function footer(status?:string,error?:string) {
     const html=renderToStaticMarkup(createElement(ComfyWorkflowInstancePanel,props));
     return html.split("data-comfy-run-footer")[1]?.split("</footer>")[0]??"";
 }
+describe("literal enum array dropdown",()=>{
+    it.each([
+        ["STRING","fast","fast",[{label:"快速",value:"fast"},{label:"高质量",value:"quality"}]],
+        ["INT",16,16,[{label:"极速",value:8},{label:"标准",value:16}]],
+        ["FLOAT",0.75,0.75,[{label:"低",value:0.25},{label:"高",value:0.75}]],
+    ] as const)("shows candidate label but persists %s as its native scalar",(kind,value,expected,choices)=>{
+        const field={
+            port:{id:"quality",label:"生成质量",direction:"target",valueKind:kind,
+                inputBinding:{mode:"literal",targets:[{nodeId:"10",inputName:"quality"}]},choices:choices.map(option=>({...option}))},
+            localValue:{source:"override",value},source:"override",
+            mixedTemplateValues:false,connectionCount:0,
+        } as ComfyInstanceScalarField;
+        const html=renderToStaticMarkup(createElement(ComfyScalarInput,{field,onSet:()=>undefined,onClear:()=>undefined}));
+        expect(html).toContain('aria-label="生成质量 候选项"');
+        const selected=choices.findIndex(choice=>Object.is(choice.value,value));
+        expect(html).toContain(`<option value="${selected}" selected="">`);
+        expect(html).toContain(choices[selected].label);
+        expect(html).not.toContain("输入浮点数");
+        expect(value).toBe(expected);
+    });
+    it("locks a dropdown when a canvas input edge is connected",()=>{
+        const field={port:{id:"steps",label:"步数",direction:"target",valueKind:"INT",
+            choices:[{label:"8步",value:8},{label:"16步",value:16}]},
+            connectedFrom:{nodeId:"text",portId:"text"},connectionCount:1,
+            localValue:{source:"override",value:16},source:"edge",mixedTemplateValues:false
+        } as ComfyInstanceScalarField;
+        const html=renderToStaticMarkup(createElement(ComfyScalarInput,{field,onSet:()=>undefined,onClear:()=>undefined}));
+        expect(html).toContain('disabled=""');
+        expect(html).toContain("上游连线");
+    });
+});
 describe("compact ComfyUI inspector execution footer",()=>{
     it("matches the config node full-width rectangular Start Generation button",()=>{
         const html=footer();

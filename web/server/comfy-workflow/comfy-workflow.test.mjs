@@ -127,6 +127,53 @@ test("COMFY_AUTOGROW_V3 prefix templates allow declared slots only",()=>{
     delete graph["1"].inputs["items.item0"];
     assert.throws(()=>validateGraph(graph,info),/comfy_required_input_missing:items.item0/);
 });
+test("STRING, INT, FLOAT choice arrays compile native scalar selections and reject invented overrides",()=>{
+    const t=template();
+    t.apiGraph["20"].inputs.steps=8;
+    t.ports.find(p=>p.id==="strength").choices=[
+        {label:"柔和",value:0.25},{label:"强烈",value:0.75}
+    ];
+    t.ports.find(p=>p.id==="strength").defaultValue=0.25;
+    t.ports.find(p=>p.id==="text").choices=[
+        {label:"快速",value:"fast"},{label:"慢速",value:"slow"}
+    ];
+    t.ports.push({id:"steps",label:"Steps",direction:"target",valueKind:"INT",
+        defaultValue:8,inputBinding:{mode:"literal",targets:[{nodeId:"20",inputName:"steps"}]},
+        choices:[{label:"轻量",value:8},{label:"质量",value:16}]});
+    t.revision=sha256(canonical({name:t.name,apiGraph:t.apiGraph,ports:t.ports,requirements:t.requirements}));
+    const config=structuredClone(info);
+    config.Generate.input.required.steps=["INT",{}];
+    const r=req();
+    r.nodes[0].templateRevision=t.revision;
+    r.nodes[0].inputOverrides={strength:0.75,steps:16,text:"fast"};
+    const result=compileSingleWorkflow(r,t,{...options(),info:config});
+    assert.equal(result.graph["w_wf-1__20"].inputs.strength,0.75);
+    assert.equal(typeof result.graph["w_wf-1__20"].inputs.strength,"number");
+    assert.equal(result.graph["w_wf-1__20"].inputs.steps,16);
+    assert.equal(typeof result.graph["w_wf-1__20"].inputs.steps,"number");
+    assert.equal(result.graph["w_wf-1__10"].inputs.text,"","connected edge > local selected option");
+    assert.equal(result.decisions.strength,"override");
+    assert.equal(result.decisions.text,"edge");
+    const invalid=structuredClone(r);invalid.nodes[0].inputOverrides.steps=64;
+    assert.throws(()=>compileSingleWorkflow(invalid,t,{...options(),info:config}),/literal_enum_value_invalid:steps/);
+    // A newly configured option list must not silently submit a stale graph
+    // input when no default or instance selection belongs to that list.
+    const withoutSelection=structuredClone(t);
+    const steps=withoutSelection.ports.find(p=>p.id==="steps");
+    delete steps.defaultValue;
+    steps.choices=[{label:"仅质量",value:16}];
+    withoutSelection.revision=sha256(canonical({name:withoutSelection.name,apiGraph:withoutSelection.apiGraph,
+        ports:withoutSelection.ports,requirements:withoutSelection.requirements}));
+    const unselected=structuredClone(r);
+    unselected.nodes[0].templateRevision=withoutSelection.revision;
+    delete unselected.nodes[0].inputOverrides.steps;
+    assert.throws(()=>compileSingleWorkflow(unselected,withoutSelection,{...options(),info:config}),
+        /literal_enum_selection_required:steps/);
+    const bad=structuredClone(t);
+    bad.ports.find(p=>p.id==="steps").choices=[{label:"坏类型",value:"16"}];
+    bad.revision=sha256(canonical({name:bad.name,apiGraph:bad.apiGraph,ports:bad.ports,requirements:bad.requirements}));
+    assert.throws(()=>compileSingleWorkflow({...r,nodes:[{...r.nodes[0],templateRevision:bad.revision}]},bad,{...options(),info:config}),/template_enum_value_invalid/);
+});
 test("CF-01 selected intermediate IMAGE captures before prune, one graph and zero/empty frozen input",()=>{
     const t=template(), r=req();
     const before=canonical(t);

@@ -3,6 +3,8 @@ import type { CanvasPortValueKind } from "@/types/canvas";
 export type ComfyNode = { class_type: string; inputs: Record<string, unknown>; _meta?: Record<string, unknown> };
 export type ComfyApiGraph = Record<string, ComfyNode>;
 export type ComfyNodeTarget = { nodeId: string; inputName: string };
+/** Optional UI-only enum choices. Comfy receives the selected scalar, never this list. */
+export type ComfyScalarChoice = {label:string;value:string|number};
 export type ComfyInputBinding =
     | { mode: "literal"; targets: ComfyNodeTarget[] }
     | { mode: "media-file"; mediaKind: "IMAGE" | "VIDEO" | "AUDIO"; targets: ComfyNodeTarget[] }
@@ -17,6 +19,7 @@ export type ComfyTemplatePort = {
     valueKind: CanvasPortValueKind;
     required?: boolean;
     defaultValue?: unknown;
+    choices?: ComfyScalarChoice[];
     inputBinding?: ComfyInputBinding;
     absentPolicy?: ComfyAbsentPolicy;
     outputBinding?: { nodeId: string; outputIndex: number };
@@ -199,8 +202,28 @@ export function validateComfyTemplatePayload(raw: unknown, info?: ComfyObjectInf
                     (p.valueKind === "FLOAT" && (typeof dv !== "number" || !Number.isFinite(dv)))) fail("default value type mismatch");
             }
             if (has(p, "defaultValue") && b.mode === "socket") fail("socket default must come from template graph");
+            if (has(p,"choices")) {
+                if (b.mode!=="literal" || !["STRING","INT","FLOAT"].includes(p.valueKind) ||
+                    !Array.isArray(p.choices) || p.choices.length<1 || p.choices.length>64)
+                    fail("enum choices require a STRING, INT or FLOAT literal input (1–64 choices)");
+                const seen=new Set<string>();
+                for(const option of p.choices){
+                    if(!isObject(option)||typeof option.label!=="string"||
+                        !option.label.trim()||option.label.length>90 || /[|\r\n]/.test(option.label) ||
+                        (p.valueKind==="STRING" ? typeof option.value!=="string"||option.value.length>16000||/[\r\n]/.test(option.value) :
+                         p.valueKind==="INT" ? !Number.isSafeInteger(option.value) :
+                         typeof option.value!=="number"||!Number.isFinite(option.value)))
+                        fail("enum choice label/value type mismatch");
+                    const key=typeof option.value+":"+String(option.value);
+                    if(seen.has(key))fail("duplicate enum choice value");
+                    seen.add(key);
+                }
+                if(has(p,"defaultValue") && !p.choices.some(o=>Object.is(o.value,p.defaultValue)))
+                    fail("enum default value must match one of the choices");
+            }
         } else {
             if (p.inputBinding) fail("output cannot have input binding");
+            if(has(p,"choices"))fail("output cannot have enum choices");
             const out = p.outputBinding;
             if (!isObject(out) || typeof out.nodeId !== "string" || !has(graph, out.nodeId) ||
                 !Number.isInteger(out.outputIndex) || out.outputIndex < 0) fail("invalid output socket");

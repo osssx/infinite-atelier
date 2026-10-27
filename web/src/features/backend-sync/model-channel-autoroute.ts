@@ -46,3 +46,26 @@ export async function ensureSqliteModelChannel(channel:ModelChannel,
  // Never persist a newly vaulted key back into browser/Zustand.
  return {...channel,apiKey:""};
 }
+/** Ordinary editor save is not an explicit key rotation. If the browser key
+ * is unchanged and this channel already has a live encrypted version, reuse
+ * it. Explicit migration/changed keys still require version-fenced rotation.
+ */
+export async function saveSqliteModelChannelFromEditor(channel:ModelChannel,
+ previous:ModelChannel|null,provider:SqliteModelProvider,
+ api:typeof canvasApi=canvasApi):Promise<ModelChannel>{
+ if(previous?.id===channel.id&&previous.apiKey===channel.apiKey&&
+  previous.baseUrl===channel.baseUrl&&previous.apiFormat===channel.apiFormat&&
+  channel.apiKey.trim()){
+  const id=encodeURIComponent(channel.id);
+  let record:VaultChannelView|null=null;
+  try{record=await api<VaultChannelView>("/api/v1/channels/"+id)}
+  catch(error){
+   if(!(error instanceof CanvasApiError&&error.status===404))throw error;
+  }
+  if(record){
+   if(record.provider!==provider)throw Error("vault_channel_provider_mismatch");
+   if(record.hasKey&&record.keyVersion)return {...channel,apiKey:""};
+  }
+ }
+ return ensureSqliteModelChannel(channel,provider,api);
+}

@@ -21,7 +21,7 @@ import { setPreviewGenerationSuspended } from "@/services/media-preview-storage"
 import { nanoid } from "nanoid";
 import { getDataUrlByteSize, readImageMeta } from "@/lib/image-utils";
 import { canvasThemes, type CanvasBackgroundMode } from "@/lib/canvas-theme";
-import { useAssetStore } from "@/stores/use-asset-store";
+import { awaitAssetStorePersistence, useAssetStore } from "@/stores/use-asset-store";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { cullConnections, worldViewRect } from "@/lib/canvas/canvas-connection-culling";
 import { reuseCanvasVisibleList } from "@/lib/canvas/canvas-visible-list";
@@ -2008,11 +2008,13 @@ function AtelierCanvasPage() {
 
     const saveNodeAsset = useCallback(
         async (node: CanvasNodeData) => {
+            try {
             if (node.type === CanvasNodeType.Text) {
                 const content = node.metadata?.content?.trim();
                 if (!content) return message.error(t("canvas.projectPage.noTextToSave"));
                 addAsset({ kind: "text", title: node.metadata?.prompt?.slice(0, 24) || t("canvas.projectPage.canvasText"), coverUrl: "", tags: [], source: "Canvas", data: { content }, metadata: { source: "canvas", nodeId: node.id } });
-                message.success(t("common.addedToAssets"));
+                await awaitAssetStorePersistence();
+            message.success(t("common.addedToAssets"));
                 return;
             }
             if (node.type === CanvasNodeType.Video) {
@@ -2026,7 +2028,8 @@ function AtelierCanvasPage() {
                     data: { url: node.metadata.content, storageKey: node.metadata.storageKey, width: node.width, height: node.height, bytes: node.metadata.bytes || 0, mimeType: node.metadata.mimeType || "video/mp4" },
                     metadata: { source: "canvas", nodeId: node.id, prompt: node.metadata?.prompt },
                 });
-                message.success(t("common.addedToAssets"));
+                await awaitAssetStorePersistence();
+            message.success(t("common.addedToAssets"));
                 return;
             }
             if (!node.metadata?.content) return message.error(t("canvas.projectPage.noImageToSave"));
@@ -2047,7 +2050,9 @@ function AtelierCanvasPage() {
                 },
                 metadata: { source: "canvas", nodeId: node.id, prompt: node.metadata?.prompt },
             });
+            await awaitAssetStorePersistence();
             message.success(t("common.addedToAssets"));
+            } catch(error) { message.error(String(error)); }
         },
         [addAsset, message, t],
     );

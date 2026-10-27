@@ -2,6 +2,7 @@ import { saveAs } from "file-saver";
 
 import i18n from "@/i18n";
 import { defaultConfig, useConfigStore, type AiConfig } from "@/stores/use-config-store";
+import {redactedExportConfig} from "@/features/backend-sync/ui-settings-client";
 
 type AppConfigFile = {
     app: "infinite-canvas";
@@ -12,7 +13,7 @@ type AppConfigFile = {
 
 export function exportAppConfig() {
     const { config } = useConfigStore.getState();
-    const data: AppConfigFile = { app: "infinite-canvas", version: 1, exportedAt: new Date().toISOString(), config };
+    const data: AppConfigFile = { app: "infinite-canvas", version: 1, exportedAt: new Date().toISOString(), config:redactedExportConfig(config) };
     saveAs(new Blob([JSON.stringify(data, null, 2)], { type: "application/json;charset=utf-8" }), "infinite-canvas-config.json");
 }
 

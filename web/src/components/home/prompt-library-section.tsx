@@ -8,7 +8,7 @@ import { useCopyText } from "@/hooks/use-copy-text";
 import { readFileAsDataUrl } from "@/lib/image-utils";
 import { cn } from "@/lib/utils";
 import { usePromptLibraryStore } from "@/stores/use-prompt-library-store";
-import { useAssetStore, type TextAsset } from "@/stores/use-asset-store";
+import { awaitAssetStorePersistence, useAssetStore, type TextAsset } from "@/stores/use-asset-store";
 
 type PromptDraft = {
     title: string;
@@ -129,7 +129,7 @@ export function PromptLibrarySection() {
         removeBuiltInCover(promptId);
         message.success(t("home.promptLibrary.coverReset"));
     };
-    const saveCustomPrompt = () => {
+    const saveCustomPrompt = async () => {
         if (!draft.title.trim() || !draft.prompt.trim()) {
             message.warning(t("home.promptLibrary.required"));
             return;
@@ -145,10 +145,12 @@ export function PromptLibrarySection() {
         };
         if (editingAssetId) updateAsset(editingAssetId, payload);
         else addAsset(payload);
-        message.success(t(editingAssetId ? "home.promptLibrary.updated" : "home.promptLibrary.created"));
-        setEditorOpen(false);
+        try { await awaitAssetStorePersistence();
+            message.success(t(editingAssetId ? "home.promptLibrary.updated" : "home.promptLibrary.created"));
+            setEditorOpen(false);
+        } catch(error) { message.error(String(error)); }
     };
-    const saveBuiltInPrompt = (prompt: DisplayPrompt) => {
+    const saveBuiltInPrompt = async (prompt: DisplayPrompt) => {
         if (prompt.custom || savedPromptIds.has(prompt.id)) {
             message.info(t("home.promptLibrary.alreadySaved"));
             return;
@@ -162,7 +164,8 @@ export function PromptLibrarySection() {
             data: { content: prompt.prompt },
             metadata: { libraryPromptId: prompt.id },
         });
-        message.success(t("home.promptLibrary.saved"));
+        try { await awaitAssetStorePersistence();message.success(t("home.promptLibrary.saved")); }
+        catch(error) { message.error(String(error)); }
     };
 
     return (

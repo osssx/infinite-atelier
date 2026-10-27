@@ -4,6 +4,7 @@ import { persist } from "zustand/middleware";
 import { nanoid } from "nanoid";
 
 import i18n from "@/i18n";
+import {awaitModelConfigPersistence,createModelConfigStorage} from "@/features/backend-sync/model-config-persistence";
 
 export type ApiCallFormat = "openai" | "gemini" | "volcengine_ark";
 export type ModelCapability = "image" | "video" | "text" | "audio";
@@ -189,6 +190,7 @@ function isAiConfigReady(config: AiConfig, model: string) {
     return Boolean(model.trim() && channel?.baseUrl.trim() && (channel?.apiKey.trim() || serverArkAuth));
 }
 
+export {awaitModelConfigPersistence};
 export const useConfigStore = create<ConfigStore>()(
     persist(
         (set, get) => ({
@@ -210,6 +212,7 @@ export const useConfigStore = create<ConfigStore>()(
         }),
         {
             name: CONFIG_STORE_KEY,
+            storage:createModelConfigStorage<{config:AiConfig}>(defaultConfig),
             partialize: (state) => ({ config: state.config }),
             merge: (persisted, current) => {
                 const persistedState = (persisted || {}) as Partial<ConfigStore>;

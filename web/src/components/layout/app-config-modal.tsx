@@ -16,6 +16,7 @@ import {
     normalizeModelOptionValue,
     selectableModelsByCapability,
     useConfigStore,
+    awaitModelConfigPersistence,
     type AiConfig,
     type ApiCallFormat,
     type ConfigTabKey,
@@ -37,7 +38,7 @@ const modelGroups: ModelGroup[] = [
 ];
 
 export function AppConfigPanel({ showDoneButton = false, initialTab = "channels" }: { showDoneButton?: boolean; initialTab?: ConfigTabKey }) {
-    const { message } = App.useApp();
+    const { message,modal } = App.useApp();
     const { i18n, t } = useTranslation();
     const configInputRef = useRef<HTMLInputElement>(null);
     const [activeTab, setActiveTab] = useState<ConfigTabKey>(initialTab);
@@ -51,10 +52,13 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
     useEffect(() => setActiveTab(initialTab), [initialTab]);
 
     const saveConfig = (nextConfig: AiConfig) => {
-        (Object.keys(nextConfig) as Array<keyof AiConfig>).forEach((key) => updateConfig(key, nextConfig[key]));
+        // One revision-fenced transaction rather than one request per setting.
+        useConfigStore.setState({config:nextConfig});
     };
 
-    const finishConfig = () => {
+    const finishConfig = async () => {
+        try { await awaitModelConfigPersistence(); }
+        catch(error) { message.error(String(error));return }
         const ready = config.channels.some((channel) => channel.baseUrl.trim() &&
             channel.models.length);
         setConfigDialogOpen(false);
@@ -66,6 +70,7 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
     const loadConfigFile = async (file: File) => {
         try {
             await importAppConfig(file);
+            await awaitModelConfigPersistence();
             message.success(t("config.imported"));
         } catch (error) {
             message.error(error instanceof Error ? error.message : t("config.importFailed"));

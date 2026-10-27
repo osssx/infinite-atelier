@@ -3,8 +3,8 @@ import { persist, type PersistStorage, type StorageValue } from "zustand/middlew
 
 import { nanoid } from "nanoid";
 import { localForageStorage } from "@/lib/localforage-storage";
-import { cleanupUnusedImages, resolveImageUrl, uploadImage } from "@/services/image-storage";
-import { cleanupUnusedMedia, resolveMediaUrl } from "@/services/file-storage";
+import {normalizeAssetCatalog,readBackendAssetCatalog,saveBackendAssetCatalog} from "@/features/backend-sync/asset-catalog-client";
+
 
 export type AssetKind = "text" | "image" | "video";
 export type TextAsset = AssetBase<"text"> & { data: { content: string } };
@@ -37,48 +37,74 @@ type AssetStore = {
 
 const ASSET_STORE_KEY = "infinite-canvas:asset_store";
 
-// Keep import/rollback asset writes ordered and expose a durability barrier.
+// The persisted Asset Library is a single optimistic CAS record in SQLite.
+// Never auto-hydrate the legacy browser store and never fall back to LocalForage.
+let catalogRevision:number|null=null;
+let committedSnapshot="";
+let catalogBlocked=false;
 let assetWriteQueue: Promise<void> = Promise.resolve();
 let lastAssetWriteError: unknown = null;
 export async function awaitAssetStorePersistence() {
     await assetWriteQueue;
     if (lastAssetWriteError) throw lastAssetWriteError;
 }
-
+export async function importLegacyBrowserAssets():Promise<number>{
+    if(!useAssetStore.getState().hydrated)throw Error("asset_catalog_not_ready");
+    if(useAssetStore.getState().assets.length)throw Error("asset_catalog_not_empty");
+    await awaitAssetStorePersistence();
+    const legacy=await localForageStorage.getItem(ASSET_STORE_KEY);
+    if(!legacy) return 0;
+    const data:unknown=JSON.parse(legacy);
+    const assets=(data&&typeof data==="object"&&"state" in data&&
+        data.state&&typeof data.state==="object"&&"assets" in data.state)?
+        data.state.assets:undefined;
+    if(!Array.isArray(assets)||assets.length>5000)throw Error("asset_legacy_invalid");
+    if(!assets.length)return 0;
+    const portable=await normalizeAssetCatalog(assets as Asset[]);
+    const current=await readBackendAssetCatalog();
+    if(current.assets.length||current.revision!==catalogRevision)throw Error("asset_catalog_revision_conflict");
+    useAssetStore.getState().replaceAssets(portable);
+    await awaitAssetStorePersistence();
+    return portable.length;
+}
 const assetStorage: PersistStorage<AssetStore> = {
-    getItem: async (name) => {
-        const value = await localForageStorage.getItem(name);
-        if (!value) return null;
-        const parsed = JSON.parse(value) as StorageValue<AssetStore>;
-        parsed.state.assets = await Promise.all(
-            parsed.state.assets.map(async (asset) => {
-                if (asset.kind === "video" && asset.data.storageKey) return { ...asset, data: { ...asset.data, url: await resolveMediaUrl(asset.data.storageKey, asset.data.url) } };
-                if (asset.kind !== "image") return asset;
-                if (asset.data.storageKey)
-                    return {
-                        ...asset,
-                        coverUrl: asset.coverUrl.startsWith("blob:") ? await resolveImageUrl(asset.data.storageKey, asset.coverUrl) : asset.coverUrl,
-                        data: { ...asset.data, dataUrl: await resolveImageUrl(asset.data.storageKey, asset.data.dataUrl) },
-                    };
-                if (!asset.data.dataUrl.startsWith("data:image/")) return asset;
-                const image = await uploadImage(asset.data.dataUrl);
-                return { ...asset, coverUrl: asset.coverUrl.startsWith("data:image/") ? image.url : asset.coverUrl, data: { ...asset.data, dataUrl: image.url, storageKey: image.storageKey, bytes: image.bytes, mimeType: image.mimeType } };
-            }),
-        );
-        return parsed;
+    getItem: async () => {
+        const catalog=await readBackendAssetCatalog(); // fail closed on offline/401
+        if(!Number.isSafeInteger(catalog.revision)||!Array.isArray(catalog.assets))
+            throw Error("asset_catalog_invalid_response");
+        catalogRevision=catalog.revision;
+        committedSnapshot=JSON.stringify(catalog.assets);
+        catalogBlocked=false;
+        return {state:{assets:catalog.assets} as StorageValue<AssetStore>["state"],version:0};
     },
-    setItem: (name, value) => {
-        const save = assetWriteQueue.then(async () => {
-            await localForageStorage.setItem(name, JSON.stringify(value));
-            lastAssetWriteError = null;
-        }).catch((error: unknown) => {
-            lastAssetWriteError = error;
-            throw error;
+    setItem: (_name,value) => {
+        const source=value.state.assets;
+        const save=assetWriteQueue.then(async()=>{
+            if(catalogBlocked||catalogRevision===null)throw Error("asset_catalog_reload_required");
+            const portable=await normalizeAssetCatalog(source);
+            const payload=JSON.stringify(portable);
+            if(payload!==committedSnapshot){
+                try{
+                    const saved=await saveBackendAssetCatalog(catalogRevision,portable);
+                    if(saved.revision!==catalogRevision+1)throw Error("asset_catalog_invalid_response");
+                    catalogRevision=saved.revision;
+                    committedSnapshot=payload;
+                }catch(error){
+                    // Unknown network outcomes and optimistic conflicts must not
+                    // be retried as a blind overwrite by the next Zustand write.
+                    catalogBlocked=true;throw error;
+                }
+            }
+            lastAssetWriteError=null;
+            if(useAssetStore.getState().assets===source&&JSON.stringify(source)!==payload)
+                useAssetStore.setState({assets:portable});
+        }).catch((error:unknown)=>{
+            lastAssetWriteError=error;throw error;
         });
-        assetWriteQueue = save.catch(() => {});
+        assetWriteQueue=save.catch(()=>{});
         return save;
     },
-    removeItem: (name) => localForageStorage.removeItem(name),
+    removeItem: async () => { throw Error("asset_catalog_clear_requires_explicit"); },
 };
 
 export const useAssetStore = create<AssetStore>()(
@@ -103,19 +129,16 @@ export const useAssetStore = create<AssetStore>()(
                     return { assets };
                 }),
             replaceAssets: (assets) => set({ assets }),
-            cleanupImages: (extra) => {
-                window.setTimeout(async () => {
-                    const { useCanvasStore } = await import("@/stores/canvas/use-canvas-store");
-                    await cleanupUnusedImages({ assets: get().assets, projects: useCanvasStore.getState().projects, extra });
-                    await cleanupUnusedMedia({ assets: get().assets, projects: useCanvasStore.getState().projects, extra });
-                }, 0);
-            },
+            // CAS deletion is governed by the backend reference ledger/GC.
+            // Do not delete historical browser files during staged migration.
+            cleanupImages: () => {},
         }),
         {
             name: ASSET_STORE_KEY,
             storage: assetStorage,
             partialize: (state) => ({ assets: state.assets }) as StorageValue<AssetStore>["state"],
-            onRehydrateStorage: () => () => {
+            onRehydrateStorage: () => (_state,error) => {
+                if(error){lastAssetWriteError=error;return}
                 useAssetStore.setState({ hydrated: true });
             },
         },

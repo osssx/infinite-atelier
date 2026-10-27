@@ -9,12 +9,13 @@ import { canvasThemes, type CanvasTheme } from "@/lib/canvas-theme";
 import { exportCanvasNodes } from "@/lib/canvas/canvas-export";
 import { getNodeDefinition } from "@/lib/canvas/node-registry";
 import { cn } from "@/lib/utils";
-import { uploadMediaFile } from "@/services/file-storage";
-import { resolveImageUrl, uploadImage } from "@/services/image-storage";
+import { uploadCanvasImage,uploadCanvasMedia } from "@/features/backend-sync/canvas-media";
+import { resolveImageUrl } from "@/services/image-storage";
 import { getImageBlob } from "@/services/image-storage";
 import { resolveMediaPreview } from "@/services/media-preview-storage";
 import { CANVAS_SIDEBAR_ROW_HEIGHT, CANVAS_SIDEBAR_ROW_STRIDE, canvasSidebarWindow } from "@/lib/canvas/canvas-side-panel-window";
 import { useAssetStore, type Asset, type AssetKind } from "@/stores/use-asset-store";
+import { awaitAssetStorePersistence } from "@/stores/use-asset-store";
 import { useGenerationHistoryStore, type GenerationHistoryRecord } from "@/stores/canvas/use-generation-history-store";
 import { CANVAS_SIDE_PANEL_MAX_WIDTH, CANVAS_SIDE_PANEL_MIN_WIDTH, CANVAS_SIDE_PANEL_MOTION_MS, useCanvasSidePanelStore } from "@/stores/use-canvas-side-panel-store";
 import { useThemeStore } from "@/stores/use-theme-store";
@@ -406,15 +407,16 @@ const CanvasAssetsTab = memo(function CanvasAssetsTab({ onInsert, theme }: { onI
         try {
             for (const file of files) {
                 if (file.type.startsWith("image/")) {
-                    const image = await uploadImage(file);
+                    const image = await uploadCanvasImage(file);
                     addAsset({ kind: "image", title: file.name || t("assets.kinds.image"), coverUrl: image.url, tags: [], data: { dataUrl: image.url, storageKey: image.storageKey, width: image.width, height: image.height, bytes: image.bytes, mimeType: image.mimeType } });
                     added += 1;
                 } else if (file.type.startsWith("video/")) {
-                    const media = await uploadMediaFile(file, "video");
+                    const media = await uploadCanvasMedia(file, "video");
                     addAsset({ kind: "video", title: file.name || t("assets.kinds.video"), coverUrl: "", tags: [], data: { url: media.url, storageKey: media.storageKey, width: media.width || 0, height: media.height || 0, bytes: media.bytes, mimeType: media.mimeType } });
                     added += 1;
                 }
             }
+            if (added) await awaitAssetStorePersistence();
             if (added) message.success(t("canvas.sidePanel.addedAssets", { count: added }));
             else message.warning(t("canvas.sidePanel.mediaOnly"));
         } catch (error) {
@@ -556,7 +558,8 @@ const CanvasHistoryTab = memo(function CanvasHistoryTab({ theme }: { theme: Canv
             source: "canvas-history",
             data: { dataUrl: url, storageKey: first.storageKey, width: first.width, height: first.height, bytes: first.bytes, mimeType: first.mimeType },
         });
-        message.success(t("common.addedToAssets"));
+        try { await awaitAssetStorePersistence();message.success(t("common.addedToAssets")); }
+        catch(error){message.error(String(error))}
     };
 
     return (

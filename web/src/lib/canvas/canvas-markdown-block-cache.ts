@@ -24,7 +24,9 @@ export function cachedCanvasMarkdownBlocks(content: string): string[] {
     }
     const blocks = parseMarkdownIntoBlocks(content);
     const bytes = (content.length + blocks.reduce((n, block) => n + block.length, 0)) * 2;
-    if (bytes > MAX_SINGLE_DOCUMENT_BYTES) return blocks;
+    // Streamdown can memoize its own split arrays. Oversized documents must
+    // bypass *all* array-identity reuse, not only our bounded LRU map.
+    if (bytes > MAX_SINGLE_DOCUMENT_BYTES) return [...blocks];
     blockCache.set(content, { blocks, bytes });
     blockCacheBytes += bytes;
     while (blockCache.size > MAX_BLOCK_CACHE_ENTRIES || blockCacheBytes > MAX_BLOCK_CACHE_BYTES) {

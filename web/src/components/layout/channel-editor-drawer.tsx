@@ -7,7 +7,7 @@ import { seedancePresets } from "@/services/api/video/model-capabilities";
 import { defaultBaseUrlForApiFormat, guessCapability, normalizeChannelModels, type ApiCallFormat, type ChannelModel, type ModelCapability, type ModelChannel } from "@/stores/use-config-store";
 import { ModelScriptEditor } from "./model-script-editor";
 import { ModelSelectModal } from "./model-select-modal";
-import {ensureSqliteModelChannel,modelChannelProvider} from "@/features/backend-sync/model-channel-autoroute";
+import {saveSqliteModelChannelFromEditor,modelChannelProvider} from "@/features/backend-sync/model-channel-autoroute";
 
 type ScriptTarget = { name: string; capability: ModelCapability; value: string };
 
@@ -61,10 +61,15 @@ export function ChannelEditorDrawer({ open, channel, onSave, onClose }: { open: 
             let updated={...draft,name:draft.name.trim()||t("config.channels.unnamed"),
                 models:normalizeChannelModels(draft.models)};
             const provider=modelChannelProvider(updated);
-            // Saving an official backend-supported channel automatically vaults
-            // a new key; no "enable backend" step or browser-stored copy.
-            if(provider&&updated.apiKey.trim())
-                updated=await ensureSqliteModelChannel(updated,provider);
+            // Save or reuse the encrypted Vault key without requiring a mode toggle.
+            // A saved Vault key alone does not prove every browser-direct path
+            // can use SQLite. Preserve the local key until the explicit
+            // capability-checked migration action safely clears it.
+            if(provider&&updated.apiKey.trim()){
+                const key=updated.apiKey;
+                const vaulted=await saveSqliteModelChannelFromEditor(updated,channel,provider);
+                updated={...vaulted,apiKey:key};
+            }
             setDraft(updated);
             onSave(updated);
             onClose();
@@ -139,7 +144,7 @@ export function ChannelEditorDrawer({ open, channel, onSave, onClose }: { open: 
                     {draft.apiFormat === "volcengine_ark" ? <div className="mt-2 flex flex-wrap items-center gap-2"><Button size="small" loading={checkingArk} onClick={() => void checkArkConnection()}>{t("config.channelEditor.testArkConnection")}</Button><span className="text-xs text-stone-500">{t("config.channelEditor.arkConnectionHint")}</span></div> : null}
                     {modelChannelProvider(draft) ? <div className="mt-2 text-xs text-stone-500">
                         本地 SQLite 模型执行默认启用。保存时自动将填写的密钥写入本机加密 Vault，
-                        不再保存在此渠道的浏览器设置中；已有密钥可留空。
+                        在确认所有直接调用路径已接入后端前，浏览器直连密钥暂时保留；可在“偏好设置”显式安全迁移。
                     </div> : null}
                 </label>
             </div>

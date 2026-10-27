@@ -1,6 +1,6 @@
 import {describe,it,expect,vi} from "vitest";
 import {CanvasApiError} from "./canvas-api";
-import {ensureSqliteModelChannel,modelChannelProvider} from "./model-channel-autoroute";
+import {ensureSqliteModelChannel,saveSqliteModelChannelFromEditor,modelChannelProvider} from "./model-channel-autoroute";
 import type {ModelChannel} from "@/stores/use-config-store";
 import type {canvasApi} from "./canvas-api";
 
@@ -37,7 +37,7 @@ describe("default SQLite model routing and automatic DPAPI provisioning",()=>{
    }}
   ]);
  });
- it("rotates key on ordinary channel save without ever copying key to returned config",async()=>{
+ it("rotates an explicitly supplied new key using the existing version fence",async()=>{
   const api=vi.fn(async(path:string,method="GET",payload?:unknown)=>{
    if(method==="GET")return {id:"channel123",provider:"openai",hasKey:true,keyVersion:"old"};
    expect(method).toBe("PATCH");
@@ -46,6 +46,27 @@ describe("default SQLite model routing and automatic DPAPI provisioning",()=>{
   });
   expect((await ensureSqliteModelChannel(channel(),"openai",api as unknown as typeof canvasApi)).apiKey).toBe("");
   expect(api).toHaveBeenCalledTimes(2);
+ });
+ it("ordinary editor save reuses an already vaulted unchanged key, but rotates a changed key",async()=>{
+  const requests:Array<{method:string;path:string}>=[];
+  const api=vi.fn(async(path:string,method="GET",payload?:unknown)=>{
+   requests.push({method,path});
+   if(method==="GET")return {id:"channel123",provider:"openai",hasKey:true,keyVersion:"current"};
+   if(method==="PATCH"){
+    expect(payload).toEqual({apiKey:"sk-new-key",expectedKeyVersion:"current"});
+    return {id:"channel123",provider:"openai",hasKey:true,keyVersion:"next"};
+   }
+   throw Error("unexpected");
+  });
+  const original=channel();
+  const same={...original,name:"Updated name"};
+  const reused=await saveSqliteModelChannelFromEditor(same,original,"openai",api as unknown as typeof canvasApi);
+  expect(reused.apiKey).toBe("");
+  expect(requests).toEqual([{method:"GET",path:"/api/v1/channels/channel123"}]);
+  const changed={...original,apiKey:"sk-new-key"};
+  const updated=await saveSqliteModelChannelFromEditor(changed,original,"openai",api as unknown as typeof canvasApi);
+  expect(updated.apiKey).toBe("");
+  expect(requests.filter(r=>r.method==="PATCH")).toHaveLength(1);
  });
  it("reuses vaulted key without needing to reenter it or call a separate enable button",async()=>{
   const api=vi.fn(async()=>({id:"channel123",provider:"openai",hasKey:true,keyVersion:"current"}));

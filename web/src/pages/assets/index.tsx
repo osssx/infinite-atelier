@@ -6,9 +6,9 @@ import { useTranslation } from "react-i18next";
 
 import { useCopyText } from "@/hooks/use-copy-text";
 import { formatBytes, readFileAsDataUrl } from "@/lib/image-utils";
-import { uploadImage } from "@/services/image-storage";
+import { uploadCanvasImage } from "@/features/backend-sync/canvas-media";
 import { cn } from "@/lib/utils";
-import { useAssetStore, type Asset, type AssetKind, type ImageAsset } from "@/stores/use-asset-store";
+import { awaitAssetStorePersistence, importLegacyBrowserAssets, useAssetStore, type Asset, type AssetKind, type ImageAsset } from "@/stores/use-asset-store";
 import { exportAssets, readAssetPackage } from "./asset-transfer";
 
 type AssetFormValues = {
@@ -26,7 +26,7 @@ type ImageDraft = ImageAsset["data"] | null;
 const kindOptions = ["all", "text", "image", "video"] as const;
 
 export default function AssetsPage() {
-    const { message } = App.useApp();
+    const { message, modal } = App.useApp();
     const { t } = useTranslation();
     const copyText = useCopyText();
     const [form] = Form.useForm<AssetFormValues>();
@@ -119,8 +119,11 @@ export default function AssetsPage() {
             editingAsset ? updateAsset(editingAsset.id, asset) : addAsset(asset);
         }
 
-        message.success(editingAsset ? t("assets.updated") : t("assets.saved"));
-        setIsAssetOpen(false);
+        try {
+            await awaitAssetStorePersistence();
+            message.success(editingAsset ? t("assets.updated") : t("assets.saved"));
+            setIsAssetOpen(false);
+        } catch (error) { message.error(String(error)); }
     };
 
     const readCoverFile = async (file?: File) => {
@@ -131,7 +134,7 @@ export default function AssetsPage() {
 
     const readImageFile = async (file?: File) => {
         if (!file || !file.type.startsWith("image/")) return;
-        const image = await uploadImage(file);
+        const image = await uploadCanvasImage(file);
         const draft = { dataUrl: image.url, storageKey: image.storageKey, width: image.width, height: image.height, bytes: image.bytes, mimeType: image.mimeType };
         setImageDraft(draft);
         if (!form.getFieldValue("coverUrl")) form.setFieldValue("coverUrl", draft.dataUrl);
@@ -153,7 +156,8 @@ export default function AssetsPage() {
             message.warning(t("assets.noneToExport"));
             return;
         }
-        await exportAssets(validAssets, t("assets.packageName"));
+        try { await exportAssets(validAssets, t("assets.packageName")); }
+        catch(error) { message.error(String(error)); }
     };
 
     const importAssetZip = async (file?: File) => {
@@ -167,6 +171,7 @@ export default function AssetsPage() {
                 delete payload.updatedAt;
                 addAsset(payload as Parameters<typeof addAsset>[0]);
             });
+            await awaitAssetStorePersistence();
             message.success(t("assets.imported", { count: importedAssets.length }));
         } catch {
             message.error(t("assets.importFailed"));
@@ -175,12 +180,25 @@ export default function AssetsPage() {
         }
     };
 
-    const confirmDelete = () => {
+    const confirmDelete = async () => {
         if (!deletingAsset) return;
         removeAsset(deletingAsset.id);
-        message.success(t("assets.deleted"));
-        setDeletingAsset(null);
+        try { await awaitAssetStorePersistence();
+            message.success(t("assets.deleted"));setDeletingAsset(null);
+        } catch (error) { message.error(String(error)); }
     };
+
+    const confirmLegacyImport = () => modal.confirm({
+        title: "导入浏览器旧素材库",
+        content: "仅在 SQLite 素材库为空时导入。图片和视频先上传到后端 BlobStore，旧浏览器数据保留且不会自动删除；导入前请确认本地后端可用。",
+        okText: "导入",cancelText: "取消",
+        onOk: async () => {
+            try {
+                const count = await importLegacyBrowserAssets();
+                message.success(count ? `已导入 ${count} 条旧素材记录` : "未发现旧浏览器素材");
+            } catch (error) { message.error(String(error)); throw error; }
+        },
+    });
 
     return (
         <div className="flex h-full flex-col overflow-hidden bg-background text-stone-900 dark:text-stone-100">
@@ -245,6 +263,9 @@ export default function AssetsPage() {
                                 >
                                     {t("assets.import")}
                                 </button>
+                                <button type="button"
+                                    className="cursor-pointer text-sm font-medium text-stone-700 underline-offset-4 hover:underline focus-visible:outline-none focus-visible:underline dark:text-stone-300"
+                                    onClick={confirmLegacyImport}>导入旧浏览器素材</button>
                                 <button
                                     type="button"
                                     className="cursor-pointer text-sm font-medium text-stone-700 underline-offset-4 hover:underline focus-visible:outline-none focus-visible:underline dark:text-stone-300"

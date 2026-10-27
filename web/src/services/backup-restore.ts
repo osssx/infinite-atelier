@@ -8,6 +8,7 @@ import { validateBackup, type AppBackupFile, type BackupItem } from "@/services/
 import { awaitCanvasStorePersistence, useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { awaitAssetStorePersistence, useAssetStore } from "@/stores/use-asset-store";
 import { useConfigStore } from "@/stores/use-config-store";
+import {redactedExportConfig} from "@/features/backend-sync/ui-settings-client";
 import { exportSkill, restoreSkillSnapshot, snapshotSkills, type SkillBackupSnapshot } from "@/features/skills/skill-registry";
 import { importSkillFile } from "@/features/skills/skill-import";
 import { exportComfyBackupTemplates, verifyComfyBackupTemplates, unbindImportedComfyProjects } from "@/features/comfy-workflow/backup-workflows";
@@ -42,7 +43,11 @@ export async function exportAppBackup() {
         await ensureReady();
         await synchronizeCanvas();
         const { projects } = useCanvasStore.getState();
+        if(JSON.stringify(projects).includes("cas:") || JSON.stringify(projects).includes("/api/v1/blobs/"))
+            throw Error("旧版浏览器 ZIP 不包含 Canvas SQLite/CAS 文件：请使用 npm run backup:data 的完整冷备份");
         const { assets } = useAssetStore.getState();
+        if(assets.some(a=>a.kind!=="text"&&a.data.storageKey?.startsWith("cas:")))
+            throw Error("旧版浏览器 ZIP 不能完整备份 SQLite 素材库：请使用 npm run backup:data 的完整冷备份");
         const { config } = useConfigStore.getState();
         const files: BackupItem[] = [];
         const zipFiles: { name: string; data: BlobPart }[] = [];
@@ -60,7 +65,7 @@ export async function exportAppBackup() {
         for (const [name, blob] of comfy.files) zipFiles.push({ name, data: blob });
         const data: AppBackupFile = {
             app: "infinite-canvas", version: comfy.records.length ? 2 : 1, exportedAt: new Date().toISOString(),
-            projects, assets, config, files,
+            projects, assets, config:redactedExportConfig(config), files,
             skills: { catalog: skillSnapshot.catalog, packages: skillRecords },
             ...(comfy.records.length ? { comfyWorkflows: comfy.records } : {}),
         };
@@ -79,6 +84,8 @@ export async function exportAppBackup() {
 export async function importAppBackup(file: File) {
     return exclusive(async () => {
         await ensureReady();
+        if(useAssetStore.getState().assets.length||useCanvasStore.getState().projects.length)
+            throw Error("旧版浏览器 ZIP 不能覆盖已有的 SQLite 项目或素材；请使用新目录完整冷备份恢复");
         const zip = await readZip(file, { maxFiles: 10000, maxUncompressedBytes: 2 * 1024 ** 3, maxEntryBytes: 512 * 1024 ** 2, maxArchiveBytes: 2 * 1024 ** 3 });
         const manifest = zip.get("backup.json");
         if (!manifest) throw new Error("Invalid application backup: missing backup.json");
@@ -86,6 +93,8 @@ export async function importAppBackup(file: File) {
         try { parsed = JSON.parse(await manifest.text()); }
         catch { throw new Error("Invalid application backup: invalid JSON manifest"); }
         const data = validateBackup(parsed, zip);
+        if(data.assets.some(a=>a.kind!=="text"&&a.data.storageKey?.startsWith("cas:")))
+            throw Error("不能通过旧版浏览器 ZIP 覆盖 SQLite CAS 素材，请使用完整冷备份恢复");
         // Validate actual content hashes and every Comfy graph/port binding BEFORE any project or Blob mutation.
         const comfyToRestore = data.version === 2 ? await verifyComfyBackupTemplates(data.comfyWorkflows || [], zip) : [];
         // Validate every nested SKILL ZIP and its claimed version before mutating browser data.

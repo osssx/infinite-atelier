@@ -10,6 +10,7 @@ import {openMainDatabase} from "./database.mjs";
 import {createBlobStore} from "./blob-store.mjs";
 import {acquireInstanceLock} from "./instance-lock.mjs";
 import {createColdBackup,verifyColdBackup,restoreColdBackup} from "./cold-backup.mjs";
+import {getAssetCatalog,putAssetCatalog} from "./asset-catalog.mjs";
 
 const png=Buffer.from("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000b49444154789c636000020000050001a5f645400000000049454e44ae426082","hex");
 async function fixture(t){
@@ -28,6 +29,7 @@ async function fixture(t){
   .run("stored","openai","Protected provider",1,1);
  db.prepare("INSERT INTO credential_versions(id,channel_id,version_num,ciphertext,created_at) VALUES(?,?,?,?,?)")
   .run("ver", "stored",1, Buffer.from("encrypted-current-user"),1);
+ putAssetCatalog(db,{expectedRevision:1,assets:[{id:"asset-from-backup",kind:"image",title:"CAS image",coverUrl:"/api/v1/blobs/"+blob.blobId,tags:[],createdAt:"2026-10-27",updatedAt:"2026-10-27",data:{storageKey:"cas:"+blob.blobId,dataUrl:"/api/v1/blobs/"+blob.blobId,width:1,height:1,bytes:blob.byteSize,mimeType:blob.mimeType}}]});
  db.close();
  return {parent,source,destination,restore,blob,text};
 }
@@ -36,7 +38,7 @@ test("P5.1 cold backup copies SQLite plus all ready BlobStore bytes, verifies, a
  const result=await createColdBackup({dataDir:f.source,backupDir:f.destination});
  assert.equal(result.blobCount,2);
  assert.equal(result.blobBytes,png.length+Buffer.byteLength("hello from the Canvas\n"));
- assert.equal(result.schemaVersion,10);
+ assert.equal(result.schemaVersion,11);
  assert.equal(existsSync(join(f.destination,"db","atelier.sqlite")),true);
  assert.equal(existsSync(join(f.destination,"manifest.json")),true);
  const check=await verifyColdBackup({backupDir:f.destination});
@@ -49,6 +51,8 @@ test("P5.1 cold backup copies SQLite plus all ready BlobStore bytes, verifies, a
  try{
   assert.equal(db.prepare("SELECT revision FROM projects WHERE id='p5-test'").get().revision,13);
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM blobs").get().n,2);
+  assert.equal(getAssetCatalog(db).assets[0].id,"asset-from-backup");
+  assert.equal(getAssetCatalog(db).revision,2);
   assert.deepEqual(Buffer.from(db.prepare("SELECT ciphertext FROM credential_versions WHERE id='ver'").get().ciphertext),
    Buffer.from("encrypted-current-user"));
   assert.equal(db.prepare("PRAGMA integrity_check").get().integrity_check,"ok");

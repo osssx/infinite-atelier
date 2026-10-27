@@ -29,7 +29,7 @@ test("P5.2 restored copy is standby; original and restored can never both acquir
  assert.equal(original.status,"active");assert.equal(clone.status,"standby");
  assert.equal(clone.lineageId,original.lineageId);
  assert.notEqual(clone.replicaId,original.replicaId);
- assert.equal((await verifyColdBackup({backupDir:f.backupDir})).schemaVersion,10);
+ assert.equal((await verifyColdBackup({backupDir:f.backupDir})).schemaVersion,11);
  assert.throws(()=>acquireDatasetGuard(f.clone,{activationRoot:f.activationRoot}),/instance_already_running|dataset_not_active/);
  const guard=acquireDatasetGuard(f.source,{activationRoot:f.activationRoot});
  try{

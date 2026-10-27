@@ -8,6 +8,7 @@ import {CANVAS_NODE_ID_PATTERN} from "../canvas-node-id.mjs";
 import {ARCHIVE_MAX_BYTES} from "./project-archive.mjs";
 import {createComfyRegistry} from "./comfy-registry.mjs";
 import {listProjectJobs} from "./project-job-history.mjs";
+import {getAssetCatalog,putAssetCatalog} from "./asset-catalog.mjs";
 const nonempty={type:"string",minLength:1,maxLength:256};
 const idSchema={type:"string",pattern:"^[A-Za-z0-9_-]{1,128}$"};
 const canvasNodeIdSchema={type:"string",pattern:CANVAS_NODE_ID_PATTERN};
@@ -93,6 +94,8 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
    "invalid_canvas_chats","invalid_canvas_viewport","canvas_chats_too_large",
    "chats_revision_conflict","viewport_revision_conflict",
    "stale_generation_source","cyclic_generation_source","generation_save_barrier_required","invalid_job_request","idempotency_key_conflict","backend_prior_job_not_terminal","job_not_found","invalid_project_job_history_request","invalid_project_job_history_cursor","reconciliation_invalid_input","reconciliation_not_eligible","reconciliation_provider_unsupported","reconciliation_adapter_unavailable","reconciliation_state_changed","reconciliation_upstream_unavailable","reconciliation_remote_already_linked",
+   "asset_catalog_invalid","asset_catalog_too_large","asset_catalog_media_not_portable",
+   "asset_catalog_blob_missing","asset_catalog_media_mismatch","asset_catalog_revision_required","asset_catalog_revision_conflict",
    "invalid_event_cursor","event_cursor_expired","raw_credentials_forbidden",
    "invalid_bootstrap_token","unsupported_blob_mime","invalid_sha256","blob_quota_exceeded",
    "empty_blob","blob_mime_mismatch","blob_digest_mismatch","blob_identity_conflict",
@@ -269,6 +272,18 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
  });
  app.delete("/api/v1/comfy/presets/:id",{schema:{params:presetParams}},(req,reply)=>
   registry.deletePreset(req.params.id));
+ // Non-Canvas Asset Library metadata is now backed by the same SQLite snapshot
+ // and immutable BlobStore as the Canvas. All writes are revision fenced.
+ const assetCatalogBody={type:"object",required:["expectedRevision","assets"],additionalProperties:false,
+  properties:{expectedRevision:{type:"integer",minimum:1},assets:{type:"array",maxItems:5000}}};
+ app.get("/api/v1/assets",(req,reply)=>{
+  reply.header("Cache-Control","no-store");return getAssetCatalog(db);
+ });
+ app.put("/api/v1/assets",{bodyLimit:3*1024*1024,
+  schema:{body:assetCatalogBody}},(req,reply)=>{
+  const result=putAssetCatalog(db,req.body);
+  reply.header("Cache-Control","no-store");return result;
+ });
  // Project library and its own transactional change cursor (job SSE is separate).
  app.get("/api/v1/projects",()=>({projects:listProjectSummaries(db),eventCursor:projectEventCursor(db)}));
  app.get("/api/v1/projects/events",{schema:{querystring:{type:"object",properties:{

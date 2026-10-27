@@ -1,5 +1,5 @@
 import{JOB_STATUSES,EXECUTION_MODES,ARTIFACT_KINDS}from"./contracts.mjs";
-export const SCHEMA_VERSION=10;
+export const SCHEMA_VERSION=11;
 const quoted=x=>x.map(s=>"'"+s+"'").join(",");
 export const INITIAL_SCHEMA_SQL=`
 CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY,applied_at INTEGER NOT NULL);
@@ -225,6 +225,20 @@ CREATE TRIGGER IF NOT EXISTS blob_ref_dirty_ark_asset_uploads_update AFTER UPDAT
 CREATE TRIGGER IF NOT EXISTS blob_ref_dirty_ark_asset_uploads_delete AFTER DELETE ON ark_asset_uploads
  BEGIN UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1; END;
 `;
+/** P5.4a: Non-Canvas Asset Library metadata becomes backup-safe SQLite.
+ * Binary media lives in the existing CAS BlobStore. Explicit browser imports
+ * must upload and validate media before this catalog can point at it.
+ */
+export const ASSET_CATALOG_SCHEMA_SQL=`
+CREATE TABLE IF NOT EXISTS asset_catalog(
+ id INTEGER PRIMARY KEY CHECK(id=1),
+ revision INTEGER NOT NULL DEFAULT 1 CHECK(revision>0),
+ assets_json TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(assets_json))
+);
+INSERT OR IGNORE INTO asset_catalog(id,revision,assets_json) VALUES(1,1,'[]');
+CREATE TRIGGER IF NOT EXISTS blob_ref_dirty_asset_catalog_update AFTER UPDATE ON asset_catalog
+ BEGIN UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1; END;
+`;
 export function initializeSchema(db){
  db.exec("PRAGMA foreign_keys=ON;PRAGMA busy_timeout=5000;BEGIN IMMEDIATE");
  try{
@@ -254,6 +268,7 @@ export function initializeSchema(db){
   if(version<8)db.exec(ARK_ASSET_SCHEMA_SQL);
   if(version<9)db.exec(COMFY_REGISTRY_SCHEMA_SQL);
   if(version<10)db.exec(BLOB_REF_LEDGER_SCHEMA_SQL);
+  if(version<11)db.exec(ASSET_CATALOG_SCHEMA_SQL);
   if(version<SCHEMA_VERSION)db.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)").run(SCHEMA_VERSION,Date.now());
   db.exec("COMMIT");
  }catch(e){db.exec("ROLLBACK");throw e}

@@ -45,6 +45,7 @@ export function SkillManager() {
                 <Button loading={busy} disabled={busy} icon={<FileUp className="size-4" />} onClick={() => fileRef.current?.click()}>{t("config.skills.import")}</Button>
                 <input ref={fileRef} type="file" className="hidden" accept=".zip,.md,application/zip,text/markdown" onChange={(event) => void selectFile(event.target.files?.[0])} />
             </div>
+            <div className="text-xs opacity-65">Skills 现存储在本地 SQLite 数据库并随完整冷备份保存；旧浏览器 Skills 数据保留但不会自动覆盖此目录。可使用原始 SKILL.md / ZIP 逐个导入。</div>
             <Input.Search value={query} placeholder={t("config.skills.search")} onChange={(event) => setQuery(event.target.value)} allowClear />
             {!loaded || visible.length === 0 ? <Empty description={loaded ? t("config.skills.empty") : t("config.skills.loading")} /> : visible.map((skill) => (
                 <div key={skill.id} className="rounded-lg border border-stone-200 p-3 dark:border-stone-800">

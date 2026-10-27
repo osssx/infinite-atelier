@@ -1,157 +1,106 @@
-import localforage from "localforage";
-import { createZip } from "@/lib/zip";
-import { PERF_MODE } from "@/lib/perf-mode";
-import { validateSkillPath } from "./skill-parser";
-import { type SkillCatalogEntry, type SkillPackage, type SkillScope } from "./types";
+import {createZip} from "@/lib/zip";
+import {canvasApi} from "@/features/backend-sync/canvas-api";
+import {validateSkillPath} from "./skill-parser";
+import type {SkillCatalogEntry,SkillPackage,SkillScope} from "./types";
 
-const store = localforage.createInstance({ name: PERF_MODE ? "infinite-canvas-perf" : "infinite-canvas", storeName: "skill_packages" });
-const CATALOG_KEY = "catalog:v1";
-const packageKey = (id: string, version: string) => "package:" + id + ":" + version;
-const copyCatalog = (entries: SkillCatalogEntry[]) => entries.map((item) => ({
-    ...item, versions: [...item.versions], ...(item.scope ? { scope: { ...item.scope } } : {}),
-}));
-
-// Mutating transactions are serialized so parallel imports cannot overwrite catalog changes.
-let operation = Promise.resolve();
-function serialize<T>(run: () => Promise<T>): Promise<T> {
-    const current = operation.then(run);
-    operation = current.then(() => undefined, () => undefined);
-    return current;
+/** v13: SQLite is authoritative; deliberately never read or erase the old
+ * IndexedDB skill_packages database. A failed backend request fails closed.
+ */
+function decodeArchive(value:string):Blob{
+ const binary=atob(value),bytes=new Uint8Array(binary.length);
+ for(let i=0;i<binary.length;i++)bytes[i]=binary.charCodeAt(i);
+ return new Blob([bytes],{type:"application/zip"});
 }
-export async function listSkills(): Promise<SkillCatalogEntry[]> {
-    await operation;
-    return copyCatalog((await store.getItem<SkillCatalogEntry[]>(CATALOG_KEY)) || []);
+async function encodeArchive(value:Blob):Promise<string>{
+ if(value.size>5*1024*1024)throw Error("Skill archive too large");
+ const bytes=new Uint8Array(await value.arrayBuffer()),parts:string[]=[];
+ for(let i=0;i<bytes.length;i+=32768)
+  parts.push(String.fromCharCode(...bytes.subarray(i,i+32768)));
+ return btoa(parts.join(""));
 }
-async function rawCatalog() { return (await store.getItem<SkillCatalogEntry[]>(CATALOG_KEY)) || []; }
-
-export async function registerSkill(pkg: SkillPackage): Promise<SkillCatalogEntry> {
-    return serialize(async () => {
-        const { manifest } = pkg;
-        const catalog = await rawCatalog();
-        const index = catalog.findIndex((entry) => entry.id === manifest.id);
-        const existing = catalog[index];
-        const version = manifest.version;
-        if (!existing && catalog.length >= 100) throw new Error("Skill library is limited to 100 skills");
-        if (existing && !existing.versions.includes(version) && existing.versions.length >= 30) {
-            throw new Error("Skill version history is limited to 30 versions");
-        }
-        if (!existing?.versions.includes(version) && catalog.reduce((sum, item) => sum + item.versions.length, 0) >= 500) {
-            throw new Error("Skill library is limited to 500 versions in total");
-        }
-        const stored = await store.getItem<SkillPackage>(packageKey(manifest.id, version));
-        if (stored && stored.manifest.hash !== manifest.hash) throw new Error("Skill version hash conflict");
-        await store.setItem(packageKey(manifest.id, version), pkg);
-        const next: SkillCatalogEntry = {
-            id: manifest.id, name: manifest.name, description: manifest.description,
-            enabled: existing?.enabled ?? true,
-            ...(existing?.scope ? { scope: { ...existing.scope } } : {}),
-            activeVersion: version,
-            versions: [...new Set([...(existing?.versions || []), version])],
-            updatedAt: new Date().toISOString(),
-        };
-        if (index >= 0) catalog[index] = next;
-        else catalog.push(next);
-        await store.setItem(CATALOG_KEY, catalog);
-        return { ...next, versions: [...next.versions] };
-    });
+const segment=(value:string)=>encodeURIComponent(value);
+const resource=(id:string,version:string)=>"/api/v1/skills/"+segment(id)+"/"+segment(version);
+let operation=Promise.resolve();
+function serialize<T>(run:()=>Promise<T>):Promise<T>{
+ const current=operation.then(run);
+ operation=current.then(()=>undefined,()=>undefined);
+ return current;
 }
-export async function setSkillEnabled(id: string, enabled: boolean) {
-    return serialize(async () => {
-        const catalog = await rawCatalog();
-        const entry = catalog.find((skill) => skill.id === id);
-        if (!entry) throw new Error("Skill does not exist");
-        entry.enabled = enabled;
-        await store.setItem(CATALOG_KEY, catalog);
-    });
+export async function listSkills():Promise<SkillCatalogEntry[]>{
+ await operation;
+ const result=await canvasApi<{revision:number;skills:SkillCatalogEntry[]}>("/api/v1/skills");
+ return result.skills;
 }
-/** Scope changes are serialized alongside all catalog mutations. */
-export async function setSkillScope(id: string, scope: SkillScope) {
-    if (scope.type !== "global" && (scope.type !== "project" || !scope.projectId || scope.projectId.length > 256)) {
-        throw new Error("Invalid Skill project scope");
-    }
-    return serialize(async () => {
-        const catalog = await rawCatalog();
-        const entry = catalog.find((skill) => skill.id === id);
-        if (!entry) throw new Error("Skill does not exist");
-        if (scope.type === "global") delete entry.scope;
-        else entry.scope = { type: "project", projectId: scope.projectId };
-        entry.updatedAt = new Date().toISOString();
-        await store.setItem(CATALOG_KEY, catalog);
-    });
+async function revision():Promise<number>{
+ const result=await canvasApi<{revision:number}>("/api/v1/skills");
+ if(!Number.isSafeInteger(result.revision)||result.revision<1)throw Error("skill_revision_invalid");
+ return result.revision;
 }
-export async function activateSkillVersion(id: string, version: string) {
-    return serialize(async () => {
-        const catalog = await rawCatalog();
-        const entry = catalog.find((skill) => skill.id === id);
-        if (!entry?.versions.includes(version)) throw new Error("Unknown Skill version");
-        const pkg = await store.getItem<SkillPackage>(packageKey(id, version));
-        if (!pkg || pkg.manifest.version !== version) throw new Error("Skill version content missing");
-        entry.activeVersion = version;
-        entry.name = pkg.manifest.name;
-        entry.description = pkg.manifest.description;
-        entry.updatedAt = new Date().toISOString();
-        await store.setItem(CATALOG_KEY, catalog);
-    });
+export async function registerSkill(pkg:SkillPackage):Promise<SkillCatalogEntry>{
+ return serialize(async()=>{
+  const {sourceArchive,...rest}=pkg;
+  const body={...rest,...(sourceArchive?{sourceArchiveBase64:await encodeArchive(sourceArchive)}:{})};
+  const result=await canvasApi<{entry:SkillCatalogEntry}>("/api/v1/skills","POST",{expectedRevision:await revision(),package:body});
+  return result.entry;
+ });
 }
-export async function removeSkill(id: string) {
-    return serialize(async () => {
-        const catalog = await rawCatalog();
-        const found = catalog.find((entry) => entry.id === id);
-        if (!found) return;
-        await store.setItem(CATALOG_KEY, catalog.filter((entry) => entry.id !== id));
-        for (const version of found.versions) await store.removeItem(packageKey(id, version));
-    });
+export async function setSkillEnabled(id:string,enabled:boolean):Promise<void>{
+ await serialize(async()=>{await canvasApi("/api/v1/skills/"+segment(id),"PATCH",{action:"enabled",enabled,expectedRevision:await revision()})});
 }
-export async function getSkillPackage(id: string, version?: string): Promise<SkillPackage | null> {
-    const catalog = await listSkills();
-    const entry = catalog.find((item) => item.id === id);
-    if (!entry || (version && !entry.versions.includes(version))) return null;
-    const selected = version || entry.activeVersion;
-    const pkg = await store.getItem<SkillPackage>(packageKey(id, selected));
-    if (!pkg || pkg.manifest.id !== id || pkg.manifest.version !== selected) throw new Error("Skill package content is missing or corrupt");
-    return pkg;
+export async function setSkillScope(id:string,scope:SkillScope):Promise<void>{
+ await serialize(async()=>{await canvasApi("/api/v1/skills/"+segment(id),"PATCH",{action:"scope",scope,expectedRevision:await revision()})});
 }
-/** Run-specific allowlisting must be enforced by a future Skill dispatcher. */
-export async function readSkillResource(id: string, path: string, version?: string): Promise<string> {
-    validateSkillPath(path);
-    if (!/^references\/.+\.(?:md|txt|markdown)$/i.test(path)) throw new Error("Skill resource is not model-readable");
-    const pkg = await getSkillPackage(id, version);
-    if (!pkg) throw new Error("Unknown Skill");
-    if (!Object.hasOwn(pkg.resources, path)) throw new Error("Unknown Skill reference");
-    return pkg.resources[path];
+export async function activateSkillVersion(id:string,version:string):Promise<void>{
+ await serialize(async()=>{await canvasApi("/api/v1/skills/"+segment(id),"PATCH",{action:"activate",version,expectedRevision:await revision()})});
 }
-export async function exportSkill(id: string, version?: string): Promise<Blob> {
-    const pkg = await getSkillPackage(id, version);
-    if (!pkg) throw new Error("Unknown Skill");
-    if (pkg.sourceArchive) return pkg.sourceArchive;
-    return createZip([{ name: "SKILL.md", data: pkg.skillMd }, ...Object.entries(pkg.resources).map(([name, data]) => ({ name, data }))]);
+export async function removeSkill(id:string):Promise<void>{
+ await serialize(async()=>{await canvasApi("/api/v1/skills/"+segment(id),"DELETE",{expectedRevision:await revision()})});
 }
-
-/** Complete snapshot for backup and rollback. */
-export type SkillBackupSnapshot = { catalog: SkillCatalogEntry[]; packages: SkillPackage[] };
-export async function snapshotSkills(): Promise<SkillBackupSnapshot> {
-    const catalog = await listSkills();
-    const packages: SkillPackage[] = [];
-    for (const entry of catalog) for (const version of entry.versions) {
-        const pkg = await getSkillPackage(entry.id, version);
-        if (!pkg) throw new Error("Skill package unavailable during backup");
-        packages.push(pkg);
-    }
-    return { catalog, packages };
+export async function getSkillPackage(id:string,version?:string):Promise<SkillPackage|null>{
+ const list=await listSkills();
+ const item=list.find(entry=>entry.id===id);
+ if(!item)return null;
+ const selected=version??item.activeVersion;
+ if(!item.versions.includes(selected))return null;
+ const result=await canvasApi<{package:{
+  manifest:SkillPackage["manifest"];skillMd:string;resources:Record<string,string>;
+  sourceArchiveBase64?:string;
+ }}>(resource(id,selected));
+ const {sourceArchiveBase64,...pkg}=result.package;
+ if(pkg.manifest.id!==id||pkg.manifest.version!==selected)
+  throw Error("Skill package content mismatch");
+ return {...pkg,...(sourceArchiveBase64?{sourceArchive:decodeArchive(sourceArchiveBase64)}:{})};
 }
-export async function restoreSkillSnapshot(snapshot: SkillBackupSnapshot) {
-    return serialize(async () => {
-        const old = await rawCatalog();
-        const expected = new Set(snapshot.catalog.flatMap((entry) => entry.versions.map((version) => packageKey(entry.id, version))));
-        for (const entry of snapshot.catalog) for (const version of entry.versions) {
-            const pkg = snapshot.packages.find((item) => item.manifest.id === entry.id && item.manifest.version === version);
-            if (!pkg) throw new Error("Invalid Skill backup: missing package");
-        }
-        for (const pkg of snapshot.packages) await store.setItem(packageKey(pkg.manifest.id, pkg.manifest.version), pkg);
-        await store.setItem(CATALOG_KEY, copyCatalog(snapshot.catalog));
-        for (const entry of old) for (const version of entry.versions) {
-            const key = packageKey(entry.id, version);
-            if (!expected.has(key)) await store.removeItem(key);
-        }
-    });
+export async function readSkillResource(id:string,path:string,version?:string):Promise<string>{
+ validateSkillPath(path);
+ if(!/^references\/.+\.(?:md|txt|markdown)$/i.test(path))
+  throw Error("Skill resource is not model-readable");
+ const pkg=await getSkillPackage(id,version);
+ if(!pkg)throw Error("Unknown Skill");
+ if(!Object.hasOwn(pkg.resources,path))throw Error("Unknown Skill reference");
+ return pkg.resources[path];
+}
+export async function exportSkill(id:string,version?:string):Promise<Blob>{
+ const pkg=await getSkillPackage(id,version);
+ if(!pkg)throw Error("Unknown Skill");
+ if(pkg.sourceArchive)return pkg.sourceArchive;
+ return createZip([{name:"SKILL.md",data:pkg.skillMd},
+  ...Object.entries(pkg.resources).map(([name,data])=>({name,data}))]);
+}
+export type SkillBackupSnapshot={catalog:SkillCatalogEntry[];packages:SkillPackage[]};
+/** Logical read-only inspection. The supported portable backup is backup:data. */
+export async function snapshotSkills():Promise<SkillBackupSnapshot>{
+ const catalog=await listSkills(),packages:SkillPackage[]=[];
+ for(const entry of catalog)for(const version of entry.versions){
+  const pkg=await getSkillPackage(entry.id,version);
+  if(!pkg)throw Error("Skill package unavailable during snapshot");
+  packages.push(pkg);
+ }
+ return {catalog,packages};
+}
+/** Full Skill rollback is performed only through SQLite cold-backup restore.
+ * Never let a legacy browser ZIP overwrite the authoritative registry.
+ */
+export async function restoreSkillSnapshot(_snapshot:SkillBackupSnapshot):Promise<never>{
+ throw Error("SQLite Skill 注册表不支持旧浏览器快照覆盖；请使用 backup:data 恢复完整数据库");
 }

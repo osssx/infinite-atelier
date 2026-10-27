@@ -9,7 +9,7 @@ import { awaitCanvasStorePersistence, useCanvasStore } from "@/stores/canvas/use
 import { awaitAssetStorePersistence, useAssetStore } from "@/stores/use-asset-store";
 import { useConfigStore } from "@/stores/use-config-store";
 import {redactedExportConfig} from "@/features/backend-sync/ui-settings-client";
-import { exportSkill, restoreSkillSnapshot, snapshotSkills, type SkillBackupSnapshot } from "@/features/skills/skill-registry";
+import { exportSkill, listSkills, restoreSkillSnapshot, snapshotSkills, type SkillBackupSnapshot } from "@/features/skills/skill-registry";
 import { importSkillFile } from "@/features/skills/skill-import";
 import { exportComfyBackupTemplates, verifyComfyBackupTemplates, unbindImportedComfyProjects } from "@/features/comfy-workflow/backup-workflows";
 import { installComfyBackupVersions } from "@/features/comfy-workflow/template-registry";
@@ -53,6 +53,10 @@ export async function exportAppBackup() {
         const zipFiles: { name: string; data: BlobPart }[] = [];
         await collectStoreFiles(imageStore, files, zipFiles);
         await collectStoreFiles(mediaStore, files, zipFiles);
+        // The legacy browser ZIP cannot faithfully restore a v13 SQLite registry.
+        // Never label this archive a full backup while Skills would be omitted.
+        if ((await listSkills()).length)
+            throw Error("SQLite Skills 已纳入 backup:data 冷备份；旧版浏览器 ZIP 不能备份 Skill 注册表");
         const skillSnapshot = await snapshotSkills();
         const skillRecords: NonNullable<AppBackupFile["skills"]>["packages"] = [];
         for (const pkg of skillSnapshot.packages) {
@@ -95,11 +99,13 @@ export async function importAppBackup(file: File) {
         const data = validateBackup(parsed, zip);
         if(data.assets.some(a=>a.kind!=="text"&&a.data.storageKey?.startsWith("cas:")))
             throw Error("不能通过旧版浏览器 ZIP 覆盖 SQLite CAS 素材，请使用完整冷备份恢复");
+        if (data.skills?.catalog.length || data.skills?.packages.length)
+            throw Error("旧浏览器 ZIP 包含 Skills；禁止覆盖 SQLite 注册表，请使用已有管理器单独导入 Skill 文件");
         // Validate actual content hashes and every Comfy graph/port binding BEFORE any project or Blob mutation.
         const comfyToRestore = data.version === 2 ? await verifyComfyBackupTemplates(data.comfyWorkflows || [], zip) : [];
         // Validate every nested SKILL ZIP and its claimed version before mutating browser data.
         let skillsToRestore: SkillBackupSnapshot | undefined;
-        if (data.skills) {
+        if (data.skills?.packages.length) {
             const packages = [];
             for (const entry of data.skills.packages) {
                 const blob = zip.get(entry.path)!;

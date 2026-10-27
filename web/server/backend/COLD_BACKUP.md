@@ -72,12 +72,16 @@ SQLite schema v12 的 `ui_settings` 包含模型通道元数据、模型选项�
 
 项目限定的 Skill 审计通过 JobSnapshot 中 `task.skills.blobId` 从冷备份保留的 CAS 内容解析版本 ID；HTTP 响应只包含版本清单、工具名称/轮数/状态，不返回 Skill 正文。用户可以对**已成功、来源指纹未变化**的原任务明确确认一次全新的可能计费的生成，复用原有 CAS、系统消息和原凭据版本，但不复用、不重试旧任务 ID；原始凭据版本被撤销或无法解密时安全拒绝。混合 SSE 的 `skill_text_delta` 只做临时 UI 预览，并在 `job_events` 中保留为非最终文本，因此冷备份可能含有**尚未完成的模型文本片段**；成功判据仍是 JobCoordinator 收集 CAS artifact 并提交 SQLite。SSE 连接断开、模型流未收到 `[DONE]` 或任意工具回合异常，均保留 `submission_unknown`，不会自动补发计费请求。本轮未将整个浏览器 Skills 注册表迁入 SQLite，也不提供旧设置迁移按钮。
 
+## P5.4h：SQLite v13 Skill 注册表完整冷备份
+
+现在 Skill 目录、启用状态、项目 scope、活跃版本、历史版本正文以及原始导入 ZIP（存在时）保存在 SQLite `skill_entries` / `skill_versions`；`backup:data create|verify|restore` 随数据库快照整体备份它们。自动 Skill 生成时另有按任务冻结的 CAS 快照，即使现在删除目录条目也不会修改历史任务 CAS。服务端的修订号 CAS 使不同浏览器标签页的过期更新被明确拒绝，不会回退到旧 IndexedDB。**注意：Skill 正文和 ZIP 属于用户数据，会以明文存放在 SQLite 冷备份中，权限/磁盘加密同样适用**。本轮没有自动从旧 IndexedDB 搬运原有 Skills，也不删除旧字节；如原数据只存在于旧浏览器数据库，需要从可信原始 `.zip` / `SKILL.md` 使用现有管理器重新导入。旧版整应用浏览器 ZIP 的 Skill 区块不能作为 SQLite v13 的恢复来源或覆盖当前目录；涉及 Skill 的完整备份/恢复仅使用 `backup:data`。原始 ZIP 内被视为惰性的脚本和素材只是保存字节供导出，不授予模型执行能力。
+
 ## 安全与范围边界
 
 - 数据库包括 Canvas 项目、聊天、任务状态、Comfy 模板/预设、渠道记录和凭据的 DPAPI **加密密文**。恢复不触发模型 API，不会重发 `submission_unknown` 请求。
 - **备份本身未二次加密**：SQLite 中的 Prompt 和用户内容可见，必须使用 BitLocker/OS 权限保护，不要提交到 Git 或公开云盘。
 - Windows DPAPI 密文绑定原用户/系统保护上下文；跨账号或跨设备恢复后可能需要重新输入模型 Key。
-- **P5.4b 后，已迁入 SQLite 的非 Canvas 素材库记录/CAS 文件、模型非敏感配置和主题偏好包含在此冷备份中**；未主动导入的旧浏览器资产/模型配置、明文渠道 API Key/自定义脚本、Skills、派生预览缓存、临时文件和数据库未登记的孤儿文件仍不在备份中。
+- **P5.4b 后，已迁入 SQLite 的非 Canvas 素材库记录/CAS 文件、模型非敏感配置和主题偏好包含在此冷备份中**；未主动导入的旧浏览器资产/模型配置、明文渠道 API Key/自定义脚本、旧 IndexedDB 中尚未重新导入的 Skills、派生预览缓存、临时文件和数据库未登记的孤儿文件仍不在备份中。
 - SHA 和 SQLite 完整性检查只能检测不一致/损坏，不能提供签名认证；请勿导入来源不明的备份。
 - 本轮避免跨文件系统原地替换；目标必须是新目录。异常断电可能留下 `.partial-*` 目录，需要人工确认清理；已有数据目录不会被覆盖。
 - **P5.2 双副本防重复执行**：备份 manifest v2 包含随机数据谱系 ID，恢复副本生成独立副本 ID，默认为 standby。后端在 JobCoordinator 恢复/启动前持有跨目录的谱系锁，并核对当前活动副本登记；不允许原库与克隆库同时运行。`activate` 必须在原实例退出并释放谱系锁后明确执行，成功切换后旧库不能直接重启。如果活动登记消失或损坏，启动直接拒绝，不能静默重新声明旧库为活动副本。

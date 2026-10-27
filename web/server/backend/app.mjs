@@ -10,6 +10,7 @@ import {createComfyRegistry} from "./comfy-registry.mjs";
 import {getProjectSkillAudit,replayProjectSkillJob} from "./skill-job-audit.mjs";
 import {listProjectJobs} from "./project-job-history.mjs";
 import {getAssetCatalog,putAssetCatalog} from "./asset-catalog.mjs";
+import {listSkillRegistry,getSkillRegistryPackage,registerSqliteSkill,updateSqliteSkill,deleteSqliteSkill} from "./sqlite-skill-registry.mjs";
 import {getUiSetting,putUiSetting} from "./ui-settings.mjs";
 const nonempty={type:"string",minLength:1,maxLength:256};
 const idSchema={type:"string",pattern:"^[A-Za-z0-9_-]{1,128}$"};
@@ -118,6 +119,9 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
    "comfy_template_invalid","comfy_template_too_large","comfy_template_revision_mismatch",
    "comfy_template_immutable_conflict","comfy_template_not_found","comfy_template_in_use",
    "comfy_preset_invalid","comfy_preset_not_found",
+   "skill_revision_required","skill_revision_conflict",
+   "skill_package_invalid","skill_package_too_large","skill_catalog_full","skill_version_conflict",
+   "skill_versions_full","skill_update_invalid","skill_not_found","skill_version_not_found",
    "credential_protection_unavailable","credential_decryption_failed",
    "skill_job_invalid_request","skill_job_not_found","skill_job_not_supported",
    "skill_replay_source_not_succeeded","skill_replay_invalid_request","skill_replay_source_changed"]);
@@ -289,6 +293,38 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
    additionalProperties:false,properties:{expectedRevision:{type:"integer",minimum:1},value:{}}}}},(req,reply)=>{
   reply.header("Cache-Control","no-store");
   return putUiSetting(db,req.params.name,req.body);
+ });
+ // v13: authoritative local Skill registry. No hidden IndexedDB fallback.
+ const skillId={type:"string",pattern:"^[a-z0-9]+(?:-[a-z0-9]+)*$",maxLength:80};
+ const skillVersion={type:"string",pattern:"^[a-f0-9]{12}$"};
+ const skillParams={type:"object",required:["id"],properties:{id:skillId},additionalProperties:false};
+ app.get("/api/v1/skills",(req,reply)=>{
+  reply.header("Cache-Control","no-store");return listSkillRegistry(db);
+ });
+ app.get("/api/v1/skills/:id/:version",{
+  schema:{params:{type:"object",required:["id","version"],
+   properties:{id:skillId,version:skillVersion},additionalProperties:false}}
+ },(req,reply)=>{
+  reply.header("Cache-Control","no-store");return getSkillRegistryPackage(db,req.params.id,req.params.version);
+ });
+ app.post("/api/v1/skills",{bodyLimit:8*1024*1024,
+  schema:{body:{type:"object",required:["package","expectedRevision"],properties:{package:{type:"object"},expectedRevision:{type:"integer",minimum:1}},additionalProperties:false}}
+ },(req,reply)=>{
+  reply.header("Cache-Control","no-store").code(201);
+  return {entry:registerSqliteSkill(db,req.body.package,req.body.expectedRevision)};
+ });
+ app.patch("/api/v1/skills/:id",{
+  schema:{params:skillParams,body:{type:"object",required:["action","expectedRevision"],properties:{
+   expectedRevision:{type:"integer",minimum:1},
+   action:{type:"string",enum:["enabled","scope","activate"]},enabled:{type:"boolean"},
+   scope:{type:"object"},version:skillVersion},additionalProperties:false}}
+ },(req,reply)=>{
+  reply.header("Cache-Control","no-store");
+  return {entry:updateSqliteSkill(db,req.params.id,req.body)};
+ });
+ app.delete("/api/v1/skills/:id",{schema:{params:skillParams,
+  body:{type:"object",required:["expectedRevision"],properties:{expectedRevision:{type:"integer",minimum:1}},additionalProperties:false}}},(req,reply)=>{
+  reply.header("Cache-Control","no-store");return deleteSqliteSkill(db,req.params.id,req.body.expectedRevision);
  });
  // Non-Canvas Asset Library metadata is now backed by the same SQLite snapshot
  // and immutable BlobStore as the Canvas. All writes are revision fenced.

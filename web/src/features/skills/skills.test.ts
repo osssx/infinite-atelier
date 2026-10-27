@@ -2,17 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { zipSync } from "fflate";
 import { webcrypto } from "node:crypto";
 
-const database = new Map<string, unknown>();
-vi.mock("localforage", () => ({
-    default: {
-        createInstance: () => ({
-            getItem: async (key: string) => database.get(key) ?? null,
-            setItem: async (key: string, value: unknown) => { database.set(key, value); return value; },
-            removeItem: async (key: string) => { database.delete(key); },
-        }),
-    },
-}));
-vi.mock("@/lib/perf-mode", () => ({ PERF_MODE: false }));
+vi.mock("@/features/backend-sync/canvas-api", async () => {
+    const {skillTestApi} = await import("./skill-registry-test-api");
+    return {canvasApi:skillTestApi};
+});
+import {resetSkillTestApi} from "./skill-registry-test-api";
 import { importSkillFile } from "./skill-import";
 import { parseSkillMd, validateSkillPath } from "./skill-parser";
 import { activateSkillVersion, exportSkill, getSkillPackage, listSkills, readSkillResource, registerSkill, removeSkill, restoreSkillSnapshot, setSkillEnabled, snapshotSkills } from "./skill-registry";
@@ -29,7 +23,7 @@ const validZip = () => packageZip({
     "storyboard-prompt/scripts/helper.py": "print('not executed')",
     "storyboard-prompt/assets/asset.bin": new Uint8Array([0, 1, 2]),
 });
-beforeEach(() => { database.clear(); vi.stubGlobal("crypto", webcrypto); });
+beforeEach(() => { resetSkillTestApi(); vi.stubGlobal("crypto", webcrypto); });
 afterEach(() => vi.unstubAllGlobals());
 
 describe("P1 Skill import, catalog and safe references", () => {
@@ -45,8 +39,9 @@ describe("P1 Skill import, catalog and safe references", () => {
         expect((await getSkillPackage(saved.id))?.manifest.description).toBe("Create structured storyboards");
         await setSkillEnabled(saved.id, false);
         expect((await listSkills())[0].enabled).toBe(false);
-        await restoreSkillSnapshot(snapshot);
-        expect((await listSkills())[0].versions).toEqual([saved.activeVersion]);
+        await expect(restoreSkillSnapshot(snapshot)).rejects.toThrow("SQLite Skill");
+        expect((await listSkills())[0].versions).toHaveLength(2);
+        await activateSkillVersion(saved.id, saved.activeVersion);
         await removeSkill(saved.id);
         expect(await listSkills()).toEqual([]);
     });

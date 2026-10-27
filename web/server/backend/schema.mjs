@@ -1,5 +1,5 @@
 import{JOB_STATUSES,EXECUTION_MODES,ARTIFACT_KINDS}from"./contracts.mjs";
-export const SCHEMA_VERSION=12;
+export const SCHEMA_VERSION=13;
 const quoted=x=>x.map(s=>"'"+s+"'").join(",");
 export const INITIAL_SCHEMA_SQL=`
 CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY,applied_at INTEGER NOT NULL);
@@ -253,6 +253,31 @@ INSERT OR IGNORE INTO ui_settings(name,revision,value_json)
 INSERT OR IGNORE INTO ui_settings(name,revision,value_json)
  VALUES('theme',1,'"dark"');
 `;
+/** v13: authoritative Skill metadata, versioned text and optional original
+ * archive bytes. The old browser IndexedDB is untouched and never a fallback.
+ */
+export const SKILL_REGISTRY_SCHEMA_SQL=`
+CREATE TABLE IF NOT EXISTS skill_registry_state(id INTEGER PRIMARY KEY CHECK(id=1),revision INTEGER NOT NULL DEFAULT 1);
+INSERT OR IGNORE INTO skill_registry_state(id,revision) VALUES(1,1);
+CREATE TABLE IF NOT EXISTS skill_entries(
+ id TEXT PRIMARY KEY,
+ name TEXT NOT NULL,description TEXT NOT NULL,
+ enabled INTEGER NOT NULL CHECK(enabled IN (0,1)),
+ scope_project_id TEXT,
+ active_version TEXT NOT NULL,
+ updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS skill_versions(
+ skill_id TEXT NOT NULL REFERENCES skill_entries(id) ON DELETE CASCADE,
+ version TEXT NOT NULL,
+ hash TEXT NOT NULL,
+ manifest_json TEXT NOT NULL CHECK(json_valid(manifest_json)),
+ skill_md TEXT NOT NULL,
+ resources_json TEXT NOT NULL CHECK(json_valid(resources_json)),
+ archive_bytes BLOB,
+ PRIMARY KEY(skill_id,version)
+);
+`;
 export function initializeSchema(db){
  db.exec("PRAGMA foreign_keys=ON;PRAGMA busy_timeout=5000;BEGIN IMMEDIATE");
  try{
@@ -284,6 +309,7 @@ export function initializeSchema(db){
   if(version<10)db.exec(BLOB_REF_LEDGER_SCHEMA_SQL);
   if(version<11)db.exec(ASSET_CATALOG_SCHEMA_SQL);
   if(version<12)db.exec(UI_SETTINGS_SCHEMA_SQL);
+  if(version<13)db.exec(SKILL_REGISTRY_SCHEMA_SQL);
   if(version<SCHEMA_VERSION)db.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)").run(SCHEMA_VERSION,Date.now());
   db.exec("COMMIT");
  }catch(e){db.exec("ROLLBACK");throw e}

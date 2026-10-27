@@ -1,17 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { isEnabledSkillInProject, isSkillInProjectScope, type SkillPackage } from "./types";
 
-const storage = vi.hoisted(() => new Map<string, unknown>());
-vi.mock("localforage", () => ({
-    default: {
-        createInstance: () => ({
-            getItem: async (key: string) => storage.get(key) ?? null,
-            setItem: async (key: string, value: unknown) => { storage.set(key, structuredClone(value)); return value; },
-            removeItem: async (key: string) => { storage.delete(key); },
-        }),
-    },
-}));
-vi.mock("@/lib/perf-mode", () => ({ PERF_MODE: false }));
+vi.mock("@/features/backend-sync/canvas-api", async () => {
+    const {skillTestApi} = await import("./skill-registry-test-api");
+    return {canvasApi:skillTestApi};
+});
+import {resetSkillTestApi} from "./skill-registry-test-api";
 import { getSkillPackage, listSkills, registerSkill, restoreSkillSnapshot, setSkillScope, snapshotSkills } from "./skill-registry";
 
 const makePackage = (version: string): SkillPackage => ({
@@ -22,7 +16,7 @@ const makePackage = (version: string): SkillPackage => ({
     skillMd: "---\nname: storyboard\ndescription: Storyboard authoring\n---\n# Instructions",
     resources: { "references/shot.md": "Use close-ups" },
 });
-beforeEach(() => storage.clear());
+beforeEach(() => resetSkillTestApi());
 
 describe("P4 Skill registry global and project scope persistence", () => {
     it("defaults old catalog entries to global availability without migration", async () => {
@@ -51,7 +45,8 @@ describe("P4 Skill registry global and project scope persistence", () => {
         const backup = await snapshotSkills();
         await setSkillScope("storyboard", { type: "global" });
         expect((await listSkills())[0].scope).toBeUndefined();
-        await restoreSkillSnapshot(backup);
+        await expect(restoreSkillSnapshot(backup)).rejects.toThrow("SQLite Skill");
+        await setSkillScope("storyboard", { type: "project", projectId: "project-a" });
         expect((await listSkills())[0].scope).toEqual({ type: "project", projectId: "project-a" });
         await setSkillScope("storyboard", { type: "global" });
         expect((await listSkills())[0].scope).toBeUndefined();

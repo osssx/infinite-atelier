@@ -4045,7 +4045,6 @@ function AtelierCanvasPage() {
                     onImportImage={() => handleUploadRequest()}
                     onUndo={undoCanvas}
                     onRedo={redoCanvas}
-                    backendComfyEnabled={backendComfyEnabled}
                     onOpenJobHistory={()=>setJobHistoryOpen(true)}
                 />
 

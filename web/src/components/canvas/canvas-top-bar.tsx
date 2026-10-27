@@ -26,7 +26,6 @@ export function CanvasTopBar({
     onImportImage,
     onUndo,
     onRedo,
-    backendComfyEnabled = false,
     onOpenJobHistory,
 }: {
     title: string;
@@ -47,7 +46,6 @@ export function CanvasTopBar({
     onUndo: () => void;
     onRedo: () => void;
     onOpenJobHistory: () => void;
-    backendComfyEnabled?: boolean;
 }) {
     const colorTheme = useThemeStore((state) => state.theme);
     const { t } = useTranslation();
@@ -105,7 +103,6 @@ export function CanvasTopBar({
                     </Dropdown>
 
                     <div ref={titleRef} className="flex min-w-0 items-center gap-2">
-                        {backendComfyEnabled ? <span className="rounded-md border px-1.5 py-0.5 text-xs opacity-70" title="ComfyUI 工作流自动使用 SQLite JobCoordinator，任务状态可在重载后恢复">SQLite 工作流执行</span> : null}
                         {isTitleEditing ? (
                             <input
                                 autoFocus

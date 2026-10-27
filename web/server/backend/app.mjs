@@ -7,6 +7,7 @@ import {EXECUTION_MODES} from "./contracts.mjs";
 import {CANVAS_NODE_ID_PATTERN} from "../canvas-node-id.mjs";
 import {ARCHIVE_MAX_BYTES} from "./project-archive.mjs";
 import {createComfyRegistry} from "./comfy-registry.mjs";
+import {getProjectSkillAudit,replayProjectSkillJob} from "./skill-job-audit.mjs";
 import {listProjectJobs} from "./project-job-history.mjs";
 import {getAssetCatalog,putAssetCatalog} from "./asset-catalog.mjs";
 import {getUiSetting,putUiSetting} from "./ui-settings.mjs";
@@ -117,7 +118,9 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
    "comfy_template_invalid","comfy_template_too_large","comfy_template_revision_mismatch",
    "comfy_template_immutable_conflict","comfy_template_not_found","comfy_template_in_use",
    "comfy_preset_invalid","comfy_preset_not_found",
-   "credential_protection_unavailable","credential_decryption_failed"]);
+   "credential_protection_unavailable","credential_decryption_failed",
+   "skill_job_invalid_request","skill_job_not_found","skill_job_not_supported",
+   "skill_replay_source_not_succeeded","skill_replay_invalid_request","skill_replay_source_changed"]);
   const code=error.validation?"invalid_request":(publicCodes.has(error.code)?error.code:
     (status===400?"invalid_request":"internal_error"));
   // Field names and request lanes are safe to reveal; values and user media
@@ -475,6 +478,28 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
   return listProjectJobs(db,{projectId:req.params.id,
    limit:req.query.limit??20,before:req.query.before});
  });
+ if(blobStore){
+  const projectSkillParams={type:"object",required:["id","jobId"],properties:{
+   id:idSchema,jobId:idSchema},additionalProperties:false};
+  app.get("/api/v1/projects/:id/jobs/:jobId/skill-audit",{
+   schema:{params:projectSkillParams}
+  },async(req,reply)=>{
+   reply.header("Cache-Control","no-store");
+   return getProjectSkillAudit(db,blobStore,{projectId:req.params.id,jobId:req.params.jobId});
+  });
+  app.post("/api/v1/projects/:id/jobs/:jobId/replay-skills",{
+   schema:{params:projectSkillParams,
+    body:{type:"object",required:["expectedProjectRevision","idempotencyKey","requestFingerprint"],
+     properties:{expectedProjectRevision:{type:"integer",minimum:1},
+      idempotencyKey:idSchema,requestFingerprint:idSchema},additionalProperties:false}}
+  },async(req,reply)=>{
+   reply.header("Cache-Control","no-store");
+   const result=replayProjectSkillJob(db,{projectId:req.params.id,jobId:req.params.jobId,...req.body});
+   const row=db.prepare("SELECT * FROM jobs WHERE id=?").get(result.jobId);
+   reply.code(result.existing?200:201);
+   return {...jobView(row),existing:result.existing};
+  });
+ }
  app.get("/api/v1/jobs/snapshot",()=>{
   const {jobs,eventCursor}=readJobsSnapshot(db);return {jobs:jobs.map(jobView),eventCursor};
  });

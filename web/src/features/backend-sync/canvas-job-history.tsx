@@ -8,9 +8,27 @@ export type CanvasJobHistoryItem={
  id:string;projectId:string;sourceNodeId:string|null;
  createdAt:number;updatedAt:number;status:string;lastOutcome:string|null;executionMode:string;
  kind:"model"|"comfy"|"other";modelKind:string|null;
- reconciliationEligible:boolean;
+ reconciliationEligible:boolean;hasSkillSnapshot?:boolean;
  artifacts:CanvasJobArtifact[];artifactsTruncated:boolean;
 };
+export type SkillAudit={
+ jobId:string;sourceNodeId:string;status:string;canReplay:boolean;
+ versionPins:Array<{skillId:string;version:string;name:string}>;
+ toolEvents:Array<{eventId:number;at:number;status:"started"|"completed";round:number;callId:string;name:string;skillId:string|null}>;
+ summary?:{rounds:number;calls:number}
+};
+export async function getCanvasSkillAudit(projectId:string,jobId:string):Promise<SkillAudit>{
+ return canvasApi("/api/v1/projects/"+encodeURIComponent(projectId)+"/jobs/"+
+  encodeURIComponent(jobId)+"/skill-audit");
+}
+export async function replayCanvasSkillJob(projectId:string,jobId:string):Promise<{id:string;existing?:boolean}>{
+ const project=await canvasApi<{revision:number}>("/api/v1/projects/"+encodeURIComponent(projectId));
+ const idempotencyKey=crypto.randomUUID();
+ return canvasApi("/api/v1/projects/"+encodeURIComponent(projectId)+"/jobs/"+
+  encodeURIComponent(jobId)+"/replay-skills","POST",{
+   expectedProjectRevision:project.revision,idempotencyKey,requestFingerprint:idempotencyKey
+  });
+}
 type Page={jobs:CanvasJobHistoryItem[];nextBefore:string|null};
 const statuses:Record<string,string>={
  queued:"等待执行",preparing:"准备中",submitting:"提交中",
@@ -78,6 +96,8 @@ export function CanvasJobHistory({projectId,open,onClose,onObserveJob,onRefreshC
  const [error,setError]=useState<string|null>(null);
  const [working,setWorking]=useState<string|null>(null);
  const [reconcilingJob,setReconcilingJob]=useState<string|null>(null);
+ const [skillAudits,setSkillAudits]=useState<Record<string,SkillAudit>>({});
+ const [skillAuditOpen,setSkillAuditOpen]=useState<string|null>(null);
  const [remoteTaskInput,setRemoteTaskInput]=useState("");
  const inflight=useRef(new Set<string>());
  const refresh=useCallback(async(silent=false)=>{
@@ -94,7 +114,7 @@ export function CanvasJobHistory({projectId,open,onClose,onObserveJob,onRefreshC
  },[projectId]);
  useEffect(()=>{
   if(!open)return;
-  setJobs([]);setNextBefore(null);
+  setJobs([]);setNextBefore(null);setSkillAudits({});setSkillAuditOpen(null);
   void refresh();
   const timer=setInterval(()=>{void refresh(true)},6000);
   return()=>clearInterval(timer);
@@ -109,6 +129,34 @@ export function CanvasJobHistory({projectId,open,onClose,onObserveJob,onRefreshC
    setNextBefore(page.nextBefore);setError(null);
   }catch(e){setError(String(e))}
   finally{setLoading(false)}
+ }
+ async function inspectSkills(job:CanvasJobHistoryItem){
+  if(!job.hasSkillSnapshot)return;
+  setWorking(job.id);setSkillAuditOpen(job.id);
+  try{
+   const audit=await getCanvasSkillAudit(projectId,job.id);
+   if(currentProject.current!==projectId)return;
+   setSkillAudits(old=>({...old,[job.id]:audit}));
+  }catch(e){message.error("读取 Skill 审计失败："+String(e));setSkillAuditOpen(null)}
+  finally{setWorking(null)}
+ }
+ function confirmSkillReplay(job:CanvasJobHistoryItem){
+  if(!skillAudits[job.id]?.canReplay||working)return;
+  modal.confirm({
+   title:"使用冻结 Skill 版本重新生成？",
+   content:"将使用原任务保存的 Skill 内容、模型、提示词及密钥版本，新建一次可能收费的模型任务。仅原任务成功且来源节点及其上游输入未改变时允许。结果作为新节点追加；不修改或重试旧任务。",
+   okText:"确认新建付费任务",cancelText:"取消",
+   onOk:async()=>{
+    setWorking(job.id);
+    try{
+     const started=await replayCanvasSkillJob(projectId,job.id);
+     message.success("已创建新的冻结 Skill 任务："+started.id);
+     onObserveJob(started.id);
+     await refresh();
+    }catch(e){message.error("冻结 Skill 重生成失败："+String(e));throw e}
+    finally{setWorking(null)}
+   }
+  });
  }
  function confirmReconcile(job:CanvasJobHistoryItem){
   if(!canReconcileUnknownJob(job)||!remoteTaskInput.trim()||working)return;
@@ -208,6 +256,31 @@ export function CanvasJobHistory({projectId,open,onClose,onObserveJob,onRefreshC
     </Tooltip>
     {job.lastOutcome&&job.lastOutcome!=="succeeded"?
      <div className="text-xs opacity-70">最近执行结果：{attemptReasons[job.lastOutcome]??job.lastOutcome}</div>:null}
+    {job.hasSkillSnapshot?<div className="space-y-2 text-xs">
+     <Button size="small" loading={working===job.id}
+      onClick={()=>void inspectSkills(job)}>
+      {skillAuditOpen===job.id?"刷新 Skill 审计":"查看 Skill 版本与工具审计"}
+     </Button>
+     {skillAuditOpen===job.id&&skillAudits[job.id]?<div className="rounded border p-2 space-y-2"
+      style={{borderColor:"var(--ant-color-border-secondary)"}}>
+      <div className="font-medium">冻结版本（不会读取当前浏览器 Skill）</div>
+      {skillAudits[job.id].versionPins.map(pin=><div key={pin.skillId} className="break-all">
+       {pin.name} · {pin.skillId} · {pin.version}
+      </div>)}
+      <div className="font-medium">工具调用事件 · {skillAudits[job.id].toolEvents.length} 条</div>
+      {skillAudits[job.id].toolEvents.length?
+       skillAudits[job.id].toolEvents.map(item=><div key={item.eventId}>
+        第 {item.round} 轮 · {item.name} · {item.skillId??"目录"} ·
+        {item.status==="started"?"开始":"完成"} ·
+        {new Date(item.at).toLocaleTimeString()}
+       </div>):<span className="opacity-60">尚无工具事件</span>}
+      <div className="text-xs opacity-60">仅展示只读工具名称、轮数与固定版本；不显示工具参数、Skill 正文或 API Key。</div>
+      {skillAudits[job.id].canReplay?<Button size="small" type="primary"
+       loading={working===job.id} onClick={()=>confirmSkillReplay(job)}>
+       使用冻结版本创建新任务
+      </Button>:<div className="opacity-60">原任务未成功，不允许从未知提交状态重新执行。</div>}
+     </div>:null}
+    </div>:null}
     {canReconcileUnknownJob(job)?
      <div className="space-y-2">
       <Button size="small" onClick={()=>{
@@ -227,7 +300,7 @@ export function CanvasJobHistory({projectId,open,onClose,onObserveJob,onRefreshC
      </div>:null}
     {job.status==="submission_unknown"?
      <Alert type="warning" showIcon message="远程是否接收尚未核实；禁止重新提交"
-      description="只有原始 ComfyUI 提交标记与冻结工作流图均匹配才能恢复。其他渠道或证据不足时保持未知，不会重新提交收费任务。"/>:null}
+      description={job.kind==="comfy"?"只有原始 ComfyUI 提交标记与冻结工作流图均匹配才能恢复。证据不足时保持未知，不会重复提交。":"模型可能已接收付费请求；无法证明是否计费，保持未知状态且不自动重新提交。"}/>:null}
     {job.status==="blocked_credential"?
      <Alert type="warning" showIcon message="密钥不可用"
       description="核查后端渠道密钥及原任务状态，不要将其作为新任务重发。"/>:null}

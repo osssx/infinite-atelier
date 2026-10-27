@@ -52,6 +52,8 @@ export function listProjectJobs(db,{projectId,limit=20,before}={}){
     snapshot.adapterKind==="comfy"?"comfy":"other",
    modelKind:snapshot.adapterKind==="model"?
     (["image","video","audio","text"].includes(snapshot.task?.kind)?snapshot.task.kind:null):null,
+   hasSkillSnapshot:snapshot.adapterKind==="model"&&snapshot.provider==="openai"&&
+    snapshot.task?.kind==="text"&&typeof snapshot.task?.skills?.blobId==="string",
    artifacts,artifactsTruncated:truncated};
  });
  return {jobs,nextBefore:hasMore?jobs.at(-1).id:null};

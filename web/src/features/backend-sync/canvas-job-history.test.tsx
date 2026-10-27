@@ -1,7 +1,7 @@
 import {describe,it,expect,vi,beforeEach} from "vitest";
 const api=vi.hoisted(()=>vi.fn());
 vi.mock("./canvas-api",()=>({canvasApi:api}));
-import {canRetryCanvasMaterialization,canReconcileUnknownJob,getCanvasJobHistory,retryCanvasMaterialization,recoverCanvasPendingMaterialization,reconcileCanvasUnknownJob,
+import {canRetryCanvasMaterialization,canReconcileUnknownJob,getCanvasJobHistory,getCanvasSkillAudit,replayCanvasSkillJob,retryCanvasMaterialization,recoverCanvasPendingMaterialization,reconcileCanvasUnknownJob,
  type CanvasJobHistoryItem,type CanvasJobArtifact} from "./canvas-job-history";
 
 const job:CanvasJobHistoryItem={
@@ -44,6 +44,26 @@ describe("P4.7 Canvas job history and recovery boundary",()=>{
   expect(api).toHaveBeenCalledExactlyOnceWith(
    "/api/v1/projects/p1/jobs/job-1/reconcile","POST",{remoteTaskId:"remote-1"});
   expect(api.mock.calls.some(call=>call[0]==="/api/v1/jobs")).toBe(false);
+ });
+ it("P5.4g reads only project-scoped Skill audit and replays after current revision fence",async()=>{
+  api.mockResolvedValueOnce({jobId:"job-1",status:"succeeded",
+   canReplay:true,versionPins:[{skillId:"camera",version:"v1",name:"Camera"}],toolEvents:[]});
+  const audit=await getCanvasSkillAudit("p1","job-1");
+  expect(audit.versionPins[0].version).toBe("v1");
+  expect(api).toHaveBeenNthCalledWith(1,
+   "/api/v1/projects/p1/jobs/job-1/skill-audit");
+  api.mockResolvedValueOnce({revision:3}).mockResolvedValueOnce({id:"replay-id"});
+  const value=await replayCanvasSkillJob("p1","job-1");
+  expect(value.id).toBe("replay-id");
+  expect(api).toHaveBeenNthCalledWith(2,"/api/v1/projects/p1");
+  expect(api).toHaveBeenNthCalledWith(3,"/api/v1/projects/p1/jobs/job-1/replay-skills",
+   "POST",expect.objectContaining({
+    expectedProjectRevision:3,
+    idempotencyKey:expect.any(String),requestFingerprint:expect.any(String)
+   }));
+  const submitted=api.mock.calls[2][2] as {idempotencyKey:string;requestFingerprint:string};
+  expect(submitted.requestFingerprint).toBe(submitted.idempotencyKey);
+  expect(api.mock.calls.some(args=>args[0]==="/api/v1/jobs")).toBe(false);
  });
  it("pending artifact recovery only invokes the direct Materializer endpoint",async()=>{
   api.mockResolvedValueOnce({artifactId:"artifact-1",status:"materialized",reason:null});

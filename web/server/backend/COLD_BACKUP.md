@@ -68,6 +68,10 @@ SQLite schema v12 的 `ui_settings` 包含模型通道元数据、模型选项�
 
 自动 Skill 任务的经用户选择/启用且符合项目作用域的只读 Skill 包，提交前冻结为 SHA-256 CAS `text/plain` JSON。SQLite JobSnapshot 保存哈希引用；P5.3 的保守 CAS 引用台账和冷备份会保护对应内容，即使仅完成了一部分模型回合。JobEvents 只保存工具名称、调用 ID、轮数、已开始/完成状态，不存正文或请求参数。**注意：冻结 Skill 本文可包含敏感信息，CAS 与冷备份并未额外加密**，必须用操作系统访问控制保护。原本存放于浏览器 IndexedDB 的 Skill 目录/全部历史包尚未迁入 SQLite：备份仅保证被 JobSnapshot 引用的已冻结版本。整个 Agent 的多次上游 POST 被同一个 JobCoordinator submit barrier 封装；若服务意外停止或任何一次响应未知，恢复标记为 `submission_unknown`，不自动重试、不再次收费提交，也不假设能够恢复中断的工具回合。服务端仅只读解释三个白名单 Skill 工具，不执行第三方 Skills 的可执行文件或网络请求。
 
+## P5.4g：Skill 版本审计与显式新任务
+
+项目限定的 Skill 审计通过 JobSnapshot 中 `task.skills.blobId` 从冷备份保留的 CAS 内容解析版本 ID；HTTP 响应只包含版本清单、工具名称/轮数/状态，不返回 Skill 正文。用户可以对**已成功、来源指纹未变化**的原任务明确确认一次全新的可能计费的生成，复用原有 CAS、系统消息和原凭据版本，但不复用、不重试旧任务 ID；原始凭据版本被撤销或无法解密时安全拒绝。混合 SSE 的 `skill_text_delta` 只做临时 UI 预览，并在 `job_events` 中保留为非最终文本，因此冷备份可能含有**尚未完成的模型文本片段**；成功判据仍是 JobCoordinator 收集 CAS artifact 并提交 SQLite。SSE 连接断开、模型流未收到 `[DONE]` 或任意工具回合异常，均保留 `submission_unknown`，不会自动补发计费请求。本轮未将整个浏览器 Skills 注册表迁入 SQLite，也不提供旧设置迁移按钮。
+
 ## 安全与范围边界
 
 - 数据库包括 Canvas 项目、聊天、任务状态、Comfy 模板/预设、渠道记录和凭据的 DPAPI **加密密文**。恢复不触发模型 API，不会重发 `submission_unknown` 请求。

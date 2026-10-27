@@ -1,3 +1,4 @@
+import {readSkillStream} from "./skill-stream-parser.mjs";
 import {createHash} from "node:crypto";
 import {readFile} from "node:fs/promises";
 
@@ -138,7 +139,7 @@ export async function runSqliteSkillAgent({
    response=await upstreamCall("https://api.openai.com/v1/chat/completions",{
     method:"POST",redirect:"manual",
     headers:{authorization,"content-type":"application/json"},
-    body:JSON.stringify({model:task.model,messages:history,stream:false,tools:toolDefs,
+    body:JSON.stringify({model:task.model,messages:history,stream:task.stream===true,tools:toolDefs,
      tool_choice:"auto"}),
     signal:AbortSignal.timeout(120000)
    });
@@ -146,7 +147,7 @@ export async function runSqliteSkillAgent({
   if(response.status>=300&&response.status<400)throw broken("model_skill_redirect_rejected");
   if(!response.ok)throw broken("model_skill_upstream_error",rounds===0&&
     response.status>=400&&response.status<500);
-  const json=await readJson(response);
+  const json=task.stream===true?await readSkillStream(response,{db,jobId,round:rounds}):await readJson(response);
   const choice=json?.choices?.[0];
   const msg=choice?.message;
   if(!obj(msg)||msg.role!=="assistant")throw broken("model_skill_response_invalid");

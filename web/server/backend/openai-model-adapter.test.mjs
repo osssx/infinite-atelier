@@ -317,12 +317,136 @@ test("P5.4f invalid/missing CAS snapshots are rejected before any billable call"
   messages:[{role:"user",content:"task"}]};
  for(const invalid of [
   {skills:{blobId:"ab"}},{skills:{blobId:"a".repeat(64),apiKey:"inject"}},
-  {skills:{blobId:"a".repeat(64)},stream:true}
+  {skills:{blobId:"a".repeat(64)},stream:"yes"}
  ])assert.throws(()=>validateModelSnapshot(f.snapshot({...base,...invalid})));
  const id=f.enqueue("skill-missing",{...base,skills:{blobId:"a".repeat(64)}});
  f.coordinator.recoverAtStartup();await f.coordinator.tick();
  assert.equal(f.db.prepare("SELECT status FROM jobs WHERE id=?").get(id).status,"failed");
  assert.equal(calls,0);
+});
+
+const ssePacket=value=>"data: "+JSON.stringify({choices:[{index:0,...value}]})+"\n\n";
+function fragmentedSseResponse(parts){
+ const encoder=new TextEncoder();
+ return new Response(new ReadableStream({
+  start(ctrl){
+   for(const part of parts)for(const segment of [part.slice(0,Math.floor(part.length/3)),
+      part.slice(Math.floor(part.length/3))])ctrl.enqueue(encoder.encode(segment));
+   ctrl.close();
+  }
+ }),{status:200,headers:{"content-type":"text/event-stream"}});
+}
+test("P5.4g mixed SSE streams partial function names and JSON args, then final text without double billing",async t=>{
+ let requests=0;
+ const f=fixture(t,async(url,options)=>{
+  requests++;
+  assert.equal(url,"https://api.openai.com/v1/chat/completions");
+  const payload=JSON.parse(options.body);
+  assert.equal(payload.stream,true);
+  if(requests===1){
+   return fragmentedSseResponse([
+    ssePacket({delta:{role:"assistant",tool_calls:[{index:0,id:"g1",type:"function",
+      function:{name:"activate_",arguments:'{"skill_'}}]},finish_reason:null}),
+    ssePacket({delta:{tool_calls:[{index:0,function:{name:"skill",arguments:'id":"shot-style"}'}}]},
+      finish_reason:null}),
+    ssePacket({delta:{},finish_reason:"tool_calls"}),"data: [DONE]\n\n"
+   ]);
+  }
+  assert.equal(payload.messages.at(-1).role,"tool");
+  assert.ok(payload.messages.at(-1).content.includes("Use soft light"));
+  return fragmentedSseResponse([
+   ssePacket({delta:{role:"assistant",content:"Shoot "},finish_reason:null}),
+   ssePacket({delta:{content:"with care."},finish_reason:null}),
+   ssePacket({delta:{},finish_reason:"stop"}),"data: [DONE]\n\n"
+  ]);
+ });
+ const frozen=await f.blobStore.put([Buffer.from(JSON.stringify(skillPack))],{mime:"text/plain"});
+ const id=f.enqueue("g-stream",{kind:"text",model:"gpt-4o-mini",
+  prompt:"Make shots",messages:[{role:"user",content:"Make shots"}],
+  stream:true,skills:{blobId:frozen.blobId}});
+ f.coordinator.recoverAtStartup();await f.coordinator.tick();
+ assert.equal(f.db.prepare("SELECT status FROM jobs WHERE id=?").get(id).status,"succeeded");
+ const log=f.db.prepare("SELECT kind,payload_json FROM job_events WHERE job_id=? AND kind IN ('skill_tool','skill_text_delta') ORDER BY seq").all(id);
+ assert.equal(log.filter(e=>e.kind==="skill_tool").length,2);
+ const deltas=log.filter(e=>e.kind==="skill_text_delta").map(e=>JSON.parse(e.payload_json));
+ assert.equal(deltas.map(d=>d.delta).join(""),"Shoot with care.");
+ assert.ok(deltas.every(d=>d.round===1));
+ assert.ok(!JSON.stringify(log).includes("shot-style"+"\\nUse soft light"));
+ const artifact=f.db.prepare("SELECT * FROM artifacts WHERE job_id=?").get(id);
+ const {readFile}=await import("node:fs/promises");
+ assert.equal(await readFile((await f.blobStore.stat(artifact.blob_id)).path,"utf8"),"Shoot with care.");
+ await f.coordinator.tick();
+ assert.equal(requests,2);
+});
+test("P5.4g incomplete SSE with a partial function call remains submission_unknown",async t=>{
+ let requests=0;
+ const f=fixture(t,async()=>{requests++;
+  return fragmentedSseResponse([ssePacket({delta:{
+   tool_calls:[{index:0,id:"g-incomplete",type:"function",
+    function:{name:"activate_skill",arguments:'{"skill_id":"shot-style"}'}}]},
+   finish_reason:"tool_calls"})]); // no DONE
+ });
+ const frozen=await f.blobStore.put([Buffer.from(JSON.stringify(skillPack))],{mime:"text/plain"});
+ const id=f.enqueue("g-incomplete",{kind:"text",model:"gpt-4o-mini",
+  prompt:"Make shots",messages:[{role:"user",content:"Make shots"}],
+  stream:true,skills:{blobId:frozen.blobId}});
+ f.coordinator.recoverAtStartup();await f.coordinator.tick();await f.coordinator.tick();
+ assert.equal(f.db.prepare("SELECT status FROM jobs WHERE id=?").get(id).status,"submission_unknown");
+ assert.equal(f.db.prepare("SELECT COUNT(*) AS n FROM artifacts WHERE job_id=?").get(id).n,0);
+ assert.equal(requests,1);
+});
+test("P5.4g project-scoped Skill audit and explicit frozen replay preserve provenance",async t=>{
+ let requests=0;
+ const f=fixture(t,async()=>{requests++;return skillResponse([],"Frozen response")});
+ const doc={nodes:[{id:"skill-src",type:"text",title:"Skill",position:{x:0,y:0},
+  width:300,height:200,metadata:{prompt:"Generate"}}],connections:[]};
+ createProject(f.db,{id:"skill-project",document:doc});
+ createProject(f.db,{id:"other-project",document:doc});
+ const frozen=await f.blobStore.put([Buffer.from(JSON.stringify(skillPack))],{mime:"text/plain"});
+ const task={kind:"text",model:"gpt-4o-mini",prompt:"Generate",
+  messages:[{role:"user",content:"Generate"}],skills:{blobId:frozen.blobId},stream:false};
+ const id=submitJob(f.db,{projectId:"skill-project",targetNodeId:"skill-src",
+  expectedProjectRevision:1,sourceNodeFingerprint:fingerprintSource(doc,"skill-src"),
+  idempotencyKey:"first-run",requestFingerprint:"first-run",
+  executionMode:"immediate",snapshot:f.snapshot(task)}).jobId;
+ f.coordinator.recoverAtStartup();await f.coordinator.tick();
+ assert.equal(requests,1);
+ const app=buildApp({db:f.db,authorize:()=>true,blobStore:f.blobStore});
+ try{
+  const url="/api/v1/projects/skill-project/jobs/"+id;
+  const detail=await app.inject({method:"GET",url:url+"/skill-audit"});
+  assert.equal(detail.statusCode,200,detail.body);
+  const audit=detail.json();
+  assert.equal(audit.canReplay,true);
+  assert.deepEqual(audit.versionPins.map(s=>s.version),["a".repeat(12)]);
+  assert.ok(!detail.body.includes("Generate"));
+  assert.ok(!detail.body.includes("Use soft light"));
+  assert.ok(!detail.body.includes("fixture-only-not-a-real-secret"));
+  assert.equal((await app.inject({method:"GET",
+   url:"/api/v1/projects/other-project/jobs/"+id+"/skill-audit"})).statusCode,404);
+  const payload={expectedProjectRevision:1,
+   idempotencyKey:"rerun-key",requestFingerprint:"rerun-key"};
+  const replay=await app.inject({method:"POST",url:url+"/replay-skills",payload});
+  assert.equal(replay.statusCode,201,replay.body);
+  assert.notEqual(replay.json().id,id);
+  assert.deepEqual(JSON.parse(f.db.prepare("SELECT snapshot_json FROM jobs WHERE id=?").get(replay.json().id).snapshot_json),
+   JSON.parse(f.db.prepare("SELECT snapshot_json FROM jobs WHERE id=?").get(id).snapshot_json));
+  const duplicate=await app.inject({method:"POST",url:url+"/replay-skills",payload});
+  assert.equal(duplicate.statusCode,200,duplicate.body);
+  assert.equal(duplicate.json().id,replay.json().id);
+  const newRequest=await app.inject({method:"POST",url:url+"/replay-skills",payload:{
+   expectedProjectRevision:1,idempotencyKey:"other-new",requestFingerprint:"other-new"
+  }});
+  assert.equal(newRequest.statusCode,409);
+  assert.equal(requests,1); // creating a job does not directly bill upstream
+  const updated=structuredClone(doc);updated.nodes[0].metadata.prompt="modified";
+  patchProject(f.db,{id:"skill-project",expectedRevision:1,document:updated});
+  const stale=await app.inject({method:"POST",url:url+"/replay-skills",payload:{
+   expectedProjectRevision:2,idempotencyKey:"stale",requestFingerprint:"stale"
+  }});
+  assert.equal(stale.statusCode,409);
+  assert.equal(stale.json().code,"skill_replay_source_changed");
+ }finally{await app.close()}
 });
 test("P5.4e frozen multi-turn history with past Skill tool results maps safely to OpenAI chat roles",async t=>{
  let sent;

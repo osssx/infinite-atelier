@@ -169,7 +169,7 @@ export function validateModelSnapshot(snapshot){
   if(task.stream!==undefined&&typeof task.stream!=="boolean")throw failure("model_task_invalid");
   if(task.skills){
    validateSkillRef(task.skills);
-   if(!task.messages||task.stream!==false||task.images?.length)
+   if(!task.messages||typeof task.stream!=="boolean"||task.images?.length)
     throw failure("model_skill_task_invalid");
   }
   validateTextHistory(task);

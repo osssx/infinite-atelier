@@ -43,12 +43,13 @@ export async function refreshSqliteComfyArtifacts({
 }
 export async function watchSqliteComfyJob({
  projectId,jobId,signal,getLocalGraph,applyGraph,
- onStatus,onTextDelta,onSkillTool,api=canvasApi,pollMs=15000,
+ onStatus,onTextDelta,onSkillText,onSkillTool,api=canvasApi,pollMs=15000,
 }:{
  projectId:string;jobId:string;signal:AbortSignal;
  getLocalGraph:()=>Graph;applyGraph:(graph:Graph)=>void;
  onStatus?:(status:string,message?:string)=>void;
  onTextDelta?:(delta:string)=>void;
+ onSkillText?:(delta:string,round:number)=>void;
  onSkillTool?:(event:{name:string;status:"started"|"completed"})=>void;
  api?:typeof canvasApi;pollMs?:number;
 }):Promise<void>{
@@ -60,6 +61,13 @@ export async function watchSqliteComfyJob({
     event.payload&&typeof event.payload==="object"&&
     "delta" in event.payload&&typeof event.payload.delta==="string"&&
     event.payload.delta.length<=4096)onTextDelta(event.payload.delta);
+  if(event.kind==="skill_text_delta"&&onSkillText&&
+    event.payload&&typeof event.payload==="object"&&
+    "delta" in event.payload&&typeof event.payload.delta==="string"&&
+    event.payload.delta.length<=4096&&
+    "round" in event.payload&&typeof event.payload.round==="number"&&
+    Number.isSafeInteger(event.payload.round)&&event.payload.round>=0)
+   onSkillText(event.payload.delta,event.payload.round);
   if(event.kind==="skill_tool"&&onSkillTool&&event.payload&&
     typeof event.payload==="object"&&
     "name" in event.payload&&typeof event.payload.name==="string"&&

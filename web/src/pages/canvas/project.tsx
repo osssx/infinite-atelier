@@ -2697,7 +2697,7 @@ function AtelierCanvasPage() {
                         bridge,
                         ...(kind==="image"||kind==="text"?{referenceImages:context.referenceImages}:{}),
                         task:{kind,model,prompt:kind==="text"?textMessages!.at(-1)!.content:text,
-                          ...(kind==="text"?{stream:!skillCatalog,messages:textMessages,
+                          ...(kind==="text"?{stream:true,messages:textMessages,
                             ...(skillCatalog?{skills:skillCatalog}:{})}:{}),
                           ...(kind==="image"?{size:openAiImageSize(generationConfig.size),
                             quality:["auto","low","medium","high"].includes(generationConfig.quality)?
@@ -3271,6 +3271,21 @@ function AtelierCanvasPage() {
                     message.error("历史视频包含参考素材；请在原始来源节点重新确认参考素材后生成，不能直接重放旧请求");
                     return;
                 }
+                if(node.type===CanvasNodeType.Text&&node.metadata?.modelArtifact?.jobId){
+                    const originalJobId=node.metadata.modelArtifact.jobId;
+                    try{
+                        await canvasApi("/api/v1/projects/"+encodeURIComponent(projectId)+
+                            "/jobs/"+encodeURIComponent(originalJobId)+"/skill-audit");
+                        message.warning("此结果使用了冻结 Skill 版本。请在「SQLite 任务历史」中查看原任务并明确确认「使用冻结版本创建新任务」，以免误用当前 Skill。");
+                        return;
+                    }catch(error){
+                        if(!(error instanceof Error&&"code" in error&&
+                            error.code==="skill_job_not_supported")){
+                            message.error("无法验证原任务 Skill 快照，已阻止自动重试："+String(error));
+                            return;
+                        }
+                    }
+                }
                 if(node.type===CanvasNodeType.Text&&node.metadata?.skillRun){
                     message.error("原任务包含 Skill 运行记录；请从来源节点重新执行，不能将 Skill 重试改为普通模型请求");
                     return;
@@ -3730,6 +3745,7 @@ function AtelierCanvasPage() {
         if(sqliteJobWatchesRef.current.has(jobId))return;
         const controller=new AbortController();
         sqliteJobWatchesRef.current.set(jobId,controller);
+        let lastSkillRound=-1;
         let recentText="";
         const progressKey="sqlite-text-"+jobId;
         void watchSqliteComfyJob({
@@ -3745,6 +3761,13 @@ function AtelierCanvasPage() {
                 recentText=(recentText+delta).slice(-512);
                 message.open({key:progressKey,type:"loading",duration:0,
                     content:"文本生成中："+recentText.slice(-120)});
+            },
+            onSkillText:(delta,round)=>{
+                if(controller.signal.aborted||activeProjectIdRef.current!==projectId)return;
+                if(round!==lastSkillRound){recentText="";lastSkillRound=round;}
+                recentText=(recentText+delta).slice(-512);
+                message.open({key:progressKey,type:"loading",duration:0,
+                    content:"Skill 第 "+(round+1)+" 轮模型响应："+recentText.slice(-120)});
             },
             onSkillTool:event=>{
                 if(controller.signal.aborted||activeProjectIdRef.current!==projectId)return;

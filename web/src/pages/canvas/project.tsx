@@ -530,14 +530,21 @@ function AtelierCanvasPage() {
     useEffect(()=>{
         if(!projectLoaded||!globalComfyInstanceId){setBackendComfyEnabled(false);return}
         let cancelled=false;
-        void canvasApi<{autoDispatch:boolean;comfyInstanceIds:string[]}>(
+        const refresh=()=>void canvasApi<{autoDispatch:boolean;comfyInstanceIds:string[]}>(
             "/api/v1/execution/capabilities"
         ).then(capability=>{
             if(!cancelled)setBackendComfyEnabled(Boolean(
                 capability.autoDispatch&&capability.comfyInstanceIds.includes(globalComfyInstanceId)
             ));
         }).catch(()=>{if(!cancelled)setBackendComfyEnabled(false)});
-        return ()=>{cancelled=true};
+        refresh();
+        window.addEventListener("atelier:comfy-instances-changed",refresh);
+        window.addEventListener("focus",refresh);
+        return ()=>{
+            cancelled=true;
+            window.removeEventListener("atelier:comfy-instances-changed",refresh);
+            window.removeEventListener("focus",refresh);
+        };
     },[projectLoaded,globalComfyInstanceId]);
 
     useEffect(()=>()=>{for(const watch of sqliteJobWatchesRef.current.values())watch.abort();

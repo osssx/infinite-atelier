@@ -4,7 +4,8 @@ import {Pencil,Plus,RefreshCw,Trash2} from "lucide-react";
 import {useConfigStore} from "@/stores/use-config-store";
 import type {CanvasNodeData,CanvasNodeMetadata} from "@/types/canvas";
 import {ComfyWorkflowPanel} from "./comfy-workflow-panel";
-import {deleteComfyInstance,listComfyInstances,saveComfyInstance,type ComfyInstance} from "./run-client";
+import type {ComfyInstance} from "./run-client";
+import {deleteSqliteComfyInstance,listSqliteComfyInstances,saveSqliteComfyInstance} from "./sqlite-instances-client";
 import {saveComfyPreset,type ComfyPreset} from "./preset-registry";
 import {installBundledComfyTemplate,listComfyPresetCatalog,resetBundledComfyPreset,type ComfyCatalogPreset} from "./preset-catalog";
 import {MINIMAX_H3_I2V_TEMPLATE_ID} from "./minimax-h3-i2v-preset";
@@ -36,7 +37,7 @@ export function ComfySettingsTab() {
 
     const reloadInstances=useCallback(async()=>{
         setLoading(true);setInstanceError("");
-        try {setInstances(await listComfyInstances());}
+        try {setInstances(await listSqliteComfyInstances());}
         catch(error){setInstances([]);setInstanceError(error instanceof Error?error.message:String(error));}
         finally {setLoading(false);}
     },[]);
@@ -54,7 +55,7 @@ export function ComfySettingsTab() {
         if(!editingInstance)return;
         setBusy(true);
         try{
-            const next=await saveComfyInstance(editingInstance.id.trim(),editingInstance.url.trim(),editingInstance.originalId);
+            const next=await saveSqliteComfyInstance(editingInstance.id.trim(),editingInstance.url.trim(),editingInstance.originalId);
             if(config.comfyInstanceId===editingInstance.originalId)update("comfyInstanceId",next.instance.id);
             setEditingInstance(null);message.success("ComfyUI 实例已保存");
             await reloadInstances();
@@ -62,7 +63,7 @@ export function ComfySettingsTab() {
         finally{setBusy(false);}
     };
     const removeInstance=async(id:string)=>{
-        try {await deleteComfyInstance(id);
+        try {await deleteSqliteComfyInstance(id);
             if(config.comfyInstanceId===id)update("comfyInstanceId","");
             message.success("已删除实例");await reloadInstances();
         }catch(error){message.error(error instanceof Error?error.message:String(error));}
@@ -134,7 +135,7 @@ export function ComfySettingsTab() {
     return <div className="space-y-6 pb-5" data-comfy-settings-tab>
         <section>
             <div className="mb-3 flex items-center justify-between gap-2">
-                <h3 className="text-base font-semibold">ComfyUI 本地实例配置</h3>
+                <h3 className="text-base font-semibold">ComfyUI 本地实例配置（SQLite 执行端）</h3>
                 <div className="flex gap-2">
                     <Button size="small" icon={<RefreshCw size={13}/>} loading={loading} onClick={()=>void reloadInstances()}>测试连接</Button>
                     <Button size="small" icon={<Plus size={13}/>} onClick={()=>setEditingInstance({id:"",url:localDefault})}>新增实例</Button>
@@ -156,6 +157,7 @@ export function ComfySettingsTab() {
                 {!instances.length?<p className="px-3 py-4 text-xs text-stone-500">{instanceError||"暂无实例，点击新增实例"}</p>:null}
             </div>
             {instanceError&&instances.length?<p role="alert" className="mt-2 text-xs text-red-500">{instanceError}</p>:null}
+            <p className="mt-2 text-xs text-stone-500">实例配置保存在 SQLite 后端，修改后可直接执行，无需重启；实例未连接时请先启动对应 ComfyUI 服务。</p>
         </section>
         <section className="border-t border-stone-200 pt-5 dark:border-stone-800">
             <div className="mb-3 flex items-center justify-between gap-2">

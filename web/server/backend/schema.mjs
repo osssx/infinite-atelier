@@ -1,5 +1,5 @@
 import{JOB_STATUSES,EXECUTION_MODES,ARTIFACT_KINDS}from"./contracts.mjs";
-export const SCHEMA_VERSION=14;
+export const SCHEMA_VERSION=15;
 const quoted=x=>x.map(s=>"'"+s+"'").join(",");
 export const INITIAL_SCHEMA_SQL=`
 CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY,applied_at INTEGER NOT NULL);
@@ -293,6 +293,16 @@ CREATE TABLE IF NOT EXISTS skill_job_grants(
 );
 CREATE INDEX IF NOT EXISTS ix_skill_job_grants_project ON skill_job_grants(project_id,expires_at);
 `;
+/** v15: local Comfy execution instances share the SQLite JobCoordinator source of truth. */
+export const COMFY_INSTANCES_SCHEMA_SQL=`
+CREATE TABLE IF NOT EXISTS comfy_instances(
+ id TEXT PRIMARY KEY,
+ url TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS comfy_instance_registry_state(
+ id INTEGER PRIMARY KEY CHECK(id=1)
+);
+`;
 export function initializeSchema(db){
  db.exec("PRAGMA foreign_keys=ON;PRAGMA busy_timeout=5000;BEGIN IMMEDIATE");
  try{
@@ -326,6 +336,7 @@ export function initializeSchema(db){
   if(version<12)db.exec(UI_SETTINGS_SCHEMA_SQL);
   if(version<13)db.exec(SKILL_REGISTRY_SCHEMA_SQL);
   if(version<14)db.exec(SKILL_GRANT_SCHEMA_SQL);
+  if(version<15)db.exec(COMFY_INSTANCES_SCHEMA_SQL);
   if(version<SCHEMA_VERSION)db.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)").run(SCHEMA_VERSION,Date.now());
   db.exec("COMMIT");
  }catch(e){db.exec("ROLLBACK");throw e}

@@ -12,11 +12,13 @@ const comfyId=process.env.ATELIER_COMFY_INSTANCE_ID;
 const comfyUrl=process.env.ATELIER_COMFY_URL;
 if(Boolean(comfyId)!==Boolean(comfyUrl))
  throw Error("ATELIER_COMFY_INSTANCE_ID and ATELIER_COMFY_URL must be set together");
-const comfyInstances=comfyId&&comfyUrl?[{id:comfyId,url:comfyUrl}]:undefined;
+// An initial local instance is always available for configuration. SQLite
+// persists subsequent edits; legacy gateway instance state is not authoritative.
+const comfyInstances=[{id:comfyId||"comfy-local",url:comfyUrl||"http://127.0.0.1:8188"}];
 const enableOpenAiModels=true;
 const enableArkVideos=true;
-const runtime=createLocalBackend({comfyInstances,enableOpenAiModels,enableArkVideos,
- autoDispatch:Boolean(comfyInstances)||enableOpenAiModels||enableArkVideos,autoLocalSession:true});
+const runtime=createLocalBackend({comfyInstances,enableComfyManagement:true,enableOpenAiModels,enableArkVideos,
+ autoDispatch:true,autoLocalSession:true});
 let stopped=false;
 async function shutdown(){
  if(stopped)return;
@@ -32,7 +34,7 @@ for(const signal of ["SIGINT","SIGTERM"])process.on(signal,()=>{
 try{
  const address=await startServer(runtime.app,{host:"127.0.0.1",port});
  console.log("Infinite Atelier private backend ready:",address);
- console.log("Comfy backend GPU dispatch:",comfyInstances?"enabled (explicit opt-in)":"disabled");
+ console.log("Comfy SQLite instances:",runtime.comfyRegistry.list().map(item=>item.id).join(", ")||"none (configure in settings)");
  console.log("SQLite OpenAI / Volcengine Ark model adapters: enabled by default (DPAPI channel required).");
  console.log("Canvas sessions: automatic same-origin loopback login (no manual token).");
  console.log("API origin: http://127.0.0.1:"+port);

@@ -78,7 +78,7 @@ function cursorOf(value){
  if(!/^(0|[1-9][0-9]*)$/.test(v)||!Number.isSafeInteger(Number(v)))throw Object.assign(Error("invalid_event_cursor"),{statusCode:400,code:"invalid_event_cursor"});
  return Number(v);
 }
-export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobStore,mediaPreview,blobGc,projectArchive,vault,coordinator,materializer,worker,comfyInstanceIds=[],modelKinds=[],arkAssetUploadReady=false,logger=false,streamPollMs=200}={}){
+export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobStore,mediaPreview,blobGc,projectArchive,vault,coordinator,materializer,worker,comfyRegistry,comfyInstanceIds=[],modelKinds=[],arkAssetUploadReady=false,logger=false,streamPollMs=200}={}){
  if(!db||(!sessionAuth&&typeof authorize!=="function"))throw Error("backend_authorizer_required");
  const app=Fastify({logger,bodyLimit:5*1024*1024,trustProxy:false,genReqId:()=>randomUUID()});
  if(blobStore)app.addContentTypeParser("application/octet-stream",(req,stream,done)=>done(null,stream));
@@ -120,6 +120,9 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
    "comfy_template_invalid","comfy_template_too_large","comfy_template_revision_mismatch",
    "comfy_template_immutable_conflict","comfy_template_not_found","comfy_template_in_use",
    "comfy_preset_invalid","comfy_preset_not_found",
+   "invalid_comfy_instance","invalid_comfy_instance_url","comfy_instance_must_be_exact_loopback_origin",
+   "comfy_instance_not_found","comfy_instance_conflict","comfy_instance_limit_reached",
+   "comfy_instance_has_pending_jobs","invalid_comfy_instances",
    "skill_freeze_unavailable","skill_freeze_integrity_failed","skill_grant_required","skill_grant_invalid",
    "skill_grant_gc_invalid","skill_replay_identity_mismatch",
    "skill_grant_already_used","skill_grant_expired","skill_grant_stale","skill_grant_not_applicable",
@@ -479,7 +482,28 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
  });
  if(coordinator)app.get("/api/v1/coordinator/status",()=>coordinator.status());
  if(worker)app.get("/api/v1/worker/status",()=>worker.status());
- app.get("/api/v1/execution/capabilities",()=>({autoDispatch:Boolean(worker),comfyInstanceIds:[...comfyInstanceIds],
+ if(comfyRegistry){
+  const routeParams={type:"object",required:["id"],properties:{id:idSchema},additionalProperties:false};
+  const instanceBody={type:"object",required:["id","url"],properties:{
+   id:idSchema,url:{type:"string",minLength:1,maxLength:256}},additionalProperties:false};
+  app.get("/api/v1/comfy/instances",async(req,reply)=>{
+   reply.header("Cache-Control","no-store");
+   return {instances:await comfyRegistry.checkedList()};
+  });
+  app.post("/api/v1/comfy/instances",{schema:{body:instanceBody}},(req,reply)=>{
+   reply.header("Cache-Control","no-store");
+   return {instance:comfyRegistry.save(req.body)};
+  });
+  app.put("/api/v1/comfy/instances/:id",{schema:{params:routeParams,body:instanceBody}},(req,reply)=>{
+   reply.header("Cache-Control","no-store");
+   return {instance:comfyRegistry.save(req.body,req.params.id)};
+  });
+  app.delete("/api/v1/comfy/instances/:id",{schema:{params:routeParams}},(req,reply)=>{
+   reply.header("Cache-Control","no-store");
+   return comfyRegistry.remove(req.params.id);
+  });
+ }
+ app.get("/api/v1/execution/capabilities",()=>({autoDispatch:Boolean(worker),comfyInstanceIds:typeof comfyInstanceIds==="function"?comfyInstanceIds():[...comfyInstanceIds],
   arkAssetUploadReady:Boolean(arkAssetUploadReady),
   ...(modelKinds.length?{modelKinds:[...modelKinds]}:{})}));
  if(materializer){

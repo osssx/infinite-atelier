@@ -16,6 +16,7 @@ import {createWindowsDpapiProtector} from "./credential-protection.mjs";
 import {createCredentialVault} from "./credential-vault.mjs";
 import {createJobCoordinator} from "./job-coordinator.mjs";
 import {createComfyV2Adapters} from "./comfy-v2-adapter.mjs";
+import {createComfyInstanceRegistry} from "./comfy-instances.mjs";
 import {createOpenAiModelAdapter} from "./openai-model-adapter.mjs";
 import {createArkVideoAdapter} from "./ark-video-adapter.mjs";
 import {readArkAssetConfig,createArkAssetManager} from "./ark-asset-manager.mjs";
@@ -41,7 +42,7 @@ export function resolveLocalDataDir(dataDir=process.env.ATELIER_DATA_DIR){
  return actual;
 }
 /** Explicit opt-in backend assembly. Does not replace existing dev/start or Comfy gateway. */
-export function createLocalBackend({dataDir,streamPollMs=200,adapters,comfyInstances,comfyUpstreamCall,enableOpenAiModels=false,modelUpstreamCall,enableArkVideos=false,arkUpstreamCall,arkAssetConfig,arkAssetUpstreamCall,arkTosClient,blobMaxBytes=2_000_000_000,autoDispatch=false,autoLocalSession=false,dispatchIntervalMs=250,activationRoot}={}){
+export function createLocalBackend({dataDir,streamPollMs=200,adapters,comfyInstances,enableComfyManagement=false,comfyUpstreamCall,enableOpenAiModels=false,modelUpstreamCall,enableArkVideos=false,arkUpstreamCall,arkAssetConfig,arkAssetUpstreamCall,arkTosClient,blobMaxBytes=2_000_000_000,autoDispatch=false,autoLocalSession=false,dispatchIntervalMs=250,activationRoot}={}){
  const root=resolveLocalDataDir(dataDir),lock=acquireInstanceLock(root);
  let db,datasetGuard;
  try{
@@ -61,7 +62,9 @@ export function createLocalBackend({dataDir,streamPollMs=200,adapters,comfyInsta
   // Startup recovery requires the exclusive instance lock acquired above.
   if(comfyInstances&&adapters?.comfy)throw Error("duplicate_comfy_adapter_configuration");
   if((enableOpenAiModels||enableArkVideos)&&adapters?.model)throw Error("duplicate_model_adapter_configuration");
-  const comfy=comfyInstances?createComfyV2Adapters({instances:comfyInstances,db,blobStore,
+  const comfyRegistry=enableComfyManagement?createComfyInstanceRegistry({db,blobStore,
+    initialInstances:comfyInstances??[],upstreamCall:comfyUpstreamCall}):null;
+  const comfy=comfyRegistry?comfyRegistry.adapters:comfyInstances?createComfyV2Adapters({instances:comfyInstances,db,blobStore,
     upstreamCall:comfyUpstreamCall}):null;
   const openai=enableOpenAiModels?createOpenAiModelAdapter({db,blobStore,vault,
     ...(modelUpstreamCall?{upstreamCall:modelUpstreamCall}:{})}):null;
@@ -87,10 +90,10 @@ export function createLocalBackend({dataDir,streamPollMs=200,adapters,comfyInsta
   const materializer=createCanvasMaterializer({db,blobStore});
   const worker=autoDispatch?createBackendWorker({coordinator,materializer,intervalMs:dispatchIntervalMs}):null;
   const app=buildApp({db,sessionAuth,autoLocalSession,blobStore,mediaPreview,blobGc,projectArchive,vault,coordinator,materializer,worker,
-   comfyInstanceIds:comfyInstances?.map(item=>item.id)??[],modelKinds:[...(enableOpenAiModels?["image","audio","text"]:[]),...(enableArkVideos?["video"]:[])],arkAssetUploadReady:Boolean(assetManager),streamPollMs});
+   comfyRegistry,comfyInstanceIds:comfyRegistry?()=>comfyRegistry.list().map(item=>item.id):comfyInstances?.map(item=>item.id)??[],modelKinds:[...(enableOpenAiModels?["image","audio","text"]:[]),...(enableArkVideos?["video"]:[])],arkAssetUploadReady:Boolean(assetManager),streamPollMs});
   worker?.start();
   let closed=false;
-  return {app,db,sessionAuth,vault,blobStore,assetManager,mediaPreview,blobGc,projectArchive,coordinator,materializer,worker,lock,async close(){
+  return {app,db,sessionAuth,vault,blobStore,comfyRegistry,assetManager,mediaPreview,blobGc,projectArchive,coordinator,materializer,worker,lock,async close(){
    if(closed)return;closed=true;
    try{await worker?.stop();await coordinator?.stop();await app.close()}
    finally{try{db.close()}finally{try{datasetGuard.release()}finally{lock.release()}}}

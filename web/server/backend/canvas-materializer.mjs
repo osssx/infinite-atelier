@@ -1,6 +1,6 @@
 import {randomUUID} from "node:crypto";
 import {readFile} from "node:fs/promises";
-import {fingerprintSource,stableJson,writeTransaction} from "./repository.mjs";
+import {matchesSourceFingerprint,stableJson,writeTransaction} from "./repository.mjs";
 import {validateProjectDocument} from "./projects.mjs";
 import {makeComfyArtifactProvenance} from "./comfy-provenance.mjs";
 import {emitProjectEvent} from "./projects.mjs";
@@ -78,7 +78,7 @@ export function createCanvasMaterializer({db,blobStore}={}){
     const hasPort=source.type==="comfy:workflow"&&source.metadata?.comfyPorts?.some(p=>
      p.id===artifact.port_id&&p.direction==="source"&&p.valueKind===requiredKind[artifact.kind]);
     if(!hasPort&&!isModel)throw fail("materialization_port_mismatch");
-    if(fingerprintSource(doc,source.id)!==artifact.source_fingerprint)
+    if(!matchesSourceFingerprint(doc,source.id,artifact.source_fingerprint,snapshot))
      throw fail("materialization_source_changed");
     const metadata=JSON.parse(artifact.metadata_json);
     if(isModel&&metadata?.modelGeneration?.kind!==artifact.kind)

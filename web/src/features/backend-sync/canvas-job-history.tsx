@@ -324,11 +324,10 @@ export function CanvasJobHistory({projectId,open,onClose,onObserveJob,onRefreshC
   }catch(e){message.error("刷新 SQLite 画布失败："+String(e))}
   finally{setWorking(null)}
  }
- return <Drawer title="SQLite 任务历史" open={open} width={540} onClose={onClose}
+ return <Drawer title="任务历史" open={open} width={540} onClose={onClose}
   extra={<Button size="small" icon={<RefreshCw size={13}/>}
    onClick={()=>void refresh()} disabled={loading}>刷新任务</Button>}>
   <div className="space-y-3">
-   <Alert type="info" showIcon message="历史任务从 SQLite 读取。落图重试只处理已有产物，不会重新提交付费生成。"/>
    <div className="flex items-center justify-between">
     <span className="text-xs opacity-65">当前项目 · 按创建时间倒序（每页 20 条）</span>
     <Button size="small" loading={working==="refresh"}

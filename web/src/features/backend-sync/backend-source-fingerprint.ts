@@ -16,6 +16,24 @@ function stableJson(value:unknown):string{
 export function canonicalBackendGraph(graph:BackendCanvasGraph):string{
  return stableJson(JSON.parse(JSON.stringify({nodes:graph.nodes,connections:graph.connections})));
 }
+// Exactly mirrors repository.mjs generationNode; unknown metadata is never ignored.
+const PRESENTATION_META=new Set(["status","errorDetails","comfyExecution","videoTask",
+ "videoDownloadError","skillTrace","skillMetrics","interactive","groupId",
+ "fontSize","freeResize"]);
+function generationNode(node:BackendCanvasGraph["nodes"][number]){
+ const {title,position,width,height,metadata,...rest}=node;
+ if(!metadata)return rest;
+ const safe:Record<string,unknown>={...metadata};
+ for(const key of PRESENTATION_META)delete safe[key];
+ if(safe.comfyWorkflow&&typeof safe.comfyWorkflow==="object"){
+  safe.comfyWorkflow={...safe.comfyWorkflow};
+  delete (safe.comfyWorkflow as Record<string,unknown>).lastRunId;
+ }
+ if(Array.isArray(safe.images))safe.images=safe.images.map((image:Record<string,unknown>)=>{
+  const {status,errorDetails,...stable}=image;return stable;
+ });
+ return Object.keys(safe).length?{...rest,metadata:safe}:rest;
+}
 export async function fingerprintBackendSource(graph:BackendCanvasGraph,targetNodeId:string):Promise<string>{
  const doc=JSON.parse(canonicalBackendGraph(graph)) as BackendCanvasGraph;
  const byId=new Map(doc.nodes.map(node=>[node.id,node]));
@@ -35,12 +53,13 @@ export async function fingerprintBackendSource(graph:BackendCanvasGraph,targetNo
   visiting.delete(id);ids.add(id);
  };
  visit(targetNodeId);
- const nodes=[...ids].sort().map(id=>byId.get(id));
- incoming.sort((a,b)=>{
+ const nodes=[...ids].sort().map(id=>generationNode(byId.get(id)!));
+ const edges=incoming.map(({id,...edge})=>edge);
+ edges.sort((a,b)=>{
   const left=stableJson(a),right=stableJson(b);
   return left<right?-1:left>right?1:0;
  });
- const bytes=new TextEncoder().encode(stableJson({nodes,incoming}));
+ const bytes=new TextEncoder().encode(stableJson({nodes,incoming:edges}));
  const hash=await crypto.subtle.digest("SHA-256",bytes);
- return [...new Uint8Array(hash)].map(n=>n.toString(16).padStart(2,"0")).join("");
+ return "v2:"+[...new Uint8Array(hash)].map(n=>n.toString(16).padStart(2,"0")).join("");
 }

@@ -1,4 +1,4 @@
-import {submitJob,fingerprintSource} from "./repository.mjs";
+import {submitJob,fingerprintSource,fingerprintSourceLegacy} from "./repository.mjs";
 import {loadFrozenSkillCatalog} from "./sqlite-skill-agent.mjs";
 const bad=(code,statusCode=409)=>Object.assign(Error(code),{code,statusCode});
 const valid=id=>typeof id==="string"&&/^[A-Za-z0-9_-]{1,128}$/.test(id);
@@ -67,7 +67,9 @@ export function replayProjectSkillJob(db,{
  const project=db.prepare("SELECT document_json,revision,deleted_at FROM projects WHERE id=?").get(projectId);
  if(!project||project.deleted_at!==null||project.revision!==expectedProjectRevision)
   throw bad("skill_replay_source_changed");
- const currentFingerprint=fingerprintSource(JSON.parse(project.document_json),job.target_node_id);
+ const document=JSON.parse(project.document_json);
+ const currentFingerprint=job.source_fingerprint.startsWith("v2:")?
+  fingerprintSource(document,job.target_node_id):fingerprintSourceLegacy(document,job.target_node_id);
  if(currentFingerprint!==job.source_fingerprint)
   throw bad("skill_replay_source_changed");
  return submitJob(db,{projectId,targetNodeId:job.target_node_id,

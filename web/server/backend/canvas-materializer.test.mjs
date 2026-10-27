@@ -8,7 +8,7 @@ import {initializeSchema} from "./schema.mjs";
 import {createBlobStore} from "./blob-store.mjs";
 import {createCanvasMaterializer} from "./canvas-materializer.mjs";
 import {createProject,getProject,patchProject} from "./projects.mjs";
-import {fingerprintSource,submitJob,appendArtifact,transitionJob,readEventsAfter} from "./repository.mjs";
+import {fingerprintSource,fingerprintSourceLegacy,submitJob,appendArtifact,transitionJob,readEventsAfter} from "./repository.mjs";
 import {createJobCoordinator} from "./job-coordinator.mjs";
 import {createBackendWorker} from "./worker.mjs";
 import {createLocalBackend} from "./runtime.mjs";
@@ -106,6 +106,53 @@ test("source mutation blocks materialization while GPU success and artifacts rem
  const result=await f.materializer.runOnce();
  assert.equal(result[0].status,"materialized");
  assert.equal(getProject(f.db,"project-1").document.nodes.length,2);
+});
+test("cosmetic source changes during GPU work do not block v2 materialization",async t=>{
+ const f=fixture(t),{jobId}=await f.addArtifacts({count:1});
+ const value=getProject(f.db,"project-1");
+ value.document.nodes[0].position={x:777,y:222};
+ value.document.nodes[0].width=650;
+ value.document.nodes[0].title="Moved after GPU submit";
+ value.document.nodes[0].metadata.comfyExecution={runId:jobId,status:"running"};
+ value.document.nodes[0].metadata.status="loading";
+ patchProject(f.db,{id:"project-1",expectedRevision:1,document:value.document});
+ const result=await f.materializer.runOnce();
+ assert.equal(result[0].status,"materialized");
+ assert.equal(getProject(f.db,"project-1").document.nodes.length,2);
+});
+test("already-blocked legacy standalone Comfy artifact retries after cosmetic changes, without GPU work",async t=>{
+ const f=fixture(t);
+ const doc=getProject(f.db,"project-1").document;
+ doc.nodes[0].metadata.comfyWorkflow={templateId:"saved",templateRevision:"r1",
+  bindingState:"bound",inputOverrides:{prompt:"unchanged",seed:1}};
+ patchProject(f.db,{id:"project-1",expectedRevision:1,document:doc});
+ const oldFingerprint=fingerprintSourceLegacy(doc,"wf-1");
+ const frozen={adapterKind:"comfy",instanceId:"comfy-local",comfyTemplate:{id:"saved",revision:"r1"},
+  comfyRequest:{instanceId:"comfy-local",nodes:[{id:"wf-1",templateId:"saved",templateRevision:"r1",
+   inputOverrides:{prompt:"unchanged",seed:1}}],edges:[],externalInputs:[]}};
+ const jobId=submitJob(f.db,{projectId:"project-1",targetNodeId:"wf-1",expectedProjectRevision:2,
+  sourceNodeFingerprint:oldFingerprint,idempotencyKey:"old-job",requestFingerprint:"old-job",
+  executionMode:"poll",snapshot:frozen}).jobId;
+ const blob=await f.blobStore.put([png],{mime:"image/png"});
+ const artifactId="old-artifact";
+ appendArtifact(f.db,{id:artifactId,jobId,portId:"image",itemKey:"image-0",blobId:blob.blobId,
+  kind:"image",mime:"image/png",sha256:blob.sha256,
+  metadata:{comfyArtifact:{runId:jobId,artifactId,workflowNodeId:"wf-1",portId:"image",kind:"image",index:0}}});
+ f.db.prepare("UPDATE jobs SET status='succeeded' WHERE id=?").run(jobId);
+ const changed=getProject(f.db,"project-1").document;
+ changed.nodes[0].position.x=777;
+ changed.nodes[0].metadata.comfyWorkflow.inputOverrides.seed=2;
+ patchProject(f.db,{id:"project-1",expectedRevision:2,document:changed});
+ assert.equal((await f.materializer.runOnce())[0].reason,"materialization_source_changed");
+ assert.equal(f.materializer.status({jobId})[0].status,"blocked");
+ const restored=getProject(f.db,"project-1").document;
+ restored.nodes[0].metadata.comfyWorkflow.inputOverrides.seed=1;
+ patchProject(f.db,{id:"project-1",expectedRevision:3,document:restored});
+ assert.equal(f.materializer.retryBlocked({projectId:"project-1",artifactId}),true);
+ assert.equal((await f.materializer.runOnce())[0].status,"materialized");
+ assert.equal(getProject(f.db,"project-1").document.nodes.length,2);
+ assert.equal(f.db.prepare("SELECT COUNT(*) n FROM jobs").get().n,1,
+  "recovery must not submit another GPU job");
 });
 test("P4.7 pending artifact recover processes only stored Blob, never generates again",async t=>{
  const f=fixture(t),{jobId,created}=await f.addArtifacts({count:1});

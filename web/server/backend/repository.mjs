@@ -28,8 +28,30 @@ export function assertNoRawCredentials(value,depth=0){
   assertNoRawCredentials(nested,depth+1);
  }
 }
-/** Fingerprints the target plus every transitive input, independent of canvas array ordering. */
-export function fingerprintSource(document,targetNodeId){
+/** Generation inputs only: moving or resizing a node and transient execution UI
+ * state never change the frozen request. Keep every unknown metadata field
+ * (fail closed on newly introduced generation controls).
+ * This projection is mirrored by backend-source-fingerprint.ts.
+ */
+const PRESENTATION_META=new Set(["status","errorDetails","comfyExecution","videoTask",
+ "videoDownloadError","skillTrace","skillMetrics","interactive","groupId",
+ "fontSize","freeResize"]);
+function generationNode(node){
+ const {title,position,width,height,metadata,...rest}=node;
+ if(!metadata)return rest;
+ const safe={...metadata};
+ for(const key of PRESENTATION_META)delete safe[key];
+ if(safe.comfyWorkflow){
+  safe.comfyWorkflow={...safe.comfyWorkflow};
+  delete safe.comfyWorkflow.lastRunId;
+ }
+ if(Array.isArray(safe.images))safe.images=safe.images.map(image=>{
+  const {status,errorDetails,...stable}=image;return stable;
+ });
+ return Object.keys(safe).length?{...rest,metadata:safe}:rest;
+}
+/** The original full-node digest remains readable for jobs created before v2. */
+function sourceDigest(document,targetNodeId,version){
  if(!Array.isArray(document?.nodes)||!Array.isArray(document?.connections))throw problem("invalid_project_document");
  const byId=new Map(document.nodes.map(node=>[node.id,node]));
  if(byId.size!==document.nodes.length||!byId.has(targetNodeId))throw problem("stale_generation_source");
@@ -51,9 +73,47 @@ export function fingerprintSource(document,targetNodeId){
   visiting.delete(id);ids.add(id);
  }
  visit(targetNodeId);
- const nodes=[...ids].sort().map(id=>byId.get(id));
- incoming.sort((a,b)=>stableJson(a).localeCompare(stableJson(b)));
- return createHash("sha256").update(stableJson({nodes,incoming})).digest("hex");
+ const nodes=[...ids].sort().map(id=>version===2?generationNode(byId.get(id)):byId.get(id));
+ const edges=version===2?incoming.map(({id,...edge})=>edge):incoming;
+ edges.sort((a,b)=>stableJson(a).localeCompare(stableJson(b)));
+ return createHash("sha256").update(stableJson({nodes,incoming:edges})).digest("hex");
+}
+export function fingerprintSource(document,targetNodeId){
+ return "v2:"+sourceDigest(document,targetNodeId,2);
+}
+export function fingerprintSourceLegacy(document,targetNodeId){
+ return sourceDigest(document,targetNodeId,1);
+}
+/** Existing standalone Comfy jobs pinned their complete executable request,
+ * but old full-node hashes also captured harmless UI/layout changes. Replay
+ * only when every executable input can be reverified from that frozen snapshot.
+ * Legacy model/media-input jobs retain strict old-hash verification.
+ */
+function matchesLegacyStandaloneComfy(document,targetNodeId,snapshot){
+ if(snapshot?.adapterKind!=="comfy"||!snapshot.comfyRequest||!snapshot.comfyTemplate)return false;
+ const request=snapshot.comfyRequest;
+ if(request.instanceId!==snapshot.instanceId||!Array.isArray(request.nodes)||request.nodes.length!==1||
+   request.nodes[0].id!==targetNodeId||!Array.isArray(request.edges)||request.edges.length||
+   !Array.isArray(request.externalInputs)||request.externalInputs.length)return false;
+ if(document.connections.some(e=>e.toNodeId===targetNodeId))return false;
+ const source=document.nodes.find(n=>n.id===targetNodeId);
+ if(source?.type!=="comfy:workflow")return false;
+ const binding=source.metadata?.comfyWorkflow;
+ if(!binding||binding.bindingState!=="bound"||
+   binding.templateId!==request.nodes[0].templateId||
+   binding.templateRevision!==request.nodes[0].templateRevision||
+   binding.templateId!==snapshot.comfyTemplate.id||
+   binding.templateRevision!==snapshot.comfyTemplate.revision||
+   binding.instanceId&&binding.instanceId!==snapshot.instanceId)return false;
+ try{return stableJson(binding.inputOverrides??{})===stableJson(request.nodes[0].inputOverrides??{})}
+ catch{return false}
+}
+export function matchesSourceFingerprint(document,targetNodeId,frozenFingerprint,snapshot){
+ if(typeof frozenFingerprint!=="string")return false;
+ if(frozenFingerprint.startsWith("v2:"))return fingerprintSource(document,targetNodeId)===frozenFingerprint;
+ if(!/^[a-f0-9]{64}$/.test(frozenFingerprint))return false;
+ if(fingerprintSourceLegacy(document,targetNodeId)===frozenFingerprint)return true;
+ return matchesLegacyStandaloneComfy(document,targetNodeId,snapshot);
 }
 const emit=(db,jobId,kind,payload)=>db.prepare("INSERT INTO job_events(job_id,kind,payload_json,created_at) VALUES(?,?,?,?)").run(jobId,kind,stableJson(payload),Date.now());
 export function submitJob(db,{jobId=randomUUID(),principal="local-owner",projectId=null,targetNodeId=null,expectedProjectRevision=null,sourceNodeFingerprint=null,idempotencyKey,requestFingerprint,executionMode,snapshot,skillAuthorizationId,requireSkillGrant=false}){
@@ -89,7 +149,11 @@ export function submitJob(db,{jobId=randomUUID(),principal="local-owner",project
   }
   if(projectId!==null){
    const project=db.prepare("SELECT document_json,revision,deleted_at FROM projects WHERE id=?").get(projectId);
-   if(!project||project.deleted_at!==null||project.revision!==expectedProjectRevision||fingerprintSource(JSON.parse(project.document_json),targetNodeId)!==sourceNodeFingerprint)throw problem("stale_generation_source");
+   if(!project||project.deleted_at!==null||project.revision!==expectedProjectRevision)throw problem("stale_generation_source");
+   const graph=JSON.parse(project.document_json);
+   const current=sourceNodeFingerprint.startsWith("v2:")?
+    fingerprintSource(graph,targetNodeId):fingerprintSourceLegacy(graph,targetNodeId);
+   if(current!==sourceNodeFingerprint)throw problem("stale_generation_source");
   }
   const now=Date.now();
   db.prepare(`INSERT INTO jobs(id,principal,project_scope,project_id,target_node_id,expected_project_revision,source_fingerprint,idempotency_key,request_fingerprint,snapshot_json,execution_mode,status,created_at,updated_at)

@@ -133,8 +133,8 @@ export function CanvasTopBar({
                 </div>
 
                 <div className="pointer-events-auto flex items-center gap-1.5">
-                    <Tooltip title="SQLite 任务历史与异常落图恢复">
-                        <button type="button" onClick={onOpenJobHistory} aria-label="SQLite 任务历史"
+                    <Tooltip title="任务历史">
+                        <button type="button" onClick={onOpenJobHistory} aria-label="任务历史"
                             className="grid size-7 place-items-center rounded-full transition hover:bg-black/5 dark:hover:bg-white/10"
                             style={{ color: theme.node.text }}>
                             <Clock3 className="size-4"/>

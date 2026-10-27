@@ -51,7 +51,7 @@ test("P5.1 cold backup copies SQLite plus all ready BlobStore bytes, verifies, a
  const result=await createColdBackup({dataDir:f.source,backupDir:f.destination});
  assert.equal(result.blobCount,2);
  assert.equal(result.blobBytes,png.length+Buffer.byteLength("hello from the Canvas\n"));
- assert.equal(result.schemaVersion,14);
+ assert.equal(result.schemaVersion,15);
  assert.equal(existsSync(join(f.destination,"db","atelier.sqlite")),true);
  assert.equal(existsSync(join(f.destination,"manifest.json")),true);
  const check=await verifyColdBackup({backupDir:f.destination});

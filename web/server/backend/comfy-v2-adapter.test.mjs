@@ -596,3 +596,77 @@ test("Demo HTTP save barrier -> auto Comfy dispatch -> typed CanvasMaterializer 
   assert.equal(transport.prompts.length,1);
  }finally{if(runtime)await runtime.close();rmSync(dir,{recursive:true,force:true})}
 });
+
+test("SQLite settings instance CRUD dynamically enables Comfy JobCoordinator, preserves jobs and survives restart",async()=>{
+ if(process.platform!=="win32")return;
+ const dir=mkdtempSync(join(tmpdir(),"atelier-comfy-instance-settings-"));
+ const transport=mockTransport(),tplt=template();
+ const startup=()=>createLocalBackend({dataDir:dir,enableComfyManagement:true,autoDispatch:true,
+  dispatchIntervalMs:25,comfyUpstreamCall:transport.mock,
+  comfyInstances:[{id:"comfy-local",url:"http://127.0.0.1:8188"}]});
+ let runtime;
+ try{
+  runtime=startup();
+  let app=runtime.app;
+  async function login(){
+   const response=await app.inject({method:"POST",url:"/api/v1/session",payload:{},headers:{
+    host:"localhost",origin:"http://localhost",authorization:"Bearer "+runtime.sessionAuth.bootstrapToken}});
+   assert.equal(response.statusCode,201,response.body);
+   return {host:"localhost",origin:"http://localhost",cookie:response.headers["set-cookie"].split(";")[0],
+    "x-atelier-csrf":response.json().csrfToken};
+  }
+  let headers=await login();
+  const reqApi=(method,url,payload)=>app.inject({method,url,headers,...(payload?{payload}:{})});
+  let list=await reqApi("GET","/api/v1/comfy/instances");
+  assert.equal(list.statusCode,200,list.body);
+  assert.deepEqual(list.json().instances.map(x=>[x.id,x.reachable]),[["comfy-local",true]]);
+  const unsafe=await reqApi("POST","/api/v1/comfy/instances",{id:"unsafe",url:"http://example.org:8188"});
+  assert.equal(unsafe.statusCode,400);
+  const added=await reqApi("POST","/api/v1/comfy/instances",{id:"other",url:"http://127.0.0.1:8188"});
+  assert.equal(added.statusCode,200,added.body);
+  assert.ok(runtime.comfyRegistry.adapters.other);
+  assert.deepEqual((await reqApi("GET","/api/v1/execution/capabilities")).json().comfyInstanceIds,["comfy-local","other"]);
+
+  const node={id:"wf-1",type:"comfy:workflow",title:"Settings instance",width:410,height:290,
+   position:{x:10,y:20},metadata:{comfyWorkflow:{templateId:tplt.id,
+    templateRevision:tplt.revision,bindingState:"bound",inputOverrides:{}},
+    comfyPorts:tplt.ports.map(port=>({id:port.id,label:port.label,
+     direction:port.direction,valueKind:port.valueKind}))}};
+  const projectId="settings-instance-project",doc={nodes:[node],connections:[]};
+  assert.equal((await reqApi("POST","/api/v1/projects",{id:projectId,document:doc})).statusCode,201);
+  const input=request(tplt);input.projectId=projectId;input.instanceId="other";
+  input.canvasRevision="1";input.idempotencyKey="settings-click";
+  const queued=await reqApi("POST","/api/v1/jobs",{
+   projectId,targetNodeId:"wf-1",expectedProjectRevision:1,
+   sourceNodeFingerprint:fingerprintSource(doc,"wf-1"),
+   idempotencyKey:"settings-click",requestFingerprint:"settings-click",executionMode:"poll",
+   snapshot:{adapterKind:"comfy",instanceId:"other",comfyRequest:input,comfyTemplate:tplt}
+  });
+  assert.equal(queued.statusCode,201,queued.body);
+  const busyEdit=await reqApi("PUT","/api/v1/comfy/instances/other",{
+   id:"other",url:"http://127.0.0.1:8189"});
+  assert.equal(busyEdit.statusCode,409,busyEdit.body);
+  assert.equal(busyEdit.json().code,"comfy_instance_has_pending_jobs");
+  assert.equal((await reqApi("DELETE","/api/v1/comfy/instances/other")).statusCode,409);
+  let project;
+  for(let i=0;i<160;i++){
+   await new Promise(resolve=>setTimeout(resolve,25));
+   project=(await reqApi("GET","/api/v1/projects/"+projectId)).json();
+   if(project.revision===7)break;
+  }
+  assert.equal(project?.revision,7,JSON.stringify(project));
+  assert.equal(transport.prompts.length,1,"must never dispatch the old /api/comfy route");
+  const edited=await reqApi("PUT","/api/v1/comfy/instances/other",{
+   id:"other-new",url:"http://127.0.0.1:8188"});
+  assert.equal(edited.statusCode,200,edited.body);
+  assert.equal(runtime.comfyRegistry.adapters.other,undefined);
+  assert.ok(runtime.comfyRegistry.adapters["other-new"]);
+  await runtime.close();runtime=startup();app=runtime.app;headers=await login();
+  list=await reqApi("GET","/api/v1/comfy/instances");
+  assert.deepEqual(list.json().instances.map(x=>x.id),["comfy-local","other-new"]);
+  for(const id of ["comfy-local","other-new"])
+   assert.equal((await reqApi("DELETE","/api/v1/comfy/instances/"+id)).statusCode,200);
+  await runtime.close();runtime=startup();app=runtime.app;headers=await login();
+  assert.deepEqual((await reqApi("GET","/api/v1/execution/capabilities")).json().comfyInstanceIds,[]);
+ }finally{if(runtime)await runtime.close();rmSync(dir,{recursive:true,force:true})}
+});

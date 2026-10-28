@@ -6,7 +6,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
 import { defineConfig, loadEnv, type Plugin } from "vite";
-import { isLocalProxyCaller, trustedLocalOrigin, validateProxyTarget } from "./server/api-proxy-policy";
+import { isLocalProxyCaller, trustedLocalOrigin, validateProxyTarget } from "./server/api-proxy-policy.ts";
 
 const webDir = dirname(fileURLToPath(import.meta.url));
 const MAX_PROXY_BODY = 200 * 1024 * 1024;

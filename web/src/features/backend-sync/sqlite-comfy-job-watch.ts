@@ -47,7 +47,7 @@ export async function watchSqliteComfyJob({
 }:{
  projectId:string;jobId:string;signal:AbortSignal;
  getLocalGraph:()=>Graph;applyGraph:(graph:Graph)=>void;
- onStatus?:(status:string,message?:string)=>void;
+ onStatus?:(status:string,message?:string,job?:BackendJobView)=>void;
  onTextDelta?:(delta:string)=>void;
  onSkillText?:(delta:string,round:number)=>void;
  onSkillTool?:(event:{name:string;status:"started"|"completed"})=>void;
@@ -85,7 +85,7 @@ export async function watchSqliteComfyJob({
    const job=await api<BackendJobView>(root);
    if(signal.aborted)return;
    if(job.projectId!==projectId)throw Error("backend_job_project_mismatch");
-   if(job.status!==previous){previous=job.status;onStatus?.(job.status)}
+   if(job.status!==previous){previous=job.status;onStatus?.(job.status,undefined,job)}
    if(closed.has(job.status))return;
    if(job.status==="succeeded"){
     const result=await api<{materializations:Row[]}>(root+"/materializations");

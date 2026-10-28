@@ -1,6 +1,6 @@
 /** Rendering/polling predicates shared by the canvas and Comfy inspector. */
 const active=new Set(["submitting","queued","preparing","running","collecting","importing"]);
-const terminal=new Set(["succeeded","failed","cancelled","submission_unknown","timed_out","import_failed"]);
+const terminal=new Set(["succeeded","failed","cancelled","submission_unknown","timed_out","import_failed","blocked_credential","unavailable"]);
 export function isComfyRunActive(status?:string):boolean {return Boolean(status&&active.has(status));}
 export function isComfyRunTerminal(status?:string):boolean {return Boolean(status&&terminal.has(status));}
 export function comfyRunStatusLabel(status?:string):string {
@@ -11,6 +11,8 @@ export function comfyRunStatusLabel(status?:string):string {
         case "running":return "生成中…";
         case "collecting":return "回收图片…";
         case "importing":return "导入画布…";
+        case "blocked_credential":return "凭据不可用";
+        case "unavailable":return "任务状态暂不可用";
         case "succeeded":return "生成完成";
         case "failed":return "生成失败";
         case "cancelled":return "任务已取消";

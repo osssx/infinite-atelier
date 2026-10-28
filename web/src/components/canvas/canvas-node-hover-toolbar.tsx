@@ -11,6 +11,7 @@ import { useThemeStore } from "@/stores/use-theme-store";
 import { CanvasNodeType, type CanvasNodeData, type ViewportTransform } from "@/types/canvas";
 import { COMFY_WORKFLOW_MOCK_TYPE } from "@/lib/canvas/canvas-ports";
 import { isComfyRunActive } from "@/features/comfy-workflow/run-status";
+import {useCanvasComfyExecution} from "@/features/comfy-workflow/canvas-execution-visual";
 import { ImageToolSettingsModal, type ImageToolbarSettingsTool } from "./canvas-image-toolbar-settings-modal";
 import { IMAGE_QUICK_TOOLS_STORAGE_KEY, buildImageToolbarTools, defaultImageQuickToolIds, readImageQuickToolsConfig, type ImageQuickToolId } from "./canvas-image-toolbar-tools";
 
@@ -110,6 +111,7 @@ export function CanvasNodeHoverToolbar({
         setImageToolSettingsOpen(false);
     }, [node?.id]);
 
+    const comfyExecution=useCanvasComfyExecution(node?.type===COMFY_WORKFLOW_MOCK_TYPE?node.id:null);
     if (!node) return null;
 
     const activeNode = node;
@@ -124,7 +126,7 @@ export function CanvasNodeHoverToolbar({
     const isText = node.type === CanvasNodeType.Text;
     const isConfig = node.type === CanvasNodeType.Config;
     const isComfy = node.type === COMFY_WORKFLOW_MOCK_TYPE;
-    const comfyRunning = isComfyRunActive(node.metadata?.comfyExecution?.status);
+    const comfyRunning = isComfyRunActive(comfyExecution?.status);
     const canRetry = node.metadata?.status === "error";
     const quickImageToolIdSet = new Set(quickImageToolIds);
     const copyImagePrompt = (target: CanvasNodeData) => {

@@ -17,7 +17,7 @@ import { CanvasNodeType, type CanvasNodeData, type CanvasNodeImage, type Viewpor
 import { useTranslation } from "react-i18next";
 import { getMediaBlob } from "@/services/file-storage";
 import { getExistingMediaPreview, resolveMediaPreview } from "@/services/media-preview-storage";
-import { comfyRunStatusLabel, isComfyRunActive } from "@/features/comfy-workflow/run-status";
+import {ComfyWorkflowNodeVisual} from "@/features/comfy-workflow/comfy-workflow-node-visual";
 import { shouldPlayVideoCoverClick, videoCoverPressDragged, type VideoCoverPress } from "./canvas-video-cover-gesture";
 
 // Parsing rich Markdown is only needed for full, non-editing text nodes. Keep its
@@ -541,24 +541,7 @@ export const CanvasNode = React.memo(function CanvasNode({
 
 function NodeContent(props: NodeContentRendererProps) {
     if (props.node.type === COMFY_WORKFLOW_MOCK_TYPE) {
-        const execution=props.node.metadata?.comfyExecution;
-        const spinning=isComfyRunActive(execution?.status);
-        return <div className="pointer-events-none flex h-full w-full flex-col items-center justify-center gap-2 p-5 text-center"
-            data-comfy-execution-status={execution?.status||"idle"} role={spinning?"status":undefined} aria-live="polite">
-            {spinning
-                ? <div className="size-9 animate-spin rounded-full border-[3px]" aria-label="ComfyUI 工作流运行中"
-                    style={{borderColor:props.theme.node.stroke,borderTopColor:props.theme.node.activeStroke}}/>
-                : <Puzzle className="size-9 opacity-60" />}
-            <span className="text-sm font-semibold">ComfyUI Workflow</span>
-            <span className="max-w-48 truncate text-xs opacity-70">
-                {execution?.status
-                    ? comfyRunStatusLabel(execution.status)
-                    : props.node.metadata?.comfyWorkflow?.templateId
-                        ? `已绑定模板 · ${Object.keys(props.node.metadata.comfyWorkflow.inputOverrides ?? {}).length} 个实例参数`
-                        : "点击导入工作流模板"}
-            </span>
-            {execution?.error?<span title={execution.error} className="max-w-48 truncate text-[11px] text-red-500">{execution.error}</span>:null}
-        </div>;
+        return <ComfyWorkflowNodeVisual node={props.node} theme={props.theme}/>;
     }
     if (props.node.type === CanvasNodeType.Config && props.renderNodeContent) return props.renderNodeContent(props.node);
     if (props.isBatchRoot) return <ImageNodeContent {...props} />;

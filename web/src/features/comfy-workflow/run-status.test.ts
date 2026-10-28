@@ -10,7 +10,7 @@ describe("durable ComfyUI workflow spinner statuses",()=>{
         }
     });
     it("stops on completion, failure, cancellation and unknown submission without claiming success",()=>{
-        for(const status of ["succeeded","failed","cancelled","timed_out","submission_unknown","import_failed"]){
+        for(const status of ["succeeded","failed","cancelled","timed_out","submission_unknown","import_failed","blocked_credential","unavailable"]){
             expect(isComfyRunActive(status)).toBe(false);
             expect(isComfyRunTerminal(status)).toBe(true);
         }

@@ -3,6 +3,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { CanvasNodeHoverToolbar } from "./canvas-node-hover-toolbar";
 import type { CanvasNodeData } from "@/types/canvas";
+import {setCanvasComfyExecutionScope,setCanvasComfyExecution}
+ from "@/features/comfy-workflow/canvas-execution-visual";
 
 vi.mock("antd",()=>({
     App:{useApp:()=>({message:{warning:vi.fn()}})},
@@ -21,6 +23,11 @@ const workflow=(status?:string):CanvasNodeData=>({
     },
 });
 function render(node:CanvasNodeData,comfyExecuteDisabled=false){
+    // Simulate the backend-observed transient status instead of persisted canvas metadata.
+    setCanvasComfyExecutionScope(null);
+    setCanvasComfyExecutionScope("toolbar-test");
+    if(node.metadata?.comfyExecution)
+        setCanvasComfyExecution("toolbar-test",node.id,node.metadata.comfyExecution);
     const noop=()=>undefined;
     const props:ComponentProps<typeof CanvasNodeHoverToolbar>={
         node,viewport:{x:0,y:0,k:1},onKeep:noop,onLeave:noop,onInfo:noop,

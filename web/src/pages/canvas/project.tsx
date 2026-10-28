@@ -105,6 +105,8 @@ import {capabilitiesForModel} from "@/services/api/video/model-capabilities";
 import {validateSeedanceRequest} from "@/services/api/video/seedance-content";
 import {ensureSqliteModelChannelForExecution,modelChannelProvider} from "@/features/backend-sync/model-channel-autoroute";
 import {watchSqliteComfyJob} from "@/features/backend-sync/sqlite-comfy-job-watch";
+import {setCanvasComfyExecutionScope,setCanvasComfyExecution,observeCanvasComfyExecution,
+    markCanvasComfyRunUnobservable} from "@/features/comfy-workflow/canvas-execution-visual";
 import {refreshSqliteComfyArtifacts} from "@/features/backend-sync/sqlite-comfy-job-watch";
 import {CanvasJobHistory} from "@/features/backend-sync/canvas-job-history";
 import {canvasApi} from "@/features/backend-sync/canvas-api";
@@ -367,6 +369,10 @@ function AtelierCanvasPage() {
     const nodesRef = useRef(nodes);
     const activeProjectIdRef = useRef(projectId);
     const pageMountedRef = useRef(true);
+    useEffect(()=>{
+        setCanvasComfyExecutionScope(projectId);
+        return ()=>setCanvasComfyExecutionScope(null);
+    },[projectId]);
     const connectionsRef = useRef(connections);
     const selectedNodeIdsRef = useRef(selectedNodeIds);
     useEffect(() => {
@@ -3733,8 +3739,17 @@ function AtelierCanvasPage() {
                 message.open({key:progressKey,type:"loading",duration:0,
                     content:"Skill "+event.name+"："+(event.status==="completed"?"已完成":"执行中")});
             },
-            onStatus:(status,details)=>{
+            onStatus:(status,details,job)=>{
                 if(controller.signal.aborted||activeProjectIdRef.current!==projectId)return;
+                if(job?.targetNodeId && nodesRef.current.some(node=>node.id===job.targetNodeId&&
+                    node.type===COMFY_WORKFLOW_MOCK_TYPE)) {
+                    observeCanvasComfyExecution(projectId,job.targetNodeId,{
+                        runId:job.id,status:job.status,
+                        ...(job.status==="failed"&&details?{error:details}:{})
+                    });
+                }
+                if(status==="unavailable")
+                    markCanvasComfyRunUnobservable(projectId,jobId,details);
                 if(["succeeded","failed","cancelled","submission_unknown","blocked_credential","materialized","blocked","unavailable","needs_refresh"].includes(status))
                     message.destroy(progressKey);
                 if(["succeeded","failed","cancelled","submission_unknown","blocked_credential"].includes(status)){
@@ -3767,7 +3782,7 @@ function AtelierCanvasPage() {
     useEffect(()=>{
         if(!projectLoaded)return;
         let cancelled=false;
-        void canvasApi<{jobs:Array<{id:string;projectId:string|null;targetNodeId?:string|null;status:string;modelKind?:string}>}>(
+        void canvasApi<{jobs:Array<{id:string;projectId:string|null;targetNodeId?:string|null;status:string;modelKind?:string;createdAt?:number}>}>(
             "/api/v1/jobs/snapshot"
         ).then(snapshot=>{
             if(cancelled)return;
@@ -3775,6 +3790,14 @@ function AtelierCanvasPage() {
                 !["succeeded","failed","cancelled"].includes(job.status));
             // Restore cancel actions after reload from authoritative SQLite,
             // not browser storage. Running cloud tasks may report not queued.
+            // Recover Comfy animation directly from the backend's active jobs.
+            // Choose the newest one per workflow and do not persist UI phases.
+            const workflows=new Map(nodesRef.current.filter(node=>node.type===COMFY_WORKFLOW_MOCK_TYPE)
+                .map(node=>[node.id,node]));
+            for(const job of active.filter(job=>job.targetNodeId&&workflows.has(job.targetNodeId))
+                .sort((a,b)=>(a.createdAt??0)-(b.createdAt??0))) {
+                setCanvasComfyExecution(projectId,job.targetNodeId!,{runId:job.id,status:job.status});
+            }
             for(const job of active){
                 if(job.modelKind!=="video"||!job.targetNodeId||
                   !nodesRef.current.some(node=>node.id===job.targetNodeId))continue;
@@ -3801,6 +3824,8 @@ function AtelierCanvasPage() {
         if(comfyExecuteLocksRef.current.has(key))
             throw new Error("该工作流正在提交，请勿重复点击");
         comfyExecuteLocksRef.current.add(key);
+        if(activeProjectIdRef.current===projectId)
+            setCanvasComfyExecution(projectId,nodeId,{status:"submitting"});
         try{
             if(!projectLoaded)throw new Error("画布尚未加载完成");
             if(!globalComfyInstanceId)throw new Error("请先在全局 ComfyUI 设置中选择默认实例");
@@ -3828,10 +3853,17 @@ function AtelierCanvasPage() {
                 instanceId:globalComfyInstanceId,outputPortIds:outputs.map(port=>port.id)
             });
             if(activeProjectIdRef.current===projectId&&pageMountedRef.current){
+                setCanvasComfyExecution(projectId,nodeId,{runId:job.id,status:job.status});
                 message.info("生成任务已提交："+job.id+"。完成后自动恢复产物节点。");
                 monitorSqliteJob(job.id);
             }
             return {runId:job.id,status:job.status,workflowNodeId:nodeId,artifacts:[]};
+        }catch(error){
+            if(activeProjectIdRef.current===projectId&&pageMountedRef.current)
+                setCanvasComfyExecution(projectId,nodeId,{
+                    status:"failed",error:error instanceof Error?error.message:String(error)
+                });
+            throw error;
         }finally{comfyExecuteLocksRef.current.delete(key)}
     },[backendComfyEnabled,globalComfyInstanceId,message,monitorSqliteJob,projectId,projectLoaded]);
 

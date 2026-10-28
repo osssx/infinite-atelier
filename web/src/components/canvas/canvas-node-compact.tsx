@@ -10,6 +10,20 @@ import { resolveMediaPreview } from "@/services/media-preview-storage";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
 import { useCanvasActions } from "./canvas-actions";
+import {COMFY_WORKFLOW_MOCK_TYPE} from "@/lib/canvas/canvas-ports";
+import {useCanvasComfyExecution} from "@/features/comfy-workflow/canvas-execution-visual";
+import {comfyRunStatusLabel,isComfyRunActive} from "@/features/comfy-workflow/run-status";
+
+function CompactComfyStatus({id}:{id:string}) {
+    const status=useCanvasComfyExecution(id)?.status;
+    if(!isComfyRunActive(status))return null;
+    return <div data-comfy-compact-status={status} role="status"
+        className="pointer-events-none absolute bottom-3 left-4 right-4 flex items-center gap-2 rounded-lg bg-black/60 px-2 py-1.5 text-xs text-white">
+        <span className="size-3 shrink-0 animate-spin rounded-full border-2 border-white/30 border-t-white" aria-label="工作流运行中"/>
+        <span className="truncate">{comfyRunStatusLabel(status)}</span>
+    </div>;
+}
+
 
 /** Same-sized visual shell and semantic content as the full node, without editing DOM or media decoders. */
 export const CompactCanvasNode = memo(function CompactCanvasNode({
@@ -132,6 +146,7 @@ export const CompactCanvasNode = memo(function CompactCanvasNode({
                         <span className="truncate text-sm font-semibold opacity-80">{data.title}</span>
                     </div>
                 ) : null}
+                {data.type===COMFY_WORKFLOW_MOCK_TYPE?<CompactComfyStatus id={data.id}/>:null}
             </div>
         </div>
     );

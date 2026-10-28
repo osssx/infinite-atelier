@@ -26,14 +26,35 @@ OpenAI 兼容渠道的文本、无参考图文生图、JSON Base64 音频、**�
 
 视频媒体下载单独执行 **无 API Key 的 GET**，支持 HTTPS 公网签名 CDN 地址，或与已冻结 API 地址同源的本机/局域网 HTTP 媒体 URL。拒绝用户信息、重定向、元数据地址、DNS 回绑定、非视频内容以及超过 200MB 的数据。只收集 MP4 或 WebM，写入 CAS 后再标记成功；下载失败仅重试读取/下载，不重复发起生成。
 
+## 远端素材 ID 上传（可选）
+
+对于同一 OpenAI 兼容渠道上提供 **JSON 上传接口** 的服务商，在视频脚本编辑器选择「安全异步视频（远端素材 ID）」。现有直接嵌入 Data URL 的视频脚本不受影响。
+
+```json
+{
+  "version": 1,
+  "assetUpload": "const r = await http.post(\"/assets\", {model, type:params.asset.kind, role:params.asset.role, mime_type:params.asset.mimeType, content:params.asset.dataUrl}); return r.id;",
+  "submit": "const r = await http.post(\"/videos\", {model, prompt, reference_video_asset_ids:params.referenceVideoAssetIds, reference_audio_asset_ids:params.referenceAudioAssetIds, first_frame:params.firstFrame, last_frame:params.lastFrame, reference_images:params.referenceImages}); return r.id;",
+  "poll": "const r = await http.get(\"/videos/\"+remoteTaskId); return {id:r.id,status:r.status,videoUrl:r.video_url||r.url};"
+}
+```
+
+`assetUpload` 是 **可选的第三个受限脚本阶段**，仅对 CAS 冻结的参考视频、音频逐项执行。可访问 `params.asset.kind`、`role`、`mimeType`、`sha256`、`index`、`dataUrl`；每项调用最多一次同渠道的 `http.post`，返回远端素材 ID 字符串或 `{id}`（字母/数字/`_`/`-`，最多 128 字符）。上传只从 Vault 获取当前任务冻结的渠道密钥版本。
+
+上传前必须写入 `script_asset_uploads` 的 `uploading` 不可重放屏障；成功响应后写入 `active` 及远端 ID。视频 `submit` 不再附带视频/音频 Base64，而是使用 `params.referenceVideoAssetIds`、`params.referenceAudioAssetIds`。图片仍可在 `submit` 阶段作为 Data URL。JobSnapshot 只包含 CAS 哈希、脚本和 Vault 密钥版本**引用**，不包含远端上传 ID 或大媒体。
+
+**响应丢失或进程意外终止后，`uploading` 状态禁止自动重复上传。** 后端会使任务准备失败、保留已确认的其他素材 ID；需要对照服务商记录进行人工核对，再决定如何恢复。上传返回确定的 4xx 拒绝时保存 `rejected` 状态，不会自动重试。当前没有自动远端任务 ID 对账接口。
+
+这是一条适用于 JSON Base64 上传的受控实现，不代表支持 multipart/form-data、分片上传、跨域预签名 PUT、先申请上传地址再上传内容等协议。此类 API 仍需要逐供应商适配器。用户自定义的 HTTP(S) 渠道地址无需配置主机白名单，但仍接受 DNS/SSRF 校验、无跳转、同一渠道地址与受限 HTTP 动词约束。
+
 ## 安全与兼容边界
 
 - 脚本不能访问 `apiKey`、`process`、`require`、`eval`、`globalThis`、动态函数、对象原型或任意 Node API。通过受控 HTTP 层注入 Vault 凭据。脚本可编辑请求体，但不能跨域访问任意主机。
 - 旧的视频 JavaScript `request()/poll()` 脚本不会自动转换为新 JSON 规范；必须按服务商响应格式调整模板。异步任务不能在脚本中执行循环。
-- **暂不支持**第三方远程素材 ID 上传协议、超过限制的大视频/音频文件、由 API Key 鉴权下载的视频内容 URL、任意 MIME 媒体、Gemini 特殊协议、脚本自定义 HTTP Header、对已运行中视频强行删除远程历史。上述能力应由后续专用适配器完成。
+- **暂不支持**超出 JSON Base64 单次上传能力的第三方上传协议（multipart/分片/跨域上传）、超过限制的大视频/音频文件、由 API Key 鉴权下载的视频内容 URL、任意 MIME 媒体、Gemini 特殊协议、脚本自定义 HTTP Header、对已运行中视频强行删除远程历史。上述能力应由后续专用适配器完成。
 - 非 OpenAI 格式渠道的旧脚本尚未移除浏览器执行路径，后续继续完成迁移。测试只模拟上游 HTTP，不调用真实收费模型。
 
 代码：`restricted-model-script.mjs`（AST 表达式解释器）、`restricted-video-adapter.mjs`（视频任务）、`restricted-video-download.mjs`（安全视频下载），附对应 `.test.mjs`。
 - 对应集成测试仅使用模拟的上游模型响应，不会调用真实付费 API。
 
-计划下一阶段：为需要先上传素材、再引用远程素材 ID 的模型设计可恢复的 provider-specific 资源准备适配器，之后逐步关闭剩余浏览器脚本执行入口。
+计划下一阶段：为 multipart、分片和预签名上传等服务商协议增加专用可恢复上传适配器及人工对账入口，之后逐步关闭剩余浏览器脚本执行入口。

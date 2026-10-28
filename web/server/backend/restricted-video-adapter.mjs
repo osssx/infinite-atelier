@@ -4,6 +4,7 @@ import {DEFAULT_OPENAI_ENDPOINT,normalizeOpenAiCompatBaseUrl,
 import {parseRestrictedModelScript,runRestrictedModelScript} from "./restricted-model-script.mjs";
 import {createRestrictedVideoDownloader} from "./restricted-video-download.mjs";
 import {validateFrozenVideoMedia,materializeFrozenVideoMedia} from "./restricted-video-media.mjs";
+import {createScriptAssetUploadManager} from "./restricted-video-asset-upload.mjs";
 
 const fail=(code,confirmedNotAccepted=false)=>Object.assign(Error(code),
  {code,statusCode:422,confirmedNotAccepted});
@@ -19,14 +20,16 @@ export function parseRestrictedVideoScript(source){
  let spec;
  try{spec=JSON.parse(source)}catch{throw fail("video_script_invalid",true)}
  if(!spec||Array.isArray(spec)||spec.version!==1||
-    Object.keys(spec).some(k=>!["version","submit","poll","cancel"].includes(k))||
+    Object.keys(spec).some(k=>!["version","submit","poll","cancel","assetUpload"].includes(k))||
     typeof spec.submit!=="string"||typeof spec.poll!=="string"||
-    spec.cancel!==undefined&&typeof spec.cancel!=="string")
+    spec.cancel!==undefined&&typeof spec.cancel!=="string"||
+    spec.assetUpload!==undefined&&typeof spec.assetUpload!=="string")
   throw fail("video_script_invalid",true);
  for(const [phase,body] of Object.entries({submit:spec.submit,poll:spec.poll,
-  ...(spec.cancel?{cancel:spec.cancel}:{})})){
+  ...(spec.cancel?{cancel:spec.cancel}:{}),
+  ...(spec.assetUpload?{assetUpload:spec.assetUpload}:{})})){
   parseRestrictedModelScript(body);
-  if(phase!=="submit"&&!body.includes("remoteTaskId"))
+  if(["poll","cancel"].includes(phase)&&!body.includes("remoteTaskId"))
    throw fail("video_script_remote_id_missing",true);
  }
  return spec;
@@ -67,6 +70,7 @@ export function createRestrictedVideoAdapter({db,vault,blobStore,
  }),mediaDownloader}={}){
  if(!db||!vault||!blobStore)throw Error("video_script_dependencies_required");
  const downloader=mediaDownloader??createRestrictedVideoDownloader({blobStore});
+ const uploadedAssets=createScriptAssetUploadManager({db});
  const check=job=>{
   const snapshot=job.snapshot??JSON.parse(job.snapshot_json);
   const {task,spec,references}=validateRestrictedVideoSnapshot(snapshot);
@@ -77,10 +81,17 @@ export function createRestrictedVideoAdapter({db,vault,blobStore,
  };
  const endpoint=snap=>snap.provider==="openai_compatible"?
   snap.endpointBaseUrl:DEFAULT_OPENAI_ENDPOINT;
- async function phase(job,name,remoteTaskId){
+ async function phase(job,name,remoteTaskId,asset){
   const {snapshot,task,spec,references}=check(job);
   const script=spec[name];
-  const media=name==="submit"?await materializeFrozenVideoMedia(blobStore,references):null;
+  const media=name==="submit"?await materializeFrozenVideoMedia(blobStore,
+   spec.assetUpload?references.filter(ref=>ref.kind==="image"):references):null;
+  const assetIds=name==="submit"&&spec.assetUpload?{
+   referenceVideoAssetIds:references.flatMap((ref,index)=>ref.kind==="video"?
+    [uploadedAssets.requireId(job.id,index,ref)]:[]),
+   referenceAudioAssetIds:references.flatMap((ref,index)=>ref.kind==="audio"?
+    [uploadedAssets.requireId(job.id,index,ref)]:[])
+  }:null;
   if(!script)return null;
   const auth=vault.withSecretVersion(snapshot.secretVersionRef,
    bytes=>"Bearer "+bytes.toString("utf8"),{channelId:snapshot.channelId});
@@ -93,17 +104,19 @@ export function createRestrictedVideoAdapter({db,vault,blobStore,
      generateAudio:task.generateAudio,watermark:task.watermark,
      ...(media?{firstFrame:media.firstFrame,lastFrame:media.lastFrame,
       referenceImages:media.referenceImages,
-      referenceVideos:media.referenceVideos,referenceAudios:media.referenceAudios}:{})},   http:async(method,path,body)=>{
+      referenceVideos:media.referenceVideos,referenceAudios:media.referenceAudios}:{}),
+     ...(assetIds??{}),...(asset?{asset}:{})},
+   http:async(method,path,body)=>{
     if(hasCalled)throw fail("video_script_multiple_requests",true);
     hasCalled=true;
-    if(name==="submit"&&method!=="post"||
+    if(["submit","assetUpload"].includes(name)&&method!=="post"||
        name==="poll"&&method!=="get"||
        name==="cancel"&&method!=="delete")
      throw fail("video_script_method_forbidden",true);
-    if(name!=="submit"&&(!validId(remoteTaskId)||
+    if(["poll","cancel"].includes(name)&&(!validId(remoteTaskId)||
        !path.endsWith("/"+remoteTaskId)))throw fail("video_script_poll_path_invalid",true);
     let payload;
-    if(name==="submit"){
+    if(["submit","assetUpload"].includes(name)){
      try{payload=JSON.stringify(body)}
      catch{throw fail("video_script_body_invalid",true)}
      if(!payload||Buffer.byteLength(payload)>(references.length?45*1024*1024:128*1024))
@@ -116,12 +129,12 @@ export function createRestrictedVideoAdapter({db,vault,blobStore,
      ...(payload?{body:payload}:{}),signal:AbortSignal.timeout(120000)
     })}catch{
      throw fail(name==="submit"?"video_script_submit_uncertain":
-      "video_script_status_unavailable");
+      name==="assetUpload"?"video_script_asset_upload_unknown":"video_script_status_unavailable");
     }
     if(response.status>=300&&response.status<400)
      throw fail("video_script_redirect_forbidden");
     if(!response.ok)throw fail("video_script_upstream_rejected",
-     name==="submit"&&response.status>=400&&response.status<500);
+     ["submit","assetUpload"].includes(name)&&response.status>=400&&response.status<500);
     if(!response.body)throw fail("video_script_response_empty");
     const parts=[];let size=0;
     for await(const chunk of response.body){
@@ -135,8 +148,20 @@ export function createRestrictedVideoAdapter({db,vault,blobStore,
   });
  }
  async function prepare({job}){
-  const {references}=check(job);
-  if(references.length)await materializeFrozenVideoMedia(blobStore,references);
+  const {references,spec}=check(job);
+  if(!references.length)return;
+  const media=await materializeFrozenVideoMedia(blobStore,references);
+  if(!spec.assetUpload)return;
+  let videoIndex=0,audioIndex=0;
+  for(let index=0;index<references.length;index++){
+   const ref=references[index];
+   if(ref.kind==="image")continue;
+   const dataUrl=ref.kind==="video"?media.referenceVideos[videoIndex++]:
+    media.referenceAudios[audioIndex++];
+   await uploadedAssets.ensureReady({job,index,ref,script:spec.assetUpload,
+    upload:()=>phase(job,"assetUpload",undefined,{kind:ref.kind,role:ref.role,
+     mimeType:ref.mimeType,sha256:ref.sha256,index,dataUrl})});
+  }
  }
  async function submit({job}){
   const result=await phase(job,"submit");

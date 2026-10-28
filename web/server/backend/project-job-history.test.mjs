@@ -145,11 +145,11 @@ test("v15 database migrates to v16 and remembers removed history after reopening
   db.prepare("UPDATE jobs SET status='failed' WHERE id=?").run(id);
   // Simulate opening an existing v15 database without this new table.
   db.exec("DROP TABLE job_history_hidden");
-  db.prepare("DELETE FROM schema_migrations WHERE version=16").run();
+  db.prepare("DELETE FROM schema_migrations WHERE version=17").run();
   db.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES(15,1)").run();
   db.close();db=new DatabaseSync(file);
   initializeSchema(db);
-  assert.equal(db.prepare("SELECT MAX(version) v FROM schema_migrations").get().v,16);
+  assert.equal(db.prepare("SELECT MAX(version) v FROM schema_migrations").get().v,17);
   assert.equal(listProjectJobs(db,{projectId:"p1"}).jobs.length,1);
   assert.deepEqual(hideProjectJobHistory(db,{projectId:"p1",jobId:id}),{hidden:true,jobId:id});
   db.close();db=new DatabaseSync(file);

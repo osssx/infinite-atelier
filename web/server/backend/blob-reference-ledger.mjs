@@ -14,6 +14,7 @@ const sourceQueries=[
  ["job_event","SELECT CAST(seq AS TEXT) AS owner,payload_json AS body FROM job_events"],
  ["comfy_template","SELECT template_id || ':' || revision AS owner,payload_json AS body FROM comfy_template_versions"],
  ["ark_asset","SELECT blob_id || ':' || bucket || ':' || project_name || ':' || group_id AS owner,blob_id AS body FROM ark_asset_uploads"],
+ ["script_asset","SELECT job_id || ':' || reference_index AS owner,blob_id AS body FROM script_asset_uploads"],
  ["asset_catalog","SELECT CAST(id AS TEXT) AS owner,assets_json AS body FROM asset_catalog"]
 ];
 export function scanBlobReferenceSources(db,consume){

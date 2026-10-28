@@ -1,5 +1,5 @@
 import{JOB_STATUSES,EXECUTION_MODES,ARTIFACT_KINDS}from"./contracts.mjs";
-export const SCHEMA_VERSION=16;
+export const SCHEMA_VERSION=17;
 const quoted=x=>x.map(s=>"'"+s+"'").join(",");
 export const INITIAL_SCHEMA_SQL=`
 CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY,applied_at INTEGER NOT NULL);
@@ -312,6 +312,31 @@ CREATE TABLE IF NOT EXISTS job_history_hidden(
  hidden_at INTEGER NOT NULL
 );
 `;
+/** v17: durable upload barriers for custom provider asset IDs.
+ * Never retry an ambiguous upload; the persisted uploading state blocks
+ * automatic network replay until manual provider reconciliation.
+ */
+export const SCRIPT_ASSET_SCHEMA_SQL=`
+CREATE TABLE IF NOT EXISTS script_asset_uploads(
+ job_id TEXT NOT NULL REFERENCES jobs(id),
+ reference_index INTEGER NOT NULL CHECK(reference_index>=0),
+ blob_id TEXT NOT NULL REFERENCES blobs(id),
+ script_fingerprint TEXT NOT NULL,
+ status TEXT NOT NULL CHECK(status IN ('uploading','active','rejected')),
+ remote_asset_id TEXT,
+ updated_at INTEGER NOT NULL,
+ PRIMARY KEY(job_id,reference_index),
+ CHECK((status='active' AND remote_asset_id IS NOT NULL) OR
+       (status!='active' AND remote_asset_id IS NULL))
+);
+CREATE INDEX IF NOT EXISTS ix_script_asset_upload_status ON script_asset_uploads(status);
+CREATE TRIGGER IF NOT EXISTS blob_ref_dirty_script_asset_insert AFTER INSERT ON script_asset_uploads
+ BEGIN UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1; END;
+CREATE TRIGGER IF NOT EXISTS blob_ref_dirty_script_asset_update AFTER UPDATE ON script_asset_uploads
+ BEGIN UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1; END;
+CREATE TRIGGER IF NOT EXISTS blob_ref_dirty_script_asset_delete AFTER DELETE ON script_asset_uploads
+ BEGIN UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1; END;
+`;
 export function initializeSchema(db){
  db.exec("PRAGMA foreign_keys=ON;PRAGMA busy_timeout=5000;BEGIN IMMEDIATE");
  try{
@@ -347,6 +372,7 @@ export function initializeSchema(db){
   if(version<14)db.exec(SKILL_GRANT_SCHEMA_SQL);
   if(version<15)db.exec(COMFY_INSTANCES_SCHEMA_SQL);
   if(version<16)db.exec(JOB_HISTORY_HIDDEN_SCHEMA_SQL);
+  if(version<17)db.exec(SCRIPT_ASSET_SCHEMA_SQL);
   if(version<SCHEMA_VERSION)db.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)").run(SCHEMA_VERSION,Date.now());
   db.exec("COMMIT");
  }catch(e){db.exec("ROLLBACK");throw e}

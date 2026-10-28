@@ -182,6 +182,102 @@ test("custom async video submit uses frozen CAS video/audio, resumes by task ID 
  assert.equal(sent.filter(x=>x.method==="POST").length,1);
  assert.ok(sent.filter(x=>x.method==="GET").every(x=>!x.body));
 });
+test("durable provider asset upload caches remote IDs and video POST uses IDs, not media bytes",async t=>{
+ const wav=Buffer.from("524946460800000057415645666d7420","hex");
+ const calls=[],taskId="task_uploaded_assets_1";let remoteCount=0;
+ const upstream=async(url,init)=>{
+  const data=init.body?JSON.parse(init.body):null;
+  calls.push({url,method:init.method,data,headers:init.headers});
+  if(url.endsWith("/assets")){
+   remoteCount++;
+   assert.ok(data.content.startsWith("data:"));
+   return response({id:"uploaded_"+remoteCount});
+  }
+  if(init.method==="POST"){
+   assert.deepEqual(data.reference_video_asset_ids,["uploaded_1"]);
+   assert.deepEqual(data.reference_audio_asset_ids,["uploaded_2"]);
+   assert.equal(JSON.stringify(data).includes("data:video"),false);
+   return response({id:taskId});
+  }
+  return response({id:taskId,status:"succeeded",video_url:mediaUrl});
+ };
+ const f=fixture(t,upstream,{importUrl:async()=>f.blobStore.put([mp4],{mime:"video/mp4"})});
+ const video=await f.blobStore.put([mp4],{mime:"video/mp4"});
+ const audio=await f.blobStore.put([wav],{mime:"audio/wav"});
+ const references=[
+  {kind:"video",role:"reference_video",blobId:video.blobId,sha256:video.sha256,mimeType:"video/mp4"},
+  {kind:"audio",role:"reference_audio",blobId:audio.blobId,sha256:audio.sha256,mimeType:"audio/wav"}
+ ];
+ const assetUpload='const data=await http.post("/assets",{model,role:params.asset.role,content:params.asset.dataUrl,mime_type:params.asset.mimeType});return data.id;';
+ const spec=JSON.stringify({version:1,assetUpload,
+  submit:'const data=await http.post("/videos",{model,prompt,reference_video_asset_ids:params.referenceVideoAssetIds,reference_audio_asset_ids:params.referenceAudioAssetIds});return data.id;',
+  poll:'const data=await http.get("/videos/"+remoteTaskId);return {id:data.id,status:data.status,videoUrl:data.video_url};'});
+ const snapshot={...f.snapshot,task:{...f.snapshot.task,script:spec,references}};
+ const jobId=submitJob(f.db,{idempotencyKey:"asset-video-one",
+  requestFingerprint:"asset-video-one",executionMode:"poll",snapshot}).jobId;
+ const job=f.db.prepare("SELECT * FROM jobs WHERE id=?").get(jobId);
+ const adapter=f.adapter;
+ await adapter.prepare({job}); // Simulate process restart after asset upload but before generation.
+ const saved=f.db.prepare("SELECT status,remote_asset_id FROM script_asset_uploads WHERE job_id=? ORDER BY reference_index")
+  .all(jobId);
+ assert.deepEqual(saved.map(r=>r.remote_asset_id),["uploaded_1","uploaded_2"]);
+ assert.ok(saved.every(r=>r.status==="active"));
+ await adapter.prepare({job}); // Must reuse persisted asset IDs.
+ assert.equal(calls.filter(x=>x.url.endsWith("/assets")).length,2);
+ const coordinator=createJobCoordinator({db:f.db,adapters:{model:adapter}});
+ coordinator.recoverAtStartup();await coordinator.tick();
+ assert.equal(f.db.prepare("SELECT upstream_task_id FROM jobs WHERE id=?").get(jobId).upstream_task_id,taskId);
+ assert.equal(calls.filter(x=>x.url.endsWith("/assets")).length,2);
+ assert.equal(calls.filter(x=>x.method==="POST"&&x.url.endsWith("/videos")).length,1);
+ const json=f.db.prepare("SELECT snapshot_json FROM jobs WHERE id=?").get(jobId).snapshot_json;
+ assert.ok(!json.includes("uploaded_1")&&!json.includes("fake-SECRET-123")&&!json.includes("data:"));
+ const restarted=createJobCoordinator({db:f.db,adapters:{model:adapter}});
+ restarted.recoverAtStartup();await restarted.tick();
+ assert.equal(f.db.prepare("SELECT status FROM jobs WHERE id=?").get(jobId).status,"succeeded");
+ assert.equal(calls.filter(x=>x.url.endsWith("/assets")).length,2);
+});
+test("ambiguous asset upload creates nonreplayable durable barrier and never submits paid video",async t=>{
+ const wav=Buffer.from("524946460800000057415645666d7420","hex");
+ let uploads=0,generated=0;
+ const upstream=async(url,init)=>{
+  if(url.endsWith("/assets")){
+   uploads++;
+   if(uploads===1)return response({id:"asset_first"});
+   throw Error("lost reply");
+  }
+  if(init.method==="POST")generated++;
+  return response({id:"video"});
+ };
+ const f=fixture(t,upstream);
+ const video=await f.blobStore.put([mp4],{mime:"video/mp4"});
+ const audio=await f.blobStore.put([wav],{mime:"audio/wav"});
+ const refs=[
+  {kind:"video",role:"reference_video",blobId:video.blobId,sha256:video.sha256,mimeType:"video/mp4"},
+  {kind:"audio",role:"reference_audio",blobId:audio.blobId,sha256:audio.sha256,mimeType:"audio/wav"}
+ ];
+ const spec=JSON.stringify({version:1,
+  assetUpload:'const r=await http.post("/assets",{content:params.asset.dataUrl});return r.id;',
+  submit:'const r=await http.post("/videos",{ids:params.referenceVideoAssetIds});return r.id;',
+  poll:'const r=await http.get("/videos/"+remoteTaskId);return {id:r.id,status:r.status,videoUrl:r.url};'
+ });
+ const snapshot={...f.snapshot,task:{...f.snapshot.task,script:spec,references:refs}};
+ const jobId=submitJob(f.db,{idempotencyKey:"asset-unknown",
+  requestFingerprint:"asset-unknown",executionMode:"poll",snapshot}).jobId;
+ const coordinator=createJobCoordinator({db:f.db,adapters:{model:f.adapter}});
+ coordinator.recoverAtStartup();await coordinator.tick();
+ assert.equal(f.db.prepare("SELECT status FROM jobs WHERE id=?").get(jobId).status,"failed");
+ assert.equal(generated,0);assert.equal(uploads,2);
+ const rows=f.db.prepare("SELECT status,remote_asset_id FROM script_asset_uploads WHERE job_id=? ORDER BY reference_index")
+  .all(jobId);
+ assert.deepEqual(rows.map(r=>r.status),["active","uploading"]);
+ assert.equal(rows[0].remote_asset_id,"asset_first");
+ assert.equal(rows[1].remote_asset_id,null);
+ const restored=createJobCoordinator({db:f.db,adapters:{model:f.adapter}});
+ restored.recoverAtStartup();await restored.tick();
+ const job=f.db.prepare("SELECT * FROM jobs WHERE id=?").get(jobId);
+ await assert.rejects(f.adapter.prepare({job}),/video_script_asset_upload_unknown/);
+ assert.equal(uploads,2);assert.equal(generated,0);
+});
 test("ambiguous submit is not resent across coordinator restart",async t=>{
  let calls=0;
  const f=fixture(t,async()=>{calls++;throw Error("network lost")});

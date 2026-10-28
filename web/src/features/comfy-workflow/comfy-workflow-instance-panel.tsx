@@ -239,7 +239,7 @@ export function ComfyWorkflowInstancePanel({node,connections,projectId,comfyInst
                 本次执行将捕获 {outputs.map(port=>port.label+" ("+port.valueKind+")").join("、")}，所有输出共享一次 ComfyUI 生成任务。
             </p>:null}
             {missingMedia.length>0?<p role="alert" className="mb-3 rounded-lg border border-[var(--comfy-border)] bg-[var(--comfy-fill)] px-3 py-2 text-xs text-amber-600 dark:text-amber-400">
-                请先连接输入：{missingMedia.map(port=>port.label+" ("+port.id+")").join("、")}。从画布的图片节点连接到对应端口，模板自带的示例文件名不可直接用于生成。
+                必填媒体参数未连接：{missingMedia.map(port=>port.label+" ("+port.id+")").join("、")}。请连接对应图片、音频或视频输入；模板示例文件名不能替代必填输入。
             </p>:null}
             {missingChoiceSelections.length>0?<p role="alert" className="mb-3 rounded-lg border border-[var(--comfy-border)] bg-[var(--comfy-fill)] px-3 py-2 text-xs text-amber-600 dark:text-amber-400">
                 请先选择候选参数：{missingChoiceSelections.map(field=>field.port.label).join("、")}。

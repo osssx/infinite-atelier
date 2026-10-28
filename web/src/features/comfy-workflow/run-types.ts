@@ -16,11 +16,14 @@ export type ComfyRunState={
 };
 export type ComfyInstance={id:string;url:string;reachable:boolean;classTypes:string[]};
 
-/** Fail before scheduling a GPU job if required media input is disconnected.
- * A template example filename must never be used as an implicit reference.
+/** Only explicitly required media ports block submission.
+ * Optional media is handled by the compiler's absent policy.
+ * Template sample filenames are never considered uploaded input.
  */
 export function missingComfyMediaInputs(template:ComfyWorkflowTemplate,workflowNodeId:string,
  connections:readonly CanvasConnection[]){
- return template.ports.filter(port=>port.direction==="target"&&port.inputBinding?.mode==="media-file"&&
+ return template.ports.filter(port=>port.direction==="target"&&port.required===true&&
+  ["IMAGE","VIDEO","AUDIO"].includes(port.valueKind)&&
+  ["media-file","socket"].includes(port.inputBinding?.mode??"") &&
   !connections.some(edge=>edge.toNodeId===workflowNodeId&&edge.toPortId===port.id));
 }

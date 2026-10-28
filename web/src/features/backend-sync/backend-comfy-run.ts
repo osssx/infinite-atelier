@@ -1,5 +1,6 @@
 import type {CanvasNodeData,CanvasConnection} from "@/types/canvas";
 import type {ComfyWorkflowTemplate} from "@/features/comfy-workflow/template-schema";
+import {missingComfyMediaInputs} from "@/features/comfy-workflow/run-types";
 import {prepareCanvasExternalInputSnapshot} from "@/lib/canvas/canvas-external-input-snapshot";
 import type {BackendCanvasGraph} from "./canvas-backend-sync";
 import {canonicalBackendGraph} from "./backend-source-fingerprint";
@@ -51,9 +52,9 @@ export async function startBackendComfyWorkflowRun(args:BackendComfyWorkflowArgs
  const currentNode=graph.nodes.find(node=>node.id===workflowNode.id);
  if(!currentNode||currentNode.type!=="comfy:workflow")throw Error("backend_workflow_node_missing");
  const incoming=graph.connections.filter(edge=>edge.toNodeId===workflowNode.id);
- const missing=template.ports.filter(port=>port.direction==="target"&&port.inputBinding?.mode==="media-file"&&
-  !graph.connections.some(edge=>edge.toNodeId===workflowNode.id&&edge.toPortId===port.id));
- if(missing.length)throw Error("请先连接媒体输入："+missing.map(p=>p.label).join("、"));
+ // Use the same required-port validation as the inspector.
+ const missing=missingComfyMediaInputs(template,workflowNode.id,graph.connections);
+ if(missing.length)throw Error("请先连接必填媒体输入："+missing.map(p=>p.label).join("、"));
  if(incoming.some(edge=>!edge.toPortId||!edge.fromPortId))
   throw Error("工作流只能使用显式端口连线");
  if(incoming.some(edge=>!graph.nodes.some(n=>n.id===edge.fromNodeId&&["text","image","video","audio"].includes(n.type))))

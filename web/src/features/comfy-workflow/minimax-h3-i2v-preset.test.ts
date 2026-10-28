@@ -19,7 +19,7 @@ describe("MiniMax H3 I2V Turbo bundled API workflow",()=>{
         const preset=minimaxH3I2VBundledTemplate();
         const ports=new Map(preset.ports.map(port=>[port.id,port]));
         expect(ports.get("first_frame")).toMatchObject({
-            required:true,direction:"target",valueKind:"IMAGE",
+            required:false,direction:"target",valueKind:"IMAGE",absentPolicy:{mode:"auto-prune"},
             inputBinding:{mode:"media-file",mediaKind:"IMAGE",targets:[{nodeId:"114",inputName:"image"}]},
         });
         expect(ports.get("prompt")).toMatchObject({required:true,inputBinding:{targets:[{nodeId:"105_104",inputName:"prompt"}]}});

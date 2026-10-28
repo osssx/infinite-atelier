@@ -37,9 +37,9 @@ export function buildMiniMaxH3I2VPreset(raw:unknown):ComfyTemplatePayload {
     const payload=templatePayloadFromGraph("MiniMax H3 I2V Turbo · 图生视频",graph);
     payload.ports=[
         {
-            id:"first_frame",label:"首帧图片",direction:"target",valueKind:"IMAGE",required:true,
+            id:"first_frame",label:"首帧图片",direction:"target",valueKind:"IMAGE",required:false,
             inputBinding:{mode:"media-file",mediaKind:"IMAGE",targets:[{nodeId:"114",inputName:"image"}]},
-            absentPolicy:{mode:"keep-template"},
+            absentPolicy:{mode:"auto-prune"},
         },
         scalar("prompt","视频提示词","STRING","105_104","prompt",true),
         scalar("duration","视频时长（秒）","FLOAT","128","value"),

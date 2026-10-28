@@ -69,6 +69,56 @@ describe("backend save fence + frozen Comfy submission",()=>{
 
   expect(bridge.submitFrozenJob).toHaveBeenCalledTimes(1);
  });
+ it("lets optional first frame be absent and submits the frozen prompt-only workflow",async()=>{
+  const templateWithOptionalMedia:ComfyWorkflowTemplate={...template,ports:[
+   {id:"first_frame",label:"首帧图片",direction:"target",required:false,valueKind:"IMAGE",
+    inputBinding:{mode:"media-file",mediaKind:"IMAGE",targets:[{nodeId:"2",inputName:"image"}]},
+    absentPolicy:{mode:"auto-prune"}},
+   ...template.ports
+  ]};
+  const bridge={
+   state:{status:"connected"},
+   assertNoActiveJob:vi.fn(async()=>{}),
+   assertComfyReady:vi.fn(async()=>{}),
+   saveProjectNow:vi.fn(async()=>({projectId:"p1",revision:8,sourceNodeFingerprint:"fence"})),
+   uploadFrozenBlob:vi.fn(async()=>{throw Error("no media should be uploaded")}),
+   submitFrozenJob:vi.fn(async(payload:Record<string,unknown>)=>{
+    const snapshot=(payload.snapshot as {comfyRequest:{
+     externalInputs:unknown[];edges:unknown[];nodes:Array<{inputOverrides:unknown}>
+    }})?.comfyRequest;
+    expect(snapshot.externalInputs).toEqual([]);
+    expect(snapshot.edges).toEqual([]);
+    return expectedJob;
+   })
+  };
+  await expect(startBackendComfyWorkflowRun({
+   bridge,projectId:"p1",workflowNode:workflow,nodes:[workflow],connections:[],
+   template:templateWithOptionalMedia,instanceId:"comfy-local",outputPortIds:["image"]
+  })).resolves.toEqual(expectedJob);
+  expect(bridge.saveProjectNow).toHaveBeenCalledOnce();
+  expect(bridge.submitFrozenJob).toHaveBeenCalledOnce();
+ });
+ it("blocks only an explicitly required media port before saving the graph",async()=>{
+  const required:ComfyWorkflowTemplate={...template,ports:[
+   {id:"first_frame",label:"首帧图片",direction:"target",required:true,valueKind:"IMAGE",
+    inputBinding:{mode:"media-file",mediaKind:"IMAGE",targets:[{nodeId:"2",inputName:"image"}]}},
+   ...template.ports
+  ]};
+  const bridge={
+   state:{status:"connected"},
+   assertNoActiveJob:vi.fn(async()=>{}),
+   assertComfyReady:vi.fn(async()=>{}),
+   saveProjectNow:vi.fn(async()=>{throw Error("must not save")}),
+   uploadFrozenBlob:vi.fn(async()=>{throw Error("must not upload")}),
+   submitFrozenJob:vi.fn(async()=>{throw Error("must not submit")})
+  };
+  await expect(startBackendComfyWorkflowRun({
+   bridge,projectId:"p1",workflowNode:workflow,nodes:[workflow],connections:[],
+   template:required,instanceId:"comfy-local",outputPortIds:["image"]
+  })).rejects.toThrow(/必填媒体输入：首帧图片/);
+  expect(bridge.saveProjectNow).not.toHaveBeenCalled();
+  expect(bridge.submitFrozenJob).not.toHaveBeenCalled();
+ });
  it("stages image bytes before save then uses digest-backed frozen reference",async()=>{
   registerCanvasPortResolver("comfy:workflow",node=>node.metadata?.comfyPorts??[]);
   const photo:CanvasNodeData={id:"photo",type:"image",title:"Photo",width:240,height:240,

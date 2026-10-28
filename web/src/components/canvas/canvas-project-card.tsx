@@ -5,7 +5,6 @@ import { useTranslation } from "react-i18next";
 
 import { useCanvasStore, type CanvasProject } from "@/stores/canvas/use-canvas-store";
 import { useCanvasUiStore } from "@/stores/canvas/use-canvas-ui-store";
-import { exportCanvasProjects } from "@/lib/canvas/canvas-export";
 import {exportSqliteCanvasProject} from "@/features/backend-sync/canvas-project-archive";
 
 export function CanvasProjectCard({ project }: { project: CanvasProject }) {

@@ -64,7 +64,7 @@ import { useGenerationHistoryStore, type GenerationHistoryImage } from "@/stores
 import { buildCanvasGraphIndex } from "@/lib/canvas/canvas-graph-index";
 import { prepareCanvasPortConnection, reconcileComfyArtifactConnections } from "@/lib/canvas/canvas-port-connections";
 import { pickCanvasDropHandle } from "@/lib/canvas/canvas-ports";
-import { exportCanvasProjects } from "@/lib/canvas/canvas-export";
+import { exportSqliteCanvasProject } from "@/features/backend-sync/canvas-project-archive";
 import { applyNodeConfigPatch, audioMetadata, buildAudioGenerationMetadata, buildImageGenerationMetadata, createCanvasNode, imageMetadata, videoMetadata } from "@/lib/canvas/canvas-node-factory";
 import { findContainingGroupId, findGroupDropTarget, findGroupDropTargetFromDelta, fitViewportToNodes, getConnectionTargetAnchor, groupSelectedCanvasNodes, normalizeConnection, normalizeConnectionFromIndex, snapNodesIntoGroup } from "@/lib/canvas/canvas-node-geometry";
 import {
@@ -1275,17 +1275,27 @@ function AtelierCanvasPage() {
     const exportCurrentProject = useCallback(async () => {
         const project = useCanvasStore.getState().projects.find((item) => item.id === projectId);
         if (!project) return message.error(t("canvas.projectPage.notFound"));
+        // Commit the latest in-memory canvas (including the debounced viewport)
+        // before the backend packages the authoritative SQLite/CAS project.
+        // Do not await before exportSqliteCanvasProject: showSaveFilePicker needs
+        // the original menu click's user activation.
         const hide = message.loading(t("canvas.projectPage.exporting"), 0);
         try {
-            await exportCanvasProjects([project], project.title || t("canvas.title"));
+            updateProject(projectId, {
+                nodes: nodesRef.current, connections: connectionsRef.current,
+                chatSessions, activeChatId, backgroundMode, showImageInfo,
+                comfyInstanceId, viewport: viewportRef.current,
+            });
+            await exportSqliteCanvasProject(project.id, project.title || t("canvas.title"));
             message.success(t("canvas.projectPage.exported"));
         } catch (error) {
-            console.error(error);
-            message.error(t("canvas.sidePanel.exportFailed"));
+            if (error instanceof Error && error.name === "AbortError") return;
+            console.error("Canvas archive export failed", error);
+            message.error("项目归档导出失败：" + (error instanceof Error ? error.message : String(error)));
         } finally {
             hide();
         }
-    }, [message, projectId, t]);
+    }, [message, projectId, t, updateProject, chatSessions, activeChatId, backgroundMode, showImageInfo, comfyInstanceId]);
 
     const handleCanvasMouseDown = useCallback(
         (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -4003,7 +4013,7 @@ function AtelierCanvasPage() {
                     onProjects={()=>{void awaitCanvasStorePersistence(projectId).then(()=>navigate("/canvas")).catch(error=>message.error("未保存，无法离开："+String(error)))}}
                     onCreateProject={createAndOpenProject}
                     onDeleteProject={deleteCurrentProject}
-                    onExportProject={()=>message.warning("完整项目导出将在媒体后端化阶段开放")}
+                    onExportProject={exportCurrentProject}
                     onImportImage={() => handleUploadRequest()}
                     onUndo={undoCanvas}
                     onRedo={redoCanvas}

@@ -117,13 +117,34 @@ export function buildGenerationConfig(config: AiConfig, node: CanvasNodeData | u
     };
 }
 
+/** Restores only UI state. Never replays a remote task, invents its status,
+ * or drops a historical provider task ID. New tasks resume through SQLite.
+ */
 export function resetInterruptedGeneration(nodes: CanvasNodeData[]) {
     return nodes.map((node) => {
-        const hasStoredVideo = Boolean(node.metadata?.storageKey && node.metadata?.content);
-        const resumableArkTask = !hasStoredVideo && (node.metadata?.videoTask?.provider === "volcengine_ark" || node.metadata?.videoTask?.provider === "router_local") && ["queued", "running", "succeeded"].includes(node.metadata.videoTask.status);
-        return resumableArkTask
-            ? { ...node, metadata: { ...node.metadata, status: "loading" as const, errorDetails: undefined } }
-            : node.metadata?.status === "loading"
+        const task = node.metadata?.videoTask;
+        const legacyArk = node.type === CanvasNodeType.Video &&
+            (task?.provider === "volcengine_ark" || task?.provider === "router_local");
+        if (legacyArk && task && ["queued", "running", "succeeded"].includes(task.status)) {
+            if (node.metadata?.content) {
+                // Preserve a video already downloaded by the previous implementation.
+                return node.metadata.status === "loading"
+                    ? { ...node, metadata: { ...node.metadata, status: "success" as const, errorDetails: undefined } }
+                    : node;
+            }
+            // The historical Ark API is deliberately disabled. A queued, running
+            // or remotely succeeded task cannot be safely resumed in the browser.
+            // Keep provider/status/taskId/videoDownloadError for later manual inspection.
+            return node.metadata?.status === "error" && node.metadata.errorDetails ? node : {
+                ...node,
+                metadata: {
+                    ...node.metadata,
+                    status: "error" as const,
+                    errorDetails: "旧 Ark 浏览器任务无法自动恢复。请保留任务 ID 并检查原服务记录；不会自动重新生成。",
+                },
+            };
+        }
+        return node.metadata?.status === "loading"
             ? {
                   ...node,
                   metadata: {

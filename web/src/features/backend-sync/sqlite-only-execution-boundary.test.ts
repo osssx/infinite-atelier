@@ -39,6 +39,15 @@ describe("P4.2 SQLite-only Canvas execution boundary",()=>{
   expect(panel).toContain('from "./run-types"');
   expect(page).toContain('from "@/features/comfy-workflow/run-types"');
  });
+ it("does not revive retired browser Ark video polling, cancellation or media retries",()=>{
+  expect(page).not.toMatch(/\bpollVideoGenerationTask\b|\bretrySeedanceDownload\b|\bcancelVideoGenerationTask\b/);
+  expect(page).not.toContain("resumedArkTasksRef");
+  expect(page).not.toContain("Unable to resume Ark video task");
+  expect(page).toContain("resetInterruptedGeneration(project.nodes)");
+  const retry=page.slice(page.indexOf("const handleRetryNode = useCallback("),
+   page.indexOf("const deleteBatchImage = useCallback("));
+  expect(retry).toContain("旧 Ark 视频任务无法从浏览器重新下载");
+ });
  it("keeps run state in SQLite, not a browser-local pending payload",()=>{
   expect(panel).toContain('"/api/v1/jobs/snapshot"');
   expect(panel).not.toMatch(/localStorage\s*\.|sessionStorage\s*\.|indexedDB\s*\./);

@@ -11,7 +11,7 @@ import { prepareAutomaticSkillCatalog, withAutomaticSkillCatalog, isUnsupportedS
 import { isSkillToolsKnownUnsupported, rememberSupportedSkillTools, rememberUnsupportedSkillTools } from "@/features/skills/skill-tool-capability";
 import { extractSkillMentions, resolvePromptSkillBinding, showLegacySkillMentions } from "@/features/skills/skill-mentions";
 import { requestAudioGeneration } from "@/services/api/audio";
-import { cancelVideoGenerationTask, pollVideoGenerationTask, requestVideoGeneration, retrySeedanceDownload, type VideoGenerationRequest, type VideoGenerationTask } from "@/services/api/video";
+import { requestVideoGeneration, type VideoGenerationRequest, type VideoGenerationTask } from "@/services/api/video";
 import { defaultConfig, resolveModelChannel, resolveModelScript, modelOptionName, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
 import {recoverLegacyGeneratedImageSize} from "@/lib/canvas/canvas-generated-image-size";
 import {recoverLegacyGeneratedVideoSize} from "@/lib/canvas/canvas-generated-video-size";
@@ -178,15 +178,6 @@ const NODE_STATUS_IDLE = "idle" as const;
 const NODE_STATUS_LOADING = "loading" as const;
 const NODE_STATUS_SUCCESS = "success" as const;
 const NODE_STATUS_ERROR = "error" as const;
-
-function abortableDelay(ms: number, signal: AbortSignal) {
-    return new Promise<void>((resolve) => {
-        if (signal.aborted) return resolve();
-        const timer = setTimeout(done, ms);
-        function done() { clearTimeout(timer); signal.removeEventListener("abort", done); resolve(); }
-        signal.addEventListener("abort", done, { once: true });
-    });
-}
 
 function isNativeArkVideo(config: typeof defaultConfig, modelOption: string) {
     return resolveModelChannel(config, modelOption)?.apiFormat === "volcengine_ark" && !resolveModelScript(config, modelOption);
@@ -407,7 +398,6 @@ function AtelierCanvasPage() {
     const selectionBoxRef = useRef(selectionBox);
     const pendingConnectionCreateRef = useRef(pendingConnectionCreate);
     const generationRequestsRef = useRef(new Map<string, CanvasGenerationRequest>());
-    const resumedArkTasksRef = useRef(new Set<string>());
     const comfyExecuteLocksRef = useRef(new Set<string>());
     const sqliteJobWatchesRef=useRef(new Map<string,AbortController>());
     const monitorSqliteJobRef=useRef<(jobId:string)=>void>(()=>{});
@@ -459,12 +449,6 @@ function AtelierCanvasPage() {
             const affectedNodeIds = new Set<string>();
             generationRequestsRef.current.forEach((request) => {
                 if (request.runningNodeId !== runningId) return;
-                const activeNode = nodesRef.current.find((node) => node.id === request.targetNodeId);
-                if (isResumableSeedanceProvider(activeNode?.metadata?.videoTask?.provider) && activeNode?.metadata?.videoTask?.status === "queued") {
-                    const saved = activeNode.metadata.videoTask;
-                    const task: VideoGenerationTask = { id: saved.taskId, provider: saved.provider === "router_local" ? "volcengine_ark" : saved.provider, channelId: saved.channelId, model: saved.model, startedAt: saved.startedAt, status: saved.status };
-                    void cancelVideoGenerationTask(effectiveConfig, task).then((cancelled) => cancelled && persistVideoTask(activeNode.id, task, "cancelled")).catch(() => undefined);
-                }
                 request.controller.abort();
                 generationRequestsRef.current.delete(request.targetNodeId);
                 affectedNodeIds.add(request.targetNodeId);
@@ -488,7 +472,7 @@ function AtelierCanvasPage() {
                 ),
             );
         },
-        [effectiveConfig, persistVideoTask, t],
+        [t],
     );
 
     const confirmStopGeneration = useCallback(
@@ -601,71 +585,6 @@ function AtelierCanvasPage() {
         let cancelled = false;
         return () => { cancelled = true; };
     }, [hydrated, loadProject, projectId,projectLoadAttempt]);
-
-    useEffect(() => {
-        if (!projectLoaded) return;
-        const pending = nodesRef.current.filter((node) => node.type === CanvasNodeType.Video && node.metadata?.status === NODE_STATUS_LOADING && isResumableSeedanceProvider(node.metadata.videoTask?.provider) && !generationRequestsRef.current.has(node.id));
-        const controllers: Array<{ controller: AbortController; key: string }> = [];
-        pending.forEach((node) => {
-            const savedTask = node.metadata?.videoTask;
-            if (!savedTask) return;
-            const resumeKey = `${projectId}:${node.id}:${savedTask.taskId}`;
-            if (resumedArkTasksRef.current.has(resumeKey)) return;
-            resumedArkTasksRef.current.add(resumeKey);
-            const controller = new AbortController();
-            controllers.push({ controller, key: resumeKey });
-            const task: VideoGenerationTask = { id: savedTask.taskId, provider: savedTask.provider === "router_local" ? "volcengine_ark" : savedTask.provider, channelId: savedTask.channelId, model: savedTask.model, startedAt: savedTask.startedAt, status: savedTask.status };
-            let lastRemoteStatus = savedTask.status;
-            const persistNode = (patch: Partial<CanvasNodeData>) => {
-                if (controller.signal.aborted || !nodesRef.current.some((current) => current.id === node.id)) return;
-                const nextNodes = nodesRef.current.map((current) => current.id === node.id ? { ...current, ...patch, metadata: { ...current.metadata, ...patch.metadata } } : current);
-                nodesRef.current = nextNodes;
-                setNodes(nextNodes);
-                updateProject(projectId, { nodes: nextNodes });
-                flushCanvasStorePersistence();
-            };
-            void (async () => {
-                let backoff = 2_000;
-                let queryFailures = 0;
-                while (!controller.signal.aborted) {
-                    if (!nodesRef.current.some((current) => current.id === node.id && current.metadata?.videoTask?.taskId === savedTask.taskId)) return;
-                    try {
-                        const resumeConfig = { ...buildGenerationConfig(effectiveConfig, node, "video"), model: savedTask.model };
-                        const state = await pollVideoGenerationTask(resumeConfig, task, { signal: controller.signal, onTaskStatus: (status) => { lastRemoteStatus = status; persistVideoTask(node.id, task, status); } });
-                        queryFailures = 0;
-                        if (state.providerStatus) persistVideoTask(node.id, task, state.providerStatus);
-                        if (state.status === "failed") {
-                            persistNode({ metadata: { status: NODE_STATUS_ERROR, errorDetails: state.error, videoTask: { ...savedTask, status: state.providerStatus || "failed" } } });
-                            return;
-                        }
-                        if (state.status === "completed") {
-                            const video = await storeGeneratedVideo(state.result);
-                            const dimensions = fitNodeSize(video.width || node.width, video.height || node.height, VIDEO_NODE_MAX_WIDTH, VIDEO_NODE_MAX_HEIGHT);
-                            const lastFrame = state.lastFrameBlob ? await saveArkLastFrame(state.lastFrameBlob) : undefined;
-                            persistNode({ width: dimensions.width, height: dimensions.height, metadata: { ...videoMetadata(video), status: NODE_STATUS_SUCCESS, errorDetails: undefined, videoDownloadError: undefined, videoTask: { ...savedTask, status: "succeeded" }, ...(state.lastFrameUrl ? { lastFrameUrl: state.lastFrameUrl } : {}), ...(lastFrame ? { lastFrame } : {}) } });
-                            return;
-                        }
-                        if (state.providerStatus) persistVideoTask(node.id, task, state.providerStatus);
-                        await abortableDelay(backoff, controller.signal);
-                        backoff = Math.min(30_000, Math.round(backoff * 1.35));
-                    } catch (error) {
-                        if (controller.signal.aborted) return;
-                        queryFailures += 1;
-                        if (queryFailures >= 8) {
-                            const details = error instanceof Error ? error.message : String(error);
-                            persistNode({ metadata: { status: NODE_STATUS_ERROR, errorDetails: details, videoDownloadError: lastRemoteStatus === "succeeded" ? details : undefined } });
-                            return;
-                        }
-                        await abortableDelay(backoff, controller.signal);
-                        backoff = Math.min(30_000, Math.round(backoff * 1.7));
-                    }
-                }
-            })().catch((error) => {
-                if (!controller.signal.aborted) console.error("Unable to resume Ark video task", error);
-            }).finally(() => resumedArkTasksRef.current.delete(resumeKey));
-        });
-        return () => controllers.forEach(({ controller, key }) => { controller.abort(); resumedArkTasksRef.current.delete(key); });
-    }, [effectiveConfig, projectId, projectLoaded, persistVideoTask, updateProject]);
 
     useEffect(() => {
         if (!projectLoaded || applyingHistoryRef.current || historyPausedRef.current) return;
@@ -3259,19 +3178,9 @@ function AtelierCanvasPage() {
                       }
                     : { ...buildGenerationConfig(effectiveConfig, node.type === CanvasNodeType.Video && node.metadata?.videoRequest ? node : sourceNode, node.type === CanvasNodeType.Text ? "text" : node.type === CanvasNodeType.Video ? "video" : node.type === CanvasNodeType.Audio ? "audio" : "image"), count: "1" };
             if (node.type === CanvasNodeType.Video && isResumableSeedanceProvider(node.metadata?.videoTask?.provider) && node.metadata.videoTask.status === "succeeded" && node.metadata.videoDownloadError) {
-                const savedTask = node.metadata.videoTask;
-                const task: VideoGenerationTask = { id: savedTask.taskId, provider: savedTask.provider === "router_local" ? "volcengine_ark" : savedTask.provider, channelId: savedTask.channelId, model: savedTask.model, startedAt: savedTask.startedAt, status: savedTask.status };
-                setNodes((prev) => prev.map((item) => item.id === node.id ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_LOADING, errorDetails: undefined } } : item));
-                try {
-                    const { video, lastFrameBlob, lastFrameUrl } = await retrySeedanceDownload(generationConfig, task);
-                    const lastFrame = lastFrameBlob ? await saveArkLastFrame(lastFrameBlob) : undefined;
-                    const dimensions = fitNodeSize(video.width || node.width, video.height || node.height, VIDEO_NODE_MAX_WIDTH, VIDEO_NODE_MAX_HEIGHT);
-                    setNodes((prev) => prev.map((item) => item.id === node.id ? { ...item, width: dimensions.width, height: dimensions.height, metadata: { ...item.metadata, ...videoMetadata(video), status: NODE_STATUS_SUCCESS, errorDetails: undefined, videoDownloadError: undefined, ...(lastFrameUrl ? { lastFrameUrl } : {}), ...(lastFrame ? { lastFrame } : {}) } } : item));
-                } catch (error) {
-                    const details = error instanceof Error ? error.message : String(error);
-                    setNodes((prev) => prev.map((item) => item.id === node.id ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_ERROR, errorDetails: details, videoDownloadError: details } } : item));
-                    message.error(details);
-                }
+                // Legacy Ark task IDs cannot be downloaded through the retired
+                // Gateway. Do not set loading, mutate the result or resubmit.
+                message.warning("旧 Ark 视频任务无法从浏览器重新下载。请检查原服务记录，保留原任务 ID；不会自动重新生成。");
                 return;
             }
 

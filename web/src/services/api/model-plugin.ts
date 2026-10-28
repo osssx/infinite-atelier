@@ -276,6 +276,15 @@ return (data.candidates || [])
             },null,2),
         },
         {
+            label:"安全异步视频（Multipart 上传）",
+            script:JSON.stringify({
+                version:1,
+                assetUpload:'const data = await http.multipart("/assets", {fileField:"file", fields:{model, role:params.asset.role, kind:params.asset.kind, mime_type:params.asset.mimeType}}); return data.id;',
+                submit:'const data = await http.post("/videos", {model, prompt, seconds:params.duration, reference_video_asset_ids:params.referenceVideoAssetIds, reference_audio_asset_ids:params.referenceAudioAssetIds, first_frame:params.firstFrame, last_frame:params.lastFrame, reference_images:params.referenceImages}); return data.id;',
+                poll:'const data = await http.get("/videos/"+remoteTaskId); return {id:data.id,status:data.status,videoUrl:data.video_url||data.url};'
+            },null,2),
+        },
+        {
             label: i18n.t("modelPlugin.templates.openai"),
             script: `// ${i18n.t("modelPlugin.templates.videoOpenai")}
 const headers = { "Content-Type": "application/json", Authorization: \`Bearer \${apiKey}\` };

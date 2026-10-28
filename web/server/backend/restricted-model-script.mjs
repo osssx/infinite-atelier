@@ -38,7 +38,7 @@ export function parseRestrictedModelScript(script){
     if(node.optional||node.callee.type!=="MemberExpression"||
        node.callee.computed||node.callee.object.type!=="Identifier"||
        node.callee.object.name!=="http"||node.callee.property.type!=="Identifier"||
-       !["post","get","delete"].includes(node.callee.property.name))
+       !["post","get","delete","multipart"].includes(node.callee.property.name))
      throw problem("model_script_call_forbidden");
     // At most one external request per script; prevents accidental double billing.
     if(++requestCount>1)throw problem("model_script_multiple_requests_forbidden");
@@ -112,7 +112,7 @@ export async function runRestrictedModelScript({script,model,prompt,messages,par
        args[0].split("/").some(part=>part===".."||part===".")||
        /%(?:2f|5c|2e)/i.test(args[0]))
      throw problem("model_script_endpoint_invalid");
-    if(method==="post"&&(args[1]===undefined||!args[1]||
+    if(["post","multipart"].includes(method)&&(args[1]===undefined||!args[1]||
        typeof args[1]!=="object"||Array.isArray(args[1])))
      throw problem("model_script_body_invalid");
     return http(method,args[0],args[1]);

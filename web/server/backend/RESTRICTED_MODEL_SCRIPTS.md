@@ -47,6 +47,18 @@ OpenAI 兼容渠道的文本、无参考图文生图、JSON Base64 音频、**�
 
 这是一条适用于 JSON Base64 上传的受控实现，不代表支持 multipart/form-data、分片上传、跨域预签名 PUT、先申请上传地址再上传内容等协议。此类 API 仍需要逐供应商适配器。用户自定义的 HTTP(S) 渠道地址无需配置主机白名单，但仍接受 DNS/SSRF 校验、无跳转、同一渠道地址与受限 HTTP 动词约束。
 
+### 同渠道 Multipart 上传
+
+第三方视频模型要求 multipart/form-data 时，在视频脚本编辑器选择「安全异步视频（Multipart 上传）」。复用现有 assetUpload、submit、poll 阶段，CAS 冻结、Credential Vault 和人工对账恢复。
+
+受限脚本中使用 http.multipart("/assets", {fileField:"file", fields:{model, role:params.asset.role, mime_type:params.asset.mimeType}})；只允许在 assetUpload 阶段，固定为 POST、相对当前冻结渠道的合法 API 路径。脚本不得自定义目标域名、鉴权 Header、文件名、任意本地路径或二进制文件内容。
+
+后端仅从已完成 MIME/大小/SHA-256 校验的 CAS 素材创建真实的 FormData 二进制文件字段，采用内容哈希派生文件名。fileField 默认为 file；fields 最多 24 项，键名受限，值仅支持短文本、有限数字或布尔值，不允许内嵌 Base64、控制字符和任意结构。multipart boundary 由底层 HTTP 客户端生成，Authorization 由 Vault 注入，不写入任务快照。
+
+每项上传依然先写入上传不可重放屏障，再进行网络 POST。远端素材 ID 成功响应后持久化并复用，响应不确定时禁止自动重传，可在任务历史进行人工核对；继续使用视频最多 12 MiB、音频最多 6 MiB、全部参考素材 32 MiB 的限制。
+
+尚不支持预签名跨域 PUT、多文件字段、分片续传和专有多步骤上传协议。
+
 ## 上传结果未知：人工核对与恢复
 
 如果上传阶段网络中断，素材状态会保留为 `uploading`，原生成任务处于 `failed`，**不会自动重传素材，也不会重新提交视频生成**。在「任务历史」找到失败的视频模型任务，选择「核对远端素材上传」：
@@ -61,10 +73,10 @@ OpenAI 兼容渠道的文本、无参考图文生图、JSON Base64 音频、**�
 
 - 脚本不能访问 `apiKey`、`process`、`require`、`eval`、`globalThis`、动态函数、对象原型或任意 Node API。通过受控 HTTP 层注入 Vault 凭据。脚本可编辑请求体，但不能跨域访问任意主机。
 - 旧的视频 JavaScript `request()/poll()` 脚本不会自动转换为新 JSON 规范；必须按服务商响应格式调整模板。异步任务不能在脚本中执行循环。
-- **暂不支持**超出 JSON Base64 单次上传能力的第三方上传协议（multipart/分片/跨域上传）、超过限制的大视频/音频文件、由 API Key 鉴权下载的视频内容 URL、任意 MIME 媒体、Gemini 特殊协议、脚本自定义 HTTP Header、对已运行中视频强行删除远程历史。上述能力应由后续专用适配器完成。
+- **暂不支持**跨域预签名 URL 上传、分片上传/续传、多文件字段等专有上传协议、超过限制的大视频/音频文件、由 API Key 鉴权下载的视频内容 URL、任意 MIME 媒体、Gemini 特殊协议、脚本自定义 HTTP Header、对已运行中视频强行删除远程历史。上述能力应由后续专用适配器完成。
 - 非 OpenAI 格式渠道的旧脚本尚未移除浏览器执行路径，后续继续完成迁移。测试只模拟上游 HTTP，不调用真实收费模型。
 
 代码：`restricted-model-script.mjs`（AST 表达式解释器）、`restricted-video-adapter.mjs`（视频任务）、`restricted-video-download.mjs`（安全视频下载），附对应 `.test.mjs`。
 - 对应集成测试仅使用模拟的上游模型响应，不会调用真实付费 API。
 
-计划下一阶段：为 multipart、分片和预签名上传等服务商协议增加专用可恢复上传适配器及人工对账入口，之后逐步关闭剩余浏览器脚本执行入口。
+计划下一阶段：调研并设计分片和预签名 URL 上传的不可重放、多阶段状态机，之后继续迁移剩余浏览器脚本执行入口。

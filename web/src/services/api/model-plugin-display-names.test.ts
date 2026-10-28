@@ -11,6 +11,8 @@ describe("unified backend model script display names",()=>{
   expect(templates.video[0].label).toBe("安全异步视频（提交/轮询）");
   expect(templates.video[1].label).toBe("安全异步视频（远端素材 ID）");
   expect(JSON.parse(templates.video[1].script).assetUpload).toContain("http.post");
+  expect(templates.video[2].label).toBe("安全异步视频（Multipart 上传）");
+  expect(JSON.parse(templates.video[2].script).assetUpload).toContain("http.multipart");
   expect(templates.audio[0].label).toBe("安全音频（JSON Base64）");
   expect(templates.text[0].label).toBe("安全文本（推荐）");
   expect(Object.values(templates).flat().map(item=>item.label).join(" ")).not.toMatch(/SQLite/i);

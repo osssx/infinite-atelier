@@ -5,6 +5,7 @@ import {parseRestrictedModelScript,runRestrictedModelScript} from "./restricted-
 import {createRestrictedVideoDownloader} from "./restricted-video-download.mjs";
 import {validateFrozenVideoMedia,materializeFrozenVideoMedia} from "./restricted-video-media.mjs";
 import {createScriptAssetUploadManager} from "./restricted-video-asset-upload.mjs";
+import {createRestrictedAssetMultipart} from "./restricted-video-multipart.mjs";
 
 const fail=(code,confirmedNotAccepted=false)=>Object.assign(Error(code),
  {code,statusCode:422,confirmedNotAccepted});
@@ -109,14 +110,18 @@ export function createRestrictedVideoAdapter({db,vault,blobStore,
    http:async(method,path,body)=>{
     if(hasCalled)throw fail("video_script_multiple_requests",true);
     hasCalled=true;
-    if(["submit","assetUpload"].includes(name)&&method!=="post"||
+    if(name==="submit"&&method!=="post"||
+       name==="assetUpload"&&!["post","multipart"].includes(method)||
        name==="poll"&&method!=="get"||
        name==="cancel"&&method!=="delete")
      throw fail("video_script_method_forbidden",true);
     if(["poll","cancel"].includes(name)&&(!validId(remoteTaskId)||
        !path.endsWith("/"+remoteTaskId)))throw fail("video_script_poll_path_invalid",true);
     let payload;
-    if(["submit","assetUpload"].includes(name)){
+    let multipart;
+    if(name==="assetUpload"&&method==="multipart"){
+     multipart=createRestrictedAssetMultipart({asset,options:body});
+    }else if(["submit","assetUpload"].includes(name)){
      try{payload=JSON.stringify(body)}
      catch{throw fail("video_script_body_invalid",true)}
      if(!payload||Buffer.byteLength(payload)>(references.length?45*1024*1024:128*1024))
@@ -126,7 +131,8 @@ export function createRestrictedVideoAdapter({db,vault,blobStore,
     try{response=await network(endpoint(snapshot)+path,{
      method:method.toUpperCase(),redirect:"manual",
      headers:{authorization:auth,...(payload?{"content-type":"application/json"}:{})},
-     ...(payload?{body:payload}:{}),signal:AbortSignal.timeout(120000)
+     ...(multipart?{body:multipart}:payload?{body:payload}:{}),
+     signal:AbortSignal.timeout(120000)
     })}catch{
      throw fail(name==="submit"?"video_script_submit_uncertain":
       name==="assetUpload"?"video_script_asset_upload_unknown":"video_script_status_unavailable");

@@ -4,7 +4,7 @@ import i18n from "@/i18n";
 
 import { NODE_SPECS } from "@/constant/canvas";
 import { registerNodeDefinitions } from "@/lib/canvas/node-registry";
-import { COMFY_WORKFLOW_MOCK_TYPE, MOCK_COMFY_PORTS } from "@/lib/canvas/canvas-ports";
+import { COMFY_WORKFLOW_MOCK_TYPE } from "@/lib/canvas/canvas-ports";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
 import type { CanvasNodeDefinition, CanvasNodeResource } from "@/types/canvas-plugin";
 
@@ -45,8 +45,9 @@ export function registerBuiltinNodes() {
             icon: <Workflow className={iconClass} />,
             minimapColor: "#8b5cf6",
             defaultSize: { width: 360, height: 265 },
-            defaultMetadata: { comfyPorts: MOCK_COMFY_PORTS },
-            ports: (node: CanvasNodeData) => node.metadata?.comfyPorts || MOCK_COMFY_PORTS,
+            // New nodes have no sockets until a real workflow template is bound.
+            defaultMetadata: { comfyPorts: [] },
+            ports: (node: CanvasNodeData) => node.metadata?.comfyPorts ?? [],
             autoOpenPanel: true,
         },
     ]);

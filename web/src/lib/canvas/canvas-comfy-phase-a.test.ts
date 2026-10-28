@@ -5,7 +5,7 @@ import { registerBuiltinNodes } from "@/components/canvas/nodes/builtin-nodes";
 import { prepareCanvasPortConnection, reconcileComfyArtifactConnections, validateCanvasPortConnections } from "./canvas-port-connections";
 import { prepareCanvasExternalInputSnapshot, resolveCanvasInputValue } from "./canvas-external-input-snapshot";
 import { COMFY_WORKFLOW_MOCK_TYPE, CANVAS_PORT_EDGE_PADDING, CANVAS_PORT_MIN_PITCH, getCanvasPortAnchor, getCanvasPortHitSize, getCanvasPortOffset, getCanvasVisiblePorts, getCanvasNodePorts, getMinimumCanvasPortNodeHeight, MOCK_COMFY_PORTS, pickCanvasDropHandle } from "./canvas-ports";
-import { applyNodeConfigPatch } from "./canvas-node-factory";
+import { applyNodeConfigPatch,createCanvasNode } from "./canvas-node-factory";
 import { connectionControlPoints, connectionControlHull } from "./canvas-connection-culling";
 import { cullConnections } from "./canvas-connection-culling";
 import { buildOverviewConnectionPaths } from "./canvas-overview-connections";
@@ -13,11 +13,58 @@ import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type Canvas
 
 beforeAll(() => registerBuiltinNodes());
 const n = (id: string, type: string, metadata: CanvasNodeData["metadata"] = {}): CanvasNodeData => ({
-    id, type, title: id, position: { x: 10, y: 20 }, width: 360, height: 265, metadata,
+    id, type, title: id, position: { x: 10, y: 20 }, width: 360, height: 265,
+    // Synthetic connected workflow fixtures represent already-bound templates.
+    metadata:type===COMFY_WORKFLOW_MOCK_TYPE && metadata?.comfyPorts && !("comfyWorkflow" in metadata)
+        ? {...metadata,comfyWorkflow:{templateId:"fixture-template",templateRevision:"a".repeat(64),
+            bindingState:"bound",inputOverrides:{}}}
+        :metadata,
 });
 const h = (nodeId: string, handleType: "source" | "target", portId?: string): ConnectionHandle => ({ nodeId, handleType, portId });
 const link = (a: ConnectionHandle, b: ConnectionHandle, nodes: CanvasNodeData[], connections: CanvasConnection[]) =>
     prepareCanvasPortConnection(a, b, nodes, connections);
+
+describe("unbound ComfyUI workflows expose no canvas sockets",()=>{
+    it("creates a genuinely empty workflow node in the add-node menu",()=>{
+        const workflow=createCanvasNode(COMFY_WORKFLOW_MOCK_TYPE,{x:300,y:280});
+        expect(workflow.title).toBe("工作流");
+        expect(workflow.metadata?.comfyPorts).toEqual([]);
+        expect(workflow.metadata?.comfyWorkflow).toBeUndefined();
+        expect(getCanvasNodePorts(workflow)).toEqual([]);
+        expect(getCanvasVisiblePorts(workflow)).toEqual([]);
+        expect(pickCanvasDropHandle(workflow,h("text","source","text"),workflow.position.y+80))
+            .toBeNull();
+    });
+    it("starts empty and does not expose legacy placeholder inputs or outputs",()=>{
+        const fresh=n("new-workflow",COMFY_WORKFLOW_MOCK_TYPE);
+        expect(getCanvasNodePorts(fresh)).toEqual([]);
+        expect(getCanvasVisiblePorts(fresh)).toEqual([]);
+        expect(pickCanvasDropHandle(fresh,h("text","source","text"),fresh.position.y+100)).toBeNull();
+        const old=n("old-workflow",COMFY_WORKFLOW_MOCK_TYPE,{
+            comfyPorts:MOCK_COMFY_PORTS,comfyWorkflow:undefined
+        });
+        expect(getCanvasNodePorts(old)).toEqual([]);
+        expect(getCanvasVisiblePorts(old)).toEqual([]);
+        expect(getCanvasPortAnchor(old,"target","prompt").y).toBe(old.position.y+old.height/2);
+        const text=n("text",CanvasNodeType.Text);
+        expect(link(h("text","source"),h("old-workflow","target","prompt"),[text,old],[]).error)
+            .toBe("missing_port");
+        expect(validateCanvasPortConnections([text,old],[{
+            id:"legacy-placeholder",fromNodeId:"text",fromPortId:"text",toNodeId:"old-workflow",toPortId:"prompt"
+        }])).toEqual([{connectionId:"legacy-placeholder",error:"missing_port"}]);
+    });
+    it("shows actual ports as soon as a template is bound",()=>{
+        const unbound=n("wf",COMFY_WORKFLOW_MOCK_TYPE,{
+            comfyPorts:MOCK_COMFY_PORTS,comfyWorkflow:undefined
+        });
+        const bound=n("wf",COMFY_WORKFLOW_MOCK_TYPE,{...unbound.metadata,
+            comfyWorkflow:{templateId:"template",templateRevision:"b".repeat(64),
+                bindingState:"needs-instance-binding",inputOverrides:{}}});
+        expect(getCanvasVisiblePorts(bound).map(p=>p.id)).toEqual(["prompt","image","result","mask"]);
+        expect(pickCanvasDropHandle(bound,h("text","source","text"),bound.position.y+40)?.portId)
+            .toBe("prompt");
+    });
+});
 
 describe("Phase A: port-aware canvas connection contract", () => {
     const aPorts: CanvasPortDescriptor[] = [
@@ -230,7 +277,10 @@ describe("ComfyUI scalar sockets hidden on canvas without altering template bind
             {id:"prompt",label:"Prompt",direction:"target",valueKind:"STRING"},
             {id:"out",label:"Output",direction:"source",valueKind:"VIDEO"}
         ];
-        const bound=applyNodeConfigPatch(n("wf",COMFY_WORKFLOW_MOCK_TYPE),{comfyPorts:many});
+        const bound=applyNodeConfigPatch(n("wf",COMFY_WORKFLOW_MOCK_TYPE,{
+            comfyWorkflow:{templateId:"fixture-template",templateRevision:"a".repeat(64),
+                bindingState:"bound",inputOverrides:{}}
+        }),{comfyPorts:many});
         expect(bound.height).toBe(265);
         expect(getCanvasVisiblePorts(bound).map(p=>p.id)).toEqual(["prompt","out"]);
         expect(bound.metadata?.comfyPorts).toHaveLength(many.length);
@@ -278,7 +328,10 @@ describe("Dense Comfy port hover hitboxes", () => {
     });
 
     it("binding 11 inputs grows node to ergonomic port spacing, and repeated edits do not shrink it", () => {
-        const old = n("dense", COMFY_WORKFLOW_MOCK_TYPE);
+        const old = n("dense", COMFY_WORKFLOW_MOCK_TYPE,{
+            comfyWorkflow:{templateId:"fixture-template",templateRevision:"a".repeat(64),
+                bindingState:"bound",inputOverrides:{}}
+        });
         const bound = applyNodeConfigPatch(old, {comfyPorts:ports});
         expect(bound.height).toBe(getMinimumCanvasPortNodeHeight(ports));
         expect(bound.position).toEqual(old.position);

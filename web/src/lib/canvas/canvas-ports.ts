@@ -7,9 +7,10 @@ export function registerCanvasPortResolver(type: string, resolve?: (node: Canvas
     else portResolvers.delete(type);
 }
 
-/** The mock type is intentionally not executable; later phases replace ports from template revisions. */
+/** Stable internal node type. Port descriptors become available after template binding. */
 export const COMFY_WORKFLOW_MOCK_TYPE = "comfy:workflow";
 
+/** Legacy test fixtures only. Never expose these placeholder ports on new nodes. */
 export const MOCK_COMFY_PORTS: CanvasPortDescriptor[] = [
     { id: "prompt", label: "Prompt", direction: "target", valueKind: "STRING", required: true },
     { id: "image", label: "Image", direction: "target", valueKind: "IMAGE" },
@@ -30,6 +31,10 @@ export function isPortAwareCanvasNode(node: CanvasNodeData): boolean {
 }
 
 export function getCanvasNodePorts(node: CanvasNodeData): readonly CanvasPortDescriptor[] {
+    // Historical unbound nodes may still carry placeholder comfyPorts in saved
+    // metadata. Never render or accept connections to those phantom sockets.
+    if (node.type === COMFY_WORKFLOW_MOCK_TYPE &&
+        (!node.metadata?.comfyWorkflow?.templateId || !node.metadata.comfyWorkflow.templateRevision)) return [];
     return portResolvers.get(node.type)?.(node) || [];
 }
 /** Presentation only: Comfy INT/FLOAT/BOOLEAN inputs are editable in the

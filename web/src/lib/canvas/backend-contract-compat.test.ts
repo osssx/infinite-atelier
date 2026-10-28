@@ -14,7 +14,10 @@ const kinds=[
  {kind:"text",type:CanvasNodeType.Text,port:"out-text",socket:"STRING"},
 ] as const;
 const node=(id:string,type:string,metadata:CanvasNodeData["metadata"]={}):CanvasNodeData=>
- ({id,type,title:id,position:{x:0,y:0},width:400,height:240,metadata});
+ ({id,type,title:id,position:{x:0,y:0},width:400,height:240,
+  metadata:type===COMFY_WORKFLOW_MOCK_TYPE&&metadata?.comfyPorts
+   ?{...metadata,comfyWorkflow:{templateId:"test-template",templateRevision:"a".repeat(64),
+      bindingState:"bound",inputOverrides:{}}}:metadata});
 
 describe("server-side Comfy provenance remains compatible with client port validation",()=>{
  it("can connect four typed generated artifacts with the existing canvas validation",()=>{

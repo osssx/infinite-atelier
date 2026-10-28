@@ -7,6 +7,8 @@ vi.mock("antd", () => ({
     Button: ({children, type, className, disabled, ...rest}:{
         children:ReactNode;type?:string;className?:string;disabled?:boolean;
     })=>createElement("button",{className:(className??"")+" "+(type??""),disabled,...rest},children),
+    Modal:({open,children}:{open:boolean;children:ReactNode})=>open?createElement("div",{role:"dialog"},children):null,
+    Input:({value,...props}:{value:string;[key:string]:unknown})=>createElement("input",{...props,value}),
 }));
 vi.mock("@/stores/use-theme-store",()=>({
     useThemeStore:(select:(state:{theme:"light"})=>unknown)=>select({theme:"light"}),
@@ -35,6 +37,29 @@ function footer(status?:string,error?:string) {
     const html=renderToStaticMarkup(createElement(ComfyWorkflowInstancePanel,props));
     return html.split("data-comfy-run-footer")[1]?.split("</footer>")[0]??"";
 }
+describe("save current ComfyUI workflow as new preset button",()=>{
+    it("renders next to template binding and is disabled before a workflow is loaded",()=>{
+        const noop=()=>undefined;
+        const withoutTemplate:CanvasNodeData={...node(),metadata:{}};
+        const html=renderToStaticMarkup(createElement(ComfyWorkflowInstancePanel,{
+            node:withoutTemplate,connections:[],projectId:"p",comfyInstanceId:"comfy-local",
+            backendExecution:true,onExecute:async()=>{throw Error("not expected")},
+            onExecutionChange:noop,onChange:noop,onTemplateChange:()=>true,onClose:noop
+        }));
+        expect(html).toMatch(/模板绑定<\/button>.*保存为新预设<\/button>/);
+        expect(html).toMatch(/disabled=""[^>]*aria-label="保存为新预设"/);
+        expect(html).toContain("尚未绑定工作流模板");
+    });
+    it("keeps the save button disabled while a bound template is not yet loaded",()=>{
+        const noop=()=>undefined;
+        const html=renderToStaticMarkup(createElement(ComfyWorkflowInstancePanel,{
+            node:node(),connections:[],projectId:"p",comfyInstanceId:"comfy-local",
+            backendExecution:true,onExecute:async()=>{throw Error("not expected")},
+            onExecutionChange:noop,onChange:noop,onTemplateChange:()=>true,onClose:noop
+        }));
+        expect(html).toMatch(/disabled=""[^>]*aria-label="保存为新预设"/);
+    });
+});
 describe("literal enum array dropdown",()=>{
     it.each([
         ["STRING","fast","fast",[{label:"快速",value:"fast"},{label:"高质量",value:"quality"}]],

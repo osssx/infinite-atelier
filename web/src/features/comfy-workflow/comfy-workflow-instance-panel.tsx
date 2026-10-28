@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState, type CSSProperties, type KeyboardEvent } from "react";
-import { Check, Dices, LoaderCircle, Link2, Play, RotateCcw, Settings2, X } from "lucide-react";
+import { Check, Dices, LoaderCircle, Link2, Play, RotateCcw, Save, Settings2, X } from "lucide-react";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
-import { Button } from "antd";
+import { Button, Input, Modal } from "antd";
 import type { CanvasConnection, CanvasNodeData, CanvasNodeMetadata } from "@/types/canvas";
 import {
     generateComfySafeSeed, getComfyInstanceScalarFields, parseComfyScalarOverride,
@@ -16,6 +16,7 @@ import type {BackendJobView} from "@/types/backend-contracts";
 import {canvasApi} from "@/features/backend-sync/canvas-api";
 import { comfyRunStatusLabel, isComfyRunActive } from "./run-status";
 import { ComfyWorkflowPanel } from "./comfy-workflow-panel";
+import {saveComfyInstanceAsNewPreset} from "./save-instance-as-preset";
 
 type Props = {
     node: CanvasNodeData;
@@ -147,6 +148,11 @@ export function ComfyWorkflowInstancePanel({node,connections,projectId,comfyInst
     const [run,setRun]=useState<ComfyRunState|null>(null);
     const [runBusy,setRunBusy]=useState(false);
     const [runError,setRunError]=useState("");
+    const [savePresetOpen,setSavePresetOpen]=useState(false);
+    const [newPresetName,setNewPresetName]=useState("");
+    const [savePresetBusy,setSavePresetBusy]=useState(false);
+    const [savePresetError,setSavePresetError]=useState("");
+    const [savedPresetMessage,setSavedPresetMessage]=useState("");
 
     const outputs=useMemo(()=>template?.ports.filter(p=>p.direction==="source" && !!p.capture?.adapterId && p.capture.kind!=="none")??[],[template]);
     const missingMedia=useMemo(()=>template?missingComfyMediaInputs(template,node.id,connections):[],[template,node.id,connections]);
@@ -189,6 +195,25 @@ export function ComfyWorkflowInstancePanel({node,connections,projectId,comfyInst
             .finally(()=>{if(active)setLoading(false);});
         return ()=>{active=false;};
     },[binding?.templateId,binding?.templateRevision,node.id]);
+    const canSaveAsPreset=!!template && !!binding &&
+        binding.templateId===template.id && binding.templateRevision===template.revision && !loading;
+    const openSavePreset=()=>{
+        if(!canSaveAsPreset)return;
+        setNewPresetName((template.name+" 副本").slice(0,160));
+        setSavePresetError("");
+        setSavedPresetMessage("");
+        setSavePresetOpen(true);
+    };
+    const saveAsNewPreset=async()=>{
+        if(!template||!canSaveAsPreset||savePresetBusy)return;
+        setSavePresetBusy(true);setSavePresetError("");
+        try {
+            const preset=await saveComfyInstanceAsNewPreset(template,node,connections,newPresetName);
+            setSavePresetOpen(false);
+            setSavedPresetMessage("已保存为新预设："+preset.name+"（当前节点保持原模板绑定）");
+        }catch(cause){setSavePresetError(cause instanceof Error?cause.message:String(cause));}
+        finally{setSavePresetBusy(false);}
+    };
     const fields=useMemo(()=>template?getComfyInstanceScalarFields(template,node,connections):[],[template,node,connections]);
     const missingChoiceSelections=fields.filter(field=>field.port.choices?.length && !field.connectedFrom &&
         (field.localValue.source==="disconnect" ||
@@ -221,7 +246,7 @@ export function ComfyWorkflowInstancePanel({node,connections,projectId,comfyInst
         if(applied)setEditingTemplate(false);
         return applied;
     }} onClose={()=>setEditingTemplate(false)}/>;
-    return <section className="pointer-events-auto mx-auto flex max-h-[min(690px,calc(100vh-32px))] w-[min(460px,calc(100vw-32px))] flex-col overflow-hidden rounded-[18px] border border-[var(--comfy-border)] bg-[var(--comfy-panel)] text-[var(--comfy-text)] shadow-2xl"
+    return <><section className="pointer-events-auto mx-auto flex max-h-[min(690px,calc(100vh-32px))] w-[min(460px,calc(100vw-32px))] flex-col overflow-hidden rounded-[18px] border border-[var(--comfy-border)] bg-[var(--comfy-panel)] text-[var(--comfy-text)] shadow-2xl"
         style={{...colors,colorScheme:themeName,accentColor:theme.node.activeStroke}}
         data-comfy-instance-panel data-canvas-no-zoom
         onMouseDown={(e)=>e.stopPropagation()} onPointerDown={(e)=>e.stopPropagation()} onWheel={(e)=>e.stopPropagation()}>
@@ -230,8 +255,13 @@ export function ComfyWorkflowInstancePanel({node,connections,projectId,comfyInst
                 <div className="truncate text-sm font-semibold">{template?.name||"ComfyUI Workflow"}</div>
                 <div className="mt-1 text-[11px] text-[var(--comfy-muted)]">实例参数 · 修改只影响当前画布节点</div>
             </div>
-            <button type="button" className={buttonClass} onClick={()=>setEditingTemplate(true)}><Settings2 size={13}/>模板绑定</button>
-            <button type="button" aria-label="关闭参数面板" className={buttonClass} onClick={onClose}><X size={14}/></button>
+            <div className="flex shrink-0 items-center gap-1.5">
+                <button type="button" className={buttonClass} onClick={()=>setEditingTemplate(true)}><Settings2 size={13}/>模板绑定</button>
+                <button type="button" className={buttonClass} disabled={!canSaveAsPreset || savePresetBusy}
+                    aria-label="保存为新预设" title={!canSaveAsPreset?"请先绑定并加载工作流模板":"将当前节点参数保存为独立预设"}
+                    onClick={openSavePreset}><Save size={13}/>保存为新预设</button>
+                <button type="button" aria-label="关闭参数面板" className={buttonClass} onClick={onClose}><X size={14}/></button>
+            </div>
         </header>
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
             {!comfyInstanceId?<p className="mb-3 rounded-lg bg-[var(--comfy-fill)] px-3 py-2 text-[11px] text-[var(--comfy-muted)]">请在右上角「配置与用户偏好 → ComfyUI」中选择默认实例，所有画布工作流节点共用此配置。</p>:null}
@@ -244,6 +274,7 @@ export function ComfyWorkflowInstancePanel({node,connections,projectId,comfyInst
             {missingChoiceSelections.length>0?<p role="alert" className="mb-3 rounded-lg border border-[var(--comfy-border)] bg-[var(--comfy-fill)] px-3 py-2 text-xs text-amber-600 dark:text-amber-400">
                 请先选择候选参数：{missingChoiceSelections.map(field=>field.port.label).join("、")}。
             </p>:null}
+            {savedPresetMessage?<p role="status" className="mb-3 text-xs text-emerald-600 dark:text-emerald-400">{savedPresetMessage}</p>:null}
             {loading?<p className="text-xs text-[var(--comfy-muted)]">正在加载模板版本…</p>
             :error?<p role="alert" className="rounded-md p-2 text-xs text-red-500">{error}</p>
             :!binding?.templateId?<div className="flex flex-col items-center gap-3 py-8 text-center text-xs text-[var(--comfy-muted)]">
@@ -275,5 +306,19 @@ export function ComfyWorkflowInstancePanel({node,connections,projectId,comfyInst
             {!backendExecution?<p className="text-xs text-amber-500" role="alert">任务调度服务不可用；请启动并配置本地 ComfyUI 后端，不会回退旧 V2。</p>:null}
             {statusError?<p className="break-words text-[11px] text-red-500" role="alert">{statusError}</p>:null}
         </footer>
-    </section>;
+    </section>
+    <Modal title="保存为新预设" open={savePresetOpen} onOk={()=>void saveAsNewPreset()}
+        onCancel={()=>{if(!savePresetBusy)setSavePresetOpen(false);}}
+        okText="保存预设" cancelText="取消" okButtonProps={{disabled:!newPresetName.trim()||savePresetBusy}}
+        confirmLoading={savePresetBusy} closable={!savePresetBusy} maskClosable={!savePresetBusy}
+        destroyOnHidden>
+        <label htmlFor="comfy-new-preset-name" className="mb-2 block text-sm">预设名称</label>
+        <Input id="comfy-new-preset-name" aria-label="新预设名称" value={newPresetName} maxLength={160}
+            onChange={e=>{setNewPresetName(e.target.value);setSavePresetError("");}}
+            onPressEnter={()=>void saveAsNewPreset()} disabled={savePresetBusy}/>
+        <p className="mt-2 text-xs text-gray-500">
+            将工作流和当前节点未被连线覆盖的实例参数保存为独立预设；不复制画布连线，也不修改原模板及当前节点绑定。
+        </p>
+        {savePresetError?<p role="alert" className="mt-2 text-xs text-red-500">{savePresetError}</p>:null}
+    </Modal></>;
 }

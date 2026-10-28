@@ -80,6 +80,33 @@ describe("P4.4 ordinary SQLite model submit",()=>{
   })).rejects.toThrow("不安全");
   expect(neverSaved.saveProjectNow).not.toHaveBeenCalled();
  });
+ it("freezes trusted text script into SQLite snapshot without browser key",async()=>{
+  const script='const data = await http.post("/chat/completions", {model, messages}); return data.choices?.[0]?.message?.content || "";';
+  const api=vi.fn(async(path:string,method="GET",payload?:any)=>{
+   if(path==="/api/v1/execution/capabilities")return {autoDispatch:true,modelKinds:["text"]};
+   if(path==="/api/v1/channels/proxy-1")return {id:"proxy-1",provider:"openai_compatible",hasKey:true,keyVersion:"v2"};
+   if(path==="/api/v1/jobs"){
+    expect(payload.snapshot).toMatchObject({
+     adapterKind:"model",provider:"openai_compatible",channelId:"proxy-1",
+     endpointBaseUrl:"http://127.0.0.1:8188/v1",secretVersionRef:"v2",
+     task:{kind:"text",model:"my-model",prompt:"hello",script}
+    });
+    expect(JSON.stringify(payload)).not.toContain("apiKey");
+    return fakeJob;
+   }
+   throw Error("unexpected "+path);
+  });
+  await startSqliteModelGeneration({projectId:"p1",sourceNodeId:"text-1",nodes,connections,
+   provider:"openai_compatible",channelId:"proxy-1",channelBaseUrl:"http://127.0.0.1:8188/v1",
+   task:{kind:"text",model:"my-model",prompt:"hello",script},
+   bridge:bridge(),api:api as unknown as typeof canvasApi});
+  expect(api).toHaveBeenCalledTimes(3);
+  const forbidden=vi.fn();
+  await expect(startSqliteModelGeneration({projectId:"p1",sourceNodeId:"text-1",nodes,connections,
+   provider:"openai",channelId:"proxy-1",
+   task:{kind:"video",model:"my-model",prompt:"hello"},
+   bridge:bridge(),api:forbidden as unknown as typeof canvasApi})).rejects.toThrow("model_provider_kind_unsupported");
+ });
  it("fails closed without worker, missing DPAPI key, or unsuccessful save fence",async()=>{
   const unsupported=vi.fn(async()=>({autoDispatch:false,modelKinds:[]}));
    const args={projectId:"p1",sourceNodeId:"text-1",nodes,connections,   channelId:"openai-channel",task:{kind:"text" as const,model:"gpt-4o-mini",prompt:"Hi"}};
@@ -97,6 +124,34 @@ describe("P4.4 ordinary SQLite model submit",()=>{
   await expect(startSqliteModelGeneration({...args,bridge:b,api:valid as unknown as typeof canvasApi}))
    .rejects.toThrow("generation_save_barrier_required");
   expect(valid.mock.calls.some(args=>args[0]==="/api/v1/jobs")).toBe(false);
+ });
+ it("submits frozen restricted async video script as durable poll job without browser API key",async()=>{
+  const script=JSON.stringify({version:1,
+   submit:'const data=await http.post("/videos",{model,prompt});return data.id;',
+   poll:'const data=await http.get("/videos/"+remoteTaskId);return {id:data.id,status:data.status,videoUrl:data.url};'
+  });
+  const requests:Array<{path:string;payload:any}>=[];
+  const api=vi.fn(async(path:string,method="GET",payload?:unknown)=>{
+   requests.push({path,payload});
+   if(path==="/api/v1/execution/capabilities")
+    return {autoDispatch:true,modelKinds:["image","text","audio","video"]};
+   if(path==="/api/v1/channels/proxy-1")
+    return {id:"proxy-1",provider:"openai_compatible",hasKey:true,keyVersion:"vault-v1"};
+   if(path==="/api/v1/jobs")return fakeJob;
+   throw Error("unexpected "+path);
+  });
+  const b=bridge();
+  await startSqliteModelGeneration({projectId:"p1",sourceNodeId:"text-1",nodes,connections,
+   channelId:"proxy-1",channelBaseUrl:"http://127.0.0.1:8188/v1",provider:"openai_compatible",
+   task:{kind:"video",model:"my-video",prompt:"fox",duration:6,ratio:"16:9",
+    resolution:"720p",generateAudio:true,watermark:false,script},
+   bridge:b,api:api as unknown as typeof canvasApi});
+  const post=requests.find(x=>x.path==="/api/v1/jobs")?.payload;
+  expect(post).toMatchObject({executionMode:"poll",snapshot:{provider:"openai_compatible",
+   secretVersionRef:"vault-v1",endpointBaseUrl:"http://127.0.0.1:8188/v1",
+   task:{kind:"video",model:"my-video",prompt:"fox",script}}});
+  expect(JSON.stringify(post)).not.toContain("apiKey");
+  expect(b.saveProjectNow).toHaveBeenCalledTimes(1);
  });
  it("submits Ark async video with frozen remote credential version and poll mode",async()=>{
   const requests:Array<{path:string;method:string;payload?:unknown}>=[];

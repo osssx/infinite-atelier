@@ -1,0 +1,188 @@
+import {appendArtifact} from "./repository.mjs";
+import {DEFAULT_OPENAI_ENDPOINT,normalizeOpenAiCompatBaseUrl,
+ createPinnedOpenAiCompatCall} from "./openai-compat-endpoints.mjs";
+import {parseRestrictedModelScript,runRestrictedModelScript} from "./restricted-model-script.mjs";
+import {createRestrictedVideoDownloader} from "./restricted-video-download.mjs";
+
+const fail=(code,confirmedNotAccepted=false)=>Object.assign(Error(code),
+ {code,statusCode:422,confirmedNotAccepted});
+const validId=id=>typeof id==="string"&&/^[A-Za-z0-9_-]{1,128}$/.test(id);
+const knownStatus=new Set(["queued","running","in_progress","processing","succeeded",
+ "completed","failed","cancelled","canceled","expired"]);
+/** Frozen JSON with three independent JavaScript expression bodies. Each body
+ * has exactly one statically permitted network operation; no general JS.
+ */
+export function parseRestrictedVideoScript(source){
+ if(typeof source!=="string"||Buffer.byteLength(source,"utf8")>32*1024)
+  throw fail("video_script_invalid",true);
+ let spec;
+ try{spec=JSON.parse(source)}catch{throw fail("video_script_invalid",true)}
+ if(!spec||Array.isArray(spec)||spec.version!==1||
+    Object.keys(spec).some(k=>!["version","submit","poll","cancel"].includes(k))||
+    typeof spec.submit!=="string"||typeof spec.poll!=="string"||
+    spec.cancel!==undefined&&typeof spec.cancel!=="string")
+  throw fail("video_script_invalid",true);
+ for(const [phase,body] of Object.entries({submit:spec.submit,poll:spec.poll,
+  ...(spec.cancel?{cancel:spec.cancel}:{})})){
+  parseRestrictedModelScript(body);
+  if(phase!=="submit"&&!body.includes("remoteTaskId"))
+   throw fail("video_script_remote_id_missing",true);
+ }
+ return spec;
+}
+export function validateRestrictedVideoSnapshot(snapshot){
+ if(snapshot?.adapterKind!=="model"||
+    !["openai","openai_compatible"].includes(snapshot.provider)||
+    !validId(snapshot.channelId)||!validId(snapshot.secretVersionRef))
+  throw fail("video_script_snapshot_invalid",true);
+ if(snapshot.provider==="openai"){
+  if(snapshot.endpointBaseUrl!==undefined)throw fail("video_script_endpoint_invalid",true);
+ }else{
+  let endpoint;
+  try{endpoint=normalizeOpenAiCompatBaseUrl(snapshot.endpointBaseUrl)}
+  catch{throw fail("video_script_endpoint_invalid",true)}
+  if(endpoint!==snapshot.endpointBaseUrl)throw fail("video_script_endpoint_invalid",true);
+ }
+ const task=snapshot.task;
+ if(!task||task.kind!=="video"||
+    typeof task.model!=="string"||!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(task.model)||
+    typeof task.prompt!=="string"||!task.prompt.trim()||
+    Buffer.byteLength(task.prompt,"utf8")>16000||
+    Object.keys(task).some(key=>!["kind","model","prompt","script","duration","ratio",
+     "resolution","generateAudio","watermark"].includes(key))||
+    task.duration!==undefined&&(!Number.isInteger(task.duration)||task.duration<1||task.duration>60)||
+    task.ratio!==undefined&&!["adaptive","16:9","9:16","1:1","4:3","3:4","21:9"].includes(task.ratio)||
+    task.resolution!==undefined&&!["480p","720p","1080p"].includes(task.resolution)||
+    task.generateAudio!==undefined&&typeof task.generateAudio!=="boolean"||
+    task.watermark!==undefined&&typeof task.watermark!=="boolean")
+  throw fail("video_script_task_invalid",true);
+ const spec=parseRestrictedVideoScript(task.script);
+ return {task,spec};
+}
+export function createRestrictedVideoAdapter({db,vault,blobStore,
+ upstreamCall=fetch,compatibleUpstreamCall=createPinnedOpenAiCompatCall({
+  allowVideoPollGet:true,allowVideoCancel:true
+ }),mediaDownloader}={}){
+ if(!db||!vault||!blobStore)throw Error("video_script_dependencies_required");
+ const downloader=mediaDownloader??createRestrictedVideoDownloader({blobStore});
+ const check=job=>{
+  const snapshot=job.snapshot??JSON.parse(job.snapshot_json);
+  const {task,spec}=validateRestrictedVideoSnapshot(snapshot);
+  if(vault.get(snapshot.channelId).provider!==snapshot.provider)
+   throw fail("video_script_channel_mismatch",true);
+  vault.checkReference(snapshot.secretVersionRef,snapshot.channelId);
+  return {snapshot,task,spec};
+ };
+ const endpoint=snap=>snap.provider==="openai_compatible"?
+  snap.endpointBaseUrl:DEFAULT_OPENAI_ENDPOINT;
+ async function phase(job,name,remoteTaskId){
+  const {snapshot,task,spec}=check(job);
+  const script=spec[name];
+  if(!script)return null;
+  const auth=vault.withSecretVersion(snapshot.secretVersionRef,
+   bytes=>"Bearer "+bytes.toString("utf8"),{channelId:snapshot.channelId});
+  const network=snapshot.provider==="openai_compatible"?compatibleUpstreamCall:upstreamCall;
+  let hasCalled=false;
+  return runRestrictedModelScript({
+   script,model:task.model,prompt:task.prompt,remoteTaskId,
+   messages:[{role:"user",content:task.prompt}],
+   params:{duration:task.duration,ratio:task.ratio,resolution:task.resolution,
+    generateAudio:task.generateAudio,watermark:task.watermark},
+   http:async(method,path,body)=>{
+    if(hasCalled)throw fail("video_script_multiple_requests",true);
+    hasCalled=true;
+    if(name==="submit"&&method!=="post"||
+       name==="poll"&&method!=="get"||
+       name==="cancel"&&method!=="delete")
+     throw fail("video_script_method_forbidden",true);
+    if(name!=="submit"&&(!validId(remoteTaskId)||
+       !path.endsWith("/"+remoteTaskId)))throw fail("video_script_poll_path_invalid",true);
+    let payload;
+    if(name==="submit"){
+     try{payload=JSON.stringify(body)}
+     catch{throw fail("video_script_body_invalid",true)}
+     if(!payload||Buffer.byteLength(payload)>128*1024)
+      throw fail("video_script_body_invalid",true);
+    }
+    let response;
+    try{response=await network(endpoint(snapshot)+path,{
+     method:method.toUpperCase(),redirect:"manual",
+     headers:{authorization:auth,...(payload?{"content-type":"application/json"}:{})},
+     ...(payload?{body:payload}:{}),signal:AbortSignal.timeout(120000)
+    })}catch{
+     throw fail(name==="submit"?"video_script_submit_uncertain":
+      "video_script_status_unavailable");
+    }
+    if(response.status>=300&&response.status<400)
+     throw fail("video_script_redirect_forbidden");
+    if(!response.ok)throw fail("video_script_upstream_rejected",
+     name==="submit"&&response.status>=400&&response.status<500);
+    if(!response.body)throw fail("video_script_response_empty");
+    const parts=[];let size=0;
+    for await(const chunk of response.body){
+     const bytes=Buffer.from(chunk);size+=bytes.length;
+     if(size>256*1024)throw fail("video_script_response_too_large");
+     parts.push(bytes);
+    }
+    try{return JSON.parse(Buffer.concat(parts).toString("utf8"))}
+    catch{throw fail("video_script_response_invalid")}
+   }
+  });
+ }
+ async function prepare({job}){check(job)}
+ async function submit({job}){
+  const result=await phase(job,"submit");
+  const id=typeof result==="string"?result:result?.id;
+  if(!validId(id))throw fail("video_script_submit_id_unknown");
+  return {kind:"accepted",remoteTaskId:id};
+ }
+ async function taskStatus(job,remoteTaskId){
+  if(!validId(remoteTaskId))throw fail("video_script_remote_id_invalid");
+  const result=await phase(job,"poll",remoteTaskId);
+  if(!result||typeof result!=="object"||Array.isArray(result)||
+     !knownStatus.has(result.status))
+   throw fail("video_script_status_invalid");
+  // A result must never swap the task ID being polled.
+  if(result.id!==undefined&&result.id!==remoteTaskId)
+   throw fail("video_script_remote_id_mismatch");
+  return result;
+ }
+ async function poll({job,remoteTaskId}){
+  const status=await taskStatus(job,remoteTaskId);
+  if(["queued","running","in_progress","processing"].includes(status.status))return {kind:"pending"};
+  if(["cancelled","canceled"].includes(status.status))return {kind:"cancelled"};
+  if(["failed","expired"].includes(status.status))return {kind:"failed"};
+  return {kind:"completed",receipt:{remoteTaskId}};
+ }
+ async function collect({job,remoteTaskId}){
+  if(db.prepare("SELECT COUNT(*) AS n FROM artifacts WHERE job_id=?").get(job.id).n>0)return;
+  const status=await taskStatus(job,remoteTaskId);
+  if(!["succeeded","completed"].includes(status.status)||typeof status.videoUrl!=="string")
+   throw fail("video_script_media_not_ready");
+  const {snapshot,task}=check(job);
+  // Never forward the bearer key to this URL. Public CDN/explicit same origin only.
+  const blob=await downloader.importUrl(status.videoUrl,
+   {endpointBaseUrl:endpoint(snapshot)});
+  if(!["video/mp4","video/webm"].includes(blob.mimeType))
+   throw fail("video_script_media_mime_invalid");
+  appendArtifact(db,{jobId:job.id,portId:"video",itemKey:"0",
+   blobId:blob.blobId,kind:"video",mime:blob.mimeType,sha256:blob.sha256,
+   metadata:{modelGeneration:{kind:"video",model:task.model}}});
+ }
+ async function cancel({job,remoteTaskId}){
+  const {spec}=check(job);
+  if(!spec.cancel)return {cancelled:false,reason:"video_script_cancel_not_configured"};
+  // Destructive cancellation is only ever allowed for a proven queued task.
+  const status=await taskStatus(job,remoteTaskId);
+  if(["cancelled","canceled"].includes(status.status))return {cancelled:true};
+  if(status.status!=="queued")
+   return {cancelled:false,reason:"video_script_cancel_not_queued"};
+  try{
+   await phase(job,"cancel",remoteTaskId);
+   const confirmed=await taskStatus(job,remoteTaskId);
+   return ["cancelled","canceled"].includes(confirmed.status)?{cancelled:true}:
+    {cancelled:false,reason:"video_script_cancel_unconfirmed"};
+  }catch{return {cancelled:false,reason:"video_script_cancel_unconfirmed"}}
+ }
+ return {prepare,submit,poll,collect,cancel};
+}

@@ -196,6 +196,14 @@ export function getPluginTemplates(): Record<ModelCapability, PluginTemplate[]> 
     return {
     image: [
         {
+            label:"安全文生图（Base64）",
+            script:`// 适用于返回 OpenAI 图片 JSON b64_json 的自定义接口。
+const data = await http.post("/images/generations", {
+  model, prompt, n: 1, size: params.size
+});
+return data.data?.[0]?.b64_json || "";`,
+        },
+        {
             label: i18n.t("modelPlugin.templates.openai"),
             script: `// ${i18n.t("modelPlugin.templates.imageOpenai")}
 // ${i18n.t("modelPlugin.templates.availableImage")}
@@ -251,6 +259,14 @@ return (data.candidates || [])
     ],
     video: [
         {
+            label:"安全异步视频（提交/轮询）",
+            script:JSON.stringify({
+                version:1,
+                submit:'const data = await http.post("/videos", {model, prompt, seconds: params.duration, ratio: params.ratio}); return data.id;',
+                poll:'const data = await http.get(`/videos/${remoteTaskId}`); return {id: data.id, status: data.status, videoUrl: data.video_url || data.url};',
+            },null,2),
+        },
+        {
             label: i18n.t("modelPlugin.templates.openai"),
             script: `// ${i18n.t("modelPlugin.templates.videoOpenai")}
 const headers = { "Content-Type": "application/json", Authorization: \`Bearer \${apiKey}\` };
@@ -294,6 +310,15 @@ return await poll(
     ],
     audio: [
         {
+            label:"安全音频（JSON Base64）",
+            script:`// 仅适用于以 JSON 返回 Base64 音频的 API，不支持原始二进制响应。
+const data = await http.post("/audio/speech", {
+  model, input: prompt, voice: params.voice,
+  response_format: params.format, speed: params.speed
+});
+return data.data || "";`,
+        },
+        {
             label: i18n.t("modelPlugin.templates.openai"),
             script: `// ${i18n.t("modelPlugin.templates.audioOpenai")}
 return await request({
@@ -326,6 +351,13 @@ return { data: audio.data };`,
         },
     ],
     text: [
+        {
+            label:"安全文本（推荐）",
+            script:`// 后端安全文本脚本：仅支持受限 JavaScript 表达式，不支持浏览器全局对象。
+// API Key 仅由后端 Vault 在 HTTP 层注入，脚本中不可读取 apiKey。
+const data = await http.post("/chat/completions", {model, messages});
+return data.choices?.[0]?.message?.content || "";`,
+        },
         {
             label: i18n.t("modelPlugin.templates.openai"),
             script: `// ${i18n.t("modelPlugin.templates.textOpenai")}

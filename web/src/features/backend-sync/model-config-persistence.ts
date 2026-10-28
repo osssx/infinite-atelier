@@ -1,4 +1,6 @@
 import type {AiConfig} from "@/stores/use-config-store";
+import type {ModelChannel} from "@/stores/use-config-store";
+import {modelChannelProvider} from "./model-channel-autoroute";
 import type {PersistStorage} from "zustand/middleware";
 import {PERF_MODE} from "@/lib/perf-mode";
 import {publicModelConfig,readUiSetting,saveUiSetting} from "./ui-settings-client";
@@ -22,6 +24,54 @@ function parse(value:string|null){
 // versions. Honor them so stale browser copies cannot resurrect vaulted keys.
 // The interactive migration feature and marker-writing logic have been removed.
 const VAULT_MARKERS_KEY="atelier:vaulted-model-channels";
+/** Only channels whose every selected model is handled by the backend may
+ * discard their browser API Key. Mixed video/JS/Gemini channels retain it.
+ */
+export function isVaultOnlyChannel(channel:ModelChannel):boolean{
+ const provider=modelChannelProvider(channel);
+ if(!provider||!channel.models.length)return false;
+ return channel.models.every(model=>!model.script?.trim()&&(
+  provider==="volcengine_ark"?model.capability==="video":model.capability!=="video"));
+}
+/** Called only after an encrypted channel key was confirmed by the backend.
+ * Preserve unrelated browser settings, custom scripts and other channels.
+ * This is not a user-data migration; it only redacts verified duplicate keys.
+ */
+export function redactConfirmedVaultKey(channel:ModelChannel):boolean{
+ if(!isVaultOnlyChannel(channel))return false;
+ if(PERF_MODE||typeof window==="undefined")return false;
+ const storage=window.localStorage;
+ const markers=vaultMarkers();
+ const scrub=(key:string,legacy=false)=>{
+  const raw=storage.getItem(key);
+  if(!raw)return;
+  const parsed=parse(raw);
+  if(!parsed||typeof parsed!=="object"||Array.isArray(parsed))return;
+  const record=parsed as Record<string,unknown>;
+  const state=legacy?(record.state as Record<string,unknown>|undefined):undefined;
+  const config=legacy?(state?.config as Record<string,unknown>|undefined):record;
+  if(!config||typeof config!=="object")return;
+  const selected=legacy?Array.isArray(config.channels)?
+    (config.channels as Array<Record<string,unknown>>).find(item=>
+      item?.id===channel.id&&item.baseUrl===channel.baseUrl&&item.apiFormat===channel.apiFormat):null:
+    ((config.channels as Record<string,Record<string,unknown>>|undefined)?.[channel.id]);
+  if(!selected||selected.baseUrl!==channel.baseUrl||
+     selected.apiFormat!==channel.apiFormat)return;
+  const oldKey=typeof selected.apiKey==="string"?selected.apiKey:"";
+  const nextChannels=legacy?(config.channels as Array<Record<string,unknown>>).map(item=>
+      item===selected?{...item,apiKey:""}:item):
+    {...config.channels as Record<string,unknown>,[channel.id]:{...selected,apiKey:""}};
+  const nextConfig={...config,channels:nextChannels,
+   ...(oldKey&&config.baseUrl===channel.baseUrl&&config.apiKey===oldKey?{apiKey:""}:{})};
+  storage.setItem(key,JSON.stringify(legacy?{...record,state:{...state,config:nextConfig}}:nextConfig));
+ }; scrub(CREDENTIALS_KEY);
+ scrub(LEGACY_KEY,true);
+ // Mark redaction complete only after both stores were updated successfully.
+ storage.setItem(VAULT_MARKERS_KEY,JSON.stringify({
+  ...markers,[channel.id]:{id:channel.id,baseUrl:channel.baseUrl,apiFormat:channel.apiFormat}
+ }));
+ return true;
+}
 type VaultedChannelBinding={id:string;baseUrl:string;apiFormat:string};
 function vaultMarkers():Record<string,VaultedChannelBinding>{
  const value=parse(localGet(VAULT_MARKERS_KEY));
@@ -77,10 +127,11 @@ function withBrowserSecrets(config:AiConfig,hasRemoteProfile:boolean):AiConfig{
  return {...config,apiKey:creds.baseUrl===config.baseUrl?(creds.apiKey||""):"",
   channels:config.channels.map(ch=>{
    const candidate=creds.channels[ch.id];
-   const safe=candidate?.baseUrl===ch.baseUrl&&candidate?.apiFormat===ch.apiFormat&&!isVaulted(ch.id,ch.baseUrl,ch.apiFormat);
-   return {...ch,apiKey:safe?(candidate.apiKey||""):"",
+   const matches=candidate?.baseUrl===ch.baseUrl&&candidate?.apiFormat===ch.apiFormat;
+   const allowKey=matches&&!isVaulted(ch.id,ch.baseUrl,ch.apiFormat);
+   return {...ch,apiKey:allowKey?(candidate.apiKey||""):"",
     models:ch.models.map(model=>({...model,
-     ...(safe&&candidate.scripts?.[model.name]?{script:candidate.scripts[model.name]}:{})}))};
+     ...(matches&&candidate.scripts?.[model.name]?{script:candidate.scripts[model.name]}:{})}))};
   })};
 }
 function saveLocalSecrets(config:AiConfig){

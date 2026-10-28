@@ -53,7 +53,8 @@ export function validateCompatResolvedAddress(hostname,address){
  }
  if(!isPublicIPv4(address))throw fail("model_endpoint_dns_forbidden");
 }
-export function createPinnedOpenAiCompatCall({fetcher=fetch,resolver=lookup}={}){
+export function createPinnedOpenAiCompatCall({fetcher=fetch,resolver=lookup,
+ allowGetModels=false,allowVideoPollGet=false,allowVideoCancel=false}={}){
  const agent=new Agent({connect:{lookup(hostname,_options,callback){
   resolver(hostname,{all:true,family:4},(error,rows)=>{
    if(error||!Array.isArray(rows)||!rows.length)return callback(fail("model_endpoint_dns_forbidden"));
@@ -66,7 +67,11 @@ export function createPinnedOpenAiCompatCall({fetcher=fetch,resolver=lookup}={})
  return async(url,options)=>{
   const target=new URL(url);
   normalizeOpenAiCompatBaseUrl(url);
-  if(!["POST"].includes(options?.method)||target.search||target.hash)
+  if(!(options?.method==="POST"||
+    allowGetModels&&options?.method==="GET"&&target.pathname.endsWith("/models")||
+    allowVideoPollGet&&options?.method==="GET"&&/\/[A-Za-z0-9_-]{1,128}$/.test(target.pathname)||
+    allowVideoCancel&&options?.method==="DELETE"&&/\/[A-Za-z0-9_-]{1,128}$/.test(target.pathname))||
+    target.search||target.hash)
    throw fail("model_endpoint_url_invalid");
   return fetcher(url,{...options,redirect:"manual",dispatcher:agent});
  };

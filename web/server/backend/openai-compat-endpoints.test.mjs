@@ -88,6 +88,19 @@ test("compatible JobCoordinator uses frozen user endpoint and vault key, not off
   {...snapshot,endpointBaseUrl:undefined}
  ])assert.throws(()=>validateModelSnapshot(forged),/model_endpoint_reference_invalid/);
 });
+test("pinned network transport allows read-only /models GET only when explicitly enabled",async()=>{
+ const calls=[];
+ const transport=createPinnedOpenAiCompatCall({allowGetModels:true,fetcher:async(url,options)=>{
+  calls.push({url,options});return new Response("{}");
+ }});
+ await transport("http://127.0.0.1:8188/v1/models",{method:"GET"});
+ assert.equal(calls[0].options.redirect,"manual");
+ assert.ok(calls[0].options.dispatcher);
+ await assert.rejects(transport("http://127.0.0.1:8188/v1/admin",{method:"GET"}),
+  /model_endpoint_url_invalid/);
+ await assert.rejects(transport("http://127.0.0.1:8188/v1/models?key=secret",{method:"GET"}),
+  /model_endpoint_config_invalid/);
+});
 test("outbound model POST keeps pinned DNS and rejects redirects; no arbitrary method",async()=>{
  const calls=[];
  const request=createPinnedOpenAiCompatCall({fetcher:async(url,options)=>{

@@ -39,6 +39,51 @@ function fixture(t,upstreamCall){
  };
  return {db,vault,snapshot,enqueue,blobStore,coordinator};
 }
+test("vault-only model catalog uses read-only GET and redacts keys from HTTP response",async t=>{
+ const calls=[];
+ const f=fixture(t,async(url,options)=>{
+  calls.push({url,options});
+  return new Response(JSON.stringify({data:[
+   {id:"z-model"},{id:"a-model"},{id:"a-model"},{id:42}
+  ]}),{status:200});
+ });
+ const adapter=createOpenAiModelAdapter({db:f.db,blobStore:f.blobStore,vault:f.vault,
+  upstreamCall:async(url,options)=>{
+   calls.push({url,options});
+   return new Response(JSON.stringify({data:[{id:"z-model"},{id:"a-model"}]}),{status:200});
+  },
+  compatibleUpstreamCall:async(url,options)=>{
+   calls.push({url,options});
+   return new Response(JSON.stringify({data:[{id:"local-model"},{id:"another"}]}),{status:200});
+  }
+ });
+ const compat=f.vault.create({id:"local-proxy",displayName:"Local proxy",
+  provider:"openai_compatible",apiKey:"local-secret-for-tests"});
+ assert.deepEqual(await adapter.listModels({channelId:"openai-channel",endpointBaseUrl:"https://api.openai.com"}),
+  {models:["a-model","z-model"]});
+ assert.deepEqual(await adapter.listModels({channelId:compat.id,endpointBaseUrl:"http://127.0.0.1:8188/v1"}),
+  {models:["another","local-model"]});
+ assert.equal(calls[0].url,"https://api.openai.com/v1/models");
+ assert.equal(calls[0].options.headers.Authorization,"Bearer fixture-only-not-a-real-secret");
+ assert.equal(calls[1].url,"http://127.0.0.1:8188/v1/models");
+ assert.equal(calls[1].options.headers.Authorization,"Bearer local-secret-for-tests");
+ assert.equal(calls[0].options.method,"GET");
+ await assert.rejects(adapter.listModels({channelId:compat.id,
+  endpointBaseUrl:"http://169.254.169.254/v1"}),/model_catalog_origin_invalid/);
+ await assert.rejects(adapter.listModels({channelId:"missing",
+  endpointBaseUrl:"https://api.openai.com"}),/channel_not_found/);
+ const app=buildApp({db:f.db,authorize:async()=>true,vault:f.vault,
+  modelCatalog:args=>adapter.listModels(args)});
+ t.after(()=>app.close());
+ const reply=await app.inject({method:"POST",url:"/api/v1/channels/local-proxy/models",
+  headers:{host:"localhost"},payload:{baseUrl:"http://127.0.0.1:8188/v1"}});
+ assert.equal(reply.statusCode,200);
+ assert.deepEqual(reply.json(),{models:["another","local-model"]});
+ assert.ok(!reply.body.includes("local-secret-for-tests"));
+ const wrong=await app.inject({method:"POST",url:"/api/v1/channels/local-proxy/models",
+  headers:{host:"localhost"},payload:{baseUrl:"http://169.254.169.254/v1"}});
+ assert.equal(wrong.statusCode,400);
+});
 test("P4.4 OpenAI image generation uses encrypted channel, immutable CAS, and a single GPU POST",async t=>{
  const calls=[];
  const f=fixture(t,async(url,options)=>{

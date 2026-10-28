@@ -18,6 +18,7 @@ import {createJobCoordinator} from "./job-coordinator.mjs";
 import {createComfyV2Adapters} from "./comfy-v2-adapter.mjs";
 import {createComfyInstanceRegistry} from "./comfy-instances.mjs";
 import {createOpenAiModelAdapter} from "./openai-model-adapter.mjs";
+import {createRestrictedVideoAdapter} from "./restricted-video-adapter.mjs";
 import {createArkVideoAdapter} from "./ark-video-adapter.mjs";
 import {createArkChannelHealth} from "./ark-channel-health.mjs";
 import {createTrustedMediaDownloader} from "./trusted-media-download.mjs";
@@ -70,6 +71,8 @@ export function createLocalBackend({dataDir,streamPollMs=200,adapters,comfyInsta
     upstreamCall:comfyUpstreamCall}):null;
   const openai=enableOpenAiModels?createOpenAiModelAdapter({db,blobStore,vault,
     ...(modelUpstreamCall?{upstreamCall:modelUpstreamCall}:{})}):null;
+  const customVideo=enableOpenAiModels?createRestrictedVideoAdapter({db,blobStore,vault,
+    ...(modelUpstreamCall?{upstreamCall:modelUpstreamCall}:{})}):null;
   const assetConfig=enableArkVideos?(arkAssetConfig??readArkAssetConfig()):null;
   const assetManager=assetConfig?createArkAssetManager({db,blobStore,config:assetConfig,
    ...(arkAssetUpstreamCall?{upstreamCall:arkAssetUpstreamCall}:{}),
@@ -79,7 +82,9 @@ export function createLocalBackend({dataDir,streamPollMs=200,adapters,comfyInsta
   const model=openai||ark?Object.fromEntries(["prepare","submit","poll","collect","cancel"].map(method=>[
    method,async args=>{
     const provider=args.job.snapshot?.provider??JSON.parse(args.job.snapshot_json).provider;
-    const instance=(provider==="openai"||provider==="openai_compatible")?openai:provider==="volcengine_ark"?ark:null;
+    const snap=args.job.snapshot??JSON.parse(args.job.snapshot_json);
+    const instance=(provider==="openai"||provider==="openai_compatible")?
+     (snap.task?.kind==="video"?customVideo:openai):provider==="volcengine_ark"?ark:null;
     if(!instance||typeof instance[method]!=="function")throw Error("model_provider_not_enabled");
     return instance[method](args);
    }
@@ -93,8 +98,9 @@ export function createLocalBackend({dataDir,streamPollMs=200,adapters,comfyInsta
   const worker=autoDispatch?createBackendWorker({coordinator,materializer,intervalMs:dispatchIntervalMs}):null;
   const app=buildApp({db,sessionAuth,autoLocalSession,blobStore,mediaPreview,blobGc,projectArchive,vault,
    arkChannelHealth:createArkChannelHealth({vault}),
+   modelCatalog:openai?args=>openai.listModels(args):null,
    mediaDownloader:createTrustedMediaDownloader({blobStore}),coordinator,materializer,worker,
-   comfyRegistry,comfyInstanceIds:comfyRegistry?()=>comfyRegistry.list().map(item=>item.id):comfyInstances?.map(item=>item.id)??[],modelKinds:[...(enableOpenAiModels?["image","audio","text"]:[]),...(enableArkVideos?["video"]:[])],arkAssetUploadReady:Boolean(assetManager),streamPollMs});
+   comfyRegistry,comfyInstanceIds:comfyRegistry?()=>comfyRegistry.list().map(item=>item.id):comfyInstances?.map(item=>item.id)??[],modelKinds:[...new Set([...(enableOpenAiModels?["image","audio","text","video"]:[]),...(enableArkVideos?["video"]:[])])],arkAssetUploadReady:Boolean(assetManager),streamPollMs});
   worker?.start();
   let closed=false;
   return {app,db,sessionAuth,vault,blobStore,comfyRegistry,assetManager,mediaPreview,blobGc,projectArchive,coordinator,materializer,worker,lock,async close(){

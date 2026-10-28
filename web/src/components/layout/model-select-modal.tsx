@@ -64,7 +64,7 @@ export function ModelSelectModal({ open, channel, selectedNames, onConfirm, onCl
     const fetchModels = async () => {
         if (!channel) return;
         if (channel.apiFormat === "volcengine_ark") return;
-        if (!channel.baseUrl.trim() || !channel.apiKey.trim()) {
+        if (!channel.baseUrl.trim() || channel.apiFormat !== "openai" && !channel.apiKey.trim()) {
             message.error(t("config.modelSelect.missingConfig"));
             return;
         }

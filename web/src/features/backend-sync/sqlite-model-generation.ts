@@ -32,13 +32,17 @@ export async function startSqliteModelGeneration({
   mode?:"text_to_video"|"first_frame"|"first_last_frame"|"omni_reference";
   references?:FrozenArkReference[];
   operation?:"edit";images?:FrozenModelImage[];mask?:FrozenModelImage;
-  messages?:FrozenTextTurn[];stream?:boolean;skills?:{blobId:string}};
+  messages?:FrozenTextTurn[];stream?:boolean;skills?:{blobId:string};script?:string};
  skillAuthorizationId?:string;
  referenceImages?:readonly ReferenceImage[];maskImage?:ReferenceImage;
  api?:typeof canvasApi;bridge?:ReturnType<typeof createSqliteComfyBridge>;
 }):Promise<BackendJobView>{
  if(!nodes.some(node=>node.id===sourceNodeId))throw Error("model_source_node_missing");
- if((["openai","openai_compatible"].includes(provider)&&task.kind==="video")||
+ if(task.script!==undefined&&(task.skills||
+   referenceImages.length>0||maskImage||typeof task.script!=="string"||
+   new TextEncoder().encode(task.script).length>16_384))
+  throw Error("自定义脚本后端不支持图片参考或 Skill，脚本最大 16KB");
+ if((["openai","openai_compatible"].includes(provider)&&task.kind==="video"&&!task.script)||
     (provider==="volcengine_ark"&&task.kind!=="video"))
   throw Error("model_provider_kind_unsupported");
  const capability=await api<{autoDispatch:boolean;modelKinds?:string[]}>(

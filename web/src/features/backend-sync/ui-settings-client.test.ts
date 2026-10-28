@@ -3,7 +3,7 @@ vi.mock("./canvas-api",()=>({canvasApi:vi.fn()}));
 vi.mock("@/lib/perf-mode",()=>({PERF_MODE:false}));
 import {canvasApi} from "./canvas-api";
 import {publicModelConfig,redactedExportConfig} from "./ui-settings-client";
-import {createModelConfigStorage,awaitModelConfigPersistence} from "./model-config-persistence";
+import {createModelConfigStorage,awaitModelConfigPersistence,isVaultOnlyChannel,redactConfirmedVaultKey} from "./model-config-persistence";
 import {createThemeStorage,awaitThemePersistence} from "./ui-theme-persistence";
 import type {AiConfig} from "@/stores/use-config-store";
 
@@ -126,6 +126,68 @@ describe("P5.4b non-secret settings client",()=>{
   const stored=JSON.parse(local.get("atelier:local-credentials")!);
   expect(stored.channels[channel.id].apiKey).toBe("");
   expect(local.get("infinite-canvas:ai_config_store")).toContain("SENSITIVE_KEY");
+ });
+ it("redacts a confirmed backend-only channel from both browser stores without changing other keys",async()=>{
+  const safe={...config.channels[0],models:[{name:"txt",capability:"text" as const}]};
+  const another={id:"gem",name:"Gemini",baseUrl:"https://generativelanguage.googleapis.com",
+   apiFormat:"gemini" as const,apiKey:"GEMINI_KEEP",models:[{name:"g",capability:"text" as const}]};
+  const active={...config,apiKey:"SENSITIVE_KEY",baseUrl:safe.baseUrl,
+   channels:[{...safe,apiKey:"SENSITIVE_KEY"},another]};
+  const legacy={state:{config:active},version:0,keep:"other data"};
+  local.set("atelier:local-credentials",JSON.stringify({
+   apiKey:"SENSITIVE_KEY",baseUrl:safe.baseUrl,channels:{
+    [safe.id]:{apiKey:"SENSITIVE_KEY",baseUrl:safe.baseUrl,apiFormat:safe.apiFormat,
+     scripts:{existing:"PRESERVE_SCRIPT"}},
+    gem:{apiKey:"GEMINI_KEEP",baseUrl:another.baseUrl,apiFormat:another.apiFormat,scripts:{}}
+   }
+  }));
+  local.set("infinite-canvas:ai_config_store",JSON.stringify(legacy));
+  expect(isVaultOnlyChannel(safe)).toBe(true);
+  expect(redactConfirmedVaultKey(safe)).toBe(true);
+  const raw=JSON.parse(local.get("atelier:local-credentials")!);
+  expect(raw.channels[safe.id].apiKey).toBe("");
+  expect(raw.channels.gem.apiKey).toBe("GEMINI_KEEP");
+  expect(raw.channels[safe.id].scripts.existing).toBe("PRESERVE_SCRIPT");
+  expect(raw.apiKey).toBe("");
+  const old=JSON.parse(local.get("infinite-canvas:ai_config_store")!);
+  expect(old.keep).toBe("other data");
+  expect(old.state.config.channels[0].apiKey).toBe("");
+  expect(old.state.config.channels[1].apiKey).toBe("GEMINI_KEEP");
+  expect(old.state.config.apiKey).toBe("");
+  const marker=JSON.parse(local.get("atelier:vaulted-model-channels")!);
+  expect(marker[safe.id]).toMatchObject({id:safe.id,baseUrl:safe.baseUrl});
+  vi.mocked(canvasApi).mockResolvedValue({revision:2,value:publicModelConfig(active)});
+  const hydrated=await createModelConfigStorage(active).getItem("config");
+  expect(hydrated?.state.config.channels[0].apiKey).toBe("");
+  expect(hydrated?.state.config.channels[1].apiKey).toBe("GEMINI_KEEP");
+  expect(hydrated?.state.config.apiKey).toBe("");
+ });
+ it("does not redact browser keys for mixed video/scripts or unhandled providers",()=>{
+  const scripted=config.channels[0];
+  const video={...scripted,models:[{name:"vid",capability:"video" as const}]};
+  const gemini={...scripted,apiFormat:"gemini" as const};
+  expect(isVaultOnlyChannel(scripted)).toBe(false);
+  expect(isVaultOnlyChannel(video)).toBe(false);
+  expect(isVaultOnlyChannel(gemini)).toBe(false);
+  expect(redactConfirmedVaultKey(scripted)).toBe(false);
+  expect(redactConfirmedVaultKey(video)).toBe(false);
+  expect(redactConfirmedVaultKey(gemini)).toBe(false);
+  expect(local.get("atelier:vaulted-model-channels")).toBeUndefined();
+  const ark={...scripted,apiFormat:"volcengine_ark" as const,
+   baseUrl:"https://ark.cn-beijing.volces.com/api/v3",
+   models:[{name:"seedance",capability:"video" as const}]};
+  expect(isVaultOnlyChannel(ark)).toBe(true);
+ });
+ it("a preexisting vaulted marker hides keys but restores custom scripts independently",async()=>{
+  const channel=config.channels[0];
+  local.set("atelier:vaulted-model-channels",JSON.stringify({
+   [channel.id]:{id:channel.id,baseUrl:channel.baseUrl,apiFormat:channel.apiFormat}
+  }));
+  local.set("infinite-canvas:ai_config_store",JSON.stringify({state:{config}}));
+  vi.mocked(canvasApi).mockResolvedValue({revision:5,value:publicConfig});
+  const hydrated=await createModelConfigStorage(config).getItem("config");
+  expect(hydrated?.state.config.channels[0].apiKey).toBe("");
+  expect(hydrated?.state.config.channels[0].models[0].script).toBe("SECRET SCRIPT");
  });
  it("theme is backend-authoritative and ignores stale browser theme without migration",async()=>{
   local.set("infinite-canvas:theme_store",JSON.stringify({state:{theme:"light"}}));

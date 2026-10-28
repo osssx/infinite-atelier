@@ -1155,6 +1155,14 @@ export async function fetchImageModels(config: Pick<AiConfig, "baseUrl" | "apiKe
 }
 
 export async function fetchChannelModels(channel: ModelChannel) {
+    if (channel.apiFormat === "openai") {
+        // Vault-backed model catalog; never forward a browser API key upstream.
+        const {canvasApi}=await import("@/features/backend-sync/canvas-api");
+        const result=await canvasApi<{models:string[]}>(
+            "/api/v1/channels/"+encodeURIComponent(channel.id)+"/models",
+            "POST",{baseUrl:channel.baseUrl});
+        return result.models;
+    }
     return fetchImageModels({ baseUrl: channel.baseUrl, apiKey: channel.apiKey, apiFormat: channel.apiFormat });
 }
 

@@ -3,6 +3,9 @@
 支持第三方 OpenAI-compatible 图片生成/编辑、文本问答（含 SSE）与语音生成。**不需要单独设置地址白名单，也不需要 `ATELIER_OPENAI_COMPAT_ENDPOINTS` 环境变量。**
 
 在「配置与用户偏好 → 模型渠道」中选择 OpenAI 协议，直接填写 API 基础地址、模型和 API Key。可以是：
+模型列表刷新也通过后端 `POST /api/v1/channels/:id/models` 使用 Vault 中的密钥，只返回模型 ID。第一次新建渠道时应先保存渠道和 API Key 再刷新模型列表；无 Vault 的渠道不会回退到浏览器直连查询。
+
+只有当一个渠道**全部模型均由后端支持、且没有自定义模型脚本或旧版视频能力**时，成功保存 Vault 密钥后才会精确清除 `atelier:local-credentials` 和旧版本地配置里该渠道的明文副本。Gemini、混合视频或脚本渠道暂时保留本地密钥；从未验证写入 Vault 的旧密钥不会自动删除。
 - 远程 `https://models.example.net/v1`、`https://models.example.net:8443/custom/v1`；
 - 本机代理 `http://127.0.0.1:8188/v1` 或 `http://localhost:8000/v1`；
 - 显式局域网 IP 地址 `http://192.168.1.23:8080/v1`。

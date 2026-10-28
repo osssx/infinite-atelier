@@ -5,13 +5,13 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { getPluginReturn, getPluginTemplates, getPluginVariables } from "@/services/api/model-plugin";
-import type { ModelCapability } from "@/stores/use-config-store";
+import type { ApiCallFormat, ModelCapability } from "@/stores/use-config-store";
 
 function isDarkMode() {
     return typeof document !== "undefined" && document.documentElement.classList.contains("dark");
 }
 
-export function ModelScriptEditor({ open, capability, modelName, value, onSave, onClose }: { open: boolean; capability: ModelCapability; modelName: string; value: string; onSave: (script: string) => void; onClose: () => void }) {
+export function ModelScriptEditor({ open, capability, apiFormat, modelName, value, onSave, onClose }: { open: boolean; capability: ModelCapability; apiFormat: ApiCallFormat; modelName: string; value: string; onSave: (script: string) => void; onClose: () => void }) {
     const { t } = useTranslation();
     const [draft, setDraft] = useState(value);
     useEffect(() => {
@@ -66,6 +66,11 @@ export function ModelScriptEditor({ open, capability, modelName, value, onSave, 
         >
             <div className="flex h-[60vh] min-h-[420px] border-t border-stone-200 dark:border-stone-800">
                 <aside className="flex w-[320px] shrink-0 flex-col overflow-y-auto border-r border-stone-200 bg-stone-50/80 dark:border-stone-800 dark:bg-stone-900/40">
+                    {apiFormat==="openai"&&capability!=="video"?<div className="border-b border-stone-200/70 px-4 py-3 text-xs leading-5 text-amber-700 dark:border-stone-800/70 dark:text-amber-300">
+                        OpenAI 兼容渠道脚本由后端受限解释器执行。请优先使用“安全脚本”模板；支持 const、await http.post、params、JSON 属性读取及 return，不支持任意 JS、apiKey、request、poll、onDelta、fetch 或系统 API。文生图必须返回 Base64，音频须由服务端 JSON 返回 Base64；不支持图片参考、脚本视频或原始二进制脚本音频。旧脚本需按模板调整。
+                    </div>:null}
+                    {apiFormat==="openai"&&capability==="video"?<div className="border-b border-stone-200/70 px-4 py-3 text-xs leading-5 text-amber-700 dark:border-stone-800/70 dark:text-amber-300">异步视频脚本通过后端执行。使用“安全异步视频（提交/轮询）”模板；填写 version=1 的 JSON，分别包含 submit 和 poll 两段受限 JS。视频生成请求只提交一次，轮询读取后端保存的远端任务 ID；返回 videoUrl 后由后端下载入 CAS。暂不支持视频参考素材，旧浏览器 request/poll 脚本不会自动迁移。</div>:null}
+                    {apiFormat!=="openai"?<div className="border-b border-stone-200/70 px-4 py-3 text-xs leading-5 text-amber-700 dark:border-stone-800/70 dark:text-amber-300">此渠道的模型脚本尚未接入后端受限解释器，仍使用旧浏览器执行路径。请勿运行来源不可信的脚本。</div>:null}
                     <div className="border-b border-stone-200/70 px-4 py-3 dark:border-stone-800/70">
                         <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-stone-400">{t("config.scriptEditor.returnRequirements")}</div>
                         <div className="text-xs leading-6 text-stone-600 dark:text-stone-300">{getPluginReturn(capability)}</div>

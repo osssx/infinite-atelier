@@ -79,7 +79,7 @@ function cursorOf(value){
  return Number(v);
 }
 export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobStore,mediaPreview,blobGc,projectArchive,vault,coordinator,materializer,worker,comfyRegistry,comfyInstanceIds=[],modelKinds=[],arkAssetUploadReady=false,
- arkChannelHealth,mediaDownloader,logger=false,streamPollMs=200}={}){
+ arkChannelHealth,modelCatalog,mediaDownloader,logger=false,streamPollMs=200}={}){
  if(!db||(!sessionAuth&&typeof authorize!=="function"))throw Error("backend_authorizer_required");
  const app=Fastify({logger,bodyLimit:5*1024*1024,trustProxy:false,genReqId:()=>randomUUID()});
  if(blobStore)app.addContentTypeParser("application/octet-stream",(req,stream,done)=>done(null,stream));
@@ -252,6 +252,13 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
   });
   app.get("/api/v1/channels/:id",{schema:{params:channelRouteParams}},async(req,reply)=>{
    reply.header("Cache-Control","no-store");return vault.get(req.params.id);
+  });
+  if(modelCatalog)app.post("/api/v1/channels/:id/models",{
+   schema:{params:channelRouteParams,body:{type:"object",required:["baseUrl"],
+    properties:{baseUrl:{type:"string",minLength:8,maxLength:1024}},additionalProperties:false}}
+  },async(req,reply)=>{
+   reply.header("Cache-Control","no-store");
+   return modelCatalog({channelId:req.params.id,endpointBaseUrl:req.body.baseUrl});
   });
   if(arkChannelHealth)app.get("/api/v1/channels/:id/health",{
    schema:{params:channelRouteParams}

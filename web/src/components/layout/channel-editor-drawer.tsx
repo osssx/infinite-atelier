@@ -9,6 +9,7 @@ import { ModelScriptEditor } from "./model-script-editor";
 import { ModelSelectModal } from "./model-select-modal";
 import {saveSqliteModelChannelFromEditor,modelChannelProvider} from "@/features/backend-sync/model-channel-autoroute";
 import {canvasApi} from "@/features/backend-sync/canvas-api";
+import {isVaultOnlyChannel,redactConfirmedVaultKey} from "@/features/backend-sync/model-config-persistence";
 
 type ScriptTarget = { name: string; capability: ModelCapability; value: string };
 
@@ -62,14 +63,15 @@ export function ChannelEditorDrawer({ open, channel, onSave, onClose }: { open: 
             let updated={...draft,name:draft.name.trim()||t("config.channels.unnamed"),
                 models:normalizeChannelModels(draft.models)};
             const provider=modelChannelProvider(updated);
-            // Save or reuse the encrypted Vault key without requiring a mode toggle.
-            // A saved Vault key alone does not prove every browser-direct path
-            // can use SQLite. Preserve the local key until the explicit
-            // capability-checked migration action safely clears it.
+            // A successful Vault save must precede any local key redaction.
+            // Mixed browser-script/video channels retain the browser credential.
             if(provider&&updated.apiKey.trim()){
                 const key=updated.apiKey;
                 const vaulted=await saveSqliteModelChannelFromEditor(updated,channel,provider);
-                updated={...vaulted,apiKey:key};
+                if(isVaultOnlyChannel(updated)){
+                    redactConfirmedVaultKey(updated);
+                    updated=vaulted;
+                }else updated={...vaulted,apiKey:key};
             }
             setDraft(updated);
             onSave(updated);
@@ -145,7 +147,9 @@ export function ChannelEditorDrawer({ open, channel, onSave, onClose }: { open: 
                         {modelChannelProvider(draft)==="openai_compatible"
                             ? "自定义 OpenAI 兼容渠道直接使用填写的 HTTP(S) API 地址，无需配置白名单。生成在本地后端执行，密钥保存在加密 Vault；远程 HTTP 明文连接请注意风险。"
                             : "本地模型执行默认启用。保存时自动将填写的密钥写入本机加密 Vault。"}
-                        浏览器直连密钥仍为其他尚未迁移的旧功能保留，相关清理将单独进行。
+                        {isVaultOnlyChannel(draft)
+                            ? "此渠道的模型执行与模型列表读取均使用后端 Vault；保存成功后自动清除浏览器中相同渠道的明文密钥。"
+                            : "此渠道可能包含旧视频或自定义脚本等浏览器直连功能，因此暂时保留其浏览器密钥。"}
                     </div> : null}
                 </label>
             </div>
@@ -187,6 +191,7 @@ export function ChannelEditorDrawer({ open, channel, onSave, onClose }: { open: 
             <ModelScriptEditor
                 open={Boolean(scriptTarget)}
                 capability={scriptTarget?.capability || "text"}
+                apiFormat={draft.apiFormat}
                 modelName={scriptTarget?.name || ""}
                 value={scriptTarget?.value || ""}
                 onSave={(script) => scriptTarget && setScript(scriptTarget.name, script)}

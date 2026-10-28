@@ -2561,7 +2561,9 @@ function AtelierCanvasPage() {
             const selectedChannel=resolveModelChannel(effectiveConfig,generationConfig.model);
             // Supported official channels always execute via SQLite. No toggle,
             // no implicit browser fallback on a failed backend/credential check.
-            const sqliteProvider=resolveModelScript(effectiveConfig,generationConfig.model)?null:modelChannelProvider(selectedChannel,mode);
+            const selectedScript=resolveModelScript(effectiveConfig,generationConfig.model);
+            const sqliteProvider=selectedScript&&mode==="video"&&selectedChannel?.apiFormat==="openai"?
+                modelChannelProvider(selectedChannel,"text"):modelChannelProvider(selectedChannel,mode);
             if(sqliteProvider&&selectedChannel){
                 const submissionKey=projectId+":"+nodeId;
                 if(sqliteModelSubmitLocksRef.current.has(submissionKey)){
@@ -2578,8 +2580,13 @@ function AtelierCanvasPage() {
                       sourceNode.type==="video"&&mode!=="video"||
                       ["image","audio","video"].includes(sourceNode.type)&&Boolean(sourceNode.metadata?.content))
                         throw Error("当前节点类型不支持此模型生成");
-                    if(resolveModelScript(effectiveConfig,generationConfig.model))
-                        throw Error("自定义模型脚本尚未接入后端任务服务");
+                    if(selectedScript&&mode==="video"){
+                        try{
+                            const spec=JSON.parse(selectedScript);
+                            if(spec.version!==1||typeof spec.submit!=="string"||typeof spec.poll!=="string")
+                                throw Error("invalid");
+                        }catch{throw Error("异步视频脚本必须使用包含 version=1、submit、poll 的 JSON 配置");}
+                    }
                     if(mode!=="text"&&sourceNode.metadata?.skillBinding&&sourceNode.metadata.skillBinding.mode!=="off")
                         throw Error("Skill 目前仅支持文本模型的手动指令模式");
                     if(mode==="image"&&getGenerationCount(generationConfig.count)!==1)
@@ -2603,7 +2610,14 @@ function AtelierCanvasPage() {
                     let skillAuthorizationId:string|undefined;
                     let skillCatalog:FrozenSqliteSkillCatalog|undefined;
                     let textMessages:import("@/features/backend-sync/sqlite-model-generation").FrozenTextTurn[]|undefined;
+                    if(selectedScript&&kind==="video"&&
+                        (context.referenceImages.length||context.referenceVideos.length||context.referenceAudios.length))
+                        throw Error("自定义异步视频脚本暂不支持首尾帧、参考图、参考视频或参考音频，请使用 ComfyUI 工作流");
+                    if(selectedScript&&kind==="image"&&context.referenceImages.length)
+                        throw Error("自定义文生图脚本暂不支持参考图片或图片编辑");
                     if(kind==="text"){
+                        if(selectedScript&&context.referenceImages.length)
+                            throw Error("自定义文本脚本目前不支持图片参考输入");
                         const skillBinding=resolvePromptSkillBinding(prompt,sourceNode.metadata?.skillBinding);
                         if(skillBinding?.mode==="auto"&&context.referenceImages.length)
                             throw Error("自动 Skill 文本任务暂不支持同时附带参考图");
@@ -2652,6 +2666,7 @@ function AtelierCanvasPage() {
                         bridge,
                         ...(kind==="image"||kind==="text"?{referenceImages:context.referenceImages}:{}),
                         task:{kind,model,prompt:kind==="text"?textMessages!.at(-1)!.content:text,
+                          ...(selectedScript?{script:selectedScript}:{}),
                           ...(kind==="text"?{stream:true,messages:textMessages,
                             ...(skillCatalog?{skills:skillCatalog}:{})}:{}),
                           ...(kind==="image"?{size:openAiImageSize(generationConfig.size),
@@ -2665,7 +2680,7 @@ function AtelierCanvasPage() {
                               ["480","720","1080"].includes(generationConfig.vquality)?generationConfig.vquality+"p":"720p",
                             generateAudio:generationConfig.videoGenerateAudio!=="false",
                             watermark:generationConfig.videoWatermark==="true",
-                            mode:seedanceMode,references:frozenReferences}:{})}
+                            ...(selectedScript?{}:{mode:seedanceMode,references:frozenReferences})}:{})}
                     });
                     message.info("模型任务已提交："+job.id+"，完成后自动追加产物节点");
                     if(kind==="video"){sqliteGenerationJobsRef.current.set(nodeId,job.id);setRunningNodeId(nodeId)}

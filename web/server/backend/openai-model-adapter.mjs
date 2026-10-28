@@ -5,6 +5,7 @@ import {Readable} from "node:stream";
 import {validateSkillRef,loadFrozenSkillCatalog,runSqliteSkillAgent} from "./sqlite-skill-agent.mjs";
 import {DEFAULT_OPENAI_ENDPOINT,compatEndpointFingerprint,normalizeOpenAiCompatBaseUrl,createPinnedOpenAiCompatCall} from "./openai-compat-endpoints.mjs";
 import {appendArtifact} from "./repository.mjs";
+import {parseRestrictedModelScript,runRestrictedModelScript} from "./restricted-model-script.mjs";
 
 const failure=(code,statusCode=400,confirmedNotAccepted=false)=>
  Object.assign(Error(code),{code,statusCode,confirmedNotAccepted});
@@ -171,12 +172,18 @@ export function validateModelSnapshot(snapshot){
   throw failure("model_endpoint_reference_invalid");
  if(!task||typeof task!=="object"||Array.isArray(task)||!supported.has(task.kind)||
   !validModel(task.model)||!validPrompt(task.prompt)||
-  Object.keys(task).some(key=>!["kind","model","prompt","size","quality","voice","format","speed","operation","images","mask","messages","stream","skills"].includes(key)))
+  Object.keys(task).some(key=>!["kind","model","prompt","size","quality","voice","format","speed","operation","images","mask","messages","stream","skills","script"].includes(key)))
   throw failure("model_task_invalid");
- const allowed=task.kind==="image"?["kind","model","prompt","size","quality","operation","images","mask"]:
-  task.kind==="audio"?["kind","model","prompt","voice","format","speed"]:
-  ["kind","model","prompt","images","messages","stream","skills"];
+ const allowed=task.kind==="image"?["kind","model","prompt","size","quality","operation","images","mask","script"]:
+  task.kind==="audio"?["kind","model","prompt","voice","format","speed","script"]:
+  ["kind","model","prompt","images","messages","stream","skills","script"];
  if(Object.keys(task).some(key=>!allowed.includes(key)))throw failure("model_task_invalid");
+ if(task.script!==undefined){
+  if(task.skills||task.images?.length||task.mask||task.operation==='edit'||
+     snapshot.provider!=="openai"&&snapshot.provider!=="openai_compatible")
+   throw failure("model_script_kind_unsupported",422);
+  parseRestrictedModelScript(task.script);
+ }
  if(task.kind==="text"){
   if(task.stream!==undefined&&typeof task.stream!=="boolean")throw failure("model_task_invalid");
   if(task.skills){
@@ -229,7 +236,7 @@ function decodeImage(value){
  * stay submission_unknown and are never blindly retried.
  */
 export function createOpenAiModelAdapter({db,blobStore,vault,upstreamCall=fetch,
- compatibleUpstreamCall=createPinnedOpenAiCompatCall()}={}){
+ compatibleUpstreamCall=createPinnedOpenAiCompatCall({allowGetModels:true})}={}){
  if(!db||!blobStore||!vault||typeof upstreamCall!=="function")throw Error("model_adapter_dependencies_required");
  const check=job=>{
   const snapshot=job.snapshot??JSON.parse(job.snapshot_json);
@@ -256,10 +263,84 @@ export function createOpenAiModelAdapter({db,blobStore,vault,upstreamCall=fetch,
  async function prepare({job}){
   const {task}=check(job);
   if(task.skills)await loadFrozenSkillCatalog(blobStore,task.skills);
+  if(task.script)parseRestrictedModelScript(task.script);
   await readFrozenInputs(task); // reject missing, oversized or wrong-MIME frozen CAS
  }
  async function submit({job}){
   const {snapshot,task}=check(job);
+  if(task.script){
+   const endpoint=snapshot.provider==="openai_compatible"?
+    snapshot.endpointBaseUrl:DEFAULT_OPENAI_ENDPOINT;
+   const authorization=vault.withSecretVersion(snapshot.secretVersionRef,
+    bytes=>"Bearer "+bytes.toString("utf8"),{channelId:snapshot.channelId});
+   const compatible=snapshot.provider==="openai_compatible";
+   const network=compatible?compatibleUpstreamCall:upstreamCall;
+   const output=await runRestrictedModelScript({
+    script:task.script,model:task.model,prompt:task.prompt,
+    messages:task.messages?chatHistory(task.messages):[{role:"user",content:task.prompt}],
+    params:{size:task.size,quality:task.quality,count:1,
+     voice:task.voice,format:task.format,speed:task.speed},
+    http:async(method,path,payload)=>{
+     let serialized;
+     try{serialized=method==="post"?JSON.stringify(payload):undefined}
+     catch{throw failure("model_script_body_invalid",422)}
+     if(serialized&&Buffer.byteLength(serialized,"utf8")>256*1024)
+      throw failure("model_script_body_too_large",422);
+     // Scripts are not an arbitrary authenticated HTTP proxy. Only known
+     // non-mutating-by-design model inference endpoints may receive the key.
+     const permitted=task.kind==="image"?["/images/generations"]:
+      task.kind==="audio"?["/audio/speech"]:["/chat/completions","/responses"];
+     if(method!=="post"||!permitted.includes(path))
+      throw failure("model_script_route_unsupported",422,true);
+     let response;
+     try{response=await network(endpoint+path,{
+      method:method.toUpperCase(),redirect:"manual",
+      headers:{authorization,...(method==="post"?{"content-type":"application/json"}:{})},
+      ...(serialized?{body:serialized}:{}),
+      signal:AbortSignal.timeout(120000)
+     })}catch{throw failure("model_submission_uncertain",502)}
+     if(response.status>=300&&response.status<400)throw failure("model_redirect_rejected",502);
+     if(!response.ok)throw failure("model_upstream_error",502,
+      response.status>=400&&response.status<500);
+     return boundedJson(response,task.kind==="image"?64*1024*1024:
+      task.kind==="audio"?34*1024*1024:1024*1024);
+    }
+   });
+   const kind=task.kind;
+   let bytes,mime;
+   if(kind==="text"){
+    if(typeof output!=="string"||!output.trim()||Buffer.byteLength(output,"utf8")>2_000_000)
+     throw failure("model_script_text_invalid",502);
+    bytes=Buffer.from(output,"utf8");mime="text/plain";
+   }else if(kind==="image"){
+    const imageData=typeof output==="string"?output:
+     output?.b64_json??output?.dataUrl;
+    if(typeof imageData!=="string")throw failure("model_script_image_invalid",502);
+    const decoded=decodeImage(imageData.replace(/^data:image\/(?:png|jpeg|webp);base64,/i,""));
+    bytes=decoded.bytes;mime=decoded.mime;
+   }else if(kind==="audio"){
+    const audioData=typeof output==="string"?output:
+     output?.data??output?.b64_json;
+    if(typeof audioData!=="string"||audioData.length>36_000_000)
+     throw failure("model_script_audio_invalid",502);
+    const base64=audioData.replace(/^data:audio\/[a-z0-9.-]+;base64,/i,"");
+    if(!/^[A-Za-z0-9+/]+={0,2}$/.test(base64))
+     throw failure("model_script_audio_invalid",502);
+    bytes=Buffer.from(base64,"base64");mime=MIME[task.format];
+    const validAudio=task.format==="wav"?
+     bytes.toString("ascii",0,4)==="RIFF"&&bytes.toString("ascii",8,12)==="WAVE":
+     task.format==="flac"?bytes.toString("ascii",0,4)==="fLaC":
+      bytes.toString("ascii",0,3)==="ID3"||
+       bytes[0]===0xff&&(bytes[1]&0xe0)===0xe0;
+    if(bytes.length<12||bytes.length>24_000_000||!validAudio)
+     throw failure("model_script_audio_invalid",502);
+   }
+   const blob=await blobStore.put([bytes],{mime});
+   appendArtifact(db,{jobId:job.id,portId:kind,itemKey:"0",
+    blobId:blob.blobId,sha256:blob.sha256,mime:blob.mimeType,kind,
+    metadata:{modelGeneration:{kind,model:task.model}}});
+   return {kind:"completed",receipt:{artifactReady:true}};
+  }
   const image=task.kind==="image",audio=task.kind==="audio";
   const edit=image&&task.operation==="edit";
   const path=image?(edit?"/images/edits":"/images/generations"):audio?"/audio/speech":"/chat/completions";
@@ -357,5 +438,33 @@ export function createOpenAiModelAdapter({db,blobStore,vault,upstreamCall=fetch,
   if(db.prepare("SELECT COUNT(*) AS n FROM artifacts WHERE job_id=?").get(job.id).n<1)
    throw failure("model_artifact_missing",503);
  }
- return {prepare,submit,collect};
+ async function listModels({channelId,endpointBaseUrl}={}){
+  const channel=vault.get(channelId);
+  if(!channel.hasKey||!channel.keyVersion)throw failure("model_catalog_key_missing",409);
+  if(!["openai","openai_compatible"].includes(channel.provider))
+   throw failure("model_catalog_provider_invalid",409);
+  let endpoint;
+  if(channel.provider==="openai"){
+   if(endpointBaseUrl!==undefined&&endpointBaseUrl!==DEFAULT_OPENAI_ENDPOINT&&
+      endpointBaseUrl!=="https://api.openai.com")
+    throw failure("model_catalog_origin_invalid",400);
+   endpoint=DEFAULT_OPENAI_ENDPOINT;
+  }else{
+   try{endpoint=normalizeOpenAiCompatBaseUrl(endpointBaseUrl)}
+   catch{throw failure("model_catalog_origin_invalid",400)}
+  }
+  const secret=vault.withSecretVersion(channel.keyVersion,bytes=>bytes.toString("utf8"),{channelId});
+  let response;
+  try{
+   response=await (channel.provider==="openai"?upstreamCall:compatibleUpstreamCall)(
+    endpoint+"/models",{method:"GET",headers:{Authorization:"Bearer "+secret}});
+  }catch{throw failure("model_catalog_upstream_unavailable",502)}
+  if(!response.ok)throw failure("model_catalog_upstream_rejected",502);
+  const data=await boundedJson(response,1024*1024);
+  if(!Array.isArray(data?.data)||data.data.length>5000)
+   throw failure("model_catalog_response_invalid",502);
+  return {models:[...new Set(data.data.map(item=>item?.id).filter(
+   id=>typeof id==="string"&&id.length>0&&id.length<=256))].sort((a,b)=>a.localeCompare(b))};
+ }
+ return {prepare,submit,collect,listModels};
 }

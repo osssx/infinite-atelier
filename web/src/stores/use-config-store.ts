@@ -187,7 +187,10 @@ export function resolveModelScript(config: AiConfig, value: string) {
 function isAiConfigReady(config: AiConfig, model: string) {
     const channel = resolveModelChannel(config, model);
     const serverArkAuth = channel?.apiFormat === "volcengine_ark" && channel.baseUrl.trim().replace(/\/$/, "") === "https://ark.cn-beijing.volces.com/api/v3";
-    return Boolean(model.trim() && channel?.baseUrl.trim() && (channel?.apiKey.trim() || serverArkAuth));
+    const capability=modelCapabilityOf(config,model);
+    const serverOpenAi=channel?.apiFormat==="openai"&&capability!==undefined&&
+        (capability!=="video"||Boolean(resolveModelScript(config,model)));
+    return Boolean(model.trim() && channel?.baseUrl.trim() && (channel?.apiKey.trim() || serverArkAuth || serverOpenAi));
 }
 
 export {awaitModelConfigPersistence};

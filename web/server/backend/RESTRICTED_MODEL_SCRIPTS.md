@@ -2,6 +2,10 @@
 
 OpenAI 兼容渠道的文本、无参考图文生图、JSON Base64 音频、**异步文生视频**已接入本地 SQLite JobCoordinator + Credential Vault + CAS。后端按用户填写的 HTTP(S) API 地址执行，不要求配置渠道白名单。模型脚本不是任意 JavaScript：仅解释一个经过 AST 检查的语言子集，不使用 Node.js `eval`、`new Function` 或任意动态模块。
 
+**浏览器回退边界（P1）**：OpenAI 格式渠道（包括自行配置的 OpenAI 兼容接口）只通过画布后端 JobCoordinator 执行自定义脚本。`runModelPlugin` 的旧调用入口对这些渠道直接拒绝执行，不能因为画布之外的图片/音频/视频/文本辅助调用而重新把 API Key 交给浏览器 `new Function`。脚本编辑器对 OpenAI 格式只显示受限后端模板与可用变量（如 `model`、`params`、`http`），不再提供会把 `apiKey`、`request`、`poll`、`fetch` 暴露给前端的旧模板。旧脚本保留在渠道设置中，不自动转换或删除，用户需显式调整到安全模板；不支持的调用会明确报错，而非静默换接口或重新发起可能收费的请求。
+
+Gemini 格式、非标准方舟旧脚本等尚未接入统一后端受限解释器的路径本轮**保持原行为**，仍可能使用浏览器 JavaScript，不能视为已完成全面隔离。下一步需为这些 provider 做独立后端适配，再移除剩余浏览器执行器。
+
 ## 普通图片、文本、音频脚本
 
 进入「配置与用户偏好 → 模型渠道 → 选择模型 → 脚本」，选择对应的「安全脚本」模板。支持 `const`、`model`、`prompt`、`messages`、`params`、JSON 属性与数组访问、基本表达式、`await http.post()`、`return`；每次执行仅允许一个网络请求。文本返回字符串；图片返回 PNG/JPEG/WebP Base64；音频返回 JSON 中 MP3/WAV/FLAC Base64。单张生成、无参考图/Skill。

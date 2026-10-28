@@ -1,7 +1,7 @@
 import axios, { type AxiosRequestConfig } from "axios";
 
 import i18n from "@/i18n";
-import { buildApiUrl, modelOptionName, type AiConfig, type ModelCapability } from "@/stores/use-config-store";
+import { buildApiUrl, modelOptionName, type AiConfig, type ApiCallFormat, type ModelCapability } from "@/stores/use-config-store";
 import { proxyApiUrl } from "@/lib/api-proxy";
 
 type RequestOptions = { signal?: AbortSignal };
@@ -113,6 +113,12 @@ function createPoll(signal?: AbortSignal) {
  * The script must `return` the result; each caller normalizes it to its capability's shape.
  */
 export async function runModelPlugin<T = unknown>(args: RunPluginArgs): Promise<T> {
+    // OpenAI-format models are owned by the backend restricted interpreter.
+    // Even non-canvas helper callers must not execute arbitrary browser JS
+    // with the channel API key or silently retry a billable request.
+    if (args.config.apiFormat === "openai") {
+        throw new Error("OpenAI 兼容渠道的自定义脚本只能通过画布后端任务执行。请将旧脚本改为“安全”模板；此入口不会在浏览器执行脚本或重新提交生成。");
+    }
     const { config } = args;
     const http = createPluginHttp(config, { signal: args.signal });
     const request = createPluginRequest(config, { signal: args.signal });
@@ -186,6 +192,15 @@ export function getPluginVariables(): PluginVariable[] {
     ];
 }
 
+/** Backend scripts do not receive secrets or browser globals. Keep legacy
+ * helpers visible for other providers until a provider-native adapter exists.
+ */
+const BACKEND_SCRIPT_VARIABLES=new Set(["prompt","messages","params","model","http"]);
+export function getScriptVariablesForFormat(capability:ModelCapability,apiFormat:ApiCallFormat){
+ const vars=getPluginVariables().filter(variable=>
+  !variable.capabilities||variable.capabilities.includes(capability));
+ return apiFormat==="openai"?vars.filter(variable=>BACKEND_SCRIPT_VARIABLES.has(variable.name)):vars;
+}
 export function getPluginReturn(capability: ModelCapability) {
     return i18n.t(`modelPlugin.returns.${capability}`);
 }
@@ -445,6 +460,17 @@ return text;`,
         },
     ],
     };
+}
+
+/** Safe templates precede legacy scripts. Never offer a browser helper
+ * template for an OpenAI-format channel: those scripts cannot run there.
+ */
+const BACKEND_TEMPLATE_COUNTS:Record<ModelCapability,number>={
+ image:1,video:6,audio:1,text:1
+};
+export function getScriptTemplatesForFormat(capability:ModelCapability,apiFormat:ApiCallFormat){
+ const templates=getPluginTemplates()[capability];
+ return apiFormat==="openai"?templates.slice(0,BACKEND_TEMPLATE_COUNTS[capability]):templates;
 }
 
 /** Normalize whatever an image script returns into the app's generated-image shape. */

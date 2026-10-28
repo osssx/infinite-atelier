@@ -8,7 +8,10 @@ const runTypes=readFileSync(new URL("../comfy-workflow/run-types.ts",import.meta
 describe("P4.2 SQLite-only Canvas execution boundary",()=>{
  it("routes the ordinary Canvas producer exclusively through JobCoordinator",()=>{
   expect(page).toContain("startBackendComfyWorkflowRun({");
-  expect(page).toContain("serverAuthoritative:true");
+  expect(page).not.toContain("serverAuthoritative:true");
+  const comfyRun=readFileSync(new URL("./backend-comfy-run.ts",import.meta.url),"utf8");
+  expect(comfyRun).not.toMatch(/backendPendingKey|backendLastJobKey|localStorage|args\.pending|serverAuthoritative/);
+  expect(comfyRun).toContain("await bridge.assertNoActiveJob(workflowNode.id)");
   expect(page).toContain("monitorSqliteJob(job.id)");
   expect(page).not.toContain("startComfyWorkflowRun(");
   expect(page).not.toContain("recoverPendingComfyRun(");

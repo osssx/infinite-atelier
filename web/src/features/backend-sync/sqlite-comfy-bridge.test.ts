@@ -72,12 +72,6 @@ describe("P4 SQLite-only Comfy generation bridge",()=>{
    }
    throw Error("unexpected path "+path);
   });
-  const pendingMap=new Map<string,string>();
-  const pending={
-   getItem:(key:string)=>pendingMap.get(key)??null,
-   setItem:(key:string,value:string)=>{pendingMap.set(key,value)},
-   removeItem:(key:string)=>{pendingMap.delete(key)}
-  };
   const template={
    id:"demo",revision:"r1",name:"demo",
    apiGraph:{"1":{class_type:"SolidImage",inputs:{}}},
@@ -108,7 +102,7 @@ describe("P4 SQLite-only Comfy generation bridge",()=>{
   const run=await startBackendComfyWorkflowRun({
    bridge,projectId:"p1",workflowNode:graphWithBinding.nodes[0],
    ...graphWithBinding,template,instanceId:"local-comfy",
-   outputPortIds:["output"],pending,serverAuthoritative:true,newKey:()=> "frozen-key"
+   outputPortIds:["output"],newKey:()=> "frozen-key"
   });
   expect(run.id).toBe("accepted-task");
   expect(submitted).toMatchObject({expectedProjectRevision:12,targetNodeId:"wf",
@@ -118,7 +112,7 @@ describe("P4 SQLite-only Comfy generation bridge",()=>{
   });
   expect(steps).toEqual(["GET /api/v1/execution/capabilities",
    "GET /api/v1/jobs/snapshot","GET /api/v1/projects/p1","POST /api/v1/jobs"]);
-  expect([...pendingMap.keys()]).toHaveLength(0);
+  expect(submitted).toBeDefined();
  });
  it("refuses duplicate SQLite workflow while a prior accepted job is active",async()=>{
   h.api.mockImplementation(async(path:string)=>{

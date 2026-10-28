@@ -3811,8 +3811,7 @@ function AtelierCanvasPage() {
             });
             const job=await startBackendComfyWorkflowRun({
                 bridge,projectId,workflowNode,...snapshot,template,
-                instanceId:globalComfyInstanceId,outputPortIds:outputs.map(port=>port.id),
-                serverAuthoritative:true
+                instanceId:globalComfyInstanceId,outputPortIds:outputs.map(port=>port.id)
             });
             if(activeProjectIdRef.current===projectId&&pageMountedRef.current){
                 message.info("生成任务已提交："+job.id+"。完成后自动恢复产物节点。");

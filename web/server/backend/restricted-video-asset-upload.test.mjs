@@ -26,13 +26,13 @@ async function entry(f,key){
   ]}}}).jobId;
  return {job:{id:jobId},ref:{blobId:saved.blobId},index:0,script:"const a=await http.post('/assets', {model});return a.id;"};
 }
-test("v17 schema upgrades existing DB and reserves CAS owners for uploaded assets",async t=>{
+test("schema upgrades from v16 and reserves CAS owners for uploaded assets",async t=>{
  const f=fixture(t);
- assert.equal(SCHEMA_VERSION,17);
- f.db.exec("DROP TABLE script_asset_uploads;DELETE FROM schema_migrations WHERE version=17;");
+ assert.equal(SCHEMA_VERSION,18);
+ f.db.exec("DROP TABLE script_asset_finalizations;DROP TABLE script_asset_uploads;DELETE FROM schema_migrations WHERE version IN (17,18);");
  f.db.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES(16,?)").run(Date.now());
  initializeSchema(f.db);
- assert.equal(f.db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get().version,17);
+ assert.equal(f.db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get().version,18);
  const x=await entry(f,"schema-asset-1");
  const manager=createScriptAssetUploadManager({db:f.db});
  assert.equal(await manager.ensureReady({...x,upload:async()=>({id:"remote_asset_1"})}),

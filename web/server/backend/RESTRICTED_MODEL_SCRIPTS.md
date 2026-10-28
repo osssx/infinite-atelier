@@ -61,13 +61,30 @@ OpenAI 兼容渠道的文本、无参考图文生图、JSON Base64 音频、**�
 
 ### 公网 HTTPS 预签名 PUT（单文件）
 
-如果服务商会先在渠道 API 返回远端素材 ID 与临时上传地址，可以选择「安全异步视频（预签名 PUT）」模板。服务端先执行一次受限的同渠道 `http.post("/assets/presign", ...)`，脚本返回 `{id: grant.id, uploadUrl: grant.upload_url}`。只有返回真实远端素材 ID 的协议适用；需要上传后另行调用 finalize/complete 才能得到 ID 的 API 暂不支持。
+如果服务商会先在渠道 API 返回远端素材 ID 与临时上传地址，可以选择「安全异步视频（预签名 PUT）」模板。服务端先执行一次受限的同渠道 `http.post("/assets/presign", ...)`，脚本返回 `{id: grant.id, uploadUrl: grant.upload_url}`。普通模板只适用于返回素材 ID 的单次 PUT 协议。上传后需要额外确认的服务商应使用下方的多阶段模板；要求在确认完成后才首次返回 ID 的服务商仍需专用适配器。
 
 后端从 CAS 校验文件的 SHA-256、MIME 和大小，随即向临时 URL 发送 **一次 HTTPS PUT** 原始文件字节。只允许公开 HTTPS 域名和标准 443 端口；禁止 IP 字面量、localhost、内部域名、认证信息、重定向，并在建立连接时验证、固定 DNS A 记录为公网地址。预签名 URL 可以带查询签名，但不得写进任务快照、数据库、日志或错误信息。PUT 请求**绝不携带渠道的 Vault API Key**，只使用服务端校验的 Content-Type，不能从脚本自定义 Header。
 
 这两个网络步骤共用原来的 `script_asset_uploads` 不可重放屏障：在申请地址之前先写入 `uploading`，只有 PUT 明确返回 2xx 才将 ID 记为 `active`。申请地址、实际上传及读取响应任一步结果不确定，都不会自动重发，也不会开始生成；可在任务历史人工核对。多个资产逐项处理、已完成的 ID 可以在重启后复用。
 
 当前范围只覆盖返回 ID 与 URL 的**单文件、单次 PUT** 协议，不支持 POST 表单上传到预签名跨域域名、自定义签名 Header、分片上传、断点续传或随后必须执行 complete/finalize 的 API。
+
+### 预签名 PUT 后完成确认
+
+选择「安全异步视频（上传完成确认）」模板。在原先的 `assetUpload` 之外增加可选 `assetFinalize` 受限脚本，其调用示例：
+
+```javascript
+const result = await http.post("/assets/" + params.asset.remoteAssetId + "/complete", {
+  id: params.asset.remoteAssetId
+});
+return result.id;
+```
+
+完整上传阶段是「申请预签名 URL → PUT 原始 CAS 文件 → 持久化已成功上传的远端 ID → 发出一次完成确认 → 完成后激活远端素材」。只有同渠道 POST 的完成接口受支持；确认接口必须返回 **与申请阶段相同的素材 ID**，否则不激活素材。上传 URL、媒体内容不会保存到任务快照或完成阶段记录。
+
+后台新增独立的 `script_asset_finalizations` 持久化阶段：`uploaded` 表示 PUT 已确认成功、尚未发出完成请求；`finalizing` 表示请求已发出、结果可能未知；`completed` 表示远端确认响应中的 ID 匹配，且已与素材 `active` 在同一事务内提交。重启后 `uploaded` 可以恢复完成请求而 **不重做 PUT**；`finalizing` **绝不自动重试**，需要人工向服务商核实后使用已有的素材对账入口。所有远端 ID、密钥版本与 CAS 素材仍按原任务身份约束，只有 `active` 的素材才进入视频生成提交。
+
+目前不支持上传后才首次分配远端素材 ID、完成请求使用特殊签名头、分片续传或将整个服务商协议交给任意 JavaScript 执行。
 
 ## 上传结果未知：人工核对与恢复
 
@@ -83,10 +100,10 @@ OpenAI 兼容渠道的文本、无参考图文生图、JSON Base64 音频、**�
 
 - 脚本不能访问 `apiKey`、`process`、`require`、`eval`、`globalThis`、动态函数、对象原型或任意 Node API。通过受控 HTTP 层注入 Vault 凭据。脚本可编辑请求体，但不能跨域访问任意主机。
 - 旧的视频 JavaScript `request()/poll()` 脚本不会自动转换为新 JSON 规范；必须按服务商响应格式调整模板。异步任务不能在脚本中执行循环。
-- **暂不支持**需要 complete/finalize 的多阶段上传、分片上传/续传、复杂签名 Header 或多文件字段等专有上传协议、超过限制的大视频/音频文件、由 API Key 鉴权下载的视频内容 URL、任意 MIME 媒体、Gemini 特殊协议、脚本自定义 HTTP Header、对已运行中视频强行删除远程历史。上述能力应由后续专用适配器完成。
+- **暂不支持**完成确认后才首次产生素材 ID 的协议、分片上传/续传、复杂签名 Header 或多文件字段等专有上传协议、超过限制的大视频/音频文件、由 API Key 鉴权下载的视频内容 URL、任意 MIME 媒体、Gemini 特殊协议、脚本自定义 HTTP Header、对已运行中视频强行删除远程历史。上述能力应由后续专用适配器完成。
 - 非 OpenAI 格式渠道的旧脚本尚未移除浏览器执行路径，后续继续完成迁移。测试只模拟上游 HTTP，不调用真实收费模型。
 
 代码：`restricted-model-script.mjs`（AST 表达式解释器）、`restricted-video-adapter.mjs`（视频任务）、`restricted-video-download.mjs`（安全视频下载），附对应 `.test.mjs`。
 - 对应集成测试仅使用模拟的上游模型响应，不会调用真实付费 API。
 
-计划下一阶段：调研 complete/finalize、多阶段分片上传的可恢复状态机，并继续迁移剩余浏览器脚本执行入口。
+计划下一阶段：探索确认后才产生素材 ID 与分片上传的安全可恢复状态机，并继续迁移剩余浏览器脚本执行入口。

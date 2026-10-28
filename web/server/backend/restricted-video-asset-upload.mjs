@@ -21,7 +21,7 @@ export function createScriptAssetUploadManager({db}={}){
    throw fail("video_script_asset_not_ready");
   return saved.remote_asset_id;
  }
- async function ensureReady({job,index,ref,script,upload}){
+ async function ensureReady({job,index,ref,script,upload,resumeFinalize}){
   if(!job?.id||!Number.isSafeInteger(index)||index<0||
      !ref?.blobId||typeof script!=="string"||typeof upload!=="function")
    throw fail("video_script_asset_prepare_invalid",true);
@@ -32,6 +32,11 @@ export function createScriptAssetUploadManager({db}={}){
     throw fail("video_script_asset_identity_conflict",true);
    if(saved.status==="active")return requireId(job.id,index,ref);
    if(saved.status==="rejected")throw fail("video_script_asset_upload_rejected",true);
+   // Resume ONLY a confirmed uploaded PUT stage. No presign / binary PUT replay.
+   if(saved.status==="uploading"&&resumeFinalize){
+    const stage=db.prepare("SELECT status FROM script_asset_finalizations WHERE job_id=? AND reference_index=?").get(job.id,index);
+    if(stage?.status==="uploaded")return resumeFinalize();
+   }
    // Ambiguous upload completion: never POST again.
    throw fail("video_script_asset_upload_unknown");
   }
@@ -48,6 +53,9 @@ export function createScriptAssetUploadManager({db}={}){
      .run(Date.now(),job.id,index);
    throw error;
   }
+  // A successful multi-stage finalize commits the active asset atomically.
+  const finalState=row(job.id,index);
+  if(finalState?.status==="active")return requireId(job.id,index,ref);
   const assetId=typeof result==="string"?result:result?.id;
   if(!validId(assetId))throw fail("video_script_asset_id_unknown");
   const completed=db.prepare("UPDATE script_asset_uploads SET status='active',remote_asset_id=?,updated_at=? WHERE job_id=? AND reference_index=? AND blob_id=? AND script_fingerprint=? AND status='uploading'")

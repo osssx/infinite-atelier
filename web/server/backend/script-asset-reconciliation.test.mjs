@@ -140,6 +140,30 @@ test("human reconciliation is authenticated, project scoped, stale-safe, and res
  assert.equal(JSON.parse(event.payload_json).operatorAttested,true);
  assert.ok(!event.payload_json.includes("manually_checked_audio"));
 });
+test("manual reconciliation refuses an asset ID that differs from the persisted presign grant",async t=>{
+ const f=await fixture(t);
+ const prior=(await f.call("GET",f.base+"/assets")).json().assets[1];
+ const ref=f.db.prepare("SELECT blob_id FROM script_asset_uploads WHERE job_id=? AND reference_index=1").get(f.jobId);
+ f.db.prepare("INSERT INTO script_asset_finalizations(job_id,reference_index,blob_id,finalize_fingerprint,asset_id,status,updated_at) VALUES(?,?,?,?,?,?,?)")
+  .run(f.jobId,1,ref.blob_id,"some-frozen-script-fingerprint","expected_grant_id","finalizing",Date.now());
+ const read=await f.call("GET",f.base+"/assets");
+ assert.equal(read.statusCode,200);
+ const pending=read.json().assets[1];
+ assert.equal(pending.finalizeStage,"finalizing");
+ assert.equal(pending.expectedAssetId,"expected_grant_id");
+ assert.ok(!read.body.includes("uploadUrl"));
+ const rejected=await f.call("POST",f.base+"/assets/1/reconcile",{
+  action:"confirm",remoteAssetId:"unrelated_id",expectedUpdatedAt:prior.updatedAt,
+  operatorConfirmed:true
+ });
+ assert.equal(rejected.statusCode,409);
+ assert.equal(rejected.json().code,"script_asset_remote_id_conflict");
+ const verified=await f.call("POST",f.base+"/assets/1/reconcile",{
+  action:"confirm",remoteAssetId:"expected_grant_id",expectedUpdatedAt:prior.updatedAt,
+  operatorConfirmed:true
+ });
+ assert.equal(verified.statusCode,200,verified.body);
+});
 test("manual rejection blocks resume; a changed project graph blocks generation even after confirmation",async t=>{
  const f=await fixture(t);
  const asset=(await f.call("GET",f.base+"/assets")).json().assets[1];

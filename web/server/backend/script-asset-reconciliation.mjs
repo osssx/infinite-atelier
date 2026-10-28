@@ -37,6 +37,7 @@ function verifyRows(references,spec,rows){
 function safeList(db,{projectId,jobId}){
  const {job,spec,references}=loadJob(db,{projectId,jobId});
  const rows=currentRows(db,jobId),byIndex=new Map(rows.map(row=>[row.reference_index,row]));
+ const stages=new Map(db.prepare("SELECT reference_index,status,asset_id FROM script_asset_finalizations WHERE job_id=?").all(jobId).map(row=>[row.reference_index,row]));
  const fingerprint=scriptHash(spec.assetUpload);
  const assets=references.flatMap((ref,index)=>{
   if(ref.kind==="image")return [];
@@ -46,6 +47,8 @@ function safeList(db,{projectId,jobId}){
    blobId:ref.blobId,mimeType:ref.mimeType,
    status:valid?record.status:record?"mismatch":"not_started",
    remoteAssetId:valid&&record.status==="active"?record.remote_asset_id:null,
+   finalizeStage:stages.get(index)?.status??null,
+   expectedAssetId:valid&&stages.has(index)?stages.get(index).asset_id:null,
    updatedAt:valid?record.updated_at:null}];
  });
  const neverSubmitted=job.submission_started_at===null&&job.submit_marker===null&&
@@ -85,6 +88,11 @@ export function reconcileScriptAsset(db,{projectId,jobId,referenceIndex,
    throw fail("script_asset_reconcile_state_changed");
   if(row.status!=="uploading")
    throw fail("script_asset_reconcile_not_eligible");
+  if(action==="confirm"){
+   const stage=db.prepare("SELECT asset_id FROM script_asset_finalizations WHERE job_id=? AND reference_index=?").get(jobId,referenceIndex);
+   if(stage&&stage.asset_id!==remoteAssetId)
+    throw fail("script_asset_remote_id_conflict");
+  }
   if(action==="confirm"){
    const duplicate=db.prepare(
     "SELECT reference_index FROM script_asset_uploads WHERE job_id=? AND remote_asset_id=? AND status='active' AND reference_index<>?")

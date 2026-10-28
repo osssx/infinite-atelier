@@ -124,7 +124,9 @@ export async function replayCanvasSkillJob(projectId:string,jobId:string):
  }
 }
 export type CanvasScriptAsset={referenceIndex:number;kind:"video"|"audio";role:string;
- blobId:string;mimeType:string;status:string;remoteAssetId:string|null;updatedAt:number|null};
+ blobId:string;mimeType:string;status:string;remoteAssetId:string|null;
+ finalizeStage?:"uploaded"|"finalizing"|"completed"|null;expectedAssetId?:string|null;
+ updatedAt:number|null};
 export type CanvasScriptAssetAudit={jobId:string;projectId:string;jobStatus:string;
  submissionNeverStarted:boolean;canResume:boolean;assets:CanvasScriptAsset[]};
 const assetBase=(projectId:string,jobId:string)=>"/api/v1/projects/"+
@@ -510,6 +512,12 @@ export function CanvasJobHistory({projectId,open,onClose,onObserveJob,onRefreshC
             asset.status==="active"?"已确认":
             asset.status==="rejected"?"已拒绝":asset.status}</div>
           <div className="font-mono opacity-60 break-all">{asset.blobId.slice(0,16)}…</div>
+          {asset.finalizeStage?<div className="text-amber-600 dark:text-amber-400">
+           {asset.finalizeStage==="uploaded"?"文件 PUT 已完成，尚未完成服务商确认":
+            asset.finalizeStage==="finalizing"?"服务商完成确认结果未知，禁止自动再次确认":
+            "服务商已完成确认"}
+           {asset.expectedAssetId?" · 申请 ID："+asset.expectedAssetId:""}
+          </div>:null}
           {asset.status==="active"?<div>远端 ID：{asset.remoteAssetId}</div>:null}
           {asset.status==="uploading"?<>
            <Input size="small" placeholder="经服务商核实的素材 ID"

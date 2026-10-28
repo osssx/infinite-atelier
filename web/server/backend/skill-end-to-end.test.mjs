@@ -130,7 +130,7 @@ test("P5.4j end-to-end SQLite registration -> HTTP authorization -> CAS -> tools
  // Backup APIs require all SQLite connections to be quiesced.
  await f.close();
  await createColdBackup({dataDir:f.dataDir,backupDir:archive});
- assert.equal((await verifyColdBackup({backupDir:archive})).schemaVersion,17);
+ assert.equal((await verifyColdBackup({backupDir:archive})).schemaVersion,18);
  await restoreColdBackup({backupDir:archive,dataDir:restored});
  const db=new DatabaseSync(join(restored,"db","atelier.sqlite"),{readOnly:true});
  try{

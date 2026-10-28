@@ -5,6 +5,7 @@ import {parseRestrictedModelScript,runRestrictedModelScript} from "./restricted-
 import {createRestrictedVideoDownloader} from "./restricted-video-download.mjs";
 import {validateFrozenVideoMedia,materializeFrozenVideoMedia} from "./restricted-video-media.mjs";
 import {createScriptAssetUploadManager} from "./restricted-video-asset-upload.mjs";
+import {createScriptAssetFinalizeManager} from "./restricted-video-asset-finalize.mjs";
 import {createRestrictedAssetMultipart} from "./restricted-video-multipart.mjs";
 import {createRestrictedSignedPut} from "./restricted-video-signed-put.mjs";
 
@@ -22,14 +23,16 @@ export function parseRestrictedVideoScript(source){
  let spec;
  try{spec=JSON.parse(source)}catch{throw fail("video_script_invalid",true)}
  if(!spec||Array.isArray(spec)||spec.version!==1||
-    Object.keys(spec).some(k=>!["version","submit","poll","cancel","assetUpload"].includes(k))||
+    Object.keys(spec).some(k=>!["version","submit","poll","cancel","assetUpload","assetFinalize"].includes(k))||
     typeof spec.submit!=="string"||typeof spec.poll!=="string"||
     spec.cancel!==undefined&&typeof spec.cancel!=="string"||
-    spec.assetUpload!==undefined&&typeof spec.assetUpload!=="string")
+    spec.assetUpload!==undefined&&typeof spec.assetUpload!=="string"||
+    spec.assetFinalize!==undefined&&(!spec.assetUpload||typeof spec.assetFinalize!=="string"||!spec.assetFinalize.trim()))
   throw fail("video_script_invalid",true);
  for(const [phase,body] of Object.entries({submit:spec.submit,poll:spec.poll,
   ...(spec.cancel?{cancel:spec.cancel}:{}),
-  ...(spec.assetUpload?{assetUpload:spec.assetUpload}:{})})){
+  ...(spec.assetUpload?{assetUpload:spec.assetUpload}:{}),
+  ...(spec.assetFinalize?{assetFinalize:spec.assetFinalize}:{})})){
   parseRestrictedModelScript(body);
   if(["poll","cancel"].includes(phase)&&!body.includes("remoteTaskId"))
    throw fail("video_script_remote_id_missing",true);
@@ -73,6 +76,7 @@ export function createRestrictedVideoAdapter({db,vault,blobStore,
  if(!db||!vault||!blobStore)throw Error("video_script_dependencies_required");
  const downloader=mediaDownloader??createRestrictedVideoDownloader({blobStore});
  const uploadedAssets=createScriptAssetUploadManager({db});
+ const finalizer=createScriptAssetFinalizeManager({db});
  const putSignedAsset=signedPut??createRestrictedSignedPut();
  const check=job=>{
   const snapshot=job.snapshot??JSON.parse(job.snapshot_json);
@@ -114,6 +118,7 @@ export function createRestrictedVideoAdapter({db,vault,blobStore,
     hasCalled=true;
     if(name==="submit"&&method!=="post"||
        name==="assetUpload"&&!["post","multipart"].includes(method)||
+       name==="assetFinalize"&&method!=="post"||
        name==="poll"&&method!=="get"||
        name==="cancel"&&method!=="delete")
      throw fail("video_script_method_forbidden",true);
@@ -123,7 +128,7 @@ export function createRestrictedVideoAdapter({db,vault,blobStore,
     let multipart;
     if(name==="assetUpload"&&method==="multipart"){
      multipart=createRestrictedAssetMultipart({asset,options:body});
-    }else if(["submit","assetUpload"].includes(name)){
+    }else if(["submit","assetUpload","assetFinalize"].includes(name)){
      try{payload=JSON.stringify(body)}
      catch{throw fail("video_script_body_invalid",true)}
      if(!payload||Buffer.byteLength(payload)>(references.length?45*1024*1024:128*1024))
@@ -137,7 +142,8 @@ export function createRestrictedVideoAdapter({db,vault,blobStore,
      signal:AbortSignal.timeout(120000)
     })}catch{
      throw fail(name==="submit"?"video_script_submit_uncertain":
-      name==="assetUpload"?"video_script_asset_upload_unknown":"video_script_status_unavailable");
+      ["assetUpload","assetFinalize"].includes(name)?
+       "video_script_asset_stage_unknown":"video_script_status_unavailable");
     }
     if(response.status>=300&&response.status<400)
      throw fail("video_script_redirect_forbidden");
@@ -166,7 +172,20 @@ export function createRestrictedVideoAdapter({db,vault,blobStore,
    if(ref.kind==="image")continue;
    const dataUrl=ref.kind==="video"?media.referenceVideos[videoIndex++]:
     media.referenceAudios[audioIndex++];
+   const finalizeUploaded=async()=>{
+    const stage=finalizer.inspect(job.id,index);
+    if(!stage||stage.status!=="uploaded")
+     throw fail("video_script_finalize_outcome_unknown");
+    return finalizer.finalize({job,index,ref,script:spec.assetFinalize,
+     call:async assetId=>{
+      const result=await phase(job,"assetFinalize",undefined,{
+       kind:ref.kind,role:ref.role,mimeType:ref.mimeType,
+       sha256:ref.sha256,index,remoteAssetId:assetId});
+      return result;
+     }});
+   };
    await uploadedAssets.ensureReady({job,index,ref,script:spec.assetUpload,
+    ...(spec.assetFinalize?{resumeFinalize:finalizeUploaded}:{}),
     upload:async()=>{
      const asset={kind:ref.kind,role:ref.role,
       mimeType:ref.mimeType,sha256:ref.sha256,index,dataUrl};
@@ -179,8 +198,16 @@ export function createRestrictedVideoAdapter({db,vault,blobStore,
       // URL remains in memory only: PUT never receives the Vault bearer
       // token and no signed URL is persisted in SQLite or error messages.
       await putSignedAsset({uploadUrl:result.uploadUrl,asset});
+      if(spec.assetFinalize){
+       // Persist PUT success before any finalize POST, so a restart can
+       // resume finalize without re-requesting a URL or re-uploading bytes.
+       finalizer.recordUploaded({job,index,ref,script:spec.assetFinalize,
+        assetId:result.id});
+       await finalizeUploaded();
+      }
       return {id:result.id};
      }
+     if(spec.assetFinalize)throw fail("video_script_finalize_requires_signed_put");
      return result;
     }});
 

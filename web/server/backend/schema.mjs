@@ -1,5 +1,5 @@
 import{JOB_STATUSES,EXECUTION_MODES,ARTIFACT_KINDS}from"./contracts.mjs";
-export const SCHEMA_VERSION=17;
+export const SCHEMA_VERSION=18;
 const quoted=x=>x.map(s=>"'"+s+"'").join(",");
 export const INITIAL_SCHEMA_SQL=`
 CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY,applied_at INTEGER NOT NULL);
@@ -337,6 +337,21 @@ CREATE TRIGGER IF NOT EXISTS blob_ref_dirty_script_asset_update AFTER UPDATE ON 
 CREATE TRIGGER IF NOT EXISTS blob_ref_dirty_script_asset_delete AFTER DELETE ON script_asset_uploads
  BEGIN UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1; END;
 `;
+/** v18: records verified PUT before an irreversible finalize POST. */
+export const SCRIPT_FINALIZE_SCHEMA_SQL=`
+CREATE TABLE IF NOT EXISTS script_asset_finalizations(
+ job_id TEXT NOT NULL,
+ reference_index INTEGER NOT NULL,
+ blob_id TEXT NOT NULL REFERENCES blobs(id),
+ finalize_fingerprint TEXT NOT NULL,
+ asset_id TEXT NOT NULL,
+ status TEXT NOT NULL CHECK(status IN ('uploaded','finalizing','completed')),
+ updated_at INTEGER NOT NULL,
+ PRIMARY KEY(job_id,reference_index),
+ FOREIGN KEY(job_id,reference_index)
+  REFERENCES script_asset_uploads(job_id,reference_index)
+);
+`;
 export function initializeSchema(db){
  db.exec("PRAGMA foreign_keys=ON;PRAGMA busy_timeout=5000;BEGIN IMMEDIATE");
  try{
@@ -373,6 +388,7 @@ export function initializeSchema(db){
   if(version<15)db.exec(COMFY_INSTANCES_SCHEMA_SQL);
   if(version<16)db.exec(JOB_HISTORY_HIDDEN_SCHEMA_SQL);
   if(version<17)db.exec(SCRIPT_ASSET_SCHEMA_SQL);
+  if(version<18)db.exec(SCRIPT_FINALIZE_SCHEMA_SQL);
   if(version<SCHEMA_VERSION)db.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)").run(SCHEMA_VERSION,Date.now());
   db.exec("COMMIT");
  }catch(e){db.exec("ROLLBACK");throw e}

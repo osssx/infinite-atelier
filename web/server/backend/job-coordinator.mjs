@@ -425,6 +425,21 @@ export function createJobCoordinator({
    });
   }
  }
+ /** Human-triggered provider read-only audit. No task submit or PUT here. */
+ async function reconcileChunkUpload({projectId,jobId,index,expectedUpdatedAt}){
+  const row=db.prepare("SELECT * FROM jobs WHERE id=? AND project_id=? AND project_scope=?")
+   .get(jobId,projectId,projectId);
+  if(!row)throw Object.assign(Error("script_asset_job_not_found"),
+   {code:"script_asset_job_not_found",statusCode:404});
+  if(row.status!=="failed"||row.lease_owner!==null||
+     row.submission_started_at!==null||row.submit_marker!==null||
+     row.upstream_task_id!==null||row.recovery_receipt_json!==null)
+   throw blocked("script_asset_reconcile_not_eligible");
+  const adapter=adapterFor(route(row));
+  if(typeof adapter?.reconcileChunkUpload!=="function")
+   throw blocked("script_asset_chunk_audit_unavailable");
+  return adapter.reconcileChunkUpload({job:parse(row),index,expectedUpdatedAt});
+ }
  async function stop(){
   stopping=true; // stop new claims, then settle existing adapter calls before DB closes.
   await Promise.allSettled([...inFlight.values()]);
@@ -437,5 +452,5 @@ export function createJobCoordinator({
   return db.prepare("SELECT id,job_id,phase,upstream_task_id,started_at,finished_at,outcome FROM job_attempts WHERE job_id=? ORDER BY started_at,id")
    .all(jobId);
  }
- return {instanceId,recoverAtStartup,tick,status,attempts,cancel,reconcileUnknown,stop};
+ return {instanceId,recoverAtStartup,tick,status,attempts,cancel,reconcileUnknown,reconcileChunkUpload,stop};
 }

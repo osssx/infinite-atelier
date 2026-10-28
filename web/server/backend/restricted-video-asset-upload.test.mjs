@@ -28,11 +28,11 @@ async function entry(f,key){
 }
 test("schema upgrades from v16 and reserves CAS owners for uploaded assets",async t=>{
  const f=fixture(t);
- assert.equal(SCHEMA_VERSION,18);
- f.db.exec("DROP TABLE script_asset_finalizations;DROP TABLE script_asset_uploads;DELETE FROM schema_migrations WHERE version IN (17,18);");
+ assert.equal(SCHEMA_VERSION,19);
+ f.db.exec("DROP TABLE script_asset_chunks;DROP TABLE script_asset_chunk_sessions;DROP TABLE script_asset_finalizations;DROP TABLE script_asset_uploads;DELETE FROM schema_migrations WHERE version IN (17,18,19);");
  f.db.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES(16,?)").run(Date.now());
  initializeSchema(f.db);
- assert.equal(f.db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get().version,18);
+ assert.equal(f.db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get().version,19);
  const x=await entry(f,"schema-asset-1");
  const manager=createScriptAssetUploadManager({db:f.db});
  assert.equal(await manager.ensureReady({...x,upload:async()=>({id:"remote_asset_1"})}),

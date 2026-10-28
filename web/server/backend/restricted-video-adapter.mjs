@@ -6,6 +6,7 @@ import {createRestrictedVideoDownloader} from "./restricted-video-download.mjs";
 import {validateFrozenVideoMedia,materializeFrozenVideoMedia} from "./restricted-video-media.mjs";
 import {createScriptAssetUploadManager} from "./restricted-video-asset-upload.mjs";
 import {createScriptAssetFinalizeManager} from "./restricted-video-asset-finalize.mjs";
+import {createRestrictedVideoChunkManager} from "./restricted-video-chunk-upload.mjs";
 import {createRestrictedAssetMultipart} from "./restricted-video-multipart.mjs";
 import {createRestrictedSignedPut} from "./restricted-video-signed-put.mjs";
 
@@ -23,16 +24,20 @@ export function parseRestrictedVideoScript(source){
  let spec;
  try{spec=JSON.parse(source)}catch{throw fail("video_script_invalid",true)}
  if(!spec||Array.isArray(spec)||spec.version!==1||
-    Object.keys(spec).some(k=>!["version","submit","poll","cancel","assetUpload","assetFinalize"].includes(k))||
+    Object.keys(spec).some(k=>!["version","submit","poll","cancel","assetUpload","assetFinalize","assetPartUrls","assetPartAudit"].includes(k))||
     typeof spec.submit!=="string"||typeof spec.poll!=="string"||
     spec.cancel!==undefined&&typeof spec.cancel!=="string"||
     spec.assetUpload!==undefined&&typeof spec.assetUpload!=="string"||
-    spec.assetFinalize!==undefined&&(!spec.assetUpload||typeof spec.assetFinalize!=="string"||!spec.assetFinalize.trim()))
+    spec.assetFinalize!==undefined&&(!spec.assetUpload||typeof spec.assetFinalize!=="string"||!spec.assetFinalize.trim())||
+    spec.assetPartUrls!==undefined&&(!spec.assetUpload||!spec.assetFinalize||typeof spec.assetPartUrls!=="string"||!spec.assetPartUrls.trim())||
+    spec.assetPartAudit!==undefined&&(!spec.assetPartUrls||typeof spec.assetPartAudit!=="string"||!spec.assetPartAudit.trim()))
   throw fail("video_script_invalid",true);
  for(const [phase,body] of Object.entries({submit:spec.submit,poll:spec.poll,
   ...(spec.cancel?{cancel:spec.cancel}:{}),
   ...(spec.assetUpload?{assetUpload:spec.assetUpload}:{}),
-  ...(spec.assetFinalize?{assetFinalize:spec.assetFinalize}:{})})){
+  ...(spec.assetFinalize?{assetFinalize:spec.assetFinalize}:{}),
+  ...(spec.assetPartUrls?{assetPartUrls:spec.assetPartUrls}:{}),
+  ...(spec.assetPartAudit?{assetPartAudit:spec.assetPartAudit}:{})})){
   parseRestrictedModelScript(body);
   if(["poll","cancel"].includes(phase)&&!body.includes("remoteTaskId"))
    throw fail("video_script_remote_id_missing",true);
@@ -78,6 +83,7 @@ export function createRestrictedVideoAdapter({db,vault,blobStore,
  const uploadedAssets=createScriptAssetUploadManager({db});
  const finalizer=createScriptAssetFinalizeManager({db});
  const putSignedAsset=signedPut??createRestrictedSignedPut();
+ const chunks=createRestrictedVideoChunkManager({db,putSignedAsset});
  const check=job=>{
   const snapshot=job.snapshot??JSON.parse(job.snapshot_json);
   const {task,spec,references}=validateRestrictedVideoSnapshot(snapshot);
@@ -119,11 +125,15 @@ export function createRestrictedVideoAdapter({db,vault,blobStore,
     if(name==="submit"&&method!=="post"||
        name==="assetUpload"&&!["post","multipart"].includes(method)||
        name==="assetFinalize"&&method!=="post"||
+       ["assetPartUrls","assetPartAudit"].includes(name)&&method!=="get"||
        name==="poll"&&method!=="get"||
        name==="cancel"&&method!=="delete")
      throw fail("video_script_method_forbidden",true);
     if(["poll","cancel"].includes(name)&&(!validId(remoteTaskId)||
        !path.endsWith("/"+remoteTaskId)))throw fail("video_script_poll_path_invalid",true);
+    if(["assetPartUrls","assetPartAudit"].includes(name)&&(!validId(asset?.remoteAssetId)||
+      !path.endsWith("/"+asset.remoteAssetId)||!path.includes("/parts/")))
+     throw fail("video_script_part_urls_path_invalid",true);
     let payload;
     let multipart;
     if(name==="assetUpload"&&method==="multipart"){
@@ -142,7 +152,7 @@ export function createRestrictedVideoAdapter({db,vault,blobStore,
      signal:AbortSignal.timeout(120000)
     })}catch{
      throw fail(name==="submit"?"video_script_submit_uncertain":
-      ["assetUpload","assetFinalize"].includes(name)?
+      ["assetUpload","assetFinalize","assetPartUrls","assetPartAudit"].includes(name)?
        "video_script_asset_stage_unknown":"video_script_status_unavailable");
     }
     if(response.status>=300&&response.status<400)
@@ -172,6 +182,8 @@ export function createRestrictedVideoAdapter({db,vault,blobStore,
    if(ref.kind==="image")continue;
    const dataUrl=ref.kind==="video"?media.referenceVideos[videoIndex++]:
     media.referenceAudios[audioIndex++];
+   const asset={kind:ref.kind,role:ref.role,
+    mimeType:ref.mimeType,sha256:ref.sha256,index,dataUrl};
    const finalizeUploaded=async()=>{
     const stage=finalizer.inspect(job.id,index);
     if(!stage||stage.status!=="uploaded")
@@ -180,16 +192,38 @@ export function createRestrictedVideoAdapter({db,vault,blobStore,
      call:async assetId=>{
       const result=await phase(job,"assetFinalize",undefined,{
        kind:ref.kind,role:ref.role,mimeType:ref.mimeType,
-       sha256:ref.sha256,index,remoteAssetId:assetId});
+       sha256:ref.sha256,index,remoteAssetId:assetId,
+       ...(spec.assetPartUrls?{partEtags:chunks.complete(job.id,index).partEtags}:{})});
       return result;
      }});
    };
+   const finishChunks=async receipt=>{
+    finalizer.recordUploaded({job,index,ref,script:spec.assetFinalize,
+     assetId:receipt.id});
+    await finalizeUploaded();
+    return {id:receipt.id};
+   };
+   const resumeChunks=async()=>{
+    const receipt=await chunks.resume({job,index,ref,
+     script:spec.assetUpload,partScript:spec.assetPartUrls,asset,
+     refresh:async assetId=>phase(job,"assetPartUrls",undefined,{
+      kind:ref.kind,role:ref.role,mimeType:ref.mimeType,
+      sha256:ref.sha256,index,remoteAssetId:assetId
+     })});
+    return finishChunks(receipt);
+   };
    await uploadedAssets.ensureReady({job,index,ref,script:spec.assetUpload,
     ...(spec.assetFinalize?{resumeFinalize:finalizeUploaded}:{}),
+    ...(spec.assetPartUrls?{resumeChunks}:{}),
     upload:async()=>{
-     const asset={kind:ref.kind,role:ref.role,
-      mimeType:ref.mimeType,sha256:ref.sha256,index,dataUrl};
      const result=await phase(job,"assetUpload",undefined,asset);
+     if(spec.assetPartUrls){
+      if(!result||!Object.hasOwn(result,"parts"))
+       throw fail("video_script_chunk_grant_required");
+      const receipt=await chunks.begin({job,index,ref,script:spec.assetUpload,
+       partScript:spec.assetPartUrls,asset,grant:result});
+      return finishChunks(receipt);
+     }
      if(result&&typeof result==="object"&&!Array.isArray(result)&&
         Object.hasOwn(result,"uploadUrl")){
       if(Object.keys(result).some(key=>!["id","uploadUrl"].includes(key))||
@@ -212,6 +246,33 @@ export function createRestrictedVideoAdapter({db,vault,blobStore,
     }});
 
   }
+ }
+ async function reconcileChunkUpload({job,index,expectedUpdatedAt}){
+  const {spec,references}=check(job);
+  if(!spec.assetPartAudit||!spec.assetPartUrls)
+   throw fail("video_script_chunk_audit_unsupported",true);
+  const ref=references[index];
+  if(!ref||!["video","audio"].includes(ref.kind))
+   throw fail("video_script_chunk_audit_invalid",true);
+  const saved=chunks.inspect(job.id,index);
+  if(!saved)throw fail("video_script_chunk_audit_not_eligible",true);
+  const row=db.prepare("SELECT status,updated_at FROM script_asset_uploads WHERE job_id=? AND reference_index=?").get(job.id,index);
+  if(row?.status!=="uploading"||row.updated_at!==expectedUpdatedAt||
+     !chunks.chunks(job.id,index).some(part=>part.status==="uploading"))
+   throw fail("video_script_chunk_audit_not_eligible",true);
+  const blob=await materializeFrozenVideoMedia(blobStore,[ref]);
+  const dataUrl=ref.kind==="video"?blob.referenceVideos[0]:blob.referenceAudios[0];
+  const asset={kind:ref.kind,role:ref.role,mimeType:ref.mimeType,
+   sha256:ref.sha256,index,dataUrl};
+  // Do not accept a signed URL or any caller-defined host here. This GET
+  // uses the frozen channel, its pinned DNS policy, and exactly one call.
+  const remote=await phase(job,"assetPartAudit",undefined,{
+   kind:ref.kind,role:ref.role,mimeType:ref.mimeType,
+   sha256:ref.sha256,index,remoteAssetId:saved.asset_id
+  });
+  return chunks.reconcileUnknown({job,index,ref,
+   script:spec.assetUpload,partScript:spec.assetPartUrls,
+   auditScript:spec.assetPartAudit,asset,remote,expectedUpdatedAt});
  }
  async function submit({job}){
   const result=await phase(job,"submit");
@@ -267,5 +328,5 @@ export function createRestrictedVideoAdapter({db,vault,blobStore,
     {cancelled:false,reason:"video_script_cancel_unconfirmed"};
   }catch{return {cancelled:false,reason:"video_script_cancel_unconfirmed"}}
  }
- return {prepare,submit,poll,collect,cancel};
+ return {prepare,submit,poll,collect,cancel,reconcileChunkUpload};
 }

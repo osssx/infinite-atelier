@@ -1,5 +1,5 @@
 import{JOB_STATUSES,EXECUTION_MODES,ARTIFACT_KINDS}from"./contracts.mjs";
-export const SCHEMA_VERSION=18;
+export const SCHEMA_VERSION=19;
 const quoted=x=>x.map(s=>"'"+s+"'").join(",");
 export const INITIAL_SCHEMA_SQL=`
 CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY,applied_at INTEGER NOT NULL);
@@ -352,6 +352,37 @@ CREATE TABLE IF NOT EXISTS script_asset_finalizations(
   REFERENCES script_asset_uploads(job_id,reference_index)
 );
 `;
+/** v19: one safe-to-resume upload session; each signed PUT has a separate
+ * irreversible request fence. No signed URLs, signatures, or Vault keys.
+ */
+export const SCRIPT_CHUNK_SCHEMA_SQL=`
+CREATE TABLE IF NOT EXISTS script_asset_chunk_sessions(
+ job_id TEXT NOT NULL,
+ reference_index INTEGER NOT NULL,
+ blob_id TEXT NOT NULL REFERENCES blobs(id),
+ asset_id TEXT NOT NULL,
+ grant_fingerprint TEXT NOT NULL,
+ refresh_fingerprint TEXT NOT NULL,
+ byte_size INTEGER NOT NULL CHECK(byte_size>0),
+ part_size INTEGER NOT NULL CHECK(part_size>0),
+ part_count INTEGER NOT NULL CHECK(part_count>=2 AND part_count<=8),
+ updated_at INTEGER NOT NULL,
+ PRIMARY KEY(job_id,reference_index),
+ FOREIGN KEY(job_id,reference_index) REFERENCES script_asset_uploads(job_id,reference_index)
+);
+CREATE TABLE IF NOT EXISTS script_asset_chunks(
+ job_id TEXT NOT NULL,
+ reference_index INTEGER NOT NULL,
+ part_number INTEGER NOT NULL CHECK(part_number>=1 AND part_number<=8),
+ status TEXT NOT NULL CHECK(status IN ('ready','uploading','uploaded')),
+ etag TEXT,
+ updated_at INTEGER NOT NULL,
+ PRIMARY KEY(job_id,reference_index,part_number),
+ FOREIGN KEY(job_id,reference_index) REFERENCES script_asset_chunk_sessions(job_id,reference_index),
+ CHECK((status='uploaded' AND etag IS NOT NULL) OR
+       (status!='uploaded' AND etag IS NULL))
+);
+`;
 export function initializeSchema(db){
  db.exec("PRAGMA foreign_keys=ON;PRAGMA busy_timeout=5000;BEGIN IMMEDIATE");
  try{
@@ -389,6 +420,7 @@ export function initializeSchema(db){
   if(version<16)db.exec(JOB_HISTORY_HIDDEN_SCHEMA_SQL);
   if(version<17)db.exec(SCRIPT_ASSET_SCHEMA_SQL);
   if(version<18)db.exec(SCRIPT_FINALIZE_SCHEMA_SQL);
+  if(version<19)db.exec(SCRIPT_CHUNK_SCHEMA_SQL);
   if(version<SCHEMA_VERSION)db.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)").run(SCHEMA_VERSION,Date.now());
   db.exec("COMMIT");
  }catch(e){db.exec("ROLLBACK");throw e}

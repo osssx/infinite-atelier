@@ -71,6 +71,6 @@ export function createRestrictedSignedPut({fetcher=fetch,resolver=lookup}={}){
   if(!response||response.status<200||response.status>=300)
    throw invalid("model_signed_put_outcome_unknown");
   try{await response.body?.cancel()}catch{/* storage already acknowledged */}
-  return {uploaded:true};
+  return {uploaded:true,...(response.headers?.get("etag")?{etag:response.headers.get("etag")}:{} )};
  };
 }

@@ -126,9 +126,10 @@ export async function replayCanvasSkillJob(projectId:string,jobId:string):
 export type CanvasScriptAsset={referenceIndex:number;kind:"video"|"audio";role:string;
  blobId:string;mimeType:string;status:string;remoteAssetId:string|null;
  finalizeStage?:"uploaded"|"finalizing"|"completed"|null;expectedAssetId?:string|null;
+ chunkProgress?:{total:number;uploaded:number;uncertain:number}|null;
  updatedAt:number|null};
 export type CanvasScriptAssetAudit={jobId:string;projectId:string;jobStatus:string;
- submissionNeverStarted:boolean;canResume:boolean;assets:CanvasScriptAsset[]};
+ submissionNeverStarted:boolean;canResume:boolean;canResumePreparation?:boolean;assets:CanvasScriptAsset[]};
 const assetBase=(projectId:string,jobId:string)=>"/api/v1/projects/"+
  encodeURIComponent(projectId)+"/jobs/"+encodeURIComponent(jobId);
 export async function getCanvasScriptAssets(projectId:string,jobId:string):Promise<CanvasScriptAssetAudit>{
@@ -140,6 +141,11 @@ export async function reconcileCanvasScriptAsset(projectId:string,jobId:string,
  return canvasApi(assetBase(projectId,jobId)+"/assets/"+referenceIndex+"/reconcile",
   "POST",{action,expectedUpdatedAt,operatorConfirmed:true,
    ...(action==="confirm"?{remoteAssetId}:{} )});
+}
+export async function auditCanvasScriptChunks(projectId:string,jobId:string,
+ referenceIndex:number,expectedUpdatedAt:number):Promise<{verified:boolean;reason?:string;verifiedParts?:number}>{
+ return canvasApi(assetBase(projectId,jobId)+"/assets/"+referenceIndex+"/audit-chunks",
+  "POST",{expectedUpdatedAt});
 }
 export async function resumeCanvasScriptAssets(projectId:string,jobId:string):
  Promise<{jobId:string;status:string;resumed:true}>{
@@ -330,6 +336,19 @@ export function CanvasJobHistory({projectId,open,onClose,onObserveJob,onRefreshC
   }catch(e){message.error("读取远端素材核对记录失败："+String(e))}
   finally{setWorking(null)}
  }
+ async function auditChunks(job:CanvasJobHistoryItem,asset:CanvasScriptAsset){
+  if(working||asset.updatedAt===null||!asset.chunkProgress?.uncertain)return;
+  setWorking(job.id);
+  try{
+   const result=await auditCanvasScriptChunks(projectId,job.id,
+    asset.referenceIndex,asset.updatedAt);
+   const current=await getCanvasScriptAssets(projectId,job.id);
+   if(currentProject.current===projectId)setAssetAudits(old=>({...old,[job.id]:current}));
+   if(result.verified)message.success("服务商已确认未知分片的 ETag。可核对后显式恢复原任务。");
+   else message.warning("服务商未提供全部未知分片的可信 ETag；仍禁止重传。");
+  }catch(e){message.error("只读分片核对失败："+String(e))}
+  finally{setWorking(null)}
+ }
  function confirmAsset(job:CanvasJobHistoryItem,asset:CanvasScriptAsset,action:"confirm"|"reject"){
   if(working||asset.status!=="uploading"||asset.updatedAt===null)return;
   const candidate=assetIdInputs[job.id+":"+asset.referenceIndex]?.trim()??"";
@@ -360,8 +379,10 @@ export function CanvasJobHistory({projectId,open,onClose,onObserveJob,onRefreshC
   const audit=assetAudits[job.id];
   if(!audit?.canResume||working)return;
   modal.confirm({
-   title:"从已核实的素材恢复视频生成？",
-   content:"所有远端素材 ID 均已确认。恢复同一个原始任务，将使用冻结参数发起一次可能收费的视频生成请求，不重新上传已确认的素材。请确认服务商中的素材和当前任务确实匹配。",
+   title:audit.canResumePreparation?"继续尚未完成的素材分片上传？":"从已核实的素材恢复视频生成？",
+   content:audit.canResumePreparation?
+    "服务商已确认结果未知分片。恢复原任务后会继续发送尚未开始的分片 PUT、完成确认，并可能提交一次收费的视频生成；已确认分片不会重传。":
+    "所有远端素材 ID 均已确认。恢复同一个原始任务，将使用冻结参数发起一次可能收费的视频生成请求，不重新上传已确认的素材。请确认服务商中的素材和当前任务确实匹配。",
    okText:"确认恢复并允许生成",cancelText:"取消",
    onOk:async()=>{
     setWorking(job.id);
@@ -512,6 +533,15 @@ export function CanvasJobHistory({projectId,open,onClose,onObserveJob,onRefreshC
             asset.status==="active"?"已确认":
             asset.status==="rejected"?"已拒绝":asset.status}</div>
           <div className="font-mono opacity-60 break-all">{asset.blobId.slice(0,16)}…</div>
+          {asset.chunkProgress?<div>
+           分片确认：{asset.chunkProgress.uploaded}/{asset.chunkProgress.total}
+           {asset.chunkProgress.uncertain>0?" · "+asset.chunkProgress.uncertain+" 片结果未知，禁止自动重传":""}
+          </div>:null}
+          {asset.status==="uploading"&&asset.chunkProgress?.uncertain?
+           <Button size="small" loading={working===job.id}
+            onClick={()=>void auditChunks(job,asset)}>
+            从服务商只读核对未知分片 ETag
+           </Button>:null}
           {asset.finalizeStage?<div className="text-amber-600 dark:text-amber-400">
            {asset.finalizeStage==="uploaded"?"文件 PUT 已完成，尚未完成服务商确认":
             asset.finalizeStage==="finalizing"?"服务商完成确认结果未知，禁止自动再次确认":
@@ -534,7 +564,8 @@ export function CanvasJobHistory({projectId,open,onClose,onObserveJob,onRefreshC
          </div>)}
         {assetAudits[job.id].canResume?
          <Button size="small" type="primary" loading={working===job.id}
-          onClick={()=>confirmAssetResume(job)}>恢复原任务并允许视频生成</Button>:
+          onClick={()=>confirmAssetResume(job)}>{assetAudits[job.id].canResumePreparation?
+           "继续剩余分片并允许视频生成":"恢复原任务并允许视频生成"}</Button>:
          <div className="opacity-65">有素材未核实或无法恢复；不会重复上传或发起生成。</div>}
        </div>:null}
      </div>:null}

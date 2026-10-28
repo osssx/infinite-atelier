@@ -39,7 +39,7 @@ function fixture(t){
 }
 test("P5.4i v13 hashes Skill.md and complete ZIP; persists immutable versions, scope and archive",async t=>{
  const {db,dir,request,app}=fixture(t);
- assert.equal(SCHEMA_VERSION,18);
+ assert.equal(SCHEMA_VERSION,19);
  const initialPkg=skill(),nextPkg=skill("Updated",true);
  const oldVersion=initialPkg.manifest.version,nextVersion=nextPkg.manifest.version;
  const initial=await request("POST","/api/v1/skills",{package:initialPkg});

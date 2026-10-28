@@ -34,10 +34,42 @@ function verifyRows(references,spec,rows){
  }))throw fail("script_asset_identity_mismatch");
  return {expected,byIndex};
 }
+function safeChunkResumption(db,{jobId,references,spec,expected,byIndex}){
+ if(!spec.assetPartAudit||!spec.assetPartUrls)return false;
+ const hasProof=db.prepare("SELECT 1 FROM job_events WHERE job_id=? AND kind='script_asset_chunks_verified' LIMIT 1").get(jobId);
+ if(!hasProof)return false;
+ const fingerprint=scriptHash(spec.assetUpload);
+ return expected.every(({index,ref})=>{
+  const row=byIndex.get(index);
+  if(!row||row.blob_id!==ref.blobId||row.script_fingerprint!==fingerprint)
+   return false;
+  if(row.status==="active")return true;
+  if(row.status!=="uploading")return false;
+  const session=db.prepare("SELECT * FROM script_asset_chunk_sessions WHERE job_id=? AND reference_index=?").get(jobId,index);
+  if(!session||session.blob_id!==ref.blobId||
+     session.grant_fingerprint!==fingerprint||
+     session.refresh_fingerprint!==scriptHash(spec.assetPartUrls))
+   return false;
+  const final=db.prepare("SELECT status FROM script_asset_finalizations WHERE job_id=? AND reference_index=?").get(jobId,index);
+  if(final&&final.status==="finalizing")return false;
+  const parts=db.prepare("SELECT status FROM script_asset_chunks WHERE job_id=? AND reference_index=? ORDER BY part_number").all(jobId,index);
+  return parts.length===session.part_count&&parts.length>=2&&
+   parts.every(x=>x.status==="ready"||x.status==="uploaded");
+ });
+}
 function safeList(db,{projectId,jobId}){
  const {job,spec,references}=loadJob(db,{projectId,jobId});
  const rows=currentRows(db,jobId),byIndex=new Map(rows.map(row=>[row.reference_index,row]));
  const stages=new Map(db.prepare("SELECT reference_index,status,asset_id FROM script_asset_finalizations WHERE job_id=?").all(jobId).map(row=>[row.reference_index,row]));
+ const chunkRows=db.prepare("SELECT reference_index,part_number,status FROM script_asset_chunks WHERE job_id=? ORDER BY reference_index,part_number").all(jobId);
+ const chunkCounts=new Map();
+ for(const part of chunkRows){
+  const stats=chunkCounts.get(part.reference_index)??{total:0,uploaded:0,uncertain:0};
+  stats.total++;
+  if(part.status==="uploaded")stats.uploaded++;
+  if(part.status==="uploading")stats.uncertain++;
+  chunkCounts.set(part.reference_index,stats);
+ }
  const fingerprint=scriptHash(spec.assetUpload);
  const assets=references.flatMap((ref,index)=>{
   if(ref.kind==="image")return [];
@@ -48,6 +80,7 @@ function safeList(db,{projectId,jobId}){
    status:valid?record.status:record?"mismatch":"not_started",
    remoteAssetId:valid&&record.status==="active"?record.remote_asset_id:null,
    finalizeStage:stages.get(index)?.status??null,
+   chunkProgress:valid?chunkCounts.get(index)??null:null,
    expectedAssetId:valid&&stages.has(index)?stages.get(index).asset_id:null,
    updatedAt:valid?record.updated_at:null}];
  });
@@ -56,8 +89,14 @@ function safeList(db,{projectId,jobId}){
  return {jobId:job.id,projectId,jobStatus:job.status,
   submissionNeverStarted:neverSubmitted,
   canResume:job.status==="failed"&&neverSubmitted&&assets.length>0&&
-   assets.every(asset=>asset.status==="active")&&
-   rows.length===assets.length,
+   rows.length===assets.length&&
+   (assets.every(asset=>asset.status==="active")||
+    safeChunkResumption(db,{jobId,references,spec,
+     expected:references.flatMap((ref,index)=>ref.kind==="image"?[]:[{index,ref}]),byIndex})),
+  canResumePreparation:job.status==="failed"&&neverSubmitted&&
+   assets.some(asset=>asset.status==="uploading")&&rows.length===assets.length&&
+   safeChunkResumption(db,{jobId,references,spec,
+    expected:references.flatMap((ref,index)=>ref.kind==="image"?[]:[{index,ref}]),byIndex}),
   assets};
 }
 /** Local authenticated operator attests that an asset ID was verified outside
@@ -91,6 +130,9 @@ export function reconcileScriptAsset(db,{projectId,jobId,referenceIndex,
   if(action==="confirm"){
    const stage=db.prepare("SELECT asset_id FROM script_asset_finalizations WHERE job_id=? AND reference_index=?").get(jobId,referenceIndex);
    if(stage&&stage.asset_id!==remoteAssetId)
+    throw fail("script_asset_remote_id_conflict");
+   const session=db.prepare("SELECT asset_id FROM script_asset_chunk_sessions WHERE job_id=? AND reference_index=?").get(jobId,referenceIndex);
+   if(session&&session.asset_id!==remoteAssetId)
     throw fail("script_asset_remote_id_conflict");
   }
   if(action==="confirm"){
@@ -134,12 +176,13 @@ export function resumeReconciledVideoJob(db,{projectId,jobId}={}){
   // A failed prepare with preexisting active assets is not automatically
   // equivalent to a human-reconciled uncertain upload. Require an explicit
   // operator attestation recorded for this exact job.
-  const attested=db.prepare("SELECT 1 FROM job_events WHERE job_id=? AND kind='script_asset_reconciled' AND json_extract(payload_json,'$.action')='confirm' LIMIT 1").get(jobId);
+  const attested=db.prepare("SELECT 1 FROM job_events WHERE job_id=? AND (kind='script_asset_chunks_verified' OR kind='script_asset_reconciled' AND json_extract(payload_json,'$.action')='confirm') LIMIT 1").get(jobId);
   if(!attested)throw fail("script_asset_resume_not_eligible");
   const rows=currentRows(db,jobId);
   const {expected,byIndex}=verifyRows(references,spec,rows);
-  if(expected.length===0||expected.some(({index})=>byIndex.get(index).status!=="active"||
-     !VALID_ID.test(byIndex.get(index).remote_asset_id)))
+  if(expected.length===0||!(expected.every(({index})=>byIndex.get(index).status==="active"&&
+      VALID_ID.test(byIndex.get(index).remote_asset_id))||
+      safeChunkResumption(db,{jobId,references,spec,expected,byIndex})))
    throw fail("script_asset_uploads_incomplete");
   const credential=db.prepare("SELECT channel_id,revoked_at FROM credential_versions WHERE id=?")
    .get(snapshot.secretVersionRef);

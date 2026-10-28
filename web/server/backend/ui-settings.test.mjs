@@ -28,7 +28,7 @@ const publicConfig={
 };
 test("P5.4b schema v12 migrates, preserves existing v11 table, persists nonsecret preferences with revisions",async t=>{
  const x=fixture(t);
- assert.equal(x.db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v,18);
+ assert.equal(x.db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v,19);
  assert.deepEqual(getUiSetting(x.db,"model_config"),{revision:1,value:{}});
  assert.deepEqual(getUiSetting(x.db,"theme"),{revision:1,value:"dark"});
  assert.equal((await x.call("PUT","/api/v1/ui-settings/model_config",

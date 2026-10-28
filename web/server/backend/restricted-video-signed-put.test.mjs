@@ -29,6 +29,12 @@ test("accepts a signed public HTTPS URL and PUTs exactly the CAS bytes, never a 
  assert.equal(validateSignedPutUrl(signed).hostname,"storage.example.com");
  assert.deepEqual(validateSignedPutAsset(asset),bytes);
 });
+test("captures only a returned ETag from a confirmed signed PUT for chunk upload",async()=>{
+ const put=createRestrictedSignedPut({fetcher:async()=>new Response(null,{
+  status:204,headers:{"ETag":'"abc-1"'}
+ })});
+ assert.deepEqual(await put({uploadUrl:signed,asset}),{uploaded:true,etag:'"abc-1"'});
+});
 test("rejects metadata, private IP, localhost, redirects, credentials and non-HTTPS before any network",async()=>{
  const put=createRestrictedSignedPut({fetcher:async()=>{throw Error("should_not_fetch")}});
  for(const url of [

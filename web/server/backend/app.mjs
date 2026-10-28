@@ -104,6 +104,10 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
    "script_asset_reconcile_invalid","script_asset_reconcile_not_eligible",
    "script_asset_reconcile_state_changed","script_asset_remote_id_conflict",
    "script_asset_resume_not_eligible","script_asset_uploads_incomplete",
+   "script_asset_chunk_audit_unavailable","video_script_chunk_audit_not_eligible",
+   "video_script_chunk_audit_invalid","video_script_chunk_audit_evidence_invalid",
+   "video_script_chunk_audit_etag_conflict","video_script_chunk_audit_unsent_conflict",
+   "video_script_chunk_audit_state_changed","video_script_chunk_audit_unsupported",
    "script_asset_credential_unavailable","script_asset_source_changed","script_asset_source_busy",
    "ui_setting_invalid","ui_setting_secret_forbidden","ui_setting_too_large","ui_setting_not_found",
    "ui_setting_revision_required","ui_setting_revision_conflict",
@@ -532,6 +536,20 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
    reply.header("Cache-Control","no-store");
    return reconcileScriptAsset(db,{projectId:req.params.id,jobId:req.params.jobId,
     referenceIndex:req.params.referenceIndex,...req.body});
+  });
+  app.post("/api/v1/projects/:id/jobs/:jobId/assets/:referenceIndex/audit-chunks",{
+   schema:{
+    params:{type:"object",required:["id","jobId","referenceIndex"],
+     properties:{id:idSchema,jobId:idSchema,
+      referenceIndex:{type:"integer",minimum:0,maximum:11}},additionalProperties:false},
+    body:{type:"object",required:["expectedUpdatedAt"],
+     properties:{expectedUpdatedAt:{type:"integer",minimum:1}},additionalProperties:false}
+   }
+  },async(req,reply)=>{
+   reply.header("Cache-Control","no-store");
+   return coordinator.reconcileChunkUpload({projectId:req.params.id,
+    jobId:req.params.jobId,index:req.params.referenceIndex,
+    expectedUpdatedAt:req.body.expectedUpdatedAt});
   });
   app.post("/api/v1/projects/:id/jobs/:jobId/resume-assets",{
    schema:{params:assetJobParams,body:{type:"object",additionalProperties:false}}

@@ -304,6 +304,18 @@ return (data.candidates || [])
             },null,2),
         },
         {
+            label:"安全异步视频（分片上传）",
+            script:JSON.stringify({
+                version:1,
+                assetUpload:'const grant=await http.post("/assets/multipart", {model, kind:params.asset.kind, mime_type:params.asset.mimeType}); return {id:grant.id,partSize:grant.part_size,parts:grant.parts};',
+                assetPartUrls:'const result=await http.get("/assets/parts/"+params.asset.remoteAssetId); return {id:result.id,parts:result.parts};',
+                assetPartAudit:'const result=await http.get("/assets/parts/status/"+params.asset.remoteAssetId); return {id:result.id,parts:result.parts};',
+                assetFinalize:'const result=await http.post("/assets/"+params.asset.remoteAssetId+"/complete", {id:params.asset.remoteAssetId, parts:params.asset.partEtags}); return result.id;',
+                submit:'const data=await http.post("/videos", {model,prompt,reference_video_asset_ids:params.referenceVideoAssetIds,reference_audio_asset_ids:params.referenceAudioAssetIds}); return data.id;',
+                poll:'const data=await http.get("/videos/"+remoteTaskId); return {id:data.id,status:data.status,videoUrl:data.video_url||data.url};'
+            },null,2),
+        },
+        {
             label: i18n.t("modelPlugin.templates.openai"),
             script: `// ${i18n.t("modelPlugin.templates.videoOpenai")}
 const headers = { "Content-Type": "application/json", Authorization: \`Bearer \${apiKey}\` };

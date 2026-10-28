@@ -36,7 +36,7 @@ test("schema v2 migrates through v3-v14 preserving prior jobs",t=>{
  db.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES(1,1),(2,2)").run();
  db.prepare("INSERT INTO projects(id,document_json,revision) VALUES('old','{\"nodes\":[],\"connections\":[]}',19)").run();
  initializeSchema(db);initializeSchema(db);
- assert.equal(db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v,18);
+ assert.equal(db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v,19);
  assert.equal(db.prepare("SELECT revision FROM projects WHERE id='old'").get().revision,19);
  for(const column of ["lease_owner","lease_acquired_at","lease_expires_at","recovery_receipt_json"])
   assert.ok(db.prepare("PRAGMA table_info(jobs)").all().some(item=>item.name===column));

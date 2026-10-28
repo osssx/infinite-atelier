@@ -21,7 +21,7 @@ export function createScriptAssetUploadManager({db}={}){
    throw fail("video_script_asset_not_ready");
   return saved.remote_asset_id;
  }
- async function ensureReady({job,index,ref,script,upload,resumeFinalize}){
+ async function ensureReady({job,index,ref,script,upload,resumeFinalize,resumeChunks}){
   if(!job?.id||!Number.isSafeInteger(index)||index<0||
      !ref?.blobId||typeof script!=="string"||typeof upload!=="function")
    throw fail("video_script_asset_prepare_invalid",true);
@@ -36,6 +36,10 @@ export function createScriptAssetUploadManager({db}={}){
    if(saved.status==="uploading"&&resumeFinalize){
     const stage=db.prepare("SELECT status FROM script_asset_finalizations WHERE job_id=? AND reference_index=?").get(job.id,index);
     if(stage?.status==="uploaded")return resumeFinalize();
+   }
+   if(saved.status==="uploading"&&resumeChunks){
+    const session=db.prepare("SELECT 1 FROM script_asset_chunk_sessions WHERE job_id=? AND reference_index=?").get(job.id,index);
+    if(session)return resumeChunks();
    }
    // Ambiguous upload completion: never POST again.
    throw fail("video_script_asset_upload_unknown");

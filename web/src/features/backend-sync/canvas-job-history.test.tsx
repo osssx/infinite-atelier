@@ -3,7 +3,7 @@ const api=vi.hoisted(()=>vi.fn());
 vi.mock("./canvas-api",async(importOriginal)=>({
  ...(await importOriginal<typeof import("./canvas-api")>()),canvasApi:api
 }));
-import {canRetryCanvasMaterialization,canReconcileUnknownJob,getCanvasJobHistory,getCanvasSkillAudit,replayCanvasSkillJob,hasPendingSkillReplay,lookupPendingSkillReplay,retryCanvasMaterialization,recoverCanvasPendingMaterialization,reconcileCanvasUnknownJob,canRemoveCanvasJobHistory,removeCanvasJobHistory,getCanvasScriptAssets,reconcileCanvasScriptAsset,resumeCanvasScriptAssets,
+import {canRetryCanvasMaterialization,canReconcileUnknownJob,getCanvasJobHistory,getCanvasSkillAudit,replayCanvasSkillJob,hasPendingSkillReplay,lookupPendingSkillReplay,retryCanvasMaterialization,recoverCanvasPendingMaterialization,reconcileCanvasUnknownJob,canRemoveCanvasJobHistory,removeCanvasJobHistory,getCanvasScriptAssets,reconcileCanvasScriptAsset,resumeCanvasScriptAssets,auditCanvasScriptChunks,
  type CanvasJobHistoryItem,type CanvasJobArtifact} from "./canvas-job-history";
 
 afterEach(()=>vi.unstubAllGlobals());
@@ -43,6 +43,15 @@ describe("P4.7 Canvas job history and recovery boundary",()=>{
   api.mockResolvedValueOnce({hidden:true,jobId:"job-1"});
   await removeCanvasJobHistory("p1","job-1");
   expect(api).toHaveBeenCalledExactlyOnceWith("/api/v1/projects/p1/jobs/job-1/history","DELETE");
+ });
+ it("read-only provider chunk audit posts only expected row version to scoped backend",async()=>{
+  api.mockResolvedValueOnce({verified:true,verifiedParts:1});
+  const result=await auditCanvasScriptChunks("p1","job-1",2,12345);
+  expect(result.verified).toBe(true);
+  expect(api).toHaveBeenCalledWith(
+   "/api/v1/projects/p1/jobs/job-1/assets/2/audit-chunks",
+   "POST",{expectedUpdatedAt:12345});
+  expect(api.mock.calls.some(([path])=>path==="/api/v1/jobs")).toBe(false);
  });
  it("manual remote asset reconciliation only calls project-scoped endpoints without a second job POST",async()=>{
   api.mockResolvedValueOnce({jobId:"job-1",projectId:"p1",jobStatus:"failed",

@@ -71,17 +71,17 @@ test("upgrade from v17 adds finalize staging without modifying existing upload r
  const db=new DatabaseSync(":memory:");
  initializeSchema(db);
  t.after(()=>db.close());
- db.exec("DROP TABLE script_asset_finalizations;DELETE FROM schema_migrations WHERE version=18;");
+ db.exec("DROP TABLE script_asset_chunks;DROP TABLE script_asset_chunk_sessions;DROP TABLE script_asset_finalizations;DELETE FROM schema_migrations WHERE version=19;");
  db.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES(17,?)").run(Date.now());
  assert.equal(db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v,17);
  initializeSchema(db);
- assert.equal(db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v,18);
+ assert.equal(db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v,19);
  assert.deepEqual(db.prepare("PRAGMA table_info(script_asset_finalizations)").all()
   .map(column=>column.name).filter(name=>["asset_id","status"].includes(name)),
   ["asset_id","status"]);
 });
 test("v18 has durable stage table; succeeds presign PUT finalize then video without replay",async t=>{
- assert.equal(SCHEMA_VERSION,18);
+ assert.equal(SCHEMA_VERSION,19);
  const f=await setup(t);
  const coordinator=createJobCoordinator({db:f.db,adapters:{model:f.adapter}});
  coordinator.recoverAtStartup();await coordinator.tick();

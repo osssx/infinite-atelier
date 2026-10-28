@@ -86,13 +86,31 @@ return result.id;
 
 目前不支持上传后才首次分配远端素材 ID、完成请求使用特殊签名头、分片续传或将整个服务商协议交给任意 JavaScript 执行。
 
+### 可恢复的分片预签名 PUT（最多 8 片）
+
+选择「安全异步视频（分片上传）」模板。服务商的 `assetUpload` 必须返回 `{id, partSize, parts:[{partNumber,uploadUrl}]}`，`partSize` 以字节为单位；服务端验证素材总长度、固定分片大小、分片序号从 1 连续排列、2–8 个分片及全部公网 HTTPS 目标。脚本不能指定任意文件路径、分片偏移或自行提交 HTTP PUT。每片由冻结 CAS 原始字节截取，使用无渠道密钥的 HTTPS PUT 发送，**每片 2xx 必须返回合法 ETag**；缺少 ETag 或响应不明都不得视为成功。
+
+为了支持重启恢复未开始的分片，新增受限 `assetPartUrls` 阶段：它只能使用当前渠道的只读 GET，访问原素材 ID 对应的 `/parts/<assetId>`，返回 `{id,parts:[{partNumber,uploadUrl}]}`。服务商必须保证这是**只读签名地址刷新**，不能创建新素材会话。若服务商没有该能力或安全保证，不要使用此通用模板。重新获得的 URL 只在内存中使用，不进入数据库或任务快照。
+
+完成后 `assetFinalize` 请求通过 `params.asset.partEtags` 取得按分片序号排序的 `[{partNumber,etag}]`，并返回与申请时相同的素材 ID。只有全部分片有已确认 ETag，才能进入完成确认与视频生成。数据库中的 `script_asset_chunk_sessions` 只保存素材 ID、CAS 哈希、脚本指纹、分片大小及数量；`script_asset_chunks` 为每片保存 `ready/uploading/uploaded` 和 ETag。网络 PUT 前先将该片持久化为 `uploading`；重启只跳过 `uploaded` 片，对 `ready` 片重新获取只读签名地址继续；对任何 `uploading` 片一律停止，转人工对账，**绝不盲目重传**。此处不是任意服务商的自动断点续传：结果不明的片不能自动判定成功。
+
+现有媒体限制不变：视频最多 12 MiB、音频最多 6 MiB、全部参考素材最多 32 MiB；单片最大 8 MiB，最多 8 片。不支持要求特定 Content-MD5、S3/OSS 额外签名请求头、单次 PATCH、专有校验算法或完成确认后才首次生成素材 ID 的服务商。页面不暴露任何签名 URL、渠道密钥或原始分片数据。
+
+### 结果未知分片的只读服务商核对
+
+分片脚本可选 `assetPartAudit`，通过受控的同渠道 `http.get("/assets/parts/status/"+params.asset.remoteAssetId)` 获取 `{id,parts:[{partNumber,etag}]}`。服务商必须保证该接口**只读且返回当前上传会话的权威分片状态**；这不能仅靠 HTTP GET 字面保证，由渠道接入者按服务商文档核实。脚本不能指定任意 URL、方法、凭据或文件内容。GET 只向当前冻结渠道发起，仍进行 DNS/SSRF 防护、禁跳转及响应大小限制。
+
+当分片 PUT 已发出、结果未知时，在「任务历史 → 核对远端素材上传」点击「从服务商只读核对未知分片 ETag」。后端验证上传会话 ID、分片数量、每个 partNumber、合法 ETag、已确认分片 ETag 不变、`ready` 分片不能出现远端回执，以及原任务从未进入视频生成提交阶段。只有**所有未知分片都具有可信服务商 ETag**，才会在一次事务内将对应分片 `uploading → uploaded` 并写入对账事件。缺失证据保持阻断，冲突一律拒绝，不会自动重新 PUT 或执行 Finalize。
+
+核对成功后需要用户**再次明确点击恢复原任务**。恢复仍在事务内验证原任务、原图状态、凭据、素材哈希和脚本指纹，并仅让未开始的 `ready` 分片通过原服务商的只读 `assetPartUrls` 获取新 URL、继续 PUT；`uploaded` 片不会重传。随后执行一次 Finalize 和可能收费的视频生成。新增项目级 API `POST /api/v1/projects/:id/jobs/:jobId/assets/:referenceIndex/audit-chunks`，只接收原上传行版本 `expectedUpdatedAt`，不接收 ETag 或签名 URL。当前不支持没有权威只读分片查询接口的服务商自动确认未知分片。
+
 ## 上传结果未知：人工核对与恢复
 
 如果上传阶段网络中断，素材状态会保留为 `uploading`，原生成任务处于 `failed`，**不会自动重传素材，也不会重新提交视频生成**。在「任务历史」找到失败的视频模型任务，选择「核对远端素材上传」：
 
 1. 打开服务商控制台或对应素材查询接口，确认素材是否被接收以及真实的远端素材 ID。
 2. 对结果未知的素材填写已确认的 ID，点击「确认素材 ID」（显式人工确认），或者确定服务商未接收时点击「确认未接收」。界面不自动查询远端，也不会伪造服务商的验证结论。
-3. 所有素材均为 `active` 后，才可点击「恢复原任务并允许视频生成」；将恢复 **同一个原任务**，复用已持久化的素材 ID，依照原冻结参数可能产生一次视频生成费用。
+3. 对分片上传可先核对全部未知分片 ETag，再显式恢复剩余分片；非分片上传仍要求所有素材均为 `active` 后，才可点击「恢复原任务并允许视频生成」；将恢复 **同一个原任务**，复用已持久化的素材 ID，依照原冻结参数可能产生一次视频生成费用。
 
 后端提供项目隔离且需要已授权会话的 API：`GET /api/v1/projects/:id/jobs/:jobId/assets`，`POST /api/v1/projects/:id/jobs/:jobId/assets/:referenceIndex/reconcile`，`POST /api/v1/projects/:id/jobs/:jobId/resume-assets`。服务端要求素材身份及上传脚本指纹匹配、行版本未改变，恢复时还核对 Job 从未进入生成提交阶段、最后失败原因仅为 prepare_failed、凭据仍有效、画布源节点及输入没有变化、没有同节点并行模型任务。这些判定都在数据库事务内完成。已提交生成、待轮询、来源改变、身份冲突、被拒绝的上传均不得通过这个入口恢复。
 
@@ -100,10 +118,10 @@ return result.id;
 
 - 脚本不能访问 `apiKey`、`process`、`require`、`eval`、`globalThis`、动态函数、对象原型或任意 Node API。通过受控 HTTP 层注入 Vault 凭据。脚本可编辑请求体，但不能跨域访问任意主机。
 - 旧的视频 JavaScript `request()/poll()` 脚本不会自动转换为新 JSON 规范；必须按服务商响应格式调整模板。异步任务不能在脚本中执行循环。
-- **暂不支持**完成确认后才首次产生素材 ID 的协议、分片上传/续传、复杂签名 Header 或多文件字段等专有上传协议、超过限制的大视频/音频文件、由 API Key 鉴权下载的视频内容 URL、任意 MIME 媒体、Gemini 特殊协议、脚本自定义 HTTP Header、对已运行中视频强行删除远程历史。上述能力应由后续专用适配器完成。
+- **暂不支持**完成确认后才首次产生素材 ID 的协议、结果未知分片的自动重传、复杂签名 Header 或多文件字段等专有上传协议、超过限制的大视频/音频文件、由 API Key 鉴权下载的视频内容 URL、任意 MIME 媒体、Gemini 特殊协议、脚本自定义 HTTP Header、对已运行中视频强行删除远程历史。上述能力应由后续专用适配器完成。
 - 非 OpenAI 格式渠道的旧脚本尚未移除浏览器执行路径，后续继续完成迁移。测试只模拟上游 HTTP，不调用真实收费模型。
 
 代码：`restricted-model-script.mjs`（AST 表达式解释器）、`restricted-video-adapter.mjs`（视频任务）、`restricted-video-download.mjs`（安全视频下载），附对应 `.test.mjs`。
 - 对应集成测试仅使用模拟的上游模型响应，不会调用真实付费 API。
 
-计划下一阶段：探索确认后才产生素材 ID 与分片上传的安全可恢复状态机，并继续迁移剩余浏览器脚本执行入口。
+计划下一阶段：支持更多服务商专有分片协议的明确确认与对账，同时继续收敛旧浏览器脚本执行入口。

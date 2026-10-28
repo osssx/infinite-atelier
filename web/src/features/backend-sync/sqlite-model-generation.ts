@@ -42,6 +42,9 @@ export async function startSqliteModelGeneration({
    referenceImages.length>0||maskImage||typeof task.script!=="string"||
    new TextEncoder().encode(task.script).length>16_384))
   throw Error("自定义脚本后端不支持图片参考或 Skill，脚本最大 16KB");
+ if(task.script&&task.kind==="video"&&task.references?.some(ref=>ref.kind!=="image"||
+  !["first_frame","last_frame","reference_image"].includes(ref.role)))
+  throw Error("自定义视频脚本仅支持首帧、尾帧和参考图片的 CAS 素材");
  if((["openai","openai_compatible"].includes(provider)&&task.kind==="video"&&!task.script)||
     (provider==="volcengine_ark"&&task.kind!=="video"))
   throw Error("model_provider_kind_unsupported");

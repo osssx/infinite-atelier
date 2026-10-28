@@ -3,6 +3,7 @@ import {DEFAULT_OPENAI_ENDPOINT,normalizeOpenAiCompatBaseUrl,
  createPinnedOpenAiCompatCall} from "./openai-compat-endpoints.mjs";
 import {parseRestrictedModelScript,runRestrictedModelScript} from "./restricted-model-script.mjs";
 import {createRestrictedVideoDownloader} from "./restricted-video-download.mjs";
+import {validateFrozenVideoImages,materializeFrozenVideoImages} from "./restricted-video-images.mjs";
 
 const fail=(code,confirmedNotAccepted=false)=>Object.assign(Error(code),
  {code,statusCode:422,confirmedNotAccepted});
@@ -49,15 +50,16 @@ export function validateRestrictedVideoSnapshot(snapshot){
     typeof task.prompt!=="string"||!task.prompt.trim()||
     Buffer.byteLength(task.prompt,"utf8")>16000||
     Object.keys(task).some(key=>!["kind","model","prompt","script","duration","ratio",
-     "resolution","generateAudio","watermark"].includes(key))||
+     "resolution","generateAudio","watermark","references"].includes(key))||
     task.duration!==undefined&&(!Number.isInteger(task.duration)||task.duration<1||task.duration>60)||
     task.ratio!==undefined&&!["adaptive","16:9","9:16","1:1","4:3","3:4","21:9"].includes(task.ratio)||
     task.resolution!==undefined&&!["480p","720p","1080p"].includes(task.resolution)||
     task.generateAudio!==undefined&&typeof task.generateAudio!=="boolean"||
     task.watermark!==undefined&&typeof task.watermark!=="boolean")
   throw fail("video_script_task_invalid",true);
+ const references=validateFrozenVideoImages(task.references);
  const spec=parseRestrictedVideoScript(task.script);
- return {task,spec};
+ return {task,spec,references};
 }
 export function createRestrictedVideoAdapter({db,vault,blobStore,
  upstreamCall=fetch,compatibleUpstreamCall=createPinnedOpenAiCompatCall({
@@ -67,17 +69,18 @@ export function createRestrictedVideoAdapter({db,vault,blobStore,
  const downloader=mediaDownloader??createRestrictedVideoDownloader({blobStore});
  const check=job=>{
   const snapshot=job.snapshot??JSON.parse(job.snapshot_json);
-  const {task,spec}=validateRestrictedVideoSnapshot(snapshot);
+  const {task,spec,references}=validateRestrictedVideoSnapshot(snapshot);
   if(vault.get(snapshot.channelId).provider!==snapshot.provider)
    throw fail("video_script_channel_mismatch",true);
   vault.checkReference(snapshot.secretVersionRef,snapshot.channelId);
-  return {snapshot,task,spec};
+  return {snapshot,task,spec,references};
  };
  const endpoint=snap=>snap.provider==="openai_compatible"?
   snap.endpointBaseUrl:DEFAULT_OPENAI_ENDPOINT;
  async function phase(job,name,remoteTaskId){
-  const {snapshot,task,spec}=check(job);
+  const {snapshot,task,spec,references}=check(job);
   const script=spec[name];
+  const media=name==="submit"?await materializeFrozenVideoImages(blobStore,references):null;
   if(!script)return null;
   const auth=vault.withSecretVersion(snapshot.secretVersionRef,
    bytes=>"Bearer "+bytes.toString("utf8"),{channelId:snapshot.channelId});
@@ -86,9 +89,10 @@ export function createRestrictedVideoAdapter({db,vault,blobStore,
   return runRestrictedModelScript({
    script,model:task.model,prompt:task.prompt,remoteTaskId,
    messages:[{role:"user",content:task.prompt}],
-   params:{duration:task.duration,ratio:task.ratio,resolution:task.resolution,
-    generateAudio:task.generateAudio,watermark:task.watermark},
-   http:async(method,path,body)=>{
+    params:{duration:task.duration,ratio:task.ratio,resolution:task.resolution,
+     generateAudio:task.generateAudio,watermark:task.watermark,
+     ...(media?{firstFrame:media.firstFrame,lastFrame:media.lastFrame,
+      referenceImages:media.referenceImages}:{})},   http:async(method,path,body)=>{
     if(hasCalled)throw fail("video_script_multiple_requests",true);
     hasCalled=true;
     if(name==="submit"&&method!=="post"||
@@ -101,7 +105,7 @@ export function createRestrictedVideoAdapter({db,vault,blobStore,
     if(name==="submit"){
      try{payload=JSON.stringify(body)}
      catch{throw fail("video_script_body_invalid",true)}
-     if(!payload||Buffer.byteLength(payload)>128*1024)
+     if(!payload||Buffer.byteLength(payload)>(references.length?36*1024*1024:128*1024))
       throw fail("video_script_body_invalid",true);
     }
     let response;
@@ -129,7 +133,10 @@ export function createRestrictedVideoAdapter({db,vault,blobStore,
    }
   });
  }
- async function prepare({job}){check(job)}
+ async function prepare({job}){
+  const {references}=check(job);
+  if(references.length)await materializeFrozenVideoImages(blobStore,references);
+ }
  async function submit({job}){
   const result=await phase(job,"submit");
   const id=typeof result==="string"?result:result?.id;

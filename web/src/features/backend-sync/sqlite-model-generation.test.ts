@@ -153,6 +153,42 @@ describe("P4.4 ordinary SQLite model submit",()=>{
   expect(JSON.stringify(post)).not.toContain("apiKey");
   expect(b.saveProjectNow).toHaveBeenCalledTimes(1);
  });
+ it("keeps async video first/last/reference CAS hashes in the frozen task without inline image bytes",async()=>{
+  const hash="a".repeat(64);
+  const refs=(["first_frame","last_frame","reference_image"] as const).map(role=>({
+   kind:"image" as const,role,blobId:hash,sha256:hash,mimeType:"image/png"
+  }));
+  const script=JSON.stringify({version:1,
+   submit:'const data=await http.post("/videos",{model,prompt,first_frame:params.firstFrame,last_frame:params.lastFrame,reference_images:params.referenceImages});return data.id;',
+   poll:'const data=await http.get("/videos/"+remoteTaskId);return {id:data.id,status:data.status,videoUrl:data.url};'
+  });
+  const received:unknown[]=[];
+  const api=vi.fn(async(path:string,method="GET",payload?:unknown)=>{
+   if(path==="/api/v1/execution/capabilities")return {autoDispatch:true,modelKinds:["video"]};
+   if(path==="/api/v1/channels/proxy-1")
+    return {id:"proxy-1",provider:"openai_compatible",hasKey:true,keyVersion:"version-1"};
+   if(path==="/api/v1/jobs"){received.push(payload);return fakeJob}
+   throw Error("unexpected "+path);
+  });
+  const b=bridge();
+  await startSqliteModelGeneration({projectId:"p1",sourceNodeId:"text-1",nodes,connections,
+   channelId:"proxy-1",channelBaseUrl:"http://127.0.0.1:8188/v1",provider:"openai_compatible",
+   task:{kind:"video",model:"my-video",prompt:"fox",duration:6,script,references:refs},
+   api:api as unknown as typeof canvasApi,bridge:b});
+  expect(received).toHaveLength(1);
+  expect(received[0]).toMatchObject({executionMode:"poll",snapshot:{task:{
+   references:refs,script
+  }}});
+  expect(JSON.stringify(received[0])).not.toMatch(/data:image|blob:|apiKey/);
+  expect(b.saveProjectNow).toHaveBeenCalledTimes(1);
+  const refused=vi.fn();
+  await expect(startSqliteModelGeneration({projectId:"p1",sourceNodeId:"text-1",nodes,connections,
+   channelId:"proxy-1",provider:"openai_compatible",
+   task:{kind:"video",model:"my-video",prompt:"fox",script,
+    references:[{kind:"video",role:"reference_video",blobId:hash,sha256:hash}]},
+   api:refused as unknown as typeof canvasApi,bridge:bridge()})).rejects.toThrow("仅支持首帧");
+  expect(refused).not.toHaveBeenCalled();
+ });
  it("submits Ark async video with frozen remote credential version and poll mode",async()=>{
   const requests:Array<{path:string;method:string;payload?:unknown}>=[];
   const api=vi.fn(async(path:string,method="GET",payload?:unknown)=>{

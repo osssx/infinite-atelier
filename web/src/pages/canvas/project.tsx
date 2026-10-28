@@ -2611,8 +2611,8 @@ function AtelierCanvasPage() {
                     let skillCatalog:FrozenSqliteSkillCatalog|undefined;
                     let textMessages:import("@/features/backend-sync/sqlite-model-generation").FrozenTextTurn[]|undefined;
                     if(selectedScript&&kind==="video"&&
-                        (context.referenceImages.length||context.referenceVideos.length||context.referenceAudios.length))
-                        throw Error("自定义异步视频脚本暂不支持首尾帧、参考图、参考视频或参考音频，请使用 ComfyUI 工作流");
+                        (context.referenceVideos.length||context.referenceAudios.length))
+                        throw Error("自定义异步视频脚本暂不支持参考视频或音频；请使用 ComfyUI 工作流");
                     if(selectedScript&&kind==="image"&&context.referenceImages.length)
                         throw Error("自定义文生图脚本暂不支持参考图片或图片编辑");
                     if(kind==="text"){
@@ -2643,12 +2643,12 @@ function AtelierCanvasPage() {
                     let frozenReferences:Awaited<ReturnType<typeof freezeSeedanceReferences>>|undefined;
                     if(kind==="video"){
                         const request=makeVideoGenerationRequest(generationConfig,text,generationConfig.model,context,
-                            sourceNode.metadata?.videoReferences);
+                            sourceNode.metadata?.videoReferences,Boolean(selectedScript)||isNativeArkVideo(generationConfig,generationConfig.model));
                         const modelConfig=selectedChannel.models.find(entry=>entry.name===model);
                         const caps=modelConfig?capabilitiesForModel(selectedChannel,modelConfig):null;
-                        if(caps)validateSeedanceRequest(request,caps);
+                        if(caps&&!selectedScript)validateSeedanceRequest(request,caps);
                         seedanceMode=request.mode;
-                        if(request.references.some(ref=>ref.kind==="video"&&
+                        if(!selectedScript&&request.references.some(ref=>ref.kind==="video"&&
                             !ref.url?.startsWith("asset://"))){
                             const capability=await canvasApi<{arkAssetUploadReady:boolean}>(
                                 "/api/v1/execution/capabilities");
@@ -2680,7 +2680,7 @@ function AtelierCanvasPage() {
                               ["480","720","1080"].includes(generationConfig.vquality)?generationConfig.vquality+"p":"720p",
                             generateAudio:generationConfig.videoGenerateAudio!=="false",
                             watermark:generationConfig.videoWatermark==="true",
-                            ...(selectedScript?{}:{mode:seedanceMode,references:frozenReferences})}:{})}
+                            ...(selectedScript?{references:frozenReferences}:{mode:seedanceMode,references:frozenReferences})}:{})}
                     });
                     message.info("模型任务已提交："+job.id+"，完成后自动追加产物节点");
                     if(kind==="video"){sqliteGenerationJobsRef.current.set(nodeId,job.id);setRunningNodeId(nodeId)}

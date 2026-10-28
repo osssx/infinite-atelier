@@ -82,6 +82,30 @@ describe("P4.4 frozen Seedance media references",()=>{
   expect(fetcher).not.toHaveBeenCalled();
   expect(bridge.uploadFrozenBlob).not.toHaveBeenCalled();
  });
+ it("custom script freezes video/audio CAS and blocks remote asset identifiers",async()=>{
+  const bridge=asBridge();
+  let calls=0;
+  const fetcher=vi.fn(async()=>new Response(null,{status:200,headers:{
+   "content-type":++calls===1?"video/webm":"audio/flac",
+   "content-length":"4096" }}));
+  const frozen=await freezeSeedanceReferences(request("omni_reference",[
+   {id:"v",kind:"video",role:"reference_video",storageKey:cas,durationMs:6000},
+   {id:"a",kind:"audio",role:"reference_audio",storageKey:cas,durationMs:2500}
+  ]),bridge,{customScript:true,fetcher:fetcher as unknown as typeof fetch});
+  expect(frozen.map(ref=>ref.mimeType)).toEqual(["video/webm","audio/flac"]);
+  expect(frozen.every(ref=>ref.blobId===hash)).toBe(true);
+  expect(JSON.stringify(frozen)).not.toContain("data:");
+  expect(bridge.uploadFrozenBlob).not.toHaveBeenCalled();
+  await expect(freezeSeedanceReferences(request("omni_reference",[
+   {id:"v",kind:"video",role:"reference_video",url:"asset://other-remote"}
+  ]),bridge,{customScript:true})).rejects.toThrow("不支持外部 asset");
+  const tooLarge=vi.fn(async()=>new Response(null,{status:200,headers:{
+   "content-type":"video/mp4","content-length":String(13*1024*1024)
+  }}));
+  await expect(freezeSeedanceReferences(request("omni_reference",[
+   {id:"v",kind:"video",role:"reference_video",storageKey:cas}
+  ]),bridge,{customScript:true,fetcher:tooLarge as unknown as typeof fetch})).rejects.toThrow("大小限制");
+ });
  it("fails before GPU generation on missing CAS or MIME/role mismatch",async()=>{
   const bridge=asBridge();
   const fetcher=vi.fn(async()=>new Response(null,{status:200,

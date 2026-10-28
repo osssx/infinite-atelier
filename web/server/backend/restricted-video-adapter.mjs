@@ -3,7 +3,7 @@ import {DEFAULT_OPENAI_ENDPOINT,normalizeOpenAiCompatBaseUrl,
  createPinnedOpenAiCompatCall} from "./openai-compat-endpoints.mjs";
 import {parseRestrictedModelScript,runRestrictedModelScript} from "./restricted-model-script.mjs";
 import {createRestrictedVideoDownloader} from "./restricted-video-download.mjs";
-import {validateFrozenVideoImages,materializeFrozenVideoImages} from "./restricted-video-images.mjs";
+import {validateFrozenVideoMedia,materializeFrozenVideoMedia} from "./restricted-video-media.mjs";
 
 const fail=(code,confirmedNotAccepted=false)=>Object.assign(Error(code),
  {code,statusCode:422,confirmedNotAccepted});
@@ -57,7 +57,7 @@ export function validateRestrictedVideoSnapshot(snapshot){
     task.generateAudio!==undefined&&typeof task.generateAudio!=="boolean"||
     task.watermark!==undefined&&typeof task.watermark!=="boolean")
   throw fail("video_script_task_invalid",true);
- const references=validateFrozenVideoImages(task.references);
+ const references=validateFrozenVideoMedia(task.references);
  const spec=parseRestrictedVideoScript(task.script);
  return {task,spec,references};
 }
@@ -80,7 +80,7 @@ export function createRestrictedVideoAdapter({db,vault,blobStore,
  async function phase(job,name,remoteTaskId){
   const {snapshot,task,spec,references}=check(job);
   const script=spec[name];
-  const media=name==="submit"?await materializeFrozenVideoImages(blobStore,references):null;
+  const media=name==="submit"?await materializeFrozenVideoMedia(blobStore,references):null;
   if(!script)return null;
   const auth=vault.withSecretVersion(snapshot.secretVersionRef,
    bytes=>"Bearer "+bytes.toString("utf8"),{channelId:snapshot.channelId});
@@ -92,7 +92,8 @@ export function createRestrictedVideoAdapter({db,vault,blobStore,
     params:{duration:task.duration,ratio:task.ratio,resolution:task.resolution,
      generateAudio:task.generateAudio,watermark:task.watermark,
      ...(media?{firstFrame:media.firstFrame,lastFrame:media.lastFrame,
-      referenceImages:media.referenceImages}:{})},   http:async(method,path,body)=>{
+      referenceImages:media.referenceImages,
+      referenceVideos:media.referenceVideos,referenceAudios:media.referenceAudios}:{})},   http:async(method,path,body)=>{
     if(hasCalled)throw fail("video_script_multiple_requests",true);
     hasCalled=true;
     if(name==="submit"&&method!=="post"||
@@ -105,7 +106,7 @@ export function createRestrictedVideoAdapter({db,vault,blobStore,
     if(name==="submit"){
      try{payload=JSON.stringify(body)}
      catch{throw fail("video_script_body_invalid",true)}
-     if(!payload||Buffer.byteLength(payload)>(references.length?36*1024*1024:128*1024))
+     if(!payload||Buffer.byteLength(payload)>(references.length?45*1024*1024:128*1024))
       throw fail("video_script_body_invalid",true);
     }
     let response;
@@ -135,7 +136,7 @@ export function createRestrictedVideoAdapter({db,vault,blobStore,
  }
  async function prepare({job}){
   const {references}=check(job);
-  if(references.length)await materializeFrozenVideoImages(blobStore,references);
+  if(references.length)await materializeFrozenVideoMedia(blobStore,references);
  }
  async function submit({job}){
   const result=await phase(job,"submit");

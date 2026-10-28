@@ -185,9 +185,31 @@ describe("P4.4 ordinary SQLite model submit",()=>{
   await expect(startSqliteModelGeneration({projectId:"p1",sourceNodeId:"text-1",nodes,connections,
    channelId:"proxy-1",provider:"openai_compatible",
    task:{kind:"video",model:"my-video",prompt:"fox",script,
-    references:[{kind:"video",role:"reference_video",blobId:hash,sha256:hash}]},
-   api:refused as unknown as typeof canvasApi,bridge:bridge()})).rejects.toThrow("仅支持首帧");
+    references:[{kind:"video",role:"reference_video",blobId:hash,sha256:"b".repeat(64)}]},
+   api:refused as unknown as typeof canvasApi,bridge:bridge()})).rejects.toThrow("必须是已冻结的");
   expect(refused).not.toHaveBeenCalled();
+ });
+ it("accepts immutable video/audio CAS refs in custom video job, never raw media",async()=>{
+  const hash="a".repeat(64);
+  const references=[{kind:"video" as const,role:"reference_video" as const,blobId:hash,sha256:hash,mimeType:"video/mp4"},
+   {kind:"audio" as const,role:"reference_audio" as const,blobId:hash,sha256:hash,mimeType:"audio/wav"}];
+  const script=JSON.stringify({version:1,
+   submit:'const d=await http.post("/videos",{model,reference_videos:params.referenceVideos,reference_audios:params.referenceAudios});return d.id;',
+   poll:'const d=await http.get("/videos/"+remoteTaskId);return {id:d.id,status:d.status,videoUrl:d.url};'});
+  const submitted:any[]=[];
+  const api=vi.fn(async(path:string,method="GET",payload?:any)=>{
+   if(path==="/api/v1/execution/capabilities")return {autoDispatch:true,modelKinds:["video"]};
+   if(path==="/api/v1/channels/proxy-1")return {id:"proxy-1",provider:"openai_compatible",hasKey:true,keyVersion:"v1"};
+   if(path==="/api/v1/jobs"){submitted.push(payload);return fakeJob}
+   throw Error("unexpected "+path);
+  });
+  await startSqliteModelGeneration({projectId:"p1",sourceNodeId:"text-1",nodes,connections,
+   provider:"openai_compatible",channelId:"proxy-1",channelBaseUrl:"http://127.0.0.1:8188/v1",
+   task:{kind:"video",model:"video",prompt:"fox",script,references},
+   api:api as unknown as typeof canvasApi,bridge:bridge()});
+  expect(submitted).toHaveLength(1);
+  expect(submitted[0]).toMatchObject({executionMode:"poll",snapshot:{task:{script,references}}});
+  expect(JSON.stringify(submitted[0])).not.toMatch(/data:video|data:audio|apiKey/);
  });
  it("submits Ark async video with frozen remote credential version and poll mode",async()=>{
   const requests:Array<{path:string;method:string;payload?:unknown}>=[];

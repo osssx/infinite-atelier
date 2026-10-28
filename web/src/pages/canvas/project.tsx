@@ -2610,9 +2610,7 @@ function AtelierCanvasPage() {
                     let skillAuthorizationId:string|undefined;
                     let skillCatalog:FrozenSqliteSkillCatalog|undefined;
                     let textMessages:import("@/features/backend-sync/sqlite-model-generation").FrozenTextTurn[]|undefined;
-                    if(selectedScript&&kind==="video"&&
-                        (context.referenceVideos.length||context.referenceAudios.length))
-                        throw Error("自定义异步视频脚本暂不支持参考视频或音频；请使用 ComfyUI 工作流");
+
                     if(selectedScript&&kind==="image"&&context.referenceImages.length)
                         throw Error("自定义文生图脚本暂不支持参考图片或图片编辑");
                     if(kind==="text"){
@@ -2655,7 +2653,8 @@ function AtelierCanvasPage() {
                             if(!capability.arkAssetUploadReady)
                                 throw Error("本地视频上传方舟素材库尚未配置：请配置方舟 AK/SK、素材组和 TOS Bucket 后重启后端");
                         }
-                        frozenReferences=await freezeSeedanceReferences(request,bridge);
+                        frozenReferences=await freezeSeedanceReferences(request,bridge,
+                            {customScript:Boolean(selectedScript)});
                     }
                     const job=await startSqliteModelGeneration({
                         projectId,sourceNodeId:nodeId,

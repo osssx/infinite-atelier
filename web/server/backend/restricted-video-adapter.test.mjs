@@ -141,6 +141,47 @@ test("first/last/reference images are frozen as CAS refs and materialized only f
  }]}};
  await assert.rejects(f.adapter.prepare({job:{id:"missing",snapshot:missing}}),/blob_not_found/);
 });
+test("custom async video submit uses frozen CAS video/audio, resumes by task ID without reposting media",async t=>{
+ const sent=[],id="video_with_av",audio=Buffer.from("524946460800000057415645666d7420","hex");
+ let polls=0;
+ const upstream=async(url,init)=>{
+  sent.push({url,method:init.method,body:init.body,headers:init.headers});
+  if(init.method==="POST")return response({id,status:"queued"});
+  polls++;
+  return response({id,status:polls===1?"processing":"completed",video_url:mediaUrl});
+ };
+ const f=fixture(t,upstream,{importUrl:async()=>f.blobStore.put([mp4],{mime:"video/mp4"})});
+ const videoSaved=await f.blobStore.put([mp4],{mime:"video/mp4"});
+ const audioSaved=await f.blobStore.put([audio],{mime:"audio/wav"});
+ const references=[
+  {kind:"video",role:"reference_video",blobId:videoSaved.blobId,
+   sha256:videoSaved.sha256,mimeType:"video/mp4",durationMs:5000},
+  {kind:"audio",role:"reference_audio",blobId:audioSaved.blobId,
+   sha256:audioSaved.sha256,mimeType:"audio/wav",durationMs:1800}
+ ];
+ const config=JSON.stringify({version:1,
+  submit:'const r=await http.post("/videos",{model,prompt,reference_videos:params.referenceVideos,reference_audios:params.referenceAudios});return r.id;',
+  poll:'const r=await http.get("/videos/"+remoteTaskId);return {id:r.id,status:r.status,videoUrl:r.video_url};'});
+ const snapshot={...f.snapshot,task:{...f.snapshot.task,script:config,references}};
+ const jobId=submitJob(f.db,{idempotencyKey:"video-av",requestFingerprint:"video-av",
+  executionMode:"poll",snapshot}).jobId;
+ const run=createJobCoordinator({db:f.db,adapters:{model:f.adapter}});
+ run.recoverAtStartup();await run.tick();
+ const row=f.db.prepare("SELECT snapshot_json,upstream_task_id FROM jobs WHERE id=?").get(jobId);
+ assert.equal(row.upstream_task_id,id);
+ assert.ok(!row.snapshot_json.includes("data:")&&!row.snapshot_json.includes("fake-SECRET"));
+ const post=sent.find(x=>x.method==="POST");
+ const body=JSON.parse(post.body);
+ assert.deepEqual(body.reference_videos,["data:video/mp4;base64,"+mp4.toString("base64")]);
+ assert.deepEqual(body.reference_audios,["data:audio/wav;base64,"+audio.toString("base64")]);
+ assert.equal(post.headers.authorization,"Bearer fake-SECRET-123");
+ await run.tick();
+ const restored=createJobCoordinator({db:f.db,adapters:{model:f.adapter}});
+ restored.recoverAtStartup();await restored.tick();
+ assert.equal(f.db.prepare("SELECT status FROM jobs WHERE id=?").get(jobId).status,"succeeded");
+ assert.equal(sent.filter(x=>x.method==="POST").length,1);
+ assert.ok(sent.filter(x=>x.method==="GET").every(x=>!x.body));
+});
 test("ambiguous submit is not resent across coordinator restart",async t=>{
  let calls=0;
  const f=fixture(t,async()=>{calls++;throw Error("network lost")});

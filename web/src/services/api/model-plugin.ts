@@ -262,7 +262,7 @@ return (data.candidates || [])
             label:"安全异步视频（提交/轮询）",
             script:JSON.stringify({
                 version:1,
-                submit:'const data = await http.post("/videos", {model, prompt, seconds: params.duration, ratio: params.ratio, first_frame: params.firstFrame, last_frame: params.lastFrame, reference_images: params.referenceImages}); return data.id;',
+                submit:'const data = await http.post("/videos", {model, prompt, seconds: params.duration, ratio: params.ratio, first_frame: params.firstFrame, last_frame: params.lastFrame, reference_images: params.referenceImages, reference_videos: params.referenceVideos, reference_audios: params.referenceAudios}); return data.id;',
                 poll:'const data = await http.get(`/videos/${remoteTaskId}`); return {id: data.id, status: data.status, videoUrl: data.video_url || data.url};',
             },null,2),
         },

@@ -3,7 +3,7 @@ const api=vi.hoisted(()=>vi.fn());
 vi.mock("./canvas-api",async(importOriginal)=>({
  ...(await importOriginal<typeof import("./canvas-api")>()),canvasApi:api
 }));
-import {canRetryCanvasMaterialization,canReconcileUnknownJob,getCanvasJobHistory,getCanvasSkillAudit,replayCanvasSkillJob,hasPendingSkillReplay,lookupPendingSkillReplay,retryCanvasMaterialization,recoverCanvasPendingMaterialization,reconcileCanvasUnknownJob,canRemoveCanvasJobHistory,removeCanvasJobHistory,
+import {canRetryCanvasMaterialization,canReconcileUnknownJob,getCanvasJobHistory,getCanvasSkillAudit,replayCanvasSkillJob,hasPendingSkillReplay,lookupPendingSkillReplay,retryCanvasMaterialization,recoverCanvasPendingMaterialization,reconcileCanvasUnknownJob,canRemoveCanvasJobHistory,removeCanvasJobHistory,getCanvasScriptAssets,reconcileCanvasScriptAsset,resumeCanvasScriptAssets,
  type CanvasJobHistoryItem,type CanvasJobArtifact} from "./canvas-job-history";
 
 afterEach(()=>vi.unstubAllGlobals());
@@ -43,6 +43,32 @@ describe("P4.7 Canvas job history and recovery boundary",()=>{
   api.mockResolvedValueOnce({hidden:true,jobId:"job-1"});
   await removeCanvasJobHistory("p1","job-1");
   expect(api).toHaveBeenCalledExactlyOnceWith("/api/v1/projects/p1/jobs/job-1/history","DELETE");
+ });
+ it("manual remote asset reconciliation only calls project-scoped endpoints without a second job POST",async()=>{
+  api.mockResolvedValueOnce({jobId:"job-1",projectId:"p1",jobStatus:"failed",
+   submissionNeverStarted:true,canResume:false,
+   assets:[{referenceIndex:1,kind:"audio",role:"reference_audio",
+    status:"uploading",updatedAt:12345}]});
+  const audit=await getCanvasScriptAssets("p1","job-1");
+  expect(audit.assets[0].status).toBe("uploading");
+  expect(api).toHaveBeenNthCalledWith(1,"/api/v1/projects/p1/jobs/job-1/assets");
+  api.mockResolvedValueOnce({status:"active"});
+  await reconcileCanvasScriptAsset("p1","job-1",1,"confirm",12345,"verified-audio-1");
+  expect(api).toHaveBeenNthCalledWith(2,
+   "/api/v1/projects/p1/jobs/job-1/assets/1/reconcile","POST",{
+    action:"confirm",expectedUpdatedAt:12345,operatorConfirmed:true,
+    remoteAssetId:"verified-audio-1"});
+  api.mockResolvedValueOnce({status:"rejected"});
+  await reconcileCanvasScriptAsset("p1","job-1",1,"reject",12345);
+  expect(api).toHaveBeenNthCalledWith(3,
+   "/api/v1/projects/p1/jobs/job-1/assets/1/reconcile","POST",{
+    action:"reject",expectedUpdatedAt:12345,operatorConfirmed:true});
+  api.mockResolvedValueOnce({jobId:"job-1",status:"queued",resumed:true});
+  const resumed=await resumeCanvasScriptAssets("p1","job-1");
+  expect(resumed.status).toBe("queued");
+  expect(api).toHaveBeenNthCalledWith(4,
+   "/api/v1/projects/p1/jobs/job-1/resume-assets","POST",{});
+  expect(api.mock.calls.some(([path])=>path==="/api/v1/jobs")).toBe(false);
  });
  it("P4.8 only eligible unknown Comfy task offers human reconciliation",()=>{
   const ready={...job,status:"submission_unknown",kind:"comfy" as const,reconciliationEligible:true};

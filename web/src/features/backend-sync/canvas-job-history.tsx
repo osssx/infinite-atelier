@@ -123,6 +123,26 @@ export async function replayCanvasSkillJob(projectId:string,jobId:string):
   if(replayInFlight.get(key)===pending)replayInFlight.delete(key);
  }
 }
+export type CanvasScriptAsset={referenceIndex:number;kind:"video"|"audio";role:string;
+ blobId:string;mimeType:string;status:string;remoteAssetId:string|null;updatedAt:number|null};
+export type CanvasScriptAssetAudit={jobId:string;projectId:string;jobStatus:string;
+ submissionNeverStarted:boolean;canResume:boolean;assets:CanvasScriptAsset[]};
+const assetBase=(projectId:string,jobId:string)=>"/api/v1/projects/"+
+ encodeURIComponent(projectId)+"/jobs/"+encodeURIComponent(jobId);
+export async function getCanvasScriptAssets(projectId:string,jobId:string):Promise<CanvasScriptAssetAudit>{
+ return canvasApi(assetBase(projectId,jobId)+"/assets");
+}
+export async function reconcileCanvasScriptAsset(projectId:string,jobId:string,
+ referenceIndex:number,action:"confirm"|"reject",expectedUpdatedAt:number,
+ remoteAssetId?:string):Promise<{status:string}>{
+ return canvasApi(assetBase(projectId,jobId)+"/assets/"+referenceIndex+"/reconcile",
+  "POST",{action,expectedUpdatedAt,operatorConfirmed:true,
+   ...(action==="confirm"?{remoteAssetId}:{} )});
+}
+export async function resumeCanvasScriptAssets(projectId:string,jobId:string):
+ Promise<{jobId:string;status:string;resumed:true}>{
+ return canvasApi(assetBase(projectId,jobId)+"/resume-assets","POST",{});
+}
 type Page={jobs:CanvasJobHistoryItem[];nextBefore:string|null};
 const statuses:Record<string,string>={
  queued:"等待执行",preparing:"准备中",submitting:"提交中",
@@ -201,6 +221,9 @@ export function CanvasJobHistory({projectId,open,onClose,onObserveJob,onRefreshC
  const [skillAudits,setSkillAudits]=useState<Record<string,SkillAudit>>({});
  const [skillAuditOpen,setSkillAuditOpen]=useState<string|null>(null);
  const [remoteTaskInput,setRemoteTaskInput]=useState("");
+ const [assetAudits,setAssetAudits]=useState<Record<string,CanvasScriptAssetAudit>>({});
+ const [assetAuditOpen,setAssetAuditOpen]=useState<string|null>(null);
+ const [assetIdInputs,setAssetIdInputs]=useState<Record<string,string>>({});
  const inflight=useRef(new Set<string>());
  const refresh=useCallback(async(silent=false)=>{
   if(!silent)setLoading(true);
@@ -217,6 +240,7 @@ export function CanvasJobHistory({projectId,open,onClose,onObserveJob,onRefreshC
  useEffect(()=>{
   if(!open)return;
   setJobs([]);setNextBefore(null);setSkillAudits({});setSkillAuditOpen(null);
+  setAssetAudits({});setAssetAuditOpen(null);setAssetIdInputs({});
   void refresh();
   const timer=setInterval(()=>{void refresh(true)},6000);
   return()=>clearInterval(timer);
@@ -290,6 +314,60 @@ export function CanvasJobHistory({projectId,open,onClose,onObserveJob,onRefreshC
       "远端历史与原始任务不匹配，已拒绝恢复");
      await refresh();
     }catch(e){message.error("人工对账失败："+String(e));throw e}
+    finally{setWorking(null)}
+   }
+  });
+ }
+ async function inspectAssets(job:CanvasJobHistoryItem){
+  if(job.kind!=="model"||job.modelKind!=="video"||working)return;
+  setWorking(job.id);
+  try{
+   const audit=await getCanvasScriptAssets(projectId,job.id);
+   if(currentProject.current!==projectId)return;
+   setAssetAuditOpen(job.id);setAssetAudits(old=>({...old,[job.id]:audit}));
+  }catch(e){message.error("读取远端素材核对记录失败："+String(e))}
+  finally{setWorking(null)}
+ }
+ function confirmAsset(job:CanvasJobHistoryItem,asset:CanvasScriptAsset,action:"confirm"|"reject"){
+  if(working||asset.status!=="uploading"||asset.updatedAt===null)return;
+  const candidate=assetIdInputs[job.id+":"+asset.referenceIndex]?.trim()??"";
+  if(action==="confirm"&&!/^[A-Za-z0-9_-]{1,128}$/.test(candidate)){
+   message.error("请输入已从服务商核实的有效素材 ID");return;
+  }
+  modal.confirm({
+   title:action==="confirm"?"确认远端素材已经上传成功？":"确认服务商未接收该素材？",
+   content:action==="confirm"?
+    "此 ID 必须已经在服务商素材列表中核实，并与当前任务的素材匹配。系统不会向服务商核实 ID；确认后允许后续恢复并可能触发一次付费视频生成。":
+    "只将本次不确定上传标记为拒绝，不会删除远端文件；此任务无法通过该入口恢复。",
+   okText:action==="confirm"?"我已人工核实素材 ID":"标记拒绝",
+   okType:action==="reject"?"danger":"primary",cancelText:"取消",
+   onOk:async()=>{
+    setWorking(job.id);
+    try{
+     await reconcileCanvasScriptAsset(projectId,job.id,asset.referenceIndex,action,
+      asset.updatedAt!,action==="confirm"?candidate:undefined);
+     const audit=await getCanvasScriptAssets(projectId,job.id);
+     if(currentProject.current===projectId)setAssetAudits(old=>({...old,[job.id]:audit}));
+     message.success(action==="confirm"?"已保存人工确认结果":"已记录服务商拒绝");
+    }catch(e){message.error("确认素材失败："+String(e));throw e}
+    finally{setWorking(null)}
+   }
+  });
+ }
+ function confirmAssetResume(job:CanvasJobHistoryItem){
+  const audit=assetAudits[job.id];
+  if(!audit?.canResume||working)return;
+  modal.confirm({
+   title:"从已核实的素材恢复视频生成？",
+   content:"所有远端素材 ID 均已确认。恢复同一个原始任务，将使用冻结参数发起一次可能收费的视频生成请求，不重新上传已确认的素材。请确认服务商中的素材和当前任务确实匹配。",
+   okText:"确认恢复并允许生成",cancelText:"取消",
+   onOk:async()=>{
+    setWorking(job.id);
+    try{
+     await resumeCanvasScriptAssets(projectId,job.id);
+     message.success("原任务已恢复排队，远端素材不会重复上传");
+     setAssetAuditOpen(null);onObserveJob(job.id);await refresh();
+    }catch(e){message.error("恢复任务失败："+String(e));throw e}
     finally{setWorking(null)}
    }
   });
@@ -415,6 +493,43 @@ export function CanvasJobHistory({projectId,open,onClose,onObserveJob,onRefreshC
       </Button>:<div className="opacity-60">原任务未成功，不允许从未知提交状态重新执行。</div>}
      </div>:null}
     </div>:null}
+    {job.kind==="model"&&job.modelKind==="video"&&
+      job.status==="failed"&&job.lastOutcome==="prepare_failed"?
+     <div className="space-y-2 text-xs">
+      <Button size="small" loading={working===job.id}
+       onClick={()=>void inspectAssets(job)}>核对远端素材上传</Button>
+      {assetAuditOpen===job.id&&assetAudits[job.id]?
+       <div className="rounded border p-2 space-y-2"
+        style={{borderColor:"var(--ant-color-border-secondary)"}}>
+        <Alert type="warning" showIcon message="必须先查阅服务商素材记录"
+         description="系统无法自动证实未知上传是否成功。切勿猜测远端素材 ID；确认后恢复任务可能产生视频生成费用。"/>
+        {assetAudits[job.id].assets.map(asset=>
+         <div key={asset.referenceIndex} className="border-b pb-2 space-y-1">
+          <div>{asset.kind==="video"?"参考视频":"参考音频"} #{asset.referenceIndex+1}
+           {" · "}{asset.status==="uploading"?"结果未知":
+            asset.status==="active"?"已确认":
+            asset.status==="rejected"?"已拒绝":asset.status}</div>
+          <div className="font-mono opacity-60 break-all">{asset.blobId.slice(0,16)}…</div>
+          {asset.status==="active"?<div>远端 ID：{asset.remoteAssetId}</div>:null}
+          {asset.status==="uploading"?<>
+           <Input size="small" placeholder="经服务商核实的素材 ID"
+            maxLength={128} value={assetIdInputs[job.id+":"+asset.referenceIndex]??""}
+            onChange={e=>setAssetIdInputs(old=>({...old,
+             [job.id+":"+asset.referenceIndex]:e.target.value}))}/>
+           <div className="flex gap-2">
+            <Button size="small" type="primary" loading={working===job.id}
+             onClick={()=>confirmAsset(job,asset,"confirm")}>确认素材 ID</Button>
+            <Button size="small" danger loading={working===job.id}
+             onClick={()=>confirmAsset(job,asset,"reject")}>确认未接收</Button>
+           </div>
+          </>:null}
+         </div>)}
+        {assetAudits[job.id].canResume?
+         <Button size="small" type="primary" loading={working===job.id}
+          onClick={()=>confirmAssetResume(job)}>恢复原任务并允许视频生成</Button>:
+         <div className="opacity-65">有素材未核实或无法恢复；不会重复上传或发起生成。</div>}
+       </div>:null}
+     </div>:null}
     {canReconcileUnknownJob(job)?
      <div className="space-y-2">
       <Button size="small" onClick={()=>{

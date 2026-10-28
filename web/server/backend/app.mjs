@@ -13,6 +13,7 @@ import {listProjectJobs,hideProjectJobHistory} from "./project-job-history.mjs";
 import {getAssetCatalog,putAssetCatalog} from "./asset-catalog.mjs";
 import {listSkillRegistry,getSkillRegistryPackage,getAuthorizedSkillCatalog,registerSqliteSkill,updateSqliteSkill,deleteSqliteSkill} from "./sqlite-skill-registry.mjs";
 import {getUiSetting,putUiSetting} from "./ui-settings.mjs";
+import {listScriptAssetReconciliation,reconcileScriptAsset,resumeReconciledVideoJob} from "./script-asset-reconciliation.mjs";
 const nonempty={type:"string",minLength:1,maxLength:256};
 const idSchema={type:"string",pattern:"^[A-Za-z0-9_-]{1,128}$"};
 const canvasNodeIdSchema={type:"string",pattern:CANVAS_NODE_ID_PATTERN};
@@ -99,6 +100,11 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
    "invalid_canvas_chats","invalid_canvas_viewport","canvas_chats_too_large",
    "chats_revision_conflict","viewport_revision_conflict",
    "stale_generation_source","cyclic_generation_source","generation_save_barrier_required","invalid_job_request","idempotency_key_conflict","backend_prior_job_not_terminal","job_not_found","invalid_project_job_history_request","invalid_project_job_history_cursor","project_job_not_found","project_job_not_terminal","reconciliation_invalid_input","reconciliation_not_eligible","reconciliation_provider_unsupported","reconciliation_adapter_unavailable","reconciliation_state_changed","reconciliation_upstream_unavailable","reconciliation_remote_already_linked",
+   "script_asset_job_not_found","script_asset_job_not_eligible","script_asset_identity_mismatch",
+   "script_asset_reconcile_invalid","script_asset_reconcile_not_eligible",
+   "script_asset_reconcile_state_changed","script_asset_remote_id_conflict",
+   "script_asset_resume_not_eligible","script_asset_uploads_incomplete",
+   "script_asset_credential_unavailable","script_asset_source_changed","script_asset_source_busy",
    "ui_setting_invalid","ui_setting_secret_forbidden","ui_setting_too_large","ui_setting_not_found",
    "ui_setting_revision_required","ui_setting_revision_conflict",
    "asset_catalog_invalid","asset_catalog_too_large","asset_catalog_media_not_portable",
@@ -501,6 +507,39 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
   return coordinator.reconcileUnknown({projectId:req.params.id,
    jobId:req.params.jobId,remoteTaskId:req.body.remoteTaskId});
  });
+ // Explicit human asset reconciliation is distinct from remote video-task
+ // reconciliation. Never repeat an ambiguous asset POST automatically.
+ if(coordinator){
+  const assetJobParams={type:"object",required:["id","jobId"],
+   properties:{id:idSchema,jobId:idSchema},additionalProperties:false};
+  app.get("/api/v1/projects/:id/jobs/:jobId/assets",{
+   schema:{params:assetJobParams}
+  },(req,reply)=>{
+   reply.header("Cache-Control","no-store");
+   return listScriptAssetReconciliation(db,{projectId:req.params.id,jobId:req.params.jobId});
+  });
+  app.post("/api/v1/projects/:id/jobs/:jobId/assets/:referenceIndex/reconcile",{
+   schema:{
+    params:{type:"object",required:["id","jobId","referenceIndex"],
+     properties:{id:idSchema,jobId:idSchema,
+      referenceIndex:{type:"integer",minimum:0,maximum:11}},additionalProperties:false},
+    body:{type:"object",required:["action","expectedUpdatedAt","operatorConfirmed"],
+     properties:{action:{type:"string",enum:["confirm","reject"]},
+      remoteAssetId:idSchema,expectedUpdatedAt:{type:"integer",minimum:1},
+      operatorConfirmed:{type:"boolean",const:true}},additionalProperties:false}
+   }
+  },(req,reply)=>{
+   reply.header("Cache-Control","no-store");
+   return reconcileScriptAsset(db,{projectId:req.params.id,jobId:req.params.jobId,
+    referenceIndex:req.params.referenceIndex,...req.body});
+  });
+  app.post("/api/v1/projects/:id/jobs/:jobId/resume-assets",{
+   schema:{params:assetJobParams,body:{type:"object",additionalProperties:false}}
+  },(req,reply)=>{
+   reply.header("Cache-Control","no-store");
+   return resumeReconciledVideoJob(db,{projectId:req.params.id,jobId:req.params.jobId});
+  });
+ }
  app.get("/api/v1/jobs/:id/attempts",{schema:{params:{type:"object",required:["id"],
   properties:{id:idSchema},additionalProperties:false}}},async(req,reply)=>{
   const job=db.prepare("SELECT id FROM jobs WHERE id=?").get(req.params.id);

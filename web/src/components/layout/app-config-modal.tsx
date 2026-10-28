@@ -1,14 +1,14 @@
 import { App, Button, Form, Input, Modal, Select, Tabs } from "antd";
-import { Download, FileUp, Pencil, Plus, Trash2, Upload } from "lucide-react";
+import { Copy, Download, Pencil, Plus, Trash2, Upload } from "lucide-react";
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { ModelPicker } from "@/components/model-picker";
 import { ChannelEditorDrawer } from "@/components/layout/channel-editor-drawer";
 import { SkillManager } from "@/features/skills/skill-manager";
+import { useCopyText } from "@/hooks/use-copy-text";
 const ComfySettingsTab = lazy(() => import("@/features/comfy-workflow/comfy-settings-tab").then(module => ({ default: module.ComfySettingsTab })));
 import { exportAppConfig, importAppConfig } from "@/services/config-file";
-import { exportAppBackup, importAppBackup } from "@/services/backup-restore";
 import { audioFormatOptions, audioVoiceOptions, normalizeAudioSpeedValue } from "@/lib/audio-generation";
 import {
     createModelChannel,
@@ -288,65 +288,33 @@ function apiFormatLabel(apiFormat: ApiCallFormat) {
     return "OpenAI";
 }
 
-function ConfigBackupTab() {
-    const { message, modal } = App.useApp();
+/** The legacy browser ZIP cannot back up authoritative SQLite/CAS data.
+ * Full local data backups require an offline snapshot, not a live browser action.
+ */
+export function ConfigBackupTab() {
     const { t } = useTranslation();
-    const inputRef = useRef<HTMLInputElement>(null);
-    const [exporting, setExporting] = useState(false);
-
-    const handleBackup = async () => {
-        setExporting(true);
-
-        try {
-            await exportAppBackup();
-            message.success(t("config.backup.exported"));
-        } catch (error) {
-            message.error(error instanceof Error ? error.message : t("config.backup.exportFailed"));
-        } finally {
-            setExporting(false);
-        }
-    };
-
-    const handleImport = async (file?: File) => {
-        if (!file) return;
-        try {
-            modal.confirm({
-                title: t("config.backup.importTitle"),
-                content: t("config.backup.importDescription"),
-                okText: t("common.restore"),
-                cancelText: t("common.cancel"),
-                okButtonProps: { danger: true },
-                onOk: async () => {
-                    try {
-                        await importAppBackup(file);
-                        message.success(t("config.backup.imported"));
-                        // Reload only after IndexedDB commits: the open editor otherwise keeps
-                        // stale local node/viewport state and stale blob URLs from before restore.
-                        window.location.reload();
-                    } catch (error) {
-                        message.error(error instanceof Error ? error.message : t("config.backup.importFailed"));
-                        throw error; // Ant Design keeps confirmation open if restore fails.
-                    }
-                },
-            });
-        } finally {
-            if (inputRef.current) inputRef.current.value = "";
-        }
-    };
+    const copyText = useCopyText();
+    const example = t("config.backup.commands");
 
     return (
-        <section className="rounded-lg border border-stone-200 p-3 dark:border-stone-800">
+        <section className="rounded-lg border border-stone-200 p-4 dark:border-stone-800" data-backup-mode="offline-backend">
             <div className="mb-1 text-sm font-semibold">{t("config.backup.title")}</div>
-            <div className="mb-3 text-xs text-stone-500">{t("config.backup.description")}</div>
-            <div className="flex flex-wrap items-center gap-2">
-                <Button loading={exporting} disabled={exporting} icon={<Download className="size-4" />} onClick={() => void handleBackup()}>
-                    {t("config.backup.export")}
-                </Button>
-                <Button disabled={exporting} icon={<FileUp className="size-4" />} onClick={() => inputRef.current?.click()}>
-                    {t("config.backup.import")}
+            <p className="mb-3 text-xs leading-5 text-stone-500">{t("config.backup.description")}</p>
+            <div className="mb-3 rounded-md bg-stone-100 p-3 text-xs leading-6 text-stone-700 dark:bg-stone-900 dark:text-stone-300">
+                <div className="font-medium">{t("config.backup.locationTitle")}</div>
+                <code className="break-all">ATELIER_DATA_DIR</code> {t("config.backup.locationFallback")}{" "}
+                <code className="break-all">%LOCALAPPDATA%\\InfiniteAtelier\\data</code>
+            </div>
+            <p className="mb-2 text-xs leading-5 text-stone-600 dark:text-stone-400">{t("config.backup.steps")}</p>
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                <div className="text-xs font-medium">{t("config.backup.commandsTitle")}</div>
+                <Button size="small" icon={<Copy className="size-3.5" />} onClick={() => copyText(example)}>
+                    {t("config.backup.copyCommands")}
                 </Button>
             </div>
-            <input ref={inputRef} type="file" accept="application/zip,.zip" className="hidden" onChange={(event) => void handleImport(event.target.files?.[0])} />
+            <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-md bg-stone-100 p-3 font-mono text-[11px] leading-5 dark:bg-stone-900">{example}</pre>
+            <p className="mt-3 text-xs leading-5 text-stone-500">{t("config.backup.restoreNote")}</p>
+            <p className="mt-2 text-xs leading-5 text-stone-500">{t("config.backup.browserNote")}</p>
         </section>
     );
 }

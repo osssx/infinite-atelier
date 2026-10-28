@@ -1,12 +1,21 @@
 import {createLocalBackend,resolveLocalDataDir} from "../server/backend/runtime.mjs";
+import {adoptMovedDataset} from "../server/backend/dataset-activation.mjs";
 import {startServer} from "../server/backend/app.mjs";
 import {loadBackendEnv} from "./load-backend-env.mjs";
-import {existsSync} from "node:fs";
+import {existsSync,readdirSync} from "node:fs";
 import {join} from "node:path";
 loadBackendEnv();
 const dataRoot=resolveLocalDataDir();
+// Support relocating a stopped dataset by cutting all its files to this root.
+if(process.env.ATELIER_DATA_DIR!==undefined&&existsSync(dataRoot)&&
+   !existsSync(join(dataRoot,"atelier-dataset-identity.json"))&&
+   readdirSync(dataRoot).length>0)
+ throw Error("configured_data_directory_incomplete: expected the complete old data directory including atelier-dataset-identity.json");
+const relocation=adoptMovedDataset(dataRoot);
+if(relocation.migrated)
+ console.log("Activated moved data directory:",relocation.from,"=>",relocation.to);
 if(process.env.ATELIER_DATA_DIR!==undefined&&!existsSync(join(dataRoot,"db","atelier.sqlite")))
- console.warn("Configured ATELIER_DATA_DIR has no existing SQLite database. A new dataset will be initialized; existing projects/media are NOT migrated. Back up and restore the complete data directory if relocation was intended.");
+ console.warn("Configured ATELIER_DATA_DIR has no existing SQLite database. A new dataset will be initialized; existing projects/media are NOT migrated.");
 
 const raw=process.env.ATELIER_BACKEND_PORT??"8788";
 const port=Number(raw);

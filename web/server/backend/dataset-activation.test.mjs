@@ -1,13 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {mkdtempSync,rmSync,existsSync,readFileSync,unlinkSync,writeFileSync,mkdirSync} from "node:fs";
+import {mkdtempSync,rmSync,existsSync,readFileSync,unlinkSync,writeFileSync,mkdirSync,cpSync,renameSync,readdirSync} from "node:fs";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
+import {spawnSync} from "node:child_process";
 import {openMainDatabase} from "./database.mjs";
 import {SCHEMA_VERSION} from "./schema.mjs";
 import {createBlobStore} from "./blob-store.mjs";
 import {createColdBackup,verifyColdBackup,restoreColdBackup} from "./cold-backup.mjs";
-import {acquireDatasetGuard,activateRestoredDataset,readDatasetIdentity} from "./dataset-activation.mjs";
+import {acquireDatasetGuard,activateRestoredDataset,readDatasetIdentity,adoptMovedDataset} from "./dataset-activation.mjs";
 import {createLocalBackend} from "./runtime.mjs";
 
 async function fixture(t){
@@ -24,6 +25,104 @@ async function fixture(t){
  await restoreColdBackup({backupDir,dataDir:clone});
  return {parent,source,backupDir,clone,activationRoot,blob};
 }
+test("stop, cut whole data folder, update path, restart: original project and assets remain",async t=>{
+ const f=await fixture(t),dest=join(f.parent,"moved");
+ renameSync(f.source,dest);
+ assert.throws(()=>readDatasetIdentity(dest),/dataset_identity_location_mismatch/);
+ const activated=adoptMovedDataset(dest,{activationRoot:f.activationRoot});
+ assert.deepEqual(activated,{migrated:true,from:f.source,to:dest});
+ assert.equal(readDatasetIdentity(dest).currentRoot,dest);
+ const active=acquireDatasetGuard(dest,{activationRoot:f.activationRoot});
+ try{
+  const db=openMainDatabase(dest);
+  try {
+   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM projects").get().n,1);
+   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM blobs").get().n,1);
+  }finally{db.close()}
+ }finally{active.release()}
+ assert.equal(adoptMovedDataset(dest,{activationRoot:f.activationRoot}).migrated,false);
+ // Moving a second time uses the latest active path rather than the origin.
+ const second=join(f.parent,"moved-again");
+ renameSync(dest,second);
+ assert.equal(adoptMovedDataset(second,{activationRoot:f.activationRoot}).from,dest);
+ const guard=acquireDatasetGuard(second,{activationRoot:f.activationRoot});guard.release();
+});
+test("cut folder with a verified-dead backend PID lock automatically recovers it",async t=>{
+ const f=await fixture(t),dest=join(f.parent,"moved-with-stale-lock");
+ // An actually exited child PID is better evidence than a guessed high PID.
+ const child=spawnSync(process.execPath,["-e","console.log(process.pid)"],{encoding:"utf8"});
+ assert.equal(child.status,0);
+ const deadPid=Number(child.stdout.trim());
+ assert.ok(Number.isSafeInteger(deadPid)&&deadPid>0);
+ assert.throws(()=>process.kill(deadPid,0),{code:"ESRCH"});
+ const identity=readDatasetIdentity(f.source);
+ const stale={pid:deadPid,token:"dead-lock-token",createdAt:Date.now()-10000};
+ writeFileSync(join(f.source,"atelier-instance.lock"),JSON.stringify(stale));
+ const registryDir=join(f.activationRoot,identity.lineageId);
+ writeFileSync(join(registryDir,"atelier-instance.lock"),JSON.stringify(stale));
+ renameSync(f.source,dest);
+ assert.equal(adoptMovedDataset(dest,{activationRoot:f.activationRoot}).migrated,true);
+ assert.equal(existsSync(join(dest,"atelier-instance.lock")),false);
+ assert.equal(existsSync(join(registryDir,"atelier-instance.lock")),false);
+ const guard=acquireDatasetGuard(dest,{activationRoot:f.activationRoot});guard.release();
+});
+test("active or malformed lock in moved folder never gets stolen or deleted",async t=>{
+ for(const [label,payload] of [
+  ["active",{pid:process.pid,token:"live-owner",createdAt:Date.now()}],
+  ["malformed",{pid:"not-a-pid",token:"unknown",createdAt:Date.now()}]
+ ]){
+  const f=await fixture(t),dest=join(f.parent,"blocked-"+label);
+  writeFileSync(join(f.source,"atelier-instance.lock"),JSON.stringify(payload));
+  renameSync(f.source,dest);
+  assert.throws(()=>adoptMovedDataset(dest,{activationRoot:f.activationRoot}),
+   /instance_already_running/);
+  assert.equal(existsSync(join(dest,"atelier-instance.lock")),true);
+  const stored=JSON.parse(readFileSync(join(dest,"atelier-instance.lock"),"utf8"));
+  assert.deepEqual(stored,payload);
+  assert.throws(()=>readDatasetIdentity(dest),/dataset_identity_location_mismatch/);
+ }
+});
+test("cutting folder CONTENTS into a new root leaves the old empty directory",async t=>{
+ const f=await fixture(t),dest=join(f.parent,"moved-contents");
+ mkdirSync(dest);
+ for(const name of readdirSync(f.source))renameSync(join(f.source,name),join(dest,name));
+ assert.deepEqual(readdirSync(f.source),[]);
+ assert.equal(adoptMovedDataset(dest,{activationRoot:f.activationRoot}).migrated,true);
+ const guard=acquireDatasetGuard(dest,{activationRoot:f.activationRoot});guard.release();
+});
+test("a copied directory or unfinished cut never changes the active data location",async t=>{
+ const f=await fixture(t),dest=join(f.parent,"copy");
+ cpSync(f.source,dest,{recursive:true});
+ assert.throws(()=>adoptMovedDataset(dest,{activationRoot:f.activationRoot}),/dataset_move_source_not_empty/);
+ const owner=acquireDatasetGuard(f.source,{activationRoot:f.activationRoot});owner.release();
+ // Even when identity and database are moved, leftover media blocks activation.
+ const partial=join(f.parent,"partial");mkdirSync(partial);
+ renameSync(join(f.source,"atelier-dataset-identity.json"),join(partial,"atelier-dataset-identity.json"));
+ renameSync(join(f.source,"db"),join(partial,"db"));
+ assert.throws(()=>adoptMovedDataset(partial,{activationRoot:f.activationRoot}),/dataset_move_source_not_empty/);
+ for(const name of readdirSync(f.source))renameSync(join(f.source,name),join(partial,name));
+ assert.equal(adoptMovedDataset(partial,{activationRoot:f.activationRoot}).migrated,true);
+});
+test("active backend lock prevents even a completed cut from being adopted",async t=>{
+ const f=await fixture(t),dest=join(f.parent,"moved-during-running");
+ const owner=acquireDatasetGuard(f.source,{activationRoot:f.activationRoot});
+ try{
+  renameSync(f.source,dest);
+  assert.throws(()=>adoptMovedDataset(dest,{activationRoot:f.activationRoot}),/instance_already_running/);
+ }finally{owner.release()}
+ assert.equal(adoptMovedDataset(dest,{activationRoot:f.activationRoot}).migrated,true);
+});
+test("interrupted registry-first migration retries successfully on restart",async t=>{
+ const f=await fixture(t),dest=join(f.parent,"moved-crash");
+ renameSync(f.source,dest);
+ const moved=JSON.parse(readFileSync(join(dest,"atelier-dataset-identity.json"),"utf8"));
+ const reg=join(f.activationRoot,moved.lineageId,"active.json");
+ const active=JSON.parse(readFileSync(reg,"utf8"));
+ writeFileSync(reg,JSON.stringify({...active,activeRoot:dest,updatedAt:Date.now()}));
+ assert.throws(()=>readDatasetIdentity(dest),/dataset_identity_location_mismatch/);
+ assert.equal(adoptMovedDataset(dest,{activationRoot:f.activationRoot}).migrated,true);
+ const guard=acquireDatasetGuard(dest,{activationRoot:f.activationRoot});guard.release();
+});
 test("P5.2 restored copy is standby; original and restored can never both acquire the lineage guard",async t=>{
  const f=await fixture(t);
  const original=readDatasetIdentity(f.source),clone=readDatasetIdentity(f.clone);

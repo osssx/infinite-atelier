@@ -1,8 +1,8 @@
 import {createHash,randomUUID} from "node:crypto";
-import {existsSync,mkdirSync,openSync,closeSync,readSync,readFileSync,writeFileSync,renameSync,unlinkSync,lstatSync} from "node:fs";
+import {existsSync,mkdirSync,openSync,closeSync,readSync,readFileSync,writeFileSync,renameSync,unlinkSync,lstatSync,readdirSync} from "node:fs";
 import {DatabaseSync} from "node:sqlite";
 import {homedir} from "node:os";
-import {isAbsolute,join,resolve} from "node:path";
+import {isAbsolute,join,resolve,relative,sep} from "node:path";
 import {acquireInstanceLock} from "./instance-lock.mjs";
 
 const fail=code=>Object.assign(Error(code),{code,statusCode:409});
@@ -46,6 +46,14 @@ function writeAtomic(path,data){
   try{unlinkSync(tmp)}catch(e){if(e.code!=="ENOENT")throw e}
  }
 }
+function loadIdentityFile(root){
+ const file=fileOf(root),stats=lstatSync(file);
+ if(!stats.isFile()||stats.isSymbolicLink()||stats.size>8192)
+  throw fail("dataset_identity_invalid");
+ let identity;
+ try{identity=JSON.parse(readFileSync(file,"utf8"))}catch{throw fail("dataset_identity_invalid")}
+ return identity;
+}
 export function readDatasetIdentity(dataDir,{bootstrap=false}={}){
  const root=canonicalRoot(dataDir),file=fileOf(root);
  if(!existsSync(file)){
@@ -55,12 +63,7 @@ export function readDatasetIdentity(dataDir,{bootstrap=false}={}){
   const fd=openSync(file,"wx",0o600);
   try{writeFileSync(fd,JSON.stringify(identity)+"\n")}finally{closeSync(fd)}
  }
- const stats=lstatSync(file);
- if(!stats.isFile()||stats.isSymbolicLink()||stats.size>8192)
-  throw fail("dataset_identity_invalid");
- let identity;
- try{identity=JSON.parse(readFileSync(file,"utf8"))}catch{throw fail("dataset_identity_invalid")}
- return validateIdentity(identity,root);
+ return validateIdentity(loadIdentityFile(root),root);
 }
 export function installStandbyIdentity(dataDir,{lineageId,originRoot}={}){
  const root=canonicalRoot(dataDir);
@@ -163,6 +166,72 @@ function auditRestoredDataset(root){
   if(e.code==="dataset_restore_integrity_failed")throw e;
   rejected();
  }finally{db?.close()}
+}
+function isAncestor(parent,child){
+ const rel=relative(parent,child);
+ return rel===""||(!isAbsolute(rel)&&rel!==".."&&!rel.startsWith(".."+sep));
+}
+/**
+ * A stopped backend can be relocated by CUTTING all contents of the data
+ * directory to a new root and changing ATELIER_DATA_DIR.
+ *
+ * No copying, hashing or backup activation is needed for this same-user move.
+ * Fail closed if the old directory still contains anything (a copy rather
+ * than a move), or if the lineage registration is not the currently active
+ * source. The global lineage lock prevents another running backend from
+ * racing this switch.
+ */
+export function adoptMovedDataset(dataDir,{activationRoot=defaultActivationRoot()}={}){
+ const root=canonicalRoot(dataDir);
+ if(!existsSync(root))return {migrated:false};
+ const targetStat=lstatSync(root);
+ if(!targetStat.isDirectory()||targetStat.isSymbolicLink())
+  throw fail("dataset_move_invalid_target");
+ if(!existsSync(fileOf(root)))return {migrated:false};
+ const identity=loadIdentityFile(root);
+ if(identity.status!=="active")return {migrated:false};
+ if(identity.format!==format||identity.version!==1||
+    !UUID.test(identity.lineageId)||!UUID.test(identity.replicaId)||
+    typeof identity.originRoot!=="string"||!isAbsolute(identity.originRoot)||
+    typeof identity.currentRoot!=="string"||!isAbsolute(identity.currentRoot))
+  throw fail("dataset_identity_invalid");
+ const oldRoot=canonicalRoot(identity.currentRoot);
+ if(root===oldRoot)return {migrated:false};
+ if(isAncestor(oldRoot,root)||isAncestor(root,oldRoot))
+  throw fail("dataset_move_paths_overlap");
+ // A cut (not a copy) leaves the old root absent or completely empty.
+ // Do not create a lock directory at the former path.
+ if(existsSync(oldRoot)){
+  const previous=lstatSync(oldRoot);
+  if(!previous.isDirectory()||previous.isSymbolicLink()||readdirSync(oldRoot).length)
+   throw fail("dataset_move_source_not_empty");
+ }
+ if(!existsSync(join(root,"db","atelier.sqlite")))
+  throw fail("dataset_move_database_missing");
+ // A stopped backend may leave a lock inside the directory being cut.
+ // Instance locks recover ONLY if the owning PID is verifiably dead;
+ // live, malformed or indeterminate owners remain blocked.
+ const local=acquireInstanceLock(root,{recoverStale:true});
+ let lineageLock;
+ try{
+  const holder=registryPath(activationRoot,identity.lineageId);
+  lineageLock=acquireInstanceLock(holder.root,{recoverStale:true});
+  const registered=readRegistry(holder.file);
+  if(!existsSync(holder.established)||!registered||
+     registered.lineageId!==identity.lineageId||
+     registered.activeReplicaId!==identity.replicaId||
+     ![oldRoot,root].includes(resolve(registered.activeRoot)))
+   throw fail("dataset_move_registry_mismatch");
+  // Recheck under the lock, and never allow an old running owner to win.
+  if(existsSync(oldRoot)&&readdirSync(oldRoot).length)
+   throw fail("dataset_move_source_not_empty");
+  if(resolve(registered.activeRoot)!==root)
+   writeAtomic(holder.file,{...registered,activeRoot:root,updatedAt:Date.now()});
+  // Registry first: an interruption fences the old root. This step can be
+  // retried on next startup if only the registry update was completed.
+  writeAtomic(fileOf(root),{...identity,currentRoot:root});
+  return {migrated:true,from:oldRoot,to:root};
+ }finally{try{lineageLock?.release()}finally{local.release()}}
 }
 /** Explicit OFFLINE fail-closed switch. Does not start any backend.
  * The old lineage holder must be stopped; activating standby permanently

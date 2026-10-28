@@ -54,7 +54,7 @@ export function getComfyInstanceScalarFields(
         if (own(port, "defaultValue")) defaults[port.id] = port.defaultValue;
         if (templateCandidate.exists && !templateCandidate.mixed) values[port.id] = templateCandidate.value;
         const localValue = resolveCanvasInputValue(port.id, {
-            overrides, defaults, template:values, absentPolicy:port.absentPolicy?.mode,
+            overrides, defaults, template:values, absentPolicy:port.absentPolicy?.mode==="auto-prune"?"keep-template":port.absentPolicy?.mode,
         });
         const links = incoming.get(port.id) ?? [];
         const connectedFrom = links[0]
@@ -62,7 +62,7 @@ export function getComfyInstanceScalarFields(
             : undefined;
         const effective = resolveCanvasInputValue(port.id, {
             overrides, defaults, template:values,
-            absentPolicy:port.absentPolicy?.mode,
+            absentPolicy:port.absentPolicy?.mode==="auto-prune"?"keep-template":port.absentPolicy?.mode,
             edge:connectedFrom ? {value:connectedFrom} : undefined,
         });
         return {

@@ -74,6 +74,10 @@ export function verifyTemplate(template) {
                     fail("template_enum_default_invalid");
             }
             if (!b || !["literal","media-file","socket"].includes(b.mode) || !Array.isArray(b.targets) || !b.targets.length) fail("template_input_binding_invalid");
+            if (port.absentPolicy?.mode === "auto-prune" &&
+                (port.required || !["IMAGE","VIDEO","AUDIO"].includes(port.valueKind) ||
+                    !["socket","media-file"].includes(b.mode) || has(port,"defaultValue")))
+                fail("template_auto_prune_invalid");
             for (const t of b.targets) {
                 if (!has(apiGraph,t.nodeId) || !has(apiGraph[t.nodeId].inputs,t.inputName)) fail("template_binding_missing");
                 const key = t.nodeId + "\0" + t.inputName;
@@ -246,6 +250,59 @@ export function fingerprintRequest(req) {
     return sha256(canonical(stable));
 }
 
+/**
+ * Missing optional media must be omitted from the actual Comfy prompt. For socket
+ * bindings this is the bound input itself. For file-backed LoadImage/Audio/Video
+ * chains, cut references at declared optional consumers, then let normal
+ * reachability pruning discard the file loader and any unused processing nodes.
+ * Never remove an /object_info required field on a live node.
+ */
+function pruneAbsentMediaPort(graph, port, canvasNodeId, info) {
+    if (!info) fail("comfy_auto_prune_object_info_required:"+port.id);
+    const fields = port.inputBinding.targets;
+    const pending = [];
+    for (const field of fields) {
+        const id=nodeKey(canvasNodeId,field.nodeId),n=graph[id];
+        if(!n || !has(n.inputs,field.inputName))fail("comfy_auto_prune_target_missing:"+port.id);
+        const schema=info[n.class_type]?.input;
+        if(!schema)fail("comfy_auto_prune_schema_missing:"+n.class_type);
+        if(has(schema.optional??{},field.inputName)) {
+            delete n.inputs[field.inputName];
+        } else if(port.inputBinding.mode==="media-file" &&
+            has(schema.required??{},field.inputName) &&
+            info[n.class_type]?.output?.includes(port.valueKind)) {
+            // Loader's file widget is required. Remove it by disconnecting
+            // its optional downstream consumers, never by submitting an empty filename.
+            pending.push(id);
+        } else {
+            fail("comfy_auto_prune_required_input:"+n.class_type+"."+field.inputName);
+        }
+    }
+    const visited=new Set();
+    while(pending.length) {
+        const source=pending.pop();
+        if(visited.has(source))continue;
+        visited.add(source);
+        for(const [consumerId,consumer] of Object.entries(graph)) {
+            for(const [input,value] of Object.entries(consumer.inputs)) {
+                if(!isLink(value)||value[0]!==source)continue;
+                const schema=info[consumer.class_type]?.input;
+                if(!schema)fail("comfy_auto_prune_schema_missing:"+consumer.class_type);
+                if(has(schema.optional??{},input)) {
+                    delete consumer.inputs[input];
+                } else if(has(schema.required??{},input)) {
+                    // An intermediate required processing node may be abandoned
+                    // when its entire branch becomes unreachable. If it remains
+                    // reachable the compiler will fail rather than silently omit it.
+                    pending.push(consumerId);
+                } else {
+                    fail("comfy_auto_prune_unknown_input:"+consumer.class_type+"."+input);
+                }
+            }
+        }
+    }
+}
+
 /** One pinned Comfy graph, one /prompt, any selected combination of supported output roots. */
 export function compileSingleWorkflow(req, template, opts = {}) {
     const {node,roots,targetEdges} = validateSingleRequest(req);
@@ -269,14 +326,21 @@ export function compileSingleWorkflow(req, template, opts = {}) {
     }
     const decisions = Object.create(null);
     const trustedStagedFields=new Set();
+    const absentMediaPorts=[];
     for (const p of template.ports.filter(p=>p.direction==="target")) {
         const binding=p.inputBinding;
         const edge=targetEdges.get(p.id);
         const override=has(node.inputOverrides,p.id);
-        const def=has(p,"defaultValue");
+        const def=has(p,"defaultValue") && binding.mode==="literal";
         const choice = edge ? "edge" : override ? "override" : def ? "default" :
+            p.absentPolicy?.mode === "auto-prune" ? "auto-prune" :
             p.absentPolicy?.mode === "disconnect" ? "disconnect" : "template";
         decisions[p.id]=choice;
+        if (choice === "auto-prune") {
+            pruneAbsentMediaPort(graph,p,node.id,opts.info);
+            absentMediaPorts.push(p);
+            continue;
+        }
         if (choice === "disconnect") {
             for (const t of p.absentPolicy.removeInputs) delete graph[nodeKey(node.id,t.nodeId)]?.inputs[t.inputName];
             for (const rm of p.absentPolicy.removeNodes) delete graph[nodeKey(node.id,rm)];
@@ -350,6 +414,23 @@ export function compileSingleWorkflow(req, template, opts = {}) {
     };
     for(const cap of captures)visit(cap.captureNodeId);
     for (const id of Object.keys(graph)) if (!reachable.has(id)) delete graph[id];
+    for (const p of absentMediaPorts) for (const t of p.inputBinding.targets) {
+        const remaining=graph[nodeKey(node.id,t.nodeId)];
+        if(remaining && has(remaining.inputs,t.inputName))
+            fail("comfy_auto_prune_media_still_reachable:"+p.id);
+    }
+    if(absentMediaPorts.length) for(const p of template.ports) {
+        const edge=targetEdges.get(p.id);
+        if(!edge || p.direction!=="target" || !["media-file","socket"].includes(p.inputBinding?.mode))continue;
+        const expected=p.inputBinding.mode==="media-file"?(opts.mediaFiles??opts.imageFiles)?.[edge.assetId]:
+            [nodeKey(node.id,"loader_"+p.id),0];
+        for(const t of p.inputBinding.targets) {
+            const remaining=graph[nodeKey(node.id,t.nodeId)];
+            if(!remaining || !has(remaining.inputs,t.inputName) ||
+                canonical(remaining.inputs[t.inputName])!==canonical(expected))
+                fail("comfy_supplied_media_pruned:"+p.id);
+        }
+    }
     normalizeComfyEnumInputs(graph,opts.info,trustedStagedFields);
     validateGraph(graph,opts.info);
     if (Object.keys(graph).length>500) fail("compiled_graph_too_large");

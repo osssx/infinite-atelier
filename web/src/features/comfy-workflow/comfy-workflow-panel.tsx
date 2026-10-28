@@ -223,7 +223,7 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
                 const {choices:_old,...rest}=p;
                 return {...rest,inputBinding};
             })}));
-        }else patchPort(port.id,{inputBinding});
+        }else patchPort(port.id,{inputBinding,...(mode==="literal"?{absentPolicy:{mode:"keep-template"}}:{})});
         setError("");
     };
     const uploadGraph=async(e:ChangeEvent<HTMLInputElement>)=>{
@@ -470,7 +470,10 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
                                                         typeof p.defaultValue==="boolean"?valueKind==="BOOLEAN":
                                                         typeof p.defaultValue==="number"?valueKind==="FLOAT"||
                                                             valueKind==="INT"&&Number.isSafeInteger(p.defaultValue):false;
-                                                    return {...rest,...patch,...(compatible?{defaultValue:p.defaultValue}:{})};
+                                                    return {...rest,...patch,...(compatible?{defaultValue:p.defaultValue}:{}),
+                                                        ...(p.absentPolicy?.mode==="auto-prune" &&
+                                                            !["IMAGE","VIDEO","AUDIO"].includes(valueKind)
+                                                            ?{absentPolicy:{mode:"keep-template" as const}}:{})};
                                                 })}));
                                             }else patchPort(activePort.id,patch);
                                         }}>{KINDS.map((k)=><option key={k} value={k}>{k}</option>)}</select>
@@ -493,10 +496,25 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
                                             </select>
                                         </label>
                                         <label className="inline-flex items-center gap-1.5 pb-2 text-xs">
-                                            <input type="checkbox" checked={!!activePort.required} onChange={(e)=>patchPort(activePort.id,{required:e.target.checked})}/> Required
+                                            <input type="checkbox" checked={!!activePort.required} onChange={(e)=>patchPort(activePort.id,{required:e.target.checked,...(e.target.checked&&activePort.absentPolicy?.mode==="auto-prune"?{absentPolicy:{mode:"keep-template"}}:{})})}/> Required
                                         </label>
                                     </div>
 
+                                    {["IMAGE","VIDEO","AUDIO"].includes(activePort.valueKind) &&
+                                    ["media-file","socket"].includes(activePort.inputBinding?.mode??"")?
+                                        <label className="mt-3 flex items-start gap-2 text-xs" data-comfy-auto-prune-option>
+                                            <input type="checkbox" aria-label="未提供媒体时动态裁剪输入"
+                                                checked={activePort.absentPolicy?.mode==="auto-prune"}
+                                                onChange={e=>patchPort(activePort.id,{
+                                                    absentPolicy:{mode:e.target.checked?"auto-prune":"keep-template"},
+                                                    ...(e.target.checked?{required:false}:{}),
+                                                })}/>
+                                            <span>未提供媒体时动态裁剪输入
+                                                <span className="mt-1 block text-[11px] text-[var(--comfy-muted)]">
+                                                    不连接时移除该可选参数及无用的图片/音频/视频加载分支；生成模式交给 ComfyUI 模型自身判断。
+                                                </span>
+                                            </span>
+                                        </label>:null}
                                     <div className="mt-4">
                                         <span className={captionClass}>COMFY INPUT TARGETS · {activePort.inputBinding?.targets.length||0}</span>
                                         <p className="mt-1 text-[11px] text-[var(--comfy-muted)]">Click parameters in the left node browser to bind them. One canvas input can feed several Comfy fields.</p>
@@ -582,8 +600,12 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
                                         <summary className="cursor-pointer text-xs font-medium">Advanced · missing input behavior</summary>
                                         <div className="mt-3 grid gap-3">
                                             <label className={captionClass}>When unconnected
-                                                <select className={inputClass+" mt-1"} value={activePort.absentPolicy?.mode||"keep-template"} onChange={(e)=>patchPort(activePort.id,{absentPolicy:e.target.value==="disconnect"?{mode:"disconnect",removeInputs:[],removeNodes:[]}:{mode:"keep-template"}})}>
-                                                    <option value="keep-template">Keep workflow template value</option><option value="disconnect">Remove optional inputs/nodes</option>
+                                                <select className={inputClass+" mt-1"} value={activePort.absentPolicy?.mode||"keep-template"} onChange={(e)=>patchPort(activePort.id,{absentPolicy:e.target.value==="disconnect"?{mode:"disconnect",removeInputs:[],removeNodes:[]}:e.target.value==="auto-prune"?{mode:"auto-prune"}:{mode:"keep-template"},...(e.target.value==="auto-prune"?{required:false}:{})})}>
+                                                    <option value="keep-template">Keep workflow template value</option>
+                                                    {["IMAGE","VIDEO","AUDIO"].includes(activePort.valueKind) &&
+                                                        ["socket","media-file"].includes(activePort.inputBinding?.mode??"")?
+                                                        <option value="auto-prune">Automatically prune when unconnected</option>:null}
+                                                    <option value="disconnect">Remove optional inputs/nodes (advanced)</option>
                                                 </select>
                                             </label>
                                             {activePort.absentPolicy?.mode==="disconnect"?<>

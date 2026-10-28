@@ -11,6 +11,8 @@ export type ComfyInputBinding =
     | { mode: "socket"; replaceInternalLink: boolean; targets: ComfyNodeTarget[] };
 export type ComfyAbsentPolicy =
     | { mode: "keep-template" }
+    /** Optional media input: remove its Comfy socket or loader branch if no asset is connected. */
+    | { mode: "auto-prune" }
     | { mode: "disconnect"; removeInputs: ComfyNodeTarget[]; removeNodes: string[] };
 export type ComfyTemplatePort = {
     id: string;
@@ -188,12 +190,17 @@ export function validateComfyTemplatePayload(raw: unknown, info?: ComfyObjectInf
                 if (declaredType && b.mode === "socket" && declaredType !== p.valueKind) fail("socket type mismatch");
                 if (declaredType && b.mode === "literal" && declaredType !== p.valueKind) fail("literal type mismatch");
             }
+            if (p.absentPolicy?.mode === "auto-prune") {
+                if (p.required || !["IMAGE","VIDEO","AUDIO"].includes(p.valueKind) ||
+                    !["socket","media-file"].includes(b.mode) || has(p,"defaultValue"))
+                    fail("automatic pruning requires an optional IMAGE, VIDEO or AUDIO input without a default");
+            }
             if (p.absentPolicy && (p.absentPolicy.mode === "disconnect")) {
                 if (p.required || !Array.isArray(p.absentPolicy.removeInputs) || !Array.isArray(p.absentPolicy.removeNodes) ||
                     p.absentPolicy.removeInputs.length + p.absentPolicy.removeNodes.length === 0) fail("invalid absence policy");
                 for (const rm of p.absentPolicy.removeInputs) if (!has(graph, rm.nodeId) || !has(graph[rm.nodeId].inputs, rm.inputName)) fail("invalid absent input");
                 for (const id of p.absentPolicy.removeNodes) if (!has(graph, id)) fail("invalid absent node");
-            } else if (p.absentPolicy && p.absentPolicy.mode !== "keep-template") fail("unknown absence policy");
+            } else if (p.absentPolicy && !["keep-template","auto-prune"].includes(p.absentPolicy.mode)) fail("unknown absence policy");
             if (has(p,"defaultValue") && b.mode === "literal") {
                 const dv = p.defaultValue;
                 if ((p.valueKind === "STRING" && typeof dv !== "string") ||

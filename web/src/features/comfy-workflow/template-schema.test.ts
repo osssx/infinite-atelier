@@ -133,6 +133,24 @@ describe("Phase B: ComfyUI API graph and immutable bindings", () => {
         sample.ports[0].choices=Array.from({length:65},(_,i)=>({label:String(i),value:String(i)}));
         expect(()=>validateComfyTemplatePayload(sample)).toThrow(/1–64 choices/);
     });
+    it("persists media auto-prune on one input port, not a workflow-level mode route",async()=>{
+        const sample=payload();
+        sample.ports[2].absentPolicy={mode:"auto-prune"};
+        const created=await createComfyTemplate("media-optional",sample);
+        expect(created.ports[2].absentPolicy).toEqual({mode:"auto-prune"});
+        expect(created).not.toHaveProperty("dynamicRoutes");
+        await expect(verifyComfyTemplate(created)).resolves.toBeUndefined();
+        const legacy=payload();
+        expect((await createComfyTemplate("media-optional",legacy)).revision).not.toBe(created.revision);
+        sample.ports[2].required=true;
+        expect(()=>validateComfyTemplatePayload(sample)).toThrow(/automatic pruning requires/);
+        sample.ports[2].required=false;
+        sample.ports[2].defaultValue="sample.png";
+        expect(()=>validateComfyTemplatePayload(sample)).toThrow(/without a default/);
+        delete sample.ports[2].defaultValue;
+        sample.ports[0].absentPolicy={mode:"auto-prune"};
+        expect(()=>validateComfyTemplatePayload(sample)).toThrow(/automatic pruning requires/);
+    });
     it("content SHA-256 is stable under object key reorder; modifying graph/port invalidates revision", async () => {
         const created=await createComfyTemplate("image-pipeline",payload(),info);
         expect(created.revision).toMatch(/^[0-9a-f]{64}$/);

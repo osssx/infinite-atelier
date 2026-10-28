@@ -4,7 +4,7 @@ vi.mock("@/i18n", () => ({ default: { t: (key: string) => key } }));
 import { registerBuiltinNodes } from "@/components/canvas/nodes/builtin-nodes";
 import { prepareCanvasPortConnection, reconcileComfyArtifactConnections, validateCanvasPortConnections } from "./canvas-port-connections";
 import { prepareCanvasExternalInputSnapshot, resolveCanvasInputValue } from "./canvas-external-input-snapshot";
-import { COMFY_WORKFLOW_MOCK_TYPE, CANVAS_PORT_EDGE_PADDING, CANVAS_PORT_MIN_PITCH, getCanvasPortAnchor, getCanvasPortHitSize, getCanvasPortOffset, getMinimumCanvasPortNodeHeight, MOCK_COMFY_PORTS, pickCanvasDropHandle } from "./canvas-ports";
+import { COMFY_WORKFLOW_MOCK_TYPE, CANVAS_PORT_EDGE_PADDING, CANVAS_PORT_MIN_PITCH, getCanvasPortAnchor, getCanvasPortHitSize, getCanvasPortOffset, getCanvasVisiblePorts, getCanvasNodePorts, getMinimumCanvasPortNodeHeight, MOCK_COMFY_PORTS, pickCanvasDropHandle } from "./canvas-ports";
 import { applyNodeConfigPatch } from "./canvas-node-factory";
 import { connectionControlPoints, connectionControlHull } from "./canvas-connection-culling";
 import { cullConnections } from "./canvas-connection-culling";
@@ -178,9 +178,80 @@ describe("typed Comfy outputs attach only to the matching generated resource",()
     });
 });
 
+describe("ComfyUI scalar sockets hidden on canvas without altering template bindings", () => {
+    const ports:CanvasPortDescriptor[]=[
+        {id:"prompt",label:"Prompt",direction:"target",valueKind:"STRING",required:true},
+        {id:"frame",label:"Frame",direction:"target",valueKind:"IMAGE"},
+        {id:"steps",label:"Steps",direction:"target",valueKind:"INT",required:true},
+        {id:"guidance",label:"Guidance",direction:"target",valueKind:"FLOAT"},
+        {id:"enabled",label:"Enabled",direction:"target",valueKind:"BOOLEAN"},
+        {id:"audio",label:"Audio",direction:"target",valueKind:"AUDIO"},
+        {id:"output",label:"Output",direction:"source",valueKind:"VIDEO"}
+    ];
+    it("only renders connectable TEXT/media inputs and all outputs; keeps full metadata",()=>{
+        const wf=n("wf",COMFY_WORKFLOW_MOCK_TYPE,{comfyPorts:ports});
+        expect(getCanvasVisiblePorts(wf).map(p=>p.id)).toEqual(["prompt","frame","audio","output"]);
+        expect(getCanvasNodePorts(wf)).toEqual(ports);
+        expect(wf.metadata?.comfyPorts).toEqual(ports);
+        expect(getCanvasPortHitSize(wf,"target")).toBe(28);
+        expect(getCanvasPortOffset(wf,"target","prompt")).toBe(CANVAS_PORT_EDGE_PADDING);
+        expect(getCanvasPortOffset(wf,"target","audio")).toBe(wf.height-CANVAS_PORT_EDGE_PADDING);
+        expect(pickCanvasDropHandle(wf,h("text","source","text"),wf.position.y+wf.height/2)?.portId).toBe("frame");
+        expect(getCanvasVisiblePorts(n("text",CanvasNodeType.Text))).toEqual([]);
+    });
+    it("shows STRING enum sockets, but hides INT, FLOAT and BOOLEAN even with candidate settings",()=>{
+        // The template owns choices; the canvas caches only port identity/type.
+        const templateInputs=[
+            {id:"model",label:"Model",direction:"target" as const,valueKind:"STRING" as const,
+                choices:[{label:"Fast",value:"fast"},{label:"Quality",value:"quality"}]},
+            {id:"strength",label:"Strength",direction:"target" as const,valueKind:"FLOAT" as const,
+                choices:[{label:"Low",value:0.5},{label:"High",value:1.0}]},
+            {id:"steps",label:"Steps",direction:"target" as const,valueKind:"INT" as const,
+                choices:[{label:"Fast",value:8},{label:"Slow",value:20}]},
+            {id:"enabled",label:"Enabled",direction:"target" as const,valueKind:"BOOLEAN" as const},
+            {id:"prompt",label:"Prompt",direction:"target" as const,valueKind:"STRING" as const},
+            {id:"video",label:"Video",direction:"source" as const,valueKind:"VIDEO" as const},
+        ];
+        const canvasPorts=templateInputs.map(({id,label,direction,valueKind})=>({id,label,direction,valueKind}));
+        const wf=n("enum-wf",COMFY_WORKFLOW_MOCK_TYPE,{comfyPorts:canvasPorts});
+        expect(getCanvasVisiblePorts(wf).map(p=>p.id)).toEqual(["model","prompt","video"]);
+        expect(getCanvasNodePorts(wf)).toEqual(canvasPorts);
+        expect(getCanvasPortOffset(wf,"target","model")).toBe(CANVAS_PORT_EDGE_PADDING);
+        const text=n("text",CanvasNodeType.Text,{content:"fast"});
+        expect(link(h("text","source"),h("enum-wf","target","model"),[text,wf],[]).connection)
+            .toMatchObject({toPortId:"model"});
+        expect(getCanvasVisiblePorts(wf).every(p=>p.direction!=="target"||
+            !["INT","FLOAT","BOOLEAN"].includes(p.valueKind))).toBe(true);
+    });
+    it("binding many scalar fields does not grow node just for hidden sockets",()=>{
+        const many:CanvasPortDescriptor[]=[
+            ...Array.from({length:18},(_,i)=>({id:"scalar-"+i,label:"Scalar",direction:"target" as const,
+                valueKind:(i%2?"BOOLEAN":"INT") as "INT"|"BOOLEAN"})),
+            {id:"prompt",label:"Prompt",direction:"target",valueKind:"STRING"},
+            {id:"out",label:"Output",direction:"source",valueKind:"VIDEO"}
+        ];
+        const bound=applyNodeConfigPatch(n("wf",COMFY_WORKFLOW_MOCK_TYPE),{comfyPorts:many});
+        expect(bound.height).toBe(265);
+        expect(getCanvasVisiblePorts(bound).map(p=>p.id)).toEqual(["prompt","out"]);
+        expect(bound.metadata?.comfyPorts).toHaveLength(many.length);
+    });
+    it("does not invalidate already-saved INT links if the source and target are declared",()=>{
+        const wf=n("wf",COMFY_WORKFLOW_MOCK_TYPE,{comfyPorts:ports});
+        const producer=n("producer",COMFY_WORKFLOW_MOCK_TYPE,{comfyPorts:[
+            {id:"value",label:"Value",direction:"source",valueKind:"INT"}
+        ]});
+        const edge:CanvasConnection={id:"legacy-scalar",fromNodeId:"producer",fromPortId:"value",
+            toNodeId:"wf",toPortId:"steps"};
+        expect(getCanvasVisiblePorts(wf).some(p=>p.id==="steps")).toBe(false);
+        expect(validateCanvasPortConnections([producer,wf],[edge])).toEqual([]);
+        expect(getCanvasPortAnchor(wf,"target","steps").y).toBe(wf.position.y+wf.height/2);
+        expect(pickCanvasDropHandle(wf,h("producer","source","value"),wf.position.y+wf.height/2)?.portId).not.toBe("steps");
+    });
+});
+
 describe("Dense Comfy port hover hitboxes", () => {
     const inputPorts: CanvasPortDescriptor[] = Array.from({ length: 11 }, (_, index) => ({
-        id: "input-" + index, label: "Input " + index, direction: "target" as const, valueKind: "INT" as const,
+        id: "input-" + index, label: "Input " + index, direction: "target" as const, valueKind: "IMAGE" as const,
     }));
     const outputPort: CanvasPortDescriptor = {id:"image",label:"Image",direction:"source",valueKind:"IMAGE"};
     const ports = [...inputPorts,outputPort];

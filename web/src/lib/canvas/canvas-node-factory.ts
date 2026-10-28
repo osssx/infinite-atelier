@@ -1,6 +1,6 @@
 import { getNodeSpec, NODE_DEFAULT_SIZE } from "@/constant/canvas";
 import { nodeSizeFromRatio } from "@/lib/canvas/canvas-node-size";
-import { COMFY_WORKFLOW_MOCK_TYPE, getMinimumCanvasPortNodeHeight } from "@/lib/canvas/canvas-ports";
+import { COMFY_WORKFLOW_MOCK_TYPE, getMinimumCanvasPortNodeHeight, getVisibleComfyWorkflowPorts } from "@/lib/canvas/canvas-ports";
 import type { AiConfig } from "@/stores/use-config-store";
 import type { UploadedImage } from "@/services/image-storage";
 import type { UploadedFile } from "@/services/file-storage";
@@ -69,7 +69,7 @@ export function applyNodeConfigPatch(node: CanvasNodeData, patch: Partial<Canvas
     if (node.type === COMFY_WORKFLOW_MOCK_TYPE && safePatch.comfyPorts) {
         // Binding a workflow with many ports needs room for independent hit targets.
         // Grow when binding (never shrink a user-resized node); keep its top edge fixed.
-        next.height = Math.max(node.height, getMinimumCanvasPortNodeHeight(safePatch.comfyPorts));
+        next.height = Math.max(node.height, getMinimumCanvasPortNodeHeight(getVisibleComfyWorkflowPorts(safePatch.comfyPorts)));
     }
     const spec = node.type === CanvasNodeType.Video ? NODE_DEFAULT_SIZE[CanvasNodeType.Video] : NODE_DEFAULT_SIZE[CanvasNodeType.Image];
     const size = typeof safePatch.size === "string" && !node.metadata?.content ? nodeSizeFromRatio(safePatch.size, spec.width, spec.height) : null;

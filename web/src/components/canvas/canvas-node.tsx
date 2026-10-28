@@ -6,7 +6,7 @@ import { ChevronRight, Clapperboard, Copy, Group, Image as ImageIcon, Music2, Pu
 import { canvasThemes } from "@/lib/canvas-theme";
 import { formatBytes } from "@/lib/image-utils";
 import { getNodeDefinition } from "@/lib/canvas/node-registry";
-import { COMFY_WORKFLOW_MOCK_TYPE, getCanvasPortHitSize, getCanvasPortOffset, getMinimumCanvasPortNodeHeight } from "@/lib/canvas/canvas-ports";
+import { COMFY_WORKFLOW_MOCK_TYPE, getCanvasPortHitSize, getCanvasPortOffset, getCanvasVisiblePorts, getMinimumCanvasPortNodeHeight } from "@/lib/canvas/canvas-ports";
 import { CANVAS_CONTENT_VISIBILITY_STYLE, shouldContainCanvasContent } from "@/lib/canvas/canvas-content-visibility";
 import { isSimpleCanvasText } from "@/lib/canvas/canvas-markdown-plain";
 import { useThemeStore } from "@/stores/use-theme-store";
@@ -237,7 +237,7 @@ export const CanvasNode = React.memo(function CanvasNode({
             const dx = (clientX - resizeRef.current.startX) / resizeRef.current.scale;
             const dy = (clientY - resizeRef.current.startY) / resizeRef.current.scale;
             const minWidth = 220;
-            const minHeight = definition?.ports ? getMinimumCanvasPortNodeHeight(definition.ports(data)) : 160;
+            const minHeight = definition?.ports ? getMinimumCanvasPortNodeHeight(getCanvasVisiblePorts(data)) : 160;
             const startRight = resizeRef.current.startLeft + resizeRef.current.startWidth;
             const startBottom = resizeRef.current.startTop + resizeRef.current.startHeight;
             const fromLeft = resizeRef.current.corner.includes("left");
@@ -516,7 +516,7 @@ export const CanvasNode = React.memo(function CanvasNode({
                 <ResizeHandle corner="bottom-right" onMouseDown={handleResizeMouseDown} />
             </div>
 
-            {!isGroup && definition?.ports ? definition.ports(data).map((port) => (
+            {!isGroup && definition?.ports ? getCanvasVisiblePorts(data).map((port) => (
                 <ConnectionHandleDot
                     key={port.direction + ":" + port.id}
                     side={port.direction === "target" ? "left" : "right"}

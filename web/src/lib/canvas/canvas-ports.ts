@@ -32,6 +32,20 @@ export function isPortAwareCanvasNode(node: CanvasNodeData): boolean {
 export function getCanvasNodePorts(node: CanvasNodeData): readonly CanvasPortDescriptor[] {
     return portResolvers.get(node.type)?.(node) || [];
 }
+/** Presentation only: Comfy INT/FLOAT/BOOLEAN inputs are editable in the
+ * parameter inspector but have no matching canvas resource source nodes.
+ * STRING inputs, including those with dropdown choices, stay connectable.
+ * Keep all descriptors in metadata and the connection validator so imported
+ * or older projects retain any existing typed links.
+ */
+export function getVisibleComfyWorkflowPorts(ports: readonly CanvasPortDescriptor[]): CanvasPortDescriptor[] {
+    return ports.filter(port=>port.direction!=="target" ||
+        (port.valueKind!=="INT" && port.valueKind!=="FLOAT" && port.valueKind!=="BOOLEAN"));
+}
+export function getCanvasVisiblePorts(node: CanvasNodeData): readonly CanvasPortDescriptor[] {
+    const ports=getCanvasNodePorts(node);
+    return node.type===COMFY_WORKFLOW_MOCK_TYPE?getVisibleComfyWorkflowPorts(ports):ports;
+}
 
 export function getCanvasResourceOutputPort(node: CanvasNodeData): CanvasPortDescriptor | undefined {
     return RESOURCE_PORTS[node.type as CanvasNodeType];
@@ -63,7 +77,7 @@ export function getMinimumCanvasPortNodeHeight(ports: readonly CanvasPortDescrip
 }
 
 export function getCanvasPortHitSize(node: CanvasNodeData, direction: "source" | "target"): number {
-    const count = getCanvasNodePorts(node).filter((port) => port.direction === direction).length;
+    const count = getCanvasVisiblePorts(node).filter((port) => port.direction === direction).length;
     if (count <= 1) return CANVAS_PORT_HIT_MAX;
     const pitch = Math.max(0, node.height - CANVAS_PORT_EDGE_PADDING * 2) / (count - 1);
     // Never let one port's hover hitbox cover its neighbour on compact old nodes.
@@ -72,7 +86,7 @@ export function getCanvasPortHitSize(node: CanvasNodeData, direction: "source" |
 
 /** Shared DOM + SVG port layout: no DOM measurement, stable during pan/zoom. */
 export function getCanvasPortOffset(node: CanvasNodeData, direction: "source" | "target", portId: string): number {
-    const ports = getCanvasNodePorts(node).filter((port) => port.direction === direction);
+    const ports = getCanvasVisiblePorts(node).filter((port) => port.direction === direction);
     const index = ports.findIndex((port) => port.id === portId);
     if (index < 0) return node.height / 2;
     // A single typed port uses exactly the same Y anchor as an ordinary node.
@@ -94,7 +108,7 @@ export function getCanvasPortAnchor(node: CanvasNodeData, direction: "source" | 
 export function pickCanvasDropHandle(node: CanvasNodeData, current: ConnectionHandle, worldY: number): ConnectionHandle | null {
     const direction = current.handleType === "source" ? "target" : "source";
     if (!isPortAwareCanvasNode(node)) return { nodeId: node.id, handleType: direction };
-    const ports = getCanvasNodePorts(node).filter((port) => port.direction === direction);
+    const ports = getCanvasVisiblePorts(node).filter((port) => port.direction === direction);
     if (!ports.length) return null;
     let best = ports[0];
     let bestDistance = Number.POSITIVE_INFINITY;

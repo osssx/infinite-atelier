@@ -41,8 +41,7 @@ export function registerBuiltinNodes() {
         ...BUILTIN_DEFINITIONS,
         {
             type: COMFY_WORKFLOW_MOCK_TYPE,
-            title: "ComfyUI Workflow",
-            description: "Import API workflows and expose bound input/output ports (execution unavailable)",
+            title: "工作流",
             icon: <Workflow className={iconClass} />,
             minimapColor: "#8b5cf6",
             defaultSize: { width: 360, height: 265 },

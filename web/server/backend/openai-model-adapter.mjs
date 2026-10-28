@@ -3,6 +3,7 @@ import {readFile} from "node:fs/promises";
 import {Blob} from "node:buffer";
 import {Readable} from "node:stream";
 import {validateSkillRef,loadFrozenSkillCatalog,runSqliteSkillAgent} from "./sqlite-skill-agent.mjs";
+import {DEFAULT_OPENAI_ENDPOINT,compatEndpointFingerprint,normalizeOpenAiCompatBaseUrl,createPinnedOpenAiCompatCall} from "./openai-compat-endpoints.mjs";
 import {appendArtifact} from "./repository.mjs";
 
 const failure=(code,statusCode=400,confirmedNotAccepted=false)=>
@@ -152,11 +153,22 @@ async function streamOpenAiText(response,db,jobId){
  return text;
 }
 export function validateModelSnapshot(snapshot){
- if(!snapshot||snapshot.adapterKind!=="model"||snapshot.provider!=="openai"||
+ if(!snapshot||snapshot.adapterKind!=="model"||!["openai","openai_compatible"].includes(snapshot.provider)||
   typeof snapshot.channelId!=="string"||!/^[-\w]{1,128}$/.test(snapshot.channelId)||
   typeof snapshot.secretVersionRef!=="string"||!/^[-\w]{1,128}$/.test(snapshot.secretVersionRef))
   throw failure("model_snapshot_invalid");
  const task=snapshot.task;
+ if(snapshot.provider==="openai_compatible"){
+  let canonical;
+  try{canonical=normalizeOpenAiCompatBaseUrl(snapshot.endpointBaseUrl)}catch{
+   throw failure("model_endpoint_reference_invalid");
+  }
+  if(canonical!==snapshot.endpointBaseUrl||
+     snapshot.endpointFingerprint!==undefined&&
+     snapshot.endpointFingerprint!==compatEndpointFingerprint(canonical))
+   throw failure("model_endpoint_reference_invalid");
+ }else if(snapshot.endpointBaseUrl!==undefined||snapshot.endpointFingerprint!==undefined)
+  throw failure("model_endpoint_reference_invalid");
  if(!task||typeof task!=="object"||Array.isArray(task)||!supported.has(task.kind)||
   !validModel(task.model)||!validPrompt(task.prompt)||
   Object.keys(task).some(key=>!["kind","model","prompt","size","quality","voice","format","speed","operation","images","mask","messages","stream","skills"].includes(key)))
@@ -209,18 +221,22 @@ function decodeImage(value){
  if(!mime)throw failure("model_image_invalid",502);
  return {bytes,mime};
 }
-/** Trusted fixed OpenAI origin only. Model key is unsealed from DPAPI for the
- * network call, never stored in a JobSnapshot or returned via HTTP. Provider
+/** Official OpenAI uses a fixed origin; compatible channels use the frozen,
+ * validated user-supplied API base URL (no server whitelist). Keys are unsealed
+ * from DPAPI only for the network call and never stored in JobSnapshot. Provider
  * errors are deliberately not recorded/logged to avoid leaking arbitrary data.
  * Only HTTP 4xx means confirmed nonacceptance; ambiguous network failures
  * stay submission_unknown and are never blindly retried.
  */
-export function createOpenAiModelAdapter({db,blobStore,vault,upstreamCall=fetch}={}){
+export function createOpenAiModelAdapter({db,blobStore,vault,upstreamCall=fetch,
+ compatibleUpstreamCall=createPinnedOpenAiCompatCall()}={}){
  if(!db||!blobStore||!vault||typeof upstreamCall!=="function")throw Error("model_adapter_dependencies_required");
  const check=job=>{
   const snapshot=job.snapshot??JSON.parse(job.snapshot_json);
   const task=validateModelSnapshot(snapshot);
-  if(vault.get(snapshot.channelId).provider!=="openai")throw failure("model_provider_mismatch",409);
+  if(vault.get(snapshot.channelId).provider!==snapshot.provider)throw failure("model_provider_mismatch",409);
+  if(snapshot.provider==="openai_compatible"&&task.skills)
+   throw failure("model_compatible_skill_unsupported",422);
   vault.checkReference(snapshot.secretVersionRef,snapshot.channelId);
   return {snapshot,task};
  };
@@ -302,7 +318,9 @@ export function createOpenAiModelAdapter({db,blobStore,vault,upstreamCall=fetch}
   }
   let response;
   try{
-   response=await upstreamCall("https://api.openai.com/v1"+path,{
+   const compatible=snapshot.provider==="openai_compatible";
+   const endpoint=compatible?snapshot.endpointBaseUrl:DEFAULT_OPENAI_ENDPOINT;
+   response=await (compatible?compatibleUpstreamCall:upstreamCall)(endpoint+path,{
     method:"POST",redirect:"manual",headers:{"authorization":authorization,...headers},body,
     signal:AbortSignal.timeout(120000)
    });

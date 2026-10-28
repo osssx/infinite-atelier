@@ -5,6 +5,7 @@ import {createSqliteComfyBridge} from "./sqlite-comfy-bridge";
 import type {FrozenArkReference} from "./seedance-frozen-references";
 import type {ReferenceImage} from "@/types/image";
 import {freezeModelImages,type FrozenModelImage} from "./frozen-model-images";
+import {normalizeCompatBaseUrl} from "./model-channel-autoroute";
 
 export type FrozenTextTurn=
  | {role:"system"|"user"|"assistant";content:string}
@@ -17,14 +18,14 @@ export type FrozenTextTurn=
  * questions, retaining a single output and no browser credential references.
  */
 export async function startSqliteModelGeneration({
- projectId,sourceNodeId,nodes,connections,channelId,provider="openai",task,
+ projectId,sourceNodeId,nodes,connections,channelId,channelBaseUrl,provider="openai",task,
  skillAuthorizationId,referenceImages=[],maskImage,
  api=canvasApi,bridge=createSqliteComfyBridge({projectId,
   getLocalGraph:()=>({nodes:[...nodes],connections:[...connections]})})
 }:{
  projectId:string;sourceNodeId:string;
  nodes:readonly CanvasNodeData[];connections:readonly CanvasConnection[];
- channelId:string;provider?:"openai"|"volcengine_ark";
+ channelId:string;channelBaseUrl?:string;provider?:"openai"|"openai_compatible"|"volcengine_ark";
  task:{kind:"image"|"audio"|"text"|"video";model:string;prompt:string;
   size?:string;quality?:string;voice?:string;format?:string;speed?:number;
   duration?:number;ratio?:string;resolution?:string;generateAudio?:boolean;watermark?:boolean;
@@ -37,18 +38,22 @@ export async function startSqliteModelGeneration({
  api?:typeof canvasApi;bridge?:ReturnType<typeof createSqliteComfyBridge>;
 }):Promise<BackendJobView>{
  if(!nodes.some(node=>node.id===sourceNodeId))throw Error("model_source_node_missing");
- if((provider==="openai"&&task.kind==="video")||
+ if((["openai","openai_compatible"].includes(provider)&&task.kind==="video")||
     (provider==="volcengine_ark"&&task.kind!=="video"))
   throw Error("model_provider_kind_unsupported");
  const capability=await api<{autoDispatch:boolean;modelKinds?:string[]}>(
   "/api/v1/execution/capabilities");
  if(!capability.autoDispatch||!capability.modelKinds?.includes(task.kind))
   throw Error("本地模型执行服务不可用，请确认本地后端已启动并更新到当前版本");
+ // A URL is public config, not a secret. Freeze it with the job so a
+ // later channel edit cannot silently redirect a paid queued task.
+ const endpointBaseUrl=provider==="openai_compatible"?
+  normalizeCompatBaseUrl(channelBaseUrl??""):undefined;
  const channel=await api<{id:string;provider:string;hasKey:boolean;keyVersion:string|null}>(
   "/api/v1/channels/"+encodeURIComponent(channelId));
  if(channel.id!==channelId||channel.provider!==provider||!channel.hasKey||!channel.keyVersion)
   throw Error("本地后端未配置此模型渠道的加密密钥");
- if((referenceImages.length||maskImage)&&provider!=="openai")
+ if((referenceImages.length||maskImage)&&!["openai","openai_compatible"].includes(provider))
   throw Error("model_provider_image_inputs_unsupported");
  if((referenceImages.length||maskImage)&&!["image","text"].includes(task.kind))
   throw Error("model_image_inputs_kind_unsupported");
@@ -83,7 +88,7 @@ export async function startSqliteModelGeneration({
   expectedProjectRevision:fence.revision,sourceNodeFingerprint:fence.sourceNodeFingerprint,
   idempotencyKey,requestFingerprint:idempotencyKey,executionMode:task.kind==="video"?"poll":"immediate",
   snapshot:{adapterKind:"model",provider,channelId,
-   secretVersionRef:channel.keyVersion,task:{...task,
+   secretVersionRef:channel.keyVersion,...(endpointBaseUrl?{endpointBaseUrl}:{}),task:{...task,
     ...(images.length?{images}:{}),
     ...(images.length&&task.kind==="image"?{operation:"edit"}:{}),
     ...(mask?{mask}:{})}}

@@ -142,8 +142,10 @@ export function ChannelEditorDrawer({ open, channel, onSave, onClose }: { open: 
                     <Input.Password value={draft.apiKey} onChange={(event) => patch({ apiKey: event.target.value })} placeholder="sk-..." />
                     {draft.apiFormat === "volcengine_ark" ? <div className="mt-2 flex flex-wrap items-center gap-2"><Button size="small" loading={checkingArk} onClick={() => void checkArkConnection()}>{t("config.channelEditor.testArkConnection")}</Button><span className="text-xs text-stone-500">{t("config.channelEditor.arkConnectionHint")}</span></div> : null}
                     {modelChannelProvider(draft) ? <div className="mt-2 text-xs text-stone-500">
-                        本地模型执行默认启用。保存时自动将填写的密钥写入本机加密 Vault，
-                        在确认所有直接调用路径已接入后端前，浏览器直连密钥暂时保留；可在“偏好设置”显式安全迁移。
+                        {modelChannelProvider(draft)==="openai_compatible"
+                            ? "自定义 OpenAI 兼容渠道直接使用填写的 HTTP(S) API 地址，无需配置白名单。生成在本地后端执行，密钥保存在加密 Vault；远程 HTTP 明文连接请注意风险。"
+                            : "本地模型执行默认启用。保存时自动将填写的密钥写入本机加密 Vault。"}
+                        浏览器直连密钥仍为其他尚未迁移的旧功能保留，相关清理将单独进行。
                     </div> : null}
                 </label>
             </div>

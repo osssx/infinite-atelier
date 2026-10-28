@@ -2211,7 +2211,7 @@ function AtelierCanvasPage() {
                 getLocalGraph:()=>({nodes:nodesRef.current,connections:connectionsRef.current})});
             const job=await startSqliteModelGeneration({
                 projectId,sourceNodeId:node.id,nodes:[...nodesRef.current],
-                connections:[...connectionsRef.current],channelId:channel.id,provider,
+                connections:[...connectionsRef.current],channelId:channel.id,channelBaseUrl:channel.baseUrl,provider,
                 referenceImages:[source],...(mask?{maskImage:mask}:{}),bridge,
                 task:{kind:"image",model:modelOptionName(generationConfig.model),prompt,
                     size:openAiImageSize(generationConfig.size),
@@ -2561,7 +2561,7 @@ function AtelierCanvasPage() {
             const selectedChannel=resolveModelChannel(effectiveConfig,generationConfig.model);
             // Supported official channels always execute via SQLite. No toggle,
             // no implicit browser fallback on a failed backend/credential check.
-            const sqliteProvider=modelChannelProvider(selectedChannel,mode);
+            const sqliteProvider=resolveModelScript(effectiveConfig,generationConfig.model)?null:modelChannelProvider(selectedChannel,mode);
             if(sqliteProvider&&selectedChannel){
                 const submissionKey=projectId+":"+nodeId;
                 if(sqliteModelSubmitLocksRef.current.has(submissionKey)){
@@ -2646,7 +2646,7 @@ function AtelierCanvasPage() {
                     const job=await startSqliteModelGeneration({
                         projectId,sourceNodeId:nodeId,
                         nodes:[...nodesRef.current],connections:[...connectionsRef.current],
-                        channelId:selectedChannel.id,
+                        channelId:selectedChannel.id,channelBaseUrl:selectedChannel.baseUrl,
                         provider:sqliteProvider,
                         ...(skillAuthorizationId?{skillAuthorizationId}:{}),
                         bridge,

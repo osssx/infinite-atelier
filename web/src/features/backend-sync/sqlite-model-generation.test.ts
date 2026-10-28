@@ -50,10 +50,39 @@ describe("P4.4 ordinary SQLite model submit",()=>{
   expect(b.assertNoActiveJob).toHaveBeenCalledWith("text-1");
   expect(b.saveProjectNow).toHaveBeenCalledOnce();
  });
+ it("freezes arbitrary user-configured compatible endpoint without a server whitelist",async()=>{
+  const calls:string[]=[];
+  const api=vi.fn(async(path:string,method="GET",payload?:unknown)=>{
+   calls.push(method+" "+path);
+   if(path==="/api/v1/execution/capabilities")return {autoDispatch:true,modelKinds:["text"]};
+   if(path==="/api/v1/channels/proxy-1")return {id:"proxy-1",provider:"openai_compatible",
+    hasKey:true,keyVersion:"sealed-key-version"};
+   if(path==="/api/v1/jobs"){
+    expect(payload).toMatchObject({snapshot:{provider:"openai_compatible",channelId:"proxy-1",
+     endpointBaseUrl:"http://127.0.0.1:8188/v1",secretVersionRef:"sealed-key-version",
+     task:{kind:"text",prompt:"hello"}}});
+    expect(JSON.stringify(payload)).not.toContain("apiKey");
+    return fakeJob;
+   }
+   throw Error("unexpected "+path);
+  });
+  const b=bridge();
+  await startSqliteModelGeneration({projectId:"p1",sourceNodeId:"text-1",nodes,connections,
+   channelId:"proxy-1",channelBaseUrl:"http://127.0.0.1:8188/v1",provider:"openai_compatible",
+   task:{kind:"text",model:"proxy-text-model",prompt:"hello"},bridge:b,api:api as unknown as typeof canvasApi});
+  expect(calls).toEqual(["GET /api/v1/execution/capabilities","GET /api/v1/channels/proxy-1","POST /api/v1/jobs"]);
+  const blocked=vi.fn();
+  const neverSaved=bridge();
+  await expect(startSqliteModelGeneration({projectId:"p1",sourceNodeId:"text-1",nodes,connections,
+   channelId:"proxy-1",channelBaseUrl:"http://169.254.169.254/v1",provider:"openai_compatible",
+   task:{kind:"text",model:"proxy-text-model",prompt:"hello"},bridge:neverSaved,
+   api:vi.fn(async()=>({autoDispatch:true,modelKinds:["text"]})) as unknown as typeof canvasApi
+  })).rejects.toThrow("不安全");
+  expect(neverSaved.saveProjectNow).not.toHaveBeenCalled();
+ });
  it("fails closed without worker, missing DPAPI key, or unsuccessful save fence",async()=>{
   const unsupported=vi.fn(async()=>({autoDispatch:false,modelKinds:[]}));
-  const args={projectId:"p1",sourceNodeId:"text-1",nodes,connections,
-   channelId:"openai-channel",task:{kind:"text" as const,model:"gpt-4o-mini",prompt:"Hi"}};
+   const args={projectId:"p1",sourceNodeId:"text-1",nodes,connections,   channelId:"openai-channel",task:{kind:"text" as const,model:"gpt-4o-mini",prompt:"Hi"}};
   await expect(startSqliteModelGeneration({...args,bridge:bridge(),api:unsupported as unknown as typeof canvasApi}))
    .rejects.toThrow("不可用");
   const missing=vi.fn(async(path:string)=>path.includes("capabilities")?

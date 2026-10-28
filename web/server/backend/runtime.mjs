@@ -79,7 +79,7 @@ export function createLocalBackend({dataDir,streamPollMs=200,adapters,comfyInsta
   const model=openai||ark?Object.fromEntries(["prepare","submit","poll","collect","cancel"].map(method=>[
    method,async args=>{
     const provider=args.job.snapshot?.provider??JSON.parse(args.job.snapshot_json).provider;
-    const instance=provider==="openai"?openai:provider==="volcengine_ark"?ark:null;
+    const instance=(provider==="openai"||provider==="openai_compatible")?openai:provider==="volcengine_ark"?ark:null;
     if(!instance||typeof instance[method]!=="function")throw Error("model_provider_not_enabled");
     return instance[method](args);
    }

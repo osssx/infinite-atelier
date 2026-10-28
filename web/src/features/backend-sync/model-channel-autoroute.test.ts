@@ -17,8 +17,30 @@ describe("default SQLite model routing and automatic DPAPI provisioning",()=>{
    baseUrl:"https://ark.cn-beijing.volces.com/api/v3"}),"video")).toBe("volcengine_ark");
   expect(modelChannelProvider(channel({apiFormat:"volcengine_ark",
    baseUrl:"https://ark.cn-beijing.volces.com/api/v3"}),"image")).toBeNull();
-  expect(modelChannelProvider(channel({baseUrl:"http://api.openai.com/v1"}),"image")).toBeNull();
-  expect(modelChannelProvider(channel({baseUrl:"https://custom-proxy.example/v1"}),"text")).toBeNull();
+  expect(modelChannelProvider(channel({baseUrl:"http://api.openai.com/v1"}),"image")).toBe("openai_compatible");
+  expect(modelChannelProvider(channel({baseUrl:"http://127.0.0.1:8188/v1"}),"image")).toBe("openai_compatible");
+  expect(modelChannelProvider(channel({baseUrl:"https://custom-proxy.example/v1"}),"text")).toBe("openai_compatible");
+  expect(modelChannelProvider(channel({baseUrl:"https://custom-proxy.example/v1"}),"video")).toBeNull();
+ });
+ it("registers any compatible API endpoint in the encrypted Vault with no backend allowlist",async()=>{
+  const custom=channel({baseUrl:"http://127.0.0.1:8188/v1"});
+  const requests:Array<{method:string;path:string}>=[];
+  const api=vi.fn(async(path:string,method="GET")=>{
+   requests.push({path,method});
+   if(path==="/api/v1/channels/channel123")throw new CanvasApiError("missing",404,method,path);
+   if(path==="/api/v1/channels")return {id:"channel123",provider:"openai_compatible",hasKey:true,keyVersion:"v1"};
+   throw Error("unexpected "+path);
+  });
+  expect((await ensureSqliteModelChannel(custom,"openai_compatible",
+   api as unknown as typeof canvasApi)).apiKey).toBe("");
+  expect(requests.map(r=>r.method+" "+r.path)).toEqual([
+   "GET /api/v1/channels/channel123","POST /api/v1/channels"
+  ]);
+  const untrusted=vi.fn();
+  await expect(ensureSqliteModelChannelForExecution(
+   channel({baseUrl:"http://169.254.169.254/v1"}),"openai_compatible",
+   untrusted as unknown as typeof canvasApi)).rejects.toThrow("不安全");
+  expect(untrusted).not.toHaveBeenCalled();
  });
  it("creates encrypted local channel on normal save, stripping browser key",async()=>{
   const calls:Array<{method:string;path:string;payload?:unknown}>=[];

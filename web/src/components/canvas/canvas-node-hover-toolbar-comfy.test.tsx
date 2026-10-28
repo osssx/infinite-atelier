@@ -57,12 +57,24 @@ describe("ComfyUI workflow selected-node toolbar",()=>{
         unbound.metadata={};
         expect(render(unbound)).toMatch(/disabled=""[^>]*aria-label="执行 ComfyUI 工作流"/);
     });
-    it("disables the execute shortcut for VIDEO-only imported presets",()=>{
+    it.each(["VIDEO", "IMAGE", "AUDIO", "STRING"] as const)("allows the execute shortcut for %s-only capture outputs",valueKind=>{
         const node=workflow();
-        node.metadata={...node.metadata,comfyPorts:[{id:"video",direction:"source",valueKind:"VIDEO",label:"生成视频"}]};
+        node.metadata={...node.metadata,comfyPorts:[{id:"output",direction:"source",valueKind,label:"生成产物"}]};
         const html=render(node);
-        expect(html).toMatch(/disabled=""[^>]*aria-label="VIDEO 输出暂不支持画布执行"/);
-        expect(html).not.toContain('aria-label="执行 ComfyUI 工作流"');
+        expect(html).toContain('aria-label="执行 ComfyUI 工作流"');
+        expect(html).not.toMatch(/disabled=""[^>]*aria-label="执行 ComfyUI 工作流"/);
+        expect(html).not.toContain("暂不支持画布执行");
+    });
+    it("allows mixed VIDEO and IMAGE capture outputs, but keeps genuine disable guards",()=>{
+        const node=workflow();
+        node.metadata={...node.metadata,comfyPorts:[
+            {id:"video",direction:"source",valueKind:"VIDEO",label:"视频"},
+            {id:"image",direction:"source",valueKind:"IMAGE",label:"图片"}
+        ]};
+        expect(render(node)).not.toMatch(/disabled=""[^>]*aria-label="执行 ComfyUI 工作流"/);
+        expect(render(node,true)).toMatch(/disabled=""[^>]*aria-label="执行 ComfyUI 工作流"/);
+        node.metadata={...node.metadata,comfyExecution:{status:"running",runId:"job"}};
+        expect(render(node)).toMatch(/disabled=""[^>]*aria-label="工作流执行中"/);
     });
     it("does not add Execute to unrelated canvas nodes",()=>{
         expect(render({...workflow(),type:"text"})).not.toContain('aria-label="执行 ComfyUI 工作流"');

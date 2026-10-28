@@ -170,7 +170,7 @@ export function ComfySettingsTab() {
                     <span className="flex min-w-0 items-center gap-1.5">
                         <span className="truncate font-medium" title={preset.name}>{preset.name}</span>
                         {preset.builtIn?<Tag className="!mr-0">内置</Tag>:null}
-                        {preset.builtinId===MINIMAX_H3_I2V_TEMPLATE_ID?<Tag className="!mr-0">视频 · 暂不支持画布执行</Tag>:null}
+                        {preset.builtinId===MINIMAX_H3_I2V_TEMPLATE_ID?<Tag className="!mr-0">视频</Tag>:null}
                         {preset.modified?<Tag color="orange" className="!mr-0">已修改</Tag>:null}
                     </span>
                     <span className="truncate font-mono text-stone-500" title={preset.templateId+"@"+preset.revision}>{preset.templateId} · {preset.revision.slice(0,12)}</span>

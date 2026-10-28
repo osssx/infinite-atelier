@@ -125,8 +125,6 @@ export function CanvasNodeHoverToolbar({
     const isConfig = node.type === CanvasNodeType.Config;
     const isComfy = node.type === COMFY_WORKFLOW_MOCK_TYPE;
     const comfyRunning = isComfyRunActive(node.metadata?.comfyExecution?.status);
-    const comfyVideoOnly=Boolean(node.metadata?.comfyPorts?.some(p=>p.direction==="source"&&p.valueKind==="VIDEO") &&
-        !node.metadata?.comfyPorts?.some(p=>p.direction==="source"&&p.valueKind==="IMAGE"));
     const canRetry = node.metadata?.status === "error";
     const quickImageToolIdSet = new Set(quickImageToolIds);
     const copyImagePrompt = (target: CanvasNodeData) => {
@@ -148,9 +146,9 @@ export function CanvasNodeHoverToolbar({
 
     const baseToolbarTools: ToolbarTool[] = [
         { id: "info", title: t("canvas.nodeToolbar.infoTitle"), label: t("canvas.nodeToolbar.info"), icon: <Info className="size-4" />, onClick: () => onInfo(node) },
-        ...(isComfy ? [{ id:"executeComfy", title:comfyRunning?"工作流执行中":comfyVideoOnly?"VIDEO 输出暂不支持画布执行":"执行 ComfyUI 工作流",
+        ...(isComfy ? [{ id:"executeComfy", title:comfyRunning?"工作流执行中":"执行 ComfyUI 工作流",
             label:comfyRunning?"执行中":"执行", icon:comfyRunning?<LoaderCircle className="size-4 animate-spin"/>:<Play className="size-4"/>,
-            disabled:comfyRunning || comfyExecuteDisabled || comfyVideoOnly || !node.metadata?.comfyWorkflow?.templateId,
+            disabled:comfyRunning || comfyExecuteDisabled || !node.metadata?.comfyWorkflow?.templateId,
             onClick:()=>onExecuteComfy(node) }] : []),
         { id: "delete", title: t("canvas.nodeToolbar.removeTitle"), label: t("common.delete"), icon: <Trash2 className="size-4" />, onClick: () => onDelete(node), danger: true },
     ];

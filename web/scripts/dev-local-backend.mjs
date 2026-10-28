@@ -1,5 +1,12 @@
-import {createLocalBackend} from "../server/backend/runtime.mjs";
+import {createLocalBackend,resolveLocalDataDir} from "../server/backend/runtime.mjs";
 import {startServer} from "../server/backend/app.mjs";
+import {loadBackendEnv} from "./load-backend-env.mjs";
+import {existsSync} from "node:fs";
+import {join} from "node:path";
+loadBackendEnv();
+const dataRoot=resolveLocalDataDir();
+if(process.env.ATELIER_DATA_DIR!==undefined&&!existsSync(join(dataRoot,"db","atelier.sqlite")))
+ console.warn("Configured ATELIER_DATA_DIR has no existing SQLite database. A new dataset will be initialized; existing projects/media are NOT migrated. Back up and restore the complete data directory if relocation was intended.");
 
 const raw=process.env.ATELIER_BACKEND_PORT??"8788";
 const port=Number(raw);
@@ -34,6 +41,7 @@ for(const signal of ["SIGINT","SIGTERM"])process.on(signal,()=>{
 try{
  const address=await startServer(runtime.app,{host:"127.0.0.1",port});
  console.log("Infinite Atelier private backend ready:",address);
+ console.log("Backend storage root:",dataRoot);
  console.log("Comfy SQLite instances:",runtime.comfyRegistry.list().map(item=>item.id).join(", ")||"none (configure in settings)");
  console.log("SQLite OpenAI / Volcengine Ark model adapters: enabled by default (DPAPI channel required).");
  console.log("Canvas sessions: automatic same-origin loopback login (no manual token).");

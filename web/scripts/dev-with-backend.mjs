@@ -2,6 +2,8 @@
 import {spawn} from "node:child_process";
 import {fileURLToPath} from "node:url";
 import {resolve,dirname} from "node:path";
+import {loadBackendEnv} from "./load-backend-env.mjs";
+loadBackendEnv();
 const root=resolve(dirname(fileURLToPath(import.meta.url)),"..");
 const port=Number(process.env.ATELIER_BACKEND_PORT??"8788");
 const vitePort=Number(process.env.ATELIER_VITE_PORT??"3000");

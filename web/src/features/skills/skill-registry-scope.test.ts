@@ -6,7 +6,7 @@ vi.mock("@/features/backend-sync/canvas-api", async () => {
     return {canvasApi:skillTestApi};
 });
 import {resetSkillTestApi} from "./skill-registry-test-api";
-import { getSkillPackage, listSkills, registerSkill, restoreSkillSnapshot, setSkillScope, snapshotSkills } from "./skill-registry";
+import { getSkillPackage, listSkills, registerSkill, setSkillScope } from "./skill-registry";
 
 const makePackage = (version: string): SkillPackage => ({
     manifest: {
@@ -39,13 +39,11 @@ describe("P4 Skill registry global and project scope persistence", () => {
         const pkg = await getSkillPackage("storyboard");
         expect(pkg?.manifest.version).toBe("222222222222");
     });
-    it("restores scoped metadata from backup, and can switch back to global", async () => {
+    it("switches scoped metadata between project and global", async () => {
         await registerSkill(makePackage("111111111111"));
         await setSkillScope("storyboard", { type: "project", projectId: "project-a" });
-        const backup = await snapshotSkills();
         await setSkillScope("storyboard", { type: "global" });
         expect((await listSkills())[0].scope).toBeUndefined();
-        await expect(restoreSkillSnapshot(backup)).rejects.toThrow("本地 Skill");
         await setSkillScope("storyboard", { type: "project", projectId: "project-a" });
         expect((await listSkills())[0].scope).toEqual({ type: "project", projectId: "project-a" });
         await setSkillScope("storyboard", { type: "global" });

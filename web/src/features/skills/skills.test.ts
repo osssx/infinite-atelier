@@ -9,7 +9,7 @@ vi.mock("@/features/backend-sync/canvas-api", async () => {
 import {resetSkillTestApi} from "./skill-registry-test-api";
 import { importSkillFile } from "./skill-import";
 import { parseSkillMd, validateSkillPath } from "./skill-parser";
-import { activateSkillVersion, exportSkill, getSkillPackage, listSkills, readSkillResource, registerSkill, removeSkill, restoreSkillSnapshot, setSkillEnabled, snapshotSkills } from "./skill-registry";
+import { activateSkillVersion, exportSkill, getSkillPackage, listSkills, readSkillResource, registerSkill, removeSkill, setSkillEnabled } from "./skill-registry";
 
 const markdown = (description = "Create structured storyboards") => ["---", "name: storyboard-prompt", "description: " + description, "---", "# Steps", "Break a scene into shots.", ""].join("\n");
 const file = (content: BlobPart, name: string) => Object.assign(new Blob([content]), { name });
@@ -27,19 +27,17 @@ beforeEach(() => { resetSkillTestApi(); vi.stubGlobal("crypto", webcrypto); });
 afterEach(() => vi.unstubAllGlobals());
 
 describe("P1 Skill import, catalog and safe references", () => {
-    it("imports a single SKILL.md, retains versions and can restore a snapshot", async () => {
+    it("imports a single SKILL.md, retains versions and can switch activation", async () => {
         const first = await importSkillFile(file(markdown(), "SKILL.md"));
         const saved = await registerSkill(first);
         expect(saved.id).toBe("storyboard-prompt");
         expect(saved.versions).toHaveLength(1);
-        const snapshot = await snapshotSkills();
         await registerSkill(await importSkillFile(file(markdown("Another description"), "SKILL.md")));
         expect((await listSkills())[0].versions).toHaveLength(2);
         await activateSkillVersion(saved.id, saved.activeVersion);
         expect((await getSkillPackage(saved.id))?.manifest.description).toBe("Create structured storyboards");
         await setSkillEnabled(saved.id, false);
         expect((await listSkills())[0].enabled).toBe(false);
-        await expect(restoreSkillSnapshot(snapshot)).rejects.toThrow("本地 Skill");
         expect((await listSkills())[0].versions).toHaveLength(2);
         await activateSkillVersion(saved.id, saved.activeVersion);
         await removeSkill(saved.id);

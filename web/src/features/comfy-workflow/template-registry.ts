@@ -28,15 +28,3 @@ export async function saveComfyTemplateVersion(id:string,payload:ComfyTemplatePa
 export async function removeComfyTemplateVersion(id:string,revision:string){
  await canvasApi<{deleted:boolean}>(base+"/"+encodeURIComponent(id)+"/"+encodeURIComponent(revision),"DELETE");
 }
-/** Atomic batch install; cleanup affects only new versions and refuses deleting referenced versions. */
-export async function installComfyBackupVersions(templates:readonly ComfyWorkflowTemplate[]){
- for(const template of templates)await verifyComfyTemplate(template);
- const {results}=await canvasApi<{results:Array<{id:string;revision:string;status:"installed"|"existing"}>}>(
-  base+"/batch","POST",{templates});
- const added=results.filter(x=>x.status==="installed").reverse();
- return async()=>{
-  const errors:unknown[]=[];
-  for(const item of added)try{await removeComfyTemplateVersion(item.id,item.revision)}catch(e){errors.push(e)}
-  if(errors.length)throw new AggregateError(errors,"Template rollback incomplete");
- };
-}

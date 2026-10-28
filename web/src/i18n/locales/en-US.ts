@@ -929,7 +929,6 @@ export default {
             commands: 'npm run backup:data -- create "D:\\InfiniteAtelierData" "D:\\AtelierBackups\\backup-2026-10-28"\nnpm run backup:data -- verify "D:\\AtelierBackups\\backup-2026-10-28"',
             copyCommands: "Copy example commands",
             restoreNote: "To restore, stop the app, use backup:data restore into a new directory, then backup:data activate to explicitly select it. Update ATELIER_DATA_DIR in web/.env and restart. Existing databases are never overwritten in place. See web/server/backend/COLD_BACKUP.md.",
-            browserNote: "Legacy browser ZIP backups do not contain authoritative backend data and are no longer offered here. Export individual canvas project archives from the project list. Browser-only caches and any direct-connect keys not migrated to the backend are not included in backend cold backups.",
         },
         fileSecurity: "Configuration JSON exports omit known API keys and model scripts. Keep configuration files secure.",
         import: "Import settings",

@@ -314,7 +314,6 @@ export function ConfigBackupTab() {
             </div>
             <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-md bg-stone-100 p-3 font-mono text-[11px] leading-5 dark:bg-stone-900">{example}</pre>
             <p className="mt-3 text-xs leading-5 text-stone-500">{t("config.backup.restoreNote")}</p>
-            <p className="mt-2 text-xs leading-5 text-stone-500">{t("config.backup.browserNote")}</p>
         </section>
     );
 }

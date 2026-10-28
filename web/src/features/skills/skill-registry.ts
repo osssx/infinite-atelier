@@ -101,20 +101,3 @@ export async function exportSkill(id:string,version?:string):Promise<Blob>{
  return createZip([{name:"SKILL.md",data:pkg.skillMd},
   ...Object.entries(pkg.resources).map(([name,data])=>({name,data}))]);
 }
-export type SkillBackupSnapshot={catalog:SkillCatalogEntry[];packages:SkillPackage[]};
-/** Logical read-only inspection. The supported portable backup is backup:data. */
-export async function snapshotSkills():Promise<SkillBackupSnapshot>{
- const catalog=await listSkills(),packages:SkillPackage[]=[];
- for(const entry of catalog)for(const version of entry.versions){
-  const pkg=await getSkillPackage(entry.id,version);
-  if(!pkg)throw Error("Skill package unavailable during snapshot");
-  packages.push(pkg);
- }
- return {catalog,packages};
-}
-/** Full Skill rollback is performed only through SQLite cold-backup restore.
- * Never let a legacy browser ZIP overwrite the authoritative registry.
- */
-export async function restoreSkillSnapshot(_snapshot:SkillBackupSnapshot):Promise<never>{
- throw Error("本地 Skill 注册表不支持旧浏览器快照覆盖；请使用 backup:data 恢复完整数据库");
-}

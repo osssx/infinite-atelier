@@ -928,7 +928,6 @@ export default {
             commands: 'npm run backup:data -- create "D:\\InfiniteAtelierData" "D:\\AtelierBackups\\backup-2026-10-28"\nnpm run backup:data -- verify "D:\\AtelierBackups\\backup-2026-10-28"',
             copyCommands: "复制命令示例",
             restoreNote: "恢复需要停机，先用 backup:data restore 恢复到一个新目录，再用 backup:data activate 显式激活，修改 web/.env 中的 ATELIER_DATA_DIR 并重启。不会原地覆盖当前数据库。详细步骤见 web/server/backend/COLD_BACKUP.md。",
-            browserNote: "旧版浏览器 ZIP 不包含当前后端的完整数据，已从本页停用。仅备份单个画布可使用项目列表的“导出项目归档”。浏览器本地缓存及未迁入后端的直连密钥不属于后端冷备份；建议另行保存所需配置。",
         },
         fileSecurity: "配置 JSON 导出会剔除已知 API Key 和模型脚本；仍请妥善保管配置文件。",
         import: "导入配置",

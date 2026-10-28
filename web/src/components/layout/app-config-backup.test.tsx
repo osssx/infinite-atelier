@@ -30,6 +30,7 @@ describe("authoritative backend backup settings",()=>{
   expect(html).toContain("复制命令示例");
   expect(html).not.toContain("导出备份</button>");
   expect(html).not.toContain("恢复备份</button>");
+  expect(html).not.toContain("旧版浏览器 ZIP");
   expect(html).not.toContain('type="file"');
  });
  it("explains the manual stop / restore / activate flow accurately in both languages",()=>{
@@ -39,7 +40,6 @@ describe("authoritative backend backup settings",()=>{
    expect(copy.steps).toMatch(/停止|Stop/);
    expect(copy.restoreNote).toContain("backup:data restore");
    expect(copy.restoreNote).toContain("backup:data activate");
-   expect(copy.browserNote).toMatch(/旧版浏览器 ZIP|Legacy browser ZIP/);
    expect(copy.description).toMatch(/SQLite/);
   }
  });

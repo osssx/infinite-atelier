@@ -63,7 +63,7 @@
         "@vitejs/plugin-react": "^6.1.2",
         "lightningcss-win32-x64-msvc": "1.32.0",
         "prettier": "^3.8.3",
-        "typescript": "^5",
+        "typescript": "^7.0.2",
         "vite": "^8.3.5",
         "vitest": "^5.0.4"
     }

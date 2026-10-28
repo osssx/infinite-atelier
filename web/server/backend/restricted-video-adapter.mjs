@@ -6,6 +6,7 @@ import {createRestrictedVideoDownloader} from "./restricted-video-download.mjs";
 import {validateFrozenVideoMedia,materializeFrozenVideoMedia} from "./restricted-video-media.mjs";
 import {createScriptAssetUploadManager} from "./restricted-video-asset-upload.mjs";
 import {createRestrictedAssetMultipart} from "./restricted-video-multipart.mjs";
+import {createRestrictedSignedPut} from "./restricted-video-signed-put.mjs";
 
 const fail=(code,confirmedNotAccepted=false)=>Object.assign(Error(code),
  {code,statusCode:422,confirmedNotAccepted});
@@ -68,10 +69,11 @@ export function validateRestrictedVideoSnapshot(snapshot){
 export function createRestrictedVideoAdapter({db,vault,blobStore,
  upstreamCall=fetch,compatibleUpstreamCall=createPinnedOpenAiCompatCall({
   allowVideoPollGet:true,allowVideoCancel:true
- }),mediaDownloader}={}){
+ }),mediaDownloader,signedPut}={}){
  if(!db||!vault||!blobStore)throw Error("video_script_dependencies_required");
  const downloader=mediaDownloader??createRestrictedVideoDownloader({blobStore});
  const uploadedAssets=createScriptAssetUploadManager({db});
+ const putSignedAsset=signedPut??createRestrictedSignedPut();
  const check=job=>{
   const snapshot=job.snapshot??JSON.parse(job.snapshot_json);
   const {task,spec,references}=validateRestrictedVideoSnapshot(snapshot);
@@ -165,8 +167,23 @@ export function createRestrictedVideoAdapter({db,vault,blobStore,
    const dataUrl=ref.kind==="video"?media.referenceVideos[videoIndex++]:
     media.referenceAudios[audioIndex++];
    await uploadedAssets.ensureReady({job,index,ref,script:spec.assetUpload,
-    upload:()=>phase(job,"assetUpload",undefined,{kind:ref.kind,role:ref.role,
-     mimeType:ref.mimeType,sha256:ref.sha256,index,dataUrl})});
+    upload:async()=>{
+     const asset={kind:ref.kind,role:ref.role,
+      mimeType:ref.mimeType,sha256:ref.sha256,index,dataUrl};
+     const result=await phase(job,"assetUpload",undefined,asset);
+     if(result&&typeof result==="object"&&!Array.isArray(result)&&
+        Object.hasOwn(result,"uploadUrl")){
+      if(Object.keys(result).some(key=>!["id","uploadUrl"].includes(key))||
+         !validId(result.id)||typeof result.uploadUrl!=="string")
+       throw fail("video_script_signed_grant_invalid");
+      // URL remains in memory only: PUT never receives the Vault bearer
+      // token and no signed URL is persisted in SQLite or error messages.
+      await putSignedAsset({uploadUrl:result.uploadUrl,asset});
+      return {id:result.id};
+     }
+     return result;
+    }});
+
   }
  }
  async function submit({job}){

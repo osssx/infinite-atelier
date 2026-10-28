@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState, type ChangeEvent, type CSSProperties } from "react";
-import { Check, ChevronDown, ChevronRight, FileUp, Link2, Plus, Save, Search, Trash2, X } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, FileUp, Link2, Plus, RefreshCw, Save, Search, Trash2, X } from "lucide-react";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { theme as antdTheme } from "antd";
 import { useThemeStore } from "@/stores/use-theme-store";
+import { useConfigStore } from "@/stores/use-config-store";
+import {useComfyObjectInfo} from "./use-comfy-object-info";
 import type { CanvasNodeData, CanvasNodeMetadata, CanvasPortValueKind } from "@/types/canvas";
 import {
     appendComfyInputTarget, bindingTargetKey, enumerateComfyGraphItems, filterComfyGraphItems,
@@ -128,7 +130,8 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
     const [presets,setPresets] = useState<ComfyCatalogPreset[]>([]);
     const [draft,setDraft] = useState<ComfyTemplatePayload|null>(null);
     const [templateId,setTemplateId] = useState("");
-    const [objectInfo,setObjectInfo] = useState<ComfyObjectInfo>();
+    const comfyInstanceId=useConfigStore(s=>s.config.comfyInstanceId);
+    const {objectInfo,loading:infoLoading,error:infoError,refresh:refreshObjectInfo}=useComfyObjectInfo(comfyInstanceId);
     const [selectedNodeId,setSelectedNodeId] = useState("");
     const [selectedPortId,setSelectedPortId] = useState<string|null>(null);
     const [choiceDirty,setChoiceDirty] = useState(false);
@@ -267,15 +270,6 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
             }
         }catch(cause){setError(String(cause));}finally{setBusy(false);}
     };
-    const uploadInfo=async(e:ChangeEvent<HTMLInputElement>)=>{
-        const file=e.target.files?.[0];e.target.value="";if(!file)return;
-        try {
-            const parsed=await safeRead(file);
-            if(!parsed || typeof parsed!=="object" || Array.isArray(parsed)) throw new Error("/object_info JSON 格式无效");
-            setObjectInfo(parsed as ComfyObjectInfo);setStatus("已加载 /object_info，可以查看输出槽位和输入参数类型。");
-            setError("");
-        }catch(cause){setError(String(cause));}
-    };
     const applySaved=(template:ComfyWorkflowTemplate):boolean=>{
         const comfyPorts=template.ports.map(({id,label,direction,valueKind,required})=>({id,label,direction,valueKind,required}));
         if(!onChange({comfyPorts,comfyWorkflow:{
@@ -364,12 +358,24 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
                         {presets.filter(p=>!p.builtIn).map(p=><option key={p.id} value={"preset:"+p.id}>{p.name}</option>)}
                     </optgroup>:null}
                 </select>
-                <label className={buttonClass+" cursor-pointer"}>加载 /object_info
-                    <input type="file" accept=".json,application/json" className="sr-only" onChange={(e)=>void uploadInfo(e)}/>
-                </label>
+                <button type="button" className={buttonClass} data-comfy-object-info-sync
+                    disabled={!comfyInstanceId||infoLoading} onClick={()=>void refreshObjectInfo()}
+                    title={comfyInstanceId?"从已配置的 ComfyUI 实例刷新节点定义":"请先在 ComfyUI 设置中选择默认实例"}>
+                    <RefreshCw size={14} className={infoLoading?"animate-spin":undefined}/>
+                    {infoLoading?"同步中…":"同步节点定义"}
+                </button>
                 {draft?<span className="ml-auto text-[11px] text-[var(--comfy-muted)]">{items.length} 个节点 · {draft.ports.length} 个画布端口</span>:null}
             </div>
 
+            {!comfyInstanceId?<div className="mx-5 mt-2 shrink-0 text-[11px] text-[var(--comfy-muted)]" role="note">
+                未选择默认 ComfyUI 实例。可编辑工作流，配置实例后自动同步节点定义。
+            </div>:null}
+            {infoError?<div className="mx-5 mt-2 shrink-0 text-xs text-amber-600 dark:text-amber-400" role="alert">
+                节点定义同步失败：{infoError}。仍可编辑工作流；请检查实例连接后重试。
+            </div>:null}
+            {objectInfo&&!infoError?<div className="mx-5 mt-2 shrink-0 text-[11px] text-[var(--comfy-muted)]" role="status">
+                已获取 {comfyInstanceId} 的 {Object.keys(objectInfo).length} 种节点定义，可用于参数类型和输出槽位校验。
+            </div>:null}
             {error?<div role="alert" className="mx-5 mt-3 shrink-0 rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-600 dark:text-red-300">{error}</div>:null}
             {status?<div role="status" className="mx-5 mt-2 shrink-0 text-xs text-[var(--comfy-muted)]">{status}</div>:null}
 
@@ -422,7 +428,7 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
                                                 <Plus size={12}/><span className="font-mono">[{slot.index}]</span><span>{slot.valueKind}</span>
                                             </button>
                                         ):<p className="px-2 py-2 text-[10px] text-[var(--comfy-muted)]">
-                                            {objectInfo?"无输出槽位":"加载 /object_info 后查看输出槽位"}
+                                            {objectInfo?"无输出槽位":"同步节点定义后查看输出槽位"}
                                         </p>}
                                     </div>:null}
                                 </div>;
@@ -627,7 +633,7 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
                                         </div>
                                     </details>
                                 </> : <>
-                                    <p className="mb-3 text-[11px] text-[var(--comfy-muted)]">选择内部节点和输出槽位。加载 /object_info 可查看实际输出类型。</p>
+                                    <p className="mb-3 text-[11px] text-[var(--comfy-muted)]">选择内部节点和输出槽位。同步节点定义后可查看实际输出类型。</p>
                                     <div className="grid grid-cols-[minmax(0,1fr)_112px] gap-3">
                                         <label className={captionClass}>来源节点
                                             <select className={inputClass+" mt-1"} value={activePort.outputBinding?.nodeId||""}
@@ -690,7 +696,7 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
                     </div>
                 </details>
                 <div className="flex flex-wrap items-center justify-between gap-3">
-                    <span className="max-w-[440px] text-[11px] text-[var(--comfy-muted)]">{objectInfo?"已加载本地 /object_info":"尚未校验插槽类型；可加载 /object_info 进行准确匹配"}</span>
+                    <span className="max-w-[440px] text-[11px] text-[var(--comfy-muted)]">{objectInfo?"已同步当前 ComfyUI 实例的节点定义":"尚未校验插槽类型；同步节点定义后可准确匹配"}</span>
                     <button type="button" className="inline-flex min-h-9 items-center gap-2 rounded-lg px-4 py-2 text-xs font-semibold transition hover:opacity-85 disabled:cursor-wait disabled:opacity-75"
                         style={embedded?{backgroundColor:token.colorPrimary,color:token.colorTextLightSolid}:{backgroundColor:theme.node.activeStroke,color:theme.node.panel}}
                         disabled={busy} onClick={()=>void save()}><Save size={14}/>{comfyTemplateSaveButtonText(context,busy)}</button>

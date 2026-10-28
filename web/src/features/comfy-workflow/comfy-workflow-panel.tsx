@@ -36,13 +36,13 @@ type Props = {
 
 function newId() { return crypto.randomUUID().replaceAll("-", "").slice(0, 12); }
 async function safeRead(file:File) {
-    if (file.size > FILE_LIMIT) throw new Error("ComfyUI JSON file must not exceed 2 MB");
+    if (file.size > FILE_LIMIT) throw new Error("ComfyUI JSON 文件不能超过 2 MB");
     return JSON.parse(await file.text()) as unknown;
 }
 function inputPort(target?:ComfyNodeTarget, kind:CanvasPortValueKind="STRING", mode:ComfyInputBinding["mode"]="literal"):ComfyTemplatePort {
     const targets = target ? [target] : [];
     return {
-        id:newId(), label:target?.inputName || "Input", direction:"target",valueKind:kind,
+        id:newId(), label:target?.inputName || "输入端口", direction:"target",valueKind:kind,
         inputBinding:mode==="socket" ? {mode,replaceInternalLink:false,targets}
             : mode==="media-file" ? {mode,mediaKind:kind as "IMAGE"|"VIDEO"|"AUDIO",targets}
             : {mode,targets},
@@ -50,7 +50,7 @@ function inputPort(target?:ComfyNodeTarget, kind:CanvasPortValueKind="STRING", m
     };
 }
 function outputPort(nodeId:string, index=0, kind:CanvasPortValueKind="IMAGE"):ComfyTemplatePort {
-    return {id:newId(),label:"Output "+index,direction:"source",valueKind:kind,
+    return {id:newId(),label:"输出 "+index,direction:"source",valueKind:kind,
         outputBinding:{nodeId,outputIndex:index},capture:{kind:"none"}};
 }
 function displayValue(value:unknown):string {
@@ -58,7 +58,7 @@ function displayValue(value:unknown):string {
     if (typeof value==="string") return value.length>70 ? value.slice(0,67)+"…" : value;
     if (typeof value==="number" || typeof value==="boolean") return String(value);
     if (value==null) return "null";
-    return Array.isArray(value)?"Array": "Object";
+    return Array.isArray(value)?"数组": "对象";
 }
 
 /** Deliberately scoped to one selected port, so incomplete numeric typing
@@ -94,6 +94,11 @@ function ComfyChoiceEditor({port,onUpdate,onDirtyChange}:{
         </div>
         {error?<p role="alert" className="text-xs text-red-500">{error}</p>:null}
     </div>;
+}
+
+/** Shared copy for the node editor and global preset editor. */
+export function comfyTemplateSaveButtonText(context:"node"|"preset",busy:boolean):string {
+    return busy?"正在保存…":context==="preset"?"保存预设版本与绑定":"保存模板版本并绑定节点";
 }
 
 export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props) {
@@ -174,13 +179,13 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
         const target={nodeId,inputName};
         const claimed=usedComfyInputTarget(draft.ports,target);
         if(claimed && claimed!==selectedPortId) {
-            setSelectedPortId(claimed);setStatus("This parameter is already exposed. Selected its existing canvas port.");
+            setSelectedPortId(claimed);setStatus("该参数已配置画布端口，已选中现有端口。");
             return;
         }
         if (activePort?.direction==="target") {
             try {
                 edit((d)=>({...d,ports:appendComfyInputTarget(d.ports,activePort.id,target)}));
-                setError("");setStatus("Bound "+nodeId+"."+inputName+" to "+activePort.label);
+                setError("");setStatus("已将 "+nodeId+"."+inputName+" 绑定到端口「"+activePort.label+"」。");
             } catch(cause) {setError(String(cause));}
             return;
         }
@@ -193,7 +198,7 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
         const mode=inferComfyBindingMode(value);
         const port=inputPort(target,kind,mode);
         edit((d)=>({...d,ports:[...d.ports,port]}));
-        setSelectedPortId(port.id);setStatus("Created canvas port for "+nodeId+"."+inputName);
+        setSelectedPortId(port.id);setStatus("已为 "+nodeId+"."+inputName+" 创建画布端口。");
         setError("");
     };
     const exposeSocket=(nodeId:string,index:number,kind:string)=>{
@@ -206,12 +211,12 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
             edit((d)=>({...d,ports:[...d.ports,port]}));
             setSelectedPortId(port.id);
         }
-        setError("");setStatus("Selected Comfy output "+nodeId+"["+index+"]");
+        setError("");setStatus("已选择 ComfyUI 输出 "+nodeId+"["+index+"]。");
     };
     const setBindingMode=(port:ComfyTemplatePort,mode:ComfyInputBinding["mode"])=>{
         const targets=port.inputBinding?.targets || [];
         if (mode==="media-file" && !["IMAGE","VIDEO","AUDIO"].includes(port.valueKind)) {
-            setError("Choose IMAGE, VIDEO or AUDIO as the port type before selecting media-file.");
+            setError("请先将端口类型设为 IMAGE、VIDEO 或 AUDIO，再选择媒体文件绑定。");
             return;
         }
         const inputBinding:ComfyInputBinding=mode==="socket"?{mode,targets,replaceInternalLink:false}
@@ -238,9 +243,9 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
                 :templatePayloadFromGraph(file.name.replace(/\.json$/i,""),graph,objectInfo);
             setDraft(next);setTemplateId(krea2?KREA2_TURBO_TEMPLATE_ID:minimax?MINIMAX_H3_I2V_TEMPLATE_ID:"comfy-"+newId());setSelectedNodeId(krea2?"55":minimax?"105_104":Object.keys(next.apiGraph)[0]||"");
             setSelectedPortId(next.ports[0]?.id||null);setNodeSearch("");setError("");
-            setStatus(krea2?"Krea 2 Turbo INT8 bindings configured. Review ports then save the revision."
-                :minimax?"MiniMax H3 I2V 已配置图片、提示词和 VIDEO 输出绑定。当前画布执行仅支持 IMAGE 产物。"
-                :"Workflow loaded. Click a node parameter to expose it as an input port.");
+            setStatus(krea2?"已配置 Krea 2 Turbo INT8 端口绑定，请检查并保存模板版本。"
+                :minimax?"MiniMax H3 I2V 已配置图片、提示词与 VIDEO 输出绑定，请检查端口后保存模板。"
+                :"工作流已加载。点击左侧节点参数即可创建输入端口。");
         }catch(cause){setError(String(cause));}
     };
     const installBuiltinPreset=async(id:string)=>{
@@ -257,8 +262,8 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
                 setSelectedNodeId(id===KREA2_TURBO_TEMPLATE_ID?"55":"105_104");
                 setSelectedPortId(id===KREA2_TURBO_TEMPLATE_ID?"prompt":"first_frame");setNodeSearch("");
                 setStatus(id===MINIMAX_H3_I2V_TEMPLATE_ID
-                    ?"MiniMax H3 I2V 预设已载入（VIDEO 输出；当前画布执行链路暂不支持视频）。"
-                    :"Krea 2 Turbo INT8 preset saved and bound: 11 inputs + image output. Instance verification still required.");
+                    ?"MiniMax H3 I2V 预设已加载并绑定，支持 VIDEO 输出；请验证 ComfyUI 实例兼容性。"
+                    :"已载入并绑定 Krea 2 Turbo INT8 预设：11 个输入和 1 个图片输出，仍需验证 ComfyUI 实例兼容性。");
             }
         }catch(cause){setError(String(cause));}finally{setBusy(false);}
     };
@@ -266,8 +271,8 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
         const file=e.target.files?.[0];e.target.value="";if(!file)return;
         try {
             const parsed=await safeRead(file);
-            if(!parsed || typeof parsed!=="object" || Array.isArray(parsed)) throw new Error("Invalid /object_info JSON");
-            setObjectInfo(parsed as ComfyObjectInfo);setStatus("/object_info loaded. Output slots and input types are now available.");
+            if(!parsed || typeof parsed!=="object" || Array.isArray(parsed)) throw new Error("/object_info JSON 格式无效");
+            setObjectInfo(parsed as ComfyObjectInfo);setStatus("已加载 /object_info，可以查看输出槽位和输入参数类型。");
             setError("");
         }catch(cause){setError(String(cause));}
     };
@@ -277,7 +282,7 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
             templateId:template.id,templateRevision:template.revision,instanceId:undefined,
             bindingState:"needs-instance-binding",inputOverrides:node.metadata?.comfyWorkflow?.inputOverrides??{},
         }})) {
-            setError("Cannot apply revision: existing canvas connections reference removed or incompatible ports.");
+            setError("无法应用该模板版本：已有画布连线引用了被删除或类型不兼容的端口。");
             return false;
         }
         setDraft({name:template.name,apiGraph:template.apiGraph,ports:template.ports,requirements:template.requirements});
@@ -314,16 +319,16 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
         >
             {!embedded?<header className="flex shrink-0 items-start justify-between gap-4 border-b border-[var(--comfy-border)] px-5 py-4">
                 <div className="min-w-0">
-                    <div className="text-sm font-semibold">ComfyUI Workflow <span className="font-normal text-[var(--comfy-muted)]">/ Template bindings</span></div>
-                    <div className="mt-1 text-[11px] text-[var(--comfy-muted)]">Expose internal inputs and output sockets to canvas ports · Execution unavailable</div>
+                    <div className="text-sm font-semibold">ComfyUI 工作流 <span className="font-normal text-[var(--comfy-muted)]">/ 模板绑定</span></div>
+                    <div className="mt-1 text-[11px] text-[var(--comfy-muted)]">将工作流内部输入与输出映射为画布端口 · 此面板仅用于配置</div>
                 </div>
-                <button type="button" className={buttonClass+" !size-8 !shrink-0 !px-0"} onClick={onClose} aria-label="Close template editor"><X size={15}/></button>
+                <button type="button" className={buttonClass+" !size-8 !shrink-0 !px-0"} onClick={onClose} aria-label="关闭模板编辑器"><X size={15}/></button>
             </header>:null}
 
             <div className={embedded
                 ? "flex min-w-0 shrink-0 flex-wrap items-center gap-2 border-b border-[var(--comfy-border)] px-4 py-3 sm:px-5"
                 : "flex shrink-0 flex-wrap items-center gap-2 border-b border-[var(--comfy-border)] px-5 py-3"}>
-                <label className={buttonClass+" cursor-pointer"}><FileUp size={14}/> Import API JSON
+                <label className={buttonClass+" cursor-pointer"}><FileUp size={14}/> 导入 API JSON
                     <input type="file" accept=".json,application/json" className="sr-only" onChange={(e)=>void uploadGraph(e)}/>
                 </label>
                 <select aria-label="加载预设" data-comfy-preset-picker
@@ -359,10 +364,10 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
                         {presets.filter(p=>!p.builtIn).map(p=><option key={p.id} value={"preset:"+p.id}>{p.name}</option>)}
                     </optgroup>:null}
                 </select>
-                <label className={buttonClass+" cursor-pointer"}>Load /object_info
+                <label className={buttonClass+" cursor-pointer"}>加载 /object_info
                     <input type="file" accept=".json,application/json" className="sr-only" onChange={(e)=>void uploadInfo(e)}/>
                 </label>
-                {draft?<span className="ml-auto text-[11px] text-[var(--comfy-muted)]">{items.length} nodes · {draft.ports.length} canvas ports</span>:null}
+                {draft?<span className="ml-auto text-[11px] text-[var(--comfy-muted)]">{items.length} 个节点 · {draft.ports.length} 个画布端口</span>:null}
             </div>
 
             {error?<div role="alert" className="mx-5 mt-3 shrink-0 rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-600 dark:text-red-300">{error}</div>:null}
@@ -375,19 +380,19 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
                         : "flex min-h-[200px] w-full shrink-0 flex-col border-b border-[var(--comfy-border)] md:min-h-0 md:w-[290px] md:border-b-0 md:border-r"} data-comfy-node-list>
                         <div className="shrink-0 px-3 pb-2 pt-4">
                             <div className="flex items-center justify-between px-1">
-                                <span className={captionClass}>COMFYUI NODES</span>
+                                <span className={captionClass}>ComfyUI 节点</span>
                                 <span className="text-[11px] text-[var(--comfy-muted)]">{filteredItems.length}/{items.length}</span>
                             </div>
                             <div className="relative mt-2">
                                 <Search className="pointer-events-none absolute left-2.5 top-2.5 text-[var(--comfy-muted)]" size={14}/>
-                                <input aria-label="Search Comfy nodes" className={inputClass+" !pl-8"} placeholder="Search ID, class, parameter…" value={nodeSearch} onChange={(e)=>setNodeSearch(e.target.value)}/>
+                                <input aria-label="搜索 ComfyUI 节点" className={inputClass+" !pl-8"} placeholder="搜索节点 ID、类型或参数…" value={nodeSearch} onChange={(e)=>setNodeSearch(e.target.value)}/>
                             </div>
                         </div>
                         <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3" data-comfy-node-browser>
                             {filteredItems.map((item)=>{
                                 const active=selectedItem?.id===item.id;
                                 return <div key={item.id} className="mb-1">
-                                    <button type="button" aria-expanded={active} aria-label={"Select Comfy node "+item.id}
+                                    <button type="button" aria-expanded={active} aria-label={"选择 ComfyUI 节点 "+item.id}
                                         className={selectableClass+" flex items-center gap-2 "+(active?"bg-[var(--comfy-fill)] font-semibold":"")}
                                         onClick={()=>setSelectedNodeId(item.id)}>
                                         {active?<ChevronDown size={13}/>:<ChevronRight size={13}/>}
@@ -396,11 +401,11 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
                                     </button>
                                     {active?<div className="ml-5 border-l border-[var(--comfy-border)] pl-2">
                                         {item.title!==item.classType?<p className="px-2 pt-1 text-[10px] text-[var(--comfy-muted)]">{item.classType}</p>:null}
-                                        <p className="px-2 pt-2 text-[10px] font-medium text-[var(--comfy-muted)]">Inputs · click to bind</p>
+                                        <p className="px-2 pt-2 text-[10px] font-medium text-[var(--comfy-muted)]">输入参数 · 点击绑定</p>
                                         {item.fields.length?item.fields.map((field)=>{
                                             const target={nodeId:item.id,inputName:field.name};
                                             const owner=usedComfyInputTarget(draft.ports,target);
-                                            return <button key={field.name} type="button" title={"Expose "+item.id+"."+field.name}
+                                            return <button key={field.name} type="button" title={"绑定参数 "+item.id+"."+field.name}
                                                 className={selectableClass+" my-0.5 flex items-start gap-2"}
                                                 onClick={()=>exposeField(item.id,field.name)}>
                                                 <span className="mt-0.5 shrink-0 text-[var(--comfy-muted)]">{owner?<Check size={12}/>:<Plus size={12}/>}</span>
@@ -409,39 +414,39 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
                                                     <span className="block truncate text-[10px] text-[var(--comfy-muted)]">{field.declaredType||inferComfyInputKind(field.value)} · {displayValue(field.value)}</span>
                                                 </span>
                                             </button>;
-                                        }):<p className="px-2 py-2 text-[11px] text-[var(--comfy-muted)]">No exposed inputs</p>}
-                                        <p className="px-2 pt-2 text-[10px] font-medium text-[var(--comfy-muted)]">Output sockets</p>
+                                        }):<p className="px-2 py-2 text-[11px] text-[var(--comfy-muted)]">暂无可绑定的输入参数</p>}
+                                        <p className="px-2 pt-2 text-[10px] font-medium text-[var(--comfy-muted)]">输出槽位</p>
                                         {item.outputs.length?item.outputs.map((slot)=>
                                             <button type="button" key={slot.index} className={selectableClass+" my-0.5 flex items-center gap-2"}
                                                 onClick={()=>exposeSocket(item.id,slot.index,slot.valueKind)}>
                                                 <Plus size={12}/><span className="font-mono">[{slot.index}]</span><span>{slot.valueKind}</span>
                                             </button>
                                         ):<p className="px-2 py-2 text-[10px] text-[var(--comfy-muted)]">
-                                            {objectInfo?"No output sockets":"Load /object_info to list output sockets"}
+                                            {objectInfo?"无输出槽位":"加载 /object_info 后查看输出槽位"}
                                         </p>}
                                     </div>:null}
                                 </div>;
                             })}
-                            {!filteredItems.length?<p className="px-3 py-4 text-xs text-[var(--comfy-muted)]">No matching nodes</p>:null}
+                            {!filteredItems.length?<p className="px-3 py-4 text-xs text-[var(--comfy-muted)]">没有匹配的节点</p>:null}
                         </div>
                     </aside>
 
                     <main className="flex min-h-0 min-w-0 flex-1 flex-col" data-comfy-binding-editor>
                         <div className="shrink-0 border-b border-[var(--comfy-border)] px-4 pb-3 pt-4">
                             <div className="flex items-center justify-between gap-2">
-                                <span className={captionClass}>CANVAS PORTS</span>
+                                <span className={captionClass}>画布端口</span>
                                 <div className="flex gap-1.5">
-                                    <button className={buttonClass} type="button" onClick={()=>addPort("target")}><Plus size={12}/> Input</button>
-                                    <button className={buttonClass} type="button" onClick={()=>addPort("source")}><Plus size={12}/> Output</button>
+                                    <button className={buttonClass} type="button" onClick={()=>addPort("target")}><Plus size={12}/> 添加输入</button>
+                                    <button className={buttonClass} type="button" onClick={()=>addPort("source")}><Plus size={12}/> 添加输出</button>
                                 </div>
                             </div>
                             <div className="mt-3 flex flex-wrap gap-1.5">
                                 {draft.ports.map((p)=><button type="button" key={p.id} aria-pressed={p.id===selectedPortId} onClick={()=>{setSelectedPortId(p.id);setError("");}}
                                     className={"inline-flex max-w-[210px] items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs transition "+(p.id===selectedPortId?"border-[var(--comfy-accent)] bg-[var(--comfy-fill)] font-semibold":"border-[var(--comfy-border)] hover:bg-[var(--comfy-fill)]")}>
-                                    <span className="text-[10px] text-[var(--comfy-muted)]">{p.direction==="target"?"IN":"OUT"}</span>
+                                    <span className="text-[10px] text-[var(--comfy-muted)]">{p.direction==="target"?"输入":"输出"}</span>
                                     <span className="truncate">{p.label}</span>
                                 </button>)}
-                                {!draft.ports.length?<p className="text-xs text-[var(--comfy-muted)]">Select a Comfy parameter on the left, or add a port.</p>:null}
+                                {!draft.ports.length?<p className="text-xs text-[var(--comfy-muted)]">点击左侧参数创建端口，或手动添加端口。</p>:null}
                             </div>
                         </div>
 
@@ -449,12 +454,12 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
                             {activePort ? <>
                                 <div className="mb-4 flex items-start gap-2">
                                     <div className="min-w-0 flex-1">
-                                        <label className={captionClass} htmlFor="comfy-port-label">PORT LABEL</label>
+                                        <label className={captionClass} htmlFor="comfy-port-label">端口名称</label>
                                         <input id="comfy-port-label" className={inputClass+" mt-1"} value={activePort.label} onChange={(e)=>patchPort(activePort.id,{label:e.target.value})}/>
-                                        <span className="mt-1 block truncate font-mono text-[10px] text-[var(--comfy-faint)]">Port ID · {activePort.id}</span>
+                                        <span className="mt-1 block truncate font-mono text-[10px] text-[var(--comfy-faint)]">端口 ID · {activePort.id}</span>
                                     </div>
                                     <label className="w-[132px] shrink-0">
-                                        <span className={captionClass}>VALUE TYPE</span>
+                                        <span className={captionClass}>数据类型</span>
                                         <select className={inputClass+" mt-1"} value={activePort.valueKind} onChange={(e)=>{
                                             const valueKind=e.target.value as CanvasPortValueKind;
                                             const patch:Partial<ComfyTemplatePort>={valueKind};
@@ -478,7 +483,7 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
                                             }else patchPort(activePort.id,patch);
                                         }}>{KINDS.map((k)=><option key={k} value={k}>{k}</option>)}</select>
                                     </label>
-                                    <button type="button" aria-label="Delete selected port" className={buttonClass+" mt-5 !px-2.5"}
+                                    <button type="button" aria-label="删除当前端口" className={buttonClass+" mt-5 !px-2.5"}
                                         onClick={()=>{edit((d)=>({...d,ports:d.ports.filter((p)=>p.id!==activePort.id)}));setSelectedPortId(draft.ports.find((p)=>p.id!==activePort.id)?.id||null);}}>
                                         <Trash2 size={15}/>
                                     </button>
@@ -487,16 +492,16 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
                                 {activePort.direction==="target" ? <>
                                     <div className="flex flex-wrap items-end gap-3">
                                         <label className="min-w-[160px] flex-1">
-                                            <span className={captionClass}>BINDING MODE</span>
-                                            <select aria-label="Binding mode" className={inputClass+" mt-1"} value={activePort.inputBinding?.mode||"literal"}
+                                            <span className={captionClass}>绑定方式</span>
+                                            <select aria-label="绑定方式" className={inputClass+" mt-1"} value={activePort.inputBinding?.mode||"literal"}
                                                 onChange={(e)=>setBindingMode(activePort,e.target.value as ComfyInputBinding["mode"])}>
-                                                <option value="literal">Literal · scalar</option>
-                                                <option value="media-file">Media file · uploaded asset</option>
-                                                <option value="socket">Socket · internal link</option>
+                                                <option value="literal">常量值 · 标量</option>
+                                                <option value="media-file">媒体文件 · 上传素材</option>
+                                                <option value="socket">数据插槽 · 内部连线</option>
                                             </select>
                                         </label>
                                         <label className="inline-flex items-center gap-1.5 pb-2 text-xs">
-                                            <input type="checkbox" checked={!!activePort.required} onChange={(e)=>patchPort(activePort.id,{required:e.target.checked,...(e.target.checked&&activePort.absentPolicy?.mode==="auto-prune"?{absentPolicy:{mode:"keep-template"}}:{})})}/> Required
+                                            <input type="checkbox" checked={!!activePort.required} onChange={(e)=>patchPort(activePort.id,{required:e.target.checked,...(e.target.checked&&activePort.absentPolicy?.mode==="auto-prune"?{absentPolicy:{mode:"keep-template"}}:{})})}/> 必填
                                         </label>
                                     </div>
 
@@ -516,35 +521,35 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
                                             </span>
                                         </label>:null}
                                     <div className="mt-4">
-                                        <span className={captionClass}>COMFY INPUT TARGETS · {activePort.inputBinding?.targets.length||0}</span>
-                                        <p className="mt-1 text-[11px] text-[var(--comfy-muted)]">Click parameters in the left node browser to bind them. One canvas input can feed several Comfy fields.</p>
+                                        <span className={captionClass}>ComfyUI 输入映射 · {activePort.inputBinding?.targets.length||0}</span>
+                                        <p className="mt-1 text-[11px] text-[var(--comfy-muted)]">点击左侧节点参数进行绑定。一个画布输入可映射到多个 ComfyUI 参数。</p>
                                         <div className="mt-2 flex flex-col gap-1.5">
                                             {activePort.inputBinding?.targets.map((t)=>{
                                                 const info=items.find((item)=>item.id===t.nodeId);
                                                 return <div key={bindingTargetKey(t)} className="flex min-w-0 items-center gap-2 rounded-lg border border-[var(--comfy-border)] bg-[var(--comfy-fill)] px-3 py-2">
                                                     <Link2 size={13} className="shrink-0 text-[var(--comfy-muted)]"/>
                                                     <span className="min-w-0 flex-1 truncate text-xs"><span className="font-medium">{info?.title||t.nodeId}</span><span className="text-[var(--comfy-muted)]"> · {t.nodeId}.{t.inputName}</span></span>
-                                                    <button type="button" aria-label={"Remove target "+t.nodeId+"."+t.inputName}
+                                                    <button type="button" aria-label={"移除输入映射 "+t.nodeId+"."+t.inputName}
                                                         className="rounded p-1 hover:bg-[var(--comfy-panel)]"
                                                         onClick={()=>edit((d)=>({...d,ports:removeComfyInputTarget(d.ports,activePort.id,t)}))}><X size={13}/></button>
                                                 </div>;
                                             })}
-                                            {!activePort.inputBinding?.targets.length?<div className="rounded-lg border border-dashed border-[var(--comfy-border)] p-4 text-center text-xs text-[var(--comfy-muted)]">No targets selected. Choose a parameter from the node browser.</div>:null}
+                                            {!activePort.inputBinding?.targets.length?<div className="rounded-lg border border-dashed border-[var(--comfy-border)] p-4 text-center text-xs text-[var(--comfy-muted)]">尚未选择映射目标。请从左侧节点列表选择参数。</div>:null}
                                         </div>
-                                        <label className={captionClass+" mt-3 block"}>OR SELECT A COMFY INPUT</label>
-                                        <select aria-label="Choose Comfy input target" className={inputClass+" mt-1"} value=""
+                                        <label className={captionClass+" mt-3 block"}>或选择 ComfyUI 输入参数</label>
+                                        <select aria-label="选择 ComfyUI 输入目标" className={inputClass+" mt-1"} value=""
                                             onChange={(e)=>{if(!e.target.value)return;const t=parseBindingTargetKey(e.target.value);exposeField(t.nodeId,t.inputName);}}>
-                                            <option value="">Choose node / parameter…</option>
+                                            <option value="">选择节点 / 参数…</option>
                                             {items.map((item)=><optgroup key={item.id} label={item.id+" · "+item.title}>
                                                 {item.fields.map((f)=><option key={f.name} value={bindingTargetKey({nodeId:item.id,inputName:f.name})}>
-                                                    {f.name} · {f.declaredType||inferComfyInputKind(f.value)}{usedComfyInputTarget(draft.ports,{nodeId:item.id,inputName:f.name})?" (exposed)":""}
+                                                    {f.name} · {f.declaredType||inferComfyInputKind(f.value)}{usedComfyInputTarget(draft.ports,{nodeId:item.id,inputName:f.name})?"（已绑定）":""}
                                                 </option>)}
                                             </optgroup>)}
                                         </select>
                                     </div>
                                     {activePort.inputBinding?.mode==="socket"?<label className="mt-4 flex items-center gap-2 text-xs">
                                         <input type="checkbox" checked={activePort.inputBinding.replaceInternalLink} onChange={(e)=>patchPort(activePort.id,{inputBinding:{...activePort.inputBinding!,mode:"socket",replaceInternalLink:e.target.checked} as ComfyInputBinding})}/>
-                                        Replace an existing internal socket connection
+                                        覆盖已有的内部插槽连接
                                     </label>:null}
                                     {activePort.inputBinding?.mode==="literal" && ["STRING","INT","FLOAT"].includes(activePort.valueKind)
                                         ?<div className="mt-4 rounded-lg border border-[var(--comfy-border)] p-3">
@@ -581,9 +586,9 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
                                                 if(!e.target.checked){const {defaultValue:_removed,...rest}=p;return rest;}
                                                 const defaultValue=p.choices?.[0]?.value ?? (p.valueKind==="BOOLEAN"?false:p.valueKind==="INT"||p.valueKind==="FLOAT"?0:"");
                                                 return {...p,defaultValue};
-                                            })}))}/> Use a default value</label>
+                                            })}))}/> 使用默认值</label>
                                         {Object.prototype.hasOwnProperty.call(activePort,"defaultValue")?activePort.choices?.length?
-                                            <select className={inputClass+" mt-2"} aria-label="Default input value"
+                                            <select className={inputClass+" mt-2"} aria-label="默认输入值"
                                                 value={String(activePort.choices.findIndex(c=>Object.is(c.value,activePort.defaultValue)))}
                                                 onChange={e=>{
                                                     const selected=activePort.choices?.[Number(e.target.value)];
@@ -592,29 +597,29 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
                                                 {activePort.choices.map((c,index)=><option key={index} value={String(index)}>{c.label}</option>)}
                                             </select>
                                             :<input className={inputClass+" mt-2"}
-                                            aria-label="Default input value" value={String(activePort.defaultValue??"")}
+                                            aria-label="默认输入值" value={String(activePort.defaultValue??"")}
                                             onChange={(e)=>patchPort(activePort.id,{defaultValue:activePort.valueKind==="BOOLEAN"?e.target.value==="true"
                                                 :activePort.valueKind==="INT"||activePort.valueKind==="FLOAT"?Number(e.target.value):e.target.value})}/>:null}
                                     </div>:null}
                                     <details className="mt-4 rounded-lg border border-[var(--comfy-border)] p-3">
-                                        <summary className="cursor-pointer text-xs font-medium">Advanced · missing input behavior</summary>
+                                        <summary className="cursor-pointer text-xs font-medium">高级设置 · 缺失输入时的处理</summary>
                                         <div className="mt-3 grid gap-3">
-                                            <label className={captionClass}>When unconnected
+                                            <label className={captionClass}>未连接时的处理
                                                 <select className={inputClass+" mt-1"} value={activePort.absentPolicy?.mode||"keep-template"} onChange={(e)=>patchPort(activePort.id,{absentPolicy:e.target.value==="disconnect"?{mode:"disconnect",removeInputs:[],removeNodes:[]}:e.target.value==="auto-prune"?{mode:"auto-prune"}:{mode:"keep-template"},...(e.target.value==="auto-prune"?{required:false}:{})})}>
-                                                    <option value="keep-template">Keep workflow template value</option>
+                                                    <option value="keep-template">保留工作流模板原值</option>
                                                     {["IMAGE","VIDEO","AUDIO"].includes(activePort.valueKind) &&
                                                         ["socket","media-file"].includes(activePort.inputBinding?.mode??"")?
-                                                        <option value="auto-prune">Automatically prune when unconnected</option>:null}
-                                                    <option value="disconnect">Remove optional inputs/nodes (advanced)</option>
+                                                        <option value="auto-prune">未连接时自动裁剪</option>:null}
+                                                    <option value="disconnect">移除可选输入或节点（高级）</option>
                                                 </select>
                                             </label>
                                             {activePort.absentPolicy?.mode==="disconnect"?<>
-                                                <label className={captionClass}>Remove Comfy input fields (nodeId.field per line)
+                                                <label className={captionClass}>移除 ComfyUI 输入字段（每行填写 nodeId.field）
                                                     <textarea className={inputClass+" mt-1"} rows={2}
                                                         value={activePort.absentPolicy.removeInputs.map((t)=>t.nodeId+"."+t.inputName).join("\n")}
                                                         onChange={(e)=>{const removeInputs=e.target.value.split("\n").map((x)=>x.trim()).filter(Boolean).map((x)=>{const i=x.indexOf(".");return {nodeId:x.slice(0,i),inputName:x.slice(i+1)};});patchPort(activePort.id,{absentPolicy:{mode:"disconnect",removeInputs,removeNodes:activePort.absentPolicy?.mode==="disconnect"?activePort.absentPolicy.removeNodes:[]}});}}/>
                                                 </label>
-                                                <label className={captionClass}>Remove Comfy node IDs (comma-separated)
+                                                <label className={captionClass}>移除 ComfyUI 节点 ID（用逗号分隔）
                                                     <input className={inputClass+" mt-1"} value={activePort.absentPolicy.removeNodes.join(",")}
                                                         onChange={(e)=>patchPort(activePort.id,{absentPolicy:{mode:"disconnect",removeInputs:activePort.absentPolicy?.mode==="disconnect"?activePort.absentPolicy.removeInputs:[],removeNodes:e.target.value.split(",").map((x)=>x.trim()).filter(Boolean)}})}/>
                                                 </label>
@@ -622,9 +627,9 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
                                         </div>
                                     </details>
                                 </> : <>
-                                    <p className="mb-3 text-[11px] text-[var(--comfy-muted)]">Choose an internal node and socket. Load /object_info to list actual output types.</p>
+                                    <p className="mb-3 text-[11px] text-[var(--comfy-muted)]">选择内部节点和输出槽位。加载 /object_info 可查看实际输出类型。</p>
                                     <div className="grid grid-cols-[minmax(0,1fr)_112px] gap-3">
-                                        <label className={captionClass}>SOURCE NODE
+                                        <label className={captionClass}>来源节点
                                             <select className={inputClass+" mt-1"} value={activePort.outputBinding?.nodeId||""}
                                                 onChange={(e)=>{
                                                     patchPort(activePort.id,{outputBinding:{nodeId:e.target.value,outputIndex:0}});
@@ -633,7 +638,7 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
                                                 {items.map((item)=><option key={item.id} value={item.id}>{item.id} · {item.title}</option>)}
                                             </select>
                                         </label>
-                                        <label className={captionClass}>OUTPUT SLOT
+                                        <label className={captionClass}>输出槽位
                                             {objectInfo && items.find((item)=>item.id===activePort.outputBinding?.nodeId)?.outputs.length ?
                                                 <select className={inputClass+" mt-1"} value={activePort.outputBinding?.outputIndex??0}
                                                     onChange={(e)=>patchPort(activePort.id,{outputBinding:{nodeId:activePort.outputBinding?.nodeId||"",outputIndex:Number(e.target.value)}})}>
@@ -646,49 +651,49 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
                                         </label>
                                     </div>
                                     <div className="mt-4 grid grid-cols-2 gap-3">
-                                        <label className={captionClass}>CAPTURE
+                                        <label className={captionClass}>产物采集
                                             <select className={inputClass+" mt-1"} value={activePort.capture?.kind||"none"}
                                                 onChange={(e)=>{const kind=e.target.value as typeof CAPTURES[number];patchPort(activePort.id,{capture:kind==="none"?{kind}:{kind,adapterId:kind==="image"?"SaveImage":kind==="video"?"SaveVideo":kind==="audio"?"SaveAudio":"SaveText"}});}}>
-                                                {CAPTURES.map((c)=><option key={c} value={c}>{c}</option>)}
+                                                {CAPTURES.map((c)=><option key={c} value={c}>{({none:"不采集",image:"图片",video:"视频",audio:"音频",text:"文本"} as Record<string,string>)[c]}</option>)}
                                             </select>
                                         </label>
-                                        {activePort.capture?.kind!=="none"?<label className={captionClass}>ADAPTER CLASS
+                                        {activePort.capture?.kind!=="none"?<label className={captionClass}>适配器类名
                                             <input className={inputClass+" mt-1"} value={activePort.capture?.adapterId||""}
                                                 onChange={(e)=>patchPort(activePort.id,{capture:{kind:activePort.capture?.kind||"none",adapterId:e.target.value}})}/>
                                         </label>:null}
                                     </div>
                                 </>}
                             </>:<div className="flex h-full min-h-[200px] flex-col items-center justify-center gap-2 text-center text-xs text-[var(--comfy-muted)]">
-                                <Link2 size={22}/><p>Select a port above or click a Comfy node parameter on the left.</p>
+                                <Link2 size={22}/><p>在上方选择端口，或点击左侧 ComfyUI 节点参数。</p>
                             </div>}
                         </div>
                     </main>
                 </div>
             ) : <div className="flex min-h-44 flex-col items-center justify-center gap-2 px-5 py-8 text-center text-xs text-[var(--comfy-muted)]">
                 <FileUp size={26}/>
-                <p>Import a ComfyUI API Format JSON to inspect nodes and bind their parameters.</p>
-                <p>Or select a saved immutable template revision above.</p>
+                <p>导入 ComfyUI API 格式的 JSON 文件，即可查看节点并绑定参数。</p>
+                <p>也可以从上方选择已保存的工作流预设。</p>
             </div>}
 
             {draft?<div className={embedded
                 ? "max-h-[38%] shrink-0 overflow-y-auto border-t border-[var(--comfy-border)] bg-[var(--comfy-panel)] px-4 py-3 sm:px-5"
                 : "shrink-0 border-t border-[var(--comfy-border)] bg-[var(--comfy-panel)] px-5 py-3"} data-comfy-save-footer>
                 <details open={expandedAdvanced} onToggle={(e)=>setExpandedAdvanced((e.currentTarget as HTMLDetailsElement).open)} className="mb-3">
-                    <summary className="cursor-pointer text-[11px] font-medium text-[var(--comfy-muted)]">Template settings · Name, ID & model requirements</summary>
+                    <summary className="cursor-pointer text-[11px] font-medium text-[var(--comfy-muted)]">模板设置 · 名称、ID 与模型依赖</summary>
                     <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
-                        <label className={captionClass}>NAME<input className={inputClass+" mt-1"} value={draft.name} onChange={(e)=>edit((d)=>({...d,name:e.target.value}))}/></label>
-                        <label className={captionClass}>TEMPLATE ID<input className={inputClass+" mt-1"} value={templateId} onChange={(e)=>setTemplateId(e.target.value)}/></label>
-                        <label className={captionClass+" sm:col-span-2"}>REQUIRED MODELS
-                            <input className={inputClass+" mt-1"} placeholder="Optional, comma separated" value={(draft.requirements.modelAssets||[]).join(", ")}
+                        <label className={captionClass}>模板名称<input className={inputClass+" mt-1"} value={draft.name} onChange={(e)=>edit((d)=>({...d,name:e.target.value}))}/></label>
+                        <label className={captionClass}>模板 ID<input className={inputClass+" mt-1"} value={templateId} onChange={(e)=>setTemplateId(e.target.value)}/></label>
+                        <label className={captionClass+" sm:col-span-2"}>依赖的模型文件
+                            <input className={inputClass+" mt-1"} placeholder="可选，多个模型以英文逗号分隔" value={(draft.requirements.modelAssets||[]).join(", ")}
                                 onChange={(e)=>edit((d)=>({...d,requirements:{...d.requirements,modelAssets:e.target.value.split(",").map((x)=>x.trim()).filter(Boolean)}}))}/>
                         </label>
                     </div>
                 </details>
                 <div className="flex flex-wrap items-center justify-between gap-3">
-                    <span className="max-w-[440px] text-[11px] text-[var(--comfy-muted)]">{objectInfo?"Offline /object_info loaded":"Socket types unverified · load /object_info for accurate matching"}</span>
+                    <span className="max-w-[440px] text-[11px] text-[var(--comfy-muted)]">{objectInfo?"已加载本地 /object_info":"尚未校验插槽类型；可加载 /object_info 进行准确匹配"}</span>
                     <button type="button" className="inline-flex min-h-9 items-center gap-2 rounded-lg px-4 py-2 text-xs font-semibold transition hover:opacity-85 disabled:cursor-wait disabled:opacity-75"
                         style={embedded?{backgroundColor:token.colorPrimary,color:token.colorTextLightSolid}:{backgroundColor:theme.node.activeStroke,color:theme.node.panel}}
-                        disabled={busy} onClick={()=>void save()}><Save size={14}/>{busy?"Saving…":context==="preset"?"保存预设版本与绑定":"Save revision & bind node"}</button>
+                        disabled={busy} onClick={()=>void save()}><Save size={14}/>{comfyTemplateSaveButtonText(context,busy)}</button>
                 </div>
             </div>:null}
         </section>

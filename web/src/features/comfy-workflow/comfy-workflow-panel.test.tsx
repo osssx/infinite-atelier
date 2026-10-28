@@ -6,7 +6,7 @@ import type { CanvasNodeData } from "@/types/canvas";
 vi.mock("@/stores/use-theme-store",()=>({
     useThemeStore:(pick:(value:{theme:"light"})=>unknown)=>pick({theme:"light"}),
 }));
-import { ComfyWorkflowPanel } from "./comfy-workflow-panel";
+import { ComfyWorkflowPanel,comfyTemplateSaveButtonText } from "./comfy-workflow-panel";
 
 describe("Comfy workflow binding selector",()=>{
     it("renders an embedded settings editor without the canvas floating header or fixed width",()=>{
@@ -20,8 +20,8 @@ describe("Comfy workflow binding selector",()=>{
         const html=renderToStaticMarkup(createElement(ComfyWorkflowPanel,props));
         expect(html).toContain('data-comfy-editor-layout="settings"');
         expect(html).toContain("h-full min-h-0 min-w-0 w-full");
-        expect(html).not.toContain("Close template editor");
-        expect(html).not.toContain("ComfyUI Workflow <span");
+        expect(html).not.toContain('aria-label="关闭模板编辑器"');
+        expect(html).not.toContain("ComfyUI 工作流 <span");
         expect(html).not.toContain("shadow-2xl");
         expect(html).not.toContain("min(940px");
         expect(html).toContain('data-comfy-bindings-panel');
@@ -29,8 +29,16 @@ describe("Comfy workflow binding selector",()=>{
             ...props,context:"node",
         }));
         expect(canvasHtml).toContain('data-comfy-editor-layout="canvas"');
-        expect(canvasHtml).toContain("Close template editor");
-        expect(canvasHtml).toContain("ComfyUI Workflow");
+        expect(canvasHtml).toContain('aria-label="关闭模板编辑器"');
+        expect(canvasHtml).toContain("ComfyUI 工作流");
+        expect(canvasHtml).toContain("/ 模板绑定");
+        expect(canvasHtml).not.toContain("Template bindings");
+    });
+    it("uses Chinese for save, busy, and preset contexts without changing save behavior",()=>{
+        expect(comfyTemplateSaveButtonText("node",false)).toBe("保存模板版本并绑定节点");
+        expect(comfyTemplateSaveButtonText("preset",false)).toBe("保存预设版本与绑定");
+        expect(comfyTemplateSaveButtonText("node",true)).toBe("正在保存…");
+        expect(comfyTemplateSaveButtonText("preset",true)).toBe("正在保存…");
     });
     it("only presents the global preset selector; no saved-version history group",()=>{
         const node:CanvasNodeData={
@@ -50,8 +58,9 @@ describe("Comfy workflow binding selector",()=>{
         expect(html).toContain("加载预设");
         expect(html).toContain('value="builtin:krea2"');
         expect(html).toContain("Krea 2 Turbo INT8 · 文生图");
-        expect(html).toContain("Import API JSON");
-        expect(html).toContain("Load /object_info");
+        expect(html).toContain("导入 API JSON");
+        expect(html).toContain("加载 /object_info");
+        expect(html).not.toContain("Import API JSON");
         expect(html).not.toContain(">Krea 2 Turbo 预设</button>");
         expect(html).not.toContain("Saved template versions");
         expect(html).not.toContain("已保存的所有模板版本");

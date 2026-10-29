@@ -32,6 +32,7 @@ export function observeCanvasComfyExecution(projectId:string,nodeId:string,execu
  if(!execution.runId||activeProject!==projectId)return;
  const previous=executions.get(nodeId);
  if(previous && previous.runId!==execution.runId)return;
+ if(previous?.status==="cancelling"&&["queued","preparing","running"].includes(execution.status))return;
  setCanvasComfyExecution(projectId,nodeId,execution);
 }
 

@@ -12,7 +12,7 @@ import {submitJob} from "./repository.mjs";
 import {fingerprintSource} from "./repository.mjs";
 import {createJobCoordinator} from "./job-coordinator.mjs";
 import {createBlobStore} from "./blob-store.mjs";
-import {createComfyV2Adapters} from "./comfy-v2-adapter.mjs";
+import {createComfyV2Adapters,comfyUpstream} from "./comfy-v2-adapter.mjs";
 import {createLocalBackend} from "./runtime.mjs";
 import {createProject,getProject} from "./projects.mjs";
 import {createCanvasMaterializer} from "./canvas-materializer.mjs";
@@ -137,6 +137,79 @@ function mockTransport({errorAt,failDownloadOnce=false,workflowNodeId="wf-1"}={}
 }
 
 
+test("legacy Comfy queue DELETE accepts empty HTTP 200 response",async t=>{
+ const server=createServer((_req,res)=>{res.writeHead(200);res.end()});
+ await new Promise(resolve=>server.listen(0,"127.0.0.1",resolve));
+ t.after(()=>new Promise(resolve=>server.close(resolve)));
+ const port=server.address().port;
+ assert.deepEqual(await comfyUpstream({url:"http://127.0.0.1:"+port},"/queue",{
+  method:"POST",body:JSON.stringify({delete:["remote-test"]})
+ }),{});
+});
+test("Comfy scoped cancel stops only its frozen prompt id, never global interrupt",async t=>{
+ const calls=[];
+ const f=fixture(t,{transport:async(_instance,path,opts)=>{
+  calls.push([path,opts?.method??"GET"]);
+  if(path==="/api/jobs/remote-test/cancel")return {cancelled:true};
+  throw Error("unscoped upstream call: "+path);
+ }});
+ const id=f.queue("cancel-run");
+ f.db.prepare("UPDATE jobs SET status='running',upstream_task_id=? WHERE id=?")
+  .run("remote-test",id);
+ const result=await f.adapters["comfy-local"].cancel({
+  job:f.row(id),remoteTaskId:"remote-test"
+ });
+ assert.equal(result.cancelled,true);
+ assert.deepEqual(calls,[["/api/jobs/remote-test/cancel","POST"]]);
+ assert.equal(f.row(id).status,"running","adapter does not change coordinator state");
+ await assert.rejects(f.adapters["comfy-local"].cancel({
+  job:f.row(id),remoteTaskId:"other-job"
+ }),/comfy_cancel_target_mismatch/);
+ assert.equal(calls.length,1);
+});
+test("legacy Comfy removes only matching pending prompt, refuses global running interrupt",async t=>{
+ let mode="queued",pending=true,queries=0;
+ const calls=[];
+ const transport=async(_instance,path,opts)=>{
+  calls.push(path);
+  if(path==="/api/jobs/remote-test/cancel")
+   throw Object.assign(Error("not found"),{code:"comfy_upstream_404"});
+  if(path==="/queue"&&(!opts?.method||opts.method==="GET")){
+   queries++;
+   return {queue_running:mode==="running"?[[5,"remote-test"]]:[],
+    queue_pending:mode==="queued"&&pending?[[6,"remote-test"],[7,"someone-else"]]:[[7,"someone-else"]]};
+  }
+  if(path==="/queue"&&opts?.method==="POST"){
+   assert.deepEqual(JSON.parse(opts.body),{delete:["remote-test"]});
+   pending=false;return {};
+  }
+  throw Error("unexpected "+path);
+ };
+ const f=fixture(t,{transport});
+ const id=f.queue("cancel-legacy");
+ f.db.prepare("UPDATE jobs SET status='running',upstream_task_id='remote-test' WHERE id=?").run(id);
+ const args={job:f.row(id),remoteTaskId:"remote-test"};
+ assert.equal((await f.adapters["comfy-local"].cancel(args)).cancelled,true);
+ assert.equal(queries,2);
+ assert.equal(calls.some(p=>p==="/interrupt"),false);
+ pending=true;mode="running";
+ const refused=await f.adapters["comfy-local"].cancel(args);
+ assert.equal(refused.cancelled,false);
+ assert.equal(refused.reason,"comfy_scoped_running_cancel_unsupported");
+ assert.equal(calls.filter(p=>p==="/queue").length,4);
+ assert.equal(calls.some(p=>p==="/interrupt"),false);
+});
+test("ambiguous Comfy cancel response never claims remote stopped",async t=>{
+ const f=fixture(t,{transport:async(_instance,path)=>{
+  if(path==="/api/jobs/remote-test/cancel")return {cancelled:false};
+  throw Error("unexpected "+path);
+ }});
+ const id=f.queue("cancel-done");
+ f.db.prepare("UPDATE jobs SET status='running',upstream_task_id='remote-test' WHERE id=?").run(id);
+ assert.deepEqual(await f.adapters["comfy-local"].cancel({
+  job:f.row(id),remoteTaskId:"remote-test"
+ }),{cancelled:false,reason:"comfy_cancel_not_confirmed"});
+});
 test("P4.8 Comfy unknown response reconciles only matching history marker and exact frozen graph",async t=>{
  const base=mockTransport({errorAt:"lost_response"});
  let scenario="absent";

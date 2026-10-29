@@ -44,6 +44,8 @@ export async function comfyUpstream(instance,path,{method="GET",body,receive,tim
    if(total>8_000_000)throw fail("comfy_response_too_large",502);
    chunks.push(Buffer.from(chunk));
   }
+  // Legacy /queue deletion returns HTTP 200 with an empty body.
+  if(path==="/queue"&&method==="POST"&&total===0)return {};
   try{return JSON.parse(Buffer.concat(chunks).toString("utf8"))}
   catch{throw fail("comfy_invalid_json",502)}
  }finally{clearTimeout(timer)}
@@ -238,6 +240,42 @@ export function createComfyV2Adapter({instance,db,blobStore,upstreamCall=comfyUp
   if(successful(entry))return {kind:"completed"};
   return {kind:"pending"};
  }
+ /** Cancel only the Comfy prompt ID returned for this immutable job.
+  * Never call the unscoped /interrupt endpoint: older Comfy builds may
+  * ignore prompt_id and interrupt another user's currently running prompt.
+  */
+ async function cancel({job,remoteTaskId}){
+  snapshotOf(job,trusted.id);
+  if(!validRemoteId(remoteTaskId)||job.upstream_task_id!==remoteTaskId)
+   throw fail("comfy_cancel_target_mismatch",409);
+  try{
+   const result=await upstreamCall(trusted,"/api/jobs/"+encodeURIComponent(remoteTaskId)+"/cancel",
+    {method:"POST",timeoutMs:12000});
+   if(result?.cancelled===true)return {cancelled:true};
+   return {cancelled:false,reason:"comfy_cancel_not_confirmed"};
+  }catch(error){
+   // Only an absent endpoint permits a backward-compatible queue removal.
+   if(!["comfy_upstream_404","comfy_upstream_405"].includes(error?.code))
+    throw error;
+  }
+  const list=await upstreamCall(trusted,"/queue",{timeoutMs:12000});
+  const queued=Array.isArray(list?.queue_pending)?list.queue_pending:[];
+  const running=Array.isArray(list?.queue_running)?list.queue_running:[];
+  const contains=(entries)=>entries.some(row=>Array.isArray(row)&&row[1]===remoteTaskId);
+  if(contains(running))return {cancelled:false,reason:"comfy_scoped_running_cancel_unsupported"};
+  if(!contains(queued))return {cancelled:false,reason:"comfy_remote_task_not_queued"};
+  await upstreamCall(trusted,"/queue",{
+   method:"POST",body:JSON.stringify({delete:[remoteTaskId]}),timeoutMs:12000
+  });
+  // Check the actual queue: a queued prompt could have started while DELETE
+  // was in flight. Never claim confirmed cancellation in that race.
+  const after=await upstreamCall(trusted,"/queue",{timeoutMs:12000});
+  if(contains(Array.isArray(after?.queue_running)?after.queue_running:[]))
+   return {cancelled:false,reason:"comfy_cancel_raced_with_execution"};
+  if(contains(Array.isArray(after?.queue_pending)?after.queue_pending:[]))
+   return {cancelled:false,reason:"comfy_cancel_not_confirmed"};
+  return {cancelled:true};
+ }
  async function poll({job,remoteTaskId}){
   snapshotOf(job,trusted.id);
   if(!validRemoteId(remoteTaskId))throw fail("comfy_remote_task_invalid",400);
@@ -286,7 +324,7 @@ export function createComfyV2Adapter({instance,db,blobStore,upstreamCall=comfyUp
    }
   }
  }
- return {prepare,submit,poll,collect,reconcile,instance:trusted};
+ return {prepare,submit,poll,collect,cancel,reconcile,instance:trusted};
 }
 export function createComfyV2Adapters({instances,db,blobStore,upstreamCall}={}){
  if(!Array.isArray(instances)||instances.length>16)throw fail("invalid_comfy_instances",400);

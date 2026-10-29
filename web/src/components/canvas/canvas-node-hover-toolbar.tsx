@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import { App, Modal, Segmented, Tooltip } from "antd";
-import { Clapperboard, Download, Ellipsis, FolderPlus, Image as ImageIcon, Info, LoaderCircle, MessageSquare, Minus, Music2, Play, Plus, RefreshCw, Scissors, Settings2, Trash2, Upload, Video } from "lucide-react";
+import { Clapperboard, Download, Ellipsis, FolderPlus, Image as ImageIcon, Info, LoaderCircle, MessageSquare, Minus, Music2, Play, Plus, RefreshCw, Scissors, Settings2, Square, Trash2, Upload, Video } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { canvasThemes, type CanvasTheme } from "@/lib/canvas-theme";
@@ -10,7 +10,7 @@ import { useCopyText } from "@/hooks/use-copy-text";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { CanvasNodeType, type CanvasNodeData, type ViewportTransform } from "@/types/canvas";
 import { COMFY_WORKFLOW_MOCK_TYPE } from "@/lib/canvas/canvas-ports";
-import { isComfyRunActive } from "@/features/comfy-workflow/run-status";
+import { comfyGenerationButtonAction, isComfyRunActive } from "@/features/comfy-workflow/run-status";
 import {useCanvasComfyExecution} from "@/features/comfy-workflow/canvas-execution-visual";
 import { ImageToolSettingsModal, type ImageToolbarSettingsTool } from "./canvas-image-toolbar-settings-modal";
 import { IMAGE_QUICK_TOOLS_STORAGE_KEY, buildImageToolbarTools, defaultImageQuickToolIds, readImageQuickToolsConfig, type ImageQuickToolId } from "./canvas-image-toolbar-tools";
@@ -26,6 +26,7 @@ type CanvasNodeHoverToolbarProps = {
     onToggleDialog: (node: CanvasNodeData) => void;
     onGenerateImage: (node: CanvasNodeData) => void;
     onExecuteComfy: (node: CanvasNodeData) => void;
+    onCancelComfy: (node: CanvasNodeData) => void;
     comfyExecuteDisabled?: boolean;
     onUpload: (node: CanvasNodeData) => void;
     onDownload: (node: CanvasNodeData) => void;
@@ -67,6 +68,7 @@ export function CanvasNodeHoverToolbar({
     onToggleDialog,
     onGenerateImage,
     onExecuteComfy,
+    onCancelComfy,
     comfyExecuteDisabled = false,
     onUpload,
     onDownload,
@@ -129,6 +131,7 @@ export function CanvasNodeHoverToolbar({
     const isConfig = node.type === CanvasNodeType.Config;
     const isComfy = node.type === COMFY_WORKFLOW_MOCK_TYPE;
     const comfyRunning = isComfyRunActive(comfyExecution?.status);
+    const comfyAction = comfyGenerationButtonAction(comfyExecution?.status,Boolean(comfyExecution?.runId));
     const canRetry = node.metadata?.status === "error";
     const quickImageToolIdSet = new Set(quickImageToolIds);
     const copyImagePrompt = (target: CanvasNodeData) => {
@@ -150,10 +153,20 @@ export function CanvasNodeHoverToolbar({
 
     const baseToolbarTools: ToolbarTool[] = [
         { id: "info", title: t("canvas.nodeToolbar.infoTitle"), label: t("canvas.nodeToolbar.info"), icon: <Info className="size-4" />, onClick: () => onInfo(node) },
-        ...(isComfy ? [{ id:"executeComfy", title:comfyRunning?"工作流执行中":"执行 ComfyUI 工作流",
-            label:comfyRunning?"执行中":"执行", icon:comfyRunning?<LoaderCircle className="size-4 animate-spin"/>:<Play className="size-4"/>,
-            disabled:comfyRunning || comfyExecuteDisabled || !node.metadata?.comfyWorkflow?.templateId,
-            onClick:()=>onExecuteComfy(node) }] : []),
+        ...(isComfy ? [{
+            id:"executeComfy",
+            title:comfyAction==="stop"?"停止当前 ComfyUI 工作流":comfyAction==="busy"
+                ?comfyExecution?.status==="cancelling"?"正在停止工作流":"工作流执行中"
+                :"执行 ComfyUI 工作流",
+            label:comfyAction==="stop"?"停止":comfyAction==="busy"
+                ?comfyExecution?.status==="cancelling"?"停止中":"执行中":"执行",
+            icon:comfyAction==="stop"?<Square className="size-4"/>:
+                comfyRunning?<LoaderCircle className="size-4 animate-spin"/>:<Play className="size-4"/>,
+            danger:comfyAction==="stop",
+            disabled:comfyAction==="busy"||(comfyAction==="generate"&&
+                (comfyExecuteDisabled||!node.metadata?.comfyWorkflow?.templateId)),
+            onClick:()=>comfyAction==="stop"?onCancelComfy(node):onExecuteComfy(node),
+        }] : []),
         { id: "delete", title: t("canvas.nodeToolbar.removeTitle"), label: t("common.delete"), icon: <Trash2 className="size-4" />, onClick: () => onDelete(node), danger: true },
     ];
     const nodeToolbarTools: ToolbarTool[] = [

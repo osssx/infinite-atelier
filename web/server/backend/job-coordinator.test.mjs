@@ -116,6 +116,49 @@ const projectJob=(f,key,{executionMode="poll",kind="comfy",instanceId="local"}={
   .run(result,"{}","[]","digest","{}","node",Date.now());
  return result;
 };
+test("coordinator cancels one confirmed Comfy remote run; other prompts and CAS jobs remain unchanged",async t=>{
+ const f=fixture(t);
+ const first=projectJob(f,"stop-one",{kind:"comfy",instanceId:"local"});
+ const second=projectJob(f,"keep-running",{kind:"comfy",instanceId:"local"});
+ f.db.prepare("UPDATE jobs SET status='running',upstream_task_id=? WHERE id=?")
+  .run("remote-one",first);
+ f.db.prepare("UPDATE jobs SET status='running',upstream_task_id=? WHERE id=?")
+  .run("remote-two",second);
+ let scopedCalls=0;
+ const adapter={async cancel({job,remoteTaskId}){
+  scopedCalls++;
+  assert.equal(job.id,first);assert.equal(remoteTaskId,"remote-one");
+  return {cancelled:true};
+ }};
+ const c=createJobCoordinator({db:f.db,adapters:{comfy:{local:adapter}}});
+ c.recoverAtStartup();
+ const cancelled=await c.cancel(first);
+ assert.equal(cancelled.cancelled,true);
+ assert.equal(cancelled.remoteCancelled,true);
+ assert.equal(f.row(first).status,"cancelled");
+ assert.equal(f.row(second).status,"running");
+ assert.equal(f.row(first).upstream_task_id,"remote-one");
+ assert.equal(scopedCalls,1);
+ assert.equal((await c.cancel(first)).cancelled,false);
+ assert.equal(scopedCalls,1,"terminal job never requests remote cancellation twice");
+ assert.equal(readEventsAfter(f.db,0).filter(e=>e.job_id===first&&e.kind==="job_remote_cancel_confirmed").length,1);
+});
+test("Comfy cancellation uncertainty remains running and is retryable",async t=>{
+ const f=fixture(t);
+ const id=projectJob(f,"unconfirmed-cancel",{kind:"comfy",instanceId:"local"});
+ f.db.prepare("UPDATE jobs SET status='running',upstream_task_id='remote-unknown' WHERE id=?").run(id);
+ let calls=0;
+ const c=createJobCoordinator({db:f.db,adapters:{comfy:{local:{
+  async cancel(){calls++;return {cancelled:false,reason:"comfy_scoped_running_cancel_unsupported"}}
+ }}}});
+ c.recoverAtStartup();
+ const result=await c.cancel(id);
+ assert.equal(result.cancelled,false);
+ assert.equal(result.reason,"comfy_scoped_running_cancel_unsupported");
+ assert.equal(f.row(id).status,"running");
+ assert.equal(f.row(id).lease_owner,null);
+ assert.equal(calls,1);
+});
 test("P4.8 manual reconciliation requires attested Comfy evidence; never submits twice",async t=>{
  const f=fixture(t);
  const id=projectJob(f,"proof",{executionMode:"poll",kind:"comfy",instanceId:"local"});

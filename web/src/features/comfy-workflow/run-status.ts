@@ -1,14 +1,24 @@
 /** Rendering/polling predicates shared by the canvas and Comfy inspector. */
-const active=new Set(["submitting","queued","preparing","running","collecting","importing"]);
+const active=new Set(["submitting","queued","preparing","running","collecting","importing","cancelling"]);
 const terminal=new Set(["succeeded","failed","cancelled","submission_unknown","timed_out","import_failed","blocked_credential","unavailable"]);
 export function isComfyRunActive(status?:string):boolean {return Boolean(status&&active.has(status));}
 export function isComfyRunTerminal(status?:string):boolean {return Boolean(status&&terminal.has(status));}
+/** One execution button toggles into Stop only when the backend has a
+ * cancellable queued or running job ID. Preparing/submitting/collecting remain
+ * busy, and an in-flight cancel cannot be clicked twice.
+ */
+export function comfyGenerationButtonAction(status?:string,hasRunId=false):"generate"|"stop"|"busy"{
+    if((status==="queued"||status==="running")&&hasRunId)return "stop";
+    return isComfyRunActive(status)?"busy":"generate";
+}
+
 export function comfyRunStatusLabel(status?:string):string {
     switch(status){
         case "submitting":return "提交工作流…";
         case "queued":return "排队中…";
         case "preparing":return "准备输入…";
         case "running":return "生成中…";
+        case "cancelling":return "正在停止…";
         case "collecting":return "回收图片…";
         case "importing":return "导入画布…";
         case "blocked_credential":return "凭据不可用";

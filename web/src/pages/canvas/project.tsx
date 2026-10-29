@@ -109,7 +109,7 @@ import {watchSqliteComfyJob} from "@/features/backend-sync/sqlite-comfy-job-watc
 import {beginCanvasTextSubmission,trackCanvasTextJob,finishCanvasTextSubmission,
     updateCanvasTextJob,finishCanvasTextJob,setCanvasTextExecutionScope} from "@/features/backend-sync/canvas-text-execution-visual";
 import {setCanvasComfyExecutionScope,setCanvasComfyExecution,observeCanvasComfyExecution,
-    markCanvasComfyRunUnobservable} from "@/features/comfy-workflow/canvas-execution-visual";
+    getCanvasComfyExecution,markCanvasComfyRunUnobservable} from "@/features/comfy-workflow/canvas-execution-visual";
 import {refreshSqliteComfyArtifacts} from "@/features/backend-sync/sqlite-comfy-job-watch";
 import {CanvasJobHistory} from "@/features/backend-sync/canvas-job-history";
 import {canvasApi} from "@/features/backend-sync/canvas-api";
@@ -3919,6 +3919,39 @@ function AtelierCanvasPage() {
     },[backendComfyEnabled,globalComfyInstanceId,message,monitorSqliteJob,projectId,projectLoaded]);
 
 
+    const cancelComfyWorkflow=useCallback(async(nodeId:string):Promise<boolean>=>{
+        const execution=getCanvasComfyExecution(nodeId);
+        if(!execution?.runId||!["queued","preparing","running"].includes(execution.status)){
+            message.warning("当前工作流尚无可停止的后端任务");
+            return false;
+        }
+        const {runId}=execution;
+        setCanvasComfyExecution(projectId,nodeId,{runId,status:"cancelling"});
+        try{
+            const job=await canvasApi<{id:string;projectId:string|null;targetNodeId:string|null;status:string}>(
+                "/api/v1/jobs/"+encodeURIComponent(runId));
+            if(job.projectId!==projectId||job.targetNodeId!==nodeId||job.id!==runId)
+                throw Error("工作流任务与当前画布不匹配");
+            const result=await canvasApi<{cancelled:boolean;reason?:string}>(
+                "/api/v1/jobs/"+encodeURIComponent(runId)+"/cancel","POST",{});
+            if(result.cancelled){
+                setCanvasComfyExecution(projectId,nodeId,{runId,status:"cancelled"});
+                message.success("已向 ComfyUI 发出指定任务的停止请求");
+                return true;
+            }
+            const current=await canvasApi<{status:string}>("/api/v1/jobs/"+encodeURIComponent(runId));
+            setCanvasComfyExecution(projectId,nodeId,{runId,status:current.status});
+            message.warning("无法确认停止该工作流："+(result.reason??"任务可能已完成或正在执行"));
+            return false;
+        }catch(error){
+            const current=await canvasApi<{status:string}>("/api/v1/jobs/"+encodeURIComponent(runId))
+                .catch(()=>null);
+            setCanvasComfyExecution(projectId,nodeId,{runId,status:current?.status??"unavailable"});
+            message.error("停止工作流失败："+(error instanceof Error?error.message:String(error)));
+            return false;
+        }
+    },[message,projectId]);
+
     const renderNodePanel = useCallback(
         (panelNode: CanvasNodeData) =>
             panelNode.type === CanvasNodeType.Director ? null : panelNode.type === COMFY_WORKFLOW_MOCK_TYPE ? (
@@ -3927,6 +3960,7 @@ function AtelierCanvasPage() {
                         node={panelNode}
                         connections={connections}
                         onExecute={() => executeComfyWorkflow(panelNode.id)}
+                        onCancel={()=>cancelComfyWorkflow(panelNode.id)}
                         backendExecution={backendComfyEnabled}
                         projectId={projectId}
                         onExecutionChange={(execution)=>handleConfigNodeChange(panelNode.id,{comfyExecution:execution})}
@@ -3975,7 +4009,7 @@ function AtelierCanvasPage() {
                     }}
                 />
             ),
-        [backendComfyEnabled,confirmStopGeneration, connections, executeComfyWorkflow, globalComfyInstanceId, handleConfigNodeChange, handleGenerateNode, handleNodePromptChange, message, projectId, runningNodeId],
+        [backendComfyEnabled,cancelComfyWorkflow,confirmStopGeneration, connections, executeComfyWorkflow, globalComfyInstanceId, handleConfigNodeChange, handleGenerateNode, handleNodePromptChange, message, projectId, runningNodeId],
     );
 
     const handleDirectorExport = useCallback(
@@ -4186,6 +4220,7 @@ function AtelierCanvasPage() {
                     onToggleDialog={(node) => setDialogNodeId((current) => (current === node.id ? null : node.id))}
                     onGenerateImage={generateImageFromTextNode}
                     onExecuteComfy={(node) => void executeComfyWorkflow(node.id).catch((cause) => message.error("工作流执行失败："+(cause instanceof Error?cause.message:String(cause))))}
+                    onCancelComfy={(node) => void cancelComfyWorkflow(node.id)}
                     comfyExecuteDisabled={!projectLoaded || !globalComfyInstanceId || (toolbarNode?.id?comfyExecuteLocksRef.current.has(projectId+":"+toolbarNode.id):false)}
                     onUpload={(node) => handleUploadRequest(node.id)}
                     onDownload={downloadNodeImage}

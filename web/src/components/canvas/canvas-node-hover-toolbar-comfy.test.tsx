@@ -39,7 +39,7 @@ function render(node:CanvasNodeData,comfyExecuteDisabled=false,theme:"light"|"da
     const props:ComponentProps<typeof CanvasNodeHoverToolbar>={
         node,viewport:{x:0,y:0,k:1},onKeep:noop,onLeave:noop,onInfo:noop,
         onDecreaseFont:noop,onIncreaseFont:noop,onToggleDialog:noop,
-        onGenerateImage:noop,onExecuteComfy:noop,comfyExecuteDisabled,onUpload:noop,
+        onGenerateImage:noop,onExecuteComfy:noop,onCancelComfy:noop,comfyExecuteDisabled,onUpload:noop,
         onDownload:noop,onSaveAsset:noop,onMaskEdit:noop,onCrop:noop,onSplit:noop,
         onCaptureVideoFrame:noop,onTrimAudio:noop,onUpscale:noop,onSuperResolve:noop,
         onAngle:noop,onViewImage:noop,onReversePrompt:noop,onRetry:noop,
@@ -57,13 +57,30 @@ describe("ComfyUI workflow selected-node toolbar",()=>{
         expect(html.indexOf('aria-label="canvas.nodeToolbar.infoTitle"')).toBeLessThan(html.indexOf('aria-label="执行 ComfyUI 工作流"'));
         expect(html.indexOf('aria-label="执行 ComfyUI 工作流"')).toBeLessThan(html.indexOf('aria-label="canvas.nodeToolbar.removeTitle"'));
     });
-    it("spins and disables Execute while a job is submitting or running",()=>{
-        for(const status of ["submitting","queued","running","importing"]){
+    it("keeps Execute disabled while submission, preparation and capture are busy",()=>{
+        for(const status of ["submitting","preparing","collecting","importing"]){
             const html=render(workflow(status));
             expect(html).toContain('aria-label="工作流执行中"');
             expect(html).toMatch(/disabled=""[^>]*aria-label="工作流执行中"/);
             expect(html).toContain("animate-spin");
         }
+    });
+    it("changes the same Execute control to Stop, without another toolbar button",()=>{
+        for(const status of ["queued","running"]){
+            const html=render(workflow(status),true);
+            expect(html).toContain('aria-label="停止当前 ComfyUI 工作流"');
+            expect(html).toContain(">停止</span>");
+            expect(html).not.toContain('aria-label="执行 ComfyUI 工作流"');
+            expect(html).not.toMatch(/disabled=""[^>]*aria-label="停止当前 ComfyUI 工作流"/);
+            expect((html.match(/aria-label="停止当前 ComfyUI 工作流"/g)??[])).toHaveLength(1);
+        }
+        for(const status of ["submitting","preparing","collecting","succeeded","cancelled","submission_unknown"]){
+            expect(render(workflow(status))).not.toContain('aria-label="停止当前 ComfyUI 工作流"');
+        }
+        const cancelling=render(workflow("cancelling"));
+        expect(cancelling).toContain('aria-label="正在停止工作流"');
+        expect(cancelling).toMatch(/disabled=""[^>]*aria-label="正在停止工作流"/);
+        expect(cancelling).toContain("停止中");
     });
     it("disables Execute without a bound template or configured instance",()=>{
         expect(render(workflow(),true)).toMatch(/disabled=""[^>]*aria-label="执行 ComfyUI 工作流"/);
@@ -88,7 +105,7 @@ describe("ComfyUI workflow selected-node toolbar",()=>{
         expect(render(node)).not.toMatch(/disabled=""[^>]*aria-label="执行 ComfyUI 工作流"/);
         expect(render(node,true)).toMatch(/disabled=""[^>]*aria-label="执行 ComfyUI 工作流"/);
         node.metadata={...node.metadata,comfyExecution:{status:"running",runId:"job"}};
-        expect(render(node)).toMatch(/disabled=""[^>]*aria-label="工作流执行中"/);
+        expect(render(node)).toContain('aria-label="停止当前 ComfyUI 工作流"');
     });
     it.each([
         ["dark","rgba(31,29,26,.96)","#44403c","#d6d3d1","#292524","#3a3631","#f5f5f4"],

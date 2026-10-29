@@ -4,9 +4,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CanvasNodeData } from "@/types/canvas";
 
 vi.mock("antd", () => ({
-    Button: ({children, type, className, disabled, ...rest}:{
-        children:ReactNode;type?:string;className?:string;disabled?:boolean;
-    })=>createElement("button",{className:(className??"")+" "+(type??""),disabled,...rest},children),
+    Button: ({children, type, className, disabled, danger, ...rest}:{
+        children:ReactNode;type?:string;className?:string;disabled?:boolean;danger?:boolean;
+    })=>createElement("button",{className:(className??"")+" "+(type??""),disabled,"data-danger":danger?"true":undefined,...rest},children),
     Modal:({open,children}:{open:boolean;children:ReactNode})=>open?createElement("div",{role:"dialog"},children):null,
     Input:({value,...props}:{value:string;[key:string]:unknown})=>createElement("input",{...props,value}),
 }));
@@ -31,19 +31,34 @@ function footer(status?:string,error?:string) {
     const noop=()=>undefined;
     const props:ComponentProps<typeof ComfyWorkflowInstancePanel>={
         node:node(status,error),connections:[],projectId:"p",comfyInstanceId:"comfy-local",backendExecution:true,
-        onExecute:async()=>{throw Error("not expected");},onExecutionChange:noop,
+        onExecute:async()=>{throw Error("not expected");},onCancel:async()=>false,onExecutionChange:noop,
         onChange:noop,onTemplateChange:()=>true,onClose:noop,
     };
     const html=renderToStaticMarkup(createElement(ComfyWorkflowInstancePanel,props));
     return html.split("data-comfy-run-footer")[1]?.split("</footer>")[0]??"";
 }
 describe("save current ComfyUI workflow as new preset button",()=>{
+    it("switches the existing generation button to Stop, with no duplicate control",()=>{
+        for(const status of ["running","queued"]){
+            const html=footer(status);
+            expect(html).toContain('aria-label="停止工作流生成"');
+            expect(html).toContain("停止生成");
+            expect(html).toContain("lucide-square");
+            expect(html).not.toContain('aria-label="开始生成"');
+            expect(html.split("<button").length-1).toBe(1);
+        }
+        const stopping=footer("cancelling");
+        expect(stopping).toContain("正在停止…");
+        expect(stopping).toMatch(/disabled=""[^>]*aria-label="开始生成"/);
+        expect(stopping.split("<button").length-1).toBe(1);
+        expect(footer("succeeded")).not.toContain('aria-label="停止工作流生成"');
+    });
     it("renders next to template binding and is disabled before a workflow is loaded",()=>{
         const noop=()=>undefined;
         const withoutTemplate:CanvasNodeData={...node(),metadata:{}};
         const html=renderToStaticMarkup(createElement(ComfyWorkflowInstancePanel,{
             node:withoutTemplate,connections:[],projectId:"p",comfyInstanceId:"comfy-local",
-            backendExecution:true,onExecute:async()=>{throw Error("not expected")},
+            backendExecution:true,onExecute:async()=>{throw Error("not expected")},onCancel:async()=>false,
             onExecutionChange:noop,onChange:noop,onTemplateChange:()=>true,onClose:noop
         }));
         expect(html).toMatch(/模板绑定<\/button>.*保存为新预设<\/button>/);
@@ -54,7 +69,7 @@ describe("save current ComfyUI workflow as new preset button",()=>{
         const noop=()=>undefined;
         const html=renderToStaticMarkup(createElement(ComfyWorkflowInstancePanel,{
             node:node(),connections:[],projectId:"p",comfyInstanceId:"comfy-local",
-            backendExecution:true,onExecute:async()=>{throw Error("not expected")},
+            backendExecution:true,onExecute:async()=>{throw Error("not expected")},onCancel:async()=>false,
             onExecutionChange:noop,onChange:noop,onTemplateChange:()=>true,onClose:noop
         }));
         expect(html).toMatch(/disabled=""[^>]*aria-label="保存为新预设"/);
@@ -110,12 +125,12 @@ describe("compact ComfyUI inspector execution footer",()=>{
         expect(html).not.toContain("首版仅支持");
         expect(html).not.toContain("参数自动保存");
     });
-    it("shows a succinct running indicator with the primary button disabled",()=>{
+    it("shows running status and lets the primary button stop the job",()=>{
         const html=footer("running");
         expect(html).toContain("生成中");
-        expect(html).toContain("animate-spin");
-        expect(html).toContain("生成中…");
-        expect(html).toMatch(/disabled=""[^>]*aria-label="开始生成"/);
+        expect(html).toContain('aria-label="停止工作流生成"');
+        expect(html).toContain("停止生成");
+        expect(html).not.toMatch(/disabled=""[^>]*aria-label="停止工作流生成"/);
     });
     it("blocks uncertain submissions without legacy browser payload recovery",()=>{
         const html=footer("submission_unknown");

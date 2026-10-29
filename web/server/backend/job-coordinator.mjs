@@ -372,9 +372,9 @@ export function createJobCoordinator({
    return {verified:true,status:next};
   });
  }
- /** Cancel a queued local job atomically or confirm Ark remote cancellation.
-  * A temporary lease prevents dispatch while we check remote queued status.
-  * Never mark a running video cancelled unless upstream DELETE confirms it.
+ /** Cancel queued local jobs or remotely identified model/Comfy jobs.
+  * A temporary lease serializes the decision with polling and collection.
+  * A remote unknown or ambiguous response never becomes "cancelled".
   */
  async function cancel(jobId){
   const lease=randomUUID();
@@ -389,9 +389,11 @@ export function createJobCoordinator({
    if(row.status!=="running"||row.lease_owner||!row.upstream_task_id)
     return {state:"not_cancellable",reason:"job_not_queued"};
    const snapshot=JSON.parse(row.snapshot_json);
-   if(snapshot.provider!=="volcengine_ark"||snapshot.task?.kind!=="video")
-    return {state:"not_cancellable",reason:"remote_cancel_not_supported"};
-   const instance=adapterFor(route(row));
+   const lane=route(row);
+   const allowed=lane.kind==="comfy"&&row.execution_mode==="poll"||
+    lane.kind==="model"&&snapshot.provider==="volcengine_ark"&&snapshot.task?.kind==="video";
+   if(!allowed)return {state:"not_cancellable",reason:"remote_cancel_not_supported"};
+   const instance=adapterFor(lane);
    if(typeof instance?.cancel!=="function")
     return {state:"not_cancellable",reason:"remote_cancel_not_available"};
    const updated=db.prepare("UPDATE jobs SET lease_owner=?,lease_acquired_at=?,lease_expires_at=? WHERE id=? AND lease_owner IS NULL AND status='running'")
@@ -415,6 +417,7 @@ export function createJobCoordinator({
     if(confirmed){
      transition(db,current,"cancelled");
      db.prepare("DELETE FROM job_schedules WHERE job_id=?").run(jobId);
+     event(db,jobId,"job_remote_cancel_confirmed",{remoteTaskId:current.upstream_task_id});
     }
     return {cancelled:confirmed,remoteCancelled:confirmed,reason:confirmed?undefined:reason};
    });

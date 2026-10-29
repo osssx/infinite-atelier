@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { comfyRunStatusLabel, isComfyRunActive, isComfyRunTerminal } from "./run-status";
+import { comfyRunStatusLabel, comfyGenerationButtonAction, isComfyRunActive, isComfyRunTerminal } from "./run-status";
 
 describe("durable ComfyUI workflow spinner statuses",()=>{
     it("spins from first click through GPU execution, capture and canvas import",()=>{
@@ -7,6 +7,19 @@ describe("durable ComfyUI workflow spinner statuses",()=>{
             expect(isComfyRunActive(status)).toBe(true);
             expect(isComfyRunTerminal(status)).toBe(false);
             expect(comfyRunStatusLabel(status)).not.toMatch(/完成|失败/);
+        }
+    });
+    it("selects generate, stop or disabled busy for a single action button",()=>{
+        expect(comfyGenerationButtonAction()).toBe("generate");
+        for(const status of ["queued","running"]){
+            expect(comfyGenerationButtonAction(status,true)).toBe("stop");
+            expect(comfyGenerationButtonAction(status,false)).toBe("busy");
+        }
+        for(const status of ["submitting","preparing","collecting","cancelling"]){
+            expect(comfyGenerationButtonAction(status,true)).toBe("busy");
+        }
+        for(const status of ["succeeded","failed","cancelled","submission_unknown"]){
+            expect(comfyGenerationButtonAction(status,true)).toBe("generate");
         }
     });
     it("stops on completion, failure, cancellation and unknown submission without claiming success",()=>{

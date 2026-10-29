@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type CSSProperties, type KeyboardEvent } from "react";
-import { Check, Dices, LoaderCircle, Link2, Play, RotateCcw, Save, Settings2, X } from "lucide-react";
+import { Check, Dices, LoaderCircle, Link2, Play, RotateCcw, Save, Settings2, Square, X } from "lucide-react";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { Button, Input, Modal } from "antd";
@@ -14,7 +14,8 @@ import type { ComfyWorkflowTemplate } from "./template-schema";
 import {missingComfyMediaInputs,type ComfyRunState} from "./run-types";
 import type {BackendJobView} from "@/types/backend-contracts";
 import {canvasApi} from "@/features/backend-sync/canvas-api";
-import { comfyRunStatusLabel, isComfyRunActive } from "./run-status";
+import { comfyRunStatusLabel, comfyGenerationButtonAction, isComfyRunActive } from "./run-status";
+import {useCanvasComfyExecution} from "./canvas-execution-visual";
 import { ComfyWorkflowPanel } from "./comfy-workflow-panel";
 import {saveComfyInstanceAsNewPreset} from "./save-instance-as-preset";
 
@@ -23,6 +24,7 @@ type Props = {
     connections: readonly CanvasConnection[];
     projectId: string;
     onExecute: () => Promise<ComfyRunState>;
+    onCancel: () => Promise<boolean>;
     backendExecution?: boolean;
     /** Chosen in the global ComfyUI settings tab, shared by all workflow nodes. */
     comfyInstanceId?: string;
@@ -128,7 +130,7 @@ export function ComfyScalarInput({field,onSet,onClear}:{
 }
 
 /** The regular workflow node inspector; template editing is an explicit secondary action. */
-export function ComfyWorkflowInstancePanel({node,connections,projectId,comfyInstanceId,onExecute,onExecutionChange,onChange,onTemplateChange,onClose,backendExecution=false}:Props) {
+export function ComfyWorkflowInstancePanel({node,connections,projectId,comfyInstanceId,onExecute,onCancel,onExecutionChange,onChange,onTemplateChange,onClose,backendExecution=false}:Props) {
     const themeName=useThemeStore((state)=>state.theme);
     const theme=canvasThemes[themeName];
     const colors={
@@ -141,6 +143,7 @@ export function ComfyWorkflowInstancePanel({node,connections,projectId,comfyInst
     } as CSSProperties;
     const binding=node.metadata?.comfyWorkflow;
     const liveExecution=node.metadata?.comfyExecution;
+    const observedExecution=useCanvasComfyExecution(node.id);
     const [template,setTemplate]=useState<ComfyWorkflowTemplate|null>(null);
     const [loading,setLoading]=useState(false);
     const [error,setError]=useState("");
@@ -230,7 +233,8 @@ export function ComfyWorkflowInstancePanel({node,connections,projectId,comfyInst
     // Do not show details belonging to an older run after a newer submission has begun.
     // Canvas-level progress also updates when a run was triggered from the selected-node toolbar.
     const currentRun=run;
-    const status=currentRun?.status||liveExecution?.status;
+    const status=observedExecution?.runId===currentRun?.runId||!currentRun?.runId?
+        observedExecution?.status??currentRun?.status??liveExecution?.status:currentRun.status;
     const active=isComfyRunActive(status)||runBusy;
     const artifactSummary=currentRun?.status==="succeeded" ?
         Object.entries(currentRun.artifacts.reduce<Record<string,number>>((acc,item)=>{
@@ -239,8 +243,11 @@ export function ComfyWorkflowInstancePanel({node,connections,projectId,comfyInst
     const statusLabel=status==="submission_unknown"?"提交待确认":status==="succeeded"
         ? `已完成${artifactSummary?` · ${artifactSummary}`:""}`
         :status?comfyRunStatusLabel(status):"待执行";
-    const statusError=runError||liveExecution?.error||(currentRun?.error??"");
-    const disabled=!backendExecution||!template||!comfyInstanceId||!outputs[0]||!projectId||active||status==="submission_unknown"||missingMedia.length>0||missingChoiceSelections.length>0;
+    const statusError=runError||observedExecution?.error||liveExecution?.error||(currentRun?.error??"");
+    const action=comfyGenerationButtonAction(status,Boolean(observedExecution?.runId||currentRun?.runId||liveExecution?.runId));
+    const disabled=action==="busy"||(action==="generate"&&
+        (!backendExecution||!template||!comfyInstanceId||!outputs[0]||!projectId||active||
+        status==="submission_unknown"||missingMedia.length>0||missingChoiceSelections.length>0));
     if(editingTemplate) return <ComfyWorkflowPanel node={node} onChange={(patch)=>{
         const applied=onTemplateChange(patch);
         if(applied)setEditingTemplate(false);
@@ -295,10 +302,14 @@ export function ComfyWorkflowInstancePanel({node,connections,projectId,comfyInst
                     <span className="truncate">{statusLabel}</span>
                 </div>
             </div>
-            <Button type="primary" className="sticky bottom-0 mt-auto !h-9 !w-full !shrink-0 !cursor-pointer !rounded-lg"
-                disabled={disabled} onClick={()=>void execute()} aria-label="开始生成">
+            <Button type="primary" danger={action==="stop"||status==="cancelling"}
+                className="sticky bottom-0 mt-auto !h-9 !w-full !shrink-0 !cursor-pointer !rounded-lg"
+                disabled={disabled} onClick={()=>void (action==="stop"?onCancel():execute())}
+                aria-label={action==="stop"?"停止工作流生成":"开始生成"}>
                 <span className="inline-flex items-center gap-1.5">
-                    {active?<><LoaderCircle className="size-4 animate-spin" aria-hidden="true"/><span>生成中…</span></>
+                    {action==="stop"?<><Square className="size-4" aria-hidden="true"/><span>停止生成</span></>
+                        :active?<><LoaderCircle className="size-4 animate-spin" aria-hidden="true"/>
+                            <span>{status==="cancelling"?"正在停止…":"生成中…"}</span></>
                         :<><Play className="size-4" aria-hidden="true"/><span>开始生成</span></>}
                 </span>
             </Button>

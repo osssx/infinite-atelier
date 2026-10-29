@@ -40,6 +40,8 @@ import { CanvasGraphIndexProvider } from "@/components/canvas/canvas-graph-conte
 import { CanvasPerfBridge } from "@/components/canvas/canvas-perf-bridge";
 import { pipelineSink } from "@/lib/canvas/canvas-perf-bridge-state";
 import { CanvasNodeContextMenu } from "@/components/canvas/canvas-context-menu";
+import { captureCanvasTextEditContext, insertCanvasClipboardText, isNativeTextEditorTarget } from "@/lib/canvas/canvas-text-context-menu";
+import { isNativeDescendantEvent } from "@/lib/canvas/canvas-portal-events";
 import { CanvasNodeAngleDialog, type CanvasImageAngleParams } from "@/components/canvas/canvas-node-angle-dialog";
 import { CanvasNodeCropDialog, type CanvasImageCropRect } from "@/components/canvas/canvas-node-crop-dialog";
 import { CanvasNodeMaskEditDialog, type CanvasImageMaskEditPayload } from "@/components/canvas/canvas-node-mask-edit-dialog";
@@ -2544,6 +2546,18 @@ function AtelierCanvasPage() {
     }, [projectId, renameProject, titleDraft]);
 
     const preventCanvasContextMenu = useCallback((event: ReactMouseEvent) => {
+        if (!isNativeDescendantEvent(event.currentTarget,event.target)) return;
+        const input = captureCanvasTextEditContext(event.target);
+        if (input) {
+            event.preventDefault();
+            event.stopPropagation();
+            setContextMenu({type:"text",x:event.clientX,y:event.clientY,editor:input});
+            return;
+        }
+        if (isNativeTextEditorTarget(event.target)) {
+            setContextMenu(null);
+            return;
+        }
         if ((event.target as HTMLElement).closest("[data-node-id]")) return;
         event.preventDefault();
         setContextMenu(null);
@@ -3690,6 +3704,19 @@ function AtelierCanvasPage() {
     }, []);
     const handleNodeRetry = useCallback((node: CanvasNodeData) => void handleRetryNode(node), [handleRetryNode]);
     const handleNodeContextMenu = useCallback((event: ReactMouseEvent, nodeId: string) => {
+        const textEditor = captureCanvasTextEditContext(event.target);
+        if (textEditor) {
+            event.preventDefault();
+            event.stopPropagation();
+            setContextMenu({type:"text",x:event.clientX,y:event.clientY,editor:textEditor});
+            return;
+        }
+        if (isNativeTextEditorTarget(event.target)) {
+            // Rich text, password and unsupported input kinds keep their native menu.
+            event.stopPropagation();
+            setContextMenu(null);
+            return;
+        }
         event.preventDefault();
         event.stopPropagation();
         setContextMenu({ type: "node", x: event.clientX, y: event.clientY, nodeId });
@@ -4178,6 +4205,34 @@ function AtelierCanvasPage() {
                     <CanvasNodeContextMenu
                         menu={contextMenu}
                         onClose={() => setContextMenu(null)}
+                        onCopyText={() => {
+                            if (contextMenu.type !== "text") return;
+                            const {copyValue} = contextMenu.editor;
+                            if (!copyValue) return;
+                            void (async () => {
+                                try {
+                                    if (!navigator.clipboard?.writeText) throw Error("clipboard_unavailable");
+                                    await navigator.clipboard.writeText(copyValue);
+                                    setContextMenu(null);
+                                } catch {
+                                    message.error(t("canvas.controls.clipboardFailed"));
+                                }
+                            })();
+                        }}
+                        onPasteText={() => {
+                            if (contextMenu.type !== "text") return;
+                            const editor = contextMenu.editor;
+                            void (async () => {
+                                try {
+                                    if (!navigator.clipboard?.readText) throw Error("clipboard_unavailable");
+                                    const content = await navigator.clipboard.readText();
+                                    if (!insertCanvasClipboardText(editor,content)) throw Error("text_editor_unavailable");
+                                    setContextMenu(null);
+                                } catch {
+                                    message.error(t("canvas.controls.clipboardFailed"));
+                                }
+                            })();
+                        }}
                         onDuplicate={() => {
                             if (contextMenu.type !== "node") return;
                             duplicateNode(contextMenu.nodeId);
@@ -4186,7 +4241,7 @@ function AtelierCanvasPage() {
                         onDelete={() => {
                             if (contextMenu.type === "node") {
                                 deleteNodes(new Set([contextMenu.nodeId]));
-                            } else {
+                            } else if (contextMenu.type === "connection") {
                                 deleteConnection(contextMenu.connectionId);
                             }
                             setContextMenu(null);

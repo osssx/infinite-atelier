@@ -392,7 +392,10 @@ export const CanvasNode = React.memo(function CanvasNode({
                 if (!isNativeDescendantEvent(event.currentTarget, event.target)) return;
                 onSelectCapture?.(event, data.id);
             }}
-            onContextMenu={(event) => onContextMenu(event, data.id)}
+            onContextMenu={(event) => {
+                if (!isNativeDescendantEvent(event.currentTarget,event.target)) return;
+                onContextMenu(event, data.id);
+            }}
         >
             {(isSelected || hovered || isEditingTitle) && (
                 <div className="absolute left-3 top-[-28px] z-[65] max-w-[calc(100%-24px)]" onMouseDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>

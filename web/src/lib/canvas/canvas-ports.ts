@@ -74,6 +74,19 @@ export const CANVAS_PORT_HIT_GAP = 2;
 /** Equal top/bottom inset centers every typed port group on the legacy handle's Y midpoint. */
 export const CANVAS_PORT_EDGE_PADDING = 40;
 
+/** Workflow ports form a centered stack with a stable pitch regardless of
+ * node height. For old compact persisted nodes, compress only as much as fits.
+ * Other port-aware node types keep the original full-height distribution.
+ */
+function getCanvasPortPitch(node: CanvasNodeData, count: number): number {
+    if (count <= 1) return 0;
+    const available = Math.max(0, node.height - CANVAS_PORT_EDGE_PADDING * 2);
+    const fittedPitch = available / (count - 1);
+    return node.type === COMFY_WORKFLOW_MOCK_TYPE
+        ? Math.min(CANVAS_PORT_MIN_PITCH, fittedPitch)
+        : fittedPitch;
+}
+
 export function getMinimumCanvasPortNodeHeight(ports: readonly CanvasPortDescriptor[]): number {
     const inputs = ports.filter((port) => port.direction === "target").length;
     const outputs = ports.filter((port) => port.direction === "source").length;
@@ -84,8 +97,9 @@ export function getMinimumCanvasPortNodeHeight(ports: readonly CanvasPortDescrip
 export function getCanvasPortHitSize(node: CanvasNodeData, direction: "source" | "target"): number {
     const count = getCanvasVisiblePorts(node).filter((port) => port.direction === direction).length;
     if (count <= 1) return CANVAS_PORT_HIT_MAX;
-    const pitch = Math.max(0, node.height - CANVAS_PORT_EDGE_PADDING * 2) / (count - 1);
-    // Never let one port's hover hitbox cover its neighbour on compact old nodes.
+    const pitch = getCanvasPortPitch(node, count);
+    // Match the actual rendered centers, including compact legacy nodes.
+    // Never let one port's hover hitbox cover its neighbour.
     return Math.max(1, Math.min(CANVAS_PORT_HIT_MAX, pitch - CANVAS_PORT_HIT_GAP));
 }
 
@@ -96,9 +110,10 @@ export function getCanvasPortOffset(node: CanvasNodeData, direction: "source" | 
     if (index < 0) return node.height / 2;
     // A single typed port uses exactly the same Y anchor as an ordinary node.
     if (ports.length === 1) return node.height / 2;
-    const space = Math.max(0, node.height - CANVAS_PORT_EDGE_PADDING * 2);
-    // Symmetric distribution: (first + last) / 2 == node.height / 2.
-    return node.height / 2 - space / 2 + (space * index) / (ports.length - 1);
+    const pitch = getCanvasPortPitch(node, ports.length);
+    // The left and right groups center independently. Expanding the node
+    // moves the whole group with its midpoint but does not spread its ports.
+    return node.height / 2 + (index - (ports.length - 1) / 2) * pitch;
 }
 
 export function getCanvasPortAnchor(node: CanvasNodeData, direction: "source" | "target", portId?: string) {

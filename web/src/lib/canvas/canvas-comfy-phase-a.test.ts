@@ -241,8 +241,8 @@ describe("ComfyUI scalar sockets hidden on canvas without altering template bind
         expect(getCanvasNodePorts(wf)).toEqual(ports);
         expect(wf.metadata?.comfyPorts).toEqual(ports);
         expect(getCanvasPortHitSize(wf,"target")).toBe(28);
-        expect(getCanvasPortOffset(wf,"target","prompt")).toBe(CANVAS_PORT_EDGE_PADDING);
-        expect(getCanvasPortOffset(wf,"target","audio")).toBe(wf.height-CANVAS_PORT_EDGE_PADDING);
+        expect(getCanvasPortOffset(wf,"target","prompt")).toBe(wf.height/2-CANVAS_PORT_MIN_PITCH);
+        expect(getCanvasPortOffset(wf,"target","audio")).toBe(wf.height/2+CANVAS_PORT_MIN_PITCH);
         expect(pickCanvasDropHandle(wf,h("text","source","text"),wf.position.y+wf.height/2)?.portId).toBe("frame");
         expect(getCanvasVisiblePorts(n("text",CanvasNodeType.Text))).toEqual([]);
     });
@@ -263,7 +263,7 @@ describe("ComfyUI scalar sockets hidden on canvas without altering template bind
         const wf=n("enum-wf",COMFY_WORKFLOW_MOCK_TYPE,{comfyPorts:canvasPorts});
         expect(getCanvasVisiblePorts(wf).map(p=>p.id)).toEqual(["model","prompt","video"]);
         expect(getCanvasNodePorts(wf)).toEqual(canvasPorts);
-        expect(getCanvasPortOffset(wf,"target","model")).toBe(CANVAS_PORT_EDGE_PADDING);
+        expect(getCanvasPortOffset(wf,"target","model")).toBe(wf.height/2-CANVAS_PORT_MIN_PITCH/2);
         const text=n("text",CanvasNodeType.Text,{content:"fast"});
         expect(link(h("text","source"),h("enum-wf","target","model"),[text,wf],[]).connection)
             .toMatchObject({toPortId:"model"});
@@ -358,10 +358,71 @@ describe("Dense Comfy port hover hitboxes", () => {
         const a = getCanvasPortOffset(typed,"target","a");
         const b = getCanvasPortOffset(typed,"target","b");
         expect((a+b)/2).toBe(typed.height/2);
-        expect(a).toBe(CANVAS_PORT_EDGE_PADDING);
-        expect(b).toBe(typed.height-CANVAS_PORT_EDGE_PADDING);
+        expect(a).toBe(typed.height/2-CANVAS_PORT_MIN_PITCH/2);
+        expect(b).toBe(typed.height/2+CANVAS_PORT_MIN_PITCH/2);
         expect(getCanvasPortAnchor(typed,"target","a").y).toBe(typed.position.y+a);
         expect(getCanvasPortAnchor(typed,"target","b").y).toBe(typed.position.y+b);
+    });
+
+    it("keeps 3 inputs as a centered fixed-pitch group when the workflow is resized",()=>{
+        const promptPorts:CanvasPortDescriptor[]=[
+            {id:"prompt",label:"提示词",direction:"target",valueKind:"STRING"},
+            {id:"ratio",label:"画面比例",direction:"target",valueKind:"STRING"},
+            {id:"negative",label:"负面提示词",direction:"target",valueKind:"STRING"},
+            {id:"image",label:"生成图像",direction:"source",valueKind:"IMAGE"},
+        ];
+        const workflow=n("moss",COMFY_WORKFLOW_MOCK_TYPE,{comfyPorts:promptPorts});
+        for(const height of [160,265,420,800]){
+            const current={...workflow,height};
+            const offsets=["prompt","ratio","negative"].map(id=>getCanvasPortOffset(current,"target",id));
+            expect(offsets).toEqual([
+                height/2-CANVAS_PORT_MIN_PITCH,height/2,height/2+CANVAS_PORT_MIN_PITCH,
+            ]);
+            expect(getCanvasPortOffset(current,"source","image")).toBe(height/2);
+            expect(getCanvasPortHitSize(current,"target")).toBe(28);
+            for(const id of ["prompt","ratio","negative"]){
+                const anchor=getCanvasPortAnchor(current,"target",id);
+                const picked=pickCanvasDropHandle(current,h("text","source","text"),anchor.y);
+                expect(picked?.portId).toBe(id);
+                expect(anchor.y).toBe(current.position.y+getCanvasPortOffset(current,"target",id));
+            }
+            const source=n("text",CanvasNodeType.Text);
+            source.position={x:-500,y:current.position.y};
+            const edge:CanvasConnection={id:"test",fromNodeId:source.id,toNodeId:current.id,
+                fromPortId:"text",toPortId:"negative"};
+            const geom=connectionControlPoints(source,current,edge);
+            expect(geom.endY).toBe(current.position.y+height/2+CANVAS_PORT_MIN_PITCH);
+            const overview=buildOverviewConnectionPaths([edge],new Map([[source.id,source],[current.id,current]]),null,new Set());
+            expect(overview.curves[0].y3).toBe(geom.endY);
+        }
+    });
+    it("centers multiple output ports independently from the inputs",()=>{
+        const workflow=n("mixed",COMFY_WORKFLOW_MOCK_TYPE,{comfyPorts:[
+            {id:"a",label:"A",direction:"target",valueKind:"STRING"},
+            {id:"b",label:"B",direction:"target",valueKind:"IMAGE"},
+            {id:"x",label:"X",direction:"source",valueKind:"IMAGE"},
+            {id:"y",label:"Y",direction:"source",valueKind:"VIDEO"},
+            {id:"z",label:"Z",direction:"source",valueKind:"AUDIO"},
+            {id:"w",label:"W",direction:"source",valueKind:"STRING"},
+        ]});
+        workflow.height=640;
+        expect(["a","b"].map(id=>getCanvasPortOffset(workflow,"target",id)))
+            .toEqual([305,335]);
+        expect(["x","y","z","w"].map(id=>getCanvasPortOffset(workflow,"source",id)))
+            .toEqual([275,305,335,365]);
+        for(const direction of ["target","source"] as const){
+            const pts=getCanvasVisiblePorts(workflow).filter(p=>p.direction===direction);
+            const positions=pts.map(p=>getCanvasPortOffset(workflow,direction,p.id));
+            expect((positions[0]+positions.at(-1)!)/2).toBe(workflow.height/2);
+        }
+    });
+    it("compresses legacy tiny nodes without letting port handles overflow",()=>{
+        const dense={...n("tiny",COMFY_WORKFLOW_MOCK_TYPE,{comfyPorts:ports}),height:180};
+        const group=inputPorts.map(p=>getCanvasPortOffset(dense,"target",p.id));
+        expect(group[0]).toBe(CANVAS_PORT_EDGE_PADDING);
+        expect(group.at(-1)).toBe(dense.height-CANVAS_PORT_EDGE_PADDING);
+        expect(getCanvasPortHitSize(dense,"target")).toBe(8);
+        expectIndependentHitboxes(dense);
     });
 
     it("11 inputs and one output all share the legacy vertical midpoint as the center of their port groups", () => {

@@ -746,8 +746,8 @@ export default {
         },
         controls: {
             ratio: "Ratio",
-            duplicate: "Duplicate",
-            delete: "Delete",
+            duplicate: "Duplicate Node",
+            delete: "Delete Node",
             disconnect: "Disconnect",
             images: "{{count}} images",
             generations: "{{count}} runs",

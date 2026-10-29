@@ -1,4 +1,5 @@
 import type { CanvasPortValueKind } from "@/types/canvas";
+import {inspectComfyInputSpec} from "./comfy-input-spec";
 
 export type ComfyNode = { class_type: string; inputs: Record<string, unknown>; _meta?: Record<string, unknown> };
 export type ComfyApiGraph = Record<string, ComfyNode>;
@@ -49,6 +50,28 @@ const safeId = (s: string) => /^[a-zA-Z0-9_:\-.]{1,128}$/.test(s);
 const isObject = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
 function fail(msg: string): never { throw new Error("Invalid ComfyUI workflow: " + msg); }
 const has = (value: object, key: string) => Object.prototype.hasOwnProperty.call(value, key);
+/** Structured context for template binding errors, so editors can navigate to
+ * the exact port and ComfyUI input without parsing an English error message.
+ * String/prompt values are never included in diagnostics.
+ */
+export class ComfyTemplateBindingError extends Error {
+    readonly portId: string;
+    readonly nodeId?: string;
+    readonly inputName?: string;
+    constructor(reason: string, port: ComfyTemplatePort, graph: ComfyApiGraph, target?: ComfyNodeTarget, detail?: string) {
+        const portName = JSON.stringify(port.label.slice(0, 90));
+        const node = target ? graph[target.nodeId] : undefined;
+        const location = target
+            ? `；ComfyUI 节点 ${target.nodeId}（${node?.class_type ?? "未知节点"}）参数 ${target.inputName}`
+            : "";
+        super(`Invalid ComfyUI workflow: ${reason}；画布端口 ${portName}（${port.id}）${location}${detail ? "；"+detail : ""}`);
+        this.name = "ComfyTemplateBindingError";
+        this.portId = port.id;
+        this.nodeId = target?.nodeId ?? (port.direction === "source" ? port.outputBinding?.nodeId : undefined);
+        this.inputName = target?.inputName;
+    }
+}
+
 
 export function canonicalComfyJson(value: unknown): string {
     const canonical = (v: unknown): unknown => {
@@ -158,6 +181,17 @@ export function validateComfyTemplatePayload(raw: unknown, info?: ComfyObjectInf
     const graph = validateComfyApiGraph(raw.apiGraph, info);
     const claimed = new Set<string>(), portIds = new Set<string>();
     const ports = raw.ports as ComfyTemplatePort[];
+    function failBinding(reason:string, port:ComfyTemplatePort, target?:ComfyNodeTarget, detail?:string):never {
+        throw new ComfyTemplateBindingError(reason, port, graph, target, detail);
+    }
+    const valueDescription = (value:unknown):string => {
+        if(typeof value === "string") return `字符串（长度 ${value.length}，内容已隐藏）`;
+        if(typeof value === "boolean") return `BOOLEAN（${value}）`;
+        if(typeof value === "number") return `${Number.isInteger(value)?"整数":"小数"}（${Number.isFinite(value)?String(value):"非有限数"}）`;
+        if(value===null)return "null";
+        return Array.isArray(value)?"数组":"对象";
+    };
+
     for (const p of ports) {
         if (!isObject(p) || typeof p.id !== "string" || !safeId(p.id) || portIds.has(p.id) ||
             typeof p.label !== "string" || p.label.length > 90 ||
@@ -166,29 +200,31 @@ export function validateComfyTemplatePayload(raw: unknown, info?: ComfyObjectInf
         if (p.direction === "target") {
             const b = p.inputBinding;
             if (p.valueKind === "LATENT" || p.valueKind === "CONDITIONING" || p.valueKind === "MASK" || p.valueKind === "IMAGE" || p.valueKind === "VIDEO" || p.valueKind === "AUDIO") {
-                if (b?.mode === "literal") fail("literal mode supports only scalar values");
+                if (b?.mode === "literal") failBinding("literal mode supports only scalar values",p,undefined,`当前端口类型 ${p.valueKind} 不支持常量绑定`);
             }
-            if (!isObject(b) || !INPUT_MODES.has(b.mode) || !Array.isArray(b.targets) || !b.targets.length) fail("missing input binding on " + p.id);
+            if (!isObject(b) || !INPUT_MODES.has(b.mode) || !Array.isArray(b.targets) || !b.targets.length) failBinding("missing input binding",p);
             if (b.mode === "socket" && typeof b.replaceInternalLink !== "boolean") fail("socket replace policy required");
             if (b.mode === "media-file" && (!["IMAGE", "VIDEO", "AUDIO"].includes(b.mediaKind) || b.mediaKind !== p.valueKind))
-                fail("media-file kind mismatch");
+                failBinding("media-file kind mismatch",p,undefined,`端口类型 ${p.valueKind}，绑定媒体类型 ${b.mediaKind}`);
             for (const target of b.targets) {
                 if (!isObject(target) || typeof target.nodeId !== "string" || typeof target.inputName !== "string" ||
-                    !has(graph, target.nodeId) || !has(graph[target.nodeId].inputs, target.inputName)) fail("input binding target missing");
+                    !has(graph, target.nodeId) || !has(graph[target.nodeId].inputs, target.inputName)) failBinding("input binding target missing",p,isObject(target) && typeof target.nodeId === "string" && typeof target.inputName === "string" ? target as ComfyNodeTarget : undefined);
                 const key = target.nodeId + "." + target.inputName;
-                if (claimed.has(key)) fail("duplicate input claim: " + key);
+                if (claimed.has(key)) failBinding("duplicate input claim: " + key,p,target);
                 claimed.add(key);
                 const existing = graph[target.nodeId].inputs[target.inputName];
-                if (b.mode === "socket" && isComfyLink(existing, graph) && !b.replaceInternalLink) fail("socket overwrites internal link");
-                if (b.mode === "media-file" && isComfyLink(existing, graph)) fail("file sink is connected to socket");
-                if (b.mode === "literal" && isComfyLink(existing, graph)) fail("literal sink is connected to socket");
+                if (b.mode === "socket" && isComfyLink(existing, graph) && !b.replaceInternalLink) failBinding("socket overwrites internal link",p,target);
+                if (b.mode === "media-file" && isComfyLink(existing, graph)) failBinding("file sink is connected to socket",p,target);
+                if (b.mode === "literal" && isComfyLink(existing, graph)) failBinding("literal sink is connected to socket",p,target);
                 const inputMeta = info?.[graph[target.nodeId].class_type]?.input;
                 const detail = inputMeta?.required?.[target.inputName] ?? inputMeta?.optional?.[target.inputName];
-                const declaredType = Array.isArray(detail) && typeof detail[0] === "string" ? detail[0] : undefined;
+                const descriptor=inspectComfyInputSpec(detail);
+                const declaredType=descriptor.declaredType;
+                const expectedType=descriptor.valueKind ?? declaredType;
                 if (b.mode === "media-file" && declaredType && ["IMAGE","VIDEO","AUDIO","LATENT","MASK","CONDITIONING"].includes(declaredType))
-                    fail("media-file cannot target a data socket");
-                if (declaredType && b.mode === "socket" && declaredType !== p.valueKind) fail("socket type mismatch");
-                if (declaredType && b.mode === "literal" && declaredType !== p.valueKind) fail("literal type mismatch");
+                    failBinding("media-file cannot target a data socket",p,target,`节点声明类型 ${declaredType}；当前端口类型 ${p.valueKind}`);
+                if (expectedType && b.mode === "socket" && expectedType !== p.valueKind) failBinding("socket type mismatch",p,target,`节点要求 ${expectedType}，当前端口设置为 ${p.valueKind}`);
+                if (expectedType && b.mode === "literal" && expectedType !== p.valueKind) failBinding("literal type mismatch",p,target,`节点要求 ${expectedType}${declaredType==="COMBO"?"（COMBO 枚举值）":""}，当前端口设置为 ${p.valueKind}；工作流原值：${valueDescription(existing)}。请调整画布端口数据类型或输入映射`);
             }
             if (p.absentPolicy?.mode === "auto-prune") {
                 if (p.required || !["IMAGE","VIDEO","AUDIO"].includes(p.valueKind) ||
@@ -206,13 +242,13 @@ export function validateComfyTemplatePayload(raw: unknown, info?: ComfyObjectInf
                 if ((p.valueKind === "STRING" && typeof dv !== "string") ||
                     (p.valueKind === "BOOLEAN" && typeof dv !== "boolean") ||
                     (p.valueKind === "INT" && (!Number.isInteger(dv) || typeof dv !== "number")) ||
-                    (p.valueKind === "FLOAT" && (typeof dv !== "number" || !Number.isFinite(dv)))) fail("default value type mismatch");
+                    (p.valueKind === "FLOAT" && (typeof dv !== "number" || !Number.isFinite(dv)))) failBinding("default value type mismatch",p,b.targets[0],`端口要求 ${p.valueKind}，默认值为 ${valueDescription(dv)}`);
             }
             if (has(p, "defaultValue") && b.mode === "socket") fail("socket default must come from template graph");
             if (has(p,"choices")) {
                 if (b.mode!=="literal" || !["STRING","INT","FLOAT"].includes(p.valueKind) ||
                     !Array.isArray(p.choices) || p.choices.length<1 || p.choices.length>64)
-                    fail("enum choices require a STRING, INT or FLOAT literal input (1–64 choices)");
+                    failBinding("enum choices require a STRING, INT or FLOAT literal input (1–64 choices)",p);
                 const seen=new Set<string>();
                 for(const option of p.choices){
                     if(!isObject(option)||typeof option.label!=="string"||
@@ -220,28 +256,28 @@ export function validateComfyTemplatePayload(raw: unknown, info?: ComfyObjectInf
                         (p.valueKind==="STRING" ? typeof option.value!=="string"||option.value.length>16000||/[\r\n]/.test(option.value) :
                          p.valueKind==="INT" ? !Number.isSafeInteger(option.value) :
                          typeof option.value!=="number"||!Number.isFinite(option.value)))
-                        fail("enum choice label/value type mismatch");
+                        failBinding("enum choice label/value type mismatch",p,undefined,`候选项类型应为 ${p.valueKind}`);
                     const key=typeof option.value+":"+String(option.value);
-                    if(seen.has(key))fail("duplicate enum choice value");
+                    if(seen.has(key))failBinding("duplicate enum choice value",p);
                     seen.add(key);
                 }
                 if(has(p,"defaultValue") && !p.choices.some(o=>Object.is(o.value,p.defaultValue)))
-                    fail("enum default value must match one of the choices");
+                    failBinding("enum default value must match one of the choices",p,undefined,`默认值为 ${valueDescription(p.defaultValue)}`);
             }
         } else {
-            if (p.inputBinding) fail("output cannot have input binding");
-            if(has(p,"choices"))fail("output cannot have enum choices");
+            if (p.inputBinding) failBinding("output cannot have input binding",p);
+            if(has(p,"choices"))failBinding("output cannot have enum choices",p);
             const out = p.outputBinding;
             if (!isObject(out) || typeof out.nodeId !== "string" || !has(graph, out.nodeId) ||
-                !Number.isInteger(out.outputIndex) || out.outputIndex < 0) fail("invalid output socket");
+                !Number.isInteger(out.outputIndex) || out.outputIndex < 0) failBinding("invalid output socket",p);
             const outputTypes = info?.[graph[out.nodeId].class_type]?.output;
             if (outputTypes && (out.outputIndex >= outputTypes.length || (outputTypes[out.outputIndex] !== p.valueKind && outputTypes[out.outputIndex] !== "*")))
-                fail("output socket type mismatch");
-            if (!p.capture || !CAPTURE_KINDS.has(p.capture.kind)) fail("capture policy required");
+                failBinding("output socket type mismatch",p,undefined,`ComfyUI 节点 ${out.nodeId}（${graph[out.nodeId].class_type}）输出 [${out.outputIndex}]：节点类型 ${outputTypes?.[out.outputIndex]??"不存在"}，当前端口设置为 ${p.valueKind}`);
+            if (!p.capture || !CAPTURE_KINDS.has(p.capture.kind)) failBinding("capture policy required",p);
             if (p.capture.kind !== "none") {
                 const expected = ({ image:"IMAGE", video:"VIDEO", audio:"AUDIO", text:"STRING" } as Record<string,string>)[p.capture.kind];
-                if (expected !== p.valueKind || !p.capture.adapterId?.trim()) fail("capture requires a compatible explicit adapterId");
-                if (info && !has(info,p.capture.adapterId)) fail("capture adapter class not installed");
+                if (expected !== p.valueKind || !p.capture.adapterId?.trim()) failBinding("capture requires a compatible explicit adapterId",p,undefined,`捕获类型 ${p.capture.kind} 对应 ${expected}，当前端口类型 ${p.valueKind}`);
+                if (info && !has(info,p.capture.adapterId)) failBinding("capture adapter class not installed",p,undefined,`缺少捕获节点 ${p.capture.adapterId}`);
             }
         }
     }

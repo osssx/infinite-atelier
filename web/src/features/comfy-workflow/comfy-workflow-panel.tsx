@@ -1,17 +1,18 @@
-import { useEffect, useMemo, useState, type ChangeEvent, type CSSProperties } from "react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties } from "react";
 import { Check, ChevronDown, ChevronRight, FileUp, Link2, Plus, RefreshCw, Save, Search, Trash2, X } from "lucide-react";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { theme as antdTheme } from "antd";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { useConfigStore } from "@/stores/use-config-store";
 import {useComfyObjectInfo} from "./use-comfy-object-info";
+import {inspectComfyInputSpec} from "./comfy-input-spec";
 import type { CanvasNodeData, CanvasNodeMetadata, CanvasPortValueKind } from "@/types/canvas";
 import {
     appendComfyInputTarget, bindingTargetKey, enumerateComfyGraphItems, filterComfyGraphItems,
     inferComfyBindingMode, inferComfyInputKind, parseBindingTargetKey, removeComfyInputTarget,
     usedComfyInputTarget,
 } from "./binding-picker";
-import { templatePayloadFromGraph, validateComfyApiGraph, type ComfyInputBinding, type ComfyNodeTarget, type ComfyObjectInfo, type ComfyTemplatePayload, type ComfyTemplatePort, type ComfyWorkflowTemplate } from "./template-schema";
+import { ComfyTemplateBindingError, templatePayloadFromGraph, validateComfyApiGraph, type ComfyInputBinding, type ComfyNodeTarget, type ComfyObjectInfo, type ComfyTemplatePayload, type ComfyTemplatePort, type ComfyWorkflowTemplate } from "./template-schema";
 import { getComfyTemplate, saveComfyTemplateVersion } from "./template-registry";
 import { upsertComfyPresetForTemplate } from "./preset-registry";
 import { listComfyPresetCatalog, type ComfyCatalogPreset } from "./preset-catalog";
@@ -140,6 +141,32 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
     const [expandedAdvanced,setExpandedAdvanced] = useState(false);
     const [busy,setBusy] = useState(false);
     const [error,setError] = useState("");
+    const [bindingIssue,setBindingIssue] = useState<{portId:string;nodeId?:string;inputName?:string}|null>(null);
+    const nodeBrowserRef=useRef<HTMLDivElement>(null);
+    const portListRef=useRef<HTMLDivElement>(null);
+    useEffect(()=>{
+        if(!bindingIssue)return;
+        const scrollToValue=(root:HTMLDivElement|null,attribute:"comfyNodeId"|"comfyPortId",value:string|undefined)=>{
+            if(!root||!value)return;
+            const element=Array.from(root.querySelectorAll<HTMLElement>("[data-comfy-node-id],[data-comfy-port-id]"))
+                .find(item=>item.dataset[attribute]===value);
+            element?.scrollIntoView?.({block:"nearest"});
+        };
+        scrollToValue(nodeBrowserRef.current,"comfyNodeId",bindingIssue.nodeId);
+        scrollToValue(portListRef.current,"comfyPortId",bindingIssue.portId);
+    },[bindingIssue]);
+    const focusBindingIssue=(issue:{portId:string;nodeId?:string;inputName?:string})=>{
+        setSelectedPortId(issue.portId);
+        if(issue.nodeId){setSelectedNodeId(issue.nodeId);setNodeSearch("");}
+    };
+    const showBindingError=(cause:unknown)=>{
+        setError(cause instanceof Error?cause.message:String(cause));
+        if(cause instanceof ComfyTemplateBindingError){
+            const issue={portId:cause.portId,nodeId:cause.nodeId,inputName:cause.inputName};
+            setBindingIssue(issue);
+            focusBindingIssue(issue);
+        }else setBindingIssue(null);
+    };
     const [status,setStatus] = useState("");
 
     const items = useMemo(()=>draft ? enumerateComfyGraphItems(draft.apiGraph,objectInfo) : [],[draft?.apiGraph,objectInfo]);
@@ -168,7 +195,10 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
         return ()=>{alive=false;};
     },[node.id]);
 
-    const edit=(fn:(current:ComfyTemplatePayload)=>ComfyTemplatePayload)=>setDraft((current)=>current?fn(current):current);
+    const edit=(fn:(current:ComfyTemplatePayload)=>ComfyTemplatePayload)=>{
+        setBindingIssue(null);setError("");
+        setDraft((current)=>current?fn(current):current);
+    };
     const patchPort=(id:string, patch:Partial<ComfyTemplatePort>)=>edit((current)=>({
         ...current,ports:current.ports.map((port)=>port.id===id?{...port,...patch}:port),
     }));
@@ -185,21 +215,31 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
             setSelectedPortId(claimed);setStatus("该参数已配置画布端口，已选中现有端口。");
             return;
         }
-        if (activePort?.direction==="target") {
-            try {
-                edit((d)=>({...d,ports:appendComfyInputTarget(d.ports,activePort.id,target)}));
-                setError("");setStatus("已将 "+nodeId+"."+inputName+" 绑定到端口「"+activePort.label+"」。");
-            } catch(cause) {setError(String(cause));}
-            return;
-        }
         const value=draft.apiGraph[nodeId].inputs[inputName];
         const nodeType=draft.apiGraph[nodeId].class_type;
         const spec=objectInfo?.[nodeType]?.input;
         const meta=spec?.required?.[inputName]??spec?.optional?.[inputName];
-        const declared=Array.isArray(meta)&&typeof meta[0]==="string"?meta[0]:undefined;
-        const kind=inferComfyInputKind(value,declared);
+        const descriptor=inspectComfyInputSpec(meta);
+        const kind=inferComfyInputKind(value,descriptor.valueKind??descriptor.declaredType);
         const mode=inferComfyBindingMode(value);
+        if (activePort?.direction==="target") {
+            try {
+                const empty=activePort.inputBinding?.targets.length===0;
+                edit((d)=>({...d,ports:appendComfyInputTarget(d.ports,activePort.id,target).map(p=>
+                    p.id===activePort.id&&empty&&p.inputBinding?.mode==="literal" && mode==="literal"
+                        ? {...p,
+                            ...(!p.choices&&!Object.prototype.hasOwnProperty.call(p,"defaultValue")
+                                ? {valueKind:kind}:{}),
+                            ...(!p.choices&&descriptor.choices?.length&&descriptor.valueKind===kind
+                                ? {choices:descriptor.choices}:{})}
+                        : p)}));
+                setError("");setStatus("已将 "+nodeId+"."+inputName+" 绑定到端口「"+activePort.label+"」。");
+            } catch(cause) {setError(String(cause));}
+            return;
+        }
         const port=inputPort(target,kind,mode);
+        if(mode==="literal" && descriptor.choices?.length && descriptor.valueKind===kind)
+            port.choices=descriptor.choices;
         edit((d)=>({...d,ports:[...d.ports,port]}));
         setSelectedPortId(port.id);setStatus("已为 "+nodeId+"."+inputName+" 创建画布端口。");
         setError("");
@@ -289,13 +329,13 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
         if(!draft||busy)return;
         if(choiceDirty){setError("请先修正并应用候选数组，再保存模板");return;}
         try {
-            setBusy(true);setError("");
+            setBusy(true);setError("");setBindingIssue(null);
             const template=await saveComfyTemplateVersion(templateId,draft,objectInfo);
             if(applySaved(template) && context==="node") {
                 await upsertComfyPresetForTemplate(template);
                 setPresets(await listComfyPresetCatalog());
             }
-        }catch(cause){setError(String(cause));}finally{setBusy(false);}
+        }catch(cause){showBindingError(cause);}finally{setBusy(false);}
     };
 
     return (
@@ -376,7 +416,11 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
             {objectInfo&&!infoError?<div className="mx-5 mt-2 shrink-0 text-[11px] text-[var(--comfy-muted)]" role="status">
                 已获取 {comfyInstanceId} 的 {Object.keys(objectInfo).length} 种节点定义，可用于参数类型和输出槽位校验。
             </div>:null}
-            {error?<div role="alert" className="mx-5 mt-3 shrink-0 rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-600 dark:text-red-300">{error}</div>:null}
+            {error?<div role="alert" className="mx-5 mt-3 shrink-0 rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-600 dark:text-red-300">
+                <div className="whitespace-pre-wrap break-words">{error}</div>
+                {bindingIssue?<button type="button" className="mt-2 rounded border border-current px-2 py-1 font-medium hover:bg-red-500/10"
+                    data-comfy-error-goto-port onClick={()=>focusBindingIssue(bindingIssue)}>定位出错参数</button>:null}
+            </div>:null}
             {status?<div role="status" className="mx-5 mt-2 shrink-0 text-xs text-[var(--comfy-muted)]">{status}</div>:null}
 
             {draft ? (
@@ -394,10 +438,10 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
                                 <input aria-label="搜索 ComfyUI 节点" className={inputClass+" !pl-8"} placeholder="搜索节点 ID、类型或参数…" value={nodeSearch} onChange={(e)=>setNodeSearch(e.target.value)}/>
                             </div>
                         </div>
-                        <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3" data-comfy-node-browser>
+                        <div ref={nodeBrowserRef} className="min-h-0 flex-1 overflow-y-auto px-2 pb-3" data-comfy-node-browser>
                             {filteredItems.map((item)=>{
                                 const active=selectedItem?.id===item.id;
-                                return <div key={item.id} className="mb-1">
+                                return <div key={item.id} data-comfy-node-id={item.id} className="mb-1">
                                     <button type="button" aria-expanded={active} aria-label={"选择 ComfyUI 节点 "+item.id}
                                         className={selectableClass+" flex items-center gap-2 "+(active?"bg-[var(--comfy-fill)] font-semibold":"")}
                                         onClick={()=>setSelectedNodeId(item.id)}>
@@ -412,7 +456,8 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
                                             const target={nodeId:item.id,inputName:field.name};
                                             const owner=usedComfyInputTarget(draft.ports,target);
                                             return <button key={field.name} type="button" title={"绑定参数 "+item.id+"."+field.name}
-                                                className={selectableClass+" my-0.5 flex items-start gap-2"}
+                                                data-comfy-binding-error={bindingIssue?.nodeId===item.id&&bindingIssue.inputName===field.name?"true":undefined}
+                                                className={selectableClass+" my-0.5 flex items-start gap-2 "+(bindingIssue?.nodeId===item.id&&bindingIssue.inputName===field.name?"border border-red-500/60 bg-red-500/10":"")}
                                                 onClick={()=>exposeField(item.id,field.name)}>
                                                 <span className="mt-0.5 shrink-0 text-[var(--comfy-muted)]">{owner?<Check size={12}/>:<Plus size={12}/>}</span>
                                                 <span className="min-w-0 flex-1">
@@ -446,9 +491,9 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
                                     <button className={buttonClass} type="button" onClick={()=>addPort("source")}><Plus size={12}/> 添加输出</button>
                                 </div>
                             </div>
-                            <div className="mt-3 flex flex-wrap gap-1.5">
-                                {draft.ports.map((p)=><button type="button" key={p.id} aria-pressed={p.id===selectedPortId} onClick={()=>{setSelectedPortId(p.id);setError("");}}
-                                    className={"inline-flex max-w-[210px] items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs transition "+(p.id===selectedPortId?"border-[var(--comfy-accent)] bg-[var(--comfy-fill)] font-semibold":"border-[var(--comfy-border)] hover:bg-[var(--comfy-fill)]")}>
+                            <div ref={portListRef} className="mt-3 flex flex-wrap gap-1.5">
+                                {draft.ports.map((p)=><button type="button" key={p.id} data-comfy-port-id={p.id} data-comfy-error-port={bindingIssue?.portId===p.id?"true":undefined} aria-pressed={p.id===selectedPortId} onClick={()=>{setSelectedPortId(p.id);setError("");setBindingIssue(null);}}
+                                    className={"inline-flex max-w-[210px] items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs transition "+(bindingIssue?.portId===p.id?"border-red-500 bg-red-500/10 font-semibold":p.id===selectedPortId?"border-[var(--comfy-accent)] bg-[var(--comfy-fill)] font-semibold":"border-[var(--comfy-border)] hover:bg-[var(--comfy-fill)]")}>
                                     <span className="text-[10px] text-[var(--comfy-muted)]">{p.direction==="target"?"输入":"输出"}</span>
                                     <span className="truncate">{p.label}</span>
                                 </button>)}
@@ -532,7 +577,7 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
                                         <div className="mt-2 flex flex-col gap-1.5">
                                             {activePort.inputBinding?.targets.map((t)=>{
                                                 const info=items.find((item)=>item.id===t.nodeId);
-                                                return <div key={bindingTargetKey(t)} className="flex min-w-0 items-center gap-2 rounded-lg border border-[var(--comfy-border)] bg-[var(--comfy-fill)] px-3 py-2">
+                                                return <div key={bindingTargetKey(t)} className={"flex min-w-0 items-center gap-2 rounded-lg border bg-[var(--comfy-fill)] px-3 py-2 "+(bindingIssue?.nodeId===t.nodeId&&bindingIssue.inputName===t.inputName?"border-red-500/60 bg-red-500/10":"border-[var(--comfy-border)]")}>
                                                     <Link2 size={13} className="shrink-0 text-[var(--comfy-muted)]"/>
                                                     <span className="min-w-0 flex-1 truncate text-xs"><span className="font-medium">{info?.title||t.nodeId}</span><span className="text-[var(--comfy-muted)]"> · {t.nodeId}.{t.inputName}</span></span>
                                                     <button type="button" aria-label={"移除输入映射 "+t.nodeId+"."+t.inputName}

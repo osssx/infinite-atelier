@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ComfyApiGraph, ComfyObjectInfo, ComfyTemplatePort } from "./template-schema";
+import {inspectComfyInputSpec} from "./comfy-input-spec";
 import {
     appendComfyInputTarget, bindingTargetKey, enumerateComfyGraphItems, filterComfyGraphItems,
     inferComfyBindingMode, inferComfyInputKind, parseBindingTargetKey, removeComfyInputTarget, usedComfyInputTarget,
@@ -35,6 +36,23 @@ describe("Comfy binding picker interactive selection",()=>{
         expect(filterComfyGraphItems(items,"30.16").map((n)=>n.id)).toEqual(["30.16"]);
         expect(filterComfyGraphItems(items,"SAMPLING_MODE").map((n)=>n.id)).toEqual(["30.16"]);
         expect(filterComfyGraphItems(items,"").length).toBe(3);
+    });
+    it("recognizes COMBO as a string enum and exposes actual values for the editor",()=>{
+        const options=["1:1 (Square)","3:4 (Portrait Standard)","16:9 (Widescreen)"];
+        const descriptor=inspectComfyInputSpec(["COMBO",{options,default:options[0]}]);
+        expect(descriptor.declaredType).toBe("COMBO");
+        expect(descriptor.valueKind).toBe("STRING");
+        expect(descriptor.choices).toEqual(options.map(value=>({label:value,value})));
+        const standard=inspectComfyInputSpec([options,{}]);
+        expect(standard.valueKind).toBe("STRING");
+        const actual:ComfyApiGraph={"19":{class_type:"ResolutionSelector",inputs:{aspect_ratio:options[0]}}};
+        const definitions:ComfyObjectInfo={ResolutionSelector:{
+            input:{required:{aspect_ratio:["COMBO",{options}]}}}};
+        expect(enumerateComfyGraphItems(actual,definitions)[0].fields[0].declaredType).toBe("COMBO (STRING)");
+        expect(inferComfyInputKind(options[0],descriptor.valueKind)).toBe("STRING");
+        expect(inspectComfyInputSpec(["COMBO",{options:[16,32]}]).valueKind).toBe("INT");
+        expect(inspectComfyInputSpec(["COMBO",{options:[16,32.5]}]).valueKind).toBe("FLOAT");
+        expect(inspectComfyInputSpec(["COMBO",{options:[]}]).valueKind).toBeUndefined();
     });
     it("assigns one canvas input to several different internal Comfy parameters",()=>{
         const result=appendComfyInputTarget([one,two],"a",target("30.16","sampling_mode.top.p"));

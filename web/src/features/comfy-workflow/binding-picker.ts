@@ -1,5 +1,6 @@
 import type { CanvasPortValueKind } from "@/types/canvas";
 import type { ComfyApiGraph, ComfyInputBinding, ComfyNodeTarget, ComfyObjectInfo, ComfyTemplatePort } from "./template-schema";
+import {inspectComfyInputSpec} from "./comfy-input-spec";
 
 export type ComfyGraphItem = {
     id: string;
@@ -25,7 +26,9 @@ export function enumerateComfyGraphItems(graph:ComfyApiGraph, objectInfo?:ComfyO
         const title = typeof node._meta?.title === "string" && node._meta.title.trim() ? node._meta.title.trim() : node.class_type;
         const fields = Object.entries(node.inputs).map(([name,value]) => {
             const meta = spec?.input?.required?.[name] ?? spec?.input?.optional?.[name];
-            const declaredType = Array.isArray(meta) && typeof meta[0]==="string" ? meta[0] : undefined;
+            const descriptor=inspectComfyInputSpec(meta);
+            const declaredType=descriptor.declaredType==="COMBO"&&descriptor.valueKind
+                ? `COMBO (${descriptor.valueKind})`:descriptor.declaredType;
             return {name,value,declaredType};
         });
         return {id,classType:node.class_type,title,fields,outputs:(spec?.output||[]).map((valueKind,index)=>({index,valueKind}))};

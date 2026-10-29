@@ -301,6 +301,38 @@ test("ResolutionSelector short aspect ratio is normalized to the live ComfyUI en
     r.nodes[0].inputOverrides.aspect_ratio="18:9";
     assert.throws(()=>compileSingleWorkflow(r,t,{info:liveInfo}),/comfy_option_invalid:ResolutionSelector.aspect_ratio:18:9/);
 });
+test("ResolutionSelector COMBO {options} accepts dropdown values and validates actual options",()=>{
+    const choices=["1:1 (Square)","2:3 (Portrait Photo)","3:4 (Portrait Standard)",
+        "16:9 (Widescreen)"];
+    const t=template();
+    t.apiGraph["19"]={class_type:"ResolutionSelector",inputs:{aspect_ratio:"1:1 (Square)"}};
+    t.apiGraph["20"].inputs.resolution=["19",0];
+    t.ports.push({id:"aspect_ratio",label:"画面比例",direction:"target",valueKind:"STRING",
+        choices:choices.map(value=>({label:value,value})),
+        inputBinding:{mode:"literal",targets:[{nodeId:"19",inputName:"aspect_ratio"}]}});
+    t.requirements.classTypes=[...new Set(Object.values(t.apiGraph).map(n=>n.class_type))].sort();
+    t.revision=sha256(canonical({name:t.name,apiGraph:t.apiGraph,ports:t.ports,requirements:t.requirements}));
+    const live={...info,Generate:{...info.Generate,input:{...info.Generate.input,
+        optional:{resolution:["INT",{}]}}},
+        ResolutionSelector:{input:{required:{aspect_ratio:["COMBO",{options:choices,default:"1:1 (Square)"}]}},output:["INT"]}};
+    const r=req();r.nodes[0].templateRevision=t.revision;
+    r.nodes[0].inputOverrides.aspect_ratio="16:9 (Widescreen)";
+    assert.equal(compileSingleWorkflow(r,t,{info:live}).graph["w_wf-1__19"].inputs.aspect_ratio,
+        "16:9 (Widescreen)");
+    // A configured dropdown accepts only actual values, not the short display alias.
+    r.nodes[0].inputOverrides.aspect_ratio="16:9";
+    assert.throws(()=>compileSingleWorkflow(r,t,{info:live}),
+        /literal_enum_value_invalid:aspect_ratio/);
+    // A plain STRING port keeps the existing shortcut normalizer.
+    const plain=structuredClone(t);delete plain.ports.at(-1).choices;
+    plain.revision=sha256(canonical({name:plain.name,apiGraph:plain.apiGraph,ports:plain.ports,requirements:plain.requirements}));
+    r.nodes[0].templateRevision=plain.revision;
+    assert.equal(compileSingleWorkflow(r,plain,{info:live}).graph["w_wf-1__19"].inputs.aspect_ratio,
+        "16:9 (Widescreen)");
+    r.nodes[0].inputOverrides.aspect_ratio="4:9";
+    assert.throws(()=>compileSingleWorkflow(r,plain,{info:live}),
+        /comfy_option_invalid:ResolutionSelector.aspect_ratio:4:9/);
+});
 test("a confirmed ComfyUI /prompt 400 validation rejection fails the run and unblocks subsequent submissions",async()=>{
     const dir=mkdtempSync(join(testRoot,"atelier-comfy-invalid-prompt-"));
     let posts=0;

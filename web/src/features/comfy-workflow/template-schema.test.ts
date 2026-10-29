@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-    canonicalComfyJson, comfySha256, createComfyTemplate, templatePayloadFromGraph,
+    ComfyTemplateBindingError, canonicalComfyJson, comfySha256, createComfyTemplate, templatePayloadFromGraph,
     validateComfyApiGraph, validateComfyTemplatePayload, verifyComfyTemplate,
     type ComfyObjectInfo, type ComfyTemplatePayload,
 } from "./template-schema";
@@ -81,6 +81,106 @@ describe("Phase B: ComfyUI API graph and immutable bindings", () => {
         expect(() => validateComfyTemplatePayload(missing)).toThrow(/target missing/);
         const wrongKind=payload();wrongKind.ports[0].valueKind="IMAGE";
         expect(() => validateComfyTemplatePayload(wrongKind,info)).toThrow(/literal mode supports only scalar/);
+    });
+    it("identifies the exact literal type mismatch, bound field and expected type without leaking prompts",()=>{
+        const broken=payload();
+        // The saved API workflow contains a prompt; never expose that source text in errors.
+        broken.apiGraph["10"].inputs.text="private prompt never display";
+        broken.ports[0].valueKind="INT";
+        let error:unknown;
+        try{validateComfyTemplatePayload(broken,info);}catch(e){error=e;}
+        expect(error).toBeInstanceOf(ComfyTemplateBindingError);
+        const issue=error as ComfyTemplateBindingError;
+        expect(issue.portId).toBe("prompt");
+        expect(issue.nodeId).toBe("10");
+        expect(issue.inputName).toBe("text");
+        expect(issue.message).toContain("literal type mismatch");
+        expect(issue.message).toContain("画布端口");
+        expect(issue.message).toContain('"Prompt"（prompt）');
+        expect(issue.message).toContain("节点 10（Prompt）参数 text");
+        expect(issue.message).toContain("节点要求 STRING，当前端口设置为 INT");
+        expect(issue.message).toContain("字符串（长度");
+        expect(issue.message).not.toContain("private prompt never display");
+    });
+    it("reports the failing parameter when one canvas port maps to several ComfyUI inputs",()=>{
+        const broken=payload();
+        broken.ports[0].inputBinding!.targets.push({nodeId:"20",inputName:"strength"});
+        expect(()=>validateComfyTemplatePayload(broken,info)).toThrow(/节点 20（Images）参数 strength.*节点要求 FLOAT，当前端口设置为 STRING/);
+        try{validateComfyTemplatePayload(broken,info);}catch(e){
+            expect(e).toBeInstanceOf(ComfyTemplateBindingError);
+            const issue=e as ComfyTemplateBindingError;
+            expect(issue.portId).toBe("prompt");
+            expect(issue.nodeId).toBe("20");
+            expect(issue.inputName).toBe("strength");
+        }
+    });
+    it("also locates socket, default-value and output socket errors",()=>{
+        const socket=payload();
+        socket.ports[0].valueKind="FLOAT";
+        socket.ports[0].inputBinding={mode:"socket",replaceInternalLink:true,targets:[{nodeId:"10",inputName:"text"}]};
+        expect(()=>validateComfyTemplatePayload(socket,info)).toThrow(/socket type mismatch.*节点 10（Prompt）参数 text.*节点要求 STRING，当前端口设置为 FLOAT/);
+        const invalidDefault=payload();
+        invalidDefault.ports[1].defaultValue="not-a-number";
+        expect(()=>validateComfyTemplatePayload(invalidDefault,info)).toThrow(/default value type mismatch.*端口要求 FLOAT，默认值为 字符串（长度/);
+        const wrongOutput=payload();
+        wrongOutput.ports[3].valueKind="VIDEO";
+        try{validateComfyTemplatePayload(wrongOutput,info);}catch(e){
+            expect(e).toBeInstanceOf(ComfyTemplateBindingError);
+            const issue=e as ComfyTemplateBindingError;
+            expect(issue.portId).toBe("output");
+            expect(issue.nodeId).toBe("20");
+            expect(issue.message).toMatch(/output socket type mismatch.*输出 \[0\].*节点类型 IMAGE，当前端口设置为 VIDEO/);
+        }
+    });
+    it("shows numeric type diagnostics without changing the strict declared INT/FLOAT validation",()=>{
+        const broken=payload();
+        broken.ports[1].valueKind="INT";
+        // API graph has 0.3, but real object_info requires FLOAT.
+        expect(()=>validateComfyTemplatePayload(broken,info)).toThrow(/节点 20（Images）参数 strength.*节点要求 FLOAT，当前端口设置为 INT.*小数（0.3）/);
+        expect(validateComfyTemplatePayload(payload(),info).ports).toHaveLength(4);
+    });
+    it("binds ResolutionSelector.aspect_ratio COMBO strings as a STRING literal, without weakening numeric type checks",async()=>{
+        const source=payload();
+        const comboOptions=["1:1 (Square)","2:3 (Portrait Photo)","3:2 (Photo)",
+            "3:4 (Portrait Standard)","4:3 (Standard)","9:16 (Portrait Widescreen)",
+            "16:9 (Widescreen)","21:9 (Ultrawide)"];
+        source.apiGraph["19"]={class_type:"ResolutionSelector",inputs:{
+            aspect_ratio:"1:1 (Square)",megapixels:1.5,multiple:16
+        },_meta:{title:"分辨率选择器"}};
+        source.requirements.classTypes=[...source.requirements.classTypes,"ResolutionSelector"].sort();
+        source.ports.push({id:"aspect_ratio",label:"画面比例",direction:"target",valueKind:"STRING",
+            inputBinding:{mode:"literal",targets:[{nodeId:"19",inputName:"aspect_ratio"}]},
+            choices:comboOptions.map(value=>({label:value,value}))});
+        const definitions:ComfyObjectInfo={...info,ResolutionSelector:{input:{required:{
+            aspect_ratio:["COMBO",{default:comboOptions[0],multiselect:false,options:comboOptions}],
+            megapixels:["FLOAT",{}],multiple:["INT",{}]
+        }},output:["INT","INT"]}};
+        expect(validateComfyTemplatePayload(source,definitions).ports.at(-1)?.choices?.length).toBe(8);
+        const version=await createComfyTemplate("moss-combo-aspect-ratio",source,definitions);
+        await expect(verifyComfyTemplate(version)).resolves.toBeUndefined();
+        const mismatch=structuredClone(source);
+        mismatch.ports.at(-1)!.valueKind="INT";
+        expect(()=>validateComfyTemplatePayload(mismatch,definitions))
+            .toThrow(/literal type mismatch.*节点要求 STRING（COMBO 枚举值），当前端口设置为 INT/);
+        const strict=structuredClone(source);
+        strict.ports.push({id:"megapixels",label:"分辨率",direction:"target",valueKind:"STRING",
+            inputBinding:{mode:"literal",targets:[{nodeId:"19",inputName:"megapixels"}]}});
+        expect(()=>validateComfyTemplatePayload(strict,definitions))
+            .toThrow(/literal type mismatch.*节点要求 FLOAT，当前端口设置为 STRING/);
+    });
+    it("accepts standard ComfyUI array enums as STRING and refuses mismatched kinds",()=>{
+        const original=payload();
+        original.apiGraph["19"]={class_type:"ResolutionSelector",inputs:{aspect_ratio:"1:1 (Square)"}};
+        original.requirements.classTypes.push("ResolutionSelector");
+        original.requirements.classTypes.sort();
+        original.ports.push({id:"aspect",label:"Aspect",direction:"target",valueKind:"STRING",
+            inputBinding:{mode:"literal",targets:[{nodeId:"19",inputName:"aspect_ratio"}]}});
+        const definitions:ComfyObjectInfo={...info,ResolutionSelector:{input:{required:{
+            aspect_ratio:[["1:1 (Square)","16:9 (Widescreen)"],{}]
+        }},output:[]}};
+        expect(()=>validateComfyTemplatePayload(original,definitions)).not.toThrow();
+        original.ports.at(-1)!.valueKind="BOOLEAN";
+        expect(()=>validateComfyTemplatePayload(original,definitions)).toThrow(/literal type mismatch/);
     });
     it("requires an explicit socket replacement policy, and never writes socket tuples into file inputs", () => {
         const invalid = payload();

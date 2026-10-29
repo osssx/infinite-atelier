@@ -144,8 +144,10 @@ function normalizeComfyEnumInputs(graph, info, trustedStagedFields) {
             // may bypass a stale upload-widget enum; never other template fields.
             if(trustedStagedFields.has(nodeId+"\0"+key))continue;
             const declaration=schema?.required?.[key] ?? schema?.optional?.[key];
-            const choices=Array.isArray(declaration?.[0]) &&
-                declaration[0].every(choice=>typeof choice==="string") ? declaration[0] : null;
+            const values=Array.isArray(declaration?.[0]) ? declaration[0] :
+                declaration?.[0]==="COMBO" && Array.isArray(declaration?.[1]?.options)
+                    ? declaration[1].options : null;
+            const choices=Array.isArray(values)&&values.every(choice=>typeof choice==="string")?values:null;
             if(!choices)continue;
             if(choices.includes(value))continue;
             // Comfy's resource widgets require the installed path exactly. Re-imported

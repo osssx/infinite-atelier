@@ -7,8 +7,7 @@ import {canvasApi,type CanvasBackendProject,type CanvasBackendSummary} from "@/f
 import {createCanvasStatePersistence,preserveValidCanvasViewport} from "@/features/backend-sync/canvas-state-persistence";
 import {safeRemoteCanvasMerge} from "@/features/backend-sync/canvas-backend-sync";
 import {canonicalBackendGraph} from "@/features/backend-sync/backend-source-fingerprint";
-import {rebaseCanvasArtifactAdditions,type GraphForRebase} from "@/features/backend-sync/canvas-artifact-save-rebase";
-import {CanvasApiError} from "@/features/backend-sync/canvas-api";
+
 
 /** Backend is authoritative. No IndexedDB, localStorage, or browser backup
  * participates in loading/saving canvas projects. */
@@ -36,19 +35,12 @@ type CanvasStore={
 };
 const initialViewport:ViewportTransform={x:0,y:0,k:1};
 const revisions=new Map<string,number>(),loaded=new Set<string>(),dirty=new Set<string>();
-const baselines=new Map<string,CanvasBackendProject["document"]>();
-const rebasedListeners=new Set<(id:string,graph:GraphForRebase)=>void>();
-export function subscribeCanvasGraphRebased(callback:(id:string,graph:GraphForRebase)=>void):()=>void{
- rebasedListeners.add(callback);
- return ()=>rebasedListeners.delete(callback);
+// The backend returns the saved graph including any new worker artifacts.
+const savedGraphListeners=new Set<(id:string,graph:{nodes:CanvasNodeData[];connections:CanvasConnection[]})=>void>();
+export function subscribeSavedCanvasGraph(callback:(id:string,graph:{nodes:CanvasNodeData[];connections:CanvasConnection[]})=>void):()=>void{
+ savedGraphListeners.add(callback);
+ return ()=>savedGraphListeners.delete(callback);
 }
-const cloned=<T,>(value:T):T=>JSON.parse(JSON.stringify(value)) as T;
-const sameMetadata=(a:Record<string,unknown>,b:Record<string,unknown>)=>{
- const nonGraph=(doc:Record<string,unknown>)=>{
-  const {nodes,connections,...rest}=doc;void nodes;void connections;return rest;
- };
- return JSON.stringify(nonGraph(a))===JSON.stringify(nonGraph(b));
-};
 
 const timers=new Map<string,ReturnType<typeof setTimeout>>();
 const activeWrites=new Map<string,Promise<void>>();
@@ -82,6 +74,29 @@ const asDocument=(value:CanvasProject)=>({
  backgroundMode:value.backgroundMode,showImageInfo:value.showImageInfo,
  comfyInstanceId:value.comfyInstanceId
 });
+/** A save can finish while the user is still typing. Append only backend
+ * results to the newer local draft; the next save handles the user's edits.
+ */
+function appendSavedOutputs(local:CanvasProject,saved:{nodes:CanvasNodeData[];connections:CanvasConnection[]}){
+ const ids=new Set(local.nodes.map(n=>n.id)),edges=new Set(local.connections.map(e=>e.id));
+ const added=saved.nodes.filter(node=>{
+  const origin=node.metadata?.comfyArtifact??node.metadata?.modelArtifact;
+  return origin&&node.id==="artifact-"+origin.artifactId&&!ids.has(node.id);
+ });
+ if(!added.length)return null;
+ const nodes=[...local.nodes,...added],allIds=new Set(nodes.map(n=>n.id));
+ const connections=[...local.connections];
+ const addedIds=new Set(added.map(n=>n.id));
+ for(const edge of saved.connections){
+  if(!addedIds.has(edge.toNodeId)||edges.has(edge.id)||!allIds.has(edge.fromNodeId))continue;
+  const source=nodes.find(n=>n.id===edge.fromNodeId);
+  if(edge.fromPortId&&source?.type==="comfy:workflow"&&
+     !source.metadata?.comfyPorts?.some(p=>p.id===edge.fromPortId&&p.direction==="source"))continue;
+  connections.push(edge);edges.add(edge.id);
+ }
+ return {nodes,connections};
+}
+
 function schedule(id:string){
  const timer=timers.get(id);if(timer)clearTimeout(timer);
  timers.set(id,setTimeout(()=>{timers.delete(id);void saveProject(id).catch(()=>{})},450));
@@ -91,7 +106,6 @@ async function saveProject(id:string):Promise<void>{
  if(existing){await existing;if(dirty.has(id))return saveProject(id);return}
  if(!dirty.has(id)||!revisions.has(id))return;
  const run=(async()=>{
-  let rebases=0;
   while(dirty.has(id)){
    const project=useCanvasStore.getState().openProject(id);
    if(!project)return;
@@ -102,36 +116,23 @@ async function saveProject(id:string):Promise<void>{
     const response=await canvasApi<CanvasBackendProject>("/api/v1/projects/"+encodeURIComponent(id),"PATCH",{
      expectedRevision:revision,document:asDocument(project)
     });
-    revisions.set(id,response.revision);baselines.set(id,cloned(response.document));
+    revisions.set(id,response.revision);
     lastErrors.delete(id);
+    // A new local edit while PATCH was in flight remains dirty, and the next
+    // save keeps any background output that appeared since this save.
+    const saved={nodes:response.document.nodes as CanvasNodeData[],
+     connections:response.document.connections as CanvasConnection[]};
+    const current=useCanvasStore.getState().openProject(id);
+    const graph=dirty.has(id)&&current?appendSavedOutputs(current,saved):
+     !dirty.has(id)&&canonicalBackendGraph(saved)!==canonicalBackendGraph({
+      nodes:project.nodes,connections:project.connections})?saved:null;
+    if(graph){
+     useCanvasStore.setState(state=>({projects:state.projects.map(value=>
+      value.id===id?{...value,nodes:graph.nodes,connections:graph.connections}:value)}));
+     for(const cb of savedGraphListeners){try{cb(id,graph)}catch{/* save succeeded */}}
+    }
     if(!auxiliary.hasPending())useCanvasStore.setState({error:null});
    }catch(error){
-    if(error instanceof CanvasApiError&&error.code==="project_revision_conflict"&&rebases<3){
-     try{
-      // Rebase only additive generated artifacts; do not overwrite user data.
-      const remote=await canvasApi<CanvasBackendProject>("/api/v1/projects/"+encodeURIComponent(id));
-      const baseline=baselines.get(id);
-      const local=useCanvasStore.getState().openProject(id);
-      if(remote.id===id&&baseline&&local&&remote.revision>revision&&
-         sameMetadata(baseline,remote.document)){
-       const merged=rebaseCanvasArtifactAdditions(
-        {nodes:baseline.nodes as CanvasNodeData[],connections:baseline.connections as CanvasConnection[]},
-        {nodes:local.nodes,connections:local.connections},
-        {nodes:remote.document.nodes as CanvasNodeData[],connections:remote.document.connections as CanvasConnection[]}
-       );
-       if(merged){
-        rebases++;
-        revisions.set(id,remote.revision);baselines.set(id,cloned(remote.document));
-        useCanvasStore.setState(state=>({projects:state.projects.map(value=>
-         value.id===id?{...value,nodes:merged.nodes,connections:merged.connections}:value)}));
-        dirty.add(id);lastErrors.delete(id);
-        useCanvasStore.setState({error:null});
-        for(const cb of rebasedListeners){try{cb(id,merged)}catch{/* UI observer cannot abort the save */}}
-        continue;
-       }
-      }
-     }catch{/* Preserve the unsaved draft on any unsafe or failed rebase. */}
-    }
     dirty.add(id);lastErrors.set(id,error);
     useCanvasStore.setState({error:error instanceof Error?error.message:"project_save_failed"});
     throw error;
@@ -194,7 +195,7 @@ export const useCanvasStore=create<CanvasStore>((set,get)=>({
    auxiliary.load(id)
   ]);
   const project={...asProject(remote),viewport:state.viewport,chatSessions:state.sessions,activeChatId:state.activeChatId};
-  revisions.set(id,remote.revision);baselines.set(id,cloned(remote.document));loaded.add(id);lastErrors.delete(id);
+  revisions.set(id,remote.revision);loaded.add(id);lastErrors.delete(id);
   set(state=>({projects:[...state.projects.filter(item=>item.id!==id),project],error:null,hydrated:true}));
   return project;
  },
@@ -203,7 +204,7 @@ export const useCanvasStore=create<CanvasStore>((set,get)=>({
   const document={title,nodes:[],connections:[],chatSessions:[],activeChatId:null,
    createdAt,updatedAt:createdAt,backgroundMode:"lines",showImageInfo:false,viewport:initialViewport};
   const response=await canvasApi<CanvasBackendProject>("/api/v1/projects","POST",{id,document});
-  revisions.set(id,response.revision);baselines.set(id,cloned(response.document));loaded.add(id);
+  revisions.set(id,response.revision);loaded.add(id);
   set(state=>({projects:[asProject(response),...state.projects],error:null,hydrated:true}));
   auxiliary.initialize(id,{viewport:initialViewport,sessions:[],activeChatId:null});
   return id;
@@ -216,7 +217,7 @@ export const useCanvasStore=create<CanvasStore>((set,get)=>({
    backgroundMode:source.backgroundMode??"lines",showImageInfo:source.showImageInfo??false,
    comfyInstanceId:source.comfyInstanceId,viewport:source.viewport??initialViewport};
   const response=await canvasApi<CanvasBackendProject>("/api/v1/projects","POST",{id,document});
-  revisions.set(id,response.revision);baselines.set(id,cloned(response.document));loaded.add(id);
+  revisions.set(id,response.revision);loaded.add(id);
   set(state=>({projects:[asProject(response),...state.projects]}));
   auxiliary.initialize(id,{viewport:source.viewport??initialViewport,sessions:source.chatSessions??[],activeChatId:source.activeChatId??null});
   return id;
@@ -234,7 +235,7 @@ export const useCanvasStore=create<CanvasStore>((set,get)=>({
    await canvasApi<{deleted:boolean}>("/api/v1/projects/"+encodeURIComponent(id),"DELETE");
    // Each committed DELETE is reflected immediately, even if a later item fails.
    set(state=>({projects:state.projects.filter(item=>item.id!==id)}));
-   loaded.delete(id);dirty.delete(id);revisions.delete(id);baselines.delete(id);lastErrors.delete(id);
+   loaded.delete(id);dirty.delete(id);revisions.delete(id);lastErrors.delete(id);
    auxiliary.discard(id);
    const timer=timers.get(id);if(timer)clearTimeout(timer);timers.delete(id);
   }
@@ -255,7 +256,7 @@ export const useCanvasStore=create<CanvasStore>((set,get)=>({
   if(!merged)return false;
   // Single synchronous Store commit: accepted server revision + graph always
   // advance together. No PATCH: this is a backend-authoritative materialization.
-  revisions.set(id,remote.revision);baselines.set(id,cloned(remote.document));
+  revisions.set(id,remote.revision);
   set(state=>({projects:state.projects.map(item=>item.id===id?
    {...item,nodes:merged.nodes,connections:merged.connections}:item)}));
   return true;

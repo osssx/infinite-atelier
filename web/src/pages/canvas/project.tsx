@@ -61,7 +61,7 @@ import { AssetPickerModal, type InsertAssetPayload } from "@/components/canvas/a
 import { CanvasSidePanel } from "@/components/canvas/canvas-side-panel";
 import { CanvasZoomControls } from "@/components/canvas/canvas-zoom-controls";
 import { DirectorPanel } from "@/components/canvas/director-panel";
-import { flushCanvasStorePersistence,awaitCanvasStorePersistence,useCanvasStore,subscribeCanvasGraphRebased } from "@/stores/canvas/use-canvas-store";
+import { flushCanvasStorePersistence,awaitCanvasStorePersistence,useCanvasStore,subscribeSavedCanvasGraph } from "@/stores/canvas/use-canvas-store";
 import { useGenerationHistoryStore, type GenerationHistoryImage } from "@/stores/canvas/use-generation-history-store";
 import { buildCanvasGraphIndex } from "@/lib/canvas/canvas-graph-index";
 import { prepareCanvasPortConnection, reconcileComfyArtifactConnections } from "@/lib/canvas/canvas-port-connections";
@@ -521,10 +521,9 @@ function AtelierCanvasPage() {
 
 
     // An artifact can land server-side while a local autosave is in flight.
-    // After a safe store-level revision rebase, update the mounted graph too;
-    // otherwise the next editor effect would write its old arrays over the
-    // newly adopted artifact on the next save.
-    useEffect(()=>subscribeCanvasGraphRebased((id,graph)=>{
+    // Keep the rendered canvas aligned with the graph returned from a save,
+    // including any generated artifacts the local backend just appended.
+    useEffect(()=>subscribeSavedCanvasGraph((id,graph)=>{
         if(id!==projectId||activeProjectIdRef.current!==projectId||
            !pageMountedRef.current)return;
         nodesRef.current=graph.nodes;connectionsRef.current=graph.connections;

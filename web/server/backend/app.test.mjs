@@ -205,9 +205,9 @@ test("project endpoints preserve CAS and reject invalid references",async t=>{
  r=await call("PATCH","/api/v1/projects/p",{expectedRevision:1,document:doc("revised")},{"if-match":'"1"'});
  assert.equal(r.statusCode,200);assert.equal(r.json().revision,2);
  r=await call("PATCH","/api/v1/projects/p",{expectedRevision:1,document:doc("stale")});
- assert.equal(r.statusCode,409);assert.equal(r.json().code,"project_revision_conflict");assert.equal(r.json().details.currentRevision,2);
- r=await call("PATCH","/api/v1/projects/p",{expectedRevision:2,document:doc("other")},{"if-match":'"1"'});
- assert.equal(r.statusCode,400);
+ assert.equal(r.statusCode,200);assert.equal(r.json().revision,3);
+ r=await call("PATCH","/api/v1/projects/p",{document:doc("other")});
+ assert.equal(r.statusCode,200);assert.equal(r.json().revision,4);
  r=await call("POST","/api/v1/projects",{id:"wrong",document:{nodes:[],connections:[{fromNodeId:"none",toNodeId:"none"}]}});
  assert.equal(r.statusCode,400);
  const unsafe=await call("POST","/api/v1/projects",{id:"leak",document:{
@@ -218,7 +218,7 @@ test("project endpoints preserve CAS and reject invalid references",async t=>{
 });
 
 
-test("two browser origins share project summaries and revision events but never overwrite on stale PATCH",async t=>{
+test("single-user canvas saves use latest edit without 409; project revision still notifies readers",async t=>{
  const {call,db}=await fixture(t);
  const hostA={host:"127.0.0.1:3000",origin:"http://127.0.0.1:3000"};
  const hostB={host:"localhost:3000",origin:"http://localhost:3000"};
@@ -237,15 +237,15 @@ test("two browser origins share project summaries and revision events but never 
  assert.equal(edited.statusCode,200);
  const stale=await call("PATCH","/api/v1/projects/shared-1",{expectedRevision:1,document:doc("lost")},
   {"if-match":'"1"',...hostB});
- assert.equal(stale.statusCode,409);
- assert.equal((await call("GET","/api/v1/projects/shared-1",undefined,hostB)).json().document.nodes[0].metadata.prompt,"B");
+ assert.equal(stale.statusCode,200);
+ assert.equal((await call("GET","/api/v1/projects/shared-1",undefined,hostB)).json().document.nodes[0].metadata.prompt,"lost");
  const stream=await call("GET","/api/v1/projects/events?after="+afterSnapshot+"&once=1",undefined,hostB);
  assert.equal(stream.statusCode,200,stream.body);
  assert.match(stream.body,/event: project/);
  const values=stream.body.split("\n").filter(line=>line.startsWith("data: ")).map(line=>JSON.parse(line.slice(6)));
- assert.deepEqual(values.map(item=>[item.kind,item.projectId,item.revision]),[["updated","shared-1",2]]);
- assert.equal(db.prepare("SELECT COUNT(*) AS n FROM project_events WHERE project_id=?").get("shared-1").n,2);
- assert.equal((await call("GET","/api/v1/projects",undefined,hostB)).json().projects[0].revision,2);
+ assert.deepEqual(values.map(item=>[item.kind,item.projectId,item.revision]),[["updated","shared-1",2],["updated","shared-1",3]]);
+ assert.equal(db.prepare("SELECT COUNT(*) AS n FROM project_events WHERE project_id=?").get("shared-1").n,3);
+ assert.equal((await call("GET","/api/v1/projects",undefined,hostB)).json().projects[0].revision,3);
  const replay=await call("GET","/api/v1/projects/events?after=0&once=1",undefined,hostA);
  assert.equal(replay.statusCode,200);assert.match(replay.body,/"kind":"created"/);
  const future=await call("GET","/api/v1/projects/events?after=99&once=1",undefined,hostB);

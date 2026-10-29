@@ -1,6 +1,6 @@
 import Fastify from "fastify";
 import {randomUUID} from "node:crypto";
-import {createProject,getProject,patchProject,deleteProject,listProjectSummaries,projectEventCursor} from "./projects.mjs";
+import {createProject,getProject,saveSingleUserCanvas,deleteProject,listProjectSummaries,projectEventCursor} from "./projects.mjs";
 import {getCanvasViewport,putCanvasViewport,getCanvasChats,putCanvasChats} from "./canvas-state.mjs";
 import {submitJob,readJobsSnapshot,readEventsAfter} from "./repository.mjs";
 import {EXECUTION_MODES} from "./contracts.mjs";
@@ -19,7 +19,7 @@ const idSchema={type:"string",pattern:"^[A-Za-z0-9_-]{1,128}$"};
 const canvasNodeIdSchema={type:"string",pattern:CANVAS_NODE_ID_PATTERN};
 const documentSchema={type:"object",required:["nodes","connections"],properties:{nodes:{type:"array"},connections:{type:"array"}},additionalProperties:true};
 const projectBody={type:"object",required:["document"],properties:{id:idSchema,document:documentSchema},additionalProperties:false};
-const editBody={type:"object",required:["expectedRevision","document"],properties:{expectedRevision:{type:"integer",minimum:1},document:documentSchema},additionalProperties:false};
+const editBody={type:"object",required:["document"],properties:{expectedRevision:{type:"integer",minimum:1},document:documentSchema},additionalProperties:false};
 const viewportBody={type:"object",required:["expectedRevision","viewport"],
  properties:{expectedRevision:{type:"integer",minimum:1},viewport:{
   type:"object",required:["x","y","k"],additionalProperties:false,
@@ -457,10 +457,7 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
   const project=getProject(db,req.params.id);reply.header("ETag",'"'+project.revision+'"');return project;
  });
  app.patch("/api/v1/projects/:id",{schema:{params:{type:"object",required:["id"],properties:{id:idSchema}},body:editBody}},async(req,reply)=>{
-  if(req.headers["if-match"]!==undefined&&req.headers["if-match"]!=='"'+req.body.expectedRevision+'"'){
-   reply.code(400);return {code:"revision_header_mismatch",message:"revision_header_mismatch",requestId:req.id};
-  }
-  const project=patchProject(db,{id:req.params.id,...req.body});reply.header("ETag",'"'+project.revision+'"');return project;
+  const project=saveSingleUserCanvas(db,{id:req.params.id,...req.body});reply.header("ETag",'"'+project.revision+'"');return project;
  });
 
  // These independent revisions never increment the graph revision or pollute

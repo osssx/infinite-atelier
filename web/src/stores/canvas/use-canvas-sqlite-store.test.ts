@@ -6,7 +6,9 @@ const fake=vi.hoisted(()=>({
  views:new Map<string,{viewport:{x:number;y:number;k:number};revision:number}>(),
  chats:new Map<string,{sessions:any[];activeChatId:string|null;revision:number}>(),
  methods:[] as string[],
- rejectPatch:false
+ rejectPatch:false,
+ pauseNextPatch:null as Promise<void>|null,
+ patchStarted:null as (()=>void)|null
 }));
 vi.mock("@/features/backend-sync/canvas-api",async importOriginal=>{
  const actual=await importOriginal<typeof import("@/features/backend-sync/canvas-api")>();
@@ -44,9 +46,26 @@ vi.mock("@/features/backend-sync/canvas-api",async importOriginal=>{
   if(method==="GET")return current;
   if(method==="DELETE"){fake.projects.delete(id);fake.views.delete(id);fake.chats.delete(id);return {deleted:true}};
   if(method==="PATCH"){
-   if(fake.rejectPatch||payload.expectedRevision!==current.revision)
-    throw new actual.CanvasApiError("project_revision_conflict",409);
-   const updated={...current,document:payload.document,revision:current.revision+1};
+   const pause=fake.pauseNextPatch;
+   if(pause){fake.pauseNextPatch=null;fake.patchStarted?.();await pause;}
+   if(fake.rejectPatch)throw new actual.CanvasApiError("save_failed",503);
+   const next={...payload.document,nodes:[...payload.document.nodes],
+    connections:[...payload.document.connections]};
+   if(payload.expectedRevision<current.revision){
+    const known=new Set(next.nodes.map((node:any)=>node.id));
+    const edges=new Set(next.connections.map((edge:any)=>edge.id));
+    const restored=new Set<string>();
+    for(const node of current.document.nodes as any[]){
+     if(!node.metadata?.comfyArtifact&&!node.metadata?.modelArtifact)continue;
+     if(known.has(node.id))continue;
+     next.nodes.push(node);known.add(node.id);restored.add(node.id);
+    }
+    for(const edge of current.document.connections as any[]){
+     if(!restored.has(edge.toNodeId)||!known.has(edge.fromNodeId)||edges.has(edge.id))continue;
+     next.connections.push(edge);edges.add(edge.id);
+    }
+   }
+   const updated={...current,document:next,revision:current.revision+1};
    fake.projects.set(id,updated);return updated;
   }
   throw Error("unexpected api "+method+" "+path);
@@ -179,8 +198,43 @@ describe("SQLite-only Canvas store",()=>{
   expect((saved.document.nodes as any[])[1].metadata.comfyArtifact.artifactId).toBe("a1");
   expect(saved.document.connections).toEqual([edge]);
   expect(useCanvasStore.getState().openProject(id)?.nodes).toHaveLength(2);
-  expect(fake.methods.filter(call=>call==="PATCH /api/v1/projects/"+id)).toHaveLength(2);
+  expect(fake.methods.filter(call=>call==="PATCH /api/v1/projects/"+id)).toHaveLength(1);
   expect(useCanvasStore.getState().error).toBeNull();
+ });
+ it("keeps a completed video while a second prompt edit happens during PATCH",async()=>{
+  fake.rejectPatch=false;
+  const id=await useCanvasStore.getState().createProject("Keep writing while saving");
+  const source={id:"source",type:"comfy:workflow",title:"Original",
+   position:{x:0,y:0},width:300,height:200,
+   metadata:{comfyPorts:[{id:"video",label:"Video",direction:"source" as const,valueKind:"VIDEO" as const}]}};
+  useCanvasStore.getState().updateProject(id,{nodes:[source]});
+  await awaitCanvasStorePersistence(id);
+  const old=fake.projects.get(id)!;
+  const output={id:"artifact-new",type:"video",title:"Video",
+   position:{x:350,y:0},width:400,height:220,
+   metadata:{comfyArtifact:{artifactId:"new",workflowNodeId:"source",
+    portId:"video",runId:"job",kind:"video",index:0}}};
+  const edge={id:"artifact-edge-new",fromNodeId:"source",fromPortId:"video",
+   toNodeId:"artifact-new",toPortId:"comfy-artifact"};
+  fake.projects.set(id,{...old,revision:old.revision+1,
+   document:{...old.document,nodes:[source,output],connections:[edge]}});
+  let release!:()=>void,started!:()=>void;
+  fake.pauseNextPatch=new Promise<void>(resolve=>{release=resolve});
+  const began=new Promise<void>(resolve=>{started=resolve});
+  fake.patchStarted=started;
+  useCanvasStore.getState().updateProject(id,{nodes:[{...source,title:"First edit"}]});
+  const saving=awaitCanvasStorePersistence(id);
+  await began;
+  useCanvasStore.getState().updateProject(id,{nodes:[{...source,title:"Second edit"}]});
+  release();
+  await saving;
+  await awaitCanvasStorePersistence(id);
+  fake.patchStarted=null;
+  const saved=fake.projects.get(id)!.document;
+  expect((saved.nodes as any[]).map(node=>node.id)).toEqual(["source","artifact-new"]);
+  expect((saved.nodes as any[])[0].title).toBe("Second edit");
+  expect(saved.connections).toEqual([edge]);
+  expect(useCanvasStore.getState().openProject(id)?.nodes).toHaveLength(2);
  });
  it("preserves a remote detached artifact if its source is locally deleted",async()=>{
   fake.rejectPatch=false;
@@ -202,7 +256,7 @@ describe("SQLite-only Canvas store",()=>{
   expect(fake.projects.get(id)!.document.connections).toEqual([]);
   expect(useCanvasStore.getState().openProject(id)?.nodes.map(n=>n.id)).toEqual(["artifact-a2"]);
  });
- it("does not overwrite a remote edit to the same source, and retains the unsaved local draft",async()=>{
+ it("single-user saves use the latest local edit without a multi-writer conflict flow",async()=>{
   fake.rejectPatch=false;
   const id=await useCanvasStore.getState().createProject("True concurrent edit");
   const node={id:"txt",type:"text",title:"Base",position:{x:0,y:0},width:300,height:200};
@@ -212,9 +266,9 @@ describe("SQLite-only Canvas store",()=>{
   fake.projects.set(id,{...previous,revision:previous.revision+1,
    document:{...previous.document,nodes:[{...node,title:"Other editor"}]}});
   useCanvasStore.getState().updateProject(id,{nodes:[{...node,title:"My unsaved draft"}]});
-  await expect(awaitCanvasStorePersistence(id)).rejects.toThrow("project_revision_conflict");
+  await expect(awaitCanvasStorePersistence(id)).resolves.toBeUndefined();
   expect(useCanvasStore.getState().openProject(id)?.nodes[0].title).toBe("My unsaved draft");
-  expect((fake.projects.get(id)!.document.nodes as any[])[0].title).toBe("Other editor");
+  expect((fake.projects.get(id)!.document.nodes as any[])[0].title).toBe("My unsaved draft");
  });
  it("keeps a valid saved viewport when a zoom calculation produces NaN or Infinity",async()=>{
   fake.rejectPatch=false;
@@ -235,7 +289,7 @@ describe("SQLite-only Canvas store",()=>{
    id:"old-draft",type:"text",title:"draft",width:200,height:100,position:{x:0,y:0}
   }]});
   fake.rejectPatch=true;
-  await expect(awaitCanvasStorePersistence(old)).rejects.toThrow("project_revision_conflict");
+  await expect(awaitCanvasStorePersistence(old)).rejects.toThrow("save_failed");
   fake.rejectPatch=false;
   const current=await useCanvasStore.getState().createProject("Current project");
   useCanvasStore.getState().updateProject(current,{nodes:[{
@@ -251,7 +305,7 @@ describe("SQLite-only Canvas store",()=>{
   const id=await useCanvasStore.getState().createProject("Revision check");
   useCanvasStore.getState().updateProject(id,{nodes:[{id:"image-1",type:"image",title:"Local",position:{x:1,y:2},width:200,height:200}]});
   fake.rejectPatch=true;
-  await expect(awaitCanvasStorePersistence()).rejects.toThrow("project_revision_conflict");
+  await expect(awaitCanvasStorePersistence()).rejects.toThrow("save_failed");
   expect(useCanvasStore.getState().openProject(id)?.nodes[0].title).toBe("Local");
   await expect(useCanvasStore.getState().loadProject(id)).rejects.toThrow("project_unsaved_local_edits");
   expect(fake.projects.get(id)?.document.nodes).toEqual([]);

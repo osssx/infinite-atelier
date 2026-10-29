@@ -80,6 +80,54 @@ export function deleteProject(db,id){
   return {id,deleted:true};
  });
 }
+/** Single-user autosave: the editor owns ordinary nodes; the background
+ * materializer owns new CAS results. A late save must not erase a completed
+ * background output. No multi-user conflict/rebase protocol is needed.
+ */
+export function saveSingleUserCanvas(db,{id,expectedRevision,document}){
+ if(!validId(id))throw problem("invalid_project_id");
+ if(expectedRevision!==undefined&&(!Number.isSafeInteger(expectedRevision)||expectedRevision<1))
+  throw problem("expected_revision_required");
+ const incoming=graphDocument(document);
+ validateProjectDocument(incoming);
+ return writeTransaction(db,()=>{
+  const row=db.prepare("SELECT * FROM projects WHERE id=? AND deleted_at IS NULL").get(id);
+  if(!row)throw problem("project_not_found",404);
+  const current=JSON.parse(row.document_json);
+  const next={...incoming,nodes:[...incoming.nodes],connections:[...incoming.connections]};
+  if(expectedRevision===undefined||expectedRevision<row.revision){
+   const ids=new Set(next.nodes.map(n=>n.id));
+   const edges=new Set(next.connections.map(e=>e.id));
+   const restored=new Set();
+   for(const node of current.nodes){
+    const origin=node.metadata?.comfyArtifact??node.metadata?.modelArtifact;
+    if(!origin||node.id!=="artifact-"+origin.artifactId||ids.has(node.id))continue;
+    const materialized=db.prepare(
+     "SELECT 1 FROM materializations WHERE artifact_id=? AND node_id=? AND project_id=? AND status='materialized' LIMIT 1"
+    ).get(origin.artifactId,node.id,id);
+    if(!materialized)continue;
+    next.nodes.push(node);ids.add(node.id);restored.add(node.id);
+   }
+   for(const edge of current.connections){
+    if(!restored.has(edge.toNodeId)||edges.has(edge.id)||!ids.has(edge.fromNodeId))continue;
+    // An edited workflow may have changed or removed the output port.
+    // Keep its already generated artifact, but do not restore a stale edge.
+    const source=next.nodes.find(n=>n.id===edge.fromNodeId);
+    if(edge.fromPortId&&source?.type==="comfy:workflow"&&
+       !source.metadata?.comfyPorts?.some(p=>p.id===edge.fromPortId&&p.direction==="source"))
+     continue;
+    next.connections.push(edge);edges.add(edge.id);
+   }
+  }
+  const content=validateProjectDocument(next);
+  const revision=row.revision+1;
+  db.prepare("UPDATE projects SET document_json=?,revision=? WHERE id=? AND deleted_at IS NULL")
+   .run(content,revision,id);
+  emitProjectEvent(db,{id,revision,kind:"updated"});
+  return map(db.prepare("SELECT * FROM projects WHERE id=?").get(id));
+ });
+}
+
 export function patchProject(db,{id,expectedRevision,document}){
  if(!Number.isSafeInteger(expectedRevision)||expectedRevision<1)throw problem("expected_revision_required");
  const content=validateProjectDocument(graphDocument(document));

@@ -7,7 +7,7 @@ import {DatabaseSync} from "node:sqlite";
 import {initializeSchema} from "./schema.mjs";
 import {createBlobStore} from "./blob-store.mjs";
 import {createCanvasMaterializer} from "./canvas-materializer.mjs";
-import {createProject,getProject,patchProject} from "./projects.mjs";
+import {createProject,getProject,patchProject,saveSingleUserCanvas} from "./projects.mjs";
 import {fingerprintSource,fingerprintSourceLegacy,submitJob,appendArtifact,transitionJob,readEventsAfter} from "./repository.mjs";
 import {createJobCoordinator} from "./job-coordinator.mjs";
 import {createBackendWorker} from "./worker.mjs";
@@ -396,6 +396,57 @@ test("worker automatically requeues old source-changed video blocks on startup, 
  assert.equal(f.db.prepare("SELECT COUNT(*) n FROM job_events WHERE job_id=? AND kind='artifact_materialization_requeued'").get(jobId).n,1,
   "restarting should not disturb successful output or blocked identity conflicts");
  await worker.stop();await restarted.stop();
+});
+test("single-user stale autosave retains worker materializations without conflict or client rebase",async t=>{
+ const f=fixture(t),{jobId}=await f.addArtifacts({count:2});
+ const before=getProject(f.db,"project-1");
+ const generated=await f.materializer.runOnce();
+ assert.equal(generated.length,2);
+ assert.ok(generated.every(r=>r.status==="materialized"));
+ const afterGeneration=getProject(f.db,"project-1");
+ assert.equal(afterGeneration.document.nodes.length,3);
+ const stale={...before.document,nodes:before.document.nodes.map(n=>({
+  ...n,metadata:{...n.metadata,comfyWorkflow:{inputOverrides:{prompt:"updated by user"}}}
+ }))};
+ const saved=saveSingleUserCanvas(f.db,{id:"project-1",expectedRevision:before.revision,document:stale});
+ assert.equal(saved.revision,afterGeneration.revision+1);
+ assert.equal(saved.document.nodes.length,3);
+ assert.equal(saved.document.connections.length,2);
+ assert.equal(saved.document.nodes[0].metadata.comfyWorkflow.inputOverrides.prompt,"updated by user");
+ assert.equal(saved.document.nodes.filter(n=>n.id.startsWith("artifact-")).length,2);
+ assert.equal(f.db.prepare("SELECT status FROM jobs WHERE id=?").get(jobId).status,"succeeded");
+ // When the browser has the latest revision, explicitly deleting one result
+ // is a user edit, not an outdated autosave; honor it.
+ const deleting={...saved.document,nodes:saved.document.nodes.filter(n=>n.id!==generated[0].nodeId),
+  connections:saved.document.connections.filter(e=>e.toNodeId!==generated[0].nodeId)};
+ const reduced=saveSingleUserCanvas(f.db,{id:"project-1",expectedRevision:saved.revision,document:deleting});
+ assert.equal(reduced.document.nodes.length,2);
+ assert.equal(reduced.document.connections.length,1);
+});
+test("single-user stale autosave never resurrects deleted Comfy sources, keeps completed video detached",async t=>{
+ const f=fixture(t),{jobId}=await f.addArtifacts({count:2});
+ const prior=getProject(f.db,"project-1");
+ await f.materializer.runOnce();
+ const stored=saveSingleUserCanvas(f.db,{id:"project-1",expectedRevision:prior.revision,
+  document:{nodes:[],connections:[]}});
+ assert.equal(stored.document.nodes.length,2);
+ assert.equal(stored.document.connections.length,0);
+ assert.ok(stored.document.nodes.every(n=>n.metadata?.comfyArtifact));
+ assert.equal(f.db.prepare("SELECT status FROM jobs WHERE id=?").get(jobId).status,"succeeded");
+});
+test("stale single-user save keeps outputs detached when workflow ports were removed",async t=>{
+ const f=fixture(t);
+ await f.addArtifacts({count:2});
+ const before=getProject(f.db,"project-1");
+ await f.materializer.runOnce();
+ const edited={...before.document,nodes:before.document.nodes.map(n=>({
+  ...n,metadata:{...n.metadata,comfyPorts:[]}
+ }))};
+ const saved=saveSingleUserCanvas(f.db,{id:"project-1",expectedRevision:before.revision,document:edited});
+ assert.equal(saved.document.nodes.length,3);
+ assert.equal(saved.document.connections.length,0);
+ assert.deepEqual(saved.document.nodes[0].metadata.comfyPorts,[]);
+ assert.equal(saved.document.nodes.filter(n=>n.metadata?.comfyArtifact).length,2);
 });
 test("P4.7 pending artifact recover processes only stored Blob, never generates again",async t=>{
  const f=fixture(t),{jobId,created}=await f.addArtifacts({count:1});

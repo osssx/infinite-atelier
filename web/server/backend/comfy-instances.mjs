@@ -82,9 +82,15 @@ export function createComfyInstanceRegistry({db,blobStore,upstreamCall=comfyUpst
  async function checkedList(){
   return Promise.all(list().map(async(instance)=>{
    try{
-    const info=await upstreamCall(instance,"/object_info",{timeoutMs:2500});
-    if(!info||typeof info!=="object"||Array.isArray(info))throw Error("invalid_comfy_info");
-    return {...instance,reachable:true,classTypes:Object.keys(info)};
+    // Connectivity must not depend on downloading/parsing /object_info:
+    // custom nodes can make that response several MB and take >2.5s,
+    // while /prompt and the workflow executor are still healthy.
+    const stats=await upstreamCall(instance,"/system_stats",{timeoutMs:5000});
+    if(!stats||typeof stats!=="object"||Array.isArray(stats)||
+       !stats.system||typeof stats.system!=="object"||Array.isArray(stats.system)||
+       !Array.isArray(stats.devices))throw Error("invalid_comfy_system_stats");
+    // Node definitions belong to the separate /object-info API, not health.
+    return {...instance,reachable:true,classTypes:[]};
    }catch{return {...instance,reachable:false,classTypes:[]}}
   }));
  }

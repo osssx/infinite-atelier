@@ -100,6 +100,7 @@ function mockTransport({errorAt,failDownloadOnce=false,workflowNodeId="wf-1"}={}
   assert.equal(instance.url,"http://127.0.0.1:8188");
   calls.push(path);
   if(path==="/object_info")return info;
+  if(path==="/system_stats")return {system:{os:"windows"},devices:[]};
   if(path==="/upload/image")return {name:opts.body.get("image").name,type:"input",subfolder:""};
   if(path==="/prompt"){
    prompts.push(JSON.parse(opts.body));

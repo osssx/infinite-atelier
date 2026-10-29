@@ -84,6 +84,59 @@ test("vault-only model catalog uses read-only GET and redacts keys from HTTP res
   headers:{host:"localhost"},payload:{baseUrl:"http://169.254.169.254/v1"}});
  assert.equal(wrong.statusCode,400);
 });
+test("model catalog exposes safe upstream failure codes instead of internal_error",async t=>{
+ const f=fixture(t,async()=>new Response("{}"));
+ const c=f.vault.create({id:"catalog-testing",provider:"openai_compatible",
+  displayName:"Catalog testing",apiKey:"not-a-real-secret"});
+ const scenarios=[
+  {expected:"model_catalog_upstream_unavailable",status:502,network:async()=>{throw Error("private upstream detail");}},
+  {expected:"model_catalog_timeout",status:502,network:async()=>{throw Object.assign(Error("timeout"),{name:"TimeoutError"});}},
+  {expected:"model_catalog_dns_blocked",status:502,network:async()=>{throw Object.assign(Error("fetch failed"),{cause:Object.assign(Error("pinning rejected"),{code:"model_endpoint_dns_forbidden"})});}},
+  {expected:"model_catalog_unauthorized",status:502,network:async()=>new Response("{}",{status:403})},
+  {expected:"model_catalog_upstream_rejected",status:502,network:async()=>new Response("{}",{status:404})},
+  {expected:"model_catalog_response_invalid",status:502,network:async()=>new Response(JSON.stringify({wrong:[]}),{status:200})}
+ ];
+ for(const s of scenarios){
+  const adapter=createOpenAiModelAdapter({db:f.db,blobStore:f.blobStore,vault:f.vault,
+   compatibleUpstreamCall:s.network});
+  const app=buildApp({db:f.db,authorize:async()=>true,vault:f.vault,
+   modelCatalog:args=>adapter.listModels(args)});
+  try{
+   const response=await app.inject({method:"POST",url:"/api/v1/channels/catalog-testing/models",
+    headers:{host:"localhost"},payload:{baseUrl:"https://api.cline.bot/api/v1"}});
+   assert.equal(response.statusCode,s.status);
+   assert.equal(response.json().code,s.expected);
+   assert.ok(!response.body.includes("not-a-real-secret"));
+   assert.ok(!response.body.includes("private upstream detail"));
+  }finally{await app.close()}
+ }
+});
+test("namespaced model IDs pass preparation and are submitted unchanged",async t=>{
+ const calls=[];
+ const f=fixture(t,async(url,options)=>{
+  calls.push({url,options});
+  return new Response(JSON.stringify({choices:[{message:{content:"generation succeeded"}}]}),{
+   status:200,headers:{"content-type":"application/json"}});
+ });
+ const model="cline-pass/deepseek-v4.1-flash-1017";
+ const task={kind:"text",model,prompt:"test prompt",messages:[{role:"user",content:"test prompt"}],stream:false,images:[]};
+ assert.equal(validateModelSnapshot(f.snapshot(task)),task);
+ const id=f.enqueue("namespace-model",task);
+ f.coordinator.recoverAtStartup();
+ await f.coordinator.tick();
+ assert.equal(f.db.prepare("SELECT status,submission_started_at FROM jobs WHERE id=?").get(id).status,"succeeded");
+ assert.equal(calls.length,1);
+ assert.equal(calls[0].url,"https://api.openai.com/v1/chat/completions");
+ assert.equal(JSON.parse(calls[0].options.body).model,model);
+ assert.equal(f.db.prepare("SELECT outcome FROM job_attempts WHERE job_id=?").get(id).outcome,"succeeded");
+ for(const invalid of ["/model","model/","model//item","model/../item","model?x=1",
+  "model#fragment","model\\path","model name","a".repeat(129)]){
+  assert.throws(()=>validateModelSnapshot(f.snapshot({...task,model:invalid})),/model_task_invalid/);
+ }
+ for(const valid of ["org/model","org/group/model",model,"model.v1"]){
+  assert.equal(validateModelSnapshot(f.snapshot({...task,model:valid})).model,valid);
+ }
+});
 test("P4.4 OpenAI image generation uses encrypted channel, immutable CAS, and a single GPU POST",async t=>{
  const calls=[];
  const f=fixture(t,async(url,options)=>{

@@ -37,6 +37,24 @@ describe("P4.2 SQLite-only Canvas execution boundary",()=>{
   expect(page).toContain("sqliteModelSubmitLocksRef.current.add(submissionKey)");
   expect(page).toContain("finally{sqliteModelSubmitLocksRef.current.delete(submissionKey)}");
  });
+ it("refreshes text-model submission readiness after hydration without bypassing the backend save fence",()=>{
+  const generation=page.slice(page.indexOf("const handleGenerateNode = useCallback("),
+   page.indexOf("const handleRetryNode = useCallback("));
+  expect(generation).toContain('if(!projectLoaded)throw Error("画布项目尚未加载完成")');
+  // Regression: useCallback used to omit projectLoaded, retaining initial false
+  // in every text-model submission even after the Canvas was visibly ready.
+  expect(generation).toMatch(/\[effectiveConfig,\s*finishGenerationRequest,[^\]]*\bprojectLoaded\b[^\]]*\]/);
+  expect(page).toMatch(/const projectLoaded\s*=\s*loadedProjectId === projectId/);
+  expect(page).toContain("setLoadedProjectId(null)");
+  expect(page).toContain("setLoadedProjectId(projectId)");
+  expect(page).not.toContain("setProjectLoaded(");
+  expect(page).toMatch(/useLayoutEffect\(\(\)\s*=>\s*\{\s*generateNodeRef.current\s*=\s*handleGenerateNode/);
+  // Durable save barrier and per-node deduplication must stay in the path.
+  expect(generation).toContain("sqliteModelSubmitLocksRef.current.add(submissionKey)");
+  expect(generation).toContain("startSqliteModelGeneration({");
+  const client=readFileSync(new URL("./sqlite-model-generation.ts",import.meta.url),"utf8");
+  expect(client).toContain("await bridge");
+ });
  it("does not leave a browser Gateway Runner or duplicate submission and input store",()=>{
   expect(runTypes).not.toMatch(/\/api\/comfy|\/runs|\/inputs|localStorage|fetch\(/);
   expect(panel).toContain('from "./run-types"');

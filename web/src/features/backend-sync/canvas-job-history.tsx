@@ -9,6 +9,7 @@ export type CanvasJobHistoryItem={
  createdAt:number;updatedAt:number;status:string;lastOutcome:string|null;executionMode:string;
  kind:"model"|"comfy"|"other";modelKind:string|null;
  reconciliationEligible:boolean;hasSkillSnapshot?:boolean;
+ closureEligible?:boolean;operatorClosedUnverified?:boolean;
  artifacts:CanvasJobArtifact[];artifactsTruncated:boolean;
 };
 export type SkillAudit={
@@ -183,6 +184,17 @@ export const canRetryCanvasMaterialization=(job:CanvasJobHistoryItem,artifact:Ca
  job.status==="succeeded"&&artifact.status==="blocked";
 export const canReconcileUnknownJob=(job:CanvasJobHistoryItem)=>
  job.kind==="comfy"&&job.status==="submission_unknown"&&job.reconciliationEligible;
+export const canCloseUnknownModelJob=(job:CanvasJobHistoryItem)=>
+ job.kind==="model"&&job.status==="submission_unknown"&&job.closureEligible===true;
+export async function closeCanvasUnknownModelJob(projectId:string,job:CanvasJobHistoryItem):
+ Promise<{closed:true;existing:boolean;jobId:string;status:string}>{
+ return canvasApi("/api/v1/projects/"+encodeURIComponent(projectId)+"/jobs/"+
+  encodeURIComponent(job.id)+"/close-unverified","POST",{
+   confirmationJobId:job.id,expectedUpdatedAt:job.updatedAt,
+   acknowledgePossibleCharge:true
+  });
+}
+
 /** Only completed jobs can leave history; uncertain and active tasks must stay visible. */
 export const canRemoveCanvasJobHistory=(job:CanvasJobHistoryItem)=>
  ["succeeded","failed","cancelled"].includes(job.status);
@@ -395,6 +407,30 @@ export function CanvasJobHistory({projectId,open,onClose,onObserveJob,onRefreshC
    }
   });
  }
+ function confirmCloseUnknownModelJob(job:CanvasJobHistoryItem){
+  if(!canCloseUnknownModelJob(job)||working)return;
+  modal.confirm({
+   title:"人工结束结果未知的模型任务？",
+   content:<div className="space-y-2 text-sm">
+    <p>原任务 {job.id} 的远端提交结果无法核实，服务商可能已经收到请求并计费。</p>
+    <p><strong>本操作只解除本地对同一节点后续提交的阻挡。</strong>不会取消远端请求、退费、找回结果或再次提交旧任务。</p>
+    <p>建议先核对服务商请求记录和账单。之后如果再次点击“生成”，将创建一笔独立的新请求，可能再次收费。</p>
+    <p>原始任务记录和“提交结果未知”证据将永久保留在任务历史中。</p>
+   </div>,
+   okText:"我理解可能重复计费，结束等待",
+   okType:"danger",cancelText:"暂不处理",
+   onOk:async()=>{
+    setWorking(job.id);
+    try{
+     await closeCanvasUnknownModelJob(projectId,job);
+     message.success("原任务已人工结束等待；未证明远端未计费。现在可以手动发起一笔新任务。");
+     await refresh();
+    }catch(e){
+     message.error("人工结束失败："+String(e));throw e;
+    }finally{setWorking(null)}
+   }
+  });
+ }
  function confirmRemove(job:CanvasJobHistoryItem){
   if(!canRemoveCanvasJobHistory(job)||working)return;
   modal.confirm({
@@ -474,7 +510,7 @@ export function CanvasJobHistory({projectId,open,onClose,onObserveJob,onRefreshC
      <div className="flex items-center gap-1">
       <Tag color={job.status==="succeeded"?"success":job.status==="failed"?"error":
        ["submission_unknown","blocked_credential"].includes(job.status)?"warning":"default"}>
-       {statuses[job.status]??job.status}
+       {job.operatorClosedUnverified?"已人工结束（结果未证实）":statuses[job.status]??job.status}
       </Tag>
       <Tooltip title={canRemoveCanvasJobHistory(job)?"删除历史记录":"任务尚未结束，不能删除"}>
        <Button type="text" size="small" danger icon={<Trash2 size={14}/>}
@@ -569,6 +605,14 @@ export function CanvasJobHistory({projectId,open,onClose,onObserveJob,onRefreshC
          <div className="opacity-65">有素材未核实或无法恢复；不会重复上传或发起生成。</div>}
        </div>:null}
      </div>:null}
+    {canCloseUnknownModelJob(job)?
+     <Button size="small" danger loading={working===job.id}
+      onClick={()=>confirmCloseUnknownModelJob(job)}>
+      人工结束等待（保留计费风险）
+     </Button>:null}
+    {job.operatorClosedUnverified?
+     <Alert type="warning" showIcon message="原任务已人工结束等待，远端结果及计费仍未证实"
+      description="本地已允许新的独立提交；旧任务没有被远端取消，也没有被认定为未计费。审计记录仍然保留。"/>:null}
     {canReconcileUnknownJob(job)?
      <div className="space-y-2">
       <Button size="small" onClick={()=>{

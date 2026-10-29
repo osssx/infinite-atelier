@@ -9,7 +9,7 @@ import {ARCHIVE_MAX_BYTES} from "./project-archive.mjs";
 import {createComfyRegistry} from "./comfy-registry.mjs";
 import {freezeAuthorizedSkillGrant} from "./skill-job-grants.mjs";
 import {getProjectSkillAudit,replayProjectSkillJob,lookupProjectSkillReplay} from "./skill-job-audit.mjs";
-import {listProjectJobs,hideProjectJobHistory} from "./project-job-history.mjs";
+import {listProjectJobs,hideProjectJobHistory,closeUnverifiedModelJob} from "./project-job-history.mjs";
 import {getAssetCatalog,putAssetCatalog} from "./asset-catalog.mjs";
 import {listSkillRegistry,getSkillRegistryPackage,getAuthorizedSkillCatalog,registerSqliteSkill,updateSqliteSkill,deleteSqliteSkill} from "./sqlite-skill-registry.mjs";
 import {getUiSetting,putUiSetting} from "./ui-settings.mjs";
@@ -94,12 +94,13 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
    reply.code(401).send({code:"unauthorized",message:"unauthorized",requestId:req.id});
  });
  app.setErrorHandler((error,req,reply)=>{
-  const status=error.statusCode>=400&&error.statusCode<500?error.statusCode:500;
+  const status=error.statusCode>=400&&error.statusCode<600?error.statusCode:500;
   const publicCodes=new Set(["project_revision_conflict","project_not_found","project_id_conflict","invalid_project_document",
    "invalid_project_id","project_document_too_large","expected_revision_required","invalid_project_reference",
    "invalid_canvas_chats","invalid_canvas_viewport","canvas_chats_too_large",
    "chats_revision_conflict","viewport_revision_conflict",
-   "stale_generation_source","cyclic_generation_source","generation_save_barrier_required","invalid_job_request","idempotency_key_conflict","backend_prior_job_not_terminal","job_not_found","invalid_project_job_history_request","invalid_project_job_history_cursor","project_job_not_found","project_job_not_terminal","reconciliation_invalid_input","reconciliation_not_eligible","reconciliation_provider_unsupported","reconciliation_adapter_unavailable","reconciliation_state_changed","reconciliation_upstream_unavailable","reconciliation_remote_already_linked",
+   "stale_generation_source","cyclic_generation_source","generation_save_barrier_required","invalid_job_request","idempotency_key_conflict","backend_prior_job_not_terminal","job_not_found","invalid_project_job_history_request","invalid_project_job_history_cursor","project_job_not_found","project_job_not_terminal",
+   "unknown_model_close_invalid","unknown_model_close_not_eligible","unknown_model_close_state_changed","reconciliation_invalid_input","reconciliation_not_eligible","reconciliation_provider_unsupported","reconciliation_adapter_unavailable","reconciliation_state_changed","reconciliation_upstream_unavailable","reconciliation_remote_already_linked",
    "script_asset_job_not_found","script_asset_job_not_eligible","script_asset_identity_mismatch",
    "script_asset_reconcile_invalid","script_asset_reconcile_not_eligible",
    "script_asset_reconcile_state_changed","script_asset_remote_id_conflict",
@@ -126,6 +127,10 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
    "archive_invalid_entry","archive_invalid_zip","archive_unexpected_files",
    "archive_media_integrity_error","archive_blob_integrity_error","archive_template_missing",
    "channel_not_found","channel_id_conflict","invalid_channel_config","invalid_credential_value",
+   "model_catalog_key_missing","model_catalog_provider_invalid","model_catalog_origin_invalid",
+   "model_catalog_upstream_unavailable","model_catalog_upstream_rejected",
+   "model_catalog_unauthorized","model_catalog_timeout","model_catalog_dns_blocked",
+   "model_catalog_response_invalid",
    "ark_channel_provider_invalid","ark_channel_key_missing",
    "upstream_url_invalid","upstream_destination_forbidden","upstream_dns_unavailable",
    "upstream_dns_destination_forbidden","MEDIA_URL_EXPIRED","MEDIA_DOWNLOAD_FAILED",
@@ -656,6 +661,19 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
   reply.header("Cache-Control","no-store");
   return listProjectJobs(db,{projectId:req.params.id,
    limit:req.query.limit??20,before:req.query.before});
+ });
+ // A human must explicitly acknowledge possible remote billing before an
+ // unverified model submit can stop blocking future new source-node requests.
+ // Never re-submit or infer remote rejection from a previous connection error.
+ app.post("/api/v1/projects/:id/jobs/:jobId/close-unverified",{
+  schema:{params:{type:"object",required:["id","jobId"],
+   properties:{id:idSchema,jobId:idSchema},additionalProperties:false},
+   body:{type:"object",required:["confirmationJobId","expectedUpdatedAt","acknowledgePossibleCharge"],
+    properties:{confirmationJobId:idSchema,expectedUpdatedAt:{type:"integer",minimum:0},
+     acknowledgePossibleCharge:{type:"boolean",const:true}},additionalProperties:false}}
+ },(req,reply)=>{
+  reply.header("Cache-Control","no-store");
+  return closeUnverifiedModelJob(db,{projectId:req.params.id,jobId:req.params.jobId,...req.body});
  });
  app.delete("/api/v1/projects/:id/jobs/:jobId/history",{
   schema:{params:{type:"object",required:["id","jobId"],

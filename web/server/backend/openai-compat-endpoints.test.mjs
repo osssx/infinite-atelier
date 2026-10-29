@@ -42,6 +42,37 @@ test("deny malformed addresses and sensitive metadata and non-HTTP schemes",()=>
  assert.doesNotThrow(()=>validateCompatResolvedAddress("localhost","127.0.0.1"));
  assert.doesNotThrow(()=>validateCompatResolvedAddress("192.168.1.10","192.168.1.10"));
 });
+test("HTTPS Fake-IP from desktop proxy is allowed only for pinned TLS hostname",()=>{
+ for(const ip of ["198.18.0.1","198.18.255.254","198.19.2.45"]){
+  assert.doesNotThrow(()=>validateCompatResolvedAddress("api.cline.bot",ip,{protocol:"https:"}));
+  assert.throws(()=>validateCompatResolvedAddress("api.cline.bot",ip,{protocol:"http:"}),
+   /model_endpoint_dns_forbidden/);
+  assert.throws(()=>validateCompatResolvedAddress(ip,ip,{protocol:"https:"}),
+   /model_endpoint_dns_forbidden/);
+  assert.throws(()=>normalizeOpenAiCompatBaseUrl("https://"+ip+"/v1"),
+   /model_endpoint_config_invalid/);
+ }
+ for(const ip of ["127.0.0.1","10.0.0.1","169.254.169.254",
+  "192.168.1.3","198.51.100.1"]){
+  assert.throws(()=>validateCompatResolvedAddress("api.cline.bot",ip,{protocol:"https:"}),
+   /model_endpoint_dns_forbidden/);
+ }
+});
+test("HTTP and HTTPS requests always get separate pinned dispatchers to prevent races",async()=>{
+ const calls=[];
+ const request=createPinnedOpenAiCompatCall({allowGetModels:true,
+  fetcher:async(url,options)=>{
+   calls.push({url,dispatcher:options.dispatcher,redirect:options.redirect});
+   return new Response(JSON.stringify({data:[]}),{status:200});
+  }});
+ await Promise.all([
+  request("http://localhost:8188/v1/models",{method:"GET"}),
+  request("https://api.cline.bot/api/v1/models",{method:"GET"})
+ ]);
+ assert.equal(calls.length,2);
+ assert.notEqual(calls[0].dispatcher,calls[1].dispatcher);
+ assert.deepEqual(calls.map(c=>c.redirect),["manual","manual"]);
+});
 test("compatible JobCoordinator uses frozen user endpoint and vault key, not official OpenAI",async t=>{
  const dir=mkdtempSync(join(tmpdir(),"atelier-openai-compatible-"));
  const db=new DatabaseSync(":memory:");

@@ -334,7 +334,10 @@ function AtelierCanvasPage() {
     const [comfyInstanceId, setComfyInstanceId] = useState<string | undefined>(undefined);
     const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
     const [assetPickerOpen, setAssetPickerOpen] = useState(false);
-    const [projectLoaded, setProjectLoaded] = useState(false);
+    // Readiness belongs to the loaded project ID, not to the page instance:
+    // switching projects must immediately invalidate the prior ready state.
+    const [loadedProjectId, setLoadedProjectId] = useState<string | null>(null);
+    const projectLoaded = loadedProjectId === projectId;
     const [projectLoadError,setProjectLoadError]=useState<string|null>(null);
     const [projectLoadAttempt,setProjectLoadAttempt]=useState(0);
     const [backendComfyEnabled,setBackendComfyEnabled] = useState(false);
@@ -545,7 +548,7 @@ function AtelierCanvasPage() {
 
     useEffect(() => {
         if (!hydrated) return;
-        setProjectLoaded(false);
+        setLoadedProjectId(null);
         nodesRef.current = [];
         setProjectLoadError(null);
         connectionsRef.current = [];
@@ -586,7 +589,7 @@ function AtelierCanvasPage() {
                 comfyInstanceId: project.comfyInstanceId,
             };
             setHistoryState({ canUndo: false, canRedo: false });
-            setProjectLoaded(true);
+            setLoadedProjectId(projectId);
         };
         void restore();
         let cancelled = false;
@@ -2694,7 +2697,13 @@ function AtelierCanvasPage() {
                     message.info("模型任务已提交："+job.id+"，完成后自动追加产物节点");
                     if(kind==="video"){sqliteGenerationJobsRef.current.set(nodeId,job.id);setRunningNodeId(nodeId)}
                     monitorSqliteJobRef.current(job.id);
-                }catch(error){message.error(error instanceof Error?error.message:String(error))}
+                }catch(error){
+                    const detail=error instanceof Error?error.message:String(error);
+                    if(detail.includes("backend_prior_job_not_terminal")){
+                        message.warning("同一节点存在尚未结束的模型任务。已打开任务历史，请先核对原任务，必要时人工确认风险后结束等待。");
+                        setJobHistoryOpen(true);
+                    }else message.error(detail);
+                }
                 finally{sqliteModelSubmitLocksRef.current.delete(submissionKey)}
                 return;
             }
@@ -3179,9 +3188,11 @@ function AtelierCanvasPage() {
                 setRunningNodeId(null);
             }
         },
-        [effectiveConfig, finishGenerationRequest, isAiConfigReady, message, openConfigDialog, projectId, startGenerationRequest, t],
+        [effectiveConfig, finishGenerationRequest, isAiConfigReady, message, openConfigDialog, projectId, projectLoaded, startGenerationRequest, t],
     );
-    useEffect(() => {
+    // Update event-driven toolbar/inspector callbacks before the painted canvas
+    // accepts clicks, so they never retain the initial `projectLoaded=false`.
+    useLayoutEffect(() => {
         generateNodeRef.current = handleGenerateNode;
     }, [handleGenerateNode]);
 

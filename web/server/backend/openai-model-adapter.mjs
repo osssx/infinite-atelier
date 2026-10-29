@@ -11,7 +11,10 @@ const failure=(code,statusCode=400,confirmedNotAccepted=false)=>
  Object.assign(Error(code),{code,statusCode,confirmedNotAccepted});
 const MIME={mp3:"audio/mpeg",wav:"audio/wav",flac:"audio/flac"};
 const supported=new Set(["image","audio","text"]);
-const validModel=value=>typeof value==="string"&&/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(value);
+// Model identifiers may be namespaced, e.g. "org/model" or "provider/org/model".
+// Preserve the 128-character bound and reject empty segments or URL characters.
+const validModel=value=>typeof value==="string"&&value.length<=128&&
+ /^[a-zA-Z0-9][a-zA-Z0-9._-]*(?:\/[a-zA-Z0-9][a-zA-Z0-9._-]*)*$/.test(value);
 const validPrompt=value=>typeof value==="string"&&value.trim().length>0&&
  Buffer.byteLength(value,"utf8")<=16000;
 
@@ -457,10 +460,23 @@ export function createOpenAiModelAdapter({db,blobStore,vault,upstreamCall=fetch,
   let response;
   try{
    response=await (channel.provider==="openai"?upstreamCall:compatibleUpstreamCall)(
-    endpoint+"/models",{method:"GET",headers:{Authorization:"Bearer "+secret}});
-  }catch{throw failure("model_catalog_upstream_unavailable",502)}
+    endpoint+"/models",{method:"GET",headers:{Authorization:"Bearer "+secret},
+      signal:AbortSignal.timeout(15000)});
+  }catch(error){
+   if(error?.name==="TimeoutError"||error?.name==="AbortError"||
+      error?.cause?.code==="UND_ERR_CONNECT_TIMEOUT")
+    throw failure("model_catalog_timeout",502);
+   if(error?.code==="model_endpoint_dns_forbidden"||
+      error?.cause?.code==="model_endpoint_dns_forbidden")
+    throw failure("model_catalog_dns_blocked",502);
+   throw failure("model_catalog_upstream_unavailable",502);
+  }
+  if(response.status===401||response.status===403)
+   throw failure("model_catalog_unauthorized",502);
   if(!response.ok)throw failure("model_catalog_upstream_rejected",502);
-  const data=await boundedJson(response,1024*1024);
+  let data;
+  try{data=await boundedJson(response,1024*1024)}
+  catch{throw failure("model_catalog_response_invalid",502)}
   if(!Array.isArray(data?.data)||data.data.length>5000)
    throw failure("model_catalog_response_invalid",502);
   return {models:[...new Set(data.data.map(item=>item?.id).filter(

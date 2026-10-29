@@ -113,6 +113,57 @@ test("history DELETE is project-scoped, authorized, terminal-only and hides with
  assert.equal(replay.jobId,finished);
 });
 
+test("explicit, authenticated risk acknowledgment closes only unverified model job and unblocks new source job",async t=>{
+ const f=fixture(t),old=f.make("unverified-model"),foreign=f.make("foreign-close","p2");
+ f.db.prepare("UPDATE jobs SET status='submission_unknown',submission_started_at=5,submit_marker='original-marker',updated_at=1234 WHERE id=?").run(old);
+ f.db.prepare("INSERT INTO job_attempts(id,job_id,phase,started_at,finished_at,outcome) VALUES(?,?,?,?,?,?)")
+  .run("old-attempt",old,"submitting",100,200,"submission_unknown");
+ const url="/api/v1/projects/p1/jobs/"+old+"/close-unverified";
+ const post=(path=url,payload={confirmationJobId:old,expectedUpdatedAt:1234,acknowledgePossibleCharge:true},headers={"x-test-owner":"owner"})=>
+  f.app.inject({method:"POST",url:path,headers,payload});
+ const makeNew=key=>submitJob(f.db,{projectId:"p1",targetNodeId:"producer",
+  expectedProjectRevision:1,sourceNodeFingerprint:fingerprintSource(doc,"producer"),
+  idempotencyKey:key,requestFingerprint:key,executionMode:"immediate",
+  snapshot:{adapterKind:"model",provider:"openai",task:{kind:"text",model:"new",prompt:"new prompt"}}});
+ assert.throws(()=>makeNew("next"),/backend_prior_job_not_terminal/);
+ assert.equal((await post(url,undefined,{})).statusCode,401);
+ assert.equal((await post(url,undefined,{"x-test-owner":"owner",origin:"https://attacker.invalid"})).statusCode,403);
+ assert.equal((await post("/api/v1/projects/p2/jobs/"+old+"/close-unverified")).statusCode,404);
+ assert.equal((await post(url,{confirmationJobId:"wrong",expectedUpdatedAt:1234,acknowledgePossibleCharge:true})).statusCode,400);
+ assert.equal((await post(url,{confirmationJobId:old,expectedUpdatedAt:1234,acknowledgePossibleCharge:false})).statusCode,400);
+ assert.equal((await post(url,{confirmationJobId:old,expectedUpdatedAt:1233,acknowledgePossibleCharge:true})).statusCode,409);
+ assert.equal((await post("/api/v1/projects/p2/jobs/"+foreign+"/close-unverified",
+  {confirmationJobId:foreign,expectedUpdatedAt:1234,acknowledgePossibleCharge:true})).statusCode,409);
+ f.db.prepare("UPDATE jobs SET lease_owner='still-running' WHERE id=?").run(old);
+ assert.equal((await post()).statusCode,409);
+ f.db.prepare("UPDATE jobs SET lease_owner=NULL WHERE id=?").run(old);
+ f.db.prepare("UPDATE jobs SET upstream_task_id='remote-existing' WHERE id=?").run(old);
+ assert.equal((await post()).statusCode,409,"known remote tasks require provider reconciliation, not local closure");
+ f.db.prepare("UPDATE jobs SET upstream_task_id=NULL WHERE id=?").run(old);
+ const before=(await f.call("/api/v1/projects/p1/jobs")).json().jobs.find(j=>j.id===old);
+ assert.equal(before.status,"submission_unknown");assert.equal(before.closureEligible,true);
+ const closed=await post();
+ assert.equal(closed.statusCode,200,closed.body);
+ assert.deepEqual(closed.json(),{closed:true,existing:false,jobId:old,status:"failed"});
+ assert.equal((await post()).json().existing,true,"lost admin response is idempotent");
+ const row=f.db.prepare("SELECT status,submit_marker,submission_started_at FROM jobs WHERE id=?").get(old);
+ assert.equal(row.status,"failed");
+ assert.equal(row.submit_marker,"original-marker");
+ assert.equal(row.submission_started_at,5);
+ assert.equal(f.db.prepare("SELECT outcome FROM job_attempts WHERE job_id=?").get(old).outcome,"submission_unknown");
+ const audit=f.db.prepare("SELECT kind,payload_json FROM job_events WHERE job_id=? AND kind='job_operator_closed_unverified'").all(old);
+ assert.equal(audit.length,1);assert.equal(JSON.parse(audit[0].payload_json).possibleCharge,true);
+ const after=(await f.call("/api/v1/projects/p1/jobs")).json().jobs.find(j=>j.id===old);
+ assert.equal(after.operatorClosedUnverified,true);
+ assert.equal(after.lastOutcome,"submission_unknown");
+ assert.equal(after.closureEligible,false);
+ assert.doesNotMatch(JSON.stringify(after),/new prompt|PRIVATE PROMPT|original-marker/);
+ const newJob=makeNew("next");
+ assert.equal(newJob.existing,false);
+ assert.notEqual(newJob.jobId,old);
+ assert.equal(makeNew("next").jobId,newJob.jobId,"original idempotency replay preserved");
+ assert.equal(f.db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE id=?").get(old).n,1);
+});
 test("history pagination excludes hidden records across page boundaries",async t=>{
  const f=fixture(t),ids=[];
  for(let i=0;i<8;i++){

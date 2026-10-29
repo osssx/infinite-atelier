@@ -5,6 +5,47 @@
 const invalid=(code,statusCode=400)=>Object.assign(Error(code),{code,statusCode});
 const validId=id=>typeof id==="string"&&/^[A-Za-z0-9_-]{1,128}$/.test(id);
 const terminal=new Set(["succeeded","failed","cancelled"]);
+/** Explicit administrative closure of an *unverified* paid-model submit.
+ * This does NOT certify cancellation, non-acceptance or non-billing.
+ * Immutable snapshot, submission_unknown attempt, submit marker remain intact.
+ * Only a separate, confirmed new click can submit another paid request.
+ */
+export function closeUnverifiedModelJob(db,{projectId,jobId,confirmationJobId,expectedUpdatedAt,acknowledgePossibleCharge}={}){
+ if(!validId(projectId)||!validId(jobId)||confirmationJobId!==jobId||
+    !Number.isSafeInteger(expectedUpdatedAt)||expectedUpdatedAt<0||acknowledgePossibleCharge!==true)
+  throw invalid("unknown_model_close_invalid");
+ db.exec("BEGIN IMMEDIATE");
+ try{
+  const row=db.prepare(`SELECT j.status,j.updated_at,j.lease_owner,j.upstream_task_id,j.snapshot_json
+   FROM jobs j JOIN projects p ON p.id=j.project_id
+   WHERE j.id=? AND j.project_id=? AND p.deleted_at IS NULL`).get(jobId,projectId);
+  if(!row)throw invalid("project_job_not_found",404);
+  // A lost close response is recoverable, with no new generation POST.
+  const already=db.prepare("SELECT 1 FROM job_events WHERE job_id=? AND kind='job_operator_closed_unverified' LIMIT 1").get(jobId);
+  if(row.status==="failed"&&already){
+   db.exec("COMMIT");return {closed:true,existing:true,jobId,status:"failed"};
+  }
+  const snap=JSON.parse(row.snapshot_json);
+  if(snap.adapterKind!=="model"||row.status!=="submission_unknown"||
+      row.lease_owner!==null||row.upstream_task_id!==null)
+   throw invalid("unknown_model_close_not_eligible",409);
+  if(row.updated_at!==expectedUpdatedAt)throw invalid("unknown_model_close_state_changed",409);
+  const now=Date.now();
+  const updated=db.prepare("UPDATE jobs SET status='failed',updated_at=? WHERE id=? AND status='submission_unknown' AND updated_at=?")
+   .run(now,jobId,expectedUpdatedAt);
+  if(updated.changes!==1)throw invalid("unknown_model_close_state_changed",409);
+  // Preserve lastOutcome=submission_unknown. Failed means administratively
+  // closed for local scheduling, NOT remotely rejected or unbilled.
+  db.prepare("INSERT INTO job_events(job_id,kind,payload_json,created_at) VALUES(?,?,?,?)")
+   .run(jobId,"job_operator_closed_unverified",JSON.stringify({
+    from:"submission_unknown",to:"failed",remoteAcceptance:"unverified",
+    possibleCharge:true,manualRiskAcknowledged:true
+   }),now);
+  db.exec("COMMIT");
+  return {closed:true,existing:false,jobId,status:"failed"};
+ }catch(error){db.exec("ROLLBACK");throw error}
+}
+
 /** Hide a finished task from this project's history without destroying the
  * immutable execution/idempotency fence, CAS, materializations or Canvas nodes.
  * Uncertain submissions and active jobs are deliberately never hidden.
@@ -64,6 +105,11 @@ export function listProjectJobs(db,{projectId,limit=20,before}={}){
   }));
   const attempt=db.prepare("SELECT outcome FROM job_attempts WHERE job_id=? AND outcome IS NOT NULL ORDER BY started_at DESC,id DESC LIMIT 1").get(job.id);
   const lastOutcome=outcomes.has(attempt?.outcome)?attempt.outcome:null;
+  const operatorClosedUnverified=!!db.prepare(
+   "SELECT 1 FROM job_events WHERE job_id=? AND kind='job_operator_closed_unverified' LIMIT 1"
+  ).get(job.id);
+  const closureEligible=job.status==="submission_unknown"&&snapshot.adapterKind==="model"&&
+   job.lease_owner===null&&job.upstream_task_id===null;
   const reconciliationEligible=job.status==="submission_unknown"&&
    snapshot.adapterKind==="comfy"&&job.execution_mode==="poll"&&
    typeof job.submit_marker==="string"&&!!job.submit_marker&&
@@ -71,6 +117,7 @@ export function listProjectJobs(db,{projectId,limit=20,before}={}){
    !!db.prepare("SELECT 1 FROM comfy_job_preparations WHERE job_id=?").get(job.id);
   return {id:job.id,projectId,sourceNodeId:job.target_node_id,
    createdAt:job.created_at,updatedAt:job.updated_at,status:job.status,lastOutcome,
+   operatorClosedUnverified,closureEligible,
    executionMode:job.execution_mode,reconciliationEligible,
    kind:snapshot.adapterKind==="model"?"model":
     snapshot.adapterKind==="comfy"?"comfy":"other",

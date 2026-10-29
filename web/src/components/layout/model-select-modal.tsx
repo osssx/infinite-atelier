@@ -4,7 +4,16 @@ import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { fetchChannelModels } from "@/services/api/image";
+import { CanvasApiError } from "@/features/backend-sync/canvas-api";
 import type { ModelChannel } from "@/stores/use-config-store";
+
+const modelCatalogCodes = new Set([
+    "model_catalog_key_missing","model_catalog_provider_invalid",
+    "model_catalog_origin_invalid","model_catalog_upstream_unavailable",
+    "model_catalog_upstream_rejected","model_catalog_unauthorized",
+    "model_catalog_timeout","model_catalog_dns_blocked",
+    "model_catalog_response_invalid",
+]);
 
 const arkSeedanceModels = ["doubao-seedance-2-0-260128", "doubao-seedance-2-0-fast-260128"];
 
@@ -75,7 +84,10 @@ export function ModelSelectModal({ open, channel, selectedNames, onConfirm, onCl
             setActiveTab("new");
             message.success(t("config.modelSelect.fetched", { count: models.length }));
         } catch (error) {
-            message.error(error instanceof Error ? error.message : t("config.modelSelect.fetchFailed"));
+            const code=error instanceof CanvasApiError?error.code:"";
+            message.error(modelCatalogCodes.has(code)
+                ? t("config.modelSelect.errors."+code)
+                : error instanceof Error?error.message:t("config.modelSelect.fetchFailed"));
         } finally {
             setLoading(false);
         }

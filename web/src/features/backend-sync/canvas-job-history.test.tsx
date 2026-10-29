@@ -3,7 +3,7 @@ const api=vi.hoisted(()=>vi.fn());
 vi.mock("./canvas-api",async(importOriginal)=>({
  ...(await importOriginal<typeof import("./canvas-api")>()),canvasApi:api
 }));
-import {canRetryCanvasMaterialization,canReconcileUnknownJob,getCanvasJobHistory,getCanvasSkillAudit,replayCanvasSkillJob,hasPendingSkillReplay,lookupPendingSkillReplay,retryCanvasMaterialization,recoverCanvasPendingMaterialization,reconcileCanvasUnknownJob,canRemoveCanvasJobHistory,removeCanvasJobHistory,getCanvasScriptAssets,reconcileCanvasScriptAsset,resumeCanvasScriptAssets,auditCanvasScriptChunks,
+import {canRetryCanvasMaterialization,canReconcileUnknownJob,getCanvasJobHistory,getCanvasSkillAudit,replayCanvasSkillJob,hasPendingSkillReplay,lookupPendingSkillReplay,retryCanvasMaterialization,recoverCanvasPendingMaterialization,reconcileCanvasUnknownJob,canCloseUnknownModelJob,closeCanvasUnknownModelJob,canRemoveCanvasJobHistory,removeCanvasJobHistory,getCanvasScriptAssets,reconcileCanvasScriptAsset,resumeCanvasScriptAssets,auditCanvasScriptChunks,
  type CanvasJobHistoryItem,type CanvasJobArtifact} from "./canvas-job-history";
 
 afterEach(()=>vi.unstubAllGlobals());
@@ -38,6 +38,22 @@ describe("P4.7 Canvas job history and recovery boundary",()=>{
    expect(canRemoveCanvasJobHistory({...job,status})).toBe(true);
   for(const status of ["queued","preparing","submitting","running","collecting","submission_unknown","blocked_credential"])
    expect(canRemoveCanvasJobHistory({...job,status})).toBe(false);
+ });
+ it("offers manual closure only for eligible, still-unknown model jobs and never submits generation",async()=>{
+  const unknown={...job,status:"submission_unknown",modelKind:"text",closureEligible:true};
+  expect(canCloseUnknownModelJob(unknown)).toBe(true);
+  expect(canCloseUnknownModelJob({...unknown,closureEligible:false})).toBe(false);
+  expect(canCloseUnknownModelJob({...unknown,kind:"comfy"})).toBe(false);
+  expect(canCloseUnknownModelJob({...unknown,status:"failed"})).toBe(false);
+  api.mockResolvedValueOnce({closed:true,existing:false,jobId:job.id,status:"failed"});
+  const response=await closeCanvasUnknownModelJob("p1",unknown);
+  expect(response.closed).toBe(true);
+  expect(api).toHaveBeenCalledExactlyOnceWith(
+   "/api/v1/projects/p1/jobs/job-1/close-unverified","POST",{
+    confirmationJobId:job.id,expectedUpdatedAt:unknown.updatedAt,
+    acknowledgePossibleCharge:true
+   });
+  expect(api.mock.calls.some(([path])=>path==="/api/v1/jobs")).toBe(false);
  });
  it("history removal only sends scoped DELETE; no paid generation or artifact deletion",async()=>{
   api.mockResolvedValueOnce({hidden:true,jobId:"job-1"});

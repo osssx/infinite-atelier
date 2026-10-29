@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties } from "react";
-import { Check, ChevronDown, ChevronRight, FileUp, Link2, Plus, RefreshCw, Save, Search, Trash2, X } from "lucide-react";
+import { ArrowDown, ArrowUp, Check, ChevronDown, ChevronRight, FileUp, GripVertical, Link2, Plus, RefreshCw, Save, Search, Trash2, X } from "lucide-react";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { theme as antdTheme } from "antd";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { useConfigStore } from "@/stores/use-config-store";
 import {useComfyObjectInfo} from "./use-comfy-object-info";
 import {inspectComfyInputSpec} from "./comfy-input-spec";
+import {moveComfyCanvasPort,reorderComfyCanvasPorts} from "./port-order";
 import type { CanvasNodeData, CanvasNodeMetadata, CanvasPortValueKind } from "@/types/canvas";
 import {
     appendComfyInputTarget, bindingTargetKey, enumerateComfyGraphItems, filterComfyGraphItems,
@@ -135,6 +136,8 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
     const {objectInfo,loading:infoLoading,error:infoError,refresh:refreshObjectInfo}=useComfyObjectInfo(comfyInstanceId);
     const [selectedNodeId,setSelectedNodeId] = useState("");
     const [selectedPortId,setSelectedPortId] = useState<string|null>(null);
+    const [draggingPortId,setDraggingPortId]=useState<string|null>(null);
+    const [dropPosition,setDropPosition]=useState<{id:string;placement:"before"|"after"}|null>(null);
     const [choiceDirty,setChoiceDirty] = useState(false);
     useEffect(()=>setChoiceDirty(false),[selectedPortId]);
     const [nodeSearch,setNodeSearch] = useState("");
@@ -175,6 +178,8 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
     const activePort = draft?.ports.find((port)=>port.id===selectedPortId);
     const inputPorts = draft?.ports.filter((port)=>port.direction==="target")||[];
     const outputPorts = draft?.ports.filter((port)=>port.direction==="source")||[];
+    const activeSidePorts=activePort?.direction==="target"?inputPorts:outputPorts;
+    const activeSideIndex=activeSidePorts.findIndex(p=>p.id===activePort?.id);
     const savedValue = node.metadata?.comfyWorkflow?.templateId && node.metadata?.comfyWorkflow?.templateRevision
         ? node.metadata.comfyWorkflow.templateId+"@"+node.metadata.comfyWorkflow.templateRevision : "";
     const selectedPreset=presets.find(p=>p.templateId+"@"+p.revision===savedValue);
@@ -202,6 +207,24 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
     const patchPort=(id:string, patch:Partial<ComfyTemplatePort>)=>edit((current)=>({
         ...current,ports:current.ports.map((port)=>port.id===id?{...port,...patch}:port),
     }));
+    const changePortOrder=(movingId:string,targetId:string,placement:"before"|"after")=>{
+        if(!draft||busy)return;
+        const updated=reorderComfyCanvasPorts(draft.ports,movingId,targetId,placement);
+        if(updated===draft.ports)return;
+        edit(current=>({...current,ports:reorderComfyCanvasPorts(current.ports,movingId,targetId,placement)}));
+        setSelectedPortId(movingId);
+        setStatus("已调整端口显示顺序。保存模板版本后应用到画布节点。");
+    };
+    const shiftPort=(id:string,step:-1|1)=>{
+        if(!draft||busy)return;
+        const side=draft.ports.filter(p=>p.direction===draft.ports.find(port=>port.id===id)?.direction);
+        const index=side.findIndex(p=>p.id===id);
+        const neighbor=side[index+step];
+        if(!neighbor)return;
+        edit(current=>({...current,ports:moveComfyCanvasPort(current.ports,id,step)}));
+        setSelectedPortId(id);
+        setStatus("已调整端口显示顺序。保存模板版本后应用到画布节点。");
+    };
     const addPort=(direction:"source"|"target")=>{
         const port=direction==="target"?inputPort():outputPort(selectedItem?.id||Object.keys(draft?.apiGraph||{})[0]||"");
         edit((d)=>({...d,ports:[...d.ports,port]}));
@@ -321,7 +344,7 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
         }
         setDraft({name:template.name,apiGraph:template.apiGraph,ports:template.ports,requirements:template.requirements});
         setTemplateId(template.id);setSelectedNodeId(Object.keys(template.apiGraph)[0]||"");
-        setSelectedPortId(template.ports[0]?.id||null);setError("");
+        setSelectedPortId(current=>template.ports.some(port=>port.id===current)?current:template.ports[0]?.id||null);setError("");
         setStatus("已保存新的不可变模板版本。运行时使用全局 ComfyUI 默认实例进行能力验证。");
         return true;
     };
@@ -491,12 +514,60 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
                                     <button className={buttonClass} type="button" onClick={()=>addPort("source")}><Plus size={12}/> 添加输出</button>
                                 </div>
                             </div>
-                            <div ref={portListRef} className="mt-3 flex flex-wrap gap-1.5">
-                                {draft.ports.map((p)=><button type="button" key={p.id} data-comfy-port-id={p.id} data-comfy-error-port={bindingIssue?.portId===p.id?"true":undefined} aria-pressed={p.id===selectedPortId} onClick={()=>{setSelectedPortId(p.id);setError("");setBindingIssue(null);}}
-                                    className={"inline-flex max-w-[210px] items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs transition "+(bindingIssue?.portId===p.id?"border-red-500 bg-red-500/10 font-semibold":p.id===selectedPortId?"border-[var(--comfy-accent)] bg-[var(--comfy-fill)] font-semibold":"border-[var(--comfy-border)] hover:bg-[var(--comfy-fill)]")}>
-                                    <span className="text-[10px] text-[var(--comfy-muted)]">{p.direction==="target"?"输入":"输出"}</span>
-                                    <span className="truncate">{p.label}</span>
-                                </button>)}
+                            <p className="mt-2 text-[11px] text-[var(--comfy-muted)]">拖动端口调整同侧显示顺序，也可选中端口后使用上移 / 下移。保存模板后生效。</p>
+                            <div ref={portListRef} className="mt-3 space-y-2.5" data-comfy-port-order-list>
+                                {(["target","source"] as const).map(direction=>{
+                                    const side=direction==="target"?inputPorts:outputPorts;
+                                    if(!side.length)return null;
+                                    return <div key={direction} data-comfy-port-order-group={direction} className="flex items-start gap-2">
+                                        <span className="w-7 shrink-0 pt-2 text-[10px] text-[var(--comfy-muted)]">{direction==="target"?"输入":"输出"}</span>
+                                        <div className="flex min-w-0 flex-1 flex-wrap gap-1.5">
+                                            {side.map((p)=><button type="button" key={p.id}
+                                                draggable={!busy}
+                                                data-comfy-port-id={p.id}
+                                                data-comfy-error-port={bindingIssue?.portId===p.id?"true":undefined}
+                                                data-comfy-port-drop={dropPosition?.id===p.id?dropPosition.placement:undefined}
+                                                aria-label={"选择端口 "+p.label+"，可拖动排序"}
+                                                title={"拖动调整"+(direction==="target"?"输入":"输出")+"端口顺序"}
+                                                aria-pressed={p.id===selectedPortId}
+                                                onClick={()=>{setSelectedPortId(p.id);setError("");setBindingIssue(null);}}
+                                                onDragStart={event=>{
+                                                    if(busy){event.preventDefault();return;}
+                                                    event.dataTransfer.effectAllowed="move";
+                                                    event.dataTransfer.setData("text/plain",p.id);
+                                                    setDraggingPortId(p.id);
+                                                    setSelectedPortId(p.id);
+                                                }}
+                                                onDragOver={event=>{
+                                                    const source=draft.ports.find(item=>item.id===draggingPortId);
+                                                    if(!source||source.direction!==p.direction||source.id===p.id)return;
+                                                    event.preventDefault();
+                                                    event.dataTransfer.dropEffect="move";
+                                                    const rect=event.currentTarget.getBoundingClientRect();
+                                                    const placement=event.clientX<rect.left+rect.width/2?"before":"after";
+                                                    if(dropPosition?.id!==p.id||dropPosition.placement!==placement)
+                                                        setDropPosition({id:p.id,placement});
+                                                }}
+                                                onDrop={event=>{
+                                                    event.preventDefault();
+                                                    if(draggingPortId)changePortOrder(draggingPortId,p.id,
+                                                        event.clientX<event.currentTarget.getBoundingClientRect().left+
+                                                            event.currentTarget.getBoundingClientRect().width/2?"before":"after");
+                                                    setDraggingPortId(null);setDropPosition(null);
+                                                }}
+                                                onDragEnd={()=>{setDraggingPortId(null);setDropPosition(null);}}
+                                                className={"inline-flex max-w-[210px] cursor-grab items-center gap-1.5 rounded-lg border px-2 py-1.5 text-xs transition active:cursor-grabbing "+
+                                                    (dropPosition?.id===p.id?"outline outline-2 outline-[var(--comfy-accent)] ":
+                                                    bindingIssue?.portId===p.id?"border-red-500 bg-red-500/10 font-semibold ":
+                                                    p.id===selectedPortId?"border-[var(--comfy-accent)] bg-[var(--comfy-fill)] font-semibold ":
+                                                    "border-[var(--comfy-border)] hover:bg-[var(--comfy-fill)] ") +
+                                                    (draggingPortId===p.id?"opacity-50":"")}>
+                                                <GripVertical size={12} className="shrink-0 text-[var(--comfy-muted)]" aria-hidden="true"/>
+                                                <span className="truncate">{p.label}</span>
+                                            </button>)}
+                                        </div>
+                                    </div>;
+                                })}
                                 {!draft.ports.length?<p className="text-xs text-[var(--comfy-muted)]">点击左侧参数创建端口，或手动添加端口。</p>:null}
                             </div>
                         </div>
@@ -534,10 +605,18 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
                                             }else patchPort(activePort.id,patch);
                                         }}>{KINDS.map((k)=><option key={k} value={k}>{k}</option>)}</select>
                                     </label>
-                                    <button type="button" aria-label="删除当前端口" className={buttonClass+" mt-5 !px-2.5"}
-                                        onClick={()=>{edit((d)=>({...d,ports:d.ports.filter((p)=>p.id!==activePort.id)}));setSelectedPortId(draft.ports.find((p)=>p.id!==activePort.id)?.id||null);}}>
-                                        <Trash2 size={15}/>
-                                    </button>
+                                    <div className="mt-5 flex shrink-0 items-center gap-1" data-comfy-port-order-controls>
+                                        <button type="button" aria-label="端口上移" title="上移端口（同侧）"
+                                            className={buttonClass+" !px-2"} disabled={busy||activeSideIndex<=0}
+                                            onClick={()=>shiftPort(activePort.id,-1)}><ArrowUp size={14}/></button>
+                                        <button type="button" aria-label="端口下移" title="下移端口（同侧）"
+                                            className={buttonClass+" !px-2"} disabled={busy||activeSideIndex<0||activeSideIndex===activeSidePorts.length-1}
+                                            onClick={()=>shiftPort(activePort.id,1)}><ArrowDown size={14}/></button>
+                                        <button type="button" aria-label="删除当前端口" className={buttonClass+" !px-2.5"}
+                                            onClick={()=>{edit((d)=>({...d,ports:d.ports.filter((p)=>p.id!==activePort.id)}));setSelectedPortId(draft.ports.find((p)=>p.id!==activePort.id)?.id||null);}}>
+                                            <Trash2 size={15}/>
+                                        </button>
+                                    </div>
                                 </div>
 
                                 {activePort.direction==="target" ? <>

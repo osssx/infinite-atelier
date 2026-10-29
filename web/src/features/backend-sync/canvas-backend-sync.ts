@@ -65,21 +65,25 @@ export function safeRemoteCanvasMerge(local:BackendCanvasGraph,remote:BackendCan
   const origin=node.metadata?.comfyArtifact;
   const model=node.metadata?.modelArtifact;
   if(origin){
-   if(!localNodes.has(origin.workflowNodeId)||
-    !["image","video","audio","text"].includes(origin.kind)||
+   if(!["image","video","audio","text"].includes(origin.kind)||
     node.type!==origin.kind)return null;
    if(local.nodes.some(n=>n.metadata?.comfyArtifact?.artifactId===origin.artifactId))return null;
-   if(!remote.connections.some(e=>e.fromNodeId===origin.workflowNodeId&&e.fromPortId===origin.portId&&
-      e.toNodeId===node.id&&e.toPortId==="comfy-artifact"))return null;
+   // The server is permitted to materialize a detached immutable artifact if
+   // a source or its output port disappeared during generation. Do not require
+   // a live edge to adopt the already persisted CAS result.
+   const incoming=remote.connections.filter(e=>e.toNodeId===node.id);
+   if(incoming.length>1||incoming.some(e=>e.fromNodeId!==origin.workflowNodeId||
+      e.fromPortId!==origin.portId||e.toPortId!=="comfy-artifact"))return null;
   }else if(model){
    if(!/^[a-zA-Z0-9_-]{1,128}$/.test(model.artifactId)||
     !/^[a-zA-Z0-9_-]{1,128}$/.test(model.jobId)||
     node.id!=="artifact-"+model.artifactId||
-    !localNodes.has(model.sourceNodeId)||node.type!==model.kind||
+    node.type!==model.kind||
     !["image","audio","text","video"].includes(model.kind))return null;
    if(local.nodes.some(n=>n.metadata?.modelArtifact?.artifactId===model.artifactId))return null;
-   if(!remote.connections.some(e=>e.fromNodeId===model.sourceNodeId&&
-     e.toNodeId===node.id&&!e.fromPortId&&!e.toPortId))return null;
+   const incoming=remote.connections.filter(e=>e.toNodeId===node.id);
+   if(incoming.length>1||incoming.some(e=>e.fromNodeId!==model.sourceNodeId||
+     Boolean(e.fromPortId||e.toPortId)))return null;
   }else return null;
  }
  for(const edge of remote.connections.filter(e=>!localEdges.has(e.id))){

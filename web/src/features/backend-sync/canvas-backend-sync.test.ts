@@ -227,9 +227,18 @@ describe("backend canvas sync opt-in, revisions and events",()=>{
   expect(safeRemoteCanvasMerge(original,withOutput)?.nodes).toHaveLength(2);
   expect(safeRemoteCanvasMerge(original,{nodes:[{...original.nodes[0],title:"MUTATED"},generated],
    connections:withOutput.connections})).toBeNull();
-  expect(safeRemoteCanvasMerge(original,{...withOutput,connections:[]})).toBeNull();
+  expect(safeRemoteCanvasMerge(original,{...withOutput,connections:[]})?.nodes).toHaveLength(2);
   const unrelated={...withOutput,connections:[...withOutput.connections,{id:"bad",fromNodeId:"wf-1",toNodeId:"wf-1"}]};
   expect(safeRemoteCanvasMerge(original,unrelated)).toBeNull();
+ });
+ it("adopts detached backend video without resurrecting a removed workflow source",()=>{
+  const detached={...generated,metadata:{...generated.metadata,
+   sourceChangedSinceSubmit:true}};
+  const remote={nodes:[detached],connections:[]};
+  expect(safeRemoteCanvasMerge({nodes:[],connections:[]},remote)).toEqual(remote);
+  const malicious={...remote,connections:[{id:"unsafe",fromNodeId:"missing",
+   toNodeId:detached.id,fromPortId:"wrong"}]};
+  expect(safeRemoteCanvasMerge({nodes:[],connections:[]},malicious)).toBeNull();
  });
  it("requires explicit connect, creates missing project once and PATCHes with If-Match",async()=>{
   const server=mockBackend({existing:false});

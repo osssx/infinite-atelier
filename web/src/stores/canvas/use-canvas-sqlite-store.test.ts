@@ -154,6 +154,68 @@ describe("SQLite-only Canvas store",()=>{
   await awaitCanvasStorePersistence();
   expect(useCanvasStore.getState().openProject(id)?.nodes[0].title).toBe("Local edit");
  });
+ it("rebases a locally edited Comfy prompt onto a newly materialized video and saves both",async()=>{
+  fake.rejectPatch=false;
+  const id=await useCanvasStore.getState().createProject("Concurrent materialization");
+  const source={id:"wf",type:"comfy:workflow",title:"Workflow",position:{x:0,y:0},
+   width:400,height:260,metadata:{prompt:"original"}};
+  useCanvasStore.getState().updateProject(id,{nodes:[source]});
+  await awaitCanvasStorePersistence(id);
+  const base=fake.projects.get(id)!;
+  const artifact={id:"artifact-a1",type:"video",title:"Generated",position:{x:500,y:0},
+   width:420,height:236,metadata:{storageKey:"cas:"+"a".repeat(64),
+    comfyArtifact:{runId:"job1",artifactId:"a1",workflowNodeId:"wf",portId:"video",kind:"video",index:0}}};
+  const edge={id:"artifact-edge-a1",fromNodeId:"wf",fromPortId:"video",
+   toNodeId:artifact.id,toPortId:"comfy-artifact"};
+  fake.projects.set(id,{...base,revision:base.revision+1,
+   document:{...base.document,nodes:[source,artifact],connections:[edge]}});
+  useCanvasStore.getState().updateProject(id,{nodes:[{...source,metadata:{prompt:"new prompt"}}]});
+  fake.methods.length=0;
+  await expect(awaitCanvasStorePersistence(id)).resolves.toBeUndefined();
+  const saved=fake.projects.get(id)!;
+  expect(saved.revision).toBe(base.revision+2);
+  expect((saved.document.nodes as any[])).toHaveLength(2);
+  expect((saved.document.nodes as any[])[0].metadata.prompt).toBe("new prompt");
+  expect((saved.document.nodes as any[])[1].metadata.comfyArtifact.artifactId).toBe("a1");
+  expect(saved.document.connections).toEqual([edge]);
+  expect(useCanvasStore.getState().openProject(id)?.nodes).toHaveLength(2);
+  expect(fake.methods.filter(call=>call==="PATCH /api/v1/projects/"+id)).toHaveLength(2);
+  expect(useCanvasStore.getState().error).toBeNull();
+ });
+ it("preserves a remote detached artifact if its source is locally deleted",async()=>{
+  fake.rejectPatch=false;
+  const id=await useCanvasStore.getState().createProject("Source removed during generation");
+  const source={id:"wf2",type:"comfy:workflow",title:"Workflow",position:{x:0,y:0},width:300,height:200};
+  useCanvasStore.getState().updateProject(id,{nodes:[source]});
+  await awaitCanvasStorePersistence(id);
+  const old=fake.projects.get(id)!;
+  const artifact={id:"artifact-a2",type:"image",title:"Generated",
+   position:{x:300,y:0},width:400,height:400,metadata:{
+    comfyArtifact:{runId:"job2",artifactId:"a2",workflowNodeId:"wf2",portId:"image",kind:"image",index:0}}};
+  const link={id:"artifact-edge-a2",fromNodeId:"wf2",fromPortId:"image",
+   toNodeId:"artifact-a2",toPortId:"comfy-artifact"};
+  fake.projects.set(id,{...old,revision:old.revision+1,
+   document:{...old.document,nodes:[source,artifact],connections:[link]}});
+  useCanvasStore.getState().updateProject(id,{nodes:[],connections:[]});
+  await awaitCanvasStorePersistence(id);
+  expect((fake.projects.get(id)!.document.nodes as any[]).map(n=>n.id)).toEqual(["artifact-a2"]);
+  expect(fake.projects.get(id)!.document.connections).toEqual([]);
+  expect(useCanvasStore.getState().openProject(id)?.nodes.map(n=>n.id)).toEqual(["artifact-a2"]);
+ });
+ it("does not overwrite a remote edit to the same source, and retains the unsaved local draft",async()=>{
+  fake.rejectPatch=false;
+  const id=await useCanvasStore.getState().createProject("True concurrent edit");
+  const node={id:"txt",type:"text",title:"Base",position:{x:0,y:0},width:300,height:200};
+  useCanvasStore.getState().updateProject(id,{nodes:[node]});
+  await awaitCanvasStorePersistence(id);
+  const previous=fake.projects.get(id)!;
+  fake.projects.set(id,{...previous,revision:previous.revision+1,
+   document:{...previous.document,nodes:[{...node,title:"Other editor"}]}});
+  useCanvasStore.getState().updateProject(id,{nodes:[{...node,title:"My unsaved draft"}]});
+  await expect(awaitCanvasStorePersistence(id)).rejects.toThrow("project_revision_conflict");
+  expect(useCanvasStore.getState().openProject(id)?.nodes[0].title).toBe("My unsaved draft");
+  expect((fake.projects.get(id)!.document.nodes as any[])[0].title).toBe("Other editor");
+ });
  it("keeps a valid saved viewport when a zoom calculation produces NaN or Infinity",async()=>{
   fake.rejectPatch=false;
   const id=await useCanvasStore.getState().createProject("Viewport error");

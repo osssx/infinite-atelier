@@ -40,7 +40,7 @@ import { CanvasGraphIndexProvider } from "@/components/canvas/canvas-graph-conte
 import { CanvasPerfBridge } from "@/components/canvas/canvas-perf-bridge";
 import { pipelineSink } from "@/lib/canvas/canvas-perf-bridge-state";
 import { CanvasNodeContextMenu } from "@/components/canvas/canvas-context-menu";
-import { captureCanvasTextEditContext, insertCanvasClipboardText, isNativeTextEditorTarget } from "@/lib/canvas/canvas-text-context-menu";
+import { isNativeTextEditorTarget } from "@/lib/canvas/canvas-text-context-menu";
 import { isNativeDescendantEvent } from "@/lib/canvas/canvas-portal-events";
 import { CanvasNodeAngleDialog, type CanvasImageAngleParams } from "@/components/canvas/canvas-node-angle-dialog";
 import { CanvasNodeCropDialog, type CanvasImageCropRect } from "@/components/canvas/canvas-node-crop-dialog";
@@ -2566,13 +2566,8 @@ function AtelierCanvasPage() {
 
     const preventCanvasContextMenu = useCallback((event: ReactMouseEvent) => {
         if (!isNativeDescendantEvent(event.currentTarget,event.target)) return;
-        const input = captureCanvasTextEditContext(event.target);
-        if (input) {
-            event.preventDefault();
-            event.stopPropagation();
-            setContextMenu({type:"text",x:event.clientX,y:event.clientY,editor:input});
-            return;
-        }
+        // The browser's native input/textarea menu is the only reliable
+        // way to paste without clipboard-read API permission restrictions.
         if (isNativeTextEditorTarget(event.target)) {
             setContextMenu(null);
             return;
@@ -3740,15 +3735,9 @@ function AtelierCanvasPage() {
     }, []);
     const handleNodeRetry = useCallback((node: CanvasNodeData) => void handleRetryNode(node), [handleRetryNode]);
     const handleNodeContextMenu = useCallback((event: ReactMouseEvent, nodeId: string) => {
-        const textEditor = captureCanvasTextEditContext(event.target);
-        if (textEditor) {
-            event.preventDefault();
-            event.stopPropagation();
-            setContextMenu({type:"text",x:event.clientX,y:event.clientY,editor:textEditor});
-            return;
-        }
         if (isNativeTextEditorTarget(event.target)) {
-            // Rich text, password and unsupported input kinds keep their native menu.
+            // Native editor menu supports Paste/Cut/Copy and undo without
+            // navigator.clipboard.readText(), even if clipboard read is denied.
             event.stopPropagation();
             setContextMenu(null);
             return;
@@ -4250,34 +4239,6 @@ function AtelierCanvasPage() {
                     <CanvasNodeContextMenu
                         menu={contextMenu}
                         onClose={() => setContextMenu(null)}
-                        onCopyText={() => {
-                            if (contextMenu.type !== "text") return;
-                            const {copyValue} = contextMenu.editor;
-                            if (!copyValue) return;
-                            void (async () => {
-                                try {
-                                    if (!navigator.clipboard?.writeText) throw Error("clipboard_unavailable");
-                                    await navigator.clipboard.writeText(copyValue);
-                                    setContextMenu(null);
-                                } catch {
-                                    message.error(t("canvas.controls.clipboardFailed"));
-                                }
-                            })();
-                        }}
-                        onPasteText={() => {
-                            if (contextMenu.type !== "text") return;
-                            const editor = contextMenu.editor;
-                            void (async () => {
-                                try {
-                                    if (!navigator.clipboard?.readText) throw Error("clipboard_unavailable");
-                                    const content = await navigator.clipboard.readText();
-                                    if (!insertCanvasClipboardText(editor,content)) throw Error("text_editor_unavailable");
-                                    setContextMenu(null);
-                                } catch {
-                                    message.error(t("canvas.controls.clipboardFailed"));
-                                }
-                            })();
-                        }}
                         onDuplicate={() => {
                             if (contextMenu.type !== "node") return;
                             duplicateNode(contextMenu.nodeId);

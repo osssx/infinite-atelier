@@ -1,5 +1,3 @@
-import type { CanvasTextEditContext } from "@/lib/canvas/canvas-text-context-menu";
-
 export type Position = {
     x: number;
     y: number;
@@ -198,12 +196,6 @@ export type SelectionBox = {
 };
 
 export type ContextMenuState =
-    | {
-          type: "text";
-          x: number;
-          y: number;
-          editor: CanvasTextEditContext;
-      }
     | {
           type: "node";
           x: number;

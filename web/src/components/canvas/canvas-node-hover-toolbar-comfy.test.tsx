@@ -6,10 +6,16 @@ import type { CanvasNodeData } from "@/types/canvas";
 import {setCanvasComfyExecutionScope,setCanvasComfyExecution}
  from "@/features/comfy-workflow/canvas-execution-visual";
 
+const currentTheme=vi.hoisted(()=>({value:"dark" as "dark"|"light"}));
+vi.mock("@/stores/use-theme-store",()=>({
+    useThemeStore:(selector:(state:{theme:"dark"|"light"})=>unknown)=>selector({theme:currentTheme.value}),
+}));
+vi.mock("./canvas-image-toolbar-settings-modal",()=>({ImageToolSettingsModal:()=>null}));
 vi.mock("antd",()=>({
     App:{useApp:()=>({message:{warning:vi.fn()}})},
     Modal:()=>null, Segmented:()=>null,
-    Tooltip:({children}:{children:ReactNode})=>children,
+    Tooltip:({children,color,styles}:{children:ReactNode;color:string;styles?:{root?:{color?:string}}})=>
+        <span data-tooltip-color={color} data-tooltip-text={styles?.root?.color}>{children}</span>,
 }));
 vi.mock("react-i18next",()=>({useTranslation:()=>({t:(key:string)=>key})}));
 vi.mock("@/i18n",()=>({default:{t:(key:string)=>key}}));
@@ -22,7 +28,8 @@ const workflow=(status?:string):CanvasNodeData=>({
         comfyExecution:status?{status,runId:"run"}:undefined,
     },
 });
-function render(node:CanvasNodeData,comfyExecuteDisabled=false){
+function render(node:CanvasNodeData,comfyExecuteDisabled=false,theme:"light"|"dark"="dark"){
+    currentTheme.value=theme;
     // Simulate the backend-observed transient status instead of persisted canvas metadata.
     setCanvasComfyExecutionScope(null);
     setCanvasComfyExecutionScope("toolbar-test");
@@ -82,6 +89,31 @@ describe("ComfyUI workflow selected-node toolbar",()=>{
         expect(render(node,true)).toMatch(/disabled=""[^>]*aria-label="执行 ComfyUI 工作流"/);
         node.metadata={...node.metadata,comfyExecution:{status:"running",runId:"job"}};
         expect(render(node)).toMatch(/disabled=""[^>]*aria-label="工作流执行中"/);
+    });
+    it.each([
+        ["dark","rgba(31,29,26,.96)","#44403c","#d6d3d1","#292524","#3a3631","#f5f5f4"],
+        ["light","rgba(251,250,247,.96)","#d6d3ca","#57534e","#e7e5df","#e7e5df","#292524"],
+    ] as const)("adapts the selected toolbar and tooltip to the %s canvas theme",
+        (name,panel,border,text,hover,active,activeText)=>{
+            const html=render(workflow(),false,name);
+            expect(html).toContain(`data-canvas-node-toolbar="${name}"`);
+            expect(html).toContain(`background-color:${panel}`);
+            expect(html).toContain(`border-color:${border}`);
+            expect(html).toContain(`color:${text}`);
+            expect(html).toContain(`--canvas-node-toolbar-hover:${hover}`);
+            expect(html).toContain(`--canvas-node-toolbar-active:${active}`);
+            expect(html).toContain(`--canvas-node-toolbar-active-text:${activeText}`);
+            expect(html).toContain(`data-tooltip-color="${panel}"`);
+            expect(html).toContain(`data-tooltip-text="${activeText}"`);
+            expect(html).not.toContain("bg-white");
+            expect(html).not.toContain("group-hover:bg-[#f0f0f1]");
+        });
+    it("uses the dark toolbar palette for image tools as well as workflow tools",()=>{
+        const image:CanvasNodeData={...workflow(),id:"media",type:"image",metadata:{content:"data:image/png;base64,AAAA"}};
+        const html=render(image,false,"dark");
+        expect(html).toContain('data-canvas-node-toolbar="dark"');
+        expect(html).toContain('background-color:rgba(31,29,26,.96)');
+        expect(html).toContain('aria-label="canvas.imageTools.configure"');
     });
     it("does not add Execute to unrelated canvas nodes",()=>{
         expect(render({...workflow(),type:"text"})).not.toContain('aria-label="执行 ComfyUI 工作流"');

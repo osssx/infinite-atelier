@@ -34,7 +34,7 @@ type Props = {
     onClose: () => void;
 };
 
-const inputClass = "min-w-0 w-full rounded-lg border border-[var(--comfy-border)] bg-[var(--comfy-fill)] px-3 py-2 text-sm text-[var(--comfy-text)] outline-none focus:border-[var(--comfy-accent)] disabled:cursor-not-allowed disabled:opacity-55";
+const inputClass = "box-border min-w-0 w-full max-w-full rounded-lg border border-[var(--comfy-border)] bg-[var(--comfy-fill)] px-3 py-2 text-sm text-[var(--comfy-text)] outline-none focus:border-[var(--comfy-accent)] disabled:cursor-not-allowed disabled:opacity-55";
 const buttonClass = "inline-flex items-center justify-center gap-1.5 rounded-lg border border-[var(--comfy-border)] px-2.5 py-2 text-xs transition hover:bg-[var(--comfy-fill)] disabled:pointer-events-none disabled:opacity-40";
 
 function sourceText(field:ComfyInstanceScalarField) {
@@ -74,15 +74,15 @@ export function ComfyScalarInput({field,onSet,onClear}:{
         onSet(parsed.value);setError("");
     };
     const noValue = local.source==="disconnect";
-    return <div className="rounded-xl border border-[var(--comfy-border)] bg-[var(--comfy-panel)] px-3 py-3" data-comfy-instance-port={field.port.id}>
+    return <div className="box-border min-w-0 w-full max-w-full rounded-xl border border-[var(--comfy-border)] bg-[var(--comfy-panel)] px-3 py-3" data-comfy-instance-port={field.port.id}>
         <div className="mb-2 flex flex-wrap items-center gap-2">
             <label htmlFor={"comfy-instance-"+field.port.id} className="min-w-0 flex-1 truncate text-xs font-semibold text-[var(--comfy-text)]">{field.port.label}</label>
-            <span className="rounded border border-[var(--comfy-border)] px-1.5 py-0.5 text-[10px] text-[var(--comfy-muted)]">{kind}</span>
-            <span className="text-[10px] text-[var(--comfy-muted)]">{sourceText(field)}</span>
+            <span className="shrink-0 rounded border border-[var(--comfy-border)] px-1.5 py-0.5 text-[10px] text-[var(--comfy-muted)]">{kind}</span>
+            <span className="min-w-0 max-w-full truncate text-[10px] text-[var(--comfy-muted)]">{sourceText(field)}</span>
         </div>
-        {connected?<div className="mb-2 flex items-center gap-1.5 rounded-md bg-[var(--comfy-fill)] px-2 py-1.5 text-[11px] text-[var(--comfy-muted)]">
+        {connected?<div className="mb-2 flex min-w-0 max-w-full items-center gap-1.5 rounded-md bg-[var(--comfy-fill)] px-2 py-1.5 text-[11px] text-[var(--comfy-muted)]">
             <Link2 size={12} className="shrink-0"/>
-            <span className="truncate">{field.connectedFrom?.nodeId}{field.connectedFrom?.portId?" · "+field.connectedFrom.portId:""} 控制此输入；本地值暂不生效</span>
+            <span className="min-w-0 flex-1 truncate" title={`${field.connectedFrom?.nodeId}${field.connectedFrom?.portId?" · "+field.connectedFrom.portId:""} 控制此输入；本地值暂不生效`}>{field.connectedFrom?.nodeId}{field.connectedFrom?.portId?" · "+field.connectedFrom.portId:""} 控制此输入；本地值暂不生效</span>
         </div>:null}
         {invalidLinks?<p role="alert" className="mb-2 text-xs text-red-500">一个输入端口不能连接多个来源，请先修复连线。</p>:null}
         {field.port.choices?.length?<select
@@ -105,11 +105,11 @@ export function ComfyScalarInput({field,onSet,onClear}:{
                 onChange={(e)=>onSet(e.target.checked)} className="size-4 accent-[var(--comfy-accent)]" />
             <span className="text-xs text-[var(--comfy-text)]">{value===true?"开启":"关闭"}{noValue?"（未配置）":""}</span>
         </label>
-        :kind==="STRING"?<textarea id={"comfy-instance-"+field.port.id} className={inputClass+" resize-y"}
+        :kind==="STRING"?<textarea id={"comfy-instance-"+field.port.id} className={inputClass+" block resize-y break-words"} wrap="soft"
             rows={/prompt|text|提示词|描述/i.test(field.port.id+" "+field.port.label)?3:2}
             value={draft} disabled={!editable} placeholder={field.mixedTemplateValues && noValue?"模板内部存在不同原值，请指定参数":"输入文字…"}
             onChange={(e)=>{const next=e.target.value;setDraft(next);const parsed=parseComfyScalarOverride("STRING",next);if(parsed.ok){setError("");onSet(parsed.value);}else setError(parsed.error);}}
-        />:<div className="flex gap-2">
+        />:<div className="flex min-w-0 max-w-full gap-2">
             <input id={"comfy-instance-"+field.port.id} className={inputClass+" flex-1"}
                 type="text" inputMode={kind==="INT"?"numeric":"decimal"} value={draft}
                 disabled={!editable} placeholder={field.mixedTemplateValues && noValue?"多个原值":kind==="INT"?"输入整数":"输入浮点数"}
@@ -122,7 +122,7 @@ export function ComfyScalarInput({field,onSet,onClear}:{
         </div>}
         {error?<p role="alert" className="mt-1 text-[11px] text-red-500">{error}</p>:null}
         <div className="mt-2 flex items-center justify-between gap-2 text-[10px] text-[var(--comfy-muted)]">
-            <span className="truncate">{local.source==="override"?"独立保存，不修改共享工作流模板":noValue?"无可用默认值":field.mixedTemplateValues?"多目标参数，请注意原值差异":"仅当前实例的备用值"}</span>
+            <span className="min-w-0 flex-1 truncate">{local.source==="override"?"独立保存，不修改共享工作流模板":noValue?"无可用默认值":field.mixedTemplateValues?"多目标参数，请注意原值差异":"仅当前实例的备用值"}</span>
             {local.source==="override"?<button type="button" disabled={!editable} className="inline-flex shrink-0 items-center gap-1 hover:underline disabled:opacity-40"
                 onClick={onClear}><RotateCcw size={11}/>恢复默认</button>:null}
         </div>
@@ -253,7 +253,7 @@ export function ComfyWorkflowInstancePanel({node,connections,projectId,comfyInst
         if(applied)setEditingTemplate(false);
         return applied;
     }} onClose={()=>setEditingTemplate(false)}/>;
-    return <><section className="pointer-events-auto mx-auto flex max-h-[min(690px,calc(100vh-32px))] w-[min(460px,calc(100vw-32px))] flex-col overflow-hidden rounded-[18px] border border-[var(--comfy-border)] bg-[var(--comfy-panel)] text-[var(--comfy-text)] shadow-2xl"
+    return <><section className="pointer-events-auto mx-auto flex min-w-0 max-h-[min(690px,calc(100vh-32px))] w-[min(460px,calc(100vw-32px))] max-w-full flex-col overflow-hidden rounded-[18px] border border-[var(--comfy-border)] bg-[var(--comfy-panel)] text-[var(--comfy-text)] shadow-2xl"
         style={{...colors,colorScheme:themeName,accentColor:theme.node.activeStroke}}
         data-comfy-instance-panel data-canvas-no-zoom
         onMouseDown={(e)=>e.stopPropagation()} onPointerDown={(e)=>e.stopPropagation()} onWheel={(e)=>e.stopPropagation()}>
@@ -270,7 +270,7 @@ export function ComfyWorkflowInstancePanel({node,connections,projectId,comfyInst
                 <button type="button" aria-label="关闭参数面板" className={buttonClass} onClick={onClose}><X size={14}/></button>
             </div>
         </header>
-        <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+        <div className="min-h-0 min-w-0 w-full flex-1 overflow-x-hidden overflow-y-auto px-4 py-4" data-comfy-instance-scroll-region>
             {!comfyInstanceId?<p className="mb-3 rounded-lg bg-[var(--comfy-fill)] px-3 py-2 text-[11px] text-[var(--comfy-muted)]">请在右上角「配置与用户偏好 → ComfyUI」中选择默认实例，所有画布工作流节点共用此配置。</p>:null}
             {outputs.length>0?<p role="note" className="mb-3 text-[11px] text-[var(--comfy-muted)]">
                 本次执行将捕获 {outputs.map(port=>port.label+" ("+port.valueKind+")").join("、")}，所有输出共享一次 ComfyUI 生成任务。
@@ -288,7 +288,7 @@ export function ComfyWorkflowInstancePanel({node,connections,projectId,comfyInst
                 <p>尚未绑定工作流模板。先导入 API JSON 或选择预设，再编辑当前节点参数。</p>
                 <button type="button" className={buttonClass} onClick={()=>setEditingTemplate(true)}><Settings2 size={14}/>导入 / 配置模板</button>
             </div>
-            :fields.length?<div className="grid gap-2">
+            :fields.length?<div className="grid min-w-0 w-full grid-cols-[minmax(0,1fr)] gap-2">
                 {fields.map((field)=><ComfyScalarInput key={field.port.id} field={field}
                     onSet={(value)=>updateOverride(field.port.id,value)} onClear={()=>resetOverride(field.port.id)}/>)}
             </div>:<p className="text-xs text-[var(--comfy-muted)]">模板没有可编辑的标量输入。可在模板绑定编辑器中暴露 STRING、INT、FLOAT 或 BOOLEAN 输入。</p>}

@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { createElement, type ComponentProps, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -106,6 +107,61 @@ describe("literal enum array dropdown",()=>{
         expect(html).toContain("上游连线");
     });
 });
+describe("ComfyUI workflow instance inspector horizontal overflow",()=>{
+    const longId="artifact-"+("very-long-source-id-".repeat(22));
+    it("constrains the scroll region and parameter grid to available width",()=>{
+        const noop=()=>undefined;
+        const html=renderToStaticMarkup(createElement(ComfyWorkflowInstancePanel,{
+            node:node(),connections:[],projectId:"p",comfyInstanceId:"comfy-local",
+            backendExecution:true,onExecute:async()=>{throw Error("not expected")},
+            onCancel:async()=>false,onExecutionChange:noop,onChange:noop,
+            onTemplateChange:()=>true,onClose:noop,
+        }));
+        expect(html).toContain("data-comfy-instance-scroll-region");
+        expect(html).toContain("overflow-x-hidden");
+        expect(html).toContain("overflow-y-auto");
+        expect(html).toContain("min-w-0");
+        const source=readFileSync(new URL("./comfy-workflow-instance-panel.tsx",import.meta.url),"utf8");
+        expect(source).toContain("grid-cols-[minmax(0,1fr)]");
+        expect(source).toContain("max-w-full");
+    });
+    it("truncates a long incoming node ID and port ID without widening the card",()=>{
+        const field={
+            port:{id:"prompt",label:"视频提示词",valueKind:"STRING",direction:"target"},
+            connectedFrom:{nodeId:longId,portId:"very-long-output-name-".repeat(15)},
+            connectionCount:1,localValue:{source:"override",value:"Unchanged input"},
+            mixedTemplateValues:false,
+        } as ComfyInstanceScalarField;
+        const html=renderToStaticMarkup(createElement(ComfyScalarInput,{
+            field,onSet:()=>undefined,onClear:()=>undefined,
+        }));
+        expect(html).toContain('data-comfy-instance-port="prompt"');
+        expect(html).toContain("min-w-0 flex-1 truncate");
+        expect(html).toContain("max-w-full");
+        expect(html).toContain("shrink-0");
+        expect(html).toContain(longId);
+        expect(html).toContain('title="');
+        expect(html).toContain("disabled");
+    });
+    it("keeps long prompt text editable inside a width-constrained textarea",()=>{
+        const prompt="A transparent gaming mouse with cinematic lighting. ".repeat(65);
+        const field={
+            port:{id:"video_prompt",label:"视频提示词",valueKind:"STRING",direction:"target"},
+            connectionCount:0,localValue:{source:"override",value:prompt},
+            mixedTemplateValues:false,
+        } as ComfyInstanceScalarField;
+        const html=renderToStaticMarkup(createElement(ComfyScalarInput,{
+            field,onSet:()=>undefined,onClear:()=>undefined,
+        }));
+        expect(html).toContain(prompt);
+        expect(html).toContain('wrap="soft"');
+        expect(html).toContain("box-border");
+        expect(html).toContain("max-w-full");
+        expect(html).toContain("resize-y");
+        expect(html).not.toContain('disabled=""');
+    });
+});
+
 describe("compact ComfyUI inspector execution footer",()=>{
     it("matches the config node full-width rectangular Start Generation button",()=>{
         const html=footer();

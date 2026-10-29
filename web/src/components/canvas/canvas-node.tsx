@@ -508,7 +508,7 @@ export const CanvasNode = React.memo(function CanvasNode({
                     />
                 </div>
 
-                {(data.type===CanvasNodeType.Text||data.type===CanvasNodeType.Config)
+                {data.type===CanvasNodeType.Text
                     ? <CanvasTextExecutionIndicator nodeId={data.id}/> : null}
 
                 {showImageInfo && hasImageContent ? <ImageInfoBar node={data} /> : null}

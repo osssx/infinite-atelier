@@ -99,6 +99,37 @@ describe("Canvas text generation transition",()=>{
   expect(smallNode).toContain("<CanvasTextExecutionIndicator nodeId={data.id} compact/>");
  });
 
+ it("keeps Config-node text progress inside the generate button, never over its controls",()=>{
+  beginCanvasTextSubmission("p1","config-1","click");
+  const inline=renderToStaticMarkup(createElement(CanvasTextExecutionIndicator,{
+   nodeId:"config-1",inline:true,idle:"开始生成"
+  }));
+  expect(inline).toContain('data-canvas-text-generation-status="submitting"');
+  expect(inline).toContain("正在提交文本请求");
+  expect(inline).toContain("animate-spin");
+  expect(inline).toContain("inline-flex");
+  expect(inline).not.toContain("absolute");
+  expect(inline).not.toContain("bottom-3");
+  expect(inline).not.toContain("bg-black");
+  finishCanvasTextSubmission("p1","config-1","click");
+  const idle=renderToStaticMarkup(createElement(CanvasTextExecutionIndicator,{
+   nodeId:"config-1",inline:true,idle:"开始生成"
+  }));
+  expect(idle).toBe("开始生成");
+  trackCanvasTextJob("p1","config-1","first","running");
+  trackCanvasTextJob("p1","config-1","second","queued");
+  expect(renderToStaticMarkup(createElement(CanvasTextExecutionIndicator,{
+   nodeId:"config-1",inline:true
+  }))).toContain("×2");
+  const config=readFileSync(new URL("../../components/canvas/canvas-config-node-panel.tsx",import.meta.url),"utf8");
+  const node=readFileSync(new URL("../../components/canvas/canvas-node.tsx",import.meta.url),"utf8");
+  const compact=readFileSync(new URL("../../components/canvas/canvas-node-compact.tsx",import.meta.url),"utf8");
+  expect(config).toContain('<CanvasTextExecutionIndicator');
+  expect(config).toMatch(/\binline\s+idle=/);
+  expect(node).toContain('data.type===CanvasNodeType.Text');
+  expect(node).not.toContain('data.type===CanvasNodeType.Text||data.type===CanvasNodeType.Config');
+  expect(compact).toContain('data.type===CanvasNodeType.Text||data.type===CanvasNodeType.Config');
+ });
  it("wires submission before the first await and recovers active text jobs via SQLite snapshot",()=>{
   const page=readFileSync(new URL("../../pages/canvas/project.tsx",import.meta.url),"utf8");
   const start=page.indexOf("const textSubmissionToken=mode");

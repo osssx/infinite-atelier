@@ -14,6 +14,7 @@ import { CanvasImageSettingsPopover } from "./canvas-image-settings-popover";
 import { CanvasAudioSettingsPopover, type CanvasAudioSettingKey } from "./canvas-audio-settings-popover";
 import { CanvasVideoSettingsPopover } from "./canvas-video-settings-popover";
 import { CanvasTextSettingsPopover } from "./canvas-text-settings-popover";
+import { CanvasTextExecutionIndicator } from "./canvas-text-execution-indicator";
 
 import type { CanvasGenerationMode, CanvasNodeData, CanvasNodeMetadata, CanvasVideoReference } from "@/types/canvas";
 
@@ -176,6 +177,15 @@ export function CanvasConfigNodePanel({ node, isRunning, onConfigChange, onGener
                             <Square className="size-3.5 fill-current" />
                             <span>{t("canvas.configNode.stop")}</span>
                         </>
+                    ) : mode==="text" ? (
+                        <CanvasTextExecutionIndicator
+                            nodeId={node.id}
+                            inline
+                            idle={<>
+                                <Play className="size-4" />
+                                <span>{t("canvas.configNode.generate")}</span>
+                            </>}
+                        />
                     ) : (
                         <>
                             <Play className="size-4" />

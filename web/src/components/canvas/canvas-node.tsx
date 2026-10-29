@@ -18,6 +18,7 @@ import { useTranslation } from "react-i18next";
 import { getMediaBlob } from "@/services/file-storage";
 import { getExistingMediaPreview, resolveMediaPreview } from "@/services/media-preview-storage";
 import {ComfyWorkflowNodeVisual} from "@/features/comfy-workflow/comfy-workflow-node-visual";
+import {CanvasTextExecutionIndicator} from "./canvas-text-execution-indicator";
 import { shouldPlayVideoCoverClick, videoCoverPressDragged, type VideoCoverPress } from "./canvas-video-cover-gesture";
 
 // Parsing rich Markdown is only needed for full, non-editing text nodes. Keep its
@@ -506,6 +507,9 @@ export const CanvasNode = React.memo(function CanvasNode({
                         onVisualReady={onVisualReady}
                     />
                 </div>
+
+                {(data.type===CanvasNodeType.Text||data.type===CanvasNodeType.Config)
+                    ? <CanvasTextExecutionIndicator nodeId={data.id}/> : null}
 
                 {showImageInfo && hasImageContent ? <ImageInfoBar node={data} /> : null}
 

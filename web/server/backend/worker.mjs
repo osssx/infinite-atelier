@@ -5,11 +5,18 @@ export function createBackendWorker({coordinator,materializer,intervalMs=250,onE
  if(!coordinator||!materializer||!Number.isSafeInteger(intervalMs)||intervalMs<20)
   throw Error("invalid_backend_worker");
  let stopping=false,active=null,timer=null,wakes=0,lastError=null;
+ let legacyMaterializationsRequeued=false;
  async function cycle(){
   if(stopping)return 0;
   if(active)return active;
   const run=(async()=>{
    try{
+    // Revisit pre-upgrade blocked CAS results once after backend startup.
+    // No provider/GPU work is scheduled by this local materialization step.
+    if(!legacyMaterializationsRequeued){
+     materializer.requeueLegacyBlocked?.();
+     legacyMaterializationsRequeued=true;
+    }
     const claimed=await coordinator.tick({maxClaims:16});
     const outputs=await materializer.runOnce({maxItems:32});
     lastError=null;

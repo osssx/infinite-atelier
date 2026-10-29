@@ -309,7 +309,7 @@ test("P4.4 Ark remote cancel DELETE only after confirming queued; running must r
  assert.equal(f.db.prepare("SELECT status FROM jobs WHERE id=?").get(id2).status,"running");
  assert.equal(operations.filter(x=>x.method==="DELETE").length,1);
 });
-test("P4.4 Ark source edits cannot silently adopt generated video",async t=>{
+test("P4.4 Ark video materializes as a new artifact without overwriting edited source",async t=>{
  const f=fixture(t,async(url,init)=>{
   if(url===root&&init.method==="POST")return response({id:"cgt-123"});
   if(url===root+"/cgt-123")return response({id:"cgt-123",status:"succeeded",content:{video_url:trustedUrl}});
@@ -330,7 +330,11 @@ test("P4.4 Ark source edits cannot silently adopt generated video",async t=>{
  patchProject(f.db,{id:"project-2",expectedRevision:1,document:modified});
  const materializer=createCanvasMaterializer({db:f.db,blobStore:f.blobStore});
  const result=await materializer.runOnce();
- assert.equal(result[0].reason,"materialization_source_changed");
- assert.equal(getProject(f.db,"project-2").document.nodes.length,1);
+ assert.equal(result[0].status,"materialized");
+ const after=getProject(f.db,"project-2").document;
+ assert.equal(after.nodes.length,2);
+ assert.equal(after.nodes[0].metadata.content,"second");
+ assert.equal(after.nodes[1].metadata.sourceChangedSinceSubmit,true);
+ assert.equal(after.nodes[1].metadata.modelArtifact.jobId,id);
  assert.equal(f.db.prepare("SELECT status FROM jobs WHERE id=?").get(id).status,"succeeded");
 });

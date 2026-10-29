@@ -168,9 +168,9 @@ const attemptReasons:Record<string,string>={
  remote_pending:"远程任务仍在执行",interrupted:"任务执行被中断"
 };
 const reasons:Record<string,string>={
- materialization_source_changed:"来源节点或上游输入已改变，需恢复原输入后重试",
- materialization_source_deleted:"生成时的来源节点已删除",
- materialization_port_mismatch:"工作流输出端口已变更或不兼容",
+ materialization_source_changed:"旧版校验因输入改变而拦截；现在可直接重新落图，无需恢复原提示词",
+ materialization_source_deleted:"原来源节点已删除；可重新落为不带连接的独立产物节点",
+ materialization_port_mismatch:"旧版端口校验拦截；重新落图时若端口不兼容，将保留独立产物但不自动连线",
  materialization_project_deleted:"项目已删除",
  materialization_node_collision:"产物节点 ID 已与现有节点冲突",
  materialization_link_conflict:"产物连接与当前画布不兼容",

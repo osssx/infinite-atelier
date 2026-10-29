@@ -220,25 +220,21 @@ test("generated portrait and landscape video nodes respect real dimensions, pers
   });
  }
 });
-test("source mutation blocks materialization while GPU success and artifacts remain durable",async t=>{
+test("changed or removed output port still persists a detached CAS image",async t=>{
  const f=fixture(t),{jobId,created}=await f.addArtifacts({count:1});
  const doc=getProject(f.db,"project-1");
  doc.document.nodes[0].metadata.comfyPorts[0].valueKind="STRING";
  patchProject(f.db,{id:"project-1",expectedRevision:1,document:doc.document});
- const blocked=await f.materializer.runOnce();
- assert.equal(blocked[0].status,"blocked");
- assert.equal(f.db.prepare("SELECT status FROM jobs WHERE id=?").get(jobId).status,"succeeded");
- assert.equal(getProject(f.db,"project-1").document.nodes.length,1);
- assert.equal((await f.materializer.runOnce()).length,0);
- const info=f.materializer.status({jobId})[0];
- assert.equal(info.status,"blocked");
- assert.equal(f.materializer.retryBlocked({projectId:"project-1",artifactId:created[0]}),true);
- const fixed=getProject(f.db,"project-1");
- fixed.document.nodes[0].metadata.comfyPorts[0].valueKind="IMAGE";
- patchProject(f.db,{id:"project-1",expectedRevision:2,document:fixed.document});
  const result=await f.materializer.runOnce();
  assert.equal(result[0].status,"materialized");
- assert.equal(getProject(f.db,"project-1").document.nodes.length,2);
+ assert.equal(f.db.prepare("SELECT status FROM jobs WHERE id=?").get(jobId).status,"succeeded");
+ const after=getProject(f.db,"project-1").document;
+ assert.equal(after.nodes.length,2);
+ assert.equal(after.connections.length,0,"incompatible port must not produce a misleading edge");
+ assert.equal(after.nodes[1].metadata.comfyArtifact.portId,"image");
+ assert.equal(after.nodes[1].metadata.sourceChangedSinceSubmit,true);
+ assert.equal(f.materializer.status({jobId})[0].status,"materialized");
+ assert.deepEqual(await f.materializer.runOnce(),[],"no extra materialization or GPU work");
 });
 test("cosmetic source changes during GPU work do not block v2 materialization",async t=>{
  const f=fixture(t),{jobId}=await f.addArtifacts({count:1});
@@ -253,7 +249,7 @@ test("cosmetic source changes during GPU work do not block v2 materialization",a
  assert.equal(result[0].status,"materialized");
  assert.equal(getProject(f.db,"project-1").document.nodes.length,2);
 });
-test("already-blocked legacy standalone Comfy artifact retries after cosmetic changes, without GPU work",async t=>{
+test("already-blocked legacy Comfy artifact materializes even after prompt changes, without GPU work",async t=>{
  const f=fixture(t);
  const doc=getProject(f.db,"project-1").document;
  doc.nodes[0].metadata.comfyWorkflow={templateId:"saved",templateRevision:"r1",
@@ -276,20 +272,130 @@ test("already-blocked legacy standalone Comfy artifact retries after cosmetic ch
  changed.nodes[0].position.x=777;
  changed.nodes[0].metadata.comfyWorkflow.inputOverrides.seed=2;
  patchProject(f.db,{id:"project-1",expectedRevision:2,document:changed});
- assert.equal((await f.materializer.runOnce())[0].reason,"materialization_source_changed");
- assert.equal(f.materializer.status({jobId})[0].status,"blocked");
- const restored=getProject(f.db,"project-1").document;
- restored.nodes[0].metadata.comfyWorkflow.inputOverrides.seed=1;
- // Backup migration made this otherwise unchanged successful workflow unbound.
- // Frozen instanceId/template/inputs still verify; do not make another GPU call.
- restored.nodes[0].metadata.comfyWorkflow.bindingState="needs-instance-binding";
- delete restored.nodes[0].metadata.comfyWorkflow.instanceId;
- patchProject(f.db,{id:"project-1",expectedRevision:3,document:restored});
+ // A previously blocked record from before the fix is safely requeued with
+ // its saved CAS blob. Neither old prompt/seed nor provider submission repeats.
+ f.db.prepare("INSERT INTO materializations(id,job_id,artifact_id,project_id,status,reason) VALUES(?,?,?,?,?,?)")
+  .run("legacy-blocked",jobId,artifactId,"project-1","blocked","materialization_source_changed");
  assert.equal(f.materializer.retryBlocked({projectId:"project-1",artifactId}),true);
  assert.equal((await f.materializer.runOnce())[0].status,"materialized");
- assert.equal(getProject(f.db,"project-1").document.nodes.length,2);
+ const output=getProject(f.db,"project-1").document;
+ assert.equal(output.nodes.length,2);
+ assert.equal(output.connections.length,1);
+ assert.equal(output.nodes[0].metadata.comfyWorkflow.inputOverrides.seed,2,"never rewrite edited input");
+ assert.equal(output.nodes[1].metadata.sourceChangedSinceSubmit,true);
  assert.equal(f.db.prepare("SELECT COUNT(*) n FROM jobs").get().n,1,
   "recovery must not submit another GPU job");
+});
+test("successful Comfy video with changed prompt and upstream graph can recover a previously blocked result",async t=>{
+ const f=fixture(t),{jobId,created}=await f.addArtifacts({count:2});
+ const current=getProject(f.db,"project-1");
+ const workflow=current.document.nodes[0];
+ workflow.metadata.comfyWorkflow={templateId:"video-template",templateRevision:"r2",
+  bindingState:"bound",inputOverrides:{prompt:"completely replaced prompt"}};
+ current.document.nodes.push({id:"new-input",type:"text",title:"New prompt",
+  position:{x:0,y:-280},width:300,height:160,metadata:{content:"different from the frozen run"}});
+ current.document.connections.push({id:"new-input-edge",fromNodeId:"new-input",toNodeId:workflow.id});
+ patchProject(f.db,{id:"project-1",expectedRevision:1,document:current.document});
+ const materializer=createCanvasMaterializer({db:f.db,blobStore:f.blobStore,
+  videoDimensionReader:async()=>({width:1344,height:768})});
+ // This is a previously successful video with a blocked materialization, not a job retry.
+ f.db.prepare("INSERT INTO materializations(id,job_id,artifact_id,project_id,status,reason) VALUES(?,?,?,?,?,?)")
+  .run("blocked-video",jobId,created[1],"project-1","blocked","materialization_source_changed");
+ assert.equal(materializer.retryBlocked({projectId:"project-1",artifactId:created[1]}),true);
+ const result=await materializer.runOnce();
+ assert.ok(result.some(x=>x.artifactId===created[1]&&x.status==="materialized"));
+ const after=getProject(f.db,"project-1").document;
+ const video=after.nodes.find(n=>n.id==="artifact-"+created[1]);
+ assert.equal(video.type,"video");
+ assert.equal(video.metadata.sourceChangedSinceSubmit,true);
+ assert.equal(video.metadata.comfyArtifact.runId,jobId);
+ assert.equal(video.metadata.comfyArtifact.portId,"video");
+ assert.equal(video.metadata.storageKey.startsWith("cas:"),true);
+ assert.equal(after.connections.some(e=>e.fromNodeId==="wf-1"&&e.toNodeId===video.id&&
+   e.fromPortId==="video"),true);
+ assert.equal(after.nodes.find(n=>n.id==="wf-1").metadata.comfyWorkflow.inputOverrides.prompt,
+  "completely replaced prompt");
+ assert.equal(f.db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n,1);
+ assert.deepEqual(await materializer.runOnce(),[]);
+});
+test("occupied edge ID does not block a standalone artifact or overwrite user connections",async t=>{
+ const f=fixture(t),{jobId,created}=await f.addArtifacts({count:1});
+ const doc=getProject(f.db,"project-1").document;
+ doc.nodes.push({id:"existing-target",type:"image",title:"User media",
+  position:{x:700,y:0},width:400,height:400,metadata:{content:"user-defined"}});
+ const occupied="artifact-edge-"+created[0];
+ doc.connections.push({id:occupied,fromNodeId:"wf-1",toNodeId:"existing-target",
+  fromPortId:"image"});
+ patchProject(f.db,{id:"project-1",expectedRevision:1,document:doc});
+ const output=await f.materializer.runOnce();
+ assert.equal(output[0].status,"materialized");
+ const after=getProject(f.db,"project-1").document;
+ assert.equal(after.connections.length,1,"keep the user's original edge");
+ assert.equal(after.connections[0].id,occupied);
+ assert.equal(after.connections[0].toNodeId,"existing-target");
+ const createdNode=after.nodes.find(n=>n.id==="artifact-"+created[0]);
+ assert.equal(createdNode.metadata.comfyArtifact.artifactId,created[0]);
+ assert.equal(after.nodes.length,3);
+ assert.equal(f.db.prepare("SELECT COUNT(*) n FROM jobs WHERE id=?").get(jobId).n,1);
+});
+test("a conflicting artifact node identity still blocks safely instead of clobbering existing content",async t=>{
+ const f=fixture(t),{jobId,created}=await f.addArtifacts({count:1});
+ const current=getProject(f.db,"project-1");
+ current.document.nodes.push({id:"artifact-"+created[0],type:"text",
+  title:"User-owned node",position:{x:600,y:0},width:250,height:200,
+  metadata:{content:"Do not replace me"}});
+ patchProject(f.db,{id:"project-1",expectedRevision:1,document:current.document});
+ const result=await f.materializer.runOnce();
+ assert.equal(result[0].status,"blocked");
+ assert.equal(result[0].reason,"materialization_node_collision");
+ const after=getProject(f.db,"project-1").document;
+ assert.equal(after.nodes.length,2);
+ assert.equal(after.nodes[1].metadata.content,"Do not replace me");
+ assert.equal(f.db.prepare("SELECT status FROM jobs WHERE id=?").get(jobId).status,"succeeded");
+});
+test("worker automatically requeues old source-changed video blocks on startup, never resubmitting Comfy",async t=>{
+ const f=fixture(t),{jobId,created}=await f.addArtifacts({count:2});
+ const current=getProject(f.db,"project-1");
+ current.document.nodes[0].metadata.comfyWorkflow={templateId:"video",templateRevision:"latest",
+  inputOverrides:{prompt:"new prompt after submission"}};
+ patchProject(f.db,{id:"project-1",expectedRevision:1,document:current.document});
+ const videoId=created[1],imageId=created[0];
+ f.db.prepare("INSERT INTO materializations(id,job_id,artifact_id,project_id,status,reason) VALUES(?,?,?,?,?,?)")
+  .run("legacy-video",jobId,videoId,"project-1","blocked","materialization_source_changed");
+ // A genuine identity conflict stays blocked, even during automatic repair.
+ f.db.prepare("INSERT INTO materializations(id,job_id,artifact_id,project_id,status,reason) VALUES(?,?,?,?,?,?)")
+  .run("real-conflict",jobId,imageId,"project-1","blocked","materialization_identity_conflict");
+ const before=f.materializer.status({jobId});
+ assert.deepEqual(before.map(x=>[x.artifact_id,x.status]),[
+  [imageId,"blocked"],[videoId,"blocked"]
+ ]);
+ assert.deepEqual(await f.materializer.runOnce(),[],"old blocked artifacts are invisible until startup migration");
+ let ticks=0,submits=0;
+ const materializer=createCanvasMaterializer({db:f.db,blobStore:f.blobStore,
+  videoDimensionReader:async()=>({width:1280,height:720})});
+ const coordinator={tick:async()=>{ticks++;return 0}};
+ const worker=createBackendWorker({coordinator,materializer,intervalMs:1000});
+ assert.equal(await worker.cycle(),1);
+ assert.equal(ticks,1);
+ const results=materializer.status({jobId});
+ assert.equal(results.find(x=>x.artifact_id===videoId).status,"materialized");
+ assert.equal(results.find(x=>x.artifact_id===imageId).status,"blocked");
+ assert.equal(results.find(x=>x.artifact_id===imageId).reason,"materialization_identity_conflict");
+ assert.equal(f.db.prepare("SELECT status FROM jobs WHERE id=?").get(jobId).status,"succeeded");
+ assert.equal(submits,0);
+ const after=getProject(f.db,"project-1").document;
+ assert.equal(after.nodes.find(n=>n.id==="artifact-"+videoId).type,"video");
+ assert.equal(after.nodes.find(n=>n.id==="artifact-"+videoId).metadata.sourceChangedSinceSubmit,true);
+ assert.equal(after.nodes[0].metadata.comfyWorkflow.inputOverrides.prompt,"new prompt after submission");
+ const requeued=f.db.prepare("SELECT COUNT(*) n FROM job_events WHERE job_id=? AND kind='artifact_materialization_requeued'").get(jobId).n;
+ assert.equal(requeued,1);
+ assert.equal(await worker.cycle(),0,"after first startup cycle no repeat materialization");
+ assert.equal(f.db.prepare("SELECT COUNT(*) n FROM job_events WHERE job_id=? AND kind='artifact_materialization_requeued'").get(jobId).n,1);
+ const restarted=createBackendWorker({coordinator,materializer,intervalMs:1000});
+ await restarted.cycle();
+ assert.equal(f.db.prepare("SELECT COUNT(*) n FROM job_events WHERE job_id=? AND kind='artifact_materialization_requeued'").get(jobId).n,1,
+  "restarting should not disturb successful output or blocked identity conflicts");
+ await worker.stop();await restarted.stop();
 });
 test("P4.7 pending artifact recover processes only stored Blob, never generates again",async t=>{
  const f=fixture(t),{jobId,created}=await f.addArtifacts({count:1});
@@ -319,7 +425,10 @@ test("P4.7 retry endpoint only requeues a succeeded blocked artifact, never GPU 
  const current=getProject(f.db,"project-1");
  current.document.nodes[0].metadata.comfyPorts[0].valueKind="STRING";
  patchProject(f.db,{id:"project-1",expectedRevision:1,document:current.document});
- assert.equal((await f.materializer.runOnce())[0].status,"blocked");
+ // Simulate an old installation that had blocked this already collected CAS
+ // artifact before allowing detached materialization on incompatible ports.
+ f.db.prepare("INSERT INTO materializations(id,job_id,artifact_id,project_id,status,reason) VALUES(?,?,?,?,?,?)")
+  .run("prior-port-block",jobId,created[0],"project-1","blocked","materialization_port_mismatch");
  const app=buildApp({db:f.db,materializer:f.materializer,
   authorize:req=>req.headers["x-test-owner"]==="owner"});
  t.after(async()=>app.close());
@@ -353,14 +462,18 @@ test("P4.7 retry endpoint only requeues a succeeded blocked artifact, never GPU 
  assert.equal(f.db.prepare("SELECT status FROM jobs WHERE id=?").get(jobId).status,"succeeded");
  assert.equal(readEventsAfter(f.db,0).filter(x=>x.kind==="artifact_materialization_requeued").length,1);
 });
-test("deleted workflow or invalid port fails closed without rolling back generation",async t=>{
+test("deleted workflow creates a standalone artifact with frozen provenance and no dangling edge",async t=>{
  const f=fixture(t),{jobId}=await f.addArtifacts({count:1});
  const doc=getProject(f.db,"project-1");
  doc.document.nodes=[];doc.document.connections=[];
  patchProject(f.db,{id:"project-1",expectedRevision:1,document:doc.document});
  const result=await f.materializer.runOnce();
- assert.equal(result[0].status,"blocked");
- assert.equal(result[0].reason,"materialization_source_deleted");
+ assert.equal(result[0].status,"materialized");
+ const after=getProject(f.db,"project-1").document;
+ assert.equal(after.nodes.length,1);
+ assert.equal(after.connections.length,0);
+ assert.equal(after.nodes[0].metadata.sourceChangedSinceSubmit,true);
+ assert.equal(after.nodes[0].metadata.comfyArtifact.workflowNodeId,"wf-1");
  assert.equal(f.db.prepare("SELECT status FROM jobs WHERE id=?").get(jobId).status,"succeeded");
 });
 test("poll backoff is persisted; restart polls only when due and never issues new submit",async t=>{

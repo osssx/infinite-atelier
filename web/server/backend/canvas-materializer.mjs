@@ -71,28 +71,39 @@ export function createCanvasMaterializer({db,blobStore,videoDimensionReader=read
     if(!project)throw fail("materialization_project_deleted");
     const doc=JSON.parse(project.document_json);
     const source=doc.nodes.find(n=>n.id===artifact.target_node_id);
-    if(!source)throw fail("materialization_source_deleted");
+    // A successful immutable artifact survives deletion or edits of its source.
+    // An absent/incompatible source prevents a link, not persistence of the blob.
     const job=db.prepare("SELECT snapshot_json FROM jobs WHERE id=?").get(artifact.job_id);
     const snapshot=job?JSON.parse(job.snapshot_json):null;
     const isModel=snapshot?.adapterKind==="model"&&
      (snapshot.provider==="openai"||snapshot.provider==="openai_compatible"||
       snapshot.provider==="volcengine_ark"&&artifact.kind==="video")&&
-     snapshot.task?.kind===artifact.kind&&artifact.port_id===artifact.kind&&
-     (["config","text"].includes(source.type)||
-      source.type===artifact.kind&&["image","audio","video"].includes(source.type));
-    const hasPort=source.type==="comfy:workflow"&&source.metadata?.comfyPorts?.some(p=>
-     p.id===artifact.port_id&&p.direction==="source"&&p.valueKind===requiredKind[artifact.kind]);
-    if(!hasPort&&!isModel)throw fail("materialization_port_mismatch");
-    if(!matchesSourceFingerprint(doc,source.id,artifact.source_fingerprint,snapshot))
-     throw fail("materialization_source_changed");
+     snapshot.task?.kind===artifact.kind&&artifact.port_id===artifact.kind;
     const metadata=JSON.parse(artifact.metadata_json);
+    // Legacy worker tests and old jobs may have model adapter snapshots
+    // without a typed task but a valid Comfy capture record.
+    const isComfy=snapshot?.adapterKind==="comfy"||
+     snapshot?.adapterKind==="model"&&!snapshot.task?.kind&&!!metadata?.comfyArtifact;
+    if(!isModel&&!isComfy)throw fail("materialization_port_mismatch");
     if(isModel&&metadata?.modelGeneration?.kind!==artifact.kind)
      throw fail("materialization_port_mismatch");
+    const compatibleModelSource=source&&(["config","text"].includes(source.type)||
+     source.type===artifact.kind&&["image","audio","video"].includes(source.type));
+    const hasPort=source?.type==="comfy:workflow"&&source.metadata?.comfyPorts?.some(p=>
+     p.id===artifact.port_id&&p.direction==="source"&&p.valueKind===requiredKind[artifact.kind]);
+    // Input fingerprints belong to the pre-submit save barrier. Once generated,
+    // an edited prompt, reference connection or workflow binding must not
+    // strand its verified CAS result. Original inputs remain in the frozen job.
+    let sourceChangedSinceSubmit=!source;
+    if(source)try{
+     sourceChangedSinceSubmit=!matchesSourceFingerprint(doc,source.id,artifact.source_fingerprint,snapshot);
+    }catch{sourceChangedSinceSubmit=true}
+    const linkable=Boolean(source&&(isModel?compatibleModelSource:hasPort));
     const index=metadata?.comfyArtifact?.index;
-    const origin=isModel?{jobId:artifact.job_id,artifactId:artifact.id,sourceNodeId:source.id,
+    const origin=isModel?{jobId:artifact.job_id,artifactId:artifact.id,sourceNodeId:artifact.target_node_id,
      kind:artifact.kind,model:snapshot.task.model}:
      makeComfyArtifactProvenance({runId:artifact.job_id,artifactId:artifact.id,
-      workflowNodeId:source.id,portId:artifact.port_id,kind:artifact.kind,index});
+      workflowNodeId:artifact.target_node_id,portId:artifact.port_id,kind:artifact.kind,index});
     const nodeId="artifact-"+artifact.id,edgeId="artifact-edge-"+artifact.id;
     if(!validId(nodeId)||!validId(edgeId))throw fail("materialization_invalid_id");
     const matches=doc.nodes.filter(n=>(isModel?n.metadata?.modelArtifact?.artifactId:
@@ -104,14 +115,16 @@ export function createCanvasMaterializer({db,blobStore,videoDimensionReader=read
     const {width,height}=artifact.kind==="image"?imageNodeSize(mediaDimensions):
      artifact.kind==="video"?videoNodeSize(mediaDimensions):
      {width:dims[artifact.kind][0],height:dims[artifact.kind][1]};
-    const existingCount=doc.nodes.filter(n=>isModel?n.metadata?.modelArtifact?.sourceNodeId===source.id:
-     n.metadata?.comfyArtifact?.workflowNodeId===source.id).length;
+    const existingCount=doc.nodes.filter(n=>isModel?n.metadata?.modelArtifact?.sourceNodeId===artifact.target_node_id:
+     n.metadata?.comfyArtifact?.workflowNodeId===artifact.target_node_id).length;
     const column=Math.floor(existingCount/4),row=existingCount%4;
+    const fallbackX=Math.max(0,...doc.nodes.map(n=>Number(n.position?.x)+Number(n.width)||0))+48;
     const node=other??{
      id:nodeId,type:artifact.kind,title:"Generated "+artifact.kind,
-     position:{x:source.position.x+source.width+48+column*444,
-      y:source.position.y+row*444},width,height,
+     position:{x:source?source.position.x+source.width+48+column*444:fallbackX+column*444,
+      y:source?source.position.y+row*444:80+row*444},width,height,
      metadata:{status:"success",mimeType:artifact.mime,
+      ...(sourceChangedSinceSubmit?{sourceChangedSinceSubmit:true}:{}),
       ...(mediaDimensions?{naturalWidth:mediaDimensions.width,naturalHeight:mediaDimensions.height}:{}),
       ...(isModel?{modelArtifact:origin}:{comfyArtifact:origin}),
       ...(artifact.kind==="text"?{content:contents}:{content:"/api/v1/blobs/"+artifact.blob_id,
@@ -120,13 +133,12 @@ export function createCanvasMaterializer({db,blobStore,videoDimensionReader=read
     };
     if(!other)doc.nodes.push(node);
     const existingLink=doc.connections.find(c=>c.toNodeId===nodeId);
-    if(existingLink&&!(existingLink.fromNodeId===source.id&&
-       (isModel?existingLink.fromPortId===undefined&&existingLink.toPortId===undefined:
-        existingLink.fromPortId===artifact.port_id&&existingLink.toPortId==="comfy-artifact")))
-      throw fail("materialization_link_conflict");
-    if(doc.connections.some(c=>c.id===edgeId&&!(
-      c.fromNodeId===source.id&&c.toNodeId===nodeId)))throw fail("materialization_edge_collision");
-    if(!existingLink)doc.connections.push(isModel?{
+    const edgeCollision=doc.connections.some(c=>c.id===edgeId&&
+      !(linkable&&c.fromNodeId===source.id&&c.toNodeId===nodeId));
+    // Do not replace a user's existing link, or attach to an output port whose
+    // meaning changed. The detached artifact still retains its original run,
+    // workflowNodeId and portId as immutable provenance.
+    if(linkable&&!existingLink&&!edgeCollision)doc.connections.push(isModel?{
      id:edgeId,fromNodeId:source.id,toNodeId:nodeId
     }:{
      id:edgeId,fromNodeId:source.id,fromPortId:artifact.port_id,
@@ -148,10 +160,9 @@ export function createCanvasMaterializer({db,blobStore,videoDimensionReader=read
    });
   }catch(e){
    const reason=e.code??"materialization_failed";
-   const blocked=new Set(["materialization_project_deleted","materialization_source_deleted",
-    "materialization_port_mismatch","materialization_source_changed",
+   const blocked=new Set(["materialization_project_deleted",
+    "materialization_port_mismatch",
     "materialization_identity_conflict","materialization_node_collision",
-    "materialization_link_conflict","materialization_edge_collision",
     "materialization_invalid_id","invalid_comfy_artifact_provenance"]);
    mark(artifact,reason,blocked.has(reason)?"blocked":"retry");
    return {artifactId:artifact.id,status:blocked.has(reason)?"blocked":"retry",reason};
@@ -174,8 +185,8 @@ export function createCanvasMaterializer({db,blobStore,videoDimensionReader=read
  function retryBlocked({projectId,artifactId}={}){
   if(!validId(projectId)||!validId(artifactId))throw fail("invalid_materialization_reference");
   // This is ONLY a replay of an already-collected immutable artifact.
-  // Never requeue a GPU/remote job, and never bypass the source fingerprint
-  // or graph validation in processArtifact.
+  // Never requeue a GPU/remote job. Re-evaluate the current graph for safe
+  // links, while preserving immutable origin and CAS validation.
   return writeTransaction(db,()=>{
    const row=db.prepare(`SELECT m.id,m.job_id FROM materializations m
     JOIN jobs j ON j.id=m.job_id
@@ -191,9 +202,41 @@ export function createCanvasMaterializer({db,blobStore,videoDimensionReader=read
    return true;
   });
  }
+ /** One-time startup recovery for the older materializer's too-strict
+  * graph/input checks. Only previously completed, frozen CAS artifacts move
+  * back to the local *materialization* queue. Never queue a GPU/model job.
+  * Conflicts discovered under the current rules can remain blocked.
+  */
+ function requeueLegacyBlocked(){
+  return writeTransaction(db,()=>{
+   const rows=db.prepare(`UPDATE materializations SET
+    status='retry',reason=NULL,next_due_at=NULL,fail_count=0
+    WHERE status='blocked'
+      AND reason IN (
+       'materialization_source_changed','materialization_source_deleted',
+       'materialization_port_mismatch','materialization_link_conflict',
+       'materialization_edge_collision'
+      )
+      AND EXISTS (
+       SELECT 1 FROM jobs j JOIN projects p ON p.id=j.project_id
+       WHERE j.id=materializations.job_id
+         AND j.project_id=materializations.project_id
+         AND j.status='succeeded' AND p.deleted_at IS NULL
+      )
+    RETURNING job_id,artifact_id,project_id`).all();
+   const insert=db.prepare(
+    "INSERT INTO job_events(job_id,kind,payload_json,created_at) VALUES(?,?,?,?)"
+   );
+   const now=Date.now();
+   for(const row of rows)insert.run(row.job_id,"artifact_materialization_requeued",
+    stableJson({projectId:row.project_id,artifactId:row.artifact_id,
+     status:"retry",reason:"legacy_materialization_policy_updated"}),now);
+   return rows.length;
+  });
+ }
  function status({jobId}={}){
   return jobId?db.prepare("SELECT id,artifact_id,project_id,status,node_id,reason FROM materializations WHERE job_id=? ORDER BY artifact_id").all(jobId):
    db.prepare("SELECT status,COUNT(*) AS count FROM materializations GROUP BY status").all();
  }
- return {runOnce,recoverPending,retryBlocked,status};
+ return {runOnce,recoverPending,retryBlocked,requeueLegacyBlocked,status};
 }

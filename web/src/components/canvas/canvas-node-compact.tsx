@@ -10,6 +10,7 @@ import { resolveMediaPreview } from "@/services/media-preview-storage";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
 import { useCanvasActions } from "./canvas-actions";
+import { CanvasTextExecutionIndicator } from "./canvas-text-execution-indicator";
 import {COMFY_WORKFLOW_MOCK_TYPE} from "@/lib/canvas/canvas-ports";
 import {useCanvasComfyExecution} from "@/features/comfy-workflow/canvas-execution-visual";
 import {comfyRunStatusLabel,isComfyRunActive} from "@/features/comfy-workflow/run-status";
@@ -147,6 +148,8 @@ export const CompactCanvasNode = memo(function CompactCanvasNode({
                     </div>
                 ) : null}
                 {data.type===COMFY_WORKFLOW_MOCK_TYPE?<CompactComfyStatus id={data.id}/>:null}
+                {(data.type===CanvasNodeType.Text||data.type===CanvasNodeType.Config)
+                    ? <CanvasTextExecutionIndicator nodeId={data.id} compact/> : null}
             </div>
         </div>
     );

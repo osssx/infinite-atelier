@@ -257,9 +257,11 @@ test("P4.4 ordinary model artifacts do not overwrite edited Canvas source",async
  patchProject(f.db,{id:"canvas-2",expectedRevision:1,document:updated});
  const materializer=createCanvasMaterializer({db:f.db,blobStore:f.blobStore});
  const result=await materializer.runOnce();
- assert.equal(result[0].status,"blocked");
- assert.equal(result[0].reason,"materialization_source_changed");
- assert.equal(getProject(f.db,"canvas-2").document.nodes.length,1);
+ assert.equal(result[0].status,"materialized");
+ const after=getProject(f.db,"canvas-2").document;
+ assert.equal(after.nodes.length,2);
+ assert.equal(after.nodes[0].metadata.content,"second");
+ assert.equal(after.nodes[1].metadata.sourceChangedSinceSubmit,true);
  assert.equal(f.db.prepare("SELECT status FROM jobs WHERE id=?").get(id).status,"succeeded");
 });
 test("P4.4 Fastify /jobs HTTP -> auto Worker -> BlobStore -> ordinary Canvas materialization",async t=>{

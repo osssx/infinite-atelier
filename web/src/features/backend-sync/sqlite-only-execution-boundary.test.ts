@@ -35,7 +35,8 @@ describe("P4.2 SQLite-only Canvas execution boundary",()=>{
   expect(legacyImage).toBeGreaterThan(durableSubmit);
   expect(retry.slice(durableSubmit,legacyVideo)).toMatch(/return;\s*}\s*if \(!isAiConfigReady/);
   expect(page).toContain("sqliteModelSubmitLocksRef.current.add(submissionKey)");
-  expect(page).toContain("finally{sqliteModelSubmitLocksRef.current.delete(submissionKey)}");
+  expect(page).toMatch(/finally\s*\{\s*sqliteModelSubmitLocksRef\.current\.delete\(submissionKey\)/);
+  expect(page).toContain("finishCanvasTextSubmission(projectId,nodeId,textSubmissionToken)");
  });
  it("refreshes text-model submission readiness after hydration without bypassing the backend save fence",()=>{
   const generation=page.slice(page.indexOf("const handleGenerateNode = useCallback("),

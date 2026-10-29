@@ -106,6 +106,8 @@ import {capabilitiesForModel} from "@/services/api/video/model-capabilities";
 import {validateSeedanceRequest} from "@/services/api/video/seedance-content";
 import {ensureSqliteModelChannelForExecution,modelChannelProvider} from "@/features/backend-sync/model-channel-autoroute";
 import {watchSqliteComfyJob} from "@/features/backend-sync/sqlite-comfy-job-watch";
+import {beginCanvasTextSubmission,trackCanvasTextJob,finishCanvasTextSubmission,
+    updateCanvasTextJob,finishCanvasTextJob,setCanvasTextExecutionScope} from "@/features/backend-sync/canvas-text-execution-visual";
 import {setCanvasComfyExecutionScope,setCanvasComfyExecution,observeCanvasComfyExecution,
     markCanvasComfyRunUnobservable} from "@/features/comfy-workflow/canvas-execution-visual";
 import {refreshSqliteComfyArtifacts} from "@/features/backend-sync/sqlite-comfy-job-watch";
@@ -375,7 +377,11 @@ function AtelierCanvasPage() {
     const pageMountedRef = useRef(true);
     useEffect(()=>{
         setCanvasComfyExecutionScope(projectId);
-        return ()=>setCanvasComfyExecutionScope(null);
+        setCanvasTextExecutionScope(projectId);
+        return ()=>{
+            setCanvasComfyExecutionScope(null);
+            setCanvasTextExecutionScope(null);
+        };
     },[projectId]);
     const connectionsRef = useRef(connections);
     const selectedNodeIdsRef = useRef(selectedNodeIds);
@@ -2584,6 +2590,9 @@ function AtelierCanvasPage() {
                     return;
                 }
                 sqliteModelSubmitLocksRef.current.add(submissionKey);
+                const textSubmissionToken=mode==="text"?nanoid():null;
+                if(textSubmissionToken)
+                    beginCanvasTextSubmission(projectId,nodeId,textSubmissionToken);
                 try{
                     if(!projectLoaded)throw Error("画布项目尚未加载完成");
                     await ensureSqliteModelChannelForExecution(selectedChannel,sqliteProvider);
@@ -2696,6 +2705,8 @@ function AtelierCanvasPage() {
                     });
                     message.info("模型任务已提交："+job.id+"，完成后自动追加产物节点");
                     if(kind==="video"){sqliteGenerationJobsRef.current.set(nodeId,job.id);setRunningNodeId(nodeId)}
+                    if(textSubmissionToken)
+                        trackCanvasTextJob(projectId,nodeId,job.id,job.status,textSubmissionToken);
                     monitorSqliteJobRef.current(job.id);
                 }catch(error){
                     const detail=error instanceof Error?error.message:String(error);
@@ -2704,7 +2715,11 @@ function AtelierCanvasPage() {
                         setJobHistoryOpen(true);
                     }else message.error(detail);
                 }
-                finally{sqliteModelSubmitLocksRef.current.delete(submissionKey)}
+                finally{
+                    sqliteModelSubmitLocksRef.current.delete(submissionKey);
+                    if(textSubmissionToken)
+                        finishCanvasTextSubmission(projectId,nodeId,textSubmissionToken);
+                }
                 return;
             }
             if (!isAiConfigReady(generationConfig, generationConfig.model)) {
@@ -3751,12 +3766,14 @@ function AtelierCanvasPage() {
             },
             onTextDelta:delta=>{
                 if(controller.signal.aborted||activeProjectIdRef.current!==projectId)return;
+                updateCanvasTextJob(projectId,jobId,"running");
                 recentText=(recentText+delta).slice(-512);
                 message.open({key:progressKey,type:"loading",duration:0,
                     content:"文本生成中："+recentText.slice(-120)});
             },
             onSkillText:(delta,round)=>{
                 if(controller.signal.aborted||activeProjectIdRef.current!==projectId)return;
+                updateCanvasTextJob(projectId,jobId,"running");
                 if(round!==lastSkillRound){recentText="";lastSkillRound=round;}
                 recentText=(recentText+delta).slice(-512);
                 message.open({key:progressKey,type:"loading",duration:0,
@@ -3769,6 +3786,7 @@ function AtelierCanvasPage() {
             },
             onStatus:(status,details,job)=>{
                 if(controller.signal.aborted||activeProjectIdRef.current!==projectId)return;
+                updateCanvasTextJob(projectId,jobId,status);
                 if(job?.targetNodeId && nodesRef.current.some(node=>node.id===job.targetNodeId&&
                     node.type===COMFY_WORKFLOW_MOCK_TYPE)) {
                     observeCanvasComfyExecution(projectId,job.targetNodeId,{
@@ -3794,6 +3812,7 @@ function AtelierCanvasPage() {
                     message.error("后端任务："+status);
             }
         }).finally(()=>{
+            finishCanvasTextJob(projectId,jobId);
             message.destroy(progressKey);
             if(sqliteJobWatchesRef.current.get(jobId)===controller)
                 sqliteJobWatchesRef.current.delete(jobId);
@@ -3825,6 +3844,11 @@ function AtelierCanvasPage() {
             for(const job of active.filter(job=>job.targetNodeId&&workflows.has(job.targetNodeId))
                 .sort((a,b)=>(a.createdAt??0)-(b.createdAt??0))) {
                 setCanvasComfyExecution(projectId,job.targetNodeId!,{runId:job.id,status:job.status});
+            }
+            for(const job of active){
+                if(job.modelKind!=="text"||!job.targetNodeId||
+                   !nodesRef.current.some(node=>node.id===job.targetNodeId))continue;
+                trackCanvasTextJob(projectId,job.targetNodeId,job.id,job.status);
             }
             for(const job of active){
                 if(job.modelKind!=="video"||!job.targetNodeId||

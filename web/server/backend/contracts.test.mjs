@@ -68,6 +68,29 @@ test("P4.6 concurrent official model jobs are serialized per Canvas producer in 
  assert.equal(submitJob(db,make("second")).jobId,second.jobId);
  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE target_node_id='source'").get().n,2);
 });
+test("each user-clicked text model request may submit despite previous unknown or active task",t=>{
+ const db=fixture();t.after(()=>db.close());
+ const graph={nodes:[{id:"source",type:"text",metadata:{prompt:"hello"}}],connections:[]};
+ db.prepare("INSERT INTO projects(id,document_json,revision) VALUES(?,?,?)").run("p-text",JSON.stringify(graph),1);
+ const make=(key,kind="text")=>({projectId:"p-text",targetNodeId:"source",
+  expectedProjectRevision:1,sourceNodeFingerprint:fingerprintSource(graph,"source"),
+  idempotencyKey:key,requestFingerprint:key,executionMode:"immediate",
+  snapshot:{adapterKind:"model",provider:"openai",task:{kind,model:"deepseek/deepseek-v4.1-flash-1017",prompt:"hello"}}});
+ const old=submitJob(db,make("old")).jobId;
+ transitionJob(db,old,"preparing");
+ transitionJob(db,old,"submitting");
+ transitionJob(db,old,"submission_unknown");
+ const next=submitJob(db,make("next"));
+ assert.equal(next.existing,false);
+ assert.notEqual(next.jobId,old);
+ assert.equal(submitJob(db,make("next")).jobId,next.jobId,"same-click retries still use idempotency");
+ const concurrent=submitJob(db,make("clicked-again"));
+ assert.notEqual(concurrent.jobId,next.jobId,"text requests have no prior-job terminal requirement");
+ assert.equal(db.prepare("SELECT status FROM jobs WHERE id=?").get(old).status,"submission_unknown");
+ assert.throws(()=>submitJob(db,make("image-is-serialized","image")),/backend_prior_job_not_terminal/);
+ assert.throws(()=>submitJob(db,{...make("bad-fence"),expectedProjectRevision:99}),/stale_generation_source/);
+ assert.equal(db.prepare("SELECT COUNT(*) n FROM jobs WHERE project_id='p-text'").get().n,3);
+});
 test("mode and submission safety",()=>{
  assertJobTransition("submitting","collecting",{executionMode:"immediate"});
  assertJobTransition("submitting","running",{executionMode:"poll"});

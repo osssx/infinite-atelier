@@ -185,7 +185,7 @@ export const canRetryCanvasMaterialization=(job:CanvasJobHistoryItem,artifact:Ca
 export const canReconcileUnknownJob=(job:CanvasJobHistoryItem)=>
  job.kind==="comfy"&&job.status==="submission_unknown"&&job.reconciliationEligible;
 export const canCloseUnknownModelJob=(job:CanvasJobHistoryItem)=>
- job.kind==="model"&&job.status==="submission_unknown"&&job.closureEligible===true;
+ job.kind==="model"&&job.modelKind!=="text"&&job.status==="submission_unknown"&&job.closureEligible===true;
 export async function closeCanvasUnknownModelJob(projectId:string,job:CanvasJobHistoryItem):
  Promise<{closed:true;existing:boolean;jobId:string;status:string}>{
  return canvasApi("/api/v1/projects/"+encodeURIComponent(projectId)+"/jobs/"+
@@ -631,8 +631,11 @@ export function CanvasJobHistory({projectId,open,onClose,onObserveJob,onRefreshC
        </div>:null}
      </div>:null}
     {job.status==="submission_unknown"?
-     <Alert type="warning" showIcon message="远程是否接收尚未核实；禁止重新提交"
-      description={job.kind==="comfy"?"只有原始 ComfyUI 提交标记与冻结工作流图均匹配才能恢复。证据不足时保持未知，不会重复提交。":"模型可能已接收付费请求；无法证明是否计费，保持未知状态且不自动重新提交。"}/>:null}
+     <Alert type="warning" showIcon
+      message={job.kind==="model"&&job.modelKind==="text"?"本次文本提交结果未知":"远程是否接收尚未核实；禁止重新提交"}
+      description={job.kind==="comfy"?"只有原始 ComfyUI 提交标记与冻结工作流图均匹配才能恢复。证据不足时保持未知，不会重复提交。":
+       job.modelKind==="text"?"本次文本请求可能已被服务商接收或计费；不会自动重发这笔请求，但可手动点击生成以提交另一笔独立请求。":
+       "模型可能已接收付费请求；无法证明是否计费，保持未知状态且不自动重新提交。"}/>:null}
     {job.status==="blocked_credential"?
      <Alert type="warning" showIcon message="密钥不可用"
       description="核查后端渠道密钥及原任务状态，不要将其作为新任务重发。"/>:null}

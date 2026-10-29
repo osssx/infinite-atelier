@@ -124,7 +124,7 @@ test("explicit, authenticated risk acknowledgment closes only unverified model j
  const makeNew=key=>submitJob(f.db,{projectId:"p1",targetNodeId:"producer",
   expectedProjectRevision:1,sourceNodeFingerprint:fingerprintSource(doc,"producer"),
   idempotencyKey:key,requestFingerprint:key,executionMode:"immediate",
-  snapshot:{adapterKind:"model",provider:"openai",task:{kind:"text",model:"new",prompt:"new prompt"}}});
+  snapshot:{adapterKind:"model",provider:"openai",task:{kind:"image",model:"new",prompt:"new prompt"}}});
  assert.throws(()=>makeNew("next"),/backend_prior_job_not_terminal/);
  assert.equal((await post(url,undefined,{})).statusCode,401);
  assert.equal((await post(url,undefined,{"x-test-owner":"owner",origin:"https://attacker.invalid"})).statusCode,403);

@@ -40,8 +40,9 @@ describe("P4.7 Canvas job history and recovery boundary",()=>{
    expect(canRemoveCanvasJobHistory({...job,status})).toBe(false);
  });
  it("offers manual closure only for eligible, still-unknown model jobs and never submits generation",async()=>{
-  const unknown={...job,status:"submission_unknown",modelKind:"text",closureEligible:true};
+  const unknown={...job,status:"submission_unknown",modelKind:"image",closureEligible:true};
   expect(canCloseUnknownModelJob(unknown)).toBe(true);
+  expect(canCloseUnknownModelJob({...unknown,modelKind:"text"})).toBe(false);
   expect(canCloseUnknownModelJob({...unknown,closureEligible:false})).toBe(false);
   expect(canCloseUnknownModelJob({...unknown,kind:"comfy"})).toBe(false);
   expect(canCloseUnknownModelJob({...unknown,status:"failed"})).toBe(false);

@@ -89,7 +89,10 @@ export async function startSqliteModelGeneration({
   throw Error("skill_grant_invalid");
  const images=referenceImages.length?await freezeModelImages(referenceImages,bridge):[];
  const mask=maskImage?(await freezeModelImages([maskImage],bridge))[0]:undefined;
- await bridge.assertNoActiveJob(sourceNodeId);
+ // Text model requests are explicit per-click submissions; a previous
+ // submission_unknown text task cannot block a new request. Non-text media
+ // retain the existing active-job guard.
+ if(task.kind!=="text")await bridge.assertNoActiveJob(sourceNodeId);
  const frozen={nodes:[...nodes],connections:[...connections]};
  const fence=await bridge.saveProjectNow(frozen,sourceNodeId);
  const idempotencyKey=crypto.randomUUID();

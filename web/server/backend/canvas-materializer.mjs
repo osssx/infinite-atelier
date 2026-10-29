@@ -75,7 +75,8 @@ export function createCanvasMaterializer({db,blobStore,videoDimensionReader=read
     const job=db.prepare("SELECT snapshot_json FROM jobs WHERE id=?").get(artifact.job_id);
     const snapshot=job?JSON.parse(job.snapshot_json):null;
     const isModel=snapshot?.adapterKind==="model"&&
-     (snapshot.provider==="openai"||snapshot.provider==="volcengine_ark"&&artifact.kind==="video")&&
+     (snapshot.provider==="openai"||snapshot.provider==="openai_compatible"||
+      snapshot.provider==="volcengine_ark"&&artifact.kind==="video")&&
      snapshot.task?.kind===artifact.kind&&artifact.port_id===artifact.kind&&
      (["config","text"].includes(source.type)||
       source.type===artifact.kind&&["image","audio","video"].includes(source.type));

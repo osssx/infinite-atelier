@@ -71,6 +71,7 @@ describe("P4.4 ordinary SQLite model submit",()=>{
    channelId:"proxy-1",channelBaseUrl:"http://127.0.0.1:8188/v1",provider:"openai_compatible",
    task:{kind:"text",model:"proxy-text-model",prompt:"hello"},bridge:b,api:api as unknown as typeof canvasApi});
   expect(calls).toEqual(["GET /api/v1/execution/capabilities","GET /api/v1/channels/proxy-1","POST /api/v1/jobs"]);
+  expect(b.assertNoActiveJob).not.toHaveBeenCalled();
   const blocked=vi.fn();
   const neverSaved=bridge();
   await expect(startSqliteModelGeneration({projectId:"p1",sourceNodeId:"text-1",nodes,connections,
@@ -79,6 +80,32 @@ describe("P4.4 ordinary SQLite model submit",()=>{
    api:vi.fn(async()=>({autoDispatch:true,modelKinds:["text"]})) as unknown as typeof canvasApi
   })).rejects.toThrow("不安全");
   expect(neverSaved.saveProjectNow).not.toHaveBeenCalled();
+ });
+ it("text bypasses prior active-job lookup, while retaining save fence and a fresh submission ID",async()=>{
+  const b=bridge();
+  b.assertNoActiveJob.mockRejectedValue(Error("backend_prior_job_not_terminal:old-unknown"));
+  const keys:string[]=[];
+  const api=vi.fn(async(path:string,_method="GET",payload?:any)=>{
+   if(path==="/api/v1/execution/capabilities")return {autoDispatch:true,modelKinds:["text"]};
+   if(path==="/api/v1/channels/openai-channel")
+    return {id:"openai-channel",provider:"openai",hasKey:true,keyVersion:"v1"};
+   if(path==="/api/v1/jobs"){
+    keys.push(payload.idempotencyKey);
+    expect(payload.snapshot.task.kind).toBe("text");
+    expect(payload.expectedProjectRevision).toBe(3);
+    return fakeJob;
+   }
+   throw Error("unexpected "+path);
+  });
+  const args={projectId:"p1",sourceNodeId:"text-1",nodes,connections,
+   channelId:"openai-channel",task:{kind:"text" as const,model:"deepseek/deepseek-v4.1-flash-1017",prompt:"hello"},
+   bridge:b,api:api as unknown as typeof canvasApi};
+  await startSqliteModelGeneration(args);
+  await startSqliteModelGeneration(args);
+  expect(b.assertNoActiveJob).not.toHaveBeenCalled();
+  expect(b.saveProjectNow).toHaveBeenCalledTimes(2);
+  expect(keys).toHaveLength(2);
+  expect(keys[0]).not.toBe(keys[1]);
  });
  it("freezes trusted text script into SQLite snapshot without browser key",async()=>{
   const script='const data = await http.post("/chat/completions", {model, messages}); return data.choices?.[0]?.message?.content || "";';

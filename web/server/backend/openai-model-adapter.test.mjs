@@ -535,7 +535,10 @@ test("P5.4g project-scoped Skill audit and explicit frozen replay preserve prove
   const newRequest=await app.inject({method:"POST",url:url+"/replay-skills",payload:{
    expectedProjectRevision:1,idempotencyKey:"other-new",requestFingerprint:"other-new"
   }});
-  assert.equal(newRequest.statusCode,409);
+  // Text requests are explicitly independent: a separate replay click gets
+  // a fresh job even while the preceding text replay is still queued.
+  assert.equal(newRequest.statusCode,201,newRequest.body);
+  assert.notEqual(newRequest.json().id,replay.json().id);
   assert.equal(requests,1); // creating a job does not directly bill upstream
   const updated=structuredClone(doc);updated.nodes[0].metadata.prompt="modified";
   patchProject(f.db,{id:"skill-project",expectedRevision:1,document:updated});

@@ -47,6 +47,69 @@ function fixture(t){
  }
  return {db,blobStore,materializer,source,doc,fingerprint,addArtifacts};
 }
+test("OpenAI-compatible text output materializes from a saved artifact without Comfy ports or a second model request",async t=>{
+ const f=fixture(t),projectId="compatible-text-project",sourceNodeId="text-1793275584701-j8nx2";
+ const original={nodes:[{id:sourceNodeId,type:"text",title:"Text prompt",
+  position:{x:24,y:36},width:360,height:220,metadata:{prompt:"Who are you?"}}],
+  connections:[]};
+ createProject(f.db,{id:projectId,document:original});
+ const model="deepseek/deepseek-v4.1-flash-1017";
+ const jobId=submitJob(f.db,{projectId,targetNodeId:sourceNodeId,
+  expectedProjectRevision:1,sourceNodeFingerprint:fingerprintSource(original,sourceNodeId),
+  idempotencyKey:"compatible-text-1",requestFingerprint:"compatible-text-1",
+  executionMode:"immediate",snapshot:{adapterKind:"model",provider:"openai_compatible",
+   endpointBaseUrl:"https://api.cline.bot/api/v1",
+   task:{kind:"text",model,prompt:"Who are you?"}}}).jobId;
+ const blob=await f.blobStore.put([Buffer.from("Text completed successfully","utf8")],{mime:"text/plain"});
+ const artifactId="compatible-text-artifact";
+ appendArtifact(f.db,{id:artifactId,jobId,portId:"text",itemKey:"0",
+  blobId:blob.blobId,sha256:blob.sha256,mime:blob.mimeType,kind:"text",
+  metadata:{modelGeneration:{kind:"text",model}}});
+ f.db.prepare("UPDATE jobs SET status='succeeded' WHERE id=?").run(jobId);
+ // Simulate an existing production result blocked by the old validator.
+ f.db.prepare("INSERT INTO materializations(id,job_id,artifact_id,project_id,status,reason) VALUES(?,?,?,?,?,?)")
+  .run("old-blocked-entry",jobId,artifactId,projectId,"blocked","materialization_port_mismatch");
+ assert.equal(f.materializer.retryBlocked({projectId,artifactId}),true);
+ const output=await f.materializer.runOnce();
+ assert.deepEqual(output.map(r=>r.status),["materialized"]);
+ const after=getProject(f.db,projectId);
+ assert.equal(after.document.nodes.length,2);
+ assert.equal(after.document.connections.length,1);
+ const result=after.document.nodes.find(n=>n.id==="artifact-"+artifactId);
+ assert.equal(result.type,"text");
+ assert.equal(result.metadata.content,"Text completed successfully");
+ assert.deepEqual(result.metadata.modelArtifact,{jobId,artifactId,sourceNodeId,kind:"text",model});
+ assert.equal(result.metadata.comfyArtifact,undefined);
+ assert.deepEqual(after.document.connections[0],{
+  id:"artifact-edge-"+artifactId,fromNodeId:sourceNodeId,toNodeId:result.id
+ });
+ assert.equal(f.db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE id=?").get(jobId).n,1);
+ assert.equal(f.materializer.status({jobId})[0].status,"materialized");
+ assert.deepEqual(await f.materializer.runOnce(),[]);
+ assert.equal(getProject(f.db,projectId).revision,2);
+});
+test("compatible model materialization retains strict kind/port and source validation",async t=>{
+ const f=fixture(t),projectId="compatible-validation-project";
+ const node={id:"text-source",type:"text",title:"Text",position:{x:0,y:0},
+  width:320,height:180,metadata:{prompt:"hello"}};
+ const original={nodes:[node],connections:[]};
+ createProject(f.db,{id:projectId,document:original});
+ const jobId=submitJob(f.db,{projectId,targetNodeId:node.id,
+  expectedProjectRevision:1,sourceNodeFingerprint:fingerprintSource(original,node.id),
+  idempotencyKey:"misbound",requestFingerprint:"misbound",executionMode:"immediate",
+  snapshot:{adapterKind:"model",provider:"openai_compatible",
+   task:{kind:"text",model:"deepseek/deepseek-v4.1-flash-1017",prompt:"hello"}}}).jobId;
+ const blob=await f.blobStore.put([Buffer.from("hello","utf8")],{mime:"text/plain"});
+ appendArtifact(f.db,{id:"bad-port",jobId,portId:"wrong-port",itemKey:"0",
+  blobId:blob.blobId,sha256:blob.sha256,mime:blob.mimeType,kind:"text",
+  metadata:{modelGeneration:{kind:"text",model:"deepseek/deepseek-v4.1-flash-1017"}}});
+ f.db.prepare("UPDATE jobs SET status='succeeded' WHERE id=?").run(jobId);
+ const result=await f.materializer.runOnce();
+ assert.equal(result[0].status,"blocked");
+ assert.equal(result[0].reason,"materialization_port_mismatch");
+ assert.equal(getProject(f.db,projectId).document.nodes.length,1);
+ assert.equal(f.db.prepare("SELECT status FROM jobs WHERE id=?").get(jobId).status,"succeeded");
+});
 test("four artifact kinds become typed connected nodes and project revision advances atomically",async t=>{
  const f=fixture(t);
  const {jobId,created}=await f.addArtifacts();

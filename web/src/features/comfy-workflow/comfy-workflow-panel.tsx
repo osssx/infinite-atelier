@@ -11,7 +11,7 @@ import type { CanvasNodeData, CanvasNodeMetadata, CanvasPortValueKind } from "@/
 import {
     appendComfyInputTarget, bindingTargetKey, enumerateComfyGraphItems, filterComfyGraphItems,
     inferComfyBindingMode, inferComfyInputKind, parseBindingTargetKey, removeComfyInputTarget,
-    usedComfyInputTarget,
+    resolveComfyInputBindingAction, toggleComfyPortSelection, usedComfyInputTarget,
 } from "./binding-picker";
 import { ComfyTemplateBindingError, templatePayloadFromGraph, validateComfyApiGraph, type ComfyInputBinding, type ComfyNodeTarget, type ComfyObjectInfo, type ComfyTemplatePayload, type ComfyTemplatePort, type ComfyWorkflowTemplate } from "./template-schema";
 import { getComfyTemplate, saveComfyTemplateVersion } from "./template-registry";
@@ -233,9 +233,10 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
     const exposeField=(nodeId:string,inputName:string)=>{
         if(!draft) return;
         const target={nodeId,inputName};
-        const claimed=usedComfyInputTarget(draft.ports,target);
-        if(claimed && claimed!==selectedPortId) {
-            setSelectedPortId(claimed);setStatus("该参数已配置画布端口，已选中现有端口。");
+        const action=resolveComfyInputBindingAction(draft.ports,selectedPortId,target);
+        if(action.kind==="existing") {
+            setSelectedPortId(action.portId!);
+            setStatus("该参数已配置画布端口，已定位到现有映射。");
             return;
         }
         const value=draft.apiGraph[nodeId].inputs[inputName];
@@ -245,18 +246,20 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
         const descriptor=inspectComfyInputSpec(meta);
         const kind=inferComfyInputKind(value,descriptor.valueKind??descriptor.declaredType);
         const mode=inferComfyBindingMode(value);
-        if (activePort?.direction==="target") {
+        if (action.kind==="append") {
+            const portId=action.portId!;
+            const selected=draft.ports.find(p=>p.id===portId)!;
             try {
-                const empty=activePort.inputBinding?.targets.length===0;
-                edit((d)=>({...d,ports:appendComfyInputTarget(d.ports,activePort.id,target).map(p=>
-                    p.id===activePort.id&&empty&&p.inputBinding?.mode==="literal" && mode==="literal"
+                const empty=selected.inputBinding?.targets.length===0;
+                edit((d)=>({...d,ports:appendComfyInputTarget(d.ports,portId,target).map(p=>
+                    p.id===portId&&empty&&p.inputBinding?.mode==="literal" && mode==="literal"
                         ? {...p,
                             ...(!p.choices&&!Object.prototype.hasOwnProperty.call(p,"defaultValue")
                                 ? {valueKind:kind}:{}),
                             ...(!p.choices&&descriptor.choices?.length&&descriptor.valueKind===kind
                                 ? {choices:descriptor.choices}:{})}
                         : p)}));
-                setError("");setStatus("已将 "+nodeId+"."+inputName+" 绑定到端口「"+activePort.label+"」。");
+                setError("");setStatus("已将 "+nodeId+"."+inputName+" 绑定到端口「"+selected.label+"」。");
             } catch(cause) {setError(String(cause));}
             return;
         }
@@ -514,7 +517,6 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
                                     <button className={buttonClass} type="button" onClick={()=>addPort("source")}><Plus size={12}/> 添加输出</button>
                                 </div>
                             </div>
-                            <p className="mt-2 text-[11px] text-[var(--comfy-muted)]">拖动端口调整同侧显示顺序，也可选中端口后使用上移 / 下移。保存模板后生效。</p>
                             <div ref={portListRef} className="mt-3 space-y-2.5" data-comfy-port-order-list>
                                 {(["target","source"] as const).map(direction=>{
                                     const side=direction==="target"?inputPorts:outputPorts;
@@ -530,7 +532,7 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
                                                 aria-label={"选择端口 "+p.label+"，可拖动排序"}
                                                 title={"拖动调整"+(direction==="target"?"输入":"输出")+"端口顺序"}
                                                 aria-pressed={p.id===selectedPortId}
-                                                onClick={()=>{setSelectedPortId(p.id);setError("");setBindingIssue(null);}}
+                                                onClick={()=>{setSelectedPortId(current=>toggleComfyPortSelection(current,p.id));setError("");setBindingIssue(null);}}
                                                 onDragStart={event=>{
                                                     if(busy){event.preventDefault();return;}
                                                     event.dataTransfer.effectAllowed="move";

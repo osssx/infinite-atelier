@@ -11,6 +11,25 @@ export type ComfyGraphItem = {
 };
 export const bindingTargetKey = (t: ComfyNodeTarget) => JSON.stringify([t.nodeId,t.inputName]);
 
+/** Clicking an already-selected canvas port deselects it; a subsequent
+ * click on a ComfyUI input then creates a separate canvas port.
+ */
+export function toggleComfyPortSelection(selectedId:string|null,clickedId:string):string|null {
+    return selectedId===clickedId?null:clickedId;
+}
+
+/** Keep existing bindings unique while allowing a deliberate multi-map. */
+export function resolveComfyInputBindingAction(
+    ports:readonly ComfyTemplatePort[],selectedId:string|null,target:ComfyNodeTarget,
+):{kind:"existing"|"append"|"create";portId?:string} {
+    const existing=usedComfyInputTarget(ports,target);
+    if(existing)return {kind:"existing",portId:existing};
+    const selected=ports.find(p=>p.id===selectedId);
+    if(selected?.direction==="target")return {kind:"append",portId:selected.id};
+    return {kind:"create"};
+}
+
+
 /** Safe even if a custom Comfy node ID or an input name contains a dot. */
 export function parseBindingTargetKey(key:string): ComfyNodeTarget {
     const parsed: unknown = JSON.parse(key);

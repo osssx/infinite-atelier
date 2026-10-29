@@ -3,7 +3,8 @@ import type { ComfyApiGraph, ComfyObjectInfo, ComfyTemplatePort } from "./templa
 import {inspectComfyInputSpec} from "./comfy-input-spec";
 import {
     appendComfyInputTarget, bindingTargetKey, enumerateComfyGraphItems, filterComfyGraphItems,
-    inferComfyBindingMode, inferComfyInputKind, parseBindingTargetKey, removeComfyInputTarget, usedComfyInputTarget,
+    inferComfyBindingMode, inferComfyInputKind, parseBindingTargetKey, removeComfyInputTarget,
+    resolveComfyInputBindingAction, toggleComfyPortSelection, usedComfyInputTarget,
 } from "./binding-picker";
 
 const graph:ComfyApiGraph = {
@@ -23,6 +24,45 @@ const two:ComfyTemplatePort={id:"b",label:"Second",direction:"target",valueKind:
     inputBinding:{mode:"literal",targets:[]}};
 
 describe("Comfy binding picker interactive selection",()=>{
+    it("deselects on second click so left-side parameters create new input ports",()=>{
+        let selected:string|null=null;
+        selected=toggleComfyPortSelection(selected,"a");
+        expect(selected).toBe("a");
+        expect(resolveComfyInputBindingAction([one,two],selected,target("21","steps")))
+            .toEqual({kind:"append",portId:"a"});
+        // Clicking the selected canvas port again is an explicit deselection.
+        selected=toggleComfyPortSelection(selected,"a");
+        expect(selected).toBeNull();
+        expect(resolveComfyInputBindingAction([one,two],selected,target("21","steps")))
+            .toEqual({kind:"create"});
+        // Clicking a new Comfy field now creates an independent port and leaves
+        // the original input's mapping intact.
+        const newPort:ComfyTemplatePort={id:"steps",label:"steps",direction:"target",
+            valueKind:"INT",inputBinding:{mode:"literal",targets:[target("21","steps")]}};
+        const ports=[one,two,newPort];
+        expect(ports[0].inputBinding?.targets).toEqual([target("29","filename_prefix")]);
+        expect(ports[2].inputBinding?.targets).toEqual([target("21","steps")]);
+        expect(resolveComfyInputBindingAction(ports,selected,target("21","steps")))
+            .toEqual({kind:"existing",portId:"steps"});
+    });
+    it("keeps intentional multiple mappings when selected and routes existing targets to their owner",()=>{
+        expect(toggleComfyPortSelection("a","b")).toBe("b");
+        const second=target("21","seed");
+        expect(resolveComfyInputBindingAction([one,two],"a",second))
+            .toEqual({kind:"append",portId:"a"});
+        const multi=appendComfyInputTarget([one,two],"a",second);
+        expect(multi[0].inputBinding?.targets).toHaveLength(2);
+        expect(resolveComfyInputBindingAction(multi,"a",second))
+            .toEqual({kind:"existing",portId:"a"});
+        expect(resolveComfyInputBindingAction(multi,null,target("29","filename_prefix")))
+            .toEqual({kind:"existing",portId:"a"});
+        const output:ComfyTemplatePort={id:"result",label:"Result",direction:"source",
+            valueKind:"IMAGE",outputBinding:{nodeId:"21",outputIndex:0},capture:{kind:"none"}};
+        expect(resolveComfyInputBindingAction([...multi,output],"result",target("21","denoise")))
+            .toEqual({kind:"create"});
+        expect(resolveComfyInputBindingAction([one,two],"deleted",target("21","denoise")))
+            .toEqual({kind:"create"});
+    });
     it("lists parsed graph nodes with titles, editable inputs, and /object_info output socket types",()=>{
         const items=enumerateComfyGraphItems(graph,info);
         expect(items).toHaveLength(3);

@@ -5,28 +5,30 @@ const versions=new Map<string,StoredPackage>();
 let revision=1;
 const clone=<T>(value:T):T=>structuredClone(value);
 export function resetSkillTestApi(){entries.clear();versions.clear();revision=1;}
-/** Test double for HTTP transport only; actual SQLite behavior is covered by
- * server/backend/sqlite-skill-registry.test.mjs integration tests.
- */
+
+/** Test fixture: simulate a filesystem scan registering a Skill, not an HTTP import. */
+export function seedSkillTestApi(pkg:StoredPackage):SkillCatalogEntry{
+ const data=clone(pkg),m=data.manifest;
+ const existing=entries.get(m.id);
+ versions.set(m.id+":"+m.version,data);
+ const entry:SkillCatalogEntry={
+  id:m.id,name:m.name,description:m.description,enabled:existing?.enabled??true,
+  ...(existing?.scope?{scope:clone(existing.scope)}:{}),
+  activeVersion:m.version,versions:[...new Set([...(existing?.versions??[]),m.version])],
+  updatedAt:new Date().toISOString()
+ };
+ entries.set(m.id,entry);revision++;
+ return clone(entry);
+}
+
+/** In-memory HTTP test double for catalog reads and metadata PATCH only. */
 export async function skillTestApi(path:string,method="GET",payload?:unknown):Promise<any>{
  if(path==="/api/v1/skills"&&method==="GET")
   return {revision,skills:clone([...entries.values()])};
  const body=payload as Record<string,any>|undefined;
- if(method!=="GET"&&body?.expectedRevision!==revision)
-  throw Object.assign(Error("skill_revision_conflict"),{code:"skill_revision_conflict",status:409});
- if(path==="/api/v1/skills"&&method==="POST"){
-  const pkg=clone(body?.package as StoredPackage),m=pkg.manifest;
-  const existing=entries.get(m.id);
-  const key=m.id+":"+m.version;
-  if(versions.has(key)&&versions.get(key)?.manifest.hash!==m.hash)
-   throw Error("Skill version hash conflict");
-  versions.set(key,pkg);
-  const entry:SkillCatalogEntry={id:m.id,name:m.name,description:m.description,
-   enabled:existing?.enabled??true,...(existing?.scope?{scope:clone(existing.scope)}:{}),
-   activeVersion:m.version,versions:[...new Set([...(existing?.versions??[]),m.version])],
-   updatedAt:new Date().toISOString()};
-  entries.set(m.id,entry);revision++;
-  return {entry:clone(entry)};
+ if(method==="POST"&&path==="/api/v1/skills/scan"){
+  if(body?.expectedRevision!==revision)throw Object.assign(Error("skill_revision_conflict"),{code:"skill_revision_conflict",status:409});
+  return {revision,total:entries.size,added:0,updated:0,unchanged:entries.size,missing:0,invalid:0,errors:[]};
  }
  const match=/^\/api\/v1\/skills\/([^/]+)(?:\/([^/]+))?$/.exec(path);
  if(!match)throw Error("unknown_skill_api");
@@ -36,12 +38,9 @@ export async function skillTestApi(path:string,method="GET",payload?:unknown):Pr
   if(!item)throw Error("skill_version_not_found");
   return {package:clone(item)};
  }
- if(method==="DELETE"){
-  entries.delete(id);
-  for(const key of [...versions.keys()])if(key.startsWith(id+":"))versions.delete(key);
-  revision++;return {removed:true};
- }
  if(method!=="PATCH"||!body)throw Error("unknown_skill_api");
+ if(body.expectedRevision!==revision)
+  throw Object.assign(Error("skill_revision_conflict"),{code:"skill_revision_conflict",status:409});
  const item=entries.get(id);
  if(!item)throw Error("Skill does not exist");
  if(body.action==="enabled"){

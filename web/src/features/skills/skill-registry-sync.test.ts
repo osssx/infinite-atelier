@@ -3,8 +3,8 @@ vi.mock("@/features/backend-sync/canvas-api",async()=>{
  const {skillTestApi}=await import("./skill-registry-test-api");
  return {canvasApi:skillTestApi};
 });
-import {resetSkillTestApi,skillTestApi} from "./skill-registry-test-api";
-import {SKILL_REGISTRY_CHANNEL,registerSkill,getSkillRegistrySnapshot,setSkillScope} from "./skill-registry";
+import {resetSkillTestApi,seedSkillTestApi,skillTestApi} from "./skill-registry-test-api";
+import {SKILL_REGISTRY_CHANNEL,getSkillRegistrySnapshot,setSkillScope} from "./skill-registry";
 import {useSkillStore} from "@/stores/use-skill-store";
 import type {SkillPackage} from "./types";
 
@@ -34,17 +34,17 @@ describe("P5.4i cross-tab revision and notification",()=>{
  it("announces only successful mutations and exposes fresh authoritative revision",async()=>{
   const initial=await getSkillRegistrySnapshot();
   expect(initial.revision).toBe(1);
-  const saved=await registerSkill(pkg,initial.revision);
+  const saved=seedSkillTestApi(pkg);
   expect(saved.id).toBe("storyboard");
   const after=await getSkillRegistrySnapshot();
   expect(after.revision).toBe(2);
-  expect(FakeChannel.sent).toEqual([{name:SKILL_REGISTRY_CHANNEL,message:{kind:"changed"}}]);
+  expect(FakeChannel.sent).toEqual([]);
   await expect(setSkillScope("storyboard",{type:"project",projectId:"p1"},1))
    .rejects.toMatchObject({code:"skill_revision_conflict"});
-  expect(FakeChannel.sent).toHaveLength(1); // rejected mutation does not notify
+  expect(FakeChannel.sent).toHaveLength(0); // rejected mutation does not notify
  });
  it("store refuses to mutate stale UI revisions, then refreshes latest value",async()=>{
-  await registerSkill(pkg);
+  seedSkillTestApi(pkg);
   await useSkillStore.getState().refresh();
   expect(useSkillStore.getState().catalogRevision).toBe(2);
   expect(useSkillStore.getState().catalog[0].enabled).toBe(true);
@@ -57,10 +57,11 @@ describe("P5.4i cross-tab revision and notification",()=>{
   expect(current.catalogRevision).toBe(3);
   expect(current.catalog[0].enabled).toBe(false);
   expect(current.busy).toBe(false);
-  expect(FakeChannel.sent).toHaveLength(1); // no broadcast after rejected write
+  expect(FakeChannel.sent).toHaveLength(0); // no broadcast after rejected write
   await current.toggle("storyboard",true);
   expect(useSkillStore.getState().catalogRevision).toBe(4);
   expect(useSkillStore.getState().catalog[0].enabled).toBe(true);
-  expect(FakeChannel.sent).toHaveLength(2);
+  expect(FakeChannel.sent).toHaveLength(1);
+   expect(FakeChannel.sent[0]).toEqual({name:SKILL_REGISTRY_CHANNEL,message:{kind:"changed"}});
  });
 });

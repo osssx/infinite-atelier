@@ -3,20 +3,11 @@ import {canvasApi} from "@/features/backend-sync/canvas-api";
 import {validateSkillPath} from "./skill-parser";
 import type {SkillCatalogEntry,SkillPackage,SkillScope} from "./types";
 
-/** v13: SQLite is authoritative; deliberately never read or erase the old
- * IndexedDB skill_packages database. A failed backend request fails closed.
- */
+/** The backend filesystem is the source of truth; browser storage is not a fallback. */
 function decodeArchive(value:string):Blob{
  const binary=atob(value),bytes=new Uint8Array(binary.length);
  for(let i=0;i<binary.length;i++)bytes[i]=binary.charCodeAt(i);
  return new Blob([bytes],{type:"application/zip"});
-}
-async function encodeArchive(value:Blob):Promise<string>{
- if(value.size>5*1024*1024)throw Error("Skill archive too large");
- const bytes=new Uint8Array(await value.arrayBuffer()),parts:string[]=[];
- for(let i=0;i<bytes.length;i+=32768)
-  parts.push(String.fromCharCode(...bytes.subarray(i,i+32768)));
- return btoa(parts.join(""));
 }
 const segment=(value:string)=>encodeURIComponent(value);
 const resource=(id:string,version:string)=>"/api/v1/skills/"+segment(id)+"/"+segment(version);
@@ -28,7 +19,15 @@ function serialize<T>(run:()=>Promise<T>):Promise<T>{
 }
 export const SKILL_REGISTRY_CHANNEL="infinite-atelier:skill-registry:v13";
 export type SkillRegistrySnapshot={revision:number;skills:SkillCatalogEntry[]};
-/** Best-effort same-origin notification only; SQLite remains authoritative. */
+export type SkillScanResult={revision:number;total:number;added:number;updated:number;unchanged:number;missing:number;invalid:number;errors:{id:string;code:string}[]};
+export async function getSkillStorageConfig():Promise<{storage:string;directory:string|null}>{
+ return canvasApi("/api/v1/skills/config");
+}
+export async function scanSkillDirectory(expectedRevision:number):Promise<SkillScanResult>{
+ const result=await canvasApi<SkillScanResult>("/api/v1/skills/scan","POST",{expectedRevision});
+ announce();return result;
+}
+/** Best-effort UI notification; the backend filesystem is authoritative. */
 function announce(){
  if(typeof BroadcastChannel==="undefined")return;
  try{
@@ -49,15 +48,6 @@ async function revision():Promise<number>{
  if(!Number.isSafeInteger(result.revision)||result.revision<1)throw Error("skill_revision_invalid");
  return result.revision;
 }
-export async function registerSkill(pkg:SkillPackage,expectedRevision?:number):Promise<SkillCatalogEntry>{
- return serialize(async()=>{
-  const {sourceArchive,...rest}=pkg;
-  const body={...rest,...(sourceArchive?{sourceArchiveBase64:await encodeArchive(sourceArchive)}:{})};
-  const result=await canvasApi<{entry:SkillCatalogEntry}>("/api/v1/skills","POST",{expectedRevision:expectedRevision??await revision(),package:body});
-  announce();
-  return result.entry;
- });
-}
 export async function setSkillEnabled(id:string,enabled:boolean,expectedRevision?:number):Promise<void>{
  await serialize(async()=>{await canvasApi("/api/v1/skills/"+segment(id),"PATCH",{action:"enabled",enabled,expectedRevision:expectedRevision??await revision()});announce()});
 }
@@ -66,9 +56,6 @@ export async function setSkillScope(id:string,scope:SkillScope,expectedRevision?
 }
 export async function activateSkillVersion(id:string,version:string,expectedRevision?:number):Promise<void>{
  await serialize(async()=>{await canvasApi("/api/v1/skills/"+segment(id),"PATCH",{action:"activate",version,expectedRevision:expectedRevision??await revision()});announce()});
-}
-export async function removeSkill(id:string,expectedRevision?:number):Promise<void>{
- await serialize(async()=>{await canvasApi("/api/v1/skills/"+segment(id),"DELETE",{expectedRevision:expectedRevision??await revision()});announce()});
 }
 export async function getSkillPackage(id:string,version?:string):Promise<SkillPackage|null>{
  const list=await listSkills();

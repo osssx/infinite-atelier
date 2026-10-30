@@ -1,6 +1,6 @@
 import { create } from "zustand";
-import { importSkillFile } from "@/features/skills/skill-import";
-import { activateSkillVersion, getSkillRegistrySnapshot, registerSkill, removeSkill, setSkillEnabled, setSkillScope } from "@/features/skills/skill-registry";
+import { activateSkillVersion, getSkillRegistrySnapshot, scanSkillDirectory, setSkillEnabled, setSkillScope } from "@/features/skills/skill-registry";
+import type {SkillScanResult} from "@/features/skills/skill-registry";
 import type { SkillCatalogEntry, SkillScope } from "@/features/skills/types";
 
 type SkillStore = {
@@ -8,12 +8,12 @@ type SkillStore = {
     catalogRevision: number;
     loaded: boolean;
     busy: boolean;
+    scanResult: SkillScanResult | null;
+    scan: () => Promise<SkillScanResult>;
     refresh: () => Promise<void>;
-    importFile: (file: File) => Promise<void>;
     toggle: (id: string, enabled: boolean) => Promise<void>;
     changeVersion: (id: string, version: string) => Promise<void>;
     changeScope: (id: string, scope: SkillScope) => Promise<void>;
-    remove: (id: string) => Promise<void>;
 };
 let loading: Promise<void> | null = null;
 export const useSkillStore = create<SkillStore>((set, get) => {
@@ -36,15 +36,19 @@ export const useSkillStore = create<SkillStore>((set, get) => {
         } finally { set({ busy: false }); }
     };
     return {
-        catalog: [], catalogRevision: 0, loaded: false, busy: false,
+        catalog: [], catalogRevision: 0, loaded: false, busy: false,scanResult:null,
         refresh: async () => {
             if (!loading) loading = refresh().finally(() => { loading = null; });
             await loading;
         },
-        importFile: (file) => change(async rev => registerSkill(await importSkillFile(file), rev)),
+        scan: async () => {
+            let result: SkillScanResult | null = null;
+            await change(async rev => {result = await scanSkillDirectory(rev ?? get().catalogRevision);});
+            set({scanResult:result});
+            return result!;
+        },
         toggle: (id, enabled) => change(rev => setSkillEnabled(id, enabled, rev)),
         changeVersion: (id, version) => change(rev => activateSkillVersion(id, version, rev)),
         changeScope: (id, scope) => change(rev => setSkillScope(id, scope, rev)),
-        remove: (id) => change(rev => removeSkill(id, rev)),
     };
 });

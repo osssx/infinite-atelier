@@ -115,6 +115,7 @@ export const CanvasNode = React.memo(function CanvasNode({
         onResizeEnd,
         onContentChange,
         onTitleChange,
+        onTitleEditingChange,
         onToggleBatch,
         onSetBatchPrimary,
         onDuplicateBatchImage,
@@ -180,6 +181,14 @@ export const CanvasNode = React.memo(function CanvasNode({
         titleInputRef.current?.focus();
         titleInputRef.current?.select();
     }, [isEditingTitle]);
+
+    // Keep the globally rendered hover toolbar out of the title's focus area.
+    // Cleanup also releases the lock if an editing node is unmounted or LOD-swapped.
+    React.useLayoutEffect(() => {
+        if (!isEditingTitle) return;
+        onTitleEditingChange(data.id, true);
+        return () => onTitleEditingChange(data.id, false);
+    }, [data.id, isEditingTitle, onTitleEditingChange]);
 
     const finishTitleEditing = useCallback(() => {
         const title = titleDraft.trim() || data.title || t("canvas.node.untitled");

@@ -66,7 +66,7 @@ describe("ComfyUI workflow selected-node toolbar",()=>{
         }
     });
     it("changes the same Execute control to Stop, without another toolbar button",()=>{
-        for(const status of ["queued","running"]){
+        for(const status of ["running"]){
             const html=render(workflow(status),true);
             expect(html).toContain('aria-label="停止当前 ComfyUI 工作流"');
             expect(html).toContain(">停止</span>");
@@ -74,6 +74,10 @@ describe("ComfyUI workflow selected-node toolbar",()=>{
             expect(html).not.toMatch(/disabled=""[^>]*aria-label="停止当前 ComfyUI 工作流"/);
             expect((html.match(/aria-label="停止当前 ComfyUI 工作流"/g)??[])).toHaveLength(1);
         }
+        const queued=render(workflow("queued"));
+        expect(queued).toContain('aria-label="工作流执行中"');
+        expect(queued).toMatch(/disabled=""[^>]*aria-label="工作流执行中"/);
+        expect(queued).not.toContain('aria-label="停止当前 ComfyUI 工作流"');
         for(const status of ["submitting","preparing","collecting","succeeded","cancelled","submission_unknown"]){
             expect(render(workflow(status))).not.toContain('aria-label="停止当前 ComfyUI 工作流"');
         }

@@ -22,6 +22,7 @@ export type CanvasActions = {
     onVideoDimensions: (nodeId: string, width: number, height: number, source: "poster" | "video") => void;
     onContentChange: (nodeId: string, content: string) => void;
     onTitleChange: (nodeId: string, title: string) => void;
+    onTitleEditingChange: (nodeId: string, editing: boolean) => void;
     onContextMenu: (event: ReactMouseEvent, nodeId: string) => void;
     onToggleBatch: (nodeId: string) => void;
     onSetBatchPrimary: (nodeId: string, imageId: string) => void;
@@ -62,6 +63,7 @@ export function CanvasActionsProvider({ actions, children }: { actions: CanvasAc
             onVideoDimensions: (nodeId, width, height, source) => latest.current.onVideoDimensions(nodeId, width, height, source),
             onContentChange: (nodeId, content) => latest.current.onContentChange(nodeId, content),
             onTitleChange: (nodeId, title) => latest.current.onTitleChange(nodeId, title),
+            onTitleEditingChange: (nodeId, editing) => latest.current.onTitleEditingChange(nodeId, editing),
             onContextMenu: (event, nodeId) => latest.current.onContextMenu(event, nodeId),
             onToggleBatch: (nodeId) => latest.current.onToggleBatch(nodeId),
             onSetBatchPrimary: (nodeId, imageId) => latest.current.onSetBatchPrimary(nodeId, imageId),

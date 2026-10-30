@@ -34,6 +34,7 @@ import { App, Button, Modal } from "antd";
 import { NODE_DEFAULT_SIZE, getNodeSpec } from "@/constant/canvas";
 import { ActiveConnectionOverlay, ConnectionLayer } from "@/components/canvas/canvas-connection-layer";
 import { CanvasActionsProvider, type CanvasActions } from "@/components/canvas/canvas-actions";
+import { nextTitleEditingNodeId, toolbarNodeDuringTitleEditing } from "@/components/canvas/canvas-title-editing";
 import { CanvasConfigComposer } from "@/components/canvas/canvas-config-composer";
 import { CanvasConfigNodePanel } from "@/components/canvas/canvas-config-node-panel";
 import { CanvasGraphIndexProvider } from "@/components/canvas/canvas-graph-context";
@@ -345,6 +346,7 @@ function AtelierCanvasPage() {
     const [projectLoadAttempt,setProjectLoadAttempt]=useState(0);
     const [backendComfyEnabled,setBackendComfyEnabled] = useState(false);
     const [toolbarNodeId, setToolbarNodeId] = useState<string | null>(null);
+    const [editingNodeTitleId, setEditingNodeTitleId] = useState<string | null>(null);
     const [nodeImageSettingsOpen, setNodeImageSettingsOpen] = useState(false);
     const [dialogNodeId, setDialogNodeId] = useState<string | null>(null);
     const [infoNodeId, setInfoNodeId] = useState<string | null>(null);
@@ -3723,6 +3725,10 @@ function AtelierCanvasPage() {
     // CanvasNode uses React.memo, but new prop references would invalidate it on every render and rerender every node
     // during click, hover, or viewport changes, which is especially expensive for Markdown. These useCallback values
     // and their memoized map/handler dependencies remain stable during interaction, so unchanged nodes do not rerender.
+    const handleNodeTitleEditingChange = useCallback((nodeId: string, editing: boolean) => {
+        setEditingNodeTitleId((current) => nextTitleEditingNodeId(current, nodeId, editing));
+    }, []);
+
     const handleNodeHoverStart = useCallback((nodeId: string) => {
         if (nodeDraggingRef.current) return;
         setHoveredNodeId(nodeId);
@@ -4088,6 +4094,7 @@ function AtelierCanvasPage() {
         onResizeEnd: handleNodeResizeEnd,
         onContentChange: handleNodeContentChange,
         onTitleChange: handleNodeTitleChange,
+        onTitleEditingChange: handleNodeTitleEditingChange,
         onContextMenu: handleNodeContextMenu,
         onToggleBatch: toggleBatchExpanded,
         onSetBatchPrimary: setBatchPrimary,
@@ -4226,7 +4233,7 @@ function AtelierCanvasPage() {
                 {directorPanelNode ? <DirectorPanel nodeId={directorPanelNode.id} open onClose={() => setDialogNodeId(null)} onExport={handleDirectorExport(directorPanelNode.id)} /> : null}
 
                 <CanvasNodeHoverToolbar
-                    node={isNodeDragging || isNodeResizing || nodeImageSettingsOpen || expandedImageNodeIds.has(toolbarNode?.id || "") ? null : toolbarNode}
+                    node={toolbarNodeDuringTitleEditing(isNodeDragging || isNodeResizing || nodeImageSettingsOpen || expandedImageNodeIds.has(toolbarNode?.id || "") ? null : toolbarNode, editingNodeTitleId)}
                     viewport={viewport}
                     onKeep={keepNodeToolbar}
                     onLeave={hideNodeToolbar}

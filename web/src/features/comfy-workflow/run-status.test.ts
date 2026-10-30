@@ -11,7 +11,7 @@ describe("durable ComfyUI workflow spinner statuses",()=>{
     });
     it("selects generate, stop or disabled busy for a single action button",()=>{
         expect(comfyGenerationButtonAction()).toBe("generate");
-        for(const status of ["queued","running"]){
+        for(const status of ["running"]){
             expect(comfyGenerationButtonAction(status,true)).toBe("stop");
             expect(comfyGenerationButtonAction(status,false)).toBe("busy");
         }
@@ -21,6 +21,13 @@ describe("durable ComfyUI workflow spinner statuses",()=>{
         for(const status of ["succeeded","failed","cancelled","submission_unknown"]){
             expect(comfyGenerationButtonAction(status,true)).toBe("generate");
         }
+    });
+    it("does not flash Stop in the initial queued -> preparing -> submitting -> running lifecycle",()=>{
+        const statuses=["queued","preparing","submitting","running"];
+        expect(statuses.map(status=>comfyGenerationButtonAction(status,true)))
+            .toEqual(["busy","busy","busy","stop"]);
+        expect(statuses.map(status=>isComfyRunActive(status))).toEqual([true,true,true,true]);
+        expect(comfyGenerationButtonAction("queued",false)).toBe("busy");
     });
     it("stops on completion, failure, cancellation and unknown submission without claiming success",()=>{
         for(const status of ["succeeded","failed","cancelled","timed_out","submission_unknown","import_failed","blocked_credential","unavailable"]){

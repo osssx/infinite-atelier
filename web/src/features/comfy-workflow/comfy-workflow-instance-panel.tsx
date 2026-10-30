@@ -245,7 +245,9 @@ export function ComfyWorkflowInstancePanel({node,connections,projectId,comfyInst
     // Do not show details belonging to an older run after a newer submission has begun.
     // Canvas-level progress also updates when a run was triggered from the selected-node toolbar.
     const currentRun=run;
-    const status=observedExecution?.runId===currentRun?.runId||!currentRun?.runId?
+    // A local click is submission-in-flight even before the newest SQLite job exists.
+    // Do not reuse a previous run ID/status to expose Stop during this window.
+    const status=runBusy?"submitting":observedExecution?.runId===currentRun?.runId||!currentRun?.runId?
         observedExecution?.status??currentRun?.status??liveExecution?.status:currentRun.status;
     const active=isComfyRunActive(status)||runBusy;
     const artifactSummary=currentRun?.status==="succeeded" ?

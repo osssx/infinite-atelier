@@ -39,8 +39,8 @@ function footer(status?:string,error?:string) {
     return html.split("data-comfy-run-footer")[1]?.split("</footer>")[0]??"";
 }
 describe("save current ComfyUI workflow as new preset button",()=>{
-    it("switches the existing generation button to Stop, with no duplicate control",()=>{
-        for(const status of ["running","queued"]){
+    it("switches to Stop only after running, without duplicate controls",()=>{
+        for(const status of ["running"]){
             const html=footer(status);
             expect(html).toContain('aria-label="停止工作流生成"');
             expect(html).toContain("停止生成");
@@ -48,6 +48,12 @@ describe("save current ComfyUI workflow as new preset button",()=>{
             expect(html).not.toContain('aria-label="开始生成"');
             expect(html.split("<button").length-1).toBe(1);
         }
+        const queued=footer("queued");
+        expect(queued).toContain("排队中");
+        expect(queued).toContain("生成中");
+        expect(queued).toMatch(/disabled=""[^>]*aria-label="开始生成"/);
+        expect(queued).not.toContain('aria-label="停止工作流生成"');
+        expect(queued).not.toContain("停止生成");
         const stopping=footer("cancelling");
         expect(stopping).toContain("正在停止…");
         expect(stopping).toMatch(/disabled=""[^>]*aria-label="开始生成"/);

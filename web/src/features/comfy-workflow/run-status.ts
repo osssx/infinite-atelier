@@ -3,12 +3,12 @@ const active=new Set(["submitting","queued","preparing","running","collecting","
 const terminal=new Set(["succeeded","failed","cancelled","submission_unknown","timed_out","import_failed","blocked_credential","unavailable"]);
 export function isComfyRunActive(status?:string):boolean {return Boolean(status&&active.has(status));}
 export function isComfyRunTerminal(status?:string):boolean {return Boolean(status&&terminal.has(status));}
-/** One execution button toggles into Stop only when the backend has a
- * cancellable queued or running job ID. Preparing/submitting/collecting remain
- * busy, and an in-flight cancel cannot be clicked twice.
+/** Avoid Stop → Busy → Stop flicker as SQLite advances queued → preparing
+ * → submitting → running. Display Stop only after a confirmed running job ID;
+ * all earlier and collecting phases remain non-interactive busy.
  */
 export function comfyGenerationButtonAction(status?:string,hasRunId=false):"generate"|"stop"|"busy"{
-    if((status==="queued"||status==="running")&&hasRunId)return "stop";
+    if(status==="running"&&hasRunId)return "stop";
     return isComfyRunActive(status)?"busy":"generate";
 }
 

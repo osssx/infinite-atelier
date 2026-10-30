@@ -320,6 +320,10 @@ function AtelierCanvasPage() {
     const [isCanvasPanning, setIsCanvasPanning] = useState(false);
     const [canvasTool, setCanvasTool] = useState<"select" | "pan">("pan");
     const [size, setSize] = useState({ width: 1200, height: 720 });
+    const [devicePixelRatio, setDevicePixelRatio] = useState(() =>
+        typeof window !== "undefined" && Number.isFinite(window.devicePixelRatio) && window.devicePixelRatio > 0
+            ? window.devicePixelRatio : 1,
+    );
     const [selectedNodeIds, setSelectedNodeIds] = useState<Set<string>>(new Set());
     const [selectedConnectionId, setSelectedConnectionId] = useState<string | null>(null);
     const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
@@ -699,6 +703,7 @@ function AtelierCanvasPage() {
             const rect = el.getBoundingClientRect();
             containerRectRef.current = rect;
             setSize({ width: rect.width, height: rect.height });
+            setDevicePixelRatio(Number.isFinite(window.devicePixelRatio) && window.devicePixelRatio > 0 ? window.devicePixelRatio : 1);
         };
         // Scrolling an ancestor moves the container without changing its size, so the
         // ResizeObserver alone would not notice. Drop the cache and re-measure on the next read.
@@ -710,10 +715,25 @@ function AtelierCanvasPage() {
         const resizeObserver = new ResizeObserver(updateSize);
         resizeObserver.observe(el);
         window.addEventListener("resize", updateSize);
+        // Moving a browser between Windows monitors can change DPR without a
+        // matching canvas resize. Listen to the current resolution media query.
+        let resolutionMedia: MediaQueryList | null = null;
+        const onResolutionChange = () => {
+            updateSize();
+            watchResolution();
+        };
+        const watchResolution = () => {
+            resolutionMedia?.removeEventListener("change", onResolutionChange);
+            if (!window.matchMedia) return;
+            resolutionMedia = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+            resolutionMedia.addEventListener("change", onResolutionChange);
+        };
+        watchResolution();
         window.addEventListener("scroll", invalidateRect, true);
         return () => {
             resizeObserver.disconnect();
             window.removeEventListener("resize", updateSize);
+            resolutionMedia?.removeEventListener("change", onResolutionChange);
             window.removeEventListener("scroll", invalidateRect, true);
         };
     }, [projectLoaded]);
@@ -4191,6 +4211,9 @@ function AtelierCanvasPage() {
                                 nodes={visibleNodes}
                                 wheelZoomActive={isWheelZooming}
                                 scale={viewport.k}
+                                viewportWidth={size.width}
+                                viewportHeight={size.height}
+                                devicePixelRatio={devicePixelRatio}
                                 // Only promotion ordering needs the center. Freeze it while
                                 // gestures pause promotion so ordinary pans cannot invalidate
                                 // every memoized NodeLayer child.

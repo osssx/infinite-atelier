@@ -28,6 +28,11 @@ type NodeLayerProps = {
     wheelZoomActive: boolean;
     /** A primitive scale used only to decide when tiny image previews become legible. */
     scale: number;
+    /** Actual canvas view bounds, excluding sidebars and browser chrome (CSS px). */
+    viewportWidth: number;
+    viewportHeight: number;
+    /** Real output pixel density, e.g. Windows display scale 125% => 1.25. */
+    devicePixelRatio: number;
     /** World-space viewport center for gradual promotion of nearby editors first. */
     centerX: number;
     centerY: number;
@@ -60,6 +65,9 @@ export const NodeLayer = memo(function NodeLayer({
     wheelZoomActive,
     scale,
     selectedNodeIds,
+    viewportWidth,
+    viewportHeight,
+    devicePixelRatio,
     centerX,
     centerY,
     pausePromotions,
@@ -94,8 +102,6 @@ export const NodeLayer = memo(function NodeLayer({
     compactRef.current = compactMode;
     // Resolution tiers change only at a threshold, not on every wheel event.
     const originalImageIds = useRef<Set<string>>(new Set());
-    const viewportWidth = typeof window === "undefined" ? 1280 : window.innerWidth;
-    const viewportHeight = typeof window === "undefined" ? 800 : window.innerHeight;
 
     // Pause new hydration during a gesture, but retain editors already mounted:
     // unmounting an active text editor or a multi-selected drag source is destructive.
@@ -203,7 +209,7 @@ export const NodeLayer = memo(function NodeLayer({
 
                 const hasOriginal = originalImageIds.current.has(node.id);
                 const wantOriginal = node.type === CanvasNodeType.Image && shouldUseOriginalCanvasImage(
-                    scale, node.width, node.height, viewportWidth, viewportHeight, hasOriginal,
+                    scale, node.width, node.height, viewportWidth, viewportHeight, hasOriginal, devicePixelRatio,
                 );
                 if (wantOriginal) originalImageIds.current.add(node.id);
                 else originalImageIds.current.delete(node.id);

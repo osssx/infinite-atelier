@@ -11,7 +11,6 @@ import {installBundledComfyTemplate,listComfyPresetCatalog,resetBundledComfyPres
 import {MINIMAX_H3_I2V_TEMPLATE_ID} from "./minimax-h3-i2v-preset";
 import {deleteComfyPreset} from "./preset-registry";
 import {getComfyTemplate} from "./template-registry";
-import {readLegacyComfySnapshot,importLegacyComfySnapshot} from "./legacy-comfy-import";
 
 const localDefault="http://127.0.0.1:8188";
 function makeTemplateNode(preset?:ComfyPreset):CanvasNodeData {
@@ -31,7 +30,6 @@ export function ComfySettingsTab() {
     const [busy,setBusy]=useState(false);
     const [presets,setPresets]=useState<ComfyCatalogPreset[]>([]);
     const [presetsBusy,setPresetsBusy]=useState(false);
-    const [importBusy,setImportBusy]=useState(false);
     const [presetActionBusy,setPresetActionBusy]=useState<string|null>(null);
     const [editor,setEditor]=useState<{key:string;node:CanvasNodeData;name:string}|null>(null);
 
@@ -109,29 +107,6 @@ export function ComfySettingsTab() {
             await deleteComfyPreset(preset.id);message.success("已移除预设（不影响现有画布节点）");await reloadPresets();}
         catch(error){message.error(String(error));}
     };
-    const importLegacy=async()=>{
-        setImportBusy(true);
-        try{
-            const snapshot=await readLegacyComfySnapshot();
-            if(!snapshot.templates.length&&!snapshot.presets.length){
-                message.info("当前浏览器没有可导入的旧模板或预设");return;
-            }
-            Modal.confirm({
-                title:"从当前浏览器导入旧 ComfyUI 工作流？",
-                content:"发现 "+snapshot.templates.length+" 个历史模板版本、"+
-                    snapshot.presets.length+" 个预设。将复制到本地后端；原浏览器数据不会删除。已有同 ID 的不同预设会拒绝覆盖。",
-                okText:"确认导入",cancelText:"取消",
-                onOk:async()=>{
-                    try{
-                        const result=await importLegacyComfySnapshot(snapshot);
-                        message.success("已导入 "+result.templates+" 个模板版本、"+result.presets+" 个预设");
-                        await reloadPresets();
-                    }catch(error){message.error("导入历史预设失败："+String(error));throw error;}
-                }
-            });
-        }catch(error){message.error("读取历史工作流失败："+String(error))}
-        finally{setImportBusy(false)}
-    };
     return <div className="space-y-6 pb-5" data-comfy-settings-tab>
         <section>
             <div className="mb-3 flex items-center justify-between gap-2">
@@ -162,7 +137,7 @@ export function ComfySettingsTab() {
         <section className="border-t border-stone-200 pt-5 dark:border-stone-800">
             <div className="mb-3 flex items-center justify-between gap-2">
                 <h3 className="text-base font-semibold">预设工作流</h3>
-                <div className="flex gap-2"><Button size="small" loading={importBusy} onClick={()=>void importLegacy()}>导入浏览器旧预设</Button><Button size="small" icon={<Plus size={13}/>} onClick={()=>void openPreset()}>新增 / 导入工作流</Button></div>
+                <Button size="small" icon={<Plus size={13}/>} onClick={()=>void openPreset()}>新增 / 导入工作流</Button>
             </div>
             <div className="overflow-hidden rounded-lg border border-stone-200 dark:border-stone-800">
                 <div className="grid grid-cols-[minmax(130px,1fr)_minmax(120px,2fr)_180px] gap-3 bg-stone-50 px-3 py-2 text-xs text-stone-500 dark:bg-stone-900"><span>名称</span><span>模板 revision</span><span>绑定编辑</span></div>

@@ -64,7 +64,7 @@ import { DirectorPanel } from "@/components/canvas/director-panel";
 import { flushCanvasStorePersistence,awaitCanvasStorePersistence,useCanvasStore,subscribeSavedCanvasGraph } from "@/stores/canvas/use-canvas-store";
 import { useGenerationHistoryStore, type GenerationHistoryImage } from "@/stores/canvas/use-generation-history-store";
 import { buildCanvasGraphIndex } from "@/lib/canvas/canvas-graph-index";
-import { prepareCanvasPortConnection, reconcileComfyArtifactConnections } from "@/lib/canvas/canvas-port-connections";
+import { connectCanvasPortsByDrag, prepareCanvasPortConnection, reconcileComfyArtifactConnections } from "@/lib/canvas/canvas-port-connections";
 import { pickCanvasDropHandle } from "@/lib/canvas/canvas-ports";
 import { exportSqliteCanvasProject } from "@/features/backend-sync/canvas-project-archive";
 import { applyNodeConfigPatch, audioMetadata, buildAudioGenerationMetadata, buildImageGenerationMetadata, createCanvasNode, imageMetadata, videoMetadata } from "@/lib/canvas/canvas-node-factory";
@@ -754,21 +754,18 @@ function AtelierCanvasPage() {
     const connectNodes = useCallback(
         (current: ConnectionHandle, target: ConnectionHandle) => {
             if (current.nodeId === target.nodeId) return;
-            const result = prepareCanvasPortConnection(current, target, nodesRef.current, connectionsRef.current);
+            const result = connectCanvasPortsByDrag(current, target, nodesRef.current, connectionsRef.current, nanoid);
             if (result.error === "duplicate") return;
-            if (!result.connection) {
-                message.warning(result.error === "multiple_sources_for_input" ? "输入端口已连接；请先断开原连接"
+            if (!result.connections) {
+                message.warning(result.error === "multiple_sources_for_input" ? "当前输入端口不支持替换连接"
                     : result.error === "incompatible_port_type" ? "端口类型不匹配"
                     : result.error === "cycle" ? "工作流连接不能形成循环"
                     : result.error === "legacy_target_not_supported" ? "工作流输出只能连接到类型化工作流输入端口"
                     : t("canvas.projectPage.configConnection"));
                 return;
             }
-            // Revalidate against the latest queued state: rapid user gestures must not bypass single-input rules.
-            setConnections((prev) => {
-                const next = prepareCanvasPortConnection(current, target, nodesRef.current, prev);
-                return next.connection ? [...prev, { id: nanoid(), ...next.connection }] : prev;
-            });
+            // Revalidate against the latest queued graph; replacement is one atomic change.
+            setConnections((prev) => connectCanvasPortsByDrag(current, target, nodesRef.current, prev, nanoid).connections ?? prev);
             setContextMenu(null);
         },
         [message, t],

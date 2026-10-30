@@ -1,11 +1,15 @@
 import { normalizeConnection } from "@/lib/canvas/canvas-node-geometry";
-import { getCanvasNodePorts, getCanvasPort, getCanvasResourceOutputPort, isPortAwareCanvasNode } from "@/lib/canvas/canvas-ports";
+import { COMFY_WORKFLOW_MOCK_TYPE, getCanvasNodePorts, getCanvasPort, getCanvasResourceOutputPort, isPortAwareCanvasNode } from "@/lib/canvas/canvas-ports";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type ConnectionHandle } from "@/types/canvas";
 
 export type CanvasPortConnectionError =
     | "missing_node" | "invalid_handle" | "missing_port" | "incompatible_port_type"
     | "multiple_sources_for_input" | "duplicate" | "cycle" | "legacy_target_not_supported";
-export type CanvasPortConnectionResult = { connection?: Omit<CanvasConnection, "id">; error?: CanvasPortConnectionError };
+export type CanvasPortConnectionResult = {
+    connection?: Omit<CanvasConnection, "id">;
+    replacedConnectionIds?: string[];
+    error?: CanvasPortConnectionError;
+};
 
 function createsCycle(from: string, to: string, connections: readonly CanvasConnection[]): boolean {
     const out = new Map<string, string[]>();
@@ -32,6 +36,7 @@ export function prepareCanvasPortConnection(
     second: ConnectionHandle,
     nodes: readonly CanvasNodeData[],
     existing: readonly CanvasConnection[],
+    options: { replaceOccupiedWorkflowInput?: boolean } = {},
 ): CanvasPortConnectionResult {
     const nodeById = new Map(nodes.map((node) => [node.id, node]));
     const a = nodeById.get(first.nodeId), b = nodeById.get(second.nodeId);
@@ -76,9 +81,28 @@ export function prepareCanvasPortConnection(
     const candidate = { fromNodeId: src.id, fromPortId: srcPort.id, toNodeId: dst.id, toPortId: dstPort.id };
     if (existing.some((c) => c.fromNodeId === candidate.fromNodeId && c.fromPortId === candidate.fromPortId
         && c.toNodeId === candidate.toNodeId && c.toPortId === candidate.toPortId)) return { error: "duplicate" };
-    if (existing.some((c) => c.toNodeId === dst.id && c.toPortId === dstPort.id)) return { error: "multiple_sources_for_input" };
-    if (createsCycle(src.id, dst.id, existing)) return { error: "cycle" };
-    return { connection: candidate };
+    const occupied = existing.filter((c) => c.toNodeId === dst.id && c.toPortId === dstPort.id);
+    const replace = options.replaceOccupiedWorkflowInput && dst.type === COMFY_WORKFLOW_MOCK_TYPE;
+    if (occupied.length && !replace) return { error: "multiple_sources_for_input" };
+    const remaining = replace ? existing.filter((c) => !occupied.includes(c)) : existing;
+    if (createsCycle(src.id, dst.id, remaining)) return { error: "cycle" };
+    return { connection: candidate, ...(occupied.length ? { replacedConnectionIds: occupied.map((c) => c.id) } : {}) };
+}
+
+/** Interactive drag: atomically replace a workflow input's old edge after
+ * successful port/type/cycle validation. Persisted graph validation remains strict.
+ */
+export function connectCanvasPortsByDrag(
+    first: ConnectionHandle,
+    second: ConnectionHandle,
+    nodes: readonly CanvasNodeData[],
+    existing: readonly CanvasConnection[],
+    makeId: () => string,
+): { connections?: CanvasConnection[]; error?: CanvasPortConnectionError } {
+    const result = prepareCanvasPortConnection(first, second, nodes, existing, { replaceOccupiedWorkflowInput: true });
+    if (!result.connection) return { error: result.error };
+    const replaced = new Set(result.replacedConnectionIds ?? []);
+    return { connections: [...existing.filter((edge) => !replaced.has(edge.id)), { id: makeId(), ...result.connection }] };
 }
 
 /** Repair only new typed Comfy provenance edges for all four artifact kinds.

@@ -2,7 +2,7 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/i18n", () => ({ default: { t: (key: string) => key } }));
 import { registerBuiltinNodes } from "@/components/canvas/nodes/builtin-nodes";
-import { prepareCanvasPortConnection, reconcileComfyArtifactConnections, validateCanvasPortConnections } from "./canvas-port-connections";
+import { connectCanvasPortsByDrag, prepareCanvasPortConnection, reconcileComfyArtifactConnections, validateCanvasPortConnections } from "./canvas-port-connections";
 import { prepareCanvasExternalInputSnapshot, resolveCanvasInputValue } from "./canvas-external-input-snapshot";
 import { COMFY_WORKFLOW_MOCK_TYPE, CANVAS_PORT_EDGE_PADDING, CANVAS_PORT_MIN_PITCH, getCanvasPortAnchor, getCanvasPortHitSize, getCanvasPortOffset, getCanvasVisiblePorts, getCanvasNodePorts, getMinimumCanvasPortNodeHeight, MOCK_COMFY_PORTS, pickCanvasDropHandle } from "./canvas-ports";
 import { applyNodeConfigPatch,createCanvasNode } from "./canvas-node-factory";
@@ -89,6 +89,86 @@ describe("Phase A: port-aware canvas connection contract", () => {
         expect(two.connection?.toPortId).toBe("two");
         expect(link(h("c", "source", "first"), h("b", "target", "one"), nodes, existing).error).toBe("multiple_sources_for_input");
         expect(link(h("a", "source", "first"), h("b", "target", "one"), nodes, existing).error).toBe("duplicate");
+    });
+    it("dragging a matching output onto a connected workflow input swaps only that wire", () => {
+        const old: CanvasConnection = {id:"old",fromNodeId:"a",fromPortId:"first",toNodeId:"b",toPortId:"one"};
+        const untouched: CanvasConnection = {id:"other",fromNodeId:"a",fromPortId:"second",toNodeId:"b",toPortId:"two"};
+        const graph = [old,untouched];
+        let created=0;
+        const replacement = connectCanvasPortsByDrag(h("c","source","first"),h("b","target","one"),nodes,graph,()=>`new-${++created}`);
+        expect(replacement.error).toBeUndefined();
+        expect(replacement.connections).toEqual([
+            untouched,{id:"new-1",fromNodeId:"c",fromPortId:"first",toNodeId:"b",toPortId:"one"}
+        ]);
+        expect(created).toBe(1);
+        expect(graph).toEqual([old,untouched]); // no mutation before successful drop
+        expect(validateCanvasPortConnections(nodes,replacement.connections!)).toEqual([]);
+        // Reverse drag direction (start at the occupied input) also works.
+        const backwards = connectCanvasPortsByDrag(h("b","target","one"),h("c","source","second"),nodes,graph,()=> "backwards");
+        expect(backwards.connections?.at(-1)).toEqual({
+            id:"backwards",fromNodeId:"c",fromPortId:"second",toNodeId:"b",toPortId:"one"
+        });
+    });
+    it("replaces connected text, image, video and audio inputs using their matching resource output types", () => {
+        const cases = [
+            [CanvasNodeType.Text,"STRING","text"],
+            [CanvasNodeType.Image,"IMAGE","image"],
+            [CanvasNodeType.Video,"VIDEO","video"],
+            [CanvasNodeType.Audio,"AUDIO","audio"],
+        ] as const;
+        for (const [type,kind,port] of cases) {
+            const testNodes=[
+                n("old",type),n("new",type),
+                n("wf",COMFY_WORKFLOW_MOCK_TYPE,{comfyPorts:[
+                    {id:"input",label:"Input",direction:"target",valueKind:kind}
+                ]})
+            ];
+            const existing:CanvasConnection[]=[{
+                id:"old-link",fromNodeId:"old",fromPortId:port,toNodeId:"wf",toPortId:"input"
+            }];
+            const result=connectCanvasPortsByDrag(
+                h("new","source"),h("wf","target","input"),testNodes,existing,()=> "new-link"
+            );
+            expect(result.connections).toEqual([{
+                id:"new-link",fromNodeId:"new",fromPortId:port,toNodeId:"wf",toPortId:"input"
+            }]);
+            expect(validateCanvasPortConnections(testNodes,result.connections!)).toEqual([]);
+        }
+    });
+    it("wrong type, duplicate drop and abandoned connection do not remove the current wire", () => {
+        const old: CanvasConnection = {id:"old",fromNodeId:"a",fromPortId:"first",toNodeId:"b",toPortId:"one"};
+        const existing=[old];
+        const differentKind = n("text",CanvasNodeType.Text,{content:"hello"});
+        let ids=0;
+        const makeId=()=>`edge-${++ids}`;
+        expect(connectCanvasPortsByDrag(
+            h("text","source"),h("b","target","one"),[...nodes,differentKind],existing,makeId
+        )).toEqual({error:"incompatible_port_type"});
+        expect(connectCanvasPortsByDrag(
+            h("a","source","first"),h("b","target","one"),nodes,existing,makeId
+        )).toEqual({error:"duplicate"});
+        expect(connectCanvasPortsByDrag(
+            h("c","source","first"),h("b","target","missing"),nodes,existing,makeId
+        )).toEqual({error:"missing_port"});
+        expect(existing).toEqual([old]);
+        expect(ids).toBe(0);
+    });
+    it("only replaces an occupied workflow input after cycle checking the final graph", () => {
+        const cWithInput=n("c",COMFY_WORKFLOW_MOCK_TYPE,{comfyPorts:[
+            ...aPorts,{id:"recv",label:"In",direction:"target",valueKind:"IMAGE"}
+        ]});
+        // A genuine cycle via b -> c must still be rejected.
+        const bWithOutput=n("b",COMFY_WORKFLOW_MOCK_TYPE,{
+            comfyPorts:[...bPorts,{id:"send",label:"Out",direction:"source",valueKind:"IMAGE"}]
+        });
+        const edges:CanvasConnection[]=[
+            {id:"old",fromNodeId:"a",fromPortId:"first",toNodeId:"b",toPortId:"one"},
+            {id:"back",fromNodeId:"b",fromPortId:"send",toNodeId:"c",toPortId:"recv"}
+        ];
+        expect(connectCanvasPortsByDrag(h("c","source","first"),h("b","target","one"),
+            [nodes[0],bWithOutput,cWithInput],edges,()=> "new")
+        ).toEqual({error:"cycle"});
+        expect(edges).toHaveLength(2);
     });
     it("A-02: a source socket can fan out to three distinct inputs", () => {
         let edges: CanvasConnection[] = [];

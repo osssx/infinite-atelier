@@ -10,6 +10,7 @@ import { uploadCanvasImage } from "@/features/backend-sync/canvas-media";
 import { cn } from "@/lib/utils";
 import { awaitAssetStorePersistence, importLegacyBrowserAssets, useAssetStore, type Asset, type AssetKind, type ImageAsset } from "@/stores/use-asset-store";
 import { exportAssets, readAssetPackage } from "./asset-transfer";
+import { AssetTextCover, assetTextExcerpt } from "./asset-text-cover";
 
 type AssetFormValues = {
     kind: AssetKind;
@@ -366,7 +367,7 @@ export default function AssetsPage() {
                             {coverUrl || imageDraft?.dataUrl ? (
                                 <img src={coverUrl || imageDraft?.dataUrl} alt="" className="aspect-[4/3] w-full object-cover" />
                             ) : (
-                                <div className="flex aspect-[4/3] items-center justify-center bg-stone-100 p-5 text-center text-sm text-stone-500 dark:bg-stone-900">{content || t("assets.noCover")}</div>
+                                <AssetTextCover content={content} placeholder={t("assets.noCover")} />
                             )}
                             <div className="p-4">
                                 <Typography.Text strong ellipsis className="block">
@@ -434,7 +435,7 @@ function AssetCard({ asset, onOpen, onEdit, onCopy, onDownload, onDelete }: { as
                     {cover ? (
                         <img src={cover} alt={asset.title} className="aspect-[4/3] w-full object-cover" />
                     ) : (
-                        <div className="flex aspect-[4/3] items-center justify-center bg-stone-100 p-5 text-center text-sm leading-6 text-stone-600 dark:bg-stone-900 dark:text-stone-300">{asset.kind === "text" ? asset.data.content : t("assets.noCover")}</div>
+                        <AssetTextCover content={asset.kind === "text" ? asset.data.content : ""} placeholder={t("assets.noCover")} />
                     )}
                 </button>
             }
@@ -450,7 +451,7 @@ function AssetCard({ asset, onOpen, onEdit, onCopy, onDownload, onDelete }: { as
                         </div>
                         <Tag className="m-0 shrink-0 text-[11px]">{t(`assets.kinds.${asset.kind}`)}</Tag>
                     </div>
-                    <Typography.Paragraph type="secondary" ellipsis={{ rows: 3 }} className="!mb-0 !mt-2 !text-xs !leading-5">
+                    <Typography.Paragraph type="secondary" ellipsis={{ rows: 3 }} className="!mb-0 !mt-2 !max-w-full !break-words !text-xs !leading-5 [overflow-wrap:anywhere]">
                         {summary}
                     </Typography.Paragraph>
                     <div className="mt-3 flex flex-wrap gap-1.5">
@@ -518,7 +519,7 @@ function AssetDrawer({ asset, onClose, onCopy, onDownload }: { asset: Asset | nu
                             {t("assets.fields.textContent")}
                         </Typography.Text>
                         {asset.kind === "text" ? (
-                            <Typography.Paragraph className="mt-2 whitespace-pre-wrap">{asset.data.content}</Typography.Paragraph>
+                            <Typography.Paragraph className="mt-2 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{asset.data.content}</Typography.Paragraph>
                         ) : asset.kind === "video" ? (
                             <video src={asset.data.url} controls className="mt-2 aspect-video w-full rounded-lg bg-black" />
                         ) : (
@@ -552,7 +553,7 @@ function AssetDrawer({ asset, onClose, onCopy, onDownload }: { asset: Asset | nu
 }
 
 function assetSummary(asset: Asset) {
-    if (asset.kind === "text") return asset.data.content;
+    if (asset.kind === "text") return assetTextExcerpt(asset.data.content, 140);
     return `${asset.data.width}x${asset.data.height} · ${formatBytes(asset.data.bytes)} · ${asset.data.mimeType}`;
 }
 

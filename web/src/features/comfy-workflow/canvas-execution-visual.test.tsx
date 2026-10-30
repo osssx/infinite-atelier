@@ -4,6 +4,8 @@ import {renderToStaticMarkup} from "react-dom/server";
 import {canvasThemes} from "@/lib/canvas-theme";
 import type {CanvasNodeData} from "@/types/canvas";
 import {ComfyWorkflowNodeVisual} from "./comfy-workflow-node-visual";
+import comfyLogoLight from "@/assets/comfyui-logo.svg";
+import comfyLogoDark from "@/assets/comfyui-logo-dark.svg";
 import {
  setCanvasComfyExecutionScope,setCanvasComfyExecution,observeCanvasComfyExecution,
  getCanvasComfyExecution,subscribeCanvasComfyExecution,markCanvasComfyRunUnobservable,observeCanvasComfyLive
@@ -13,11 +15,29 @@ const node:CanvasNodeData={id:"wf",type:"comfy:workflow",title:"Comfy",
  position:{x:0,y:0},width:320,height:210,metadata:{
  comfyWorkflow:{templateId:"preset",templateRevision:"sha",bindingState:"bound",inputOverrides:{}}
 }};
-const render=()=>renderToStaticMarkup(createElement(ComfyWorkflowNodeVisual,{node,theme:canvasThemes.light}));
+const render=(mode:"light"|"dark"="light")=>renderToStaticMarkup(createElement(ComfyWorkflowNodeVisual,{node,theme:canvasThemes[mode]}));
 afterEach(()=>setCanvasComfyExecutionScope(null));
 
 describe("canvas ComfyUI execution visual state",()=>{
- it("spins instantly on submit and during queue, running and capture, never on terminal status",()=>{
+ it("uses the bundled ComfyUI logo matching canvas theme, without duplicating SVG paths in DOM",()=>{
+    setCanvasComfyExecutionScope("project");
+    const light=render("light");
+    const dark=render("dark");
+    expect(light).toContain('alt="ComfyUI"');
+    expect(light).toContain('src="'+comfyLogoLight+'"');
+    expect(light).not.toContain('src="'+comfyLogoDark+'"');
+    expect(dark).toContain('src="'+comfyLogoDark+'"');
+    expect(dark).not.toContain('src="'+comfyLogoLight+'"');
+    expect(light).not.toContain("lucide-puzzle");
+    expect(dark).not.toContain("lucide-puzzle");
+    expect(light).not.toContain('aria-label="ComfyUI 工作流运行中"');
+    setCanvasComfyExecution("project","wf",{status:"running",runId:"job"});
+    const active=render("dark");
+    expect(active).toContain('src="'+comfyLogoDark+'"');
+    expect(active).toContain('aria-label="ComfyUI 工作流运行中"');
+    expect(active).toContain("animate-spin");
+   });
+   it("spins instantly on submit and during queue, running and capture, never on terminal status",()=>{
   setCanvasComfyExecutionScope("project");
   for(const status of ["submitting","queued","preparing","running","collecting","importing"]){
    setCanvasComfyExecution("project","wf",{runId:status==="submitting"?undefined:"job-1",status});

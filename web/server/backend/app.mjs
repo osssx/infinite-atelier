@@ -11,7 +11,7 @@ import {freezeAuthorizedSkillGrant} from "./skill-job-grants.mjs";
 import {getProjectSkillAudit,replayProjectSkillJob,lookupProjectSkillReplay} from "./skill-job-audit.mjs";
 import {listProjectJobs,hideProjectJobHistory,closeUnverifiedModelJob} from "./project-job-history.mjs";
 import {getAssetCatalog,putAssetCatalog} from "./asset-catalog.mjs";
-import {listSkillRegistry,getSkillRegistryPackage,getAuthorizedSkillCatalog,registerSqliteSkill,updateSqliteSkill,deleteSqliteSkill} from "./sqlite-skill-registry.mjs";
+import {listSkillRegistry,getSkillRegistryPackage,getAuthorizedSkillCatalog,updateSqliteSkill} from "./sqlite-skill-registry.mjs";
 import {getUiSetting,putUiSetting} from "./ui-settings.mjs";
 import {listScriptAssetReconciliation,reconcileScriptAsset,resumeReconciledVideoJob} from "./script-asset-reconciliation.mjs";
 const nonempty={type:"string",minLength:1,maxLength:256};
@@ -80,7 +80,7 @@ function cursorOf(value){
  return Number(v);
 }
 export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobStore,mediaPreview,blobGc,projectArchive,vault,coordinator,materializer,worker,comfyRegistry,comfyInstanceIds=[],modelKinds=[],arkAssetUploadReady=false,
- arkChannelHealth,modelCatalog,mediaDownloader,logger=false,streamPollMs=200}={}){
+ arkChannelHealth,modelCatalog,mediaDownloader,skillRegistry,logger=false,streamPollMs=200}={}){
  if(!db||(!sessionAuth&&typeof authorize!=="function"))throw Error("backend_authorizer_required");
  const app=Fastify({logger,bodyLimit:5*1024*1024,trustProxy:false,genReqId:()=>randomUUID()});
  if(blobStore)app.addContentTypeParser("application/octet-stream",(req,stream,done)=>done(null,stream));
@@ -150,7 +150,7 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
    "skill_grant_already_used","skill_grant_expired","skill_grant_stale","skill_grant_not_applicable",
    "skill_authorization_invalid","skill_project_not_found",
    "skill_authorization_changed","skill_snapshot_limit_exceeded",
-   "skill_revision_required","skill_revision_conflict",
+   "skill_revision_required","skill_revision_conflict","skill_scan_required","skill_scan_unavailable","skill_directory_name_mismatch","skill_directory_invalid","skill_path_unsafe","skill_missing_manifest","skill_directory_must_be_absolute","skill_registry_corrupt",
    "skill_package_integrity_failed",
    "skill_package_invalid","skill_package_too_large","skill_catalog_full","skill_version_conflict",
    "skill_versions_full","skill_update_invalid","skill_not_found","skill_version_not_found",
@@ -348,18 +348,30 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
   reply.header("Cache-Control","no-store");
   return putUiSetting(db,req.params.name,req.body);
  });
- // v13: authoritative local Skill registry. No hidden IndexedDB fallback.
+  // Filesystem Skill registry in the production local backend.
+  app.get("/api/v1/skills/config",(req,reply)=>{
+   reply.header("Cache-Control","no-store");
+   return {storage:"filesystem",directory:skillRegistry?.root??null};
+  });
+  app.post("/api/v1/skills/scan",{bodyLimit:8192,
+   schema:{body:{type:"object",required:["expectedRevision"],additionalProperties:false,
+    properties:{expectedRevision:{type:"integer",minimum:1}}}}
+  },(req,reply)=>{
+   reply.header("Cache-Control","no-store");
+   if(!skillRegistry)throw Object.assign(Error("skill_scan_unavailable"),{code:"skill_scan_unavailable",statusCode:503});
+   return skillRegistry.scan(req.body.expectedRevision);
+  });
  const skillId={type:"string",pattern:"^[a-z0-9]+(?:-[a-z0-9]+)*$",maxLength:80};
  const skillVersion={type:"string",pattern:"^[a-f0-9]{12}$"};
  const skillParams={type:"object",required:["id"],properties:{id:skillId},additionalProperties:false};
  app.get("/api/v1/skills",(req,reply)=>{
-  reply.header("Cache-Control","no-store");return listSkillRegistry(db);
+  reply.header("Cache-Control","no-store");return skillRegistry?skillRegistry.list():listSkillRegistry(db);
  });
  app.get("/api/v1/skills/:id/:version",{
   schema:{params:{type:"object",required:["id","version"],
    properties:{id:skillId,version:skillVersion},additionalProperties:false}}
  },(req,reply)=>{
-  reply.header("Cache-Control","no-store");return getSkillRegistryPackage(db,req.params.id,req.params.version);
+  reply.header("Cache-Control","no-store");return skillRegistry?skillRegistry.get(req.params.id,req.params.version):getSkillRegistryPackage(db,req.params.id,req.params.version);
  });
  app.post("/api/v1/skills/authorized-catalog",{bodyLimit:32*1024,
   schema:{body:{type:"object",required:["projectId","expectedRevision","skillIds","versionPins"],
@@ -370,7 +382,7 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
    },additionalProperties:false}}
  },(req,reply)=>{
   reply.header("Cache-Control","no-store");
-  return getAuthorizedSkillCatalog(db,req.body);
+  return skillRegistry?skillRegistry.authorized(db,req.body):getAuthorizedSkillCatalog(db,req.body);
  });
  app.post("/api/v1/skills/freeze",{bodyLimit:32*1024,
   schema:{body:{type:"object",required:["projectId","expectedRevision","skillIds","versionPins"],
@@ -383,12 +395,6 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
   reply.header("Cache-Control","no-store");
   return freezeAuthorizedSkillGrant(db,blobStore,req.body);
  });
- app.post("/api/v1/skills",{bodyLimit:8*1024*1024,
-  schema:{body:{type:"object",required:["package","expectedRevision"],properties:{package:{type:"object"},expectedRevision:{type:"integer",minimum:1}},additionalProperties:false}}
- },(req,reply)=>{
-  reply.header("Cache-Control","no-store").code(201);
-  return {entry:registerSqliteSkill(db,req.body.package,req.body.expectedRevision)};
- });
  app.patch("/api/v1/skills/:id",{
   schema:{params:skillParams,body:{type:"object",required:["action","expectedRevision"],properties:{
    expectedRevision:{type:"integer",minimum:1},
@@ -396,11 +402,7 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
    scope:{type:"object"},version:skillVersion},additionalProperties:false}}
  },(req,reply)=>{
   reply.header("Cache-Control","no-store");
-  return {entry:updateSqliteSkill(db,req.params.id,req.body)};
- });
- app.delete("/api/v1/skills/:id",{schema:{params:skillParams,
-  body:{type:"object",required:["expectedRevision"],properties:{expectedRevision:{type:"integer",minimum:1}},additionalProperties:false}}},(req,reply)=>{
-  reply.header("Cache-Control","no-store");return deleteSqliteSkill(db,req.params.id,req.body.expectedRevision);
+  return {entry:skillRegistry?skillRegistry.update(req.params.id,req.body):updateSqliteSkill(db,req.params.id,req.body)};
  });
  // Non-Canvas Asset Library metadata is now backed by the same SQLite snapshot
  // and immutable BlobStore as the Canvas. All writes are revision fenced.

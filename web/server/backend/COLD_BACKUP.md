@@ -72,8 +72,7 @@ SQLite schema v12 的 `ui_settings` 包含模型通道元数据、模型选项�
 
 项目限定的 Skill 审计通过 JobSnapshot 中 `task.skills.blobId` 从冷备份保留的 CAS 内容解析版本 ID；HTTP 响应只包含版本清单、工具名称/轮数/状态，不返回 Skill 正文。用户可以对**已成功、来源指纹未变化**的原任务明确确认一次全新的可能计费的生成，复用原有 CAS、系统消息和原凭据版本，但不复用、不重试旧任务 ID；原始凭据版本被撤销或无法解密时安全拒绝。混合 SSE 的 `skill_text_delta` 只做临时 UI 预览，并在 `job_events` 中保留为非最终文本，因此冷备份可能含有**尚未完成的模型文本片段**；成功判据仍是 JobCoordinator 收集 CAS artifact 并提交 SQLite。SSE 连接断开、模型流未收到 `[DONE]` 或任意工具回合异常，均保留 `submission_unknown`，不会自动补发计费请求。本轮未将整个浏览器 Skills 注册表迁入 SQLite，也不提供旧设置迁移按钮。
 
-## P5.4h：SQLite v13 Skill 注册表完整冷备份
-
+## P5.4h：SQLite v13 Skill 注册表完整冷备份（旧版本说明；当前文件系统 Skill 存储请先阅读 SKILL_FILESYSTEM_STORAGE.md）
 现在 Skill 目录、启用状态、项目 scope、活跃版本、历史版本正文以及原始导入 ZIP（存在时）保存在 SQLite `skill_entries` / `skill_versions`；`backup:data create|verify|restore` 随数据库快照整体备份它们。自动 Skill 生成时另有按任务冻结的 CAS 快照，即使现在删除目录条目也不会修改历史任务 CAS。服务端的修订号 CAS 使不同浏览器标签页的过期更新被明确拒绝，不会回退到旧 IndexedDB。**注意：Skill 正文和 ZIP 属于用户数据，会以明文存放在 SQLite 冷备份中，权限/磁盘加密同样适用**。本轮没有自动从旧 IndexedDB 搬运原有 Skills，也不删除旧字节；如原数据只存在于旧浏览器数据库，需要从可信原始 `.zip` / `SKILL.md` 使用现有管理器重新导入。旧版整应用浏览器 ZIP 的 Skill 区块不能作为 SQLite v13 的恢复来源或覆盖当前目录；涉及 Skill 的完整备份/恢复仅使用 `backup:data`。原始 ZIP 内被视为惰性的脚本和素材只是保存字节供导出，不授予模型执行能力。
 
 ## P5.4i：Skill 字节完整性与多标签页写入一致性

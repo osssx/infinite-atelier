@@ -11,7 +11,7 @@ const validPath=p=>typeof p==="string"&&p.length>0&&p.length<=240&&
  !p.split("/").some(x=>!x||x==="."||x==="..");
 const view16=(v,p)=>v.getUint16(p,true);
 const view32=(v,p)=>v.getUint32(p,true);
-function readArchive(bytes){
+export function readSkillArchive(bytes){
  if(!bytes||bytes.length>SIZE||bytes.length<22)throw fail();
  const v=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);
  let end=-1;
@@ -74,7 +74,7 @@ function readArchive(bytes){
  if(normalized.size!==files.size)throw fail();
  return normalized;
 }
-function extractFrontmatter(md){
+export function extractSkillFrontmatter(md){
  const text=md.replace(/^\uFEFF/,"").replace(/\r\n?/g,"\n"),lines=text.split("\n");
  if(lines[0]?.trim()!=="---")throw fail();
  const end=lines.findIndex((line,i)=>i>0&&line.trim()==="---");
@@ -136,7 +136,7 @@ export function calculateNormalizedSkillHash(files){
 }
 export function verifySkillPackageContent(pkg,archive){
  let files;
- if(archive)files=readArchive(archive);
+ if(archive)files=readSkillArchive(archive);
  else{
   files=new Map([["SKILL.md",Buffer.from(pkg.skillMd,"utf8")]]);
   for(const [path,body] of Object.entries(pkg.resources??{})){
@@ -147,7 +147,7 @@ export function verifySkillPackageContent(pkg,archive){
  if(files.size<1||files.size>100||!files.has("SKILL.md"))throw fail();
  const md=txt(files.get("SKILL.md"));
  if(md!==pkg.skillMd)throw fail();
- const {name,description}=extractFrontmatter(md);
+ const {name,description}=extractSkillFrontmatter(md);
  const references={};
  for(const [path,body] of files){
   if(/^references\/.+\.(?:md|txt|markdown)$/i.test(path)){

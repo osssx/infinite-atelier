@@ -1,6 +1,13 @@
 import {randomUUID,createHash} from "node:crypto";
 import {writeTransaction} from "./repository.mjs";
 import {getAuthorizedSkillCatalog} from "./sqlite-skill-registry.mjs";
+// Production binds a file-backed registry per backend instance. Legacy direct
+// buildApp fixtures without a registry retain their isolated SQL test path.
+const fileRegistries=new WeakMap();
+export function bindFileSkillRegistry(db,registry){fileRegistries.set(db,registry)}
+function authorizedCatalog(db,selection){return fileRegistries.get(db)?.authorized(db,selection)??getAuthorizedSkillCatalog(db,selection)}
+function activeRevision(db){return fileRegistries.get(db)?.revision()??db.prepare("SELECT revision FROM skill_registry_state WHERE id=1").get().revision}
+function assertDiskCurrent(db){fileRegistries.get(db)?.assertCurrent()}
 const reject=(code,statusCode=409)=>Object.assign(Error(code),{code,statusCode});
 const shaId=/^[a-f0-9]{64}$/;
 const idPattern=/^[0-9a-f-]{36}$/;
@@ -36,7 +43,7 @@ export function pruneExpiredUnclaimedSkillGrants(db,{
  */
 export async function freezeAuthorizedSkillGrant(db,blobStore,selection){
  if(!blobStore)throw reject("skill_freeze_unavailable",503);
- const authorized=getAuthorizedSkillCatalog(db,selection);
+ const authorized=authorizedCatalog(db,selection);
  const body=Buffer.from(JSON.stringify({
   format:"atelier-skill-snapshot-v1",entries:authorized.entries
  }),"utf8");
@@ -48,7 +55,7 @@ export async function freezeAuthorizedSkillGrant(db,blobStore,selection){
   throw reject("skill_freeze_integrity_failed",422);
  return writeTransaction(db,()=>{
   // Concurrent scope, enabled or version changes invalidate this grant.
-  getAuthorizedSkillCatalog(db,selection);
+  authorizedCatalog(db,selection);
   // At most 100 unclaimed expired grants per successful freeze; this is
   // scoped to metadata, never removes CAS bytes or committed job references.
   deleteExpiredUnclaimedInTransaction(db,{now:Date.now(),limit:100,
@@ -80,8 +87,9 @@ export function claimSkillJobGrant(db,{
   throw reject("skill_grant_invalid");
  if(row.job_id!==null)throw reject("skill_grant_already_used");
  if(Date.now()>row.expires_at)throw reject("skill_grant_expired");
- const current=db.prepare("SELECT revision FROM skill_registry_state WHERE id=1").get().revision;
+ const current=activeRevision(db);
  if(current!==row.registry_revision)throw reject("skill_grant_stale");
+ assertDiskCurrent(db);
  const result=db.prepare("UPDATE skill_job_grants SET job_id=? WHERE id=? AND job_id IS NULL")
   .run(jobId,skillAuthorizationId);
  if(result.changes!==1)throw reject("skill_grant_already_used");

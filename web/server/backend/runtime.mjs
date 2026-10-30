@@ -7,6 +7,8 @@ import {acquireInstanceLock} from "./instance-lock.mjs";
 import {acquireDatasetGuard} from "./dataset-activation.mjs";
 import {createLocalSessionAuth} from "./session.mjs";
 import {createBlobStore} from "./blob-store.mjs";
+import {createFileSkillRegistry,resolveSkillsDir} from "./file-skill-registry.mjs";
+import {bindFileSkillRegistry} from "./skill-job-grants.mjs";
 import {createProjectArchive} from "./project-archive.mjs";
 import {createMediaPreviewStore} from "./media-preview.mjs";
 import {createBlobGarbageCollector} from "./blob-gc.mjs";
@@ -45,12 +47,14 @@ export function resolveLocalDataDir(dataDir=process.env.ATELIER_DATA_DIR){
  return actual;
 }
 /** Explicit opt-in backend assembly. Does not replace existing dev/start or Comfy gateway. */
-export function createLocalBackend({dataDir,streamPollMs=200,adapters,comfyInstances,enableComfyManagement=false,comfyUpstreamCall,enableOpenAiModels=false,modelUpstreamCall,enableArkVideos=false,arkUpstreamCall,arkAssetConfig,arkAssetUpstreamCall,arkTosClient,blobMaxBytes=2_000_000_000,autoDispatch=false,autoLocalSession=false,dispatchIntervalMs=250,activationRoot}={}){
+export function createLocalBackend({dataDir,streamPollMs=200,adapters,comfyInstances,enableComfyManagement=false,comfyUpstreamCall,enableOpenAiModels=false,modelUpstreamCall,enableArkVideos=false,arkUpstreamCall,arkAssetConfig,arkAssetUpstreamCall,arkTosClient,blobMaxBytes=2_000_000_000,autoDispatch=false,autoLocalSession=false,dispatchIntervalMs=250,activationRoot,skillsDir}={}){
  const root=resolveLocalDataDir(dataDir),lock=acquireInstanceLock(root);
  let db,datasetGuard;
  try{
   datasetGuard=acquireDatasetGuard(root,{activationRoot});
   db=openMainDatabase(root);
+  const skillRegistry=createFileSkillRegistry({skillsDir:skillsDir??resolveSkillsDir()});
+  bindFileSkillRegistry(db,skillRegistry);
   // Durable owner/hash ledger rebuilt on safe startup after schema migration,
   // before any worker can collect or garbage-collect media.
   rebuildBlobReferenceLedger(db);
@@ -96,14 +100,14 @@ export function createLocalBackend({dataDir,streamPollMs=200,adapters,comfyInsta
   coordinator?.recoverAtStartup();
   const materializer=createCanvasMaterializer({db,blobStore});
   const worker=autoDispatch?createBackendWorker({coordinator,materializer,intervalMs:dispatchIntervalMs}):null;
-  const app=buildApp({db,sessionAuth,autoLocalSession,blobStore,mediaPreview,blobGc,projectArchive,vault,
+  const app=buildApp({db,sessionAuth,autoLocalSession,blobStore,mediaPreview,blobGc,projectArchive,vault,skillRegistry,
    arkChannelHealth:createArkChannelHealth({vault}),
    modelCatalog:openai?args=>openai.listModels(args):null,
    mediaDownloader:createTrustedMediaDownloader({blobStore}),coordinator,materializer,worker,
    comfyRegistry,comfyInstanceIds:comfyRegistry?()=>comfyRegistry.list().map(item=>item.id):comfyInstances?.map(item=>item.id)??[],modelKinds:[...new Set([...(enableOpenAiModels?["image","audio","text","video"]:[]),...(enableArkVideos?["video"]:[])])],arkAssetUploadReady:Boolean(assetManager),streamPollMs});
   worker?.start();
   let closed=false;
-  return {app,db,sessionAuth,vault,blobStore,comfyRegistry,assetManager,mediaPreview,blobGc,projectArchive,coordinator,materializer,worker,lock,async close(){
+  return {app,db,sessionAuth,vault,blobStore,skillRegistry,comfyRegistry,assetManager,mediaPreview,blobGc,projectArchive,coordinator,materializer,worker,lock,async close(){
    if(closed)return;closed=true;
    try{await worker?.stop();await coordinator?.stop();await app.close()}
    finally{try{db.close()}finally{try{datasetGuard.release()}finally{lock.release()}}}

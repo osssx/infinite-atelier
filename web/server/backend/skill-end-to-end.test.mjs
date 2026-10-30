@@ -11,7 +11,7 @@ import {createProject} from "./projects.mjs";
 import {fingerprintSource,submitJob} from "./repository.mjs";
 import {createBlobStore} from "./blob-store.mjs";
 import {calculateNormalizedSkillHash} from "./skill-package-integrity.mjs";
-import {listSkillRegistry,registerSqliteSkill} from "./sqlite-skill-registry.mjs";
+import {listSkillRegistry,registerSqliteSkill,deleteSqliteSkill} from "./sqlite-skill-registry.mjs";
 import {createCredentialVault} from "./credential-vault.mjs";
 import {createOpenAiModelAdapter} from "./openai-model-adapter.mjs";
 import {createJobCoordinator} from "./job-coordinator.mjs";
@@ -187,10 +187,9 @@ test("P5.4j already frozen CAS can finish after registry deletion, but uncertain
  assert.equal(granted.statusCode,200,granted.body);
  const cas=await f.freeze(granted.json());
  const jobId=f.submit(cas,"uncertain-after-skill-delete");
- const removed=await request(f.app,"DELETE","/api/v1/skills/shot-workflow",{
-  expectedRevision:listSkillRegistry(f.db).revision});
- assert.equal(removed.statusCode,200,removed.body);
- assert.equal(listSkillRegistry(f.db).skills.length,0);
+  // Historical SQLite fixture is modified directly; HTTP delete no longer exists.
+  const removed=deleteSqliteSkill(f.db,"shot-workflow",listSkillRegistry(f.db).revision);
+  assert.equal(removed.removed,true); assert.equal(listSkillRegistry(f.db).skills.length,0);
  const existing=await loadFrozenSkillCatalog(f.blobStore,{blobId:cas.blobId});
  assert.equal(existing.get("shot-workflow").skillMd,text);
  f.coordinator.recoverAtStartup();await f.coordinator.tick();

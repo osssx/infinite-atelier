@@ -47,7 +47,7 @@ function fixture(t){
  }
  return {db,blobStore,materializer,source,doc,fingerprint,addArtifacts};
 }
-test("OpenAI-compatible text output materializes from a saved artifact without Comfy ports or a second model request",async t=>{
+test("OpenAI-compatible text fills the originally empty source node without creating an output node",async t=>{
  const f=fixture(t),projectId="compatible-text-project",sourceNodeId="text-1793275584701-j8nx2";
  const original={nodes:[{id:sourceNodeId,type:"text",title:"Text prompt",
   position:{x:24,y:36},width:360,height:220,metadata:{prompt:"Who are you?"}}],
@@ -66,27 +66,68 @@ test("OpenAI-compatible text output materializes from a saved artifact without C
   blobId:blob.blobId,sha256:blob.sha256,mime:blob.mimeType,kind:"text",
   metadata:{modelGeneration:{kind:"text",model}}});
  f.db.prepare("UPDATE jobs SET status='succeeded' WHERE id=?").run(jobId);
- // Simulate an existing production result blocked by the old validator.
  f.db.prepare("INSERT INTO materializations(id,job_id,artifact_id,project_id,status,reason) VALUES(?,?,?,?,?,?)")
   .run("old-blocked-entry",jobId,artifactId,projectId,"blocked","materialization_port_mismatch");
  assert.equal(f.materializer.retryBlocked({projectId,artifactId}),true);
  const output=await f.materializer.runOnce();
  assert.deepEqual(output.map(r=>r.status),["materialized"]);
+ assert.equal(output[0].nodeId,sourceNodeId);
  const after=getProject(f.db,projectId);
- assert.equal(after.document.nodes.length,2);
- assert.equal(after.document.connections.length,1);
- const result=after.document.nodes.find(n=>n.id==="artifact-"+artifactId);
- assert.equal(result.type,"text");
+ assert.equal(after.document.nodes.length,1);
+ assert.equal(after.document.connections.length,0);
+ const result=after.document.nodes[0];
+ assert.equal(result.id,sourceNodeId);
+ assert.equal(result.title,"Text prompt");
+ assert.equal(result.metadata.prompt,"Who are you?");
  assert.equal(result.metadata.content,"Text completed successfully");
+ assert.equal(result.metadata.status,"success");
  assert.deepEqual(result.metadata.modelArtifact,{jobId,artifactId,sourceNodeId,kind:"text",model});
- assert.equal(result.metadata.comfyArtifact,undefined);
- assert.deepEqual(after.document.connections[0],{
-  id:"artifact-edge-"+artifactId,fromNodeId:sourceNodeId,toNodeId:result.id
- });
- assert.equal(f.db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE id=?").get(jobId).n,1);
- assert.equal(f.materializer.status({jobId})[0].status,"materialized");
+ assert.equal(f.materializer.status({jobId})[0].node_id,sourceNodeId);
  assert.deepEqual(await f.materializer.runOnce(),[]);
  assert.equal(getProject(f.db,projectId).revision,2);
+ // An older autosave must not erase the model's in-place output.
+ const saved=saveSingleUserCanvas(f.db,{id:projectId,expectedRevision:1,document:original});
+ assert.equal(saved.document.nodes.length,1);
+ assert.equal(saved.document.nodes[0].metadata.content,"Text completed successfully");
+ assert.equal(saved.document.nodes[0].metadata.modelArtifact.artifactId,artifactId);
+});test("nonempty Text sources and sources edited during model generation keep their text and get a separate artifact",async t=>{
+ for(const scenario of [
+  {id:"existing",initial:"User's draft",edited:null,expected:"User's draft"},
+  {id:"edited-during-run",initial:"",edited:"Typed while generating",expected:"Typed while generating"},
+ ])await t.test(scenario.id,async child=>{
+  const f=fixture(child),projectId="text-"+scenario.id;
+  const node={id:"text-source",type:"text",title:"Original",position:{x:0,y:0},width:320,height:180,
+   metadata:{content:scenario.initial,prompt:"Write a paragraph"}};
+  const original={nodes:[node],connections:[]};
+  createProject(f.db,{id:projectId,document:original});
+  const jobId=submitJob(f.db,{projectId,targetNodeId:node.id,
+   expectedProjectRevision:1,sourceNodeFingerprint:fingerprintSource(original,node.id),
+   idempotencyKey:scenario.id,requestFingerprint:scenario.id,executionMode:"immediate",
+   snapshot:{adapterKind:"model",provider:"openai",task:{kind:"text",model:"gpt-example",prompt:"Write a paragraph"}}}).jobId;
+  const artifactId="result-"+scenario.id;
+  const blob=await f.blobStore.put([Buffer.from("Generated answer")],{mime:"text/plain"});
+  appendArtifact(f.db,{id:artifactId,jobId,portId:"text",itemKey:"0",
+   blobId:blob.blobId,sha256:blob.sha256,mime:blob.mimeType,kind:"text",
+   metadata:{modelGeneration:{kind:"text",model:"gpt-example"}}});
+  f.db.prepare("UPDATE jobs SET status='succeeded' WHERE id=?").run(jobId);
+  if(scenario.edited!==null){
+   const next=getProject(f.db,projectId);
+   next.document.nodes[0].metadata.content=scenario.edited;
+   patchProject(f.db,{id:projectId,expectedRevision:1,document:next.document});
+  }
+  const materialized=await f.materializer.runOnce();
+  assert.deepEqual(materialized.map(item=>item.status),["materialized"]);
+  const graph=getProject(f.db,projectId).document;
+  assert.equal(graph.nodes.length,2);
+  assert.equal(graph.connections.length,1);
+  assert.equal(graph.nodes[0].metadata.content,scenario.expected);
+  assert.equal(graph.nodes[0].metadata.modelArtifact,undefined);
+  const output=graph.nodes[1];
+  assert.equal(output.id,"artifact-"+artifactId);
+  assert.equal(output.metadata.content,"Generated answer");
+  assert.equal(output.metadata.sourceChangedSinceSubmit,scenario.edited!==null?true:undefined);
+  assert.equal(graph.connections[0].toNodeId,output.id);
+ });
 });
 test("compatible model materialization retains strict kind/port and source validation",async t=>{
  const f=fixture(t),projectId="compatible-validation-project";

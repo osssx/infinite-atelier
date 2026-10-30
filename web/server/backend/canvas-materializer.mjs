@@ -104,46 +104,54 @@ export function createCanvasMaterializer({db,blobStore,videoDimensionReader=read
      kind:artifact.kind,model:snapshot.task.model}:
      makeComfyArtifactProvenance({runId:artifact.job_id,artifactId:artifact.id,
       workflowNodeId:artifact.target_node_id,portId:artifact.port_id,kind:artifact.kind,index});
-    const nodeId="artifact-"+artifact.id,edgeId="artifact-edge-"+artifact.id;
+    // An unchanged, empty Text source can receive its own generated response.
+    // If the user typed into it while the model ran, append a new node instead.
+    const fillEmptyText=Boolean(isModel&&artifact.kind==="text"&&source?.type==="text"&&
+     !sourceChangedSinceSubmit&&!String(source.metadata?.content??"").trim()&&
+     !source.metadata?.modelArtifact&&typeof contents==="string"&&contents.trim());
+    const nodeId=fillEmptyText?source.id:"artifact-"+artifact.id;
+    const edgeId="artifact-edge-"+artifact.id;
     if(!validId(nodeId)||!validId(edgeId))throw fail("materialization_invalid_id");
-    const matches=doc.nodes.filter(n=>(isModel?n.metadata?.modelArtifact?.artifactId:
-     n.metadata?.comfyArtifact?.artifactId)===artifact.id);
-    if(matches.length>1||(matches.length===1&&matches[0].id!==nodeId))
-     throw fail("materialization_identity_conflict");
-    const other=doc.nodes.find(n=>n.id===nodeId);
-    if(other&&!matches.includes(other))throw fail("materialization_node_collision");
-    const {width,height}=artifact.kind==="image"?imageNodeSize(mediaDimensions):
-     artifact.kind==="video"?videoNodeSize(mediaDimensions):
-     {width:dims[artifact.kind][0],height:dims[artifact.kind][1]};
-    const existingCount=doc.nodes.filter(n=>isModel?n.metadata?.modelArtifact?.sourceNodeId===artifact.target_node_id:
-     n.metadata?.comfyArtifact?.workflowNodeId===artifact.target_node_id).length;
-    const column=Math.floor(existingCount/4),row=existingCount%4;
-    const fallbackX=Math.max(0,...doc.nodes.map(n=>Number(n.position?.x)+Number(n.width)||0))+48;
-    const node=other??{
-     id:nodeId,type:artifact.kind,title:"Generated "+artifact.kind,
-     position:{x:source?source.position.x+source.width+48+column*444:fallbackX+column*444,
-      y:source?source.position.y+row*444:80+row*444},width,height,
-     metadata:{status:"success",mimeType:artifact.mime,
-      ...(sourceChangedSinceSubmit?{sourceChangedSinceSubmit:true}:{}),
-      ...(mediaDimensions?{naturalWidth:mediaDimensions.width,naturalHeight:mediaDimensions.height}:{}),
-      ...(isModel?{modelArtifact:origin}:{comfyArtifact:origin}),
-      ...(artifact.kind==="text"?{content:contents}:{content:"/api/v1/blobs/"+artifact.blob_id,
-       storageKey:"cas:"+artifact.blob_id,
-       bytes:db.prepare("SELECT byte_size FROM blobs WHERE id=?").get(artifact.blob_id).byte_size})}
-    };
-    if(!other)doc.nodes.push(node);
-    const existingLink=doc.connections.find(c=>c.toNodeId===nodeId);
-    const edgeCollision=doc.connections.some(c=>c.id===edgeId&&
-      !(linkable&&c.fromNodeId===source.id&&c.toNodeId===nodeId));
-    // Do not replace a user's existing link, or attach to an output port whose
-    // meaning changed. The detached artifact still retains its original run,
-    // workflowNodeId and portId as immutable provenance.
-    if(linkable&&!existingLink&&!edgeCollision)doc.connections.push(isModel?{
-     id:edgeId,fromNodeId:source.id,toNodeId:nodeId
-    }:{
-     id:edgeId,fromNodeId:source.id,fromPortId:artifact.port_id,
-     toNodeId:nodeId,toPortId:"comfy-artifact"
-    });
+    if(fillEmptyText){
+     source.metadata={...source.metadata,content:contents,status:"success",modelArtifact:origin};
+    }else{
+     const matches=doc.nodes.filter(n=>(isModel?n.metadata?.modelArtifact?.artifactId:
+      n.metadata?.comfyArtifact?.artifactId)===artifact.id);
+     if(matches.length>1||(matches.length===1&&matches[0].id!==nodeId))
+      throw fail("materialization_identity_conflict");
+     const other=doc.nodes.find(n=>n.id===nodeId);
+     if(other&&!matches.includes(other))throw fail("materialization_node_collision");
+     const {width,height}=artifact.kind==="image"?imageNodeSize(mediaDimensions):
+      artifact.kind==="video"?videoNodeSize(mediaDimensions):
+      {width:dims[artifact.kind][0],height:dims[artifact.kind][1]};
+     const existingCount=doc.nodes.filter(n=>isModel?n.metadata?.modelArtifact?.sourceNodeId===artifact.target_node_id:
+      n.metadata?.comfyArtifact?.workflowNodeId===artifact.target_node_id).length;
+     const column=Math.floor(existingCount/4),row=existingCount%4;
+     const fallbackX=Math.max(0,...doc.nodes.map(n=>Number(n.position?.x)+Number(n.width)||0))+48;
+     const node=other??{
+      id:nodeId,type:artifact.kind,title:"Generated "+artifact.kind,
+      position:{x:source?source.position.x+source.width+48+column*444:fallbackX+column*444,
+       y:source?source.position.y+row*444:80+row*444},width,height,
+      metadata:{status:"success",mimeType:artifact.mime,
+       ...(sourceChangedSinceSubmit?{sourceChangedSinceSubmit:true}:{}),
+       ...(mediaDimensions?{naturalWidth:mediaDimensions.width,naturalHeight:mediaDimensions.height}:{}),
+       ...(isModel?{modelArtifact:origin}:{comfyArtifact:origin}),
+       ...(artifact.kind==="text"?{content:contents}:{content:"/api/v1/blobs/"+artifact.blob_id,
+        storageKey:"cas:"+artifact.blob_id,
+        bytes:db.prepare("SELECT byte_size FROM blobs WHERE id=?").get(artifact.blob_id).byte_size})}
+     };
+     if(!other)doc.nodes.push(node);
+     const existingLink=doc.connections.find(c=>c.toNodeId===nodeId);
+     const edgeCollision=doc.connections.some(c=>c.id===edgeId&&
+       !(linkable&&c.fromNodeId===source.id&&c.toNodeId===nodeId));
+     // Preserve existing user links; a detached artifact keeps its provenance.
+     if(linkable&&!existingLink&&!edgeCollision)doc.connections.push(isModel?{
+      id:edgeId,fromNodeId:source.id,toNodeId:nodeId
+     }:{
+      id:edgeId,fromNodeId:source.id,fromPortId:artifact.port_id,
+      toNodeId:nodeId,toPortId:"comfy-artifact"
+     });
+    }
     const content=validateProjectDocument(doc);
     db.prepare("UPDATE projects SET document_json=?,revision=revision+1 WHERE id=? AND revision=?")
       .run(content,artifact.project_id,project.revision);

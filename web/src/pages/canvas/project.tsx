@@ -2708,7 +2708,10 @@ function AtelierCanvasPage() {
                             watermark:generationConfig.videoWatermark==="true",
                             ...(selectedScript?{references:frozenReferences}:{mode:seedanceMode,references:frozenReferences})}:{})}
                     });
-                    message.info("模型任务已提交："+job.id+"，完成后自动追加产物节点");
+                    const fillSelectedText=kind==="text"&&sourceNode.type===CanvasNodeType.Text&&
+                        !String(sourceNode.metadata?.content??"").trim();
+                    message.info("模型任务已提交："+job.id+(fillSelectedText?
+                        "，成功后优先填充当前空文本节点":"，完成后自动追加产物节点"));
                     if(kind==="video"){sqliteGenerationJobsRef.current.set(nodeId,job.id);setRunningNodeId(nodeId)}
                     if(textSubmissionToken)
                         trackCanvasTextJob(projectId,nodeId,job.id,job.status,textSubmissionToken);

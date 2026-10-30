@@ -98,8 +98,23 @@ export function saveSingleUserCanvas(db,{id,expectedRevision,document}){
   if(expectedRevision===undefined||expectedRevision<row.revision){
    const ids=new Set(next.nodes.map(n=>n.id));
    const edges=new Set(next.connections.map(e=>e.id));
-   const restored=new Set();
-   for(const node of current.nodes){
+    // Reconcile a late autosave of an empty source with a successful in-place
+    // model output; never overwrite text explicitly entered in the draft.
+    for(const [index,draft] of next.nodes.entries()){
+     const latest=current.nodes.find(node=>node.id===draft.id);
+     const origin=latest?.metadata?.modelArtifact;
+     if(draft.type!=="text"||latest?.type!=="text"||origin?.kind!=="text"||
+        origin.sourceNodeId!==draft.id||String(draft.metadata?.content??"").trim()||
+        !String(latest.metadata?.content??"").trim())continue;
+     const persisted=db.prepare(
+      "SELECT 1 FROM materializations WHERE artifact_id=? AND node_id=? AND project_id=? AND status='materialized' LIMIT 1"
+     ).get(origin.artifactId,draft.id,id);
+     if(!persisted)continue;
+     next.nodes[index]={...draft,metadata:{...draft.metadata,
+      content:latest.metadata.content,status:"success",modelArtifact:origin}};
+    }
+    const restored=new Set();
+    for(const node of current.nodes){
     const origin=node.metadata?.comfyArtifact??node.metadata?.modelArtifact;
     if(!origin||node.id!=="artifact-"+origin.artifactId||ids.has(node.id))continue;
     const materialized=db.prepare(

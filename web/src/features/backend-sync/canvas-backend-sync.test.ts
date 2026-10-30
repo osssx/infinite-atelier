@@ -118,8 +118,25 @@ describe("P4.4 ordinary SQLite model artifact merge",()=>{
     sourceNodeId:"other"}}
   }]})).toBeNull();
  });
- it("accepts Ark model video CAS node only with original source and a plain edge",()=>{
-  const prompt:CanvasNodeData={id:"prompt1",type:"text",title:"Prompt",
+ it("adopts a backend text result in the same empty source node, but not an unrelated overwrite",()=>{
+  const original:CanvasNodeData={id:"empty-text",type:"text",title:"Text",position:{x:4,y:9},
+   width:350,height:250,metadata:{content:"",prompt:"Write about rain"}};
+  const local:BackendCanvasGraph={nodes:[original],connections:[]};
+  const modelArtifact={jobId:"job-write",artifactId:"answer-1",sourceNodeId:original.id,
+   kind:"text" as const,model:"gpt-example"};
+  const updated:CanvasNodeData={...original,metadata:{...original.metadata,
+   content:"The rain fell softly.",status:"success",modelArtifact}};
+  const remote:BackendCanvasGraph={nodes:[updated],connections:[]};
+  expect(safeRemoteCanvasMerge(local,remote)).toEqual(remote);
+  const typed:BackendCanvasGraph={nodes:[{...original,metadata:{...original.metadata,content:"User typed"}}],connections:[]};
+  expect(safeRemoteCanvasMerge(typed,remote)).toBeNull();
+  expect(safeRemoteCanvasMerge(local,{nodes:[{...updated,title:"Modified title"}],connections:[]})).toBeNull();
+  expect(safeRemoteCanvasMerge(local,{nodes:[{...updated,metadata:{...updated.metadata,
+   modelArtifact:{...modelArtifact,sourceNodeId:"someone-else"}}}],connections:[]})).toBeNull();
+  expect(safeRemoteCanvasMerge(local,{nodes:[{...updated,metadata:{...updated.metadata,
+   status:"loading"}}],connections:[]})).toBeNull();
+ });
+  it("accepts Ark model video CAS node only with original source and a plain edge",()=>{  const prompt:CanvasNodeData={id:"prompt1",type:"text",title:"Prompt",
    position:{x:0,y:0},width:300,height:160,metadata:{content:"snow"}};
   const movie:CanvasNodeData={id:"artifact-vid1",type:"video",title:"Generated video",
    position:{x:360,y:0},width:420,height:236,

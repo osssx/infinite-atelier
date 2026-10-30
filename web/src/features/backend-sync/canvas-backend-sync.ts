@@ -40,9 +40,20 @@ function canonical(value:unknown):string{
  }
  return JSON.stringify(value);
 }
-/** Only append server-materialized artifacts to a matching original document.
- * Never silently overwrite or delete a user's canvas edit.
+/** Only accept append-only artifacts or a verified fill of an empty Text node.
+ * Never silently overwrite a user's text or graph edits.
  */
+function isSafeEmptyTextFill(local:CanvasNodeData,remote:CanvasNodeData):boolean{
+ const model=remote.metadata?.modelArtifact;
+ if(local.type!=="text"||remote.type!=="text"||!model||model.kind!=="text"||
+   model.sourceNodeId!==local.id||typeof model.jobId!=="string"||
+   typeof model.artifactId!=="string"||typeof model.model!=="string"||
+   local.metadata?.modelArtifact||String(local.metadata?.content??"").trim()||
+   typeof remote.metadata?.content!=="string"||!remote.metadata.content.trim()||
+   remote.metadata.status!=="success")return false;
+ return canonical({...local,metadata:{...local.metadata,content:remote.metadata.content,
+   status:"success",modelArtifact:model}})===canonical(remote);
+}
 export function safeRemoteCanvasMerge(local:BackendCanvasGraph,remote:BackendCanvasGraph):BackendCanvasGraph|null {
  if(!Array.isArray(remote?.nodes)||!Array.isArray(remote.connections))return null;
  const localNodes=new Map(local.nodes.map(n=>[n.id,n]));
@@ -52,7 +63,7 @@ export function safeRemoteCanvasMerge(local:BackendCanvasGraph,remote:BackendCan
     localEdges.size!==local.connections.length)return null;
  for(const node of local.nodes){
   const same=remoteNodes.get(node.id);
-  if(!same||canonical(node)!==canonical(same))return null;
+   if(!same||canonical(node)!==canonical(same)&&!isSafeEmptyTextFill(node,same))return null;
  }
  for(const edge of local.connections){
   const same=remote.connections.find(e=>e.id===edge.id);

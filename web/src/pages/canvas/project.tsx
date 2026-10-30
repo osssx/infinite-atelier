@@ -65,7 +65,7 @@ import { flushCanvasStorePersistence,awaitCanvasStorePersistence,useCanvasStore,
 import { useGenerationHistoryStore, type GenerationHistoryImage } from "@/stores/canvas/use-generation-history-store";
 import { buildCanvasGraphIndex } from "@/lib/canvas/canvas-graph-index";
 import { connectCanvasPortsByDrag, prepareCanvasPortConnection, reconcileComfyArtifactConnections } from "@/lib/canvas/canvas-port-connections";
-import { pickCanvasDropHandle } from "@/lib/canvas/canvas-ports";
+import { getCanvasVisiblePorts, pickCanvasDropHandle } from "@/lib/canvas/canvas-ports";
 import { exportSqliteCanvasProject } from "@/features/backend-sync/canvas-project-archive";
 import { applyNodeConfigPatch, audioMetadata, buildAudioGenerationMetadata, buildImageGenerationMetadata, createCanvasNode, imageMetadata, videoMetadata } from "@/lib/canvas/canvas-node-factory";
 import { findContainingGroupId, findGroupDropTarget, findGroupDropTargetFromDelta, fitViewportToNodes, getConnectionTargetAnchor, groupSelectedCanvasNodes, normalizeConnection, normalizeConnectionFromIndex, snapNodesIntoGroup } from "@/lib/canvas/canvas-node-geometry";
@@ -3969,6 +3969,15 @@ function AtelierCanvasPage() {
                         onTemplateChange={(patch) => {
                             const candidate = applyNodeConfigPatch(panelNode, patch);
                             const candidateNodes = nodesRef.current.map((n) => n.id === panelNode.id ? candidate : n);
+                            const visibleInputIds = new Set(getCanvasVisiblePorts(candidate)
+                                .filter(port=>port.direction==="target").map(port=>port.id));
+                            const hiddenWire = connectionsRef.current.find(edge=>edge.toNodeId===panelNode.id && edge.toPortId &&
+                                candidate.metadata?.comfyPorts?.some(port=>port.direction==="target" && port.id===edge.toPortId) &&
+                                !visibleInputIds.has(edge.toPortId));
+                            if (hiddenWire) {
+                                message.error("输入端口已有连线，请先断开原连线再隐藏该端口。");
+                                return false;
+                            }
                             const errors = validateCanvasPortConnections(candidateNodes, connectionsRef.current);
                             if (errors.length) {
                                 message.error("Template ports conflict with existing connections: " + errors[0].error);

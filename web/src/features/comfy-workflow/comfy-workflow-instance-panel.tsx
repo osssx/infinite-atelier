@@ -248,7 +248,9 @@ export function ComfyWorkflowInstancePanel({node,connections,projectId,comfyInst
     const disabled=action==="busy"||(action==="generate"&&
         (!backendExecution||!template||!comfyInstanceId||!outputs[0]||!projectId||active||
         status==="submission_unknown"||missingMedia.length>0||missingChoiceSelections.length>0));
-    if(editingTemplate) return <ComfyWorkflowPanel node={node} onChange={(patch)=>{
+    if(editingTemplate) return <ComfyWorkflowPanel node={node}
+        connectedInputPortIds={new Set(connections.filter(edge=>edge.toNodeId===node.id && edge.toPortId).map(edge=>edge.toPortId!))}
+        onChange={(patch)=>{
         const applied=onTemplateChange(patch);
         if(applied)setEditingTemplate(false);
         return applied;

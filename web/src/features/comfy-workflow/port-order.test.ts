@@ -1,6 +1,6 @@
 import {beforeAll,describe,expect,it,vi} from "vitest";
 import {registerBuiltinNodes} from "@/components/canvas/nodes/builtin-nodes";
-import {getCanvasPortAnchor,getCanvasPortOffset,getCanvasVisiblePorts} from "@/lib/canvas/canvas-ports";
+import {canToggleComfyInputPortVisibility,getCanvasPortAnchor,getCanvasPortOffset,getCanvasVisiblePorts,pickCanvasDropHandle} from "@/lib/canvas/canvas-ports";
 import {connectionControlPoints} from "@/lib/canvas/canvas-connection-culling";
 import type {CanvasNodeData,CanvasConnection} from "@/types/canvas";
 import {canonicalComfyJson,type ComfyTemplatePort} from "./template-schema";
@@ -27,10 +27,26 @@ const makeNode=(arr:readonly ComfyTemplatePort[]):CanvasNodeData=>({
  id:"wf",title:"工作流",type:"comfy:workflow",width:400,height:320,
  position:{x:500,y:100},metadata:{
   comfyWorkflow:{templateId:"test",templateRevision:"a".repeat(64),bindingState:"bound",inputOverrides:{}},
-  comfyPorts:arr.map(({id,label,direction,valueKind})=>({id,label,direction,valueKind})),
+  comfyPorts:arr.map(({id,label,direction,valueKind,required,canvasVisible})=>({id,label,direction,valueKind,required,canvasVisible})),
  }
 });
 describe("Comfy workflow canvas port order",()=>{
+ it("hides optional input sockets only; required sockets and outputs stay visible",()=>{
+  const configurable=[
+   {id:"required",label:"Required",direction:"target" as const,valueKind:"STRING" as const,required:true,canvasVisible:false},
+   {id:"optional",label:"Optional",direction:"target" as const,valueKind:"IMAGE" as const,canvasVisible:false},
+   {id:"plain",label:"Default",direction:"target" as const,valueKind:"STRING" as const},
+   {id:"float",label:"Numeric",direction:"target" as const,valueKind:"FLOAT" as const},
+   {id:"out",label:"Output",direction:"source" as const,valueKind:"IMAGE" as const},
+  ];
+  const node=makeNode(configurable.map(p=>({...p,inputBinding:p.direction==="target"?{mode:"literal" as const,targets:[]}:undefined})));
+  expect(canToggleComfyInputPortVisibility(configurable[1])).toBe(true);
+  expect(canToggleComfyInputPortVisibility(configurable[3])).toBe(false);
+  expect(canToggleComfyInputPortVisibility(configurable[4])).toBe(false);
+  expect(getCanvasVisiblePorts(node).map(p=>p.id)).toEqual(["required","plain","out"]);
+  expect(pickCanvasDropHandle(node,{nodeId:"source",handleType:"source"},node.position.y+node.height/2)?.portId).not.toBe("optional");
+  expect(getCanvasVisiblePorts(makeNode(ports)).filter(p=>p.direction==="target").map(p=>p.id)).toEqual(["prompt","ratio","negative"]);
+ });
  it("drags inputs before/after siblings while preserving outputs and metadata",()=>{
   const reordered=reorderComfyCanvasPorts(ports,"negative","prompt","before");
   expect(ids(reordered)).toEqual(["negative","image","prompt","video","ratio"]);

@@ -21,6 +21,8 @@ export type ComfyTemplatePort = {
     direction: "source" | "target";
     valueKind: CanvasPortValueKind;
     required?: boolean;
+    /** Omitted means visible; only optional, connectable inputs may hide their socket. */
+    canvasVisible?: boolean;
     defaultValue?: unknown;
     choices?: ComfyScalarChoice[];
     inputBinding?: ComfyInputBinding;
@@ -197,6 +199,9 @@ export function validateComfyTemplatePayload(raw: unknown, info?: ComfyObjectInf
             typeof p.label !== "string" || p.label.length > 90 ||
             (p.direction !== "source" && p.direction !== "target") || !PORT_KINDS.has(p.valueKind)) fail("invalid/duplicate port");
         portIds.add(p.id);
+        if (p.canvasVisible !== undefined && typeof p.canvasVisible !== "boolean") fail("invalid port visibility");
+        if (p.canvasVisible === false && (p.direction !== "target" || p.required || ["INT","FLOAT","BOOLEAN"].includes(p.valueKind)))
+            fail("only optional canvas-connectable inputs can be hidden");
         if (p.direction === "target") {
             const b = p.inputBinding;
             if (p.valueKind === "LATENT" || p.valueKind === "CONDITIONING" || p.valueKind === "MASK" || p.valueKind === "IMAGE" || p.valueKind === "VIDEO" || p.valueKind === "AUDIO") {

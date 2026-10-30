@@ -25,6 +25,31 @@ const payload = (): ComfyTemplatePayload => ({
     ],
 });
 describe("Phase B: ComfyUI API graph and immutable bindings", () => {
+    it("persists optional canvas visibility in immutable versions without changing input bindings", async () => {
+        const source = payload();
+        const original = validateComfyTemplatePayload(source, info);
+        expect(original.ports[0].canvasVisible).toBeUndefined(); // omitted => shown
+        source.ports[0].canvasVisible = false;
+        const updated = validateComfyTemplatePayload(source, info);
+        expect(updated.ports[0].canvasVisible).toBe(false);
+        const version = await createComfyTemplate("visibility-example", source, info);
+        await expect(verifyComfyTemplate(version)).resolves.toBeUndefined();
+        expect(version.ports[0].canvasVisible).toBe(false);
+        expect(version.ports[0].inputBinding).toEqual(source.ports[0].inputBinding);
+        const required = payload();
+        required.ports[0].required = true;
+        required.ports[0].canvasVisible = false;
+        expect(() => validateComfyTemplatePayload(required, info)).toThrow(/only optional canvas-connectable/);
+        const numeric = payload();
+        numeric.ports[1].canvasVisible = false;
+        expect(() => validateComfyTemplatePayload(numeric, info)).toThrow(/only optional canvas-connectable/);
+        const output = payload();
+        output.ports[3].canvasVisible = false;
+        expect(() => validateComfyTemplatePayload(output, info)).toThrow(/only optional canvas-connectable/);
+        const malformed = payload();
+        malformed.ports[0].canvasVisible = "false" as unknown as boolean;
+        expect(() => validateComfyTemplatePayload(malformed, info)).toThrow(/invalid port visibility/);
+    });
     it("imports Save(API Format), checks required classes/inputs and output slot", () => {
         expect(validateComfyApiGraph(graph(),info)["20"].class_type).toBe("Images");
         expect(validateComfyTemplatePayload(payload(),info).ports).toHaveLength(4);

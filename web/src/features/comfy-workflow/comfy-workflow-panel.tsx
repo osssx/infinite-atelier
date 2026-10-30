@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties } from "react";
 import { ArrowDown, ArrowUp, Check, ChevronDown, ChevronRight, FileUp, GripVertical, Link2, Plus, RefreshCw, Save, Search, Trash2, X } from "lucide-react";
 import { canvasThemes } from "@/lib/canvas-theme";
+import { canToggleComfyInputPortVisibility } from "@/lib/canvas/canvas-ports";
 import { theme as antdTheme } from "antd";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { useConfigStore } from "@/stores/use-config-store";
@@ -33,6 +34,8 @@ const selectableClass = "w-full min-w-0 rounded-md px-2 py-1.5 text-left text-xs
 
 type Props = {
     node: CanvasNodeData;
+    /** Already-wired inputs cannot be hidden in this editor. */
+    connectedInputPortIds?: ReadonlySet<string>;
     context?: "node" | "preset";
     onChange: (patch: Partial<CanvasNodeMetadata>) => boolean;
     onClose: () => void;
@@ -105,7 +108,7 @@ export function comfyTemplateSaveButtonText(context:"node"|"preset",busy:boolean
     return busy?"正在保存…":context==="preset"?"保存预设版本与绑定":"保存模板版本并绑定节点";
 }
 
-export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props) {
+export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,context="node"}:Props) {
     const themeName = useThemeStore((s)=>s.theme);
     const theme = canvasThemes[themeName];
     const {token} = antdTheme.useToken();
@@ -337,7 +340,7 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
         }catch(cause){setError(String(cause));}finally{setBusy(false);}
     };
     const applySaved=(template:ComfyWorkflowTemplate):boolean=>{
-        const comfyPorts=template.ports.map(({id,label,direction,valueKind,required})=>({id,label,direction,valueKind,required}));
+        const comfyPorts=template.ports.map(({id,label,direction,valueKind,required,canvasVisible})=>({id,label,direction,valueKind,required,...(canvasVisible===false?{canvasVisible:false}:{})}));
         if(!onChange({comfyPorts,comfyWorkflow:{
             templateId:template.id,templateRevision:template.revision,instanceId:undefined,
             bindingState:"needs-instance-binding",inputOverrides:node.metadata?.comfyWorkflow?.inputOverrides??{},
@@ -566,6 +569,7 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
                                                     (draggingPortId===p.id?"opacity-50":"")}>
                                                 <GripVertical size={12} className="shrink-0 text-[var(--comfy-muted)]" aria-hidden="true"/>
                                                 <span className="truncate">{p.label}</span>
+                                                {direction==="target" && !p.required && p.canvasVisible===false ? <span className="shrink-0 text-[10px] text-[var(--comfy-muted)]">已隐藏</span> : null}
                                             </button>)}
                                         </div>
                                     </div>;
@@ -586,7 +590,7 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
                                         <span className={captionClass}>数据类型</span>
                                         <select className={inputClass+" mt-1"} value={activePort.valueKind} onChange={(e)=>{
                                             const valueKind=e.target.value as CanvasPortValueKind;
-                                            const patch:Partial<ComfyTemplatePort>={valueKind};
+                                            const patch:Partial<ComfyTemplatePort>={valueKind,...(!canToggleComfyInputPortVisibility({...activePort,valueKind})?{canvasVisible:true}:{})};
                                             if(activePort.inputBinding?.mode==="media-file" && ["IMAGE","VIDEO","AUDIO"].includes(valueKind))
                                                 patch.inputBinding={...activePort.inputBinding,mediaKind:valueKind as "IMAGE"|"VIDEO"|"AUDIO"};
                                             if(activePort.valueKind!==valueKind){
@@ -633,9 +637,22 @@ export function ComfyWorkflowPanel({node,onChange,onClose,context="node"}:Props)
                                             </select>
                                         </label>
                                         <label className="inline-flex items-center gap-1.5 pb-2 text-xs">
-                                            <input type="checkbox" checked={!!activePort.required} onChange={(e)=>patchPort(activePort.id,{required:e.target.checked,...(e.target.checked&&activePort.absentPolicy?.mode==="auto-prune"?{absentPolicy:{mode:"keep-template"}}:{})})}/> 必填
+                                            <input type="checkbox" checked={!!activePort.required} onChange={(e)=>patchPort(activePort.id,{required:e.target.checked,...(e.target.checked?{canvasVisible:true}:{}),...(e.target.checked&&activePort.absentPolicy?.mode==="auto-prune"?{absentPolicy:{mode:"keep-template"}}:{})})}/> 必填
                                         </label>
                                     </div>
+
+                                    {canToggleComfyInputPortVisibility(activePort) ? <div className="mt-3 rounded-lg border border-[var(--comfy-border)] bg-[var(--comfy-fill)] px-3 py-2.5" data-comfy-input-port-visibility={activePort.id}>
+                                        <label className="flex items-center gap-2 text-xs">
+                                            <input type="checkbox" aria-label="显示画布连线端口"
+                                                checked={!!activePort.required || activePort.canvasVisible !== false}
+                                                disabled={busy || !!activePort.required || !!connectedInputPortIds?.has(activePort.id)}
+                                                onChange={event=>patchPort(activePort.id,{canvasVisible:event.target.checked})}/>
+                                            <span>显示画布连线端口</span>
+                                            {activePort.required ? <span className="text-[11px] text-[var(--comfy-muted)]">必填项始终显示</span> : null}
+                                        </label>
+                                        {connectedInputPortIds?.has(activePort.id) && !activePort.required ?
+                                            <p className="mt-1 text-[11px] text-[var(--comfy-muted)]">已有连线，断开后才能隐藏端口。</p> : null}
+                                    </div> : null}
 
                                     {["IMAGE","VIDEO","AUDIO"].includes(activePort.valueKind) &&
                                     ["media-file","socket"].includes(activePort.inputBinding?.mode??"")?

@@ -43,9 +43,12 @@ export function getCanvasNodePorts(node: CanvasNodeData): readonly CanvasPortDes
  * Keep all descriptors in metadata and the connection validator so imported
  * or older projects retain any existing typed links.
  */
+export function canToggleComfyInputPortVisibility(port: Pick<CanvasPortDescriptor, "direction" | "valueKind">): boolean {
+    return port.direction === "target" && !["INT", "FLOAT", "BOOLEAN"].includes(port.valueKind);
+}
 export function getVisibleComfyWorkflowPorts(ports: readonly CanvasPortDescriptor[]): CanvasPortDescriptor[] {
-    return ports.filter(port=>port.direction!=="target" ||
-        (port.valueKind!=="INT" && port.valueKind!=="FLOAT" && port.valueKind!=="BOOLEAN"));
+    return ports.filter(port => port.direction !== "target" ||
+        (canToggleComfyInputPortVisibility(port) && (port.required || port.canvasVisible !== false)));
 }
 export function getCanvasVisiblePorts(node: CanvasNodeData): readonly CanvasPortDescriptor[] {
     const ports=getCanvasNodePorts(node);

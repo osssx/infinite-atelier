@@ -30,6 +30,8 @@ export type CanvasPortDescriptor = {
     direction: "source" | "target";
     valueKind: CanvasPortValueKind;
     required?: boolean;
+    /** Optional workflow input: hide its canvas socket, not its template binding. */
+    canvasVisible?: boolean;
 };
 
 export type CanvasNodeStatus = "idle" | "success" | "loading" | "error";

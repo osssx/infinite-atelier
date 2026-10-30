@@ -46,7 +46,8 @@ describe("CanvasTextMarkdown code wrapping", () => {
 
         const markup = renderToStaticMarkup(<CanvasTextMarkdown content={content} theme={canvasThemes.light} />);
 
-        expect(markup.match(/data-canvas-code-wrap="off"/g)).toHaveLength(2);
+        expect(markup.match(/data-canvas-code-wrap="on"/g)).toHaveLength(2);
+        expect(markup).not.toContain('data-canvas-code-wrap="off"');
         // The wrap button portals into Streamdown's copy toolbar after mount.
         // Static HTML must expose one target for each fenced block, not for inline code.
         expect(markup.match(/data-streamdown="code-block-actions"/g)).toHaveLength(2);

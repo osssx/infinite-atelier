@@ -14,7 +14,7 @@ import "./canvas-text-markdown.css";
 function CanvasMarkdownPre(props: unknown) {
     // Streamdown accepts intrinsic pre attributes and arbitrary plugin props.
     const { children } = props as { children?: ReactNode };
-    const [wrap, setWrap] = useState(false);
+    const [wrap, setWrap] = useState(true);
     const containerRef = useRef<HTMLDivElement>(null);
     const [actionsContainer, setActionsContainer] = useState<HTMLElement | null>(null);
 

@@ -2,7 +2,7 @@
 
 生产后端 Skill 唯一权威来源是 `ATELIER_SKILLS_DIR`。在 `web/.env` 中指定绝对路径，例如 `ATELIER_SKILLS_DIR=H:\\InfiniteAtelier\\skills`。Windows 默认值为 `%LOCALAPPDATA%\\InfiniteAtelier\\skills`；修改 `.env` 后必须重启后端。环境变量的值优先于 `.env`。
 
-每个一级子目录是一个 Skill，目录名必须与 `SKILL.md` YAML `name` 匹配，如 `camera-guide/SKILL.md`，可附带 `references/`、`assets/`、`scripts/`。支持 Windows 目录符号链接 / junction 作为一级 Skill 目录，附属文件及子目录链接也可指向配置根目录之外（典型用法是 `.agents/skills` 指向 `.skills-manager/skills`）。单机使用场景不限制链接目标根路径，扫描时追踪这些链接；循环目录链接会被跳过并报告错误。脚本和素材不会自动执行；Skill 自动模式仅按需读取 `SKILL.md`、references 中的文本。
+每个一级子目录是一个 Skill，目录名（如 `drama-01-outline`）是稳定的英文 slug ID，`SKILL.md` YAML `name` 是可使用中文的显示名称，无需与目录名相同；目录内可附带 `references/`、`assets/`、`scripts/`。支持 Windows 目录符号链接 / junction 作为一级 Skill 目录，附属文件及子目录链接也可指向配置根目录之外（典型用法是 `.agents/skills` 指向 `.skills-manager/skills`）。单机使用场景不限制链接目标根路径，扫描时追踪这些链接；循环目录链接会被跳过并报告错误。脚本和素材不会自动执行；Skill 自动模式仅按需读取 `SKILL.md`、references 中的文本。
 
 后端启动时扫描一次；设置 > Skills 页面提供“扫描目录”，也可 `POST /api/v1/skills/scan`（参数 `expectedRevision`），扫描后可使用已发现的 Skill。普通 GET 不扫描磁盘。每次手动扫描：合法新增目录自动启用；更新内容创建 SHA-256 新版本；目录被文件系统删除后，下一次扫描会从可见 Skill 列表移除它（历史快照仍保留）；无效 Skill 不可用于新任务。现有启用、项目作用域和历史版本保留。磁盘文件发生未扫描的变动时，提交前 fail-closed 并提示重新扫描。历史版本可作为活跃版本，但不覆盖工作区当前文件。
 

@@ -112,7 +112,8 @@ export function extractSkillFrontmatter(md){
   values[nested]=decodeValue(value);
  }
  const name=values.name??"",description=values.description??"";
- if(!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name)||name.length>64||
+ // The directory / manifest id is the stable slug; YAML name is the display title.
+ if(!name.trim()||name.length>180||/[\x00-\x1f\x7f]/.test(name)||
   !description.trim()||description.length>1024||
   /[\x00-\x08\x0e-\x1f]/.test(description)||!lines.slice(end+1).join("").trim())
   throw fail();
@@ -165,7 +166,8 @@ export function verifySkillPackageContent(pkg,archive){
  const resources=paths.filter(x=>/^references\/.+\.(?:md|txt|markdown)$/i.test(x)).sort();
  const hash=calculateNormalizedSkillHash(files);
  const m=pkg.manifest;
- if(m.id!==name||m.name!==name||m.description!==description||
+ if(typeof m.id!=="string"||m.id.length>80||!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(m.id)||
+  m.name!==name||m.description!==description||
   m.hash!==hash||m.version!==hash.slice(0,12)||
   JSON.stringify(m.resources)!==JSON.stringify(resources)||
   JSON.stringify(m.warnings)!==JSON.stringify(warnings))throw fail();

@@ -93,7 +93,7 @@ export function createFileSkillRegistry({skillsDir=resolveSkillsDir(),scanAtStar
     if(files.get("SKILL.md").length>MAX_TEXT)throw fail("skill_package_too_large",413);
     const hash=calculateNormalizedSkillHash(files),skillMd=new TextDecoder("utf-8",{fatal:true}).decode(files.get("SKILL.md"));
     const {name,description}=extractSkillFrontmatter(skillMd);
-    if(name!==id)throw fail("skill_directory_name_mismatch",422);
+    // Folder name is the stable id; SKILL.md name is the display title.
     const resources={},warnings=[],all=[...files.keys()];
     for(const path of all)if(/^references\/.+\.(?:md|txt|markdown)$/i.test(path)){
       if(files.get(path).length>MAX_TEXT)throw fail("skill_package_too_large",413);

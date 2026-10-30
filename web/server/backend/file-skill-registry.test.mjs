@@ -50,6 +50,46 @@ test("filesystem registry scans folders, persists metadata, adds immutable versi
  assert.equal(reopened.list().skills[0].scope.projectId,"project-a");
  assert.equal(reopened.list().skills[0].activeVersion,initial);
 });
+
+test("filesystem skill directory slug and localized YAML display name are independent", t=>{
+ const f=fixture(t),r=f.skillRegistry;
+ const id="drama-01-outline",folder=join(f.root,id);
+ mkdirSync(join(folder,"references"),{recursive:true});
+ const localized=(title)=>"---\nname: "+title+"\ndescription: 短剧创作大纲说明\ntier: free\nauthor: AI搅拌手\ncopyright: \"© 2025 作者\"\nlicense: proprietary\n---\n# 故事大纲\n请输出完整大纲。";
+ writeFileSync(join(folder,"SKILL.md"),localized("创作大纲"));
+ writeFileSync(join(folder,"references","guide.md"),"人物、场景、节奏");
+ const scan=r.scan();
+ assert.equal(scan.added,1,JSON.stringify(scan));
+ assert.equal(scan.invalid,0,JSON.stringify(scan));
+ const created=r.list().skills.find(x=>x.id===id);
+ assert.equal(created.name,"创作大纲");
+ assert.equal(created.enabled,true);
+ const v1=created.activeVersion;
+ const pkg=r.get(id,v1).package;
+ assert.equal(pkg.manifest.id,id);
+ assert.equal(pkg.manifest.name,"创作大纲");
+ assert.equal(pkg.resources["references/guide.md"],"人物、场景、节奏");
+ assert.deepEqual([...readSkillArchive(Buffer.from(pkg.sourceArchiveBase64,"base64")).keys()].sort(),
+  ["SKILL.md","references/guide.md"]);
+ const authorized=r.authorized(f.db,{projectId:"project-a",expectedRevision:r.revision(),
+  skillIds:[id],versionPins:{[id]:v1}});
+ assert.equal(authorized.entries[0].name,"创作大纲");
+ r.update(id,{action:"enabled",enabled:false,expectedRevision:r.revision()});
+ writeFileSync(join(folder,"SKILL.md"),localized("新版本大纲"));
+ const updated=r.scan();
+ assert.equal(updated.updated,1,JSON.stringify(updated));
+ const current=r.list().skills.find(x=>x.id===id);
+ assert.equal(current.name,"新版本大纲");
+ assert.equal(current.enabled,false);
+ assert.notEqual(current.activeVersion,v1);
+ assert.equal(r.get(id,v1).package.manifest.name,"创作大纲");
+ // Integrity remains enforced for historical snapshots.
+ const snapshot=join(f.root,".atelier","versions",id,v1+".json");
+ const saved=JSON.parse(readFileSync(snapshot,"utf8"));
+ saved.package.manifest.name="篡改标题";
+ writeFileSync(snapshot,JSON.stringify(saved));
+ assert.throws(()=>r.get(id,v1),/skill_package_integrity_failed/);
+});
 test("unscanned disk edit fails freeze; missing and invalid folders cannot be authorized",t=>{
  const {root,db,skillRegistry:r}=fixture(t);
  const v=r.list().skills[0].activeVersion;

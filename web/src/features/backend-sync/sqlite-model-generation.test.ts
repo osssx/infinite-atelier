@@ -81,6 +81,35 @@ describe("P4.4 ordinary SQLite model submit",()=>{
   })).rejects.toThrow("不安全");
   expect(neverSaved.saveProjectNow).not.toHaveBeenCalled();
  });
+ it("submits long Chinese prompt and multiple manual Skill instructions intact",async()=>{
+  const prompt='<selected-skill id="drama-a">\n'+"中文场景".repeat(18000)+
+   '</selected-skill>\n<selected-skill id="drama-b">\n'+"人物设定".repeat(18000)+
+   '</selected-skill>\n<user-request>生成剧本</user-request>';
+  expect(new TextEncoder().encode(prompt).length).toBeGreaterThan(16000);
+  const b=bridge();
+  const api=vi.fn(async(path:string,_method="GET",payload?:any)=>{
+   if(path==="/api/v1/execution/capabilities")return {autoDispatch:true,modelKinds:["text"]};
+   if(path==="/api/v1/channels/openai-channel")return {id:"openai-channel",provider:"openai",hasKey:true,keyVersion:"v1"};
+   if(path==="/api/v1/jobs"){
+    const task=payload.snapshot.task;
+    expect(task.prompt).toBe(prompt);
+    expect(task.messages).toEqual([{role:"system",content:"导演规则"},{role:"user",content:prompt}]);
+    expect(task.messages[1].content).toContain("人物设定");
+    return fakeJob;
+   }
+   throw Error("unexpected "+path);
+  });
+  const args={projectId:"p1",sourceNodeId:"text-1",nodes,connections,
+   channelId:"openai-channel",task:{kind:"text" as const,model:"gpt-4o-mini",prompt,
+    messages:[{role:"system" as const,content:"导演规则"},{role:"user" as const,content:prompt}]},
+   bridge:b,api:api as unknown as typeof canvasApi};
+  await expect(startSqliteModelGeneration(args)).resolves.toEqual(fakeJob);
+  expect(b.saveProjectNow).toHaveBeenCalledOnce();
+  expect(api).toHaveBeenCalledWith("/api/v1/jobs","POST",expect.anything());
+  const invalid={...args,task:{...args.task,prompt:"中".repeat(180000),messages:undefined}};
+  await expect(startSqliteModelGeneration(invalid)).rejects.toThrow(/512 KiB/);
+  expect(b.saveProjectNow).toHaveBeenCalledOnce();
+ });
  it("text bypasses prior active-job lookup, while retaining save fence and a fresh submission ID",async()=>{
   const b=bridge();
   b.assertNoActiveJob.mockRejectedValue(Error("backend_prior_job_not_terminal:old-unknown"));

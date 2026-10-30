@@ -18,6 +18,7 @@ import {createWindowsDpapiProtector} from "./credential-protection.mjs";
 import {createCredentialVault} from "./credential-vault.mjs";
 import {createJobCoordinator} from "./job-coordinator.mjs";
 import {createComfyV2Adapters} from "./comfy-v2-adapter.mjs";
+import {createComfyLiveHub} from "./comfy-live.mjs";
 import {createComfyInstanceRegistry} from "./comfy-instances.mjs";
 import {createOpenAiModelAdapter} from "./openai-model-adapter.mjs";
 import {createRestrictedVideoAdapter} from "./restricted-video-adapter.mjs";
@@ -65,14 +66,15 @@ export function createLocalBackend({dataDir,streamPollMs=200,adapters,comfyInsta
   const mediaPreview=createMediaPreviewStore({dataDir:root,blobStore});
   const blobGc=createBlobGarbageCollector({db,blobStore});
   const projectArchive=createProjectArchive({db,blobStore});
+  const comfyLive=createComfyLiveHub({WebSocketImpl:comfyUpstreamCall?null:globalThis.WebSocket});
   // Explicit opt-in only: no adapters means no scheduling/real generation calls.
   // Startup recovery requires the exclusive instance lock acquired above.
   if(comfyInstances&&adapters?.comfy)throw Error("duplicate_comfy_adapter_configuration");
   if((enableOpenAiModels||enableArkVideos)&&adapters?.model)throw Error("duplicate_model_adapter_configuration");
   const comfyRegistry=enableComfyManagement?createComfyInstanceRegistry({db,blobStore,
-    initialInstances:comfyInstances??[],upstreamCall:comfyUpstreamCall}):null;
+    initialInstances:comfyInstances??[],upstreamCall:comfyUpstreamCall,liveHub:comfyLive}):null;
   const comfy=comfyRegistry?comfyRegistry.adapters:comfyInstances?createComfyV2Adapters({instances:comfyInstances,db,blobStore,
-    upstreamCall:comfyUpstreamCall}):null;
+    upstreamCall:comfyUpstreamCall,liveHub:comfyLive}):null;
   const openai=enableOpenAiModels?createOpenAiModelAdapter({db,blobStore,vault,
     ...(modelUpstreamCall?{upstreamCall:modelUpstreamCall}:{})}):null;
   const customVideo=enableOpenAiModels?createRestrictedVideoAdapter({db,blobStore,vault,
@@ -104,12 +106,12 @@ export function createLocalBackend({dataDir,streamPollMs=200,adapters,comfyInsta
    arkChannelHealth:createArkChannelHealth({vault}),
    modelCatalog:openai?args=>openai.listModels(args):null,
    mediaDownloader:createTrustedMediaDownloader({blobStore}),coordinator,materializer,worker,
-   comfyRegistry,comfyInstanceIds:comfyRegistry?()=>comfyRegistry.list().map(item=>item.id):comfyInstances?.map(item=>item.id)??[],modelKinds:[...new Set([...(enableOpenAiModels?["image","audio","text","video"]:[]),...(enableArkVideos?["video"]:[])])],arkAssetUploadReady:Boolean(assetManager),streamPollMs});
+   comfyRegistry,comfyLive,comfyInstanceIds:comfyRegistry?()=>comfyRegistry.list().map(item=>item.id):comfyInstances?.map(item=>item.id)??[],modelKinds:[...new Set([...(enableOpenAiModels?["image","audio","text","video"]:[]),...(enableArkVideos?["video"]:[])])],arkAssetUploadReady:Boolean(assetManager),streamPollMs});
   worker?.start();
   let closed=false;
   return {app,db,sessionAuth,vault,blobStore,skillRegistry,comfyRegistry,assetManager,mediaPreview,blobGc,projectArchive,coordinator,materializer,worker,lock,async close(){
    if(closed)return;closed=true;
-   try{await worker?.stop();await coordinator?.stop();await app.close()}
+   try{await worker?.stop();await coordinator?.stop();comfyLive.dispose();await app.close()}
    finally{try{db.close()}finally{try{datasetGuard.release()}finally{lock.release()}}}
   }};
  }catch(e){try{db?.close()}finally{try{datasetGuard?.release()}finally{lock.release()}}throw e}

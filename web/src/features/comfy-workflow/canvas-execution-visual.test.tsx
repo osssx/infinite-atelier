@@ -6,7 +6,7 @@ import type {CanvasNodeData} from "@/types/canvas";
 import {ComfyWorkflowNodeVisual} from "./comfy-workflow-node-visual";
 import {
  setCanvasComfyExecutionScope,setCanvasComfyExecution,observeCanvasComfyExecution,
- getCanvasComfyExecution,subscribeCanvasComfyExecution,markCanvasComfyRunUnobservable
+ getCanvasComfyExecution,subscribeCanvasComfyExecution,markCanvasComfyRunUnobservable,observeCanvasComfyLive
 } from "./canvas-execution-visual";
 
 const node:CanvasNodeData={id:"wf",type:"comfy:workflow",title:"Comfy",
@@ -76,4 +76,36 @@ describe("canvas ComfyUI execution visual state",()=>{
   expect(render()).toContain('data-comfy-execution-status="running"');
   expect(node.metadata?.comfyExecution).toBeUndefined();
  });
+  it("renders scoped sampler progress and ephemeral preview without touching saved canvas data",()=>{
+   setCanvasComfyExecutionScope("project");
+   setCanvasComfyExecution("project","wf",{status:"running",runId:"job-1"});
+   const preview={kind:"preview" as const,mime:"image/png" as const,data:"iVBORw0KGgo="};
+   observeCanvasComfyLive("project","wf","other-job",preview);
+   expect(getCanvasComfyExecution("wf")?.preview).toBeUndefined();
+   observeCanvasComfyLive("other-project","wf","job-1",preview);
+   expect(getCanvasComfyExecution("wf")?.preview).toBeUndefined();
+   observeCanvasComfyLive("project","wf","job-1",preview);
+   observeCanvasComfyLive("project","wf","job-1",{kind:"progress",currentNode:"w_wf__12",step:6,steps:20,value:.3});
+   const html=render();
+   expect(html).toContain("ComfyUI 实时预览");
+   expect(html).toContain("执行节点 12");
+   expect(html).toContain("采样 6/20");
+   expect(html).toContain("30%");
+   expect(node.metadata?.comfyExecution).toBeUndefined();
+   observeCanvasComfyExecution("project","wf",{status:"succeeded",runId:"job-1"});
+   expect(getCanvasComfyExecution("wf")?.preview).toBeUndefined();
+   expect(getCanvasComfyExecution("wf")?.progress).toBeUndefined();
+  });
+  it("keeps the structured node failure through terminal polling and drops stale live events",()=>{
+   setCanvasComfyExecutionScope("project");
+   setCanvasComfyExecution("project","wf",{status:"running",runId:"job-1"});
+   const detail={nodeId:"w_wf__19",classType:"ResolutionSelector",type:"value_not_in_list",message:"value_not_in_list"};
+   observeCanvasComfyLive("project","wf","job-1",{kind:"error",error:detail});
+   observeCanvasComfyExecution("project","wf",{status:"failed",runId:"job-1"});
+   expect(getCanvasComfyExecution("wf")?.errorDetail).toEqual(detail);
+   expect(getCanvasComfyExecution("wf")?.error).toBe("value_not_in_list");
+   observeCanvasComfyLive("project","wf","job-1",{kind:"progress",currentNode:"w_wf__19",step:10,steps:20,value:.5});
+   expect(getCanvasComfyExecution("wf")?.progress).toBeUndefined();
+   expect(render()).toContain("value_not_in_list");
+  });
 });

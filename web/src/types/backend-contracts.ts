@@ -34,7 +34,8 @@ export type BackendJobAttempt={
 export type BackendJobView={
  id:string;projectId:string|null;targetNodeId?:string|null;status:JobStatus;executionMode:JobExecutionMode;
  createdAt:number;updatedAt:number;upstreamTaskId:string|null;
- attemptId:string|null;submitMarker:string|null;submissionStartedAt:number|null;
+  attemptId:string|null;submitMarker:string|null;submissionStartedAt:number|null;
+  adapterKind?:"comfy";modelKind?:string;
 };
 export type BackendJobEvent={eventId:number;jobId:string;kind:string;timestamp:number;payload:unknown};
 export type BackendJobsSnapshot={jobs:readonly {id:string;status:JobStatus;executionMode:JobExecutionMode}[];eventCursor:number};

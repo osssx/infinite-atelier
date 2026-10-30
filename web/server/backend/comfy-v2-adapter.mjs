@@ -6,6 +6,7 @@ import {compileSingleWorkflow,verifyTemplate,validateSingleRequest,canonical,sha
 import {extractCapture,detectArtifactMime,captureLimits} from "../comfy-workflow/capture-adapters.mjs";
 import {appendArtifact,writeTransaction} from "./repository.mjs";
 import {makeComfyArtifactProvenance} from "./comfy-provenance.mjs";
+import {parseComfyExecutionError,parseComfyPromptError} from "./comfy-live.mjs";
 
 const fail=(code,statusCode=422)=>Object.assign(Error(code),{code,statusCode});
 const validId=id=>typeof id==="string"&&/^[A-Za-z0-9_-]{1,128}$/.test(id);
@@ -28,11 +29,22 @@ export async function comfyUpstream(instance,path,{method="GET",body,receive,tim
    headers:typeof body==="string"?{"content-type":"application/json"}:undefined
   });
   if(response.status>=300&&response.status<400)throw fail("comfy_redirect_rejected",502);
-  if(!response.ok){
-   if(path==="/prompt"&&method==="POST"&&[400,422].includes(response.status))
-    throw Object.assign(fail("comfy_prompt_rejected",422),{confirmedNotAccepted:true});
-   throw fail("comfy_upstream_"+response.status,502);
-  }
+   if(!response.ok){
+    if(path==="/prompt"&&method==="POST"&&[400,422].includes(response.status)){
+     let diagnostic=null;
+     try{
+      const chunks=[];let size=0;
+      for await(const chunk of response.body??[]){
+       size+=chunk.length;if(size>65536)break;
+       chunks.push(Buffer.from(chunk));
+      }
+      if(size<=65536)diagnostic=parseComfyPromptError(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+     }catch{/* malformed upstream details must not turn a confirmed rejection into an unknown submit */}
+     throw Object.assign(fail("comfy_prompt_rejected",422),{confirmedNotAccepted:true,comfyDiagnostic:diagnostic});
+    }
+    throw fail("comfy_upstream_"+response.status,502);
+   }
+
   const mime=(response.headers.get("content-type")??"").split(";")[0].toLowerCase();
   if(receive){
    if(!response.body)throw fail("comfy_empty_response",502);
@@ -118,7 +130,7 @@ async function storeCapturedFile({instance,cap,item,blobStore,upstreamCall}){
  }
  throw fail("capture_download_invalid",502);
 }
-export function createComfyV2Adapter({instance,db,blobStore,upstreamCall=comfyUpstream}={}){
+export function createComfyV2Adapter({instance,db,blobStore,upstreamCall=comfyUpstream,liveHub}={}){
  const trusted=validateInstance(instance);
  if(!db||!blobStore||typeof upstreamCall!=="function")throw Error("invalid_comfy_v2_adapter");
  async function prepare({job}){
@@ -197,13 +209,14 @@ export function createComfyV2Adapter({instance,db,blobStore,upstreamCall=comfyUp
    }catch(error){
     if(error?.confirmedNotAccepted===true||error?.promptRejected===true||
        ["comfy_upstream_400","comfy_upstream_422"].includes(error?.code)){
-      throw Object.assign(fail("comfy_prompt_rejected",422),{confirmedNotAccepted:true});
+      throw Object.assign(fail("comfy_prompt_rejected",422),{confirmedNotAccepted:true,comfyDiagnostic:error?.comfyDiagnostic??null});
     }
     throw error; // ambiguous: JobCoordinator -> submission_unknown
    }
    if(result?.error&&!result?.prompt_id)
-    throw Object.assign(fail("comfy_prompt_rejected",422),{confirmedNotAccepted:true});
+    throw Object.assign(fail("comfy_prompt_rejected",422),{confirmedNotAccepted:true,comfyDiagnostic:parseComfyPromptError(result)});
    if(!validRemoteId(result?.prompt_id))throw fail("comfy_prompt_id_missing",502);
+   liveHub?.observe({jobId:job.id,promptId:result.prompt_id,clientId:attemptId,url:trusted.url});
    return {kind:"accepted",remoteTaskId:result.prompt_id};
   }finally{sending.delete(job.id)}
  }
@@ -251,7 +264,7 @@ export function createComfyV2Adapter({instance,db,blobStore,upstreamCall=comfyUp
   try{
    const result=await upstreamCall(trusted,"/api/jobs/"+encodeURIComponent(remoteTaskId)+"/cancel",
     {method:"POST",timeoutMs:12000});
-   if(result?.cancelled===true)return {cancelled:true};
+   if(result?.cancelled===true){liveHub?.disconnect(job.id);return {cancelled:true}}
    return {cancelled:false,reason:"comfy_cancel_not_confirmed"};
   }catch(error){
    // Only an absent endpoint permits a backward-compatible queue removal.
@@ -279,14 +292,23 @@ export function createComfyV2Adapter({instance,db,blobStore,upstreamCall=comfyUp
  async function poll({job,remoteTaskId}){
   snapshotOf(job,trusted.id);
   if(!validRemoteId(remoteTaskId))throw fail("comfy_remote_task_invalid",400);
-  const history=await upstreamCall(trusted,"/history/"+encodeURIComponent(remoteTaskId));
-  const entry=historyEntry(history,remoteTaskId);
-  if(!entry)return {kind:"pending"};
-  if(failed(entry))return {kind:"failed"};
-  if(successful(entry))return {kind:"completed",receipt:{remoteTaskId}};
-  return {kind:"pending"};
- }
- async function collect({job,remoteTaskId,db:database}){
+   const history=await upstreamCall(trusted,"/history/"+encodeURIComponent(remoteTaskId));
+   const entry=historyEntry(history,remoteTaskId);
+   if(!entry){
+    const first=db.prepare("SELECT id FROM job_attempts WHERE job_id=? AND upstream_task_id=? ORDER BY started_at LIMIT 1").get(job.id,remoteTaskId);
+    liveHub?.observe({jobId:job.id,promptId:remoteTaskId,clientId:first?.id??job.attempt_id,url:trusted.url});
+    return {kind:"pending"};
+   }
+   if(failed(entry)){
+    liveHub?.disconnect(job.id);
+    const detail=Array.isArray(entry.status?.messages)?entry.status.messages
+     .find(row=>Array.isArray(row)&&row[0]==="execution_error")?.[1]:null;
+    return {kind:"failed",error:parseComfyExecutionError(detail)};
+   }
+   if(successful(entry)){liveHub?.disconnect(job.id);return {kind:"completed",receipt:{remoteTaskId}};}
+   return {kind:"pending"};
+  }
+  async function collect({job,remoteTaskId,db:database}){
   snapshotOf(job,trusted.id);
   if(db!==database)throw fail("comfy_database_mismatch",409);
   if(!validRemoteId(remoteTaskId))throw fail("comfy_remote_task_invalid",400);
@@ -326,13 +348,13 @@ export function createComfyV2Adapter({instance,db,blobStore,upstreamCall=comfyUp
  }
  return {prepare,submit,poll,collect,cancel,reconcile,instance:trusted};
 }
-export function createComfyV2Adapters({instances,db,blobStore,upstreamCall}={}){
+export function createComfyV2Adapters({instances,db,blobStore,upstreamCall,liveHub}={}){
  if(!Array.isArray(instances)||instances.length>16)throw fail("invalid_comfy_instances",400);
  const adapters=Object.create(null);
  for(const raw of instances){
   const instance=validateInstance(raw);
   if(Object.hasOwn(adapters,instance.id))throw fail("duplicate_comfy_instance",400);
-  adapters[instance.id]=createComfyV2Adapter({instance,db,blobStore,upstreamCall});
+  adapters[instance.id]=createComfyV2Adapter({instance,db,blobStore,upstreamCall,liveHub});
  }
  return adapters;
 }

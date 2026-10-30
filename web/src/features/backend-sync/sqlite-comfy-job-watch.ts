@@ -4,6 +4,8 @@ import {canvasApi,type CanvasBackendProject} from "./canvas-api";
 import {canonicalBackendGraph} from "./backend-source-fingerprint";
 import {awaitCanvasStorePersistence,useCanvasStore} from "@/stores/canvas/use-canvas-store";
 import {subscribeSqliteJobEvents} from "./sqlite-job-events";
+import {parseComfyLiveUpdate,subscribeComfyLiveEvents} from "./comfy-live-events";
+import type {CanvasComfyLiveUpdate} from "@/features/comfy-workflow/canvas-execution-visual";
 
 type Graph={nodes:CanvasNodeData[];connections:CanvasConnection[]};
 type Row={artifactId:string;status:string;reason?:string};
@@ -43,11 +45,12 @@ export async function refreshSqliteComfyArtifacts({
 }
 export async function watchSqliteComfyJob({
  projectId,jobId,signal,getLocalGraph,applyGraph,
- onStatus,onTextDelta,onSkillText,onSkillTool,api=canvasApi,pollMs=15000,
+ onStatus,onTextDelta,onSkillText,onSkillTool,onComfyLive,api=canvasApi,pollMs=15000,
 }:{
  projectId:string;jobId:string;signal:AbortSignal;
  getLocalGraph:()=>Graph;applyGraph:(graph:Graph)=>void;
  onStatus?:(status:string,message?:string,job?:BackendJobView)=>void;
+  onComfyLive?:(event:CanvasComfyLiveUpdate,job:BackendJobView)=>void;
  onTextDelta?:(delta:string)=>void;
  onSkillText?:(delta:string,round:number)=>void;
  onSkillTool?:(event:{name:string;status:"started"|"completed"})=>void;
@@ -55,9 +58,15 @@ export async function watchSqliteComfyJob({
 }):Promise<void>{
  const root="/api/v1/jobs/"+encodeURIComponent(jobId);
  let previous="",failures=0,eventRevision=0;
+  let latestJob:BackendJobView|null=null;
+  let stopLive:(()=>void)|null=null;
  let wake:(()=>void)|null=null;
  const unsubscribe=subscribeSqliteJobEvents(jobId,event=>{
-  if(event.kind==="model_text_delta"&&onTextDelta&&
+  if(event.kind==="job_comfy_error"&&latestJob?.adapterKind==="comfy"&&onComfyLive){
+    const parsed=parseComfyLiveUpdate({kind:"error",error:event.payload});
+    if(parsed)onComfyLive(parsed,latestJob);
+   }
+   if(event.kind==="model_text_delta"&&onTextDelta&&
     event.payload&&typeof event.payload==="object"&&
     "delta" in event.payload&&typeof event.payload.delta==="string"&&
     event.payload.delta.length<=4096)onTextDelta(event.payload.delta);
@@ -85,6 +94,14 @@ export async function watchSqliteComfyJob({
    const job=await api<BackendJobView>(root);
    if(signal.aborted)return;
    if(job.projectId!==projectId)throw Error("backend_job_project_mismatch");
+    latestJob=job;
+    if(job.adapterKind==="comfy"&&onComfyLive&&!stopLive&&!closed.has(job.status)&&job.status!=="succeeded")
+     stopLive=subscribeComfyLiveEvents(jobId,event=>{if(!signal.aborted&&latestJob)onComfyLive(event,latestJob)});
+    if(job.adapterKind==="comfy"&&job.status==="failed"&&onComfyLive){
+     const diagnostic=await api<{error:unknown}>(root+"/comfy-diagnostic").catch(()=>null);
+     const parsed=parseComfyLiveUpdate({kind:"error",error:diagnostic?.error});
+     if(parsed&&!signal.aborted)onComfyLive(parsed,job);
+    }
    if(job.status!==previous){previous=job.status;onStatus?.(job.status,undefined,job)}
    if(closed.has(job.status))return;
    if(job.status==="succeeded"){
@@ -129,5 +146,5 @@ export async function watchSqliteComfyJob({
    if(eventRevision!==observedRevision)complete();
   });
  }
- }finally{unsubscribe()}
+ }finally{unsubscribe();stopLive?.()}
 }

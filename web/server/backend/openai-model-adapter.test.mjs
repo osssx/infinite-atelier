@@ -137,6 +137,48 @@ test("namespaced model IDs pass preparation and are submitted unchanged",async t
   assert.equal(validateModelSnapshot(f.snapshot({...task,model:valid})).model,valid);
  }
 });
+test("long Chinese prompt with multiple manual Skills is frozen and forwarded intact",async t=>{
+ const calls=[];
+ const f=fixture(t,async(url,options)=>{
+  calls.push({url,body:JSON.parse(options.body)});
+  return new Response(JSON.stringify({choices:[{message:{content:"已生成"}}]}),{status:200});
+ });
+ const skill1="片段甲".repeat(13000),skill2="片段乙".repeat(13000);
+ const prompt='<selected-skill id="drama-a">\n'+skill1+'\n</selected-skill>\n'+
+  '<selected-skill id="drama-b">\n'+skill2+'\n</selected-skill>\n'+
+  '<user-request>请生成分镜</user-request>';
+ assert.ok(Buffer.byteLength(prompt,"utf8")>16000);
+ const task={kind:"text",model:"gpt-4o-mini",prompt,
+  messages:[{role:"system",content:"你是专业导演"},{role:"user",content:prompt}],stream:false};
+ assert.equal(validateModelSnapshot(f.snapshot(task)),task);
+ const id=f.enqueue("chinese-skills-text",task);
+ f.coordinator.recoverAtStartup();await f.coordinator.tick();
+ assert.equal(f.db.prepare("SELECT status FROM jobs WHERE id=?").get(id).status,"succeeded");
+ assert.equal(calls.length,1);
+ assert.equal(calls[0].body.messages[1].content,prompt);
+ assert.ok(calls[0].body.messages[1].content.includes(skill1));
+ assert.ok(calls[0].body.messages[1].content.includes(skill2));
+});
+test("text byte bounds are enforced while image and audio retain 16KB prompts",t=>{
+ const f=fixture(t,async()=>new Response("{}"));
+ const task={kind:"text",model:"gpt-4o-mini",prompt:"safe"};
+ const multi="字".repeat(150000); // 450KB of UTF-8: allowed for text
+ assert.doesNotThrow(()=>validateModelSnapshot(f.snapshot({...task,prompt:multi,messages:[
+  {role:"system",content:"规则"},{role:"user",content:multi}
+ ]})));
+ const oversize="字".repeat(Math.ceil((512*1024+1)/3));
+ assert.throws(()=>validateModelSnapshot(f.snapshot({...task,prompt:oversize})),/model_task_invalid/);
+ assert.doesNotThrow(()=>validateModelSnapshot(f.snapshot({...task,messages:[
+  {role:"system",content:"a".repeat(512*1024)},{role:"user",content:"safe"}
+ ]})));
+ assert.throws(()=>validateModelSnapshot(f.snapshot({...task,prompt:multi,messages:[
+  {role:"system",content:"s".repeat(512*1024)},{role:"system",content:"额".repeat(30000)},
+  {role:"assistant",content:"a".repeat(30000)},
+  {role:"user",content:multi}
+ ]})),/model_text_history_invalid/);
+ for(const kind of ["image","audio"])
+  assert.throws(()=>validateModelSnapshot(f.snapshot({kind,model:"gpt-4o-mini",prompt:"x".repeat(16001)})),/model_task_invalid/);
+});
 test("P4.4 OpenAI image generation uses encrypted channel, immutable CAS, and a single GPU POST",async t=>{
  const calls=[];
  const f=fixture(t,async(url,options)=>{

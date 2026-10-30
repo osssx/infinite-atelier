@@ -15,8 +15,9 @@ const supported=new Set(["image","audio","text"]);
 // Preserve the 128-character bound and reject empty segments or URL characters.
 const validModel=value=>typeof value==="string"&&value.length<=128&&
  /^[a-zA-Z0-9][a-zA-Z0-9._-]*(?:\/[a-zA-Z0-9][a-zA-Z0-9._-]*)*$/.test(value);
-const validPrompt=value=>typeof value==="string"&&value.trim().length>0&&
- Buffer.byteLength(value,"utf8")<=16000;
+const MAX_TEXT_PROMPT_BYTES=512*1024,MAX_TEXT_HISTORY_BYTES=1024*1024;
+const validPrompt=(value,kind)=>typeof value==="string"&&value.trim().length>0&&
+ Buffer.byteLength(value,"utf8")<=(kind==="text"?MAX_TEXT_PROMPT_BYTES:16000);
 
 const imageMimes=new Set(["image/png","image/jpeg","image/webp"]);
 const MAX_INPUT_IMAGE_BYTES=20*1024*1024,MAX_TOTAL_IMAGE_BYTES=64*1024*1024;
@@ -43,7 +44,7 @@ function validateImageInputs(task){
   throw failure("model_task_invalid");
  return images;
 }
-const MAX_HISTORY=32,MAX_HISTORY_BYTES=128*1024,MAX_TOOL_OUTPUT=32768;
+const MAX_HISTORY=32,MAX_HISTORY_BYTES=MAX_TEXT_HISTORY_BYTES,MAX_TOOL_OUTPUT=32768;
 const textRoles=new Set(["system","user","assistant","tool"]);
 function validateTextHistory(task){
  if(task.messages===undefined)return null;
@@ -57,7 +58,9 @@ function validateTextHistory(task){
   const keys=item.role==="assistant"?["role","content","toolCalls"]:
    item.role==="tool"?["role","content","callId","name"]:["role","content"];
   if(Object.keys(item).some(key=>!keys.includes(key))||
-   typeof item.content!=="string"||item.content.length>MAX_TOOL_OUTPUT||
+   typeof item.content!=="string"||
+   (item.role==="assistant"||item.role==="tool"?item.content.length>MAX_TOOL_OUTPUT:
+     Buffer.byteLength(item.content,"utf8")>MAX_TEXT_PROMPT_BYTES)||
    (total+=Buffer.byteLength(item.content,"utf8"))>MAX_HISTORY_BYTES)
    throw failure("model_text_history_invalid");
   if(item.role==="assistant"&&item.toolCalls!==undefined){
@@ -174,7 +177,7 @@ export function validateModelSnapshot(snapshot){
  }else if(snapshot.endpointBaseUrl!==undefined||snapshot.endpointFingerprint!==undefined)
   throw failure("model_endpoint_reference_invalid");
  if(!task||typeof task!=="object"||Array.isArray(task)||!supported.has(task.kind)||
-  !validModel(task.model)||!validPrompt(task.prompt)||
+  !validModel(task.model)||!validPrompt(task.prompt,task.kind)||
   Object.keys(task).some(key=>!["kind","model","prompt","size","quality","voice","format","speed","operation","images","mask","messages","stream","skills","script"].includes(key)))
   throw failure("model_task_invalid");
  const allowed=task.kind==="image"?["kind","model","prompt","size","quality","operation","images","mask","script"]:

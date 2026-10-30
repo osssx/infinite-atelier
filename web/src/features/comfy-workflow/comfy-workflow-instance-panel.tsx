@@ -17,6 +17,8 @@ import {canvasApi} from "@/features/backend-sync/canvas-api";
 import { comfyRunStatusLabel, comfyGenerationButtonAction, isComfyRunActive } from "./run-status";
 import {useCanvasComfyExecution} from "./canvas-execution-visual";
 import { ComfyWorkflowPanel } from "./comfy-workflow-panel";
+import {parseComfyLiveUpdate} from "@/features/backend-sync/comfy-live-events";
+import type {ComfyExecutionError} from "./canvas-execution-visual";
 import {saveComfyInstanceAsNewPreset} from "./save-instance-as-preset";
 
 type Props = {
@@ -151,6 +153,7 @@ export function ComfyWorkflowInstancePanel({node,connections,projectId,comfyInst
     const [run,setRun]=useState<ComfyRunState|null>(null);
     const [runBusy,setRunBusy]=useState(false);
     const [runError,setRunError]=useState("");
+    const [frozenDiagnostic,setFrozenDiagnostic]=useState<{jobId:string;error:ComfyExecutionError}|null>(null);
     const [savePresetOpen,setSavePresetOpen]=useState(false);
     const [newPresetName,setNewPresetName]=useState("");
     const [savePresetBusy,setSavePresetBusy]=useState(false);
@@ -163,6 +166,7 @@ export function ComfyWorkflowInstancePanel({node,connections,projectId,comfyInst
     // no V2 gateway recovery, and no task lifecycle tied to inspector mount.
     useEffect(()=>{
         let active=true;
+        let fetchedDiagnosticId:string|null=null;
         const refresh=async()=>{
             try{
                 const snapshot=await canvasApi<{jobs:BackendJobView[]}>("/api/v1/jobs/snapshot");
@@ -172,6 +176,14 @@ export function ComfyWorkflowInstancePanel({node,connections,projectId,comfyInst
                 if(!latest)return;
                 setRun(previous=>previous?.runId===latest.id&&previous.status===latest.status?
                     previous:{runId:latest.id,workflowNodeId:node.id,status:latest.status,artifacts:[]});
+                if(latest.adapterKind==="comfy"&&latest.status==="failed"&&fetchedDiagnosticId!==latest.id){
+                    fetchedDiagnosticId=latest.id;
+                    void canvasApi<{error:unknown}>("/api/v1/jobs/"+encodeURIComponent(latest.id)+"/comfy-diagnostic")
+                        .then(result=>{
+                            const parsed=parseComfyLiveUpdate({kind:"error",error:result.error});
+                            if(active&&parsed?.kind==="error")setFrozenDiagnostic({jobId:latest.id,error:parsed.error});
+                        }).catch(()=>{});
+                }
             }catch(cause){if(active)setRunError("读取任务状态失败："+String(cause))}
         };
         void refresh();
@@ -248,7 +260,14 @@ export function ComfyWorkflowInstancePanel({node,connections,projectId,comfyInst
     const disabled=action==="busy"||(action==="generate"&&
         (!backendExecution||!template||!comfyInstanceId||!outputs[0]||!projectId||active||
         status==="submission_unknown"||missingMedia.length>0||missingChoiceSelections.length>0));
-    if(editingTemplate) return <ComfyWorkflowPanel node={node}
+    const errorDetail=(currentRun?.runId && observedExecution?.runId===currentRun.runId ? observedExecution?.errorDetail : undefined) ??
+        (currentRun?.runId && frozenDiagnostic?.jobId===currentRun.runId ? frozenDiagnostic.error : undefined);
+    const errorNodeId=errorDetail?.nodeId?.startsWith("w_"+node.id+"__")
+        ?errorDetail.nodeId.slice(("w_"+node.id+"__").length):null;
+    const errorPort=errorNodeId?template?.ports.find(port=>
+        port.inputBinding?.targets.some(target=>target.nodeId===errorNodeId)||
+        port.outputBinding?.nodeId===errorNodeId):undefined;
+    if(editingTemplate) return <ComfyWorkflowPanel node={node} focus={errorNodeId?{nodeId:errorNodeId,portId:errorPort?.id}:undefined}
         connectedInputPortIds={new Set(connections.filter(edge=>edge.toNodeId===node.id && edge.toPortId).map(edge=>edge.toPortId!))}
         onChange={(patch)=>{
         const applied=onTemplateChange(patch);
@@ -283,6 +302,13 @@ export function ComfyWorkflowInstancePanel({node,connections,projectId,comfyInst
             {missingChoiceSelections.length>0?<p role="alert" className="mb-3 rounded-lg border border-[var(--comfy-border)] bg-[var(--comfy-fill)] px-3 py-2 text-xs text-amber-600 dark:text-amber-400">
                 请先选择候选参数：{missingChoiceSelections.map(field=>field.port.label).join("、")}。
             </p>:null}
+            {errorDetail?<div className="mb-3 rounded-lg border border-red-500/30 bg-red-500/5 p-3 text-[11px] text-red-500" data-comfy-error-detail>
+                <div className="font-semibold">ComfyUI 节点执行错误 · {errorDetail.classType||"未知类型"} {errorNodeId?"#"+errorNodeId:""}</div>
+                <div className="mt-1 break-words">{errorDetail.type||errorDetail.message}</div>
+                {errorNodeId?<button type="button" className={buttonClass+" mt-2"} onClick={()=>setEditingTemplate(true)}>
+                    {errorPort?"定位绑定："+errorPort.label:"定位工作流节点"}
+                </button>:null}
+            </div>:null}
             {savedPresetMessage?<p role="status" className="mb-3 text-xs text-emerald-600 dark:text-emerald-400">{savedPresetMessage}</p>:null}
             {loading?<p className="text-xs text-[var(--comfy-muted)]">正在加载模板版本…</p>
             :error?<p role="alert" className="rounded-md p-2 text-xs text-red-500">{error}</p>
@@ -317,6 +343,7 @@ export function ComfyWorkflowInstancePanel({node,connections,projectId,comfyInst
             </Button>
             {status==="submission_unknown"?<p className="text-xs text-amber-500">提交结果尚未确认；本地后端会恢复任务，禁止重复运行。</p>:null}
             {!backendExecution?<p className="text-xs text-amber-500" role="alert">任务调度服务不可用；请启动并配置本地 ComfyUI 后端，不会回退旧 V2。</p>:null}
+
             {statusError?<p className="break-words text-[11px] text-red-500" role="alert">{statusError}</p>:null}
         </footer>
     </section>

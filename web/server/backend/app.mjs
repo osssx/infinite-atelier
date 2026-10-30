@@ -71,6 +71,7 @@ const jobView=row=>{
  // Expose only the task category needed for UI restoration. Never leak a
  // frozen model prompt, media reference, channel ID or credential version.
  ...(snapshot.adapterKind==="model"?{modelKind:snapshot.task?.kind}:{}),
+  ...(snapshot.adapterKind==="comfy"?{adapterKind:"comfy"}:{}),
  };
 };
 const eventView=row=>({eventId:row.seq,jobId:row.job_id,kind:row.kind,timestamp:row.created_at,payload:JSON.parse(row.payload_json)});
@@ -79,7 +80,7 @@ function cursorOf(value){
  if(!/^(0|[1-9][0-9]*)$/.test(v)||!Number.isSafeInteger(Number(v)))throw Object.assign(Error("invalid_event_cursor"),{statusCode:400,code:"invalid_event_cursor"});
  return Number(v);
 }
-export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobStore,mediaPreview,blobGc,projectArchive,vault,coordinator,materializer,worker,comfyRegistry,comfyInstanceIds=[],modelKinds=[],arkAssetUploadReady=false,
+export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobStore,mediaPreview,blobGc,projectArchive,vault,coordinator,materializer,worker,comfyRegistry,comfyLive,comfyInstanceIds=[],modelKinds=[],arkAssetUploadReady=false,
  arkChannelHealth,modelCatalog,mediaDownloader,skillRegistry,logger=false,streamPollMs=200}={}){
  if(!db||(!sessionAuth&&typeof authorize!=="function"))throw Error("backend_authorizer_required");
  const app=Fastify({logger,bodyLimit:5*1024*1024,trustProxy:false,genReqId:()=>randomUUID()});
@@ -723,8 +724,40 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
   if(!row){reply.code(404);return{code:"job_not_found",message:"job_not_found",requestId:req.id}}
   return jobView(row);
  });
- // Replaying committed database events from the last seq on every poll has no subscribe/replay race.
- app.get("/api/v1/events",{schema:{querystring:{type:"object",properties:{
+  app.get("/api/v1/jobs/:id/comfy-diagnostic",{
+   schema:{params:{type:"object",required:["id"],properties:{id:idSchema}}}
+  },(req,reply)=>{
+   const job=db.prepare("SELECT id FROM jobs WHERE id=?").get(req.params.id);
+   if(!job){reply.code(404);return {code:"job_not_found"}}
+   const row=db.prepare("SELECT payload_json FROM job_events WHERE job_id=? AND kind='job_comfy_error' ORDER BY seq DESC LIMIT 1").get(req.params.id);
+   reply.header("Cache-Control","no-store");
+   return {error:row?JSON.parse(row.payload_json):null};
+  });
+  // Ephemeral ComfyUI progress: sampler frames and previews never enter SQLite.
+  if(comfyLive)app.get("/api/v1/jobs/:id/live",{
+   schema:{params:{type:"object",required:["id"],properties:{id:idSchema}}}
+  },(req,reply)=>{
+   const job=db.prepare("SELECT id FROM jobs WHERE id=?").get(req.params.id);
+   if(!job){reply.code(404);return {code:"job_not_found"}}
+   const raw=reply.raw;reply.hijack();
+   raw.writeHead(200,{"Content-Type":"text/event-stream; charset=utf-8","Cache-Control":"no-cache, no-transform",
+    "Connection":"keep-alive","X-Accel-Buffering":"no"});
+   let closed=false;
+   const off=comfyLive.subscribe(req.params.id,item=>{
+    if(!closed&&!raw.destroyed&&raw.writableLength<524288)
+     raw.write("event: live\ndata: "+JSON.stringify(item)+"\n\n");
+   });
+   raw.write(": connected\n\n");
+   const timer=setInterval(()=>{
+     if(closed)return;
+     if(sessionAuth&&!sessionAuth.authorize(req)){closed=true;raw.end();return}
+     if(raw.writableLength<524288)raw.write(": heartbeat\n\n");
+    },15000);
+   timer.unref?.();
+   raw.on("close",()=>{closed=true;clearInterval(timer);off()});
+  });
+  // Replaying committed database events from the last seq on every poll has no subscribe/replay race.
+  app.get("/api/v1/events",{schema:{querystring:{type:"object",properties:{
   after:{type:"string",pattern:"^(0|[1-9][0-9]*)$"},once:{type:"string",enum:["1"]}
  },additionalProperties:false}}},async(req,reply)=>{
   const after=cursorOf(req.headers["last-event-id"]??req.query.after??0);

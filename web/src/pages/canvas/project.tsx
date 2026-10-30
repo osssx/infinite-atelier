@@ -101,6 +101,7 @@ import {createSqliteComfyBridge} from "@/features/backend-sync/sqlite-comfy-brid
 import {startSqliteModelGeneration,openAiImageSize} from "@/features/backend-sync/sqlite-model-generation";
 import {findSqliteModelRetrySource} from "@/features/backend-sync/sqlite-model-retry-source";
 import {freezeSqliteSkillCatalog,type FrozenSqliteSkillCatalog} from "@/features/backend-sync/frozen-sqlite-skills";
+import { assertTextPromptSize } from "@/features/backend-sync/text-model-limits";
 import {freezeSeedanceReferences} from "@/features/backend-sync/seedance-frozen-references";
 import {capabilitiesForModel} from "@/services/api/video/model-capabilities";
 import {validateSeedanceRequest} from "@/services/api/video/seedance-content";
@@ -109,7 +110,7 @@ import {watchSqliteComfyJob} from "@/features/backend-sync/sqlite-comfy-job-watc
 import {beginCanvasTextSubmission,trackCanvasTextJob,finishCanvasTextSubmission,
     updateCanvasTextJob,finishCanvasTextJob,setCanvasTextExecutionScope} from "@/features/backend-sync/canvas-text-execution-visual";
 import {setCanvasComfyExecutionScope,setCanvasComfyExecution,observeCanvasComfyExecution,
-    getCanvasComfyExecution,markCanvasComfyRunUnobservable} from "@/features/comfy-workflow/canvas-execution-visual";
+    getCanvasComfyExecution,markCanvasComfyRunUnobservable,observeCanvasComfyLive} from "@/features/comfy-workflow/canvas-execution-visual";
 import {refreshSqliteComfyArtifacts} from "@/features/backend-sync/sqlite-comfy-job-watch";
 import {CanvasJobHistory} from "@/features/backend-sync/canvas-job-history";
 import {canvasApi} from "@/features/backend-sync/canvas-api";
@@ -2653,8 +2654,8 @@ function AtelierCanvasPage() {
                         const compiled=auto?
                             auto.catalogMessage+"\n\n<user-request>\n"+text+"\n</user-request>":
                             adapted?.[0]?.content??text;
-                        if(typeof compiled!=="string"||new TextEncoder().encode(compiled).length>16000)
-                            throw Error("文本提示词与 Skill 上下文合计超过 16 KB 限制");
+                        if(typeof compiled!=="string")throw Error("model_text_content_invalid");
+                        assertTextPromptSize(compiled);
                         textMessages=[
                             ...(generationConfig.systemPrompt.trim()?[
                                 {role:"system" as const,content:generationConfig.systemPrompt.trim()}]:[]),
@@ -3782,6 +3783,12 @@ function AtelierCanvasPage() {
                 if(controller.signal.aborted||activeProjectIdRef.current!==projectId)return;
                 message.open({key:progressKey,type:"loading",duration:0,
                     content:"Skill "+event.name+"："+(event.status==="completed"?"已完成":"执行中")});
+            },
+            onComfyLive:(event,job)=>{
+                if(controller.signal.aborted||activeProjectIdRef.current!==projectId)return;
+                if(job.projectId!==projectId||!job.targetNodeId)return;
+                if(nodesRef.current.some(node=>node.id===job.targetNodeId&&node.type===COMFY_WORKFLOW_MOCK_TYPE))
+                    observeCanvasComfyLive(projectId,job.targetNodeId,job.id,event);
             },
             onStatus:(status,details,job)=>{
                 if(controller.signal.aborted||activeProjectIdRef.current!==projectId)return;

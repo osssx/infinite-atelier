@@ -4,7 +4,15 @@ import {useCallback,useSyncExternalStore} from "react";
  * A node subscribes only to its own key; CSS runs the spinner without frames
  * passing through React. Jobs and scopes are identified to reject stale polls.
  */
-export type CanvasComfyExecution={status:string;runId?:string;error?:string};
+export type ComfyExecutionError={nodeId:string|null;classType:string;type:string;message:string};
+export type CanvasComfyLiveUpdate=
+ | {kind:"progress";currentNode:string|null;step:number|null;steps:number|null;value:number|null}
+ | {kind:"preview";mime:"image/png"|"image/jpeg";data:string}
+ | {kind:"error";error:ComfyExecutionError};
+export type CanvasComfyExecution={status:string;runId?:string;error?:string;
+ progress?:Extract<CanvasComfyLiveUpdate,{kind:"progress"}>;
+ preview?:Extract<CanvasComfyLiveUpdate,{kind:"preview"}>;
+ errorDetail?:ComfyExecutionError};
 let activeProject:string|null=null;
 const executions=new Map<string,CanvasComfyExecution>();
 const listeners=new Map<string,Set<()=>void>>();
@@ -20,7 +28,7 @@ export function setCanvasComfyExecutionScope(projectId:string|null):void {
 export function setCanvasComfyExecution(projectId:string,nodeId:string,execution:CanvasComfyExecution):void {
  if(activeProject!==projectId)return;
  const previous=executions.get(nodeId);
- if(previous?.status===execution.status&&previous?.runId===execution.runId&&previous?.error===execution.error)return;
+ if(previous?.status===execution.status&&previous?.runId===execution.runId&&previous?.error===execution.error&&previous?.progress===execution.progress&&previous?.preview===execution.preview&&previous?.errorDetail===execution.errorDetail)return;
  executions.set(nodeId,execution);
  publish(nodeId);
 }
@@ -31,9 +39,14 @@ export function setCanvasComfyExecution(projectId:string,nodeId:string,execution
 export function observeCanvasComfyExecution(projectId:string,nodeId:string,execution:CanvasComfyExecution):void {
  if(!execution.runId||activeProject!==projectId)return;
  const previous=executions.get(nodeId);
- if(previous && previous.runId!==execution.runId)return;
+ if(previous&&previous.runId!==execution.runId)return;
  if(previous?.status==="cancelling"&&["queued","preparing","running"].includes(execution.status))return;
- setCanvasComfyExecution(projectId,nodeId,execution);
+ const retain=previous?.runId===execution.runId;
+ const active=["submitting","queued","preparing","running","collecting","importing","cancelling"].includes(execution.status);
+ setCanvasComfyExecution(projectId,nodeId,{...execution,
+  ...(retain&&active?{progress:previous?.progress,preview:previous?.preview}:{}),
+  ...(retain?{errorDetail:previous?.errorDetail,error:execution.error??previous?.error}:{}),
+ });
 }
 
 /** Transport failures are observation failures, not evidence of GPU success.
@@ -45,6 +58,16 @@ export function markCanvasComfyRunUnobservable(projectId:string,runId:string,err
   if(previous.runId===runId)
    setCanvasComfyExecution(projectId,nodeId,{runId,status:"unavailable",error});
  }
+}
+
+/** Ephemeral updates are scoped to the current job and never persisted. */
+export function observeCanvasComfyLive(projectId:string,nodeId:string,runId:string,event:CanvasComfyLiveUpdate):void{
+ if(activeProject!==projectId)return;
+ const previous=executions.get(nodeId);
+ if(!previous||previous.runId!==runId||!["queued","running","preparing","submitting"].includes(previous.status))return;
+ if(event.kind==="progress")setCanvasComfyExecution(projectId,nodeId,{...previous,progress:event});
+ else if(event.kind==="preview")setCanvasComfyExecution(projectId,nodeId,{...previous,preview:event});
+ else setCanvasComfyExecution(projectId,nodeId,{...previous,errorDetail:event.error,error:event.error.message});
 }
 
 export function getCanvasComfyExecution(nodeId:string|null|undefined):CanvasComfyExecution|undefined {

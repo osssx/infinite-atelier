@@ -20,11 +20,11 @@ export function validateComfyInstance(value){
  * A nonterminal or uncertain run pins its original instance URL; edits to that
  * instance are rejected until the run becomes terminal. No legacy gateway writes.
  */
-export function createComfyInstanceRegistry({db,blobStore,upstreamCall=comfyUpstream,initialInstances=[]}={}){
+export function createComfyInstanceRegistry({db,blobStore,upstreamCall=comfyUpstream,initialInstances=[],liveHub}={}){
  if(!db||!blobStore)throw Error("invalid_comfy_instance_registry");
  const adapters=Object.create(null),instances=new Map();
  const add=(instance)=>{
-  adapters[instance.id]=createComfyV2Adapter({instance,db,blobStore,upstreamCall});
+  adapters[instance.id]=createComfyV2Adapter({instance,db,blobStore,upstreamCall,liveHub});
   instances.set(instance.id,instance);
  };
  const configured=initialInstances.map(validateComfyInstance);
@@ -52,7 +52,7 @@ export function createComfyInstanceRegistry({db,blobStore,upstreamCall=comfyUpst
    throw fail("comfy_instance_conflict",409);
   if((!oldId&&instances.size>=16))throw fail("comfy_instance_limit_reached",409);
   // Validate the adapter before writing; the ID determines its immutable lane.
-  const adapter=createComfyV2Adapter({instance:item,db,blobStore,upstreamCall});
+  const adapter=createComfyV2Adapter({instance:item,db,blobStore,upstreamCall,liveHub});
   writeTransaction(db,()=>{
    if(oldId&&pending(oldId))throw fail("comfy_instance_has_pending_jobs",409);
    if(oldId)db.prepare("DELETE FROM comfy_instances WHERE id=?").run(oldId);

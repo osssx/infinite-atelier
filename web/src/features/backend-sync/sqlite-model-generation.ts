@@ -6,6 +6,7 @@ import type {FrozenArkReference} from "./seedance-frozen-references";
 import type {ReferenceImage} from "@/types/image";
 import {freezeModelImages,type FrozenModelImage} from "./frozen-model-images";
 import {normalizeCompatBaseUrl} from "./model-channel-autoroute";
+import {assertTextPromptSize,assertTextHistorySize} from "./text-model-limits";
 
 export type FrozenTextTurn=
  | {role:"system"|"user"|"assistant";content:string}
@@ -73,10 +74,13 @@ export async function startSqliteModelGeneration({
  if(task.images||task.mask||task.operation)
   throw Error("model_task_references_must_be_frozen");
  if(task.kind==="text"){
-  if(task.messages&&(!Array.isArray(task.messages)||task.messages.length>32||
-    task.messages.some(item=>typeof item.content!=="string"||
-      item.content.includes("data:image/")||item.content.length>32768)))
-   throw Error("model_text_history_invalid");
+  assertTextPromptSize(task.prompt);
+  if(task.messages){
+   if(!Array.isArray(task.messages)||task.messages.length>32||
+     task.messages.some(item=>typeof item.content!=="string"||item.content.includes("data:image/")))
+    throw Error("model_text_history_invalid");
+   assertTextHistorySize(task.messages);
+  }
  }else if(task.messages||task.stream!==undefined)
   throw Error("model_text_options_kind_invalid");
  if(task.skills&&referenceImages.length)

@@ -36,6 +36,7 @@ type Props = {
     node: CanvasNodeData;
     /** Already-wired inputs cannot be hidden in this editor. */
     connectedInputPortIds?: ReadonlySet<string>;
+    focus?:{nodeId:string;portId?:string};
     context?: "node" | "preset";
     onChange: (patch: Partial<CanvasNodeMetadata>) => boolean;
     onClose: () => void;
@@ -108,7 +109,7 @@ export function comfyTemplateSaveButtonText(context:"node"|"preset",busy:boolean
     return busy?"正在保存…":context==="preset"?"保存预设版本与绑定":"保存模板版本并绑定节点";
 }
 
-export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,context="node"}:Props) {
+export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,focus,context="node"}:Props) {
     const themeName = useThemeStore((s)=>s.theme);
     const theme = canvasThemes[themeName];
     const {token} = antdTheme.useToken();
@@ -196,12 +197,12 @@ export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,
                 if(!alive || !bound)return;
                 setDraft({name:bound.name,apiGraph:bound.apiGraph,ports:bound.ports,requirements:bound.requirements});
                 setTemplateId(bound.id);
-                setSelectedNodeId(Object.keys(bound.apiGraph)[0]||"");
-                setSelectedPortId(bound.ports[0]?.id||null);
+                setSelectedNodeId(focus?.nodeId&&bound.apiGraph[focus.nodeId]?focus.nodeId:Object.keys(bound.apiGraph)[0]||"");
+                setSelectedPortId(focus?.portId&&bound.ports.some(p=>p.id===focus.portId)?focus.portId:bound.ports[0]?.id||null);
             }).catch(cause=>{if(alive)setError(String(cause));});
         }
         return ()=>{alive=false;};
-    },[node.id]);
+    },[node.id,focus?.nodeId,focus?.portId]);
 
     const edit=(fn:(current:ComfyTemplatePayload)=>ComfyTemplatePayload)=>{
         setBindingIssue(null);setError("");

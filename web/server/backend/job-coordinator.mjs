@@ -204,10 +204,11 @@ export function createJobCoordinator({
   return modify(jobId,lease,row=>{
    if(row.status!=="running"||!row.upstream_task_id)throw blocked("unsafe_remote_poll");
    if(result?.kind==="pending")return "running";
-   if(result?.kind==="failed"){
-    transition(db,row,"failed");return "failed";
-   }
-   if(result?.kind==="cancelled"){
+    if(result?.kind==="failed"){
+     if(result.error&&typeof result.error==="object")event(db,row.id,"job_comfy_error",result.error);
+     transition(db,row,"failed");return "failed";
+    }
+    if(result?.kind==="cancelled"){
     transition(db,row,"cancelled");return "cancelled";
    }
    if(result?.kind==="completed"){
@@ -257,7 +258,9 @@ export function createJobCoordinator({
     catch(err){
      // Only an explicit, verified "not accepted" proof permits failed.
      const safe=err?.confirmedNotAccepted===true;
-     move(jobId,lease,safe?"failed":"submission_unknown",
+     if(safe&&err?.comfyDiagnostic)
+       writeTransaction(db,()=>event(db,jobId,"job_comfy_error",err.comfyDiagnostic));
+      move(jobId,lease,safe?"failed":"submission_unknown",
        {confirmedNotAccepted:safe});
      outcome=safe?"not_accepted":"submission_unknown";return;
     }

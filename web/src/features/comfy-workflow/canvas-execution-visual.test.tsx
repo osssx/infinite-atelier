@@ -36,6 +36,12 @@ describe("canvas ComfyUI execution visual state",()=>{
     expect(active).toContain('src="'+comfyLogoDark+'"');
     expect(active).toContain('aria-label="ComfyUI 工作流运行中"');
     expect(active).toContain("animate-spin");
+    // The active spinner belongs beside the status label, never to the logo.
+    expect(active).toContain("data-comfy-status-line");
+    expect(active.indexOf("animate-spin")).toBeGreaterThan(active.indexOf("data-comfy-status-line"));
+    expect(active.indexOf("animate-spin")).toBeGreaterThan(active.indexOf("ComfyUI Workflow"));
+    expect(active).not.toContain("absolute -right-1");
+    expect(active).not.toContain("absolute -top-0.5");
    });
    it("spins instantly on submit and during queue, running and capture, never on terminal status",()=>{
   setCanvasComfyExecutionScope("project");

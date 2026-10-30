@@ -27,7 +27,15 @@ export function parseComfyPromptError(body){
  const type=safeText(body.error?.type,100);
  return {nodeId:null,classType:"",type,message:type||"ComfyUI 工作流参数校验失败"};
 }
-export function parseComfySocketMessage(raw,promptId){
+/** The compiled graph retains ComfyUI's _meta.title, including custom node titles. */
+function executionNodeName(graph,nodeId){
+ if(!nodeId||!graph||!Object.prototype.hasOwnProperty.call(graph,nodeId))return null;
+ const node=graph[nodeId];
+ const title=typeof node?._meta?.title==="string"?node._meta.title.trim().replace(/\s+/g," ").slice(0,120):"";
+ const classType=typeof node?.class_type==="string"?node.class_type.slice(0,120):"";
+ return title||classType||null;
+}
+export function parseComfySocketMessage(raw,promptId,graph){
  if(typeof raw!=="string")return null;
  let envelope;
  try{envelope=JSON.parse(raw)}catch{return null}
@@ -35,14 +43,16 @@ export function parseComfySocketMessage(raw,promptId){
  const data=envelope.data;
  if(!data||typeof data!=="object"||data.prompt_id!==promptId)return null;
  const nodeId=safeId(String(data.node??data.node_id??""))?String(data.node??data.node_id):null;
+ const nodeName=executionNodeName(graph,nodeId);
  if(envelope.type==="execution_error"){
   const error=parseComfyExecutionError(data);
   return error?{kind:"error",error}:null;
  }
- if(envelope.type==="executing"&&nodeId)return {kind:"progress",currentNode:nodeId,step:null,steps:null,value:null};
+ if(envelope.type==="executing"&&nodeId)return {kind:"progress",currentNode:nodeId,step:null,steps:null,value:null,
+  ...(nodeName?{nodeName}:{})};
  if(envelope.type==="progress"&&Number.isFinite(data.value)&&Number.isFinite(data.max)&&data.max>0){
   return {kind:"progress",currentNode:nodeId,step:Math.max(0,Math.floor(data.value)),steps:Math.floor(data.max),
-   value:Math.max(0,Math.min(1,data.value/data.max))};
+   value:Math.max(0,Math.min(1,data.value/data.max)),...(nodeName?{nodeName}:{})};
  }
  return null;
 }
@@ -67,7 +77,8 @@ export function createComfyLiveHub({WebSocketImpl=globalThis.WebSocket,now=()=>D
   const e=entry(jobId),time=now();
   if(update.kind==="preview"&&time-e.lastPreview<1000)return;
   if(update.kind==="progress"&&update.currentNode===null)
-   update={...update,currentNode:e.snapshots.get("progress")?.currentNode??null};
+   update={...update,currentNode:e.snapshots.get("progress")?.currentNode??null,
+    ...(e.snapshots.get("progress")?.nodeName?{nodeName:e.snapshots.get("progress").nodeName}:{})};
   if(update.kind==="progress"&&time-e.lastProgress<200&&
       e.snapshots.get("progress")?.currentNode===update.currentNode)return;
   if(update.kind==="preview")e.lastPreview=time;
@@ -91,7 +102,7 @@ export function createComfyLiveHub({WebSocketImpl=globalThis.WebSocket,now=()=>D
   e.cleanup=setTimeout(()=>{if(e.closed&&entries.get(jobId)===e)entries.delete(jobId)},5*60*1000);
   e.cleanup.unref?.();
  }
- function observe({jobId,promptId,clientId,url}){
+ function observe({jobId,promptId,clientId,url,graph}){
   if(!WebSocketImpl||!safeId(jobId)||!safeId(promptId)||!safeId(clientId))return;
   const e=entry(jobId);
   if(e.socket&&!e.closed)return;
@@ -110,7 +121,7 @@ export function createComfyLiveHub({WebSocketImpl=globalThis.WebSocket,now=()=>D
   try{socket.binaryType="arraybuffer"}catch{}
   socket.addEventListener("message",msg=>{
    if(e.closed||e.socket!==socket)return;
-   const update=parseComfySocketMessage(msg.data,promptId);
+   const update=parseComfySocketMessage(msg.data,promptId,graph);
    if(update)publish(jobId,update);
    else if(typeof msg.data!=="string"){
     const preview=parseComfyPreview(msg.data);

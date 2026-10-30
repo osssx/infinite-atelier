@@ -9,7 +9,10 @@ export function ComfyWorkflowNodeVisual({node,theme}:{node:CanvasNodeData;theme:
  const execution=useCanvasComfyExecution(node.id);
  const spinning=isComfyRunActive(execution?.status);
  const progress=execution?.progress;
- const nodeLabel=progress?.currentNode?.split("__").at(-1);
+ const nodeId=progress?.currentNode?.startsWith("w_"+node.id+"__")
+   ?progress.currentNode.slice(("w_"+node.id+"__").length)
+   :progress?.currentNode?.split("__").at(-1);
+  const nodeLabel=progress?.nodeName||nodeId;
  return <div className="pointer-events-none flex h-full w-full flex-col items-center justify-center gap-2 p-5 text-center"
    data-comfy-execution-status={execution?.status||"idle"} role={spinning?"status":undefined} aria-live="polite">
    {execution?.preview&&spinning?<img alt="ComfyUI 实时预览" className="max-h-20 max-w-44 rounded object-contain" src={`data:${execution.preview.mime};base64,${execution.preview.data}`}/>:null}
@@ -24,7 +27,7 @@ export function ComfyWorkflowNodeVisual({node,theme}:{node:CanvasNodeData;theme:
       ?`已绑定模板 · ${Object.keys(node.metadata.comfyWorkflow.inputOverrides??{}).length} 个实例参数`
       :"点击导入工作流模板"}
    </span>
-   {spinning&&nodeLabel?<span className="max-w-48 truncate text-[11px] opacity-80" title={progress?.currentNode||""}>执行节点 {nodeLabel}</span>:null}
+   {spinning&&nodeLabel?<span className="pointer-events-auto max-w-48 truncate text-[11px] opacity-80" title={progress?.nodeName&&nodeId?progress.nodeName+" · ID: "+nodeId:progress?.currentNode||""}>执行节点 {nodeLabel}</span>:null}
    {spinning&&progress?.step!=null&&progress.steps?
     <span className="text-[11px] opacity-80">采样 {progress.step}/{progress.steps} · {Math.round((progress.value??0)*100)}%</span>:null}
    {execution?.error?<span title={execution.error} className="max-w-48 truncate text-[11px] text-red-500">{execution.error}</span>:null}

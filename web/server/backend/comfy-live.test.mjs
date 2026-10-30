@@ -43,6 +43,34 @@ test("native websocket filters unrelated prompts and returns scoped progress + v
  assert.equal(events.length,3);
  off();hub.dispose();
 });
+test("Comfy execution title comes from compiled graph; class_type and ID remain fallbacks",()=>{
+ const graph={
+  "w_wf__105_14":{class_type:"SamplerCustomAdvanced",_meta:{title:"  自定义采样器（高级）  "}},
+  "w_wf__105_15":{class_type:"BasicGuider",_meta:{title:"   "}}
+ };
+ const named=parseComfySocketMessage(frame("executing",{prompt_id:"prompt-a",node:"w_wf__105_14"}),"prompt-a",graph);
+ assert.equal(named.nodeName,"自定义采样器（高级）");
+ const typed=parseComfySocketMessage(frame("executing",{prompt_id:"prompt-a",node:"w_wf__105_15"}),"prompt-a",graph);
+ assert.equal(typed.nodeName,"BasicGuider");
+ const unknown=parseComfySocketMessage(frame("executing",{prompt_id:"prompt-a",node:"w_wf__capture_image"}),"prompt-a",graph);
+ assert.equal(unknown.nodeName,undefined);
+ assert.equal(parseComfySocketMessage(frame("executing",{prompt_id:"other",node:"w_wf__105_14"}),"prompt-a",graph),null);
+});
+test("Sampler updates without node ID retain the last named executing node",()=>{
+ FakeSocket.all=[];
+ let time=1000;
+ const hub=createComfyLiveHub({WebSocketImpl:FakeSocket,now:()=>time});
+ const events=[],graph={"w_wf__105_14":{class_type:"SamplerCustomAdvanced",_meta:{title:"自定义采样器（高级）"}}};
+ hub.subscribe("job-title",event=>events.push(event));
+ hub.observe({jobId:"job-title",promptId:"prompt-a",clientId:"attempt-1",url:"http://127.0.0.1:8188",graph});
+ const ws=FakeSocket.all.at(-1);
+ ws.emit("message",frame("executing",{prompt_id:"prompt-a",node:"w_wf__105_14"}));
+ time+=250;
+ ws.emit("message",frame("progress",{prompt_id:"prompt-a",value:2,max:6}));
+ assert.equal(events[0].nodeName,"自定义采样器（高级）");
+ assert.deepEqual({...events[1]},{kind:"progress",currentNode:"w_wf__105_14",step:2,steps:6,value:2/6,nodeName:"自定义采样器（高级）"});
+ hub.dispose();
+});
 test("WebSocket reconnect is bounded when backend polls faster than socket can recover",()=>{
  FakeSocket.all=[];
  let time=1000;

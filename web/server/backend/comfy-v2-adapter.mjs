@@ -216,7 +216,7 @@ export function createComfyV2Adapter({instance,db,blobStore,upstreamCall=comfyUp
    if(result?.error&&!result?.prompt_id)
     throw Object.assign(fail("comfy_prompt_rejected",422),{confirmedNotAccepted:true,comfyDiagnostic:parseComfyPromptError(result)});
    if(!validRemoteId(result?.prompt_id))throw fail("comfy_prompt_id_missing",502);
-   liveHub?.observe({jobId:job.id,promptId:result.prompt_id,clientId:attemptId,url:trusted.url});
+   liveHub?.observe({jobId:job.id,promptId:result.prompt_id,clientId:attemptId,url:trusted.url,graph:prepared.graph});
    return {kind:"accepted",remoteTaskId:result.prompt_id};
   }finally{sending.delete(job.id)}
  }
@@ -296,7 +296,7 @@ export function createComfyV2Adapter({instance,db,blobStore,upstreamCall=comfyUp
    const entry=historyEntry(history,remoteTaskId);
    if(!entry){
     const first=db.prepare("SELECT id FROM job_attempts WHERE job_id=? AND upstream_task_id=? ORDER BY started_at LIMIT 1").get(job.id,remoteTaskId);
-    liveHub?.observe({jobId:job.id,promptId:remoteTaskId,clientId:first?.id??job.attempt_id,url:trusted.url});
+    liveHub?.observe({jobId:job.id,promptId:remoteTaskId,clientId:first?.id??job.attempt_id,url:trusted.url,graph:getPreparation(db,job.id)?.graph});
     return {kind:"pending"};
    }
    if(failed(entry)){

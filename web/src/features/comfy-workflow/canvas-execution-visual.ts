@@ -6,7 +6,7 @@ import {useCallback,useSyncExternalStore} from "react";
  */
 export type ComfyExecutionError={nodeId:string|null;classType:string;type:string;message:string};
 export type CanvasComfyLiveUpdate=
- | {kind:"progress";currentNode:string|null;step:number|null;steps:number|null;value:number|null}
+ | {kind:"progress";currentNode:string|null;nodeName?:string;step:number|null;steps:number|null;value:number|null}
  | {kind:"preview";mime:"image/png"|"image/jpeg";data:string}
  | {kind:"error";error:ComfyExecutionError};
 export type CanvasComfyExecution={status:string;runId?:string;error?:string;

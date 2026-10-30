@@ -6,7 +6,8 @@ export function parseComfyLiveUpdate(raw:unknown):CanvasComfyLiveUpdate|null {
  if(!object(raw))return null;
  if(raw.kind==="progress"&&nullableNode(raw.currentNode)&&nullableNumber(raw.step)&&nullableNumber(raw.steps)&&
     nullableNumber(raw.value)&&(raw.value===null||raw.value>=0&&raw.value<=1))
-  return {kind:"progress",currentNode:raw.currentNode,step:raw.step,steps:raw.steps,value:raw.value};
+  return {kind:"progress",currentNode:raw.currentNode,step:raw.step,steps:raw.steps,value:raw.value,
+   ...(typeof raw.nodeName==="string"&&raw.nodeName.trim().length>0&&raw.nodeName.length<=120?{nodeName:raw.nodeName}:{})};
  if(raw.kind==="preview"&&(raw.mime==="image/png"||raw.mime==="image/jpeg")&&typeof raw.data==="string"&&
     raw.data.length>0&&raw.data.length<=350000&&/^[A-Za-z0-9+/]*={0,2}$/.test(raw.data))
   return {kind:"preview",mime:raw.mime,data:raw.data};

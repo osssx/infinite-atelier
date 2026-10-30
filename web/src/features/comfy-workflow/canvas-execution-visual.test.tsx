@@ -96,6 +96,17 @@ describe("canvas ComfyUI execution visual state",()=>{
    expect(getCanvasComfyExecution("wf")?.preview).toBeUndefined();
    expect(getCanvasComfyExecution("wf")?.progress).toBeUndefined();
   });
+  it("shows a workflow node title instead of just the numeric identifier",()=>{
+   setCanvasComfyExecutionScope("project");
+   setCanvasComfyExecution("project","wf",{status:"running",runId:"job-1"});
+   observeCanvasComfyLive("project","wf","job-1",{
+    kind:"progress",currentNode:"w_wf__105_14",nodeName:"自定义采样器（高级）",step:2,steps:6,value:2/6
+   });
+   const html=render();
+   expect(html).toContain("执行节点 自定义采样器（高级）");
+   expect(html).toContain("ID: 105_14");
+   expect(html).not.toContain(">执行节点 105_14</span>");
+  });
   it("keeps the structured node failure through terminal polling and drops stale live events",()=>{
    setCanvasComfyExecutionScope("project");
    setCanvasComfyExecution("project","wf",{status:"running",runId:"job-1"});

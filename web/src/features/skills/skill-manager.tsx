@@ -6,6 +6,7 @@ import { useTranslation } from "react-i18next";
 import { exportSkill, getSkillPackage, getSkillStorageConfig, SKILL_REGISTRY_CHANNEL } from "./skill-registry";
 import { useSkillStore } from "@/stores/use-skill-store";
 import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
+import { enabledSkillsFirst } from "./skill-list-order";
 
 export function SkillManager() {
     const { t } = useTranslation();
@@ -61,7 +62,7 @@ export function SkillManager() {
         try { await action(); if (success) message.success(success); }
         catch (error) { message.error(error instanceof Error ? error.message : String(error)); }
     };
-    const visible = catalog.filter((skill) => (skill.name + " " + skill.description).toLowerCase().includes(query.toLowerCase()));
+    const visible = enabledSkillsFirst(catalog.filter((skill) => (skill.name + " " + skill.description).toLowerCase().includes(query.toLowerCase())));
     return (
         <section className="space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-3">

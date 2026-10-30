@@ -8,7 +8,7 @@ import { useCopyText } from "@/hooks/use-copy-text";
 import { formatBytes, readFileAsDataUrl } from "@/lib/image-utils";
 import { uploadCanvasImage } from "@/features/backend-sync/canvas-media";
 import { cn } from "@/lib/utils";
-import { awaitAssetStorePersistence, importLegacyBrowserAssets, useAssetStore, type Asset, type AssetKind, type ImageAsset } from "@/stores/use-asset-store";
+import { awaitAssetStorePersistence, useAssetStore, type Asset, type AssetKind, type ImageAsset } from "@/stores/use-asset-store";
 import { exportAssets, readAssetPackage } from "./asset-transfer";
 import { AssetTextCover, assetTextExcerpt } from "./asset-text-cover";
 
@@ -189,18 +189,6 @@ export default function AssetsPage() {
         } catch (error) { message.error(String(error)); }
     };
 
-    const confirmLegacyImport = () => modal.confirm({
-        title: "导入浏览器旧素材库",
-        content: "仅在 本地素材库为空时导入。图片和视频先上传到后端 BlobStore，旧浏览器数据保留且不会自动删除；导入前请确认本地后端可用。",
-        okText: "导入",cancelText: "取消",
-        onOk: async () => {
-            try {
-                const count = await importLegacyBrowserAssets();
-                message.success(count ? `已导入 ${count} 条旧素材记录` : "未发现旧浏览器素材");
-            } catch (error) { message.error(String(error)); throw error; }
-        },
-    });
-
     return (
         <div className="flex h-full flex-col overflow-hidden bg-background text-stone-900 dark:text-stone-100">
             <main className="min-h-0 flex-1 overflow-y-auto bg-[radial-gradient(#e5e7eb_1px,transparent_1px)] px-6 py-8 [background-size:16px_16px] dark:bg-[radial-gradient(rgba(245,245,244,.14)_1px,transparent_1px)]">
@@ -264,9 +252,6 @@ export default function AssetsPage() {
                                 >
                                     {t("assets.import")}
                                 </button>
-                                <button type="button"
-                                    className="cursor-pointer text-sm font-medium text-stone-700 underline-offset-4 hover:underline focus-visible:outline-none focus-visible:underline dark:text-stone-300"
-                                    onClick={confirmLegacyImport}>导入旧浏览器素材</button>
                                 <button
                                     type="button"
                                     className="cursor-pointer text-sm font-medium text-stone-700 underline-offset-4 hover:underline focus-visible:outline-none focus-visible:underline dark:text-stone-300"

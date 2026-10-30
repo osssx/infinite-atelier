@@ -2,7 +2,6 @@ import { create } from "zustand";
 import { persist, type PersistStorage, type StorageValue } from "zustand/middleware";
 
 import { nanoid } from "nanoid";
-import { localForageStorage } from "@/lib/localforage-storage";
 import {normalizeAssetCatalog,readBackendAssetCatalog,saveBackendAssetCatalog} from "@/features/backend-sync/asset-catalog-client";
 
 
@@ -47,25 +46,6 @@ let lastAssetWriteError: unknown = null;
 export async function awaitAssetStorePersistence() {
     await assetWriteQueue;
     if (lastAssetWriteError) throw lastAssetWriteError;
-}
-export async function importLegacyBrowserAssets():Promise<number>{
-    if(!useAssetStore.getState().hydrated)throw Error("asset_catalog_not_ready");
-    if(useAssetStore.getState().assets.length)throw Error("asset_catalog_not_empty");
-    await awaitAssetStorePersistence();
-    const legacy=await localForageStorage.getItem(ASSET_STORE_KEY);
-    if(!legacy) return 0;
-    const data:unknown=JSON.parse(legacy);
-    const assets=(data&&typeof data==="object"&&"state" in data&&
-        data.state&&typeof data.state==="object"&&"assets" in data.state)?
-        data.state.assets:undefined;
-    if(!Array.isArray(assets)||assets.length>5000)throw Error("asset_legacy_invalid");
-    if(!assets.length)return 0;
-    const portable=await normalizeAssetCatalog(assets as Asset[]);
-    const current=await readBackendAssetCatalog();
-    if(current.assets.length||current.revision!==catalogRevision)throw Error("asset_catalog_revision_conflict");
-    useAssetStore.getState().replaceAssets(portable);
-    await awaitAssetStorePersistence();
-    return portable.length;
 }
 const assetStorage: PersistStorage<AssetStore> = {
     getItem: async () => {

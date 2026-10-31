@@ -36,16 +36,27 @@ const enableArkVideos=true;
 const runtime=createLocalBackend({comfyInstances,enableComfyManagement:true,enableOpenAiModels,enableArkVideos,
  autoDispatch:true,autoLocalSession:true});
 let stopped=false;
+let shutdownPromise;
 async function shutdown(){
- if(stopped)return;
+ if(shutdownPromise)return shutdownPromise;
  stopped=true;
- await runtime.close();
+ shutdownPromise=runtime.close();
+ return shutdownPromise;
 }
-for(const signal of ["SIGINT","SIGTERM"])process.on(signal,()=>{
- void shutdown().then(()=>process.exit(0)).catch(error=>{
+async function exitAfterShutdown(code=0){
+ try{await shutdown();process.exit(code)}catch(error){
   console.error("Local backend shutdown failed:",error?.message||"unknown");
   process.exit(1);
- });
+ }
+}
+for(const signal of ["SIGINT","SIGTERM"])process.on(signal,()=>{
+ void exitAfterShutdown(0);
+});
+process.on("message",message=>{
+ if(message?.type==="atelier:shutdown")void exitAfterShutdown(0);
+});
+process.on("disconnect",()=>{
+ if(!stopped)void exitAfterShutdown(0);
 });
 try{
  const address=await startServer(runtime.app,{host:"127.0.0.1",port});

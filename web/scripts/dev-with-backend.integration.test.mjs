@@ -33,7 +33,7 @@ test("dev launcher uses only SQLite Fastify and Vite, retires Gateway routes",{
  let log="";
  const child=spawn(process.execPath,["scripts/dev-with-backend.mjs"],{
   cwd:webDir,windowsHide:true,stdio:["ignore","pipe","pipe"],
-  env:{...process.env,ATELIER_DATA_DIR:join(temp,"data"),
+  env:{...process.env,LOCALAPPDATA:join(temp,"localappdata"),ATELIER_DATA_DIR:join(temp,"data"),
    ATELIER_BACKEND_PORT:String(backendPort),ATELIER_VITE_PORT:String(vitePort),
    ATELIER_GATEWAY_PORT:String(gatewayPort),MEDIA_GATEWAY_URL:"http://127.0.0.1:"+gatewayPort,
    GATEWAY_TOKEN:"ignored-obsolete-config"}

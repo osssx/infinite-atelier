@@ -1,10 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {mkdtempSync,rmSync,writeFileSync,readdirSync} from "node:fs";
+import {mkdtempSync,rmSync,writeFileSync,readFileSync,readdirSync,unlinkSync} from "node:fs";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {createHash} from "node:crypto";
 import {DatabaseSync} from "node:sqlite";
+import {spawn,spawnSync} from "node:child_process";
 import {initializeSchema} from "./schema.mjs";
 import {createLocalSessionAuth} from "./session.mjs";
 import {acquireInstanceLock,hasInstanceLock} from "./instance-lock.mjs";
@@ -47,6 +48,66 @@ test("live instance lock blocks second owner; releases correctly; proven-dead PI
  next.release();assert.equal(hasInstanceLock(dir),false);
  writeFileSync(stale,"{malformed");
  assert.throws(()=>acquireInstanceLock(dir),/instance_lock_recovery_required/);
+});
+test("v2 lock records process identity and recovers a reused Windows PID",t=>{
+ const dir=temp(t),first=acquireInstanceLock(dir);
+ const lockPath=join(dir,"atelier-instance.lock");
+ const stored=JSON.parse(readFileSync(lockPath,"utf8"));
+ assert.equal(stored.version,2);
+ assert.equal(stored.pid,process.pid);
+ assert.ok(Object.hasOwn(stored,"processStartedAt"));
+ first.release();
+ if(process.platform!=="win32")return;
+ assert.match(stored.processStartedAt,/^\d+$/);
+ writeFileSync(lockPath,JSON.stringify({...stored,token:"reused-pid",processStartedAt:String(BigInt(stored.processStartedAt)+1n)}));
+ const recovered=acquireInstanceLock(dir);
+ assert.notEqual(JSON.parse(readFileSync(lockPath,"utf8")).token,"reused-pid");
+ recovered.release();
+});
+test("live legacy lock is preserved and reported separately",t=>{
+ const dir=temp(t),lockPath=join(dir,"atelier-instance.lock");
+ const payload={pid:process.pid,token:"legacy-live-owner",createdAt:Date.now()};
+ writeFileSync(lockPath,JSON.stringify(payload));
+ assert.throws(()=>acquireInstanceLock(dir),error=>error.code==="instance_lock_legacy");
+ assert.deepEqual(JSON.parse(readFileSync(lockPath,"utf8")),payload);
+});
+test("recovery mutex is fail-closed",t=>{
+ const dir=temp(t),lockPath=join(dir,"atelier-instance.lock");
+ writeFileSync(lockPath,JSON.stringify({pid:99999999,token:"dead-owner",createdAt:1}));
+ writeFileSync(join(dir,"atelier-recovery.lock"),"operator-review");
+ assert.throws(()=>acquireInstanceLock(dir),error=>error.code==="instance_lock_recovery_required");
+ assert.equal(readFileSync(lockPath,"utf8"),JSON.stringify({pid:99999999,token:"dead-owner",createdAt:1}));
+});
+test("concurrent stale recovery has one winner and old release cannot remove the winner",async t=>{
+ const dir=temp(t),lockPath=join(dir,"atelier-instance.lock");
+ writeFileSync(lockPath,JSON.stringify({pid:99999999,token:"dead-owner",createdAt:1}));
+ const modulePath=new URL("./instance-lock.mjs",import.meta.url).href;
+ const script=`import {acquireInstanceLock} from ${JSON.stringify(modulePath)};
+process.stdin.setEncoding("utf8");
+process.stdout.write("ready\\n");
+process.stdin.on("data",chunk=>{if(!chunk.includes("go"))return;try{const lock=acquireInstanceLock(process.argv[1]);process.stdout.write("acquired\\n");setTimeout(()=>{lock.release();process.exit(0)},1500)}catch(error){process.stdout.write("error:"+(error.code||"unknown")+"\\n");process.exit(2)}});`;
+ const children=[0,1].map(()=>spawn(process.execPath,["--input-type=module","-e",script,dir],{stdio:["pipe","pipe","pipe"]}));
+ t.after(()=>{for(const child of children)if(child.exitCode===null)child.kill()});
+ const output=children.map(()=>"");
+ const ready=children.map((child,index)=>new Promise((resolve,reject)=>{
+  child.stdout.on("data",chunk=>{
+   output[index]+=chunk.toString();
+   if(output[index].includes("ready"))resolve();
+  });
+  child.once("error",reject);
+ }));
+ await Promise.all(ready);
+ const exits=children.map(child=>new Promise(resolve=>child.once("exit",resolve)));
+ for(const child of children)child.stdin.end("go\n");
+ await Promise.all(exits);
+ assert.equal(output.filter(value=>value.includes("acquired")).length,1);
+ assert.equal(output.filter(value=>value.includes("error:instance_already_running")||value.includes("error:instance_lock_recovery_required")).length,1);
+ const swapDir=join(dir,"release-race"),oldOwner=acquireInstanceLock(swapDir);
+ unlinkSync(oldOwner.path);
+ const newOwner=acquireInstanceLock(swapDir);
+ oldOwner.release();
+ assert.equal(hasInstanceLock(swapDir),true);
+ newOwner.release();
 });
 test("BlobStore validates signatures, SHA-256, deduplicates, caps bytes, guards Range",async t=>{
  const dir=temp(t),db=new DatabaseSync(":memory:");t.after(()=>db.close());initializeSchema(db);

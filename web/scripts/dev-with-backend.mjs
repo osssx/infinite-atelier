@@ -13,9 +13,11 @@ for(const [name,value] of [["vite",vitePort],["backend",port]]){
 if(port===vitePort)throw Error("development_service_ports_must_be_distinct");
 const children=[];
 let stopping=false;
+let shutdownPromise;
+let backendChild=null;
 function start(name,entry,args=[],env={}){
  const child=spawn(process.execPath,[resolve(root,entry),...args],{
-  cwd:root,env:{...process.env,...env},stdio:"inherit",windowsHide:false
+  cwd:root,env:{...process.env,...env},stdio:["inherit","inherit","inherit","ipc"],windowsHide:false
  });
  children.push(child);
  child.on("exit",(code,signal)=>{
@@ -27,18 +29,34 @@ function start(name,entry,args=[],env={}){
  return child;
 }
 async function shutdown(code=0){
- if(stopping)return;stopping=true;
- for(const child of children)if(child.exitCode===null&&!child.killed)child.kill();
+ if(shutdownPromise)return shutdownPromise;
+ stopping=true;
  process.exitCode=code;
+ shutdownPromise=(async()=>{
+  const backend=backendChild;
+  if(backend?.exitCode===null&&!backend.killed&&backend.connected){
+   try{backend.send({type:"atelier:shutdown"})}catch{}
+  }
+  for(const child of children){
+   if(child===backend)continue;
+   if(child.exitCode===null&&!child.killed)child.kill();
+  }
+  const waitForExit=child=>child.exitCode!==null||child.signalCode!==null?Promise.resolve():new Promise(resolve=>child.once("exit",resolve));
+  const allExited=Promise.all(children.map(waitForExit));
+  await Promise.race([allExited,new Promise(resolve=>setTimeout(resolve,10000))]);
+  for(const child of children)if(child.exitCode===null&&!child.killed)child.kill();
+  await Promise.race([allExited,new Promise(resolve=>setTimeout(resolve,1000))]);
+ })();
+ return shutdownPromise;
 }
 for(const signal of ["SIGINT","SIGTERM"])process.on(signal,()=>{void shutdown()});
-const backend=start("Atelier backend","scripts/dev-local-backend.mjs");
+backendChild=start("Atelier backend","scripts/dev-local-backend.mjs");
 let ready=false;
 for(let i=0;i<100;i++){
- if(backend.exitCode!==null)break;
+ if(backendChild.exitCode!==null)break;
  try{
   const result=await fetch("http://127.0.0.1:"+port+"/health",{signal:AbortSignal.timeout(400)});
-  if(result.ok){await new Promise(resolve=>setTimeout(resolve,120));if(backend.exitCode===null){ready=true;break}}
+  if(result.ok){await new Promise(resolve=>setTimeout(resolve,120));if(backendChild.exitCode===null){ready=true;break}}
  }catch{}
  await new Promise(resolve=>setTimeout(resolve,100));
 }

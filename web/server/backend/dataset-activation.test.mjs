@@ -75,7 +75,7 @@ test("active or malformed lock in moved folder never gets stolen or deleted",asy
   writeFileSync(join(f.source,"atelier-instance.lock"),JSON.stringify(payload));
   renameSync(f.source,dest);
   assert.throws(()=>adoptMovedDataset(dest,{activationRoot:f.activationRoot}),
-   /instance_already_running/);
+   label==="active"?/instance_lock_legacy/:/instance_lock_recovery_required/);
   assert.equal(existsSync(join(dest,"atelier-instance.lock")),true);
   const stored=JSON.parse(readFileSync(join(dest,"atelier-instance.lock"),"utf8"));
   assert.deepEqual(stored,payload);

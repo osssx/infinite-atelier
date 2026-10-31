@@ -1987,8 +1987,8 @@ function AtelierCanvasPage() {
         setNodes((prev) => prev.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, prompt } } : node)));
     }, []);
 
-    const handleConfigNodeChange = useCallback((nodeId: string, patch: Partial<CanvasNodeData["metadata"]>) => {
-        setNodes((prev) => prev.map((node) => (node.id === nodeId ? applyNodeConfigPatch(node, patch) : node)));
+    const handleConfigNodeChange = useCallback((nodeId: string, patch: Partial<CanvasNodeData["metadata"]>, boundWorkflowName?: string) => {
+        setNodes((prev) => prev.map((node) => (node.id === nodeId ? applyNodeConfigPatch(node, patch, boundWorkflowName) : node)));
     }, []);
 
     const downloadNodeImage = useCallback((node: CanvasNodeData) => {
@@ -3999,7 +3999,7 @@ function AtelierCanvasPage() {
                         onExecutionChange={(execution)=>handleConfigNodeChange(panelNode.id,{comfyExecution:execution})}
                         comfyInstanceId={globalComfyInstanceId}
                         onChange={(patch) => handleConfigNodeChange(panelNode.id, patch)}
-                        onTemplateChange={(patch) => {
+                        onTemplateChange={(patch, boundWorkflowName) => {
                             const candidate = applyNodeConfigPatch(panelNode, patch);
                             const candidateNodes = nodesRef.current.map((n) => n.id === panelNode.id ? candidate : n);
                             const visibleInputIds = new Set(getCanvasVisiblePorts(candidate)
@@ -4016,7 +4016,7 @@ function AtelierCanvasPage() {
                                 message.error("Template ports conflict with existing connections: " + errors[0].error);
                                 return false;
                             }
-                            handleConfigNodeChange(panelNode.id, patch);
+                            handleConfigNodeChange(panelNode.id, patch, boundWorkflowName);
                             return true;
                         }}
                         onClose={() => setDialogNodeId(null)}

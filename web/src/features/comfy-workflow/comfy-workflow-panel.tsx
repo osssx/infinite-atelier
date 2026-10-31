@@ -38,7 +38,7 @@ type Props = {
     connectedInputPortIds?: ReadonlySet<string>;
     focus?:{nodeId:string;portId?:string};
     context?: "node" | "preset";
-    onChange: (patch: Partial<CanvasNodeMetadata>) => boolean;
+    onChange: (patch: Partial<CanvasNodeMetadata>, boundWorkflowName?:string) => boolean;
     onClose: () => void;
 };
 
@@ -345,7 +345,7 @@ export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,
         if(!onChange({comfyPorts,comfyWorkflow:{
             templateId:template.id,templateRevision:template.revision,instanceId:undefined,
             bindingState:"needs-instance-binding",inputOverrides:node.metadata?.comfyWorkflow?.inputOverrides??{},
-        }})) {
+        }},template.name)) {
             setError("无法应用该模板版本：已有画布连线引用了被删除或类型不兼容的端口。");
             return false;
         }

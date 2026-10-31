@@ -32,7 +32,7 @@ type Props = {
     comfyInstanceId?: string;
     onExecutionChange: (execution: NonNullable<CanvasNodeMetadata["comfyExecution"]>) => void;
     onChange: (patch: Partial<CanvasNodeMetadata>) => void;
-    onTemplateChange: (patch: Partial<CanvasNodeMetadata>) => boolean;
+    onTemplateChange: (patch: Partial<CanvasNodeMetadata>, boundWorkflowName?:string) => boolean;
     onClose: () => void;
 };
 
@@ -271,8 +271,8 @@ export function ComfyWorkflowInstancePanel({node,connections,projectId,comfyInst
         port.outputBinding?.nodeId===errorNodeId):undefined;
     if(editingTemplate) return <ComfyWorkflowPanel node={node} focus={errorNodeId?{nodeId:errorNodeId,portId:errorPort?.id}:undefined}
         connectedInputPortIds={new Set(connections.filter(edge=>edge.toNodeId===node.id && edge.toPortId).map(edge=>edge.toPortId!))}
-        onChange={(patch)=>{
-        const applied=onTemplateChange(patch);
+        onChange={(patch,boundWorkflowName)=>{
+        const applied=onTemplateChange(patch,boundWorkflowName);
         if(applied)setEditingTemplate(false);
         return applied;
     }} onClose={()=>setEditingTemplate(false)}/>;

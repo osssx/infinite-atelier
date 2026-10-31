@@ -63,9 +63,19 @@ export function buildAudioGenerationMetadata(config: AiConfig): CanvasNodeMetada
     };
 }
 
-export function applyNodeConfigPatch(node: CanvasNodeData, patch: Partial<CanvasNodeData["metadata"]>) {
+// Existing canvas nodes have a generic title until their first workflow bind.
+// Do not rename a title the user has already customized (including when rebinding).
+const DEFAULT_COMFY_WORKFLOW_TITLES=new Set(["工作流","ComfyUI Workflow"]);
+export function titleAfterComfyWorkflowBind(node:CanvasNodeData,workflowName:string):string{
+    const name=workflowName.trim();
+    return node.type===COMFY_WORKFLOW_MOCK_TYPE && name && DEFAULT_COMFY_WORKFLOW_TITLES.has(node.title.trim())
+        ? name : node.title;
+}
+
+export function applyNodeConfigPatch(node: CanvasNodeData, patch: Partial<CanvasNodeData["metadata"]>, boundWorkflowName?: string) {
     const safePatch = patch || {};
-    const next = { ...node, metadata: { ...node.metadata, ...safePatch } };
+    const next = { ...node, metadata: { ...node.metadata, ...safePatch },
+        ...(safePatch.comfyWorkflow && boundWorkflowName ? {title:titleAfterComfyWorkflowBind(node,boundWorkflowName)} : {}) };
     if (node.type === COMFY_WORKFLOW_MOCK_TYPE && safePatch.comfyPorts) {
         // Binding a workflow with many ports needs room for independent hit targets.
         // Grow when binding (never shrink a user-resized node); keep its top edge fixed.

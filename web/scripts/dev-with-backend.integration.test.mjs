@@ -44,7 +44,7 @@ test("dev launcher uses only SQLite Fastify and Vite, retires Gateway routes",{
  try{
   const base="http://127.0.0.1:"+vitePort;
   let result,lastError,session,cookie="";
-  const deadline=Date.now()+15000;
+  const deadline=Date.now()+60000;
   while(Date.now()<deadline){
    if(child.exitCode!==null)throw Error("launcher exited early: "+log);
    try{
@@ -86,6 +86,39 @@ test("dev launcher uses only SQLite Fastify and Vite, retires Gateway routes",{
    new Promise(done=>child.exitCode!==null||child.signalCode!==null?done():child.once("exit",done)),
    new Promise(done=>setTimeout(done,2000))
   ]);
+  rmSync(temp,{force:true,recursive:true,maxRetries:8,retryDelay:250});
+ }
+});
+
+test("dev launcher rejects an occupied Vite port before starting the backend",{
+ skip:process.platform!=="win32"&&"local backend uses Windows DPAPI",timeout:15000
+},async()=>{
+ const temp=mkdtempSync(join(tmpdir(),"atelier-occupied-port-"));
+ const [backendPort,vitePort]=await Promise.all([freePort(),freePort()]);
+ const occupied=createServer();
+ await new Promise((resolve,reject)=>{occupied.once("error",reject);occupied.listen(vitePort,"127.0.0.1",resolve)});
+ const child=spawn(process.execPath,["scripts/dev-with-backend.mjs"],{
+  cwd:webDir,windowsHide:true,stdio:["ignore","pipe","pipe"],
+  env:{...process.env,LOCALAPPDATA:join(temp,"localappdata"),ATELIER_DATA_DIR:join(temp,"data"),
+   ATELIER_BACKEND_PORT:String(backendPort),ATELIER_VITE_PORT:String(vitePort)}
+ });
+ let log="";
+ for(const stream of [child.stdout,child.stderr])stream.on("data",data=>{log=(log+data.toString()).slice(-8000)});
+ try{
+  const result=await new Promise((resolve,reject)=>{
+   const timer=setTimeout(()=>reject(Error("occupied-port launcher timeout")),10000);
+   child.once("error",error=>{clearTimeout(timer);reject(error)});
+   child.once("exit",(code,signal)=>{clearTimeout(timer);resolve({code,signal})});
+  });
+  assert.equal(result.code,1,log);
+  assert.match(log,/Vite port \d+ is already in use/);
+  assert.doesNotMatch(log,/Infinite Atelier private backend ready/);
+ }finally{
+  if(child.pid&&child.exitCode===null){
+   if(process.platform==="win32")spawnSync("taskkill",["/T","/F","/PID",String(child.pid)],{stdio:"ignore"});
+   else child.kill("SIGTERM");
+  }
+  await new Promise(resolve=>occupied.close(()=>resolve()));
   rmSync(temp,{force:true,recursive:true,maxRetries:8,retryDelay:250});
  }
 });

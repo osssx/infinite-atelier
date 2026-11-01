@@ -1,5 +1,6 @@
 /** Single local Fastify backend + Vite. No Ark/Comfy Gateway process. */
 import {spawn} from "node:child_process";
+import {createServer} from "node:net";
 import {fileURLToPath} from "node:url";
 import {resolve,dirname} from "node:path";
 import {loadBackendEnv} from "./load-backend-env.mjs";
@@ -7,6 +8,7 @@ loadBackendEnv();
 const root=resolve(dirname(fileURLToPath(import.meta.url)),"..");
 const port=Number(process.env.ATELIER_BACKEND_PORT??"8788");
 const vitePort=Number(process.env.ATELIER_VITE_PORT??"3000");
+const backendStartupTimeoutMs=60_000;
 for(const [name,value] of [["vite",vitePort],["backend",port]]){
  if(!Number.isSafeInteger(value)||value<1024||value>65535)throw Error("invalid_"+name+"_port");
 }
@@ -15,6 +17,23 @@ const children=[];
 let stopping=false;
 let shutdownPromise;
 let backendChild=null;
+async function assertPortAvailable(name,value){
+ await new Promise((resolve,reject)=>{
+  const probe=createServer();
+  const finish=error=>{
+   if(error){try{probe.close()}catch{};reject(error);return}
+   if(!probe.listening){resolve();return}
+   probe.close(closeError=>closeError?reject(closeError):resolve());
+  };
+  probe.once("error",error=>{
+   if(error.code==="EADDRINUSE")finish(Error(`${name} port ${value} is already in use`));
+   else finish(error);
+  });
+  probe.listen(value,"127.0.0.1",()=>finish());
+ });
+}
+await assertPortAvailable("Vite",vitePort);
+await assertPortAvailable("Atelier backend",port);
 function start(name,entry,args=[],env={}){
  const child=spawn(process.execPath,[resolve(root,entry),...args],{
   cwd:root,env:{...process.env,...env},stdio:["inherit","inherit","inherit","ipc"],windowsHide:false
@@ -52,7 +71,8 @@ async function shutdown(code=0){
 for(const signal of ["SIGINT","SIGTERM"])process.on(signal,()=>{void shutdown()});
 backendChild=start("Atelier backend","scripts/dev-local-backend.mjs");
 let ready=false;
-for(let i=0;i<100;i++){
+const startupDeadline=Date.now()+backendStartupTimeoutMs;
+while(Date.now()<startupDeadline){
  if(backendChild.exitCode!==null)break;
  try{
   const result=await fetch("http://127.0.0.1:"+port+"/health",{signal:AbortSignal.timeout(400)});
@@ -61,7 +81,7 @@ for(let i=0;i<100;i++){
  await new Promise(resolve=>setTimeout(resolve,100));
 }
 if(!ready){
- console.error("Atelier backend did not start; Canvas will not fall back to browser storage.");
+ console.error("Atelier backend did not start within "+Math.round(backendStartupTimeoutMs/1000)+"s; Canvas will not fall back to browser storage.");
  await shutdown(1);
 }else if(!stopping){
  console.log("Atelier backend ready at http://127.0.0.1:"+port+"; starting Vite (no gateway).");

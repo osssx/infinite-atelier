@@ -420,7 +420,7 @@ function AtelierCanvasPage() {
     const generationRequestsRef = useRef(new Map<string, CanvasGenerationRequest>());
     const comfyExecuteLocksRef = useRef(new Set<string>());
     const sqliteJobWatchesRef=useRef(new Map<string,AbortController>());
-    const monitorSqliteJobRef=useRef<(jobId:string)=>void>(()=>{});
+    const monitorSqliteJobRef=useRef<(jobId:string,notifyOnMaterialization?:boolean)=>void>(()=>{});
     const sqliteGenerationJobsRef=useRef(new Map<string,string>());
     const sqliteModelSubmitLocksRef=useRef(new Set<string>());
 
@@ -2243,7 +2243,7 @@ function AtelierCanvasPage() {
                     quality:["auto","low","medium","high"].includes(generationConfig.quality)?
                         generationConfig.quality:"auto"},
             });
-            monitorSqliteJobRef.current(job.id);
+            monitorSqliteJobRef.current(job.id,true);
             message.info("图片编辑任务已提交："+job.id+"，完成后自动追加图片节点");
         } finally {
             sqliteModelSubmitLocksRef.current.delete(submissionKey);
@@ -2661,7 +2661,7 @@ function AtelierCanvasPage() {
                     if(kind==="video"){sqliteGenerationJobsRef.current.set(nodeId,job.id);setRunningNodeId(nodeId)}
                     if(textSubmissionToken)
                         trackCanvasTextJob(projectId,nodeId,job.id,job.status,textSubmissionToken);
-                    monitorSqliteJobRef.current(job.id);
+                    monitorSqliteJobRef.current(job.id,true);
                 }catch(error){
                     const detail=error instanceof Error?error.message:String(error);
                     if(detail.includes("backend_prior_job_not_terminal")){
@@ -2937,7 +2937,7 @@ function AtelierCanvasPage() {
     }, []);
 
 
-    const monitorSqliteJob=useCallback((jobId:string)=>{
+    const monitorSqliteJob=useCallback((jobId:string,notifyOnMaterialization=false)=>{
         if(sqliteJobWatchesRef.current.has(jobId))return;
         const controller=new AbortController();
         sqliteJobWatchesRef.current.set(jobId,controller);
@@ -2946,6 +2946,7 @@ function AtelierCanvasPage() {
         const progressKey="sqlite-text-"+jobId;
         void watchSqliteComfyJob({
             projectId,jobId,signal:controller.signal,
+            notifyOnMaterialization,
             getLocalGraph:()=>({nodes:nodesRef.current,connections:connectionsRef.current}),
             applyGraph:graph=>{
                 if(activeProjectIdRef.current!==projectId||!pageMountedRef.current)return;
@@ -3056,7 +3057,8 @@ function AtelierCanvasPage() {
                 job.status==="succeeded"&&
                 !nodesRef.current.some(node=>node.metadata?.comfyArtifact?.runId===job.id||node.metadata?.modelArtifact?.jobId===job.id))
                 .slice(-40);
-            for(const job of [...active,...recent])monitorSqliteJob(job.id);
+            for(const job of active)monitorSqliteJob(job.id,true);
+            for(const job of recent)monitorSqliteJob(job.id);
         }).catch(()=>{});
         return ()=>{cancelled=true};
     },[projectLoaded,monitorSqliteJob,projectId]);
@@ -3101,7 +3103,7 @@ function AtelierCanvasPage() {
             if(activeProjectIdRef.current===projectId&&pageMountedRef.current){
                 setCanvasComfyExecution(projectId,nodeId,{runId:job.id,status:job.status});
                 message.info("生成任务已提交："+job.id+"。完成后自动恢复产物节点。");
-                monitorSqliteJob(job.id);
+                monitorSqliteJob(job.id,true);
             }
             return {runId:job.id,status:job.status,workflowNodeId:nodeId,artifacts:[]};
         }catch(error){
@@ -3323,15 +3325,18 @@ function AtelierCanvasPage() {
                 <CanvasJobHistory projectId={projectId} open={jobHistoryOpen}
                     onClose={()=>setJobHistoryOpen(false)}
                     onObserveJob={jobId=>monitorSqliteJobRef.current(jobId)}
-                    onRefreshCanvas={()=>refreshSqliteComfyArtifacts({
-                        projectId,
-                        getLocalGraph:()=>({nodes:nodesRef.current,connections:connectionsRef.current}),
-                        applyGraph:graph=>{
-                            if(activeProjectIdRef.current!==projectId||!pageMountedRef.current)return;
-                            nodesRef.current=graph.nodes;connectionsRef.current=graph.connections;
-                            setNodes(graph.nodes);setConnections(graph.connections);
-                        }
-                    })}
+                    onRefreshCanvas={async()=>{
+                        const result=await refreshSqliteComfyArtifacts({
+                            projectId,
+                            getLocalGraph:()=>({nodes:nodesRef.current,connections:connectionsRef.current}),
+                            applyGraph:graph=>{
+                                if(activeProjectIdRef.current!==projectId||!pageMountedRef.current)return;
+                                nodesRef.current=graph.nodes;connectionsRef.current=graph.connections;
+                                setNodes(graph.nodes);setConnections(graph.connections);
+                            }
+                        });
+                        return result!=="conflict";
+                    }}
                 />
 
                 <AtelierCanvas

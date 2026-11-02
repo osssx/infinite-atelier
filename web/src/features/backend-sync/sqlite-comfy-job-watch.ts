@@ -20,44 +20,45 @@ export async function refreshSqliteComfyArtifacts({
 }:{
  projectId:string;getLocalGraph:()=>Graph;applyGraph:(graph:Graph)=>void;
  api?:typeof canvasApi
-}):Promise<boolean>{
+}):Promise<"changed"|"unchanged"|"conflict">{
  const frozen=canonicalBackendGraph(getLocalGraph());
  await awaitCanvasStorePersistence(projectId);
- if(canonicalBackendGraph(getLocalGraph())!==frozen)return false;
+ if(canonicalBackendGraph(getLocalGraph())!==frozen)return "conflict";
  const remote=await api<CanvasBackendProject>("/api/v1/projects/"+encodeURIComponent(projectId));
- if(canonicalBackendGraph(getLocalGraph())!==frozen)return false;
+ if(canonicalBackendGraph(getLocalGraph())!==frozen)return "conflict";
  const snapshot=getLocalGraph();
  // Reopened Canvas may already include every server artifact. A no-op is
  // success, not a conflict and never triggers an extra SQLite PATCH.
  if(canonicalBackendGraph({
   nodes:remote.document.nodes as CanvasNodeData[],
   connections:remote.document.connections as CanvasConnection[]
- })===frozen)return true;
- if(!useCanvasStore.getState().adoptMaterializedGraph(projectId,snapshot,remote))return false;
+ })===frozen)return "unchanged";
+ if(!useCanvasStore.getState().adoptMaterializedGraph(projectId,snapshot,remote))return "conflict";
  const updated=useCanvasStore.getState().openProject(projectId);
- if(!updated)return false;
+ if(!updated)return "conflict";
  const current={nodes:updated.nodes,connections:updated.connections};
  // Store was changed synchronously by server adoption. Do not overwrite an
  // unrelated user gesture that happened while the HTTP request was running.
- if(canonicalBackendGraph(getLocalGraph())!==frozen)return false;
+ if(canonicalBackendGraph(getLocalGraph())!==frozen)return "conflict";
  applyGraph(current);
- return true;
+ return "changed";
 }
 export async function watchSqliteComfyJob({
  projectId,jobId,signal,getLocalGraph,applyGraph,
- onStatus,onTextDelta,onSkillText,onSkillTool,onComfyLive,api=canvasApi,pollMs=15000,
+ onStatus,onTextDelta,onSkillText,onSkillTool,onComfyLive,notifyOnMaterialization=false,api=canvasApi,pollMs=15000,
 }:{
  projectId:string;jobId:string;signal:AbortSignal;
  getLocalGraph:()=>Graph;applyGraph:(graph:Graph)=>void;
  onStatus?:(status:string,message?:string,job?:BackendJobView)=>void;
   onComfyLive?:(event:CanvasComfyLiveUpdate,job:BackendJobView)=>void;
+ notifyOnMaterialization?:boolean;
  onTextDelta?:(delta:string)=>void;
  onSkillText?:(delta:string,round:number)=>void;
  onSkillTool?:(event:{name:string;status:"started"|"completed"})=>void;
  api?:typeof canvasApi;pollMs?:number;
 }):Promise<void>{
  const root="/api/v1/jobs/"+encodeURIComponent(jobId);
- let previous="",failures=0,eventRevision=0;
+ let previous="",failures=0,eventRevision=0,materializationNotified=false;
   let latestJob:BackendJobView|null=null;
   let stopLive:(()=>void)|null=null;
  let wake:(()=>void)|null=null;
@@ -112,15 +113,19 @@ export async function watchSqliteComfyJob({
      onStatus?.("blocked","artifact_materialization_blocked");
      return;
     }
-    let applied=false;
+    let refreshResult:"changed"|"unchanged"|"conflict"="unchanged";
     if(records.some(item=>item.status==="materialized")){
-     applied=await refreshSqliteComfyArtifacts({
+     refreshResult=await refreshSqliteComfyArtifacts({
       projectId,getLocalGraph,applyGraph,api
-     }).catch(()=>false);
-     if(applied)onStatus?.("materialized");
+     }).catch(()=>"conflict");
+     if(!materializationNotified&&refreshResult!=="conflict"&&
+      (refreshResult==="changed"||notifyOnMaterialization)){
+      materializationNotified=true;
+      onStatus?.("materialized",undefined,job);
+     }
     }
     if(records.length&&records.every(item=>item.status==="materialized")){
-     if(!applied)onStatus?.("needs_refresh","local_graph_changed_or_already_restored");
+     if(refreshResult==="conflict")onStatus?.("needs_refresh","local_graph_changed_during_refresh",job);
      return;
     }
    }

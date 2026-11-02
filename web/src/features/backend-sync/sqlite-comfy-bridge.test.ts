@@ -164,11 +164,11 @@ describe("P4 SQLite-only Comfy generation bridge",()=>{
   h.adopt.mockReturnValue(true);
   h.project={nodes:[...graph.nodes,artifact],connections:[edge]};
   h.api.mockResolvedValue(project(2,[...graph.nodes,artifact],[edge]));
-  expect(await refreshSqliteComfyArtifacts({projectId:"p1",getLocalGraph:get,applyGraph:apply,api:h.api})).toBe(true);
+  expect(await refreshSqliteComfyArtifacts({projectId:"p1",getLocalGraph:get,applyGraph:apply,api:h.api})).toBe("changed");
   expect(apply).toHaveBeenCalledOnce();
   expect(h.adopt).toHaveBeenCalledOnce();
   h.adopt.mockReturnValue(false);apply.mockClear();
-  expect(await refreshSqliteComfyArtifacts({projectId:"p1",getLocalGraph:get,applyGraph:apply,api:h.api})).toBe(false);
+  expect(await refreshSqliteComfyArtifacts({projectId:"p1",getLocalGraph:get,applyGraph:apply,api:h.api})).toBe("conflict");
   expect(apply).not.toHaveBeenCalled();
  });
  it("treats materializations already present in SQLite Canvas as a successful no-op",async()=>{
@@ -176,15 +176,17 @@ describe("P4 SQLite-only Comfy generation bridge",()=>{
   h.adopt.mockReturnValue(false);
   const apply=vi.fn();
   expect(await refreshSqliteComfyArtifacts({projectId:"p1",getLocalGraph:()=>graph,
-   applyGraph:apply,api:h.api})).toBe(true);
+   applyGraph:apply,api:h.api})).toBe("unchanged");
   expect(h.adopt).not.toHaveBeenCalled();
   expect(apply).not.toHaveBeenCalled();
  });
  it("watches a succeeded backend job and invokes artifact refresh once",async()=>{
+  const artifact={...node,id:"artifact-one",type:"image" as const,title:"Generated image"};
+  const edge={id:"edge",fromNodeId:"wf",fromPortId:"output",toNodeId:"artifact-one",toPortId:"comfy-artifact"};
   h.api.mockImplementation(async(path:string)=>{
    if(path.endsWith("/materializations"))return {materializations:[{artifactId:"artifact-one",status:"materialized"}]};
    if(path.endsWith("/job1"))return {id:"job1",projectId:"p1",status:"succeeded"};
-   if(path==="/api/v1/projects/p1")return project(2,[...graph.nodes],[]);
+   if(path==="/api/v1/projects/p1")return project(2,[...graph.nodes,artifact],[edge]);
    throw Error("unexpected "+path);
   });
   h.adopt.mockReturnValue(true);
@@ -194,5 +196,79 @@ describe("P4 SQLite-only Comfy generation bridge",()=>{
    getLocalGraph:()=>graph,applyGraph:vi.fn(),onStatus:s=>status.push(s),api:h.api,pollMs:1});
   expect(status).toContain("succeeded");
   expect(status).toContain("materialized");
+ });
+ it("silently observes already materialized history when refresh is unchanged",async()=>{
+  h.api.mockImplementation(async(path:string)=>{
+   if(path.endsWith("/materializations"))return {materializations:[{artifactId:"artifact-one",status:"materialized"}]};
+   if(path.endsWith("/job1"))return {id:"job1",projectId:"p1",status:"succeeded"};
+   if(path==="/api/v1/projects/p1")return project(2);
+   throw Error("unexpected "+path);
+  });
+  const status:string[]=[];
+  await watchSqliteComfyJob({projectId:"p1",jobId:"job1",signal:new AbortController().signal,
+   getLocalGraph:()=>graph,applyGraph:vi.fn(),onStatus:s=>status.push(s),api:h.api,pollMs:1});
+  expect(status).toContain("succeeded");
+  expect(status).not.toContain("materialized");
+  expect(status).not.toContain("needs_refresh");
+ });
+ it("does not announce a historical succeeded task without materialized artifacts",async()=>{
+  const status:string[]=[];
+  const controller=new AbortController();
+  h.api.mockImplementation(async(path:string)=>{
+   if(path.endsWith("/materializations"))return {materializations:[]};
+   if(path.endsWith("/job1"))return {id:"job1",projectId:"p1",status:"succeeded"};
+   throw Error("unexpected "+path);
+  });
+  await watchSqliteComfyJob({projectId:"p1",jobId:"job1",signal:controller.signal,
+   getLocalGraph:()=>graph,applyGraph:vi.fn(),onStatus:s=>{status.push(s);if(s==="succeeded")controller.abort()},api:h.api,pollMs:1});
+  expect(status).toEqual(["succeeded"]);
+ });
+ it("announces fresh materialization once even when the saved source graph is already synchronized",async()=>{
+  let jobReads=0;
+  h.api.mockImplementation(async(path:string)=>{
+   if(path.endsWith("/materializations"))return {materializations:[{artifactId:"artifact-one",status:"materialized"}]};
+   if(path.endsWith("/job1"))return {id:"job1",projectId:"p1",status:++jobReads===1?"running":"succeeded"};
+   if(path==="/api/v1/projects/p1")return project(2);
+   throw Error("unexpected "+path);
+  });
+  const status:string[]=[];
+  await watchSqliteComfyJob({projectId:"p1",jobId:"job1",signal:new AbortController().signal,
+   getLocalGraph:()=>graph,applyGraph:vi.fn(),notifyOnMaterialization:true,
+   onStatus:s=>status.push(s),api:h.api,pollMs:1});
+  expect(status).toContain("running");
+  expect(status).toContain("succeeded");
+  expect(status.filter(s=>s==="materialized")).toHaveLength(1);
+ });
+ it("preserves needs-refresh state without a success toast when local edits block adoption",async()=>{
+  let local=graph;
+  h.flush.mockImplementationOnce(async()=>{local={nodes:[{...node,title:"local edit"}],connections:[]};});
+  h.api.mockImplementation(async(path:string)=>{
+   if(path.endsWith("/materializations"))return {materializations:[{artifactId:"artifact-one",status:"materialized"}]};
+   if(path.endsWith("/job1"))return {id:"job1",projectId:"p1",status:"succeeded"};
+   throw Error("unexpected "+path);
+  });
+  const status:string[]=[];
+  await watchSqliteComfyJob({projectId:"p1",jobId:"job1",signal:new AbortController().signal,
+   getLocalGraph:()=>local,applyGraph:vi.fn(),notifyOnMaterialization:true,
+   onStatus:s=>status.push(s),api:h.api,pollMs:1});
+  expect(status).toContain("needs_refresh");
+  expect(status).not.toContain("materialized");
+ });
+ it("keeps failed and blocked job outcomes observable without a materialization toast",async()=>{
+  const failed:string[]=[];
+  h.api.mockResolvedValueOnce({id:"job1",projectId:"p1",status:"failed"});
+  await watchSqliteComfyJob({projectId:"p1",jobId:"job1",signal:new AbortController().signal,
+   getLocalGraph:()=>graph,applyGraph:vi.fn(),onStatus:s=>failed.push(s),api:h.api,pollMs:1});
+  expect(failed).toContain("failed");
+  const blocked:string[]=[];
+  h.api.mockImplementation(async(path:string)=>{
+   if(path.endsWith("/materializations"))return {materializations:[{artifactId:"artifact-one",status:"blocked"}]};
+   if(path.endsWith("/job1"))return {id:"job1",projectId:"p1",status:"succeeded"};
+   throw Error("unexpected "+path);
+  });
+  await watchSqliteComfyJob({projectId:"p1",jobId:"job1",signal:new AbortController().signal,
+   getLocalGraph:()=>graph,applyGraph:vi.fn(),onStatus:s=>blocked.push(s),api:h.api,pollMs:1});
+  expect(blocked).toContain("blocked");
+  expect(blocked).not.toContain("materialized");
  });
 });

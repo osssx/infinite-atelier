@@ -37,16 +37,6 @@ export async function getMediaBlob(storageKey: string) {
     return store.getItem<Blob>(storageKey);
 }
 
-export async function setMediaBlob(storageKey: string, blob: Blob) {
-    if(isCanvasCasKey(storageKey))throw Error("immutable_canvas_blob_key");
-    await deleteMediaPreview("video", storageKey);
-    await store.setItem(storageKey, blob);
-    const url = URL.createObjectURL(blob);
-    objectUrls.set(storageKey, url);
-    if (blob.type.startsWith("video/")) void resolveMediaPreview("video", storageKey, async () => blob);
-    return url;
-}
-
 export async function deleteStoredMedia(keys: Iterable<string>) {
     await Promise.all(
         Array.from(new Set(keys)).map(async (key) => {

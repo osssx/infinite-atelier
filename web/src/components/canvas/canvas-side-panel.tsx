@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { App, Button, Empty, Input, Popconfirm, Select, Spin, Tag } from "antd";
 import { useQuery } from "@tanstack/react-query";
-import { BookOpen, Check, ChevronRight, Clapperboard, Download, Eye, FileText, History as HistoryIcon, Image as ImageIcon, ListChecks, Music2, Plus, Search, Settings2, Square, Trash2, Type, Video } from "lucide-react";
+import { BookOpen, Check, ChevronRight, Clapperboard, Download, Eye, FileText, Image as ImageIcon, ListChecks, Music2, Plus, Search, Settings2, Square, Trash2, Type, Video } from "lucide-react";
 import { motion } from "motion/react";
 import { useTranslation } from "react-i18next";
 
@@ -10,13 +10,11 @@ import { exportCanvasNodes } from "@/lib/canvas/canvas-export";
 import { getNodeDefinition } from "@/lib/canvas/node-registry";
 import { cn } from "@/lib/utils";
 import { uploadCanvasImage,uploadCanvasMedia } from "@/features/backend-sync/canvas-media";
-import { resolveImageUrl } from "@/services/image-storage";
 import { getImageBlob } from "@/services/image-storage";
 import { resolveMediaPreview } from "@/services/media-preview-storage";
 import { CANVAS_SIDEBAR_ROW_HEIGHT, CANVAS_SIDEBAR_ROW_STRIDE, canvasSidebarWindow } from "@/lib/canvas/canvas-side-panel-window";
 import { useAssetStore, type Asset, type AssetKind } from "@/stores/use-asset-store";
 import { awaitAssetStorePersistence } from "@/stores/use-asset-store";
-import { useGenerationHistoryStore, type GenerationHistoryRecord } from "@/stores/canvas/use-generation-history-store";
 import { CANVAS_SIDE_PANEL_MAX_WIDTH, CANVAS_SIDE_PANEL_MIN_WIDTH, CANVAS_SIDE_PANEL_MOTION_MS, useCanvasSidePanelStore } from "@/stores/use-canvas-side-panel-store";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
@@ -29,7 +27,7 @@ const PANEL_EASE = [0.22, 1, 0.36, 1] as const;
 // Inline so Vite inlines it before Rollup runs; the timing probe must not exist in a normal build.
 const CANVAS_PERF_MODE = import.meta.env.MODE === "perf";
 
-type PanelTab = "canvas" | "assets" | "history";
+type PanelTab = "canvas" | "assets";
 
 type Props = {
     nodes: CanvasNodeData[];
@@ -108,15 +106,12 @@ export function CanvasSidePanel({ nodes, selectedNodeIds, onFocusNode, onPreview
                 <div className="flex items-center gap-5 px-4 pt-3.5">
                     <TabButton label={t("canvas.sidePanel.canvas")} active={tab === "canvas"} theme={theme} onClick={() => setTab("canvas")} />
                     <TabButton label={t("canvas.sidePanel.assets")} active={tab === "assets"} theme={theme} onClick={() => setTab("assets")} />
-                    <TabButton label={t("canvas.sidePanel.history")} active={tab === "history"} theme={theme} onClick={() => setTab("history")} />
                 </div>
                 <div className="mt-2 min-h-0 flex-1 overflow-hidden">
                     {tab === "canvas" ? (
                         <CanvasNodesTab nodes={nodes} selectedNodeIds={selectedNodeIds} onFocusNode={onFocusNode} onPreviewNode={onPreviewNode} theme={theme} />
-                    ) : tab === "assets" ? (
-                        <CanvasAssetsTab onInsert={onInsertAsset} theme={theme} />
                     ) : (
-                        <CanvasHistoryTab theme={theme} />
+                        <CanvasAssetsTab onInsert={onInsertAsset} theme={theme} />
                     )}
                 </div>
                 <button type="button" className="absolute inset-y-0 right-0 z-40 w-4 translate-x-1/2 cursor-col-resize" onPointerDown={startResize} aria-label={t("canvas.sidePanel.resize")} />
@@ -528,95 +523,4 @@ function AssetCover({ asset }: { asset: Asset }) {
         return <video src={`${asset.data.url}#t=0.1`} muted playsInline preload="metadata" className="size-full object-cover transition duration-300 group-hover:scale-[1.04]" />;
     }
     return <img src={asset.coverUrl || asset.data.dataUrl} alt="" className="size-full object-cover transition duration-300 group-hover:scale-[1.04]" />;
-}
-
-// ---------------------------------------------------------------------------
-// Generation history tab: recently generated canvas images with one-click save to assets.
-// ---------------------------------------------------------------------------
-
-const CanvasHistoryTab = memo(function CanvasHistoryTab({ theme }: { theme: CanvasTheme }) {
-    const { i18n, t } = useTranslation();
-    const message = App.useApp().message;
-    const records = useGenerationHistoryStore((state) => state.records);
-    const removeRecord = useGenerationHistoryStore((state) => state.removeRecord);
-    const clearRecords = useGenerationHistoryStore((state) => state.clearRecords);
-    const addAsset = useAssetStore((state) => state.addAsset);
-
-    const saveToAssets = async (record: GenerationHistoryRecord) => {
-        const first = record.images[0];
-        if (!first) return;
-        const url = await resolveImageUrl(first.storageKey);
-        if (!url) {
-            message.error(t("canvas.sidePanel.addFailed"));
-            return;
-        }
-        addAsset({
-            kind: "image",
-            title: record.prompt.slice(0, 24) || t("canvas.sidePanel.generatedImage"),
-            coverUrl: url,
-            tags: [],
-            source: "canvas-history",
-            data: { dataUrl: url, storageKey: first.storageKey, width: first.width, height: first.height, bytes: first.bytes, mimeType: first.mimeType },
-        });
-        try { await awaitAssetStorePersistence();message.success(t("common.addedToAssets")); }
-        catch(error){message.error(String(error))}
-    };
-
-    return (
-        <div className="flex h-full flex-col">
-            <div className="flex min-h-8 items-center justify-between px-3 pt-1">
-                <span className="text-xs opacity-60">{t("canvas.sidePanel.history")}</span>
-                {records.length ? (
-                    <Button type="text" size="small" className="!px-2 !text-xs" onClick={clearRecords}>
-                        {t("canvas.sidePanel.clearHistory")}
-                    </Button>
-                ) : null}
-            </div>
-            <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
-                {records.length ? (
-                    <div className="space-y-2">
-                        {records.map((record) => (
-                            <div key={record.id} className="rounded-xl border p-2.5" style={{ borderColor: theme.node.stroke, background: theme.node.panel }}>
-                                <div className="grid grid-cols-3 gap-1.5">
-                                    {record.images.slice(0, 6).map((image) => (
-                                        <HistoryThumb key={image.storageKey} storageKey={image.storageKey} theme={theme} />
-                                    ))}
-                                </div>
-                                <p className="mt-2 line-clamp-2 text-xs leading-5 opacity-75">{record.prompt}</p>
-                                <div className="mt-2 flex items-center justify-between gap-2">
-                                    <span className="truncate text-[11px] opacity-45">
-                                        {new Date(record.createdAt).toLocaleString(i18n.resolvedLanguage, { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}
-                                        {record.successCount > 1 ? ` · ${record.successCount}张` : ""}
-                                    </span>
-                                    <div className="flex shrink-0 items-center gap-1">
-                                        <Button type="text" size="small" className="!px-2 !text-xs" style={{ color: theme.toolbar.activeText }} onClick={() => void saveToAssets(record)}>
-                                            {t("canvas.sidePanel.saveToAssets")}
-                                        </Button>
-                                        <Button type="text" size="small" className="!px-1.5 !text-xs" icon={<Trash2 className="size-3.5" />} onClick={() => removeRecord(record.id)} aria-label={t("common.delete")} />
-                                    </div>
-                                </div>
-                            </div>
-                        ))}
-                    </div>
-                ) : (
-                    <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("canvas.sidePanel.historyEmpty")} className="pt-12" />
-                )}
-            </div>
-        </div>
-    );
-});
-
-function HistoryThumb({ storageKey, theme }: { storageKey: string; theme: CanvasTheme }) {
-    const [url, setUrl] = useState("");
-    useEffect(() => {
-        let alive = true;
-        void resolveImageUrl(storageKey).then((resolved) => {
-            if (alive && resolved) setUrl(resolved);
-        });
-        return () => {
-            alive = false;
-        };
-    }, [storageKey]);
-    if (!url) return <div className="aspect-square rounded-lg" style={{ background: theme.toolbar.itemHover }} />;
-    return <img src={url} alt="" className="aspect-square w-full rounded-lg object-cover" loading="lazy" />;
 }

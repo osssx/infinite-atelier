@@ -63,7 +63,6 @@ import { CanvasSidePanel } from "@/components/canvas/canvas-side-panel";
 import { CanvasZoomControls } from "@/components/canvas/canvas-zoom-controls";
 import { DirectorPanel } from "@/components/canvas/director-panel";
 import { flushCanvasStorePersistence,awaitCanvasStorePersistence,useCanvasStore,subscribeSavedCanvasGraph } from "@/stores/canvas/use-canvas-store";
-import { useGenerationHistoryStore, type GenerationHistoryImage } from "@/stores/canvas/use-generation-history-store";
 import { buildCanvasGraphIndex } from "@/lib/canvas/canvas-graph-index";
 import { connectCanvasPortsByDrag, prepareCanvasPortConnection, reconcileComfyArtifactConnections } from "@/lib/canvas/canvas-port-connections";
 import { getCanvasVisiblePorts, pickCanvasDropHandle } from "@/lib/canvas/canvas-ports";
@@ -2899,7 +2898,6 @@ function AtelierCanvasPage() {
                     let hasSuccess = false;
                     let hasFailure = false;
                     let firstError = "";
-                    const succeededImages: GenerationHistoryImage[] = [];
                     await Promise.all(
                         imageIds.map(async (imageId) => {
                             try {
@@ -2943,7 +2941,6 @@ function AtelierCanvasPage() {
                                     }),
                                 );
                                 hasSuccess = true;
-                                succeededImages.push({ storageKey: uploaded.storageKey, mimeType: uploaded.mimeType, width: uploaded.width, height: uploaded.height, bytes: uploaded.bytes });
                                 if (isConfigNode) setNodes((prev) => prev.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_SUCCESS, errorDetails: undefined } } : node)));
                                 return true;
                             } catch (error) {
@@ -2961,15 +2958,6 @@ function AtelierCanvasPage() {
                         }),
                     );
                     if (rootId !== nodeId) finishGenerationRequest(rootId, controller);
-                    if (succeededImages.length) {
-                        useGenerationHistoryStore.getState().addRecord({
-                            prompt: effectivePrompt,
-                            model: generationConfig.model || "",
-                            images: succeededImages,
-                            successCount: succeededImages.length,
-                            failCount: count - succeededImages.length,
-                        });
-                    }
                     if (controller.signal.aborted) {
                         setNodes((prev) => prev.map((node) => (node.id === nodeId && isConfigNode && node.metadata?.status === NODE_STATUS_LOADING ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_IDLE, errorDetails: undefined } } : node)));
                         return;

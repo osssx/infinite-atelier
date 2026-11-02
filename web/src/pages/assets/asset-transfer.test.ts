@@ -3,13 +3,12 @@ vi.mock("@/lib/zip",()=>({readZip:vi.fn(),createZip:vi.fn()}));
 vi.mock("@/features/backend-sync/canvas-media",()=>({
  uploadCanvasImage:vi.fn(),uploadCanvasMedia:vi.fn()
 }));
-vi.mock("@/services/image-storage",()=>({setImageBlob:vi.fn(),getImageBlob:vi.fn()}));
-vi.mock("@/services/file-storage",()=>({setMediaBlob:vi.fn(),getMediaBlob:vi.fn()}));
+vi.mock("@/services/image-storage",()=>({getImageBlob:vi.fn()}));
+vi.mock("@/services/file-storage",()=>({getMediaBlob:vi.fn()}));
 vi.mock("file-saver",()=>({saveAs:vi.fn()}));
 
 import {readZip} from "@/lib/zip";
 import {uploadCanvasImage} from "@/features/backend-sync/canvas-media";
-import {setImageBlob} from "@/services/image-storage";
 import {readAssetPackage} from "./asset-transfer";
 
 const sha="a".repeat(64),storageKey="cas:"+sha;
@@ -30,7 +29,6 @@ describe("P5.4 portable library ZIP imports",()=>{
   });
   expect(await readAssetPackage(new File([],"assets.zip"))).toHaveLength(1);
   expect(uploadCanvasImage).toHaveBeenCalledOnce();
-  expect(setImageBlob).not.toHaveBeenCalled();
  });
  it("rejects missing media files and hash mismatch without pretending restore succeeded",async()=>{
   vi.mocked(readZip).mockResolvedValue(archive([{storageKey,path:"files/nope.png",mimeType:"image/png",bytes:4}]));
@@ -58,7 +56,6 @@ describe("P5.4 portable library ZIP imports",()=>{
    expect(items[0].data.storageKey).toBe(storageKey);
    expect(items[0].data.dataUrl).toBe("/api/v1/blobs/"+sha);
   }
-  expect(setImageBlob).not.toHaveBeenCalled();
  });
  it("rejects a second missing or incorrectly sized file before publishing the first valid CAS",async()=>{
   vi.mocked(readZip).mockResolvedValue(archive([{storageKey,path:"files/hashed.png",mimeType:"image/png",bytes:20}]));

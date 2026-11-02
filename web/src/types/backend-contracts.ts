@@ -1,4 +1,4 @@
-/** Planned Fastify wire DTOs (P0); existing browser stores and Comfy gateway remain active. */
+/** Wire DTOs for the authoritative local Fastify/SQLite backend. */
 export type JobExecutionMode="immediate"|"stream"|"poll";
 export type JobStatus="queued"|"preparing"|"submitting"|"running"|"collecting"|"succeeded"|"failed"|"cancelled"|"submission_unknown"|"blocked_credential";
 export type BackendArtifactKind="image"|"video"|"audio"|"text";

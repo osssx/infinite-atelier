@@ -107,6 +107,18 @@ describe("default SQLite model routing and automatic DPAPI provisioning",()=>{
   expect(updated.apiKey).toBe("");
   expect(requests.filter(r=>r.method==="PATCH")).toHaveLength(1);
  });
+ it("keeps an existing Vault key when an editor save leaves the key field blank",async()=>{
+  const api=vi.fn(async(_path:string,method="GET")=>{
+   expect(method).toBe("GET");
+   return {id:"channel123",provider:"openai",hasKey:true,keyVersion:"current"};
+  });
+  const withoutBrowserSecret={...channel(),apiKey:""};
+  const saved=await saveSqliteModelChannelFromEditor(withoutBrowserSecret,withoutBrowserSecret,
+   "openai",api as unknown as typeof canvasApi);
+  expect(saved.apiKey).toBe("");
+  expect(api).toHaveBeenCalledTimes(1);
+  expect(api).toHaveBeenCalledWith("/api/v1/channels/channel123");
+ });
  it("P5.4e normal generation reuses vault without rotating unchanged local browser key",async()=>{
   const request=vi.fn(async(_path:string,method="GET")=>{
    expect(method).toBe("GET");

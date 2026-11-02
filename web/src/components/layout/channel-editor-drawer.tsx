@@ -1,16 +1,22 @@
 import { App, Button, Drawer, Input, Segmented, Select, Space } from "antd";
-import { ListPlus, Trash2 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { ListPlus, RotateCw, Trash2 } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { seedancePresets } from "@/services/api/video/model-capabilities";
 import { defaultBaseUrlForApiFormat, guessCapability, normalizeChannelModels, type ApiCallFormat, type ChannelModel, type ModelCapability, type ModelChannel } from "@/stores/use-config-store";
 import { ModelScriptEditor } from "./model-script-editor";
 import { ModelSelectModal } from "./model-select-modal";
-import {saveSqliteModelChannelFromEditor,modelChannelProvider} from "@/features/backend-sync/model-channel-autoroute";
-import {canvasApi} from "@/features/backend-sync/canvas-api";
+import {saveSqliteModelChannelFromEditor,modelChannelProvider, type VaultChannelView} from "@/features/backend-sync/model-channel-autoroute";
+import {canvasApi, CanvasApiError} from "@/features/backend-sync/canvas-api";
 
 type ScriptTarget = { name: string; capability: ModelCapability; value: string };
+type VaultKeyStatus =
+    | { state: "checking"; channelId: string; expectedProvider: string | null; protocol: ApiCallFormat }
+    | { state: "saved"; channelId: string; expectedProvider: string | null; protocol: ApiCallFormat; actualProvider: string }
+    | { state: "unconfigured"; channelId: string; expectedProvider: string | null; protocol: ApiCallFormat }
+    | { state: "mismatch"; channelId: string; expectedProvider: string | null; protocol: ApiCallFormat; actualProvider: string }
+    | { state: "failed"; channelId: string; expectedProvider: string | null; protocol: ApiCallFormat };
 
 export function ChannelEditorDrawer({ open, channel, onSave, onClose }: { open: boolean; channel: ModelChannel | null; onSave: (channel: ModelChannel) => void; onClose: () => void }) {
     const { t } = useTranslation();
@@ -20,6 +26,9 @@ export function ChannelEditorDrawer({ open, channel, onSave, onClose }: { open: 
     const [scriptTarget, setScriptTarget] = useState<ScriptTarget | null>(null);
     const [checkingArk, setCheckingArk] = useState(false);
     const [savingChannel,setSavingChannel]=useState(false);
+    const [vaultKeyStatus, setVaultKeyStatus] = useState<VaultKeyStatus | null>(null);
+    const [vaultCheckAttempt, setVaultCheckAttempt] = useState(0);
+    const apiKeyWasEdited = useRef(false);
     const apiFormatOptions: Array<{ label: string; value: ApiCallFormat }> = [
         { label: "OpenAI", value: "openai" },
         { label: "Gemini", value: "gemini" },
@@ -28,8 +37,47 @@ export function ChannelEditorDrawer({ open, channel, onSave, onClose }: { open: 
     const capabilityOptions: Array<{ label: string; value: ModelCapability }> = ["image", "video", "text", "audio"].map((value) => ({ label: t(`config.channelEditor.capabilities.${value}`), value: value as ModelCapability }));
 
     useEffect(() => {
-        if (open && channel) setDraft(channel);
+        if (open && channel) {
+            apiKeyWasEdited.current = false;
+            setDraft(channel);
+        }
     }, [open, channel]);
+
+    const draftProvider = modelChannelProvider(draft);
+    useEffect(() => {
+        if (!open || !draft) return;
+        const channelId = draft.id;
+        const expectedProvider = modelChannelProvider(draft);
+        const protocol = draft.apiFormat;
+        let active = true;
+        setVaultKeyStatus({ state: "checking", channelId, expectedProvider, protocol });
+        canvasApi<VaultChannelView>("/api/v1/channels/" + encodeURIComponent(channelId))
+            .then((record) => {
+                if (!active) return;
+                if (record.id !== channelId || !expectedProvider || record.provider !== expectedProvider) {
+                    setVaultKeyStatus({ state: "mismatch", channelId, expectedProvider, protocol, actualProvider: record.provider });
+                } else if (record.hasKey && record.keyVersion) {
+                    setVaultKeyStatus({ state: "saved", channelId, expectedProvider, protocol, actualProvider: record.provider });
+                    if (!apiKeyWasEdited.current) {
+                        setDraft((current) => current?.id === channelId ? { ...current, apiKey: "" } : current);
+                    }
+                } else {
+                    setVaultKeyStatus({ state: "unconfigured", channelId, expectedProvider, protocol });
+                }
+            })
+            .catch((error: unknown) => {
+                if (!active) return;
+                if (error instanceof CanvasApiError && error.status === 404) {
+                    setVaultKeyStatus({ state: "unconfigured", channelId, expectedProvider, protocol });
+                } else {
+                    setVaultKeyStatus({ state: "failed", channelId, expectedProvider, protocol });
+                }
+            });
+        return () => { active = false; };
+    }, [open, draft?.id, draft?.apiFormat, draftProvider, vaultCheckAttempt]);
+
+    const currentVaultStatus = vaultKeyStatus && vaultKeyStatus.channelId === draft?.id &&
+        vaultKeyStatus.expectedProvider === draftProvider && vaultKeyStatus.protocol === draft?.apiFormat ? vaultKeyStatus : null;
 
     if (!draft) return null;
 
@@ -63,11 +111,11 @@ export function ChannelEditorDrawer({ open, channel, onSave, onClose }: { open: 
                 models:normalizeChannelModels(draft.models)};
             const provider=modelChannelProvider(updated);
             // Vault-backed channels are saved to the encrypted backend Vault.
-            // Keep the key only in the live config for browser-only execution.
             if(provider&&updated.apiKey.trim()){
-                const key=updated.apiKey;
-                const vaulted=await saveSqliteModelChannelFromEditor(updated,channel,provider);
-                updated={...vaulted,apiKey:key};
+                updated=await saveSqliteModelChannelFromEditor(updated,channel,provider);
+            } else if (provider && currentVaultStatus?.state === "saved") {
+                // An empty key leaves the existing vault version intact.
+                updated=await saveSqliteModelChannelFromEditor(updated,channel,provider);
             }
             setDraft(updated);
             onSave(updated);
@@ -80,11 +128,11 @@ export function ChannelEditorDrawer({ open, channel, onSave, onClose }: { open: 
         setCheckingArk(true);
         try {
             if(modelChannelProvider(draft)!=="volcengine_ark") {
-                message.warning("当前连通性检查仅支持官方方舟 API 地址");
+                message.warning(t("config.channelEditor.arkConnectionUnsupported"));
                 return;
             }
-            if(!channel || channel.apiKey!==draft.apiKey || channel.baseUrl!==draft.baseUrl) {
-                message.warning("请先保存渠道及 API Key，再测试连接");
+            if(!channel || channel.id!==draft.id || draft.apiKey.trim() || channel.baseUrl!==draft.baseUrl || currentVaultStatus?.state !== "saved") {
+                message.warning(t("config.channelEditor.arkSaveBeforeTest"));
                 return;
             }
             const result=await canvasApi<{reachable:boolean;authenticated:boolean;reason?:string}>(
@@ -132,19 +180,21 @@ export function ChannelEditorDrawer({ open, channel, onSave, onClose }: { open: 
                     <Input value={draft.baseUrl} onChange={(event) => patch({ baseUrl: event.target.value })} placeholder="https://api.example.com" />
                     {draft.apiFormat === "volcengine_ark" ? <span className="mt-1 block text-xs text-stone-500">{t("config.channelEditor.arkProtocolHint")}</span> : null}
                 </label>
-                {draft.apiFormat === "volcengine_ark" ? <label className="block md:col-span-2">
-
-                </label> : null}
                 <label className="block md:col-span-2">
                     <span className="mb-1 block text-sm font-medium">API Key</span>
-                    <Input.Password value={draft.apiKey} onChange={(event) => patch({ apiKey: event.target.value })} placeholder="sk-..." />
+                    <Input.Password value={draft.apiKey} onChange={(event) => { apiKeyWasEdited.current = true; patch({ apiKey: event.target.value }); }} placeholder={currentVaultStatus?.state === "saved" ? "" : t("config.channelEditor.apiKeyPlaceholder")} />
+                    <div className={`mt-2 text-xs ${currentVaultStatus?.state === "saved" ? "text-emerald-700 dark:text-emerald-400" : currentVaultStatus?.state === "mismatch" ? "text-amber-700 dark:text-amber-400" : "text-stone-500"}`}>
+                        {draft.apiKey.trim()
+                            ? t(currentVaultStatus?.state === "saved" ? "config.channelEditor.apiKeyPendingReplace" : "config.channelEditor.apiKeyPendingSave")
+                            : currentVaultStatus?.state === "checking" ? t("config.channelEditor.apiKeyChecking")
+                            : currentVaultStatus?.state === "saved" ? t("config.channelEditor.apiKeySaved")
+                            : currentVaultStatus?.state === "mismatch" ? t("config.channelEditor.apiKeyProviderMismatch", { provider: t(`config.channelEditor.vaultProviderNames.${currentVaultStatus.actualProvider}`, { defaultValue: t("config.channelEditor.vaultProviderNames.unknown") }) })
+                            : currentVaultStatus?.state === "failed" ? <span className="inline-flex items-center gap-2">{t("config.channelEditor.apiKeyCheckFailed")}<Button size="small" type="link" className="h-auto p-0" icon={<RotateCw className="size-3" />} onClick={() => setVaultCheckAttempt((value) => value + 1)}>{t("config.channelEditor.retryKeyCheck")}</Button></span>
+                            : t("config.channelEditor.apiKeyUnconfigured")}
+                    </div>
+                    {draft.apiKey.trim() && currentVaultStatus?.state === "mismatch" ? <div className="mt-1 text-xs text-amber-700 dark:text-amber-400">{t("config.channelEditor.apiKeyProviderMismatch", { provider: t(`config.channelEditor.vaultProviderNames.${currentVaultStatus.actualProvider}`, { defaultValue: t("config.channelEditor.vaultProviderNames.unknown") }) })}</div> : null}
+                    {draft.apiKey.trim() && currentVaultStatus?.state === "failed" ? <div className="mt-1 inline-flex items-center gap-2 text-xs text-stone-500">{t("config.channelEditor.apiKeyCheckFailed")}<Button size="small" type="link" className="h-auto p-0" icon={<RotateCw className="size-3" />} onClick={() => setVaultCheckAttempt((value) => value + 1)}>{t("config.channelEditor.retryKeyCheck")}</Button></div> : null}
                     {draft.apiFormat === "volcengine_ark" ? <div className="mt-2 flex flex-wrap items-center gap-2"><Button size="small" loading={checkingArk} onClick={() => void checkArkConnection()}>{t("config.channelEditor.testArkConnection")}</Button><span className="text-xs text-stone-500">{t("config.channelEditor.arkConnectionHint")}</span></div> : null}
-                    {modelChannelProvider(draft) ? <div className="mt-2 text-xs text-stone-500">
-                        {modelChannelProvider(draft)==="openai_compatible"
-                            ? "自定义 OpenAI 兼容渠道直接使用填写的 HTTP(S) API 地址，无需配置白名单。生成在本地后端执行，密钥保存在加密 Vault；远程 HTTP 明文连接请注意风险。"
-                            : "本地模型执行默认启用。保存时自动将填写的密钥写入本机加密 Vault。"}
-                        {" 密钥不会写入浏览器存储；需要前端直连的模型与脚本仅在当前会话中使用此密钥。"}
-                    </div> : null}
                 </label>
             </div>
 

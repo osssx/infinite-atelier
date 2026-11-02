@@ -3,7 +3,7 @@ import type {UploadedFile} from "@/services/file-storage";
 import {readImageMeta} from "@/lib/image-utils";
 import {canvasSession} from "@/features/backend-sync/canvas-api";
 import {proxyApiUrl} from "@/lib/api-proxy";
-import {readVideoMeta,readAudioMeta} from "@/services/file-storage";
+import {readVideoMeta,readAudioMeta} from "@/services/media-metadata";
 import {canvasCasKey,canvasCasUrl} from "./canvas-cas";
 export {canvasCasKey,canvasCasUrl,getCanvasBlob,isCanvasCasKey} from "./canvas-cas";
 
@@ -16,6 +16,7 @@ const TYPES=new Set(["image/png","image/jpeg","image/webp","video/mp4","video/we
 type Uploaded={blobId:string;sha256:string;byteSize:number;mimeType:string;existing:boolean};
 async function inputBlob(input:string|Blob):Promise<Blob>{
  if(input instanceof Blob)return input;
+ if(/^(?:image|video|audio|file|director):/.test(input))throw Error("legacy_canvas_media_unavailable");
  let source=input;
  try{
   const url=new URL(input);

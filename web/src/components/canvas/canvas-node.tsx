@@ -15,7 +15,6 @@ import { useCanvasActions } from "./canvas-actions";
 import { useNodeMentionReferences } from "./canvas-graph-context";
 import { CanvasNodeType, type CanvasNodeData, type CanvasNodeImage, type ViewportTransform } from "@/types/canvas";
 import { useTranslation } from "react-i18next";
-import { getMediaBlob } from "@/services/file-storage";
 import { getExistingMediaPreview, resolveMediaPreview } from "@/services/media-preview-storage";
 import {ComfyWorkflowNodeVisual} from "@/features/comfy-workflow/comfy-workflow-node-visual";
 import {CanvasTextExecutionIndicator} from "./canvas-text-execution-indicator";
@@ -807,12 +806,11 @@ function VideoNodeContent({ node, theme, onMediaPlaybackChange }: NodeContentRen
     const [frameReady, setFrameReady] = useState(false);
     const [failed, setFailed] = useState(false);
 
-    // An offscreen video is intentionally unmounted. The lightweight poster is a separately
-    // persisted WebP, so panning back does not re-open a video decoder or native loading UI.
+    // An offscreen video is intentionally unmounted. Its server poster avoids reopening a decoder.
     useEffect(() => {
         if (!storageKey || !source) return;
         let alive = true;
-        void resolveMediaPreview("video", storageKey, () => getMediaBlob(storageKey))
+        void resolveMediaPreview("video", storageKey)
             .then((url) => { if (alive && url) setCover({ key: storageKey, url }); });
         return () => { alive = false; };
     }, [source, storageKey]);

@@ -1,6 +1,6 @@
 import {afterEach,describe,expect,it,vi} from "vitest";
 vi.mock("@/lib/image-utils",()=>({readImageMeta:vi.fn(async()=>({width:400,height:200,mimeType:"image/png"}))}));
-vi.mock("@/services/file-storage",()=>({
+vi.mock("@/services/media-metadata",()=>({
  readVideoMeta:vi.fn(async()=>({width:1920,height:1080,durationMs:8000})),
  readAudioMeta:vi.fn(async()=>({durationMs:2000}))
 }));

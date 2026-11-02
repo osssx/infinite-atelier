@@ -1,8 +1,6 @@
 import {canvasApi} from "@/features/backend-sync/canvas-api";
 import {canvasCasUrl,isCanvasCasKey} from "@/features/backend-sync/canvas-cas";
 import {uploadCanvasImage,uploadCanvasMedia} from "@/features/backend-sync/canvas-media";
-import {getImageBlob} from "@/services/image-storage";
-import {getMediaBlob} from "@/services/file-storage";
 import type {Asset} from "@/stores/use-asset-store";
 
 export type BackendAssetCatalog={revision:number;assets:Asset[]};
@@ -31,9 +29,7 @@ async function normalizeCover(url:string){
  const saved=await uploadCanvasImage(url);
  return saved.url;
 }
-/** Convert every browser-only media key to durable CAS BEFORE PUT.
- * Original LocalForage entries remain untouched for manual recovery.
- */
+/** Convert embedded image data to durable CAS BEFORE PUT. Browser-only media keys are unavailable. */
 export async function normalizeAssetCatalogItem(asset:Asset):Promise<Asset>{
  if(asset.kind==="text")return {...asset,coverUrl:await normalizeCover(asset.coverUrl)};
  const data=asset.data;
@@ -47,7 +43,6 @@ export async function normalizeAssetCatalogItem(asset:Asset):Promise<Asset>{
   media={...stat,width:data.width,height:data.height};
  }else{
   let blob:Blob|null=null;
-  if(key)blob=asset.kind==="image"?await getImageBlob(key):await getMediaBlob(key);
   if(!blob&&asset.kind==="image"&&asset.data.dataUrl.startsWith("data:image/"))
    blob=await (await fetch(asset.data.dataUrl)).blob();
   if(!blob)throw Error("asset_legacy_media_missing");

@@ -1,122 +1,32 @@
-import localforage from "localforage";
-import { nanoid } from "nanoid";
-import { deleteMediaPreview, resolveMediaPreview } from "./media-preview-storage";
-import {canvasCasUrl,getCanvasBlob,isCanvasCasKey} from "@/features/backend-sync/canvas-cas";
+import { uploadCanvasMedia } from "@/features/backend-sync/canvas-media";
+import { isCanvasCasKey, canvasCasUrl, getCanvasBlob } from "@/features/backend-sync/canvas-cas";
 
 export type UploadedFile = { url: string; storageKey: string; bytes: number; mimeType: string; width?: number; height?: number; durationMs?: number };
 
-const store = localforage.createInstance({ name: "infinite-canvas", storeName: "media_files" });
-const objectUrls = new Map<string, string>();
-
-export async function uploadMediaFile(input: string | Blob, prefix = "file"): Promise<UploadedFile> {
-    const blob = typeof input === "string" ? await (await fetch(input)).blob() : input;
-    const storageKey = `${prefix}:${nanoid()}`;
-    await store.setItem(storageKey, blob);
-    const url = URL.createObjectURL(blob);
-    objectUrls.set(storageKey, url);
-    const meta = blob.type.startsWith("video/") ? await readVideoMeta(url) : blob.type.startsWith("audio/") ? await readAudioMeta(url) : {};
-    if (blob.type.startsWith("video/")) void resolveMediaPreview("video", storageKey, async () => blob);
-    return { url, storageKey, bytes: blob.size, mimeType: blob.type || "application/octet-stream", ...meta };
+/** Canvas media uploads are durable backend CAS blobs; prefix is retained for API compatibility. */
+export async function uploadMediaFile(input: string | Blob, _prefix = "file"): Promise<UploadedFile> {
+    if (typeof input === "string" && /^(?:image|video|audio|file|director):/.test(input)) throw new Error("legacy_canvas_media_unavailable");
+    const response = typeof input === "string" ? await fetch(input, { credentials: "same-origin" }) : null;
+    if (response && !response.ok) throw new Error("canvas_media_download_failed");
+    const blob = response ? await response.blob() : input as Blob;
+    const kind = blob.type.startsWith("audio/") ? "audio" : "video";
+    return uploadCanvasMedia(blob, kind);
 }
 
 export async function resolveMediaUrl(storageKey?: string, fallback = "") {
-    if (!storageKey) return fallback;
-    const fromBackend=canvasCasUrl(storageKey);
-    if(fromBackend)return fromBackend;
-    const cached = objectUrls.get(storageKey);
-    if (cached) return cached;
-    const blob = await store.getItem<Blob>(storageKey);
-    if (!blob) return fallback;
-    const url = URL.createObjectURL(blob);
-    objectUrls.set(storageKey, url);
-    return url;
+    if (!storageKey) return safeFallback(fallback);
+    const url = canvasCasUrl(storageKey);
+    if (url) return url;
+    // Historical browser keys are unavailable after the IndexedDB media store is retired.
+    return safeFallback(fallback);
 }
 
-export async function getMediaBlob(storageKey: string) {
-    if(isCanvasCasKey(storageKey))return getCanvasBlob(storageKey);
-    return store.getItem<Blob>(storageKey);
+export async function getMediaBlob(storageKey: string): Promise<Blob | null> {
+    if (!isCanvasCasKey(storageKey)) return null;
+    return getCanvasBlob(storageKey);
 }
 
-export async function deleteStoredMedia(keys: Iterable<string>) {
-    await Promise.all(
-        Array.from(new Set(keys)).map(async (key) => {
-            if(isCanvasCasKey(key))return; // Backend CAS GC requires reachability
-            const url = objectUrls.get(key);
-            if (url) URL.revokeObjectURL(url);
-            objectUrls.delete(key);
-            await store.removeItem(key);
-            await deleteMediaPreview("video", key);
-        }),
-    );
-}
-
-export async function cleanupUnusedMedia(usedData: unknown) {
-    const usedKeys = collectMediaStorageKeys(usedData);
-    const unused: string[] = [];
-    await store.iterate((_value, key) => {
-        if (!usedKeys.has(key)) unused.push(key);
-    });
-    await deleteStoredMedia(unused);
-}
-
-export function collectMediaStorageKeys(value: unknown, keys = new Set<string>()) {
-    if (!value || typeof value !== "object") return keys;
-    if ("storageKey" in value && typeof value.storageKey === "string" && value.storageKey.includes(":")) keys.add(value.storageKey);
-    Object.values(value).forEach((item) => (Array.isArray(item) ? item.forEach((child) => collectMediaStorageKeys(child, keys)) : collectMediaStorageKeys(item, keys)));
-    return keys;
-}
-
-export function readVideoMeta(url: string) {
-    return new Promise<{ width?: number; height?: number; durationMs?: number }>((resolve) => {
-        const video = document.createElement("video");
-        video.preload = "metadata";
-        let settled = false;
-        const finish = (loaded: boolean) => {
-            if (settled) return;
-            settled = true;
-            clearTimeout(timeout);
-            video.removeEventListener("loadedmetadata", onLoaded);
-            video.removeEventListener("error", onError);
-            const metadata = loaded ? {
-                ...(video.videoWidth > 0 && video.videoHeight > 0 ? { width: video.videoWidth, height: video.videoHeight } : {}),
-                ...(Number.isFinite(video.duration) && video.duration > 0 ? { durationMs: Math.round(video.duration * 1000) } : {}),
-            } : {};
-            video.pause();
-            video.removeAttribute("src");
-            video.load();
-            resolve(metadata);
-        };
-        const onLoaded = () => finish(true);
-        const onError = () => finish(false);
-        const timeout = setTimeout(onError, 10_000);
-        video.addEventListener("loadedmetadata", onLoaded, { once: true });
-        video.addEventListener("error", onError, { once: true });
-        video.src = url;
-    });
-}
-
-export function readAudioMeta(url: string) {
-    return new Promise<{ durationMs?: number }>((resolve) => {
-        const audio = document.createElement("audio");
-        audio.preload = "metadata";
-        let settled = false;
-        const finish = (loaded: boolean) => {
-            if (settled) return;
-            settled = true;
-            clearTimeout(timeout);
-            audio.removeEventListener("loadedmetadata", onLoaded);
-            audio.removeEventListener("error", onError);
-            const metadata = loaded && Number.isFinite(audio.duration) && audio.duration > 0 ? { durationMs: Math.round(audio.duration * 1000) } : {};
-            audio.pause();
-            audio.removeAttribute("src");
-            audio.load();
-            resolve(metadata);
-        };
-        const onLoaded = () => finish(true);
-        const onError = () => finish(false);
-        const timeout = setTimeout(onError, 10_000);
-        audio.addEventListener("loadedmetadata", onLoaded, { once: true });
-        audio.addEventListener("error", onError, { once: true });
-        audio.src = url;
-    });
+function safeFallback(value: string) {
+    if (!value || /^(?:image|video|audio|file|director):/.test(value)) return "";
+    return value;
 }

@@ -4,8 +4,6 @@ import { canvasThemes } from "@/lib/canvas-theme";
 import { getNodeDefinition } from "@/lib/canvas/node-registry";
 import { getCompactImageSource } from "@/lib/canvas/canvas-lod-preview";
 import { compactCanvasMarkdown } from "@/lib/canvas/canvas-markdown-utils";
-import { getImageBlob } from "@/services/image-storage";
-import { getMediaBlob } from "@/services/file-storage";
 import { resolveMediaPreview } from "@/services/media-preview-storage";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
@@ -51,17 +49,14 @@ export const CompactCanvasNode = memo(function CompactCanvasNode({
     const storageKey = isImage ? (primary?.storageKey || data.metadata?.storageKey) : isVideo ? data.metadata?.storageKey : undefined;
     const kind = isVideo ? "video" as const : "image" as const;
     const [preview, setPreview] = useState<{ key: string; url: string } | null>(null);
-    // A persisted 256px preview is looked up by source storage key. The full original
-    // is NOT passed to an <img> in the overview. Legacy blobs backfill only while idle.
+    // The server thumbnail is used in the overview; original media is never loaded here.
     useEffect(() => {
         if (!showImagePreview || !storageKey || (!isImage && !isVideo)) return;
         let active = true;
-        const load = kind === "image" ? () => getImageBlob(storageKey) : () => getMediaBlob(storageKey);
-        void resolveMediaPreview(kind, storageKey, load, isImage && data.metadata?.naturalWidth && data.metadata.naturalHeight
-            ? { width: data.metadata.naturalWidth, height: data.metadata.naturalHeight } : undefined)
+        void resolveMediaPreview(kind, storageKey)
             .then((url) => { if (active && url) setPreview({ key: storageKey, url }); });
         return () => { active = false; };
-    }, [showImagePreview, storageKey, kind, isImage, isVideo, data.metadata?.naturalWidth, data.metadata?.naturalHeight]);
+    }, [showImagePreview, storageKey, kind, isImage, isVideo]);
     const previewUrl = storageKey ? (preview?.key === storageKey ? preview.url : null) : imageSource;
 
     const hasImage = Boolean(imageSource);

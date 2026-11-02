@@ -10,7 +10,6 @@ import { exportCanvasNodes } from "@/lib/canvas/canvas-export";
 import { getNodeDefinition } from "@/lib/canvas/node-registry";
 import { cn } from "@/lib/utils";
 import { uploadCanvasImage,uploadCanvasMedia } from "@/features/backend-sync/canvas-media";
-import { getImageBlob } from "@/services/image-storage";
 import { resolveMediaPreview } from "@/services/media-preview-storage";
 import { CANVAS_SIDEBAR_ROW_HEIGHT, CANVAS_SIDEBAR_ROW_STRIDE, canvasSidebarWindow } from "@/lib/canvas/canvas-side-panel-window";
 import { useAssetStore, type Asset, type AssetKind } from "@/stores/use-asset-store";
@@ -337,7 +336,7 @@ const CanvasSidebarThumbnail = memo(function CanvasSidebarThumbnail({ storageKey
     useEffect(() => {
         if (!storageKey) return;
         let active = true;
-        void resolveMediaPreview("image", storageKey, () => getImageBlob(storageKey))
+        void resolveMediaPreview("image", storageKey)
             .then((url) => { if (active && url) setPreview({ key: storageKey, url }); });
         return () => { active = false; };
     }, [storageKey]);

@@ -15,8 +15,8 @@ import { requestVideoGeneration, type VideoGenerationRequest, type VideoGenerati
 import { defaultConfig, resolveModelChannel, resolveModelScript, modelOptionName, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
 import {recoverLegacyGeneratedImageSize} from "@/lib/canvas/canvas-generated-image-size";
 import {recoverLegacyGeneratedVideoSize} from "@/lib/canvas/canvas-generated-video-size";
-import { deleteStoredImages,getImageBlob } from "@/services/image-storage";
-import { deleteStoredMedia,getMediaBlob } from "@/services/file-storage";
+import { getImageBlob } from "@/services/image-storage";
+import { getMediaBlob } from "@/services/file-storage";
 import {uploadCanvasImage as uploadImage,uploadCanvasMedia,storeCanvasGeneratedVideo as storeGeneratedVideo,storeCanvasGeneratedAudio as storeGeneratedAudio,isCanvasCasKey,canvasCasUrl} from "@/features/backend-sync/canvas-media";
 const uploadMediaFile=(input:string|Blob,prefix="video")=>uploadCanvasMedia(input,prefix==="audio"?"audio":"video");
 import { setPreviewGenerationSuspended } from "@/services/media-preview-storage";
@@ -2122,7 +2122,7 @@ function AtelierCanvasPage() {
         if (!pageMountedRef.current || !sourceContent || activeProjectIdRef.current !== projectAtStart || !liveSource || liveSource.type !== CanvasNodeType.Video || liveSource.metadata?.content !== sourceContent || liveSource.metadata?.storageKey !== sourceStorageKey) return;
         const image = await uploadImage(blob);
         const stillCurrent = pageMountedRef.current && activeProjectIdRef.current === projectAtStart && nodesRef.current.some((item) => item.id === source.id && item.type === CanvasNodeType.Video && item.metadata?.content === sourceContent && item.metadata?.storageKey === sourceStorageKey);
-        if (!stillCurrent) { await deleteStoredImages([image.storageKey]); return; }
+        if (!stillCurrent) return;
         const size = fitNodeSize(image.width, image.height, VIDEO_NODE_MAX_WIDTH, VIDEO_NODE_MAX_HEIGHT);
         const placed = findVideoFramePosition(source, size, nodesRef.current);
         const id = nanoid();
@@ -2161,7 +2161,7 @@ function AtelierCanvasPage() {
         let audio: Awaited<ReturnType<typeof uploadMediaFile>> | null = null;
         try {
             audio = await uploadMediaFile(blob, "audio");
-            if (signal.aborted || !isCurrent()) { await deleteStoredMedia([audio.storageKey]); return; }
+            if (signal.aborted || !isCurrent()) return;
             const id = nanoid();
             const startLabel = `${Math.floor(startMs / 60000)}:${((startMs % 60000) / 1000).toFixed(2).padStart(5, "0")}`;
             const endLabel = `${Math.floor(endMs / 60000)}:${((endMs % 60000) / 1000).toFixed(2).padStart(5, "0")}`;
@@ -2181,7 +2181,6 @@ function AtelierCanvasPage() {
             setSelectedNodeIds(new Set([id])); setSelectedConnectionId(null);
             message.success(t("canvas.audioTrim.success"));
         } catch {
-            if (audio) await deleteStoredMedia([audio.storageKey]);
             message.error(t("canvas.audioTrim.failed"));
         }
     }, [createHistoryEntry, message, projectId, t]);

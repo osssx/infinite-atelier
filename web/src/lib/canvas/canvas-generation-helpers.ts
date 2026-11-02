@@ -3,7 +3,8 @@ import i18n from "@/i18n";
 import {resolveImageUrl} from "@/services/image-storage";
 import {uploadCanvasImage as uploadImage} from "@/features/backend-sync/canvas-media";
 import { resolveMediaUrl } from "@/services/file-storage";
-import { imageMetadata, referenceUrl } from "@/lib/canvas/canvas-node-factory";
+import { canvasCasUrl, isCanvasCasKey } from "@/features/backend-sync/canvas-cas";
+import { imageMetadata } from "@/lib/canvas/canvas-node-factory";
 import type { NodeGenerationInput } from "@/components/canvas/canvas-node-generation";
 import type { CanvasNodeGenerationMode } from "@/components/canvas/canvas-node-prompt-panel";
 import type { CanvasImageAngleParams } from "@/components/canvas/canvas-node-angle-dialog";
@@ -24,10 +25,15 @@ export function audioExtension(mimeType?: string) {
 }
 
 export function generationReferenceUrls(context: { referenceImages: ReferenceImage[]; referenceVideos: Array<{ storageKey?: string; url?: string }>; referenceAudios?: Array<{ storageKey?: string; url?: string }> }) {
+    const referenceUrl = (item: { storageKey?: string; url?: string }) => {
+        if (item.storageKey && isCanvasCasKey(item.storageKey)) return canvasCasUrl(item.storageKey) || undefined;
+        if (item.storageKey && /^(?:image|video|audio|file|director):/.test(item.storageKey)) return undefined;
+        return item.url;
+    };
     return [
-        ...context.referenceImages.map(referenceUrl).filter((url): url is string => Boolean(url)),
-        ...context.referenceVideos.map((video) => video.storageKey || video.url).filter((url): url is string => Boolean(url)),
-        ...(context.referenceAudios || []).map((audio) => audio.storageKey || audio.url).filter((url): url is string => Boolean(url)),
+        ...context.referenceImages.map((image) => referenceUrl({ storageKey: image.storageKey, url: image.url || image.dataUrl })).filter((url): url is string => Boolean(url)),
+        ...context.referenceVideos.map(referenceUrl).filter((url): url is string => Boolean(url)),
+        ...(context.referenceAudios || []).map(referenceUrl).filter((url): url is string => Boolean(url)),
     ];
 }
 
@@ -36,8 +42,10 @@ export async function resolveMetadataReferences(metadata: CanvasNodeMetadata) {
     if (!metadata.references?.length) return null;
     const references = await Promise.all(
         metadata.references.map(async (url, index) => {
-            const dataUrl = url.startsWith("image:") ? await resolveImageUrl(url, "") : url;
-            return dataUrl ? { id: `${index}`, name: `reference-${index}.png`, type: "image/png", dataUrl, storageKey: url.startsWith("image:") ? url : undefined } : null;
+            if (/^(?:image|video|audio|file|director):/.test(url)) return null;
+            const dataUrl = isCanvasCasKey(url) ? canvasCasUrl(url) || "" : url;
+            if (!dataUrl) return null;
+            return { id: `${index}`, name: `reference-${index}.png`, type: "image/png", dataUrl, storageKey: isCanvasCasKey(url) ? url : undefined };
         }),
     );
     return references.every(Boolean) ? (references as ReferenceImage[]) : null;

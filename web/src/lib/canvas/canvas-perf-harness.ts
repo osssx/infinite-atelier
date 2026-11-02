@@ -18,9 +18,9 @@ export const PERF_PROJECT_TITLE = "[perf] fixture";
 
 /**
  * Shared fixture image. Imported with `?no-inline` on purpose: Vite would otherwise inline this small
- * SVG as a `data:` URL, and `hydrateCanvasImages` sends any `data:image/` content through
- * `uploadImage` — one blob write per image node. The acceptance check is that the built URL is a real
- * same-origin HTTP URL, not a data URL.
+ * SVG as a `data:` URL. `hydrateCanvasImages` uploads inline image content to backend CAS, adding a
+ * network request to fixture hydration; the static asset keeps fixture setup outside that path.
+ * The acceptance check is that the built URL is a real same-origin HTTP URL, not a data URL.
  */
 export const PERF_MEDIA_URL = perfPixelUrl;
 /** Kept in the perf module across per-round project remounts. */

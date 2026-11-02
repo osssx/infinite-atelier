@@ -1,12 +1,6 @@
-import localforage from "localforage";
-
-import { nanoid } from "nanoid";
 import i18n from "@/i18n";
-import { readImageMeta } from "@/lib/image-utils";
 import { proxyApiUrl } from "@/lib/api-proxy";
-import { PERF_MODE } from "@/lib/perf-mode";
-import { deleteMediaPreview, resolveMediaPreview } from "./media-preview-storage";
-import {canvasCasUrl,getCanvasBlob,isCanvasCasKey} from "@/features/backend-sync/canvas-cas";
+import { isCanvasCasKey, canvasCasUrl, getCanvasBlob } from "@/features/backend-sync/canvas-cas";
 
 export type UploadedImage = {
     url: string;
@@ -17,81 +11,29 @@ export type UploadedImage = {
     mimeType: string;
 };
 
-const store = localforage.createInstance({ name: PERF_MODE ? "infinite-canvas-perf" : "infinite-canvas", storeName: "image_files" });
-const objectUrls = new Map<string, string>();
-
-export async function uploadImage(input: string | Blob): Promise<UploadedImage> {
-    const blob = typeof input === "string" ? await (await fetch(proxyRemoteMediaUrl(input))).blob() : input;
-    const storageKey = `image:${nanoid()}`;
-    await store.setItem(storageKey, blob);
-    const url = URL.createObjectURL(blob);
-    objectUrls.set(storageKey, url);
-    const meta = await readImageMeta(url);
-    // Generate once while idle; do not block the asset import or create thumbnails during zoom.
-    void resolveMediaPreview("image", storageKey, async () => blob, { width: meta.width, height: meta.height });
-    return { url, storageKey, width: meta.width, height: meta.height, bytes: blob.size, mimeType: blob.type || meta.mimeType };
-}
-
 export async function resolveImageUrl(storageKey?: string, fallback = "") {
-    if (!storageKey) return fallback;
-    const fromBackend=canvasCasUrl(storageKey);
-    if(fromBackend)return fromBackend;
-    const cached = objectUrls.get(storageKey);
-    if (cached) return cached;
-    const blob = await store.getItem<Blob>(storageKey);
-    if (!blob) return fallback;
-    const url = URL.createObjectURL(blob);
-    objectUrls.set(storageKey, url);
-    return url;
+    if (!storageKey) return safeFallback(fallback);
+    const url = canvasCasUrl(storageKey);
+    if (url) return url;
+    // Do not interpret historical IndexedDB keys as URLs or attempt a browser-side migration.
+    return safeFallback(fallback);
 }
 
-export async function getImageBlob(storageKey: string) {
-    if(isCanvasCasKey(storageKey))return getCanvasBlob(storageKey);
-    return store.getItem<Blob>(storageKey);
+export async function getImageBlob(storageKey: string): Promise<Blob | null> {
+    if (!isCanvasCasKey(storageKey)) return null;
+    return getCanvasBlob(storageKey);
 }
 
 export async function imageToDataUrl(image: { url?: string; dataUrl?: string; storageKey?: string }) {
-    const url = image.dataUrl || (await resolveImageUrl(image.storageKey, image.url || ""));
-    if (!url || url.startsWith("data:")) return url;
-    return blobToDataUrl(await (await fetch(proxyRemoteMediaUrl(url))).blob());
-}
-
-export async function deleteStoredImages(keys: Iterable<string>) {
-    await Promise.all(
-        Array.from(new Set(keys)).map(async (key) => {
-            if(isCanvasCasKey(key))return; // Backend CAS GC requires reachability
-            const url = objectUrls.get(key);
-            if (url) URL.revokeObjectURL(url);
-            objectUrls.delete(key);
-            await store.removeItem(key);
-            await deleteMediaPreview("image", key);
-        }),
-    );
-}
-
-export async function cleanupUnusedImages(usedData: unknown) {
-    const usedKeys = collectImageStorageKeys(usedData);
-    const unused: string[] = [];
-    await store.iterate((_value, key) => {
-        if (!usedKeys.has(key)) unused.push(key);
-    });
-    await deleteStoredImages(unused);
-}
-
-export function collectImageStorageKeys(value: unknown, keys = new Set<string>()) {
-    if (!value || typeof value !== "object") return keys;
-    if ("storageKey" in value && typeof value.storageKey === "string" && value.storageKey.startsWith("image:")) keys.add(value.storageKey);
-    Object.values(value).forEach((item) => (Array.isArray(item) ? item.forEach((child) => collectImageStorageKeys(child, keys)) : collectImageStorageKeys(item, keys)));
-    return keys;
-}
-
-function blobToDataUrl(blob: Blob) {
-    return new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(String(reader.result || ""));
-        reader.onerror = () => reject(new Error(i18n.t("common.imageReadFailed")));
-        reader.readAsDataURL(blob);
-    });
+    const direct = image.dataUrl;
+    if (direct?.startsWith("data:")) return direct;
+    const url = image.storageKey ? await resolveImageUrl(image.storageKey, image.url || direct || "") : safeFallback(direct || image.url || "");
+    if (!url) return "";
+    if (url.startsWith("data:")) return url;
+    if (/^(?:image|video|audio|file|director):/.test(url)) return "";
+    const response = await fetch(proxyRemoteMediaUrl(url), { credentials: "same-origin" });
+    if (!response.ok) throw new Error(i18n.t("common.imageReadFailed"));
+    return blobToDataUrl(await response.blob());
 }
 
 function proxyRemoteMediaUrl(url: string) {
@@ -101,4 +43,18 @@ function proxyRemoteMediaUrl(url: string) {
     } catch {
         return url;
     }
+}
+
+function safeFallback(value: string) {
+    if (!value || /^(?:image|video|audio|file|director):/.test(value)) return "";
+    return value;
+}
+
+function blobToDataUrl(blob: Blob) {
+    return new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ""));
+        reader.onerror = () => reject(new Error(i18n.t("common.imageReadFailed")));
+        reader.readAsDataURL(blob);
+    });
 }

@@ -20,20 +20,33 @@ describe("P4.2 SQLite-only Canvas execution boundary",()=>{
   expect(page).not.toContain("backendSyncRef");
   expect(page).toContain("不会回退旧 V2");
  });
- it("P4.6 official retry cannot fall into the legacy browser generation branch",()=>{
+ it("all Canvas model generation and retry routes are browser HTTP-free",()=>{
+  expect(page).not.toMatch(/await\s+request(?:Generation|Edit|ImageQuestion|VideoGeneration|AudioGeneration)\s*\(/);
+  expect(page).not.toContain('from "@/services/api/image"');
+  expect(page).not.toContain('from "@/services/api/audio"');
+  const generation=page.slice(page.indexOf("const handleGenerateNode = useCallback("),
+   page.indexOf("const handleRetryNode = useCallback("));
+  expect(generation).toContain("startSqliteModelGeneration({");
+  expect(generation).toContain("writeBack:true");
+  expect(generation).toContain('(builtinPanel?.promptPrefix||"")+promptText');
+  expect(generation).toContain('standardOpenAiVideo&&(context.referenceVideos.length||context.referenceAudios.length)');
+  expect(generation).toContain('getGenerationCount(generationConfig.count)>10');
+  expect(generation).toContain("finishCanvasTextSubmission(projectId,nodeId,textSubmissionToken)");
+  expect(generation).toContain("没有可用的后端 JobCoordinator adapter");
   const retry=page.slice(page.indexOf("const handleRetryNode = useCallback("),
    page.indexOf("const deleteBatchImage = useCallback("));
   const sqliteRoute=retry.indexOf("if(modelChannelProvider(retryChannel,retryMode))");
   const durableSubmit=retry.indexOf("await handleGenerateNode(sqliteSource.id,retryMode,retryPrompt,generationConfig)");
-  const legacyVideo=retry.indexOf("await requestVideoGeneration(");
-  const legacyAudio=retry.indexOf("await requestAudioGeneration(");
-  const legacyImage=retry.indexOf("await requestGeneration(");
   expect(sqliteRoute).toBeGreaterThan(0);
   expect(durableSubmit).toBeGreaterThan(sqliteRoute);
-  expect(legacyVideo).toBeGreaterThan(durableSubmit);
-  expect(legacyAudio).toBeGreaterThan(durableSubmit);
-  expect(legacyImage).toBeGreaterThan(durableSubmit);
-  expect(retry.slice(durableSubmit,legacyVideo)).toMatch(/return;\s*}\s*if \(!isAiConfigReady/);
+  expect(retry).not.toMatch(/request(?:Generation|Edit|ImageQuestion|VideoGeneration|AudioGeneration)\s*\(/);
+  const mask=page.slice(page.indexOf("const maskEditImageNode = useCallback("),
+   page.indexOf("const upscaleImageNode = useCallback("));
+  const angle=page.slice(page.indexOf("const generateAngleNode = useCallback("),
+   page.indexOf("const handleFontSizeChange = useCallback("));
+  expect(mask).toContain("submitSqliteImageEdit(");
+  expect(angle).toContain("submitSqliteImageEdit(");
+  expect(mask+angle).not.toMatch(/request(?:Edit|Generation)\s*\(/);
   expect(page).toContain("sqliteModelSubmitLocksRef.current.add(submissionKey)");
   expect(page).toMatch(/finally\s*\{\s*sqliteModelSubmitLocksRef\.current\.delete\(submissionKey\)/);
   expect(page).toContain("finishCanvasTextSubmission(projectId,nodeId,textSubmissionToken)");
@@ -44,7 +57,7 @@ describe("P4.2 SQLite-only Canvas execution boundary",()=>{
   expect(generation).toContain('if(!projectLoaded)throw Error("画布项目尚未加载完成")');
   // Regression: useCallback used to omit projectLoaded, retaining initial false
   // in every text-model submission even after the Canvas was visibly ready.
-  expect(generation).toMatch(/\[effectiveConfig,\s*finishGenerationRequest,[^\]]*\bprojectLoaded\b[^\]]*\]/);
+  expect(generation).toMatch(/\[effectiveConfig,[^\]]*\bprojectLoaded\b[^\]]*\]/);
   expect(page).toMatch(/const projectLoaded\s*=\s*loadedProjectId === projectId/);
   expect(page).toContain("setLoadedProjectId(null)");
   expect(page).toContain("setLoadedProjectId(projectId)");

@@ -28,8 +28,8 @@ describe("Ark jobs are exclusively server-owned after Gateway removal",()=>{
  it.each(["https://ark.cn-beijing.volces.com/api/v3","http://127.0.0.1:8189/api/v3","https://relay.example.test/api/v3"])(
   "does not submit a browser-paid Ark task for %s",async url=>{
    const cfg=ark(url);
-   await expect(createVideoGenerationTask(cfg,"prompt",[],{request:request(cfg)})).rejects.toThrow(/后端任务/);
-   await expect(requestVideoGeneration(cfg,"prompt",[],{request:request(cfg)})).rejects.toThrow(/后端任务/);
+   await expect(createVideoGenerationTask(cfg,"prompt",[],{request:request(cfg)})).rejects.toThrow(/JobCoordinator/);
+   await expect(requestVideoGeneration(cfg,"prompt",[],{request:request(cfg)})).rejects.toThrow(/JobCoordinator/);
    expect(axios.post).not.toHaveBeenCalled();expect(axios.get).not.toHaveBeenCalled();
   });
  it("does not upload local references using a browser credential or Gateway API",async()=>{
@@ -39,27 +39,26 @@ describe("Ark jobs are exclusively server-owned after Gateway removal",()=>{
    mimeType:"video/mp4",bytes:42,width:1280,height:720,durationMs:3000
   }]};
   const fetchMock=vi.fn();vi.stubGlobal("fetch",fetchMock);
-  await expect(createVideoGenerationTask(cfg,"prompt",[],{request:frozen})).rejects.toThrow(/后端任务/);
+  await expect(createVideoGenerationTask(cfg,"prompt",[],{request:frozen})).rejects.toThrow(/JobCoordinator/);
   expect(fetchMock).not.toHaveBeenCalled();expect(axios.post).not.toHaveBeenCalled();
  });
  it("does not poll, cancel or retry unowned old task IDs or generate replacements",async()=>{
   const cfg=ark();
-  await expect(pollVideoGenerationTask(cfg,task(cfg))).rejects.toThrow(/旧 Ark 任务/);
+  await expect(pollVideoGenerationTask(cfg,task(cfg))).rejects.toThrow(/JobCoordinator/);
   expect(await cancelVideoGenerationTask(cfg,task(cfg))).toBe(false);
   await expect(retrySeedanceDownload(cfg,task(cfg))).rejects.toThrow(/旧 Ark 任务/);
   expect(axios.post).not.toHaveBeenCalled();expect(axios.get).not.toHaveBeenCalled();
   expect(axios.delete).not.toHaveBeenCalled();
  });
- it("continues to use the independent OpenAI API without Ark Gateway",async()=>{
+ it("closes the retired browser OpenAI video submit entry",async()=>{
   const cfg:AiConfig={...ark(),channels:[{...ark().channels[0],apiFormat:"openai"}]};
-  vi.mocked(axios.post).mockResolvedValueOnce({data:{id:"openai-task"}});
-  expect(await createVideoGenerationTask(cfg,"prompt")).toMatchObject({provider:"openai",id:"openai-task"});
-  expect(vi.mocked(axios.post).mock.calls[0][1]).toBeInstanceOf(FormData);
+  await expect(createVideoGenerationTask(cfg,"prompt")).rejects.toThrow(/画布后端 JobCoordinator/);
+  await expect(requestVideoGeneration(cfg,"prompt")).rejects.toThrow(/画布后端 JobCoordinator/);
+  expect(axios.post).not.toHaveBeenCalled();
  });
- it("continues to use a configured user plugin without Ark Gateway",async()=>{
+ it("closes the legacy browser plugin video entry",async()=>{
   const cfg=ark();cfg.channels[0].models[0].script="return 'https://example.com/video.mp4'";
-  vi.mocked(runModelPlugin).mockResolvedValueOnce("https://example.com/video.mp4");
-  expect(await createVideoGenerationTask(cfg,"prompt")).toMatchObject({provider:"plugin"});
+  await expect(createVideoGenerationTask(cfg,"prompt")).rejects.toThrow(/画布后端 JobCoordinator/);
   expect(axios.post).not.toHaveBeenCalled();
  });
  it("requires local persistence before declaring a downloaded video successful",async()=>{

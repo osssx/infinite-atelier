@@ -8,6 +8,7 @@ import { imageToDataUrl } from "@/services/image-storage";
 import { boolConfig, buildApiUrl, modelOptionName, resolveModelRequestConfig, resolveModelScript, type AiConfig } from "@/stores/use-config-store";
 import { proxyApiUrl } from "@/lib/api-proxy";
 import { runModelPlugin } from "./model-plugin";
+import {browserGenerationError,isBrowserGenerationDisabled} from "./browser-generation-boundary";
 import type { ReferenceImage } from "@/types/image";
 import type { ReferenceAudio, ReferenceVideo } from "@/types/media";
 import type { VideoGenerationRequest, VideoTaskStatus } from "./video/types";
@@ -38,6 +39,7 @@ function aiHeaders(config: AiConfig, contentType?: string) {
 }
 
 export async function requestVideoGeneration(config: AiConfig, prompt: string, references: ReferenceImage[] = [], options?: RequestOptions): Promise<VideoGenerationResult> {
+    if(isBrowserGenerationDisabled())throw browserGenerationError("视频生成");
     const task = await createVideoGenerationTask(config, prompt, references, options);
     options?.onTaskCreated?.(task);
     let backoff = 2_000;
@@ -68,6 +70,7 @@ export async function requestVideoGeneration(config: AiConfig, prompt: string, r
  * durable idempotency key, so it must never create a billable Ark task.
  */
 export async function createVideoGenerationTask(config: AiConfig, prompt: string, references: ReferenceImage[] = [], options?: RequestOptions): Promise<VideoGenerationTask> {
+    if(isBrowserGenerationDisabled())throw browserGenerationError("视频任务");
     const selectedModel=(config.model||config.videoModel).trim();
     const requestConfig=resolveModelRequestConfig(config,selectedModel);
     const script=resolveModelScript(config,selectedModel);
@@ -79,6 +82,7 @@ export async function createVideoGenerationTask(config: AiConfig, prompt: string
 }
 
 export async function pollVideoGenerationTask(config: AiConfig, task: VideoGenerationTask, options?: RequestOptions): Promise<VideoGenerationTaskState> {
+    if(isBrowserGenerationDisabled())throw browserGenerationError("视频任务状态查询");
     if(task.provider==="plugin"){
         const result=pluginVideoResults.get(task.id);
         return result?{status:"completed",result}:{status:"failed",error:apiText("pluginVideoExpired")};

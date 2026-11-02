@@ -81,6 +81,31 @@ describe("P4.4 ordinary SQLite model submit",()=>{
   })).rejects.toThrow("不安全");
   expect(neverSaved.saveProjectNow).not.toHaveBeenCalled();
  });
+ it("freezes the Gemini provider, normalized versioned endpoint and endpoint fingerprint into its paid job",async()=>{
+  const endpoint="https://generativelanguage.googleapis.com/v1beta";
+  const b=bridge();
+  const api=vi.fn(async(path:string,_method="GET",payload?:any)=>{
+   if(path==="/api/v1/execution/capabilities")return {autoDispatch:true,modelKinds:["image","text"]};
+   if(path==="/api/v1/channels/gemini-channel")
+    return {id:"gemini-channel",provider:"google_gemini",hasKey:true,keyVersion:"gemini-key-v1"};
+   if(path==="/api/v1/jobs"){
+    expect(payload.snapshot).toMatchObject({adapterKind:"model",provider:"google_gemini",
+     channelId:"gemini-channel",secretVersionRef:"gemini-key-v1",endpointBaseUrl:endpoint,
+     task:{kind:"text",model:"gemini-2.5-flash",prompt:"hello"}});
+    const digest=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(endpoint));
+    const expected="sha256:"+[...new Uint8Array(digest)].map(x=>x.toString(16).padStart(2,"0")).join("");
+    expect(payload.snapshot.endpointFingerprint).toBe(expected);
+    expect(JSON.stringify(payload)).not.toContain("apiKey");
+    return fakeJob;
+   }
+   throw Error("unexpected "+path);
+  });
+  await startSqliteModelGeneration({projectId:"p1",sourceNodeId:"text-1",nodes,connections,
+   channelId:"gemini-channel",channelBaseUrl:"https://generativelanguage.googleapis.com",provider:"google_gemini",
+   task:{kind:"text",model:"gemini-2.5-flash",prompt:"hello",messages:[{role:"user",content:"hello"}]},
+   bridge:b,api:api as unknown as typeof canvasApi});
+  expect(b.saveProjectNow).toHaveBeenCalledOnce();
+ });
  it("submits long Chinese prompt and multiple manual Skill instructions intact",async()=>{
   const prompt='<selected-skill id="drama-a">\n'+"中文场景".repeat(18000)+
    '</selected-skill>\n<selected-skill id="drama-b">\n'+"人物设定".repeat(18000)+
@@ -157,11 +182,38 @@ describe("P4.4 ordinary SQLite model submit",()=>{
    task:{kind:"text",model:"my-model",prompt:"hello",script},
    bridge:bridge(),api:api as unknown as typeof canvasApi});
   expect(api).toHaveBeenCalledTimes(3);
-  const forbidden=vi.fn();
+  const videoReference={id:"frame-1",name:"opening frame",type:"image/png",dataUrl:"data:image/png;base64,UNSAFE"};
+  const videoApi=vi.fn(async(path:string,_method="GET",payload?:any)=>{
+   if(path==="/api/v1/execution/capabilities")return {autoDispatch:true,modelKinds:["video"]};
+   if(path==="/api/v1/channels/openai-channel")return {id:"openai-channel",provider:"openai",hasKey:true,keyVersion:"v3"};
+   if(path==="/api/v1/jobs"){
+    expect(payload.executionMode).toBe("poll");
+    expect(payload.snapshot).toMatchObject({provider:"openai",task:{kind:"video",
+     model:"sora-2",prompt:"hello",images:[{blobId:"a".repeat(64),mimeType:"image/png"}]}});
+    expect(payload.snapshot.task.operation).toBeUndefined();
+    expect(JSON.stringify(payload)).not.toContain("UNSAFE");
+    return fakeJob;
+   }
+   throw Error("unexpected "+path);
+  });
+  await startSqliteModelGeneration({projectId:"p1",sourceNodeId:"text-1",nodes,connections,
+   provider:"openai",channelId:"openai-channel",referenceImages:[videoReference],
+   task:{kind:"video",model:"sora-2",prompt:"hello"},
+   bridge:bridge(),api:videoApi as unknown as typeof canvasApi});
+  const maskVideoApi=vi.fn(async(path:string)=>path==="/api/v1/execution/capabilities"?
+   {autoDispatch:true,modelKinds:["video"]}:
+   {id:"openai-channel",provider:"openai",hasKey:true,keyVersion:"v3"});
   await expect(startSqliteModelGeneration({projectId:"p1",sourceNodeId:"text-1",nodes,connections,
-   provider:"openai",channelId:"proxy-1",
-   task:{kind:"video",model:"my-model",prompt:"hello"},
-   bridge:bridge(),api:forbidden as unknown as typeof canvasApi})).rejects.toThrow("model_provider_kind_unsupported");
+   provider:"openai",channelId:"openai-channel",referenceImages:[videoReference],maskImage:videoReference,
+   task:{kind:"video",model:"sora-2",prompt:"hello"},bridge:bridge(),
+   api:maskVideoApi as unknown as typeof canvasApi})).rejects.toThrow("model_image_mask_inputs_invalid");
+  expect(maskVideoApi).not.toHaveBeenCalledWith("/api/v1/jobs",expect.anything(),expect.anything());
+  const geminiVideoApi=vi.fn();
+  await expect(startSqliteModelGeneration({projectId:"p1",sourceNodeId:"text-1",nodes,connections,
+   provider:"google_gemini",channelId:"gemini-channel",channelBaseUrl:"https://generativelanguage.googleapis.com",
+   task:{kind:"video",model:"gemini-video",prompt:"hello"},bridge:bridge(),
+   api:geminiVideoApi as unknown as typeof canvasApi})).rejects.toThrow("model_provider_kind_unsupported");
+  expect(geminiVideoApi).not.toHaveBeenCalled();
  });
  it("fails closed without worker, missing DPAPI key, or unsuccessful save fence",async()=>{
   const unsupported=vi.fn(async()=>({autoDispatch:false,modelKinds:[]}));

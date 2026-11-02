@@ -6,7 +6,7 @@
 import type {ModelChannel,ModelCapability} from "@/stores/use-config-store";
 import {canvasApi,CanvasApiError} from "./canvas-api";
 
-export type SqliteModelProvider="openai"|"openai_compatible"|"volcengine_ark";
+export type SqliteModelProvider="openai"|"openai_compatible"|"google_gemini"|"volcengine_ark";
 const isCompatibleHostSafe=(hostname:string)=>{
  const host=hostname.toLowerCase().replace(/^\[|\]$/g,"");
  if(["metadata","metadata.google.internal","instance-data","instance-data.ec2.internal"].includes(host)||
@@ -37,13 +37,16 @@ export function modelChannelProvider(channel:ModelChannel|null,kind?:ModelCapabi
  const endpoint=channel.baseUrl.trim().replace(/\/$/,"");
  if(channel.apiFormat==="openai"&&
    (endpoint==="https://api.openai.com"||endpoint==="https://api.openai.com/v1"))
-  return kind==="video"?null:"openai";
+  return "openai";
  // All custom OpenAI-format endpoints, including local HTTP proxies,
- // go through the backend. Invalid URLs fail closed during provisioning.
- if(channel.apiFormat==="openai")return kind==="video"?null:"openai_compatible";
+ // go through the backend. Video still requires an explicit restricted
+ // asynchronous video script before submission.
+ if(channel.apiFormat==="openai")return "openai_compatible";
  if(channel.apiFormat==="volcengine_ark"&&
    endpoint==="https://ark.cn-beijing.volces.com/api/v3")
   return kind&&kind!=="video"?null:"volcengine_ark";
+ if(channel.apiFormat==="gemini")
+  return kind===undefined||kind==="image"||kind==="text"?"google_gemini":null;
  return null;
 }
 export type VaultChannelView={id:string;provider:string;hasKey:boolean;keyVersion:string|null};
@@ -51,7 +54,7 @@ export async function ensureSqliteModelChannel(channel:ModelChannel,
  provider:SqliteModelProvider,api:typeof canvasApi=canvasApi):Promise<ModelChannel>{
  if(!/^[a-zA-Z0-9_-]{1,128}$/.test(channel.id))throw Error("后端渠道 ID 不符合要求");
  if(modelChannelProvider(channel)!==provider)throw Error("该渠道地址不受本地后端支持");
- if(provider==="openai_compatible")normalizeCompatBaseUrl(channel.baseUrl);
+ if(provider==="openai_compatible"||provider==="google_gemini")normalizeCompatBaseUrl(channel.baseUrl);
  let existing:VaultChannelView|null=null;
  try{existing=await api<VaultChannelView>("/api/v1/channels/"+encodeURIComponent(channel.id))}
  catch(error){
@@ -82,7 +85,7 @@ export async function ensureSqliteModelChannel(channel:ModelChannel,
 export async function ensureSqliteModelChannelForExecution(channel:ModelChannel,
  provider:SqliteModelProvider,api:typeof canvasApi=canvasApi):Promise<void>{
  if(modelChannelProvider(channel)!==provider)throw Error("该渠道地址不受本地后端支持");
- if(provider==="openai_compatible")normalizeCompatBaseUrl(channel.baseUrl);
+ if(provider==="openai_compatible"||provider==="google_gemini")normalizeCompatBaseUrl(channel.baseUrl);
  let existing:VaultChannelView|null=null;
  try{existing=await api<VaultChannelView>("/api/v1/channels/"+encodeURIComponent(channel.id))}
  catch(error){if(!(error instanceof CanvasApiError&&error.status===404))throw error}

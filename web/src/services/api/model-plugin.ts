@@ -3,6 +3,7 @@ import axios, { type AxiosRequestConfig } from "axios";
 import i18n from "@/i18n";
 import { buildApiUrl, modelOptionName, type AiConfig, type ApiCallFormat, type ModelCapability } from "@/stores/use-config-store";
 import { proxyApiUrl } from "@/lib/api-proxy";
+import {browserGenerationError,isBrowserGenerationDisabled} from "./browser-generation-boundary";
 
 type RequestOptions = { signal?: AbortSignal };
 
@@ -113,12 +114,9 @@ function createPoll(signal?: AbortSignal) {
  * The script must `return` the result; each caller normalizes it to its capability's shape.
  */
 export async function runModelPlugin<T = unknown>(args: RunPluginArgs): Promise<T> {
-    // OpenAI-format models are owned by the backend restricted interpreter.
-    // Even non-canvas helper callers must not execute arbitrary browser JS
-    // with the channel API key or silently retry a billable request.
-    if (args.config.apiFormat === "openai") {
-        throw new Error("OpenAI 兼容渠道的自定义脚本只能通过画布后端任务执行。请将旧脚本改为“安全”模板；此入口不会在浏览器执行脚本或重新提交生成。");
-    }
+    // Every provider generation script must go through a frozen backend job.
+    // Retain the signature for migration errors, but never interpret scripts in the browser.
+    if(isBrowserGenerationDisabled())throw browserGenerationError("模型生成脚本");
     const { config } = args;
     const http = createPluginHttp(config, { signal: args.signal });
     const request = createPluginRequest(config, { signal: args.signal });

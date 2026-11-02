@@ -136,6 +136,29 @@ describe("P4.4 ordinary SQLite model artifact merge",()=>{
   expect(safeRemoteCanvasMerge(local,{nodes:[{...updated,metadata:{...updated.metadata,
    status:"loading"}}],connections:[]})).toBeNull();
  });
+ it("adopts a backend builtin image writeback while preserving the submitted source fields",()=>{
+  const original:CanvasNodeData={id:"builtin-panorama",type:"builtin:panorama",title:"Panorama",
+   position:{x:4,y:9},width:640,height:320,metadata:{content:"source-state",composerContent:"sunset"}};
+  const local:BackendCanvasGraph={nodes:[original],connections:[]};
+  const modelArtifact={jobId:"job-image",artifactId:"image-1",sourceNodeId:original.id,
+   kind:"image" as const,model:"gpt-image-2"};
+  const updated:CanvasNodeData={...original,metadata:{...original.metadata,
+   content:"/api/v1/blobs/"+"a".repeat(64),storageKey:"cas:"+"a".repeat(64),
+   mimeType:"image/png",status:"success",bytes:42,naturalWidth:512,naturalHeight:512,
+   modelArtifact}};
+  expect(safeRemoteCanvasMerge(local,{nodes:[updated],connections:[]})).toEqual({nodes:[updated],connections:[]});
+  const prior:BackendCanvasGraph={nodes:[{...original,metadata:{...original.metadata,
+   content:"/api/v1/blobs/"+"b".repeat(64),storageKey:"cas:"+"b".repeat(64),
+   mimeType:"image/png",status:"success",modelArtifact:{jobId:"old-job",artifactId:"old-image",
+    sourceNodeId:original.id,kind:"image",model:"gpt-image-2"}}}],connections:[]};
+  expect(safeRemoteCanvasMerge(prior,{nodes:[updated],connections:[]})).toEqual({nodes:[updated],connections:[]});
+  const edited:BackendCanvasGraph={nodes:[{...original,metadata:{...original.metadata,
+   composerContent:"blue hour"}}],connections:[]};
+  expect(safeRemoteCanvasMerge(edited,{nodes:[updated],connections:[]})).toBeNull();
+  expect(safeRemoteCanvasMerge(local,{nodes:[{...updated,title:"Injected"}],connections:[]})).toBeNull();
+  expect(safeRemoteCanvasMerge(local,{nodes:[{...updated,metadata:{...updated.metadata,
+   modelArtifact:{...modelArtifact,sourceNodeId:"other"}}}],connections:[]})).toBeNull();
+ });
   it("accepts Ark model video CAS node only with original source and a plain edge",()=>{  const prompt:CanvasNodeData={id:"prompt1",type:"text",title:"Prompt",
    position:{x:0,y:0},width:300,height:160,metadata:{content:"snow"}};
   const movie:CanvasNodeData={id:"artifact-vid1",type:"video",title:"Generated video",

@@ -21,6 +21,8 @@ import {createComfyV2Adapters} from "./comfy-v2-adapter.mjs";
 import {createComfyLiveHub} from "./comfy-live.mjs";
 import {createComfyInstanceRegistry} from "./comfy-instances.mjs";
 import {createOpenAiModelAdapter} from "./openai-model-adapter.mjs";
+import {createOpenAiVideoAdapter} from "./openai-video-adapter.mjs";
+import {createGeminiModelAdapter} from "./gemini-model-adapter.mjs";
 import {createRestrictedVideoAdapter} from "./restricted-video-adapter.mjs";
 import {createArkVideoAdapter} from "./ark-video-adapter.mjs";
 import {createArkChannelHealth} from "./ark-channel-health.mjs";
@@ -77,6 +79,10 @@ export function createLocalBackend({dataDir,streamPollMs=200,adapters,comfyInsta
     upstreamCall:comfyUpstreamCall,liveHub:comfyLive}):null;
   const openai=enableOpenAiModels?createOpenAiModelAdapter({db,blobStore,vault,
     ...(modelUpstreamCall?{upstreamCall:modelUpstreamCall}:{})}):null;
+  const openaiVideo=enableOpenAiModels?createOpenAiVideoAdapter({db,blobStore,vault,
+    ...(modelUpstreamCall?{upstreamCall:modelUpstreamCall}:{})}):null;
+  const gemini=enableOpenAiModels?createGeminiModelAdapter({db,blobStore,vault,
+    ...(modelUpstreamCall?{upstreamCall:modelUpstreamCall}:{})}):null;
   const customVideo=enableOpenAiModels?createRestrictedVideoAdapter({db,blobStore,vault,
     ...(modelUpstreamCall?{upstreamCall:modelUpstreamCall}:{})}):null;
   const assetConfig=enableArkVideos?(arkAssetConfig??readArkAssetConfig()):null;
@@ -85,12 +91,12 @@ export function createLocalBackend({dataDir,streamPollMs=200,adapters,comfyInsta
    ...(arkTosClient?{client:arkTosClient}:{})}):null;
   const ark=enableArkVideos?createArkVideoAdapter({db,blobStore,vault,assetManager,
     ...(arkUpstreamCall?{upstreamCall:arkUpstreamCall}:{})}):null;
-  const model=openai||ark?Object.fromEntries(["prepare","submit","poll","collect","cancel"].map(method=>[
+  const model=openai||openaiVideo||gemini||ark?Object.fromEntries(["prepare","submit","poll","collect","cancel"].map(method=>[
    method,async args=>{
     const provider=args.job.snapshot?.provider??JSON.parse(args.job.snapshot_json).provider;
     const snap=args.job.snapshot??JSON.parse(args.job.snapshot_json);
-    const instance=(provider==="openai"||provider==="openai_compatible")?
-     (snap.task?.kind==="video"?customVideo:openai):provider==="volcengine_ark"?ark:null;
+    const instance=provider==="google_gemini"?gemini:(provider==="openai"||provider==="openai_compatible")?
+     (snap.task?.kind==="video"?(snap.task?.script?customVideo:openaiVideo):openai):provider==="volcengine_ark"?ark:null;
     if(!instance||typeof instance[method]!=="function")throw Error("model_provider_not_enabled");
     return instance[method](args);
    }
@@ -104,7 +110,8 @@ export function createLocalBackend({dataDir,streamPollMs=200,adapters,comfyInsta
   const worker=autoDispatch?createBackendWorker({coordinator,materializer,intervalMs:dispatchIntervalMs}):null;
   const app=buildApp({db,sessionAuth,autoLocalSession,blobStore,mediaPreview,blobGc,projectArchive,vault,skillRegistry,
    arkChannelHealth:createArkChannelHealth({vault}),
-   modelCatalog:openai?args=>openai.listModels(args):null,
+   modelCatalog:openai||gemini?args=>vault.get(args.channelId).provider==="google_gemini"?
+    gemini.listModels({channelId:args.channelId,endpointBaseUrl:args.endpointBaseUrl}):openai.listModels(args):null,
    mediaDownloader:createTrustedMediaDownloader({blobStore}),coordinator,materializer,worker,
    comfyRegistry,comfyLive,comfyInstanceIds:comfyRegistry?()=>comfyRegistry.list().map(item=>item.id):comfyInstances?.map(item=>item.id)??[],modelKinds:[...new Set([...(enableOpenAiModels?["image","audio","text","video"]:[]),...(enableArkVideos?["video"]:[])])],arkAssetUploadReady:Boolean(assetManager),streamPollMs});
   worker?.start();

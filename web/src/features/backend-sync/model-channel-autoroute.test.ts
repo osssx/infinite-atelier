@@ -12,7 +12,7 @@ describe("default SQLite model routing and automatic DPAPI provisioning",()=>{
  it("routes supported official OpenAI/Ark models automatically, regardless of old saved toggle",()=>{
   expect(modelChannelProvider(channel(),"image")).toBe("openai");
   expect(modelChannelProvider(channel(),"text")).toBe("openai");
-  expect(modelChannelProvider(channel(),"video")).toBeNull();
+  expect(modelChannelProvider(channel(),"video")).toBe("openai");
   expect(modelChannelProvider(channel({apiFormat:"volcengine_ark",
    baseUrl:"https://ark.cn-beijing.volces.com/api/v3"}),"video")).toBe("volcengine_ark");
   expect(modelChannelProvider(channel({apiFormat:"volcengine_ark",
@@ -20,7 +20,13 @@ describe("default SQLite model routing and automatic DPAPI provisioning",()=>{
   expect(modelChannelProvider(channel({baseUrl:"http://api.openai.com/v1"}),"image")).toBe("openai_compatible");
   expect(modelChannelProvider(channel({baseUrl:"http://127.0.0.1:8188/v1"}),"image")).toBe("openai_compatible");
   expect(modelChannelProvider(channel({baseUrl:"https://custom-proxy.example/v1"}),"text")).toBe("openai_compatible");
-  expect(modelChannelProvider(channel({baseUrl:"https://custom-proxy.example/v1"}),"video")).toBeNull();
+  expect(modelChannelProvider(channel({baseUrl:"https://custom-proxy.example/v1"}),"video")).toBe("openai_compatible");
+  const gemini=channel({apiFormat:"gemini",baseUrl:"https://generativelanguage.googleapis.com"});
+  expect(modelChannelProvider(gemini)).toBe("google_gemini");
+  expect(modelChannelProvider(gemini,"image")).toBe("google_gemini");
+  expect(modelChannelProvider(gemini,"text")).toBe("google_gemini");
+  expect(modelChannelProvider(gemini,"audio")).toBeNull();
+  expect(modelChannelProvider(gemini,"video")).toBeNull();
  });
  it("registers any compatible API endpoint in the encrypted Vault with no backend allowlist",async()=>{
   const custom=channel({baseUrl:"http://127.0.0.1:8188/v1"});
@@ -58,6 +64,17 @@ describe("default SQLite model routing and automatic DPAPI provisioning",()=>{
     id:"channel123",provider:"openai",displayName:"OpenAI",apiKey:"sk-test-legacy"
    }}
   ]);
+ });
+ it("stores Gemini channels under a distinct Vault provider and strips the browser key",async()=>{
+  const gemini=channel({name:"Gemini",apiFormat:"gemini",baseUrl:"https://generativelanguage.googleapis.com"});
+  const api=vi.fn(async(path:string,method="GET",payload?:unknown)=>{
+   if(method==="GET")throw new CanvasApiError("missing",404,method,path);
+   expect(payload).toEqual({id:"channel123",displayName:"Gemini",provider:"google_gemini",apiKey:"sk-test-legacy"});
+   return {id:"channel123",provider:"google_gemini",hasKey:true,keyVersion:"gemini-v1"};
+  });
+  const saved=await ensureSqliteModelChannel(gemini,"google_gemini",api as unknown as typeof canvasApi);
+  expect(saved.apiKey).toBe("");
+  expect(api).toHaveBeenCalledTimes(2);
  });
  it("rotates an explicitly supplied new key using the existing version fence",async()=>{
   const api=vi.fn(async(path:string,method="GET",payload?:unknown)=>{

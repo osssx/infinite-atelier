@@ -10,7 +10,7 @@ import {parseRestrictedModelScript,runRestrictedModelScript} from "./restricted-
 const failure=(code,statusCode=400,confirmedNotAccepted=false)=>
  Object.assign(Error(code),{code,statusCode,confirmedNotAccepted});
 const MIME={mp3:"audio/mpeg",wav:"audio/wav",flac:"audio/flac"};
-const supported=new Set(["image","audio","text"]);
+const supported=new Set(["image","audio","text","video"]);
 // Model identifiers may be namespaced, e.g. "org/model" or "provider/org/model".
 // Preserve the 128-character bound and reject empty segments or URL characters.
 const validModel=value=>typeof value==="string"&&value.length<=128&&
@@ -178,10 +178,11 @@ export function validateModelSnapshot(snapshot){
   throw failure("model_endpoint_reference_invalid");
  if(!task||typeof task!=="object"||Array.isArray(task)||!supported.has(task.kind)||
   !validModel(task.model)||!validPrompt(task.prompt,task.kind)||
-  Object.keys(task).some(key=>!["kind","model","prompt","size","quality","voice","format","speed","operation","images","mask","messages","stream","skills","script"].includes(key)))
+  Object.keys(task).some(key=>!["kind","model","prompt","size","quality","voice","format","speed","instructions","count","duration","ratio","resolution","generateAudio","watermark","writeBack","operation","images","mask","messages","stream","skills","script"].includes(key)))
   throw failure("model_task_invalid");
- const allowed=task.kind==="image"?["kind","model","prompt","size","quality","operation","images","mask","script"]:
-  task.kind==="audio"?["kind","model","prompt","voice","format","speed","script"]:
+ const allowed=task.kind==="image"?["kind","model","prompt","size","quality","count","writeBack","operation","images","mask","script"]:
+  task.kind==="audio"?["kind","model","prompt","voice","format","speed","instructions","script"]:
+  task.kind==="video"?["kind","model","prompt","duration","ratio","resolution","generateAudio","watermark","count","images","script"]:
   ["kind","model","prompt","images","messages","stream","skills","script"];
  if(Object.keys(task).some(key=>!allowed.includes(key)))throw failure("model_task_invalid");
  if(task.script!==undefined){
@@ -202,12 +203,16 @@ export function validateModelSnapshot(snapshot){
  validateImageInputs(task);
  if(task.kind==="image"&&
    (task.size!==undefined&&!["auto","1024x1024","1024x1536","1536x1024"].includes(task.size)||
-    task.quality!==undefined&&!["auto","low","medium","high"].includes(task.quality)))
+    task.quality!==undefined&&!["auto","low","medium","high"].includes(task.quality)||
+    task.count!==undefined&&(!Number.isSafeInteger(task.count)||task.count<1||task.count>10)))
   throw failure("model_task_invalid");
  if(task.kind==="audio"&&(
    typeof task.voice!=="string"||!/^[a-zA-Z0-9_-]{1,48}$/.test(task.voice)||
    !Object.hasOwn(MIME,task.format)||
-   task.speed!==undefined&&(!Number.isFinite(task.speed)||task.speed<0.25||task.speed>4)))
+   task.speed!==undefined&&(!Number.isFinite(task.speed)||task.speed<0.25||task.speed>4)||
+   task.instructions!==undefined&&(typeof task.instructions!=="string"||task.instructions.length>500)))
+  throw failure("model_task_invalid");
+ if(task.writeBack!==undefined&&(task.kind!=="image"||typeof task.writeBack!=="boolean"))
   throw failure("model_task_invalid");
  return task;
 }
@@ -284,8 +289,8 @@ export function createOpenAiModelAdapter({db,blobStore,vault,upstreamCall=fetch,
    const output=await runRestrictedModelScript({
     script:task.script,model:task.model,prompt:task.prompt,
     messages:task.messages?chatHistory(task.messages):[{role:"user",content:task.prompt}],
-    params:{size:task.size,quality:task.quality,count:1,
-     voice:task.voice,format:task.format,speed:task.speed},
+    params:{size:task.size,quality:task.quality,count:task.count??1,
+     voice:task.voice,format:task.format,speed:task.speed,instructions:task.instructions},
     http:async(method,path,payload)=>{
      let serialized;
      try{serialized=method==="post"?JSON.stringify(payload):undefined}
@@ -319,11 +324,19 @@ export function createOpenAiModelAdapter({db,blobStore,vault,upstreamCall=fetch,
      throw failure("model_script_text_invalid",502);
     bytes=Buffer.from(output,"utf8");mime="text/plain";
    }else if(kind==="image"){
-    const imageData=typeof output==="string"?output:
-     output?.b64_json??output?.dataUrl;
-    if(typeof imageData!=="string")throw failure("model_script_image_invalid",502);
-    const decoded=decodeImage(imageData.replace(/^data:image\/(?:png|jpeg|webp);base64,/i,""));
-    bytes=decoded.bytes;mime=decoded.mime;
+    const outputs=Array.isArray(output)?output:[output];
+    if(outputs.length!==(task.count??1))throw failure("model_script_image_count_mismatch",502);
+    for(let index=0;index<outputs.length;index++){
+     const imageData=typeof outputs[index]==="string"?outputs[index]:
+      outputs[index]?.b64_json??outputs[index]?.dataUrl;
+     if(typeof imageData!=="string")throw failure("model_script_image_invalid",502);
+     const decoded=decodeImage(imageData.replace(/^data:image\/(?:png|jpeg|webp);base64,/i,""));
+     const blob=await blobStore.put([decoded.bytes],{mime:decoded.mime});
+     appendArtifact(db,{jobId:job.id,portId:"image",itemKey:String(index),
+      blobId:blob.blobId,sha256:blob.sha256,mime:blob.mimeType,kind:"image",
+      metadata:{modelGeneration:{kind:"image",model:task.model,index}}});
+    }
+    return {kind:"completed",receipt:{artifactReady:true,count:outputs.length}};
    }else if(kind==="audio"){
     const audioData=typeof output==="string"?output:
      output?.data??output?.b64_json;
@@ -361,7 +374,7 @@ export function createOpenAiModelAdapter({db,blobStore,vault,upstreamCall=fetch,
   let body,headers={"content-type":"application/json"};
   if(edit){
    const form=new FormData();
-   form.set("model",task.model);form.set("prompt",task.prompt);form.set("n","1");
+   form.set("model",task.model);form.set("prompt",task.prompt);form.set("n",String(task.count??1));
    if(task.size)form.set("size",task.size);
    if(task.quality)form.set("quality",task.quality);
    for(let i=0;i<task.images.length;i++){
@@ -372,11 +385,11 @@ export function createOpenAiModelAdapter({db,blobStore,vault,upstreamCall=fetch,
    if(task.mask)form.set("mask",new Blob([data[data.length-1]],{type:"image/png"}),"mask.png");
    body=form;headers={};
   }else if(image){
-   body=JSON.stringify({model:task.model,prompt:task.prompt,n:1,
+   body=JSON.stringify({model:task.model,prompt:task.prompt,n:task.count??1,
     ...(task.size?{size:task.size}:{}),...(task.quality?{quality:task.quality}:{})});
   }else if(audio){
    body=JSON.stringify({model:task.model,input:task.prompt,voice:task.voice,
-    response_format:task.format,...(task.speed?{speed:task.speed}:{})});
+    response_format:task.format,...(task.speed?{speed:task.speed}:{}),...(task.instructions?.trim()?{instructions:task.instructions.trim()}:{})});
   }else{
    const content=task.images?.length?[
     {type:"text",text:task.prompt},
@@ -423,9 +436,17 @@ export function createOpenAiModelAdapter({db,blobStore,vault,upstreamCall=fetch,
   }else{
    const json=task.kind==="text"&&task.stream===true?null:await boundedJson(response);
    if(image){
-    const data=decodeImage(json?.data?.[0]?.b64_json);
-    const blob=await blobStore.put([data.bytes],{mime:data.mime});
-    record={...blob,kind:"image"};
+    const outputs=json?.data;
+    if(!Array.isArray(outputs)||outputs.length<1||outputs.length>(task.count??1))
+     throw failure("model_image_output_invalid",502);
+    for(let index=0;index<outputs.length;index++){
+     const data=decodeImage(outputs[index]?.b64_json);
+     const blob=await blobStore.put([data.bytes],{mime:data.mime});
+     appendArtifact(db,{jobId:job.id,portId:"image",itemKey:String(index),
+      blobId:blob.blobId,sha256:blob.sha256,mime:blob.mimeType,kind:"image",
+      metadata:{modelGeneration:{kind:"image",model:task.model,index}}});
+    }
+    return {kind:"completed",receipt:{artifactReady:true,count:outputs.length}};
    }else{
     const content=task.stream===true?await streamOpenAiText(response,db,job.id):json?.choices?.[0]?.message?.content;
     if(typeof content!=="string"||Buffer.byteLength(content,"utf8")>2_000_000)

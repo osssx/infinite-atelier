@@ -76,7 +76,7 @@ export function createCanvasMaterializer({db,blobStore,videoDimensionReader=read
     const job=db.prepare("SELECT snapshot_json FROM jobs WHERE id=?").get(artifact.job_id);
     const snapshot=job?JSON.parse(job.snapshot_json):null;
     const isModel=snapshot?.adapterKind==="model"&&
-     (snapshot.provider==="openai"||snapshot.provider==="openai_compatible"||
+     (snapshot.provider==="openai"||snapshot.provider==="openai_compatible"||snapshot.provider==="google_gemini"||
       snapshot.provider==="volcengine_ark"&&artifact.kind==="video")&&
      snapshot.task?.kind===artifact.kind&&artifact.port_id===artifact.kind;
     const metadata=JSON.parse(artifact.metadata_json);
@@ -106,14 +106,22 @@ export function createCanvasMaterializer({db,blobStore,videoDimensionReader=read
       workflowNodeId:artifact.target_node_id,portId:artifact.port_id,kind:artifact.kind,index});
     // An unchanged, empty Text source can receive its own generated response.
     // If the user typed into it while the model ran, append a new node instead.
+    const writeBack=Boolean(isModel&&snapshot.task?.writeBack===true&&artifact.kind==="image"&&
+      source&&!sourceChangedSinceSubmit);
     const fillEmptyText=Boolean(isModel&&artifact.kind==="text"&&source?.type==="text"&&
      !sourceChangedSinceSubmit&&!String(source.metadata?.content??"").trim()&&
      !source.metadata?.modelArtifact&&typeof contents==="string"&&contents.trim());
-    const nodeId=fillEmptyText?source.id:"artifact-"+artifact.id;
+    const nodeId=fillEmptyText||writeBack?source.id:"artifact-"+artifact.id;
     const edgeId="artifact-edge-"+artifact.id;
     if(!validId(nodeId)||!validId(edgeId))throw fail("materialization_invalid_id");
     if(fillEmptyText){
      source.metadata={...source.metadata,content:contents,status:"success",modelArtifact:origin};
+    }else if(writeBack){
+     source.metadata={...source.metadata,content:"/api/v1/blobs/"+artifact.blob_id,
+      storageKey:"cas:"+artifact.blob_id,mimeType:artifact.mime,status:"success",
+      modelArtifact:origin,
+      bytes:db.prepare("SELECT byte_size FROM blobs WHERE id=?").get(artifact.blob_id).byte_size,
+      ...(mediaDimensions?{naturalWidth:mediaDimensions.width,naturalHeight:mediaDimensions.height}:{})};
     }else{
      const matches=doc.nodes.filter(n=>(isModel?n.metadata?.modelArtifact?.artifactId:
       n.metadata?.comfyArtifact?.artifactId)===artifact.id);

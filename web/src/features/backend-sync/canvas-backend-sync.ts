@@ -54,6 +54,29 @@ function isSafeEmptyTextFill(local:CanvasNodeData,remote:CanvasNodeData):boolean
  return canonical({...local,metadata:{...local.metadata,content:remote.metadata.content,
    status:"success",modelArtifact:model}})===canonical(remote);
 }
+function isSafeModelImageWriteback(local:CanvasNodeData,remote:CanvasNodeData):boolean{
+ const model=remote.metadata?.modelArtifact;
+ const previous=local.metadata?.modelArtifact;
+ if(local.type!==remote.type||!model||model.kind!=="image"||
+   model.sourceNodeId!==local.id||typeof model.jobId!=="string"||
+   typeof model.artifactId!=="string"||typeof model.model!=="string"||
+   Boolean(previous&&(previous.kind!=="image"||previous.sourceNodeId!==local.id||
+    typeof previous.jobId!=="string"||typeof previous.artifactId!=="string"))||
+   remote.metadata?.status!=="success"||
+   typeof remote.metadata?.content!=="string"||
+   !remote.metadata.content.startsWith("/api/v1/blobs/")||
+   typeof remote.metadata.storageKey!=="string"||
+   !remote.metadata.storageKey.startsWith("cas:")||
+   typeof remote.metadata.mimeType!=="string"||
+   !remote.metadata.mimeType.startsWith("image/"))return false;
+ const generatedKeys=["content","storageKey","mimeType","status","modelArtifact",
+  "bytes","naturalWidth","naturalHeight"] as const;
+ const metadata:Record<string,unknown>={...local.metadata};
+ for(const key of generatedKeys)delete metadata[key];
+ for(const key of generatedKeys)if(Object.hasOwn(remote.metadata,key))
+  metadata[key]=remote.metadata[key];
+ return canonical({...local,metadata:metadata as CanvasNodeData["metadata"]})===canonical(remote);
+}
 export function safeRemoteCanvasMerge(local:BackendCanvasGraph,remote:BackendCanvasGraph):BackendCanvasGraph|null {
  if(!Array.isArray(remote?.nodes)||!Array.isArray(remote.connections))return null;
  const localNodes=new Map(local.nodes.map(n=>[n.id,n]));
@@ -63,7 +86,8 @@ export function safeRemoteCanvasMerge(local:BackendCanvasGraph,remote:BackendCan
     localEdges.size!==local.connections.length)return null;
  for(const node of local.nodes){
   const same=remoteNodes.get(node.id);
-   if(!same||canonical(node)!==canonical(same)&&!isSafeEmptyTextFill(node,same))return null;
+   if(!same||canonical(node)!==canonical(same)&&
+      !isSafeEmptyTextFill(node,same)&&!isSafeModelImageWriteback(node,same))return null;
  }
  for(const edge of local.connections){
   const same=remote.connections.find(e=>e.id===edge.id);

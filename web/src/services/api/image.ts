@@ -4,6 +4,7 @@ import i18n from "@/i18n";
 import { buildApiUrl, resolveModelRequestConfig, resolveModelScript, type AiConfig, type ModelChannel } from "@/stores/use-config-store";
 import { proxyApiUrl } from "@/lib/api-proxy";
 import { normalizePluginImages, runModelPlugin } from "./model-plugin";
+import {browserGenerationError,isBrowserGenerationDisabled} from "./browser-generation-boundary";
 import { runTextAgent, type TextAgentInput } from "./text-agent-runner";
 import { nanoid } from "nanoid";
 import { dataUrlToFile } from "@/lib/image-utils";
@@ -987,6 +988,7 @@ function parseGeminiImagePayload(payload: GeminiPayload) {
 }
 
 export async function requestGeneration(config: AiConfig, prompt: string, options?: RequestOptions) {
+    if(isBrowserGenerationDisabled())throw browserGenerationError("图片生成");
     const requestConfig = resolveModelRequestConfig(config, config.model || config.imageModel);
     const n = Math.max(1, Math.min(15, Math.floor(Math.abs(Number(config.count)) || 1)));
     const script = resolveModelScript(config, config.model || config.imageModel);
@@ -1038,6 +1040,7 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
 }
 
 export async function requestEdit(config: AiConfig, prompt: string, references: ReferenceImage[], mask?: ReferenceImage, options?: RequestOptions) {
+    if(isBrowserGenerationDisabled())throw browserGenerationError("图片编辑");
     const requestConfig = resolveModelRequestConfig(config, config.model || config.imageModel);
     const n = Math.max(1, Math.min(15, Math.floor(Math.abs(Number(config.count)) || 1)));
     const requestPrompt = buildImageReferencePromptText(prompt, references);
@@ -1093,6 +1096,7 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
 export type TextAgentRequestOptions = Pick<TextAgentInput, "tools" | "executeTool" | "onEvent" | "maxToolRounds" | "maxToolCalls" | "maxToolOutputChars">;
 
 export async function requestImageQuestion(config: AiConfig, messages: AiTextMessage[], onDelta: (text: string) => void, options?: RequestOptions & { agent?: TextAgentRequestOptions }) {
+    if(isBrowserGenerationDisabled())throw browserGenerationError("图片问答");
     const requestConfig = resolveModelRequestConfig(config, config.model || config.textModel);
     const script = resolveModelScript(config, config.model || config.textModel);
     if (options?.agent) {
@@ -1155,7 +1159,7 @@ export async function fetchImageModels(config: Pick<AiConfig, "baseUrl" | "apiKe
 }
 
 export async function fetchChannelModels(channel: ModelChannel) {
-    if (channel.apiFormat === "openai") {
+    if (channel.apiFormat === "openai" || channel.apiFormat === "gemini") {
         // Vault-backed model catalog; never forward a browser API key upstream.
         const {canvasApi}=await import("@/features/backend-sync/canvas-api");
         const result=await canvasApi<{models:string[]}>(

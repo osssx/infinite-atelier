@@ -1,5 +1,5 @@
 import {randomUUID} from "node:crypto";
-import {stableJson,writeTransaction,assertNoRawCredentials} from "./repository.mjs";
+import {stableJson,writeTransaction,assertNoRawCredentials,matchesSourceFingerprint} from "./repository.mjs";
 import {validCanvasNodeId} from "../canvas-node-id.mjs";
 import {initialCanvasState} from "./canvas-state.mjs";
 const problem=(code,statusCode=400,details)=>Object.assign(new Error(code),{code,statusCode,details});
@@ -103,22 +103,51 @@ export function saveSingleUserCanvas(db,{id,expectedRevision,document}){
   if(expectedRevision===undefined||expectedRevision<row.revision){
    const ids=new Set(next.nodes.map(n=>n.id));
    const edges=new Set(next.connections.map(e=>e.id));
+    const restored=new Set();
     // Reconcile a late autosave of an empty source with a successful in-place
     // model output; never overwrite text explicitly entered in the draft.
     for(const [index,draft] of next.nodes.entries()){
      const latest=current.nodes.find(node=>node.id===draft.id);
      const origin=latest?.metadata?.modelArtifact;
-     if(draft.type!=="text"||latest?.type!=="text"||origin?.kind!=="text"||
-        origin.sourceNodeId!==draft.id||String(draft.metadata?.content??"").trim()||
-        !String(latest.metadata?.content??"").trim())continue;
+     if(origin?.sourceNodeId!==draft.id||!origin?.artifactId||!origin?.jobId)continue;
      const persisted=db.prepare(
       "SELECT 1 FROM materializations WHERE artifact_id=? AND node_id=? AND project_id=? AND status='materialized' LIMIT 1"
      ).get(origin.artifactId,draft.id,id);
      if(!persisted)continue;
-     next.nodes[index]={...draft,metadata:{...draft.metadata,
-      content:latest.metadata.content,status:"success",modelArtifact:origin}};
+     const job=db.prepare("SELECT source_fingerprint,snapshot_json,target_node_id FROM jobs WHERE id=? AND project_id=? AND status='succeeded'")
+      .get(origin.jobId,id);
+     if(!job||job.target_node_id!==draft.id)continue;
+     const snapshot=JSON.parse(job.snapshot_json);
+     const sourceUnchanged=matchesSourceFingerprint(next,draft.id,job.source_fingerprint,snapshot);
+     if(origin.kind==="text"&&draft.type==="text"&&latest.type==="text"&&
+        !String(draft.metadata?.content??"").trim()&&String(latest.metadata?.content??"").trim()&&sourceUnchanged){
+      next.nodes[index]={...draft,metadata:{...draft.metadata,
+       content:latest.metadata.content,status:"success",modelArtifact:origin}};
+     }else if(origin.kind==="image"&&sourceUnchanged){
+      // A late stale autosave may not erase a backend materializer's
+      // in-place image writeback when the submitted source is still intact.
+      next.nodes[index]={...draft,metadata:{...draft.metadata,
+       ...Object.fromEntries(["content","storageKey","mimeType","status","modelArtifact","prompt","bytes","naturalWidth","naturalHeight"]
+        .filter(key=>Object.hasOwn(latest.metadata??{},key)).map(key=>[key,latest.metadata[key]]))}};
+     }else if(origin.kind==="image"&&!sourceUnchanged){
+      // The source changed after submission. Preserve the edit and demote the
+      // already collected image to a linked result node instead of overwriting.
+      const artifactId="artifact-"+origin.artifactId;
+      if(!ids.has(artifactId)){
+       next.nodes.push({...latest,id:artifactId,type:"image",
+        title:latest.title||"Generated Image",
+        position:{x:Number(draft.position?.x||0)+Number(draft.width||420)+48,
+         y:Number(draft.position?.y||0)},
+        metadata:{...latest.metadata,modelArtifact:origin}});
+       ids.add(artifactId);restored.add(artifactId);
+      }
+      const edgeId="artifact-edge-"+origin.artifactId;
+      if(!edges.has(edgeId)&&ids.has(artifactId)){
+       next.connections.push({id:edgeId,fromNodeId:draft.id,toNodeId:artifactId});
+       edges.add(edgeId);
+      }
+     }
     }
-    const restored=new Set();
     for(const node of current.nodes){
     const origin=node.metadata?.comfyArtifact??node.metadata?.modelArtifact;
     if(!origin||node.id!=="artifact-"+origin.artifactId||ids.has(node.id))continue;

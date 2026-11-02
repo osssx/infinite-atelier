@@ -5,19 +5,17 @@ import { Group, Video } from "lucide-react";
 import { saveAs } from "file-saver";
 import { useTranslation } from "react-i18next";
 
-import { requestEdit, requestGeneration, requestImageQuestion } from "@/services/api/image";
 import { MissingSkillVersionError, resolveManualSkillContext, withManualSkillMessages, type ManualSkillContext } from "@/features/skills/skill-manual";
 import { prepareAutomaticSkillCatalog, withAutomaticSkillCatalog, isUnsupportedSkillToolsError, type AutomaticSkillPlan } from "@/features/skills/skill-auto";
 import { isSkillToolsKnownUnsupported, rememberSupportedSkillTools, rememberUnsupportedSkillTools } from "@/features/skills/skill-tool-capability";
 import { extractSkillMentions, resolvePromptSkillBinding, showLegacySkillMentions } from "@/features/skills/skill-mentions";
-import { requestAudioGeneration } from "@/services/api/audio";
-import { requestVideoGeneration, type VideoGenerationRequest, type VideoGenerationTask } from "@/services/api/video";
+import type { VideoGenerationRequest } from "@/services/api/video";
 import { defaultConfig, resolveModelChannel, resolveModelScript, modelOptionName, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
 import {recoverLegacyGeneratedImageSize} from "@/lib/canvas/canvas-generated-image-size";
 import {recoverLegacyGeneratedVideoSize} from "@/lib/canvas/canvas-generated-video-size";
 import { getImageBlob } from "@/services/image-storage";
 import { getMediaBlob } from "@/services/file-storage";
-import {uploadCanvasImage as uploadImage,uploadCanvasMedia,storeCanvasGeneratedVideo as storeGeneratedVideo,storeCanvasGeneratedAudio as storeGeneratedAudio,isCanvasCasKey,canvasCasUrl} from "@/features/backend-sync/canvas-media";
+import {uploadCanvasImage as uploadImage,uploadCanvasMedia,isCanvasCasKey,canvasCasUrl} from "@/features/backend-sync/canvas-media";
 const uploadMediaFile=(input:string|Blob,prefix="video")=>uploadCanvasMedia(input,prefix==="audio"?"audio":"video");
 import { setPreviewGenerationSuspended } from "@/services/media-preview-storage";
 import { nanoid } from "nanoid";
@@ -425,14 +423,6 @@ function AtelierCanvasPage() {
     const monitorSqliteJobRef=useRef<(jobId:string)=>void>(()=>{});
     const sqliteGenerationJobsRef=useRef(new Map<string,string>());
     const sqliteModelSubmitLocksRef=useRef(new Set<string>());
-
-    const persistVideoTask = useCallback((nodeId: string, task: VideoGenerationTask, status: "queued" | "running" | "succeeded" | "failed" | "cancelled" | "expired" = task.status || "queued") => {
-        const nodesWithTask = nodesRef.current.map((node) => node.id === nodeId ? { ...node, metadata: { ...node.metadata, videoTask: { provider: task.provider, channelId: task.channelId, model: task.model, taskId: task.id, startedAt: task.startedAt || Date.now(), status } } } : node);
-        nodesRef.current = nodesWithTask;
-        setNodes(nodesWithTask);
-        updateProject(projectId, { nodes: nodesWithTask });
-        flushCanvasStorePersistence();
-    }, [projectId, updateProject]);
 
     const createHistoryEntry = useCallback(
         (): CanvasHistoryEntry => ({
@@ -2278,49 +2268,10 @@ function AtelierCanvasPage() {
                 }catch(error){message.error(error instanceof Error?error.message:String(error))}
                 return;
             }
-            if (!isAiConfigReady(generationConfig, generationConfig.model)) {
-                openConfigDialog(true);
+            message.error("当前图片渠道没有可用的后端图片编辑 adapter；蒙版编辑未提交。");
                 return;
-            }
-            const prompt = t("canvas.projectPage.maskPrompt", { prompt: userPrompt });
-            const childId = nanoid();
-            const source = { id: node.id, name: `${node.title || node.id}.png`, type: node.metadata.mimeType || "image/png", dataUrl: node.metadata.content, storageKey: node.metadata.storageKey };
-            const generationMetadata = buildImageGenerationMetadata("edit", generationConfig, 1, [source]);
-            setMaskEditNodeId(null);
-            setRunningNodeId(childId);
-            setNodes((prev) => [
-                ...prev,
-                {
-                    id: childId,
-                    type: CanvasNodeType.Image,
-                    title: userPrompt.slice(0, 32) || t("canvas.projectPage.maskResult"),
-                    position: { x: node.position.x + node.width + 96, y: node.position.y },
-                    width: node.width,
-                    height: node.height,
-                    metadata: { prompt, status: NODE_STATUS_LOADING, ...generationMetadata },
-                },
-            ]);
-            setConnections((prev) => [...prev, { id: nanoid(), fromNodeId: node.id, toNodeId: childId }]);
-            setSelectedNodeIds(new Set([childId]));
-            setSelectedConnectionId(null);
-            setDialogNodeId(childId);
-            const controller = startGenerationRequest(childId, node.id, childId);
-            try {
-                const image = await requestEdit(generationConfig, prompt, [source], { id: `${node.id}-mask`, name: "mask.png", type: "image/png", dataUrl: payload.maskDataUrl }, { signal: controller.signal }).then((items) => items[0]);
-                const uploaded = await uploadImage(image.dataUrl);
-                const size = fitNodeSize(uploaded.width, uploaded.height, node.width, node.height);
-                setNodes((prev) => prev.map((item) => (item.id === childId ? { ...item, width: size.width, height: size.height, metadata: { ...item.metadata, ...imageMetadata(uploaded), prompt, ...generationMetadata } } : item)));
-            } catch (error) {
-                if (isGenerationCanceled(error)) return;
-                const errorDetails = error instanceof Error ? error.message : t("canvas.projectPage.maskFailed");
-                message.error(errorDetails);
-                setNodes((prev) => prev.map((item) => (item.id === childId ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_ERROR, errorDetails } } : item)));
-            } finally {
-                finishGenerationRequest(childId, controller);
-                setRunningNodeId(null);
-            }
         },
-        [effectiveConfig, finishGenerationRequest, isAiConfigReady, message, openConfigDialog, projectId, startGenerationRequest, submitSqliteImageEdit, t],
+        [effectiveConfig, message, submitSqliteImageEdit, t],
     );
 
     const upscaleImageNode = useCallback(async (node: CanvasNodeData, params: CanvasImageUpscaleParams) => {
@@ -2362,56 +2313,11 @@ function AtelierCanvasPage() {
                 }catch(error){message.error(error instanceof Error?error.message:String(error))}
                 return;
             }
-            if (!isAiConfigReady(generationConfig, generationConfig.model)) {
-                openConfigDialog(true);
-                return;
-            }
-            const childId = nanoid();
-            const imageConfig = NODE_DEFAULT_SIZE[CanvasNodeType.Image];
-            const title = buildAngleLabel(params);
-            const prompt = buildAnglePrompt(params);
-            const generationMetadata = buildImageGenerationMetadata("edit", generationConfig, 1, [
-                { id: node.id, name: `${node.title || node.id}.png`, type: node.metadata.mimeType || "image/png", dataUrl: node.metadata.content, storageKey: node.metadata.storageKey },
-            ]);
-            setAngleNodeId(null);
-            setRunningNodeId(childId);
-            setNodes((prev) => [
-                ...prev,
-                {
-                    id: childId,
-                    type: CanvasNodeType.Image,
-                    title,
-                    position: { x: node.position.x + node.width + 96, y: node.position.y },
-                    width: imageConfig.width,
-                    height: imageConfig.height,
-                    metadata: { prompt, status: NODE_STATUS_LOADING, ...generationMetadata },
-                },
-            ]);
-            setConnections((prev) => [...prev, { id: nanoid(), fromNodeId: node.id, toNodeId: childId }]);
-            setSelectedNodeIds(new Set([childId]));
-            setDialogNodeId(childId);
-            const controller = startGenerationRequest(childId, node.id, childId);
-            try {
-                const image = await requestEdit(
-                    generationConfig,
-                    prompt,
-                    [{ id: node.id, name: `${node.title || node.id}.png`, type: node.metadata.mimeType || "image/png", dataUrl: node.metadata.content, storageKey: node.metadata.storageKey }],
-                    undefined,
-                    { signal: controller.signal },
-                ).then((items) => items[0]);
-                const uploaded = await uploadImage(image.dataUrl);
-                const size = fitNodeSize(uploaded.width, uploaded.height, imageConfig.width, imageConfig.height);
-                setNodes((prev) => prev.map((item) => (item.id === childId ? { ...item, width: size.width, height: size.height, metadata: { ...item.metadata, ...imageMetadata(uploaded), prompt, ...generationMetadata } } : item)));
-            } catch (error) {
-                if (isGenerationCanceled(error)) return;
-                const errorDetails = error instanceof Error ? error.message : t("canvas.projectPage.generationFailed");
-                setNodes((prev) => prev.map((item) => (item.id === childId ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_ERROR, errorDetails } } : item)));
-            } finally {
-                finishGenerationRequest(childId, controller);
-                setRunningNodeId(null);
-            }
+            message.error("当前图片渠道没有可用的后端图片编辑 adapter；角度生成未提交。");
+            return;
+                        return;
         },
-        [effectiveConfig, finishGenerationRequest, message, openConfigDialog, startGenerationRequest, submitSqliteImageEdit, t],
+        [effectiveConfig, message, submitSqliteImageEdit, t],
     );
 
     const handleFontSizeChange = useCallback((nodeId: string, fontSize: number) => {
@@ -2606,6 +2512,15 @@ function AtelierCanvasPage() {
             const selectedScript=resolveModelScript(effectiveConfig,generationConfig.model);
             const sqliteProvider=selectedScript&&mode==="video"&&selectedChannel?.apiFormat==="openai"?
                 modelChannelProvider(selectedChannel,"text"):modelChannelProvider(selectedChannel,mode);
+            if(!sqliteProvider||!selectedChannel){
+                const reason=selectedChannel?.apiFormat==="gemini"&&mode!=="image"&&mode!=="text"?
+                    "Gemini 后端目前仅支持图片生成与文本/图片问答；此模型任务未提交。":
+                    mode==="video"&&selectedChannel?.apiFormat==="openai"?
+                    "OpenAI Sora 视频接口已停用；请使用支持的 Ark 渠道或受限异步视频脚本。此任务未提交。":
+                    "当前模型渠道没有可用的后端 JobCoordinator adapter；为了防止未经持久化的计费请求，任务未提交。";
+                message.error(reason);
+                return;
+            }
             if(sqliteProvider&&selectedChannel){
                 const submissionKey=projectId+":"+nodeId;
                 if(sqliteModelSubmitLocksRef.current.has(submissionKey)){
@@ -2619,7 +2534,9 @@ function AtelierCanvasPage() {
                 try{
                     if(!projectLoaded)throw Error("画布项目尚未加载完成");
                     await ensureSqliteModelChannelForExecution(selectedChannel,sqliteProvider);
-                    if(!sourceNode||!["text","config","image","audio","video"].includes(sourceNode.type)||
+                    const builtinPanel=sourceNode?getNodeDefinition(sourceNode.type)?.useBuiltinPanel:undefined;
+                    const writeBack=mode==="image"&&Boolean(builtinPanel?.writeBackToSelf&&builtinPanel.mode==="image");
+                    if(!sourceNode||!( ["text","config","image","audio","video"].includes(sourceNode.type)||writeBack)||
                       sourceNode.type==="image"&&mode!=="image"||
                       sourceNode.type==="audio"&&mode!=="audio"||
                       sourceNode.type==="video"&&mode!=="video"||
@@ -2634,12 +2551,15 @@ function AtelierCanvasPage() {
                     }
                     if(mode!=="text"&&sourceNode.metadata?.skillBinding&&sourceNode.metadata.skillBinding.mode!=="off")
                         throw Error("Skill 目前仅支持文本模型的手动指令模式");
-                    if(mode==="image"&&getGenerationCount(generationConfig.count)!==1)
-                        throw Error("当前图片生成每次仅支持一张，请将数量设置为 1");
+                    if(selectedScript&&sqliteProvider==="google_gemini")
+                        throw Error("Gemini 后端暂不执行自定义模型脚本");
+                    if(selectedChannel.apiFormat==="gemini"&&mode==="text"&&resolvePromptSkillBinding(prompt,sourceNode.metadata?.skillBinding))
+                        throw Error("Gemini 后端暂不支持文本任务的 Skill 工具回合；任务未提交。");
                     const original=sourceNode.type===CanvasNodeType.Text?
                       sourceNode.metadata?.content?.trim():"";
+                    const requestPrompt=writeBack?(builtinPanel?.promptPrefix||"")+promptText:promptText;
                     const context=buildNodeGenerationContext(nodeId,nodesRef.current,connectionsRef.current,
-                      mode==="text"&&original?t("canvas.projectPage.editTextPrompt",{source:original,prompt:promptText}):promptText);
+                      mode==="text"&&original?t("canvas.projectPage.editTextPrompt",{source:original,prompt:promptText}):requestPrompt);
                     if(mode!=="video"&&(context.referenceVideos.length||context.referenceAudios.length||
                         mode==="audio"&&context.referenceImages.length))
                         throw Error("当前仅支持图片生成/编辑与文本问答的图片参考输入；视频、音频参考请使用对应工作流");
@@ -2647,6 +2567,9 @@ function AtelierCanvasPage() {
                     if(!text)throw Error("请输入生成提示词");
                     const model=modelOptionName(generationConfig.model);
                     const kind=mode as "image"|"audio"|"text"|"video";
+                    if(kind==="image"&&getGenerationCount(generationConfig.count)>10&&
+                       ["openai","gemini"].includes(selectedChannel.apiFormat))
+                        throw Error("所选官方后端一次最多生成 10 张图片；请将图片数量调至 10 张以内再提交");
                     const format=generationConfig.audioFormat;
                     if(kind==="audio"&&!["mp3","wav","flac"].includes(format))
                         throw Error("语音生成目前仅支持 MP3、WAV 或 FLAC");
@@ -2684,14 +2607,17 @@ function AtelierCanvasPage() {
                     }
                     let seedanceMode:"text_to_video"|"first_frame"|"first_last_frame"|"omni_reference"|undefined;
                     let frozenReferences:Awaited<ReturnType<typeof freezeSeedanceReferences>>|undefined;
-                    if(kind==="video"){
+                    const standardOpenAiVideo=kind==="video"&&["openai","openai_compatible"].includes(sqliteProvider)&&!selectedScript;
+                    if(standardOpenAiVideo&&(context.referenceVideos.length||context.referenceAudios.length))
+                        throw Error("OpenAI 视频后端仅支持图片参考；视频或音频参考未提交");
+                    if(kind==="video"&&!standardOpenAiVideo){
                         const request=makeVideoGenerationRequest(generationConfig,text,generationConfig.model,context,
                             sourceNode.metadata?.videoReferences,Boolean(selectedScript)||isNativeArkVideo(generationConfig,generationConfig.model));
                         const modelConfig=selectedChannel.models.find(entry=>entry.name===model);
                         const caps=modelConfig?capabilitiesForModel(selectedChannel,modelConfig):null;
                         if(caps&&!selectedScript)validateSeedanceRequest(request,caps);
                         seedanceMode=request.mode;
-                        if(!selectedScript&&request.references.some(ref=>ref.kind==="video"&&
+                        if(sqliteProvider==="volcengine_ark"&&!selectedScript&&request.references.some(ref=>ref.kind==="video"&&
                             !ref.url?.startsWith("asset://"))){
                             const capability=await canvasApi<{arkAssetUploadReady:boolean}>(
                                 "/api/v1/execution/capabilities");
@@ -2708,23 +2634,25 @@ function AtelierCanvasPage() {
                         provider:sqliteProvider,
                         ...(skillAuthorizationId?{skillAuthorizationId}:{}),
                         bridge,
-                        ...(kind==="image"||kind==="text"?{referenceImages:context.referenceImages}:{}),
+                        ...(kind==="image"||kind==="text"||standardOpenAiVideo?{referenceImages:context.referenceImages}:{}),
                         task:{kind,model,prompt:kind==="text"?textMessages!.at(-1)!.content:text,
+                          ...(writeBack?{writeBack:true}:{}),
                           ...(selectedScript?{script:selectedScript}:{}),
-                          ...(kind==="text"?{stream:true,messages:textMessages,
+                          ...(kind==="text"?{stream:sqliteProvider==="google_gemini"?false:true,messages:textMessages,
                             ...(skillCatalog?{skills:skillCatalog}:{})}:{}),
-                          ...(kind==="image"?{size:openAiImageSize(generationConfig.size),
+                          ...(kind==="image"?{count:getGenerationCount(generationConfig.count),size:openAiImageSize(generationConfig.size),
                             quality:["auto","low","medium","high"].includes(generationConfig.quality)?
                               generationConfig.quality:"auto"}:{}),
                           ...(kind==="audio"?{voice:generationConfig.audioVoice,format,
-                            speed:Number(generationConfig.audioSpeed)||1}:{}),
-                          ...(kind==="video"?{duration:Math.max(4,Math.min(15,Math.floor(Number(generationConfig.videoSeconds)||6))),
+                            speed:Number(generationConfig.audioSpeed)||1,
+                            ...(generationConfig.audioInstructions.trim()?{instructions:generationConfig.audioInstructions.trim()}:{} )}:{}),
+                          ...(kind==="video"?{duration:Math.max(4,Math.min(20,Math.floor(Number(generationConfig.videoSeconds)||6))),
                             ratio:["16:9","9:16","1:1","4:3","3:4","21:9"].includes(generationConfig.videoRatio)?generationConfig.videoRatio:"adaptive",
                             resolution:["480p","720p","1080p"].includes(generationConfig.vquality)?generationConfig.vquality:
                               ["480","720","1080"].includes(generationConfig.vquality)?generationConfig.vquality+"p":"720p",
                             generateAudio:generationConfig.videoGenerateAudio!=="false",
                             watermark:generationConfig.videoWatermark==="true",
-                            ...(selectedScript?{references:frozenReferences}:{mode:seedanceMode,references:frozenReferences})}:{})}
+                            ...(!standardOpenAiVideo?{references:frozenReferences,...(!selectedScript?{mode:seedanceMode}:{})}:{})}:{})}
                     });
                     const fillSelectedText=kind==="text"&&sourceNode.type===CanvasNodeType.Text&&
                         !String(sourceNode.metadata?.content??"").trim();
@@ -2748,477 +2676,8 @@ function AtelierCanvasPage() {
                 }
                 return;
             }
-            if (!isAiConfigReady(generationConfig, generationConfig.model)) {
-                openConfigDialog(true);
-                return;
-            }
-
-            // useBuiltinPanel.writeBackToSelf reuses built-in generation while writing the result back to the plugin node.
-            // Image mode currently supports display-only nodes such as panoramas, with a useBuiltinPanel.promptPrefix.
-            const builtinPanel = sourceNode ? getNodeDefinition(sourceNode.type)?.useBuiltinPanel : undefined;
-            if (sourceNode && builtinPanel?.writeBackToSelf && builtinPanel.mode === "image") {
-                const scene = prompt.trim();
-                if (!scene) return;
-                setRunningNodeId(nodeId);
-                const controller = startGenerationRequest(nodeId, nodeId, nodeId);
-                setNodes((prev) => prev.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, prompt: scene, status: NODE_STATUS_LOADING, errorDetails: undefined } } : node)));
-                try {
-                    const fullPrompt = (builtinPanel.promptPrefix || "") + scene;
-                    // Upstream image nodes become references; without them this is text-to-image.
-                    const upstreamNodes = connectionsRef.current
-                        .filter((conn) => conn.toNodeId === nodeId)
-                        .map((conn) => nodesRef.current.find((node) => node.id === conn.fromNodeId))
-                        .filter((node): node is CanvasNodeData => Boolean(node));
-                    const refs = upstreamNodes.flatMap((up) =>
-                        typeof up.metadata?.content === "string" && up.metadata.content && up.type !== sourceNode.type
-                            ? [{ id: up.id, name: `${up.title || up.id}.png`, type: up.metadata.mimeType || "image/png", dataUrl: up.metadata.content, storageKey: up.metadata.storageKey }]
-                            : [],
-                    );
-                    const image = refs.length
-                        ? await requestEdit({ ...generationConfig, count: "1" }, fullPrompt, refs, undefined, { signal: controller.signal }).then((items) => items[0])
-                        : await requestGeneration({ ...generationConfig, count: "1" }, fullPrompt, { signal: controller.signal }).then((items) => items[0]);
-                    const uploaded = await uploadImage(image.dataUrl);
-                    setNodes((prev) =>
-                        prev.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, ...imageMetadata(uploaded), prompt: scene, model: generationConfig.model, status: NODE_STATUS_SUCCESS, errorDetails: undefined } } : node)),
-                    );
-                    setDialogNodeId(null);
-                } catch (error) {
-                    if (!isGenerationCanceled(error)) {
-                        const errorDetails = error instanceof Error ? error.message : t("canvas.projectPage.generationFailed");
-                        message.error(errorDetails);
-                        setNodes((prev) => prev.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_ERROR, errorDetails } } : node)));
-                    }
-                } finally {
-                    finishGenerationRequest(nodeId, controller);
-                }
-                return;
-            }
-
-            setRunningNodeId(nodeId);
-            const runController = startGenerationRequest(nodeId, nodeId, nodeId);
-            const sourceTextContent = sourceNode?.type === CanvasNodeType.Text ? sourceNode.metadata?.content?.trim() || "" : "";
-            const editingTextNode = mode === "text" && Boolean(sourceTextContent);
-            const generationContext = await hydrateNodeGenerationContext(
-                buildNodeGenerationContext(nodeId, nodesRef.current, connectionsRef.current, editingTextNode ? t("canvas.projectPage.editTextPrompt", { source: sourceTextContent, prompt: promptText }) : promptText),
-            );
-            const effectivePrompt = generationContext.prompt.trim();
-            if (runController.signal.aborted) {
-                finishGenerationRequest(nodeId, runController);
-                setRunningNodeId(null);
-                return;
-            }
-            const markSourceStatus = sourceNode?.type !== CanvasNodeType.Image && !editingTextNode;
-            if (!effectivePrompt && (mode === "text" || mode === "audio")) {
-                finishGenerationRequest(nodeId, runController);
-                setRunningNodeId(null);
-                return;
-            }
-            let pendingChildIds: string[] = [];
-            if (markSourceStatus)
-                setNodes((prev) => prev.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, ...(node.type === CanvasNodeType.Config ? {} : { prompt }), status: NODE_STATUS_LOADING, errorDetails: undefined } } : node)));
-
-            try {
-                if (mode === "image") {
-                    const count = getGenerationCount(generationConfig.count);
-                    const isConfigNode = sourceNode?.type === CanvasNodeType.Config;
-                    const isImageNode = sourceNode?.type === CanvasNodeType.Image;
-                    const isEmptyImageNode = isImageNode && !sourceNode?.metadata?.content;
-                    const sourceReference =
-                        isImageNode && sourceNode?.metadata?.content
-                            ? [{ id: sourceNode.id, name: `${sourceNode.title || sourceNode.id}.png`, type: sourceNode.metadata.mimeType || "image/png", dataUrl: sourceNode.metadata.content, storageKey: sourceNode.metadata.storageKey }]
-                            : [];
-                    const referenceImages = sourceReference.length ? sourceReference : generationContext.referenceImages;
-                    const generationType = referenceImages.length ? ("edit" as const) : ("generation" as const);
-                    const generationMetadata = buildImageGenerationMetadata(generationType, generationConfig, count, referenceImages);
-                    const parentConfig = NODE_DEFAULT_SIZE[isConfigNode ? CanvasNodeType.Config : isImageNode ? CanvasNodeType.Image : CanvasNodeType.Text];
-                    const imageConfig = NODE_DEFAULT_SIZE[CanvasNodeType.Image];
-                    const parentPosition = sourceNode?.position || { x: 0, y: 0 };
-                    const rootId = isEmptyImageNode ? nodeId : nanoid();
-                    const imageIds = Array.from({ length: count }, () => nanoid());
-                    pendingChildIds = [rootId];
-                    const rootNode: CanvasNodeData = {
-                        id: rootId,
-                        type: CanvasNodeType.Image,
-                        title: effectivePrompt.slice(0, 32) || "Generated Image",
-                        position: {
-                            x: isEmptyImageNode ? parentPosition.x : parentPosition.x + parentConfig.width + 96,
-                            y: parentPosition.y + parentConfig.height / 2 - imageConfig.height / 2,
-                        },
-                        width: isEmptyImageNode ? sourceNode?.width || imageConfig.width : imageConfig.width,
-                        height: isEmptyImageNode ? sourceNode?.height || imageConfig.height : imageConfig.height,
-                        metadata: {
-                            prompt: effectivePrompt,
-                            status: NODE_STATUS_LOADING,
-                            images: imageIds.map((id) => ({ id, status: NODE_STATUS_LOADING, content: "", storageKey: "", naturalWidth: 0, naturalHeight: 0, bytes: 0, mimeType: "" })),
-                            ...generationMetadata,
-                        },
-                    };
-
-                    setNodes((prev) => [
-                        ...prev.map((node) =>
-                            node.id === nodeId
-                                ? isConfigNode
-                                    ? {
-                                          ...node,
-                                          metadata: { ...node.metadata, status: NODE_STATUS_LOADING, errorDetails: undefined },
-                                      }
-                                    : isEmptyImageNode
-                                      ? {
-                                            ...node,
-                                            position: rootNode.position,
-                                            width: rootNode.width,
-                                            height: rootNode.height,
-                                            title: rootNode.title,
-                                            metadata: { ...node.metadata, ...rootNode.metadata, errorDetails: undefined },
-                                        }
-                                      : isImageNode
-                                        ? {
-                                              ...node,
-                                              metadata: { ...node.metadata, status: NODE_STATUS_SUCCESS, errorDetails: undefined },
-                                          }
-                                        : {
-                                              ...node,
-                                              type: CanvasNodeType.Text,
-                                              title: prompt.slice(0, 32) || "Prompt",
-                                              width: parentConfig.width,
-                                              height: parentConfig.height,
-                                              metadata: { ...node.metadata, content: prompt, prompt, status: NODE_STATUS_SUCCESS, fontSize: 14, errorDetails: undefined },
-                                          }
-                                : node,
-                        ),
-                        ...(isEmptyImageNode ? [] : [rootNode]),
-                    ]);
-                    if (!isEmptyImageNode) setConnections((prev) => [...prev, { id: nanoid(), fromNodeId: nodeId, toNodeId: rootId }]);
-                    setSelectedNodeIds(new Set([nodeId]));
-                    setSelectedConnectionId(null);
-                    setDialogNodeId(nodeId);
-
-                    const controller = rootId === nodeId ? runController : startGenerationRequest(rootId, nodeId, nodeId, runController);
-                    let hasSuccess = false;
-                    let hasFailure = false;
-                    let firstError = "";
-                    await Promise.all(
-                        imageIds.map(async (imageId) => {
-                            try {
-                                const image = referenceImages.length
-                                    ? await requestEdit({ ...generationConfig, count: "1" }, effectivePrompt, referenceImages, undefined, { signal: controller.signal }).then((items) => items[0])
-                                    : await requestGeneration({ ...generationConfig, count: "1" }, effectivePrompt, { signal: controller.signal }).then((items) => items[0]);
-                                const uploaded = await uploadImage(image.dataUrl);
-                                const imageSize = fitNodeSize(uploaded.width, uploaded.height, imageConfig.width, imageConfig.height);
-                                const item: CanvasNodeImage = {
-                                    id: imageId,
-                                    status: NODE_STATUS_SUCCESS,
-                                    content: uploaded.url,
-                                    storageKey: uploaded.storageKey,
-                                    naturalWidth: uploaded.width,
-                                    naturalHeight: uploaded.height,
-                                    bytes: uploaded.bytes,
-                                    mimeType: uploaded.mimeType,
-                                };
-                                setNodes((prev) =>
-                                    prev.map((node) => {
-                                        if (node.id !== rootId) return node;
-                                        const images = node.metadata?.images?.map((image) => (image.id === imageId ? item : image)) || [];
-                                        if (node.metadata?.primaryImageId) return { ...node, metadata: { ...node.metadata, images } };
-                                        const center = { x: node.position.x + node.width / 2, y: node.position.y + node.height / 2 };
-                                        return {
-                                            ...node,
-                                            position: { x: center.x - imageSize.width / 2, y: center.y - imageSize.height / 2 },
-                                            ...imageSize,
-                                            metadata: {
-                                                ...node.metadata,
-                                                content: item.content,
-                                                storageKey: item.storageKey,
-                                                naturalWidth: item.naturalWidth,
-                                                naturalHeight: item.naturalHeight,
-                                                bytes: item.bytes,
-                                                mimeType: item.mimeType,
-                                                images,
-                                                primaryImageId: imageId,
-                                            },
-                                        };
-                                    }),
-                                );
-                                hasSuccess = true;
-                                if (isConfigNode) setNodes((prev) => prev.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_SUCCESS, errorDetails: undefined } } : node)));
-                                return true;
-                            } catch (error) {
-                                if (isGenerationCanceled(error)) return false;
-                                const errorDetails = error instanceof Error ? error.message : t("canvas.projectPage.generationFailed");
-                                if (!firstError) firstError = errorDetails;
-                                hasFailure = true;
-                                setNodes((prev) =>
-                                    prev.map((node) =>
-                                        node.id === rootId ? { ...node, metadata: { ...node.metadata, images: node.metadata?.images?.map((image) => (image.id === imageId ? { ...image, status: NODE_STATUS_ERROR, errorDetails } : image)) } } : node,
-                                    ),
-                                );
-                            }
-                            return false;
-                        }),
-                    );
-                    if (rootId !== nodeId) finishGenerationRequest(rootId, controller);
-                    if (controller.signal.aborted) {
-                        setNodes((prev) => prev.map((node) => (node.id === nodeId && isConfigNode && node.metadata?.status === NODE_STATUS_LOADING ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_IDLE, errorDetails: undefined } } : node)));
-                        return;
-                    }
-                    if (hasFailure) {
-                        message.error(hasSuccess ? t("canvas.projectPage.partialFailed") : firstError || t("canvas.projectPage.generationFailed"));
-                    }
-                    setNodes((prev) =>
-                        prev.map((node) =>
-                            node.id === nodeId && isConfigNode
-                                ? { ...node, metadata: { ...node.metadata, status: hasSuccess ? NODE_STATUS_SUCCESS : NODE_STATUS_ERROR, errorDetails: hasSuccess ? undefined : t("canvas.projectPage.generationFailed") } }
-                                : node.id === rootId
-                                  ? { ...node, metadata: { ...node.metadata, status: hasSuccess ? NODE_STATUS_SUCCESS : NODE_STATUS_ERROR, errorDetails: hasSuccess ? undefined : t("canvas.projectPage.allFailed") } }
-                                  : node,
-                        ),
-                    );
-                    return;
-                }
-
-                if (mode === "video") {
-                    const spec = nodeSizeFromRatio(generationConfig.size, NODE_DEFAULT_SIZE[CanvasNodeType.Video].width, NODE_DEFAULT_SIZE[CanvasNodeType.Video].height) || NODE_DEFAULT_SIZE[CanvasNodeType.Video];
-                    const isEmptyVideoNode = sourceNode?.type === CanvasNodeType.Video && !sourceNode.metadata?.content;
-                    const videoId = isEmptyVideoNode ? nodeId : nanoid();
-                    const parent = sourceNode?.position || { x: 0, y: 0 };
-                    const videoNode: CanvasNodeData = {
-                        id: videoId,
-                        type: CanvasNodeType.Video,
-                        title: effectivePrompt.slice(0, 32) || "Generated Video",
-                        position: isEmptyVideoNode ? sourceNode.position : { x: parent.x + (sourceNode?.width || spec.width) + 96, y: parent.y },
-                        width: isEmptyVideoNode ? sourceNode.width : spec.width,
-                        height: isEmptyVideoNode ? sourceNode.height : spec.height,
-                        metadata: {
-                            prompt: effectivePrompt,
-                            status: NODE_STATUS_LOADING,
-                            model: generationConfig.model,
-                            size: generationConfig.size,
-                            seconds: generationConfig.videoSeconds,
-                            vquality: generationConfig.vquality,
-                            generateAudio: generationConfig.videoGenerateAudio,
-                            watermark: generationConfig.videoWatermark,
-                            videoMode: generationConfig.videoMode,
-                            videoRatio: generationConfig.videoRatio,
-                            returnLastFrame: generationConfig.videoReturnLastFrame,
-                            videoReferences: makeVideoGenerationRequest(generationConfig, effectivePrompt, generationConfig.model, generationContext, sourceNode?.metadata?.videoReferences).references.map(({ id, kind, role, storageKey, url, mimeType, durationMs, bytes }) => ({ id, kind, role, storageKey, url, mimeType, durationMs, bytes })),
-                            references: generationReferenceUrls(generationContext),
-                        },
-                    };
-                    pendingChildIds = [videoId];
-                    const nextNodes = isEmptyVideoNode
-                        ? nodesRef.current.map((node) => (node.id === nodeId ? { ...node, ...videoNode } : node))
-                        : [...nodesRef.current.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_SUCCESS } } : node)), videoNode];
-                    nodesRef.current = nextNodes;
-                    setNodes(nextNodes);
-                    if (!isEmptyVideoNode) setConnections((prev) => [...prev, { id: nanoid(), fromNodeId: nodeId, toNodeId: videoId }]);
-                    const controller = startGenerationRequest(videoId, nodeId, nodeId, runController);
-                    try {
-                        let generationTask: VideoGenerationTask | null = null;
-                        const request = makeVideoGenerationRequest(generationConfig, effectivePrompt, generationConfig.model, generationContext, sourceNode?.metadata?.videoReferences);
-                        if (isNativeArkVideo(generationConfig, generationConfig.model)) {
-                            const videoRequest = { ...request, references: request.references.map(({ dataUrl, storageKey, ...reference }) => ({ ...reference, ...(storageKey ? { storageKey } : dataUrl ? { dataUrl } : {}) })) };
-                            nodesRef.current = nodesRef.current.map((item) => item.id === videoId ? { ...item, metadata: { ...item.metadata, videoRequest } } : item);
-                            setNodes(nodesRef.current);
-                            updateProject(projectId, { nodes: nodesRef.current });
-                            flushCanvasStorePersistence();
-                        }
-                        const generatedVideo = await requestVideoGeneration(generationConfig, effectivePrompt, generationContext.referenceImages, {
-                            signal: controller.signal,
-                            request,
-                            onTaskCreated: (task) => {
-                                generationTask = task;
-                                persistVideoTask(videoId, task);
-                            },
-                            onTaskStatus: (status) => generationTask && persistVideoTask(videoId, { ...generationTask, status }, status),
-                        });
-                        const video = await storeGeneratedVideo(generatedVideo);
-                        const lastFrame = generatedVideo.lastFrameBlob ? await saveArkLastFrame(generatedVideo.lastFrameBlob) : undefined;
-                        if (generationTask) persistVideoTask(videoId, generationTask, "succeeded");
-                        const videoSize = fitNodeSize(video.width || spec.width, video.height || spec.height, VIDEO_NODE_MAX_WIDTH, VIDEO_NODE_MAX_HEIGHT);
-                        setNodes((prev) =>
-                            prev.map((node) =>
-                                node.id === videoId
-                                    ? {
-                                          ...node,
-                                          width: videoSize.width,
-                                          height: videoSize.height,
-                                          position: { x: node.position.x + node.width / 2 - videoSize.width / 2, y: node.position.y + node.height / 2 - videoSize.height / 2 },
-                                          metadata: {
-                                              ...node.metadata,
-                                              ...videoMetadata(video),
-                                              prompt: effectivePrompt,
-                                              model: generationConfig.model,
-                                              size: generationConfig.size,
-                                              seconds: generationConfig.videoSeconds,
-                                              vquality: generationConfig.vquality,
-                                              generateAudio: generationConfig.videoGenerateAudio,
-                                              watermark: generationConfig.videoWatermark,
-                                              videoMode: generationConfig.videoMode,
-                                              videoRatio: generationConfig.videoRatio,
-                                              returnLastFrame: generationConfig.videoReturnLastFrame,
-                                              ...(generationTask ? { videoTask: { provider: generationTask.provider, channelId: generationTask.channelId, model: generationTask.model, taskId: generationTask.id, startedAt: generationTask.startedAt || Date.now(), status: "succeeded" as const } } : {}),
-                                              ...(generatedVideo.lastFrameUrl ? { lastFrameUrl: generatedVideo.lastFrameUrl } : {}),
-                                              ...(lastFrame ? { lastFrame } : {}),
-                                              references: generationReferenceUrls(generationContext),
-                                          },
-                                      }
-                                    : node,
-                            ),
-                        );
-                    } finally {
-                        finishGenerationRequest(videoId, controller);
-                    }
-                    return;
-                }
-
-                if (mode === "audio") {
-                    const spec = NODE_DEFAULT_SIZE[CanvasNodeType.Audio];
-                    const isEmptyAudioNode = sourceNode?.type === CanvasNodeType.Audio && !sourceNode.metadata?.content;
-                    const audioId = isEmptyAudioNode ? nodeId : nanoid();
-                    const parent = sourceNode?.position || { x: 0, y: 0 };
-                    const audioNode: CanvasNodeData = {
-                        id: audioId,
-                        type: CanvasNodeType.Audio,
-                        title: effectivePrompt.slice(0, 32) || "Generated Audio",
-                        position: isEmptyAudioNode ? sourceNode.position : { x: parent.x + (sourceNode?.width || spec.width) + 96, y: parent.y + ((sourceNode?.height || spec.height) - spec.height) / 2 },
-                        width: isEmptyAudioNode ? sourceNode.width : spec.width,
-                        height: isEmptyAudioNode ? sourceNode.height : spec.height,
-                        metadata: { prompt: effectivePrompt, status: NODE_STATUS_LOADING, ...buildAudioGenerationMetadata(generationConfig) },
-                    };
-                    pendingChildIds = [audioId];
-                    setNodes((prev) =>
-                        isEmptyAudioNode
-                            ? prev.map((node) => (node.id === nodeId ? { ...node, ...audioNode } : node))
-                            : [...prev.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_SUCCESS } } : node)), audioNode],
-                    );
-                    if (!isEmptyAudioNode) setConnections((prev) => [...prev, { id: nanoid(), fromNodeId: nodeId, toNodeId: audioId }]);
-                    const controller = startGenerationRequest(audioId, nodeId, nodeId, runController);
-                    try {
-                        const audio = await storeGeneratedAudio(await requestAudioGeneration(generationConfig, effectivePrompt, { signal: controller.signal }), generationConfig.audioFormat);
-                        setNodes((prev) => prev.map((node) => (node.id === audioId ? { ...node, metadata: { ...node.metadata, ...audioMetadata(audio), prompt: effectivePrompt, ...buildAudioGenerationMetadata(generationConfig) } } : node)));
-                    } finally {
-                        finishGenerationRequest(audioId, controller);
-                    }
-                    return;
-                }
-
-                const requestedSkills = resolvePromptSkillBinding(prompt, sourceNode?.metadata?.skillBinding);
-                const manualSkills = requestedSkills?.mode === "manual" ? await resolveManualSkillContext(requestedSkills, undefined, projectId) : null;
-                const autoPlan = !manualSkills && !resolveModelScript(generationConfig, generationConfig.model) && !isSkillToolsKnownUnsupported(generationConfig)
-                    ? await prepareAutomaticSkillCatalog(requestedSkills?.mode === "auto" ? requestedSkills : undefined, undefined, effectivePrompt, projectId)
-                    : null;
-                if (runController.signal.aborted) return;
-                const defaultMessages = buildNodeResponseMessages({ ...generationContext, prompt: effectivePrompt });
-                const skillMessages = manualSkills ? withManualSkillMessages(defaultMessages, manualSkills)
-                    : autoPlan ? withAutomaticSkillCatalog(defaultMessages, autoPlan) : defaultMessages;
-                const initialSkillRun = manualSkills?.snapshot || autoPlan?.snapshot();
-                let streamed = "";
-                const isConfigNode = sourceNode?.type === CanvasNodeType.Config;
-                const textCount = getGenerationCount(String(sourceNode?.metadata?.textCount || 1));
-                const parentConfig = NODE_DEFAULT_SIZE[isConfigNode ? CanvasNodeType.Config : CanvasNodeType.Text];
-                const textConfig = NODE_DEFAULT_SIZE[CanvasNodeType.Text];
-                const parentPosition = sourceNode?.position || { x: 0, y: 0 };
-                const childIds = isConfigNode || editingTextNode || textCount > 1 ? Array.from({ length: textCount }, () => nanoid()) : [];
-                pendingChildIds = childIds;
-                if (childIds.length) {
-                    const childNodes: CanvasNodeData[] = childIds.map((id, index) => ({
-                        id,
-                        type: CanvasNodeType.Text,
-                        title: effectivePrompt.slice(0, 32) || "Generated Text",
-                        position: {
-                            x: parentPosition.x + parentConfig.width + 96,
-                            y: parentPosition.y + parentConfig.height / 2 - textConfig.height / 2 + (index - (textCount - 1) / 2) * (textConfig.height + 36),
-                        },
-                        width: textConfig.width,
-                        height: textConfig.height,
-                        metadata: { prompt: effectivePrompt, status: NODE_STATUS_LOADING, fontSize: 14, model: generationConfig.model, reasoningEffort: generationConfig.reasoningEffort, skillRun: initialSkillRun },
-                    }));
-                    setNodes((prev) => [...prev.map((node) => (node.id === nodeId && isConfigNode ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_LOADING, errorDetails: undefined } } : node)), ...childNodes]);
-                    setConnections((prev) => [...prev, ...childIds.map((childId) => ({ id: nanoid(), fromNodeId: nodeId, toNodeId: childId }))]);
-                }
-
-                const controller = runController;
-                const textTargetIds = childIds.length ? childIds : [nodeId];
-                textTargetIds.forEach((targetNodeId) => startGenerationRequest(targetNodeId, nodeId, nodeId, controller));
-                const answers = await Promise.all(
-                    textTargetIds.map(async (targetNodeId) => {
-                        let localStreamed = "";
-                        const autoRun = autoPlan?.createRun();
-                        let toolStarted = false;
-                        let toolUnsupported = false;
-                        const onText = (text: string) => {
-                            localStreamed = text;
-                            streamed = text;
-                            if (isConfigNode) return;
-                            setNodes((prev) => prev.map((node) => (node.id === targetNodeId ? { ...node, type: CanvasNodeType.Text, metadata: { ...node.metadata, content: text, status: NODE_STATUS_LOADING } } : node)));
-                        };
-                        try {
-                            let answer: string;
-                            try {
-                                answer = await requestImageQuestion(generationConfig, skillMessages, onText,
-                                    { signal: controller.signal, ...(autoRun ? { agent: {
-                                        tools: autoRun.tools, executeTool: autoRun.executeTool,
-                                        maxToolRounds: 6, maxToolCalls: 12, maxToolOutputChars: 32768,
-                                        onEvent: (event) => {
-                                            if (event.type === "tool_start") toolStarted = true;
-                                            autoRun.onEvent(event);
-                                        },
-                                    } } : {}) });
-                                if (autoRun) rememberSupportedSkillTools(generationConfig);
-                            } catch (error) {
-                                if (!autoRun || toolStarted || controller.signal.aborted || !isUnsupportedSkillToolsError(error)) throw error;
-                                // Only unsupported tool/function schemas trigger fallback; keep the original prompt.
-                                rememberUnsupportedSkillTools(generationConfig);
-                                toolUnsupported = true;
-                                answer = await requestImageQuestion(generationConfig, defaultMessages, onText, { signal: controller.signal });
-                            }
-                            return { nodeId: targetNodeId, content: answer || localStreamed,
-                                skillRun: toolUnsupported ? undefined : autoRun?.snapshot() || manualSkills?.snapshot,
-                                skillTrace: toolUnsupported ? undefined : autoRun?.trace(),
-                                skillMetrics: toolUnsupported ? undefined : autoRun?.metrics(),
-                            };
-                        } finally {
-                            finishGenerationRequest(targetNodeId, controller);
-                        }
-                    }),
-                );
-                if (controller.signal.aborted) return;
-                const answerByNodeId = new Map(answers.map((item) => [item.nodeId, item]));
-                const answerText = (id: string) => answerByNodeId.get(id)?.content || streamed;
-                const skillResult = (id: string) => ({
-                    skillRun: answerByNodeId.get(id)?.skillRun,
-                    skillTrace: answerByNodeId.get(id)?.skillTrace,
-                    skillMetrics: answerByNodeId.get(id)?.skillMetrics,
-                });
-                setNodes((prev) =>
-                    prev.map((node) =>
-                        childIds.includes(node.id)
-                            ? { ...node, metadata: { ...node.metadata, content: answerText(node.id), ...skillResult(node.id), status: NODE_STATUS_SUCCESS } }
-                            : node.id === nodeId && isConfigNode
-                              ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_SUCCESS } }
-                              : node.id === nodeId && !editingTextNode
-                                ? {
-                                      ...node,
-                                      type: CanvasNodeType.Text,
-                                      title: prompt.slice(0, 32) || "Generated Text",
-                                      metadata: { ...node.metadata, content: answerText(node.id), model: generationConfig.model, reasoningEffort: generationConfig.reasoningEffort, ...skillResult(node.id), status: NODE_STATUS_SUCCESS },
-                                  }
-                                : node,
-                    ),
-                );
-            } catch (error) {
-                if (isGenerationCanceled(error)) return;
-                const errorDetails = error instanceof Error ? error.message : t("canvas.projectPage.generationFailed");
-                message.error(errorDetails);
-                setNodes((prev) =>
-                    prev.map((node) => (node.id === nodeId || pendingChildIds.includes(node.id) ? (node.id === nodeId && !markSourceStatus ? node : { ...node, metadata: { ...node.metadata, status: NODE_STATUS_ERROR, errorDetails, ...(isResumableSeedanceProvider(node.metadata?.videoTask?.provider) && node.metadata?.videoTask?.status === "succeeded" ? { videoDownloadError: errorDetails } : {}) } }) : node)),
-                );
-            } finally {
-                finishGenerationRequest(nodeId, runController);
-                setRunningNodeId(null);
-            }
         },
-        [effectiveConfig, finishGenerationRequest, isAiConfigReady, message, openConfigDialog, projectId, projectLoaded, startGenerationRequest, t],
+        [effectiveConfig, message, projectId, projectLoaded, t],
     );
     // Update event-driven toolbar/inspector callbacks before the painted canvas
     // accepts clicks, so they never retain the initial `projectLoaded=false`.
@@ -3270,10 +2729,6 @@ function AtelierCanvasPage() {
                     message.warning(t("canvas.projectPage.retryPromptMissing"));
                     return;
                 }
-                if(node.type===CanvasNodeType.Image&&savedImageMetadata?.generationType==="edit"){
-                    message.error("官方模型参考图编辑尚未接入后端任务服务；不会回退浏览器直接请求");
-                    return;
-                }
                 // Historical result snapshots may carry references not present
                 // in the current producer's dependency graph. Never replace
                 // such a retry with an accidental text-only paid video job.
@@ -3309,290 +2764,10 @@ function AtelierCanvasPage() {
                 await handleGenerateNode(sqliteSource.id,retryMode,retryPrompt,generationConfig);
                 return;
             }
-            if (!isAiConfigReady(generationConfig, generationConfig.model)) {
-                openConfigDialog(true);
-                return;
-            }
-
-            const context = hasSavedImageMetadata || node.metadata?.videoRequest ? null : await hydrateNodeGenerationContext(buildNodeGenerationContext(sourceNode.id, nodesRef.current, connectionsRef.current, sourceNode.metadata?.prompt || node.metadata?.prompt || ""));
-            const prompt = (savedImageMetadata?.prompt || node.metadata?.videoRequest?.prompt || context?.prompt || "").trim();
-            if (!prompt) {
-                message.warning(t("canvas.projectPage.retryPromptMissing"));
-                return;
-            }
-            const generationType = savedImageMetadata?.generationType;
-            const useReferenceImages = generationType ? generationType === "edit" : Boolean(context?.referenceImages.length);
-            const retryReferenceImages =
-                hasSavedImageMetadata && savedImageMetadata ? await resolveMetadataReferences(savedImageMetadata) : useReferenceImages ? (context?.referenceImages.length ? context.referenceImages : sourceNodeReferenceImages(sourceNode)) : [];
-            if (useReferenceImages && !retryReferenceImages) {
-                message.error(t("canvas.projectPage.referenceMissing"));
-                setNodes((prev) =>
-                    prev.map((item) =>
-                        item.id === node.id
-                            ? {
-                                  ...item,
-                                  metadata: {
-                                      ...item.metadata,
-                                      status: item.metadata?.content ? NODE_STATUS_SUCCESS : NODE_STATUS_ERROR,
-                                      errorDetails: item.metadata?.content ? undefined : t("canvas.projectPage.referenceMissing"),
-                                      images: item.metadata?.images?.map((image) => (image.id === imageId ? { ...image, status: NODE_STATUS_ERROR, errorDetails: t("canvas.projectPage.referenceMissing") } : image)),
-                                  },
-                              }
-                            : item,
-                    ),
-                );
-                return;
-            }
-            const retryImages = retryReferenceImages || [];
-
-            // Resolve pinned Skills before setting the node to loading: the user may
-            // decline replacing a removed version, leaving the existing output intact.
-            let retryManualSkills: ManualSkillContext | null = null;
-            let retryAutoPlan: AutomaticSkillPlan | null = null;
-            if (node.type === CanvasNodeType.Text) {
-                const inlinePrompt = sourceNode.type === CanvasNodeType.Config
-                    ? sourceNode.metadata?.composerContent ?? sourceNode.metadata?.prompt ?? ""
-                    : node.metadata?.composerContent ?? node.metadata?.prompt ?? "";
-                const requestedSkills = resolvePromptSkillBinding(inlinePrompt, sourceNode.metadata?.skillBinding);
-                const oldRun = node.metadata?.skillRun;
-                const canAuto = !resolveModelScript(generationConfig, generationConfig.model);
-                try {
-                    if (oldRun?.mode === "manual" || (!oldRun && requestedSkills?.mode === "manual")) {
-                        retryManualSkills = await resolveManualSkillContext(requestedSkills, oldRun?.mode === "manual" ? oldRun : undefined, projectId);
-                    } else if (canAuto && !isSkillToolsKnownUnsupported(generationConfig)) {
-                        retryAutoPlan = await prepareAutomaticSkillCatalog(undefined, oldRun?.mode === "auto" ? oldRun : undefined, prompt, projectId);
-                    }
-                } catch (error) {
-                    if (error instanceof MissingSkillVersionError && oldRun) {
-                        const replaceVersion = await new Promise<boolean>((resolve) => {
-                            modal.confirm({
-                                title: t("canvas.skillPicker.missingVersionTitle"),
-                                content: t("canvas.skillPicker.missingVersionContent", { id: error.skillId, version: error.version }),
-                                okText: t("canvas.skillPicker.useCurrent"),
-                                cancelText: t("common.cancel"),
-                                onOk: () => resolve(true),
-                                onCancel: () => resolve(false),
-                            });
-                        });
-                        if (!replaceVersion) return;
-                        try {
-                            if (oldRun.mode === "manual") {
-                                retryManualSkills = await resolveManualSkillContext({ mode: "manual", skillIds: oldRun.skillIds }, undefined, projectId);
-                            } else if (canAuto) {
-                                retryAutoPlan = await prepareAutomaticSkillCatalog({ mode: "auto", skillIds: oldRun.skillIds }, undefined, prompt, projectId);
-                            }
-                        } catch (nextError) {
-                            message.error(nextError instanceof Error ? nextError.message : String(nextError));
-                            return;
-                        }
-                    } else {
-                        message.error(error instanceof Error ? error.message : String(error));
-                        return;
-                    }
-                }
-            }
-
-            setRunningNodeId(node.id);
-            setNodes((prev) =>
-                prev.map((item) =>
-                    item.id === node.id
-                        ? {
-                              ...item,
-                              metadata: {
-                                  ...item.metadata,
-                                  status: NODE_STATUS_LOADING,
-                                  errorDetails: undefined,
-                                  images: item.metadata?.images?.map((image) => (image.id === imageId ? { ...image, status: NODE_STATUS_LOADING, errorDetails: undefined } : image)),
-                              },
-                          }
-                        : item,
-                ),
-            );
-            const controller = startGenerationRequest(node.id, sourceNode.id, node.id);
-
-            try {
-                if (node.type === CanvasNodeType.Text) {
-                    if (!context) return;
-                    if (controller.signal.aborted) return;
-                    const baseMessages = buildNodeResponseMessages({ ...context, prompt: extractSkillMentions(prompt).text });
-                    const messages = retryManualSkills ? withManualSkillMessages(baseMessages, retryManualSkills)
-                        : retryAutoPlan ? withAutomaticSkillCatalog(baseMessages, retryAutoPlan) : baseMessages;
-                    const autoRun = retryAutoPlan?.createRun();
-                    let toolStarted = false;
-                    let toolUnsupported = false;
-                    let streamed = "";
-                    const onDelta = (text: string) => {
-                        streamed = text;
-                        setNodes((prev) => prev.map((item) => (item.id === node.id ? { ...item, type: CanvasNodeType.Text, metadata: { ...item.metadata, content: text, status: NODE_STATUS_LOADING } } : item)));
-                    };
-                    let answer: string;
-                    try {
-                        answer = await requestImageQuestion(generationConfig, messages, onDelta, {
-                            signal: controller.signal,
-                            ...(autoRun ? { agent: {
-                                tools: autoRun.tools, executeTool: autoRun.executeTool,
-                                maxToolRounds: 6, maxToolCalls: 12, maxToolOutputChars: 32768,
-                                onEvent: (event) => {
-                                    if (event.type === "tool_start") toolStarted = true;
-                                    autoRun.onEvent(event);
-                                },
-                            } } : {}),
-                        });
-                        if (autoRun) rememberSupportedSkillTools(generationConfig);
-                    } catch (error) {
-                        if (!autoRun || toolStarted || controller.signal.aborted || !isUnsupportedSkillToolsError(error)) throw error;
-                        rememberUnsupportedSkillTools(generationConfig);
-                        toolUnsupported = true;
-                        answer = await requestImageQuestion(generationConfig, baseMessages, onDelta, { signal: controller.signal });
-                    }
-                    setNodes((prev) => prev.map((item) => (item.id === node.id ? {
-                        ...item, type: CanvasNodeType.Text,
-                        metadata: { ...item.metadata, content: answer || streamed, prompt,
-                            skillRun: toolUnsupported ? undefined : autoRun?.snapshot() || retryManualSkills?.snapshot,
-                            skillTrace: toolUnsupported ? undefined : autoRun?.trace(),
-                            skillMetrics: toolUnsupported ? undefined : autoRun?.metrics(),
-                            status: NODE_STATUS_SUCCESS,
-                        },
-                    } : item)));
-                    return;
-                }
-                if (node.type === CanvasNodeType.Video) {
-                    const retryContext = context || { referenceImages: retryImages, referenceVideos: [], referenceAudios: [] };
-                    const request = node.metadata?.videoRequest || {
-                        ...makeVideoGenerationRequest(generationConfig, prompt, generationConfig.model, retryContext, node.metadata?.videoReferences || []),
-                    };
-                    let generationTask: VideoGenerationTask | null = null;
-                    const generatedVideo = await requestVideoGeneration(generationConfig, prompt, retryImages, {
-                        signal: controller.signal,
-                        request,
-                        onTaskCreated: (task) => {
-                            generationTask = task;
-                            persistVideoTask(node.id, task);
-                        },
-                        onTaskStatus: (status) => generationTask && persistVideoTask(node.id, { ...generationTask, status }, status),
-                    });
-                    const video = await storeGeneratedVideo(generatedVideo);
-                    const lastFrame = generatedVideo.lastFrameBlob ? await saveArkLastFrame(generatedVideo.lastFrameBlob) : undefined;
-                    if (generationTask) persistVideoTask(node.id, generationTask, "succeeded");
-                    const videoSize = fitNodeSize(video.width || node.width, video.height || node.height, VIDEO_NODE_MAX_WIDTH, VIDEO_NODE_MAX_HEIGHT);
-                    setNodes((prev) =>
-                        prev.map((item) =>
-                            item.id === node.id
-                                ? {
-                                      ...item,
-                                      width: videoSize.width,
-                                      height: videoSize.height,
-                                      position: { x: item.position.x + item.width / 2 - videoSize.width / 2, y: item.position.y + item.height / 2 - videoSize.height / 2 },
-                                      metadata: {
-                                          ...item.metadata,
-                                          ...videoMetadata(video),
-                                          prompt,
-                                          model: generationConfig.model,
-                                          size: generationConfig.size,
-                                          seconds: generationConfig.videoSeconds,
-                                          vquality: generationConfig.vquality,
-                                          generateAudio: generationConfig.videoGenerateAudio,
-                                          watermark: generationConfig.videoWatermark,
-                                          videoMode: generationConfig.videoMode,
-                                          videoRatio: generationConfig.videoRatio,
-                                          returnLastFrame: generationConfig.videoReturnLastFrame,
-                                          videoReferences: request.references.map(({ id, kind, role, storageKey, url, mimeType, durationMs, bytes }) => ({ id, kind, role, storageKey, url, mimeType, durationMs, bytes })),
-                                          ...(generationTask ? { videoTask: { provider: generationTask.provider, channelId: generationTask.channelId, model: generationTask.model, taskId: generationTask.id, startedAt: generationTask.startedAt || Date.now(), status: "succeeded" as const } } : {}),
-                                          ...(generatedVideo.lastFrameUrl ? { lastFrameUrl: generatedVideo.lastFrameUrl } : {}),
-                                          ...(lastFrame ? { lastFrame } : {}),
-                                      },
-                                  }
-                                : item,
-                        ),
-                    );
-                    return;
-                }
-                if (node.type === CanvasNodeType.Audio) {
-                    const audio = await storeGeneratedAudio(await requestAudioGeneration(generationConfig, prompt, { signal: controller.signal }), generationConfig.audioFormat);
-                    setNodes((prev) => prev.map((item) => (item.id === node.id ? { ...item, metadata: { ...item.metadata, ...audioMetadata(audio), prompt, ...buildAudioGenerationMetadata(generationConfig) } } : item)));
-                    return;
-                }
-
-                const image = useReferenceImages
-                    ? await requestEdit(generationConfig, prompt, retryImages, undefined, { signal: controller.signal }).then((items) => items[0])
-                    : await requestGeneration(generationConfig, prompt, { signal: controller.signal }).then((items) => items[0]);
-                const uploadedImage = await uploadImage(image.dataUrl);
-                const imageConfig = NODE_DEFAULT_SIZE[CanvasNodeType.Image];
-                const retryImage: CanvasNodeImage = {
-                    id: imageId || node.metadata?.primaryImageId || nanoid(),
-                    status: NODE_STATUS_SUCCESS,
-                    content: uploadedImage.url,
-                    storageKey: uploadedImage.storageKey,
-                    naturalWidth: uploadedImage.width,
-                    naturalHeight: uploadedImage.height,
-                    bytes: uploadedImage.bytes,
-                    mimeType: uploadedImage.mimeType,
-                };
-                const generationMetadata = savedImageMetadata?.generationType
-                    ? {
-                          generationType: savedImageMetadata.generationType,
-                          model: generationConfig.model,
-                          size: generationConfig.size,
-                          quality: generationConfig.quality,
-                          ...(generationConfig.background ? { background: generationConfig.background } : {}),
-                          count: savedImageMetadata.count || 1,
-                          references: savedImageMetadata.references,
-                      }
-                    : buildImageGenerationMetadata(useReferenceImages ? "edit" : "generation", generationConfig, 1, retryImages);
-                setNodes((prev) =>
-                    prev.map((item) => {
-                        if (item.id !== node.id) return item;
-                        const makePrimary = !imageId || !item.metadata?.content;
-                        const edge = imageId ? Math.max(item.width, item.height) : 0;
-                        const imageSize =
-                            imageId && item.metadata?.freeResize
-                                ? { width: item.width, height: item.height }
-                                : imageId
-                                  ? fitNodeSize(uploadedImage.width, uploadedImage.height, edge, edge)
-                                  : fitNodeSize(uploadedImage.width, uploadedImage.height, imageConfig.width, imageConfig.height);
-                        return {
-                            ...item,
-                            type: CanvasNodeType.Image,
-                            ...(makePrimary
-                                ? { width: imageSize.width, height: imageSize.height, ...(imageId ? { position: { x: item.position.x + item.width / 2 - imageSize.width / 2, y: item.position.y + item.height / 2 - imageSize.height / 2 } } : {}) }
-                                : {}),
-                            metadata: {
-                                ...item.metadata,
-                                ...(makePrimary ? imageMetadata(uploadedImage) : { status: NODE_STATUS_SUCCESS }),
-                                images: item.metadata?.images?.map((current) => (current.id === retryImage.id ? retryImage : current)),
-                                primaryImageId: makePrimary ? retryImage.id : item.metadata?.primaryImageId,
-                                prompt,
-                                ...generationMetadata,
-                            },
-                        };
-                    }),
-                );
-            } catch (error) {
-                if (isGenerationCanceled(error)) return;
-                const errorDetails = error instanceof Error ? error.message : t("canvas.projectPage.generationFailed");
-                message.error(errorDetails);
-                setNodes((prev) =>
-                    prev.map((item) =>
-                        item.id === node.id
-                            ? {
-                                  ...item,
-                                  metadata: {
-                                      ...item.metadata,
-                                      status: isResumableSeedanceProvider(item.metadata?.videoTask?.provider) && item.metadata.videoTask.status === "succeeded" ? NODE_STATUS_ERROR : item.metadata?.content ? NODE_STATUS_SUCCESS : NODE_STATUS_ERROR,
-                                      errorDetails: isResumableSeedanceProvider(item.metadata?.videoTask?.provider) && item.metadata.videoTask.status === "succeeded" ? errorDetails : item.metadata?.content ? undefined : errorDetails,
-                                      ...(isResumableSeedanceProvider(item.metadata?.videoTask?.provider) && item.metadata.videoTask.status === "succeeded" ? { videoDownloadError: errorDetails } : {}),
-                                      images: item.metadata?.images?.map((image) => (image.id === imageId ? { ...image, status: NODE_STATUS_ERROR, errorDetails } : image)),
-                                  },
-                              }
-                            : item,
-                    ),
-                );
-            } finally {
-                finishGenerationRequest(node.id, controller);
-                setRunningNodeId(null);
-            }
+            message.error("当前模型渠道没有可用的后端 JobCoordinator adapter；重试未提交。");
+            return;
         },
-        [effectiveConfig, finishGenerationRequest, isAiConfigReady, message, modal, openConfigDialog, projectId, startGenerationRequest, t],
+        [effectiveConfig, handleGenerateNode, message, projectId, t],
     );
 
     const deleteBatchImage = useCallback((nodeId: string, imageId: string) => {

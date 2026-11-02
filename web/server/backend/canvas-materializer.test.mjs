@@ -90,7 +90,71 @@ test("OpenAI-compatible text fills the originally empty source node without crea
  assert.equal(saved.document.nodes.length,1);
  assert.equal(saved.document.nodes[0].metadata.content,"Text completed successfully");
  assert.equal(saved.document.nodes[0].metadata.modelArtifact.artifactId,artifactId);
-});test("nonempty Text sources and sources edited during model generation keep their text and get a separate artifact",async t=>{
+});
+test("image writeback is adopted in place, while a changed source becomes an appended image",async t=>{
+ const f=fixture(t),projectId="image-writeback-project",sourceNodeId="builtin-panel-1";
+ const original={nodes:[{id:sourceNodeId,type:"builtin:panorama",title:"Panorama",
+  position:{x:24,y:36},width:640,height:320,metadata:{composerContent:"sunset",content:"source-state"}}],
+  connections:[]};
+ createProject(f.db,{id:projectId,document:original});
+ const artifactId="writeback-image-1",model="gpt-image-2";
+ const jobId=submitJob(f.db,{projectId,targetNodeId:sourceNodeId,
+  expectedProjectRevision:1,sourceNodeFingerprint:fingerprintSource(original,sourceNodeId),
+  idempotencyKey:"writeback-image-1",requestFingerprint:"writeback-image-1",
+  executionMode:"immediate",snapshot:{adapterKind:"model",provider:"openai",
+   task:{kind:"image",model,prompt:"sunset",writeBack:true}}}).jobId;
+ const blob=await f.blobStore.put([png],{mime:"image/png"});
+ appendArtifact(f.db,{id:artifactId,jobId,portId:"image",itemKey:"0",blobId:blob.blobId,
+  sha256:blob.sha256,mime:blob.mimeType,kind:"image",
+  metadata:{modelGeneration:{kind:"image",model}}});
+ f.db.prepare("UPDATE jobs SET status='succeeded' WHERE id=?").run(jobId);
+ await f.materializer.runOnce();
+ let saved=getProject(f.db,projectId);
+ assert.equal(saved.document.nodes.length,1);
+ assert.equal(saved.document.nodes[0].type,"builtin:panorama");
+ assert.equal(saved.document.nodes[0].metadata.content,"/api/v1/blobs/"+blob.blobId);
+ assert.equal(saved.document.nodes[0].metadata.modelArtifact.artifactId,artifactId);
+ saved=saveSingleUserCanvas(f.db,{id:projectId,expectedRevision:1,document:original});
+ assert.equal(saved.document.nodes.length,1);
+ assert.equal(saved.document.nodes[0].metadata.content,"/api/v1/blobs/"+blob.blobId);
+ const edited={...original,nodes:[{...original.nodes[0],metadata:{...original.nodes[0].metadata,
+  composerContent:"blue hour"}}]};
+ saved=saveSingleUserCanvas(f.db,{id:projectId,expectedRevision:1,document:edited});
+ assert.equal(saved.document.nodes.find(node=>node.id===sourceNodeId).metadata.composerContent,"blue hour");
+ assert.equal(saved.document.nodes.find(node=>node.id===sourceNodeId).metadata.content,"source-state");
+ const output=saved.document.nodes.find(node=>node.id==="artifact-"+artifactId);
+ assert.equal(output.type,"image");
+ assert.equal(output.metadata.content,"/api/v1/blobs/"+blob.blobId);
+ assert.deepEqual(saved.document.connections,[{id:"artifact-edge-"+artifactId,
+  fromNodeId:sourceNodeId,toNodeId:output.id}]);
+});
+test("a later frozen image writeback replaces the prior CAS result on the same builtin node",async t=>{
+ const f=fixture(t),projectId="image-writeback-repeat-project",sourceNodeId="builtin-repeat";
+ const original={nodes:[{id:sourceNodeId,type:"builtin:panorama",title:"Panorama",
+  position:{x:0,y:0},width:640,height:320,metadata:{composerContent:"scene",content:"seed"}}],connections:[]};
+ createProject(f.db,{id:projectId,document:original});
+ for(const [index,prompt] of [[1,"PREFIX: first scene"],[2,"PREFIX: second scene"]]){
+  const before=getProject(f.db,projectId),doc=before.document;
+  const jobId=submitJob(f.db,{projectId,targetNodeId:sourceNodeId,
+   expectedProjectRevision:before.revision,sourceNodeFingerprint:fingerprintSource(doc,sourceNodeId),
+   idempotencyKey:"repeat-writeback-"+index,requestFingerprint:"repeat-writeback-"+index,
+   executionMode:"immediate",snapshot:{adapterKind:"model",provider:"openai",
+    task:{kind:"image",model:"gpt-image-2",prompt,writeBack:true}}}).jobId;
+  const blob=await f.blobStore.put([Buffer.from([...png,index])],{mime:"image/png"});
+  const artifactId="repeat-image-"+index;
+  appendArtifact(f.db,{id:artifactId,jobId,portId:"image",itemKey:"0",blobId:blob.blobId,
+   sha256:blob.sha256,mime:blob.mimeType,kind:"image",metadata:{modelGeneration:{kind:"image",model:"gpt-image-2"}}});
+  f.db.prepare("UPDATE jobs SET status='succeeded' WHERE id=?").run(jobId);
+  const output=await f.materializer.runOnce();
+  assert.equal(output[0].status,"materialized");
+  const after=getProject(f.db,projectId);
+  assert.equal(after.document.nodes.length,1);
+  assert.equal(after.document.nodes[0].metadata.content,"/api/v1/blobs/"+blob.blobId);
+  assert.equal(after.document.nodes[0].metadata.modelArtifact.artifactId,artifactId);
+  assert.equal(JSON.parse(f.db.prepare("SELECT snapshot_json FROM jobs WHERE id=?").get(jobId).snapshot_json).task.prompt,prompt);
+ }
+});
+test("nonempty Text sources and sources edited during model generation keep their text and get a separate artifact",async t=>{
  for(const scenario of [
   {id:"existing",initial:"User's draft",edited:null,expected:"User's draft"},
   {id:"edited-during-run",initial:"",edited:"Typed while generating",expected:"Typed while generating"},

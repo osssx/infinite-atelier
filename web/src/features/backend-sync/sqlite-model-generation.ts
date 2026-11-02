@@ -13,6 +13,15 @@ export type FrozenTextTurn=
  | {role:"assistant";content:string;toolCalls:{id:string;name:string;argumentsJson:string}[]}
  | {role:"tool";content:string;callId:string;name:string};
 
+async function fingerprintEndpoint(value:string){
+ const digest=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(value));
+ return "sha256:"+[...new Uint8Array(digest)].map(byte=>byte.toString(16).padStart(2,"0")).join("");
+}
+function normalizeGeminiEndpoint(value:string){
+ const base=normalizeCompatBaseUrl(value);
+ return /\/v1(?:beta)?$/i.test(base)?base:`${base}/v1beta`;
+}
+
 /** Ordinary OpenAI calls use the same SQLite revision/source-fingerprint fence
  * as Comfy, with encrypted backend channel references (never raw API keys).
  * P5.4d allows frozen CAS images for official OpenAI image edits or text
@@ -26,14 +35,14 @@ export async function startSqliteModelGeneration({
 }:{
  projectId:string;sourceNodeId:string;
  nodes:readonly CanvasNodeData[];connections:readonly CanvasConnection[];
- channelId:string;channelBaseUrl?:string;provider?:"openai"|"openai_compatible"|"volcengine_ark";
+ channelId:string;channelBaseUrl?:string;provider?:"openai"|"openai_compatible"|"google_gemini"|"volcengine_ark";
  task:{kind:"image"|"audio"|"text"|"video";model:string;prompt:string;
-  size?:string;quality?:string;voice?:string;format?:string;speed?:number;
+  size?:string;quality?:string;count?:number;voice?:string;format?:string;speed?:number;instructions?:string;
   duration?:number;ratio?:string;resolution?:string;generateAudio?:boolean;watermark?:boolean;
   mode?:"text_to_video"|"first_frame"|"first_last_frame"|"omni_reference";
   references?:FrozenArkReference[];
   operation?:"edit";images?:FrozenModelImage[];mask?:FrozenModelImage;
-  messages?:FrozenTextTurn[];stream?:boolean;skills?:{blobId:string};script?:string};
+  messages?:FrozenTextTurn[];stream?:boolean;skills?:{blobId:string};script?:string;writeBack?:boolean};
  skillAuthorizationId?:string;
  referenceImages?:readonly ReferenceImage[];maskImage?:ReferenceImage;
  api?:typeof canvasApi;bridge?:ReturnType<typeof createSqliteComfyBridge>;
@@ -50,7 +59,7 @@ export async function startSqliteModelGeneration({
     ref.kind==="audio"&&ref.role!=="reference_audio"||
     !ref.blobId||ref.blobId!==ref.sha256||!(/^[a-f0-9]{64}$/.test(ref.blobId))))
   throw Error("自定义视频脚本参考素材必须是已冻结的图片、视频或音频 CAS 文件");
- if((["openai","openai_compatible"].includes(provider)&&task.kind==="video"&&!task.script)||
+ if((provider==="google_gemini"&&task.kind!=="image"&&task.kind!=="text")||
     (provider==="volcengine_ark"&&task.kind!=="video"))
   throw Error("model_provider_kind_unsupported");
  const capability=await api<{autoDispatch:boolean;modelKinds?:string[]}>(
@@ -59,15 +68,17 @@ export async function startSqliteModelGeneration({
   throw Error("本地模型执行服务不可用，请确认本地后端已启动并更新到当前版本");
  // A URL is public config, not a secret. Freeze it with the job so a
  // later channel edit cannot silently redirect a paid queued task.
- const endpointBaseUrl=provider==="openai_compatible"?
-  normalizeCompatBaseUrl(channelBaseUrl??""):undefined;
+ const endpointBaseUrl=provider==="google_gemini"?normalizeGeminiEndpoint(channelBaseUrl??""):
+  provider==="openai_compatible"?normalizeCompatBaseUrl(channelBaseUrl??""):undefined;
+ const endpointFingerprint=endpointBaseUrl?await fingerprintEndpoint(endpointBaseUrl):undefined;
  const channel=await api<{id:string;provider:string;hasKey:boolean;keyVersion:string|null}>(
   "/api/v1/channels/"+encodeURIComponent(channelId));
  if(channel.id!==channelId||channel.provider!==provider||!channel.hasKey||!channel.keyVersion)
   throw Error("本地后端未配置此模型渠道的加密密钥");
- if((referenceImages.length||maskImage)&&!["openai","openai_compatible"].includes(provider))
+ if((referenceImages.length||maskImage)&&!["openai","openai_compatible","google_gemini"].includes(provider))
   throw Error("model_provider_image_inputs_unsupported");
- if((referenceImages.length||maskImage)&&!["image","text"].includes(task.kind))
+ if((referenceImages.length||maskImage)&&!(task.kind==="image"||task.kind==="text"||
+    task.kind==="video"&&["openai","openai_compatible"].includes(provider)))
   throw Error("model_image_inputs_kind_unsupported");
  if(maskImage&&(task.kind!=="image"||referenceImages.length!==1))
   throw Error("model_image_mask_inputs_invalid");
@@ -106,7 +117,7 @@ export async function startSqliteModelGeneration({
   expectedProjectRevision:fence.revision,sourceNodeFingerprint:fence.sourceNodeFingerprint,
   idempotencyKey,requestFingerprint:idempotencyKey,executionMode:task.kind==="video"?"poll":"immediate",
   snapshot:{adapterKind:"model",provider,channelId,
-   secretVersionRef:channel.keyVersion,...(endpointBaseUrl?{endpointBaseUrl}:{}),task:{...task,
+   secretVersionRef:channel.keyVersion,...(endpointBaseUrl?{endpointBaseUrl,endpointFingerprint}:{}),task:{...task,
     ...(images.length?{images}:{}),
     ...(images.length&&task.kind==="image"?{operation:"edit"}:{}),
     ...(mask?{mask}:{})}}

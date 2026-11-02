@@ -1,8 +1,13 @@
 import {describe,it,expect,vi} from "vitest";
+vi.mock("axios",()=>({default:{post:vi.fn(),get:vi.fn(),delete:vi.fn(),request:vi.fn(),isAxiosError:()=>false}}));
 vi.mock("@/i18n",()=>({default:{t:(key:string)=>key}}));
 import {defaultConfig,type AiConfig} from "@/stores/use-config-store";
 import {runModelPlugin,getPluginTemplates,getScriptTemplatesForFormat,
  getScriptVariablesForFormat} from "./model-plugin";
+import axios from "axios";
+import {requestGeneration,requestEdit,requestImageQuestion} from "./image";
+import {requestAudioGeneration} from "./audio";
+import {requestVideoGeneration,createVideoGenerationTask,pollVideoGenerationTask} from "./video";
 
 const openai:AiConfig={
  ...defaultConfig,apiFormat:"openai",model:"model-1",
@@ -13,12 +18,23 @@ describe("P1 backend-owned scripts never fall back to browser JavaScript",()=>{
   "fails closed before arbitrary browser script execution for %s",async capability=>{
    const dangerous='throw new Error("UNSAFE_BROWSER_EXECUTED")';
    await expect(runModelPlugin({capability,script:dangerous,
-    config:openai,prompt:"test"})).rejects.toThrow(/只能通过画布后端任务执行/);
+    config:openai,prompt:"test"})).rejects.toThrow(/只能通过画布后端 JobCoordinator/);
   });
- it("allows unrelated Gemini-format legacy script entry while provider migration is pending",async()=>{
-  const result=await runModelPlugin<number>({capability:"text",script:"return 7;",
-   config:{...openai,apiFormat:"gemini"}});
-  expect(result).toBe(7);
+ it.each(["openai","gemini","volcengine_ark"] as const)("blocks browser scripts for %s channels",async apiFormat=>{
+  await expect(runModelPlugin({capability:"text",script:"return 7;",
+   config:{...openai,apiFormat}})).rejects.toThrow(/只能通过画布后端 JobCoordinator/);
+ });
+ it("closes every legacy browser generation entry before any network request",async()=>{
+  const videoTask={id:"old-task",provider:"openai" as const,model:"video-model"};
+  const calls=vi.mocked(axios.post);
+  await expect(requestGeneration(openai,"image")).rejects.toThrow(/画布后端 JobCoordinator/);
+  await expect(requestEdit(openai,"image",[])).rejects.toThrow(/画布后端 JobCoordinator/);
+  await expect(requestImageQuestion(openai,[],()=>{})).rejects.toThrow(/画布后端 JobCoordinator/);
+  await expect(requestAudioGeneration(openai,"audio")).rejects.toThrow(/画布后端 JobCoordinator/);
+  await expect(requestVideoGeneration(openai,"video")).rejects.toThrow(/画布后端 JobCoordinator/);
+  await expect(createVideoGenerationTask(openai,"video")).rejects.toThrow(/画布后端 JobCoordinator/);
+  await expect(pollVideoGenerationTask(openai,videoTask)).rejects.toThrow(/画布后端 JobCoordinator/);
+  expect(calls).not.toHaveBeenCalled();
  });
  it.each(["text","image","audio","video"] as const)(
   "editor offers only backend templates and no key or browser helpers for %s",capability=>{

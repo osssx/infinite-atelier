@@ -18,9 +18,9 @@ describe("Gateway replacement boundary",()=>{
   expect(channel.id).toBe("old-id");expect(channel).not.toHaveProperty("seedanceAdapter");
   const config:AiConfig={...defaultConfig,model:"old-id::"+SEEDANCE_STANDARD,
    channels:[{...channel,models:[{name:SEEDANCE_STANDARD,capability:"video"}]}]};
-  await expect(createVideoGenerationTask(config,"prompt")).rejects.toThrow(/后端任务/);
+  await expect(createVideoGenerationTask(config,"prompt")).rejects.toThrow(/画布后端 JobCoordinator/);
   const old={id:"cgt-existing",provider:"router_local",model:config.model} as unknown as VideoGenerationTask;
-  await expect(pollVideoGenerationTask(config,old)).rejects.toThrow(/旧 Ark 任务/);
+  await expect(pollVideoGenerationTask(config,old)).rejects.toThrow(/画布后端 JobCoordinator/);
   expect(axios.post).not.toHaveBeenCalled();expect(axios.get).not.toHaveBeenCalled();
  });
 });

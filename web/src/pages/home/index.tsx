@@ -1,4 +1,4 @@
-import { useState, type CSSProperties } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import { ArrowRight, ArrowUpRight, Clock3, Palette, Plus, Sparkles } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
@@ -21,6 +21,9 @@ export default function IndexPage() {
     const navigate = useNavigate();
     const projects = useCanvasStore((state) => state.projects);
     const createProject = useCanvasStore((state) => state.createProject);
+    const loadProjects = useCanvasStore((state) => state.loadProjects);
+    const [projectError, setProjectError] = useState<string | null>(null);
+    useEffect(() => { void loadProjects().catch((error) => setProjectError(error instanceof Error ? error.message : "backend_unavailable")); }, [loadProjects]);
     const [paletteId, setPaletteId] = useState<(typeof homePalettes)[number]["id"]>(() => {
         const saved = window.localStorage.getItem(HOME_PALETTE_KEY);
         return homePalettes.some((palette) => palette.id === saved) ? (saved as (typeof homePalettes)[number]["id"]) : "garnet";
@@ -38,9 +41,14 @@ export default function IndexPage() {
         "--home-on-accent": palette.onAccent,
     } as CSSProperties;
     const projectAccents = [palette.accent, palette.secondary, `color-mix(in srgb, ${palette.accent} 45%, ${palette.secondary})`];
-    const createAndEnter = () => {
-        const id = createProject(t("canvas.defaultTitle", { count: projects.length + 1 }));
-        navigate(`/canvas/${id}`);
+    const createAndEnter = async () => {
+        setProjectError(null);
+        try {
+            const id = await createProject(t("canvas.defaultTitle", { count: projects.length + 1 }));
+            navigate(`/canvas/${id}`);
+        } catch (error) {
+            setProjectError(error instanceof Error ? error.message : "project_create_failed");
+        }
     };
     const changePalette = (id: (typeof homePalettes)[number]["id"]) => {
         setPaletteId(id);
@@ -158,6 +166,7 @@ export default function IndexPage() {
                             <ArrowRight className="size-4" />
                         </button>
                     </div>
+                    {projectError && <p role="alert" className="mb-4 text-sm text-red-600">{projectError}</p>}
                     {recentProjects.length ? (
                         <div className="home-project-grid grid gap-px overflow-hidden border border-stone-200 bg-stone-200 md:grid-cols-3 dark:border-stone-800 dark:bg-stone-800">
                             {recentProjects.map((project, index) => (

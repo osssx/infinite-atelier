@@ -41,11 +41,16 @@ export function emitProjectEvent(db,{id,revision,kind}){
   .run(id,revision,kind,Date.now());
 }
 export function listProjectSummaries(db){
- return db.prepare("SELECT id,revision,document_json FROM projects WHERE deleted_at IS NULL ORDER BY id").all()
+ return db.prepare(`SELECT p.id,p.revision,p.document_json,
+  (SELECT MIN(e.created_at) FROM project_events e WHERE e.project_id=p.id) AS created_at,
+  (SELECT MAX(e.created_at) FROM project_events e WHERE e.project_id=p.id) AS updated_at
+  FROM projects p WHERE p.deleted_at IS NULL ORDER BY p.id`).all()
   .map(row=>{
    const doc=JSON.parse(row.document_json);
+   const createdAt=typeof doc.createdAt==="string"?doc.createdAt:new Date(row.created_at??0).toISOString();
+   const updatedAt=typeof doc.updatedAt==="string"?doc.updatedAt:new Date(row.updated_at??row.created_at??0).toISOString();
    return {id:row.id,revision:row.revision,title:typeof doc.title==="string"&&doc.title.trim()?doc.title:row.id,
-    nodeCount:doc.nodes.length,connectionCount:doc.connections.length};
+    createdAt,updatedAt,nodeCount:doc.nodes.length,connectionCount:doc.connections.length};
   });
 }
 export function projectEventCursor(db){

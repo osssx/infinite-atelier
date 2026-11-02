@@ -58,4 +58,4 @@ export async function canvasApi<T>(path:string,method="GET",payload?:unknown):Pr
  throw new CanvasApiError("backend_unauthorized",401);
 }
 export type CanvasBackendProject={id:string;revision:number;document:Record<string,unknown>};
-export type CanvasBackendSummary={id:string;title:string;revision:number;nodeCount:number;connectionCount:number;updatedAt?:number};
+export type CanvasBackendSummary={id:string;title:string;revision:number;createdAt?:string;updatedAt?:string;nodeCount:number;connectionCount:number};

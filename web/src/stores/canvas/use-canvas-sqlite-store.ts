@@ -182,7 +182,7 @@ export const useCanvasStore=create<CanvasStore>((set,get)=>({
    set(state=>({hydrated:true,loading:false,error:null,projects:listing.projects.map(summary=>{
     const cached=state.projects.find(project=>project.id===summary.id);
     if(cached&&(loaded.has(summary.id)||dirty.has(summary.id)))return cached;
-    return {id:summary.id,title:summary.title,createdAt:now(),updatedAt:now(),
+    return {id:summary.id,title:summary.title,createdAt:summary.createdAt??now(),updatedAt:summary.updatedAt??summary.createdAt??now(),
      nodes:[],connections:[],chatSessions:[],activeChatId:null,backgroundMode:"lines" as CanvasBackgroundMode,
      showImageInfo:false,viewport:initialViewport,nodeCount:summary.nodeCount,connectionCount:summary.connectionCount};
    })}));

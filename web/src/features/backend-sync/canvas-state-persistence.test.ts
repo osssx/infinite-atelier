@@ -52,4 +52,51 @@ describe("independent Canvas state writes",()=>{
   expect((error as Error).message).toBe("chats_revision_conflict");
   queue.discard("p");
  });
+ it("recovers a lost PUT response only after the remote value confirms that exact write",async()=>{
+  let server={revision:1,viewport:{x:0,y:0,k:1}};
+  let puts=0;
+  const api=(async(path:string,method="GET",payload?:any)=>{
+   if(method==="GET"&&path.endsWith("/viewport"))return server;
+   if(method==="GET")return {revision:1,sessions:[],activeChatId:null};
+   if(method==="PUT"){
+    puts++;
+    if(payload.expectedRevision!==server.revision)throw new CanvasApiError("viewport_revision_conflict",409);
+    server={revision:server.revision+1,viewport:payload.viewport};
+    if(puts===1)throw new CanvasApiError("backend_unavailable",503);
+    return server;
+   }
+   throw Error("unexpected request");
+  }) as typeof canvasApi;
+  const queue=createCanvasStatePersistence(()=>{},api);
+  await queue.load("p");queue.updateViewport("p",{x:5,y:0,k:1});
+  await expect(queue.flush("p")).rejects.toThrow("backend_unavailable");
+  await queue.flush("p");
+  expect(server).toEqual({revision:2,viewport:{x:5,y:0,k:1}});
+  expect(puts).toBe(2);
+  expect(queue.hasPending("p")).toBe(false);queue.discard("p");
+ });
+ it("confirms the uncertain older payload before retrying newer local edits",async()=>{
+  let server={revision:1,viewport:{x:0,y:0,k:1}};
+  const writes:Array<{revision:number;x:number}>=[];
+  const api=(async(path:string,method="GET",payload?:any)=>{
+   if(method==="GET"&&path.endsWith("/viewport"))return server;
+   if(method==="GET")return {revision:1,sessions:[],activeChatId:null};
+   if(method==="PUT"){
+    writes.push({revision:payload.expectedRevision,x:payload.viewport.x});
+    if(payload.expectedRevision!==server.revision)throw new CanvasApiError("viewport_revision_conflict",409);
+    server={revision:server.revision+1,viewport:payload.viewport};
+    if(writes.length===1)throw new CanvasApiError("backend_unavailable",503);
+    return server;
+   }
+   throw Error("unexpected request");
+  }) as typeof canvasApi;
+  const queue=createCanvasStatePersistence(()=>{},api);
+  await queue.load("p");queue.updateViewport("p",{x:5,y:0,k:1});
+  await expect(queue.flush("p")).rejects.toThrow("backend_unavailable");
+  queue.updateViewport("p",{x:9,y:0,k:1});
+  await queue.flush("p");
+  expect(writes).toEqual([{revision:1,x:5},{revision:1,x:9},{revision:2,x:9}]);
+  expect(server).toEqual({revision:3,viewport:{x:9,y:0,k:1}});
+  expect(queue.hasPending("p")).toBe(false);queue.discard("p");
+ });
 });

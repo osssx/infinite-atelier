@@ -228,7 +228,11 @@ test("single-user canvas saves use latest edit without 409; project revision sti
  const listingB=await call("GET","/api/v1/projects",undefined,hostB);
  assert.equal(listingA.statusCode,200);
  assert.deepEqual(listingA.json(),listingB.json());
- assert.deepEqual(listingA.json().projects,[{id:"shared-1",revision:1,title:"共享画布",nodeCount:1,connectionCount:0}]);
+ const summary=listingA.json().projects[0];
+ const {createdAt,updatedAt,...summaryFields}=summary;
+ assert.deepEqual(summaryFields,{id:"shared-1",revision:1,title:"共享画布",nodeCount:1,connectionCount:0});
+ assert.ok(Number.isFinite(Date.parse(createdAt)));
+ assert.ok(Number.isFinite(Date.parse(updatedAt)));
  assert.equal(listingA.json().eventCursor,1);
  const afterSnapshot=listingB.json().eventCursor;
  const edited=await call("PATCH","/api/v1/projects/shared-1",{

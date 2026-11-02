@@ -17,7 +17,7 @@ type Kind="viewport"|"chats";
 type Entry={viewport:CanvasViewportState;chats:CanvasChatsState;pending:Set<Kind>;
  timers:Partial<Record<Kind,ReturnType<typeof setTimeout>>>;
  active:Partial<Record<Kind,Promise<void>>>;errors:Partial<Record<Kind,unknown>>;
- backoff:Partial<Record<Kind,number>>};
+ backoff:Partial<Record<Kind,number>>;uncertain:Partial<Record<Kind,unknown>>};
 export function createCanvasStatePersistence(
  onError:(error:unknown|null)=>void,
  api:Api=canvasApi,
@@ -52,9 +52,39 @@ export function createCanvasStatePersistence(
      // The request only confirms its own revision. A newer viewport/chat
      // payload may have arrived while this PUT was in flight.
      entry[kind]={...entry[kind],revision:response.revision} as never;
+     delete entry.uncertain[kind];
      delete entry.errors[kind];entry.backoff[kind]=750;
      if(!anyErrors())emitError(null);
     }catch(error){
+     // A lost success response leaves the client one revision behind. On a
+     // conflict, advance only when the remote value exactly matches the PUT
+     // whose response was lost; then retry any newer local draft at that rev.
+     if(error instanceof CanvasApiError&&error.status===409){
+      try{
+       const remote=await api<CanvasViewportState&CanvasChatsState>(path(id,kind));
+       const lost=entry.uncertain[kind] as typeof payload|undefined;
+       const matches=!!lost&&(kind==="viewport"?
+        JSON.stringify(remote.viewport)===JSON.stringify((lost as typeof payload).viewport):
+        JSON.stringify(remote.sessions)===JSON.stringify((lost as typeof payload).sessions)&&
+         remote.activeChatId===(lost as typeof payload).activeChatId);
+       if(matches){
+        entry[kind]={...entry[kind],revision:remote.revision} as never;
+        delete entry.uncertain[kind];
+        delete entry.errors[kind];
+        const current=entry[kind];
+        const sameAsLost=kind==="viewport"?
+         JSON.stringify((current as CanvasViewportState).viewport)===JSON.stringify((lost as {viewport:ViewportTransform}).viewport):
+         JSON.stringify((current as CanvasChatsState).sessions)===JSON.stringify((lost as {sessions:CanvasAssistantSession[]}).sessions)&&
+          (current as CanvasChatsState).activeChatId===(lost as {activeChatId:string|null}).activeChatId;
+        if(!sameAsLost)entry.pending.add(kind);
+        if(entry.pending.has(kind))continue;
+        if(!anyErrors())emitError(null);
+        break;
+       }
+      }catch{/* Preserve the original conflict and local draft. */}
+     }
+     if(!(error instanceof CanvasApiError)||error.status===0||error.status>=500)
+      entry.uncertain[kind]=payload;
      entry.pending.add(kind);entry.errors[kind]=error;emitError(error);
      // Do not retry conflicts or validation errors; drafts remain in memory.
      if(!(error instanceof CanvasApiError)||error.status===0||error.status>=500){
@@ -78,14 +108,14 @@ export function createCanvasStatePersistence(
    const existing=entries.get(id);
    if(existing?.pending.size||existing?.active.viewport||existing?.active.chats)
     throw Error("canvas_state_unsaved_local_edits");
-   entries.set(id,{viewport,chats,pending:new Set(),timers:{},active:{},errors:{},backoff:{}});
+   entries.set(id,{viewport,chats,pending:new Set(),timers:{},active:{},errors:{},backoff:{},uncertain:{}});
    return {viewport:viewport.viewport,sessions:chats.sessions,activeChatId:chats.activeChatId};
   },
   initialize(id:string,{viewport,sessions,activeChatId}:{
    viewport:ViewportTransform;sessions:CanvasAssistantSession[];activeChatId:string|null}){
    entries.set(id,{viewport:{viewport,revision:1},
     chats:{sessions,activeChatId,revision:1},
-    pending:new Set(),timers:{},active:{},errors:{},backoff:{}});
+    pending:new Set(),timers:{},active:{},errors:{},backoff:{},uncertain:{}});
   },
   updateViewport(id:string,viewport:ViewportTransform){
    const entry=entries.get(id);if(!entry)return;

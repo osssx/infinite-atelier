@@ -141,6 +141,8 @@ export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,
     const [selectedNodeId,setSelectedNodeId] = useState("");
     const [selectedPortId,setSelectedPortId] = useState<string|null>(null);
     const [draggingPortId,setDraggingPortId]=useState<string|null>(null);
+    const portDragRef=useRef<{id:string;pointerId:number;x:number;y:number;active:boolean;target?:{id:string;placement:"before"|"after"}}|null>(null);
+    const suppressPortClickRef=useRef(false);
     const [dropPosition,setDropPosition]=useState<{id:string;placement:"before"|"after"}|null>(null);
     const [choiceDirty,setChoiceDirty] = useState(false);
     const suppressedChoiceIds=useRef(new Set<string>());
@@ -594,40 +596,56 @@ export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,
                                         <span className="w-7 shrink-0 pt-2 text-[10px] text-[var(--comfy-muted)]">{direction==="target"?"输入":"输出"}</span>
                                         <div className="flex min-w-0 flex-1 flex-wrap gap-1.5">
                                             {side.map((p)=><button type="button" key={p.id}
-                                                draggable={!busy}
+                                                draggable={false}
+                                                style={{touchAction:"none"}}
                                                 data-comfy-port-id={p.id}
                                                 data-comfy-error-port={bindingIssue?.portId===p.id?"true":undefined}
                                                 data-comfy-port-drop={dropPosition?.id===p.id?dropPosition.placement:undefined}
                                                 aria-label={"选择端口 "+p.label+"，可拖动排序"}
                                                 title={"拖动调整"+(direction==="target"?"输入":"输出")+"端口顺序"}
                                                 aria-pressed={p.id===selectedPortId}
-                                                onClick={()=>{setSelectedPortId(current=>toggleComfyPortSelection(current,p.id));setError("");setBindingIssue(null);}}
-                                                onDragStart={event=>{
-                                                    if(busy){event.preventDefault();return;}
-                                                    event.dataTransfer.effectAllowed="move";
-                                                    event.dataTransfer.setData("text/plain",p.id);
-                                                    setDraggingPortId(p.id);
-                                                    setSelectedPortId(p.id);
+                                                onClick={()=>{
+                                                    if(suppressPortClickRef.current){suppressPortClickRef.current=false;return;}
+                                                    setSelectedPortId(current=>toggleComfyPortSelection(current,p.id));setError("");setBindingIssue(null);
                                                 }}
-                                                onDragOver={event=>{
-                                                    const source=draft.ports.find(item=>item.id===draggingPortId);
-                                                    if(!source||source.direction!==p.direction||source.id===p.id)return;
-                                                    event.preventDefault();
-                                                    event.dataTransfer.dropEffect="move";
-                                                    const rect=event.currentTarget.getBoundingClientRect();
-                                                    const placement=event.clientX<rect.left+rect.width/2?"before":"after";
-                                                    if(dropPosition?.id!==p.id||dropPosition.placement!==placement)
-                                                        setDropPosition({id:p.id,placement});
+                                                onPointerDown={event=>{
+                                                    if(busy||event.button!==0||!event.isPrimary)return;
+                                                    event.stopPropagation();
+                                                    suppressPortClickRef.current=false;
+                                                    portDragRef.current={id:p.id,pointerId:event.pointerId,x:event.clientX,y:event.clientY,active:false};
+                                                    event.currentTarget.setPointerCapture(event.pointerId);
                                                 }}
-                                                onDrop={event=>{
-                                                    event.preventDefault();
-                                                    if(draggingPortId)changePortOrder(draggingPortId,p.id,
-                                                        event.clientX<event.currentTarget.getBoundingClientRect().left+
-                                                            event.currentTarget.getBoundingClientRect().width/2?"before":"after");
+                                                onPointerMove={event=>{
+                                                    const drag=portDragRef.current;
+                                                    if(!drag||drag.pointerId!==event.pointerId)return;
+                                                    if(!drag.active&&Math.hypot(event.clientX-drag.x,event.clientY-drag.y)<5)return;
+                                                    drag.active=true;
+                                                    suppressPortClickRef.current=true;
+                                                    setDraggingPortId(drag.id);
+                                                    // Capture keeps events on the source; hit-test the actual
+                                                    // chip underneath the pointer, including wrapped rows.
+                                                    const hit=event.currentTarget.ownerDocument.elementFromPoint(event.clientX,event.clientY)
+                                                        ?.closest<HTMLElement>("[data-comfy-port-id]");
+                                                    const targetId=hit?.dataset.comfyPortId;
+                                                    const target=draft.ports.find(port=>port.id===targetId);
+                                                    if(!hit||!portListRef.current?.contains(hit)||!target||target.direction!==p.direction||target.id===drag.id){
+                                                        drag.target=undefined;setDropPosition(null);return;
+                                                    }
+                                                    const rect=hit.getBoundingClientRect();
+                                                    drag.target={id:target.id,placement:event.clientX<rect.left+rect.width/2?"before":"after"};
+                                                    setDropPosition(drag.target);
+                                                }}
+                                                onPointerUp={event=>{
+                                                    const drag=portDragRef.current;
+                                                    if(!drag||drag.pointerId!==event.pointerId)return;
+                                                    if(drag.active&&drag.target)changePortOrder(drag.id,drag.target.id,drag.target.placement);
+                                                    portDragRef.current=null;
                                                     setDraggingPortId(null);setDropPosition(null);
+                                                    if(event.currentTarget.hasPointerCapture(event.pointerId))event.currentTarget.releasePointerCapture(event.pointerId);
                                                 }}
-                                                onDragEnd={()=>{setDraggingPortId(null);setDropPosition(null);}}
-                                                className={"inline-flex max-w-[210px] cursor-grab items-center gap-1.5 rounded-lg border px-2 py-1.5 text-xs transition active:cursor-grabbing "+
+                                                onPointerCancel={()=>{portDragRef.current=null;setDraggingPortId(null);setDropPosition(null);}}
+                                                onLostPointerCapture={()=>{portDragRef.current=null;setDraggingPortId(null);setDropPosition(null);}}
+                                                className={"inline-flex max-w-[210px] select-none cursor-grab items-center gap-1.5 rounded-lg border px-2 py-1.5 text-xs transition active:cursor-grabbing "+
                                                     (dropPosition?.id===p.id?"outline outline-2 outline-[var(--comfy-accent)] ":
                                                     bindingIssue?.portId===p.id?"border-red-500 bg-red-500/10 font-semibold ":
                                                     p.id===selectedPortId?"border-[var(--comfy-accent)] bg-[var(--comfy-fill)] font-semibold ":

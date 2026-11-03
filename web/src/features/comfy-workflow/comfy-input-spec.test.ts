@@ -14,7 +14,9 @@ describe("Comfy scalar enum descriptors",()=>{
   const oversized=[...max,"entry-over-limit"];
   expect(inspectComfyInputSpec([oversized,{}]).options).toHaveLength(MAX_COMFY_CHOICES+1);
   expect(inspectComfyInputSpec([oversized,{}]).choices).toBeUndefined();
-  expect(inspectComfyInputSpec([["x".repeat(91)],{}]).choices).toBeUndefined();
+  expect(inspectComfyInputSpec([["x".repeat(91)],{}]).choices).toEqual([
+   {label:"x".repeat(89)+"…",value:"x".repeat(91)}
+  ]);
  });
  it("preserves numeric COMBO option types",()=>{
   expect(inspectComfyInputSpec(["COMBO",{options:[1,2,4]}])).toMatchObject({

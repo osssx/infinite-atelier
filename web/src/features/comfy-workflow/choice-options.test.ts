@@ -3,6 +3,22 @@ import {autoFillComfyPortChoices,formatComfyChoiceLines,inferComfyChoicesForPort
 import type {ComfyApiGraph,ComfyObjectInfo,ComfyTemplatePort} from "./template-schema";
 
 describe("editable Comfy literal candidate arrays",()=>{
+ it("imports LoRA catalogs with long paths and roundtrips complete execution values",()=>{
+  const longName="minimaxh3\\minimax_h3_4step_lora_flashgen_v1.0_768p_fl2va_pruned_avg_rank_13_bf16.safetensors";
+  const graph:ComfyApiGraph={"105_121":{class_type:"LoraLoaderModelOnly",inputs:{lora_name:longName}}};
+  const port:ComfyTemplatePort={id:"lora",label:"LoRA",direction:"target",valueKind:"STRING",
+   inputBinding:{mode:"literal",targets:[{nodeId:"105_121",inputName:"lora_name"}]}};
+  for(const spec of [[[longName,"short.safetensors"],{}],["COMBO",{options:[longName,"short.safetensors"]}]]){
+   const info:ComfyObjectInfo={LoraLoaderModelOnly:{input:{required:{lora_name:spec}}}};
+   const result=autoFillComfyPortChoices([port],graph,info);
+   expect(result.blocked.size).toBe(0);
+   const choices=result.ports[0].choices!;
+   expect(choices).toHaveLength(2);
+   expect(choices[0].label).toHaveLength(90);
+   expect(choices[0].value).toBe(longName);
+   expect(parseComfyChoiceLines("STRING",formatComfyChoiceLines(choices))).toEqual({ok:true,choices});
+  }
+ });
  it("parses labels separately from native STRING values (including extra pipes)",()=>{
   expect(parseComfyChoiceLines("STRING","标准 | standard\n快速 | fast\n复杂 | a|b")).toEqual({
    ok:true,choices:[

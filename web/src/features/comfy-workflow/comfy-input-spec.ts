@@ -27,9 +27,11 @@ export function inspectComfyInputSpec(spec:unknown):{
         const valueKind:CanvasPortValueKind|undefined=strings?"STRING":integers?"INT":numbers?"FLOAT":undefined;
         // Keep enum snapshots bounded even for large model catalogs.
         const choices=valueKind&&options.length<=MAX_COMFY_CHOICES&&options.every((v:unknown)=>
-            typeof v==="string"?v.length>0&&v.length<=90&&!/[|\r\n]/.test(v):
+            typeof v==="string"?v.length>0&&v.length<=16000&&!/[|\r\n]/.test(v):
                 typeof v==="number"&&Number.isFinite(v))?
-            options.map((value:string|number)=>({label:String(value),value})):undefined;
+            // Model paths may exceed the display-label limit. Preserve the
+            // complete execution value and shorten only its visible label.
+            options.map((value:string|number)=>({label:String(value).length>90?String(value).slice(0,89)+"…":String(value),value})):undefined;
         return {declaredType,valueKind,options:valueKind?options:undefined,choices};
     }
     return {declaredType,valueKind:scalarKinds.has(raw as CanvasPortValueKind)?raw as CanvasPortValueKind:undefined};

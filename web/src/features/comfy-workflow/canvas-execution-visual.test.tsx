@@ -39,7 +39,7 @@ describe("canvas ComfyUI execution visual state",()=>{
     // The active spinner belongs beside the status label, never to the logo.
     expect(active).toContain("data-comfy-status-line");
     expect(active.indexOf("animate-spin")).toBeGreaterThan(active.indexOf("data-comfy-status-line"));
-    expect(active.indexOf("animate-spin")).toBeGreaterThan(active.indexOf("ComfyUI Workflow"));
+    expect(active).not.toContain("ComfyUI Workflow");
     expect(active).not.toContain("absolute -right-1");
     expect(active).not.toContain("absolute -top-0.5");
    });

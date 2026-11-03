@@ -61,7 +61,6 @@ export function ComfyWorkflowNodeVisual({node,theme}:{node:CanvasNodeData;theme:
      <video ref={videoRef} key={previewUrl} src={previewUrl!} className="absolute inset-0 h-full w-full rounded-3xl object-cover object-center" autoPlay muted loop playsInline controls={false} aria-label="ComfyUI 实时预览" onLoadedMetadata={event=>{if(reducedMotion)event.currentTarget.pause()}}/>:
      <img alt="ComfyUI 实时预览" className="absolute inset-0 h-full w-full rounded-3xl object-cover object-center" src={previewUrl!}/>}
     <div className="absolute inset-x-0 bottom-0 z-10 flex flex-col items-start gap-1 bg-gradient-to-t from-black/85 via-black/55 to-transparent px-4 pb-4 pt-12 text-left text-white">
-     <span className="text-sm font-semibold">ComfyUI Workflow</span>
      <span className="inline-flex max-w-full min-w-0 items-center gap-2 text-xs" data-comfy-status-line>
       <span className="size-4 shrink-0 animate-spin rounded-full border-2" aria-label="ComfyUI 工作流运行中"
        style={{borderColor:"rgba(255,255,255,.4)",borderTopColor:"white"}}/>
@@ -76,7 +75,6 @@ export function ComfyWorkflowNodeVisual({node,theme}:{node:CanvasNodeData;theme:
     <div className="flex h-12 w-[164px] shrink-0 items-center justify-center">
      <img src={theme===canvasThemes.dark?comfyLogoDark:comfyLogoLight} alt="ComfyUI" draggable={false} className="max-h-11 w-[148px] object-contain" />
     </div>
-    <span className="text-sm font-semibold">ComfyUI Workflow</span>
     <span className="inline-flex max-w-48 min-w-0 items-center justify-center gap-2 text-xs opacity-70" data-comfy-status-line>
      {spinning?<span className="size-4 shrink-0 animate-spin rounded-full border-2"
       aria-label="ComfyUI 工作流运行中" style={{borderColor:theme.node.stroke,borderTopColor:theme.node.activeStroke}}/>:null}

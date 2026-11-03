@@ -2528,9 +2528,9 @@ function AtelierCanvasPage() {
                     return;
                 }
                 sqliteModelSubmitLocksRef.current.add(submissionKey);
-                const textSubmissionToken=mode==="text"?nanoid():null;
+                const textSubmissionToken=nanoid();
                 if(textSubmissionToken)
-                    beginCanvasTextSubmission(projectId,nodeId,textSubmissionToken);
+                    beginCanvasTextSubmission(projectId,nodeId,textSubmissionToken,mode);
                 try{
                     if(!projectLoaded)throw Error("画布项目尚未加载完成");
                     await ensureSqliteModelChannelForExecution(selectedChannel,sqliteProvider);
@@ -2660,7 +2660,7 @@ function AtelierCanvasPage() {
                         "，成功后优先填充当前空文本节点":"，完成后自动追加产物节点"));
                     if(kind==="video"){sqliteGenerationJobsRef.current.set(nodeId,job.id);setRunningNodeId(nodeId)}
                     if(textSubmissionToken)
-                        trackCanvasTextJob(projectId,nodeId,job.id,job.status,textSubmissionToken);
+                        trackCanvasTextJob(projectId,nodeId,job.id,job.status,textSubmissionToken,kind);
                     monitorSqliteJobRef.current(job.id,true);
                 }catch(error){
                     const detail=error instanceof Error?error.message:String(error);
@@ -3051,9 +3051,9 @@ function AtelierCanvasPage() {
                 }
             }
             for(const job of active){
-                if(job.modelKind!=="text"||!job.targetNodeId||
+                if(!["image","text","video","audio"].includes(job.modelKind??"")||!job.targetNodeId||
                    !nodesRef.current.some(node=>node.id===job.targetNodeId))continue;
-                trackCanvasTextJob(projectId,job.targetNodeId,job.id,job.status);
+                trackCanvasTextJob(projectId,job.targetNodeId,job.id,job.status,undefined,job.modelKind as "image"|"text"|"video"|"audio");
             }
             for(const job of active){
                 if(job.modelKind!=="video"||!job.targetNodeId||

@@ -1,23 +1,26 @@
 import {useCallback,useSyncExternalStore} from "react";
 
-/** Transient per-source UI only. Durable job state always comes from SQLite.
- * Concurrent text requests have distinct job IDs; one completion must not
+/** Shared model execution state. Legacy text export names remain compatible.
+ * Transient per-source UI only. Durable job state always comes from SQLite.
+ * Concurrent model requests have distinct job IDs; one completion must not
  * clear the indicator while a later request is still running.
  */
 const activeStatuses=new Set(["submitting","queued","preparing","running","collecting"]);
-export const textExecutionLabel=(status:string):string=>{
+export type CanvasModelKind="image"|"text"|"video"|"audio";
+export const textExecutionLabel=(status:string,modelKind:CanvasModelKind="text"):string=>{
+ const name={image:"图片",text:"文本",video:"视频",audio:"音频"}[modelKind];
  switch(status){
-  case "submitting":return "正在提交文本请求…";
-  case "queued":return "文本任务排队中…";
+  case "submitting":return `正在提交${name}请求…`;
+  case "queued":return `${name}任务排队中…`;
   case "preparing":return "正在准备模型输入…";
-  case "running":return "文本生成中…";
-  case "collecting":return "正在保存文本结果…";
+  case "running":return `${name}生成中…`;
+  case "collecting":return `正在保存${name}结果…`;
   default:return "等待模型响应…";
  }
 };
-export type CanvasTextExecution={status:string;activeCount:number};
+export type CanvasTextExecution={status:string;modelKind:CanvasModelKind;activeCount:number};
 let scope:string|null=null;
-const entries=new Map<string,Map<string,string>>();
+const entries=new Map<string,Map<string,{status:string;modelKind:CanvasModelKind}>>();
 const views=new Map<string,CanvasTextExecution>();
 const listeners=new Map<string,Set<()=>void>>();
 const notify=(nodeId:string)=>{for(const cb of listeners.get(nodeId)??[])cb()};
@@ -26,7 +29,7 @@ function publish(nodeId:string){
  if(!jobs?.size){entries.delete(nodeId);views.delete(nodeId)}
  else{
   const statuses=[...jobs.values()];
-  views.set(nodeId,{status:statuses.at(-1)!,activeCount:statuses.length});
+  views.set(nodeId,{...statuses.at(-1)!,activeCount:statuses.length});
  }
  notify(nodeId);
 }
@@ -36,30 +39,31 @@ export function setCanvasTextExecutionScope(projectId:string|null):void{
  entries.clear();views.clear();
  for(const nodeId of listeners.keys())notify(nodeId);
 }
-function change(projectId:string,nodeId:string,jobId:string,status:string,replaceId?:string){
+function change(projectId:string,nodeId:string,jobId:string,status:string,replaceId?:string,modelKind?:CanvasModelKind){
  if(scope!==projectId||!nodeId||!jobId)return;
  let jobs=entries.get(nodeId);
  if(!jobs){
   if(!activeStatuses.has(status))return;
   jobs=new Map();entries.set(nodeId,jobs);
  }
+ const kind=modelKind??jobs.get(jobId)?.modelKind??(replaceId?jobs.get(replaceId)?.modelKind:undefined)??"text";
  if(replaceId)jobs.delete(replaceId);
  const old=jobs.get(jobId);
  if(activeStatuses.has(status)){
-  if(old===status&&!replaceId)return;
-  jobs.set(jobId,status);
+  if(old?.status===status&&old.modelKind===kind&&!replaceId)return;
+  jobs.set(jobId,{status,modelKind:kind});
  }else if(!jobs.delete(jobId)&&!replaceId)return;
  publish(nodeId);
 }
 /** Called before the first await so the source node animates immediately. */
-export function beginCanvasTextSubmission(projectId:string,nodeId:string,token:string):void{
- change(projectId,nodeId,token,"submitting");
+export function beginCanvasTextSubmission(projectId:string,nodeId:string,token:string,modelKind:CanvasModelKind="text"):void{
+ change(projectId,nodeId,token,"submitting",undefined,modelKind);
 }
 /** Transfer a pending click to its durable backend job, or restore a job
  * after reload from the authoritative SQLite snapshot.
  */
-export function trackCanvasTextJob(projectId:string,nodeId:string,jobId:string,status:string,token?:string):void{
- change(projectId,nodeId,jobId,status,token);
+export function trackCanvasTextJob(projectId:string,nodeId:string,jobId:string,status:string,token?:string,modelKind?:CanvasModelKind):void{
+ change(projectId,nodeId,jobId,status,token,modelKind);
 }
 export function finishCanvasTextSubmission(projectId:string,nodeId:string,token:string):void{
  change(projectId,nodeId,token,"finished");

@@ -1,7 +1,7 @@
 import type {ReactNode} from "react";
 import {useCanvasTextExecution,textExecutionLabel} from "@/features/backend-sync/canvas-text-execution-visual";
 
-/** CSS-only progress indicator. Use inline mode inside the Config node's
+/** Shared model progress indicator; the legacy component name is retained for text-node callers. Use inline mode inside the Config node's
  * generate button, never a bottom-anchored overlay above that button.
  * Full text and compact LOD nodes retain the unobtrusive overlay.
  */
@@ -11,9 +11,9 @@ export function CanvasTextExecutionIndicator({
  const execution=useCanvasTextExecution(nodeId);
  if(!execution)return inline?<>{idle}</>:null;
  const content=<>
-  <span className="size-3.5 shrink-0 animate-spin rounded-full border-2 border-current border-t-transparent"
-   aria-label="文本模型生成中"/>
-  <span className={inline?"min-w-0 truncate":"min-w-0 flex-1 truncate"}>{textExecutionLabel(execution.status)}</span>
+  <span className="size-3.5 shrink-0 animate-spin motion-reduce:animate-none rounded-full border-2 border-current border-t-transparent"
+   aria-label={textExecutionLabel("running",execution.modelKind)}/>
+  <span className={inline?"min-w-0 truncate":"min-w-0 flex-1 truncate"}>{textExecutionLabel(execution.status,execution.modelKind)}</span>
   {execution.activeCount>1?<span className="shrink-0 opacity-70">×{execution.activeCount}</span>:null}
  </>;
  if(inline)return <span data-canvas-text-generation-status={execution.status}

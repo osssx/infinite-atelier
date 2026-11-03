@@ -173,11 +173,15 @@ export function CanvasConfigNodePanel({ node, isRunning, onConfigChange, onGener
                 <span className="inline-flex items-center gap-1.5">
                     {isRunning ? (
                         <>
-                            <LoaderCircle className="size-4 animate-spin" />
+                            <CanvasTextExecutionIndicator
+                                nodeId={node.id}
+                                inline
+                                idle={<LoaderCircle className="size-4 animate-spin motion-reduce:animate-none" />}
+                            />
                             <Square className="size-3.5 fill-current" />
                             <span>{t("canvas.configNode.stop")}</span>
                         </>
-                    ) : mode==="text" ? (
+                    ) : (
                         <CanvasTextExecutionIndicator
                             nodeId={node.id}
                             inline
@@ -186,11 +190,6 @@ export function CanvasConfigNodePanel({ node, isRunning, onConfigChange, onGener
                                 <span>{t("canvas.configNode.generate")}</span>
                             </>}
                         />
-                    ) : (
-                        <>
-                            <Play className="size-4" />
-                            <span>{t("canvas.configNode.generate")}</span>
-                        </>
                     )}
                 </span>
             </Button>

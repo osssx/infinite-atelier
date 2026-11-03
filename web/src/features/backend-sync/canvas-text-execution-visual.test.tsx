@@ -7,20 +7,62 @@ import {
  getCanvasTextExecution,setCanvasTextExecutionScope,subscribeCanvasTextExecution,
  textExecutionLabel,trackCanvasTextJob,updateCanvasTextJob
 } from "./canvas-text-execution-visual";
+import {CanvasExecutionHalo} from "@/components/canvas/canvas-execution-halo";
+import {CanvasNodeType, type CanvasNodeData} from "@/types/canvas";
 import {CanvasTextExecutionIndicator} from "@/components/canvas/canvas-text-execution-indicator";
 
 describe("Canvas text generation transition",()=>{
  beforeEach(()=>setCanvasTextExecutionScope("p1"));
  afterEach(()=>setCanvasTextExecutionScope(null));
 
+ it.each(["image","text","video","audio"] as const)("tracks %s from click through all phases and renders the shared halo",kind=>{
+  const node:CanvasNodeData={id:"config",type:CanvasNodeType.Config,title:"Config",position:{x:0,y:0},width:320,height:240};
+  const halo=()=>renderToStaticMarkup(createElement(CanvasExecutionHalo,{node}));
+  const button=()=>renderToStaticMarkup(createElement(CanvasTextExecutionIndicator,{nodeId:node.id,inline:true}));
+  expect(halo()).toBe("");
+  beginCanvasTextSubmission("p1",node.id,"click",kind);
+  expect(getCanvasTextExecution(node.id)).toEqual({status:"submitting",modelKind:kind,activeCount:1});
+  expect(halo()).toContain("canvas-execution-halo");
+  expect(button()).toContain(textExecutionLabel("submitting",kind));
+  trackCanvasTextJob("p1",node.id,"job","queued","click");
+  finishCanvasTextSubmission("p1",node.id,"click");
+  for(const status of ["queued","preparing","running","collecting"]){
+   updateCanvasTextJob("p1","job",status);
+   expect(getCanvasTextExecution(node.id)?.modelKind).toBe(kind);
+   expect(button()).toContain(textExecutionLabel(status,kind));
+   expect(button()).toContain("animate-spin");
+   expect(halo()).toContain("canvas-execution-halo");
+  }
+  updateCanvasTextJob("p1","job","succeeded");
+  expect(button()).toBe("");
+  expect(halo()).toBe("");
+  // Snapshot recovery needs no pending click and must retain the model kind.
+  trackCanvasTextJob("p1",node.id,"restored","running",undefined,kind);
+  expect(button()).toContain(textExecutionLabel("running",kind));
+  updateCanvasTextJob("p1","restored","unavailable");
+  expect(halo()).toBe("");
+ });
+
+ it("keeps concurrent model kinds and independent nodes isolated",()=>{
+  trackCanvasTextJob("p1","source","image-job","running",undefined,"image");
+  trackCanvasTextJob("p1","source","audio-job","queued",undefined,"audio");
+  trackCanvasTextJob("p1","other","video-job","running",undefined,"video");
+  finishCanvasTextJob("p1","audio-job");
+  expect(getCanvasTextExecution("source")).toEqual({status:"running",modelKind:"image",activeCount:1});
+  expect(getCanvasTextExecution("other")?.modelKind).toBe("video");
+  finishCanvasTextJob("p1","image-job");
+  expect(getCanvasTextExecution("source")).toBeUndefined();
+  expect(getCanvasTextExecution("other")?.status).toBe("running");
+ });
+
  it("begins animating immediately, hands off to the durable job, and clears on success",()=>{
   const changed=vi.fn(),unsubscribe=subscribeCanvasTextExecution("text-1",changed);
   expect(getCanvasTextExecution("text-1")).toBeUndefined();
   beginCanvasTextSubmission("p1","text-1","click-a");
-  expect(getCanvasTextExecution("text-1")).toEqual({status:"submitting",activeCount:1});
+  expect(getCanvasTextExecution("text-1")).toEqual({status:"submitting",modelKind:"text",activeCount:1});
   trackCanvasTextJob("p1","text-1","job-a","queued","click-a");
   finishCanvasTextSubmission("p1","text-1","click-a");
-  expect(getCanvasTextExecution("text-1")).toEqual({status:"queued",activeCount:1});
+  expect(getCanvasTextExecution("text-1")).toEqual({status:"queued",modelKind:"text",activeCount:1});
   for(const status of ["preparing","running","collecting"]){
    updateCanvasTextJob("p1","job-a",status);
    expect(getCanvasTextExecution("text-1")?.status).toBe(status);
@@ -51,12 +93,12 @@ describe("Canvas text generation transition",()=>{
  it("preserves one spinner when concurrent explicit text requests complete out of order",()=>{
   trackCanvasTextJob("p1","text","job-1","running");
   beginCanvasTextSubmission("p1","text","click-2");
-  expect(getCanvasTextExecution("text")).toEqual({status:"submitting",activeCount:2});
+  expect(getCanvasTextExecution("text")).toEqual({status:"submitting",modelKind:"text",activeCount:2});
   trackCanvasTextJob("p1","text","job-2","queued","click-2");
   finishCanvasTextSubmission("p1","text","click-2");
-  expect(getCanvasTextExecution("text")).toEqual({status:"queued",activeCount:2});
+  expect(getCanvasTextExecution("text")).toEqual({status:"queued",modelKind:"text",activeCount:2});
   updateCanvasTextJob("p1","job-1","succeeded");
-  expect(getCanvasTextExecution("text")).toEqual({status:"queued",activeCount:1});
+  expect(getCanvasTextExecution("text")).toEqual({status:"queued",modelKind:"text",activeCount:1});
   updateCanvasTextJob("p1","job-2","running");
   expect(getCanvasTextExecution("text")?.status).toBe("running");
   updateCanvasTextJob("p1","job-2","failed");
@@ -132,17 +174,17 @@ describe("Canvas text generation transition",()=>{
  });
  it("wires submission before the first await and recovers active text jobs via SQLite snapshot",()=>{
   const page=readFileSync(new URL("../../pages/canvas/project.tsx",import.meta.url),"utf8");
-  const start=page.indexOf("const textSubmissionToken=mode");
+  const start=page.indexOf("const textSubmissionToken=nanoid()");
   const firstAwait=page.indexOf("await ensureSqliteModelChannelForExecution",start);
   expect(start).toBeGreaterThan(0);
-  expect(page.indexOf("beginCanvasTextSubmission(projectId,nodeId,textSubmissionToken)",start))
+  expect(page.indexOf("beginCanvasTextSubmission(projectId,nodeId,textSubmissionToken,mode)",start))
    .toBeLessThan(firstAwait);
-  expect(page).toContain("trackCanvasTextJob(projectId,nodeId,job.id,job.status,textSubmissionToken)");
+  expect(page).toContain("trackCanvasTextJob(projectId,nodeId,job.id,job.status,textSubmissionToken,kind)");
   expect(page).toContain("finishCanvasTextSubmission(projectId,nodeId,textSubmissionToken)");
   expect(page).toContain("updateCanvasTextJob(projectId,jobId,status)");
   expect(page).toContain('updateCanvasTextJob(projectId,jobId,"running")');
   expect(page).toContain("finishCanvasTextJob(projectId,jobId)");
-  expect(page).toContain('if(job.modelKind!=="text"||!job.targetNodeId||');
+  expect(page).toContain('["image","text","video","audio"].includes(job.modelKind');
   expect(page).toContain("setCanvasTextExecutionScope(null)");
  });
 });

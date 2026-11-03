@@ -1,4 +1,5 @@
 import {useCallback,useSyncExternalStore} from "react";
+import {isComfyRunActive} from "./run-status";
 
 /** Ephemeral visual state, never written to a saved canvas revision.
  * A node subscribes only to its own key; CSS runs the spinner without frames
@@ -9,7 +10,7 @@ export type CanvasComfyLiveUpdate=
  | {kind:"progress";currentNode:string|null;nodeName?:string;step:number|null;steps:number|null;value:number|null}
  | {kind:"preview";mime:"image/png"|"image/jpeg"|"image/webp"|"video/mp4";version:number;step?:number;steps?:number}
  | {kind:"error";error:ComfyExecutionError};
-export type CanvasComfyExecution={status:string;runId?:string;error?:string;previewEnabled?:boolean;
+export type CanvasComfyExecution={status:string;runId?:string;startedAt?:number;error?:string;previewEnabled?:boolean;
  progress?:Extract<CanvasComfyLiveUpdate,{kind:"progress"}>;
  preview?:Extract<CanvasComfyLiveUpdate,{kind:"preview"}>;
  errorDetail?:ComfyExecutionError};
@@ -17,6 +18,16 @@ let activeProject:string|null=null;
 const executions=new Map<string,CanvasComfyExecution>();
 const listeners=new Map<string,Set<()=>void>>();
 const publish=(id:string)=>{for(const listener of listeners.get(id)??[])listener()};
+
+export function resolveComfyExecutionStartedAt(previous:CanvasComfyExecution|undefined,
+ incoming:CanvasComfyExecution,now=Date.now()):number|undefined {
+ if(!isComfyRunActive(incoming.status))return incoming.startedAt;
+ if(Number.isFinite(incoming.startedAt))return incoming.startedAt;
+ if(Number.isFinite(previous?.startedAt)&&(
+  previous?.runId===incoming.runId || !previous?.runId&&Boolean(incoming.runId)
+ ))return previous!.startedAt;
+ return now;
+}
 
 export function setCanvasComfyExecutionScope(projectId:string|null):void {
  if(activeProject===projectId)return;
@@ -28,8 +39,10 @@ export function setCanvasComfyExecutionScope(projectId:string|null):void {
 export function setCanvasComfyExecution(projectId:string,nodeId:string,execution:CanvasComfyExecution):void {
  if(activeProject!==projectId)return;
  const previous=executions.get(nodeId);
- if(previous?.status===execution.status&&previous?.runId===execution.runId&&previous?.error===execution.error&&previous?.previewEnabled===execution.previewEnabled&&previous?.progress===execution.progress&&previous?.preview===execution.preview&&previous?.errorDetail===execution.errorDetail)return;
- executions.set(nodeId,execution);
+ const normalized={...execution,startedAt:resolveComfyExecutionStartedAt(previous,execution)};
+ if(normalized.startedAt===undefined)delete normalized.startedAt;
+ if(previous?.status===normalized.status&&previous?.runId===normalized.runId&&previous?.startedAt===normalized.startedAt&&previous?.error===normalized.error&&previous?.previewEnabled===normalized.previewEnabled&&previous?.progress===normalized.progress&&previous?.preview===normalized.preview&&previous?.errorDetail===normalized.errorDetail)return;
+ executions.set(nodeId,normalized);
  publish(nodeId);
 }
 

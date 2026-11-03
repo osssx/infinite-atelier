@@ -2985,7 +2985,7 @@ function AtelierCanvasPage() {
                 if(job?.targetNodeId && nodesRef.current.some(node=>node.id===job.targetNodeId&&
                     node.type===COMFY_WORKFLOW_MOCK_TYPE)) {
                     observeCanvasComfyExecution(projectId,job.targetNodeId,{
-                        runId:job.id,status:job.status,
+                        runId:job.id,status:job.status,startedAt:job.createdAt,
                         ...(job.status==="failed"&&details?{error:details}:{})
                     });
                 }
@@ -3040,7 +3040,7 @@ function AtelierCanvasPage() {
                 .sort((a,b)=>(a.createdAt??0)-(b.createdAt??0))) {
                 const workflow=workflows.get(job.targetNodeId!)!;
                 const previewEnabled=Boolean(workflow.metadata?.comfyWorkflow?.previewBinding);
-                setCanvasComfyExecution(projectId,job.targetNodeId!,{runId:job.id,status:job.status,previewEnabled});
+                setCanvasComfyExecution(projectId,job.targetNodeId!,{runId:job.id,status:job.status,startedAt:job.createdAt,previewEnabled});
                 const ref=workflow.metadata?.comfyWorkflow;
                 if(!previewEnabled&&ref?.templateId&&ref.templateRevision){
                     void getComfyTemplate(ref.templateId,ref.templateRevision).then(template=>{
@@ -3112,7 +3112,7 @@ function AtelierCanvasPage() {
                 instanceId:globalComfyInstanceId,outputPortIds:outputs.map(port=>port.id)
             });
             if(activeProjectIdRef.current===projectId&&pageMountedRef.current){
-                setCanvasComfyExecution(projectId,nodeId,{runId:job.id,status:job.status,previewEnabled:Boolean(template.previewBinding)});
+                setCanvasComfyExecution(projectId,nodeId,{runId:job.id,status:job.status,startedAt:job.createdAt,previewEnabled:Boolean(template.previewBinding)});
                 message.info("生成任务已提交："+job.id+"。完成后自动恢复产物节点。");
                 monitorSqliteJob(job.id,true);
             }

@@ -6,9 +6,10 @@ import {canvasThemes} from "@/lib/canvas-theme";
 import {comfyRunStatusLabel,isComfyRunActive} from "./run-status";
 import {useCanvasComfyExecution} from "./canvas-execution-visual";
 import {createComfyPreviewMediaController} from "./comfy-preview-media";
+import {ComfyExecutionTimer} from "./comfy-execution-timer";
 
 /** Only the active workflow subscribes to phase updates; CSS owns the animation. */
-export function ComfyWorkflowNodeVisual({node,theme}:{node:CanvasNodeData;theme:(typeof canvasThemes)[keyof typeof canvasThemes]}) {
+export function ComfyWorkflowNodeVisual({node,theme,visible=true}:{node:CanvasNodeData;theme:(typeof canvasThemes)[keyof typeof canvasThemes];visible?:boolean}) {
  const execution=useCanvasComfyExecution(node.id);
  const spinning=isComfyRunActive(execution?.status);
  const progress=execution?.progress;
@@ -54,8 +55,9 @@ export function ComfyWorkflowNodeVisual({node,theme}:{node:CanvasNodeData;theme:
    :"点击导入工作流模板";
  return <div className={showingPreview
     ?"pointer-events-none relative h-full w-full overflow-hidden rounded-3xl text-center"
-    :"pointer-events-none flex h-full w-full flex-col items-center justify-center gap-2 p-5 text-center"}
+    :"pointer-events-none relative flex h-full w-full flex-col items-center justify-center gap-2 p-5 text-center"}
    data-comfy-execution-status={execution?.status||"idle"} role={spinning?"status":undefined} aria-live="polite">
+   <ComfyExecutionTimer nodeId={node.id} visible={visible}/>
    {showingPreview?<>
     {previewSource?.mime==="video/mp4"?
      <video ref={videoRef} key={previewUrl} src={previewUrl!} className="absolute inset-0 h-full w-full rounded-3xl object-cover object-center" autoPlay muted loop playsInline controls={false} aria-label="ComfyUI 实时预览" onLoadedMetadata={event=>{if(reducedMotion)event.currentTarget.pause()}}/>:

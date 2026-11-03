@@ -16,7 +16,7 @@ const node:CanvasNodeData={id:"wf",type:"comfy:workflow",title:"Comfy",
  comfyWorkflow:{templateId:"preset",templateRevision:"sha",bindingState:"bound",inputOverrides:{}}
 }};
 const render=(mode:"light"|"dark"="light")=>renderToStaticMarkup(createElement(ComfyWorkflowNodeVisual,{node,theme:canvasThemes[mode]}));
-afterEach(()=>setCanvasComfyExecutionScope(null));
+afterEach(()=>{setCanvasComfyExecutionScope(null);vi.useRealTimers()});
 
 describe("canvas ComfyUI execution visual state",()=>{
  it("uses the bundled ComfyUI logo matching canvas theme, without duplicating SVG paths in DOM",()=>{
@@ -58,6 +58,13 @@ describe("canvas ComfyUI execution visual state",()=>{
    expect(html).not.toContain("animate-spin");
    expect(html).toContain('data-comfy-execution-status="'+status+'"');
   }
+ });
+ it("renders the timer only while an active run is visible",()=>{
+  setCanvasComfyExecutionScope("project");
+  setCanvasComfyExecution("project","wf",{status:"running",runId:"job",startedAt:Date.now()});
+  expect(render()).toContain('role="timer"');
+  setCanvasComfyExecution("project","wf",{status:"succeeded",runId:"job"});
+  expect(render()).not.toContain('role="timer"');
  });
  it("notifies only the changed node and skips identical phase updates",()=>{
   setCanvasComfyExecutionScope("project");
@@ -132,6 +139,26 @@ describe("canvas ComfyUI execution visual state",()=>{
    observeCanvasComfyExecution("project","wf",{runId:"job-1",status:"running"});
    expect(getCanvasComfyExecution("wf")?.runId).toBe("job-2");
   });
+ it("keeps one run anchor across phases, corrects pending fallback from createdAt, and resets for a new or recovered run",()=>{
+  vi.useFakeTimers();vi.setSystemTime(5000);
+  setCanvasComfyExecutionScope("project");
+  setCanvasComfyExecution("project","wf",{status:"submitting"});
+  expect(getCanvasComfyExecution("wf")?.startedAt).toBe(5000);
+  setCanvasComfyExecution("project","wf",{status:"queued",runId:"job-1",startedAt:3200});
+  expect(getCanvasComfyExecution("wf")?.startedAt).toBe(3200);
+  observeCanvasComfyExecution("project","wf",{status:"running",runId:"job-1"});
+  expect(getCanvasComfyExecution("wf")?.startedAt).toBe(3200);
+  observeCanvasComfyExecution("project","wf",{status:"collecting",runId:"job-1"});
+  expect(getCanvasComfyExecution("wf")?.startedAt).toBe(3200);
+  setCanvasComfyExecution("project","wf",{status:"failed",runId:"job-1"});
+  expect(render()).not.toContain('role="timer"');
+  setCanvasComfyExecution("project","wf",{status:"submitting"});
+  expect(getCanvasComfyExecution("wf")?.startedAt).toBe(5000);
+  setCanvasComfyExecutionScope(null);
+  setCanvasComfyExecutionScope("project");
+  setCanvasComfyExecution("project","wf",{status:"running",runId:"restored",startedAt:2100});
+  expect(getCanvasComfyExecution("wf")?.startedAt).toBe(2100);
+ });
   it("shows a workflow node title instead of just the numeric identifier",()=>{
    setCanvasComfyExecutionScope("project");
    setCanvasComfyExecution("project","wf",{status:"running",runId:"job-1"});

@@ -78,6 +78,7 @@ type NodeContentRendererProps = {
     onMediaPlaybackChange?: (nodeId: string, playing: boolean) => void;
     groupChildCount: number;
     onVisualReady?: () => void;
+    visualShown?: boolean;
 };
 
 export const CanvasNode = React.memo(function CanvasNode({
@@ -515,6 +516,7 @@ export const CanvasNode = React.memo(function CanvasNode({
                         onMediaPlaybackChange={onMediaPlaybackChange}
                         groupChildCount={groupChildCount}
                         onVisualReady={onVisualReady}
+                        visualShown={visualShown}
                     />
                 </div>
 
@@ -558,7 +560,7 @@ export const CanvasNode = React.memo(function CanvasNode({
 
 function NodeContent(props: NodeContentRendererProps) {
     if (props.node.type === COMFY_WORKFLOW_MOCK_TYPE) {
-        return <ComfyWorkflowNodeVisual node={props.node} theme={props.theme}/>;
+        return <ComfyWorkflowNodeVisual node={props.node} theme={props.theme} visible={props.visualShown}/>;
     }
     if (props.node.type === CanvasNodeType.Config && props.renderNodeContent) return props.renderNodeContent(props.node);
     if (props.isBatchRoot) return <ImageNodeContent {...props} />;

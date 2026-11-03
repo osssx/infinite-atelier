@@ -13,15 +13,18 @@ import { CanvasTextExecutionIndicator } from "./canvas-text-execution-indicator"
 import {COMFY_WORKFLOW_MOCK_TYPE} from "@/lib/canvas/canvas-ports";
 import {useCanvasComfyExecution} from "@/features/comfy-workflow/canvas-execution-visual";
 import {comfyRunStatusLabel,isComfyRunActive} from "@/features/comfy-workflow/run-status";
+import {ComfyExecutionTimer} from "@/features/comfy-workflow/comfy-execution-timer";
 
-function CompactComfyStatus({id}:{id:string}) {
+function CompactComfyStatus({id,visible}:{id:string;visible:boolean}) {
     const status=useCanvasComfyExecution(id)?.status;
     if(!isComfyRunActive(status))return null;
-    return <div data-comfy-compact-status={status} role="status"
+    return <>
+    <ComfyExecutionTimer nodeId={id} visible={visible}/>
+    <div data-comfy-compact-status={status} role="status"
         className="pointer-events-none absolute bottom-3 left-4 right-4 flex items-center gap-2 rounded-lg bg-black/60 px-2 py-1.5 text-xs text-white">
         <span className="size-3 shrink-0 animate-spin rounded-full border-2 border-white/30 border-t-white" aria-label="工作流运行中"/>
         <span className="truncate">{comfyRunStatusLabel(status)}</span>
-    </div>;
+    </div></>;
 }
 
 
@@ -144,7 +147,7 @@ export const CompactCanvasNode = memo(function CompactCanvasNode({
                         <span className="truncate text-sm font-semibold opacity-80">{data.title}</span>
                     </div>
                 ) : null}
-                {data.type===COMFY_WORKFLOW_MOCK_TYPE?<CompactComfyStatus id={data.id}/>:null}
+                {data.type===COMFY_WORKFLOW_MOCK_TYPE?<CompactComfyStatus id={data.id} visible={hitActive}/>:null}
                 {(data.type===CanvasNodeType.Text||data.type===CanvasNodeType.Config)
                     ? <CanvasTextExecutionIndicator nodeId={data.id} compact/> : null}
             </div>

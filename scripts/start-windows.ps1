@@ -189,15 +189,15 @@ Set-Location -LiteralPath $webRoot
 
 $requiredModules = @(
     "node_modules\vite\package.json",
-    "node_modules\@rollup\rollup-win32-x64-msvc\package.json",
-    "node_modules\@tailwindcss\oxide-win32-x64-msvc\package.json",
-    "node_modules\@esbuild\win32-x64\package.json",
-    "node_modules\lightningcss-win32-x64-msvc\package.json"
+    "node_modules\@tailwindcss\postcss\package.json"
 )
+# Load the public entry points so each tool resolves its own native dependencies.
+# Vite uses Rolldown; platform-specific packages are managed by npm.
+$validateModules = "Promise.all([import('vite'), import('@tailwindcss/postcss')]).catch(error => { console.error(error); process.exitCode = 1; });"
 $needsInstall = $requiredModules | Where-Object { -not (Test-Path -LiteralPath $_ -PathType Leaf) }
 
 if (-not $needsInstall) {
-    & $nodeExe -e "require('rollup'); require('@tailwindcss/oxide'); require('esbuild'); require('lightningcss')" 2>$null
+    & $nodeExe -e $validateModules 2>$null
     if ($LASTEXITCODE -ne 0) {
         $needsInstall = @("native module validation")
     }
@@ -215,10 +215,10 @@ if ($needsInstall) {
         ) $LASTEXITCODE
     }
 
-    & $nodeExe -e "require('rollup'); require('@tailwindcss/oxide'); require('esbuild'); require('lightningcss')" 2>$null
+    & $nodeExe -e $validateModules
     if ($LASTEXITCODE -ne 0) {
         Stop-WithMessage @(
-            "[ERROR] A required Windows native module is unavailable.",
+            "[ERROR] A required build dependency or native module is unavailable.",
             "Delete web\node_modules and run start.bat again."
         )
     }

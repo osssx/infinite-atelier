@@ -268,8 +268,10 @@ describe("Phase B: ComfyUI API graph and immutable bindings", () => {
         sample.ports[0].inputBinding={mode:"socket",replaceInternalLink:true,targets:[{nodeId:"10",inputName:"text"}]};
         expect(()=>validateComfyTemplatePayload(sample)).toThrow(/enum choices require/);
         sample.ports[0].inputBinding={mode:"literal",targets:[{nodeId:"10",inputName:"text"}]};
-        sample.ports[0].choices=Array.from({length:65},(_,i)=>({label:String(i),value:String(i)}));
-        expect(()=>validateComfyTemplatePayload(sample)).toThrow(/1–64 choices/);
+        sample.ports[0].choices=Array.from({length:2049},(_,i)=>({label:String(i),value:String(i)}));
+        expect(()=>validateComfyTemplatePayload(sample)).toThrow(/1–2048 choices/);
+        sample.ports[0].choices=Array.from({length:2048},(_,i)=>({label:String(i),value:String(i)}));
+        expect(()=>validateComfyTemplatePayload(sample)).not.toThrow();
     });
     it("persists media auto-prune on one input port, not a workflow-level mode route",async()=>{
         const sample=payload();

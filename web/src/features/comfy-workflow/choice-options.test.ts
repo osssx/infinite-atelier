@@ -1,5 +1,6 @@
 import {describe,expect,it} from "vitest";
-import {formatComfyChoiceLines,parseComfyChoiceLines} from "./choice-options";
+import {autoFillComfyPortChoices,formatComfyChoiceLines,inferComfyChoicesForPort,parseComfyChoiceLines} from "./choice-options";
+import type {ComfyApiGraph,ComfyObjectInfo,ComfyTemplatePort} from "./template-schema";
 
 describe("editable Comfy literal candidate arrays",()=>{
  it("parses labels separately from native STRING values (including extra pipes)",()=>{
@@ -57,8 +58,61 @@ describe("editable Comfy literal candidate arrays",()=>{
   expect(parseComfyChoiceLines("FLOAT","坏 | Infinity").ok).toBe(false);
  });
  it("validates line syntax, option limits and distinct actual values",()=>{
-  for(const s of ["","abc","1.5"," | 1","A | 1\nB | 1","1\n另一个 | 1",Array.from({length:65},(_,i)=>"选项"+i+" | "+i).join("\n")]){
+  for(const s of ["","abc","1.5"," | 1","A | 1\nB | 1","1\n另一个 | 1",Array.from({length:2049},(_,i)=>"选项"+i+" | "+i).join("\n")]){
    expect(parseComfyChoiceLines("INT",s).ok).toBe(false);
   }
+ });
+ it("fills missing existing-port enums after object_info arrives and remains idempotent",()=>{
+  const graph:ComfyApiGraph={"10":{class_type:"LoadImage",inputs:{image:"sample.png"}}};
+  const port:ComfyTemplatePort={id:"image",label:"Image",direction:"target",valueKind:"STRING",
+   inputBinding:{mode:"literal",targets:[{nodeId:"10",inputName:"image"}]}};
+  const before=autoFillComfyPortChoices([port],graph,{});
+  expect(before.ports).toBeTruthy();expect(before.ports[0].choices).toBeUndefined();
+  const info:ComfyObjectInfo={LoadImage:{input:{required:{image:[["sample.png","second.png"],{}]}}}};
+  const after=autoFillComfyPortChoices(before.ports,graph,info);
+  expect(after.ports[0].choices).toEqual([{label:"sample.png",value:"sample.png"},{label:"second.png",value:"second.png"}]);
+  const again=autoFillComfyPortChoices(after.ports,graph,info,new Set(),new Set(["image"]));
+  expect(again.ports).toBe(after.ports);
+ });
+ it("intersects enum mappings, ignores unconstrained scalar strings, and rejects incompatible mappings",()=>{
+  const graph:ComfyApiGraph={
+   "10":{class_type:"A",inputs:{mode:"fast"}},
+   "11":{class_type:"B",inputs:{mode:"fast"}},
+   "12":{class_type:"Plain",inputs:{text:"fast"}},
+  };
+  const port:ComfyTemplatePort={id:"mode",label:"Mode",direction:"target",valueKind:"STRING",defaultValue:"fast",
+   inputBinding:{mode:"literal",targets:[{nodeId:"10",inputName:"mode"},{nodeId:"11",inputName:"mode"},{nodeId:"12",inputName:"text"}]}};
+  const info:ComfyObjectInfo={
+   A:{input:{required:{mode:[["fast","quality"],{}]}}},
+   B:{input:{required:{mode:[["fast","fastest"],{}]}}},
+   Plain:{input:{required:{text:["STRING",{}]}}},
+  };
+  expect(inferComfyChoicesForPort(port,graph,info)).toMatchObject({kind:"choices",choices:[{value:"fast"}]});
+  info.B={input:{required:{mode:[["quality","fastest"],{}]}}};
+  expect(inferComfyChoicesForPort(port,graph,info).kind).toBe("default-outside");
+  info.B={input:{required:{mode:["INT",{}]}}};
+  expect(inferComfyChoicesForPort(port,graph,info).kind).toBe("incompatible");
+ });
+ it("does not overwrite manual choices or refill a user-suppressed port",()=>{
+  const graph:ComfyApiGraph={"10":{class_type:"A",inputs:{mode:"fast"}}};
+  const info:ComfyObjectInfo={A:{input:{required:{mode:[["fast","quality"],{}]}}}};
+  const port:ComfyTemplatePort={id:"mode",label:"Mode",direction:"target",valueKind:"STRING",
+   choices:[{label:"Custom",value:"custom"}],inputBinding:{mode:"literal",targets:[{nodeId:"10",inputName:"mode"}]}};
+  expect(autoFillComfyPortChoices([port],graph,info).ports).toBeTruthy();
+  expect(autoFillComfyPortChoices([port],graph,info).ports[0].choices).toEqual(port.choices);
+  const without:ComfyTemplatePort={...port,choices:undefined};
+  expect(autoFillComfyPortChoices([without],graph,info,new Set(["mode"])).ports[0].choices).toBeUndefined();
+ });
+ it("imports the full enum when an existing scalar is stale without changing saved values",()=>{
+  const choices=Array.from({length:120},(_,i)=>`catalog-${i}`);
+  const graph:ComfyApiGraph={"130":{class_type:"LoadImage",inputs:{image:"removed-from-comfy.png"}}};
+  const info:ComfyObjectInfo={LoadImage:{input:{required:{image:[choices,{}]}}}};
+  const port:ComfyTemplatePort={id:"last_frame",label:"Last frame",direction:"target",valueKind:"STRING",
+   defaultValue:"removed-from-comfy.png",inputBinding:{mode:"literal",targets:[{nodeId:"130",inputName:"image"}]}};
+  const result=autoFillComfyPortChoices([port],graph,info);
+  expect(result.ports[0].choices).toHaveLength(120);
+  expect(result.blocked.get(port.id)).toMatchObject({kind:"default-outside"});
+  expect(graph["130"].inputs.image).toBe("removed-from-comfy.png");
+  expect(result.ports[0].defaultValue).toBe("removed-from-comfy.png");
  });
 });

@@ -49,6 +49,7 @@ export type ComfyObjectInfo = Record<string, {
 const PORT_KINDS = new Set(["STRING", "INT", "FLOAT", "BOOLEAN", "IMAGE", "MASK", "LATENT", "CONDITIONING", "VIDEO", "AUDIO", "JSON"]);
 const CAPTURE_KINDS = new Set(["none", "image", "video", "audio", "text"]);
 const INPUT_MODES = new Set(["literal", "media-file", "socket"]);
+const MAX_ENUM_CHOICES=2048;
 const MAX_GRAPH_NODES = 500, MAX_PORTS = 64, MAX_PAYLOAD_BYTES = 2_000_000;
 const safeId = (s: string) => /^[a-zA-Z0-9_:\-.]{1,128}$/.test(s);
 const isObject = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
@@ -260,8 +261,8 @@ export function validateComfyTemplatePayload(raw: unknown, info?: ComfyObjectInf
             if (has(p, "defaultValue") && b.mode === "socket") fail("socket default must come from template graph");
             if (has(p,"choices")) {
                 if (b.mode!=="literal" || !["STRING","INT","FLOAT"].includes(p.valueKind) ||
-                    !Array.isArray(p.choices) || p.choices.length<1 || p.choices.length>64)
-                    failBinding("enum choices require a STRING, INT or FLOAT literal input (1–64 choices)",p);
+                    !Array.isArray(p.choices) || p.choices.length<1 || p.choices.length>MAX_ENUM_CHOICES)
+                    failBinding(`enum choices require a STRING, INT or FLOAT literal input (1–${MAX_ENUM_CHOICES} choices)`,p);
                 const seen=new Set<string>();
                 for(const option of p.choices){
                     if(!isObject(option)||typeof option.label!=="string"||

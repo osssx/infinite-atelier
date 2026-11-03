@@ -24,6 +24,7 @@ export function canonical(value) {
 export const sha256 = (value) => createHash("sha256").update(value).digest("hex");
 const validId = (id) => typeof id === "string" && /^[\w:.-]{1,128}$/.test(id);
 const validSha = (s) => typeof s === "string" && /^[a-f0-9]{64}$/.test(s);
+const maxEnumChoices=2048;
 const isLink = (v) => Array.isArray(v) && v.length === 2 && typeof v[0] === "string" && Number.isInteger(v[1]);
 const object = (x) => x !== null && typeof x === "object" && !Array.isArray(x);
 const matchValue = (kind, v) => ({
@@ -63,7 +64,7 @@ export function verifyTemplate(template) {
             const b = port.inputBinding;
             if(has(port,"choices")){
                 if(b?.mode!=="literal"||!["STRING","INT","FLOAT"].includes(port.valueKind)||
-                    !Array.isArray(port.choices)||port.choices.length<1||port.choices.length>64)
+                    !Array.isArray(port.choices)||port.choices.length<1||port.choices.length>maxEnumChoices)
                     fail("template_enum_kind_invalid");
                 const seen=new Set();
                 for(const option of port.choices){

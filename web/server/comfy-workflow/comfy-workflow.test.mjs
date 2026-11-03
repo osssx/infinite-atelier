@@ -184,6 +184,19 @@ test("STRING, INT, FLOAT choice arrays compile native scalar selections and reje
     bad.revision=sha256(canonical({name:bad.name,apiGraph:bad.apiGraph,ports:bad.ports,requirements:bad.requirements}));
     assert.throws(()=>compileSingleWorkflow({...r,nodes:[{...r.nodes[0],templateRevision:bad.revision}]},bad,{...options(),info:config}),/template_enum_value_invalid/);
 });
+test("choice arrays accept 2048 entries and reject the 2049th",()=>{
+    const t=template();
+    t.ports.find(p=>p.id==="text").choices=Array.from({length:2048},(_,i)=>({
+        label:i===0?"original":"option-"+i,value:i===0?"original":"option-"+i
+    }));
+    t.revision=sha256(canonical({name:t.name,apiGraph:t.apiGraph,ports:t.ports,requirements:t.requirements}));
+    const r=req();r.nodes[0].templateRevision=t.revision;
+    assert.doesNotThrow(()=>compileSingleWorkflow(r,t,options()));
+    t.ports.find(p=>p.id==="text").choices.push({label:"overflow",value:"overflow"});
+    t.revision=sha256(canonical({name:t.name,apiGraph:t.apiGraph,ports:t.ports,requirements:t.requirements}));
+    r.nodes[0].templateRevision=t.revision;
+    assert.throws(()=>compileSingleWorkflow(r,t,options()),/template_enum_kind_invalid/);
+});
 test("CF-01 selected intermediate IMAGE captures before prune, one graph and zero/empty frozen input",()=>{
     const t=template(), r=req();
     const before=canonical(t);

@@ -6,7 +6,7 @@ import { theme as antdTheme } from "antd";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { useConfigStore } from "@/stores/use-config-store";
 import {useComfyObjectInfo} from "./use-comfy-object-info";
-import {inspectComfyInputSpec} from "./comfy-input-spec";
+import {inspectComfyInputSpec,MAX_COMFY_CHOICES} from "./comfy-input-spec";
 import {moveComfyCanvasPort,reorderComfyCanvasPorts} from "./port-order";
 import type { CanvasNodeData, CanvasNodeMetadata, CanvasPortValueKind } from "@/types/canvas";
 import {
@@ -21,7 +21,7 @@ import { listComfyPresetCatalog, type ComfyCatalogPreset } from "./preset-catalo
 import { buildKrea2TurboTemplate, isKrea2TurboT2IWorkflow, KREA2_TURBO_TEMPLATE_ID } from "./krea2-turbo-preset";
 import { buildMiniMaxH3I2VPreset, isMiniMaxH3I2VWorkflow, MINIMAX_H3_I2V_TEMPLATE_ID } from "./minimax-h3-i2v-preset";
 import { installBundledComfyTemplate } from "./preset-catalog";
-import {formatComfyChoiceLines,parseComfyChoiceLines,type ComfyChoiceKind} from "./choice-options";
+import {autoFillComfyPortChoices,formatComfyChoiceLines,inferComfyChoicesForPort,parseComfyChoiceLines,type ComfyChoiceKind} from "./choice-options";
 import type {ComfyScalarChoice} from "./template-schema";
 
 const KINDS: CanvasPortValueKind[] = ["STRING","INT","FLOAT","BOOLEAN","IMAGE","MASK","LATENT","CONDITIONING","VIDEO","AUDIO","JSON"];
@@ -143,7 +143,10 @@ export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,
     const [draggingPortId,setDraggingPortId]=useState<string|null>(null);
     const [dropPosition,setDropPosition]=useState<{id:string;placement:"before"|"after"}|null>(null);
     const [choiceDirty,setChoiceDirty] = useState(false);
+    const suppressedChoiceIds=useRef(new Set<string>());
+    const replaceableChoiceIds=useRef(new Set<string>());
     useEffect(()=>setChoiceDirty(false),[selectedPortId]);
+    useEffect(()=>{suppressedChoiceIds.current.clear();replaceableChoiceIds.current.clear();},[node.id]);
     const [nodeSearch,setNodeSearch] = useState("");
     const [expandedAdvanced,setExpandedAdvanced] = useState(false);
     const [busy,setBusy] = useState(false);
@@ -183,6 +186,7 @@ export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,
     const inputPorts = draft?.ports.filter((port)=>port.direction==="target")||[];
     const outputPorts = draft?.ports.filter((port)=>port.direction==="source")||[];
     const activeSidePorts=activePort?.direction==="target"?inputPorts:outputPorts;
+    const activeChoiceInference=activePort?inferComfyChoicesForPort(activePort,draft?.apiGraph??{},objectInfo):{kind:"none" as const};
     const activeSideIndex=activeSidePorts.findIndex(p=>p.id===activePort?.id);
     const savedValue = node.metadata?.comfyWorkflow?.templateId && node.metadata?.comfyWorkflow?.templateRevision
         ? node.metadata.comfyWorkflow.templateId+"@"+node.metadata.comfyWorkflow.templateRevision : "";
@@ -203,6 +207,18 @@ export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,
         }
         return ()=>{alive=false;};
     },[node.id,focus?.nodeId,focus?.portId]);
+
+    // Definitions often arrive after the immutable template. Fill only missing
+    // choices; persisted/manual choices and the current editor draft take precedence.
+    useEffect(()=>{
+        if(!draft||!objectInfo)return;
+        const result=autoFillComfyPortChoices(draft.ports,draft.apiGraph,objectInfo,
+            suppressedChoiceIds.current,replaceableChoiceIds.current);
+        if(result.ports===draft.ports)return;
+        for(const port of result.ports)if(port.choices&&!draft.ports.find(old=>old.id===port.id)?.choices)
+            replaceableChoiceIds.current.add(port.id);
+        setDraft(current=>current?.ports===draft.ports?{...current,ports:[...result.ports]}:current);
+    },[draft?.ports,draft?.apiGraph,objectInfo]);
 
     const edit=(fn:(current:ComfyTemplatePayload)=>ComfyTemplatePayload)=>{
         setBindingIssue(null);setError("");
@@ -239,8 +255,16 @@ export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,
         const target={nodeId,inputName};
         const action=resolveComfyInputBindingAction(draft.ports,selectedPortId,target);
         if(action.kind==="existing") {
+            const port=draft.ports.find(p=>p.id===action.portId);
+            const inferred=port&&!port.choices&&!suppressedChoiceIds.current.has(port.id)
+                ?inferComfyChoicesForPort(port,draft.apiGraph,objectInfo):{kind:"none" as const};
+            if(port&&(inferred.kind==="choices"||inferred.kind==="default-outside")){
+                replaceableChoiceIds.current.add(port.id);
+                edit(current=>({...current,ports:current.ports.map(p=>p.id===port.id?{...p,choices:inferred.choices}:p)}));
+            }
             setSelectedPortId(action.portId!);
-            setStatus("该参数已配置画布端口，已定位到现有映射。");
+            setStatus(inferred.kind==="too-many"?`候选项共有 ${inferred.count} 个，超过 ${MAX_COMFY_CHOICES} 个上限，未截断导入。`
+                :"该参数已配置画布端口，已定位到现有映射。");
             return;
         }
         const value=draft.apiGraph[nodeId].inputs[inputName];
@@ -255,21 +279,26 @@ export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,
             const selected=draft.ports.find(p=>p.id===portId)!;
             try {
                 const empty=selected.inputBinding?.targets.length===0;
-                edit((d)=>({...d,ports:appendComfyInputTarget(d.ports,portId,target).map(p=>
-                    p.id===portId&&empty&&p.inputBinding?.mode==="literal" && mode==="literal"
-                        ? {...p,
-                            ...(!p.choices&&!Object.prototype.hasOwnProperty.call(p,"defaultValue")
-                                ? {valueKind:kind}:{}),
-                            ...(!p.choices&&descriptor.choices?.length&&descriptor.valueKind===kind
-                                ? {choices:descriptor.choices}:{})}
-                        : p)}));
+                const updated=appendComfyInputTarget(draft.ports,portId,target).map(p=>
+                    p.id===portId&&empty&&p.inputBinding?.mode==="literal"&&mode==="literal"&&
+                      !p.choices&&!Object.prototype.hasOwnProperty.call(p,"defaultValue")?{...p,valueKind:kind}:p);
+                const changedPort=updated.find(p=>p.id===portId)!;
+                const inferred=changedPort.choices||suppressedChoiceIds.current.has(portId)?{kind:"none" as const}
+                    :inferComfyChoicesForPort(changedPort,draft.apiGraph,objectInfo);
+                if(inferred.kind==="choices"){
+                    replaceableChoiceIds.current.add(portId);
+                    const index=updated.findIndex(p=>p.id===portId);updated[index]={...changedPort,choices:inferred.choices};
+                }
+                edit(d=>({...d,ports:updated}));
                 setError("");setStatus("已将 "+nodeId+"."+inputName+" 绑定到端口「"+selected.label+"」。");
             } catch(cause) {setError(String(cause));}
             return;
         }
         const port=inputPort(target,kind,mode);
-        if(mode==="literal" && descriptor.choices?.length && descriptor.valueKind===kind)
-            port.choices=descriptor.choices;
+        const inferred=inferComfyChoicesForPort(port,draft.apiGraph,objectInfo);
+        if(inferred.kind==="choices"){
+            port.choices=inferred.choices;replaceableChoiceIds.current.add(port.id);
+        }
         edit((d)=>({...d,ports:[...d.ports,port]}));
         setSelectedPortId(port.id);setStatus("已为 "+nodeId+"."+inputName+" 创建画布端口。");
         setError("");
@@ -369,13 +398,48 @@ export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,
         }catch(cause){showBindingError(cause);}finally{setBusy(false);}
     };
 
+    const toggleChoiceArray=(portId:string,enabled:boolean)=>{
+        const port=draft?.ports.find(p=>p.id===portId);
+        if(!port||!draft)return;
+        setChoiceDirty(false);setError("");
+        if(!enabled){
+            suppressedChoiceIds.current.add(portId);replaceableChoiceIds.current.delete(portId);
+            edit(current=>({...current,ports:current.ports.map(p=>{
+                if(p.id!==portId)return p;
+                const {choices:_removed,...rest}=p;return rest;
+            })}));
+            return;
+        }
+        suppressedChoiceIds.current.delete(portId);
+        const inferred=inferComfyChoicesForPort(port,draft.apiGraph,objectInfo);
+        if(inferred.kind==="too-many"){
+            setError(`该参数共有 ${inferred.count} 个候选项，超过 ${MAX_COMFY_CHOICES} 个上限；未截断数组，请先缩小 ComfyUI 节点的候选范围。`);return;
+        }
+        if(inferred.kind==="incompatible"||inferred.kind==="empty-intersection"){
+            setError(inferred.kind==="empty-intersection"?"多个已枚举映射没有共同候选值；请调整映射或手工配置候选项。"
+                :"该输入映射的候选类型不兼容；请检查映射后再启用候选数组。");return;
+        }
+        let choices=inferred.kind==="choices"||inferred.kind==="default-outside"?inferred.choices:undefined;
+        if(!choices){
+            const binding=port.inputBinding;
+            const candidate=port.defaultValue??(binding?.mode==="literal"&&binding.targets.length
+                ?draft.apiGraph[binding.targets[0].nodeId]?.inputs[binding.targets[0].inputName]:undefined);
+            const value=port.valueKind==="STRING"?typeof candidate==="string"?candidate:""
+                :typeof candidate==="number"&&Number.isFinite(candidate)?candidate:0;
+            choices=[{label:String(value)||"默认",value}];
+        }
+        replaceableChoiceIds.current.add(portId);
+        edit(current=>({...current,ports:current.ports.map(p=>p.id===portId?{...p,choices}:p)}));
+        if(inferred.kind==="default-outside")setStatus("候选项已导入；当前模板值不在节点候选中，请选择有效默认值或执行参数。原值已保留。");
+    };
+
     return (
         <section
             className={embedded
                 ? "flex h-full min-h-0 min-w-0 w-full cursor-default flex-col overflow-hidden bg-[var(--comfy-panel)] text-[var(--comfy-text)]"
                 : "pointer-events-auto flex min-h-0 cursor-default flex-col overflow-hidden rounded-[18px] border border-[var(--comfy-border)] bg-[var(--comfy-panel)] text-[var(--comfy-text)] shadow-2xl"}
             style={embedded
-                ? {...presetColors,accentColor:token.colorPrimary}
+                ? {...presetColors,colorScheme:themeName,accentColor:token.colorPrimary}
                 : {...colors,colorScheme:themeName,accentColor:theme.node.activeStroke,width:"min(940px, calc(100vw - 32px))",maxHeight:"min(780px, calc(100vh - 32px))"}}
             data-canvas-no-zoom data-comfy-bindings-panel data-comfy-editor-layout={embedded?"settings":"canvas"}
             onMouseDown={(event)=>event.stopPropagation()}
@@ -707,27 +771,21 @@ export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,
                                             <label className="inline-flex items-center gap-2 text-xs">
                                                 <input type="checkbox" aria-label="启用候选数组下拉"
                                                     checked={!!activePort.choices}
-                                                    onChange={e=>{setChoiceDirty(false);edit(current=>({...current,ports:current.ports.map(p=>{
-                                                        if(p.id!==activePort.id)return p;
-                                                        if(!e.target.checked){const {choices:_old,...rest}=p;return rest;}
-                                                        const candidate=p.defaultValue ?? current.apiGraph[p.inputBinding!.targets[0]?.nodeId]?.inputs[
-                                                            p.inputBinding!.targets[0]?.inputName];
-                                                        const value=p.valueKind==="STRING"
-                                                            ?typeof candidate==="string"?candidate:""
-                                                            :typeof candidate==="number"&&Number.isFinite(candidate)?candidate:0;
-                                                        return {...p,choices:[{label:String(value)||"默认",value}]};
-                                                    })}));}}/>
+                                                    onChange={e=>toggleChoiceArray(activePort.id,e.target.checked)}/>
                                                 使用候选数组（节点参数显示下拉选择）
                                             </label>
+                                            {!activePort.choices&&activeChoiceInference.kind==="too-many"?
+                                                <p role="status" className="mt-2 text-[11px] text-amber-700 dark:text-amber-300">节点定义含 {activeChoiceInference.count} 个候选项，超过 {MAX_COMFY_CHOICES} 个上限，未截断；请先缩小节点候选范围。</p>:null}
+                                            {!activePort.choices&&activeChoiceInference.kind==="empty-intersection"?
+                                                <p role="status" className="mt-2 text-[11px] text-amber-700 dark:text-amber-300">多个枚举映射没有共同候选值，未自动合并。</p>:null}
+                                            {!activePort.choices&&activeChoiceInference.kind==="incompatible"?
+                                                <p role="status" className="mt-2 text-[11px] text-amber-700 dark:text-amber-300">映射的节点参数类型不兼容，未自动导入候选。</p>:null}
+                                            {activeChoiceInference.kind==="default-outside"?
+                                                <p role="status" className="mt-2 text-[11px] text-amber-700 dark:text-amber-300">当前模板值不在节点候选中；已保留原值，请选择有效默认值或执行参数。</p>:null}
                                             {activePort.choices?<ComfyChoiceEditor key={activePort.id} port={activePort}
-                                                onDirtyChange={setChoiceDirty}
-                                                onUpdate={choices=>edit(current=>({...current,ports:current.ports.map(p=>
-                                                    p.id!==activePort.id?p:{
-                                                        ...p,choices,
-                                                        ...(Object.prototype.hasOwnProperty.call(p,"defaultValue") &&
-                                                            !choices.some(c=>Object.is(c.value,p.defaultValue))
-                                                            ?{defaultValue:choices[0].value}:{}),
-                                                    })}))}/>:null}
+                                                onDirtyChange={dirty=>{setChoiceDirty(dirty);if(dirty)replaceableChoiceIds.current.delete(activePort.id)}}
+                                                onUpdate={choices=>{replaceableChoiceIds.current.delete(activePort.id);edit(current=>({...current,ports:current.ports.map(p=>
+                                                    p.id===activePort.id?{...p,choices}:p)}))}}/>:null}
                                         </div>:null}
                                     {activePort.inputBinding?.mode==="literal"?<div className="mt-4">
                                         <label className="inline-flex items-center gap-2 text-xs"><input type="checkbox"

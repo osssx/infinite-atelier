@@ -3,6 +3,7 @@ import type {ComfyScalarChoice} from "./template-schema";
 
 const scalarKinds=new Set<CanvasPortValueKind>(["STRING","INT","FLOAT","BOOLEAN","IMAGE","MASK","LATENT","CONDITIONING","VIDEO","AUDIO","JSON"]);
 const isObject=(value:unknown):value is Record<string,unknown>=>Boolean(value)&&typeof value==="object"&&!Array.isArray(value);
+export const MAX_COMFY_CHOICES=2048;
 
 /** ComfyUI exposes enum widgets as either [values, options] or
  * ["COMBO", {options: values}]. Canvas ports carry the selected scalar,
@@ -24,9 +25,8 @@ export function inspectComfyInputSpec(spec:unknown):{
         const integers=options.length>0&&options.every((v:unknown)=>Number.isSafeInteger(v));
         const numbers=options.length>0&&options.every((v:unknown)=>typeof v==="number"&&Number.isFinite(v));
         const valueKind:CanvasPortValueKind|undefined=strings?"STRING":integers?"INT":numbers?"FLOAT":undefined;
-        // The dropdown editor caps its choice list at 64. Large model lists
-        // remain bindable as ordinary scalars without copying the whole catalog.
-        const choices=valueKind&&options.length<=64&&options.every((v:unknown)=>
+        // Keep enum snapshots bounded even for large model catalogs.
+        const choices=valueKind&&options.length<=MAX_COMFY_CHOICES&&options.every((v:unknown)=>
             typeof v==="string"?v.length>0&&v.length<=90&&!/[|\r\n]/.test(v):
                 typeof v==="number"&&Number.isFinite(v))?
             options.map((value:string|number)=>({label:String(value),value})):undefined;

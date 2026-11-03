@@ -2,6 +2,7 @@ import type {CanvasConnection,CanvasNodeData} from "@/types/canvas";
 import type {BackendJobView} from "@/types/backend-contracts";
 import {canvasApi,type CanvasBackendProject} from "./canvas-api";
 import {canonicalBackendGraph} from "./backend-source-fingerprint";
+import {safeRemoteCanvasMerge} from "./canvas-backend-sync";
 import {awaitCanvasStorePersistence,useCanvasStore} from "@/stores/canvas/use-canvas-store";
 import {subscribeSqliteJobEvents} from "./sqlite-job-events";
 import {parseComfyLiveUpdate,subscribeComfyLiveEvents} from "./comfy-live-events";
@@ -10,7 +11,13 @@ import type {CanvasComfyLiveUpdate} from "@/features/comfy-workflow/canvas-execu
 type Graph={nodes:CanvasNodeData[];connections:CanvasConnection[]};
 type Row={artifactId:string;status:string;reason?:string};
 const closed=new Set(["failed","cancelled"]);
-
+const graphFromProject=(project:{nodes:CanvasNodeData[];connections:CanvasConnection[]}):Graph=>({
+ nodes:project.nodes,connections:project.connections
+});
+function isSafeArtifactAdvance(base:Graph,candidate:Graph):boolean{
+ const merged=safeRemoteCanvasMerge(base,candidate);
+ return Boolean(merged&&canonicalBackendGraph(merged)===canonicalBackendGraph(candidate));
+}
 /** Recover the server-owned artifact graph by advancing the SQLite Store's
  * revision and applying only additive materializations. Never replace a local
  * dirty draft or overwrite modified source nodes.
@@ -22,25 +29,89 @@ export async function refreshSqliteComfyArtifacts({
  api?:typeof canvasApi
 }):Promise<"changed"|"unchanged"|"conflict">{
  const frozen=canonicalBackendGraph(getLocalGraph());
+ const frozenGraph=JSON.parse(frozen) as Graph;
  await awaitCanvasStorePersistence(projectId);
- if(canonicalBackendGraph(getLocalGraph())!==frozen)return "conflict";
+ // A pending SQLite save can itself merge newly materialized artifacts into
+ // the rendered graph. Accept that delta only when all original source nodes
+ // and edges remain unchanged and safeRemoteCanvasMerge validates additions.
+ let pageGraph=getLocalGraph();
+ if(canonicalBackendGraph(pageGraph)!==frozen&&!isSafeArtifactAdvance(frozenGraph,pageGraph)){
+  return "conflict";
+ }
  const remote=await api<CanvasBackendProject>("/api/v1/projects/"+encodeURIComponent(projectId));
- if(canonicalBackendGraph(getLocalGraph())!==frozen)return "conflict";
- const snapshot=getLocalGraph();
- // Reopened Canvas may already include every server artifact. A no-op is
- // success, not a conflict and never triggers an extra SQLite PATCH.
- if(canonicalBackendGraph({
-  nodes:remote.document.nodes as CanvasNodeData[],
-  connections:remote.document.connections as CanvasConnection[]
- })===frozen)return "unchanged";
- if(!useCanvasStore.getState().adoptMaterializedGraph(projectId,snapshot,remote))return "conflict";
- const updated=useCanvasStore.getState().openProject(projectId);
- if(!updated)return "conflict";
- const current={nodes:updated.nodes,connections:updated.connections};
- // Store was changed synchronously by server adoption. Do not overwrite an
- // unrelated user gesture that happened while the HTTP request was running.
- if(canonicalBackendGraph(getLocalGraph())!==frozen)return "conflict";
- applyGraph(current);
+ const afterFetch=getLocalGraph();
+ if(canonicalBackendGraph(afterFetch)!==canonicalBackendGraph(pageGraph)){
+  if(!isSafeArtifactAdvance(frozenGraph,afterFetch)){
+   return "conflict";
+  }
+  pageGraph=afterFetch;
+ }
+ const remoteGraph:Graph={nodes:remote.document.nodes as CanvasNodeData[],
+  connections:remote.document.connections as CanvasConnection[]};
+ if(!isSafeArtifactAdvance(frozenGraph,remoteGraph)){
+  return "conflict";
+ }
+ const stored=useCanvasStore.getState().openProject(projectId);
+ if(!stored)return "conflict";
+ let current=graphFromProject(stored);
+ if(!isSafeArtifactAdvance(frozenGraph,current)){
+  return "conflict";
+ }
+
+ // An autosave may already have advanced Store to the fetched server graph.
+ // Repair a lagging page ref only from this verified Store snapshot.
+ if(canonicalBackendGraph(current)===canonicalBackendGraph(remoteGraph)){
+  if(canonicalBackendGraph(pageGraph)===canonicalBackendGraph(current))return "unchanged";
+  if(!safeRemoteCanvasMerge(pageGraph,current)){
+   return "conflict";
+  }
+  if(canonicalBackendGraph(getLocalGraph())!==canonicalBackendGraph(pageGraph)){
+   return "conflict";
+  }
+  applyGraph(current);
+  return "changed";
+ }
+
+ // Backend may be ahead of Store. Validate additive adoption from the exact
+ // Store graph; Store still rejects dirty projects and stale revisions.
+ if(!safeRemoteCanvasMerge(current,remoteGraph)){
+  return "conflict";
+ }
+ const beforeAdopt=getLocalGraph();
+ if(canonicalBackendGraph(beforeAdopt)!==canonicalBackendGraph(pageGraph)&&
+    !isSafeArtifactAdvance(frozenGraph,beforeAdopt)){
+  return "conflict";
+ }
+ const latestStore=useCanvasStore.getState().openProject(projectId);
+ if(!latestStore)return "conflict";
+ const latestStoreGraph=graphFromProject(latestStore);
+ if(canonicalBackendGraph(latestStoreGraph)!==canonicalBackendGraph(current)){
+  return "conflict";
+ }
+ if(!useCanvasStore.getState().adoptMaterializedGraph(projectId,latestStoreGraph,remote)){
+  // Another sync may have adopted this project while the request was open.
+  const adopted=useCanvasStore.getState().openProject(projectId);
+  if(!adopted||canonicalBackendGraph(graphFromProject(adopted))!==canonicalBackendGraph(remoteGraph)){
+   return "conflict";
+  }
+  current=graphFromProject(adopted);
+ }else{
+  const adopted=useCanvasStore.getState().openProject(projectId);
+  if(!adopted)return "conflict";
+  current=graphFromProject(adopted);
+ }
+ const pageNow=getLocalGraph();
+ if(canonicalBackendGraph(pageNow)!==canonicalBackendGraph(beforeAdopt)&&
+    !isSafeArtifactAdvance(frozenGraph,pageNow)){
+  return "conflict";
+ }
+ if(canonicalBackendGraph(pageNow)===canonicalBackendGraph(current))return "unchanged";
+ const merged=safeRemoteCanvasMerge(pageNow,current);
+ if(!merged)return "conflict";
+ if(canonicalBackendGraph(getLocalGraph())!==canonicalBackendGraph(pageNow)){
+  return "conflict";
+ }
+ applyGraph(merged);
  return "changed";
 }
 export async function watchSqliteComfyJob({

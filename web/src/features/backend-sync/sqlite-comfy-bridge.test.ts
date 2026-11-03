@@ -26,9 +26,24 @@ import type {ComfyWorkflowTemplate} from "@/features/comfy-workflow/template-sch
 const node:CanvasNodeData={id:"wf",type:"comfy:workflow",title:"Workflow",position:{x:0,y:0},width:350,height:200,
  metadata:{comfyPorts:[{id:"output",label:"Output",direction:"source",valueKind:"IMAGE"}]}};
 const graph:BackendCanvasGraph={nodes:[node],connections:[]};
+const imageSource:CanvasNodeData={id:"image-source",type:"image",title:"Reference image",
+ position:{x:0,y:0},width:420,height:420,metadata:{status:"idle",content:""}};
+const imageBase:BackendCanvasGraph={nodes:[imageSource],connections:[]};
 const project=(revision:number,nodes:unknown[]=graph.nodes,connections:unknown[]=[])=>({
  id:"p1",revision,document:{title:"test",nodes,connections}
 });
+function materializedModelGraph(ids=["model-a","model-b","model-c"]):BackendCanvasGraph{
+ const artifacts:CanvasNodeData[]=ids.map((artifactId,index)=>({
+  id:"artifact-"+artifactId,type:"image",title:"Generated image "+index,
+  position:{x:420,y:index*440},width:420,height:420,
+  metadata:{content:"/api/v1/blobs/"+String(index+1).repeat(64),
+   storageKey:"cas:"+String(index+1).repeat(64),mimeType:"image/png",status:"success",
+   modelArtifact:{jobId:"job1",artifactId,sourceNodeId:imageSource.id,kind:"image",model:"gpt-image-2"}}
+ }));
+ return {nodes:[imageSource,...artifacts],connections:ids.map((artifactId,index)=>({
+  id:"artifact-edge-"+artifactId,fromNodeId:imageSource.id,toNodeId:"artifact-"+artifactId
+ }))};
+}
 describe("P4 SQLite-only Comfy generation bridge",()=>{
  afterEach(()=>{vi.clearAllMocks();h.project=graph;h.remote=null;h.updates.length=0;vi.unstubAllGlobals()});
  it("persists a frozen graph before submitting and verifies saved revision and source fingerprint",async()=>{
@@ -161,35 +176,140 @@ describe("P4 SQLite-only Comfy generation bridge",()=>{
   };
   const edge={id:"edge",fromNodeId:"wf",fromPortId:"output",toNodeId:"artifact-one",toPortId:"comfy-artifact"};
   const get=vi.fn(()=>graph),apply=vi.fn();
-  h.adopt.mockReturnValue(true);
-  h.project={nodes:[...graph.nodes,artifact],connections:[edge]};
+  h.adopt.mockImplementation((_id:string,_expected:unknown,value:ReturnType<typeof project>)=>{
+   h.project={nodes:value.document.nodes,connections:value.document.connections};return true;
+  });
+  h.project={nodes:graph.nodes,connections:graph.connections};
   h.api.mockResolvedValue(project(2,[...graph.nodes,artifact],[edge]));
   expect(await refreshSqliteComfyArtifacts({projectId:"p1",getLocalGraph:get,applyGraph:apply,api:h.api})).toBe("changed");
   expect(apply).toHaveBeenCalledOnce();
   expect(h.adopt).toHaveBeenCalledOnce();
-  h.adopt.mockReturnValue(false);apply.mockClear();
+  h.adopt.mockReturnValue(false);h.project={nodes:graph.nodes,connections:graph.connections};apply.mockClear();
   expect(await refreshSqliteComfyArtifacts({projectId:"p1",getLocalGraph:get,applyGraph:apply,api:h.api})).toBe("conflict");
   expect(apply).not.toHaveBeenCalled();
  });
+ it("accepts artifacts appended by the save flush and keeps the page graph already synchronized",async()=>{
+  const outputs=materializedModelGraph();
+  let pageGraph:BackendCanvasGraph=imageBase;
+  h.project={nodes:imageBase.nodes,connections:imageBase.connections};
+  h.flush.mockImplementationOnce(async()=>{
+   // Mirrors saveProject → appendSavedOutputs → savedGraphListeners.
+   pageGraph=outputs;
+   h.project={nodes:outputs.nodes,connections:outputs.connections};
+  });
+  h.api.mockResolvedValue(project(12,outputs.nodes,outputs.connections));
+  const apply=vi.fn((value:BackendCanvasGraph)=>{pageGraph=value});
+  expect(await refreshSqliteComfyArtifacts({projectId:"p1",getLocalGraph:()=>pageGraph,
+   applyGraph:apply,api:h.api})).toBe("unchanged");
+  expect(pageGraph.nodes.filter(item=>item.metadata?.modelArtifact).map(item=>item.id))
+   .toEqual(["artifact-model-a","artifact-model-b","artifact-model-c"]);
+  expect(pageGraph.connections).toHaveLength(3);
+  expect(apply).not.toHaveBeenCalled();
+  expect(h.adopt).not.toHaveBeenCalled();
+  expect(await refreshSqliteComfyArtifacts({projectId:"p1",getLocalGraph:()=>pageGraph,
+   applyGraph:apply,api:h.api})).toBe("unchanged");
+  expect(pageGraph.nodes.filter(item=>item.metadata?.modelArtifact)).toHaveLength(3);
+ });
+ it("applies an already-adopted Store graph when the React page ref is stale",async()=>{
+  const outputs=materializedModelGraph();
+  let pageGraph:BackendCanvasGraph=imageBase;
+  h.project={nodes:outputs.nodes,connections:outputs.connections};
+  h.api.mockResolvedValue(project(12,outputs.nodes,outputs.connections));
+  const apply=vi.fn((value:BackendCanvasGraph)=>{pageGraph=value});
+  expect(await refreshSqliteComfyArtifacts({projectId:"p1",getLocalGraph:()=>pageGraph,
+   applyGraph:apply,api:h.api})).toBe("changed");
+  expect(pageGraph.nodes.filter(item=>item.metadata?.modelArtifact)).toHaveLength(3);
+  expect(pageGraph.connections).toHaveLength(3);
+  expect(apply).toHaveBeenCalledOnce();
+  expect(h.adopt).not.toHaveBeenCalled();
+ });
+ it("still conflicts if source metadata or position changes during persistence or the HTTP read",async()=>{
+  const outputs=materializedModelGraph();
+  let pageGraph:BackendCanvasGraph=graph;
+  h.flush.mockImplementationOnce(async()=>{
+   pageGraph={nodes:[{...node,title:"User edit"}],connections:[]};
+  });
+  h.api.mockResolvedValue(project(2,outputs.nodes,outputs.connections));
+  const apply=vi.fn();
+  expect(await refreshSqliteComfyArtifacts({projectId:"p1",getLocalGraph:()=>pageGraph,
+   applyGraph:apply,api:h.api})).toBe("conflict");
+  expect(h.api).not.toHaveBeenCalled();
+  expect(apply).not.toHaveBeenCalled();
+
+  pageGraph=imageBase;
+  h.project={nodes:imageBase.nodes,connections:imageBase.connections};
+  h.flush.mockImplementationOnce(async()=>{});
+  h.api.mockImplementationOnce(async()=>{
+   pageGraph={nodes:[{...imageSource,position:{x:10,y:0}}],connections:[]};
+   return project(2,outputs.nodes,outputs.connections);
+  });
+  expect(await refreshSqliteComfyArtifacts({projectId:"p1",getLocalGraph:()=>pageGraph,
+   applyGraph:apply,api:h.api})).toBe("conflict");
+  expect(h.api).toHaveBeenCalledOnce();
+  expect(apply).not.toHaveBeenCalled();
+ });
+ it("keeps an immutable baseline when the page mutates source objects in place",async()=>{
+  const source:CanvasNodeData={...imageSource,position:{...imageSource.position},
+   metadata:{...imageSource.metadata}};
+  const pageGraph:BackendCanvasGraph={nodes:[source],connections:[]};
+  h.project={nodes:[source],connections:[]};
+  h.flush.mockImplementationOnce(async()=>{
+   source.position.x=10;
+   source.metadata!.status="loading";
+  });
+  const apply=vi.fn();
+  expect(await refreshSqliteComfyArtifacts({projectId:"p1",getLocalGraph:()=>pageGraph,
+   applyGraph:apply,api:h.api})).toBe("conflict");
+  expect(h.api).not.toHaveBeenCalled();
+  expect(apply).not.toHaveBeenCalled();
+ });
+ it("does not treat a source status transition as an artifact-only save merge",async()=>{
+  const initial:BackendCanvasGraph={nodes:[{...imageSource,metadata:{status:"loading",content:""}}],connections:[]};
+  const outputs=materializedModelGraph();
+  let pageGraph:BackendCanvasGraph=initial;
+  h.flush.mockImplementationOnce(async()=>{pageGraph=outputs});
+  h.api.mockResolvedValue(project(2,outputs.nodes,outputs.connections));
+  const apply=vi.fn();
+  expect(await refreshSqliteComfyArtifacts({projectId:"p1",getLocalGraph:()=>pageGraph,
+   applyGraph:apply,api:h.api})).toBe("conflict");
+  expect(h.api).not.toHaveBeenCalled();
+  expect(apply).not.toHaveBeenCalled();
+ });
+ it("rejects colliding materialized node IDs rather than replacing a source",async()=>{
+  const collision={...node,id:"artifact-model-a"};
+  const local={nodes:[imageSource,collision],connections:[]};
+  const remote=materializedModelGraph();
+  h.project={nodes:local.nodes,connections:local.connections};
+  h.api.mockResolvedValue(project(2,remote.nodes,remote.connections));
+  const apply=vi.fn();
+  expect(await refreshSqliteComfyArtifacts({projectId:"p1",getLocalGraph:()=>local,
+   applyGraph:apply,api:h.api})).toBe("conflict");
+  expect(apply).not.toHaveBeenCalled();
+  expect(h.adopt).not.toHaveBeenCalled();
+ });
  it("treats materializations already present in SQLite Canvas as a successful no-op",async()=>{
-  h.api.mockResolvedValue(project(5));
+  h.project={nodes:imageBase.nodes,connections:imageBase.connections};
+  h.api.mockResolvedValue(project(5,imageBase.nodes,imageBase.connections));
   h.adopt.mockReturnValue(false);
   const apply=vi.fn();
-  expect(await refreshSqliteComfyArtifacts({projectId:"p1",getLocalGraph:()=>graph,
+  expect(await refreshSqliteComfyArtifacts({projectId:"p1",getLocalGraph:()=>imageBase,
    applyGraph:apply,api:h.api})).toBe("unchanged");
   expect(h.adopt).not.toHaveBeenCalled();
   expect(apply).not.toHaveBeenCalled();
  });
  it("watches a succeeded backend job and invokes artifact refresh once",async()=>{
-  const artifact={...node,id:"artifact-one",type:"image" as const,title:"Generated image"};
-  const edge={id:"edge",fromNodeId:"wf",fromPortId:"output",toNodeId:"artifact-one",toPortId:"comfy-artifact"};
+  const artifact:CanvasNodeData={id:"artifact-a1",type:"image",title:"Generated image",position:{x:400,y:0},width:420,height:420,
+   metadata:{comfyArtifact:{runId:"job1",artifactId:"a1",workflowNodeId:"wf",portId:"output",kind:"image",index:0}}};
+  const edge={id:"artifact-edge-a1",fromNodeId:"wf",fromPortId:"output",toNodeId:"artifact-a1",toPortId:"comfy-artifact"};
   h.api.mockImplementation(async(path:string)=>{
    if(path.endsWith("/materializations"))return {materializations:[{artifactId:"artifact-one",status:"materialized"}]};
    if(path.endsWith("/job1"))return {id:"job1",projectId:"p1",status:"succeeded"};
    if(path==="/api/v1/projects/p1")return project(2,[...graph.nodes,artifact],[edge]);
    throw Error("unexpected "+path);
   });
-  h.adopt.mockReturnValue(true);
+  h.adopt.mockImplementation((_id:string,_expected:unknown,value:ReturnType<typeof project>)=>{
+   h.project={nodes:value.document.nodes,connections:value.document.connections};return true;
+  });
   const status:string[]=[];
   const controller=new AbortController();
   await watchSqliteComfyJob({projectId:"p1",jobId:"job1",signal:controller.signal,

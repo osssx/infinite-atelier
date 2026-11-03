@@ -3038,7 +3038,17 @@ function AtelierCanvasPage() {
                 .map(node=>[node.id,node]));
             for(const job of active.filter(job=>job.targetNodeId&&workflows.has(job.targetNodeId))
                 .sort((a,b)=>(a.createdAt??0)-(b.createdAt??0))) {
-                setCanvasComfyExecution(projectId,job.targetNodeId!,{runId:job.id,status:job.status});
+                const workflow=workflows.get(job.targetNodeId!)!;
+                const previewEnabled=Boolean(workflow.metadata?.comfyWorkflow?.previewBinding);
+                setCanvasComfyExecution(projectId,job.targetNodeId!,{runId:job.id,status:job.status,previewEnabled});
+                const ref=workflow.metadata?.comfyWorkflow;
+                if(!previewEnabled&&ref?.templateId&&ref.templateRevision){
+                    void getComfyTemplate(ref.templateId,ref.templateRevision).then(template=>{
+                        const current=getCanvasComfyExecution(job.targetNodeId!);
+                        if(activeProjectIdRef.current===projectId&&current?.runId===job.id&&template?.previewBinding)
+                            setCanvasComfyExecution(projectId,job.targetNodeId!,{...current,previewEnabled:true});
+                    }).catch(()=>{});
+                }
             }
             for(const job of active){
                 if(job.modelKind!=="text"||!job.targetNodeId||
@@ -3088,6 +3098,7 @@ function AtelierCanvasPage() {
                 throw new Error("请先在工作流参数面板绑定预设模板");
             const template=await getComfyTemplate(binding.templateId,binding.templateRevision);
             if(!template)throw new Error("绑定的工作流模板版本不存在");
+            setCanvasComfyExecution(projectId,nodeId,{status:"submitting",previewEnabled:Boolean(template.previewBinding)});
             const outputs=template.ports.filter(port=>port.direction==="source"&&
                 !!port.capture?.adapterId&&port.capture.kind!=="none");
             if(!outputs.length)throw new Error("工作流没有可捕获的输出端口");
@@ -3101,7 +3112,7 @@ function AtelierCanvasPage() {
                 instanceId:globalComfyInstanceId,outputPortIds:outputs.map(port=>port.id)
             });
             if(activeProjectIdRef.current===projectId&&pageMountedRef.current){
-                setCanvasComfyExecution(projectId,nodeId,{runId:job.id,status:job.status});
+                setCanvasComfyExecution(projectId,nodeId,{runId:job.id,status:job.status,previewEnabled:Boolean(template.previewBinding)});
                 message.info("生成任务已提交："+job.id+"。完成后自动恢复产物节点。");
                 monitorSqliteJob(job.id,true);
             }

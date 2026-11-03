@@ -104,6 +104,7 @@ export function createLocalBackend({dataDir,streamPollMs=200,adapters,comfyInsta
   const configured={...adapters,...(comfy?{comfy}:{}),...(model?{model}:{})};
   if(autoDispatch&&!Object.keys(configured).length)throw Error("auto_dispatch_requires_adapters");
   const coordinator=Object.keys(configured).length?createJobCoordinator({db,adapters:configured,
+   onTerminal:(jobId,row)=>{if(row.snapshot_json&&JSON.parse(row.snapshot_json).adapterKind==="comfy")comfyLive.disconnect(jobId)},
    retryPolicy:autoDispatch?{pollMs:500,collectMs:1000,maxMs:60000}:null}):null;
   coordinator?.recoverAtStartup();
   const materializer=createCanvasMaterializer({db,blobStore});

@@ -67,6 +67,16 @@ test("all installed classes including custom nodes are accepted, but missing cla
     assert.doesNotThrow(()=>validateGraph(graph,customInfo));
     assert.throws(()=>validateGraph(graph,{SolidImage:info.SolidImage}),/comfy_missing_class:ComfySwitchNode/);
 });
+test("legacy template hash remains compatible and a bound KJ preview node cannot be pruned",()=>{
+ const old=template();
+ assert.equal(sha256(canonical({name:old.name,apiGraph:old.apiGraph,ports:old.ports,requirements:old.requirements})),old.revision);
+ const payload={...old,apiGraph:{...old.apiGraph,"90":{class_type:"ModelPreviewOverrideKJ",inputs:{model:["40",0],max_resolution:512,jpeg_quality:80,suppress_default_preview:true,preview_frames:1,preview_fps:8}}},
+  requirements:{classTypes:[...new Set([...old.requirements.classTypes,"ModelPreviewOverrideKJ"])].sort()},previewBinding:{protocol:"kj-preview",nodeId:"90"}};
+ delete payload.id;delete payload.revision;
+ const withBinding={id:"demo",revision:sha256(canonical(payload)),...payload};
+ const request=req();request.nodes[0].templateRevision=withBinding.revision;
+ assert.throws(()=>compileSingleWorkflow(request,withBinding,options()),/preview_binding_node_pruned/);
+});
 
 test("dynamic COMFY_DYNAMICCOMBO_V3 dotted inputs follow selected option schema",()=>{
     const sample={

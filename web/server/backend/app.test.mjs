@@ -9,14 +9,32 @@ import {openMainDatabase} from "./database.mjs";
 import {buildApp,startServer} from "./app.mjs";
 import {createLocalSessionAuth} from "./session.mjs";
 import {fingerprintSource,transitionJob} from "./repository.mjs";
+import {createComfyLiveHub} from "./comfy-live.mjs";
 const doc=(prompt="hello")=>({nodes:[{id:"text",type:"text",metadata:{prompt}}],connections:[]});
-async function fixture(t){
+async function fixture(t,extra={}){
  const db=new DatabaseSync(":memory:");initializeSchema(db);
- const app=buildApp({db,authorize:req=>req.headers["x-test-owner"]==="owner",streamPollMs:20});
+ const app=buildApp({db,authorize:req=>req.headers["x-test-owner"]==="owner",streamPollMs:20,...extra});
  t.after(async()=>{await app.close();db.close()});
  const call=(method,url,payload,headers={})=>app.inject({method,url,headers:{"x-test-owner":"owner",...headers},...(payload===undefined?{}:{payload})});
  return{db,app,call};
 }
+test("preview endpoint is same-origin authenticated, no-store, and refuses terminal jobs",async t=>{
+ const hub=createComfyLiveHub({WebSocketImpl:null}),{db,call,app}=await fixture(t,{comfyLive:hub});
+ await call("POST","/api/v1/projects",{id:"preview-project",document:doc()});
+ const payload={idempotencyKey:"preview-job",requestFingerprint:"preview-job",executionMode:"poll",
+  projectId:"preview-project",targetNodeId:"text",expectedProjectRevision:1,
+  sourceNodeFingerprint:fingerprintSource(doc(),"text"),snapshot:{adapterKind:"comfy",instanceId:"comfy-local"}};
+ const created=await call("POST","/api/v1/jobs",payload);assert.equal(created.statusCode,201,created.body);
+ const id=created.json().id,bytes=Buffer.from("89504e470d0a1a0a00000000","hex");
+ hub.publish(id,{kind:"preview",mime:"image/png",bytes,step:1,steps:4});
+ const unauth=await app.inject({method:"GET",url:`/api/v1/jobs/${id}/preview`});assert.equal(unauth.statusCode,401);
+ const media=await call("GET",`/api/v1/jobs/${id}/preview`);
+ assert.equal(media.statusCode,200);assert.equal(media.headers["cache-control"],"no-store");
+ assert.equal(media.headers["content-type"],"image/png");assert.deepEqual(media.rawPayload,bytes);
+ db.prepare("UPDATE jobs SET status='succeeded' WHERE id=?").run(id);
+ assert.equal((await call("GET",`/api/v1/jobs/${id}/preview`)).statusCode,404);
+ assert.equal(hub.getPreview(id),null);hub.dispose();
+});
 test("application fail-closed auth and localhost origin rules",async t=>{
  assert.throws(()=>buildApp({db:new DatabaseSync(":memory:")}),/backend_authorizer_required/);
  const{call,app}=await fixture(t);

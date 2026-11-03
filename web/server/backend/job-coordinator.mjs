@@ -16,10 +16,11 @@ function event(db,jobId,kind,payload){
  db.prepare("INSERT INTO job_events(job_id,kind,payload_json,created_at) VALUES(?,?,?,?)")
    .run(jobId,kind,stableJson(payload),Date.now());
 }
-function transition(db,row,to,evidence={}){
+function transition(db,row,to,evidence={},onTerminal){
  assertJobTransition(row.status,to,{executionMode:row.execution_mode,...evidence});
  db.prepare("UPDATE jobs SET status=?,updated_at=? WHERE id=?").run(to,Date.now(),row.id);
  event(db,row.id,"job_status",{from:row.status,to});
+ if(["succeeded","failed","cancelled","submission_unknown","blocked_credential","blocked"].includes(to))onTerminal?.(row.id,row,to);
 }
 function mustOwn(db,jobId,lease){
  const row=db.prepare("SELECT * FROM jobs WHERE id=? AND lease_owner=?").get(jobId,lease);
@@ -50,7 +51,7 @@ function credentialAvailable(db,snapshot){
  * Unknown submit outcomes are NEVER automatically resubmitted.
  */
 export function createJobCoordinator({
- db,adapters={},modelConcurrency=2,comfyConcurrency=1,
+ db,adapters={},modelConcurrency=2,comfyConcurrency=1,onTerminal,
  leaseMs=120000,clock=()=>Date.now(),retryPolicy=null
 }={}){
  if(!db||!Number.isSafeInteger(modelConcurrency)||modelConcurrency<1||
@@ -154,14 +155,14 @@ export function createJobCoordinator({
   });
  }
  function move(jobId,lease,next,evidence={}){
-  return modify(jobId,lease,row=>transition(db,row,next,evidence));
+  return modify(jobId,lease,row=>transition(db,row,next,evidence,onTerminal));
  }
  function enterSubmitting(jobId,lease){
   return modify(jobId,lease,row=>{
    if(row.status!=="preparing"||row.submission_started_at!==null)throw blocked("unsafe_submit_barrier");
    const snap=JSON.parse(row.snapshot_json);
    if(!credentialAvailable(db,snap)){
-    transition(db,row,"blocked_credential");
+    transition(db,row,"blocked_credential",{},onTerminal);
     return null;
    }
    const marker=randomUUID(),now=clock();
@@ -189,7 +190,7 @@ export function createJobCoordinator({
    if(result?.kind==="completed"&&result.receipt&&typeof result.receipt==="object"&&!Array.isArray(result.receipt)){
     let receipt;
     try{receipt=saveReceipt(result.receipt)}
-    catch{transition(db,row,"submission_unknown");return "submission_unknown"}
+    catch{transition(db,row,"submission_unknown",{},onTerminal);return "submission_unknown"}
     assertJobTransition(row.status,"collecting",{executionMode:row.execution_mode});
     db.prepare("UPDATE jobs SET recovery_receipt_json=?,status='collecting',updated_at=? WHERE id=?")
      .run(receipt,clock(),row.id);
@@ -197,7 +198,7 @@ export function createJobCoordinator({
     event(db,row.id,"job_status",{from:"submitting",to:"collecting"});
     return "collecting";
    }
-   transition(db,row,"submission_unknown");return "submission_unknown";
+   transition(db,row,"submission_unknown",{},onTerminal);return "submission_unknown";
   });
  }
  function recordPolled(jobId,lease,result){
@@ -206,10 +207,10 @@ export function createJobCoordinator({
    if(result?.kind==="pending")return "running";
     if(result?.kind==="failed"){
      if(result.error&&typeof result.error==="object")event(db,row.id,"job_comfy_error",result.error);
-     transition(db,row,"failed");return "failed";
+     transition(db,row,"failed",{},onTerminal);return "failed";
     }
     if(result?.kind==="cancelled"){
-    transition(db,row,"cancelled");return "cancelled";
+    transition(db,row,"cancelled",{},onTerminal);return "cancelled";
    }
    if(result?.kind==="completed"){
     const receipt=saveReceipt(result.receipt??{remoteTaskId:row.upstream_task_id});
@@ -227,7 +228,7 @@ export function createJobCoordinator({
    if(row.status!=="collecting")throw blocked("unexpected_job_status");
    const count=db.prepare("SELECT COUNT(*) AS n FROM artifacts WHERE job_id=?").get(jobId).n;
    if(count<1)throw blocked("required_artifacts_missing");
-   transition(db,row,"succeeded");
+   transition(db,row,"succeeded",{},onTerminal);
    db.prepare("DELETE FROM job_schedules WHERE job_id=?").run(jobId);
    return "succeeded";
   });
@@ -385,7 +386,7 @@ export function createJobCoordinator({
    const row=db.prepare("SELECT * FROM jobs WHERE id=?").get(jobId);
    if(!row)throw Object.assign(Error("job_not_found"),{code:"job_not_found",statusCode:404});
    if(row.status==="queued"&&!row.lease_owner){
-    transition(db,row,"cancelled");
+    transition(db,row,"cancelled",{},onTerminal);
     db.prepare("DELETE FROM job_schedules WHERE job_id=?").run(jobId);
     return {state:"cancelled"};
    }
@@ -418,7 +419,7 @@ export function createJobCoordinator({
     if(!current||current.lease_owner!==lease||current.status!=="running")
      return {cancelled:false,reason:"cancel_lease_lost"};
     if(confirmed){
-     transition(db,current,"cancelled");
+     transition(db,current,"cancelled",{},onTerminal);
      db.prepare("DELETE FROM job_schedules WHERE job_id=?").run(jobId);
      event(db,jobId,"job_remote_cancel_confirmed",{remoteTaskId:current.upstream_task_id});
     }

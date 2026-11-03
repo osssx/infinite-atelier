@@ -47,6 +47,20 @@ test("P4.5 templates immutable, presets point to versions, protect referenced de
  assert.equal((await call("GET",base+"/"+encodeURIComponent(next.id)+"/"+next.revision)).statusCode,200);
  assert.equal((await call("GET",base+"/absent/"+"a".repeat(64))).statusCode,404);
 });
+test("SQLite template registry hashes and retains optional KJ preview bindings",async t=>{
+ const {call}=fixture(t),graph={"1":{class_type:"Image",inputs:{seed:1}},
+  "2":{class_type:"ModelPreviewOverrideKJ",inputs:{model:["1",0],max_resolution:512,jpeg_quality:80,suppress_default_preview:true,preview_frames:1,preview_fps:8}}};
+ const baseTemplate=template(1,"workflow:preview"),payload={...baseTemplate,apiGraph:graph,
+  requirements:{classTypes:["Image","ModelPreviewOverrideKJ"]},previewBinding:{protocol:"kj-preview",nodeId:"2"}};
+ payload.revision=createHash("sha256").update(JSON.stringify(sort({name:payload.name,apiGraph:payload.apiGraph,ports:payload.ports,
+  requirements:payload.requirements,previewBinding:payload.previewBinding}))).digest("hex");
+ assert.equal((await call("POST","/api/v1/comfy/templates",{template:payload})).statusCode,201);
+ assert.deepEqual((await call("GET",`/api/v1/comfy/templates/${encodeURIComponent(payload.id)}/${payload.revision}`)).json().template.previewBinding,payload.previewBinding);
+ const invalid={...payload,id:"workflow:bad",previewBinding:{protocol:"kj-preview",nodeId:"1"}};
+ invalid.revision=createHash("sha256").update(JSON.stringify(sort({name:invalid.name,apiGraph:invalid.apiGraph,ports:invalid.ports,
+  requirements:invalid.requirements,previewBinding:invalid.previewBinding}))).digest("hex");
+ assert.equal((await call("POST","/api/v1/comfy/templates",{template:invalid})).statusCode,400);
+});
 test("P4.5 template batch install atomic rollback, schema v8 migration",async t=>{
  const {db,call}=fixture(t),base="/api/v1/comfy/templates/batch";
  const a=template(1,"a"),b=template(2,"b"),corrupt=structuredClone(b);

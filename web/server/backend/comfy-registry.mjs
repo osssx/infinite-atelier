@@ -26,9 +26,10 @@ export function validateComfyTemplate(template){
     Object.keys(template.apiGraph).length<1||Object.keys(template.apiGraph).length>500||
     template.ports.length>64||!Array.isArray(template.requirements.classTypes))
   throw error("comfy_template_invalid");
- if(Object.keys(template).some(k=>!["id","revision","name","apiGraph","ports","requirements"].includes(k)))
+ if(Object.keys(template).some(k=>!["id","revision","name","apiGraph","ports","requirements","previewBinding"].includes(k)))
   throw error("comfy_template_invalid");
- const payload={name:template.name,apiGraph:template.apiGraph,ports:template.ports,requirements:template.requirements};
+ const payload={name:template.name,apiGraph:template.apiGraph,ports:template.ports,requirements:template.requirements,
+  ...(template.previewBinding!==undefined?{previewBinding:template.previewBinding}:{})};
  assertNoRawCredentials(payload);
  const json=stable(payload);
  if(Buffer.byteLength(json)>2_000_000)throw error("comfy_template_too_large",413);
@@ -37,6 +38,13 @@ export function validateComfyTemplate(template){
  // Defense in depth: verify basic graph and port topology even when the client
  // has already run the full ComfyUI schema validator.
  const graph=template.apiGraph;
+ if(template.previewBinding!==undefined){
+  const binding=template.previewBinding;
+  if(!object(binding)||Object.keys(binding).some(k=>!["protocol","nodeId"].includes(k))||
+    binding.protocol!=="kj-preview"||!idRe.test(binding.nodeId)||
+    graph[binding.nodeId]?.class_type!=="ModelPreviewOverrideKJ")
+   throw error("comfy_template_preview_binding_invalid");
+ }
  const nodeIds=Object.keys(graph);
  if(nodeIds.some(k=>!idRe.test(k)||!object(graph[k])||
     !idRe.test(graph[k].class_type)||!object(graph[k].inputs))||

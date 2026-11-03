@@ -25,6 +25,19 @@ const payload = (): ComfyTemplatePayload => ({
     ],
 });
 describe("Phase B: ComfyUI API graph and immutable bindings", () => {
+    it("keeps old revisions byte-compatible and includes an explicit KJ preview binding in new revisions", async () => {
+        const oldPayload=payload();
+        const old=await createComfyTemplate("legacy",oldPayload,info);
+        expect(old.previewBinding).toBeUndefined();
+        await expect(verifyComfyTemplate(old)).resolves.toBeUndefined();
+        const withNode={...oldPayload,apiGraph:{...oldPayload.apiGraph,"kj":{class_type:"ModelPreviewOverrideKJ",inputs:{model:["10",0],max_resolution:512,jpeg_quality:80,suppress_default_preview:true,preview_frames:1,preview_fps:8}}},
+            requirements:{classTypes:[...oldPayload.requirements.classTypes,"ModelPreviewOverrideKJ"].sort()},previewBinding:{protocol:"kj-preview" as const,nodeId:"kj"}};
+        const previewTemplate=await createComfyTemplate("preview",withNode);
+        expect(previewTemplate.previewBinding).toEqual({protocol:"kj-preview",nodeId:"kj"});
+        await expect(verifyComfyTemplate(previewTemplate)).resolves.toBeUndefined();
+        expect(previewTemplate.revision).not.toBe(old.revision);
+        expect(()=>validateComfyTemplatePayload({...withNode,previewBinding:{protocol:"kj-preview",nodeId:"10"}})).toThrow(/invalid KJ preview binding/);
+    });
     it("persists optional canvas visibility in immutable versions without changing input bindings", async () => {
         const source = payload();
         const original = validateComfyTemplatePayload(source, info);

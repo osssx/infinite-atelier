@@ -8,9 +8,12 @@ export function parseComfyLiveUpdate(raw:unknown):CanvasComfyLiveUpdate|null {
     nullableNumber(raw.value)&&(raw.value===null||raw.value>=0&&raw.value<=1))
   return {kind:"progress",currentNode:raw.currentNode,step:raw.step,steps:raw.steps,value:raw.value,
    ...(typeof raw.nodeName==="string"&&raw.nodeName.trim().length>0&&raw.nodeName.length<=120?{nodeName:raw.nodeName}:{})};
- if(raw.kind==="preview"&&(raw.mime==="image/png"||raw.mime==="image/jpeg")&&typeof raw.data==="string"&&
-    raw.data.length>0&&raw.data.length<=350000&&/^[A-Za-z0-9+/]*={0,2}$/.test(raw.data))
-  return {kind:"preview",mime:raw.mime,data:raw.data};
+ if(raw.kind==="preview"&&["image/png","image/jpeg","image/webp","video/mp4"].includes(String(raw.mime))&&
+    Number.isSafeInteger(raw.version)&&Number(raw.version)>0&&
+    (raw.step===undefined||Number.isSafeInteger(raw.step)&&Number(raw.step)>=0)&&
+    (raw.steps===undefined||Number.isSafeInteger(raw.steps)&&Number(raw.steps)>=0))
+  return {kind:"preview",mime:raw.mime as "image/png"|"image/jpeg"|"image/webp"|"video/mp4",version:Number(raw.version),
+   ...(raw.step!==undefined?{step:Number(raw.step)}:{}),...(raw.steps!==undefined?{steps:Number(raw.steps)}:{})};
  if(raw.kind==="error"&&object(raw.error)){
   const error=raw.error;
   if(nullableNode(error.nodeId)&&typeof error.classType==="string"&&error.classType.length<=100&&

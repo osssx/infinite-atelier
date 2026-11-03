@@ -16,7 +16,8 @@ const template:ComfyWorkflowTemplate={
  id:"original",revision:"b".repeat(64),name:"Sample workflow",
  apiGraph:{
   "1":{class_type:"Model",inputs:{prompt:"base",steps:8,scale:0.5,enabled:true,choice:"fast"}},
-  "2":{class_type:"SaveImage",inputs:{image:["1",0]}}
+  "2":{class_type:"SaveImage",inputs:{image:["1",0]}},
+  "3":{class_type:"ModelPreviewOverrideKJ",inputs:{model:["1",0],max_resolution:512,jpeg_quality:80,suppress_default_preview:true,preview_frames:1,preview_fps:8}}
  },
  ports:[
   {id:"prompt",label:"提示词",direction:"target",valueKind:"STRING",inputBinding:{mode:"literal",targets:[{nodeId:"1",inputName:"prompt"}]}},
@@ -29,7 +30,8 @@ const template:ComfyWorkflowTemplate={
   {id:"output",label:"图片",direction:"source",valueKind:"IMAGE",outputBinding:{nodeId:"1",outputIndex:0},
    capture:{kind:"image",adapterId:"SaveImage"}}
  ],
- requirements:{classTypes:["Model","SaveImage"]}
+ requirements:{classTypes:["Model","ModelPreviewOverrideKJ","SaveImage"]},
+ previewBinding:{protocol:"kj-preview",nodeId:"3"}
 };
 const node:CanvasNodeData={
  id:"wf",title:"Workflow",type:"comfy:workflow",width:420,height:300,position:{x:0,y:0},
@@ -52,6 +54,7 @@ describe("save current workflow as independent preset",()=>{
   expect(payload.ports.find(p=>p.id==="enabled")?.defaultValue).toBe(false);
   expect(payload.ports.find(p=>p.id==="choice")?.defaultValue).toBe("quality");
   expect(payload.apiGraph["2"].inputs.image).toEqual(["1",0]);
+  expect(payload.previewBinding).toEqual(template.previewBinding);
   expect(template.apiGraph["1"].inputs.steps).toBe(8);
   expect(template.ports.find(p=>p.id==="steps")?.defaultValue).toBe(8);
   expect(node.metadata?.comfyWorkflow?.inputOverrides.steps).toBe(0);

@@ -195,7 +195,7 @@ export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,
         if(binding?.templateId && binding.templateRevision) {
             void getComfyTemplate(binding.templateId,binding.templateRevision).then(bound=>{
                 if(!alive || !bound)return;
-                setDraft({name:bound.name,apiGraph:bound.apiGraph,ports:bound.ports,requirements:bound.requirements});
+                setDraft({name:bound.name,apiGraph:bound.apiGraph,ports:bound.ports,requirements:bound.requirements,...(bound.previewBinding?{previewBinding:bound.previewBinding}:{})});
                 setTemplateId(bound.id);
                 setSelectedNodeId(focus?.nodeId&&bound.apiGraph[focus.nodeId]?focus.nodeId:Object.keys(bound.apiGraph)[0]||"");
                 setSelectedPortId(focus?.portId&&bound.ports.some(p=>p.id===focus.portId)?focus.portId:bound.ports[0]?.id||null);
@@ -345,11 +345,12 @@ export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,
         if(!onChange({comfyPorts,comfyWorkflow:{
             templateId:template.id,templateRevision:template.revision,instanceId:undefined,
             bindingState:"needs-instance-binding",inputOverrides:node.metadata?.comfyWorkflow?.inputOverrides??{},
+            ...(template.previewBinding?{previewBinding:template.previewBinding}:{}),
         }},template.name)) {
             setError("无法应用该模板版本：已有画布连线引用了被删除或类型不兼容的端口。");
             return false;
         }
-        setDraft({name:template.name,apiGraph:template.apiGraph,ports:template.ports,requirements:template.requirements});
+        setDraft({name:template.name,apiGraph:template.apiGraph,ports:template.ports,requirements:template.requirements,...(template.previewBinding?{previewBinding:template.previewBinding}:{})});
         setTemplateId(template.id);setSelectedNodeId(Object.keys(template.apiGraph)[0]||"");
         setSelectedPortId(current=>template.ports.some(port=>port.id===current)?current:template.ports[0]?.id||null);setError("");
         setStatus("已保存新的不可变模板版本。运行时使用全局 ComfyUI 默认实例进行能力验证。");
@@ -829,13 +830,22 @@ export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,
                 ? "max-h-[38%] shrink-0 overflow-y-auto border-t border-[var(--comfy-border)] bg-[var(--comfy-panel)] px-4 py-3 sm:px-5"
                 : "shrink-0 border-t border-[var(--comfy-border)] bg-[var(--comfy-panel)] px-5 py-3"} data-comfy-save-footer>
                 <details open={expandedAdvanced} onToggle={(e)=>setExpandedAdvanced((e.currentTarget as HTMLDetailsElement).open)} className="mb-3">
-                    <summary className="cursor-pointer text-[11px] font-medium text-[var(--comfy-muted)]">模板设置 · 名称、ID 与模型依赖</summary>
+                    <summary className="cursor-pointer text-[11px] font-medium text-[var(--comfy-muted)]">模板设置 · 名称、ID、模型依赖与执行预览</summary>
                     <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
                         <label className={captionClass}>模板名称<input className={inputClass+" mt-1"} value={draft.name} onChange={(e)=>edit((d)=>({...d,name:e.target.value}))}/></label>
                         <label className={captionClass}>模板 ID<input className={inputClass+" mt-1"} value={templateId} onChange={(e)=>setTemplateId(e.target.value)}/></label>
                         <label className={captionClass+" sm:col-span-2"}>依赖的模型文件
                             <input className={inputClass+" mt-1"} placeholder="可选，多个模型以英文逗号分隔" value={(draft.requirements.modelAssets||[]).join(", ")}
                                 onChange={(e)=>edit((d)=>({...d,requirements:{...d.requirements,modelAssets:e.target.value.split(",").map((x)=>x.trim()).filter(Boolean)}}))}/>
+                        </label>
+                        <label className={captionClass+" sm:col-span-2"}>执行预览
+                            <select className={inputClass+" mt-1"} value={draft.previewBinding?.nodeId||""}
+                                onChange={(e)=>edit((d)=>({...d,...(e.target.value?{previewBinding:{protocol:"kj-preview" as const,nodeId:e.target.value}}:{previewBinding:undefined})}))}>
+                                <option value="">不启用</option>
+                                {Object.entries(draft.apiGraph).filter(([,n])=>n.class_type==="ModelPreviewOverrideKJ").map(([id,n])=><option key={id} value={id}>{typeof n._meta?.title==="string"?n._meta.title+" · ":""}{id} · ModelPreviewOverrideKJ</option>)}
+                            </select>
+                            {!Object.values(draft.apiGraph).some(n=>n.class_type==="ModelPreviewOverrideKJ")?
+                                <span className="mt-1 block text-[11px] text-[var(--comfy-muted)]">先在 ComfyUI 工作流接入 ModelPreviewOverrideKJ，再重新导入即可启用预览。</span>:null}
                         </label>
                     </div>
                 </details>

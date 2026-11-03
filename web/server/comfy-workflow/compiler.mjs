@@ -42,6 +42,12 @@ export function verifyTemplate(template) {
     if (!Object.keys(apiGraph).length || Object.keys(apiGraph).length > 500 || ports.length > 64) fail("template_limits");
     const classes = [...new Set(Object.values(apiGraph).map(n => n?.class_type))].sort();
     if (!Array.isArray(requirements.classTypes) || canonical(classes) !== canonical(requirements.classTypes)) fail("template_requirements_invalid");
+    if (template.previewBinding !== undefined) {
+        const binding=template.previewBinding;
+        if (!object(binding) || Object.keys(binding).some(k=>!['protocol','nodeId'].includes(k)) ||
+            binding.protocol !== "kj-preview" || !validId(binding.nodeId) ||
+            apiGraph[binding.nodeId]?.class_type !== "ModelPreviewOverrideKJ") fail("template_preview_binding_invalid");
+    }
     const ids = new Set(), claims = new Set();
     for (const [id, node] of Object.entries(apiGraph)) {
         if (!validId(id) || !validId(node?.class_type) || !object(node?.inputs)) fail("template_graph_invalid");
@@ -96,7 +102,8 @@ export function verifyTemplate(template) {
         }
     }
     const {id,revision,...payload} = template;
-    if (sha256(canonical({name:payload.name,apiGraph:payload.apiGraph,ports:payload.ports,requirements:payload.requirements})) !== revision) fail("template_revision_mismatch");
+    if (sha256(canonical({name:payload.name,apiGraph:payload.apiGraph,ports:payload.ports,requirements:payload.requirements,
+        ...(payload.previewBinding!==undefined?{previewBinding:payload.previewBinding}:{})})) !== revision) fail("template_revision_mismatch");
     const graphBytes = Buffer.byteLength(canonical(apiGraph));
     if (graphBytes > 2_000_000) fail("template_graph_too_large");
     validateGraph(apiGraph);
@@ -326,6 +333,7 @@ export function compileSingleWorkflow(req, template, opts = {}) {
         for (const [name,v] of Object.entries(inputs)) if (isLink(v)) inputs[name] = [nodeKey(node.id,v[0]),v[1]];
         graph[nodeKey(node.id,id)] = {...n, inputs};
     }
+    const previewNodeId=template.previewBinding?nodeKey(node.id,template.previewBinding.nodeId):null;
     const decisions = Object.create(null);
     const trustedStagedFields=new Set();
     const absentMediaPorts=[];
@@ -416,6 +424,7 @@ export function compileSingleWorkflow(req, template, opts = {}) {
     };
     for(const cap of captures)visit(cap.captureNodeId);
     for (const id of Object.keys(graph)) if (!reachable.has(id)) delete graph[id];
+    if (previewNodeId && !graph[previewNodeId]) fail("preview_binding_node_pruned");
     for (const p of absentMediaPorts) for (const t of p.inputBinding.targets) {
         const remaining=graph[nodeKey(node.id,t.nodeId)];
         if(remaining && has(remaining.inputs,t.inputName))
@@ -436,5 +445,6 @@ export function compileSingleWorkflow(req, template, opts = {}) {
     normalizeComfyEnumInputs(graph,opts.info,trustedStagedFields);
     validateGraph(graph,opts.info);
     if (Object.keys(graph).length>500) fail("compiled_graph_too_large");
-    return {graph,graphHash:sha256(canonical(graph)),captureMap:captures,decisions};
+    return {graph,graphHash:sha256(canonical(graph)),captureMap:captures,decisions,
+        ...(previewNodeId?{previewNodeId}:{})};
 }

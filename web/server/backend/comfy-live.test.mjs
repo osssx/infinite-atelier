@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {createServer} from "node:http";
 import {comfyUpstream} from "./comfy-v2-adapter.mjs";
-import {createComfyLiveHub,parseComfySocketMessage,parseComfyPreview,parseComfyPromptError} from "./comfy-live.mjs";
+import {createComfyLiveHub,parseComfySocketMessage,parseComfyPreview,parseComfyPromptError,parseKJPreviewMessage} from "./comfy-live.mjs";
 
 const frame=(type,data)=>JSON.stringify({type,data});
 const png=Buffer.from("89504e470d0a1a0a0000000d49484452","hex");
@@ -13,7 +13,7 @@ class FakeSocket {
  emit(kind,data){for(const handler of this.listeners.get(kind)??[])handler({data})}
  close(){this.closed=true;this.emit("close",null)}
 }
-test("native websocket filters unrelated prompts and returns scoped progress + volatile preview",()=>{
+test("native websocket filters unrelated prompts; legacy unscoped binary preview is disabled",()=>{
  FakeSocket.all=[];
  let time=1000;
  const hub=createComfyLiveHub({WebSocketImpl:FakeSocket,now:()=>time});
@@ -32,16 +32,48 @@ test("native websocket filters unrelated prompts and returns scoped progress + v
  const bytes=Buffer.alloc(8);bytes.writeUInt32BE(1,0);bytes.writeUInt32BE(2,4);
  const combined=Buffer.concat([bytes,png]);
  ws.emit("message",combined.buffer.slice(combined.byteOffset,combined.byteOffset+combined.byteLength));
- assert.equal(events.at(-1).kind,"preview");
- assert.equal(events.at(-1).mime,"image/png");
+ assert.equal(events.at(-1).kind,"progress");
  const recovered=[];
  hub.subscribe("job-1",event=>recovered.push(event));
- assert.deepEqual(recovered.map(item=>item.kind),["progress","preview"]);
+ assert.deepEqual(recovered.map(item=>item.kind),["progress"]);
  hub.disconnect("job-1");
  assert.equal(ws.closed,true);
  ws.emit("message",frame("progress",{prompt_id:"prompt-a",value:20,max:20}));
- assert.equal(events.length,3);
+ assert.equal(events.length,2);
  off();hub.dispose();
+});
+test("KJ preview override accepts only the bound namespaced node and matching prompt",()=>{
+ const image=png.toString("base64"),nodeId="w_canvas-1__105_200";
+ const message=data=>JSON.stringify({type:"kj_preview_override",data});
+ const valid=parseKJPreviewMessage(message({node_id:nodeId,image,mime:"image/png",w:2,h:2,step:4,total:20}),{nodeId,promptId:"p-1"});
+ assert.equal(valid.kind,"preview");assert.equal(valid.steps,20);assert.deepEqual(valid.bytes,png);
+ assert.equal(parseKJPreviewMessage(message({node_id:"w_other__105_200",image,mime:"image/png",step:4,total:20}),{nodeId,promptId:"p-1"}),null);
+ assert.equal(parseKJPreviewMessage(message({node_id:nodeId,prompt_id:"p-2",image,mime:"image/png",step:4,total:20}),{nodeId,promptId:"p-1"}),null);
+ assert.equal(parseKJPreviewMessage(message({node_id:nodeId,image:"not-base64",mime:"image/png",step:4,total:20}),{nodeId}),null);
+});
+test("preview cache is bounded, SSE carries metadata only, and disconnect releases media",()=>{
+ let time=0;const hub=createComfyLiveHub({WebSocketImpl:FakeSocket,now:()=>time});
+ const payload=Buffer.alloc(4*1024*1024),updates=[];hub.subscribe("live-0",item=>updates.push(item));
+ for(let i=0;i<17;i++){time+=1001;hub.publish("live-"+i,{kind:"preview",mime:"image/webp",bytes:payload,step:i,steps:20})}
+ assert.equal(hub.getPreview("live-0"),null);
+ assert.equal(hub.getPreview("live-16").bytes.length,4*1024*1024);
+ assert.deepEqual(updates.map(({kind,mime,version,step,steps})=>({kind,mime,version,step,steps})),[
+  {kind:"preview",mime:"image/webp",version:1,step:0,steps:20}
+ ]);
+ assert.equal(Object.hasOwn(updates[0],"bytes"),false);
+ hub.disconnect("live-16");assert.equal(hub.getPreview("live-16"),null);hub.dispose();
+});
+test("task socket stages pre-acceptance previews and publishes only after prompt ID matches",()=>{
+ FakeSocket.all=[];let time=1000;const hub=createComfyLiveHub({WebSocketImpl:FakeSocket,now:()=>time});
+ const nodeId="w_canvas-1__105_200",events=[];hub.subscribe("job-kj",item=>events.push(item));
+ const args={jobId:"job-kj",promptId:null,clientId:"attempt-1",url:"http://127.0.0.1:8188",previewNodeId:nodeId,graph:{}};
+ hub.observe(args);const ws=FakeSocket.all[0],image=png.toString("base64");
+ const send=prompt_id=>ws.emit("message",frame("kj_preview_override",{prompt_id,node_id:nodeId,image,mime:"image/png",w:2,h:2,step:1,total:4}));
+ send("other-prompt");hub.observe({...args,promptId:"prompt-1"});
+ assert.equal(events.length,0);
+ time+=1001;send("prompt-1");
+ assert.equal(events.length,1);assert.equal(events[0].kind,"preview");assert.equal(events[0].version,1);
+ assert.equal(hub.getPreview("job-kj").mime,"image/png");hub.disconnect("job-kj");hub.dispose();
 });
 test("Comfy execution title comes from compiled graph; class_type and ID remain fallbacks",()=>{
  const graph={

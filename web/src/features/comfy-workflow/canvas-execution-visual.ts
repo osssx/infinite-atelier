@@ -7,9 +7,9 @@ import {useCallback,useSyncExternalStore} from "react";
 export type ComfyExecutionError={nodeId:string|null;classType:string;type:string;message:string};
 export type CanvasComfyLiveUpdate=
  | {kind:"progress";currentNode:string|null;nodeName?:string;step:number|null;steps:number|null;value:number|null}
- | {kind:"preview";mime:"image/png"|"image/jpeg";data:string}
+ | {kind:"preview";mime:"image/png"|"image/jpeg"|"image/webp"|"video/mp4";version:number;step?:number;steps?:number}
  | {kind:"error";error:ComfyExecutionError};
-export type CanvasComfyExecution={status:string;runId?:string;error?:string;
+export type CanvasComfyExecution={status:string;runId?:string;error?:string;previewEnabled?:boolean;
  progress?:Extract<CanvasComfyLiveUpdate,{kind:"progress"}>;
  preview?:Extract<CanvasComfyLiveUpdate,{kind:"preview"}>;
  errorDetail?:ComfyExecutionError};
@@ -28,7 +28,7 @@ export function setCanvasComfyExecutionScope(projectId:string|null):void {
 export function setCanvasComfyExecution(projectId:string,nodeId:string,execution:CanvasComfyExecution):void {
  if(activeProject!==projectId)return;
  const previous=executions.get(nodeId);
- if(previous?.status===execution.status&&previous?.runId===execution.runId&&previous?.error===execution.error&&previous?.progress===execution.progress&&previous?.preview===execution.preview&&previous?.errorDetail===execution.errorDetail)return;
+ if(previous?.status===execution.status&&previous?.runId===execution.runId&&previous?.error===execution.error&&previous?.previewEnabled===execution.previewEnabled&&previous?.progress===execution.progress&&previous?.preview===execution.preview&&previous?.errorDetail===execution.errorDetail)return;
  executions.set(nodeId,execution);
  publish(nodeId);
 }
@@ -45,6 +45,7 @@ export function observeCanvasComfyExecution(projectId:string,nodeId:string,execu
  const active=["submitting","queued","preparing","running","collecting","importing","cancelling"].includes(execution.status);
  setCanvasComfyExecution(projectId,nodeId,{...execution,
   ...(retain&&active?{progress:previous?.progress,preview:previous?.preview}:{}),
+  ...(retain&&active&&execution.previewEnabled===undefined?{previewEnabled:previous?.previewEnabled}:{}),
   ...(retain?{errorDetail:previous?.errorDetail,error:execution.error??previous?.error}:{}),
  });
 }
@@ -67,7 +68,7 @@ export function observeCanvasComfyLive(projectId:string,nodeId:string,runId:stri
  if(!previous||previous.runId!==runId||!["queued","running","preparing","submitting"].includes(previous.status))return;
  if(event.kind==="progress")setCanvasComfyExecution(projectId,nodeId,{...previous,progress:event});
  else if(event.kind==="preview")setCanvasComfyExecution(projectId,nodeId,{...previous,preview:event});
- else setCanvasComfyExecution(projectId,nodeId,{...previous,errorDetail:event.error,error:event.error.message});
+ else if(event.kind==="error")setCanvasComfyExecution(projectId,nodeId,{...previous,errorDetail:event.error,error:event.error.message});
 }
 
 export function getCanvasComfyExecution(nodeId:string|null|undefined):CanvasComfyExecution|undefined {

@@ -733,6 +733,20 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
    reply.header("Cache-Control","no-store");
    return {error:row?JSON.parse(row.payload_json):null};
   });
+  if(comfyLive)app.get("/api/v1/jobs/:id/preview",{
+   schema:{params:{type:"object",required:["id"],properties:{id:idSchema}}}
+  },(req,reply)=>{
+   const job=db.prepare("SELECT id,status FROM jobs WHERE id=?").get(req.params.id);
+   if(!job){reply.code(404);return {code:"job_not_found"}}
+   if(["succeeded","failed","cancelled","submission_unknown","blocked_credential","blocked"].includes(job.status)){
+    comfyLive.disconnect(req.params.id);reply.code(404);return {code:"preview_not_found"};
+   }
+   const preview=comfyLive.getPreview?.(req.params.id);
+   reply.header("Cache-Control","no-store");
+   if(!preview){reply.code(404);return {code:"preview_not_found"}}
+   reply.type(preview.mime).header("X-Preview-Version",String(preview.version));
+   return reply.send(preview.bytes);
+  });
   // Ephemeral ComfyUI progress: sampler frames and previews never enter SQLite.
   if(comfyLive)app.get("/api/v1/jobs/:id/live",{
    schema:{params:{type:"object",required:["id"],properties:{id:idSchema}}}
@@ -740,7 +754,7 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
    const job=db.prepare("SELECT id FROM jobs WHERE id=?").get(req.params.id);
    if(!job){reply.code(404);return {code:"job_not_found"}}
    const raw=reply.raw;reply.hijack();
-   raw.writeHead(200,{"Content-Type":"text/event-stream; charset=utf-8","Cache-Control":"no-cache, no-transform",
+   raw.writeHead(200,{"Content-Type":"text/event-stream; charset=utf-8","Cache-Control":"no-store, no-cache, no-transform",
     "Connection":"keep-alive","X-Accel-Buffering":"no"});
    let closed=false;
    const off=comfyLive.subscribe(req.params.id,item=>{

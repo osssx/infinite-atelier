@@ -19,7 +19,8 @@ export function snapshotComfyInstanceAsPreset(
  if(!binding || binding.templateId!==template.id || binding.templateRevision!==template.revision)
   throw Error("请先加载有效的工作流模板");
  const payload:ComfyTemplatePayload=structuredClone({
-  name:trimmed,apiGraph:template.apiGraph,ports:template.ports,requirements:template.requirements
+  name:trimmed,apiGraph:template.apiGraph,ports:template.ports,requirements:template.requirements,
+  ...(template.previewBinding?{previewBinding:template.previewBinding}:{})
  });
  const connected=new Set(connections.filter(edge=>edge.toNodeId===node.id).map(edge=>edge.toPortId));
  for(const port of payload.ports){

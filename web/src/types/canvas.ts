@@ -125,6 +125,7 @@ export type CanvasNodeMetadata = {
         instanceId?: string;
         bindingState: "bound" | "needs-instance-binding" | "incompatible";
         inputOverrides: Record<string, unknown>;
+        previewBinding?: {protocol:"kj-preview";nodeId:string};
         lastRunId?: string;
     };
 };

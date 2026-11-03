@@ -105,7 +105,7 @@ describe("canvas ComfyUI execution visual state",()=>{
   it("renders scoped sampler progress and ephemeral preview without touching saved canvas data",()=>{
    setCanvasComfyExecutionScope("project");
    setCanvasComfyExecution("project","wf",{status:"running",runId:"job-1"});
-   const preview={kind:"preview" as const,mime:"image/png" as const,data:"iVBORw0KGgo="};
+   const preview={kind:"preview" as const,mime:"image/png" as const,version:1};
    observeCanvasComfyLive("project","wf","other-job",preview);
    expect(getCanvasComfyExecution("wf")?.preview).toBeUndefined();
    observeCanvasComfyLive("other-project","wf","job-1",preview);
@@ -113,7 +113,7 @@ describe("canvas ComfyUI execution visual state",()=>{
    observeCanvasComfyLive("project","wf","job-1",preview);
    observeCanvasComfyLive("project","wf","job-1",{kind:"progress",currentNode:"w_wf__12",step:6,steps:20,value:.3});
    const html=render();
-   expect(html).toContain("ComfyUI 实时预览");
+   expect(getCanvasComfyExecution("wf")?.preview?.version).toBe(1);
    expect(html).toContain("执行节点 12");
    expect(html).toContain("采样 6/20");
    expect(html).toContain("30%");
@@ -121,6 +121,16 @@ describe("canvas ComfyUI execution visual state",()=>{
    observeCanvasComfyExecution("project","wf",{status:"succeeded",runId:"job-1"});
    expect(getCanvasComfyExecution("wf")?.preview).toBeUndefined();
    expect(getCanvasComfyExecution("wf")?.progress).toBeUndefined();
+  });
+  it("retains run-scoped preview permission across poll status updates and applies the first preview",()=>{
+   setCanvasComfyExecutionScope("project");
+   setCanvasComfyExecution("project","wf",{runId:"job-2",status:"queued",previewEnabled:true});
+   observeCanvasComfyExecution("project","wf",{runId:"job-2",status:"running"});
+   expect(getCanvasComfyExecution("wf")?.previewEnabled).toBe(true);
+   observeCanvasComfyLive("project","wf","job-2",{kind:"preview",mime:"video/mp4",version:8,step:1,steps:6});
+   expect(getCanvasComfyExecution("wf")?.preview?.version).toBe(8);
+   observeCanvasComfyExecution("project","wf",{runId:"job-1",status:"running"});
+   expect(getCanvasComfyExecution("wf")?.runId).toBe("job-2");
   });
   it("shows a workflow node title instead of just the numeric identifier",()=>{
    setCanvasComfyExecutionScope("project");

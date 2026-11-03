@@ -36,6 +36,8 @@ export type ComfyTemplatePayload = {
     apiGraph: ComfyApiGraph;
     ports: ComfyTemplatePort[];
     requirements: ComfyRequirements;
+    /** Opt-in KJNodes preview override. Omitted templates keep legacy behavior. */
+    previewBinding?: { protocol: "kj-preview"; nodeId: string };
 };
 export type ComfyWorkflowTemplate = ComfyTemplatePayload & { id: string; revision: string };
 
@@ -181,6 +183,12 @@ export function validateComfyTemplatePayload(raw: unknown, info?: ComfyObjectInf
     if (!isObject(raw) || typeof raw.name !== "string" || raw.name.trim().length < 1 || raw.name.length > 160 ||
         !Array.isArray(raw.ports) || raw.ports.length > MAX_PORTS) fail("invalid template metadata or port count");
     const graph = validateComfyApiGraph(raw.apiGraph, info);
+    if (raw.previewBinding !== undefined) {
+        const binding=raw.previewBinding;
+        if(!isObject(binding)||binding.protocol!=="kj-preview"||typeof binding.nodeId!=="string"||
+            !safeId(binding.nodeId)||!has(graph,binding.nodeId)||
+            graph[binding.nodeId].class_type!=="ModelPreviewOverrideKJ") fail("invalid KJ preview binding");
+    }
     const claimed = new Set<string>(), portIds = new Set<string>();
     const ports = raw.ports as ComfyTemplatePort[];
     function failBinding(reason:string, port:ComfyTemplatePort, target?:ComfyNodeTarget, detail?:string):never {
@@ -295,7 +303,8 @@ export function validateComfyTemplatePayload(raw: unknown, info?: ComfyObjectInf
         raw.requirements.modelAssets.some((v: unknown) => typeof v !== "string" || !v.trim() || v.length > 256)))
         fail("invalid model dependencies");
     // Identity/revision are NOT part of content-addressed payload. Ignore extra supplied metadata.
-    return JSON.parse(canonicalComfyJson({name:raw.name,apiGraph:graph,ports,requirements:raw.requirements})) as ComfyTemplatePayload;
+    return JSON.parse(canonicalComfyJson({name:raw.name,apiGraph:graph,ports,requirements:raw.requirements,
+        ...(raw.previewBinding!==undefined?{previewBinding:raw.previewBinding}:{})})) as ComfyTemplatePayload;
 }
 export function templatePayloadFromGraph(name: string, raw: unknown, info?: ComfyObjectInfo): ComfyTemplatePayload {
     const graph = validateComfyApiGraph(raw, info);

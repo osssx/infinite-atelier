@@ -201,6 +201,13 @@ export function createComfyV2Adapter({instance,db,blobStore,upstreamCall=comfyUp
   sending.add(job.id);
   try{
    let result;
+   const frozen=snapshotOf(job,trusted.id);
+   const previewNodeId=prepared.previewNodeId??(frozen.comfyTemplate.previewBinding
+    ?`w_${frozen.comfyRequest.nodes[0].id}__${frozen.comfyTemplate.previewBinding.nodeId}`:undefined);
+   if(previewNodeId){
+    try{liveHub?.observe({jobId:job.id,promptId:null,clientId:attemptId,url:trusted.url,graph:prepared.graph,previewNodeId})}catch{/* optional preview connection */}
+    try{await liveHub?.waitReady?.(job.id,1000)}catch{/* optional preview connection */}
+   }
    try{
     result=await upstreamCall(trusted,"/prompt",{method:"POST",body:JSON.stringify({
      prompt:prepared.graph,client_id:attemptId,
@@ -209,14 +216,18 @@ export function createComfyV2Adapter({instance,db,blobStore,upstreamCall=comfyUp
    }catch(error){
     if(error?.confirmedNotAccepted===true||error?.promptRejected===true||
        ["comfy_upstream_400","comfy_upstream_422"].includes(error?.code)){
+      liveHub?.disconnect(job.id);
       throw Object.assign(fail("comfy_prompt_rejected",422),{confirmedNotAccepted:true,comfyDiagnostic:error?.comfyDiagnostic??null});
     }
+    liveHub?.disconnect(job.id);
     throw error; // ambiguous: JobCoordinator -> submission_unknown
    }
-   if(result?.error&&!result?.prompt_id)
+   if(result?.error&&!result?.prompt_id){
+    liveHub?.disconnect(job.id);
     throw Object.assign(fail("comfy_prompt_rejected",422),{confirmedNotAccepted:true,comfyDiagnostic:parseComfyPromptError(result)});
-   if(!validRemoteId(result?.prompt_id))throw fail("comfy_prompt_id_missing",502);
-   liveHub?.observe({jobId:job.id,promptId:result.prompt_id,clientId:attemptId,url:trusted.url,graph:prepared.graph});
+   }
+   if(!validRemoteId(result?.prompt_id)){liveHub?.disconnect(job.id);throw fail("comfy_prompt_id_missing",502)}
+   try{liveHub?.observe({jobId:job.id,promptId:result.prompt_id,clientId:attemptId,url:trusted.url,graph:prepared.graph,previewNodeId})}catch{/* submission is already accepted */}
    return {kind:"accepted",remoteTaskId:result.prompt_id};
   }finally{sending.delete(job.id)}
  }
@@ -287,6 +298,7 @@ export function createComfyV2Adapter({instance,db,blobStore,upstreamCall=comfyUp
    return {cancelled:false,reason:"comfy_cancel_raced_with_execution"};
   if(contains(Array.isArray(after?.queue_pending)?after.queue_pending:[]))
    return {cancelled:false,reason:"comfy_cancel_not_confirmed"};
+  liveHub?.disconnect(job.id);
   return {cancelled:true};
  }
  async function poll({job,remoteTaskId}){
@@ -296,7 +308,9 @@ export function createComfyV2Adapter({instance,db,blobStore,upstreamCall=comfyUp
    const entry=historyEntry(history,remoteTaskId);
    if(!entry){
     const first=db.prepare("SELECT id FROM job_attempts WHERE job_id=? AND upstream_task_id=? ORDER BY started_at LIMIT 1").get(job.id,remoteTaskId);
-    liveHub?.observe({jobId:job.id,promptId:remoteTaskId,clientId:first?.id??job.attempt_id,url:trusted.url,graph:getPreparation(db,job.id)?.graph});
+    const snap=snapshotOf(job,trusted.id),prep=getPreparation(db,job.id);
+    liveHub?.observe({jobId:job.id,promptId:remoteTaskId,clientId:first?.id??job.attempt_id,url:trusted.url,graph:prep?.graph,
+     previewNodeId:snap.comfyTemplate.previewBinding?`w_${snap.comfyRequest.nodes[0].id}__${snap.comfyTemplate.previewBinding.nodeId}`:undefined});
     return {kind:"pending"};
    }
    if(failed(entry)){

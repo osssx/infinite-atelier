@@ -41,6 +41,7 @@ export type CanvasVideoReference = { id: string; kind: "image" | "video" | "audi
 export type CanvasVideoTask = { provider: "volcengine_ark" | "router_local" | "openai" | "plugin"; channelId?: string; model: string; taskId: string; startedAt: number; status: "queued" | "running" | "succeeded" | "failed" | "cancelled" | "expired" };
 
 export type CanvasNodeImage = {
+    modelArtifact?: CanvasNodeMetadata["modelArtifact"];
     id: string;
     status: CanvasNodeStatus;
     errorDetails?: string;

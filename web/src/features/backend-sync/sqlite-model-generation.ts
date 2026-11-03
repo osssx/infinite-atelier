@@ -117,6 +117,7 @@ export async function startSqliteModelGeneration({
   expectedProjectRevision:fence.revision,sourceNodeFingerprint:fence.sourceNodeFingerprint,
   idempotencyKey,requestFingerprint:idempotencyKey,executionMode:task.kind==="video"?"poll":"immediate",
   snapshot:{adapterKind:"model",provider,channelId,
+    sourceNodeType:nodes.find(node=>node.id===sourceNodeId)?.type,
    secretVersionRef:channel.keyVersion,...(endpointBaseUrl?{endpointBaseUrl,endpointFingerprint}:{}),task:{...task,
     ...(images.length?{images}:{}),
     ...(images.length&&task.kind==="image"?{operation:"edit"}:{}),

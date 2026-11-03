@@ -754,3 +754,86 @@ test("autoDispatch completes HTTP job and persists typed canvas output without m
  }
 });
 
+
+async function modelImageBatch(t,{count=3,sourceType="config",removeSource=false}={}){
+ const f=fixture(t),projectId="batch-project",sourceNodeId="config-source";
+ const document={nodes:[{id:sourceNodeId,type:sourceType,title:"Source",position:{x:0,y:0},width:320,height:240,metadata:{}}],connections:[]};
+ createProject(f.db,{id:projectId,document});
+ const jobId=submitJob(f.db,{projectId,targetNodeId:sourceNodeId,expectedProjectRevision:1,
+  sourceNodeFingerprint:fingerprintSource(document,sourceNodeId),idempotencyKey:"batch",requestFingerprint:"batch",executionMode:"immediate",
+  snapshot:{adapterKind:"model",provider:"openai",sourceNodeType:sourceType,task:{kind:"image",model:"image-model",prompt:"Cats",count:3}}}).jobId;
+ const created=[];
+ for(let index=0;index<count;index++){
+  const blob=await f.blobStore.put([Buffer.concat([png,Buffer.from([index])])],{mime:"image/png"});
+  const id="batch-image-"+index;
+  appendArtifact(f.db,{id,jobId,portId:"image",itemKey:String(index),blobId:blob.blobId,sha256:blob.sha256,mime:"image/png",kind:"image",metadata:{modelGeneration:{kind:"image",model:"image-model"}}});
+  created.push({id,blob});
+ }
+ f.db.prepare("UPDATE jobs SET status='succeeded' WHERE id=?").run(jobId);
+ if(removeSource)saveSingleUserCanvas(f.db,{id:projectId,expectedRevision:1,document:{nodes:[],connections:[]}});
+ return {...f,projectId,sourceNodeId,document,jobId,created};
+}
+for(const count of [1,2,3])test(`config model image output groups actual count ${count}`,async t=>{
+ const f=await modelImageBatch(t,{count});
+ await f.materializer.runOnce({maxItems:1});
+ let project=getProject(f.db,f.projectId);
+ assert.equal(project.document.nodes.length,2);
+ assert.equal(project.document.connections.length,1);
+ const node=project.document.nodes[1];
+ assert.equal(node.id,"artifact-batch-image-0");
+ if(count===1)assert.equal(node.metadata.images,undefined);
+ else{
+  assert.equal(node.metadata.images.length,count);
+  assert.equal(node.metadata.primaryImageId,"batch-image-0");
+  assert.equal(node.metadata.content,node.metadata.images[0].content);
+  assert.equal(node.metadata.bytes,f.created[0].blob.byteSize);
+  assert.deepEqual(node.metadata.images.map(i=>i.modelArtifact.artifactId),f.created.map(i=>i.id));
+  assert.equal(new Set(f.materializer.status({jobId:f.jobId}).map(m=>m.node_id)).size,1);
+ }
+ assert.deepEqual(await f.materializer.runOnce(),[]);
+ assert.equal(getProject(f.db,f.projectId).revision,project.revision);
+ const saved=saveSingleUserCanvas(f.db,{id:f.projectId,expectedRevision:1,document:f.document});
+ assert.equal(saved.document.nodes.length,2);
+ assert.equal(saved.document.connections.length,1);
+ assert.deepEqual(saved.document.nodes[1],node);
+});
+test("batch survives deleted source, and only Config sources are grouped",async t=>{
+ const f=await modelImageBatch(t,{removeSource:true});
+ await f.materializer.runOnce();
+ const doc=getProject(f.db,f.projectId).document;
+ assert.equal(doc.nodes.length,1);
+ assert.equal(doc.nodes[0].metadata.images.length,3);
+ assert.equal(doc.connections.length,0);
+});
+test("non-config multi-image results retain independent nodes",async t=>{
+ const f=await modelImageBatch(t,{sourceType:"text"});
+ await f.materializer.runOnce();
+ const doc=getProject(f.db,f.projectId).document;
+ assert.equal(doc.nodes.length,4);
+ assert.equal(doc.connections.length,3);
+ assert.ok(doc.nodes.slice(1).every(n=>!n.metadata.images));
+});
+test("one unavailable batch blob leaves no partial group or adopted artifacts",async t=>{
+ const f=await modelImageBatch(t);
+ const broken=createCanvasMaterializer({db:f.db,blobStore:{stat:async id=>{
+  if(id===f.created[1].blob.blobId)throw Error("unavailable");
+  return f.blobStore.stat(id);
+ }}});
+ const result=await broken.runOnce({maxItems:1});
+ assert.equal(result[0].status,"retry");
+ assert.equal(getProject(f.db,f.projectId).document.nodes.length,1);
+ assert.ok(f.materializer.status({jobId:f.jobId}).every(m=>m.status==="retry"));
+ f.db.prepare("UPDATE materializations SET next_due_at=NULL").run();
+ await f.materializer.runOnce();
+ assert.equal(getProject(f.db,f.projectId).document.nodes[1].metadata.images.length,3);
+});
+test("already materialized historical individual images are not regrouped",async t=>{
+ const f=await modelImageBatch(t,{sourceType:"text"});
+ await f.materializer.runOnce({maxItems:1});
+ const project=getProject(f.db,f.projectId),doc=project.document;
+ doc.nodes[0].type="config";
+ saveSingleUserCanvas(f.db,{id:f.projectId,expectedRevision:project.revision,document:doc});
+ f.db.prepare("UPDATE jobs SET snapshot_json=json_remove(snapshot_json,'$.sourceNodeType') WHERE id=?").run(f.jobId);
+ await f.materializer.runOnce();
+ assert.equal(getProject(f.db,f.projectId).document.nodes.length,4);
+});

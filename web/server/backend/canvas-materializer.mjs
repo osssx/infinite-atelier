@@ -42,7 +42,78 @@ export function createCanvasMaterializer({db,blobStore,videoDimensionReader=read
     }),Date.now());
   });
  }
+ // A completed model batch is adopted atomically; historical per-image records
+ // deliberately keep their original nodes.
+ async function processImageBatch(artifact){
+  const job=db.prepare("SELECT snapshot_json FROM jobs WHERE id=?").get(artifact.job_id);
+  const snapshot=job?JSON.parse(job.snapshot_json):null;
+  if(snapshot?.adapterKind!=="model"||snapshot.task?.kind!=="image"||snapshot.task.writeBack||
+     !["openai","openai_compatible","google_gemini"].includes(snapshot.provider))return null;
+  const project=db.prepare("SELECT document_json FROM projects WHERE id=? AND deleted_at IS NULL").get(artifact.project_id);
+  const source=project?JSON.parse(project.document_json).nodes.find(n=>n.id===artifact.target_node_id):null;
+  if((snapshot.sourceNodeType??source?.type)!=="config")return null;
+  const rows=db.prepare("SELECT * FROM artifacts WHERE job_id=? ORDER BY CAST(item_key AS INTEGER),item_key,id").all(artifact.job_id);
+  if(rows.length<2||rows.some(a=>a.kind!=="image"||a.port_id!=="image"))return null;
+  const records=db.prepare("SELECT * FROM materializations WHERE job_id=? AND project_id=?").all(artifact.job_id,artifact.project_id);
+  if(records.some(m=>m.status==="materialized")){
+   const prior=records.find(m=>m.artifact_id===artifact.id);
+   if(prior?.status==="materialized")return {artifactId:artifact.id,status:"materialized",existing:true};
+   return null;
+  }
+  let images;
+  try{
+   images=await Promise.all(rows.map(async a=>{
+    if(!validId(a.id)||JSON.parse(a.metadata_json)?.modelGeneration?.kind!=="image")throw fail("materialization_port_mismatch");
+    const blob=await blobStore.stat(a.blob_id);
+    if(blob.sha256!==a.sha256||blob.mimeType!==a.mime)throw fail("materialization_blob_mismatch");
+    const dimensions=await readRasterImageDimensions(blob.path,blob.mimeType);
+    return {id:a.id,status:"success",content:"/api/v1/blobs/"+a.blob_id,storageKey:"cas:"+a.blob_id,
+     naturalWidth:dimensions?.width??0,naturalHeight:dimensions?.height??0,bytes:blob.byteSize,mimeType:a.mime,
+     modelArtifact:{jobId:a.job_id,artifactId:a.id,sourceNodeId:artifact.target_node_id,kind:"image",model:snapshot.task.model}};
+   }));
+   return writeTransaction(db,()=>{
+    const current=db.prepare("SELECT * FROM projects WHERE id=? AND deleted_at IS NULL").get(artifact.project_id);
+    if(!current)throw fail("materialization_project_deleted");
+    // Another watcher may have adopted the batch while CAS reads were pending.
+    if(db.prepare("SELECT 1 FROM materializations WHERE artifact_id=? AND project_id=? AND status='materialized'")
+      .get(artifact.id,artifact.project_id))return {artifactId:artifact.id,status:"materialized",existing:true};
+    const doc=JSON.parse(current.document_json),source=doc.nodes.find(n=>n.id===artifact.target_node_id);
+    const nodeId="artifact-"+images[0].id,edgeId="artifact-edge-"+images[0].id;
+    if(!validId(nodeId)||!validId(edgeId))throw fail("materialization_invalid_id");
+    if(doc.nodes.some(n=>n.id===nodeId||images.some(image=>n.metadata?.modelArtifact?.artifactId===image.id||
+       n.metadata?.images?.some(i=>i.modelArtifact?.artifactId===image.id))))throw fail("materialization_identity_conflict");
+    const first=images[0],{id:primaryImageId,modelArtifact,...media}=first;
+    const size=imageNodeSize(first.naturalWidth&&first.naturalHeight?{width:first.naturalWidth,height:first.naturalHeight}:null);
+    const count=doc.nodes.filter(n=>n.metadata?.modelArtifact?.sourceNodeId===artifact.target_node_id).length;
+    const fallbackX=Math.max(0,...doc.nodes.map(n=>Number(n.position?.x)+Number(n.width)||0))+48;
+    doc.nodes.push({id:nodeId,type:"image",title:"Generated image",...size,
+     position:{x:source?source.position.x+source.width+48+Math.floor(count/4)*444:fallbackX,
+      y:source?source.position.y+(count%4)*444:80},
+     metadata:{...media,modelArtifact,images,primaryImageId,count:images.length,prompt:snapshot.task.prompt}});
+    if(source?.type==="config"&&!doc.connections.some(c=>c.id===edgeId))
+     doc.connections.push({id:edgeId,fromNodeId:source.id,toNodeId:nodeId});
+    const content=validateProjectDocument(doc);
+    db.prepare("UPDATE projects SET document_json=?,revision=revision+1 WHERE id=? AND revision=?")
+     .run(content,artifact.project_id,current.revision);
+    for(const a of rows){
+     db.prepare("INSERT INTO materializations(id,job_id,artifact_id,project_id,status,node_id) VALUES(?,?,?,?,?,?) ON CONFLICT(project_id,artifact_id) DO UPDATE SET status='materialized',node_id=excluded.node_id,reason=NULL,fail_count=0,next_due_at=NULL")
+      .run(randomUUID(),a.job_id,a.id,artifact.project_id,"materialized",nodeId);
+     db.prepare("INSERT INTO job_events(job_id,kind,payload_json,created_at) VALUES(?,?,?,?)")
+      .run(a.job_id,"artifact_materialized",stableJson({projectId:artifact.project_id,artifactId:a.id,nodeId,revision:current.revision+1}),Date.now());
+    }
+    emitProjectEvent(db,{id:artifact.project_id,revision:current.revision+1,kind:"materialized"});
+    return {artifactId:artifact.id,status:"materialized",nodeId,revision:current.revision+1};
+   });
+  }catch(error){
+   const reason=error.code??"materialization_failed";
+   const status=["materialization_identity_conflict","materialization_invalid_id","materialization_port_mismatch","materialization_project_deleted"].includes(reason)?"blocked":"retry";
+   for(const a of rows)mark({...a,project_id:artifact.project_id},reason,status);
+   return {artifactId:artifact.id,status,reason};
+  }
+ }
  async function processArtifact(artifact){
+  const batch=await processImageBatch(artifact);
+  if(batch)return batch;
   let contents=null,mediaDimensions=null;
   try{
    if(!validId(artifact.project_id)||!artifact.target_node_id||!artifact.port_id||

@@ -2772,15 +2772,22 @@ function AtelierCanvasPage() {
 
     const deleteBatchImage = useCallback((nodeId: string, imageId: string) => {
         const node = nodesRef.current.find((item) => item.id === nodeId);
-        if ((node?.metadata?.images?.length || 0) <= 2) setExpandedImageNodeIds((current) => new Set([...current].filter((id) => id !== nodeId)));
-        setNodes((prev) =>
-            prev.map((item) => {
-                if (item.id !== nodeId) return item;
-                const images = item.metadata?.images?.filter((image) => image.id !== imageId) || [];
-                return { ...item, metadata: { ...item.metadata, images, count: images.length, primaryImageId: item.metadata?.primaryImageId === imageId ? images[0]?.id : item.metadata?.primaryImageId } };
-            }),
-        );
-    }, []);
+        if (!node?.metadata?.images?.some(image => image.id === imageId)) return;
+        if (node.metadata.images.length === 1) { deleteNodes(new Set([nodeId])); return; }
+        if (node.metadata.images.length <= 2) setExpandedImageNodeIds((current) => new Set([...current].filter((id) => id !== nodeId)));
+        setNodes((prev) => prev.map((item) => {
+            if (item.id !== nodeId) return item;
+            const images = item.metadata?.images?.filter((image) => image.id !== imageId) || [];
+            const primary = images.find(image => image.id === item.metadata?.primaryImageId) || images[0];
+            const edge = Math.max(item.width, item.height);
+            const size = item.metadata?.freeResize ? { width: item.width, height: item.height } : fitNodeSize(primary.naturalWidth, primary.naturalHeight, edge, edge);
+            return { ...item, ...size,
+                position: { x: item.position.x + (item.width-size.width)/2, y: item.position.y + (item.height-size.height)/2 },
+                metadata: { ...item.metadata, images, count: images.length, primaryImageId: primary.id,
+                    content: primary.content, storageKey: primary.storageKey, naturalWidth: primary.naturalWidth,
+                    naturalHeight: primary.naturalHeight, bytes: primary.bytes, mimeType: primary.mimeType, status: primary.status } };
+        }));
+    }, [deleteNodes]);
 
     const retryBatchImage = useCallback((node: CanvasNodeData, imageId: string) => void handleRetryNode(node, imageId), [handleRetryNode]);
 

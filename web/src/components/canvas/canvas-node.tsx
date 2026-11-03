@@ -1,3 +1,4 @@
+import { CanvasExecutionHalo } from "./canvas-execution-halo";
 import { isNativeDescendantEvent } from "@/lib/canvas/canvas-portal-events";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
@@ -406,6 +407,7 @@ export const CanvasNode = React.memo(function CanvasNode({
                 onContextMenu(event, data.id);
             }}
         >
+            <CanvasExecutionHalo node={data} visible={!handoffActive || visualShown} />
             {(isSelected || hovered || isEditingTitle) && (
                 <div className="absolute left-3 top-[-28px] z-[65] max-w-[calc(100%-24px)]" onMouseDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
                     {isEditingTitle ? (

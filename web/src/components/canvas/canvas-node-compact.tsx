@@ -1,3 +1,4 @@
+import { CanvasExecutionHalo } from "./canvas-execution-halo";
 import { memo, useEffect, useState } from "react";
 
 import { canvasThemes } from "@/lib/canvas-theme";
@@ -78,6 +79,7 @@ export const CompactCanvasNode = memo(function CompactCanvasNode({
             onMouseDownCapture={(event) => onSelectCapture(event, data.id)}
             onContextMenu={(event) => onContextMenu(event, data.id)}
         >
+            <CanvasExecutionHalo node={data} visible={hitActive} />
             <div data-canvas-compact-body className="relative h-full w-full overflow-hidden rounded-3xl border-2"
                 style={{ borderStyle: isGroup ? "dashed" : "solid", borderColor, background, boxSizing: "border-box", boxShadow: active ? "0 0 0 1px #2f80ff55" : undefined }}
                 onMouseDown={(event) => onMouseDown(event, data.id)}

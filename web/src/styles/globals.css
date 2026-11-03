@@ -1401,3 +1401,51 @@
         transition-duration: 0.01ms;
     }
 }
+
+/* Outside the clipped node body: the two masked rings leave media and controls untouched. */
+@property --canvas-halo-angle {
+    syntax: "<angle>";
+    initial-value: 0deg;
+    inherits: false;
+}
+
+.canvas-execution-halo {
+    position: absolute;
+    inset: -3px;
+    border-radius: calc(var(--radius-3xl, 1.5rem) + 3px);
+    pointer-events: none;
+    z-index: 55;
+}
+
+.canvas-execution-halo::before,
+.canvas-execution-halo::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    padding: 2px;
+    background: conic-gradient(from var(--canvas-halo-angle), #6366f133, #6366f133 35%, #3b82f6 60%, #c084fc 78%, #818cf8 88%, #6366f133);
+    -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+    animation: canvas-execution-halo-turn 3s linear infinite;
+}
+
+.canvas-execution-halo::before {
+    inset: -2px;
+    padding: 5px;
+    filter: blur(4px);
+    opacity: 0.45;
+}
+
+@keyframes canvas-execution-halo-turn {
+    to { --canvas-halo-angle: 360deg; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .canvas-execution-halo::before,
+    .canvas-execution-halo::after {
+        animation: none;
+    }
+}

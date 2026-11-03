@@ -835,3 +835,45 @@ test("P5.4d rejects CAS MIME mismatch before making any billable API call",async
  assert.notEqual(f.db.prepare("SELECT status FROM jobs WHERE id=?").get(id).status,"succeeded");
  assert.equal(posted,0);
 });
+
+test("cancel stops an in-flight OpenAI image HTTP request without claiming remote cancellation",async t=>{
+ let started,signal;
+ const ready=new Promise(resolve=>started=resolve);
+ const f=fixture(t,async(_url,options)=>{
+  signal=options.signal;started();
+  return new Promise((_resolve,reject)=>signal.addEventListener("abort",()=>reject(signal.reason),{once:true}));
+ });
+ const id=f.enqueue("stop-image",{kind:"image",model:"gpt-image-2",prompt:"cat"});
+ f.coordinator.recoverAtStartup();
+ const work=f.coordinator.tick();await ready;
+ const app=buildApp({db:f.db,authorize:()=>true,coordinator:f.coordinator});
+ t.after(()=>app.close());
+ const response=await app.inject({method:"POST",url:"/api/v1/jobs/"+id+"/cancel",payload:{}});
+ assert.equal(response.statusCode,200);
+ const result=response.json();
+ assert.deepEqual(result,{cancelled:true,remoteCancelled:false,localWaitStopped:true});
+ assert.equal(signal.aborted,true);
+ await work;
+ const row=f.db.prepare("SELECT * FROM jobs WHERE id=?").get(id);
+ assert.equal(row.status,"cancelled");
+ assert.equal(row.lease_owner,null);
+ assert.equal(f.db.prepare("SELECT COUNT(*) AS n FROM artifacts WHERE job_id=?").get(id).n,0);
+ assert.equal(f.coordinator.attempts(id)[0].outcome,"local_wait_stopped");
+ assert.equal(await f.coordinator.tick(),0);
+ const restarted=createJobCoordinator({db:f.db,adapters:{model:{submit(){throw Error("must not resubmit")}}}});
+ restarted.recoverAtStartup();assert.equal(await restarted.tick(),0);
+});
+test("late image response after local stop is ignored even if upstream ignores abort",async t=>{
+ let started,release;
+ const ready=new Promise(resolve=>started=resolve);
+ const f=fixture(t,async()=>{
+  started();return new Promise(resolve=>release=resolve);
+ });
+ const id=f.enqueue("late-stop",{kind:"image",model:"gpt-image-2",prompt:"cat"});
+ f.coordinator.recoverAtStartup();const work=f.coordinator.tick();await ready;
+ assert.equal((await f.coordinator.cancel(id)).localWaitStopped,true);
+ release(new Response(JSON.stringify({data:[{b64_json:png.toString("base64")}]}),{headers:{"content-type":"application/json"}}));
+ await work;
+ assert.equal(f.db.prepare("SELECT status FROM jobs WHERE id=?").get(id).status,"cancelled");
+ assert.equal(f.db.prepare("SELECT COUNT(*) AS n FROM artifacts WHERE job_id=?").get(id).n,0);
+});

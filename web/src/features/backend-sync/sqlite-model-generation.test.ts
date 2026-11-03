@@ -487,3 +487,23 @@ describe("P4.4 ordinary SQLite model submit",()=>{
   expect(openAiImageSize("random")).toBe("auto");
  });
 });
+
+it("checks stop intent again after graph saving and never posts a stopped preparation",async()=>{
+ let stopped=false;
+ const b=bridge();
+ b.saveProjectNow.mockImplementation(async()=>{
+  stopped=true;
+  return {projectId:"p1",revision:3,sourceNodeFingerprint:"fingerprint"};
+ });
+ const api=vi.fn(async(path:string)=>{
+  if(path==="/api/v1/execution/capabilities")return {autoDispatch:true,modelKinds:["image"]};
+  if(path==="/api/v1/channels/openai-channel")return {id:"openai-channel",provider:"openai",hasKey:true,keyVersion:"v1"};
+  throw Error("unexpected POST");
+ });
+ const beforeSubmit=vi.fn(()=>{if(stopped)throw Error("canvas_submission_stopped")});
+ await expect(startSqliteModelGeneration({projectId:"p1",sourceNodeId:"text-1",nodes,connections,
+  channelId:"openai-channel",task:{kind:"image",model:"gpt-image-2",prompt:"A fox"},bridge:b,
+  api:api as unknown as typeof canvasApi,beforeSubmit})).rejects.toThrow("canvas_submission_stopped");
+ expect(beforeSubmit).toHaveBeenCalledTimes(2);
+ expect(api.mock.calls.some(([path])=>path==="/api/v1/jobs")).toBe(false);
+});

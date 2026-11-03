@@ -592,7 +592,7 @@ export default {
             items: "{{count}} items",
             images: "{{count}} images",
             compose: "Compose prompt",
-            stop: "Stop",
+            stop: "Stop generation",
             generate: "Generate",
         },
         projectPage: {

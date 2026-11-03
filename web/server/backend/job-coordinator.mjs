@@ -58,7 +58,7 @@ export function createJobCoordinator({
     !Number.isSafeInteger(comfyConcurrency)||comfyConcurrency<1||
     !Number.isSafeInteger(leaseMs)||leaseMs<1000)throw Error("invalid_coordinator_config");
  let recovered=false,stopping=false;
- const inFlight=new Map(),instanceId=randomUUID();
+ const inFlight=new Map(),requestControllers=new Map(),instanceId=randomUUID();
  const limit=lane=>lane.kind==="model"?modelConcurrency:comfyConcurrency;
  const adapterFor=lane=>lane.kind==="model"?adapters.model:adapters.comfy?.[lane.instanceId];
  const policy=retryPolicy?{
@@ -236,6 +236,8 @@ export function createJobCoordinator({
  async function perform(claimed){
   const {jobId,lease,attemptId,adapter}=claimed;
   let outcome="interrupted";
+  const controller=new AbortController();
+  requestControllers.set(jobId,controller);
   const heartbeat=setInterval(()=>{
    try{
     db.prepare("UPDATE jobs SET lease_expires_at=? WHERE id=? AND lease_owner=?")
@@ -249,14 +251,15 @@ export function createJobCoordinator({
     if(!credentialAvailable(db,job.snapshot)){
      move(jobId,lease,"blocked_credential");outcome="blocked_credential";return;
     }
-    try{await adapter.prepare?.({job})}
-    catch{move(jobId,lease,"failed");outcome="prepare_failed";return}
+    try{await adapter.prepare?.({job,signal:controller.signal});controller.signal.throwIfAborted()}
+    catch{if(controller.signal.aborted){outcome="local_wait_stopped";return}move(jobId,lease,"failed");outcome="prepare_failed";return}
     const marker=enterSubmitting(jobId,lease);
     if(!marker){outcome="blocked_credential";return}
     job=parse(mustOwn(db,jobId,lease));
     let result;
-    try{result=await adapter.submit({job,attemptId,submitMarker:marker})}
+    try{result=await adapter.submit({job,attemptId,submitMarker:marker,signal:controller.signal})}
     catch(err){
+     if(controller.signal.aborted){outcome="local_wait_stopped";return}
      // Only an explicit, verified "not accepted" proof permits failed.
      const safe=err?.confirmedNotAccepted===true;
      if(safe&&err?.comfyDiagnostic)
@@ -265,6 +268,7 @@ export function createJobCoordinator({
        {confirmedNotAccepted:safe});
      outcome=safe?"not_accepted":"submission_unknown";return;
     }
+    if(controller.signal.aborted){outcome="local_wait_stopped";return}
     const next=markSubmitted(jobId,lease,result);
     if(next==="submission_unknown"){outcome="submission_unknown";return}
     if(next==="running"){schedule(jobId,"poll",false);outcome="remote_pending";return}
@@ -295,12 +299,14 @@ export function createJobCoordinator({
     try{
      await adapter.collect({job,remoteTaskId:job.upstream_task_id,
        receipt:job.recovery_receipt_json?JSON.parse(job.recovery_receipt_json):null,db});
+     if(controller.signal.aborted){outcome="local_wait_stopped";return}
      confirmCollection(jobId,lease);
      outcome="succeeded";
-    }catch{schedule(jobId,"collect",true);outcome="collect_pending"} // retry download only
+    }catch{if(controller.signal.aborted){outcome="local_wait_stopped";return}schedule(jobId,"collect",true);outcome="collect_pending"} // retry download only
    }
   }finally{
    clearInterval(heartbeat);
+   if(requestControllers.get(jobId)===controller)requestControllers.delete(jobId);
    try{finish(jobId,lease,outcome)}catch{/* an explicit startup recovery owns it now */}
   }
  }
@@ -378,7 +384,8 @@ export function createJobCoordinator({
  }
  /** Cancel queued local jobs or remotely identified model/Comfy jobs.
   * A temporary lease serializes the decision with polling and collection.
-  * A remote unknown or ambiguous response never becomes "cancelled".
+  * OpenAI immediate requests may stop local waiting without claiming remote cancellation.
+  * Remote cancellation otherwise requires provider confirmation.
   */
  async function cancel(jobId){
   const lease=randomUUID();
@@ -389,6 +396,15 @@ export function createJobCoordinator({
     transition(db,row,"cancelled",{},onTerminal);
     db.prepare("DELETE FROM job_schedules WHERE job_id=?").run(jobId);
     return {state:"cancelled"};
+   }
+   const localSnapshot=JSON.parse(row.snapshot_json);
+   if(localSnapshot.adapterKind==="model"&&["openai","openai_compatible"].includes(localSnapshot.provider)&&
+      ["image","text","audio"].includes(localSnapshot.task?.kind)&&
+      ["preparing","submitting","running","collecting"].includes(row.status)){
+    transition(db,row,"cancelled",{localWaitStopped:true},onTerminal);
+    db.prepare("DELETE FROM job_schedules WHERE job_id=?").run(jobId);
+    event(db,jobId,"job_local_wait_stopped",{remoteCancelled:false,submissionMayHaveOccurred:row.submission_started_at!==null});
+    return {state:"local_wait_stopped"};
    }
    if(row.status!=="running"||row.lease_owner||!row.upstream_task_id)
     return {state:"not_cancellable",reason:"job_not_queued"};
@@ -405,6 +421,10 @@ export function createJobCoordinator({
    if(!updated.changes)return {state:"not_cancellable",reason:"job_busy"};
    return {state:"reserved",job:parse({...row,lease_owner:lease}),instance};
   });
+  if(reserved.state==="local_wait_stopped"){
+   requestControllers.get(jobId)?.abort();
+   return {cancelled:true,remoteCancelled:false,localWaitStopped:true};
+  }
   if(reserved.state==="cancelled")return {cancelled:true,remoteCancelled:false};
   if(reserved.state!=="reserved")return {cancelled:false,reason:reserved.reason};
   try{

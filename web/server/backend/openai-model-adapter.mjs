@@ -277,7 +277,16 @@ export function createOpenAiModelAdapter({db,blobStore,vault,upstreamCall=fetch,
   if(task.script)parseRestrictedModelScript(task.script);
   await readFrozenInputs(task); // reject missing, oversized or wrong-MIME frozen CAS
  }
- async function submit({job}){
+ const rawUpstreamCall=upstreamCall,rawCompatibleUpstreamCall=compatibleUpstreamCall;
+ async function submit({job,signal}){
+  signal?.throwIfAborted();
+  const abortable=network=>async(url,options={})=>{
+   signal?.throwIfAborted();
+   const response=await network(url,{...options,...(signal?{signal:options.signal?AbortSignal.any([signal,options.signal]):signal}:{})});
+   signal?.throwIfAborted();
+   return response;
+  };
+  const upstreamCall=abortable(rawUpstreamCall),compatibleUpstreamCall=abortable(rawCompatibleUpstreamCall);
   const {snapshot,task}=check(job);
   if(task.script){
    const endpoint=snapshot.provider==="openai_compatible"?
@@ -332,7 +341,8 @@ export function createOpenAiModelAdapter({db,blobStore,vault,upstreamCall=fetch,
      if(typeof imageData!=="string")throw failure("model_script_image_invalid",502);
      const decoded=decodeImage(imageData.replace(/^data:image\/(?:png|jpeg|webp);base64,/i,""));
      const blob=await blobStore.put([decoded.bytes],{mime:decoded.mime});
-     appendArtifact(db,{jobId:job.id,portId:"image",itemKey:String(index),
+     signal?.throwIfAborted();
+   appendArtifact(db,{jobId:job.id,portId:"image",itemKey:String(index),
       blobId:blob.blobId,sha256:blob.sha256,mime:blob.mimeType,kind:"image",
       metadata:{modelGeneration:{kind:"image",model:task.model,index}}});
     }
@@ -355,6 +365,7 @@ export function createOpenAiModelAdapter({db,blobStore,vault,upstreamCall=fetch,
      throw failure("model_script_audio_invalid",502);
    }
    const blob=await blobStore.put([bytes],{mime});
+   signal?.throwIfAborted();
    appendArtifact(db,{jobId:job.id,portId:kind,itemKey:"0",
     blobId:blob.blobId,sha256:blob.sha256,mime:blob.mimeType,kind,
     metadata:{modelGeneration:{kind,model:task.model}}});
@@ -411,6 +422,7 @@ export function createOpenAiModelAdapter({db,blobStore,vault,upstreamCall=fetch,
    const content=await runSqliteSkillAgent({task,jobId:job.id,db,skills,
     authorization,upstreamCall,messages:chatHistory(task.messages)});
    const blob=await blobStore.put([Buffer.from(content,"utf8")],{mime:"text/plain"});
+   signal?.throwIfAborted();
    appendArtifact(db,{jobId:job.id,portId:"text",itemKey:"0",
     blobId:blob.blobId,sha256:blob.sha256,mime:blob.mimeType,kind:"text",
     metadata:{modelGeneration:{kind:"text",model:task.model}}});
@@ -442,7 +454,8 @@ export function createOpenAiModelAdapter({db,blobStore,vault,upstreamCall=fetch,
     for(let index=0;index<outputs.length;index++){
      const data=decodeImage(outputs[index]?.b64_json);
      const blob=await blobStore.put([data.bytes],{mime:data.mime});
-     appendArtifact(db,{jobId:job.id,portId:"image",itemKey:String(index),
+     signal?.throwIfAborted();
+   appendArtifact(db,{jobId:job.id,portId:"image",itemKey:String(index),
       blobId:blob.blobId,sha256:blob.sha256,mime:blob.mimeType,kind:"image",
       metadata:{modelGeneration:{kind:"image",model:task.model,index}}});
     }
@@ -455,7 +468,8 @@ export function createOpenAiModelAdapter({db,blobStore,vault,upstreamCall=fetch,
     record={...blob,kind:"text"};
    }
   }
-  appendArtifact(db,{jobId:job.id,portId:record.kind,itemKey:"0",
+  signal?.throwIfAborted();
+   appendArtifact(db,{jobId:job.id,portId:record.kind,itemKey:"0",
    blobId:record.blobId,sha256:record.sha256,mime:record.mimeType,kind:record.kind,
    metadata:{modelGeneration:{kind:task.kind,model:task.model}}});
   // Captured bytes & SQLite artifact are durable BEFORE completed is reported.

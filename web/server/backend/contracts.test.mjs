@@ -119,3 +119,10 @@ test("consistent snapshot event cursor; transaction rollback keeps event and sta
  assert.equal(readEventsAfter(db,3).length,0);
  assert.equal(readJobsSnapshot(db).jobs[0].status,"submitting");
 });
+
+test("local wait stop explicitly allows immediate submission and collection to end without remote proof",()=>{
+ for(const from of ["submitting","collecting"]){
+  assert.throws(()=>assertJobTransition(from,"cancelled",{executionMode:"immediate"}),/illegal_job_transition/);
+  assertJobTransition(from,"cancelled",{executionMode:"immediate",localWaitStopped:true});
+ }
+});

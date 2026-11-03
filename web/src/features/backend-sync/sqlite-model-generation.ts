@@ -29,7 +29,7 @@ function normalizeGeminiEndpoint(value:string){
  */
 export async function startSqliteModelGeneration({
  projectId,sourceNodeId,nodes,connections,channelId,channelBaseUrl,provider="openai",task,
- skillAuthorizationId,referenceImages=[],maskImage,
+ skillAuthorizationId,referenceImages=[],maskImage,beforeSubmit,
  api=canvasApi,bridge=createSqliteComfyBridge({projectId,
   getLocalGraph:()=>({nodes:[...nodes],connections:[...connections]})})
 }:{
@@ -43,10 +43,12 @@ export async function startSqliteModelGeneration({
   references?:FrozenArkReference[];
   operation?:"edit";images?:FrozenModelImage[];mask?:FrozenModelImage;
   messages?:FrozenTextTurn[];stream?:boolean;skills?:{blobId:string};script?:string;writeBack?:boolean};
+ beforeSubmit?:()=>void;
  skillAuthorizationId?:string;
  referenceImages?:readonly ReferenceImage[];maskImage?:ReferenceImage;
  api?:typeof canvasApi;bridge?:ReturnType<typeof createSqliteComfyBridge>;
 }):Promise<BackendJobView>{
+ beforeSubmit?.();
  if(!nodes.some(node=>node.id===sourceNodeId))throw Error("model_source_node_missing");
  if(task.script!==undefined&&(task.skills||
    referenceImages.length>0||maskImage||typeof task.script!=="string"||
@@ -111,6 +113,7 @@ export async function startSqliteModelGeneration({
  const frozen={nodes:[...nodes],connections:[...connections]};
  const fence=await bridge.saveProjectNow(frozen,sourceNodeId);
  const idempotencyKey=crypto.randomUUID();
+ beforeSubmit?.();
  return api<BackendJobView>("/api/v1/jobs","POST",{
   ...(skillAuthorizationId?{skillAuthorizationId}:{}),
   projectId,targetNodeId:sourceNodeId,

@@ -1,6 +1,6 @@
 import type { CSSProperties } from "react";
-import { Image as ImageIcon, LoaderCircle, MessageSquare, Music2, Play, Settings2, Square, Video } from "lucide-react";
-import { Button, Segmented, Select } from "antd";
+import { Image as ImageIcon, MessageSquare, Music2, Settings2, Video } from "lucide-react";
+import { Segmented, Select } from "antd";
 import { useTranslation } from "react-i18next";
 
 import { ModelPicker } from "@/components/model-picker";
@@ -14,20 +14,19 @@ import { CanvasImageSettingsPopover } from "./canvas-image-settings-popover";
 import { CanvasAudioSettingsPopover, type CanvasAudioSettingKey } from "./canvas-audio-settings-popover";
 import { CanvasVideoSettingsPopover } from "./canvas-video-settings-popover";
 import { CanvasTextSettingsPopover } from "./canvas-text-settings-popover";
-import { CanvasTextExecutionIndicator } from "./canvas-text-execution-indicator";
+import { CanvasConfigGenerateButton } from "./canvas-config-generate-button";
 
 import type { CanvasGenerationMode, CanvasNodeData, CanvasNodeMetadata, CanvasVideoReference } from "@/types/canvas";
 
 type CanvasConfigNodePanelProps = {
     node: CanvasNodeData;
-    isRunning: boolean;
     onConfigChange: (nodeId: string, patch: Partial<CanvasNodeMetadata>) => void;
     onGenerate: (nodeId: string) => void;
     onStop: (nodeId: string) => void;
     onComposerToggle: () => void;
 };
 
-export function CanvasConfigNodePanel({ node, isRunning, onConfigChange, onGenerate, onStop, onComposerToggle }: CanvasConfigNodePanelProps) {
+export function CanvasConfigNodePanel({ node, onConfigChange, onGenerate, onStop, onComposerToggle }: CanvasConfigNodePanelProps) {
     const { t } = useTranslation();
     const globalConfig = useEffectiveConfig();
     const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
@@ -162,37 +161,7 @@ export function CanvasConfigNodePanel({ node, isRunning, onConfigChange, onGener
                 </div>
             ) : null}
 
-            <Button
-                type="primary"
-                className="sticky bottom-0 mt-auto !h-9 !w-full !shrink-0 !cursor-pointer !rounded-lg"
-                danger={isRunning}
-                disabled={!isRunning && !canGenerate}
-                onMouseDown={(event) => event.stopPropagation()}
-                onClick={() => (isRunning ? onStop(node.id) : onGenerate(node.id))}
-            >
-                <span className="inline-flex items-center gap-1.5">
-                    {isRunning ? (
-                        <>
-                            <CanvasTextExecutionIndicator
-                                nodeId={node.id}
-                                inline
-                                idle={<LoaderCircle className="size-4 animate-spin motion-reduce:animate-none" />}
-                            />
-                            <Square className="size-3.5 fill-current" />
-                            <span>{t("canvas.configNode.stop")}</span>
-                        </>
-                    ) : (
-                        <CanvasTextExecutionIndicator
-                            nodeId={node.id}
-                            inline
-                            idle={<>
-                                <Play className="size-4" />
-                                <span>{t("canvas.configNode.generate")}</span>
-                            </>}
-                        />
-                    )}
-                </span>
-            </Button>
+            <CanvasConfigGenerateButton nodeId={node.id} canGenerate={canGenerate} onGenerate={onGenerate} onStop={onStop} />
         </div>
     );
 }

@@ -18,9 +18,11 @@ export const textExecutionLabel=(status:string,modelKind:CanvasModelKind="text")
   default:return "等待模型响应…";
  }
 };
-export type CanvasTextExecution={status:string;modelKind:CanvasModelKind;activeCount:number};
+export type CanvasTextExecution={status:string;modelKind:CanvasModelKind;activeCount:number;stopping?:boolean};
 let scope:string|null=null;
 const entries=new Map<string,Map<string,{status:string;modelKind:CanvasModelKind}>>();
+const submissions=new Map<string,{nodeId:string;stopped:boolean}>();
+const cancellations=new Map<string,Promise<void>>();
 const views=new Map<string,CanvasTextExecution>();
 const listeners=new Map<string,Set<()=>void>>();
 const notify=(nodeId:string)=>{for(const cb of listeners.get(nodeId)??[])cb()};
@@ -29,14 +31,14 @@ function publish(nodeId:string){
  if(!jobs?.size){entries.delete(nodeId);views.delete(nodeId)}
  else{
   const statuses=[...jobs.values()];
-  views.set(nodeId,{...statuses.at(-1)!,activeCount:statuses.length});
+  views.set(nodeId,{...statuses.at(-1)!,activeCount:statuses.length,...(cancellations.has(nodeId)||[...submissions.values()].some(s=>s.nodeId===nodeId&&s.stopped)?{stopping:true}:{})});
  }
  notify(nodeId);
 }
 export function setCanvasTextExecutionScope(projectId:string|null):void{
  if(scope===projectId)return;
  scope=projectId;
- entries.clear();views.clear();
+ entries.clear();views.clear();submissions.clear();cancellations.clear();
  for(const nodeId of listeners.keys())notify(nodeId);
 }
 function change(projectId:string,nodeId:string,jobId:string,status:string,replaceId?:string,modelKind?:CanvasModelKind){
@@ -57,6 +59,8 @@ function change(projectId:string,nodeId:string,jobId:string,status:string,replac
 }
 /** Called before the first await so the source node animates immediately. */
 export function beginCanvasTextSubmission(projectId:string,nodeId:string,token:string,modelKind:CanvasModelKind="text"):void{
+ if(projectId!==scope)return;
+ submissions.set(token,{nodeId,stopped:false});
  change(projectId,nodeId,token,"submitting",undefined,modelKind);
 }
 /** Transfer a pending click to its durable backend job, or restore a job
@@ -66,7 +70,10 @@ export function trackCanvasTextJob(projectId:string,nodeId:string,jobId:string,s
  change(projectId,nodeId,jobId,status,token,modelKind);
 }
 export function finishCanvasTextSubmission(projectId:string,nodeId:string,token:string):void{
+ if(projectId!==scope)return;
+ submissions.delete(token);
  change(projectId,nodeId,token,"finished");
+ publish(nodeId);
 }
 export function updateCanvasTextJob(projectId:string,jobId:string,status:string):void{
  if(projectId!==scope)return;
@@ -92,4 +99,43 @@ export function useCanvasTextExecution(nodeId:string):CanvasTextExecution|undefi
  const subscribe=useCallback((cb:()=>void)=>subscribeCanvasTextExecution(nodeId,cb),[nodeId]);
  const snapshot=useCallback(()=>getCanvasTextExecution(nodeId),[nodeId]);
  return useSyncExternalStore(subscribe,snapshot,snapshot);
+}
+
+export function canvasSubmissionStopped(projectId:string,token:string):boolean{
+ return projectId!==scope||submissions.get(token)?.stopped===true;
+}
+export function assertCanvasSubmissionActive(projectId:string,token:string):void{
+ if(canvasSubmissionStopped(projectId,token))throw Error("canvas_submission_stopped");
+}
+/** Stop pending preparation and cancel each durable job, retaining unsupported jobs. */
+export function cancelCanvasNodeExecution(projectId:string,nodeId:string,
+ cancel:(jobId:string)=>Promise<{cancelled:boolean;reason?:string}>,
+ report:(message:string)=>void,jobIds?:readonly string[]):Promise<void>{
+ if(projectId!==scope)return Promise.resolve();
+ const existing=cancellations.get(nodeId);
+ if(existing)return existing;
+ for(const pending of submissions.values())if(pending.nodeId===nodeId)pending.stopped=true;
+ const ids=[...(entries.get(nodeId)?.keys()??[])].filter(id=>!submissions.has(id)&&(!jobIds||jobIds.includes(id)));
+ // Defer work until the lock is installed, even when there are no durable IDs yet.
+ const work=Promise.resolve().then(async()=>{
+  for(const id of ids){
+   if(projectId!==scope)return;
+   if(!entries.get(nodeId)?.has(id))continue;
+   try{
+    const result=await cancel(id);
+    if(projectId!==scope)return;
+    if(result.cancelled)finishCanvasTextJob(projectId,id);
+    else if(entries.get(nodeId)?.has(id))report("无法取消当前任务："+(result.reason??"not_cancellable"));
+   }catch(error){if(projectId===scope&&entries.get(nodeId)?.has(id))report(error instanceof Error?error.message:String(error))}
+  }
+ }).finally(()=>{
+  if(projectId===scope&&cancellations.get(nodeId)===work){cancellations.delete(nodeId);publish(nodeId)}
+ });
+ cancellations.set(nodeId,work);publish(nodeId);
+ return work;
+}
+
+/** A job ID can arrive while the initial stop call is still settling. */
+export async function waitForCanvasNodeCancellation(projectId:string,nodeId:string):Promise<void>{
+ if(projectId===scope)await cancellations.get(nodeId);
 }

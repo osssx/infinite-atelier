@@ -166,11 +166,11 @@ describe("Canvas text generation transition",()=>{
   const config=readFileSync(new URL("../../components/canvas/canvas-config-node-panel.tsx",import.meta.url),"utf8");
   const node=readFileSync(new URL("../../components/canvas/canvas-node.tsx",import.meta.url),"utf8");
   const compact=readFileSync(new URL("../../components/canvas/canvas-node-compact.tsx",import.meta.url),"utf8");
-  expect(config).toContain('<CanvasTextExecutionIndicator');
-  expect(config).toMatch(/\binline\s+idle=/);
+  expect(config).toContain('<CanvasConfigGenerateButton');
+  expect(config).not.toContain('CanvasTextExecutionIndicator');
   expect(node).toContain('data.type===CanvasNodeType.Text');
   expect(node).not.toContain('data.type===CanvasNodeType.Text||data.type===CanvasNodeType.Config');
-  expect(compact).toContain('data.type===CanvasNodeType.Text||data.type===CanvasNodeType.Config');
+  expect(compact).not.toContain('data.type===CanvasNodeType.Text||data.type===CanvasNodeType.Config');
  });
  it("wires submission before the first await and recovers active text jobs via SQLite snapshot",()=>{
   const page=readFileSync(new URL("../../pages/canvas/project.tsx",import.meta.url),"utf8");

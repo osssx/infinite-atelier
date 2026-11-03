@@ -105,7 +105,7 @@ import {capabilitiesForModel} from "@/services/api/video/model-capabilities";
 import {validateSeedanceRequest} from "@/services/api/video/seedance-content";
 import {ensureSqliteModelChannelForExecution,modelChannelProvider} from "@/features/backend-sync/model-channel-autoroute";
 import {watchSqliteComfyJob} from "@/features/backend-sync/sqlite-comfy-job-watch";
-import {beginCanvasTextSubmission,trackCanvasTextJob,finishCanvasTextSubmission,
+import {waitForCanvasNodeCancellation,cancelCanvasNodeExecution,canvasSubmissionStopped,assertCanvasSubmissionActive,beginCanvasTextSubmission,trackCanvasTextJob,finishCanvasTextSubmission,
     updateCanvasTextJob,finishCanvasTextJob,setCanvasTextExecutionScope} from "@/features/backend-sync/canvas-text-execution-visual";
 import {setCanvasComfyExecutionScope,setCanvasComfyExecution,observeCanvasComfyExecution,
     getCanvasComfyExecution,markCanvasComfyRunUnobservable,observeCanvasComfyLive} from "@/features/comfy-workflow/canvas-execution-visual";
@@ -486,6 +486,10 @@ function AtelierCanvasPage() {
         },
         [t],
     );
+
+    const stopConfigGeneration = useCallback((nodeId:string,jobId?:string) => cancelCanvasNodeExecution(projectId,nodeId,
+        jobId=>canvasApi<{cancelled:boolean;reason?:string}>("/api/v1/jobs/"+encodeURIComponent(jobId)+"/cancel","POST",{}),
+        detail=>message.warning(detail),jobId?[jobId]:undefined),[projectId,message]);
 
     const confirmStopGeneration = useCallback(
         (nodeId: string) => {
@@ -2534,6 +2538,7 @@ function AtelierCanvasPage() {
                 try{
                     if(!projectLoaded)throw Error("画布项目尚未加载完成");
                     await ensureSqliteModelChannelForExecution(selectedChannel,sqliteProvider);
+                    assertCanvasSubmissionActive(projectId,textSubmissionToken);
                     const builtinPanel=sourceNode?getNodeDefinition(sourceNode.type)?.useBuiltinPanel:undefined;
                     const writeBack=mode==="image"&&Boolean(builtinPanel?.writeBackToSelf&&builtinPanel.mode==="image");
                     if(!sourceNode||!( ["text","config","image","audio","video"].includes(sourceNode.type)||writeBack)||
@@ -2628,6 +2633,7 @@ function AtelierCanvasPage() {
                             {customScript:Boolean(selectedScript)});
                     }
                     const job=await startSqliteModelGeneration({
+                        beforeSubmit:()=>assertCanvasSubmissionActive(projectId,textSubmissionToken),
                         projectId,sourceNodeId:nodeId,
                         nodes:[...nodesRef.current],connections:[...connectionsRef.current],
                         channelId:selectedChannel.id,channelBaseUrl:selectedChannel.baseUrl,
@@ -2662,8 +2668,13 @@ function AtelierCanvasPage() {
                     if(textSubmissionToken)
                         trackCanvasTextJob(projectId,nodeId,job.id,job.status,textSubmissionToken,kind);
                     monitorSqliteJobRef.current(job.id,true);
+                    if(canvasSubmissionStopped(projectId,textSubmissionToken)){
+                        await waitForCanvasNodeCancellation(projectId,nodeId);
+                        await stopConfigGeneration(nodeId,job.id);
+                    }
                 }catch(error){
                     const detail=error instanceof Error?error.message:String(error);
+                    if(detail==="canvas_submission_stopped")return;
                     if(detail.includes("backend_prior_job_not_terminal")){
                         message.warning("同一节点存在尚未结束的模型任务。已打开任务历史，请先核对原任务，必要时人工确认风险后结束等待。");
                         setJobHistoryOpen(true);
@@ -2677,7 +2688,7 @@ function AtelierCanvasPage() {
                 return;
             }
         },
-        [effectiveConfig, message, projectId, projectLoaded, t],
+        [effectiveConfig, message, projectId, projectLoaded, stopConfigGeneration, t],
     );
     // Update event-driven toolbar/inspector callbacks before the painted canvas
     // accepts clicks, so they never retain the initial `projectLoaded=false`.
@@ -3010,8 +3021,9 @@ function AtelierCanvasPage() {
                 if(status==="materialized")message.success("任务产物已写入画布");
                 else if(status==="blocked"||status==="unavailable"||status==="needs_refresh")
                     message.warning("后端任务产物需要检查或刷新画布："+(details??status));
-                else if(status==="failed"||status==="cancelled")
+                else if(status==="failed")
                     message.error("后端任务："+status);
+                else if(status==="cancelled")message.info("任务已停止");
             }
         }).finally(()=>{
             finishCanvasTextJob(projectId,jobId);
@@ -3264,17 +3276,16 @@ function AtelierCanvasPage() {
         (contentNode: CanvasNodeData) => (
             <CanvasConfigNodePanel
                 node={contentNode}
-                isRunning={runningNodeId === contentNode.id}
                 onConfigChange={handleConfigNodeChange}
                 onComposerToggle={() => setDialogNodeId((current) => (current === contentNode.id ? null : contentNode.id))}
-                onStop={confirmStopGeneration}
+                onStop={stopConfigGeneration}
                 onGenerate={(nodeId) => {
                     const target = nodesRef.current.find((item) => item.id === nodeId);
                     void handleGenerateNode(nodeId, target?.metadata?.generationMode || "image", target?.metadata?.composerContent ?? target?.metadata?.prompt ?? "");
                 }}
             />
         ),
-        [confirmStopGeneration, handleConfigNodeChange, handleGenerateNode, runningNodeId],
+        [stopConfigGeneration, handleConfigNodeChange, handleGenerateNode],
     );
 
     // Grouped so NodeLayer's prop list stays readable. The node still receives each entry as its own

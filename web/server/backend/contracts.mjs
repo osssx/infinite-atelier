@@ -12,10 +12,10 @@ const edges={
  blocked_credential:["running","collecting","failed","cancelled"],
  succeeded:[],failed:[],cancelled:[]
 };
-export function assertJobTransition(from,to,{executionMode,confirmedNotAccepted=false,trustedRemoteMatch=false,recoveryCredentialAuthorized=false}={}){
+export function assertJobTransition(from,to,{executionMode,confirmedNotAccepted=false,trustedRemoteMatch=false,recoveryCredentialAuthorized=false,localWaitStopped=false}={}){
  if(!EXECUTION_MODES.includes(executionMode))throw Error("invalid_execution_mode");
  if(!JOB_STATUSES.includes(from)||!JOB_STATUSES.includes(to))throw Error("invalid_job_status");
- if(!edges[from].includes(to))throw Error("illegal_job_transition");
+ if(!edges[from].includes(to)&&!(to==="cancelled"&&localWaitStopped&&["submitting","collecting"].includes(from)))throw Error("illegal_job_transition");
  if(to==="running"&&executionMode==="immediate")throw Error("immediate_cannot_poll");
  if(from==="submitting"&&["failed","blocked_credential"].includes(to)&&!confirmedNotAccepted)throw Error("submission_may_have_occurred");
  if(from==="submission_unknown"&&["running","collecting"].includes(to)&&!trustedRemoteMatch)throw Error("unverified_remote_task");

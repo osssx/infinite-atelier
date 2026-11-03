@@ -592,7 +592,7 @@ export default {
             items: "{{count}} 个",
             images: "{{count}} 张",
             compose: "组装提示词",
-            stop: "停止",
+            stop: "停止生成",
             generate: "开始生成",
         },
         projectPage: {

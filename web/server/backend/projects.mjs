@@ -104,6 +104,14 @@ export function saveSingleUserCanvas(db,{id,expectedRevision,document}){
    const ids=new Set(next.nodes.map(n=>n.id));
    const edges=new Set(next.connections.map(e=>e.id));
     const restored=new Set();
+    const relocateMaterializedOutput=(sourceNode,targetNode,latest)=>{
+     const origin=latest.metadata?.modelArtifact;
+     const artifactIds=new Set([origin.artifactId,...(origin.kind==="image"&&Array.isArray(latest.metadata?.images)?
+      latest.metadata.images.map(image=>image.modelArtifact).filter(model=>model?.kind==="image"&&
+       model.jobId===origin.jobId&&model.sourceNodeId===sourceNode).map(model=>model.artifactId):[])]);
+     for(const artifactId of artifactIds)db.prepare("UPDATE materializations SET node_id=? WHERE artifact_id=? AND project_id=? AND node_id=? AND status='materialized'")
+      .run(targetNode,artifactId,id,sourceNode);
+    };
     // Reconcile a late autosave of an empty source with a successful in-place
     // model output; never overwrite text explicitly entered in the draft.
     for(const [index,draft] of next.nodes.entries()){
@@ -123,21 +131,25 @@ export function saveSingleUserCanvas(db,{id,expectedRevision,document}){
         !String(draft.metadata?.content??"").trim()&&String(latest.metadata?.content??"").trim()&&sourceUnchanged){
       next.nodes[index]={...draft,metadata:{...draft.metadata,
        content:latest.metadata.content,status:"success",modelArtifact:origin}};
-     }else if(origin.kind==="image"&&sourceUnchanged){
+     }else if((origin.kind==="image"||["video","audio"].includes(origin.kind)&&
+       draft.type===origin.kind&&latest.type===origin.kind)&&sourceUnchanged){
       // A late stale autosave may not erase a backend materializer's
-      // in-place image writeback when the submitted source is still intact.
+      // in-place media result when the submitted source is still intact.
+      const generatedKeys=origin.kind==="image"?
+       ["content","storageKey","mimeType","status","modelArtifact","prompt","bytes","naturalWidth","naturalHeight","images","primaryImageId","count"]:
+       ["content","storageKey","mimeType","status","modelArtifact","bytes","naturalWidth","naturalHeight"];
       next.nodes[index]={...draft,metadata:{...draft.metadata,
-       ...Object.fromEntries(["content","storageKey","mimeType","status","modelArtifact","prompt","bytes","naturalWidth","naturalHeight",
-        "images","primaryImageId","count"]
+       ...Object.fromEntries(generatedKeys
         .filter(key=>Object.hasOwn(latest.metadata??{},key)).map(key=>[key,latest.metadata[key]]))}};
-     }else if(origin.kind==="image"&&!sourceUnchanged){
+     }else if((origin.kind==="image"||["video","audio"].includes(origin.kind)&&
+       draft.type===origin.kind&&latest.type===origin.kind)&&!sourceUnchanged){
       // The source changed after submission. Preserve the edit and demote the
       // already collected image to a linked result node instead of overwriting.
       const artifactId="artifact-"+origin.artifactId;
       let output=next.nodes.find(node=>node.id===artifactId);
       if(!output&&!ids.has(artifactId)){
-       output={...latest,id:artifactId,type:"image",
-        title:latest.title||"Generated Image",
+       output={...latest,id:artifactId,type:origin.kind,
+        title:latest.title||"Generated "+origin.kind,
         position:{x:Number(draft.position?.x||0)+Number(draft.width||420)+48,
          y:Number(draft.position?.y||0)},
         metadata:{...latest.metadata,modelArtifact:origin}};
@@ -150,22 +162,29 @@ export function saveSingleUserCanvas(db,{id,expectedRevision,document}){
        edges.add(edgeId);
       }
       if(output?.metadata?.modelArtifact?.artifactId===origin.artifactId){
-       const artifactIds=new Set([origin.artifactId,...(Array.isArray(latest.metadata?.images)?
-        latest.metadata.images.map(image=>image.modelArtifact).filter(model=>model?.kind==="image"&&
-         model.jobId===origin.jobId&&model.sourceNodeId===draft.id).map(model=>model.artifactId):[])]);
-       for(const artifactIdItem of artifactIds)db.prepare("UPDATE materializations SET node_id=? WHERE artifact_id=? AND project_id=? AND node_id=? AND status='materialized'")
-        .run(artifactId,artifactIdItem,id,draft.id);
+       relocateMaterializedOutput(draft.id,artifactId,latest);
       }
      }
     }
     for(const node of current.nodes){
     const origin=node.metadata?.comfyArtifact??node.metadata?.modelArtifact;
-    if(!origin||node.id!=="artifact-"+origin.artifactId||ids.has(node.id))continue;
+    if(!origin)continue;
+    const detachedInPlaceMedia=node.id===origin.sourceNodeId&&
+     ["image","video","audio"].includes(origin.kind)&&!ids.has(node.id);
+    const artifactNodeId="artifact-"+origin.artifactId;
+    if(!detachedInPlaceMedia&&(node.id!==artifactNodeId||ids.has(node.id)))continue;
     const materialized=db.prepare(
      "SELECT 1 FROM materializations WHERE artifact_id=? AND node_id=? AND project_id=? AND status='materialized' LIMIT 1"
     ).get(origin.artifactId,node.id,id);
     if(!materialized)continue;
-    next.nodes.push(node);ids.add(node.id);restored.add(node.id);
+    if(detachedInPlaceMedia){
+     if(ids.has(artifactNodeId))continue;
+     const detached={...node,id:artifactNodeId,type:origin.kind,title:"Generated "+origin.kind};
+     next.nodes.push(detached);ids.add(artifactNodeId);restored.add(artifactNodeId);
+     relocateMaterializedOutput(node.id,artifactNodeId,node);
+    }else{
+     next.nodes.push(node);ids.add(node.id);restored.add(node.id);
+    }
    }
    for(const edge of current.connections){
     if(!restored.has(edge.toNodeId)||edges.has(edge.id)||!ids.has(edge.fromNodeId))continue;

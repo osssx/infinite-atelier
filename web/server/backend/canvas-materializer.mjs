@@ -194,19 +194,25 @@ export function createCanvasMaterializer({db,blobStore,videoDimensionReader=read
     const sourceImageEmpty=Boolean(source?.type==="image"&&
       !String(source.metadata?.content??"").trim()&&!source.metadata?.storageKey&&
       !source.metadata?.modelArtifact&&!source.metadata?.comfyArtifact&&!source.metadata?.images?.length);
+    const sourceMediaEmpty=Boolean(source&&["video","audio"].includes(source.type)&&
+      source.type===artifact.kind&&!String(source.metadata?.content??"").trim()&&
+      !source.metadata?.storageKey&&!source.metadata?.modelArtifact&&!source.metadata?.comfyArtifact);
     const writeBack=Boolean(isModel&&snapshot.task?.writeBack===true&&artifact.kind==="image"&&
       source&&!sourceChangedSinceSubmit);
     const emptyImageWriteBack=Boolean(isModel&&snapshot.task?.writeBack!==true&&artifact.kind==="image"&&
       source?.type==="image"&&sourceImageEmpty&&!sourceChangedSinceSubmit);
+    const emptyMediaWriteBack=Boolean(isModel&&["video","audio"].includes(artifact.kind)&&
+      source?.type===artifact.kind&&sourceMediaEmpty&&!sourceChangedSinceSubmit);
     const fillEmptyText=Boolean(isModel&&artifact.kind==="text"&&source?.type==="text"&&
      !sourceChangedSinceSubmit&&!String(source.metadata?.content??"").trim()&&
      !source.metadata?.modelArtifact&&typeof contents==="string"&&contents.trim());
-    const nodeId=fillEmptyText||writeBack||emptyImageWriteBack?source.id:"artifact-"+artifact.id;
+    const writeToSource=fillEmptyText||writeBack||emptyImageWriteBack||emptyMediaWriteBack;
+    const nodeId=writeToSource?source.id:"artifact-"+artifact.id;
     const edgeId="artifact-edge-"+artifact.id;
     if(!validId(nodeId)||!validId(edgeId))throw fail("materialization_invalid_id");
     if(fillEmptyText){
      source.metadata={...source.metadata,content:contents,status:"success",modelArtifact:origin};
-    }else if(writeBack||emptyImageWriteBack){
+    }else if(writeBack||emptyImageWriteBack||emptyMediaWriteBack){
      source.metadata={...source.metadata,content:"/api/v1/blobs/"+artifact.blob_id,
       storageKey:"cas:"+artifact.blob_id,mimeType:artifact.mime,status:"success",
       modelArtifact:origin,

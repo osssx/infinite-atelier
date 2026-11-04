@@ -773,6 +773,41 @@ async function modelImageBatch(t,{count=3,sourceType="config",removeSource=false
  if(removeSource)saveSingleUserCanvas(f.db,{id:projectId,expectedRevision:1,document:{nodes:[],connections:[]}});
  return {...f,projectId,sourceNodeId,document,jobId,created};
 }
+async function modelMediaRun(t,{kind="video",count=1,sourceMetadata={},editSource=false,deleteSource=false}={}){
+ const f=fixture(t),projectId="model-media-"+kind,sourceNodeId=kind+"-source";
+ const prompt={id:"media-prompt",type:"text",title:"Prompt",position:{x:-360,y:8},width:320,height:180,
+  metadata:{content:"prompt input"}};
+ const source={id:sourceNodeId,type:kind,title:kind==="video"?"Video source":"Audio source",
+  position:{x:16,y:40},width:kind==="video"?420:520,height:kind==="video"?236:220,
+  metadata:{prompt:"keep this source prompt",...sourceMetadata}};
+ const document={nodes:[prompt,source],connections:[{id:"source-input",fromNodeId:prompt.id,toNodeId:source.id}]};
+ createProject(f.db,{id:projectId,document});
+ const model="model-"+kind;
+ const jobId=submitJob(f.db,{projectId,targetNodeId:sourceNodeId,expectedProjectRevision:1,
+  sourceNodeFingerprint:fingerprintSource(document,sourceNodeId),idempotencyKey:"media-"+kind,
+  requestFingerprint:"media-"+kind,executionMode:"immediate",
+  snapshot:{adapterKind:"model",provider:"openai_compatible",sourceNodeType:kind,
+   task:{kind,model,prompt:"generated request"}}}).jobId;
+ const created=[];
+ const bytes=kind==="video"?mp4:wav,mime=kind==="video"?"video/mp4":"audio/wav";
+ for(let index=0;index<count;index++){
+  const blob=await f.blobStore.put([Buffer.concat([bytes,Buffer.from([index])])],{mime});
+  const artifactId="media-"+kind+"-"+index;
+  appendArtifact(f.db,{id:artifactId,jobId,portId:kind,itemKey:String(index),blobId:blob.blobId,
+   sha256:blob.sha256,mime,kind,metadata:{modelGeneration:{kind,model}}});
+  created.push({artifactId,blob});
+ }
+ f.db.prepare("UPDATE jobs SET status='succeeded' WHERE id=?").run(jobId);
+ if(editSource||deleteSource){
+  const draft=editSource?{nodes:[prompt,{...source,metadata:{...source.metadata,composerContent:"user edited during generation"}}],
+   connections:document.connections}:
+   {nodes:[prompt],connections:[]};
+  saveSingleUserCanvas(f.db,{id:projectId,expectedRevision:1,document:draft});
+ }
+ const materializer=createCanvasMaterializer({db:f.db,blobStore:f.blobStore,
+  videoDimensionReader:async()=>null});
+ return {...f,materializer,projectId,sourceNodeId,document,jobId,created,source,prompt};
+}
 for(const count of [1,2,3])test(`config model image output groups actual count ${count}`,async t=>{
  const f=await modelImageBatch(t,{count});
  await f.materializer.runOnce({maxItems:1});
@@ -898,6 +933,104 @@ test("a stale edited save demotes an in-place image group as one linked group",a
  const repeated=saveSingleUserCanvas(f.db,{id:f.projectId,expectedRevision:1,document:edited});
  assert.equal(repeated.document.nodes.filter(node=>node.id===group.id).length,1);
  assert.equal(repeated.document.nodes.find(node=>node.id===group.id).metadata.images.length,3);
+});
+for(const kind of ["video","audio"])test(`${kind} model output fills only an unchanged empty source`,async t=>{
+ const f=await modelMediaRun(t,{kind});
+ assert.equal((await f.materializer.runOnce())[0].status,"materialized");
+ const saved=getProject(f.db,f.projectId).document;
+ const source=saved.nodes.find(node=>node.id===f.sourceNodeId);
+ assert.equal(saved.nodes.length,2);
+ assert.equal(source.metadata.content,"/api/v1/blobs/"+f.created[0].blob.blobId);
+ assert.equal(source.metadata.storageKey,"cas:"+f.created[0].blob.blobId);
+ assert.equal(source.metadata.mimeType,kind==="video"?"video/mp4":"audio/wav");
+ assert.equal(source.metadata.modelArtifact.kind,kind);
+ assert.equal(source.title,f.source.title);
+ assert.deepEqual(source.position,f.source.position);
+ assert.equal(source.width,f.source.width);assert.equal(source.height,f.source.height);
+ assert.equal(source.metadata.prompt,"keep this source prompt");
+ assert.deepEqual(saved.connections,f.document.connections);
+ assert.ok(saved.connections.every(edge=>edge.fromNodeId!==edge.toNodeId));
+ assert.equal(f.materializer.status({jobId:f.jobId})[0].node_id,f.sourceNodeId);
+ const stale=saveSingleUserCanvas(f.db,{id:f.projectId,expectedRevision:1,document:f.document}).document;
+ assert.equal(stale.nodes.find(node=>node.id===f.sourceNodeId).metadata.modelArtifact.artifactId,
+  f.created[0].artifactId);
+});
+for(const kind of ["video","audio"])test(`${kind} multi-output uses the empty source for the first result and appends later results`,async t=>{
+ const f=await modelMediaRun(t,{kind,count:2});
+ await f.materializer.runOnce();
+ const saved=getProject(f.db,f.projectId).document;
+ const source=saved.nodes.find(node=>node.id===f.sourceNodeId);
+ const appended=saved.nodes.find(node=>node.id==="artifact-"+f.created[1].artifactId);
+ assert.ok(source.metadata.content.endsWith(f.created[0].blob.blobId));
+ assert.equal(appended.metadata.content,"/api/v1/blobs/"+f.created[1].blob.blobId);
+ assert.deepEqual(saved.connections,[...f.document.connections,
+  {id:"artifact-edge-"+f.created[1].artifactId,fromNodeId:f.sourceNodeId,toNodeId:appended.id}]);
+ assert.ok(f.materializer.status({jobId:f.jobId}).every(item=>item.status==="materialized"));
+ assert.equal(f.materializer.status({jobId:f.jobId}).find(item=>item.artifact_id===f.created[0].artifactId).node_id,f.sourceNodeId);
+ assert.equal(f.materializer.status({jobId:f.jobId}).find(item=>item.artifact_id===f.created[1].artifactId).node_id,appended.id);
+ const stale=saveSingleUserCanvas(f.db,{id:f.projectId,expectedRevision:1,document:f.document}).document;
+ assert.equal(stale.nodes.find(node=>node.id===f.sourceNodeId).metadata.modelArtifact.artifactId,
+  f.created[0].artifactId);
+ assert.ok(stale.nodes.some(node=>node.id===appended.id));
+});
+for(const kind of ["video","audio"])test(`${kind} populated or edited sources preserve their media and receive an appended output`,async t=>{
+ for(const scenario of [
+  {name:"populated",options:{sourceMetadata:{content:"/api/v1/blobs/original",storageKey:"cas:original"}}},
+  {name:"edited",options:{editSource:true}}
+ ])await t.test(scenario.name,async child=>{
+  const f=await modelMediaRun(child,{kind,...scenario.options});
+  await f.materializer.runOnce();
+  const saved=getProject(f.db,f.projectId).document;
+  const source=saved.nodes.find(node=>node.id===f.sourceNodeId);
+  const output=saved.nodes.find(node=>node.id==="artifact-"+f.created[0].artifactId);
+  assert.equal(source.metadata.content,scenario.name==="populated"?"/api/v1/blobs/original":undefined);
+  assert.equal(output.metadata.modelArtifact.artifactId,f.created[0].artifactId);
+  assert.ok(saved.connections.some(edge=>edge.id==="artifact-edge-"+f.created[0].artifactId&&
+   edge.fromNodeId===f.sourceNodeId&&edge.toNodeId===output.id));
+ });
+});
+for(const kind of ["video","audio"])test(`${kind} output survives source deletion without restoring the source or creating a self-link`,async t=>{
+ const f=await modelMediaRun(t,{kind,deleteSource:true});
+ await f.materializer.runOnce();
+ const saved=getProject(f.db,f.projectId).document;
+ assert.equal(saved.nodes.some(node=>node.id===f.sourceNodeId),false);
+ const output=saved.nodes.find(node=>node.id==="artifact-"+f.created[0].artifactId);
+ assert.ok(output);
+ assert.ok(saved.connections.every(edge=>edge.fromNodeId!==edge.toNodeId));
+});
+for(const kind of ["video","audio"])test(`${kind} stale edited source demotes in-place output and relocates materialization history`,async t=>{
+ const f=await modelMediaRun(t,{kind,count:2});
+ await f.materializer.runOnce();
+ const edited={nodes:[f.prompt,{...f.source,metadata:{...f.source.metadata,composerContent:"user changed"}}],
+  connections:f.document.connections};
+ const saved=saveSingleUserCanvas(f.db,{id:f.projectId,expectedRevision:1,document:edited}).document;
+ const source=saved.nodes.find(node=>node.id===f.sourceNodeId);
+ const output=saved.nodes.find(node=>node.id==="artifact-"+f.created[0].artifactId);
+ const laterOutput=saved.nodes.find(node=>node.id==="artifact-"+f.created[1].artifactId);
+ assert.equal(source.metadata.content,undefined);
+ assert.equal(source.metadata.composerContent,"user changed");
+ assert.equal(output.type,kind);
+ assert.ok(laterOutput);
+ const status=f.materializer.status({jobId:f.jobId});
+ assert.equal(status.find(item=>item.artifact_id===f.created[0].artifactId).node_id,output.id);
+ assert.equal(status.find(item=>item.artifact_id===f.created[1].artifactId).node_id,laterOutput.id);
+ assert.deepEqual(saved.connections,[...f.document.connections,
+  {id:"artifact-edge-"+f.created[0].artifactId,fromNodeId:f.sourceNodeId,toNodeId:output.id},
+  {id:"artifact-edge-"+f.created[1].artifactId,fromNodeId:f.sourceNodeId,toNodeId:laterOutput.id}]);
+});
+for(const kind of ["video","audio"])test(`${kind} stale deletion keeps the in-place media detached without restoring the source`,async t=>{
+ const f=await modelMediaRun(t,{kind});
+ await f.materializer.runOnce();
+ const deletion={nodes:[f.prompt],connections:[]};
+ const saved=saveSingleUserCanvas(f.db,{id:f.projectId,expectedRevision:1,document:deletion}).document;
+ assert.equal(saved.nodes.some(node=>node.id===f.sourceNodeId),false);
+ const output=saved.nodes.find(node=>node.id==="artifact-"+f.created[0].artifactId);
+ assert.ok(output);
+ assert.equal(f.materializer.status({jobId:f.jobId})[0].node_id,output.id);
+ assert.deepEqual(saved.connections,[]);
+ const repeated=saveSingleUserCanvas(f.db,{id:f.projectId,expectedRevision:1,document:deletion}).document;
+ assert.equal(repeated.nodes.some(node=>node.id===output.id),true);
+ assert.equal(repeated.nodes.some(node=>node.id===f.sourceNodeId),false);
 });
 test("one unavailable batch blob leaves no partial group or adopted artifacts",async t=>{
  const f=await modelImageBatch(t);

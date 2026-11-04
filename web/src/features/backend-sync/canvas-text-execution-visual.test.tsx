@@ -72,7 +72,9 @@ describe("Canvas text generation transition",()=>{
   expect(getCanvasTextExecution("image-source")).toEqual({status:"collecting",modelKind:"image",activeCount:1});
   updateCanvasTextJob("p1","image-job",canvasModelExecutionPhase("materialized","image"));
   expect(getCanvasTextExecution("image-source")).toBeUndefined();
-  expect(canvasModelExecutionPhase("succeeded","video")).toBe("succeeded");
+  expect(canvasModelExecutionPhase("succeeded","video")).toBe("collecting");
+  expect(canvasModelExecutionPhase("succeeded","audio")).toBe("collecting");
+  expect(canvasModelExecutionPhase("succeeded","text")).toBe("succeeded");
  });
 
  it("begins animating immediately, hands off to the durable job, and clears on success",()=>{
@@ -188,8 +190,10 @@ describe("Canvas text generation transition",()=>{
   const compact=readFileSync(new URL("../../components/canvas/canvas-node-compact.tsx",import.meta.url),"utf8");
   expect(config).toContain('<CanvasConfigGenerateButton');
   expect(config).not.toContain('CanvasTextExecutionIndicator');
-  expect(node).toContain('data.type===CanvasNodeType.Text||data.type===CanvasNodeType.Image');
-  expect(compact).toContain('data.type===CanvasNodeType.Text||data.type===CanvasNodeType.Image');
+  expect(node).toContain('data.type===CanvasNodeType.Text||data.type===CanvasNodeType.Image||');
+  expect(node).toContain('data.type===CanvasNodeType.Video||data.type===CanvasNodeType.Audio');
+  expect(compact).toContain('data.type===CanvasNodeType.Text||data.type===CanvasNodeType.Image||');
+  expect(compact).toContain('data.type===CanvasNodeType.Video||data.type===CanvasNodeType.Audio');
  });
  it("wires submission before the first await and recovers active text jobs via SQLite snapshot",()=>{
   const page=readFileSync(new URL("../../pages/canvas/project.tsx",import.meta.url),"utf8");

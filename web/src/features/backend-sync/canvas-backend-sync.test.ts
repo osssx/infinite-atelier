@@ -175,6 +175,21 @@ describe("P4.4 ordinary SQLite model artifact merge",()=>{
   expect(safeRemoteCanvasMerge({nodes:[source],connections:[]},{nodes:[{...updated,
    metadata:{...updated.metadata,count:1}}],connections:[]})).toBeNull();
  });
+ it.each(["video","audio"] as const)("accepts an in-place %s writeback only on the unchanged empty source",kind=>{
+  const source:CanvasNodeData={id:"media-source",type:kind,title:"Source media",
+   position:{x:0,y:0},width:420,height:236,metadata:{prompt:"preserved prompt"}};
+  const modelArtifact={jobId:"job-media",artifactId:kind+"-1",sourceNodeId:source.id,
+   kind,model:"media-model"};
+  const updated:CanvasNodeData={...source,metadata:{...source.metadata,
+   content:"/api/v1/blobs/"+"a".repeat(64),storageKey:"cas:"+"a".repeat(64),
+   mimeType:kind==="video"?"video/mp4":"audio/wav",status:"success",bytes:42,modelArtifact}};
+  expect(safeRemoteCanvasMerge({nodes:[source],connections:[]},{nodes:[updated],connections:[]}))
+   .toEqual({nodes:[updated],connections:[]});
+  const changed:BackendCanvasGraph={nodes:[{...source,metadata:{...source.metadata,prompt:"edited"}}],connections:[]};
+  expect(safeRemoteCanvasMerge(changed,{nodes:[updated],connections:[]})).toBeNull();
+  expect(safeRemoteCanvasMerge({nodes:[{...source,metadata:{...source.metadata,content:"user media"}}],connections:[]},
+   {nodes:[updated],connections:[]})).toBeNull();
+ });
   it("accepts Ark model video CAS node only with original source and a plain edge",()=>{  const prompt:CanvasNodeData={id:"prompt1",type:"text",title:"Prompt",
    position:{x:0,y:0},width:300,height:160,metadata:{content:"snow"}};
   const movie:CanvasNodeData={id:"artifact-vid1",type:"video",title:"Generated video",

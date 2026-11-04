@@ -148,7 +148,8 @@ export const CompactCanvasNode = memo(function CompactCanvasNode({
                     </div>
                 ) : null}
                 {data.type===COMFY_WORKFLOW_MOCK_TYPE?<CompactComfyStatus id={data.id} visible={hitActive}/>:null}
-                {data.type===CanvasNodeType.Text||data.type===CanvasNodeType.Image
+                {data.type===CanvasNodeType.Text||data.type===CanvasNodeType.Image||
+                    data.type===CanvasNodeType.Video||data.type===CanvasNodeType.Audio
                     ? <CanvasTextExecutionIndicator nodeId={data.id} compact/> : null}
             </div>
         </div>

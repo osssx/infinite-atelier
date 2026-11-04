@@ -63,4 +63,14 @@ describe("image prompt panel execution action",()=>{
   setCanvasTextExecutionScope("other-project");
   expect(render()).toContain('aria-label="canvas.promptPanel.generate"');
  });
+
+ it("keeps Stop visible until every concurrent media request finishes",()=>{
+  trackCanvasTextJob("project",image.id,"image-job-1","queued",undefined,"image");
+  trackCanvasTextJob("project",image.id,"image-job-2","running",undefined,"image");
+  expect(render()).toContain('aria-label="canvas.promptPanel.stopGeneration"');
+  finishCanvasTextJob("project","image-job-1");
+  expect(render()).toContain('aria-label="canvas.promptPanel.stopGeneration"');
+  finishCanvasTextJob("project","image-job-2");
+  expect(render()).toContain('aria-label="canvas.promptPanel.generate"');
+ });
 });

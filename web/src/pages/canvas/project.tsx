@@ -2999,7 +2999,9 @@ function AtelierCanvasPage() {
             },
             onStatus:(status,details,job)=>{
                 if(controller.signal.aborted||activeProjectIdRef.current!==projectId)return;
-                const sourceKind=job?.modelKind??(job?.targetNodeId&&nodesRef.current.find(node=>node.id===job.targetNodeId)?.type===CanvasNodeType.Image?"image":undefined);
+                const targetKind=job?.targetNodeId?nodesRef.current.find(node=>node.id===job.targetNodeId)?.type:undefined;
+                const sourceKind=job?.modelKind??([CanvasNodeType.Image,CanvasNodeType.Video,CanvasNodeType.Audio,
+                    CanvasNodeType.Text].includes(targetKind as CanvasNodeType)?targetKind:undefined);
                 updateCanvasTextJob(projectId,jobId,canvasModelExecutionPhase(status,sourceKind));
                 if(job?.targetNodeId && nodesRef.current.some(node=>node.id===job.targetNodeId&&
                     node.type===COMFY_WORKFLOW_MOCK_TYPE)) {

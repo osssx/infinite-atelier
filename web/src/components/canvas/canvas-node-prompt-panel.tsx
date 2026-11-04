@@ -14,6 +14,7 @@ import { CanvasVideoSettingsPopover } from "./canvas-video-settings-popover";
 import { CanvasTextSettingsPopover } from "./canvas-text-settings-popover";
 import { CanvasNodeType, type CanvasGenerationMode, type CanvasNodeData } from "@/types/canvas";
 import { useNodeMentionReferences } from "./canvas-graph-context";
+import { useCanvasTextExecution } from "@/features/backend-sync/canvas-text-execution-visual";
 
 export type CanvasNodeGenerationMode = CanvasGenerationMode;
 
@@ -37,6 +38,8 @@ export function CanvasNodePromptPanel({ node, projectId, isRunning, onPromptChan
     // Computed here rather than passed in: this panel only mounts for the node whose panel is open,
     // so the references are built for one node instead of for every node on the canvas.
     const mentionReferences = useNodeMentionReferences(node.id);
+    const execution = useCanvasTextExecution(node.id);
+    const active = isRunning || Boolean(execution);
     const mode = modeOverride ?? defaultMode(node.type);
     const config = buildNodeConfig(globalConfig, node, mode);
     const hasTextContent = node.type === CanvasNodeType.Text && Boolean(node.metadata?.content?.trim());
@@ -59,7 +62,7 @@ export function CanvasNodePromptPanel({ node, projectId, isRunning, onPromptChan
 
     const submit = () => {
         const text = prompt.trim();
-        if (!text || isRunning) return;
+        if (!text || active) return;
         onGenerate(node.id, mode, text);
     };
 
@@ -145,13 +148,13 @@ export function CanvasNodePromptPanel({ node, projectId, isRunning, onPromptChan
                 <Button
                     type="primary"
                     className="!h-10 !min-w-16 shrink-0 !rounded-full !px-3"
-                    danger={isRunning}
-                    disabled={!isRunning && !prompt.trim()}
-                    onClick={() => (isRunning ? onStop(node.id) : submit())}
-                    aria-label={t(isRunning ? "canvas.promptPanel.stopGeneration" : "canvas.promptPanel.generate")}
+                    danger={active}
+                    disabled={Boolean(execution?.stopping) || (!active && !prompt.trim())}
+                    onClick={() => (active ? onStop(node.id) : submit())}
+                    aria-label={t(active ? "canvas.promptPanel.stopGeneration" : "canvas.promptPanel.generate")}
                 >
                     <span className="flex items-center gap-1.5">
-                        {isRunning ? (
+                        {active ? (
                             <>
                                 <LoaderCircle className="size-4 animate-spin" />
                                 <Square className="size-3.5 fill-current" />

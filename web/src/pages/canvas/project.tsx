@@ -3238,7 +3238,7 @@ function AtelierCanvasPage() {
                     onPromptChange={handleNodePromptChange}
                     onConfigChange={handleConfigNodeChange}
                     onGenerate={handleGenerateNode}
-                    onStop={confirmStopGeneration}
+                    onStop={stopConfigGeneration}
                     modeOverride={getNodeDefinition(panelNode.type)?.useBuiltinPanel?.mode}
                     onImageSettingsOpenChange={(open) => {
                         setNodeImageSettingsOpen(open);
@@ -3246,7 +3246,8 @@ function AtelierCanvasPage() {
                     }}
                 />
             ),
-        [backendComfyEnabled,cancelComfyWorkflow,confirmStopGeneration, connections, executeComfyWorkflow, globalComfyInstanceId, handleConfigNodeChange, handleGenerateNode, handleNodePromptChange, message, projectId, runningNodeId],
+        [backendComfyEnabled,cancelComfyWorkflow,connections,executeComfyWorkflow,globalComfyInstanceId,
+            handleConfigNodeChange,handleGenerateNode,handleNodePromptChange,message,projectId,runningNodeId,stopConfigGeneration],
     );
 
     const handleDirectorExport = useCallback(

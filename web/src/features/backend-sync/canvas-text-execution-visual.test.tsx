@@ -55,6 +55,17 @@ describe("Canvas text generation transition",()=>{
   expect(getCanvasTextExecution("other")?.status).toBe("running");
  });
 
+ it("uses each image source's shared execution state and routes prompt-panel stop through node cancellation",()=>{
+  const panel=readFileSync(new URL("../../components/canvas/canvas-node-prompt-panel.tsx",import.meta.url),"utf8");
+  const page=readFileSync(new URL("../../pages/canvas/project.tsx",import.meta.url),"utf8");
+  expect(panel).toContain("useCanvasTextExecution(node.id)");
+  expect(panel).toContain("const active = isRunning || Boolean(execution)");
+  expect(panel).toContain("disabled={Boolean(execution?.stopping) || (!active && !prompt.trim())}");
+  expect(panel).toContain("onClick={() => (active ? onStop(node.id) : submit())}");
+  expect(page).toContain("onStop={stopConfigGeneration}");
+  expect(page).toContain("cancelCanvasNodeExecution(projectId,nodeId");
+ });
+
  it("keeps image execution active through succeeded until artifact refresh completes",()=>{
   trackCanvasTextJob("p1","image-source","image-job","running",undefined,"image");
   updateCanvasTextJob("p1","image-job",canvasModelExecutionPhase("succeeded","image"));

@@ -67,6 +67,8 @@ export type CanvasNodeMetadata = {
     model?: string;
     reasoningEffort?: "auto" | "low" | "medium" | "high" | "xhigh";
     size?: string;
+    /** Versioned editable BBox layout draft attached to an empty image node. */
+    bboxLayout?: import("@/lib/canvas/bbox-layout").BBoxLayout;
     quality?: string;
     background?: string;
     count?: number;

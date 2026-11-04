@@ -48,11 +48,13 @@ export function CanvasNodePromptPanel({ node, projectId, isRunning, onPromptChan
     const [prompt, setPrompt] = useState(node.metadata?.composerContent ?? node.metadata?.prompt ?? "");
     const [expanded, setExpanded] = useState(false);
 
-    // Restore prompts only when switching nodes; preserve the current input after generation on the same node.
+    // Restore on node switches and external prompt updates (e.g. BBox apply).
+    // Local edits are also committed to metadata, so this agrees with the draft;
+    // generation result fields do not participate and cannot reset typed input.
     useEffect(() => {
         setPrompt(node.metadata?.composerContent ?? node.metadata?.prompt ?? "");
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [node.id]);
+    }, [node.id, node.metadata?.composerContent, node.metadata?.prompt]);
 
     const updatePrompt = (value: string) => {
         setPrompt(value);

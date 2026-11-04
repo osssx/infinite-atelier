@@ -40,7 +40,7 @@ function render(node:CanvasNodeData,comfyExecuteDisabled=false,theme:"light"|"da
         node,viewport:{x:0,y:0,k:1},onKeep:noop,onLeave:noop,onInfo:noop,
         onDecreaseFont:noop,onIncreaseFont:noop,onToggleDialog:noop,
         onGenerateImage:noop,onExecuteComfy:noop,onCancelComfy:noop,comfyExecuteDisabled,onUpload:noop,
-        onDownload:noop,onSaveAsset:noop,onMaskEdit:noop,onCrop:noop,onSplit:noop,
+        onDownload:noop,onSaveAsset:noop,onMaskEdit:noop,onBboxEdit:noop,onCrop:noop,onSplit:noop,
         onCaptureVideoFrame:noop,onTrimAudio:noop,onUpscale:noop,onSuperResolve:noop,
         onAngle:noop,onViewImage:noop,onReversePrompt:noop,onRetry:noop,
         onToggleFreeResize:noop,onDelete:noop,

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import { App, Modal, Segmented, Tooltip } from "antd";
-import { Clapperboard, Download, Ellipsis, FolderPlus, Image as ImageIcon, Info, LoaderCircle, MessageSquare, Minus, Music2, Play, Plus, RefreshCw, Scissors, Settings2, Square, Trash2, Upload, Video } from "lucide-react";
+import { Clapperboard, Download, Ellipsis, FolderPlus, Image as ImageIcon, Info, LayoutGrid, LoaderCircle, MessageSquare, Minus, Music2, Play, Plus, RefreshCw, Scissors, Settings2, Square, Trash2, Upload, Video } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { canvasThemes, type CanvasTheme } from "@/lib/canvas-theme";
@@ -32,6 +32,7 @@ type CanvasNodeHoverToolbarProps = {
     onDownload: (node: CanvasNodeData) => void;
     onSaveAsset: (node: CanvasNodeData) => void;
     onMaskEdit: (node: CanvasNodeData) => void;
+    onBboxEdit: (node: CanvasNodeData) => void;
     onCrop: (node: CanvasNodeData) => void;
     onSplit: (node: CanvasNodeData) => void;
     onCaptureVideoFrame: (node: CanvasNodeData) => void;
@@ -74,6 +75,7 @@ export function CanvasNodeHoverToolbar({
     onDownload,
     onSaveAsset,
     onMaskEdit,
+    onBboxEdit,
     onCrop,
     onSplit,
     onCaptureVideoFrame,
@@ -182,6 +184,7 @@ export function CanvasNodeHoverToolbar({
         ...(isText ? [{ id: "decreaseFont", title: t("canvas.nodeToolbar.decreaseFont"), label: t("canvas.nodeToolbar.zoomOut"), icon: <Minus className="size-4" />, onClick: () => onDecreaseFont(node) }] : []),
         ...(isText ? [{ id: "increaseFont", title: t("canvas.nodeToolbar.increaseFont"), label: t("canvas.nodeToolbar.zoomIn"), icon: <Plus className="size-4" />, onClick: () => onIncreaseFont(node) }] : []),
         ...(isImage && !hasImage ? [{ id: "uploadImage", title: t("canvas.nodeToolbar.uploadImage"), label: t("canvas.nodeToolbar.uploadImage"), icon: <Upload className="size-4" />, onClick: () => onUpload(node) }] : []),
+        ...(isImage && !node.metadata?.content ? [{ id: "bboxLayout", title: t("canvas.imageTools.bboxLayout"), label: t("canvas.imageTools.bboxLayout"), icon: <LayoutGrid className="size-4" />, onClick: () => onBboxEdit(node) }] : []),
         ...(isVideo ? [{ id: "uploadVideo", title: t(hasVideo ? "canvas.nodeToolbar.replaceVideo" : "canvas.nodeToolbar.uploadVideo"), label: t(hasVideo ? "canvas.nodeToolbar.replaceVideo" : "canvas.nodeToolbar.uploadVideo"), icon: <Video className="size-4" />, onClick: () => onUpload(node) }] : []),
         ...(isAudio ? [{ id: "uploadAudio", title: t(hasAudio ? "canvas.nodeToolbar.replaceAudio" : "canvas.nodeToolbar.uploadAudio"), label: t(hasAudio ? "canvas.nodeToolbar.replaceAudio" : "canvas.nodeToolbar.uploadAudio"), icon: <Music2 className="size-4" />, onClick: () => onUpload(node) }] : []),
         ...(hasImage ? imageTools.map((tool) => ({ id: tool.id, title: tool.title, label: tool.label, icon: tool.icon, active: tool.active, onClick: tool.onClick })) : []),

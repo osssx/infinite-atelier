@@ -44,6 +44,9 @@ import { isNativeDescendantEvent } from "@/lib/canvas/canvas-portal-events";
 import { CanvasNodeAngleDialog, type CanvasImageAngleParams } from "@/components/canvas/canvas-node-angle-dialog";
 import { CanvasNodeCropDialog, type CanvasImageCropRect } from "@/components/canvas/canvas-node-crop-dialog";
 import { CanvasNodeMaskEditDialog, type CanvasImageMaskEditPayload } from "@/components/canvas/canvas-node-mask-edit-dialog";
+import { CanvasNodeBBoxLayoutDialog } from "@/components/canvas/canvas-node-bbox-layout-dialog";
+import { applyBboxLayoutToGraph, bboxLayoutToModelJson, isSupportedBboxGenerationSize, validateBboxLayout, type BBoxLayout } from "@/lib/canvas/bbox-layout";
+import { updateCanvasNodePrompt } from "@/lib/canvas/canvas-prompt-metadata";
 import { CanvasNodeSplitDialog, type CanvasImageSplitParams } from "@/components/canvas/canvas-node-split-dialog";
 import { CanvasVideoFrameDialog } from "@/components/canvas/canvas-video-frame-dialog";
 import { CanvasAudioTrimDialog } from "@/components/canvas/canvas-audio-trim-dialog";
@@ -357,6 +360,7 @@ function AtelierCanvasPage() {
     const [audioTrimNodeId, setAudioTrimNodeId] = useState<string | null>(null);
     const audioTrimIdentityRef = useRef<string | null>(null);
     const [maskEditNodeId, setMaskEditNodeId] = useState<string | null>(null);
+    const [bboxLayoutNodeId, setBboxLayoutNodeId] = useState<string | null>(null);
     const [splitNodeId, setSplitNodeId] = useState<string | null>(null);
     const [upscaleNodeId, setUpscaleNodeId] = useState<string | null>(null);
     const [superResolveNodeId, setSuperResolveNodeId] = useState<string | null>(null);
@@ -903,6 +907,7 @@ function AtelierCanvasPage() {
         if (identity !== audioTrimIdentityRef.current) setAudioTrimNodeId(null);
     }, [projectId, audioTrimNodeId, audioTrimNode]);
     const maskEditNode = maskEditNodeId ? nodeById.get(maskEditNodeId) || null : null;
+    const bboxLayoutNode = bboxLayoutNodeId ? nodeById.get(bboxLayoutNodeId) || null : null;
     const splitNode = splitNodeId ? nodeById.get(splitNodeId) || null : null;
     const upscaleNode = upscaleNodeId ? nodeById.get(upscaleNodeId) || null : null;
     const superResolveNode = superResolveNodeId ? nodeById.get(superResolveNodeId) || null : null;
@@ -1977,7 +1982,7 @@ function AtelierCanvasPage() {
     }, []);
 
     const handleNodePromptChange = useCallback((nodeId: string, prompt: string) => {
-        setNodes((prev) => prev.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, prompt } } : node)));
+        setNodes((prev) => prev.map((node) => (node.id === nodeId ? { ...node, metadata: updateCanvasNodePrompt(node.metadata, prompt) } : node)));
     }, []);
 
     const handleConfigNodeChange = useCallback((nodeId: string, patch: Partial<CanvasNodeData["metadata"]>, boundWorkflowName?: string) => {
@@ -2277,6 +2282,25 @@ function AtelierCanvasPage() {
         },
         [effectiveConfig, message, submitSqliteImageEdit, t],
     );
+
+    const applyBboxLayout = useCallback((nodeId: string, layout: BBoxLayout, _promptJson: string, width: number, height: number) => {
+        const latest = nodesRef.current.find((item) => item.id === nodeId);
+        const issue = validateBboxLayout(layout);
+        if (!latest) { message.warning(t("canvas.bboxEditor.targetRemoved")); setBboxLayoutNodeId(null); return; }
+        if (latest.type !== CanvasNodeType.Image || latest.metadata?.content) { message.warning(t("canvas.bboxEditor.emptyImageOnly")); setBboxLayoutNodeId(null); return; }
+        if (issue) {
+            const text = issue.startsWith("Global caption") ? t("canvas.bboxEditor.captionRequired") : issue.startsWith("Add at least") ? t("canvas.bboxEditor.visibleRequired") : issue.startsWith("Complete the caption") ? t("canvas.bboxEditor.captionTextRequired", { kind: issue.split("for ").at(-1)?.replace(/\.$/, "") }) : issue.startsWith("Fix the bounds") ? t("canvas.bboxEditor.boundsInvalid", { kind: issue.split("for ").at(-1)?.replace(/\.$/, "") }) : issue;
+            message.warning(text); return;
+        }
+        if (layout.width !== width || layout.height !== height || !isSupportedBboxGenerationSize(width, height)) { message.warning(t("canvas.bboxEditor.supportedSizeRequired")); return; }
+        const compiled = bboxLayoutToModelJson(layout);
+        const graph = applyBboxLayoutToGraph({ nodes: nodesRef.current, connections: connectionsRef.current, nodeId, layout, promptJson: compiled, makeTextNode: () => createCanvasNode(CanvasNodeType.Text, { x: 0, y: 0 }, { content: compiled, status: "success" }), makeConnectionId: nanoid });
+        if (!graph) { message.warning(t("canvas.bboxEditor.targetChanged")); setBboxLayoutNodeId(null); return; }
+        setNodes(graph.nodes);
+        setConnections(graph.connections);
+        if (graph.selectedNodeId) { setSelectedNodeIds(new Set([graph.selectedNodeId])); setSelectedConnectionId(null); }
+        setBboxLayoutNodeId(null);
+    }, [message, t]);
 
     const upscaleImageNode = useCallback(async (node: CanvasNodeData, params: CanvasImageUpscaleParams) => {
         if (!node.metadata?.content) return;
@@ -3472,6 +3496,7 @@ function AtelierCanvasPage() {
                     onDownload={downloadNodeImage}
                     onSaveAsset={(node) => void saveNodeAsset(node)}
                     onMaskEdit={(node) => setMaskEditNodeId(node.id)}
+                    onBboxEdit={(node) => setBboxLayoutNodeId(node.id)}
                     onCrop={(node) => setCropNodeId(node.id)}
                     onCaptureVideoFrame={(node) => { videoFrameIdentityRef.current = `${projectId}:${node.id}:${node.metadata?.storageKey || ""}:${node.metadata?.content || ""}`; setVideoFrameNodeId(node.id); }}
                     onTrimAudio={(node) => { audioTrimIdentityRef.current = `${projectId}:${node.id}:${node.metadata?.storageKey || ""}:${node.metadata?.content || ""}`; document.querySelectorAll<HTMLElement>("[data-node-id]").forEach((element) => { if (element.dataset.nodeId === node.id) element.querySelector("audio")?.pause(); }); setAudioTrimNodeId(node.id); }}
@@ -3549,6 +3574,8 @@ function AtelierCanvasPage() {
                 {maskEditNode?.metadata?.content ? (
                     <CanvasNodeMaskEditDialog dataUrl={maskEditNode.metadata.content} open={Boolean(maskEditNode)} onClose={() => setMaskEditNodeId(null)} onConfirm={(payload) => void maskEditImageNode(maskEditNode!, payload)} />
                 ) : null}
+
+                {bboxLayoutNode && !bboxLayoutNode.metadata?.content ? <CanvasNodeBBoxLayoutDialog open initialLayout={bboxLayoutNode.metadata?.bboxLayout} initialPrompt={bboxLayoutNode.metadata?.composerContent ?? bboxLayoutNode.metadata?.prompt} initialSize={buildGenerationConfig(effectiveConfig, bboxLayoutNode, "image").size} onClose={() => setBboxLayoutNodeId(null)} onApply={(layout, promptJson, width, height) => applyBboxLayout(bboxLayoutNode.id, layout, promptJson, width, height)} /> : null}
 
                 {splitNode?.metadata?.content ? <CanvasNodeSplitDialog dataUrl={splitNode.metadata.content} open={Boolean(splitNode)} onClose={() => setSplitNodeId(null)} onConfirm={(params) => void splitImageNode(splitNode!, params)} /> : null}
 

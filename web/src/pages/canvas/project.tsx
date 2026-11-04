@@ -2614,14 +2614,15 @@ function AtelierCanvasPage() {
                         if(selectedScript&&context.referenceImages.length)
                             throw Error("自定义文本脚本目前不支持图片参考输入");
                         const skillBinding=resolvePromptSkillBinding(prompt,sourceNode.metadata?.skillBinding);
-                        if(skillBinding?.mode==="auto"&&context.referenceImages.length)
-                            throw Error("自动 Skill 文本任务暂不支持同时附带参考图");
                         const auto=skillBinding?.mode==="auto"?
                             await freezeSqliteSkillCatalog(skillBinding,text,projectId,bridge):null;
-                        skillCatalog=auto?.catalog;
-                        skillAuthorizationId=auto?.authorizationId;
                         const manual=skillBinding?.mode==="manual"?
                             await resolveManualSkillContext(skillBinding,undefined,projectId):null;
+                        const manualScripts=manual?.scriptSkillIds.length?
+                            await freezeSqliteSkillCatalog({mode:"manual",skillIds:manual.snapshot.skillIds,
+                                versionPins:manual.snapshot.versionPins},text,projectId,bridge):null;
+                        skillCatalog=auto?.catalog??manualScripts?.catalog;
+                        skillAuthorizationId=auto?.authorizationId??manualScripts?.authorizationId;
                         const adapted=manual?withManualSkillMessages([{role:"user",content:text}],manual):null;
                         const compiled=auto?
                             auto.catalogMessage+"\n\n<user-request>\n"+text+"\n</user-request>":
@@ -3012,6 +3013,18 @@ function AtelierCanvasPage() {
             },
             onSkillTool:event=>{
                 if(controller.signal.aborted||activeProjectIdRef.current!==projectId)return;
+                if(event.name==="run_skill_script"&&event.status==="failed"){
+                    const detail=event.result?.stderr?.trim()||("退出码："+String(event.result?.exit_code??"未知"));
+                    message.open({key:progressKey,type:"error",duration:8,
+                        content:"Skill 脚本失败："+detail.slice(-240)});
+                    return;
+                }
+                if(event.name==="run_skill_script"&&event.status==="completed"){
+                    const output=event.result?.stdout?.trim();
+                    message.open({key:progressKey,type:"loading",duration:0,
+                        content:"Skill 脚本已完成"+(output?"："+output.slice(-100):"")});
+                    return;
+                }
                 message.open({key:progressKey,type:"loading",duration:0,
                     content:"Skill "+event.name+"："+(event.status==="completed"?"已完成":"执行中")});
             },

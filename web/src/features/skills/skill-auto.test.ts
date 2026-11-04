@@ -2,12 +2,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { defaultConfig } from "@/stores/use-config-store";
 import { runTextAgent } from "@/services/api/text-agent-runner";
 import { getSkillPackage, listSkills } from "./skill-registry";
+import { canvasApi } from "@/features/backend-sync/canvas-api";
+import { zipSync } from "fflate";
 import { MAX_CATALOG_CHARS, isUnsupportedSkillToolsError, prepareAutomaticSkillCatalog, withAutomaticSkillCatalog } from "./skill-auto";
 import type { SkillCatalogEntry, SkillPackage } from "./types";
 
 vi.mock("@/i18n", () => ({ default: { t: (key: string) => key } }));
 vi.mock("@/lib/api-proxy", () => ({ proxyApiUrl: (url: string) => url }));
 vi.mock("./skill-registry", () => ({ listSkills: vi.fn(), getSkillPackage: vi.fn() }));
+vi.mock("@/features/backend-sync/canvas-api", () => ({ canvasApi: vi.fn() }));
 const id = "storyboard-prompt", version = "aaaaaaaaaaaa", next = "bbbbbbbbbbbb";
 const active: SkillCatalogEntry = { id, name: id, enabled: true, description: "Construct storyboard shots", activeVersion: version,
     versions: [version, next], updatedAt: "2026-10-20" };
@@ -19,6 +22,7 @@ const call = (name: string, args: object, id = "tool-1") => ({ name, id, argumen
 beforeEach(() => {
     vi.mocked(listSkills).mockResolvedValue([active]);
     vi.mocked(getSkillPackage).mockImplementation(async (_id, v) => pkg(v || version));
+    vi.mocked(canvasApi).mockResolvedValue({ status: "succeeded", stdout: "ok" });
 });
 afterEach(() => vi.resetAllMocks());
 
@@ -66,7 +70,7 @@ describe("P3 default automatic Skill selection and safe tool dispatcher", () => 
         expect(messages[0].role).toBe("user");
         expect(messages[0].content).toContain("Make a shot list");
         const run = plan.createRun();
-        expect(run.tools.map((tool) => tool.name)).toEqual(["activate_skill", "read_skill_resource", "search_skills"]);
+        expect(run.tools.map((tool) => tool.name)).toEqual(["activate_skill", "read_skill_resource", "run_skill_script", "search_skills"]);
         expect(run.snapshot().activatedSkillIds).toEqual([]);
     });
     it("allows only activation before reading references and records versions and trace", async () => {
@@ -88,6 +92,50 @@ describe("P3 default automatic Skill selection and safe tool dispatcher", () => 
         await expect(run.executeTool(call("read_skill_resource", { skill_id: id, path: "../config.json" }), {})).rejects.toThrow(/path traversal/);
         await expect(run.executeTool(call("read_skill_resource", { skill_id: id, path: "scripts/helper.py" }), {})).rejects.toThrow(/Unauthorized/);
         await expect(run.executeTool(call("read_skill_resource", { skill_id: id, path: "references/missing.md" }), {})).rejects.toThrow(/Unauthorized/);
+    });
+    it("exposes bundled scripts and runs only activated, listed paths or entry IDs through the backend", async () => {
+        const archive = zipSync({
+            "scripts/compile.py": new TextEncoder().encode("print('ok')"),
+            "references/guide.md": new TextEncoder().encode("# guide"),
+            "execution.json": new TextEncoder().encode('{"entries":{"compile":"scripts/compile.py"}}'),
+        });
+        vi.mocked(getSkillPackage).mockResolvedValue({ ...pkg(), sourceArchive: new Blob([archive as BlobPart]) });
+        const run = (await prepareAutomaticSkillCatalog(undefined, undefined, "test", "project-a"))!.createRun();
+        await expect(run.executeTool(call("run_skill_script", { skill_id: id, script_path: "scripts/compile.py" }), {})).rejects.toThrow(/activated/);
+        const activation = JSON.parse(await run.executeTool(call("activate_skill", { skill_id: id }), {}));
+        expect(activation.scripts).toEqual(["scripts/compile.py"]);
+        expect(activation.entry_points).toEqual({ compile: "scripts/compile.py" });
+        expect(JSON.parse(await run.executeTool(call("read_skill_resource", { skill_id: id, path: "scripts/compile.py" }), {})).content).toContain("print");
+        await expect(run.executeTool(call("run_skill_script", { skill_id: id, script_path: "scripts/private.py" }), {})).rejects.toThrow(/Unauthorized/);
+        const controller = new AbortController();
+        const output = await run.executeTool(call("run_skill_script", { skill_id: id, entry_id: "compile", args: ["draft.json"], input_files: { "draft.json": "{}" }, output_files: ["prompt.txt"] }), { signal: controller.signal });
+        expect(JSON.parse(output).status).toBe("succeeded");
+        expect(canvasApi).toHaveBeenCalledWith("/api/v1/skills/execute", "POST", expect.objectContaining({
+            skill_id: id, version, project_id: "project-a", entry_id: "compile", args: ["draft.json"],
+        }), controller.signal);
+        expect(run.trace().at(-1)?.type).toBe("script");
+    });
+    it("keeps failed script output available for correction and bounds oversized results", async () => {
+        const archive = zipSync({ "scripts/compile.py": new TextEncoder().encode("print('ok')") });
+        vi.mocked(getSkillPackage).mockResolvedValue({ ...pkg(), sourceArchive: new Blob([archive as BlobPart]) });
+        const run = (await prepareAutomaticSkillCatalog())!.createRun("project-a");
+        await run.executeTool(call("activate_skill", { skill_id: id }), {});
+        vi.mocked(canvasApi).mockResolvedValueOnce({ status: "failed", exit_code: 2, stderr: "invalid draft" });
+        const failed = JSON.parse(await run.executeTool(call("run_skill_script", { skill_id: id, script_path: "scripts/compile.py" }), {}));
+        expect(failed).toMatchObject({ status: "failed", exit_code: 2, stderr: "invalid draft" });
+        vi.mocked(canvasApi).mockResolvedValueOnce({ status: "succeeded", stdout: "x".repeat(30000) });
+        const large = JSON.parse(await run.executeTool(call("run_skill_script", { skill_id: id, script_path: "scripts/compile.py" }), {}));
+        expect(large.output_truncated).toBe(true);
+        expect(JSON.stringify(large).length).toBeLessThan(24000);
+    });
+    it("runs listed scripts without execution.json using their explicit relative path", async () => {
+        const archive = zipSync({ "scripts/helper.py": new TextEncoder().encode("pass") });
+        vi.mocked(getSkillPackage).mockResolvedValue({ ...pkg(), sourceArchive: new Blob([archive as BlobPart]) });
+        const run = (await prepareAutomaticSkillCatalog())!.createRun("project-a");
+        const activation = JSON.parse(await run.executeTool(call("activate_skill", { skill_id: id }), {}));
+        expect(activation.scripts).toEqual(["scripts/helper.py"]);
+        expect(activation.entry_points).toEqual({});
+        expect(JSON.parse(await run.executeTool(call("run_skill_script", { skill_id: id, script_path: "scripts/helper.py" }), {})).status).toBe("succeeded");
     });
     it("isolates activation across concurrent runs", async () => {
         const plan = (await prepareAutomaticSkillCatalog())!;

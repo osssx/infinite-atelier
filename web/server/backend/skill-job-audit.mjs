@@ -7,7 +7,7 @@ function mustFind(db,projectId,jobId){
  const job=db.prepare("SELECT * FROM jobs WHERE id=? AND project_id=?").get(jobId,projectId);
  if(!job)throw bad("skill_job_not_found",404);
  const snapshot=JSON.parse(job.snapshot_json);
- if(snapshot.adapterKind!=="model"||snapshot.provider!=="openai"||
+ if(snapshot.adapterKind!=="model"||!["openai","openai_compatible"].includes(snapshot.provider)||
   snapshot.task?.kind!=="text"||!snapshot.task.skills?.blobId)
   throw bad("skill_job_not_supported");
  return {job,snapshot};
@@ -19,9 +19,10 @@ export async function getProjectSkillAudit(db,blobStore,{projectId,jobId}){
  const toolEvents=events.filter(item=>item.kind==="skill_tool").slice(0,96).map(item=>{
   const payload=JSON.parse(item.payload_json);
   return {eventId:item.seq,at:item.created_at,status:payload.status,round:payload.round,
-   callId:payload.callId,name:payload.name,skillId:payload.skillId??null};
- }).filter(item=>["started","completed"].includes(item.status)&&
-   ["search_skills","activate_skill","read_skill_resource"].includes(item.name));
+   callId:payload.callId,name:payload.name,skillId:payload.skillId??null,
+   ...(payload.result?{result:payload.result}:{}),...(payload.error?{error:payload.error}:{})};
+ }).filter(item=>["started","completed","failed"].includes(item.status)&&
+   ["search_skills","activate_skill","read_skill_resource","run_skill_script"].includes(item.name));
  const completion=events.find(item=>item.kind==="skill_run_completed");
  const versionPins=[...skills.values()].map(s=>({skillId:s.id,version:s.version,name:s.name.slice(0,100)}));
  return {jobId,sourceNodeId:job.target_node_id,status:job.status,

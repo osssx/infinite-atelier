@@ -6,6 +6,7 @@ import {readFile,writeFile,rm} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {DatabaseSync} from "node:sqlite";
+import {SCHEMA_VERSION} from "./schema.mjs";
 import {openMainDatabase} from "./database.mjs";
 import {createBlobStore} from "./blob-store.mjs";
 import {acquireInstanceLock} from "./instance-lock.mjs";
@@ -51,7 +52,7 @@ test("P5.1 cold backup copies SQLite plus all ready BlobStore bytes, verifies, a
  const result=await createColdBackup({dataDir:f.source,backupDir:f.destination});
  assert.equal(result.blobCount,2);
  assert.equal(result.blobBytes,png.length+Buffer.byteLength("hello from the Canvas\n"));
- assert.equal(result.schemaVersion,19);
+ assert.equal(result.schemaVersion,SCHEMA_VERSION);
  assert.equal(existsSync(join(f.destination,"db","atelier.sqlite")),true);
  assert.equal(existsSync(join(f.destination,"manifest.json")),true);
  const check=await verifyColdBackup({backupDir:f.destination});

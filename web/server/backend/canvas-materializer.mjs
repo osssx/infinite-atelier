@@ -22,7 +22,7 @@ export function createCanvasMaterializer({db,blobStore,videoDimensionReader=read
   FROM artifacts a JOIN jobs j ON j.id=a.job_id
   LEFT JOIN materializations m ON m.artifact_id=a.id AND m.project_id=j.project_id
   WHERE j.status='succeeded' AND j.project_id IS NOT NULL
-    AND (? IS NULL OR j.project_id=?) AND (? IS NULL OR a.id=?)
+    AND (? IS NULL OR j.project_id=?) AND (? IS NULL OR a.id=?) AND a.port_id IS NOT 'skill-script'
     AND (m.id IS NULL OR m.status IN ('pending','retry') AND (m.next_due_at IS NULL OR m.next_due_at<=CAST(strftime('%s','now') AS INTEGER)*1000))
   ORDER BY j.created_at,a.port_id,a.item_key,a.id`).all(projectId,projectId,artifactId,artifactId);
  function mark(artifact,code,status){

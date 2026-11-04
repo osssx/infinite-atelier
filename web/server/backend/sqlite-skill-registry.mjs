@@ -1,5 +1,6 @@
 import {verifySkillPackageContent} from "./skill-package-integrity.mjs";
 import {writeTransaction} from "./repository.mjs";
+import {unzipSync} from "fflate";
 const problem=(code,statusCode=400)=>Object.assign(Error(code),{code,statusCode});
 const idRule=/^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const versionRule=/^[a-f0-9]{12}$/;
@@ -145,10 +146,21 @@ export function getAuthorizedSkillCatalog(db,{projectId,expectedRevision,skillId
   if(skillMd.length>24000||Object.keys(resources).length>99||
     Object.values(resources).some(value=>typeof value!=="string"||value.length>24000))
    throw problem("skill_snapshot_limit_exceeded",413);
+  const scripts={},packageFiles={};
+  if(record.archive_bytes){
+   let files;try{files=unzipSync(record.archive_bytes)}catch{throw problem("skill_package_integrity_failed",422)}
+   for(const [path,source] of Object.entries(files))if(path.startsWith("scripts/")){
+    if(source.byteLength>512*1024||source.includes(0))continue;
+    try{scripts[path]=new TextDecoder("utf-8",{fatal:true}).decode(source)}catch{/* Binary files remain in the frozen package but are not scripts. */}
+   }
+   for(const [path,source] of Object.entries(files)){
+    packageFiles[path]=Buffer.from(source).toString("base64");
+   }
+  }
   const entry={id,version,hash:manifest.hash,name:manifest.name,
-   description:manifest.description,skillMd,resources};
+   description:manifest.description,skillMd,resources,scripts,files:packageFiles};
   size+=Buffer.byteLength(JSON.stringify(entry),"utf8");
-  if(size>950000)throw problem("skill_snapshot_limit_exceeded",413);
+  if(size>7*1024*1024)throw problem("skill_snapshot_limit_exceeded",413);
   entries.push(entry);
  }
  return {revision:expectedRevision,entries};

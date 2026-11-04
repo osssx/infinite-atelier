@@ -2,13 +2,15 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {DatabaseSync} from "node:sqlite";
 import {Readable} from "node:stream";
-import {mkdtempSync,rmSync} from "node:fs";
-import {join} from "node:path";
+import {mkdtempSync,rmSync,readFileSync} from "node:fs";
+import {join,resolve,dirname} from "node:path";
+import {fileURLToPath} from "node:url";
 import {tmpdir} from "node:os";
 import {initializeSchema} from "./schema.mjs";
 import {createBlobStore} from "./blob-store.mjs";
 import {createCredentialVault} from "./credential-vault.mjs";
 import {createOpenAiModelAdapter,validateModelSnapshot} from "./openai-model-adapter.mjs";
+import {loadFrozenSkillCatalog} from "./sqlite-skill-agent.mjs";
 import {createJobCoordinator} from "./job-coordinator.mjs";
 import {submitJob} from "./repository.mjs";
 import {fingerprintSource} from "./repository.mjs";
@@ -16,28 +18,31 @@ import {createProject,getProject,patchProject} from "./projects.mjs";
 import {createCanvasMaterializer} from "./canvas-materializer.mjs";
 import {createBackendWorker} from "./worker.mjs";
 import {buildApp} from "./app.mjs";
+import {compatEndpointFingerprint} from "./openai-compat-endpoints.mjs";
 const png=Buffer.from("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000b49444154789c636000020000050001a5f645400000000049454e44ae426082","hex");
 const wav=Buffer.from("524946460800000057415645666d7420","hex");
 const fakeProtector={protect:b=>Buffer.from(b),unprotect:b=>Buffer.from(b)};
-function fixture(t,upstreamCall){
+function fixture(t,upstreamCall,{provider="openai",endpointBaseUrl,compatibleUpstreamCall}={}){
  const dir=mkdtempSync(join(tmpdir(),"atelier-openai-jobs-"));
  const db=new DatabaseSync(":memory:");
  initializeSchema(db);
  t.after(()=>{db.close();rmSync(dir,{recursive:true,force:true})});
  const vault=createCredentialVault({db,protector:fakeProtector});
- const channel=vault.create({id:"openai-channel",provider:"openai",displayName:"OpenAI",
+ const channel=vault.create({id:"openai-channel",provider,displayName:"OpenAI",
   apiKey:"fixture-only-not-a-real-secret"});
- const snapshot=task=>({adapterKind:"model",provider:"openai",channelId:channel.id,
-  secretVersionRef:channel.keyVersion,task});
+ const snapshot=task=>({adapterKind:"model",provider,channelId:channel.id,
+  secretVersionRef:channel.keyVersion,...(provider==="openai_compatible"?{
+   endpointBaseUrl,endpointFingerprint:compatEndpointFingerprint(endpointBaseUrl)}:{}),task});
  const blobStore=createBlobStore({dataDir:dir,db});
- const adapter=createOpenAiModelAdapter({db,blobStore,vault,upstreamCall});
+ const adapter=createOpenAiModelAdapter({db,blobStore,vault,upstreamCall,
+  ...(compatibleUpstreamCall?{compatibleUpstreamCall}:{})});
  const coordinator=createJobCoordinator({db,adapters:{model:adapter}});
  const enqueue=(name,task)=>{
   const result=submitJob(db,{idempotencyKey:name,requestFingerprint:name,
    executionMode:"immediate",snapshot:snapshot(task)});
   return result.jobId;
  };
- return {db,vault,snapshot,enqueue,blobStore,coordinator};
+ return {db,vault,snapshot,enqueue,blobStore,coordinator,adapter};
 }
 test("vault-only model catalog uses read-only GET and redacts keys from HTTP response",async t=>{
  const calls=[];
@@ -384,7 +389,7 @@ test("P5.4f SQLite Skill agent executes authorized read-only tool rounds and sav
   const body=JSON.parse(options.body);requests.push(body);
   assert.equal(body.stream,false);
   assert.deepEqual(body.tools.map(t=>t.function.name),
-   ["search_skills","activate_skill","read_skill_resource"]);
+   ["search_skills","activate_skill","read_skill_resource","run_skill_script"]);
   if(requests.length===1)return skillResponse([
    toolCall("a1","search_skills",{query:"lighting"})]);
   if(requests.length===2)return skillResponse([
@@ -403,7 +408,7 @@ test("P5.4f SQLite Skill agent executes authorized read-only tool rounds and sav
   skills:{blobId:stored.blobId}
  });
  f.coordinator.recoverAtStartup();await f.coordinator.tick();await f.coordinator.tick();
- assert.equal(f.db.prepare("SELECT status FROM jobs WHERE id=?").get(id).status,"succeeded");
+ assert.equal(f.db.prepare("SELECT status FROM jobs WHERE id=?").get(id).status,"succeeded",JSON.stringify({attempts:f.coordinator.attempts(id),requests:requests.length}));
  const artifact=f.db.prepare("SELECT * FROM artifacts WHERE job_id=?").get(id);
  assert.equal(artifact.kind,"text");
  const {readFile}=await import("node:fs/promises");
@@ -423,6 +428,109 @@ test("P5.4f SQLite Skill agent executes authorized read-only tool rounds and sav
   skills:{blobId:stored.blobId}
  }),id);
  assert.equal(requests.length,4);
+});
+test("P5.4k real MOSS compiler runs from the frozen SQLite package and returns prompt text to the model",async t=>{
+ const root=resolve(dirname(fileURLToPath(import.meta.url)),"../../../skills/moss-image-prompt-enhancer");
+ const source=readFileSync(join(root,"scripts/compile_prompt.py"),"utf8");
+ const scriptFiles={"scripts/compile_prompt.py":source};
+ const files={"SKILL.md":readFileSync(join(root,"SKILL.md")).toString("base64"),
+  "scripts/compile_prompt.py":Buffer.from(source).toString("base64")};
+ const draft=JSON.stringify({caption:"A ceramic tea cup, turquoise glaze, soft morning light."});
+ const requests=[],toolResults=[];
+ const f=fixture(t,async(_url,options)=>{
+  const body=JSON.parse(options.body);requests.push(body);
+  const user=body.messages.find(message=>message.role==="user");
+  assert.ok(Array.isArray(user.content));assert.equal(user.content[0].text,"Compile the caption");
+  assert.equal(user.content[1].image_url.url,"data:image/png;base64,"+png.toString("base64"));
+  if(requests.length===1)return skillResponse([toolCall("moss-activate","activate_skill",{skill_id:"moss-image-prompt-enhancer"})]);
+  if(requests.length===2)return skillResponse([toolCall("moss-read","read_skill_resource",{skill_id:"moss-image-prompt-enhancer",path:"scripts/compile_prompt.py"})]);
+  if(requests.length===3)return skillResponse([toolCall("moss-run","run_skill_script",{
+   skill_id:"moss-image-prompt-enhancer",script_path:"scripts/compile_prompt.py",
+   args:["draft.json","--output","prompt.txt"],
+   input_files:{"draft.json":draft},output_files:["prompt.txt"]})]);
+  const result=JSON.parse(body.messages.at(-1).content);
+  toolResults.push(result);return skillResponse([],"The compiled caption is ready.");
+ });
+ const frozen={format:"atelier-skill-snapshot-v1",entries:[{id:"moss-image-prompt-enhancer",version:"0123456789ab",hash:"0123456789ab"+"a".repeat(52),name:"MOSS",description:"MOSS image prompts",skillMd:"Run the compiler when useful.",resources:{},scripts:scriptFiles,files}]};
+ const blob=await f.blobStore.put([Buffer.from(JSON.stringify(frozen))],{mime:"text/plain"});
+ const image=await f.blobStore.put([png],{mime:"image/png"});
+ await loadFrozenSkillCatalog(f.blobStore,{blobId:blob.blobId});
+ const task={kind:"text",model:"gpt-4o-mini",prompt:"Compile the caption",stream:false,
+  messages:[{role:"user",content:"Compile the caption"}],skills:{blobId:blob.blobId},
+  images:[{blobId:image.blobId,mimeType:"image/png"}]};
+ await f.adapter.prepare({job:{snapshot:f.snapshot(task)}});
+ const id=f.enqueue("moss-skill-run",task);
+ f.coordinator.recoverAtStartup();await f.coordinator.tick();await f.coordinator.tick();
+ assert.equal(f.db.prepare("SELECT status FROM jobs WHERE id=?").get(id).status,"succeeded");
+ assert.equal(toolResults[0].status,"completed",JSON.stringify(toolResults[0]));
+ assert.equal(toolResults[0].artifacts[0].content,"A ceramic tea cup, turquoise glaze, soft morning light.\r\n");assert.ok(toolResults[0].artifacts[0].artifact_id);
+ assert.equal(requests.length,4);
+ const output=f.db.prepare("SELECT * FROM artifacts WHERE job_id=? AND port_id='skill-script'").get(id);
+ assert.ok(output);assert.ok((await f.blobStore.stat(output.blob_id)).byteSize>0);
+ assert.equal(f.db.prepare("SELECT status FROM materializations WHERE artifact_id=?").get(output.id),undefined);
+});
+test("OpenAI-compatible real MOSS script loop retains frozen reference image and stores output",async t=>{
+ const root=resolve(dirname(fileURLToPath(import.meta.url)),"../../../skills/moss-image-prompt-enhancer");
+ const source=readFileSync(join(root,"scripts/compile_prompt.py"),"utf8");
+ const endpoint="http://127.0.0.1:8188/v1",requests=[],toolResults=[];
+ const f=fixture(t,async()=>{throw Error("must not use official OpenAI network")},{
+  provider:"openai_compatible",endpointBaseUrl:endpoint,
+  compatibleUpstreamCall:async(url,options)=>{
+   assert.equal(url,endpoint+"/chat/completions");
+   assert.equal(options.headers.authorization,"Bearer fixture-only-not-a-real-secret");
+   assert.ok(!options.body.includes("fixture-only-not-a-real-secret"));
+   const body=JSON.parse(options.body);requests.push(body);
+   const user=body.messages.find(message=>message.role==="user");
+   assert.ok(Array.isArray(user.content));assert.equal(user.content[0].text,"Compile the caption");
+   assert.equal(user.content[1].image_url.url,"data:image/png;base64,"+png.toString("base64"));
+   if(requests.length===1)return skillResponse([toolCall("moss-activate","activate_skill",{skill_id:"moss-image-prompt-enhancer"})]);
+   if(requests.length===2)return skillResponse([toolCall("moss-read","read_skill_resource",{skill_id:"moss-image-prompt-enhancer",path:"scripts/compile_prompt.py"})]);
+   if(requests.length===3)return skillResponse([toolCall("moss-run","run_skill_script",{
+    skill_id:"moss-image-prompt-enhancer",script_path:"scripts/compile_prompt.py",
+    args:["draft.json","--output","prompt.txt"],
+    input_files:{"draft.json":JSON.stringify({caption:"A ceramic cup in morning light."})},
+    output_files:["prompt.txt"]})]);
+   toolResults.push(JSON.parse(body.messages.at(-1).content));
+   return skillResponse([],"Compatible endpoint received the compiled prompt.");
+  }
+ });
+ const pack={format:"atelier-skill-snapshot-v1",entries:[{id:"moss-image-prompt-enhancer",version:"0123456789ab",hash:"0123456789ab"+"a".repeat(52),name:"MOSS",description:"MOSS image prompts",skillMd:"Run the compiler.",resources:{},scripts:{"scripts/compile_prompt.py":source},files:{
+  "SKILL.md":Buffer.from(readFileSync(join(root,"SKILL.md"))).toString("base64"),
+  "scripts/compile_prompt.py":Buffer.from(source).toString("base64")
+ }}]};
+ const stored=await f.blobStore.put([Buffer.from(JSON.stringify(pack))],{mime:"text/plain"});
+ const image=await f.blobStore.put([png],{mime:"image/png"});
+ const task={kind:"text",model:"gpt-4o-mini",prompt:"Compile the caption",stream:false,
+  messages:[{role:"user",content:"Compile the caption"}],skills:{blobId:stored.blobId},
+  images:[{blobId:image.blobId,mimeType:"image/png"}]};
+ const id=f.enqueue("compatible-moss-script",task);
+ f.coordinator.recoverAtStartup();await f.coordinator.tick();await f.coordinator.tick();
+ assert.equal(f.db.prepare("SELECT status FROM jobs WHERE id=?").get(id).status,"succeeded");
+ assert.equal(requests.length,4);assert.equal(toolResults[0].status,"completed");
+ assert.equal(toolResults[0].artifacts[0].content.trimEnd(),"A ceramic cup in morning light.");
+ assert.ok(toolResults[0].artifacts[0].artifact_id);
+ assert.ok(f.db.prepare("SELECT 1 FROM artifacts WHERE job_id=? AND port_id='skill-script'").get(id));
+});
+test("P5.4l script tool preserves full large logs as blobs and returns a bounded completed result",async t=>{
+ const source="process.stdout.write('o'.repeat(50000));process.stderr.write('e'.repeat(60000));";
+ const frozen={format:"atelier-skill-snapshot-v1",entries:[{id:"large-output",version:"abcdef012345",hash:"abcdef012345"+"a".repeat(52),name:"Output",description:"Large output",skillMd:"Run the logger.",resources:{},scripts:{"scripts/log.js":source},files:{"scripts/log.js":Buffer.from(source).toString("base64")}}]};
+ const results=[];let calls=0;
+ const f=fixture(t,async(_url,options)=>{
+  calls++;const body=JSON.parse(options.body);
+  if(calls===1)return skillResponse([toolCall("large-active","activate_skill",{skill_id:"large-output"})]);
+  if(calls===2)return skillResponse([toolCall("large-run","run_skill_script",{skill_id:"large-output",script_path:"scripts/log.js"})]);
+  results.push(JSON.parse(body.messages.at(-1).content));return skillResponse([],"Logs retained.");
+ });
+ const blob=await f.blobStore.put([Buffer.from(JSON.stringify(frozen))],{mime:"text/plain"});
+ const id=f.enqueue("large-script-logs",{kind:"text",model:"gpt-4o-mini",prompt:"Run it",stream:false,
+  messages:[{role:"user",content:"Run it"}],skills:{blobId:blob.blobId}});
+ f.coordinator.recoverAtStartup();await f.coordinator.tick();await f.coordinator.tick();
+ assert.equal(f.db.prepare("SELECT status FROM jobs WHERE id=?").get(id).status,"succeeded");
+ const result=results[0];assert.equal(result.status,"completed");assert.equal(result.stdout_bytes,50000);assert.equal(result.stderr_bytes,60000);
+ assert.ok(result.stdout_truncated&&result.stderr_truncated);assert.ok(Buffer.byteLength(JSON.stringify(result))<=32*1024);
+ assert.equal((await f.blobStore.stat(result.log_blobs.stdout)).byteSize,50000);
+ assert.equal((await f.blobStore.stat(result.log_blobs.stderr)).byteSize,60000);
+ assert.equal(f.db.prepare("SELECT COUNT(*) AS n FROM artifacts WHERE job_id=? AND port_id='skill-script'").get(id).n,2);
 });
 test("P5.4f unauthorized function requests never invoke arbitrary tools or retry upstream",async t=>{
  let calls=0;

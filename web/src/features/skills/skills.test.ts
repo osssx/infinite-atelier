@@ -1,5 +1,5 @@
 import {beforeEach,describe,expect,it,vi} from "vitest";
-import {unzipSync} from "fflate";
+import {unzipSync,zipSync} from "fflate";
 import {parseSkillMd,validateSkillPath} from "./skill-parser";
 import {resetSkillTestApi,seedSkillTestApi} from "./skill-registry-test-api";
 import {activateSkillVersion,exportSkill,getSkillPackage,listSkills,readSkillResource,setSkillEnabled} from "./skill-registry";
@@ -33,11 +33,22 @@ describe("Filesystem-managed Skill catalog",()=>{
   const pkg=makePackage("111111111111");
   seedSkillTestApi(pkg);
   expect(await readSkillResource(pkg.manifest.id,"references/shots.md")).toContain("wide shots");
-  await expect(readSkillResource(pkg.manifest.id,"scripts/helper.py")).rejects.toThrow(/not model-readable/);
+  await expect(readSkillResource(pkg.manifest.id,"scripts/helper.py")).rejects.toThrow(/Unknown Skill resource/);
   await expect(readSkillResource(pkg.manifest.id,"references/../scripts/helper.py")).rejects.toThrow(/traversal/);
   const archive=unzipSync(new Uint8Array(await (await exportSkill(pkg.manifest.id)).arrayBuffer()));
   expect(new TextDecoder().decode(archive["SKILL.md"])).toBe(pkg.skillMd);
   expect(new TextDecoder().decode(archive["references/shots.md"])).toBe(pkg.resources["references/shots.md"]);
+ });
+ it("reads bundled text scripts and other text resources from the fixed package archive",async()=>{
+  const pkg=makePackage("111111111111");
+  const archive=zipSync({
+   "scripts/helper.py":new TextEncoder().encode("print('ok')"),
+   "references/guide.json":new TextEncoder().encode('{"ok":true}')
+  });
+  seedSkillTestApi({...pkg,sourceArchiveBase64:btoa(String.fromCharCode(...archive))});
+  expect(await readSkillResource(pkg.manifest.id,"scripts/helper.py")).toContain("print");
+  expect(await readSkillResource(pkg.manifest.id,"references/guide.json")).toBe('{"ok":true}');
+  await expect(readSkillResource(pkg.manifest.id,"assets/logo.png")).rejects.toThrow(/not model-readable/);
  });
  it("validates Skill markdown and rejects invalid paths",()=>{
   expect(()=>parseSkillMd("---\nname: Bad_Name\ndescription: valid\n---\n# Text")).toThrow(/name/);

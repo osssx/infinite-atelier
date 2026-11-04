@@ -4,7 +4,7 @@ import {DatabaseSync} from "node:sqlite";
 import {mkdtempSync,rmSync} from "node:fs";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
-import {initializeSchema} from "./schema.mjs";
+import {initializeSchema,SCHEMA_VERSION} from "./schema.mjs";
 import {createProject} from "./projects.mjs";
 import {fingerprintSource,submitJob,appendArtifact} from "./repository.mjs";
 import {buildApp} from "./app.mjs";
@@ -196,11 +196,11 @@ test("v15 database migrates to v16 and remembers removed history after reopening
   db.prepare("UPDATE jobs SET status='failed' WHERE id=?").run(id);
   // Simulate opening an existing v15 database without this new table.
   db.exec("DROP TABLE job_history_hidden");
-  db.prepare("DELETE FROM schema_migrations WHERE version=19").run();
-  db.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES(15,1)").run();
+  db.prepare("DELETE FROM schema_migrations WHERE version>15").run();
+  db.prepare("INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(15,1)").run();
   db.close();db=new DatabaseSync(file);
   initializeSchema(db);
-  assert.equal(db.prepare("SELECT MAX(version) v FROM schema_migrations").get().v,19);
+  assert.equal(db.prepare("SELECT MAX(version) v FROM schema_migrations").get().v,SCHEMA_VERSION);
   assert.equal(listProjectJobs(db,{projectId:"p1"}).jobs.length,1);
   assert.deepEqual(hideProjectJobHistory(db,{projectId:"p1",jobId:id}),{hidden:true,jobId:id});
   db.close();db=new DatabaseSync(file);

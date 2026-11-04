@@ -29,16 +29,17 @@ export async function canvasSession(force=false):Promise<string>{
  })();
  try{return await initializing}finally{initializing=null}
 }
-export async function canvasApi<T>(path:string,method="GET",payload?:unknown):Promise<T>{
+export async function canvasApi<T>(path:string,method="GET",payload?:unknown,signal?:AbortSignal):Promise<T>{
  if(!path.startsWith("/api/v1/"))throw Error("invalid_canvas_api_path");
  for(let attempts=0;attempts<2;attempts++){
   const token=await canvasSession(attempts>0);
   let response:Response;
   try{response=await fetch(path,{method,credentials:"same-origin",cache:"no-store",
+   signal,
    headers:{"accept":"application/json",...(method!=="GET"?{"x-atelier-csrf":token}:{}),
     ...(payload===undefined?{}:{"content-type":"application/json"})},
    ...(payload===undefined?{}:{body:JSON.stringify(payload)})})}
-  catch{throw new CanvasApiError("backend_unavailable",0)}
+  catch(error){if(signal?.aborted)throw new DOMException("Aborted","AbortError");throw new CanvasApiError("backend_unavailable",0)}
   if(response.status===401&&attempts===0){csrf=null;continue}
   const data:unknown=await response.json().catch(()=>null);
   if(!response.ok){

@@ -7,13 +7,14 @@ import { exportSkill, getSkillPackage, getSkillStorageConfig, SKILL_REGISTRY_CHA
 import { useSkillStore } from "@/stores/use-skill-store";
 import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { enabledSkillsFirst } from "./skill-list-order";
+import { unzipSync } from "fflate";
 
 export function SkillManager() {
     const { t } = useTranslation();
     const { message } = App.useApp();
     const [query, setQuery] = useState("");
     const [directory, setDirectory] = useState<string | null>(null);
-    const [preview, setPreview] = useState<{ title: string; text: string } | null>(null);
+    const [preview, setPreview] = useState<{ title: string; text: string; scripts: string[] } | null>(null);
     const catalog = useSkillStore((state) => state.catalog);
     const loaded = useSkillStore((state) => state.loaded);
     const busy = useSkillStore((state) => state.busy);
@@ -98,13 +99,24 @@ export function SkillManager() {
                         <Select size="small" disabled={busy} value={skill.activeVersion} options={skill.versions.map((version) => ({ value: version, label: version }))} onChange={(version) => void execute(() => changeVersion(skill.id, version))} style={{ minWidth: 144 }} />
                         <Button size="small" icon={<Eye className="size-3.5" />} onClick={() => void execute(async () => {
                             const data = await getSkillPackage(skill.id);
-                            if (data) setPreview({ title: skill.name + " @ " + skill.activeVersion, text: data.skillMd });
+                            if (data) {
+                                let scripts: string[] = [];
+                                if (data.sourceArchive) {
+                                    try { scripts = Object.keys(unzipSync(new Uint8Array(await data.sourceArchive.arrayBuffer()))).filter(path => path.startsWith("scripts/") && !path.endsWith("/")).sort(); }
+                                    catch { /* package preview remains available */ }
+                                }
+                                setPreview({ title: skill.name + " @ " + skill.activeVersion, text: data.skillMd, scripts });
+                            }
                         })}>{t("config.skills.preview")}</Button>
                         <Button size="small" icon={<Download className="size-3.5" />} onClick={() => void execute(async () => saveAs(await exportSkill(skill.id), skill.name + "-" + skill.activeVersion + ".zip"))}>{t("config.skills.export")}</Button>
                     </div>
                 </div>
             ))}
             <Modal title={preview?.title} open={Boolean(preview)} onCancel={() => setPreview(null)} onOk={() => setPreview(null)} footer={null} width={750} destroyOnHidden>
+                {preview?.scripts.length ? <div className="mb-3 rounded border border-stone-200 p-3 text-xs dark:border-stone-800">
+                    <div className="mb-1 font-medium">Bundled scripts · available through run_skill_script</div>
+                    {preview.scripts.map(path => <div key={path} className="font-mono">{path}</div>)}
+                </div> : null}
                 <pre className="max-h-[60vh] overflow-auto whitespace-pre-wrap break-words rounded bg-stone-100 p-4 text-xs dark:bg-stone-900">{preview?.text || ""}</pre>
             </Modal>
         </section>

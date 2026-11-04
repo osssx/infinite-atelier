@@ -2,7 +2,7 @@ import {randomUUID} from "node:crypto";
 import {existsSync,mkdirSync,readdirSync,lstatSync,statSync,realpathSync,readFileSync,writeFileSync,renameSync,rmSync} from "node:fs";
 import {join,resolve,isAbsolute,dirname,sep} from "node:path";
 import {homedir} from "node:os";
-import {zipSync} from "fflate";
+import {zipSync,unzipSync} from "fflate";
 import {calculateNormalizedSkillHash,extractSkillFrontmatter,verifySkillPackageContent} from "./skill-package-integrity.mjs";
 
 const fail=(code,statusCode=400)=>Object.assign(Error(code),{code,statusCode});
@@ -70,6 +70,7 @@ export function createFileSkillRegistry({skillsDir=resolveSkillsDir(),scanAtStar
       ancestors.add(physical);
       try{
         for(const child of readdirSync(folder,{withFileTypes:true})){
+          if(child.name==="__pycache__"||child.name===".pytest_cache")continue;
           const path=prefix+child.name;
           if(!validFile(path))throw fail("skill_path_unsafe",422);
           const full=join(folder,child.name);
@@ -201,8 +202,16 @@ export function createFileSkillRegistry({skillsDir=resolveSkillsDir(),scanAtStar
       const {manifest,skillMd,resources}=load(id,version);
       if(skillMd.length>24000||Object.keys(resources).length>99||
          Object.values(resources).some(s=>s.length>24000))throw fail("skill_snapshot_limit_exceeded",413);
-      const item={id,version,hash:manifest.hash,name:manifest.name,description:manifest.description,skillMd,resources};
-      size+=Buffer.byteLength(JSON.stringify(item));if(size>950000)throw fail("skill_snapshot_limit_exceeded",413);
+      const saved=safeJson(versionFile(id,version));
+      const scripts={},files={};
+      for(const [path,encoded] of Object.entries(saved.files??{}))if(path.startsWith("scripts/")){
+        const source=Buffer.from(encoded,"base64");
+        if(source.includes(0)||source.byteLength>512*1024)continue;
+        try{scripts[path]=new TextDecoder("utf-8",{fatal:true}).decode(source)}catch{/* Binary files remain package data, not executable scripts. */}
+      }
+      for(const [path,encoded] of Object.entries(saved.files??{}))files[path]=encoded;
+      const item={id,version,hash:manifest.hash,name:manifest.name,description:manifest.description,skillMd,resources,scripts,files};
+      size+=Buffer.byteLength(JSON.stringify(item));if(size>7*1024*1024)throw fail("skill_snapshot_limit_exceeded",413);
       entries.push(item);
     }
     return {revision:state.revision,entries};

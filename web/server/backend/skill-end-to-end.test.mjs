@@ -5,6 +5,7 @@ import {readFile} from "node:fs/promises";
 import {join} from "node:path";
 import {tmpdir} from "node:os";
 import {DatabaseSync} from "node:sqlite";
+import {SCHEMA_VERSION} from "./schema.mjs";
 import {openMainDatabase} from "./database.mjs";
 import {buildApp} from "./app.mjs";
 import {createProject} from "./projects.mjs";
@@ -17,6 +18,7 @@ import {createOpenAiModelAdapter} from "./openai-model-adapter.mjs";
 import {createJobCoordinator} from "./job-coordinator.mjs";
 import {loadFrozenSkillCatalog} from "./sqlite-skill-agent.mjs";
 import {createColdBackup,restoreColdBackup,verifyColdBackup} from "./cold-backup.mjs";
+import {compatEndpointFingerprint} from "./openai-compat-endpoints.mjs";
 const protect={protect:bytes=>Buffer.from(bytes),unprotect:bytes=>Buffer.from(bytes)};
 const text="---\nname: shot-workflow\ndescription: Cinematic shot sequence\n---\nUse camera references";
 const reference="35mm wide lenses and soft light";
@@ -32,14 +34,15 @@ const skill={
 const request=(app,method,url,payload)=>app.inject({
  method,url,headers:{"x-test-owner":"owner"},...(payload?{payload}:{})
 });
-function setup(t,upstream){
+function setup(t,upstream,{provider="openai",endpointBaseUrl,compatibleUpstreamCall}={}){
  const root=mkdtempSync(join(tmpdir(),"p54j-skill-e2e-"));
  const dataDir=join(root,"data"),db=openMainDatabase(dataDir);
  const blobStore=createBlobStore({db,dataDir});
  const vault=createCredentialVault({db,protector:protect});
- const channel=vault.create({id:"openai-test",provider:"openai",
+ const channel=vault.create({id:"openai-test",provider,
   displayName:"Test Channel",apiKey:"E2E_FAKE_TOKEN_DO_NOT_SEND"});
- const adapter=createOpenAiModelAdapter({db,blobStore,vault,upstreamCall:upstream});
+ const adapter=createOpenAiModelAdapter({db,blobStore,vault,upstreamCall:upstream,
+  ...(compatibleUpstreamCall?{compatibleUpstreamCall}:{})});
  const coordinator=createJobCoordinator({db,adapters:{model:adapter}});
  const app=buildApp({db,authorize:r=>r.headers["x-test-owner"]==="owner",blobStore});
  const document={nodes:[{id:"skill-text",type:"text",title:"Prompt",position:{x:0,y:0},
@@ -55,15 +58,17 @@ function setup(t,upstream){
   const json=JSON.stringify({format:"atelier-skill-snapshot-v1",entries:bundle.entries});
   return blobStore.put([Buffer.from(json)],{mime:"text/plain"});
  }
- function submit(cas,name){
+ function submit(cas,name,{authorizationId,images=[]}={}){
   return submitJob(db,{projectId:"film-project",targetNodeId:"skill-text",
    expectedProjectRevision:1,sourceNodeFingerprint:fingerprintSource(document,"skill-text"),
    executionMode:"immediate",idempotencyKey:name,requestFingerprint:name,
-   snapshot:{adapterKind:"model",provider:"openai",channelId:channel.id,
-    secretVersionRef:channel.keyVersion,task:{
+   requireSkillGrant:Boolean(authorizationId),skillAuthorizationId:authorizationId,
+   snapshot:{adapterKind:"model",provider,channelId:channel.id,
+    secretVersionRef:channel.keyVersion,...(provider==="openai_compatible"?{
+     endpointBaseUrl,endpointFingerprint:compatEndpointFingerprint(endpointBaseUrl)}:{}),task:{
      kind:"text",model:"gpt-4o-mini",prompt:"Show a camera angle",stream:false,
      messages:[{role:"user",content:"Show a camera angle"}],
-     skills:{blobId:cas.blobId}
+     skills:{blobId:cas.blobId},...(images.length?{images}:{})
     }}
   }).jobId;
  }
@@ -73,7 +78,7 @@ function setup(t,upstream){
   shutdown=true;await app.close();db.close();
  };
  t.after(async()=>{await close();rmSync(root,{recursive:true,force:true})});
- return {root,dataDir,db,app,blobStore,vault,coordinator,document,register,authorize,freeze,submit,close};
+ return {root,dataDir,db,app,blobStore,vault,coordinator,document,register,authorize,freeze,submit,close,channel};
 }
 const call=(id,name,args)=>({id,type:"function",function:{name,arguments:JSON.stringify(args)}});
 const response=(tools,text="")=>new Response(JSON.stringify({choices:[{
@@ -130,7 +135,7 @@ test("P5.4j end-to-end SQLite registration -> HTTP authorization -> CAS -> tools
  // Backup APIs require all SQLite connections to be quiesced.
  await f.close();
  await createColdBackup({dataDir:f.dataDir,backupDir:archive});
- assert.equal((await verifyColdBackup({backupDir:archive})).schemaVersion,19);
+ assert.equal((await verifyColdBackup({backupDir:archive})).schemaVersion,SCHEMA_VERSION);
  await restoreColdBackup({backupDir:archive,dataDir:restored});
  const db=new DatabaseSync(join(restored,"db","atelier.sqlite"),{readOnly:true});
  try{
@@ -142,6 +147,62 @@ test("P5.4j end-to-end SQLite registration -> HTTP authorization -> CAS -> tools
   const blob=await restoredStore.stat(artifact.blob_id);
   assert.equal(await readFile(blob.path,"utf8"),"Lighting and camera shot list complete.");
  }finally{db.close()}
+});
+test("OpenAI-compatible frozen Skill grant runs MOSS-style tools with CAS reference images, audit and replay",async t=>{
+ const endpoint="http://127.0.0.1:8188/v1";
+ const imageBytes=Buffer.from("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000b49444154789c636000020000050001a5f645400000000049454e44ae426082","hex");
+ const requests=[];let calls=0;
+ const f=setup(t,async()=>{throw Error("official endpoint must not be used")},{
+  provider:"openai_compatible",endpointBaseUrl:endpoint,
+  compatibleUpstreamCall:async(url,options)=>{
+   assert.equal(url,endpoint+"/chat/completions");
+   assert.equal(options.method,"POST");
+   assert.equal(options.headers.authorization,"Bearer E2E_FAKE_TOKEN_DO_NOT_SEND");
+   assert.ok(!options.body.includes("E2E_FAKE_TOKEN_DO_NOT_SEND"));
+   const body=JSON.parse(options.body);requests.push(body);calls++;
+   const user=body.messages.find(item=>item.role==="user");
+   assert.ok(Array.isArray(user.content));
+   assert.equal(user.content[0].text,"Show a camera angle");
+   assert.equal(user.content[1].image_url.url,"data:image/png;base64,"+imageBytes.toString("base64"));
+   const phase=(calls-1)%3;
+   if(phase===0)return response([call(`act-${calls}`,"activate_skill",{skill_id:"shot-workflow"})]);
+   if(phase===1)return response([call(`ref-${calls}`,"read_skill_resource",{
+    skill_id:"shot-workflow",path:"references/camera.md"})]);
+   return response([],"Compatible endpoint produced the camera prompt.");
+  }
+ });
+ f.register();
+ const authorization=await f.authorize();
+ assert.equal(authorization.statusCode,200,authorization.body);
+ const image=await f.blobStore.put([imageBytes],{mime:"image/png"});
+ const cas=await f.freeze(authorization.json());
+ const id=f.submit(cas,"compatible-skills-with-image",{
+  authorizationId:authorization.json().authorizationId,
+  images:[{blobId:image.blobId,mimeType:"image/png"}]
+ });
+ f.coordinator.recoverAtStartup();
+ await f.coordinator.tick();
+ assert.equal(f.db.prepare("SELECT status FROM jobs WHERE id=?").get(id).status,"succeeded");
+ assert.equal(calls,3);
+ const output=f.db.prepare("SELECT blob_id FROM artifacts WHERE job_id=? AND port_id='text'").get(id);
+ assert.ok(output);assert.equal(await readFile((await f.blobStore.stat(output.blob_id)).path,"utf8"),
+  "Compatible endpoint produced the camera prompt.");
+ const audit=await request(f.app,"GET",`/api/v1/projects/film-project/jobs/${id}/skill-audit`);
+ assert.equal(audit.statusCode,200,audit.body);
+ assert.ok(audit.json().toolEvents.some(event=>event.name==="activate_skill"));
+ assert.ok(audit.json().toolEvents.some(event=>event.name==="read_skill_resource"));
+ const replay=await request(f.app,"POST",`/api/v1/projects/film-project/jobs/${id}/replay-skills`,{
+  expectedProjectRevision:1,idempotencyKey:"compatible-replay",requestFingerprint:"compatible-replay"
+ });
+ assert.equal(replay.statusCode,201,replay.body);
+ await f.coordinator.tick();
+ const replayId=replay.json().id;
+ assert.ok(replayId);
+ assert.equal(f.db.prepare("SELECT status FROM jobs WHERE id=?").get(replayId).status,"succeeded");
+ assert.equal(calls,6);
+ const replayAudit=await request(f.app,"GET",`/api/v1/projects/film-project/jobs/${replayId}/skill-audit`);
+ assert.equal(replayAudit.statusCode,200,replayAudit.body);
+ assert.equal(requests.length,6);
 });
 test("P5.4j one read fence prevents disabled/out-of-scope/stale Skills before CAS upload",async t=>{
  const f=setup(t,async()=>{throw Error("must never call paid model")});

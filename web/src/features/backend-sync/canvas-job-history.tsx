@@ -15,7 +15,7 @@ export type CanvasJobHistoryItem={
 export type SkillAudit={
  jobId:string;sourceNodeId:string;status:string;canReplay:boolean;
  versionPins:Array<{skillId:string;version:string;name:string}>;
- toolEvents:Array<{eventId:number;at:number;status:"started"|"completed";round:number;callId:string;name:string;skillId:string|null}>;
+  toolEvents:Array<{eventId:number;at:number;status:"started"|"completed"|"failed";round:number;callId:string;name:string;skillId:string|null;error?:string;result?:{script_path?:string;status?:string;exit_code?:number|null;stderr?:string;stdout?:string;error?:string;message?:string}}>;
  summary?:{rounds:number;calls:number}
 };
 export async function getCanvasSkillAudit(projectId:string,jobId:string):Promise<SkillAudit>{
@@ -542,10 +542,16 @@ export function CanvasJobHistory({projectId,open,onClose,onObserveJob,onRefreshC
       {skillAudits[job.id].toolEvents.length?
        skillAudits[job.id].toolEvents.map(item=><div key={item.eventId}>
         第 {item.round} 轮 · {item.name} · {item.skillId??"目录"} ·
-        {item.status==="started"?"开始":"完成"} ·
+         {item.status==="started"?"开始":item.status==="failed"?"失败":"完成"} ·
         {new Date(item.at).toLocaleTimeString()}
        </div>):<span className="opacity-60">尚无工具事件</span>}
-      <div className="text-xs opacity-60">仅展示只读工具名称、轮数与固定版本；不显示工具参数、Skill 正文或 API Key。</div>
+       {skillAudits[job.id].toolEvents.filter(item=>item.name==="run_skill_script"&&item.status!=="started").map(item=><div key={"result-"+item.eventId}
+        className={item.status==="failed"?"text-red-600":"opacity-80"}>
+        脚本 {item.result?.script_path??"脚本"} · {item.status==="failed"?"失败":"已完成"}
+        {item.result?.exit_code!==undefined?" · exit "+String(item.result.exit_code):""}
+        {item.status==="failed"&&item.result?.stderr?" · "+item.result.stderr.slice(-240):item.result?.message?" · "+item.result.message.slice(-240):item.result?.error?" · "+item.result.error:item.error?" · "+item.error:""}
+       </div>)}
+       <div className="text-xs opacity-60">显示固定版本、工具轮数以及脚本状态和错误摘要；不显示工具参数、Skill 正文或 API Key。</div>
       {skillAudits[job.id].canReplay?<Button size="small" type="primary"
        loading={working===job.id} onClick={()=>confirmSkillReplay(job)}>
        {hasPendingSkillReplay(projectId,job.id)?"核实待确认提交结果（不重新执行）":"使用冻结版本创建新任务"}

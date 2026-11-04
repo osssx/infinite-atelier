@@ -83,19 +83,19 @@ async function fixture(t,{putResponse,grant,refresh,finalize}={}){
   mediaDownloader:{importUrl:async()=>blobStore.put([data],{mime:"video/mp4"})}});
  return {db,jobId,adapter,calls,ref};
 }
-test("schema upgrades v18 to v19 with chunk tables and preserves prior asset-upload storage",async t=>{
+test("schema upgrades v18 through v20 with chunk tables and preserves prior asset-upload storage",async t=>{
  const db=new DatabaseSync(":memory:");initializeSchema(db);
  t.after(()=>db.close());
- db.exec("DROP TABLE script_asset_chunks;DROP TABLE script_asset_chunk_sessions;DELETE FROM schema_migrations WHERE version=19;");
+ db.exec("DROP TABLE script_asset_chunks;DROP TABLE script_asset_chunk_sessions;DELETE FROM schema_migrations WHERE version IN (19,20);");
  db.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES(18,?)").run(Date.now());
  assert.equal(db.prepare("SELECT MAX(version) v FROM schema_migrations").get().v,18);
  initializeSchema(db);
- assert.equal(db.prepare("SELECT MAX(version) v FROM schema_migrations").get().v,19);
+ assert.equal(db.prepare("SELECT MAX(version) v FROM schema_migrations").get().v,SCHEMA_VERSION);
  assert.ok(db.prepare("PRAGMA table_info(script_asset_chunk_sessions)").all().some(x=>x.name==="part_count"));
  assert.ok(db.prepare("PRAGMA table_info(script_asset_chunks)").all().some(x=>x.name==="etag"));
 });
 test("v19: three CAS chunks with ETag complete once; no signed URLs, secrets or raw media in job",async t=>{
- assert.equal(SCHEMA_VERSION,19);
+ assert.ok(SCHEMA_VERSION>=20);
  const f=await fixture(t);
  const coord=createJobCoordinator({db:f.db,adapters:{model:f.adapter}});
  coord.recoverAtStartup();await coord.tick();

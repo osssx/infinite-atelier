@@ -61,6 +61,8 @@ export async function startSqliteModelGeneration({
     ref.kind==="audio"&&ref.role!=="reference_audio"||
     !ref.blobId||ref.blobId!==ref.sha256||!(/^[a-f0-9]{64}$/.test(ref.blobId))))
   throw Error("自定义视频脚本参考素材必须是已冻结的图片、视频或音频 CAS 文件");
+ if(task.skills&&provider!=="openai"&&provider!=="openai_compatible")
+  throw Error("model_skill_provider_unsupported: Skill 文本工具循环仅支持 OpenAI 与 OpenAI 兼容渠道");
  if((provider==="google_gemini"&&task.kind!=="image"&&task.kind!=="text")||
     (provider==="volcengine_ark"&&task.kind!=="video"))
   throw Error("model_provider_kind_unsupported");
@@ -96,10 +98,7 @@ export async function startSqliteModelGeneration({
   }
  }else if(task.messages||task.stream!==undefined)
   throw Error("model_text_options_kind_invalid");
- if(task.skills&&referenceImages.length)
-  throw Error("model_skill_images_unsupported");
- if(task.skills&&(task.kind!=="text"||provider!=="openai"||
-   !/^[a-f0-9]{64}$/.test(task.skills.blobId)))
+ if(task.skills&&(task.kind!=="text"||!/^[a-f0-9]{64}$/.test(task.skills.blobId)))
   throw Error("model_skill_catalog_invalid");
  if(task.skills&&!skillAuthorizationId)throw Error("skill_grant_required");
  if(skillAuthorizationId&&(!task.skills||!/^[0-9a-f-]{36}$/.test(skillAuthorizationId)))

@@ -4,7 +4,7 @@ import {DatabaseSync} from "node:sqlite";
 import {mkdtempSync,rmSync} from "node:fs";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
-import {initializeSchema} from "./schema.mjs";
+import {initializeSchema,SCHEMA_VERSION} from "./schema.mjs";
 import {openMainDatabase} from "./database.mjs";
 import {buildApp,startServer} from "./app.mjs";
 import {createLocalSessionAuth} from "./session.mjs";
@@ -171,11 +171,24 @@ test("SQLite schema v6 upgrades old backend viewport/chat JSON without losing gr
  db.prepare("INSERT INTO projects(id,document_json,revision) VALUES(?,?,?)")
   .run("old-backend",JSON.stringify(legacy),18);
  initializeSchema(db);initializeSchema(db);
- assert.equal(db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v,19);
+ assert.equal(db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v,SCHEMA_VERSION);
  assert.equal(db.prepare("SELECT revision FROM projects WHERE id='old-backend'").get().revision,18);
  assert.deepEqual(JSON.parse(db.prepare("SELECT viewport_json AS v FROM project_viewports WHERE project_id='old-backend'").get().v),
   legacy.viewport);
  assert.equal(db.prepare("SELECT active_chat_id AS id FROM project_chats WHERE project_id='old-backend'").get().id,"legacy-chat");
+});
+test("schema v19 installs Skill script run references and GC ledger triggers",t=>{
+ const db=new DatabaseSync(":memory:");initializeSchema(db);t.after(()=>db.close());
+ db.exec("DROP TRIGGER blob_ref_dirty_skill_script_runs_insert;DROP TRIGGER blob_ref_dirty_skill_script_runs_update;DROP TRIGGER blob_ref_dirty_skill_script_runs_delete;DELETE FROM schema_migrations WHERE version=20;");
+ db.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES(19,?)").run(Date.now());
+ assert.equal(db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v,19);
+ initializeSchema(db);
+ assert.equal(db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v,SCHEMA_VERSION);
+ assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='skill_script_runs'").get());
+ db.prepare("INSERT INTO projects(id,document_json,revision) VALUES('script-run-project','{}',1)").run();
+ db.prepare("UPDATE blob_ref_ledger_state SET dirty=0 WHERE id=1").run();
+ db.prepare("INSERT INTO skill_script_runs(id,project_id,skill_id,version,status,result_json,blob_refs_json,created_at,updated_at) VALUES('run-v20','script-run-project','example','0123456789ab','completed','{}','[\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"]',1,1)").run();
+ assert.equal(db.prepare("SELECT dirty FROM blob_ref_ledger_state WHERE id=1").get().dirty,1);
 });
 test("viewport and chats have independent SQLite revisions and do not modify the graph",async t=>{
  const{call,db}=await fixture(t);
@@ -390,9 +403,9 @@ test("SSE reports expired event cursor after retained history is pruned",async t
 });
 test("disk main db creates schema and remains reusable after close",t=>{
  const dir=mkdtempSync(join(tmpdir(),"atelier-main-"));t.after(()=>rmSync(dir,{recursive:true,force:true}));
- const db=openMainDatabase(dir);assert.equal(db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v,19);
+ const db=openMainDatabase(dir);assert.equal(db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v,SCHEMA_VERSION);
  db.close();const reopened=openMainDatabase(dir);
- assert.equal(reopened.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v,19);reopened.close();
+ assert.equal(reopened.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v,SCHEMA_VERSION);reopened.close();
 });
 test("startServer rejects wide-area binding",async t=>{
  const{app}=await fixture(t);

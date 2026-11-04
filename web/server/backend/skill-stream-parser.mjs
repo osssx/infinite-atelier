@@ -66,7 +66,7 @@ export async function readSkillStream(response,{db,jobId,round}){
      }
     }
    }
-   if(previous.function.arguments.length>8192||previous.function.name.length>128)
+   if(previous.function.arguments.length>(previous.function.name==="run_skill_script"?1024*1024:8192)||previous.function.name.length>128)
     throw error("model_skill_stream_too_large");
    tools.set(item.index,previous);seenIndexes.add(item.index);
   }

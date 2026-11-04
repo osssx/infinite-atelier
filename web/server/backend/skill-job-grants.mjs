@@ -47,7 +47,7 @@ export async function freezeAuthorizedSkillGrant(db,blobStore,selection){
  const body=Buffer.from(JSON.stringify({
   format:"atelier-skill-snapshot-v1",entries:authorized.entries
  }),"utf8");
- if(body.length>1024*1024)throw reject("skill_snapshot_limit_exceeded",413);
+ if(body.length>8*1024*1024)throw reject("skill_snapshot_limit_exceeded",413);
  const stored=await blobStore.put([body],{mime:"text/plain"});
  if(stored.mimeType!=="text/plain"||!shaId.test(stored.blobId)||
   stored.byteSize!==body.length||
@@ -76,7 +76,7 @@ export function claimSkillJobGrant(db,{
    throw reject("skill_grant_not_applicable",400);
   return;
  }
- if(snapshot.adapterKind!=="model"||snapshot.provider!=="openai"||
+ if(snapshot.adapterKind!=="model"||!["openai","openai_compatible"].includes(snapshot.provider)||
   snapshot.task.kind!=="text"||!projectId||
   typeof ref.blobId!=="string"||!shaId.test(ref.blobId)||
   typeof skillAuthorizationId!=="string"||!idPattern.test(skillAuthorizationId))

@@ -37,7 +37,7 @@ function fixture(t){
 }
 test("historical SQLite Skill content stays readable, but import and delete APIs are gone",async t=>{
  const {db,dir,request}=fixture(t);
- assert.equal(SCHEMA_VERSION,19);
+ assert.ok(SCHEMA_VERSION>=20);
  const first=skill(),second=skill("Updated",true);
  const initial=registerSqliteSkill(db,first,listSkillRegistry(db).revision);
  assert.equal(initial.activeVersion,first.manifest.version);

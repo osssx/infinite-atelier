@@ -195,7 +195,7 @@ export function validateModelSnapshot(snapshot){
   if(task.stream!==undefined&&typeof task.stream!=="boolean")throw failure("model_task_invalid");
   if(task.skills){
    validateSkillRef(task.skills);
-   if(!task.messages||typeof task.stream!=="boolean"||task.images?.length)
+   if(!task.messages||typeof task.stream!=="boolean")
     throw failure("model_skill_task_invalid");
   }
   validateTextHistory(task);
@@ -253,8 +253,6 @@ export function createOpenAiModelAdapter({db,blobStore,vault,upstreamCall=fetch,
   const snapshot=job.snapshot??JSON.parse(job.snapshot_json);
   const task=validateModelSnapshot(snapshot);
   if(vault.get(snapshot.channelId).provider!==snapshot.provider)throw failure("model_provider_mismatch",409);
-  if(snapshot.provider==="openai_compatible"&&task.skills)
-   throw failure("model_compatible_skill_unsupported",422);
   vault.checkReference(snapshot.secretVersionRef,snapshot.channelId);
   return {snapshot,task};
  };
@@ -382,7 +380,7 @@ export function createOpenAiModelAdapter({db,blobStore,vault,upstreamCall=fetch,
     throw failure("model_image_input_integrity_failed",503);
    data.push(bytes);
   }
-  let body,headers={"content-type":"application/json"};
+  let body,messages,headers={"content-type":"application/json"};
   if(edit){
    const form=new FormData();
    form.set("model",task.model);form.set("prompt",task.prompt);form.set("n",String(task.count??1));
@@ -407,7 +405,7 @@ export function createOpenAiModelAdapter({db,blobStore,vault,upstreamCall=fetch,
     ...task.images.map((ref,i)=>({type:"image_url",image_url:{
      url:"data:"+ref.mimeType+";base64,"+data[i].toString("base64")}}))
    ]:task.prompt;
-   const messages=task.messages?chatHistory(task.messages):[{role:"user",content}];
+   messages=task.messages?chatHistory(task.messages):[{role:"user",content}];
    if(task.messages&&task.images?.length){
     messages[messages.length-1]={role:"user",content};
    }
@@ -419,8 +417,11 @@ export function createOpenAiModelAdapter({db,blobStore,vault,upstreamCall=fetch,
    bytes=>"Bearer "+bytes.toString("utf8"),{channelId:snapshot.channelId});
   if(task.skills){
    const skills=await loadFrozenSkillCatalog(blobStore,task.skills);
+   const compatible=snapshot.provider==="openai_compatible";
    const content=await runSqliteSkillAgent({task,jobId:job.id,db,skills,
-    authorization,upstreamCall,messages:chatHistory(task.messages)});
+    authorization,upstreamCall:compatible?compatibleUpstreamCall:upstreamCall,
+    endpointUrl:(compatible?snapshot.endpointBaseUrl:DEFAULT_OPENAI_ENDPOINT)+"/chat/completions",
+    messages,blobStore,signal});
    const blob=await blobStore.put([Buffer.from(content,"utf8")],{mime:"text/plain"});
    signal?.throwIfAborted();
    appendArtifact(db,{jobId:job.id,portId:"text",itemKey:"0",

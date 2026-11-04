@@ -4,7 +4,7 @@ import {DatabaseSync} from "node:sqlite";
 import {mkdtempSync,readFileSync,rmSync,existsSync} from "node:fs";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
-import {initializeSchema,INITIAL_SCHEMA_SQL} from "./schema.mjs";
+import {initializeSchema,INITIAL_SCHEMA_SQL,SCHEMA_VERSION} from "./schema.mjs";
 import {createWindowsDpapiProtector} from "./credential-protection.mjs";
 import {createCredentialVault} from "./credential-vault.mjs";
 import {createLocalBackend} from "./runtime.mjs";
@@ -20,7 +20,7 @@ test("v1 database migrates through credential schema v2 to coordinator schema v3
  db.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES(1,1)").run();
  db.prepare("INSERT INTO projects(id,document_json,revision) VALUES(?,?,?)").run("keep",'{"nodes":[],"connections":[]}',12);
  initializeSchema(db);initializeSchema(db);
- assert.equal(db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v,19);
+ assert.equal(db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v,SCHEMA_VERSION);
  assert.equal(db.prepare("SELECT revision FROM projects WHERE id='keep'").get().revision,12);
  assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE name='credential_versions'").get().name,"credential_versions");
  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM schema_migrations").get().n,2);

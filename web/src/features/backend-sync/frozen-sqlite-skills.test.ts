@@ -32,6 +32,18 @@ describe("P5.4k trusted backend Skill freeze and one-use authorization",()=>{
     skillIds:["camera-style"],versionPins:{"camera-style":hash.slice(0,12)}});
   expect(bridge.uploadFrozenBlob).not.toHaveBeenCalled();
  });
+ it("freezes every manually selected Skill at its pinned version when any selection has scripts",async()=>{
+  const pinned={"camera-style":"a".repeat(12),"moss-image-prompt-enhancer":"c".repeat(12)};
+  mocks.plan.mockResolvedValue({catalogMessage:"Manual selected Skills",snapshot:()=>({mode:"auto",
+   skillIds:Object.keys(pinned),versionPins:pinned,activatedSkillIds:[]})});
+  const result=await freezeSqliteSkillCatalog({mode:"manual",skillIds:Object.keys(pinned),versionPins:pinned},
+   "compile image prompt","project-1",bridge);
+  expect(result.catalogMessage).toBe("Manual selected Skills");
+  expect(mocks.plan).toHaveBeenCalledWith({mode:"manual",skillIds:Object.keys(pinned),versionPins:pinned},
+   undefined,"compile image prompt","project-1");
+  expect(mocks.freeze).toHaveBeenCalledWith("/api/v1/skills/freeze","POST",{
+   projectId:"project-1",expectedRevision:4,skillIds:Object.keys(pinned),versionPins:pinned});
+ });
  it("fails closed when another tab changes scope or disables a Skill",async()=>{
   const revoked=Object.assign(Error("skill_authorization_changed"),{code:"skill_authorization_changed"});
   mocks.freeze.mockRejectedValueOnce(revoked);

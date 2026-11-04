@@ -3,6 +3,7 @@ vi.mock("./sqlite-comfy-bridge",()=>({createSqliteComfyBridge:vi.fn()}));
 vi.mock("./frozen-model-images",()=>({freezeModelImages:vi.fn(async()=>[
  {blobId:"a".repeat(64),mimeType:"image/png"}])}));
 import {startSqliteModelGeneration,openAiImageSize} from "./sqlite-model-generation";
+import {freezeModelImages} from "./frozen-model-images";
 import type {CanvasConnection,CanvasNodeData} from "@/types/canvas";
 import type {BackendJobView} from "@/types/backend-contracts";
 import type {canvasApi} from "./canvas-api";
@@ -479,6 +480,83 @@ describe("P4.4 ordinary SQLite model submit",()=>{
    task:{kind:"text",model:"gpt-4o-mini",prompt:"Show camera moves",
     skills:{blobId:cas}},bridge:b,api:api as unknown as typeof canvasApi
   })).rejects.toThrow("skill_grant_required");
+ });
+ it("freezes Skill text questions and reference images together without changing transcript text",async()=>{
+  const cas="b".repeat(64),catalog="c".repeat(64),grant="11111111-1111-4111-a111-111111111111";
+  const reference={id:"frame-1",name:"layout reference",type:"image/png",storageKey:"cas:"+cas,
+   dataUrl:"data:image/png;base64,UNSAFE"};
+  const messages=[{role:"system" as const,content:"Use MOSS guidance"},
+   {role:"user" as const,content:"Create a prompt based on this reference image."}];
+  const b=bridge();
+  vi.mocked(freezeModelImages).mockClear();
+  const api=vi.fn(async(path:string,_method="GET",payload?:any)=>{
+   if(path==="/api/v1/execution/capabilities")return {autoDispatch:true,modelKinds:["text"]};
+   if(path==="/api/v1/channels/openai-channel")return {id:"openai-channel",provider:"openai",hasKey:true,keyVersion:"v1"};
+   if(path==="/api/v1/jobs"){
+    expect(payload.skillAuthorizationId).toBe(grant);
+    expect(payload.snapshot.task).toMatchObject({kind:"text",prompt:messages[1].content,
+     messages,skills:{blobId:catalog},images:[{blobId:"a".repeat(64),mimeType:"image/png"}]});
+    expect(payload.snapshot.task.operation).toBeUndefined();
+    expect(JSON.stringify(payload)).not.toContain("UNSAFE");
+    expect(JSON.stringify(payload)).not.toContain("data:image");
+    return fakeJob;
+   }
+   throw Error("unexpected "+path);
+  });
+  await expect(startSqliteModelGeneration({projectId:"p1",sourceNodeId:"text-1",nodes,connections,
+   channelId:"openai-channel",skillAuthorizationId:grant,referenceImages:[reference],
+   task:{kind:"text",model:"gpt-4o-mini",prompt:messages[1].content,messages,stream:true,
+    skills:{blobId:catalog}},bridge:b,api:api as unknown as typeof canvasApi})).resolves.toEqual(fakeJob);
+  expect(freezeModelImages).toHaveBeenCalledWith([reference],b);
+  expect(b.saveProjectNow).toHaveBeenCalledOnce();
+ });
+ it("accepts Skill text plus frozen images on an OpenAI-compatible provider and freezes its endpoint",async()=>{
+  const catalog="d".repeat(64),grant="22222222-2222-4222-a222-222222222222";
+  const endpoint="http://127.0.0.1:8188/v1";
+  const reference={id:"frame-2",name:"reference",type:"image/png",storageKey:"cas:"+"e".repeat(64),
+   dataUrl:"data:image/png;base64,DO_NOT_SERIALIZE"};
+  const messages=[{role:"system" as const,content:"Follow selected Skill instructions"},
+   {role:"user" as const,content:"Describe this reference and refine the prompt."}];
+  const api=vi.fn(async(path:string,_method="GET",payload?:any)=>{
+   if(path==="/api/v1/execution/capabilities")return {autoDispatch:true,modelKinds:["text"]};
+   if(path==="/api/v1/channels/proxy-1")return {id:"proxy-1",provider:"openai_compatible",hasKey:true,keyVersion:"proxy-key-v7"};
+   if(path==="/api/v1/jobs"){
+    expect(payload.skillAuthorizationId).toBe(grant);
+    expect(payload.snapshot).toMatchObject({provider:"openai_compatible",channelId:"proxy-1",
+     endpointBaseUrl:endpoint,secretVersionRef:"proxy-key-v7",task:{kind:"text",
+      prompt:messages[1].content,messages,skills:{blobId:catalog},
+      images:[{blobId:"a".repeat(64),mimeType:"image/png"}]}});
+    const digest=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(endpoint));
+    const expected="sha256:"+[...new Uint8Array(digest)].map(value=>value.toString(16).padStart(2,"0")).join("");
+    expect(payload.snapshot.endpointFingerprint).toBe(expected);
+    expect(JSON.stringify(payload.snapshot)).not.toContain(grant);
+    expect(JSON.stringify(payload)).not.toContain("DO_NOT_SERIALIZE");
+    expect(JSON.stringify(payload)).not.toContain("data:image");
+    return fakeJob;
+   }
+   throw Error("unexpected "+path);
+  });
+  const b=bridge();
+  await expect(startSqliteModelGeneration({projectId:"p1",sourceNodeId:"text-1",nodes,connections,
+   channelId:"proxy-1",channelBaseUrl:endpoint,provider:"openai_compatible",skillAuthorizationId:grant,
+   referenceImages:[reference],task:{kind:"text",model:"local-vision-model",prompt:messages[1].content,
+    messages,stream:true,skills:{blobId:catalog}},bridge:b,api:api as unknown as typeof canvasApi
+  })).resolves.toEqual(fakeJob);
+  expect(b.saveProjectNow).toHaveBeenCalledOnce();
+ });
+ it("reports unsupported Skill providers separately from malformed frozen catalogs",async()=>{
+  const api=vi.fn(async(path:string)=>path==="/api/v1/execution/capabilities"?
+   {autoDispatch:true,modelKinds:["text"]}:
+   {id:"gemini-channel",provider:"google_gemini",hasKey:true,keyVersion:"gemini-v1"});
+  const b=bridge();
+  await expect(startSqliteModelGeneration({projectId:"p1",sourceNodeId:"text-1",nodes,connections,
+   channelId:"gemini-channel",channelBaseUrl:"https://generativelanguage.googleapis.com",
+   provider:"google_gemini",referenceImages:[{id:"ref",name:"reference",type:"image/png",dataUrl:"data:image/png;base64,x"}],
+   task:{kind:"text",model:"gemini-2.5-flash",prompt:"Describe this image",messages:[{role:"user",content:"Describe this image"}],skills:{blobId:"f".repeat(64)}},
+   skillAuthorizationId:"33333333-3333-4333-a333-333333333333",bridge:b,api:api as unknown as typeof canvasApi
+  })).rejects.toThrow("model_skill_provider_unsupported");
+  expect(b.saveProjectNow).not.toHaveBeenCalled();
+  expect(api).not.toHaveBeenCalledWith("/api/v1/jobs",expect.anything(),expect.anything());
  });
  it("normalizes Canvas ratio shortcuts to supported OpenAI image size",()=>{
   expect(openAiImageSize("1:1")).toBe("1024x1024");

@@ -1,5 +1,5 @@
 import{JOB_STATUSES,EXECUTION_MODES,ARTIFACT_KINDS}from"./contracts.mjs";
-export const SCHEMA_VERSION=19;
+export const SCHEMA_VERSION=20;
 const quoted=x=>x.map(s=>"'"+s+"'").join(",");
 export const INITIAL_SCHEMA_SQL=`
 CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY,applied_at INTEGER NOT NULL);
@@ -35,6 +35,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_artifacts_no_port ON artifacts(job_id,item_
 CREATE TABLE IF NOT EXISTS materializations(id TEXT PRIMARY KEY,job_id TEXT NOT NULL REFERENCES jobs(id),artifact_id TEXT NOT NULL REFERENCES artifacts(id),project_id TEXT NOT NULL REFERENCES projects(id),status TEXT NOT NULL,node_id TEXT,reason TEXT,UNIQUE(project_id,artifact_id));
 CREATE TABLE IF NOT EXISTS job_events(seq INTEGER PRIMARY KEY AUTOINCREMENT,job_id TEXT NOT NULL REFERENCES jobs(id),kind TEXT NOT NULL,payload_json TEXT NOT NULL CHECK(json_valid(payload_json)),created_at INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS ix_job_events_job_seq ON job_events(job_id,seq);
+CREATE TABLE IF NOT EXISTS skill_script_runs(id TEXT PRIMARY KEY,project_id TEXT NOT NULL REFERENCES projects(id),skill_id TEXT NOT NULL,version TEXT NOT NULL,status TEXT NOT NULL,result_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(result_json)),blob_refs_json TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(blob_refs_json)),created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL);
 `;
 
 /** Schema v2: versioned encrypted credentials. Cipher bytes are never in
@@ -211,6 +212,12 @@ CREATE TRIGGER IF NOT EXISTS blob_ref_dirty_job_events_insert AFTER INSERT ON jo
 CREATE TRIGGER IF NOT EXISTS blob_ref_dirty_job_events_update AFTER UPDATE ON job_events
  BEGIN UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1; END;
 CREATE TRIGGER IF NOT EXISTS blob_ref_dirty_job_events_delete AFTER DELETE ON job_events
+ BEGIN UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1; END;
+CREATE TRIGGER IF NOT EXISTS blob_ref_dirty_skill_script_runs_insert AFTER INSERT ON skill_script_runs
+ BEGIN UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1; END;
+CREATE TRIGGER IF NOT EXISTS blob_ref_dirty_skill_script_runs_update AFTER UPDATE ON skill_script_runs
+ BEGIN UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1; END;
+CREATE TRIGGER IF NOT EXISTS blob_ref_dirty_skill_script_runs_delete AFTER DELETE ON skill_script_runs
  BEGIN UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1; END;
 CREATE TRIGGER IF NOT EXISTS blob_ref_dirty_comfy_template_versions_insert AFTER INSERT ON comfy_template_versions
  BEGIN UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1; END;
@@ -421,7 +428,19 @@ export function initializeSchema(db){
   if(version<17)db.exec(SCRIPT_ASSET_SCHEMA_SQL);
   if(version<18)db.exec(SCRIPT_FINALIZE_SCHEMA_SQL);
   if(version<19)db.exec(SCRIPT_CHUNK_SCHEMA_SQL);
+  if(version<20)db.exec(SKILL_SCRIPT_RUNS_SCHEMA_SQL);
   if(version<SCHEMA_VERSION)db.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)").run(SCHEMA_VERSION,Date.now());
   db.exec("COMMIT");
  }catch(e){db.exec("ROLLBACK");throw e}
 }
+
+export const SKILL_SCRIPT_RUNS_SCHEMA_SQL=`
+CREATE TABLE IF NOT EXISTS skill_script_runs(id TEXT PRIMARY KEY,project_id TEXT NOT NULL REFERENCES projects(id),skill_id TEXT NOT NULL,version TEXT NOT NULL,status TEXT NOT NULL,result_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(result_json)),blob_refs_json TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(blob_refs_json)),created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS ix_skill_script_runs_project_created ON skill_script_runs(project_id,created_at DESC);
+CREATE TRIGGER IF NOT EXISTS blob_ref_dirty_skill_script_runs_insert AFTER INSERT ON skill_script_runs
+ BEGIN UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1; END;
+CREATE TRIGGER IF NOT EXISTS blob_ref_dirty_skill_script_runs_update AFTER UPDATE ON skill_script_runs
+ BEGIN UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1; END;
+CREATE TRIGGER IF NOT EXISTS blob_ref_dirty_skill_script_runs_delete AFTER DELETE ON skill_script_runs
+ BEGIN UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1; END;
+`;

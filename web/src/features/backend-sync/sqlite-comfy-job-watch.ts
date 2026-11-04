@@ -125,7 +125,7 @@ export async function watchSqliteComfyJob({
  notifyOnMaterialization?:boolean;
  onTextDelta?:(delta:string)=>void;
  onSkillText?:(delta:string,round:number)=>void;
- onSkillTool?:(event:{name:string;status:"started"|"completed"})=>void;
+ onSkillTool?:(event:{name:string;status:"started"|"completed"|"failed";result?:{status?:string;exit_code?:number|null;stderr?:string;stdout?:string}})=>void;
  api?:typeof canvasApi;pollMs?:number;
 }):Promise<void>{
  const root="/api/v1/jobs/"+encodeURIComponent(jobId);
@@ -152,10 +152,13 @@ export async function watchSqliteComfyJob({
   if(event.kind==="skill_tool"&&onSkillTool&&event.payload&&
     typeof event.payload==="object"&&
     "name" in event.payload&&typeof event.payload.name==="string"&&
-    ["search_skills","activate_skill","read_skill_resource"].includes(event.payload.name)&&
+    ["search_skills","activate_skill","read_skill_resource","run_skill_script"].includes(event.payload.name)&&
     "status" in event.payload&&
-    (event.payload.status==="started"||event.payload.status==="completed"))
-   onSkillTool({name:event.payload.name,status:event.payload.status});
+    (event.payload.status==="started"||event.payload.status==="completed"||event.payload.status==="failed")) {
+   const result="result" in event.payload&&event.payload.result&&typeof event.payload.result==="object"?
+    event.payload.result as {status?:string;exit_code?:number|null;stderr?:string;stdout?:string}:undefined;
+   onSkillTool({name:event.payload.name,status:event.payload.status,...(result?{result}:{})});
+  }
   eventRevision++;
   wake?.();
  });

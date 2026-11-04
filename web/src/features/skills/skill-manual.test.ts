@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AiTextMessage } from "@/services/api/image";
 import { getSkillPackage, listSkills } from "./skill-registry";
 import { MissingSkillVersionError, resolveManualSkillContext, withManualSkillMessages } from "./skill-manual";
+import { zipSync } from "fflate";
 import type { SkillBinding, SkillCatalogEntry, SkillPackage } from "./types";
 
 vi.mock("./skill-registry", () => ({
@@ -68,6 +69,20 @@ describe("P2 manual Skill binding and pinned generation", () => {
         expect(messages).toHaveLength(1);
         expect(messages[0].content).toBe("Make a storyboard");
         expect(getSkillPackage).toHaveBeenCalledTimes(2);
+    });
+    it("pins every manually selected Skill and enables the tool path only for selections with bundled scripts", async () => {
+        const zip = zipSync({ "scripts/compile.py": new TextEncoder().encode("print('ok')") });
+        vi.mocked(getSkillPackage).mockImplementation(async (id, version) => {
+            const value = id === "storyboard" ? pack(id, version || firstVersion) : pack(id, version || referenceVersion);
+            return id === "storyboard" ? { ...value, sourceArchive: new Blob([zip as BlobPart]) } : value;
+        });
+        const binding: SkillBinding = { mode: "manual", skillIds: ["storyboard", "lighting"], versionPins: { storyboard: nextVersion, lighting: referenceVersion } };
+        const context = await resolveManualSkillContext(binding, undefined, "project-a");
+        expect(context?.snapshot).toEqual({ mode: "manual", skillIds: ["storyboard", "lighting"], versionPins: { storyboard: nextVersion, lighting: referenceVersion } });
+        expect(context?.scriptSkillIds).toEqual(["storyboard"]);
+        expect(context?.instruction).toContain("run_skill_script");
+        expect(getSkillPackage).toHaveBeenCalledWith("storyboard", nextVersion);
+        expect(getSkillPackage).toHaveBeenCalledWith("lighting", referenceVersion);
     });
     it("preserves multimodal user attachments and keeps a single Gemini-compatible user turn", async () => {
         const selected = await resolveManualSkillContext(manual(["storyboard"]));

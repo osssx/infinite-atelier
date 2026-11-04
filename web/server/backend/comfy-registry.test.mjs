@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {DatabaseSync} from "node:sqlite";
 import {createHash} from "node:crypto";
-import {initializeSchema} from "./schema.mjs";
+import {initializeSchema,SCHEMA_VERSION} from "./schema.mjs";
 import {buildApp} from "./app.mjs";
 import {createProject} from "./projects.mjs";
 const sort=v=>Array.isArray(v)?v.map(sort):v&&typeof v==="object"?
@@ -75,9 +75,10 @@ test("P4.5 template batch install atomic rollback, schema v8 migration",async t=
  const older=new DatabaseSync(":memory:");
  t.after(()=>older.close());
  initializeSchema(older);
- older.prepare("UPDATE schema_migrations SET version=8 WHERE version=19").run();
+ older.prepare("DELETE FROM schema_migrations WHERE version>8").run();
+ older.prepare("INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(8,1)").run();
  older.exec("DROP TABLE comfy_presets;DROP TABLE comfy_template_versions");
  initializeSchema(older);
- assert.equal(older.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v,19);
+ assert.equal(older.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v,SCHEMA_VERSION);
  assert.ok(older.prepare("SELECT name FROM sqlite_master WHERE name='comfy_presets'").get());
 });

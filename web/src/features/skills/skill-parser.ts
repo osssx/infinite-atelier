@@ -73,7 +73,7 @@ export function parseSkillMd(md: string): { name: string; description: string } 
 export function buildSkillManifest(md: string, hash: string, paths: string[]): SkillManifest {
     const metadata = parseSkillMd(md);
     const resources = paths.filter((path) => /^references\/.+\.(?:md|txt|markdown)$/i.test(path)).sort();
-    const warnings = paths.some((path) => path.startsWith("scripts/")) ? ["Script files are inert and cannot be executed in V1"] : [];
-    if (paths.some((path) => path.startsWith("assets/"))) warnings.push("Asset files are retained for export, but are not executable or model-readable in V1");
+    const warnings: string[] = [];
+    if (paths.some((path) => path.startsWith("assets/"))) warnings.push("Asset files are retained for export and are not model-readable");
     return { id: metadata.name, ...metadata, hash, version: hash.slice(0, 12), resources, warnings };
 }

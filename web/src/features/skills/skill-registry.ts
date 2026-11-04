@@ -1,4 +1,5 @@
 import {createZip} from "@/lib/zip";
+import {unzipSync} from "fflate";
 import {canvasApi} from "@/features/backend-sync/canvas-api";
 import {validateSkillPath} from "./skill-parser";
 import type {SkillCatalogEntry,SkillPackage,SkillScope} from "./types";
@@ -74,12 +75,17 @@ export async function getSkillPackage(id:string,version?:string):Promise<SkillPa
 }
 export async function readSkillResource(id:string,path:string,version?:string):Promise<string>{
  validateSkillPath(path);
- if(!/^references\/.+\.(?:md|txt|markdown)$/i.test(path))
-  throw Error("Skill resource is not model-readable");
  const pkg=await getSkillPackage(id,version);
  if(!pkg)throw Error("Unknown Skill");
- if(!Object.hasOwn(pkg.resources,path))throw Error("Unknown Skill reference");
- return pkg.resources[path];
+ if(Object.hasOwn(pkg.resources,path))return pkg.resources[path];
+ if(!/\.(?:md|txt|markdown|json|ya?ml|py|js|mjs|cjs|ts|tsx|jsx|sh|bat|ps1|html|css|xml|csv)$/i.test(path)||path.startsWith("assets/"))
+  throw Error("Skill resource is not model-readable");
+ if(!pkg.sourceArchive)throw Error("Unknown Skill resource");
+ const archive=unzipSync(new Uint8Array(await pkg.sourceArchive.arrayBuffer()));
+ const bytes=archive[path];
+ if(!bytes)throw Error("Unknown Skill resource");
+ try{return new TextDecoder("utf-8",{fatal:true}).decode(bytes)}
+ catch{throw Error("Skill resource is not valid UTF-8 text")}
 }
 export async function exportSkill(id:string,version?:string):Promise<Blob>{
  const pkg=await getSkillPackage(id,version);

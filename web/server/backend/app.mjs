@@ -1,5 +1,6 @@
 import Fastify from "fastify";
 import {randomUUID} from "node:crypto";
+import {unzipSync} from "fflate";
 import {createProject,getProject,saveSingleUserCanvas,deleteProject,listProjectSummaries,projectEventCursor} from "./projects.mjs";
 import {getCanvasViewport,putCanvasViewport,getCanvasChats,putCanvasChats} from "./canvas-state.mjs";
 import {submitJob,readJobsSnapshot,readEventsAfter} from "./repository.mjs";
@@ -8,6 +9,7 @@ import {CANVAS_NODE_ID_PATTERN} from "../canvas-node-id.mjs";
 import {ARCHIVE_MAX_BYTES} from "./project-archive.mjs";
 import {createComfyRegistry} from "./comfy-registry.mjs";
 import {freezeAuthorizedSkillGrant} from "./skill-job-grants.mjs";
+import {runSkillScript} from "./skill-script-runner.mjs";
 import {getProjectSkillAudit,replayProjectSkillJob,lookupProjectSkillReplay} from "./skill-job-audit.mjs";
 import {listProjectJobs,hideProjectJobHistory,closeUnverifiedModelJob} from "./project-job-history.mjs";
 import {getAssetCatalog,putAssetCatalog} from "./asset-catalog.mjs";
@@ -373,6 +375,61 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
    properties:{id:skillId,version:skillVersion},additionalProperties:false}}
  },(req,reply)=>{
   reply.header("Cache-Control","no-store");return skillRegistry?skillRegistry.get(req.params.id,req.params.version):getSkillRegistryPackage(db,req.params.id,req.params.version);
+ });
+ app.post("/api/v1/skills/execute",{bodyLimit:1024*1024,schema:{body:{type:"object",required:["skill_id","version","project_id"],properties:{
+  skill_id:skillId,version:skillVersion,project_id:idSchema,script_path:{type:"string",maxLength:240},entry_id:{type:"string",maxLength:64},
+  runtime:{type:"string",maxLength:260},args:{type:"array",maxItems:64,items:{type:"string",maxLength:8192}},
+  input_files:{type:"object",maxProperties:32,additionalProperties:{type:"string",maxLength:262144}},
+  output_files:{type:"array",maxItems:32,items:{type:"string",maxLength:240}}
+ },additionalProperties:false}}},async(req,reply)=>{
+  reply.header("Cache-Control","no-store");
+  const {skill_id,version,project_id,script_path,entry_id}=req.body;
+  if(Boolean(script_path)===Boolean(entry_id))throw Object.assign(Error("skill_script_arguments_invalid"),{code:"skill_script_arguments_invalid",statusCode:400});
+  const project=db.prepare("SELECT deleted_at FROM projects WHERE id=?").get(project_id);
+  if(!project||project.deleted_at!==null)throw Object.assign(Error("skill_project_not_found"),{code:"skill_project_not_found",statusCode:404});
+  const catalog=skillRegistry?skillRegistry.list():listSkillRegistry(db),selected=catalog.skills.find(item=>item.id===skill_id);
+  if(!selected||!selected.enabled||!selected.versions.includes(version)||
+    selected.scope?.type==="project"&&selected.scope.projectId!==project_id)
+   throw Object.assign(Error("skill_authorization_changed"),{code:"skill_authorization_changed",statusCode:409});
+  const loaded=skillRegistry?skillRegistry.get(skill_id,version):getSkillRegistryPackage(db,skill_id,version);
+  const pkg=loaded.package;if(pkg.manifest.hash.slice(0,12)!==version||!pkg.sourceArchiveBase64)
+   throw Object.assign(Error("skill_package_integrity_failed"),{code:"skill_package_integrity_failed",statusCode:422});
+  let packed;try{packed=unzipSync(Buffer.from(pkg.sourceArchiveBase64,"base64"))}catch{throw Object.assign(Error("skill_package_integrity_failed"),{code:"skill_package_integrity_failed",statusCode:422})}
+  const packageFiles={},scripts={};
+  for(const [path,bytes] of Object.entries(packed)){
+   packageFiles[path]=Buffer.from(bytes).toString("base64");
+   if(path.startsWith("scripts/"))try{scripts[path]=new TextDecoder("utf-8",{fatal:true}).decode(bytes)}catch{/* Non-text package data is never executable. */}
+  }
+  let selectedPath=script_path;
+  if(entry_id){
+   let entry={};if(packageFiles["execution.json"]){try{entry=JSON.parse(Buffer.from(packageFiles["execution.json"],"base64").toString("utf8")).entries??{}}catch{throw Object.assign(Error("model_skill_execution_manifest_invalid"),{code:"model_skill_execution_manifest_invalid",statusCode:422})}}
+   selectedPath=entry[entry_id];
+  }
+  if(typeof selectedPath!=="string"||!Object.hasOwn(scripts,selectedPath))
+   throw Object.assign(Error("skill_script_not_authorized"),{code:"skill_script_not_authorized",statusCode:403});
+  const runId=randomUUID(),now=Date.now();
+  db.prepare("INSERT INTO skill_script_runs(id,project_id,skill_id,version,status,result_json,blob_refs_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)")
+   .run(runId,project_id,skill_id,version,"started","{}","[]",now,now);
+  const controller=new AbortController(),onAbort=()=>controller.abort(),onClose=()=>{if(!reply.raw.writableEnded)controller.abort()};
+  req.raw.once("aborted",onAbort);reply.raw.once("close",onClose);
+  try{
+   const result=await runSkillScript({skillId:skill_id,version,scriptPath:selectedPath,source:scripts[selectedPath],packageFiles,
+    args:req.body.args??[],inputFiles:req.body.input_files??{},outputFiles:req.body.output_files??[],runtime:req.body.runtime,blobStore,signal:controller.signal});
+   const refs=[...Object.values(result.log_blobs??{}),...(result.artifacts??[]).map(item=>item.blob_id)];
+   db.prepare("UPDATE skill_script_runs SET status=?,result_json=?,blob_refs_json=?,updated_at=? WHERE id=?")
+    .run(result.status,JSON.stringify({...result,run_id:runId}),JSON.stringify(refs),Date.now(),runId);
+   return {...result,run_id:runId};
+  }catch(error){
+   db.prepare("UPDATE skill_script_runs SET status=?,result_json=?,updated_at=? WHERE id=?")
+    .run(error.code??"failed",JSON.stringify({error:error.code??"skill_script_failed",message:error.message,run_id:runId}),Date.now(),runId);
+   throw error;
+  }
+  finally{req.raw.removeListener("aborted",onAbort);reply.raw.removeListener("close",onClose);}
+ });
+ app.get("/api/v1/skills/runs/:id",{schema:{params:{type:"object",required:["id"],properties:{id:{type:"string",format:"uuid"}},additionalProperties:false}}},(req,reply)=>{
+  const run=db.prepare("SELECT id,project_id,skill_id,version,status,result_json,created_at,updated_at FROM skill_script_runs WHERE id=?").get(req.params.id);
+  if(!run)throw Object.assign(Error("skill_script_run_not_found"),{code:"skill_script_run_not_found",statusCode:404});
+  reply.header("Cache-Control","no-store");return {...run,result:JSON.parse(run.result_json)};
  });
  app.post("/api/v1/skills/authorized-catalog",{bodyLimit:32*1024,
   schema:{body:{type:"object",required:["projectId","expectedRevision","skillIds","versionPins"],

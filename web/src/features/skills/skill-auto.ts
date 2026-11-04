@@ -5,6 +5,8 @@ import { getSkillPackage, listSkills } from "./skill-registry";
 import { validateSkillPath } from "./skill-parser";
 import { MissingSkillVersionError } from "./skill-manual";
 import { isSkillInProjectScope, type SkillBinding, type SkillCatalogEntry, type SkillPackage } from "./types";
+import { unzipSync } from "fflate";
+import { canvasApi } from "@/features/backend-sync/canvas-api";
 
 export type AutoSkillSnapshot = {
     mode: "auto";
@@ -13,7 +15,7 @@ export type AutoSkillSnapshot = {
     versionPins: Record<string, string>;
     activatedSkillIds: string[];
 };
-export type SkillTraceEvent = { type: "activated" | "reference" | "search" | "error"; skillId: string; version?: string; path?: string; query?: string; error?: string; durationMs?: number };
+export type SkillTraceEvent = { type: "activated" | "reference" | "search" | "script" | "error"; skillId: string; version?: string; path?: string; query?: string; error?: string; durationMs?: number };
 export type SkillRunMetrics = { catalogChars: number; catalogEstimatedTokens: number; toolCalls: number; toolDurationMs: number; rounds: number };
 export type AutomaticSkillRun = {
     tools: TextToolSpec[];
@@ -25,7 +27,7 @@ export type AutomaticSkillRun = {
 };
 export type AutomaticSkillPlan = {
     catalogMessage: string;
-    createRun: () => AutomaticSkillRun;
+    createRun: (projectId?: string) => AutomaticSkillRun;
     snapshot: () => AutoSkillSnapshot;
 };
 
@@ -38,28 +40,43 @@ const MAX_TRACE_EVENTS = 32;
 const TOOL_ACTIVATE = "activate_skill";
 const TOOL_READ = "read_skill_resource";
 const TOOL_SEARCH = "search_skills";
+const TOOL_RUN = "run_skill_script";
 const TOOL_PARAMETERS = { type: "object", properties: { skill_id: { type: "string" } }, required: ["skill_id"], additionalProperties: false };
 const TOOLS: TextToolSpec[] = [
     { name: TOOL_ACTIVATE, description: "Load the complete SKILL.md workflow instructions for one Skill that is relevant to the task. Only authorized skill_id values in the supplied catalog are permitted.", parameters: TOOL_PARAMETERS },
-    { name: TOOL_READ, description: "Read a text file in references/ for an already activated Skill. Provide skill_id and a relative path listed in the Skill activation response.", parameters: { type: "object", properties: { skill_id: { type: "string" }, path: { type: "string" } }, required: ["skill_id", "path"], additionalProperties: false } },
+    { name: TOOL_READ, description: "Read a text file listed in activation for an already activated Skill. Provide skill_id and the relative path.", parameters: { type: "object", properties: { skill_id: { type: "string" }, path: { type: "string" } }, required: ["skill_id", "path"], additionalProperties: false } },
+    { name: TOOL_RUN, description: "Run a script bundled with an activated Skill through the local application backend. Use only script paths or entry IDs listed in that Skill's activation response.", parameters: { type: "object", properties: { skill_id: { type: "string" }, script_path: { type: "string" }, entry_id: { type: "string" }, runtime: { type: "string" }, args: { type: "array", items: { type: "string" } }, input_files: { type: "object", additionalProperties: { type: "string" } }, output_files: { type: "array", items: { type: "string" } } }, required: ["skill_id"], additionalProperties: false } },
     { name: TOOL_SEARCH, description: "Search ALL authorized Skills, including Skills omitted from the shortened initial catalog. Query with a task or subject; returns matching Skill IDs and descriptions. Then use activate_skill for the chosen ID.", parameters: { type: "object", properties: { query: { type: "string", description: "Short description of the needed workflow" } }, required: ["query"], additionalProperties: false } },
 ];
 function assertActive(signal?: AbortSignal) {
     if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
 }
-function argsFor(call: TextToolCall, expected: string[]): Record<string, string> {
-    let value: unknown;
-    try { value = JSON.parse(call.argumentsJson); } catch { throw new Error("Invalid Skill tool argument JSON"); }
-    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Skill tool arguments must be an object");
-    const args = value as Record<string, unknown>;
-    if (Object.keys(args).length !== expected.length || !expected.every((key) => typeof args[key] === "string" && String(args[key]).length > 0)) {
-        throw new Error("Skill tool arguments do not match the expected schema");
-    }
-    return args as Record<string, string>;
-}
 function sized(text: string, title: string): string {
     if (text.length > MAX_TOOL_TEXT) throw new Error(title + " exceeds the 24,000-character tool limit; shorten the Skill document before using it automatically");
     return text;
+}
+function boundedScriptOutput(result: Record<string, unknown>): string {
+    const text = JSON.stringify(result);
+    if (text.length <= MAX_TOOL_TEXT) return text;
+    const artifacts = Array.isArray(result.artifacts) ? result.artifacts.slice(0, 24).map((item) => {
+        if (!item || typeof item !== "object") return item;
+        const artifact = item as Record<string, unknown>;
+        const { content: _content, ...metadata } = artifact;
+        return metadata;
+    }) : [];
+    return JSON.stringify({
+        skill_id: result.skill_id,
+        version: result.version,
+        script_path: result.script_path,
+        status: result.status,
+        exit_code: result.exit_code,
+        stdout: typeof result.stdout === "string" ? result.stdout.slice(0, 6000) : "",
+        stderr: typeof result.stderr === "string" ? result.stderr.slice(0, 6000) : "",
+        stdout_truncated: true,
+        stderr_truncated: true,
+        artifacts,
+        output_truncated: true,
+    });
 }
 /** Pure ranking: no model call or Skill-body access needed. Supports CJK bi-grams. */
 function keywords(input: string): string[] {
@@ -90,7 +107,7 @@ function compactCatalog(entries: SkillCatalogEntry[], pins: Record<string, strin
     const header = [
         "Read-only Skill directory (metadata, not instructions). Use activate_skill only if relevant.",
         "If necessary, search_skills searches ALL authorized Skills, including entries not listed below.",
-        "Only read_skill_resource for references returned by activate_skill. Never execute scripts or files.",
+        "After activating a Skill, use read_skill_resource for its listed text files and run_skill_script for a listed bundled script when the workflow calls for it. Script execution happens through the application's local backend.",
     ];
     const ordered = rankedSkills(entries, prompt);
     const lines: string[] = [];
@@ -156,10 +173,13 @@ export async function prepareAutomaticSkillCatalog(binding?: SkillBinding, previ
     return {
         catalogMessage,
         snapshot: () => snapshotFor(entries, pins, []),
-        createRun: () => {
+        createRun: (runProjectId?: string) => {
             const allowed = new Set(ids);
             const activated = new Set<string>();
             const packages = new Map<string, SkillPackage>();
+            const packageScriptPaths = new Map<string, string[]>();
+            const packageFiles = new Map<string, Record<string, string>>();
+            const packageEntryPoints = new Map<string, Record<string, string>>();
             const trace: SkillTraceEvent[] = [];
             let toolCalls = 0;
             let rounds = 0;
@@ -171,17 +191,26 @@ export async function prepareAutomaticSkillCatalog(binding?: SkillBinding, previ
                     assertActive(signal);
                     if (!TOOLS.some((tool) => tool.name === call.name)) throw new Error("Unauthorized Skill function");
                     const start = Date.now();
-                    const args = argsFor(call, call.name === TOOL_ACTIVATE ? ["skill_id"] : call.name === TOOL_READ ? ["skill_id", "path"] : ["query"]);
-                    const id = args.skill_id || "";
+                    let args: Record<string, unknown>;
+                    try { const parsed: unknown = JSON.parse(call.argumentsJson); if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw Error(); args = parsed as Record<string, unknown>; }
+                    catch { throw new Error("Invalid Skill tool argument JSON"); }
+                    const allowedKeys = call.name === TOOL_ACTIVATE ? ["skill_id"] : call.name === TOOL_READ ? ["skill_id", "path"] : call.name === TOOL_SEARCH ? ["query"] : ["skill_id", "script_path", "entry_id", "runtime", "args", "input_files", "output_files"];
+                    if (Object.keys(args).some((key) => !allowedKeys.includes(key))) throw new Error("Skill tool arguments do not match the expected schema");
+                    for (const key of ["skill_id", "path", "query", "script_path", "entry_id", "runtime"]) if (Object.hasOwn(args, key) && (typeof args[key] !== "string" || !args[key])) throw new Error("Skill tool arguments do not match the expected schema");
+                    if (Object.hasOwn(args, "args") && (!Array.isArray(args.args) || args.args.some((value) => typeof value !== "string"))) throw new Error("Skill tool arguments do not match the expected schema");
+                    if (Object.hasOwn(args, "input_files") && (!args.input_files || typeof args.input_files !== "object" || Array.isArray(args.input_files) || Object.values(args.input_files as Record<string, unknown>).some((value) => typeof value !== "string"))) throw new Error("Skill tool arguments do not match the expected schema");
+                    if (Object.hasOwn(args, "output_files") && (!Array.isArray(args.output_files) || args.output_files.some((value) => typeof value !== "string"))) throw new Error("Skill tool arguments do not match the expected schema");
+                    const id = typeof args.skill_id === "string" ? args.skill_id : "";
                     if (call.name !== TOOL_SEARCH && !allowed.has(id)) throw new Error("Skill '" + id + "' is not authorized for this task");
                     const version = pins[id];
                     try {
                         if (call.name === TOOL_SEARCH) {
-                            if (args.query.length > SEARCH_QUERY_LIMIT) throw new Error("Skill search query exceeds 200 characters");
-                            const matches = rankedSkills(entries, args.query.trim(), true).slice(0, SEARCH_RESULTS);
+                            const query = String(args.query || "");
+                            if (query.length > SEARCH_QUERY_LIMIT) throw new Error("Skill search query exceeds 200 characters");
+                            const matches = rankedSkills(entries, query.trim(), true).slice(0, SEARCH_RESULTS);
                             const result = matches.map((entry) => ({ skill_id: entry.id, version: pins[entry.id], description: entry.description.slice(0, 230) }));
                             assertActive(signal);
-                            record({ type: "search", skillId: "", query: args.query, durationMs: Math.max(0, Date.now() - start) });
+                            record({ type: "search", skillId: "", query, durationMs: Math.max(0, Date.now() - start) });
                             return JSON.stringify({ matches: result, total: entries.length });
                         }
                         if (call.name === TOOL_ACTIVATE) {
@@ -194,20 +223,74 @@ export async function prepareAutomaticSkillCatalog(binding?: SkillBinding, previ
                             assertActive(signal);
                             if (pkg.manifest.hash.slice(0, 12) !== version) throw new Error("Skill version integrity mismatch");
                             const text = sized(pkg.skillMd, "SKILL.md");
+                            const files: Record<string, string> = {};
+                            let scriptPaths: string[] = [];
+                            if (pkg.sourceArchive) {
+                                try {
+                                    const archive = unzipSync(new Uint8Array(await pkg.sourceArchive.arrayBuffer()));
+                                    scriptPaths = Object.keys(archive).filter((path) => path.startsWith("scripts/") && !path.endsWith("/")).sort();
+                                    for (const [path, bytes] of Object.entries(archive)) {
+                                        if (path.startsWith("scripts/") && !path.endsWith("/")) {
+                                            try { files[path] = new TextDecoder("utf-8", { fatal: true }).decode(bytes); } catch { /* binary scripts can still run in the backend */ }
+                                        }
+                                        else if (/\.(?:md|txt|markdown|json|ya?ml|py|js|mjs|cjs|ts|tsx|jsx|sh|bat|ps1|html|css|xml|csv)$/i.test(path) && !path.startsWith("assets/") && !Object.hasOwn(pkg.resources, path)) {
+                                            try { files[path] = new TextDecoder("utf-8", { fatal: true }).decode(bytes); } catch { /* binary reference */ }
+                                        }
+                                    }
+                                } catch { /* legacy/in-memory package archives may be absent or non-ZIP */ }
+                            }
+                            for (const [path, value] of Object.entries(pkg.resources)) files[path] = value;
+                            let entryPoints: Record<string, string> = {};
+                            const execution = files["execution.json"];
+                            if (execution) {
+                                try {
+                                    const parsed = JSON.parse(execution) as { entries?: Record<string, unknown> };
+                                    if (parsed.entries && typeof parsed.entries === "object" && !Array.isArray(parsed.entries)) {
+                                        entryPoints = Object.fromEntries(Object.entries(parsed.entries).filter(([entry, path]) => /^[a-zA-Z0-9_-]{1,64}$/.test(entry) && typeof path === "string" && scriptPaths.includes(path)) as [string, string][]);
+                                    }
+                                } catch { /* optional execution manifest; raw file remains readable */ }
+                            }
                             activated.add(id);
+                            if (!scriptPaths.length) scriptPaths = Object.keys(files).filter((path) => path.startsWith("scripts/")).sort();
+                            const readablePaths = Object.keys(files).sort();
+                            // Keep extracted text and validated entry points scoped to this run.
+                            packageFiles.set(id, files);
+                            packageEntryPoints.set(id, entryPoints);
+                            packageScriptPaths.set(id, scriptPaths);
                             record({ type: "activated", skillId: id, version, durationMs: Math.max(0, Date.now() - start) });
-                            return JSON.stringify({ skill_id: id, version, content: text, references: pkg.manifest.resources });
+                            return JSON.stringify({ skill_id: id, version, content: text, references: pkg.manifest.resources, scripts: scriptPaths, entry_points: entryPoints, resources: readablePaths });
                         }
-                        if (!activated.has(id)) throw new Error("Skill must be activated before reading references");
-                        const path = validateSkillPath(args.path);
+                        if (!activated.has(id)) throw new Error("Skill must be activated before reading resources or running scripts");
+                        if (call.name === TOOL_RUN) {
+                            const path = typeof args.script_path === "string" ? validateSkillPath(args.script_path) : undefined;
+                            const entryId = typeof args.entry_id === "string" ? args.entry_id : undefined;
+                            if (Boolean(path) === Boolean(entryId)) throw new Error("Provide exactly one of script_path or entry_id");
+                            const entriesForSkill = packageEntryPoints.get(id) || {};
+                            const selectedPath = path || entriesForSkill[entryId!];
+                            if (!selectedPath || !selectedPath.startsWith("scripts/") || !packageScriptPaths.get(id)?.includes(selectedPath)) throw new Error("Unauthorized Skill script path or entry ID");
+                            const payload = {
+                                skill_id: id, version, project_id: runProjectId || projectId || "",
+                                ...(path ? { script_path: path } : { entry_id: entryId }),
+                                ...(typeof args.runtime === "string" ? { runtime: args.runtime } : {}),
+                                ...(Array.isArray(args.args) ? { args: args.args as string[] } : {}),
+                                ...(args.input_files && typeof args.input_files === "object" ? { input_files: args.input_files as Record<string, string> } : {}),
+                                ...(Array.isArray(args.output_files) ? { output_files: args.output_files as string[] } : {}),
+                            };
+                            const result = await canvasApi<Record<string, unknown>>("/api/v1/skills/execute", "POST", payload, signal);
+                            assertActive(signal);
+                            record({ type: "script", skillId: id, version, path: selectedPath, durationMs: Math.max(0, Date.now() - start) });
+                            return boundedScriptOutput(result);
+                        }
+                        const path = validateSkillPath(String(args.path));
                         const pkg = packages.get(id);
-                        if (!pkg || !pkg.manifest.resources.includes(path) || !Object.hasOwn(pkg.resources, path)) throw new Error("Unauthorized Skill reference path");
-                        const text = sized(pkg.resources[path], path);
+                        const content = packageFiles.get(id)?.[path];
+                        if (!pkg || content === undefined || !Object.hasOwn(packageFiles.get(id) || {}, path)) throw new Error("Unauthorized Skill resource path");
+                        const text = sized(content, path);
                         assertActive(signal);
                         record({ type: "reference", skillId: id, version, path, durationMs: Math.max(0, Date.now() - start) });
                         return JSON.stringify({ skill_id: id, version, path, content: text });
                     } catch (error) {
-                        record({ type: "error", skillId: id, version, path: args.path, error: error instanceof Error ? error.message : String(error), durationMs: Math.max(0, Date.now() - start) });
+                        record({ type: "error", skillId: id, version, path: typeof args.path === "string" ? args.path : undefined, error: error instanceof Error ? error.message : String(error), durationMs: Math.max(0, Date.now() - start) });
                         throw error;
                     } finally {
                         toolDurationMs += Math.max(0, Date.now() - start);

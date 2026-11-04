@@ -69,8 +69,16 @@ function isSafeModelImageWriteback(local:CanvasNodeData,remote:CanvasNodeData):b
    !remote.metadata.storageKey.startsWith("cas:")||
    typeof remote.metadata.mimeType!=="string"||
    !remote.metadata.mimeType.startsWith("image/"))return false;
+ const images=remote.metadata.images;
+ if(images!==undefined&&(!Array.isArray(images)||images.length<2||
+   remote.metadata.count!==images.length||
+   !images.every(image=>image.status==="success"&&image.modelArtifact?.kind==="image"&&
+    image.modelArtifact.sourceNodeId===local.id&&image.modelArtifact.jobId===model.jobId&&
+    typeof image.modelArtifact.artifactId==="string")||
+   !images.some(image=>image.id===remote.metadata?.primaryImageId)||
+   images[0]?.modelArtifact?.artifactId!==model.artifactId))return false;
  const generatedKeys=["content","storageKey","mimeType","status","modelArtifact",
-  "bytes","naturalWidth","naturalHeight"] as const;
+  "bytes","naturalWidth","naturalHeight","images","primaryImageId","count"] as const;
  const metadata:Record<string,unknown>={...local.metadata};
  for(const key of generatedKeys)delete metadata[key];
  for(const key of generatedKeys)if(Object.hasOwn(remote.metadata,key))

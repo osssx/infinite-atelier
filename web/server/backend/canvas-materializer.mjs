@@ -45,15 +45,16 @@ export function createCanvasMaterializer({db,blobStore,videoDimensionReader=read
  // A completed model batch is adopted atomically; historical per-image records
  // deliberately keep their original nodes.
  async function processImageBatch(artifact){
-  const job=db.prepare("SELECT snapshot_json FROM jobs WHERE id=?").get(artifact.job_id);
+  const job=db.prepare("SELECT snapshot_json,source_fingerprint FROM jobs WHERE id=?").get(artifact.job_id);
   const snapshot=job?JSON.parse(job.snapshot_json):null;
   if(snapshot?.adapterKind!=="model"||snapshot.task?.kind!=="image"||snapshot.task.writeBack||
      !["openai","openai_compatible","google_gemini"].includes(snapshot.provider))return null;
   const project=db.prepare("SELECT document_json FROM projects WHERE id=? AND deleted_at IS NULL").get(artifact.project_id);
   const source=project?JSON.parse(project.document_json).nodes.find(n=>n.id===artifact.target_node_id):null;
-  if((snapshot.sourceNodeType??source?.type)!=="config")return null;
+  const sourceType=snapshot.sourceNodeType??source?.type;
   const rows=db.prepare("SELECT * FROM artifacts WHERE job_id=? ORDER BY CAST(item_key AS INTEGER),item_key,id").all(artifact.job_id);
-  if(rows.length<2||rows.some(a=>a.kind!=="image"||a.port_id!=="image"))return null;
+  if((rows.length<2||sourceType!=="image"&&sourceType!=="config")||
+     rows.some(a=>a.kind!=="image"||a.port_id!=="image"))return null;
   const records=db.prepare("SELECT * FROM materializations WHERE job_id=? AND project_id=?").all(artifact.job_id,artifact.project_id);
   if(records.some(m=>m.status==="materialized")){
    const prior=records.find(m=>m.artifact_id===artifact.id);
@@ -78,19 +79,32 @@ export function createCanvasMaterializer({db,blobStore,videoDimensionReader=read
     if(db.prepare("SELECT 1 FROM materializations WHERE artifact_id=? AND project_id=? AND status='materialized'")
       .get(artifact.id,artifact.project_id))return {artifactId:artifact.id,status:"materialized",existing:true};
     const doc=JSON.parse(current.document_json),source=doc.nodes.find(n=>n.id===artifact.target_node_id);
-    const nodeId="artifact-"+images[0].id,edgeId="artifact-edge-"+images[0].id;
+    let sourceUnchanged=false;
+    if(source&&job)try{sourceUnchanged=matchesSourceFingerprint(doc,source.id,job.source_fingerprint,snapshot)}catch{}
+    const sourceEmpty=source?.type==="image"&&!String(source.metadata?.content??"").trim()&&
+     !source.metadata?.storageKey&&!source.metadata?.modelArtifact&&!source.metadata?.comfyArtifact&&
+     !source.metadata?.images?.length;
+    const writeInPlace=Boolean(source?.type==="image"&&sourceUnchanged&&sourceEmpty);
+    const nodeId=writeInPlace?source.id:"artifact-"+images[0].id,edgeId="artifact-edge-"+images[0].id;
     if(!validId(nodeId)||!validId(edgeId))throw fail("materialization_invalid_id");
-    if(doc.nodes.some(n=>n.id===nodeId||images.some(image=>n.metadata?.modelArtifact?.artifactId===image.id||
+    if(doc.nodes.some(n=>(!writeInPlace&&n.id===nodeId)||images.some(image=>n.metadata?.modelArtifact?.artifactId===image.id||
        n.metadata?.images?.some(i=>i.modelArtifact?.artifactId===image.id))))throw fail("materialization_identity_conflict");
     const first=images[0],{id:primaryImageId,modelArtifact,...media}=first;
-    const size=imageNodeSize(first.naturalWidth&&first.naturalHeight?{width:first.naturalWidth,height:first.naturalHeight}:null);
-    const count=doc.nodes.filter(n=>n.metadata?.modelArtifact?.sourceNodeId===artifact.target_node_id).length;
-    const fallbackX=Math.max(0,...doc.nodes.map(n=>Number(n.position?.x)+Number(n.width)||0))+48;
-    doc.nodes.push({id:nodeId,type:"image",title:"Generated image",...size,
-     position:{x:source?source.position.x+source.width+48+Math.floor(count/4)*444:fallbackX,
-      y:source?source.position.y+(count%4)*444:80},
-     metadata:{...media,modelArtifact,images,primaryImageId,count:images.length,prompt:snapshot.task.prompt}});
-    if(source?.type==="config"&&!doc.connections.some(c=>c.id===edgeId))
+    const groupMetadata={...media,modelArtifact,images,primaryImageId,count:images.length,prompt:snapshot.task.prompt};
+    if(writeInPlace){
+     const sourceGroupMetadata={...groupMetadata};
+     delete sourceGroupMetadata.prompt;
+     source.metadata={...source.metadata,...sourceGroupMetadata,status:"success"};
+    }else{
+     const size=imageNodeSize(first.naturalWidth&&first.naturalHeight?{width:first.naturalWidth,height:first.naturalHeight}:null);
+     const count=doc.nodes.filter(n=>n.metadata?.modelArtifact?.sourceNodeId===artifact.target_node_id).length;
+     const fallbackX=Math.max(0,...doc.nodes.map(n=>Number(n.position?.x)+Number(n.width)||0))+48;
+     doc.nodes.push({id:nodeId,type:"image",title:"Generated image",...size,
+      position:{x:source?source.position.x+source.width+48+Math.floor(count/4)*444:fallbackX,
+       y:source?source.position.y+(count%4)*444:80},
+      metadata:{...groupMetadata,...(source&&!sourceUnchanged?{sourceChangedSinceSubmit:true}:{})}});
+    }
+    if(!writeInPlace&&source&&["config","text","image"].includes(source.type)&&!doc.connections.some(c=>c.id===edgeId))
      doc.connections.push({id:edgeId,fromNodeId:source.id,toNodeId:nodeId});
     const content=validateProjectDocument(doc);
     db.prepare("UPDATE projects SET document_json=?,revision=revision+1 WHERE id=? AND revision=?")
@@ -177,17 +191,22 @@ export function createCanvasMaterializer({db,blobStore,videoDimensionReader=read
       workflowNodeId:artifact.target_node_id,portId:artifact.port_id,kind:artifact.kind,index});
     // An unchanged, empty Text source can receive its own generated response.
     // If the user typed into it while the model ran, append a new node instead.
+    const sourceImageEmpty=Boolean(source?.type==="image"&&
+      !String(source.metadata?.content??"").trim()&&!source.metadata?.storageKey&&
+      !source.metadata?.modelArtifact&&!source.metadata?.comfyArtifact&&!source.metadata?.images?.length);
     const writeBack=Boolean(isModel&&snapshot.task?.writeBack===true&&artifact.kind==="image"&&
       source&&!sourceChangedSinceSubmit);
+    const emptyImageWriteBack=Boolean(isModel&&snapshot.task?.writeBack!==true&&artifact.kind==="image"&&
+      source?.type==="image"&&sourceImageEmpty&&!sourceChangedSinceSubmit);
     const fillEmptyText=Boolean(isModel&&artifact.kind==="text"&&source?.type==="text"&&
      !sourceChangedSinceSubmit&&!String(source.metadata?.content??"").trim()&&
      !source.metadata?.modelArtifact&&typeof contents==="string"&&contents.trim());
-    const nodeId=fillEmptyText||writeBack?source.id:"artifact-"+artifact.id;
+    const nodeId=fillEmptyText||writeBack||emptyImageWriteBack?source.id:"artifact-"+artifact.id;
     const edgeId="artifact-edge-"+artifact.id;
     if(!validId(nodeId)||!validId(edgeId))throw fail("materialization_invalid_id");
     if(fillEmptyText){
      source.metadata={...source.metadata,content:contents,status:"success",modelArtifact:origin};
-    }else if(writeBack){
+    }else if(writeBack||emptyImageWriteBack){
      source.metadata={...source.metadata,content:"/api/v1/blobs/"+artifact.blob_id,
       storageKey:"cas:"+artifact.blob_id,mimeType:artifact.mime,status:"success",
       modelArtifact:origin,

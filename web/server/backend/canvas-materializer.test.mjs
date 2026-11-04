@@ -755,9 +755,9 @@ test("autoDispatch completes HTTP job and persists typed canvas output without m
 });
 
 
-async function modelImageBatch(t,{count=3,sourceType="config",removeSource=false}={}){
+async function modelImageBatch(t,{count=3,sourceType="config",removeSource=false,sourceMetadata={}}={}){
  const f=fixture(t),projectId="batch-project",sourceNodeId="config-source";
- const document={nodes:[{id:sourceNodeId,type:sourceType,title:"Source",position:{x:0,y:0},width:320,height:240,metadata:{}}],connections:[]};
+ const document={nodes:[{id:sourceNodeId,type:sourceType,title:"Source",position:{x:0,y:0},width:320,height:240,metadata:sourceMetadata}],connections:[]};
  createProject(f.db,{id:projectId,document});
  const jobId=submitJob(f.db,{projectId,targetNodeId:sourceNodeId,expectedProjectRevision:1,
   sourceNodeFingerprint:fingerprintSource(document,sourceNodeId),idempotencyKey:"batch",requestFingerprint:"batch",executionMode:"immediate",
@@ -812,6 +812,92 @@ test("non-config multi-image results retain independent nodes",async t=>{
  assert.equal(doc.nodes.length,4);
  assert.equal(doc.connections.length,3);
  assert.ok(doc.nodes.slice(1).every(n=>!n.metadata.images));
+});
+test("an unchanged empty image source receives a single generated image in place",async t=>{
+ const f=await modelImageBatch(t,{count:1,sourceType:"image"});
+ await f.materializer.runOnce();
+ const doc=getProject(f.db,f.projectId).document;
+ assert.equal(doc.nodes.length,1);
+ assert.equal(doc.connections.length,0);
+ assert.equal(doc.nodes[0].id,f.sourceNodeId);
+ assert.equal(doc.nodes[0].metadata.modelArtifact.artifactId,f.created[0].id);
+ assert.equal(doc.nodes[0].metadata.content,"/api/v1/blobs/"+f.created[0].blob.blobId);
+ assert.equal(doc.nodes[0].metadata.images,undefined);
+});
+test("an unchanged empty image source adopts a multi-image group atomically in place",async t=>{
+ const f=await modelImageBatch(t,{sourceType:"image",sourceMetadata:{prompt:"preserve this prompt"}});
+ await f.materializer.runOnce({maxItems:1});
+ const doc=getProject(f.db,f.projectId).document;
+ assert.equal(doc.nodes.length,1);
+ assert.equal(doc.connections.length,0);
+ assert.equal(doc.nodes[0].metadata.images.length,3);
+ assert.equal(doc.nodes[0].metadata.primaryImageId,f.created[0].id);
+ assert.equal(doc.nodes[0].metadata.count,3);
+ assert.equal(doc.nodes[0].metadata.prompt,"preserve this prompt");
+ assert.ok(f.materializer.status({jobId:f.jobId}).every(m=>m.node_id===f.sourceNodeId&&m.status==="materialized"));
+ const stale=saveSingleUserCanvas(f.db,{id:f.projectId,expectedRevision:1,document:f.document}).document;
+ assert.equal(stale.nodes.length,1);
+ assert.equal(stale.nodes[0].metadata.images.length,3);
+ assert.equal(stale.nodes[0].metadata.count,3);
+ await f.materializer.runOnce();
+ assert.equal(getProject(f.db,f.projectId).document.nodes.length,1,"retries do not duplicate a completed image group");
+});
+test("a populated image source gets one linked image group and keeps its original media",async t=>{
+ const f=await modelImageBatch(t,{sourceType:"image",sourceMetadata:{content:"/api/v1/blobs/original",storageKey:"cas:original"}});
+ await f.materializer.runOnce();
+ const doc=getProject(f.db,f.projectId).document;
+ assert.equal(doc.nodes.length,2);
+ assert.equal(doc.nodes[0].metadata.content,"/api/v1/blobs/original");
+ const group=doc.nodes[1];
+ assert.equal(group.metadata.images.length,3);
+ assert.equal(group.metadata.primaryImageId,f.created[0].id);
+ assert.deepEqual(doc.connections,[{id:"artifact-edge-"+f.created[0].id,fromNodeId:f.sourceNodeId,toNodeId:group.id}]);
+});
+test("an image source edited after submit gets one linked image group",async t=>{
+ const f=await modelImageBatch(t,{sourceType:"image"});
+ const edited={...f.document,nodes:[{...f.document.nodes[0],metadata:{content:"/api/v1/blobs/user-edit"}}]};
+ saveSingleUserCanvas(f.db,{id:f.projectId,expectedRevision:1,document:edited});
+ await f.materializer.runOnce();
+ const doc=getProject(f.db,f.projectId).document;
+ assert.equal(doc.nodes.length,2);
+ assert.equal(doc.nodes[0].metadata.content,"/api/v1/blobs/user-edit");
+ assert.equal(doc.nodes[1].metadata.images.length,3);
+ assert.deepEqual(doc.connections,[{id:"artifact-edge-"+f.created[0].id,fromNodeId:f.sourceNodeId,toNodeId:doc.nodes[1].id}]);
+});
+test("single image output preserves a populated or changed image source",async t=>{
+ for(const scenario of [
+  {name:"populated",metadata:{content:"/api/v1/blobs/original",storageKey:"cas:original"},edit:false},
+  {name:"changed",metadata:{},edit:true}
+ ])await t.test(scenario.name,async child=>{
+  const f=await modelImageBatch(child,{count:1,sourceType:"image",sourceMetadata:scenario.metadata});
+  if(scenario.edit){
+   const edited={...f.document,nodes:[{...f.document.nodes[0],metadata:{content:"/api/v1/blobs/user-edit"}}]};
+   saveSingleUserCanvas(f.db,{id:f.projectId,expectedRevision:1,document:edited});
+  }
+  await f.materializer.runOnce();
+  const doc=getProject(f.db,f.projectId).document;
+  assert.equal(doc.nodes.length,2);
+  assert.equal(doc.nodes[0].metadata.content,scenario.edit?"/api/v1/blobs/user-edit":scenario.metadata.content);
+  assert.equal(doc.nodes[1].metadata.modelArtifact.artifactId,f.created[0].id);
+  assert.deepEqual(doc.connections,[{id:"artifact-edge-"+f.created[0].id,fromNodeId:f.sourceNodeId,toNodeId:doc.nodes[1].id}]);
+ });
+});
+test("a stale edited save demotes an in-place image group as one linked group",async t=>{
+ const f=await modelImageBatch(t,{sourceType:"image"});
+ await f.materializer.runOnce();
+ const edited={...f.document,nodes:[{...f.document.nodes[0],metadata:{content:"/api/v1/blobs/user-edit"}}]};
+ const saved=saveSingleUserCanvas(f.db,{id:f.projectId,expectedRevision:1,document:edited});
+ assert.equal(saved.document.nodes.length,2);
+ assert.equal(saved.document.nodes[0].metadata.content,"/api/v1/blobs/user-edit");
+ const group=saved.document.nodes[1];
+ assert.equal(group.id,"artifact-"+f.created[0].id);
+ assert.equal(group.metadata.images.length,3);
+ assert.deepEqual(saved.document.connections,[{id:"artifact-edge-"+f.created[0].id,
+  fromNodeId:f.sourceNodeId,toNodeId:group.id}]);
+ assert.ok(f.materializer.status({jobId:f.jobId}).every(item=>item.node_id===group.id));
+ const repeated=saveSingleUserCanvas(f.db,{id:f.projectId,expectedRevision:1,document:edited});
+ assert.equal(repeated.document.nodes.filter(node=>node.id===group.id).length,1);
+ assert.equal(repeated.document.nodes.find(node=>node.id===group.id).metadata.images.length,3);
 });
 test("one unavailable batch blob leaves no partial group or adopted artifacts",async t=>{
  const f=await modelImageBatch(t);

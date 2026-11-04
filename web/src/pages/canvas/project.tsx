@@ -106,7 +106,7 @@ import {validateSeedanceRequest} from "@/services/api/video/seedance-content";
 import {ensureSqliteModelChannelForExecution,modelChannelProvider} from "@/features/backend-sync/model-channel-autoroute";
 import {watchSqliteComfyJob} from "@/features/backend-sync/sqlite-comfy-job-watch";
 import {waitForCanvasNodeCancellation,cancelCanvasNodeExecution,canvasSubmissionStopped,assertCanvasSubmissionActive,beginCanvasTextSubmission,trackCanvasTextJob,finishCanvasTextSubmission,
-    updateCanvasTextJob,finishCanvasTextJob,setCanvasTextExecutionScope} from "@/features/backend-sync/canvas-text-execution-visual";
+    updateCanvasTextJob,finishCanvasTextJob,setCanvasTextExecutionScope,canvasModelExecutionPhase} from "@/features/backend-sync/canvas-text-execution-visual";
 import {setCanvasComfyExecutionScope,setCanvasComfyExecution,observeCanvasComfyExecution,
     getCanvasComfyExecution,markCanvasComfyRunUnobservable,observeCanvasComfyLive} from "@/features/comfy-workflow/canvas-execution-visual";
 import {refreshSqliteComfyArtifacts} from "@/features/backend-sync/sqlite-comfy-job-watch";
@@ -2999,7 +2999,8 @@ function AtelierCanvasPage() {
             },
             onStatus:(status,details,job)=>{
                 if(controller.signal.aborted||activeProjectIdRef.current!==projectId)return;
-                updateCanvasTextJob(projectId,jobId,status);
+                const sourceKind=job?.modelKind??(job?.targetNodeId&&nodesRef.current.find(node=>node.id===job.targetNodeId)?.type===CanvasNodeType.Image?"image":undefined);
+                updateCanvasTextJob(projectId,jobId,canvasModelExecutionPhase(status,sourceKind));
                 if(job?.targetNodeId && nodesRef.current.some(node=>node.id===job.targetNodeId&&
                     node.type===COMFY_WORKFLOW_MOCK_TYPE)) {
                     observeCanvasComfyExecution(projectId,job.targetNodeId,{

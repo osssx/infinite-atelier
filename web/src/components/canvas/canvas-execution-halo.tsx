@@ -11,7 +11,9 @@ export function CanvasExecutionHalo({ node, visible = true }: { node: CanvasNode
         || node.metadata?.images?.some(image => image.status === "loading");
     if (loading) return <Halo />;
     if (node.type === COMFY_WORKFLOW_MOCK_TYPE) return <ComfyHalo nodeId={node.id} />;
-    if (node.type === CanvasNodeType.Text || node.type === CanvasNodeType.Config) return <TextHalo nodeId={node.id} />;
+    if ([CanvasNodeType.Text, CanvasNodeType.Config, CanvasNodeType.Image,
+        CanvasNodeType.Video, CanvasNodeType.Audio].includes(node.type as CanvasNodeType))
+        return <TextHalo nodeId={node.id} />;
     return null;
 }
 

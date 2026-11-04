@@ -43,10 +43,12 @@ describe("execution halo lifecycle", () => {
         expect(render(workflow)).toBe("");
     });
     it("retains one halo until all text requests finish and clears on scope change", () => {
-        for (const type of [CanvasNodeType.Text, CanvasNodeType.Config]) {
+        for (const type of [CanvasNodeType.Text, CanvasNodeType.Config,
+            CanvasNodeType.Image,CanvasNodeType.Video,CanvasNodeType.Audio]) {
             const text = { ...node, type };
-            beginCanvasTextSubmission("project", node.id, "first");
-            beginCanvasTextSubmission("project", node.id, "second");
+            const kind=type===CanvasNodeType.Image?"image":type===CanvasNodeType.Video?"video":type===CanvasNodeType.Audio?"audio":"text";
+            beginCanvasTextSubmission("project", node.id, "first",kind);
+            beginCanvasTextSubmission("project", node.id, "second",kind);
             expect(render(text).match(/data-canvas-execution-halo/g)).toHaveLength(1);
             finishCanvasTextSubmission("project", node.id, "first");
             expect(render(text)).not.toBe("");

@@ -4,7 +4,7 @@ import {renderToStaticMarkup} from "react-dom/server";
 import {afterEach,beforeEach,describe,expect,it,vi} from "vitest";
 import {
  beginCanvasTextSubmission,finishCanvasTextJob,finishCanvasTextSubmission,
- getCanvasTextExecution,setCanvasTextExecutionScope,subscribeCanvasTextExecution,
+ canvasModelExecutionPhase,getCanvasTextExecution,setCanvasTextExecutionScope,subscribeCanvasTextExecution,
  textExecutionLabel,trackCanvasTextJob,updateCanvasTextJob
 } from "./canvas-text-execution-visual";
 import {CanvasExecutionHalo} from "@/components/canvas/canvas-execution-halo";
@@ -53,6 +53,15 @@ describe("Canvas text generation transition",()=>{
   finishCanvasTextJob("p1","image-job");
   expect(getCanvasTextExecution("source")).toBeUndefined();
   expect(getCanvasTextExecution("other")?.status).toBe("running");
+ });
+
+ it("keeps image execution active through succeeded until artifact refresh completes",()=>{
+  trackCanvasTextJob("p1","image-source","image-job","running",undefined,"image");
+  updateCanvasTextJob("p1","image-job",canvasModelExecutionPhase("succeeded","image"));
+  expect(getCanvasTextExecution("image-source")).toEqual({status:"collecting",modelKind:"image",activeCount:1});
+  updateCanvasTextJob("p1","image-job",canvasModelExecutionPhase("materialized","image"));
+  expect(getCanvasTextExecution("image-source")).toBeUndefined();
+  expect(canvasModelExecutionPhase("succeeded","video")).toBe("succeeded");
  });
 
  it("begins animating immediately, hands off to the durable job, and clears on success",()=>{
@@ -168,9 +177,8 @@ describe("Canvas text generation transition",()=>{
   const compact=readFileSync(new URL("../../components/canvas/canvas-node-compact.tsx",import.meta.url),"utf8");
   expect(config).toContain('<CanvasConfigGenerateButton');
   expect(config).not.toContain('CanvasTextExecutionIndicator');
-  expect(node).toContain('data.type===CanvasNodeType.Text');
-  expect(node).not.toContain('data.type===CanvasNodeType.Text||data.type===CanvasNodeType.Config');
-  expect(compact).not.toContain('data.type===CanvasNodeType.Text||data.type===CanvasNodeType.Config');
+  expect(node).toContain('data.type===CanvasNodeType.Text||data.type===CanvasNodeType.Image');
+  expect(compact).toContain('data.type===CanvasNodeType.Text||data.type===CanvasNodeType.Image');
  });
  it("wires submission before the first await and recovers active text jobs via SQLite snapshot",()=>{
   const page=readFileSync(new URL("../../pages/canvas/project.tsx",import.meta.url),"utf8");
@@ -181,7 +189,7 @@ describe("Canvas text generation transition",()=>{
    .toBeLessThan(firstAwait);
   expect(page).toContain("trackCanvasTextJob(projectId,nodeId,job.id,job.status,textSubmissionToken,kind)");
   expect(page).toContain("finishCanvasTextSubmission(projectId,nodeId,textSubmissionToken)");
-  expect(page).toContain("updateCanvasTextJob(projectId,jobId,status)");
+  expect(page).toContain("updateCanvasTextJob(projectId,jobId,canvasModelExecutionPhase(status,sourceKind))");
   expect(page).toContain('updateCanvasTextJob(projectId,jobId,"running")');
   expect(page).toContain("finishCanvasTextJob(projectId,jobId)");
   expect(page).toContain('["image","text","video","audio"].includes(job.modelKind');

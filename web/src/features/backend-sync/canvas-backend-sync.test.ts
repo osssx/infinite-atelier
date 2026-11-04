@@ -159,6 +159,22 @@ describe("P4.4 ordinary SQLite model artifact merge",()=>{
   expect(safeRemoteCanvasMerge(local,{nodes:[{...updated,metadata:{...updated.metadata,
    modelArtifact:{...modelArtifact,sourceNodeId:"other"}}}],connections:[]})).toBeNull();
  });
+ it("adopts a verified multi-image writeback on an unchanged empty image source",()=>{
+  const source:CanvasNodeData={id:"image-source",type:"image",title:"Image",
+   position:{x:0,y:0},width:420,height:420,metadata:{}};
+  const modelArtifact={jobId:"job-images",artifactId:"img-1",sourceNodeId:source.id,
+   kind:"image" as const,model:"gpt-image-2"};
+  const images=["img-1","img-2"].map((id,index)=>({id,status:"success" as const,
+   content:"/api/v1/blobs/"+(index?"b":"a").repeat(64),storageKey:"cas:"+(index?"b":"a").repeat(64),
+   mimeType:"image/png",naturalWidth:512,naturalHeight:512,bytes:42,
+   modelArtifact:{...modelArtifact,artifactId:id}}));
+  const updated:CanvasNodeData={...source,metadata:{content:images[0].content,storageKey:images[0].storageKey,
+   mimeType:"image/png",status:"success",modelArtifact,images,primaryImageId:"img-1",count:2}};
+  expect(safeRemoteCanvasMerge({nodes:[source],connections:[]},{nodes:[updated],connections:[]}))
+   .toEqual({nodes:[updated],connections:[]});
+  expect(safeRemoteCanvasMerge({nodes:[source],connections:[]},{nodes:[{...updated,
+   metadata:{...updated.metadata,count:1}}],connections:[]})).toBeNull();
+ });
   it("accepts Ark model video CAS node only with original source and a plain edge",()=>{  const prompt:CanvasNodeData={id:"prompt1",type:"text",title:"Prompt",
    position:{x:0,y:0},width:300,height:160,metadata:{content:"snow"}};
   const movie:CanvasNodeData={id:"artifact-vid1",type:"video",title:"Generated video",

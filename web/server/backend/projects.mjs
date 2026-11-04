@@ -127,24 +127,34 @@ export function saveSingleUserCanvas(db,{id,expectedRevision,document}){
       // A late stale autosave may not erase a backend materializer's
       // in-place image writeback when the submitted source is still intact.
       next.nodes[index]={...draft,metadata:{...draft.metadata,
-       ...Object.fromEntries(["content","storageKey","mimeType","status","modelArtifact","prompt","bytes","naturalWidth","naturalHeight"]
+       ...Object.fromEntries(["content","storageKey","mimeType","status","modelArtifact","prompt","bytes","naturalWidth","naturalHeight",
+        "images","primaryImageId","count"]
         .filter(key=>Object.hasOwn(latest.metadata??{},key)).map(key=>[key,latest.metadata[key]]))}};
      }else if(origin.kind==="image"&&!sourceUnchanged){
       // The source changed after submission. Preserve the edit and demote the
       // already collected image to a linked result node instead of overwriting.
       const artifactId="artifact-"+origin.artifactId;
-      if(!ids.has(artifactId)){
-       next.nodes.push({...latest,id:artifactId,type:"image",
+      let output=next.nodes.find(node=>node.id===artifactId);
+      if(!output&&!ids.has(artifactId)){
+       output={...latest,id:artifactId,type:"image",
         title:latest.title||"Generated Image",
         position:{x:Number(draft.position?.x||0)+Number(draft.width||420)+48,
          y:Number(draft.position?.y||0)},
-        metadata:{...latest.metadata,modelArtifact:origin}});
+        metadata:{...latest.metadata,modelArtifact:origin}};
+       next.nodes.push(output);
        ids.add(artifactId);restored.add(artifactId);
       }
       const edgeId="artifact-edge-"+origin.artifactId;
-      if(!edges.has(edgeId)&&ids.has(artifactId)){
+      if(output?.metadata?.modelArtifact?.artifactId===origin.artifactId&&!edges.has(edgeId)&&ids.has(artifactId)){
        next.connections.push({id:edgeId,fromNodeId:draft.id,toNodeId:artifactId});
        edges.add(edgeId);
+      }
+      if(output?.metadata?.modelArtifact?.artifactId===origin.artifactId){
+       const artifactIds=new Set([origin.artifactId,...(Array.isArray(latest.metadata?.images)?
+        latest.metadata.images.map(image=>image.modelArtifact).filter(model=>model?.kind==="image"&&
+         model.jobId===origin.jobId&&model.sourceNodeId===draft.id).map(model=>model.artifactId):[])]);
+       for(const artifactIdItem of artifactIds)db.prepare("UPDATE materializations SET node_id=? WHERE artifact_id=? AND project_id=? AND node_id=? AND status='materialized'")
+        .run(artifactId,artifactIdItem,id,draft.id);
       }
      }
     }

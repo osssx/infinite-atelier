@@ -7,6 +7,9 @@ import {useCallback,useSyncExternalStore} from "react";
  */
 const activeStatuses=new Set(["submitting","queued","preparing","running","collecting"]);
 export type CanvasModelKind="image"|"text"|"video"|"audio";
+export function canvasModelExecutionPhase(status:string,modelKind?:string):string{
+ return status==="succeeded"&&modelKind==="image"?"collecting":status;
+}
 export const textExecutionLabel=(status:string,modelKind:CanvasModelKind="text"):string=>{
  const name={image:"图片",text:"文本",video:"视频",audio:"音频"}[modelKind];
  switch(status){

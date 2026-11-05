@@ -2,7 +2,7 @@ import "./canvas-node-bbox-layout-dialog.css";
 import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { createPortal } from "react-dom";
 import { App, Button, Input, Modal, Select, Switch, Tooltip } from "antd";
-import { Layers3, SlidersHorizontal, AlignCenterHorizontal, AlignCenterVertical, ArrowDown, ArrowUp, Copy, Eye, EyeOff, Lock, LockOpen, Redo2, Trash2, Undo2, ZoomIn, ZoomOut } from "lucide-react";
+import { Download, Upload, ClipboardCopy, Layers3, SlidersHorizontal, AlignCenterHorizontal, AlignCenterVertical, ArrowDown, ArrowUp, Copy, Eye, EyeOff, Lock, LockOpen, Redo2, Trash2, Undo2, ZoomIn, ZoomOut } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { IMAGE_SIZE_PRESETS } from "@/lib/canvas/image-size-presets";
@@ -813,10 +813,21 @@ export function CanvasNodeBBoxLayoutDialog({
                         </label>
                         <details className="bbox-json-tools rounded-lg border border-black/10 p-3 dark:border-white/10">
                             <summary className="cursor-pointer text-xs font-medium">{t("canvas.bboxEditor.jsonTools")}</summary>
-                            <div className="mt-3 space-y-3">
-                                <div className="flex flex-wrap gap-2">
-                                    <Button onClick={() => fileRef.current?.click()}>{t("canvas.bboxEditor.importJson")}</Button>
+                            <div className="bbox-json-sections">
+                                <section className="bbox-json-section">
+                                    <h4>{t("canvas.bboxEditor.jsonImport")}</h4>
+                                    <Button block icon={<Upload size={14} />} onClick={() => fileRef.current?.click()}>{t("canvas.bboxEditor.importJson")}</Button>
+                                    <div className="bbox-json-divider"><span>{t("canvas.bboxEditor.orPasteJson")}</span></div>
+                                    <Input.TextArea className="bbox-json-input" rows={4} placeholder={t("canvas.bboxEditor.pasteJson")} aria-label={t("canvas.bboxEditor.pasteJson")} value={pasteJson} onChange={(event) => setPasteJson(event.target.value)} />
+                                    <Button block disabled={!pasteJson.trim()} onClick={() => void importText(pasteJson)}>
+                                        {t("canvas.bboxEditor.importPasted")}
+                                    </Button>
+                                </section>
+                                <section className="bbox-json-section">
+                                    <h4>{t("canvas.bboxEditor.jsonExport")}</h4>
                                     <Button
+                                        block
+                                        icon={<Download size={14} />}
                                         onClick={() => {
                                             const blob = new Blob([JSON.stringify(layout, null, 2)], { type: "application/json" });
                                             const url = URL.createObjectURL(blob);
@@ -829,13 +840,12 @@ export function CanvasNodeBBoxLayoutDialog({
                                     >
                                         {t("canvas.bboxEditor.exportDraft")}
                                     </Button>
-                                    <Button onClick={() => void navigator.clipboard.writeText(json).then(() => message.success(t("canvas.bboxEditor.copied")))}>{t("canvas.bboxEditor.copyModelJson")}</Button>
-                                </div>
-                                <textarea className="w-full rounded border border-black/15 bg-transparent p-2 font-mono text-xs" rows={5} readOnly value={json} />
-                                <Input.TextArea rows={3} placeholder={t("canvas.bboxEditor.pasteJson")} value={pasteJson} onChange={(event) => setPasteJson(event.target.value)} />
-                                <Button disabled={!pasteJson.trim()} onClick={() => void importText(pasteJson)}>
-                                    {t("canvas.bboxEditor.importPasted")}
-                                </Button>
+                                    <Button block icon={<ClipboardCopy size={14} />} onClick={() => void navigator.clipboard.writeText(json).then(() => message.success(t("canvas.bboxEditor.copied")))}>{t("canvas.bboxEditor.copyModelJson")}</Button>
+                                    <details className="bbox-json-preview">
+                                        <summary>{t("canvas.bboxEditor.modelJsonPreview")}</summary>
+                                        <textarea aria-label={t("canvas.bboxEditor.modelJsonPreview")} wrap="off" rows={7} readOnly value={json} spellCheck={false} />
+                                    </details>
+                                </section>
                                 <input
                                     ref={fileRef}
                                     type="file"

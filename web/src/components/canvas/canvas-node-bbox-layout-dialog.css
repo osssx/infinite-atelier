@@ -54,3 +54,15 @@
 .bbox-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; min-height: 160px; border: 1px dashed var(--border); border-radius: 10px; color: var(--muted-foreground); font-size: 12px; }
 .bbox-empty > svg { opacity: .5; }
 .bbox-inline-editor { background: var(--popover); color: var(--popover-foreground); border-color: var(--border); box-shadow: 0 12px 40px #00000026; }
+
+.bbox-json-sections { display: flex; flex-direction: column; gap: 16px; margin-top: 14px; }
+.bbox-json-section { display: flex; min-width: 0; flex-direction: column; gap: 8px; }
+.bbox-json-section + .bbox-json-section { border-top: 1px solid var(--border); padding-top: 14px; }
+.bbox-json-section h4 { margin: 0 0 2px; color: var(--foreground); font-size: 11px; font-weight: 650; letter-spacing: .03em; }
+.bbox-json-section .ant-btn { justify-content: flex-start; font-size: 12px; }
+.bbox-json-divider { display: flex; align-items: center; gap: 8px; color: var(--muted-foreground); font-size: 10px; }
+.bbox-json-divider::before, .bbox-json-divider::after { content: ""; height: 1px; flex: 1; background: var(--border); }
+.bbox-json-section .bbox-json-input { font-family: ui-monospace, monospace; font-size: 11px; resize: vertical; max-height: 240px; }
+.bbox-json-preview { min-width: 0; margin-top: 2px; }
+.bbox-json-preview summary { cursor: pointer; padding: 4px 0; color: var(--muted-foreground); font-size: 11px; }
+.bbox-json-preview textarea { display: block; width: 100%; max-width: 100%; margin-top: 6px; border: 1px solid var(--border); border-radius: 7px; padding: 8px; background: var(--muted); color: var(--foreground); font: 10px/1.6 ui-monospace, monospace; resize: vertical; max-height: 260px; }

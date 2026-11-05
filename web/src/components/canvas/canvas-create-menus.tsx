@@ -115,21 +115,21 @@ export function ConnectionCreateMenu({
     );
 }
 
-export function ConnectionCreateOption({ theme, icon, title, description, onClick }: { theme: (typeof canvasThemes)[keyof typeof canvasThemes]; icon: React.ReactNode; title: string; description?: string; onClick?: () => void }) {
+export function ConnectionCreateOption({ theme, icon, title, description, onClick, compact = false }: { compact?: boolean; theme: (typeof canvasThemes)[keyof typeof canvasThemes]; icon: React.ReactNode; title: string; description?: string; onClick?: () => void }) {
     return (
         <button
             type="button"
-            className="flex h-16 w-full cursor-pointer items-center gap-3 rounded-2xl px-3 text-left transition"
+            className={`flex w-full cursor-pointer items-center text-left transition ${compact ? "h-11 gap-2.5 rounded-lg px-2" : "h-16 gap-3 rounded-2xl px-3"}`}
             style={{ color: theme.node.text }}
             onClick={onClick}
             onMouseEnter={(event) => (event.currentTarget.style.background = theme.node.fill)}
             onMouseLeave={(event) => (event.currentTarget.style.background = "transparent")}
         >
-            <span className="grid size-11 shrink-0 place-items-center rounded-xl" style={{ background: theme.node.fill, color: theme.node.muted }}>
+            <span className={`grid shrink-0 place-items-center ${compact ? "size-8 rounded-lg [&>svg]:size-4" : "size-11 rounded-xl"}`} style={{ background: theme.node.fill, color: theme.node.muted }}>
                 {icon}
             </span>
             <span className="min-w-0 flex-1">
-                <span className="flex items-center gap-2 text-base font-semibold leading-5">{title}</span>
+                <span className={`flex items-center gap-2 leading-5 ${compact ? "text-sm font-semibold" : "text-base font-semibold"}`}>{title}</span>
                 {description ? (
                     <span className="mt-1 block truncate text-sm" style={{ color: theme.node.muted }}>
                         {description}
@@ -157,14 +157,14 @@ export function NodeCreateMenu({ position, canvasRef, viewport, onCreate, onClos
     return createPortal(
         <div
             ref={menuRef}
-            className="z-[1200] max-h-[70vh] w-[300px] overflow-y-auto rounded-[18px] border p-3 shadow-2xl backdrop-blur thin-scrollbar"
+            className="z-[1200] max-h-[70vh] w-[248px] overflow-y-auto rounded-[14px] border p-2 shadow-2xl backdrop-blur thin-scrollbar"
             data-canvas-no-zoom
             style={{ ...style, background: theme.node.panel, borderColor: theme.node.stroke, color: theme.node.text }}
             onPointerDown={(event) => event.stopPropagation()}
             onMouseDown={(event) => event.stopPropagation()}
         >
             <div className="mb-2 flex items-center justify-between px-1">
-                <span className="text-sm font-medium" style={{ color: theme.node.muted }}>
+                <span className="text-xs font-medium" style={{ color: theme.node.muted }}>
                     {t("canvas.createMenu.select")}
                 </span>
                 <button type="button" className="grid size-7 place-items-center rounded-lg opacity-55 transition hover:opacity-100" onClick={onClose} aria-label={t("canvas.createMenu.close")}>
@@ -173,7 +173,7 @@ export function NodeCreateMenu({ position, canvasRef, viewport, onCreate, onClos
             </div>
             <div className="grid gap-1">
                 {definitions.map((def) => (
-                    <ConnectionCreateOption key={def.type} theme={theme} icon={def.icon} title={def.title} description={def.description} onClick={() => onCreate(def.type)} />
+                    <ConnectionCreateOption compact key={def.type} theme={theme} icon={def.icon} title={def.title} description={def.description} onClick={() => onCreate(def.type)} />
                 ))}
             </div>
         </div>,

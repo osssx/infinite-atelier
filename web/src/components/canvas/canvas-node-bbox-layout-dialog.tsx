@@ -538,6 +538,7 @@ export function CanvasNodeBBoxLayoutDialog({
                                             }}
                                         />
                                     </div>
+                                    <div className="bbox-layer-fields">
                                     <div className="grid grid-cols-4 gap-1">
                                         {(["x1", "y1", "x2", "y2"] as const).map((key) => (
                                             <label className="text-[10px] opacity-70" key={key}>
@@ -553,11 +554,11 @@ export function CanvasNodeBBoxLayoutDialog({
                                             </label>
                                         ))}
                                     </div>
-                                    <Input.TextArea className="mt-2" size="small" rows={2} placeholder={t("canvas.bboxEditor.itemCaption")} value={item.caption} onChange={(event) => updateItem(item.id, { caption: event.target.value })} />
+                                    <Input.TextArea size="small" rows={2} placeholder={t("canvas.bboxEditor.itemCaption")} value={item.caption} onChange={(event) => updateItem(item.id, { caption: event.target.value })} />
                                     {item.kind === "text" ? (
-                                        <Input.TextArea className="mt-2" size="small" rows={2} placeholder={t("canvas.bboxEditor.exactText")} value={item.text} onChange={(event) => updateItem(item.id, { text: event.target.value })} />
+                                        <Input.TextArea size="small" rows={2} placeholder={t("canvas.bboxEditor.exactText")} value={item.text} onChange={(event) => updateItem(item.id, { text: event.target.value })} />
                                     ) : null}
-                                    <div className="mt-1 grid grid-cols-2 gap-1">
+                                    <div className="grid grid-cols-2 gap-1">
                                         <Input
                                             size="small"
                                             placeholder={t("canvas.bboxEditor.tags")}
@@ -584,6 +585,7 @@ export function CanvasNodeBBoxLayoutDialog({
                                                 })
                                             }
                                         />
+                                    </div>
                                     </div>
                                 </div>
                             ))}

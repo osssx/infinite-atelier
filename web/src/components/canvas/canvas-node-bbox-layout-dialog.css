@@ -95,3 +95,6 @@
     margin: 0;
 }
 .bbox-editor .bbox-kind-select .ant-select-input { grid-area: 1 / 1; min-width: 0; }
+
+.bbox-layer-fields { display: flex; flex-direction: column; gap: 8px; }
+.bbox-layer-fields > .ant-input { margin-block: 0; }

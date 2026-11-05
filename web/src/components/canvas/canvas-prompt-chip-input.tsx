@@ -355,7 +355,10 @@ function createSkillChip(skillId: string, label: string, theme: (typeof canvasTh
     wrapper.className = "mx-px inline-flex h-6 max-w-44 items-center justify-center overflow-hidden rounded-md border px-1 text-xs font-bold leading-none align-middle";
     Object.assign(wrapper.style, { background: theme.toolbar.panel, borderColor: theme.node.stroke, color: theme.node.text });
     wrapper.title = label;
-    wrapper.textContent = label;
+    const text = document.createElement("span");
+    text.className = "block min-w-0 truncate";
+    text.textContent = label;
+    wrapper.appendChild(text);
     return wrapper;
 }
 

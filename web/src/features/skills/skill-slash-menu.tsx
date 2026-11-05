@@ -44,7 +44,7 @@ export function SkillSlashMenu({ entries, activeIndex, rect, theme, onSelect }: 
                     onClick={(event) => { event.preventDefault(); event.stopPropagation(); choose(entry); }}
                 >
                     <span className="grid size-8 shrink-0 place-items-center rounded-md bg-black/10"><BookOpen className="size-4" /></span>
-                    <span className="min-w-0 flex-1"><span className="block truncate font-medium">/{entry.name}</span><span className="block truncate opacity-65">{entry.description}</span></span>
+                    <span className="min-w-0 flex-1"><span className="block truncate text-xs font-bold leading-5">/{entry.name}</span><span className="block truncate text-[11px] leading-4 opacity-65">{entry.description}</span></span>
                 </button>
             )) : <div className="p-2 text-xs opacity-70">{t("canvas.skillPicker.noMatches")}</div>}
         </div>,

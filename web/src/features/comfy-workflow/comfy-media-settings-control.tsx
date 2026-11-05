@@ -1,5 +1,6 @@
-import {useMemo} from "react";
+import {useEffect,useRef,useState} from "react";
 import {Select} from "antd";
+import {parseComfyScalarOverride} from "./instance-parameters";
 import type {CanvasNodeMetadata} from "@/types/canvas";
 import type {ComfyMediaUseCase,ComfyTemplatePayload,ComfyTemplatePort} from "./template-schema";
 
@@ -36,15 +37,39 @@ function cast(port:ComfyTemplatePort,value:string):string|number|boolean{
 export function patchComfyMediaOverrides(overrides:Record<string,unknown>,updates:Record<string,unknown>,clear:readonly string[]=[]){
  const next={...overrides};for(const id of clear)delete next[id];return Object.assign(next,updates);
 }
+export function ComfyMediaNumericInput({kind,value,onChange}:{kind:"INT"|"FLOAT";value:unknown;onChange:(value:string|number|boolean)=>void}){
+ const text=value===undefined?"":String(value);
+ const [draft,setDraft]=useState(text);
+ const [error,setError]=useState("");
+ const editing=useRef(false);
+ useEffect(()=>{if(!editing.current)setDraft(text);},[text]);
+ return <div><input type="text" inputMode={kind==="INT"?"numeric":"decimal"}
+  className="w-full rounded border border-stone-300 bg-transparent px-2 py-1 text-xs dark:border-stone-700"
+  value={draft} aria-invalid={!!error} onFocus={()=>{editing.current=true;}}
+  onChange={e=>{
+   const next=e.target.value;setDraft(next);setError("");
+   const parsed=parseComfyScalarOverride(kind,next);
+   if(parsed.ok)onChange(parsed.value);
+  }}
+  onBlur={()=>{
+   editing.current=false;
+   const parsed=parseComfyScalarOverride(kind,draft);
+   if(parsed.ok){setDraft(String(parsed.value));setError("");}
+   else {setDraft(text);setError(parsed.error);}
+  }}
+  onKeyDown={e=>{e.stopPropagation();if(e.key==="Enter")e.currentTarget.blur();}}/>
+  {error?<p role="alert" className="mt-1 text-xs text-red-500">{error}</p>:null}
+ </div>;
+}
 function GenericInput({port,value,onChange,options}:{port:ComfyTemplatePort;value:unknown;onChange:(v:string|number|boolean)=>void;options?:Array<{label:string;value:string|number|boolean}>}){
  const choices=options??port.choices;
- if(choices?.length)return <Select className="w-full" value={value===undefined?undefined:String(value)} placeholder="使用工作流默认值" allowClear
+ if(choices?.length)return <Select getPopupContainer={trigger=>trigger.parentElement!} className="w-full" value={value===undefined?undefined:String(value)} placeholder="使用工作流默认值" allowClear
   options={choices.map(option=>({label:option.label,value:String(option.value)}))} onChange={selected=>{if(selected===undefined)return;const option=choices.find(item=>String(item.value)===selected);if(option)onChange(option.value);}}/>;
  if(port.valueKind==="BOOLEAN")return <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={value===true} onChange={e=>onChange(e.target.checked)}/>{value===true?"开启":"关闭"}</label>;
  if(port.valueKind==="STRING")return /prompt|instruction|指令|提示/i.test(port.id+" "+port.label)?
   <textarea className="w-full rounded border border-stone-300 bg-transparent px-2 py-1 text-xs dark:border-stone-700" rows={2} value={String(value??"")} onChange={e=>onChange(e.target.value)}/>
   :<input className="w-full rounded border border-stone-300 bg-transparent px-2 py-1 text-xs dark:border-stone-700" value={String(value??"")} onChange={e=>onChange(e.target.value)}/>;
- return <input type="number" className="w-full rounded border border-stone-300 bg-transparent px-2 py-1 text-xs dark:border-stone-700" value={value===undefined?"":String(value)} onChange={e=>{if(e.target.value==="")return;try{onChange(cast(port,e.target.value));}catch{/* do not persist invalid numeric input */}}}/>;
+ return <ComfyMediaNumericInput kind={port.valueKind==="INT"?"INT":"FLOAT"} value={value} onChange={onChange}/>;
 }
 export function ComfyMediaSettingsControl({template,binding,onChange,showCommon=true}:{template:ComfyTemplatePayload;binding:Binding;onChange:(patch:Partial<CanvasNodeMetadata>)=>void;showCommon?:boolean}){
  const useCase=template.mediaUseCase!;
@@ -62,7 +87,7 @@ export function ComfyMediaSettingsControl({template,binding,onChange,showCommon=
   const commonValues:MappedChoice[]|undefined=explicit?.length?explicit:(ports.length===1?ports[0].choices?.map(choice=>({label:choice.label,value:choice.value})):undefined);
   const selected=commonValues?.find(option=>ports.every(port=>Object.is(value(port),option.portValues?.[port.id]??option.value)));
   if(commonValues?.length)return <label key={key} className="block text-xs">{labels[key]??key}
-   <Select className="mt-1 w-full" value={selected?String(selected.value):undefined} placeholder="使用工作流默认值" allowClear
+   <Select getPopupContainer={trigger=>trigger.parentElement!} className="mt-1 w-full" value={selected?String(selected.value):undefined} placeholder="使用工作流默认值" allowClear
     options={commonValues.map(option=>({label:option.label,value:String(option.value)}))} onChange={selectedValue=>{
      if(selectedValue===undefined){clear(ids);return;}
      const option=commonValues.find(item=>String(item.value)===selectedValue);if(!option)return;

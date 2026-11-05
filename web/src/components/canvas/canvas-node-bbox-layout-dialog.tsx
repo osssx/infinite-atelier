@@ -592,7 +592,7 @@ export function CanvasNodeBBoxLayoutDialog({
                         className={`relative h-[clamp(240px,55dvh,600px)] min-h-0 lg:h-auto lg:flex-1 rounded-lg border border-black/15 bg-neutral-100 dark:border-white/15 dark:bg-neutral-900 ${viewport.scrollClassName} ${viewport.spacePressed ? "cursor-grab" : ""}`}
                     >
                         <div className="relative" style={viewport.contentStyle}>
-                            <div ref={viewport.stageRef} className="absolute overflow-hidden rounded bg-white shadow-sm" style={viewport.stageStyle}>
+                            <div ref={viewport.stageRef} className="absolute overflow-visible rounded bg-white shadow-sm" style={viewport.stageStyle}>
                                 <svg
                                     tabIndex={0}
                                     aria-label={t("canvas.bboxEditor.canvasItems")}
@@ -600,7 +600,7 @@ export function CanvasNodeBBoxLayoutDialog({
                                     height={layout.height}
                                     viewBox={`0 0 ${layout.width} ${layout.height}`}
                                     className="absolute left-0 top-0 h-full w-full touch-none select-none focus:outline-none"
-                                    style={viewport.mediaStyle}
+                                    style={{ ...viewport.mediaStyle, overflow: "visible" }}
                                     onPointerDown={(event) => begin(event)}
                                     onPointerMove={move}
                                     onPointerUp={finish}
@@ -708,10 +708,11 @@ export function CanvasNodeBBoxLayoutDialog({
                                                                   key={handle}
                                                                   cx={x}
                                                                   cy={y}
-                                                                  r={Math.max(5, layout.width / 180)}
+                                                                  r={5 / scale}
                                                                   fill="white"
                                                                   stroke="#0284c7"
                                                                   strokeWidth={2}
+                                                                  vectorEffect="non-scaling-stroke"
                                                                   style={{ cursor: `${handle}-resize` }}
                                                                   onPointerDown={(event) => begin(event, item.id, handle)}
                                                               />

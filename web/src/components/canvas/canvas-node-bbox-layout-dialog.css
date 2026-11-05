@@ -73,3 +73,25 @@
 .bbox-editor .bbox-add-button[data-kind="text"] { --bbox-kind: #f97316; }
 .bbox-add-button .ant-btn-icon { display: inline-flex; color: color-mix(in srgb, var(--bbox-kind) 80%, var(--foreground)); }
 .bbox-editor .bbox-add-button:hover { border-color: var(--bbox-kind); color: var(--foreground); background: color-mix(in srgb, var(--bbox-kind) 9%, var(--card)); }
+
+.bbox-editor .bbox-kind-select { width: 48px; min-width: 48px; flex: 0 0 48px; color: color-mix(in srgb, var(--bbox-kind) 80%, var(--foreground)); }
+.bbox-kind-option { display: inline-flex; align-items: center; gap: 8px; min-width: 92px; }
+
+/* Ant Design 6 renders the selected icon directly inside content. */
+.bbox-editor .bbox-kind-select { height: 24px; align-self: center; padding-block: 0; }
+.bbox-editor .bbox-kind-select .ant-select-content {
+    display: grid;
+    align-items: center;
+    justify-items: center;
+    height: 22px;
+    min-height: 0;
+    line-height: 1;
+}
+.bbox-editor .bbox-kind-select .ant-select-content > svg {
+    display: block;
+    grid-area: 1 / 1;
+    align-self: center;
+    justify-self: center;
+    margin: 0;
+}
+.bbox-editor .bbox-kind-select .ant-select-input { grid-area: 1 / 1; min-width: 0; }

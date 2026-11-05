@@ -466,13 +466,25 @@ export function CanvasNodeBBoxLayoutDialog({
                                         <span className="bbox-layer-number inline-flex h-6 min-w-7 shrink-0 items-center justify-center rounded px-1 text-xs font-bold" aria-label={`Layer ${index + 1}`}>
                                             #{index + 1}
                                         </span>
-                                        <Select
-                                            size="small"
-                                            className="min-w-0 flex-1"
-                                            value={item.kind}
-                                            options={(["object", "character", "text"] as const).map((value) => ({ value, label: value }))}
-                                            onChange={(kind) => updateItem(item.id, { kind: kind as BBoxKind, text: kind === "text" ? item.text || "" : undefined })}
-                                        />
+                                        <Tooltip title={t(`canvas.bboxEditor.kind${item.kind === "object" ? "Object" : item.kind === "character" ? "Character" : "Text"}`)}>
+                                            <Select
+                                                size="small"
+                                                className="bbox-kind-select"
+                                                aria-label={t("canvas.bboxEditor.itemType")}
+                                                value={item.kind}
+                                                popupMatchSelectWidth={false}
+                                                optionLabelProp="selectedLabel"
+                                                options={(["object", "character", "text"] as const).map((value) => {
+                                                    const icon = value === "object" ? <Box size={14} /> : value === "character" ? <UserRound size={14} /> : <Type size={14} />;
+                                                    return {
+                                                        value,
+                                                        selectedLabel: icon,
+                                                        label: <span className="bbox-kind-option">{icon}{t(`canvas.bboxEditor.kind${value === "object" ? "Object" : value === "character" ? "Character" : "Text"}`)}</span>,
+                                                    };
+                                                })}
+                                                onChange={(kind) => updateItem(item.id, { kind: kind as BBoxKind, text: kind === "text" ? item.text || "" : undefined })}
+                                            />
+                                        </Tooltip>
                                         <Tooltip title={item.locked ? "Unlock" : "Lock"}>
                                             <Button
                                                 size="small"

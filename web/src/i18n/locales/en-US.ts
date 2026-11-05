@@ -541,6 +541,7 @@ export default {
             addObject: "Add object",
             addCharacter: "Add character",
             addText: "Add text",
+            itemType: "Item type",
             jsonTools: "JSON import and export",
             sizeLimit: "All quality-setting ratios and custom dimensions in multiples of 16 are supported. Generation dimensions depend on the selected model.",
             supportedSizeError: "Width and height must be positive integers divisible by 16.",

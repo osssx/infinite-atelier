@@ -541,6 +541,7 @@ export default {
             addObject: "添加物体",
             addCharacter: "添加人物",
             addText: "添加文字",
+            itemType: "项目类型",
             jsonTools: "JSON 导入与导出",
             sizeLimit: "支持质量设置中的全部比例，也可输入宽高均为 16 倍数的自定义尺寸。实际生成尺寸以所选模型支持范围为准。",
             supportedSizeError: "宽高必须为正整数且是 16 的倍数。",

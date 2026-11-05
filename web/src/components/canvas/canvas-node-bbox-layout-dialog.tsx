@@ -4,6 +4,7 @@ import { App, Button, Input, Modal, Select, Switch, Tooltip } from "antd";
 import { AlignCenterHorizontal, AlignCenterVertical, ArrowDown, ArrowUp, Copy, Eye, EyeOff, Lock, LockOpen, Redo2, Trash2, Undo2, ZoomIn, ZoomOut } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
+import { IMAGE_SIZE_PRESETS } from "@/lib/canvas/image-size-presets";
 import { useImageEditorViewport } from "@/components/canvas/use-image-editor-viewport";
 import {
     alignBboxItems,
@@ -32,11 +33,7 @@ import {
 type Gesture = { pointerId: number; startX: number; startY: number; original: BBoxLayout; itemId?: string; handle?: string; selection: string[]; newItem?: BBoxItem };
 type Point = { x: number; y: number };
 const handles = ["nw", "n", "ne", "e", "se", "s", "sw", "w"];
-const presets = [
-    { label: "Square · 1024 × 1024", width: 1024, height: 1024 },
-    { label: "Landscape · 1536 × 1024", width: 1536, height: 1024 },
-    { label: "Portrait · 1024 × 1536", width: 1024, height: 1536 },
-];
+const presets = IMAGE_SIZE_PRESETS;
 
 export function CanvasNodeBBoxLayoutDialog({
     open,
@@ -152,6 +149,7 @@ export function CanvasNodeBBoxLayoutDialog({
     };
 
     const openInlineEditor = (event: ReactMouseEvent<SVGSVGElement>, item: BBoxItem) => {
+        if (preview) return;
         event.preventDefault();
         event.stopPropagation();
         if (item.locked) {
@@ -183,6 +181,7 @@ export function CanvasNodeBBoxLayoutDialog({
     useEffect(() => {
         if (!open) return;
         const onKeyDown = (event: KeyboardEvent) => {
+            if (preview) return;
             if (event.target instanceof Element && event.target.closest("input,textarea,[contenteditable='true']")) return;
             const mod = event.metaKey || event.ctrlKey;
             if (mod && event.key.toLowerCase() === "z") {
@@ -236,6 +235,7 @@ export function CanvasNodeBBoxLayoutDialog({
             }
         };
         const onPaste = (event: ClipboardEvent) => {
+            if (preview) return;
             const target = event.target instanceof Element ? event.target : null;
             if (target?.closest("input,textarea,[contenteditable='true']")) return;
             const text = event.clipboardData?.getData("text/plain");
@@ -389,10 +389,167 @@ export function CanvasNodeBBoxLayoutDialog({
     };
 
     return (
-        <Modal open={open} title={t("canvas.bboxEditor.title")} onCancel={onClose} footer={null} width={1200} centered destroyOnHidden>
-            <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_360px]" data-canvas-no-zoom>
-                <section className="min-w-0">
-                    <div className="mb-2 flex flex-wrap items-center gap-2">
+        <Modal open={open} title={t("canvas.bboxEditor.title")} onCancel={onClose} footer={null} width="min(1400px, 94vw)" centered destroyOnHidden styles={{ body: { maxHeight: "calc(100dvh - 140px)", overflowY: "auto" } }}>
+            <div className="grid items-start gap-4 lg:grid-cols-[320px_minmax(0,1fr)_260px] xl:grid-cols-[320px_minmax(0,1fr)_260px]" data-canvas-no-zoom>
+                <section className="flex h-[min(60dvh,560px)] min-h-0 min-w-0 flex-col overflow-hidden rounded-xl border border-black/10 bg-black/[0.02] p-3 dark:border-white/10 dark:bg-white/[0.02] lg:h-[calc(100dvh-180px)]">
+                    <div className="thin-scrollbar min-h-0 flex-1 space-y-3 overflow-auto overscroll-contain pr-1">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                            <strong>{t("canvas.bboxEditor.canvasItems")}</strong>
+                            <div className="flex gap-1">
+                                {(["object", "character", "text"] as const).map((kind) => (
+                                    <Button key={kind} size="small" onClick={() => addItem(kind)}>
+                                        + {kind}
+                                    </Button>
+                                ))}
+                            </div>
+                        </div>
+                        <div className="space-y-2">
+                            {layout.items.map((item, index) => (
+                                <div
+                                    key={item.id}
+                                    data-bbox-id={item.id}
+                                    draggable
+                                    onDragStart={() => {
+                                        draggedLayer.current = item.id;
+                                    }}
+                                    onDragOver={(event) => event.preventDefault()}
+                                    onDrop={(event) => {
+                                        event.preventDefault();
+                                        const source = layout.items.findIndex((candidate) => candidate.id === draggedLayer.current),
+                                            target = layout.items.findIndex((candidate) => candidate.id === item.id);
+                                        if (source < 0 || target < 0 || source === target) return;
+                                        const items = [...layout.items];
+                                        const [moving] = items.splice(source, 1);
+                                        items.splice(target, 0, moving);
+                                        commit({ ...layout, items });
+                                        draggedLayer.current = null;
+                                    }}
+                                    onDragEnd={() => {
+                                        draggedLayer.current = null;
+                                    }}
+                                    className={`rounded-lg border p-2 ${selected.includes(item.id) ? "border-sky-500" : "border-black/10 dark:border-white/10"}`}
+                                    onClick={() => setSelected([item.id])}
+                                >
+                                    <div className="mb-2 flex flex-wrap items-center gap-1">
+                                        <span className="inline-flex h-6 min-w-7 shrink-0 items-center justify-center rounded bg-slate-200 px-1 text-xs font-bold text-slate-800 dark:bg-slate-700 dark:text-white" aria-label={`Layer ${index + 1}`}>
+                                            #{index + 1}
+                                        </span>
+                                        <Select
+                                            size="small"
+                                            className="min-w-0 flex-1"
+                                            value={item.kind}
+                                            options={(["object", "character", "text"] as const).map((value) => ({ value, label: value }))}
+                                            onChange={(kind) => updateItem(item.id, { kind: kind as BBoxKind, text: kind === "text" ? item.text || "" : undefined })}
+                                        />
+                                        <Tooltip title={item.locked ? "Unlock" : "Lock"}>
+                                            <Button
+                                                size="small"
+                                                title={t(item.locked ? "canvas.bboxEditor.unlock" : "canvas.bboxEditor.lock")}
+                                                aria-label={t(item.locked ? "canvas.bboxEditor.unlock" : "canvas.bboxEditor.lock")}
+                                                icon={item.locked ? <Lock size={14} /> : <LockOpen size={14} />}
+                                                onClick={() => updateItem(item.id, { locked: !item.locked })}
+                                            />
+                                        </Tooltip>
+                                        <Button
+                                            size="small"
+                                            title={t(item.hidden ? "canvas.bboxEditor.show" : "canvas.bboxEditor.hide")}
+                                            aria-label={t(item.hidden ? "canvas.bboxEditor.show" : "canvas.bboxEditor.hide")}
+                                            icon={item.hidden ? <EyeOff size={14} /> : <Eye size={14} />}
+                                            onClick={() => updateItem(item.id, { hidden: !item.hidden })}
+                                        />
+                                        <Button
+                                            size="small"
+                                            title={t("canvas.bboxEditor.moveUp")}
+                                            aria-label={t("canvas.bboxEditor.moveUp")}
+                                            icon={<ArrowUp size={14} />}
+                                            disabled={index === layout.items.length - 1}
+                                            onClick={() => {
+                                                const items = [...layout.items];
+                                                [items[index], items[index + 1]] = [items[index + 1], items[index]];
+                                                commit({ ...layout, items });
+                                            }}
+                                        />
+                                        <Button
+                                            size="small"
+                                            title={t("canvas.bboxEditor.moveDown")}
+                                            aria-label={t("canvas.bboxEditor.moveDown")}
+                                            icon={<ArrowDown size={14} />}
+                                            disabled={index === 0}
+                                            onClick={() => {
+                                                const items = [...layout.items];
+                                                [items[index], items[index - 1]] = [items[index - 1], items[index]];
+                                                commit({ ...layout, items });
+                                            }}
+                                        />
+                                        <Button size="small" title={t("canvas.bboxEditor.duplicate")} aria-label={t("canvas.bboxEditor.duplicate")} icon={<Copy size={14} />} onClick={() => duplicate(item)} />
+                                        <Button
+                                            danger
+                                            size="small"
+                                            title={t("canvas.bboxEditor.delete")}
+                                            aria-label={t("canvas.bboxEditor.delete")}
+                                            icon={<Trash2 size={14} />}
+                                            onClick={() => {
+                                                commit({ ...layout, items: layout.items.filter((candidate) => candidate.id !== item.id) });
+                                                setSelected([]);
+                                            }}
+                                        />
+                                    </div>
+                                    <div className="grid grid-cols-4 gap-1">
+                                        {(["x1", "y1", "x2", "y2"] as const).map((key) => (
+                                            <label className="text-[10px] opacity-70" key={key}>
+                                                {key}
+                                                <Input
+                                                    size="small"
+                                                    type="number"
+                                                    min={key === "x1" || key === "y1" ? 0 : undefined}
+                                                    max={key === "x1" ? item.x2 - 1 : key === "y1" ? item.y2 - 1 : key === "x2" ? layout.width : layout.height}
+                                                    value={Math.round(item[key])}
+                                                    onChange={(event) => updateItem(item.id, { [key]: Number(event.target.value) })}
+                                                />
+                                            </label>
+                                        ))}
+                                    </div>
+                                    <Input.TextArea className="mt-2" size="small" rows={2} placeholder={t("canvas.bboxEditor.itemCaption")} value={item.caption} onChange={(event) => updateItem(item.id, { caption: event.target.value })} />
+                                    {item.kind === "text" ? (
+                                        <Input.TextArea className="mt-2" size="small" rows={2} placeholder={t("canvas.bboxEditor.exactText")} value={item.text} onChange={(event) => updateItem(item.id, { text: event.target.value })} />
+                                    ) : null}
+                                    <div className="mt-1 grid grid-cols-2 gap-1">
+                                        <Input
+                                            size="small"
+                                            placeholder={t("canvas.bboxEditor.tags")}
+                                            value={item.tags?.join(", ") || ""}
+                                            onChange={(event) =>
+                                                updateItem(item.id, {
+                                                    tags: event.target.value
+                                                        .split(",")
+                                                        .map((value) => value.trim())
+                                                        .filter(Boolean),
+                                                })
+                                            }
+                                        />
+                                        <Input
+                                            size="small"
+                                            placeholder={t("canvas.bboxEditor.palette")}
+                                            value={item.palette?.join(", ") || ""}
+                                            onChange={(event) =>
+                                                updateItem(item.id, {
+                                                    palette: event.target.value
+                                                        .split(",")
+                                                        .map((value) => value.trim())
+                                                        .filter(Boolean),
+                                                })
+                                            }
+                                        />
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                        {selected.length > 1 ? <MultiSelectionTools layout={layout} selected={selected} onCommit={commit} /> : null}
+                    </div>
+                </section>
+
+                <section className="flex min-h-0 min-w-0 flex-col lg:sticky lg:top-0 lg:h-[calc(100dvh-180px)]">
+                    <div role="toolbar" className="thin-scrollbar mb-2 flex shrink-0 items-center gap-2 overflow-x-auto whitespace-nowrap rounded-lg border border-black/10 p-2 text-xs dark:border-white/10 [&>*]:shrink-0" title={t("canvas.bboxEditor.panHint")}>
                         <Button size="small" title={t("canvas.bboxEditor.undo")} aria-label={t("canvas.bboxEditor.undo")} icon={<Undo2 size={15} />} disabled={!history.length} onClick={undo} />
                         <Button size="small" title={t("canvas.bboxEditor.redo")} aria-label={t("canvas.bboxEditor.redo")} icon={<Redo2 size={15} />} disabled={!future.length} onClick={redo} />
                         <Button size="small" title={t("canvas.bboxEditor.zoomOut")} aria-label={t("canvas.bboxEditor.zoomOut")} icon={<ZoomOut size={15} />} onClick={viewport.zoomOut} disabled={!viewport.canZoomOut} />
@@ -400,6 +557,7 @@ export function CanvasNodeBBoxLayoutDialog({
                         <Button size="small" title={t("canvas.bboxEditor.zoomIn")} aria-label={t("canvas.bboxEditor.zoomIn")} icon={<ZoomIn size={15} />} onClick={viewport.zoomIn} disabled={!viewport.canZoomIn} />
                         <Select
                             size="small"
+                            disabled={preview}
                             value={drawKind ?? "select"}
                             onChange={(value) => setDrawKind(value === "select" ? null : (value as BBoxKind))}
                             options={[
@@ -409,12 +567,29 @@ export function CanvasNodeBBoxLayoutDialog({
                                 { value: "text", label: t("canvas.bboxEditor.drawText") },
                             ]}
                         />
-                        <span className="text-xs opacity-65">{t("canvas.bboxEditor.panHint")}</span>
+                        <span aria-hidden="true" className="h-4 border-l border-black/15 dark:border-white/15" />
+                        <span>
+                            {layout.width} × {layout.height}px
+                        </span>
+                        <label className="flex items-center gap-2">
+                            {t("canvas.bboxEditor.snap")} <Switch size="small" disabled={preview} checked={snap} onChange={setSnap} />
+                        </label>
+                        <label className="flex items-center gap-2">
+                            {t("canvas.bboxEditor.grid16")} <Switch size="small" disabled={preview} checked={grid} onChange={setGrid} />
+                        </label>
+                        <Button size="small" type={preview ? "primary" : "default"} aria-pressed={preview} title={t("canvas.bboxEditor.previewHint")} icon={<Eye size={14} />} onClick={() => {
+                            setEditingItemId(null);
+                            setDrawKind(null);
+                            setMarquee(null);
+                            setPreview((value) => !value);
+                        }}>
+                            {preview ? t("canvas.bboxEditor.edit") : t("canvas.bboxEditor.preview")}
+                        </Button>
                     </div>
                     <div
                         ref={viewport.viewportRef}
                         {...viewport.panHandlers}
-                        className={`relative h-[min(66vh,680px)] min-h-[360px] rounded-lg border border-black/15 bg-neutral-100 dark:border-white/15 dark:bg-neutral-900 ${viewport.scrollClassName} ${viewport.spacePressed ? "cursor-grab" : ""}`}
+                        className={`relative h-[clamp(240px,55dvh,600px)] min-h-0 lg:h-auto lg:flex-1 rounded-lg border border-black/15 bg-neutral-100 dark:border-white/15 dark:bg-neutral-900 ${viewport.scrollClassName} ${viewport.spacePressed ? "cursor-grab" : ""}`}
                     >
                         <div className="relative" style={viewport.contentStyle}>
                             <div ref={viewport.stageRef} className="absolute overflow-hidden rounded bg-white shadow-sm" style={viewport.stageStyle}>
@@ -570,43 +745,17 @@ export function CanvasNodeBBoxLayoutDialog({
                             </div>
                         </div>
                     </div>
-                    <div className="mt-2 flex flex-wrap items-center gap-4 text-xs">
-                        <span>
-                            {layout.width} × {layout.height}px
-                        </span>
-                        <label className="flex items-center gap-2">
-                            {t("canvas.bboxEditor.snap")} <Switch size="small" checked={snap} onChange={setSnap} />
-                        </label>
-                        <label className="flex items-center gap-2">
-                            {t("canvas.bboxEditor.grid16")} <Switch size="small" checked={grid} onChange={setGrid} />
-                        </label>
-                        <Button size="small" icon={<Eye size={14} />} onClick={() => setPreview(!preview)}>
-                            {preview ? t("canvas.bboxEditor.edit") : t("canvas.bboxEditor.preview")}
-                        </Button>
-                    </div>
                 </section>
 
-                <section className="flex max-h-[72vh] min-h-0 flex-col">
-                    <div className="thin-scrollbar min-h-0 flex-1 space-y-3 overflow-auto pr-1">
-                        <div className="flex items-center justify-between">
-                            <strong>{t("canvas.bboxEditor.canvasItems")}</strong>
-                            <div className="flex gap-1">
-                                {(["object", "character", "text"] as const).map((kind) => (
-                                    <Button key={kind} size="small" onClick={() => addItem(kind)}>
-                                        + {kind}
-                                    </Button>
-                                ))}
-                            </div>
-                        </div>
+                <section className="flex h-[min(60dvh,560px)] min-h-0 min-w-0 flex-col overflow-hidden rounded-xl border border-black/10 bg-black/[0.02] p-3 dark:border-white/10 dark:bg-white/[0.02] lg:h-[calc(100dvh-180px)]">
+                    <div className="thin-scrollbar min-h-0 flex-1 space-y-3 overflow-auto overscroll-contain pr-1">
                         <label className="block text-xs">
                             {t("canvas.bboxEditor.generationSize")}{" "}
                             <Select
                                 className="w-full"
                                 value={presets.some((size) => size.width === layout.width && size.height === layout.height) ? `${layout.width}x${layout.height}` : "custom"}
                                 options={[
-                                    { value: "1024x1024", label: t("canvas.bboxEditor.square") },
-                                    { value: "1536x1024", label: t("canvas.bboxEditor.landscape") },
-                                    { value: "1024x1536", label: t("canvas.bboxEditor.portrait") },
+                                    ...presets.map((size) => ({ value: `${size.width}x${size.height}`, label: `${size.ratio} · ${size.width} × ${size.height}` })),
                                     { value: "custom", label: t("canvas.bboxEditor.customDraft", { width: layout.width, height: layout.height }) },
                                 ]}
                                 onChange={(value) => {
@@ -631,184 +780,47 @@ export function CanvasNodeBBoxLayoutDialog({
                             {t("canvas.bboxEditor.globalCaption")}
                             <Input.TextArea data-bbox-global-caption rows={2} value={layout.summary.caption} onChange={(event) => commit({ ...layout, summary: { ...layout.summary, caption: event.target.value } })} />
                         </label>
-                        <div className="space-y-2">
-                            {layout.items.map((item, index) => (
-                                <div
-                                    key={item.id}
-                                    data-bbox-id={item.id}
-                                    draggable
-                                    onDragStart={() => {
-                                        draggedLayer.current = item.id;
-                                    }}
-                                    onDragOver={(event) => event.preventDefault()}
-                                    onDrop={(event) => {
-                                        event.preventDefault();
-                                        const source = layout.items.findIndex((candidate) => candidate.id === draggedLayer.current),
-                                            target = layout.items.findIndex((candidate) => candidate.id === item.id);
-                                        if (source < 0 || target < 0 || source === target) return;
-                                        const items = [...layout.items];
-                                        const [moving] = items.splice(source, 1);
-                                        items.splice(target, 0, moving);
-                                        commit({ ...layout, items });
-                                        draggedLayer.current = null;
-                                    }}
-                                    onDragEnd={() => {
-                                        draggedLayer.current = null;
-                                    }}
-                                    className={`rounded-lg border p-2 ${selected.includes(item.id) ? "border-sky-500" : "border-black/10 dark:border-white/10"}`}
-                                    onClick={() => setSelected([item.id])}
-                                >
-                                    <div className="mb-2 flex items-center gap-1">
-                                        <span className="inline-flex h-6 min-w-7 shrink-0 items-center justify-center rounded bg-slate-200 px-1 text-xs font-bold text-slate-800 dark:bg-slate-700 dark:text-white" aria-label={`Layer ${index + 1}`}>
-                                            #{index + 1}
-                                        </span>
-                                        <Select
-                                            size="small"
-                                            className="min-w-0 flex-1"
-                                            value={item.kind}
-                                            options={(["object", "character", "text"] as const).map((value) => ({ value, label: value }))}
-                                            onChange={(kind) => updateItem(item.id, { kind: kind as BBoxKind, text: kind === "text" ? item.text || "" : undefined })}
-                                        />
-                                        <Tooltip title={item.locked ? "Unlock" : "Lock"}>
-                                            <Button
-                                                size="small"
-                                                title={t(item.locked ? "canvas.bboxEditor.unlock" : "canvas.bboxEditor.lock")}
-                                                aria-label={t(item.locked ? "canvas.bboxEditor.unlock" : "canvas.bboxEditor.lock")}
-                                                icon={item.locked ? <Lock size={14} /> : <LockOpen size={14} />}
-                                                onClick={() => updateItem(item.id, { locked: !item.locked })}
-                                            />
-                                        </Tooltip>
-                                        <Button
-                                            size="small"
-                                            title={t(item.hidden ? "canvas.bboxEditor.show" : "canvas.bboxEditor.hide")}
-                                            aria-label={t(item.hidden ? "canvas.bboxEditor.show" : "canvas.bboxEditor.hide")}
-                                            icon={item.hidden ? <EyeOff size={14} /> : <Eye size={14} />}
-                                            onClick={() => updateItem(item.id, { hidden: !item.hidden })}
-                                        />
-                                        <Button
-                                            size="small"
-                                            title={t("canvas.bboxEditor.moveUp")}
-                                            aria-label={t("canvas.bboxEditor.moveUp")}
-                                            icon={<ArrowUp size={14} />}
-                                            disabled={index === layout.items.length - 1}
-                                            onClick={() => {
-                                                const items = [...layout.items];
-                                                [items[index], items[index + 1]] = [items[index + 1], items[index]];
-                                                commit({ ...layout, items });
-                                            }}
-                                        />
-                                        <Button
-                                            size="small"
-                                            title={t("canvas.bboxEditor.moveDown")}
-                                            aria-label={t("canvas.bboxEditor.moveDown")}
-                                            icon={<ArrowDown size={14} />}
-                                            disabled={index === 0}
-                                            onClick={() => {
-                                                const items = [...layout.items];
-                                                [items[index], items[index - 1]] = [items[index - 1], items[index]];
-                                                commit({ ...layout, items });
-                                            }}
-                                        />
-                                        <Button size="small" title={t("canvas.bboxEditor.duplicate")} aria-label={t("canvas.bboxEditor.duplicate")} icon={<Copy size={14} />} onClick={() => duplicate(item)} />
-                                        <Button
-                                            danger
-                                            size="small"
-                                            title={t("canvas.bboxEditor.delete")}
-                                            aria-label={t("canvas.bboxEditor.delete")}
-                                            icon={<Trash2 size={14} />}
-                                            onClick={() => {
-                                                commit({ ...layout, items: layout.items.filter((candidate) => candidate.id !== item.id) });
-                                                setSelected([]);
-                                            }}
-                                        />
-                                    </div>
-                                    <div className="grid grid-cols-4 gap-1">
-                                        {(["x1", "y1", "x2", "y2"] as const).map((key) => (
-                                            <label className="text-[10px] opacity-70" key={key}>
-                                                {key}
-                                                <Input
-                                                    size="small"
-                                                    type="number"
-                                                    min={key === "x1" || key === "y1" ? 0 : undefined}
-                                                    max={key === "x1" ? item.x2 - 1 : key === "y1" ? item.y2 - 1 : key === "x2" ? layout.width : layout.height}
-                                                    value={Math.round(item[key])}
-                                                    onChange={(event) => updateItem(item.id, { [key]: Number(event.target.value) })}
-                                                />
-                                            </label>
-                                        ))}
-                                    </div>
-                                    <Input.TextArea className="mt-2" size="small" rows={2} placeholder={t("canvas.bboxEditor.itemCaption")} value={item.caption} onChange={(event) => updateItem(item.id, { caption: event.target.value })} />
-                                    {item.kind === "text" ? (
-                                        <Input.TextArea className="mt-2" size="small" rows={2} placeholder={t("canvas.bboxEditor.exactText")} value={item.text} onChange={(event) => updateItem(item.id, { text: event.target.value })} />
-                                    ) : null}
-                                    <div className="mt-1 grid grid-cols-2 gap-1">
-                                        <Input
-                                            size="small"
-                                            placeholder={t("canvas.bboxEditor.tags")}
-                                            value={item.tags?.join(", ") || ""}
-                                            onChange={(event) =>
-                                                updateItem(item.id, {
-                                                    tags: event.target.value
-                                                        .split(",")
-                                                        .map((value) => value.trim())
-                                                        .filter(Boolean),
-                                                })
-                                            }
-                                        />
-                                        <Input
-                                            size="small"
-                                            placeholder={t("canvas.bboxEditor.palette")}
-                                            value={item.palette?.join(", ") || ""}
-                                            onChange={(event) =>
-                                                updateItem(item.id, {
-                                                    palette: event.target.value
-                                                        .split(",")
-                                                        .map((value) => value.trim())
-                                                        .filter(Boolean),
-                                                })
-                                            }
-                                        />
-                                    </div>
+                        <details className="rounded-lg border border-black/10 p-3 dark:border-white/10">
+                            <summary className="cursor-pointer text-xs font-medium">{t("canvas.bboxEditor.jsonTools")}</summary>
+                            <div className="mt-3 space-y-3">
+                                <div className="flex flex-wrap gap-2">
+                                    <Button onClick={() => fileRef.current?.click()}>{t("canvas.bboxEditor.importJson")}</Button>
+                                    <Button
+                                        onClick={() => {
+                                            const blob = new Blob([JSON.stringify(layout, null, 2)], { type: "application/json" });
+                                            const url = URL.createObjectURL(blob);
+                                            const anchor = document.createElement("a");
+                                            anchor.href = url;
+                                            anchor.download = "bbox-layout.json";
+                                            anchor.click();
+                                            URL.revokeObjectURL(url);
+                                        }}
+                                    >
+                                        {t("canvas.bboxEditor.exportDraft")}
+                                    </Button>
+                                    <Button onClick={() => void navigator.clipboard.writeText(json).then(() => message.success(t("canvas.bboxEditor.copied")))}>{t("canvas.bboxEditor.copyModelJson")}</Button>
                                 </div>
-                            ))}
-                        </div>
-                        {selected.length > 1 ? <MultiSelectionTools layout={layout} selected={selected} onCommit={commit} /> : null}
-                        <div className="flex flex-wrap gap-2">
-                            <Button onClick={() => fileRef.current?.click()}>{t("canvas.bboxEditor.importJson")}</Button>
-                            <Button
-                                onClick={() => {
-                                    const blob = new Blob([JSON.stringify(layout, null, 2)], { type: "application/json" });
-                                    const url = URL.createObjectURL(blob);
-                                    const anchor = document.createElement("a");
-                                    anchor.href = url;
-                                    anchor.download = "bbox-layout.json";
-                                    anchor.click();
-                                    URL.revokeObjectURL(url);
-                                }}
-                            >
-                                {t("canvas.bboxEditor.exportDraft")}
-                            </Button>
-                            <Button onClick={() => void navigator.clipboard.writeText(json).then(() => message.success(t("canvas.bboxEditor.copied")))}>{t("canvas.bboxEditor.copyModelJson")}</Button>
-                        </div>
-                        <textarea className="w-full rounded border border-black/15 bg-transparent p-2 font-mono text-xs" rows={5} readOnly value={json} />
-                        <Input.TextArea rows={3} placeholder={t("canvas.bboxEditor.pasteJson")} value={pasteJson} onChange={(event) => setPasteJson(event.target.value)} />
-                        <Button disabled={!pasteJson.trim()} onClick={() => void importText(pasteJson)}>
-                            {t("canvas.bboxEditor.importPasted")}
-                        </Button>
-                        <input
-                            ref={fileRef}
-                            type="file"
-                            accept="application/json,.json"
-                            hidden
-                            onChange={(event) => {
-                                const file = event.target.files?.[0];
-                                if (file) void file.text().then(importText);
-                                event.target.value = "";
-                            }}
-                        />
+                                <textarea className="w-full rounded border border-black/15 bg-transparent p-2 font-mono text-xs" rows={5} readOnly value={json} />
+                                <Input.TextArea rows={3} placeholder={t("canvas.bboxEditor.pasteJson")} value={pasteJson} onChange={(event) => setPasteJson(event.target.value)} />
+                                <Button disabled={!pasteJson.trim()} onClick={() => void importText(pasteJson)}>
+                                    {t("canvas.bboxEditor.importPasted")}
+                                </Button>
+                                <input
+                                    ref={fileRef}
+                                    type="file"
+                                    accept="application/json,.json"
+                                    hidden
+                                    onChange={(event) => {
+                                        const file = event.target.files?.[0];
+                                        if (file) void file.text().then(importText);
+                                        event.target.value = "";
+                                    }}
+                                />
+                            </div>
+                        </details>
                     </div>
                     {error ? <div className="text-sm text-red-500">{error}</div> : null}
-                    <div className="mt-3 flex justify-end gap-2 border-t pt-3">
+                    <div className="mt-3 flex shrink-0 justify-end gap-2 border-t pt-3">
                         <Button onClick={onClose}>{t("common.cancel")}</Button>
                         <Button type="primary" disabled={!canApplySize} onClick={apply}>
                             {t("canvas.bboxEditor.apply")}

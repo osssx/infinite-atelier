@@ -1,3 +1,5 @@
+import { IMAGE_SIZE_PRESETS } from "./image-size-presets";
+import { isSupportedBboxGenerationSize } from "./bbox-layout";
 import { describe, expect, it } from "vitest";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
 import {
@@ -87,8 +89,21 @@ describe("BBox layout model and geometry", () => {
         expect(resized.items[1].y1).toBeCloseTo(265.2);
         expect(resized.items[1].x2).toBeCloseTo((800.1 * 2) / 3);
         expect(resized.items[1].y2).toBeCloseTo(720.3);
-        expect(initialBboxSize("16:9")).toEqual([1536, 1024]);
+        expect(initialBboxSize("16:9")).toEqual([1536, 864]);
         expect(initialBboxSize("auto")).toEqual([1024, 1024]);
+    });
+
+    it("preserves all prompt-panel ratios and accepts aligned custom dimensions", () => {
+        for (const preset of IMAGE_SIZE_PRESETS) {
+            expect(initialBboxSize(preset.ratio)).toEqual([preset.width, preset.height]);
+            const [w, h] = preset.ratio.split(":").map(Number);
+            expect(preset.width / preset.height).toBeCloseTo(w / h, 8);
+            expect(isSupportedBboxGenerationSize(preset.width, preset.height)).toBe(true);
+        }
+        expect(initialBboxSize("2048x1152")).toEqual([2048, 1152]);
+        expect(isSupportedBboxGenerationSize(2048, 1152)).toBe(true);
+        expect(isSupportedBboxGenerationSize(1025, 1024)).toBe(false);
+        expect(isSupportedBboxGenerationSize(0, 1024)).toBe(false);
     });
 
     it("rejects invalid bounds, empty visible layouts, blank exact text, nested imports, and bad dimensions", () => {

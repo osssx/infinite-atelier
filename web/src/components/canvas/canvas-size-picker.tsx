@@ -4,7 +4,9 @@ import { useTranslation } from "react-i18next";
 
 import { cn } from "@/lib/utils";
 
-const sizeOptions = ["auto", "1:1", "3:2", "2:3", "4:3", "3:4", "16:9", "9:16"];
+import { IMAGE_SIZE_PRESETS } from "@/lib/canvas/image-size-presets";
+
+const sizeOptions: string[] = ["auto", ...IMAGE_SIZE_PRESETS.map((size) => size.ratio)];
 
 type CanvasSizePickerProps = {
     value: string;

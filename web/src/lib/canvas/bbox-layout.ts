@@ -1,3 +1,4 @@
+import { IMAGE_SIZE_PRESETS } from "./image-size-presets";
 import type { CanvasNodeMetadata } from "@/types/canvas";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData } from "@/types/canvas";
 
@@ -265,26 +266,15 @@ export function initialBboxSize(value?: string): [number, number] {
             h = Number(match[2]);
         if (validBboxSize(w, h)) return [w, h];
     }
-    const sizes: Record<string, [number, number]> = {
-        "1:1": [1024, 1024],
-        "3:2": [1536, 1024],
-        "16:9": [1536, 1024],
-        "4:3": [1536, 1024],
-        "2:3": [1024, 1536],
-        "9:16": [1024, 1536],
-        "3:4": [1024, 1536],
-        "1024x1024": [1024, 1024],
-        "1536x1024": [1536, 1024],
-        "1024x1536": [1024, 1536],
-    };
-    if (value && sizes[value]) return sizes[value];
+    const preset = IMAGE_SIZE_PRESETS.find((size) => size.ratio === value);
+    if (preset) return [preset.width, preset.height];
     return [1024, 1024];
 }
 
 export type BBoxMetadata = CanvasNodeMetadata & { bboxLayout?: BBoxLayout };
 
 export function isSupportedBboxGenerationSize(width: number, height: number) {
-    return (width === 1024 && height === 1024) || (width === 1536 && height === 1024) || (width === 1024 && height === 1536);
+    return validBboxSize(width, height);
 }
 
 export function applyBboxLayoutToGraph(args: {

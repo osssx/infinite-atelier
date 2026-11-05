@@ -828,6 +828,7 @@ export default {
             },
         },
         controls: {
+            syncPlay: "Play videos together",
             ratio: "Ratio",
             duplicate: "Duplicate Node",
             delete: "Delete Node",

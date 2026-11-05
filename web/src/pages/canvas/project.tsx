@@ -1,3 +1,4 @@
+import { playCanvasVideosFromStart } from "@/lib/canvas/video-sync-playback";
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent as ReactChangeEvent, DragEvent as ReactDragEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react";
 import { useNavigate, useParams } from "react-router-dom";
@@ -3557,6 +3558,11 @@ function AtelierCanvasPage() {
                 {contextMenu ? (
                     <CanvasNodeContextMenu
                         menu={contextMenu}
+                        onSyncPlay={contextMenu.type === "node" && selectedNodeIds.has(contextMenu.nodeId) && nodes.filter((node) => selectedNodeIds.has(node.id) && node.type === CanvasNodeType.Video).length > 1 ? () => {
+                            const ids = nodesRef.current.filter((node) => selectedNodeIdsRef.current.has(node.id) && node.type === CanvasNodeType.Video && node.metadata?.content).map((node) => node.id);
+                            void playCanvasVideosFromStart(ids);
+                            setContextMenu(null);
+                        } : undefined}
                         onClose={() => setContextMenu(null)}
                         onDuplicate={() => {
                             if (contextMenu.type !== "node") return;

@@ -827,6 +827,7 @@ export default {
             },
         },
         controls: {
+            syncPlay: "同步播放",
             ratio: "比例",
             duplicate: "复制节点",
             delete: "删除节点",

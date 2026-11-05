@@ -1,3 +1,4 @@
+import { registerCanvasVideoPlayer } from "@/lib/canvas/video-sync-playback";
 import { CanvasExecutionHalo } from "./canvas-execution-halo";
 import { isNativeDescendantEvent } from "@/lib/canvas/canvas-portal-events";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -850,6 +851,28 @@ function VideoNodeContent({ node, theme, onMediaPlaybackChange }: NodeContentRen
             onMediaPlaybackChange?.(node.id, false);
         });
     };
+
+    useEffect(() => {
+        if (!source) return;
+        return registerCanvasVideoPlayer(node.id, {
+            prepare: () => {
+                const video = videoRef.current;
+                if (!video) return async () => {};
+                video.pause();
+                setFailed(false);
+                setRequested(true);
+                if (video.getAttribute("src") !== source) video.src = source;
+                else if (video.error) video.load();
+                video.currentTime = 0;
+                video.playbackRate = 1;
+                return () => video.play().catch(() => {
+                    setFailed(true);
+                    setRequested(false);
+                    onMediaPlaybackChange?.(node.id, false);
+                });
+            },
+        });
+    }, [node.id, source, onMediaPlaybackChange]);
 
     if (!source)
         return (

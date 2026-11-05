@@ -1081,21 +1081,33 @@ function AtelierCanvasPage() {
     }, [cleanupCanvasFiles, deselectCanvas, projectId]);
 
     const duplicateNode = useCallback((nodeId: string) => {
-        const source = nodesRef.current.find((node) => node.id === nodeId);
-        if (!source) return;
+        const selected = selectedNodeIdsRef.current;
+        const targetIds = selected.has(nodeId) ? selected : new Set([nodeId]);
+        const sources = nodesRef.current.filter((node) => targetIds.has(node.id));
+        if (!sources.length) return;
 
-        const id = `${source.type}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-        const next: CanvasNodeData = {
+        const idMap = new Map(sources.map((node) => [node.id, `${node.type}-${crypto.randomUUID()}`]));
+        const copies: CanvasNodeData[] = sources.map((source) => ({
             ...source,
-            id,
+            id: idMap.get(source.id)!,
             title: `${source.title} Copy`,
             position: { x: source.position.x + 36, y: source.position.y + 36 },
-        };
+            metadata: source.metadata ? {
+                ...source.metadata,
+                ...(source.metadata.groupId ? { groupId: idMap.get(source.metadata.groupId) ?? source.metadata.groupId } : {}),
+            } : undefined,
+        }));
+        const copiedConnections = connectionsRef.current.flatMap((connection) => {
+            const fromNodeId = idMap.get(connection.fromNodeId);
+            const toNodeId = idMap.get(connection.toNodeId);
+            return fromNodeId && toNodeId ? [{ ...connection, id: `conn-${crypto.randomUUID()}`, fromNodeId, toNodeId }] : [];
+        });
 
-        setNodes((prev) => [...prev, next]);
-        setSelectedNodeIds(new Set([id]));
+        setNodes((prev) => [...prev, ...copies]);
+        setConnections((prev) => [...prev, ...copiedConnections]);
+        setSelectedNodeIds(new Set(copies.map((node) => node.id)));
         setSelectedConnectionId(null);
-        if (next.type !== CanvasNodeType.Group) setDialogNodeId(id);
+        setDialogNodeId(copies.length === 1 && copies[0].type !== CanvasNodeType.Group ? copies[0].id : null);
     }, []);
 
     const copySelectedNodes = useCallback(() => {

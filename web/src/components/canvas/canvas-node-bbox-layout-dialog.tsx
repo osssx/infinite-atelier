@@ -708,26 +708,6 @@ export function CanvasNodeBBoxLayoutDialog({
                                                         )}
                                                     </div>
                                                 </foreignObject>
-                                                {selected.includes(item.id) && !item.locked && !preview
-                                                    ? handles.map((handle) => {
-                                                          const x = handle.includes("w") ? item.x1 : handle.includes("e") ? item.x2 : (item.x1 + item.x2) / 2;
-                                                          const y = handle.includes("n") ? item.y1 : handle.includes("s") ? item.y2 : (item.y1 + item.y2) / 2;
-                                                          return (
-                                                              <circle
-                                                                  key={handle}
-                                                                  cx={x}
-                                                                  cy={y}
-                                                                  r={5 / scale}
-                                                                  fill="white"
-                                                                  stroke="#0284c7"
-                                                                  strokeWidth={2}
-                                                                  vectorEffect="non-scaling-stroke"
-                                                                  style={{ cursor: `${handle}-resize` }}
-                                                                  onPointerDown={(event) => begin(event, item.id, handle)}
-                                                              />
-                                                          );
-                                                      })
-                                                    : null}
                                             </g>
                                         );
                                     })}
@@ -751,6 +731,42 @@ export function CanvasNodeBBoxLayoutDialog({
                                             pointerEvents="none"
                                         />
                                     ) : null}
+                                    {/* Selection controls render last, above every content layer. */}
+                                    {!preview ? layout.items.filter((item) => selected.includes(item.id) && !item.hidden).map((item) => (
+                                        <g key={`selection-${item.id}`} data-bbox-canvas-id={item.id}>
+                                            <rect
+                                                x={item.x1}
+                                                y={item.y1}
+                                                width={Math.max(1, item.x2 - item.x1)}
+                                                height={Math.max(1, item.y2 - item.y1)}
+                                                fill="none"
+                                                stroke="#0ea5e9"
+                                                strokeWidth={2}
+                                                vectorEffect="non-scaling-stroke"
+                                                pointerEvents="stroke"
+                                                className={item.locked ? "" : "cursor-move"}
+                                                onPointerDown={(event) => begin(event, item.id)}
+                                            />
+                                            {!item.locked ? handles.map((handle) => {
+                                                const x = handle.includes("w") ? item.x1 : handle.includes("e") ? item.x2 : (item.x1 + item.x2) / 2;
+                                                const y = handle.includes("n") ? item.y1 : handle.includes("s") ? item.y2 : (item.y1 + item.y2) / 2;
+                                                return (
+                                                    <circle
+                                                        key={handle}
+                                                        cx={x}
+                                                        cy={y}
+                                                        r={5 / Math.max(viewport.imageScale, 0.001)}
+                                                        fill="white"
+                                                        stroke="#0284c7"
+                                                        strokeWidth={2}
+                                                        vectorEffect="non-scaling-stroke"
+                                                        style={{ cursor: `${handle}-resize` }}
+                                                        onPointerDown={(event) => begin(event, item.id, handle)}
+                                                    />
+                                                );
+                                            }) : null}
+                                        </g>
+                                    )) : null}
                                 </svg>
                             </div>
                         </div>

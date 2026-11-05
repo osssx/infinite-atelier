@@ -66,3 +66,10 @@
 .bbox-json-preview { min-width: 0; margin-top: 2px; }
 .bbox-json-preview summary { cursor: pointer; padding: 4px 0; color: var(--muted-foreground); font-size: 11px; }
 .bbox-json-preview textarea { display: block; width: 100%; max-width: 100%; margin-top: 6px; border: 1px solid var(--border); border-radius: 7px; padding: 8px; background: var(--muted); color: var(--foreground); font: 10px/1.6 ui-monospace, monospace; resize: vertical; max-height: 260px; }
+
+.bbox-add-tools { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; width: 100%; }
+.bbox-editor .bbox-add-button { --bbox-kind: #3b82f6; display: inline-flex; align-items: center; justify-content: center; gap: 5px; height: 30px; border-radius: 7px; border-color: var(--border); background: var(--card); color: var(--foreground); font-size: 12px; box-shadow: none; }
+.bbox-editor .bbox-add-button[data-kind="character"] { --bbox-kind: #a855f7; }
+.bbox-editor .bbox-add-button[data-kind="text"] { --bbox-kind: #f97316; }
+.bbox-add-button .ant-btn-icon { display: inline-flex; color: color-mix(in srgb, var(--bbox-kind) 80%, var(--foreground)); }
+.bbox-editor .bbox-add-button:hover { border-color: var(--bbox-kind); color: var(--foreground); background: color-mix(in srgb, var(--bbox-kind) 9%, var(--card)); }

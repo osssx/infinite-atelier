@@ -2,7 +2,7 @@ import "./canvas-node-bbox-layout-dialog.css";
 import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { createPortal } from "react-dom";
 import { App, Button, Input, Modal, Select, Switch, Tooltip } from "antd";
-import { Download, Upload, ClipboardCopy, Layers3, SlidersHorizontal, AlignCenterHorizontal, AlignCenterVertical, ArrowDown, ArrowUp, Copy, Eye, EyeOff, Lock, LockOpen, Redo2, Trash2, Undo2, ZoomIn, ZoomOut } from "lucide-react";
+import { Box, UserRound, Type, Download, Upload, ClipboardCopy, Layers3, SlidersHorizontal, AlignCenterHorizontal, AlignCenterVertical, ArrowDown, ArrowUp, Copy, Eye, EyeOff, Lock, LockOpen, Redo2, Trash2, Undo2, ZoomIn, ZoomOut } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { IMAGE_SIZE_PRESETS } from "@/lib/canvas/image-size-presets";
@@ -397,10 +397,18 @@ export function CanvasNodeBBoxLayoutDialog({
                     <div className="thin-scrollbar min-h-0 flex-1 space-y-3 overflow-auto overscroll-contain pr-1">
                         <div className="bbox-panel-heading flex flex-wrap items-center justify-between gap-2">
                             <strong className="bbox-section-title"><Layers3 size={15} />{t("canvas.bboxEditor.canvasItems")}<span className="bbox-count">{layout.items.length}</span></strong>
-                            <div className="flex gap-1">
+                            <div className="bbox-add-tools">
                                 {(["object", "character", "text"] as const).map((kind) => (
-                                    <Button key={kind} size="small" onClick={() => addItem(kind)}>
-                                        + {kind}
+                                    <Button
+                                        key={kind}
+                                        size="small"
+                                        className="bbox-add-button"
+                                        data-kind={kind}
+                                        icon={kind === "object" ? <Box size={15} /> : kind === "character" ? <UserRound size={15} /> : <Type size={15} />}
+                                        title={t(`canvas.bboxEditor.add${kind === "object" ? "Object" : kind === "character" ? "Character" : "Text"}`)}
+                                        onClick={() => addItem(kind)}
+                                    >
+                                        {t(`canvas.bboxEditor.kind${kind === "object" ? "Object" : kind === "character" ? "Character" : "Text"}`)}
                                     </Button>
                                 ))}
                             </div>

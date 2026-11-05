@@ -1,0 +1,56 @@
+/* Follow the app theme tokens in both light and dark mode. */
+.bbox-editor .ant-modal-container {
+    background: var(--background);
+    border: 1px solid var(--border);
+    border-radius: 18px;
+}
+.bbox-editor .ant-modal-header { background: transparent; margin-bottom: 16px; }
+.bbox-editor-title, .bbox-section-title { display: flex; align-items: center; gap: 8px; color: var(--foreground); }
+.bbox-editor-title { font-size: 15px; font-weight: 650; letter-spacing: .02em; }
+.bbox-editor-title > svg { color: var(--muted-foreground); }
+.bbox-editor .bbox-panel {
+    background: color-mix(in srgb, var(--muted) 55%, var(--background));
+    border-color: var(--border);
+    box-shadow: 0 1px 2px #00000004;
+}
+.bbox-panel-heading { padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+.bbox-section-title { font-size: 12px; font-weight: 650; }
+.bbox-section-title > svg { color: var(--muted-foreground); }
+.bbox-count { display: inline-flex; align-items: center; justify-content: center; min-width: 22px; padding: 1px 6px; border-radius: 6px; background: var(--secondary); color: var(--muted-foreground); font-size: 11px; font-variant-numeric: tabular-nums; }
+.bbox-editor .bbox-layer-card {
+    --bbox-kind: #3b82f6;
+    background: var(--card);
+    border-color: var(--border);
+    border-radius: 10px;
+    padding: 10px;
+    box-shadow: 0 1px 3px #00000005;
+    transition: border-color .15s, box-shadow .15s;
+}
+.bbox-editor .bbox-layer-card[data-kind="character"] { --bbox-kind: #a855f7; }
+.bbox-editor .bbox-layer-card[data-kind="text"] { --bbox-kind: #f97316; }
+.bbox-editor .bbox-layer-card:hover { border-color: color-mix(in srgb, var(--foreground) 25%, var(--border)); }
+.bbox-editor .bbox-layer-card[data-selected="true"] {
+    border-color: var(--bbox-kind);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--bbox-kind) 14%, transparent);
+}
+.bbox-layer-number { background: color-mix(in srgb, var(--bbox-kind) 13%, var(--card)); color: color-mix(in srgb, var(--bbox-kind) 75%, var(--foreground)); }
+.bbox-editor .bbox-toolbar { background: var(--card); border-color: var(--border); border-radius: 10px; box-shadow: 0 1px 3px #00000005; scrollbar-width: thin; }
+.bbox-toolbar > span, .bbox-toolbar > label { color: var(--muted-foreground); }
+.bbox-editor .bbox-viewport {
+    border-color: var(--border);
+    background-color: var(--muted);
+    background-image: radial-gradient(circle, color-mix(in srgb, var(--muted-foreground) 20%, transparent) .7px, transparent .7px);
+    background-size: 12px 12px;
+    border-radius: 12px;
+    box-shadow: inset 0 1px 4px #00000008;
+}
+.bbox-editor .bbox-json-tools { border-color: var(--border); background: var(--card); }
+.bbox-json-tools > summary { color: var(--muted-foreground); transition: color .15s; }
+.bbox-json-tools > summary:hover, .bbox-json-tools[open] > summary { color: var(--foreground); }
+.bbox-editor .bbox-panel-footer { border-color: var(--border); }
+.bbox-panel label { color: var(--muted-foreground); }
+.bbox-panel label > .ant-input, .bbox-panel label > .ant-select { margin-top: 5px; }
+.bbox-panel .ant-input, .bbox-panel .ant-select { font-size: 12px; }
+.bbox-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; min-height: 160px; border: 1px dashed var(--border); border-radius: 10px; color: var(--muted-foreground); font-size: 12px; }
+.bbox-empty > svg { opacity: .5; }
+.bbox-inline-editor { background: var(--popover); color: var(--popover-foreground); border-color: var(--border); box-shadow: 0 12px 40px #00000026; }

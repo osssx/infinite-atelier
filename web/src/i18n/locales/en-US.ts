@@ -529,6 +529,8 @@ export default {
             width: "Width",
             height: "Height",
             previewHint: "Preview the layout with grid and selection markers hidden and canvas editing disabled. This does not generate an image.",
+            canvasSettings: "Canvas settings",
+            emptyLayers: "Add an item to start building your layout",
             jsonTools: "JSON import and export",
             sizeLimit: "All quality-setting ratios and custom dimensions in multiples of 16 are supported. Generation dimensions depend on the selected model.",
             supportedSizeError: "Width and height must be positive integers divisible by 16.",

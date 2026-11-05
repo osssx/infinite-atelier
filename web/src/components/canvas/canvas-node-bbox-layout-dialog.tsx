@@ -1,7 +1,8 @@
+import "./canvas-node-bbox-layout-dialog.css";
 import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { createPortal } from "react-dom";
 import { App, Button, Input, Modal, Select, Switch, Tooltip } from "antd";
-import { AlignCenterHorizontal, AlignCenterVertical, ArrowDown, ArrowUp, Copy, Eye, EyeOff, Lock, LockOpen, Redo2, Trash2, Undo2, ZoomIn, ZoomOut } from "lucide-react";
+import { Layers3, SlidersHorizontal, AlignCenterHorizontal, AlignCenterVertical, ArrowDown, ArrowUp, Copy, Eye, EyeOff, Lock, LockOpen, Redo2, Trash2, Undo2, ZoomIn, ZoomOut } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { IMAGE_SIZE_PRESETS } from "@/lib/canvas/image-size-presets";
@@ -390,12 +391,12 @@ export function CanvasNodeBBoxLayoutDialog({
     };
 
     return (
-        <Modal open={open} title={t("canvas.bboxEditor.title")} onCancel={onClose} footer={null} width="min(1400px, 94vw)" centered destroyOnHidden styles={{ body: { maxHeight: "calc(100dvh - 140px)", overflowY: "auto" } }}>
+        <Modal className="bbox-editor" open={open} title={<span className="bbox-editor-title"><Layers3 size={18} />{t("canvas.bboxEditor.title")}</span>} onCancel={onClose} footer={null} width="min(1400px, 94vw)" centered destroyOnHidden styles={{ body: { maxHeight: "calc(100dvh - 140px)", overflowY: "auto" } }}>
             <div className="grid items-start gap-4 lg:grid-cols-[320px_minmax(0,1fr)_260px] xl:grid-cols-[320px_minmax(0,1fr)_260px]" data-canvas-no-zoom>
-                <section className="flex h-[min(60dvh,560px)] min-h-0 min-w-0 flex-col overflow-hidden rounded-xl border border-black/10 bg-black/[0.02] p-3 dark:border-white/10 dark:bg-white/[0.02] lg:h-[calc(100dvh-180px)]">
+                <section className="bbox-panel flex h-[min(60dvh,560px)] min-h-0 min-w-0 flex-col overflow-hidden rounded-xl border border-black/10 bg-black/[0.02] p-3 dark:border-white/10 dark:bg-white/[0.02] lg:h-[calc(100dvh-180px)]">
                     <div className="thin-scrollbar min-h-0 flex-1 space-y-3 overflow-auto overscroll-contain pr-1">
-                        <div className="flex flex-wrap items-center justify-between gap-2">
-                            <strong>{t("canvas.bboxEditor.canvasItems")}</strong>
+                        <div className="bbox-panel-heading flex flex-wrap items-center justify-between gap-2">
+                            <strong className="bbox-section-title"><Layers3 size={15} />{t("canvas.bboxEditor.canvasItems")}<span className="bbox-count">{layout.items.length}</span></strong>
                             <div className="flex gap-1">
                                 {(["object", "character", "text"] as const).map((kind) => (
                                     <Button key={kind} size="small" onClick={() => addItem(kind)}>
@@ -404,6 +405,7 @@ export function CanvasNodeBBoxLayoutDialog({
                                 ))}
                             </div>
                         </div>
+                        {!layout.items.length ? <div className="bbox-empty"><Layers3 size={28} /><span>{t("canvas.bboxEditor.emptyLayers")}</span></div> : null}
                         <div className="space-y-2">
                             {layout.items.map((item, index) => (
                                 <div
@@ -447,11 +449,13 @@ export function CanvasNodeBBoxLayoutDialog({
                                     onDragEnd={() => {
                                         draggedLayer.current = null;
                                     }}
-                                    className={`rounded-lg border p-2 ${selected.includes(item.id) ? "border-sky-500" : "border-black/10 dark:border-white/10"}`}
+                                    data-selected={selected.includes(item.id)}
+                                    data-kind={item.kind}
+                                    className="bbox-layer-card rounded-lg border p-2"
                                     onClick={() => setSelected([item.id])}
                                 >
                                     <div className="mb-2 flex flex-wrap items-center gap-1">
-                                        <span className="inline-flex h-6 min-w-7 shrink-0 items-center justify-center rounded bg-slate-200 px-1 text-xs font-bold text-slate-800 dark:bg-slate-700 dark:text-white" aria-label={`Layer ${index + 1}`}>
+                                        <span className="bbox-layer-number inline-flex h-6 min-w-7 shrink-0 items-center justify-center rounded px-1 text-xs font-bold" aria-label={`Layer ${index + 1}`}>
                                             #{index + 1}
                                         </span>
                                         <Select
@@ -569,7 +573,7 @@ export function CanvasNodeBBoxLayoutDialog({
                 </section>
 
                 <section className="flex min-h-0 min-w-0 flex-col lg:sticky lg:top-0 lg:h-[calc(100dvh-180px)]">
-                    <div role="toolbar" className="thin-scrollbar mb-2 flex shrink-0 items-center gap-2 overflow-x-auto whitespace-nowrap rounded-lg border border-black/10 p-2 text-xs dark:border-white/10 [&>*]:shrink-0" title={t("canvas.bboxEditor.panHint")}>
+                    <div role="toolbar" className="bbox-toolbar thin-scrollbar mb-2 flex shrink-0 items-center gap-2 overflow-x-auto whitespace-nowrap rounded-lg border border-black/10 p-2 text-xs dark:border-white/10 [&>*]:shrink-0" title={t("canvas.bboxEditor.panHint")}>
                         <Button size="small" title={t("canvas.bboxEditor.undo")} aria-label={t("canvas.bboxEditor.undo")} icon={<Undo2 size={15} />} disabled={!history.length} onClick={undo} />
                         <Button size="small" title={t("canvas.bboxEditor.redo")} aria-label={t("canvas.bboxEditor.redo")} icon={<Redo2 size={15} />} disabled={!future.length} onClick={redo} />
                         <Button size="small" title={t("canvas.bboxEditor.zoomOut")} aria-label={t("canvas.bboxEditor.zoomOut")} icon={<ZoomOut size={15} />} onClick={viewport.zoomOut} disabled={!viewport.canZoomOut} />
@@ -613,7 +617,7 @@ export function CanvasNodeBBoxLayoutDialog({
                             const target = event.target instanceof Element ? event.target : null;
                             if (event.button === 0 && !target?.closest("[data-bbox-canvas-id]")) setEditingItemId(null);
                         }}
-                        className={`relative h-[clamp(240px,55dvh,600px)] min-h-0 lg:h-auto lg:flex-1 rounded-lg border border-black/15 bg-neutral-100 dark:border-white/15 dark:bg-neutral-900 ${viewport.scrollClassName} ${viewport.spacePressed ? "cursor-grab" : ""}`}
+                        className={`bbox-viewport relative h-[clamp(240px,55dvh,600px)] min-h-0 lg:h-auto lg:flex-1 rounded-lg border border-black/15 bg-neutral-100 dark:border-white/15 dark:bg-neutral-900 ${viewport.scrollClassName} ${viewport.spacePressed ? "cursor-grab" : ""}`}
                     >
                         <div className="relative" style={viewport.contentStyle}>
                             <div ref={viewport.stageRef} className="absolute overflow-visible rounded bg-white shadow-sm" style={viewport.stageStyle}>
@@ -773,8 +777,9 @@ export function CanvasNodeBBoxLayoutDialog({
                     </div>
                 </section>
 
-                <section className="flex h-[min(60dvh,560px)] min-h-0 min-w-0 flex-col overflow-hidden rounded-xl border border-black/10 bg-black/[0.02] p-3 dark:border-white/10 dark:bg-white/[0.02] lg:h-[calc(100dvh-180px)]">
+                <section className="bbox-panel flex h-[min(60dvh,560px)] min-h-0 min-w-0 flex-col overflow-hidden rounded-xl border border-black/10 bg-black/[0.02] p-3 dark:border-white/10 dark:bg-white/[0.02] lg:h-[calc(100dvh-180px)]">
                     <div className="thin-scrollbar min-h-0 flex-1 space-y-3 overflow-auto overscroll-contain pr-1">
+                        <div className="bbox-panel-heading bbox-section-title"><SlidersHorizontal size={15} />{t("canvas.bboxEditor.canvasSettings")}</div>
                         <label className="block text-xs">
                             {t("canvas.bboxEditor.generationSize")}{" "}
                             <Select
@@ -806,7 +811,7 @@ export function CanvasNodeBBoxLayoutDialog({
                             {t("canvas.bboxEditor.globalCaption")}
                             <Input.TextArea data-bbox-global-caption rows={2} value={layout.summary.caption} onChange={(event) => commit({ ...layout, summary: { ...layout.summary, caption: event.target.value } })} />
                         </label>
-                        <details className="rounded-lg border border-black/10 p-3 dark:border-white/10">
+                        <details className="bbox-json-tools rounded-lg border border-black/10 p-3 dark:border-white/10">
                             <summary className="cursor-pointer text-xs font-medium">{t("canvas.bboxEditor.jsonTools")}</summary>
                             <div className="mt-3 space-y-3">
                                 <div className="flex flex-wrap gap-2">
@@ -846,7 +851,7 @@ export function CanvasNodeBBoxLayoutDialog({
                         </details>
                     </div>
                     {error ? <div className="text-sm text-red-500">{error}</div> : null}
-                    <div className="mt-3 flex shrink-0 justify-end gap-2 border-t pt-3">
+                    <div className="bbox-panel-footer mt-3 flex shrink-0 justify-end gap-2 border-t pt-3">
                         <Button onClick={onClose}>{t("common.cancel")}</Button>
                         <Button type="primary" disabled={!canApplySize} onClick={apply}>
                             {t("canvas.bboxEditor.apply")}
@@ -859,7 +864,7 @@ export function CanvasNodeBBoxLayoutDialog({
                       <div
                           data-canvas-no-zoom
                           data-canvas-shortcuts-ignore
-                          className="fixed z-[1200] w-[min(340px,calc(100vw-24px))] rounded-xl border border-black/15 bg-white p-3 text-slate-900 shadow-2xl dark:border-white/15 dark:bg-slate-900 dark:text-slate-100"
+                          className="bbox-inline-editor fixed z-[1200] w-[min(340px,calc(100vw-24px))] rounded-xl border border-black/15 bg-white p-3 text-slate-900 shadow-2xl dark:border-white/15 dark:bg-slate-900 dark:text-slate-100"
                           style={{ left: editingPosition.left, top: editingPosition.top }}
                           onPointerDownCapture={(event) => {
                               event.stopPropagation();

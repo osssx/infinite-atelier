@@ -529,6 +529,8 @@ export default {
             width: "宽度",
             height: "高度",
             previewHint: "预览布局：隐藏网格和选中标记，禁用画布编辑；不生成图片。",
+            canvasSettings: "画布设置",
+            emptyLayers: "添加项目，开始构建布局",
             jsonTools: "JSON 导入与导出",
             sizeLimit: "支持质量设置中的全部比例，也可输入宽高均为 16 倍数的自定义尺寸。实际生成尺寸以所选模型支持范围为准。",
             supportedSizeError: "宽高必须为正整数且是 16 的倍数。",

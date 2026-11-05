@@ -826,7 +826,9 @@ export default {
                 text: "文本{{index}}",
             },
         },
+        imageCompare: { hint: "拖动分界线比较两张图片", swap: "交换图片", divider: "图片对比分界线", loadError: "图片加载失败，请检查图片资源后重试。" },
         controls: {
+            compareImages: "比较图片",
             syncPlay: "同步播放",
             ratio: "比例",
             duplicate: "复制节点",

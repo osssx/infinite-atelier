@@ -1,3 +1,4 @@
+import { CanvasImageCompareDialog } from "@/components/canvas/canvas-image-compare-dialog";
 import { playCanvasVideosFromStart } from "@/lib/canvas/video-sync-playback";
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent as ReactChangeEvent, DragEvent as ReactDragEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react";
@@ -367,6 +368,7 @@ function AtelierCanvasPage() {
     const [superResolveNodeId, setSuperResolveNodeId] = useState<string | null>(null);
     const [angleNodeId, setAngleNodeId] = useState<string | null>(null);
     const [previewNodeId, setPreviewNodeId] = useState<string | null>(null);
+    const [compareImages, setCompareImages] = useState<[{ src: string; title: string }, { src: string; title: string }] | null>(null);
     const [previewImageId, setPreviewImageId] = useState<string | null>(null);
     const [titleEditing, setTitleEditing] = useState(false);
     const [titleDraft, setTitleDraft] = useState("");
@@ -3567,9 +3569,15 @@ function AtelierCanvasPage() {
 
                 <CanvasZoomControls scale={viewport.k} onScaleChange={setZoomScale} onFitView={fitViewport} canFocusSelected={nodes.some((node) => selectedNodeIds.has(node.id))} onFocusSelected={focusSelectedNodes} isMiniMapOpen={isMiniMapOpen} onToggleMiniMap={() => setIsMiniMapOpen((value) => !value)} />
 
+                {compareImages ? <CanvasImageCompareDialog images={compareImages} onClose={() => setCompareImages(null)} /> : null}
                 {contextMenu ? (
                     <CanvasNodeContextMenu
                         menu={contextMenu}
+                        onCompareImages={contextMenu.type === "node" && selectedNodeIds.has(contextMenu.nodeId) && selectedNodeIds.size === 2 && nodes.filter((node) => selectedNodeIds.has(node.id) && node.type === CanvasNodeType.Image && node.metadata?.content).length === 2 ? () => {
+                            const images = nodesRef.current.filter((node) => selectedNodeIdsRef.current.has(node.id) && node.type === CanvasNodeType.Image && node.metadata?.content).map((node) => ({ src: node.metadata!.content!, title: node.title }));
+                            if (images.length === 2) setCompareImages([images[0], images[1]]);
+                            setContextMenu(null);
+                        } : undefined}
                         onSyncPlay={contextMenu.type === "node" && selectedNodeIds.has(contextMenu.nodeId) && nodes.filter((node) => selectedNodeIds.has(node.id) && node.type === CanvasNodeType.Video).length > 1 ? () => {
                             const ids = nodesRef.current.filter((node) => selectedNodeIdsRef.current.has(node.id) && node.type === CanvasNodeType.Video && node.metadata?.content).map((node) => node.id);
                             void playCanvasVideosFromStart(ids);

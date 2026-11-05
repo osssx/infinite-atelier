@@ -827,7 +827,9 @@ export default {
                 text: "Text {{index}}",
             },
         },
+        imageCompare: { hint: "Drag the divider to compare both images", swap: "Swap images", divider: "Image comparison divider", loadError: "Could not load an image. Check the image source and try again." },
         controls: {
+            compareImages: "Compare images",
             syncPlay: "Play videos together",
             ratio: "Ratio",
             duplicate: "Duplicate Node",

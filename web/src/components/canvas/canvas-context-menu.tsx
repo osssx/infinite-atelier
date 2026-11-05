@@ -1,13 +1,13 @@
 import { useEffect } from "react";
 import type { ReactNode } from "react";
-import { Play, Plus, Trash2, Unlink2 } from "lucide-react";
+import { Columns2, Play, Plus, Trash2, Unlink2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
 import type { ContextMenuState } from "@/types/canvas";
 
-export function CanvasNodeContextMenu({ menu, onClose, onDuplicate, onDelete, onSyncPlay }: { onSyncPlay?: () => void; menu: ContextMenuState; onClose: () => void; onDuplicate: () => void; onDelete: () => void }) {
+export function CanvasNodeContextMenu({ menu, onClose, onDuplicate, onDelete, onSyncPlay, onCompareImages }: { onCompareImages?: () => void; onSyncPlay?: () => void; menu: ContextMenuState; onClose: () => void; onDuplicate: () => void; onDelete: () => void }) {
     const { t } = useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
 
@@ -29,6 +29,7 @@ export function CanvasNodeContextMenu({ menu, onClose, onDuplicate, onDelete, on
         >
             {menu.type === "node" ? <MenuButton icon={<Plus className="size-4" />} label={t("canvas.controls.duplicate")} onClick={onDuplicate} /> : null}
             {menu.type === "node" && onSyncPlay ? <MenuButton icon={<Play className="size-4" />} label={t("canvas.controls.syncPlay")} onClick={onSyncPlay} /> : null}
+            {menu.type === "node" && onCompareImages ? <MenuButton icon={<Columns2 className="size-4" />} label={t("canvas.controls.compareImages")} onClick={onCompareImages} /> : null}
             <MenuButton icon={menu.type === "connection" ? <Unlink2 className="size-4" /> : <Trash2 className="size-4" />} label={t(menu.type === "connection" ? "canvas.controls.disconnect" : "canvas.controls.delete")} onClick={onDelete} danger />
         </div>
     );

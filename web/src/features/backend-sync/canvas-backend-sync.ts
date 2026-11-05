@@ -104,6 +104,21 @@ function isSafeModelMediaWriteback(local:CanvasNodeData,remote:CanvasNodeData):b
  for(const key of generatedKeys)if(Object.hasOwn(remote.metadata,key))metadata[key]=remote.metadata[key];
  return canonical({...local,metadata:metadata as CanvasNodeData["metadata"]})===canonical(remote);
 }
+function isSafeComfyMediaPresetWriteback(local:CanvasNodeData,remote:CanvasNodeData):boolean{
+ const kind=local.type,artifact=remote.metadata?.comfyArtifact;
+ if((kind!=="image"&&kind!=="video"&&kind!=="audio")||remote.type!==kind||!artifact||artifact.kind!==kind||
+  artifact.workflowNodeId!==local.id||typeof artifact.runId!=="string"||typeof artifact.artifactId!=="string"||
+  local.metadata?.comfyArtifact||String(local.metadata?.content??"").trim()||local.metadata?.storageKey||
+  remote.metadata?.status!=="success"||typeof remote.metadata?.content!=="string"||
+  !remote.metadata.content.startsWith("/api/v1/blobs/")||typeof remote.metadata.storageKey!=="string"||
+  !remote.metadata.storageKey.startsWith("cas:")||typeof remote.metadata.mimeType!=="string"||
+  !remote.metadata.mimeType.startsWith(kind+"/"))return false;
+ const generatedKeys=["content","storageKey","mimeType","status","comfyArtifact","bytes","naturalWidth","naturalHeight"] as const;
+ const metadata:Record<string,unknown>={...local.metadata};
+ for(const key of generatedKeys)delete metadata[key];
+ for(const key of generatedKeys)if(Object.hasOwn(remote.metadata,key))metadata[key]=remote.metadata[key];
+ return canonical({...local,metadata:metadata as CanvasNodeData["metadata"]})===canonical(remote);
+}
 export function safeRemoteCanvasMerge(local:BackendCanvasGraph,remote:BackendCanvasGraph):BackendCanvasGraph|null {
  if(!Array.isArray(remote?.nodes)||!Array.isArray(remote.connections))return null;
  const localNodes=new Map(local.nodes.map(n=>[n.id,n]));
@@ -115,7 +130,7 @@ export function safeRemoteCanvasMerge(local:BackendCanvasGraph,remote:BackendCan
   const same=remoteNodes.get(node.id);
    if(!same||canonical(node)!==canonical(same)&&
       !isSafeEmptyTextFill(node,same)&&!isSafeModelImageWriteback(node,same)&&
-      !isSafeModelMediaWriteback(node,same))return null;
+      !isSafeModelMediaWriteback(node,same)&&!isSafeComfyMediaPresetWriteback(node,same))return null;
  }
  for(const edge of local.connections){
   const same=remote.connections.find(e=>e.id===edge.id);

@@ -57,7 +57,14 @@ describe("P4.2 SQLite-only Canvas execution boundary",()=>{
   expect(generation).toContain('if(!projectLoaded)throw Error("画布项目尚未加载完成")');
   // Regression: useCallback used to omit projectLoaded, retaining initial false
   // in every text-model submission even after the Canvas was visibly ready.
-  expect(generation).toMatch(/\[effectiveConfig,[^\]]*\bprojectLoaded\b[^\]]*\]/);
+  // Check the dependency array attached to this callback, independent of
+  // dependency ordering and references elsewhere in its body.
+  const callbackStart=page.indexOf("const handleGenerateNode = useCallback(");
+  const callbackEnd=page.indexOf("// Update event-driven toolbar/inspector callbacks",callbackStart);
+  const handleGenerateCallback=page.slice(callbackStart,callbackEnd).trimEnd();
+  const handleGenerateDependencies=handleGenerateCallback.match(/,\s*\[([^\]]*)\]\s*,\s*\);$/);
+  expect(handleGenerateDependencies,"handleGenerateNode useCallback dependency array").not.toBeNull();
+  expect(handleGenerateDependencies?.[1].split(",").map(value=>value.trim())).toContain("projectLoaded");
   expect(page).toMatch(/const projectLoaded\s*=\s*loadedProjectId === projectId/);
   expect(page).toContain("setLoadedProjectId(null)");
   expect(page).toContain("setLoadedProjectId(projectId)");

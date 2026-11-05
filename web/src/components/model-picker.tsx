@@ -1,9 +1,9 @@
 import { useEffect, useId, useMemo, useState } from "react";
-import { Cpu } from "lucide-react";
+import { Cpu, Workflow } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import i18n from "@/i18n";
-import { Select, SelectContent, SelectItem, SelectTrigger } from "@/components/ui/select";
+import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { modelOptionLabel, modelOptionName, selectableModelsByCapability, type AiConfig, type ModelCapability } from "@/stores/use-config-store";
 
@@ -16,15 +16,34 @@ type ModelPickerProps = {
     fullWidth?: boolean;
     placeholder?: string;
     onMissingConfig?: () => void;
+    externalOptions?:{value:string;label:string}[];
+    externalValue?:string;
+    onExternalSelect?:(value:string)=>void;
 };
+const EXTERNAL_MODEL_PREFIX="__atelier_external:";
+export function modelPickerSelectValue(channelValue:string,externalValue:string|undefined,externalOptions:{value:string;label:string}[]){
+    return externalValue&&externalOptions.some(option=>option.value===externalValue)
+        ?EXTERNAL_MODEL_PREFIX+externalValue:channelValue;
+}
+export function modelPickerSelection(selected:string,externalOptions:{value:string;label:string}[]){
+    const external=externalOptions.find(option=>EXTERNAL_MODEL_PREFIX+option.value===selected);
+    return external?{kind:"external" as const,value:external.value}:{kind:"channel" as const,value:selected};
+}
 
-export function ModelPicker({ config, value, onChange, capability, className, fullWidth = false, placeholder, onMissingConfig }: ModelPickerProps) {
+export function ModelPicker({ config, value, onChange, capability, className, fullWidth = false, placeholder, onMissingConfig,externalOptions=[],externalValue,onExternalSelect }: ModelPickerProps) {
     const { t } = useTranslation();
     const pickerId = useId();
     const [open, setOpen] = useState(false);
     const options = useMemo(() => Array.from(new Set([...(config.channelMode === "local" && !capability ? [value] : []), ...selectableModelsByCapability(config, capability)].filter((model): model is string => Boolean(model)))), [capability, config, value]);
     const current = value || "";
+    const selectedExternal=externalValue?externalOptions.find(option=>option.value===externalValue):undefined;
+    const selectedValue=modelPickerSelectValue(current,externalValue,externalOptions);
     const pickerPlaceholder = placeholder || t("settingsPanels.model.select");
+    const handleValueChange=(selected:string)=>{
+        const selection=modelPickerSelection(selected,externalOptions);
+        if(selection.kind==="external")onExternalSelect?.(selection.value);
+        else onChange(selection.value);
+    };
 
     useEffect(() => {
         const closeOtherPicker = (event: Event) => {
@@ -37,13 +56,13 @@ export function ModelPicker({ config, value, onChange, capability, className, fu
     return (
         <Select
             open={open}
-            value={current}
+            value={selectedValue}
             onOpenChange={(nextOpen) => {
                 if (nextOpen && !options.length && config.channelMode === "local") onMissingConfig?.();
                 if (nextOpen) window.dispatchEvent(new CustomEvent("model-picker-open", { detail: pickerId }));
                 setOpen(nextOpen);
             }}
-            onValueChange={onChange}
+            onValueChange={handleValueChange}
         >
             <SelectTrigger
                 className={cn(
@@ -54,10 +73,10 @@ export function ModelPicker({ config, value, onChange, capability, className, fu
                 )}
                 onMouseDown={(event) => event.stopPropagation()}
                 onPointerDown={(event) => event.stopPropagation()}
-                title={current ? modelOptionLabel(config, current) : pickerPlaceholder}
+                title={selectedExternal?.label??(current ? modelOptionLabel(config, current) : pickerPlaceholder)}
             >
-                <ModelIcon model={current} />
-                <span className="canvas-model-picker-text min-w-0 flex-1 truncate text-left">{current ? modelOptionLabel(config, current) : pickerPlaceholder}</span>
+                {selectedExternal?<Workflow className="size-4 shrink-0 opacity-70" aria-hidden="true"/>:<ModelIcon model={current}/>}
+                <span className="canvas-model-picker-text min-w-0 flex-1 truncate text-left">{selectedExternal?.label??(current ? modelOptionLabel(config, current) : pickerPlaceholder)}</span>
             </SelectTrigger>
             <SelectContent
                 data-canvas-no-zoom
@@ -70,16 +89,22 @@ export function ModelPicker({ config, value, onChange, capability, className, fu
                 onMouseDown={(event) => event.stopPropagation()}
             >
                 {options.length ? (
-                    options.map((model) => (
+                    <SelectGroup>
+                    <SelectLabel>渠道模型</SelectLabel>
+                    {options.map((model) => (
                         <SelectItem key={model} value={model} textValue={modelOptionLabel(config, model)}>
                             <ModelLabel config={config} model={model} />
                         </SelectItem>
-                    ))
+                    ))}
+                    </SelectGroup>
                 ) : (
                     <SelectItem value="__empty__" disabled>
                         {emptyModelLabel(config, capability)}
                     </SelectItem>
                 )}
+                {externalOptions.length?<SelectGroup><SelectLabel>ComfyUI 工作流预设</SelectLabel>
+                    {externalOptions.map(option=><SelectItem key={option.value} value={EXTERNAL_MODEL_PREFIX+option.value}>{option.label}</SelectItem>)}
+                </SelectGroup>:null}
             </SelectContent>
         </Select>
     );

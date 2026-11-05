@@ -61,6 +61,21 @@ test("v2 fingerprints block edits to frozen text, image selection, workflow over
   assert.equal(await fingerprintBackendSource(graph,"comfy"),fingerprintSource(graph,"comfy"));
  }
 });
+test("v2 fingerprints include non-connected media preset slot references and selected single-image identity",async()=>{
+ const graph={nodes:[structuredClone(base.nodes[1]),{id:"media-node",type:"video",title:"Video",position:{x:0,y:0},width:360,height:320,
+  metadata:{prompt:"cinematic scene",comfyMediaPreset:{templateId:"t2",templateRevision:"r2",overrides:{duration:6},
+   slots:{first_frame:{nodeId:"image",imageId:"i1"}}}}}],connections:[]};
+ const initial=fingerprintSource(graph,"media-node");
+ assert.equal(await fingerprintBackendSource(graph,"media-node"),initial);
+ const changed=structuredClone(graph);changed.nodes[0].metadata.images[0].storageKey="cas:"+"c".repeat(64);
+ assert.notEqual(fingerprintSource(changed,"media-node"),initial);
+ assert.equal(await fingerprintBackendSource(changed,"media-node"),fingerprintSource(changed,"media-node"));
+ const changedSelection=structuredClone(graph);changedSelection.nodes[1].metadata.comfyMediaPreset.slots.first_frame.imageId="other-image";
+ assert.notEqual(fingerprintSource(changedSelection,"media-node"),initial);
+ const self=structuredClone(graph);self.nodes[1].metadata.storageKey="cas:"+"d".repeat(64);
+ self.nodes[1].metadata.comfyMediaPreset.slots.first_frame={nodeId:"media-node"};
+ assert.match(fingerprintSource(self,"media-node"),/^v2:/);
+});
 test("legacy already-collected standalone Comfy request can recover only verified frozen inputs",()=>{
  const doc={nodes:[structuredClone(base.nodes[2])],connections:[]};
  const legacy=fingerprintSourceLegacy(doc,"comfy");

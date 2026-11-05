@@ -21,6 +21,9 @@ export type BackendComfyWorkflowArgs={
  bridge:Submitter;projectId:string;workflowNode:CanvasNodeData;
  nodes:readonly CanvasNodeData[];connections:readonly CanvasConnection[];
  template:ComfyWorkflowTemplate;instanceId:string;outputPortIds:readonly string[];
+ mediaSlots?:Record<string,{nodeId:string;imageId?:string}>;
+ prompt?:string;
+ beforeSubmit?:()=>void;
  readBlob?:(storageKey:string)=>Promise<Blob|null>;
  getBlob?:(url:string)=>Promise<Blob|null>;
  newKey?:()=>string;
@@ -44,22 +47,51 @@ export async function startBackendComfyWorkflowRun(args:BackendComfyWorkflowArgs
     outputPortIds.some(id=>!template.ports.some(port=>port.id===id&&port.direction==="source"&&
       port.capture?.kind!=="none"&&!!port.capture?.adapterId)))
   throw Error("backend_invalid_output_ports");
- const binding=workflowNode.metadata?.comfyWorkflow;
+ const mediaBinding=workflowNode.metadata?.comfyMediaPreset;
+ const regularBinding=workflowNode.metadata?.comfyWorkflow;
+ const binding=mediaBinding??regularBinding;
  if(!binding||binding.templateId!==template.id||binding.templateRevision!==template.revision)
   throw Error("backend_template_revision_mismatch");
  const graph=copy<BackendCanvasGraph>({nodes:[...args.nodes],connections:[...args.connections]});
  const original=canonicalBackendGraph(graph);
  const currentNode=graph.nodes.find(node=>node.id===workflowNode.id);
- if(!currentNode||currentNode.type!=="comfy:workflow")throw Error("backend_workflow_node_missing");
- const incoming=graph.connections.filter(edge=>edge.toNodeId===workflowNode.id);
+ if(!currentNode||currentNode.id!==workflowNode.id||
+   currentNode.type!=="comfy:workflow"&&(!mediaBinding||!template.mediaUseCase||
+    !["image","video","audio"].includes(currentNode.type)))throw Error("backend_workflow_node_missing");
+ const allIncoming=graph.connections.filter(edge=>edge.toNodeId===workflowNode.id);
+ // Media preset nodes may also carry old, untyped canvas references. They are
+ // visual context only; only edges targeting declared Comfy ports can be sent.
+ const incoming=mediaBinding?allIncoming.filter(edge=>!!edge.toPortId&&template.ports.some(port=>port.id===edge.toPortId)):allIncoming;
+ const useCase=template.mediaUseCase;
+ const mediaEdges:CanvasConnection[]=[];
+ if(mediaBinding&&useCase){
+  const selected=args.mediaSlots??{};
+  for(const slot of useCase.slots){
+   const ref=selected[slot.id];
+   if(slot.required&&!ref)throw Error("请先选择必填媒体槽位："+slot.label);
+   if(!ref)continue;
+   const source=graph.nodes.find(node=>node.id===ref.nodeId);
+   if(!source)throw Error("媒体槽位素材已从画布移除："+slot.label);
+   if(!incoming.some(edge=>edge.toPortId===slot.id))mediaEdges.push({id:"media-slot-"+slot.id,fromNodeId:source.id,toNodeId:workflowNode.id,
+    fromPortId:slot.valueKind.toLowerCase(),toPortId:slot.id});
+  }
+  for(const id of Object.keys(selected))if(!useCase.slots.some(slot=>slot.id===id))throw Error("backend_unknown_media_slot");
+ }
  // Use the same required-port validation as the inspector.
- const missing=missingComfyMediaInputs(template,workflowNode.id,graph.connections);
+ const missing=missingComfyMediaInputs(template,workflowNode.id,[...incoming,...mediaEdges]);
  if(missing.length)throw Error("请先连接必填媒体输入："+missing.map(p=>p.label).join("、"));
  if(incoming.some(edge=>!edge.toPortId||!edge.fromPortId))
   throw Error("工作流只能使用显式端口连线");
  if(incoming.some(edge=>!graph.nodes.some(n=>n.id===edge.fromNodeId&&["text","image","video","audio"].includes(n.type))))
   throw Error("工作流外部输入仅支持 Text / Image / Video / Audio 节点");
- const external=prepareCanvasExternalInputSnapshot(graph.nodes,incoming);
+ const virtualMediaTargetPortIds=new Set([
+  ...mediaEdges.map(edge=>edge.toPortId!),
+  // A regular Comfy workflow can advertise media use cases too. Its existing
+  // typed edges still use ordinary workflow execution, but the schema's slot
+  // ports must be accepted when the UI has not materialized local port data.
+  ...(useCase?.slots.map(slot=>slot.id)??[])
+ ]);
+ const external=prepareCanvasExternalInputSnapshot(graph.nodes,[...incoming,...mediaEdges],virtualMediaTargetPortIds);
  const externalInputs:Array<Record<string,unknown>>=[];
  for(const value of external){
   if(value.kind==="scalar"){
@@ -106,8 +138,8 @@ export async function startBackendComfyWorkflowRun(args:BackendComfyWorkflowArgs
   schemaVersion:2,projectId,canvasRevision:String(fence.revision),instanceId,
   rootOutputs:outputPortIds.map(portId=>({nodeId:workflowNode.id,portId})),
   nodes:[{id:workflowNode.id,templateId:template.id,templateRevision:template.revision,
-   inputOverrides:copy(binding.inputOverrides??{})}],
-  edges:incoming.map(edge=>({fromNodeId:edge.fromNodeId,fromPortId:edge.fromPortId!,
+   inputOverrides:mediaBinding?mediaOverrides(template,mediaBinding,args.prompt??""):copy(regularBinding?.inputOverrides??{})}],
+  edges:[...incoming,...mediaEdges].map(edge=>({fromNodeId:edge.fromNodeId,fromPortId:edge.fromPortId!,
    toNodeId:edge.toNodeId,toPortId:edge.toPortId!})),
   externalInputs,runOptions:{},idempotencyKey
  };
@@ -117,7 +149,15 @@ export async function startBackendComfyWorkflowRun(args:BackendComfyWorkflowArgs
   executionMode:"poll",idempotencyKey,requestFingerprint:idempotencyKey,
   snapshot:{adapterKind:"comfy",instanceId,comfyRequest,comfyTemplate:copy(template)}
  };
+ args.beforeSubmit?.();
  // Lost HTTP replies are reconciled via the SQLite job snapshot; browser
  // storage must never retain a replayable frozen request payload.
  const result=await bridge.submitFrozenJob(payload); return result;
+}
+
+function mediaOverrides(_template:ComfyWorkflowTemplate,binding:NonNullable<CanvasNodeData["metadata"]>["comfyMediaPreset"],prompt:string):Record<string,unknown>{
+ const overrides=copy(binding?.overrides??{});
+ const promptPort=_template.mediaUseCase!.promptPortId;
+ overrides[promptPort]=prompt;
+ return overrides;
 }

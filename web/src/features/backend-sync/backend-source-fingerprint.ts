@@ -30,6 +30,10 @@ function generationNode(node:BackendCanvasGraph["nodes"][number]){
   delete (safe.comfyWorkflow as Record<string,unknown>).lastRunId;
   delete (safe.comfyWorkflow as Record<string,unknown>).bindingState;
  }
+ if(safe.comfyMediaPreset&&typeof safe.comfyMediaPreset==="object"){
+  safe.comfyMediaPreset={...safe.comfyMediaPreset};
+  delete (safe.comfyMediaPreset as Record<string,unknown>).lastRunId;
+ }
  if(Array.isArray(safe.images))safe.images=safe.images.map((image:Record<string,unknown>)=>{
   const {status,errorDetails,...stable}=image;return stable;
  });
@@ -45,12 +49,19 @@ export async function fingerprintBackendSource(graph:BackendCanvasGraph,targetNo
   const list=parents.get(edge.toNodeId)??[];
   list.push(edge);parents.set(edge.toNodeId,list);
  }
- const ids=new Set<string>(),visiting=new Set<string>(),incoming:typeof doc.connections=[];
+ const ids=new Set<string>(),visiting=new Set<string>(),incoming:Array<Record<string,unknown>>=[];
  const visit=(id:string)=>{
   if(visiting.has(id))throw Error("cyclic_generation_source");
   if(ids.has(id))return;
   visiting.add(id);
-  for(const edge of parents.get(id)??[]){incoming.push(edge);visit(edge.fromNodeId)}
+  for(const edge of parents.get(id)??[]){const {id:_edgeId,...stableEdge}=edge;incoming.push(stableEdge);visit(edge.fromNodeId)}
+  const target=byId.get(id)!;
+  for(const [slotId,ref] of Object.entries(target.metadata?.comfyMediaPreset?.slots??{})){
+   if(!ref||typeof ref.nodeId!=="string"||!byId.has(ref.nodeId))throw Error("stale_generation_source");
+   const source=byId.get(ref.nodeId)!;
+   incoming.push({fromNodeId:ref.nodeId,fromPortId:source.type,toNodeId:id,toPortId:slotId,mediaAssetId:ref.imageId??null});
+   if(ref.nodeId!==id)visit(ref.nodeId);
+  }
   visiting.delete(id);ids.add(id);
  };
  visit(targetNodeId);

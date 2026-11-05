@@ -38,6 +38,17 @@ export type ComfyTemplatePayload = {
     requirements: ComfyRequirements;
     /** Opt-in KJNodes preview override. Omitted templates keep legacy behavior. */
     previewBinding?: { protocol: "kj-preview"; nodeId: string };
+    /** Optional preset metadata for channel-driven media generation. It is part of the immutable revision. */
+    mediaUseCase?: ComfyMediaUseCase;
+};
+export type ComfyMediaUseCase = {
+    channel: "image" | "video" | "audio";
+    primaryOutputKind: "image" | "video" | "audio";
+    promptPortId: string;
+    slots: Array<{id:string;label:string;valueKind:"IMAGE"|"VIDEO"|"AUDIO";required?:boolean}>;
+    primaryOutputPortId: string;
+    additionalOutputPortIds?: string[];
+    settings?: Record<string, string | string[] | {ports:string[];values?:Array<{label:string;value:string|number|boolean;portValues?:Record<string,string|number|boolean>}>}>;
 };
 export type ComfyWorkflowTemplate = ComfyTemplatePayload & { id: string; revision: string };
 
@@ -184,6 +195,60 @@ export function validateComfyTemplatePayload(raw: unknown, info?: ComfyObjectInf
     if (!isObject(raw) || typeof raw.name !== "string" || raw.name.trim().length < 1 || raw.name.length > 160 ||
         !Array.isArray(raw.ports) || raw.ports.length > MAX_PORTS) fail("invalid template metadata or port count");
     const graph = validateComfyApiGraph(raw.apiGraph, info);
+    if (raw.mediaUseCase !== undefined) {
+        const useCase=raw.mediaUseCase;
+        if(!isObject(useCase)||!(["image","video","audio"] as unknown[]).includes(useCase.channel)||
+            !(["image","video","audio"] as unknown[]).includes(useCase.primaryOutputKind)||
+            typeof useCase.promptPortId!=="string"||typeof useCase.primaryOutputPortId!=="string"||
+            !Array.isArray(useCase.slots)||useCase.slots.length>16||
+            (useCase.additionalOutputPortIds!==undefined&&(!Array.isArray(useCase.additionalOutputPortIds)||useCase.additionalOutputPortIds.length>16))||
+            (useCase.settings!==undefined&&!isObject(useCase.settings))) fail("invalid media use case");
+        const ids=new Set<string>();
+        for(const slot of useCase.slots){
+            if(!isObject(slot)||typeof slot.id!=="string"||!safeId(slot.id)||ids.has(slot.id)||
+                typeof slot.label!=="string"||slot.label.length>90||
+                !["IMAGE","VIDEO","AUDIO"].includes(String(slot.valueKind))||
+                (slot.required!==undefined&&typeof slot.required!=="boolean")||
+                (slot.required!==undefined&&typeof slot.required!=="boolean")) fail("invalid media slot");
+            ids.add(slot.id);
+        }
+        const byId=new Map((raw.ports as ComfyTemplatePort[]).map(port=>[port?.id,port]));
+        const prompt=byId.get(useCase.promptPortId), primary=byId.get(useCase.primaryOutputPortId);
+        if(!prompt||prompt.direction!=="target"||prompt.valueKind!=="STRING"||prompt.inputBinding?.mode!=="literal"||
+            !primary||primary.direction!=="source"||!primary.capture||primary.capture.kind!==useCase.primaryOutputKind||!primary.capture.adapterId||
+            useCase.channel!==useCase.primaryOutputKind) fail("media use case port mismatch");
+        for(const slot of useCase.slots){const port=byId.get(slot.id);
+            if(!port||port.direction!=="target"||port.valueKind!==slot.valueKind||Boolean(port.required)!==Boolean(slot.required))fail("media slot port mismatch");}
+        const outputs=[useCase.primaryOutputPortId,...(useCase.additionalOutputPortIds??[])];
+        if(new Set(outputs).size!==outputs.length)fail("duplicate media output port");
+        for(const id of useCase.additionalOutputPortIds??[]){const port=byId.get(id);
+            if(!port||port.direction!=="source"||!port.capture||port.capture.kind==="none"||!port.capture.adapterId)fail("media additional output port mismatch");}
+        const settingPortIds=new Set<string>();
+        for(const [key,value] of Object.entries(useCase.settings??{})){
+            if(!["imageQuality","imageWidth","imageHeight","imageCount","imageBackground","videoResolution","videoSize","videoRatio","videoDuration","videoGenerateAudio","videoWatermark","videoReturnLastFrame","audioVoice","audioFormat","audioSpeed","audioInstructions"].includes(key)||
+                !(typeof value==="string"||Array.isArray(value)&&value.length>0&&value.length<=2&&value.every(v=>typeof v==="string")||
+                  isObject(value)&&Array.isArray(value.ports)&&value.ports.length>0&&value.ports.length<=2&&value.ports.every(v=>typeof v==="string"))) fail("invalid media setting mapping");
+            const mapped=typeof value==="string"?[value]:Array.isArray(value)?value:(value as {ports:string[]}).ports;
+            for(const id of mapped){const port=byId.get(id as string);
+                if(!port||port.direction!=="target"||!["STRING","INT","FLOAT","BOOLEAN"].includes(port.valueKind)||
+                    settingPortIds.has(id as string)||id===useCase.promptPortId||useCase.slots.some(slot=>slot.id===id))fail("media setting port mismatch");
+                settingPortIds.add(id as string);
+            }
+            if(typeof value==="object"&&!Array.isArray(value)&&"values" in value){
+                if(!Array.isArray(value.values)||!value.values.length||value.values.length>128)fail("invalid media setting values");
+                for(const option of value.values)if(!isObject(option)||typeof option.label!=="string"||!option.label.trim()||option.label.length>90||
+                    !(typeof option.value==="string"||typeof option.value==="boolean"||typeof option.value==="number"&&Number.isFinite(option.value))||
+                    option.portValues!==undefined&&!isObject(option.portValues))fail("invalid media setting values");
+                for(const option of value.values as Array<{portValues?:Record<string,unknown>}>)for(const [portId,mappedValue] of Object.entries(option.portValues??{})){
+                    const port=byId.get(portId);
+                    if(!mapped.includes(portId)||!port||port.valueKind==="STRING"&&typeof mappedValue!=="string"||
+                        port.valueKind==="BOOLEAN"&&typeof mappedValue!=="boolean"||port.valueKind==="INT"&&!Number.isSafeInteger(mappedValue)||
+                        port.valueKind==="FLOAT"&&(typeof mappedValue!=="number"||!Number.isFinite(mappedValue))||
+                        port.choices?.length&&!port.choices.some(choice=>Object.is(choice.value,mappedValue)))fail("invalid media setting mapped value");
+                }
+            }
+        }
+    }
     if (raw.previewBinding !== undefined) {
         const binding=raw.previewBinding;
         if(!isObject(binding)||binding.protocol!=="kj-preview"||typeof binding.nodeId!=="string"||
@@ -305,7 +370,8 @@ export function validateComfyTemplatePayload(raw: unknown, info?: ComfyObjectInf
         fail("invalid model dependencies");
     // Identity/revision are NOT part of content-addressed payload. Ignore extra supplied metadata.
     return JSON.parse(canonicalComfyJson({name:raw.name,apiGraph:graph,ports,requirements:raw.requirements,
-        ...(raw.previewBinding!==undefined?{previewBinding:raw.previewBinding}:{})})) as ComfyTemplatePayload;
+        ...(raw.previewBinding!==undefined?{previewBinding:raw.previewBinding}:{}),
+        ...(raw.mediaUseCase!==undefined?{mediaUseCase:raw.mediaUseCase}:{})})) as ComfyTemplatePayload;
 }
 export function templatePayloadFromGraph(name: string, raw: unknown, info?: ComfyObjectInfo): ComfyTemplatePayload {
     const graph = validateComfyApiGraph(raw, info);

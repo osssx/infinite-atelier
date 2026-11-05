@@ -302,7 +302,17 @@ export function createJobCoordinator({
      if(controller.signal.aborted){outcome="local_wait_stopped";return}
      confirmCollection(jobId,lease);
      outcome="succeeded";
-    }catch{if(controller.signal.aborted){outcome="local_wait_stopped";return}schedule(jobId,"collect",true);outcome="collect_pending"} // retry download only
+    }catch(error){
+     if(controller.signal.aborted){outcome="local_wait_stopped";return}
+     if(error?.permanentCollectFailure===true){
+      modify(jobId,lease,row=>{
+       event(db,jobId,"job_comfy_error",{phase:"collect",code:typeof error.code==="string"?error.code:"comfy_capture_missing"});
+       transition(db,row,"failed",{},onTerminal);
+      });
+      outcome="collect_failed";return;
+     }
+     schedule(jobId,"collect",true);outcome="collect_pending";
+    } // only transient capture/download failures are retried
    }
   }finally{
    clearInterval(heartbeat);

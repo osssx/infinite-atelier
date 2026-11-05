@@ -20,6 +20,7 @@ import { upsertComfyPresetForTemplate } from "./preset-registry";
 import { listComfyPresetCatalog, type ComfyCatalogPreset } from "./preset-catalog";
 import { buildKrea2TurboTemplate, isKrea2TurboT2IWorkflow, KREA2_TURBO_TEMPLATE_ID } from "./krea2-turbo-preset";
 import { buildMiniMaxH3I2VPreset, isMiniMaxH3I2VWorkflow, MINIMAX_H3_I2V_TEMPLATE_ID } from "./minimax-h3-i2v-preset";
+import {ComfyMediaUseCaseEditor,normalizeComfyTemplateMediaDraft} from "./comfy-media-use-case-editor";
 import { installBundledComfyTemplate } from "./preset-catalog";
 import {autoFillComfyPortChoices,formatComfyChoiceLines,inferComfyChoicesForPort,parseComfyChoiceLines,type ComfyChoiceKind} from "./choice-options";
 import type {ComfyScalarChoice} from "./template-schema";
@@ -201,7 +202,8 @@ export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,
         if(binding?.templateId && binding.templateRevision) {
             void getComfyTemplate(binding.templateId,binding.templateRevision).then(bound=>{
                 if(!alive || !bound)return;
-                setDraft({name:bound.name,apiGraph:bound.apiGraph,ports:bound.ports,requirements:bound.requirements,...(bound.previewBinding?{previewBinding:bound.previewBinding}:{})});
+                setDraft(normalizeComfyTemplateMediaDraft({name:bound.name,apiGraph:bound.apiGraph,ports:bound.ports,requirements:bound.requirements,
+                    ...(bound.previewBinding?{previewBinding:bound.previewBinding}:{}),...(bound.mediaUseCase?{mediaUseCase:bound.mediaUseCase}:{})}));
                 setTemplateId(bound.id);
                 setSelectedNodeId(focus?.nodeId&&bound.apiGraph[focus.nodeId]?focus.nodeId:Object.keys(bound.apiGraph)[0]||"");
                 setSelectedPortId(focus?.portId&&bound.ports.some(p=>p.id===focus.portId)?focus.portId:bound.ports[0]?.id||null);
@@ -224,7 +226,7 @@ export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,
 
     const edit=(fn:(current:ComfyTemplatePayload)=>ComfyTemplatePayload)=>{
         setBindingIssue(null);setError("");
-        setDraft((current)=>current?fn(current):current);
+        setDraft((current)=>current?normalizeComfyTemplateMediaDraft(fn(current)):current);
     };
     const patchPort=(id:string, patch:Partial<ComfyTemplatePort>)=>edit((current)=>({
         ...current,ports:current.ports.map((port)=>port.id===id?{...port,...patch}:port),
@@ -381,7 +383,8 @@ export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,
             setError("无法应用该模板版本：已有画布连线引用了被删除或类型不兼容的端口。");
             return false;
         }
-        setDraft({name:template.name,apiGraph:template.apiGraph,ports:template.ports,requirements:template.requirements,...(template.previewBinding?{previewBinding:template.previewBinding}:{})});
+        setDraft(normalizeComfyTemplateMediaDraft({name:template.name,apiGraph:template.apiGraph,ports:template.ports,requirements:template.requirements,
+            ...(template.previewBinding?{previewBinding:template.previewBinding}:{}),...(template.mediaUseCase?{mediaUseCase:template.mediaUseCase}:{})}));
         setTemplateId(template.id);setSelectedNodeId(Object.keys(template.apiGraph)[0]||"");
         setSelectedPortId(current=>template.ports.some(port=>port.id===current)?current:template.ports[0]?.id||null);setError("");
         setStatus("已保存新的不可变模板版本。运行时使用全局 ComfyUI 默认实例进行能力验证。");
@@ -392,7 +395,9 @@ export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,
         if(choiceDirty){setError("请先修正并应用候选数组，再保存模板");return;}
         try {
             setBusy(true);setError("");setBindingIssue(null);
-            const template=await saveComfyTemplateVersion(templateId,draft,objectInfo);
+            const normalizedDraft=normalizeComfyTemplateMediaDraft(draft);
+            if(normalizedDraft!==draft)setDraft(normalizedDraft);
+            const template=await saveComfyTemplateVersion(templateId,normalizedDraft,objectInfo);
             if(applySaved(template) && context==="node") {
                 await upsertComfyPresetForTemplate(template);
                 setPresets(await listComfyPresetCatalog());
@@ -905,7 +910,8 @@ export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,
             {draft?<div className={embedded
                 ? "max-h-[38%] shrink-0 overflow-y-auto border-t border-[var(--comfy-border)] bg-[var(--comfy-panel)] px-4 py-3 sm:px-5"
                 : "shrink-0 border-t border-[var(--comfy-border)] bg-[var(--comfy-panel)] px-5 py-3"} data-comfy-save-footer>
-                <details open={expandedAdvanced} onToggle={(e)=>setExpandedAdvanced((e.currentTarget as HTMLDetailsElement).open)} className="mb-3">
+                <div className="mb-3 space-y-3" data-comfy-template-settings-stack>
+                <details open={expandedAdvanced} onToggle={(e)=>setExpandedAdvanced((e.currentTarget as HTMLDetailsElement).open)} className="rounded-lg border border-[var(--comfy-border)] p-3">
                     <summary className="cursor-pointer text-[11px] font-medium text-[var(--comfy-muted)]">模板设置 · 名称、ID、模型依赖与执行预览</summary>
                     <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
                         <label className={captionClass}>模板名称<input className={inputClass+" mt-1"} value={draft.name} onChange={(e)=>edit((d)=>({...d,name:e.target.value}))}/></label>
@@ -925,6 +931,9 @@ export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,
                         </label>
                     </div>
                 </details>
+                <ComfyMediaUseCaseEditor template={draft} onChange={mediaUseCase=>edit(current=>({...current,
+                    ...(mediaUseCase?{mediaUseCase}:{mediaUseCase:undefined})}))}/>
+                </div>
                 <div className="flex flex-wrap items-center justify-between gap-3">
                     <span className="max-w-[440px] text-[11px] text-[var(--comfy-muted)]">{objectInfo?"已同步当前 ComfyUI 实例的节点定义":"尚未校验插槽类型；同步节点定义后可准确匹配"}</span>
                     <button type="button" className="inline-flex min-h-9 items-center gap-2 rounded-lg px-4 py-2 text-xs font-semibold transition hover:opacity-85 disabled:cursor-wait disabled:opacity-75"

@@ -29,6 +29,7 @@ export type PreparedExternalInput = PreparedExternalScalar | PreparedExternalAss
 export function prepareCanvasExternalInputSnapshot(
     nodes: readonly CanvasNodeData[],
     connections: readonly CanvasConnection[],
+    virtualMediaTargetPortIds:ReadonlySet<string>=new Set(),
 ): PreparedExternalInput[] {
     const nodeById = new Map(nodes.map((node) => [node.id, node]));
     const inputs = new Map<string, PreparedExternalInput>();
@@ -36,7 +37,7 @@ export function prepareCanvasExternalInputSnapshot(
         if (!edge.toPortId) continue;
         const source = nodeById.get(edge.fromNodeId);
         const target = nodeById.get(edge.toNodeId);
-        if (!source || !target || !isPortAwareCanvasNode(target)) throw new Error("external_source_missing");
+        if (!source || !target || (!isPortAwareCanvasNode(target)&&!virtualMediaTargetPortIds.has(edge.toPortId??""))) throw new Error("external_source_missing");
         if (isPortAwareCanvasNode(source)) continue; // internal Comfy link, not an external asset
         const port = getCanvasResourceOutputPort(source);
         if (!port || port.id !== edge.fromPortId) throw new Error("external_source_port_invalid");

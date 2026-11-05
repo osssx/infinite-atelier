@@ -2549,6 +2549,42 @@ function AtelierCanvasPage() {
             const sourceNode = nodesRef.current.find((node) => node.id === nodeId);
             const generationConfig = retryConfig ?? buildGenerationConfig(effectiveConfig, sourceNode, mode);
             const promptText = mode === "text" ? extractSkillMentions(prompt).text : prompt;
+            const mediaPreset=sourceNode?.metadata?.comfyMediaPreset;
+            if(mediaPreset){
+                const submissionKey=projectId+":"+nodeId;
+                if(sqliteModelSubmitLocksRef.current.has(submissionKey)){message.warning("该来源节点的生成任务正在提交，请勿重复点击");return}
+                sqliteModelSubmitLocksRef.current.add(submissionKey);
+                const submissionToken=nanoid();
+                beginCanvasTextSubmission(projectId,nodeId,submissionToken,mode);
+                try{
+                    if(!projectLoaded)throw Error("画布项目尚未加载完成");
+                    if(!backendComfyEnabled)throw Error("ComfyUI 后端任务服务不可用");
+                    if(mode==="text")throw Error("媒体 Comfy 预设只支持图片、视频或音频节点");
+                    if(!globalComfyInstanceId)throw Error("请先在全局 ComfyUI 设置中选择默认实例");
+                    const template=await getComfyTemplate(mediaPreset.templateId,mediaPreset.templateRevision);
+                    if(!template?.mediaUseCase)throw Error("绑定的媒体预设版本不存在或缺少媒体用途配置");
+                    if(template.mediaUseCase.channel!==mode)throw Error("当前预设类型与节点媒体类型不匹配");
+                    const outputs=[template.mediaUseCase.primaryOutputPortId,...(template.mediaUseCase.additionalOutputPortIds??[])];
+                    const bridge=createSqliteComfyBridge({projectId,getLocalGraph:()=>({nodes:nodesRef.current,connections:connectionsRef.current})});
+                    const snapshot={nodes:[...nodesRef.current],connections:[...connectionsRef.current]};
+                    const job=await startBackendComfyWorkflowRun({bridge,projectId,workflowNode:sourceNode,...snapshot,
+                        template,instanceId:mediaPreset.instanceId||globalComfyInstanceId,outputPortIds:outputs,
+                        mediaSlots:mediaPreset.slots,prompt:promptText,
+                        beforeSubmit:()=>assertCanvasSubmissionActive(projectId,submissionToken)});
+                    sqliteGenerationJobsRef.current.set(nodeId,job.id);setRunningNodeId(nodeId);
+                    trackCanvasTextJob(projectId,nodeId,job.id,job.status,submissionToken,mode);
+                    message.info("ComfyUI 媒体任务已提交："+job.id);
+                    monitorSqliteJobRef.current(job.id,true);
+                    if(canvasSubmissionStopped(projectId,submissionToken)){
+                        await waitForCanvasNodeCancellation(projectId,nodeId);
+                        await stopConfigGeneration(nodeId,job.id);
+                    }
+                }catch(error){const detail=error instanceof Error?error.message:String(error);
+                    if(detail!=="canvas_submission_stopped")message.error(detail);}
+                finally{sqliteModelSubmitLocksRef.current.delete(submissionKey);
+                    finishCanvasTextSubmission(projectId,nodeId,submissionToken);}
+                return;
+            }
             const selectedChannel=resolveModelChannel(effectiveConfig,generationConfig.model);
             // Supported official channels always execute via SQLite. No toggle,
             // no implicit browser fallback on a failed backend/credential check.
@@ -2728,7 +2764,7 @@ function AtelierCanvasPage() {
                 return;
             }
         },
-        [effectiveConfig, message, projectId, projectLoaded, stopConfigGeneration, t],
+        [backendComfyEnabled,effectiveConfig,globalComfyInstanceId,message,projectId,projectLoaded,stopConfigGeneration,t],
     );
     // Update event-driven toolbar/inspector callbacks before the painted canvas
     // accepts clicks, so they never retain the initial `projectLoaded=false`.
@@ -3098,7 +3134,7 @@ function AtelierCanvasPage() {
     useEffect(()=>{
         if(!projectLoaded)return;
         let cancelled=false;
-        void canvasApi<{jobs:Array<{id:string;projectId:string|null;targetNodeId?:string|null;status:string;modelKind?:string;createdAt?:number}>}>(
+        void canvasApi<{jobs:Array<{id:string;projectId:string|null;targetNodeId?:string|null;status:string;modelKind?:string;adapterKind?:string;createdAt?:number}>}>(
             "/api/v1/jobs/snapshot"
         ).then(snapshot=>{
             if(cancelled)return;
@@ -3108,21 +3144,25 @@ function AtelierCanvasPage() {
             // not browser storage. Running cloud tasks may report not queued.
             // Recover Comfy animation directly from the backend's active jobs.
             // Choose the newest one per workflow and do not persist UI phases.
-            const workflows=new Map(nodesRef.current.filter(node=>node.type===COMFY_WORKFLOW_MOCK_TYPE)
+            const workflows=new Map(nodesRef.current.filter(node=>node.type===COMFY_WORKFLOW_MOCK_TYPE||Boolean(node.metadata?.comfyMediaPreset))
                 .map(node=>[node.id,node]));
-            for(const job of active.filter(job=>job.targetNodeId&&workflows.has(job.targetNodeId))
+            for(const job of active.filter(job=>job.adapterKind==="comfy"&&job.targetNodeId&&workflows.has(job.targetNodeId))
                 .sort((a,b)=>(a.createdAt??0)-(b.createdAt??0))) {
                 const workflow=workflows.get(job.targetNodeId!)!;
                 const previewEnabled=Boolean(workflow.metadata?.comfyWorkflow?.previewBinding);
                 setCanvasComfyExecution(projectId,job.targetNodeId!,{runId:job.id,status:job.status,startedAt:job.createdAt,previewEnabled});
-                const ref=workflow.metadata?.comfyWorkflow;
-                if(!previewEnabled&&ref?.templateId&&ref.templateRevision){
+                const ref=workflow.metadata?.comfyWorkflow??workflow.metadata?.comfyMediaPreset;
+                if(ref?.templateId&&ref.templateRevision){
                     void getComfyTemplate(ref.templateId,ref.templateRevision).then(template=>{
                         const current=getCanvasComfyExecution(job.targetNodeId!);
-                        if(activeProjectIdRef.current===projectId&&current?.runId===job.id&&template?.previewBinding)
+                        if(activeProjectIdRef.current===projectId&&current?.runId===job.id&&Boolean(template?.previewBinding)&&!current.previewEnabled)
                             setCanvasComfyExecution(projectId,job.targetNodeId!,{...current,previewEnabled:true});
                     }).catch(()=>{});
                 }
+            }
+            for(const job of active.filter(job=>job.adapterKind==="comfy"&&job.targetNodeId&&
+                nodesRef.current.some(node=>node.id===job.targetNodeId&&node.metadata?.comfyMediaPreset))) {
+                sqliteGenerationJobsRef.current.set(job.targetNodeId!,job.id);setRunningNodeId(current=>current??job.targetNodeId!);
             }
             for(const job of active){
                 if(!["image","text","video","audio"].includes(job.modelKind??"")||!job.targetNodeId||
@@ -3287,6 +3327,8 @@ function AtelierCanvasPage() {
             ) : (
                 <CanvasNodePromptPanel
                     node={panelNode}
+                    nodes={nodes}
+                    connections={connections}
                     projectId={projectId}
                     isRunning={runningNodeId === panelNode.id}
                     onPromptChange={handleNodePromptChange}

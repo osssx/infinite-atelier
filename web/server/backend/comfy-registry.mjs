@@ -26,10 +26,11 @@ export function validateComfyTemplate(template){
     Object.keys(template.apiGraph).length<1||Object.keys(template.apiGraph).length>500||
     template.ports.length>64||!Array.isArray(template.requirements.classTypes))
   throw error("comfy_template_invalid");
- if(Object.keys(template).some(k=>!["id","revision","name","apiGraph","ports","requirements","previewBinding"].includes(k)))
+ if(Object.keys(template).some(k=>!["id","revision","name","apiGraph","ports","requirements","previewBinding","mediaUseCase"].includes(k)))
   throw error("comfy_template_invalid");
  const payload={name:template.name,apiGraph:template.apiGraph,ports:template.ports,requirements:template.requirements,
   ...(template.previewBinding!==undefined?{previewBinding:template.previewBinding}:{})};
+ if(template.mediaUseCase!==undefined)payload.mediaUseCase=template.mediaUseCase;
  assertNoRawCredentials(payload);
  const json=stable(payload);
  if(Buffer.byteLength(json)>2_000_000)throw error("comfy_template_too_large",413);
@@ -44,6 +45,52 @@ export function validateComfyTemplate(template){
     binding.protocol!=="kj-preview"||!idRe.test(binding.nodeId)||
     graph[binding.nodeId]?.class_type!=="ModelPreviewOverrideKJ")
    throw error("comfy_template_preview_binding_invalid");
+ }
+ if(template.mediaUseCase!==undefined){
+  const u=template.mediaUseCase,mediaKinds=["image","video","audio"];
+  if(!object(u)||!mediaKinds.includes(u.channel)||!mediaKinds.includes(u.primaryOutputKind)||
+    u.channel!==u.primaryOutputKind||!idRe.test(u.promptPortId)||!idRe.test(u.primaryOutputPortId)||
+    !Array.isArray(u.slots)||u.slots.length>16||
+    (u.additionalOutputPortIds!==undefined&&(!Array.isArray(u.additionalOutputPortIds)||u.additionalOutputPortIds.length>16))||
+    (u.settings!==undefined&&!object(u.settings)))throw error("comfy_template_media_use_case_invalid");
+  const byId=new Map(template.ports.map(p=>[p?.id,p]));
+  const prompt=byId.get(u.promptPortId),primary=byId.get(u.primaryOutputPortId);
+  if(prompt?.direction!=="target"||prompt.valueKind!=="STRING"||prompt.inputBinding?.mode!=="literal"||
+    primary?.direction!=="source"||primary.capture?.kind!==u.primaryOutputKind||!primary.capture.adapterId)
+   throw error("comfy_template_media_use_case_invalid");
+  const slotIds=new Set();
+  for(const slot of u.slots){
+   const port=byId.get(slot?.id);
+   if(!object(slot)||!idRe.test(slot.id)||slotIds.has(slot.id)||typeof slot.label!=="string"||slot.label.length>90||
+    !["IMAGE","VIDEO","AUDIO"].includes(slot.valueKind)||port?.direction!=="target"||port.valueKind!==slot.valueKind||
+    Boolean(slot.required)!==Boolean(port.required)||(slot.required!==undefined&&typeof slot.required!=="boolean"))
+    throw error("comfy_template_media_slot_invalid");
+   slotIds.add(slot.id);
+  }
+  const outputIds=[u.primaryOutputPortId,...(u.additionalOutputPortIds??[])];
+  if(new Set(outputIds).size!==outputIds.length)throw error("comfy_template_media_output_invalid");
+  for(const id of u.additionalOutputPortIds??[]){const port=byId.get(id);
+   if(port?.direction!=="source"||!port.capture||port.capture.kind==="none"||!port.capture.adapterId)throw error("comfy_template_media_output_invalid");}
+  const allowed=new Set(["imageQuality","imageWidth","imageHeight","imageCount","imageBackground","videoResolution","videoSize","videoRatio","videoDuration","videoGenerateAudio","videoWatermark","videoReturnLastFrame","audioVoice","audioFormat","audioSpeed","audioInstructions"]);
+  const settingPorts=new Set();
+  for(const [key,value] of Object.entries(u.settings??{})){
+   const ids=typeof value==="string"?[value]:Array.isArray(value)?value:value?.ports;
+   if(!allowed.has(key)||!(typeof value==="string"||Array.isArray(value)&&value.length>0&&value.length<=2&&value.every(v=>typeof v==="string")||object(value)&&Array.isArray(value.ports)&&value.ports.length>0&&value.ports.length<=2&&value.ports.every(v=>typeof v==="string"))||
+    ids.some(id=>byId.get(id)?.direction!=="target"||!["STRING","INT","FLOAT","BOOLEAN"].includes(byId.get(id)?.valueKind)||settingPorts.has(id)||id===u.promptPortId||slotIds.has(id)))
+    throw error("comfy_template_media_setting_invalid");
+   for(const id of ids)settingPorts.add(id);
+   if(object(value)&&Object.hasOwn(value,"values")&&(!Array.isArray(value.values)||!value.values.length||value.values.length>128||
+    value.values.some(option=>!object(option)||typeof option.label!=="string"||!option.label.trim()||option.label.length>90||
+     !(typeof option.value==="string"||typeof option.value==="boolean"||typeof option.value==="number"&&Number.isFinite(option.value))||
+     option.portValues!==undefined&&!object(option.portValues))))
+    throw error("comfy_template_media_setting_values_invalid");
+   for(const option of value?.values??[])for(const [portId,mappedValue] of Object.entries(option.portValues??{})){
+    const port=byId.get(portId),kind=port?.valueKind;
+    if(!ids.includes(portId)||!port||kind==="STRING"&&typeof mappedValue!=="string"||kind==="BOOLEAN"&&typeof mappedValue!=="boolean"||
+     kind==="INT"&&!Number.isSafeInteger(mappedValue)||kind==="FLOAT"&&(typeof mappedValue!=="number"||!Number.isFinite(mappedValue))||
+     port.choices?.length&&!port.choices.some(choice=>Object.is(choice.value,mappedValue)))throw error("comfy_template_media_setting_mapped_value_invalid");
+   }
+  }
  }
  const nodeIds=Object.keys(graph);
  if(nodeIds.some(k=>!idRe.test(k)||!object(graph[k])||
@@ -100,10 +147,12 @@ export function createComfyRegistry(db){
    if(!find(id,revision))throw error("comfy_template_not_found",404);
    if(db.prepare("SELECT id FROM comfy_presets WHERE template_id=? AND revision=? LIMIT 1")
      .get(id,revision))throw error("comfy_template_in_use",409);
-   const projects=db.prepare("SELECT document_json FROM projects WHERE deleted_at IS NULL").all();
-   if(projects.some(({document_json})=>JSON.parse(document_json).nodes?.some(node=>
-      node.metadata?.comfyWorkflow?.templateId===id&&
-      node.metadata?.comfyWorkflow?.templateRevision===revision)))
+   const projects=db.prepare("SELECT document_json FROM projects").all();
+   if(projects.some(({document_json})=>JSON.parse(document_json).nodes?.some(node=>{
+      const meta=node.metadata??{};
+      return meta.comfyWorkflow?.templateId===id&&meta.comfyWorkflow?.templateRevision===revision||
+       meta.comfyMediaPreset?.templateId===id&&meta.comfyMediaPreset?.templateRevision===revision;
+   })))
     throw error("comfy_template_in_use",409);
    db.prepare("DELETE FROM comfy_template_versions WHERE template_id=? AND revision=?").run(id,revision);
    return {deleted:true};

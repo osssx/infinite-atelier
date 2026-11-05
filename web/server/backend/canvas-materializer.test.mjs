@@ -246,6 +246,47 @@ test("four artifact kinds become typed connected nodes and project revision adva
  assert.equal(readEventsAfter(f.db,0).filter(e=>e.kind==="artifact_materialized").length,4);
  assert.equal(f.db.prepare("SELECT COUNT(*) AS n FROM project_events WHERE project_id=? AND kind=?").get("project-1","materialized").n,4);
 });
+test("media preset primary output fills only an unchanged empty media node; populated source gets appended output",async t=>{
+ const f=fixture(t),sourceId="media-source",doc={nodes:[{id:sourceId,type:"image",title:"Media prompt",
+  position:{x:20,y:30},width:360,height:280,metadata:{prompt:"still life",comfyMediaPreset:{templateId:"media-image",
+   templateRevision:"r1",overrides:{steps:0},slots:{}}}}],connections:[]};
+ createProject(f.db,{id:"media-preset-project",document:doc});
+ const fingerprint=fingerprintSource(doc,sourceId),template={id:"media-image",revision:"r1",mediaUseCase:{
+  primaryOutputPortId:"image",additionalOutputPortIds:[]}};
+ const jobId=submitJob(f.db,{projectId:"media-preset-project",targetNodeId:sourceId,expectedProjectRevision:1,
+  sourceNodeFingerprint:fingerprint,idempotencyKey:"media-preset-run",requestFingerprint:"media-preset-run",executionMode:"poll",
+  snapshot:{adapterKind:"comfy",instanceId:"comfy-local",comfyTemplate:template,
+   comfyRequest:{nodes:[{id:sourceId}],rootOutputs:[{nodeId:sourceId,portId:"image"}]}}}).jobId;
+ const blob=await f.blobStore.put([png],{mime:"image/png"});
+ appendArtifact(f.db,{id:"media-primary",jobId,portId:"image",itemKey:"0",blobId:blob.blobId,sha256:blob.sha256,
+  mime:blob.mimeType,kind:"image",metadata:{comfyArtifact:{runId:jobId,artifactId:"media-primary",workflowNodeId:sourceId,
+   portId:"image",kind:"image",index:0}}});
+ f.db.prepare("UPDATE jobs SET status='succeeded' WHERE id=?").run(jobId);
+ const result=await f.materializer.runOnce();
+ assert.equal(result[0].status,"materialized");
+ const after=getProject(f.db,"media-preset-project").document;
+ assert.equal(after.nodes.length,1);
+ assert.equal(after.nodes[0].metadata.storageKey,"cas:"+blob.blobId);
+ assert.equal(after.nodes[0].metadata.comfyArtifact.artifactId,"media-primary");
+
+ const populated=structuredClone(doc);populated.nodes[0].metadata.content="existing image";
+ createProject(f.db,{id:"media-preset-populated",document:populated});
+ const secondFingerprint=fingerprintSource(populated,sourceId);
+ const secondJob=submitJob(f.db,{projectId:"media-preset-populated",targetNodeId:sourceId,expectedProjectRevision:1,
+  sourceNodeFingerprint:secondFingerprint,idempotencyKey:"media-preset-populated-run",requestFingerprint:"media-preset-populated-run",
+  executionMode:"poll",snapshot:{adapterKind:"comfy",instanceId:"comfy-local",comfyTemplate:template,
+   comfyRequest:{nodes:[{id:sourceId}],rootOutputs:[{nodeId:sourceId,portId:"image"}]}}}).jobId;
+ const secondBlob=await f.blobStore.put([png],{mime:"image/png"});
+ appendArtifact(f.db,{id:"media-appended",jobId:secondJob,portId:"image",itemKey:"0",blobId:secondBlob.blobId,
+  sha256:secondBlob.sha256,mime:secondBlob.mimeType,kind:"image",metadata:{comfyArtifact:{runId:secondJob,
+   artifactId:"media-appended",workflowNodeId:sourceId,portId:"image",kind:"image",index:0}}});
+ f.db.prepare("UPDATE jobs SET status='succeeded' WHERE id=?").run(secondJob);
+ await f.materializer.runOnce();
+ const populatedAfter=getProject(f.db,"media-preset-populated").document;
+ assert.equal(populatedAfter.nodes.length,2);
+ assert.equal(populatedAfter.nodes.find(node=>node.id===sourceId).metadata.content,"existing image");
+ assert.equal(populatedAfter.nodes.find(node=>node.metadata?.comfyArtifact?.artifactId==="media-appended").type,"image");
+});
 test("materializer replays after interruption; doesn't duplicate nodes/connections",async t=>{
  const f=fixture(t),{jobId}=await f.addArtifacts();
  await f.materializer.runOnce({maxItems:1});

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowUp, LoaderCircle, Maximize2, Square } from "lucide-react";
 import { Button, Modal, Tooltip } from "antd";
 import { useTranslation } from "react-i18next";
@@ -15,6 +15,8 @@ import { CanvasTextSettingsPopover } from "./canvas-text-settings-popover";
 import { CanvasNodeType, type CanvasGenerationMode, type CanvasNodeData } from "@/types/canvas";
 import { useNodeMentionReferences } from "./canvas-graph-context";
 import { useCanvasTextExecution } from "@/features/backend-sync/canvas-text-execution-visual";
+import {useComfyMediaPresetControl} from "@/features/comfy-workflow/comfy-media-preset-control";
+import type {CanvasConnection} from "@/types/canvas";
 
 export type CanvasNodeGenerationMode = CanvasGenerationMode;
 
@@ -28,9 +30,11 @@ type CanvasNodePromptPanelProps = {
     onStop: (nodeId: string) => void;
     onImageSettingsOpenChange?: (open: boolean) => void;
     modeOverride?: CanvasNodeGenerationMode; // Plugin nodes set their generation type through useBuiltinPanel.mode.
+    nodes?:readonly CanvasNodeData[];
+    connections?:readonly CanvasConnection[];
 };
 
-export function CanvasNodePromptPanel({ node, projectId, isRunning, onPromptChange, onConfigChange, onGenerate, onStop, onImageSettingsOpenChange, modeOverride }: CanvasNodePromptPanelProps) {
+export function CanvasNodePromptPanel({ node, projectId, isRunning, onPromptChange, onConfigChange, onGenerate, onStop, onImageSettingsOpenChange, modeOverride,nodes=[],connections=[] }: CanvasNodePromptPanelProps) {
     const { t } = useTranslation();
     const globalConfig = useEffectiveConfig();
     const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
@@ -47,6 +51,18 @@ export function CanvasNodePromptPanel({ node, projectId, isRunning, onPromptChan
     const isEditingExistingContent = hasTextContent || hasImageContent;
     const [prompt, setPrompt] = useState(node.metadata?.composerContent ?? node.metadata?.prompt ?? "");
     const [expanded, setExpanded] = useState(false);
+    const [comfyOptions,setComfyOptions]=useState<{value:string;label:string}[]>([]);
+    const [comfyValue,setComfyValue]=useState<string>();
+    const selectComfyPresetRef=useRef<(value:string)=>void>(()=>{});
+    const onComfyPickerOptionsChange=useCallback((options:{value:string;label:string}[],select:(value:string)=>void,activeValue?:string)=>{
+        setComfyOptions(current=>current.length===options.length&&current.every((item,index)=>item.value===options[index]?.value&&item.label===options[index]?.label)?current:options);
+        selectComfyPresetRef.current=select;
+        setComfyValue(current=>current===activeValue?current:activeValue);
+    },[]);
+    const onModelChange=(model:string)=>{onConfigChange(node.id,{model,comfyMediaPreset:undefined});setComfyValue(undefined);};
+    const handleComfyConfigChange=useCallback((patch:Partial<CanvasNodeData["metadata"]>)=>onConfigChange(node.id,patch),[node.id,onConfigChange]);
+    const comfyMediaControls=useComfyMediaPresetControl({node,nodes,connections,
+        onChange:handleComfyConfigChange,onPickerOptionsChange:onComfyPickerOptionsChange});
 
     // Restore on node switches and external prompt updates (e.g. BBox apply).
     // Local edits are also committed to metadata, so this agrees with the draft;
@@ -120,25 +136,25 @@ export function CanvasNodePromptPanel({ node, projectId, isRunning, onPromptChan
                     </Tooltip>
                     {mode === "image" ? (
                         <>
-                            <ModelPicker config={config} value={config.model} onChange={(model) => onConfigChange(node.id, { model })} capability="image" onMissingConfig={() => openConfigDialog(true)} className="max-w-[190px]" />
-                            <CanvasImageSettingsPopover
+                            <ModelPicker config={config} value={config.model} onChange={onModelChange} capability="image" onMissingConfig={() => openConfigDialog(true)} className="max-w-[190px]" externalOptions={comfyOptions} externalValue={comfyValue} onExternalSelect={value=>selectComfyPresetRef.current(value)}/>
+                            {!node.metadata?.comfyMediaPreset?<CanvasImageSettingsPopover
                                 config={config}
                                 placement="topLeft"
                                 buttonClassName="!h-10 !max-w-[170px] !justify-start !rounded-full !px-3"
                                 onConfigChange={(key, value) => onConfigChange(node.id, key === "count" ? { count: Number(value) || 1 } : { [key]: value })}
                                 onMissingConfig={() => openConfigDialog(true)}
                                 onOpenChange={onImageSettingsOpenChange}
-                            />
+                            />:comfyMediaControls.settings}
                         </>
                     ) : mode === "video" ? (
                         <>
-                            <ModelPicker config={config} value={config.model} onChange={(model) => onConfigChange(node.id, { model })} capability="video" onMissingConfig={() => openConfigDialog(true)} className="max-w-[190px]" />
-                            <CanvasVideoSettingsPopover config={config} buttonClassName="!h-10 !max-w-[170px] !justify-start !rounded-full !px-3" onConfigChange={(key, value) => onConfigChange(node.id, videoConfigPatch(key, value))} />
+                            <ModelPicker config={config} value={config.model} onChange={onModelChange} capability="video" onMissingConfig={() => openConfigDialog(true)} className="max-w-[190px]" externalOptions={comfyOptions} externalValue={comfyValue} onExternalSelect={value=>selectComfyPresetRef.current(value)}/>
+                            {!node.metadata?.comfyMediaPreset?<CanvasVideoSettingsPopover config={config} buttonClassName="!h-10 !max-w-[170px] !justify-start !rounded-full !px-3" onConfigChange={(key, value) => onConfigChange(node.id, videoConfigPatch(key, value))} />:comfyMediaControls.settings}
                         </>
                     ) : mode === "audio" ? (
                         <>
-                            <ModelPicker config={config} value={config.model} onChange={(model) => onConfigChange(node.id, { model })} capability="audio" onMissingConfig={() => openConfigDialog(true)} className="max-w-[190px]" />
-                            <CanvasAudioSettingsPopover config={config} buttonClassName="!h-10 !max-w-[170px] !justify-start !rounded-full !px-3" onConfigChange={(key, value) => onConfigChange(node.id, audioConfigPatch(key, value))} />
+                            <ModelPicker config={config} value={config.model} onChange={onModelChange} capability="audio" onMissingConfig={() => openConfigDialog(true)} className="max-w-[190px]" externalOptions={comfyOptions} externalValue={comfyValue} onExternalSelect={value=>selectComfyPresetRef.current(value)}/>
+                            {!node.metadata?.comfyMediaPreset?<CanvasAudioSettingsPopover config={config} buttonClassName="!h-10 !max-w-[170px] !justify-start !rounded-full !px-3" onConfigChange={(key, value) => onConfigChange(node.id, audioConfigPatch(key, value))} />:comfyMediaControls.settings}
                         </>
                     ) : (
                         <>
@@ -168,6 +184,7 @@ export function CanvasNodePromptPanel({ node, projectId, isRunning, onPromptChan
                     </span>
                 </Button>
             </div>
+            {comfyMediaControls.slots}
             <Modal title={t("canvas.promptPanel.editorTitle")} open={expanded} centered width={760} footer={null} onCancel={() => setExpanded(false)} destroyOnHidden>
                 <div data-canvas-no-zoom className="pt-2" onWheelCapture={(event) => event.stopPropagation()}>
                     <CanvasPromptChipInput

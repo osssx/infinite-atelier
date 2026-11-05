@@ -94,7 +94,7 @@ function fixture(t,{transport,requestOverride,reference=false}={}){
  const row=id=>db.prepare("SELECT * FROM jobs WHERE id=?").get(id);
  return {db,dir,blobStore,queue,adapters,row,tplt,req};
 }
-function mockTransport({errorAt,failDownloadOnce=false,workflowNodeId="wf-1"}={}){
+function mockTransport({errorAt,failDownloadOnce=false,workflowNodeId="wf-1",omitImageCapture=false}={}){
  const calls=[],prompts=[];let historyCount=0,downloadFailed=false;
  const mock=async(instance,path,opts={})=>{
   assert.equal(instance.url,"http://127.0.0.1:8188");
@@ -111,14 +111,16 @@ function mockTransport({errorAt,failDownloadOnce=false,workflowNodeId="wf-1"}={}
   if(path==="/history/remote-test"){
    historyCount++;
    if(errorAt==="pending"&&historyCount===1)return {};
-   return {"remote-test":{status:{completed:true,status_str:"success"},outputs:{
+   const outputs={
     ["w_"+workflowNodeId+"__capture_image"]:{images:[
      {filename:"one.png",subfolder:"",type:"output"},
      {filename:"two.png",subfolder:"",type:"output"}]},
     ["w_"+workflowNodeId+"__5"]:{images:[{filename:"movie.mp4",type:"output"}]},
     ["w_"+workflowNodeId+"__6"]:{audio:[{filename:"sound.wav",type:"output"}]},
     ["w_"+workflowNodeId+"__7"]:{text:["generated text",""]}
-   }}};
+   };
+   if(omitImageCapture)delete outputs["w_"+workflowNodeId+"__capture_image"];
+   return {"remote-test":{status:{completed:true,status_str:"success"},outputs}};
   }
   if(path.startsWith("/view?")){
    const name=new URL("http://localhost"+path).searchParams.get("filename");
@@ -481,6 +483,23 @@ test("download interruption preserves partial captures and retries collection wi
  assert.equal(f.db.prepare("SELECT COUNT(*) AS n FROM artifacts WHERE job_id=?").get(id).n,6);
  assert.equal(transport.prompts.length,1);
  assert.equal(transport.calls.filter(x=>x.startsWith("/view?")&&x.includes("one.png")).length,1);
+});
+test("completed Comfy history missing a required capture fails terminally and records a diagnostic",async t=>{
+ const transport=mockTransport({omitImageCapture:true});
+ const f=fixture(t,{transport:transport.mock});
+ const id=f.queue("missing-capture");
+ const c=createJobCoordinator({db:f.db,adapters:{comfy:f.adapters}});
+ c.recoverAtStartup();await c.tick();await c.tick();
+ assert.equal(f.row(id).status,"failed");
+ assert.equal(f.db.prepare("SELECT COUNT(*) AS n FROM artifacts WHERE job_id=?").get(id).n,0,
+  "all required captures are checked before any output is imported");
+ const event=f.db.prepare("SELECT kind,payload_json FROM job_events WHERE job_id=? AND kind='job_comfy_error'").get(id);
+ assert.equal(event.kind,"job_comfy_error");
+ assert.deepEqual(JSON.parse(event.payload_json),{phase:"collect",code:"capture_missing:image"});
+ await c.tick();
+ assert.equal(f.row(id).status,"failed");
+ assert.equal(transport.prompts.length,1,"must not submit the GPU workflow a second time");
+ assert.equal(f.db.prepare("SELECT outcome FROM job_attempts WHERE job_id=? ORDER BY started_at DESC LIMIT 1").get(id).outcome,"collect_failed");
 });
 test("Comfy confirmed 422 allows terminal failure; ambiguous POST response survives restart without resubmission",async t=>{
  const first=mockTransport({errorAt:"validation"});

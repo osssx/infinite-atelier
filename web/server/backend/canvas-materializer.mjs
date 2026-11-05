@@ -174,8 +174,13 @@ export function createCanvasMaterializer({db,blobStore,videoDimensionReader=read
      throw fail("materialization_port_mismatch");
     const compatibleModelSource=source&&(["config","text"].includes(source.type)||
      source.type===artifact.kind&&["image","audio","video"].includes(source.type));
-    const hasPort=source?.type==="comfy:workflow"&&source.metadata?.comfyPorts?.some(p=>
+    const hasWorkflowPort=source?.type==="comfy:workflow"&&source.metadata?.comfyPorts?.some(p=>
      p.id===artifact.port_id&&p.direction==="source"&&p.valueKind===requiredKind[artifact.kind]);
+    const mediaUseCase=snapshot?.comfyTemplate?.mediaUseCase;
+    const hasMediaPresetPort=source?.type===artifact.kind&&source.metadata?.comfyMediaPreset?.templateId===snapshot?.comfyTemplate?.id&&
+     source.metadata?.comfyMediaPreset?.templateRevision===snapshot?.comfyTemplate?.revision&&
+     [mediaUseCase?.primaryOutputPortId,...(mediaUseCase?.additionalOutputPortIds??[])].includes(artifact.port_id);
+    const hasPort=Boolean(hasWorkflowPort||hasMediaPresetPort);
     // Input fingerprints belong to the pre-submit save barrier. Once generated,
     // an edited prompt, reference connection or workflow binding must not
     // strand its verified CAS result. Original inputs remain in the frozen job.
@@ -203,19 +208,21 @@ export function createCanvasMaterializer({db,blobStore,videoDimensionReader=read
       source?.type==="image"&&sourceImageEmpty&&!sourceChangedSinceSubmit);
     const emptyMediaWriteBack=Boolean(isModel&&["video","audio"].includes(artifact.kind)&&
       source?.type===artifact.kind&&sourceMediaEmpty&&!sourceChangedSinceSubmit);
+    const emptyComfyMediaWriteBack=Boolean(isComfy&&hasMediaPresetPort&&mediaUseCase?.primaryOutputPortId===artifact.port_id&&
+      source&&!sourceChangedSinceSubmit&&(artifact.kind==="image"?sourceImageEmpty:sourceMediaEmpty));
     const fillEmptyText=Boolean(isModel&&artifact.kind==="text"&&source?.type==="text"&&
      !sourceChangedSinceSubmit&&!String(source.metadata?.content??"").trim()&&
      !source.metadata?.modelArtifact&&typeof contents==="string"&&contents.trim());
-    const writeToSource=fillEmptyText||writeBack||emptyImageWriteBack||emptyMediaWriteBack;
+    const writeToSource=fillEmptyText||writeBack||emptyImageWriteBack||emptyMediaWriteBack||emptyComfyMediaWriteBack;
     const nodeId=writeToSource?source.id:"artifact-"+artifact.id;
     const edgeId="artifact-edge-"+artifact.id;
     if(!validId(nodeId)||!validId(edgeId))throw fail("materialization_invalid_id");
     if(fillEmptyText){
      source.metadata={...source.metadata,content:contents,status:"success",modelArtifact:origin};
-    }else if(writeBack||emptyImageWriteBack||emptyMediaWriteBack){
+    }else if(writeBack||emptyImageWriteBack||emptyMediaWriteBack||emptyComfyMediaWriteBack){
      source.metadata={...source.metadata,content:"/api/v1/blobs/"+artifact.blob_id,
       storageKey:"cas:"+artifact.blob_id,mimeType:artifact.mime,status:"success",
-      modelArtifact:origin,
+      ...(isModel?{modelArtifact:origin}:{comfyArtifact:origin}),
       bytes:db.prepare("SELECT byte_size FROM blobs WHERE id=?").get(artifact.blob_id).byte_size,
       ...(mediaDimensions?{naturalWidth:mediaDimensions.width,naturalHeight:mediaDimensions.height}:{})};
     }else{

@@ -239,6 +239,12 @@ describe("Phase B: ComfyUI API graph and immutable bindings", () => {
         good.ports[3].capture={kind:"video",adapterId:"SaveVideo"};
         expect(() => validateComfyTemplatePayload(good)).toThrow(/capture requires/);
     });
+    it("rejects duplicate media output port IDs in immutable templates",()=>{
+        const sample=payload();
+        sample.mediaUseCase={channel:"image",primaryOutputKind:"image",promptPortId:"prompt",slots:[],primaryOutputPortId:"output",
+            additionalOutputPortIds:["output","output"]};
+        expect(()=>validateComfyTemplatePayload(sample,info)).toThrow(/duplicate media output port/);
+    });
     it("preserves typed STRING/FLOAT choice lists across immutable template revisions",async()=>{
         const sample=payload();
         sample.ports[0].choices=[{label:"快速",value:"fast"},{label:"慢速",value:"slow"}];

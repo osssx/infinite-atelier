@@ -49,6 +49,45 @@ export function verifyTemplate(template) {
             binding.protocol !== "kj-preview" || !validId(binding.nodeId) ||
             apiGraph[binding.nodeId]?.class_type !== "ModelPreviewOverrideKJ") fail("template_preview_binding_invalid");
     }
+    if(template.mediaUseCase!==undefined){
+        const u=template.mediaUseCase,byId=new Map(ports.map(p=>[p?.id,p]));
+        const kinds=["image","video","audio"];
+        if(!object(u)||!kinds.includes(u.channel)||!kinds.includes(u.primaryOutputKind)||u.channel!==u.primaryOutputKind||
+            !Array.isArray(u.slots)||u.slots.length>16||!object(u.settings??{})||
+            byId.get(u.promptPortId)?.direction!=="target"||byId.get(u.promptPortId)?.valueKind!=="STRING"||
+            byId.get(u.promptPortId)?.inputBinding?.mode!=="literal"||
+            byId.get(u.primaryOutputPortId)?.direction!=="source"||byId.get(u.primaryOutputPortId)?.capture?.kind!==u.primaryOutputKind||
+            !byId.get(u.primaryOutputPortId)?.capture?.adapterId)fail("template_media_use_case_invalid");
+        const slots=new Set();
+        for(const slot of u.slots){const port=byId.get(slot?.id);
+            if(!object(slot)||!validId(slot.id)||slots.has(slot.id)||typeof slot.label!=="string"||slot.label.length>90||
+                !["IMAGE","VIDEO","AUDIO"].includes(slot.valueKind)||port?.direction!=="target"||port.valueKind!==slot.valueKind||
+                Boolean(port.required)!==Boolean(slot.required))fail("template_media_slot_invalid");slots.add(slot.id);}
+        const outputs=[u.primaryOutputPortId,...(u.additionalOutputPortIds??[])];
+        if(!Array.isArray(u.additionalOutputPortIds??[])||outputs.some(id=>byId.get(id)?.direction!=="source"||
+            !byId.get(id)?.capture||byId.get(id).capture.kind==="none"||!byId.get(id).capture.adapterId)||new Set(outputs).size!==outputs.length)
+            fail("template_media_output_invalid");
+        const claimed=new Set();
+        for(const [key,mapping] of Object.entries(u.settings??{})){
+            const values=typeof mapping==="string"?[mapping]:Array.isArray(mapping)?mapping:mapping?.ports;
+            if(!["imageQuality","imageWidth","imageHeight","imageCount","imageBackground","videoResolution","videoRatio","videoDuration","videoGenerateAudio","videoWatermark","videoReturnLastFrame","audioVoice","audioFormat","audioSpeed","audioInstructions"].includes(key)||
+                !(typeof mapping==="string"||Array.isArray(mapping)&&mapping.length>0&&mapping.length<=2&&mapping.every(x=>typeof x==="string")||
+                    object(mapping)&&Array.isArray(mapping.ports)&&mapping.ports.length>0&&mapping.ports.length<=2&&mapping.ports.every(x=>typeof x==="string"))||
+                values.some(id=>{const p=byId.get(id);return !p||p.direction!=="target"||!["STRING","INT","FLOAT","BOOLEAN"].includes(p.valueKind)||
+                    claimed.has(id)||id===u.promptPortId||slots.has(id);}))fail("template_media_setting_invalid");
+            for(const id of values)claimed.add(id);
+            if(object(mapping)&&Object.hasOwn(mapping,"values")&&(!Array.isArray(mapping.values)||!mapping.values.length||mapping.values.length>128||
+                mapping.values.some(o=>!object(o)||typeof o.label!=="string"||!o.label.trim()||o.label.length>90||
+                    !(typeof o.value==="string"||typeof o.value==="boolean"||typeof o.value==="number"&&Number.isFinite(o.value))||
+                    o.portValues!==undefined&&!object(o.portValues))))fail("template_media_setting_values_invalid");
+            for(const option of mapping?.values??[])for(const [portId,mappedValue] of Object.entries(option.portValues??{})){
+                const port=byId.get(portId),kind=port?.valueKind;
+                if(!values.includes(portId)||!port||kind==="STRING"&&typeof mappedValue!=="string"||kind==="BOOLEAN"&&typeof mappedValue!=="boolean"||
+                    kind==="INT"&&!Number.isSafeInteger(mappedValue)||kind==="FLOAT"&&(typeof mappedValue!=="number"||!Number.isFinite(mappedValue))||
+                    port.choices?.length&&!port.choices.some(choice=>Object.is(choice.value,mappedValue)))fail("template_media_setting_mapped_value_invalid");
+            }
+        }
+    }
     const ids = new Set(), claims = new Set();
     for (const [id, node] of Object.entries(apiGraph)) {
         if (!validId(id) || !validId(node?.class_type) || !object(node?.inputs)) fail("template_graph_invalid");
@@ -104,7 +143,8 @@ export function verifyTemplate(template) {
     }
     const {id,revision,...payload} = template;
     if (sha256(canonical({name:payload.name,apiGraph:payload.apiGraph,ports:payload.ports,requirements:payload.requirements,
-        ...(payload.previewBinding!==undefined?{previewBinding:payload.previewBinding}:{})})) !== revision) fail("template_revision_mismatch");
+        ...(payload.previewBinding!==undefined?{previewBinding:payload.previewBinding}:{}),
+        ...(payload.mediaUseCase!==undefined?{mediaUseCase:payload.mediaUseCase}:{})})) !== revision) fail("template_revision_mismatch");
     const graphBytes = Buffer.byteLength(canonical(apiGraph));
     if (graphBytes > 2_000_000) fail("template_graph_too_large");
     validateGraph(apiGraph);
@@ -227,7 +267,7 @@ export function validateSingleRequest(req) {
     const inputs = new Map(), targetEdges = new Map();
     for (const x of req.externalInputs) {
         if (!object(x) || !validCanvasNodeId(x.sourceNodeId) || !validId(x.sourcePortId) ||
-            x.sourceNodeId === node.id || !["text","image","video","audio"].includes(x.sourcePortId) ||
+            !["text","image","video","audio"].includes(x.sourcePortId) ||
             !["scalar","asset"].includes(x.kind)) fail("external_input_invalid");
         if (x.kind === "scalar" && (x.sourcePortId !== "text" || x.valueKind !== "STRING" || !matchValue("STRING",x.value))) fail("external_scalar_invalid");
         if (x.kind === "asset" && (({image:"IMAGE",video:"VIDEO",audio:"AUDIO"})[x.sourcePortId] !== x.valueKind || !validId(x.assetId) || !validSha(x.sha256))) fail("external_asset_invalid");
@@ -238,7 +278,8 @@ export function validateSingleRequest(req) {
     const used = new Set();
     for (const e of req.edges) {
         if (!object(e) || !validCanvasNodeId(e.fromNodeId) || !validId(e.fromPortId) ||
-            e.toNodeId !== node.id || !validId(e.toPortId) || e.fromNodeId === node.id) fail("only_external_source_edges_allowed");
+            e.toNodeId !== node.id || !validId(e.toPortId)) fail("only_external_source_edges_allowed");
+        if(e.fromNodeId===node.id&&!template.mediaUseCase?.slots.some(slot=>slot.id===e.toPortId))fail("self_external_input_invalid");
         const source=e.fromNodeId+"\0"+e.fromPortId;
         if (!inputs.has(source)) fail("missing_external_snapshot");
         if (targetEdges.has(e.toPortId)) fail("multiple_sources_for_input");

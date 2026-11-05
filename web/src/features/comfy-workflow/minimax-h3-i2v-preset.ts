@@ -57,6 +57,9 @@ export function buildMiniMaxH3I2VPreset(raw:unknown):ComfyTemplatePayload {
             capture:{kind:"video",adapterId:"SaveVideo"},
         },
     ];
+    payload.mediaUseCase={channel:"video",primaryOutputKind:"video",promptPortId:"prompt",
+        slots:[{id:"first_frame",label:"首帧图片",valueKind:"IMAGE",required:false}],
+        primaryOutputPortId:"video",settings:{videoDuration:"duration",videoRatio:"aspect_ratio",videoResolution:"megapixels"}};
     payload.requirements.modelAssets=[...new Set(Object.values(graph)
         .flatMap(node=>Object.entries(node.inputs)
             .filter(([key])=>["unet_name","clip_name","vae_name","lora_name"].includes(key))

@@ -331,9 +331,10 @@ export function createComfyV2Adapter({instance,db,blobStore,upstreamCall=comfyUp
   const result=await upstreamCall(trusted,"/history/"+encodeURIComponent(remoteTaskId));
   const entry=historyEntry(result,remoteTaskId);
   if(!successful(entry)||failed(entry))throw fail("comfy_history_not_completed",409);
-  for(const cap of preparation.captures){
-   const candidates=extractCapture(entry.outputs?.[cap.captureNodeId],cap);
-   if(!candidates.length&&cap.required)throw fail("capture_missing:"+cap.portId,409);
+  const captures=preparation.captures.map(cap=>({cap,candidates:extractCapture(entry.outputs?.[cap.captureNodeId],cap)}));
+  const missing=captures.find(({cap,candidates})=>cap.required&&!candidates.length);
+  if(missing)throw Object.assign(fail("capture_missing:"+missing.cap.portId,409),{permanentCollectFailure:true});
+  for(const {cap,candidates} of captures){
    for(const [index,item] of candidates.entries()){
     const prior=db.prepare("SELECT id FROM artifacts WHERE job_id=? AND port_id=? AND item_key=?")
       .get(job.id,cap.portId,item.key);

@@ -48,6 +48,10 @@ function generationNode(node){
   // the actual template, inputs and explicit instance identity stay fingerprinted.
   delete safe.comfyWorkflow.bindingState;
  }
+ if(safe.comfyMediaPreset){
+  safe.comfyMediaPreset={...safe.comfyMediaPreset};
+  delete safe.comfyMediaPreset.lastRunId;
+ }
  if(Array.isArray(safe.images))safe.images=safe.images.map(image=>{
   const {status,errorDetails,...stable}=image;return stable;
  });
@@ -72,6 +76,15 @@ function sourceDigest(document,targetNodeId,version){
   for(const edge of parents.get(id)||[]){
    incoming.push(edge);
    visit(edge.fromNodeId);
+  }
+  if(version===2){
+   const target=byId.get(id);
+   for(const [slotId,ref] of Object.entries(target?.metadata?.comfyMediaPreset?.slots||{})){
+    if(!ref||typeof ref.nodeId!=="string"||!byId.has(ref.nodeId))throw problem("stale_generation_source");
+    const source=byId.get(ref.nodeId);
+    incoming.push({fromNodeId:ref.nodeId,fromPortId:source.type,toNodeId:id,toPortId:slotId,mediaAssetId:ref.imageId??null});
+    if(ref.nodeId!==id)visit(ref.nodeId);
+   }
   }
   visiting.delete(id);ids.add(id);
  }
@@ -138,9 +151,15 @@ export function submitJob(db,{jobId=randomUUID(),principal="local-owner",project
   // explicit per-click request; older text jobs (including unknown outcomes)
   // must not block another independent request. Never replay old jobs here.
   // Every new request still has its own idempotency key and credential fence.
-  if(projectId!==null&&snapshot.adapterKind==="model"&&snapshot.task?.kind!=="text"){
-   const active=db.prepare("SELECT id FROM jobs WHERE principal=? AND project_id=? AND target_node_id=? AND status NOT IN ('succeeded','failed','cancelled') LIMIT 1")
-    .get(principal,projectId,targetNodeId);
+  if(projectId!==null&&((snapshot.adapterKind==="model"&&snapshot.task?.kind!=="text")||snapshot.adapterKind==="comfy")){
+   const projectRow=db.prepare("SELECT document_json FROM projects WHERE id=?").get(projectId);
+   const source=projectRow&&JSON.parse(projectRow.document_json).nodes?.find(node=>node.id===targetNodeId);
+   const mediaSource=["image","video","audio"].includes(source?.type);
+   const active=db.prepare("SELECT id,snapshot_json FROM jobs WHERE principal=? AND project_id=? AND target_node_id=? AND status NOT IN ('succeeded','failed','cancelled')")
+    .all(principal,projectId,targetNodeId).find(row=>{
+     const previous=JSON.parse(row.snapshot_json);
+     return mediaSource||snapshot.adapterKind==="model"&&previous.adapterKind==="model"&&previous.task?.kind!=="text";
+    });
    if(active)throw problem("backend_prior_job_not_terminal");
   }
   // The immutable credential reference is checked under the same write

@@ -131,6 +131,14 @@ export type CanvasNodeMetadata = {
         previewBinding?: {protocol:"kj-preview";nodeId:string};
         lastRunId?: string;
     };
+    /** A media-channel node may pin a Comfy preset directly without adding a graph node. */
+    comfyMediaPreset?: {
+        templateId:string;templateRevision:string;instanceId?:string;
+        overrides:Record<string,unknown>;
+        slots:Record<string,{nodeId:string;imageId?:string}>;
+        lastRunId?:string;
+    };
+    comfyMediaPresetCache?: Record<string,NonNullable<CanvasNodeMetadata["comfyMediaPreset"]>>;
 };
 
 export type CanvasNodeData = {

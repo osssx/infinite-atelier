@@ -69,6 +69,52 @@ describe("backend save fence + frozen Comfy submission",()=>{
 
   expect(bridge.submitFrozenJob).toHaveBeenCalledTimes(1);
  });
+ it("media preset freezes selected slot assets as request-only edges and independent Comfy overrides",async()=>{
+  const mediaNode:CanvasNodeData={id:"media-target",type:"image",title:"Image",width:360,height:280,position:{x:0,y:0},
+   metadata:{comfyMediaPreset:{templateId:"media-demo",templateRevision:"rev-media",overrides:{steps:0,enabled:false},
+    slots:{reference:{nodeId:"reference",imageId:"still-1"}}}}};
+  const reference:CanvasNodeData={id:"reference",type:"image",title:"Reference",width:360,height:280,position:{x:400,y:0},
+   metadata:{content:"blob:reference-image",storageKey:"reference-blob",mimeType:"image/png"}};
+  const mediaTemplate:ComfyWorkflowTemplate={...template,id:"media-demo",revision:"rev-media",
+   apiGraph:{"1":{class_type:"LoadImage",inputs:{image:"example.png"}},"2":{class_type:"Prompt",inputs:{text:""}},"3":{class_type:"Output",inputs:{}}},
+   requirements:{classTypes:["LoadImage","Output","Prompt"]},
+   ports:[{id:"reference",label:"Reference",direction:"target",valueKind:"IMAGE",inputBinding:{mode:"media-file",mediaKind:"IMAGE",targets:[{nodeId:"1",inputName:"image"}]}},
+    {id:"prompt",label:"Prompt",direction:"target",valueKind:"STRING",inputBinding:{mode:"literal",targets:[{nodeId:"2",inputName:"text"}]}},
+    {id:"image",label:"Image",direction:"source",valueKind:"IMAGE",outputBinding:{nodeId:"3",outputIndex:0},capture:{kind:"image",adapterId:"SaveImage"}}],
+   mediaUseCase:{channel:"image",primaryOutputKind:"image",promptPortId:"prompt",slots:[{id:"reference",label:"Reference",valueKind:"IMAGE"}],primaryOutputPortId:"image"}};
+  const context:CanvasNodeData={id:"context-text",type:"text",title:"Context",width:300,height:220,position:{x:-400,y:0},metadata:{content:"visual only"}};
+  const graph={nodes:[reference,mediaNode,context],connections:[{id:"legacy-context",fromNodeId:context.id,toNodeId:mediaNode.id}]};let frozen:any;
+  const bridge={state:{status:"connected"},assertNoActiveJob:vi.fn(async()=>{}),assertComfyReady:vi.fn(async()=>{}),
+   saveProjectNow:vi.fn(async()=>({projectId:"p1",revision:9,sourceNodeFingerprint:"media-fence"})),
+   uploadFrozenBlob:vi.fn(async(blob:Blob)=>({blobId:"a".repeat(64),sha256:"a".repeat(64),byteSize:blob.size} as BlobUploadResponse)),
+   submitFrozenJob:vi.fn(async(payload:Record<string,unknown>)=>{frozen=payload;return expectedJob})};
+  const result=await startBackendComfyWorkflowRun({bridge,projectId:"p1",workflowNode:mediaNode,...graph,template:mediaTemplate,
+   instanceId:"comfy-local",outputPortIds:["image"],mediaSlots:mediaNode.metadata!.comfyMediaPreset!.slots,prompt:"frozen prompt",
+   readBlob:async()=>new Blob(["image"],{type:"image/png"}),beforeSubmit:vi.fn()});
+  expect(result).toEqual(expectedJob);
+  const request=(frozen.snapshot as any).comfyRequest;
+  expect(request.nodes[0].inputOverrides).toEqual({steps:0,enabled:false,prompt:"frozen prompt"});
+  expect(request.edges).toEqual([{fromNodeId:"reference",fromPortId:"image",toNodeId:"media-target",toPortId:"reference"}]);
+  expect(request.externalInputs).toMatchObject([{kind:"asset",sourceNodeId:"reference",sourcePortId:"image",valueKind:"IMAGE",sha256:"a".repeat(64)}]);
+  expect(graph.connections).toEqual([{id:"legacy-context",fromNodeId:"context-text",toNodeId:"media-target"}]);
+ });
+ it("does not require media slot picker data when a regular workflow node runs a template that advertises media use",async()=>{
+  const workflowWithUseCase:ComfyWorkflowTemplate={...template,ports:[
+   {id:"first_frame",label:"First frame",direction:"target",required:true,valueKind:"IMAGE",
+    inputBinding:{mode:"media-file",mediaKind:"IMAGE",targets:[{nodeId:"2",inputName:"image"}]}},...template.ports],
+   mediaUseCase:{channel:"image",primaryOutputKind:"image",promptPortId:"prompt",slots:[{id:"first_frame",label:"First",valueKind:"IMAGE",required:true}],primaryOutputPortId:"image"}};
+  const graph={nodes:[workflow,{id:"ref-node",type:"image",title:"Reference",width:320,height:320,position:{x:0,y:0},
+   metadata:{content:"blob:ref",storageKey:"reference",mimeType:"image/png"}} as CanvasNodeData],
+   connections:[{id:"typed-input",fromNodeId:"ref-node",fromPortId:"image",toNodeId:"wf-1",toPortId:"first_frame"}]};
+  const bridge={state:{status:"connected"},assertNoActiveJob:vi.fn(async()=>{}),assertComfyReady:vi.fn(async()=>{}),
+   saveProjectNow:vi.fn(async()=>({projectId:"p1",revision:10,sourceNodeFingerprint:"workflow-fence"})),
+   uploadFrozenBlob:vi.fn(async()=>({blobId:"b".repeat(64),sha256:"b".repeat(64),byteSize:4} as BlobUploadResponse)),
+   submitFrozenJob:vi.fn(async(payload:Record<string,unknown>)=>{const request=(payload.snapshot as any).comfyRequest;
+    expect(request.edges).toEqual([{fromNodeId:"ref-node",fromPortId:"image",toNodeId:"wf-1",toPortId:"first_frame"}]);return expectedJob;})};
+  await expect(startBackendComfyWorkflowRun({bridge,projectId:"p1",workflowNode:workflow,...graph,template:workflowWithUseCase,
+   instanceId:"comfy-local",outputPortIds:["image"],readBlob:async()=>new Blob(["test"],{type:"image/png"}),
+   getBlob:async()=>new Blob(["test"],{type:"image/png"})})).resolves.toEqual(expectedJob);
+ });
  it("lets optional first frame be absent and submits the frozen prompt-only workflow",async()=>{
   const templateWithOptionalMedia:ComfyWorkflowTemplate={...template,ports:[
    {id:"first_frame",label:"首帧图片",direction:"target",required:false,valueKind:"IMAGE",

@@ -3583,7 +3583,8 @@ function AtelierCanvasPage() {
                         }}
                         onDelete={() => {
                             if (contextMenu.type === "node") {
-                                deleteNodes(new Set([contextMenu.nodeId]));
+                                const selected = selectedNodeIdsRef.current;
+                                deleteNodes(selected.has(contextMenu.nodeId) ? new Set(selected) : new Set([contextMenu.nodeId]));
                             } else if (contextMenu.type === "connection") {
                                 deleteConnection(contextMenu.connectionId);
                             }

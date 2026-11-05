@@ -67,7 +67,7 @@ export function CanvasNodeBBoxLayoutDialog({
     const [selected, setSelected] = useState<string[]>([]);
     const [error, setError] = useState("");
     const [snap, setSnap] = useState(true);
-    const [grid, setGrid] = useState(false);
+    const [grid, setGrid] = useState(true);
     const [preview, setPreview] = useState(false);
     const [drawKind, setDrawKind] = useState<BBoxKind | null>(null);
     const [marquee, setMarquee] = useState<{ start: Point; end: Point } | null>(null);
@@ -262,6 +262,7 @@ export function CanvasNodeBBoxLayoutDialog({
     };
     const begin = (event: ReactPointerEvent<SVGElement>, itemId?: string, handle?: string) => {
         if (event.button !== 0 || preview) return;
+        if (!itemId) setEditingItemId(null);
         event.preventDefault();
         event.stopPropagation();
         const point = pointFor(event);
@@ -409,8 +410,27 @@ export function CanvasNodeBBoxLayoutDialog({
                                     key={item.id}
                                     data-bbox-id={item.id}
                                     draggable
-                                    onDragStart={() => {
+                                    onPointerDownCapture={(event) => {
+                                        const target = event.target instanceof Element ? event.target : null;
+                                        event.currentTarget.draggable = !target?.closest("input,textarea,button,[contenteditable='true'],.ant-select");
+                                    }}
+                                    onFocusCapture={(event) => {
+                                        if (event.target.closest("input,textarea,button,[contenteditable='true'],.ant-select")) event.currentTarget.draggable = false;
+                                    }}
+                                    onBlurCapture={(event) => {
+                                        if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.draggable = true;
+                                    }}
+                                    onDragStart={(event) => {
+                                        const focused = document.activeElement;
+                                        const target = event.target instanceof Element ? event.target : null;
+                                        if (target?.closest("input,textarea,button,[contenteditable='true'],.ant-select") || (focused instanceof Element && event.currentTarget.contains(focused) && focused.closest("input,textarea,button,[contenteditable='true'],.ant-select"))) {
+                                            event.preventDefault();
+                                            draggedLayer.current = null;
+                                            return;
+                                        }
                                         draggedLayer.current = item.id;
+                                        event.dataTransfer.effectAllowed = "move";
+                                        event.dataTransfer.setData("text/plain", item.id);
                                     }}
                                     onDragOver={(event) => event.preventDefault()}
                                     onDrop={(event) => {
@@ -589,6 +609,10 @@ export function CanvasNodeBBoxLayoutDialog({
                     <div
                         ref={viewport.viewportRef}
                         {...viewport.panHandlers}
+                        onPointerDown={(event) => {
+                            const target = event.target instanceof Element ? event.target : null;
+                            if (event.button === 0 && !target?.closest("[data-bbox-canvas-id]")) setEditingItemId(null);
+                        }}
                         className={`relative h-[clamp(240px,55dvh,600px)] min-h-0 lg:h-auto lg:flex-1 rounded-lg border border-black/15 bg-neutral-100 dark:border-white/15 dark:bg-neutral-900 ${viewport.scrollClassName} ${viewport.spacePressed ? "cursor-grab" : ""}`}
                     >
                         <div className="relative" style={viewport.contentStyle}>
@@ -676,23 +700,8 @@ export function CanvasNodeBBoxLayoutDialog({
                                                             {item.locked ? " · 🔒" : ""}
                                                         </div>
                                                         {item.kind === "text" ? (
-                                                            <div style={{ minHeight: 0, overflow: "hidden", display: "flex", flexDirection: "column", gap: `${2 / scale}px` }}>
-                                                                <div
-                                                                    style={{
-                                                                        flex: `0 0 ${Math.min(2, Math.max(1, Math.floor((boxHeight * scale) / 46)))}em`,
-                                                                        overflow: "hidden",
-                                                                        fontSize: `${11 / scale}px`,
-                                                                        lineHeight: 1.15,
-                                                                        color: "#475569",
-                                                                        whiteSpace: "pre-wrap",
-                                                                        overflowWrap: "anywhere",
-                                                                    }}
-                                                                >
-                                                                    {item.caption}
-                                                                </div>
-                                                                <div style={{ minHeight: 0, flex: 1, overflow: "hidden", fontSize: `${14 / scale}px`, lineHeight: 1.2, fontWeight: 600, color: "#111827", whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
-                                                                    {item.text}
-                                                                </div>
+                                                            <div style={{ minHeight: 0, flex: 1, overflow: "hidden", fontSize: `${14 / scale}px`, lineHeight: 1.2, fontWeight: 600, color: "#111827", whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
+                                                                {item.text}
                                                             </div>
                                                         ) : (
                                                             <div style={{ minHeight: 0, flex: 1, overflow: "hidden", fontSize: `${14 / scale}px`, lineHeight: 1.2, color: "#334155", whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{item.caption}</div>

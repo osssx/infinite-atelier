@@ -3,23 +3,22 @@ import { createPortal } from "react-dom";
 import { Settings2 } from "lucide-react";
 import { Button } from "antd";
 
-import { VideoSettingsPanel, videoResolutionLabel, videoSecondsLabel, videoSizeLabel,type VideoSettingsPanelMappedOptions } from "@/components/video-settings-panel";
+import { VideoSettingsPanel, videoResolutionLabel, videoSecondsLabel, videoSizeLabel } from "@/components/video-settings-panel";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { resolveModelChannel, type AiConfig } from "@/stores/use-config-store";
+import { isComfyMediaParameterPopupTarget } from "@/features/comfy-workflow/comfy-media-overrides";
 
 type CanvasVideoSettingsPopoverProps = {
     config: AiConfig;
     onConfigChange: (key: keyof AiConfig, value: string) => void;
     buttonClassName?: string;
     placement?: "topLeft" | "top" | "topRight" | "bottomLeft" | "bottom" | "bottomRight";
-    visibleKeys?:readonly ("resolution"|"size"|"duration"|"ratio"|"generateAudio"|"watermark"|"lastFrame")[];
-    extraContent?:ReactNode;
     buttonLabel?:string;
-    mappedOptions?:VideoSettingsPanelMappedOptions;
+    content?:ReactNode;
 };
 
-export function CanvasVideoSettingsPopover({ config, onConfigChange, buttonClassName, placement = "topLeft",visibleKeys,extraContent,buttonLabel,mappedOptions }: CanvasVideoSettingsPopoverProps) {
+export function CanvasVideoSettingsPopover({ config, onConfigChange, buttonClassName, placement = "topLeft",buttonLabel,content }: CanvasVideoSettingsPopoverProps) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const buttonRef = useRef<HTMLSpanElement>(null);
     const panelRef = useRef<HTMLDivElement>(null);
@@ -32,6 +31,7 @@ export function CanvasVideoSettingsPopover({ config, onConfigChange, buttonClass
         const closeOnOutsidePointer = (event: PointerEvent) => {
             const target = event.target;
             if (!(target instanceof Node)) return;
+            if (isComfyMediaParameterPopupTarget(target)) return;
             if (buttonRef.current?.contains(target) || panelRef.current?.contains(target)) return;
             setOpen(false);
         };
@@ -47,7 +47,7 @@ export function CanvasVideoSettingsPopover({ config, onConfigChange, buttonClass
         };
     }, [open]);
 
-    const panel = open && buttonRect ? <VideoSettingsPortal buttonRect={buttonRect} panelRef={panelRef} placement={placement} theme={theme} config={config} onConfigChange={onConfigChange} visibleKeys={visibleKeys} extraContent={extraContent} mappedOptions={mappedOptions} /> : null;
+    const panel = open && buttonRect ? <VideoSettingsPortal buttonRect={buttonRect} panelRef={panelRef} placement={placement} theme={theme} config={config} onConfigChange={onConfigChange} content={content} /> : null;
 
     return (
         <>
@@ -75,9 +75,7 @@ function VideoSettingsPortal({
     theme,
     config,
     onConfigChange,
-    visibleKeys,
-    extraContent,
-    mappedOptions,
+    content,
 }: {
     buttonRect: DOMRect;
     panelRef: RefObject<HTMLDivElement | null>;
@@ -85,9 +83,7 @@ function VideoSettingsPortal({
     theme: (typeof canvasThemes)[keyof typeof canvasThemes];
     config: AiConfig;
     onConfigChange: (key: keyof AiConfig, value: string) => void;
-    visibleKeys?:CanvasVideoSettingsPopoverProps["visibleKeys"];
-    extraContent?:ReactNode;
-    mappedOptions?:CanvasVideoSettingsPopoverProps["mappedOptions"];
+    content?:ReactNode;
 }) {
     const width = 356;
     const gap = 8;
@@ -119,8 +115,7 @@ function VideoSettingsPortal({
             onMouseDown={(event) => event.stopPropagation()}
             onClick={(event) => event.stopPropagation()}
         >
-            <VideoSettingsPanel config={config} onConfigChange={(key, value) => onConfigChange(key, value)} theme={theme} className="space-y-4" visibleKeys={visibleKeys} mappedOptions={mappedOptions} />
-            {extraContent}
+            {content??<VideoSettingsPanel config={config} onConfigChange={(key, value) => onConfigChange(key, value)} theme={theme} className="space-y-4" />}
         </div>,
         document.body,
     );

@@ -25,7 +25,7 @@ describe("Comfy media output editor draft recovery",()=>{
    {id:"main",label:"Main output",direction:"source",valueKind:"IMAGE",capture:{kind:"image",adapterId:"SaveImage"}},
    {id:"preview",label:"Preview output",direction:"source",valueKind:"IMAGE",capture:{kind:"image",adapterId:"SaveImage"}},
   ],mediaUseCase:{channel:"image",primaryOutputKind:"image",promptPortId:"prompt",slots:[{id:"image-in",label:"Reference image",valueKind:"IMAGE"}],
-   primaryOutputPortId:"main",additionalOutputPortIds:["preview"],settings:{imageQuality:"quality"}}} as ComfyTemplatePayload;
+   primaryOutputPortId:"main",additionalOutputPortIds:["preview"]}} as ComfyTemplatePayload;
   const html=renderToStaticMarkup(createElement(ComfyMediaUseCaseEditor,{template,onChange:()=>{}}));
   expect(html).toContain("ant-select");expect(html).toContain("ant-checkbox");expect(html).toContain("ant-btn");
   expect(html).not.toContain("<select");expect(html).not.toContain("multiple=");

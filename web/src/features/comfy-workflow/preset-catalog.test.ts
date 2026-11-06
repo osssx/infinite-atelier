@@ -20,7 +20,7 @@ vi.mock("./template-registry",()=>({
 }));
 import {listComfyPresets,saveComfyPreset} from "./preset-registry";
 import {
-    bundledKrea2Template, installBundledKrea2Template, listComfyPresetCatalog, resetBundledComfyPreset,
+    bundledKrea2Template, installBundledKrea2Template, listComfyPresetCatalog, loadComfyPresetCatalogTemplates, resetBundledComfyPreset,
 } from "./preset-catalog";
 
 describe("built-in ComfyUI presets in global settings",()=>{
@@ -37,6 +37,20 @@ describe("built-in ComfyUI presets in global settings",()=>{
         expect(all[1]).toMatchObject({id:MINIMAX_H3_I2V_TEMPLATE_ID,builtIn:true,modified:false});
         expect(await listComfyPresets()).toEqual([]);
         expect(storedTemplates.size).toBe(0);
+    });
+    it("keeps valid built-ins visible when one managed custom or stale alias revision fails validation",async()=>{
+        const items=await listComfyPresetCatalog();
+        const broken={...items[0],id:"broken-minimax-alias",name:"Broken MiniMax alias",templateId:MINIMAX_H3_I2V_TEMPLATE_ID,
+            revision:"f".repeat(64),modified:true};
+        const loaded=await loadComfyPresetCatalogTemplates([...items,broken],item=>{
+            if(item.id===broken.id)throw new Error("invalid media use case: legacy settings");
+            return item.builtIn?import("./preset-catalog").then(module=>module.bundledComfyTemplate(item.builtinId!)):
+                Promise.resolve(null);
+        });
+        expect(Object.keys(loaded.templates)).toHaveLength(2);
+        expect(Object.keys(loaded.templates)).toContain(items[0].templateId+"@"+items[0].revision);
+        expect(Object.keys(loaded.templates)).toContain(items[1].templateId+"@"+items[1].revision);
+        expect(loaded.failures).toEqual([{presetId:broken.id,name:broken.name,message:"invalid media use case: legacy settings"}]);
     });
     it("merges an edited built-in alias, and still lists independently saved custom presets",async()=>{
         const defaults=await installBundledKrea2Template();

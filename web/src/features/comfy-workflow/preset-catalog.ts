@@ -11,6 +11,30 @@ export type ComfyCatalogPreset = ComfyPreset & {
     defaultRevision?: string;
     builtinId?: string;
 };
+export type ComfyCatalogLoadFailure={presetId:string;name:string;message:string};
+
+/** Loads catalog revisions independently so one invalid/stale saved alias cannot hide other presets. */
+export async function loadComfyPresetCatalogTemplates(
+    items:readonly ComfyCatalogPreset[],
+    resolve:(item:ComfyCatalogPreset)=>Promise<ComfyWorkflowTemplate|null>,
+):Promise<{templates:Record<string,ComfyWorkflowTemplate>;failures:ComfyCatalogLoadFailure[]}> {
+    const results=await Promise.all(items.map(async item=>{
+        try{return {item,template:await resolve(item)};}
+        catch(error){return {item,error};}
+    }));
+    const templates:Record<string,ComfyWorkflowTemplate>={};
+    const failures:ComfyCatalogLoadFailure[]=[];
+    for(const result of results){
+        if("error" in result){
+            failures.push({presetId:result.item.id,name:result.item.name,
+                message:result.error instanceof Error?result.error.message:String(result.error)});
+            continue;
+        }
+        if(result.template)templates[result.item.templateId+"@"+result.item.revision]=result.template;
+        else failures.push({presetId:result.item.id,name:result.item.name,message:"模板版本不存在"});
+    }
+    return {templates,failures};
+}
 
 const builtins=[
     {id:KREA2_TURBO_TEMPLATE_ID, payload:krea2TurboBundledTemplate},

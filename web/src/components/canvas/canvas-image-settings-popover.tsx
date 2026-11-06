@@ -8,6 +8,7 @@ import { ImageSettingsPanel, imageQualityLabel, imageSizeLabel } from "@/compone
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
 import type { AiConfig } from "@/stores/use-config-store";
+import { isComfyMediaParameterPopupTarget } from "@/features/comfy-workflow/comfy-media-overrides";
 
 type CanvasImageSettingsPopoverProps = {
     config: AiConfig;
@@ -18,13 +19,11 @@ type CanvasImageSettingsPopoverProps = {
     getPopupContainer?: (triggerNode: HTMLElement) => HTMLElement;
     placement?: "topLeft" | "top" | "topRight" | "bottomLeft" | "bottom" | "bottomRight";
     autoAdjustOverflow?: boolean;
-    visibleKeys?:readonly ("quality"|"size"|"count"|"background")[];
-    extraContent?:ReactNode;
     buttonLabel?:string;
-    mappedOptions?:import("@/components/image-settings-panel").ImageSettingsPanelMappedOptions;
+    content?:ReactNode;
 };
 
-export function CanvasImageSettingsPopover({ config, onConfigChange, onOpenChange, buttonClassName, placement = "topLeft",visibleKeys,extraContent,buttonLabel,mappedOptions }: CanvasImageSettingsPopoverProps) {
+export function CanvasImageSettingsPopover({ config, onConfigChange, onOpenChange, buttonClassName, placement = "topLeft",buttonLabel,content }: CanvasImageSettingsPopoverProps) {
     const { t } = useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const buttonRef = useRef<HTMLSpanElement>(null);
@@ -45,6 +44,7 @@ export function CanvasImageSettingsPopover({ config, onConfigChange, onOpenChang
         const closeOnOutsidePointer = (event: PointerEvent) => {
             const target = event.target;
             if (!(target instanceof Node)) return;
+            if (isComfyMediaParameterPopupTarget(target)) return;
             if (buttonRef.current?.contains(target) || panelRef.current?.contains(target)) return;
             if (document.activeElement instanceof HTMLElement && panelRef.current?.contains(document.activeElement)) document.activeElement.blur();
             setOpen(false);
@@ -62,7 +62,7 @@ export function CanvasImageSettingsPopover({ config, onConfigChange, onOpenChang
         };
     }, [onOpenChange, open]);
 
-    const panel = open && buttonRect ? <ImageSettingsPortal buttonRect={buttonRect} panelRef={panelRef} placement={placement} theme={theme} config={config} onConfigChange={onConfigChange} visibleKeys={visibleKeys} extraContent={extraContent} mappedOptions={mappedOptions} /> : null;
+    const panel = open && buttonRect ? <ImageSettingsPortal buttonRect={buttonRect} panelRef={panelRef} placement={placement} theme={theme} config={config} onConfigChange={onConfigChange} content={content} /> : null;
 
     return (
         <>
@@ -85,9 +85,7 @@ function ImageSettingsPortal({
     theme,
     config,
     onConfigChange,
-    visibleKeys,
-    extraContent,
-    mappedOptions,
+    content,
 }: {
     buttonRect: DOMRect;
     panelRef: RefObject<HTMLDivElement | null>;
@@ -95,9 +93,7 @@ function ImageSettingsPortal({
     theme: (typeof canvasThemes)[keyof typeof canvasThemes];
     config: AiConfig;
     onConfigChange: (key: keyof AiConfig, value: string) => void;
-    visibleKeys?:CanvasImageSettingsPopoverProps["visibleKeys"];
-    extraContent?:ReactNode;
-    mappedOptions?:CanvasImageSettingsPopoverProps["mappedOptions"];
+    content?:ReactNode;
 }) {
     const width = 356;
     const gap = 8;
@@ -129,8 +125,7 @@ function ImageSettingsPortal({
             onMouseDown={(event) => event.stopPropagation()}
             onClick={(event) => event.stopPropagation()}
         >
-            <ImageSettingsPanel config={config} onConfigChange={(key, value) => onConfigChange(key, value)} theme={theme} className="space-y-4" visibleKeys={visibleKeys} mappedOptions={mappedOptions} />
-            {extraContent}
+            {content??<ImageSettingsPanel config={config} onConfigChange={(key, value) => onConfigChange(key, value)} theme={theme} className="space-y-4" />}
         </div>,
         document.body,
     );

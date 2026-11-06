@@ -5,6 +5,7 @@ import {createHash} from "node:crypto";
 import {initializeSchema,SCHEMA_VERSION} from "./schema.mjs";
 import {buildApp} from "./app.mjs";
 import {createProject} from "./projects.mjs";
+import {validateComfyTemplate} from "./comfy-registry.mjs";
 const sort=v=>Array.isArray(v)?v.map(sort):v&&typeof v==="object"?
  Object.fromEntries(Object.keys(v).sort().map(k=>[k,sort(v[k])])):v;
 function template(seed=1,id="workflow:test"){
@@ -60,6 +61,16 @@ test("SQLite template registry hashes and retains optional KJ preview bindings",
  invalid.revision=createHash("sha256").update(JSON.stringify(sort({name:invalid.name,apiGraph:invalid.apiGraph,ports:invalid.ports,
   requirements:invalid.requirements,previewBinding:invalid.previewBinding}))).digest("hex");
  assert.equal((await call("POST","/api/v1/comfy/templates",{template:invalid})).statusCode,400);
+});
+test("template registry rejects legacy media setting mappings without migrating or stripping them",async t=>{
+ const {call}=fixture(t),legacy=template();
+ legacy.mediaUseCase={channel:"image",primaryOutputKind:"image",promptPortId:"prompt",slots:[],primaryOutputPortId:"result",settings:{imageQuality:"quality"}};
+ const payload={name:legacy.name,apiGraph:legacy.apiGraph,ports:legacy.ports,requirements:legacy.requirements,mediaUseCase:legacy.mediaUseCase};
+ legacy.revision=createHash("sha256").update(JSON.stringify(sort(payload))).digest("hex");
+ assert.throws(()=>validateComfyTemplate(legacy),error=>error.code==="comfy_template_media_use_case_invalid");
+ const response=await call("POST","/api/v1/comfy/templates",{template:legacy});
+ assert.equal(response.statusCode,400);
+ assert.equal(response.json().code,"invalid_request");
 });
 test("P4.5 template batch install atomic rollback, schema v8 migration",async t=>{
  const {db,call}=fixture(t),base="/api/v1/comfy/templates/batch";

@@ -48,7 +48,6 @@ export type ComfyMediaUseCase = {
     slots: Array<{id:string;label:string;valueKind:"IMAGE"|"VIDEO"|"AUDIO";required?:boolean}>;
     primaryOutputPortId: string;
     additionalOutputPortIds?: string[];
-    settings?: Record<string, string | string[] | {ports:string[];values?:Array<{label:string;value:string|number|boolean;portValues?:Record<string,string|number|boolean>}>}>;
 };
 export type ComfyWorkflowTemplate = ComfyTemplatePayload & { id: string; revision: string };
 
@@ -199,10 +198,9 @@ export function validateComfyTemplatePayload(raw: unknown, info?: ComfyObjectInf
         const useCase=raw.mediaUseCase;
         if(!isObject(useCase)||!(["image","video","audio"] as unknown[]).includes(useCase.channel)||
             !(["image","video","audio"] as unknown[]).includes(useCase.primaryOutputKind)||
-            typeof useCase.promptPortId!=="string"||typeof useCase.primaryOutputPortId!=="string"||
+            typeof useCase.promptPortId!=="string"||typeof useCase.primaryOutputPortId!=="string"||Object.hasOwn(useCase,"settings")||
             !Array.isArray(useCase.slots)||useCase.slots.length>16||
-            (useCase.additionalOutputPortIds!==undefined&&(!Array.isArray(useCase.additionalOutputPortIds)||useCase.additionalOutputPortIds.length>16))||
-            (useCase.settings!==undefined&&!isObject(useCase.settings))) fail("invalid media use case");
+            (useCase.additionalOutputPortIds!==undefined&&(!Array.isArray(useCase.additionalOutputPortIds)||useCase.additionalOutputPortIds.length>16))) fail("invalid media use case");
         const ids=new Set<string>();
         for(const slot of useCase.slots){
             if(!isObject(slot)||typeof slot.id!=="string"||!safeId(slot.id)||ids.has(slot.id)||
@@ -223,31 +221,6 @@ export function validateComfyTemplatePayload(raw: unknown, info?: ComfyObjectInf
         if(new Set(outputs).size!==outputs.length)fail("duplicate media output port");
         for(const id of useCase.additionalOutputPortIds??[]){const port=byId.get(id);
             if(!port||port.direction!=="source"||!port.capture||port.capture.kind==="none"||!port.capture.adapterId)fail("media additional output port mismatch");}
-        const settingPortIds=new Set<string>();
-        for(const [key,value] of Object.entries(useCase.settings??{})){
-            if(!["imageQuality","imageWidth","imageHeight","imageCount","imageBackground","videoResolution","videoSize","videoRatio","videoDuration","videoGenerateAudio","videoWatermark","videoReturnLastFrame","audioVoice","audioFormat","audioSpeed","audioInstructions"].includes(key)||
-                !(typeof value==="string"||Array.isArray(value)&&value.length>0&&value.length<=2&&value.every(v=>typeof v==="string")||
-                  isObject(value)&&Array.isArray(value.ports)&&value.ports.length>0&&value.ports.length<=2&&value.ports.every(v=>typeof v==="string"))) fail("invalid media setting mapping");
-            const mapped=typeof value==="string"?[value]:Array.isArray(value)?value:(value as {ports:string[]}).ports;
-            for(const id of mapped){const port=byId.get(id as string);
-                if(!port||port.direction!=="target"||!["STRING","INT","FLOAT","BOOLEAN"].includes(port.valueKind)||
-                    settingPortIds.has(id as string)||id===useCase.promptPortId||useCase.slots.some(slot=>slot.id===id))fail("media setting port mismatch");
-                settingPortIds.add(id as string);
-            }
-            if(typeof value==="object"&&!Array.isArray(value)&&"values" in value){
-                if(!Array.isArray(value.values)||!value.values.length||value.values.length>128)fail("invalid media setting values");
-                for(const option of value.values)if(!isObject(option)||typeof option.label!=="string"||!option.label.trim()||option.label.length>90||
-                    !(typeof option.value==="string"||typeof option.value==="boolean"||typeof option.value==="number"&&Number.isFinite(option.value))||
-                    option.portValues!==undefined&&!isObject(option.portValues))fail("invalid media setting values");
-                for(const option of value.values as Array<{portValues?:Record<string,unknown>}>)for(const [portId,mappedValue] of Object.entries(option.portValues??{})){
-                    const port=byId.get(portId);
-                    if(!mapped.includes(portId)||!port||port.valueKind==="STRING"&&typeof mappedValue!=="string"||
-                        port.valueKind==="BOOLEAN"&&typeof mappedValue!=="boolean"||port.valueKind==="INT"&&!Number.isSafeInteger(mappedValue)||
-                        port.valueKind==="FLOAT"&&(typeof mappedValue!=="number"||!Number.isFinite(mappedValue))||
-                        port.choices?.length&&!port.choices.some(choice=>Object.is(choice.value,mappedValue)))fail("invalid media setting mapped value");
-                }
-            }
-        }
     }
     if (raw.previewBinding !== undefined) {
         const binding=raw.previewBinding;

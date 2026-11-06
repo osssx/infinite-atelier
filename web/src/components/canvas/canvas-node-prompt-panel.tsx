@@ -61,7 +61,7 @@ export function CanvasNodePromptPanel({ node, projectId, isRunning, onPromptChan
     },[]);
     const onModelChange=(model:string)=>{onConfigChange(node.id,{model,comfyMediaPreset:undefined});setComfyValue(undefined);};
     const handleComfyConfigChange=useCallback((patch:Partial<CanvasNodeData["metadata"]>)=>onConfigChange(node.id,patch),[node.id,onConfigChange]);
-    const comfyMediaControls=useComfyMediaPresetControl({node,nodes,connections,
+    const comfyMediaControls=useComfyMediaPresetControl({node,nodes,connections,config,theme,
         onChange:handleComfyConfigChange,onPickerOptionsChange:onComfyPickerOptionsChange});
 
     // Restore on node switches and external prompt updates (e.g. BBox apply).
@@ -185,6 +185,7 @@ export function CanvasNodePromptPanel({ node, projectId, isRunning, onPromptChan
                 </Button>
             </div>
             {comfyMediaControls.slots}
+            {comfyMediaControls.error?<div role="alert" className="mt-1 max-w-[460px] text-[11px] leading-4 text-amber-700 dark:text-amber-300">{comfyMediaControls.error}</div>:null}
             <Modal title={t("canvas.promptPanel.editorTitle")} open={expanded} centered width={760} footer={null} onCancel={() => setExpanded(false)} destroyOnHidden>
                 <div data-canvas-no-zoom className="pt-2" onWheelCapture={(event) => event.stopPropagation()}>
                     <CanvasPromptChipInput

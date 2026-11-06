@@ -19,7 +19,6 @@ const DIMENSION_STEP = 16;
 export const imageQualityOptions = qualityOptions.map((item) => ({ value: item.value, get label() { return i18n.t(`settingsPanels.common.${item.labelKey}`); } }));
 export const imageAspectOptions = aspectOptions.map((item) => ({ value: item.size || item.value, label: item.label }));
 
-export type ImageSettingsPanelMappedOptions=Partial<Record<"quality"|"size"|"count"|"background",readonly {value:string;label:string}[]>>;
 type ImageSettingsPanelProps = {
     config: AiConfig;
     onConfigChange: (key: "quality" | "size" | "count" | "background", value: string) => void;
@@ -28,11 +27,9 @@ type ImageSettingsPanelProps = {
     className?: string;
     maxCount?: number;
     quickCount?: number;
-    visibleKeys?:readonly ("quality"|"size"|"count"|"background")[];
-    mappedOptions?:ImageSettingsPanelMappedOptions;
 };
 
-export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = true, className = "w-[320px] space-y-4 rounded-2xl px-1 py-0.5", maxCount = 15, quickCount = 10,visibleKeys,mappedOptions }: ImageSettingsPanelProps) {
+export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = true, className = "w-[320px] space-y-4 rounded-2xl px-1 py-0.5", maxCount = 15, quickCount = 10 }: ImageSettingsPanelProps) {
     const { t } = useTranslation();
     const [snapDimensionToStep, setSnapDimensionToStep] = useState(true);
     const quality = config.quality || "auto";
@@ -41,10 +38,6 @@ export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = 
     const transparentBackground = config.background === "transparent";
     const selectedAspect = aspectOptions.find((item) => (item.size || item.value) === activeSize || item.value === activeSize || `${item.width}x${item.height}`===activeSize);
     const dimensions = readSizeDimensions(activeSize, selectedAspect || aspectOptions[0]);
-    const visible=(key:"quality"|"size"|"count"|"background")=>!visibleKeys||visibleKeys.includes(key);
-    const sizeChoices:Array<{value:string;label:string;icon?:typeof aspectOptions[number]["icon"];width?:number;height?:number}>=mappedOptions?.size?.length
-        ? mappedOptions.size.map(item=>({ ...item }))
-        : aspectOptions.map(item=>({value:item.size||item.value,label:item.label,icon:item.icon,width:item.width,height:item.height}));
     const selectAspect = (value: string) => {
         const option = aspectOptions.find((item) => item.value === value);
         onConfigChange("size", option?.size || option?.value || "auto");
@@ -68,17 +61,17 @@ export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = 
                 }}
             >
                 {showTitle ? <div className="text-lg font-semibold">{t("settingsPanels.image.title")}</div> : null}
-                {visible("quality")?<div className="space-y-2.5">
+                <div className="space-y-2.5">
                     <SettingTitle color={theme.node.muted}>{t("settingsPanels.image.quality")}</SettingTitle>
                     <div className="grid grid-cols-4 gap-2.5">
-                        {(mappedOptions?.quality??qualityOptions.map(item=>({value:item.value,label:t(`settingsPanels.common.${item.labelKey}`)}))).map((item) => (
+                        {qualityOptions.map((item) => (
                             <OptionPill key={item.value} selected={quality === item.value} theme={theme} onClick={() => onConfigChange("quality", item.value)}>
-                                {item.label}
+                                {t(`settingsPanels.common.${item.labelKey}`)}
                             </OptionPill>
                         ))}
                     </div>
-                </div>:null}
-                {visible("size")?<div className="space-y-2.5">
+                </div>
+                <div className="space-y-2.5">
                     <div className="flex items-center justify-between gap-3">
                         <SettingTitle color={theme.node.muted}>{t("settingsPanels.image.size")}</SettingTitle>
                         <div className="flex items-center gap-2">
@@ -95,27 +88,26 @@ export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = 
                         <span className="text-lg opacity-45">↔</span>
                         <DimensionInput prefix="H" value={dimensions.height} disabled={activeSize === "auto"} theme={theme} alignToStep={snapDimensionToStep} onChange={(value) => updateDimension("height", value)} />
                     </div>
-                </div>:null}
-                {visible("size")?<div className="space-y-2.5">
+                </div>
+                <div className="space-y-2.5">
                     <SettingTitle color={theme.node.muted}>{t("settingsPanels.image.aspectRatio")}</SettingTitle>
                     <div className="grid grid-cols-4 gap-2.5">
-                        {sizeChoices.map((item) => (
+                        {aspectOptions.map((item) => (
                             <button
                                 key={item.value}
                                 type="button"
                                 className="flex h-[72px] cursor-pointer flex-col items-center justify-center gap-1.5 rounded-xl border bg-transparent text-sm transition hover:opacity-80"
                                 style={{ borderColor: (activeSize===item.value||selectedAspect?.value === item.value) ? theme.node.text : theme.node.stroke, background: "transparent", color: theme.node.text }}
                                 onMouseDown={(event) => event.stopPropagation()}
-                                onClick={() => onConfigChange("size",item.value)}
+                                onClick={() => selectAspect(item.value)}
                             >
                                 {item.icon?<AspectIcon type={item.icon} width={item.width??0} height={item.height??0} color={theme.node.text} />:null}
                                 <span>{item.label}</span>
                             </button>
                         ))}
                     </div>
-                </div>:null}
-                {visible("background")&&mappedOptions?.background?.length?<div className="space-y-2.5"><SettingTitle color={theme.node.muted}>{t("settingsPanels.image.transparent")}</SettingTitle><div className="flex flex-wrap gap-2">{mappedOptions.background.map(item=><OptionPill key={item.value} selected={config.background===item.value} theme={theme} onClick={()=>onConfigChange("background",item.value)}>{item.label}</OptionPill>)}</div></div>:null}
-                {visible("background")&&!mappedOptions?.background?.length?<div className="flex items-center justify-between gap-3">
+                </div>
+                <div className="flex items-center justify-between gap-3">
                     <div className="space-y-0.5">
                         <SettingTitle color={theme.node.muted}>{t("settingsPanels.image.transparent")}</SettingTitle>
                         <div className="text-xs" style={{ color: theme.node.muted, opacity: 0.75 }}>
@@ -125,18 +117,18 @@ export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = 
                     <span onMouseDown={(event) => event.stopPropagation()}>
                         <Switch size="small" checked={transparentBackground} onChange={(checked) => onConfigChange("background", checked ? "transparent" : "")} />
                     </span>
-                </div>:null}
-                {visible("count")?<div className="space-y-2.5">
+                </div>
+                <div className="space-y-2.5">
                     <SettingTitle color={theme.node.muted}>{t("settingsPanels.image.count")}</SettingTitle>
                     <div className="grid grid-cols-4 gap-2.5">
-                        {(mappedOptions?.count?.length?mappedOptions.count.map(item=>({value:Number(item.value),label:item.label})):Array.from({ length: quickCount }, (_, index) => ({value:index+1,label:t("settingsPanels.image.images",{count:index+1})}))).map(({value,label}) => (
+                        {Array.from({ length: quickCount }, (_, index) => ({value:index+1,label:t("settingsPanels.image.images",{count:index+1})})).map(({value,label}) => (
                             <OptionPill key={value} selected={count === value} theme={theme} onClick={() => onConfigChange("count", String(value))}>
                                 {label}
                             </OptionPill>
                         ))}
                         <CountInput value={count} max={maxCount} theme={theme} onChange={(value) => onConfigChange("count", String(value || 1))} />
                     </div>
-                </div>:null}
+                </div>
             </div>
         </ImageSettingsTheme>
     );

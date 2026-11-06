@@ -60,7 +60,7 @@ export function buildKrea2TurboTemplate(graphInput:unknown):ComfyTemplatePayload
         },
     ];
     payload.mediaUseCase={channel:"image",primaryOutputKind:"image",promptPortId:"prompt",slots:[],
-        primaryOutputPortId:"image",settings:{imageWidth:["width"],imageHeight:["height"],imageCount:"batch_size"}};
+        primaryOutputPortId:"image"};
     payload.requirements.modelAssets = [...new Set(
         Object.values(graph).flatMap((node)=>
             Object.entries(node.inputs).filter(([name])=>["unet_name","clip_name","vae_name","lora_name"].includes(name))

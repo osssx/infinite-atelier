@@ -53,7 +53,7 @@ export function verifyTemplate(template) {
         const u=template.mediaUseCase,byId=new Map(ports.map(p=>[p?.id,p]));
         const kinds=["image","video","audio"];
         if(!object(u)||!kinds.includes(u.channel)||!kinds.includes(u.primaryOutputKind)||u.channel!==u.primaryOutputKind||
-            !Array.isArray(u.slots)||u.slots.length>16||!object(u.settings??{})||
+            !Array.isArray(u.slots)||u.slots.length>16||Object.hasOwn(u,"settings")||
             byId.get(u.promptPortId)?.direction!=="target"||byId.get(u.promptPortId)?.valueKind!=="STRING"||
             byId.get(u.promptPortId)?.inputBinding?.mode!=="literal"||
             byId.get(u.primaryOutputPortId)?.direction!=="source"||byId.get(u.primaryOutputPortId)?.capture?.kind!==u.primaryOutputKind||
@@ -67,26 +67,6 @@ export function verifyTemplate(template) {
         if(!Array.isArray(u.additionalOutputPortIds??[])||outputs.some(id=>byId.get(id)?.direction!=="source"||
             !byId.get(id)?.capture||byId.get(id).capture.kind==="none"||!byId.get(id).capture.adapterId)||new Set(outputs).size!==outputs.length)
             fail("template_media_output_invalid");
-        const claimed=new Set();
-        for(const [key,mapping] of Object.entries(u.settings??{})){
-            const values=typeof mapping==="string"?[mapping]:Array.isArray(mapping)?mapping:mapping?.ports;
-            if(!["imageQuality","imageWidth","imageHeight","imageCount","imageBackground","videoResolution","videoRatio","videoDuration","videoGenerateAudio","videoWatermark","videoReturnLastFrame","audioVoice","audioFormat","audioSpeed","audioInstructions"].includes(key)||
-                !(typeof mapping==="string"||Array.isArray(mapping)&&mapping.length>0&&mapping.length<=2&&mapping.every(x=>typeof x==="string")||
-                    object(mapping)&&Array.isArray(mapping.ports)&&mapping.ports.length>0&&mapping.ports.length<=2&&mapping.ports.every(x=>typeof x==="string"))||
-                values.some(id=>{const p=byId.get(id);return !p||p.direction!=="target"||!["STRING","INT","FLOAT","BOOLEAN"].includes(p.valueKind)||
-                    claimed.has(id)||id===u.promptPortId||slots.has(id);}))fail("template_media_setting_invalid");
-            for(const id of values)claimed.add(id);
-            if(object(mapping)&&Object.hasOwn(mapping,"values")&&(!Array.isArray(mapping.values)||!mapping.values.length||mapping.values.length>128||
-                mapping.values.some(o=>!object(o)||typeof o.label!=="string"||!o.label.trim()||o.label.length>90||
-                    !(typeof o.value==="string"||typeof o.value==="boolean"||typeof o.value==="number"&&Number.isFinite(o.value))||
-                    o.portValues!==undefined&&!object(o.portValues))))fail("template_media_setting_values_invalid");
-            for(const option of mapping?.values??[])for(const [portId,mappedValue] of Object.entries(option.portValues??{})){
-                const port=byId.get(portId),kind=port?.valueKind;
-                if(!values.includes(portId)||!port||kind==="STRING"&&typeof mappedValue!=="string"||kind==="BOOLEAN"&&typeof mappedValue!=="boolean"||
-                    kind==="INT"&&!Number.isSafeInteger(mappedValue)||kind==="FLOAT"&&(typeof mappedValue!=="number"||!Number.isFinite(mappedValue))||
-                    port.choices?.length&&!port.choices.some(choice=>Object.is(choice.value,mappedValue)))fail("template_media_setting_mapped_value_invalid");
-            }
-        }
     }
     const ids = new Set(), claims = new Set();
     for (const [id, node] of Object.entries(apiGraph)) {

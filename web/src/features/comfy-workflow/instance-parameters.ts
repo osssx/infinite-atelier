@@ -37,8 +37,9 @@ export function getComfyInstanceScalarFields(
     template: ComfyWorkflowTemplate,
     node: CanvasNodeData,
     connections: readonly CanvasConnection[],
+    overridesOverride?:Readonly<Record<string,unknown>>,
 ): ComfyInstanceScalarField[] {
-    const overrides = node.metadata?.comfyWorkflow?.inputOverrides ?? {};
+    const overrides = overridesOverride ?? node.metadata?.comfyWorkflow?.inputOverrides ?? {};
     const incoming = new Map<string, CanvasConnection[]>();
     for (const connection of connections) {
         if (connection.toNodeId !== node.id || !connection.toPortId) continue;
@@ -47,7 +48,7 @@ export function getComfyInstanceScalarFields(
         else incoming.set(connection.toPortId, [connection]);
     }
     return template.ports.filter((port) => port.direction === "target" &&
-        port.inputBinding?.mode === "literal" && scalarKinds.has(port.valueKind)).map((port) => {
+        port.inputBinding?.mode === "literal" && (port.inputBinding.targets?.length??0)>0 && scalarKinds.has(port.valueKind)).map((port) => {
         const templateCandidate = templateFieldValue(template, port);
         const defaults: Record<string, unknown> = {};
         const values: Record<string, unknown> = {};

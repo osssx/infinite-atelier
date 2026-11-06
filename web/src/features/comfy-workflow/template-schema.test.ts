@@ -75,6 +75,11 @@ describe("Phase B: ComfyUI API graph and immutable bindings", () => {
         const cycle = graph(); (cycle["10"].inputs as Record<string,unknown>).text=["20",0];
         expect(() => validateComfyApiGraph(cycle)).toThrow(/cycle/);
     });
+    it("explicitly rejects legacy media setting mappings instead of dropping them from a revision",()=>{
+        const legacy={...payload(),mediaUseCase:{channel:"image",primaryOutputKind:"image",promptPortId:"prompt",
+            slots:[],primaryOutputPortId:"output",settings:{imageQuality:"strength"}}};
+        expect(()=>validateComfyTemplatePayload(legacy,info)).toThrow(/invalid media use case/);
+    });
     it("handles ComfyMathExpression COMFY_AUTOGROW_V3 named leaves, not a literal parent",()=>{
         const descriptor:ComfyObjectInfo={
             PrimitiveFloat:{input:{required:{value:["FLOAT",{}]}},output:["FLOAT"]},

@@ -1,13 +1,15 @@
 import {useCallback,useEffect,useMemo,useState,type ReactNode} from "react";
 import {Select} from "antd";
 import type {CanvasConnection,CanvasNodeData,CanvasNodeMetadata} from "@/types/canvas";
-import {listComfyPresetCatalog,type ComfyCatalogPreset} from "./preset-catalog";
+import {listComfyPresetCatalog,loadComfyPresetCatalogTemplates,type ComfyCatalogLoadFailure,type ComfyCatalogPreset} from "./preset-catalog";
 import {getComfyTemplate} from "./template-registry";
 import {bundledComfyTemplate,installBundledComfyTemplate} from "./preset-catalog";
 import type {ComfyMediaUseCase,ComfyWorkflowTemplate} from "./template-schema";
-import {ComfyMediaNativeSettings} from "./comfy-media-native-settings";
+import {ComfyMediaParameters} from "./comfy-media-parameters";
+import type {AiConfig} from "@/stores/use-config-store";
+import type {CanvasTheme} from "@/lib/canvas-theme";
 
-type Props={node:CanvasNodeData;nodes:readonly CanvasNodeData[];connections:readonly CanvasConnection[];
+type Props={node:CanvasNodeData;nodes:readonly CanvasNodeData[];connections:readonly CanvasConnection[];config:AiConfig;theme:CanvasTheme;
  onChange:(patch:Partial<CanvasNodeMetadata>)=>void;
  onPickerOptionsChange?:(options:{value:string;label:string}[],select:(value:string)=>void,activeValue?:string)=>void};
 const family=(kind:string)=>kind==="image"?"image":kind==="video"?"video":"audio";
@@ -17,21 +19,25 @@ function hasMedia(node:CanvasNodeData,kind:string){
  if(kind==="video")return node.type==="video"&&Boolean(m?.storageKey||m?.content);
  return node.type==="audio"&&Boolean(m?.storageKey||m?.content);
 }
-export function useComfyMediaPresetControl({node,nodes,connections,onChange,onPickerOptionsChange}:Props):{settings:ReactNode;slots:ReactNode}{
+export function useComfyMediaPresetControl({node,nodes,connections,config,theme,onChange,onPickerOptionsChange}:Props):{settings:ReactNode;slots:ReactNode;error?:string}{
  const [catalog,setCatalog]=useState<ComfyCatalogPreset[]>([]);
  const [templates,setTemplates]=useState<Record<string,ComfyWorkflowTemplate>>({});
+ const [catalogFailures,setCatalogFailures]=useState<ComfyCatalogLoadFailure[]>([]);
+ const [catalogError,setCatalogError]=useState<string>();
+ const [boundPresetError,setBoundPresetError]=useState<string>();
  useEffect(()=>{let current=true;void listComfyPresetCatalog().then(async items=>{
-  const loaded=await Promise.all(items.map(async item=>({item,template:item.builtIn&&!item.modified&&item.defaultRevision===item.revision?
-   await bundledComfyTemplate(item.builtinId!):await getComfyTemplate(item.templateId,item.revision)})));
+  const loaded=await loadComfyPresetCatalogTemplates(items,item=>item.builtIn&&!item.modified&&item.defaultRevision===item.revision?
+   bundledComfyTemplate(item.builtinId!):getComfyTemplate(item.templateId,item.revision));
   if(!current)return;
-  setCatalog(loaded.map(x=>x.item));setTemplates(Object.fromEntries(loaded.filter(x=>x.template?.mediaUseCase)
-   .map(x=>[x.item.templateId+"@"+x.item.revision,x.template!])));
- }).catch(()=>{if(current){setCatalog([]);setTemplates({});}});return()=>{current=false};},[]);
+  setCatalog(items);setTemplates(Object.fromEntries(Object.entries(loaded.templates).filter(([,template])=>template.mediaUseCase)));
+  setCatalogFailures(loaded.failures);setCatalogError(undefined);
+ }).catch(error=>{if(current){setCatalog([]);setTemplates({});setCatalogError(error instanceof Error?error.message:String(error));}});return()=>{current=false};},[]);
  const preset=node.metadata?.comfyMediaPreset;
  useEffect(()=>{if(!preset)return;const key=preset.templateId+"@"+preset.templateRevision;if(templates[key])return;
   let active=true;void getComfyTemplate(preset.templateId,preset.templateRevision).then(template=>{
-   if(active&&template?.mediaUseCase)setTemplates(current=>({...current,[key]:template}));
-  }).catch(()=>{});return()=>{active=false};},[preset?.templateId,preset?.templateRevision,templates]);
+  if(active&&template?.mediaUseCase)setTemplates(current=>({...current,[key]:template}));
+  if(active)setBoundPresetError(undefined);
+ }).catch(error=>{if(active)setBoundPresetError(error instanceof Error?error.message:String(error));});return()=>{active=false};},[preset?.templateId,preset?.templateRevision,templates]);
  const template=preset?templates[preset.templateId+"@"+preset.templateRevision]:undefined;
  const useCase=template?.mediaUseCase;
  const options=useMemo(()=>catalog.map(item=>{
@@ -77,6 +83,9 @@ export function useComfyMediaPresetControl({node,nodes,connections,onChange,onPi
    return <label key={slot.id} className="block"><Select className="w-full" allowClear placeholder={slot.label+(slot.required?"（必填）":"（可选）")}
     value={selected} options={choices} onChange={(v:string|undefined)=>{if(!v){assign(slot.id,undefined);return;}const [nodeId,imageId]=v.split("#");assign(slot.id,{nodeId,...(imageId?{imageId}:{})});}}/></label>;
   })}</div>:null;
- const settings=template?.mediaUseCase&&preset?<ComfyMediaNativeSettings template={template} binding={preset} onChange={onChange}/>:null;
- return {settings,slots};
+ const settings=template?.mediaUseCase&&preset?<ComfyMediaParameters template={template} binding={preset} config={config} theme={theme} onChange={onChange}/>:null;
+ const error=catalogError?`工作流预设目录加载失败：${catalogError}`:
+  catalogFailures.length?`以下预设版本无法加载，请在工作流设置中重新导入：${catalogFailures.map(failure=>`${failure.name} (${failure.presetId}): ${failure.message}`).join("；")}`:
+  boundPresetError?`当前绑定的工作流版本无法加载，请重新导入该版本：${boundPresetError}`:undefined;
+ return {settings,slots,error};
 }

@@ -3,11 +3,12 @@ import { createPortal } from "react-dom";
 import { Settings2 } from "lucide-react";
 import { Button } from "antd";
 
-import { AudioSettingsPanel,type AudioSettingsMappedOptions } from "@/components/audio-settings-panel";
+import { AudioSettingsPanel } from "@/components/audio-settings-panel";
 import { audioFormatLabel, audioSpeedLabel, audioVoiceLabel } from "@/lib/audio-generation";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
 import type { AiConfig } from "@/stores/use-config-store";
+import { isComfyMediaParameterPopupTarget } from "@/features/comfy-workflow/comfy-media-overrides";
 
 export type CanvasAudioSettingKey = "audioVoice" | "audioFormat" | "audioSpeed" | "audioInstructions";
 
@@ -16,13 +17,11 @@ type CanvasAudioSettingsPopoverProps = {
     onConfigChange: (key: CanvasAudioSettingKey, value: string) => void;
     buttonClassName?: string;
     placement?: "topLeft" | "top" | "topRight" | "bottomLeft" | "bottom" | "bottomRight";
-    visibleKeys?:readonly CanvasAudioSettingKey[];
-    extraContent?:ReactNode;
     buttonLabel?:string;
-    mappedOptions?:AudioSettingsMappedOptions;
+    content?:ReactNode;
 };
 
-export function CanvasAudioSettingsPopover({ config, onConfigChange, buttonClassName, placement = "topLeft",visibleKeys,extraContent,buttonLabel,mappedOptions }: CanvasAudioSettingsPopoverProps) {
+export function CanvasAudioSettingsPopover({ config, onConfigChange, buttonClassName, placement = "topLeft",buttonLabel,content }: CanvasAudioSettingsPopoverProps) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const buttonRef = useRef<HTMLSpanElement>(null);
     const panelRef = useRef<HTMLDivElement>(null);
@@ -35,6 +34,7 @@ export function CanvasAudioSettingsPopover({ config, onConfigChange, buttonClass
         const closeOnOutsidePointer = (event: PointerEvent) => {
             const target = event.target;
             if (!(target instanceof Node)) return;
+            if (isComfyMediaParameterPopupTarget(target)) return;
             if (buttonRef.current?.contains(target) || panelRef.current?.contains(target)) return;
             setOpen(false);
         };
@@ -50,7 +50,7 @@ export function CanvasAudioSettingsPopover({ config, onConfigChange, buttonClass
         };
     }, [open]);
 
-    const panel = open && buttonRect ? <AudioSettingsPortal buttonRect={buttonRect} panelRef={panelRef} placement={placement} theme={theme} config={config} onConfigChange={onConfigChange} visibleKeys={visibleKeys} extraContent={extraContent} mappedOptions={mappedOptions} /> : null;
+    const panel = open && buttonRect ? <AudioSettingsPortal buttonRect={buttonRect} panelRef={panelRef} placement={placement} theme={theme} config={config} onConfigChange={onConfigChange} content={content} /> : null;
 
     return (
         <>
@@ -73,9 +73,7 @@ function AudioSettingsPortal({
     theme,
     config,
     onConfigChange,
-    visibleKeys,
-    extraContent,
-    mappedOptions,
+    content,
 }: {
     buttonRect: DOMRect;
     panelRef: RefObject<HTMLDivElement | null>;
@@ -83,9 +81,7 @@ function AudioSettingsPortal({
     theme: (typeof canvasThemes)[keyof typeof canvasThemes];
     config: AiConfig;
     onConfigChange: (key: CanvasAudioSettingKey, value: string) => void;
-    visibleKeys?:CanvasAudioSettingsPopoverProps["visibleKeys"];
-    extraContent?:ReactNode;
-    mappedOptions?:CanvasAudioSettingsPopoverProps["mappedOptions"];
+    content?:ReactNode;
 }) {
     const width = 356;
     const gap = 8;
@@ -117,8 +113,7 @@ function AudioSettingsPortal({
             onMouseDown={(event) => event.stopPropagation()}
             onClick={(event) => event.stopPropagation()}
         >
-            <AudioSettingsPanel config={config} onConfigChange={(key, value) => onConfigChange(key, value)} theme={theme} className="space-y-4" visibleKeys={visibleKeys} mappedOptions={mappedOptions} />
-            {extraContent}
+            {content??<AudioSettingsPanel config={config} onConfigChange={(key, value) => onConfigChange(key, value)} theme={theme} className="space-y-4" />}
         </div>,
         document.body,
     );

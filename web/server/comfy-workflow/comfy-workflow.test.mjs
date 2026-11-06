@@ -78,6 +78,15 @@ test("legacy template hash remains compatible and a bound KJ preview node cannot
  assert.throws(()=>compileSingleWorkflow(request,withBinding,options()),/preview_binding_node_pruned/);
 });
 
+test("compiler explicitly rejects legacy mediaUseCase.settings instead of accepting or stripping it",()=>{
+ const old=template();
+ const payload={name:old.name,apiGraph:old.apiGraph,ports:old.ports,requirements:old.requirements,
+  mediaUseCase:{channel:"image",primaryOutputKind:"image",promptPortId:"text",slots:[],primaryOutputPortId:"image",settings:{imageQuality:"strength"}}};
+ const legacy={id:"demo",...payload,revision:sha256(canonical(payload))};
+ const request=req();request.nodes[0].templateRevision=legacy.revision;
+ assert.throws(()=>compileSingleWorkflow(request,legacy,options()),/template_media_use_case_invalid/);
+});
+
 test("dynamic COMFY_DYNAMICCOMBO_V3 dotted inputs follow selected option schema",()=>{
     const sample={
         TextGenerate:{input:{required:{

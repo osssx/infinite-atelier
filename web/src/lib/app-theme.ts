@@ -47,6 +47,12 @@ export function getAntThemeConfig(dark: boolean): ThemeConfig {
             controlItemBgActiveHover: color.itemSelectedHoverBg,
         },
         components: {
+            Tooltip: {
+                // Primary buttons use dark text in dark mode; tooltip surfaces
+                // stay dark in both themes and need their own foreground.
+                colorTextLightSolid: "#fafafa",
+                colorBgSpotlight: dark ? "#292524" : "#171717",
+            },
             Button: {
                 primaryShadow: "none",
             },

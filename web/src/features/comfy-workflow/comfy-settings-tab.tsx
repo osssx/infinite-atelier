@@ -37,7 +37,6 @@ export function ComfySettingsTab() {
     const [presetKind,setPresetKind]=useState("all");
     const [presetMediaType,setPresetMediaType]=useState("all");
     const [presetStatus,setPresetStatus]=useState("all");
-    const [expandedGroups,setExpandedGroups]=useState<Set<string>>(new Set());
     const [jsonPreset,setJsonPreset]=useState<{name:string;json:string}|null>(null);
     const [workflowVersions,setWorkflowVersions]=useState<Record<string,{revision:string;templateId:string;workflowHash:string;createdAt:number}[]>>({});
 
@@ -61,12 +60,6 @@ export function ComfySettingsTab() {
         (presetMediaType==="all"||p.mediaType===presetMediaType)&&(presetStatus==="all"||p.status===presetStatus)&&
         (!presetSearch||[p.name,p.id,p.templateId,p.revision].some(v=>v.toLowerCase().includes(presetSearch.toLowerCase())))),
         [presets,presetSearch,presetSource,presetKind,presetMediaType,presetStatus]);
-    const presetGroups=useMemo(()=>{
-        const groups=new Map<string,ComfyCatalogPreset[]>();
-        for(const preset of filteredPresets){const key=preset.workflowId??preset.templateId;groups.set(key,[...(groups.get(key)??[]),preset]);}
-        return [...groups.entries()];
-    },[filteredPresets]);
-
     const saveInstance=async()=>{
         if(!editingInstance)return;
         setBusy(true);
@@ -110,7 +103,7 @@ export function ComfySettingsTab() {
                 ...(template.mediaUseCase?{mediaUseCase:template.mediaUseCase}:{})});
             await saveComfyPresetBinding({id,name:variant.name,workflowId:preset.workflowId??preset.templateId,
                 templateId:variant.id,revision:variant.revision,source:"user",kind:"variant",parentId:preset.id},variant);
-            await reloadPresets();setExpandedGroups(groups=>new Set(groups).add(preset.workflowId??preset.templateId));
+            await reloadPresets();
             message.success("已创建独立绑定快照；graph 文件与基础工作流去重共享");
         }catch(error){message.error("创建变体失败："+(error instanceof Error?error.message:String(error)));}
         finally{setPresetActionBusy(null);}
@@ -176,23 +169,15 @@ export function ComfySettingsTab() {
                 <Select value={presetStatus} onChange={setPresetStatus} options={[{value:"all",label:"全部状态"},{value:"available",label:"可用"},{value:"missing",label:"缺失 / 加载失败"}]}/>
             </div>
             <div className="overflow-hidden rounded-lg border border-stone-200 dark:border-stone-800">
-                {presetGroups.map(([groupId,group])=>{
-                    const preset=group.find(item=>item.kind!=="variant"&&!item.parentId)??group[0];
-                    const variants=group.filter(item=>item.id!==preset.id);
-                    const expanded=expandedGroups.has(groupId)||Boolean(presetSearch);
-                    const rows=expanded||!variants.length?group:[preset];
-                    return <div key={groupId} data-comfy-workflow-group={groupId}>
-                    {rows.map(item=>{
+                {filteredPresets.map(item=>{
                         const mediaLabel=item.mediaType==="video"?"视频":item.mediaType==="audio"?"音频":item.mediaType==="image"?"图片":"其他";
                         const MediaIcon=item.mediaType==="video"?Video:item.mediaType==="audio"?Music2:item.mediaType==="image"?ImageIcon:null;
                         const versions=workflowVersions[item.id]??[];
-                        return <div className={`flex min-w-0 items-center gap-2 border-t border-stone-200 px-2.5 py-2 dark:border-stone-800 sm:gap-3 sm:px-3 ${item.kind==="variant"?"pl-7 sm:pl-9":""}`} key={item.id} data-comfy-preset={item.id}>
+                        return <div className="flex min-w-0 items-center gap-2 border-t border-stone-200 px-2.5 py-2 dark:border-stone-800 sm:gap-3 sm:px-3" key={item.id} data-comfy-preset={item.id}>
                             <div className="flex min-w-0 flex-1 items-center gap-2">
-                                {item.id===preset.id&&variants.length?<Tooltip title={expanded?"折叠变体":"展开变体"}><Button type="text" size="small" className="!h-6 !w-6 !shrink-0 !p-0" aria-label={expanded?"折叠变体":"展开变体"} onClick={()=>setExpandedGroups(current=>{const next=new Set(current);expanded?next.delete(groupId):next.add(groupId);return next;})}>{expanded?"−":"+"}</Button></Tooltip>:null}
                                 {MediaIcon?<Tooltip title={mediaLabel}><MediaIcon size={15} className="shrink-0 text-stone-500" aria-label={mediaLabel}/></Tooltip>:null}
                                 <Tooltip title={item.status==="missing"?"模板版本缺失或不可读取":"模板可用"}><span aria-label={item.status==="missing"?"模板缺失":"模板可用"} className={`size-2 shrink-0 rounded-full ${item.status==="missing"?"bg-red-500":"bg-emerald-500"}`}/></Tooltip>
                                 <span className="min-w-0 truncate text-sm font-medium" title={item.name}>{item.name}</span>
-                                {item.id===preset.id&&variants.length?<Tooltip title={`${variants.length} 个变体`}><Tag className="!mr-0 !shrink-0">{variants.length}</Tag></Tooltip>:null}
                             </div>
                             <span className="flex shrink-0 items-center gap-1 font-mono text-[11px] text-stone-500" title={item.revision}>
                                 <span className="hidden sm:inline">{item.revision.slice(0,8)}</span>
@@ -206,12 +191,10 @@ export function ComfySettingsTab() {
                             <span className="flex shrink-0 items-center gap-0.5">
                                 <Tooltip title="编辑绑定"><Button type="text" size="small" aria-label={`编辑绑定 ${item.name}`} loading={presetActionBusy===item.id} icon={<SlidersHorizontal size={15}/>} className="!h-7 !w-7 !p-0" onClick={()=>void openPreset(item)}/></Tooltip>
                                 <Tooltip title="查看 JSON"><Button type="text" size="small" aria-label={`查看 JSON ${item.name}`} icon={<FileJson size={15}/>} className="!h-7 !w-7 !p-0" onClick={()=>void showPresetJson(item)}/></Tooltip>
-                                {item.id===preset.id?<Tooltip title="创建变体"><Button type="text" size="small" aria-label={`创建 ${item.name} 的变体`} disabled={presetActionBusy!==null} icon={<CopyPlus size={15}/>} className="!h-7 !w-7 !p-0" onClick={()=>void createVariant(preset)}/></Tooltip>:null}
+                                <Tooltip title="创建变体"><Button type="text" size="small" aria-label={`创建 ${item.name} 的变体`} disabled={presetActionBusy!==null} icon={<CopyPlus size={15}/>} className="!h-7 !w-7 !p-0" onClick={()=>void createVariant(item)}/></Tooltip>
                                 <Popconfirm title={`移除“${item.name}”预设？`} onConfirm={()=>void removePreset(item)}><Tooltip title="删除预设"><Button danger type="text" size="small" aria-label={`删除预设 ${item.name}`} icon={<Trash2 size={15}/>} className="!h-7 !w-7 !p-0"/></Tooltip></Popconfirm>
                             </span>
                         </div>;
-                    })}
-                    </div>;
                 })}
                 {!filteredPresets.length?<p className="px-3 py-5 text-sm text-stone-500">{presetsBusy?"正在加载…":presets.length?"没有匹配的工作流，请调整搜索或筛选条件。":"还没有工作流。使用“新增 / 导入工作流”导入 ComfyUI API JSON。"}</p>:null}
             </div>

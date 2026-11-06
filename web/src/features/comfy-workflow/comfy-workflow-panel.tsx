@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSPropert
 import { ArrowDown, ArrowUp, Check, ChevronDown, ChevronRight, FileUp, GripVertical, Link2, Plus, RefreshCw, Save, Search, Trash2, X } from "lucide-react";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { canToggleComfyInputPortVisibility } from "@/lib/canvas/canvas-ports";
-import { theme as antdTheme } from "antd";
+import { Modal, Select, theme as antdTheme } from "antd";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { useConfigStore } from "@/stores/use-config-store";
 import {useComfyObjectInfo} from "./use-comfy-object-info";
@@ -134,6 +134,7 @@ export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,
     const embedded = context==="preset";
 
     const [presets,setPresets] = useState<ComfyCatalogPreset[]>([]);
+    const [pendingPreset,setPendingPreset] = useState<ComfyCatalogPreset|null>(null);
     const [draft,setDraft] = useState<ComfyTemplatePayload|null>(null);
     const [templateId,setTemplateId] = useState("");
     const originalTemplate=useRef<ComfyWorkflowTemplate|null>(null);
@@ -476,27 +477,35 @@ export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,
                 <label className={buttonClass+" cursor-pointer"}><FileUp size={14}/> 导入 API JSON
                     <input type="file" accept=".json,application/json" className="sr-only" onChange={(e)=>void uploadGraph(e)}/>
                 </label>
-                <select aria-label="加载预设" data-comfy-preset-picker
-                    className={inputClass+" !w-auto min-w-[160px] max-w-[260px] flex-1"}
+                <div data-comfy-preset-picker className="min-w-[160px] max-w-[260px] flex-1">
+                <Select aria-label="加载预设" className="w-full" popupMatchSelectWidth={320}
                     disabled={busy}
-                    value={selectedPreset ? "preset:"+selectedPreset.id : ""}
-                    onChange={(e)=>{
-                        const value=e.target.value;
+                    value={selectedPreset ? "preset:"+selectedPreset.id : undefined}
+                    placeholder={savedValue && draft ? "当前绑定："+draft.name : "加载预设"}
+                    options={presets.map(p=>({value:"preset:"+p.id,label:p.name}))}
+                    onChange={(value:string)=>{
                         if(!value.startsWith("preset:"))return;
                         const preset=presets.find(p=>p.id===value.slice("preset:".length));
                         if(!preset)return;
+                        setPendingPreset(preset);
+                    }}/>
+                </div>
+                <Modal title="确认加载预设" open={pendingPreset!==null}
+                    okText="确认加载" cancelText="取消" confirmLoading={busy}
+                    cancelButtonProps={{disabled:busy}} closable={!busy} maskClosable={!busy} keyboard={!busy}
+                    onCancel={()=>{if(!busy)setPendingPreset(null);}}
+                    onOk={async()=>{
+                        if(!pendingPreset||busy)return;
                         setBusy(true);setError("");
-                        void getComfyTemplate(preset.templateId,preset.revision)
-                            .then(t=>{if(!t)throw new Error("预设模板版本不存在");applySaved(t);})
-                            .catch(cause=>setError(String(cause)))
-                            .finally(()=>setBusy(false));
+                        try{
+                            const template=await getComfyTemplate(pendingPreset.templateId,pendingPreset.revision);
+                            if(!template)throw new Error("预设模板版本不存在");
+                            if(applySaved(template))setPendingPreset(null);
+                        }catch(cause){setError(String(cause));setPendingPreset(null);}
+                        finally{setBusy(false);}
                     }}>
-                    <option value="">{savedValue && draft && !selectedPreset
-                        ? "当前绑定："+draft.name : "加载预设"}</option>
-                    {presets.length?<optgroup label="已保存工作流">
-                        {presets.map(p=><option key={p.id} value={"preset:"+p.id}>{p.name}</option>)}
-                    </optgroup>:null}
-                </select>
+                    <p>加载“{pendingPreset?.name}”将替换当前编辑内容，尚未保存的修改会丢失。是否继续？</p>
+                </Modal>
                 <button type="button" className={buttonClass} data-comfy-object-info-sync
                     disabled={!comfyInstanceId||infoLoading} onClick={()=>void refreshObjectInfo()}
                     title={comfyInstanceId?"从已配置的 ComfyUI 实例刷新节点定义":"请先在 ComfyUI 设置中选择默认实例"}>

@@ -3,7 +3,6 @@ import {Select} from "antd";
 import type {CanvasConnection,CanvasNodeData,CanvasNodeMetadata} from "@/types/canvas";
 import {listComfyPresetCatalog,loadComfyPresetCatalogTemplates,type ComfyCatalogLoadFailure,type ComfyCatalogPreset} from "./preset-catalog";
 import {getComfyTemplate} from "./template-registry";
-import {bundledComfyTemplate,installBundledComfyTemplate} from "./preset-catalog";
 import type {ComfyMediaUseCase,ComfyWorkflowTemplate} from "./template-schema";
 import {ComfyMediaParameters} from "./comfy-media-parameters";
 import type {AiConfig} from "@/stores/use-config-store";
@@ -26,8 +25,7 @@ export function useComfyMediaPresetControl({node,nodes,connections,config,theme,
  const [catalogError,setCatalogError]=useState<string>();
  const [boundPresetError,setBoundPresetError]=useState<string>();
  useEffect(()=>{let current=true;void listComfyPresetCatalog().then(async items=>{
-  const loaded=await loadComfyPresetCatalogTemplates(items,item=>item.builtIn&&!item.modified&&item.defaultRevision===item.revision?
-   bundledComfyTemplate(item.builtinId!):getComfyTemplate(item.templateId,item.revision));
+  const loaded=await loadComfyPresetCatalogTemplates(items,item=>getComfyTemplate(item.templateId,item.revision));
   if(!current)return;
   setCatalog(items);setTemplates(Object.fromEntries(Object.entries(loaded.templates).filter(([,template])=>template.mediaUseCase)));
   setCatalogFailures(loaded.failures);setCatalogError(undefined);
@@ -48,8 +46,7 @@ export function useComfyMediaPresetControl({node,nodes,connections,config,theme,
   if(!value){onChange({comfyMediaPreset:undefined});return;}
   const [templateId,revision]=value.split("@");
   const row=catalog.find(item=>item.templateId===templateId&&item.revision===revision);
-  const found=templates[value]??(row?.builtIn&&!row.modified&&row.defaultRevision===revision?
-   await installBundledComfyTemplate(row.builtinId!):await getComfyTemplate(templateId,revision));
+  const found=templates[value]??(row?await getComfyTemplate(templateId,revision):null);
   if(!found?.mediaUseCase)return;
   const prior=node.metadata?.comfyMediaPreset;
   const cache={...(node.metadata?.comfyMediaPresetCache??{})};

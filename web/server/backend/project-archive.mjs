@@ -92,9 +92,9 @@ function validatedManifest(manifest,registry){
  return media;
 }
 function assertQuota(n){if(n>ARCHIVE_MAX_BYTES)throw error("archive_size_exceeded",413)}
-export function createProjectArchive({db,blobStore}={}){
+export function createProjectArchive({db,blobStore,workflowsDir,registry:providedRegistry}={}){
  if(!db||!blobStore)throw Error("archive_backend_required");
- const registry=createComfyRegistry(db);
+ const registry=providedRegistry??createComfyRegistry(db,{workflowsDir});
  async function exportProject(id){
   const project=getProject(db,id),viewport=getCanvasViewport(db,id),chats=getCanvasChats(db,id);
   const hashes=[...projectArchiveHashes({document:project.document,chats})].sort();

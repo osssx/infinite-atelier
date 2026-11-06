@@ -179,7 +179,7 @@ test("SQLite schema v6 upgrades old backend viewport/chat JSON without losing gr
 });
 test("schema v19 installs Skill script run references and GC ledger triggers",t=>{
  const db=new DatabaseSync(":memory:");initializeSchema(db);t.after(()=>db.close());
- db.exec("DROP TRIGGER blob_ref_dirty_skill_script_runs_insert;DROP TRIGGER blob_ref_dirty_skill_script_runs_update;DROP TRIGGER blob_ref_dirty_skill_script_runs_delete;DELETE FROM schema_migrations WHERE version=20;");
+ db.exec("DROP TRIGGER blob_ref_dirty_skill_script_runs_insert;DROP TRIGGER blob_ref_dirty_skill_script_runs_update;DROP TRIGGER blob_ref_dirty_skill_script_runs_delete;DELETE FROM schema_migrations WHERE version>19;");
  db.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES(19,?)").run(Date.now());
  assert.equal(db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v,19);
  initializeSchema(db);

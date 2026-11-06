@@ -14,14 +14,13 @@ import {
     inferComfyBindingMode, inferComfyInputKind, parseBindingTargetKey, removeComfyInputTarget,
     resolveComfyInputBindingAction, toggleComfyPortSelection, usedComfyInputTarget,
 } from "./binding-picker";
-import { ComfyTemplateBindingError, templatePayloadFromGraph, validateComfyApiGraph, type ComfyInputBinding, type ComfyNodeTarget, type ComfyObjectInfo, type ComfyTemplatePayload, type ComfyTemplatePort, type ComfyWorkflowTemplate } from "./template-schema";
+import { ComfyTemplateBindingError, canonicalComfyJson, createComfyTemplate, templatePayloadFromGraph, validateComfyApiGraph, type ComfyInputBinding, type ComfyNodeTarget, type ComfyObjectInfo, type ComfyTemplatePayload, type ComfyTemplatePort, type ComfyWorkflowTemplate } from "./template-schema";
 import { getComfyTemplate, saveComfyTemplateVersion } from "./template-registry";
-import { upsertComfyPresetForTemplate } from "./preset-registry";
+import { renameComfyTemplate, saveComfyPresetBinding, upsertComfyPresetForTemplate } from "./preset-registry";
 import { listComfyPresetCatalog, type ComfyCatalogPreset } from "./preset-catalog";
 import { buildKrea2TurboTemplate, isKrea2TurboT2IWorkflow, KREA2_TURBO_TEMPLATE_ID } from "./krea2-turbo-preset";
 import { buildMiniMaxH3I2VPreset, isMiniMaxH3I2VWorkflow, MINIMAX_H3_I2V_TEMPLATE_ID } from "./minimax-h3-i2v-preset";
 import {ComfyMediaUseCaseEditor,normalizeComfyTemplateMediaDraft} from "./comfy-media-use-case-editor";
-import { installBundledComfyTemplate } from "./preset-catalog";
 import {autoFillComfyPortChoices,formatComfyChoiceLines,inferComfyChoicesForPort,parseComfyChoiceLines,type ComfyChoiceKind} from "./choice-options";
 import type {ComfyScalarChoice} from "./template-schema";
 
@@ -137,6 +136,7 @@ export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,
     const [presets,setPresets] = useState<ComfyCatalogPreset[]>([]);
     const [draft,setDraft] = useState<ComfyTemplatePayload|null>(null);
     const [templateId,setTemplateId] = useState("");
+    const originalTemplate=useRef<ComfyWorkflowTemplate|null>(null);
     const comfyInstanceId=useConfigStore(s=>s.config.comfyInstanceId);
     const {objectInfo,loading:infoLoading,error:infoError,refresh:refreshObjectInfo}=useComfyObjectInfo(comfyInstanceId);
     const [selectedNodeId,setSelectedNodeId] = useState("");
@@ -202,6 +202,7 @@ export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,
         if(binding?.templateId && binding.templateRevision) {
             void getComfyTemplate(binding.templateId,binding.templateRevision).then(bound=>{
                 if(!alive || !bound)return;
+                originalTemplate.current=bound;
                 setDraft(normalizeComfyTemplateMediaDraft({name:bound.name,apiGraph:bound.apiGraph,ports:bound.ports,requirements:bound.requirements,
                     ...(bound.previewBinding?{previewBinding:bound.previewBinding}:{}),...(bound.mediaUseCase?{mediaUseCase:bound.mediaUseCase}:{})}));
                 setTemplateId(bound.id);
@@ -354,25 +355,6 @@ export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,
                 :"工作流已加载。点击左侧节点参数即可创建输入端口。");
         }catch(cause){setError(String(cause));}
     };
-    const installBuiltinPreset=async(id:string)=>{
-        if(busy)return;
-        try {
-            setBusy(true);setError("");
-            // Bundled JSON is version-pinned; no upload or GPU execution is triggered.
-            const template=await installBundledComfyTemplate(id);
-            if(applySaved(template)) {
-                if(context==="node") {
-                    await upsertComfyPresetForTemplate(template);
-                    setPresets(await listComfyPresetCatalog());
-                }
-                setSelectedNodeId(id===KREA2_TURBO_TEMPLATE_ID?"55":"105_104");
-                setSelectedPortId(id===KREA2_TURBO_TEMPLATE_ID?"prompt":"first_frame");setNodeSearch("");
-                setStatus(id===MINIMAX_H3_I2V_TEMPLATE_ID
-                    ?"MiniMax H3 I2V 预设已加载并绑定，支持 VIDEO 输出；请验证 ComfyUI 实例兼容性。"
-                    :"已载入并绑定 Krea 2 Turbo INT8 预设：11 个输入和 1 个图片输出，仍需验证 ComfyUI 实例兼容性。");
-            }
-        }catch(cause){setError(String(cause));}finally{setBusy(false);}
-    };
     const applySaved=(template:ComfyWorkflowTemplate):boolean=>{
         const comfyPorts=template.ports.map(({id,label,direction,valueKind,required,canvasVisible})=>({id,label,direction,valueKind,required,...(canvasVisible===false?{canvasVisible:false}:{})}));
         if(!onChange({comfyPorts,comfyWorkflow:{
@@ -397,8 +379,35 @@ export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,
             setBusy(true);setError("");setBindingIssue(null);
             const normalizedDraft=normalizeComfyTemplateMediaDraft(draft);
             if(normalizedDraft!==draft)setDraft(normalizedDraft);
-            const template=await saveComfyTemplateVersion(templateId,normalizedDraft,objectInfo);
+            const original=originalTemplate.current;
+            const withoutName=(value:ComfyTemplatePayload|ComfyWorkflowTemplate)=>canonicalComfyJson({apiGraph:value.apiGraph,ports:value.ports,requirements:value.requirements,
+                ...(value.previewBinding?{previewBinding:value.previewBinding}:{}),...(value.mediaUseCase?{mediaUseCase:value.mediaUseCase}:{})});
+            if(original&&original.id===templateId&&normalizedDraft.name.trim()===original.name&&withoutName(normalizedDraft)===withoutName(original)){
+                setStatus("模板内容没有变化。");return;
+            }
+            if(original&&original.id===templateId&&normalizedDraft.name.trim()!==original.name&&withoutName(normalizedDraft)===withoutName(original)){
+                await renameComfyTemplate(templateId,normalizedDraft.name);
+                const freshRevision=await createComfyTemplate(original.id,original);
+                const legacy=original.revision!==freshRevision.revision;
+                const renamed={...original,name:normalizedDraft.name.trim(),...(legacy?{revisionName:original.revisionName??original.name}:{})};
+                originalTemplate.current=renamed;applySaved(renamed);setStatus("工作流名称已更新，版本与 graph 文件保持不变。");
+                if(context==="preset")setPresets(await listComfyPresetCatalog());
+                return;
+            }
+            const template=context==="preset"
+                ?await createComfyTemplate(templateId,normalizedDraft,objectInfo)
+                :await saveComfyTemplateVersion(templateId,normalizedDraft,objectInfo);
+            if(context==="preset"){
+                const previous=presets.find(item=>item.id===node.id);
+                await saveComfyPresetBinding({id:node.id,name:normalizedDraft.name,
+                    workflowId:previous?.workflowId??previous?.templateId??template.id,templateId:template.id,revision:template.revision,
+                    source:previous?.source??"user",kind:previous?.kind??"base",...(previous?.parentId?{parentId:previous.parentId}:{})},template);
+                originalTemplate.current=template;
+                if(applySaved(template))setPresets(await listComfyPresetCatalog());
+                return;
+            }
             if(applySaved(template) && context==="node") {
+                originalTemplate.current=template;
                 await upsertComfyPresetForTemplate(template);
                 setPresets(await listComfyPresetCatalog());
             }
@@ -473,12 +482,9 @@ export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,
                     value={selectedPreset ? "preset:"+selectedPreset.id : ""}
                     onChange={(e)=>{
                         const value=e.target.value;
-                        if(value==="builtin:krea2"){void installBuiltinPreset(KREA2_TURBO_TEMPLATE_ID);return;}
-                        if(value==="builtin:minimax"){void installBuiltinPreset(MINIMAX_H3_I2V_TEMPLATE_ID);return;}
                         if(!value.startsWith("preset:"))return;
                         const preset=presets.find(p=>p.id===value.slice("preset:".length));
                         if(!preset)return;
-                        if(preset.builtIn && !preset.modified){void installBuiltinPreset(preset.builtinId!);return;}
                         setBusy(true);setError("");
                         void getComfyTemplate(preset.templateId,preset.revision)
                             .then(t=>{if(!t)throw new Error("预设模板版本不存在");applySaved(t);})
@@ -487,17 +493,8 @@ export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,
                     }}>
                     <option value="">{savedValue && draft && !selectedPreset
                         ? "当前绑定："+draft.name : "加载预设"}</option>
-                    <optgroup label="内置预设">
-                        {presets.filter(p=>p.builtIn).map(p=><option key={p.id} value={"preset:"+p.id}>
-                            {p.name}{p.modified?"（已修改）":""}
-                        </option>)}
-                        {!presets.length?<>
-                            <option value="builtin:krea2">Krea 2 Turbo INT8 · 文生图</option>
-                            <option value="builtin:minimax">MiniMax H3 I2V Turbo · 图生视频</option>
-                        </>:null}
-                    </optgroup>
-                    {presets.some(p=>!p.builtIn)?<optgroup label="全局预设">
-                        {presets.filter(p=>!p.builtIn).map(p=><option key={p.id} value={"preset:"+p.id}>{p.name}</option>)}
+                    {presets.length?<optgroup label="已保存工作流">
+                        {presets.map(p=><option key={p.id} value={"preset:"+p.id}>{p.name}</option>)}
                     </optgroup>:null}
                 </select>
                 <button type="button" className={buttonClass} data-comfy-object-info-sync

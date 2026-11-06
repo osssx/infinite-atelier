@@ -49,7 +49,7 @@ export type ComfyMediaUseCase = {
     primaryOutputPortId: string;
     additionalOutputPortIds?: string[];
 };
-export type ComfyWorkflowTemplate = ComfyTemplatePayload & { id: string; revision: string };
+export type ComfyWorkflowTemplate = ComfyTemplatePayload & { id: string; revision: string; revisionName?:string };
 
 /** A subset of the ComfyUI /object_info schema used for static capability checks. */
 export type ComfyObjectInfo = Record<string, {
@@ -355,10 +355,15 @@ export function templatePayloadFromGraph(name: string, raw: unknown, info?: Comf
 export async function createComfyTemplate(id: string, raw: unknown, info?: ComfyObjectInfo): Promise<ComfyWorkflowTemplate> {
     if (!safeId(id)) fail("invalid template id");
     const payload = validateComfyTemplatePayload(raw, info);
-    const revision = await comfySha256(canonicalComfyJson(payload));
+    const {name:_name,...content}=payload;
+    const revision = await comfySha256(canonicalComfyJson(content));
     return { id, revision, ...payload };
 }
 export async function verifyComfyTemplate(template: ComfyWorkflowTemplate): Promise<void> {
     const actual = await createComfyTemplate(template.id, template);
-    if (template.revision !== actual.revision) fail("template revision SHA-256 mismatch");
+    if(template.revision===actual.revision){if(template.revisionName!==undefined)fail("template revision SHA-256 mismatch");return;}
+    const legacyName=template.revisionName??template.name;
+    const {id:_id,revision:_revision,revisionName:_revisionName,...payload}=template;
+    const legacy=await comfySha256(canonicalComfyJson({...payload,name:legacyName}));
+    if(template.revision!==legacy)fail("template revision SHA-256 mismatch");
 }

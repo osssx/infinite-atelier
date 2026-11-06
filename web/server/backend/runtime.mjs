@@ -10,6 +10,7 @@ import {createBlobStore} from "./blob-store.mjs";
 import {createFileSkillRegistry,resolveSkillsDir} from "./file-skill-registry.mjs";
 import {bindFileSkillRegistry} from "./skill-job-grants.mjs";
 import {createProjectArchive} from "./project-archive.mjs";
+import {createComfyRegistry} from "./comfy-registry.mjs";
 import {createMediaPreviewStore} from "./media-preview.mjs";
 import {createBlobGarbageCollector} from "./blob-gc.mjs";
 import {rebuildBlobReferenceLedger} from "./blob-reference-ledger.mjs";
@@ -58,8 +59,10 @@ export function createLocalBackend({dataDir,streamPollMs=200,adapters,comfyInsta
   db=openMainDatabase(root);
   const skillRegistry=createFileSkillRegistry({skillsDir:skillsDir??resolveSkillsDir()});
   bindFileSkillRegistry(db,skillRegistry);
-  // Durable owner/hash ledger rebuilt on safe startup after schema migration,
-  // before any worker can collect or garbage-collect media.
+  const comfyWorkflowDir=join(root,"workflows");
+  const workflowRegistry=createComfyRegistry(db,{workflowsDir:comfyWorkflowDir});
+  // Workflow migration publishes each referenced graph first; rebuild the
+  // owner/hash ledger afterward so the committed state is clean at startup.
   rebuildBlobReferenceLedger(db);
   // Fail closed if CurrentUser DPAPI is unavailable; no plaintext fallback.
   const protector=createWindowsDpapiProtector();
@@ -67,7 +70,7 @@ export function createLocalBackend({dataDir,streamPollMs=200,adapters,comfyInsta
   const sessionAuth=createLocalSessionAuth(),blobStore=createBlobStore({dataDir:root,db,maxBlobBytes:blobMaxBytes});
   const mediaPreview=createMediaPreviewStore({dataDir:root,blobStore});
   const blobGc=createBlobGarbageCollector({db,blobStore});
-  const projectArchive=createProjectArchive({db,blobStore});
+  const projectArchive=createProjectArchive({db,blobStore,workflowsDir:comfyWorkflowDir,registry:workflowRegistry});
   const comfyLive=createComfyLiveHub({WebSocketImpl:comfyUpstreamCall?null:globalThis.WebSocket});
   // Explicit opt-in only: no adapters means no scheduling/real generation calls.
   // Startup recovery requires the exclusive instance lock acquired above.
@@ -114,7 +117,7 @@ export function createLocalBackend({dataDir,streamPollMs=200,adapters,comfyInsta
    modelCatalog:openai||gemini?args=>vault.get(args.channelId).provider==="google_gemini"?
     gemini.listModels({channelId:args.channelId,endpointBaseUrl:args.endpointBaseUrl}):openai.listModels(args):null,
    mediaDownloader:createTrustedMediaDownloader({blobStore}),coordinator,materializer,worker,
-   comfyRegistry,comfyLive,comfyInstanceIds:comfyRegistry?()=>comfyRegistry.list().map(item=>item.id):comfyInstances?.map(item=>item.id)??[],modelKinds:[...new Set([...(enableOpenAiModels?["image","audio","text","video"]:[]),...(enableArkVideos?["video"]:[])])],arkAssetUploadReady:Boolean(assetManager),streamPollMs});
+   comfyRegistry,comfyWorkflowDir,comfyLive,comfyInstanceIds:comfyRegistry?()=>comfyRegistry.list().map(item=>item.id):comfyInstances?.map(item=>item.id)??[],modelKinds:[...new Set([...(enableOpenAiModels?["image","audio","text","video"]:[]),...(enableArkVideos?["video"]:[])])],arkAssetUploadReady:Boolean(assetManager),streamPollMs});
   worker?.start();
   let closed=false;
   return {app,db,sessionAuth,vault,blobStore,skillRegistry,comfyRegistry,assetManager,mediaPreview,blobGc,projectArchive,coordinator,materializer,worker,lock,async close(){

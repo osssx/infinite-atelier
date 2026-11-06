@@ -2,14 +2,14 @@ import {beforeEach,describe,expect,it,vi} from "vitest";
 import type {CanvasConnection,CanvasNodeData} from "@/types/canvas";
 import type {ComfyWorkflowTemplate} from "./template-schema";
 
-vi.mock("./template-registry",()=>({
- saveComfyTemplateVersion:vi.fn(async(id:string,payload:unknown)=>({id,revision:"a".repeat(64),...payload as object})),
- removeComfyTemplateVersion:vi.fn(async()=>{})
+vi.mock("./template-schema",async importOriginal=>({
+ ...await importOriginal<typeof import("./template-schema")>(),
+ createComfyTemplate:vi.fn(async(id:string,payload:any)=>({id,revision:"a".repeat(64),...payload})),
 }));
-vi.mock("./preset-registry",()=>({saveComfyPreset:vi.fn(async()=>{})}));
+vi.mock("./preset-registry",()=>({listComfyPresets:vi.fn(async()=>[]),saveComfyPresetBinding:vi.fn(async()=>{})}));
 
-import {saveComfyTemplateVersion,removeComfyTemplateVersion} from "./template-registry";
-import {saveComfyPreset} from "./preset-registry";
+import {createComfyTemplate} from "./template-schema";
+import {listComfyPresets,saveComfyPresetBinding} from "./preset-registry";
 import {snapshotComfyInstanceAsPreset,saveComfyInstanceAsNewPreset} from "./save-instance-as-preset";
 
 const template:ComfyWorkflowTemplate={
@@ -48,7 +48,7 @@ describe("save current workflow as independent preset",()=>{
   const payload=snapshotComfyInstanceAsPreset(template,node,[edge],"  新预设  ");
   expect(payload.name).toBe("新预设");
   expect(payload.apiGraph["1"].inputs).toEqual({
-   prompt:"base",steps:0,scale:1.25,enabled:false,choice:"quality"
+   prompt:"base",steps:8,scale:0.5,enabled:true,choice:"fast"
   });
   expect(payload.ports.find(p=>p.id==="steps")?.defaultValue).toBe(0);
   expect(payload.ports.find(p=>p.id==="enabled")?.defaultValue).toBe(false);
@@ -64,9 +64,9 @@ describe("save current workflow as independent preset",()=>{
   expect(saved.id).toMatch(/^comfy-custom-[0-9a-f-]{36}$/);
   expect(saved.templateId).toBe(saved.id);
   expect(saved.name).toBe("用户预设");
-  expect(vi.mocked(saveComfyTemplateVersion)).toHaveBeenCalledOnce();
-  expect(vi.mocked(saveComfyTemplateVersion).mock.calls[0][0]).toBe(saved.id);
-  expect(vi.mocked(saveComfyPreset)).toHaveBeenCalledWith(saved);
+  expect(vi.mocked(createComfyTemplate)).toHaveBeenCalledOnce();
+  expect(vi.mocked(createComfyTemplate).mock.calls[0][0]).toBe(saved.id);
+  expect(vi.mocked(saveComfyPresetBinding)).toHaveBeenCalledWith(saved,expect.objectContaining({id:saved.id}));
   expect(node.metadata?.comfyWorkflow?.templateId).toBe("original");
  });
  it("rejects empty names and stale workflow bindings without writing",async()=>{
@@ -75,11 +75,12 @@ describe("save current workflow as independent preset",()=>{
    ...node.metadata!.comfyWorkflow!,templateRevision:"stale"
   }}};
   await expect(saveComfyInstanceAsNewPreset(template,stale,[],"new")).rejects.toThrow(/有效的工作流/);
-  expect(saveComfyTemplateVersion).not.toHaveBeenCalled();
+  expect(createComfyTemplate).not.toHaveBeenCalled();
  });
- it("rolls back a newly created template when alias registration fails",async()=>{
-  vi.mocked(saveComfyPreset).mockRejectedValueOnce(Error("alias save failed"));
-  await expect(saveComfyInstanceAsNewPreset(template,node,[],"rollback")).rejects.toThrow("alias save failed");
-  expect(removeComfyTemplateVersion).toHaveBeenCalledOnce();
+ it("shares the stable workflow identity and creates a variant for a known source preset",async()=>{
+  vi.mocked(listComfyPresets).mockResolvedValueOnce([{id:"source-preset",name:"Source",workflowId:"logical",templateId:template.id,revision:template.revision,kind:"base",source:"user"}]);
+  const saved=await saveComfyInstanceAsNewPreset(template,node,[],"variant");
+  expect(saved).toMatchObject({workflowId:"logical",kind:"variant",parentId:"source-preset"});
+  expect(saveComfyPresetBinding).toHaveBeenCalledOnce();
  });
 });

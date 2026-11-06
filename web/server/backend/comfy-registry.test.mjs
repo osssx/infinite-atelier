@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {DatabaseSync} from "node:sqlite";
+import {mkdtempSync,readFileSync,rmSync,existsSync,writeFileSync,unlinkSync,mkdirSync} from "node:fs";
+import {tmpdir} from "node:os";
+import {join} from "node:path";
 import {createHash} from "node:crypto";
 import {initializeSchema,SCHEMA_VERSION} from "./schema.mjs";
 import {buildApp} from "./app.mjs";
@@ -37,7 +40,7 @@ test("P4.5 templates immutable, presets point to versions, protect referenced de
  assert.equal((await call("POST",base,{template:next})).statusCode,201);
  const preset={id:"custom",name:"Preset",templateId:old.id,revision:old.revision};
  assert.equal((await call("PUT","/api/v1/comfy/presets/custom",preset)).statusCode,200);
- assert.deepEqual((await call("GET","/api/v1/comfy/presets")).json().presets,[preset]);
+ assert.deepEqual((await call("GET","/api/v1/comfy/presets")).json().presets,[{...preset,workflowId:old.id,source:"user",kind:"base"}]);
  assert.equal((await call("DELETE",base+"/"+encodeURIComponent(old.id)+"/"+old.revision)).statusCode,409);
  const updated={...preset,revision:next.revision};
  assert.equal((await call("PUT","/api/v1/comfy/presets/custom",updated)).statusCode,200);
@@ -47,6 +50,27 @@ test("P4.5 templates immutable, presets point to versions, protect referenced de
  assert.equal((await call("DELETE","/api/v1/comfy/presets/custom")).statusCode,200);
  assert.equal((await call("GET",base+"/"+encodeURIComponent(next.id)+"/"+next.revision)).statusCode,200);
  assert.equal((await call("GET",base+"/absent/"+"a".repeat(64))).statusCode,404);
+});
+test("template rename updates shared metadata without creating a version or graph file and retains legacy hash verification",async t=>{
+ const {db,call}=fixture(t),restored=fixture(t),base="/api/v1/comfy/templates",legacy=template();
+ assert.equal((await call("POST",base,{template:legacy})).statusCode,201);
+ const preset={id:"named-preset",name:"Old visible name",templateId:legacy.id,revision:legacy.revision};
+ assert.equal((await call("PUT","/api/v1/comfy/presets/named-preset",preset)).statusCode,200);
+ const beforeVersions=db.prepare("SELECT COUNT(*) n FROM comfy_template_versions").get().n;
+ const beforeGraphs=db.prepare("SELECT COUNT(*) n FROM comfy_workflow_versions").get().n;
+ const beforeHash=db.prepare("SELECT workflow_hash FROM comfy_template_versions WHERE template_id=?").get(legacy.id).workflow_hash;
+ const renamed=await call("PUT",base+"/"+encodeURIComponent(legacy.id)+"/name",{name:"Renamed workflow"});
+ assert.equal(renamed.statusCode,200,renamed.body);
+ assert.equal(db.prepare("SELECT COUNT(*) n FROM comfy_template_versions").get().n,beforeVersions);
+ assert.equal(db.prepare("SELECT COUNT(*) n FROM comfy_workflow_versions").get().n,beforeGraphs);
+ assert.equal(db.prepare("SELECT workflow_hash FROM comfy_template_versions WHERE template_id=?").get(legacy.id).workflow_hash,beforeHash);
+ const loaded=(await call("GET",base+"/"+encodeURIComponent(legacy.id)+"/"+legacy.revision)).json().template;
+ assert.equal(loaded.name,"Renamed workflow");assert.equal(loaded.revisionName,legacy.name);
+ assert.equal((await call("GET","/api/v1/comfy/presets")).json().presets[0].name,"Renamed workflow");
+ const exported=await call("GET",base);
+ assert.equal(exported.statusCode,200);assert.equal(exported.json().templates[0].revisionName,legacy.name);
+ assert.equal((await restored.call("POST",base,{template:exported.json().templates[0]})).statusCode,201);
+ assert.equal((await restored.call("GET",base+"/"+encodeURIComponent(legacy.id)+"/"+legacy.revision)).json().template.name,"Renamed workflow");
 });
 test("SQLite template registry hashes and retains optional KJ preview bindings",async t=>{
  const {call}=fixture(t),graph={"1":{class_type:"Image",inputs:{seed:1}},
@@ -92,4 +116,91 @@ test("P4.5 template batch install atomic rollback, schema v8 migration",async t=
  initializeSchema(older);
  assert.equal(older.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v,SCHEMA_VERSION);
  assert.ok(older.prepare("SELECT name FROM sqlite_master WHERE name='comfy_presets'").get());
+});
+test("workflow graph is content-addressed on disk and is reloaded after reopening SQLite",async t=>{
+ const root=mkdtempSync(join(tmpdir(),"atelier-comfy-workflows-test-"));t.after(()=>rmSync(root,{recursive:true,force:true}));
+ const dbPath=join(root,"db","atelier.sqlite");mkdirSync(join(root,"db"),{recursive:true});
+ let db=new DatabaseSync(dbPath);initializeSchema(db);const {createComfyRegistry}=await import("./comfy-registry.mjs");
+ const registry=createComfyRegistry(db),base=template(4,"durable-workflow");registry.installMany([base]);
+ const row=db.prepare("SELECT workflow_hash,payload_json FROM comfy_template_versions WHERE template_id=? AND revision=?").get(base.id,base.revision);
+ const graphFile=join(root,"workflows",row.workflow_hash+".json");
+ assert.equal(existsSync(graphFile),true);assert.deepEqual(JSON.parse(readFileSync(graphFile,"utf8")),base.apiGraph);
+ assert.equal(Object.hasOwn(JSON.parse(row.payload_json),"apiGraph"),false);db.close();
+ db=new DatabaseSync(dbPath);const reopened=createComfyRegistry(db);assert.deepEqual(reopened.find(base.id,base.revision),base);
+ db.close();
+});
+test("legacy graph migration preserves revision and retries after a bad file blocks publication",async t=>{
+ const root=mkdtempSync(join(tmpdir(),"atelier-comfy-migration-test-"));t.after(()=>rmSync(root,{recursive:true,force:true}));
+ const dir=join(root,"workflows");mkdirSync(dir,{recursive:true});const db=new DatabaseSync(join(root,"legacy.sqlite"));initializeSchema(db);
+ const legacy=template(7,"legacy-workflow"),payload={name:legacy.name,apiGraph:legacy.apiGraph,ports:legacy.ports,requirements:legacy.requirements};
+ db.prepare("INSERT INTO comfy_template_versions(template_id,revision,payload_json,created_at,workflow_hash) VALUES(?,?,?,?,NULL)")
+  .run(legacy.id,legacy.revision,JSON.stringify(sort(payload)),1);
+ const hash=createHash("sha256").update(JSON.stringify(sort(legacy.apiGraph))).digest("hex"),path=join(dir,hash+".json");
+ writeFileSync(path,"corrupt");const {createComfyRegistry}=await import("./comfy-registry.mjs");
+ assert.throws(()=>createComfyRegistry(db,{workflowsDir:dir}),/comfy_workflow_file_corrupt/);
+ const before=db.prepare("SELECT payload_json,workflow_hash FROM comfy_template_versions WHERE template_id=?").get(legacy.id);
+ assert.equal(JSON.parse(before.payload_json).apiGraph["1"].inputs.seed,7);assert.equal(before.workflow_hash,null);
+ unlinkSync(path);const registry=createComfyRegistry(db,{workflowsDir:dir});
+ assert.deepEqual(registry.find(legacy.id,legacy.revision),legacy);
+ assert.equal(db.prepare("SELECT workflow_hash FROM comfy_template_versions WHERE template_id=?").get(legacy.id).workflow_hash,hash);
+ db.close();
+});
+test("a corrupt graph is isolated to its workflow instead of preventing registry startup",async t=>{
+ const root=mkdtempSync(join(tmpdir(),"atelier-comfy-isolation-test-"));t.after(()=>rmSync(root,{recursive:true,force:true}));
+ mkdirSync(join(root,"db"),{recursive:true});const db=new DatabaseSync(join(root,"db","atelier.sqlite"));initializeSchema(db);
+ const {createComfyRegistry}=await import("./comfy-registry.mjs"),registry=createComfyRegistry(db);
+ const good=template(1,"good-workflow"),bad=template(2,"bad-workflow");registry.installMany([good,bad]);
+ const hash=db.prepare("SELECT workflow_hash FROM comfy_template_versions WHERE template_id=?").get(bad.id).workflow_hash;
+ writeFileSync(join(root,"workflows",hash+".json"),"corrupt");db.close();
+ const reopened=new DatabaseSync(join(root,"db","atelier.sqlite")),loaded=createComfyRegistry(reopened);
+ assert.deepEqual(loaded.find(good.id,good.revision),good);
+ assert.throws(()=>loaded.find(bad.id,bad.revision),/comfy_workflow_file_corrupt/);reopened.close();
+});
+test("binding-only save atomically creates an independent variant snapshot and moves its pointer",async t=>{
+ const {db,call}=fixture(t),base=template(11,"logical-workflow"),templates="/api/v1/comfy/templates";
+ assert.equal((await call("POST",templates,{template:base})).statusCode,201);
+ const basePreset={id:"base-preset",name:"Base",workflowId:base.id,templateId:base.id,revision:base.revision,source:"user",kind:"base"};
+ assert.equal((await call("PUT","/api/v1/comfy/presets/base-preset",basePreset)).statusCode,200);
+ const graphResponse=await call("POST","/api/v1/comfy/workflows/"+base.id+"/graphs",{graph:base.apiGraph});
+ assert.equal(graphResponse.statusCode,200);const workflowHash=graphResponse.json().workflowHash;
+ const changedPort={id:"seed",label:"Seed",direction:"target",valueKind:"INT",defaultValue:21,
+  inputBinding:{mode:"literal",targets:[{nodeId:"1",inputName:"seed"}]},absentPolicy:{mode:"keep-template"}};
+ const variantPayload={name:"Variant",apiGraph:base.apiGraph,ports:[...base.ports,changedPort],requirements:base.requirements};
+ const variant={id:"variant-template",revision:createHash("sha256").update(JSON.stringify(sort(variantPayload))).digest("hex"),...variantPayload};
+ const {apiGraph,...binding}=variant,preset={id:"variant-preset",name:"Variant",workflowId:base.id,templateId:variant.id,revision:variant.revision,source:"user",kind:"variant",parentId:basePreset.id};
+ const saved=await call("PUT","/api/v1/comfy/presets/variant-preset/bind",{preset,workflowHash,binding});
+ assert.equal(saved.statusCode,200,saved.body);assert.equal(saved.json().workflowId,base.id);
+ assert.equal(db.prepare("SELECT COUNT(*) AS n FROM comfy_template_versions WHERE template_id=?").get(variant.id).n,1);
+ assert.equal(db.prepare("SELECT workflow_hash FROM comfy_workflow_versions WHERE template_id=?").get(variant.id).workflow_hash,workflowHash);
+ assert.equal(db.prepare("SELECT workflow_id FROM comfy_presets WHERE id=?").get(preset.id).workflow_id,base.id);
+ const invalidPayload={name:variant.name,apiGraph:variant.apiGraph,requirements:variant.requirements,ports:variant.ports.map(port=>port.id==="seed"?{...port,inputBinding:{mode:"literal",targets:[{nodeId:"404",inputName:"missing"}]}}:port)};
+ const invalid={id:variant.id,revision:createHash("sha256").update(JSON.stringify(sort(invalidPayload))).digest("hex"),...invalidPayload};
+ const {apiGraph:invalidGraph,...invalidBinding}=invalid,invalidPreset={...preset,revision:invalid.revision};
+ const failed=await call("PUT","/api/v1/comfy/presets/variant-preset/bind",{preset:invalidPreset,workflowHash,binding:invalidBinding});
+ assert.notEqual(failed.statusCode,200);
+ assert.equal(db.prepare("SELECT COUNT(*) AS n FROM comfy_template_versions WHERE template_id=?").get(variant.id).n,1);
+ assert.equal(db.prepare("SELECT revision FROM comfy_presets WHERE id=?").get(preset.id).revision,variant.revision);
+});
+
+
+test("name-independent template can be renamed repeatedly without legacy hash metadata",async t=>{
+ const {db,call}=fixture(t),destination=fixture(t),base="/api/v1/comfy/templates";
+ const original=template(42,"workflow:modern-rename");
+ const {id,revision,name,...content}=original;
+ original.revision=createHash("sha256").update(JSON.stringify(sort(content))).digest("hex");
+ assert.equal((await call("POST",base,{template:original})).statusCode,201);
+ for(const nextName of ["First rename","Second rename",name]){
+  const response=await call("PUT",base+"/"+encodeURIComponent(id)+"/name",{name:nextName});
+  assert.equal(response.statusCode,200,response.body);
+  const loaded=(await call("GET",base+"/"+encodeURIComponent(id)+"/"+original.revision)).json().template;
+  assert.equal(loaded.name,nextName);
+  assert.equal(loaded.revision,original.revision);
+  assert.equal(Object.hasOwn(loaded,"revisionName"),false);
+  assert.doesNotThrow(()=>validateComfyTemplate(loaded));
+  const {verifyTemplate}=await import("../comfy-workflow/compiler.mjs");
+  assert.doesNotThrow(()=>verifyTemplate(loaded));
+  assert.ok([200,201].includes((await destination.call("POST",base,{template:loaded})).statusCode));
+ }
+ assert.equal(db.prepare("SELECT COUNT(*) AS n FROM comfy_template_versions").get().n,1);
+ assert.equal(db.prepare("SELECT COUNT(*) AS n FROM comfy_workflow_versions").get().n,1);
 });

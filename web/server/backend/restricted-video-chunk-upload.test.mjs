@@ -86,7 +86,7 @@ async function fixture(t,{putResponse,grant,refresh,finalize}={}){
 test("schema upgrades v18 through v20 with chunk tables and preserves prior asset-upload storage",async t=>{
  const db=new DatabaseSync(":memory:");initializeSchema(db);
  t.after(()=>db.close());
- db.exec("DROP TABLE script_asset_chunks;DROP TABLE script_asset_chunk_sessions;DELETE FROM schema_migrations WHERE version IN (19,20);");
+ db.exec("DROP TABLE script_asset_chunks;DROP TABLE script_asset_chunk_sessions;DELETE FROM schema_migrations WHERE version>18;");
  db.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES(18,?)").run(Date.now());
  assert.equal(db.prepare("SELECT MAX(version) v FROM schema_migrations").get().v,18);
  initializeSchema(db);

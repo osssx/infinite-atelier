@@ -71,7 +71,7 @@ test("upgrade from v17 adds finalize staging without modifying existing upload r
  const db=new DatabaseSync(":memory:");
  initializeSchema(db);
  t.after(()=>db.close());
- db.exec("DROP TABLE script_asset_chunks;DROP TABLE script_asset_chunk_sessions;DROP TABLE script_asset_finalizations;DELETE FROM schema_migrations WHERE version IN (18,19,20);");
+ db.exec("DROP TABLE script_asset_chunks;DROP TABLE script_asset_chunk_sessions;DROP TABLE script_asset_finalizations;DELETE FROM schema_migrations WHERE version>17;");
  db.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES(17,?)").run(Date.now());
  assert.equal(db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v,17);
  initializeSchema(db);

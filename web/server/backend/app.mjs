@@ -82,7 +82,7 @@ function cursorOf(value){
  if(!/^(0|[1-9][0-9]*)$/.test(v)||!Number.isSafeInteger(Number(v)))throw Object.assign(Error("invalid_event_cursor"),{statusCode:400,code:"invalid_event_cursor"});
  return Number(v);
 }
-export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobStore,mediaPreview,blobGc,projectArchive,vault,coordinator,materializer,worker,comfyRegistry,comfyLive,comfyInstanceIds=[],modelKinds=[],arkAssetUploadReady=false,
+export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobStore,mediaPreview,blobGc,projectArchive,comfyWorkflowDir,vault,coordinator,materializer,worker,comfyRegistry,comfyLive,comfyInstanceIds=[],modelKinds=[],arkAssetUploadReady=false,
  arkChannelHealth,modelCatalog,mediaDownloader,skillRegistry,logger=false,streamPollMs=200}={}){
  if(!db||(!sessionAuth&&typeof authorize!=="function"))throw Error("backend_authorizer_required");
  const app=Fastify({logger,bodyLimit:5*1024*1024,trustProxy:false,genReqId:()=>randomUUID()});
@@ -144,6 +144,7 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
    "comfy_template_invalid","comfy_template_too_large","comfy_template_revision_mismatch",
    "comfy_template_immutable_conflict","comfy_template_not_found","comfy_template_in_use",
    "comfy_preset_invalid","comfy_preset_not_found",
+   "comfy_preset_parent_not_found","comfy_preset_parent_workflow_mismatch","comfy_preset_binding_mismatch","comfy_workflow_version_not_found","comfy_workflow_file_missing","comfy_workflow_file_corrupt",
    "invalid_comfy_instance","invalid_comfy_instance_url","comfy_instance_must_be_exact_loopback_origin",
    "comfy_instance_not_found","comfy_instance_conflict","comfy_instance_limit_reached",
    "comfy_instance_has_pending_jobs","invalid_comfy_instances",
@@ -298,13 +299,36 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
   });
  }
 
- const registry=createComfyRegistry(db);
+ const registry=createComfyRegistry(db,{workflowsDir:comfyWorkflowDir});
  const registryParams={type:"object",required:["id","revision"],
   properties:{id:{type:"string",minLength:1,maxLength:128},revision:{type:"string",pattern:"^[a-f0-9]{64}$"}},
   additionalProperties:false};
  const presetParams={type:"object",required:["id"],properties:{id:{type:"string",pattern:"^[A-Za-z0-9_:.-]{1,128}$"}},additionalProperties:false};
  app.get("/api/v1/comfy/templates",(req,reply)=>{
   reply.header("Cache-Control","no-store");return {templates:registry.listTemplates()};
+ });
+ app.get("/api/v1/comfy/workflows",(req,reply)=>{
+  reply.header("Cache-Control","no-store");return {workflows:registry.listWorkflows()};
+ });
+ app.get("/api/v1/comfy/workflows/:id/versions",{schema:{params:{type:"object",required:["id"],properties:{id:{type:"string",pattern:"^[A-Za-z0-9_:.-]{1,128}$"}},additionalProperties:false}}},(req,reply)=>{
+  reply.header("Cache-Control","no-store");return {versions:registry.workflowVersions(req.params.id)};
+ });
+ app.post("/api/v1/comfy/workflows/:id/graphs",{bodyLimit:2*1024*1024+4096,
+  schema:{params:{type:"object",required:["id"],properties:{id:{type:"string",pattern:"^[A-Za-z0-9_:.-]{1,128}$"}},additionalProperties:false},body:{type:"object",required:["graph"],properties:{graph:{type:"object"}},additionalProperties:false}}},(req,reply)=>{
+  reply.header("Cache-Control","no-store");return registry.publishWorkflowGraph(req.params.id,req.body.graph);
+ });
+ app.get("/api/v1/comfy/workflows/:id/graphs/:hash",{schema:{params:{type:"object",required:["id","hash"],properties:{id:{type:"string",pattern:"^[A-Za-z0-9_:.-]{1,128}$"},hash:{type:"string",pattern:"^[a-f0-9]{64}$"}},additionalProperties:false}}},(req,reply)=>{
+  reply.header("Cache-Control","no-store");return {available:registry.workflowGraphAvailable(req.params.id,req.params.hash)};
+ });
+ app.post("/api/v1/comfy/workflows/:id/versions",{bodyLimit:2*1024*1024+4096,
+  schema:{params:{type:"object",required:["id"],properties:{id:{type:"string",pattern:"^[A-Za-z0-9_:.-]{1,128}$"}},additionalProperties:false},body:{type:"object",required:["template"],properties:{template:{type:"object"}},additionalProperties:false}}},(req,reply)=>{
+  if(req.body.template.id!==req.params.id)throw Object.assign(Error("comfy_workflow_id_mismatch"),{code:"comfy_workflow_id_mismatch",statusCode:400});
+  const result=registry.installMany([req.body.template])[0];reply.header("Cache-Control","no-store").code(result.status==="installed"?201:200);return result;
+ });
+ app.get("/api/v1/comfy/workflows/:id/versions/:revision",{schema:{params:registryParams}},(req,reply)=>{
+  const template=registry.find(req.params.id,req.params.revision);
+  if(!template){reply.code(404);return {code:"comfy_template_not_found"}}
+  reply.header("Cache-Control","no-store");return {template};
  });
  app.get("/api/v1/comfy/templates/:id/:revision",{schema:{params:registryParams}},(req,reply)=>{
   const template=registry.find(req.params.id,req.params.revision);
@@ -330,9 +354,19 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
  app.get("/api/v1/comfy/presets",(req,reply)=>{
   reply.header("Cache-Control","no-store");return {presets:registry.listPresets()};
  });
+ app.put("/api/v1/comfy/templates/:id/name",{schema:{params:{type:"object",required:["id"],properties:{id:{type:"string",pattern:"^[A-Za-z0-9_:.-]{1,128}$"}},additionalProperties:false},body:{type:"object",required:["name"],properties:{name:{type:"string",minLength:1,maxLength:160}},additionalProperties:false}}},(req,reply)=>{
+  reply.header("Cache-Control","no-store");return registry.renameTemplate(req.params.id,req.body.name);
+ });
+ app.put("/api/v1/comfy/presets/:id/bind",{bodyLimit:2*1024*1024+8192,
+  schema:{params:presetParams,body:{type:"object",required:["preset","workflowHash","binding"],properties:{
+   preset:{type:"object",required:["id","name","templateId","revision"],properties:{id:{type:"string"},name:{type:"string"},workflowId:{type:"string"},templateId:{type:"string"},revision:{type:"string"},source:{type:"string"},kind:{type:"string"},parentId:{type:"string"}},additionalProperties:false},
+   workflowHash:{type:"string",pattern:"^[a-f0-9]{64}$"},binding:{type:"object"}},additionalProperties:false}}},(req,reply)=>{
+  if(req.params.id!==req.body.preset.id)throw Object.assign(Error("comfy_preset_invalid"),{code:"comfy_preset_invalid",statusCode:400});
+  reply.header("Cache-Control","no-store");return registry.savePresetBinding(req.body.preset,req.body.workflowHash,req.body.binding);
+ });
  app.put("/api/v1/comfy/presets/:id",{schema:{params:presetParams,
   body:{type:"object",required:["id","name","templateId","revision"],
-   properties:{id:{type:"string"},name:{type:"string"},templateId:{type:"string"},revision:{type:"string"}},
+   properties:{id:{type:"string"},name:{type:"string"},workflowId:{type:"string"},templateId:{type:"string"},revision:{type:"string"},source:{type:"string"},kind:{type:"string"},parentId:{type:"string"}},
    additionalProperties:false}}},(req,reply)=>{
   if(req.params.id!==req.body.id)throw Object.assign(Error("comfy_preset_invalid"),{code:"comfy_preset_invalid",statusCode:400});
   reply.header("Cache-Control","no-store");return registry.savePreset(req.body);

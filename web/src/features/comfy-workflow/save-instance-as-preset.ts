@@ -1,13 +1,13 @@
 import type {CanvasConnection,CanvasNodeData} from "@/types/canvas";
 import type {ComfyTemplatePayload,ComfyWorkflowTemplate} from "./template-schema";
-import {saveComfyTemplateVersion,removeComfyTemplateVersion} from "./template-registry";
-import {saveComfyPreset,type ComfyPreset} from "./preset-registry";
+import {createComfyTemplate} from "./template-schema";
+import {listComfyPresets,saveComfyPresetBinding,type ComfyPreset} from "./preset-registry";
 
 const has=(value:object,key:string)=>Object.prototype.hasOwnProperty.call(value,key);
 const scalarKinds=new Set(["STRING","INT","FLOAT","BOOLEAN"]);
 
 /** Snapshot the current node's editable literal overrides into an independent
- * template. Upstream canvas edges are not reproducible preset constants and
+ * binding snapshot. The source graph remains unchanged. Upstream canvas edges are not reproducible preset constants and
  * therefore keep their original template/default values.
  */
 export function snapshotComfyInstanceAsPreset(
@@ -20,7 +20,8 @@ export function snapshotComfyInstanceAsPreset(
   throw Error("请先加载有效的工作流模板");
  const payload:ComfyTemplatePayload=structuredClone({
   name:trimmed,apiGraph:template.apiGraph,ports:template.ports,requirements:template.requirements,
-  ...(template.previewBinding?{previewBinding:template.previewBinding}:{})
+  ...(template.previewBinding?{previewBinding:template.previewBinding}:{}),
+  ...(template.mediaUseCase?{mediaUseCase:template.mediaUseCase}:{})
  });
  const connected=new Set(connections.filter(edge=>edge.toNodeId===node.id).map(edge=>edge.toPortId));
  for(const port of payload.ports){
@@ -33,13 +34,14 @@ export function snapshotComfyInstanceAsPreset(
      port.valueKind==="INT"?(typeof value!=="number"||!Number.isSafeInteger(value)):
      typeof value!=="number"||!Number.isFinite(value))
    throw Error("实例参数格式不正确："+port.label);
-  port.defaultValue=value;
   for(const target of port.inputBinding.targets) {
-   const targetNode=payload.apiGraph[target.nodeId];
-   if(!targetNode||!has(targetNode.inputs,target.inputName))
+   if(!payload.apiGraph[target.nodeId] || !has(payload.apiGraph[target.nodeId].inputs,target.inputName))
     throw Error("模板参数绑定不存在："+port.label);
-   targetNode.inputs[target.inputName]=value;
   }
+  if(port.choices && !port.choices.some(choice=>Object.is(choice.value,value)))
+   throw Error("实例参数不在候选范围："+port.label);
+  port.defaultValue=value;
+
  }
  return payload;
 }
@@ -52,13 +54,11 @@ export async function saveComfyInstanceAsNewPreset(
 ):Promise<ComfyPreset> {
  const payload=snapshotComfyInstanceAsPreset(template,node,connections,name);
  const id="comfy-custom-"+crypto.randomUUID();
- const created=await saveComfyTemplateVersion(id,payload);
- const preset:ComfyPreset={id,name:payload.name,templateId:created.id,revision:created.revision};
- try{await saveComfyPreset(preset);}
- catch(error){
-  try{await removeComfyTemplateVersion(created.id,created.revision);}
-  catch{/* Keep the original save error; an unreferenced version may remain. */}
-  throw error;
- }
+ const created=await createComfyTemplate(id,payload);
+ const aliases=await listComfyPresets(),source=aliases.find(item=>item.templateId===template.id&&item.revision===template.revision);
+ const parentId=source?(source.kind==="variant"?source.parentId:source.id):undefined;
+ const preset:ComfyPreset={id,name:payload.name,workflowId:source?.workflowId??template.id,templateId:created.id,
+  revision:created.revision,source:"user",kind:source&&parentId?"variant":"base",...(parentId?{parentId}:{})};
+ await saveComfyPresetBinding(preset,created);
  return preset;
 }

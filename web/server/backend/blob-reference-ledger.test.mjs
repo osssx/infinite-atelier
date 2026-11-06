@@ -9,13 +9,15 @@ import {createBlobStore} from "./blob-store.mjs";
 import {createBlobGarbageCollector} from "./blob-gc.mjs";
 import {createProject,patchProject} from "./projects.mjs";
 import {blobReferenceLedgerStatus,rebuildBlobReferenceLedger,persistedBlobReferences} from "./blob-reference-ledger.mjs";
+import {createComfyRegistry} from "./comfy-registry.mjs";
+import {createHash} from "node:crypto";
 
 const png=Buffer.from([137,80,78,71,13,10,26,10,0,0,0,0,0,0,0,0]);
 function fixture(t){
  const root=mkdtempSync(join(tmpdir(),"atelier-ledger-"));
  const db=new DatabaseSync(join(root,"db.sqlite"));initializeSchema(db);
  t.after(()=>{db.close();rmSync(root,{recursive:true,force:true})});
- return {db,blobStore:createBlobStore({db,dataDir:root})};
+ return {db,root,blobStore:createBlobStore({db,dataDir:root})};
 }
 test("v10 ledger migration survives restart and source mutations mark dirty in same SQLite transaction",async t=>{
  const f=fixture(t);
@@ -84,4 +86,14 @@ test("references recorded by artifacts and Ark assets persist, malformed ledger 
  f.db.exec("DROP TABLE blob_ref_ledger");
  assert.throws(()=>gc.sweep({now:future}),/no such table/);
  assert.equal(existsSync(f.blobStore.pathFor(media.blobId)),true);
+});
+test("content-addressed workflow graph references enter the ledger and dirty it transactionally",t=>{
+ const f=fixture(t),blobId="b".repeat(64),graph={"1":{class_type:"Image",inputs:{seed:1,asset:"cas:"+blobId}}};
+ const ports=[{id:"out",label:"Output",direction:"source",valueKind:"IMAGE",outputBinding:{nodeId:"1",outputIndex:0},capture:{kind:"none"}}];
+ const payload={name:"Ledger graph",apiGraph:graph,ports,requirements:{classTypes:["Image"]}};
+ const sort=value=>Array.isArray(value)?value.map(sort):value&&typeof value==="object"?Object.fromEntries(Object.keys(value).sort().map(k=>[k,sort(value[k])])):value;
+ const template={id:"ledger-graph",revision:createHash("sha256").update(JSON.stringify(sort(payload))).digest("hex"),...payload};
+ createComfyRegistry(f.db,{workflowsDir:join(f.root,"workflows")}).installMany([template]);
+ assert.equal(blobReferenceLedgerStatus(f.db).dirty,true);rebuildBlobReferenceLedger(f.db);
+ assert.equal(persistedBlobReferences(f.db).has(blobId),true);
 });

@@ -309,6 +309,12 @@ describe("Phase B: ComfyUI API graph and immutable bindings", () => {
         const tampered=structuredClone(created);tampered.apiGraph["10"].inputs.text="changed";
         await expect(verifyComfyTemplate(tampered)).rejects.toThrow(/SHA-256 mismatch/);
         expect(canonicalComfyJson({z:1,a:{y:2,x:3}})).toBe(canonicalComfyJson({a:{x:3,y:2},z:1}));
-        expect(await comfySha256(canonicalComfyJson(payload()))).toBe(created.revision);
+        const {name:_name,...nameIndependent}=payload();
+        expect(await comfySha256(canonicalComfyJson(nameIndependent))).toBe(created.revision);
+        const renamed=await createComfyTemplate("image-pipeline",{...payload(),name:"Renamed"},info);
+        expect(renamed.revision).toBe(created.revision);
+        const legacyPayload=payload();
+        const legacyRevision=await comfySha256(canonicalComfyJson(legacyPayload));
+        await expect(verifyComfyTemplate({...created,revision:legacyRevision,name:"Current name",revisionName:legacyPayload.name})).resolves.toBeUndefined();
     });
 });

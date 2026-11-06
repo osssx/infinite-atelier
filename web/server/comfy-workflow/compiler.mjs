@@ -121,10 +121,13 @@ export function verifyTemplate(template) {
                 fail("capture_adapter_unsupported");
         }
     }
-    const {id,revision,...payload} = template;
-    if (sha256(canonical({name:payload.name,apiGraph:payload.apiGraph,ports:payload.ports,requirements:payload.requirements,
+    const {id,revision,revisionName,...payload} = template;
+    const content={apiGraph:payload.apiGraph,ports:payload.ports,requirements:payload.requirements,
         ...(payload.previewBinding!==undefined?{previewBinding:payload.previewBinding}:{}),
-        ...(payload.mediaUseCase!==undefined?{mediaUseCase:payload.mediaUseCase}:{})})) !== revision) fail("template_revision_mismatch");
+        ...(payload.mediaUseCase!==undefined?{mediaUseCase:payload.mediaUseCase}:{})};
+    const current=sha256(canonical(content));
+    const legacy=sha256(canonical({name:revisionName??payload.name,...content}));
+    if (current === revision ? revisionName!==undefined : legacy !== revision) fail("template_revision_mismatch");
     const graphBytes = Buffer.byteLength(canonical(apiGraph));
     if (graphBytes > 2_000_000) fail("template_graph_too_large");
     validateGraph(apiGraph);

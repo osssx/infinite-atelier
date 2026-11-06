@@ -29,7 +29,7 @@ async function entry(f,key){
 test("schema upgrades from v16 and reserves CAS owners for uploaded assets",async t=>{
  const f=fixture(t);
  assert.ok(SCHEMA_VERSION>=20);
- f.db.exec("DROP TABLE script_asset_chunks;DROP TABLE script_asset_chunk_sessions;DROP TABLE script_asset_finalizations;DROP TABLE script_asset_uploads;DELETE FROM schema_migrations WHERE version IN (17,18,19,20);");
+ f.db.exec("DROP TABLE script_asset_chunks;DROP TABLE script_asset_chunk_sessions;DROP TABLE script_asset_finalizations;DROP TABLE script_asset_uploads;DELETE FROM schema_migrations WHERE version>16;");
  f.db.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES(16,?)").run(Date.now());
  initializeSchema(f.db);
  assert.equal(f.db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get().version,SCHEMA_VERSION);

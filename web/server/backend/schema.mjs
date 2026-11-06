@@ -1,5 +1,5 @@
 import{JOB_STATUSES,EXECUTION_MODES,ARTIFACT_KINDS}from"./contracts.mjs";
-export const SCHEMA_VERSION=20;
+export const SCHEMA_VERSION=22;
 const quoted=x=>x.map(s=>"'"+s+"'").join(",");
 export const INITIAL_SCHEMA_SQL=`
 CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY,applied_at INTEGER NOT NULL);
@@ -159,6 +159,46 @@ CREATE TABLE IF NOT EXISTS comfy_presets(
  FOREIGN KEY(template_id,revision) REFERENCES comfy_template_versions(template_id,revision)
 );
 CREATE INDEX IF NOT EXISTS ix_comfy_presets_template ON comfy_presets(template_id,revision);
+`;
+export const COMFY_WORKFLOW_SPLIT_SCHEMA_SQL=`
+CREATE TABLE IF NOT EXISTS comfy_workflows(
+ workflow_id TEXT PRIMARY KEY,name TEXT NOT NULL,source TEXT NOT NULL DEFAULT 'import',created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS comfy_workflow_versions(
+ workflow_id TEXT NOT NULL,revision TEXT NOT NULL,template_id TEXT NOT NULL,workflow_hash TEXT NOT NULL CHECK(length(workflow_hash)=64),blob_refs_json TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(blob_refs_json)),created_at INTEGER NOT NULL,
+ PRIMARY KEY(workflow_id,revision,template_id),UNIQUE(template_id,revision),FOREIGN KEY(workflow_id) REFERENCES comfy_workflows(workflow_id),
+ FOREIGN KEY(template_id,revision) REFERENCES comfy_template_versions(template_id,revision)
+);
+`;
+export const COMFY_TEMPLATE_NAMES_SCHEMA_SQL=`
+CREATE TABLE IF NOT EXISTS comfy_template_names(
+ template_id TEXT PRIMARY KEY,display_name TEXT NOT NULL CHECK(length(display_name) BETWEEN 1 AND 160),updated_at INTEGER NOT NULL
+);
+INSERT OR IGNORE INTO comfy_template_names(template_id,display_name,updated_at)
+ SELECT p.template_id,p.name,p.updated_at FROM comfy_presets p
+ WHERE p.id=(SELECT latest.id FROM comfy_presets latest WHERE latest.template_id=p.template_id ORDER BY latest.updated_at DESC,latest.id LIMIT 1);
+INSERT OR IGNORE INTO comfy_template_names(template_id,display_name,updated_at)
+ SELECT v.template_id,json_extract(v.payload_json,'$.name'),v.created_at FROM comfy_template_versions v
+ WHERE json_type(v.payload_json,'$.name')='text';
+UPDATE comfy_presets SET name=(SELECT display_name FROM comfy_template_names n WHERE n.template_id=comfy_presets.template_id)
+ WHERE EXISTS(SELECT 1 FROM comfy_template_names n WHERE n.template_id=comfy_presets.template_id);
+`;
+export const COMFY_WORKFLOW_SPLIT_MIGRATION_SQL=`
+UPDATE comfy_presets SET workflow_id=template_id WHERE workflow_id='';
+CREATE TRIGGER IF NOT EXISTS blob_ref_dirty_comfy_workflow_versions_insert AFTER INSERT ON comfy_workflow_versions
+ BEGIN UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1; END;
+CREATE TRIGGER IF NOT EXISTS blob_ref_dirty_comfy_workflow_versions_update AFTER UPDATE ON comfy_workflow_versions
+ BEGIN UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1; END;
+CREATE TRIGGER IF NOT EXISTS blob_ref_dirty_comfy_workflow_versions_delete AFTER DELETE ON comfy_workflow_versions
+ BEGIN UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1; END;
+`;
+function ensureColumn(db,table,column,definition){
+ const columns=new Set(db.prepare(`PRAGMA table_info(${table})`).all().map(row=>row.name));
+ if(!columns.has(column))db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+}
+export const COMFY_WORKFLOW_SPLIT_BACKFILL_SQL=`
+INSERT OR IGNORE INTO comfy_workflows(workflow_id,name,source,created_at,updated_at)
+ SELECT template_id,json_extract(payload_json,'$.name'),'migration',created_at,created_at FROM comfy_template_versions;
 `;
 /** v10: Conservative persisted CAS references. Triggers only mark dirty in
  * the SAME SQLite transaction as source edits. A maintenance rebuild produces
@@ -429,6 +469,16 @@ export function initializeSchema(db){
   if(version<18)db.exec(SCRIPT_FINALIZE_SCHEMA_SQL);
   if(version<19)db.exec(SCRIPT_CHUNK_SCHEMA_SQL);
   if(version<20)db.exec(SKILL_SCRIPT_RUNS_SCHEMA_SQL);
+  if(version<21){
+   db.exec(COMFY_WORKFLOW_SPLIT_SCHEMA_SQL);
+   ensureColumn(db,"comfy_template_versions","workflow_hash","TEXT");
+   ensureColumn(db,"comfy_presets","source","TEXT NOT NULL DEFAULT 'user'");
+   ensureColumn(db,"comfy_presets","kind","TEXT NOT NULL DEFAULT 'base'");
+   ensureColumn(db,"comfy_presets","parent_id","TEXT");
+   ensureColumn(db,"comfy_presets","workflow_id","TEXT NOT NULL DEFAULT ''");
+   db.exec(COMFY_WORKFLOW_SPLIT_MIGRATION_SQL);db.exec(COMFY_WORKFLOW_SPLIT_BACKFILL_SQL);
+  }
+  if(version<22)db.exec(COMFY_TEMPLATE_NAMES_SCHEMA_SQL);
   if(version<SCHEMA_VERSION)db.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)").run(SCHEMA_VERSION,Date.now());
   db.exec("COMMIT");
  }catch(e){db.exec("ROLLBACK");throw e}

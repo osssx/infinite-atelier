@@ -76,8 +76,8 @@ describe("Comfy workflow binding selector",()=>{
         expect(html).toContain('aria-label="加载预设"');
         expect(html).toContain("data-comfy-preset-picker");
         expect(html).toContain("加载预设");
-        expect(html).toContain('value="builtin:krea2"');
-        expect(html).toContain("Krea 2 Turbo INT8 · 文生图");
+        expect(html).not.toContain('value="builtin:krea2"');
+        expect(html).not.toContain("内置预设");
         expect(html).toContain("导入 API JSON");
         expect(html).toContain("同步节点定义");
         expect(html).toContain('data-comfy-object-info-sync');

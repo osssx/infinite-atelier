@@ -15,6 +15,8 @@ import {getAssetCatalog,putAssetCatalog} from "./asset-catalog.mjs";
 import {calculateNormalizedSkillHash} from "./skill-package-integrity.mjs";
 import {getSkillRegistryPackage,listSkillRegistry,registerSqliteSkill} from "./sqlite-skill-registry.mjs";
 import {getUiSetting,putUiSetting} from "./ui-settings.mjs";
+import {createComfyRegistry} from "./comfy-registry.mjs";
+import {createHash} from "node:crypto";
 
 const png=Buffer.from("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000b49444154789c636000020000050001a5f645400000000049454e44ae426082","hex");
 async function fixture(t){
@@ -82,6 +84,23 @@ test("P5.1 cold backup copies SQLite plus all ready BlobStore bytes, verifies, a
  assert.deepEqual(await readFile(join(f.restore,"blobs",f.blob.blobId.slice(0,2),f.blob.blobId)),png);
  const src=readFileSync(join(f.source,"db","atelier.sqlite"));
  assert.ok(src.byteLength>0);
+});
+test("cold backup inventories, verifies, and restores content-addressed Comfy graph files",async t=>{
+ const f=await fixture(t),db=openMainDatabase(f.source);
+ const payload={name:"Backup workflow",apiGraph:{"1":{class_type:"Image",inputs:{seed:9}}},
+  ports:[{id:"result",label:"Result",direction:"source",valueKind:"IMAGE",outputBinding:{nodeId:"1",outputIndex:0},capture:{kind:"none"}}],requirements:{classTypes:["Image"]}};
+ const sort=value=>Array.isArray(value)?value.map(sort):value&&typeof value==="object"?Object.fromEntries(Object.keys(value).sort().map(k=>[k,sort(value[k])])):value;
+ const template={id:"backup-workflow",revision:createHash("sha256").update(JSON.stringify(sort(payload))).digest("hex"),...payload};
+ createComfyRegistry(db,{workflowsDir:join(f.source,"workflows")}).installMany([template]);db.close();
+ const backup=await createColdBackup({dataDir:f.source,backupDir:f.destination});
+ assert.equal(backup.workflowCount,1);
+ const manifest=JSON.parse(readFileSync(join(f.destination,"manifest.json"),"utf8"));
+ assert.equal(manifest.workflows.length,1);assert.equal(existsSync(join(f.destination,manifest.workflows[0].path)),true);
+ await restoreColdBackup({backupDir:f.destination,dataDir:f.restore});
+ assert.equal(existsSync(join(f.restore,manifest.workflows[0].path)),true);
+ const restoredDb=openMainDatabase(f.restore);
+ try{assert.equal(restoredDb.prepare("SELECT workflow_hash FROM comfy_template_versions WHERE template_id=?").get(template.id).workflow_hash,manifest.workflows[0].sha256);}
+ finally{restoredDb.close()}
 });
 test("P5.1 offline CLI verify command inspects a completed backup",async t=>{
  const f=await fixture(t);

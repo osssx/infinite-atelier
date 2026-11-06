@@ -103,7 +103,12 @@ export function ModelPicker({ config, value, onChange, capability, className, fu
                     </SelectItem>
                 )}
                 {externalOptions.length?<SelectGroup><SelectLabel>ComfyUI 工作流预设</SelectLabel>
-                    {externalOptions.map(option=><SelectItem key={option.value} value={EXTERNAL_MODEL_PREFIX+option.value} disabled={option.disabled}>{option.label}</SelectItem>)}
+                    {externalOptions.map(option=><SelectItem key={option.value} value={EXTERNAL_MODEL_PREFIX+option.value} textValue={option.label} disabled={option.disabled}>
+                        <span className="flex min-w-0 items-center gap-2">
+                            <Workflow className="size-4 shrink-0 opacity-70" aria-hidden="true"/>
+                            <span className="truncate">{option.label}</span>
+                        </span>
+                    </SelectItem>)}
                 </SelectGroup>:null}
             </SelectContent>
         </Select>

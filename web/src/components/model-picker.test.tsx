@@ -45,7 +45,7 @@ describe("ModelPicker external workflow selection",()=>{
   expect(modelPickerSelectValue("gpt-image-2","deleted@r1",externalOptions)).toBe("gpt-image-2");
   expect(render("deleted@r1")).toContain('data-select-value="gpt-image-2"');
   expect(render()).toContain('src="/icons/openai.svg"');
-  expect(render()).not.toContain('data-icon="workflow"');
+  expect(render().match(/<button\b[^>]*>[\s\S]*?<\/button>/)?.[0]).not.toContain('data-icon="workflow"');
  });
  it("dispatches only known workflow values as external selections",()=>{
   expect(modelPickerSelection("__atelier_external:krea@r1",externalOptions)).toEqual({kind:"external",value:"krea@r1"});

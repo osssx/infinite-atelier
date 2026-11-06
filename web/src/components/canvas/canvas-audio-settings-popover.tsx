@@ -9,6 +9,7 @@ import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
 import type { AiConfig } from "@/stores/use-config-store";
 import { isComfyMediaParameterPopupTarget } from "@/features/comfy-workflow/comfy-media-overrides";
+import { calculateSettingsPopoverHorizontalPosition } from "./settings-popover-layout";
 
 export type CanvasAudioSettingKey = "audioVoice" | "audioFormat" | "audioSpeed" | "audioInstructions";
 
@@ -18,10 +19,11 @@ type CanvasAudioSettingsPopoverProps = {
     buttonClassName?: string;
     placement?: "topLeft" | "top" | "topRight" | "bottomLeft" | "bottom" | "bottomRight";
     buttonLabel?:string;
+    panelWidth?:number;
     content?:ReactNode;
 };
 
-export function CanvasAudioSettingsPopover({ config, onConfigChange, buttonClassName, placement = "topLeft",buttonLabel,content }: CanvasAudioSettingsPopoverProps) {
+export function CanvasAudioSettingsPopover({ config, onConfigChange, buttonClassName, placement = "topLeft",buttonLabel,content,panelWidth=356 }: CanvasAudioSettingsPopoverProps) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const buttonRef = useRef<HTMLSpanElement>(null);
     const panelRef = useRef<HTMLDivElement>(null);
@@ -50,7 +52,7 @@ export function CanvasAudioSettingsPopover({ config, onConfigChange, buttonClass
         };
     }, [open]);
 
-    const panel = open && buttonRect ? <AudioSettingsPortal buttonRect={buttonRect} panelRef={panelRef} placement={placement} theme={theme} config={config} onConfigChange={onConfigChange} content={content} /> : null;
+    const panel = open && buttonRect ? <AudioSettingsPortal buttonRect={buttonRect} panelRef={panelRef} placement={placement} theme={theme} config={config} onConfigChange={onConfigChange} content={content} panelWidth={panelWidth} /> : null;
 
     return (
         <>
@@ -74,6 +76,7 @@ function AudioSettingsPortal({
     config,
     onConfigChange,
     content,
+    panelWidth,
 }: {
     buttonRect: DOMRect;
     panelRef: RefObject<HTMLDivElement | null>;
@@ -82,19 +85,17 @@ function AudioSettingsPortal({
     config: AiConfig;
     onConfigChange: (key: CanvasAudioSettingKey, value: string) => void;
     content?:ReactNode;
+    panelWidth:number;
 }) {
-    const width = 356;
     const gap = 8;
     const margin = 12;
-    const alignRight = placement?.endsWith("Right");
-    const alignCenter = placement === "top" || placement === "bottom";
-    const left = alignCenter ? buttonRect.left + buttonRect.width / 2 - width / 2 : alignRight ? buttonRect.right - width : buttonRect.left;
+    const {width,left}=calculateSettingsPopoverHorizontalPosition(buttonRect,placement,panelWidth,window.innerWidth);
     const topPlacement = placement?.startsWith("top");
     const style = {
         position: "fixed",
         zIndex: 1200,
         width,
-        left: Math.max(margin, Math.min(window.innerWidth - width - margin, left)),
+        left,
         ...(topPlacement ? { bottom: window.innerHeight - buttonRect.top + gap, maxHeight: Math.max(260, buttonRect.top - margin * 2) } : { top: buttonRect.bottom + gap, maxHeight: Math.max(260, window.innerHeight - buttonRect.bottom - margin * 2) }),
         background: theme.toolbar.panel,
         borderRadius: 18,

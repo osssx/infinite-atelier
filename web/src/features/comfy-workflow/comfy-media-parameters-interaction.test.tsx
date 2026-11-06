@@ -42,6 +42,7 @@ describe("ComfyMediaParameters component events",()=>{
  it("routes all media types to the same direct, ordered controls and excludes prompt/unbound/socket ports",()=>{
  for(const kind of ["image","video","audio"] as const){
   const emitted=vi.fn();const root=ComfyMediaParameters({template:template(kind),binding,config:{} as AiConfig,theme:canvasThemes.light,onChange:emitted}) as ReactElement;
+  expect((root.props as Record<string,unknown>).panelWidth).toBe(300);
   const content=(root.type as (props:unknown)=>unknown)(root.props);
   const controls=childrenOf(content).filter(child=>(child as ReactElement).type===DirectPortControl);
   expect(controls.map(child=>((child as ReactElement).props as {field:{port:{id:string}}}).field.port.id)).toEqual(["enum","bool","text"]);

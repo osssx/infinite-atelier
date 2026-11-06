@@ -81,8 +81,8 @@ export function ComfyMediaParameters({template,binding,config,theme,onChange}:{t
  const buttonClassName="!h-10 !max-w-[170px] !min-w-0 !justify-start !rounded-full !px-3";
  const noChange=()=>{};
  return useCase.primaryOutputKind==="image"?
-  <CanvasImageSettingsPopover config={config} onConfigChange={noChange} placement="topLeft" buttonClassName={buttonClassName} buttonLabel={buttonLabel} content={controls}/>:
+  <CanvasImageSettingsPopover config={config} onConfigChange={noChange} placement="topLeft" panelWidth={300} buttonClassName={buttonClassName} buttonLabel={buttonLabel} content={controls}/>:
   useCase.primaryOutputKind==="video"?
-   <CanvasVideoSettingsPopover config={config} onConfigChange={noChange} placement="topLeft" buttonClassName={buttonClassName} buttonLabel={buttonLabel} content={controls}/>:
-   <CanvasAudioSettingsPopover config={config} onConfigChange={noChange} placement="topLeft" buttonClassName={buttonClassName} buttonLabel={buttonLabel} content={controls}/>;
+   <CanvasVideoSettingsPopover config={config} onConfigChange={noChange} placement="topLeft" panelWidth={300} buttonClassName={buttonClassName} buttonLabel={buttonLabel} content={controls}/>:
+   <CanvasAudioSettingsPopover config={config} onConfigChange={noChange} placement="topLeft" panelWidth={300} buttonClassName={buttonClassName} buttonLabel={buttonLabel} content={controls}/>;
 }

@@ -9,6 +9,7 @@ import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
 import type { AiConfig } from "@/stores/use-config-store";
 import { isComfyMediaParameterPopupTarget } from "@/features/comfy-workflow/comfy-media-overrides";
+import { calculateSettingsPopoverHorizontalPosition } from "./settings-popover-layout";
 
 type CanvasImageSettingsPopoverProps = {
     config: AiConfig;
@@ -19,11 +20,12 @@ type CanvasImageSettingsPopoverProps = {
     getPopupContainer?: (triggerNode: HTMLElement) => HTMLElement;
     placement?: "topLeft" | "top" | "topRight" | "bottomLeft" | "bottom" | "bottomRight";
     autoAdjustOverflow?: boolean;
+    panelWidth?:number;
     buttonLabel?:string;
     content?:ReactNode;
 };
 
-export function CanvasImageSettingsPopover({ config, onConfigChange, onOpenChange, buttonClassName, placement = "topLeft",buttonLabel,content }: CanvasImageSettingsPopoverProps) {
+export function CanvasImageSettingsPopover({ config, onConfigChange, onOpenChange, buttonClassName, placement = "topLeft",buttonLabel,content,panelWidth=356 }: CanvasImageSettingsPopoverProps) {
     const { t } = useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const buttonRef = useRef<HTMLSpanElement>(null);
@@ -62,7 +64,7 @@ export function CanvasImageSettingsPopover({ config, onConfigChange, onOpenChang
         };
     }, [onOpenChange, open]);
 
-    const panel = open && buttonRect ? <ImageSettingsPortal buttonRect={buttonRect} panelRef={panelRef} placement={placement} theme={theme} config={config} onConfigChange={onConfigChange} content={content} /> : null;
+    const panel = open && buttonRect ? <ImageSettingsPortal buttonRect={buttonRect} panelRef={panelRef} placement={placement} theme={theme} config={config} onConfigChange={onConfigChange} content={content} panelWidth={panelWidth} /> : null;
 
     return (
         <>
@@ -86,6 +88,7 @@ function ImageSettingsPortal({
     config,
     onConfigChange,
     content,
+    panelWidth,
 }: {
     buttonRect: DOMRect;
     panelRef: RefObject<HTMLDivElement | null>;
@@ -94,19 +97,17 @@ function ImageSettingsPortal({
     config: AiConfig;
     onConfigChange: (key: keyof AiConfig, value: string) => void;
     content?:ReactNode;
+    panelWidth:number;
 }) {
-    const width = 356;
     const gap = 8;
     const margin = 12;
-    const alignRight = placement?.endsWith("Right");
-    const alignCenter = placement === "top" || placement === "bottom";
-    const left = alignCenter ? buttonRect.left + buttonRect.width / 2 - width / 2 : alignRight ? buttonRect.right - width : buttonRect.left;
+    const {width,left}=calculateSettingsPopoverHorizontalPosition(buttonRect,placement,panelWidth,window.innerWidth);
     const topPlacement = placement?.startsWith("top");
     const style = {
         position: "fixed",
         zIndex: 1200,
         width,
-        left: Math.max(margin, Math.min(window.innerWidth - width - margin, left)),
+        left,
         ...(topPlacement ? { bottom: window.innerHeight - buttonRect.top + gap, maxHeight: Math.max(260, buttonRect.top - margin * 2) } : { top: buttonRect.bottom + gap, maxHeight: Math.max(260, window.innerHeight - buttonRect.bottom - margin * 2) }),
         background: theme.toolbar.panel,
         borderRadius: 18,

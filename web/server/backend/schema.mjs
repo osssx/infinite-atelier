@@ -1,5 +1,5 @@
 import{JOB_STATUSES,EXECUTION_MODES,ARTIFACT_KINDS}from"./contracts.mjs";
-export const SCHEMA_VERSION=22;
+export const SCHEMA_VERSION=23;
 const quoted=x=>x.map(s=>"'"+s+"'").join(",");
 export const INITIAL_SCHEMA_SQL=`
 CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY,applied_at INTEGER NOT NULL);
@@ -152,6 +152,10 @@ export const COMFY_REGISTRY_SCHEMA_SQL=`
 CREATE TABLE IF NOT EXISTS comfy_template_versions(
  template_id TEXT NOT NULL,revision TEXT NOT NULL,payload_json TEXT NOT NULL CHECK(json_valid(payload_json)),
  created_at INTEGER NOT NULL,PRIMARY KEY(template_id,revision)
+);
+CREATE TABLE IF NOT EXISTS comfy_template_version_notes(
+ template_id TEXT NOT NULL,revision TEXT NOT NULL,note TEXT NOT NULL DEFAULT '' CHECK(length(note)<=200),
+ PRIMARY KEY(template_id,revision),FOREIGN KEY(template_id,revision) REFERENCES comfy_template_versions(template_id,revision) ON DELETE CASCADE
 );
 CREATE TABLE IF NOT EXISTS comfy_presets(
  id TEXT PRIMARY KEY,name TEXT NOT NULL,template_id TEXT NOT NULL,revision TEXT NOT NULL,
@@ -479,10 +483,18 @@ export function initializeSchema(db){
    db.exec(COMFY_WORKFLOW_SPLIT_MIGRATION_SQL);db.exec(COMFY_WORKFLOW_SPLIT_BACKFILL_SQL);
   }
   if(version<22)db.exec(COMFY_TEMPLATE_NAMES_SCHEMA_SQL);
+  if(version<23)db.exec(COMFY_VERSION_NOTES_SCHEMA_SQL);
   if(version<SCHEMA_VERSION)db.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)").run(SCHEMA_VERSION,Date.now());
   db.exec("COMMIT");
  }catch(e){db.exec("ROLLBACK");throw e}
 }
+
+export const COMFY_VERSION_NOTES_SCHEMA_SQL=`
+CREATE TABLE IF NOT EXISTS comfy_template_version_notes(
+ template_id TEXT NOT NULL,revision TEXT NOT NULL,note TEXT NOT NULL DEFAULT '' CHECK(length(note)<=200),
+ PRIMARY KEY(template_id,revision),FOREIGN KEY(template_id,revision) REFERENCES comfy_template_versions(template_id,revision) ON DELETE CASCADE
+);
+`;
 
 export const SKILL_SCRIPT_RUNS_SCHEMA_SQL=`
 CREATE TABLE IF NOT EXISTS skill_script_runs(id TEXT PRIMARY KEY,project_id TEXT NOT NULL REFERENCES projects(id),skill_id TEXT NOT NULL,version TEXT NOT NULL,status TEXT NOT NULL,result_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(result_json)),blob_refs_json TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(blob_refs_json)),created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL);

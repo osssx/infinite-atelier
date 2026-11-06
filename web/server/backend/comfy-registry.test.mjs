@@ -26,6 +26,82 @@ function fixture(t){
   ...(payload===undefined?{}:{payload})});
  return {db,app,call};
 }
+
+test("v22 upgrade preserves existing versions, notes survive reopen and repeated installs retain timestamps",async t=>{
+ const db=new DatabaseSync(":memory:");t.after(()=>db.close());initializeSchema(db);
+ const {createComfyRegistry}=await import("./comfy-registry.mjs");
+ const registry=createComfyRegistry(db),original=template(7,"upgrade");registry.installMany([original]);
+ db.exec("DROP TABLE comfy_template_version_notes; DELETE FROM schema_migrations WHERE version>22; INSERT OR IGNORE INTO schema_migrations VALUES(22,1)");
+ initializeSchema(db);assert.equal(db.prepare("SELECT MAX(version) v FROM schema_migrations").get().v,23);
+ assert.deepEqual(registry.getVersionNote(original.id,original.revision),{note:""});
+ registry.setVersionNote(original.id,original.revision,"保留配置");
+ const before=db.prepare("SELECT created_at FROM comfy_workflow_versions").get().created_at;
+ registry.installMany([original]);
+ assert.equal(db.prepare("SELECT created_at FROM comfy_workflow_versions").get().created_at,before);
+ assert.equal(createComfyRegistry(db).getVersionNote(original.id,original.revision).note,"保留配置");
+ assert.deepEqual(registry.find(original.id,original.revision),original);
+});
+
+test("history protects task snapshots, project nodes and defaults; batch deletion is atomic and leaves graph files",async t=>{
+ const {db,call}=fixture(t),root="/api/v1/comfy",id="protected";
+ const versions=[1,2,3,4].map(n=>template(n,id));
+ for(const version of versions)assert.equal((await call("POST",root+"/templates",{template:version})).statusCode,201);
+ const url=v=>root+"/templates/"+id+"/"+v.revision;
+ createProject(db,{id:"refs",document:{title:"Project",nodes:[{id:"n",type:"image",metadata:{comfyMediaPreset:{templateId:id,templateRevision:versions[1].revision}}}],connections:[]}});
+ const snapshot={comfyTemplate:versions[2],comfyRequest:{nodes:[{templateId:id,templateRevision:versions[2].revision}]}};
+ db.prepare("INSERT INTO jobs(id,principal,project_scope,idempotency_key,request_fingerprint,snapshot_json,execution_mode,status,created_at,updated_at) VALUES('history-task','local-owner','','key','fingerprint',?,'poll','failed',1,1)").run(JSON.stringify(snapshot));
+ db.prepare("UPDATE ui_settings SET value_json=? WHERE name='model_config'").run(JSON.stringify({comfyWorkflowDefaults:{image:{templateId:id,templateRevision:versions[3].revision}}}));
+ for(const [index,kind] of [[1,"projectNodes"],[2,"tasks"],[3,"defaults"]]){
+  const refs=(await call("GET",url(versions[index])+"/references")).json().references;
+  assert.equal(refs[kind].length,1);assert.equal(refs.count,1);
+  assert.equal((await call("DELETE",url(versions[index]))).statusCode,409);
+  const result=await call("POST",root+"/templates/delete-batch",{versions:[{templateId:id,revision:versions[0].revision},{templateId:id,revision:versions[index].revision}]});
+  assert.equal(result.statusCode,409);assert.equal(result.json().details.references[kind].length,1);
+  assert.equal((await call("GET",url(versions[0]))).statusCode,200);
+ }
+ assert.equal((await call("PUT",url(versions[0])+"/note",{note:"x".repeat(201)})).statusCode,400);
+ assert.equal((await call("PUT",url(versions[0])+"/note",{note:"unused"})).statusCode,200);
+ assert.equal((await call("GET",url(versions[0])+"/note")).json().note,"unused");
+ assert.equal((await call("POST",root+"/templates/delete-batch",{versions:[{templateId:id,revision:versions[0].revision}]})).statusCode,200);
+ assert.equal((await call("GET",url(versions[0]))).statusCode,404);
+ assert.equal(db.prepare("SELECT COUNT(*) n FROM comfy_template_version_notes").get().n,0);
+ const hash=createHash("sha256").update(JSON.stringify(sort(versions[0].apiGraph))).digest("hex");
+ assert.equal((await call("GET",root+"/workflows/"+id+"/graphs/"+hash)).json().available,true);
+});
+
+test("complete restore preserves binding settings, preset identity and existing nodes, rejects other workflows",async t=>{
+ const {db,call}=fixture(t),root="/api/v1/comfy",old=template(1,"restore-full"),next=template(2,"restore-full");
+ old.ports.unshift({id:"seed",label:"Seed",direction:"target",valueKind:"INT",defaultValue:1,choices:[{label:"One",value:1}],inputBinding:{mode:"literal",targets:[{nodeId:"1",inputName:"seed"}]}});
+ const {id,revision,...payload}=old;old.revision=createHash("sha256").update(JSON.stringify(sort(payload))).digest("hex");
+ for(const v of [old,next,template(3,"other-workflow")])assert.equal((await call("POST",root+"/templates",{template:v})).statusCode,201);
+ const preset={id:"restore-preset",name:"Keep this name",templateId:next.id,revision:next.revision};
+ assert.equal((await call("PUT",root+"/presets/"+preset.id,preset)).statusCode,200);
+ createProject(db,{id:"unchanged",document:{title:"Before",nodes:[{id:"n",type:"comfy:workflow",metadata:{comfyWorkflow:{templateId:next.id,templateRevision:next.revision}}}],connections:[]}});
+ const document=db.prepare("SELECT document_json FROM projects WHERE id='unchanged'").get().document_json;
+ const body={templateId:old.id,revision:old.revision,expectedTemplateId:next.id,expectedRevision:next.revision};
+ const unrelated=template(3,"other-workflow");
+ assert.equal((await call("POST",root+"/presets/"+preset.id+"/restore",{...body,templateId:unrelated.id,revision:unrelated.revision})).statusCode,404);
+ assert.equal((await call("POST",root+"/presets/"+preset.id+"/restore",body)).statusCode,200);
+ const selected=(await call("GET",root+"/presets")).json().presets.find(x=>x.id===preset.id);
+ assert.equal(selected.name,preset.name);assert.equal(selected.revision,old.revision);
+ const loaded=(await call("GET",root+"/templates/"+old.id+"/"+old.revision)).json().template;
+ assert.deepEqual(loaded.ports,old.ports);assert.deepEqual(loaded.apiGraph,old.apiGraph);
+ assert.equal(db.prepare("SELECT document_json FROM projects WHERE id='unchanged'").get().document_json,document);
+ assert.equal((await call("POST",root+"/presets/"+preset.id+"/restore",body)).statusCode,409);
+});
+
+test("shared workflow histories do not duplicate rows and cross-template restore preserves variant name and parent",async t=>{
+ const {db,call}=fixture(t),root="/api/v1/comfy",base=template(1,"shared-base"),variant=template(2,"shared-variant");
+ for(const v of [base,variant])assert.equal((await call("POST",root+"/templates",{template:v})).statusCode,201);
+ db.prepare("UPDATE comfy_workflow_versions SET workflow_id=? WHERE template_id=?").run(base.id,variant.id);
+ const parent={id:"parent",name:"Base name",workflowId:base.id,templateId:base.id,revision:base.revision};
+ const child={id:"child",name:"Variant name",workflowId:base.id,templateId:variant.id,revision:variant.revision,kind:"variant",parentId:parent.id};
+ for(const p of [parent,child,{...child,id:"second-child"}])assert.equal((await call("PUT",root+"/presets/"+p.id,p)).statusCode,200);
+ assert.equal((await call("GET",root+"/workflows/"+base.id+"/versions")).json().versions.length,2);
+ assert.equal((await call("POST",root+"/presets/child/restore",{templateId:base.id,revision:base.revision,expectedTemplateId:variant.id,expectedRevision:variant.revision})).statusCode,200);
+ const restored=(await call("GET",root+"/presets")).json().presets.find(p=>p.id===child.id);
+ assert.equal(restored.name,child.name);assert.equal(restored.kind,"variant");assert.equal(restored.parentId,parent.id);
+});
 test("P4.5 templates immutable, presets point to versions, protect referenced deletes",async t=>{
  const {db,call,app}=fixture(t),base="/api/v1/comfy/templates";
  const old=template(1),next=template(2);
@@ -50,6 +126,25 @@ test("P4.5 templates immutable, presets point to versions, protect referenced de
  assert.equal((await call("DELETE","/api/v1/comfy/presets/custom")).statusCode,200);
  assert.equal((await call("GET",base+"/"+encodeURIComponent(next.id)+"/"+next.revision)).statusCode,200);
  assert.equal((await call("GET",base+"/absent/"+"a".repeat(64))).statusCode,404);
+});
+test("v23 workflow history notes, complete CAS restore, reference guards and atomic batch deletion",async t=>{
+ const {db,call}=fixture(t),root="/api/v1/comfy",id="workflow:history",old=template(1,id),next=template(2,id);
+ await call("POST",root+"/templates",{template:old});await call("POST",root+"/templates",{template:next});
+ const preset={id:"history-preset",name:"Named",workflowId:id,templateId:id,revision:next.revision,kind:"variant",parentId:"parent"};
+ // A base preset keeps the case focused on its saved pointer and name.
+ const base={...preset,kind:"base"};delete base.parentId;await call("PUT",root+"/presets/"+base.id,base);
+ const note=await call("PUT",root+"/templates/"+encodeURIComponent(id)+"/"+old.revision+"/note",{note:"known good"});
+ assert.equal(note.statusCode,200);assert.equal(db.prepare("SELECT revision FROM comfy_template_versions WHERE template_id=? AND revision=?").get(id,old.revision).revision,old.revision);
+ const list=(await call("GET",root+"/workflows/"+encodeURIComponent(id)+"/versions")).json().versions;
+ assert.equal(list.find(v=>v.revision===old.revision).note,"known good");assert.equal(list.find(v=>v.revision===next.revision).current,true);
+ const restored=await call("POST",root+"/presets/"+base.id+"/restore",{templateId:id,revision:old.revision,expectedTemplateId:id,expectedRevision:next.revision});
+ assert.equal(restored.statusCode,200,restored.body);assert.equal(db.prepare("SELECT name,kind,revision FROM comfy_presets WHERE id=?").get(base.id).name,"Named");
+ assert.equal(db.prepare("SELECT kind FROM comfy_presets WHERE id=?").get(base.id).kind,"base");
+ assert.equal((await call("POST",root+"/presets/"+base.id+"/restore",{templateId:id,revision:next.revision,expectedTemplateId:id,expectedRevision:next.revision})).statusCode,409);
+ const refs=(await call("GET",root+"/templates/"+encodeURIComponent(id)+"/"+old.revision+"/references")).json().references;assert.equal(refs.presets[0].name,"Named");
+ const batch=await call("POST",root+"/templates/delete-batch",{versions:[{templateId:id,revision:old.revision},{templateId:id,revision:next.revision}]});
+ assert.equal(batch.statusCode,409);assert.ok(db.prepare("SELECT 1 FROM comfy_template_versions WHERE template_id=? AND revision=?").get(id,next.revision));
+ assert.equal((await call("DELETE",root+"/templates/"+encodeURIComponent(id)+"/"+old.revision)).statusCode,409);
 });
 test("template rename updates shared metadata without creating a version or graph file and retains legacy hash verification",async t=>{
  const {db,call}=fixture(t),restored=fixture(t),base="/api/v1/comfy/templates",legacy=template();

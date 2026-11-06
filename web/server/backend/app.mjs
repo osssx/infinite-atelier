@@ -142,7 +142,7 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
    "expected_credential_version_required","credential_version_conflict",
    "credential_reference_required","credential_missing","credential_revoked",
    "comfy_template_invalid","comfy_template_too_large","comfy_template_revision_mismatch",
-   "comfy_template_immutable_conflict","comfy_template_not_found","comfy_template_in_use",
+   "comfy_template_immutable_conflict","comfy_template_not_found","comfy_template_in_use","comfy_template_restore_conflict",
    "comfy_preset_invalid","comfy_preset_not_found",
    "comfy_preset_parent_not_found","comfy_preset_parent_workflow_mismatch","comfy_preset_binding_mismatch","comfy_workflow_version_not_found","comfy_workflow_file_missing","comfy_workflow_file_corrupt",
    "invalid_comfy_instance","invalid_comfy_instance_url","comfy_instance_must_be_exact_loopback_origin",
@@ -180,6 +180,7 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
     :undefined;
   reply.code(status).send({code,message:code,requestId:req.id,
    ...(validationDetails?{details:validationDetails}:{}),
+   ...(code==="comfy_template_in_use"&&error.references?{details:{templateId:error.templateId,revision:error.revision,references:error.references}}:{}),
    ...(["project_revision_conflict","invalid_project_document"].includes(code)&&error.details?{details:error.details}:{})});
  });
  app.get("/health",()=>({ok:true}));
@@ -311,7 +312,7 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
   reply.header("Cache-Control","no-store");return {workflows:registry.listWorkflows()};
  });
  app.get("/api/v1/comfy/workflows/:id/versions",{schema:{params:{type:"object",required:["id"],properties:{id:{type:"string",pattern:"^[A-Za-z0-9_:.-]{1,128}$"}},additionalProperties:false}}},(req,reply)=>{
-  reply.header("Cache-Control","no-store");return {versions:registry.workflowVersions(req.params.id)};
+  reply.header("Cache-Control","no-store");return {versions:registry.listTemplateVersions(req.params.id)};
  });
  app.post("/api/v1/comfy/workflows/:id/graphs",{bodyLimit:2*1024*1024+4096,
   schema:{params:{type:"object",required:["id"],properties:{id:{type:"string",pattern:"^[A-Za-z0-9_:.-]{1,128}$"}},additionalProperties:false},body:{type:"object",required:["graph"],properties:{graph:{type:"object"}},additionalProperties:false}}},(req,reply)=>{
@@ -351,6 +352,21 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
  });
  app.delete("/api/v1/comfy/templates/:id/:revision",{schema:{params:registryParams}},(req,reply)=>
   registry.deleteTemplate(req.params.id,req.params.revision));
+ app.get("/api/v1/comfy/templates/:id/:revision/note",{schema:{params:registryParams}},(req,reply)=>{
+  reply.header("Cache-Control","no-store");return registry.getVersionNote(req.params.id,req.params.revision);
+ });
+ app.put("/api/v1/comfy/templates/:id/:revision/note",{schema:{params:registryParams,body:{type:"object",required:["note"],properties:{note:{type:"string",maxLength:200}},additionalProperties:false}}},(req,reply)=>{
+  reply.header("Cache-Control","no-store");return registry.setVersionNote(req.params.id,req.params.revision,req.body.note);
+ });
+ app.get("/api/v1/comfy/templates/:id/:revision/references",{schema:{params:registryParams}},(req,reply)=>{
+  reply.header("Cache-Control","no-store");return {references:registry.templateReferences(req.params.id,req.params.revision)};
+ });
+ app.post("/api/v1/comfy/presets/:id/restore",{schema:{params:presetParams,body:{type:"object",required:["templateId","revision","expectedTemplateId","expectedRevision"],properties:{templateId:{type:"string",pattern:"^[A-Za-z0-9_:.-]{1,128}$"},revision:{type:"string",pattern:"^[a-f0-9]{64}$"},expectedTemplateId:{type:"string",pattern:"^[A-Za-z0-9_:.-]{1,128}$"},expectedRevision:{type:"string",pattern:"^[a-f0-9]{64}$"}},additionalProperties:false}}},(req,reply)=>{
+  reply.header("Cache-Control","no-store");return registry.restorePresetVersion(req.params.id,req.body);
+ });
+ app.post("/api/v1/comfy/templates/delete-batch",{schema:{body:{type:"object",required:["versions"],properties:{versions:{type:"array",minItems:1,maxItems:128,items:{type:"object",required:["templateId","revision"],properties:{templateId:{type:"string",pattern:"^[A-Za-z0-9_:.-]{1,128}$"},revision:{type:"string",pattern:"^[a-f0-9]{64}$"}},additionalProperties:false}}},additionalProperties:false}}},(req,reply)=>{
+  reply.header("Cache-Control","no-store");return registry.deleteTemplates(req.body.versions);
+ });
  app.get("/api/v1/comfy/presets",(req,reply)=>{
   reply.header("Cache-Control","no-store");return {presets:registry.listPresets()};
  });

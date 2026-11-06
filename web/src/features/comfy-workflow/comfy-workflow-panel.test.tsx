@@ -56,7 +56,7 @@ describe("Comfy workflow binding selector",()=>{
     });
     it("uses Chinese for save, busy, and preset contexts without changing save behavior",()=>{
         expect(comfyTemplateSaveButtonText("node",false)).toBe("保存模板版本并绑定节点");
-        expect(comfyTemplateSaveButtonText("preset",false)).toBe("保存预设版本与绑定");
+        expect(comfyTemplateSaveButtonText("preset",false)).toBe("保存预设");
         expect(comfyTemplateSaveButtonText("node",true)).toBe("正在保存…");
         expect(comfyTemplateSaveButtonText("preset",true)).toBe("正在保存…");
     });

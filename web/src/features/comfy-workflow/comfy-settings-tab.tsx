@@ -1,14 +1,14 @@
 import {useCallback,useEffect,useMemo,useState} from "react";
-import {App,Button,Input,Modal,Popover,Popconfirm,Select,Switch,Tag,Tooltip,Typography} from "antd";
+import {App,Button,Input,Modal,Popconfirm,Select,Switch,Tag,Tooltip,Typography} from "antd";
 import {CopyPlus,FileJson,History,Image as ImageIcon,Music2,Pencil,Plus,RefreshCw,SlidersHorizontal,Trash2,Video} from "lucide-react";
 import {useConfigStore} from "@/stores/use-config-store";
 import type {CanvasNodeData,CanvasNodeMetadata} from "@/types/canvas";
 import {ComfyWorkflowPanel} from "./comfy-workflow-panel";
 import type {ComfyInstance} from "./run-types";
 import {deleteSqliteComfyInstance,listSqliteComfyInstances,saveSqliteComfyInstance} from "./sqlite-instances-client";
-import {listComfyWorkflowVersions,saveComfyPresetBinding,type ComfyPreset} from "./preset-registry";
+import {deleteComfyPreset as deletePresetById,saveComfyPresetBinding,type ComfyPreset} from "./preset-registry";
+import {ComfyPresetHistory} from "./comfy-preset-history";
 import {listComfyPresetCatalog,type ComfyCatalogPreset} from "./preset-catalog";
-import {deleteComfyPreset} from "./preset-registry";
 import {getComfyTemplate} from "./template-registry";
 import {createComfyTemplate} from "./template-schema";
 
@@ -38,7 +38,7 @@ export function ComfySettingsTab() {
     const [presetMediaType,setPresetMediaType]=useState("all");
     const [presetStatus,setPresetStatus]=useState("all");
     const [jsonPreset,setJsonPreset]=useState<{name:string;json:string}|null>(null);
-    const [workflowVersions,setWorkflowVersions]=useState<Record<string,{revision:string;templateId:string;workflowHash:string;createdAt:number}[]>>({});
+    const [versionPreset,setVersionPreset]=useState<ComfyCatalogPreset|null>(null);
 
     const reloadInstances=useCallback(async()=>{
         setLoading(true);setInstanceError("");
@@ -88,7 +88,7 @@ export function ComfySettingsTab() {
         return true;
     };
     const removePreset=async(preset:ComfyCatalogPreset)=>{
-        try{await deleteComfyPreset(preset.id);message.success("已移除预设（不影响现有画布节点）");await reloadPresets();}
+        try{await deletePresetById(preset.id);message.success("已移除预设（不影响现有画布节点）");await reloadPresets();}
         catch(error){message.error(String(error));}
     };
     const createVariant=async(preset:ComfyCatalogPreset)=>{
@@ -112,22 +112,6 @@ export function ComfySettingsTab() {
         try{const template=await getComfyTemplate(preset.templateId,preset.revision);if(!template)throw Error("工作流版本不存在");
             setJsonPreset({name:preset.name,json:JSON.stringify(template.apiGraph,null,2)});}
         catch(error){message.error(String(error));}
-    };
-    const switchPresetVersion=async(preset:ComfyCatalogPreset,revision:string)=>{
-        try{const target=workflowVersions[preset.id]?.find(version=>version.revision===revision);
-            if(!target)throw Error("工作流版本不存在");
-            const [current,source]=await Promise.all([getComfyTemplate(preset.templateId,preset.revision),getComfyTemplate(target.templateId??preset.templateId,revision)]);
-            if(!current||!source)throw Error("工作流版本不存在");
-            const rebound=await createComfyTemplate(preset.templateId,{...current,apiGraph:source.apiGraph});
-            await saveComfyPresetBinding({id:preset.id,name:preset.name,workflowId:preset.workflowId??preset.templateId,
-                templateId:rebound.id,revision:rebound.revision,source:preset.source??"user",kind:preset.kind??"base",...(preset.parentId?{parentId:preset.parentId}:{})},rebound);
-            await reloadPresets();message.success("已使用选定 graph 发布新的绑定快照");}
-        catch(error){message.error("切换版本失败："+String(error));}
-    };
-    const showWorkflowVersions=async(preset:ComfyCatalogPreset)=>{
-        try{const versions=await listComfyWorkflowVersions(preset.workflowId??preset.templateId);setWorkflowVersions(current=>({...current,[preset.id]:versions}));
-            if(!versions.length)message.info("没有可用版本");}
-        catch(error){message.error("读取版本失败："+String(error));}
     };
     return <div className="space-y-6 pb-5" data-comfy-settings-tab>
         <section>
@@ -172,7 +156,6 @@ export function ComfySettingsTab() {
                 {filteredPresets.map(item=>{
                         const mediaLabel=item.mediaType==="video"?"视频":item.mediaType==="audio"?"音频":item.mediaType==="image"?"图片":"其他";
                         const MediaIcon=item.mediaType==="video"?Video:item.mediaType==="audio"?Music2:item.mediaType==="image"?ImageIcon:null;
-                        const versions=workflowVersions[item.id]??[];
                         return <div className="flex min-w-0 items-center gap-2 border-t border-stone-200 px-2.5 py-2 dark:border-stone-800 sm:gap-3 sm:px-3" key={item.id} data-comfy-preset={item.id}>
                             <div className="flex min-w-0 flex-1 items-center gap-2">
                                 {MediaIcon?<Tooltip title={mediaLabel}><MediaIcon size={15} className="shrink-0 text-stone-500" aria-label={mediaLabel}/></Tooltip>:null}
@@ -181,12 +164,7 @@ export function ComfySettingsTab() {
                             </div>
                             <span className="flex shrink-0 items-center gap-1 font-mono text-[11px] text-stone-500" title={item.revision}>
                                 <span className="hidden sm:inline">{item.revision.slice(0,8)}</span>
-                                <Popover trigger="click" placement="bottomRight" onOpenChange={open=>{if(open)void showWorkflowVersions(item);}}
-                                    content={versions.length?<Select aria-label={`切换 ${item.name} 版本`} size="small" className="w-44" value={item.revision}
-                                        options={versions.map(version=>({value:version.revision,label:`${version.revision.slice(0,10)} · ${version.templateId}`}))}
-                                        onChange={revision=>void switchPresetVersion(item,revision)}/>:<span className="text-xs text-stone-500">暂无可用版本</span>}>
-                                    <Tooltip title="版本历史"><Button type="text" size="small" aria-label={`版本历史 ${item.name}`} icon={<History size={14}/>} className="!h-7 !w-7 !p-0"/></Tooltip>
-                                </Popover>
+                                <Tooltip title="修改历史"><Button type="text" size="small" aria-label={`修改历史 ${item.name}`} icon={<History size={14}/>} className="!h-7 !w-7 !p-0" onClick={()=>setVersionPreset(item)}/></Tooltip>
                             </span>
                             <span className="flex shrink-0 items-center gap-0.5">
                                 <Tooltip title="编辑绑定"><Button type="text" size="small" aria-label={`编辑绑定 ${item.name}`} loading={presetActionBusy===item.id} icon={<SlidersHorizontal size={15}/>} className="!h-7 !w-7 !p-0" onClick={()=>void openPreset(item)}/></Tooltip>
@@ -224,6 +202,7 @@ export function ComfySettingsTab() {
         <Modal title={jsonPreset?.name?`${jsonPreset.name} · JSON`:"工作流 JSON"} open={!!jsonPreset} footer={null} onCancel={()=>setJsonPreset(null)} width="min(900px, calc(100vw - 32px))">
             <pre className="max-h-[70vh] overflow-auto rounded bg-stone-950 p-4 text-xs text-stone-100">{jsonPreset?.json}</pre>
         </Modal>
+        {versionPreset?<ComfyPresetHistory key={versionPreset.id} preset={versionPreset} onClose={()=>setVersionPreset(null)} onChanged={reloadPresets}/>:null}
         <Modal
             className="comfy-preset-editor-modal"
             open={!!editor}

@@ -193,25 +193,102 @@ export function createComfyRegistry(db,{workflowsDir}={}){
  }
  function deleteTemplate(id,revision){
   if(!idRe.test(id)||!shaRe.test(revision))throw error("comfy_template_invalid");
-  return writeTransaction(db,()=>{
-   if(!find(id,revision))throw error("comfy_template_not_found",404);
-   if(db.prepare("SELECT id FROM comfy_presets WHERE template_id=? AND revision=? LIMIT 1")
-     .get(id,revision))throw error("comfy_template_in_use",409);
-   const projects=db.prepare("SELECT document_json FROM projects").all();
-   if(projects.some(({document_json})=>JSON.parse(document_json).nodes?.some(node=>{
-      const meta=node.metadata??{};
-      return meta.comfyWorkflow?.templateId===id&&meta.comfyWorkflow?.templateRevision===revision||
-       meta.comfyMediaPreset?.templateId===id&&meta.comfyMediaPreset?.templateRevision===revision;
-   })))
-    throw error("comfy_template_in_use",409);
-   db.prepare("DELETE FROM comfy_workflow_versions WHERE template_id=? AND revision=?").run(id,revision);
-   db.prepare("DELETE FROM comfy_template_versions WHERE template_id=? AND revision=?").run(id,revision);
-   db.prepare("DELETE FROM comfy_workflows WHERE workflow_id=? AND NOT EXISTS(SELECT 1 FROM comfy_workflow_versions WHERE workflow_id=?)").run(id,id);
-   return {deleted:true};
-  });
+  return {...deleteTemplates([{templateId:id,revision}]),deleted:true};
+ }
+ function versionReferences(id,revision){
+  return versionReferenceIndex().get(id+"@"+revision)??{presets:[],projectNodes:[],tasks:[],defaults:[],count:0};
+ }
+ function versionReferenceIndex(){
+  const index=new Map(),key=(id,revision)=>id+"@"+revision;
+  const get=k=>{
+   if(!index.has(k))index.set(k,{presets:[],projectNodes:[],tasks:[],defaults:[],count:0});
+   return index.get(k);
+  };
+  for(const p of db.prepare("SELECT id,name,kind,parent_id AS parentId,template_id,revision FROM comfy_presets").iterate()){
+   get(key(p.template_id,p.revision)).presets.push({id:p.id,name:p.name,kind:p.kind,parentId:p.parentId??undefined});
+  }
+  // Stream snapshots once per operation; never scan all tasks once per version.
+  for(const row of db.prepare("SELECT id,document_json FROM projects").iterate()){
+   const doc=JSON.parse(row.document_json);
+   for(const node of doc.nodes??[]){
+    const references=new Set();
+    for(const prop of ["comfyWorkflow","comfyMediaPreset"]){
+     const binding=node.metadata?.[prop];
+     if(binding?.templateId&&binding?.templateRevision)references.add(key(binding.templateId,binding.templateRevision));
+    }
+    for(const identity of references)get(identity).projectNodes.push({projectId:row.id,projectName:doc.title??row.id,nodeId:node.id,nodeTitle:node.title??""});
+   }
+  }
+  for(const row of db.prepare("SELECT id,snapshot_json FROM jobs").iterate()){
+   const snapshot=JSON.parse(row.snapshot_json),references=new Set();
+   if(snapshot.comfyTemplate?.id&&snapshot.comfyTemplate?.revision)references.add(key(snapshot.comfyTemplate.id,snapshot.comfyTemplate.revision));
+   for(const node of snapshot.comfyRequest?.nodes??[]){
+    if(node.templateId&&node.templateRevision)references.add(key(node.templateId,node.templateRevision));
+   }
+   for(const identity of references)get(identity).tasks.push({taskId:row.id});
+  }
+  const setting=db.prepare("SELECT value_json FROM ui_settings WHERE name='model_config'").get();
+  if(setting){
+   const config=JSON.parse(setting.value_json);
+   for(const [model,binding] of Object.entries(config.comfyWorkflowDefaults??{})){
+    if(binding?.templateId&&binding?.templateRevision)get(key(binding.templateId,binding.templateRevision)).defaults.push({model});
+   }
+  }
+  for(const refs of index.values())refs.count=refs.presets.length+refs.projectNodes.length+refs.tasks.length+refs.defaults.length;
+  return index;
+ }
+ function deleteTemplates(items){return writeTransaction(db,()=>{
+  if(!Array.isArray(items)||!items.length||items.length>128||items.some(v=>!object(v)||!idRe.test(v.templateId)||!shaRe.test(v.revision)))throw error("comfy_template_invalid");
+  const unique=new Map(items.map(v=>[v.templateId+"@"+v.revision,v]));
+  if(unique.size!==items.length)throw error("comfy_template_invalid");
+  const checked=[],referenceIndex=versionReferenceIndex();
+  for(const {templateId,revision} of unique.values()){
+   if(!db.prepare("SELECT 1 FROM comfy_template_versions WHERE template_id=? AND revision=?").get(templateId,revision))throw error("comfy_template_not_found",404);
+   const references=referenceIndex.get(templateId+"@"+revision);if(references?.count)throw Object.assign(error("comfy_template_in_use",409),{references,templateId,revision});
+   checked.push({templateId,revision});
+  }
+  for(const {templateId,revision} of checked){
+   const workflowIds=db.prepare("SELECT workflow_id FROM comfy_workflow_versions WHERE template_id=? AND revision=?").all(templateId,revision).map(x=>x.workflow_id);
+   db.prepare("DELETE FROM comfy_workflow_versions WHERE template_id=? AND revision=?").run(templateId,revision);
+   db.prepare("DELETE FROM comfy_template_versions WHERE template_id=? AND revision=?").run(templateId,revision);
+   for(const workflowId of workflowIds)db.prepare("DELETE FROM comfy_workflows WHERE workflow_id=? AND NOT EXISTS(SELECT 1 FROM comfy_workflow_versions WHERE workflow_id=?)").run(workflowId,workflowId);
+  }
+  return {deleted:checked.length};
+ });}
+ function listTemplateVersions(workflowId){
+  if(!idRe.test(workflowId))throw error("comfy_template_invalid");
+  const refs=versionReferenceIndex();
+  return db.prepare(`SELECT v.template_id AS templateId,v.revision,v.workflow_hash AS workflowHash,v.created_at AS createdAt,
+   COALESCE(n.display_name,json_extract(t.payload_json,'$.name')) AS name,
+   COALESCE(x.note,'') AS note,v.workflow_id AS workflowId,
+   EXISTS(SELECT 1 FROM comfy_presets cp WHERE cp.workflow_id=v.workflow_id AND cp.template_id=v.template_id AND cp.revision=v.revision) AS current
+   FROM comfy_workflow_versions v JOIN comfy_template_versions t ON t.template_id=v.template_id AND t.revision=v.revision
+   LEFT JOIN comfy_template_names n ON n.template_id=v.template_id LEFT JOIN comfy_template_version_notes x ON x.template_id=v.template_id AND x.revision=v.revision
+   WHERE v.workflow_id=? ORDER BY v.created_at DESC,v.revision DESC,v.template_id`).all(workflowId).map(row=>({...row,shortRevision:row.revision.slice(0,10),current:Boolean(row.current),references:{count:refs.get(row.templateId+"@"+row.revision)?.count??0}}));
+ }
+ function templateReferences(id,revision){if(!idRe.test(id)||!shaRe.test(revision))throw error("comfy_template_invalid");if(!db.prepare("SELECT 1 FROM comfy_template_versions WHERE template_id=? AND revision=?").get(id,revision))throw error("comfy_template_not_found",404);return versionReferences(id,revision);}
+ function setVersionNote(id,revision,note){
+  if(!idRe.test(id)||!shaRe.test(revision)||typeof note!=="string"||note.length>200)throw error("comfy_template_invalid");
+  return writeTransaction(db,()=>{if(!db.prepare("SELECT 1 FROM comfy_template_versions WHERE template_id=? AND revision=?").get(id,revision))throw error("comfy_template_not_found",404);
+   db.prepare("INSERT INTO comfy_template_version_notes(template_id,revision,note) VALUES(?,?,?) ON CONFLICT(template_id,revision) DO UPDATE SET note=excluded.note").run(id,revision,note);
+   return {templateId:id,revision,note};});
+ }
+ function getVersionNote(id,revision){
+  if(!idRe.test(id)||!shaRe.test(revision))throw error("comfy_template_invalid");
+  if(!db.prepare("SELECT 1 FROM comfy_template_versions WHERE template_id=? AND revision=?").get(id,revision))throw error("comfy_template_not_found",404);
+  return {note:db.prepare("SELECT note FROM comfy_template_version_notes WHERE template_id=? AND revision=?").get(id,revision)?.note??""};
+ }
+ function restorePresetVersion(presetId,{templateId,revision,expectedTemplateId,expectedRevision}){
+  if(!idRe.test(presetId)||!idRe.test(templateId)||!shaRe.test(revision)||!idRe.test(expectedTemplateId)||!shaRe.test(expectedRevision))throw error("comfy_template_invalid");
+  return writeTransaction(db,()=>{const p=db.prepare("SELECT * FROM comfy_presets WHERE id=?").get(presetId);if(!p)throw error("comfy_preset_not_found",404);
+   if(p.template_id!==expectedTemplateId||p.revision!==expectedRevision)throw error("comfy_template_restore_conflict",409);
+   const targetWorkflow=db.prepare("SELECT workflow_id FROM comfy_workflow_versions WHERE template_id=? AND revision=?").get(templateId,revision)?.workflow_id;
+   if(!find(templateId,revision)||targetWorkflow!==p.workflow_id)throw error("comfy_template_not_found",404);
+   db.prepare("UPDATE comfy_presets SET template_id=?,revision=?,updated_at=? WHERE id=? AND template_id=? AND revision=?").run(templateId,revision,Date.now(),presetId,expectedTemplateId,expectedRevision);
+   return {...p,template_id:templateId,revision};});
  }
  function listPresets(){
-  return db.prepare("SELECT p.id,COALESCE(n.display_name,p.name) AS name,p.template_id,p.revision,p.source,p.kind,p.parent_id,p.workflow_id FROM comfy_presets p LEFT JOIN comfy_template_names n ON n.template_id=p.template_id ORDER BY name,p.id")
+  return db.prepare("SELECT p.id,p.name,p.template_id,p.revision,p.source,p.kind,p.parent_id,p.workflow_id FROM comfy_presets p ORDER BY p.name,p.id")
    .all().map(row=>({id:row.id,name:row.name,workflowId:row.workflow_id,templateId:row.template_id,revision:row.revision,source:row.source,kind:row.kind,
     ...(row.parent_id?{parentId:row.parent_id}:{})}));
  }
@@ -301,5 +378,5 @@ export function createComfyRegistry(db,{workflowsDir}={}){
  // prevent unrelated workflows from loading.
  db.prepare("SELECT template_id,revision,payload_json,workflow_hash FROM comfy_template_versions WHERE workflow_hash IS NULL ORDER BY template_id,revision")
   .all().forEach(compose);
- return {find,listTemplates,installMany,deleteTemplate,listPresets,savePreset,savePresetBinding,renameTemplate,deletePreset,listWorkflows,workflowVersions,publishWorkflowGraph,workflowGraphAvailable};
+ return {find,listTemplates,installMany,deleteTemplate,deleteTemplates,listPresets,savePreset,savePresetBinding,renameTemplate,deletePreset,listWorkflows,workflowVersions,listTemplateVersions,templateReferences,getVersionNote,setVersionNote,restorePresetVersion,publishWorkflowGraph,workflowGraphAvailable};
 }

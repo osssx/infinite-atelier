@@ -42,6 +42,25 @@ export async function deleteComfyPreset(id:string){
  await canvasApi(root+"/"+encodeURIComponent(id),"DELETE");
 }
 export async function listComfyWorkflowVersions(id:string){
- const {versions}=await canvasApi<{versions:{revision:string;templateId:string;workflowHash:string;createdAt:number}[]}>("/api/v1/comfy/workflows/"+encodeURIComponent(id)+"/versions");
+ const {versions}=await canvasApi<{versions:ComfyVersion[]}>("/api/v1/comfy/workflows/"+encodeURIComponent(id)+"/versions");
  return versions;
+}
+export type ComfyVersion={revision:string;templateId:string;workflowId:string;workflowHash:string;createdAt:number;name:string;note:string;shortRevision:string;current:boolean;
+ references:{count:number}};
+export type ComfyVersionReferences={presets:{id:string;name:string;kind:string;parentId?:string}[];projectNodes:{projectId:string;projectName:string;nodeId:string;nodeTitle:string}[];tasks:{taskId:string}[];defaults:{model:string}[];count:number};
+export async function getComfyVersionNote(templateId:string,revision:string){
+ const {note}=await canvasApi<{note:string}>("/api/v1/comfy/templates/"+encodeURIComponent(templateId)+"/"+revision+"/note");return note;
+}
+export async function setComfyVersionNote(templateId:string,revision:string,note:string){
+ return canvasApi("/api/v1/comfy/templates/"+encodeURIComponent(templateId)+"/"+revision+"/note","PUT",{note});
+}
+export async function restoreComfyPresetVersion(id:string,version:ComfyVersion,current:ComfyPreset){
+ return canvasApi(root+"/"+encodeURIComponent(id)+"/restore","POST",{templateId:version.templateId,revision:version.revision,
+  expectedTemplateId:current.templateId,expectedRevision:current.revision});
+}
+export async function deleteComfyVersions(versions:{templateId:string;revision:string}[]){
+ return canvasApi("/api/v1/comfy/templates/delete-batch","POST",{versions});
+}
+export async function getComfyVersionReferences(templateId:string,revision:string){
+ const {references}=await canvasApi<{references:ComfyVersionReferences}>("/api/v1/comfy/templates/"+encodeURIComponent(templateId)+"/"+revision+"/references");return references;
 }

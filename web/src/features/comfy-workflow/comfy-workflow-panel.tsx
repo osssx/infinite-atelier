@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSPropert
 import { ArrowDown, ArrowUp, Check, ChevronDown, ChevronRight, FileUp, GripVertical, Link2, Plus, RefreshCw, Save, Search, Trash2, X } from "lucide-react";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { canToggleComfyInputPortVisibility } from "@/lib/canvas/canvas-ports";
-import { Modal, Select, theme as antdTheme } from "antd";
+import { Input, Modal, Select, theme as antdTheme } from "antd";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { useConfigStore } from "@/stores/use-config-store";
 import {useComfyObjectInfo} from "./use-comfy-object-info";
@@ -16,7 +16,7 @@ import {
 } from "./binding-picker";
 import { ComfyTemplateBindingError, canonicalComfyJson, createComfyTemplate, templatePayloadFromGraph, validateComfyApiGraph, type ComfyInputBinding, type ComfyNodeTarget, type ComfyObjectInfo, type ComfyTemplatePayload, type ComfyTemplatePort, type ComfyWorkflowTemplate } from "./template-schema";
 import { getComfyTemplate, saveComfyTemplateVersion } from "./template-registry";
-import { renameComfyTemplate, saveComfyPresetBinding, upsertComfyPresetForTemplate } from "./preset-registry";
+import { getComfyVersionNote, renameComfyTemplate, saveComfyPresetBinding, setComfyVersionNote, upsertComfyPresetForTemplate } from "./preset-registry";
 import { listComfyPresetCatalog, type ComfyCatalogPreset } from "./preset-catalog";
 import { buildKrea2TurboTemplate, isKrea2TurboT2IWorkflow, KREA2_TURBO_TEMPLATE_ID } from "./krea2-turbo-preset";
 import { buildMiniMaxH3I2VPreset, isMiniMaxH3I2VWorkflow, MINIMAX_H3_I2V_TEMPLATE_ID } from "./minimax-h3-i2v-preset";
@@ -106,7 +106,7 @@ function ComfyChoiceEditor({port,onUpdate,onDirtyChange}:{
 
 /** Shared copy for the node editor and global preset editor. */
 export function comfyTemplateSaveButtonText(context:"node"|"preset",busy:boolean):string {
-    return busy?"正在保存…":context==="preset"?"保存预设版本与绑定":"保存模板版本并绑定节点";
+    return busy?"正在保存…":context==="preset"?"保存预设":"保存模板版本并绑定节点";
 }
 
 export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,focus,context="node"}:Props) {
@@ -154,6 +154,8 @@ export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,
     const [nodeSearch,setNodeSearch] = useState("");
     const [expandedAdvanced,setExpandedAdvanced] = useState(false);
     const [busy,setBusy] = useState(false);
+    const [revisionNote,setRevisionNote] = useState("");
+    const revisionNoteEdited=useRef(false);
     const [error,setError] = useState("");
     const [bindingIssue,setBindingIssue] = useState<{portId:string;nodeId?:string;inputName?:string}|null>(null);
     const nodeBrowserRef=useRef<HTMLDivElement>(null);
@@ -201,8 +203,10 @@ export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,
         void listComfyPresetCatalog().then(values=>{if(alive)setPresets(values);}).catch(cause=>{if(alive)setError(String(cause));});
         const binding=node.metadata?.comfyWorkflow;
         if(binding?.templateId && binding.templateRevision) {
-            void getComfyTemplate(binding.templateId,binding.templateRevision).then(bound=>{
+            void Promise.all([getComfyTemplate(binding.templateId,binding.templateRevision),
+                context==="preset"?getComfyVersionNote(binding.templateId,binding.templateRevision):Promise.resolve("")]).then(([bound,note])=>{
                 if(!alive || !bound)return;
+                if(!revisionNoteEdited.current)setRevisionNote(note);
                 originalTemplate.current=bound;
                 setDraft(normalizeComfyTemplateMediaDraft({name:bound.name,apiGraph:bound.apiGraph,ports:bound.ports,requirements:bound.requirements,
                     ...(bound.previewBinding?{previewBinding:bound.previewBinding}:{}),...(bound.mediaUseCase?{mediaUseCase:bound.mediaUseCase}:{})}));
@@ -384,6 +388,8 @@ export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,
             const withoutName=(value:ComfyTemplatePayload|ComfyWorkflowTemplate)=>canonicalComfyJson({apiGraph:value.apiGraph,ports:value.ports,requirements:value.requirements,
                 ...(value.previewBinding?{previewBinding:value.previewBinding}:{}),...(value.mediaUseCase?{mediaUseCase:value.mediaUseCase}:{})});
             if(original&&original.id===templateId&&normalizedDraft.name.trim()===original.name&&withoutName(normalizedDraft)===withoutName(original)){
+                if(context==="preset"&&revisionNoteEdited.current)await setComfyVersionNote(original.id,original.revision,revisionNote);
+                revisionNoteEdited.current=false;
                 setStatus("模板内容没有变化。");return;
             }
             if(original&&original.id===templateId&&normalizedDraft.name.trim()!==original.name&&withoutName(normalizedDraft)===withoutName(original)){
@@ -392,6 +398,8 @@ export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,
                 const legacy=original.revision!==freshRevision.revision;
                 const renamed={...original,name:normalizedDraft.name.trim(),...(legacy?{revisionName:original.revisionName??original.name}:{})};
                 originalTemplate.current=renamed;applySaved(renamed);setStatus("工作流名称已更新，版本与 graph 文件保持不变。");
+                if(context==="preset"&&revisionNoteEdited.current)await setComfyVersionNote(original.id,original.revision,revisionNote);
+                revisionNoteEdited.current=false;
                 if(context==="preset")setPresets(await listComfyPresetCatalog());
                 return;
             }
@@ -403,6 +411,9 @@ export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,
                 await saveComfyPresetBinding({id:node.id,name:normalizedDraft.name,
                     workflowId:previous?.workflowId??previous?.templateId??template.id,templateId:template.id,revision:template.revision,
                     source:previous?.source??"user",kind:previous?.kind??"base",...(previous?.parentId?{parentId:previous.parentId}:{})},template);
+                if(revisionNoteEdited.current)await setComfyVersionNote(template.id,template.revision,revisionNote);
+                revisionNoteEdited.current=false;
+                setRevisionNote(await getComfyVersionNote(template.id,template.revision));
                 originalTemplate.current=template;
                 if(applySaved(template))setPresets(await listComfyPresetCatalog());
                 return;
@@ -942,6 +953,10 @@ export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,
                 </div>
                 <div className="flex flex-wrap items-center justify-between gap-3">
                     <span className="max-w-[440px] text-[11px] text-[var(--comfy-muted)]">{objectInfo?"已同步当前 ComfyUI 实例的节点定义":"尚未校验插槽类型；同步节点定义后可准确匹配"}</span>
+                    {context==="preset"?<details className="min-w-0 flex-1 sm:max-w-xs">
+                        <summary className="cursor-pointer text-xs">修改说明（可选）</summary>
+                        <Input aria-label="修改说明" maxLength={200} disabled={busy} placeholder="本次修改说明，最多 200 字" value={revisionNote} onChange={e=>{revisionNoteEdited.current=true;setRevisionNote(e.target.value);}} className="mt-2"/>
+                    </details>:null}
                     <button type="button" className="inline-flex min-h-9 items-center gap-2 rounded-lg px-4 py-2 text-xs font-semibold transition hover:opacity-85 disabled:cursor-wait disabled:opacity-75"
                         style={embedded?{backgroundColor:token.colorPrimary,color:token.colorTextLightSolid}:{backgroundColor:theme.node.activeStroke,color:theme.node.panel}}
                         disabled={busy} onClick={()=>void save()}><Save size={14}/>{comfyTemplateSaveButtonText(context,busy)}</button>

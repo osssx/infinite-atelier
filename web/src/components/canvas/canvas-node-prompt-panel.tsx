@@ -25,7 +25,7 @@ export type CanvasNodeGenerationMode = CanvasGenerationMode;
 type CanvasNodePromptPanelProps = {
     node: CanvasNodeData;
     projectId?: string;
-    onConnectReference?: (sourceId: string, targetId: string) => void;
+    onStartReferenceSelection?: (nodeId: string) => void;
     onDisconnectReference?: (sourceId: string, targetId: string) => void;
     isRunning: boolean;
     onPromptChange: (nodeId: string, prompt: string) => void;
@@ -38,7 +38,7 @@ type CanvasNodePromptPanelProps = {
     connections?:readonly CanvasConnection[];
 };
 
-export function CanvasNodePromptPanel({ node, projectId, isRunning, onPromptChange, onConfigChange, onGenerate, onStop, onImageSettingsOpenChange, modeOverride,nodes=[],connections=[],onConnectReference,onDisconnectReference }: CanvasNodePromptPanelProps) {
+export function CanvasNodePromptPanel({ node, projectId, isRunning, onPromptChange, onConfigChange, onGenerate, onStop, onImageSettingsOpenChange, modeOverride,nodes=[],connections=[],onStartReferenceSelection,onDisconnectReference }: CanvasNodePromptPanelProps) {
     const { t } = useTranslation();
     const globalConfig = useEffectiveConfig();
     const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
@@ -106,7 +106,7 @@ export function CanvasNodePromptPanel({ node, projectId, isRunning, onPromptChan
             onPointerDown={(event) => event.stopPropagation()}
             onWheel={(event) => event.stopPropagation()}
         >
-            <CanvasNodeReferenceBar nodeId={node.id} references={activeReferences} nodes={nodes} onConnect={onConnectReference} onDisconnect={onDisconnectReference} />
+            <CanvasNodeReferenceBar nodeId={node.id} references={activeReferences} onStartSelection={onStartReferenceSelection} onDisconnect={onDisconnectReference} />
             {mode === "text" ? <div className="mb-1 text-[11px] opacity-60">{t("canvas.skillPicker.slashHint")}</div> : null}
             <CanvasPromptChipInput
                 value={prompt}
@@ -180,7 +180,7 @@ export function CanvasNodePromptPanel({ node, projectId, isRunning, onPromptChan
             {comfyMediaControls.error?<div role="alert" className="mt-1 max-w-[460px] text-[11px] leading-4 text-amber-700 dark:text-amber-300">{comfyMediaControls.error}</div>:null}
             <Modal title={t("canvas.promptPanel.editorTitle")} open={expanded} centered width={760} footer={null} onCancel={() => setExpanded(false)} destroyOnHidden>
                 <div data-canvas-no-zoom className="pt-2" onWheelCapture={(event) => event.stopPropagation()}>
-                    <CanvasNodeReferenceBar nodeId={node.id} references={activeReferences} nodes={nodes} onConnect={onConnectReference} onDisconnect={onDisconnectReference} />
+                    <CanvasNodeReferenceBar nodeId={node.id} references={activeReferences} onStartSelection={(nodeId) => { setExpanded(false); onStartReferenceSelection?.(nodeId); }} onDisconnect={onDisconnectReference} />
                     <CanvasPromptChipInput
                         value={prompt}
                         enableSkills={mode === "text"}

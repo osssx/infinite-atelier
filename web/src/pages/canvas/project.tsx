@@ -1,3 +1,4 @@
+import { isResourceNode, buildNodeMentionReferencesFromIndex } from "@/lib/canvas/canvas-resource-references";
 import { CanvasImageCompareDialog } from "@/components/canvas/canvas-image-compare-dialog";
 import { playCanvasVideosFromStart } from "@/lib/canvas/video-sync-playback";
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -355,6 +356,7 @@ function AtelierCanvasPage() {
     const [toolbarNodeId, setToolbarNodeId] = useState<string | null>(null);
     const [editingNodeTitleId, setEditingNodeTitleId] = useState<string | null>(null);
     const [nodeImageSettingsOpen, setNodeImageSettingsOpen] = useState(false);
+    const [referencePickerNodeId, setReferencePickerNodeId] = useState<string | null>(null);
     const [dialogNodeId, setDialogNodeId] = useState<string | null>(null);
     const [infoNodeId, setInfoNodeId] = useState<string | null>(null);
     const [cropNodeId, setCropNodeId] = useState<string | null>(null);
@@ -794,6 +796,39 @@ function AtelierCanvasPage() {
         },
         [message, t],
     );
+
+    const referenceConnectedNodeIds = useMemo(() => new Set(referencePickerNodeId
+        ? buildNodeMentionReferencesFromIndex(graphIndex, referencePickerNodeId).map((reference) => reference.nodeId)
+        : []), [graphIndex, referencePickerNodeId]);
+
+    const startNodeReferenceSelection = useCallback((nodeId: string) => {
+        setReferencePickerNodeId(nodeId);
+        setSelectedNodeIds(new Set([nodeId]));
+        setSelectedConnectionId(null);
+        setDialogNodeId(null);
+        setToolbarNodeId(null);
+        setContextMenu(null);
+    }, []);
+
+    const exitNodeReferenceSelection = useCallback(() => {
+        if (!referencePickerNodeId) return;
+        setSelectedNodeIds(new Set([referencePickerNodeId]));
+        setDialogNodeId(referencePickerNodeId);
+        setReferencePickerNodeId(null);
+    }, [referencePickerNodeId]);
+
+    useEffect(() => {
+        if (!referencePickerNodeId) return;
+        const handleKey = (event: KeyboardEvent) => {
+            if (event.key === "Escape") exitNodeReferenceSelection();
+            if (["Escape", "Delete", "Backspace", "Enter"].includes(event.key)) {
+                event.preventDefault();
+                event.stopImmediatePropagation();
+            }
+        };
+        window.addEventListener("keydown", handleKey, true);
+        return () => window.removeEventListener("keydown", handleKey, true);
+    }, [exitNodeReferenceSelection, referencePickerNodeId]);
 
     const createConnectedNode = useCallback(
         (type: CanvasNodeType.Image | CanvasNodeType.Text | CanvasNodeType.Config | CanvasNodeType.Video | CanvasNodeType.Audio, pending: PendingConnectionCreate) => {
@@ -3330,7 +3365,7 @@ function AtelierCanvasPage() {
             ) : (
                 <CanvasNodePromptPanel
                     node={panelNode}
-                    onConnectReference={(sourceId, targetId) => connectNodes({ nodeId: sourceId, handleType: "source" }, { nodeId: targetId, handleType: "target" })}
+                    onStartReferenceSelection={startNodeReferenceSelection}
                     onDisconnectReference={(sourceId, targetId) => {
                         const configTarget = connectionsRef.current.find((connection) => connection.fromNodeId === targetId && nodesRef.current.some((node) => node.id === connection.toNodeId && node.type === CanvasNodeType.Config));
                         const referenceTarget = configTarget && connectionsRef.current.some((connection) => connection.fromNodeId === sourceId && connection.toNodeId === configTarget.toNodeId) ? configTarget.toNodeId : targetId;
@@ -3351,7 +3386,7 @@ function AtelierCanvasPage() {
                     }}
                 />
             ),
-        [backendComfyEnabled,cancelComfyWorkflow,connectNodes,connections,nodes,executeComfyWorkflow,globalComfyInstanceId,
+        [backendComfyEnabled,cancelComfyWorkflow,startNodeReferenceSelection,connections,nodes,executeComfyWorkflow,globalComfyInstanceId,
             handleConfigNodeChange,handleGenerateNode,handleNodePromptChange,message,projectId,runningNodeId,stopConfigGeneration],
     );
 
@@ -3485,9 +3520,10 @@ function AtelierCanvasPage() {
                     onViewportChange={handleViewportChange}
                     onWheelActivityChange={setIsWheelZooming}
                     onPanActivityChange={setIsCanvasPanning}
-                    onCanvasMouseDown={handleCanvasMouseDown}
-                    onCanvasDeselect={deselectCanvas}
+                    onCanvasMouseDown={referencePickerNodeId ? () => {} : handleCanvasMouseDown}
+                    onCanvasDeselect={referencePickerNodeId ? () => {} : deselectCanvas}
                     onCanvasDoubleClick={(event) => {
+                        if (referencePickerNodeId) return;
                         setContextMenu(null);
                         setNodeCreatePosition(screenToCanvas(event.clientX, event.clientY));
                     }}
@@ -3542,6 +3578,22 @@ function AtelierCanvasPage() {
                         </CanvasGraphIndexProvider>
                     </CanvasActionsProvider>
 
+                    {referencePickerNodeId ? visibleNodes.map((node) => {
+                        const available = node.id !== referencePickerNodeId && isResourceNode(node) && !referenceConnectedNodeIds.has(node.id);
+                        const label = node.id === referencePickerNodeId ? "正在添加参考" : referenceConnectedNodeIds.has(node.id) ? "已添加" : available ? "选取为参考" : "不可选取";
+                        return <button key={`reference-picker:${node.id}`} type="button" aria-label={`${label}：${node.title || node.id}`} aria-disabled={!available}
+                            className={`absolute z-[80] grid place-items-center rounded-3xl border-2 ${available ? "cursor-pointer hover:border-current" : "cursor-not-allowed"}`}
+                            style={{ transform: `translate(${node.position.x}px, ${node.position.y}px)`, width: node.width, height: node.height, borderColor: available ? theme.node.muted : "transparent", background: `color-mix(in srgb, ${theme.canvas.background} ${available ? 20 : 65}%, transparent)`, color: theme.node.text }}
+                            onPointerDown={(event) => { if (event.button === 0) event.stopPropagation(); }}
+                            onMouseDown={(event) => { if (event.button === 0) event.stopPropagation(); }}
+                            onDoubleClick={(event) => event.stopPropagation()}
+                            onClick={(event) => {
+                                event.stopPropagation();
+                                if (available) connectNodes({ nodeId: node.id, handleType: "source" }, { nodeId: referencePickerNodeId, handleType: "target" });
+                            }}>
+                            <span className="rounded-lg px-3 py-2 text-sm font-medium" style={{ background: theme.toolbar.panel }}>{label}</span>
+                        </button>;
+                    }) : null}
                     <SelectionOverlay selectionBox={selectionBox} scale={viewport.k} />
                     {pendingConnectionCreate ? <ConnectionCreateMenu pending={pendingConnectionCreate} canvasRef={containerRef} viewport={viewport} onCreate={(type) => createConnectedNode(type, pendingConnectionCreate)} onClose={cancelPendingConnectionCreate} /> : null}
                     {nodeCreatePosition ? (
@@ -3557,6 +3609,7 @@ function AtelierCanvasPage() {
                         />
                     ) : null}
                 </AtelierCanvas>
+                {referencePickerNodeId ? <button type="button" className="absolute left-1/2 top-4 z-[90] -translate-x-1/2 rounded-full border px-4 py-2 text-sm font-medium shadow-lg" style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border }} onClick={exitNodeReferenceSelection}>点击画布节点添加参考 · 完成选取（Esc）</button> : null}
 
                 {directorPanelNode ? <DirectorPanel nodeId={directorPanelNode.id} open onClose={() => setDialogNodeId(null)} onExport={handleDirectorExport(directorPanelNode.id)} /> : null}
 

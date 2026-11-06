@@ -1,19 +1,15 @@
-import { useState } from "react";
 import { Popover } from "antd";
 import { FileText, Image as ImageIcon, Music2, Plus, Video, X } from "lucide-react";
 import { canvasThemes } from "@/lib/canvas-theme";
-import { isResourceNode, type CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
+import { type CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
 import { useThemeStore } from "@/stores/use-theme-store";
-import type { CanvasNodeData } from "@/types/canvas";
 
-export function CanvasNodeReferenceBar({ nodeId, references, nodes, onConnect, onDisconnect }: {
-    nodeId: string; references: CanvasResourceReference[]; nodes: readonly CanvasNodeData[];
-    onConnect?: (sourceId: string, targetId: string) => void;
+export function CanvasNodeReferenceBar({ nodeId, references, onStartSelection, onDisconnect }: {
+    nodeId: string; references: CanvasResourceReference[];
+    onStartSelection?: (nodeId: string) => void;
     onDisconnect?: (sourceId: string, targetId: string) => void;
 }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
-    const [open, setOpen] = useState(false);
-    const candidates = nodes.filter((node) => node.id !== nodeId && isResourceNode(node) && !references.some((ref) => ref.nodeId === node.id));
     return <div className="mb-2">
         <div className="mb-1.5 text-[11px] font-medium" style={{ color: theme.node.muted }}>参考内容</div>
         <div className="thin-scrollbar flex min-h-12 gap-2 overflow-x-auto pb-1">
@@ -26,9 +22,7 @@ export function CanvasNodeReferenceBar({ nodeId, references, nodes, onConnect, o
                     </div>
                 </Popover>;
             })}
-            {onConnect ? <Popover trigger="click" placement="topLeft" open={open} onOpenChange={setOpen} content={<div className="thin-scrollbar max-h-60 w-64 overflow-y-auto">{candidates.length ? candidates.map((node) => <button key={node.id} type="button" className="block w-full truncate rounded-lg px-3 py-2 text-left text-sm hover:bg-black/5 dark:hover:bg-white/10" onClick={() => { onConnect(node.id, nodeId); setOpen(false); }}>{node.title || node.id}</button>) : <div className="p-3 text-sm opacity-60">暂无可添加的参考节点</div>}</div>}>
-                <button type="button" className="grid size-12 shrink-0 place-items-center rounded-xl border bg-transparent transition hover:opacity-70" style={{ borderColor: theme.toolbar.border, color: theme.node.muted }} aria-label="添加参考内容"><Plus className="size-4" /></button>
-            </Popover> : null}
+            {onStartSelection ? <button type="button" className="grid size-12 shrink-0 place-items-center rounded-xl border bg-transparent transition hover:opacity-70" style={{ borderColor: theme.toolbar.border, color: theme.node.muted }} aria-label="从画布选取参考内容" title="从画布选取" onClick={() => onStartSelection(nodeId)}><Plus className="size-4" /></button> : null}
         </div>
     </div>;
 }

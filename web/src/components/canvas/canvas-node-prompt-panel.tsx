@@ -7,6 +7,8 @@ import { ModelPicker } from "@/components/model-picker";
 import { defaultConfig, modelMatchesCapability, resolveModelForCapability, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
+import { CanvasNodeReferenceBar } from "./canvas-node-reference-bar";
+import { CanvasPromptLibrary } from "./canvas-prompt-library";
 import { CanvasImageSettingsPopover } from "./canvas-image-settings-popover";
 import { CanvasAudioSettingsPopover, type CanvasAudioSettingKey } from "./canvas-audio-settings-popover";
 import { CanvasPromptChipInput } from "./canvas-prompt-chip-input";
@@ -23,6 +25,8 @@ export type CanvasNodeGenerationMode = CanvasGenerationMode;
 type CanvasNodePromptPanelProps = {
     node: CanvasNodeData;
     projectId?: string;
+    onConnectReference?: (sourceId: string, targetId: string) => void;
+    onDisconnectReference?: (sourceId: string, targetId: string) => void;
     isRunning: boolean;
     onPromptChange: (nodeId: string, prompt: string) => void;
     onConfigChange: (nodeId: string, patch: Partial<CanvasNodeData["metadata"]>) => void;
@@ -34,7 +38,7 @@ type CanvasNodePromptPanelProps = {
     connections?:readonly CanvasConnection[];
 };
 
-export function CanvasNodePromptPanel({ node, projectId, isRunning, onPromptChange, onConfigChange, onGenerate, onStop, onImageSettingsOpenChange, modeOverride,nodes=[],connections=[] }: CanvasNodePromptPanelProps) {
+export function CanvasNodePromptPanel({ node, projectId, isRunning, onPromptChange, onConfigChange, onGenerate, onStop, onImageSettingsOpenChange, modeOverride,nodes=[],connections=[],onConnectReference,onDisconnectReference }: CanvasNodePromptPanelProps) {
     const { t } = useTranslation();
     const globalConfig = useEffectiveConfig();
     const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
@@ -96,29 +100,13 @@ export function CanvasNodePromptPanel({ node, projectId, isRunning, onPromptChan
     return (
         <div
             data-canvas-no-zoom
-            className="rounded-2xl border p-3 shadow-2xl backdrop-blur"
+            className="rounded-2xl border p-3 backdrop-blur"
             style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.text }}
             onMouseDown={(event) => event.stopPropagation()}
             onPointerDown={(event) => event.stopPropagation()}
             onWheel={(event) => event.stopPropagation()}
         >
-            {activeReferences.length ? (
-                <div className="mb-2 flex flex-wrap items-center gap-1.5">
-                    <span className="text-[11px] opacity-55">{t("canvas.promptPanel.references")}</span>
-                    {activeReferences.map((reference) => (
-                        <span
-                            key={reference.id}
-                            className="inline-flex max-w-44 items-center gap-1.5 rounded-lg border px-1.5 py-1 text-xs"
-                            style={{ background: theme.toolbar.itemHover, borderColor: theme.node.stroke, color: theme.node.text }}
-                            title={reference.title}
-                        >
-                            {reference.kind === "image" && reference.previewUrl ? <img src={reference.previewUrl} alt="" className="size-6 rounded object-cover" /> : null}
-                            <span className="truncate font-medium">{reference.label}</span>
-                        </span>
-                    ))}
-                    <span className="text-[11px] opacity-45">{t("canvas.promptPanel.mentionHint")}</span>
-                </div>
-            ) : null}
+            <CanvasNodeReferenceBar nodeId={node.id} references={activeReferences} nodes={nodes} onConnect={onConnectReference} onDisconnect={onDisconnectReference} />
             {mode === "text" ? <div className="mb-1 text-[11px] opacity-60">{t("canvas.skillPicker.slashHint")}</div> : null}
             <CanvasPromptChipInput
                 value={prompt}
@@ -137,13 +125,14 @@ export function CanvasNodePromptPanel({ node, projectId, isRunning, onPromptChan
                     <Tooltip title={t("canvas.promptPanel.expandEditor")}>
                         <Button type="text" className="!h-8 !w-8 !min-w-8 shrink-0 !rounded-full !bg-transparent !p-0" style={{ color: theme.node.text }} icon={<Maximize2 className="size-3.5" />} onClick={openExpandedEditor} aria-label={t("canvas.promptPanel.expandEditor")} />
                     </Tooltip>
+                    <CanvasPromptLibrary onSelect={updatePrompt} />
                     {mode === "image" ? (
                         <>
                             <ModelPicker config={config} value={config.model} onChange={onModelChange} capability="image" onMissingConfig={() => openConfigDialog(true)} className="max-w-[190px]" externalOptions={comfyOptions} externalValue={comfyValue} onExternalSelect={value=>selectComfyPresetRef.current(value)}/>
                             {!hasComfyWorkflow?<CanvasImageSettingsPopover
                                 config={config}
                                 placement="topLeft"
-                                buttonClassName="!h-10 !max-w-[170px] !justify-start !rounded-full !px-3"
+                                buttonClassName="!h-8 !max-w-[170px] !justify-start !rounded-full !px-3"
                                 onConfigChange={(key, value) => onConfigChange(node.id, key === "count" ? { count: Number(value) || 1 } : { [key]: value })}
                                 onMissingConfig={() => openConfigDialog(true)}
                                 onOpenChange={onImageSettingsOpenChange}
@@ -152,17 +141,17 @@ export function CanvasNodePromptPanel({ node, projectId, isRunning, onPromptChan
                     ) : mode === "video" ? (
                         <>
                             <ModelPicker config={config} value={config.model} onChange={onModelChange} capability="video" onMissingConfig={() => openConfigDialog(true)} className="max-w-[190px]" externalOptions={comfyOptions} externalValue={comfyValue} onExternalSelect={value=>selectComfyPresetRef.current(value)}/>
-                            {!hasComfyWorkflow?<CanvasVideoSettingsPopover config={config} buttonClassName="!h-10 !max-w-[170px] !justify-start !rounded-full !px-3" onConfigChange={(key, value) => onConfigChange(node.id, videoConfigPatch(key, value))} />:comfyMediaControls.settings}
+                            {!hasComfyWorkflow?<CanvasVideoSettingsPopover config={config} buttonClassName="!h-8 !max-w-[170px] !justify-start !rounded-full !px-3" onConfigChange={(key, value) => onConfigChange(node.id, videoConfigPatch(key, value))} />:comfyMediaControls.settings}
                         </>
                     ) : mode === "audio" ? (
                         <>
                             <ModelPicker config={config} value={config.model} onChange={onModelChange} capability="audio" onMissingConfig={() => openConfigDialog(true)} className="max-w-[190px]" externalOptions={comfyOptions} externalValue={comfyValue} onExternalSelect={value=>selectComfyPresetRef.current(value)}/>
-                            {!hasComfyWorkflow?<CanvasAudioSettingsPopover config={config} buttonClassName="!h-10 !max-w-[170px] !justify-start !rounded-full !px-3" onConfigChange={(key, value) => onConfigChange(node.id, audioConfigPatch(key, value))} />:comfyMediaControls.settings}
+                            {!hasComfyWorkflow?<CanvasAudioSettingsPopover config={config} buttonClassName="!h-8 !max-w-[170px] !justify-start !rounded-full !px-3" onConfigChange={(key, value) => onConfigChange(node.id, audioConfigPatch(key, value))} />:comfyMediaControls.settings}
                         </>
                     ) : (
                         <>
                             <ModelPicker config={config} value={config.model} onChange={(model) => onConfigChange(node.id, { model })} capability="text" onMissingConfig={() => openConfigDialog(true)} className="max-w-[190px]" />
-                            <CanvasTextSettingsPopover config={config} count={node.metadata?.textCount || 1} onConfigChange={(_, value) => onConfigChange(node.id, { reasoningEffort: value })} onCountChange={(textCount) => onConfigChange(node.id, { textCount })} />
+                            <CanvasTextSettingsPopover buttonClassName="!h-8 !max-w-[170px] !justify-start !rounded-full !px-3" config={config} count={node.metadata?.textCount || 1} onConfigChange={(_, value) => onConfigChange(node.id, { reasoningEffort: value })} onCountChange={(textCount) => onConfigChange(node.id, { textCount })} />
                         </>
                     )}
                 </div>
@@ -191,6 +180,7 @@ export function CanvasNodePromptPanel({ node, projectId, isRunning, onPromptChan
             {comfyMediaControls.error?<div role="alert" className="mt-1 max-w-[460px] text-[11px] leading-4 text-amber-700 dark:text-amber-300">{comfyMediaControls.error}</div>:null}
             <Modal title={t("canvas.promptPanel.editorTitle")} open={expanded} centered width={760} footer={null} onCancel={() => setExpanded(false)} destroyOnHidden>
                 <div data-canvas-no-zoom className="pt-2" onWheelCapture={(event) => event.stopPropagation()}>
+                    <CanvasNodeReferenceBar nodeId={node.id} references={activeReferences} nodes={nodes} onConnect={onConnectReference} onDisconnect={onDisconnectReference} />
                     <CanvasPromptChipInput
                         value={prompt}
                         enableSkills={mode === "text"}

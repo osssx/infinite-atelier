@@ -3330,6 +3330,12 @@ function AtelierCanvasPage() {
             ) : (
                 <CanvasNodePromptPanel
                     node={panelNode}
+                    onConnectReference={(sourceId, targetId) => connectNodes({ nodeId: sourceId, handleType: "source" }, { nodeId: targetId, handleType: "target" })}
+                    onDisconnectReference={(sourceId, targetId) => {
+                        const configTarget = connectionsRef.current.find((connection) => connection.fromNodeId === targetId && nodesRef.current.some((node) => node.id === connection.toNodeId && node.type === CanvasNodeType.Config));
+                        const referenceTarget = configTarget && connectionsRef.current.some((connection) => connection.fromNodeId === sourceId && connection.toNodeId === configTarget.toNodeId) ? configTarget.toNodeId : targetId;
+                        setConnections((prev) => prev.filter((connection) => connection.fromNodeId !== sourceId || connection.toNodeId !== referenceTarget));
+                    }}
                     nodes={nodes}
                     connections={connections}
                     projectId={projectId}
@@ -3345,7 +3351,7 @@ function AtelierCanvasPage() {
                     }}
                 />
             ),
-        [backendComfyEnabled,cancelComfyWorkflow,connections,executeComfyWorkflow,globalComfyInstanceId,
+        [backendComfyEnabled,cancelComfyWorkflow,connectNodes,connections,nodes,executeComfyWorkflow,globalComfyInstanceId,
             handleConfigNodeChange,handleGenerateNode,handleNodePromptChange,message,projectId,runningNodeId,stopConfigGeneration],
     );
 

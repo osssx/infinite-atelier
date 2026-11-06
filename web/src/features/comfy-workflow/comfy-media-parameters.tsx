@@ -79,7 +79,7 @@ export function ComfyMediaParameters({template,binding,config,theme,onChange}:{t
   </div>
  </ConfigProvider>;
  const buttonLabel="工作流参数";
- const buttonClassName="!h-10 !max-w-[170px] !min-w-0 !justify-start !rounded-full !px-3";
+ const buttonClassName="!h-8 !max-w-[170px] !min-w-0 !justify-start !rounded-full !px-3";
  const noChange=()=>{};
  return useCase.primaryOutputKind==="image"?
   <CanvasImageSettingsPopover config={config} onConfigChange={noChange} placement="topLeft" panelWidth={300} buttonClassName={buttonClassName} buttonLabel={buttonLabel} content={controls}/>:

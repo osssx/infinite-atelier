@@ -13,7 +13,8 @@ import i18n from "@/i18n";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { canvasMentionPosition, keepMentionOptionVisible } from "@/lib/canvas/canvas-mention-position";
 import { useThemeStore } from "@/stores/use-theme-store";
-import { useNodeGenerationInputs } from "./canvas-graph-context";
+import { CanvasNodeReferenceBar } from "./canvas-node-reference-bar";
+import { useNodeMentionReferences, useNodeGenerationInputs } from "./canvas-graph-context";
 import type { NodeGenerationInput } from "./canvas-node-generation";
 
 type CanvasConfigComposerProps = {
@@ -23,6 +24,8 @@ type CanvasConfigComposerProps = {
     onClose: () => void;
     enableSkills?: boolean;
     projectId?: string;
+    onStartReferenceSelection?: (nodeId: string) => void;
+    onDisconnectReference?: (sourceId: string, targetId: string) => void;
 };
 
 type Token =
@@ -38,7 +41,7 @@ type MentionState = {
 
 export const CONFIG_REFERENCE_PATTERN = /@\[node:([^\]]+)\]/g;
 
-export function CanvasConfigComposer({ nodeId, value, onChange, onClose, enableSkills = false, projectId }: CanvasConfigComposerProps) {
+export function CanvasConfigComposer({ nodeId, value, onChange, onClose, enableSkills = false, projectId, onStartReferenceSelection, onDisconnectReference }: CanvasConfigComposerProps) {
     const { t } = useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const catalog = useSkillStore((state) => state.catalog);
@@ -50,6 +53,7 @@ export function CanvasConfigComposer({ nodeId, value, onChange, onClose, enableS
     // Derived here rather than passed in: this composer only mounts for the node whose panel is
     // open, so inputs are built for one node instead of for every Config node on the canvas.
     const inputs = useNodeGenerationInputs(nodeId);
+    const references = useNodeMentionReferences(nodeId);
     const editorRef = useRef<HTMLDivElement>(null);
     const composingRef = useRef(false);
     const [mention, setMention] = useState<MentionState | null>(null);
@@ -163,7 +167,7 @@ export function CanvasConfigComposer({ nodeId, value, onChange, onClose, enableS
     return (
         <div
             data-canvas-no-zoom
-            className="rounded-2xl border p-3 shadow-2xl backdrop-blur"
+            className="rounded-2xl border p-3 backdrop-blur"
             style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.text }}
             onMouseDown={stopCanvasInteraction}
             onPointerDown={stopCanvasInteraction}
@@ -176,6 +180,7 @@ export function CanvasConfigComposer({ nodeId, value, onChange, onClose, enableS
                 </div>
                 <Button size="small" type="text" className="!h-7 !w-7 !min-w-7 !p-0" icon={<X className="size-3.5" />} onClick={onClose} />
             </div>
+            <CanvasNodeReferenceBar nodeId={nodeId} references={references} onStartSelection={onStartReferenceSelection} onDisconnect={onDisconnectReference} />
             {enableSkills ? <div className="mb-1 text-[11px] opacity-65">{t("canvas.skillPicker.slashHint")}</div> : null}
             <div className="relative rounded-xl">
                 {!value.trim() ? <div className="pointer-events-none absolute left-3 top-2 text-sm leading-7" style={{ color: theme.node.placeholder }}>{t("canvas.composer.placeholder")}</div> : null}

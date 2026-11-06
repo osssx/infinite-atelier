@@ -3352,6 +3352,8 @@ function AtelierCanvasPage() {
             ) : panelNode.type === CanvasNodeType.Config ? (
                 <CanvasConfigComposer
                     nodeId={panelNode.id}
+                    onStartReferenceSelection={startNodeReferenceSelection}
+                    onDisconnectReference={(sourceId, targetId) => setConnections((prev) => prev.filter((connection) => connection.fromNodeId !== sourceId || connection.toNodeId !== targetId))}
                     projectId={projectId}
                     value={panelNode.metadata?.generationMode === "text"
                         ? showLegacySkillMentions(panelNode.metadata?.composerContent ?? panelNode.metadata?.prompt ?? "", panelNode.metadata?.skillBinding)

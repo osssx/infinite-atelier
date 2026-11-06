@@ -79,7 +79,7 @@ describe("ComfyMediaParameters component events",()=>{
  const input=propElements(textControl,props=>typeof props.value==="string"&&typeof props.onChange==="function")[0] as ReactElement;
  ((input.props as Record<string,unknown>).onChange as (event:{target:{value:string}})=>void)({target:{value:""}});
  expect(emitted).toHaveBeenLastCalledWith({comfyMediaPreset:{...binding,overrides:{bool:true,text:""}}});
- const reset=propElements(boolControl,props=>typeof props.onClick==="function"&&props.children==="恢复默认")[0] as ReactElement;
+ const reset=propElements(boolControl,props=>typeof props.onClick==="function"&&props.title==="恢复默认")[0] as ReactElement;
  ((reset.props as Record<string,unknown>).onClick as ()=>void)();
  expect(emitted).toHaveBeenLastCalledWith({comfyMediaPreset:{...binding,overrides:{}}});
  });

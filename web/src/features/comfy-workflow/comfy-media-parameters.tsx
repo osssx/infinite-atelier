@@ -1,5 +1,6 @@
 import {useEffect,useState} from "react";
 import {Button,ConfigProvider,Input,InputNumber,Select,Switch} from "antd";
+import {RotateCcw} from "lucide-react";
 import {CanvasImageSettingsPopover} from "@/components/canvas/canvas-image-settings-popover";
 import {CanvasVideoSettingsPopover} from "@/components/canvas/canvas-video-settings-popover";
 import {CanvasAudioSettingsPopover} from "@/components/canvas/canvas-audio-settings-popover";
@@ -32,7 +33,7 @@ export function DirectPortControl({field,value,overridden,theme,onSet,onReset}:{
  return <div className="min-w-0 space-y-1.5" style={{color:theme.node.text}} data-comfy-media-port={field.port.id}>
   <div className="flex min-w-0 items-start gap-2">
    <label className="min-w-0 flex-1 break-words text-xs font-medium leading-5" title={field.port.label}>{field.port.label}</label>
-   {overridden?<Button size="small" type="text" className="!h-6 shrink-0 !px-1.5 text-[11px]" onClick={reset}>恢复默认</Button>:null}
+   {overridden?<Button size="small" type="text" className="!h-6 !w-6 shrink-0 !p-0" title="恢复默认" aria-label={`${field.port.label}恢复默认`} icon={<RotateCcw size={14}/>} onClick={reset}/>:null}
   </div>
   {field.port.choices?.length?<ConfigProvider theme={{token:{colorBgContainer:theme.toolbar.panel,colorBgElevated:theme.toolbar.panel,
    colorText:theme.node.text,colorTextSecondary:theme.node.muted,colorBorder:theme.node.stroke,colorPrimary:theme.node.activeStroke},

@@ -47,6 +47,17 @@ describe("ComfyMediaParameters component events",()=>{
   expect(controls.map(child=>((child as ReactElement).props as {field:{port:{id:string}}}).field.port.id)).toEqual(["enum","bool","text"]);
  }
  });
+ it("renders a compact titled header with count and a disabled full reset when untouched",()=>{
+  const untouched={...binding,overrides:{}};
+  const root=ComfyMediaParameters({template:template("image"),binding:untouched,config:{} as AiConfig,theme:canvasThemes.light,onChange:vi.fn()}) as ReactElement;
+  const content=(root.type as (props:unknown)=>unknown)(root.props);
+  const wrapper=childrenOf(content).find(element=>((element as ReactElement).props as Record<string,unknown>)["data-comfy-media-native-settings"]!==undefined) as ReactElement;
+  const reset=propElements(wrapper,props=>props.children==="恢复默认"&&props.disabled===true)[0] as ReactElement;
+  expect((reset.props as Record<string,unknown>).disabled).toBe(true);
+  const firstControl=childrenOf(wrapper).find(element=>(element as ReactElement).type===DirectPortControl) as ReactElement;
+  const card=(firstControl.type as (props:unknown)=>unknown)(firstControl.props);
+  expect((card as ReactElement).props).toMatchObject({className:"min-w-0 space-y-1.5","data-comfy-media-port":"enum"});
+ });
  it("calls the real control callbacks for enum, boolean, text, and reset actions",()=>{
  const emitted=vi.fn();const root=ComfyMediaParameters({template:template("image"),binding,config:{} as AiConfig,theme:canvasThemes.light,onChange:emitted}) as ReactElement;
  const content=(root.type as (props:unknown)=>unknown)(root.props);

@@ -16,11 +16,12 @@ function localValue(field:ComfyInstanceScalarField):unknown{return field.localVa
 export function DirectPortControl({field,value,overridden,theme,onSet,onReset}:{field:ComfyInstanceScalarField;value:unknown;overridden:boolean;theme:CanvasTheme;
  onSet:(value:ScalarValue)=>void;onReset:()=>void}){
  const kind=field.port.valueKind;
+ const numeric=kind==="INT"||kind==="FLOAT";
+ const multiline=kind==="STRING"&&/(instruction|description|negative|指令|说明|描述|负面提示)/i.test(field.port.label);
  const initial=typeof value==="string"||typeof value==="number"?String(value):"";
  const [draft,setDraft]=useState(initial);
  const [error,setError]=useState("");
  useEffect(()=>{setDraft(initial);setError("");},[initial,field.port.id]);
- const numeric=kind==="INT"||kind==="FLOAT";
  const saveNumber=()=>{
   if(!numeric||!draft.trim())return;
   const parsed=parseComfyScalarOverride(kind,draft);
@@ -28,10 +29,9 @@ export function DirectPortControl({field,value,overridden,theme,onSet,onReset}:{
  };
  const placeholder=field.mixedTemplateValues&&value===undefined?"模板目标原值不同，请设置覆盖值":value===undefined?"使用工作流默认值":undefined;
  const reset=()=>{setDraft("");setError("");onReset();};
- return <div className="space-y-1.5" data-comfy-media-port={field.port.id}>
-  <div className="flex min-w-0 items-center gap-2">
-   <label className="min-w-0 flex-1 truncate text-xs font-medium" title={field.port.label}>{field.port.label}</label>
-   <span className="shrink-0 rounded border border-stone-300 px-1.5 py-0.5 text-[10px] opacity-60 dark:border-stone-700">{kind}</span>
+ return <div className="min-w-0 space-y-1.5" style={{color:theme.node.text}} data-comfy-media-port={field.port.id}>
+  <div className="flex min-w-0 items-start gap-2">
+   <label className="min-w-0 flex-1 break-words text-xs font-medium leading-5" title={field.port.label}>{field.port.label}</label>
    {overridden?<Button size="small" type="text" className="!h-6 shrink-0 !px-1.5 text-[11px]" onClick={reset}>恢复默认</Button>:null}
   </div>
   {field.port.choices?.length?<ConfigProvider theme={{token:{colorBgContainer:theme.toolbar.panel,colorBgElevated:theme.toolbar.panel,
@@ -44,12 +44,13 @@ export function DirectPortControl({field,value,overridden,theme,onSet,onReset}:{
    String(field.port.choices.findIndex(choice=>Object.is(choice.value,value))):undefined}
    placeholder={placeholder??"选择参数值"} options={field.port.choices.map((choice,index)=>({value:String(index),label:choice.label}))}
    onChange={(selected:string|undefined)=>{if(selected===undefined){reset();return;}const choice=field.port.choices?.[Number(selected)];if(choice)onSet(choice.value);}}/></ConfigProvider>:
-   kind==="BOOLEAN"?<div className="flex items-center gap-2"><Switch size="small" checked={value===true} onChange={onSet}/><span className="text-xs opacity-65">{field.mixedTemplateValues&&value===undefined?"模板目标值不同，请指定覆盖值":value===undefined?"未设置":value?"开启":"关闭"}</span></div>:
+  kind==="BOOLEAN"?<div className="flex min-h-8 items-center gap-2"><Switch size="small" checked={value===true} onChange={onSet}/><span className="text-xs opacity-70">{field.mixedTemplateValues&&value===undefined?"模板目标值不同，请指定覆盖值":value===undefined?"未设置":value?"开启":"关闭"}</span></div>:
    numeric?<InputNumber className="w-full" size="small" stringMode value={draft||undefined} placeholder={placeholder}
     onChange={next=>{setDraft(next==null?"":String(next));setError("");}}
     onBlur={saveNumber} onPressEnter={event=>event.currentTarget.blur()}/>:
+   multiline?<Input.TextArea size="small" autoSize={{minRows:2,maxRows:5}} value={typeof value==="string"?value:""} placeholder={placeholder} onChange={event=>onSet(event.target.value)}/>:
    <Input size="small" value={typeof value==="string"?value:""} placeholder={placeholder} onChange={event=>onSet(event.target.value)}/>}
-  {error?<div role="alert" className="text-[11px] text-red-500">{error}</div>:null}
+  {error?<div role="alert" className="mt-1 text-[11px] text-red-500">{error}</div>:null}
  </div>;
 }
 
@@ -62,12 +63,20 @@ export function ComfyMediaParameters({template,binding,config,theme,onChange}:{t
  const write=(field:ComfyInstanceScalarField,value:ScalarValue)=>onChange(createComfyMediaOverridePatch(binding,field.port.id,value));
  const reset=(field:ComfyInstanceScalarField)=>onChange(createComfyMediaResetPatch(binding,field.port.id));
  const resetAll=()=>onChange(createComfyMediaResetPatch(binding));
- const controls=<div className="space-y-3" data-comfy-media-native-settings>
-  {fields.length?fields.map(field=><DirectPortControl key={field.port.id} field={field} value={localValue(field)} theme={theme}
-   overridden={Object.hasOwn(binding.overrides,field.port.id)} onSet={value=>write(field,value)} onReset={()=>reset(field)}/>)
-   :<p className="text-xs opacity-60">没有可编辑的标量参数。</p>}
-  {Object.keys(binding.overrides).length?<Button size="small" onClick={resetAll}>重置全部参数</Button>:null}
- </div>;
+ const controls=<ConfigProvider theme={{token:{colorBgContainer:theme.toolbar.panel,colorBgElevated:theme.toolbar.panel,
+  colorText:theme.node.text,colorTextSecondary:theme.node.muted,colorBorder:theme.node.stroke,colorPrimary:theme.node.activeStroke,
+  controlOutline:theme.node.activeStroke},components:{Button:{defaultBg:theme.toolbar.panel,defaultBorderColor:theme.node.stroke,defaultColor:theme.node.text}}}}>
+  <div className="space-y-3" style={{color:theme.node.text}} data-comfy-media-native-settings>
+   <header className="flex items-center justify-between gap-2 border-b pb-2" style={{borderColor:theme.node.stroke}}>
+    <h3 className="m-0 text-sm font-semibold">工作流参数</h3>
+    <Button size="small" disabled={!Object.keys(binding.overrides).length} onClick={resetAll}>恢复默认</Button>
+   </header>
+   {fields.length?<div className="space-y-3" data-comfy-media-parameter-list>
+    {fields.map(field=><DirectPortControl key={field.port.id} field={field} value={localValue(field)} theme={theme}
+     overridden={Object.hasOwn(binding.overrides,field.port.id)} onSet={value=>write(field,value)} onReset={()=>reset(field)}/>)}
+   </div>:<p className="rounded-lg border p-3 text-xs opacity-65" style={{borderColor:theme.node.stroke}}>没有可编辑的标量参数。</p>}
+  </div>
+ </ConfigProvider>;
  const buttonLabel="工作流参数";
  const buttonClassName="!h-10 !max-w-[170px] !min-w-0 !justify-start !rounded-full !px-3";
  const noChange=()=>{};

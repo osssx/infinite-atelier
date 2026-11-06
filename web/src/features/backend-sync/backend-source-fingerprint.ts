@@ -56,7 +56,9 @@ export async function fingerprintBackendSource(graph:BackendCanvasGraph,targetNo
   visiting.add(id);
   for(const edge of parents.get(id)??[]){const {id:_edgeId,...stableEdge}=edge;incoming.push(stableEdge);visit(edge.fromNodeId)}
   const target=byId.get(id)!;
-  for(const [slotId,ref] of Object.entries(target.metadata?.comfyMediaPreset?.slots??{})){
+  const slotBindings=[target.metadata?.comfyMediaPreset,...Object.values(target.metadata?.comfyWorkflowSelections??{})].filter(Boolean);
+  const slots=Object.assign({},...slotBindings.map(binding=>binding?.slots??{})) as Record<string,{nodeId:string;imageId?:string}>;
+  for(const [slotId,ref] of Object.entries(slots)){
    if(!ref||typeof ref.nodeId!=="string"||!byId.has(ref.nodeId))throw Error("stale_generation_source");
    const source=byId.get(ref.nodeId)!;
    incoming.push({fromNodeId:ref.nodeId,fromPortId:source.type,toNodeId:id,toPortId:slotId,mediaAssetId:ref.imageId??null});
@@ -74,4 +76,9 @@ export async function fingerprintBackendSource(graph:BackendCanvasGraph,targetNo
  const bytes=new TextEncoder().encode(stableJson({nodes,incoming:edges}));
  const hash=await crypto.subtle.digest("SHA-256",bytes);
  return "v2:"+[...new Uint8Array(hash)].map(n=>n.toString(16).padStart(2,"0")).join("");
+}
+export async function fingerprintComfyTargetBinding(graphFingerprint:string,targetBinding:{mode:string;binding:unknown}):Promise<string>{
+ const bytes=new TextEncoder().encode(stableJson({graphFingerprint,targetBinding}));
+ const hash=await crypto.subtle.digest("SHA-256",bytes);
+ return "v2c:"+[...new Uint8Array(hash)].map(n=>n.toString(16).padStart(2,"0")).join("");
 }

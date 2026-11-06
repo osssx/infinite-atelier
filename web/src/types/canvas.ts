@@ -139,6 +139,8 @@ export type CanvasNodeMetadata = {
         lastRunId?:string;
     };
     comfyMediaPresetCache?: Record<string,NonNullable<CanvasNodeMetadata["comfyMediaPreset"]>>;
+    /** Per-mode Comfy workflow selection for the multi-capability Config node. */
+    comfyWorkflowSelections?: Partial<Record<"image"|"video"|"audio",NonNullable<CanvasNodeMetadata["comfyMediaPreset"]>>>;
 };
 
 export type CanvasNodeData = {

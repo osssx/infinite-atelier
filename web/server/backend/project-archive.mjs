@@ -45,12 +45,15 @@ export function projectArchiveHashes(value){
 function boundTemplates(document){
  const refs=new Map();
  for(const node of document.nodes??[]){
-  const value=node?.metadata?.comfyWorkflow??node?.metadata?.comfyMediaPreset;
-  if(!value||value.templateId===undefined&&value.templateRevision===undefined)continue;
-  if(typeof value.templateId!=="string"||typeof value.templateRevision!=="string")
-   throw error("archive_template_missing",422);
-  refs.set(value.templateId+"@"+value.templateRevision,
-   {id:value.templateId,revision:value.templateRevision});
+  const values=[node?.metadata?.comfyWorkflow,node?.metadata?.comfyMediaPreset,
+   ...Object.values(node?.metadata?.comfyWorkflowSelections??{})];
+  for(const value of values){
+   if(!value||value.templateId===undefined&&value.templateRevision===undefined)continue;
+   if(typeof value.templateId!=="string"||typeof value.templateRevision!=="string")
+    throw error("archive_template_missing",422);
+   refs.set(value.templateId+"@"+value.templateRevision,
+    {id:value.templateId,revision:value.templateRevision});
+  }
  }
  return [...refs.values()].sort((a,b)=>(a.id+"@"+a.revision).localeCompare(b.id+"@"+b.revision));
 }

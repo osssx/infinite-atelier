@@ -44,7 +44,7 @@ export function referenceUrl(image: ReferenceImage) {
 export function buildImageGenerationMetadata(type: CanvasImageGenerationType, config: AiConfig, count: number, references: ReferenceImage[]): CanvasNodeMetadata {
     return {
         generationType: type,
-        model: config.model,
+        ...(!config.comfyWorkflowDefaults?.image?{model:config.imageModel||config.model}:{}),
         size: config.size,
         quality: config.quality,
         ...(config.background ? { background: config.background } : {}),
@@ -55,7 +55,7 @@ export function buildImageGenerationMetadata(type: CanvasImageGenerationType, co
 
 export function buildAudioGenerationMetadata(config: AiConfig): CanvasNodeMetadata {
     return {
-        model: config.model,
+        ...(!config.comfyWorkflowDefaults?.audio?{model:config.audioModel||config.model}:{}),
         audioVoice: config.audioVoice,
         audioFormat: config.audioFormat,
         audioSpeed: config.audioSpeed,

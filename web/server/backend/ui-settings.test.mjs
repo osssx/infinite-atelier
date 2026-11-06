@@ -22,6 +22,7 @@ function fixture(t){
 const publicConfig={
  channelMode:"local",model:"one::gpt",textModel:"one::gpt",
  imageModel:"",videoModel:"",audioModel:"",
+ comfyWorkflowDefaults:{image:{templateId:"image-flow",templateRevision:"a".repeat(64)}},
  audioVoice:"alloy",videoSeconds:"6",comfyAutoDetect:true,
  channels:[{id:"one",name:"API",baseUrl:"https://api.example.test",apiFormat:"openai",
   models:[{name:"gpt",capability:"text"}]}]
@@ -51,6 +52,8 @@ test("P5.4b rejects API keys, scripts, tokens and unknown fields anywhere in set
   {...publicConfig,channels:[{...publicConfig.channels[0],
    models:[{name:"gpt",capability:"text",script:"const key = 'SECRET'"}]}]},
   {...publicConfig,metadata:{some:"value"}},
+  {...publicConfig,comfyWorkflowDefaults:{text:{templateId:"text-flow",templateRevision:"a".repeat(64)}}},
+  {...publicConfig,comfyWorkflowDefaults:{image:{templateId:"image-flow",templateRevision:"bad"}}},
   {...publicConfig,channels:[{...publicConfig.channels[0],models:[{
    name:"gpt",capability:"text",videoCapabilities:{accessToken:"secret"}
   }]}]}

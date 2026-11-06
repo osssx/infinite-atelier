@@ -1,10 +1,10 @@
-import type { CSSProperties } from "react";
+import {useCallback,useRef,useState,type CSSProperties} from "react";
 import { Image as ImageIcon, MessageSquare, Music2, Settings2, Video } from "lucide-react";
 import { Segmented, Select } from "antd";
 import { useTranslation } from "react-i18next";
 
 import { ModelPicker } from "@/components/model-picker";
-import { defaultConfig, resolveModelChannel, resolveModelForCapability, resolveModelScript, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
+import { defaultConfig, modelMatchesCapability, resolveModelChannel, resolveModelForCapability, resolveModelScript, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { getInputSummary } from "@/lib/canvas/canvas-generation-helpers";
 import { resolveSeedanceInputAssignments } from "@/lib/canvas/seedance-input-assignments";
@@ -15,6 +15,7 @@ import { CanvasAudioSettingsPopover, type CanvasAudioSettingKey } from "./canvas
 import { CanvasVideoSettingsPopover } from "./canvas-video-settings-popover";
 import { CanvasTextSettingsPopover } from "./canvas-text-settings-popover";
 import { CanvasConfigGenerateButton } from "./canvas-config-generate-button";
+import {useComfyMediaPresetControl} from "@/features/comfy-workflow/comfy-media-preset-control";
 
 import type { CanvasGenerationMode, CanvasNodeData, CanvasNodeMetadata, CanvasVideoReference } from "@/types/canvas";
 
@@ -24,9 +25,11 @@ type CanvasConfigNodePanelProps = {
     onGenerate: (nodeId: string) => void;
     onStop: (nodeId: string) => void;
     onComposerToggle: () => void;
+    nodes:readonly CanvasNodeData[];
+    connections:readonly import("@/types/canvas").CanvasConnection[];
 };
 
-export function CanvasConfigNodePanel({ node, onConfigChange, onGenerate, onStop, onComposerToggle }: CanvasConfigNodePanelProps) {
+export function CanvasConfigNodePanel({ node, onConfigChange, onGenerate, onStop, onComposerToggle,nodes,connections }: CanvasConfigNodePanelProps) {
     const { t } = useTranslation();
     const globalConfig = useEffectiveConfig();
     const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
@@ -38,6 +41,23 @@ export function CanvasConfigNodePanel({ node, onConfigChange, onGenerate, onStop
     const videoInputs = inputs;
     const mode = node.metadata?.generationMode || "image";
     const config = buildNodeConfig(globalConfig, node, mode);
+    const selectedWorkflow=node.metadata?.comfyWorkflowSelections?.[mode as "image"|"video"|"audio"];
+    const explicitChannelModel=Boolean(node.metadata?.model&&modelMatchesCapability(globalConfig,node.metadata.model,mode));
+    const inheritedWorkflow=mode!=="text"&&!explicitChannelModel?globalConfig.comfyWorkflowDefaults?.[mode]:undefined;
+    const hasComfyWorkflow=Boolean(selectedWorkflow??inheritedWorkflow);
+    const workflowNode={...node,metadata:{...node.metadata,comfyMediaPreset:selectedWorkflow}};
+    const [comfyOptions,setComfyOptions]=useState<{value:string;label:string;disabled?:boolean}[]>([]);
+    const selectComfyRef=useRef<(value:string)=>void>(()=>{});
+    const onComfyOptionsChange=useCallback((options:{value:string;label:string;disabled?:boolean}[],select:(value:string)=>void)=>{
+        setComfyOptions(options);selectComfyRef.current=select;
+    },[]);
+    const handleComfySelection=useCallback((patch:Partial<CanvasNodeMetadata>)=>{
+        const next={...(node.metadata?.comfyWorkflowSelections??{})};
+        if(patch.comfyMediaPreset){next[mode as "image"|"video"|"audio"]=patch.comfyMediaPreset;onConfigChange(node.id,{comfyWorkflowSelections:next,model:undefined});}
+        else {delete next[mode as "image"|"video"|"audio"];onConfigChange(node.id,{comfyWorkflowSelections:next});}
+    },[mode,node.id,node.metadata?.comfyWorkflowSelections,onConfigChange]);
+    const comfyControls=useComfyMediaPresetControl({node:workflowNode,nodes,connections,config,theme,capability:mode,
+        defaultPreset:inheritedWorkflow,onChange:handleComfySelection,onPickerOptionsChange:onComfyOptionsChange});
     const chipStyle = { background: theme.node.fill, borderColor: theme.node.stroke, color: theme.node.text };
     const hasAnyInput = Boolean(inputSummary.textCount || inputSummary.imageCount || inputSummary.videoCount || inputSummary.audioCount);
     const hasComposerContent = Boolean((node.metadata?.composerContent ?? node.metadata?.prompt ?? "").trim());
@@ -124,19 +144,25 @@ export function CanvasConfigNodePanel({ node, onConfigChange, onGenerate, onStop
             </div>
 
             <div className="mb-2 grid min-w-0 cursor-default grid-cols-[minmax(0,1fr)_148px] items-center gap-2" onMouseDown={(event) => event.stopPropagation()}>
-                <ModelPicker className="canvas-compact-control h-10" config={config} value={config.model} onChange={(model) => onConfigChange(node.id, { model })} capability={mode} onMissingConfig={() => openConfigDialog(true)} fullWidth />
-                {mode === "video" ? (
+                <ModelPicker className="canvas-compact-control h-10" config={config} value={config.model} onChange={(model) => {
+                    const next={...(node.metadata?.comfyWorkflowSelections??{})};delete next[mode as "image"|"video"|"audio"];
+                    onConfigChange(node.id,{model,comfyWorkflowSelections:next});
+                }} capability={mode} onMissingConfig={() => openConfigDialog(true)} fullWidth
+                    externalOptions={mode==="text"?[]:comfyOptions}
+                    externalValue={mode!=="text"&&(selectedWorkflow??(!explicitChannelModel?inheritedWorkflow:undefined))?`${(selectedWorkflow??inheritedWorkflow)!.templateId}@${(selectedWorkflow??inheritedWorkflow)!.templateRevision}`:undefined}
+                    onExternalSelect={value=>selectComfyRef.current(value)}/>
+                {mode === "video"&&!hasComfyWorkflow ? (
                     <CanvasVideoSettingsPopover config={config} placement="topRight" buttonClassName="canvas-compact-control !h-10 !w-full !justify-start !rounded-lg !px-2" onConfigChange={(key, value) => onConfigChange(node.id, videoConfigPatch(key, value))} />
-                ) : mode === "image" ? (
+                ) : mode === "image"&&!hasComfyWorkflow ? (
                     <CanvasImageSettingsPopover config={config} placement="topRight" autoAdjustOverflow={false} buttonClassName="canvas-compact-control !h-10 !w-full !justify-start !rounded-lg !px-2" onConfigChange={(key, value) => onConfigChange(node.id, key === "count" ? { count: Number(value) || 1 } : { [key]: value })} />
-                ) : mode === "audio" ? (
+                ) : mode === "audio"&&!hasComfyWorkflow ? (
                     <CanvasAudioSettingsPopover config={config} placement="topRight" buttonClassName="canvas-compact-control !h-10 !w-full !justify-start !rounded-lg !px-2" onConfigChange={(key, value) => onConfigChange(node.id, audioConfigPatch(key, value))} />
-                ) : (
+                ) : mode === "text" ? (
                     <CanvasTextSettingsPopover config={config} count={node.metadata?.textCount || 1} placement="topRight" buttonClassName="canvas-compact-control !h-10 !w-full !justify-start !rounded-lg !px-2" onConfigChange={(_, value) => onConfigChange(node.id, { reasoningEffort: value })} onCountChange={(textCount) => onConfigChange(node.id, { textCount })} />
-                )}
+                ) : null}
             </div>
 
-            {arkVideo ? (
+            {arkVideo&&!hasComfyWorkflow ? (
                 <div className="mb-2 space-y-2 rounded-lg border p-2" style={{ borderColor: theme.node.stroke }} onMouseDown={(event) => event.stopPropagation()}>
                     <div className="text-[11px] font-medium opacity-75">{t("canvas.configNode.seedanceInputs")}</div>
                     {!mediaInputs.length ? <div className="text-[11px] opacity-60">{t("canvas.configNode.seedanceInputsEmpty")}</div> : orderedAssignments.map((item, index) => {
@@ -160,6 +186,9 @@ export function CanvasConfigNodePanel({ node, onConfigChange, onGenerate, onStop
                     <div className="text-[10px] opacity-55">{t("canvas.configNode.seedanceInputsHint")}</div>
                 </div>
             ) : null}
+
+            {comfyControls.settings}{comfyControls.slots}
+            {comfyControls.error?<div role="alert" className="mb-2 text-[11px] text-amber-600">{comfyControls.error}</div>:null}
 
             <CanvasConfigGenerateButton nodeId={node.id} canGenerate={canGenerate} onGenerate={onGenerate} onStop={onStop} />
         </div>

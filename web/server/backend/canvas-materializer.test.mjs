@@ -8,12 +8,12 @@ import {initializeSchema} from "./schema.mjs";
 import {createBlobStore} from "./blob-store.mjs";
 import {createCanvasMaterializer} from "./canvas-materializer.mjs";
 import {createProject,getProject,patchProject,saveSingleUserCanvas} from "./projects.mjs";
-import {fingerprintSource,fingerprintSourceLegacy,submitJob,appendArtifact,transitionJob,readEventsAfter} from "./repository.mjs";
+import {fingerprintSource,fingerprintSourceLegacy,stableJson,submitJob,appendArtifact,transitionJob,readEventsAfter} from "./repository.mjs";
 import {createJobCoordinator} from "./job-coordinator.mjs";
 import {createBackendWorker} from "./worker.mjs";
 import {createLocalBackend} from "./runtime.mjs";
 import {buildApp} from "./app.mjs";
-import {randomUUID} from "node:crypto";
+import {randomUUID,createHash} from "node:crypto";
 
 const png=Buffer.from([137,80,78,71,13,10,26,10,0,0,0,0,73,72,68,82]);
 const mp4=Buffer.from("000000186674797069736f6d0000020069736f6d69736f32","hex");
@@ -286,6 +286,25 @@ test("media preset primary output fills only an unchanged empty media node; popu
  assert.equal(populatedAfter.nodes.length,2);
  assert.equal(populatedAfter.nodes.find(node=>node.id===sourceId).metadata.content,"existing image");
  assert.equal(populatedAfter.nodes.find(node=>node.metadata?.comfyArtifact?.artifactId==="media-appended").type,"image");
+});
+test("frozen global workflow default materializes onto a media node without an explicit node binding",async t=>{
+ const f=fixture(t),sourceId="default-media",doc={nodes:[{id:sourceId,type:"image",title:"Image",
+  position:{x:0,y:0},width:320,height:240,metadata:{prompt:"a cat"}}],connections:[]};
+ createProject(f.db,{id:"global-workflow-default",document:doc});
+ const template={id:"default-image",revision:"r1",mediaUseCase:{channel:"image",primaryOutputPortId:"image",additionalOutputPortIds:[]}};
+ const binding={mode:"image",binding:{templateId:"default-image",templateRevision:"r1",overrides:{},slots:{}}};
+ const base=fingerprintSource(doc,sourceId),sourceFingerprint="v2c:"+createHash("sha256").update(stableJson({graphFingerprint:base,targetBinding:binding})).digest("hex");
+ const jobId=submitJob(f.db,{projectId:"global-workflow-default",targetNodeId:sourceId,expectedProjectRevision:1,
+  sourceNodeFingerprint:sourceFingerprint,idempotencyKey:"global-default-run",requestFingerprint:"global-default-run",executionMode:"poll",
+  snapshot:{adapterKind:"comfy",instanceId:"comfy-local",comfyTemplate:template,comfyTargetBinding:binding,
+   comfyRequest:{nodes:[{id:sourceId}],rootOutputs:[{nodeId:sourceId,portId:"image"}]}}}).jobId;
+ const blob=await f.blobStore.put([png],{mime:"image/png"});
+ appendArtifact(f.db,{id:"default-output",jobId,portId:"image",itemKey:"0",blobId:blob.blobId,sha256:blob.sha256,
+  mime:blob.mimeType,kind:"image",metadata:{comfyArtifact:{runId:jobId,artifactId:"default-output",workflowNodeId:sourceId,portId:"image",kind:"image",index:0}}});
+ f.db.prepare("UPDATE jobs SET status='succeeded' WHERE id=?").run(jobId);
+ const result=await f.materializer.runOnce();
+ assert.equal(result[0].status,"materialized");
+ assert.equal(getProject(f.db,"global-workflow-default").document.nodes[0].metadata.storageKey,"cas:"+blob.blobId);
 });
 test("materializer replays after interruption; doesn't duplicate nodes/connections",async t=>{
  const f=fixture(t),{jobId}=await f.addArtifacts();

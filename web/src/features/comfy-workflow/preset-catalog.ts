@@ -5,6 +5,7 @@ import type { ComfyWorkflowTemplate } from "./template-schema";
 /** User-owned catalog entries only. Legacy builtin rows are shown as imports. */
 export type ComfyCatalogPreset = ComfyPreset & {
     mediaType?:"image"|"video"|"audio"|"other";
+    mediaWorkflowEligible?:boolean;
     status?:"available"|"missing";
 };
 export type ComfyCatalogLoadFailure={presetId:string;name:string;message:string};
@@ -39,7 +40,8 @@ export async function listComfyPresetCatalog():Promise<ComfyCatalogPreset[]> {
             const template=await getComfyTemplate(preset.templateId,preset.revision);
             const output=template?.ports.find(port=>port.direction==="source")?.valueKind;
             const mediaType=template?.mediaUseCase?.channel??(output==="VIDEO"?"video":output==="AUDIO"?"audio":output==="IMAGE"?"image":"other");
-            return {...preset,mediaType,status:template?"available" as const:"missing" as const};
-        }catch{return {...preset,mediaType:"other" as const,status:"missing" as const};}
+            const mediaWorkflowEligible=Boolean(template?.mediaUseCase&&["image","video","audio"].includes(template.mediaUseCase.channel));
+            return {...preset,mediaType,mediaWorkflowEligible,status:template?"available" as const:"missing" as const};
+        }catch{return {...preset,mediaType:"other" as const,mediaWorkflowEligible:false,status:"missing" as const};}
     }));
 }

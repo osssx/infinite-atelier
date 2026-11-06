@@ -98,6 +98,28 @@ describe("backend save fence + frozen Comfy submission",()=>{
   expect(request.externalInputs).toMatchObject([{kind:"asset",sourceNodeId:"reference",sourcePortId:"image",valueKind:"IMAGE",sha256:"a".repeat(64)}]);
   expect(graph.connections).toEqual([{id:"legacy-context",fromNodeId:"context-text",toNodeId:"media-target"}]);
  });
+ it("config producer submits through the frozen Comfy workflow route with a binding fingerprint",async()=>{
+  const binding={templateId:"config-flow",templateRevision:"config-rev",overrides:{steps:3},slots:{}};
+  const configNode:CanvasNodeData={id:"config-target",type:"config",title:"Config",width:360,height:280,
+   position:{x:0,y:0},metadata:{comfyWorkflowSelections:{image:binding}}};
+  const mediaTemplate:ComfyWorkflowTemplate={...template,id:"config-flow",revision:"config-rev",
+   apiGraph:{"1":{class_type:"Prompt",inputs:{text:""}},"2":{class_type:"Output",inputs:{}}},
+   requirements:{classTypes:["Prompt","Output"]},
+   ports:[{id:"prompt",label:"Prompt",direction:"target",valueKind:"STRING",inputBinding:{mode:"literal",targets:[{nodeId:"1",inputName:"text"}]}},
+    {id:"image",label:"Image",direction:"source",valueKind:"IMAGE",outputBinding:{nodeId:"2",outputIndex:0},capture:{kind:"image",adapterId:"SaveImage"}}],
+   mediaUseCase:{channel:"image",primaryOutputKind:"image",promptPortId:"prompt",slots:[],primaryOutputPortId:"image"}};
+  let frozen:any;
+  const bridge={state:{status:"connected"},assertNoActiveJob:vi.fn(async()=>{}),assertComfyReady:vi.fn(async()=>{}),
+   saveProjectNow:vi.fn(async()=>({projectId:"p1",revision:11,sourceNodeFingerprint:"graph-fence"})),
+   uploadFrozenBlob:vi.fn(async()=>{throw Error("unexpected upload")}),
+   submitFrozenJob:vi.fn(async(payload:Record<string,unknown>)=>{frozen=payload;return expectedJob})};
+  await expect(startBackendComfyWorkflowRun({bridge,projectId:"p1",workflowNode:configNode,nodes:[configNode],connections:[],
+   template:mediaTemplate,instanceId:"comfy-local",outputPortIds:["image"],mediaBinding:binding,workflowMode:"image",prompt:"upstream prompt"}))
+   .resolves.toEqual(expectedJob);
+  expect(frozen.snapshot.comfyTargetBinding).toEqual({mode:"image",binding});
+  expect(frozen.sourceNodeFingerprint).toMatch(/^v2c:/);
+  expect(bridge.submitFrozenJob).toHaveBeenCalledOnce();
+ });
  it("does not require media slot picker data when a regular workflow node runs a template that advertises media use",async()=>{
   const workflowWithUseCase:ComfyWorkflowTemplate={...template,ports:[
    {id:"first_frame",label:"First frame",direction:"target",required:true,valueKind:"IMAGE",

@@ -4,11 +4,12 @@ const names=new Set(["theme","model_config"]);
 const allowedConfig=new Set(["channelMode","baseUrl","apiFormat","channels","model","imageModel","videoModel",
  "textModel","audioModel","audioVoice","audioFormat","audioSpeed","audioInstructions","videoSeconds",
  "videoMode","videoRatio","videoReturnLastFrame","vquality","videoGenerateAudio","videoWatermark",
- "systemPrompt","reasoningEffort","models","quality","size","background","count",
+ "systemPrompt","reasoningEffort","models","quality","size","background","count","comfyWorkflowDefaults",
  "canvasImageCount","comfyInstanceId","comfyAutoDetect"]);
 const allowedChannel=new Set(["id","name","baseUrl","apiFormat","models"]);
 const allowedModel=new Set(["name","capability","videoPreset","videoCapabilities"]);
 const allowedVideoCapabilities=new Set(["resolutions","durations","ratios","generateAudio","watermark","returnLastFrame"]);
+const allowedWorkflowDefaults=new Set(["image","video","audio"]);
 const fail=(code,statusCode=400)=>Object.assign(Error(code),{code,statusCode});
 const object=v=>v!==null&&typeof v==="object"&&!Array.isArray(v);
 function safeTree(value,depth=0){
@@ -54,6 +55,13 @@ function validate(name,value){
      Object.keys(m.videoCapabilities).some(k=>!allowedVideoCapabilities.has(k))))throw fail("ui_setting_invalid");
    }
   }
+ }
+ if(value.comfyWorkflowDefaults!==undefined){
+  const defaults=value.comfyWorkflowDefaults;
+  if(!object(defaults)||Object.keys(defaults).some(key=>!allowedWorkflowDefaults.has(key)))throw fail("ui_setting_invalid");
+  for(const item of Object.values(defaults))if(!object(item)||Object.keys(item).some(key=>!['templateId','templateRevision'].includes(key))||
+   typeof item.templateId!=="string"||!/^[A-Za-z0-9_:.-]{1,128}$/.test(item.templateId)||
+   typeof item.templateRevision!=="string"||!/^[a-f0-9]{64}$/.test(item.templateRevision))throw fail("ui_setting_invalid");
  }
  safeTree(value);
  const json=JSON.stringify(value);

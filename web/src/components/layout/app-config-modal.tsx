@@ -9,6 +9,7 @@ import { SkillManager } from "@/features/skills/skill-manager";
 import { useCopyText } from "@/hooks/use-copy-text";
 const ComfySettingsTab = lazy(() => import("@/features/comfy-workflow/comfy-settings-tab").then(module => ({ default: module.ComfySettingsTab })));
 import { exportAppConfig, importAppConfig } from "@/services/config-file";
+import {listComfyWorkflowModelOptionsByCapability,type WorkflowModelOption,workflowModelValue} from "@/features/comfy-workflow/workflow-model-options";
 import { audioFormatOptions, audioVoiceOptions, normalizeAudioSpeedValue } from "@/lib/audio-generation";
 import {
     createModelChannel,
@@ -36,6 +37,11 @@ const modelGroups: ModelGroup[] = [
     { capability: "text", modelKey: "textModel", labelKey: "config.preferences.defaultTextModel" },
     { capability: "audio", modelKey: "audioModel", labelKey: "config.preferences.defaultAudioModel" },
 ];
+function selectedWorkflowOption(options:WorkflowModelOption[],selection:{templateId:string;templateRevision:string}|undefined){
+    if(!selection)return options;
+    const value=workflowModelValue(selection.templateId,selection.templateRevision);
+    return options.some(option=>option.value===value)?options:[...options,{value,label:"工作流版本不可用 · 请重新导入",disabled:true,templateId:selection.templateId,templateRevision:selection.templateRevision}];
+}
 
 export function AppConfigPanel({ showDoneButton = false, initialTab = "channels" }: { showDoneButton?: boolean; initialTab?: ConfigTabKey }) {
     const { message,modal } = App.useApp();
@@ -43,6 +49,8 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
     const configInputRef = useRef<HTMLInputElement>(null);
     const [activeTab, setActiveTab] = useState<ConfigTabKey>(initialTab);
     const [editingChannelId, setEditingChannelId] = useState("");
+    const [workflowOptions,setWorkflowOptions]=useState<Record<"image"|"video"|"audio",WorkflowModelOption[]>>({image:[],video:[],audio:[]});
+    const [workflowCatalogError,setWorkflowCatalogError]=useState("");
     const config = useConfigStore((state) => state.config);
     const updateConfig = useConfigStore((state) => state.updateConfig);
     const shouldPromptContinue = useConfigStore((state) => state.shouldPromptContinue);
@@ -50,6 +58,9 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
     const clearPromptContinue = useConfigStore((state) => state.clearPromptContinue);
     const editingChannel = config.channels.find((channel) => channel.id === editingChannelId) || null;
     useEffect(() => setActiveTab(initialTab), [initialTab]);
+    useEffect(()=>{let active=true;void listComfyWorkflowModelOptionsByCapability()
+        .then(rows=>{if(active){setWorkflowOptions(rows);setWorkflowCatalogError("");}})
+        .catch(error=>{if(active)setWorkflowCatalogError(error instanceof Error?error.message:String(error));});return()=>{active=false};},[]);
 
     const saveConfig = (nextConfig: AiConfig) => {
         // One revision-fenced transaction rather than one request per setting.
@@ -156,12 +167,29 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
                             <Form layout="vertical" requiredMark={false}>
                                 <div className="mb-2 text-sm font-semibold">{t("config.preferences.defaultModels")}</div>
                                 <div className="mb-4 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-                                    {modelGroups.map((group) => (
-                                        <Form.Item key={group.modelKey} label={t(group.labelKey)} className="mb-0">
-                                            <ModelPicker config={config} value={config[group.modelKey]} onChange={(model) => updateConfig(group.modelKey, model)} capability={group.capability} fullWidth />
+                                    {modelGroups.map((group) => {
+                                        const workflowCapability=group.capability==="text"?undefined:group.capability;
+                                        const selectedWorkflow=workflowCapability?config.comfyWorkflowDefaults?.[workflowCapability]:undefined;
+                                        const availableOptions=workflowCapability?selectedWorkflowOption(workflowOptions[workflowCapability],selectedWorkflow):[];
+                                        return <Form.Item key={group.modelKey} label={t(group.labelKey)} className="mb-0">
+                                            <ModelPicker config={config} value={config[group.modelKey]} onChange={(model) => {
+                                                updateConfig(group.modelKey, model);
+                                                if(workflowCapability)updateConfig("comfyWorkflowDefaults",{...config.comfyWorkflowDefaults,[workflowCapability]:undefined});
+                                            }} capability={group.capability} fullWidth
+                                                externalOptions={availableOptions}
+                                                externalValue={selectedWorkflow?workflowModelValue(selectedWorkflow.templateId,selectedWorkflow.templateRevision):undefined}
+                                                onExternalSelect={value=>{
+                                                    if(!workflowCapability)return;
+                                                    const option=workflowOptions[workflowCapability].find(item=>item.value===value);
+                                                    if(!option||option.disabled)return;
+                                                    updateConfig("comfyWorkflowDefaults",{...config.comfyWorkflowDefaults,[workflowCapability]:{templateId:option.templateId,templateRevision:option.templateRevision}});
+                                                }} />
+                                            {workflowCapability&&selectedWorkflow&&!workflowOptions[workflowCapability].some(option=>option.value===workflowModelValue(selectedWorkflow.templateId,selectedWorkflow.templateRevision))?
+                                                <div role="alert" className="mt-1 text-xs text-amber-600">默认工作流版本不可用；切换到渠道模型或重新导入该模板。</div>:null}
                                         </Form.Item>
-                                    ))}
+                                    })}
                                 </div>
+                                {workflowCatalogError?<div role="alert" className="mb-3 text-xs text-amber-600">读取工作流预设失败：{workflowCatalogError}</div>:null}
                                 <div className="mb-2 text-sm font-semibold">{t("config.preferences.generation")}</div>
                                 <div className="grid gap-4 md:grid-cols-4">
                                     <Form.Item label={t("config.preferences.canvasImageCount")} extra={t("config.preferences.canvasImageCountDescription")} className="mb-4">

@@ -180,7 +180,12 @@ export function createCanvasMaterializer({db,blobStore,videoDimensionReader=read
     const hasMediaPresetPort=source?.type===artifact.kind&&source.metadata?.comfyMediaPreset?.templateId===snapshot?.comfyTemplate?.id&&
      source.metadata?.comfyMediaPreset?.templateRevision===snapshot?.comfyTemplate?.revision&&
      [mediaUseCase?.primaryOutputPortId,...(mediaUseCase?.additionalOutputPortIds??[])].includes(artifact.port_id);
-    const hasPort=Boolean(hasWorkflowPort||hasMediaPresetPort);
+    const targetBinding=snapshot?.comfyTargetBinding;
+    const targetBindingPort=(source?.type==="config"||source?.type===targetBinding?.mode)&&targetBinding?.mode===mediaUseCase?.channel&&
+     targetBinding?.binding?.templateId===snapshot?.comfyTemplate?.id&&
+     targetBinding?.binding?.templateRevision===snapshot?.comfyTemplate?.revision&&
+     [mediaUseCase?.primaryOutputPortId,...(mediaUseCase?.additionalOutputPortIds??[])].includes(artifact.port_id);
+    const hasPort=Boolean(hasWorkflowPort||hasMediaPresetPort||targetBindingPort);
     // Input fingerprints belong to the pre-submit save barrier. Once generated,
     // an edited prompt, reference connection or workflow binding must not
     // strand its verified CAS result. Original inputs remain in the frozen job.
@@ -208,7 +213,7 @@ export function createCanvasMaterializer({db,blobStore,videoDimensionReader=read
       source?.type==="image"&&sourceImageEmpty&&!sourceChangedSinceSubmit);
     const emptyMediaWriteBack=Boolean(isModel&&["video","audio"].includes(artifact.kind)&&
       source?.type===artifact.kind&&sourceMediaEmpty&&!sourceChangedSinceSubmit);
-    const emptyComfyMediaWriteBack=Boolean(isComfy&&hasMediaPresetPort&&mediaUseCase?.primaryOutputPortId===artifact.port_id&&
+    const emptyComfyMediaWriteBack=Boolean(isComfy&&(hasMediaPresetPort||targetBindingPort)&&mediaUseCase?.primaryOutputPortId===artifact.port_id&&
       source&&!sourceChangedSinceSubmit&&(artifact.kind==="image"?sourceImageEmpty:sourceMediaEmpty));
     const fillEmptyText=Boolean(isModel&&artifact.kind==="text"&&source?.type==="text"&&
      !sourceChangedSinceSubmit&&!String(source.metadata?.content??"").trim()&&

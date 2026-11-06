@@ -12,7 +12,7 @@ import { prepareAutomaticSkillCatalog, withAutomaticSkillCatalog, isUnsupportedS
 import { isSkillToolsKnownUnsupported, rememberSupportedSkillTools, rememberUnsupportedSkillTools } from "@/features/skills/skill-tool-capability";
 import { extractSkillMentions, resolvePromptSkillBinding, showLegacySkillMentions } from "@/features/skills/skill-mentions";
 import type { VideoGenerationRequest } from "@/services/api/video";
-import { defaultConfig, resolveModelChannel, resolveModelScript, modelOptionName, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
+import { defaultConfig, modelMatchesCapability, resolveModelChannel, resolveModelScript, modelOptionName, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
 import {recoverLegacyGeneratedImageSize} from "@/lib/canvas/canvas-generated-image-size";
 import {recoverLegacyGeneratedVideoSize} from "@/lib/canvas/canvas-generated-video-size";
 import { getImageBlob } from "@/services/image-storage";
@@ -100,6 +100,7 @@ import { getComfyTemplate } from "@/features/comfy-workflow/template-registry";
 import { resolveCanvasComfyInstance } from "@/features/comfy-workflow/canvas-instance";
 import { CanvasRefreshShell } from "@/components/canvas/canvas-refresh-shell";
 import { startBackendComfyWorkflowRun } from "@/features/backend-sync/backend-comfy-run";
+import {resolveComfyWorkflowSelection} from "@/features/comfy-workflow/comfy-workflow-selection";
 import {createSqliteComfyBridge} from "@/features/backend-sync/sqlite-comfy-bridge";
 import {startSqliteModelGeneration,openAiImageSize} from "@/features/backend-sync/sqlite-model-generation";
 import {findSqliteModelRetrySource} from "@/features/backend-sync/sqlite-model-retry-source";
@@ -796,7 +797,7 @@ function AtelierCanvasPage() {
 
     const createConnectedNode = useCallback(
         (type: CanvasNodeType.Image | CanvasNodeType.Text | CanvasNodeType.Config | CanvasNodeType.Video | CanvasNodeType.Audio, pending: PendingConnectionCreate) => {
-            const metadata = type === CanvasNodeType.Config ? { model: effectiveConfig.imageModel || effectiveConfig.model, size: effectiveConfig.size, count: getGenerationCount(effectiveConfig.canvasImageCount || effectiveConfig.count) } : undefined;
+            const metadata = type === CanvasNodeType.Config ? { ...(!effectiveConfig.comfyWorkflowDefaults?.image?{model:effectiveConfig.imageModel||effectiveConfig.model}:{}), size: effectiveConfig.size, count: getGenerationCount(effectiveConfig.canvasImageCount || effectiveConfig.count) } : undefined;
             const newNode = createCanvasNode(type, pending.position, metadata);
             const otherHandle: ConnectionHandle = { nodeId: newNode.id, handleType: pending.connection.handleType === "source" ? "target" : "source" };
             const resolved = prepareCanvasPortConnection(pending.connection, otherHandle, [...nodesRef.current, newNode], connectionsRef.current);
@@ -970,7 +971,7 @@ function AtelierCanvasPage() {
             const configMetadata =
                 type === CanvasNodeType.Config
                     ? {
-                          model: effectiveConfig.imageModel || effectiveConfig.model,
+                          ...(!effectiveConfig.comfyWorkflowDefaults?.image?{model:effectiveConfig.imageModel||effectiveConfig.model}:{}),
                           size: effectiveConfig.size,
                           count: getGenerationCount(effectiveConfig.canvasImageCount || effectiveConfig.count),
                       }
@@ -2549,7 +2550,7 @@ function AtelierCanvasPage() {
             const sourceNode = nodesRef.current.find((node) => node.id === nodeId);
             const generationConfig = retryConfig ?? buildGenerationConfig(effectiveConfig, sourceNode, mode);
             const promptText = mode === "text" ? extractSkillMentions(prompt).text : prompt;
-            const mediaPreset=sourceNode?.metadata?.comfyMediaPreset;
+            const mediaPreset=resolveComfyWorkflowSelection(effectiveConfig,sourceNode,mode);
             if(mediaPreset){
                 const submissionKey=projectId+":"+nodeId;
                 if(sqliteModelSubmitLocksRef.current.has(submissionKey)){message.warning("该来源节点的生成任务正在提交，请勿重复点击");return}
@@ -2557,6 +2558,7 @@ function AtelierCanvasPage() {
                 const submissionToken=nanoid();
                 beginCanvasTextSubmission(projectId,nodeId,submissionToken,mode);
                 try{
+                    if(!sourceNode)throw Error("生成节点不存在");
                     if(!projectLoaded)throw Error("画布项目尚未加载完成");
                     if(!backendComfyEnabled)throw Error("ComfyUI 后端任务服务不可用");
                     if(mode==="text")throw Error("媒体 Comfy 预设只支持图片、视频或音频节点");
@@ -2567,9 +2569,10 @@ function AtelierCanvasPage() {
                     const outputs=[template.mediaUseCase.primaryOutputPortId,...(template.mediaUseCase.additionalOutputPortIds??[])];
                     const bridge=createSqliteComfyBridge({projectId,getLocalGraph:()=>({nodes:nodesRef.current,connections:connectionsRef.current})});
                     const snapshot={nodes:[...nodesRef.current],connections:[...connectionsRef.current]};
+                    const comfyPrompt=sourceNode.type==="config"?buildNodeGenerationContext(nodeId,nodesRef.current,connectionsRef.current,promptText).prompt:promptText;
                     const job=await startBackendComfyWorkflowRun({bridge,projectId,workflowNode:sourceNode,...snapshot,
                         template,instanceId:mediaPreset.instanceId||globalComfyInstanceId,outputPortIds:outputs,
-                        mediaSlots:mediaPreset.slots,prompt:promptText,
+                        mediaSlots:mediaPreset.slots,prompt:comfyPrompt,mediaBinding:mediaPreset,workflowMode:mode,
                         beforeSubmit:()=>assertCanvasSubmissionActive(projectId,submissionToken)});
                     sqliteGenerationJobsRef.current.set(nodeId,job.id);setRunningNodeId(nodeId);
                     trackCanvasTextJob(projectId,nodeId,job.id,job.status,submissionToken,mode);
@@ -2896,7 +2899,7 @@ function AtelierCanvasPage() {
                 },
                 {
                     prompt: "",
-                    model: effectiveConfig.imageModel || effectiveConfig.model,
+                    ...(!effectiveConfig.comfyWorkflowDefaults?.image?{model:effectiveConfig.imageModel||effectiveConfig.model}:{}),
                     size: effectiveConfig.size,
                     count: getGenerationCount(effectiveConfig.canvasImageCount || effectiveConfig.count),
                 },
@@ -3374,6 +3377,8 @@ function AtelierCanvasPage() {
         (contentNode: CanvasNodeData) => (
             <CanvasConfigNodePanel
                 node={contentNode}
+                nodes={nodes}
+                connections={connections}
                 onConfigChange={handleConfigNodeChange}
                 onComposerToggle={() => setDialogNodeId((current) => (current === contentNode.id ? null : contentNode.id))}
                 onStop={stopConfigGeneration}
@@ -3383,7 +3388,7 @@ function AtelierCanvasPage() {
                 }}
             />
         ),
-        [stopConfigGeneration, handleConfigNodeChange, handleGenerateNode],
+        [stopConfigGeneration, handleConfigNodeChange, handleGenerateNode,nodes,connections],
     );
 
     // Grouped so NodeLayer's prop list stays readable. The node still receives each entry as its own

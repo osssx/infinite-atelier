@@ -3,7 +3,7 @@ import type {ComfyWorkflowTemplate} from "@/features/comfy-workflow/template-sch
 import {missingComfyMediaInputs} from "@/features/comfy-workflow/run-types";
 import {prepareCanvasExternalInputSnapshot} from "@/lib/canvas/canvas-external-input-snapshot";
 import type {BackendCanvasGraph} from "./canvas-backend-sync";
-import {canonicalBackendGraph} from "./backend-source-fingerprint";
+import {canonicalBackendGraph,fingerprintComfyTargetBinding} from "./backend-source-fingerprint";
 import {canvasCasUrl,isCanvasCasKey} from "./canvas-cas";
 import type {BlobUploadResponse,BackendJobView} from "@/types/backend-contracts";
 
@@ -23,6 +23,8 @@ export type BackendComfyWorkflowArgs={
  template:ComfyWorkflowTemplate;instanceId:string;outputPortIds:readonly string[];
  mediaSlots?:Record<string,{nodeId:string;imageId?:string}>;
  prompt?:string;
+ mediaBinding?:NonNullable<CanvasNodeData["metadata"]>["comfyMediaPreset"];
+ workflowMode?:"image"|"video"|"audio";
  beforeSubmit?:()=>void;
  readBlob?:(storageKey:string)=>Promise<Blob|null>;
  getBlob?:(url:string)=>Promise<Blob|null>;
@@ -47,7 +49,7 @@ export async function startBackendComfyWorkflowRun(args:BackendComfyWorkflowArgs
     outputPortIds.some(id=>!template.ports.some(port=>port.id===id&&port.direction==="source"&&
       port.capture?.kind!=="none"&&!!port.capture?.adapterId)))
   throw Error("backend_invalid_output_ports");
- const mediaBinding=workflowNode.metadata?.comfyMediaPreset;
+ const mediaBinding=args.mediaBinding??workflowNode.metadata?.comfyMediaPreset;
  const regularBinding=workflowNode.metadata?.comfyWorkflow;
  const binding=mediaBinding??regularBinding;
  if(!binding||binding.templateId!==template.id||binding.templateRevision!==template.revision)
@@ -57,7 +59,7 @@ export async function startBackendComfyWorkflowRun(args:BackendComfyWorkflowArgs
  const currentNode=graph.nodes.find(node=>node.id===workflowNode.id);
  if(!currentNode||currentNode.id!==workflowNode.id||
    currentNode.type!=="comfy:workflow"&&(!mediaBinding||!template.mediaUseCase||
-    !["image","video","audio"].includes(currentNode.type)))throw Error("backend_workflow_node_missing");
+    !["image","video","audio","config"].includes(currentNode.type)))throw Error("backend_workflow_node_missing");
  const allIncoming=graph.connections.filter(edge=>edge.toNodeId===workflowNode.id);
  // Media preset nodes may also carry old, untyped canvas references. They are
  // visual context only; only edges targeting declared Comfy ports can be sent.
@@ -133,6 +135,8 @@ export async function startBackendComfyWorkflowRun(args:BackendComfyWorkflowArgs
  }
  if(canonicalBackendGraph(graph)!==original)throw Error("backend_frozen_graph_mutated");
  const fence=await bridge.saveProjectNow(graph,workflowNode.id);
+ const comfyTargetBinding=mediaBinding?{mode:args.workflowMode??useCase?.channel??"image",binding:copy(mediaBinding)}:undefined;
+ const sourceNodeFingerprint=comfyTargetBinding?await fingerprintComfyTargetBinding(fence.sourceNodeFingerprint,comfyTargetBinding):fence.sourceNodeFingerprint;
  const idempotencyKey=(args.newKey??(()=>crypto.randomUUID()))();
  const comfyRequest={
   schemaVersion:2,projectId,canvasRevision:String(fence.revision),instanceId,
@@ -145,9 +149,10 @@ export async function startBackendComfyWorkflowRun(args:BackendComfyWorkflowArgs
  };
  const payload={
   projectId,targetNodeId:workflowNode.id,
-  expectedProjectRevision:fence.revision,sourceNodeFingerprint:fence.sourceNodeFingerprint,
+  expectedProjectRevision:fence.revision,sourceNodeFingerprint,
   executionMode:"poll",idempotencyKey,requestFingerprint:idempotencyKey,
-  snapshot:{adapterKind:"comfy",instanceId,comfyRequest,comfyTemplate:copy(template)}
+  snapshot:{adapterKind:"comfy",instanceId,comfyRequest,comfyTemplate:copy(template),
+   ...(comfyTargetBinding?{comfyTargetBinding}:{})}
  };
  args.beforeSubmit?.();
  // Lost HTTP replies are reconciled via the SQLite job snapshot; browser

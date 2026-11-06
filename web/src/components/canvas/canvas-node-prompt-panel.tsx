@@ -4,7 +4,7 @@ import { Button, Modal, Tooltip } from "antd";
 import { useTranslation } from "react-i18next";
 
 import { ModelPicker } from "@/components/model-picker";
-import { defaultConfig, resolveModelForCapability, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
+import { defaultConfig, modelMatchesCapability, resolveModelForCapability, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { CanvasImageSettingsPopover } from "./canvas-image-settings-popover";
@@ -51,18 +51,21 @@ export function CanvasNodePromptPanel({ node, projectId, isRunning, onPromptChan
     const isEditingExistingContent = hasTextContent || hasImageContent;
     const [prompt, setPrompt] = useState(node.metadata?.composerContent ?? node.metadata?.prompt ?? "");
     const [expanded, setExpanded] = useState(false);
-    const [comfyOptions,setComfyOptions]=useState<{value:string;label:string}[]>([]);
+    const [comfyOptions,setComfyOptions]=useState<{value:string;label:string;disabled?:boolean}[]>([]);
     const [comfyValue,setComfyValue]=useState<string>();
     const selectComfyPresetRef=useRef<(value:string)=>void>(()=>{});
-    const onComfyPickerOptionsChange=useCallback((options:{value:string;label:string}[],select:(value:string)=>void,activeValue?:string)=>{
+    const onComfyPickerOptionsChange=useCallback((options:{value:string;label:string;disabled?:boolean}[],select:(value:string)=>void,activeValue?:string)=>{
         setComfyOptions(current=>current.length===options.length&&current.every((item,index)=>item.value===options[index]?.value&&item.label===options[index]?.label)?current:options);
         selectComfyPresetRef.current=select;
         setComfyValue(current=>current===activeValue?current:activeValue);
     },[]);
     const onModelChange=(model:string)=>{onConfigChange(node.id,{model,comfyMediaPreset:undefined});setComfyValue(undefined);};
-    const handleComfyConfigChange=useCallback((patch:Partial<CanvasNodeData["metadata"]>)=>onConfigChange(node.id,patch),[node.id,onConfigChange]);
+    const handleComfyConfigChange=useCallback((patch:Partial<CanvasNodeData["metadata"]>)=>onConfigChange(node.id,{...patch,...(patch?.comfyMediaPreset?{model:undefined}:{})}),[node.id,onConfigChange]);
+    const explicitChannelModel=Boolean(node.metadata?.model&&modelMatchesCapability(globalConfig,node.metadata.model,mode));
+    const inheritedWorkflow=mode!=="text"&&!explicitChannelModel?globalConfig.comfyWorkflowDefaults?.[mode]:undefined;
+    const hasComfyWorkflow=Boolean(node.metadata?.comfyMediaPreset??inheritedWorkflow);
     const comfyMediaControls=useComfyMediaPresetControl({node,nodes,connections,config,theme,
-        onChange:handleComfyConfigChange,onPickerOptionsChange:onComfyPickerOptionsChange});
+        defaultPreset:inheritedWorkflow,onChange:handleComfyConfigChange,capability:mode,onPickerOptionsChange:onComfyPickerOptionsChange});
 
     // Restore on node switches and external prompt updates (e.g. BBox apply).
     // Local edits are also committed to metadata, so this agrees with the draft;
@@ -137,7 +140,7 @@ export function CanvasNodePromptPanel({ node, projectId, isRunning, onPromptChan
                     {mode === "image" ? (
                         <>
                             <ModelPicker config={config} value={config.model} onChange={onModelChange} capability="image" onMissingConfig={() => openConfigDialog(true)} className="max-w-[190px]" externalOptions={comfyOptions} externalValue={comfyValue} onExternalSelect={value=>selectComfyPresetRef.current(value)}/>
-                            {!node.metadata?.comfyMediaPreset?<CanvasImageSettingsPopover
+                            {!hasComfyWorkflow?<CanvasImageSettingsPopover
                                 config={config}
                                 placement="topLeft"
                                 buttonClassName="!h-10 !max-w-[170px] !justify-start !rounded-full !px-3"
@@ -149,12 +152,12 @@ export function CanvasNodePromptPanel({ node, projectId, isRunning, onPromptChan
                     ) : mode === "video" ? (
                         <>
                             <ModelPicker config={config} value={config.model} onChange={onModelChange} capability="video" onMissingConfig={() => openConfigDialog(true)} className="max-w-[190px]" externalOptions={comfyOptions} externalValue={comfyValue} onExternalSelect={value=>selectComfyPresetRef.current(value)}/>
-                            {!node.metadata?.comfyMediaPreset?<CanvasVideoSettingsPopover config={config} buttonClassName="!h-10 !max-w-[170px] !justify-start !rounded-full !px-3" onConfigChange={(key, value) => onConfigChange(node.id, videoConfigPatch(key, value))} />:comfyMediaControls.settings}
+                            {!hasComfyWorkflow?<CanvasVideoSettingsPopover config={config} buttonClassName="!h-10 !max-w-[170px] !justify-start !rounded-full !px-3" onConfigChange={(key, value) => onConfigChange(node.id, videoConfigPatch(key, value))} />:comfyMediaControls.settings}
                         </>
                     ) : mode === "audio" ? (
                         <>
                             <ModelPicker config={config} value={config.model} onChange={onModelChange} capability="audio" onMissingConfig={() => openConfigDialog(true)} className="max-w-[190px]" externalOptions={comfyOptions} externalValue={comfyValue} onExternalSelect={value=>selectComfyPresetRef.current(value)}/>
-                            {!node.metadata?.comfyMediaPreset?<CanvasAudioSettingsPopover config={config} buttonClassName="!h-10 !max-w-[170px] !justify-start !rounded-full !px-3" onConfigChange={(key, value) => onConfigChange(node.id, audioConfigPatch(key, value))} />:comfyMediaControls.settings}
+                            {!hasComfyWorkflow?<CanvasAudioSettingsPopover config={config} buttonClassName="!h-10 !max-w-[170px] !justify-start !rounded-full !px-3" onConfigChange={(key, value) => onConfigChange(node.id, audioConfigPatch(key, value))} />:comfyMediaControls.settings}
                         </>
                     ) : (
                         <>

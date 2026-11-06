@@ -79,7 +79,8 @@ function sourceDigest(document,targetNodeId,version){
   }
   if(version===2){
    const target=byId.get(id);
-   for(const [slotId,ref] of Object.entries(target?.metadata?.comfyMediaPreset?.slots||{})){
+   const slotBindings=[target?.metadata?.comfyMediaPreset,...Object.values(target?.metadata?.comfyWorkflowSelections||{})].filter(Boolean);
+   for(const [slotId,ref] of Object.entries(Object.assign({},...slotBindings.map(binding=>binding.slots||{})))){
     if(!ref||typeof ref.nodeId!=="string"||!byId.has(ref.nodeId))throw problem("stale_generation_source");
     const source=byId.get(ref.nodeId);
     incoming.push({fromNodeId:ref.nodeId,fromPortId:source.type,toNodeId:id,toPortId:slotId,mediaAssetId:ref.imageId??null});
@@ -131,6 +132,12 @@ function matchesLegacyStandaloneComfy(document,targetNodeId,snapshot){
 }
 export function matchesSourceFingerprint(document,targetNodeId,frozenFingerprint,snapshot){
  if(typeof frozenFingerprint!=="string")return false;
+ if(frozenFingerprint.startsWith("v2c:")){
+  const binding=snapshot?.comfyTargetBinding;
+  if(snapshot?.adapterKind!=="comfy"||!binding||typeof binding.mode!=="string"||!binding.binding)return false;
+  const digest=createHash("sha256").update(stableJson({graphFingerprint:fingerprintSource(document,targetNodeId),targetBinding:binding})).digest("hex");
+  return frozenFingerprint==="v2c:"+digest;
+ }
  if(frozenFingerprint.startsWith("v2:"))return fingerprintSource(document,targetNodeId)===frozenFingerprint;
  if(!/^[a-f0-9]{64}$/.test(frozenFingerprint))return false;
  if(fingerprintSourceLegacy(document,targetNodeId)===frozenFingerprint)return true;
@@ -178,8 +185,9 @@ export function submitJob(db,{jobId=randomUUID(),principal="local-owner",project
    const project=db.prepare("SELECT document_json,revision,deleted_at FROM projects WHERE id=?").get(projectId);
    if(!project||project.deleted_at!==null||project.revision!==expectedProjectRevision)throw problem("stale_generation_source");
    const graph=JSON.parse(project.document_json);
-   const current=sourceNodeFingerprint.startsWith("v2:")?
-    fingerprintSource(graph,targetNodeId):fingerprintSourceLegacy(graph,targetNodeId);
+   const current=snapshot.adapterKind==="comfy"&&snapshot.comfyTargetBinding?
+    "v2c:"+createHash("sha256").update(stableJson({graphFingerprint:fingerprintSource(graph,targetNodeId),targetBinding:snapshot.comfyTargetBinding})).digest("hex"):
+    sourceNodeFingerprint.startsWith("v2:")?fingerprintSource(graph,targetNodeId):fingerprintSourceLegacy(graph,targetNodeId);
    if(current!==sourceNodeFingerprint)throw problem("stale_generation_source");
   }
   const now=Date.now();

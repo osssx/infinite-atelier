@@ -16,16 +16,16 @@ type ModelPickerProps = {
     fullWidth?: boolean;
     placeholder?: string;
     onMissingConfig?: () => void;
-    externalOptions?:{value:string;label:string}[];
+    externalOptions?:{value:string;label:string;disabled?:boolean}[];
     externalValue?:string;
     onExternalSelect?:(value:string)=>void;
 };
 const EXTERNAL_MODEL_PREFIX="__atelier_external:";
-export function modelPickerSelectValue(channelValue:string,externalValue:string|undefined,externalOptions:{value:string;label:string}[]){
+export function modelPickerSelectValue(channelValue:string,externalValue:string|undefined,externalOptions:{value:string;label:string;disabled?:boolean}[]){
     return externalValue&&externalOptions.some(option=>option.value===externalValue)
         ?EXTERNAL_MODEL_PREFIX+externalValue:channelValue;
 }
-export function modelPickerSelection(selected:string,externalOptions:{value:string;label:string}[]){
+export function modelPickerSelection(selected:string,externalOptions:{value:string;label:string;disabled?:boolean}[]){
     const external=externalOptions.find(option=>EXTERNAL_MODEL_PREFIX+option.value===selected);
     return external?{kind:"external" as const,value:external.value}:{kind:"channel" as const,value:selected};
 }
@@ -103,7 +103,7 @@ export function ModelPicker({ config, value, onChange, capability, className, fu
                     </SelectItem>
                 )}
                 {externalOptions.length?<SelectGroup><SelectLabel>ComfyUI 工作流预设</SelectLabel>
-                    {externalOptions.map(option=><SelectItem key={option.value} value={EXTERNAL_MODEL_PREFIX+option.value}>{option.label}</SelectItem>)}
+                    {externalOptions.map(option=><SelectItem key={option.value} value={EXTERNAL_MODEL_PREFIX+option.value} disabled={option.disabled}>{option.label}</SelectItem>)}
                 </SelectGroup>:null}
             </SelectContent>
         </Select>

@@ -14,6 +14,7 @@ export function publicModelConfig(config:AiConfig):Record<string,unknown>{
  const keys=[
   "channelMode","baseUrl","apiFormat","model","imageModel","videoModel","textModel",
   "audioModel","audioVoice","audioFormat","audioSpeed","audioInstructions","videoSeconds",
+  "comfyWorkflowDefaults",
   "videoMode","videoRatio","videoReturnLastFrame","vquality","videoGenerateAudio",
   "videoWatermark","systemPrompt","reasoningEffort","models","quality","size","background",
   "count","canvasImageCount","comfyInstanceId","comfyAutoDetect"

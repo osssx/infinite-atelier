@@ -8,6 +8,8 @@ import {awaitModelConfigPersistence,createModelConfigStorage} from "@/features/b
 
 export type ApiCallFormat = "openai" | "gemini" | "volcengine_ark";
 export type ModelCapability = "image" | "video" | "text" | "audio";
+export type ComfyWorkflowCapability = Exclude<ModelCapability,"text">;
+export type ComfyWorkflowDefault = {templateId:string;templateRevision:string};
 export type ReasoningEffort = "auto" | "low" | "medium" | "high" | "xhigh";
 export type SeedanceVideoMode = "text_to_video" | "first_frame" | "first_last_frame" | "omni_reference";
 export type VideoCapabilities = { resolutions?: string[]; durations?: number[]; ratios?: string[]; generateAudio?: boolean; watermark?: boolean; returnLastFrame?: boolean };
@@ -40,6 +42,8 @@ export type AiConfig = {
     videoModel: string;
     textModel: string;
     audioModel: string;
+    /** Optional saved Comfy workflow defaults; kept separate from channel model values. */
+    comfyWorkflowDefaults?: Partial<Record<ComfyWorkflowCapability,ComfyWorkflowDefault>>;
     audioVoice: string;
     audioFormat: string;
     audioSpeed: string;
@@ -97,6 +101,7 @@ export const defaultConfig: AiConfig = {
     videoModel: "default::grok-imagine-video",
     textModel: "default::gpt-5.5",
     audioModel: "default::gpt-4o-mini-tts",
+    comfyWorkflowDefaults:{},
     audioVoice: "alloy",
     audioFormat: "mp3",
     audioSpeed: "1",
@@ -220,7 +225,8 @@ export const useConfigStore = create<ConfigStore>()(
             merge: (persisted, current) => {
                 const persistedState = (persisted || {}) as Partial<ConfigStore>;
                 const persistedConfig = (persistedState.config || {}) as Partial<AiConfig>;
-                const config = { ...defaultConfig, ...persistedConfig };
+                const config = { ...defaultConfig, ...persistedConfig,
+                    comfyWorkflowDefaults:normalizeComfyWorkflowDefaults(persistedConfig.comfyWorkflowDefaults) };
                 if (!Array.isArray(persistedConfig.channels)) config.channels = [];
                 const channels = normalizeChannels(config);
                 const models = modelOptionsFromChannels(channels);
@@ -330,6 +336,20 @@ export function normalizeModelOptionValue(value: string | undefined, channels: M
     }
     const channel = channels.find((item) => item.models.some((entry) => entry.name === model)) || channels[0];
     return channel && channel.models.some((item) => item.name === model) ? encodeChannelModel(channel.id, model) : model;
+}
+
+export function normalizeComfyWorkflowDefaults(value:unknown):AiConfig["comfyWorkflowDefaults"]{
+    if(!value||typeof value!=="object"||Array.isArray(value))return {};
+    const result:AiConfig["comfyWorkflowDefaults"]={};
+    for(const capability of ["image","video","audio"] as const){
+        const item=(value as Record<string,unknown>)[capability];
+        if(!item||typeof item!=="object"||Array.isArray(item))continue;
+        const {templateId,templateRevision}=item as Record<string,unknown>;
+        if(typeof templateId==="string"&&/^[A-Za-z0-9_:.-]{1,128}$/.test(templateId)&&
+           typeof templateRevision==="string"&&/^[a-f0-9]{64}$/.test(templateRevision))
+            result[capability]={templateId,templateRevision};
+    }
+    return result;
 }
 
 function defaultChannelFromLegacyConfig(config: AiConfig) {

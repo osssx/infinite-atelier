@@ -74,6 +74,14 @@ function snapshotOf(job,instanceId){
  if(job.target_node_id&&s.comfyRequest.nodes?.[0]?.id!==job.target_node_id)
    throw fail("comfy_canvas_node_mismatch",400);
  validateSingleRequest(s.comfyRequest);verifyTemplate(s.comfyTemplate);
+ if(s.comfyTargetBinding!==undefined){
+  const target=s.comfyTargetBinding,binding=target?.binding,useCase=s.comfyTemplate.mediaUseCase;
+  if(!target||!(["image","video","audio"].includes(target.mode))||!binding||
+     binding.templateId!==s.comfyTemplate.id||binding.templateRevision!==s.comfyTemplate.revision||
+     useCase?.channel!==target.mode||!binding.overrides||typeof binding.overrides!=="object"||Array.isArray(binding.overrides)||
+     !binding.slots||typeof binding.slots!=="object"||Array.isArray(binding.slots))
+   throw fail("comfy_target_binding_invalid",400);
+ }
  return s;
 }
 function getPreparation(db,jobId){

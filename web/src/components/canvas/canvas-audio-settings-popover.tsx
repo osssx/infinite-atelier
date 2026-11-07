@@ -109,12 +109,14 @@ function AudioSettingsPortal({
         <div
             ref={panelRef}
             data-canvas-no-zoom
+            data-canvas-block-wheel-zoom
             className="canvas-image-settings-popover"
             style={style}
             onPointerDown={(event) => event.stopPropagation()}
             onMouseDown={(event) => event.stopPropagation()}
             onClick={(event) => event.stopPropagation()}
             onDoubleClick={(event) => event.stopPropagation()}
+            onWheel={(event) => event.stopPropagation()}
         >
             {content??<AudioSettingsPanel config={config} onConfigChange={(key, value) => onConfigChange(key, value)} theme={theme} className="space-y-4" />}
         </div>,

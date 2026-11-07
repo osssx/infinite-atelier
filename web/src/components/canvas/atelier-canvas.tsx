@@ -138,6 +138,9 @@ export function AtelierCanvas({ containerRef, viewport, tool, backgroundMode = "
     const handleWheel = (event: React.WheelEvent<HTMLDivElement>) => {
         // React can forward portal events through ancestors outside their actual DOM tree.
         if (!isNativeDescendantEvent(event.currentTarget, event.target)) return;
+        // Keep the viewport still while a settings portal is open, including
+        // wheel gestures just outside the panel or its portaled dropdowns.
+        if (event.currentTarget.ownerDocument.querySelector("[data-canvas-block-wheel-zoom]")) return;
         const target = event.target instanceof Element ? event.target : null;
         if (target?.closest(canvasWheelExcludedSelector)) return;
 

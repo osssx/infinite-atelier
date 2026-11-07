@@ -26,6 +26,10 @@ export function ComfyMediaUseCaseEditor({template,onChange}:{template:ComfyTempl
  const promptPorts=template.ports.filter(port=>scalar(port)&&port.valueKind==="STRING");
  const mediaTargets=template.ports.filter(port=>port.direction==="target"&&["IMAGE","VIDEO","AUDIO"].includes(port.valueKind)&&
   ["media-file","socket"].includes(port.inputBinding?.mode??""));
+ const ratioPorts=template.ports.filter(port=>scalar(port)&&port.valueKind==="STRING");
+ const dimensionPorts=template.ports.filter(port=>scalar(port)&&["INT","FLOAT"].includes(port.valueKind));
+ const sync=current?.aspectSync;
+ const portOptions=(ports:ComfyTemplatePort[])=>ports.map(port=>({value:port.id,label:port.label+" · "+port.id}));
  const kind=current?.primaryOutputKind??"image";
  const outputs=template.ports.filter(port=>port.direction==="source"&&port.capture&&port.capture.kind===kind&&port.capture.adapterId);
  const ensure=():ComfyMediaUseCase=>current??{channel:"image",primaryOutputKind:"image",promptPortId:"",slots:[],primaryOutputPortId:"",additionalOutputPortIds:[]};
@@ -49,6 +53,20 @@ export function ComfyMediaUseCaseEditor({template,onChange}:{template:ComfyTempl
     options={comfyAdditionalOutputOptions(template,current).map(outputOption)}
     onChange={(values:string[])=>patch({additionalOutputPortIds:[...new Set(values)].filter(id=>id!==current?.primaryOutputPortId)})}/></label>
   </div>
+  {kind!=="audio"?<div className="mt-3 space-y-2" data-comfy-aspect-sync-editor>
+   <label className="block text-xs">节点比例同步<Select {...selectProps} value={sync?.mode??"auto"}
+    options={[{value:"auto",label:"自动识别"},{value:"ratio",label:"指定比例端口"},{value:"dimensions",label:"指定宽高端口"},{value:"off",label:"关闭"}]}
+    onChange={(mode:"auto"|"ratio"|"dimensions"|"off")=>patch({aspectSync:mode==="ratio"?{mode,portId:""}:mode==="dimensions"?{mode,widthPortId:"",heightPortId:""}:{mode}})}/></label>
+   {sync?.mode==="ratio"?<label className="block text-xs">比例端口<Select {...selectProps} value={sync.portId||undefined} placeholder="选择比例 STRING 端口"
+    options={portOptions(ratioPorts)} onChange={(portId:string)=>patch({aspectSync:{mode:"ratio",portId}})}/></label>:null}
+   {sync?.mode==="dimensions"?<div className="grid gap-2 sm:grid-cols-2">
+    <label className="text-xs">宽度端口<Select {...selectProps} value={sync.widthPortId||undefined} placeholder="选择宽度端口"
+     options={portOptions(dimensionPorts.filter(port=>port.id!==sync.heightPortId))} onChange={(widthPortId:string)=>patch({aspectSync:{...sync,widthPortId}})}/></label>
+    <label className="text-xs">高度端口<Select {...selectProps} value={sync.heightPortId||undefined} placeholder="选择高度端口"
+     options={portOptions(dimensionPorts.filter(port=>port.id!==sync.widthPortId))} onChange={(heightPortId:string)=>patch({aspectSync:{...sync,heightPortId}})}/></label>
+   </div>:null}
+   <p className="text-[11px] text-[var(--comfy-muted)]">仅预览空图片和视频节点的比例，生成结果以实际尺寸为准。</p>
+  </div>:null}
   <div className="mt-3"><span className="text-xs font-medium">有序媒体槽位</span><div className="mt-1 grid gap-1 sm:grid-cols-2">
    {mediaTargets.map(port=>{const existing=current?.slots.find(slot=>slot.id===port.id);return <label key={port.id} className="flex min-w-0 items-center gap-2 text-xs">
     <Checkbox checked={!!existing} onChange={event=>{const slots=(current?.slots??[]).filter(slot=>slot.id!==port.id);

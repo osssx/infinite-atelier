@@ -132,6 +132,8 @@ export type CanvasNodeMetadata = {
         lastRunId?: string;
     };
     /** A media-channel node may pin a Comfy preset directly without adding a graph node. */
+    /** Derived canvas preview only; never used as workflow generation input. */
+    comfyMediaPreviewRatio?: string;
     comfyMediaPreset?: {
         templateId:string;templateRevision:string;instanceId?:string;
         overrides:Record<string,unknown>;

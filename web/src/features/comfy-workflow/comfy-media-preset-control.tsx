@@ -4,6 +4,7 @@ import type {CanvasConnection,CanvasNodeData,CanvasNodeMetadata} from "@/types/c
 import {listComfyPresetCatalog,loadComfyPresetCatalogTemplates,type ComfyCatalogLoadFailure,type ComfyCatalogPreset} from "./preset-catalog";
 import {getComfyTemplate} from "./template-registry";
 import type {ComfyMediaUseCase,ComfyWorkflowTemplate} from "./template-schema";
+import {withComfyMediaAspect} from "./comfy-media-aspect";
 import {ComfyMediaParameters} from "./comfy-media-parameters";
 import type {AiConfig,ModelCapability} from "@/stores/use-config-store";
 import type {CanvasTheme} from "@/lib/canvas-theme";
@@ -59,8 +60,8 @@ export function useComfyMediaPresetControl({node,nodes,connections,config,theme,
   const cache={...(node.metadata?.comfyMediaPresetCache??{})};
   if(prior)cache[prior.templateId+"@"+prior.templateRevision]=prior;
   const restored=cache[value];
-  onChange({comfyMediaPresetCache:cache,comfyMediaPreset:restored??{templateId,templateRevision:revision,
-   instanceId:prior?.instanceId,overrides:{},slots:{}}});
+  onChange(withComfyMediaAspect(found,{comfyMediaPresetCache:cache,comfyMediaPreset:restored??{templateId,templateRevision:revision,
+   instanceId:prior?.instanceId,overrides:{},slots:{}}}));
  },[activePreset,catalog,node.metadata?.comfyMediaPresetCache,onChange,templates]);
  const pickerOptions=useMemo(()=>[
   ...options.map(({label,value})=>({label,value})),
@@ -99,12 +100,19 @@ export function useComfyMediaPresetControl({node,nodes,connections,config,theme,
   const binding=patch.comfyWorkflow;
   if(!binding||!activePreset)return false;
   setEditor(current=>current?{...current,metadata:{...current.metadata,...patch}}:current);
-  onChange({comfyMediaPreset:{...activePreset,templateId:binding.templateId,templateRevision:binding.templateRevision}});
+  const mediaPatch={comfyMediaPreset:{...activePreset,templateId:binding.templateId,templateRevision:binding.templateRevision}};
+  // The editor has persisted the immutable version before calling this callback.
+  void getComfyTemplate(binding.templateId,binding.templateRevision).then(saved=>{
+   if(saved){
+    setTemplates(current=>({...current,[saved.id+"@"+saved.revision]:saved}));
+    onChange(withComfyMediaAspect(saved,mediaPatch));
+   }else onChange(mediaPatch);
+  }).catch(()=>onChange(mediaPatch));
   setCatalogRevision(current=>current+1);
   return true;
  };
  const settings=<>
-  {!editor&&template?.mediaUseCase&&activePreset?<ComfyMediaParameters template={template} binding={activePreset} config={config} theme={theme} onChange={onChange} onEditPreset={openPresetEditor}/>:null}
+  {!editor&&template?.mediaUseCase&&activePreset?<ComfyMediaParameters template={template} binding={activePreset} config={config} theme={theme} onChange={patch=>onChange(withComfyMediaAspect(template,patch))} onEditPreset={openPresetEditor}/>:null}
   <Modal open={!!editor} title="编辑工作流预设" footer={null} width="min(1200px, 95vw)" destroyOnHidden centered
    styles={{body:{padding:0,height:"min(720px, calc(100dvh - 160px))",minHeight:260,overflow:"hidden"}}}
    onCancel={()=>{setEditor(null);setCatalogRevision(current=>current+1);}}>

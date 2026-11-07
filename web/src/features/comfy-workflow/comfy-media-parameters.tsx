@@ -9,6 +9,7 @@ import type {CanvasNodeData,CanvasNodeMetadata} from "@/types/canvas";
 import type {CanvasTheme} from "@/lib/canvas-theme";
 import {getComfyInstanceScalarFields,parseComfyScalarOverride,type ComfyInstanceScalarField} from "./instance-parameters";
 import {COMFY_MEDIA_PARAMETER_POPUP_CLASS,createComfyMediaOverridePatch,createComfyMediaResetPatch} from "./comfy-media-overrides";
+import {resolveComfyMediaAspect} from "./comfy-media-aspect";
 import type {ComfyWorkflowTemplate} from "./template-schema";
 
 type Binding=NonNullable<CanvasNodeMetadata["comfyMediaPreset"]>;
@@ -63,6 +64,7 @@ export function ComfyMediaParameters({template,binding,config,theme,onChange,onE
  const fields=getComfyInstanceScalarFields(template,node,[],binding.overrides).filter(field=>!excluded.has(field.port.id));
  const write=(field:ComfyInstanceScalarField,value:ScalarValue)=>onChange(createComfyMediaOverridePatch(binding,field.port.id,value));
  const reset=(field:ComfyInstanceScalarField)=>onChange(createComfyMediaResetPatch(binding,field.port.id));
+ const aspectWarning=resolveComfyMediaAspect(template,binding).warning;
  const resetAll=()=>onChange(createComfyMediaResetPatch(binding));
  const controls=<ConfigProvider theme={{token:{colorBgContainer:theme.toolbar.panel,colorBgElevated:theme.toolbar.panel,
   colorText:theme.node.text,colorTextSecondary:theme.node.muted,colorBorder:theme.node.stroke,colorPrimary:theme.node.activeStroke,
@@ -75,6 +77,7 @@ export function ComfyMediaParameters({template,binding,config,theme,onChange,onE
      <Button size="small" disabled={!Object.keys(binding.overrides).length} onClick={resetAll}>恢复默认</Button>
     </div>
    </header>
+   {aspectWarning?<p role="status" className="text-xs opacity-70">{aspectWarning}</p>:null}
    {fields.length?<div className="space-y-3" data-comfy-media-parameter-list>
     {fields.map(field=><DirectPortControl key={field.port.id} field={field} value={localValue(field)} theme={theme}
      overridden={Object.hasOwn(binding.overrides,field.port.id)} onSet={value=>write(field,value)} onReset={()=>reset(field)}/>)}

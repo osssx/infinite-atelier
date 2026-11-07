@@ -41,7 +41,12 @@ export type ComfyTemplatePayload = {
     /** Optional preset metadata for channel-driven media generation. It is part of the immutable revision. */
     mediaUseCase?: ComfyMediaUseCase;
 };
+export type ComfyAspectSync =
+    | {mode:"auto"|"off"}
+    | {mode:"ratio";portId:string}
+    | {mode:"dimensions";widthPortId:string;heightPortId:string};
 export type ComfyMediaUseCase = {
+    aspectSync?: ComfyAspectSync;
     channel: "image" | "video" | "audio";
     primaryOutputKind: "image" | "video" | "audio";
     promptPortId: string;
@@ -211,6 +216,17 @@ export function validateComfyTemplatePayload(raw: unknown, info?: ComfyObjectInf
             ids.add(slot.id);
         }
         const byId=new Map((raw.ports as ComfyTemplatePort[]).map(port=>[port?.id,port]));
+        if(useCase.aspectSync!==undefined){
+            const sync=useCase.aspectSync;
+            if(!isObject(sync)||!["auto","off","ratio","dimensions"].includes(String(sync.mode)))fail("invalid aspect sync");
+            const eligible=(id:unknown,kinds:string[])=>{
+                const port=typeof id==="string"?byId.get(id):undefined;
+                return port?.direction==="target"&&port.inputBinding?.mode==="literal"&&port.inputBinding.targets.length>0&&kinds.includes(port.valueKind);
+            };
+            if(sync.mode==="ratio"&&!eligible(sync.portId,["STRING"]))fail("invalid aspect ratio port");
+            if(sync.mode==="dimensions"&&(!eligible(sync.widthPortId,["INT","FLOAT"])||
+                !eligible(sync.heightPortId,["INT","FLOAT"])||sync.widthPortId===sync.heightPortId))fail("invalid aspect dimensions ports");
+        }
         const prompt=byId.get(useCase.promptPortId), primary=byId.get(useCase.primaryOutputPortId);
         if(!prompt||prompt.direction!=="target"||prompt.valueKind!=="STRING"||prompt.inputBinding?.mode!=="literal"||
             !primary||primary.direction!=="source"||!primary.capture||primary.capture.kind!==useCase.primaryOutputKind||!primary.capture.adapterId||

@@ -13,6 +13,7 @@ vi.mock("@/components/canvas/canvas-image-settings-popover",()=>({CanvasImageSet
 vi.mock("@/components/canvas/canvas-video-settings-popover",()=>({CanvasVideoSettingsPopover:(props:{content:unknown})=>props.content}));
 vi.mock("@/components/canvas/canvas-audio-settings-popover",()=>({CanvasAudioSettingsPopover:(props:{content:unknown})=>props.content}));
 
+import {withComfyMediaAspect} from "./comfy-media-aspect";
 import {ComfyMediaParameters,DirectPortControl} from "./comfy-media-parameters";
 
 const ports=[
@@ -39,6 +40,20 @@ const propElements=(element:unknown,predicate:(props:Record<string,unknown>)=>bo
 });
 
 describe("ComfyMediaParameters component events",()=>{
+ it("emits the effective preview ratio with parameter changes and reset in one patch",()=>{
+  const t=template("image");t.mediaUseCase!.aspectSync={mode:"ratio",portId:"text"};
+  t.apiGraph.n.inputs.text="1:1";
+  const emitted=vi.fn();
+  const root=ComfyMediaParameters({template:t,binding,config:{} as AiConfig,theme:canvasThemes.light,
+   onChange:patch=>emitted(withComfyMediaAspect(t,patch))}) as ReactElement;
+  const content=(root.type as (props:unknown)=>unknown)(root.props);
+  const field=childrenOf(content).find(child=>(child as ReactElement).type===DirectPortControl&&
+   ((child as ReactElement).props as {field:{port:{id:string}}}).field.port.id==="text") as ReactElement;
+  const props=field.props as {onSet:(value:string)=>void;onReset:()=>void};
+  props.onSet("9:16");expect(emitted).toHaveBeenLastCalledWith({comfyMediaPreset:{...binding,overrides:{bool:true,text:"9:16"}},comfyMediaPreviewRatio:"562500:1000000"});
+  props.onReset();expect(emitted).toHaveBeenLastCalledWith({comfyMediaPreset:binding,comfyMediaPreviewRatio:"1000000:1000000"});
+ });
+
  it("routes all media types to the same direct, ordered controls and excludes prompt/unbound/socket ports",()=>{
  for(const kind of ["image","video","audio"] as const){
   const emitted=vi.fn();const root=ComfyMediaParameters({template:template(kind),binding,config:{} as AiConfig,theme:canvasThemes.light,onChange:emitted}) as ReactElement;

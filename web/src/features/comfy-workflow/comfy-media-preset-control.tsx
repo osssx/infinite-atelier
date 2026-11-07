@@ -1,5 +1,5 @@
-import {useCallback,useEffect,useMemo,useState,type ReactNode} from "react";
-import {Select} from "antd";
+import {lazy,Suspense,useCallback,useEffect,useMemo,useState,type ReactNode} from "react";
+import {Modal,Select} from "antd";
 import type {CanvasConnection,CanvasNodeData,CanvasNodeMetadata} from "@/types/canvas";
 import {listComfyPresetCatalog,loadComfyPresetCatalogTemplates,type ComfyCatalogLoadFailure,type ComfyCatalogPreset} from "./preset-catalog";
 import {getComfyTemplate} from "./template-registry";
@@ -7,6 +7,8 @@ import type {ComfyMediaUseCase,ComfyWorkflowTemplate} from "./template-schema";
 import {ComfyMediaParameters} from "./comfy-media-parameters";
 import type {AiConfig,ModelCapability} from "@/stores/use-config-store";
 import type {CanvasTheme} from "@/lib/canvas-theme";
+
+const ComfyWorkflowPanel=lazy(()=>import("./comfy-workflow-panel").then(module=>({default:module.ComfyWorkflowPanel})));
 
 type MediaBinding=NonNullable<CanvasNodeMetadata["comfyMediaPreset"]>;
 type Props={node:CanvasNodeData;nodes:readonly CanvasNodeData[];connections:readonly CanvasConnection[];config:AiConfig;theme:CanvasTheme;
@@ -21,6 +23,8 @@ function hasMedia(node:CanvasNodeData,kind:string){
  return node.type==="audio"&&Boolean(m?.storageKey||m?.content);
 }
 export function useComfyMediaPresetControl({node,nodes,connections,config,theme,capability,onChange,onPickerOptionsChange,defaultPreset}:Props):{settings:ReactNode;slots:ReactNode;error?:string}{
+ const [editor,setEditor]=useState<CanvasNodeData|null>(null);
+ const [catalogRevision,setCatalogRevision]=useState(0);
  const [catalog,setCatalog]=useState<ComfyCatalogPreset[]>([]);
  const [templates,setTemplates]=useState<Record<string,ComfyWorkflowTemplate>>({});
  const [catalogFailures,setCatalogFailures]=useState<ComfyCatalogLoadFailure[]>([]);
@@ -31,7 +35,7 @@ export function useComfyMediaPresetControl({node,nodes,connections,config,theme,
   if(!current)return;
   setCatalog(items);setTemplates(Object.fromEntries(Object.entries(loaded.templates).filter(([,template])=>template.mediaUseCase)));
   setCatalogFailures(loaded.failures);setCatalogError(undefined);
- }).catch(error=>{if(current){setCatalog([]);setTemplates({});setCatalogError(error instanceof Error?error.message:String(error));}});return()=>{current=false};},[]);
+ }).catch(error=>{if(current){setCatalog([]);setTemplates({});setCatalogError(error instanceof Error?error.message:String(error));}});return()=>{current=false};},[catalogRevision]);
  const preset=node.metadata?.comfyMediaPreset;
  const activePreset=preset??(defaultPreset?{...defaultPreset,overrides:{},slots:{}}:undefined);
  useEffect(()=>{if(!activePreset)return;const key=activePreset.templateId+"@"+activePreset.templateRevision;if(templates[key])return;
@@ -84,7 +88,32 @@ export function useComfyMediaPresetControl({node,nodes,connections,config,theme,
    return <label key={slot.id} className="block"><Select className="w-full" allowClear placeholder={slot.label+(slot.required?"（必填）":"（可选）")}
     value={selected} options={choices} onChange={(v:string|undefined)=>{if(!v){assign(slot.id,undefined);return;}const [nodeId,imageId]=v.split("#");assign(slot.id,{nodeId,...(imageId?{imageId}:{})});}}/></label>;
   })}</div>:null;
- const settings=template?.mediaUseCase&&activePreset?<ComfyMediaParameters template={template} binding={activePreset} config={config} theme={theme} onChange={onChange}/>:null;
+ const openPresetEditor=()=>{
+  if(!template||!activePreset)return;
+  const entry=catalog.find(item=>item.templateId===activePreset.templateId&&item.revision===activePreset.templateRevision)
+   ??catalog.find(item=>item.templateId===activePreset.templateId);
+  setEditor({id:entry?.id??template.id,type:"comfy:workflow",title:template.name,position:{x:0,y:0},width:400,height:300,
+   metadata:{comfyWorkflow:{templateId:template.id,templateRevision:template.revision,bindingState:"bound",inputOverrides:{}}}});
+ };
+ const applyPresetEdit=(patch:Partial<CanvasNodeMetadata>)=>{
+  const binding=patch.comfyWorkflow;
+  if(!binding||!activePreset)return false;
+  setEditor(current=>current?{...current,metadata:{...current.metadata,...patch}}:current);
+  onChange({comfyMediaPreset:{...activePreset,templateId:binding.templateId,templateRevision:binding.templateRevision}});
+  setCatalogRevision(current=>current+1);
+  return true;
+ };
+ const settings=<>
+  {!editor&&template?.mediaUseCase&&activePreset?<ComfyMediaParameters template={template} binding={activePreset} config={config} theme={theme} onChange={onChange} onEditPreset={openPresetEditor}/>:null}
+  <Modal open={!!editor} title="编辑工作流预设" footer={null} width="min(1200px, 95vw)" destroyOnHidden centered
+   styles={{body:{padding:0,height:"min(720px, calc(100dvh - 160px))",minHeight:260,overflow:"hidden"}}}
+   onCancel={()=>{setEditor(null);setCatalogRevision(current=>current+1);}}>
+   {editor?<div className="h-full min-h-0 min-w-0 w-full" data-comfy-preset-editor-content><Suspense fallback={<div className="p-4">正在加载工作流预设…</div>}>
+    <ComfyWorkflowPanel key={editor.id} context="preset" node={editor} onChange={applyPresetEdit}
+     onClose={()=>{setEditor(null);setCatalogRevision(current=>current+1);}}/>
+   </Suspense></div>:null}
+  </Modal>
+ </>;
  const error=catalogError?`工作流预设目录加载失败：${catalogError}`:
   catalogFailures.length?`以下预设版本无法加载，请在工作流设置中重新导入：${catalogFailures.map(failure=>`${failure.name} (${failure.presetId}): ${failure.message}`).join("；")}`:
   boundPresetError?`当前绑定的工作流版本无法加载，请重新导入该版本：${boundPresetError}`:undefined;

@@ -1,6 +1,6 @@
 import {useEffect,useState} from "react";
 import {Button,ConfigProvider,Input,InputNumber,Select,Switch} from "antd";
-import {RotateCcw} from "lucide-react";
+import {Pencil,RotateCcw} from "lucide-react";
 import {CanvasImageSettingsPopover} from "@/components/canvas/canvas-image-settings-popover";
 import {CanvasVideoSettingsPopover} from "@/components/canvas/canvas-video-settings-popover";
 import {CanvasAudioSettingsPopover} from "@/components/canvas/canvas-audio-settings-popover";
@@ -55,8 +55,8 @@ export function DirectPortControl({field,value,overridden,theme,onSet,onReset}:{
  </div>;
 }
 
-export function ComfyMediaParameters({template,binding,config,theme,onChange}:{template:ComfyWorkflowTemplate;binding:Binding;config:AiConfig;theme:CanvasTheme;
- onChange:(patch:Partial<CanvasNodeMetadata>)=>void}){
+export function ComfyMediaParameters({template,binding,config,theme,onChange,onEditPreset}:{template:ComfyWorkflowTemplate;binding:Binding;config:AiConfig;theme:CanvasTheme;
+ onChange:(patch:Partial<CanvasNodeMetadata>)=>void;onEditPreset?:()=>void}){
  const useCase=template.mediaUseCase!;
  const excluded=new Set([useCase.promptPortId,...useCase.slots.map(slot=>slot.id)]);
  const node={id:"comfy-media-settings",type:"comfy:workflow",metadata:{comfyWorkflow:{inputOverrides:binding.overrides}}} as CanvasNodeData;
@@ -70,7 +70,10 @@ export function ComfyMediaParameters({template,binding,config,theme,onChange}:{t
   <div className="space-y-3" style={{color:theme.node.text}} data-comfy-media-native-settings>
    <header className="flex items-center justify-between gap-2 border-b pb-2" style={{borderColor:theme.node.stroke}}>
     <h3 className="m-0 text-sm font-semibold">工作流参数</h3>
-    <Button size="small" disabled={!Object.keys(binding.overrides).length} onClick={resetAll}>恢复默认</Button>
+    <div className="flex shrink-0 items-center gap-1">
+     {onEditPreset?<Button size="small" type="text" title="编辑当前工作流预设" aria-label="编辑当前工作流预设" icon={<Pencil size={14}/>} onClick={onEditPreset}/>:null}
+     <Button size="small" disabled={!Object.keys(binding.overrides).length} onClick={resetAll}>恢复默认</Button>
+    </div>
    </header>
    {fields.length?<div className="space-y-3" data-comfy-media-parameter-list>
     {fields.map(field=><DirectPortControl key={field.port.id} field={field} value={localValue(field)} theme={theme}

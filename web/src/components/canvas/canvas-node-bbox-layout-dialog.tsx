@@ -429,16 +429,11 @@ export function CanvasNodeBBoxLayoutDialog({
                                         const target = event.target instanceof Element ? event.target : null;
                                         event.currentTarget.draggable = !target?.closest("input,textarea,button,[contenteditable='true'],.ant-select");
                                     }}
-                                    onFocusCapture={(event) => {
-                                        if (event.target.closest("input,textarea,button,[contenteditable='true'],.ant-select")) event.currentTarget.draggable = false;
-                                    }}
-                                    onBlurCapture={(event) => {
-                                        if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.draggable = true;
-                                    }}
                                     onDragStart={(event) => {
-                                        const focused = document.activeElement;
                                         const target = event.target instanceof Element ? event.target : null;
-                                        if (target?.closest("input,textarea,button,[contenteditable='true'],.ant-select") || (focused instanceof Element && event.currentTarget.contains(focused) && focused.closest("input,textarea,button,[contenteditable='true'],.ant-select"))) {
+                                        // Only the press origin controls dragging; a previously focused
+                                        // editor must not cancel a drag from the card's number or padding.
+                                        if (target?.closest("input,textarea,button,[contenteditable='true'],.ant-select")) {
                                             event.preventDefault();
                                             draggedLayer.current = null;
                                             return;

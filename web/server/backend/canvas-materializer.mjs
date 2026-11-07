@@ -7,6 +7,14 @@ import {emitProjectEvent} from "./projects.mjs";
 import {imageNodeSize,readRasterImageDimensions} from "./image-dimensions.mjs";
 import {readVideoDimensions,videoNodeSize} from "./video-dimensions.mjs";
 
+function resizeVisualMediaWriteback(source, dimensions) {
+ if(!["image","video"].includes(source.type)||source.metadata?.freeResize||!dimensions?.width||!dimensions?.height)return;
+ const edge=Math.max(source.width,source.height);
+ const scale=edge/Math.max(dimensions.width,dimensions.height);
+ source.width=dimensions.width*scale;
+ source.height=dimensions.height*scale;
+}
+
 const requiredKind={image:"IMAGE",video:"VIDEO",audio:"AUDIO",text:"STRING"};
 const dims={image:[420,420],video:[420,236],audio:[520,220],text:[420,320]};
 const fail=reason=>Object.assign(Error(reason),{code:reason,statusCode:409});
@@ -94,6 +102,7 @@ export function createCanvasMaterializer({db,blobStore,videoDimensionReader=read
     if(writeInPlace){
      const sourceGroupMetadata={...groupMetadata};
      delete sourceGroupMetadata.prompt;
+     resizeVisualMediaWriteback(source,{width:first.naturalWidth,height:first.naturalHeight});
      source.metadata={...source.metadata,...sourceGroupMetadata,status:"success"};
     }else{
      const size=imageNodeSize(first.naturalWidth&&first.naturalHeight?{width:first.naturalWidth,height:first.naturalHeight}:null);
@@ -225,6 +234,7 @@ export function createCanvasMaterializer({db,blobStore,videoDimensionReader=read
     if(fillEmptyText){
      source.metadata={...source.metadata,content:contents,status:"success",modelArtifact:origin};
     }else if(writeBack||emptyImageWriteBack||emptyMediaWriteBack||emptyComfyMediaWriteBack){
+     resizeVisualMediaWriteback(source,mediaDimensions);
      source.metadata={...source.metadata,content:"/api/v1/blobs/"+artifact.blob_id,
       storageKey:"cas:"+artifact.blob_id,mimeType:artifact.mime,status:"success",
       ...(isModel?{modelArtifact:origin}:{comfyArtifact:origin}),

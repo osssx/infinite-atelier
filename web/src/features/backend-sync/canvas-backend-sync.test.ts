@@ -159,6 +159,32 @@ describe("P4.4 ordinary SQLite model artifact merge",()=>{
   expect(safeRemoteCanvasMerge(local,{nodes:[{...updated,metadata:{...updated.metadata,
    modelArtifact:{...modelArtifact,sourceNodeId:"other"}}}],connections:[]})).toBeNull();
  });
+ it("accepts only derived image proportions when a workflow fills a node",()=>{
+  const source:CanvasNodeData={id:"image-source",type:"image",title:"Image",
+   position:{x:20,y:30},width:360,height:280,metadata:{}};
+  const updated:CanvasNodeData={...source,width:768*(360/1344),height:360,metadata:{
+   content:"/api/v1/blobs/"+"a".repeat(64),storageKey:"cas:"+"a".repeat(64),
+   mimeType:"image/png",status:"success",naturalWidth:768,naturalHeight:1344,
+   comfyArtifact:{runId:"run",artifactId:"img",workflowNodeId:source.id,portId:"image",kind:"image",index:0}}};
+  const local={nodes:[source],connections:[]};
+  expect(safeRemoteCanvasMerge(local,{nodes:[updated],connections:[]})).toEqual({nodes:[updated],connections:[]});
+  expect(safeRemoteCanvasMerge(local,{nodes:[{...updated,width:999}],connections:[]})).toBeNull();
+  expect(safeRemoteCanvasMerge({nodes:[{...source,metadata:{freeResize:true}}],connections:[]},
+   {nodes:[{...updated,metadata:{...updated.metadata,freeResize:true}}],connections:[]})).toBeNull();
+ });
+ it.each(["model","comfy"])("accepts proportioned %s video writeback and rejects unrelated geometry",adapter=>{
+  const source:CanvasNodeData={id:"video-source",type:"video",title:"Video",
+   position:{x:16,y:40},width:420,height:236,metadata:{}};
+  const updated:CanvasNodeData={...source,width:240,height:420,metadata:{
+   content:"/api/v1/blobs/"+"a".repeat(64),storageKey:"cas:"+"a".repeat(64),
+   mimeType:"video/mp4",status:"success",naturalWidth:768,naturalHeight:1344,
+   ...(adapter==="model"?{modelArtifact:{jobId:"job",artifactId:"vid",sourceNodeId:source.id,kind:"video" as const,model:"video-model"}}:
+    {comfyArtifact:{runId:"run",artifactId:"vid",workflowNodeId:source.id,portId:"video",kind:"video" as const,index:0}})}};
+  const local={nodes:[source],connections:[]};
+  expect(safeRemoteCanvasMerge(local,{nodes:[updated],connections:[]})).toEqual({nodes:[updated],connections:[]});
+  expect(safeRemoteCanvasMerge(local,{nodes:[{...updated,width:999}],connections:[]})).toBeNull();
+  expect(safeRemoteCanvasMerge(local,{nodes:[{...updated,position:{x:0,y:0}}],connections:[]})).toBeNull();
+ });
  it("adopts a verified multi-image writeback on an unchanged empty image source",()=>{
   const source:CanvasNodeData={id:"image-source",type:"image",title:"Image",
    position:{x:0,y:0},width:420,height:420,metadata:{}};

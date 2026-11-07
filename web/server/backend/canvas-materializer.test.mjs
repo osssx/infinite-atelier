@@ -257,7 +257,8 @@ test("media preset primary output fills only an unchanged empty media node; popu
   sourceNodeFingerprint:fingerprint,idempotencyKey:"media-preset-run",requestFingerprint:"media-preset-run",executionMode:"poll",
   snapshot:{adapterKind:"comfy",instanceId:"comfy-local",comfyTemplate:template,
    comfyRequest:{nodes:[{id:sourceId}],rootOutputs:[{nodeId:sourceId,portId:"image"}]}}}).jobId;
- const blob=await f.blobStore.put([png],{mime:"image/png"});
+ const portrait=Buffer.alloc(24);png.copy(portrait);portrait.writeUInt32BE(768,16);portrait.writeUInt32BE(1344,20);
+ const blob=await f.blobStore.put([portrait],{mime:"image/png"});
  appendArtifact(f.db,{id:"media-primary",jobId,portId:"image",itemKey:"0",blobId:blob.blobId,sha256:blob.sha256,
   mime:blob.mimeType,kind:"image",metadata:{comfyArtifact:{runId:jobId,artifactId:"media-primary",workflowNodeId:sourceId,
    portId:"image",kind:"image",index:0}}});
@@ -268,6 +269,9 @@ test("media preset primary output fills only an unchanged empty media node; popu
  assert.equal(after.nodes.length,1);
  assert.equal(after.nodes[0].metadata.storageKey,"cas:"+blob.blobId);
  assert.equal(after.nodes[0].metadata.comfyArtifact.artifactId,"media-primary");
+ assert.equal(after.nodes[0].width,768*(360/1344));
+ assert.equal(after.nodes[0].height,360);
+ assert.deepEqual(after.nodes[0].position,{x:20,y:30});
 
  const populated=structuredClone(doc);populated.nodes[0].metadata.content="existing image";
  createProject(f.db,{id:"media-preset-populated",document:populated});
@@ -833,28 +837,30 @@ async function modelImageBatch(t,{count=3,sourceType="config",removeSource=false
  if(removeSource)saveSingleUserCanvas(f.db,{id:projectId,expectedRevision:1,document:{nodes:[],connections:[]}});
  return {...f,projectId,sourceNodeId,document,jobId,created};
 }
-async function modelMediaRun(t,{kind="video",count=1,sourceMetadata={},editSource=false,deleteSource=false}={}){
+async function modelMediaRun(t,{kind="video",count=1,sourceMetadata={},editSource=false,deleteSource=false,dimensions=null,adapter="model"}={}){
  const f=fixture(t),projectId="model-media-"+kind,sourceNodeId=kind+"-source";
  const prompt={id:"media-prompt",type:"text",title:"Prompt",position:{x:-360,y:8},width:320,height:180,
   metadata:{content:"prompt input"}};
  const source={id:sourceNodeId,type:kind,title:kind==="video"?"Video source":"Audio source",
   position:{x:16,y:40},width:kind==="video"?420:520,height:kind==="video"?236:220,
-  metadata:{prompt:"keep this source prompt",...sourceMetadata}};
+  metadata:{prompt:"keep this source prompt",...sourceMetadata,
+   ...(adapter==="comfy"?{comfyMediaPreset:{templateId:"video-template",templateRevision:"r1",overrides:{},slots:{}}}:{})}};
  const document={nodes:[prompt,source],connections:[{id:"source-input",fromNodeId:prompt.id,toNodeId:source.id}]};
  createProject(f.db,{id:projectId,document});
  const model="model-"+kind;
  const jobId=submitJob(f.db,{projectId,targetNodeId:sourceNodeId,expectedProjectRevision:1,
   sourceNodeFingerprint:fingerprintSource(document,sourceNodeId),idempotencyKey:"media-"+kind,
   requestFingerprint:"media-"+kind,executionMode:"immediate",
-  snapshot:{adapterKind:"model",provider:"openai_compatible",sourceNodeType:kind,
-   task:{kind,model,prompt:"generated request"}}}).jobId;
+  snapshot:adapter==="comfy"?{adapterKind:"comfy",instanceId:"local",
+   comfyTemplate:{id:"video-template",revision:"r1",mediaUseCase:{primaryOutputPortId:kind,additionalOutputPortIds:[]}}}:
+   {adapterKind:"model",provider:"openai_compatible",sourceNodeType:kind,task:{kind,model,prompt:"generated request"}}}).jobId;
  const created=[];
  const bytes=kind==="video"?mp4:wav,mime=kind==="video"?"video/mp4":"audio/wav";
  for(let index=0;index<count;index++){
   const blob=await f.blobStore.put([Buffer.concat([bytes,Buffer.from([index])])],{mime});
   const artifactId="media-"+kind+"-"+index;
   appendArtifact(f.db,{id:artifactId,jobId,portId:kind,itemKey:String(index),blobId:blob.blobId,
-   sha256:blob.sha256,mime,kind,metadata:{modelGeneration:{kind,model}}});
+   sha256:blob.sha256,mime,kind,metadata:adapter==="comfy"?{comfyArtifact:{index}}:{modelGeneration:{kind,model}}});
   created.push({artifactId,blob});
  }
  f.db.prepare("UPDATE jobs SET status='succeeded' WHERE id=?").run(jobId);
@@ -865,7 +871,7 @@ async function modelMediaRun(t,{kind="video",count=1,sourceMetadata={},editSourc
   saveSingleUserCanvas(f.db,{id:projectId,expectedRevision:1,document:draft});
  }
  const materializer=createCanvasMaterializer({db:f.db,blobStore:f.blobStore,
-  videoDimensionReader:async()=>null});
+  videoDimensionReader:async()=>dimensions});
  return {...f,materializer,projectId,sourceNodeId,document,jobId,created,source,prompt};
 }
 for(const count of [1,2,3])test(`config model image output groups actual count ${count}`,async t=>{
@@ -1115,4 +1121,19 @@ test("already materialized historical individual images are not regrouped",async
  f.db.prepare("UPDATE jobs SET snapshot_json=json_remove(snapshot_json,'$.sourceNodeType') WHERE id=?").run(f.jobId);
  await f.materializer.runOnce();
  assert.equal(getProject(f.db,f.projectId).document.nodes.length,4);
+});
+
+for(const adapter of ["model","comfy"])for(const dimensions of [{width:768,height:1344},{width:1344,height:768}])
+ for(const freeResize of [false,true])test(`${adapter} video writeback respects ${dimensions.width}x${dimensions.height}, freeResize=${freeResize}`,async t=>{
+ const f=await modelMediaRun(t,{dimensions,adapter,sourceMetadata:{freeResize}});
+ const result=await f.materializer.runOnce();
+ assert.equal(result[0].status,"materialized");
+ const node=getProject(f.db,f.projectId).document.nodes.find(n=>n.id===f.sourceNodeId);
+ const scale=420/Math.max(dimensions.width,dimensions.height);
+ assert.equal(node.width,freeResize?420:dimensions.width*scale);
+ assert.equal(node.height,freeResize?236:dimensions.height*scale);
+ assert.equal(node.metadata.naturalWidth,dimensions.width);
+ assert.equal(node.metadata.naturalHeight,dimensions.height);
+ assert.deepEqual(node.position,f.source.position);
+ assert.equal(getProject(f.db,f.projectId).document.nodes.length,2);
 });

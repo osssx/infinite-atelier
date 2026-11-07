@@ -54,6 +54,12 @@ function isSafeEmptyTextFill(local:CanvasNodeData,remote:CanvasNodeData):boolean
  return canonical({...local,metadata:{...local.metadata,content:remote.metadata.content,
    status:"success",modelArtifact:model}})===canonical(remote);
 }
+function visualMediaWritebackSize(local:CanvasNodeData,remote:CanvasNodeData){
+ const width=remote.metadata?.naturalWidth,height=remote.metadata?.naturalHeight;
+ if(!["image","video"].includes(local.type)||local.metadata?.freeResize||!width||!height)return {};
+ const scale=Math.max(local.width,local.height)/Math.max(width,height);
+ return {width:width*scale,height:height*scale};
+}
 function isSafeModelImageWriteback(local:CanvasNodeData,remote:CanvasNodeData):boolean{
  const model=remote.metadata?.modelArtifact;
  const previous=local.metadata?.modelArtifact;
@@ -83,7 +89,8 @@ function isSafeModelImageWriteback(local:CanvasNodeData,remote:CanvasNodeData):b
  for(const key of generatedKeys)delete metadata[key];
  for(const key of generatedKeys)if(Object.hasOwn(remote.metadata,key))
   metadata[key]=remote.metadata[key];
- return canonical({...local,metadata:metadata as CanvasNodeData["metadata"]})===canonical(remote);
+ return canonical({...local,metadata:metadata as CanvasNodeData["metadata"]})===canonical(remote)||
+  canonical({...local,...visualMediaWritebackSize(local,remote),metadata:metadata as CanvasNodeData["metadata"]})===canonical(remote);
 }
 function isSafeModelMediaWriteback(local:CanvasNodeData,remote:CanvasNodeData):boolean{
  const kind=local.type;
@@ -102,7 +109,8 @@ function isSafeModelMediaWriteback(local:CanvasNodeData,remote:CanvasNodeData):b
  const metadata:Record<string,unknown>={...local.metadata};
  for(const key of generatedKeys)delete metadata[key];
  for(const key of generatedKeys)if(Object.hasOwn(remote.metadata,key))metadata[key]=remote.metadata[key];
- return canonical({...local,metadata:metadata as CanvasNodeData["metadata"]})===canonical(remote);
+ return canonical({...local,metadata:metadata as CanvasNodeData["metadata"]})===canonical(remote)||
+  canonical({...local,...visualMediaWritebackSize(local,remote),metadata:metadata as CanvasNodeData["metadata"]})===canonical(remote);
 }
 function isSafeComfyMediaPresetWriteback(local:CanvasNodeData,remote:CanvasNodeData):boolean{
  const kind=local.type,artifact=remote.metadata?.comfyArtifact;
@@ -117,7 +125,8 @@ function isSafeComfyMediaPresetWriteback(local:CanvasNodeData,remote:CanvasNodeD
  const metadata:Record<string,unknown>={...local.metadata};
  for(const key of generatedKeys)delete metadata[key];
  for(const key of generatedKeys)if(Object.hasOwn(remote.metadata,key))metadata[key]=remote.metadata[key];
- return canonical({...local,metadata:metadata as CanvasNodeData["metadata"]})===canonical(remote);
+ return canonical({...local,metadata:metadata as CanvasNodeData["metadata"]})===canonical(remote)||
+  canonical({...local,...visualMediaWritebackSize(local,remote),metadata:metadata as CanvasNodeData["metadata"]})===canonical(remote);
 }
 export function safeRemoteCanvasMerge(local:BackendCanvasGraph,remote:BackendCanvasGraph):BackendCanvasGraph|null {
  if(!Array.isArray(remote?.nodes)||!Array.isArray(remote.connections))return null;

@@ -757,7 +757,7 @@ export function CanvasNodeBBoxLayoutDialog({
                                             pointerEvents="none"
                                         />
                                     ) : null}
-                                    {/* Selection controls render last, above every content layer. */}
+                                    {/* Selected boxes capture their entire area above overlapping content. */}
                                     {!preview ? layout.items.filter((item) => selected.includes(item.id) && !item.hidden).map((item) => (
                                         <g key={`selection-${item.id}`} data-bbox-canvas-id={item.id}>
                                             <rect
@@ -769,7 +769,7 @@ export function CanvasNodeBBoxLayoutDialog({
                                                 stroke="#0ea5e9"
                                                 strokeWidth={2}
                                                 vectorEffect="non-scaling-stroke"
-                                                pointerEvents="stroke"
+                                                pointerEvents="all"
                                                 className={item.locked ? "" : "cursor-move"}
                                                 onPointerDown={(event) => begin(event, item.id)}
                                             />

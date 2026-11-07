@@ -11,6 +11,7 @@ import {createFileSkillRegistry,resolveSkillsDir} from "./file-skill-registry.mj
 import {bindFileSkillRegistry} from "./skill-job-grants.mjs";
 import {createProjectArchive} from "./project-archive.mjs";
 import {createComfyRegistry} from "./comfy-registry.mjs";
+import {createAudioExtractionService} from "./audio-extraction.mjs";
 import {createMediaPreviewStore} from "./media-preview.mjs";
 import {createBlobGarbageCollector} from "./blob-gc.mjs";
 import {rebuildBlobReferenceLedger} from "./blob-reference-ledger.mjs";
@@ -69,6 +70,7 @@ export function createLocalBackend({dataDir,streamPollMs=200,adapters,comfyInsta
   const vault=createCredentialVault({db,protector});
   const sessionAuth=createLocalSessionAuth(),blobStore=createBlobStore({dataDir:root,db,maxBlobBytes:blobMaxBytes});
   const mediaPreview=createMediaPreviewStore({dataDir:root,blobStore});
+  const audioExtraction=createAudioExtractionService({dataDir:root,blobStore});
   const blobGc=createBlobGarbageCollector({db,blobStore});
   const projectArchive=createProjectArchive({db,blobStore,workflowsDir:comfyWorkflowDir,registry:workflowRegistry});
   const comfyLive=createComfyLiveHub({WebSocketImpl:comfyUpstreamCall?null:globalThis.WebSocket});
@@ -112,7 +114,7 @@ export function createLocalBackend({dataDir,streamPollMs=200,adapters,comfyInsta
   coordinator?.recoverAtStartup();
   const materializer=createCanvasMaterializer({db,blobStore});
   const worker=autoDispatch?createBackendWorker({coordinator,materializer,intervalMs:dispatchIntervalMs}):null;
-  const app=buildApp({db,sessionAuth,autoLocalSession,blobStore,mediaPreview,blobGc,projectArchive,vault,skillRegistry,
+  const app=buildApp({db,sessionAuth,autoLocalSession,blobStore,mediaPreview,audioExtraction,blobGc,projectArchive,vault,skillRegistry,
    arkChannelHealth:createArkChannelHealth({vault}),
    modelCatalog:openai||gemini?args=>vault.get(args.channelId).provider==="google_gemini"?
     gemini.listModels({channelId:args.channelId,endpointBaseUrl:args.endpointBaseUrl}):openai.listModels(args):null,

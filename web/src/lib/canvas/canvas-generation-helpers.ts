@@ -16,6 +16,7 @@ export function imageExtension(dataUrl: string) {
 }
 
 export function audioExtension(mimeType?: string) {
+    if (mimeType === "audio/mp4" || mimeType === "audio/x-m4a") return "m4a";
     if (mimeType?.includes("wav")) return "wav";
     if (mimeType?.includes("opus")) return "opus";
     if (mimeType?.includes("aac")) return "aac";

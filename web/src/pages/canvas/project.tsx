@@ -1,3 +1,4 @@
+import {createVideoAudioExtractionController,extractedAudioMetadata,audioExtractionErrorMessage,type ExtractedAudio} from "@/features/backend-sync/video-audio-extraction";
 import { isResourceNode, buildNodeMentionReferencesFromIndex } from "@/lib/canvas/canvas-resource-references";
 import { CanvasImageCompareDialog } from "@/components/canvas/canvas-image-compare-dialog";
 import { playCanvasVideosFromStart } from "@/lib/canvas/video-sync-playback";
@@ -2205,6 +2206,47 @@ function AtelierCanvasPage() {
         message.success(t("canvas.videoFrame.captureSuccess"));
     }, [createHistoryEntry, message, projectId, t]);
 
+    const [extractingAudioIds, setExtractingAudioIds] = useState<ReadonlySet<string>>(new Set());
+    const commitExtractedAudio = useCallback((source: CanvasNodeData, result: ExtractedAudio) => {
+        const id = nanoid();
+        const { width, height } = NODE_DEFAULT_SIZE[CanvasNodeType.Audio];
+        const child: CanvasNodeData = {
+            id, type: CanvasNodeType.Audio, title: `${source.title || t("canvas.node.video")} · 音频`,
+            position: findVideoFramePosition(source, { width, height }, nodesRef.current), width, height,
+            metadata: extractedAudioMetadata(result, source),
+        };
+        if (historyCommitTimerRef.current) { clearTimeout(historyCommitTimerRef.current); historyCommitTimerRef.current = null; }
+        const previous = createHistoryEntry(); const baseline = lastHistoryRef.current; const past = [...historyRef.current.past];
+        if (baseline && !sameCanvasHistoryEntry(baseline, previous)) past.push(baseline);
+        past.push(previous); historyRef.current.past = past.slice(-50); historyRef.current.future = []; setHistoryState({ canUndo: true, canRedo: false });
+        const nextNodes = [...nodesRef.current, child];
+        const nextConnections = [...connectionsRef.current, { id: nanoid(), fromNodeId: source.id, toNodeId: id }];
+        lastHistoryRef.current = { ...previous, nodes: nextNodes, connections: nextConnections };
+        nodesRef.current = nextNodes; connectionsRef.current = nextConnections; setNodes(nextNodes); setConnections(nextConnections);
+        setSelectedNodeIds(new Set([id])); setSelectedConnectionId(null);
+        message.success("已提取音频");
+    }, [createHistoryEntry, message, t]);
+    const audioExtractionCallbacks = useRef({ commitExtractedAudio });
+    audioExtractionCallbacks.current = { commitExtractedAudio };
+    const audioExtraction = useMemo(() => createVideoAudioExtractionController({
+        projectId,
+        getSource: id => pageMountedRef.current && activeProjectIdRef.current === projectId
+            ? nodesRef.current.find(node => node.id === id) : undefined,
+        saveSource: async () => {
+            updateProject(projectId, { nodes: nodesRef.current, connections: connectionsRef.current });
+            await awaitCanvasStorePersistence(projectId);
+        },
+        onResult: (source, result) => audioExtractionCallbacks.current.commitExtractedAudio(source, result),
+        onError: error => message.error(audioExtractionErrorMessage(error)),
+        onChange: setExtractingAudioIds,
+    }), [projectId, updateProject, message]);
+    useEffect(() => {
+        const cancelAll = () => audioExtraction.dispose();
+        window.addEventListener("pagehide", cancelAll);
+        return () => { window.removeEventListener("pagehide", cancelAll); cancelAll(); };
+    }, [audioExtraction]);
+    useEffect(() => { audioExtraction.reconcile(); }, [audioExtraction, nodes]);
+
     const trimAudioNode = useCallback(async (source: CanvasNodeData, blob: Blob, startMs: number, endMs: number, durationMs: number, signal: AbortSignal) => {
         const projectAtStart = projectId;
         const sourceContent = source.metadata?.content;
@@ -3654,6 +3696,9 @@ function AtelierCanvasPage() {
                     onBboxEdit={(node) => void openBboxEditor(node)}
                     onCrop={(node) => setCropNodeId(node.id)}
                     onCaptureVideoFrame={(node) => { videoFrameIdentityRef.current = `${projectId}:${node.id}:${node.metadata?.storageKey || ""}:${node.metadata?.content || ""}`; setVideoFrameNodeId(node.id); }}
+                    onExtractAudio={node => { void audioExtraction.start(node); }}
+                    onCancelExtractAudio={node => audioExtraction.cancel(node.id)}
+                    extractingAudio={Boolean(toolbarNode && extractingAudioIds.has(toolbarNode.id))}
                     onTrimAudio={(node) => { audioTrimIdentityRef.current = `${projectId}:${node.id}:${node.metadata?.storageKey || ""}:${node.metadata?.content || ""}`; document.querySelectorAll<HTMLElement>("[data-node-id]").forEach((element) => { if (element.dataset.nodeId === node.id) element.querySelector("audio")?.pause(); }); setAudioTrimNodeId(node.id); }}
                     onSplit={(node) => setSplitNodeId(node.id)}
                     onUpscale={(node) => setUpscaleNodeId(node.id)}

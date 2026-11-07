@@ -34,8 +34,10 @@ describe("Canvas content-addressed media transport",()=>{
   const video=await uploadCanvasMedia(new Blob(["ftyp+sample"],{type:"video/mp4"}),"video");
   expect(video).toMatchObject({storageKey:"cas:"+sha,width:1920,height:1080,durationMs:8000});
   const audio=await storeCanvasGeneratedAudio(wav,"wav");
+  const m4a=await uploadCanvasMedia(new Blob(["ftypM4A"],{type:"audio/mp4"}),"audio");
+  expect(m4a).toMatchObject({storageKey:"cas:"+sha,mimeType:"audio/mp4",durationMs:2000});
   expect(audio).toMatchObject({storageKey:"cas:"+sha,durationMs:2000});
-  expect(sent.filter(item=>item.path==="/api/v1/blobs")).toHaveLength(3);
+  expect(sent.filter(item=>item.path==="/api/v1/blobs")).toHaveLength(4);
   for(const {init} of sent.filter(item=>item.path==="/api/v1/blobs")){
    expect(init.headers).toMatchObject({
     "Content-Type":"application/octet-stream","X-Atelier-CSRF":"test-csrf"

@@ -37,6 +37,9 @@ type CanvasNodeHoverToolbarProps = {
     onSplit: (node: CanvasNodeData) => void;
     onCaptureVideoFrame: (node: CanvasNodeData) => void;
     onTrimAudio: (node: CanvasNodeData) => void;
+    onExtractAudio?: (node: CanvasNodeData) => void;
+    onCancelExtractAudio?: (node: CanvasNodeData) => void;
+    extractingAudio?: boolean;
     onUpscale: (node: CanvasNodeData) => void;
     onSuperResolve: (node: CanvasNodeData) => void;
     onAngle: (node: CanvasNodeData) => void;
@@ -80,6 +83,9 @@ export function CanvasNodeHoverToolbar({
     onSplit,
     onCaptureVideoFrame,
     onTrimAudio,
+    onExtractAudio,
+    onCancelExtractAudio,
+    extractingAudio = false,
     onUpscale,
     onSuperResolve,
     onAngle,
@@ -177,6 +183,8 @@ export function CanvasNodeHoverToolbar({
         ...(hasImage || hasVideo || hasAudio ? [{ id: "download", title: t(hasAudio ? "canvas.nodeToolbar.downloadAudio" : hasVideo ? "canvas.nodeToolbar.downloadVideo" : "canvas.nodeToolbar.downloadImage"), label: t("common.download"), icon: <Download className="size-4" />, onClick: () => onDownload(node) }] : []),
         ...(isVideo ? [{ id: "edit", title: t("common.edit"), label: t("common.edit"), icon: <MessageSquare className="size-4" />, onClick: () => onToggleDialog(node) }] : []),
         ...(hasVideo ? [{ id: "captureFrame", title: t("canvas.videoFrame.capture"), label: t("canvas.videoFrame.capture"), icon: <Scissors className="size-4" />, onClick: () => onCaptureVideoFrame(node) }] : []),
+        ...(hasVideo && onExtractAudio ? [{ id: "extractAudio", title: extractingAudio ? "正在提取音频" : "提取音频", label: extractingAudio ? "提取中" : "提取音频", icon: extractingAudio ? <LoaderCircle className="size-4 animate-spin" /> : <Music2 className="size-4" />, disabled: extractingAudio, onClick: () => onExtractAudio(node) }] : []),
+        ...(hasVideo && extractingAudio && onCancelExtractAudio ? [{ id: "cancelExtractAudio", title: "取消音频提取", label: "取消提取", icon: <Square className="size-4" />, onClick: () => onCancelExtractAudio(node) }] : []),
         ...(hasAudio ? [{ id: "trimAudio", title: t("canvas.audioTrim.open"), label: t("canvas.audioTrim.open"), icon: <Scissors className="size-4" />, onClick: () => onTrimAudio(node) }] : []),
         ...(isText ? [{ id: "generateImage", title: t("canvas.node.generateImage"), label: t("canvas.node.generate"), icon: <ImageIcon className="size-4" />, onClick: () => onGenerateImage(node) }] : []),
         ...(isConfig ? [{ id: "config", title: t("canvas.configNode.title"), label: t("canvas.configNode.title"), icon: <Settings2 className="size-4" />, onClick: () => onToggleDialog(node) }] : []),

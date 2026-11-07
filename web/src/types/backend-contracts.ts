@@ -6,7 +6,7 @@ export type BackendErrorResponse={code:string;message:string;requestId:string;de
 /** The local launcher exchanges a single-use token; never put it in a browser URL. */
 export type LocalSessionResponse={csrfToken:string;expiresAt:number};
 export type BlobUploadResponse={blobId:string;sha256:string;byteSize:number;mimeType:string;existing:boolean};
-export type BackendBlobMime="image/png"|"image/jpeg"|"image/webp"|"video/mp4"|"video/webm"|"video/x-matroska"|"audio/wav"|"audio/flac"|"audio/ogg"|"audio/mpeg"|"text/plain";
+export type BackendBlobMime="image/png"|"image/jpeg"|"image/webp"|"video/mp4"|"video/webm"|"video/x-matroska"|"audio/wav"|"audio/flac"|"audio/ogg"|"audio/mp4"|"audio/mpeg"|"text/plain";
 
 
 export type BackendChannelMetadata={

@@ -82,7 +82,7 @@ function cursorOf(value){
  if(!/^(0|[1-9][0-9]*)$/.test(v)||!Number.isSafeInteger(Number(v)))throw Object.assign(Error("invalid_event_cursor"),{statusCode:400,code:"invalid_event_cursor"});
  return Number(v);
 }
-export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobStore,mediaPreview,blobGc,projectArchive,comfyWorkflowDir,vault,coordinator,materializer,worker,comfyRegistry,comfyLive,comfyInstanceIds=[],modelKinds=[],arkAssetUploadReady=false,
+export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobStore,mediaPreview,audioExtraction,blobGc,projectArchive,comfyWorkflowDir,vault,coordinator,materializer,worker,comfyRegistry,comfyLive,comfyInstanceIds=[],modelKinds=[],arkAssetUploadReady=false,
  arkChannelHealth,modelCatalog,mediaDownloader,skillRegistry,logger=false,streamPollMs=200}={}){
  if(!db||(!sessionAuth&&typeof authorize!=="function"))throw Error("backend_authorizer_required");
  const app=Fastify({logger,bodyLimit:5*1024*1024,trustProxy:false,genReqId:()=>randomUUID()});
@@ -123,6 +123,9 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
    "blob_not_found","blob_missing_on_disk","blob_integrity_error","invalid_blob_range",
    "preview_unsupported_mime","preview_transcoder_unavailable","preview_timeout",
    "preview_render_failed","preview_invalid_output","preview_busy",
+   "audio_extraction_cancelled","audio_extraction_source_invalid","audio_extraction_no_audio",
+   "audio_extraction_tool_unavailable","audio_extraction_failed","audio_extraction_timeout",
+   "audio_extraction_quota_exceeded","audio_extraction_busy",
    "gc_confirmation_required","invalid_gc_limit","gc_upload_in_progress",
    "gc_blob_integrity_error","gc_delete_race",
    "archive_nonportable_media_reference","archive_invalid_manifest",
@@ -222,6 +225,35 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
   reply.header("Cache-Control","no-store").code(stored.existing?200:201);
   return stored;
  });
+ if(audioExtraction){
+  app.addHook("preClose",async()=>audioExtraction.close());
+  app.post("/api/v1/projects/:projectId/media/extract-audio",{
+   bodyLimit:4096,
+   schema:{params:{type:"object",required:["projectId"],properties:{projectId:idSchema},additionalProperties:false},
+    body:{type:"object",required:["sourceNodeId","sourceBlobId"],additionalProperties:false,
+     properties:{sourceNodeId:canvasNodeIdSchema,sourceBlobId:{type:"string",pattern:"^[a-f0-9]{64}$"}}}}
+  },async(req,reply)=>{
+   const {sourceNodeId,sourceBlobId}=req.body;
+   const validate=()=>{
+    const project=getProject(db,req.params.projectId);
+    const node=project.document.nodes.find(node=>node.id===sourceNodeId);
+    if(!node||node.type!=="video"||node.metadata?.storageKey!=="cas:"+sourceBlobId||
+     node.metadata?.content!=="/api/v1/blobs/"+sourceBlobId)
+     throw Object.assign(Error("audio_extraction_source_invalid"),{code:"audio_extraction_source_invalid",statusCode:409});
+   };
+   validate();
+   // This request includes queue wait plus a bounded ten-minute conversion.
+   req.raw.socket?.setTimeout?.(0);
+   const controller=new AbortController();
+   const abort=()=>{if(!reply.raw.writableFinished)controller.abort()};
+   reply.raw.on("close",abort);
+   req.raw.on("aborted",abort);
+   try{
+    const result=await audioExtraction.extract(sourceBlobId,{signal:controller.signal,validate});
+    reply.header("Cache-Control","no-store");return result;
+   }finally{reply.raw.off("close",abort);req.raw.off("aborted",abort)}
+  });
+ }
  if(blobStore){
   app.post("/api/v1/blobs",{bodyLimit:blobStore.maxBlobBytes+1},async(req,reply)=>{
    const stored=await blobStore.put(req.body,{mime:req.headers["x-atelier-mime"],

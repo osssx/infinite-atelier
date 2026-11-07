@@ -12,7 +12,7 @@ export {canvasCasKey,canvasCasUrl,getCanvasBlob,isCanvasCasKey} from "./canvas-c
  * the unrelated Asset library's legacy storage is not silently migrated.
  */
 const TYPES=new Set(["image/png","image/jpeg","image/webp","video/mp4","video/webm",
- "video/x-matroska","audio/wav","audio/flac","audio/ogg","audio/mpeg","text/plain"]);
+ "video/x-matroska","audio/wav","audio/flac","audio/ogg","audio/mp4","audio/mpeg","text/plain"]);
 type Uploaded={blobId:string;sha256:string;byteSize:number;mimeType:string;existing:boolean};
 async function inputBlob(input:string|Blob):Promise<Blob>{
  if(input instanceof Blob)return input;

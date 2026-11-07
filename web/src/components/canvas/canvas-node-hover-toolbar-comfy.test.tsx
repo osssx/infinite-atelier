@@ -28,7 +28,7 @@ const workflow=(status?:string):CanvasNodeData=>({
         comfyExecution:status?{status,runId:"run"}:undefined,
     },
 });
-function render(node:CanvasNodeData,comfyExecuteDisabled=false,theme:"light"|"dark"="dark"){
+function render(node:CanvasNodeData,comfyExecuteDisabled=false,theme:"light"|"dark"="dark",extractingAudio=false){
     currentTheme.value=theme;
     // Simulate the backend-observed transient status instead of persisted canvas metadata.
     setCanvasComfyExecutionScope(null);
@@ -41,7 +41,7 @@ function render(node:CanvasNodeData,comfyExecuteDisabled=false,theme:"light"|"da
         onDecreaseFont:noop,onIncreaseFont:noop,onToggleDialog:noop,
         onGenerateImage:noop,onExecuteComfy:noop,onCancelComfy:noop,comfyExecuteDisabled,onUpload:noop,
         onDownload:noop,onSaveAsset:noop,onMaskEdit:noop,onBboxEdit:noop,onCrop:noop,onSplit:noop,
-        onCaptureVideoFrame:noop,onTrimAudio:noop,onUpscale:noop,onSuperResolve:noop,
+        onCaptureVideoFrame:noop,onTrimAudio:noop,onExtractAudio:noop,onCancelExtractAudio:noop,extractingAudio,onUpscale:noop,onSuperResolve:noop,
         onAngle:noop,onViewImage:noop,onReversePrompt:noop,onRetry:noop,
         onToggleFreeResize:noop,onDelete:noop,
     };
@@ -138,5 +138,22 @@ describe("ComfyUI workflow selected-node toolbar",()=>{
     });
     it("does not add Execute to unrelated canvas nodes",()=>{
         expect(render({...workflow(),type:"text"})).not.toContain('aria-label="执行 ComfyUI 工作流"');
+    });
+});
+
+
+describe("video audio extraction toolbar",()=>{
+    const video:CanvasNodeData={id:"video",type:"video",title:"Video",position:{x:0,y:0},width:320,height:180,metadata:{content:"/api/v1/blobs/video"}};
+    it("offers extraction only for a populated video",()=>{
+        expect(render(video)).toContain('aria-label="提取音频"');
+        expect(render({...video,metadata:{}})).not.toContain('aria-label="提取音频"');
+        expect(render({...video,type:"audio"})).not.toContain('aria-label="提取音频"');
+    });
+    it("shows a spinner, disables repeat extraction and offers cancel while running",()=>{
+        const html=render(video,false,"dark",true);
+        expect(html).toMatch(/disabled=""[^>]*aria-label="正在提取音频"/);
+        expect(html).toContain('aria-label="取消音频提取"');
+        expect(html).toContain("animate-spin");
+        expect(html).toContain('aria-label="canvas.nodeToolbar.replaceVideo"');
     });
 });

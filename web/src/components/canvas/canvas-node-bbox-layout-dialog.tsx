@@ -42,6 +42,7 @@ export function CanvasNodeBBoxLayoutDialog({
     initialLayout,
     initialPrompt,
     initialSize,
+    initialDimensions,
     onClose,
     onApply,
 }: {
@@ -49,21 +50,24 @@ export function CanvasNodeBBoxLayoutDialog({
     initialLayout?: BBoxLayout;
     initialPrompt?: string;
     initialSize: string;
+    initialDimensions?: {width:number;height:number};
     onClose: () => void;
     onApply: (layout: BBoxLayout, promptJson: string, width: number, height: number) => void;
 }) {
     const { t } = useTranslation();
     const { message, modal } = App.useApp();
     const getInitialLayout = () => {
-        if (initialLayout) return syncBboxLayoutAspect(initialLayout,initialSize);
+        const fit=(layout:BBoxLayout)=>initialDimensions
+            ?resizeBboxLayout(layout,initialDimensions.width,initialDimensions.height):syncBboxLayoutAspect(layout,initialSize);
+        if (initialLayout) return fit(initialLayout);
         if (initialPrompt) {
             try {
-                return syncBboxLayoutAspect(parseBboxImport(initialPrompt, ...initialBboxSize(initialSize)),initialSize);
+                return fit(parseBboxImport(initialPrompt, ...initialBboxSize(initialSize)));
             } catch {
                 /* Start with a clean layout when the prompt is not a BBox document. */
             }
         }
-        return emptyBboxLayout(...initialBboxSize(initialSize));
+        return initialDimensions?emptyBboxLayout(initialDimensions.width,initialDimensions.height):emptyBboxLayout(...initialBboxSize(initialSize));
     };
     const [layout, setLayout] = useState<BBoxLayout>(getInitialLayout);
     const [selected, setSelected] = useState<string[]>([]);
@@ -107,7 +111,7 @@ export function CanvasNodeBBoxLayoutDialog({
         setFuture([]);
         setPreview(false);
         setDrawKind(null);
-    }, [open, initialLayout, initialPrompt, initialSize]);
+    }, [open, initialLayout, initialPrompt, initialSize, initialDimensions]);
 
     const commit = (next: BBoxLayout) => {
         setHistory((past) => [...past.slice(-49), layout]);
@@ -392,7 +396,7 @@ export function CanvasNodeBBoxLayoutDialog({
     };
 
     return (
-        <Modal className="bbox-editor" open={open} title={<span className="bbox-editor-title"><Layers3 size={18} />{t("canvas.bboxEditor.title")}</span>} onCancel={onClose} footer={null} width="min(1400px, 94vw)" centered destroyOnHidden styles={{ body: { maxHeight: "calc(100dvh - 140px)", overflowY: "auto" } }}>
+        <Modal className="bbox-editor" open={open} title={<span className="bbox-editor-title"><Layers3 size={18} />{t("canvas.bboxEditor.title")}{initialDimensions?<span className="text-xs font-normal opacity-65">工作流尺寸 {initialDimensions.width} × {initialDimensions.height}</span>:null}</span>} onCancel={onClose} footer={null} width="min(1400px, 94vw)" centered destroyOnHidden styles={{ body: { maxHeight: "calc(100dvh - 140px)", overflowY: "auto" } }}>
             <div className="grid items-start gap-4 lg:grid-cols-[320px_minmax(0,1fr)_260px] xl:grid-cols-[320px_minmax(0,1fr)_260px]" data-canvas-no-zoom>
                 <section className="bbox-panel flex h-[min(60dvh,560px)] min-h-0 min-w-0 flex-col overflow-hidden rounded-xl border border-black/10 bg-black/[0.02] p-3 dark:border-white/10 dark:bg-white/[0.02] lg:h-[calc(100dvh-180px)]">
                     <div className="thin-scrollbar min-h-0 flex-1 space-y-3 overflow-auto overscroll-contain pr-1">
@@ -883,6 +887,7 @@ export function CanvasNodeBBoxLayoutDialog({
                             </div>
                         </details>
                     </div>
+                    {!canApplySize?<div role="status" className="text-xs text-amber-600">{t("canvas.bboxEditor.supportedSizeError")}</div>:null}
                     {error ? <div className="text-sm text-red-500">{error}</div> : null}
                     <div className="bbox-panel-footer mt-3 flex shrink-0 justify-end gap-2 border-t pt-3">
                         <Button onClick={onClose}>{t("common.cancel")}</Button>

@@ -48,6 +48,7 @@ import { CanvasNodeAngleDialog, type CanvasImageAngleParams } from "@/components
 import { CanvasNodeCropDialog, type CanvasImageCropRect } from "@/components/canvas/canvas-node-crop-dialog";
 import { CanvasNodeMaskEditDialog, type CanvasImageMaskEditPayload } from "@/components/canvas/canvas-node-mask-edit-dialog";
 import { CanvasNodeBBoxLayoutDialog } from "@/components/canvas/canvas-node-bbox-layout-dialog";
+import {resolveComfyMediaDimensions,type ComfyMediaDimensions} from "@/features/comfy-workflow/comfy-media-dimensions";
 import { bboxSizeForNode, applyBboxLayoutToGraph, bboxLayoutToModelJson, isSupportedBboxGenerationSize, validateBboxLayout, type BBoxLayout } from "@/lib/canvas/bbox-layout";
 import { updateCanvasNodePrompt } from "@/lib/canvas/canvas-prompt-metadata";
 import { CanvasNodeSplitDialog, type CanvasImageSplitParams } from "@/components/canvas/canvas-node-split-dialog";
@@ -365,6 +366,8 @@ function AtelierCanvasPage() {
     const [audioTrimNodeId, setAudioTrimNodeId] = useState<string | null>(null);
     const audioTrimIdentityRef = useRef<string | null>(null);
     const [maskEditNodeId, setMaskEditNodeId] = useState<string | null>(null);
+    const [bboxInitialDimensions,setBboxInitialDimensions]=useState<ComfyMediaDimensions|undefined>();
+    const bboxOpenRequest=useRef(0);
     const [bboxLayoutNodeId, setBboxLayoutNodeId] = useState<string | null>(null);
     const [splitNodeId, setSplitNodeId] = useState<string | null>(null);
     const [upscaleNodeId, setUpscaleNodeId] = useState<string | null>(null);
@@ -2334,6 +2337,22 @@ function AtelierCanvasPage() {
         [effectiveConfig, message, submitSqliteImageEdit, t],
     );
 
+    const openBboxEditor=useCallback(async(node:CanvasNodeData)=>{
+        const request=++bboxOpenRequest.current;
+        let dimensions:ComfyMediaDimensions|undefined;
+        const defaults=!node.metadata?.model?effectiveConfig.comfyWorkflowDefaults?.image:undefined;
+        const binding=node.metadata?.comfyMediaPreset??(defaults?{...defaults,overrides:{},slots:{}}:undefined);
+        if(binding)try{
+            const template=await getComfyTemplate(binding.templateId,binding.templateRevision);
+            if(template)dimensions=resolveComfyMediaDimensions(template,binding);
+        }catch{/* The editor remains usable with manual dimensions when a preset is unavailable. */}
+        if(request!==bboxOpenRequest.current)return;
+        const current=nodesRef.current.find(item=>item.id===node.id);
+        if(!current||current.type!==CanvasNodeType.Image||current.metadata?.content)return;
+        setBboxInitialDimensions(dimensions);
+        setBboxLayoutNodeId(node.id);
+    },[effectiveConfig.comfyWorkflowDefaults]);
+
     const applyBboxLayout = useCallback((nodeId: string, layout: BBoxLayout, _promptJson: string, width: number, height: number) => {
         const latest = nodesRef.current.find((item) => item.id === nodeId);
         const issue = validateBboxLayout(layout);
@@ -3632,7 +3651,7 @@ function AtelierCanvasPage() {
                     onDownload={downloadNodeImage}
                     onSaveAsset={(node) => void saveNodeAsset(node)}
                     onMaskEdit={(node) => setMaskEditNodeId(node.id)}
-                    onBboxEdit={(node) => setBboxLayoutNodeId(node.id)}
+                    onBboxEdit={(node) => void openBboxEditor(node)}
                     onCrop={(node) => setCropNodeId(node.id)}
                     onCaptureVideoFrame={(node) => { videoFrameIdentityRef.current = `${projectId}:${node.id}:${node.metadata?.storageKey || ""}:${node.metadata?.content || ""}`; setVideoFrameNodeId(node.id); }}
                     onTrimAudio={(node) => { audioTrimIdentityRef.current = `${projectId}:${node.id}:${node.metadata?.storageKey || ""}:${node.metadata?.content || ""}`; document.querySelectorAll<HTMLElement>("[data-node-id]").forEach((element) => { if (element.dataset.nodeId === node.id) element.querySelector("audio")?.pause(); }); setAudioTrimNodeId(node.id); }}
@@ -3723,7 +3742,7 @@ function AtelierCanvasPage() {
                     <CanvasNodeMaskEditDialog dataUrl={maskEditNode.metadata.content} open={Boolean(maskEditNode)} onClose={() => setMaskEditNodeId(null)} onConfirm={(payload) => void maskEditImageNode(maskEditNode!, payload)} />
                 ) : null}
 
-                {bboxLayoutNode && !bboxLayoutNode.metadata?.content ? <CanvasNodeBBoxLayoutDialog open initialLayout={bboxLayoutNode.metadata?.bboxLayout} initialPrompt={bboxLayoutNode.metadata?.composerContent ?? bboxLayoutNode.metadata?.prompt} initialSize={bboxSizeForNode(bboxLayoutNode,buildGenerationConfig(effectiveConfig, bboxLayoutNode, "image").size)} onClose={() => setBboxLayoutNodeId(null)} onApply={(layout, promptJson, width, height) => applyBboxLayout(bboxLayoutNode.id, layout, promptJson, width, height)} /> : null}
+                {bboxLayoutNode && !bboxLayoutNode.metadata?.content ? <CanvasNodeBBoxLayoutDialog open initialDimensions={bboxInitialDimensions} initialLayout={bboxLayoutNode.metadata?.bboxLayout} initialPrompt={bboxLayoutNode.metadata?.composerContent ?? bboxLayoutNode.metadata?.prompt} initialSize={bboxSizeForNode(bboxLayoutNode,buildGenerationConfig(effectiveConfig, bboxLayoutNode, "image").size)} onClose={() => setBboxLayoutNodeId(null)} onApply={(layout, promptJson, width, height) => applyBboxLayout(bboxLayoutNode.id, layout, promptJson, width, height)} /> : null}
 
                 {splitNode?.metadata?.content ? <CanvasNodeSplitDialog dataUrl={splitNode.metadata.content} open={Boolean(splitNode)} onClose={() => setSplitNodeId(null)} onConfirm={(params) => void splitImageNode(splitNode!, params)} /> : null}
 

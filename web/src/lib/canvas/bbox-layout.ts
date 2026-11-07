@@ -268,7 +268,30 @@ export function initialBboxSize(value?: string): [number, number] {
     }
     const preset = IMAGE_SIZE_PRESETS.find((size) => size.ratio === value);
     if (preset) return [preset.width, preset.height];
+    const ratioMatch=value?.match(/^(\d+(?:\.\d+)?)\s*:\s*(\d+(?:\.\d+)?)$/);
+    if(ratioMatch){
+        const ratio=Number(ratioMatch[1])/Number(ratioMatch[2]);
+        if(Number.isFinite(ratio)&&ratio>=0.25&&ratio<=4){
+            const known=IMAGE_SIZE_PRESETS.find(size=>Math.abs(size.width/size.height-ratio)<0.00001);
+            if(known)return [known.width,known.height];
+            return ratio>=1?[1536,Math.max(16,Math.round(1536/ratio/16)*16)]:[Math.max(16,Math.round(1536*ratio/16)*16),1536];
+        }
+    }
     return [1024, 1024];
+}
+
+/** Prefer the current node's preview geometry over stale channel settings. */
+export function bboxSizeForNode(node:CanvasNodeData,fallback:string):string{
+    const ratio=node.width/node.height;
+    if(!Number.isFinite(ratio)||ratio<0.25||ratio>4)return fallback;
+    const configured=initialBboxSize(fallback);
+    if(Math.abs(configured[0]/configured[1]-ratio)<0.00001)return fallback;
+    return `${node.width}:${node.height}`;
+}
+
+export function syncBboxLayoutAspect(layout:BBoxLayout,size:string):BBoxLayout{
+    const [width,height]=initialBboxSize(size);
+    return Math.abs(layout.width/layout.height-width/height)<0.00001?layout:resizeBboxLayout(layout,width,height);
 }
 
 export type BBoxMetadata = CanvasNodeMetadata & { bboxLayout?: BBoxLayout };

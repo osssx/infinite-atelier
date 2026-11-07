@@ -16,6 +16,7 @@ import {
     distributeBboxItems,
     emptyBboxLayout,
     initialBboxSize,
+    syncBboxLayoutAspect,
     isSupportedBboxGenerationSize,
     matchBboxSize,
     moveBboxSelection,
@@ -54,10 +55,10 @@ export function CanvasNodeBBoxLayoutDialog({
     const { t } = useTranslation();
     const { message, modal } = App.useApp();
     const getInitialLayout = () => {
-        if (initialLayout) return initialLayout;
+        if (initialLayout) return syncBboxLayoutAspect(initialLayout,initialSize);
         if (initialPrompt) {
             try {
-                return parseBboxImport(initialPrompt, ...initialBboxSize(initialSize));
+                return syncBboxLayoutAspect(parseBboxImport(initialPrompt, ...initialBboxSize(initialSize)),initialSize);
             } catch {
                 /* Start with a clean layout when the prompt is not a BBox document. */
             }

@@ -48,7 +48,7 @@ import { CanvasNodeAngleDialog, type CanvasImageAngleParams } from "@/components
 import { CanvasNodeCropDialog, type CanvasImageCropRect } from "@/components/canvas/canvas-node-crop-dialog";
 import { CanvasNodeMaskEditDialog, type CanvasImageMaskEditPayload } from "@/components/canvas/canvas-node-mask-edit-dialog";
 import { CanvasNodeBBoxLayoutDialog } from "@/components/canvas/canvas-node-bbox-layout-dialog";
-import { applyBboxLayoutToGraph, bboxLayoutToModelJson, isSupportedBboxGenerationSize, validateBboxLayout, type BBoxLayout } from "@/lib/canvas/bbox-layout";
+import { bboxSizeForNode, applyBboxLayoutToGraph, bboxLayoutToModelJson, isSupportedBboxGenerationSize, validateBboxLayout, type BBoxLayout } from "@/lib/canvas/bbox-layout";
 import { updateCanvasNodePrompt } from "@/lib/canvas/canvas-prompt-metadata";
 import { CanvasNodeSplitDialog, type CanvasImageSplitParams } from "@/components/canvas/canvas-node-split-dialog";
 import { CanvasVideoFrameDialog } from "@/components/canvas/canvas-video-frame-dialog";
@@ -3723,7 +3723,7 @@ function AtelierCanvasPage() {
                     <CanvasNodeMaskEditDialog dataUrl={maskEditNode.metadata.content} open={Boolean(maskEditNode)} onClose={() => setMaskEditNodeId(null)} onConfirm={(payload) => void maskEditImageNode(maskEditNode!, payload)} />
                 ) : null}
 
-                {bboxLayoutNode && !bboxLayoutNode.metadata?.content ? <CanvasNodeBBoxLayoutDialog open initialLayout={bboxLayoutNode.metadata?.bboxLayout} initialPrompt={bboxLayoutNode.metadata?.composerContent ?? bboxLayoutNode.metadata?.prompt} initialSize={buildGenerationConfig(effectiveConfig, bboxLayoutNode, "image").size} onClose={() => setBboxLayoutNodeId(null)} onApply={(layout, promptJson, width, height) => applyBboxLayout(bboxLayoutNode.id, layout, promptJson, width, height)} /> : null}
+                {bboxLayoutNode && !bboxLayoutNode.metadata?.content ? <CanvasNodeBBoxLayoutDialog open initialLayout={bboxLayoutNode.metadata?.bboxLayout} initialPrompt={bboxLayoutNode.metadata?.composerContent ?? bboxLayoutNode.metadata?.prompt} initialSize={bboxSizeForNode(bboxLayoutNode,buildGenerationConfig(effectiveConfig, bboxLayoutNode, "image").size)} onClose={() => setBboxLayoutNodeId(null)} onApply={(layout, promptJson, width, height) => applyBboxLayout(bboxLayoutNode.id, layout, promptJson, width, height)} /> : null}
 
                 {splitNode?.metadata?.content ? <CanvasNodeSplitDialog dataUrl={splitNode.metadata.content} open={Boolean(splitNode)} onClose={() => setSplitNodeId(null)} onConfirm={(params) => void splitImageNode(splitNode!, params)} /> : null}
 

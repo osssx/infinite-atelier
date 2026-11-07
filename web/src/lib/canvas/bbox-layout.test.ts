@@ -11,6 +11,8 @@ import {
     drawBboxItem,
     duplicateBboxSelection,
     initialBboxSize,
+    bboxSizeForNode,
+    syncBboxLayoutAspect,
     matchBboxSize,
     moveBboxSelection,
     parseBboxImport,
@@ -294,4 +296,26 @@ describe("BBox graph apply", () => {
         expect(applyBboxLayoutToGraph(args)).toBeNull();
         expect(applyBboxLayoutToGraph({ ...args, nodes: [] })).toBeNull();
     });
+});
+
+describe("BBox opening follows node aspect",()=>{
+ it("uses workflow preview geometry instead of stale channel size",()=>{
+  const node={width:191.25,height:340} as CanvasNodeData;
+  expect(initialBboxSize(bboxSizeForNode(node,"1:1"))).toEqual([864,1536]);
+  expect(bboxSizeForNode({width:340,height:191.25} as CanvasNodeData,"2048x1152")).toBe("2048x1152");
+ });
+ it("supports custom ratios with valid aligned canvas dimensions",()=>{
+  const [w,h]=initialBboxSize("2.5:1");
+  expect(w%16).toBe(0);expect(h%16).toBe(0);expect(w/h).toBeCloseTo(2.5,1);
+  expect(initialBboxSize("562500:1000000")).toEqual([864,1536]);
+  expect(bboxSizeForNode({width:0,height:0} as CanvasNodeData,"4:3")).toBe("4:3");
+ });
+ it("rescales saved boxes while preserving captions and same-aspect canvas dimensions",()=>{
+  const layout={version:1 as const,width:1024,height:1024,summary:{caption:"scene"},items:[
+   {id:"a",kind:"object" as const,caption:"subject",x1:256,y1:256,x2:768,y2:768}]};
+  const resized=syncBboxLayoutAspect(layout,"9:16");
+  expect(resized).toMatchObject({width:864,height:1536,summary:{caption:"scene"},items:[{caption:"subject",x1:216,y1:384,x2:648,y2:1152}]});
+  expect(syncBboxLayoutAspect(resized,"9:16")).toBe(resized);
+  expect(layout.width).toBe(1024);
+ });
 });

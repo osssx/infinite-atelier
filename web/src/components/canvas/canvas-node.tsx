@@ -554,7 +554,7 @@ export const CanvasNode = React.memo(function CanvasNode({
             {!isGroup && !definition?.ports ? <ConnectionHandleDot side="left" visible={hovered || isSelected || isConnecting} onMouseDown={(event) => onConnectStart(event, data.id, "target")} /> : null}
             {!isGroup && !definition?.ports && getCanvasResourceOutputPorts(data).length ? getCanvasResourceOutputPorts(data).map(port=>{
                 const resourcePorts=getCanvasResourceOutputPorts(data);
-                const showLabel=data.type!==CanvasNodeType.Image||resourcePorts.length>1;
+                const showLabel=resourcePorts.length>1;
                 return <ConnectionHandleDot key={port.id} side="right" visible={(hovered||isSelected||isConnecting)} top={getCanvasPortOffset(data,"source",port.id)} hitSize={28} portId={port.id} portDirection="source" label={showLabel?port.label:undefined} valueKind={showLabel?port.valueKind:undefined} onMouseDown={event=>onConnectStart(event,data.id,"source",port.id)}/>;
             }):null}
             {!isGroup && !definition?.ports && !getCanvasResourceOutputPorts(data).length ? (

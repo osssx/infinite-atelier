@@ -168,7 +168,7 @@ export function CanvasVideoFrameDialog({ node, open, onClose, onCapture }: { nod
     };
     const retry = () => { setError(false); setLoading(true); setReady(false); setLoadAttempt((value) => value + 1); };
 
-    return <Modal title={t("canvas.videoFrame.title")} open={open} centered width="min(900px, calc(100vw - 24px))" footer={null} destroyOnHidden onCancel={onClose} maskClosable={!busy} closable={!busy} keyboard={!busy} afterOpenChange={(visible) => { if (!visible) onClose(); }}>
+    return <Modal title={t("canvas.videoFrame.title")} open={open} centered width="min(900px, calc(100vw - 24px))" footer={null} destroyOnHidden onCancel={onClose} mask={{ closable: !busy }} closable={!busy} keyboard={!busy} afterOpenChange={(visible) => { if (!visible) onClose(); }}>
         <div data-canvas-no-zoom data-canvas-shortcuts-ignore className="space-y-4" onPointerDown={(event) => event.stopPropagation()} onWheel={(event) => event.stopPropagation()}>
             <div className="relative flex min-h-[260px] max-h-[62vh] items-center justify-center overflow-hidden rounded-lg bg-black">
                 <video ref={videoRef} className="max-h-[62vh] max-w-full" playsInline muted preload="auto" onLoadedMetadata={() => { const video = videoRef.current; if (video && Number.isFinite(video.duration)) setDuration(video.duration); }} onLoadedData={onLoadedData} onDurationChange={() => { const video = videoRef.current; if (video && Number.isFinite(video.duration)) setDuration(video.duration); }} onTimeUpdate={() => { const video = videoRef.current; if (video && !video.seeking && !seeking && seekTarget === null) setTime(video.currentTime); }} onEnded={() => setPlaying(false)} onError={onVideoError} />

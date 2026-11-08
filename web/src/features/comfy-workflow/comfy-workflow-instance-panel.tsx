@@ -352,7 +352,7 @@ export function ComfyWorkflowInstancePanel({node,connections,projectId,comfyInst
     <Modal title="保存为新预设" open={savePresetOpen} onOk={()=>void saveAsNewPreset()}
         onCancel={()=>{if(!savePresetBusy)setSavePresetOpen(false);}}
         okText="保存预设" cancelText="取消" okButtonProps={{disabled:!newPresetName.trim()||savePresetBusy}}
-        confirmLoading={savePresetBusy} closable={!savePresetBusy} maskClosable={!savePresetBusy}
+        confirmLoading={savePresetBusy} closable={!savePresetBusy} mask={{ closable: !savePresetBusy }}
         destroyOnHidden>
         <label htmlFor="comfy-new-preset-name" className="mb-2 block text-sm">预设名称</label>
         <Input id="comfy-new-preset-name" aria-label="新预设名称" value={newPresetName} maxLength={160}

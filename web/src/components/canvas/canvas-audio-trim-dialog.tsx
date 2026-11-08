@@ -223,7 +223,7 @@ export function CanvasAudioTrimDialog({ node, open, onClose, onTrim }: { node: C
             footer={null}
             destroyOnHidden
             onCancel={onClose}
-            maskClosable={!busy}
+            mask={{ closable: !busy }}
             closable={!busy}
             keyboard={!busy}
             afterOpenChange={(visible) => {

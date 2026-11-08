@@ -503,7 +503,7 @@ export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,
                 </div>
                 <Modal title="确认加载预设" open={pendingPreset!==null}
                     okText="确认加载" cancelText="取消" confirmLoading={busy}
-                    cancelButtonProps={{disabled:busy}} closable={!busy} maskClosable={!busy} keyboard={!busy}
+                    cancelButtonProps={{disabled:busy}} closable={!busy} mask={{ closable: !busy }} keyboard={!busy}
                     onCancel={()=>{if(!busy)setPendingPreset(null);}}
                     onOk={async()=>{
                         if(!pendingPreset||busy)return;

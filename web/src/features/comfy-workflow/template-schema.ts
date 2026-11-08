@@ -8,7 +8,7 @@ export type ComfyNodeTarget = { nodeId: string; inputName: string };
 export type ComfyScalarChoice = {label:string;value:string|number};
 export type ComfyInputBinding =
     | { mode: "literal"; targets: ComfyNodeTarget[] }
-    | { mode: "media-file"; mediaKind: "IMAGE" | "VIDEO" | "AUDIO"; targets: ComfyNodeTarget[] }
+    | { mode: "media-file"; mediaKind: "IMAGE" | "MASK" | "VIDEO" | "AUDIO"; targets: ComfyNodeTarget[] }
     | { mode: "socket"; replaceInternalLink: boolean; targets: ComfyNodeTarget[] };
 export type ComfyAbsentPolicy =
     | { mode: "keep-template" }
@@ -50,7 +50,7 @@ export type ComfyMediaUseCase = {
     channel: "image" | "video" | "audio";
     primaryOutputKind: "image" | "video" | "audio";
     promptPortId: string;
-    slots: Array<{id:string;label:string;valueKind:"IMAGE"|"VIDEO"|"AUDIO";required?:boolean}>;
+    slots: Array<{id:string;label:string;valueKind:"IMAGE"|"MASK"|"VIDEO"|"AUDIO";required?:boolean}>;
     primaryOutputPortId: string;
     additionalOutputPortIds?: string[];
 };
@@ -210,7 +210,7 @@ export function validateComfyTemplatePayload(raw: unknown, info?: ComfyObjectInf
         for(const slot of useCase.slots){
             if(!isObject(slot)||typeof slot.id!=="string"||!safeId(slot.id)||ids.has(slot.id)||
                 typeof slot.label!=="string"||slot.label.length>90||
-                !["IMAGE","VIDEO","AUDIO"].includes(String(slot.valueKind))||
+                !["IMAGE","MASK","VIDEO","AUDIO"].includes(String(slot.valueKind))||
                 (slot.required!==undefined&&typeof slot.required!=="boolean")||
                 (slot.required!==undefined&&typeof slot.required!=="boolean")) fail("invalid media slot");
             ids.add(slot.id);
@@ -272,7 +272,7 @@ export function validateComfyTemplatePayload(raw: unknown, info?: ComfyObjectInf
             }
             if (!isObject(b) || !INPUT_MODES.has(b.mode) || !Array.isArray(b.targets) || !b.targets.length) failBinding("missing input binding",p);
             if (b.mode === "socket" && typeof b.replaceInternalLink !== "boolean") fail("socket replace policy required");
-            if (b.mode === "media-file" && (!["IMAGE", "VIDEO", "AUDIO"].includes(b.mediaKind) || b.mediaKind !== p.valueKind))
+            if (b.mode === "media-file" && (!["IMAGE", "MASK", "VIDEO", "AUDIO"].includes(b.mediaKind) || b.mediaKind !== p.valueKind))
                 failBinding("media-file kind mismatch",p,undefined,`端口类型 ${p.valueKind}，绑定媒体类型 ${b.mediaKind}`);
             for (const target of b.targets) {
                 if (!isObject(target) || typeof target.nodeId !== "string" || typeof target.inputName !== "string" ||
@@ -281,6 +281,10 @@ export function validateComfyTemplatePayload(raw: unknown, info?: ComfyObjectInf
                 if (claimed.has(key)) failBinding("duplicate input claim: " + key,p,target);
                 claimed.add(key);
                 const existing = graph[target.nodeId].inputs[target.inputName];
+                if(p.valueKind==="MASK"&&b.mode==="media-file"&&
+                    (graph[target.nodeId].class_type!=="LoadImageMask"||target.inputName!=="image"||
+                     graph[target.nodeId].inputs.channel!=="alpha"))
+                    failBinding("MASK file input requires LoadImageMask image with alpha channel",p,target);
                 if (b.mode === "socket" && isComfyLink(existing, graph) && !b.replaceInternalLink) failBinding("socket overwrites internal link",p,target);
                 if (b.mode === "media-file" && isComfyLink(existing, graph)) failBinding("file sink is connected to socket",p,target);
                 if (b.mode === "literal" && isComfyLink(existing, graph)) failBinding("literal sink is connected to socket",p,target);
@@ -295,7 +299,7 @@ export function validateComfyTemplatePayload(raw: unknown, info?: ComfyObjectInf
                 if (expectedType && b.mode === "literal" && expectedType !== p.valueKind) failBinding("literal type mismatch",p,target,`节点要求 ${expectedType}${declaredType==="COMBO"?"（COMBO 枚举值）":""}，当前端口设置为 ${p.valueKind}；工作流原值：${valueDescription(existing)}。请调整画布端口数据类型或输入映射`);
             }
             if (p.absentPolicy?.mode === "auto-prune") {
-                if (p.required || !["IMAGE","VIDEO","AUDIO"].includes(p.valueKind) ||
+                if (p.required || !["IMAGE","MASK","VIDEO","AUDIO"].includes(p.valueKind) ||
                     !["socket","media-file"].includes(b.mode) || has(p,"defaultValue"))
                     fail("automatic pruning requires an optional IMAGE, VIDEO or AUDIO input without a default");
             }

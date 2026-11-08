@@ -51,7 +51,11 @@ export type CanvasNodeImage = {
     naturalHeight: number;
     bytes: number;
     mimeType: string;
+    mask?: CanvasImageMask;
 };
+
+/** Immutable PNG mask bound to the exact source image version it was drawn on. */
+export type CanvasImageMask = { storageKey:string; width:number; height:number; bytes:number; sourceStorageKey:string; sourceImageId?:string };
 
 export type CanvasNodeMetadata = {
     videoFrame?: { sourceNodeId: string; timeMs: number };
@@ -107,6 +111,7 @@ export type CanvasNodeMetadata = {
     images?: CanvasNodeImage[];
     primaryImageId?: string;
     storageKey?: string;
+    mask?: CanvasImageMask;
     mimeType?: string;
     bytes?: number;
     durationMs?: number;

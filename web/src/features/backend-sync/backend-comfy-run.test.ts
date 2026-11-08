@@ -74,7 +74,7 @@ describe("backend save fence + frozen Comfy submission",()=>{
    metadata:{comfyMediaPreset:{templateId:"media-demo",templateRevision:"rev-media",overrides:{steps:0,enabled:false},
     slots:{reference:{nodeId:"reference",imageId:"still-1"}}}}};
   const reference:CanvasNodeData={id:"reference",type:"image",title:"Reference",width:360,height:280,position:{x:400,y:0},
-   metadata:{content:"blob:reference-image",storageKey:"reference-blob",mimeType:"image/png"}};
+   metadata:{content:"blob:reference-image",storageKey:"reference-blob",mimeType:"image/png",images:[{id:"still-1",status:"success",content:"blob:reference-image",storageKey:"reference-blob",naturalWidth:1,naturalHeight:1,bytes:5,mimeType:"image/png"}]}};
   const mediaTemplate:ComfyWorkflowTemplate={...template,id:"media-demo",revision:"rev-media",
    apiGraph:{"1":{class_type:"LoadImage",inputs:{image:"example.png"}},"2":{class_type:"Prompt",inputs:{text:""}},"3":{class_type:"Output",inputs:{}}},
    requirements:{classTypes:["LoadImage","Output","Prompt"]},

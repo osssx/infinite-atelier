@@ -28,6 +28,7 @@ import { canvasThemes, type CanvasBackgroundMode } from "@/lib/canvas-theme";
 import { awaitAssetStorePersistence, useAssetStore } from "@/stores/use-asset-store";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { cullConnections, worldViewRect } from "@/lib/canvas/canvas-connection-culling";
+import {resolveCanvasImage,resolveCanvasImageMask} from "@/lib/canvas/canvas-image-mask";
 import { reuseCanvasVisibleList } from "@/lib/canvas/canvas-visible-list";
 import { cropDataUrl, splitDataUrl, upscaleDataUrl } from "@/lib/canvas/canvas-image-data";
 import { fitNodeSize, nodeSizeFromRatio } from "@/lib/canvas/canvas-node-size";
@@ -367,6 +368,7 @@ function AtelierCanvasPage() {
     const [audioTrimNodeId, setAudioTrimNodeId] = useState<string | null>(null);
     const audioTrimIdentityRef = useRef<string | null>(null);
     const [maskEditNodeId, setMaskEditNodeId] = useState<string | null>(null);
+    const maskEditSourceRef=useRef<{nodeId:string;imageId?:string;storageKey:string;content?:string}|null>(null);
     const [bboxInitialDimensions,setBboxInitialDimensions]=useState<ComfyMediaDimensions|undefined>();
     const bboxOpenRequest=useRef(0);
     const [bboxLayoutNodeId, setBboxLayoutNodeId] = useState<string | null>(null);
@@ -950,6 +952,8 @@ function AtelierCanvasPage() {
         if (identity !== audioTrimIdentityRef.current) setAudioTrimNodeId(null);
     }, [projectId, audioTrimNodeId, audioTrimNode]);
     const maskEditNode = maskEditNodeId ? nodeById.get(maskEditNodeId) || null : null;
+    const editedMask=maskEditNode&&maskEditSourceRef.current?.nodeId===maskEditNode.id?
+        resolveCanvasImageMask(maskEditNode,maskEditSourceRef.current.imageId):undefined;
     const bboxLayoutNode = bboxLayoutNodeId ? nodeById.get(bboxLayoutNodeId) || null : null;
     const splitNode = splitNodeId ? nodeById.get(splitNodeId) || null : null;
     const upscaleNode = upscaleNodeId ? nodeById.get(upscaleNodeId) || null : null;
@@ -2357,14 +2361,17 @@ function AtelierCanvasPage() {
 
     const maskEditImageNode = useCallback(
         async (node: CanvasNodeData, payload: CanvasImageMaskEditPayload) => {
-            if (!node.metadata?.content) return;
+            const opened=maskEditSourceRef.current;
+            const sourceImage=opened?.nodeId===node.id?resolveCanvasImage(node,opened.imageId):undefined;
+            const sourceUrl=opened?.content|| (opened?.storageKey?canvasCasUrl(opened.storageKey):undefined);
+            if (!opened||!sourceImage||sourceImage.storageKey!==opened.storageKey||!sourceUrl) return;
             const generationConfig = { ...buildGenerationConfig(effectiveConfig, node, "image"), count: "1", size: node.metadata?.size || "auto" };
-            const userPrompt = payload.prompt.trim();
+            const userPrompt = payload.prompt?.trim()??"";
             if(modelChannelProvider(resolveModelChannel(effectiveConfig,generationConfig.model),"image")){
                 const editPrompt=t("canvas.projectPage.maskPrompt",{prompt:userPrompt});
-                const source:ReferenceImage={id:node.id,name:node.title||node.id,
-                    type:node.metadata.mimeType||"image/png",dataUrl:node.metadata.content,
-                    storageKey:node.metadata.storageKey};
+                const source:ReferenceImage={id:opened.imageId??node.id,name:node.title||node.id,
+                    type:sourceImage.mimeType||"image/png",dataUrl:sourceUrl,
+                    storageKey:sourceImage.storageKey};
                 const mask:ReferenceImage={id:node.id+"-mask",name:"mask.png",type:"image/png",
                     dataUrl:payload.maskDataUrl};
                 try{
@@ -2378,6 +2385,30 @@ function AtelierCanvasPage() {
         },
         [effectiveConfig, message, submitSqliteImageEdit, t],
     );
+
+    const saveImageNodeMask = useCallback(async(node:CanvasNodeData,maskDataUrl:string)=>{
+        const opened=maskEditSourceRef.current;
+        if(!opened||opened.nodeId!==node.id)throw Error("蒙版编辑目标已变化，请重新打开编辑器");
+        const current=nodesRef.current.find(item=>item.id===node.id);
+        const source=current?resolveCanvasImage(current,opened.imageId):undefined;
+        if(!source?.storageKey||source.storageKey!==opened.storageKey||source.content!==opened.content)throw Error("原图已更换，请重新编辑蒙版");
+        const stored=await uploadImage(maskDataUrl);
+        if((source.width&&stored.width!==source.width)||(source.height&&stored.height!==source.height))throw Error("蒙版尺寸与原图不一致，请重新编辑");
+        const latest=nodesRef.current.find(item=>item.id===node.id);
+        const latestSource=latest?resolveCanvasImage(latest,opened.imageId):undefined;
+        if(!latest||latestSource?.storageKey!==opened.storageKey||latestSource.content!==opened.content)
+            throw Error("蒙版保存期间原图已变化，请重新编辑");
+        const mask={storageKey:stored.storageKey,width:stored.width,height:stored.height,bytes:stored.bytes,sourceStorageKey:opened.storageKey,...(opened.imageId?{sourceImageId:opened.imageId}:{})};
+        const updated=opened.imageId?{...latest,metadata:{...latest.metadata,images:latest.metadata?.images?.map(image=>image.id===opened.imageId?{...image,mask}:image)}}:
+            {...latest,metadata:{...latest.metadata,mask}};
+        setNodes(nodesRef.current.map(item=>item.id===node.id?updated:item));
+        setMaskEditNodeId(null);
+    },[]);
+    const clearImageNodeMask=useCallback((node:CanvasNodeData)=>{
+        const opened=maskEditSourceRef.current;if(!opened||opened.nodeId!==node.id)return;
+        setNodes(nodesRef.current.map(item=>item.id!==node.id?item:opened.imageId?{...item,metadata:{...item.metadata,images:item.metadata?.images?.map(image=>image.id===opened.imageId?({...image,mask:undefined}):image)}}:{...item,metadata:{...item.metadata,mask:undefined}}));
+        setMaskEditNodeId(null);
+    },[]);
 
     const openBboxEditor=useCallback(async(node:CanvasNodeData)=>{
         const request=++bboxOpenRequest.current;
@@ -3692,7 +3723,7 @@ function AtelierCanvasPage() {
                     onUpload={(node) => handleUploadRequest(node.id)}
                     onDownload={downloadNodeImage}
                     onSaveAsset={(node) => void saveNodeAsset(node)}
-                    onMaskEdit={(node) => setMaskEditNodeId(node.id)}
+                    onMaskEdit={(node) => {const image=resolveCanvasImage(node);if(!image?.storageKey||!isCanvasCasKey(image.storageKey)){message.warning("请先保存原图，再编辑蒙版");return;}maskEditSourceRef.current={nodeId:node.id,imageId:image.id,storageKey:image.storageKey,content:image.content};setMaskEditNodeId(node.id)}}
                     onBboxEdit={(node) => void openBboxEditor(node)}
                     onCrop={(node) => setCropNodeId(node.id)}
                     onCaptureVideoFrame={(node) => { videoFrameIdentityRef.current = `${projectId}:${node.id}:${node.metadata?.storageKey || ""}:${node.metadata?.content || ""}`; setVideoFrameNodeId(node.id); }}
@@ -3783,8 +3814,8 @@ function AtelierCanvasPage() {
 
                 {cropNode?.metadata?.content ? <CanvasNodeCropDialog dataUrl={cropNode.metadata.content} open={Boolean(cropNode)} onClose={() => setCropNodeId(null)} onConfirm={(crop) => void cropImageNode(cropNode!, crop)} /> : null}
 
-                {maskEditNode?.metadata?.content ? (
-                    <CanvasNodeMaskEditDialog dataUrl={maskEditNode.metadata.content} open={Boolean(maskEditNode)} onClose={() => setMaskEditNodeId(null)} onConfirm={(payload) => void maskEditImageNode(maskEditNode!, payload)} />
+                {maskEditNode&&maskEditSourceRef.current?.nodeId===maskEditNode.id ? (
+                    <CanvasNodeMaskEditDialog dataUrl={maskEditSourceRef.current.content||canvasCasUrl(maskEditSourceRef.current.storageKey)||""} open={Boolean(maskEditNode)} onClose={() => setMaskEditNodeId(null)} onConfirm={(payload) => void maskEditImageNode(maskEditNode!, payload)} onSaveMask={(data)=>void saveImageNodeMask(maskEditNode,data).catch(error=>message.error(error instanceof Error?error.message:String(error)))} onClearMask={()=>clearImageNodeMask(maskEditNode)} hasSavedMask={Boolean(editedMask)} initialMaskDataUrl={(()=>{const key=editedMask?.mask.storageKey;return key?canvasCasUrl(key)??undefined:undefined})()}/>
                 ) : null}
 
                 {bboxLayoutNode && !bboxLayoutNode.metadata?.content ? <CanvasNodeBBoxLayoutDialog open initialDimensions={bboxInitialDimensions} initialLayout={bboxLayoutNode.metadata?.bboxLayout} initialPrompt={bboxLayoutNode.metadata?.composerContent ?? bboxLayoutNode.metadata?.prompt} initialSize={bboxSizeForNode(bboxLayoutNode,buildGenerationConfig(effectiveConfig, bboxLayoutNode, "image").size)} onClose={() => setBboxLayoutNodeId(null)} onApply={(layout, promptJson, width, height) => applyBboxLayout(bboxLayoutNode.id, layout, promptJson, width, height)} /> : null}

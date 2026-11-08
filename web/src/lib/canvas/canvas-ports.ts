@@ -1,4 +1,5 @@
 import { CanvasNodeType, type CanvasNodeData, type CanvasPortDescriptor, type CanvasPortValueKind, type ConnectionHandle } from "@/types/canvas";
+import {resolveCanvasImageMask} from "./canvas-image-mask";
 /** No registry/i18n import here: geometry, culling and overview paths run in pure/node test environments. */
 const portResolvers = new Map<string, (node: CanvasNodeData) => readonly CanvasPortDescriptor[]>();
 
@@ -59,11 +60,17 @@ export function getCanvasResourceOutputPort(node: CanvasNodeData): CanvasPortDes
     return RESOURCE_PORTS[node.type as CanvasNodeType];
 }
 
+export function getCanvasResourceOutputPorts(node:CanvasNodeData):readonly CanvasPortDescriptor[]{
+    const base=getCanvasResourceOutputPort(node);if(!base)return [];
+    if(node.type!==CanvasNodeType.Image)return [base];
+    return [base,...(resolveCanvasImageMask(node)?[{id:"mask",label:"Mask",direction:"source" as const,valueKind:"MASK" as const}]:[])];
+}
+
 export function getCanvasPort(node: CanvasNodeData, direction: "source" | "target", portId: string | undefined): CanvasPortDescriptor | undefined {
     if (!portId) return undefined;
     const ports = getCanvasNodePorts(node);
     if (ports.length) return ports.find((port) => port.id === portId && port.direction === direction);
-    return direction === "source" && getCanvasResourceOutputPort(node)?.id === portId ? getCanvasResourceOutputPort(node) : undefined;
+    return direction === "source" ? getCanvasResourceOutputPorts(node).find(port=>port.id===portId) : undefined;
 }
 
 /**
@@ -110,6 +117,10 @@ export function getCanvasPortHitSize(node: CanvasNodeData, direction: "source" |
 export function getCanvasPortOffset(node: CanvasNodeData, direction: "source" | "target", portId: string): number {
     const ports = getCanvasVisiblePorts(node).filter((port) => port.direction === direction);
     const index = ports.findIndex((port) => port.id === portId);
+    if (index < 0 && direction==="source"&&!isPortAwareCanvasNode(node)){
+        const resource=getCanvasResourceOutputPorts(node);const resourceIndex=resource.findIndex(port=>port.id===portId);
+        return resourceIndex<0?node.height/2:node.height/2+(resourceIndex-(resource.length-1)/2)*30;
+    }
     if (index < 0) return node.height / 2;
     // A single typed port uses exactly the same Y anchor as an ordinary node.
     if (ports.length === 1) return node.height / 2;
@@ -120,10 +131,15 @@ export function getCanvasPortOffset(node: CanvasNodeData, direction: "source" | 
 }
 
 export function getCanvasPortAnchor(node: CanvasNodeData, direction: "source" | "target", portId?: string) {
+    const resourceOutputs=direction==="source"&&!isPortAwareCanvasNode(node)?getCanvasResourceOutputPorts(node):[];
+    // A legacy image edge has no serialized output ID. Once the image exposes a
+    // second resource socket, keep that edge visually attached to the default
+    // IMAGE output without changing its persisted connection semantics.
+    const resolvedPortId=portId??(resourceOutputs.length>1?resourceOutputs[0].id:undefined);
     return {
         x: direction === "source" ? node.position.x + node.width : node.position.x,
-        y: portId && isPortAwareCanvasNode(node) && getCanvasPort(node, direction, portId)
-            ? node.position.y + getCanvasPortOffset(node, direction, portId)
+        y: resolvedPortId && getCanvasPort(node,direction,resolvedPortId)
+            ? node.position.y + getCanvasPortOffset(node, direction, resolvedPortId)
             : node.position.y + node.height / 2,
     };
 }

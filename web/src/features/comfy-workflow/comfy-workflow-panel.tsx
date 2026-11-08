@@ -52,7 +52,7 @@ function inputPort(target?:ComfyNodeTarget, kind:CanvasPortValueKind="STRING", m
     return {
         id:newId(), label:target?.inputName || "输入端口", direction:"target",valueKind:kind,
         inputBinding:mode==="socket" ? {mode,replaceInternalLink:false,targets}
-            : mode==="media-file" ? {mode,mediaKind:kind as "IMAGE"|"VIDEO"|"AUDIO",targets}
+            : mode==="media-file" ? {mode,mediaKind:kind as "IMAGE"|"MASK"|"VIDEO"|"AUDIO",targets}
             : {mode,targets},
         absentPolicy:{mode:"keep-template"},
     };
@@ -327,12 +327,12 @@ export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,
     };
     const setBindingMode=(port:ComfyTemplatePort,mode:ComfyInputBinding["mode"])=>{
         const targets=port.inputBinding?.targets || [];
-        if (mode==="media-file" && !["IMAGE","VIDEO","AUDIO"].includes(port.valueKind)) {
+        if (mode==="media-file" && !["IMAGE","MASK","VIDEO","AUDIO"].includes(port.valueKind)) {
             setError("请先将端口类型设为 IMAGE、VIDEO 或 AUDIO，再选择媒体文件绑定。");
             return;
         }
         const inputBinding:ComfyInputBinding=mode==="socket"?{mode,targets,replaceInternalLink:false}
-            :mode==="media-file"?{mode,targets,mediaKind:port.valueKind as "IMAGE"|"VIDEO"|"AUDIO"}
+            :mode==="media-file"?{mode,targets,mediaKind:port.valueKind as "IMAGE"|"MASK"|"VIDEO"|"AUDIO"}
             :{mode,targets};
         if(mode!=="literal" && port.choices){
             edit(current=>({...current,ports:current.ports.map(p=>{
@@ -697,8 +697,8 @@ export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,
                                         <select className={inputClass+" mt-1"} value={activePort.valueKind} onChange={(e)=>{
                                             const valueKind=e.target.value as CanvasPortValueKind;
                                             const patch:Partial<ComfyTemplatePort>={valueKind,...(!canToggleComfyInputPortVisibility({...activePort,valueKind})?{canvasVisible:true}:{})};
-                                            if(activePort.inputBinding?.mode==="media-file" && ["IMAGE","VIDEO","AUDIO"].includes(valueKind))
-                                                patch.inputBinding={...activePort.inputBinding,mediaKind:valueKind as "IMAGE"|"VIDEO"|"AUDIO"};
+                                            if(activePort.inputBinding?.mode==="media-file" && ["IMAGE","MASK","VIDEO","AUDIO"].includes(valueKind))
+                                                patch.inputBinding={...activePort.inputBinding,mediaKind:valueKind as "IMAGE"|"MASK"|"VIDEO"|"AUDIO"};
                                             if(activePort.valueKind!==valueKind){
                                                 edit(current=>({...current,ports:current.ports.map(p=>{
                                                     if(p.id!==activePort.id)return p;
@@ -711,7 +711,7 @@ export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,
                                                             valueKind==="INT"&&Number.isSafeInteger(p.defaultValue):false;
                                                     return {...rest,...patch,...(compatible?{defaultValue:p.defaultValue}:{}),
                                                         ...(p.absentPolicy?.mode==="auto-prune" &&
-                                                            !["IMAGE","VIDEO","AUDIO"].includes(valueKind)
+                                                            !["IMAGE","MASK","VIDEO","AUDIO"].includes(valueKind)
                                                             ?{absentPolicy:{mode:"keep-template" as const}}:{})};
                                                 })}));
                                             }else patchPort(activePort.id,patch);
@@ -760,7 +760,7 @@ export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,
                                             <p className="mt-1 text-[11px] text-[var(--comfy-muted)]">已有连线，断开后才能隐藏端口。</p> : null}
                                     </div> : null}
 
-                                    {["IMAGE","VIDEO","AUDIO"].includes(activePort.valueKind) &&
+                                    {["IMAGE","MASK","VIDEO","AUDIO"].includes(activePort.valueKind) &&
                                     ["media-file","socket"].includes(activePort.inputBinding?.mode??"")?
                                         <label className="mt-3 flex items-start gap-2 text-xs" data-comfy-auto-prune-option>
                                             <input type="checkbox" aria-label="未提供媒体时动态裁剪输入"
@@ -856,7 +856,7 @@ export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,
                                             <label className={captionClass}>未连接时的处理
                                                 <select className={inputClass+" mt-1"} value={activePort.absentPolicy?.mode||"keep-template"} onChange={(e)=>patchPort(activePort.id,{absentPolicy:e.target.value==="disconnect"?{mode:"disconnect",removeInputs:[],removeNodes:[]}:e.target.value==="auto-prune"?{mode:"auto-prune"}:{mode:"keep-template"},...(e.target.value==="auto-prune"?{required:false}:{})})}>
                                                     <option value="keep-template">保留工作流模板原值</option>
-                                                    {["IMAGE","VIDEO","AUDIO"].includes(activePort.valueKind) &&
+                                                    {["IMAGE","MASK","VIDEO","AUDIO"].includes(activePort.valueKind) &&
                                                         ["socket","media-file"].includes(activePort.inputBinding?.mode??"")?
                                                         <option value="auto-prune">未连接时自动裁剪</option>:null}
                                                     <option value="disconnect">移除可选输入或节点（高级）</option>

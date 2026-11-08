@@ -8,6 +8,7 @@ import {withComfyMediaAspect} from "./comfy-media-aspect";
 import {ComfyMediaParameters} from "./comfy-media-parameters";
 import type {AiConfig,ModelCapability} from "@/stores/use-config-store";
 import type {CanvasTheme} from "@/lib/canvas-theme";
+import {isCanvasImageMaskValid,resolveCanvasImageMask} from "@/lib/canvas/canvas-image-mask";
 
 const ComfyWorkflowPanel=lazy(()=>import("./comfy-workflow-panel").then(module=>({default:module.ComfyWorkflowPanel})));
 
@@ -16,11 +17,12 @@ type Props={node:CanvasNodeData;nodes:readonly CanvasNodeData[];connections:read
  capability?:ModelCapability;defaultPreset?:Pick<MediaBinding,"templateId"|"templateRevision">;
  onChange:(patch:Partial<CanvasNodeMetadata>)=>void;
  onPickerOptionsChange?:(options:{value:string;label:string;disabled?:boolean}[],select:(value:string)=>void,activeValue?:string)=>void};
-const family=(kind:string)=>kind==="image"?"image":kind==="video"?"video":"audio";
+const family=(kind:string)=>kind==="image"?"image":kind==="video"?"video":kind==="mask"?"mask":"audio";
 function hasMedia(node:CanvasNodeData,kind:string){
  const m=node.metadata;
  if(kind==="image")return node.type==="image"&&Boolean(m?.storageKey||m?.content||m?.images?.length);
  if(kind==="video")return node.type==="video"&&Boolean(m?.storageKey||m?.content);
+ if(kind==="mask")return node.type==="image"&&Boolean(resolveCanvasImageMask(node));
  return node.type==="audio"&&Boolean(m?.storageKey||m?.content);
 }
 export function useComfyMediaPresetControl({node,nodes,connections,config,theme,capability,onChange,onPickerOptionsChange,defaultPreset}:Props):{settings:ReactNode;slots:ReactNode;error?:string}{
@@ -83,7 +85,8 @@ export function useComfyMediaPresetControl({node,nodes,connections,config,theme,
    const selected=value?value.nodeId+"#"+(value.imageId??""):undefined;
    const choices=assets.flatMap(source=>{
     const images=source.type==="image"&&source.metadata?.images?.length?source.metadata.images:null;
-    if(images?.length)return images.map(image=>({label:`${incoming.has(source.id)?"↑ ":""}${source.title} · 单张 ${image.id.slice(0,8)}`,value:source.id+"#"+image.id}));
+    if(images?.length)return images.filter(image=>slot.valueKind!=="MASK"||isCanvasImageMaskValid({id:image.id,storageKey:image.storageKey,width:image.naturalWidth,height:image.naturalHeight,mask:image.mask})).map(image=>({label:`${incoming.has(source.id)?"↑ ":""}${source.title} · 单张 ${image.id.slice(0,8)}`,value:source.id+"#"+image.id}));
+    if(slot.valueKind==="MASK"&&!resolveCanvasImageMask(source))return [];
     return [{label:`${incoming.has(source.id)?"↑ ":""}${source.title} · 单张`,value:source.id+"#"}];
    });
    return <label key={slot.id} className="block"><Select className="w-full" allowClear placeholder={slot.label+(slot.required?"（必填）":"（可选）")}

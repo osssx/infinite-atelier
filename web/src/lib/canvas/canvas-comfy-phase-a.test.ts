@@ -4,7 +4,7 @@ vi.mock("@/i18n", () => ({ default: { t: (key: string) => key } }));
 import { registerBuiltinNodes } from "@/components/canvas/nodes/builtin-nodes";
 import { connectCanvasPortsByDrag, prepareCanvasPortConnection, reconcileComfyArtifactConnections, validateCanvasPortConnections } from "./canvas-port-connections";
 import { prepareCanvasExternalInputSnapshot, resolveCanvasInputValue } from "./canvas-external-input-snapshot";
-import { COMFY_WORKFLOW_MOCK_TYPE, CANVAS_PORT_EDGE_PADDING, CANVAS_PORT_MIN_PITCH, getCanvasPortAnchor, getCanvasPortHitSize, getCanvasPortOffset, getCanvasVisiblePorts, getCanvasNodePorts, getMinimumCanvasPortNodeHeight, MOCK_COMFY_PORTS, pickCanvasDropHandle } from "./canvas-ports";
+import { COMFY_WORKFLOW_MOCK_TYPE, CANVAS_PORT_EDGE_PADDING, CANVAS_PORT_MIN_PITCH, getCanvasPortAnchor, getCanvasPortHitSize, getCanvasPortOffset, getCanvasVisiblePorts, getCanvasNodePorts, getMinimumCanvasPortNodeHeight, getCanvasResourceOutputPorts, MOCK_COMFY_PORTS, pickCanvasDropHandle } from "./canvas-ports";
 import { applyNodeConfigPatch,createCanvasNode } from "./canvas-node-factory";
 import { connectionControlPoints, connectionControlHull } from "./canvas-connection-culling";
 import { cullConnections } from "./canvas-connection-culling";
@@ -581,5 +581,49 @@ describe("Phase A: frozen external inputs and precedence", () => {
         expect(() => prepareCanvasExternalInputSnapshot([img,wf],edges)).toThrow("primary_image_not_selected");
         img.metadata.primaryImageId = "two";
         expect(prepareCanvasExternalInputSnapshot([img,wf],edges)[0]).toMatchObject({ storageKey:"image:2",imageId:"two" });
+    });
+    it("exposes only a CAS-current MASK port and freezes its PNG independently of the source IMAGE",()=>{
+        const img=n("masked",CanvasNodeType.Image,{content:"blob:source",storageKey:"cas:"+"a".repeat(64),mimeType:"image/png",
+            mask:{storageKey:"cas:"+"b".repeat(64),width:20,height:10,bytes:50,sourceStorageKey:"cas:"+"a".repeat(64)}});
+        const wf=n("mask-wf",COMFY_WORKFLOW_MOCK_TYPE,{comfyPorts:[{id:"mask",label:"Mask",direction:"target",valueKind:"MASK"}]});
+        const edge:CanvasConnection={id:"mask-link",fromNodeId:img.id,fromPortId:"mask",toNodeId:wf.id,toPortId:"mask"};
+        expect(getCanvasResourceOutputPorts(img).map(port=>port.valueKind)).toEqual(["IMAGE","MASK"]);
+        expect(prepareCanvasExternalInputSnapshot([img,wf],[edge])[0]).toMatchObject({sourcePortId:"mask",valueKind:"MASK",storageKey:img.metadata!.mask!.storageKey,mimeType:"image/png"});
+        img.metadata!.storageKey="cas:"+"c".repeat(64);
+        expect(getCanvasResourceOutputPorts(img).map(port=>port.valueKind)).toEqual(["IMAGE"]);
+        expect(prepareCanvasPortConnection({nodeId:img.id,handleType:"source",portId:"mask"},{nodeId:wf.id,handleType:"target",portId:"mask"},[img,wf],[])).toMatchObject({error:"missing_port"});
+        expect(()=>prepareCanvasExternalInputSnapshot([img,wf],[edge])).toThrow("external_mask_unavailable");
+    });
+    it("keeps legacy image edges attached to IMAGE as the MASK output appears and disappears",()=>{
+        const img=n("legacy-image",CanvasNodeType.Image,{storageKey:"cas:"+"a".repeat(64),content:"blob:image",mimeType:"image/png"});
+        const text=n("legacy-text",CanvasNodeType.Text,{content:"caption"});
+        const legacy:CanvasConnection={id:"legacy",fromNodeId:img.id,toNodeId:text.id};
+        const imageEdge:CanvasConnection={id:"image-output",fromNodeId:img.id,fromPortId:"image",toNodeId:text.id,toPortId:"text"};
+        const maskEdge:CanvasConnection={id:"mask-output",fromNodeId:img.id,fromPortId:"mask",toNodeId:text.id,toPortId:"text"};
+        const target=n("inbound-target",CanvasNodeType.Image,{content:"blob:target",storageKey:"cas:"+"c".repeat(64)});
+        const inbound:CanvasConnection={id:"inbound",fromNodeId:text.id,toNodeId:target.id};
+        const center=img.position.y+img.height/2;
+        expect(connectionControlPoints(img,text,legacy).startY).toBe(center);
+        expect(connectionControlPoints(img,text,imageEdge).startY).toBe(center);
+        img.metadata!.mask={storageKey:"cas:"+"b".repeat(64),sourceStorageKey:img.metadata!.storageKey!,width:32,height:24,bytes:50};
+        const imageY=img.position.y+getCanvasPortOffset(img,"source","image");
+        const maskY=img.position.y+getCanvasPortOffset(img,"source","mask");
+        expect(connectionControlPoints(img,text,legacy).startY).toBe(imageY);
+        expect(connectionControlPoints(img,text,imageEdge).startY).toBe(imageY);
+        expect(connectionControlPoints(img,text,maskEdge).startY).toBe(maskY);
+        expect(connectionControlPoints(text,target,inbound).endY).toBe(target.position.y+target.height/2);
+        const overview=buildOverviewConnectionPaths([legacy,imageEdge,maskEdge],new Map([[img.id,img],[text.id,text]]),null,new Set());
+        expect(overview.curves.map(curve=>curve.y0)).toEqual([imageY,imageY,maskY]);
+        img.metadata!.mask=undefined;
+        expect(connectionControlPoints(img,text,legacy).startY).toBe(center);
+        expect(connectionControlPoints(img,text,imageEdge).startY).toBe(center);
+    });
+    it("rejects two media slots that choose different images from the same source port",()=>{
+        const img=n("batch",CanvasNodeType.Image,{primaryImageId:"a",images:[
+            {id:"a",status:"success",content:"data:a",storageKey:"cas:a",naturalWidth:4,naturalHeight:4,bytes:1,mimeType:"image/png"},
+            {id:"b",status:"success",content:"data:b",storageKey:"cas:b",naturalWidth:4,naturalHeight:4,bytes:1,mimeType:"image/png"}]});
+        const wf=n("batch-wf",COMFY_WORKFLOW_MOCK_TYPE,{comfyPorts:[{id:"left",label:"Left",direction:"target",valueKind:"IMAGE"},{id:"right",label:"Right",direction:"target",valueKind:"IMAGE"}]});
+        const edges:CanvasConnection[]=["left","right"].map(toPortId=>({id:toPortId,fromNodeId:img.id,fromPortId:"image",toNodeId:wf.id,toPortId}));
+        expect(()=>prepareCanvasExternalInputSnapshot([img,wf],edges,new Set(),new Map([["left","a"],["right","b"]]))).toThrow("external_source_selection_conflict");
     });
 });

@@ -5,10 +5,11 @@ import { Brush, Eraser, Redo2, RotateCcw, Undo2, WandSparkles, X, ZoomIn, ZoomOu
 import { useTranslation } from "react-i18next";
 
 import { readImageMeta } from "@/lib/image-utils";
+import {restoreCanvasMaskSelectionPixels} from "@/lib/canvas/canvas-mask-pixels";
 import { useImageEditorViewport } from "@/components/canvas/use-image-editor-viewport";
 
 export type CanvasImageMaskEditPayload = {
-    prompt: string;
+    prompt?: string;
     maskDataUrl: string;
 };
 
@@ -20,7 +21,7 @@ type BrushPreview = { x: number; y: number; size: number; adjusting: boolean };
 const defaultBrushSize = 100;
 const maskFillColor = "rgba(37, 99, 235, .38)";
 
-export function CanvasNodeMaskEditDialog({ dataUrl, open, onClose, onConfirm }: { dataUrl: string; open: boolean; onClose: () => void; onConfirm: (payload: CanvasImageMaskEditPayload) => void }) {
+export function CanvasNodeMaskEditDialog({ dataUrl, open, onClose, onConfirm, onSaveMask, onClearMask, hasSavedMask=false, initialMaskDataUrl, maskOnly = false }: { dataUrl: string; open: boolean; onClose: () => void; onConfirm: (payload: CanvasImageMaskEditPayload) => void; onSaveMask?: (maskDataUrl:string)=>void; onClearMask?:()=>void; hasSavedMask?:boolean; initialMaskDataUrl?:string; maskOnly?:boolean }) {
     const { t } = useTranslation();
     const maskCanvasRef = useRef<HTMLCanvasElement>(null);
     const previewCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -28,6 +29,7 @@ export function CanvasNodeMaskEditDialog({ dataUrl, open, onClose, onConfirm }: 
     const brushAdjustRef = useRef<{ active: boolean; pointerId: number; startX: number; startSize: number; previewX: number; previewY: number } | null>(null);
     const historyRef = useRef<MaskStroke[]>([]);
     const redoRef = useRef<MaskStroke[]>([]);
+    const baseSelectionRef=useRef<Uint8ClampedArray|null>(null);
     const [image, setImage] = useState<{ width: number; height: number } | null>(null);
     const [prompt, setPrompt] = useState("");
     const [brushSize, setBrushSize] = useState(defaultBrushSize);
@@ -49,6 +51,7 @@ export function CanvasNodeMaskEditDialog({ dataUrl, open, onClose, onConfirm }: 
         setBrushPreview(null);
         historyRef.current = [];
         redoRef.current = [];
+        baseSelectionRef.current=null;
         brushAdjustRef.current = null;
         drawingRef.current = { active: false, stroke: null };
         void readImageMeta(dataUrl).then(setImage);
@@ -57,7 +60,24 @@ export function CanvasNodeMaskEditDialog({ dataUrl, open, onClose, onConfirm }: 
     useEffect(() => {
         clearCanvas(maskCanvasRef.current);
         clearCanvas(previewCanvasRef.current);
-    }, [image]);
+        if(!image||!initialMaskDataUrl)return;
+        let active=true;
+        const source=new Image();
+        source.onload=()=>{
+            if(!active)return;
+            const canvas=maskCanvasRef.current,preview=previewCanvasRef.current;
+            const context=canvas?.getContext("2d",{willReadFrequently:true});
+            const previewContext=preview?.getContext("2d");
+            if(!canvas||!preview||!context||!previewContext)return;
+            context.drawImage(source,0,0,canvas.width,canvas.height);
+            const pixels=context.getImageData(0,0,canvas.width,canvas.height),selection=restoreCanvasMaskSelectionPixels(pixels.data),overlay=previewContext.createImageData(canvas.width,canvas.height);
+            baseSelectionRef.current=selection;pixels.data.set(selection);
+            for(let i=0;i<selection.length;i+=4){const selected=selection[i+3];overlay.data[i]=37;overlay.data[i+1]=99;overlay.data[i+2]=235;overlay.data[i+3]=selected?96:0;}
+            context.putImageData(pixels,0,0);previewContext.putImageData(overlay,0,0);
+        };
+        source.src=initialMaskDataUrl;
+        return ()=>{active=false;source.onload=null;};
+    }, [image,initialMaskDataUrl]);
 
     const draw = (event: ReactPointerEvent<HTMLCanvasElement>) => {
         const point = readCanvasPoint(event.currentTarget, event.clientX, event.clientY);
@@ -156,7 +176,7 @@ export function CanvasNodeMaskEditDialog({ dataUrl, open, onClose, onConfirm }: 
         if (stroke) redoRef.current.push(stroke);
         setHistorySize(historyRef.current.length);
         setRedoSize(redoRef.current.length);
-        replayMask(historyRef.current, maskCanvasRef.current, previewCanvasRef.current);
+        replayMask(historyRef.current, maskCanvasRef.current, previewCanvasRef.current,baseSelectionRef.current);
         setError("");
     }, []);
 
@@ -166,13 +186,14 @@ export function CanvasNodeMaskEditDialog({ dataUrl, open, onClose, onConfirm }: 
         if (stroke) historyRef.current.push(stroke);
         setHistorySize(historyRef.current.length);
         setRedoSize(redoRef.current.length);
-        replayMask(historyRef.current, maskCanvasRef.current, previewCanvasRef.current);
+        replayMask(historyRef.current, maskCanvasRef.current, previewCanvasRef.current,baseSelectionRef.current);
         setError("");
     }, []);
 
     const resetMask = () => {
         historyRef.current = [];
         redoRef.current = [];
+        baseSelectionRef.current=null;
         setHistorySize(0);
         setRedoSize(0);
         clearCanvas(maskCanvasRef.current);
@@ -203,15 +224,16 @@ export function CanvasNodeMaskEditDialog({ dataUrl, open, onClose, onConfirm }: 
     const submit = () => {
         const nextPrompt = prompt.trim();
         const canvas = maskCanvasRef.current;
-        if (!nextPrompt) return setError(t("canvas.editors.maskPromptRequired"));
         if (!canvas) return;
         if (!canvasHasPaint(canvas)) return setError(t("canvas.editors.maskRequired"));
+        if(maskOnly){onSaveMask?.(buildEditMask(canvas));return;}
+        if (!nextPrompt) return setError(t("canvas.editors.maskPromptRequired"));
         onConfirm({ prompt: nextPrompt, maskDataUrl: buildEditMask(canvas) });
     };
 
     return (
-        <Modal title={null} open={open && Boolean(dataUrl)} onCancel={onClose} footer={null} width={980} centered destroyOnHidden transitionName="" maskTransitionName="">
-            <div className="grid gap-5 lg:grid-cols-[minmax(360px,1fr)_320px]" data-canvas-no-zoom>
+        <Modal title={null} open={open && Boolean(dataUrl)} onCancel={onClose} footer={null} width={1100} centered destroyOnHidden transitionName="" maskTransitionName="">
+            <div className="grid gap-5 lg:grid-cols-[minmax(360px,1fr)_420px]" data-canvas-no-zoom>
                 <div
                     ref={viewport.viewportRef}
                     {...viewport.panHandlers}
@@ -257,7 +279,7 @@ export function CanvasNodeMaskEditDialog({ dataUrl, open, onClose, onConfirm }: 
                       )
                     : null}
 
-                <div className="flex min-h-[360px] flex-col gap-5">
+                <div className="flex min-h-[360px] min-w-0 flex-col gap-5">
                     <div>
                         <h2 className="text-xl font-semibold">{t("canvas.editors.maskTitle")}</h2>
                         <div className="mt-2 text-sm opacity-60">{image ? `${image.width} x ${image.height}px` : t("canvas.editors.loading")}</div>
@@ -293,13 +315,13 @@ export function CanvasNodeMaskEditDialog({ dataUrl, open, onClose, onConfirm }: 
                         </div>
                     </div>
 
-                    <div className="space-y-2">
+                    {!maskOnly?<div className="space-y-2">
                         <div className="flex items-center justify-between text-sm">
                             <span className="font-medium opacity-75">{t("canvas.editors.brushSize")}</span>
                             <span className="font-semibold">{brushSize}px</span>
                         </div>
                         <Slider min={8} max={160} step={2} value={brushSize} onChange={setBrushSize} />
-                    </div>
+                    </div>:null}
 
                     <div className="space-y-2">
                         <div className="text-sm font-medium opacity-75">{t("canvas.editors.editInstructions")}</div>
@@ -316,16 +338,20 @@ export function CanvasNodeMaskEditDialog({ dataUrl, open, onClose, onConfirm }: 
                         {error ? <div className="text-xs font-medium text-[#ef4444]">{error}</div> : null}
                     </div>
 
-                    <div className="mt-auto flex items-center justify-between gap-2">
-                        <Button icon={<RotateCcw className="size-4" />} onClick={resetMask}>
-                            {t("canvas.editors.reset")}
-                        </Button>
-                        <div className="flex items-center gap-2">
+                    <div className="mt-auto flex w-full min-w-0 flex-col gap-2">
+                        {hasSavedMask?<div className="flex min-w-0 flex-wrap items-center gap-2">
+                            <Button danger onClick={onClearMask}>清除已保存蒙版</Button>
+                        </div>:null}
+                        <div className="flex min-w-0 flex-wrap items-center justify-end gap-2">
+                            <Button icon={<RotateCcw className="size-4" />} onClick={resetMask}>
+                                {t("canvas.editors.reset")}
+                            </Button>
+                            {onSaveMask?<Button onClick={()=>{const canvas=maskCanvasRef.current;if(!canvas||!canvasHasPaint(canvas))return setError(t("canvas.editors.maskRequired"));onSaveMask(buildEditMask(canvas))}}>保存蒙版</Button>:null}
                             <Button icon={<X className="size-4" />} onClick={onClose}>
                                 {t("canvas.editors.cancel")}
                             </Button>
-                            <Button type="primary" icon={<WandSparkles className="size-4" />} onClick={submit}>
-                                {t("canvas.editors.aiEdit")}
+                            <Button type="primary" icon={maskOnly?undefined:<WandSparkles className="size-4" />} onClick={submit}>
+                                {maskOnly?"保存蒙版":t("canvas.editors.aiEdit")}
                             </Button>
                         </div>
                     </div>
@@ -384,12 +410,18 @@ function configurePreviewStrokeContext(context: CanvasRenderingContext2D, stroke
     context.fillStyle = maskFillColor;
 }
 
-function replayMask(strokes: MaskStroke[], maskCanvas: HTMLCanvasElement | null, previewCanvas: HTMLCanvasElement | null) {
+function replayMask(strokes: MaskStroke[], maskCanvas: HTMLCanvasElement | null, previewCanvas: HTMLCanvasElement | null,baseSelection:Uint8ClampedArray|null=null) {
     const context = maskCanvas?.getContext("2d", { willReadFrequently: true });
     const previewContext = previewCanvas?.getContext("2d");
     if (!maskCanvas || !context || !previewCanvas || !previewContext) return;
     context.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
     previewContext.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
+    if(baseSelection&&baseSelection.length===maskCanvas.width*maskCanvas.height*4){
+        const pixels=context.createImageData(maskCanvas.width,maskCanvas.height);pixels.data.set(baseSelection);context.putImageData(pixels,0,0);
+        const overlay=previewContext.createImageData(previewCanvas.width,previewCanvas.height);
+        for(let i=0;i<baseSelection.length;i+=4){const selected=baseSelection[i+3];overlay.data[i]=37;overlay.data[i+1]=99;overlay.data[i+2]=235;overlay.data[i+3]=selected?96:0;}
+        previewContext.putImageData(overlay,0,0);
+    }
     for (const stroke of strokes) {
         configureStrokeContext(context, stroke);
         configurePreviewStrokeContext(previewContext, stroke);

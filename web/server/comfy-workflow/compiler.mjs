@@ -61,7 +61,7 @@ export function verifyTemplate(template) {
         const slots=new Set();
         for(const slot of u.slots){const port=byId.get(slot?.id);
             if(!object(slot)||!validId(slot.id)||slots.has(slot.id)||typeof slot.label!=="string"||slot.label.length>90||
-                !["IMAGE","VIDEO","AUDIO"].includes(slot.valueKind)||port?.direction!=="target"||port.valueKind!==slot.valueKind||
+                !["IMAGE","MASK","VIDEO","AUDIO"].includes(slot.valueKind)||port?.direction!=="target"||port.valueKind!==slot.valueKind||
                 Boolean(port.required)!==Boolean(slot.required))fail("template_media_slot_invalid");slots.add(slot.id);}
         const outputs=[u.primaryOutputPortId,...(u.additionalOutputPortIds??[])];
         if(!Array.isArray(u.additionalOutputPortIds??[])||outputs.some(id=>byId.get(id)?.direction!=="source"||
@@ -101,7 +101,7 @@ export function verifyTemplate(template) {
             }
             if (!b || !["literal","media-file","socket"].includes(b.mode) || !Array.isArray(b.targets) || !b.targets.length) fail("template_input_binding_invalid");
             if (port.absentPolicy?.mode === "auto-prune" &&
-                (port.required || !["IMAGE","VIDEO","AUDIO"].includes(port.valueKind) ||
+                (port.required || !["IMAGE","MASK","VIDEO","AUDIO"].includes(port.valueKind) ||
                     !["socket","media-file"].includes(b.mode) || has(port,"defaultValue")))
                 fail("template_auto_prune_invalid");
             for (const t of b.targets) {
@@ -250,10 +250,10 @@ export function validateSingleRequest(req) {
     const inputs = new Map(), targetEdges = new Map();
     for (const x of req.externalInputs) {
         if (!object(x) || !validCanvasNodeId(x.sourceNodeId) || !validId(x.sourcePortId) ||
-            !["text","image","video","audio"].includes(x.sourcePortId) ||
+            !["text","image","mask","video","audio"].includes(x.sourcePortId) ||
             !["scalar","asset"].includes(x.kind)) fail("external_input_invalid");
         if (x.kind === "scalar" && (x.sourcePortId !== "text" || x.valueKind !== "STRING" || !matchValue("STRING",x.value))) fail("external_scalar_invalid");
-        if (x.kind === "asset" && (({image:"IMAGE",video:"VIDEO",audio:"AUDIO"})[x.sourcePortId] !== x.valueKind || !validId(x.assetId) || !validSha(x.sha256))) fail("external_asset_invalid");
+        if (x.kind === "asset" && (({image:"IMAGE",mask:"MASK",video:"VIDEO",audio:"AUDIO"})[x.sourcePortId] !== x.valueKind || !validId(x.assetId) || !validSha(x.sha256))) fail("external_asset_invalid");
         const key = x.sourceNodeId+"\0"+x.sourcePortId;
         if (inputs.has(key)) fail("duplicate_external_source");
         inputs.set(key,x);
@@ -404,21 +404,30 @@ export function compileSingleWorkflow(req, template, opts = {}) {
             if(choice==="override" && p.choices && !p.choices.some(item=>Object.is(item.value,resolved)))
                 fail("literal_enum_value_invalid:"+p.id);
         } else if (binding.mode === "media-file") {
-            if (!edge || edge.kind !== "asset" || !["IMAGE","VIDEO","AUDIO"].includes(p.valueKind) ||
+            if (!edge || edge.kind !== "asset" || !["IMAGE","MASK","VIDEO","AUDIO"].includes(p.valueKind) ||
                 binding.mediaKind !== p.valueKind) fail("media_file_binding_invalid:"+p.id);
+            if(p.valueKind==="MASK"&&binding.targets.some(t=>graph[nodeKey(node.id,t.nodeId)]?.class_type!=="LoadImageMask"||t.inputName!=="image"||graph[nodeKey(node.id,t.nodeId)]?.inputs?.channel!=="alpha"))fail("mask_media_file_target_invalid:"+p.id);
             resolved = (opts.mediaFiles??opts.imageFiles)?.[edge.assetId];
             if (!resolved || !/^[A-Za-z0-9_.-]{1,160}$/.test(resolved)) fail("staged_media_not_uploaded");
             for (const t of binding.targets)
                 trustedStagedFields.add(nodeKey(node.id,t.nodeId)+"\0"+t.inputName);
         } else if (binding.mode === "socket") {
-            if (!edge || edge.kind !== "asset" || p.valueKind !== "IMAGE" ||
+            if (!edge || edge.kind !== "asset" || !["IMAGE","MASK"].includes(p.valueKind) ||
                 (!binding.replaceInternalLink && binding.targets.some(t=>isLink(template.apiGraph[t.nodeId].inputs[t.inputName])))) fail("socket_bridge_invalid:"+p.id);
             const filename=(opts.mediaFiles??opts.imageFiles)?.[edge.assetId];
             if (!filename || !/^[A-Za-z0-9_.-]{1,160}$/.test(filename)) fail("staged_image_not_uploaded");
             const loaderId=nodeKey(node.id,"loader_"+p.id);
             if (graph[loaderId]) fail("generated_node_collision");
-            graph[loaderId]={class_type:"LoadImage",inputs:{image:filename}};
-            trustedStagedFields.add(loaderId+"\0image");
+            if(p.valueKind==="MASK"){
+                const schema=opts.info?.LoadImageMask;
+                const channel=schema?.input?.required?.channel;
+                if(!schema||!channel||!Array.isArray(channel[0])||!channel[0].includes("alpha"))fail("load_image_mask_unavailable");
+                graph[loaderId]={class_type:"LoadImageMask",inputs:{image:filename,channel:"alpha"}};
+                trustedStagedFields.add(loaderId+"\0image");trustedStagedFields.add(loaderId+"\0channel");
+            }else{
+                graph[loaderId]={class_type:"LoadImage",inputs:{image:filename}};
+                trustedStagedFields.add(loaderId+"\0image");
+            }
             resolved=[loaderId,0];
         } else fail("unsupported_binding_mode");
         for (const t of binding.targets) {

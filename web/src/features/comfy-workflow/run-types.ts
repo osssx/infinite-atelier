@@ -23,7 +23,7 @@ export type ComfyInstance={id:string;url:string;reachable:boolean;classTypes:str
 export function missingComfyMediaInputs(template:ComfyWorkflowTemplate,workflowNodeId:string,
  connections:readonly CanvasConnection[]){
  return template.ports.filter(port=>port.direction==="target"&&port.required===true&&
-  ["IMAGE","VIDEO","AUDIO"].includes(port.valueKind)&&
+  ["IMAGE","MASK","VIDEO","AUDIO"].includes(port.valueKind)&&
   ["media-file","socket"].includes(port.inputBinding?.mode??"") &&
   !connections.some(edge=>edge.toNodeId===workflowNodeId&&edge.toPortId===port.id));
 }

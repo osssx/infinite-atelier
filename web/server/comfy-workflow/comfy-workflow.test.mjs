@@ -275,6 +275,23 @@ test("image staged LoadImage replaces internal IMAGE link, multi-source rejects"
     assert.throws(()=>compileSingleWorkflow(multi,template(),options()),/single_workflow_request_required/);
 });
 
+test("MASK socket injects LoadImageMask with the alpha channel and rejects absent support",()=>{
+    const t=template(),asset={assetId:"mask-staged",sha256:"b".repeat(64)};
+    t.apiGraph["41"]={class_type:"LoadImageMask",inputs:{image:"placeholder.png",channel:"alpha"}};
+    t.apiGraph["20"].inputs.mask=["41",0];
+    t.ports.push({id:"mask",label:"Mask",direction:"target",valueKind:"MASK",inputBinding:{mode:"socket",replaceInternalLink:true,targets:[{nodeId:"20",inputName:"mask"}]}});
+    t.requirements.classTypes=[...new Set(Object.values(t.apiGraph).map(n=>n.class_type))].sort();
+    t.revision=sha256(canonical({name:t.name,apiGraph:t.apiGraph,ports:t.ports,requirements:t.requirements}));
+    const r=req();r.nodes[0].templateRevision=t.revision;r.edges.push({fromNodeId:"mask-source",fromPortId:"mask",toNodeId:"wf-1",toPortId:"mask"});
+    r.externalInputs.push({kind:"asset",sourceNodeId:"mask-source",sourcePortId:"mask",valueKind:"MASK",assetId:asset.assetId,sha256:asset.sha256});
+    const maskInfo={...info,Generate:{...info.Generate,input:{...info.Generate.input,optional:{mask:["MASK",{}]}}},
+        LoadImageMask:{input:{required:{image:["STRING",{}],channel:[["alpha","red","green","blue"],{}]}},output:["MASK"]}};
+    const compiled=compileSingleWorkflow(r,t,{info:maskInfo,imageFiles:{[asset.assetId]:"mask.png"}});
+    assert.deepEqual(compiled.graph["w_wf-1__loader_mask"],{class_type:"LoadImageMask",inputs:{image:"mask.png",channel:"alpha"}});
+    assert.deepEqual(compiled.graph["w_wf-1__20"].inputs.mask,["w_wf-1__loader_mask",0]);
+    assert.throws(()=>compileSingleWorkflow(r,t,{info,imageFiles:{[asset.assetId]:"mask.png"}}),/load_image_mask_unavailable/);
+});
+
 test("Krea2 LoRA path typo resolves to the unique installed exact enum without changing saved templates",()=>{
     const t=template();
     t.apiGraph["model"]={class_type:"ModelNode",inputs:{}};

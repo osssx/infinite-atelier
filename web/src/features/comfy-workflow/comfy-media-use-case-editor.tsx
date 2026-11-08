@@ -24,7 +24,7 @@ export function comfyAdditionalOutputOptions(template:ComfyTemplatePayload,useCa
 export function ComfyMediaUseCaseEditor({template,onChange}:{template:ComfyTemplatePayload;onChange:(value:ComfyMediaUseCase|undefined)=>void}){
  const current=template.mediaUseCase;
  const promptPorts=template.ports.filter(port=>scalar(port)&&port.valueKind==="STRING");
- const mediaTargets=template.ports.filter(port=>port.direction==="target"&&["IMAGE","VIDEO","AUDIO"].includes(port.valueKind)&&
+ const mediaTargets=template.ports.filter(port=>port.direction==="target"&&["IMAGE","MASK","VIDEO","AUDIO"].includes(port.valueKind)&&
   ["media-file","socket"].includes(port.inputBinding?.mode??""));
  const ratioPorts=template.ports.filter(port=>scalar(port)&&port.valueKind==="STRING");
  const dimensionPorts=template.ports.filter(port=>scalar(port)&&["INT","FLOAT"].includes(port.valueKind));
@@ -70,7 +70,7 @@ export function ComfyMediaUseCaseEditor({template,onChange}:{template:ComfyTempl
   <div className="mt-3"><span className="text-xs font-medium">有序媒体槽位</span><div className="mt-1 grid gap-1 sm:grid-cols-2">
    {mediaTargets.map(port=>{const existing=current?.slots.find(slot=>slot.id===port.id);return <label key={port.id} className="flex min-w-0 items-center gap-2 text-xs">
     <Checkbox checked={!!existing} onChange={event=>{const slots=(current?.slots??[]).filter(slot=>slot.id!==port.id);
-     if(event.target.checked)slots.push({id:port.id,label:port.label,valueKind:port.valueKind as "IMAGE"|"VIDEO"|"AUDIO",required:!!port.required});
+     if(event.target.checked)slots.push({id:port.id,label:port.label,valueKind:port.valueKind as "IMAGE"|"MASK"|"VIDEO"|"AUDIO",required:!!port.required});
      patch({slots});}}/><span className="min-w-0 truncate" title={port.label+" · "+port.valueKind}>
      {port.label} · {port.valueKind}{port.required?"（必填）":"（可选）"}</span></label>;})}
    {!mediaTargets.length?<span className="text-xs text-[var(--comfy-muted)]">当前模板没有已绑定的媒体输入。</span>:null}

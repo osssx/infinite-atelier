@@ -93,14 +93,16 @@ export async function startBackendComfyWorkflowRun(args:BackendComfyWorkflowArgs
   // ports must be accepted when the UI has not materialized local port data.
   ...(useCase?.slots.map(slot=>slot.id)??[])
  ]);
- const external=prepareCanvasExternalInputSnapshot(graph.nodes,[...incoming,...mediaEdges],virtualMediaTargetPortIds);
+ const imageIdsByTargetPort=new Map(Object.entries(args.mediaSlots??{}).flatMap(([slotId,ref])=>ref?.imageId?[[slotId,ref.imageId] as const]:[]));
+ const external=prepareCanvasExternalInputSnapshot(graph.nodes,[...incoming,...mediaEdges],virtualMediaTargetPortIds,imageIdsByTargetPort);
  const externalInputs:Array<Record<string,unknown>>=[];
  for(const value of external){
   if(value.kind==="scalar"){
    externalInputs.push({...value});continue;
   }
-  const accepted:Record<"IMAGE"|"VIDEO"|"AUDIO",readonly string[]>={
+  const accepted:Record<"IMAGE"|"MASK"|"VIDEO"|"AUDIO",readonly string[]>={
    IMAGE:["image/png","image/jpeg","image/webp"],
+   MASK:["image/png"],
    VIDEO:["video/mp4","video/webm","video/x-matroska"],
    AUDIO:["audio/wav","audio/flac","audio/ogg","audio/mpeg"]
   };
@@ -120,7 +122,7 @@ export async function startBackendComfyWorkflowRun(args:BackendComfyWorkflowArgs
    continue;
   }
   let blob=value.storageKey?await (args.readBlob??(async(key:string)=>
-   value.valueKind==="IMAGE"
+   (value.valueKind==="IMAGE"||value.valueKind==="MASK")
     ? (await import("@/services/image-storage")).getImageBlob(key)
     : (await import("@/services/file-storage")).getMediaBlob(key)))(value.storageKey):null;
   if(!blob&&value.url)blob=await (args.getBlob??fromBrowserUrl)(value.url);

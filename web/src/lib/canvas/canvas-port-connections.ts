@@ -74,7 +74,7 @@ export function prepareCanvasPortConnection(
     }
     const srcPort = isPortAwareCanvasNode(src)
         ? getCanvasPort(src, "source", srcHandle.portId)
-        : getCanvasResourceOutputPort(src);
+        : getCanvasPort(src,"source",srcHandle.portId??getCanvasResourceOutputPort(src)?.id);
     const dstPort = getCanvasPort(dst, "target", dstHandle.portId);
     if (!srcPort || !dstPort || !getCanvasNodePorts(dst).length) return { error: "missing_port" };
     if (srcPort.valueKind !== dstPort.valueKind) return { error: "incompatible_port_type" };

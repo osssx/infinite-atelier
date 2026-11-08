@@ -1,5 +1,6 @@
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type CanvasPortValueKind } from "@/types/canvas";
 import { getCanvasResourceOutputPort, isPortAwareCanvasNode } from "./canvas-ports";
+import {resolveCanvasImage,resolveCanvasImageMask} from "./canvas-image-mask";
 
 /** Immutable scalar contents captured at one canvas revision. Asset bytes are frozen separately on upload. */
 export type PreparedExternalScalar = Readonly<{
@@ -13,7 +14,7 @@ export type PreparedExternalAsset = Readonly<{
     kind: "asset";
     sourceNodeId: string;
     sourcePortId: string;
-    valueKind: "IMAGE" | "VIDEO" | "AUDIO";
+    valueKind: "IMAGE" | "MASK" | "VIDEO" | "AUDIO";
     storageKey?: string;
     url?: string;
     imageId?: string;
@@ -30,6 +31,7 @@ export function prepareCanvasExternalInputSnapshot(
     nodes: readonly CanvasNodeData[],
     connections: readonly CanvasConnection[],
     virtualMediaTargetPortIds:ReadonlySet<string>=new Set(),
+    imageIdsByTargetPort:ReadonlyMap<string,string>=new Map(),
 ): PreparedExternalInput[] {
     const nodeById = new Map(nodes.map((node) => [node.id, node]));
     const inputs = new Map<string, PreparedExternalInput>();
@@ -39,10 +41,21 @@ export function prepareCanvasExternalInputSnapshot(
         const target = nodeById.get(edge.toNodeId);
         if (!source || !target || (!isPortAwareCanvasNode(target)&&!virtualMediaTargetPortIds.has(edge.toPortId??""))) throw new Error("external_source_missing");
         if (isPortAwareCanvasNode(source)) continue; // internal Comfy link, not an external asset
-        const port = getCanvasResourceOutputPort(source);
-        if (!port || port.id !== edge.fromPortId) throw new Error("external_source_port_invalid");
-        const key = source.id + "\0" + port.id;
-        if (inputs.has(key)) continue;
+        const port = edge.fromPortId?getCanvasResourceOutputPort(source):undefined;
+        const maskPort=edge.fromPortId==="mask"&&source.type===CanvasNodeType.Image;
+        if ((!port || port.id !== edge.fromPortId)&&!maskPort) throw new Error("external_source_port_invalid");
+        const sourcePortId=maskPort?"mask":port!.id;
+        const key = source.id + "\0" + sourcePortId;
+        const requestedImageId=imageIdsByTargetPort.get(edge.toPortId);
+        const resolvedImage=source.type===CanvasNodeType.Image?resolveCanvasImage(source,requestedImageId):undefined;
+        if(source.type===CanvasNodeType.Image&&requestedImageId&&!resolvedImage)throw new Error("external_image_id_invalid");
+        const resolvedMask=maskPort?resolveCanvasImageMask(source,requestedImageId):undefined;
+        if(maskPort&&!resolvedMask)throw new Error("external_mask_unavailable");
+        if (inputs.has(key)){
+            const prior=inputs.get(key);
+            if(prior?.kind==="asset"&&prior.imageId!==(resolvedImage?.id))throw new Error("external_source_selection_conflict");
+            continue;
+        }
         const meta = source.metadata;
         if (source.type === CanvasNodeType.Text) {
             const value = Object.hasOwn(meta ?? {}, "content") ? meta?.content : meta?.prompt;
@@ -57,19 +70,22 @@ export function prepareCanvasExternalInputSnapshot(
         let mimeType = meta?.mimeType;
         let imageId: string | undefined;
         if (source.type === CanvasNodeType.Image && meta?.images?.length) {
-            const selected = meta.primaryImageId
-                ? meta.images.find((image) => image.id === meta.primaryImageId)
-                : meta.images.length === 1 ? meta.images[0] : undefined;
+            const selected = resolvedImage;
             if (!selected) throw new Error("primary_image_not_selected");
             storageKey = selected.storageKey;
             url = selected.content;
             mimeType = selected.mimeType;
             imageId = selected.id;
         }
+        if(maskPort){
+            const resolved=resolvedMask;
+            if(!resolved)throw new Error("external_mask_unavailable");
+            storageKey=resolved.mask.storageKey;url=undefined;mimeType="image/png";
+        }
         if (!storageKey && !url) throw new Error("external_asset_unavailable");
-        const kind = port.valueKind as Extract<CanvasPortValueKind, "IMAGE" | "VIDEO" | "AUDIO">;
+        const kind = (maskPort?"MASK":port!.valueKind) as Extract<CanvasPortValueKind, "IMAGE" | "MASK" | "VIDEO" | "AUDIO">;
         inputs.set(key, Object.freeze({
-            kind: "asset" as const, sourceNodeId: source.id, sourcePortId: port.id,
+            kind: "asset" as const, sourceNodeId: source.id, sourcePortId,
             valueKind: kind, storageKey, url, imageId, mimeType,
         }));
     }

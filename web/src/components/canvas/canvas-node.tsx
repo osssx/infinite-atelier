@@ -8,9 +8,10 @@ import { ChevronRight, Clapperboard, Copy, Group, Image as ImageIcon, Music2, Pu
 import { canvasThemes } from "@/lib/canvas-theme";
 import { formatBytes } from "@/lib/image-utils";
 import { getNodeDefinition } from "@/lib/canvas/node-registry";
-import { COMFY_WORKFLOW_MOCK_TYPE, getCanvasPortHitSize, getCanvasPortOffset, getCanvasVisiblePorts, getMinimumCanvasPortNodeHeight } from "@/lib/canvas/canvas-ports";
+import { COMFY_WORKFLOW_MOCK_TYPE, getCanvasPortHitSize, getCanvasPortOffset, getCanvasVisiblePorts, getMinimumCanvasPortNodeHeight, getCanvasResourceOutputPorts } from "@/lib/canvas/canvas-ports";
 import { CANVAS_CONTENT_VISIBILITY_STYLE, shouldContainCanvasContent } from "@/lib/canvas/canvas-content-visibility";
 import { isSimpleCanvasText } from "@/lib/canvas/canvas-markdown-plain";
+import {resolveCanvasImageMask} from "@/lib/canvas/canvas-image-mask";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { CanvasResourceMentionTextarea } from "./canvas-resource-mention-textarea";
 import { useCanvasActions } from "./canvas-actions";
@@ -551,7 +552,12 @@ export const CanvasNode = React.memo(function CanvasNode({
                 />
             )) : null}
             {!isGroup && !definition?.ports ? <ConnectionHandleDot side="left" visible={hovered || isSelected || isConnecting} onMouseDown={(event) => onConnectStart(event, data.id, "target")} /> : null}
-            {!isGroup && !definition?.ports ? (
+            {!isGroup && !definition?.ports && getCanvasResourceOutputPorts(data).length ? getCanvasResourceOutputPorts(data).map(port=>{
+                const resourcePorts=getCanvasResourceOutputPorts(data);
+                const showLabel=data.type!==CanvasNodeType.Image||resourcePorts.length>1;
+                return <ConnectionHandleDot key={port.id} side="right" visible={(hovered||isSelected||isConnecting)} top={getCanvasPortOffset(data,"source",port.id)} hitSize={28} portId={port.id} portDirection="source" label={showLabel?port.label:undefined} valueKind={showLabel?port.valueKind:undefined} onMouseDown={event=>onConnectStart(event,data.id,"source",port.id)}/>;
+            }):null}
+            {!isGroup && !definition?.ports && !getCanvasResourceOutputPorts(data).length ? (
                 <ConnectionHandleDot side="right" visible={(definition?.hasSourceHandle ?? true) && data.type !== CanvasNodeType.Config && (hovered || isSelected || isConnecting)} onMouseDown={(event) => onConnectStart(event, data.id, "source")} />
             ) : null}
 
@@ -1233,11 +1239,13 @@ function ImageInfoBar({ node }: { node: CanvasNodeData }) {
     const width = Math.round(node.metadata?.naturalWidth || node.width);
     const height = Math.round(node.metadata?.naturalHeight || node.height);
     const size = formatBytes(node.metadata?.bytes || 0);
+    const hasMask=Boolean(resolveCanvasImageMask(node));
     return (
         <div className="pointer-events-none absolute bottom-3 right-3 z-40 max-w-[calc(100%-24px)]">
             <span className="max-w-full truncate rounded-md bg-black/55 px-2 py-1 text-[11px] font-medium leading-none text-white backdrop-blur-sm">
                 {width} x {height}
                 {size ? ` · ${size}` : ""}
+                {hasMask?" · MASK":""}
             </span>
         </div>
     );

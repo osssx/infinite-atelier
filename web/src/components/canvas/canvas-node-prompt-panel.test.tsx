@@ -2,18 +2,20 @@ import {createElement,type ButtonHTMLAttributes,type ReactNode} from "react";
 import {renderToStaticMarkup} from "react-dom/server";
 import {afterEach,beforeEach,describe,expect,it,vi} from "vitest";
 
-vi.mock("react-i18next",()=>({useTranslation:()=>({t:(key:string)=>key})}));
+vi.mock("react-i18next",()=>({useTranslation:()=>({t:(key:string)=>key,i18n:{resolvedLanguage:"zh-CN"}}),initReactI18next:{type:"3rdParty",init:()=>{}}}));
+vi.mock("@/i18n",()=>({default:{t:(key:string)=>key,resolvedLanguage:"zh-CN"}}));
 vi.mock("antd",()=>({
  Button:({children,danger:_danger,...props}:ButtonHTMLAttributes<HTMLButtonElement>&{danger?:boolean})=>
   createElement("button",props,children),Tooltip:({children}:{children:ReactNode})=>children,Modal:()=>null
 }));
-vi.mock("lucide-react",()=>Object.fromEntries(["ArrowUp","LoaderCircle","Maximize2","Square"]
+vi.mock("lucide-react",()=>Object.fromEntries(["ArrowUp","LoaderCircle","Maximize2","Square","BookOpen"]
  .map(name=>[name,()=>createElement("i",{"data-icon":name})])));
 vi.mock("@/components/model-picker",()=>({ModelPicker:()=>null}));
 vi.mock("./canvas-image-settings-popover",()=>({CanvasImageSettingsPopover:()=>null}));
 vi.mock("./canvas-audio-settings-popover",()=>({CanvasAudioSettingsPopover:()=>null}));
 vi.mock("./canvas-video-settings-popover",()=>({CanvasVideoSettingsPopover:()=>null}));
 vi.mock("./canvas-text-settings-popover",()=>({CanvasTextSettingsPopover:()=>null}));
+vi.mock("./canvas-prompt-library",()=>({CanvasPromptLibrary:()=>null}));
 vi.mock("./canvas-prompt-chip-input",()=>({CanvasPromptChipInput:({value}:{value:string})=>createElement("textarea",{value,readOnly:true})}));
 vi.mock("./canvas-graph-context",()=>({useNodeMentionReferences:()=>[]}));
 vi.mock("@/stores/use-config-store",()=>({

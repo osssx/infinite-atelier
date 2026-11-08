@@ -150,10 +150,11 @@ export function createComfyV2Adapter({instance,db,blobStore,upstreamCall=comfyUp
   const mediaFiles={};
   const allowed={
    IMAGE:{"image/png":"png","image/jpeg":"jpg","image/webp":"webp"},
+   MASK:{"image/png":"png"},
    VIDEO:{"video/mp4":"mp4","video/webm":"webm","video/x-matroska":"mkv"},
    AUDIO:{"audio/wav":"wav","audio/flac":"flac","audio/ogg":"ogg","audio/mpeg":"mp3"}
   };
-  const sizes={IMAGE:captureLimits.image,VIDEO:captureLimits.video,AUDIO:captureLimits.audio};
+  const sizes={IMAGE:captureLimits.image,MASK:captureLimits.image,VIDEO:captureLimits.video,AUDIO:captureLimits.audio};
   const items=request.externalInputs.filter(x=>x.kind==="asset");
   for(const item of items){
    const blobId=snapshot.comfyAssetBlobs?.[item.assetId]??item.assetId;

@@ -82,7 +82,7 @@ export function validateComfyTemplate(template){
   for(const slot of u.slots){
    const port=byId.get(slot?.id);
    if(!object(slot)||!idRe.test(slot.id)||slotIds.has(slot.id)||typeof slot.label!=="string"||slot.label.length>90||
-    !["IMAGE","VIDEO","AUDIO"].includes(slot.valueKind)||port?.direction!=="target"||port.valueKind!==slot.valueKind||
+    !["IMAGE","MASK","VIDEO","AUDIO"].includes(slot.valueKind)||port?.direction!=="target"||port.valueKind!==slot.valueKind||
     Boolean(slot.required)!==Boolean(port.required)||(slot.required!==undefined&&typeof slot.required!=="boolean"))
     throw error("comfy_template_media_slot_invalid");
    slotIds.add(slot.id);

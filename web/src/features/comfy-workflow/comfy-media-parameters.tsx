@@ -56,8 +56,8 @@ export function DirectPortControl({field,value,overridden,theme,onSet,onReset}:{
  </div>;
 }
 
-export function ComfyMediaParameters({template,binding,config,theme,onChange,onEditPreset}:{template:ComfyWorkflowTemplate;binding:Binding;config:AiConfig;theme:CanvasTheme;
- onChange:(patch:Partial<CanvasNodeMetadata>)=>void;onEditPreset?:()=>void}){
+export function ComfyMediaParameters({template,binding,config,theme,onChange,onEditPreset,buttonClassName,placement}:{template:ComfyWorkflowTemplate;binding:Binding;config:AiConfig;theme:CanvasTheme;
+ onChange:(patch:Partial<CanvasNodeMetadata>)=>void;onEditPreset?:()=>void;buttonClassName?:string;placement?:"topLeft"|"topRight"}){
  const useCase=template.mediaUseCase!;
  const excluded=new Set([useCase.promptPortId,...useCase.slots.map(slot=>slot.id)]);
  const node={id:"comfy-media-settings",type:"comfy:workflow",metadata:{comfyWorkflow:{inputOverrides:binding.overrides}}} as CanvasNodeData;
@@ -85,11 +85,11 @@ export function ComfyMediaParameters({template,binding,config,theme,onChange,onE
   </div>
  </ConfigProvider>;
  const buttonLabel="工作流参数";
- const buttonClassName="!h-8 !max-w-[170px] !min-w-0 !justify-start !rounded-full !px-3";
+ const resolvedButtonClassName=buttonClassName??"!h-8 !max-w-[170px] !min-w-0 !justify-start !rounded-full !px-3";
  const noChange=()=>{};
  return useCase.primaryOutputKind==="image"?
-  <CanvasImageSettingsPopover config={config} onConfigChange={noChange} placement="topLeft" panelWidth={300} buttonClassName={buttonClassName} buttonLabel={buttonLabel} content={controls}/>:
+  <CanvasImageSettingsPopover config={config} onConfigChange={noChange} placement={placement??"topLeft"} panelWidth={300} buttonClassName={resolvedButtonClassName} buttonLabel={buttonLabel} content={controls}/>:
   useCase.primaryOutputKind==="video"?
-   <CanvasVideoSettingsPopover config={config} onConfigChange={noChange} placement="topLeft" panelWidth={300} buttonClassName={buttonClassName} buttonLabel={buttonLabel} content={controls}/>:
-   <CanvasAudioSettingsPopover config={config} onConfigChange={noChange} placement="topLeft" panelWidth={300} buttonClassName={buttonClassName} buttonLabel={buttonLabel} content={controls}/>;
+   <CanvasVideoSettingsPopover config={config} onConfigChange={noChange} placement={placement??"topLeft"} panelWidth={300} buttonClassName={resolvedButtonClassName} buttonLabel={buttonLabel} content={controls}/>:
+   <CanvasAudioSettingsPopover config={config} onConfigChange={noChange} placement={placement??"topLeft"} panelWidth={300} buttonClassName={resolvedButtonClassName} buttonLabel={buttonLabel} content={controls}/>;
 }

@@ -15,6 +15,7 @@ const ComfyWorkflowPanel=lazy(()=>import("./comfy-workflow-panel").then(module=>
 type MediaBinding=NonNullable<CanvasNodeMetadata["comfyMediaPreset"]>;
 type Props={node:CanvasNodeData;nodes:readonly CanvasNodeData[];connections:readonly CanvasConnection[];config:AiConfig;theme:CanvasTheme;
  capability?:ModelCapability;defaultPreset?:Pick<MediaBinding,"templateId"|"templateRevision">;
+ settingsButtonClassName?:string;settingsPlacement?:"topLeft"|"topRight";
  onChange:(patch:Partial<CanvasNodeMetadata>)=>void;
  onPickerOptionsChange?:(options:{value:string;label:string;disabled?:boolean}[],select:(value:string)=>void,activeValue?:string)=>void};
 const family=(kind:string)=>kind==="image"?"image":kind==="video"?"video":kind==="mask"?"mask":"audio";
@@ -25,7 +26,7 @@ function hasMedia(node:CanvasNodeData,kind:string){
  if(kind==="mask")return node.type==="image"&&Boolean(resolveCanvasImageMask(node));
  return node.type==="audio"&&Boolean(m?.storageKey||m?.content);
 }
-export function useComfyMediaPresetControl({node,nodes,connections,config,theme,capability,onChange,onPickerOptionsChange,defaultPreset}:Props):{settings:ReactNode;slots:ReactNode;error?:string}{
+export function useComfyMediaPresetControl({node,nodes,connections,config,theme,capability,onChange,onPickerOptionsChange,defaultPreset,settingsButtonClassName,settingsPlacement}:Props):{settings:ReactNode;slots:ReactNode;error?:string}{
  const [editor,setEditor]=useState<CanvasNodeData|null>(null);
  const [catalogRevision,setCatalogRevision]=useState(0);
  const [catalog,setCatalog]=useState<ComfyCatalogPreset[]>([]);
@@ -40,7 +41,9 @@ export function useComfyMediaPresetControl({node,nodes,connections,config,theme,
   setCatalogFailures(loaded.failures);setCatalogError(undefined);
  }).catch(error=>{if(current){setCatalog([]);setTemplates({});setCatalogError(error instanceof Error?error.message:String(error));}});return()=>{current=false};},[catalogRevision]);
  const preset=node.metadata?.comfyMediaPreset;
- const activePreset=preset??(defaultPreset?{...defaultPreset,overrides:{},slots:{}}:undefined);
+ const activePreset=useMemo(()=>preset??(defaultPreset?{...defaultPreset,overrides:{},slots:{}}:undefined),[
+  preset,defaultPreset?.templateId,defaultPreset?.templateRevision,
+ ]);
  useEffect(()=>{if(!activePreset)return;const key=activePreset.templateId+"@"+activePreset.templateRevision;if(templates[key])return;
   let active=true;void getComfyTemplate(activePreset.templateId,activePreset.templateRevision).then(template=>{
   if(active&&template?.mediaUseCase)setTemplates(current=>({...current,[key]:template}));
@@ -115,7 +118,8 @@ export function useComfyMediaPresetControl({node,nodes,connections,config,theme,
   return true;
  };
  const settings=<>
-  {!editor&&template?.mediaUseCase&&activePreset?<ComfyMediaParameters template={template} binding={activePreset} config={config} theme={theme} onChange={patch=>onChange(withComfyMediaAspect(template,patch))} onEditPreset={openPresetEditor}/>:null}
+  {!editor&&template?.mediaUseCase&&activePreset?<ComfyMediaParameters template={template} binding={activePreset} config={config} theme={theme} onChange={patch=>onChange(withComfyMediaAspect(template,patch))} onEditPreset={openPresetEditor}
+   buttonClassName={settingsButtonClassName} placement={settingsPlacement}/>:null}
   <Modal open={!!editor} title="编辑工作流预设" footer={null} width="min(1200px, 95vw)" destroyOnHidden centered
    styles={{body:{padding:0,height:"min(720px, calc(100dvh - 160px))",minHeight:260,overflow:"hidden"}}}
    onCancel={()=>{setEditor(null);setCatalogRevision(current=>current+1);}}>

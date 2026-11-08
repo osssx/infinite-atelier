@@ -232,8 +232,8 @@ export function CanvasNodeMaskEditDialog({ dataUrl, open, onClose, onConfirm, on
     };
 
     return (
-        <Modal title={null} open={open && Boolean(dataUrl)} onCancel={onClose} footer={null} width={1100} centered destroyOnHidden transitionName="" maskTransitionName="">
-            <div className="grid gap-5 lg:grid-cols-[minmax(360px,1fr)_420px]" data-canvas-no-zoom>
+        <Modal title={null} open={open && Boolean(dataUrl)} onCancel={onClose} footer={null} width={980} centered destroyOnHidden transitionName="" maskTransitionName="">
+            <div className="grid gap-5 lg:grid-cols-[minmax(360px,1fr)_320px]" data-canvas-no-zoom>
                 <div
                     ref={viewport.viewportRef}
                     {...viewport.panHandlers}
@@ -295,6 +295,11 @@ export function CanvasNodeMaskEditDialog({ dataUrl, open, onClose, onConfirm, on
                         </Button>
                     </div>
 
+                    {onSaveMask?<div className="grid min-w-0 grid-cols-2 gap-2">
+                        <Button className={hasSavedMask?"w-full":"col-span-2 w-full"} onClick={()=>{const canvas=maskCanvasRef.current;if(!canvas||!canvasHasPaint(canvas))return setError(t("canvas.editors.maskRequired"));onSaveMask(buildEditMask(canvas))}}>保存蒙版</Button>
+                        {hasSavedMask?<Button className="w-full" danger onClick={onClearMask}>清除已保存蒙版</Button>:null}
+                    </div>:null}
+
                     <div className="flex items-center justify-between rounded-lg border border-black/10 px-2 py-1 dark:border-white/10">
                         <Tooltip title={t("canvas.editors.undoMaskTitle")}>
                             <Button type="text" icon={<Undo2 className="size-4" />} disabled={!historySize} aria-label={t("canvas.editors.undoMask")} onClick={undoMask} />
@@ -338,22 +343,16 @@ export function CanvasNodeMaskEditDialog({ dataUrl, open, onClose, onConfirm, on
                         {error ? <div className="text-xs font-medium text-[#ef4444]">{error}</div> : null}
                     </div>
 
-                    <div className="mt-auto flex w-full min-w-0 flex-col gap-2">
-                        {hasSavedMask?<div className="flex min-w-0 flex-wrap items-center gap-2">
-                            <Button danger onClick={onClearMask}>清除已保存蒙版</Button>
-                        </div>:null}
-                        <div className="flex min-w-0 flex-wrap items-center justify-end gap-2">
+                    <div className="mt-auto flex w-full min-w-0 flex-wrap items-center justify-end gap-2">
                             <Button icon={<RotateCcw className="size-4" />} onClick={resetMask}>
                                 {t("canvas.editors.reset")}
                             </Button>
-                            {onSaveMask?<Button onClick={()=>{const canvas=maskCanvasRef.current;if(!canvas||!canvasHasPaint(canvas))return setError(t("canvas.editors.maskRequired"));onSaveMask(buildEditMask(canvas))}}>保存蒙版</Button>:null}
                             <Button icon={<X className="size-4" />} onClick={onClose}>
                                 {t("canvas.editors.cancel")}
                             </Button>
                             <Button type="primary" icon={maskOnly?undefined:<WandSparkles className="size-4" />} onClick={submit}>
                                 {maskOnly?"保存蒙版":t("canvas.editors.aiEdit")}
                             </Button>
-                        </div>
                     </div>
                 </div>
             </div>

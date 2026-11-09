@@ -1,3 +1,4 @@
+import type { WheelZoomDirection } from "@/lib/canvas/canvas-wheel-pressure";
 import { memo, startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
@@ -29,6 +30,8 @@ type NodeLayerProps = {
     canonicalNodes: CanvasNodeData[];
     /** Wheel activity temporarily pins crowded scenes in lightweight mode. */
     wheelZoomActive: boolean;
+    wheelRenderPressure?: boolean;
+    wheelZoomDirection?: WheelZoomDirection;
     /** A primitive scale used only to decide when tiny image previews become legible. */
     scale: number;
     /** Actual canvas view bounds, excluding sidebars and browser chrome (CSS px). */
@@ -67,6 +70,8 @@ export const NodeLayer = memo(function NodeLayer({
     canonicalNodes,
     shared,
     wheelZoomActive,
+    wheelRenderPressure = false,
+    wheelZoomDirection = "none",
     scale,
     selectedNodeIds,
     viewportWidth,
@@ -118,14 +123,30 @@ export const NodeLayer = memo(function NodeLayer({
 
     // Keep a stable decision across 0.30–0.42 zoom and moderate visible-count changes.
     const compactRef = useRef(false);
-    const compactMode = shouldUseCompactNodeLayer(nodes.length, scale, false, compactRef.current);
-    compactRef.current = compactMode;
+    const spatialCompact = shouldUseCompactNodeLayer(nodes.length, scale, false, compactRef.current);
+    compactRef.current = spatialCompact;
+    const pressureCompactRef = useRef(false);
+    const pressureCompact = wheelRenderPressure && wheelZoomDirection === "out" && scale < 0.42 && nodes.length >= (pressureCompactRef.current ? 56 : 72);
+    pressureCompactRef.current = pressureCompact;
+    const compactMode = spatialCompact || pressureCompact;
+    const previewIds = useRef(new Set<string>());
+    const summaryIds = useRef(new Set<string>());
     // Resolution tiers change only at a threshold, not on every wheel event.
     const originalImageIds = useRef<Set<string>>(new Set());
 
     // Pause new hydration during a gesture, but retain editors already mounted:
     // unmounting an active text editor or a multi-selected drag source is destructive.
     const [promotedIds, setPromotedIds] = useState<ReadonlySet<string>>(() => new Set());
+    // Record editors rendered without staging in small scenes before the count grows.
+    useLayoutEffect(() => {
+        if (compactMode || nodes.length >= 24) return;
+        setPromotedIds(previous => {
+            if (nodes.every(node => previous.has(node.id))) return previous;
+            const next = new Set(previous);
+            for (const node of nodes) next.add(node.id);
+            return next;
+        });
+    }, [nodes, compactMode]);
     const [gestureSettled, setGestureSettled] = useState(!pausePromotions);
     const promotionEpochRef = useRef(0);
     // Any previously queued transition becomes stale as soon as the user
@@ -219,20 +240,24 @@ export const NodeLayer = memo(function NodeLayer({
                 const showFull = (actuallyVisibleIds.has(node.id) || priorityIds.has(node.id)) && shouldRenderFullNode(node.id, stagedCompact, selectedNodeIds, hoveredForPromotion, connectionTargetNodeId, panelNodeId, playingNodeIds.has(node.id));
 
                 const hasOriginal = originalImageIds.current.has(node.id);
-                const wantOriginal = node.type === CanvasNodeType.Image && shouldUseOriginalCanvasImage(
+                const wantOriginal = (!wheelZoomActive || hasOriginal) && node.type === CanvasNodeType.Image && shouldUseOriginalCanvasImage(
                     scale, node.width, node.height, viewportWidth, viewportHeight, hasOriginal, devicePixelRatio,
                 );
                 if (wantOriginal) originalImageIds.current.add(node.id);
                 else originalImageIds.current.delete(node.id);
                 const preferImageThumbnail = node.type === CanvasNodeType.Image && !wantOriginal;
+                const preview = shouldShowCompactImage(scale, node.width, node.height, wheelZoomActive, previewIds.current.has(node.id));
+                if (preview) previewIds.current.add(node.id); else previewIds.current.delete(node.id);
+                const summary = shouldShowCompactCanvasTextSummary(scale, node.metadata?.fontSize || 14, showFull, summaryIds.current.has(node.id));
+                if (summary) summaryIds.current.add(node.id); else summaryIds.current.delete(node.id);
                 return <CanvasNodeHandoff
                     key={node.id}
                     shared={shared}
                     data={node}
                     isViewportVisible={actuallyVisibleIds.has(node.id)}
                     showFull={showFull}
-                    showImagePreview={shouldShowCompactImage(scale, node.width, node.height, wheelZoomActive)}
-                    showTextSummary={node.type === CanvasNodeType.Text && shouldShowCompactCanvasTextSummary(scale, node.metadata?.fontSize || 14, showFull)}
+                    showImagePreview={preview}
+                    showTextSummary={node.type === CanvasNodeType.Text && summary}
                     preferImageThumbnail={preferImageThumbnail}
                     isSelected={selectedNodeIds.has(node.id)}
                     isRelated={relatedNodeIds.has(node.id)}

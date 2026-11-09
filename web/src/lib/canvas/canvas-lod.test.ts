@@ -4,9 +4,9 @@ import { shouldUseCompactNodeLayer, compactCanvasTextOutlineStyle, shouldShowCom
 describe("compact text readability threshold", () => {
     it("shows the short summary only once projected glyphs reach readable size", () => {
         expect(shouldShowCompactCanvasTextSummary(0.49, 14, false)).toBe(false);
-        expect(shouldShowCompactCanvasTextSummary(0.5, 14, false)).toBe(true);
+        expect(shouldShowCompactCanvasTextSummary(0.58, 14, false)).toBe(true);
         expect(shouldShowCompactCanvasTextSummary(0.58, 12, false)).toBe(false);
-        expect(shouldShowCompactCanvasTextSummary(0.59, 12, false)).toBe(true);
+        expect(shouldShowCompactCanvasTextSummary(0.67, 12, false)).toBe(true);
     });
     it("keeps the full editor representation during direct interaction", () => {
         expect(shouldShowCompactCanvasTextSummary(0.2, 14, true)).toBe(true);

@@ -31,13 +31,13 @@ describe("visually continuous compact LOD previews", () => {
 
     it("only activates expensive image previews when their projected size is visible", () => {
         expect(shouldShowCompactImage(0.05, 320, 180)).toBe(false);
-        expect(shouldShowCompactImage(0.2, 320, 180)).toBe(true);
+        expect(shouldShowCompactImage(0.23, 320, 180)).toBe(true);
         expect(shouldShowCompactImage(0.35, 160, 120)).toBe(true);
         expect(shouldShowCompactImage(0.35, 80, 80)).toBe(false);
         expect(shouldShowCompactImage(NaN, 320, 180)).toBe(false);
     });
     it("keeps preview elements mounted through wheel zoom regardless of the 36px idle threshold", () => {
-        expect(shouldShowCompactImage(0.2, 160, 120, true)).toBe(true);
+        expect(shouldShowCompactImage(0.2, 160, 120, true, true)).toBe(true);
         expect(shouldShowCompactImage(0.2, 160, 120)).toBe(false);
     });
 });

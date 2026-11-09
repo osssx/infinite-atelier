@@ -1,3 +1,4 @@
+import type { WheelZoomDirection } from "@/lib/canvas/canvas-wheel-pressure";
 import {createVideoAudioExtractionController,extractedAudioMetadata,audioExtractionErrorMessage,type ExtractedAudio} from "@/features/backend-sync/video-audio-extraction";
 import { isResourceNode, buildNodeMentionReferencesFromIndex } from "@/lib/canvas/canvas-resource-references";
 import { CanvasImageCompareDialog } from "@/components/canvas/canvas-image-compare-dialog";
@@ -333,6 +334,8 @@ function AtelierCanvasPage() {
     const [chatSessions, setChatSessions] = useState<CanvasAssistantSession[]>([]);
     const [activeChatId, setActiveChatId] = useState<string | null>(null);
     const [viewport, setViewport] = useState<ViewportTransform>({ x: 0, y: 0, k: 1 });
+    const [wheelZoomDirection, setWheelZoomDirection] = useState<WheelZoomDirection>("none");
+    const [wheelRenderPressure, setWheelRenderPressure] = useState(false);
     const [isWheelZooming, setIsWheelZooming] = useState(false);
     const [isCanvasPanning, setIsCanvasPanning] = useState(false);
     const [canvasTool, setCanvasTool] = useState<"select" | "pan">("pan");
@@ -3673,6 +3676,8 @@ function AtelierCanvasPage() {
                     onViewportChange={handleViewportChange}
                     onViewportFrameChange={handleViewportFrameChange}
                     onWheelActivityChange={setIsWheelZooming}
+                    onWheelRenderPressureChange={setWheelRenderPressure}
+                    onWheelZoomDirectionChange={setWheelZoomDirection}
                     onPanActivityChange={setIsCanvasPanning}
                     onCanvasMouseDown={referencePickerNodeId ? () => {} : handleCanvasMouseDown}
                     onCanvasDeselect={referencePickerNodeId ? () => {} : deselectCanvas}
@@ -3712,6 +3717,8 @@ function AtelierCanvasPage() {
                             <NodeLayer
                                 nodes={visibleNodes}
                                 canonicalNodes={nodes}
+                                wheelZoomDirection={wheelZoomDirection}
+                                wheelRenderPressure={wheelRenderPressure}
                                 wheelZoomActive={isWheelZooming}
                                 scale={viewport.k}
                                 viewportWidth={size.width}

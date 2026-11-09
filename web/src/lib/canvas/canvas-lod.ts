@@ -5,7 +5,7 @@
 /**
  * Hysteresis prevents the same group of nodes from alternating between compact/full when
  * wheel input oscillates near a threshold. Start compact at <0.30 and return full at >=0.42.
- * A wheel burst can temporarily force compact while at least 24 nodes are visible.
+ * Wheel activity pauses promotion without forcing a spatial downgrade.
  */
 export function shouldUseCompactNodeLayer(
     visibleCount: number,
@@ -29,8 +29,8 @@ export function shouldPromoteHoveredNode(
 }
 
 /** At smaller projections glyph raster work dominates while carrying no readable text. */
-export function shouldShowCompactCanvasTextSummary(scale: number, fontSize: number, keepFull: boolean): boolean {
-    return keepFull || scale * Math.max(1, fontSize) >= 7;
+export function shouldShowCompactCanvasTextSummary(scale: number, fontSize: number, keepFull: boolean, wasVisible = false): boolean {
+    return keepFull || scale * Math.max(1, fontSize) >= (wasVisible ? 6 : 8);
 }
 
 export function compactCanvasTextOutlineStyle(color: string) {

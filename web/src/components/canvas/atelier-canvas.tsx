@@ -1,3 +1,4 @@
+import { createWheelPressureMonitor, type WheelZoomDirection } from "@/lib/canvas/canvas-wheel-pressure";
 import { isNativeDescendantEvent } from "@/lib/canvas/canvas-portal-events";
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 
@@ -18,6 +19,8 @@ type AtelierCanvasProps = {
     /** Synchronously refreshes coordinate refs while a fast pan is between React commits. */
     onViewportFrameChange?: (viewport: ViewportTransform) => void;
     /** Marks the short wheel gesture window so media nodes can defer expensive LOD promotion. */
+    onWheelZoomDirectionChange?: (direction: WheelZoomDirection) => void;
+    onWheelRenderPressureChange?: (active: boolean) => void;
     onWheelActivityChange?: (active: boolean) => void;
     onPanActivityChange?: (active: boolean) => void;
     onCanvasMouseDown?: (event: React.PointerEvent<HTMLDivElement>) => void;
@@ -32,7 +35,18 @@ type AtelierCanvasProps = {
 // Preserve native scrolling for editors and menus.
 const canvasWheelExcludedSelector = "[data-canvas-no-zoom],.ant-modal,.ant-popover,.ant-dropdown,.ant-select-dropdown,.ant-picker-dropdown,textarea,[contenteditable='true']";
 
-export function AtelierCanvas({ containerRef, viewport, tool, backgroundMode = "lines", onViewportChange, onViewportFrameChange, onWheelActivityChange, onPanActivityChange, onCanvasMouseDown, onCanvasDeselect, onCanvasDoubleClick, onContextMenu, onDrop, children }: AtelierCanvasProps) {
+export function AtelierCanvas({ containerRef, viewport, tool, backgroundMode = "lines", onViewportChange, onViewportFrameChange, onWheelActivityChange, onWheelRenderPressureChange, onWheelZoomDirectionChange, onPanActivityChange, onCanvasMouseDown, onCanvasDeselect, onCanvasDoubleClick, onContextMenu, onDrop, children }: AtelierCanvasProps) {
+    const zoomDirection = useRef<WheelZoomDirection>("none");
+    const pressureCallback = useRef(onWheelRenderPressureChange);
+    pressureCallback.current = onWheelRenderPressureChange;
+    const pressureMonitor = useRef<ReturnType<typeof createWheelPressureMonitor> | null>(null);
+    if (!pressureMonitor.current) pressureMonitor.current = createWheelPressureMonitor(active => pressureCallback.current?.(active));
+    useEffect(() => {
+        const reset = () => pressureMonitor.current?.reset();
+        window.addEventListener("blur", reset);
+        document.addEventListener("visibilitychange", reset);
+        return () => { reset(); window.removeEventListener("blur", reset); document.removeEventListener("visibilitychange", reset); };
+    }, []);
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const panState = useRef({
         isPanning: false,
@@ -189,7 +203,8 @@ export function AtelierCanvas({ containerRef, viewport, tool, backgroundMode = "
                 wheelRectRef.current = null;
                 if (wheelIdleTimerRef.current !== null) clearTimeout(wheelIdleTimerRef.current);
                 wheelIdleTimerRef.current = null;
-                onWheelActivityChange?.(false);
+                pressureMonitor.current?.stop();
+            onWheelActivityChange?.(false);
                 setPreviewGenerationSuspended(false, "wheel");
             }
             setIsSpacePressed(false);
@@ -246,6 +261,7 @@ export function AtelierCanvas({ containerRef, viewport, tool, backgroundMode = "
             lastCommittedWheelViewportRef.current = finalViewport;
             wheelFastRef.current = false;
             wheelRectRef.current = null;
+            pressureMonitor.current?.stop();
             onWheelActivityChange?.(false);
             setPreviewGenerationSuspended(false, "wheel");
         }, 180);
@@ -262,12 +278,19 @@ export function AtelierCanvas({ containerRef, viewport, tool, backgroundMode = "
             fastPanRef.current = false;
             onViewportChange(latest);
         }
+        const previousScale = (pendingWheelViewportRef.current ?? viewportRef.current).k;
         const next = applyAnchoredWheelZoom(
             pendingWheelViewportRef.current ?? viewportRef.current,
             event.deltaY,
             event.clientX - rect.left,
             event.clientY - rect.top,
         );
+        const direction: WheelZoomDirection = next.k > previousScale ? "in" : next.k < previousScale ? "out" : "none";
+        if (direction !== "none" && zoomDirection.current !== direction) {
+            zoomDirection.current = direction;
+            onWheelZoomDirectionChange?.(direction);
+        }
+        if (!document.hidden) pressureMonitor.current?.input(direction, next.k);
         pendingWheelViewportRef.current = next;
         viewportRef.current = next;
         if (wheelFrameRef.current !== null) return;
@@ -310,6 +333,7 @@ export function AtelierCanvas({ containerRef, viewport, tool, backgroundMode = "
             lastCommittedWheelViewportRef.current = finalViewport;
             wheelFastRef.current = false;
             wheelRectRef.current = null;
+            pressureMonitor.current?.stop();
             onWheelActivityChange?.(false);
             setPreviewGenerationSuspended(false, "wheel");
         }

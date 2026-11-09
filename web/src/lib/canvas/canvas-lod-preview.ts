@@ -10,7 +10,7 @@ export function getCompactImageSource(node: CanvasNodeData): string | null {
 }
 
 /** Load image previews only when they occupy enough screen pixels to be meaningful. */
-export function shouldShowCompactImage(scale: number, width: number, height: number, keepDuringWheel = false): boolean {
-    if (keepDuringWheel) return true;
-    return Number.isFinite(scale) && scale > 0 && Math.min(width, height) * scale >= 36;
+export function shouldShowCompactImage(scale: number, width: number, height: number, keepDuringWheel = false, wasVisible = false): boolean {
+    if (keepDuringWheel) return wasVisible;
+    return Number.isFinite(scale) && scale > 0 && Math.min(width, height) * scale >= (wasVisible ? 32 : 40);
 }

@@ -118,7 +118,7 @@ export const NodeLayer = memo(function NodeLayer({
 
     // Keep a stable decision across 0.30–0.42 zoom and moderate visible-count changes.
     const compactRef = useRef(false);
-    const compactMode = shouldUseCompactNodeLayer(wheelZoomActive ? wheelRetained.length : nodes.length, scale, wheelZoomActive, compactRef.current);
+    const compactMode = shouldUseCompactNodeLayer(nodes.length, scale, false, compactRef.current);
     compactRef.current = compactMode;
     // Resolution tiers change only at a threshold, not on every wheel event.
     const originalImageIds = useRef<Set<string>>(new Set());
@@ -204,7 +204,7 @@ export const NodeLayer = memo(function NodeLayer({
     }, [compactMode, pausePromotions, gestureSettled, candidates, promotedIds, nodes.length]);
     // data-node-id stays constant through promotion; expose a perf-only settling marker.
     const isRecovering = PERF_MODE && !compactMode && nodes.length >= 24 &&
-        (pausePromotions || !gestureSettled || candidates.some(({ id }) => !promotedIds.has(id)));
+        nodes.some(({ id }) => !promotedIds.has(id) && !priorityIds.has(id));
 
     return (
         <>
@@ -216,7 +216,7 @@ export const NodeLayer = memo(function NodeLayer({
                 // Hover-only promotion is suspended during wheel input. An otherwise pinned
                 // heavy media/editor node can stall zoom; selection and playing media still win.
                 const hoveredForPromotion = shouldPromoteHoveredNode(scale, node.width, node.height, wheelZoomActive) ? activeNodeId : null;
-                const showFull = shouldRenderFullNode(node.id, stagedCompact, selectedNodeIds, hoveredForPromotion, connectionTargetNodeId, panelNodeId, playingNodeIds.has(node.id));
+                const showFull = (actuallyVisibleIds.has(node.id) || priorityIds.has(node.id)) && shouldRenderFullNode(node.id, stagedCompact, selectedNodeIds, hoveredForPromotion, connectionTargetNodeId, panelNodeId, playingNodeIds.has(node.id));
 
                 const hasOriginal = originalImageIds.current.has(node.id);
                 const wantOriginal = node.type === CanvasNodeType.Image && shouldUseOriginalCanvasImage(

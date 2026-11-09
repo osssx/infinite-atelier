@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compactCanvasTextOutlineStyle, shouldShowCompactCanvasTextSummary } from "./canvas-lod";
+import { shouldUseCompactNodeLayer, compactCanvasTextOutlineStyle, shouldShowCompactCanvasTextSummary } from "./canvas-lod";
 
 describe("compact text readability threshold", () => {
     it("shows the short summary only once projected glyphs reach readable size", () => {
@@ -20,3 +20,13 @@ describe("compact text readability threshold", () => {
         expect(style.opacity).toBe(0.4);
     });
 });
+
+ describe("stable spatial LOD", () => {
+ it("does not downgrade ordinary wheel gestures", () => {
+ expect(shouldUseCompactNodeLayer(100, 1, true, false)).toBe(false);
+ expect(shouldUseCompactNodeLayer(100, .29, true, false)).toBe(true);
+ expect(shouldUseCompactNodeLayer(60, .35, true, true)).toBe(true);
+ expect(shouldUseCompactNodeLayer(60, .42, false, true)).toBe(false);
+ expect(shouldUseCompactNodeLayer(55, .2, false, true)).toBe(false);
+ });
+ });

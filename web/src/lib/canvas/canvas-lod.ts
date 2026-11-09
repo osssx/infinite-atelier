@@ -13,7 +13,7 @@ export function shouldUseCompactNodeLayer(
     wheelZoomActive = false,
     wasCompact = false,
 ): boolean {
-    if (wheelZoomActive && visibleCount >= 24) return true;
+    void wheelZoomActive;
     if (wasCompact) return visibleCount >= 56 && scale < 0.42;
     return visibleCount >= 72 && scale < 0.30;
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
-import { buildOverviewConnectionPaths, findOverviewConnectionAtPoint } from "./canvas-overview-connections";
+import { buildOverviewConnectionPaths, findOverviewConnectionAtPoint, partitionConnectionsForMovingNodes, refreshStationaryNodeMap, shouldUseOverviewConnections } from "./canvas-overview-connections";
 import { connectionControlPoints } from "./canvas-connection-culling";
 
 const n = (id: string, x: number, y: number): CanvasNodeData => ({
@@ -15,6 +15,33 @@ const connections = [
     { id: "bc", fromNodeId: "b", toNodeId: "c" },
 ];
 describe("batched overview connections", () => {
+    it("separates only edges incident to moving nodes for drag rendering", () => {
+        const split = partitionConnectionsForMovingNodes(connections, new Set(["b"]));
+        expect(split.moving.map((connection) => connection.id)).toEqual(["ab", "bc"]);
+        expect(split.stationary).toEqual([]);
+        const stationaryGraph = partitionConnectionsForMovingNodes(connections, new Set(["a"]));
+        expect(stationaryGraph.moving.map((connection) => connection.id)).toEqual(["ab"]);
+        expect(stationaryGraph.stationary.map((connection) => connection.id)).toEqual(["bc"]);
+    });
+    it("freezes moving-node geometry while refreshing unrelated nodes during a gesture", () => {
+        const moved = { ...a, position: { x: 10, y: 0 } };
+        const changedOther = { ...b, position: { x: 410, y: 110 } };
+        const previous = new Map([[a.id, a], [b.id, b]]);
+        const current = new Map([[a.id, moved], [b.id, changedOther], [c.id, c]]);
+        const refreshed = refreshStationaryNodeMap(previous, current, new Set([a.id]));
+        expect(refreshed).not.toBe(previous);
+        expect(refreshed.get(a.id)).toBe(a);
+        expect(refreshed.get(b.id)).toBe(changedOther);
+        expect(refreshed.get(c.id)).toBe(c);
+        expect(refreshStationaryNodeMap(previous, new Map([[a.id, moved], [b.id, b]]), new Set([a.id]))).toBe(previous);
+    });
+    it("batches the vector layer for every wheel zoom and preserves scale hysteresis afterward", () => {
+        expect(shouldUseOverviewConnections(0.8,false,true)).toBe(true);
+        expect(shouldUseOverviewConnections(0.8,true,false)).toBe(false);
+        expect(shouldUseOverviewConnections(0.18,true,false)).toBe(true);
+        expect(shouldUseOverviewConnections(0.22,false,false)).toBe(false);
+        expect(shouldUseOverviewConnections(0.16,false,false)).toBe(true);
+    });
     it("preserves cubic geometry and groups active edges without duplicating hit paths", () => {
         const paths = buildOverviewConnectionPaths(connections, byId, null, new Set(["bc"]));
         const ab = connectionControlPoints(a, b);
@@ -23,6 +50,14 @@ describe("batched overview connections", () => {
         expect(paths.highlighted).toContain("M 520 150 C");
         expect(paths.hit.match(/M /g)).toHaveLength(2);
         expect(paths.curves.map((entry) => entry.id)).toEqual(["ab", "bc"]);
+    });
+    it("rebuilds incident edge geometry from transient drag deltas without replacing node data", () => {
+        const delta = new Map([["a", { x: 35, y: -12 }]]);
+        const moved = buildOverviewConnectionPaths([connections[0]], byId, null, new Set(), delta);
+        const expected = connectionControlPoints({ ...a, position: { x: 35, y: -12 } }, b);
+        expect(moved.curves[0]).toMatchObject({ x0: expected.startX, y0: expected.startY, x1: expected.control1X, y1: expected.control1Y });
+        expect(a.position).toEqual({ x: 0, y: 0 });
+        expect(buildOverviewConnectionPaths([connections[0]], byId, null, new Set()).curves[0]).not.toEqual(moved.curves[0]);
     });
     it("leaves a selected edge out of the combined visual and hit paths", () => {
         const paths = buildOverviewConnectionPaths(connections, byId, "ab", new Set());

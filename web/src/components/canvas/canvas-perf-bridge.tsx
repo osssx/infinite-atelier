@@ -13,6 +13,7 @@ type CanvasPerfBridgeProps = {
     containerRef: RefObject<HTMLDivElement | null>;
     viewport: ViewportTransform;
     setViewport: (viewport: ViewportTransform) => void;
+    setNodes: (update: CanvasNodeData[] | ((previous: CanvasNodeData[]) => CanvasNodeData[])) => void;
     selectedNodeIds: ReadonlySet<string>;
     nodes: CanvasNodeData[];
     connections: CanvasConnection[];
@@ -33,7 +34,7 @@ type CanvasPerfBridgeProps = {
  * root `<main>`. Its own mount is then exactly the "project loaded and canvas mounted" signal, and
  * because it renders only a fixed-position panel (or null) it takes part in no layout.
  */
-export function CanvasPerfBridge({ containerRef, viewport, setViewport, selectedNodeIds, nodes, connections }: CanvasPerfBridgeProps) {
+export function CanvasPerfBridge({ containerRef, viewport, setViewport, setNodes, selectedNodeIds, nodes, connections }: CanvasPerfBridgeProps) {
     // Start of this render pass. This component is the first child of the page's root element, so
     // everything the canvas subtree renders afterwards is covered by the delta to the layout effect
     // below. Not exact — anything rendered before this point is excluded — but it is what answers
@@ -54,6 +55,7 @@ export function CanvasPerfBridge({ containerRef, viewport, setViewport, selected
         canvasPerfBridgeState.connections = connections;
         canvasPerfBridgeState.container = containerRef.current;
         canvasPerfBridgeState.setViewport = setViewport;
+        canvasPerfBridgeState.setNodes = setNodes;
     });
 
     // The layout effect above runs first, so the state is already published when the token advances.
@@ -66,6 +68,7 @@ export function CanvasPerfBridge({ containerRef, viewport, setViewport, selected
         return () => {
             canvasPerfBridgeState.container = null;
             canvasPerfBridgeState.setViewport = null;
+            canvasPerfBridgeState.setNodes = null;
         };
     }, []);
 

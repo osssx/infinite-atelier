@@ -20,6 +20,21 @@ export type CanvasGraphIndex = {
     neighborsById: Map<string, Set<string>>;
 };
 
+/**
+ * Reuse the semantic input snapshot while nodes move on the canvas. Reference/generation consumers
+ * depend on identity, type, title, metadata and dimensions; position-only edits are visual geometry.
+ */
+export function reuseCanvasSemanticNodes(previous: CanvasNodeData[], current: CanvasNodeData[]): CanvasNodeData[] {
+    if (previous === current || previous.length !== current.length) return previous === current ? previous : current;
+    for (let index = 0; index < current.length; index += 1) {
+        const before = previous[index];
+        const next = current[index];
+        if (before.id !== next.id || before.type !== next.type || before.title !== next.title ||
+            before.width !== next.width || before.height !== next.height || before.metadata !== next.metadata) return current;
+    }
+    return previous;
+}
+
 export function buildCanvasGraphIndex(nodes: CanvasNodeData[], connections: CanvasConnection[]): CanvasGraphIndex {
     const nodeById = new Map<string, CanvasNodeData>();
     const groupChildrenByGroupId = new Map<string, CanvasNodeData[]>();

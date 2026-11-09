@@ -22,10 +22,10 @@ describe("canvas full-node promotion scheduler", () => {
 
     it("adapts admission to observed pressure, avoiding a large decoder batch", () => {
         const nodes = orderNodePromotions([make("a", 0), make("b", 100), make("c", 200), make("d", 300)], 0, 0, new Set());
-        expect(choosePromotionBatch(nodes, new Set(), 16.7, 1)).toEqual(["a", "b"]);
+        expect(choosePromotionBatch(nodes, new Set(), 16.7, 1)).toEqual(["a"]);
         expect(choosePromotionBatch(nodes, new Set(), 21, 1)).toEqual(["a"]);
         expect(choosePromotionBatch(nodes, new Set(), 16.7, 9)).toEqual(["a"]);
-        expect(choosePromotionBatch(nodes, new Set(["a"]), 16.7, 1)).toEqual(["b", "c"]);
+        expect(choosePromotionBatch(nodes, new Set(["a"]), 16.7, 1)).toEqual(["b"]);
         expect(choosePromotionBatch(nodes, new Set(nodes.map((n) => n.id)), 16.7, 1)).toEqual([]);
     });
 

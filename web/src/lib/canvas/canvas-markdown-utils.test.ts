@@ -27,5 +27,7 @@ describe("compact canvas Markdown preview", () => {
     it("bounds very large documents in overview", () => {
         expect(compactCanvasMarkdown("x".repeat(10000)).length).toBe(900);
         expect(compactCanvasMarkdown("ok", 5)).toBe("ok");
+        expect(compactCanvasMarkdown("- **A long item with formatting that expands during cleanup**", 40).length).toBeLessThanOrEqual(40);
+        expect(compactCanvasMarkdown("x".repeat(900), 40)).toBe(`${"x".repeat(39)}…`);
     });
 });

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData } from "@/types/canvas";
 import { buildCanvasFixture } from "./canvas-fixtures";
-import { buildCanvasGraphIndex } from "./canvas-graph-index";
+import { buildCanvasGraphIndex, reuseCanvasSemanticNodes } from "./canvas-graph-index";
 
 // `@/i18n` reads localStorage while initialising, and the default node test environment has none.
 // The stub has to be installed before anything pulls i18n in, hence the dynamic imports below.
@@ -48,8 +48,27 @@ function legacyGenerationResourceNodes(nodeId: string, nodes: CanvasNodeData[], 
 }
 
 const ids = (nodes: CanvasNodeData[]) => nodes.map((node) => node.id);
+const graphNode = (id: string, type: CanvasNodeType): CanvasNodeData => ({
+    id, type, title: id, position: { x: 0, y: 0 }, width: 200, height: 120, metadata: { content: "source" },
+});
 
 describe("canvas graph index", () => {
+    it("reuses semantic input nodes when only canvas positions change", () => {
+        const original = [graphNode("a", CanvasNodeType.Image), graphNode("b", CanvasNodeType.Config)];
+        const moved = original.map((item, index) => ({ ...item, position: { x: item.position.x + 120 + index, y: item.position.y - 30 } }));
+        expect(reuseCanvasSemanticNodes(original, moved)).toBe(original);
+    });
+
+    it("refreshes the semantic snapshot for metadata, dimensions, or graph order changes", () => {
+        const original = [graphNode("a", CanvasNodeType.Image), graphNode("b", CanvasNodeType.Config)];
+        const metadataChanged = [{ ...original[0], metadata: { ...original[0].metadata, prompt: "new prompt" } }, original[1]];
+        const widthChanged = [{ ...original[0], width: original[0].width + 1 }, original[1]];
+        const reordered = [original[1], original[0]];
+        expect(reuseCanvasSemanticNodes(original, metadataChanged)).toBe(metadataChanged);
+        expect(reuseCanvasSemanticNodes(original, widthChanged)).toBe(widthChanged);
+        expect(reuseCanvasSemanticNodes(original, reordered)).toBe(reordered);
+    });
+
     it("matches the linear-scan traversal for mentions and generation inputs across random graphs", () => {
         for (const seed of [1, 7, 42, 1337]) {
             const { nodes, connections } = buildCanvasFixture({ nodeCount: 60, seed });

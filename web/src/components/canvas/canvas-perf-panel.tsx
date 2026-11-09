@@ -6,6 +6,7 @@ import {
     BASELINE_SCENARIOS,
     CANVAS_200_SCENARIOS,
     CANVAS_200_DENSE_RECOVERY_SCENARIOS,
+    CANVAS_300_SCENARIOS,
     ZOOM_DIAGNOSTIC_SCENARIOS,
     copyBaselineReport,
     downloadBaselineReport,
@@ -34,6 +35,7 @@ import {
 export default function CanvasPerfPanel() {
     const [scenarios] = useState<Scenario[]>(BASELINE_SCENARIOS);
     const [canvas200] = useState<Scenario[]>(CANVAS_200_SCENARIOS);
+    const [canvas300] = useState<Scenario[]>(CANVAS_300_SCENARIOS);
     const [denseRecovery] = useState<Scenario[]>(CANVAS_200_DENSE_RECOVERY_SCENARIOS);
     const [diagnostics] = useState<Scenario[]>(ZOOM_DIAGNOSTIC_SCENARIOS);
     const [sessionLabel, setSessionLabel] = useState(() => getPerfSessionLabel());
@@ -93,6 +95,9 @@ export default function CanvasPerfPanel() {
                 </button>
                 <button type="button" onClick={() => run(canvas200)} disabled={running} className="rounded border px-2 py-1 font-medium disabled:opacity-50">
                     Run 200 + minimap
+                </button>
+                <button type="button" onClick={() => run(canvas300)} disabled={running} className="rounded border px-2 py-1 font-medium disabled:opacity-50">
+                    Run 300 mixed + minimap
                 </button>
                 <button type="button" onClick={() => run(denseRecovery)} disabled={running} className="rounded border px-2 py-1 font-medium disabled:opacity-50">
                     Run dense LOD recovery

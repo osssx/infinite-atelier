@@ -1,4 +1,5 @@
 import { registerCanvasVideoPlayer } from "@/lib/canvas/video-sync-playback";
+import { registerCanvasDragPositionElement } from "@/lib/canvas/canvas-drag-position-runtime";
 import { CanvasExecutionHalo } from "./canvas-execution-halo";
 import { isNativeDescendantEvent } from "@/lib/canvas/canvas-portal-events";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -18,10 +19,11 @@ import { useCanvasActions } from "./canvas-actions";
 import { useNodeMentionReferences } from "./canvas-graph-context";
 import { CanvasNodeType, type CanvasNodeData, type CanvasNodeImage, type ViewportTransform } from "@/types/canvas";
 import { useTranslation } from "react-i18next";
-import { getExistingMediaPreview, resolveMediaPreview } from "@/services/media-preview-storage";
+import { acquireMediaPreview } from "@/services/media-preview-storage";
 import {ComfyWorkflowNodeVisual} from "@/features/comfy-workflow/comfy-workflow-node-visual";
 import {CanvasTextExecutionIndicator} from "./canvas-text-execution-indicator";
 import { shouldPlayVideoCoverClick, videoCoverPressDragged, type VideoCoverPress } from "./canvas-video-cover-gesture";
+import { PERF_MODE } from "@/lib/perf-mode";
 
 // Parsing rich Markdown is only needed for full, non-editing text nodes. Keep its
 // parser out of the initial canvas bundle and all compact LOD representations.
@@ -52,6 +54,8 @@ export type CanvasNodeProps = {
     /** Handoff: fade heavy content in only after its visual content has loaded. */
     onVisualReady?: () => void;
     visualShown?: boolean;
+    /** Retained LOD roots stay painted during wheel gestures but do not become new hit targets. */
+    isViewportVisible?: boolean;
     handoffActive?: boolean;
     isGroupDropTarget?: boolean;
     batchExpanded?: boolean;
@@ -102,6 +106,7 @@ export const CanvasNode = React.memo(function CanvasNode({
     onMediaPlaybackChange,
     onVisualReady,
     visualShown = true,
+    isViewportVisible = true,
     handoffActive = false,
 }: CanvasNodeProps) {
     // Destructured so the rest of the component reads the same as it did when these were props. The
@@ -153,6 +158,12 @@ export const CanvasNode = React.memo(function CanvasNode({
     const imageBorderColor = isActive ? selectionBlue : isRelated ? theme.node.muted : "transparent";
     const textareaRef = useRef<HTMLTextAreaElement>(null);
     const titleInputRef = useRef<HTMLInputElement>(null);
+    const dragRuntimeElementRef = useRef<HTMLDivElement>(null);
+    React.useLayoutEffect(() => {
+        const element = dragRuntimeElementRef.current;
+        if (!element) return;
+        return registerCanvasDragPositionElement(data.id, element);
+    }, [data.id]);
     const resizeRef = useRef({
         isResizing: false,
         corner: "bottom-right" as ResizeCorner,
@@ -376,7 +387,8 @@ export const CanvasNode = React.memo(function CanvasNode({
 
     return (
         <div
-            data-node-id={!handoffActive || visualShown ? data.id : undefined}
+            ref={dragRuntimeElementRef}
+            data-node-id={!handoffActive || (visualShown && isViewportVisible) ? data.id : undefined}
             data-canvas-full-node
             data-canvas-lod-node={data.id}
             className={`node-element absolute flex select-none flex-col transition-shadow duration-200 ${isGroup ? "z-[5]" : isSelected ? "z-50" : "z-10"}`}
@@ -386,7 +398,7 @@ export const CanvasNode = React.memo(function CanvasNode({
                 height: data.height,
                 transition: handoffActive ? "opacity 160ms ease-out, box-shadow 200ms ease" : "box-shadow 200ms ease",
                 opacity: visualShown ? 1 : 0,
-                pointerEvents: visualShown ? undefined : "none",
+                pointerEvents: visualShown && isViewportVisible ? undefined : "none",
                 contain: "layout style",
             }}
             onMouseEnter={() => {
@@ -822,9 +834,9 @@ function VideoNodeContent({ node, theme, onMediaPlaybackChange }: NodeContentRen
     useEffect(() => {
         if (!storageKey || !source) return;
         let alive = true;
-        void resolveMediaPreview("video", storageKey)
-            .then((url) => { if (alive && url) setCover({ key: storageKey, url }); });
-        return () => { alive = false; };
+        const lease = acquireMediaPreview("video", storageKey, "selected");
+        void lease.promise.then((url) => { if (alive && url) setCover({ key: storageKey, url }); });
+        return () => { alive = false; lease.release(); };
     }, [source, storageKey]);
     useEffect(() => () => onMediaPlaybackChange?.(node.id, false), [node.id, onMediaPlaybackChange]);
 
@@ -888,7 +900,7 @@ function VideoNodeContent({ node, theme, onMediaPlaybackChange }: NodeContentRen
             </div>
         );
 
-    const poster = storageKey && cover?.key === storageKey ? cover.url : null;
+    const poster = storageKey && cover?.key === storageKey ? cover.url : PERF_MODE ? node.metadata?.perfStaticPosterUrl ?? null : null;
     return (
         <div className="relative h-full w-full overflow-hidden rounded-[18px] bg-black" data-canvas-video-shell>
             <video ref={videoRef}
@@ -936,6 +948,7 @@ function VideoNodeContent({ node, theme, onMediaPlaybackChange }: NodeContentRen
                     aria-label={failed ? "Retry video playback" : requested ? "Loading video" : "Play video"}
                 >
                     {poster ? <img src={poster} alt="" draggable={false}
+                        data-canvas-perf-poster={PERF_MODE ? "" : undefined}
                         onLoad={(event)=>{
                             if((node.metadata?.comfyArtifact||node.metadata?.modelArtifact)&&
                                !node.metadata?.legacyVideoAspectRecovered&&
@@ -1021,10 +1034,11 @@ function ImageContent({
     useEffect(() => {
         if (!needsPreview) return;
         let active = true;
-        void getExistingMediaPreview("image", primaryStorageKey).then((url) => {
+        const lease = acquireMediaPreview("image", primaryStorageKey, "visible");
+        void lease.promise.then((url) => {
             if (active) setPreview({ key: primaryStorageKey, url });
         });
-        return () => { active = false; };
+        return () => { active = false; lease.release(); };
     }, [needsPreview, primaryStorageKey]);
     // Putting an original URL into <img> can start full decoding even if scaled down.
     const previewUrl = needsPreview && badPreview !== primaryStorageKey && preview?.key === primaryStorageKey

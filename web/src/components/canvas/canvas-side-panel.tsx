@@ -10,7 +10,7 @@ import { exportCanvasNodes } from "@/lib/canvas/canvas-export";
 import { getNodeDefinition } from "@/lib/canvas/node-registry";
 import { cn } from "@/lib/utils";
 import { uploadCanvasImage,uploadCanvasMedia } from "@/features/backend-sync/canvas-media";
-import { resolveMediaPreview } from "@/services/media-preview-storage";
+import { acquireMediaPreview } from "@/services/media-preview-storage";
 import { CANVAS_SIDEBAR_ROW_HEIGHT, CANVAS_SIDEBAR_ROW_STRIDE, canvasSidebarWindow } from "@/lib/canvas/canvas-side-panel-window";
 import { useAssetStore, type Asset, type AssetKind } from "@/stores/use-asset-store";
 import { awaitAssetStorePersistence } from "@/stores/use-asset-store";
@@ -336,9 +336,9 @@ const CanvasSidebarThumbnail = memo(function CanvasSidebarThumbnail({ storageKey
     useEffect(() => {
         if (!storageKey) return;
         let active = true;
-        void resolveMediaPreview("image", storageKey)
-            .then((url) => { if (active && url) setPreview({ key: storageKey, url }); });
-        return () => { active = false; };
+        const lease = acquireMediaPreview("image", storageKey, "background");
+        void lease.promise.then((url) => { if (active && url) setPreview({ key: storageKey, url }); });
+        return () => { active = false; lease.release(); };
     }, [storageKey]);
     // Preserve legacy/external image thumbnails where no storageKey exists; virtualization limits concurrent decodes.
     const url = storageKey ? (preview?.key === storageKey ? preview.url : null) : source;

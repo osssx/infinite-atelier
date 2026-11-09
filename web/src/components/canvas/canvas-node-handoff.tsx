@@ -1,17 +1,20 @@
-import { memo, useCallback, useEffect, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
 
 import type { CanvasNodeData } from "@/types/canvas";
 import { CanvasNodeType } from "@/types/canvas";
 import { getCompactImageSource } from "@/lib/canvas/canvas-lod-preview";
 import { keepCompactDuringHandoff } from "@/lib/canvas/canvas-node-handoff";
+import { selectNodeRenderCallbacks } from "./canvas-node-handoff-props";
 import { CanvasNode } from "./canvas-node";
 import { CompactCanvasNode } from "./canvas-node-compact";
 import type { SharedNodeProps } from "./canvas-node-layer";
 
 type Props = {
     data: CanvasNodeData;
+    isViewportVisible: boolean;
     showFull: boolean;
     showImagePreview: boolean;
+    showTextSummary: boolean;
     preferImageThumbnail: boolean;
     isSelected: boolean;
     isRelated: boolean;
@@ -37,7 +40,7 @@ type Props = {
  * Unlike swapping keyed components, the compact image stays mounted throughout hydration.
  */
 export const CanvasNodeHandoff = memo(function CanvasNodeHandoff({
-    data, showFull, showImagePreview, preferImageThumbnail, isSelected, isRelated, isFocusRelated,
+    data, isViewportVisible, showFull, showImagePreview, showTextSummary, preferImageThumbnail, isSelected, isRelated, isFocusRelated,
     isConnectionTarget, isConnecting, showPanel, groupChildCount, isGroupDropTarget,
     batchExpanded, showImageInfo, shared, onMediaPlaybackChange,
 }: Props) {
@@ -81,6 +84,10 @@ export const CanvasNodeHandoff = memo(function CanvasNodeHandoff({
     }, [interactiveFull, settledKey, visualKey]);
 
     const keepCompact = keepCompactDuringHandoff(showFull, visualKey, shownKey, settledKey);
+    const renderCallbacks = useMemo(
+        () => selectNodeRenderCallbacks(shared, data.type, showPanel),
+        [shared, data.type, showPanel],
+    );
 
     return (
         <>
@@ -92,13 +99,16 @@ export const CanvasNodeHandoff = memo(function CanvasNodeHandoff({
                     isGroupDropTarget={isGroupDropTarget}
                     groupChildCount={groupChildCount}
                     showImagePreview={showImagePreview}
-                    hitActive={!interactiveFull}
+                    showTextSummary={showTextSummary}
+                    hitActive={isViewportVisible && !interactiveFull}
                 />
             ) : null}
             {showFull ? (
                 <CanvasNode
                     {...shared}
+                    {...renderCallbacks}
                     data={data}
+                    isViewportVisible={isViewportVisible}
                     isSelected={isSelected}
                     isRelated={isRelated}
                     isFocusRelated={isFocusRelated}

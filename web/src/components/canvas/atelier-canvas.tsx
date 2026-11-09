@@ -2,8 +2,9 @@ import { isNativeDescendantEvent } from "@/lib/canvas/canvas-portal-events";
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { canvasThemes, type CanvasBackgroundMode } from "@/lib/canvas-theme";
-import { applyAnchoredWheelZoom } from "@/lib/canvas/canvas-wheel-zoom";
-import { canFastPanAtScale, FAST_PAN_COMMIT_INTERVAL_MS, gridPositionForViewport, worldTransformForViewport } from "@/lib/canvas/canvas-pan-fast-path";
+import { applyAnchoredWheelZoom, resolveWheelCommitViewport } from "@/lib/canvas/canvas-wheel-zoom";
+import { canFastPanAtScale, gridPositionForViewport, shouldCommitFastPan, shouldCommitFastViewport, worldTransformForViewport } from "@/lib/canvas/canvas-pan-fast-path";
+import { createWebGLGridRenderer, type WebGLGridColors, type WebGLGridRenderer, type WebGLGridSize } from "@/lib/canvas/canvas-webgl-grid";
 import { setPreviewGenerationSuspended } from "@/services/media-preview-storage";
 import { useThemeStore } from "@/stores/use-theme-store";
 import type { ViewportTransform } from "@/types/canvas";
@@ -14,6 +15,8 @@ type AtelierCanvasProps = {
     tool: "select" | "pan";
     backgroundMode?: CanvasBackgroundMode;
     onViewportChange: (viewport: ViewportTransform) => void;
+    /** Synchronously refreshes coordinate refs while a fast pan is between React commits. */
+    onViewportFrameChange?: (viewport: ViewportTransform) => void;
     /** Marks the short wheel gesture window so media nodes can defer expensive LOD promotion. */
     onWheelActivityChange?: (active: boolean) => void;
     onPanActivityChange?: (active: boolean) => void;
@@ -29,7 +32,7 @@ type AtelierCanvasProps = {
 // Preserve native scrolling for editors and menus.
 const canvasWheelExcludedSelector = "[data-canvas-no-zoom],.ant-modal,.ant-popover,.ant-dropdown,.ant-select-dropdown,.ant-picker-dropdown,textarea,[contenteditable='true']";
 
-export function AtelierCanvas({ containerRef, viewport, tool, backgroundMode = "lines", onViewportChange, onWheelActivityChange, onPanActivityChange, onCanvasMouseDown, onCanvasDeselect, onCanvasDoubleClick, onContextMenu, onDrop, children }: AtelierCanvasProps) {
+export function AtelierCanvas({ containerRef, viewport, tool, backgroundMode = "lines", onViewportChange, onViewportFrameChange, onWheelActivityChange, onPanActivityChange, onCanvasMouseDown, onCanvasDeselect, onCanvasDoubleClick, onContextMenu, onDrop, children }: AtelierCanvasProps) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const panState = useRef({
         isPanning: false,
@@ -46,11 +49,30 @@ export function AtelierCanvas({ containerRef, viewport, tool, backgroundMode = "
     const viewportRef = useRef(viewport);
     const worldRef = useRef<HTMLDivElement | null>(null);
     const gridRef = useRef<HTMLDivElement | null>(null);
+    const gridCanvasRef = useRef<HTMLCanvasElement | null>(null);
+    const gridRendererRef = useRef<WebGLGridRenderer | null>(null);
+    const gridViewportSizeRef = useRef<WebGLGridSize>({ width: 0, height: 0, dpr: 1 });
+    const gridConfigRef = useRef<{ mode: CanvasBackgroundMode; colors: WebGLGridColors }>({ mode: backgroundMode, colors: { line: theme.canvas.line, dot: theme.canvas.dot } });
+    gridConfigRef.current = { mode: backgroundMode, colors: { line: theme.canvas.line, dot: theme.canvas.dot } };
+    const drawGrid = (next: ViewportTransform) => {
+        const { mode, colors } = gridConfigRef.current;
+        if (mode === "blank") return;
+        if (gridRendererRef.current) gridRendererRef.current.draw(next, mode, colors, gridViewportSizeRef.current);
+        else if (gridRef.current) updateCssGrid(gridRef.current, next, mode, colors);
+    };
     const fastPanRef = useRef(false);
     const lastPanCommitRef = useRef(0);
+    const lastCommittedPanViewportRef = useRef(viewport);
     const applyPanVisual = (next: ViewportTransform) => {
         if (worldRef.current) worldRef.current.style.transform = worldTransformForViewport(next);
-        if (gridRef.current) gridRef.current.style.backgroundPosition = gridPositionForViewport(next);
+        drawGrid(next);
+    };
+    const wheelFastRef = useRef(false);
+    const lastWheelCommitRef = useRef(0);
+    const lastCommittedWheelViewportRef = useRef(viewport);
+    const applyWheelVisual = (next: ViewportTransform) => {
+        if (worldRef.current) worldRef.current.style.transform = worldTransformForViewport(next);
+        drawGrid(next);
     };
     const frameRef = useRef<number | null>(null);
     const nextViewportRef = useRef<ViewportTransform | null>(null);
@@ -67,12 +89,49 @@ export function AtelierCanvas({ containerRef, viewport, tool, backgroundMode = "
     useEffect(() => {
         // A React commit may land between two wheel events. Do not replace a more recent
         // uncommitted wheel transform with props from an older render.
-        if (!fastPanRef.current && pendingWheelViewportRef.current === null) viewportRef.current = viewport;
+        if (!fastPanRef.current && !wheelFastRef.current && pendingWheelViewportRef.current === null) viewportRef.current = viewport;
     }, [viewport]);
+
+    const updateGridSizeRef = useRef<(width: number, height: number) => void>(() => undefined);
+    updateGridSizeRef.current = (width, height) => {
+        const next = { width, height, dpr: Math.min(2, Math.max(1, window.devicePixelRatio || 1)) };
+        const previous = gridViewportSizeRef.current;
+        if (previous.width === next.width && previous.height === next.height && previous.dpr === next.dpr) return;
+        gridViewportSizeRef.current = next;
+        const { mode, colors } = gridConfigRef.current;
+        if (mode !== "blank") gridRendererRef.current?.draw(viewportRef.current, mode, colors, next);
+    };
+
+    useLayoutEffect(() => {
+        const rect = containerRef.current?.getBoundingClientRect();
+        if (rect) updateGridSizeRef.current(rect.width, rect.height);
+    }, []);
+
+    useEffect(() => {
+        const container = containerRef.current;
+        if (!container) return;
+        const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver((entries) => {
+            const rect = entries[0]?.contentRect;
+            if (rect) updateGridSizeRef.current(rect.width, rect.height);
+        });
+        observer?.observe(container);
+        const onWindowResize = () => {
+            const rect = container.getBoundingClientRect();
+            updateGridSizeRef.current(rect.width, rect.height);
+        };
+        window.addEventListener("resize", onWindowResize);
+        onWindowResize();
+        return () => {
+            observer?.disconnect();
+            window.removeEventListener("resize", onWindowResize);
+        };
+    }, [containerRef]);
 
     useLayoutEffect(() => {
         // A React commit may carry a slightly older viewport than the latest drag event.
         if (fastPanRef.current) applyPanVisual(viewportRef.current);
+        else if (wheelFastRef.current) applyWheelVisual(viewportRef.current);
+        else drawGrid(viewport);
     });
 
     useEffect(
@@ -116,6 +175,23 @@ export function AtelierCanvas({ containerRef, viewport, tool, backgroundMode = "
                 fastPanRef.current = false;
                 onViewportChange(finalViewport);
             }
+            if (wheelFastRef.current || pendingWheelViewportRef.current) {
+                if (wheelFrameRef.current !== null) cancelAnimationFrame(wheelFrameRef.current);
+                wheelFrameRef.current = null;
+                const finalViewport = resolveWheelCommitViewport(pendingWheelViewportRef.current, viewportRef.current);
+                pendingWheelViewportRef.current = null;
+                viewportRef.current = finalViewport;
+                applyWheelVisual(finalViewport);
+                onViewportFrameChange?.(finalViewport);
+                onViewportChange(finalViewport);
+                lastCommittedWheelViewportRef.current = finalViewport;
+                wheelFastRef.current = false;
+                wheelRectRef.current = null;
+                if (wheelIdleTimerRef.current !== null) clearTimeout(wheelIdleTimerRef.current);
+                wheelIdleTimerRef.current = null;
+                onWheelActivityChange?.(false);
+                setPreviewGenerationSuspended(false, "wheel");
+            }
             setIsSpacePressed(false);
             setIsControlPressed(false);
             panState.current.isPanning = false;
@@ -133,7 +209,7 @@ export function AtelierCanvas({ containerRef, viewport, tool, backgroundMode = "
             window.removeEventListener("keyup", handleKeyUp);
             window.removeEventListener("blur", handleBlur);
         };
-    }, [onPanActivityChange, onViewportChange]);
+        }, [onPanActivityChange, onViewportChange, onViewportFrameChange, onWheelActivityChange]);
 
     const handleWheel = (event: React.WheelEvent<HTMLDivElement>) => {
         // React can forward portal events through ancestors outside their actual DOM tree.
@@ -151,10 +227,25 @@ export function AtelierCanvas({ containerRef, viewport, tool, backgroundMode = "
 
         // Cancel mass media promotion during wheel bursts. Do not schedule React updates for
         // each wheel event: one "start" update and one "idle" update per gesture is enough.
-        if (wheelIdleTimerRef.current === null) onWheelActivityChange?.(true);
-        else clearTimeout(wheelIdleTimerRef.current);
+        if (wheelIdleTimerRef.current === null) {
+            onWheelActivityChange?.(true);
+            wheelFastRef.current = true;
+            lastCommittedWheelViewportRef.current = viewportRef.current;
+            lastWheelCommitRef.current = performance.now();
+        } else clearTimeout(wheelIdleTimerRef.current);
         wheelIdleTimerRef.current = setTimeout(() => {
             wheelIdleTimerRef.current = null;
+            if (wheelFrameRef.current !== null) cancelAnimationFrame(wheelFrameRef.current);
+            wheelFrameRef.current = null;
+            const finalViewport = resolveWheelCommitViewport(pendingWheelViewportRef.current, viewportRef.current);
+            pendingWheelViewportRef.current = null;
+            viewportRef.current = finalViewport;
+            applyWheelVisual(finalViewport);
+            onViewportFrameChange?.(finalViewport);
+            onViewportChange(finalViewport);
+            lastCommittedWheelViewportRef.current = finalViewport;
+            wheelFastRef.current = false;
+            wheelRectRef.current = null;
             onWheelActivityChange?.(false);
             setPreviewGenerationSuspended(false, "wheel");
         }, 180);
@@ -182,10 +273,18 @@ export function AtelierCanvas({ containerRef, viewport, tool, backgroundMode = "
         if (wheelFrameRef.current !== null) return;
         wheelFrameRef.current = requestAnimationFrame(() => {
             wheelFrameRef.current = null;
-            wheelRectRef.current = null;
-            const committed = pendingWheelViewportRef.current;
+            const frameViewport = resolveWheelCommitViewport(pendingWheelViewportRef.current, viewportRef.current);
             pendingWheelViewportRef.current = null;
-            if (committed) onViewportChange(committed);
+            viewportRef.current = frameViewport;
+            applyWheelVisual(frameViewport);
+            onViewportFrameChange?.(frameViewport);
+            const committed = lastCommittedWheelViewportRef.current;
+            const now = performance.now();
+            if (shouldCommitFastViewport(frameViewport, committed, now - lastWheelCommitRef.current)) {
+                lastWheelCommitRef.current = now;
+                lastCommittedWheelViewportRef.current = frameViewport;
+                onViewportChange(frameViewport);
+            }
         });
     };
 
@@ -197,6 +296,23 @@ export function AtelierCanvas({ containerRef, viewport, tool, backgroundMode = "
         const target = event.target instanceof Element ? event.target : null;
         if (target?.closest("[data-canvas-no-zoom]")) return;
         if (target?.closest("[data-connection-create-menu]")) return;
+        if (wheelFastRef.current || pendingWheelViewportRef.current !== null) {
+            if (wheelIdleTimerRef.current !== null) clearTimeout(wheelIdleTimerRef.current);
+            wheelIdleTimerRef.current = null;
+            if (wheelFrameRef.current !== null) cancelAnimationFrame(wheelFrameRef.current);
+            wheelFrameRef.current = null;
+            const finalViewport = resolveWheelCommitViewport(pendingWheelViewportRef.current, viewportRef.current);
+            pendingWheelViewportRef.current = null;
+            viewportRef.current = finalViewport;
+            applyWheelVisual(finalViewport);
+            onViewportFrameChange?.(finalViewport);
+            onViewportChange(finalViewport);
+            lastCommittedWheelViewportRef.current = finalViewport;
+            wheelFastRef.current = false;
+            wheelRectRef.current = null;
+            onWheelActivityChange?.(false);
+            setPreviewGenerationSuspended(false, "wheel");
+        }
         const isBackgroundClick = !target?.closest("[data-node-id],[data-connection-id]");
         const temporaryTool = event.ctrlKey || isSpacePressed;
         const activeTool = temporaryTool ? (tool === "select" ? "pan" : "select") : tool;
@@ -217,6 +333,7 @@ export function AtelierCanvas({ containerRef, viewport, tool, backgroundMode = "
 
             fastPanRef.current = canFastPanAtScale(viewportRef.current.k);
             lastPanCommitRef.current = performance.now();
+            lastCommittedPanViewportRef.current = viewportRef.current;
             setIsPanning(true);
             setPreviewGenerationSuspended(true, "pan");
             onPanActivityChange?.(true);
@@ -259,10 +376,13 @@ export function AtelierCanvas({ containerRef, viewport, tool, backgroundMode = "
                 nextViewportRef.current = null;
                 if (!next) return;
                 viewportRef.current = next;
+                onViewportFrameChange?.(next);
                 if (fastPanRef.current) {
                     applyPanVisual(next);
-                    if (time - lastPanCommitRef.current < FAST_PAN_COMMIT_INTERVAL_MS) return;
+                    const committed = lastCommittedPanViewportRef.current;
+                    if (!shouldCommitFastPan(next, committed, time - lastPanCommitRef.current)) return;
                     lastPanCommitRef.current = time;
+                    lastCommittedPanViewportRef.current = next;
                 }
                 onViewportChange(next);
             });
@@ -302,7 +422,7 @@ export function AtelierCanvas({ containerRef, viewport, tool, backgroundMode = "
             window.removeEventListener("pointercancel", handlePointerUp);
             document.body.style.cursor = "";
         };
-    }, [onCanvasDeselect, onViewportChange, onPanActivityChange]);
+    }, [onCanvasDeselect, onViewportChange, onViewportFrameChange, onPanActivityChange]);
 
     useEffect(() => {
         const container = containerRef.current;
@@ -334,7 +454,17 @@ export function AtelierCanvas({ containerRef, viewport, tool, backgroundMode = "
             onDragOver={(event) => event.preventDefault()}
             onDrop={onDrop}
         >
-            <CanvasGrid viewport={viewport} mode={backgroundMode} gridRef={gridRef} />
+            <CanvasGrid
+                viewport={viewport}
+                mode={backgroundMode}
+                colors={gridConfigRef.current.colors}
+                fallbackRef={gridRef}
+                canvasRef={gridCanvasRef}
+                rendererRef={gridRendererRef}
+                sizeRef={gridViewportSizeRef}
+                viewportRef={viewportRef}
+                configRef={gridConfigRef}
+            />
             <div
                 ref={worldRef}
                 className="absolute origin-top-left"
@@ -348,26 +478,93 @@ export function AtelierCanvas({ containerRef, viewport, tool, backgroundMode = "
     );
 }
 
-function CanvasGrid({ viewport, mode, gridRef }: { viewport: ViewportTransform; mode: CanvasBackgroundMode; gridRef: React.RefObject<HTMLDivElement | null> }) {
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+function CanvasGrid({
+    viewport, mode, colors, fallbackRef, canvasRef, rendererRef, sizeRef, viewportRef, configRef,
+}: {
+    viewport: ViewportTransform;
+    mode: CanvasBackgroundMode;
+    colors: WebGLGridColors;
+    fallbackRef: React.RefObject<HTMLDivElement | null>;
+    canvasRef: React.RefObject<HTMLCanvasElement | null>;
+    rendererRef: React.RefObject<WebGLGridRenderer | null>;
+    sizeRef: React.RefObject<WebGLGridSize>;
+    viewportRef: React.RefObject<ViewportTransform>;
+    configRef: React.RefObject<{ mode: CanvasBackgroundMode; colors: WebGLGridColors }>;
+}) {
+    const [rendererMode, setRendererMode] = useState<"css" | "webgl">("css");
+    const disposeRendererRef = useRef<(() => void) | null>(null);
+    const webglUnavailableRef = useRef(false);
+
+    useLayoutEffect(() => {
+        if (mode === "blank") {
+            disposeRendererRef.current?.();
+            disposeRendererRef.current = null;
+            webglUnavailableRef.current = false;
+            setRendererMode("css");
+            return;
+        }
+        if (rendererRef.current) {
+            setRendererMode("webgl");
+            return;
+        }
+        if (webglUnavailableRef.current) {
+            setRendererMode("css");
+            return;
+        }
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        const renderer = createWebGLGridRenderer(canvas);
+        if (!renderer) {
+            webglUnavailableRef.current = true;
+            setRendererMode("css");
+            return;
+        }
+        rendererRef.current = renderer;
+        renderer.draw(viewport, mode, colors, sizeRef.current);
+        const onContextLost = (event: Event) => {
+            event.preventDefault();
+            renderer.destroy();
+            if (rendererRef.current === renderer) rendererRef.current = null;
+            canvas.removeEventListener("webglcontextlost", onContextLost);
+            disposeRendererRef.current = null;
+            webglUnavailableRef.current = true;
+            setRendererMode("css");
+            const fallback = fallbackRef.current;
+            const latestConfig = configRef.current;
+            if (fallback && latestConfig.mode !== "blank") {
+                updateCssGrid(fallback, viewportRef.current, latestConfig.mode, latestConfig.colors);
+            }
+        };
+        canvas.addEventListener("webglcontextlost", onContextLost);
+        disposeRendererRef.current = () => {
+            canvas.removeEventListener("webglcontextlost", onContextLost);
+            renderer.destroy();
+            if (rendererRef.current === renderer) rendererRef.current = null;
+        };
+        setRendererMode("webgl");
+    }, [mode]);
+
+    useEffect(() => () => {
+        disposeRendererRef.current?.();
+        disposeRendererRef.current = null;
+    }, []);
+
     if (mode === "blank") return null;
-
-    const gridSize = 48 * viewport.k;
-    const x = viewport.x % gridSize;
-    const y = viewport.y % gridSize;
-    const dotSize = viewport.k < 0.12 ? 0.8 : 1.15;
-    const backgroundImage =
-        mode === "dots" ? `radial-gradient(circle, ${theme.canvas.dot} ${dotSize}px, transparent ${dotSize + 0.2}px)` : `linear-gradient(${theme.canvas.line} 1px, transparent 1px), linear-gradient(90deg, ${theme.canvas.line} 1px, transparent 1px)`;
-
     return (
-        <div
-            ref={gridRef}
-            className="pointer-events-none absolute inset-0 opacity-40"
-            style={{
-                backgroundImage,
-                backgroundSize: `${gridSize}px ${gridSize}px`,
-                backgroundPosition: `${x}px ${y}px`,
-            }}
-        />
+        <div className="pointer-events-none absolute inset-0" data-canvas-grid="" data-grid-renderer={rendererMode}>
+            <canvas ref={canvasRef} aria-hidden="true" className="pointer-events-none absolute inset-0 h-full w-full" style={{ display: rendererMode === "webgl" ? undefined : "none" }} />
+            <div ref={fallbackRef} className="pointer-events-none absolute inset-0 opacity-40" style={{ display: rendererMode === "css" ? undefined : "none" }} />
+        </div>
     );
+}
+
+function updateCssGrid(element: HTMLDivElement, viewport: ViewportTransform, mode: CanvasBackgroundMode, colors: WebGLGridColors) {
+    if (mode === "blank") return;
+    const gridSize = 48 * viewport.k;
+    const dotSize = viewport.k < 0.12 ? 0.8 : 1.15;
+    element.style.backgroundImage = mode === "dots"
+        ? `radial-gradient(circle, ${colors.dot} ${dotSize}px, transparent ${dotSize + 0.2}px)`
+        : `linear-gradient(${colors.line} 1px, transparent 1px), linear-gradient(90deg, ${colors.line} 1px, transparent 1px)`;
+    element.style.backgroundSize = `${gridSize}px ${gridSize}px`;
+    element.style.backgroundPosition = gridPositionForViewport(viewport);
 }

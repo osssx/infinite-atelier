@@ -77,6 +77,25 @@ describe("canvas ComfyUI execution visual state",()=>{
   expect(other).not.toHaveBeenCalled();
   stopWf();stopOther();
  });
+ it("coalesces sampler progress per node at 100ms while publishing terminal status immediately",()=>{
+  vi.useFakeTimers();vi.setSystemTime(1000);
+  setCanvasComfyExecutionScope("project");
+  const listener=vi.fn();subscribeCanvasComfyExecution("wf",listener);
+  setCanvasComfyExecution("project","wf",{status:"running",runId:"job"});
+  const progress=(step:number)=>observeCanvasComfyLive("project","wf","job",{
+   kind:"progress",currentNode:"w_wf__1",step,steps:20,value:step/20
+  });
+  progress(1);
+  progress(2);vi.advanceTimersByTime(40);progress(3);
+  expect(getCanvasComfyExecution("wf")?.progress?.step).toBe(1);
+  vi.advanceTimersByTime(60);
+  expect(getCanvasComfyExecution("wf")?.progress?.step).toBe(3);
+  setCanvasComfyExecution("project","wf",{status:"succeeded",runId:"job"});
+  const afterTerminal=listener.mock.calls.length;
+  vi.advanceTimersByTime(200);
+  expect(listener).toHaveBeenCalledTimes(afterTerminal);
+  expect(getCanvasComfyExecution("wf")?.status).toBe("succeeded");
+ });
  it("ignores stale job callbacks, scopes updates to one project, and clears on project switch",()=>{
   setCanvasComfyExecutionScope("alpha");
   setCanvasComfyExecution("alpha","wf",{status:"submitting"});

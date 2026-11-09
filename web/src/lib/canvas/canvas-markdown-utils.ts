@@ -17,7 +17,7 @@ export function safeCanvasMarkdownImageSrc(src: string | undefined): string | un
  * Retain prose while hiding common formatting syntax and verbose link URLs.
  */
 export function compactCanvasMarkdown(content: string, limit = 900): string {
-    return content.slice(0, limit)
+    const preview = content.slice(0, limit)
         .replace(/^\s*```[^\n]*$/gm, "")
         .replace(/^\s{0,3}#{1,6}\s+/gm, "")
         .replace(/^\s{0,3}>\s?/gm, "")
@@ -26,4 +26,5 @@ export function compactCanvasMarkdown(content: string, limit = 900): string {
         .replace(/(\*\*|__)(.*?)\1/g, "$2")
         .replace(/(\*|_)(.*?)\1/g, "$2")
         .replace(/`([^`]+)`/g, "$1");
+    return preview.length > limit || content.length > limit ? `${preview.slice(0, Math.max(0, limit - 1))}…` : preview;
 }

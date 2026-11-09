@@ -24,3 +24,8 @@ export function applyAnchoredWheelZoom(
         k,
     };
 }
+
+/** Prefer an uncommitted wheel result when flushing; the committed ref is only a fallback. */
+export function resolveWheelCommitViewport(pending: ViewportTransform | null, latest: ViewportTransform): ViewportTransform {
+    return pending ?? latest;
+}

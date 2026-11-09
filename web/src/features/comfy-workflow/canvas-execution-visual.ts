@@ -17,7 +17,16 @@ export type CanvasComfyExecution={status:string;runId?:string;startedAt?:number;
 let activeProject:string|null=null;
 const executions=new Map<string,CanvasComfyExecution>();
 const listeners=new Map<string,Set<()=>void>>();
+const lastProgressAt=new Map<string,number>();
+const pendingProgress=new Map<string,{projectId:string;nodeId:string;runId:string;event:Extract<CanvasComfyLiveUpdate,{kind:"progress"}>}>();
+const progressTimers=new Map<string,ReturnType<typeof setTimeout>>();
+const PROGRESS_PUBLISH_INTERVAL_MS=100;
 const publish=(id:string)=>{for(const listener of listeners.get(id)??[])listener()};
+function clearPendingProgress(nodeId:string){
+ const timer=progressTimers.get(nodeId);
+ if(timer!==undefined)clearTimeout(timer);
+ progressTimers.delete(nodeId);pendingProgress.delete(nodeId);lastProgressAt.delete(nodeId);
+}
 
 export function resolveComfyExecutionStartedAt(previous:CanvasComfyExecution|undefined,
  incoming:CanvasComfyExecution,now=Date.now()):number|undefined {
@@ -33,11 +42,14 @@ export function setCanvasComfyExecutionScope(projectId:string|null):void {
  if(activeProject===projectId)return;
  activeProject=projectId;
  executions.clear();
+ for(const timer of progressTimers.values())clearTimeout(timer);
+ progressTimers.clear();pendingProgress.clear();lastProgressAt.clear();
  for(const id of listeners.keys())publish(id);
 }
 
 export function setCanvasComfyExecution(projectId:string,nodeId:string,execution:CanvasComfyExecution):void {
  if(activeProject!==projectId)return;
+ if(!isComfyRunActive(execution.status))clearPendingProgress(nodeId);
  const previous=executions.get(nodeId);
  const normalized={...execution,startedAt:resolveComfyExecutionStartedAt(previous,execution)};
  if(normalized.startedAt===undefined)delete normalized.startedAt;
@@ -79,7 +91,23 @@ export function observeCanvasComfyLive(projectId:string,nodeId:string,runId:stri
  if(activeProject!==projectId)return;
  const previous=executions.get(nodeId);
  if(!previous||previous.runId!==runId||!["queued","running","preparing","submitting"].includes(previous.status))return;
- if(event.kind==="progress")setCanvasComfyExecution(projectId,nodeId,{...previous,progress:event});
+ if(event.kind==="progress"){
+  const now=Date.now(),last=lastProgressAt.get(nodeId)??0;
+  if(now-last>=PROGRESS_PUBLISH_INTERVAL_MS){
+   lastProgressAt.set(nodeId,now);
+   setCanvasComfyExecution(projectId,nodeId,{...previous,progress:event});
+  }else{
+   pendingProgress.set(nodeId,{projectId,nodeId,runId,event});
+   if(!progressTimers.has(nodeId))progressTimers.set(nodeId,setTimeout(()=>{
+    progressTimers.delete(nodeId);
+    const pending=pendingProgress.get(nodeId);pendingProgress.delete(nodeId);
+    const current=executions.get(nodeId);
+    if(!pending||activeProject!==pending.projectId||current?.runId!==pending.runId||!isComfyRunActive(current.status))return;
+    lastProgressAt.set(nodeId,Date.now());
+    setCanvasComfyExecution(pending.projectId,nodeId,{...current,progress:pending.event});
+   },Math.max(0,PROGRESS_PUBLISH_INTERVAL_MS-(now-last))));
+  }
+ }
  else if(event.kind==="preview")setCanvasComfyExecution(projectId,nodeId,{...previous,preview:event});
  else if(event.kind==="error")setCanvasComfyExecution(projectId,nodeId,{...previous,errorDetail:event.error,error:event.error.message});
 }

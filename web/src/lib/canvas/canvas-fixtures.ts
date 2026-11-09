@@ -46,6 +46,10 @@ export type CanvasFixtureOptions = {
     /** Real encoded media assets for repeatable image/video/audio decode tests (perf fixture only). */
     staticVideoUrl?: string;
     staticAudioUrl?: string;
+    /** Exact, representative 300-node workload used by the repeatable performance acceptance run. */
+    profile?: "performance-300";
+    /** Same-origin static poster image for video cards (the video itself is never played). */
+    staticVideoPosterUrl?: string;
 };
 
 // A type with no registered definition, standing in for a plugin node: it must survive every path
@@ -58,17 +62,32 @@ const PLUGIN_NODE_TYPE = "plugin:fixture";
  * edges, media nodes, and nodes mid-generation.
  */
 export function buildCanvasFixture(options: CanvasFixtureOptions): CanvasFixture {
-    const { nodeCount, seed = 1, connectionRatio = 1.5, groupCount = 3, layout = "spread", mediaMode = "remote", staticMediaUrl, staticVideoUrl, staticAudioUrl } = options;
+    const { nodeCount, seed = 1, connectionRatio = 1.5, groupCount = 3, layout = "spread", mediaMode = "remote", staticMediaUrl, staticVideoUrl, staticAudioUrl, profile, staticVideoPosterUrl } = options;
     if (mediaMode === "static" && !staticMediaUrl) throw new Error('buildCanvasFixture: mediaMode "static" requires staticMediaUrl');
     if (mediaMode === "decoded" && (!staticMediaUrl || !staticVideoUrl || !staticAudioUrl)) throw new Error('buildCanvasFixture: decoded media mode requires all three same-origin asset URLs');
     const random = createSeededRandom(seed);
     const pick = <T>(items: readonly T[]) => items[Math.floor(random() * items.length)];
-    const groups = Math.max(0, Math.min(groupCount, nodeCount));
+    const groups = Math.max(0, Math.min(profile === "performance-300" ? 10 : groupCount, nodeCount));
+    const profileTypes = profile === "performance-300" ? [
+        ...Array<CanvasNodeType>(150).fill(CanvasNodeType.Image),
+        ...Array<CanvasNodeType>(60).fill(CanvasNodeType.Video),
+        ...Array<CanvasNodeType>(60).fill(CanvasNodeType.Text),
+        ...Array<CanvasNodeType>(10).fill(CanvasNodeType.Audio),
+        ...Array<CanvasNodeType>(10).fill(CanvasNodeType.Config),
+    ] : null;
+    // Deterministically interleave node types across the canvas so a dense viewport exercises
+    // mixed media and editors instead of one large homogeneous band.
+    if (profileTypes) for (let index = profileTypes.length - 1; index > 0; index -= 1) {
+        const swapIndex = Math.floor(random() * (index + 1));
+        [profileTypes[index], profileTypes[swapIndex]] = [profileTypes[swapIndex], profileTypes[index]];
+    }
+    let textNodeOrdinal = 0;
 
     const nodes: CanvasNodeData[] = [];
     for (let index = 0; index < nodeCount; index += 1) {
         const id = `node-${index}`;
         const metadata: CanvasNodeMetadata = {};
+        if (profile === "performance-300" && index >= groups + 100 && index < groups + 120) metadata.perfSimulatedProgress = true;
 
         // Groups lead the array, mirroring how they are created before their children.
         if (index < groups) {
@@ -76,17 +95,34 @@ export function buildCanvasFixture(options: CanvasFixtureOptions): CanvasFixture
             continue;
         }
 
-        const type = pick([CanvasNodeType.Image, CanvasNodeType.Image, CanvasNodeType.Text, CanvasNodeType.Video, CanvasNodeType.Audio, CanvasNodeType.Config, PLUGIN_NODE_TYPE]);
+        // Keep the normal seeded mix for general graph tests. The acceptance profile uses
+        // deterministic exact counts: 150 image, 60 video, 60 text, 10 audio, 10 config,
+        // and 10 groups. Since groups occupy the first slots, this table maps the remaining
+        // 290 indices directly without consuming PRNG state.
+        const profileType = profileTypes?.[index - groups] ?? null;
+        const type = profileType ?? pick([CanvasNodeType.Image, CanvasNodeType.Image, CanvasNodeType.Text, CanvasNodeType.Video, CanvasNodeType.Audio, CanvasNodeType.Config, PLUGIN_NODE_TYPE]);
         const isMedia = type === CanvasNodeType.Image || type === CanvasNodeType.Video || type === CanvasNodeType.Audio;
         if (isMedia && mediaMode === "remote") metadata.content = `https://example.test/${id}`;
         // Video and audio deliberately stay empty under "static": feeding a still image to <video>
         // only produces decode errors, and it would not measure anything the image nodes do not.
         if (type === CanvasNodeType.Image && (mediaMode === "static" || mediaMode === "decoded")) metadata.content = staticMediaUrl;
+        if (type === CanvasNodeType.Video && profile === "performance-300" && mediaMode === "static") {
+            // VideoNodeContent uses preload="none" and assigns src only after a user click.
+            // The sample video URL is present to render its cover affordance, with no playback.
+            metadata.perfStaticPosterUrl = staticVideoPosterUrl;
+            metadata.content = staticVideoUrl;
+        }
         if (type === CanvasNodeType.Video && mediaMode === "decoded") metadata.content = staticVideoUrl;
         if (type === CanvasNodeType.Audio && mediaMode === "decoded") metadata.content = staticAudioUrl;
-        if (type === CanvasNodeType.Text) metadata.content = `text ${index}`;
+        if (type === CanvasNodeType.Text) {
+            const ordinal = textNodeOrdinal++;
+            metadata.content = profile !== "performance-300" ? `text ${index}`
+                : ordinal < 20 ? `Short note ${ordinal}: a compact text card.`
+                    : ordinal < 40 ? `# Long note ${ordinal}\n\n${"This long markdown fixture contains headings, **emphasis**, lists, links, and realistic paragraphs to exercise editor and preview rendering. ".repeat(16)}`
+                        : `# Complex note ${ordinal}\n\n| Stage | Detail |\n| --- | --- |\n| Input | Markdown table |\n\n\`\`\`ts\nexport const sample = { enabled: true, count: 3 };\n\`\`\`\n\n- first item\n- second item\n\n> A quoted paragraph used to verify compact summaries.`;
+        }
         if (type === CanvasNodeType.Config) metadata.prompt = `config ${index}`;
-        if (random() < 0.15) metadata.status = "loading";
+        if (profile !== "performance-300" && random() < 0.15) metadata.status = "loading";
 
         // Spread nodes wide enough that plenty of edges cross the viewport, and let some sit far
         // off in negative space. A few get extreme dimensions so group/bounds math is exercised.

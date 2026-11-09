@@ -28,6 +28,22 @@ export function shouldPromoteHoveredNode(
     return !wheelZoomActive && Math.min(width, height) * scale >= 72;
 }
 
+/** At smaller projections glyph raster work dominates while carrying no readable text. */
+export function shouldShowCompactCanvasTextSummary(scale: number, fontSize: number, keepFull: boolean): boolean {
+    return keepFull || scale * Math.max(1, fontSize) >= 7;
+}
+
+export function compactCanvasTextOutlineStyle(color: string) {
+    const line = `linear-gradient(to right, ${color}, ${color})`;
+    return {
+        backgroundImage: `${line}, ${line}, ${line}`,
+        backgroundSize: "85% 6px, 60% 6px, 75% 6px",
+        backgroundPosition: "0 0, 0 16px, 0 32px",
+        backgroundRepeat: "no-repeat",
+        opacity: 0.4,
+    } as const;
+}
+
 /** Promote the node back to its full interactive editor when it is the actual interaction target. */
 export function shouldRenderFullNode(
     nodeId: string,

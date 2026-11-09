@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { applyAnchoredWheelZoom } from "./canvas-wheel-zoom";
+import { applyAnchoredWheelZoom, resolveWheelCommitViewport } from "./canvas-wheel-zoom";
 
 describe("anchored wheel composition", () => {
     const start = { x: 135, y: -75, k: 0.05 };
@@ -29,6 +29,15 @@ describe("anchored wheel composition", () => {
         expect(after.k).toBeCloseTo(start.k, 12);
         expect(after.x).toBeCloseTo(start.x, 9);
         expect(after.y).toBeCloseTo(start.y, 9);
+    });
+
+    it("flushes the latest uncommitted transform rather than a stale React viewport", () => {
+        let pending = start;
+        pending = applyAnchoredWheelZoom(pending, -35, 120, 80);
+        pending = applyAnchoredWheelZoom(pending, 50, 430, 240);
+        const final = applyAnchoredWheelZoom(pending, -18, 760, 140);
+        expect(resolveWheelCommitViewport(final, start)).toBe(final);
+        expect(resolveWheelCommitViewport(null, final)).toBe(final);
     });
 
     it("clamps zoom at both limits without moving the anchor at a clamped limit", () => {

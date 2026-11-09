@@ -17,6 +17,8 @@ export type CanvasPerfBridgeState = {
     /** The canvas's scroll/transform container, for DOM queries and synthetic event targets. */
     container: HTMLElement | null;
     setViewport: ((viewport: ViewportTransform) => void) | null;
+    /** Perf-only simulated result insertion through the canvas's normal node-state path. */
+    setNodes: ((update: CanvasNodeData[] | ((previous: CanvasNodeData[]) => CanvasNodeData[])) => void) | null;
     /**
      * Incremented every time the canvas page finishes loading. Each measurement round waits for this
      * to advance past the value it saw before navigating, so a late signal from a previous round can
@@ -32,6 +34,7 @@ export const canvasPerfBridgeState: CanvasPerfBridgeState = {
     connections: [],
     container: null,
     setViewport: null,
+    setNodes: null,
     readyToken: 0,
 };
 

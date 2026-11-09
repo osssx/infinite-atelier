@@ -3,12 +3,14 @@ import perfPixelUrl from "@/assets/perf-pixel.svg?no-inline";
 import { router } from "@/router";
 import { canvasPerfBridgeState, drainPipelineTimings, type PipelineTimings } from "@/lib/canvas/canvas-perf-bridge-state";
 import { buildCanvasFixture } from "@/lib/canvas/canvas-fixtures";
+import { buildOverviewConnectionPaths, findOverviewConnectionAtPoint } from "@/lib/canvas/canvas-overview-connections";
+import { observeCanvasComfyLive, setCanvasComfyExecution } from "@/features/comfy-workflow/canvas-execution-visual";
 import { PERF_MODE } from "@/lib/perf-mode";
 import { drainPersistTimings, useCanvasStore, type CanvasProject } from "@/stores/canvas/use-canvas-store";
 import { CanvasNodeType, type CanvasNodeData, type ViewportTransform } from "@/types/canvas";
 
 /** Bumped whenever the harness changes in a way that invalidates earlier measurements. */
-export const HARNESS_VERSION = "1";
+export const HARNESS_VERSION = "5";
 
 /** Every measured tree must use this seed so the three groups see the same graph. */
 export const PERF_SEED = 7;
@@ -96,9 +98,11 @@ export function perfProjectId(nodeCount: number): string {
 export function provisionPerfProject(nodeCount: number, seed = PERF_SEED, mediaMode: "static" | "decoded" = perfFixtureMediaMode, layout: "spread" | "clustered" = "spread"): string {
     const { nodes, connections } = buildCanvasFixture({
         nodeCount, seed, mediaMode, layout,
-        staticMediaUrl: mediaMode === "decoded" ? "/perf-media/sample-photo.jpg" : PERF_MEDIA_URL,
+        staticMediaUrl: mediaMode === "decoded" || nodeCount === 300 ? "/perf-media/sample-photo.jpg" : PERF_MEDIA_URL,
         staticVideoUrl: "/perf-media/sample-video.mp4",
         staticAudioUrl: "/perf-media/sample-audio.mp3",
+        staticVideoPosterUrl: "/perf-media/sample-video-poster.jpg",
+        profile: nodeCount === 300 ? "performance-300" : undefined,
     });
     const id = perfProjectId(nodeCount);
     const now = new Date().toISOString();
@@ -213,19 +217,29 @@ async function waitUntil(predicate: () => boolean, timeoutMs: number, reason: st
  * reproducible: the same frame index carries the same event in every group. It does not make frame
  * *timing* comparable — that is what the statistics are for.
  */
-export async function pumpFrames(count: number, fn: (index: number) => void): Promise<void> {
+export async function pumpFrames(count: number, fn: (index: number, frameTimestamp: number) => void): Promise<void> {
     for (let index = 0; index < count; index += 1) {
         const frameStart = await nextFrame();
         // A hidden tab pauses rAF; without this the sequence would stall silently instead of failing.
         assertPageVisible();
-        // Time the main thread actually spends inside this frame's callback. Compared against the gap
-        // between callbacks, this separates two very different causes of a slow frame: the main thread
-        // being busy, versus the main thread being idle while the browser produces frames slowly. Only
-        // the first is something the application code or an index could fix.
+        // Time spent inside this sampled callback only. This does not cover other main-thread work
+        // between callbacks or browser layout, raster, and GPU work; use a browser trace to attribute
+        // slow frames when this sample does not explain the measured cadence.
         const busyStart = performance.now();
-        fn(index);
+        fn(index, frameStart);
         frameBusyMs += performance.now() - busyStart;
-        if (frameStart > 0) void frameStart;
+    }
+}
+
+async function pumpFramesForDuration(durationMs: number, fn: (index: number, frameTimestamp: number) => void): Promise<void> {
+    const deadline = performance.now() + durationMs;
+    let index = 0;
+    while (performance.now() < deadline) {
+        const frameTimestamp = await nextFrame();
+        assertPageVisible();
+        const busyStart = performance.now();
+        fn(index++, frameTimestamp);
+        frameBusyMs += performance.now() - busyStart;
     }
 }
 
@@ -295,10 +309,10 @@ export type LiveCounts = {
  */
 export function snapshotCounts(): LiveCounts {
     const container = requireContainer();
-    const batchedEdges = container.querySelector("[data-canvas-overview-edge-count]");
+    const edgeLayer = container.querySelector("[data-canvas-edge-count]") ?? container.querySelector("[data-canvas-overview-edge-count]");
     return {
         mountedNodes: container.querySelectorAll("[data-node-id]").length,
-        mountedEdges: batchedEdges ? Number(batchedEdges.getAttribute("data-canvas-overview-edge-count")) : container.querySelectorAll("[data-connection-id]").length,
+        mountedEdges: edgeLayer ? Number(edgeLayer.getAttribute("data-canvas-edge-count") ?? edgeLayer.getAttribute("data-canvas-overview-edge-count")) : container.querySelectorAll("[data-connection-id]").length,
         svgPaths: container.querySelectorAll("svg path").length,
         domNodes: container.querySelectorAll("*").length,
         mediaElements: container.querySelectorAll("img[src], video[src], audio[src]").length,
@@ -383,7 +397,7 @@ function idleTimeoutFor(nodeCount: number): number {
     return Math.min(60_000, Math.max(10_000, nodeCount * 12));
 }
 
-export async function waitForIdle({ stableFrames = 3, quietMs = 1200, timeoutMs = IDLE_TIMEOUT_MS }: IdleOptions = {}): Promise<void> {
+export async function waitForIdle({ stableFrames = 3, quietMs = 2000, timeoutMs = IDLE_TIMEOUT_MS }: IdleOptions = {}): Promise<void> {
     let stable = 0;
     let lastSignature = "";
     let quietSince = performance.now();
@@ -453,6 +467,10 @@ export type RoundResult = {
     scenarioId: string;
     nodeCount: number;
     frames: FrameStats;
+    /** Callback-to-callback timing, shown beside the browser's authoritative rAF cadence. */
+    callbackFrames: FrameStats;
+    /** Perf acceptance scenarios split the active gesture and the measured post-input recovery tail. */
+    segments?: { active: FrameStats; recovery: FrameStats };
     longTasks: LongTaskSummary;
     mountedNodes: { min: number; median: number; max: number };
     counts: LiveCounts;
@@ -466,6 +484,8 @@ export type RoundResult = {
      * marked every single frame as jank.
      */
     deltasMs: number[];
+    /** Callback-to-callback wall intervals, retained to diagnose callback scheduling separately from rAF cadence. */
+    callbackDeltasMs: number[];
     /** Scenario-specific facts that belong in the report regardless of the verdict. */
     notes: string[];
     /** Which measured round this is, e.g. "2/3". Filled in by the session runner. */
@@ -475,15 +495,11 @@ export type RoundResult = {
      * Only collected in perf mode; empty otherwise.
      */
     persist: { writes: number; maxStringifyMs: number; totalStringifyMs: number; maxWriteMs: number; totalWriteMs: number; maxBytes: number };
-    /**
-     * Main-thread time inside sampled frame callbacks. Compare with `frames.durationMs`: if this is a
-     * small fraction, the thread was idle while the browser took its time producing frames, and no
-     * amount of application-code optimisation will move it.
-     */
+    /** Main-thread time inside sampled frame callbacks; excludes work between callbacks and browser rendering/GPU work. */
     frameBusyMs: number;
     /**
-     * Where the main thread's time went during this round. The frame timings say how slow a frame was;
-     * only this says what made it slow, which is the difference between building an index and not.
+     * Selected instrumented main-thread work during this round. It does not attribute all frame cost;
+     * use a browser trace to separate application JS, layout/style, raster and GPU work.
      */
     pipeline: PipelineTimings;
 };
@@ -496,6 +512,10 @@ export type Scenario = {
     fixtureLayout?: "spread" | "clustered";
     /** Frames of scripted input. */
     frames: number;
+    /** Optional wall-clock sampling window, used for background load that must last 30 real seconds. */
+    durationMs?: number;
+    /** Additional sampled frames after scripted input stops; included in total metrics. */
+    recoveryFrames?: number;
     /** Set the viewport once the round is ready. */
     setup?: () => Promise<void> | void;
     /** One input event per frame. */
@@ -602,6 +622,7 @@ export async function runRound(scenario: Scenario, jankThresholdMs: number, onPh
         const selectedBefore = canvasPerfBridgeState.selectedNodeIds.size;
 
         const deltas: number[] = [];
+        const callbackDeltas: number[] = [];
         const mounted: number[] = [];
         const longTasks: number[] = [];
         const observer = new PerformanceObserver((list) => {
@@ -609,12 +630,15 @@ export async function runRound(scenario: Scenario, jankThresholdMs: number, onPh
         });
         observer.observe({ type: "longtask", buffered: false });
 
-        let previous = performance.now();
-        const startedAt = previous;
-        const sample = () => {
+        let previousCallback = performance.now();
+        let previousFrameTimestamp: number | null = null;
+        const startedAt = previousCallback;
+        const sample = (frameTimestamp: number) => {
             const now = performance.now();
-            deltas.push(now - previous);
-            previous = now;
+            callbackDeltas.push(now - previousCallback);
+            previousCallback = now;
+            if (previousFrameTimestamp !== null) deltas.push(frameTimestamp - previousFrameTimestamp);
+            previousFrameTimestamp = frameTimestamp;
             mounted.push(mountedNodeCountFast());
         };
 
@@ -622,13 +646,17 @@ export async function runRound(scenario: Scenario, jankThresholdMs: number, onPh
         // The deadline lives outside the loop on purpose: a frame-paced loop cannot time itself out
         // when rAF is what stopped. The budget is generous because the fit-all-zoom case really can
         // take hundreds of ms a frame — that is a measurement, not a hang.
-        const frameBudgetMs = Math.max(20_000, scenario.frames * 3000);
+        const sampledFrames = scenario.frames + (scenario.recoveryFrames ?? 0);
+        const frameBudgetMs = scenario.durationMs ? scenario.durationMs + 20_000 : Math.max(20_000, Math.min(60_000, sampledFrames * 80));
         try {
             await withDeadline(
-                pumpFrames(scenario.frames, (index) => {
-                    sample();
+                (scenario.durationMs ? pumpFramesForDuration(scenario.durationMs, (index, frameTimestamp) => {
+                    sample(frameTimestamp);
                     scenario.script(index);
-                }),
+                }) : pumpFrames(sampledFrames, (index, frameTimestamp) => {
+                    sample(frameTimestamp);
+                    if (index < scenario.frames) scenario.script(index);
+                })),
                 frameBudgetMs,
                 "frame-stall",
                 `scripted input did not complete within ${frameBudgetMs}ms`,
@@ -650,12 +678,11 @@ export async function runRound(scenario: Scenario, jankThresholdMs: number, onPh
         }
 
         // Let the work the final input triggered land inside the window rather than after it.
-        await pumpFrames(SETTLE_FRAMES, sample);
+        await pumpFrames(SETTLE_FRAMES, (_index, frameTimestamp) => sample(frameTimestamp));
         observer.disconnect();
 
-        // The first delta spans the gap between the setup idle and the first scripted frame, so it
-        // measures the harness's own scheduling rather than the app's.
-        deltas.shift();
+        // rAF deltas begin with the interval between the first and second sampled animation frames.
+        // Keep the callback array's setup-to-first-frame gap as diagnostic context.
 
         // A single frame this long is not the app being slow: it is the tab having been suspended, the
         // machine having slept, or the process being descheduled. One such round produced a 176s "frame"
@@ -688,6 +715,13 @@ export async function runRound(scenario: Scenario, jankThresholdMs: number, onPh
                 scenarioId: scenario.id,
                 nodeCount: scenario.nodeCount,
                 frames: summariseFrames(deltas, durationMs, jankThresholdMs),
+                callbackFrames: summariseFrames(callbackDeltas.slice(1), callbackDeltas.slice(1).reduce((sum, value) => sum + value, 0), jankThresholdMs),
+                ...(scenario.recoveryFrames ? {
+                    segments: {
+                        active: summariseFrames(deltas.slice(0, scenario.frames), deltas.slice(0, scenario.frames).reduce((sum, value) => sum + value, 0), jankThresholdMs),
+                        recovery: summariseFrames(deltas.slice(scenario.frames), deltas.slice(scenario.frames).reduce((sum, value) => sum + value, 0), jankThresholdMs),
+                    },
+                } : {}),
                 longTasks: { count: longTasks.length, totalMs: longTasks.reduce((total, value) => total + value, 0), maxMs: longTasks.length ? Math.max(...longTasks) : 0 },
                 mountedNodes: medianCounts(mounted),
                 counts: snapshotCounts(),
@@ -696,6 +730,7 @@ export async function runRound(scenario: Scenario, jankThresholdMs: number, onPh
                 selectedBefore,
                 selectedAfter: canvasPerfBridgeState.selectedNodeIds.size,
                 deltasMs: deltas,
+                callbackDeltasMs: callbackDeltas,
                 notes: scenario.notes?.() ?? [],
                 round: "",
                 persist,
@@ -876,6 +911,8 @@ function isBackgroundElement(element: Element): boolean {
 export function findBackgroundPoint(): { x: number; y: number } {
     const container = requireContainer();
     const rect = container.getBoundingClientRect();
+    const nodeById = new Map(canvasPerfBridgeState.nodes.map((node) => [node.id, node]));
+    const edgeCurves = buildOverviewConnectionPaths(canvasPerfBridgeState.connections, nodeById, null, new Set()).curves;
     // A grid, not a handful of fixed candidates. This fixture mounts hundreds of nodes and — more to
     // the point — the connection hit paths are 16px wide with 600+ edges crossing the view, so they
     // cover most of the canvas. A few candidate points reliably landed on one and the round was
@@ -886,7 +923,11 @@ export function findBackgroundPoint(): { x: number; y: number } {
         for (let column = 1; column < columns; column += 1) {
             const point = { x: rect.left + (rect.width * column) / columns, y: rect.top + (rect.height * row) / rows };
             const element = document.elementFromPoint(point.x, point.y);
-            if (element && container.contains(element) && isBackgroundElement(element)) return point;
+            const viewport = canvasPerfBridgeState.viewport;
+            const worldX = (point.x - rect.left - viewport.x) / viewport.k;
+            const worldY = (point.y - rect.top - viewport.y) / viewport.k;
+            const onEdgeCanvas = Boolean(element?.closest("[data-canvas-edge-layer]") && findOverviewConnectionAtPoint(edgeCurves, worldX, worldY));
+            if (element && container.contains(element) && isBackgroundElement(element) && !onEdgeCanvas) return point;
         }
     }
     throw new PerfInvalidSampleError("no-background-point", `no free pixel on a ${columns}x${rows} grid over ${Math.round(rect.width)}x${Math.round(rect.height)}`);
@@ -897,7 +938,7 @@ export function findBackgroundPoint(): { x: number; y: number } {
  * `data-node-id` and the selection capture handler sit on the outer element — dispatching at the
  * outer element only bubbles *up*, so it never reaches the handler that starts a drag.
  */
-export function findDraggableNodeTarget(): { nodeId: string; x: number; y: number; target: Element } {
+export function findDraggableNodeTarget(options: { exclude?: ReadonlySet<string>; only?: ReadonlySet<string>; ungroupedOnly?: boolean; type?: CanvasNodeType } = {}): { nodeId: string; x: number; y: number; target: Element } {
     const container = requireContainer();
     const nodes = [...container.querySelectorAll<HTMLElement>("[data-node-id]")];
     for (const node of nodes) {
@@ -911,6 +952,11 @@ export function findDraggableNodeTarget(): { nodeId: string; x: number; y: numbe
         if (element.closest("button, input, textarea, [data-canvas-no-zoom], [contenteditable='true']")) continue;
         const nodeId = node.dataset.nodeId;
         if (!nodeId) continue;
+        if (options.exclude?.has(nodeId)) continue;
+        if (options.only && !options.only.has(nodeId)) continue;
+        const data = canvasPerfBridgeState.nodes.find((candidate) => candidate.id === nodeId);
+        if (options.ungroupedOnly && data?.metadata?.groupId) continue;
+        if (options.type && data?.type !== options.type) continue;
         return { nodeId, x, y, target: element };
     }
     throw new PerfInvalidSampleError("no-draggable-node", "no mounted node offered a draggable body point");
@@ -966,9 +1012,11 @@ export function createPanScenario(nodeCount = 1000, frames = 180): Scenario {
         },
         script: (frame) => {
             if (frame === 0) {
-                const start = pointInsideContainer();
-                origin = { x: start.x, y: start.y };
-                dispatchPointer(start.element, "pointerdown", start.x, start.y, { button: 1, buttons: 4 });
+                const point = findBackgroundPoint();
+                const target = document.elementFromPoint(point.x, point.y);
+                if (!target) throw new PerfInvalidSampleError("pan-target-missing", "background point has no hit-test target");
+                origin = { x: point.x, y: point.y };
+                dispatchPointer(target, "pointerdown", point.x, point.y, { button: 1, buttons: 4 });
                 return;
             }
             if (!origin) throw new PerfInvalidSampleError("pan-not-started", "frame 0 did not establish a drag origin");
@@ -1006,6 +1054,54 @@ function movedNodeIds(before: Map<string, string>): string[] {
     return moved;
 }
 
+function createMultiNodeDragScenario(nodeCount = 300, frames = 480): Scenario {
+    let dragTarget: ReturnType<typeof findDraggableNodeTarget> | null = null;
+    let selectedIds = new Set<string>();
+    let before = new Map<string, string>();
+    let startX = 0;
+    const perFramePx = 1.5;
+    let moved: string[] = [];
+    return {
+        id: "drag-multiple",
+        label: "drag two selected image nodes, then recover",
+        nodeCount,
+        frames,
+        recoveryFrames: 120,
+        fixtureLayout: "clustered",
+        setup: async () => {
+            const size=canvasSize(),k=0.8;
+            applyViewport({x:size.width/2,y:size.height/2-150*k,k});
+            await nextFrame();await nextFrame();
+            const first=findDraggableNodeTarget({ungroupedOnly:true,type:CanvasNodeType.Image});
+            dispatchMouse(first.target,"mousedown",first.x,first.y);
+            dispatchMouse(window,"mouseup",first.x,first.y,{buttons:0});
+            await nextFrame();await nextFrame();
+            if(canvasPerfBridgeState.selectedNodeIds.size!==1||!canvasPerfBridgeState.selectedNodeIds.has(first.nodeId))throw new PerfInvalidSampleError("multi-drag-first-selection-failed",`first image ${first.nodeId} was not committed before shift-click`);
+            const second=findDraggableNodeTarget({exclude:new Set([first.nodeId]),ungroupedOnly:true,type:CanvasNodeType.Image});
+            dispatchMouse(second.target,"mousedown",second.x,second.y,{shiftKey:true});
+            dispatchMouse(window,"mouseup",second.x,second.y,{buttons:0,shiftKey:true});
+            await nextFrame();await nextFrame();
+            selectedIds=new Set(canvasPerfBridgeState.selectedNodeIds);
+            if(selectedIds.size!==2)throw new PerfInvalidSampleError("multi-drag-selection-failed",`selected ${selectedIds.size} nodes instead of two`);
+            dragTarget=findDraggableNodeTarget({only:selectedIds,type:CanvasNodeType.Image});
+            before=positionSignatures();startX=dragTarget.x;
+        },
+        script:(frame)=>{
+            const target=dragTarget;
+            if(!target)throw new PerfInvalidSampleError("multi-drag-target-missing","no selected image drag target");
+            const x=startX+frame*perFramePx;
+            if(frame===0){dispatchMouse(target.target,"mousedown",target.x,target.y);return;}
+            dispatchMouse(window,"mousemove",x,target.y);
+            if(frame===frames-1)dispatchMouse(window,"mouseup",x,target.y,{buttons:0});
+        },
+        assert:()=>{
+            moved=movedNodeIds(before);
+            if(moved.length!==2||moved.some((id)=>!selectedIds.has(id)))throw new PerfInvalidSampleError("multi-drag-wrong-nodes",`expected selected pair ${[...selectedIds].join(",")}, moved ${moved.join(",")}`);
+        },
+        notes:()=>[`selected ${selectedIds.size} images; moved ${moved.length} nodes during the active window`],
+    };
+}
+
 /** World point under a client coordinate, using the same convention as the app's screenToCanvas. */
 function worldUnder(clientX: number, clientY: number): { x: number; y: number } {
     const rect = requireContainer().getBoundingClientRect();
@@ -1016,9 +1112,6 @@ function worldUnder(clientX: number, clientY: number): { x: number; y: number } 
 // ---------------------------------------------------------------------------
 // Zoom scenarios
 // ---------------------------------------------------------------------------
-
-/** One wheel notch is `1.1^(-deltaY/100)`; a quarter notch keeps a 180-frame sweep inside 0.05–5. */
-const ZOOM_DELTA_PER_FRAME = 25;
 
 /**
  * Anchor for wheel events: a coordinate that matters, plus the element to dispatch on.
@@ -1044,10 +1137,12 @@ function zoomAnchor(): { x: number; y: number; element: Element } {
  * under the anchor must not drift (that is what anchored zoom means). Frames where k did not move
  * because a limit was reached are counted separately rather than averaged into the zoom cost.
  */
-export function createZoomScenario(nodeCount = 1000, frames = 180): Scenario {
+export function createZoomScenario(nodeCount = 1000, frames = 180, explicitTargetScale?: number): Scenario {
     const half = Math.floor(frames / 2);
+    let deltaPerFrame = 0;
     let anchor: { x: number; y: number; element: Element } | null = null;
     let baseK = 0;
+    let targetK = 0;
     let anchorWorld: { x: number; y: number } | null = null;
     let previousK: number | null = null;
     let stalledFrames = 0;
@@ -1056,9 +1151,9 @@ export function createZoomScenario(nodeCount = 1000, frames = 180): Scenario {
     let stepsDown = 0;
 
     const drift = () => (anchor && anchorWorld ? Math.hypot(worldUnder(anchor.x, anchor.y).x - anchorWorld.x, worldUnder(anchor.x, anchor.y).y - anchorWorld.y) : 0);
-    const expectedTurn = () => baseK * Math.pow(1.1, (ZOOM_DELTA_PER_FRAME / 100) * half);
+    const expectedTurn = () => targetK;
     /** How many zoom steps the turn reading is behind. A lagged read, not a lost event. */
-    const turnLagSteps = () => (kAtTurn > 0 && baseK > 0 ? Math.log(expectedTurn() / kAtTurn) / Math.log(Math.pow(1.1, ZOOM_DELTA_PER_FRAME / 100)) : 0);
+    const turnLagSteps = () => (kAtTurn > 0 && baseK > 0 ? Math.log(expectedTurn() / kAtTurn) / Math.log(Math.pow(1.1, deltaPerFrame / 100)) : 0);
 
     return {
         id: "zoom-general",
@@ -1072,6 +1167,13 @@ export function createZoomScenario(nodeCount = 1000, frames = 180): Scenario {
             if (frame === 0) {
                 anchor = zoomAnchor();
                 baseK = readViewport().k;
+                targetK = explicitTargetScale ?? Math.min(baseK * 2, 4.5);
+                if (baseK <= 0 || targetK <= baseK || half <= 0) {
+                    throw new PerfInvalidSampleError("zoom-invalid-base-scale", `cannot build an unclamped zoom-in target from base k=${baseK.toFixed(4)}`);
+                }
+                // One wheel event scales by 1.1^(-deltaY/100). Compute the per-frame delta from
+                // the actual post-setup scale so the midpoint reaches one deterministic in-range target.
+                deltaPerFrame = 100 * Math.log(targetK / baseK) / (half * Math.log(1.1));
                 anchorWorld = worldUnder(anchor.x, anchor.y);
                 previousK = baseK;
                 stalledFrames = 0;
@@ -1092,7 +1194,7 @@ export function createZoomScenario(nodeCount = 1000, frames = 180): Scenario {
             // The zoom-in half must have been fully applied by now. Checking here turns "the deltas
             // were not delivered" into a precise diagnosis instead of a vague percentage shortfall.
             if (frame === half) kAtTurn = kAtStart;
-            dispatchWheel(anchor.element, frame < half ? -ZOOM_DELTA_PER_FRAME : ZOOM_DELTA_PER_FRAME, anchor.x, anchor.y);
+            dispatchWheel(anchor.element, frame < half ? -deltaPerFrame : deltaPerFrame, anchor.x, anchor.y);
         },
         assert: () => {
             // Asymmetric bound: a lagged read can only make this lower, never higher. The bridge
@@ -1132,9 +1234,10 @@ export function createZoomScenario(nodeCount = 1000, frames = 180): Scenario {
  */
 export function createZoomBurstScenario(nodeCount = 1000, frames = 20): Scenario {
     const eventsPerFrame = 5;
-    const deltaPerEvent = -20; // 1.1^0.2 per event, so 1.1 per frame
+    let deltaPerEvent = 0;
     let anchor: { x: number; y: number; element: Element } | null = null;
     let baseK = 0;
+    let targetK = 0;
     return {
         id: "zoom-burst",
         label: "wheel burst (5 events per frame)",
@@ -1147,16 +1250,22 @@ export function createZoomBurstScenario(nodeCount = 1000, frames = 20): Scenario
             if (frame === 0) {
                 anchor = zoomAnchor();
                 baseK = readViewport().k;
+                targetK = Math.min(baseK * 4, 4.5);
+                if (baseK <= 0 || targetK <= baseK) {
+                    throw new PerfInvalidSampleError("zoom-burst-invalid-base-scale", `cannot build an unclamped burst target from base k=${baseK.toFixed(4)}`);
+                }
+                // Preserve five events in every frame while setting their combined exponent to an
+                // in-range target derived from the actual layout scale (viewport solving can vary).
+                deltaPerEvent = -100 * Math.log(targetK / baseK) / (eventsPerFrame * frames * Math.log(1.1));
             }
             if (!anchor) throw new PerfInvalidSampleError("zoom-not-started", "frame 0 did not establish an anchor");
             for (let index = 0; index < eventsPerFrame; index += 1) dispatchWheel(anchor.element, deltaPerEvent, anchor.x, anchor.y);
         },
         assert: () => {
-            const expected = baseK * Math.pow(1.1, (-deltaPerEvent / 100) * eventsPerFrame * frames);
             const actual = readViewport().k;
-            if (expected > 0 && Math.abs(actual - expected) / expected > 0.02) throw new PerfInvalidSampleError("zoom-burst-lost-deltas", `expected ~${expected.toFixed(4)}, got ${actual.toFixed(4)} — wheel events in one frame are overwriting each other`);
+            if (targetK > 0 && Math.abs(actual - targetK) / targetK > 0.02) throw new PerfInvalidSampleError("zoom-burst-mismatch", `expected in-range target ${targetK.toFixed(4)}, got ${actual.toFixed(4)} — five wheel inputs per frame did not reach the requested zoom`);
         },
-        notes: () => [`k ${baseK.toFixed(4)} -> ${readViewport().k.toFixed(4)}`, `${eventsPerFrame} wheel events per frame`],
+        notes: () => [`k ${baseK.toFixed(4)} -> ${readViewport().k.toFixed(4)} (target ${targetK.toFixed(4)})`, `${eventsPerFrame} wheel events per frame`],
     };
 }
 
@@ -1360,11 +1469,13 @@ export function createDragScenario(nodeCount = 1000, frames = 180): Scenario {
 function findResizeHandle(): { nodeId: string; x: number; y: number; element: Element } {
     const container = requireContainer();
     const mounted = [...container.querySelectorAll<HTMLElement>("[data-node-id]")];
+    const selectedIds = canvasPerfBridgeState.selectedNodeIds;
     let sawHandle = false;
     for (const node of mounted) {
         const nodeId = node.dataset.nodeId;
-        if (!nodeId) continue;
-        const handle = node.querySelector(".cursor-nwse-resize");
+        if (!nodeId || !selectedIds.has(nodeId)) continue;
+        const handle = [...node.querySelectorAll<HTMLElement>(".cursor-nwse-resize")]
+            .find((candidate) => candidate.classList.contains("-bottom-[14px]") && candidate.classList.contains("-right-[14px]"));
         if (!handle) continue;
         sawHandle = true;
         const rect = handle.getBoundingClientRect();
@@ -1380,43 +1491,24 @@ function findResizeHandle(): { nodeId: string; x: number; y: number; element: El
     );
 }
 
-/**
- * A normal-sized node whose bottom-right corner nothing else can cover.
- *
- * Picked from the graph data rather than by hit-testing, because the reason every earlier attempt failed
- * is geometric, not a threshold:
- *
- * - A node root carries `transform`, which creates a stacking context. The resize handle's `z-50` is
- *   therefore scoped *inside* its own node and cannot lift it above a sibling node — so any overlapping
- *   neighbour, painted later, covers the handle outright.
- * - The handle sits 14px outside the node's corner, so it is the easiest part to cover, and the
- *   fixture's extreme nodes (4000-8000 wide) reach across the whole viewport.
- *
- * So the only reliable way is to require that no other node's rectangle reaches into the corner region
- * at all. `handleMargin` covers the 14px overhang plus the 28px handle itself.
- */
-function findIsolatedResizeNode(handleMargin = 24): CanvasNodeData {
-    const nodes = canvasPerfBridgeState.nodes;
-    const isNormal = (node: CanvasNodeData) => node.type !== CanvasNodeType.Group && node.width >= 120 && node.width <= 600 && node.height >= 80 && node.height <= 500;
-    const overlaps = (a: { left: number; top: number; right: number; bottom: number }, b: { left: number; top: number; right: number; bottom: number }) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
-
-    for (const candidate of nodes) {
-        if (!isNormal(candidate)) continue;
-        // The corner region: the node's own box plus the handle overhang, and nothing else may enter it.
-        const corner = {
-            left: candidate.position.x - handleMargin,
-            top: candidate.position.y - handleMargin,
-            right: candidate.position.x + candidate.width + handleMargin,
-            bottom: candidate.position.y + candidate.height + handleMargin,
-        };
-        const obstructed = nodes.some(
-            (other) =>
-                other.id !== candidate.id &&
-                overlaps(corner, { left: other.position.x, top: other.position.y, right: other.position.x + other.width, bottom: other.position.y + other.height }),
-        );
-        if (!obstructed) return candidate;
+/** Finds a normal full node whose body can be clicked to select and bring its resize handle forward. */
+function findVisibleResizeNodeTarget(): ReturnType<typeof findDraggableNodeTarget> & { node: CanvasNodeData } {
+    const container = requireContainer();
+    const candidates = canvasPerfBridgeState.nodes.filter((node) =>
+        node.type !== CanvasNodeType.Group && !node.metadata?.groupId && node.width >= 120 && node.width <= 600 && node.height >= 80 && node.height <= 500,
+    );
+    const fullNodes = [...container.querySelectorAll<HTMLElement>("[data-canvas-full-node][data-node-id]")];
+    for (const candidate of candidates) {
+        const root = fullNodes.find((element) => element.dataset.nodeId === candidate.id);
+        if (!root) continue;
+        const rect = root.getBoundingClientRect();
+        const x = rect.left + rect.width / 2;
+        const y = rect.top + rect.height / 2;
+        const target = document.elementFromPoint(x, y);
+        if (!target || !root.contains(target) || target.closest("button,input,textarea,[data-canvas-no-zoom],[contenteditable='true']")) continue;
+        return { nodeId: candidate.id, x, y, target, node: candidate };
     }
-    throw new PerfInvalidSampleError("no-isolated-node", `no normally-sized node among ${nodes.length} had an unobstructed bottom-right corner`);
+    throw new PerfInvalidSampleError("no-visible-resize-node", `no reachable normal full node among ${candidates.length} candidates`);
 }
 
 function nodeSize(nodeId: string): { width: number; height: number } | null {
@@ -1437,21 +1529,36 @@ export function createResizeScenario(nodeCount = 1000, frames = 60): Scenario {
     let before: { width: number; height: number } | null = null;
     let after: { width: number; height: number } | null = null;
     let expectedGrow = 0;
+    let lastObservedSize: { width: number; height: number } | null = null;
+    let sizeChangeFrames = 0;
+    const observeSize = (nodeId: string) => {
+        const current = nodeSize(nodeId);
+        if (!current) return;
+        const previous = lastObservedSize;
+        if (previous && (Math.abs(current.width - previous.width) >= 0.5 || Math.abs(current.height - previous.height) >= 0.5)) sizeChangeFrames += 1;
+        lastObservedSize = current;
+    };
     return {
         id: "resize-single",
         label: "resize one node from its bottom-right handle",
         nodeCount,
         frames,
         setup: async () => {
-            // Centre on an isolated normal-sized node at k=1.
-            //
-            // Not a dense view: this scenario needs exactly one usable handle, and the fixture's extreme
-            // nodes (4000-8000 wide) blanket the viewport at k=1, covering everything's corners. Picking
-            // from the graph data instead — a node nothing else reaches into the corner of — is the only
-            // way that is not luck.
-            const target = findIsolatedResizeNode();
+            // Clustered nodes overlap by design. Select a genuinely reachable full node first so normal
+            // z-order elevates its handle above siblings; removing overlap would weaken the dense workload.
+            applyViewport(centredViewport(1));
+            await nextFrame();
+            await nextFrame();
+            const target = findVisibleResizeNodeTarget();
+            dispatchMouse(target.target, "mousedown", target.x, target.y);
+            dispatchMouse(window, "mouseup", target.x, target.y, { buttons: 0 });
+            await nextFrame();
+            await nextFrame();
+            if (!canvasPerfBridgeState.selectedNodeIds.has(target.nodeId)) {
+                throw new PerfInvalidSampleError("resize-selection-failed", `expected selected ${target.nodeId}, selected [${[...canvasPerfBridgeState.selectedNodeIds].join(", ")}]`);
+            }
             const size = canvasSize();
-            applyViewport({ x: size.width / 2 - (target.position.x + target.width / 2), y: size.height / 2 - (target.position.y + target.height / 2), k: 1 });
+            applyViewport({ x: size.width / 2 - (target.node.position.x + target.node.width / 2), y: size.height / 2 - (target.node.position.y + target.node.height / 2), k: 1 });
             // Two frames so React commits and paints before the handle is hit-tested.
             await nextFrame();
             await nextFrame();
@@ -1461,12 +1568,15 @@ export function createResizeScenario(nodeCount = 1000, frames = 60): Scenario {
                 const found = findResizeHandle();
                 handle = found;
                 before = nodeSize(found.nodeId);
+                lastObservedSize = before;
+                sizeChangeFrames = 0;
                 expectedGrow = ((frames - 1) * perFramePx) / readViewport().k;
                 dispatchMouse(found.element, "mousedown", found.x, found.y);
                 return;
             }
             const active = handle;
             if (!active) throw new PerfInvalidSampleError("resize-not-started", "frame 0 did not find a resize handle");
+            observeSize(active.nodeId);
             const x = active.x + frame * perFramePx;
             const y = active.y + frame * perFramePx;
             dispatchMouse(window, "mousemove", x, y);
@@ -1478,8 +1588,13 @@ export function createResizeScenario(nodeCount = 1000, frames = 60): Scenario {
             if (!active || !start) throw new PerfInvalidSampleError("resize-assert-missing", "no resize context was captured");
             after = nodeSize(active.nodeId);
             if (!after) throw new PerfInvalidSampleError("resize-node-vanished", active.nodeId);
-            if (after.width === start.width && after.height === start.height) {
-                throw new PerfInvalidSampleError("resize-had-no-effect", `${active.nodeId} stayed ${start.width}x${start.height}`);
+            observeSize(active.nodeId);
+            const netChange = Math.max(Math.abs(after.width - start.width), Math.abs(after.height - start.height));
+            if (netChange < 1) {
+                throw new PerfInvalidSampleError("resize-had-no-effect", `${active.nodeId} changed only ${netChange.toFixed(3)} world units from ${start.width}x${start.height}`);
+            }
+            if (sizeChangeFrames < 10) {
+                throw new PerfInvalidSampleError("resize-insufficient-changing-frames", `size changed on only ${sizeChangeFrames} sampled frames; expected at least 10`);
             }
             // Direction is deliberately not asserted. Aspect-locked nodes derive the other dimension
             // from whichever axis moved more, so an outward drag can legitimately change a node in a
@@ -1490,7 +1605,7 @@ export function createResizeScenario(nodeCount = 1000, frames = 60): Scenario {
             const start = before;
             const end = after;
             if (!start || !end) return [];
-            return [`size ${start.width}x${start.height} -> ${Math.round(end.width)}x${Math.round(end.height)} (dispatched +${expectedGrow.toFixed(0)} world units)`];
+            return [`size ${start.width.toFixed(1)}x${start.height.toFixed(1)} -> ${end.width.toFixed(1)}x${end.height.toFixed(1)}; net ${Math.max(Math.abs(end.width-start.width), Math.abs(end.height-start.height)).toFixed(1)} world units, changed ${sizeChangeFrames} sampled frames (dispatched +${expectedGrow.toFixed(0)} world units)`];
         },
     };
 }
@@ -1725,13 +1840,13 @@ export const BASELINE_SCENARIOS: Scenario[] = [
  * benchmarking with the minimap closed (the app's default). The same mixed-media graph fixture,
  * repeat/warm-up rules and invalid-sample checks as the baseline are reused.
  */
-function with200NodeMinimap(scenario: Scenario): Scenario {
+function withMinimap(scenario: Scenario, nodeCount: number): Scenario {
     const originalSetup = scenario.setup;
     const originalAssert = scenario.assert;
     return {
         ...scenario,
-        id: `${scenario.id}-200-minimap`,
-        label: `${scenario.label} (200 total nodes, minimap open)`,
+        id: `${scenario.id}-${nodeCount}-minimap`,
+        label: `${scenario.label} (${nodeCount} total nodes, minimap open)`,
         setup: async () => {
             const button = document.querySelector<HTMLButtonElement>("[data-canvas-minimap-toggle]");
             if (!button) throw new PerfInvalidSampleError("minimap-toggle-missing", "no minimap toggle in current canvas");
@@ -1743,7 +1858,160 @@ function with200NodeMinimap(scenario: Scenario): Scenario {
                 throw new PerfInvalidSampleError("minimap-missing", "the minimap did not render during the scenario");
             }
             originalAssert?.(context);
+            if (nodeCount === 300) {
+                const nodes = canvasPerfBridgeState.nodes.filter((node) => /^node-\d+$/.test(node.id));
+                const counts = new Map<string, number>();
+                for (const node of nodes) counts.set(node.type, (counts.get(node.type) ?? 0) + 1);
+                if (nodes.length !== 300 || canvasPerfBridgeState.connections.length !== 450 ||
+                    counts.get(CanvasNodeType.Image) !== 150 || counts.get(CanvasNodeType.Video) !== 60 ||
+                    counts.get(CanvasNodeType.Text) !== 60 || counts.get(CanvasNodeType.Audio) !== 10 ||
+                    counts.get(CanvasNodeType.Config) !== 10 || counts.get(CanvasNodeType.Group) !== 10) {
+                    throw new PerfInvalidSampleError("fixture-shape-mismatch", `nodes=${nodes.length}, edges=${canvasPerfBridgeState.connections.length}, types=${JSON.stringify(Object.fromEntries(counts))}`);
+                }
+                if (document.querySelector('video[src]')) throw new PerfInvalidSampleError("fixture-video-started", "static video coverage must not start playback");
+            }
+            if (scenario.id === "dense-media-editing") assertRealFixtureMediaVisible();
         },
+    };
+}
+
+function isVisibleInsideCanvas(image: HTMLImageElement, container: HTMLElement): boolean {
+    if (!image.complete || image.naturalWidth === 0) return false;
+    const bounds = image.getBoundingClientRect();
+    const canvas = container.getBoundingClientRect();
+    if (bounds.right <= canvas.left || bounds.left >= canvas.right || bounds.bottom <= canvas.top || bounds.top >= canvas.bottom) return false;
+    for (let element: HTMLElement | null = image; element && element !== container; element = element.parentElement) {
+        const style = getComputedStyle(element);
+        if (style.display === "none" || style.visibility === "hidden" || Number(style.opacity) === 0) return false;
+    }
+    return true;
+}
+
+function assertRealFixtureMediaVisible() {
+    const container = requireContainer();
+    const image = [...container.querySelectorAll<HTMLImageElement>('img[src="/perf-media/sample-photo.jpg"]')].some((candidate) => isVisibleInsideCanvas(candidate, container));
+    const poster = [...container.querySelectorAll<HTMLImageElement>("img[data-canvas-perf-poster]")].some((candidate) => isVisibleInsideCanvas(candidate, container));
+    if (!image || !poster) throw new PerfInvalidSampleError("fixture-media-not-visible", "the real sample photo and extracted video poster must both intersect the canvas and be visibly rendered");
+    if (container.querySelector("video[src]")) throw new PerfInvalidSampleError("fixture-video-started", "the static video coverage must not start playback");
+}
+
+function createDenseMediaEditingScenario(nodeCount = 300): Scenario {
+    let anchor: ReturnType<typeof zoomAnchor> | null = null;
+    let startScale = 0.8;
+    const deltaPerFrame = -100 * Math.log(1.05 / startScale) / (240 * Math.log(1.1));
+    return {
+        id: "dense-media-editing",
+        label: "10s editing zoom with real image and video cover visible",
+        nodeCount,
+        fixtureLayout: "clustered",
+        frames: 480,
+        recoveryFrames:120,
+        repeats: 3,
+        setup: async () => {
+            const size = canvasSize();
+            const k = startScale;
+            applyViewport({ x: size.width / 2, y: size.height / 2 - 150 * k, k });
+            await nextFrame();
+            await nextFrame();
+            const image = findDraggableNodeTarget();
+            dispatchMouse(image.target, "mousedown", image.x, image.y);
+            dispatchMouse(window, "mouseup", image.x, image.y, { buttons: 0 });
+            anchor=zoomAnchor();
+        },
+        script: (frame) => {
+            if(!anchor)return;
+            dispatchWheel(anchor.element,frame<240?deltaPerFrame:-deltaPerFrame,anchor.x,anchor.y);
+        },
+        assert: () => {
+            assertRealFixtureMediaVisible();
+            const actual=readViewport().k;
+            if(Math.abs(actual-startScale)>0.03)throw new PerfInvalidSampleError("editing-zoom-not-restored",`scale ${startScale.toFixed(3)} did not return after the gentle zoom sweep; got ${actual.toFixed(3)}`);
+        },
+        notes: () => [`gentle zoom ${startScale.toFixed(2)} -> 1.05 -> ${readViewport().k.toFixed(2)}`,"real photo and extracted video frame poster intersect canvas with visible ancestor styles", "video remains preload=none without a src attribute"],
+    };
+}
+
+function createDenseWideZoomScenario(nodeCount=300):Scenario{
+    const zoom=createZoomScenario(nodeCount,480,1.75);
+    return {
+        ...zoom,
+        id:"dense-wide-zoom",
+        label:"10s wide zoom stress, 0.2 to 1.75 and back",
+        fixtureLayout:"clustered",
+        recoveryFrames:120,
+        setup:()=>{
+            const size=canvasSize();
+            applyViewport({x:size.width/2,y:size.height/2,k:0.2});
+        },
+    };
+}
+
+function createBackgroundProgressScenario(nodeCount = 300): Scenario {
+    const progressNodes: string[] = [];
+    const activeJobs = new Map<string, string>();
+    let startedAt = 0;
+    let lastProgressAt = 0;
+    let lastResultAt = 0;
+    let resultCount = 0;
+    let progressTicks = 0;
+    let runNumber = 0;
+    const startJob = (nodeId: string) => {
+        const runId = `perf-progress-${nodeId}-${runNumber++}`;
+        activeJobs.set(nodeId, runId);
+        setCanvasComfyExecution(perfProjectId(nodeCount), nodeId, { status: "running", runId, startedAt: Date.now() });
+    };
+    return {
+        id: "background-progress-results",
+        label: "30s background: 20 visible node progress at 10Hz + 2 results/s",
+        nodeCount,
+        fixtureLayout: "clustered",
+        frames: 1800,
+        durationMs: 30_000,
+        repeats: 1,
+        setup: () => {
+            progressNodes.splice(0, progressNodes.length, ...canvasPerfBridgeState.nodes.filter((node) => node.metadata?.perfSimulatedProgress).map((node) => node.id));
+            if (progressNodes.length !== 20) throw new PerfInvalidSampleError("progress-fixture-mismatch", `expected 20 progress nodes, got ${progressNodes.length}`);
+            activeJobs.clear();resultCount=0;progressTicks=0;runNumber=0;
+            for (const nodeId of progressNodes) startJob(nodeId);
+            const size = canvasSize();
+            applyViewport({ x: size.width / 2, y: size.height / 2 - 150 * 0.8, k: 0.8 });
+            startedAt=performance.now();lastProgressAt=startedAt;lastResultAt=startedAt-500;
+        },
+        script: () => {
+            const now=performance.now();
+            if(now-lastProgressAt>=100){
+                const step=Math.floor((now-startedAt)/100)%100;
+                const currentNode=progressNodes[step%progressNodes.length];
+                for(const nodeId of progressNodes){
+                    if(!activeJobs.has(nodeId))startJob(nodeId);
+                    const runId=activeJobs.get(nodeId)!;
+                    observeCanvasComfyLive(perfProjectId(nodeCount),nodeId,runId,{
+                        kind:"progress",currentNode,step,steps:100,value:step/100,
+                    });
+                }
+                progressTicks+=1;lastProgressAt=now;
+            }
+            while(now-lastResultAt>=500&&resultCount<60){
+                let nodeId=[...activeJobs.keys()][0];
+                if(!nodeId){
+                    nodeId=progressNodes[resultCount%progressNodes.length];
+                    startJob(nodeId);
+                }
+                const runId=activeJobs.get(nodeId)!;
+                setCanvasComfyExecution(perfProjectId(nodeCount),nodeId,{status:"succeeded",runId});
+                activeJobs.delete(nodeId);
+                const ordinal=resultCount+1;
+                const outputNode:CanvasNodeData={id:`perf-result-${ordinal}`,type:CanvasNodeType.Image,title:`Simulated result ${ordinal}`,
+                    position:{x:-800+((ordinal-1)%10)*170,y:-250+Math.floor((ordinal-1)/10)*130},width:160,height:120,
+                    metadata:{content:"/perf-media/sample-photo.jpg",status:"success"}};
+                canvasPerfBridgeState.setNodes?.((previous)=>[...previous,outputNode]);
+                resultCount+=1;lastResultAt+=500;
+            }
+        },
+        assert:()=>{
+            if(resultCount!==60||progressTicks<250)throw new PerfInvalidSampleError("background-load-incomplete",`completed ${resultCount}/60 results with ${progressTicks} 100ms progress ticks`);
+        },
+        notes:()=>[`20 node-scoped progress loops, ${progressTicks} progress ticks at ~10Hz`,`${resultCount} simulated image results inserted via the canvas node-state setter at 2/s for 30s`],
     };
 }
 
@@ -1755,7 +2023,24 @@ export const CANVAS_200_SCENARIOS: Scenario[] = [
     createDragScenario(200),
     createResizeScenario(200),
     createMarqueeScenario(200),
-].map(with200NodeMinimap);
+].map((scenario) => withMinimap(scenario, 200));
+
+/** Exact mixed-media acceptance workload: each interaction is sampled in three rounds. */
+export const CANVAS_300_SCENARIOS: Scenario[] = [
+    { ...createIdleBaselineScenario(300), frames: 600, label: "10s idle baseline (300 mixed nodes)" },
+    ...[
+        createPanScenario(300, 480),
+        createZoomScenario(300, 480),
+        createZoomBurstScenario(300, 480),
+        createDragScenario(300, 480),
+        createResizeScenario(300, 480),
+        createMarqueeScenario(300, 480),
+    ].map((scenario) => ({ ...scenario, recoveryFrames: 120 })),
+    createMultiNodeDragScenario(300,480),
+    createDenseWideZoomScenario(300),
+    createDenseMediaEditingScenario(300),
+    createBackgroundProgressScenario(300),
+].map((scenario) => withMinimap({ ...scenario, fixtureLayout: "clustered" }, 300));
 
 /**
  * Repeatable 200-node LOD tail-frame measurement.
@@ -2044,6 +2329,9 @@ export function formatBaselineReport(report: SessionReport): string {
     lines.push(`- UA: ${report.env.userAgent}`);
     lines.push(`- window: ${report.env.viewportWidth}x${report.env.viewportHeight} @${report.env.devicePixelRatio}x, canvas ${report.env.canvasRect ? `${report.env.canvasRect.width}x${report.env.canvasRect.height}` : "n/a"}`);
     lines.push(`- cores: ${report.env.hardwareConcurrency}; idle frame: ${report.env.idleFrameMs === null ? "n/a" : `${fixed(report.env.idleFrameMs, 2)} ms`}`);
+    lines.push(`- frame timing: p50/p95/p99 and fps use adjacent requestAnimationFrame timestamps; per-round callback intervals from performance.now are retained in callbackDeltasMs and summarized as callbackFrames for diagnostics.`);
+    if (Number(report.env.harnessVersion) >= 5) lines.push(`- comparability: v5 keeps the v4 rAF timestamp frame-timing protocol and changes dense-wide zoom to 0.2 -> 1.75 -> 0.2; v4 used 0.2 -> 0.4, so those wide-zoom samples are not directly comparable.`);
+    else if (Number(report.env.harnessVersion) >= 4) lines.push(`- comparability: v4 frame timing uses browser rAF cadence; earlier callback-interval frame reports are not directly comparable.`);
     lines.push("");
     lines.push(`## Per-scenario summary`);
     lines.push("");
@@ -2060,12 +2348,12 @@ export function formatBaselineReport(report: SessionReport): string {
     lines.push("");
     lines.push(`## Per-round detail`);
     lines.push("");
-    lines.push(`| scenario | round | node | mounted min/med/max | edges | paths | dom | media | fps | p50 | p95 | p99 | max | jank | longtasks | longtask total ms | longtask max ms | persist writes | stringify max ms |`);
-    lines.push(`| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |`);
+    lines.push(`| scenario | round | node | mounted min/med/max | edges | paths | dom | media | fps | p50 | p95 | p99 | max | active p95 | recovery p95 | jank | longtasks | longtask total ms | longtask max ms | persist writes | stringify max ms |`);
+    lines.push(`| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |`);
     for (const result of report.results) {
         const m = result.mountedNodes;
         lines.push(
-            `| ${result.scenarioId} | ${result.round} | ${result.nodeCount} | ${m.min}/${fixed(m.median, 0)}/${m.max} | ${result.counts.mountedEdges} | ${result.counts.svgPaths} | ${result.counts.domNodes} | ${result.counts.mediaElements} | ${fixed(result.frames.fps)} | ${fixed(result.frames.p50, 2)} | ${fixed(result.frames.p95, 2)} | ${fixed(result.frames.p99, 2)} | ${fixed(result.frames.max, 2)} | ${result.frames.jank} | ${result.longTasks.count} | ${fixed(result.longTasks.totalMs, 1)} | ${fixed(result.longTasks.maxMs, 1)} | ${result.persist.writes} | ${fixed(result.persist.maxStringifyMs, 2)} |`,
+            `| ${result.scenarioId} | ${result.round} | ${result.nodeCount} | ${m.min}/${fixed(m.median, 0)}/${m.max} | ${result.counts.mountedEdges} | ${result.counts.svgPaths} | ${result.counts.domNodes} | ${result.counts.mediaElements} | ${fixed(result.frames.fps)} | ${fixed(result.frames.p50, 2)} | ${fixed(result.frames.p95, 2)} | ${fixed(result.frames.p99, 2)} | ${fixed(result.frames.max, 2)} | ${result.segments ? fixed(result.segments.active.p95, 2) : "—"} | ${result.segments ? fixed(result.segments.recovery.p95, 2) : "—"} | ${result.frames.jank} | ${result.longTasks.count} | ${fixed(result.longTasks.totalMs, 1)} | ${fixed(result.longTasks.maxMs, 1)} | ${result.persist.writes} | ${fixed(result.persist.maxStringifyMs, 2)} |`,
         );
     }
     if (report.invalid.length) {
@@ -2101,10 +2389,10 @@ export function formatBaselineReport(report: SessionReport): string {
             );
         }
         lines.push("");
-        lines.push(`\`busy ms\` is the main thread's own time inside the sampled frame callbacks (which includes dispatching the input and the app's synchronous response). Compare it with \`frame total\`: if it is a small share, the thread was idle while the browser produced frames slowly, and no application-code change can fix that.`);
+        lines.push(`\`busy ms\` covers only the sampled frame callbacks, including input dispatch and synchronous app response. It does not cover all main-thread work between callbacks or browser layout, raster, and GPU work; a small share is inconclusive, so use a browser trace to attribute slow frames.`);
         lines.push(`\`render ms\` is React render+commit measured from the perf bridge's own render body to its layout effect, so anything rendered before it is excluded — an approximation, not an exact figure.`);
         lines.push(`\`longtask ms\` and \`write ms\` are main-thread/task costs that sit outside the pipeline columns above.`);
-        lines.push(`If every column here is small against \`frame total\`, the cost is not in JavaScript at all.`);
+        lines.push(`These columns cover selected instrumented work, not all frame cost. A browser trace is needed to distinguish application JavaScript, layout/style, raster, and GPU contributions.`);
     }
     lines.push("");
     lines.push(`Measured with scripted synthetic events. Not real user input: no OS-level event coalescing, no trackpad momentum, no real pointer capture. Absolute numbers are comparable only within this harness, and one session is not a result — the plan requires at least three interleaved sessions per build.`);

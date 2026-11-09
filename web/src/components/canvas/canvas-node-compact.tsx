@@ -1,13 +1,16 @@
 import { CanvasExecutionHalo } from "./canvas-execution-halo";
-import { memo, useEffect, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { canvasThemes } from "@/lib/canvas-theme";
 import { getNodeDefinition } from "@/lib/canvas/node-registry";
 import { getCompactImageSource } from "@/lib/canvas/canvas-lod-preview";
 import { compactCanvasMarkdown } from "@/lib/canvas/canvas-markdown-utils";
-import { resolveMediaPreview } from "@/services/media-preview-storage";
+import { compactCanvasTextOutlineStyle } from "@/lib/canvas/canvas-lod";
+import { PERF_MODE } from "@/lib/perf-mode";
+import { acquireMediaPreview, isPreviewGenerationSuspended } from "@/services/media-preview-storage";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
+import { registerCanvasDragPositionElement } from "@/lib/canvas/canvas-drag-position-runtime";
 import { useCanvasActions } from "./canvas-actions";
 import { CanvasTextExecutionIndicator } from "./canvas-text-execution-indicator";
 import {COMFY_WORKFLOW_MOCK_TYPE} from "@/lib/canvas/canvas-ports";
@@ -30,7 +33,7 @@ function CompactComfyStatus({id,visible}:{id:string;visible:boolean}) {
 
 /** Same-sized visual shell and semantic content as the full node, without editing DOM or media decoders. */
 export const CompactCanvasNode = memo(function CompactCanvasNode({
-    data, isSelected, isRelated, isGroupDropTarget, showImagePreview = false, groupChildCount = 0, hitActive = true,
+    data, isSelected, isRelated, isGroupDropTarget, showImagePreview = false, groupChildCount = 0, hitActive = true, showTextSummary = true,
 }: {
     data: CanvasNodeData;
     isSelected: boolean;
@@ -40,7 +43,15 @@ export const CompactCanvasNode = memo(function CompactCanvasNode({
     groupChildCount?: number;
     /** Handoff: do not duplicate hit targets once the full node becomes interactive. */
     hitActive?: boolean;
+    /** Hide dense Markdown glyphs until their projected font size is readable. */
+    showTextSummary?: boolean;
 }) {
+    const dragRuntimeElementRef = useRef<HTMLDivElement>(null);
+    useLayoutEffect(() => {
+        const element = dragRuntimeElementRef.current;
+        if (!element) return;
+        return registerCanvasDragPositionElement(data.id, element);
+    }, [data.id]);
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const { onMouseDown, onSelectCapture, onHoverStart, onHoverEnd, onContextMenu, onViewImage } = useCanvasActions();
     const definition = getNodeDefinition(data.type);
@@ -57,11 +68,12 @@ export const CompactCanvasNode = memo(function CompactCanvasNode({
     useEffect(() => {
         if (!showImagePreview || !storageKey || (!isImage && !isVideo)) return;
         let active = true;
-        void resolveMediaPreview(kind, storageKey)
-            .then((url) => { if (active && url) setPreview({ key: storageKey, url }); });
-        return () => { active = false; };
-    }, [showImagePreview, storageKey, kind, isImage, isVideo]);
-    const previewUrl = storageKey ? (preview?.key === storageKey ? preview.url : null) : imageSource;
+        const lease = acquireMediaPreview(kind, storageKey, isSelected ? "selected" : "visible");
+        void lease.promise.then((url) => { if (active && url) setPreview({ key: storageKey, url }); });
+        return () => { active = false; lease.release(); };
+    }, [showImagePreview, storageKey, kind, isImage, isVideo, isSelected]);
+    const previewUrl = storageKey ? (preview?.key === storageKey ? preview.url : null)
+        : isVideo && PERF_MODE ? data.metadata?.perfStaticPosterUrl ?? null : imageSource;
 
     const hasImage = Boolean(imageSource);
     const active = isSelected || isGroupDropTarget;
@@ -71,7 +83,7 @@ export const CompactCanvasNode = memo(function CompactCanvasNode({
     const background = isGroup ? `${theme.toolbar.panel}66` : hasImage || (isVideo && data.metadata?.content) || transparent ? "transparent" : theme.node.fill;
 
     return (
-        <div data-node-id={hitActive ? data.id : undefined} data-canvas-compact-node={hitActive ? "" : undefined} data-canvas-lod-node={data.id} title={data.title}
+        <div ref={dragRuntimeElementRef} data-node-id={hitActive ? data.id : undefined} data-canvas-compact-node={hitActive ? "" : undefined} data-canvas-lod-node={data.id} title={data.type === CanvasNodeType.Text ? data.metadata?.content || data.title : data.title}
             className={`node-element absolute select-none ${isGroup ? "z-[5]" : isSelected ? "z-50" : "z-10"}`}
             style={{ transform: `translate(${data.position.x}px, ${data.position.y}px)`, width: data.width, height: data.height, contain: "layout style", pointerEvents: hitActive ? undefined : "none" }}
             onMouseEnter={() => onHoverStart(data.id)}
@@ -97,7 +109,11 @@ export const CompactCanvasNode = memo(function CompactCanvasNode({
                     <img key={previewUrl} data-canvas-compact-image src={previewUrl} alt="" draggable={false} loading="lazy" decoding="async"
                         className={`pointer-events-none block h-full w-full select-none ${data.metadata?.freeResize ? "object-fill" : "object-contain"}`}
                         style={{ opacity: 0, transition: "opacity 160ms ease-out" }}
-                        onLoad={(event) => { event.currentTarget.style.opacity = "1"; }}
+                        onLoad={(event) => {
+                            const style = event.currentTarget.style;
+                            if (isPreviewGenerationSuspended()) style.transition = "none";
+                            style.opacity = "1";
+                        }}
                     />
                 ) : null}
                 {isImage && imageSource && (!showImagePreview || !previewUrl) ? (
@@ -109,6 +125,7 @@ export const CompactCanvasNode = memo(function CompactCanvasNode({
                         {showImagePreview && previewUrl && isVideo ? (
                             <img src={previewUrl} alt="" draggable={false} decoding="async"
                                 data-canvas-compact-poster
+                                data-canvas-perf-poster={PERF_MODE ? "" : undefined}
                                 className="pointer-events-none absolute inset-0 h-full w-full object-contain" />
                         ) : null}
                         <span className="relative z-[1] grid size-12 place-items-center rounded-full border border-white/30 bg-white/15 text-white/85">
@@ -122,9 +139,18 @@ export const CompactCanvasNode = memo(function CompactCanvasNode({
                         <div className="h-2 w-full rounded-full" style={{ background: theme.node.muted + "44" }} />
                     </div>
                 ) : null}
-                {data.type === CanvasNodeType.Text ? (
+                {data.type === CanvasNodeType.Text && !showTextSummary ? (
+                    <div data-canvas-compact-text-outline="" aria-label={data.title}
+                        className="pointer-events-none absolute left-4 right-4 top-12 bottom-4"
+                        style={compactCanvasTextOutlineStyle(theme.node.text)} />
+                ) : null}
+                {data.type === CanvasNodeType.Text && showTextSummary ? (
                     <div className="pointer-events-none h-full w-full overflow-hidden whitespace-pre-wrap break-words px-4 pt-12 pb-4 font-mono"
-                        style={{ color: theme.node.text, fontSize: data.metadata?.fontSize || 14, lineHeight: 1.65 }}>
+                        style={{
+                            color: theme.node.text,
+                            fontSize: data.metadata?.fontSize || 14,
+                            lineHeight: 1.65,
+                        }}>
                         {compactCanvasMarkdown(data.metadata?.content || data.title)}
                     </div>
                 ) : null}

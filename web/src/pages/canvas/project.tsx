@@ -70,12 +70,13 @@ import { CanvasSidePanel } from "@/components/canvas/canvas-side-panel";
 import { CanvasZoomControls } from "@/components/canvas/canvas-zoom-controls";
 import { DirectorPanel } from "@/components/canvas/director-panel";
 import { flushCanvasStorePersistence,awaitCanvasStorePersistence,useCanvasStore,subscribeSavedCanvasGraph } from "@/stores/canvas/use-canvas-store";
-import { buildCanvasGraphIndex } from "@/lib/canvas/canvas-graph-index";
+import { buildCanvasGraphIndex, reuseCanvasSemanticNodes } from "@/lib/canvas/canvas-graph-index";
 import { connectCanvasPortsByDrag, prepareCanvasPortConnection, reconcileComfyArtifactConnections } from "@/lib/canvas/canvas-port-connections";
 import { getCanvasVisiblePorts, pickCanvasDropHandle } from "@/lib/canvas/canvas-ports";
 import { exportSqliteCanvasProject } from "@/features/backend-sync/canvas-project-archive";
 import { applyNodeConfigPatch, audioMetadata, buildAudioGenerationMetadata, buildImageGenerationMetadata, createCanvasNode, imageMetadata, videoMetadata } from "@/lib/canvas/canvas-node-factory";
 import { findContainingGroupId, findGroupDropTarget, findGroupDropTargetFromDelta, fitViewportToNodes, getConnectionTargetAnchor, groupSelectedCanvasNodes, normalizeConnection, normalizeConnectionFromIndex, snapNodesIntoGroup } from "@/lib/canvas/canvas-node-geometry";
+import { applyCanvasDragDelta, canvasDragDeltaFromPointer, clearCanvasDragPositionOverrides, resolveCanvasDragFinishDelta, setCanvasDragPositionOverrides } from "@/lib/canvas/canvas-drag-position-runtime";
 import {
     audioExtension,
     buildAngleLabel,
@@ -269,6 +270,8 @@ function AtelierCanvasPage() {
     const marqueePointerRef = useRef<{ clientX: number; clientY: number } | null>(null);
     const marqueeSelectionRef = useRef<Set<string> | null>(null);
     const nodeDraggingRef = useRef(false);
+    const dragCommitPendingRef = useRef(false);
+    const committedDragPositionsRef = useRef<Map<string, Position> | null>(null);
     const dragRef = useRef<{
         isDraggingNode: boolean;
         hasMoved: boolean;
@@ -296,6 +299,13 @@ function AtelierCanvasPage() {
         latestDelta: { dx: 0, dy: 0 },
         lastDropTargetId: null,
     });
+    useEffect(() => () => {
+        if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+        clearCanvasDragPositionOverrides();
+        dragCommitPendingRef.current = false;
+        committedDragPositionsRef.current = null;
+    }, []);
 
     const config = useConfigStore((state) => state.config);
     const effectiveConfig = useEffectiveConfig();
@@ -385,6 +395,7 @@ function AtelierCanvasPage() {
     const [expandedImageNodeIds, setExpandedImageNodeIds] = useState<Set<string>>(new Set());
     const [isNodeDragging, setIsNodeDragging] = useState(false);
     const [isNodeResizing, setIsNodeResizing] = useState(false);
+    const [edgeMotionNodeIds, setEdgeMotionNodeIds] = useState<ReadonlySet<string>>(() => new Set());
     const [dropTargetGroupId, setDropTargetGroupId] = useState<string | null>(null);
     const editingGestureActive = isNodeDragging || isNodeResizing || selectionBox !== null;
     useEffect(() => {
@@ -421,6 +432,13 @@ function AtelierCanvasPage() {
         pipelineSink.count("graphIndexNodes", nodes.length);
         return built;
     }, [nodes, connections]);
+    // Generation/reference consumers do not need spatial positions. Preserve their graph snapshot
+    // across pure drag/resize geometry updates, while retaining current node records for every
+    // semantic field they do consume.
+    const semanticInputNodesRef = useRef(nodes);
+    const inputGraphNodes = reuseCanvasSemanticNodes(semanticInputNodesRef.current, nodes);
+    semanticInputNodesRef.current = inputGraphNodes;
+    const inputGraphIndex = useMemo(() => buildCanvasGraphIndex(inputGraphNodes, connections), [inputGraphNodes, connections]);
     const graphIndexRef = useRef(graphIndex);
     const directorPanelNode = dialogNodeId && graphIndex.nodeById.get(dialogNodeId)?.type === CanvasNodeType.Director ? graphIndex.nodeById.get(dialogNodeId) : undefined;
     // Container rect cache. Screen-to-world conversion runs on every pointermove during drag,
@@ -686,12 +704,29 @@ function AtelierCanvasPage() {
         nodesRef.current = nodes;
         connectionsRef.current = connections;
         selectedNodeIdsRef.current = selectedNodeIds;
-        viewportRef.current = viewport;
+        // Fast pan/wheel handlers maintain this ref every animation frame. Background result
+        // renders can run between React viewport commits, so they must not restore an older prop.
+        if (!isCanvasPanning && !isWheelZooming) viewportRef.current = viewport;
         graphIndexRef.current = graphIndex;
         connectingParamsRef.current = connectingParams;
         connectionTargetNodeIdRef.current = connectionTargetNodeId;
         pendingConnectionCreateRef.current = pendingConnectionCreate;
-    }, [nodes, connections, selectedNodeIds, viewport, graphIndex, connectingParams, connectionTargetNodeId, pendingConnectionCreate]);
+    }, [nodes, connections, selectedNodeIds, viewport, graphIndex, connectingParams, connectionTargetNodeId, pendingConnectionCreate, isCanvasPanning, isWheelZooming]);
+
+    useLayoutEffect(() => {
+        if (!dragCommitPendingRef.current) return;
+        const expected = committedDragPositionsRef.current;
+        if (!expected) return;
+        const currentById = new Map(nodes.map((node) => [node.id, node.position]));
+        const committed = [...expected].every(([id, position]) => {
+            const current = currentById.get(id);
+            return current?.x === position.x && current.y === position.y;
+        });
+        if (!committed) return;
+        clearCanvasDragPositionOverrides();
+        committedDragPositionsRef.current = null;
+        dragCommitPendingRef.current = false;
+    }, [nodes]);
 
     useLayoutEffect(() => {
         selectionBoxRef.current = selectionBox;
@@ -913,7 +948,10 @@ function AtelierCanvasPage() {
     const visibleConnectionsCacheRef = useRef<CanvasConnection[]>([]);
 
     const visibleNodes = useMemo(() => {
-        const padding = 280;
+        // Keep a constant 280 CSS px of temporary geometry around the viewport.
+        // The world transform fast-pan path can move between React commits at any
+        // zoom, so a fixed world-space margin collapsed to almost nothing when k < 1.
+        const padding = 280 / viewport.k;
         // `size` is kept current by the ResizeObserver below. Measuring the container here instead
         // would force a synchronous layout on every pan/zoom frame.
         const viewLeft = -viewport.x / viewport.k - padding;
@@ -1273,6 +1311,11 @@ function AtelierCanvasPage() {
         },
         [cancelViewportAnimation],
     );
+    const handleViewportFrameChange = useCallback((next: ViewportTransform) => {
+        // Keep hit testing and coordinate conversion aligned with the directly transformed
+        // world between the throttled React geometry commits of a fast pan.
+        viewportRef.current = next;
+    }, []);
 
     const fitViewport = useCallback(() => {
         setContextMenu(null);
@@ -1479,6 +1522,10 @@ function AtelierCanvasPage() {
             if (index.nodeById.get(id)?.type !== CanvasNodeType.Group) return;
             for (const child of index.groupChildrenByGroupId.get(id) ?? []) dragIds.add(child.id);
         });
+        setEdgeMotionNodeIds(dragIds);
+        dragCommitPendingRef.current = false;
+        committedDragPositionsRef.current = null;
+        clearCanvasDragPositionOverrides();
 
         const movedNodes = currentNodes.filter((node) => dragIds.has(node.id));
         const initialPositions = new Map<string, { x: number; y: number }>();
@@ -1516,41 +1563,58 @@ function AtelierCanvasPage() {
         if (wasDragging) historyPausedRef.current = false;
         if (!wasDragging) return;
 
-        const wasClick = !dragRef.current.hasMoved && !dragRef.current.suppressClickPanel && dragRef.current.movedNodes.length === 1;
-        const clickedNodeId = dragRef.current.movedNodes[0]?.id;
+        const drag = dragRef.current;
         const currentViewport = viewportRef.current;
-        const dx = clientX == null ? 0 : (clientX - dragRef.current.startX) / currentViewport.k;
-        const dy = clientY == null ? 0 : (clientY - dragRef.current.startY) / currentViewport.k;
-        const initialPositions = dragRef.current.initialPositions;
+        const finalDelta = resolveCanvasDragFinishDelta(
+            { x: drag.startX, y: drag.startY },
+            clientX == null || clientY == null ? null : { x: clientX, y: clientY },
+            { x: drag.latestDelta.dx, y: drag.latestDelta.dy },
+            currentViewport.k,
+        );
+        const { x: dx, y: dy } = finalDelta;
+        if (clientX != null && clientY != null) {
+            if (Math.abs(clientX - drag.startX) > 3 || Math.abs(clientY - drag.startY) > 3) drag.hasMoved = true;
+            drag.latestDelta = { dx, dy };
+        }
+
+        const wasClick = !drag.hasMoved && !drag.suppressClickPanel && drag.movedNodes.length === 1;
+        const clickedNodeId = drag.movedNodes[0]?.id;
+        const initialPositions = drag.initialPositions;
 
         nodeDraggingRef.current = false;
         setIsNodeDragging(false);
+        setEdgeMotionNodeIds(new Set());
         setDropTargetGroupId(null);
-        if (dragRef.current.hasMoved && clientX != null && clientY != null) {
+        if (drag.hasMoved) {
             const movedIds = new Set(initialPositions.keys());
+            setCanvasDragPositionOverrides(new Map([...movedIds].map((id) => [id, { x: dx, y: dy }])));
+            dragCommitPendingRef.current = true;
+            committedDragPositionsRef.current = null;
             setNodes((prev) => {
-                const moved = prev.map((node) => {
-                    const initial = initialPositions.get(node.id);
-                    return initial ? { ...node, position: { x: initial.x + dx, y: initial.y + dy } } : node;
-                });
+                const moved = applyCanvasDragDelta(prev, initialPositions, { x: dx, y: dy });
                 const targetGroup = findGroupDropTarget(movedIds, moved);
-                if (targetGroup) return snapNodesIntoGroup(movedIds, moved, targetGroup);
-                return moved.map((node) => {
+                const finalized = targetGroup ? snapNodesIntoGroup(movedIds, moved, targetGroup) : moved.map((node) => {
                     if (!movedIds.has(node.id) || node.type === CanvasNodeType.Group) return node;
                     const groupId = findContainingGroupId(node, moved);
                     if (node.metadata?.groupId === groupId) return node;
                     return { ...node, metadata: { ...node.metadata, groupId } };
                 });
+                committedDragPositionsRef.current = new Map(finalized.filter((node) => movedIds.has(node.id)).map((node) => [node.id, node.position]));
+                return finalized;
             });
+        } else {
+            clearCanvasDragPositionOverrides();
+            dragCommitPendingRef.current = false;
+            committedDragPositionsRef.current = null;
         }
 
-        dragRef.current.isDraggingNode = false;
-        dragRef.current.hasMoved = false;
-        dragRef.current.initialPositions = new Map();
-        dragRef.current.suppressClickPanel = false;
-        dragRef.current.movedNodes = [];
-        dragRef.current.reversedCandidateGroups = [];
-        dragRef.current.lastDropTargetId = null;
+        drag.isDraggingNode = false;
+        drag.hasMoved = false;
+        drag.initialPositions = new Map();
+        drag.suppressClickPanel = false;
+        drag.movedNodes = [];
+        drag.reversedCandidateGroups = [];
+        drag.lastDropTargetId = null;
         if (wasClick && clickedNodeId) {
             const clickedNode = nodesRef.current.find((node) => node.id === clickedNodeId);
             const clickedDefinition = clickedNode ? getNodeDefinition(clickedNode.type) : undefined;
@@ -1569,8 +1633,7 @@ function AtelierCanvasPage() {
 
             if (dragRef.current.isDraggingNode) {
                 const drag = dragRef.current;
-                const dx = (event.clientX - drag.startX) / currentViewport.k;
-                const dy = (event.clientY - drag.startY) / currentViewport.k;
+                const { x: dx, y: dy } = canvasDragDeltaFromPointer({ x: drag.startX, y: drag.startY }, { x: event.clientX, y: event.clientY }, currentViewport.k);
                 if (Math.abs(event.clientX - drag.startX) > 3 || Math.abs(event.clientY - drag.startY) > 3) {
                     drag.hasMoved = true;
                 }
@@ -1584,13 +1647,7 @@ function AtelierCanvasPage() {
                 rafRef.current = requestAnimationFrame(() => {
                     rafRef.current = null;
                     const { dx: frameDx, dy: frameDy } = drag.latestDelta;
-                    const initialPositions = drag.initialPositions;
-                    setNodes((prev) =>
-                        prev.map((node) => {
-                            const initial = initialPositions.get(node.id);
-                            return initial ? { ...node, position: { x: initial.x + frameDx, y: initial.y + frameDy } } : node;
-                        }),
-                    );
+                    setCanvasDragPositionOverrides(new Map([...drag.initialPositions.keys()].map((id) => [id, { x: frameDx, y: frameDy }])));
                     const targetId = findGroupDropTargetFromDelta(drag.movedNodes, drag.reversedCandidateGroups, frameDx, frameDy)?.id ?? null;
                     // Only touch React state when the target actually changes.
                     if (drag.lastDropTargetId !== targetId) {
@@ -1936,14 +1993,16 @@ function AtelierCanvasPage() {
         });
     },[]);
 
-    const handleNodeResizeStart = useCallback(() => {
+    const handleNodeResizeStart = useCallback((nodeId: string) => {
+        setEdgeMotionNodeIds(new Set([nodeId]));
         setIsNodeResizing(true);
         // Same transaction boundary a node drag already has. Without it the history and persistence
         // effects stay live through the gesture: the 180ms history debounce splits one continuous
         // resize into several undo entries, and every settled frame re-serialises the whole store.
         historyPausedRef.current = true;
     }, []);
-    const handleNodeResizeEnd = useCallback(() => {
+    const handleNodeResizeEnd = useCallback((_nodeId: string) => {
+        setEdgeMotionNodeIds(new Set());
         setIsNodeResizing(false);
         historyPausedRef.current = false;
     }, []);
@@ -3512,7 +3571,7 @@ function AtelierCanvasPage() {
         (contentNode: CanvasNodeData) => (
             <CanvasConfigNodePanel
                 node={contentNode}
-                nodes={nodes}
+                nodes={inputGraphNodes}
                 connections={connections}
                 onConfigChange={handleConfigNodeChange}
                 onComposerToggle={() => setDialogNodeId((current) => (current === contentNode.id ? null : contentNode.id))}
@@ -3523,7 +3582,7 @@ function AtelierCanvasPage() {
                 }}
             />
         ),
-        [stopConfigGeneration, handleConfigNodeChange, handleGenerateNode,nodes,connections],
+        [stopConfigGeneration, handleConfigNodeChange, handleGenerateNode,inputGraphNodes,connections],
     );
 
     // Grouped so NodeLayer's prop list stays readable. The node still receives each entry as its own
@@ -3561,7 +3620,7 @@ function AtelierCanvasPage() {
 
     return (
         <main className="flex h-full min-h-0 overflow-hidden" style={{ background: theme.canvas.background, color: theme.node.text }}>
-            <CanvasPerfBridge containerRef={containerRef} viewport={viewport} setViewport={setViewport} selectedNodeIds={selectedNodeIds} nodes={nodes} connections={connections} />
+            <CanvasPerfBridge containerRef={containerRef} viewport={viewport} setViewport={setViewport} setNodes={setNodes} selectedNodeIds={selectedNodeIds} nodes={nodes} connections={connections} />
             <CanvasSidePanel nodes={nodes} selectedNodeIds={selectedNodeIds} onFocusNode={focusNode} onPreviewNode={setPreviewNodeId} onInsertAsset={handleAssetInsert} />
             <section className="relative min-w-0 flex-1 overflow-hidden">
                 {backendSaveError?<div role="alert" className="absolute right-4 top-16 z-[100] rounded-lg border border-red-500 bg-background p-3 text-sm shadow-lg">
@@ -3612,6 +3671,7 @@ function AtelierCanvasPage() {
                     tool={canvasTool}
                     backgroundMode={backgroundMode}
                     onViewportChange={handleViewportChange}
+                    onViewportFrameChange={handleViewportFrameChange}
                     onWheelActivityChange={setIsWheelZooming}
                     onPanActivityChange={setIsCanvasPanning}
                     onCanvasMouseDown={referencePickerNodeId ? () => {} : handleCanvasMouseDown}
@@ -3626,7 +3686,14 @@ function AtelierCanvasPage() {
                 >
                     <ConnectionLayer
                         connections={visibleConnections}
-                        scale={viewport.k}
+                        wheelZoomActive={isWheelZooming}
+                        panActive={isCanvasPanning}
+                        containerRef={containerRef}
+                        viewportRef={viewportRef}
+                        viewport={viewport}
+                        viewportSize={size}
+                        devicePixelRatio={devicePixelRatio}
+                        movingNodeIds={edgeMotionNodeIds}
                         nodeById={nodeById}
                         selectedConnectionId={selectedConnectionId}
                         relatedConnectionIds={relatedHighlight.connectionIds}
@@ -3641,9 +3708,10 @@ function AtelierCanvasPage() {
                         instead of the controller precomputing references and generation inputs for
                         every node on every change. */}
                     <CanvasActionsProvider actions={canvasActions}>
-                        <CanvasGraphIndexProvider index={graphIndex}>
+                        <CanvasGraphIndexProvider index={inputGraphIndex}>
                             <NodeLayer
                                 nodes={visibleNodes}
+                                canonicalNodes={nodes}
                                 wheelZoomActive={isWheelZooming}
                                 scale={viewport.k}
                                 viewportWidth={size.width}

@@ -96,6 +96,10 @@ export type CanvasNodeMetadata = {
     videoRequest?: Omit<import("@/services/api/video").VideoGenerationRequest, "references"> & { references: CanvasVideoReference[] };
     videoTask?: CanvasVideoTask;
     lastFrameUrl?: string;
+    /** Perf fixture only: a static same-origin poster shown without starting video playback. */
+    perfStaticPosterUrl?: string;
+    /** Perf-only marker for an ephemeral 20-node backend progress load scenario. */
+    perfSimulatedProgress?: boolean;
     lastFrame?: { storageKey: string; url: string; width: number; height: number; bytes: number; mimeType: string };
     videoDownloadError?: string;
     audioVoice?: string;

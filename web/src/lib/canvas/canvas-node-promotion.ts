@@ -42,9 +42,9 @@ export function orderNodePromotions(
 }
 
 /**
- * Avoid bursts after a slow frame or expensive React commit. A good 60Hz frame
- * admits up to four weighted units (usually two images); strained frames admit
- * one expensive node at most. Never starve a remaining candidate.
+ * Keep post-gesture recovery bounded: at most two candidates and two weighted
+ * cost units per frame. Under observed pressure, admit one lighter node instead.
+ * A video still gets one admission when it is next, so it cannot starve forever.
  */
 export function choosePromotionBatch(
     ordered: readonly NodePromotionCandidate[],
@@ -52,9 +52,8 @@ export function choosePromotionBatch(
     frameIntervalMs: number,
     lastCommitMs: number,
 ): string[] {
-    const slow = frameIntervalMs > 25 || lastCommitMs > 8;
-    const pressured = frameIntervalMs > 19 || lastCommitMs > 4 || frameIntervalMs < 11;
-    const maxCost = slow ? 1 : pressured ? 2 : 4;
+    const pressured = frameIntervalMs > 18 || lastCommitMs > 2 || frameIntervalMs < 11;
+    const maxCost = pressured ? 1 : 2;
     const batch: string[] = [];
     let cost = 0;
     for (const candidate of ordered) {
@@ -62,7 +61,7 @@ export function choosePromotionBatch(
         if (batch.length && cost + candidate.cost > maxCost) break;
         batch.push(candidate.id);
         cost += candidate.cost;
-        if (batch.length >= 4 || cost >= maxCost) break;
+        if (batch.length >= 2 || cost >= maxCost) break;
     }
     return batch;
 }

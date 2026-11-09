@@ -5,6 +5,7 @@ import type {CanvasBackgroundMode} from "@/lib/canvas-theme";
 import type {CanvasAssistantSession,CanvasConnection,CanvasNodeData,ViewportTransform} from "@/types/canvas";
 import {canvasApi,type CanvasBackendProject,type CanvasBackendSummary} from "@/features/backend-sync/canvas-api";
 import {createCanvasStatePersistence,preserveValidCanvasViewport} from "@/features/backend-sync/canvas-state-persistence";
+import {PERF_MODE} from "@/lib/perf-mode";
 import {safeRemoteCanvasMerge} from "@/features/backend-sync/canvas-backend-sync";
 import {canonicalBackendGraph} from "@/features/backend-sync/backend-source-fingerprint";
 
@@ -179,16 +180,22 @@ export const useCanvasStore=create<CanvasStore>((set,get)=>({
   set({loading:true,error:null});
   try{
    const listing=await canvasApi<{projects:CanvasBackendSummary[]}>("/api/v1/projects");
-   set(state=>({hydrated:true,loading:false,error:null,projects:listing.projects.map(summary=>{
+   set(state=>({hydrated:true,loading:false,error:null,projects:[...listing.projects.map(summary=>{
     const cached=state.projects.find(project=>project.id===summary.id);
     if(cached&&(loaded.has(summary.id)||dirty.has(summary.id)))return cached;
     return {id:summary.id,title:summary.title,createdAt:summary.createdAt??now(),updatedAt:summary.updatedAt??summary.createdAt??now(),
      nodes:[],connections:[],chatSessions:[],activeChatId:null,backgroundMode:"lines" as CanvasBackgroundMode,
      showImageInfo:false,viewport:initialViewport,nodeCount:summary.nodeCount,connectionCount:summary.connectionCount};
-   })}));
+   }),...(PERF_MODE?state.projects.filter(project=>project.id.startsWith("perf-fixture-")&&!listing.projects.some(summary=>summary.id===project.id)):[])]}));
   }catch(error){set({loading:false,error:error instanceof Error?error.message:"backend_unavailable"});throw error}
  },
  loadProject:async id=>{
+  // Perf fixtures are deliberately ephemeral browser state. This branch keeps the
+  // acceptance harness independent of the backend database and user projects.
+  if(PERF_MODE&&id.startsWith("perf-fixture-")){
+   const fixture=get().projects.find(project=>project.id===id);
+   if(fixture)return fixture;
+  }
   if(dirty.has(id)||activeWrites.has(id)||auxiliary.hasPending(id))throw Error("project_unsaved_local_edits");
   const [remote,state]=await Promise.all([
    canvasApi<CanvasBackendProject>("/api/v1/projects/"+encodeURIComponent(id)),
@@ -261,7 +268,12 @@ export const useCanvasStore=create<CanvasStore>((set,get)=>({
    {...item,nodes:merged.nodes,connections:merged.connections}:item)}));
   return true;
  },
- replaceProjects:()=>{throw Error("canvas_legacy_browser_restore_not_supported")},
+ replaceProjects:projects=>{
+  if(!PERF_MODE)throw Error("canvas_legacy_browser_restore_not_supported");
+  // Only perf builds can replace the in-memory project list; do not touch SQLite or
+  // the backend project library while provisioning repeatable synthetic fixtures.
+  set({projects,hydrated:true});
+ },
  updateProject:(id,patch)=>{
   const {viewport,chatSessions,activeChatId,...graphPatch}=patch;
   const existing=get().openProject(id);

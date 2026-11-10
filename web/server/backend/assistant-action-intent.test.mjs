@@ -45,6 +45,21 @@ test("classifies explicit whole-canvas layouts without silently treating questio
   "把整个画布从上到下再从左到右布局"
  ])assert.equal(exactWholeCanvasGraphLayout(request),null,request);
 });
+test("P2.5 treats explicit generation and configuration commands as edit intent for format repair",()=>{
+ for(const request of [
+  "运行选中的图片节点",
+  "执行 ComfyUI 工作流节点",
+  "为图片节点设置模型",
+  "切换文本节点模型",
+  "生成选中的视频节点",
+  "设置节点生成参数并运行"
+ ])assert.equal(isCanvasEditInstruction(request),true,request);
+ for(const request of [
+  "请解释如何执行节点生成",
+  "不要执行工作流",
+  "如何配置图片模型？"
+ ])assert.equal(isCanvasEditInstruction(request),false,request);
+});
 test("screenshotted failure: prose-only model response still produces a real safe layout_graph operation",async()=>{
  const payloads=[];
  const result=await run(async(_url,options)=>{

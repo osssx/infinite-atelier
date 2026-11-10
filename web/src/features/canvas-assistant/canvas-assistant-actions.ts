@@ -4,6 +4,8 @@ import {groupSelectedCanvasNodes} from "@/lib/canvas/canvas-node-geometry";
 import {prepareCanvasPortConnection} from "@/lib/canvas/canvas-port-connections";
 import {CanvasNodeType,type CanvasConnection,type CanvasNodeData,type Position} from "@/types/canvas";
 import {layoutCanvasDependencyGraph,type AssistantGraphLayoutDirection} from "./canvas-assistant-graph-layout";
+import {assistantValueHasSupportedShape,setAssistantNodePrompt,setAssistantNodeParameter,type AssistantParameterKey,type AssistantParameterValue,type AssistantExecutionAction} from "./canvas-assistant-node-control";
+import type {AiConfig} from "@/stores/use-config-store";
 
 export type AssistantCreatableNodeType="text"|"image"|"video"|"audio"|"config"|"director";
 export type AssistantLayoutDirection="horizontal"|"vertical"|"grid";
@@ -20,7 +22,10 @@ export type AssistantCanvasAction=
  |{type:"set_text";nodeId:string;content:string}
  |{type:"set_title";nodeId:string;title:string}
  |{type:"delete_node";nodeId:string}
- |{type:"delete_connection";connectionId:string};
+ |{type:"delete_connection";connectionId:string}
+ |{type:"set_prompt";nodeId:string;prompt:string}
+ |{type:"set_node_param";nodeId:string;key:AssistantParameterKey;value:AssistantParameterValue}
+ |AssistantExecutionAction;
 export type AssistantCanvasGraph={nodes:CanvasNodeData[];connections:CanvasConnection[]};
 export type AssistantCanvasStage="safe"|"dangerous";
 export type AssistantCanvasOutcome=AssistantCanvasGraph&{refs:Map<string,string>;applied:number;createdNodeIds:string[]};
@@ -69,6 +74,12 @@ export function isAssistantCanvasAction(value:unknown):value is AssistantCanvasA
    (action.gap===undefined||(Number.isInteger(action.gap)&&Number(action.gap)>=16&&Number(action.gap)<=160))&&
    (action.layerGap===undefined||(Number.isInteger(action.layerGap)&&Number(action.layerGap)>=40&&Number(action.layerGap)<=360));
   case "connect":return keys(action,["type","from","to"])&&identifier(action.from)&&identifier(action.to)&&action.from!==action.to;
+  case "set_prompt":return keys(action,["type","nodeId","prompt"])&&identifier(action.nodeId)&&boundedString(action.prompt,12000);
+  case "set_node_param":return keys(action,["type","nodeId","key","value"])&&
+   identifier(action.nodeId)&&assistantValueHasSupportedShape(action.key,action.value);
+  case "run_node":return keys(action,["type","nodeId","mode"])&&identifier(action.nodeId)&&
+   (action.mode===undefined||["text","image","video","audio"].includes(String(action.mode)));
+  case "run_workflow":return keys(action,["type","nodeId"])&&identifier(action.nodeId);
   case "set_text":return keys(action,["type","nodeId","content"])&&identifier(action.nodeId)&&boundedString(action.content,12000);
   case "set_title":return keys(action,["type","nodeId","title"])&&identifier(action.nodeId)&&boundedString(action.title,120);
   case "delete_node":return keys(action,["type","nodeId"])&&identifier(action.nodeId);
@@ -85,12 +96,14 @@ export function parseAssistantCanvasActions(value:unknown):AssistantCanvasAction
   if(aliases.has(action.ref))throw Error("AI 创建节点的引用标识重复，未执行。");
   aliases.add(action.ref);
  }
+ if(value.filter(action=>action.type==="run_node"||action.type==="run_workflow").length>3)
+  throw Error("每次 AI 请求最多触发 3 个生成任务。");
  if(value.filter(action=>["create_text","create_node","create_group"].includes(action.type)).length>MAX_CREATED)
   throw Error("单次最多创建 12 个画布节点或分组。");
  return value;
 }
 export const isDangerousAssistantAction=(action:AssistantCanvasAction)=>
- action.type==="set_text"||action.type==="set_title"||action.type==="delete_node"||action.type==="delete_connection"||action.type==="ungroup";
+ action.type==="set_text"||action.type==="set_title"||action.type==="delete_node"||action.type==="delete_connection"||action.type==="ungroup"||action.type==="set_prompt"||action.type==="set_node_param";
 export function dangerousAssistantActionSummary(actions:readonly AssistantCanvasAction[]){
  const count=(type:AssistantCanvasAction["type"])=>actions.filter(action=>action.type===type).length;
  return [
@@ -98,7 +111,9 @@ export function dangerousAssistantActionSummary(actions:readonly AssistantCanvas
   count("set_title")?"修改 "+count("set_title")+" 个节点标题":"",
   count("delete_node")?"删除 "+count("delete_node")+" 个节点":"",
   count("delete_connection")?"删除 "+count("delete_connection")+" 条连线":"",
-  count("ungroup")?"解散 "+count("ungroup")+" 个分组（保留组内节点和连线）":""
+  count("ungroup")?"解散 "+count("ungroup")+" 个分组（保留组内节点和连线）":"",
+  count("set_prompt")?"修改 "+count("set_prompt")+" 个生成提示词":"",
+  count("set_node_param")?"修改 "+count("set_node_param")+" 项节点生成参数":""
  ].filter(Boolean).join("、");
 }
 function createsCycle(from:string,to:string,connections:readonly CanvasConnection[]){
@@ -151,7 +166,7 @@ function expandGroupToEncloseMembers(group:CanvasNodeData,nodes:readonly CanvasN
 /** Pure all-or-nothing graph transaction. The caller owns confirmation, saving and history. */
 export function applyAssistantCanvasActions(
  graph:AssistantCanvasGraph,rawActions:unknown,stage:AssistantCanvasStage,center:Position,
- refs:ReadonlyMap<string,string>=new Map(),
+ refs:ReadonlyMap<string,string>=new Map(),config?:AiConfig
 ):AssistantCanvasOutcome{
  const actions=parseAssistantCanvasActions(rawActions);
  if(!validPosition(center))throw Error("画布中心坐标无效，未执行。");
@@ -287,6 +302,18 @@ export function applyAssistantCanvasActions(
      nodes=nodes.filter(n=>n.id!==groupId).map(n=>n.metadata?.groupId===groupId
       ?{...n,metadata:{...n.metadata,groupId:undefined}}:n);
      applied++;break;
+    }
+    case "set_prompt":{
+     const id=mapped.get(action.nodeId)??action.nodeId;
+     const i=nodes.findIndex(node=>node.id===id);
+     if(i<0)throw Error("目标节点不存在，未执行。");
+     nodes[i]=setAssistantNodePrompt(nodes[i],action.prompt);applied++;break;
+    }
+    case "set_node_param":{
+     const id=mapped.get(action.nodeId)??action.nodeId;
+     const i=nodes.findIndex(node=>node.id===id);
+     if(i<0)throw Error("目标节点不存在，未执行。");
+     nodes[i]=setAssistantNodeParameter(nodes[i],action.key,action.value,config);applied++;break;
     }
     case "set_text":{
      const i=nodes.findIndex(node=>node.id===action.nodeId);

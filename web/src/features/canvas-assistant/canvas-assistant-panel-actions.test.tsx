@@ -10,7 +10,7 @@ const mocks=vi.hoisted(()=>({
  api:vi.fn(),
  confirm:vi.fn(),
  ensure:vi.fn(async()=>{}),
-}));
+ run:vi.fn(async(_actions:unknown,_refs:ReadonlyMap<string,string>,_signal:AbortSignal)=>({submitted:1,jobIds:["job-demo"]})), }));
 vi.mock("@/stores/use-theme-store",()=>({
  useThemeStore:(select:(value:{theme:"light"})=>unknown)=>select({theme:"light"})
 }));
@@ -59,8 +59,7 @@ function setup(actions:unknown[]){
    sessions,setSessions,activeChatId:active,setActiveChatId:setActive,
    selectedNodes:[{id:"text-existing",title:"现有文本",type:CanvasNodeType.Text}],
    getContext:()=>({text:"节点：现有文本 (text, id=text-existing)",references:[],truncated:false}),
-   onApplyActions:apply,config:defaultConfig
-  });
+   onApplyActions:apply,onRunActions:mocks.run,config:defaultConfig  });
  }
  container=document.createElement("div");document.body.appendChild(container);
  root=createRoot(container);
@@ -85,7 +84,8 @@ async function renderAndSend(Harness:()=>React.ReactElement){
  await act(async()=>{send!.click();await Promise.resolve();});
 }beforeEach(()=>{
  (globalThis as {IS_REACT_ACT_ENVIRONMENT?:boolean}).IS_REACT_ACT_ENVIRONMENT=true;
- mocks.api.mockReset();mocks.confirm.mockReset();mocks.ensure.mockClear();
+ mocks.api.mockReset();mocks.confirm.mockReset();mocks.ensure.mockClear();mocks.run.mockClear();
+ mocks.run.mockResolvedValue({submitted:1,jobIds:["job-demo"]});
  mocks.confirm.mockImplementation(()=>({destroy:vi.fn()}));
 });
 afterEach(async()=>{
@@ -223,8 +223,64 @@ describe("P2 assistant confirmation boundary",()=>{
    expect(container!.textContent).toContain("已自动执行 1 项画布操作");
    expect(container!.textContent).toContain("模型未返回可执行的画布指令");
   });
-  it("P2.4 auto-executes dependency layout after creating and connecting nodes, without confirmation",async()=>{  const actions=[   {type:"create_node",ref:"step1",nodeType:"text",title:"起点",content:"场景一"},
-   {type:"create_node",ref:"step2",nodeType:"text",title:"终点",content:"场景二"},
+ it("P2.5 requires approval before prompt and parameter edits can trigger generation",async()=>{
+  const fixture=setup([
+   {type:"set_prompt",nodeId:"text-existing",prompt:"新生成提示词"},
+   {type:"set_node_param",nodeId:"text-existing",key:"reasoningEffort",value:"high"},
+   {type:"run_node",nodeId:"text-existing",mode:"text"}
+  ]);
+  await renderAndSend(fixture.Harness);
+  expect(mocks.run).not.toHaveBeenCalled();
+  expect(fixture.getGraph().nodes[0].metadata?.prompt).toBeUndefined();
+  expect(mocks.confirm.mock.calls[0][0].content).toContain("修改 1 个生成提示词");
+  await act(async()=>{mocks.confirm.mock.calls[0][0].onOk();await Promise.resolve();});
+  expect(fixture.getGraph().nodes[0].metadata?.composerContent).toBe("新生成提示词");
+  expect(fixture.getGraph().nodes[0].metadata?.reasoningEffort).toBe("high");
+  expect(fixture.getGraph().nodes[0].metadata?.content).toBe(originalContent);
+  expect(mocks.run).toHaveBeenCalledTimes(1);
+  expect(mocks.run.mock.calls[0][0]).toEqual([{type:"run_node",nodeId:"text-existing",mode:"text"}]);
+  expect(container!.textContent).toContain("job-demo");
+ });
+ it("P2.5 rejecting a parameter change also skips its generation",async()=>{
+  const fixture=setup([
+   {type:"set_prompt",nodeId:"text-existing",prompt:"新提示词"},
+   {type:"run_node",nodeId:"text-existing"}
+  ]);
+  await renderAndSend(fixture.Harness);
+  await act(async()=>{mocks.confirm.mock.calls[0][0].onCancel();await Promise.resolve();});
+  expect(fixture.getGraph().nodes[0].metadata?.composerContent).toBeUndefined();
+  expect(mocks.run).not.toHaveBeenCalled();
+  expect(container!.textContent).toContain("已跳过全部 1 项生成执行");
+ });
+ it("P2.5 runs an already configured node automatically and reports real submission IDs",async()=>{
+  const fixture=setup([{type:"run_node",nodeId:"text-existing",mode:"text"}]);
+  await renderAndSend(fixture.Harness);
+  expect(mocks.confirm).not.toHaveBeenCalled();
+  expect(mocks.run).toHaveBeenCalledTimes(1);
+  expect(container!.textContent).toContain("已通过原有节点执行链路提交 1 项生成任务");
+  expect(container!.textContent).toContain("job-demo");
+ });
+ it("P2.5 reports execution failure without falsely claiming successful submission",async()=>{
+  const fixture=setup([{type:"run_node",nodeId:"text-existing"}]);
+  mocks.run.mockRejectedValueOnce(Error("任务未成功提交"));
+  await renderAndSend(fixture.Harness);
+  expect(container!.textContent).toContain("画布操作未完成：任务未成功提交");
+  expect(container!.textContent).not.toContain("已通过原有节点执行链路提交");
+ });
+ it("P2.5 passes an abortable signal and stops waiting on a pending submission",async()=>{
+  const fixture=setup([{type:"run_node",nodeId:"text-existing"}]);
+  let finish!:(result:{submitted:number;jobIds:string[]})=>void;
+  mocks.run.mockImplementationOnce(()=>new Promise(resolve=>{finish=resolve;}));
+  await renderAndSend(fixture.Harness);
+  const signal=mocks.run.mock.calls[0][2] as AbortSignal;
+  expect(signal.aborted).toBe(false);
+  const stop=container!.querySelector<HTMLButtonElement>('[aria-label="停止生成"]');
+  expect(stop).toBeTruthy();
+  await act(async()=>{stop!.click();finish({submitted:1,jobIds:["job-x"]});await Promise.resolve();});
+  expect(signal.aborted).toBe(true);
+  expect(container!.textContent).toContain("已停止生成");
+ });
+   it("P2.4 auto-executes dependency layout after creating and connecting nodes, without confirmation",async()=>{  const actions=[   {type:"create_node",ref:"step1",nodeType:"text",title:"起点",content:"场景一"},   {type:"create_node",ref:"step2",nodeType:"text",title:"终点",content:"场景二"},
    {type:"connect",from:"text-existing",to:"step1"},
    {type:"connect",from:"step1",to:"step2"},
    {type:"layout_graph",nodeIds:[],direction:"horizontal",gap:48,layerGap:140}

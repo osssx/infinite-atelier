@@ -22,7 +22,7 @@ const props:ComponentProps<typeof CanvasAssistantPanel>={
  selectedNodes:[{id:"text-1",title:"角色对白",type:CanvasNodeType.Text}],
  getContext:()=>({text:"画布上下文",references:[],truncated:false}),
  onApplyActions:()=>({applied:0,refs:new Map<string,string>()}),
- config:defaultConfig,
+ onRunActions:async()=>({submitted:0,jobIds:[]}), config:defaultConfig,
 };
 
 describe("assistant error messages",()=>{

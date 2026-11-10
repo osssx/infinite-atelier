@@ -23,8 +23,7 @@ test("P2 server action parser accepts bounded typed operations and JSON fences",
 test("P2 parser fails closed on unsupported or malformed operations",()=>{
  const wrap=actions=>JSON.stringify({answer:"test",actions});
  for(const invalid of [
-  [{type:"run_workflow",nodeId:"a"}],
-  [{type:"delete_node",nodeId:"a",force:true}],
+   [{type:"run_shell",nodeId:"a"}],  [{type:"delete_node",nodeId:"a",force:true}],
   [{type:"set_text",nodeId:"a",content:"x".repeat(12001)}],
   [{type:"create_text",ref:"same",title:"a",content:"x"},{type:"create_text",ref:"same",title:"b",content:"y"}],
   [{type:"connect",from:"a",to:"a"}],
@@ -103,6 +102,40 @@ test("P2 rejects non-boolean action mode and malformed model action payload",asy
 
 
 
+
+test("P2.5 server emits only bounded node settings and generation actions",()=>{
+ const actions=[
+  {type:"create_node",ref:"new",nodeType:"image",title:"新图片",prompt:"cinematic sunset"},
+  {type:"set_prompt",nodeId:"new",prompt:"cinematic sunrise"},
+  {type:"set_node_param",nodeId:"new",key:"model",value:"channel::my-image-model"},
+  {type:"set_node_param",nodeId:"new",key:"count",value:2},
+  {type:"run_node",nodeId:"new",mode:"image"},
+  {type:"run_workflow",nodeId:"existing-workflow"}
+ ];
+ const parsed=parseAssistantActionResponse(JSON.stringify({answer:"创建并生成",actions}));
+ assert.deepEqual(parsed.actions,actions);
+ assert.match(CANVAS_ACTION_SYSTEM,/set_node_param/);
+ assert.match(CANVAS_ACTION_SYSTEM,/run_node/);
+ assert.match(CANVAS_ACTION_SYSTEM,/run_workflow/);
+ assert.match(CANVAS_ACTION_SYSTEM,/explicit user confirmation/);
+ const wrapped=actions=>JSON.stringify({answer:"x",actions});
+ for(const action of [
+  {type:"set_prompt",nodeId:"x",prompt:"a".repeat(12001)},
+  {type:"set_prompt",nodeId:"x",prompt:"hello",endpoint:"http://host"},
+  {type:"set_node_param",nodeId:"x",key:"storageKey",value:"secret"},
+  {type:"set_node_param",nodeId:"x",key:"systemPrompt",value:"override system"},
+  {type:"set_node_param",nodeId:"x",key:"count",value:0},
+  {type:"set_node_param",nodeId:"x",key:"count",value:11},
+  {type:"set_node_param",nodeId:"x",key:"audioSpeed",value:"3"},
+  {type:"set_node_param",nodeId:"x",key:"seconds",value:21},
+  {type:"set_node_param",nodeId:"x",key:"model",value:""},
+  {type:"run_node",nodeId:"x",mode:"unknown"},
+  {type:"run_workflow",nodeId:"x",inputOverrides:{danger:true}},
+ ])assert.throws(()=>parseAssistantActionResponse(wrapped([action])),/assistant_actions_invalid/);
+ assert.throws(()=>parseAssistantActionResponse(wrapped(
+  Array.from({length:4},(_,i)=>({type:"run_node",nodeId:"n"+i}))
+ )),/assistant_actions_invalid/);
+});
 test("P2.4 assistant contract allows bounded link-aware layout only",()=>{
  const actions=[
   {type:"create_node",nodeType:"text",ref:"new",title:"新镜头"},

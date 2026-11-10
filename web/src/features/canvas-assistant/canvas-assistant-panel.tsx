@@ -22,10 +22,10 @@ type Props={
  projectId:string;projectTitle:string;open:boolean;onClose:()=>void;
  sessions:CanvasAssistantSession[];setSessions:Dispatch<SetStateAction<CanvasAssistantSession[]>>;
  activeChatId:string|null;setActiveChatId:Dispatch<SetStateAction<string|null>>;
-  selectedNodes:Choice[];getContext:(ids:string[],scope:AssistantContextScope)=>AssistantContextResult;
-  onApplyActions:(actions:unknown,stage:AssistantCanvasStage,refs?:ReadonlyMap<string,string>)=>{applied:number;refs:Map<string,string>};
-  config:AiConfig;};
-const now=()=>new Date().toISOString();
+   selectedNodes:Choice[];getContext:(ids:string[],scope:AssistantContextScope)=>AssistantContextResult;
+   onApplyActions:(actions:unknown,stage:AssistantCanvasStage,refs?:ReadonlyMap<string,string>)=>{applied:number;refs:Map<string,string>};
+   onRunActions:(actions:unknown,refs:ReadonlyMap<string,string>,signal:AbortSignal)=>Promise<{submitted:number;jobIds:string[]}>;
+   config:AiConfig;};const now=()=>new Date().toISOString();
 const append=(list:CanvasAssistantSession[],id:string,message:CanvasAssistantMessage)=>{
  const stamp=now();
  const existing=list.find(session=>session.id===id);
@@ -103,7 +103,7 @@ function confirmDangerousActions(summary:string,signal:AbortSignal,themeName:Can
   if(signal.aborted)onAbort();
  });
 }/** UI messages update only on send/terminal, not on every canvas pointer event. */
-export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessions,setSessions,activeChatId,setActiveChatId,selectedNodes,getContext,onApplyActions,config}:Props){
+export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessions,setSessions,activeChatId,setActiveChatId,selectedNodes,getContext,onApplyActions,onRunActions,config}:Props){
   const themeName=useThemeStore(state=>state.theme);
   const theme=canvasThemes[themeName];
   const [draft,setDraft]=useState(""); const [modelRef,setModelRef]=useState(config.textModel);
@@ -135,9 +135,14 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
   const user:CanvasAssistantMessage={id:nanoid(),role:"user",text,
    ...(contextSnapshot?.references.length?{references:contextSnapshot.references}:{})};
   const id=session?.id??nanoid();
-  const prior=session?.messages??[];
-   const turns=buildCanvasAssistantTurns(prior,text,contextSnapshot?.text);  const controller=new AbortController();controllerRef.current=controller;
-  setSending(true);setDraft("");setSessions(prev=>append(prev,id,user));setActiveChatId(id);
+   const prior=session?.messages??[];
+   const modelHints=(["text","image","video","audio"] as const).map(mode=>{
+    const models=selectableModelsByCapability(config,mode).slice(0,16);
+    return mode+" 生成模型："+(models.length?models.join("、"):"未配置");
+   }).join("\n").slice(0,2500);
+   const contextText=contextSnapshot?.text?contextSnapshot.text+"\n"+modelHints:undefined;
+   const turns=buildCanvasAssistantTurns(prior,text,contextText);
+   const controller=new AbortController();controllerRef.current=controller;  setSending(true);setDraft("");setSessions(prev=>append(prev,id,user));setActiveChatId(id);
   try{
    await ensureSqliteModelChannelForExecution(channel,provider);
    if(controller.signal.aborted)return;
@@ -148,26 +153,40 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
      },controller.signal);
     if(controller.signal.aborted)throw new DOMException("Aborted","AbortError");
     const notes:string[]=[];
-    try{
-      const actions=parseAssistantCanvasActions(response.actions??[]);
-      if(!actions.length)notes.push("本轮没有执行任何画布操作，画布保持不变。");     if(actions.length){
-      const safe=onApplyActions(actions,"safe");
-      if(safe.applied)notes.push("已自动执行 "+safe.applied+" 项画布操作。");
-      const dangerous=actions.filter(isDangerousAssistantAction);
-      if(dangerous.length){
-       const confirmed=await confirmDangerousActions(dangerousAssistantActionSummary(dangerous),controller.signal,themeName);
-       if(controller.signal.aborted)throw new DOMException("Aborted","AbortError");
-       if(confirmed){
-        const result=onApplyActions(actions,"dangerous",safe.refs);
-        notes.push("已确认并执行 "+result.applied+" 项修改或删除操作。");
-       }else notes.push("你已取消修改或删除操作，其他已执行的操作不受影响。");
-      }
-     }
-    }catch(operationError){
-     if(controller.signal.aborted)throw operationError;
-     notes.push("画布操作未完成："+(operationError instanceof Error?operationError.message:"执行失败"));
-    }
-    const answer=[response.answer,...notes].filter(Boolean).join("\n\n");
+     try{
+       const actions=parseAssistantCanvasActions(response.actions??[]);
+       if(!actions.length)notes.push("本轮没有执行任何画布操作，画布保持不变。");
+       if(actions.length){
+        const safe=onApplyActions(actions,"safe");
+        if(safe.applied)notes.push("已自动执行 "+safe.applied+" 项画布操作。");
+        const dangerous=actions.filter(isDangerousAssistantAction);
+        let approved=true;
+        if(dangerous.length){
+         const confirmed=await confirmDangerousActions(dangerousAssistantActionSummary(dangerous),controller.signal,themeName);
+         if(controller.signal.aborted)throw new DOMException("Aborted","AbortError");
+         if(confirmed){
+          const result=onApplyActions(actions,"dangerous",safe.refs);
+          if(result.applied)notes.push("已确认并执行 "+result.applied+" 项内容或参数修改。");
+         }else{
+          approved=false;
+          notes.push("你已取消修改或删除操作，其他已执行的操作不受影响。");
+         }
+        }
+        const runs=actions.filter(action=>action.type==="run_node"||action.type==="run_workflow");
+        if(runs.length){
+         if(!approved)notes.push("因你拒绝了本轮参数或内容修改，已跳过全部 "+runs.length+" 项生成执行。");
+         else{
+          const result=await onRunActions(runs,safe.refs,controller.signal);
+          if(controller.signal.aborted)throw new DOMException("Aborted","AbortError");
+          if(result.submitted)notes.push("已通过原有节点执行链路提交 "+result.submitted+
+           " 项生成任务（任务 ID："+result.jobIds.join("、")+"）。可在节点或任务历史查看进度并停止。");
+         }
+        }
+       }
+     }catch(operationError){
+       if(controller.signal.aborted)throw operationError;
+       notes.push("画布操作未完成："+(operationError instanceof Error?operationError.message:"执行失败"));
+     }    const answer=[response.answer,...notes].filter(Boolean).join("\n\n");
     setSessions(prev=>append(prev,id,{id:nanoid(),role:"assistant",text:answer,
       meta:response.model+(response.retryCount?` · 网络自动重试 ${response.retryCount} 次`:"")}));
    }catch(error){
@@ -177,7 +196,7 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
    if(controllerRef.current===controller)controllerRef.current=null;
    setSending(false);
   }
-  },[draft,chosenModel,config,includeContext,getContext,includedIds,effectiveScope,session,setSessions,setActiveChatId,projectId,onApplyActions,themeName]);
+  },[draft,chosenModel,config,includeContext,getContext,includedIds,effectiveScope,session,setSessions,setActiveChatId,projectId,onApplyActions,onRunActions,themeName]);
   const clear=()=>{
   if(!session||sending)return;
   Modal.confirm({...canvasAssistantConfirmTheme(themeName),icon:<AlertCircle className="canvas-assistant-confirm-icon" size={19} aria-hidden="true"/>,title:"删除当前对话？",content:"删除后无法恢复。",okText:"删除",okType:"danger",cancelText:"取消",onOk:()=>{
@@ -297,7 +316,7 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
        选择画布中的节点，询问创作建议、梳理故事结构，或优化文本内容。
       </p>
       <div className="canvas-assistant-suggestions" aria-label="推荐问题">
-        {["创建三个分镜文本节点并依次连线","根据连线关系对整个工作流智能排版","把选中节点添加到已有分组","移出分组中的指定节点","解散选中的分组（需确认）"].map(hint=>         <button type="button" key={hint} className="canvas-assistant-suggestion" onClick={()=>setDraft(hint)}>
+        {["创建三个分镜文本节点并依次连线","根据连线关系对整个工作流智能排版","把选中节点添加到已有分组","移出分组中的指定节点","解散选中的分组（需确认）","修改选中图片节点的提示词并生成（修改前确认）","执行选中的 ComfyUI 工作流"].map(hint=>         <button type="button" key={hint} className="canvas-assistant-suggestion" onClick={()=>setDraft(hint)}>
           <span>{hint}</span><ArrowUpRight size={14}/>
          </button>)}
       </div>
@@ -355,7 +374,7 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
     </div>
     <div className="canvas-assistant-hint">
      <span>AI 建议仅供参考</span>
-      <span className="inline-flex items-center gap-1"><Check size={11}/>创建、拓扑布局、分组调整自动执行 · 修改删除需确认</span>
+      <span className="inline-flex items-center gap-1"><Check size={11}/>创建、布局、生成自动执行 · 修改已有提示词、参数及删除需确认</span>
      </div>   </footer>
   </aside>
  );

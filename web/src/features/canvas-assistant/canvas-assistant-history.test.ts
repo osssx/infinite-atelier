@@ -27,6 +27,7 @@ describe("AI canvas assistant history isolation",()=>{
    m("user","改为创建一个节点"),
    m("assistant","已创建一个节点。\n\n已自动执行 1 项画布操作。"),
    m("user","删除节点"),m("assistant","准备删除。\n\n画布操作未完成：节点不存在"),
+   m("user","运行图片生成"),m("assistant","准备生成。\n\n已通过原有节点执行链路提交 1 项生成任务（任务 ID：job1）。"),
    m("user","再试试删除节点"),m("error","接口异常"),
    m("user","无回复的旧问题")
   ];

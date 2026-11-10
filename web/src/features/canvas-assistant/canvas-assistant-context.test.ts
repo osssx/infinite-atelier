@@ -9,8 +9,17 @@ const nodes:CanvasNodeData[]=[
  {id:"t2",type:CanvasNodeType.Text,title:"秘密",position:{x:0,y:0},width:180,height:80,metadata:{content:"保密内容"}},
 ];
 describe("assistant context snapshot",()=>{
- it("uses only referenced nodes and adjacent topology",()=>{
-  const result=buildCanvasAssistantContext({projectTitle:"测试",nodes,connections:[
+ it("exposes only safe node model settings, not media contents or storage keys",()=>{
+  const node={...nodes[1],metadata:{...nodes[1].metadata,model:"channel::image-one",
+   count:2,size:"1024x1024",quality:"high",storageKey:"private-storage-key"}};
+  const result=buildCanvasAssistantContext({projectTitle:"Test",nodes:[node],connections:[],nodeIds:[node.id]});
+  expect(result.text).toContain("model=channel::image-one");
+  expect(result.text).toContain("count=2");
+  expect(result.text).toContain("quality=high");
+  expect(result.text).not.toContain("private-storage-key");
+  expect(result.text).not.toContain("base64,AAAA");
+ });
+ it("uses only referenced nodes and adjacent topology",()=>{  const result=buildCanvasAssistantContext({projectTitle:"测试",nodes,connections:[
    {id:"e1",fromNodeId:"t1",toNodeId:"i1"}],nodeIds:["t1","i1"]});
   expect(result.text).toContain("雨夜来信");
   expect(result.text).toContain("梗概 → 人物图");

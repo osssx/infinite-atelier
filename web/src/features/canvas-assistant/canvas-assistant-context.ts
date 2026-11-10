@@ -32,8 +32,22 @@ export function buildCanvasAssistantContext({projectTitle,nodes,connections,node
     }   if(node.type===CanvasNodeType.Text && meta?.content)
     lines.push("文本内容："+limitString(meta.content,2200));
    if(meta?.prompt)lines.push("提示词："+limitString(meta.prompt,1400));
-   if(meta?.composerContent)lines.push("参数输入："+limitString(meta.composerContent,1000));
-   if(node.type===CanvasNodeType.Image||node.type===CanvasNodeType.Video||node.type===CanvasNodeType.Audio)
+    if(meta?.composerContent)lines.push("参数输入："+limitString(meta.composerContent,1000));
+    const safeSettings=[
+      meta?.generationMode?"mode="+meta.generationMode:"",
+      meta?.model?"model="+limitString(meta.model,128):"",
+      meta?.size?"size="+limitString(meta.size,40):"",
+      meta?.quality?"quality="+limitString(meta.quality,32):"",
+      meta?.count?"count="+meta.count:"",
+      meta?.reasoningEffort?"reasoningEffort="+meta.reasoningEffort:"",
+      meta?.seconds?"seconds="+limitString(meta.seconds,16):"",
+      meta?.videoRatio?"videoRatio="+limitString(meta.videoRatio,24):"",
+      meta?.vquality?"vquality="+limitString(meta.vquality,16):"",
+      meta?.audioFormat?"audioFormat="+limitString(meta.audioFormat,16):"",
+      meta?.audioVoice?"audioVoice="+limitString(meta.audioVoice,64):""
+    ].filter(Boolean);
+    if(safeSettings.length)lines.push("当前节点生成设置："+safeSettings.join("、"));
+    if(meta?.comfyWorkflow)lines.push("ComfyUI 工作流绑定状态："+meta.comfyWorkflow.bindingState);   if(node.type===CanvasNodeType.Image||node.type===CanvasNodeType.Video||node.type===CanvasNodeType.Audio)
     lines.push("媒体：仅提供标题及已有提示词；未提供图片、视频或音频内容");
   }
   const selected=new Set(chosen.map(node=>node.id));

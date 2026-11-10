@@ -48,6 +48,7 @@ import { CanvasNodeContextMenu } from "@/components/canvas/canvas-context-menu";
 const CanvasAssistantPanel=lazy(()=>import("@/features/canvas-assistant/canvas-assistant-panel").then(mod=>({default:mod.CanvasAssistantPanel})));
 import {buildCanvasAssistantContext,type AssistantContextScope} from "@/features/canvas-assistant/canvas-assistant-context";
 import {applyAssistantCanvasActions,assistantCreatedSelection,type AssistantCanvasStage} from "@/features/canvas-assistant/canvas-assistant-actions";
+import {planAssistantNodeRuns,type AssistantExecutionAction} from "@/features/canvas-assistant/canvas-assistant-node-control";
 import { isNativeTextEditorTarget } from "@/lib/canvas/canvas-text-context-menu";
 import { isNativeDescendantEvent } from "@/lib/canvas/canvas-portal-events";
 import { CanvasNodeAngleDialog, type CanvasImageAngleParams } from "@/components/canvas/canvas-node-angle-dialog";
@@ -120,7 +121,7 @@ import {capabilitiesForModel} from "@/services/api/video/model-capabilities";
 import {validateSeedanceRequest} from "@/services/api/video/seedance-content";
 import {ensureSqliteModelChannelForExecution,modelChannelProvider} from "@/features/backend-sync/model-channel-autoroute";
 import {watchSqliteComfyJob} from "@/features/backend-sync/sqlite-comfy-job-watch";
-import {waitForCanvasNodeCancellation,cancelCanvasNodeExecution,canvasSubmissionStopped,assertCanvasSubmissionActive,beginCanvasTextSubmission,trackCanvasTextJob,finishCanvasTextSubmission,
+import {waitForCanvasNodeCancellation,cancelCanvasNodeExecution,canvasSubmissionStopped,assertCanvasSubmissionActive,beginCanvasTextSubmission,trackCanvasTextJob,finishCanvasTextSubmission,getCanvasTextExecution,
     updateCanvasTextJob,finishCanvasTextJob,setCanvasTextExecutionScope,canvasModelExecutionPhase} from "@/features/backend-sync/canvas-text-execution-visual";
 import {setCanvasComfyExecutionScope,setCanvasComfyExecution,observeCanvasComfyExecution,
     getCanvasComfyExecution,markCanvasComfyRunUnobservable,observeCanvasComfyLive} from "@/features/comfy-workflow/canvas-execution-visual";
@@ -465,13 +466,14 @@ function AtelierCanvasPage() {
     // time. Kept fresh by the ResizeObserver effect and nulled on scroll (see that effect).
     const containerRectRef = useRef<DOMRect | null>(null);
     const viewportAnimRef = useRef<number | null>(null);
-    const generateNodeRef = useRef<((nodeId: string, mode: CanvasNodeGenerationMode, prompt: string) => Promise<void>) | null>(null);
+    const generateNodeRef = useRef<((nodeId: string, mode: CanvasNodeGenerationMode, prompt: string) => Promise<unknown>) | null>(null);
     const connectingParamsRef = useRef(connectingParams);
     const connectionTargetNodeIdRef = useRef(connectionTargetNodeId);
     const selectionBoxRef = useRef(selectionBox);
     const pendingConnectionCreateRef = useRef(pendingConnectionCreate);
     const generationRequestsRef = useRef(new Map<string, CanvasGenerationRequest>());
     const comfyExecuteLocksRef = useRef(new Set<string>());
+    const assistantExecuteLocksRef=useRef(new Set<string>());
     const sqliteJobWatchesRef=useRef(new Map<string,AbortController>());
     const monitorSqliteJobRef=useRef<(jobId:string,notifyOnMaterialization?:boolean)=>void>(()=>{});
     const sqliteGenerationJobsRef=useRef(new Map<string,string>());
@@ -1001,7 +1003,7 @@ function AtelierCanvasPage() {
         const before=nodesRef.current;
         // Validate every operation against the current graph before committing either state.
         const result=applyAssistantCanvasActions({nodes:before,connections:connectionsRef.current},
-            actions,stage,getCanvasCenter(),refs);
+            actions,stage,getCanvasCenter(),refs,effectiveConfig);
         if(result.applied){
             nodesRef.current=result.nodes;
             connectionsRef.current=result.connections;
@@ -1024,7 +1026,7 @@ function AtelierCanvasPage() {
             }
         }
         return {applied:result.applied,refs:result.refs};
-    },[projectLoaded,projectId,getCanvasCenter,cleanupCanvasFiles,chatSessions]);
+    },[projectLoaded,projectId,getCanvasCenter,cleanupCanvasFiles,chatSessions,effectiveConfig]);
     // The toolbar follows a single selected node selected by click, creation, marquee, or keyboard.    // It stays hidden for multi-selection and while isNodeDragging is true.
     const singleSelectedNodeId = selectedNodeIds.size === 1 ? Array.from(selectedNodeIds)[0] : null;
     const toolbarNode = (toolbarNodeId ? nodeById.get(toolbarNodeId) || null : null) || (singleSelectedNodeId ? nodeById.get(singleSelectedNodeId) || null : null);
@@ -2821,7 +2823,7 @@ function AtelierCanvasPage() {
                         await waitForCanvasNodeCancellation(projectId,nodeId);
                         await stopConfigGeneration(nodeId,job.id);
                     }
-                }catch(error){const detail=error instanceof Error?error.message:String(error);
+                    return {jobId:job.id};                }catch(error){const detail=error instanceof Error?error.message:String(error);
                     if(detail!=="canvas_submission_stopped")message.error(detail);}
                 finally{sqliteModelSubmitLocksRef.current.delete(submissionKey);
                     finishCanvasTextSubmission(projectId,nodeId,submissionToken);}
@@ -2990,7 +2992,7 @@ function AtelierCanvasPage() {
                         await waitForCanvasNodeCancellation(projectId,nodeId);
                         await stopConfigGeneration(nodeId,job.id);
                     }
-                }catch(error){
+                    return {jobId:job.id};                }catch(error){
                     const detail=error instanceof Error?error.message:String(error);
                     if(detail==="canvas_submission_stopped")return;
                     if(detail.includes("backend_prior_job_not_terminal")){
@@ -3516,6 +3518,66 @@ function AtelierCanvasPage() {
         }
     },[message,projectId]);
 
+    // Reuse the node's durable generation paths; AI only orchestrates existing UI commands.
+    const executeAssistantNodeActions=useCallback(async(
+        raw:unknown,refs:ReadonlyMap<string,string>,signal:AbortSignal
+    ):Promise<{submitted:number;jobIds:string[]}>=>{
+        if(!projectLoaded||activeProjectIdRef.current!==projectId||!pageMountedRef.current)
+            throw Error("当前画布已切换或尚未加载，未执行生成");
+        if(!Array.isArray(raw))throw Error("生成操作格式无效");
+        const actions=raw.filter((action):action is AssistantExecutionAction=>
+            action?.type==="run_node"||action?.type==="run_workflow");
+        const planned=planAssistantNodeRuns(nodesRef.current,actions,refs);
+        const keys=planned.map(plan=>projectId+":"+plan.nodeId);
+        if(keys.some(key=>assistantExecuteLocksRef.current.has(key))||
+            planned.some(plan=>getCanvasTextExecution(plan.nodeId)||
+                sqliteModelSubmitLocksRef.current.has(projectId+":"+plan.nodeId)||
+                comfyExecuteLocksRef.current.has(projectId+":"+plan.nodeId)||
+                ["queued","preparing","running","submitting","cancelling"].includes(
+                    getCanvasComfyExecution(plan.nodeId)?.status??"")))
+            throw Error("目标节点有正在提交或运行的任务，请先等待或停止后重试");
+        keys.forEach(key=>assistantExecuteLocksRef.current.add(key));
+        const jobIds:string[]=[];
+        try{
+            for(const plan of planned){
+                if(signal.aborted||activeProjectIdRef.current!==projectId||!pageMountedRef.current)
+                    throw Error("已停止后续生成请求");
+                if(getCanvasTextExecution(plan.nodeId))
+                    throw Error("目标节点正在生成，请勿重复提交");
+                const current=planAssistantNodeRuns(nodesRef.current, [{
+                    type:plan.kind==="workflow"?"run_workflow":"run_node",
+                    nodeId:plan.nodeId,...(plan.kind==="node"?{mode:plan.mode}:{})
+                } as AssistantExecutionAction]);
+                if(current[0]?.prompt!==plan.prompt)
+                    throw Error("节点提示词在生成前已变更，请重新发送指令");
+                let jobId:string;
+                if(plan.kind==="workflow"){
+                    const job=await executeComfyWorkflow(plan.nodeId);
+                    if(!job.runId)throw Error("工作流未返回任务 ID");
+                    jobId=job.runId;
+                }else{
+                    const job=await handleGenerateNode(plan.nodeId,plan.mode!,plan.prompt!);
+                    if(!job?.jobId)throw Error("模型任务未成功提交，请查看节点错误和任务历史");
+                    jobId=job.jobId;
+                }
+                jobIds.push(jobId);
+                if(signal.aborted){
+                    if(plan.kind==="workflow")await cancelComfyWorkflow(plan.nodeId);
+                    else await stopConfigGeneration(plan.nodeId,jobId);
+                    throw Error("生成提交后收到停止请求，已尝试停止对应后端任务");
+                }
+            }
+            return {submitted:jobIds.length,jobIds};
+        }catch(error){
+            if(jobIds.length)
+                throw Error("已有 "+jobIds.length+" 项任务提交至后端（任务 ID："+jobIds.join("、")+
+                    "）；后续执行中断："+(error instanceof Error?error.message:String(error)));
+            throw error;
+        }finally{
+            keys.forEach(key=>assistantExecuteLocksRef.current.delete(key));
+        }
+    },[cancelComfyWorkflow,executeComfyWorkflow,handleGenerateNode,projectId,projectLoaded,stopConfigGeneration]);
+
     const renderNodePanel = useCallback(
         (panelNode: CanvasNodeData) =>
             panelNode.type === CanvasNodeType.Director ? null : panelNode.type === COMFY_WORKFLOW_MOCK_TYPE ? (
@@ -3708,7 +3770,7 @@ function AtelierCanvasPage() {
                     onClose={()=>setAssistantOpen(false)} sessions={chatSessions} setSessions={setChatSessions}
                     activeChatId={activeChatId} setActiveChatId={setActiveChatId}
                     selectedNodes={assistantSelectedNodes} getContext={getAssistantContext}
-                    onApplyActions={applyAssistantGraphActions} config={effectiveConfig}/>                </Suspense> : null}
+                    onApplyActions={applyAssistantGraphActions} onRunActions={executeAssistantNodeActions} config={effectiveConfig}/>                </Suspense> : null}
 
                 <CanvasJobHistory projectId={projectId} open={jobHistoryOpen}
                     onClose={()=>setJobHistoryOpen(false)}

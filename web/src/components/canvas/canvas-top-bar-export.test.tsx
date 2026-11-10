@@ -30,8 +30,7 @@ describe("Canvas top-left export menu",()=>{
    onCancelTitleEditing:noop,canUndo:false,canRedo:false,
    onHome:noop,onProjects:noop,onCreateProject:noop,onDeleteProject:noop,
    onExportProject:exportProject,onImportImage:noop,onUndo:noop,onRedo:noop,
-   onOpenJobHistory:noop
-  };
+    onOpenJobHistory:noop,onOpenAssistant:noop  };
   renderToStaticMarkup(createElement(CanvasTopBar,props));
   const entry=ui.items.find(item=>item.key==="export");
   expect(entry).toBeDefined();

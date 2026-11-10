@@ -45,6 +45,8 @@ import { CanvasGraphIndexProvider } from "@/components/canvas/canvas-graph-conte
 import { CanvasPerfBridge } from "@/components/canvas/canvas-perf-bridge";
 import { pipelineSink } from "@/lib/canvas/canvas-perf-bridge-state";
 import { CanvasNodeContextMenu } from "@/components/canvas/canvas-context-menu";
+const CanvasAssistantPanel=lazy(()=>import("@/features/canvas-assistant/canvas-assistant-panel").then(mod=>({default:mod.CanvasAssistantPanel})));
+import {buildCanvasAssistantContext,type AssistantContextScope} from "@/features/canvas-assistant/canvas-assistant-context";
 import { isNativeTextEditorTarget } from "@/lib/canvas/canvas-text-context-menu";
 import { isNativeDescendantEvent } from "@/lib/canvas/canvas-portal-events";
 import { CanvasNodeAngleDialog, type CanvasImageAngleParams } from "@/components/canvas/canvas-node-angle-dialog";
@@ -357,6 +359,19 @@ function AtelierCanvasPage() {
     const [runningNodeId, setRunningNodeId] = useState<string | null>(null);
     const [isMiniMapOpen, setIsMiniMapOpen] = useState(false);
     const [jobHistoryOpen,setJobHistoryOpen]=useState(false);
+    const [assistantOpen,setAssistantOpen]=useState(false);
+    const [assistantEverOpened,setAssistantEverOpened]=useState(false);
+    useEffect(()=>{if(assistantOpen)setAssistantEverOpened(true)},[assistantOpen]);
+    useEffect(()=>setAssistantOpen(false),[projectId]);
+    useEffect(()=>{
+        const handler=(event:KeyboardEvent)=>{
+            if(event.altKey&&!event.ctrlKey&&!event.metaKey&&event.key.toLowerCase()==="i"){
+                event.preventDefault();setAssistantOpen(value=>!value);
+            }
+        };
+        window.addEventListener("keydown",handler);
+        return ()=>window.removeEventListener("keydown",handler);
+    },[]);
     const [backgroundMode, setBackgroundMode] = useState<CanvasBackgroundMode>("lines");
     const [showImageInfo, setShowImageInfo] = useState(false);
     const [comfyInstanceId, setComfyInstanceId] = useState<string | undefined>(undefined);
@@ -974,6 +989,12 @@ function AtelierCanvasPage() {
     }, [nodes, size.height, size.width, viewport.k, viewport.x, viewport.y]);
 
     const nodeById = graphIndex.nodeById;
+    const assistantSelectedNodes=useMemo(()=>[...selectedNodeIds].map(id=>inputGraphIndex.nodeById.get(id))
+        .filter((node):node is CanvasNodeData=>Boolean(node)).map(node=>({id:node.id,title:node.title,type:node.type})),
+        [selectedNodeIds,inputGraphIndex]);
+    const getAssistantContext=useCallback((ids:string[],scope:AssistantContextScope)=>
+        buildCanvasAssistantContext({projectTitle:currentProjectTitle||"未命名画布",nodes:nodesRef.current,
+            connections:connectionsRef.current,nodeIds:ids,scope}),[currentProjectTitle]);
     // The toolbar follows a single selected node selected by click, creation, marquee, or keyboard.
     // It stays hidden for multi-selection and while isNodeDragging is true.
     const singleSelectedNodeId = selectedNodeIds.size === 1 ? Array.from(selectedNodeIds)[0] : null;
@@ -3649,7 +3670,16 @@ function AtelierCanvasPage() {
                     onUndo={undoCanvas}
                     onRedo={redoCanvas}
                     onOpenJobHistory={()=>setJobHistoryOpen(true)}
+                    onOpenAssistant={()=>setAssistantOpen(value=>!value)}
                 />
+
+                {assistantEverOpened ? <Suspense fallback={null}>
+                <CanvasAssistantPanel key={projectId} projectId={projectId}
+                    projectTitle={currentProjectTitle||"未命名画布"} open={assistantOpen}
+                    onClose={()=>setAssistantOpen(false)} sessions={chatSessions} setSessions={setChatSessions}
+                    activeChatId={activeChatId} setActiveChatId={setActiveChatId}
+                    selectedNodes={assistantSelectedNodes} getContext={getAssistantContext} config={effectiveConfig}/>
+                </Suspense> : null}
 
                 <CanvasJobHistory projectId={projectId} open={jobHistoryOpen}
                     onClose={()=>setJobHistoryOpen(false)}
@@ -3851,6 +3881,11 @@ function AtelierCanvasPage() {
                 {contextMenu ? (
                     <CanvasNodeContextMenu
                         menu={contextMenu}
+                        onAskAssistant={contextMenu.type==="node"?()=>{
+                            const selected=selectedNodeIdsRef.current;
+                            setSelectedNodeIds(new Set(selected.has(contextMenu.nodeId)?selected:[contextMenu.nodeId]));
+                            setAssistantOpen(true);setContextMenu(null);
+                        }:undefined}
                         onCompareImages={contextMenu.type === "node" && selectedNodeIds.has(contextMenu.nodeId) && selectedNodeIds.size === 2 && nodes.filter((node) => selectedNodeIds.has(node.id) && node.type === CanvasNodeType.Image && node.metadata?.content).length === 2 ? () => {
                             const images = nodesRef.current.filter((node) => selectedNodeIdsRef.current.has(node.id) && node.type === CanvasNodeType.Image && node.metadata?.content).map((node) => ({ src: node.metadata!.content!, title: node.title }));
                             if (images.length === 2) setCompareImages([images[0], images[1]]);

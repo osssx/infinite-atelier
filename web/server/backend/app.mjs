@@ -83,7 +83,7 @@ function cursorOf(value){
  return Number(v);
 }
 export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobStore,mediaPreview,audioExtraction,blobGc,projectArchive,comfyWorkflowDir,vault,coordinator,materializer,worker,comfyRegistry,comfyLive,comfyInstanceIds=[],modelKinds=[],arkAssetUploadReady=false,
- arkChannelHealth,modelCatalog,mediaDownloader,skillRegistry,logger=false,streamPollMs=200}={}){
+ arkChannelHealth,modelCatalog,mediaDownloader,skillRegistry,assistantChat,logger=false,streamPollMs=200}={}){
  if(!db||(!sessionAuth&&typeof authorize!=="function"))throw Error("backend_authorizer_required");
  const app=Fastify({logger,bodyLimit:5*1024*1024,trustProxy:false,genReqId:()=>randomUUID()});
  if(blobStore)app.addContentTypeParser("application/octet-stream",(req,stream,done)=>done(null,stream));
@@ -611,6 +611,26 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
  app.get("/api/v1/projects/:id/chats",{schema:{params:canvasParams}},req=>getCanvasChats(db,req.params.id));
  app.put("/api/v1/projects/:id/chats",{schema:{params:canvasParams,body:chatsBody}},req=>
   putCanvasChats(db,req.params.id,req.body));
+  app.post("/api/v1/projects/:id/assistant/chat",{schema:{params:canvasParams,body:{type:"object",
+    required:["channelId","provider","model","messages"],additionalProperties:false,properties:{
+      channelId:idSchema,provider:{type:"string",enum:["openai","openai_compatible","google_gemini"]},
+      baseUrl:{type:"string",maxLength:1024},model:{type:"string",minLength:1,maxLength:128},
+      messages:{type:"array",minItems:1,maxItems:20,items:{type:"object",required:["role","content"],
+        additionalProperties:false,properties:{role:{type:"string",enum:["user","assistant"]},
+          content:{type:"string",maxLength:98304}}}}
+     }}}},async(req,reply)=>{    getProject(db,req.params.id); // Verify the project before invoking any paid provider.
+    if(!assistantChat)return reply.code(503).send({code:"assistant_unavailable"});
+    const controller=new AbortController();
+    const onClose=()=>controller.abort();
+    reply.raw.on("close",onClose);
+    try{
+      const result=await assistantChat({...req.body,signal:controller.signal});
+      reply.header("Cache-Control","no-store");return result;
+    }catch(error){
+      const code=typeof error?.code==="string"&&error.code.startsWith("assistant_")?error.code:"assistant_failed";
+      return reply.code(error?.statusCode>=400&&error.statusCode<600?error.statusCode:502).send({code});
+    }finally{reply.raw.off("close",onClose)}
+  });
  if(projectArchive){
   app.get("/api/v1/projects/:id/archive",{schema:{params:canvasParams}},async(req,reply)=>{
    const archive=await projectArchive.exportProject(req.params.id);

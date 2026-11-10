@@ -23,6 +23,7 @@ import {createComfyV2Adapters} from "./comfy-v2-adapter.mjs";
 import {createComfyLiveHub} from "./comfy-live.mjs";
 import {createComfyInstanceRegistry} from "./comfy-instances.mjs";
 import {createOpenAiModelAdapter} from "./openai-model-adapter.mjs";
+import {createAssistantChatService} from "./assistant-chat.mjs";
 import {createOpenAiVideoAdapter} from "./openai-video-adapter.mjs";
 import {createGeminiModelAdapter} from "./gemini-model-adapter.mjs";
 import {createRestrictedVideoAdapter} from "./restricted-video-adapter.mjs";
@@ -115,6 +116,7 @@ export function createLocalBackend({dataDir,streamPollMs=200,adapters,comfyInsta
   const materializer=createCanvasMaterializer({db,blobStore});
   const worker=autoDispatch?createBackendWorker({coordinator,materializer,intervalMs:dispatchIntervalMs}):null;
   const app=buildApp({db,sessionAuth,autoLocalSession,blobStore,mediaPreview,audioExtraction,blobGc,projectArchive,vault,skillRegistry,
+    assistantChat:enableOpenAiModels?createAssistantChatService({vault,...(modelUpstreamCall?{upstreamCall:modelUpstreamCall}: {})}):null,
    arkChannelHealth:createArkChannelHealth({vault}),
    modelCatalog:openai||gemini?args=>vault.get(args.channelId).provider==="google_gemini"?
     gemini.listModels({channelId:args.channelId,endpointBaseUrl:args.endpointBaseUrl}):openai.listModels(args):null,

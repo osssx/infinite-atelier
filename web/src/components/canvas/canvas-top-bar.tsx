@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Clock3, Download, Home, Images, Menu, PanelLeftClose, PanelLeftOpen, Plus, Redo2, Trash2, Undo2, Upload } from "lucide-react";
+import { Clock3, Download, Home, Images, Menu, PanelLeftClose, PanelLeftOpen, Plus, Redo2, Sparkles, Trash2, Undo2, Upload } from "lucide-react";
 import { Dropdown, Modal, Tooltip } from "antd";
 import { useTranslation } from "react-i18next";
 
@@ -27,6 +27,7 @@ export function CanvasTopBar({
     onUndo,
     onRedo,
     onOpenJobHistory,
+    onOpenAssistant,
 }: {
     title: string;
     titleDraft: string;
@@ -46,6 +47,7 @@ export function CanvasTopBar({
     onUndo: () => void;
     onRedo: () => void;
     onOpenJobHistory: () => void;
+    onOpenAssistant: () => void;
 }) {
     const colorTheme = useThemeStore((state) => state.theme);
     const { t } = useTranslation();
@@ -130,6 +132,13 @@ export function CanvasTopBar({
                 </div>
 
                 <div className="pointer-events-auto flex items-center gap-1.5">
+                    <Tooltip title="AI 创作助手 (Alt+I)">
+                        <button type="button" onClick={onOpenAssistant} aria-label="AI 创作助手"
+                            className="grid size-7 place-items-center rounded-full transition hover:bg-black/5 dark:hover:bg-white/10"
+                            style={{ color: theme.node.text }}>
+                            <Sparkles className="size-4"/>
+                        </button>
+                    </Tooltip>
                     <Tooltip title="任务历史">
                         <button type="button" onClick={onOpenJobHistory} aria-label="任务历史"
                             className="grid size-7 place-items-center rounded-full transition hover:bg-black/5 dark:hover:bg-white/10"

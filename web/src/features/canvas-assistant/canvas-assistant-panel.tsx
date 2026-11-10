@@ -301,8 +301,7 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
        选择画布中的节点，询问创作建议、梳理故事结构，或优化文本内容。
       </p>
       <div className="canvas-assistant-suggestions" aria-label="推荐问题">
-        {["创建三个分镜文本节点并依次连线","检查选中节点中的内容是否连贯","为选中节点优化对白（修改前确认）"].map(hint=>
-         <button type="button" key={hint} className="canvas-assistant-suggestion" onClick={()=>setDraft(hint)}>
+        {["创建三个分镜文本节点并依次连线","将选中节点横向排列并创建分组","新建图片、视频和音频节点","为选中节点优化对白（修改前确认）"].map(hint=>         <button type="button" key={hint} className="canvas-assistant-suggestion" onClick={()=>setDraft(hint)}>
           <span>{hint}</span><ArrowUpRight size={14}/>
          </button>)}
       </div>
@@ -360,8 +359,8 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
     </div>
     <div className="canvas-assistant-hint">
      <span>AI 建议仅供参考</span>
-      <span className="inline-flex items-center gap-1"><Check size={11}/>创建节点自动执行，修改与删除需确认</span>    </div>
-   </footer>
+      <span className="inline-flex items-center gap-1"><Check size={11}/>创建、布局、分组自动执行 · 修改删除需确认</span>
+     </div>   </footer>
   </aside>
  );
 }

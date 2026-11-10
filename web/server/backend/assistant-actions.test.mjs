@@ -18,7 +18,7 @@ test("P2 server action parser accepts bounded typed operations and JSON fences",
  assert.deepEqual(parseAssistantActionResponse(raw),{answer:"拟定五项操作",actions});
  assert.deepEqual(parseAssistantActionResponse("```json\n"+raw+"\n```"),{answer:"拟定五项操作",actions});
  assert.deepEqual(parseAssistantActionResponse("普通文本建议"),{answer:"普通文本建议",actions:[]});
- assert.match(CANVAS_ACTION_SYSTEM,/only use IDs explicitly listed/i);
+ assert.match(CANVAS_ACTION_SYSTEM,/Use existing IDs ONLY when provided/i);
 });
 test("P2 parser fails closed on unsupported or malformed operations",()=>{
  const wrap=actions=>JSON.stringify({answer:"test",actions});
@@ -99,4 +99,42 @@ test("P2 assistant HTTP route passes action mode and does not write canvas graph
  const rejected=await app.inject({method:"POST",url:"/api/v1/projects/p2-project/assistant/chat",
   headers,payload:{...body,canvasActions:"not-a-boolean"}});
  assert.equal(rejected.statusCode,400);
+});
+
+test("P2.2 validates multi-type creation, grouped layout, and legacy content safety",()=>{
+ const extended=[
+  {type:"create_node",ref:"img",nodeType:"image",title:"场景图",prompt:"夜间车站"},
+  {type:"create_node",ref:"clip",nodeType:"video",title:"视频镜头"},
+  {type:"create_node",ref:"audio",nodeType:"audio",title:"配乐"},
+  {type:"create_node",ref:"config",nodeType:"config",title:"生成参数"},
+  {type:"create_node",ref:"director",nodeType:"director",title:"导演"},
+  {type:"layout_nodes",nodeIds:["img","clip","audio"],direction:"grid",gap:48},
+  {type:"create_group",ref:"visuals",title:"画面组",members:["img","clip","audio"]},
+  {type:"layout_nodes",nodeIds:["visuals"],direction:"vertical",gap:32},
+  {type:"create_group",ref:"empty",title:"素材备用区",members:[]},
+  {type:"set_title",nodeId:"text-existing",title:"新标题"}
+ ];
+ const result=parseAssistantActionResponse(JSON.stringify({answer:"创建并分组",actions:extended}));
+ assert.deepEqual(result.actions,extended);
+ assert.match(CANVAS_ACTION_SYSTEM,/image,video,audio,config,director/);
+ assert.match(CANVAS_ACTION_SYSTEM,/explicit user confirmation/);
+});
+test("P2.2 refuses arbitrary node metadata, unknown actions, nesting shapes and unsafe layouts",()=>{
+ const wrap=actions=>JSON.stringify({answer:"x",actions});
+ for(const actions of [
+  [{type:"create_node",ref:"f",nodeType:"plugin:arbitrary"}],
+  [{type:"create_node",ref:"f",nodeType:"image",content:"data:image/png;base64,sensitive"}],
+  [{type:"create_node",ref:"f",nodeType:"text",prompt:"unapproved"}],
+  [{type:"create_node",ref:"f",nodeType:"image",metadata:{storageKey:"file"}}],
+  [{type:"create_node",ref:"f",nodeType:"image",execute:true}],
+  [{type:"layout_nodes",nodeIds:["a"],direction:"free"}],
+  [{type:"layout_nodes",nodeIds:["a","a"],direction:"grid"}],
+  [{type:"layout_nodes",nodeIds:["a"],direction:"horizontal",gap:3}],
+  [{type:"layout_nodes",nodeIds:["a"],direction:"horizontal",gap:200}],
+  [{type:"create_group",ref:"g",title:"单节点组",members:["a"]}],
+  [{type:"create_group",ref:"g",title:"重复",members:["a","a"]}],
+  [{type:"create_text",ref:"dupe",title:"a",content:"a"},
+   {type:"create_group",ref:"dupe",title:"group",members:[]}],
+  Array.from({length:13},(_,i)=>({type:"create_node",ref:"n"+i,nodeType:"text"})),
+ ])assert.throws(()=>parseAssistantActionResponse(wrap(actions)),/assistant_actions_invalid/);
 });

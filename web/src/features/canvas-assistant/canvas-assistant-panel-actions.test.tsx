@@ -127,4 +127,23 @@ describe("P2 assistant confirmation boundary",()=>{
   expect(fixture.apply).toHaveBeenCalledTimes(1);
   expect(container!.textContent).toContain("已停止生成");
  });
+ it("P2.2 automatically creates mixed nodes, layouts and groups without confirmation",async()=>{
+  const actions=[
+   {type:"create_node",ref:"picture",nodeType:"image",title:"封面图",prompt:"人物海报"},
+   {type:"create_node",ref:"scene",nodeType:"text",title:"场景文本",content:"雨夜"},
+   {type:"layout_nodes",nodeIds:["text-existing","scene","picture"],direction:"horizontal",gap:32},
+   {type:"create_group",ref:"act",title:"第一幕",members:["text-existing","scene","picture"]}
+  ];
+  const fixture=setup(actions);
+  await renderAndSend(fixture.Harness);
+  expect(fixture.apply).toHaveBeenCalledTimes(1);
+  expect(mocks.confirm).not.toHaveBeenCalled();
+  const graph=fixture.getGraph();
+  expect(graph.nodes).toHaveLength(4);
+  const group=graph.nodes.find(n=>n.type===CanvasNodeType.Group)!;
+  expect(graph.nodes.filter(n=>n.metadata?.groupId===group.id)).toHaveLength(3);
+  expect(graph.nodes.find(n=>n.type===CanvasNodeType.Image)?.metadata?.prompt).toBe("人物海报");
+  expect(graph.nodes.find(n=>n.id==="text-existing")?.metadata?.content).toBe(originalContent);
+  expect(container!.textContent).toContain("已自动执行 4 项画布操作");
+ });
 });

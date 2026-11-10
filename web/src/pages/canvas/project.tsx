@@ -47,7 +47,7 @@ import { pipelineSink } from "@/lib/canvas/canvas-perf-bridge-state";
 import { CanvasNodeContextMenu } from "@/components/canvas/canvas-context-menu";
 const CanvasAssistantPanel=lazy(()=>import("@/features/canvas-assistant/canvas-assistant-panel").then(mod=>({default:mod.CanvasAssistantPanel})));
 import {buildCanvasAssistantContext,type AssistantContextScope} from "@/features/canvas-assistant/canvas-assistant-context";
-import {applyAssistantCanvasActions,type AssistantCanvasStage} from "@/features/canvas-assistant/canvas-assistant-actions";
+import {applyAssistantCanvasActions,assistantCreatedSelection,type AssistantCanvasStage} from "@/features/canvas-assistant/canvas-assistant-actions";
 import { isNativeTextEditorTarget } from "@/lib/canvas/canvas-text-context-menu";
 import { isNativeDescendantEvent } from "@/lib/canvas/canvas-portal-events";
 import { CanvasNodeAngleDialog, type CanvasImageAngleParams } from "@/components/canvas/canvas-node-angle-dialog";
@@ -1008,8 +1008,7 @@ function AtelierCanvasPage() {
             setNodes(result.nodes);
             setConnections(result.connections);
             if(stage==="safe"&&result.createdNodeIds.length){
-                setSelectedNodeIds(new Set(result.createdNodeIds));
-                setSelectedConnectionId(null);
+                setSelectedNodeIds(new Set(assistantCreatedSelection(result)));                setSelectedConnectionId(null);
             }
             if(stage==="dangerous"){
                 const kept=new Set(result.nodes.map(node=>node.id));

@@ -2,6 +2,7 @@ import {CanvasNodeType,type CanvasGenerationMode,type CanvasNodeData,type Canvas
 import {COMFY_WORKFLOW_MOCK_TYPE} from "@/lib/canvas/canvas-ports";
 import {selectableModelsByCapability,type AiConfig} from "@/stores/use-config-store";
 import {updateCanvasNodePrompt} from "@/lib/canvas/canvas-prompt-metadata";
+import {assistantWorkflowBinding} from "./canvas-assistant-workflow-params";
 
 export const assistantParameterKeys=[
  "model","generationMode","quality","size","count","reasoningEffort",
@@ -68,8 +69,10 @@ export function setAssistantNodeParameter(
   if(node.type!==CanvasNodeType.Config)throw Error("只有配置节点可调整生成模式。");
   return {...node,metadata:{...node.metadata,generationMode:value as CanvasGenerationMode}};
  }
- const mode=assistantNodeMode(node);
- const allowed=mode==="text"?["model","reasoningEffort","textCount"]:
+  const mode=assistantNodeMode(node);
+  if(node.metadata?.comfyMediaPreset||node.metadata?.comfyWorkflowSelections?.[mode==="text"?"image":mode]||
+   config&&assistantWorkflowBinding(node,config))
+   throw Error("该节点使用 ComfyUI 工作流预设，请使用 set_workflow_param 按实际工作流端口 ID 修改参数；普通渠道参数不会生效。"); const allowed=mode==="text"?["model","reasoningEffort","textCount"]:
   mode==="image"?["model","quality","size","count"]:
   mode==="video"?["model","seconds","videoRatio","vquality","generateAudio"]:
   ["model","audioVoice","audioFormat","audioSpeed","audioInstructions"];

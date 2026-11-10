@@ -100,8 +100,7 @@ describe("P2.5 node parameters and execution plan",()=>{
   expect(()=>setAssistantNodeParameter(node,"model","ch-1::my-image")).toThrow(/模型配置/);
   const preset={templateId:"tpl",templateRevision:"r1",overrides:{},slots:{}};
   expect(()=>setAssistantNodeParameter(make(CanvasNodeType.Image,"p",{comfyMediaPreset:preset}),
-   "model","ch-1::my-image",config)).toThrow(/解除绑定/);
- });
+    "model","ch-1::my-image",config)).toThrow(/set_workflow_param/); });
  it("maps settings to the exact generation metadata fields and enforces node-mode checks",()=>{
   const video=make(CanvasNodeType.Video,"video",{prompt:"Scene"});
   const s=setAssistantNodeParameter(video,"seconds",8,config);

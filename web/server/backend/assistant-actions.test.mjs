@@ -103,6 +103,24 @@ test("P2 rejects non-boolean action mode and malformed model action payload",asy
 
 
 
+test("AI ComfyUI preset port edits use strict server JSON shape, with user confirmation required",()=>{
+ const actions=[
+  {type:"set_workflow_param",nodeId:"image1",portId:"steps",value:30},
+  {type:"set_workflow_param",nodeId:"image1",portId:"aspect_ratio",value:"9:16"},
+  {type:"run_node",nodeId:"image1",mode:"image"}
+ ];
+ assert.deepEqual(parseAssistantActionResponse(JSON.stringify({answer:"修改工作流后生成",actions})).actions,actions);
+ assert.match(CANVAS_ACTION_SYSTEM,/set_workflow_param/);
+ assert.match(CANVAS_ACTION_SYSTEM,/ordinary-channel metadata/);
+ for(const invalid of [
+  {type:"set_workflow_param",nodeId:"image1",portId:"steps",value:null},
+  {type:"set_workflow_param",nodeId:"image1",portId:"steps",value:{}},
+  {type:"set_workflow_param",nodeId:"image1",portId:"steps",value:1e18},
+  {type:"set_workflow_param",nodeId:"image1",portId:"steps",value:"x".repeat(2001)},
+  {type:"set_workflow_param",nodeId:"image1",portId:"steps",value:40,metadata:{storageKey:"unsafe"}},
+  {type:"set_workflow_param",nodeId:"image1",portId:"unsafe port",value:10},
+ ])assert.throws(()=>parseAssistantActionResponse(JSON.stringify({answer:"x",actions:[invalid]})),/assistant_actions_invalid/);
+});
 test("P2.5 server emits only bounded node settings and generation actions",()=>{
  const actions=[
   {type:"create_node",ref:"new",nodeType:"image",title:"新图片",prompt:"cinematic sunset"},

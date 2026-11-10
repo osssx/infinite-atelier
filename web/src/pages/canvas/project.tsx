@@ -49,6 +49,8 @@ const CanvasAssistantPanel=lazy(()=>import("@/features/canvas-assistant/canvas-a
 import {buildCanvasAssistantContext,type AssistantContextScope} from "@/features/canvas-assistant/canvas-assistant-context";
 import {applyAssistantCanvasActions,assistantCreatedSelection,type AssistantCanvasStage} from "@/features/canvas-assistant/canvas-assistant-actions";
 import {planAssistantNodeRuns,type AssistantExecutionAction} from "@/features/canvas-assistant/canvas-assistant-node-control";
+import {assistantWorkflowBinding,assistantWorkflowTemplateContext} from "@/features/canvas-assistant/canvas-assistant-workflow-params";
+import type {ComfyWorkflowTemplate} from "@/features/comfy-workflow/template-schema";
 import { isNativeTextEditorTarget } from "@/lib/canvas/canvas-text-context-menu";
 import { isNativeDescendantEvent } from "@/lib/canvas/canvas-portal-events";
 import { CanvasNodeAngleDialog, type CanvasImageAngleParams } from "@/components/canvas/canvas-node-angle-dialog";
@@ -998,12 +1000,31 @@ function AtelierCanvasPage() {
     const getAssistantContext=useCallback((ids:string[],scope:AssistantContextScope)=>
         buildCanvasAssistantContext({projectTitle:currentProjectTitle||"未命名画布",nodes:nodesRef.current,
             connections:connectionsRef.current,nodeIds:ids,scope}),[currentProjectTitle]);
-    const applyAssistantGraphActions=useCallback((actions:unknown,stage:AssistantCanvasStage,refs?:ReadonlyMap<string,string>)=>{
+    const getAssistantWorkflowTemplates=useCallback(async(
+        ids:string[],signal:AbortSignal
+    )=>{
+        const templates=new Map<string,ComfyWorkflowTemplate>();
+        const descriptions:string[]=[];
+        for(const id of [...new Set(ids)].slice(0,12)){
+            if(signal.aborted)throw new DOMException("Aborted","AbortError");
+            const node=nodesRef.current.find(candidate=>candidate.id===id);
+            if(!node)continue;
+            const active=assistantWorkflowBinding(node,effectiveConfig);
+            if(!active)continue;
+            const template=await getComfyTemplate(active.binding.templateId,active.binding.templateRevision);
+            if(signal.aborted)throw new DOMException("Aborted","AbortError");
+            if(!template)throw Error("节点 "+id+" 绑定的工作流预设版本不存在");
+            templates.set(id,template);
+            descriptions.push(assistantWorkflowTemplateContext(node,effectiveConfig,template));
+        }
+        return {templates,context:descriptions.filter(Boolean).join("\n\n").slice(0,4200)};
+    },[effectiveConfig]);
+    const applyAssistantGraphActions=useCallback((actions:unknown,stage:AssistantCanvasStage,refs?:ReadonlyMap<string,string>,workflowTemplates?:ReadonlyMap<string,ComfyWorkflowTemplate>)=>{
         if(!projectLoaded||activeProjectIdRef.current!==projectId)throw Error("画布尚未加载完成，操作未执行。");
         const before=nodesRef.current;
         // Validate every operation against the current graph before committing either state.
         const result=applyAssistantCanvasActions({nodes:before,connections:connectionsRef.current},
-            actions,stage,getCanvasCenter(),refs,effectiveConfig);
+            actions,stage,getCanvasCenter(),refs,effectiveConfig,workflowTemplates);
         if(result.applied){
             nodesRef.current=result.nodes;
             connectionsRef.current=result.connections;
@@ -3768,6 +3789,7 @@ function AtelierCanvasPage() {
                     onClose={()=>setAssistantOpen(false)} sessions={chatSessions} setSessions={setChatSessions}
                     activeChatId={activeChatId} setActiveChatId={setActiveChatId}
                     selectedNodes={assistantSelectedNodes} getContext={getAssistantContext}
+                    getWorkflowTemplates={getAssistantWorkflowTemplates}
                     onApplyActions={applyAssistantGraphActions} onRunActions={executeAssistantNodeActions} config={effectiveConfig}/>                </Suspense> : null}
 
                 <CanvasJobHistory projectId={projectId} open={jobHistoryOpen}

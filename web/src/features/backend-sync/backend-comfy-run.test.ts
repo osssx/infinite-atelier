@@ -1,7 +1,10 @@
+// @vitest-environment happy-dom
 import {describe,expect,it,vi} from "vitest";
 import type {CanvasNodeData,CanvasConnection} from "@/types/canvas";
 import type {ComfyWorkflowTemplate} from "@/features/comfy-workflow/template-schema";
 import {startBackendComfyWorkflowRun} from "./backend-comfy-run";
+import {defaultConfig} from "@/stores/use-config-store";
+import {setAssistantWorkflowParameter} from "@/features/canvas-assistant/canvas-assistant-workflow-params";
 import {fingerprintBackendSource,canonicalBackendGraph} from "./backend-source-fingerprint";
 import {fingerprintSource} from "../../../server/backend/repository.mjs";
 import {registerCanvasPortResolver} from "@/lib/canvas/canvas-ports";
@@ -98,8 +101,33 @@ describe("backend save fence + frozen Comfy submission",()=>{
   expect(request.externalInputs).toMatchObject([{kind:"asset",sourceNodeId:"reference",sourcePortId:"image",valueKind:"IMAGE",sha256:"a".repeat(64)}]);
   expect(graph.connections).toEqual([{id:"legacy-context",fromNodeId:"context-text",toNodeId:"media-target"}]);
  });
- it("config producer submits through the frozen Comfy workflow route with a binding fingerprint",async()=>{
-  const binding={templateId:"config-flow",templateRevision:"config-rev",overrides:{steps:3},slots:{}};
+ it("AI workflow port override reaches frozen Comfy submission and does not overwrite source media",async()=>{
+  const mediaTemplate:ComfyWorkflowTemplate={...template,id:"assistant-media",revision:"r-ai",
+   apiGraph:{"1":{class_type:"Sampler",inputs:{steps:20,prompt:""}},"2":{class_type:"Output",inputs:{}}},
+   requirements:{classTypes:["Sampler","Output"]},
+   ports:[
+    {id:"steps",label:"Steps",direction:"target",valueKind:"INT",inputBinding:{mode:"literal",targets:[{nodeId:"1",inputName:"steps"}]}},
+    {id:"prompt",label:"Prompt",direction:"target",valueKind:"STRING",inputBinding:{mode:"literal",targets:[{nodeId:"1",inputName:"prompt"}]}},
+    {id:"image",label:"Image",direction:"source",valueKind:"IMAGE",outputBinding:{nodeId:"2",outputIndex:0},capture:{kind:"image",adapterId:"SaveImage"}}],
+   mediaUseCase:{channel:"image",primaryOutputKind:"image",promptPortId:"prompt",slots:[],primaryOutputPortId:"image"}};
+  const mediaNode:CanvasNodeData={id:"img-1",type:"image",title:"Image",width:400,height:300,position:{x:0,y:0},
+   metadata:{content:"/api/v1/blobs/existing",prompt:"dragon",
+    comfyMediaPreset:{templateId:"assistant-media",templateRevision:"r-ai",overrides:{steps:18},slots:{}}}};
+  const edited=setAssistantWorkflowParameter(mediaNode,"steps",42,defaultConfig,mediaTemplate);
+  expect(mediaNode.metadata?.comfyMediaPreset?.overrides).toEqual({steps:18});
+  expect(edited.metadata?.comfyMediaPreset?.overrides).toEqual({steps:42});
+  let frozen:any;
+  const bridge={state:{status:"connected"},assertNoActiveJob:vi.fn(async()=>{}),assertComfyReady:vi.fn(async()=>{}),
+   saveProjectNow:vi.fn(async()=>({projectId:"p1",revision:13,sourceNodeFingerprint:"preset-fence"})),
+   uploadFrozenBlob:vi.fn(async()=>{throw Error("unexpected upload")}),
+   submitFrozenJob:vi.fn(async(payload:Record<string,unknown>)=>{frozen=payload;return expectedJob})};
+  await expect(startBackendComfyWorkflowRun({bridge,projectId:"p1",workflowNode:edited,nodes:[edited],
+   connections:[],template:mediaTemplate,instanceId:"comfy-local",outputPortIds:["image"],
+   mediaBinding:edited.metadata!.comfyMediaPreset!,prompt:"dragon reimagined"})).resolves.toEqual(expectedJob);
+  expect(frozen.snapshot.comfyRequest.nodes[0].inputOverrides).toEqual({steps:42,prompt:"dragon reimagined"});
+  expect(edited.metadata?.content).toBe("/api/v1/blobs/existing");
+ });
+ it("config producer submits through the frozen Comfy workflow route with a binding fingerprint",async()=>{  const binding={templateId:"config-flow",templateRevision:"config-rev",overrides:{steps:3},slots:{}};
   const configNode:CanvasNodeData={id:"config-target",type:"config",title:"Config",width:360,height:280,
    position:{x:0,y:0},metadata:{comfyWorkflowSelections:{image:binding}}};
   const mediaTemplate:ComfyWorkflowTemplate={...template,id:"config-flow",revision:"config-rev",

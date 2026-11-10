@@ -6,6 +6,7 @@ import {defaultConfig} from "@/stores/use-config-store";
 import {CanvasNodeType,type CanvasAssistantSession,type CanvasNodeData} from "@/types/canvas";
 import {applyAssistantCanvasActions,type AssistantCanvasStage,type AssistantCanvasGraph} from "./canvas-assistant-actions";
 import {CanvasApiError} from "@/features/backend-sync/canvas-api";
+import type {ComfyWorkflowTemplate} from "@/features/comfy-workflow/template-schema";
 const mocks=vi.hoisted(()=>({
  api:vi.fn(),
  confirm:vi.fn(),
@@ -59,7 +60,7 @@ function setup(actions:unknown[]){
    sessions,setSessions,activeChatId:active,setActiveChatId:setActive,
    selectedNodes:[{id:"text-existing",title:"现有文本",type:CanvasNodeType.Text}],
    getContext:()=>({text:"节点：现有文本 (text, id=text-existing)",references:[],truncated:false}),
-   onApplyActions:apply,onRunActions:mocks.run,config:defaultConfig  });
+   getWorkflowTemplates:async()=>({context:"",templates:new Map()}),   onApplyActions:apply,onRunActions:mocks.run,config:defaultConfig  });
  }
  container=document.createElement("div");document.body.appendChild(container);
  root=createRoot(container);
@@ -223,9 +224,60 @@ describe("P2 assistant confirmation boundary",()=>{
    expect(container!.textContent).toContain("已自动执行 1 项画布操作");
    expect(container!.textContent).toContain("模型未返回可执行的画布指令");
   });
- it("P2.5 requires approval before prompt and parameter edits can trigger generation",async()=>{
-  const fixture=setup([
-   {type:"set_prompt",nodeId:"text-existing",prompt:"新生成提示词"},
+ it("AI receives exact media preset port definitions, confirms override, then runs node with updated binding",async()=>{
+  const template:ComfyWorkflowTemplate={id:"img-flow",revision:"r1",name:"图片生成流程",
+   apiGraph:{"1":{class_type:"Sampler",inputs:{steps:20,prompt:""}},"2":{class_type:"SaveImage",inputs:{}}},
+   requirements:{classTypes:["Sampler","SaveImage"]},
+   ports:[
+    {id:"steps",label:"采样步数",direction:"target",valueKind:"INT",
+     inputBinding:{mode:"literal",targets:[{nodeId:"1",inputName:"steps"}]}},
+    {id:"prompt",label:"提示词",direction:"target",valueKind:"STRING",
+     inputBinding:{mode:"literal",targets:[{nodeId:"1",inputName:"prompt"}]}},
+    {id:"image",label:"Image",direction:"source",valueKind:"IMAGE",capture:{kind:"image",adapterId:"SaveImage"},outputBinding:{nodeId:"2",outputIndex:0}}
+   ],
+   mediaUseCase:{channel:"image",primaryOutputKind:"image",promptPortId:"prompt",slots:[],primaryOutputPortId:"image"}};
+  const source:CanvasNodeData={id:"img-source",type:CanvasNodeType.Image,title:"生成图片",
+   position:{x:0,y:0},width:400,height:320,
+   metadata:{content:"/api/v1/blobs/original",prompt:"city",
+    comfyMediaPreset:{templateId:"img-flow",templateRevision:"r1",overrides:{steps:16},slots:{}}}};
+  let graph:AssistantCanvasGraph={nodes:[source],connections:[]};
+  const apply=vi.fn((items:unknown,stage:AssistantCanvasStage,refs?:ReadonlyMap<string,string>,
+   templates?:ReadonlyMap<string,ComfyWorkflowTemplate>)=>{
+   const result=applyAssistantCanvasActions(graph,items,stage,{x:0,y:0},refs,defaultConfig,templates);
+   graph={nodes:result.nodes,connections:result.connections};
+   return {applied:result.applied,refs:result.refs};
+  });
+  const getWorkflowTemplates=vi.fn(async()=>({context:"工作流预设 img-flow；端口 id=steps，名称=采样步数，类型=INT，当前值=16",
+   templates:new Map([["img-source",template]])}));
+  mocks.api.mockResolvedValue({answer:"设置步数后生成",model:"demo",actions:[
+   {type:"set_workflow_param",nodeId:"img-source",portId:"steps",value:42},
+   {type:"run_node",nodeId:"img-source",mode:"image"}
+  ]});
+  function Harness(){
+   const [sessions,setSessions]=useState<CanvasAssistantSession[]>([]);
+   const [active,setActive]=useState<string|null>(null);
+   return createElement(CanvasAssistantPanel,{
+    projectId:"p1",projectTitle:"图像画布",open:true,onClose:()=>{},
+    sessions,setSessions,activeChatId:active,setActiveChatId:setActive,
+    selectedNodes:[{id:"img-source",title:"生成图片",type:CanvasNodeType.Image}],
+    getContext:()=>({text:"图像节点 id=img-source",references:[],truncated:false}),
+    getWorkflowTemplates,onApplyActions:apply,onRunActions:mocks.run,config:defaultConfig
+   });
+  }
+  container=document.createElement("div");document.body.appendChild(container);
+  root=createRoot(container);
+  await renderAndSend(Harness);
+  expect(getWorkflowTemplates).toHaveBeenCalled();  expect((mocks.api.mock.calls[0][2].messages as {role:string;content:string}[]).at(-1)?.content).toContain("端口 id=steps");
+  expect(graph.nodes[0].metadata?.comfyMediaPreset?.overrides).toEqual({steps:16});
+  expect(mocks.confirm).toHaveBeenCalledTimes(1);
+  expect(mocks.confirm.mock.calls[0][0].content).toContain("工作流预设端口参数");  expect(mocks.run).not.toHaveBeenCalled();
+  await act(async()=>{mocks.confirm.mock.calls[0][0].onOk();await Promise.resolve();});
+  expect(graph.nodes[0].metadata?.comfyMediaPreset?.overrides).toEqual({steps:42});
+  expect(graph.nodes[0].metadata?.content).toBe(source.metadata?.content);
+  expect(mocks.run).toHaveBeenCalledOnce();
+  expect(container!.textContent).toContain("已确认并执行 1 项内容或参数修改"); });
+  it("P2.5 requires approval before prompt and parameter edits can trigger generation",async()=>{
+   const fixture=setup([   {type:"set_prompt",nodeId:"text-existing",prompt:"新生成提示词"},
    {type:"set_node_param",nodeId:"text-existing",key:"reasoningEffort",value:"high"},
    {type:"run_node",nodeId:"text-existing",mode:"text"}
   ]);

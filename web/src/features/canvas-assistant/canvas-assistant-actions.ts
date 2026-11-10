@@ -6,6 +6,8 @@ import {CanvasNodeType,type CanvasConnection,type CanvasNodeData,type Position} 
 import {layoutCanvasDependencyGraph,type AssistantGraphLayoutDirection} from "./canvas-assistant-graph-layout";
 import {assistantValueHasSupportedShape,setAssistantNodePrompt,setAssistantNodeParameter,type AssistantParameterKey,type AssistantParameterValue,type AssistantExecutionAction} from "./canvas-assistant-node-control";
 import type {AiConfig} from "@/stores/use-config-store";
+import {validAssistantWorkflowScalar,setAssistantWorkflowParameter,type AssistantWorkflowScalar} from "./canvas-assistant-workflow-params";
+import type {ComfyWorkflowTemplate} from "@/features/comfy-workflow/template-schema";
 
 export type AssistantCreatableNodeType="text"|"image"|"video"|"audio"|"config"|"director";
 export type AssistantLayoutDirection="horizontal"|"vertical"|"grid";
@@ -25,7 +27,7 @@ export type AssistantCanvasAction=
  |{type:"delete_connection";connectionId:string}
  |{type:"set_prompt";nodeId:string;prompt:string}
  |{type:"set_node_param";nodeId:string;key:AssistantParameterKey;value:AssistantParameterValue}
- |AssistantExecutionAction;
+ |{type:"set_workflow_param";nodeId:string;portId:string;value:AssistantWorkflowScalar} |AssistantExecutionAction;
 export type AssistantCanvasGraph={nodes:CanvasNodeData[];connections:CanvasConnection[]};
 export type AssistantCanvasStage="safe"|"dangerous";
 export type AssistantCanvasOutcome=AssistantCanvasGraph&{refs:Map<string,string>;applied:number;createdNodeIds:string[]};
@@ -77,6 +79,8 @@ export function isAssistantCanvasAction(value:unknown):value is AssistantCanvasA
   case "set_prompt":return keys(action,["type","nodeId","prompt"])&&identifier(action.nodeId)&&boundedString(action.prompt,12000);
   case "set_node_param":return keys(action,["type","nodeId","key","value"])&&
    identifier(action.nodeId)&&assistantValueHasSupportedShape(action.key,action.value);
+  case "set_workflow_param":return keys(action,["type","nodeId","portId","value"])&&
+   identifier(action.nodeId)&&validAssistantWorkflowScalar(action.portId,action.value);
   case "run_node":return keys(action,["type","nodeId","mode"])&&identifier(action.nodeId)&&
    (action.mode===undefined||["text","image","video","audio"].includes(String(action.mode)));
   case "run_workflow":return keys(action,["type","nodeId"])&&identifier(action.nodeId);
@@ -103,7 +107,7 @@ export function parseAssistantCanvasActions(value:unknown):AssistantCanvasAction
  return value;
 }
 export const isDangerousAssistantAction=(action:AssistantCanvasAction)=>
- action.type==="set_text"||action.type==="set_title"||action.type==="delete_node"||action.type==="delete_connection"||action.type==="ungroup"||action.type==="set_prompt"||action.type==="set_node_param";
+ action.type==="set_text"||action.type==="set_title"||action.type==="delete_node"||action.type==="delete_connection"||action.type==="ungroup"||action.type==="set_prompt"||action.type==="set_node_param"||action.type==="set_workflow_param";
 export function dangerousAssistantActionSummary(actions:readonly AssistantCanvasAction[]){
  const count=(type:AssistantCanvasAction["type"])=>actions.filter(action=>action.type===type).length;
  return [
@@ -113,8 +117,8 @@ export function dangerousAssistantActionSummary(actions:readonly AssistantCanvas
   count("delete_connection")?"删除 "+count("delete_connection")+" 条连线":"",
   count("ungroup")?"解散 "+count("ungroup")+" 个分组（保留组内节点和连线）":"",
   count("set_prompt")?"修改 "+count("set_prompt")+" 个生成提示词":"",
-  count("set_node_param")?"修改 "+count("set_node_param")+" 项节点生成参数":""
- ].filter(Boolean).join("、");
+  count("set_node_param")?"修改 "+count("set_node_param")+" 项节点生成参数":"",
+  count("set_workflow_param")?"修改 "+count("set_workflow_param")+" 项工作流预设端口参数":"" ].filter(Boolean).join("、");
 }
 function createsCycle(from:string,to:string,connections:readonly CanvasConnection[]){
  const stack=[to],seen=new Set<string>();
@@ -166,9 +170,9 @@ function expandGroupToEncloseMembers(group:CanvasNodeData,nodes:readonly CanvasN
 /** Pure all-or-nothing graph transaction. The caller owns confirmation, saving and history. */
 export function applyAssistantCanvasActions(
  graph:AssistantCanvasGraph,rawActions:unknown,stage:AssistantCanvasStage,center:Position,
- refs:ReadonlyMap<string,string>=new Map(),config?:AiConfig
-):AssistantCanvasOutcome{
- const actions=parseAssistantCanvasActions(rawActions);
+ refs:ReadonlyMap<string,string>=new Map(),config?:AiConfig,
+ workflowTemplates?:ReadonlyMap<string,ComfyWorkflowTemplate>
+):AssistantCanvasOutcome{ const actions=parseAssistantCanvasActions(rawActions);
  if(!validPosition(center))throw Error("画布中心坐标无效，未执行。");
  let nodes=[...graph.nodes],connections=[...graph.connections];
  const mapped=new Map(refs);
@@ -314,6 +318,15 @@ export function applyAssistantCanvasActions(
      const i=nodes.findIndex(node=>node.id===id);
      if(i<0)throw Error("目标节点不存在，未执行。");
      nodes[i]=setAssistantNodeParameter(nodes[i],action.key,action.value,config);applied++;break;
+    }
+    case "set_workflow_param":{
+     const id=mapped.get(action.nodeId)??action.nodeId;
+     const i=nodes.findIndex(node=>node.id===id);
+     if(i<0)throw Error("工作流参数目标节点不存在，未执行。");
+     const template=workflowTemplates?.get(id);
+     if(!config||!template)throw Error("尚未加载该节点绑定的工作流预设参数定义，未修改。");
+     nodes[i]=setAssistantWorkflowParameter(nodes[i],action.portId,action.value,config,template);
+     applied++;break;
     }
     case "set_text":{
      const i=nodes.findIndex(node=>node.id===action.nodeId);

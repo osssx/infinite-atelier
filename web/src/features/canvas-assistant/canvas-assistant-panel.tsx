@@ -11,6 +11,7 @@ import {CanvasNodeType,type CanvasAssistantMessage,type CanvasAssistantSession,t
 import type {AssistantContextResult,AssistantContextScope} from "./canvas-assistant-context";
 import {parseAssistantCanvasActions,isDangerousAssistantAction,dangerousAssistantActionSummary,type AssistantCanvasStage} from "./canvas-assistant-actions";
 import {buildCanvasAssistantTurns} from "./canvas-assistant-history";
+import type {ComfyWorkflowTemplate} from "@/features/comfy-workflow/template-schema";
 import "./canvas-assistant-panel.css";
 type Choice={id:string;title:string;type:CanvasNodeTypeId};
 function ReferenceIcon({type}:{type:CanvasNodeTypeId}){
@@ -23,9 +24,9 @@ type Props={
  sessions:CanvasAssistantSession[];setSessions:Dispatch<SetStateAction<CanvasAssistantSession[]>>;
  activeChatId:string|null;setActiveChatId:Dispatch<SetStateAction<string|null>>;
    selectedNodes:Choice[];getContext:(ids:string[],scope:AssistantContextScope)=>AssistantContextResult;
-   onApplyActions:(actions:unknown,stage:AssistantCanvasStage,refs?:ReadonlyMap<string,string>)=>{applied:number;refs:Map<string,string>};
-   onRunActions:(actions:unknown,refs:ReadonlyMap<string,string>,signal:AbortSignal)=>Promise<{submitted:number;jobIds:string[]}>;
-   config:AiConfig;};const now=()=>new Date().toISOString();
+   getWorkflowTemplates:(ids:string[],signal:AbortSignal)=>Promise<{context:string;templates:Map<string,ComfyWorkflowTemplate>}>;
+   onApplyActions:(actions:unknown,stage:AssistantCanvasStage,refs?:ReadonlyMap<string,string>,workflowTemplates?:ReadonlyMap<string,ComfyWorkflowTemplate>)=>{applied:number;refs:Map<string,string>};
+   onRunActions:(actions:unknown,refs:ReadonlyMap<string,string>,signal:AbortSignal)=>Promise<{submitted:number;jobIds:string[]}>;   config:AiConfig;};const now=()=>new Date().toISOString();
 const append=(list:CanvasAssistantSession[],id:string,message:CanvasAssistantMessage)=>{
  const stamp=now();
  const existing=list.find(session=>session.id===id);
@@ -103,7 +104,7 @@ function confirmDangerousActions(summary:string,signal:AbortSignal,themeName:Can
   if(signal.aborted)onAbort();
  });
 }/** UI messages update only on send/terminal, not on every canvas pointer event. */
-export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessions,setSessions,activeChatId,setActiveChatId,selectedNodes,getContext,onApplyActions,onRunActions,config}:Props){
+export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessions,setSessions,activeChatId,setActiveChatId,selectedNodes,getContext,getWorkflowTemplates,onApplyActions,onRunActions,config}:Props){
   const themeName=useThemeStore(state=>state.theme);
   const theme=canvasThemes[themeName];
   const [draft,setDraft]=useState(""); const [modelRef,setModelRef]=useState(config.textModel);
@@ -135,16 +136,27 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
   const user:CanvasAssistantMessage={id:nanoid(),role:"user",text,
    ...(contextSnapshot?.references.length?{references:contextSnapshot.references}:{})};
   const id=session?.id??nanoid();
-   const prior=session?.messages??[];
-   const modelHints=(["text","image","video","audio"] as const).map(mode=>{
-    const models=selectableModelsByCapability(config,mode).slice(0,16);
-    return mode+" 生成模型："+(models.length?models.join("、"):"未配置");
-   }).join("\n").slice(0,2500);
-   const contextText=contextSnapshot?.text?contextSnapshot.text+"\n"+modelHints:undefined;
-   const turns=buildCanvasAssistantTurns(prior,text,contextText);
-   const controller=new AbortController();controllerRef.current=controller;  setSending(true);setDraft("");setSessions(prev=>append(prev,id,user));setActiveChatId(id);
-  try{
-   await ensureSqliteModelChannelForExecution(channel,provider);
+    const prior=session?.messages??[];
+    const controller=new AbortController();controllerRef.current=controller;
+    setSending(true);setDraft("");setSessions(prev=>append(prev,id,user));setActiveChatId(id);
+   try{
+    let workflowInfo:{context:string;templates:Map<string,ComfyWorkflowTemplate>}={
+     context:"",templates:new Map()
+    };
+    if(contextSnapshot&&effectiveScope==="selection"&&includedIds.length){
+     try{workflowInfo=await getWorkflowTemplates(includedIds,controller.signal)}
+     catch(error){
+      if(controller.signal.aborted)throw error;
+      workflowInfo.context="所选工作流预设端口定义读取失败："+(error instanceof Error?error.message:String(error));
+     }
+    }
+    const modelHints=(["text","image","video","audio"] as const).map(mode=>{
+     const models=selectableModelsByCapability(config,mode).slice(0,16);
+     return mode+" 生成模型："+(models.length?models.join("、"):"未配置");
+    }).join("\n").slice(0,2500);
+    const contextText=contextSnapshot?.text?
+     [contextSnapshot.text.slice(0,8500),modelHints,workflowInfo.context].filter(Boolean).join("\n\n"):undefined;
+    const turns=buildCanvasAssistantTurns(prior,text,contextText);   await ensureSqliteModelChannelForExecution(channel,provider);
    if(controller.signal.aborted)return;
     const response=await canvasApi<{answer:string;model:string;retryCount?:number;actions?:unknown}>(
      "/api/v1/projects/"+encodeURIComponent(projectId)+"/assistant/chat","POST",{
@@ -157,16 +169,24 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
        const actions=parseAssistantCanvasActions(response.actions??[]);
        if(!actions.length)notes.push("本轮没有执行任何画布操作，画布保持不变。");
        if(actions.length){
-        const safe=onApplyActions(actions,"safe");
-        if(safe.applied)notes.push("已自动执行 "+safe.applied+" 项画布操作。");
+        const templates=new Map(workflowInfo.templates);
+        const workflowTargetIds=actions.filter(action=>action.type==="set_workflow_param").map(action=>action.nodeId);
+        const uncached=[...new Set(workflowTargetIds)].filter(target=>!templates.has(target));
+        if(uncached.length){
+         const loaded=await getWorkflowTemplates(uncached,controller.signal);
+         for(const [key,template] of loaded.templates)templates.set(key,template);
+        }
+        if(workflowTargetIds.some(target=>!templates.has(target)))
+         throw Error("找不到节点当前绑定的工作流参数定义，请选中该节点并检查其工作流预设。");
+        if(controller.signal.aborted)throw new DOMException("Aborted","AbortError");
+        const safe=onApplyActions(actions,"safe",undefined,templates);        if(safe.applied)notes.push("已自动执行 "+safe.applied+" 项画布操作。");
         const dangerous=actions.filter(isDangerousAssistantAction);
         let approved=true;
         if(dangerous.length){
          const confirmed=await confirmDangerousActions(dangerousAssistantActionSummary(dangerous),controller.signal,themeName);
          if(controller.signal.aborted)throw new DOMException("Aborted","AbortError");
          if(confirmed){
-          const result=onApplyActions(actions,"dangerous",safe.refs);
-          if(result.applied)notes.push("已确认并执行 "+result.applied+" 项内容或参数修改。");
+           const result=onApplyActions(actions,"dangerous",safe.refs,templates);          if(result.applied)notes.push("已确认并执行 "+result.applied+" 项内容或参数修改。");
          }else{
           approved=false;
           notes.push("你已取消修改或删除操作，其他已执行的操作不受影响。");
@@ -196,7 +216,7 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
    if(controllerRef.current===controller)controllerRef.current=null;
    setSending(false);
   }
-  },[draft,chosenModel,config,includeContext,getContext,includedIds,effectiveScope,session,setSessions,setActiveChatId,projectId,onApplyActions,onRunActions,themeName]);
+  },[draft,chosenModel,config,includeContext,getContext,includedIds,effectiveScope,session,setSessions,setActiveChatId,projectId,onApplyActions,onRunActions,getWorkflowTemplates,themeName]);
   const clear=()=>{
   if(!session||sending)return;
   Modal.confirm({...canvasAssistantConfirmTheme(themeName),icon:<AlertCircle className="canvas-assistant-confirm-icon" size={19} aria-hidden="true"/>,title:"删除当前对话？",content:"删除后无法恢复。",okText:"删除",okType:"danger",cancelText:"取消",onOk:()=>{

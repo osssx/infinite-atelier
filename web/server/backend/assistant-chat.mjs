@@ -1,5 +1,6 @@
 import {DEFAULT_OPENAI_ENDPOINT,normalizeOpenAiCompatBaseUrl,createPinnedOpenAiCompatCall} from "./openai-compat-endpoints.mjs";
 import {setTimeout as delay} from "node:timers/promises";
+import {CANVAS_ACTION_SYSTEM,parseAssistantActionResponse} from "./assistant-actions.mjs";
 
 const fail=(code,statusCode=400)=>Object.assign(Error(code),{code,statusCode});
 const validModel=value=>typeof value==="string"&&value.length<=128&&
@@ -140,16 +141,14 @@ async function readBoundedAnswer(response,provider){
  try{value=JSON.parse(raw)}catch{throw fail("assistant_response_invalid",502)}
  return extractAnswer(value,provider);
 }
-function normalizeGeminiHistory(messages){
- const contents=[];
+function normalizeGeminiHistory(messages,system=SYSTEM){ const contents=[];
  for(const message of messages){
   const role=message.role==="assistant"?"model":"user";
   const last=contents.at(-1);
   if(last?.role===role)last.parts.push({text:message.content});
   else contents.push({role,parts:[{text:message.content}]});
  }
- return {contents,systemInstruction:{parts:[{text:SYSTEM}]}};
-}
+  return {contents,systemInstruction:{parts:[{text:system}]}};}
 /** Ad-hoc assistant inference; no canvas graph writes, job materialization or browser keys. */
 export function createAssistantChatService({vault,upstreamCall=fetch,
  compatibleUpstreamCall=createPinnedOpenAiCompatCall(),
@@ -158,13 +157,13 @@ export function createAssistantChatService({vault,upstreamCall=fetch,
  const retries=Number.isInteger(maxRetries)?Math.max(0,Math.min(DEFAULT_RETRIES,maxRetries)):DEFAULT_RETRIES;
  const timeout=Number.isInteger(requestTimeoutMs)?Math.max(1,Math.min(DEFAULT_TIMEOUT_MS,requestTimeoutMs)):DEFAULT_TIMEOUT_MS;
  const backoff=Number.isInteger(retryDelayMs)?Math.max(0,Math.min(5000,retryDelayMs)):DEFAULT_RETRY_DELAY_MS;
- return async function ask({channelId,provider,baseUrl,model,messages,signal}){
-  if(!validId(channelId)||!validModel(model)||
+  return async function ask({channelId,provider,baseUrl,model,messages,signal,canvasActions=false}){  if(!validId(channelId)||!validModel(model)||
    !["openai","openai_compatible","google_gemini"].includes(provider))
    throw fail("assistant_model_invalid");
   checkMessages(messages);
-  const channel=vault.get(channelId);
-  if(channel.provider!==provider||!channel.hasKey||!channel.keyVersion)
+   if(typeof canvasActions!=="boolean")throw fail("assistant_actions_invalid");
+   const system=canvasActions?CANVAS_ACTION_SYSTEM:SYSTEM;
+   const channel=vault.get(channelId);  if(channel.provider!==provider||!channel.hasKey||!channel.keyVersion)
    throw fail("assistant_channel_unavailable",409);
   const apiKey=vault.withSecretVersion(channel.keyVersion,bytes=>bytes.toString("utf8"),{channelId});
   let url,body,headers,network;
@@ -174,13 +173,11 @@ export function createAssistantChatService({vault,upstreamCall=fetch,
    const modelId=model.replace(/^models\//,"").split("/").map(encodeURIComponent).join("/");
    url=endpoint+"/models/"+modelId+":generateContent";
    headers={"content-type":"application/json","x-goog-api-key":apiKey};
-   body=JSON.stringify({...normalizeGeminiHistory(messages),generationConfig:{maxOutputTokens:2048}});
-   network=compatibleUpstreamCall;
+    body=JSON.stringify({...normalizeGeminiHistory(messages,system),generationConfig:{maxOutputTokens:canvasActions?4096:2048}});   network=compatibleUpstreamCall;
   }else{
    url=(provider==="openai"?DEFAULT_OPENAI_ENDPOINT:normalizeOpenAiCompatBaseUrl(baseUrl))+"/chat/completions";
    headers={"content-type":"application/json",authorization:"Bearer "+apiKey};
-   body=JSON.stringify({model,messages:[{role:"system",content:SYSTEM},...messages],stream:false});
-   network=provider==="openai"?upstreamCall:compatibleUpstreamCall;
+    body=JSON.stringify({model,messages:[{role:"system",content:system},...messages],stream:false});   network=provider==="openai"?upstreamCall:compatibleUpstreamCall;
   }
    // Only transport timeouts, transient network failures and gateway timeouts are retried.
    // A new per-attempt deadline is required: AbortSignal.timeout cannot be reused after abort.
@@ -194,8 +191,13 @@ export function createAssistantChatService({vault,upstreamCall=fetch,
      const answer=await readBoundedAnswer(response,provider);
      if(signal?.aborted)throw fail("assistant_cancelled",499);
      if(deadline.aborted)throw fail("assistant_upstream_timeout",504);
-     return {answer,model,retryCount:attempt};
-    }catch(error){
+     if(canvasActions){
+      let plan;
+      try{plan=parseAssistantActionResponse(answer)}
+      catch{throw fail("assistant_actions_invalid",502)}
+      return {...plan,model,retryCount:attempt};
+     }
+     return {answer,model,retryCount:attempt};    }catch(error){
      if(signal?.aborted)throw fail("assistant_cancelled",499);
      const retryable=error?.code==="assistant_upstream_timeout"||
       (deadline.aborted&&(!error?.code||error.code==="assistant_upstream_unavailable"))||

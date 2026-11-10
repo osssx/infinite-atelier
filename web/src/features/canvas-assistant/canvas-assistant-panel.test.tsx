@@ -22,6 +22,7 @@ const props:ComponentProps<typeof CanvasAssistantPanel>={
  sessions:[],setSessions:noop,activeChatId:null,setActiveChatId:noop,
  selectedNodes:[{id:"text-1",title:"角色对白",type:CanvasNodeType.Text}],
  getContext:()=>({text:"画布上下文",references:[],truncated:false}),
+ onApplyActions:()=>({applied:0,refs:new Map<string,string>()}),
  config:defaultConfig,
 };
 

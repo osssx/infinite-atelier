@@ -36,14 +36,16 @@ export function buildCanvasAssistantContext({projectTitle,nodes,connections,node
   for(const edge of connections){
    if(!selected.has(edge.fromNodeId)&&!selected.has(edge.toNodeId))continue;
    const a=index.get(edge.fromNodeId),b=index.get(edge.toNodeId);
-   if(a&&b)lines.push("关联："+limitString(a.title,100)+" → "+limitString(b.title,100));
-   if(lines.length>60)break;
+    if(a&&b)lines.push("关联："+limitString(a.title,100)+" → "+limitString(b.title,100)+" (id="+edge.id+", from="+a.id+", to="+b.id+")");
+    if(lines.length>60)break;
   }
  }else{
   lines.push("上下文范围：画布概要（不包含节点正文和媒体内容）");
-  for(const node of nodes.slice(0,30))lines.push("· "+limitString(node.title,90)+" ["+node.type+"]");
-  if(nodes.length>30)lines.push("另有 "+(nodes.length-30)+" 个节点未列出");
- }
+   for(const node of nodes.slice(0,30))lines.push("· "+limitString(node.title,90)+" ["+node.type+", id="+node.id+"]");
+   if(nodes.length>30)lines.push("另有 "+(nodes.length-30)+" 个节点未列出");
+   for(const edge of connections.slice(0,24))lines.push("连线：id="+edge.id+"，from="+edge.fromNodeId+"，to="+edge.toNodeId);
+   if(connections.length>24)lines.push("另有 "+(connections.length-24)+" 条连线未列出");
+  }
  const combined=lines.join("\n");
  const truncated=combined.length>allowed||requested.length>12;
  return {text:combined.length>allowed?combined.slice(0,allowed)+"\n[上下文已截断]":combined,references:refs,truncated};}

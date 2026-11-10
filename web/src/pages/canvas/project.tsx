@@ -47,6 +47,7 @@ import { pipelineSink } from "@/lib/canvas/canvas-perf-bridge-state";
 import { CanvasNodeContextMenu } from "@/components/canvas/canvas-context-menu";
 const CanvasAssistantPanel=lazy(()=>import("@/features/canvas-assistant/canvas-assistant-panel").then(mod=>({default:mod.CanvasAssistantPanel})));
 import {buildCanvasAssistantContext,type AssistantContextScope} from "@/features/canvas-assistant/canvas-assistant-context";
+import {applyAssistantCanvasActions,type AssistantCanvasStage} from "@/features/canvas-assistant/canvas-assistant-actions";
 import { isNativeTextEditorTarget } from "@/lib/canvas/canvas-text-context-menu";
 import { isNativeDescendantEvent } from "@/lib/canvas/canvas-portal-events";
 import { CanvasNodeAngleDialog, type CanvasImageAngleParams } from "@/components/canvas/canvas-node-angle-dialog";
@@ -995,8 +996,37 @@ function AtelierCanvasPage() {
     const getAssistantContext=useCallback((ids:string[],scope:AssistantContextScope)=>
         buildCanvasAssistantContext({projectTitle:currentProjectTitle||"未命名画布",nodes:nodesRef.current,
             connections:connectionsRef.current,nodeIds:ids,scope}),[currentProjectTitle]);
-    // The toolbar follows a single selected node selected by click, creation, marquee, or keyboard.
-    // It stays hidden for multi-selection and while isNodeDragging is true.
+    const applyAssistantGraphActions=useCallback((actions:unknown,stage:AssistantCanvasStage,refs?:ReadonlyMap<string,string>)=>{
+        if(!projectLoaded||activeProjectIdRef.current!==projectId)throw Error("画布尚未加载完成，操作未执行。");
+        const before=nodesRef.current;
+        // Validate every operation against the current graph before committing either state.
+        const result=applyAssistantCanvasActions({nodes:before,connections:connectionsRef.current},
+            actions,stage,getCanvasCenter(),refs);
+        if(result.applied){
+            nodesRef.current=result.nodes;
+            connectionsRef.current=result.connections;
+            setNodes(result.nodes);
+            setConnections(result.connections);
+            if(stage==="safe"&&result.createdNodeIds.length){
+                setSelectedNodeIds(new Set(result.createdNodeIds));
+                setSelectedConnectionId(null);
+            }
+            if(stage==="dangerous"){
+                const kept=new Set(result.nodes.map(node=>node.id));
+                const removed=new Set(before.filter(node=>!kept.has(node.id)).map(node=>node.id));
+                if(removed.size){
+                    setSelectedNodeIds(ids=>new Set([...ids].filter(id=>!removed.has(id))));
+                    setSelectedConnectionId(null);
+                    setHoveredNodeId(id=>id&&removed.has(id)?null:id);
+                    setToolbarNodeId(id=>id&&removed.has(id)?null:id);
+                    setDialogNodeId(id=>id&&removed.has(id)?null:id);
+                    cleanupCanvasFiles({projectId,nodes:result.nodes,chatSessions});
+                }
+            }
+        }
+        return {applied:result.applied,refs:result.refs};
+    },[projectLoaded,projectId,getCanvasCenter,cleanupCanvasFiles,chatSessions]);
+    // The toolbar follows a single selected node selected by click, creation, marquee, or keyboard.    // It stays hidden for multi-selection and while isNodeDragging is true.
     const singleSelectedNodeId = selectedNodeIds.size === 1 ? Array.from(selectedNodeIds)[0] : null;
     const toolbarNode = (toolbarNodeId ? nodeById.get(toolbarNodeId) || null : null) || (singleSelectedNodeId ? nodeById.get(singleSelectedNodeId) || null : null);
     const infoNode = infoNodeId ? nodeById.get(infoNodeId) || null : null;
@@ -3678,8 +3708,8 @@ function AtelierCanvasPage() {
                     projectTitle={currentProjectTitle||"未命名画布"} open={assistantOpen}
                     onClose={()=>setAssistantOpen(false)} sessions={chatSessions} setSessions={setChatSessions}
                     activeChatId={activeChatId} setActiveChatId={setActiveChatId}
-                    selectedNodes={assistantSelectedNodes} getContext={getAssistantContext} config={effectiveConfig}/>
-                </Suspense> : null}
+                    selectedNodes={assistantSelectedNodes} getContext={getAssistantContext}
+                    onApplyActions={applyAssistantGraphActions} config={effectiveConfig}/>                </Suspense> : null}
 
                 <CanvasJobHistory projectId={projectId} open={jobHistoryOpen}
                     onClose={()=>setJobHistoryOpen(false)}

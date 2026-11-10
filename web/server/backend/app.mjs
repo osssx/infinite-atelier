@@ -614,8 +614,8 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
   app.post("/api/v1/projects/:id/assistant/chat",{schema:{params:canvasParams,body:{type:"object",
     required:["channelId","provider","model","messages"],additionalProperties:false,properties:{
       channelId:idSchema,provider:{type:"string",enum:["openai","openai_compatible","google_gemini"]},
-      baseUrl:{type:"string",maxLength:1024},model:{type:"string",minLength:1,maxLength:128},
-      messages:{type:"array",minItems:1,maxItems:20,items:{type:"object",required:["role","content"],
+       baseUrl:{type:"string",maxLength:1024},model:{type:"string",minLength:1,maxLength:128},
+       canvasActions:{type:"boolean"},      messages:{type:"array",minItems:1,maxItems:20,items:{type:"object",required:["role","content"],
         additionalProperties:false,properties:{role:{type:"string",enum:["user","assistant"]},
           content:{type:"string",maxLength:98304}}}}
      }}}},async(req,reply)=>{    getProject(db,req.params.id); // Verify the project before invoking any paid provider.

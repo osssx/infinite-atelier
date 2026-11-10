@@ -10,6 +10,7 @@ import {canvasThemes} from "@/lib/canvas-theme";
 import {useThemeStore} from "@/stores/use-theme-store";
 import {CanvasNodeType,type CanvasAssistantMessage,type CanvasAssistantSession,type CanvasNodeTypeId} from "@/types/canvas";
 import type {AssistantContextResult,AssistantContextScope} from "./canvas-assistant-context";
+import {parseAssistantCanvasActions,isDangerousAssistantAction,dangerousAssistantActionSummary,type AssistantCanvasStage} from "./canvas-assistant-actions";
 import "./canvas-assistant-panel.css";
 type Choice={id:string;title:string;type:CanvasNodeTypeId};
 function ReferenceIcon({type}:{type:CanvasNodeTypeId}){
@@ -21,9 +22,9 @@ type Props={
  projectId:string;projectTitle:string;open:boolean;onClose:()=>void;
  sessions:CanvasAssistantSession[];setSessions:Dispatch<SetStateAction<CanvasAssistantSession[]>>;
  activeChatId:string|null;setActiveChatId:Dispatch<SetStateAction<string|null>>;
- selectedNodes:Choice[];getContext:(ids:string[],scope:AssistantContextScope)=>AssistantContextResult;
- config:AiConfig;
-};
+  selectedNodes:Choice[];getContext:(ids:string[],scope:AssistantContextScope)=>AssistantContextResult;
+  onApplyActions:(actions:unknown,stage:AssistantCanvasStage,refs?:ReadonlyMap<string,string>)=>{applied:number;refs:Map<string,string>};
+  config:AiConfig;};
 const now=()=>new Date().toISOString();
 const append=(list:CanvasAssistantSession[],id:string,message:CanvasAssistantMessage)=>{
  const stamp=now();
@@ -41,14 +42,39 @@ const assistantErrorMessages:Record<string,string>={
  assistant_upstream_error:"模型渠道返回错误，请检查模型名称、接口地址及该渠道的接口兼容性。",
  assistant_upstream_unavailable:"无法连接模型渠道或请求超时，请检查网络、渠道地址和服务状态。",
  assistant_upstream_retry_exhausted:"模型请求网络异常或超时，已自动重试 2 次仍未成功。请检查网络与模型服务状态后再试。",
- assistant_channel_unavailable:"模型渠道尚未配置可用的服务端密钥，请在设置中检查配置。",
+  assistant_channel_unavailable:"模型渠道尚未配置可用的服务端密钥，请在设置中检查配置。",
+  assistant_actions_invalid:"模型返回的画布操作格式不符合要求，未执行画布修改。请尝试更明确地描述操作。",
 };
 export function canvasAssistantErrorText(error:unknown){
  if(error instanceof CanvasApiError)return assistantErrorMessages[error.code]??error.message;
  if(error instanceof Error)return assistantErrorMessages[error.message]??error.message;
  return "模型请求失败，请稍后重试。";
-}/** UI messages update only on send/terminal, not on every canvas pointer event. */
-export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessions,setSessions,activeChatId,setActiveChatId,selectedNodes,getContext,config}:Props){
+}
+/** Confirm only high-risk operations; do not display a generic diff preview. */
+function confirmDangerousActions(summary:string,signal:AbortSignal):Promise<boolean>{
+ return new Promise(resolve=>{
+  if(signal.aborted){resolve(false);return;}
+  let settled=false;
+  let dialog:ReturnType<typeof Modal.confirm>|undefined;
+  const finish=(accepted:boolean)=>{
+   if(settled)return;
+   settled=true;
+   signal.removeEventListener("abort",onAbort);
+   resolve(accepted);
+  };
+  const onAbort=()=>{dialog?.destroy();finish(false);};
+  dialog=Modal.confirm({
+   title:"确认 AI 画布操作",
+   content:summary+"。这些操作会修改或删除已有内容，是否执行？",
+   okText:"确认执行",okType:"danger",cancelText:"取消",
+   onOk:()=>{finish(true);},onCancel:()=>{finish(false);}
+  });
+  signal.addEventListener("abort",onAbort,{once:true});
+  if(signal.aborted)onAbort();
+ });
+}
+/** UI messages update only on send/terminal, not on every canvas pointer event. */
+export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessions,setSessions,activeChatId,setActiveChatId,selectedNodes,getContext,onApplyActions,config}:Props){
  const [draft,setDraft]=useState("");
  const [modelRef,setModelRef]=useState(config.textModel);
  const [scope,setScope]=useState<AssistantContextScope>("selection");
@@ -90,21 +116,44 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
   try{
    await ensureSqliteModelChannelForExecution(channel,provider);
    if(controller.signal.aborted)return;
-   const response=await canvasApi<{answer:string;model:string;retryCount?:number}>(
-    "/api/v1/projects/"+encodeURIComponent(projectId)+"/assistant/chat","POST",{
-     channelId:channel.id,provider,baseUrl:channel.baseUrl,model:modelOptionName(chosenModel),messages:turns
-    },controller.signal);
-   if(controller.signal.aborted)return;
-   setSessions(prev=>append(prev,id,{id:nanoid(),role:"assistant",text:response.answer,meta:response.model+(response.retryCount?` · 网络自动重试 ${response.retryCount} 次`:"")}));
-  }catch(error){
+    const response=await canvasApi<{answer:string;model:string;retryCount?:number;actions?:unknown}>(
+     "/api/v1/projects/"+encodeURIComponent(projectId)+"/assistant/chat","POST",{
+      channelId:channel.id,provider,baseUrl:channel.baseUrl,model:modelOptionName(chosenModel),
+      messages:turns,canvasActions:true
+     },controller.signal);
+    if(controller.signal.aborted)throw new DOMException("Aborted","AbortError");
+    const notes:string[]=[];
+    try{
+     const actions=parseAssistantCanvasActions(response.actions??[]);
+     if(actions.length){
+      const safe=onApplyActions(actions,"safe");
+      if(safe.applied)notes.push("已自动执行 "+safe.applied+" 项画布操作。");
+      const dangerous=actions.filter(isDangerousAssistantAction);
+      if(dangerous.length){
+       const confirmed=await confirmDangerousActions(dangerousAssistantActionSummary(dangerous),controller.signal);
+       if(controller.signal.aborted)throw new DOMException("Aborted","AbortError");
+       if(confirmed){
+        const result=onApplyActions(actions,"dangerous",safe.refs);
+        notes.push("已确认并执行 "+result.applied+" 项修改或删除操作。");
+       }else notes.push("你已取消修改或删除操作，其他已执行的操作不受影响。");
+      }
+     }
+    }catch(operationError){
+     if(controller.signal.aborted)throw operationError;
+     notes.push("画布操作未完成："+(operationError instanceof Error?operationError.message:"执行失败"));
+    }
+    const answer=[response.answer,...notes].filter(Boolean).join("\n\n");
+    setSessions(prev=>append(prev,id,{id:nanoid(),role:"assistant",text:answer,
+      meta:response.model+(response.retryCount?` · 网络自动重试 ${response.retryCount} 次`:"")}));
+   }catch(error){
    const stopped=controller.signal.aborted;
    setSessions(prev=>append(prev,id,{id:nanoid(),role:"error",text:stopped?"已停止生成":canvasAssistantErrorText(error)}));
   }finally{
    if(controllerRef.current===controller)controllerRef.current=null;
    setSending(false);
   }
- },[draft,chosenModel,config,includeContext,getContext,includedIds,effectiveScope,session,setSessions,setActiveChatId,projectId]);
- const clear=()=>{
+  },[draft,chosenModel,config,includeContext,getContext,includedIds,effectiveScope,session,setSessions,setActiveChatId,projectId,onApplyActions]);
+  const clear=()=>{
   if(!session||sending)return;
   Modal.confirm({title:"删除当前对话？",content:"删除后无法恢复。",okText:"删除",okType:"danger",cancelText:"取消",onOk:()=>{
    setSessions(prev=>prev.filter(item=>item.id!==session.id));
@@ -225,10 +274,10 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
        选择画布中的节点，询问创作建议、梳理故事结构，或优化文本内容。
       </p>
       <div className="canvas-assistant-suggestions" aria-label="推荐问题">
-       {["检查选中节点中的内容是否连贯","分析这些节点之间的逻辑关系","给我一些更有张力的对白建议"].map(hint=>
-        <button type="button" key={hint} className="canvas-assistant-suggestion" onClick={()=>setDraft(hint)}>
-         <span>{hint}</span><ArrowUpRight size={14}/>
-        </button>)}
+        {["创建三个分镜文本节点并依次连线","检查选中节点中的内容是否连贯","为选中节点优化对白（修改前确认）"].map(hint=>
+         <button type="button" key={hint} className="canvas-assistant-suggestion" onClick={()=>setDraft(hint)}>
+          <span>{hint}</span><ArrowUpRight size={14}/>
+         </button>)}
       </div>
      </div>
     ):(
@@ -284,8 +333,7 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
     </div>
     <div className="canvas-assistant-hint">
      <span>AI 建议仅供参考</span>
-     <span className="inline-flex items-center gap-1"><Check size={11}/>不会自动修改画布</span>
-    </div>
+      <span className="inline-flex items-center gap-1"><Check size={11}/>创建节点自动执行，修改与删除需确认</span>    </div>
    </footer>
   </aside>
  );

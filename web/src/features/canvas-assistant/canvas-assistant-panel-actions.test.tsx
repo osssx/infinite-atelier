@@ -146,4 +146,42 @@ describe("P2 assistant confirmation boundary",()=>{
   expect(graph.nodes.find(n=>n.id==="text-existing")?.metadata?.content).toBe(originalContent);
   expect(container!.textContent).toContain("已自动执行 4 项画布操作");
  });
+ it("P2.3 requires confirmation for dissolving a group, preserving its child nodes when cancelled",async()=>{
+  const actions=[
+   {type:"create_node",ref:"scene",nodeType:"text",title:"场景",content:"雨夜"},
+   {type:"create_group",ref:"new-group",title:"第一幕",members:["text-existing","scene"]},
+   {type:"ungroup",groupId:"new-group"}
+  ];
+  const fixture=setup(actions);
+  await renderAndSend(fixture.Harness);
+  expect(fixture.apply).toHaveBeenCalledTimes(1);
+  expect(fixture.getGraph().nodes.filter(n=>n.type===CanvasNodeType.Group)).toHaveLength(1);
+  expect(fixture.getGraph().nodes).toHaveLength(3);
+  expect(mocks.confirm).toHaveBeenCalledTimes(1);
+  const props=mocks.confirm.mock.calls[0][0];
+  expect(props.content).toContain("解散 1 个分组");
+  expect(props.content).toContain("保留");
+  await act(async()=>{props.onCancel();await Promise.resolve();});
+  expect(fixture.apply).toHaveBeenCalledTimes(1);
+  expect(fixture.getGraph().nodes.filter(n=>n.type===CanvasNodeType.Group)).toHaveLength(1);
+  expect(fixture.getGraph().nodes.find(n=>n.id==="text-existing")?.metadata?.content).toBe(originalContent);
+ });
+ it("P2.3 ungroup after acceptance removes only the shell, not its members or connections",async()=>{
+  const actions=[
+   {type:"create_node",ref:"scene",nodeType:"text",title:"场景",content:"雨夜"},
+   {type:"create_group",ref:"new-group",title:"第一幕",members:["text-existing","scene"]},
+   {type:"ungroup",groupId:"new-group"}
+  ];
+  const fixture=setup(actions);
+  await renderAndSend(fixture.Harness);
+  const props=mocks.confirm.mock.calls[0][0];
+  await act(async()=>{props.onOk();await Promise.resolve();});
+  expect(fixture.apply).toHaveBeenCalledTimes(2);
+  expect(fixture.getGraph().nodes).toHaveLength(2);
+  expect(fixture.getGraph().nodes.some(n=>n.type===CanvasNodeType.Group)).toBe(false);
+  expect(fixture.getGraph().nodes.every(n=>!n.metadata?.groupId)).toBe(true);
+  expect(fixture.getGraph().nodes.find(n=>n.id==="text-existing")?.metadata?.content).toBe(originalContent);
+  expect(container!.textContent).toContain("已确认并执行 1 项");
+ });
+
 });

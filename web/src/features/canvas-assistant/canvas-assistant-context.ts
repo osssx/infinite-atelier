@@ -24,8 +24,12 @@ export function buildCanvasAssistantContext({projectTitle,nodes,connections,node
   lines.push("上下文范围：用户明确引用的 "+chosen.length+" 个节点（不包括媒体文件本体）");
   if(requested.length>12)lines.push("注意：引用数量超过 12 个，仅提供前 12 个节点。");  for(const node of chosen){
    lines.push("节点："+limitString(node.title,120)+" ("+node.type+", id="+node.id+")");
-   const meta=node.metadata;
-   if(node.type===CanvasNodeType.Text && meta?.content)
+    const meta=node.metadata;
+    if(meta?.groupId)lines.push("所属分组：id="+meta.groupId+"，名称="+limitString(index.get(meta.groupId)?.title,120));
+    if(node.type===CanvasNodeType.Group){
+     const members=nodes.filter(child=>child.metadata?.groupId===node.id).slice(0,24);
+     lines.push("分组成员："+(members.length?members.map(child=>limitString(child.title,70)+" (id="+child.id+")").join("、"):"空分组"));
+    }   if(node.type===CanvasNodeType.Text && meta?.content)
     lines.push("文本内容："+limitString(meta.content,2200));
    if(meta?.prompt)lines.push("提示词："+limitString(meta.prompt,1400));
    if(meta?.composerContent)lines.push("参数输入："+limitString(meta.composerContent,1000));
@@ -41,8 +45,7 @@ export function buildCanvasAssistantContext({projectTitle,nodes,connections,node
   }
  }else{
   lines.push("上下文范围：画布概要（不包含节点正文和媒体内容）");
-   for(const node of nodes.slice(0,30))lines.push("· "+limitString(node.title,90)+" ["+node.type+", id="+node.id+"]");
-   if(nodes.length>30)lines.push("另有 "+(nodes.length-30)+" 个节点未列出");
+   for(const node of nodes.slice(0,30))lines.push("· "+limitString(node.title,90)+" ["+node.type+", id="+node.id+(node.metadata?.groupId?", groupId="+node.metadata.groupId:"")+"]");   if(nodes.length>30)lines.push("另有 "+(nodes.length-30)+" 个节点未列出");
    for(const edge of connections.slice(0,24))lines.push("连线：id="+edge.id+"，from="+edge.fromNodeId+"，to="+edge.toNodeId);
    if(connections.length>24)lines.push("另有 "+(connections.length-24)+" 条连线未列出");
   }

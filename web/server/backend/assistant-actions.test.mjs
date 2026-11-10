@@ -101,6 +101,29 @@ test("P2 assistant HTTP route passes action mode and does not write canvas graph
  assert.equal(rejected.statusCode,400);
 });
 
+
+test("P2.3 assistant contract supports adding, removing group members and confirmed dissolution",()=>{
+ const changes=[
+  {type:"create_node",ref:"new-node",nodeType:"text",title:"新节点"},
+  {type:"add_to_group",groupId:"existing-group",members:["new-node","existing-free-node"]},
+  {type:"remove_from_group",groupId:"existing-group",members:["existing-member"]},
+  {type:"ungroup",groupId:"existing-group"}
+ ];
+ const parsed=parseAssistantActionResponse(JSON.stringify({answer:"管理分组",actions:changes}));
+ assert.deepEqual(parsed.actions,changes);
+ assert.match(CANVAS_ACTION_SYSTEM,/add_to_group/);
+ assert.match(CANVAS_ACTION_SYSTEM,/remove_from_group/);
+ assert.match(CANVAS_ACTION_SYSTEM,/ungroup/);
+ assert.match(CANVAS_ACTION_SYSTEM,/requires explicit user confirmation/);
+ for(const invalid of [
+  [{type:"add_to_group",groupId:"g",members:[]}],
+  [{type:"remove_from_group",groupId:"g",members:["a","a"]}],
+  [{type:"add_to_group",groupId:"g",members:["a"],force:true}],
+  [{type:"ungroup",groupId:"g",deleteMembers:true}],
+  [{type:"ungroup",groupId:777}],
+  [{type:"add_to_group",groupId:"g",members:Array.from({length:13},(_,i)=>"id"+i)}]
+ ])assert.throws(()=>parseAssistantActionResponse(JSON.stringify({answer:"x",actions:invalid})),/assistant_actions_invalid/);
+});
 test("P2.2 validates multi-type creation, grouped layout, and legacy content safety",()=>{
  const extended=[
   {type:"create_node",ref:"img",nodeType:"image",title:"场景图",prompt:"夜间车站"},

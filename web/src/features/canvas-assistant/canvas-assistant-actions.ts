@@ -10,6 +10,9 @@ export type AssistantCanvasAction=
  |{type:"create_text";ref:string;title:string;content:string}
  |{type:"create_node";ref:string;nodeType:AssistantCreatableNodeType;title?:string;content?:string;prompt?:string}
  |{type:"create_group";ref:string;title:string;members:string[]}
+ |{type:"add_to_group";groupId:string;members:string[]}
+ |{type:"remove_from_group";groupId:string;members:string[]}
+ |{type:"ungroup";groupId:string}
  |{type:"layout_nodes";nodeIds:string[];direction:AssistantLayoutDirection;gap?:number}
  |{type:"connect";from:string;to:string}
  |{type:"set_text";nodeId:string;content:string}
@@ -51,6 +54,10 @@ export function isAssistantCanvasAction(value:unknown):value is AssistantCanvasA
   case "create_group":return keys(action,["type","ref","title","members"])&&
    identifier(action.ref)&&boundedString(action.title,120)&&
    (ids(action.members,0,0)||ids(action.members,2,MAX_CREATED));
+  case "add_to_group":
+  case "remove_from_group":return keys(action,["type","groupId","members"])&&
+   identifier(action.groupId)&&ids(action.members,1,MAX_CREATED);
+  case "ungroup":return keys(action,["type","groupId"])&&identifier(action.groupId);
   case "layout_nodes":return keys(action,["type","nodeIds","direction","gap"])&&
    ids(action.nodeIds,1,MAX_CREATED)&&directions.has(action.direction as AssistantLayoutDirection)&&
    (action.gap===undefined||(Number.isInteger(action.gap)&&Number(action.gap)>=16&&Number(action.gap)<=160));
@@ -76,14 +83,15 @@ export function parseAssistantCanvasActions(value:unknown):AssistantCanvasAction
  return value;
 }
 export const isDangerousAssistantAction=(action:AssistantCanvasAction)=>
- action.type==="set_text"||action.type==="set_title"||action.type==="delete_node"||action.type==="delete_connection";
+ action.type==="set_text"||action.type==="set_title"||action.type==="delete_node"||action.type==="delete_connection"||action.type==="ungroup";
 export function dangerousAssistantActionSummary(actions:readonly AssistantCanvasAction[]){
  const count=(type:AssistantCanvasAction["type"])=>actions.filter(action=>action.type===type).length;
  return [
   count("set_text")?"修改 "+count("set_text")+" 个节点内容":"",
   count("set_title")?"修改 "+count("set_title")+" 个节点标题":"",
   count("delete_node")?"删除 "+count("delete_node")+" 个节点":"",
-  count("delete_connection")?"删除 "+count("delete_connection")+" 条连线":""
+  count("delete_connection")?"删除 "+count("delete_connection")+" 条连线":"",
+  count("ungroup")?"解散 "+count("ungroup")+" 个分组（保留组内节点和连线）":""
  ].filter(Boolean).join("、");
 }
 function createsCycle(from:string,to:string,connections:readonly CanvasConnection[]){
@@ -118,6 +126,20 @@ function layoutPositions(items:readonly CanvasNodeData[],center:Position,directi
   if(!validPosition(result))throw Error("节点位置超过画布安全范围，未执行。");
   return result;
  });
+}
+/** Expand a group without relocating members or modifying their content. */
+function expandGroupToEncloseMembers(group:CanvasNodeData,nodes:readonly CanvasNodeData[]):CanvasNodeData{
+ const members=nodes.filter(n=>n.metadata?.groupId===group.id);
+ if(!members.length)return group;
+ const left=Math.min(group.position.x,...members.map(n=>n.position.x-36));
+ const top=Math.min(group.position.y,...members.map(n=>n.position.y-80));
+ const right=Math.max(group.position.x+group.width,...members.map(n=>n.position.x+n.width+36));
+ const bottom=Math.max(group.position.y+group.height,...members.map(n=>n.position.y+n.height+36));
+ const position={x:left,y:top},width=right-left,height=bottom-top;
+ if(!validPosition(position)||!validPosition({x:right,y:bottom})||
+  !Number.isFinite(width)||!Number.isFinite(height)||width>MAX_COORD||height>MAX_COORD||
+  width<1||height<1)throw Error("添加节点后分组尺寸超出安全范围，未执行。");
+ return {...group,position,width,height};
 }
 /** Pure all-or-nothing graph transaction. The caller owns confirmation, saving and history. */
 export function applyAssistantCanvasActions(
@@ -174,6 +196,27 @@ export function applyAssistantCanvasActions(
     mapped.set(action.ref,template.id);createdNodeIds.push(template.id);applied++;
     continue;
    }
+   if(action.type==="add_to_group"||action.type==="remove_from_group"){
+    const groupId=resolve(action.groupId);
+    if(!nodes.some(n=>n.id===groupId&&n.type===CanvasNodeType.Group))
+     throw Error("目标分组不存在，未执行。");
+    const memberIds=action.members.map(resolve);
+    if(new Set(memberIds).size!==memberIds.length)throw Error("分组成员重复，未执行。");
+    const members=memberIds.map(id=>nodes.find(n=>n.id===id));
+    if(members.some(n=>!n||n.type===CanvasNodeType.Group))
+     throw Error("成员不存在或不支持嵌套分组，未执行。");
+    if(action.type==="add_to_group"&&members.some(n=>n?.metadata?.groupId))
+     throw Error("节点已属于其他分组或已在目标分组，未执行。");
+    if(action.type==="remove_from_group"&&members.some(n=>n?.metadata?.groupId!==groupId))
+     throw Error("节点不是目标分组的成员，未执行。");
+    const chosen=new Set(memberIds);
+    nodes=nodes.map(n=>!chosen.has(n.id)?n:{
+     ...n,metadata:{...n.metadata,groupId:action.type==="add_to_group"?groupId:undefined}
+    });
+    if(action.type==="add_to_group")
+     nodes=nodes.map(n=>n.id===groupId?expandGroupToEncloseMembers(n,nodes):n);
+    applied++;continue;
+   }
    if(action.type==="layout_nodes"){
     const targetIds=action.nodeIds.map(resolve);
     if(new Set(targetIds).size!==targetIds.length)throw Error("布局节点重复，未执行。");
@@ -218,6 +261,16 @@ export function applyAssistantCanvasActions(
  }else{
   for(const action of actions.filter(isDangerousAssistantAction)){
    switch(action.type){
+    case "ungroup":{
+     const groupId=mapped.get(action.groupId)??action.groupId;
+     const group=nodes.find(n=>n.id===groupId&&n.type===CanvasNodeType.Group);
+     if(!group)throw Error("目标分组不存在，未执行。");
+     if(connections.some(edge=>edge.fromNodeId===groupId||edge.toNodeId===groupId))
+      throw Error("分组自身仍有连线，请先处理连线，未执行。");
+     nodes=nodes.filter(n=>n.id!==groupId).map(n=>n.metadata?.groupId===groupId
+      ?{...n,metadata:{...n.metadata,groupId:undefined}}:n);
+     applied++;break;
+    }
     case "set_text":{
      const i=nodes.findIndex(node=>node.id===action.nodeId);
      if(i<0||nodes[i].type!==CanvasNodeType.Text)throw Error("文本节点不存在或类型不支持，未执行。");

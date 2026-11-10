@@ -88,7 +88,7 @@ function confirmDangerousActions(summary:string,signal:AbortSignal,themeName:Can
    ...canvasAssistantConfirmTheme(themeName),
    icon:<AlertCircle className="canvas-assistant-confirm-icon" size={19} aria-hidden="true"/>,
    title:"确认 AI 画布操作",
-   content:summary+"。这些操作会修改或删除已有内容，是否执行？",
+   content:summary+"。"+(summary.includes("解散")?"解散仅移除分组容器，保留组内节点、素材及连线。":"这些操作会修改或删除已有内容。")+"是否执行？",
    okText:"确认执行",okType:"danger",cancelText:"取消",
    onOk:()=>{finish(true);},onCancel:()=>{finish(false);}
   });
@@ -301,7 +301,7 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
        选择画布中的节点，询问创作建议、梳理故事结构，或优化文本内容。
       </p>
       <div className="canvas-assistant-suggestions" aria-label="推荐问题">
-        {["创建三个分镜文本节点并依次连线","将选中节点横向排列并创建分组","新建图片、视频和音频节点","为选中节点优化对白（修改前确认）"].map(hint=>         <button type="button" key={hint} className="canvas-assistant-suggestion" onClick={()=>setDraft(hint)}>
+        {["创建三个分镜文本节点并依次连线","将选中节点横向排列并创建分组","把选中节点添加到已有分组","移出分组中的指定节点","解散选中的分组（需确认）"].map(hint=>         <button type="button" key={hint} className="canvas-assistant-suggestion" onClick={()=>setDraft(hint)}>
           <span>{hint}</span><ArrowUpRight size={14}/>
          </button>)}
       </div>
@@ -359,7 +359,7 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
     </div>
     <div className="canvas-assistant-hint">
      <span>AI 建议仅供参考</span>
-      <span className="inline-flex items-center gap-1"><Check size={11}/>创建、布局、分组自动执行 · 修改删除需确认</span>
+      <span className="inline-flex items-center gap-1"><Check size={11}/>创建、布局、成员调整自动执行 · 修改删除及解散需确认</span>
      </div>   </footer>
   </aside>
  );

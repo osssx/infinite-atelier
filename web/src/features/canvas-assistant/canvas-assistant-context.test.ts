@@ -26,4 +26,14 @@ describe("assistant context snapshot",()=>{
   const overview=buildCanvasAssistantContext({projectTitle:"画布",nodes,connections:[],nodeIds:[],scope:"overview"});
   expect(overview.text).not.toContain("雨夜来信");
  });
+ it("gives selected group member IDs and overview group memberships without leaking text",()=>{
+  const graph=[...nodes,{id:"group-1",type:CanvasNodeType.Group,title:"第一幕",position:{x:0,y:0},width:760,height:480,metadata:{status:"idle" as const}},
+   {...nodes[2],metadata:{...nodes[2].metadata,groupId:"group-1"}}];
+  const selected=buildCanvasAssistantContext({projectTitle:"剧情",nodes:graph,connections:[],nodeIds:["group-1","t2"]});
+  expect(selected.text).toContain("分组成员：秘密 (id=t2)");
+  expect(selected.text).toContain("所属分组：id=group-1");
+  const overview=buildCanvasAssistantContext({projectTitle:"剧情",nodes:graph,connections:[],nodeIds:[],scope:"overview"});
+  expect(overview.text).toContain("groupId=group-1");
+  expect(overview.text).not.toContain("保密内容");
+ });
 });

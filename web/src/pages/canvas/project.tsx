@@ -49,7 +49,8 @@ const CanvasAssistantPanel=lazy(()=>import("@/features/canvas-assistant/canvas-a
 import {buildCanvasAssistantContext,type AssistantContextScope} from "@/features/canvas-assistant/canvas-assistant-context";
 import {applyAssistantCanvasActions,assistantCreatedSelection,type AssistantCanvasStage} from "@/features/canvas-assistant/canvas-assistant-actions";
 import {planAssistantNodeRuns,type AssistantExecutionAction} from "@/features/canvas-assistant/canvas-assistant-node-control";
-import {assistantWorkflowBinding,assistantWorkflowTemplateContext} from "@/features/canvas-assistant/canvas-assistant-workflow-params";
+import {assistantWorkflowBinding,assistantWorkflowTemplateContext,assistantComfyWorkflowScalarContext} from "@/features/canvas-assistant/canvas-assistant-workflow-params";
+import {assistantWorkflowPortContext} from "@/features/canvas-assistant/canvas-assistant-workflow-ports";
 import type {ComfyWorkflowTemplate} from "@/features/comfy-workflow/template-schema";
 import { isNativeTextEditorTarget } from "@/lib/canvas/canvas-text-context-menu";
 import { isNativeDescendantEvent } from "@/lib/canvas/canvas-portal-events";
@@ -1009,15 +1010,20 @@ function AtelierCanvasPage() {
             if(signal.aborted)throw new DOMException("Aborted","AbortError");
             const node=nodesRef.current.find(candidate=>candidate.id===id);
             if(!node)continue;
-            const active=assistantWorkflowBinding(node,effectiveConfig);
-            if(!active)continue;
-            const template=await getComfyTemplate(active.binding.templateId,active.binding.templateRevision);
+            const regular=node.type===COMFY_WORKFLOW_MOCK_TYPE?node.metadata?.comfyWorkflow:undefined;
+            const active=regular?null:assistantWorkflowBinding(node,effectiveConfig);
+            const templateId=regular?.templateId??active?.binding.templateId;
+            const revision=regular?.templateRevision??active?.binding.templateRevision;
+            if(!templateId||!revision)continue;
+            const template=await getComfyTemplate(templateId,revision);
             if(signal.aborted)throw new DOMException("Aborted","AbortError");
             if(!template)throw Error("节点 "+id+" 绑定的工作流预设版本不存在");
             templates.set(id,template);
-            descriptions.push(assistantWorkflowTemplateContext(node,effectiveConfig,template));
-        }
-        return {templates,context:descriptions.filter(Boolean).join("\n\n").slice(0,4200)};
+            if(regular){
+                descriptions.push(assistantComfyWorkflowScalarContext(node,template,connectionsRef.current));
+                descriptions.push(assistantWorkflowPortContext(node,template,nodesRef.current,connectionsRef.current));
+            }else descriptions.push(assistantWorkflowTemplateContext(node,effectiveConfig,template));        }
+        return {templates,context:descriptions.filter(Boolean).join("\n\n").slice(0,6600)};
     },[effectiveConfig]);
     const applyAssistantGraphActions=useCallback((actions:unknown,stage:AssistantCanvasStage,refs?:ReadonlyMap<string,string>,workflowTemplates?:ReadonlyMap<string,ComfyWorkflowTemplate>)=>{
         if(!projectLoaded||activeProjectIdRef.current!==projectId)throw Error("画布尚未加载完成，操作未执行。");

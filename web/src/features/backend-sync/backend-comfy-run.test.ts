@@ -5,6 +5,7 @@ import type {ComfyWorkflowTemplate} from "@/features/comfy-workflow/template-sch
 import {startBackendComfyWorkflowRun} from "./backend-comfy-run";
 import {defaultConfig} from "@/stores/use-config-store";
 import {setAssistantWorkflowParameter} from "@/features/canvas-assistant/canvas-assistant-workflow-params";
+import {applyAssistantCanvasActions} from "@/features/canvas-assistant/canvas-assistant-actions";
 import {fingerprintBackendSource,canonicalBackendGraph} from "./backend-source-fingerprint";
 import {fingerprintSource} from "../../../server/backend/repository.mjs";
 import {registerCanvasPortResolver} from "@/lib/canvas/canvas-ports";
@@ -72,8 +73,64 @@ describe("backend save fence + frozen Comfy submission",()=>{
 
   expect(bridge.submitFrozenJob).toHaveBeenCalledTimes(1);
  });
- it("media preset freezes selected slot assets as request-only edges and independent Comfy overrides",async()=>{
-  const mediaNode:CanvasNodeData={id:"media-target",type:"image",title:"Image",width:360,height:280,position:{x:0,y:0},
+ it("P2.6 AI workflow input override and typed canvas link reach the actual frozen Comfy request",async()=>{
+  registerCanvasPortResolver("comfy:workflow",node=>node.metadata?.comfyPorts??[]);
+  try{
+   const configured:ComfyWorkflowTemplate={...template,
+    apiGraph:{"1":{class_type:"Sampler",inputs:{steps:15,ref:null}}},
+    ports:[
+     {id:"steps",label:"Steps",direction:"target",valueKind:"INT",
+      inputBinding:{mode:"literal",targets:[{nodeId:"1",inputName:"steps"}]}},
+     {id:"ref",label:"Reference image",direction:"target",valueKind:"IMAGE",required:true,
+      inputBinding:{mode:"socket",replaceInternalLink:true,targets:[{nodeId:"1",inputName:"ref"}]}},
+     ...template.ports
+    ]
+   };
+   const target:CanvasNodeData={...workflow,metadata:{...workflow.metadata,
+    comfyWorkflow:{...workflow.metadata!.comfyWorkflow!,inputOverrides:{steps:15}},
+    comfyPorts:configured.ports.map(({id,label,direction,valueKind,required})=>({id,label,direction,valueKind,required}))
+   }};
+   const image:CanvasNodeData={id:"photo-ai",type:"image",title:"Reference",position:{x:0,y:0},
+    width:240,height:260,metadata:{content:"blob:img",storageKey:"image-123",mimeType:"image/png"}};
+   const refs=new Map([[target.id,configured]]);
+   const actions=[
+    {type:"connect_workflow_port",fromNodeId:"photo-ai",fromPortId:"image",toNodeId:"wf-1",toPortId:"ref"},
+    {type:"set_workflow_param",nodeId:"wf-1",portId:"steps",value:42},
+    {type:"run_workflow",nodeId:"wf-1"}
+   ];
+   const safe=applyAssistantCanvasActions({nodes:[target,image],connections:[]},actions,"safe",
+    {x:0,y:0},new Map(),defaultConfig,refs);
+   expect(safe.connections).toMatchObject([{fromNodeId:"photo-ai",toNodeId:"wf-1",toPortId:"ref"}]);
+   const confirmed=applyAssistantCanvasActions({nodes:safe.nodes,connections:safe.connections},
+    actions,"dangerous",{x:0,y:0},safe.refs,defaultConfig,refs);
+   expect(confirmed.nodes.find(n=>n.id==="wf-1")?.metadata?.comfyWorkflow?.inputOverrides).toEqual({steps:42});
+   let payload:any;
+   const uploaded:BlobUploadResponse={blobId:"b".repeat(64),sha256:"b".repeat(64),
+    byteSize:4,mimeType:"image/png",existing:false};
+   const bridge={state:{status:"connected"},assertComfyReady:vi.fn(async()=>{}),
+    assertNoActiveJob:vi.fn(async()=>{}),
+    saveProjectNow:vi.fn(async(graph:{nodes:CanvasNodeData[];connections:CanvasConnection[]})=>{
+     expect(graph.nodes.find(n=>n.id==="wf-1")?.metadata?.comfyWorkflow?.inputOverrides.steps).toBe(42);
+     expect(graph.connections).toHaveLength(1);
+     return {projectId:"p1",revision:3,sourceNodeFingerprint:"ai-fence"};
+    }),
+    uploadFrozenBlob:vi.fn(async()=>uploaded),
+    submitFrozenJob:vi.fn(async(data:unknown)=>{payload=data;return expectedJob})};
+   const work=confirmed.nodes.find(n=>n.id==="wf-1")!;
+   await expect(startBackendComfyWorkflowRun({
+    bridge,projectId:"p1",workflowNode:work,nodes:confirmed.nodes,connections:confirmed.connections,
+    template:configured,instanceId:"comfy-local",outputPortIds:["image"],
+    readBlob:async()=>new Blob(["DATA"],{type:"image/png"})
+   })).resolves.toEqual(expectedJob);
+   const request=payload.snapshot.comfyRequest;
+   expect(request.nodes[0].inputOverrides).toEqual({steps:42});
+   expect(request.edges).toMatchObject([{fromNodeId:"photo-ai",fromPortId:"image",toNodeId:"wf-1",toPortId:"ref"}]);
+   expect(request.externalInputs).toMatchObject([{kind:"asset",sourceNodeId:"photo-ai",valueKind:"IMAGE",
+    sha256:"b".repeat(64)}]);
+   expect(image.metadata?.content).toBe("blob:img");
+  }finally{registerCanvasPortResolver("comfy:workflow");}
+ });
+  it("media preset freezes selected slot assets as request-only edges and independent Comfy overrides",async()=>{  const mediaNode:CanvasNodeData={id:"media-target",type:"image",title:"Image",width:360,height:280,position:{x:0,y:0},
    metadata:{comfyMediaPreset:{templateId:"media-demo",templateRevision:"rev-media",overrides:{steps:0,enabled:false},
     slots:{reference:{nodeId:"reference",imageId:"still-1"}}}}};
   const reference:CanvasNodeData={id:"reference",type:"image",title:"Reference",width:360,height:280,position:{x:400,y:0},

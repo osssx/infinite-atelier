@@ -8,6 +8,7 @@ import {assistantValueHasSupportedShape,setAssistantNodePrompt,setAssistantNodeP
 import type {AiConfig} from "@/stores/use-config-store";
 import {validAssistantWorkflowScalar,setAssistantWorkflowParameter,type AssistantWorkflowScalar} from "./canvas-assistant-workflow-params";
 import type {ComfyWorkflowTemplate} from "@/features/comfy-workflow/template-schema";
+import {applyAssistantWorkflowPortAction,type AssistantWorkflowPortAction} from "./canvas-assistant-workflow-ports";
 
 export type AssistantCreatableNodeType="text"|"image"|"video"|"audio"|"config"|"director";
 export type AssistantLayoutDirection="horizontal"|"vertical"|"grid";
@@ -21,7 +22,7 @@ export type AssistantCanvasAction=
  |{type:"layout_nodes";nodeIds:string[];direction:AssistantLayoutDirection;gap?:number}
  |{type:"layout_graph";nodeIds:string[];direction?:AssistantGraphLayoutDirection;gap?:number;layerGap?:number}
  |{type:"connect";from:string;to:string}
- |{type:"set_text";nodeId:string;content:string}
+ |AssistantWorkflowPortAction |{type:"set_text";nodeId:string;content:string}
  |{type:"set_title";nodeId:string;title:string}
  |{type:"delete_node";nodeId:string}
  |{type:"delete_connection";connectionId:string}
@@ -76,6 +77,12 @@ export function isAssistantCanvasAction(value:unknown):value is AssistantCanvasA
    (action.gap===undefined||(Number.isInteger(action.gap)&&Number(action.gap)>=16&&Number(action.gap)<=160))&&
    (action.layerGap===undefined||(Number.isInteger(action.layerGap)&&Number(action.layerGap)>=40&&Number(action.layerGap)<=360));
   case "connect":return keys(action,["type","from","to"])&&identifier(action.from)&&identifier(action.to)&&action.from!==action.to;
+  case "connect_workflow_port":
+  case "replace_workflow_port":return keys(action,["type","fromNodeId","fromPortId","toNodeId","toPortId"])&&
+   identifier(action.fromNodeId)&&identifier(action.fromPortId)&&
+   identifier(action.toNodeId)&&identifier(action.toPortId)&&action.fromNodeId!==action.toNodeId;
+  case "disconnect_workflow_port":return keys(action,["type","nodeId","portId"])&&
+   identifier(action.nodeId)&&identifier(action.portId);
   case "set_prompt":return keys(action,["type","nodeId","prompt"])&&identifier(action.nodeId)&&boundedString(action.prompt,12000);
   case "set_node_param":return keys(action,["type","nodeId","key","value"])&&
    identifier(action.nodeId)&&assistantValueHasSupportedShape(action.key,action.value);
@@ -107,7 +114,7 @@ export function parseAssistantCanvasActions(value:unknown):AssistantCanvasAction
  return value;
 }
 export const isDangerousAssistantAction=(action:AssistantCanvasAction)=>
- action.type==="set_text"||action.type==="set_title"||action.type==="delete_node"||action.type==="delete_connection"||action.type==="ungroup"||action.type==="set_prompt"||action.type==="set_node_param"||action.type==="set_workflow_param";
+ action.type==="set_text"||action.type==="set_title"||action.type==="delete_node"||action.type==="delete_connection"||action.type==="ungroup"||action.type==="set_prompt"||action.type==="set_node_param"||action.type==="set_workflow_param"||action.type==="replace_workflow_port"||action.type==="disconnect_workflow_port";
 export function dangerousAssistantActionSummary(actions:readonly AssistantCanvasAction[]){
  const count=(type:AssistantCanvasAction["type"])=>actions.filter(action=>action.type===type).length;
  return [
@@ -118,7 +125,9 @@ export function dangerousAssistantActionSummary(actions:readonly AssistantCanvas
   count("ungroup")?"解散 "+count("ungroup")+" 个分组（保留组内节点和连线）":"",
   count("set_prompt")?"修改 "+count("set_prompt")+" 个生成提示词":"",
   count("set_node_param")?"修改 "+count("set_node_param")+" 项节点生成参数":"",
-  count("set_workflow_param")?"修改 "+count("set_workflow_param")+" 项工作流预设端口参数":"" ].filter(Boolean).join("、");
+  count("set_workflow_param")?"修改 "+count("set_workflow_param")+" 项工作流输入参数":"",
+  count("replace_workflow_port")?"替换 "+count("replace_workflow_port")+" 条工作流输入连线":"",
+  count("disconnect_workflow_port")?"解除 "+count("disconnect_workflow_port")+" 条工作流输入连线":"" ].filter(Boolean).join("、");
 }
 function createsCycle(from:string,to:string,connections:readonly CanvasConnection[]){
  const stack=[to],seen=new Set<string>();
@@ -283,6 +292,11 @@ export function applyAssistantCanvasActions(
     });
     applied++;continue;
    }
+   if(action.type==="connect_workflow_port"){
+    connections=applyAssistantWorkflowPortAction(nodes,connections,{...action,
+     fromNodeId:resolve(action.fromNodeId),toNodeId:resolve(action.toNodeId)},workflowTemplates);
+    applied++;continue;
+   }
    if(action.type==="connect"){
     const from=resolve(action.from),to=resolve(action.to);
     if(from===to)throw Error("不能连接同一个节点。");
@@ -319,13 +333,20 @@ export function applyAssistantCanvasActions(
      if(i<0)throw Error("目标节点不存在，未执行。");
      nodes[i]=setAssistantNodeParameter(nodes[i],action.key,action.value,config);applied++;break;
     }
-    case "set_workflow_param":{
-     const id=mapped.get(action.nodeId)??action.nodeId;
+     case "replace_workflow_port":
+     case "disconnect_workflow_port":{
+      connections=applyAssistantWorkflowPortAction(nodes,connections,
+       action.type==="replace_workflow_port"?{...action,
+        fromNodeId:mapped.get(action.fromNodeId)??action.fromNodeId,
+        toNodeId:mapped.get(action.toNodeId)??action.toNodeId}:action,workflowTemplates);
+      applied++;break;
+     }
+     case "set_workflow_param":{     const id=mapped.get(action.nodeId)??action.nodeId;
      const i=nodes.findIndex(node=>node.id===id);
      if(i<0)throw Error("工作流参数目标节点不存在，未执行。");
      const template=workflowTemplates?.get(id);
      if(!config||!template)throw Error("尚未加载该节点绑定的工作流预设参数定义，未修改。");
-     nodes[i]=setAssistantWorkflowParameter(nodes[i],action.portId,action.value,config,template);
+     nodes[i]=setAssistantWorkflowParameter(nodes[i],action.portId,action.value,config,template,connections);
      applied++;break;
     }
     case "set_text":{

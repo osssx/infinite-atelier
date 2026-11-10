@@ -170,15 +170,15 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
        if(!actions.length)notes.push("本轮没有执行任何画布操作，画布保持不变。");
        if(actions.length){
         const templates=new Map(workflowInfo.templates);
-        const workflowTargetIds=actions.filter(action=>action.type==="set_workflow_param").map(action=>action.nodeId);
-        const uncached=[...new Set(workflowTargetIds)].filter(target=>!templates.has(target));
+         const workflowTargetIds=actions.flatMap(action=>
+          action.type==="set_workflow_param"||action.type==="disconnect_workflow_port"?[action.nodeId]:
+          action.type==="connect_workflow_port"||action.type==="replace_workflow_port"?[action.toNodeId]:[]);        const uncached=[...new Set(workflowTargetIds)].filter(target=>!templates.has(target));
         if(uncached.length){
          const loaded=await getWorkflowTemplates(uncached,controller.signal);
          for(const [key,template] of loaded.templates)templates.set(key,template);
         }
         if(workflowTargetIds.some(target=>!templates.has(target)))
-         throw Error("找不到节点当前绑定的工作流参数定义，请选中该节点并检查其工作流预设。");
-        if(controller.signal.aborted)throw new DOMException("Aborted","AbortError");
+          throw Error("找不到节点当前绑定的 ComfyUI 工作流预设端口定义，请检查该节点的模板版本。");        if(controller.signal.aborted)throw new DOMException("Aborted","AbortError");
         const safe=onApplyActions(actions,"safe",undefined,templates);        if(safe.applied)notes.push("已自动执行 "+safe.applied+" 项画布操作。");
         const dangerous=actions.filter(isDangerousAssistantAction);
         let approved=true;

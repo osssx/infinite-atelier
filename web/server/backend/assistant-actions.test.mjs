@@ -121,8 +121,29 @@ test("AI ComfyUI preset port edits use strict server JSON shape, with user confi
   {type:"set_workflow_param",nodeId:"image1",portId:"unsafe port",value:10},
  ])assert.throws(()=>parseAssistantActionResponse(JSON.stringify({answer:"x",actions:[invalid]})),/assistant_actions_invalid/);
 });
-test("P2.5 server emits only bounded node settings and generation actions",()=>{
+test("P2.6 only allows precise Comfy workflow port binding, replacement and disconnect action shapes",()=>{
  const actions=[
+  {type:"connect_workflow_port",fromNodeId:"reference-image",fromPortId:"image",toNodeId:"wf-1",toPortId:"reference"},
+  {type:"replace_workflow_port",fromNodeId:"reference-2",fromPortId:"image",toNodeId:"wf-1",toPortId:"reference"},
+  {type:"disconnect_workflow_port",nodeId:"wf-1",portId:"seed"},
+  {type:"set_workflow_param",nodeId:"wf-1",portId:"steps",value:28},
+  {type:"run_workflow",nodeId:"wf-1"}
+ ];
+ assert.deepEqual(parseAssistantActionResponse(JSON.stringify({answer:"设置工作流端口",actions})).actions,actions);
+ for(const key of ["connect_workflow_port","replace_workflow_port","disconnect_workflow_port"])
+  assert.match(CANVAS_ACTION_SYSTEM,new RegExp(key));
+ assert.match(CANVAS_ACTION_SYSTEM,/requires confirmation/);
+ for(const invalid of [
+  {...actions[0],toNodeId:"reference-image"},
+  {...actions[0],fromPortId:""},
+  {...actions[0],toPortId:"bad id"},
+  {...actions[0],override:true},
+  {...actions[1],deleteExisting:true},
+  {...actions[2],portId:100},
+  {...actions[2],script:"unsafe"}
+ ])assert.throws(()=>parseAssistantActionResponse(JSON.stringify({answer:"x",actions:[invalid]})),/assistant_actions_invalid/);
+});
+test("P2.5 server emits only bounded node settings and generation actions",()=>{ const actions=[
   {type:"create_node",ref:"new",nodeType:"image",title:"新图片",prompt:"cinematic sunset"},
   {type:"set_prompt",nodeId:"new",prompt:"cinematic sunrise"},
   {type:"set_node_param",nodeId:"new",key:"model",value:"channel::my-image-model"},

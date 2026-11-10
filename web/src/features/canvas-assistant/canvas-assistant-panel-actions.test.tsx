@@ -7,6 +7,7 @@ import {CanvasNodeType,type CanvasAssistantSession,type CanvasNodeData} from "@/
 import {applyAssistantCanvasActions,type AssistantCanvasStage,type AssistantCanvasGraph} from "./canvas-assistant-actions";
 import {CanvasApiError} from "@/features/backend-sync/canvas-api";
 import type {ComfyWorkflowTemplate} from "@/features/comfy-workflow/template-schema";
+import {registerCanvasPortResolver} from "@/lib/canvas/canvas-ports";
 const mocks=vi.hoisted(()=>({
  api:vi.fn(),
  confirm:vi.fn(),
@@ -270,14 +271,74 @@ describe("P2 assistant confirmation boundary",()=>{
   expect(getWorkflowTemplates).toHaveBeenCalled();  expect((mocks.api.mock.calls[0][2].messages as {role:string;content:string}[]).at(-1)?.content).toContain("端口 id=steps");
   expect(graph.nodes[0].metadata?.comfyMediaPreset?.overrides).toEqual({steps:16});
   expect(mocks.confirm).toHaveBeenCalledTimes(1);
-  expect(mocks.confirm.mock.calls[0][0].content).toContain("工作流预设端口参数");  expect(mocks.run).not.toHaveBeenCalled();
-  await act(async()=>{mocks.confirm.mock.calls[0][0].onOk();await Promise.resolve();});
+   expect(mocks.confirm.mock.calls[0][0].content).toContain("工作流输入参数");
+   expect(mocks.run).not.toHaveBeenCalled();  await act(async()=>{mocks.confirm.mock.calls[0][0].onOk();await Promise.resolve();});
   expect(graph.nodes[0].metadata?.comfyMediaPreset?.overrides).toEqual({steps:42});
   expect(graph.nodes[0].metadata?.content).toBe(source.metadata?.content);
   expect(mocks.run).toHaveBeenCalledOnce();
   expect(container!.textContent).toContain("已确认并执行 1 项内容或参数修改"); });
-  it("P2.5 requires approval before prompt and parameter edits can trigger generation",async()=>{
-   const fixture=setup([   {type:"set_prompt",nodeId:"text-existing",prompt:"新生成提示词"},
+ it("P2.6 confirms replacement of a connected Comfy workflow input before running",async()=>{
+  registerCanvasPortResolver("comfy:workflow",node=>node.metadata?.comfyPorts??[]);
+  const template:ComfyWorkflowTemplate={id:"wf-tpl",revision:"rev1",name:"Workflow",
+   apiGraph:{"1":{class_type:"TextProcessor",inputs:{text:""}},"2":{class_type:"Output",inputs:{}}},
+   requirements:{classTypes:["TextProcessor","Output"]},
+   ports:[
+    {id:"text_in",label:"文本输入",direction:"target",valueKind:"STRING",required:true,
+     inputBinding:{mode:"literal",targets:[{nodeId:"1",inputName:"text"}]}},
+    {id:"result",label:"图片输出",direction:"source",valueKind:"IMAGE",
+     outputBinding:{nodeId:"2",outputIndex:0},capture:{kind:"image",adapterId:"SaveImage"}}
+   ]};
+  const work:CanvasNodeData={id:"wf-node",type:"comfy:workflow",title:"工作流",
+   position:{x:300,y:0},width:360,height:260,metadata:{
+    comfyWorkflow:{templateId:"wf-tpl",templateRevision:"rev1",bindingState:"needs-instance-binding",inputOverrides:{}},
+    comfyPorts:template.ports.map(({id,label,direction,valueKind})=>({id,label,direction,valueKind}))
+   }};
+  const textNode=(id:string):CanvasNodeData=>({id,type:CanvasNodeType.Text,title:id,
+   position:{x:0,y:0},width:280,height:180,metadata:{content:id+" content"}});
+  const oldEdge={id:"old-edge",fromNodeId:"source-a",fromPortId:"text",toNodeId:"wf-node",toPortId:"text_in"};
+  let graph:AssistantCanvasGraph={nodes:[textNode("source-a"),textNode("source-b"),work],
+   connections:[oldEdge]};
+  const apply=vi.fn((actions:unknown,stage:AssistantCanvasStage,refs?:ReadonlyMap<string,string>,
+   templates?:ReadonlyMap<string,ComfyWorkflowTemplate>)=>{
+   const result=applyAssistantCanvasActions(graph,actions,stage,{x:50,y:50},refs,defaultConfig,templates);
+   graph={nodes:result.nodes,connections:result.connections};
+   return {applied:result.applied,refs:result.refs};
+  });
+  const load=vi.fn(async()=>({context:"输入 portId=text_in，类型=STRING，已连接=source-a.text；sourceNodeId=source-b，sourcePortId=text",
+   templates:new Map([["wf-node",template]])}));
+  mocks.api.mockResolvedValue({answer:"更换上游文本并执行",model:"demo",actions:[
+   {type:"replace_workflow_port",fromNodeId:"source-b",fromPortId:"text",toNodeId:"wf-node",toPortId:"text_in"},
+   {type:"run_workflow",nodeId:"wf-node"}
+  ]});
+  function Harness(){
+   const [sessions,setSessions]=useState<CanvasAssistantSession[]>([]);
+   const [active,setActive]=useState<string|null>(null);
+   return createElement(CanvasAssistantPanel,{
+    projectId:"p1",projectTitle:"测试工作流",open:true,onClose:()=>{},
+    sessions,setSessions,activeChatId:active,setActiveChatId:setActive,
+    selectedNodes:[{id:"wf-node",title:"工作流",type:"comfy:workflow"}],
+    getContext:()=>({text:"节点工作流 wf-node",references:[],truncated:false}),
+    getWorkflowTemplates:load,onApplyActions:apply,onRunActions:mocks.run,config:defaultConfig
+   });
+  }
+  try{
+   container=document.createElement("div");document.body.appendChild(container);
+   root=createRoot(container);
+   await renderAndSend(Harness);
+   expect(load).toHaveBeenCalled();
+   expect((mocks.api.mock.calls[0][2].messages as {role:string;content:string}[]).at(-1)?.content).toContain("portId=text_in");
+   expect(mocks.confirm).toHaveBeenCalledOnce();
+   expect(mocks.confirm.mock.calls[0][0].content).toContain("替换 1 条工作流输入连线");
+   expect(graph.connections).toEqual([oldEdge]);
+   expect(mocks.run).not.toHaveBeenCalled();
+   await act(async()=>{mocks.confirm.mock.calls[0][0].onOk();await Promise.resolve();});
+   expect(graph.connections).toMatchObject([{fromNodeId:"source-b",fromPortId:"text",toNodeId:"wf-node",toPortId:"text_in"}]);
+   expect(graph.connections[0].id).not.toBe(oldEdge.id);
+   expect(mocks.run).toHaveBeenCalledOnce();
+   expect(container!.textContent).toContain("已通过原有节点执行链路提交 1 项生成任务");
+  }finally{registerCanvasPortResolver("comfy:workflow");}
+ });
+   it("P2.5 requires approval before prompt and parameter edits can trigger generation",async()=>{   const fixture=setup([   {type:"set_prompt",nodeId:"text-existing",prompt:"新生成提示词"},
    {type:"set_node_param",nodeId:"text-existing",key:"reasoningEffort",value:"high"},
    {type:"run_node",nodeId:"text-existing",mode:"text"}
   ]);

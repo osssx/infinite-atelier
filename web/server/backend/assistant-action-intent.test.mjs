@@ -103,6 +103,56 @@ test("compound node edits that need a model plan get exactly one structured-outp
  assert.deepEqual(result.actions,plan.actions);
  assert.match(repairSystem,/FORMAT CORRECTION/);
 });
+
+test("repair inference isolates latest command from an old failed chat history",async()=>{
+ const request="创建一个新的文本节点";
+ const messages=[
+  {role:"user",content:"解释一下如何组织剧情"},
+  {role:"assistant",content:"可以先建立剧情节点"},
+  {role:"user",content:request},
+  {role:"user",content:request},
+  {role:"user",content:request}
+ ];
+ const plan={answer:"创建新节点",actions:[{type:"create_text",ref:"new",title:"新节点",content:"第一场"}]};
+ const calls=[];
+ const result=await run(async(_url,options)=>{
+  const body=JSON.parse(options.body);
+  calls.push(body.messages);
+  // The compatible model fails when repeated user-only prompts remain in its input.
+  return answer(body.messages.length>2?"准备创建节点，但未返回操作列表":JSON.stringify(plan));
+ },messages);
+ assert.equal(calls.length,2);
+ assert.equal(calls[0].length,messages.length+1);
+ assert.equal(calls[1].length,2);
+ assert.equal(calls[1][1].content,request);
+ assert.equal(result.actions[0].type,"create_text");
+ assert.equal(result.formatRepairCount,1);
+});
+test("Gemini repair also isolates latest user request while preserving valid system instruction",async()=>{
+ const request="创建一个文本节点";
+ const messages=[{role:"user",content:"历史请求"},{role:"user",content:"历史请求"},{role:"user",content:request}];
+ const payloads=[];
+ const geminiVault={
+  get:()=>({provider:"google_gemini",hasKey:true,keyVersion:"v1"}),
+  withSecretVersion:(_version,consumer)=>consumer(Buffer.from("private-key"))
+ };
+ const service=createAssistantChatService({vault:geminiVault,compatibleUpstreamCall:async(_url,options)=>{
+  const payload=JSON.parse(options.body);payloads.push(payload);
+  const content=payload.contents[0].parts.length===1?
+   JSON.stringify({answer:"已安排",actions:[{type:"create_text",ref:"new",title:"新建",content:"剧情"}]}):
+   "我将创建文本节点";
+  return new Response(JSON.stringify({candidates:[{content:{parts:[{text:content}]}}]}),{status:200});
+ }});
+ const result=await service({...base,channelId:"gemini",provider:"google_gemini",
+  baseUrl:"https://generativelanguage.googleapis.com",model:"gemini-2.5-pro",messages});
+ assert.equal(payloads.length,2);
+ assert.equal(payloads[0].contents.length,1); // Consecutive user turns merge into a multi-part turn.
+ assert.equal(payloads[0].contents[0].parts.length,3);
+ assert.equal(payloads[1].contents.length,1);
+ assert.equal(payloads[1].contents[0].parts[0].text,request);
+ assert.match(payloads[1].systemInstruction.parts[0].text,/FORMAT CORRECTION/);
+ assert.equal(result.actions[0].type,"create_text");
+});
 test("if model still promises work but returns no operations, fail clearly without reporting success",async()=>{
  let calls=0;
  await assert.rejects(run(async()=>{

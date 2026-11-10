@@ -5,6 +5,7 @@ import {afterEach,beforeEach,describe,expect,it,vi} from "vitest";
 import {defaultConfig} from "@/stores/use-config-store";
 import {CanvasNodeType,type CanvasAssistantSession,type CanvasNodeData} from "@/types/canvas";
 import {applyAssistantCanvasActions,type AssistantCanvasStage,type AssistantCanvasGraph} from "./canvas-assistant-actions";
+import {CanvasApiError} from "@/features/backend-sync/canvas-api";
 const mocks=vi.hoisted(()=>({
  api:vi.fn(),
  confirm:vi.fn(),
@@ -68,13 +69,21 @@ function setup(actions:unknown[]){
 async function renderAndSend(Harness:()=>React.ReactElement){
  await act(async()=>{root!.render(createElement(Harness));});
  const suggestion=Array.from(container!.querySelectorAll("button")).find(btn=>btn.textContent?.includes("创建三个分镜文本节点"));
- expect(suggestion).toBeTruthy();
- await act(async()=>{suggestion!.click();});
+ if(suggestion){
+  await act(async()=>{suggestion.click();});
+ }else{
+  const input=container!.querySelector<HTMLTextAreaElement>('[aria-label="向 AI 助手发送消息"]')!;
+  const setter=Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,"value")!.set!;
+  await act(async()=>{
+   setter.call(input,"创建三个分镜文本节点并依次连线");
+   input.dispatchEvent(new Event("input",{bubbles:true}));
+  });
+ }
  const send=container!.querySelector<HTMLButtonElement>('[aria-label="发送消息"]');
  expect(send).toBeTruthy();
+ expect(send!.disabled).toBe(false);
  await act(async()=>{send!.click();await Promise.resolve();});
-}
-beforeEach(()=>{
+}beforeEach(()=>{
  (globalThis as {IS_REACT_ACT_ENVIRONMENT?:boolean}).IS_REACT_ACT_ENVIRONMENT=true;
  mocks.api.mockReset();mocks.confirm.mockReset();mocks.ensure.mockClear();
  mocks.confirm.mockImplementation(()=>({destroy:vi.fn()}));
@@ -196,8 +205,25 @@ describe("P2 assistant confirmation boundary",()=>{
   expect(container!.textContent).toContain("画布保持不变");
   expect(mocks.confirm).not.toHaveBeenCalled();
  });
- it("P2.4 auto-executes dependency layout after creating and connecting nodes, without confirmation",async()=>{  const actions=[
-   {type:"create_node",ref:"step1",nodeType:"text",title:"起点",content:"场景一"},
+  it("repeated failures in one session do not pollute later successful canvas operations",async()=>{
+   const fixture=setup([{type:"create_text",ref:"new1",title:"新的分镜",content:"剧情"}]);
+   mocks.api.mockRejectedValueOnce(new CanvasApiError("assistant_actions_missing",502));
+   mocks.api.mockRejectedValueOnce(new CanvasApiError("assistant_actions_missing",502));
+   mocks.api.mockRejectedValueOnce(new CanvasApiError("assistant_actions_missing",502));
+   for(let i=0;i<4;i++)await renderAndSend(fixture.Harness);
+   expect(mocks.api).toHaveBeenCalledTimes(4);
+   for(const call of mocks.api.mock.calls){
+    const messages=call[2].messages as Array<{role:string;content:string}>;
+    expect(messages).toHaveLength(1);
+    expect(messages[0].role).toBe("user");
+    expect(messages[0].content).toContain("创建三个分镜文本节点");
+   }
+   expect(fixture.apply).toHaveBeenCalledTimes(1);
+   expect(fixture.getGraph().nodes).toHaveLength(2);
+   expect(container!.textContent).toContain("已自动执行 1 项画布操作");
+   expect(container!.textContent).toContain("模型未返回可执行的画布指令");
+  });
+  it("P2.4 auto-executes dependency layout after creating and connecting nodes, without confirmation",async()=>{  const actions=[   {type:"create_node",ref:"step1",nodeType:"text",title:"起点",content:"场景一"},
    {type:"create_node",ref:"step2",nodeType:"text",title:"终点",content:"场景二"},
    {type:"connect",from:"text-existing",to:"step1"},
    {type:"connect",from:"step1",to:"step2"},

@@ -242,10 +242,13 @@ export function createAssistantChatService({vault,upstreamCall=fetch,
     ' with non-empty "actions" and a short "answer". No prose outside JSON,'+
     " no Markdown or promises of future execution. Use real IDs from the provided"+
     " context. If IDs are unavailable, do not invent IDs.";
-   const correctionBody=provider==="google_gemini"?
-    JSON.stringify({...normalizeGeminiHistory(messages,correction),generationConfig:{maxOutputTokens:4096}}):
-    JSON.stringify({model,messages:[{role:"system",content:correction},...messages],stream:false});
-   const second=await infer(correctionBody);
+    // Retry with just the latest user request and its fresh canvas snapshot.
+    // Old user-only error turns and prior action narratives can lock compatible
+    // models into prose replies, even if a corrective system instruction is used.
+    const repairMessages=[messages.at(-1)];
+    const correctionBody=provider==="google_gemini"?
+     JSON.stringify({...normalizeGeminiHistory(repairMessages,correction),generationConfig:{maxOutputTokens:4096}}):
+     JSON.stringify({model,messages:[{role:"system",content:correction},...repairMessages],stream:false});   const second=await infer(correctionBody);
    let recovered;
    try{recovered=parseAssistantActionResponse(second.answer)}
    catch{throw fail("assistant_actions_invalid",502)}

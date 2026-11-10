@@ -6,8 +6,7 @@ import {nanoid} from "nanoid";
 import {CanvasApiError,canvasApi} from "@/features/backend-sync/canvas-api";
 import {ensureSqliteModelChannelForExecution,modelChannelProvider} from "@/features/backend-sync/model-channel-autoroute";
 import {modelOptionLabel,modelOptionName,resolveModelChannel,resolveModelScript,selectableModelsByCapability,type AiConfig} from "@/stores/use-config-store";
-import {canvasThemes} from "@/lib/canvas-theme";
-import {useThemeStore} from "@/stores/use-theme-store";
+import {canvasThemes,type CanvasColorTheme} from "@/lib/canvas-theme";import {useThemeStore} from "@/stores/use-theme-store";
 import {CanvasNodeType,type CanvasAssistantMessage,type CanvasAssistantSession,type CanvasNodeTypeId} from "@/types/canvas";
 import type {AssistantContextResult,AssistantContextScope} from "./canvas-assistant-context";
 import {parseAssistantCanvasActions,isDangerousAssistantAction,dangerousAssistantActionSummary,type AssistantCanvasStage} from "./canvas-assistant-actions";
@@ -50,33 +49,63 @@ export function canvasAssistantErrorText(error:unknown){
  if(error instanceof Error)return assistantErrorMessages[error.message]??error.message;
  return "模型请求失败，请稍后重试。";
 }
+/** Modal.confirm portals into document.body, so it cannot inherit the canvas panel palette. */
+export function canvasAssistantConfirmTheme(themeName:CanvasColorTheme){
+ const palette=canvasThemes[themeName];
+ return {
+  className:"canvas-assistant-confirm",
+  rootClassName:"canvas-assistant-confirm-root",
+  style:{
+   "--assistant-confirm-panel":palette.toolbar.panel,
+   "--assistant-confirm-surface":palette.node.panel,
+   "--assistant-confirm-border":palette.toolbar.border,
+   "--assistant-confirm-text":palette.node.text,
+   "--assistant-confirm-muted":palette.node.muted,
+   "--assistant-confirm-hover":palette.toolbar.itemHover,
+   "--assistant-confirm-active":palette.toolbar.activeBg,
+   "--assistant-confirm-danger":themeName==="dark"?"#fca5a5":"#b91c1c",
+   "--assistant-confirm-shadow":themeName==="dark"?"0 24px 72px rgba(0,0,0,.60)":"0 24px 72px rgba(41,37,36,.20)",
+  } as CSSProperties,
+  styles:{mask:{backgroundColor:themeName==="dark"?"rgba(10,9,8,.64)":"rgba(30,27,24,.32)"}}
+ };
+}
 /** Confirm only high-risk operations; do not display a generic diff preview. */
-function confirmDangerousActions(summary:string,signal:AbortSignal):Promise<boolean>{
+function confirmDangerousActions(summary:string,signal:AbortSignal,themeName:CanvasColorTheme):Promise<boolean>{
  return new Promise(resolve=>{
   if(signal.aborted){resolve(false);return;}
   let settled=false;
   let dialog:ReturnType<typeof Modal.confirm>|undefined;
+  let unsubscribe=()=>{};
   const finish=(accepted:boolean)=>{
    if(settled)return;
    settled=true;
+   unsubscribe();
    signal.removeEventListener("abort",onAbort);
    resolve(accepted);
   };
   const onAbort=()=>{dialog?.destroy();finish(false);};
   dialog=Modal.confirm({
+   ...canvasAssistantConfirmTheme(themeName),
+   icon:<AlertCircle className="canvas-assistant-confirm-icon" size={19} aria-hidden="true"/>,
    title:"确认 AI 画布操作",
    content:summary+"。这些操作会修改或删除已有内容，是否执行？",
    okText:"确认执行",okType:"danger",cancelText:"取消",
    onOk:()=>{finish(true);},onCancel:()=>{finish(false);}
   });
+  // Keep an already-open portal aligned if the user switches the canvas theme.
+  if(typeof useThemeStore.subscribe==="function"){
+   unsubscribe=useThemeStore.subscribe(state=>{
+    if(!settled)dialog?.update(canvasAssistantConfirmTheme(state.theme));
+   });
+  }
   signal.addEventListener("abort",onAbort,{once:true});
   if(signal.aborted)onAbort();
  });
-}
-/** UI messages update only on send/terminal, not on every canvas pointer event. */
+}/** UI messages update only on send/terminal, not on every canvas pointer event. */
 export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessions,setSessions,activeChatId,setActiveChatId,selectedNodes,getContext,onApplyActions,config}:Props){
- const [draft,setDraft]=useState("");
- const [modelRef,setModelRef]=useState(config.textModel);
+  const themeName=useThemeStore(state=>state.theme);
+  const theme=canvasThemes[themeName];
+  const [draft,setDraft]=useState(""); const [modelRef,setModelRef]=useState(config.textModel);
  const [scope,setScope]=useState<AssistantContextScope>("selection");
  const [includeContext,setIncludeContext]=useState(true);
  const [includedIds,setIncludedIds]=useState<string[]>([]);
@@ -130,7 +159,7 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
       if(safe.applied)notes.push("已自动执行 "+safe.applied+" 项画布操作。");
       const dangerous=actions.filter(isDangerousAssistantAction);
       if(dangerous.length){
-       const confirmed=await confirmDangerousActions(dangerousAssistantActionSummary(dangerous),controller.signal);
+       const confirmed=await confirmDangerousActions(dangerousAssistantActionSummary(dangerous),controller.signal,themeName);
        if(controller.signal.aborted)throw new DOMException("Aborted","AbortError");
        if(confirmed){
         const result=onApplyActions(actions,"dangerous",safe.refs);
@@ -152,16 +181,14 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
    if(controllerRef.current===controller)controllerRef.current=null;
    setSending(false);
   }
-  },[draft,chosenModel,config,includeContext,getContext,includedIds,effectiveScope,session,setSessions,setActiveChatId,projectId,onApplyActions]);
+  },[draft,chosenModel,config,includeContext,getContext,includedIds,effectiveScope,session,setSessions,setActiveChatId,projectId,onApplyActions,themeName]);
   const clear=()=>{
   if(!session||sending)return;
-  Modal.confirm({title:"删除当前对话？",content:"删除后无法恢复。",okText:"删除",okType:"danger",cancelText:"取消",onOk:()=>{
+  Modal.confirm({...canvasAssistantConfirmTheme(themeName),icon:<AlertCircle className="canvas-assistant-confirm-icon" size={19} aria-hidden="true"/>,title:"删除当前对话？",content:"删除后无法恢复。",okText:"删除",okType:"danger",cancelText:"取消",onOk:()=>{
    setSessions(prev=>prev.filter(item=>item.id!==session.id));
    setActiveChatId(null);
   }});
  };
- const themeName=useThemeStore(state=>state.theme);
- const theme=canvasThemes[themeName];
  const assistantStyle={
   "--assistant-panel":theme.toolbar.panel,
   "--assistant-surface":theme.node.panel,

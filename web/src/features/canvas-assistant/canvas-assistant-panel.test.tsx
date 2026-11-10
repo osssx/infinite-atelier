@@ -13,8 +13,7 @@ vi.mock("@/stores/use-theme-store",()=>({
 vi.mock("antd",()=>({Modal:{confirm:vi.fn()}}));
 vi.mock("streamdown",()=>({Streamdown:({children}:{children:unknown})=>children}));
 
-import {CanvasAssistantPanel,canvasAssistantErrorText} from "./canvas-assistant-panel";
-import {CanvasApiError} from "@/features/backend-sync/canvas-api";
+import {CanvasAssistantPanel,canvasAssistantConfirmTheme,canvasAssistantErrorText} from "./canvas-assistant-panel";import {CanvasApiError} from "@/features/backend-sync/canvas-api";
 
 const noop=()=>{};
 const props:ComponentProps<typeof CanvasAssistantPanel>={
@@ -33,6 +32,24 @@ describe("assistant error messages",()=>{
   expect(canvasAssistantErrorText(new CanvasApiError("assistant_response_invalid",502))).toContain("无法解析");
   expect(canvasAssistantErrorText(new CanvasApiError("assistant_upstream_rate_limited",502))).toContain("429");
   expect(canvasAssistantErrorText(new CanvasApiError("assistant_upstream_retry_exhausted",504))).toContain("重试 2 次");
+ });
+});
+
+describe("canvas assistant confirm modal theme",()=>{
+ it.each(["light","dark"] as const)("uses %s canvas palette on portaled modal",name=>{
+  const theme=canvasAssistantConfirmTheme(name);
+  expect(theme.className).toBe("canvas-assistant-confirm");
+  expect(theme.rootClassName).toBe("canvas-assistant-confirm-root");
+  const vars=theme.style as Record<string,string>;
+  expect(vars["--assistant-confirm-surface"]).toBe(canvasThemes[name].node.panel);
+  expect(vars["--assistant-confirm-text"]).toBe(canvasThemes[name].node.text);
+  expect(vars["--assistant-confirm-border"]).toBe(canvasThemes[name].toolbar.border);
+  expect(vars["--assistant-confirm-muted"]).toBe(canvasThemes[name].node.muted);
+  expect(theme.styles.mask.backgroundColor).toBeTruthy();
+ });
+ it("keeps dark and light dialog tokens distinct",()=>{
+  expect((canvasAssistantConfirmTheme("dark").style as Record<string,string>)["--assistant-confirm-surface"])
+   .not.toBe((canvasAssistantConfirmTheme("light").style as Record<string,string>)["--assistant-confirm-surface"]);
  });
 });
 

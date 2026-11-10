@@ -99,6 +99,9 @@ describe("P2 assistant confirmation boundary",()=>{
   const props=mocks.confirm.mock.calls[0][0];
   expect(props.content).toContain("修改 1 个节点内容");
   expect(props.content).not.toContain("AI 覆盖正文");
+  expect(props.className).toBe("canvas-assistant-confirm");
+  expect(props.style["--assistant-confirm-surface"]).toBe("#fbfaf7");
+  expect(props.rootClassName).toBe("canvas-assistant-confirm-root");
   await act(async()=>{props.onOk();await Promise.resolve();});
   expect(fixture.getGraph().nodes[0].metadata?.content).toBe("AI 覆盖正文");
   expect(fixture.apply).toHaveBeenCalledTimes(2);

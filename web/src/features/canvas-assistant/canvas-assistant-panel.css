@@ -385,3 +385,106 @@
   .canvas-assistant-shell { animation: none; }
   .canvas-assistant-shell button { transition: none !important; }
 }
+
+/*
+ * Ant Design's static Modal.confirm renders in a document.body portal.
+ * Scope every override to this dialog; the canvas theme variables are attached
+ * directly to its modal element by canvasAssistantConfirmTheme().
+ */
+.canvas-assistant-confirm-root .canvas-assistant-confirm.ant-modal,
+.canvas-assistant-confirm.ant-modal {
+  color: var(--assistant-confirm-text);
+  font-family: inherit;
+}
+.canvas-assistant-confirm.ant-modal .ant-modal-container,
+.canvas-assistant-confirm.ant-modal .ant-modal-content {
+  overflow: hidden;
+  border: 1px solid var(--assistant-confirm-border);
+  border-radius: 16px;
+  background: var(--assistant-confirm-surface);
+  color: var(--assistant-confirm-text);
+  box-shadow: var(--assistant-confirm-shadow);
+}
+.canvas-assistant-confirm.ant-modal .ant-modal-container {
+  padding: 22px 24px 20px;
+}
+.canvas-assistant-confirm.ant-modal .ant-modal-content {
+  padding: 22px 24px 20px;
+}
+.canvas-assistant-confirm.ant-modal .ant-modal-container .ant-modal-content {
+  padding: 0;
+  border: 0;
+  box-shadow: none;
+}
+.canvas-assistant-confirm.ant-modal .ant-modal-confirm-body,
+.canvas-assistant-confirm.ant-modal .ant-modal-confirm-body-wrapper {
+  color: var(--assistant-confirm-text);
+}
+.canvas-assistant-confirm.ant-modal .ant-modal-confirm-title,
+.canvas-assistant-confirm.ant-modal .ant-modal-title {
+  color: var(--assistant-confirm-text);
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.5;
+}
+.canvas-assistant-confirm.ant-modal .ant-modal-confirm-content {
+  margin-top: 9px;
+  color: var(--assistant-confirm-muted);
+  font-size: 12px;
+  line-height: 1.8;
+}
+.canvas-assistant-confirm.ant-modal .canvas-assistant-confirm-icon,
+.canvas-assistant-confirm.ant-modal .ant-modal-confirm-body .anticon {
+  color: var(--assistant-confirm-danger);
+}
+.canvas-assistant-confirm.ant-modal .ant-modal-confirm-btns {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 23px;
+}
+.canvas-assistant-confirm.ant-modal .ant-modal-confirm-btns .ant-btn {
+  min-width: 70px;
+  height: 33px;
+  margin-inline-start: 0;
+  padding-inline: 13px;
+  border: 1px solid var(--assistant-confirm-border);
+  border-radius: 9px;
+  background: var(--assistant-confirm-panel);
+  color: var(--assistant-confirm-text);
+  font-size: 12px;
+  font-weight: 550;
+  box-shadow: none;
+  transition: background-color .16s ease, border-color .16s ease, color .16s ease;
+}
+.canvas-assistant-confirm.ant-modal .ant-modal-confirm-btns .ant-btn:hover {
+  border-color: var(--assistant-confirm-muted);
+  background: var(--assistant-confirm-hover);
+  color: var(--assistant-confirm-text);
+}
+.canvas-assistant-confirm.ant-modal .ant-modal-confirm-btns .ant-btn-primary,
+.canvas-assistant-confirm.ant-modal .ant-modal-confirm-btns .ant-btn-dangerous {
+  border-color: var(--assistant-confirm-danger);
+  background: color-mix(in srgb, var(--assistant-confirm-danger) 11%, var(--assistant-confirm-surface));
+  color: var(--assistant-confirm-danger);
+}
+.canvas-assistant-confirm.ant-modal .ant-modal-confirm-btns .ant-btn-primary:hover,
+.canvas-assistant-confirm.ant-modal .ant-modal-confirm-btns .ant-btn-dangerous:hover {
+  border-color: var(--assistant-confirm-danger);
+  background: color-mix(in srgb, var(--assistant-confirm-danger) 21%, var(--assistant-confirm-surface));
+  color: var(--assistant-confirm-danger);
+}
+.canvas-assistant-confirm.ant-modal .ant-modal-confirm-btns .ant-btn:focus-visible {
+  outline: 2px solid var(--assistant-confirm-text);
+  outline-offset: 3px;
+}
+@media (max-width: 520px) {
+  .canvas-assistant-confirm.ant-modal .ant-modal-container,
+  .canvas-assistant-confirm.ant-modal .ant-modal-content { padding: 18px; }
+  .canvas-assistant-confirm.ant-modal .ant-modal-container .ant-modal-content { padding: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .canvas-assistant-confirm.ant-modal .ant-modal-confirm-btns .ant-btn { transition: none; }
+}
+

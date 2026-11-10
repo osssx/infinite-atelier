@@ -31,8 +31,8 @@ describe("assistant error messages",()=>{
   expect(canvasAssistantErrorText(new CanvasApiError("assistant_response_incomplete",502))).toContain("未完成");
   expect(canvasAssistantErrorText(new CanvasApiError("assistant_response_invalid",502))).toContain("无法解析");
   expect(canvasAssistantErrorText(new CanvasApiError("assistant_upstream_rate_limited",502))).toContain("429");
-  expect(canvasAssistantErrorText(new CanvasApiError("assistant_upstream_retry_exhausted",504))).toContain("重试 2 次");
- });
+   expect(canvasAssistantErrorText(new CanvasApiError("assistant_upstream_retry_exhausted",504))).toContain("重试 2 次");
+   expect(canvasAssistantErrorText(new CanvasApiError("assistant_actions_missing",502))).toContain("画布仍未修改"); });
 });
 
 describe("canvas assistant confirm modal theme",()=>{

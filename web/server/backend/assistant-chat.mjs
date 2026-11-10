@@ -1,6 +1,7 @@
 import {DEFAULT_OPENAI_ENDPOINT,normalizeOpenAiCompatBaseUrl,createPinnedOpenAiCompatCall} from "./openai-compat-endpoints.mjs";
 import {setTimeout as delay} from "node:timers/promises";
 import {CANVAS_ACTION_SYSTEM,parseAssistantActionResponse} from "./assistant-actions.mjs";
+import {latestCanvasUserRequest,isCanvasEditInstruction,exactWholeCanvasGraphLayout} from "./assistant-action-intent.mjs";
 
 const fail=(code,statusCode=400)=>Object.assign(Error(code),{code,statusCode});
 const validModel=value=>typeof value==="string"&&value.length<=128&&
@@ -179,40 +180,75 @@ export function createAssistantChatService({vault,upstreamCall=fetch,
    headers={"content-type":"application/json",authorization:"Bearer "+apiKey};
     body=JSON.stringify({model,messages:[{role:"system",content:system},...messages],stream:false});   network=provider==="openai"?upstreamCall:compatibleUpstreamCall;
   }
-   // Only transport timeouts, transient network failures and gateway timeouts are retried.
-   // A new per-attempt deadline is required: AbortSignal.timeout cannot be reused after abort.
-   for(let attempt=0;attempt<=retries;attempt++){
-    if(signal?.aborted)throw fail("assistant_cancelled",499);
-    const deadline=AbortSignal.timeout(timeout);
-    const requestSignal=signal?AbortSignal.any([signal,deadline]):deadline;
-    try{
-     const response=await network(url,{method:"POST",headers,body,redirect:"manual",signal:requestSignal});
+   // Transport retries are separate from the single structured-output repair below.
+   // Never retry canvas mutation here: the server only produces proposals.
+   const infer=async(requestBody)=>{
+    for(let attempt=0;attempt<=retries;attempt++){
      if(signal?.aborted)throw fail("assistant_cancelled",499);
-     const answer=await readBoundedAnswer(response,provider);
-     if(signal?.aborted)throw fail("assistant_cancelled",499);
-     if(deadline.aborted)throw fail("assistant_upstream_timeout",504);
-     if(canvasActions){
-      let plan;
-      try{plan=parseAssistantActionResponse(answer)}
-      catch{throw fail("assistant_actions_invalid",502)}
-      return {...plan,model,retryCount:attempt};
-     }
-     return {answer,model,retryCount:attempt};    }catch(error){
-     if(signal?.aborted)throw fail("assistant_cancelled",499);
-     const retryable=error?.code==="assistant_upstream_timeout"||
-      (deadline.aborted&&(!error?.code||error.code==="assistant_upstream_unavailable"))||
-      retryableNetworkError(error);
-     if(!retryable){
-      if(typeof error?.code==="string"&&error.code.startsWith("assistant_"))throw error;
-      throw fail("assistant_upstream_unavailable",502);
-     }
-     if(attempt===retries)throw fail("assistant_upstream_retry_exhausted",504);
-     try{await delay(backoff*2**attempt,undefined,{signal});}
-     catch{
+     const deadline=AbortSignal.timeout(timeout);
+     const requestSignal=signal?AbortSignal.any([signal,deadline]):deadline;
+     try{
+      const response=await network(url,{method:"POST",headers,body:requestBody,redirect:"manual",signal:requestSignal});
       if(signal?.aborted)throw fail("assistant_cancelled",499);
-      throw fail("assistant_upstream_unavailable",502);
+      const answer=await readBoundedAnswer(response,provider);
+      if(signal?.aborted)throw fail("assistant_cancelled",499);
+      if(deadline.aborted)throw fail("assistant_upstream_timeout",504);
+      return {answer,retryCount:attempt};
+     }catch(error){
+      if(signal?.aborted)throw fail("assistant_cancelled",499);
+      const retryable=error?.code==="assistant_upstream_timeout"||
+       (deadline.aborted&&(!error?.code||error.code==="assistant_upstream_unavailable"))||
+       retryableNetworkError(error);
+      if(!retryable){
+       if(typeof error?.code==="string"&&error.code.startsWith("assistant_"))throw error;
+       throw fail("assistant_upstream_unavailable",502);
+      }
+      if(attempt===retries)throw fail("assistant_upstream_retry_exhausted",504);
+      try{await delay(backoff*2**attempt,undefined,{signal});}
+      catch{
+       if(signal?.aborted)throw fail("assistant_cancelled",499);
+       throw fail("assistant_upstream_unavailable",502);
+      }
      }
     }
+    throw fail("assistant_upstream_unavailable",502);
+   };
+   const first=await infer(body);
+   if(!canvasActions)return {...first,model};
+   let plan=null,invalid=false;
+   try{plan=parseAssistantActionResponse(first.answer)}
+   catch{invalid=true}
+   if(plan?.actions.length)return {...plan,model,retryCount:first.retryCount};
+   const request=latestCanvasUserRequest(messages.at(-1).content);
+   if(!isCanvasEditInstruction(request)){
+    if(invalid)throw fail("assistant_actions_invalid",502);
+    return {...plan,model,retryCount:first.retryCount};
    }
-  };
+   // Exact, low-risk intent: no model guesswork needed. This covers models that
+   // explain topology layout in prose but never emit a layout_graph action.
+   if(!invalid){
+    const knownLayout=exactWholeCanvasGraphLayout(request);
+    if(knownLayout)return {
+     answer:"已将明确的全画布依赖布局指令转换为画布操作。",
+     actions:[knownLayout],model,retryCount:first.retryCount
+    };
+   }
+   // All other edit requests get one corrective inference, not an unbounded loop.
+   // It cannot write to the canvas; the live-graph executor still validates and
+   // requires explicit confirmation for destructive operations.
+   const correction=CANVAS_ACTION_SYSTEM+
+    "\nFORMAT CORRECTION: Your last response did not provide valid executable canvas actions."+
+    " The user explicitly requested a canvas edit. Return ONLY one valid JSON object"+
+    ' with non-empty "actions" and a short "answer". No prose outside JSON,'+
+    " no Markdown or promises of future execution. Use real IDs from the provided"+
+    " context. If IDs are unavailable, do not invent IDs.";
+   const correctionBody=provider==="google_gemini"?
+    JSON.stringify({...normalizeGeminiHistory(messages,correction),generationConfig:{maxOutputTokens:4096}}):
+    JSON.stringify({model,messages:[{role:"system",content:correction},...messages],stream:false});
+   const second=await infer(correctionBody);
+   let recovered;
+   try{recovered=parseAssistantActionResponse(second.answer)}
+   catch{throw fail("assistant_actions_invalid",502)}
+   if(!recovered.actions.length)throw fail("assistant_actions_missing",502);
+   return {...recovered,model,retryCount:first.retryCount+second.retryCount,formatRepairCount:1};  };
 }

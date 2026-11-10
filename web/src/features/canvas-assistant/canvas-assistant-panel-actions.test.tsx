@@ -184,4 +184,38 @@ describe("P2 assistant confirmation boundary",()=>{
   expect(container!.textContent).toContain("已确认并执行 1 项");
  });
 
+ it("plain promises without an action payload are visibly marked as no-op",async()=>{
+  const fixture=setup([]);
+  mocks.api.mockResolvedValue({
+   answer:"将对整个画布进行从左到右的拓扑布局，预计执行 1 项布局操作。",
+   actions:[],model:"demo"
+  });
+  await renderAndSend(fixture.Harness);
+  expect(fixture.apply).not.toHaveBeenCalled();
+  expect(container!.textContent).toContain("本轮没有执行任何画布操作");
+  expect(container!.textContent).toContain("画布保持不变");
+  expect(mocks.confirm).not.toHaveBeenCalled();
+ });
+ it("P2.4 auto-executes dependency layout after creating and connecting nodes, without confirmation",async()=>{  const actions=[
+   {type:"create_node",ref:"step1",nodeType:"text",title:"起点",content:"场景一"},
+   {type:"create_node",ref:"step2",nodeType:"text",title:"终点",content:"场景二"},
+   {type:"connect",from:"text-existing",to:"step1"},
+   {type:"connect",from:"step1",to:"step2"},
+   {type:"layout_graph",nodeIds:[],direction:"horizontal",gap:48,layerGap:140}
+  ];
+  const fixture=setup(actions);
+  await renderAndSend(fixture.Harness);
+  expect(fixture.apply).toHaveBeenCalledTimes(1);
+  expect(mocks.confirm).not.toHaveBeenCalled();
+  const graph=fixture.getGraph();
+  const start=graph.nodes.find(n=>n.id==="text-existing")!;
+  const step1=graph.nodes.find(n=>n.title==="起点")!;
+  const step2=graph.nodes.find(n=>n.title==="终点")!;
+  expect(start.position.x).toBeLessThan(step1.position.x);
+  expect(step1.position.x).toBeLessThan(step2.position.x);
+  expect(graph.connections).toHaveLength(2);
+  expect(start.metadata?.content).toBe(originalContent);
+  expect(step1.metadata?.content).toBe("场景一");
+  expect(container!.textContent).toContain("已自动执行 5 项画布操作");
+ });
 });

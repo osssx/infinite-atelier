@@ -67,13 +67,13 @@ test("P2 rejects non-boolean action mode and malformed model action payload",asy
  }});
  const input={channelId:"channel",provider:"openai_compatible",model:"demo",baseUrl:"http://127.0.0.1:8188/v1",messages,canvasActions:true};
  await assert.rejects(ask(input),error=>error?.code==="assistant_actions_invalid");
- assert.equal(calls,1);
+ assert.equal(calls,2); // Exactly one corrective inference.
  await assert.rejects(ask({...input,canvasActions:"true"}),error=>error?.code==="assistant_actions_invalid");
- assert.equal(calls,1);
+ assert.equal(calls,2); // Invalid parameters do not reach upstream.
  raw="普通建议";
- assert.deepEqual((await ask(input)).actions,[]);
-});
-test("P2 assistant HTTP route passes action mode and does not write canvas graph",async t=>{
+ const question={...input,messages:[{role:"user",content:"请分析两个分镜的节奏"}]};
+ assert.deepEqual((await ask(question)).actions,[]);
+});test("P2 assistant HTTP route passes action mode and does not write canvas graph",async t=>{
  const db=new DatabaseSync(":memory:");initializeSchema(db);
  let passed=null;
  const app=buildApp({db,authorize:req=>req.headers["x-test-owner"]==="owner",
@@ -102,6 +102,35 @@ test("P2 assistant HTTP route passes action mode and does not write canvas graph
 });
 
 
+
+test("P2.4 assistant contract allows bounded link-aware layout only",()=>{
+ const actions=[
+  {type:"create_node",nodeType:"text",ref:"new",title:"新镜头"},
+  {type:"connect",from:"existing",to:"new"},
+  {type:"layout_graph",nodeIds:[],direction:"horizontal",gap:48,layerGap:140},
+  {type:"layout_graph",nodeIds:["existing","new"],direction:"vertical"}
+ ];
+ const parsed=parseAssistantActionResponse(JSON.stringify({answer:"将按依赖关系排列",actions}));
+ assert.deepEqual(parsed.actions,actions);
+ assert.match(CANVAS_ACTION_SYSTEM,/layout_graph/);
+ assert.match(CANVAS_ACTION_SYSTEM,/topological layout|intelligently lays out/i);
+ assert.match(CANVAS_ACTION_SYSTEM,/never changes content/i);
+ const twoHundred={type:"layout_graph",nodeIds:Array.from({length:200},(_,i)=>"n"+i)};
+ assert.equal(parseAssistantActionResponse(JSON.stringify({answer:"x",actions:[twoHundred]})).actions[0].nodeIds.length,200);
+ for(const invalid of [
+  {type:"layout_graph",nodeIds:["a","a"]},
+  {type:"layout_graph",nodeIds:[],direction:"grid"},
+  {type:"layout_graph",nodeIds:[],gap:0},
+  {type:"layout_graph",nodeIds:[],gap:161},
+  {type:"layout_graph",nodeIds:[],layerGap:39},
+  {type:"layout_graph",nodeIds:[],layerGap:361},
+  {type:"layout_graph",nodeIds:[],rewriteConnections:true},
+  {type:"layout_graph",nodeIds:[] ,algorithm:"unsafe"},
+  {type:"layout_graph",nodeIds:["bad id"]},
+  {type:"layout_graph",nodeIds:Array.from({length:201},(_,i)=>"n"+i)},
+  {type:"layout_graph",nodeIds:["a"],layerGap:Infinity},
+ ])assert.throws(()=>parseAssistantActionResponse(JSON.stringify({answer:"x",actions:[invalid]})),/assistant_actions_invalid/);
+});
 test("P2.3 assistant contract supports adding, removing group members and confirmed dissolution",()=>{
  const changes=[
   {type:"create_node",ref:"new-node",nodeType:"text",title:"新节点"},

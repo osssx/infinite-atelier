@@ -3,6 +3,7 @@ import {createCanvasNode} from "@/lib/canvas/canvas-node-factory";
 import {groupSelectedCanvasNodes} from "@/lib/canvas/canvas-node-geometry";
 import {prepareCanvasPortConnection} from "@/lib/canvas/canvas-port-connections";
 import {CanvasNodeType,type CanvasConnection,type CanvasNodeData,type Position} from "@/types/canvas";
+import {layoutCanvasDependencyGraph,type AssistantGraphLayoutDirection} from "./canvas-assistant-graph-layout";
 
 export type AssistantCreatableNodeType="text"|"image"|"video"|"audio"|"config"|"director";
 export type AssistantLayoutDirection="horizontal"|"vertical"|"grid";
@@ -14,6 +15,7 @@ export type AssistantCanvasAction=
  |{type:"remove_from_group";groupId:string;members:string[]}
  |{type:"ungroup";groupId:string}
  |{type:"layout_nodes";nodeIds:string[];direction:AssistantLayoutDirection;gap?:number}
+ |{type:"layout_graph";nodeIds:string[];direction?:AssistantGraphLayoutDirection;gap?:number;layerGap?:number}
  |{type:"connect";from:string;to:string}
  |{type:"set_text";nodeId:string;content:string}
  |{type:"set_title";nodeId:string;title:string}
@@ -61,6 +63,11 @@ export function isAssistantCanvasAction(value:unknown):value is AssistantCanvasA
   case "layout_nodes":return keys(action,["type","nodeIds","direction","gap"])&&
    ids(action.nodeIds,1,MAX_CREATED)&&directions.has(action.direction as AssistantLayoutDirection)&&
    (action.gap===undefined||(Number.isInteger(action.gap)&&Number(action.gap)>=16&&Number(action.gap)<=160));
+  case "layout_graph":return keys(action,["type","nodeIds","direction","gap","layerGap"])&&
+   ids(action.nodeIds,0,200)&&
+   (action.direction===undefined||action.direction==="horizontal"||action.direction==="vertical")&&
+   (action.gap===undefined||(Number.isInteger(action.gap)&&Number(action.gap)>=16&&Number(action.gap)<=160))&&
+   (action.layerGap===undefined||(Number.isInteger(action.layerGap)&&Number(action.layerGap)>=40&&Number(action.layerGap)<=360));
   case "connect":return keys(action,["type","from","to"])&&identifier(action.from)&&identifier(action.to)&&action.from!==action.to;
   case "set_text":return keys(action,["type","nodeId","content"])&&identifier(action.nodeId)&&boundedString(action.content,12000);
   case "set_title":return keys(action,["type","nodeId","title"])&&identifier(action.nodeId)&&boundedString(action.title,120);
@@ -215,6 +222,16 @@ export function applyAssistantCanvasActions(
     });
     if(action.type==="add_to_group")
      nodes=nodes.map(n=>n.id===groupId?expandGroupToEncloseMembers(n,nodes):n);
+    applied++;continue;
+   }
+   if(action.type==="layout_graph"){
+    const selected=action.nodeIds.map(resolve);
+    if(new Set(selected).size!==selected.length)
+     throw Error("自动布局节点引用重复，未执行。");
+    nodes=layoutCanvasDependencyGraph(nodes,connections,{
+     nodeIds:selected,direction:action.direction??"horizontal",
+     gap:action.gap??48,layerGap:action.layerGap??140,center
+    });
     applied++;continue;
    }
    if(action.type==="layout_nodes"){

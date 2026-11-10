@@ -43,7 +43,7 @@ const assistantErrorMessages:Record<string,string>={
  assistant_upstream_retry_exhausted:"模型请求网络异常或超时，已自动重试 2 次仍未成功。请检查网络与模型服务状态后再试。",
   assistant_channel_unavailable:"模型渠道尚未配置可用的服务端密钥，请在设置中检查配置。",
   assistant_actions_invalid:"模型返回的画布操作格式不符合要求，未执行画布修改。请尝试更明确地描述操作。",
-};
+  assistant_actions_missing:"模型未返回可执行的画布指令，已尝试重新生成操作计划，但画布仍未修改。请明确要执行的操作，或更换支持结构化 JSON 输出的模型。",};
 export function canvasAssistantErrorText(error:unknown){
  if(error instanceof CanvasApiError)return assistantErrorMessages[error.code]??error.message;
  if(error instanceof Error)return assistantErrorMessages[error.message]??error.message;
@@ -153,8 +153,8 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
     if(controller.signal.aborted)throw new DOMException("Aborted","AbortError");
     const notes:string[]=[];
     try{
-     const actions=parseAssistantCanvasActions(response.actions??[]);
-     if(actions.length){
+      const actions=parseAssistantCanvasActions(response.actions??[]);
+      if(!actions.length)notes.push("本轮没有执行任何画布操作，画布保持不变。");     if(actions.length){
       const safe=onApplyActions(actions,"safe");
       if(safe.applied)notes.push("已自动执行 "+safe.applied+" 项画布操作。");
       const dangerous=actions.filter(isDangerousAssistantAction);
@@ -301,7 +301,7 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
        选择画布中的节点，询问创作建议、梳理故事结构，或优化文本内容。
       </p>
       <div className="canvas-assistant-suggestions" aria-label="推荐问题">
-        {["创建三个分镜文本节点并依次连线","将选中节点横向排列并创建分组","把选中节点添加到已有分组","移出分组中的指定节点","解散选中的分组（需确认）"].map(hint=>         <button type="button" key={hint} className="canvas-assistant-suggestion" onClick={()=>setDraft(hint)}>
+        {["创建三个分镜文本节点并依次连线","根据连线关系对整个工作流智能排版","把选中节点添加到已有分组","移出分组中的指定节点","解散选中的分组（需确认）"].map(hint=>         <button type="button" key={hint} className="canvas-assistant-suggestion" onClick={()=>setDraft(hint)}>
           <span>{hint}</span><ArrowUpRight size={14}/>
          </button>)}
       </div>
@@ -359,7 +359,7 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
     </div>
     <div className="canvas-assistant-hint">
      <span>AI 建议仅供参考</span>
-      <span className="inline-flex items-center gap-1"><Check size={11}/>创建、布局、成员调整自动执行 · 修改删除及解散需确认</span>
+      <span className="inline-flex items-center gap-1"><Check size={11}/>创建、拓扑布局、分组调整自动执行 · 修改删除需确认</span>
      </div>   </footer>
   </aside>
  );

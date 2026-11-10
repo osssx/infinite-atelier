@@ -102,10 +102,13 @@ export function planAssistantNodeRuns(
   if(result.length>=3)throw Error("每次 AI 请求最多触发 3 个生成任务。");
   if(action.type==="run_workflow"){
    if(node.type!==COMFY_WORKFLOW_MOCK_TYPE)throw Error("执行目标不是 ComfyUI 工作流节点。");
-   if(node.metadata?.comfyWorkflow?.bindingState!=="bound"||
-    !node.metadata.comfyWorkflow?.templateId||!node.metadata.comfyWorkflow?.templateRevision)
-    throw Error("工作流节点尚未绑定可执行的预设模板。");
-   result.push({kind:"workflow",nodeId});
+    // Match executeComfyWorkflow: a template revision must exist, but execution
+    // uses the configured global default ComfyUI instance. Template binding
+    // normally leaves bindingState as "needs-instance-binding"; that UI state
+    // alone does not make a globally runnable workflow invalid.
+    if(!node.metadata?.comfyWorkflow?.templateId||
+     !node.metadata.comfyWorkflow?.templateRevision)
+     throw Error("工作流节点尚未绑定可执行的预设模板。");   result.push({kind:"workflow",nodeId});
    continue;
   }
   if(node.type===COMFY_WORKFLOW_MOCK_TYPE)throw Error("ComfyUI 工作流必须使用 run_workflow 操作。");

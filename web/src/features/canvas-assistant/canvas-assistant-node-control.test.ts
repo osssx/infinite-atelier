@@ -119,13 +119,27 @@ describe("P2.5 node parameters and execution plan",()=>{
   expect(()=>planAssistantNodeRuns(changed.nodes,[{type:"run_node",nodeId:"missing"}],created.refs)).toThrow(/不存在/);
   expect(()=>planAssistantNodeRuns([make(CanvasNodeType.Image,"empty")],[{type:"run_node",nodeId:"empty"}])).toThrow(/提示词为空/);
  });
- it("requires bound workflow and uses a distinct workflow execution action",()=>{
+ it("accepts template-bound workflows with a global default instance regardless of legacy bindingState",()=>{
   const workflow=make(COMFY_WORKFLOW_MOCK_TYPE,"wf",{
    comfyWorkflow:{templateId:"t",templateRevision:"r",bindingState:"bound",inputOverrides:{}}
   });
-  expect(planAssistantNodeRuns([workflow],[{type:"run_workflow",nodeId:"wf"}])).toEqual([{kind:"workflow",nodeId:"wf"}]);
+  const run={type:"run_workflow" as const,nodeId:"wf"};
+  const expected=[{kind:"workflow",nodeId:"wf"}];
+  expect(planAssistantNodeRuns([workflow],[run])).toEqual(expected);
+  const needsGlobalDefault=make(COMFY_WORKFLOW_MOCK_TYPE,"comfy:workflow-1793190927827-8xz38",{
+   comfyWorkflow:{templateId:"t",templateRevision:"r",bindingState:"needs-instance-binding",
+    instanceId:undefined,inputOverrides:{}}
+  });
+  // A global instance is resolved by executeComfyWorkflow, not by this planner.
+  expect(planAssistantNodeRuns([needsGlobalDefault],[
+   {type:"run_workflow",nodeId:needsGlobalDefault.id}
+  ])).toEqual([{kind:"workflow",nodeId:needsGlobalDefault.id}]);
   expect(()=>planAssistantNodeRuns([workflow],[{type:"run_node",nodeId:"wf"}])).toThrow(/run_workflow/);
-  expect(()=>planAssistantNodeRuns([make(COMFY_WORKFLOW_MOCK_TYPE,"wf")],[{type:"run_workflow",nodeId:"wf"}])).toThrow(/尚未绑定/);
-  expect(()=>planAssistantNodeRuns([make(CanvasNodeType.Text,"txt",{prompt:"hi"})],[{type:"run_workflow",nodeId:"txt"}])).toThrow(/不是 ComfyUI/);
- });
-});
+  expect(()=>planAssistantNodeRuns([make(COMFY_WORKFLOW_MOCK_TYPE,"wf")],[run])).toThrow(/尚未绑定/);
+  expect(()=>planAssistantNodeRuns([make(COMFY_WORKFLOW_MOCK_TYPE,"wf",{
+   comfyWorkflow:{templateId:"t",templateRevision:"",bindingState:"needs-instance-binding",inputOverrides:{}}
+  })],[run])).toThrow(/尚未绑定/);
+  expect(()=>planAssistantNodeRuns([make(CanvasNodeType.Text,"txt",{prompt:"hi"})],[
+   {type:"run_workflow",nodeId:"txt"}
+  ])).toThrow(/不是 ComfyUI/);
+ });});

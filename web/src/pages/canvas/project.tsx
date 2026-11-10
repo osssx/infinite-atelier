@@ -2863,11 +2863,9 @@ function AtelierCanvasPage() {
                     if(!sourceNode||!( ["text","config","image","audio","video"].includes(sourceNode.type)||writeBack)||
                       sourceNode.type==="image"&&mode!=="image"||
                       sourceNode.type==="audio"&&mode!=="audio"||
-                      sourceNode.type==="video"&&mode!=="video"||
-                      ["image","audio","video"].includes(sourceNode.type)&&Boolean(sourceNode.metadata?.content))
+                      sourceNode.type==="video"&&mode!=="video")
                         throw Error("当前节点类型不支持此模型生成");
-                    if(selectedScript&&mode==="video"){
-                        try{
+                    if(selectedScript&&mode==="video"){                        try{
                             const spec=JSON.parse(selectedScript);
                             if(spec.version!==1||typeof spec.submit!=="string"||typeof spec.poll!=="string")
                                 throw Error("invalid");

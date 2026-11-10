@@ -112,11 +112,10 @@ export function planAssistantNodeRuns(
    continue;
   }
   if(node.type===COMFY_WORKFLOW_MOCK_TYPE)throw Error("ComfyUI 工作流必须使用 run_workflow 操作。");
-  const mode=assistantNodeMode(node,action.mode);
-  if([CanvasNodeType.Image,CanvasNodeType.Video,CanvasNodeType.Audio].includes(node.type as CanvasNodeType)
-   &&Boolean(node.metadata?.content))throw Error("已有媒体产物的节点不能直接覆盖生成。");
-  const prompt=node.metadata?.composerContent??node.metadata?.prompt??"";
-  if(!prompt.trim())throw Error("节点生成提示词为空，请先设置提示词并确认。");
+   const mode=assistantNodeMode(node,action.mode);
+   // A populated media node is still a valid generation source. The materializer
+   // appends separate artifacts when source media content is already present.
+   const prompt=node.metadata?.composerContent??node.metadata?.prompt??"";  if(!prompt.trim())throw Error("节点生成提示词为空，请先设置提示词并确认。");
   result.push({kind:"node",nodeId,mode,prompt});
  }
  return result;

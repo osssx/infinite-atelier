@@ -154,6 +154,45 @@ test("a later frozen image writeback replaces the prior CAS result on the same b
   assert.equal(JSON.parse(f.db.prepare("SELECT snapshot_json FROM jobs WHERE id=?").get(jobId).snapshot_json).task.prompt,prompt);
  }
 });
+test("regenerating populated image/video/audio sources appends independent artifacts without replacing source",async t=>{
+ for(const [kind,,bytes,mime] of kinds.slice(0,3))await t.test(kind,async child=>{
+  const f=fixture(child),projectId="regenerate-existing-"+kind,sourceNodeId=kind+"-source";
+  const previousContent="/api/v1/blobs/"+"a".repeat(64);
+  const original={nodes:[{id:sourceNodeId,type:kind,title:"Existing "+kind,
+   position:{x:20,y:25},width:340,height:260,
+   metadata:{content:previousContent,prompt:"generate another "+kind,
+    storageKey:"cas:"+"a".repeat(64),status:"success"}}],connections:[]};
+  createProject(f.db,{id:projectId,document:original});
+  const sourceBefore=structuredClone(original.nodes[0]);
+  for(let i=1;i<=2;i++){
+   const current=getProject(f.db,projectId);
+   const artifactId="new-"+kind+"-"+i;
+   const jobId=submitJob(f.db,{projectId,targetNodeId:sourceNodeId,
+    expectedProjectRevision:current.revision,
+    sourceNodeFingerprint:fingerprintSource(current.document,sourceNodeId),
+    idempotencyKey:artifactId,requestFingerprint:artifactId,executionMode:"immediate",
+    snapshot:{adapterKind:"model",provider:"openai",
+     task:{kind,model:"test-"+kind,prompt:"generate another "+kind}}}).jobId;
+   const blob=await f.blobStore.put([bytes],{mime});
+   appendArtifact(f.db,{id:artifactId,jobId,portId:kind,itemKey:"0",
+    blobId:blob.blobId,sha256:blob.sha256,mime:blob.mimeType,kind,
+    metadata:{modelGeneration:{kind,model:"test-"+kind}}});
+   f.db.prepare("UPDATE jobs SET status='succeeded' WHERE id=?").run(jobId);
+   const materialized=await f.materializer.runOnce();
+   assert.equal(materialized.length,1,JSON.stringify(materialized));
+   assert.equal(materialized[0].status,"materialized",JSON.stringify(materialized));
+   assert.equal(materialized[0].nodeId,"artifact-"+artifactId);
+   const latest=getProject(f.db,projectId).document;
+   assert.equal(latest.nodes.length,i+1);
+   assert.deepEqual(latest.nodes.find(n=>n.id===sourceNodeId),sourceBefore);
+   const generated=latest.nodes.find(n=>n.id==="artifact-"+artifactId);
+   assert.equal(generated.type,kind);
+   assert.equal(generated.metadata.content,"/api/v1/blobs/"+blob.blobId);
+   assert.equal(generated.metadata.modelArtifact.sourceNodeId,sourceNodeId);
+   assert.equal(latest.connections.filter(c=>c.fromNodeId===sourceNodeId).length,i);
+  }
+ });
+});
 test("nonempty Text sources and sources edited during model generation keep their text and get a separate artifact",async t=>{
  for(const scenario of [
   {id:"existing",initial:"User's draft",edited:null,expected:"User's draft"},

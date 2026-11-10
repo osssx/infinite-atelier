@@ -65,7 +65,32 @@ describe("P2.5 node parameters and execution plan",()=>{
   expect(changed.nodes[0].metadata?.model).toBe("ch-1::my-image");
   expect(changed.nodes[0].metadata?.count).toBe(2);
   expect(changed.nodes[0].metadata?.content).toBe("existing-image-url");
-  expect(()=>planAssistantNodeRuns(changed.nodes,[{type:"run_node",nodeId:"img"}])).toThrow(/已有媒体产物/);
+  expect(planAssistantNodeRuns(changed.nodes,[{type:"run_node",nodeId:"img"}])).toEqual([
+   {kind:"node",nodeId:"img",mode:"image",prompt:"new idea"}
+  ]);
+  expect(changed.nodes[0].metadata?.content).toBe("existing-image-url"); });
+ it("allows image, video and audio nodes with existing media to generate again without mutating source",()=>{
+  const media=[
+   make(CanvasNodeType.Image,"img",{content:"/api/v1/blobs/old-img",prompt:"new image",
+    storageKey:"cas:old-img",modelArtifact:{jobId:"old-1",artifactId:"old-img",sourceNodeId:"img",kind:"image",model:"prior"}}),
+   make(CanvasNodeType.Video,"vid",{content:"/api/v1/blobs/old-video",prompt:"new video",
+    storageKey:"cas:old-video"}),
+   make(CanvasNodeType.Audio,"aud",{content:"/api/v1/blobs/old-audio",prompt:"new audio",
+    storageKey:"cas:old-audio"})
+  ];
+  const before=JSON.stringify(media);
+  const operations=[
+   {type:"run_node" as const,nodeId:"img",mode:"image" as const},
+   {type:"run_node" as const,nodeId:"vid",mode:"video" as const},
+   {type:"run_node" as const,nodeId:"aud",mode:"audio" as const}
+  ];
+  expect(planAssistantNodeRuns(media,operations)).toEqual([
+   {kind:"node",nodeId:"img",mode:"image",prompt:"new image"},
+   {kind:"node",nodeId:"vid",mode:"video",prompt:"new video"},
+   {kind:"node",nodeId:"aud",mode:"audio",prompt:"new audio"}
+  ]);
+  expect(planAssistantNodeRuns(media,operations)).toHaveLength(3);
+  expect(JSON.stringify(media)).toBe(before);
  });
  it("validates channel model capability and blocks automatic Comfy preset unbinding",()=>{
   const node=make(CanvasNodeType.Image);

@@ -3,6 +3,8 @@ import { createPortal } from "react-dom";
 import { BookOpen } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { canvasThemes } from "@/lib/canvas-theme";
+import { keepMentionOptionVisible } from "@/lib/canvas/canvas-mention-position";
+import { skillSlashMenuPlacement } from "./skill-slash-position";
 import type { SkillCatalogEntry } from "./types";
 
 export function SkillSlashMenu({ entries, activeIndex, rect, theme, onSelect }: {
@@ -15,7 +17,9 @@ export function SkillSlashMenu({ entries, activeIndex, rect, theme, onSelect }: 
     const { t } = useTranslation();
     const selectedRef = useRef(false);
     const activeRef = useRef<HTMLButtonElement>(null);
-    useEffect(() => { activeRef.current?.scrollIntoView({ block: "nearest" }); }, [activeIndex, entries]);
+    const menuRef = useRef<HTMLDivElement>(null);
+    // scrollIntoView also scrolls page/overlay ancestors and shifts the caret anchor.
+    useEffect(() => { keepMentionOptionVisible(menuRef.current, activeRef.current); }, [activeIndex, entries]);
     const choose = (entry: SkillCatalogEntry) => {
         if (selectedRef.current) return;
         selectedRef.current = true;
@@ -23,16 +27,13 @@ export function SkillSlashMenu({ entries, activeIndex, rect, theme, onSelect }: 
     };
     const stop = (event: PointerEvent | MouseEvent) => event.stopPropagation();
     const anchor = rect || new DOMRect(16, 16, 0, 0);
-    const width = 280;
-    const maxHeight = 228;
-    const left = Math.max(8, Math.min(anchor.left, window.innerWidth - width - 8));
-    const above = anchor.bottom + maxHeight + 6 > window.innerHeight && anchor.top > maxHeight + 6;
-    const top = above ? anchor.top - maxHeight - 6 : anchor.bottom + 6;
+    const placement = skillSlashMenuPlacement(anchor, { width: window.innerWidth, height: window.innerHeight }, entries.length);
     return createPortal(
         <div
             data-skill-slash-menu="true"
-            className="fixed z-[1200] max-h-56 w-[280px] overflow-y-auto rounded-xl border p-1 shadow-2xl backdrop-blur-md"
-            style={{ left, top, background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.text }}
+            ref={menuRef}
+            className="fixed z-[1200] overflow-y-auto rounded-xl border p-1 shadow-2xl backdrop-blur-md"
+            style={{ ...placement, background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.text }}
             onPointerDown={stop} onMouseDown={stop} onClick={(event) => event.stopPropagation()}
         >
             {entries.length ? entries.map((entry, index) => (

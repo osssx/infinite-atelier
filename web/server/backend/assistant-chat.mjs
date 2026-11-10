@@ -158,11 +158,17 @@ export function createAssistantChatService({vault,upstreamCall=fetch,
  const retries=Number.isInteger(maxRetries)?Math.max(0,Math.min(DEFAULT_RETRIES,maxRetries)):DEFAULT_RETRIES;
  const timeout=Number.isInteger(requestTimeoutMs)?Math.max(1,Math.min(DEFAULT_TIMEOUT_MS,requestTimeoutMs)):DEFAULT_TIMEOUT_MS;
  const backoff=Number.isInteger(retryDelayMs)?Math.max(0,Math.min(5000,retryDelayMs)):DEFAULT_RETRY_DELAY_MS;
-  return async function ask({channelId,provider,baseUrl,model,messages,signal,canvasActions=false}){  if(!validId(channelId)||!validModel(model)||
+  return async function ask({channelId,provider,baseUrl,model,messages,signal,canvasActions=false,skillContext=""}){  if(!validId(channelId)||!validModel(model)||
    !["openai","openai_compatible","google_gemini"].includes(provider))
    throw fail("assistant_model_invalid");
   checkMessages(messages);
    if(typeof canvasActions!=="boolean")throw fail("assistant_actions_invalid");
+   // The HTTP endpoint, not the client, authorizes Skill instructions.
+   if(typeof skillContext!=="string"||Buffer.byteLength(skillContext)>48*1024)
+    throw fail("assistant_skill_context_too_large",413);
+   const effectiveMessages=skillContext?messages.map((item,index)=>index===messages.length-1?
+    {...item,content:skillContext+"\n\n<user-request>\n"+item.content+"\n</user-request>"}:item):messages;
+   checkMessages(effectiveMessages);
    const system=canvasActions?CANVAS_ACTION_SYSTEM:SYSTEM;
    const channel=vault.get(channelId);  if(channel.provider!==provider||!channel.hasKey||!channel.keyVersion)
    throw fail("assistant_channel_unavailable",409);
@@ -174,11 +180,11 @@ export function createAssistantChatService({vault,upstreamCall=fetch,
    const modelId=model.replace(/^models\//,"").split("/").map(encodeURIComponent).join("/");
    url=endpoint+"/models/"+modelId+":generateContent";
    headers={"content-type":"application/json","x-goog-api-key":apiKey};
-    body=JSON.stringify({...normalizeGeminiHistory(messages,system),generationConfig:{maxOutputTokens:canvasActions?4096:2048}});   network=compatibleUpstreamCall;
+    body=JSON.stringify({...normalizeGeminiHistory(effectiveMessages,system),generationConfig:{maxOutputTokens:canvasActions?4096:2048}});   network=compatibleUpstreamCall;
   }else{
    url=(provider==="openai"?DEFAULT_OPENAI_ENDPOINT:normalizeOpenAiCompatBaseUrl(baseUrl))+"/chat/completions";
    headers={"content-type":"application/json",authorization:"Bearer "+apiKey};
-    body=JSON.stringify({model,messages:[{role:"system",content:system},...messages],stream:false});   network=provider==="openai"?upstreamCall:compatibleUpstreamCall;
+    body=JSON.stringify({model,messages:[{role:"system",content:system},...effectiveMessages],stream:false});   network=provider==="openai"?upstreamCall:compatibleUpstreamCall;
   }
    // Transport retries are separate from the single structured-output repair below.
    // Never retry canvas mutation here: the server only produces proposals.
@@ -245,7 +251,7 @@ export function createAssistantChatService({vault,upstreamCall=fetch,
     // Retry with just the latest user request and its fresh canvas snapshot.
     // Old user-only error turns and prior action narratives can lock compatible
     // models into prose replies, even if a corrective system instruction is used.
-    const repairMessages=[messages.at(-1)];
+    const repairMessages=[effectiveMessages.at(-1)];
     const correctionBody=provider==="google_gemini"?
      JSON.stringify({...normalizeGeminiHistory(repairMessages,correction),generationConfig:{maxOutputTokens:4096}}):
      JSON.stringify({model,messages:[{role:"system",content:correction},...repairMessages],stream:false});   const second=await infer(correctionBody);

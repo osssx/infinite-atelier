@@ -1,6 +1,6 @@
 import {useCallback,useEffect,useMemo,useRef,useState,type CSSProperties,type Dispatch,type SetStateAction} from "react";
 import {Modal} from "antd";
-import {AlertCircle,ArrowUp,ArrowUpRight,Bot,Check,ChevronDown,ChevronUp,Clock3,Copy,FileText,Image as ImageIcon,Layers3,Link2,LoaderCircle,MessageSquarePlus,Music2,Plus,RefreshCw,Sparkles,Square,Trash2,UserRound,Video,X} from "lucide-react";
+import {AlertCircle,ArrowUp,ArrowUpRight,BookOpen,Bot,Check,ChevronDown,ChevronUp,Clock3,Copy,FileText,Image as ImageIcon,Layers3,Link2,LoaderCircle,MessageSquarePlus,Music2,Plus,RefreshCw,Sparkles,Square,Trash2,UserRound,Video,X} from "lucide-react";
 import {Streamdown} from "streamdown";
 import {nanoid} from "nanoid";
 import {CanvasApiError,canvasApi} from "@/features/backend-sync/canvas-api";
@@ -11,6 +11,10 @@ import {CanvasNodeType,type CanvasAssistantMessage,type CanvasAssistantSession,t
 import type {AssistantContextResult,AssistantContextScope} from "./canvas-assistant-context";
 import {parseAssistantCanvasActions,isDangerousAssistantAction,dangerousAssistantActionSummary,type AssistantCanvasStage} from "./canvas-assistant-actions";
 import {buildCanvasAssistantTurns} from "./canvas-assistant-history";
+import {CanvasPromptChipInput} from "@/components/canvas/canvas-prompt-chip-input";
+import {extractSkillMentions} from "@/features/skills/skill-mentions";
+import {getSkillRegistrySnapshot,SKILL_REGISTRY_CHANNEL} from "@/features/skills/skill-registry";
+import {isEnabledSkillInProject,type SkillCatalogEntry,type SkillMode} from "@/features/skills/types";
 import type {ComfyWorkflowTemplate} from "@/features/comfy-workflow/template-schema";
 import "./canvas-assistant-panel.css";
 type Choice={id:string;title:string;type:CanvasNodeTypeId};
@@ -44,6 +48,10 @@ const assistantErrorMessages:Record<string,string>={
  assistant_upstream_unavailable:"无法连接模型渠道或请求超时，请检查网络、渠道地址和服务状态。",
  assistant_upstream_retry_exhausted:"模型请求网络异常或超时，已自动重试 2 次仍未成功。请检查网络与模型服务状态后再试。",
   assistant_channel_unavailable:"模型渠道尚未配置可用的服务端密钥，请在设置中检查配置。",
+ assistant_skill_selection_invalid:"Skill 选择无效，请检查当前选择后重试。",
+ assistant_skill_catalog_changed:"Skill 列表或版本已发生变化，请刷新后重试。",
+ assistant_skill_unavailable:"选中的 Skill 已被禁用、删除或不适用于当前项目，请更新选择。",
+ assistant_skill_context_too_large:"Skill 内容与本轮请求超过助手上下文限制，请减少选择的 Skill。",
   assistant_actions_invalid:"模型返回的画布操作格式不符合要求，未执行画布修改。请尝试更明确地描述操作。",
   assistant_actions_missing:"模型未返回可执行的画布指令，已尝试重新生成操作计划，但画布仍未修改。请明确要执行的操作，或更换支持结构化 JSON 输出的模型。",};
 export function canvasAssistantErrorText(error:unknown){
@@ -109,6 +117,9 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
   const theme=canvasThemes[themeName];
   const [draft,setDraft]=useState(""); const [modelRef,setModelRef]=useState(config.textModel);
  const [scope,setScope]=useState<AssistantContextScope>("selection");
+ const [skillMode,setSkillMode]=useState<SkillMode>("manual");
+ const [skills,setSkills]=useState<SkillCatalogEntry[]>([]);
+ const [skillError,setSkillError]=useState("");
  const [includeContext,setIncludeContext]=useState(true);
  const [includedIds,setIncludedIds]=useState<string[]>([]);
  const [sending,setSending]=useState(false);
@@ -119,6 +130,22 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
  const signature=selectedNodes.map(node=>node.id).join("|");
  useEffect(()=>{setIncludedIds(selectedNodes.slice(0,12).map(node=>node.id));setPreviewRevision(n=>n+1);},[signature]);
  useEffect(()=>()=>controllerRef.current?.abort(),[]);
+ useEffect(()=>{
+  if(!open)return;
+  let active=true;
+  const refresh=()=>void getSkillRegistrySnapshot().then(snapshot=>{
+   if(active){setSkills(Array.isArray(snapshot.skills)?snapshot.skills:[]);setSkillError("");}
+  },()=>{if(active)setSkillError("读取 Skill 列表失败，请检查后端连接。");});
+  refresh();
+  let channel:BroadcastChannel|null=null;
+  try{if(typeof BroadcastChannel!=="undefined"){
+   channel=new BroadcastChannel(SKILL_REGISTRY_CHANNEL);
+   channel.onmessage=refresh;
+  }}catch{/* Focus refresh is the fallback. */}
+  window.addEventListener("focus",refresh);
+  return ()=>{active=false;channel?.close();window.removeEventListener("focus",refresh);};
+ },[open,projectId]);
+ const availableSkills=skills.filter(item=>isEnabledSkillInProject(item,projectId));
  const options=useMemo(()=>selectableModelsByCapability(config,"text").filter(value=>
   !resolveModelScript(config,value)&&Boolean(modelChannelProvider(resolveModelChannel(config,value),"text")))
   .map(value=>({value,label:modelOptionLabel(config,value)})),[config]);
@@ -128,7 +155,8 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
  useEffect(()=>{if(open)scrollRef.current?.scrollTo({top:scrollRef.current.scrollHeight});},[open,session?.id,session?.messages.length,sending]);
  const stop=useCallback(()=>controllerRef.current?.abort(),[]);
  const send=useCallback(async()=>{
-  const text=draft.trim();if(!text||controllerRef.current||!chosenModel)return;
+  const parsedDraft=extractSkillMentions(draft.trim());
+  const text=parsedDraft.text.trim();if(!text||controllerRef.current||!chosenModel)return;
   const channel=resolveModelChannel(config,chosenModel);
   const provider=modelChannelProvider(channel,"text");
   if(!channel||!provider||provider==="volcengine_ark")return;
@@ -156,12 +184,28 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
     }).join("\n").slice(0,2500);
     const contextText=contextSnapshot?.text?
      [contextSnapshot.text.slice(0,8500),modelHints,workflowInfo.context].filter(Boolean).join("\n\n"):undefined;
-    const turns=buildCanvasAssistantTurns(prior,text,contextText);   await ensureSqliteModelChannelForExecution(channel,provider);
+    const turns=buildCanvasAssistantTurns(prior,text,contextText);
+    let selectedSkills:undefined|{mode:"manual"|"auto";projectId:string;expectedRevision:number;skillIds:string[];versionPins:Record<string,string>};
+    if(skillMode!=="off"&&(parsedDraft.skillIds.length>0||skillMode==="auto")){
+     const registry=await getSkillRegistrySnapshot();
+     const eligible=registry.skills.filter(item=>isEnabledSkillInProject(item,projectId));
+     const useManual=parsedDraft.skillIds.length>0;
+     const selected=useManual?parsedDraft.skillIds.map(skillId=>{
+      const item=eligible.find(entry=>entry.id===skillId);
+      if(!item)throw Error("选中的 Skill 已被禁用、删除或不可用于当前项目："+skillId);
+      return item;
+     }):eligible;
+     if(!selected.length)throw Error("当前没有可用的 Skill，请在设置中启用，或关闭自动匹配。");
+     if(useManual&&selected.length>12)throw Error("助手一次最多手动使用 12 个 Skill");
+     selectedSkills={mode:useManual?"manual":"auto",projectId,expectedRevision:registry.revision,
+      skillIds:selected.map(entry=>entry.id),versionPins:Object.fromEntries(selected.map(entry=>[entry.id,entry.activeVersion]))};
+    }
+    await ensureSqliteModelChannelForExecution(channel,provider);
    if(controller.signal.aborted)return;
-    const response=await canvasApi<{answer:string;model:string;retryCount?:number;actions?:unknown}>(
+    const response=await canvasApi<{answer:string;model:string;retryCount?:number;actions?:unknown;appliedSkillIds?:string[]}>(
      "/api/v1/projects/"+encodeURIComponent(projectId)+"/assistant/chat","POST",{
       channelId:channel.id,provider,baseUrl:channel.baseUrl,model:modelOptionName(chosenModel),
-      messages:turns,canvasActions:true
+      messages:turns,canvasActions:true,...(selectedSkills?{skills:selectedSkills}:{})
      },controller.signal);
     if(controller.signal.aborted)throw new DOMException("Aborted","AbortError");
     const notes:string[]=[];
@@ -208,7 +252,8 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
        notes.push("画布操作未完成："+(operationError instanceof Error?operationError.message:"执行失败"));
      }    const answer=[response.answer,...notes].filter(Boolean).join("\n\n");
     setSessions(prev=>append(prev,id,{id:nanoid(),role:"assistant",text:answer,
-      meta:response.model+(response.retryCount?` · 网络自动重试 ${response.retryCount} 次`:"")}));
+      meta:response.model+(response.retryCount?` · 网络自动重试 ${response.retryCount} 次`:"")+
+       (selectedSkills?" · Skill: "+(response.appliedSkillIds?.length?response.appliedSkillIds.join("、"):"未匹配"):"")}));
    }catch(error){
    const stopped=controller.signal.aborted;
    setSessions(prev=>append(prev,id,{id:nanoid(),role:"error",text:stopped?"已停止生成":canvasAssistantErrorText(error)}));
@@ -216,7 +261,7 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
    if(controllerRef.current===controller)controllerRef.current=null;
    setSending(false);
   }
-  },[draft,chosenModel,config,includeContext,getContext,includedIds,effectiveScope,session,setSessions,setActiveChatId,projectId,onApplyActions,onRunActions,getWorkflowTemplates,themeName]);
+  },[draft,chosenModel,config,includeContext,getContext,includedIds,effectiveScope,session,setSessions,setActiveChatId,projectId,onApplyActions,onRunActions,getWorkflowTemplates,themeName,skillMode]);
   const clear=()=>{
   if(!session||sending)return;
   Modal.confirm({...canvasAssistantConfirmTheme(themeName),icon:<AlertCircle className="canvas-assistant-confirm-icon" size={19} aria-hidden="true"/>,title:"删除当前对话？",content:"删除后无法恢复。",okText:"删除",okType:"danger",cancelText:"取消",onOk:()=>{
@@ -281,6 +326,21 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
        <ChevronDown size={13} className="canvas-assistant-select-chevron" aria-hidden="true"/>
       </div>
      </div>
+    </div>
+
+    <div className="canvas-assistant-skills" aria-label="助手 Skill 配置">
+     <div className="canvas-assistant-skill-bar">
+      <label htmlFor="canvas-assistant-skill-mode"><BookOpen size={13}/> Skill</label>
+      <select id="canvas-assistant-skill-mode" aria-label="Skill 模式" value={skillMode} disabled={sending}
+       onChange={event=>setSkillMode(event.target.value as SkillMode)}>
+       <option value="manual">手动输入 / 选择</option><option value="auto">自动匹配</option><option value="off">关闭</option>
+      </select>
+      {skillMode!=="off"?<span className="canvas-assistant-skill-count">{extractSkillMentions(draft).skillIds.length?extractSkillMentions(draft).skillIds.length+" 个指定":availableSkills.length+" 个可用"}</span>:null}
+     </div>
+
+     {skillMode==="auto"?<p className="canvas-assistant-skill-hint">根据本轮问题自动匹配；输入 / 选择 Skill 可明确指定。</p>:null}
+     {skillMode==="manual"?<p className="canvas-assistant-skill-hint">在消息中输入 /，搜索并选择 Skill 标签（最多 12 个）；不执行脚本。</p>:null}
+     {skillError?<p className="canvas-assistant-skill-hint" role="status">{skillError}</p>:null}
     </div>
 
     <div className="canvas-assistant-context">
@@ -380,15 +440,16 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
 
    <footer className="canvas-assistant-footer">
     <div className="canvas-assistant-composer">
-     <textarea aria-label="向 AI 助手发送消息" value={draft} rows={3} placeholder="提问或描述你的创作想法…"
-      onChange={event=>setDraft(event.target.value)}
-      onKeyDown={event=>{if(event.key==="Enter"&&(event.ctrlKey||event.metaKey)){event.preventDefault();void send();}}}/>
+     <CanvasPromptChipInput value={draft} references={[]} onChange={setDraft}
+      onSubmit={()=>void send()} submitShortcut="mod-enter" ariaLabel="向 AI 助手发送消息"
+      enableSkills={skillMode!=="off"} projectId={projectId} skillCatalog={skills}
+      className="canvas-assistant-draft-input" placeholder={skillMode==="off"?"提问或描述你的创作想法…":"提问或输入 / 选择 Skill…"}/>
      <div className="canvas-assistant-composer-footer">
       <span className="canvas-assistant-shortcut">Ctrl / ⌘ + Enter 发送</span>
       {sending?(
        <button type="button" className="canvas-assistant-send canvas-assistant-stop" aria-label="停止生成" onClick={stop}><Square size={13}/>停止</button>
       ):(
-       <button type="button" className="canvas-assistant-send" aria-label="发送消息" disabled={!draft.trim()||!chosenModel} onClick={()=>void send()}><ArrowUp size={15}/>发送</button>
+       <button type="button" className="canvas-assistant-send" aria-label="发送消息" disabled={!extractSkillMentions(draft).text.trim()||!chosenModel} onClick={()=>void send()}><ArrowUp size={15}/>发送</button>
       )}
      </div>
     </div>

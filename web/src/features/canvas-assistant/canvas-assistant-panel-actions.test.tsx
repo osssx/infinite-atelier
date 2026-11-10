@@ -8,6 +8,12 @@ import {applyAssistantCanvasActions,type AssistantCanvasStage,type AssistantCanv
 import {CanvasApiError} from "@/features/backend-sync/canvas-api";
 import type {ComfyWorkflowTemplate} from "@/features/comfy-workflow/template-schema";
 import {registerCanvasPortResolver} from "@/lib/canvas/canvas-ports";
+const skillMocks=vi.hoisted(()=>({
+ snapshot:vi.fn(async():Promise<{revision:number;skills:unknown[]}>=>({revision:4,skills:[]}))
+}));
+vi.mock("@/features/skills/skill-registry",()=>({
+ getSkillRegistrySnapshot:skillMocks.snapshot,SKILL_REGISTRY_CHANNEL:"test:assistant-skills"
+}));
 const mocks=vi.hoisted(()=>({
  api:vi.fn(),
  confirm:vi.fn(),
@@ -73,10 +79,9 @@ async function renderAndSend(Harness:()=>React.ReactElement){
  if(suggestion){
   await act(async()=>{suggestion.click();});
  }else{
-  const input=container!.querySelector<HTMLTextAreaElement>('[aria-label="向 AI 助手发送消息"]')!;
-  const setter=Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,"value")!.set!;
+  const input=container!.querySelector<HTMLElement>('[aria-label="向 AI 助手发送消息"]')!;
   await act(async()=>{
-   setter.call(input,"创建三个分镜文本节点并依次连线");
+   input.textContent="创建三个分镜文本节点并依次连线";
    input.dispatchEvent(new Event("input",{bubbles:true}));
   });
  }
@@ -89,6 +94,7 @@ async function renderAndSend(Harness:()=>React.ReactElement){
  mocks.api.mockReset();mocks.confirm.mockReset();mocks.ensure.mockClear();mocks.run.mockClear();
  mocks.run.mockResolvedValue({submitted:1,jobIds:["job-demo"]});
  mocks.confirm.mockImplementation(()=>({destroy:vi.fn()}));
+ skillMocks.snapshot.mockResolvedValue({revision:4,skills:[]});
 });
 afterEach(async()=>{
  if(root)await act(async()=>{root!.unmount()});
@@ -372,6 +378,132 @@ describe("P2 assistant confirmation boundary",()=>{
   expect(mocks.run).toHaveBeenCalledTimes(1);
   expect(container!.textContent).toContain("已通过原有节点执行链路提交 1 项生成任务");
   expect(container!.textContent).toContain("job-demo");
+ });
+ it("typing slash opens the same Skill menu and selecting a suggestion inserts a scoped Skill chip",async()=>{
+  skillMocks.snapshot.mockResolvedValue({revision:6,skills:[
+   {id:"story",name:"分镜编剧",description:"剧本分镜工作流",enabled:true,scope:{type:"global"},
+    activeVersion:"abcdef123456",versions:["abcdef123456"],updatedAt:"today"},
+   {id:"hidden",name:"隐藏技能",description:"不可使用",enabled:false,scope:{type:"global"},
+    activeVersion:"bbbbbbbbbbbb",versions:["bbbbbbbbbbbb"],updatedAt:"today"}
+  ]});
+  const fixture=setup([]);
+  await act(async()=>{root!.render(createElement(fixture.Harness));await Promise.resolve();});
+  const editor=container!.querySelector<HTMLElement>('[aria-label="向 AI 助手发送消息"]')!;
+  await act(async()=>{
+   editor.focus();
+   editor.textContent="请规划镜头 /";
+   const range=document.createRange();
+   const textNode=editor.firstChild!;
+   range.setStart(textNode,(textNode.textContent||"").length);
+   range.collapse(true);
+   window.getSelection()?.removeAllRanges();
+   window.getSelection()?.addRange(range);
+   editor.dispatchEvent(new Event("input",{bubbles:true}));
+   await Promise.resolve();
+  });
+  const menu=document.body.querySelector<HTMLElement>('[data-skill-slash-menu="true"]');
+  expect(menu).toBeTruthy();
+  expect(menu!.textContent).toContain("分镜编剧");
+  expect(menu!.textContent).not.toContain("隐藏技能");
+  await act(async()=>{menu!.querySelector<HTMLButtonElement>("button")!.click();});
+  expect(editor.querySelector<HTMLElement>('[data-skill-id="story"]')).toBeTruthy();
+  const send=container!.querySelector<HTMLButtonElement>('[aria-label="发送消息"]')!;
+  await act(async()=>{send.click();await Promise.resolve();});
+  const sent=mocks.api.mock.calls.find(call=>String(call[0]).includes("/assistant/chat"));
+  expect(sent?.[2].skills).toEqual({mode:"manual",projectId:"p1",expectedRevision:6,
+   skillIds:["story"],versionPins:{story:"abcdef123456"}});
+  expect(sent?.[2].messages.at(-1).content).not.toContain("/[skill:");
+ });
+ it("positions Skill suggestions immediately above the caret in the bottom chat composer",async()=>{
+  skillMocks.snapshot.mockResolvedValue({revision:6,skills:[
+   {id:"story",name:"分镜编剧",description:"镜头指导",enabled:true,scope:{type:"global"},
+    activeVersion:"abcdef123456",versions:["abcdef123456"],updatedAt:"today"}
+  ]});
+  const rangeRect=vi.spyOn(Range.prototype,"getBoundingClientRect").mockReturnValue(new DOMRect(0,0,0,0));
+  const glyphRect=new DOMRect(460,window.innerHeight-60,8,18);
+  const glyphRects=vi.spyOn(Range.prototype,"getClientRects").mockReturnValue([glyphRect] as unknown as DOMRectList);
+  try{
+   const fixture=setup([]);
+   await act(async()=>{root!.render(createElement(fixture.Harness));await Promise.resolve();});
+   const editor=container!.querySelector<HTMLElement>('[aria-label="向 AI 助手发送消息"]')!;
+   await act(async()=>{
+    editor.focus();
+    editor.textContent="写分镜 /";
+    const range=document.createRange();
+    range.setStart(editor.firstChild!,editor.firstChild!.textContent!.length);
+    range.collapse(true);
+    window.getSelection()?.removeAllRanges();
+    window.getSelection()?.addRange(range);
+    editor.dispatchEvent(new Event("input",{bubbles:true}));
+   });
+   const menu=document.body.querySelector<HTMLElement>('[data-skill-slash-menu="true"]')!;
+   expect(menu).toBeTruthy();
+   expect(menu.style.left).toBe("468px");
+   expect(menu.style.bottom).toBe("66px");
+   expect(menu.style.top).toBe("");
+   expect(Number.parseInt(menu.style.maxHeight,10)).toBeGreaterThanOrEqual(58);
+  }finally{rangeRect.mockRestore();glyphRects.mockRestore();}
+ });
+ it("assistant sends only selected authorized Skill IDs and version pins",async()=>{
+  skillMocks.snapshot.mockResolvedValue({revision:4,skills:[
+   {id:"story",name:"分镜编剧",description:"分镜指导",enabled:true,scope:{type:"global"},
+    activeVersion:"abcdef123456",versions:["abcdef123456"],updatedAt:"today"},
+   {id:"hidden",name:"不可用",description:"不应该展示",enabled:false,scope:{type:"global"},
+    activeVersion:"aaaaaaaaaaaa",versions:["aaaaaaaaaaaa"],updatedAt:"today"}
+  ]});
+  const fixture=setup([]);
+  await act(async()=>{root!.render(createElement(fixture.Harness));});
+  const mode=container!.querySelector<HTMLSelectElement>('[aria-label="Skill 模式"]')!;
+  await act(async()=>{mode.value="manual";mode.dispatchEvent(new Event("change",{bubbles:true}));});
+  const input=container!.querySelector<HTMLElement>('[aria-label="向 AI 助手发送消息"]')!;
+  expect(container!.textContent).toContain("输入 /");
+  await act(async()=>{
+   input.textContent="创建三个分镜文本节点并依次连线 /[skill:story]";
+   input.dispatchEvent(new Event("input",{bubbles:true}));
+  });
+  expect(container!.textContent).not.toContain("不可用");
+  const send=container!.querySelector<HTMLButtonElement>('[aria-label="发送消息"]')!;
+  await act(async()=>{send.click();await Promise.resolve();});
+  const sent=mocks.api.mock.calls.find(call=>String(call[0]).includes("/assistant/chat"));
+  expect(sent).toBeTruthy();
+  expect(sent![2].skills).toEqual({
+   mode:"manual",projectId:"p1",expectedRevision:4,
+   skillIds:["story"],versionPins:{story:"abcdef123456"}
+  });
+  expect(sent![2].messages.at(-1).content).not.toContain("/[skill:story]");
+  expect(sent![2].messages.at(-1).content).not.toContain("分镜指导");
+  expect(fixture.apply).not.toHaveBeenCalled();
+ });
+ it("explicit slash Skill takes priority over auto matching, while plain questions send without Skill selection",async()=>{
+  skillMocks.snapshot.mockResolvedValue({revision:8,skills:[
+   {id:"story",name:"分镜编剧",description:"剧本",enabled:true,
+    activeVersion:"abcdef123456",versions:["abcdef123456"],updatedAt:"today"},
+   {id:"sound",name:"配乐",description:"音乐",enabled:true,
+    activeVersion:"bbbbbbbbbbbb",versions:["bbbbbbbbbbbb"],updatedAt:"today"}
+  ]});
+  const fixture=setup([]);
+  await act(async()=>{root!.render(createElement(fixture.Harness));});
+  const mode=container!.querySelector<HTMLSelectElement>('[aria-label="Skill 模式"]')!;
+  await act(async()=>{mode.value="auto";mode.dispatchEvent(new Event("change",{bubbles:true}));});
+  const editor=container!.querySelector<HTMLElement>('[aria-label="向 AI 助手发送消息"]')!;
+  await act(async()=>{
+   editor.textContent="整理故事 /[skill:story]";
+   editor.dispatchEvent(new Event("input",{bubbles:true}));
+  });
+  await act(async()=>{container!.querySelector<HTMLButtonElement>('[aria-label="发送消息"]')!.click();});
+  const sent=mocks.api.mock.calls.find(call=>String(call[0]).includes("/assistant/chat"));
+  expect(sent?.[2].skills.mode).toBe("manual");
+  expect(sent?.[2].skills.skillIds).toEqual(["story"]);
+ });
+ it("Ctrl or Cmd Enter submits assistant messages, while plain Enter preserves composer newlines",async()=>{
+  const fixture=setup([]);
+  await act(async()=>{root!.render(createElement(fixture.Harness));});
+  const editor=container!.querySelector<HTMLElement>('[aria-label="向 AI 助手发送消息"]')!;
+  await act(async()=>{editor.textContent="梳理角色关系";editor.dispatchEvent(new Event("input",{bubbles:true}));});
+  await act(async()=>{editor.dispatchEvent(new KeyboardEvent("keydown",{key:"Enter",bubbles:true,cancelable:true}));});
+  expect(mocks.api.mock.calls.filter(call=>String(call[0]).includes("/assistant/chat"))).toHaveLength(0);
+  await act(async()=>{editor.dispatchEvent(new KeyboardEvent("keydown",{key:"Enter",ctrlKey:true,bubbles:true,cancelable:true}));await Promise.resolve();});
+  expect(mocks.api.mock.calls.filter(call=>String(call[0]).includes("/assistant/chat"))).toHaveLength(1);
  });
  it("P2.5 reports execution failure without falsely claiming successful submission",async()=>{
   const fixture=setup([{type:"run_node",nodeId:"text-existing"}]);

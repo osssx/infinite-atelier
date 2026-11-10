@@ -9,6 +9,7 @@ import {CANVAS_NODE_ID_PATTERN} from "../canvas-node-id.mjs";
 import {ARCHIVE_MAX_BYTES} from "./project-archive.mjs";
 import {createComfyRegistry} from "./comfy-registry.mjs";
 import {freezeAuthorizedSkillGrant} from "./skill-job-grants.mjs";
+import {resolveAssistantSkills} from "./assistant-skills.mjs";
 import {runSkillScript} from "./skill-script-runner.mjs";
 import {getProjectSkillAudit,replayProjectSkillJob,lookupProjectSkillReplay} from "./skill-job-audit.mjs";
 import {listProjectJobs,hideProjectJobHistory,closeUnverifiedModelJob} from "./project-job-history.mjs";
@@ -615,7 +616,12 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
     required:["channelId","provider","model","messages"],additionalProperties:false,properties:{
       channelId:idSchema,provider:{type:"string",enum:["openai","openai_compatible","google_gemini"]},
        baseUrl:{type:"string",maxLength:1024},model:{type:"string",minLength:1,maxLength:128},
-       canvasActions:{type:"boolean"},      messages:{type:"array",minItems:1,maxItems:20,items:{type:"object",required:["role","content"],
+       canvasActions:{type:"boolean"},
+       skills:{type:"object",required:["mode","projectId","expectedRevision","skillIds","versionPins"],additionalProperties:false,
+        properties:{mode:{type:"string",enum:["manual","auto"]},projectId:idSchema,
+         expectedRevision:{type:"integer",minimum:1},skillIds:{type:"array",minItems:1,maxItems:100,uniqueItems:true,items:skillId},
+         versionPins:{type:"object",additionalProperties:skillVersion}}},
+       messages:{type:"array",minItems:1,maxItems:20,items:{type:"object",required:["role","content"],
         additionalProperties:false,properties:{role:{type:"string",enum:["user","assistant"]},
           content:{type:"string",maxLength:98304}}}}
      }}}},async(req,reply)=>{    getProject(db,req.params.id); // Verify the project before invoking any paid provider.
@@ -624,8 +630,12 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
     const onClose=()=>controller.abort();
     reply.raw.on("close",onClose);
     try{
-      const result=await assistantChat({...req.body,signal:controller.signal});
-      reply.header("Cache-Control","no-store");return result;
+      if(req.body.skills&&req.body.skills.projectId!==req.params.id)
+       return reply.code(400).send({code:"assistant_skill_selection_invalid"});
+      const skill=resolveAssistantSkills(db,skillRegistry,req.body.skills,req.body.messages);
+      const {skills:_selection,...chatInput}=req.body;
+      const result=await assistantChat({...chatInput,skillContext:skill.context,signal:controller.signal});
+      reply.header("Cache-Control","no-store");return {...result,appliedSkillIds:skill.skillIds};
     }catch(error){
       const code=typeof error?.code==="string"&&error.code.startsWith("assistant_")?error.code:"assistant_failed";
       return reply.code(error?.statusCode>=400&&error.statusCode<600?error.statusCode:502).send({code});

@@ -20,11 +20,16 @@ type Props = {
     references: CanvasResourceReference[];
     onChange: (value: string) => void;
     onSubmit?: () => void;
+    /** Prompt panels use plain Enter; chat composers may require Ctrl/Cmd+Enter. */
+    submitShortcut?: "enter" | "mod-enter";
+    ariaLabel?: string;
     className?: string;
     style?: CSSProperties;
     placeholder?: string;
     enableSkills?: boolean;
     projectId?: string;
+    /** Optional fresh, project-scoped catalog for callers with their own registry subscription. */
+    skillCatalog?: SkillCatalogEntry[];
 };
 
 type MentionState = {
@@ -40,12 +45,13 @@ type Token =
 
 // Prompt-panel contentEditable input: @ references embed thumbnail chips instead of plain label text.
 // Serialization converts chips back to reference labels so the generated value matches the former textarea semantics.
-export function CanvasPromptChipInput({ value, references, onChange, onSubmit, className, style, placeholder, enableSkills = false, projectId }: Props) {
+export function CanvasPromptChipInput({ value, references, onChange, onSubmit, submitShortcut = "enter", ariaLabel, className, style, placeholder, enableSkills = false, projectId, skillCatalog }: Props) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
-    const catalog = useSkillStore((state) => state.catalog);
+    const storedCatalog = useSkillStore((state) => state.catalog);
+    const catalog = skillCatalog ?? storedCatalog;
     const loaded = useSkillStore((state) => state.loaded);
     const refreshSkills = useSkillStore((state) => state.refresh);
-    useEffect(() => { if (enableSkills && !loaded) void refreshSkills().catch(() => undefined); }, [enableSkills, loaded, refreshSkills]);
+    useEffect(() => { if (enableSkills && !skillCatalog && !loaded) void refreshSkills().catch(() => undefined); }, [enableSkills, skillCatalog, loaded, refreshSkills]);
     const editorRef = useRef<HTMLDivElement>(null);
     const composingRef = useRef(false);
     // Track the last value emitted to the parent. An identical focused value is this component's own echo,
@@ -182,6 +188,7 @@ export function CanvasPromptChipInput({ value, references, onChange, onSubmit, c
                 suppressContentEditableWarning
                 role="textbox"
                 aria-multiline="true"
+                aria-label={ariaLabel}
                 className={`${className || ""} overflow-y-auto whitespace-pre-wrap break-words outline-none`}
                 style={{ ...style, cursor: "text" }}
                 onInput={() => {
@@ -231,7 +238,7 @@ export function CanvasPromptChipInput({ value, references, onChange, onSubmit, c
                         requestAnimationFrame(syncFromEditor);
                         return;
                     }
-                    if (isPlainEnterKey(event) && onSubmit) {
+                    if (onSubmit && (submitShortcut === "mod-enter" ? event.key === "Enter" && (event.ctrlKey || event.metaKey) : isPlainEnterKey(event))) {
                         event.preventDefault();
                         onSubmit();
                         return;
@@ -443,9 +450,24 @@ function caretRect(): DOMRect | null {
     range.collapse(true);
     const rect = range.getBoundingClientRect();
     if (rect.width || rect.height || rect.left || rect.top) return rect;
-    // Empty lines and editors produce a zero-sized range, so fall back to the editor bounds.
+    // Chromium can give a zero-size rectangle for a collapsed caret. Measure the
+    // adjacent text glyph instead of falling back to the whole multiline editor.
+    const node = range.startContainer;
+    const offset = range.startOffset;
+    if (node.nodeType === Node.TEXT_NODE && node.textContent?.length) {
+        const glyph = range.cloneRange();
+        const start = offset > 0 ? offset - 1 : 0;
+        glyph.setStart(node, start);
+        glyph.setEnd(node, Math.min(start + 1, node.textContent.length));
+        const boxes = glyph.getClientRects();
+        const box = boxes.length ? boxes[boxes.length - 1] : null;
+        if (box && (box.height || box.width || box.left || box.top))
+            return new DOMRect(offset > 0 ? box.right : box.left, box.top, 0, box.height);
+    }
     const editor = closestEditor(range.startContainer);
-    return editor ? editor.getBoundingClientRect() : null;
+    if (!editor) return null;
+    const bounds = editor.getBoundingClientRect();
+    return new DOMRect(bounds.left, bounds.top, 0, bounds.height ? Math.min(20, bounds.height) : 0);
 }
 
 function closestEditor(node: Node) {

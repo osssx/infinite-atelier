@@ -15,6 +15,10 @@ const safePath=path=>typeof path==="string"&&path.length<=240&&referencePath.tes
  !path.includes("\\")&&!/[\x00-\x1f\x7f]/.test(path)&&
  !path.split("/").some(part=>!part||part==="."||part==="..");
 
+const safeOutputPath=path=>typeof path==="string"&&path.length<=240&&
+ !path.startsWith("/")&&!path.includes("\\")&&!/[\x00-\x1f\x7f<>:"|?*]/.test(path)&&
+ !path.split("/").some(part=>!part||part==="."||part===".."||part===".atelier");
+const safeScriptPath=path=>safeOutputPath(path)&&path.startsWith("scripts/");
 export const assistantSkillToolDefinitions=[
  {type:"function",function:{name:"search_skills",
   description:"Search the already-authorized Skill catalog by name or description. No network or filesystem access.",
@@ -38,7 +42,36 @@ export const assistantGeminiSkillDeclarations=assistantSkillToolDefinitions.map(
    .map(key=>[key,{type:"STRING"}]))}
 }));
 
-export function createAssistantSkillToolSession(authorizedEntries){
+export const assistantSkillProposalToolDefinition={
+ type:"function",function:{
+  name:"run_skill_script",
+  description:"PROPOSE running one script bundled with a currently authorized Skill. This never executes in model inference. A separate user approval dialog is mandatory. Use script_path exactly as listed by activate_skill.",
+  parameters:{type:"object",additionalProperties:false,required:["skill_id","script_path"],
+   properties:{
+    skill_id:{type:"string"},script_path:{type:"string"},
+    args:{type:"array",items:{type:"string"},maxItems:32},
+    input_files_json:{type:"string",description:"Optional JSON object mapping relative paths to UTF-8 text, such as inputs/prompt.txt."},
+    output_files:{type:"array",items:{type:"string"},maxItems:16},
+    runtime:{type:"string"}
+   }}
+ }
+};
+const geminiParameter=spec=>({
+ type:spec.type==="array"?"ARRAY":spec.type==="object"?"OBJECT":"STRING",
+ ...(spec.items?{items:geminiParameter(spec.items)}:{}),
+ ...(spec.properties?{properties:Object.fromEntries(Object.entries(spec.properties)
+  .map(([key,value])=>[key,geminiParameter(value)]))}:{}),
+ ...(spec.required?{required:spec.required}:{})
+});
+export function assistantSkillToolsFor(entries,scriptProposalEnabled=true){
+ return scriptProposalEnabled&&entries.some(entry=>entry.scriptPaths?.length)?
+  [...assistantSkillToolDefinitions,assistantSkillProposalToolDefinition]:assistantSkillToolDefinitions;
+}
+export function assistantGeminiSkillDeclarationsFor(definitions){
+ return definitions.map(item=>({name:item.function.name,description:item.function.description,
+  parameters:geminiParameter(item.function.parameters)}));
+}
+export function createAssistantSkillToolSession(authorizedEntries,{scriptProposalEnabled=false}={}){
  if(!Array.isArray(authorizedEntries)||authorizedEntries.length>12)
   throw fail("assistant_skill_tool_unauthorized");
  const skills=new Map(),activated=new Set();
@@ -50,6 +83,37 @@ export function createAssistantSkillToolSession(authorizedEntries){
   // These Skills' SKILL.md instructions are already present in the user-level
   // context. Their resources can be read without a redundant activate call.
   activated.add(entry.id);
+ }
+ function propose(args){
+  if(!scriptProposalEnabled||!object(args)||typeof args.skill_id!=="string"||
+   typeof args.script_path!=="string"||
+   Object.keys(args).some(key=>!["skill_id","script_path","args","input_files_json","output_files","runtime"].includes(key)))
+   throw fail("assistant_skill_tool_unauthorized");
+  const skill=skills.get(args.skill_id);
+  const paths=skill?.scriptPaths??[];
+  if(!skill||!Array.isArray(paths)||!paths.includes(args.script_path)||
+   !safeScriptPath(args.script_path))
+   throw fail("assistant_skill_tool_unauthorized");
+  const argv=args.args??[],out=args.output_files??[];
+  if(!Array.isArray(argv)||argv.length>32||argv.some(v=>typeof v!=="string"||v.length>8192)||
+   !Array.isArray(out)||out.length>16||out.some(v=>!safeOutputPath(v))||
+   args.runtime!==undefined&&(typeof args.runtime!=="string"||args.runtime.length>260))
+   throw fail("assistant_skill_tool_arguments_invalid");
+  let inputFiles={};
+  if(args.input_files_json!==undefined){
+   if(typeof args.input_files_json!=="string"||Buffer.byteLength(args.input_files_json)>64*1024)
+    throw fail("assistant_skill_tool_arguments_invalid");
+   try{inputFiles=JSON.parse(args.input_files_json)}
+   catch{throw fail("assistant_skill_tool_arguments_invalid")}
+  }
+  if(!object(inputFiles)||Object.keys(inputFiles).length>16||Object.entries(inputFiles).some(([p,v])=>
+   !safeOutputPath(p)||p.startsWith("scripts/")||typeof v!=="string"||Buffer.byteLength(v)>16384))
+   throw fail("assistant_skill_tool_arguments_invalid");
+  const proposal={skill_id:skill.id,version:skill.version,script_path:args.script_path,
+   args:argv,input_files:inputFiles,output_files:out,
+   ...(args.runtime?{runtime:args.runtime}:{})};
+  if(Buffer.byteLength(JSON.stringify(proposal))>64*1024)throw fail("assistant_skill_tool_arguments_invalid");
+  return proposal;
  }
  const reads=[],calls=[];
  function invoke(name,args){
@@ -72,7 +136,8 @@ export function createAssistantSkillToolSession(authorizedEntries){
    activated.add(skill.id);
    calls.push({name,skillId:skill.id});
    const content=JSON.stringify({skill_id:skill.id,version:skill.version,
-    content:skill.skillMd,references:Object.keys(skill.resources).filter(safePath)});
+    content:skill.skillMd,references:Object.keys(skill.resources).filter(safePath),
+    ...(scriptProposalEnabled?{scripts:skill.scriptPaths??[]}: {})});
    if(Buffer.byteLength(content)>MAX_RESULT_BYTES)throw fail("assistant_skill_tool_output_too_large");
    return content;
   }
@@ -87,12 +152,12 @@ export function createAssistantSkillToolSession(authorizedEntries){
   reads.push({skillId:skill.id,path:args.path});
   return output;
  }
- return {invoke,reads,calls,authorizedSkillIds:[...skills.keys()]};
+ return {invoke,propose,reads,calls,authorizedSkillIds:[...skills.keys()]};
 }
 
 /** Model-provided JSON arguments must obey a narrow server-side schema. */
-export function parseAssistantSkillToolArgs(input){
- if(typeof input!=="string"||Buffer.byteLength(input)>4096)
+export function parseAssistantSkillToolArgs(input,toolName){
+ if(typeof input!=="string"||Buffer.byteLength(input)>(toolName==="run_skill_script"?65536:4096))
   throw fail("assistant_skill_tool_arguments_invalid");
  let parsed;
  try{parsed=JSON.parse(input)}catch{throw fail("assistant_skill_tool_arguments_invalid")}

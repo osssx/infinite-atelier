@@ -617,6 +617,7 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
       channelId:idSchema,provider:{type:"string",enum:["openai","openai_compatible","google_gemini"]},
        baseUrl:{type:"string",maxLength:1024},model:{type:"string",minLength:1,maxLength:128},
        canvasActions:{type:"boolean"},
+       skillScriptProposalEnabled:{type:"boolean"},
        skills:{type:"object",required:["mode","projectId","expectedRevision","skillIds","versionPins"],additionalProperties:false,
         properties:{mode:{type:"string",enum:["manual","auto"]},projectId:idSchema,
          expectedRevision:{type:"integer",minimum:1},skillIds:{type:"array",minItems:1,maxItems:100,uniqueItems:true,items:skillId},

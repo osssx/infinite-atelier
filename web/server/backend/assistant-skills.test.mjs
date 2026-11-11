@@ -33,7 +33,9 @@ test("assistant Skill resolver reuses authorized versions; manual order and auto
  assert.ok(manual.context.indexOf("调色指南")<manual.context.indexOf("短剧编剧"));
  assert.match(manual.context,/按三幕结构/);
  assert.match(manual.context,/references\/extra\.md/);
- assert.doesNotMatch(manual.context,/not automatically loaded|side-effect\.py/);
+ assert.doesNotMatch(manual.context,/not automatically loaded|print\(\x27do not run\x27\)/);
+ assert.match(manual.context,/scripts\/side-effect\.py/);
+ assert.deepEqual(manual.toolEntries[0].scriptPaths,["scripts/side-effect.py"]);
  assert.equal(manual.toolEntries.length,2);
  assert.equal(manual.toolEntries[0].resources["references/extra.md"],"not automatically loaded");
  assert.equal(manual.toolEntries[0].scripts,undefined);

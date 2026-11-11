@@ -580,6 +580,89 @@ describe("P2 assistant confirmation boundary",()=>{
   expect(container!.textContent).toContain("Skill 列表或版本已发生变化");
  });
 
+ it("assistant requires explicit confirmation before executing a model-proposed Skill script",async()=>{
+  const fixture=setup([]);
+  const proposal={skill_id:"story",version:"aaaaaaaaaaaa",script_path:"scripts/compile.js",
+   args:["input.txt"],input_files:{"input.txt":"用户数据"},output_files:["result.txt"]};
+  let assistantCalls=0;
+  mocks.api.mockImplementation(async (url:string,_method:string,body:Record<string,unknown>)=>{
+   if(url.includes("/assistant/chat")){
+    assistantCalls++;
+    return assistantCalls===1?
+     {answer:"等待确认",model:"demo",actions:[],skillScriptProposal:proposal}:
+     {answer:"已根据脚本结果创建文本",model:"demo",
+      actions:[{type:"create_node",ref:"created",nodeType:"text",title:"生成结果",content:"脚本返回内容"}]};
+   }
+   if(url==="/api/v1/skills/execute")
+    return {run_id:"run-audit-123",status:"completed",stdout:"生成成功",exit_code:0,
+     artifacts:[{path:"result.txt",mime:"text/plain",blob_id:"b".repeat(64)}]};
+   throw Error("Unexpected request: "+url);
+  });
+  await renderAndSend(fixture.Harness);
+  expect(mocks.confirm).toHaveBeenCalledTimes(1);
+  const confirmation=mocks.confirm.mock.calls[0][0];
+  expect(confirmation.title).toBe("确认运行本地 Skill 脚本");
+  expect(confirmation.okText).toBe("确认运行脚本");
+  expect(mocks.api.mock.calls.filter(call=>call[0]==="/api/v1/skills/execute")).toHaveLength(0);
+  expect(fixture.apply).not.toHaveBeenCalled();
+  await act(async()=>{confirmation.onOk();await Promise.resolve();await Promise.resolve();});
+  const scriptRequests=mocks.api.mock.calls.filter(call=>call[0]==="/api/v1/skills/execute");
+  expect(scriptRequests).toHaveLength(1);
+  expect(scriptRequests[0][2]).toEqual({project_id:"p1",...proposal});
+  const chatRequests=mocks.api.mock.calls.filter(call=>String(call[0]).includes("/assistant/chat"));
+  expect(chatRequests).toHaveLength(2);
+  expect(chatRequests[1][2].skillScriptProposalEnabled).toBe(false);
+  expect(chatRequests[1][2].messages[0].content).toContain("run-audit-123");
+  expect(chatRequests[1][2].messages[0].content).toContain("生成成功");
+  expect(fixture.getGraph().nodes).toHaveLength(2);
+  expect(container!.textContent).toContain("运行 ID：run-audit-123");
+ });
+
+ it("persists the Skill run ID in chat even if final model inference fails",async()=>{
+  const fixture=setup([]);
+  const proposal={skill_id:"story",version:"aaaaaaaaaaaa",script_path:"scripts/compile.js",
+   args:[],input_files:{},output_files:[]};
+  let count=0;
+  mocks.api.mockImplementation(async (url:string)=>{
+   if(String(url).includes("/assistant/chat")){
+    count++;
+    if(count===1)return {answer:"等待确认",model:"demo",actions:[],skillScriptProposal:proposal};
+    throw new CanvasApiError("assistant_upstream_error",502);
+   }
+   if(url==="/api/v1/skills/execute")return {run_id:"audit-survived",status:"completed",stdout:"运行完毕"};
+   throw Error("unexpected");
+  });
+  await renderAndSend(fixture.Harness);
+  await act(async()=>{mocks.confirm.mock.calls[0][0].onOk();await Promise.resolve();await Promise.resolve();});
+  expect(mocks.api.mock.calls.filter(call=>call[0]==="/api/v1/skills/execute")).toHaveLength(1);
+  expect(container!.textContent).toContain("运行 ID：audit-survived");
+  expect(container!.textContent).toContain("模型渠道返回错误");
+  expect(fixture.apply).not.toHaveBeenCalled();
+ });
+ it("assistant cancellation never executes a proposed Skill script or modifies canvas",async()=>{
+  const fixture=setup([]);
+  mocks.api.mockResolvedValue({answer:"等待确认",model:"demo",actions:[],
+   skillScriptProposal:{skill_id:"story",version:"aaaaaaaaaaaa",script_path:"scripts/compile.js",
+    args:[],input_files:{},output_files:[]}});
+  await renderAndSend(fixture.Harness);
+  expect(mocks.confirm).toHaveBeenCalledTimes(1);
+  await act(async()=>{mocks.confirm.mock.calls[0][0].onCancel();await Promise.resolve();});
+  expect(mocks.api.mock.calls.filter(call=>call[0]==="/api/v1/skills/execute")).toHaveLength(0);
+  expect(mocks.api.mock.calls.filter(call=>String(call[0]).includes("/assistant/chat"))).toHaveLength(1);
+  expect(fixture.apply).not.toHaveBeenCalled();
+  expect(container!.textContent).toContain("已取消 Skill 脚本执行");
+ });
+ it("stopping while confirmation is open aborts without executing the script",async()=>{
+  const fixture=setup([]);
+  mocks.api.mockResolvedValue({answer:"等待确认",model:"demo",actions:[],
+   skillScriptProposal:{skill_id:"story",version:"aaaaaaaaaaaa",script_path:"scripts/compile.js",
+    args:[],input_files:{},output_files:[]}});
+  await renderAndSend(fixture.Harness);
+  await act(async()=>{container!.querySelector<HTMLButtonElement>('[aria-label="停止生成"]')!.click();await Promise.resolve();});
+  expect(mocks.api.mock.calls.filter(call=>call[0]==="/api/v1/skills/execute")).toHaveLength(0);
+  expect(fixture.apply).not.toHaveBeenCalled();
+  expect(container!.textContent).toContain("已停止生成");
+ });
  it("Ctrl or Cmd Enter submits assistant messages, while plain Enter preserves composer newlines",async()=>{
   const fixture=setup([]);
   await act(async()=>{root!.render(createElement(fixture.Harness));});

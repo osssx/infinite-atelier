@@ -162,6 +162,74 @@ test("an unsupported tool declaration after a resource read cannot silently disc
  assert.equal(requests,2);
 });
 
+test("assistant script tool yields a proposal without executing a script or returning canvas actions",async()=>{
+ const scriptArgs={...args,skillTools:[{...skill,scriptPaths:["scripts/run.py"]}]};
+ let requests=0;
+ const service=createAssistantChatService({vault,compatibleUpstreamCall:async(_url,options)=>{
+  requests++;
+  const payload=JSON.parse(options.body);
+  assert.ok(payload.tools.some(item=>item.function.name==="run_skill_script"));
+  return response(null,[call("script-1","run_skill_script",{
+   skill_id:"story",script_path:"scripts/run.py",args:["--dry-run"],
+   input_files_json:JSON.stringify({"inputs/prompt.txt":"test input"}),output_files:["result.txt"]
+  })]);
+ }});
+ const result=await service(scriptArgs);
+ assert.equal(requests,1);
+ assert.deepEqual(result.actions,[]);
+ assert.match(result.answer,/确认/);
+ assert.deepEqual(result.skillScriptProposal,{
+  skill_id:"story",version:"a".repeat(12),script_path:"scripts/run.py",
+  args:["--dry-run"],input_files:{"inputs/prompt.txt":"test input"},output_files:["result.txt"]
+ });
+ assert.equal(result.skillScriptProposal.scriptSource,undefined);
+});
+
+test("script proposal must be pinned to an authorized Skill and safe package path",()=>{
+ const session=createAssistantSkillToolSession([{...skill,scriptPaths:["scripts/run.py"]}],{scriptProposalEnabled:true});
+ const approved=session.propose({skill_id:"story",script_path:"scripts/run.py"});
+ assert.equal(approved.version,"a".repeat(12));
+ assert.deepEqual(approved.input_files,{});
+ assert.throws(()=>session.propose({skill_id:"other",script_path:"scripts/run.py"}),
+  {code:"assistant_skill_tool_unauthorized"});
+ assert.throws(()=>session.propose({skill_id:"story",script_path:"scripts/unknown.py"}),
+  {code:"assistant_skill_tool_unauthorized"});
+ assert.throws(()=>session.propose({skill_id:"story",script_path:"scripts/run.py",
+  input_files_json:'{"../escaped":"bad"}'}),{code:"assistant_skill_tool_arguments_invalid"});
+ assert.throws(()=>session.propose({skill_id:"story",script_path:"scripts/run.py",
+  input_files_json:JSON.stringify({"scripts/overwrite.py":"bad"})}),{code:"assistant_skill_tool_arguments_invalid"});
+ assert.throws(()=>session.propose({skill_id:"story",script_path:"scripts/run.py",
+  output_files:["C:/secret.txt"]}),{code:"assistant_skill_tool_arguments_invalid"});
+ assert.throws(()=>session.propose({skill_id:"story",script_path:"scripts/run.py",command:"rm -rf /"}),
+  {code:"assistant_skill_tool_unauthorized"});
+});
+test("script tools are absent during the post-execution continuation round",async()=>{
+ const scriptArgs={...args,skillTools:[{...skill,scriptPaths:["scripts/run.py"]}],
+  skillScriptProposalEnabled:false};
+ let captured;
+ const service=createAssistantChatService({vault,compatibleUpstreamCall:async(_url,options)=>{
+  captured=JSON.parse(options.body);return response(result);
+ }});
+ const next=await service(scriptArgs);
+ assert.equal(next.actions.length,1);
+ assert.ok(!captured.tools.some(item=>item.function.name==="run_skill_script"));
+ assert.deepEqual(next.skillResourceReads,[]);
+});
+test("Gemini script request is a proposal and never invokes a local interpreter",async()=>{
+ const geminiVault={get:()=>({provider:"google_gemini",hasKey:true,keyVersion:"v2"}),
+  withSecretVersion:(_v,fn)=>fn(Buffer.from("gemini-secret"))};
+ let declarations;
+ const service=createAssistantChatService({vault:geminiVault,compatibleUpstreamCall:async(_url,options)=>{
+  const body=JSON.parse(options.body);declarations=body.tools[0].functionDeclarations;
+  return new Response(JSON.stringify({candidates:[{content:{parts:[{functionCall:{name:"run_skill_script",
+   args:{skill_id:"story",script_path:"scripts/run.py"}}}]},finishReason:"STOP"}]}),{status:200});
+ }});
+ const result=await service({...args,provider:"google_gemini",
+  baseUrl:"http://localhost:8080/v1beta",skillTools:[{...skill,scriptPaths:["scripts/run.py"]}]});
+ assert.ok(declarations.some(item=>item.name==="run_skill_script"));
+ assert.equal(result.skillScriptProposal.script_path,"scripts/run.py");
+ assert.deepEqual(result.actions,[]);
+});
 test("assistant can answer without requesting any tools, preserving the Skill and plan",async()=>{
  let requests=0;
  const service=createAssistantChatService({vault,compatibleUpstreamCall:async()=>{

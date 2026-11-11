@@ -1,4 +1,4 @@
-import {assistantSkillToolDefinitions,assistantGeminiSkillDeclarations,
+import {assistantSkillToolsFor,assistantGeminiSkillDeclarationsFor,
  createAssistantSkillToolSession,parseAssistantSkillToolArgs} from "./assistant-skill-tools.mjs";
 
 const fail=(code,statusCode=422)=>Object.assign(Error(code),{code,statusCode});
@@ -10,15 +10,16 @@ const utf8=value=>Buffer.byteLength(value,"utf8");
  * canvas writes. All model tool calls are validated against the one request's
  * server-authorized, version-pinned catalog before execution.
  */
-export async function runAssistantSkillRounds({provider,initialBody,infer,readAnswer,authorizedEntries,signal}){
- const toolSession=createAssistantSkillToolSession(authorizedEntries);
+export async function runAssistantSkillRounds({provider,initialBody,infer,readAnswer,authorizedEntries,signal,scriptProposalEnabled=true}){
+ const toolSession=createAssistantSkillToolSession(authorizedEntries,{scriptProposalEnabled});
+ const toolDefinitions=assistantSkillToolsFor(authorizedEntries,scriptProposalEnabled);
  const payload=JSON.parse(initialBody);
  const gemini=provider==="google_gemini";
  if(gemini){
-  payload.tools=[{functionDeclarations:assistantGeminiSkillDeclarations}];
+  payload.tools=[{functionDeclarations:assistantGeminiSkillDeclarationsFor(toolDefinitions)}];
   if(!Array.isArray(payload.contents))throw fail("assistant_skill_tool_response_invalid");
  }else{
-  payload.tools=assistantSkillToolDefinitions;
+  payload.tools=toolDefinitions;
   payload.tool_choice="auto";
   if(!Array.isArray(payload.messages))throw fail("assistant_skill_tool_response_invalid");
  }
@@ -57,7 +58,7 @@ export async function runAssistantSkillRounds({provider,initialBody,infer,readAn
    calls=raw.map(item=>{
     if(item?.type!=="function"||typeof item.id!=="string"||!/^[-\w]{1,128}$/.test(item.id)||
      typeof item.function?.name!=="string")throw fail("assistant_skill_tool_response_invalid");
-    return {id:item.id,name:item.function.name,args:parseAssistantSkillToolArgs(item.function.arguments)};
+    return {id:item.id,name:item.function.name,args:parseAssistantSkillToolArgs(item.function.arguments,item.function.name)};
    });
    reply=choice.message;
   }
@@ -67,6 +68,15 @@ export async function runAssistantSkillRounds({provider,initialBody,infer,readAn
   }
   if(rounds>=MAX_TOOL_ROUNDS||totalCalls+calls.length>MAX_TOOL_CALLS)
    throw fail("assistant_skill_tool_round_limit");
+  const proposals=calls.filter(call=>call.name==="run_skill_script");
+  if(proposals.length){
+   if(proposals.length!==1||calls.length!==1)throw fail("assistant_skill_tool_arguments_invalid");
+   const pendingSkillScript=toolSession.propose(proposals[0].args);
+   // A proposal is NOT a tool result; stop the model conversation at this point.
+   // An explicit click in the client must invoke the separately audited API.
+   return {pendingSkillScript,retryCount,skillToolCalls:toolSession.calls,
+    skillResourceReads:toolSession.reads};
+  }
   const replies=[];
   for(const call of calls){
    if(seen.has(call.id))throw fail("assistant_skill_tool_response_invalid");

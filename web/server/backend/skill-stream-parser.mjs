@@ -2,7 +2,7 @@ const error=code=>Object.assign(Error(code),{code,statusCode:502});
 /** Parses fragmented OpenAI Chat Completions SSE without dispatching partial tools.
  * Output is authoritative ONLY after both finish_reason and [DONE] arrive.
  */
-export async function readSkillStream(response,{db,jobId,round}){
+export async function readSkillStream(response,{db,jobId,round}={}){
  if(!response.body)throw error("model_skill_stream_missing");
  const reader=response.body.getReader();
  const decoder=new TextDecoder("utf-8",{fatal:true});
@@ -12,7 +12,7 @@ export async function readSkillStream(response,{db,jobId,round}){
  const publish=()=>{
   if(events>=96||text.length<=sent)return;
   const delta=text.slice(sent,sent+4096);
-  db.prepare("INSERT INTO job_events(job_id,kind,payload_json,created_at) VALUES(?,?,?,?)")
+  if(db&&jobId)db.prepare("INSERT INTO job_events(job_id,kind,payload_json,created_at) VALUES(?,?,?,?)")
    .run(jobId,"skill_text_delta",JSON.stringify({round,delta}),Date.now());
   sent+=delta.length;events++;
  };

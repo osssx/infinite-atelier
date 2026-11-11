@@ -52,6 +52,11 @@ const assistantErrorMessages:Record<string,string>={
  assistant_skill_catalog_changed:"Skill 列表或版本已发生变化，请刷新后重试。",
  assistant_skill_unavailable:"选中的 Skill 已被禁用、删除或不适用于当前项目，请更新选择。",
  assistant_skill_context_too_large:"Skill 内容与本轮请求超过助手上下文限制，请减少选择的 Skill。",
+ assistant_skill_tool_unauthorized:"模型请求了未授权的 Skill 或资源，已拒绝执行，请检查 Skill 配置。",
+ assistant_skill_tool_arguments_invalid:"模型生成的 Skill 工具参数无效，未读取资源。",
+ assistant_skill_tool_response_invalid:"模型的 Skill 工具响应不完整或格式错误，请更换支持工具调用的模型。",
+ assistant_skill_tool_round_limit:"Skill 工具调用超过安全轮次限制，请缩小任务范围。",
+ assistant_skill_tool_output_too_large:"Skill 参考资料过长，超出单次读取限制。",
   assistant_actions_invalid:"模型返回的画布操作格式不符合要求，未执行画布修改。请尝试更明确地描述操作。",
   assistant_actions_missing:"模型未返回可执行的画布指令，已尝试重新生成操作计划，但画布仍未修改。请明确要执行的操作，或更换支持结构化 JSON 输出的模型。",};
 export function canvasAssistantErrorText(error:unknown){
@@ -208,7 +213,7 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
     }
     await ensureSqliteModelChannelForExecution(channel,provider);
    if(controller.signal.aborted)return;
-    type AssistantReply={answer:string;model:string;retryCount?:number;actions?:unknown;appliedSkillIds?:string[]};
+    type AssistantReply={answer:string;model:string;retryCount?:number;actions?:unknown;appliedSkillIds?:string[];skillResourceReads?:{skillId:string;path:string}[];skillToolCalls?:{name:string;skillId:string|null}[];skillToolsFallback?:boolean};
     const endpoint="/api/v1/projects/"+encodeURIComponent(projectId)+"/assistant/chat";
     const request={channelId:channel.id,provider,baseUrl:channel.baseUrl,model:modelOptionName(chosenModel),
      messages:turns,canvasActions:true};
@@ -272,7 +277,9 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
      }    const answer=[response.answer,...notes].filter(Boolean).join("\n\n");
     setSessions(prev=>append(prev,id,{id:nanoid(),role:"assistant",text:answer,
       meta:response.model+(response.retryCount?` · 网络自动重试 ${response.retryCount} 次`:"")+
-       (response.appliedSkillIds?.length?" · Skill: "+response.appliedSkillIds.join("、"):"")}));
+       (response.appliedSkillIds?.length?" · Skill: "+response.appliedSkillIds.join("、"):"")+
+       (response.skillResourceReads?.length?" · 读取资料 "+response.skillResourceReads.length+" 项":"")+
+       (response.skillToolsFallback?" · 工具不支持，仅使用 Skill 指令":"")}));
    }catch(error){
    const stopped=controller.signal.aborted;
    setSessions(prev=>append(prev,id,{id:nanoid(),role:"error",text:stopped?"已停止生成":canvasAssistantErrorText(error)}));

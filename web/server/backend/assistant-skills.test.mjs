@@ -32,7 +32,11 @@ test("assistant Skill resolver reuses authorized versions; manual order and auto
  assert.deepEqual(manual.skillIds,["color","story"]);
  assert.ok(manual.context.indexOf("调色指南")<manual.context.indexOf("短剧编剧"));
  assert.match(manual.context,/按三幕结构/);
- assert.doesNotMatch(manual.context,/references\/extra\.md|side-effect\.py/);
+ assert.match(manual.context,/references\/extra\.md/);
+ assert.doesNotMatch(manual.context,/not automatically loaded|side-effect\.py/);
+ assert.equal(manual.toolEntries.length,2);
+ assert.equal(manual.toolEntries[0].resources["references/extra.md"],"not automatically loaded");
+ assert.equal(manual.toolEntries[0].scripts,undefined);
  const auto=resolveAssistantSkills(null,registry,selection("auto"),messages);
  assert.deepEqual(auto.skillIds,["story"]);
  assert.deepEqual(resolveAssistantSkills(null,registry,selection("auto"),[{role:"user",content:"随便聊聊"}]).skillIds,[]);
@@ -129,6 +133,61 @@ test("production filesystem Skill registry enforces enablement and project scope
  assert.equal(disabled.json().code,"assistant_skill_catalog_changed");
  const stale=await request("p1",1);
  assert.equal(stale.statusCode,409,stale.body);
+});
+test("HTTP ad-hoc assistant loads only frozen, authorized reference text through a read-only tool",async t=>{
+ const root=mkdtempSync(join(tmpdir(),"assistant-readonly-"));
+ const skillDir=join(root,"skills","scene-guide");
+ mkdirSync(join(skillDir,"references"),{recursive:true});
+ writeFileSync(join(skillDir,"SKILL.md"),
+  "---\nname: scene-guide\ndescription: 帮助分镜规划和镜头脚本\n---\n编写镜头列表前读取 references/camera.md。");
+ writeFileSync(join(skillDir,"references","camera.md"),"已授权的镜头语言：推镜、拉镜、摇镜。");
+ const db=new DatabaseSync(":memory:");initializeSchema(db);
+ const skills=createFileSkillRegistry({skillsDir:join(root,"skills")});
+ const entry=skills.list().skills[0];
+ const upstream=[];
+ const vault={get:()=>({provider:"openai_compatible",hasKey:true,keyVersion:"v1"}),
+  withSecretVersion:(_v,fn)=>fn(Buffer.from("private-key"))};
+ const service=createAssistantChatService({vault,compatibleUpstreamCall:async(_url,options)=>{
+  const request=JSON.parse(options.body);upstream.push(request);
+  const message=upstream.length===1?
+   {role:"assistant",content:null,tool_calls:[{id:"req-1",type:"function",
+    function:{name:"read_skill_resource",arguments:JSON.stringify({
+     skill_id:"scene-guide",path:"references/camera.md"
+    })}}]}:
+   {role:"assistant",content:JSON.stringify({answer:"镜头建议已编排",actions:[
+    {type:"create_node",ref:"shot",nodeType:"text",title:"镜头",content:"推镜、拉镜、摇镜"}]})};
+  return new Response(JSON.stringify({choices:[{finish_reason:upstream.length===1?"tool_calls":"stop",message}]}),{status:200});
+ }});
+ const app=buildApp({db,skillRegistry:skills,assistantChat:service,
+  authorize:req=>req.headers["x-owner"]==="yes"});
+ t.after(async()=>{await app.close();db.close();rmSync(root,{recursive:true,force:true})});
+ const headers={"x-owner":"yes"};
+ assert.equal((await app.inject({method:"POST",url:"/api/v1/projects",
+  headers,payload:{id:"p1",document:{nodes:[],connections:[]}}})).statusCode,201);
+ const request={channelId:"c1",provider:"openai_compatible",model:"demo",
+  baseUrl:"http://localhost:8080/v1",canvasActions:true,
+  messages:[{role:"user",content:"请用 scene-guide 为分镜规划创建节点"}],
+  skills:{mode:"manual",projectId:"p1",expectedRevision:skills.revision(),
+   skillIds:["scene-guide"],versionPins:{"scene-guide":entry.activeVersion}}};
+ const reply=await app.inject({method:"POST",url:"/api/v1/projects/p1/assistant/chat",
+  headers,payload:request});
+ assert.equal(reply.statusCode,200,reply.body);
+ const data=reply.json();
+ assert.equal(data.actions[0].type,"create_node");
+ assert.deepEqual(data.appliedSkillIds,["scene-guide"]);
+ assert.deepEqual(data.skillResourceReads,[{skillId:"scene-guide",path:"references/camera.md"}]);
+ assert.equal(upstream.length,2);
+ assert.ok(upstream[0].tools.some(item=>item.function.name==="read_skill_resource"));
+ assert.doesNotMatch(JSON.stringify(upstream[0]),/已授权的镜头语言/);
+ assert.match(upstream[1].messages.at(-1).content,/已授权的镜头语言/);
+ assert.doesNotMatch(reply.body,/已授权的镜头语言|private-key/);
+ assert.deepEqual((await app.inject({method:"GET",url:"/api/v1/projects/p1",
+  headers})).json().document.nodes,[]);
+ const forged=await app.inject({method:"POST",url:"/api/v1/projects/p1/assistant/chat",
+  headers,payload:{...request,skillTools:[{id:"fake",resources:{"references/private.md":"stolen"}}]}});
+ // Fastify strips undeclared fields from requests; the forged catalog is not passed through.
+ assert.equal(forged.statusCode,200,forged.body);
+ assert.doesNotMatch(JSON.stringify(upstream.at(-1)),/fake|private\.md|stolen/);
 });
 test("assistant corrective JSON inference retains selected Skill instructions",async()=>{
  const captured=[];

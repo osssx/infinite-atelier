@@ -634,7 +634,7 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
        return reply.code(400).send({code:"assistant_skill_selection_invalid"});
       const skill=resolveAssistantSkills(db,skillRegistry,req.body.skills,req.body.messages);
       const {skills:_selection,...chatInput}=req.body;
-      const result=await assistantChat({...chatInput,skillContext:skill.context,signal:controller.signal});
+      const result=await assistantChat({...chatInput,skillContext:skill.context,skillTools:skill.toolEntries??[],signal:controller.signal});
       reply.header("Cache-Control","no-store");return {...result,appliedSkillIds:skill.skillIds};
     }catch(error){
       const code=typeof error?.code==="string"&&error.code.startsWith("assistant_")?error.code:"assistant_failed";

@@ -17,6 +17,8 @@ export type VideoCapabilities = { resolutions?: string[]; durations?: number[]; 
 export type ChannelModel = {
     name: string;
     capability: ModelCapability;
+    /** Optional model input capabilities; absent means unknown, not necessarily text-only. */
+    inputModalities?: ("text" | "image")[];
     script?: string;
     videoPreset?: "seedance-2.0" | "seedance-2.0-fast" | "seedance-2.0-mini";
     videoCapabilities?: VideoCapabilities;

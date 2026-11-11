@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {fingerprintSource,fingerprintSourceLegacy,matchesSourceFingerprint} from "./repository.mjs";
+import {createHash} from "node:crypto";
+import {fingerprintSource,fingerprintSourceLegacy,matchesSourceFingerprint,stableJson} from "./repository.mjs";
 // Node 24 can erase TS-only imports; exercise the actual browser implementation.
 import {fingerprintBackendSource} from "../../src/features/backend-sync/backend-source-fingerprint.ts";
 
@@ -114,4 +115,80 @@ test("legacy already-collected standalone Comfy request can recover only verifie
  withEdge.connections.push({id:"e",fromNodeId:"media",toNodeId:"comfy"});
  assert.equal(matchesSourceFingerprint(withEdge,"comfy",legacy,frozen),false);
  assert.equal(matchesSourceFingerprint(doc,"comfy",legacy,{}),true);
+});
+test("completed ancestors break provenance loops while unfinished generation cycles still fail",async()=>{
+ const saved={nodes:[
+  {id:"image-source",type:"image",metadata:{content:"/api/v1/blobs/snapshot",storageKey:"cas:"+"a".repeat(64)}},
+  {id:"text-source",type:"text",metadata:{content:"golden sky"}},
+  {id:"target",type:"image",metadata:{prompt:"golden sky"}}
+ ],connections:[
+  {id:"image-to-text",fromNodeId:"image-source",toNodeId:"text-source"},
+  {id:"text-to-target",fromNodeId:"text-source",toNodeId:"target"},
+  // A visual output/provenance link points back into the already saved source.
+  {id:"target-to-image",fromNodeId:"target",toNodeId:"image-source"}
+ ]};
+ const initial=fingerprintSource(saved,"target");
+ assert.equal(await fingerprintBackendSource(saved,"target"),initial);
+ const promptOnly=structuredClone(saved);
+ delete promptOnly.nodes[1].metadata.content;
+ promptOnly.nodes[1].metadata.prompt="manually entered text";
+ assert.equal(await fingerprintBackendSource(promptOnly,"target"),fingerprintSource(promptOnly,"target"));
+ // Only the completed text is consumed; the old image provenance isn't replayed.
+ const changedEarlier=structuredClone(saved);
+ changedEarlier.nodes[0].metadata.content="/api/v1/blobs/updated";
+ assert.equal(fingerprintSource(changedEarlier,"target"),initial);
+ const changedText=structuredClone(saved);
+ changedText.nodes[1].metadata.content="sunset";
+ assert.notEqual(fingerprintSource(changedText,"target"),initial);
+ assert.equal(await fingerprintBackendSource(changedText,"target"),fingerprintSource(changedText,"target"));
+ // Regenerating a target with an old output must still include its fresh inputs.
+ const targetUpdated=structuredClone(saved);
+ targetUpdated.nodes[2].metadata.content="/api/v1/blobs/old-target-output";
+ assert.equal(await fingerprintBackendSource(targetUpdated,"target"),fingerprintSource(targetUpdated,"target"));
+ const pending=structuredClone(saved);
+ delete pending.nodes[0].metadata.content;
+ delete pending.nodes[1].metadata.content;
+ assert.throws(()=>fingerprintSource(pending,"target"),/cyclic_generation_source/);
+ await assert.rejects(()=>fingerprintBackendSource(pending,"target"),/cyclic_generation_source/);
+ // v1 is an old complete-graph digest and must retain its historical behavior.
+ assert.throws(()=>fingerprintSourceLegacy(saved,"target"),/cyclic_generation_source/);
+});
+
+test("saved Comfy output can be reused by its producing workflow",async()=>{
+ const graph={nodes:[
+  {id:"wf",type:"comfy:workflow",metadata:{comfyWorkflow:{templateId:"x",templateRevision:"1"}}},
+  {id:"artifact",type:"image",metadata:{content:"/api/v1/blobs/image",comfyArtifact:{
+   workflowNodeId:"wf",runId:"run",artifactId:"asset",portId:"image",kind:"image",index:0}}}
+ ],connections:[
+  {id:"produced",fromNodeId:"wf",fromPortId:"image",toNodeId:"artifact",toPortId:"comfy-artifact"},
+  {id:"referenced",fromNodeId:"artifact",fromPortId:"image",toNodeId:"wf",toPortId:"reference"}
+ ]};
+ assert.equal(await fingerprintBackendSource(graph,"wf"),fingerprintSource(graph,"wf"));
+ const noAsset=structuredClone(graph);
+ delete noAsset.nodes[1].metadata.content;
+ assert.throws(()=>fingerprintSource(noAsset,"wf"),/cyclic_generation_source/);
+});
+test("pre-fix v2 and v2c job hashes still verify for already queued tasks",()=>{
+ // No presentation-only metadata: previous v2 captured the entire chain.
+ const graph={nodes:[
+  {id:"upstream",type:"text",metadata:{content:"old text"}},
+  {id:"source",type:"image",metadata:{content:"saved image"}},
+  {id:"target",type:"comfy:workflow",metadata:{comfyWorkflow:{templateId:"demo",templateRevision:"1"}}}
+ ],connections:[
+  {id:"a",fromNodeId:"upstream",toNodeId:"source"},
+  {id:"b",fromNodeId:"source",toNodeId:"target"}
+ ]};
+ const oldNodes=[...graph.nodes].sort((a,b)=>a.id.localeCompare(b.id));
+ const oldEdges=graph.connections.map(({id,...edge})=>edge).sort((a,b)=>stableJson(a).localeCompare(stableJson(b)));
+ const oldV2="v2:"+createHash("sha256").update(stableJson({nodes:oldNodes,incoming:oldEdges})).digest("hex");
+ assert.notEqual(oldV2,fingerprintSource(graph,"target"));
+ assert.equal(matchesSourceFingerprint(graph,"target",oldV2,{adapterKind:"model"}),true);
+ const binding={mode:"image",binding:{templateId:"demo",templateRevision:"1"}};
+ const oldV2c="v2c:"+createHash("sha256").update(stableJson({graphFingerprint:oldV2,targetBinding:binding})).digest("hex");
+ const snapshot={adapterKind:"comfy",comfyTargetBinding:binding};
+ assert.equal(matchesSourceFingerprint(graph,"target",oldV2c,snapshot),true);
+ const changed=structuredClone(graph);
+ changed.nodes[0].metadata.content="modified text";
+ assert.equal(matchesSourceFingerprint(changed,"target",oldV2,{adapterKind:"model"}),false);
+ assert.equal(matchesSourceFingerprint(changed,"target",oldV2c,snapshot),false);
 });

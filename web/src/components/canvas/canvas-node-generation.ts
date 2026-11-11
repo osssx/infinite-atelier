@@ -35,7 +35,12 @@ export function buildNodeGenerationContext(nodeId: string, nodes: CanvasNodeData
         return buildComposerGenerationContext(inputs, prompt);
     }
 
+    // Prompt-panel @ chips historically serialize their labels (e.g. "文本 1").
+    // Support those saved drafts and stable @[node:id] references. Only append text
+    // implicitly if it wasn't explicitly referenced; media inputs stay unchanged.
+    const { expandedPrompt, referencedTextIds } = expandGenerationPromptReferences(prompt, inputs);
     const upstreamText = inputs
+        .filter((input) => input.type === "text" && !referencedTextIds.has(input.nodeId))
         .map((input) => input.text)
         .filter(Boolean)
         .join("\n\n");
@@ -44,7 +49,7 @@ export function buildNodeGenerationContext(nodeId: string, nodes: CanvasNodeData
     const referenceAudios = inputs.map((input) => input.audio).filter((audio): audio is ReferenceAudio => Boolean(audio));
 
     return {
-        prompt: upstreamText ? `${prompt}\n\n${upstreamText}` : prompt,
+        prompt: upstreamText ? `${expandedPrompt}\n\n${upstreamText}` : expandedPrompt,
         referenceImages,
         referenceVideos,
         referenceAudios,
@@ -55,6 +60,37 @@ export function buildNodeGenerationContext(nodeId: string, nodes: CanvasNodeData
     };
 }
 
+/** Expand @ text chips against connected saved resources, not transient UI labels. */
+function expandGenerationPromptReferences(prompt: string, inputs: NodeGenerationInput[]) {
+    const byId = new Map(inputs.map((input) => [input.nodeId, input]));
+    const labels = new Map<string, NodeGenerationInput>();
+    const counts = { text: 0, image: 0, video: 0, audio: 0 };
+    const labelById = new Map<string, string>();
+    for (const input of inputs) {
+        const label = generationLabel(input.type, counts[input.type]++);
+        labelById.set(input.nodeId, label);
+        if (input.type === "text") labels.set(label, input);
+    }
+    const labelChoices = [...labels.keys()].sort((a, b) => b.length - a.length)
+        .map((label) => label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+    const pattern = new RegExp("@\\[node:([^\\]]+)\\]" + (labelChoices.length ? "|(?:" + labelChoices.join("|") + ")(?![0-9])" : ""), "g");
+    const referencedTextIds = new Set<string>();
+    const expandedPrompt = prompt.replace(pattern, (token, encodedNodeId: string | undefined) => {
+        let input: NodeGenerationInput | undefined;
+        if (encodedNodeId !== undefined) {
+            const rawId = encodedNodeId.split(":image:")[0];
+            let nodeId = rawId;
+            try { nodeId = decodeURIComponent(rawId); } catch { /* malformed token is missing */ }
+            input = byId.get(nodeId);
+            if (!input) throw Error("引用的画布节点已断开或不存在：" + nodeId);
+        } else input = labels.get(token);
+        if (!input) return token;
+        if (input.type !== "text") return labelById.get(input.nodeId) || token;
+        referencedTextIds.add(input.nodeId);
+        return input.text || "";
+    });
+    return { expandedPrompt, referencedTextIds };
+}
 function buildComposerGenerationContext(inputs: NodeGenerationInput[], prompt: string): NodeGenerationContext {
     const inputByNodeId = new Map(inputs.map((input) => [input.nodeId, input]));
     const selectedInputs: NodeGenerationInput[] = [];

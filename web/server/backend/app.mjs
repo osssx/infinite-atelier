@@ -10,6 +10,7 @@ import {ARCHIVE_MAX_BYTES} from "./project-archive.mjs";
 import {createComfyRegistry} from "./comfy-registry.mjs";
 import {freezeAuthorizedSkillGrant} from "./skill-job-grants.mjs";
 import {resolveAssistantSkills} from "./assistant-skills.mjs";
+import {resolveAssistantVisualContext} from "./assistant-visual-context.mjs";
 import {runSkillScript} from "./skill-script-runner.mjs";
 import {getProjectSkillAudit,replayProjectSkillJob,lookupProjectSkillReplay} from "./skill-job-audit.mjs";
 import {listProjectJobs,hideProjectJobHistory,closeUnverifiedModelJob} from "./project-job-history.mjs";
@@ -618,6 +619,13 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
        baseUrl:{type:"string",maxLength:1024},model:{type:"string",minLength:1,maxLength:128},
        canvasActions:{type:"boolean"},
        skillScriptProposalEnabled:{type:"boolean"},
+       visualContext:{type:"object",required:["images"],additionalProperties:false,properties:{
+        detail:{type:"string",enum:["auto","low","high"]},
+        images:{type:"array",minItems:1,maxItems:4,items:{
+         type:"object",required:["nodeId"],additionalProperties:false,
+         properties:{nodeId:canvasNodeIdSchema,imageId:{type:"string",minLength:1,maxLength:160}}
+        }}
+       }},
        skills:{type:"object",required:["mode","projectId","expectedRevision","skillIds","versionPins"],additionalProperties:false,
         properties:{mode:{type:"string",enum:["manual","auto"]},projectId:idSchema,
          expectedRevision:{type:"integer",minimum:1},skillIds:{type:"array",minItems:1,maxItems:100,uniqueItems:true,items:skillId},
@@ -625,7 +633,7 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
        messages:{type:"array",minItems:1,maxItems:20,items:{type:"object",required:["role","content"],
         additionalProperties:false,properties:{role:{type:"string",enum:["user","assistant"]},
           content:{type:"string",maxLength:98304}}}}
-     }}}},async(req,reply)=>{    getProject(db,req.params.id); // Verify the project before invoking any paid provider.
+     }}}},async(req,reply)=>{    const project=getProject(db,req.params.id); // Verify the project before invoking any paid provider.
     if(!assistantChat)return reply.code(503).send({code:"assistant_unavailable"});
     const controller=new AbortController();
     const onClose=()=>controller.abort();
@@ -634,9 +642,15 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
       if(req.body.skills&&req.body.skills.projectId!==req.params.id)
        return reply.code(400).send({code:"assistant_skill_selection_invalid"});
       const skill=resolveAssistantSkills(db,skillRegistry,req.body.skills,req.body.messages);
-      const {skills:_selection,...chatInput}=req.body;
-      const result=await assistantChat({...chatInput,skillContext:skill.context,skillTools:skill.toolEntries??[],signal:controller.signal});
-      reply.header("Cache-Control","no-store");return {...result,appliedSkillIds:skill.skillIds};
+      const visual=await resolveAssistantVisualContext({
+       document:project.document,visualContext:req.body.visualContext,blobStore,signal:controller.signal
+      });
+      const {skills:_selection,visualContext:_visual,...chatInput}=req.body;
+      const result=await assistantChat({...chatInput,skillContext:skill.context,
+       skillTools:skill.toolEntries??[],visualImages:visual.images,
+       visualDetail:req.body.visualContext?.detail??"high",signal:controller.signal});
+      reply.header("Cache-Control","no-store");return {...result,
+       appliedSkillIds:skill.skillIds,usedVisualReferences:visual.references};
     }catch(error){
       const code=typeof error?.code==="string"&&error.code.startsWith("assistant_")?error.code:"assistant_failed";
       return reply.code(error?.statusCode>=400&&error.statusCode<600?error.statusCode:502).send({code});

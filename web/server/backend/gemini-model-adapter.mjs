@@ -2,6 +2,7 @@ import {createHash} from "node:crypto";
 import {readFile} from "node:fs/promises";
 import {compatEndpointFingerprint,createPinnedOpenAiCompatCall,normalizeOpenAiCompatBaseUrl} from "./openai-compat-endpoints.mjs";
 import {appendArtifact} from "./repository.mjs";
+import {geminiVisionParts} from "./model-vision-parts.mjs";
 
 const failure=(code,statusCode=400,confirmedNotAccepted=false)=>
  Object.assign(Error(code),{code,statusCode,confirmedNotAccepted});
@@ -194,13 +195,13 @@ export function createGeminiModelAdapter({db,blobStore,vault,
  async function submit({job}){
   const {snapshot,task}=check(job),images=await readImages(task);
   if(task.kind==="image"){
-   const parts=[{text:task.prompt},...images.map(inlineData=>({inlineData}))];
+   const parts=geminiVisionParts(task.prompt,images);
    await send({snapshot,task,contents:[{role:"user",parts}],jobId:job.id});
   }else{
    const history=normalizeGeminiHistory(task);
    if(images.length){
     const user=history.contents.at(-1);
-    user.parts=[{text:task.prompt},...images.map(inlineData=>({inlineData}))];
+    user.parts=geminiVisionParts(task.prompt,images);
    }
    await send({snapshot,task,contents:history.contents,systemInstruction:history.systemInstruction,jobId:job.id});
   }

@@ -13,11 +13,13 @@ import { canvasThemes } from "@/lib/canvas-theme";
 import { canvasMentionPosition, keepMentionOptionVisible } from "@/lib/canvas/canvas-mention-position";
 import { isImeComposing, isPlainEnterKey } from "@/lib/keyboard-event";
 import { useThemeStore } from "@/stores/use-theme-store";
-import type { CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
+import {canvasResourceReferenceToken,type CanvasResourceReference} from "@/lib/canvas/canvas-resource-references";
 
 type Props = {
     value: string;
     references: CanvasResourceReference[];
+    /** Identity tokens prevent a stale @ label from silently referring to a different node. */
+    referenceSerialization?: "label" | "identity";
     onChange: (value: string) => void;
     onSubmit?: () => void;
     /** Prompt panels use plain Enter; chat composers may require Ctrl/Cmd+Enter. */
@@ -45,7 +47,7 @@ type Token =
 
 // Prompt-panel contentEditable input: @ references embed thumbnail chips instead of plain label text.
 // Serialization converts chips back to reference labels so the generated value matches the former textarea semantics.
-export function CanvasPromptChipInput({ value, references, onChange, onSubmit, submitShortcut = "enter", ariaLabel, className, style, placeholder, enableSkills = false, projectId, skillCatalog }: Props) {
+export function CanvasPromptChipInput({ value, references, referenceSerialization="label", onChange, onSubmit, submitShortcut = "enter", ariaLabel, className, style, placeholder, enableSkills = false, projectId, skillCatalog }: Props) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const storedCatalog = useSkillStore((state) => state.catalog);
     const catalog = skillCatalog ?? storedCatalog;
@@ -62,9 +64,11 @@ export function CanvasPromptChipInput({ value, references, onChange, onSubmit, s
     const [imagePreview, setImagePreview] = useState<string | null>(null);
 
     const activeReferences = useMemo(() => references.filter((item) => item.active), [references]);
-    const referenceByLabel = useMemo(() => new Map(activeReferences.map((item) => [item.label, item])), [activeReferences]);
+    const referenceToken=(item:CanvasResourceReference)=>referenceSerialization==="identity"?
+        canvasResourceReferenceToken(item):item.label;
+    const referenceByLabel = useMemo(() => new Map(activeReferences.map((item) => [referenceToken(item), item])), [activeReferences,referenceSerialization]);
     // Match longer labels first so a shorter label cannot split a longer one.
-    const activeLabels = useMemo(() => Array.from(new Set(activeReferences.map((item) => item.label))).sort((a, b) => b.length - a.length), [activeReferences]);
+    const activeLabels = useMemo(() => Array.from(new Set(activeReferences.map(referenceToken))).sort((a, b) => b.length - a.length), [activeReferences,referenceSerialization]);
     const tokens = useMemo(() => parseTokens(value, activeLabels), [value, activeLabels]);
 
     const candidates = useMemo(() => {
@@ -95,7 +99,7 @@ export function CanvasPromptChipInput({ value, references, onChange, onSubmit, s
                 return;
             }
             const reference = referenceByLabel.get(token.label);
-            if (reference) editor.append(createReferenceChip(reference, theme, setImagePreview));
+            if (reference) editor.append(createReferenceChip(reference, theme, setImagePreview,referenceToken(reference)));
             else editor.append(document.createTextNode(token.label));
         });
         lastEmittedRef.current = value;
@@ -132,7 +136,7 @@ export function CanvasPromptChipInput({ value, references, onChange, onSubmit, s
         const editor = editorRef.current;
         if (!editor) return;
         removeActiveMention("reference");
-        const chip = createReferenceChip(reference, theme, setImagePreview);
+        const chip = createReferenceChip(reference, theme, setImagePreview,referenceToken(reference));
         const space = document.createTextNode(" ");
         const selection = window.getSelection();
         const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
@@ -327,10 +331,10 @@ function ReferencePreview({ reference }: { reference: CanvasResourceReference })
     );
 }
 
-function createReferenceChip(reference: CanvasResourceReference, theme: (typeof canvasThemes)[keyof typeof canvasThemes], onImagePreview: (url: string) => void) {
+function createReferenceChip(reference: CanvasResourceReference, theme: (typeof canvasThemes)[keyof typeof canvasThemes], onImagePreview: (url: string) => void,serializedLabel=reference.label) {
     const wrapper = document.createElement("span");
     wrapper.contentEditable = "false";
-    wrapper.dataset.refLabel = reference.label;
+    wrapper.dataset.refLabel = serializedLabel;
     if (reference.kind === "image" && reference.previewUrl) {
         const image = document.createElement("img");
         image.src = reference.previewUrl;

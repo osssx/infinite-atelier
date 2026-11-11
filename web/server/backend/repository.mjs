@@ -57,8 +57,19 @@ function generationNode(node){
  });
  return Object.keys(safe).length?{...rest,metadata:safe}:rest;
 }
+/** A completed resource is a saved input snapshot, not a request to re-run its provenance.
+ * The explicit target still traverses its parents even when it has old content. */
+function isMaterializedGenerationResource(node){
+ const kind=node?.type,meta=node?.metadata;
+ if(!["text","image","video","audio"].includes(kind)||!meta)return false;
+ return typeof meta.content==="string"&&meta.content.length>0||
+  kind==="text"&&typeof meta.prompt==="string"&&meta.prompt.length>0||
+  kind==="image"&&Array.isArray(meta.images)&&meta.images.some(image=>
+   typeof image?.content==="string"&&image.content.length>0&&
+   typeof image?.storageKey==="string"&&image.storageKey.length>0);
+}
 /** The original full-node digest remains readable for jobs created before v2. */
-function sourceDigest(document,targetNodeId,version){
+function sourceDigest(document,targetNodeId,version,materializedBoundary=true){
  if(!Array.isArray(document?.nodes)||!Array.isArray(document?.connections))throw problem("invalid_project_document");
  const byId=new Map(document.nodes.map(node=>[node.id,node]));
  if(byId.size!==document.nodes.length||!byId.has(targetNodeId))throw problem("stale_generation_source");
@@ -73,21 +84,25 @@ function sourceDigest(document,targetNodeId,version){
   if(visiting.has(id))throw problem("cyclic_generation_source");
   if(ids.has(id))return;
   visiting.add(id);
-  for(const edge of parents.get(id)||[]){
-   incoming.push(edge);
-   visit(edge.fromNodeId);
-  }
-  if(version===2){
-   const target=byId.get(id);
-   const slotBindings=[target?.metadata?.comfyMediaPreset,...Object.values(target?.metadata?.comfyWorkflowSelections||{})].filter(Boolean);
-   for(const [slotId,ref] of Object.entries(Object.assign({},...slotBindings.map(binding=>binding.slots||{})))){
-    if(!ref||typeof ref.nodeId!=="string"||!byId.has(ref.nodeId))throw problem("stale_generation_source");
-    const source=byId.get(ref.nodeId);
-    incoming.push({fromNodeId:ref.nodeId,fromPortId:source.type,toNodeId:id,toPortId:slotId,mediaAssetId:ref.imageId??null});
-    if(ref.nodeId!==id)visit(ref.nodeId);
+   // Existing outputs are input snapshots: don't follow provenance back to a
+   // source job which may now consume the result. v1 hashes stay unchanged.
+   if(version===1||!materializedBoundary||id===targetNodeId||!isMaterializedGenerationResource(byId.get(id))){
+    for(const edge of parents.get(id)||[]){
+     incoming.push(edge);
+     visit(edge.fromNodeId);
+    }
+    if(version===2){
+     const target=byId.get(id);
+     const slotBindings=[target?.metadata?.comfyMediaPreset,...Object.values(target?.metadata?.comfyWorkflowSelections||{})].filter(Boolean);
+     for(const [slotId,ref] of Object.entries(Object.assign({},...slotBindings.map(binding=>binding.slots||{})))){
+      if(!ref||typeof ref.nodeId!=="string"||!byId.has(ref.nodeId))throw problem("stale_generation_source");
+      const source=byId.get(ref.nodeId);
+      incoming.push({fromNodeId:ref.nodeId,fromPortId:source.type,toNodeId:id,toPortId:slotId,mediaAssetId:ref.imageId??null});
+      if(ref.nodeId!==id)visit(ref.nodeId);
+     }
+    }
    }
-  }
-  visiting.delete(id);ids.add(id);
+   visiting.delete(id);ids.add(id);
  }
  visit(targetNodeId);
  const nodes=[...ids].sort().map(id=>version===2?generationNode(byId.get(id)):byId.get(id));
@@ -130,15 +145,25 @@ function matchesLegacyStandaloneComfy(document,targetNodeId,snapshot){
  try{return stableJson(binding.inputOverrides??{})===stableJson(request.nodes[0].inputOverrides??{})}
  catch{return false}
 }
+/** Jobs submitted before materialized snapshot boundaries used the full v2 ancestry.
+ * Verify those frozen jobs with their original algorithm so in-flight results can
+ * still be materialized, without weakening the new generation's source fence. */
+function previousV2Fingerprint(document,targetNodeId){
+ return "v2:"+sourceDigest(document,targetNodeId,2,false);
+}
 export function matchesSourceFingerprint(document,targetNodeId,frozenFingerprint,snapshot){
  if(typeof frozenFingerprint!=="string")return false;
  if(frozenFingerprint.startsWith("v2c:")){
   const binding=snapshot?.comfyTargetBinding;
   if(snapshot?.adapterKind!=="comfy"||!binding||typeof binding.mode!=="string"||!binding.binding)return false;
-  const digest=createHash("sha256").update(stableJson({graphFingerprint:fingerprintSource(document,targetNodeId),targetBinding:binding})).digest("hex");
-  return frozenFingerprint==="v2c:"+digest;
+  const makeDigest=graphFingerprint=>"v2c:"+createHash("sha256").update(stableJson({graphFingerprint,targetBinding:binding})).digest("hex");
+  if(frozenFingerprint===makeDigest(fingerprintSource(document,targetNodeId)))return true;
+  try{return frozenFingerprint===makeDigest(previousV2Fingerprint(document,targetNodeId))}catch{return false}
  }
- if(frozenFingerprint.startsWith("v2:"))return fingerprintSource(document,targetNodeId)===frozenFingerprint;
+ if(frozenFingerprint.startsWith("v2:")){
+  if(fingerprintSource(document,targetNodeId)===frozenFingerprint)return true;
+  try{return previousV2Fingerprint(document,targetNodeId)===frozenFingerprint}catch{return false}
+ }
  if(!/^[a-f0-9]{64}$/.test(frozenFingerprint))return false;
  if(fingerprintSourceLegacy(document,targetNodeId)===frozenFingerprint)return true;
  return matchesLegacyStandaloneComfy(document,targetNodeId,snapshot);

@@ -8,6 +8,7 @@ import {applyAssistantCanvasActions,type AssistantCanvasStage,type AssistantCanv
 import {CanvasApiError} from "@/features/backend-sync/canvas-api";
 import type {ComfyWorkflowTemplate} from "@/features/comfy-workflow/template-schema";
 import {registerCanvasPortResolver} from "@/lib/canvas/canvas-ports";
+import type {CanvasResourceReference} from "@/lib/canvas/canvas-resource-references";
 const skillMocks=vi.hoisted(()=>({
  snapshot:vi.fn(async():Promise<{revision:number;skills:unknown[]}>=>({revision:4,skills:[]}))
 }));
@@ -50,7 +51,7 @@ function makeGraph():AssistantCanvasGraph{
  return {nodes:[{id:"text-existing",type:CanvasNodeType.Text,title:"现有文本",
   position:{x:0,y:0},width:320,height:220,metadata:{content:originalContent}} satisfies CanvasNodeData],connections:[]};
 }
-function setup(actions:unknown[]){
+function setup(actions:unknown[],resources:CanvasResourceReference[]=[]){
  let graph=makeGraph();
  const apply=vi.fn((items:unknown,stage:AssistantCanvasStage,refs?:ReadonlyMap<string,string>)=>{
   const result=applyAssistantCanvasActions(graph,items,stage,{x:400,y:300},refs);
@@ -65,8 +66,10 @@ function setup(actions:unknown[]){
   return createElement(CanvasAssistantPanel,{
    projectId:"p1",projectTitle:"测试画布",open:true,onClose:()=>{},
    sessions,setSessions,activeChatId:active,setActiveChatId:setActive,
-   selectedNodes:[{id:"text-existing",title:"现有文本",type:CanvasNodeType.Text}],
+   selectedNodes:resources.length?resources.map(item=>({id:item.nodeId,title:item.title,type:CanvasNodeType.Image})):
+    [{id:"text-existing",title:"现有文本",type:CanvasNodeType.Text}],
    getContext:()=>({text:"节点：现有文本 (text, id=text-existing)",references:[],truncated:false}),
+   getResourceReferences:()=>resources,
    getWorkflowTemplates:async()=>({context:"",templates:new Map()}),   onApplyActions:apply,onRunActions:mocks.run,config:defaultConfig  });
  }
  container=document.createElement("div");document.body.appendChild(container);
@@ -662,6 +665,36 @@ describe("P2 assistant confirmation boundary",()=>{
   expect(mocks.api.mock.calls.filter(call=>call[0]==="/api/v1/skills/execute")).toHaveLength(0);
   expect(fixture.apply).not.toHaveBeenCalled();
   expect(container!.textContent).toContain("已停止生成");
+ });
+ it("reuses selected canvas image @ suggestions, prepopulates reverse prompt, and sends only image IDs",async()=>{
+  const refs:CanvasResourceReference[]=[{id:"img-01",nodeId:"img-01",kind:"image",label:"参考图1",
+   title:"人物立绘",previewUrl:"/api/v1/blobs/123",active:true}];
+  const fixture=setup([],refs);
+  await act(async()=>{root!.render(createElement(fixture.Harness));});
+  const shortcut=Array.from(container!.querySelectorAll("button")).find(button=>
+   button.textContent?.includes("反推选中图片的生成提示词"));
+  expect(shortcut).toBeTruthy();
+  await act(async()=>{shortcut!.click();});
+  const editor=container!.querySelector<HTMLElement>('[aria-label="向 AI 助手发送消息"]')!;
+  expect(editor.querySelector('[data-ref-label^="@[node:img-01"]')).toBeTruthy();
+  await act(async()=>{container!.querySelector<HTMLButtonElement>('[aria-label="发送消息"]')!.click();await Promise.resolve();});
+  const sent=mocks.api.mock.calls.find(call=>String(call[0]).includes("/assistant/chat"));
+  expect(sent?.[2].visualContext).toEqual({detail:"high",images:[{nodeId:"img-01"}]});
+  expect(sent?.[2].messages.at(-1).content).toContain("【参考图片：人物立绘】");
+  expect(JSON.stringify(sent?.[2])).not.toContain("data:image");
+  expect(container!.textContent).toContain("视觉图片 1 张");
+ });
+
+ it("plain chat never sends canvas pictures implicitly even with image references selected",async()=>{
+  const refs:CanvasResourceReference[]=[{id:"img-01",nodeId:"img-01",kind:"image",label:"参考图1",
+   title:"人物立绘",active:true}];
+  const fixture=setup([],refs);
+  await act(async()=>{root!.render(createElement(fixture.Harness));});
+  const editor=container!.querySelector<HTMLElement>('[aria-label="向 AI 助手发送消息"]')!;
+  await act(async()=>{editor.textContent="帮我写一段独白";editor.dispatchEvent(new Event("input",{bubbles:true}));});
+  await act(async()=>{container!.querySelector<HTMLButtonElement>('[aria-label="发送消息"]')!.click();await Promise.resolve();});
+  const sent=mocks.api.mock.calls.find(call=>String(call[0]).includes("/assistant/chat"));
+  expect(sent).toBeTruthy();expect(sent?.[2].visualContext).toBeUndefined();
  });
  it("Ctrl or Cmd Enter submits assistant messages, while plain Enter preserves composer newlines",async()=>{
   const fixture=setup([]);

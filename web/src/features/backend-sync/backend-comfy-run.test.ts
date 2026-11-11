@@ -40,11 +40,14 @@ describe("backend save fence + frozen Comfy submission",()=>{
   expect(hash).toBe(fingerprintSource(copy(graph),"wf-1"));
   expect(hash).toBe(await fingerprintBackendSource({nodes:[...graph.nodes].reverse(),connections:[...connections].reverse()},"wf-1"));
   expect(hash).toBe(await fingerprintBackendSource({...graph,nodes:graph.nodes.map(n=>n.id==="scalar"?{...n,title:"new"}:n)},"wf-1"));
-  expect(hash).not.toBe(await fingerprintBackendSource({...graph,nodes:graph.nodes.map(n=>n.id==="scalar"?{...n,metadata:{...n.metadata,content:"new input"}}:n)},"wf-1"));
-  expect(canonicalBackendGraph(graph)).toContain('"nodes"');
-  await expect(fingerprintBackendSource({...graph,connections:[...connections,{id:"three",fromNodeId:"wf-1",toNodeId:"scalar"}]},"wf-1"))
-   .rejects.toThrow("cyclic_generation_source");
- });
+   // The saved "ref" image is a frozen input: editing its *old* text provenance
+   // does not affect a new workflow run unless the saved image itself changes.
+   expect(hash).toBe(await fingerprintBackendSource({...graph,nodes:graph.nodes.map(n=>n.id==="scalar"?{...n,metadata:{...n.metadata,content:"new input"}}:n)},"wf-1"));
+   expect(hash).not.toBe(await fingerprintBackendSource({...graph,nodes:graph.nodes.map(n=>n.id==="ref"?{...n,metadata:{...n.metadata,content:"new image"}}:n)},"wf-1"));
+   // With no materialized source outputs, a genuinely recursive graph must fail.
+   const unfinished={...graph,nodes:graph.nodes.map(n=>["scalar","ref"].includes(n.id)?{...n,metadata:{...n.metadata,content:""}}:n)};
+   await expect(fingerprintBackendSource({...unfinished,connections:[...connections,{id:"three",fromNodeId:"wf-1",toNodeId:"scalar"}]},"wf-1"))
+    .rejects.toThrow("cyclic_generation_source"); });
  it("text-only workflow freezes graph and saves project before POST; no legacy gateway",async()=>{
   const calls:string[]=[];
   const bridge={

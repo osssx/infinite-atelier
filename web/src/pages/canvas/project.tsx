@@ -1,6 +1,7 @@
 import type { WheelZoomDirection } from "@/lib/canvas/canvas-wheel-pressure";
 import {createVideoAudioExtractionController,extractedAudioMetadata,audioExtractionErrorMessage,type ExtractedAudio} from "@/features/backend-sync/video-audio-extraction";
 import { isResourceNode, buildNodeMentionReferencesFromIndex } from "@/lib/canvas/canvas-resource-references";
+import {buildAssistantResourceReferences} from "@/features/canvas-assistant/canvas-assistant-resources";
 import { CanvasImageCompareDialog } from "@/components/canvas/canvas-image-compare-dialog";
 import { playCanvasVideosFromStart } from "@/lib/canvas/video-sync-playback";
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -998,6 +999,9 @@ function AtelierCanvasPage() {
     const assistantSelectedNodes=useMemo(()=>[...selectedNodeIds].map(id=>inputGraphIndex.nodeById.get(id))
         .filter((node):node is CanvasNodeData=>Boolean(node)).map(node=>({id:node.id,title:node.title,type:node.type})),
         [selectedNodeIds,inputGraphIndex]);
+    const getAssistantResourceReferences=useCallback((ids:string[])=>
+        buildAssistantResourceReferences(ids.map(id=>nodesRef.current.find(node=>node.id===id))
+          .filter((node):node is CanvasNodeData=>Boolean(node))),[]);
     const getAssistantContext=useCallback((ids:string[],scope:AssistantContextScope)=>
         buildCanvasAssistantContext({projectTitle:currentProjectTitle||"未命名画布",nodes:nodesRef.current,
             connections:connectionsRef.current,nodeIds:ids,scope}),[currentProjectTitle]);
@@ -2837,7 +2841,7 @@ function AtelierCanvasPage() {
                     const outputs=[template.mediaUseCase.primaryOutputPortId,...(template.mediaUseCase.additionalOutputPortIds??[])];
                     const bridge=createSqliteComfyBridge({projectId,getLocalGraph:()=>({nodes:nodesRef.current,connections:connectionsRef.current})});
                     const snapshot={nodes:[...nodesRef.current],connections:[...connectionsRef.current]};
-                    const comfyPrompt=sourceNode.type==="config"?buildNodeGenerationContext(nodeId,nodesRef.current,connectionsRef.current,promptText).prompt:promptText;
+                    const comfyPrompt=buildNodeGenerationContext(nodeId,nodesRef.current,connectionsRef.current,promptText).prompt;
                     const job=await startBackendComfyWorkflowRun({bridge,projectId,workflowNode:sourceNode,...snapshot,
                         template,instanceId:mediaPreset.instanceId||globalComfyInstanceId,outputPortIds:outputs,
                         mediaSlots:mediaPreset.slots,prompt:comfyPrompt,mediaBinding:mediaPreset,workflowMode:mode,
@@ -3794,7 +3798,7 @@ function AtelierCanvasPage() {
                     projectTitle={currentProjectTitle||"未命名画布"} open={assistantOpen}
                     onClose={()=>setAssistantOpen(false)} sessions={chatSessions} setSessions={setChatSessions}
                     activeChatId={activeChatId} setActiveChatId={setActiveChatId}
-                    selectedNodes={assistantSelectedNodes} getContext={getAssistantContext}
+                    selectedNodes={assistantSelectedNodes} getContext={getAssistantContext} getResourceReferences={getAssistantResourceReferences}
                     getWorkflowTemplates={getAssistantWorkflowTemplates}
                     onApplyActions={applyAssistantGraphActions} onRunActions={executeAssistantNodeActions} config={effectiveConfig}/>                </Suspense> : null}
 

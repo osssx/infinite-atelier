@@ -6,6 +6,7 @@ import {validateSkillRef,loadFrozenSkillCatalog,runSqliteSkillAgent} from "./sql
 import {DEFAULT_OPENAI_ENDPOINT,compatEndpointFingerprint,normalizeOpenAiCompatBaseUrl,createPinnedOpenAiCompatCall} from "./openai-compat-endpoints.mjs";
 import {appendArtifact} from "./repository.mjs";
 import {parseRestrictedModelScript,runRestrictedModelScript} from "./restricted-model-script.mjs";
+import {openAiVisionContent} from "./model-vision-parts.mjs";
 
 const failure=(code,statusCode=400,confirmedNotAccepted=false)=>
  Object.assign(Error(code),{code,statusCode,confirmedNotAccepted});
@@ -400,11 +401,8 @@ export function createOpenAiModelAdapter({db,blobStore,vault,upstreamCall=fetch,
    body=JSON.stringify({model:task.model,input:task.prompt,voice:task.voice,
     response_format:task.format,...(task.speed?{speed:task.speed}:{}),...(task.instructions?.trim()?{instructions:task.instructions.trim()}:{})});
   }else{
-   const content=task.images?.length?[
-    {type:"text",text:task.prompt},
-    ...task.images.map((ref,i)=>({type:"image_url",image_url:{
-     url:"data:"+ref.mimeType+";base64,"+data[i].toString("base64")}}))
-   ]:task.prompt;
+   const content=task.images?.length?openAiVisionContent(task.prompt,
+    task.images.map((ref,i)=>({mimeType:ref.mimeType,bytes:data[i]}))):task.prompt;
    messages=task.messages?chatHistory(task.messages):[{role:"user",content}];
    if(task.messages&&task.images?.length){
     messages[messages.length-1]={role:"user",content};

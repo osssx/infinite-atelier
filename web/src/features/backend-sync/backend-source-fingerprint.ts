@@ -39,6 +39,16 @@ function generationNode(node:BackendCanvasGraph["nodes"][number]){
  });
  return Object.keys(safe).length?{...rest,metadata:safe}:rest;
 }
+/** Mirrors repository.mjs: previously generated media/text is a frozen input snapshot. */
+function isMaterializedGenerationResource(node:BackendCanvasGraph["nodes"][number]):boolean{
+ const kind=node.type,meta=node.metadata;
+ if(!["text","image","video","audio"].includes(kind)||!meta)return false;
+ return typeof meta.content==="string"&&meta.content.length>0||
+  kind==="text"&&typeof meta.prompt==="string"&&meta.prompt.length>0||
+  kind==="image"&&Array.isArray(meta.images)&&meta.images.some(image=>
+   typeof image?.content==="string"&&image.content.length>0&&
+   typeof image?.storageKey==="string"&&image.storageKey.length>0);
+}
 export async function fingerprintBackendSource(graph:BackendCanvasGraph,targetNodeId:string):Promise<string>{
  const doc=JSON.parse(canonicalBackendGraph(graph)) as BackendCanvasGraph;
  const byId=new Map(doc.nodes.map(node=>[node.id,node]));
@@ -54,17 +64,20 @@ export async function fingerprintBackendSource(graph:BackendCanvasGraph,targetNo
   if(visiting.has(id))throw Error("cyclic_generation_source");
   if(ids.has(id))return;
   visiting.add(id);
-  for(const edge of parents.get(id)??[]){const {id:_edgeId,...stableEdge}=edge;incoming.push(stableEdge);visit(edge.fromNodeId)}
-  const target=byId.get(id)!;
-  const slotBindings=[target.metadata?.comfyMediaPreset,...Object.values(target.metadata?.comfyWorkflowSelections??{})].filter(Boolean);
-  const slots=Object.assign({},...slotBindings.map(binding=>binding?.slots??{})) as Record<string,{nodeId:string;imageId?:string}>;
-  for(const [slotId,ref] of Object.entries(slots)){
-   if(!ref||typeof ref.nodeId!=="string"||!byId.has(ref.nodeId))throw Error("stale_generation_source");
-   const source=byId.get(ref.nodeId)!;
-   incoming.push({fromNodeId:ref.nodeId,fromPortId:source.type,toNodeId:id,toPortId:slotId,mediaAssetId:ref.imageId??null});
-   if(ref.nodeId!==id)visit(ref.nodeId);
-  }
-  visiting.delete(id);ids.add(id);
+   // Read saved ancestor contents without re-entering their provenance chain.
+   if(id===targetNodeId||!isMaterializedGenerationResource(byId.get(id)!)){
+    for(const edge of parents.get(id)??[]){const {id:_edgeId,...stableEdge}=edge;incoming.push(stableEdge);visit(edge.fromNodeId)}
+    const target=byId.get(id)!;
+    const slotBindings=[target.metadata?.comfyMediaPreset,...Object.values(target.metadata?.comfyWorkflowSelections??{})].filter(Boolean);
+    const slots=Object.assign({},...slotBindings.map(binding=>binding?.slots??{})) as Record<string,{nodeId:string;imageId?:string}>;
+    for(const [slotId,ref] of Object.entries(slots)){
+     if(!ref||typeof ref.nodeId!=="string"||!byId.has(ref.nodeId))throw Error("stale_generation_source");
+     const source=byId.get(ref.nodeId)!;
+     incoming.push({fromNodeId:ref.nodeId,fromPortId:source.type,toNodeId:id,toPortId:slotId,mediaAssetId:ref.imageId??null});
+     if(ref.nodeId!==id)visit(ref.nodeId);
+    }
+   }
+   visiting.delete(id);ids.add(id);
  };
  visit(targetNodeId);
  const nodes=[...ids].sort().map(id=>generationNode(byId.get(id)!));

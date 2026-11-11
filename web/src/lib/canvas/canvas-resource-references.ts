@@ -11,6 +11,8 @@ export type CanvasResourceKind = "image" | "video" | "audio" | "text";
 export type CanvasResourceReference = {
     id: string;
     nodeId: string;
+    /** Optional exact image ID for multi-output image nodes. */
+    imageId?: string;
     kind: CanvasResourceKind;
     label: string;
     title: string;
@@ -18,6 +20,13 @@ export type CanvasResourceReference = {
     text?: string;
     active: boolean;
 };
+
+/** Stable serialization for assistant @ chips. Prompt-panel label mode remains unchanged. */
+export function canvasResourceReferenceToken(reference:CanvasResourceReference){
+    const id=encodeURIComponent(reference.nodeId);
+    const image=reference.imageId?":image:"+encodeURIComponent(reference.imageId):"";
+    return "@[node:"+id+image+"]";
+}
 
 export function buildNodeMentionReferences(node: CanvasNodeData, nodes: CanvasNodeData[], connections: CanvasConnection[]) {
     return buildNodeMentionReferencesFromIndex(buildCanvasGraphIndex(nodes, connections), node.id);

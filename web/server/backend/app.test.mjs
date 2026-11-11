@@ -351,8 +351,12 @@ test("multi-hop generation fingerprint includes all transitive upstream nodes",(
  assert.equal(initial,fingerprintSource({...chain,nodes:[...chain.nodes].reverse(),connections:[...chain.connections].reverse()},"last"));
  const edited={...chain,nodes:chain.nodes.map(n=>n.id==="first"?{...n,metadata:{prompt:"two"}}:n)};
  assert.notEqual(initial,fingerprintSource(edited,"last"));
- assert.throws(()=>fingerprintSource({...chain,connections:[...chain.connections,{id:"cycle",fromNodeId:"last",toNodeId:"first"}]},"last"),/cyclic_generation_source/);
-});
+  const loop={...chain,connections:[...chain.connections,{id:"cycle",fromNodeId:"last",toNodeId:"first"}]};
+  // A fixed upstream text prompt is a snapshot, so its provenance is not replayed.
+  assert.equal(fingerprintSource(loop,"last"),initial);
+  // Without any saved resource, a genuine recursive generation chain must still fail.
+  const pending={...loop,nodes:chain.nodes.map(n=>n.id==="first"?{...n,metadata:{}}:n)};
+  assert.throws(()=>fingerprintSource(pending,"last"),/cyclic_generation_source/);});
 test("SSE one-shot catch-up from snapshot includes intervening events",async t=>{
  const{call,db}=await fixture(t);
  const r=await call("POST","/api/v1/jobs",{idempotencyKey:"idem",requestFingerprint:"fingerprint",executionMode:"immediate",snapshot:{text:"hello"}});

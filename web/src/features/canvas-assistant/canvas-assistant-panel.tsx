@@ -1,6 +1,6 @@
 import {useCallback,useEffect,useMemo,useRef,useState,type CSSProperties,type Dispatch,type SetStateAction} from "react";
 import {Modal} from "antd";
-import {AlertCircle,ArrowUp,ArrowUpRight,BookOpen,Bot,Check,ChevronDown,ChevronUp,Clock3,Copy,FileText,Image as ImageIcon,Layers3,Link2,LoaderCircle,MessageSquarePlus,Music2,Plus,RefreshCw,Sparkles,Square,Trash2,UserRound,Video,X} from "lucide-react";
+import {AlertCircle,ArrowUp,ArrowUpRight,Bot,Check,ChevronDown,ChevronUp,Clock3,Copy,FileText,Image as ImageIcon,Layers3,Link2,LoaderCircle,MessageSquarePlus,Music2,Plus,RefreshCw,Sparkles,Square,Trash2,UserRound,Video,X} from "lucide-react";
 import {Streamdown} from "streamdown";
 import {nanoid} from "nanoid";
 import {CanvasApiError,canvasApi} from "@/features/backend-sync/canvas-api";
@@ -14,7 +14,7 @@ import {buildCanvasAssistantTurns} from "./canvas-assistant-history";
 import {CanvasPromptChipInput} from "@/components/canvas/canvas-prompt-chip-input";
 import {extractSkillMentions} from "@/features/skills/skill-mentions";
 import {getSkillRegistrySnapshot,SKILL_REGISTRY_CHANNEL} from "@/features/skills/skill-registry";
-import {isEnabledSkillInProject,type SkillCatalogEntry,type SkillMode} from "@/features/skills/types";
+import {isEnabledSkillInProject,type SkillCatalogEntry} from "@/features/skills/types";
 import type {ComfyWorkflowTemplate} from "@/features/comfy-workflow/template-schema";
 import "./canvas-assistant-panel.css";
 type Choice={id:string;title:string;type:CanvasNodeTypeId};
@@ -117,7 +117,6 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
   const theme=canvasThemes[themeName];
   const [draft,setDraft]=useState(""); const [modelRef,setModelRef]=useState(config.textModel);
  const [scope,setScope]=useState<AssistantContextScope>("selection");
- const [skillMode,setSkillMode]=useState<SkillMode>("manual");
  const [skills,setSkills]=useState<SkillCatalogEntry[]>([]);
  const [skillError,setSkillError]=useState("");
  const [includeContext,setIncludeContext]=useState(true);
@@ -145,7 +144,6 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
   window.addEventListener("focus",refresh);
   return ()=>{active=false;channel?.close();window.removeEventListener("focus",refresh);};
  },[open,projectId]);
- const availableSkills=skills.filter(item=>isEnabledSkillInProject(item,projectId));
  const options=useMemo(()=>selectableModelsByCapability(config,"text").filter(value=>
   !resolveModelScript(config,value)&&Boolean(modelChannelProvider(resolveModelChannel(config,value),"text")))
   .map(value=>({value,label:modelOptionLabel(config,value)})),[config]);
@@ -186,27 +184,48 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
      [contextSnapshot.text.slice(0,8500),modelHints,workflowInfo.context].filter(Boolean).join("\n\n"):undefined;
     const turns=buildCanvasAssistantTurns(prior,text,contextText);
     let selectedSkills:undefined|{mode:"manual"|"auto";projectId:string;expectedRevision:number;skillIds:string[];versionPins:Record<string,string>};
-    if(skillMode!=="off"&&(parsedDraft.skillIds.length>0||skillMode==="auto")){
-     const registry=await getSkillRegistrySnapshot();
+    // Skill is always on: explicit / Skill mentions override automatic matching.
+    // No enabled Skill is a normal state, not a reason to block an ordinary chat.
+    const explicitSkills=parsedDraft.skillIds.length>0;
+    if(explicitSkills&&parsedDraft.skillIds.length>12)throw Error("助手一次最多手动使用 12 个 Skill");
+    let registry:Awaited<ReturnType<typeof getSkillRegistrySnapshot>>|undefined;
+    try{
+     registry=await getSkillRegistrySnapshot();
+     setSkillError("");
+    }catch(error){
+     if(explicitSkills)throw Error("无法验证指定的 Skill，请检查 Skill 服务后重试。");
+     setSkillError("Skill 列表暂不可用，本轮按普通对话执行。");
+    }
+    if(registry){
      const eligible=registry.skills.filter(item=>isEnabledSkillInProject(item,projectId));
-     const useManual=parsedDraft.skillIds.length>0;
-     const selected=useManual?parsedDraft.skillIds.map(skillId=>{
+     const selected=explicitSkills?parsedDraft.skillIds.map(skillId=>{
       const item=eligible.find(entry=>entry.id===skillId);
-      if(!item)throw Error("选中的 Skill 已被禁用、删除或不可用于当前项目："+skillId);
+      if(!item)throw Error("指定的 Skill 已被禁用、删除或不可用于当前项目："+skillId);
       return item;
      }):eligible;
-     if(!selected.length)throw Error("当前没有可用的 Skill，请在设置中启用，或关闭自动匹配。");
-     if(useManual&&selected.length>12)throw Error("助手一次最多手动使用 12 个 Skill");
-     selectedSkills={mode:useManual?"manual":"auto",projectId,expectedRevision:registry.revision,
+     if(selected.length)selectedSkills={mode:explicitSkills?"manual":"auto",projectId,expectedRevision:registry.revision,
       skillIds:selected.map(entry=>entry.id),versionPins:Object.fromEntries(selected.map(entry=>[entry.id,entry.activeVersion]))};
     }
     await ensureSqliteModelChannelForExecution(channel,provider);
    if(controller.signal.aborted)return;
-    const response=await canvasApi<{answer:string;model:string;retryCount?:number;actions?:unknown;appliedSkillIds?:string[]}>(
-     "/api/v1/projects/"+encodeURIComponent(projectId)+"/assistant/chat","POST",{
-      channelId:channel.id,provider,baseUrl:channel.baseUrl,model:modelOptionName(chosenModel),
-      messages:turns,canvasActions:true,...(selectedSkills?{skills:selectedSkills}:{})
-     },controller.signal);
+    type AssistantReply={answer:string;model:string;retryCount?:number;actions?:unknown;appliedSkillIds?:string[]};
+    const endpoint="/api/v1/projects/"+encodeURIComponent(projectId)+"/assistant/chat";
+    const request={channelId:channel.id,provider,baseUrl:channel.baseUrl,model:modelOptionName(chosenModel),
+     messages:turns,canvasActions:true};
+    let response:AssistantReply;
+    try{
+     response=await canvasApi<AssistantReply>(endpoint,"POST",
+      {...request,...(selectedSkills?{skills:selectedSkills}:{})},controller.signal);
+    }catch(error){
+     // The server validates Skills before running inference: if automatic
+     // matching is stale or too large, retry the same question without Skill.
+     // Never silently discard an explicitly selected Skill.
+     const safeAutoFallback=selectedSkills?.mode==="auto"&&error instanceof CanvasApiError&&
+      ["assistant_skill_catalog_changed","assistant_skill_unavailable","assistant_skill_context_too_large"].includes(error.code);
+     if(!safeAutoFallback||controller.signal.aborted)throw error;
+     setSkillError("Skill 自动匹配未成功，本轮按普通对话继续。");
+     response=await canvasApi<AssistantReply>(endpoint,"POST",request,controller.signal);
+    }
     if(controller.signal.aborted)throw new DOMException("Aborted","AbortError");
     const notes:string[]=[];
      try{
@@ -253,7 +272,7 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
      }    const answer=[response.answer,...notes].filter(Boolean).join("\n\n");
     setSessions(prev=>append(prev,id,{id:nanoid(),role:"assistant",text:answer,
       meta:response.model+(response.retryCount?` · 网络自动重试 ${response.retryCount} 次`:"")+
-       (selectedSkills?" · Skill: "+(response.appliedSkillIds?.length?response.appliedSkillIds.join("、"):"未匹配"):"")}));
+       (response.appliedSkillIds?.length?" · Skill: "+response.appliedSkillIds.join("、"):"")}));
    }catch(error){
    const stopped=controller.signal.aborted;
    setSessions(prev=>append(prev,id,{id:nanoid(),role:"error",text:stopped?"已停止生成":canvasAssistantErrorText(error)}));
@@ -261,7 +280,7 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
    if(controllerRef.current===controller)controllerRef.current=null;
    setSending(false);
   }
-  },[draft,chosenModel,config,includeContext,getContext,includedIds,effectiveScope,session,setSessions,setActiveChatId,projectId,onApplyActions,onRunActions,getWorkflowTemplates,themeName,skillMode]);
+  },[draft,chosenModel,config,includeContext,getContext,includedIds,effectiveScope,session,setSessions,setActiveChatId,projectId,onApplyActions,onRunActions,getWorkflowTemplates,themeName]);
   const clear=()=>{
   if(!session||sending)return;
   Modal.confirm({...canvasAssistantConfirmTheme(themeName),icon:<AlertCircle className="canvas-assistant-confirm-icon" size={19} aria-hidden="true"/>,title:"删除当前对话？",content:"删除后无法恢复。",okText:"删除",okType:"danger",cancelText:"取消",onOk:()=>{
@@ -326,21 +345,6 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
        <ChevronDown size={13} className="canvas-assistant-select-chevron" aria-hidden="true"/>
       </div>
      </div>
-    </div>
-
-    <div className="canvas-assistant-skills" aria-label="助手 Skill 配置">
-     <div className="canvas-assistant-skill-bar">
-      <label htmlFor="canvas-assistant-skill-mode"><BookOpen size={13}/> Skill</label>
-      <select id="canvas-assistant-skill-mode" aria-label="Skill 模式" value={skillMode} disabled={sending}
-       onChange={event=>setSkillMode(event.target.value as SkillMode)}>
-       <option value="manual">手动输入 / 选择</option><option value="auto">自动匹配</option><option value="off">关闭</option>
-      </select>
-      {skillMode!=="off"?<span className="canvas-assistant-skill-count">{extractSkillMentions(draft).skillIds.length?extractSkillMentions(draft).skillIds.length+" 个指定":availableSkills.length+" 个可用"}</span>:null}
-     </div>
-
-     {skillMode==="auto"?<p className="canvas-assistant-skill-hint">根据本轮问题自动匹配；输入 / 选择 Skill 可明确指定。</p>:null}
-     {skillMode==="manual"?<p className="canvas-assistant-skill-hint">在消息中输入 /，搜索并选择 Skill 标签（最多 12 个）；不执行脚本。</p>:null}
-     {skillError?<p className="canvas-assistant-skill-hint" role="status">{skillError}</p>:null}
     </div>
 
     <div className="canvas-assistant-context">
@@ -442,10 +446,10 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
     <div className="canvas-assistant-composer">
      <CanvasPromptChipInput value={draft} references={[]} onChange={setDraft}
       onSubmit={()=>void send()} submitShortcut="mod-enter" ariaLabel="向 AI 助手发送消息"
-      enableSkills={skillMode!=="off"} projectId={projectId} skillCatalog={skills}
-      className="canvas-assistant-draft-input" placeholder={skillMode==="off"?"提问或描述你的创作想法…":"提问或输入 / 选择 Skill…"}/>
+      enableSkills projectId={projectId} skillCatalog={skills}
+      className="canvas-assistant-draft-input" placeholder="提问或输入 / 指定 Skill（默认自动匹配）…"/>
      <div className="canvas-assistant-composer-footer">
-      <span className="canvas-assistant-shortcut">Ctrl / ⌘ + Enter 发送</span>
+      <span className="canvas-assistant-shortcut">Ctrl / ⌘ + Enter 发送 · / 指定 Skill</span>
       {sending?(
        <button type="button" className="canvas-assistant-send canvas-assistant-stop" aria-label="停止生成" onClick={stop}><Square size={13}/>停止</button>
       ):(
@@ -453,6 +457,7 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
       )}
      </div>
     </div>
+    {skillError?<p className="canvas-assistant-skill-error" role="status">{skillError}</p>:null}
     <div className="canvas-assistant-hint">
      <span>AI 建议仅供参考</span>
       <span className="inline-flex items-center gap-1"><Check size={11}/>创建、布局、生成自动执行 · 修改已有提示词、参数及删除需确认</span>

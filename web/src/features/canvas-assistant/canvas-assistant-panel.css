@@ -116,13 +116,6 @@
 .canvas-assistant-select option { background: var(--assistant-surface); color: var(--assistant-text); }
 
 
-.canvas-assistant-skills {margin-top: 10px; padding: 8px 10px; border: 1px solid var(--assistant-border); border-radius: 11px; background: var(--assistant-surface);}
-.canvas-assistant-skill-bar {display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 11px;}
-.canvas-assistant-skill-bar label {display: inline-flex; gap: 5px; align-items: center; flex: none; font-weight: 600; color: var(--assistant-text);}
-.canvas-assistant-skill-bar select {min-width: 0; flex: 1; height: 26px; padding: 0 7px; border: 1px solid var(--assistant-border); border-radius: 7px; background: var(--assistant-panel); color: var(--assistant-text); font-size: 11px;}
-.canvas-assistant-skill-count {flex: none; color: var(--assistant-muted); font-size: 10px;}
-.canvas-assistant-skill-hint {font-size: 10px; margin: 7px 0 0; color: var(--assistant-muted); line-height: 1.5;}
-
 .canvas-assistant-context {
   margin-top: 10px;
   padding: 8px 10px 9px;
@@ -369,6 +362,7 @@
 }
 .canvas-assistant-send:not(:disabled):hover { opacity: .85; transform: translateY(-1px); }
 .canvas-assistant-stop { border: 1px solid var(--assistant-border); background: var(--assistant-active); color: var(--assistant-text) !important; }
+.canvas-assistant-skill-error { margin: 6px 2px 0; color: var(--assistant-muted); font-size: 10px; line-height: 1.5; }
 .canvas-assistant-hint { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 7px; padding: 0 2px; font-size: 10px; color: var(--assistant-muted); }
 .canvas-assistant-shell :is(.canvas-assistant-transcript,.canvas-assistant-reference-list,.canvas-assistant-preview) {
   scrollbar-width: thin;

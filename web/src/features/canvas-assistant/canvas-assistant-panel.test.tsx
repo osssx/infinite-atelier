@@ -66,6 +66,9 @@ describe("canvas assistant visual shell",()=>{
   expect(markup).toContain("历史会话");
   expect(markup).toContain("收起助手");
   expect(markup).toContain("向 AI 助手发送消息");
+  expect(markup).toContain("默认自动匹配");
+  expect(markup).not.toContain("canvas-assistant-skill-mode");
+  expect(markup).not.toContain("Skill 模式");
   expect(markup).not.toContain("bg-indigo-600");
  });
  it("renders saved conversation using the canvas message style",()=>{

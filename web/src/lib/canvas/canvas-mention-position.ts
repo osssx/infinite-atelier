@@ -21,6 +21,38 @@ export function canvasMentionPosition(
     return { left, top, width, maxHeight };
 }
 
+/** Shared viewport placement for both @ resource and / Skill menus.
+ * Use estimated natural height only to choose above/below. The CSS max-height
+ * is the AVAILABLE space, not the estimate, so one row never gains a scrollbar.
+ * Above-caret menus use bottom anchoring to avoid shifting when results filter.
+ */
+export function anchoredMentionMenuPlacement(
+    anchor: MentionAnchor,
+    screen: { width: number; height: number },
+    options: { width: number; count: number; rowHeight?: number; chromeHeight?: number; cap?: number },
+): { left: number; width: number; maxHeight: number; top?: number; bottom?: number } {
+    const gap = 6;
+    const margin = 8;
+    const cap = options.cap ?? 224;
+    const naturalHeight = options.count
+        ? (options.rowHeight ?? 48) * options.count + (options.chromeHeight ?? 10)
+        : 42;
+    const preferredHeight = Math.min(cap, naturalHeight);
+    const placement = canvasMentionPosition(
+        anchor, screen, { width: options.width, maxHeight: preferredHeight }, gap, margin,
+    );
+    const above = placement.top + placement.maxHeight <= anchor.top - gap;
+    const available = above
+        ? Math.max(0, anchor.top - margin - gap)
+        : Math.max(0, screen.height - margin - anchor.bottom - gap);
+    return {
+        left: placement.left,
+        width: placement.width,
+        maxHeight: Math.min(cap, available),
+        ...(above ? { bottom: Math.max(margin, screen.height - anchor.top + gap) } : { top: placement.top }),
+    };
+}
+
 /** Scroll only the popup list, never all scrollable ancestors of the selected row. */
 export function keepMentionOptionVisible(menu: HTMLElement | null, option: HTMLElement | null) {
     if (!menu || !option) return;

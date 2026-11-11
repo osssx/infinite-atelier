@@ -10,7 +10,7 @@ import { FileText, Image as ImageIcon, Music2, Video } from "lucide-react";
 
 import i18n from "@/i18n";
 import { canvasThemes } from "@/lib/canvas-theme";
-import { canvasMentionPosition, keepMentionOptionVisible } from "@/lib/canvas/canvas-mention-position";
+import { anchoredMentionMenuPlacement, keepMentionOptionVisible } from "@/lib/canvas/canvas-mention-position";
 import { isImeComposing, isPlainEnterKey } from "@/lib/keyboard-event";
 import { useThemeStore } from "@/stores/use-theme-store";
 import {canvasResourceReferenceToken,type CanvasResourceReference} from "@/lib/canvas/canvas-resource-references";
@@ -278,7 +278,9 @@ function MentionMenu({ rect, references, activeIndex, theme, onSelect }: { rect:
 
     const stopCanvasInteraction = (event: PointerEvent | MouseEvent) => event.stopPropagation();
 
-    const placement = canvasMentionPosition(rect || new DOMRect(16, 16, 0, 0), { width: window.innerWidth, height: window.innerHeight }, { width: 256, maxHeight: 224 });
+    const placement = anchoredMentionMenuPlacement(rect || new DOMRect(16, 16, 0, 0),
+        { width: window.innerWidth, height: window.innerHeight },
+        { width: 256, count: references.length });
 
     return createPortal(
         <div

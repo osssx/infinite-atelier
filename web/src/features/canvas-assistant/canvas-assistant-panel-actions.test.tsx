@@ -447,6 +447,39 @@ describe("P2 assistant confirmation boundary",()=>{
    expect(Number.parseInt(menu.style.maxHeight,10)).toBeGreaterThanOrEqual(58);
   }finally{rangeRect.mockRestore();glyphRects.mockRestore();}
  });
+ it("positions a single @ image candidate immediately above the bottom composer caret without a scrollbar",async()=>{
+  const references:CanvasResourceReference[]=[{
+   id:"img-01",nodeId:"img-01",kind:"image",label:"参考图1",
+   title:"人物立绘",previewUrl:"/api/v1/blobs/image",active:true
+  }];
+  const rangeRect=vi.spyOn(Range.prototype,"getBoundingClientRect").mockReturnValue(new DOMRect(0,0,0,0));
+  const glyphRect=new DOMRect(460,window.innerHeight-60,8,18);
+  const glyphRects=vi.spyOn(Range.prototype,"getClientRects").mockReturnValue([glyphRect] as unknown as DOMRectList);
+  try{
+   const fixture=setup([],references);
+   await act(async()=>{root!.render(createElement(fixture.Harness));await Promise.resolve();});
+   const editor=container!.querySelector<HTMLElement>('[aria-label="向 AI 助手发送消息"]')!;
+   await act(async()=>{
+    editor.focus();
+    editor.textContent="反推图片 @";
+    const range=document.createRange();
+    range.setStart(editor.firstChild!,editor.firstChild!.textContent!.length);
+    range.collapse(true);
+    window.getSelection()?.removeAllRanges();
+    window.getSelection()?.addRange(range);
+    editor.dispatchEvent(new Event("input",{bubbles:true}));
+   });
+   const menu=document.body.querySelector<HTMLElement>('[data-canvas-resource-mention-menu="true"]');
+   expect(menu).toBeTruthy();
+   expect(menu!.querySelectorAll("button")).toHaveLength(1);
+   expect(menu!.style.left).toBe("468px");
+   expect(menu!.style.bottom).toBe("66px");
+   expect(menu!.style.top).toBe("");
+   expect(Number.parseInt(menu!.style.maxHeight,10)).toBeGreaterThanOrEqual(58);
+   await act(async()=>{menu!.querySelector<HTMLButtonElement>("button")!.click();});
+   expect(editor.querySelector('[data-ref-label^="@[node:img-01"]')).toBeTruthy();
+  }finally{rangeRect.mockRestore();glyphRects.mockRestore();}
+ });
  it("assistant sends only selected authorized Skill IDs and version pins",async()=>{
   skillMocks.snapshot.mockResolvedValue({revision:4,skills:[
    {id:"story",name:"分镜编剧",description:"分镜指导",enabled:true,scope:{type:"global"},

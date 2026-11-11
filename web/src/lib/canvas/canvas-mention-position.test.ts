@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canvasMentionPosition, keepMentionOptionVisible } from "./canvas-mention-position";
+import { anchoredMentionMenuPlacement, canvasMentionPosition, keepMentionOptionVisible } from "./canvas-mention-position";
 
 describe("portaled canvas @ reference picker placement", () => {
     const screen = { width: 1200, height: 800 };
@@ -34,6 +34,45 @@ describe("portaled canvas @ reference picker placement", () => {
     });
 });
 
+
+describe("shared anchored @ image and / Skill menu placement", () => {
+    const screen = { width: 1200, height: 800 };
+    const nearBottom = { left: 500, top: 750, bottom: 770 };
+    it("anchors a single @ reference directly above the caret without an empty 224px offset", () => {
+        const one = anchoredMentionMenuPlacement(nearBottom, screen, { width: 256, count: 1 });
+        expect(one).toEqual({ left: 500, width: 256, maxHeight: 224, bottom: 56 });
+        expect(one.top).toBeUndefined();
+        expect(one.maxHeight).toBeGreaterThanOrEqual(58); // a 48px row + padding/border
+    });
+    it("keeps 2-3 candidates anchored without changing distance from the caret", () => {
+        for (const count of [2, 3]) {
+            const result = anchoredMentionMenuPlacement(nearBottom, screen, { width: 256, count });
+            expect(result.bottom).toBe(56);
+            expect(result.maxHeight).toBe(224);
+        }
+    });
+    it("opens below the caret when a single row fits instead of moving the popup far above", () => {
+        const result = anchoredMentionMenuPlacement({ left: 380, top: 220, bottom: 240 }, screen, { width: 256, count: 1 });
+        expect(result.top).toBe(246);
+        expect(result.bottom).toBeUndefined();
+    });
+    it("clips a long list and clamps x to viewport CSS pixels", () => {
+        const result = anchoredMentionMenuPlacement({ left: 1180, top: 580, bottom: 600 }, screen, { width: 256, count: 12 });
+        expect(result.left).toBe(936);
+        expect(result.bottom).toBe(226);
+        expect(result.maxHeight).toBe(224);
+    });
+    it("remains within a short viewport without shifting relative to zoomed canvas coordinates", () => {
+        const result = anchoredMentionMenuPlacement(
+            { left: -100, top: 55, bottom: 73 }, { width: 220, height: 125 }, { width: 256, count: 1 },
+        );
+        expect(result.left).toBe(8);
+        expect(result.width).toBe(204);
+        expect(result.maxHeight).toBeLessThanOrEqual(44);
+        if (result.top !== undefined) expect(result.top + result.maxHeight).toBeLessThanOrEqual(117);
+        else expect(result.bottom).toBeGreaterThan(0);
+    });
+});
 
 describe("mention menu selected item scrolling", () => {
     it("scrolls only the dropdown contents if selected item falls below or above", () => {

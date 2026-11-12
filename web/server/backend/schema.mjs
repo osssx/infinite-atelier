@@ -1,5 +1,5 @@
 import{JOB_STATUSES,EXECUTION_MODES,ARTIFACT_KINDS}from"./contracts.mjs";
-export const SCHEMA_VERSION=23;
+export const SCHEMA_VERSION=24;
 const quoted=x=>x.map(s=>"'"+s+"'").join(",");
 export const INITIAL_SCHEMA_SQL=`
 CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY,applied_at INTEGER NOT NULL);
@@ -434,6 +434,67 @@ CREATE TABLE IF NOT EXISTS script_asset_chunks(
        (status!='uploaded' AND etag IS NULL))
 );
 `;
+/** P0a: task identity and guidance-only persistence; no execution implied. */
+export const ASSISTANT_TASK_SCHEMA_SQL=`
+CREATE TABLE IF NOT EXISTS assistant_tasks(
+ id TEXT PRIMARY KEY,project_id TEXT NOT NULL REFERENCES projects(id),
+ chat_session_id TEXT NOT NULL,root_message_id TEXT NOT NULL,
+ status TEXT NOT NULL DEFAULT 'planning' CHECK(status IN ('planning','ready','waiting_approval','running','waiting_external','blocked','needs_reconcile','cancelling','failed','completed','cancelled')),
+ active_plan_version INTEGER NOT NULL DEFAULT 1 CHECK(active_plan_version>0),
+ active_step_id TEXT,original_request TEXT NOT NULL,
+ goal_json TEXT NOT NULL CHECK(json_valid(goal_json)),constraints_json TEXT NOT NULL CHECK(json_valid(constraints_json)),
+ summary_json TEXT NOT NULL CHECK(json_valid(summary_json)),context_policy_json TEXT NOT NULL CHECK(json_valid(context_policy_json)),
+ cancel_requested_at INTEGER,read_only INTEGER NOT NULL DEFAULT 0 CHECK(read_only IN (0,1)),
+ created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,finished_at INTEGER,
+ UNIQUE(project_id,chat_session_id,root_message_id)
+);
+CREATE INDEX IF NOT EXISTS ix_assistant_tasks_chat ON assistant_tasks(project_id,chat_session_id,updated_at);
+CREATE TABLE IF NOT EXISTS assistant_task_steps(
+ id TEXT PRIMARY KEY,task_id TEXT NOT NULL REFERENCES assistant_tasks(id),
+ plan_version INTEGER NOT NULL CHECK(plan_version>0),ordinal INTEGER NOT NULL CHECK(ordinal>=0),
+ kind TEXT NOT NULL CHECK(kind IN ('canvas_mutation','skill_script','model_job','comfy_workflow','wait_external','materialize','clarification')),
+ status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','ready','waiting_approval','submitting','running','waiting_external','succeeded','failed','skipped','blocked','needs_reconcile')),
+ required INTEGER NOT NULL DEFAULT 1 CHECK(required IN (0,1)),
+ depends_on_json TEXT NOT NULL CHECK(json_valid(depends_on_json)),
+ action_json TEXT NOT NULL CHECK(json_valid(action_json)),action_digest TEXT NOT NULL,
+ preconditions_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(preconditions_json)),
+ approval_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(approval_json)),
+ receipt_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(receipt_json)),
+ receipt_trust TEXT NOT NULL DEFAULT 'none' CHECK(receipt_trust IN ('none','client_reported','server_committed')),
+ result_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(result_json)),
+ error_code TEXT,superseded_at INTEGER,lease_owner TEXT,lease_expires_at INTEGER,
+ attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(attempt_count>=0),
+ created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,
+ UNIQUE(task_id,plan_version,ordinal)
+);
+CREATE TABLE IF NOT EXISTS assistant_task_attempts(
+ id TEXT PRIMARY KEY,task_id TEXT NOT NULL REFERENCES assistant_tasks(id),
+ step_id TEXT NOT NULL REFERENCES assistant_task_steps(id),
+ attempt_no INTEGER NOT NULL CHECK(attempt_no>=1),
+ project_id TEXT NOT NULL REFERENCES projects(id),execution_key TEXT NOT NULL,
+ action_digest TEXT NOT NULL,request_fingerprint TEXT NOT NULL,
+ frozen_snapshot_json TEXT NOT NULL CHECK(json_valid(frozen_snapshot_json)),
+ status TEXT NOT NULL,external_kind TEXT,external_id TEXT,submit_marker TEXT,
+ submitted_at INTEGER,lease_owner TEXT,
+ evidence_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(evidence_json)),
+ created_at INTEGER NOT NULL,finished_at INTEGER,
+ UNIQUE(step_id,attempt_no),UNIQUE(project_id,execution_key)
+);
+CREATE TABLE IF NOT EXISTS assistant_task_events(
+ seq INTEGER PRIMARY KEY AUTOINCREMENT,task_id TEXT NOT NULL REFERENCES assistant_tasks(id),
+ step_id TEXT REFERENCES assistant_task_steps(id),kind TEXT NOT NULL,
+ payload_json TEXT NOT NULL CHECK(json_valid(payload_json)),created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_assistant_task_events ON assistant_task_events(task_id,seq);
+CREATE TABLE IF NOT EXISTS assistant_task_commands(
+ project_id TEXT NOT NULL REFERENCES projects(id),request_id TEXT NOT NULL,
+ task_id TEXT REFERENCES assistant_tasks(id),command_kind TEXT NOT NULL,payload_digest TEXT NOT NULL,
+ status TEXT NOT NULL CHECK(status IN ('completed','in_progress','needs_reconcile')),
+ response_json TEXT NOT NULL CHECK(json_valid(response_json)),created_at INTEGER NOT NULL,
+ PRIMARY KEY(project_id,request_id)
+);
+`;
+
 export function initializeSchema(db){
  db.exec("PRAGMA foreign_keys=ON;PRAGMA busy_timeout=5000;BEGIN IMMEDIATE");
  try{
@@ -484,6 +545,7 @@ export function initializeSchema(db){
   }
   if(version<22)db.exec(COMFY_TEMPLATE_NAMES_SCHEMA_SQL);
   if(version<23)db.exec(COMFY_VERSION_NOTES_SCHEMA_SQL);
+  if(version<24)db.exec(ASSISTANT_TASK_SCHEMA_SQL);
   if(version<SCHEMA_VERSION)db.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)").run(SCHEMA_VERSION,Date.now());
   db.exec("COMMIT");
  }catch(e){db.exec("ROLLBACK");throw e}

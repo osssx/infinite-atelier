@@ -11,6 +11,7 @@ import {CanvasNodeType,type CanvasAssistantMessage,type CanvasAssistantSession,t
 import type {AssistantContextResult,AssistantContextScope} from "./canvas-assistant-context";
 import {parseAssistantCanvasActions,isDangerousAssistantAction,dangerousAssistantActionSummary,type AssistantCanvasStage} from "./canvas-assistant-actions";
 import {buildCanvasAssistantTurns} from "./canvas-assistant-history";
+import {useCanvasAssistantTasks} from "./canvas-assistant-task-state";
 import {CanvasPromptChipInput} from "@/components/canvas/canvas-prompt-chip-input";
 import {canvasResourceReferenceToken,type CanvasResourceReference} from "@/lib/canvas/canvas-resource-references";
 import {collectAssistantImageMentions} from "./canvas-assistant-visual-mentions";
@@ -238,6 +239,7 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
  const firstImageReference=resourceReferences.find(item=>item.kind==="image");
  const reversePromptRequest="请仔细观察引用图片的真实视觉内容，反推适合图像生成模型的提示词。请分别给出：画面主体与动作、场景与构图、镜头、光影色彩、材质与风格；完整英文正向提示词、中文版、可选负面提示词，以及无法从图像确定的信息。不要把猜测当成原始 Prompt、Seed 或 LoRA。";
  const session=sessions.find(item=>item.id===activeChatId);
+ const taskTracker=useCanvasAssistantTasks({projectId,activeChatId,session,open,sending,includeContext,scope:effectiveScope,includedIds,onDraft:setDraft});
  useEffect(()=>{if(open)scrollRef.current?.scrollTo({top:scrollRef.current.scrollHeight});},[open,session?.id,session?.messages.length,sending]);
  const stop=useCallback(()=>controllerRef.current?.abort(),[]);
  const send=useCallback(async()=>{
@@ -251,6 +253,7 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
   const user:CanvasAssistantMessage={id:nanoid(),role:"user",text,
    ...(contextSnapshot?.references.length?{references:contextSnapshot.references}:{})};
   const id=session?.id??nanoid();
+     const linkedTaskId=taskTracker.activeTaskId;
     const prior=session?.messages??[];
     const controller=new AbortController();controllerRef.current=controller;
     setSending(true);setDraft("");setSessions(prev=>append(prev,id,user));setActiveChatId(id);
@@ -302,7 +305,8 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
      if(selected.length)selectedSkills={mode:explicitSkills?"manual":"auto",projectId,expectedRevision:registry.revision,
       skillIds:selected.map(entry=>entry.id),versionPins:Object.fromEntries(selected.map(entry=>[entry.id,entry.activeVersion]))};
     }
-    await ensureSqliteModelChannelForExecution(channel,provider);
+    await taskTracker.recordTurn(linkedTaskId,user.id,text,controller.signal);
+     await ensureSqliteModelChannelForExecution(channel,provider);
    if(controller.signal.aborted)return;
     type AssistantReply={answer:string;model:string;retryCount?:number;actions?:unknown;appliedSkillIds?:string[];skillResourceReads?:{skillId:string;path:string}[];skillToolCalls?:{name:string;skillId:string|null}[];skillToolsFallback?:boolean;skillScriptProposal?:AssistantSkillScriptProposal};
     const endpoint="/api/v1/projects/"+encodeURIComponent(projectId)+"/assistant/chat";
@@ -452,14 +456,16 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
        (response.skillResourceReads?.length?" · 读取资料 "+response.skillResourceReads.length+" 项":"")+
        (response.skillToolsFallback?" · 工具不支持，仅使用 Skill 指令":"")+
        (visual.images.length?" · 视觉图片 "+visual.images.length+" 张":"")}));
+     await taskTracker.observe(linkedTaskId,user.id,"reply",answer);
    }catch(error){
    const stopped=controller.signal.aborted;
    setSessions(prev=>append(prev,id,{id:nanoid(),role:"error",text:stopped?"已停止生成":canvasAssistantErrorText(error)}));
+    await taskTracker.observe(linkedTaskId,user.id,"error",stopped?"已停止生成":canvasAssistantErrorText(error));
   }finally{
    if(controllerRef.current===controller)controllerRef.current=null;
    setSending(false);
   }
-  },[draft,chosenModel,config,includeContext,getContext,includedIds,effectiveScope,session,setSessions,setActiveChatId,projectId,onApplyActions,onRunActions,getWorkflowTemplates,themeName,resourceReferences]);
+  },[draft,chosenModel,config,includeContext,getContext,includedIds,effectiveScope,session,setSessions,setActiveChatId,projectId,onApplyActions,onRunActions,getWorkflowTemplates,themeName,resourceReferences,taskTracker]);
   const restoreSkillRun=async(runId:string)=>{
    if(sending||restoringSkillRun)return;
    setRestoringSkillRun(runId);
@@ -597,7 +603,8 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
     {!options.length?<p className="mt-2 flex items-center gap-1 text-[11px]" style={{color:theme.node.muted}}><AlertCircle size={12}/>请先在设置中配置文字模型渠道。</p>:null}
    </section>
 
-   <div ref={scrollRef} className="canvas-assistant-transcript" aria-live="polite">
+   {taskTracker.view}
+    <div ref={scrollRef} className="canvas-assistant-transcript" aria-live="polite">
     {!session?.messages.length?(
      <div className="canvas-assistant-empty">
       <span className="canvas-assistant-empty-icon" aria-hidden="true"><Sparkles size={22}/></span>

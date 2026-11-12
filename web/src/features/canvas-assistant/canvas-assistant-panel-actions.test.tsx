@@ -17,6 +17,7 @@ vi.mock("@/features/skills/skill-registry",()=>({
 }));
 const mocks=vi.hoisted(()=>({
  api:vi.fn(),
+ taskApi:vi.fn(),
  confirm:vi.fn(),
  ensure:vi.fn(async()=>{}),
  run:vi.fn(async(_actions:unknown,_refs:ReadonlyMap<string,string>,_signal:AbortSignal)=>({submitted:1,jobIds:["job-demo"]})), }));
@@ -39,7 +40,9 @@ vi.mock("@/features/backend-sync/model-channel-autoroute",()=>({
 }));
 vi.mock("@/features/backend-sync/canvas-api",async importOriginal=>{
  const original=await importOriginal<typeof import("@/features/backend-sync/canvas-api")>();
- return {...original,canvasApi:mocks.api};
+ // Task-state requests should not consume legacy model request mock expectations.
+ return {...original,canvasApi:(url:string,...args:unknown[])=>String(url).includes("/assistant/tasks")?
+  mocks.taskApi(url,...args):mocks.api(url,...args)};
 });
 vi.mock("antd",()=>({Modal:{confirm:mocks.confirm}}));
 vi.mock("streamdown",()=>({Streamdown:({children}:{children:unknown})=>children}));
@@ -95,6 +98,7 @@ async function renderAndSend(Harness:()=>React.ReactElement){
 }beforeEach(()=>{
  (globalThis as {IS_REACT_ACT_ENVIRONMENT?:boolean}).IS_REACT_ACT_ENVIRONMENT=true;
  mocks.api.mockReset();mocks.confirm.mockReset();mocks.ensure.mockClear();mocks.run.mockClear();
+ mocks.taskApi.mockReset();mocks.taskApi.mockResolvedValue({tasks:[]});
  mocks.run.mockResolvedValue({submitted:1,jobIds:["job-demo"]});
  mocks.confirm.mockImplementation(()=>({destroy:vi.fn()}));
  skillMocks.snapshot.mockResolvedValue({revision:4,skills:[]});
@@ -103,6 +107,35 @@ afterEach(async()=>{
  if(root)await act(async()=>{root!.unmount()});
  root=null;container?.remove();container=null;
 });
+describe("P0a task linkage in the existing assistant send flow",()=>{
+ it("records later user instructions and client observations without marking a task complete",async()=>{
+  const history:CanvasAssistantSession[]=[{id:"chat-existing",title:"画布任务",createdAt:"2026-11-12",
+   updatedAt:"2026-11-12",messages:[{id:"user-old",role:"user",text:"请搭建工作流"}]}];
+  const fixture=setup([],[],history);
+  const task={id:"task-linked",chatSessionId:"chat-existing",rootMessageId:"user-old",
+   originalRequest:"请搭建工作流",status:"planning",steps:[],recoveryMode:"guidance_only"};
+  mocks.taskApi.mockImplementation(async(url:string,method:string)=>{
+   if(method==="GET"&&url.includes("chatSessionId="))return {tasks:[]};
+   if(method==="GET")return {task};
+   if(method==="POST")return {task};
+   return {tasks:[]};
+  });
+  await act(async()=>{root!.render(createElement(fixture.Harness));});
+  const remember=Array.from(container!.querySelectorAll("button")).find(btn=>btn.textContent==="记录为任务");
+  expect(remember).toBeTruthy();
+  await act(async()=>{remember!.click();await Promise.resolve();});
+  expect(container!.textContent).toContain("仅指导恢复");
+  await renderAndSend(fixture.Harness);
+  const turn=mocks.taskApi.mock.calls.find(call=>String(call[0]).endsWith("/turns"));
+  expect(turn).toBeTruthy();
+  expect(turn?.[2].text).toContain("创建三个分镜文本节点");
+  const report=mocks.taskApi.mock.calls.find(call=>String(call[0]).endsWith("/observations"));
+  expect(report?.[2].kind).toBe("reply");
+  expect(container!.textContent).toContain("待规划");
+  expect(mocks.api.mock.calls.filter(call=>String(call[0]).includes("/assistant/chat"))).toHaveLength(1);
+ });
+});
+
 describe("P2 assistant confirmation boundary",()=>{
  const actions=[
   {type:"create_text",ref:"newA",title:"新段落",content:"新正文"},

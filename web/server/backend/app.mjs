@@ -3,6 +3,7 @@ import {randomUUID} from "node:crypto";
 import {unzipSync} from "fflate";
 import {createProject,getProject,saveSingleUserCanvas,deleteProject,listProjectSummaries,projectEventCursor} from "./projects.mjs";
 import {getCanvasViewport,putCanvasViewport,getCanvasChats,putCanvasChats} from "./canvas-state.mjs";
+import {registerAssistantTaskRoutes} from "./assistant-task-routes.mjs";
 import {submitJob,readJobsSnapshot,readEventsAfter} from "./repository.mjs";
 import {EXECUTION_MODES} from "./contracts.mjs";
 import {CANVAS_NODE_ID_PATTERN} from "../canvas-node-id.mjs";
@@ -103,6 +104,7 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
   const publicCodes=new Set(["project_revision_conflict","project_not_found","project_id_conflict","invalid_project_document",
    "invalid_project_id","project_document_too_large","expected_revision_required","invalid_project_reference",
    "invalid_canvas_chats","invalid_canvas_viewport","canvas_chats_too_large",
+    "assistant_task_invalid","assistant_task_not_found","assistant_task_not_editable","assistant_task_payload_too_large","assistant_task_command_conflict",
    "chats_revision_conflict","viewport_revision_conflict",
    "stale_generation_source","cyclic_generation_source","generation_save_barrier_required","invalid_job_request","idempotency_key_conflict","backend_prior_job_not_terminal","job_not_found","invalid_project_job_history_request","invalid_project_job_history_cursor","project_job_not_found","project_job_not_terminal",
    "unknown_model_close_invalid","unknown_model_close_not_eligible","unknown_model_close_state_changed","reconciliation_invalid_input","reconciliation_not_eligible","reconciliation_provider_unsupported","reconciliation_adapter_unavailable","reconciliation_state_changed","reconciliation_upstream_unavailable","reconciliation_remote_already_linked",
@@ -613,6 +615,7 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
  app.get("/api/v1/projects/:id/chats",{schema:{params:canvasParams}},req=>getCanvasChats(db,req.params.id));
  app.put("/api/v1/projects/:id/chats",{schema:{params:canvasParams,body:chatsBody}},req=>
   putCanvasChats(db,req.params.id,req.body));
+ registerAssistantTaskRoutes(app,db);
   app.post("/api/v1/projects/:id/assistant/chat",{schema:{params:canvasParams,body:{type:"object",
     required:["channelId","provider","model","messages"],additionalProperties:false,properties:{
       channelId:idSchema,provider:{type:"string",enum:["openai","openai_compatible","google_gemini"]},

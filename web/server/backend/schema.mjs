@@ -1,5 +1,5 @@
 import{JOB_STATUSES,EXECUTION_MODES,ARTIFACT_KINDS}from"./contracts.mjs";
-export const SCHEMA_VERSION=24;
+export const SCHEMA_VERSION=25;
 const quoted=x=>x.map(s=>"'"+s+"'").join(",");
 export const INITIAL_SCHEMA_SQL=`
 CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY,applied_at INTEGER NOT NULL);
@@ -495,6 +495,25 @@ CREATE TABLE IF NOT EXISTS assistant_task_commands(
 );
 `;
 
+/** P0b: immutable per-upstream-POST audit for task-scoped inference. */
+export const ASSISTANT_MODEL_CALL_SCHEMA_SQL=`
+CREATE TABLE IF NOT EXISTS assistant_model_calls(
+ id TEXT PRIMARY KEY,project_id TEXT NOT NULL REFERENCES projects(id),
+ task_id TEXT NOT NULL REFERENCES assistant_tasks(id),
+ request_id TEXT NOT NULL,
+ call_index INTEGER NOT NULL CHECK(call_index>=0),
+ call_kind TEXT NOT NULL CHECK(call_kind IN ('initial','skill_tool_round','skill_fallback','skill_execution_repair','format_repair','script_continuation')),
+ parent_call_id TEXT,
+ provider TEXT NOT NULL,model TEXT NOT NULL,request_digest TEXT NOT NULL,
+ status TEXT NOT NULL CHECK(status IN ('submitting','succeeded','failed','needs_reconcile')),
+ submit_marker TEXT NOT NULL,started_at INTEGER NOT NULL,finished_at INTEGER,
+ result_digest TEXT,error_code TEXT,
+ UNIQUE(project_id,request_id,call_index),
+ FOREIGN KEY(project_id,request_id) REFERENCES assistant_task_commands(project_id,request_id)
+);
+CREATE INDEX IF NOT EXISTS ix_assistant_model_calls_task ON assistant_model_calls(task_id,started_at,id);
+`;
+
 export function initializeSchema(db){
  db.exec("PRAGMA foreign_keys=ON;PRAGMA busy_timeout=5000;BEGIN IMMEDIATE");
  try{
@@ -546,6 +565,7 @@ export function initializeSchema(db){
   if(version<22)db.exec(COMFY_TEMPLATE_NAMES_SCHEMA_SQL);
   if(version<23)db.exec(COMFY_VERSION_NOTES_SCHEMA_SQL);
   if(version<24)db.exec(ASSISTANT_TASK_SCHEMA_SQL);
+  if(version<25)db.exec(ASSISTANT_MODEL_CALL_SCHEMA_SQL);
   if(version<SCHEMA_VERSION)db.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)").run(SCHEMA_VERSION,Date.now());
   db.exec("COMMIT");
  }catch(e){db.exec("ROLLBACK");throw e}

@@ -1,5 +1,6 @@
 import {createAssistantTask,listAssistantTasks,getAssistantTask,appendAssistantTaskTurn,
  observeAssistantTask,guideAssistantTaskResume,cancelAssistantTask,listAssistantTaskEvents} from "./assistant-tasks.mjs";
+import {listAssistantModelCalls} from "./assistant-model-calls.mjs";
 
 const id={type:"string",pattern:"^[A-Za-z0-9_-]{1,128}$"};
 const policy={type:"object",additionalProperties:false,required:["includeContext","scope","includedIds"],
@@ -40,6 +41,9 @@ export function registerAssistantTaskRoutes(app,db){
   guideAssistantTaskResume(db,{projectId:req.params.id,taskId:req.params.taskId,...req.body})));
  app.post(base+"/:taskId/cancel",{schema:{params:taskParams,body:requestBody}},(req,reply)=>result(reply,
   cancelAssistantTask(db,{projectId:req.params.id,taskId:req.params.taskId,...req.body})));
+ app.get(base+"/:taskId/model-calls",{schema:{params:taskParams}},(req,reply)=>result(reply,
+  listAssistantModelCalls(db,{projectId:req.params.id,taskId:req.params.taskId,
+   limit:Number(req.query?.limit??100)})));
  app.get(base+"/:taskId/events",{schema:{params:taskParams}},(req,reply)=>result(reply,
   listAssistantTaskEvents(db,{projectId:req.params.id,taskId:req.params.taskId,
    afterSeq:Number(req.query?.afterSeq??0),limit:Number(req.query?.limit??100)})));

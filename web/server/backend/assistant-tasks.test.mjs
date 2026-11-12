@@ -23,7 +23,7 @@ const create=(requestId="c1")=>({requestId,chatSessionId:"chat-1",
  rootMessageId:"msg-1",originalRequest:"创建三个节点"});
 test("P0a task persists guidance-only state without claiming execution",async t=>{
  const {db,call,base}=await setup(t);
- assert.equal(SCHEMA_VERSION,24);
+ assert.equal(SCHEMA_VERSION,25);
  const made=await call("POST",base,create());
  assert.equal(made.status,201,made.body);
  assert.equal(made.body.task.status,"planning");
@@ -130,18 +130,20 @@ test("P0a read-only tasks remain queryable but never accept new commands",async 
  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM assistant_task_events WHERE task_id=?").get(id).n,1);
 });
 
-test("v23 to v24 restores task tables without changing existing projects or chat sessions",()=>{
+test("v23 to v25 restores task/model tables without changing existing projects or chat sessions",()=>{
  const db=new DatabaseSync(":memory:");
  try{
   initializeSchema(db);
   db.prepare("INSERT INTO projects(id,document_json,revision) VALUES('legacy','{}',4)").run();
-  db.prepare("DELETE FROM schema_migrations WHERE version=24").run();
+  db.prepare("DELETE FROM schema_migrations WHERE version=25").run();
+  db.exec("DROP TABLE assistant_model_calls");
   for(const table of ["assistant_task_commands","assistant_task_events","assistant_task_attempts","assistant_task_steps","assistant_tasks"])
    db.exec("DROP TABLE "+table);
   db.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES(23,1)").run();
   initializeSchema(db);
   assert.equal(db.prepare("SELECT revision FROM projects WHERE id='legacy'").get().revision,4);
-  assert.equal(db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get().version,24);
+  assert.equal(db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get().version,25);
   assert.ok(db.prepare("SELECT name FROM sqlite_master WHERE name='assistant_tasks'").get());
+  assert.ok(db.prepare("SELECT name FROM sqlite_master WHERE name='assistant_model_calls'").get());
  }finally{db.close()}
 });

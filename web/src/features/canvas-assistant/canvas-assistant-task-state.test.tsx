@@ -74,6 +74,17 @@ describe("P0a guidance-only task strip",()=>{
   await click("结束记录");
   expect(container!.textContent).toContain("已结束记录");
  });
+ it("shows an uncertain provider call without offering an automatic rerun",async()=>{
+  const original=mocks.api.getMockImplementation()!;
+  mocks.api.mockImplementation(async(...args:unknown[])=>String(args[0]).endsWith("/model-calls")?{
+   calls:[{id:"recorded-model-call",kind:"initial",status:"needs_reconcile"}]
+  }:original(...args));
+  await render();
+  await click("记录为任务");
+  expect(container!.textContent).toContain("存在结果不明的模型请求，不会自动重发");
+  await click("模型调用记录 (1)");
+  expect(container!.textContent).toContain("initial · needs_reconcile");
+ });
  it("only loads tasks for its active session",async()=>{
   await render("chat-b");
   expect(mocks.api.mock.calls[0][0]).toContain("chatSessionId=chat-b");

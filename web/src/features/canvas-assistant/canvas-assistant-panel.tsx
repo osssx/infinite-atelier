@@ -53,6 +53,10 @@ const assistantErrorMessages:Record<string,string>={
  assistant_upstream_error:"模型渠道返回错误，请检查模型名称、接口地址及该渠道的接口兼容性。",
  assistant_upstream_unavailable:"无法连接模型渠道或请求超时，请检查网络、渠道地址和服务状态。",
  assistant_upstream_retry_exhausted:"模型请求网络异常或超时，已自动重试 2 次仍未成功。请检查网络与模型服务状态后再试。",
+ assistant_model_call_unknown:"模型请求可能已被服务商受理，但结果无法确认。已阻止自动重发以避免重复计费，请查看调用记录。",
+ assistant_model_call_in_progress:"相同任务模型请求正在执行，请勿重复提交。",
+ assistant_task_command_conflict:"同一任务调用标识的参数已改变，已阻止执行。",
+ assistant_task_not_editable:"任务已取消或只读，无法继续推理。",
   assistant_channel_unavailable:"模型渠道尚未配置可用的服务端密钥，请在设置中检查配置。",
  assistant_skill_selection_invalid:"Skill 选择无效，请检查当前选择后重试。",
  assistant_skill_catalog_changed:"Skill 列表或版本已发生变化，请刷新后重试。",
@@ -239,7 +243,7 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
  const firstImageReference=resourceReferences.find(item=>item.kind==="image");
  const reversePromptRequest="请仔细观察引用图片的真实视觉内容，反推适合图像生成模型的提示词。请分别给出：画面主体与动作、场景与构图、镜头、光影色彩、材质与风格；完整英文正向提示词、中文版、可选负面提示词，以及无法从图像确定的信息。不要把猜测当成原始 Prompt、Seed 或 LoRA。";
  const session=sessions.find(item=>item.id===activeChatId);
- const taskTracker=useCanvasAssistantTasks({projectId,activeChatId,session,open,sending,includeContext,scope:effectiveScope,includedIds,onDraft:setDraft});
+ const taskTracker=useCanvasAssistantTasks({projectId,activeChatId,session,open,sending,includeContext,scope,includedIds,onDraft:setDraft});
  useEffect(()=>{if(open)scrollRef.current?.scrollTo({top:scrollRef.current.scrollHeight});},[open,session?.id,session?.messages.length,sending]);
  const stop=useCallback(()=>controllerRef.current?.abort(),[]);
  const send=useCallback(async()=>{
@@ -281,7 +285,7 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
     }).join("\n").slice(0,2500);
     const contextText=contextSnapshot?.text?
      [contextSnapshot.text.slice(0,8500),modelHints,workflowInfo.context].filter(Boolean).join("\n\n"):undefined;
-    const turns=buildCanvasAssistantTurns(prior,text,contextText);
+    const turns=linkedTaskId?[{role:"user" as const,content:text}]:buildCanvasAssistantTurns(prior,text,contextText);
     let selectedSkills:undefined|{mode:"manual"|"auto";projectId:string;expectedRevision:number;skillIds:string[];versionPins:Record<string,string>};
     // Skill is always on: explicit / Skill mentions override automatic matching.
     // No enabled Skill is a normal state, not a reason to block an ordinary chat.
@@ -312,6 +316,7 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
     const endpoint="/api/v1/projects/"+encodeURIComponent(projectId)+"/assistant/chat";
     const request={channelId:channel.id,provider,baseUrl:channel.baseUrl,model:modelOptionName(chosenModel),
      messages:turns,canvasActions:true,
+      ...(linkedTaskId?{task:{taskId:linkedTaskId,turnMessageId:user.id,requestId:user.id+"-model-initial"}}:{}),
      ...(visual.images.length?{visualContext:{detail:"high",images:visual.images}}:{})};
     let response:AssistantReply;
     try{
@@ -325,7 +330,9 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
       ["assistant_skill_catalog_changed","assistant_skill_unavailable","assistant_skill_context_too_large"].includes(error.code);
      if(!safeAutoFallback||controller.signal.aborted)throw error;
      setSkillError("Skill 自动匹配未成功，本轮按普通对话继续。");
-     response=await canvasApi<AssistantReply>(endpoint,"POST",request,controller.signal);
+     response=await canvasApi<AssistantReply>(endpoint,"POST",{
+       ...request,...(linkedTaskId?{task:{taskId:linkedTaskId,turnMessageId:user.id,requestId:user.id+"-model-skill-fallback"}}:{})
+      },controller.signal);
     }
     // The Skill determines which scripts and artifacts are needed. A script
     // proposal never executes without a new explicit user confirmation.
@@ -392,6 +399,8 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
      try{
       response=await canvasApi<AssistantReply>(endpoint,"POST",{
        ...request,messages:[{role:"user",content:continuationText}],
+        ...(linkedTaskId?{task:{taskId:linkedTaskId,turnMessageId:user.id,requestId:user.id+"-model-script-"+scriptSteps,
+         callKind:"script_continuation"}}:{}),
        skillScriptProposalEnabled:scriptSteps<4,
        ...(followUpSkills?{skills:followUpSkills}:{})
       },controller.signal);

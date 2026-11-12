@@ -20,6 +20,10 @@ export function useCanvasAssistantTasks({
  const [detail,setDetail]=useState<Task|null>(null);
  const [busy,setBusy]=useState(false);
  const [error,setError]=useState("");
+ const [calls,setCalls]=useState<{id:string;kind:string;status:string;errorCode?:string|null}[]>([]);
+ const [callsOpen,setCallsOpen]=useState(false);
+ const [callRevision,setCallRevision]=useState(0);
+
  const base="/api/v1/projects/"+encodeURIComponent(projectId)+"/assistant/tasks";
  useEffect(()=>{
   if(!open||!activeChatId){setItems([]);setSelectedId(null);setDetail(null);return;}
@@ -41,6 +45,17 @@ export function useCanvasAssistantTasks({
     ()=>{if(alive)setError("读取任务详情失败。");});
   return ()=>{alive=false;};
  },[base,open,selectedId]);
+
+ useEffect(()=>{
+  if(!open||!selectedId){setCalls([]);return;}
+  let alive=true;
+  void canvasApi<{calls:{id:string;kind:string;status:string;errorCode?:string|null}[]}>(
+   base+"/"+encodeURIComponent(selectedId)+"/model-calls","GET")
+   .then(result=>{if(alive)setCalls(Array.isArray(result.calls)?result.calls:[]);},
+    ()=>{if(alive)setCalls([]);});
+  return ()=>{alive=false;};
+ },[base,open,selectedId,callRevision]);
+
  const selected=items.find(item=>item.id===selectedId&&item.chatSessionId===activeChatId)??null;
  const activeTask=selected?.status==="cancelled"||selected?.status==="completed"?null:selected;
  const policy=()=>({includeContext,scope,includedIds:includeContext&&scope==="selection"?includedIds.slice(0,12):[]});
@@ -51,6 +66,7 @@ export function useCanvasAssistantTasks({
    const data=await canvasApi<TaskResponse>(path(taskId)+"/observations","POST",{
     requestId:messageId+"-result",kind,preview:text.slice(0,1800)||"无结果"});
    if(data.task?.id===taskId)setDetail(data.task);
+   setCallRevision(value=>value+1);
   }catch{setError("任务结果未能保存；聊天记录不受影响。");}
  };
  const recordTurn=async(taskId:string|null,messageId:string,text:string,signal:AbortSignal)=>{
@@ -59,7 +75,7 @@ export function useCanvasAssistantTasks({
    await canvasApi(path(taskId)+"/turns","POST",{
     requestId:messageId,messageId,text,contextPolicy:policy()
    },signal);
-  }catch{setError("任务指令未写入持久记录；聊天仍会继续。");}
+  }catch(error){setError("任务指令未写入持久记录；为避免未记账的模型调用，本轮任务推理已停止。");throw error;}
  };
  const remember=async()=>{
   const last=session&&[...session.messages].reverse().find(item=>item.role==="user");
@@ -123,6 +139,19 @@ export function useCanvasAssistantTasks({
    {detail?.id===selected.id&&detail.lastError?
     <p role="status" className="mt-1 break-words">上次错误：{detail.lastError.slice(0,200)}</p>:null}
   </div>:null}
+
+   {selected?<div className="mt-1 text-[11px]" style={{color:"var(--assistant-muted)"}}>
+    <button type="button" className="canvas-assistant-link" aria-expanded={callsOpen}
+     onClick={()=>setCallsOpen(value=>!value)}>模型调用记录 ({calls.length})</button>
+    {calls.some(item=>item.status==="needs_reconcile"||item.status==="submitting")?
+     <span className="ml-2" role="status">存在结果不明的模型请求，不会自动重发</span>:null}
+    {callsOpen?<div className="mt-1 max-h-28 overflow-y-auto">
+     {calls.length?calls.slice(0,20).map(item=><div key={item.id} className="truncate"
+      title={item.id}>{item.kind} · {item.status} · {item.id.slice(0,8)}</div>):
+      <span>暂无调用记录</span>}
+    </div>:null}
+   </div>:null}
+
   {error?<p role="status" className="mt-1 text-[11px]" style={{color:"var(--assistant-error)"}}>{error}</p>:null}
  </section>;
  return {view,activeTaskId:activeTask?.id??null,recordTurn,observe};

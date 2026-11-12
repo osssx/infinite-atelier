@@ -4,6 +4,9 @@ import {unzipSync} from "fflate";
 import {createProject,getProject,saveSingleUserCanvas,deleteProject,listProjectSummaries,projectEventCursor} from "./projects.mjs";
 import {getCanvasViewport,putCanvasViewport,getCanvasChats,putCanvasChats} from "./canvas-state.mjs";
 import {registerAssistantTaskRoutes} from "./assistant-task-routes.mjs";
+import {getAssistantTask,getAssistantTaskTurnPolicy} from "./assistant-tasks.mjs";
+import {beginAssistantModelCommand,createAssistantModelObserver,completeAssistantModelCommand,failAssistantModelCommand} from "./assistant-model-calls.mjs";
+import {buildAssistantTaskProviderContext} from "./assistant-task-context.mjs";
 import {submitJob,readJobsSnapshot,readEventsAfter} from "./repository.mjs";
 import {EXECUTION_MODES} from "./contracts.mjs";
 import {CANVAS_NODE_ID_PATTERN} from "../canvas-node-id.mjs";
@@ -105,6 +108,8 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
    "invalid_project_id","project_document_too_large","expected_revision_required","invalid_project_reference",
    "invalid_canvas_chats","invalid_canvas_viewport","canvas_chats_too_large",
     "assistant_task_invalid","assistant_task_not_found","assistant_task_not_editable","assistant_task_payload_too_large","assistant_task_command_conflict",
+    "assistant_model_call_in_progress","assistant_model_call_unknown","assistant_model_call_not_active",
+    "assistant_model_result_too_large","assistant_task_context_invalid","assistant_task_turn_not_found",
    "chats_revision_conflict","viewport_revision_conflict",
    "stale_generation_source","cyclic_generation_source","generation_save_barrier_required","invalid_job_request","idempotency_key_conflict","backend_prior_job_not_terminal","job_not_found","invalid_project_job_history_request","invalid_project_job_history_cursor","project_job_not_found","project_job_not_terminal",
    "unknown_model_close_invalid","unknown_model_close_not_eligible","unknown_model_close_state_changed","reconciliation_invalid_input","reconciliation_not_eligible","reconciliation_provider_unsupported","reconciliation_adapter_unavailable","reconciliation_state_changed","reconciliation_upstream_unavailable","reconciliation_remote_already_linked",
@@ -616,50 +621,80 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
  app.put("/api/v1/projects/:id/chats",{schema:{params:canvasParams,body:chatsBody}},req=>
   putCanvasChats(db,req.params.id,req.body));
  registerAssistantTaskRoutes(app,db);
-  app.post("/api/v1/projects/:id/assistant/chat",{schema:{params:canvasParams,body:{type:"object",
-    required:["channelId","provider","model","messages"],additionalProperties:false,properties:{
-      channelId:idSchema,provider:{type:"string",enum:["openai","openai_compatible","google_gemini"]},
-       baseUrl:{type:"string",maxLength:1024},model:{type:"string",minLength:1,maxLength:128},
-       canvasActions:{type:"boolean"},
-       skillScriptProposalEnabled:{type:"boolean"},
-       visualContext:{type:"object",required:["images"],additionalProperties:false,properties:{
-        detail:{type:"string",enum:["auto","low","high"]},
-        images:{type:"array",minItems:1,maxItems:4,items:{
-         type:"object",required:["nodeId"],additionalProperties:false,
-         properties:{nodeId:canvasNodeIdSchema,imageId:{type:"string",minLength:1,maxLength:160}}
-        }}
-       }},
-       skills:{type:"object",required:["mode","projectId","expectedRevision","skillIds","versionPins"],additionalProperties:false,
-        properties:{mode:{type:"string",enum:["manual","auto"]},projectId:idSchema,
-         expectedRevision:{type:"integer",minimum:1},skillIds:{type:"array",minItems:1,maxItems:100,uniqueItems:true,items:skillId},
-         versionPins:{type:"object",additionalProperties:skillVersion}}},
-       messages:{type:"array",minItems:1,maxItems:20,items:{type:"object",required:["role","content"],
-        additionalProperties:false,properties:{role:{type:"string",enum:["user","assistant"]},
-          content:{type:"string",maxLength:98304}}}}
-     }}}},async(req,reply)=>{    const project=getProject(db,req.params.id); // Verify the project before invoking any paid provider.
-    if(!assistantChat)return reply.code(503).send({code:"assistant_unavailable"});
-    const controller=new AbortController();
-    const onClose=()=>controller.abort();
-    reply.raw.on("close",onClose);
-    try{
-      if(req.body.skills&&req.body.skills.projectId!==req.params.id)
-       return reply.code(400).send({code:"assistant_skill_selection_invalid"});
-      const skill=resolveAssistantSkills(db,skillRegistry,req.body.skills,req.body.messages);
-      const visual=await resolveAssistantVisualContext({
-       document:project.document,visualContext:req.body.visualContext,blobStore,signal:controller.signal
-      });
-      const {skills:_selection,visualContext:_visual,...chatInput}=req.body;
-      const result=await assistantChat({...chatInput,skillContext:skill.context,
-       skillTools:skill.toolEntries??[],visualImages:visual.images,
-       visualDetail:req.body.visualContext?.detail??"high",signal:controller.signal});
-      reply.header("Cache-Control","no-store");return {...result,
-       appliedSkillIds:skill.skillIds,usedVisualReferences:visual.references};
-    }catch(error){
-      const code=typeof error?.code==="string"&&error.code.startsWith("assistant_")?error.code:"assistant_failed";
-      return reply.code(error?.statusCode>=400&&error.statusCode<600?error.statusCode:502).send({code});
-    }finally{reply.raw.off("close",onClose)}
-  });
- if(projectArchive){
+   app.post("/api/v1/projects/:id/assistant/chat",{schema:{params:canvasParams,body:{type:"object",
+     required:["channelId","provider","model","messages"],additionalProperties:false,properties:{
+       channelId:idSchema,provider:{type:"string",enum:["openai","openai_compatible","google_gemini"]},
+        baseUrl:{type:"string",maxLength:1024},model:{type:"string",minLength:1,maxLength:128},
+        canvasActions:{type:"boolean"},
+        skillScriptProposalEnabled:{type:"boolean"},
+        task:{type:"object",additionalProperties:false,required:["taskId","requestId","turnMessageId"],properties:{
+         taskId:idSchema,requestId:idSchema,turnMessageId:idSchema,
+         callKind:{type:"string",enum:["initial","script_continuation"]}
+        }},
+        visualContext:{type:"object",required:["images"],additionalProperties:false,properties:{
+         detail:{type:"string",enum:["auto","low","high"]},
+         images:{type:"array",minItems:1,maxItems:4,items:{
+          type:"object",required:["nodeId"],additionalProperties:false,
+          properties:{nodeId:canvasNodeIdSchema,imageId:{type:"string",minLength:1,maxLength:160}}
+         }}
+        }},
+        skills:{type:"object",required:["mode","projectId","expectedRevision","skillIds","versionPins"],additionalProperties:false,
+         properties:{mode:{type:"string",enum:["manual","auto"]},projectId:idSchema,
+          expectedRevision:{type:"integer",minimum:1},skillIds:{type:"array",minItems:1,maxItems:100,uniqueItems:true,items:skillId},
+          versionPins:{type:"object",additionalProperties:skillVersion}}},
+        messages:{type:"array",minItems:1,maxItems:20,items:{type:"object",required:["role","content"],
+         additionalProperties:false,properties:{role:{type:"string",enum:["user","assistant"]},
+           content:{type:"string",maxLength:98304}}}}
+      }}}},async(req,reply)=>{
+     const project=getProject(db,req.params.id); // Verify project before any paid provider call.
+     if(!assistantChat)return reply.code(503).send({code:"assistant_unavailable"});
+     const controller=new AbortController();
+     const onClose=()=>controller.abort();
+     reply.raw.on("close",onClose);
+     const ref=req.body.task;
+     let commandStarted=false;
+     try{
+       let observer=null,taskContext="",messages=req.body.messages;
+       if(ref){
+        const command=beginAssistantModelCommand(db,{projectId:req.params.id,taskId:ref.taskId,
+         requestId:ref.requestId,requestPayload:req.body});
+        if(command.cached){reply.header("Cache-Control","no-store");return command.response;}
+        commandStarted=true;
+        const snapshot=getAssistantTask(db,{projectId:req.params.id,taskId:ref.taskId}).task;
+        const frozenPolicy=getAssistantTaskTurnPolicy(db,{projectId:req.params.id,taskId:ref.taskId,
+         messageId:ref.turnMessageId});
+        taskContext=buildAssistantTaskProviderContext({task:{...snapshot,contextPolicy:frozenPolicy},document:project.document});
+        // P0b: client transcript may contain previously selected private nodes.
+        // Only the current explicit user request enters the provider payload.
+        messages=[req.body.messages.at(-1)];
+        observer=createAssistantModelObserver(db,{projectId:req.params.id,taskId:ref.taskId,
+         requestId:ref.requestId,provider:req.body.provider,model:req.body.model});
+       }
+       if(req.body.skills&&req.body.skills.projectId!==req.params.id)
+        throw Object.assign(Error("assistant_skill_selection_invalid"),{code:"assistant_skill_selection_invalid",statusCode:400});
+       const skill=resolveAssistantSkills(db,skillRegistry,req.body.skills,messages);
+       const visual=await resolveAssistantVisualContext({
+        document:project.document,visualContext:req.body.visualContext,blobStore,signal:controller.signal
+       });
+       const {skills:_selection,visualContext:_visual,task:_task,...chatInput}=req.body;
+       const result=await assistantChat({...chatInput,messages,skillContext:skill.context,
+        skillTools:skill.toolEntries??[],visualImages:visual.images,
+        visualDetail:req.body.visualContext?.detail??"high",signal:controller.signal,
+        ...(ref?{taskContext,callObserver:observer,modelCallKind:ref.callKind??"initial"}:{})});
+       const completed={...result,appliedSkillIds:skill.skillIds,usedVisualReferences:visual.references};
+       if(ref)completeAssistantModelCommand(db,{projectId:req.params.id,taskId:ref.taskId,
+        requestId:ref.requestId,response:completed});
+       reply.header("Cache-Control","no-store");return completed;
+     }catch(error){
+       if(ref&&commandStarted){
+        try{failAssistantModelCommand(db,{projectId:req.params.id,taskId:ref.taskId,requestId:ref.requestId})}
+        catch{ /* A durable submitting record will still prohibit replay on restart. */ }
+       }
+       const code=typeof error?.code==="string"&&error.code.startsWith("assistant_")?error.code:"assistant_failed";
+       return reply.code(error?.statusCode>=400&&error.statusCode<600?error.statusCode:502).send({code});
+     }finally{reply.raw.off("close",onClose)}
+   });
+  if(projectArchive){
   app.get("/api/v1/projects/:id/archive",{schema:{params:canvasParams}},async(req,reply)=>{
    const archive=await projectArchive.exportProject(req.params.id);
    reply.header("Content-Type","application/zip")

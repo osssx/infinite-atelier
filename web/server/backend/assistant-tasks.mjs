@@ -109,10 +109,26 @@ export function appendAssistantTaskTurn(db,{projectId,taskId,requestId,text:mess
   if(contextPolicyValue)db.prepare("UPDATE assistant_tasks SET context_policy_json=?,updated_at=? WHERE id=?")
    .run(json(contextPolicyValue),at,taskId);
   else db.prepare("UPDATE assistant_tasks SET updated_at=? WHERE id=?").run(at,taskId);
-  event(db,taskId,"user_turn",{messageId,preview:message.slice(0,160),requestDigest:hash(message)},null,at);
+  event(db,taskId,"user_turn",{messageId,preview:message.slice(0,160),requestDigest:hash(message),
+   contextPolicy:contextPolicyValue??JSON.parse(row.context_policy_json)},null,at);
   return {task:snapshot(db,projectId,taskId)};
  });
 }
+
+/** Recover exactly the provider visibility agreed for this user turn.
+ * Later changes to assistant_tasks.context_policy_json cannot widen it.
+ */
+export function getAssistantTaskTurnPolicy(db,{projectId,taskId,messageId}){
+ active(db,projectId);mustTask(db,projectId,taskId);
+ if(!id(messageId))throw fail("assistant_task_invalid");
+ const row=db.prepare("SELECT payload_json FROM assistant_task_events WHERE task_id=? AND kind='user_turn' AND json_extract(payload_json,'$.messageId')=? ORDER BY seq DESC LIMIT 1")
+  .get(taskId,messageId);
+ if(!row)throw fail("assistant_task_turn_not_found",409);
+ const value=JSON.parse(row.payload_json).contextPolicy;
+ if(!value)throw fail("assistant_task_context_invalid",409);
+ return policy(value);
+}
+
 export function observeAssistantTask(db,{projectId,taskId,requestId,kind,preview}){
  if(!["reply","error"].includes(kind)||!text(preview,1800))throw fail("assistant_task_invalid");
  return command(db,{projectId,requestId,kind:"observe",payload:{taskId,kind,preview}},()=>{

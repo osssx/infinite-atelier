@@ -10,7 +10,7 @@ const utf8=value=>Buffer.byteLength(value,"utf8");
  * canvas writes. All model tool calls are validated against the one request's
  * server-authorized, version-pinned catalog before execution.
  */
-export async function runAssistantSkillRounds({provider,initialBody,infer,readAnswer,authorizedEntries,signal,scriptProposalEnabled=true,requireScriptProposal=false}){
+export async function runAssistantSkillRounds({provider,initialBody,infer,readAnswer,authorizedEntries,signal,scriptProposalEnabled=true,requireScriptProposal=false,initialKind="initial"}){
  const toolSession=createAssistantSkillToolSession(authorizedEntries,{scriptProposalEnabled});
  const toolDefinitions=assistantSkillToolsFor(authorizedEntries,scriptProposalEnabled);
  const payload=JSON.parse(initialBody);
@@ -28,7 +28,7 @@ export async function runAssistantSkillRounds({provider,initialBody,infer,readAn
  for(;;){
   if(signal?.aborted)throw fail("assistant_cancelled",499);
   let result;
-  try{result=await infer(JSON.stringify(payload),true)}
+  try{result=await infer(JSON.stringify(payload),true,rounds===0?initialKind:"skill_tool_round")}
   catch(error){
    if(rounds>0&&error?.code==="assistant_skill_tools_unsupported")
     throw fail("assistant_skill_tool_response_invalid");

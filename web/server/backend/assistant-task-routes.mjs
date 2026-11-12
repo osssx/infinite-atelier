@@ -1,6 +1,7 @@
 import {createAssistantTask,listAssistantTasks,getAssistantTask,appendAssistantTaskTurn,
  observeAssistantTask,guideAssistantTaskResume,cancelAssistantTask,listAssistantTaskEvents} from "./assistant-tasks.mjs";
 import {listAssistantModelCalls} from "./assistant-model-calls.mjs";
+import {decideAssistantTaskStep} from "./assistant-task-step-gate.mjs";
 
 const id={type:"string",pattern:"^[A-Za-z0-9_-]{1,128}$"};
 const policy={type:"object",additionalProperties:false,required:["includeContext","scope","includedIds"],
@@ -10,6 +11,11 @@ const base="/api/v1/projects/:id/assistant/tasks";
 const projectParams={type:"object",required:["id"],additionalProperties:false,properties:{id}};
 const taskParams={type:"object",required:["id","taskId"],additionalProperties:false,
  properties:{id,taskId:id}};
+const stepParams={type:"object",required:["id","taskId","stepId"],additionalProperties:false,
+ properties:{id,taskId:id,stepId:id}};
+const decisionBody={type:"object",required:["requestId","expectedPlanVersion","actionDigest","decision"],
+ additionalProperties:false,properties:{requestId:id,expectedPlanVersion:{type:"integer",minimum:1},
+ actionDigest:{type:"string",pattern:"^[a-f0-9]{64}$"},decision:{type:"string",enum:["approve","reject"]}}};
 const requestBody={type:"object",required:["requestId"],additionalProperties:false,
  properties:{requestId:id}};
 const taskPostBody={type:"object",required:["requestId","chatSessionId","rootMessageId","originalRequest"],
@@ -41,6 +47,12 @@ export function registerAssistantTaskRoutes(app,db){
   guideAssistantTaskResume(db,{projectId:req.params.id,taskId:req.params.taskId,...req.body})));
  app.post(base+"/:taskId/cancel",{schema:{params:taskParams,body:requestBody}},(req,reply)=>result(reply,
   cancelAssistantTask(db,{projectId:req.params.id,taskId:req.params.taskId,...req.body})));
+ // P1a approval is tied to a frozen Step, plan version and action digest.
+ // There is intentionally NO HTTP Step claim, execute or succeeded endpoint yet.
+ app.post(base+"/:taskId/steps/:stepId/approval",
+  {schema:{params:stepParams,body:decisionBody}},(req,reply)=>result(reply,
+   decideAssistantTaskStep(db,{projectId:req.params.id,taskId:req.params.taskId,
+    stepId:req.params.stepId,...req.body})));
  app.get(base+"/:taskId/model-calls",{schema:{params:taskParams}},(req,reply)=>result(reply,
   listAssistantModelCalls(db,{projectId:req.params.id,taskId:req.params.taskId,
    limit:Number(req.query?.limit??100)})));

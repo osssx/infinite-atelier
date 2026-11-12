@@ -169,14 +169,16 @@ export function listAssistantTaskEvents(db,{projectId,taskId,afterSeq=0,limit=10
  return {events,nextSeq:events.at(-1)?.seq??afterSeq,hasMore:rows.length>limit};
 }
 /** Internal P0a planner entry: pending only, never executes or asserts success. */
-export function addAssistantTaskStep(db,{projectId,taskId,stepId=randomUUID(),kind,ordinal,action={},dependsOn=[],required=true}){
+export function addAssistantTaskStep(db,{projectId,taskId,expectedPlanVersion,stepId=randomUUID(),kind,ordinal,action={},dependsOn=[],required=true}){
  const allowed=["canvas_mutation","skill_script","model_job","comfy_workflow","wait_external","materialize","clarification"];
- if(!id(stepId)||!allowed.includes(kind)||!Number.isSafeInteger(ordinal)||ordinal<0||
+ if(!id(stepId)||!Number.isSafeInteger(expectedPlanVersion)||expectedPlanVersion<1||
+  !allowed.includes(kind)||!Number.isSafeInteger(ordinal)||ordinal<0||
  !Array.isArray(dependsOn)||dependsOn.some(n=>!id(n))||typeof required!=="boolean")throw fail("assistant_task_invalid");
  return writeTransaction(db,()=>{
   active(db,projectId);
   const row=mustTask(db,projectId,taskId);
   if(row.read_only||row.cancel_requested_at!==null)throw fail("assistant_task_not_editable",409);
+  if(row.active_plan_version!==expectedPlanVersion)throw fail("assistant_step_plan_conflict",409);
   const frozen=json(action,12000),actionDigest=hash(action),at=Date.now();
   db.prepare("INSERT INTO assistant_task_steps(id,task_id,plan_version,ordinal,kind,status,required,depends_on_json,action_json,action_digest,preconditions_json,approval_json,receipt_json,receipt_trust,result_json,created_at,updated_at) VALUES(?,?,?,?,?,'pending',?,?,?,?,'{}','{}','{}','none','{}',?,?)")
   .run(stepId,taskId,row.active_plan_version,ordinal,kind,required?1:0,json(dependsOn),frozen,actionDigest,at,at);

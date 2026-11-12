@@ -3767,9 +3767,24 @@ function AtelierCanvasPage() {
             <CanvasPerfBridge containerRef={containerRef} viewport={viewport} setViewport={setViewport} setNodes={setNodes} selectedNodeIds={selectedNodeIds} nodes={nodes} connections={connections} />
             <CanvasSidePanel nodes={nodes} selectedNodeIds={selectedNodeIds} onFocusNode={focusNode} onPreviewNode={setPreviewNodeId} onInsertAsset={handleAssetInsert} />
             <section className="relative min-w-0 flex-1 overflow-hidden">
-                {backendSaveError?<div role="alert" className="absolute right-4 top-16 z-[100] rounded-lg border border-red-500 bg-background p-3 text-sm shadow-lg">
-                    画布自动保存失败：{backendSaveError}
-                    <Button size="small" className="ml-2" onClick={()=>{void awaitCanvasStorePersistence().catch(error=>message.error(String(error)))}}>重试保存</Button>
+                {backendSaveError?<div role="alert" className="absolute right-4 top-16 z-[100] max-w-lg rounded-lg border border-red-500 bg-background p-3 text-sm shadow-lg">
+                    {backendSaveError.startsWith("project_revision_conflict")?<>
+                        <div className="font-medium">画布版本冲突：服务端图已发生变化，已保留本地未保存草稿。</div>
+                        <div className="mt-1 text-xs opacity-75">为保护 Task 创建的节点和连线，旧快照不会覆盖服务端。可先导出本地草稿，再明确选择舍弃它并重新载入。</div>
+                        <div className="mt-2 flex flex-wrap gap-2">
+                            <Button size="small" onClick={()=>{
+                                const backup={projectId,title:currentProjectTitle,nodes,connections,exportedAt:new Date().toISOString(),reason:"canvas_revision_conflict"};
+                                saveAs(new Blob([JSON.stringify(backup,null,2)],{type:"application/json"}),projectId+"-unsaved-canvas-draft.json");
+                            }}>导出本地草稿</Button>
+                            <Button size="small" onClick={()=>{
+                                if(window.confirm("重新载入服务端画布会舍弃本地所有未保存编辑。建议先导出草稿。确定舍弃并刷新吗？"))
+                                    window.location.reload();
+                            }}>舍弃草稿并重新载入</Button>
+                        </div>
+                    </>:<>
+                        画布自动保存失败：{backendSaveError}
+                        <Button size="small" className="ml-2" onClick={()=>{void awaitCanvasStorePersistence().catch(error=>message.error(String(error)))}}>重试保存</Button>
+                    </>}
                 </div>:null}
                 <CanvasTopBar
                     title={currentProjectTitle || t("canvas.projectPage.untitledCanvas")}

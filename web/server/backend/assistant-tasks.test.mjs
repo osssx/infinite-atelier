@@ -85,7 +85,7 @@ test("P0a user turns, client observations and event cursors are idempotent",asyn
 test("P0a only internal planner may add pending steps; cancellation prevents new turns and resume",async t=>{
  const {db,call,base}=await setup(t);
  const taskId=(await call("POST",base,create())).body.task.id;
- const task=addAssistantTaskStep(db,{projectId:"task-project",taskId,kind:"canvas_mutation",ordinal:0,
+ const task=addAssistantTaskStep(db,{projectId:"task-project",taskId,expectedPlanVersion:1,kind:"canvas_mutation",ordinal:0,
   action:{type:"create_node",ref:"planned"}});
  assert.equal(task.steps.length,1);
  assert.equal(task.steps[0].status,"pending");

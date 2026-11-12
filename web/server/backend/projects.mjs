@@ -98,6 +98,12 @@ export function saveSingleUserCanvas(db,{id,expectedRevision,document}){
  return writeTransaction(db,()=>{
   const row=db.prepare("SELECT * FROM projects WHERE id=? AND deleted_at IS NULL").get(id);
   if(!row)throw problem("project_not_found",404);
+  // R1: Task-associated projects strictly compare revisions for full-graph autosaves.
+  // Non-Task single-user saves preserve the existing media reconciliation behavior.
+  // The fence remains even after Task cancellation or archival.
+  const taskManaged=!!db.prepare("SELECT 1 FROM assistant_tasks WHERE project_id=? LIMIT 1").get(id);
+  if(taskManaged&&expectedRevision!==row.revision)
+   throw problem("project_revision_conflict",409,{currentRevision:row.revision});
   const current=JSON.parse(row.document_json);
   const next={...incoming,nodes:[...incoming.nodes],connections:[...incoming.connections]};
   if(expectedRevision===undefined||expectedRevision<row.revision){

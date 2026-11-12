@@ -45,6 +45,7 @@ export function subscribeSavedCanvasGraph(callback:(id:string,graph:{nodes:Canva
 
 const timers=new Map<string,ReturnType<typeof setTimeout>>();
 const activeWrites=new Map<string,Promise<void>>();
+const taskCanvasBarriers=new Set<string>();
 const lastErrors=new Map<string,unknown>();
 const auxiliary=createCanvasStatePersistence(error=>{
  if(error===null&&lastErrors.size)return;
@@ -103,6 +104,7 @@ function schedule(id:string){
  timers.set(id,setTimeout(()=>{timers.delete(id);void saveProject(id).catch(()=>{})},450));
 }
 async function saveProject(id:string):Promise<void>{
+ if(taskCanvasBarriers.has(id))throw Error("canvas_task_save_barrier_active");
  const existing=activeWrites.get(id);
  if(existing){await existing;if(dirty.has(id))return saveProject(id);return}
  if(!dirty.has(id)||!revisions.has(id))return;
@@ -161,6 +163,52 @@ export async function awaitCanvasStorePersistence(projectId?:string):Promise<voi
   if(failure)throw failure;
  }else if(lastErrors.size)throw lastErrors.values().next().value;
 }
+/** P1a browser save barrier for the future P1b Task graph executor.
+ * Flush every earlier PATCH before freezing the current revision. Local edits
+ * occurring during the remote transaction stay in memory and are never
+ * overwritten by a late authoritative response.
+ */
+export async function commitAssistantCanvasGraphWithSaveBarrier(
+ projectId:string,
+ submit:(frozen:{expectedRevision:number;document:ReturnType<typeof asDocument>})=>Promise<CanvasBackendProject>
+):Promise<CanvasBackendProject>{
+ if(taskCanvasBarriers.has(projectId))throw Error("canvas_task_save_barrier_active");
+ await awaitCanvasStorePersistence(projectId);
+ if(taskCanvasBarriers.has(projectId)||activeWrites.has(projectId)||dirty.has(projectId))
+  throw Error("project_unsaved_local_edits");
+ const project=useCanvasStore.getState().openProject(projectId),revision=revisions.get(projectId);
+ if(!project||revision===undefined)throw Error("project_not_loaded");
+ const frozen=JSON.parse(JSON.stringify(asDocument(project))) as ReturnType<typeof asDocument>;
+ taskCanvasBarriers.add(projectId);
+ try{
+  const remote=await submit({expectedRevision:revision,document:frozen});
+  if(remote.id!==projectId||!Number.isSafeInteger(remote.revision)||
+   remote.revision<=revision||!Array.isArray(remote.document.nodes)||
+   !Array.isArray(remote.document.connections))throw Error("assistant_task_graph_response_invalid");
+  if(dirty.has(projectId)){
+   const conflict=Error("project_revision_conflict");
+   lastErrors.set(projectId,conflict);
+   useCanvasStore.setState({error:conflict.message});
+   throw conflict;
+  }
+  revisions.set(projectId,remote.revision);
+  lastErrors.delete(projectId);
+  const graph={nodes:remote.document.nodes as CanvasNodeData[],
+   connections:remote.document.connections as CanvasConnection[]};
+  useCanvasStore.setState(state=>({projects:state.projects.map(item=>item.id===projectId?
+   {...item,nodes:graph.nodes,connections:graph.connections}:item),error:null}));
+  for(const listener of savedGraphListeners){try{listener(projectId,graph)}catch{/* already committed */}}
+  return remote;
+ }catch(error){
+  if(dirty.has(projectId)){
+   const conflict=Error("project_revision_conflict");
+   lastErrors.set(projectId,conflict);
+   useCanvasStore.setState({error:conflict.message});
+  }
+  throw error;
+ }finally{taskCanvasBarriers.delete(projectId)}
+}
+
 function updateCached(id:string,update:(project:CanvasProject)=>CanvasProject){
  useCanvasStore.setState(state=>state.projects.some(p=>p.id===id)?
   {projects:state.projects.map(project=>project.id===id?update(project):project)}:state);
@@ -298,7 +346,7 @@ export const useCanvasStore=create<CanvasStore>((set,get)=>({
     {...project,...patch,...(validViewport!==undefined?{viewport:validViewport}:{}),
      updatedAt:graphChanged?now():project.updatedAt}:project)}:state);
   if(!loaded.has(id))return;
-  if(graphChanged){dirty.add(id);schedule(id)}
+  if(graphChanged){dirty.add(id);if(!taskCanvasBarriers.has(id))schedule(id)}
   if(viewportChanged&&validViewport!==undefined)auxiliary.updateViewport(id,validViewport);
   if(chatsChanged){
    const project=useCanvasStore.getState().openProject(id);

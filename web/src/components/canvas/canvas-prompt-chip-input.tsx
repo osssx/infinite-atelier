@@ -6,7 +6,7 @@ import { SkillSlashMenu } from "@/features/skills/skill-slash-menu";
 import { activeSkillSlash, skillMentionToken } from "@/features/skills/skill-mentions";
 import { useSkillStore } from "@/stores/use-skill-store";
 import { isEnabledSkillInProject, type SkillCatalogEntry } from "@/features/skills/types";
-import { FileText, Image as ImageIcon, Music2, Video } from "lucide-react";
+import { FileText, Image as ImageIcon, Layers3, Music2, Video } from "lucide-react";
 
 import i18n from "@/i18n";
 import { canvasThemes } from "@/lib/canvas-theme";
@@ -325,7 +325,7 @@ function MentionMenu({ rect, references, activeIndex, theme, onSelect }: { rect:
 function ReferencePreview({ reference }: { reference: CanvasResourceReference }) {
     if (reference.kind === "image" && reference.previewUrl) return <img src={reference.previewUrl} alt="" className="size-9 rounded-md object-cover" />;
     if (reference.kind === "video" && reference.previewUrl) return <video src={reference.previewUrl} className="size-9 rounded-md bg-black object-cover" muted preload="metadata" />;
-    const Icon = reference.kind === "audio" ? Music2 : reference.kind === "video" ? Video : reference.kind === "image" ? ImageIcon : FileText;
+    const Icon = reference.kind === "audio" ? Music2 : reference.kind === "video" ? Video : reference.kind === "image" ? ImageIcon : reference.kind === "node" ? Layers3 : FileText;
     return (
         <span className="grid size-9 shrink-0 place-items-center rounded-md bg-black/10">
             <Icon className="size-4" />

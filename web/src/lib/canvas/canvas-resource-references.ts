@@ -13,7 +13,8 @@ export type CanvasResourceReference = {
     nodeId: string;
     /** Optional exact image ID for multi-output image nodes. */
     imageId?: string;
-    kind: CanvasResourceKind;
+    /** Assistant-only fallback references can target nodes without media outputs. */
+    kind: CanvasResourceKind | "node";
     label: string;
     title: string;
     previewUrl?: string;

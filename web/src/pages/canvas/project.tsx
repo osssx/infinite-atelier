@@ -999,9 +999,9 @@ function AtelierCanvasPage() {
     const assistantSelectedNodes=useMemo(()=>[...selectedNodeIds].map(id=>inputGraphIndex.nodeById.get(id))
         .filter((node):node is CanvasNodeData=>Boolean(node)).map(node=>({id:node.id,title:node.title,type:node.type})),
         [selectedNodeIds,inputGraphIndex]);
-    const getAssistantResourceReferences=useCallback((ids:string[])=>
-        buildAssistantResourceReferences(ids.map(id=>nodesRef.current.find(node=>node.id===id))
-          .filter((node):node is CanvasNodeData=>Boolean(node))),[]);
+    // @ candidates cover the canvas, independently of the selected-node context.
+    const getAssistantResourceReferences=useCallback(()=>
+        buildAssistantResourceReferences(nodes),[nodes]);
     const getAssistantContext=useCallback((ids:string[],scope:AssistantContextScope)=>
         buildCanvasAssistantContext({projectTitle:currentProjectTitle||"未命名画布",nodes:nodesRef.current,
             connections:connectionsRef.current,nodeIds:ids,scope}),[currentProjectTitle]);

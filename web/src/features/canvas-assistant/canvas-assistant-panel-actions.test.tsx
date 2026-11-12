@@ -8,7 +8,7 @@ import {applyAssistantCanvasActions,type AssistantCanvasStage,type AssistantCanv
 import {CanvasApiError} from "@/features/backend-sync/canvas-api";
 import type {ComfyWorkflowTemplate} from "@/features/comfy-workflow/template-schema";
 import {registerCanvasPortResolver} from "@/lib/canvas/canvas-ports";
-import type {CanvasResourceReference} from "@/lib/canvas/canvas-resource-references";
+import {canvasResourceReferenceToken,type CanvasResourceReference} from "@/lib/canvas/canvas-resource-references";
 const skillMocks=vi.hoisted(()=>({
  snapshot:vi.fn(async():Promise<{revision:number;skills:unknown[]}>=>({revision:4,skills:[]}))
 }));
@@ -56,6 +56,7 @@ function makeGraph():AssistantCanvasGraph{
 }
 function setup(actions:unknown[],resources:CanvasResourceReference[]=[],history:CanvasAssistantSession[]=[]){
  let graph=makeGraph();
+ const getContext=vi.fn((ids:string[])=>({text:"节点：现有文本 (text, id=text-existing)\n明确引用："+ids.join(","),references:[],truncated:false}));
  const apply=vi.fn((items:unknown,stage:AssistantCanvasStage,refs?:ReadonlyMap<string,string>)=>{
   const result=applyAssistantCanvasActions(graph,items,stage,{x:400,y:300},refs);
   graph={nodes:result.nodes,connections:result.connections};
@@ -71,13 +72,13 @@ function setup(actions:unknown[],resources:CanvasResourceReference[]=[],history:
    sessions,setSessions,activeChatId:active,setActiveChatId:setActive,
    selectedNodes:resources.length?resources.map(item=>({id:item.nodeId,title:item.title,type:CanvasNodeType.Image})):
     [{id:"text-existing",title:"现有文本",type:CanvasNodeType.Text}],
-   getContext:()=>({text:"节点：现有文本 (text, id=text-existing)",references:[],truncated:false}),
+   getContext,
    getResourceReferences:()=>resources,
    getWorkflowTemplates:async()=>({context:"",templates:new Map()}),   onApplyActions:apply,onRunActions:mocks.run,config:defaultConfig  });
  }
  container=document.createElement("div");document.body.appendChild(container);
  root=createRoot(container);
- return {Harness,apply,getGraph:()=>graph};
+ return {Harness,apply,getContext,getGraph:()=>graph};
 }
 async function renderAndSend(Harness:()=>React.ReactElement){
  await act(async()=>{root!.render(createElement(Harness));});
@@ -924,7 +925,7 @@ describe("P2 assistant confirmation boundary",()=>{
   const fixture=setup([],refs);
   await act(async()=>{root!.render(createElement(fixture.Harness));});
   const shortcut=Array.from(container!.querySelectorAll("button")).find(button=>
-   button.textContent?.includes("反推选中图片的生成提示词"));
+   button.textContent?.includes("反推画布图片的生成提示词"));
   expect(shortcut).toBeTruthy();
   await act(async()=>{shortcut!.click();});
   const editor=container!.querySelector<HTMLElement>('[aria-label="向 AI 助手发送消息"]')!;
@@ -937,7 +938,30 @@ describe("P2 assistant confirmation boundary",()=>{
   expect(container!.textContent).toContain("视觉图片 1 张");
  });
 
- it("plain chat never sends canvas pictures implicitly even with image references selected",async()=>{
+ it("@ references unselected text, video and workflow nodes without media bytes",async()=>{
+  const refs:CanvasResourceReference[]=[
+   {id:"text-1",nodeId:"text-1",kind:"text",label:"资料1",title:"分镜脚本",text:"完整脚本",active:true},
+   {id:"video-1",nodeId:"video-1",kind:"video",label:"视频1",title:"镜头预览",active:true},
+   {id:"workflow-1",nodeId:"workflow-1",kind:"node",label:"节点1",title:"Comfy 工作流",active:true}
+  ];
+  const fixture=setup([],refs);
+  await act(async()=>{root!.render(createElement(fixture.Harness));});
+  const overview=Array.from(container!.querySelectorAll("button")).find(button=>button.textContent==="画布概览")!;
+  await act(async()=>{overview.click();});
+  const editor=container!.querySelector<HTMLElement>('[aria-label="向 AI 助手发送消息"]')!;
+  await act(async()=>{
+   editor.textContent="比较 "+refs.map(canvasResourceReferenceToken).join(" ");
+   editor.dispatchEvent(new Event("input",{bubbles:true}));
+  });
+  await act(async()=>{container!.querySelector<HTMLButtonElement>('[aria-label="发送消息"]')!.click();await Promise.resolve();});
+  const sent=mocks.api.mock.calls.find(call=>String(call[0]).includes("/assistant/chat"));
+  expect(sent).toBeTruthy();
+  expect(sent?.[2].visualContext).toBeUndefined();
+  expect(sent?.[2].messages.at(-1).content).toContain("【引用节点：分镜脚本（text，id=text-1）】");
+  expect(sent?.[2].messages.at(-1).content).toContain("明确引用：text-1,video-1,workflow-1");
+  expect(fixture.getContext).toHaveBeenCalledWith(["text-1","video-1","workflow-1"],"selection");
+ });
+  it("plain chat never sends canvas pictures implicitly even with image references selected",async()=>{
   const refs:CanvasResourceReference[]=[{id:"img-01",nodeId:"img-01",kind:"image",label:"参考图1",
    title:"人物立绘",active:true}];
   const fixture=setup([],refs);

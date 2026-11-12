@@ -49,3 +49,27 @@ describe("assistant visual @-mention extraction",()=>{
   expect(collectAssistantImageMentions("讲讲图片",[]).images).toEqual([]);
  });
 });
+
+describe("assistant non-image @ mentions",()=>{
+ it("resolves text, video and workflow nodes without visual payload",()=>{
+  const refs:CanvasResourceReference[]=[
+   {id:"txt",nodeId:"txt",kind:"text",label:"资料1",title:"脚本",text:"故事正文",active:true},
+   {id:"vid",nodeId:"vid",kind:"video",label:"视频1",title:"镜头",active:true},
+   {id:"wf",nodeId:"wf",kind:"node",label:"节点1",title:"Comfy 工作流",active:true}
+  ];
+  const result=collectAssistantImageMentions([canvasResourceReferenceToken(refs[0]),
+   canvasResourceReferenceToken(refs[1]),canvasResourceReferenceToken(refs[2]),
+   canvasResourceReferenceToken(refs[0])].join(" "),refs);
+  expect(result.nodeIds).toEqual(["txt","vid","wf"]);
+  expect(result.images).toEqual([]);
+  expect(result.text).toContain("【引用节点：脚本（text，id=txt）】");
+  expect(result.text).toContain("【引用节点：Comfy 工作流（node，id=wf）】");
+  expect(result.unresolved).toBe(false);
+ });
+ it("rejects stale non-image identity tokens",()=>{
+  const token=canvasResourceReferenceToken({id:"t",nodeId:"t",kind:"text",label:"资料1",title:"旧节点",active:true});
+  const result=collectAssistantImageMentions("阅读 "+token,[]);
+  expect(result.unresolved).toBe(true);
+  expect(result.nodeIds).toEqual([]);
+ });
+});

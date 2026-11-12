@@ -1,22 +1,29 @@
 import {canvasResourceReferenceToken,type CanvasResourceReference} from "@/lib/canvas/canvas-resource-references";
 
 export type AssistantVisualReference={nodeId:string;imageId?:string};
-/** The assistant uses the shared editor in identity mode. Only a deliberate
- * @ chip counts as consent to send image pixels. Plain-text labels never do. */
+/** Identity @ chips address nodes. Only an explicit image chip consents to
+ * sending image pixels; other nodes provide read-only context, not media. */
 export function collectAssistantImageMentions(text:string,references:readonly CanvasResourceReference[]){
- const candidates=new Map(references.filter(item=>item.active&&item.kind==="image")
+ const candidates=new Map(references.filter(item=>item.active)
   .map(item=>[canvasResourceReferenceToken(item),item] as const));
- const images:AssistantVisualReference[]=[],found=new Set<string>();
+ const images:AssistantVisualReference[]=[],foundImages=new Set<string>();
+ const nodeIds:string[]=[],foundNodes=new Set<string>();
  let unresolved=false;
  const remaining=text.replace(/@\[node:[^\]]+\]/g,token=>{
   const candidate=candidates.get(token);
   if(!candidate){unresolved=true;return token;}
-  const key=candidate.nodeId+":"+(candidate.imageId??"");
-  if(!found.has(key)){
-   images.push({nodeId:candidate.nodeId,...(candidate.imageId?{imageId:candidate.imageId}:{})});
-   found.add(key);
+  if(!foundNodes.has(candidate.nodeId)){
+   nodeIds.push(candidate.nodeId);
+   foundNodes.add(candidate.nodeId);
   }
-  return "【参考图片："+candidate.title.slice(0,80)+"】";
+  const title=candidate.title.replace(/[\r\n]/g," ").slice(0,80);
+  if(candidate.kind!=="image")return "【引用节点："+title+"（"+candidate.kind+"，id="+candidate.nodeId+"）】";
+  const key=candidate.nodeId+":"+(candidate.imageId??"");
+  if(!foundImages.has(key)){
+   images.push({nodeId:candidate.nodeId,...(candidate.imageId?{imageId:candidate.imageId}:{})});
+   foundImages.add(key);
+  }
+  return "【参考图片："+title+"】";
  });
- return {text:remaining,images,unresolved};
+ return {text:remaining,images,nodeIds,unresolved};
 }

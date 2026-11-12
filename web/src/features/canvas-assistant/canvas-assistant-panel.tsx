@@ -15,6 +15,7 @@ import {useCanvasAssistantTasks} from "./canvas-assistant-task-state";
 import {CanvasPromptChipInput} from "@/components/canvas/canvas-prompt-chip-input";
 import {canvasResourceReferenceToken,type CanvasResourceReference} from "@/lib/canvas/canvas-resource-references";
 import {collectAssistantImageMentions} from "./canvas-assistant-visual-mentions";
+import {prioritizeAssistantResourceReferences} from "./canvas-assistant-resources";
 import {createSkillTextArtifactActions} from "./canvas-assistant-skill-artifacts";
 
 import {extractSkillMentions} from "@/features/skills/skill-mentions";
@@ -33,7 +34,7 @@ type Props={
  sessions:CanvasAssistantSession[];setSessions:Dispatch<SetStateAction<CanvasAssistantSession[]>>;
  activeChatId:string|null;setActiveChatId:Dispatch<SetStateAction<string|null>>;
    selectedNodes:Choice[];getContext:(ids:string[],scope:AssistantContextScope)=>AssistantContextResult;
-   getResourceReferences?:(ids:string[])=>CanvasResourceReference[];
+   getResourceReferences?:()=>CanvasResourceReference[];
    getWorkflowTemplates:(ids:string[],signal:AbortSignal)=>Promise<{context:string;templates:Map<string,ComfyWorkflowTemplate>}>;
    onApplyActions:(actions:unknown,stage:AssistantCanvasStage,refs?:ReadonlyMap<string,string>,workflowTemplates?:ReadonlyMap<string,ComfyWorkflowTemplate>)=>{applied:number;refs:Map<string,string>};
    onRunActions:(actions:unknown,refs:ReadonlyMap<string,string>,signal:AbortSignal)=>Promise<{submitted:number;jobIds:string[]}>;   config:AiConfig;};const now=()=>new Date().toISOString();
@@ -238,8 +239,9 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
   .map(value=>({value,label:modelOptionLabel(config,value)})),[config]);
  const chosenModel=options.some(option=>option.value===modelRef)?modelRef:options[0]?.value??"";
  const effectiveScope=scope==="selection"&&includedIds.length===0&&selectedNodes.length===0?"overview":scope; const context=useMemo(()=>getContext(includedIds,effectiveScope),[getContext,includedIds,effectiveScope,previewRevision]);
- const resourceReferences=useMemo(()=>includeContext&&effectiveScope==="selection"?
-  (getResourceReferences?.(includedIds)??[]).filter(item=>item.kind==="image"):[],[getResourceReferences,includeContext,includedIds,effectiveScope,previewRevision]);
+ const resourceReferences=useMemo(()=>includeContext?
+  prioritizeAssistantResourceReferences(getResourceReferences?.()??[],selectedNodes.map(node=>node.id)):
+  [],[getResourceReferences,includeContext,previewRevision,signature]);
  const firstImageReference=resourceReferences.find(item=>item.kind==="image");
  const reversePromptRequest="请仔细观察引用图片的真实视觉内容，反推适合图像生成模型的提示词。请分别给出：画面主体与动作、场景与构图、镜头、光影色彩、材质与风格；完整英文正向提示词、中文版、可选负面提示词，以及无法从图像确定的信息。不要把猜测当成原始 Prompt、Seed 或 LoRA。";
  const session=sessions.find(item=>item.id===activeChatId);
@@ -253,17 +255,24 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
   const channel=resolveModelChannel(config,chosenModel);
   const provider=modelChannelProvider(channel,"text");
   if(!channel||!provider||provider==="volcengine_ark")return;
-  const contextSnapshot=includeContext?getContext(includedIds,effectiveScope):null;
+  // Explicit @ references take priority over implicitly selected nodes.
+  const contextIds=[...new Set([...visual.nodeIds,...(effectiveScope==="selection"?includedIds:[])])];
+  const mentionedContext=includeContext&&visual.nodeIds.length?getContext(contextIds,"selection"):null;
+  const contextSnapshot=includeContext?(effectiveScope==="selection"?
+   mentionedContext??getContext(includedIds,"selection"):getContext(includedIds,"overview")):null;
+  const refs=[...(contextSnapshot?.references??[]),...(mentionedContext?.references??[])];
+  const userReferences=[...new Map(refs.map(ref=>[ref.id,ref])).values()];
   const user:CanvasAssistantMessage={id:nanoid(),role:"user",text,
-   ...(contextSnapshot?.references.length?{references:contextSnapshot.references}:{})};
+   ...(userReferences.length?{references:userReferences}:{})};
   const id=session?.id??nanoid();
      const linkedTaskId=taskTracker.activeTaskId;
     const prior=session?.messages??[];
     const controller=new AbortController();controllerRef.current=controller;
     setSending(true);setDraft("");setSessions(prev=>append(prev,id,user));setActiveChatId(id);
    try{
+    if(contextIds.length>12)throw Error("AI 助手一轮最多引用 12 个节点，请减少 @ 或已选节点引用。");
     if(visual.images.length>4)throw Error("AI 助手一轮最多引用 4 张图片，请减少 @ 图片引用。");
-    if(visual.unresolved)throw Error("画布图片引用已失效，请重新选择 @ 图片。");
+    if(visual.unresolved)throw Error("画布节点引用已失效，请重新选择 @ 节点。");
     if(visual.images.length){
      const configured=channel.models?.find(item=>item.name===modelOptionName(chosenModel));
      if(configured?.inputModalities&&!configured.inputModalities.includes("image"))
@@ -272,8 +281,8 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
     let workflowInfo:{context:string;templates:Map<string,ComfyWorkflowTemplate>}={
      context:"",templates:new Map()
     };
-    if(contextSnapshot&&effectiveScope==="selection"&&includedIds.length){
-     try{workflowInfo=await getWorkflowTemplates(includedIds,controller.signal)}
+    if(contextSnapshot&&contextIds.length){
+     try{workflowInfo=await getWorkflowTemplates(contextIds,controller.signal)}
      catch(error){
       if(controller.signal.aborted)throw error;
       workflowInfo.context="所选工作流预设端口定义读取失败："+(error instanceof Error?error.message:String(error));
@@ -284,8 +293,10 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
      return mode+" 生成模型："+(models.length?models.join("、"):"未配置");
     }).join("\n").slice(0,2500);
     const contextText=contextSnapshot?.text?
-     [contextSnapshot.text.slice(0,8500),modelHints,workflowInfo.context].filter(Boolean).join("\n\n"):undefined;
-    const turns=linkedTaskId?[{role:"user" as const,content:text}]:buildCanvasAssistantTurns(prior,text,contextText);
+     [contextSnapshot.text.slice(0,8500),
+      ...(effectiveScope==="overview"&&mentionedContext?[mentionedContext.text.slice(0,6000)]:[]),
+      modelHints,workflowInfo.context].filter(Boolean).join("\n\n"):undefined;
+    const turns=buildCanvasAssistantTurns(linkedTaskId?[]:prior,text,contextText);
     let selectedSkills:undefined|{mode:"manual"|"auto";projectId:string;expectedRevision:number;skillIds:string[];versionPins:Record<string,string>};
     // Skill is always on: explicit / Skill mentions override automatic matching.
     // No enabled Skill is a normal state, not a reason to block an ordinary chat.
@@ -572,7 +583,7 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
        <Link2 size={13} aria-hidden="true"/><span>画布引用</span>
       </label>
       <span className="canvas-assistant-context-divider" aria-hidden="true"/>
-      {resourceReferences.filter(item=>item.kind==="image").length?<span className="canvas-assistant-reference-count">可 @ 引用图片</span>:null}
+      {resourceReferences.length?<span className="canvas-assistant-reference-count">可 @ 引用节点</span>:null}
       <div className="flex min-w-0 items-center gap-0.5">
        <button type="button" className="canvas-assistant-scope-button" aria-pressed={scope==="selection"} disabled={!includeContext} onClick={()=>setScope("selection")}>选中节点</button>
        <button type="button" className="canvas-assistant-scope-button" aria-pressed={scope==="overview"} disabled={!includeContext} onClick={()=>setScope("overview")}>画布概览</button>
@@ -607,8 +618,8 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
       </div>
      ):null}
     </div>
-    {resourceReferences.some(item=>item.kind==="image")?
-      <p className="canvas-assistant-context-help">可输入 @ 选择图片供视觉模型分析（最多 4 张）；图片将发送给所选模型渠道。</p>:null}
+    {resourceReferences.length?
+      <p className="canvas-assistant-context-help">输入 @ 可引用文本、媒体、工作流等节点；图片最多 4 张可发送视觉内容，视频和音频仅提供节点信息。</p>:null}
     {!options.length?<p className="mt-2 flex items-center gap-1 text-[11px]" style={{color:theme.node.muted}}><AlertCircle size={12}/>请先在设置中配置文字模型渠道。</p>:null}
    </section>
 
@@ -624,7 +635,7 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
       <div className="canvas-assistant-suggestions" aria-label="推荐问题">
         {firstImageReference?<button type="button" className="canvas-assistant-suggestion"
           onClick={()=>setDraft(reversePromptRequest+" "+canvasResourceReferenceToken(firstImageReference))}>
-          <span>反推选中图片的生成提示词</span><ArrowUpRight size={14}/>
+          <span>反推画布图片的生成提示词</span><ArrowUpRight size={14}/>
          </button>:null}
         {["创建三个分镜文本节点并依次连线","根据连线关系对整个工作流智能排版","把选中节点添加到已有分组","移出分组中的指定节点","解散选中的分组（需确认）","修改选中图片节点的提示词并生成（修改前确认）","执行选中的 ComfyUI 工作流"].map(hint=>         <button type="button" key={hint} className="canvas-assistant-suggestion" onClick={()=>setDraft(hint)}>
           <span>{hint}</span><ArrowUpRight size={14}/>
@@ -679,9 +690,9 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
      <CanvasPromptChipInput value={draft} references={resourceReferences} referenceSerialization="identity" onChange={setDraft}
       onSubmit={()=>void send()} submitShortcut="mod-enter" ariaLabel="向 AI 助手发送消息"
       enableSkills projectId={projectId} skillCatalog={skills}
-      className="canvas-assistant-draft-input" placeholder="提问或输入 / 指定 Skill，输入 @ 引用图片（默认自动匹配）…"/>
+      className="canvas-assistant-draft-input" placeholder="提问或输入 / 指定 Skill，输入 @ 引用画布节点（默认自动匹配）…"/>
      <div className="canvas-assistant-composer-footer">
-      <span className="canvas-assistant-shortcut">Ctrl / ⌘ + Enter 发送 · @ 引用图片 · / 指定 Skill</span>
+      <span className="canvas-assistant-shortcut">Ctrl / ⌘ + Enter 发送 · @ 引用节点 · / 指定 Skill</span>
       {sending?(
        <button type="button" className="canvas-assistant-send canvas-assistant-stop" aria-label="停止生成" onClick={stop}><Square size={13}/>停止</button>
       ):(

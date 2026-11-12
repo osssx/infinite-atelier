@@ -223,13 +223,13 @@ describe("P2 assistant confirmation boundary",()=>{
    mocks.api.mockRejectedValueOnce(new CanvasApiError("assistant_actions_missing",502));
    for(let i=0;i<4;i++)await renderAndSend(fixture.Harness);
    expect(mocks.api).toHaveBeenCalledTimes(4);
-   for(const call of mocks.api.mock.calls){
-    const messages=call[2].messages as Array<{role:string;content:string}>;
-    expect(messages).toHaveLength(1);
-    expect(messages[0].role).toBe("user");
-    expect(messages[0].content).toContain("创建三个分镜文本节点");
-   }
-   expect(fixture.apply).toHaveBeenCalledTimes(1);
+    for(const [index,call] of mocks.api.mock.calls.entries()){
+     const messages=call[2].messages as Array<{role:string;content:string}>;
+     expect(messages).toHaveLength(1+index*2);
+     expect(messages.at(-1)?.role).toBe("user");
+     expect(messages.at(-1)?.content).toContain("创建三个分镜文本节点");
+     if(index)expect(messages.some(item=>item.content.includes("模型未返回可执行的画布指令"))).toBe(true);
+    }   expect(fixture.apply).toHaveBeenCalledTimes(1);
    expect(fixture.getGraph().nodes).toHaveLength(2);
    expect(container!.textContent).toContain("已自动执行 1 项画布操作");
    expect(container!.textContent).toContain("模型未返回可执行的画布指令");

@@ -3,15 +3,19 @@ import {nanoid} from "nanoid";
 import {canvasApi} from "@/features/backend-sync/canvas-api";
 import type {CanvasAssistantSession} from "@/types/canvas";
 import type {AssistantContextScope} from "./canvas-assistant-context";
+import {executeFrozenAssistantCanvasTaskStep} from "./canvas-assistant-task-execution";
 
+type Step={id:string;kind:string;planVersion:number;status:string;actionDigest:string;
+ action?:{actions?:unknown[];center?:{x:number;y:number}};receiptTrust?:string};
 type Task={id:string;chatSessionId:string;rootMessageId:string;originalRequest:string;
- status:string;recoveryMode:"guidance_only";steps?:{id:string;status:string}[];lastError?:string|null};
+ status:string;recoveryMode:"guidance_only"|"canvas_atomic";steps?:Step[];lastError?:string|null};
 type Args={projectId:string;activeChatId:string|null;session?:CanvasAssistantSession;
  open:boolean;sending:boolean;includeContext:boolean;scope:AssistantContextScope;includedIds:string[];
  onDraft:(value:string)=>void};
 type TaskResponse={task:Task;existing?:boolean;executionStarted?:boolean};
+const taskStatusLabel:Record<string,string>={planning:"待规划",ready:"可继续",waiting_approval:"等待确认",running:"执行中",waiting_external:"等待外部",blocked:"已阻断",needs_reconcile:"需要对账",cancelling:"正在取消",failed:"失败",completed:"已完成",cancelled:"已结束记录"};
 
-/** P0a tracks intent and client observations; it never certifies canvas/job completion. */
+/** P1b canvas Steps are server-committed; external Job/Skill Steps remain guidance-only. */
 export function useCanvasAssistantTasks({
  projectId,activeChatId,session,open,sending,includeContext,scope,includedIds,onDraft
 }:Args){
@@ -110,6 +114,21 @@ export function useCanvasAssistantTasks({
   }catch{setError("结束记录失败；已有生成任务不会受影响。");}
   finally{setBusy(false);}
  };
+ const resumeCanvasStep=async(step:Step,decision?:"approve"|"reject")=>{
+  if(!selected||busy||sending)return;
+  setBusy(true);setError("");
+  try{
+   await executeFrozenAssistantCanvasTaskStep({projectId,taskId:selected.id,step:{
+    stepId:step.id,planVersion:step.planVersion,actionDigest:step.actionDigest
+   },decision,signal:new AbortController().signal});
+   const latest=await canvasApi<TaskResponse>(path(selected.id),"GET");
+   setDetail(latest.task);
+   setItems(old=>old.map(task=>task.id===latest.task.id?latest.task:task));
+  }catch(error){setError("步骤仍保存在任务中，未强行重放："+(error instanceof Error?error.message:"执行失败"));}
+  finally{setBusy(false);}
+ };
+ const pendingCanvas=detail&&selected&&detail.id===selected.id?detail.steps?.filter(step=>step.kind==="canvas_mutation"&&
+  ["waiting_approval","ready"].includes(step.status))??[]:[];
  const view=<section aria-label="任务状态" className="border-b px-3 py-2"
   style={{borderColor:"var(--assistant-border)",color:"var(--assistant-text)"}}>
   <div className="flex items-center gap-2">
@@ -126,9 +145,9 @@ export function useCanvasAssistantTasks({
   </div>
   {selected?<div className="mt-1.5 text-[11px]" style={{color:"var(--assistant-muted)"}}>
    <div className="flex flex-wrap items-center gap-2">
-    <span>状态：{selected.status==="cancelled"?"已结束记录":"待规划"}</span>
+    <span>状态：{taskStatusLabel[detail?.id===selected.id?detail.status:selected.status]??selected.status}</span>
     <span>步骤：{detail?.id===selected.id?detail.steps?.length??0:0}</span>
-    <span>仅指导恢复</span>
+    <span>{detail?.id===selected.id&&detail.recoveryMode==="canvas_atomic"?"画布操作有可信回执":"仅指导恢复"}</span>
     {activeTask?<>
      <button type="button" className="canvas-assistant-link" disabled={busy||sending}
       title="只读取任务并填写继续指令，不自动运行" onClick={()=>void resume()}>继续</button>
@@ -138,6 +157,23 @@ export function useCanvasAssistantTasks({
    </div>
    {detail?.id===selected.id&&detail.lastError?
     <p role="status" className="mt-1 break-words">上次错误：{detail.lastError.slice(0,200)}</p>:null}
+
+   {pendingCanvas.map(step=><div key={step.id} className="mt-2 rounded-md border p-2"
+    style={{borderColor:"var(--assistant-border)"}}>
+    <div className="font-medium">待恢复画布步骤：{step.id.slice(0,8)} · {step.status}</div>
+    <details className="mt-1"><summary className="cursor-pointer">查看冻结操作与参数</summary>
+     <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-all">{JSON.stringify(step.action,null,2)}</pre>
+    </details>
+    <div className="mt-1 flex gap-3">
+     {step.status==="waiting_approval"?<>
+      <button type="button" className="canvas-assistant-link" disabled={busy||sending}
+       onClick={()=>void resumeCanvasStep(step,"approve")}>确认并执行此步骤</button>
+      <button type="button" className="canvas-assistant-link" disabled={busy||sending}
+       onClick={()=>void resumeCanvasStep(step,"reject")}>拒绝此步骤</button>
+     </>:<button type="button" className="canvas-assistant-link" disabled={busy||sending}
+      onClick={()=>void resumeCanvasStep(step)}>继续已批准步骤</button>}
+    </div>
+   </div>)}
   </div>:null}
 
    {selected?<div className="mt-1 text-[11px]" style={{color:"var(--assistant-muted)"}}>

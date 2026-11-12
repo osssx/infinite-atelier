@@ -183,8 +183,15 @@ export async function commitAssistantCanvasGraphWithSaveBarrier(
  try{
   const remote=await submit({expectedRevision:revision,document:frozen});
   if(remote.id!==projectId||!Number.isSafeInteger(remote.revision)||
-   remote.revision<=revision||!Array.isArray(remote.document.nodes)||
+   remote.revision<revision||!Array.isArray(remote.document.nodes)||
    !Array.isArray(remote.document.connections))throw Error("assistant_task_graph_response_invalid");
+  // Replaying an already committed Step is allowed only if this exact
+  // revision contains the graph already displayed. Never adopt a differing
+  // graph without the revision advancing.
+  if(remote.revision===revision&&canonicalBackendGraph({
+   nodes:remote.document.nodes as CanvasNodeData[],connections:remote.document.connections as CanvasConnection[]
+  })!==canonicalBackendGraph({nodes:project.nodes,connections:project.connections}))
+   throw Error("assistant_task_graph_response_invalid");
   if(dirty.has(projectId)){
    const conflict=Error("project_revision_conflict");
    lastErrors.set(projectId,conflict);

@@ -12,6 +12,7 @@ import type {AssistantContextResult,AssistantContextScope} from "./canvas-assist
 import {parseAssistantCanvasActions,isDangerousAssistantAction,dangerousAssistantActionSummary,type AssistantCanvasStage} from "./canvas-assistant-actions";
 import {buildCanvasAssistantTurns} from "./canvas-assistant-history";
 import {useCanvasAssistantTasks} from "./canvas-assistant-task-state";
+import {planAndExecuteAssistantCanvasActions} from "./canvas-assistant-task-execution";
 import {CanvasPromptChipInput} from "@/components/canvas/canvas-prompt-chip-input";
 import {canvasResourceReferenceToken,type CanvasResourceReference} from "@/lib/canvas/canvas-resource-references";
 import {collectAssistantImageMentions} from "./canvas-assistant-visual-mentions";
@@ -34,6 +35,7 @@ type Props={
  sessions:CanvasAssistantSession[];setSessions:Dispatch<SetStateAction<CanvasAssistantSession[]>>;
  activeChatId:string|null;setActiveChatId:Dispatch<SetStateAction<string|null>>;
    selectedNodes:Choice[];getContext:(ids:string[],scope:AssistantContextScope)=>AssistantContextResult;
+   getCanvasCenter?:()=>{x:number;y:number};
    getResourceReferences?:()=>CanvasResourceReference[];
    getWorkflowTemplates:(ids:string[],signal:AbortSignal)=>Promise<{context:string;templates:Map<string,ComfyWorkflowTemplate>}>;
    onApplyActions:(actions:unknown,stage:AssistantCanvasStage,refs?:ReadonlyMap<string,string>,workflowTemplates?:ReadonlyMap<string,ComfyWorkflowTemplate>)=>{applied:number;refs:Map<string,string>};
@@ -201,7 +203,7 @@ function completedSkillRunId(message:CanvasAssistantMessage):string|null{
  return message.text.match(/运行 ID：([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i)?.[1]??null;
 }
 /** UI messages update only on send/terminal, not on every canvas pointer event. */
-export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessions,setSessions,activeChatId,setActiveChatId,selectedNodes,getContext,getResourceReferences,getWorkflowTemplates,onApplyActions,onRunActions,config}:Props){
+export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessions,setSessions,activeChatId,setActiveChatId,selectedNodes,getContext,getResourceReferences,getWorkflowTemplates,onApplyActions,onRunActions,getCanvasCenter,config}:Props){
   const themeName=useThemeStore(state=>state.theme);
   const theme=canvasThemes[themeName];
   const [draft,setDraft]=useState(""); const [modelRef,setModelRef]=useState(config.textModel);
@@ -356,7 +358,7 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
     // This fallback works on immutable server-produced text artifacts only;
     // it does not invent or compile Skill-specific output.
     const deliverCompletedTextArtifacts=(reason:string):boolean=>{
-     if(!latestCompletedRun||controller.signal.aborted)return false;
+     if(!latestCompletedRun||controller.signal.aborted||linkedTaskId)return false;
      const proposals=createSkillTextArtifactActions(latestCompletedRun);
      if(!proposals.length)return false;
      const actions=parseAssistantCanvasActions(proposals);
@@ -370,6 +372,7 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
      return true;
     };
     while(response.skillScriptProposal){
+     if(linkedTaskId)throw Error("已关联 Task 的 Skill 脚本需要 P2 可靠执行链路；本轮不会直接运行脚本。请取消 Task 关联后使用普通脚本功能，或等待 P2。");
      if(++scriptSteps>4)throw Error("单轮助手最多支持 4 次已确认的 Skill 脚本执行，请分轮继续。");
      const proposal=response.skillScriptProposal;
      if(selectedSkills&&response.appliedSkillIds?.length){
@@ -432,6 +435,18 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
        const actions=parseAssistantCanvasActions(response.actions??[]);
        if(!actions.length)notes.push("本轮没有执行任何画布操作，画布保持不变。");
        if(actions.length){
+        if(linkedTaskId){
+         const result=await planAndExecuteAssistantCanvasActions({
+          projectId,taskId:linkedTaskId,messageId:user.id,actions,
+          center:getCanvasCenter?.()??{x:0,y:0},signal:controller.signal,
+          confirm:async()=>confirmDangerousActions(
+           "Task 将持久提交 "+actions.length+" 项画布操作，审批绑定冻结摘要。请核对：\n"+
+           JSON.stringify(actions,null,2).slice(0,3200)+
+           (JSON.stringify(actions).length>3200?"\n[较长操作内容已截断，请在 Task 步骤详情中检查完整操作]":""),
+           controller.signal,themeName)
+         });
+         notes.push("Task 画布事务已提交 "+result.applied+" 项操作；修订版本 "+result.revision+"；步骤 "+result.stepId+"。");
+        }else{
         const templates=new Map(workflowInfo.templates);
          const workflowTargetIds=actions.flatMap(action=>
           action.type==="set_workflow_param"||action.type==="disconnect_workflow_port"?[action.nodeId]:
@@ -465,6 +480,7 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
            " 项生成任务（任务 ID："+result.jobIds.join("、")+"）。可在节点或任务历史查看进度并停止。");
          }
         }
+        }
        }
      }catch(operationError){
        if(controller.signal.aborted)throw operationError;
@@ -485,7 +501,7 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
    if(controllerRef.current===controller)controllerRef.current=null;
    setSending(false);
   }
-  },[draft,chosenModel,config,includeContext,getContext,includedIds,effectiveScope,session,setSessions,setActiveChatId,projectId,onApplyActions,onRunActions,getWorkflowTemplates,themeName,resourceReferences,taskTracker]);
+  },[draft,chosenModel,config,includeContext,getContext,includedIds,effectiveScope,session,setSessions,setActiveChatId,projectId,onApplyActions,onRunActions,getWorkflowTemplates,themeName,resourceReferences,taskTracker,getCanvasCenter]);
   const restoreSkillRun=async(runId:string)=>{
    if(sending||restoringSkillRun)return;
    setRestoringSkillRun(runId);
@@ -498,6 +514,7 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
      throw Error("运行记录已失效、未完成或不属于当前项目。");
     const actions=createSkillTextArtifactActions(stored.result);
     if(!actions.length)throw Error("此运行没有可恢复的完整文本产物，请查看原始运行记录。");
+    if(taskTracker.activeTaskId)throw Error("当前已关联 Task，Skill 产物可靠落图将在 P2 接入；不能绕过 Task 执行账本。");
     const parsed=parseAssistantCanvasActions(actions);
     const result=onApplyActions(parsed,"safe");
     if(result.applied!==parsed.length)throw Error("部分产物未能写入画布，请检查节点状态。");

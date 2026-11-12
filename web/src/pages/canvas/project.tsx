@@ -3814,7 +3814,7 @@ function AtelierCanvasPage() {
                     onClose={()=>setAssistantOpen(false)} sessions={chatSessions} setSessions={setChatSessions}
                     activeChatId={activeChatId} setActiveChatId={setActiveChatId}
                     selectedNodes={assistantSelectedNodes} getContext={getAssistantContext} getResourceReferences={getAssistantResourceReferences}
-                    getWorkflowTemplates={getAssistantWorkflowTemplates}
+                    getWorkflowTemplates={getAssistantWorkflowTemplates} getCanvasCenter={getCanvasCenter}
                     onApplyActions={applyAssistantGraphActions} onRunActions={executeAssistantNodeActions} config={effectiveConfig}/>                </Suspense> : null}
 
                 <CanvasJobHistory projectId={projectId} open={jobHistoryOpen}

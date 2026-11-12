@@ -25,6 +25,7 @@ import {createComfyInstanceRegistry} from "./comfy-instances.mjs";
 import {createOpenAiModelAdapter} from "./openai-model-adapter.mjs";
 import {createAssistantChatService} from "./assistant-chat.mjs";
 import {recoverAssistantModelCallsAtStartup} from "./assistant-model-calls.mjs";
+import {recoverAssistantCanvasTasksAtStartup} from "./assistant-task-canvas-executor.mjs";
 import {createOpenAiVideoAdapter} from "./openai-video-adapter.mjs";
 import {createGeminiModelAdapter} from "./gemini-model-adapter.mjs";
 import {createRestrictedVideoAdapter} from "./restricted-video-adapter.mjs";
@@ -61,6 +62,7 @@ export function createLocalBackend({dataDir,streamPollMs=200,adapters,comfyInsta
   datasetGuard=acquireDatasetGuard(root,{activationRoot});
   db=openMainDatabase(root);
   recoverAssistantModelCallsAtStartup(db);
+  recoverAssistantCanvasTasksAtStartup(db);
   const skillRegistry=createFileSkillRegistry({skillsDir:skillsDir??resolveSkillsDir()});
   bindFileSkillRegistry(db,skillRegistry);
   const comfyWorkflowDir=join(root,"workflows");

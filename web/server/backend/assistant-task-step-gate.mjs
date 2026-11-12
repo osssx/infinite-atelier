@@ -99,6 +99,28 @@ export function prepareAssistantTaskStep(db,{projectId,taskId,stepId,expectedPla
    status:requiresApproval?"waiting_approval":"ready",executionStarted:false};
  });
 }
+/** Block downstream Steps whose required predecessor cannot succeed.
+ * Caller owns the surrounding SQLite write transaction.
+ */
+export function blockUnreachableAssistantTaskStepsWithinTransaction(db,taskId,planVersion){
+ let count=0,changed=true;
+ while(changed){
+  changed=false;
+  const steps=db.prepare("SELECT id,status,depends_on_json FROM assistant_task_steps WHERE task_id=? AND plan_version=? AND superseded_at IS NULL")
+   .all(taskId,planVersion);
+  const states=new Map(steps.map(row=>[row.id,row.status]));
+  for(const step of steps){
+   if(!["pending","ready","waiting_approval"].includes(step.status))continue;
+   const deps=JSON.parse(step.depends_on_json);
+   if(!deps.some(dep=>["blocked","failed","skipped","needs_reconcile"].includes(states.get(dep))))continue;
+   db.prepare("UPDATE assistant_task_steps SET status='blocked',error_code='assistant_step_dependency_unverified',updated_at=? WHERE id=?")
+    .run(stamp(),step.id);
+   log(db,taskId,step.id,"step_dependency_blocked",{planVersion});
+   changed=true;count++;
+  }
+ }
+ return count;
+}
 /** Public user decision: requestId is replay-safe and the server checks the
  * persisted frozen action, plan, graph fence and decision on every fresh vote.
  */
@@ -143,6 +165,14 @@ export function decideAssistantTaskStep(db,{projectId,taskId,stepId,requestId,
    if(updated.changes!==1)throw fail("assistant_step_state_conflict");
    log(db,taskId,stepId,decision==="approve"?"step_approved":"step_rejected",
     {planVersion:expectedPlanVersion,actionDigest,decision:choice});
+   if(decision==="reject"){
+    blockUnreachableAssistantTaskStepsWithinTransaction(db,taskId,expectedPlanVersion);
+    db.prepare("UPDATE assistant_tasks SET status='blocked',updated_at=? WHERE id=?")
+     .run(decidedAt,taskId);
+   }else{
+    db.prepare("UPDATE assistant_tasks SET status='ready',updated_at=? WHERE id=?")
+     .run(decidedAt,taskId);
+   }
    response={stepId,decision:choice,planVersion:expectedPlanVersion,actionDigest,
     approvedAt:decidedAt,status:next,executionStarted:false};
   }

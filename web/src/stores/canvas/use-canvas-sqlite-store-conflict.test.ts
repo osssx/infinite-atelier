@@ -99,4 +99,23 @@ describe("P1a browser autosave conflict safety",()=>{
   expect(useCanvasStore.getState().openProject(id)?.nodes.map(node=>node.id)).toEqual(["local-during"]);
   await expect(useCanvasStore.getState().loadProject(id)).rejects.toThrow("project_unsaved_local_edits");
  });
+ it("replays an identical Step graph at the same revision without overwriting divergent snapshots",async()=>{
+  const remote:{id:string;revision:number;document:{title:string;nodes:{id:string;type:string;title:string}[];connections:unknown[]}}={
+   id:"",revision:1,document:{title:"回执重放",nodes:[],connections:[]}};
+  mock.api.mockImplementation(async(_path:string,method="GET",payload?:{id?:string;document?:typeof remote.document})=>{
+   if(method==="POST"){remote.id=payload!.id!;remote.document=payload!.document!;return {...remote};}
+   throw Error("unexpected autosave");
+  });
+  const id=await useCanvasStore.getState().createProject("回执重放");
+  const first=await commitAssistantCanvasGraphWithSaveBarrier(id,async()=>({
+   ...remote,revision:2,document:{...remote.document,nodes:[{id:"committed",type:"text",title:"已提交"}]}
+  }));
+  expect(first.revision).toBe(2);
+  const replay=await commitAssistantCanvasGraphWithSaveBarrier(id,async()=>({...first}));
+  expect(replay.revision).toBe(2);
+  await expect(commitAssistantCanvasGraphWithSaveBarrier(id,async()=>({
+   ...first,document:{...first.document,nodes:[]}
+  }))).rejects.toThrow("assistant_task_graph_response_invalid");
+  expect(useCanvasStore.getState().openProject(id)?.nodes.map(node=>node.id)).toEqual(["committed"]);
+ });
 });

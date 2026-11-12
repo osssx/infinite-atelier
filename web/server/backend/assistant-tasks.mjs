@@ -33,13 +33,17 @@ function view(row){
 const stepView=row=>({id:row.id,taskId:row.task_id,planVersion:row.plan_version,
  ordinal:row.ordinal,kind:row.kind,status:row.status,required:!!row.required,
  dependsOn:JSON.parse(row.depends_on_json),actionDigest:row.action_digest,
- receiptTrust:row.receipt_trust,result:JSON.parse(row.result_json),errorCode:row.error_code});
+ receiptTrust:row.receipt_trust,result:JSON.parse(row.result_json),errorCode:row.error_code,
+ action:row.kind==="canvas_mutation"?JSON.parse(row.action_json):undefined,
+ approvalDecision:JSON.parse(row.approval_json).decision??null});
 function snapshot(db,projectId,taskId){
  const row=mustTask(db,projectId,taskId);
  const steps=db.prepare("SELECT * FROM assistant_task_steps WHERE task_id=? ORDER BY plan_version,ordinal").all(taskId).map(stepView);
  const lastSeq=db.prepare("SELECT COALESCE(MAX(seq),0) AS n FROM assistant_task_events WHERE task_id=?").get(taskId).n;
  const last=db.prepare("SELECT kind,payload_json FROM assistant_task_events WHERE task_id=? AND kind IN ('client_reported_error','client_reported_reply') ORDER BY seq DESC LIMIT 1").get(taskId);
- return {...view(row),steps,lastSeq,lastError:last?.kind==="client_reported_error"?JSON.parse(last.payload_json).preview:null};
+ return {...view(row),recoveryMode:steps.some(step=>step.kind==="canvas_mutation"&&
+  Array.isArray(step.action?.actions))?"canvas_atomic":"guidance_only",
+  steps,lastSeq,lastError:last?.kind==="client_reported_error"?JSON.parse(last.payload_json).preview:null};
 }
 function event(db,taskId,kind,payload,stepId=null,at=Date.now()){
  db.prepare("INSERT INTO assistant_task_events(task_id,step_id,kind,payload_json,created_at) VALUES(?,?,?,?,?)")
@@ -151,12 +155,28 @@ export function guideAssistantTaskResume(db,{projectId,taskId,requestId}){
 export function cancelAssistantTask(db,{projectId,taskId,requestId}){
  return command(db,{projectId,requestId,kind:"cancel",payload:{taskId}},()=>{
   const row=mustTask(db,projectId,taskId);
-  if(row.read_only)throw fail("assistant_task_not_editable",409);
+  if(row.read_only||row.status==="completed")throw fail("assistant_task_not_editable",409);
   if(!row.cancel_requested_at){
    const at=Date.now();
-   db.prepare("UPDATE assistant_tasks SET cancel_requested_at=?,status='cancelled',updated_at=?,finished_at=? WHERE id=?")
-    .run(at,at,at,taskId);
-   event(db,taskId,"task_cancelled",{executionStarted:false},null,at);
+   let unknown=false,activeStepId=row.active_step_id;
+   if(activeStepId){
+    const step=db.prepare("SELECT * FROM assistant_task_steps WHERE id=? AND task_id=?").get(activeStepId,taskId);
+    const attempt=step&&db.prepare("SELECT * FROM assistant_task_attempts WHERE step_id=? ORDER BY attempt_no DESC LIMIT 1")
+     .get(step.id);
+    if(step&&attempt&&attempt.status==="prepared"&&attempt.submit_marker===null&&attempt.submitted_at===null){
+     db.prepare("UPDATE assistant_task_attempts SET status='cancelled_pre_submit',finished_at=? WHERE id=?").run(at,attempt.id);
+     db.prepare("UPDATE assistant_task_steps SET status='blocked',error_code='assistant_task_cancelled',lease_owner=NULL,lease_expires_at=NULL,updated_at=? WHERE id=?")
+      .run(at,step.id);
+     event(db,taskId,"step_cancelled_pre_submit",{attemptId:attempt.id},step.id,at);
+     activeStepId=null;
+    }else unknown=true;
+   }
+   db.prepare("UPDATE assistant_task_steps SET status='blocked',error_code='assistant_task_cancelled',updated_at=? WHERE task_id=? AND status IN ('pending','ready','waiting_approval')")
+    .run(at,taskId);
+   db.prepare("UPDATE assistant_tasks SET cancel_requested_at=?,status=?,active_step_id=?,updated_at=?,finished_at=? WHERE id=?")
+    .run(at,unknown?"cancelling":"cancelled",activeStepId,at,unknown?null:at,taskId);
+   event(db,taskId,unknown?"task_cancelling":"task_cancelled",
+    {executionStarted:false,unknownAttempt:unknown},null,at);
   }
   return {task:snapshot(db,projectId,taskId),executionStarted:false};
  });

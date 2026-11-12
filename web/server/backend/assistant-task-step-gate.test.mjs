@@ -179,8 +179,8 @@ test("P1a a prepared claimant loses authority after graph changes; old planner c
 test("P1a explicit refusal is durable and cannot be overwritten by an approval request",async t=>{
  const fx=await setup(t),step=seed(fx);freeze(fx,step);
  assert.equal(approve(fx,step,"reject-it","reject").status,"blocked");
- assert.throws(()=>claim(fx,step),{code:"assistant_step_already_claimed"});
- assert.throws(()=>approve(fx,step,"later-approval","approve"),{code:"assistant_step_approval_conflict"});
+ assert.throws(()=>claim(fx,step),{code:"assistant_task_not_editable"});
+ assert.throws(()=>approve(fx,step,"later-approval","approve"),{code:"assistant_task_not_editable"});
  assert.equal(fx.db.prepare("SELECT COUNT(*) AS n FROM assistant_task_attempts").get().n,0);
 });
 

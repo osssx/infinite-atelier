@@ -1,7 +1,7 @@
 # Infinite Atelier AI 助手 — 持久化任务状态（Task State）设计
 
 > 设计版本：v2（2026-11-12，已合入 [审核结论](./assistant-task-state-design-review.md) R1–R10）  
-> 状态：**P0a、P0b 与 P1a 安全门槛已实施；P1b–P3 尚未实施**。适用现有单机、单用户、SQLite 后端。项目已有的聊天、画布、生成 Job、ComfyUI、Skill 和 CAS 机制继续复用；不引入分布式工作流平台。
+> 状态：**P0a、P0b、P1a 已实施；P1b 本地画布事务与恢复路径已实施（明确限制支持的动作类型）；P2–P3 尚未实施**。适用现有单机、单用户、SQLite 后端。项目已有的聊天、画布、生成 Job、ComfyUI、Skill 和 CAS 机制继续复用；不引入分布式工作流平台。
 
 ## 0. 设计决策与交付边界
 
@@ -320,6 +320,16 @@ Step `status`：`pending | ready | waiting_approval | submitting | running | wai
 - **R2/R3：仅后端可调用的 `claimAssistantTaskStep`。** `BEGIN IMMEDIATE` 中检查计划版本、依赖的 `server_committed` 回执、审批、图版本、无取消/只读及空闲租约；条件更新成功后持久写入冻结 Attempt（含 `executionKey`、`requestFingerprint`、`frozenSnapshot`、`leaseOwner`）。同 Task 只能领取一个 Step；租约过期、冻结图改变、计划修订和无效持有者不具有后续写回资格。`releaseUnsubmittedAssistantTaskClaim` 只允许持有实时租约、尚无提交标记的 Prepared Attempt 释放；计划修订也只自动释放**未跨提交屏障**的旧占位，已经提交或不明的保留待后续对账。
 - **执行范围限制：** P1a 只允许内部预留 `canvas_mutation` 类型 Step；`skill_script`、`model_job` 和 `comfy_workflow` 不能通过该领取路径开始执行。没有 HTTP claim、执行、标记 succeeded 入口，也没有在 P1a 将 Step 和图改动原子提交。`executionStarted=false` 不代表动作已执行。Task UI 的 resume 仍是指导性恢复；实际图执行器/原子回执和取消后续状态闭合属于 **P1b**，外部 Job/Skill/Comfy 同一执行身份恢复属于 **P2**。
 - **验证：** 覆盖旧 PATCH、取消后的迟到保存、非 Task 兼容、客户端 dirty 草稿保留、屏障先排空旧 PATCH 与新编辑期间不误覆盖、冻结 refs、未批准领取、批准后改图/改参数、同 key 审批重放、显式拒绝、并发领取、租约过期、旧计划失效、依赖 `client_reported` 不可满足、不同执行类型禁止提前调用等故障点。
+
+
+### P1b 本地画布事务与恢复落地（2026-11-12）
+
+- **原子图执行**：新增 `assistant-task-canvas-graph.mjs`、`assistant-task-canvas-executor.mjs`。先冻结动作、项目版本、图指纹、稳定 Node/Edge refs，复用 P1a 的租约/审批；同一 SQLite 事务提交项目图、revision、`project_events`、Step `server_committed` 可信回执、Attempt 结果和 Task Event。模拟回执写入前崩溃会整体回滚；重复调用只读取旧回执，不产生第二批节点或外部 Job。
+- **API 与权限**：`POST /api/v1/projects/:id/assistant/tasks/:taskId/canvas-steps` 持久化并预验证操作；`POST .../:taskId/steps/:stepId/execute` 只接收身份和动作摘要，后端从冻结记录执行；用户审批绑定 planVersion/actionDigest。过期图或旧计划 409，未批准不得执行，旧浏览器 PATCH 继续受 P1a CAS 保护。
+- **前端保存与恢复**：Task 关联的 AI 画布动作改为保存屏障→冻结步骤→明确审批→后端事务→权威图同步；普通聊天保留原浏览器行为。Task 面板显示待批准和已批准但未执行的冻结步骤，刷新后可核对并继续；相同 revision 同图的已提交重放是只读结果，不能用同 revision 异图覆盖本地草稿。
+- **依赖与取消**：拒绝后阻断 Task 和依赖后继；取消在未提交时撤销 Prepared Attempt，未知提交时保留证据与 `cancelling` 状态。`runtime.mjs` 在独占实例锁后运行 `recoverAssistantCanvasTasksAtStartup`，只释放尚未提交的本地 Attempt；未知提交须对账、绝不重跑。跨步骤引用只能读取 `server_committed` 的前驱回执；`client_reported` 不能冒充完成。
+- **当前限制**：只支持创建内置文本/图像/视频/音频/配置/导演节点、普通连线，修改文本/标题/提示词以及删除文本节点或连线，均需明确确认。复杂组与布局、Comfy 端口绑定、Skill 文本落图、`run_node` / `run_workflow` / GPU/外部脚本与 Job 不经此路径执行，也不会偷偷退回旧浏览器路径。Task 下的 Skill 脚本提案先阻断，等待 P2；普通非 Task 功能仍可用。
+- **验收范围**：HTTP plan/approve/execute/replay、事务中途失败、重复 Step、后续稳定 refs、取消与 unknown、重启 Prepared 对账、保存屏障及前端恢复动作均有自动化测试。无真实上游/Comfy 的 exactly-once 声明；P2 的 Job/Materialize/CAS/Skill 生命周期仍未开始。
 
 ## 13. 故障注入与验收清单（R1–R10）
 

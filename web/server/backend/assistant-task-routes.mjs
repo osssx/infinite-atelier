@@ -2,6 +2,7 @@ import {createAssistantTask,listAssistantTasks,getAssistantTask,appendAssistantT
  observeAssistantTask,guideAssistantTaskResume,cancelAssistantTask,listAssistantTaskEvents} from "./assistant-tasks.mjs";
 import {listAssistantModelCalls} from "./assistant-model-calls.mjs";
 import {decideAssistantTaskStep} from "./assistant-task-step-gate.mjs";
+import {planAssistantCanvasStep,executeAssistantCanvasStep} from "./assistant-task-canvas-executor.mjs";
 
 const id={type:"string",pattern:"^[A-Za-z0-9_-]{1,128}$"};
 const policy={type:"object",additionalProperties:false,required:["includeContext","scope","includedIds"],
@@ -27,7 +28,20 @@ const observationBody={type:"object",required:["requestId","kind","preview"],add
  properties:{requestId:id,kind:{type:"string",enum:["reply","error"]},
  preview:{type:"string",minLength:1,maxLength:1800}}};
 
-/** P0a is guidance-only; no route can execute, approve, or claim a completed step. */
+const canvasStepBody={type:"object",additionalProperties:false,
+ required:["requestId","expectedPlanVersion","expectedProjectRevision","actions","center"],
+ properties:{requestId:id,expectedPlanVersion:{type:"integer",minimum:1},
+  expectedProjectRevision:{type:"integer",minimum:1},
+  actions:{type:"array",minItems:1,maxItems:16,items:{type:"object"}},
+  center:{type:"object",additionalProperties:false,required:["x","y"],properties:{
+   x:{type:"number",minimum:-1000000,maximum:1000000},y:{type:"number",minimum:-1000000,maximum:1000000}}},
+  dependsOn:{type:"array",maxItems:20,uniqueItems:true,items:id},finalizeTask:{type:"boolean"}}};
+const executeBody={type:"object",additionalProperties:false,
+ required:["requestId","expectedPlanVersion","actionDigest"],properties:{
+  requestId:id,expectedPlanVersion:{type:"integer",minimum:1},
+  actionDigest:{type:"string",pattern:"^[a-f0-9]{64}$"}}};
+
+/** P1b: canvas mutation is backend-executed; external Skill/Comfy remain blocked. */
 export function registerAssistantTaskRoutes(app,db){
  const result=(reply,value)=>{reply.header("Cache-Control","no-store");return value};
  app.post(base,{schema:{params:projectParams,body:taskPostBody}},(req,reply)=>{
@@ -47,12 +61,16 @@ export function registerAssistantTaskRoutes(app,db){
   guideAssistantTaskResume(db,{projectId:req.params.id,taskId:req.params.taskId,...req.body})));
  app.post(base+"/:taskId/cancel",{schema:{params:taskParams,body:requestBody}},(req,reply)=>result(reply,
   cancelAssistantTask(db,{projectId:req.params.id,taskId:req.params.taskId,...req.body})));
- // P1a approval is tied to a frozen Step, plan version and action digest.
- // There is intentionally NO HTTP Step claim, execute or succeeded endpoint yet.
+ app.post(base+"/:taskId/canvas-steps",{schema:{params:taskParams,body:canvasStepBody}},(req,reply)=>result(reply,
+  planAssistantCanvasStep(db,{projectId:req.params.id,taskId:req.params.taskId,...req.body})));
+ // Approval binds the frozen Step; execute never accepts new action JSON.
  app.post(base+"/:taskId/steps/:stepId/approval",
   {schema:{params:stepParams,body:decisionBody}},(req,reply)=>result(reply,
    decideAssistantTaskStep(db,{projectId:req.params.id,taskId:req.params.taskId,
     stepId:req.params.stepId,...req.body})));
+ app.post(base+"/:taskId/steps/:stepId/execute",{schema:{params:stepParams,body:executeBody}},(req,reply)=>result(reply,
+  executeAssistantCanvasStep(db,{projectId:req.params.id,taskId:req.params.taskId,
+   stepId:req.params.stepId,...req.body})));
  app.get(base+"/:taskId/model-calls",{schema:{params:taskParams}},(req,reply)=>result(reply,
   listAssistantModelCalls(db,{projectId:req.params.id,taskId:req.params.taskId,
    limit:Number(req.query?.limit??100)})));

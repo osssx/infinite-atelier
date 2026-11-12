@@ -51,7 +51,7 @@ function makeGraph():AssistantCanvasGraph{
  return {nodes:[{id:"text-existing",type:CanvasNodeType.Text,title:"现有文本",
   position:{x:0,y:0},width:320,height:220,metadata:{content:originalContent}} satisfies CanvasNodeData],connections:[]};
 }
-function setup(actions:unknown[],resources:CanvasResourceReference[]=[]){
+function setup(actions:unknown[],resources:CanvasResourceReference[]=[],history:CanvasAssistantSession[]=[]){
  let graph=makeGraph();
  const apply=vi.fn((items:unknown,stage:AssistantCanvasStage,refs?:ReadonlyMap<string,string>)=>{
   const result=applyAssistantCanvasActions(graph,items,stage,{x:400,y:300},refs);
@@ -61,8 +61,8 @@ function setup(actions:unknown[],resources:CanvasResourceReference[]=[]){
  const result={answer:"提出操作",model:"demo",actions};
  mocks.api.mockResolvedValue(result);
  function Harness(){
-  const [sessions,setSessions]=useState<CanvasAssistantSession[]>([]);
-  const [active,setActive]=useState<string|null>(null);
+  const [sessions,setSessions]=useState<CanvasAssistantSession[]>(history);
+  const [active,setActive]=useState<string|null>(history[0]?.id??null);
   return createElement(CanvasAssistantPanel,{
    projectId:"p1",projectTitle:"测试画布",open:true,onClose:()=>{},
    sessions,setSessions,activeChatId:active,setActiveChatId:setActive,
@@ -616,6 +616,192 @@ describe("P2 assistant confirmation boundary",()=>{
   expect(container!.textContent).toContain("Skill 列表或版本已发生变化");
  });
 
+ it("restores a historical completed run's real text output from the audit API without rerunning the script",async()=>{
+  const runId="01182680-43a8-428a-b373-189668e7bf4a";
+  const prompt='{"caption":"夜市肖像","visible_text":"你好"}';
+  const history:CanvasAssistantSession[]=[{
+   id:"chat-old",title:"历史 Skill 执行",createdAt:"2026-11-12",updatedAt:"2026-11-12",
+   messages:[{id:"run-message",role:"assistant",meta:"Skill 脚本运行记录",
+    text:"Skill 脚本已执行完成（运行 ID："+runId+"；状态：completed）。已保存产物：outputs/prompt.txt。"}]
+  }];
+  const fixture=setup([],[],history);
+  mocks.api.mockImplementation(async(url:string,method:string)=>{
+   if(url==="/api/v1/skills/runs/"+runId&&method==="GET")return {
+    id:runId,project_id:"p1",status:"completed",result:{
+     status:"completed",exit_code:0,artifacts:[{
+      path:"outputs/prompt.txt",mime:"text/plain",content:prompt,
+      byte_length:new TextEncoder().encode(prompt).length,blob_id:"a".repeat(64)
+     }]
+    }
+   };
+   throw Error("Unexpected endpoint: "+url);
+  });
+  await act(async()=>{root!.render(createElement(fixture.Harness));});
+  const restore=container!.querySelector<HTMLButtonElement>('[aria-label="恢复 Skill 脚本产物"]');
+  expect(restore).toBeTruthy();
+  await act(async()=>{restore!.click();await Promise.resolve();});
+  expect(fixture.getGraph().nodes.find(node=>node.title.includes("prompt.txt"))?.metadata?.content).toBe(prompt);
+  expect(container!.textContent).toContain("无需重新执行 Skill 脚本");
+  expect(mocks.api.mock.calls.every(call=>call[0]!=="/api/v1/skills/execute")).toBe(true);
+ });
+
+ it("rejects restoring historical Skill output from another project",async()=>{
+  const runId="01182680-43a8-428a-b373-189668e7bf4a";
+  const history:CanvasAssistantSession[]=[{
+   id:"chat-old",title:"历史 Skill 执行",createdAt:"2026-11-12",updatedAt:"2026-11-12",
+   messages:[{id:"run-message",role:"assistant",meta:"Skill 脚本运行记录",
+    text:"Skill 脚本已执行完成（运行 ID："+runId+"；状态：completed）。"}]
+  }];
+  const fixture=setup([],[],history);
+  mocks.api.mockResolvedValue({id:runId,project_id:"other",status:"completed",result:{
+   status:"completed",exit_code:0,artifacts:[{path:"final.txt",mime:"text/plain",content:"private"}]
+  }});
+  await act(async()=>{root!.render(createElement(fixture.Harness));});
+  await act(async()=>{container!.querySelector<HTMLButtonElement>('[aria-label="恢复 Skill 脚本产物"]')!.click();await Promise.resolve();});
+  expect(fixture.getGraph().nodes).toHaveLength(1);
+  expect(container!.textContent).toContain("不属于当前项目");
+ });
+ it("recovers real text artifacts into canvas when post-script model reports an incomplete Skill flow",async()=>{
+  const fixture=setup([]);
+  const prompt='{"summary":{"caption":"夜市红灯笼"},"items":[{"label":"object","text":"你好"}]}';
+  const proposal={skill_id:"generic-kit",version:"abcdef123456",
+   script_path:"scripts/build.py",args:["draft.json","--output","outputs/prompt.txt"],
+   input_files:{"draft.json":"{}"},output_files:["outputs/prompt.txt"]};
+  let chats=0;
+  mocks.api.mockImplementation(async(url:string)=>{
+   if(String(url).includes("/assistant/chat")){
+    if(++chats===1)return {answer:"等待用户确认",model:"demo",actions:[],
+      skillScriptProposal:proposal,appliedSkillIds:["generic-kit"]};
+    throw new CanvasApiError("assistant_skill_execution_incomplete",502);
+   }
+   if(url==="/api/v1/skills/execute")return {run_id:"01182680-recovered",
+    status:"completed",exit_code:0,
+    artifacts:[{path:"outputs/prompt.txt",mime:"text/plain",
+     content:prompt,byte_length:new TextEncoder().encode(prompt).length,
+     blob_id:"a".repeat(64)}]};
+   throw Error("Unexpected request: "+url);
+  });
+  await renderAndSend(fixture.Harness);
+  expect(fixture.getGraph().nodes).toHaveLength(1);
+  await act(async()=>{mocks.confirm.mock.calls[0][0].onOk();await Promise.resolve();});
+  expect(chats).toBe(2);
+  const created=fixture.getGraph().nodes.find(node=>node.title.includes("prompt.txt"));
+  expect(created?.metadata?.content).toBe(prompt);
+  expect(container!.textContent).toContain("01182680-recovered");
+  expect(container!.textContent).toContain("真实文本产物写入画布");
+ });
+
+ it("completed Skill text output is materialized if model returns no canvas actions",async()=>{
+  const fixture=setup([]);
+  const proposal={skill_id:"toolkit",version:"abcdef123456",script_path:"scripts/format.js",
+   args:[],input_files:{},output_files:["outputs/final.txt"]};
+  let chats=0;
+  mocks.api.mockImplementation(async(url:string)=>{
+   if(String(url).includes("/assistant/chat")){
+    if(++chats===1)return {answer:"等待确认",model:"demo",actions:[],skillScriptProposal:proposal};
+    return {answer:"脚本已经完成，结果可使用",model:"demo",actions:[]};
+   }
+   if(url==="/api/v1/skills/execute")return {run_id:"success-output",status:"completed",
+    exit_code:0,artifacts:[{path:"outputs/final.txt",mime:"text/plain",
+     content:"the actual output",byte_length:17}]};
+   throw Error("Unexpected request");
+  });
+  await renderAndSend(fixture.Harness);
+  await act(async()=>{mocks.confirm.mock.calls[0][0].onOk();await Promise.resolve();});
+  expect(chats).toBe(2);
+  expect(fixture.getGraph().nodes.some(node=>node.metadata?.content==="the actual output")).toBe(true);
+ });
+
+ it("generic Skill uses actual compiled artifact text to create a canvas node",async()=>{
+  const fixture=setup([]);
+  const proposal={skill_id:"toolkit",version:"abcdef123456",script_path:"scripts/process.py",
+   args:["source.json","--output","result.txt"],input_files:{"source.json":'{"title":"测试"}'},output_files:["result.txt"]};
+  const compiled='{"payload":"已经生成的实际输出","script":"toolkit"}';
+  let turns=0;
+  mocks.api.mockImplementation(async(url:string,_method:string,body:Record<string,unknown>)=>{
+   if(String(url).includes("/assistant/chat")){
+    turns++;
+    if(turns===1)return {answer:"准备执行技能",model:"demo",actions:[],skillScriptProposal:proposal,
+     appliedSkillIds:["toolkit"]};
+    expect(JSON.stringify(body.messages)).toContain("已经生成的实际输出");
+    return {answer:"已根据输出创建文本节点",model:"demo",actions:[
+     {type:"create_node",ref:"complete",nodeType:"text",title:"最终结果",content:compiled}]};
+   }
+   if(url==="/api/v1/skills/execute")return {run_id:"run-toolkit",status:"completed",exit_code:0,
+    artifacts:[{path:"result.txt",content:compiled,mime:"text/plain",blob_id:"a".repeat(64)}]};
+   throw Error("unexpected");
+  });
+  await renderAndSend(fixture.Harness);
+  expect(fixture.getGraph().nodes).toHaveLength(1);
+  await act(async()=>{mocks.confirm.mock.calls[0][0].onOk();await Promise.resolve();});
+  expect(fixture.getGraph().nodes.find(node=>node.title==="最终结果")?.metadata?.content).toBe(compiled);
+  expect(turns).toBe(2);
+  expect(container!.textContent).toContain("run-toolkit");
+ });
+
+ it("a generic Skill can recover a failed script using a second explicitly approved proposal",async()=>{
+  const fixture=setup([]);
+  const first={skill_id:"toolkit",version:"abcdef123456",script_path:"scripts/compile.py",
+   args:["source.json"],input_files:{"source.json":'{"type":"wrong"}'},output_files:["result.txt"]};
+  const corrected={...first,input_files:{"source.json":'{"type":"correct"}'}};
+  let chats=0,runs=0;
+  mocks.api.mockImplementation(async(url:string,_method:string,body:Record<string,unknown>)=>{
+   if(String(url).includes("/assistant/chat")){
+    chats++;
+    if(chats===1)return {answer:"请求执行",model:"demo",actions:[],skillScriptProposal:first,
+     appliedSkillIds:["toolkit"]};
+    if(chats===2){
+     expect(JSON.stringify(body.messages)).toContain("type must be correct");
+     return {answer:"依据脚本错误修正输入，等待再次批准",model:"demo",actions:[],
+      skillScriptProposal:corrected,appliedSkillIds:["toolkit"]};
+    }
+    expect(JSON.stringify(body.messages)).toContain("已生成真实产物");
+    return {answer:"脚本成功",model:"demo",actions:[
+     {type:"create_node",ref:"created",nodeType:"text",title:"真实结果",content:"已生成真实产物"}]};
+   }
+   if(url==="/api/v1/skills/execute"){
+    runs++;
+    return runs===1?{run_id:"fail-run",status:"failed",exit_code:2,stderr:"type must be correct",
+     artifacts:[]}:{run_id:"pass-run",status:"completed",exit_code:0,
+      artifacts:[{path:"result.txt",content:"已生成真实产物",mime:"text/plain",blob_id:"b".repeat(64)}]};
+   }
+   throw Error("unexpected");
+  });
+  await renderAndSend(fixture.Harness);
+  await act(async()=>{mocks.confirm.mock.calls[0][0].onOk();await Promise.resolve();});
+  expect(runs).toBe(1);
+  expect(fixture.getGraph().nodes).toHaveLength(1);
+  expect(container!.textContent).toContain("type must be correct");
+  expect(mocks.confirm).toHaveBeenCalledTimes(2);
+  await act(async()=>{mocks.confirm.mock.calls[1][0].onOk();await Promise.resolve();});
+  expect(runs).toBe(2);
+  expect(fixture.getGraph().nodes.find(node=>node.title==="真实结果")?.metadata?.content).toBe("已生成真实产物");
+  expect(container!.textContent).toContain("pass-run");
+ });
+
+ it("failed Skill execution never applies model-proposed draft-only actions",async()=>{
+  const fixture=setup([]);
+  let chats=0;
+  mocks.api.mockImplementation(async(url:string)=>{
+   if(String(url).includes("/assistant/chat")){
+    chats++;
+    return chats===1?{answer:"等待执行",model:"demo",actions:[],
+      skillScriptProposal:{skill_id:"toolkit",version:"abcdef123456",
+       script_path:"scripts/compile.py",args:[],input_files:{},output_files:[]}}:
+      {answer:"脚本没有成功",model:"demo",actions:[
+       {type:"create_node",ref:"draft",nodeType:"text",title:"错误的草稿",content:"草稿"}]};
+   }
+   if(url==="/api/v1/skills/execute")return {
+    run_id:"failed-123",status:"failed",exit_code:2,stderr:"label must be an allowed value"
+   };
+   throw Error("unexpected");
+  });
+  await renderAndSend(fixture.Harness);
+  await act(async()=>{mocks.confirm.mock.calls[0][0].onOk();await Promise.resolve();});
+  expect(fixture.getGraph().nodes).toHaveLength(1);
+  expect(container!.textContent).toContain("label must be an allowed value");
+  expect(container!.textContent).toContain("failed-123");
+ });
  it("assistant requires explicit confirmation before executing a model-proposed Skill script",async()=>{
   const fixture=setup([]);
   const proposal={skill_id:"story",version:"aaaaaaaaaaaa",script_path:"scripts/compile.js",
@@ -647,7 +833,7 @@ describe("P2 assistant confirmation boundary",()=>{
   expect(scriptRequests[0][2]).toEqual({project_id:"p1",...proposal});
   const chatRequests=mocks.api.mock.calls.filter(call=>String(call[0]).includes("/assistant/chat"));
   expect(chatRequests).toHaveLength(2);
-  expect(chatRequests[1][2].skillScriptProposalEnabled).toBe(false);
+  expect(chatRequests[1][2].skillScriptProposalEnabled).toBe(true);
   expect(chatRequests[1][2].messages[0].content).toContain("run-audit-123");
   expect(chatRequests[1][2].messages[0].content).toContain("生成成功");
   expect(fixture.getGraph().nodes).toHaveLength(2);
@@ -686,7 +872,7 @@ describe("P2 assistant confirmation boundary",()=>{
   expect(mocks.api.mock.calls.filter(call=>call[0]==="/api/v1/skills/execute")).toHaveLength(0);
   expect(mocks.api.mock.calls.filter(call=>String(call[0]).includes("/assistant/chat"))).toHaveLength(1);
   expect(fixture.apply).not.toHaveBeenCalled();
-  expect(container!.textContent).toContain("已取消 Skill 脚本执行");
+  expect(container!.textContent).toContain("已取消待执行的 Skill 脚本");
  });
  it("stopping while confirmation is open aborts without executing the script",async()=>{
   const fixture=setup([]);

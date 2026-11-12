@@ -10,7 +10,7 @@ const utf8=value=>Buffer.byteLength(value,"utf8");
  * canvas writes. All model tool calls are validated against the one request's
  * server-authorized, version-pinned catalog before execution.
  */
-export async function runAssistantSkillRounds({provider,initialBody,infer,readAnswer,authorizedEntries,signal,scriptProposalEnabled=true}){
+export async function runAssistantSkillRounds({provider,initialBody,infer,readAnswer,authorizedEntries,signal,scriptProposalEnabled=true,requireScriptProposal=false}){
  const toolSession=createAssistantSkillToolSession(authorizedEntries,{scriptProposalEnabled});
  const toolDefinitions=assistantSkillToolsFor(authorizedEntries,scriptProposalEnabled);
  const payload=JSON.parse(initialBody);
@@ -63,6 +63,8 @@ export async function runAssistantSkillRounds({provider,initialBody,infer,readAn
    reply=choice.message;
   }
   if(!calls.length){
+   // A repair request MUST not become a draft-only canvas plan.
+   if(requireScriptProposal)throw fail("assistant_skill_execution_incomplete",502);
    return {answer:readAnswer(data,provider),retryCount,
     skillToolCalls:toolSession.calls,skillResourceReads:toolSession.reads};
   }

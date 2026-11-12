@@ -1,10 +1,26 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {runSkillScript} from "./skill-script-runner.mjs";
+import {runSkillScript,resolveSkillInterpreterAlias} from "./skill-script-runner.mjs";
 
 const skill={skillId:"runner-test",version:"0123456789ab"};
 function store(){const blobs=new Map();return {blobs,async put(parts,{mimeType="application/octet-stream",mime}={}){const id=String(blobs.size+1).padStart(64,"0"),data=Buffer.concat(parts.map(Buffer.from));blobs.set(id,data);return {blobId:id,sha256:id,mimeType:mime??mimeType}},async stat(id){const data=blobs.get(id);return {sha256:id,byteSize:data.length}}}}
 const b64=text=>Buffer.from(text).toString("base64");
+
+test("normalizes Windows Store python3 alias without changing other runtimes or explicit configuration",()=>{
+ assert.equal(resolveSkillInterpreterAlias("python3",{platform:"win32",ext:".py",configured:"python"}),"python");
+ assert.equal(resolveSkillInterpreterAlias("python3",{platform:"linux",ext:".py",configured:"python"}),"python3");
+ assert.equal(resolveSkillInterpreterAlias("python3",{platform:"win32",ext:".py",configured:"C:/Tools/custom-python.exe"}),"python3");
+ assert.equal(resolveSkillInterpreterAlias("node",{platform:"win32",ext:".js",configured:"node"}),"node");
+});
+test("Windows user-requested python3 still launches installed Python instead of an App Execution Alias",{
+ skip:process.platform!=="win32"
+},async()=>{
+ const result=await runSkillScript({...skill,scriptPath:"scripts/run.py",
+  source:"print('python-alias-works')",runtime:"python3",blobStore:store()});
+ assert.equal(result.status,"completed");
+ assert.equal(result.exit_code,0);
+ assert.match(result.stdout,/python-alias-works/);
+});
 
 test("runs a frozen Node script with relative package files, inputs and stored outputs",async()=>{
  const blobStore=store();const packageFiles={"scripts/run.mjs":b64("import {readFile,writeFile} from 'node:fs/promises'; import {join} from 'node:path'; const x=await readFile(join('data','input.json'),'utf8'); await writeFile('prompt.txt','生成:'+JSON.parse(x).text); console.log('完成');"),"references/helper.txt":b64("reference")};
@@ -36,6 +52,23 @@ test("settles cancellation that arrives while the frozen package is being materi
  const pending=runSkillScript({...skill,scriptPath:"scripts/run.js",source:"process.exit(0)",packageFiles,blobStore:store(),signal:controller.signal});
  setImmediate(()=>controller.abort());
  await assert.rejects(pending,{code:"skill_script_cancelled"});
+});
+
+test("concurrent missing interpreters retain their original error instead of Windows ENOTEMPTY cleanup errors",async()=>{
+ const old=process.env.ATELIER_RUNTIME_MISSING_TEST;
+ process.env.ATELIER_RUNTIME_MISSING_TEST="Z:\\\\missing\\\\atelier-python.exe";
+ try{
+  const attempts=await Promise.allSettled(Array.from({length:6},()=>runSkillScript({
+   ...skill,scriptPath:"scripts/compile.missing_test",source:"",blobStore:store()
+  })));
+  for(const result of attempts){
+   assert.equal(result.status,"rejected");
+   assert.equal(result.reason?.code,"skill_script_interpreter_missing");
+  }
+ }finally{
+  if(old===undefined)delete process.env.ATELIER_RUNTIME_MISSING_TEST;
+  else process.env.ATELIER_RUNTIME_MISSING_TEST=old;
+ }
 });
 
 test("runs a locally configured custom runtime and reports a missing configured interpreter",async()=>{

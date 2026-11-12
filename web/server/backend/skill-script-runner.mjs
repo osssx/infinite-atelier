@@ -11,6 +11,15 @@ function safePath(value){
  if(typeof value!=="string"||!value||value.length>240||isAbsolute(value)||value.includes("\\")||/[\x00-\x1f\x7f<>:"|?*]/.test(value))return false;
  const parts=value.split("/");return parts.every(part=>part&&part!=="."&&part!==".."&&!/[. ]$/.test(part)&&!(/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i.test(part)))&&!parts.includes(".atelier");
 }
+/** Windows commonly resolves 'python3' to the WindowsApps Store alias, which
+ * exits 9009 without stderr, even when a working Python 3 is installed as
+ * 'python'. Only normalize this alias when 'python' is our configured default;
+ * explicit custom interpreter configuration continues to take precedence.
+ */
+export function resolveSkillInterpreterAlias(command,{platform=process.platform,ext,configured}={}){
+ return platform==="win32"&&ext===".py"&&command==="python3"&&configured==="python"?
+  "python":command;
+}
 function runtimeFor(ext,runtime){
  const definitions={".py":["python","python3"],".js":["node"],".mjs":["node"],".cjs":["node"],".ps1":["powershell","pwsh"],".sh":["bash","sh"]};
  let mappings={};try{mappings=JSON.parse(process.env.ATELIER_RUNTIMES_JSON||"{}")}catch{throw fail("skill_script_runtime_config_invalid")}
@@ -21,7 +30,7 @@ function runtimeFor(ext,runtime){
  if(requested&&typeof requested!=="string")throw fail("skill_script_runtime_invalid");
  const aliases=Array.isArray(mapping.aliases)?mapping.aliases:[];
  if(requested!==configured&&!definitions[ext]?.includes(requested)&&!aliases.includes(requested))throw fail("skill_script_runtime_mismatch");
- const executable=requested;
+ const executable=resolveSkillInterpreterAlias(requested,{ext,configured});
  const configuredArgs=process.env["ATELIER_RUNTIME_ARGS_"+ext.slice(1).toUpperCase()];
  let fixedArgs=Array.isArray(mapping.args)?mapping.args:[];
  if(configuredArgs){try{fixedArgs=JSON.parse(configuredArgs)}catch{throw fail("skill_script_runtime_config_invalid")}
@@ -120,9 +129,15 @@ export async function runSkillScript({skillId,version,scriptPath,source,packageF
     currentChild.stderr.on("error",error=>finish(fail("skill_script_output_failed",error.message)));
     currentChild.on("error",error=>{
      if(error.code==="ENOENT"&&command==="python"&&ext===".py"&&!retriedPython&&!terminationError&&!settled){retriedPython=true;start("python3");return;}
-     finish(fail("skill_script_interpreter_missing",error.message));
+     // A missing executable can fail before the log write streams open.
+     // Wait for both streams to finish before the temporary root is removed;
+     // otherwise Windows can throw ENOTEMPTY and hide the interpreter error.
+     Promise.all([
+      new Promise(resolve=>stdoutStream.end(resolve)),
+      new Promise(resolve=>stderrStream.end(resolve))
+     ]).then(()=>finish(fail("skill_script_interpreter_missing",error.message)),finish);
     });
-    currentChild.on("close",(code,signalName)=>{if(currentChild!==activeChild)return;onClose(code,signalName)});
+    currentChild.on("close",(code,signalName)=>{if(currentChild!==activeChild||settled)return;onClose(code,signalName)});
    };
    const onClose=async(code,signalName)=>{
     try{
@@ -149,5 +164,5 @@ export async function runSkillScript({skillId,version,scriptPath,source,packageF
    if(timeoutMs>0)timeout=setTimeout(()=>{terminationError=fail("skill_script_timeout","Skill script exceeded the configured timeout");killTree(activeChild)},timeoutMs);
   });
   return await output;
- }finally{await rm(root,{recursive:true,force:true});}
+ }finally{await rm(root,{recursive:true,force:true,maxRetries:4,retryDelay:75});}
 }

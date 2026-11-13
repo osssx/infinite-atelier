@@ -8,6 +8,7 @@ import {planAssistantExternalJobStep,enqueueAssistantExternalJobStep,reconcileAs
 import {planAssistantSkillStep,executeAssistantSkillStep} from "./assistant-task-skills.mjs";
 import {registerAssistantRunSequence,getAssistantRunSequence,selectAssistantRunInput,skipAssistantRunBranch,commitAssistantRunJoin} from "./assistant-task-run-sequences.mjs";
 import {inspectAssistantTaskRecovery,replanAssistantTaskSafely} from "./assistant-task-safe-replan.mjs";
+import {inspectAssistantRunFailureRecovery,confirmAssistantRunFailureRecovery} from "./assistant-task-failure-recovery.mjs";
 
 const id={type:"string",pattern:"^[A-Za-z0-9_-]{1,128}$"};
 const policy={type:"object",additionalProperties:false,required:["includeContext","scope","includedIds"],
@@ -79,6 +80,11 @@ const runBranchSkipBody={type:"object",additionalProperties:false,
   evidenceDigest:{type:"string",pattern:"^[a-f0-9]{64}$"},
   expectedPlanVersion:{type:"integer",minimum:1},
   expectedProjectRevision:{type:"integer",minimum:1}}};
+const failoverConfirmBody={type:"object",additionalProperties:false,
+ required:["requestId","expectedPlanVersion","expectedProjectRevision","evidenceDigest"],
+ properties:{requestId:id,expectedPlanVersion:{type:"integer",minimum:1},
+  expectedProjectRevision:{type:"integer",minimum:1},
+  evidenceDigest:{type:"string",pattern:"^[a-f0-9]{64}$"}}};
 const runJoinBody={type:"object",additionalProperties:false,
  required:["requestId","runSequenceId","runIndex","evidenceDigest","expectedPlanVersion","expectedProjectRevision"],
  properties:{requestId:id,runSequenceId:id,runIndex:{type:"integer",const:3},
@@ -139,6 +145,12 @@ export function registerAssistantTaskRoutes(app,db,{skillRegistry,blobStore}={})
     projectId:req.params.id,taskId:req.params.taskId,...req.body})));
  app.post(base+"/:taskId/run-sequences/skip",{schema:{params:taskParams,body:runBranchSkipBody}},
   (req,reply)=>result(reply,skipAssistantRunBranch(db,{
+   projectId:req.params.id,taskId:req.params.taskId,...req.body})));
+ app.get(base+"/:taskId/run-sequences/failure-recovery",{schema:{params:taskParams}},
+  (req,reply)=>result(reply,inspectAssistantRunFailureRecovery(db,{
+   projectId:req.params.id,taskId:req.params.taskId})));
+ app.post(base+"/:taskId/run-sequences/failure-recovery",{schema:{params:taskParams,body:failoverConfirmBody}},
+  (req,reply)=>result(reply,confirmAssistantRunFailureRecovery(db,{
    projectId:req.params.id,taskId:req.params.taskId,...req.body})));
  app.post(base+"/:taskId/run-sequences/join",{schema:{params:taskParams,body:runJoinBody}},
   (req,reply)=>result(reply,commitAssistantRunJoin(db,{

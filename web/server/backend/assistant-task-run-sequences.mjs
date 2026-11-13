@@ -6,6 +6,7 @@
 import {randomUUID,createHash} from "node:crypto";
 import {stableJson,writeTransaction} from "./repository.mjs";
 import {trustedAssistantTaskOutputs} from "./assistant-task-produced-artifacts.mjs";
+import {verifyAssistantFrozenFailover} from "./assistant-task-failure-recovery.mjs";
 const fail=(code,statusCode=409)=>Object.assign(Error(code),{code,statusCode});
 const id=x=>typeof x==="string"&&/^[A-Za-z0-9_-]{1,128}$/.test(x);
 const hash=x=>createHash("sha256").update(stableJson(x)).digest("hex");
@@ -253,6 +254,12 @@ function joinReceiptValid(row,proof){
 export function nextAssistantRunInTransaction(db,projectId,taskId,seq){
  const task=taskWithGraph(db,projectId,taskId),actions=JSON.parse(seq.actions_json);
  const out={sequence:projection(seq),next:null};
+ const failover=db.prepare("SELECT evidence_digest FROM assistant_task_run_failovers WHERE sequence_id=?").get(seq.id);
+ if(failover){
+  try{verifyAssistantFrozenFailover(db,{projectId,taskId,runSequenceId:seq.id,
+   expectedPlanVersion:seq.plan_version,evidenceDigest:failover.evidence_digest})}
+  catch{return {...out,state:"failover_evidence_invalidated"}}
+ }
  if(seq.plan_version!==task.active_plan_version||seq.status!=="active"||
   task.read_only||task.cancel_requested_at!==null||
   (terminal.has(task.status)&&task.status!=="completed"))
@@ -666,5 +673,7 @@ export function verifyAssistantRunSequenceJob(db,{projectId,taskId,runSequenceId
     e.assetId===binding.sourceSha256).length!==1)
    throw fail("assistant_task_run_input_binding_unverified");
  }
- return {finalizeTask:next.last,...(next.joinEvidenceDigest?{joinEvidenceDigest:next.joinEvidenceDigest}:{})};
+ const failover=db.prepare("SELECT evidence_digest FROM assistant_task_run_failovers WHERE sequence_id=?").get(seq.id);
+ return {finalizeTask:next.last,...(next.joinEvidenceDigest?{joinEvidenceDigest:next.joinEvidenceDigest}:{}),
+  ...(failover?{failoverEvidenceDigest:failover.evidence_digest}:{})};
 }

@@ -137,6 +137,8 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
     "assistant_task_run_branch_evidence_unverified",
     "assistant_task_run_join_invalid","assistant_task_run_join_not_ready",
     "assistant_task_run_join_evidence_invalidated",
+    "assistant_task_run_failure_invalid","assistant_task_run_failure_not_ready",
+    "assistant_task_run_failure_evidence_invalidated",
     "assistant_node_parameter_invalid","assistant_node_parameter_not_applicable",
     "assistant_node_parameter_uses_workflow","assistant_node_model_unavailable",
     "assistant_comfy_target_invalid","assistant_comfy_template_unavailable",

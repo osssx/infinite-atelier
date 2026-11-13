@@ -1,5 +1,5 @@
 import{JOB_STATUSES,EXECUTION_MODES,ARTIFACT_KINDS}from"./contracts.mjs";
-export const SCHEMA_VERSION=31;
+export const SCHEMA_VERSION=32;
 const quoted=x=>x.map(s=>"'"+s+"'").join(",");
 export const INITIAL_SCHEMA_SQL=`
 CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY,applied_at INTEGER NOT NULL);
@@ -628,6 +628,27 @@ CREATE TABLE IF NOT EXISTS assistant_task_run_joins(
 );
 CREATE INDEX IF NOT EXISTS ix_assistant_task_run_joins_task ON assistant_task_run_joins(task_id,plan_version);
 `;
+/** P3c3d: immutable source failure proof and explicit cross-plan failover. */
+export const ASSISTANT_TASK_RUN_FAILOVER_SCHEMA_SQL=`
+CREATE TABLE IF NOT EXISTS assistant_task_run_failovers(
+ sequence_id TEXT PRIMARY KEY REFERENCES assistant_task_run_sequences(id),
+ task_id TEXT NOT NULL REFERENCES assistant_tasks(id),
+ project_id TEXT NOT NULL REFERENCES projects(id),
+ plan_version INTEGER NOT NULL CHECK(plan_version>1),
+ source_sequence_id TEXT NOT NULL REFERENCES assistant_task_run_sequences(id),
+ source_step_id TEXT NOT NULL REFERENCES assistant_task_steps(id),
+ source_job_id TEXT NOT NULL REFERENCES jobs(id),
+ source_attempt_id TEXT NOT NULL REFERENCES assistant_task_attempts(id),
+ source_plan_version INTEGER NOT NULL CHECK(source_plan_version>0),
+ source_run_index INTEGER NOT NULL CHECK(source_run_index>=0),
+ evidence_digest TEXT NOT NULL CHECK(length(evidence_digest)=64),
+ receipt_json TEXT NOT NULL CHECK(json_valid(receipt_json)),
+ confirmed_at INTEGER NOT NULL,
+ UNIQUE(source_step_id)
+);
+CREATE INDEX IF NOT EXISTS ix_assistant_task_run_failovers_task
+ ON assistant_task_run_failovers(task_id,plan_version);
+`;
 export function initializeSchema(db){
  db.exec("PRAGMA foreign_keys=ON;PRAGMA busy_timeout=5000;BEGIN IMMEDIATE");
  try{
@@ -686,6 +707,7 @@ export function initializeSchema(db){
   if(version<29)db.exec(ASSISTANT_TASK_RUN_INPUT_SELECTION_SCHEMA_SQL);
   if(version<30)db.exec(ASSISTANT_TASK_RUN_BRANCH_SCHEMA_SQL);
   if(version<31)db.exec(ASSISTANT_TASK_RUN_JOIN_SCHEMA_SQL);
+  if(version<32)db.exec(ASSISTANT_TASK_RUN_FAILOVER_SCHEMA_SQL);
   if(version<SCHEMA_VERSION)db.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)").run(SCHEMA_VERSION,Date.now());
   db.exec("COMMIT");
  }catch(e){db.exec("ROLLBACK");throw e}

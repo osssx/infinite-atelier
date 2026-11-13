@@ -382,7 +382,7 @@ test("P3c3b persisted skip survives SQLite restart, preserves existing Job and r
 });
 test("P3b freeze two intents; one Job at a time; approval and materialization gate next",t=>{
  const ctx=setup(t);
- assert.equal(SCHEMA_VERSION,31);
+ assert.equal(SCHEMA_VERSION,32);
  const seq=capture(ctx);
  assert.equal(seq.count,2);
  assert.equal(capture(ctx).sequenceId,seq.sequenceId);

@@ -105,6 +105,70 @@ describe("P3c cross-chat resume and safe replan UI",()=>{
   expect(mocks.api.mock.calls.some(([url])=>url.endsWith("/enqueue")||url.includes("/jobs"))).toBe(false);
  });
 });
+describe("P3c3d explicit confirmed failure fallback UI",()=>{
+ it("only freezes a new plan from trusted failure and leaves all paid Jobs untouched",async()=>{
+  let task={id:"task-definitive-failure",chatSessionId:"chat-a",chatSessionIds:["chat-a"],
+   rootMessageId:"original-user",originalRequest:"生成失败后运行备用节点",
+   status:"failed",activePlanVersion:1,recoveryMode:"job_observation",steps:[]};
+  let confirmed=false;
+  const source={type:"run_node",nodeId:"first",mode:"text"};
+  const fallback={type:"run_node",nodeId:"alternative",mode:"text"};
+  const requests:{method:string;url:string;payload?:Record<string,unknown>}[]=[];
+  mocks.api.mockImplementation(async(url:string,method:string,payload?:Record<string,unknown>)=>{
+   requests.push({url,method,payload});
+   if(method==="GET"&&url.includes("chatSessionId="))return {tasks:[task]};
+   if(method==="GET"&&url.endsWith("/model-calls"))return {calls:[]};
+   if(method==="GET"&&url.endsWith("/recovery"))return {
+    canReplan:true,reason:"verified_safe_to_replan",planVersion:1,projectRevision:3};
+   if(method==="GET"&&url.endsWith("/run-sequences/failure-recovery"))return {
+    canRecover:!confirmed,reason:confirmed?"task_not_definitively_failed":"definitive_failure_fallback_ready",
+    planVersion:1,projectRevision:3,failureReason:"provider_confirmed_not_accepted",
+    sourceJobId:"original-job-1",fallbackAction:fallback,evidenceDigest:"a".repeat(64)};
+   if(method==="GET"&&url.endsWith("/run-sequences"))return confirmed?{
+    sequence:{id:"failover-sequence",taskId:task.id,sourceMessageId:"failover-old",planVersion:2,
+     actions:[fallback],status:"active"},state:"ready",next:{index:0,action:fallback,dependsOn:[],last:true},
+    joins:[],branchSkips:[],outputs:[]}:{
+    sequence:{id:"original-sequence",taskId:task.id,sourceMessageId:"user",
+     planVersion:1,actions:[source,fallback],status:"active"},state:"blocked",next:null,outputs:[]};
+   if(method==="GET"&&url.endsWith("/task-definitive-failure"))return {task};
+   if(method==="POST"&&url.endsWith("/run-sequences/failure-recovery")){
+    expect(payload).toMatchObject({expectedPlanVersion:1,expectedProjectRevision:3,
+     evidenceDigest:"a".repeat(64)});
+    confirmed=true;task={...task,status:"planning",activePlanVersion:2};
+    return {sequenceId:"failover-sequence",executionStarted:false,planVersion:2};
+   }
+   throw Error("unexpected Task external side effect "+method+" "+url);
+  });
+  await render();
+  expect(container!.textContent).toContain("确认启用备用计划（不生成）");
+  expect(container!.textContent).toContain("alternative");
+  await click("确认启用备用计划（不生成）");
+  expect(confirmed).toBe(true);
+  expect(container!.textContent).toContain("顺序生成计划：1 项");
+  expect(requests.filter(item=>item.method==="POST")).toHaveLength(1);
+  expect(requests.some(item=>item.method==="POST"&&/\/enqueue$|\/external-jobs$|\/canvas-steps$/.test(item.url))).toBe(false);
+ });
+ it("does not offer failure fallback for an unverified or unknown upstream Job",async()=>{
+  const task={id:"task-unknown",chatSessionId:"chat-a",chatSessionIds:["chat-a"],
+   rootMessageId:"original-user",originalRequest:"图像生成提交结果未知",
+   status:"failed",activePlanVersion:1,recoveryMode:"job_observation",steps:[]};
+  mocks.api.mockImplementation(async(url:string,method:string)=>{
+   if(method!=="GET")throw Error("unverified failure cannot POST");
+   if(url.includes("chatSessionId="))return {tasks:[task]};
+   if(url.endsWith("/model-calls"))return {calls:[]};
+   if(url.endsWith("/run-sequences/failure-recovery"))return {
+    canRecover:false,reason:"job_failure_evidence_unverified",planVersion:1,projectRevision:1};
+   if(url.endsWith("/recovery"))return {
+    canReplan:false,reason:"job_outcome_unknown",planVersion:1,projectRevision:1};
+   if(url.endsWith("/run-sequences"))return {sequence:null,state:"none",next:null};
+   return {task};
+  });
+  await render();
+  expect(container!.textContent).toContain("job_failure_evidence_unverified");
+  expect(container!.textContent).not.toContain("确认启用备用计划（不生成）");
+  expect(mocks.api.mock.calls.every(item=>item[1]==="GET")).toBe(true);
+ });
+});
 describe("P3b persisted multi-run UI resume",()=>{
  it("loads the next frozen target after refresh and never invents a second Job",async()=>{
   const task={id:"task-seq",chatSessionId:"chat-a",rootMessageId:"original-user",

@@ -14,6 +14,9 @@ type Step={id:string;kind:string;planVersion:number;status:string;actionDigest:s
 type Task={id:string;chatSessionId:string;chatSessionIds?:string[];rootMessageId:string;originalRequest:string;
  activePlanVersion?:number;status:string;recoveryMode:"guidance_only"|"canvas_atomic"|"job_observation"|"skill_audit";steps?:Step[];lastError?:string|null};
 type Recovery={canReplan:boolean;reason:string;planVersion:number;projectRevision:number;completedArtifacts?:number;failedJobs?:number};
+type FailureRecovery={canRecover:boolean;reason:string;planVersion:number;projectRevision:number;
+ failureReason?:string;sourceJobId?:string;fallbackAction?:{type:"run_node";nodeId:string;mode?:string};
+ evidenceDigest?:string};
 type Args={projectId:string;activeChatId:string|null;session?:CanvasAssistantSession;
  open:boolean;sending:boolean;includeContext:boolean;scope:AssistantContextScope;includedIds:string[];
  onDraft:(value:string)=>void;
@@ -44,6 +47,7 @@ export function useCanvasAssistantTasks({
  const [showOtherTasks,setShowOtherTasks]=useState(false);
  const [linkCandidateId,setLinkCandidateId]=useState("");
  const [recovery,setRecovery]=useState<Recovery|null>(null);
+ const [failureRecovery,setFailureRecovery]=useState<FailureRecovery|null>(null);
 
  const base="/api/v1/projects/"+encodeURIComponent(projectId)+"/assistant/tasks";
  useEffect(()=>{
@@ -108,6 +112,16 @@ export function useCanvasAssistantTasks({
   let alive=true;
   void canvasApi<Recovery>(base+"/"+encodeURIComponent(selectedId)+"/recovery","GET")
    .then(data=>{if(alive)setRecovery(data);},()=>{if(alive)setRecovery(null);});
+  return ()=>{alive=false;};
+ },[base,open,selectedId,detail]);
+ useEffect(()=>{
+  if(!open||!selectedId||!detail||detail.id!==selectedId||detail.status!=="failed"){
+   setFailureRecovery(null);return;
+  }
+  let alive=true;
+  void canvasApi<FailureRecovery>(base+"/"+encodeURIComponent(selectedId)+"/run-sequences/failure-recovery","GET")
+   .then(data=>{if(alive)setFailureRecovery(data);},
+    ()=>{if(alive)setFailureRecovery(null);});
   return ()=>{alive=false;};
  },[base,open,selectedId,detail]);
  const selected=items.find(item=>item.id===selectedId&&(item.chatSessionId===activeChatId||
@@ -352,6 +366,26 @@ export function useCanvasAssistantTasks({
   }catch(error){setError("关联任务失败；不会重新执行任何步骤："+(error instanceof Error?error.message:"请求失败"));}
   finally{setBusy(false);}
  };
+ const confirmFailureFallback=async()=>{
+  if(!selected||!failureRecovery?.canRecover||!failureRecovery.evidenceDigest||
+   busy||sending)return;
+  setBusy(true);setError("");
+  try{
+   const check=await canvasApi<FailureRecovery>(
+    path(selected.id)+"/run-sequences/failure-recovery","GET");
+   if(!check.canRecover||check.evidenceDigest!==failureRecovery.evidenceDigest)
+    throw Error("已验证的失败证据变化，请先完成 Job 对账");
+   await canvasApi(path(selected.id)+"/run-sequences/failure-recovery","POST",{
+    requestId:nanoid(),expectedPlanVersion:check.planVersion,
+    expectedProjectRevision:check.projectRevision,evidenceDigest:check.evidenceDigest
+   });
+   await refreshTask(selected.id);
+   const latest=await canvasApi<AssistantRunSequenceView>(path(selected.id)+"/run-sequences","GET");
+   setRunSequence(latest?.sequence?latest:null);
+   setFailureRecovery(null);setRecovery(null);
+  }catch(error){setError("备用计划未启用，原失败 Job 不会重试："+(error instanceof Error?error.message:"恢复失败"));}
+  finally{setBusy(false);}
+ };
  const safelyReplan=async()=>{
   if(!selected||!recovery?.canReplan||busy||sending)return;
   setBusy(true);setError("");
@@ -415,6 +449,20 @@ export function useCanvasAssistantTasks({
    {detail?.id===selected.id&&detail.lastError?
     <p role="status" className="mt-1 break-words">上次错误：{detail.lastError.slice(0,200)}</p>:null}
 
+   {failureRecovery&&selected&&detail?.id===selected.id&&detail.status==="failed"?
+    <div className="mt-2 rounded-md border p-2" style={{borderColor:"var(--assistant-border)"}}>
+     {failureRecovery.canRecover&&failureRecovery.fallbackAction?
+      <>
+       <p>服务端确认失败：{failureRecovery.failureReason}（原 Job {failureRecovery.sourceJobId?.slice(0,12)}）。
+        已冻结的独立备用目标为 {failureRecovery.fallbackAction.nodeId}。确认只创建新计划，原失败 Job 保留；备用生成仍需另行审批费用。</p>
+       <button type="button" className="canvas-assistant-link"
+        disabled={busy||sending} onClick={()=>void confirmFailureFallback()}>
+        确认启用备用计划（不生成）
+       </button>
+      </>:
+      <p>不能自动选择失败备用路径：{failureRecovery.reason}。
+       结果不明、产物下载失败或缺少预先冻结的独立目标时，不会触发备用生成。</p>}
+    </div>:null}
    {recovery&&selected&&detail?.id===selected.id&&["failed","blocked"].includes(detail.status)?
     <div className="mt-2 rounded-md border p-2" style={{borderColor:"var(--assistant-border)"}}>
      <p>恢复条件：{recovery.canReplan?"已有足够的可信终态证据":"需先完成已有执行结果的对账"}</p>

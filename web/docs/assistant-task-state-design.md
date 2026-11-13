@@ -1,7 +1,7 @@
 # Infinite Atelier AI 助手 — 持久化任务状态（Task State）设计
 
 > 设计版本：v2（2026-11-12，已合入 [审核结论](./assistant-task-state-design-review.md) R1–R10）  
-> 状态：**P0a、P0b、P1a 已实施；P1b 本地画布事务与恢复路径已实施（明确限制支持的动作类型）；P2–P3 尚未实施**。适用现有单机、单用户、SQLite 后端。项目已有的聊天、画布、生成 Job、ComfyUI、Skill 和 CAS 机制继续复用；不引入分布式工作流平台。
+> 状态（2026-11-13 更新）：**P0a–P3c3d 首轮已实施；P3c3d 新增可信失败证据、显式独立备用恢复和入队前再次验证**。以下章节 0–15 保留原设计与审核历史，最新交付约束见第 16–18 节。适用现有单机、单用户、SQLite 后端。项目已有的聊天、画布、生成 Job、ComfyUI、Skill 和 CAS 机制继续复用；不引入分布式工作流平台。
 
 ## 0. 设计决策与交付边界
 
@@ -359,3 +359,31 @@ Step `status`：`pending | ready | waiting_approval | submitting | running | wai
 ## 15. 最终决策
 
 **先交付可解释的持久任务状态，再交付经证明安全的副作用恢复。** 实施顺序为 `P0a → P0b → P1a → P1b → P2 → P3`，执行安全的阻断项必须在对应阶段开始前闭合。所有“成功”和“可以继续”的结论由持久回执、有效计划和后端条件校验决定；模型历史文字只能作为参考。
+
+## 16. P3c3b 实施回执：受控互斥条件分支（2026-11-13）
+
+本轮为 **P3c3b 受控二选一分支**，不是任意 DAG 工作流。一个序列中精确包含三项：第 1 项生成可信来源；第 2、3 项分别带 `when:{sourceIndex:0,kind,op:"gte"|"lt",count}` 条件，必须使用完全相同的媒体类型与阈值、且运算符互斥。阈值 1–16，仅计算第 1 项的 **完整 Job + Artifact + Materialize + CAS** 可信回执，不评估模型推理文本、未落图结果、未经验证的成功或不确定的失败。
+
+- SQLite Schema v30 新增 `assistant_task_run_branch_skips`：主键 `(sequence_id,run_index)` 固化未执行分支索引、上游 Job Step / Materialization Step、验证证据 SHA-256 摘要和 `server_committed` 跳过回执。只允许明确用户调用 `POST /api/v1/projects/:id/assistant/tasks/:taskId/run-sequences/skip`，服务端在单次事务内重算可信证据、核对 Plan/Project 版本和摘要，写入审计事件 `run_branch_skipped` 和命令幂等记录。**跳过不创建 Job、Skill、边或素材，也不触发远端 Provider**。
+- 顺序推进：条件成立的分支仍走原来的冻结、独立费用审批、原子 Job 入队和落图；条件不成立时返回 `skip_ready`，必须由用户确认写入跳过回执后才继续下一项。最后一项跳过且全部前序步骤已可信完成时 Task 原子标记 `completed`；重启按原回执恢复，不会为未选分支支付费用。先前已完成的步骤不重放。
+- 反伪造：服务端要求源 Step 为 `succeeded + server_committed`、存在可信 Materialize，且全部 Job 产物均可从 `trustedAssistantTaskOutputs` 逐一核验；少任意一项返回 `awaiting_verified_branch_evidence`，不是“数量=0”。已保存跳过回执若与后续证据不符，返回 `branch_evidence_invalidated`，不会自行重新规划或改选。反向分支无法在另一支执行后同时自动产生 Job。
+- 此轮尚不支持根据 `failed` / `submission_unknown` 自动进入失败后继，不支持超过一个上游、任意逻辑表达式或复杂 DAG 汇合。外部失败必须先提供确定性对账证据，再由显式重新规划恢复。对于互斥分支第 3 项的媒体输入，来源解析显式绑定第 1 项的可信产物，而不是被跳过的第 2 项。
+- 验收使用无 GPU 的隔离 SQLite/HTTP/前端模拟：分别覆盖满足条件与不满足条件的两条路径、独立计费审批、无重复 Job、错误阈值、CAS 缺失/伪造、跳过命令幂等、SQLite 重启、schema 迁移和 Task 完成条件。此前 Moss → MiniMax 图生视频真实 GPU 成功仍作为 P3c2 的独立基线；本轮未重复提交付费生成。
+
+## 17. P3c3c 实施回执：显式可信 Join 与双上游依赖（2026-11-13）
+
+本轮完成一个**受控的二路汇合检查点**（不是任意 DAG）：单个 Task 的四项冻结意图依次为 ① 可信源生成、②/③ 使用互斥 `when` 的两条候选生成、④ 使用精确 `join:{indices:[0,1,2]}` 的最终 `run_node`。第 2/3 项**恰好一项执行并可信落图，另一项有不可改写的 `server_committed` skip 回执**。最终 Join 是额外的、由用户明确确认的只写事务；它本身不提交任何 GPU/模型请求。
+
+- **SQLite Schema v31**：新增 `assistant_task_run_joins`。固化序列/Task/Plan、源 Job Step + Materialize Step、实际执行分支的 Job Step + Materialize Step、被跳过分支、Skip 证据摘要、完整 Join 证据 SHA-256 和 `server_committed` 回执。唯一键 `(sequence_id,run_index)`，仅允许 `run_index=3`，不可改选。
+- **只读决策与用户确认**：`GET .../run-sequences` 可返回 `join_ready`、`awaiting_verified_join_evidence` 或 `join_evidence_invalidated`。任务面板展示源、实际执行和跳过的分支，由用户点击“确认可信汇合（只写回执）”；`POST .../run-sequences/join` 在事务里验证版本、冻结摘要、所有上游 Job / Artifact / Blob / Materialization / skip 回执后写入证据与 `run_join_committed` 审计事件。不允许用户随意传入或推测 Job/Artifact ID。
+- **原子收费边界不变**：Join 回执成功以后，最终生成目标才允许冻结 `model_job`。该 Step 的 `dependsOn` 必须**同时包含**第 1 项和实际执行分支的两个 `materialize` Step，而不包含未执行分支。独立审批完成后，在 **原子 Job enqueue 前再次核验**原 Join 回执、所有前驱 CAS、原条件与 skip 证据摘要是否仍相符；证据变化返回 `assistant_task_run_join_evidence_invalidated`，不新增 Job、不调用 Provider。
+- **升级与回归**：保留此前 2/3 项 Run Sequence 的兼容行为，并验证 v27/v29/v30 → v31 的独立升级与重复启动。覆盖两个互斥分支方向、提交前后伪造证据/CAS 消失、HTTP 幂等、SQLite 重启、不经 Join 直接冻结最终生成会被拒绝、前端确认只调用 Join 接口。本轮全部使用本地 SQLite/HTTP/前端测试，**不重新调用 Moss/MiniMax GPU**。
+- **尚未实现**：任意 N 路 DAG、自动多媒体输入混合/合成、并行 Job dispatch、按确定失败自动切换分支和 `submission_unknown` 直接进入失败后继。本轮 Join 是执行依赖屏障，不能把多个上游的图像或视频内容自动合成为一个新文件；真正多输入资源路由需要后续单独设计与验收。
+## 18. P3c3d 首轮：确定性失败回执与独立备用目标的显式恢复（2026-11-13）
+
+本轮只允许**原顺序计划已冻结的、紧随失败项的独立 `run_node` 目标**作为后继，不会从模型回答或 UI 猜测新的 Artifact、执行参数、分支条件或 GPU 任务。原失败 Job、Attempt 和 Step 保持原状；用户确认后原子创建新 Plan 与只有一个目标的 Failover Run Sequence。后续生成仍需独立 Step 冻结、费用审批及原子 Job 入队。此阶段不是任意失败条件 DAG。
+
+- **SQLite Schema v32**：新增 `assistant_task_run_failovers`，唯一绑定新 Sequence 与原失败 Job/Attempt/Step/Plan、失败证据 SHA-256、冻结备用 Action、`server_committed` 恢复决定。`GET .../run-sequences/failure-recovery` 只返回只读的恢复资格、失败原因和预定备用目标；`POST .../run-sequences/failure-recovery` 在事务内重验版本和证据后原子取消旧序列、将 Task 升至下一 Plan、写入新单项序列与审计事件 `run_failure_failover_confirmed`。重复命令幂等，不能替换旧失败记录。
+- **失败资格不是仅凭 `job.status='failed'`**：服务端同时核对 Assistant Attempt 冻结快照 / executionKey / Job Fingerprint、Step/Attempt 的 Failed 终态回执、零 Artifact / 零 Materialization 以及 Job Coordinator 自己持久记录的失败事件。可接受来源只包括 `preparing→failed`（从未提交）、`submitting→failed`（明确未被上游接收）、`running→failed`（有远端 Task ID 的确定失败），或 `submission_unknown` 经过验证远端身份并对账到 Failed。缺少事件、不符的回执、存在部分产物、未完成的其他 Job/Skill、`submission_unknown` 或 `collecting→failed`（可能已付费生成，仅下载/采集失败）全部保守阻断。
+- **防重复计费**：恢复命令不创建 Job。只允许下一项为 `run_node` 且不包含 `when`、`join`、外部媒体输入引用，也不允许指向原失败节点本身。冻结备用 Step 时验证新 Plan 和可信证据；用户批准之后、真正 enqueue 之前再次核对**原 Job 终态及全部来源证据**。证据变更则返回 `assistant_task_run_failure_evidence_invalidated`，不生成、不自动重试。
+- **恢复和边界**：重启后新 Plan 可恢复为待执行的单个冻结目标，原 Job 不会重新提交；旧分支/Join 及正常顺序计划保持兼容。对于原计划没有预先冻结独立备用目标、失败后的下一项依赖原媒体产物、涉及互斥 `when` / Join 或希望重试相同模型的场景，本轮只提供已有的保守人工安全重新规划，**不自动切换或重复计费**。多类型失败链路和条件型错误分支属于后续阶段。

@@ -211,6 +211,25 @@ describe("P2c assistant Task routes node generation through frozen Job context",
   expect(container!.textContent).toContain("assistant_task_run_invalid");
  });
 });
+describe("P3c3b safety guard for a chat without durable Task",()=>{
+ it("rejects mutually exclusive conditional generation before any canvas edits or paid submissions",async()=>{
+  const actions=[
+   {type:"create_text",ref:"side-note",title:"不应创建",content:"untrusted"},
+   {type:"run_node",nodeId:"text-existing",mode:"text"},
+   {type:"run_node",nodeId:"branch-a",mode:"text",
+    when:{sourceIndex:0,kind:"text",op:"gte",count:1}},
+   {type:"run_node",nodeId:"branch-b",mode:"text",
+    when:{sourceIndex:0,kind:"text",op:"lt",count:1}}
+  ];
+  const fixture=setup(actions);
+  await renderAndSend(fixture.Harness);
+  expect(fixture.apply).not.toHaveBeenCalled();
+  expect(mocks.run).not.toHaveBeenCalled();
+  expect(mocks.freezeSeq).not.toHaveBeenCalled();
+  expect(fixture.getGraph().nodes).toHaveLength(1);
+  expect(container!.textContent).toContain("条件分支需要先关联持久 Task");
+ });
+});
 describe("P2 assistant confirmation boundary",()=>{
  const actions=[
   {type:"create_text",ref:"newA",title:"新段落",content:"新正文"},

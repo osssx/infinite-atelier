@@ -258,6 +258,26 @@ export function useCanvasAssistantTasks({
   }catch(error){setError("产物尚未选定，未发起下游生成："+(error instanceof Error?error.message:"选择失败"));}
   finally{setBusy(false);}
  };
+ const skipFrozenRunBranch=async()=>{
+  if(!selected||!runSequence?.sequence||runSequence.state!=="skip_ready"||
+   !runSequence.skip||busy||sending)return;
+  setBusy(true);setError("");
+  try{
+   const latest=await canvasApi<AssistantRunSequenceView>(path(selected.id)+"/run-sequences","GET");
+   if(latest.state!=="skip_ready"||latest.skip?.evidenceDigest!==runSequence.skip.evidenceDigest||
+    latest.index!==runSequence.skip.index)throw Error("分支证据已变化，请先刷新任务");
+   const project=await canvasApi<{revision:number}>("/api/v1/projects/"+encodeURIComponent(projectId),"GET");
+   await canvasApi(path(selected.id)+"/run-sequences/skip","POST",{
+    requestId:nanoid(),runSequenceId:latest.sequence!.id,runIndex:latest.skip.index,
+    expectedPlanVersion:latest.sequence!.planVersion,expectedProjectRevision:project.revision,
+    evidenceDigest:latest.skip.evidenceDigest
+   });
+   const status=await canvasApi<AssistantRunSequenceView>(path(selected.id)+"/run-sequences","GET");
+   setRunSequence(status?.sequence?status:null);
+   await refreshTask(selected.id);
+  }catch(error){setError("分支未跳过，未发起任何生成："+(error instanceof Error?error.message:"请求失败"));}
+  finally{setBusy(false);}
+ };
  const externalSteps=detail&&selected&&detail.id===selected.id?detail.steps?.filter(step=>
   ["model_job","comfy_workflow","materialize"].includes(step.kind))??[]:[];
  const skillSteps=detail&&selected&&detail.id===selected.id?
@@ -400,6 +420,17 @@ export function useCanvasAssistantTasks({
    {runSequence?.sequence&&selected&&runSequence.sequence.taskId===selected.id?<div className="mt-2 rounded-md border p-2" style={{borderColor:"var(--assistant-border)"}}>
     <div className="font-medium">顺序生成计划：{runSequence.sequence.actions.length} 项 · {runSequence.state}</div>
     <p>每项单独批准费用，只有上一项落图验收后才执行下一项。</p>
+    {runSequence.branchSkips?.length?<p className="mt-1">
+     已持久记录跳过：{runSequence.branchSkips.map(skip=>(skip.index+1)+"/"+runSequence.sequence!.actions.length).join("、")} 项（可信回执）
+    </p>:null}
+    {runSequence.state==="skip_ready"&&runSequence.skip?<div className="mt-2">
+     <p>可信条件判断：第 1 项生成的 {runSequence.skip.action.when?.kind} 产物共 {runSequence.skip.count} 个，
+      未满足第 {runSequence.skip.index+1} 项的 {runSequence.skip.action.when?.op} {runSequence.skip.action.when?.count} 条件。</p>
+     <button type="button" className="canvas-assistant-link" disabled={busy||sending}
+      onClick={()=>void skipFrozenRunBranch()}>确认跳过第 {runSequence.skip.index+1} 项（仅写回执，不生成）</button>
+    </div>:null}
+    {runSequence.state==="awaiting_verified_branch_evidence"?<p>前一项的 Job、Artifact 与落图证据尚未完全一致；无法判断分支，不会执行备用 Job。</p>:null}
+    {runSequence.state==="branch_evidence_invalidated"?<p>已确认跳过的分支来源证据发生变化，任务已阻断；不会改选或重新发起生成。</p>:null}
     {runSequence.state==="ready"&&runSequence.next&&onRunSequenceStep?
      <button type="button" className="canvas-assistant-link" disabled={busy||sending}
       onClick={()=>void resumeRunSequence()}>

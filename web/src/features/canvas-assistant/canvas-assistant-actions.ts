@@ -4,7 +4,7 @@ import {groupSelectedCanvasNodes} from "@/lib/canvas/canvas-node-geometry";
 import {prepareCanvasPortConnection} from "@/lib/canvas/canvas-port-connections";
 import {CanvasNodeType,type CanvasConnection,type CanvasNodeData,type Position} from "@/types/canvas";
 import {layoutCanvasDependencyGraph,type AssistantGraphLayoutDirection} from "./canvas-assistant-graph-layout";
-import {assistantValueHasSupportedShape,setAssistantNodePrompt,setAssistantNodeParameter,type AssistantParameterKey,type AssistantParameterValue,type AssistantExecutionAction} from "./canvas-assistant-node-control";
+import {assistantValueHasSupportedShape,validAssistantRunCondition,setAssistantNodePrompt,setAssistantNodeParameter,type AssistantParameterKey,type AssistantParameterValue,type AssistantExecutionAction} from "./canvas-assistant-node-control";
 import type {AiConfig} from "@/stores/use-config-store";
 import {validAssistantWorkflowScalar,setAssistantWorkflowParameter,type AssistantWorkflowScalar} from "./canvas-assistant-workflow-params";
 import type {ComfyWorkflowTemplate} from "@/features/comfy-workflow/template-schema";
@@ -94,9 +94,11 @@ export function isAssistantCanvasAction(value:unknown):value is AssistantCanvasA
    identifier(action.nodeId)&&assistantValueHasSupportedShape(action.key,action.value);
   case "set_workflow_param":return keys(action,["type","nodeId","portId","value"])&&
    identifier(action.nodeId)&&validAssistantWorkflowScalar(action.portId,action.value);
-  case "run_node":return keys(action,["type","nodeId","mode"])&&identifier(action.nodeId)&&
+  case "run_node":return keys(action,["type","nodeId","mode","when"])&&identifier(action.nodeId)&&
+    (action.when===undefined||validAssistantRunCondition(action.when))&&
    (action.mode===undefined||["text","image","video","audio"].includes(String(action.mode)));
-  case "run_workflow":return keys(action,["type","nodeId","inputFromPrevious"])&&identifier(action.nodeId)&&
+  case "run_workflow":return keys(action,["type","nodeId","inputFromPrevious","when"])&&identifier(action.nodeId)&&
+    (action.when===undefined||validAssistantRunCondition(action.when))&&
    (action.inputFromPrevious===undefined||validRunInput(action.inputFromPrevious));  case "set_text":return keys(action,["type","nodeId","content"])&&identifier(action.nodeId)&&boundedString(action.content,12000);
   case "set_title":return keys(action,["type","nodeId","title"])&&identifier(action.nodeId)&&boundedString(action.title,120);
   case "delete_node":return keys(action,["type","nodeId"])&&identifier(action.nodeId);
@@ -111,6 +113,13 @@ export function parseAssistantCanvasActions(value:unknown):AssistantCanvasAction
  if(runs.some((action,index)=>action.type==="run_workflow"&&
   action.inputFromPrevious&&index===0))
   throw Error("第一项生成没有可引用的上一项产物，未执行。");
+ if(runs.some(action=>action.when)){
+  const left=runs[1]?.when,right=runs[2]?.when;
+  if(runs.length!==3||runs[0]?.when||!left||!right||
+   left.sourceIndex!==0||right.sourceIndex!==0||
+   left.kind!==right.kind||left.count!==right.count||left.op===right.op)
+   throw Error("条件分支只支持第 1 项可信来源加两条互斥的第 2/3 项生成，请先修正生成方案。");
+ }
  const aliases=new Set<string>();
  for(const action of value){
   if(action.type!=="create_text"&&action.type!=="create_node"&&action.type!=="create_group")continue;

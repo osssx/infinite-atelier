@@ -12,7 +12,7 @@ import {createAssistantTask,getAssistantTask} from "./assistant-tasks.mjs";
 import {decideAssistantTaskStep,claimAssistantTaskStep} from "./assistant-task-step-gate.mjs";
 import {planAssistantCanvasStep,executeAssistantCanvasStep,recoverAssistantCanvasTasksAtStartup} from "./assistant-task-canvas-executor.mjs";
 import {planAssistantExternalJobStep,enqueueAssistantExternalJobStep,reconcileAssistantExternalTask,recoverAssistantExternalTasksAtStartup} from "./assistant-task-external-jobs.mjs";
-import {registerAssistantRunSequence,getAssistantRunSequence,selectAssistantRunInput} from "./assistant-task-run-sequences.mjs";
+import {registerAssistantRunSequence,getAssistantRunSequence,selectAssistantRunInput,skipAssistantRunBranch} from "./assistant-task-run-sequences.mjs";
 
 const sha="a".repeat(64),shaTwo="c".repeat(64),revision="b".repeat(64);
 const template={id:"demo-image-refine",revision,name:"Image refine",
@@ -131,6 +131,61 @@ function nextJob(ctx,alter){
  if(alter)alter(spec);
  return planAssistantExternalJobStep(ctx.db,spec);
 }
+test("P3c3b skipped alternative still binds original trusted image to third Comfy workflow before any paid submit",t=>{
+ const root=setup(t),db=root.db;
+ const alternate={id:"alternate",type:"text",title:"Backup path",
+  position:{x:0,y:540},width:340,height:200,metadata:{content:"other"}};
+ const doc={nodes:[...original.nodes,alternate],connections:[]};
+ db.prepare("UPDATE projects SET document_json=? WHERE id='p'").run(JSON.stringify(doc));
+ const task=createAssistantTask(db,{projectId:"p",chatSessionId:"chat-branch",rootMessageId:"branch-root",
+  originalRequest:"未产生 VIDEO 则用 IMAGE 做图像编辑",requestId:"branch-task"}).task;
+ const ctx={db,projectId:"p",taskId:task.id};
+ const actions=[
+  {type:"run_node",nodeId:"source",mode:"image"},
+  {type:"run_node",nodeId:"alternate",mode:"text",
+   when:{sourceIndex:0,kind:"video",op:"gte",count:1}},
+  {type:"run_workflow",nodeId:"wf",inputFromPrevious:{sourceKind:"image",toPortId:"image_in"},
+   when:{sourceIndex:0,kind:"video",op:"lt",count:1}}
+ ];
+ const seq=registerAssistantRunSequence(db,{...ctx,requestId:"branch-plan",
+  sourceMessageId:"branch-prompt",expectedPlanVersion:1,expectedProjectRevision:1,actions});
+ ctx.seq=seq;
+ const first=generateFirst(ctx);materialize(ctx,first);
+ const before=getAssistantRunSequence(db,ctx);
+ assert.equal(before.state,"skip_ready");assert.equal(before.index,1);
+ const skipped=skipAssistantRunBranch(db,{...ctx,requestId:"skip-unused",
+  runSequenceId:seq.sequenceId,runIndex:1,expectedPlanVersion:1,expectedProjectRevision:2,
+  evidenceDigest:before.skip.evidenceDigest});
+ assert.equal(skipped.skipped,true);
+ const waiting=getAssistantRunSequence(db,ctx);
+ assert.equal(waiting.state,"ready");assert.equal(waiting.next.index,2);
+ assert.equal(waiting.next.needsBinding,true);
+ assert.equal(waiting.next.inputBinding.sourceArtifactId,"art-rendered");
+ assert.equal(waiting.next.inputBinding.sourceNodeId,"rendered");
+ assert.equal(count(db,"jobs"),1);
+ const b=waiting.next.inputBinding,actionsForBinding=[{type:"connect_workflow_port",
+  fromNodeId:b.sourceNodeId,fromPortId:b.sourcePortId,toNodeId:b.toNodeId,toPortId:b.toPortId}];
+ const draft=planAssistantCanvasStep(db,{...ctx,requestId:"branch-bind",
+  expectedPlanVersion:1,expectedProjectRevision:2,actions:actionsForBinding,
+  dependsOn:waiting.next.dependsOn,center:{x:0,y:0},
+  runSequenceId:seq.sequenceId,runIndex:2});
+ assert.equal(draft.status,"waiting_approval");
+ assert.equal(count(db,"jobs"),1);
+ const committed=commit(ctx,draft);
+ assert.equal(committed.status,"succeeded");
+ const now=getAssistantRunSequence(db,ctx);
+ assert.equal(now.next.index,2);
+ assert.equal(now.next.needsBinding,false);
+ const frozen=nextJob(ctx,spec=>{spec.runIndex=2;spec.requestId="branch-workflow";});
+ assert.equal(frozen.status,"waiting_approval");
+ assert.equal(count(db,"jobs"),1);
+ approve(ctx,frozen);
+ const queued=enqueueAssistantExternalJobStep(db,{...ctx,stepId:frozen.stepId,
+  requestId:"branch-workflow-enqueue",expectedPlanVersion:1,actionDigest:frozen.actionDigest});
+ assert.ok(queued.jobId);
+ assert.equal(count(db,"jobs"),2);
+ assert.equal(getAssistantRunSequence(db,ctx).state,"waiting_external");
+});
 test("P3c3a multiple trusted IMAGE artifacts require explicit immutable choice before binding or second Job",t=>{
  const ctx=setup(t),jobId=generateFirst(ctx);
  materialize(ctx,jobId,{multi:true});

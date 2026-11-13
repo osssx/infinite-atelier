@@ -137,6 +137,53 @@ describe("P3b persisted multi-run UI resume",()=>{
   expect(mocks.api.mock.calls.every(call=>call[1]==="GET")).toBe(true);
  });
 });
+describe("P3c3b trusted branch skip UI",()=>{
+ it("requires deliberate skip confirmation and posts only the receipt command",async()=>{
+  const task={id:"task-branch",chatSessionId:"chat-a",chatSessionIds:["chat-a"],
+   rootMessageId:"original-user",originalRequest:"先出图再按类型走分支",
+   status:"ready",activePlanVersion:1,recoveryMode:"job_observation",steps:[]};
+  const cond={sourceIndex:0,kind:"image",op:"gte",count:2};
+  const inverse={sourceIndex:0,kind:"image",op:"lt",count:2};
+  const actions=[{type:"run_node",nodeId:"source",mode:"image"},
+   {type:"run_node",nodeId:"two-image-target",mode:"image",when:cond},
+   {type:"run_node",nodeId:"small-batch-target",mode:"image",when:inverse}];
+  const digest="e".repeat(64);
+  let skipped=false;
+  const calls:{method:string;url:string;payload?:Record<string,unknown>}[]=[];
+  mocks.api.mockImplementation(async(url:string,method:string,payload?:Record<string,unknown>)=>{
+   calls.push({method,url,payload});
+   if(method==="GET"&&url.includes("chatSessionId="))return {tasks:[task]};
+   if(method==="GET"&&url.endsWith("/model-calls"))return {calls:[]};
+   if(method==="GET"&&url.endsWith("/run-sequences"))return {
+    sequence:{id:"branch-1",taskId:task.id,sourceMessageId:"original-user",
+     planVersion:1,actions,status:"active"},
+    state:skipped?"ready":"skip_ready",index:skipped?2:1,
+    skip:skipped?null:{index:1,action:actions[1],sourceStepId:"job0",
+     materialStepId:"mat0",count:1,verifiedCount:1,evidenceDigest:digest},
+    branchSkips:skipped?[{index:1,receipt:{decision:"skip",receiptTrust:"server_committed",
+     condition:cond,evaluatedCount:1,evidenceDigest:digest},skippedAt:1}]:[],
+    next:skipped?{index:2,action:actions[2],dependsOn:["mat0"],last:true}:null,
+    outputs:[]
+   };
+   if(method==="GET"&&url==="/api/v1/projects/project")return {revision:3};
+   if(method==="GET")return {task};
+   if(method==="POST"&&url.endsWith("/run-sequences/skip")){
+    expect(payload).toMatchObject({runSequenceId:"branch-1",runIndex:1,
+     expectedPlanVersion:1,expectedProjectRevision:3,evidenceDigest:digest});
+    skipped=true;return {skipped:true,executionStarted:false};
+   }
+   throw Error("unexpected external call: "+method+" "+url);
+  });
+  await render();
+  expect(container!.textContent).toContain("未满足第 2 项");
+  await click("确认跳过第 2 项（仅写回执，不生成）");
+  expect(skipped).toBe(true);
+  expect(container!.textContent).toContain("已持久记录跳过：2/3");
+  expect(calls.filter(c=>c.method==="POST")).toHaveLength(1);
+  expect(calls.some(c=>c.method==="POST"&&
+   /\/external-jobs$|\/enqueue$|\/canvas-steps$/.test(c.url))).toBe(false);
+ });
+});
 describe("P3c3a explicit multi-artifact selection UI",()=>{
  it("shows two verified outputs and persists one selection without creating any Job",async()=>{
   const task={id:"task-multi",chatSessionId:"chat-a",chatSessionIds:["chat-a"],

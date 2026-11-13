@@ -11,9 +11,20 @@ export const assistantParameterKeys=[
 ] as const;
 export type AssistantParameterKey=typeof assistantParameterKeys[number];
 export type AssistantParameterValue=string|number|boolean;
+export type AssistantRunCondition={sourceIndex:0;kind:"text"|"image"|"video"|"audio";
+ op:"gte"|"lt";count:number};
+export const validAssistantRunCondition=(value:unknown):value is AssistantRunCondition=>{
+ if(!value||typeof value!=="object"||Array.isArray(value))return false;
+ const v=value as Record<string,unknown>;
+ return Object.keys(v).sort().join(",")==="count,kind,op,sourceIndex"&&
+  v.sourceIndex===0&&["text","image","video","audio"].includes(String(v.kind))&&
+  ["gte","lt"].includes(String(v.op))&&Number.isInteger(v.count)&&
+  Number(v.count)>=1&&Number(v.count)<=16;
+};
 export type AssistantExecutionAction=
- |{type:"run_node";nodeId:string;mode?:CanvasGenerationMode}
- |{type:"run_workflow";nodeId:string;inputFromPrevious?:{sourceKind:"image"|"video"|"audio";toPortId:string}};
+ |{type:"run_node";nodeId:string;mode?:CanvasGenerationMode;when?:AssistantRunCondition}
+ |{type:"run_workflow";nodeId:string;inputFromPrevious?:{sourceKind:"image"|"video"|"audio";toPortId:string};
+  when?:AssistantRunCondition};
 export type AssistantNodeRun={
  kind:"node"|"workflow";nodeId:string;mode?:CanvasGenerationMode;prompt?:string;
 };

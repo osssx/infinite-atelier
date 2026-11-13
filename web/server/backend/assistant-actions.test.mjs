@@ -48,6 +48,31 @@ test("P3c2 model may propose one typed prior-media input, never arbitrary asset 
   {type:"run_workflow",nodeId:"wf",inputFromPrevious:{sourceKind:"image",toPortId:"image_in",sha256:"a".repeat(64)}}
  ])assert.throws(()=>parseAssistantActionResponse(wrap([action])),/assistant_actions_invalid/);
 });
+test("P3c3b model parser accepts typed complementary run conditions and refuses arbitrary condition fields",()=>{
+ const wrap=actions=>JSON.stringify({answer:"受控分支生成",actions});
+ const actions=[
+  {type:"run_node",nodeId:"first",mode:"image"},
+  {type:"run_workflow",nodeId:"wf",
+   when:{sourceIndex:0,kind:"image",op:"gte",count:2}},
+  {type:"run_node",nodeId:"fallback",mode:"image",
+   when:{sourceIndex:0,kind:"image",op:"lt",count:2}}
+ ];
+ assert.deepEqual(parseAssistantActionResponse(wrap(actions)).actions,actions);
+ assert.throws(()=>parseAssistantActionResponse(wrap([
+  actions[0],actions[1],{...actions[2],when:{...actions[2].when,count:3}}
+ ])),/assistant_actions_invalid/);
+ assert.throws(()=>parseAssistantActionResponse(wrap([
+  actions[0],actions[1],{...actions[2],when:{...actions[2].when,op:"gte"}}
+ ])),/assistant_actions_invalid/);
+ assert.match(CANVAS_ACTION_SYSTEM,/mutually exclusive when fields/);
+ for(const condition of [
+  {...actions[2].when,count:0}, {...actions[2].when,sourceIndex:3},
+  {...actions[2].when,op:"shell"}, {...actions[2].when,executable:"rm"},
+  {...actions[2].when,kind:"unknown"}
+ ])assert.throws(()=>parseAssistantActionResponse(wrap([
+  actions[0],actions[1],{...actions[2],when:condition}
+ ])),/assistant_actions_invalid/);
+});
 test("P2 assistant responds with structured plan but never mutates graph in backend",async()=>{
  const recorded=[];
  const vault={

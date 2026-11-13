@@ -7,6 +7,10 @@ export type AssistantRunSequenceView={
  sequence:{id:string;taskId:string;sourceMessageId:string;planVersion:number;
   actions:AssistantRunIntent[];status:string}|null;
  state:string;index?:number;stepId?:string;
+ skip?:{index:number;action:AssistantRunIntent;sourceStepId:string;materialStepId:string;
+  count:number;verifiedCount:number;evidenceDigest:string};
+ branchSkips?:{index:number;receipt:{decision:string;receiptTrust:string;condition:{sourceIndex:0;
+  kind:string;op:string;count:number};evaluatedCount:number;evidenceDigest:string};skippedAt:number}[];
  selectionCandidates?:{artifactId:string;nodeId:string;kind:string;portId:string|null;
   itemKey:string;sha256:string;addressable:boolean}[];
  outputs?:{sourceStepId:string;materialStepId:string;runIndex:number|null;runSequenceId:string|null;

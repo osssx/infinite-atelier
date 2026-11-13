@@ -515,6 +515,9 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
     const notes:string[]=[];
      try{
        const actions=parseAssistantCanvasActions(response.actions??[]);
+       if(!linkedTaskId&&actions.some(action=>
+        (action.type==="run_node"||action.type==="run_workflow")&&action.when))
+        throw Error("条件分支需要先关联持久 Task；当前不会执行任何分支、修改画布或提交 GPU Job。");
        if(!linkedTaskId&&actions.some(action=>action.type==="run_workflow"&&action.inputFromPrevious))
         throw Error("引用上一项生成产物需要先创建关联 Task 顺序计划，不会直接运行工作流。");
        if(!actions.length)notes.push("本轮没有执行任何画布操作，画布保持不变。");

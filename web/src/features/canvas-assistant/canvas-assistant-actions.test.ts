@@ -10,6 +10,29 @@ const connection=(from:string,to:string,id="edge-1"):CanvasConnection=>
  ({id,fromNodeId:from,toNodeId:to});
 const center={x:320,y:220};
 
+describe("P3c3b typed trusted branch action validation",()=>{
+ it("accepts explicit typed conditions and rejects caller-injected branch expressions",()=>{
+  const conditional=[
+   {type:"run_node",nodeId:"first",mode:"image"},
+   {type:"run_node",nodeId:"second",mode:"image",
+    when:{sourceIndex:0,kind:"image",op:"gte",count:2}},
+   {type:"run_node",nodeId:"third",mode:"image",
+    when:{sourceIndex:0,kind:"image",op:"lt",count:2}}
+  ];
+  expect(parseAssistantCanvasActions(conditional)).toEqual(conditional);
+  expect(()=>parseAssistantCanvasActions([
+   conditional[0],conditional[1],
+   {...conditional[2],when:{sourceIndex:0,kind:"image",op:"lt",count:3}}
+  ])).toThrow(/互斥/);
+  for(const injection of [
+   {sourceIndex:0,kind:"image",op:"eval",count:2},
+   {sourceIndex:1,kind:"image",op:"lt",count:2},
+   {sourceIndex:0,kind:"image",op:"lt",count:2,assetId:"forged"},
+   {sourceIndex:0,kind:"image",op:"lt",count:0}
+  ])expect(()=>parseAssistantCanvasActions([
+   conditional[0],conditional[1],{...conditional[2],when:injection}])).toThrow();
+ });
+});
 describe("P3c2 prior generated asset action validation",()=>{
  it("requires a later action and forbids caller-supplied media identity",()=>{
   const valid=[{type:"run_node",nodeId:"source",mode:"image"},

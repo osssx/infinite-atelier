@@ -1,11 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {DatabaseSync} from "node:sqlite";
+import {DatabaseSync,backup} from "node:sqlite";
+import {mkdtempSync,rmSync} from "node:fs";
+import {join} from "node:path";
+import {tmpdir} from "node:os";
+import {buildApp} from "./app.mjs";
 import {initializeSchema,SCHEMA_VERSION} from "./schema.mjs";
 import {createProject} from "./projects.mjs";
 import {fingerprintSource} from "./repository.mjs";
 import {createAssistantTask,getAssistantTask} from "./assistant-tasks.mjs";
-import {registerAssistantRunSequence,getAssistantRunSequence} from "./assistant-task-run-sequences.mjs";
+import {registerAssistantRunSequence,getAssistantRunSequence,skipAssistantRunBranch} from "./assistant-task-run-sequences.mjs";
 import {planAssistantExternalJobStep,enqueueAssistantExternalJobStep,reconcileAssistantExternalTask,
  recoverAssistantExternalTasksAtStartup} from "./assistant-task-external-jobs.mjs";
 import {decideAssistantTaskStep} from "./assistant-task-step-gate.mjs";
@@ -28,7 +32,7 @@ function capture(ctx,requestId="capture",act=actions){
   expectedPlanVersion:1,expectedProjectRevision:1,actions:act});
 }
 function plan(ctx,seq,index,dependsOn){
- const nodeId=actions[index].nodeId;
+ const nodeId=(ctx.branchActions??actions)[index].nodeId;
  return planAssistantExternalJobStep(ctx.db,{...ctx.base,
   requestId:"planned-"+index,kind:"model_job",expectedPlanVersion:1,
   expectedProjectRevision:1,
@@ -55,13 +59,155 @@ function complete(ctx,jobId,index){
   .get(ctx.base.taskId,jobId);
  assert.ok(material);
  ctx.db.prepare("INSERT INTO materializations(id,job_id,artifact_id,project_id,status,node_id) VALUES(?,?,?,'p','materialized',?)")
-  .run("mat-"+index,jobId,artifact,actions[index].nodeId);
+  .run("mat-"+index,jobId,artifact,(ctx.branchActions??actions)[index].nodeId);
  reconcileAssistantExternalTask(ctx.db,ctx.base);
  return material.id;
 }
+const branchActions=kind=>[
+ {type:"run_node",nodeId:"first",mode:"text"},
+ {type:"run_node",nodeId:"second",mode:"text",
+  when:{sourceIndex:0,kind,op:"gte",count:1}},
+ {type:"run_node",nodeId:"third",mode:"text",
+  when:{sourceIndex:0,kind,op:"lt",count:1}}
+];
+function branchFixture(t,kind="text"){
+ const ctx=setup(t);ctx.branchActions=branchActions(kind);
+ const seq=capture(ctx,"branch-seq",ctx.branchActions);
+ const first=plan(ctx,seq,0,[]),job=send(ctx,first,0),mat=complete(ctx,job.jobId,0);
+ return {ctx,seq,first,jobId:job.jobId,mat};
+}
+function skipBranch(ctx,seq,index,requestId="skip-"+index,overrides={}){
+ const state=getAssistantRunSequence(ctx.db,ctx.base);
+ return skipAssistantRunBranch(ctx.db,{...ctx.base,requestId,runSequenceId:seq.sequenceId,
+  runIndex:index,expectedPlanVersion:1,expectedProjectRevision:1,
+  evidenceDigest:state.skip?.evidenceDigest??"0".repeat(64),...overrides});
+}
+test("P3c3b trusted count chooses gte branch, skips lt branch with durable receipt and no third Job",t=>{
+ const {ctx,seq,mat}=branchFixture(t,"text");
+ assert.equal(getAssistantRunSequence(ctx.db,ctx.base).state,"ready");
+ assert.equal(getAssistantRunSequence(ctx.db,ctx.base).next.index,1);
+ assert.throws(()=>skipBranch(ctx,seq,2),{code:"assistant_task_run_branch_not_ready"});
+ const second=plan(ctx,seq,1,[mat]),paid=send(ctx,second,1);
+ complete(ctx,paid.jobId,1);
+ const next=getAssistantRunSequence(ctx.db,ctx.base);
+ assert.equal(next.state,"skip_ready");
+ assert.equal(next.index,2);
+ assert.equal(next.skip.count,1);
+ assert.equal(next.skip.verifiedCount,1);
+ assert.equal(ctx.db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n,2);
+ assert.throws(()=>skipBranch(ctx,seq,2,"wrong-proof",{evidenceDigest:"0".repeat(64)}),{
+  code:"assistant_task_run_branch_not_ready"});
+ assert.equal(ctx.db.prepare("SELECT COUNT(*) AS n FROM assistant_task_run_branch_skips").get().n,0);
+ const result=skipBranch(ctx,seq,2);
+ assert.equal(result.skipped,true);
+ assert.equal(result.completed,true);
+ assert.equal(result.receipt.receiptTrust,"server_committed");
+ assert.equal(skipBranch(ctx,seq,2,"skip-2",{evidenceDigest:next.skip.evidenceDigest}).existing,true);
+ assert.equal(getAssistantRunSequence(ctx.db,ctx.base).state,"completed");
+ assert.equal(getAssistantRunSequence(ctx.db,ctx.base).branchSkips[0].index,2);
+ assert.equal(getAssistantTask(ctx.db,ctx.base).task.status,"completed");
+ assert.equal(ctx.db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n,2);
+ assert.equal(ctx.db.prepare("SELECT COUNT(*) AS n FROM assistant_task_run_branch_skips").get().n,1);
+});
+test("P3c3b trusted zero image count skips gte branch then runs lt branch with separate paid approval",t=>{
+ const {ctx,seq,mat}=branchFixture(t,"image");
+ const before=getAssistantRunSequence(ctx.db,ctx.base);
+ assert.equal(before.state,"skip_ready");
+ assert.equal(before.index,1);
+ assert.equal(before.skip.count,0);
+ assert.equal(ctx.db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n,1);
+ const result=skipBranch(ctx,seq,1);
+ assert.equal(result.completed,false);
+ const follow=getAssistantRunSequence(ctx.db,ctx.base);
+ assert.equal(follow.state,"ready");
+ assert.equal(follow.next.index,2);
+ assert.deepEqual(follow.next.dependsOn,[mat]);
+ assert.equal(ctx.db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n,1);
+ assert.throws(()=>plan(ctx,seq,1,[mat]),{code:"assistant_task_run_not_ready"});
+ const third=plan(ctx,seq,2,[mat]);
+ assert.equal(ctx.db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n,1);
+ assert.equal(getAssistantRunSequence(ctx.db,ctx.base).state,"waiting_approval");
+ const paid=send(ctx,third,2);
+ assert.equal(ctx.db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n,2);
+ complete(ctx,paid.jobId,2);
+ assert.equal(getAssistantRunSequence(ctx.db,ctx.base).state,"completed");
+ assert.equal(getAssistantTask(ctx.db,ctx.base).task.status,"completed");
+});
+test("P3c3b never interprets missing CAS or unverified materialization as the zero-count branch",t=>{
+ const {ctx,seq}=branchFixture(t,"image");
+ ctx.db.prepare("UPDATE blobs SET status='missing' WHERE id='blob-0'").run();
+ assert.equal(getAssistantRunSequence(ctx.db,ctx.base).state,"awaiting_verified_branch_evidence");
+ assert.throws(()=>skipBranch(ctx,seq,1),{code:"assistant_task_run_branch_not_ready"});
+ assert.equal(ctx.db.prepare("SELECT COUNT(*) AS n FROM assistant_task_run_branch_skips").get().n,0);
+ assert.equal(ctx.db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n,1);
+ ctx.db.prepare("UPDATE blobs SET status='ready' WHERE id='blob-0'").run();
+ assert.equal(getAssistantRunSequence(ctx.db,ctx.base).state,"skip_ready");
+ skipBranch(ctx,seq,1);
+ ctx.db.prepare("UPDATE blobs SET status='missing' WHERE id='blob-0'").run();
+ assert.equal(getAssistantRunSequence(ctx.db,ctx.base).state,"branch_evidence_invalidated");
+ assert.equal(ctx.db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n,1);
+});
+test("P3c3b validates a single complementary trusted source; malformed branches leave zero Steps",t=>{
+ const ctx=setup(t);
+ const base=branchActions("text");
+ const invalid=[
+  [base[0],base[1]], // only 2 run actions
+  [base[0],base[1],{...base[2],when:{...base[2].when,op:"gte"}}],
+  [base[0],base[1],{...base[2],when:{...base[2].when,count:2}}],
+  [{...base[0],when:base[1].when},base[1],base[2]],
+  [base[0],{...base[1],when:{...base[1].when,sourceIndex:1}},base[2]],
+  [base[0],{...base[1],when:{...base[1].when,kind:"missing"}},base[2]]
+ ];
+ for(const [n,actions] of invalid.entries())
+  assert.throws(()=>registerAssistantRunSequence(ctx.db,{...ctx.base,requestId:"invalid-branch-"+n,
+   sourceMessageId:"invalid-branch-"+n,expectedPlanVersion:1,expectedProjectRevision:1,actions}),
+   {code:"assistant_task_run_branch_invalid"});
+ assert.equal(ctx.db.prepare("SELECT COUNT(*) AS n FROM assistant_task_run_sequences").get().n,0);
+ assert.equal(ctx.db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n,0);
+});
+test("P3c3b HTTP skip command is approval-independent, idempotent and never creates a Job",async t=>{
+ const {ctx,seq}=branchFixture(t,"image"),app=buildApp({db:ctx.db,authorize:()=>true});
+ t.after(async()=>app.close());
+ const base="/api/v1/projects/p/assistant/tasks/"+ctx.base.taskId+"/run-sequences";
+ const call=async(method,url,payload)=>{
+  const r=await app.inject({method,url,...(payload?{payload}:{})});
+  return {status:r.statusCode,body:r.json()};
+ };
+ const state=(await call("GET",base)).body;
+ assert.equal(state.state,"skip_ready");
+ const body={requestId:"http-skip",runSequenceId:seq.sequenceId,runIndex:1,
+  expectedPlanVersion:1,expectedProjectRevision:1,evidenceDigest:state.skip.evidenceDigest};
+ const fake=await call("POST",base+"/skip",{...body,requestId:"fake-digest",
+  evidenceDigest:"0".repeat(64)});
+ assert.equal(fake.status,409);
+ assert.equal((await call("POST",base+"/skip",body)).body.skipped,true);
+ assert.equal((await call("POST",base+"/skip",body)).body.existing,true);
+ assert.equal((await call("GET",base)).body.next.index,2);
+ assert.equal(ctx.db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n,1);
+ assert.equal(ctx.db.prepare("SELECT COUNT(*) AS n FROM assistant_task_run_branch_skips").get().n,1);
+});
+test("P3c3b persisted skip survives SQLite restart, preserves existing Job and remains immutable",async t=>{
+ const {ctx,seq}=branchFixture(t,"image");
+ skipBranch(ctx,seq,1);
+ const dir=mkdtempSync(join(tmpdir(),"atelier-p3c3b-")),file=join(dir,"branch.sqlite");
+ let reopened;
+ t.after(()=>{try{reopened?.close()}catch{};rmSync(dir,{recursive:true,force:true})});
+ await backup(ctx.db,file);
+ reopened=new DatabaseSync(file);initializeSchema(reopened);
+ const next=getAssistantRunSequence(reopened,ctx.base);
+ assert.equal(next.state,"ready");assert.equal(next.next.index,2);
+ assert.equal(next.branchSkips.length,1);
+ assert.equal(reopened.prepare("SELECT COUNT(*) AS n FROM jobs").get().n,1);
+ assert.equal(recoverAssistantExternalTasksAtStartup(reopened).advanced,0);
+ assert.throws(()=>skipAssistantRunBranch(reopened,{...ctx.base,requestId:"switch-branch",
+  runSequenceId:seq.sequenceId,runIndex:2,expectedPlanVersion:1,
+  expectedProjectRevision:1,evidenceDigest:next.branchSkips[0].receipt.evidenceDigest}),
+  {code:"assistant_task_run_branch_not_ready"});
+ assert.equal(reopened.prepare("SELECT COUNT(*) AS n FROM jobs").get().n,1);
+});
 test("P3b freeze two intents; one Job at a time; approval and materialization gate next",t=>{
  const ctx=setup(t);
- assert.equal(SCHEMA_VERSION,29);
+ assert.equal(SCHEMA_VERSION,30);
  const seq=capture(ctx);
  assert.equal(seq.count,2);
  assert.equal(capture(ctx).sequenceId,seq.sequenceId);

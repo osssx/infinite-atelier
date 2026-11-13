@@ -20,6 +20,14 @@ function taskWithGraph(db,projectId,taskId){
  if(!task)throw fail("assistant_task_not_found",404);
  return task;
 }
+const conditionKinds=new Set(["text","image","video","audio"]);
+function validBranchCondition(value){
+ return value&&typeof value==="object"&&!Array.isArray(value)&&
+  Object.keys(value).sort().join(",")==="count,kind,op,sourceIndex"&&
+  value.sourceIndex===0&&conditionKinds.has(value.kind)&&
+  ["gte","lt"].includes(value.op)&&Number.isInteger(value.count)&&
+  value.count>=1&&value.count<=16;
+}
 function validActions(actions,doc){
  if(!Array.isArray(actions)||actions.length<2||actions.length>3)
   throw fail("assistant_task_run_invalid",400);
@@ -29,7 +37,7 @@ function validActions(actions,doc){
    !id(action.nodeId)||used.has(action.nodeId))throw fail("assistant_task_run_invalid",400);
   const node=nodes.get(action.nodeId);
   if(action.type==="run_workflow"){
-   if(Object.keys(action).some(k=>!["type","nodeId","inputFromPrevious"].includes(k))||
+   if(Object.keys(action).some(k=>!["type","nodeId","inputFromPrevious","when"].includes(k))||
     node?.type!=="comfy:workflow"||!node.metadata?.comfyWorkflow?.templateId||
     !node.metadata?.comfyWorkflow?.templateRevision)throw fail("assistant_task_run_target_invalid",400);
    if(action.inputFromPrevious!==undefined){
@@ -40,13 +48,23 @@ function validActions(actions,doc){
      throw fail("assistant_task_run_input_invalid",400);
    }
   }else if(action.type==="run_node"){
-   if(Object.keys(action).some(k=>!["type","nodeId","mode"].includes(k))||
+   if(Object.keys(action).some(k=>!["type","nodeId","mode","when"].includes(k))||
     !["text","image","video","audio","config"].includes(node?.type)||
     (action.mode!==undefined&&!modes.has(action.mode)))throw fail("assistant_task_run_target_invalid",400);
    const mode=node.type==="config"?(node.metadata?.generationMode??"image"):node.type;
    if(action.mode!==undefined&&action.mode!==mode)throw fail("assistant_task_run_target_invalid",400);
   }else throw fail("assistant_task_run_invalid",400);
   used.add(action.nodeId);
+  if(action.when!==undefined&&(index===0||!validBranchCondition(action.when)))
+   throw fail("assistant_task_run_branch_invalid",400);
+ }
+ const conditioned=actions.filter(action=>action.when);
+ if(conditioned.length){
+  if(actions.length!==3||conditioned.length!==2||!actions[1].when||!actions[2].when||
+   actions[1].when.kind!==actions[2].when.kind||
+   actions[1].when.count!==actions[2].when.count||
+   actions[1].when.op===actions[2].when.op)
+   throw fail("assistant_task_run_branch_invalid",400);
  }
 }
 const mediaKinds={image:"IMAGE",video:"VIDEO",audio:"AUDIO"};
@@ -59,7 +77,7 @@ function bindingStepFor(db,seq,index){
 function candidateOutputs(db,projectId,task,seq,action,index,dep){
  const graph=JSON.parse(task.document_json);
  return trustedAssistantTaskOutputs(db,{projectId,taskId:seq.task_id,planVersion:seq.plan_version})
-  .filter(out=>out.runSequenceId===seq.id&&out.runIndex===index-1&&
+  .filter(out=>out.runSequenceId===seq.id&&out.runIndex===(action.when?.sourceIndex??index-1)&&
    out.materialStepId===dep&&out.kind===action.inputFromPrevious.sourceKind&&
    graph.nodes.some(node=>node.id===out.nodeId&&node.type===out.kind))
   .map(out=>({...out,addressable:graph.nodes.some(node=>node.id===out.nodeId&&
@@ -129,6 +147,31 @@ function verifiedMaterialization(db,seq,jobStepId){
   JSON.parse(row.depends_on_json).includes(jobStepId));
 }
 
+/** Require complete trusted producer+materialization evidence; a missing CAS is NOT zero output. */
+function branchEvidenceFor(db,projectId,task,seq,action){
+ const source=stepFor(db,seq,0);
+ if(!source||source.status!=="succeeded"||source.receipt_trust!=="server_committed")return null;
+ const material=verifiedMaterialization(db,seq,source.id);
+ if(!material)return null;
+ const sourceReceipt=JSON.parse(source.receipt_json);
+ const items=Array.isArray(sourceReceipt?.artifactIds)?sourceReceipt.artifactIds:null;
+ if(!items||items.length===0||items.length>64||new Set(items).size!==items.length)return null;
+ const outputs=trustedAssistantTaskOutputs(db,{projectId,taskId:seq.task_id,planVersion:seq.plan_version})
+  .filter(out=>out.runSequenceId===seq.id&&out.runIndex===0&&
+   out.sourceStepId===source.id&&out.materialStepId===material.id);
+ if(outputs.length!==items.length||outputs.some(out=>!items.includes(out.artifactId)))return null;
+ const verified=outputs.map(out=>({artifactId:out.artifactId,sha256:out.sha256,
+  kind:out.kind,nodeId:out.nodeId})).sort((a,b)=>a.artifactId.localeCompare(b.artifactId));
+ const count=outputs.filter(out=>out.kind===action.when.kind).length;
+ const shouldRun=action.when.op==="gte"?count>=action.when.count:count<action.when.count;
+ return {sourceStepId:source.id,materialStepId:material.id,count,shouldRun,
+  evidenceDigest:hash({sequenceId:seq.id,planVersion:seq.plan_version,sourceStepId:source.id,
+   materialStepId:material.id,condition:action.when,verified}),verifiedCount:verified.length};
+}
+function branchSkipRow(db,seq,index){
+ return db.prepare("SELECT * FROM assistant_task_run_branch_skips WHERE sequence_id=? AND run_index=?")
+  .get(seq.id,index);
+}
 export function nextAssistantRunInTransaction(db,projectId,taskId,seq){
  const task=taskWithGraph(db,projectId,taskId),actions=JSON.parse(seq.actions_json);
  const out={sequence:projection(seq),next:null};
@@ -147,7 +190,25 @@ export function nextAssistantRunInTransaction(db,projectId,taskId,seq){
    dep=mat.id;
    continue;
   }
-   const action=actions[index],bindingStep=action.type==="run_workflow"&&
+   const action=actions[index];
+   const skip=branchSkipRow(db,seq,index);
+   if(skip){
+    const proof=action.when&&branchEvidenceFor(db,projectId,task,seq,action);
+    if(!proof||proof.shouldRun||proof.evidenceDigest!==skip.evidence_digest||
+     proof.sourceStepId!==skip.source_step_id||
+     proof.materialStepId!==skip.material_step_id)
+     return {...out,state:"branch_evidence_invalidated",index};
+    continue;
+   }
+   if(action.when){
+    const proof=branchEvidenceFor(db,projectId,task,seq,action);
+    if(!proof)return {...out,state:"awaiting_verified_branch_evidence",index};
+    if(!proof.shouldRun)return {...out,state:"skip_ready",index,
+     skip:{index,action,sourceStepId:proof.sourceStepId,
+      materialStepId:proof.materialStepId,count:proof.count,
+      verifiedCount:proof.verifiedCount,evidenceDigest:proof.evidenceDigest}};
+   }
+   const bindingStep=action.type==="run_workflow"&&
     action.inputFromPrevious?bindingStepFor(db,seq,index):null;
    if(bindingStep&&(bindingStep.status!=="succeeded"||bindingStep.receipt_trust!=="server_committed"))
     return {...out,state:bindingStep.status,stepId:bindingStep.id,index};
@@ -191,8 +252,10 @@ export function getAssistantRunSequence(db,{projectId,taskId}){
  const task=taskWithGraph(db,projectId,taskId);
  const seq=sequenceRows(db,taskId,task.active_plan_version).at(-1);
  const state=seq?nextAssistantRunInTransaction(db,projectId,taskId,seq):{sequence:null,state:"none",next:null};
+ const branchSkips=seq?db.prepare("SELECT run_index,receipt_json,skipped_at FROM assistant_task_run_branch_skips WHERE sequence_id=? ORDER BY run_index")
+  .all(seq.id).map(row=>({index:row.run_index,receipt:JSON.parse(row.receipt_json),skippedAt:row.skipped_at})):[];
  const outputs=trustedAssistantTaskOutputs(db,{projectId,taskId,planVersion:task.active_plan_version});
- return {...state,outputs:seq?outputs.filter(output=>output.runSequenceId===seq.id):outputs};
+ return {...state,branchSkips,outputs:seq?outputs.filter(output=>output.runSequenceId===seq.id):outputs};
 }
 export function registerAssistantRunSequence(db,{projectId,taskId,requestId,sourceMessageId,
  expectedPlanVersion,expectedProjectRevision,actions}){
@@ -238,6 +301,54 @@ export function registerAssistantRunSequence(db,{projectId,taskId,requestId,sour
    executionStarted:false,status:"planned"};
   db.prepare("INSERT INTO assistant_task_commands(project_id,request_id,task_id,command_kind,payload_digest,status,response_json,created_at) VALUES(?,?,?,'run_sequence',?,'completed',?,?)")
    .run(projectId,requestId,taskId,digest,stableJson(response),now);
+  return {...response,existing:false};
+ });
+}
+/** Persist a server-computed false branch; no Job, graph mutation, Skill or provider side effects.
+ * The evidence digest is bound to immutable producer/Materialize receipts and CAS identities.
+ */
+export function skipAssistantRunBranch(db,{projectId,taskId,requestId,runSequenceId,runIndex,
+ expectedPlanVersion,expectedProjectRevision,evidenceDigest}){
+ if(!id(requestId)||!id(runSequenceId)||!Number.isInteger(runIndex)||runIndex<1||runIndex>2||
+  !Number.isSafeInteger(expectedPlanVersion)||expectedPlanVersion<1||
+  !Number.isSafeInteger(expectedProjectRevision)||expectedProjectRevision<1||
+  typeof evidenceDigest!=="string"||!/^[a-f0-9]{64}$/.test(evidenceDigest))
+  throw fail("assistant_task_run_branch_invalid",400);
+ const payload={taskId,runSequenceId,runIndex,expectedPlanVersion,expectedProjectRevision,evidenceDigest};
+ const digest=hash(payload);
+ return writeTransaction(db,()=>{
+  const prior=db.prepare("SELECT command_kind,payload_digest,response_json FROM assistant_task_commands WHERE project_id=? AND request_id=?").get(projectId,requestId);
+  if(prior){
+   if(prior.command_kind!=="run_branch_skip"||prior.payload_digest!==digest)
+    throw fail("assistant_task_command_conflict");
+   return {...JSON.parse(prior.response_json),existing:true};
+  }
+  const task=taskWithGraph(db,projectId,taskId);
+  if(task.read_only||task.cancel_requested_at!==null||terminal.has(task.status)||
+   task.active_plan_version!==expectedPlanVersion||task.revision!==expectedProjectRevision)
+   throw fail("assistant_task_run_branch_not_ready");
+  const seq=db.prepare("SELECT * FROM assistant_task_run_sequences WHERE id=? AND task_id=? AND project_id=? AND plan_version=? AND status='active'")
+   .get(runSequenceId,taskId,projectId,expectedPlanVersion);
+  if(!seq)throw fail("assistant_task_run_not_found",404);
+  const state=nextAssistantRunInTransaction(db,projectId,taskId,seq);
+  if(state.state!=="skip_ready"||state.index!==runIndex||
+   !state.skip||state.skip.evidenceDigest!==evidenceDigest)
+   throw fail("assistant_task_run_branch_not_ready");
+  const skip=state.skip,at=Date.now(),actions=JSON.parse(seq.actions_json);
+  const receipt={decision:"skip",receiptTrust:"server_committed",
+   runIndex,condition:skip.action.when,evaluatedCount:skip.count,
+   verifiedCount:skip.verifiedCount,sourceStepId:skip.sourceStepId,
+   materialStepId:skip.materialStepId,evidenceDigest};
+  db.prepare("INSERT INTO assistant_task_run_branch_skips(sequence_id,task_id,project_id,plan_version,run_index,source_step_id,material_step_id,evidence_digest,receipt_json,skipped_at) VALUES(?,?,?,?,?,?,?,?,?,?)")
+   .run(seq.id,taskId,projectId,expectedPlanVersion,runIndex,skip.sourceStepId,
+    skip.materialStepId,evidenceDigest,stableJson(receipt),at);
+  if(runIndex===actions.length-1)db.prepare("UPDATE assistant_tasks SET status='completed',updated_at=? WHERE id=? AND status IN ('ready','planning')").run(at,taskId);
+  db.prepare("INSERT INTO assistant_task_events(task_id,kind,payload_json,created_at) VALUES(?,?,?,?)")
+   .run(taskId,"run_branch_skipped",stableJson({sequenceId:seq.id,receipt}),at);
+  const response={sequenceId:seq.id,runIndex,skipped:true,
+   completed:runIndex===actions.length-1,receipt,executionStarted:false};
+  db.prepare("INSERT INTO assistant_task_commands(project_id,request_id,task_id,command_kind,payload_digest,status,response_json,created_at) VALUES(?,?,?,'run_branch_skip',?,'completed',?,?)")
+   .run(projectId,requestId,taskId,digest,stableJson(response),at);
   return {...response,existing:false};
  });
 }
@@ -328,7 +439,7 @@ export function verifyAssistantCommittedRunInput(db,{projectId,taskId,runSequenc
   .get(runSequenceId,taskId,projectId,expectedPlanVersion);
  if(!seq)throw fail("assistant_task_run_not_found",404);
  const task=taskWithGraph(db,projectId,taskId),list=JSON.parse(seq.actions_json);
- const action=list[runBindingIndex],preceding=stepFor(db,seq,runBindingIndex-1);
+ const action=list[runBindingIndex],preceding=stepFor(db,seq,action?.when?.sourceIndex??runBindingIndex-1);
  if(task.active_plan_version!==expectedPlanVersion||action?.type!=="run_workflow"||
   !action.inputFromPrevious||!preceding||preceding.status!=="succeeded"||
   preceding.receipt_trust!=="server_committed")throw fail("assistant_task_run_not_ready");

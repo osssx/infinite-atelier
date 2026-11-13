@@ -6,7 +6,7 @@ import {decideAssistantTaskStep} from "./assistant-task-step-gate.mjs";
 import {planAssistantCanvasStep,executeAssistantCanvasStep} from "./assistant-task-canvas-executor.mjs";
 import {planAssistantExternalJobStep,enqueueAssistantExternalJobStep,reconcileAssistantExternalTask} from "./assistant-task-external-jobs.mjs";
 import {planAssistantSkillStep,executeAssistantSkillStep} from "./assistant-task-skills.mjs";
-import {registerAssistantRunSequence,getAssistantRunSequence,selectAssistantRunInput} from "./assistant-task-run-sequences.mjs";
+import {registerAssistantRunSequence,getAssistantRunSequence,selectAssistantRunInput,skipAssistantRunBranch} from "./assistant-task-run-sequences.mjs";
 import {inspectAssistantTaskRecovery,replanAssistantTaskSafely} from "./assistant-task-safe-replan.mjs";
 
 const id={type:"string",pattern:"^[A-Za-z0-9_-]{1,128}$"};
@@ -73,6 +73,12 @@ const runInputSelectionBody={type:"object",additionalProperties:false,
  properties:{requestId:id,runSequenceId:id,runIndex:{type:"integer",minimum:1,maximum:2},
   artifactId:id,expectedPlanVersion:{type:"integer",minimum:1},
   expectedProjectRevision:{type:"integer",minimum:1}}};
+const runBranchSkipBody={type:"object",additionalProperties:false,
+ required:["requestId","runSequenceId","runIndex","evidenceDigest","expectedPlanVersion","expectedProjectRevision"],
+ properties:{requestId:id,runSequenceId:id,runIndex:{type:"integer",minimum:1,maximum:2},
+  evidenceDigest:{type:"string",pattern:"^[a-f0-9]{64}$"},
+  expectedPlanVersion:{type:"integer",minimum:1},
+  expectedProjectRevision:{type:"integer",minimum:1}}};
 const skillProposal={type:"object",additionalProperties:false,
  required:["skill_id","version"],properties:{
  skill_id:{type:"string",pattern:"^[a-z0-9]+(?:-[a-z0-9]+)*$",maxLength:80},
@@ -125,6 +131,9 @@ export function registerAssistantTaskRoutes(app,db,{skillRegistry,blobStore}={})
   app.post(base+"/:taskId/run-sequences/select",{schema:{params:taskParams,body:runInputSelectionBody}},
    (req,reply)=>result(reply,selectAssistantRunInput(db,{
     projectId:req.params.id,taskId:req.params.taskId,...req.body})));
+ app.post(base+"/:taskId/run-sequences/skip",{schema:{params:taskParams,body:runBranchSkipBody}},
+  (req,reply)=>result(reply,skipAssistantRunBranch(db,{
+   projectId:req.params.id,taskId:req.params.taskId,...req.body})));
  // Local Job queue creation, Attempt and Step are one transaction.
  // No provider request is performed in these routes.
  app.post(base+"/:taskId/external-jobs",{bodyLimit:600*1024,

@@ -7,7 +7,7 @@ export type AssistantTaskFrozenJob={
  kind:"model_job"|"comfy_workflow";status:string;existing?:boolean
 };
 export type AssistantTaskJobContext={
- taskId:string;messageId:string;
+ taskId:string;messageId:string;runSequenceId?:string;runIndex?:number;
  confirm:(step:AssistantTaskFrozenJob,payload:Record<string,unknown>)=>Promise<boolean>;
 };
 const taskPath=(projectId:string,taskId:string)=>"/api/v1/projects/"+
@@ -38,6 +38,9 @@ export async function submitAssistantTaskFrozenJob({
   Array.isArray(payload.snapshot))
   throw Error("assistant_task_job_snapshot_invalid");
  const snapshot=payload.snapshot as Record<string,unknown>;
+ if((context.runSequenceId===undefined)!==(context.runIndex===undefined)||
+  context.runIndex!==undefined&&context.runIndex!==actionIndex)
+  throw Error("assistant_task_run_sequence_conflict");
  if(snapshot.adapterKind!=="model"&&snapshot.adapterKind!=="comfy")
   throw Error("assistant_task_job_snapshot_invalid");
  const kind=snapshot.adapterKind==="comfy"?"comfy_workflow":"model_job";
@@ -55,7 +58,8 @@ export async function submitAssistantTaskFrozenJob({
    executionMode:payload.executionMode,snapshot,
    ...(typeof payload.skillAuthorizationId==="string"?
     {skillAuthorizationId:payload.skillAuthorizationId}:{})},
-  dependsOn
+  dependsOn,
+  ...(context.runSequenceId?{runSequenceId:context.runSequenceId,runIndex:actionIndex}:{})
  },signal);
  if(plan.kind!==kind||!plan.stepId||!plan.actionDigest)
   throw Error("assistant_task_job_plan_invalid");

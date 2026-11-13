@@ -1,3 +1,5 @@
+import {applyFrozenComfyMediaParameter} from "./assistant-task-comfy-media-param.mjs";
+
 /** Task-only, server-side Comfy instance operations. The current bound template
  * revision is looked up from the immutable SQLite registry, not a model-claimed
  * port schema or the browser's transient workflow editor.
@@ -53,8 +55,12 @@ const reached=(from,to,links)=>{
   for(const e of links)if(e.fromNodeId===n)stack.push(e.toNodeId);
  }return false;
 };
-export function applyFrozenComfyAction({document,action,edgeId,resolve,loadTemplate}){
+export function applyFrozenComfyAction({document,action,edgeId,resolve,loadTemplate,config}){
  const nodes=document.nodes,connections=document.connections;
+ if(action.type==="set_workflow_param"&&nodes.find(n=>n.id===resolve(action.nodeId))?.type!=="comfy:workflow"){
+  applyFrozenComfyMediaParameter({document,action,resolve,loadTemplate,config});
+  return;
+ }
  const targetId=action.toNodeId??action.nodeId,targetPort=action.toPortId??action.portId;
  const {node,port}=pinnedPort(nodes,targetId,targetPort,loadTemplate,resolve);
  const incoming=()=>connections.filter(c=>c.toNodeId===node.id&&c.toPortId===port.id);

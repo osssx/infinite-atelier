@@ -1,6 +1,7 @@
 import {createHash,randomUUID} from "node:crypto";
 import {EXECUTION_MODES} from "./contracts.mjs";
 import {assertNoRawCredentials,stableJson,writeTransaction,submitJobInTransaction} from "./repository.mjs";
+import {verifyAssistantRunSequenceJob,assertNoPendingAssistantRunSequence} from "./assistant-task-run-sequences.mjs";
 
 const fail=(code,statusCode=409)=>Object.assign(Error(code),{code,statusCode});
 const id=v=>typeof v==="string"&&/^[A-Za-z0-9_-]{1,128}$/.test(v);
@@ -76,14 +77,17 @@ function jobShape(kind,job,revision){
  * Only a later approval + atomic enqueue can create the unique local Job.
  */
 export function planAssistantExternalJobStep(db,{projectId,taskId,requestId,kind,
- expectedPlanVersion,expectedProjectRevision,job,dependsOn=[],finalizeTask=false}){
+ expectedPlanVersion,expectedProjectRevision,job,dependsOn=[],finalizeTask=false,
+ runSequenceId,runIndex}){
  if(!id(requestId)||!["model_job","comfy_workflow"].includes(kind)||
   !Number.isSafeInteger(expectedPlanVersion)||expectedPlanVersion<1||
   !Number.isSafeInteger(expectedProjectRevision)||expectedProjectRevision<1||
   typeof finalizeTask!=="boolean")throw fail("assistant_external_invalid",400);
  const frozenJob=jobShape(kind,job,expectedProjectRevision);
  const action={kind,job:frozenJob};
- const payload={taskId,expectedPlanVersion,expectedProjectRevision,action,dependsOn,finalizeTask};
+ if((runSequenceId===undefined)!==(runIndex===undefined))throw fail("assistant_task_run_invalid",400);
+ const payload={taskId,expectedPlanVersion,expectedProjectRevision,action,dependsOn,finalizeTask,
+  ...(runSequenceId!==undefined?{runSequenceId,runIndex}:{})};
  return writeTransaction(db,()=>{
   const {signature,response}=known(db,projectId,requestId,"external_plan",payload);
   if(response)return {...response,existing:true};
@@ -94,17 +98,23 @@ export function planAssistantExternalJobStep(db,{projectId,taskId,requestId,kind
   if(task.revision!==expectedProjectRevision)throw fail("assistant_step_source_changed");
   if(db.prepare("SELECT 1 FROM assistant_task_steps WHERE task_id=? AND plan_version=? AND superseded_at IS NULL AND status IN ('pending','ready','waiting_approval','submitting','running','waiting_external','needs_reconcile') LIMIT 1")
    .get(taskId,expectedPlanVersion))throw fail("assistant_step_already_planned");
+  if(runSequenceId===undefined)assertNoPendingAssistantRunSequence(db,{projectId,taskId});
+  const sequence=runSequenceId!==undefined?verifyAssistantRunSequenceJob(db,{
+   projectId,taskId,runSequenceId,runIndex,expectedPlanVersion,job:frozenJob,kind,dependsOn}):null;
+  if(sequence&&finalizeTask)throw fail("assistant_task_run_invalid",400);
   const ordinal=db.prepare("SELECT COALESCE(MAX(ordinal)+1,0) AS n FROM assistant_task_steps WHERE task_id=? AND plan_version=?").get(taskId,expectedPlanVersion).n;
   dependencyCheck(db,taskId,expectedPlanVersion,ordinal,dependsOn);
   const stepId=randomUUID(),actionDigest=hash(action),at=Date.now();
   const pre={projectRevision:expectedProjectRevision,
    projectGraphDigest:hash(JSON.parse(task.document_json)),
-   requiresApproval:true,finalizeTask};
+   requiresApproval:true,finalizeTask:sequence?.finalizeTask??finalizeTask,
+   ...(sequence?{runSequenceId,runIndex}:{})};
   db.prepare("INSERT INTO assistant_task_steps(id,task_id,plan_version,ordinal,kind,status,required,depends_on_json,action_json,action_digest,preconditions_json,created_at,updated_at) VALUES(?,?,?,?,?,'waiting_approval',1,?,?,?,?,?,?)")
    .run(stepId,taskId,expectedPlanVersion,ordinal,kind,freeze(dependsOn),freeze(action,550*1024),actionDigest,freeze(pre),at,at);
   db.prepare("UPDATE assistant_tasks SET status='waiting_approval',updated_at=? WHERE id=?").run(at,taskId);
   event(db,taskId,stepId,"external_step_frozen",{kind,actionDigest,
-   targetNodeId:frozenJob.targetNodeId,adapterKind:frozenJob.snapshot.adapterKind},at);
+   targetNodeId:frozenJob.targetNodeId,adapterKind:frozenJob.snapshot.adapterKind,
+   ...(sequence?{runSequenceId,runIndex}:{})},at);
   const value={taskId,stepId,kind,planVersion:expectedPlanVersion,actionDigest,
    status:"waiting_approval",executionStarted:false};
   saveCommand(db,projectId,taskId,requestId,"external_plan",signature,value);

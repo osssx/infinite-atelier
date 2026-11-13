@@ -19,6 +19,7 @@ import {canvasResourceReferenceToken,type CanvasResourceReference} from "@/lib/c
 import {collectAssistantImageMentions} from "./canvas-assistant-visual-mentions";
 import {prioritizeAssistantResourceReferences} from "./canvas-assistant-resources";
 import {createSkillTextArtifactActions} from "./canvas-assistant-skill-artifacts";
+import {freezeAssistantRunSequence,canLaunchAssistantRunSequenceStep,type AssistantRunSequenceView} from "./canvas-assistant-task-run-sequences";
 
 import {extractSkillMentions} from "@/features/skills/skill-mentions";
 import {getSkillRegistrySnapshot,SKILL_REGISTRY_CHANNEL} from "@/features/skills/skill-registry";
@@ -286,7 +287,20 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
  const firstImageReference=resourceReferences.find(item=>item.kind==="image");
  const reversePromptRequest="请仔细观察引用图片的真实视觉内容，反推适合图像生成模型的提示词。请分别给出：画面主体与动作、场景与构图、镜头、光影色彩、材质与风格；完整英文正向提示词、中文版、可选负面提示词，以及无法从图像确定的信息。不要把猜测当成原始 Prompt、Seed 或 LoRA。";
  const session=sessions.find(item=>item.id===activeChatId);
- const taskTracker=useCanvasAssistantTasks({projectId,activeChatId,session,open,sending,includeContext,scope,includedIds,onDraft:setDraft});
+ const taskTracker=useCanvasAssistantTasks({projectId,activeChatId,session,open,sending,includeContext,scope,includedIds,
+  onDraft:setDraft,onRunSequenceStep:async(taskId:string,view:AssistantRunSequenceView)=>{
+   const next=canLaunchAssistantRunSequenceStep(view);
+   const controller=new AbortController();
+   if(controllerRef.current)throw Error("另一个 AI 任务正在执行");
+   controllerRef.current=controller;setSending(true);
+   try{
+    await onRunActions([next.action],new Map(),controller.signal,{
+     taskId,messageId:view.sequence!.sourceMessageId,runSequenceId:view.sequence!.id,runIndex:next.index,
+     confirm:(step,payload)=>confirmAssistantTaskJob(step,payload,controller.signal,themeName)
+    });
+   }finally{setSending(false);controllerRef.current=null;}
+  }
+ });
  useEffect(()=>{if(open)scrollRef.current?.scrollTo({top:scrollRef.current.scrollHeight});},[open,session?.id,session?.messages.length,sending]);
  const stop=useCallback(()=>controllerRef.current?.abort(),[]);
  const send=useCallback(async()=>{
@@ -484,9 +498,8 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
          if(linkedTaskId){
           const runActions=actions.filter(action=>action.type==="run_node"||action.type==="run_workflow");
           const graphActions=actions.filter(action=>action.type!=="run_node"&&action.type!=="run_workflow");
-          // One Step remains active while its external Job is unresolved.
-          // Do not partially execute a multi-generation instruction.
-          if(runActions.length>1)throw Error("Task 同一轮暂不支持多个生成目标，请拆为独立轮次；没有提交 Job");
+          // Freeze a multi-target intent, but submit only its first paid Step.
+          // Subsequent targets are resumed after independently verified materialization.
           let taskRefs:ReadonlyMap<string,string>=new Map();
           if(graphActions.length){
            const result=await planAndExecuteAssistantCanvasActions({
@@ -501,12 +514,22 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
            notes.push("Task 画布事务已提交 "+result.applied+" 项操作；修订版本 "+result.revision+"；步骤 "+result.stepId+"。");
           }
           if(runActions.length){
-           const submitted=await onRunActions(runActions,taskRefs,controller.signal,{
+           const sequence=runActions.length>1?await freezeAssistantRunSequence({
+            projectId,taskId:linkedTaskId,messageId:user.id,actions:runActions,refs:taskRefs,
+            signal:controller.signal
+           }):null;
+           const next=sequence?canLaunchAssistantRunSequenceStep(sequence):null;
+           const submitted=await onRunActions(next?[next.action]:runActions,
+            sequence?new Map():taskRefs,controller.signal,{
             taskId:linkedTaskId,messageId:user.id,
+            ...(sequence&&next?{runSequenceId:sequence.sequence!.id,runIndex:next.index}:{}),
             confirm:(step,payload)=>confirmAssistantTaskJob(step,payload,controller.signal,themeName)
            });
+           if(sequence)notes.push("本轮 "+runActions.length+" 个生成目标已冻结为顺序计划；"+
+            "仅提交第 "+(next!.index+1)+" 项。其余目标待落图验证后在任务面板继续执行。");
            if(submitted.submitted)notes.push("Task 已经原子入队 "+submitted.submitted+
             " 项生成任务（Job ID："+submitted.jobIds.join("、")+"），可在任务状态与历史中对账。");
+           void taskTracker.refreshTask(linkedTaskId).catch(()=>{});
           }
          }else{
          const templates=new Map(workflowInfo.templates);

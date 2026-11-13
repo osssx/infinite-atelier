@@ -5,6 +5,7 @@ import {decideAssistantTaskStep} from "./assistant-task-step-gate.mjs";
 import {planAssistantCanvasStep,executeAssistantCanvasStep} from "./assistant-task-canvas-executor.mjs";
 import {planAssistantExternalJobStep,enqueueAssistantExternalJobStep,reconcileAssistantExternalTask} from "./assistant-task-external-jobs.mjs";
 import {planAssistantSkillStep,executeAssistantSkillStep} from "./assistant-task-skills.mjs";
+import {registerAssistantRunSequence,getAssistantRunSequence} from "./assistant-task-run-sequences.mjs";
 
 const id={type:"string",pattern:"^[A-Za-z0-9_-]{1,128}$"};
 const policy={type:"object",additionalProperties:false,required:["includeContext","scope","includedIds"],
@@ -54,7 +55,12 @@ const externalJobBody={type:"object",additionalProperties:false,
  executionMode:{type:"string",enum:["immediate","stream","poll"]},
  snapshot:{type:"object"},skillAuthorizationId:{type:"string",pattern:"^[0-9a-f-]{36}$"}}},
  dependsOn:{type:"array",maxItems:20,uniqueItems:true,items:id},
- finalizeTask:{type:"boolean"}}};
+ finalizeTask:{type:"boolean"},runSequenceId:id,runIndex:{type:"integer",minimum:0,maximum:2}}};
+const runSequenceBody={type:"object",additionalProperties:false,
+ required:["requestId","sourceMessageId","expectedPlanVersion","expectedProjectRevision","actions"],
+ properties:{requestId:id,sourceMessageId:id,
+  expectedPlanVersion:{type:"integer",minimum:1},expectedProjectRevision:{type:"integer",minimum:1},
+  actions:{type:"array",minItems:2,maxItems:3,items:{type:"object"}}}};
 const skillProposal={type:"object",additionalProperties:false,
  required:["skill_id","version"],properties:{
  skill_id:{type:"string",pattern:"^[a-z0-9]+(?:-[a-z0-9]+)*$",maxLength:80},
@@ -94,6 +100,10 @@ export function registerAssistantTaskRoutes(app,db,{skillRegistry,blobStore}={})
   cancelAssistantTask(db,{projectId:req.params.id,taskId:req.params.taskId,...req.body})));
  app.post(base+"/:taskId/canvas-steps",{schema:{params:taskParams,body:canvasStepBody}},(req,reply)=>result(reply,
   planAssistantCanvasStep(db,{projectId:req.params.id,taskId:req.params.taskId,...req.body})));
+ app.post(base+"/:taskId/run-sequences",{schema:{params:taskParams,body:runSequenceBody}},(req,reply)=>result(reply,
+  registerAssistantRunSequence(db,{projectId:req.params.id,taskId:req.params.taskId,...req.body})));
+ app.get(base+"/:taskId/run-sequences",{schema:{params:taskParams}},(req,reply)=>result(reply,
+  getAssistantRunSequence(db,{projectId:req.params.id,taskId:req.params.taskId})));
  // Local Job queue creation, Attempt and Step are one transaction.
  // No provider request is performed in these routes.
  app.post(base+"/:taskId/external-jobs",{bodyLimit:600*1024,

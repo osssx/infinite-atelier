@@ -3,6 +3,7 @@ import {assertNoRawCredentials,stableJson,writeTransaction} from "./repository.m
 import {resolveAuthorizedSkillScript} from "./skill-script-source.mjs";
 import {runSkillScript} from "./skill-script-runner.mjs";
 import {blockUnreachableAssistantTaskStepsWithinTransaction} from "./assistant-task-step-gate.mjs";
+import {assertNoPendingAssistantRunSequence} from "./assistant-task-run-sequences.mjs";
 
 const fail=(code,statusCode=409)=>Object.assign(Error(code),{code,statusCode});
 const id=x=>typeof x==="string"&&/^[A-Za-z0-9_-]{1,128}$/.test(x);
@@ -96,6 +97,7 @@ export function planAssistantSkillStep(db,{projectId,taskId,requestId,
   if(task.revision!==expectedProjectRevision)throw fail("assistant_step_source_changed");
   if(db.prepare("SELECT 1 FROM assistant_task_steps WHERE task_id=? AND plan_version=? AND superseded_at IS NULL AND status IN ('pending','ready','waiting_approval','submitting','running','waiting_external','needs_reconcile') LIMIT 1").get(taskId,expectedPlanVersion))
    throw fail("assistant_step_already_planned");
+  assertNoPendingAssistantRunSequence(db,{projectId,taskId});
   const ordinal=db.prepare("SELECT COALESCE(MAX(ordinal)+1,0) AS n FROM assistant_task_steps WHERE task_id=? AND plan_version=?").get(taskId,expectedPlanVersion).n;
   for(const sourceId of dependsOn){
    const predecessor=db.prepare("SELECT plan_version,ordinal,status,receipt_trust,superseded_at FROM assistant_task_steps WHERE task_id=? AND id=?").get(taskId,sourceId);

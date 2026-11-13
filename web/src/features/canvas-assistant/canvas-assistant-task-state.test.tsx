@@ -12,12 +12,13 @@ let root:Root|null=null,container:HTMLDivElement|null=null;
 const session:CanvasAssistantSession={id:"chat-a",title:"示例任务",
  createdAt:"2026-11-12",updatedAt:"2026-11-12",
  messages:[{id:"original-user",role:"user",text:"创建三个分镜节点"}]};
-function Harness({activeChatId="chat-a"}:{activeChatId?:string}){
+function Harness({activeChatId="chat-a",runSequence}:{activeChatId?:string;
+ runSequence?:(taskId:string,view:unknown)=>Promise<void>}){
  const [draft,setDraft]=useState("");
  const state=useCanvasAssistantTasks({
   projectId:"project",activeChatId,session:activeChatId==="chat-a"?session:undefined,
   open:true,sending:false,includeContext:false,scope:"selection",
-  includedIds:["private-node"],onDraft:setDraft
+  includedIds:["private-node"],onDraft:setDraft,onRunSequenceStep:runSequence
  });
  return createElement("div",{},state.view,
   createElement("button",{type:"button",onClick:()=>void state.recordTurn(state.activeTaskId,"later-msg","继续",new AbortController().signal)},"记录下一条"),
@@ -53,6 +54,38 @@ beforeEach(()=>{
  });
 });
 afterEach(async()=>{if(root)await act(async()=>{root!.unmount();});root=null;container?.remove();container=null;});
+describe("P3b persisted multi-run UI resume",()=>{
+ it("loads the next frozen target after refresh and never invents a second Job",async()=>{
+  const task={id:"task-seq",chatSessionId:"chat-a",rootMessageId:"original-user",
+   originalRequest:"生成两段",status:"ready",recoveryMode:"job_observation",steps:[]};
+  const actions=[{type:"run_node" as const,nodeId:"first",mode:"text" as const},
+   {type:"run_node" as const,nodeId:"second",mode:"text" as const}];
+  let submitted=false;
+  const view={sequence:{id:"seq-1",taskId:task.id,sourceMessageId:"original-user",
+   planVersion:1,actions,status:"active"},state:"ready",
+   next:{index:1,action:actions[1],dependsOn:["trusted-material"],last:true}};
+  const runner=vi.fn(async(_taskId:string,_view:unknown)=>{
+   submitted=true;
+  });
+  mocks.api.mockImplementation(async(url:string,method:string)=>{
+   if(method!=="GET")throw Error("resume view must not POST on its own");
+   if(url.includes("chatSessionId="))return {tasks:[task]};
+   if(url.endsWith("/model-calls"))return {calls:[]};
+   if(url.endsWith("/run-sequences"))return submitted?{...view,state:"waiting_approval",next:null}:view;
+   return {task};
+  });
+  container=document.createElement("div");document.body.appendChild(container);
+  root=createRoot(container);
+  await act(async()=>root!.render(createElement(Harness,{runSequence:runner})));
+  expect(container!.textContent).toContain("顺序生成计划：2 项");
+  await click("继续第 2/2 项生成（需审批）");
+  expect(runner).toHaveBeenCalledTimes(1);
+  expect(runner.mock.calls[0][0]).toBe("task-seq");
+  expect(runner.mock.calls[0][1]).toMatchObject({sequence:{id:"seq-1"},next:{index:1}});
+  expect(container!.textContent).not.toContain("继续第 2/2 项生成（需审批）");
+  expect(mocks.api.mock.calls.every(call=>call[1]==="GET")).toBe(true);
+ });
+});
 describe("P3 task progress and read-only event pagination",()=>{
  it("shows trusted materialization and paginates 10+ turn evidence without executing steps",async()=>{
   const steps=[

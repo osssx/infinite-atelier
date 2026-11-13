@@ -4,6 +4,7 @@ import {canvasApi} from "@/features/backend-sync/canvas-api";
 import type {CanvasAssistantSession} from "@/types/canvas";
 import type {AssistantContextScope} from "./canvas-assistant-context";
 import {executeFrozenAssistantCanvasTaskStep} from "./canvas-assistant-task-execution";
+import {canLaunchAssistantRunSequenceStep,type AssistantRunSequenceView} from "./canvas-assistant-task-run-sequences";
 
 type Step={id:string;kind:string;planVersion:number;status:string;actionDigest:string;
  action?:{actions?:unknown[];center?:{x:number;y:number};job?:{targetNodeId:string;executionMode:string;snapshot:{adapterKind?:string}}};
@@ -13,13 +14,14 @@ type Task={id:string;chatSessionId:string;rootMessageId:string;originalRequest:s
  status:string;recoveryMode:"guidance_only"|"canvas_atomic"|"job_observation"|"skill_audit";steps?:Step[];lastError?:string|null};
 type Args={projectId:string;activeChatId:string|null;session?:CanvasAssistantSession;
  open:boolean;sending:boolean;includeContext:boolean;scope:AssistantContextScope;includedIds:string[];
- onDraft:(value:string)=>void};
+ onDraft:(value:string)=>void;
+ onRunSequenceStep?:(taskId:string,view:AssistantRunSequenceView)=>Promise<void>};
 type TaskResponse={task:Task;existing?:boolean;executionStarted?:boolean};
 const taskStatusLabel:Record<string,string>={planning:"待规划",ready:"可继续",waiting_approval:"等待确认",running:"执行中",waiting_external:"等待外部",blocked:"已阻断",needs_reconcile:"需要对账",cancelling:"正在取消",failed:"失败",completed:"已完成",cancelled:"已结束记录"};
 
 /** Task-associated Skill and Job runs are persisted before execution and observed by Run ID. */
 export function useCanvasAssistantTasks({
- projectId,activeChatId,session,open,sending,includeContext,scope,includedIds,onDraft
+ projectId,activeChatId,session,open,sending,includeContext,scope,includedIds,onDraft,onRunSequenceStep
 }:Args){
  const [items,setItems]=useState<Task[]>([]);
  const [selectedId,setSelectedId]=useState<string|null>(null);
@@ -35,6 +37,7 @@ export function useCanvasAssistantTasks({
  const [eventsMore,setEventsMore]=useState(false);
  const [eventsBusy,setEventsBusy]=useState(false);
  const eventScope=useRef(0);
+ const [runSequence,setRunSequence]=useState<AssistantRunSequenceView|null>(null);
 
  const base="/api/v1/projects/"+encodeURIComponent(projectId)+"/assistant/tasks";
  useEffect(()=>{
@@ -83,6 +86,13 @@ export function useCanvasAssistantTasks({
   }catch{if(scope===eventScope.current)setError("读取 Task 事件失败，没有执行任何外部操作。");}
   finally{setEventsBusy(false);}
  };
+ useEffect(()=>{
+  if(!open||!selectedId){setRunSequence(null);return;}
+  let alive=true;
+  void canvasApi<AssistantRunSequenceView>(base+"/"+encodeURIComponent(selectedId)+"/run-sequences","GET")
+   .then(value=>{if(alive)setRunSequence(value?.sequence?value:null);},()=>{if(alive)setRunSequence(null);});
+  return ()=>{alive=false;};
+ },[base,open,selectedId,detail]);
  const selected=items.find(item=>item.id===selectedId&&item.chatSessionId===activeChatId)??null;
  const currentTask=detail?.id===selected?.id?detail:selected;
  const activeTask=currentTask?.status==="cancelled"||currentTask?.status==="completed"?null:currentTask;
@@ -188,6 +198,20 @@ export function useCanvasAssistantTasks({
   }catch(error){setError("可凭原 Step 查询已有 Job，不会再次生成："+(error instanceof Error?error.message:"执行失败"));}
   finally{setBusy(false);}
  };
+ const resumeRunSequence=async()=>{
+  if(!selected||!onRunSequenceStep||busy||sending)return;
+  setBusy(true);setError("");
+  try{
+   const latest=await canvasApi<AssistantRunSequenceView>(path(selected.id)+"/run-sequences","GET");
+   canLaunchAssistantRunSequenceStep(latest);
+   await onRunSequenceStep(selected.id,latest);
+   await refreshTask(selected.id);
+   const status=await canvasApi<AssistantRunSequenceView>(path(selected.id)+"/run-sequences","GET");
+   setRunSequence(status?.sequence?status:null);
+  }catch(error){setError("顺序生成不会自动重试；请核对原计划与 Job："+
+   (error instanceof Error?error.message:"请求失败"));}
+  finally{setBusy(false);}
+ };
  const externalSteps=detail&&selected&&detail.id===selected.id?detail.steps?.filter(step=>
   ["model_job","comfy_workflow","materialize"].includes(step.kind))??[]:[];
  const skillSteps=detail&&selected&&detail.id===selected.id?
@@ -262,6 +286,16 @@ export function useCanvasAssistantTasks({
       onClick={()=>void loadEvents()}>加载更多事件</button>:null}
     </div>:null}
    </div>
+   {runSequence?.sequence&&selected&&runSequence.sequence.taskId===selected.id?<div className="mt-2 rounded-md border p-2" style={{borderColor:"var(--assistant-border)"}}>
+    <div className="font-medium">顺序生成计划：{runSequence.sequence.actions.length} 项 · {runSequence.state}</div>
+    <p>每项单独批准费用，只有上一项落图验收后才执行下一项。</p>
+    {runSequence.state==="ready"&&runSequence.next&&onRunSequenceStep?
+     <button type="button" className="canvas-assistant-link" disabled={busy||sending}
+      onClick={()=>void resumeRunSequence()}>
+      继续第 {runSequence.next.index+1}/{runSequence.sequence.actions.length} 项生成（需审批）
+     </button>:null}
+    {runSequence.state==="awaiting_materialization"?<p>等待产物落图对账，不能提前提交下一项。</p>:null}
+   </div>:null}
    {pendingCanvas.map(step=><div key={step.id} className="mt-2 rounded-md border p-2"
     style={{borderColor:"var(--assistant-border)"}}>
     <div className="font-medium">待恢复画布步骤：{step.id.slice(0,8)} · {step.status}</div>
@@ -345,5 +379,5 @@ export function useCanvasAssistantTasks({
 
   {error?<p role="status" className="mt-1 text-[11px]" style={{color:"var(--assistant-error)"}}>{error}</p>:null}
  </section>;
- return {view,activeTaskId:activeTask?.id??null,recordTurn,observe};
+ return {view,activeTaskId:activeTask?.id??null,recordTurn,observe,refreshTask};
 }

@@ -3593,7 +3593,7 @@ function AtelierCanvasPage() {
                     throw Error("节点提示词在生成前已变更，请重新发送指令");
                 const taskSubmit:AssistantTaskJobSubmit|undefined=taskContext?
                     payload=>submitAssistantTaskFrozenJob({
-                        projectId,context:taskContext,actionIndex:index,payload,signal
+                        projectId,context:taskContext,actionIndex:taskContext.runIndex??index,payload,signal
                     }):undefined;
                 let jobId:string;
                 if(plan.kind==="workflow"){

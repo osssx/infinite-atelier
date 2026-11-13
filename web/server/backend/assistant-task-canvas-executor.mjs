@@ -3,6 +3,7 @@ import {stableJson,writeTransaction,assertNoRawCredentials} from "./repository.m
 import {validateProjectDocument,emitProjectEvent} from "./projects.mjs";
 import {deterministicAssistantRefs,claimAssistantTaskStep,verifyAssistantTaskClaim} from "./assistant-task-step-gate.mjs";
 import {assertAssistantCanvasPlan,applyFrozenAssistantCanvasPlan} from "./assistant-task-canvas-graph.mjs";
+import {assertNoPendingAssistantRunSequence} from "./assistant-task-run-sequences.mjs";
 const fail=(code,statusCode=409)=>Object.assign(Error(code),{code,statusCode});
 const id=value=>typeof value==="string"&&/^[A-Za-z0-9_-]{1,128}$/.test(value);
 const hash=value=>createHash("sha256").update(stableJson(value)).digest("hex");
@@ -32,6 +33,10 @@ const loadPinnedComfyTemplate=(db)=>(templateId,revision)=>{
  const row=db.prepare("SELECT payload_json FROM comfy_template_versions WHERE template_id=? AND revision=?")
   .get(templateId,revision);
  return row?{...JSON.parse(row.payload_json),id:templateId,revision}:null;
+};
+const modelConfig=(db)=>{
+ const value=db.prepare("SELECT revision,value_json FROM ui_settings WHERE name='model_config'").get();
+ return {revision:value?.revision??0,value:value?JSON.parse(value.value_json):{}};
 };
 function oldCommand(db,projectId,requestId,kind,digest){
  const row=db.prepare("SELECT command_kind,payload_digest,status,response_json FROM assistant_task_commands WHERE project_id=? AND request_id=?")
@@ -89,6 +94,7 @@ export function planAssistantCanvasStep(db,{projectId,taskId,requestId,
    throw fail("assistant_step_already_planned");
   if(task.active_plan_version!==expectedPlanVersion)throw fail("assistant_step_plan_conflict");
   if(task.revision!==expectedProjectRevision)throw fail("assistant_step_source_changed");
+  assertNoPendingAssistantRunSequence(db,{projectId,taskId});
   const stepId=randomUUID(),action={actions,center},
    actionDigest=hash(action);
   const ordinal=db.prepare("SELECT COALESCE(MAX(ordinal)+1,0) AS ordinal FROM assistant_task_steps WHERE task_id=? AND plan_version=?")
@@ -98,11 +104,13 @@ export function planAssistantCanvasStep(db,{projectId,taskId,requestId,
    depends_on_json:json(dependsOn)};
   const externalRefs=dependencies(db,taskId,skeleton);
   const original=JSON.parse(task.document_json);
+  const ui=modelConfig(db);
   const preview=applyFrozenAssistantCanvasPlan(original,action,refs,{externalRefs,
-   loadTemplate:loadPinnedComfyTemplate(db)});
+   loadTemplate:loadPinnedComfyTemplate(db),config:ui.value});
   validateProjectDocument(preview.document);
   const preconditions={projectRevision:expectedProjectRevision,projectGraphDigest:hash(original),
-   refs,requiresApproval:true,finalizeTask};
+   refs,requiresApproval:true,finalizeTask,
+   ...(actions.some(a=>["set_node_param","set_workflow_param"].includes(a.type))?{modelConfigRevision:ui.revision}:{})};
   const at=Date.now();
   db.prepare("INSERT INTO assistant_task_steps(id,task_id,plan_version,ordinal,kind,status,required,depends_on_json,action_json,action_digest,preconditions_json,approval_json,receipt_json,receipt_trust,result_json,created_at,updated_at) VALUES(?,?,?,?,'canvas_mutation','waiting_approval',1,?,?,?,?,'{}','{}','none','{}',?,?)")
    .run(stepId,taskId,expectedPlanVersion,ordinal,json(dependsOn),json(action,12000),
@@ -147,8 +155,11 @@ export function commitAssistantCanvasAttempt(db,{projectId,taskId,stepId,
   if(task.revision!==pre.projectRevision||hash(JSON.parse(task.document_json))!==pre.projectGraphDigest)
    throw fail("assistant_step_source_changed");
   const externalRefs=dependencies(db,taskId,step);
+  const ui=modelConfig(db);
+  if(pre.modelConfigRevision!==undefined&&pre.modelConfigRevision!==ui.revision)
+   throw fail("assistant_step_source_changed");
   const applied=applyFrozenAssistantCanvasPlan(JSON.parse(task.document_json),action,pre.refs,{externalRefs,
-   loadTemplate:loadPinnedComfyTemplate(db)});
+   loadTemplate:loadPinnedComfyTemplate(db),config:ui.value});
   const content=validateProjectDocument(applied.document),at=Date.now(),revision=task.revision+1;
   // No async/external side effects may occur inside this BEGIN IMMEDIATE block.
   const updated=db.prepare("UPDATE projects SET document_json=?,revision=? WHERE id=? AND revision=? AND deleted_at IS NULL")

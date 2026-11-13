@@ -18,11 +18,19 @@ vi.mock("@/features/skills/skill-registry",()=>({
 const mocks=vi.hoisted(()=>({
  api:vi.fn(),
  taskApi:vi.fn(),
+ freezeSeq:vi.fn(),
  confirm:vi.fn(),
  ensure:vi.fn(async()=>{}),
  run:vi.fn(async(_actions:unknown,_refs:ReadonlyMap<string,string>,_signal:AbortSignal,
   _taskContext?:{taskId:string;messageId:string;confirm:(...args:any[])=>Promise<boolean>})=>
    ({submitted:1,jobIds:["job-demo"]})), }));
+vi.mock("./canvas-assistant-task-run-sequences",()=>({
+ freezeAssistantRunSequence:mocks.freezeSeq,
+ canLaunchAssistantRunSequenceStep:(value:{state:string;next?:unknown})=>{
+  if(value.state!=="ready"||!value.next)throw Error("assistant_task_run_not_ready");
+  return value.next;
+ }
+}));
 vi.mock("@/stores/use-theme-store",()=>({
  useThemeStore:(select:(value:{theme:"light"})=>unknown)=>select({theme:"light"})
 }));
@@ -175,15 +183,32 @@ describe("P2c assistant Task routes node generation through frozen Job context",
   expect(fixture.apply).not.toHaveBeenCalled();
   expect(container!.textContent).toContain("Task 已经原子入队 1 项生成任务");
  });
+ it("P3b two distinct targets freeze once but submit only the first Step",async()=>{
+  const fixture=setup([{type:"run_node",nodeId:"text-existing",mode:"text"},
+   {type:"run_node",nodeId:"another-text",mode:"text"}],[],previous);
+  mocks.freezeSeq.mockResolvedValueOnce({state:"ready",sequence:{id:"seq-one",sourceMessageId:"user-msg",
+   actions:[{type:"run_node",nodeId:"text-existing",mode:"text"},
+    {type:"run_node",nodeId:"another-text",mode:"text"}]},
+   next:{index:0,action:{type:"run_node",nodeId:"text-existing",mode:"text"},dependsOn:[],last:false}});
+  installTask();
+  await link(fixture.Harness);
+  await renderAndSend(fixture.Harness);
+  expect(mocks.freezeSeq).toHaveBeenCalledTimes(1);
+  expect(mocks.run).toHaveBeenCalledTimes(1);
+  expect(mocks.run.mock.calls[0][0]).toEqual([{type:"run_node",nodeId:"text-existing",mode:"text"}]);
+  expect(mocks.run.mock.calls[0][3]).toMatchObject({taskId:"task-p2c",runSequenceId:"seq-one",runIndex:0});
+  expect(container!.textContent).toContain("2 个生成目标已冻结为顺序计划");
+ });
  it("multiple run_node actions are blocked before any submission",async()=>{
   const fixture=setup([{type:"run_node",nodeId:"text-existing",mode:"text"},
    {type:"run_node",nodeId:"text-existing",mode:"text"}],[],previous);
+  mocks.freezeSeq.mockRejectedValueOnce(Error("assistant_task_run_invalid"));
   installTask();
   await link(fixture.Harness);
   await renderAndSend(fixture.Harness);
   expect(mocks.run).not.toHaveBeenCalled();
   expect(fixture.apply).not.toHaveBeenCalled();
-  expect(container!.textContent).toContain("同一轮暂不支持多个生成目标");
+  expect(container!.textContent).toContain("assistant_task_run_invalid");
  });
 });
 describe("P2 assistant confirmation boundary",()=>{

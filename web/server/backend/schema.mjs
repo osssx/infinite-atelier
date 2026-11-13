@@ -1,5 +1,5 @@
 import{JOB_STATUSES,EXECUTION_MODES,ARTIFACT_KINDS}from"./contracts.mjs";
-export const SCHEMA_VERSION=26;
+export const SCHEMA_VERSION=27;
 const quoted=x=>x.map(s=>"'"+s+"'").join(",");
 export const INITIAL_SCHEMA_SQL=`
 CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY,applied_at INTEGER NOT NULL);
@@ -537,6 +537,23 @@ CREATE TRIGGER IF NOT EXISTS blob_ref_dirty_assistant_task_attempts_delete AFTER
 UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1;
 `;
 
+/** P3b: ordered generation intents; no Job or external side effect at this stage. */
+export const ASSISTANT_TASK_RUN_SEQUENCE_SCHEMA_SQL=`
+CREATE TABLE IF NOT EXISTS assistant_task_run_sequences(
+ id TEXT PRIMARY KEY,project_id TEXT NOT NULL REFERENCES projects(id),
+ task_id TEXT NOT NULL REFERENCES assistant_tasks(id),
+ plan_version INTEGER NOT NULL CHECK(plan_version>0),
+ source_message_id TEXT NOT NULL,base_step_id TEXT REFERENCES assistant_task_steps(id),
+ actions_json TEXT NOT NULL CHECK(json_valid(actions_json)),
+ intent_digest TEXT NOT NULL,
+ expected_project_revision INTEGER NOT NULL CHECK(expected_project_revision>0),
+ status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','cancelled')),
+ created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,
+ UNIQUE(task_id,source_message_id)
+);
+CREATE INDEX IF NOT EXISTS ix_task_sequences_task ON assistant_task_run_sequences(task_id,created_at);
+`;
+
 export function initializeSchema(db){
  db.exec("PRAGMA foreign_keys=ON;PRAGMA busy_timeout=5000;BEGIN IMMEDIATE");
  try{
@@ -590,6 +607,7 @@ export function initializeSchema(db){
   if(version<24)db.exec(ASSISTANT_TASK_SCHEMA_SQL);
   if(version<25)db.exec(ASSISTANT_MODEL_CALL_SCHEMA_SQL);
   if(version<26)db.exec(ASSISTANT_TASK_BLOB_REFERENCE_SCHEMA_SQL);
+  if(version<27)db.exec(ASSISTANT_TASK_RUN_SEQUENCE_SCHEMA_SQL);
   if(version<SCHEMA_VERSION)db.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)").run(SCHEMA_VERSION,Date.now());
   db.exec("COMMIT");
  }catch(e){db.exec("ROLLBACK");throw e}

@@ -15,10 +15,22 @@ export function buildAssistantTaskProviderContext({task,document}){
   "任务状态："+safe(task.status,40)+"（仅阶段状态；不得推断任何画布操作或脚本已经成功）",
   "有效计划版本："+Number(task.activePlanVersion??1)
  ];
- const steps=Array.isArray(task.steps)?task.steps.slice(-16):[];
- for(const step of steps)lines.push("步骤 "+safe(step.id,80)+
-  "："+safe(step.kind,40)+"/"+safe(step.status,40)+
-  "；可信回执="+safe(step.receiptTrust,40));
+ const allSteps=Array.isArray(task.steps)?task.steps:[];
+ const steps=allSteps.slice(-16);
+ if(allSteps.length>steps.length)lines.push("总步骤数："+allSteps.length+"（仅显示最近 "+steps.length+" 步；旧步骤不作为新成功依据）");
+ for(const step of steps){
+  const trusted=step.status==="succeeded"&&step.receiptTrust==="server_committed";
+  const result=step.result??{};
+  const verified=trusted&&step.kind==="canvas_mutation"&&Number.isInteger(result.applied)&&result.applied>=0?
+   "；已提交画布操作="+result.applied:
+   trusted&&["model_job","comfy_workflow"].includes(step.kind)&&Array.isArray(result.artifactIds)?
+   "；已确认产物="+result.artifactIds.length:
+   trusted&&step.kind==="materialize"&&Array.isArray(result.bindings)?
+   "；已核对落图="+result.bindings.length:"";
+  lines.push("步骤 "+safe(step.id,80)+
+   "："+safe(step.kind,40)+"/"+safe(step.status,40)+
+   "；可信回执="+safe(step.receiptTrust,40)+verified);
+ }
  if(task.lastError)lines.push("上轮有失败的客户端观察记录；不能作为服务端执行证据。");
  if(!policy.includeContext){
   lines.push("用户未授权发送画布资料。不得引用任何本地图节点标题、内容、提示词或媒体。");

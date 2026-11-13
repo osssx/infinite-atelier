@@ -55,6 +55,38 @@ describe("P2c Task job submission boundary",()=>{
   expect(result).toEqual(job);
   expect(seen).toEqual(["task","plan","consent","approval","enqueue","lookup"]);
  });
+ it("P3 next generated Job requires the committed preceding canvas Step",async()=>{
+  const preceding={id:"canvas-1",planVersion:2,ordinal:0,kind:"canvas_mutation",
+   status:"succeeded",receiptTrust:"server_committed",dependsOn:[]};
+  mocks.api.mockImplementation(async(url:string,method:string,body?:Record<string,unknown>)=>{
+   if(!url)return undefined;
+   if(method==="GET"&&url.endsWith("/task"))
+    return {task:{status:"ready",activePlanVersion:2,steps:[preceding]}};
+   if(url.endsWith("/external-jobs")){
+    expect(body?.dependsOn).toEqual(["canvas-1"]);
+    return frozen;
+   }
+   if(url.endsWith("/approval"))return {};
+   if(url.endsWith("/enqueue"))return {jobId:job.id,status:"waiting_external"};
+   if(url.endsWith("/jobs/job-1"))return job;
+   throw Error("unexpected");
+  });
+  const result=await submitAssistantTaskFrozenJob({projectId:"p",context:makeContext(),
+   actionIndex:0,payload,signal:new AbortController().signal});
+  expect(result.id).toBe("job-1");
+ });
+ it("P3 refuses a new paid Job when the previous generation has not been materialized",async()=>{
+  const unfinished={id:"job-before",planVersion:2,ordinal:0,kind:"model_job",
+   status:"succeeded",receiptTrust:"server_committed",dependsOn:[]};
+  mocks.api.mockImplementation(async(url:string,method:string)=>{
+   if(!url)return undefined;
+   if(method==="GET")return {task:{status:"ready",activePlanVersion:2,steps:[unfinished]}};
+   throw Error("unexpected paid request "+url);
+  });
+  await expect(submitAssistantTaskFrozenJob({projectId:"p",context:makeContext(),
+   actionIndex:0,payload,signal:new AbortController().signal}))
+   .rejects.toThrow("assistant_task_materialization_required");
+ });
  it("rejection durably rejects frozen Step and never queues Job",async()=>{
   mocks.api.mockImplementation(async(url:string,method:string,body?:Record<string,unknown>)=>{
    if(!url)return undefined;

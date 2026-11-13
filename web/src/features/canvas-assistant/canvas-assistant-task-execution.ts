@@ -1,5 +1,6 @@
 import {canvasApi,type CanvasBackendProject} from "@/features/backend-sync/canvas-api";
 import {commitAssistantCanvasGraphWithSaveBarrier} from "@/stores/canvas/use-canvas-store";
+import {confirmedAssistantTaskDependencies,type AssistantTaskDependencyStep} from "./canvas-assistant-task-dependencies";
 
 export type FrozenCanvasTaskStep={
  stepId:string;taskId:string;planVersion:number;actionDigest:string;status:string;
@@ -63,11 +64,12 @@ export async function planAndExecuteAssistantCanvasActions({
  let plan:FrozenCanvasTaskStep|null=null;
  const remote=await commitAssistantCanvasGraphWithSaveBarrier(projectId,async frozen=>{
   requestError(signal);
-  const snapshot=await canvasApi<{task:{activePlanVersion:number}}>(base(projectId,taskId),"GET",undefined,signal);
+  const snapshot=await canvasApi<{task:{status:string;activePlanVersion:number;steps:AssistantTaskDependencyStep[]}}>(base(projectId,taskId),"GET",undefined,signal);
+   const dependsOn=confirmedAssistantTaskDependencies(snapshot.task);
   plan=await canvasApi<FrozenCanvasTaskStep>(base(projectId,taskId)+"/canvas-steps","POST",{
    requestId:messageId+"-canvas-plan",
    expectedPlanVersion:snapshot.task.activePlanVersion,
-   expectedProjectRevision:frozen.expectedRevision,actions,center,dependsOn:[]
+   expectedProjectRevision:frozen.expectedRevision,actions,center,dependsOn
   },signal);
   requestError(signal);
   const accepted=await confirm(plan);

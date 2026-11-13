@@ -1,3 +1,5 @@
+import {assertFrozenComfyAction,applyFrozenComfyAction} from "./assistant-task-comfy-canvas.mjs";
+
 /** Deterministic, backend-only ordinary canvas operations.
  * No network, filesystem, Comfy, Skill or GPU work. Unsupported actions
  * fail closed rather than falling back to unsafe browser mutations.
@@ -30,7 +32,13 @@ export function assertAssistantCanvasPlan({actions,center}){
    delete_node:["type","nodeId"],
    delete_connection:["type","connectionId"]
   }[a.type];
-  if(!fields)throw fail("assistant_canvas_action_unsupported");
+  if(!fields){
+   if(["set_workflow_param","connect_workflow_port","replace_workflow_port","disconnect_workflow_port"].includes(a.type)){
+    if(assertFrozenComfyAction(a))edges.push("edge_"+index);
+    continue;
+   }
+   throw fail("assistant_canvas_action_unsupported");
+  }
   if(!own(a,fields))throw fail("assistant_canvas_plan_invalid",400);
   if(["nodeId","from","to","connectionId"].some(key=>key in a&&!nodeName(a[key])))
    throw fail("assistant_canvas_plan_invalid",400);
@@ -65,7 +73,7 @@ function reachable(from,to,connections){
 /** externalRefs are permitted only from server_committed dependency receipts.
  * New node and edge IDs always come from the frozen Step.
  */
-export function applyFrozenAssistantCanvasPlan(document,plan,refs,{externalRefs={}}={}){
+export function applyFrozenAssistantCanvasPlan(document,plan,refs,{externalRefs={},loadTemplate}={}){
  const {newNodes,newConnections}=assertAssistantCanvasPlan(plan);
  if(!refs||!refs.nodes||!refs.connections||
   newNodes.some(value=>!nodeName(refs.nodes[value]))||
@@ -93,7 +101,9 @@ export function applyFrozenAssistantCanvasPlan(document,plan,refs,{externalRefs=
  for(let index=0;index<plan.actions.length;index++){
   const a=plan.actions[index],type=a.type;
   if(type==="create_text"||type==="create_node")continue;
-  if(type==="connect"){
+  if(["set_workflow_param","connect_workflow_port","replace_workflow_port","disconnect_workflow_port"].includes(type)){
+   applyFrozenComfyAction({document:output,action:a,edgeId:refs.connections["edge_"+index],resolve,loadTemplate});
+  }else if(type==="connect"){
    const from=resolve(a.from),to=resolve(a.to),edgeId=refs.connections["edge_"+index];
    if(!seen.has(from)||!seen.has(to)||from===to||seenEdges.has(edgeId)||
     connections.some(edge=>edge.fromNodeId===from&&edge.toNodeId===to)||

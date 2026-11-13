@@ -1,4 +1,4 @@
-import {useEffect,useState} from "react";
+import {useEffect,useRef,useState} from "react";
 import {nanoid} from "nanoid";
 import {canvasApi} from "@/features/backend-sync/canvas-api";
 import type {CanvasAssistantSession} from "@/types/canvas";
@@ -29,6 +29,12 @@ export function useCanvasAssistantTasks({
  const [calls,setCalls]=useState<{id:string;kind:string;status:string;errorCode?:string|null}[]>([]);
  const [callsOpen,setCallsOpen]=useState(false);
  const [callRevision,setCallRevision]=useState(0);
+ const [eventsOpen,setEventsOpen]=useState(false);
+ const [events,setEvents]=useState<{seq:number;stepId:string|null;kind:string;createdAt:number}[]>([]);
+ const [eventsNext,setEventsNext]=useState(0);
+ const [eventsMore,setEventsMore]=useState(false);
+ const [eventsBusy,setEventsBusy]=useState(false);
+ const eventScope=useRef(0);
 
  const base="/api/v1/projects/"+encodeURIComponent(projectId)+"/assistant/tasks";
  useEffect(()=>{
@@ -62,6 +68,21 @@ export function useCanvasAssistantTasks({
   return ()=>{alive=false;};
  },[base,open,selectedId,callRevision]);
 
+ useEffect(()=>{eventScope.current++;setEventsOpen(false);setEvents([]);setEventsNext(0);setEventsMore(false);},[selectedId]);
+ const loadEvents=async(reset=false)=>{
+  if(!selectedId||eventsBusy||sending)return;
+  const scope=eventScope.current;
+  setEventsBusy(true);
+  try{
+   const cursor=reset?0:eventsNext;
+   const page=await canvasApi<{events:{seq:number;stepId:string|null;kind:string;createdAt:number}[];nextSeq:number;hasMore:boolean}>(
+    base+"/"+encodeURIComponent(selectedId)+"/events?afterSeq="+cursor+"&limit=30","GET");
+   if(scope!==eventScope.current)return;
+   setEvents(old=>reset?page.events:[...old,...page.events.filter(e=>!old.some(p=>p.seq===e.seq))]);
+   setEventsNext(page.nextSeq);setEventsMore(page.hasMore);setEventsOpen(true);
+  }catch{if(scope===eventScope.current)setError("读取 Task 事件失败，没有执行任何外部操作。");}
+  finally{setEventsBusy(false);}
+ };
  const selected=items.find(item=>item.id===selectedId&&item.chatSessionId===activeChatId)??null;
  const currentTask=detail?.id===selected?.id?detail:selected;
  const activeTask=currentTask?.status==="cancelled"||currentTask?.status==="completed"?null:currentTask;
@@ -213,6 +234,7 @@ export function useCanvasAssistantTasks({
    <div className="flex flex-wrap items-center gap-2">
     <span>状态：{taskStatusLabel[detail?.id===selected.id?detail.status:selected.status]??selected.status}</span>
     <span>步骤：{detail?.id===selected.id?detail.steps?.length??0:0}</span>
+    {detail?.id===selected.id&&detail.steps?.length?<span>可信完成：{detail.steps.filter(s=>s.status==="succeeded"&&s.receiptTrust==="server_committed").length}/{detail.steps.length}</span>:null}
     <span>{detail?.id===selected.id&&detail.recoveryMode==="skill_audit"?"Skill 执行有可信 Run ID":detail?.id===selected.id&&detail.recoveryMode==="job_observation"?"生成与落图分阶段对账":detail?.id===selected.id&&detail.recoveryMode==="canvas_atomic"?"画布操作有可信回执":"仅指导恢复"}</span>
     {activeTask?<>
      {!["waiting_external","needs_reconcile","cancelling","waiting_approval","blocked"].includes(activeTask.status)?
@@ -225,6 +247,21 @@ export function useCanvasAssistantTasks({
    {detail?.id===selected.id&&detail.lastError?
     <p role="status" className="mt-1 break-words">上次错误：{detail.lastError.slice(0,200)}</p>:null}
 
+   {currentTask?.status==="ready"&&detail?.steps?.some(s=>s.kind==="materialize"&&s.status==="succeeded"&&s.receiptTrust==="server_committed")?
+    <p className="mt-1 text-[11px]">已核对生成产物和落图；可点击「继续」编排下一步。不会自动重新发起生成。</p>:null}
+   <div className="mt-1.5 text-[11px]">
+    <button type="button" className="canvas-assistant-link" disabled={sending||eventsBusy}
+     onClick={()=>eventsOpen?setEventsOpen(false):void loadEvents(true)}>
+     {eventsOpen?"收起任务事件":"查看任务事件（只读）"}
+    </button>
+    {eventsOpen?<div className="mt-1 max-h-40 overflow-y-auto rounded border px-2 py-1" style={{borderColor:"var(--assistant-border)"}}>
+     {events.length?events.map(event=><div key={event.seq} className="break-words py-0.5">
+      <span>{event.seq} · {event.kind}</span>{event.stepId?<span> · {event.stepId.slice(0,8)}</span>:null}
+     </div>):<p>暂无事件记录</p>}
+     {eventsMore?<button type="button" className="canvas-assistant-link" disabled={eventsBusy||sending}
+      onClick={()=>void loadEvents()}>加载更多事件</button>:null}
+    </div>:null}
+   </div>
    {pendingCanvas.map(step=><div key={step.id} className="mt-2 rounded-md border p-2"
     style={{borderColor:"var(--assistant-border)"}}>
     <div className="font-medium">待恢复画布步骤：{step.id.slice(0,8)} · {step.status}</div>

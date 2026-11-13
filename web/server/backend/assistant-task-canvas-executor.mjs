@@ -28,6 +28,11 @@ const projectView=(db,projectId)=>{
  return {id:row.id,revision:row.revision,document:JSON.parse(row.document_json)};
 };
 const signature=(kind,payload)=>hash({kind,payload});
+const loadPinnedComfyTemplate=(db)=>(templateId,revision)=>{
+ const row=db.prepare("SELECT payload_json FROM comfy_template_versions WHERE template_id=? AND revision=?")
+  .get(templateId,revision);
+ return row?{...JSON.parse(row.payload_json),id:templateId,revision}:null;
+};
 function oldCommand(db,projectId,requestId,kind,digest){
  const row=db.prepare("SELECT command_kind,payload_digest,status,response_json FROM assistant_task_commands WHERE project_id=? AND request_id=?")
   .get(projectId,requestId);
@@ -93,7 +98,8 @@ export function planAssistantCanvasStep(db,{projectId,taskId,requestId,
    depends_on_json:json(dependsOn)};
   const externalRefs=dependencies(db,taskId,skeleton);
   const original=JSON.parse(task.document_json);
-  const preview=applyFrozenAssistantCanvasPlan(original,action,refs,{externalRefs});
+  const preview=applyFrozenAssistantCanvasPlan(original,action,refs,{externalRefs,
+   loadTemplate:loadPinnedComfyTemplate(db)});
   validateProjectDocument(preview.document);
   const preconditions={projectRevision:expectedProjectRevision,projectGraphDigest:hash(original),
    refs,requiresApproval:true,finalizeTask};
@@ -141,7 +147,8 @@ export function commitAssistantCanvasAttempt(db,{projectId,taskId,stepId,
   if(task.revision!==pre.projectRevision||hash(JSON.parse(task.document_json))!==pre.projectGraphDigest)
    throw fail("assistant_step_source_changed");
   const externalRefs=dependencies(db,taskId,step);
-  const applied=applyFrozenAssistantCanvasPlan(JSON.parse(task.document_json),action,pre.refs,{externalRefs});
+  const applied=applyFrozenAssistantCanvasPlan(JSON.parse(task.document_json),action,pre.refs,{externalRefs,
+   loadTemplate:loadPinnedComfyTemplate(db)});
   const content=validateProjectDocument(applied.document),at=Date.now(),revision=task.revision+1;
   // No async/external side effects may occur inside this BEGIN IMMEDIATE block.
   const updated=db.prepare("UPDATE projects SET document_json=?,revision=? WHERE id=? AND revision=? AND deleted_at IS NULL")

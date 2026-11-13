@@ -53,6 +53,48 @@ beforeEach(()=>{
  });
 });
 afterEach(async()=>{if(root)await act(async()=>{root!.unmount();});root=null;container?.remove();container=null;});
+describe("P3 task progress and read-only event pagination",()=>{
+ it("shows trusted materialization and paginates 10+ turn evidence without executing steps",async()=>{
+  const steps=[
+   {id:"canvas",kind:"canvas_mutation",planVersion:1,ordinal:0,
+    status:"succeeded",receiptTrust:"server_committed",actionDigest:"a".repeat(64)},
+   {id:"job",kind:"model_job",planVersion:1,ordinal:1,
+    status:"succeeded",receiptTrust:"server_committed",actionDigest:"b".repeat(64),
+    result:{jobId:"existing-job-1"}},
+   {id:"materialize",kind:"materialize",planVersion:1,ordinal:2,
+    status:"succeeded",receiptTrust:"server_committed",actionDigest:"c".repeat(64)}
+  ];
+  const task={id:"task-p3-events",chatSessionId:"chat-a",rootMessageId:"original-user",
+   originalRequest:"生成图片并落图",status:"ready",recoveryMode:"job_observation",steps};
+  const seen:number[]=[];
+  mocks.api.mockImplementation(async(url:string,method:string)=>{
+   if(method!=="GET")throw Error("event view must be read only");
+   if(url.includes("chatSessionId="))return {tasks:[task]};
+   if(url.endsWith("/model-calls"))return {calls:[]};
+   if(url.includes("/events?")){
+    const cursor=Number(new URL("http://localhost"+url).searchParams.get("afterSeq")??0);
+    seen.push(cursor);
+    return cursor===0?{events:Array.from({length:30},(_,i)=>({seq:i+1,
+     stepId:null,kind:"user_turn",createdAt:i+1})),nextSeq:30,hasMore:true}:
+     {events:[{seq:31,stepId:"materialize",kind:"materialize_verified",createdAt:31}],
+      nextSeq:31,hasMore:false};
+   }
+   return {task};
+  });
+  await render();
+  expect(container!.textContent).toContain("可信完成：3/3");
+  expect(container!.textContent).toContain("已核对生成产物和落图");
+  expect(container!.textContent).toContain("继续");
+  await click("查看任务事件（只读）");
+  expect(container!.textContent).toContain("1 · user_turn");
+  await click("加载更多事件");
+  expect(container!.textContent).toContain("31 · materialize_verified");
+  expect(seen).toEqual([0,30]);
+  expect(mocks.api.mock.calls.every(call=>call[1]==="GET")).toBe(true);
+  await click("收起任务事件");
+  expect(container!.textContent).not.toContain("31 · materialize_verified");
+ });
+});
 describe("P2a Task external Job UI",()=>{
  it("requires explicit approval, enqueues with frozen Step identity and only observes on refresh",async()=>{
   const step={id:"external-step-1",kind:"model_job",planVersion:1,

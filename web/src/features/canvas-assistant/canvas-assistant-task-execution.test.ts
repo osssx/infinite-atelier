@@ -52,6 +52,22 @@ describe("P1b browser Task canvas protocol",()=>{
   expect(trace).toEqual(["snapshot","plan","user_confirm","approval","execute"]);
   expect(mocks.barrier).toHaveBeenCalledTimes(1);
  });
+ it("P3 freezes next canvas Step with an explicit trusted dependency",async()=>{
+  const previous={id:"previous",planVersion:2,ordinal:0,kind:"canvas_mutation",
+   status:"succeeded",receiptTrust:"server_committed",dependsOn:[]};
+  mocks.api.mockImplementation(async(url:string,method:string,payload:Record<string,unknown>)=>{
+   if(method==="GET")return {task:{status:"ready",activePlanVersion:2,steps:[previous]}};
+   if(url.endsWith("/canvas-steps")){expect(payload.dependsOn).toEqual(["previous"]);return step;}
+   if(url.endsWith("/approval"))return {status:"ready"};
+   if(url.endsWith("/execute"))return committed;
+   throw Error("unexpected route");
+  });
+  const result=await planAndExecuteAssistantCanvasActions({projectId:"p",taskId:"task",
+   messageId:"m-after",actions:[{type:"set_text",nodeId:"task-node",content:"next"}],
+   center:{x:0,y:0},signal:new AbortController().signal,confirm:async()=>true});
+  expect(result.stepId).toBe("step");
+  expect(mocks.api.mock.calls.filter(([url])=>url.endsWith("/canvas-steps"))).toHaveLength(1);
+ });
  it("a rejection creates durable denied approval but cannot submit graph",async()=>{
   let executes=0;
   mocks.api.mockImplementation(async(url:string)=>{

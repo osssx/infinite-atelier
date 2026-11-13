@@ -1,5 +1,6 @@
 import {canvasApi} from "@/features/backend-sync/canvas-api";
 import type {BackendJobView} from "@/types/backend-contracts";
+import {confirmedAssistantTaskDependencies,type AssistantTaskDependencyStep} from "./canvas-assistant-task-dependencies";
 
 export type AssistantTaskFrozenJob={
  stepId:string;planVersion:number;actionDigest:string;
@@ -42,7 +43,8 @@ export async function submitAssistantTaskFrozenJob({
  const kind=snapshot.adapterKind==="comfy"?"comfy_workflow":"model_job";
  const base=taskPath(projectId,context.taskId);
  // The project save barrier already flushed the graph before this callback.
- const task=await canvasApi<{task:{activePlanVersion:number}}>(base,"GET",undefined,signal);
+ const task=await canvasApi<{task:{status:string;activePlanVersion:number;steps:AssistantTaskDependencyStep[]}}>(base,"GET",undefined,signal);
+  const dependsOn=confirmedAssistantTaskDependencies(task.task);
  aborted(signal);
  const stableId=context.messageId+"-job-"+actionIndex;
  const plan=await canvasApi<AssistantTaskFrozenJob>(base+"/external-jobs","POST",{
@@ -53,7 +55,7 @@ export async function submitAssistantTaskFrozenJob({
    executionMode:payload.executionMode,snapshot,
    ...(typeof payload.skillAuthorizationId==="string"?
     {skillAuthorizationId:payload.skillAuthorizationId}:{})},
-  dependsOn:[]
+  dependsOn
  },signal);
  if(plan.kind!==kind||!plan.stepId||!plan.actionDigest)
   throw Error("assistant_task_job_plan_invalid");

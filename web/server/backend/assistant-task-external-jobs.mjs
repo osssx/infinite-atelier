@@ -1,7 +1,7 @@
 import {createHash,randomUUID} from "node:crypto";
 import {EXECUTION_MODES} from "./contracts.mjs";
 import {assertNoRawCredentials,stableJson,writeTransaction,submitJobInTransaction} from "./repository.mjs";
-import {verifyAssistantRunSequenceJob,assertNoPendingAssistantRunSequence} from "./assistant-task-run-sequences.mjs";
+import {verifyAssistantRunSequenceJob,assertNoPendingAssistantRunSequence,verifyAssistantFrozenRunJoin} from "./assistant-task-run-sequences.mjs";
 
 const fail=(code,statusCode=409)=>Object.assign(Error(code),{code,statusCode});
 const id=v=>typeof v==="string"&&/^[A-Za-z0-9_-]{1,128}$/.test(v);
@@ -108,7 +108,8 @@ export function planAssistantExternalJobStep(db,{projectId,taskId,requestId,kind
   const pre={projectRevision:expectedProjectRevision,
    projectGraphDigest:hash(JSON.parse(task.document_json)),
    requiresApproval:true,finalizeTask:sequence?.finalizeTask??finalizeTask,
-   ...(sequence?{runSequenceId,runIndex}:{})};
+   ...(sequence?{runSequenceId,runIndex,
+     ...(sequence.joinEvidenceDigest?{joinEvidenceDigest:sequence.joinEvidenceDigest}:{})}:{})};
   db.prepare("INSERT INTO assistant_task_steps(id,task_id,plan_version,ordinal,kind,status,required,depends_on_json,action_json,action_digest,preconditions_json,created_at,updated_at) VALUES(?,?,?,?,?,'waiting_approval',1,?,?,?,?,?,?)")
    .run(stepId,taskId,expectedPlanVersion,ordinal,kind,freeze(dependsOn),freeze(action,550*1024),actionDigest,freeze(pre),at,at);
   db.prepare("UPDATE assistant_tasks SET status='waiting_approval',updated_at=? WHERE id=?").run(at,taskId);
@@ -157,6 +158,11 @@ export function enqueueAssistantExternalJobStep(db,{projectId,taskId,stepId,requ
   if(task.revision!==pre.projectRevision||hash(JSON.parse(task.document_json))!==pre.projectGraphDigest)
    throw fail("assistant_step_source_changed");
   dependencyCheck(db,taskId,expectedPlanVersion,step.ordinal,JSON.parse(step.depends_on_json));
+  if(pre.runIndex===3){
+   verifyAssistantFrozenRunJoin(db,{projectId,taskId,runSequenceId:pre.runSequenceId,
+    runIndex:pre.runIndex,expectedPlanVersion,joinEvidenceDigest:pre.joinEvidenceDigest,
+    dependsOn:JSON.parse(step.depends_on_json)});
+  }
   const attemptNo=step.attempt_count+1,attemptId=randomUUID(),
    executionKey=hash({taskId,stepId,planVersion:expectedPlanVersion,attemptNo}),
    at=Date.now();

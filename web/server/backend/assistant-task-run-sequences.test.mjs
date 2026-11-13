@@ -9,7 +9,7 @@ import {initializeSchema,SCHEMA_VERSION} from "./schema.mjs";
 import {createProject} from "./projects.mjs";
 import {fingerprintSource} from "./repository.mjs";
 import {createAssistantTask,getAssistantTask} from "./assistant-tasks.mjs";
-import {registerAssistantRunSequence,getAssistantRunSequence,skipAssistantRunBranch} from "./assistant-task-run-sequences.mjs";
+import {registerAssistantRunSequence,getAssistantRunSequence,skipAssistantRunBranch,commitAssistantRunJoin} from "./assistant-task-run-sequences.mjs";
 import {planAssistantExternalJobStep,enqueueAssistantExternalJobStep,reconcileAssistantExternalTask,
  recoverAssistantExternalTasksAtStartup} from "./assistant-task-external-jobs.mjs";
 import {decideAssistantTaskStep} from "./assistant-task-step-gate.mjs";
@@ -36,7 +36,7 @@ function plan(ctx,seq,index,dependsOn){
  return planAssistantExternalJobStep(ctx.db,{...ctx.base,
   requestId:"planned-"+index,kind:"model_job",expectedPlanVersion:1,
   expectedProjectRevision:1,
-  job:{targetNodeId:nodeId,sourceNodeFingerprint:fingerprintSource(doc,nodeId),executionMode:"poll",
+  job:{targetNodeId:nodeId,sourceNodeFingerprint:fingerprintSource(ctx.document??doc,nodeId),executionMode:"poll",
    snapshot:{adapterKind:"model",task:{kind:"text",model:"mock",prompt:"Story "+nodeId}}},
   runSequenceId:seq.sequenceId,runIndex:index,dependsOn});
 }
@@ -82,6 +82,181 @@ function skipBranch(ctx,seq,index,requestId="skip-"+index,overrides={}){
   runIndex:index,expectedPlanVersion:1,expectedProjectRevision:1,
   evidenceDigest:state.skip?.evidenceDigest??"0".repeat(64),...overrides});
 }
+/** P3c3c: a four-intent sequence has three paid candidates (one branch skipped)
+ * plus a durable, explicit checkpoint before the final independent generation.
+ */
+const joinActions=kind=>[...branchActions(kind),
+ {type:"run_node",nodeId:"join-target",mode:"text",join:{indices:[0,1,2]}}];
+function joinFixture(t,kind="text"){
+ const ctx=setup(t),joinedDocument={nodes:[...doc.nodes,node("join-target")],connections:[]};
+ ctx.document=joinedDocument;ctx.branchActions=joinActions(kind);
+ ctx.db.prepare("UPDATE projects SET document_json=? WHERE id='p'").run(JSON.stringify(joinedDocument));
+ const seq=capture(ctx,"join-sequence",ctx.branchActions);
+ const first=plan(ctx,seq,0,[]),firstJob=send(ctx,first,0),sourceMat=complete(ctx,firstJob.jobId,0);
+ let executedIndex,executedMat,skipIndex;
+ if(kind==="text"){
+  executedIndex=1;skipIndex=2;
+  const selected=plan(ctx,seq,1,[sourceMat]),paid=send(ctx,selected,1);
+  executedMat=complete(ctx,paid.jobId,1);
+  const state=getAssistantRunSequence(ctx.db,ctx.base);
+  assert.equal(state.state,"skip_ready");
+  skipBranch(ctx,seq,2);
+ }else{
+  executedIndex=2;skipIndex=1;
+  assert.equal(getAssistantRunSequence(ctx.db,ctx.base).state,"skip_ready");
+  skipBranch(ctx,seq,1);
+  const selected=plan(ctx,seq,2,[sourceMat]),paid=send(ctx,selected,2);
+  executedMat=complete(ctx,paid.jobId,2);
+ }
+ return {ctx,seq,sourceMat,executedMat,executedIndex,skipIndex};
+}
+function joinCommit(ctx,seq,requestId="commit-join",options={}){
+ const state=getAssistantRunSequence(ctx.db,ctx.base);
+ return commitAssistantRunJoin(ctx.db,{...ctx.base,requestId,
+  runSequenceId:seq.sequenceId,runIndex:3,expectedPlanVersion:1,
+  expectedProjectRevision:1,
+  evidenceDigest:state.join?.evidenceDigest??"0".repeat(64),...options});
+}
+test("P3c3c joins original source and executed gte branch; skip is separately committed, final Job needs approval",t=>{
+ const {ctx,seq,sourceMat,executedMat,executedIndex,skipIndex}=joinFixture(t,"text");
+ assert.equal(executedIndex,1);assert.equal(skipIndex,2);
+ const waiting=getAssistantRunSequence(ctx.db,ctx.base);
+ assert.equal(waiting.state,"join_ready");
+ assert.equal(waiting.index,3);
+ assert.deepEqual(waiting.join.dependsOn,[sourceMat,executedMat]);
+ assert.equal(ctx.db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n,2);
+ assert.throws(()=>plan(ctx,seq,3,[sourceMat,executedMat]),{code:"assistant_task_run_not_ready"});
+ assert.throws(()=>joinCommit(ctx,seq,"forged-join",{evidenceDigest:"0".repeat(64)}),
+  {code:"assistant_task_run_join_not_ready"});
+ const joined=joinCommit(ctx,seq);
+ assert.equal(joined.joined,true);
+ assert.equal(joined.receipt.receiptTrust,"server_committed");
+ assert.equal(joinCommit(ctx,seq,"commit-join",{evidenceDigest:waiting.join.evidenceDigest}).existing,true);
+ assert.equal(getAssistantRunSequence(ctx.db,ctx.base).joins.length,1);
+ const next=getAssistantRunSequence(ctx.db,ctx.base);
+ assert.equal(next.state,"ready");assert.equal(next.next.index,3);
+ assert.deepEqual(next.next.dependsOn,[sourceMat,executedMat]);
+ const planned=plan(ctx,seq,3,next.next.dependsOn);
+ assert.equal(ctx.db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n,2);
+ const pre=JSON.parse(ctx.db.prepare("SELECT preconditions_json FROM assistant_task_steps WHERE id=?")
+  .get(planned.stepId).preconditions_json);
+ assert.equal(pre.joinEvidenceDigest,waiting.join.evidenceDigest);
+ assert.equal(pre.finalizeTask,true);
+ const third=send(ctx,planned,3);
+ assert.equal(ctx.db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n,3);
+ complete(ctx,third.jobId,3);
+ assert.equal(getAssistantRunSequence(ctx.db,ctx.base).state,"completed");
+ assert.equal(getAssistantTask(ctx.db,ctx.base).task.status,"completed");
+ assert.equal(ctx.db.prepare("SELECT COUNT(*) AS n FROM assistant_task_run_joins").get().n,1);
+});
+test("P3c3c joins original source and executed lt branch; skipped branch never creates a Job",t=>{
+ const {ctx,seq,sourceMat,executedMat,executedIndex,skipIndex}=joinFixture(t,"image");
+ assert.equal(executedIndex,2);assert.equal(skipIndex,1);
+ const view=getAssistantRunSequence(ctx.db,ctx.base);
+ assert.equal(view.state,"join_ready");assert.equal(view.join.skippedIndex,1);
+ assert.deepEqual(view.join.dependsOn,[sourceMat,executedMat]);
+ assert.equal(ctx.db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n,2);
+ joinCommit(ctx,seq);
+ const ready=getAssistantRunSequence(ctx.db,ctx.base);
+ assert.equal(ready.state,"ready");
+ assert.equal(ready.next.joinEvidenceDigest,view.join.evidenceDigest);
+ assert.deepEqual(ready.next.dependsOn,[sourceMat,executedMat]);
+ const frozen=plan(ctx,seq,3,ready.next.dependsOn),job=send(ctx,frozen,3);
+ assert.equal(ctx.db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n,3);
+ complete(ctx,job.jobId,3);
+ assert.equal(getAssistantRunSequence(ctx.db,ctx.base).state,"completed");
+});
+test("P3c3c missing CAS after frozen join blocks final paid enqueue without another Job",t=>{
+ const {ctx,seq}=joinFixture(t,"text");
+ joinCommit(ctx,seq);
+ const ready=getAssistantRunSequence(ctx.db,ctx.base);
+ const frozen=plan(ctx,seq,3,ready.next.dependsOn);
+ decideAssistantTaskStep(ctx.db,{...ctx.base,stepId:frozen.stepId,requestId:"approve-join",
+  expectedPlanVersion:1,actionDigest:frozen.actionDigest,decision:"approve"});
+ ctx.db.prepare("UPDATE blobs SET status='missing' WHERE id='blob-1'").run();
+ assert.equal(getAssistantRunSequence(ctx.db,ctx.base).state,"awaiting_verified_join_evidence");
+ assert.throws(()=>enqueueAssistantExternalJobStep(ctx.db,{...ctx.base,stepId:frozen.stepId,
+  requestId:"enqueue-broken-join",expectedPlanVersion:1,actionDigest:frozen.actionDigest}),
+  {code:"assistant_task_run_join_evidence_invalidated"});
+ assert.equal(ctx.db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n,2);
+ ctx.db.prepare("UPDATE blobs SET status='ready' WHERE id='blob-1'").run();
+ const queued=enqueueAssistantExternalJobStep(ctx.db,{...ctx.base,stepId:frozen.stepId,
+  requestId:"enqueue-revalidated-join",expectedPlanVersion:1,actionDigest:frozen.actionDigest});
+ assert.ok(queued.jobId);
+ assert.equal(ctx.db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n,3);
+});
+test("P3c3c mutated committed skip receipt invalidates checkpoint and prevents final Job",t=>{
+ const {ctx,seq}=joinFixture(t,"image");
+ const waiting=getAssistantRunSequence(ctx.db,ctx.base);
+ assert.equal(waiting.state,"join_ready");
+ joinCommit(ctx,seq);
+ const row=ctx.db.prepare("SELECT receipt_json FROM assistant_task_run_branch_skips WHERE sequence_id=?")
+  .get(seq.sequenceId);
+ const altered={...JSON.parse(row.receipt_json),receiptTrust:"none"};
+ ctx.db.prepare("UPDATE assistant_task_run_branch_skips SET receipt_json=? WHERE sequence_id=?")
+  .run(JSON.stringify(altered),seq.sequenceId);
+ assert.equal(getAssistantRunSequence(ctx.db,ctx.base).state,"awaiting_verified_join_evidence");
+ assert.equal(ctx.db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n,2);
+ assert.throws(()=>plan(ctx,seq,3,waiting.join.dependsOn),{code:"assistant_task_run_not_ready"});
+});
+test("P3c3c HTTP Join is atomic/idempotent, and a forged digest never mutates Jobs",async t=>{
+ const {ctx,seq}=joinFixture(t,"text");
+ const app=buildApp({db:ctx.db,authorize:()=>true});
+ t.after(async()=>app.close());
+ const url="/api/v1/projects/p/assistant/tasks/"+ctx.base.taskId+"/run-sequences";
+ const get=await app.inject({method:"GET",url});
+ assert.equal(get.statusCode,200);
+ const state=get.json();
+ assert.equal(state.state,"join_ready");
+ const payload={requestId:"http-join-1",runSequenceId:seq.sequenceId,runIndex:3,
+  expectedPlanVersion:1,expectedProjectRevision:1,evidenceDigest:state.join.evidenceDigest};
+ const forged=await app.inject({method:"POST",url:url+"/join",payload:{...payload,
+  requestId:"http-forged",evidenceDigest:"0".repeat(64)}});
+ assert.equal(forged.statusCode,409);
+ const committed=await app.inject({method:"POST",url:url+"/join",payload});
+ assert.equal(committed.statusCode,200,committed.body);
+ assert.equal(committed.json().joined,true);
+ assert.equal((await app.inject({method:"POST",url:url+"/join",payload})).json().existing,true);
+ assert.equal((await app.inject({method:"GET",url})).json().next.index,3);
+ assert.equal(ctx.db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n,2);
+ assert.equal(ctx.db.prepare("SELECT COUNT(*) AS n FROM assistant_task_run_joins").get().n,1);
+});
+test("P3c3c Join persists through SQLite restart with fixed two-parent dependency and no replay",async t=>{
+ const {ctx,seq,sourceMat,executedMat}=joinFixture(t,"image");
+ joinCommit(ctx,seq);
+ const dir=mkdtempSync(join(tmpdir(),"atelier-p3c3c-")),file=join(dir,"join.sqlite");
+ let restarted;
+ t.after(()=>{try{restarted?.close()}catch{};rmSync(dir,{recursive:true,force:true})});
+ await backup(ctx.db,file);
+ restarted=new DatabaseSync(file);initializeSchema(restarted);
+ const state=getAssistantRunSequence(restarted,ctx.base);
+ assert.equal(state.state,"ready");
+ assert.equal(state.joins.length,1);
+ assert.deepEqual(state.next.dependsOn,[sourceMat,executedMat]);
+ assert.equal(restarted.prepare("SELECT COUNT(*) AS n FROM jobs").get().n,2);
+ assert.equal(recoverAssistantExternalTasksAtStartup(restarted).advanced,0);
+ assert.equal(restarted.prepare("SELECT COUNT(*) AS n FROM assistant_task_run_joins").get().n,1);
+});
+test("P3c3c malformed fourth Join is rejected before any Task Step or provider Job",t=>{
+ const ctx=setup(t);
+ const fourth=node("join-target");
+ ctx.db.prepare("UPDATE projects SET document_json=? WHERE id='p'")
+  .run(JSON.stringify({nodes:[...doc.nodes,fourth],connections:[]}));
+ const source=joinActions("text");
+ for(const [index,invalid] of [
+  [...source.slice(0,3),{...source[3],join:{indices:[0,1,1]}}],
+  [...source.slice(0,3),{...source[3],join:{indices:[0,1,2],url:"bad"}}],
+  [...source.slice(0,3),{...source[3],when:source[2].when}],
+  [...source.slice(0,3),{...source[3],join:undefined}],
+  [source[0],source[1],{...source[2],when:{...source[2].when,count:2}},source[3]]
+ ].entries()){
+  assert.throws(()=>registerAssistantRunSequence(ctx.db,{...ctx.base,requestId:"invalid-join-"+index,
+   sourceMessageId:"invalid-join-"+index,expectedPlanVersion:1,expectedProjectRevision:1,
+   actions:invalid}));
+ }
+ assert.equal(ctx.db.prepare("SELECT COUNT(*) AS n FROM assistant_task_run_sequences").get().n,0);
+ assert.equal(ctx.db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n,0);
+});
 test("P3c3b trusted count chooses gte branch, skips lt branch with durable receipt and no third Job",t=>{
  const {ctx,seq,mat}=branchFixture(t,"text");
  assert.equal(getAssistantRunSequence(ctx.db,ctx.base).state,"ready");
@@ -207,7 +382,7 @@ test("P3c3b persisted skip survives SQLite restart, preserves existing Job and r
 });
 test("P3b freeze two intents; one Job at a time; approval and materialization gate next",t=>{
  const ctx=setup(t);
- assert.equal(SCHEMA_VERSION,30);
+ assert.equal(SCHEMA_VERSION,31);
  const seq=capture(ctx);
  assert.equal(seq.count,2);
  assert.equal(capture(ctx).sequenceId,seq.sequenceId);

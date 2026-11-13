@@ -10,6 +10,24 @@ const connection=(from:string,to:string,id="edge-1"):CanvasConnection=>
  ({id,fromNodeId:from,toNodeId:to});
 const center={x:320,y:220};
 
+describe("P3c3c typed Join intent",()=>{
+ it("allows only a fourth joined node after two complementary trusted branches",()=>{
+  const runs=[
+   {type:"run_node",nodeId:"src",mode:"image"},
+   {type:"run_node",nodeId:"branch-a",mode:"image",when:{sourceIndex:0,kind:"image",op:"gte",count:2}},
+   {type:"run_node",nodeId:"branch-b",mode:"image",when:{sourceIndex:0,kind:"image",op:"lt",count:2}},
+   {type:"run_node",nodeId:"join",mode:"image",join:{indices:[0,1,2]}}
+  ];
+  expect(parseAssistantCanvasActions(runs)).toEqual(runs);
+  for(const invalid of [
+   [...runs.slice(0,3),{...runs[3],join:{indices:[0,2,1]}}],
+   [...runs.slice(0,3),{...runs[3],join:{indices:[0,1,2],apiKey:"fake"}}],
+   [...runs.slice(0,3),{...runs[3],when:runs[2].when}],
+   [...runs.slice(0,3),{...runs[3],join:undefined}],
+   [...runs.slice(0,3),{...runs[3],type:"run_workflow"}]
+  ])expect(()=>parseAssistantCanvasActions(invalid)).toThrow();
+ });
+});
 describe("P3c3b typed trusted branch action validation",()=>{
  it("accepts explicit typed conditions and rejects caller-injected branch expressions",()=>{
   const conditional=[

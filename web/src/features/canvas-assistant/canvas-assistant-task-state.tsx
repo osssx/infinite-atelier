@@ -278,6 +278,26 @@ export function useCanvasAssistantTasks({
   }catch(error){setError("分支未跳过，未发起任何生成："+(error instanceof Error?error.message:"请求失败"));}
   finally{setBusy(false);}
  };
+ const confirmTrustedJoin=async()=>{
+  if(!selected||!runSequence?.sequence||runSequence.state!=="join_ready"||
+   !runSequence.join||busy||sending)return;
+  setBusy(true);setError("");
+  try{
+   const latest=await canvasApi<AssistantRunSequenceView>(path(selected.id)+"/run-sequences","GET");
+   if(latest.state!=="join_ready"||latest.join?.evidenceDigest!==runSequence.join.evidenceDigest)
+    throw Error("汇合证据已经变化，请刷新状态");
+   const project=await canvasApi<{revision:number}>("/api/v1/projects/"+encodeURIComponent(projectId),"GET");
+   await canvasApi(path(selected.id)+"/run-sequences/join","POST",{
+    requestId:nanoid(),runSequenceId:latest.sequence!.id,runIndex:3,
+    expectedPlanVersion:latest.sequence!.planVersion,expectedProjectRevision:project.revision,
+    evidenceDigest:latest.join.evidenceDigest
+   });
+   const status=await canvasApi<AssistantRunSequenceView>(path(selected.id)+"/run-sequences","GET");
+   setRunSequence(status?.sequence?status:null);
+   await refreshTask(selected.id);
+  }catch(error){setError("Join 未提交，不会触发生成："+(error instanceof Error?error.message:"证据校验失败"));}
+  finally{setBusy(false);}
+ };
  const externalSteps=detail&&selected&&detail.id===selected.id?detail.steps?.filter(step=>
   ["model_job","comfy_workflow","materialize"].includes(step.kind))??[]:[];
  const skillSteps=detail&&selected&&detail.id===selected.id?
@@ -420,6 +440,15 @@ export function useCanvasAssistantTasks({
    {runSequence?.sequence&&selected&&runSequence.sequence.taskId===selected.id?<div className="mt-2 rounded-md border p-2" style={{borderColor:"var(--assistant-border)"}}>
     <div className="font-medium">顺序生成计划：{runSequence.sequence.actions.length} 项 · {runSequence.state}</div>
     <p>每项单独批准费用，只有上一项落图验收后才执行下一项。</p>
+    {runSequence.joins?.length?<p className="mt-1">已提交可信汇合检查点：第 1 项与执行分支均落图，未选择的分支已跳过。</p>:null}
+    {runSequence.state==="join_ready"&&runSequence.join?<div className="mt-2">
+     <p>汇合待确认：上游第 1 项 + 第 {runSequence.join.executedIndex+1} 项已可信落图，
+      第 {runSequence.join.skippedIndex+1} 项具有服务端跳过回执。确认只写入 Join 回执，不发起生成。</p>
+     <button type="button" className="canvas-assistant-link" disabled={busy||sending}
+      onClick={()=>void confirmTrustedJoin()}>确认可信汇合（只写回执）</button>
+    </div>:null}
+    {runSequence.state==="awaiting_verified_join_evidence"?<p>汇合前驱的 Job、CAS、落图或跳过证据不完整；后继 Job 保持阻断。</p>:null}
+    {runSequence.state==="join_evidence_invalidated"?<p>已提交的汇合回执与当前可信证据不符；不会执行后继 Job。</p>:null}
     {runSequence.branchSkips?.length?<p className="mt-1">
      已持久记录跳过：{runSequence.branchSkips.map(skip=>(skip.index+1)+"/"+runSequence.sequence!.actions.length).join("、")} 项（可信回执）
     </p>:null}

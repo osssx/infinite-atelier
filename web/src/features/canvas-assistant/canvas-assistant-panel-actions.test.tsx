@@ -199,6 +199,32 @@ describe("P2c assistant Task routes node generation through frozen Job context",
   expect(mocks.run.mock.calls[0][3]).toMatchObject({taskId:"task-p2c",runSequenceId:"seq-one",runIndex:0});
   expect(container!.textContent).toContain("2 个生成目标已冻结为顺序计划");
  });
+ it("P3c3c four-intent Join freezes once and submits only the first approved Job",async()=>{
+  const acts=[
+   {type:"run_node",nodeId:"text-existing",mode:"text"},
+   {type:"run_node",nodeId:"path-high",mode:"text",
+    when:{sourceIndex:0,kind:"text",op:"gte",count:1}},
+   {type:"run_node",nodeId:"path-low",mode:"text",
+    when:{sourceIndex:0,kind:"text",op:"lt",count:1}},
+   {type:"run_node",nodeId:"join-node",mode:"text",join:{indices:[0,1,2]}}
+  ];
+  const fixture=setup(acts,[],previous);
+  mocks.freezeSeq.mockResolvedValueOnce({state:"ready",sequence:{
+   id:"seq-join",sourceMessageId:"root",actions:acts},next:{
+   index:0,action:acts[0],dependsOn:[],last:false
+  }});
+  installTask();
+  await link(fixture.Harness);
+  await renderAndSend(fixture.Harness);
+  expect(mocks.freezeSeq).toHaveBeenCalledTimes(1);
+  expect(mocks.run).toHaveBeenCalledTimes(1);
+  expect(mocks.run.mock.calls[0][0]).toEqual([acts[0]]);
+  expect(mocks.run.mock.calls[0][3]).toMatchObject({
+   taskId:"task-p2c",runSequenceId:"seq-join",runIndex:0
+  });
+  expect(container!.textContent).toContain("4 个生成目标已冻结为顺序计划");
+  expect(fixture.apply).not.toHaveBeenCalled();
+ });
  it("multiple run_node actions are blocked before any submission",async()=>{
   const fixture=setup([{type:"run_node",nodeId:"text-existing",mode:"text"},
    {type:"run_node",nodeId:"text-existing",mode:"text"}],[],previous);

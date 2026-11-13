@@ -48,6 +48,25 @@ test("P3c2 model may propose one typed prior-media input, never arbitrary asset 
   {type:"run_workflow",nodeId:"wf",inputFromPrevious:{sourceKind:"image",toPortId:"image_in",sha256:"a".repeat(64)}}
  ])assert.throws(()=>parseAssistantActionResponse(wrap([action])),/assistant_actions_invalid/);
 });
+test("P3c3c model parser supports only explicit fourth Join intent and cannot invent metadata",()=>{
+ const wrap=actions=>JSON.stringify({answer:"Join 合流",actions});
+ const parts=[
+  {type:"run_node",nodeId:"source",mode:"image"},
+  {type:"run_node",nodeId:"high",mode:"image",
+   when:{sourceIndex:0,kind:"image",op:"gte",count:2}},
+  {type:"run_node",nodeId:"low",mode:"image",
+   when:{sourceIndex:0,kind:"image",op:"lt",count:2}},
+  {type:"run_node",nodeId:"join",mode:"image",join:{indices:[0,1,2]}}
+ ];
+ assert.deepEqual(parseAssistantActionResponse(wrap(parts)).actions,parts);
+ for(const invalid of [
+  [...parts.slice(0,3),{...parts[3],join:{indices:[0,1,1]}}],
+  [...parts.slice(0,3),{...parts[3],join:{indices:[0,1,2],secret:"bad"}}],
+  [...parts.slice(0,3),{...parts[3],when:parts[2].when}],
+  [parts[0],parts[1],parts[2],{type:"run_workflow",nodeId:"join"}],
+  [parts[0],parts[1],parts[2],{type:"run_node",nodeId:"join"}]
+ ])assert.throws(()=>parseAssistantActionResponse(wrap(invalid)),/assistant_actions_invalid/);
+});
 test("P3c3b model parser accepts typed complementary run conditions and refuses arbitrary condition fields",()=>{
  const wrap=actions=>JSON.stringify({answer:"受控分支生成",actions});
  const actions=[

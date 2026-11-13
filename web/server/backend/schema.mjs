@@ -1,5 +1,5 @@
 import{JOB_STATUSES,EXECUTION_MODES,ARTIFACT_KINDS}from"./contracts.mjs";
-export const SCHEMA_VERSION=30;
+export const SCHEMA_VERSION=31;
 const quoted=x=>x.map(s=>"'"+s+"'").join(",");
 export const INITIAL_SCHEMA_SQL=`
 CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY,applied_at INTEGER NOT NULL);
@@ -603,6 +603,31 @@ CREATE TABLE IF NOT EXISTS assistant_task_run_branch_skips(
 );
 CREATE INDEX IF NOT EXISTS ix_assistant_task_run_branch_skips_task ON assistant_task_run_branch_skips(task_id,plan_version);
 `;
+/** P3c3c: an explicit, immutable join of two committed media steps and one
+ * server-trusted mutually exclusive branch skip; never a provider submission.
+ */
+export const ASSISTANT_TASK_RUN_JOIN_SCHEMA_SQL=`
+CREATE TABLE IF NOT EXISTS assistant_task_run_joins(
+ sequence_id TEXT NOT NULL REFERENCES assistant_task_run_sequences(id),
+ task_id TEXT NOT NULL REFERENCES assistant_tasks(id),
+ project_id TEXT NOT NULL REFERENCES projects(id),
+ plan_version INTEGER NOT NULL CHECK(plan_version>0),
+ run_index INTEGER NOT NULL CHECK(run_index=3),
+ source_step_id TEXT NOT NULL REFERENCES assistant_task_steps(id),
+ source_material_step_id TEXT NOT NULL REFERENCES assistant_task_steps(id),
+ executed_index INTEGER NOT NULL CHECK(executed_index IN (1,2)),
+ executed_step_id TEXT NOT NULL REFERENCES assistant_task_steps(id),
+ executed_material_step_id TEXT NOT NULL REFERENCES assistant_task_steps(id),
+ skipped_index INTEGER NOT NULL CHECK(skipped_index IN (1,2)),
+ skip_evidence_digest TEXT NOT NULL CHECK(length(skip_evidence_digest)=64),
+ evidence_digest TEXT NOT NULL CHECK(length(evidence_digest)=64),
+ receipt_json TEXT NOT NULL CHECK(json_valid(receipt_json)),
+ joined_at INTEGER NOT NULL,
+ PRIMARY KEY(sequence_id,run_index),
+ CHECK(executed_index<>skipped_index)
+);
+CREATE INDEX IF NOT EXISTS ix_assistant_task_run_joins_task ON assistant_task_run_joins(task_id,plan_version);
+`;
 export function initializeSchema(db){
  db.exec("PRAGMA foreign_keys=ON;PRAGMA busy_timeout=5000;BEGIN IMMEDIATE");
  try{
@@ -660,6 +685,7 @@ export function initializeSchema(db){
   if(version<28)db.exec(ASSISTANT_TASK_CHAT_LINK_SCHEMA_SQL);
   if(version<29)db.exec(ASSISTANT_TASK_RUN_INPUT_SELECTION_SCHEMA_SQL);
   if(version<30)db.exec(ASSISTANT_TASK_RUN_BRANCH_SCHEMA_SQL);
+  if(version<31)db.exec(ASSISTANT_TASK_RUN_JOIN_SCHEMA_SQL);
   if(version<SCHEMA_VERSION)db.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)").run(SCHEMA_VERSION,Date.now());
   db.exec("COMMIT");
  }catch(e){db.exec("ROLLBACK");throw e}

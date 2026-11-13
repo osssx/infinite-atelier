@@ -137,6 +137,58 @@ describe("P3b persisted multi-run UI resume",()=>{
   expect(mocks.api.mock.calls.every(call=>call[1]==="GET")).toBe(true);
  });
 });
+describe("P3c3c multi-predecessor Join checkpoint UI",()=>{
+ it("commits trusted Join only once without executing the final paid generation",async()=>{
+  const task={id:"task-join",chatSessionId:"chat-a",chatSessionIds:["chat-a"],
+   rootMessageId:"original-user",originalRequest:"先素材再分支最后汇合",
+   status:"ready",activePlanVersion:1,recoveryMode:"job_observation",steps:[]};
+  const cond={sourceIndex:0,kind:"image",op:"gte",count:2};
+  const inverse={sourceIndex:0,kind:"image",op:"lt",count:2};
+  const actions=[
+   {type:"run_node",nodeId:"src",mode:"image"},
+   {type:"run_node",nodeId:"a",mode:"image",when:cond},
+   {type:"run_node",nodeId:"b",mode:"image",when:inverse},
+   {type:"run_node",nodeId:"final",mode:"image",join:{indices:[0,1,2]}}
+  ];
+  const digest="e".repeat(64),deps=["material-source","material-branch"];
+  let joined=false;
+  const requests:{method:string;url:string;payload?:Record<string,unknown>}[]=[];
+  mocks.api.mockImplementation(async(url:string,method:string,payload?:Record<string,unknown>)=>{
+   requests.push({url,method,payload});
+   if(method==="GET"&&url.includes("chatSessionId="))return {tasks:[task]};
+   if(method==="GET"&&url.endsWith("/model-calls"))return {calls:[]};
+   if(method==="GET"&&url.endsWith("/run-sequences"))return {
+    sequence:{id:"sequence-join",taskId:task.id,sourceMessageId:"original-user",
+     planVersion:1,actions,status:"active"},
+    state:joined?"ready":"join_ready",index:3,
+    join:joined?null:{index:3,planVersion:1,taskId:task.id,projectId:"project",
+     sourceStepId:"job-source",sourceMaterialStepId:"material-source",
+     executedIndex:1,executedStepId:"job-branch",executedMaterialStepId:"material-branch",
+     skippedIndex:2,skipEvidenceDigest:"a".repeat(64),evidenceDigest:digest,
+     dependsOn:deps},
+    joins:joined?[{index:3,receipt:{decision:"join",receiptTrust:"server_committed",
+     evidenceDigest:digest,dependsOn:deps},joinedAt:1}]:[],
+    next:joined?{index:3,action:actions[3],dependsOn:deps,last:true,joinEvidenceDigest:digest}:null,
+    branchSkips:[],outputs:[]
+   };
+   if(method==="GET"&&url==="/api/v1/projects/project")return {revision:5};
+   if(method==="GET")return {task};
+   if(method==="POST"&&url.endsWith("/run-sequences/join")){
+    expect(payload).toMatchObject({runSequenceId:"sequence-join",runIndex:3,
+     expectedPlanVersion:1,expectedProjectRevision:5,evidenceDigest:digest});
+    joined=true;return {joined:true,executionStarted:false};
+   }
+   throw Error("unexpected side effect: "+method+" "+url);
+  });
+  await render();
+  expect(container!.textContent).toContain("汇合待确认");
+  await click("确认可信汇合（只写回执）");
+  expect(joined).toBe(true);
+  expect(container!.textContent).toContain("已提交可信汇合检查点");
+  expect(requests.filter(r=>r.method==="POST")).toHaveLength(1);
+  expect(requests.some(r=>r.method==="POST"&&/\/enqueue$|\/external-jobs$|\/canvas-steps$/.test(r.url))).toBe(false);
+ });
+});
 describe("P3c3b trusted branch skip UI",()=>{
  it("requires deliberate skip confirmation and posts only the receipt command",async()=>{
   const task={id:"task-branch",chatSessionId:"chat-a",chatSessionIds:["chat-a"],

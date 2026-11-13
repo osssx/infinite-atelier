@@ -19,40 +19,57 @@ async function fixture(t){
   originalRequest:"持续执行工作流"})).body.task;
  return {db,call,taskId:first.id,base:"/api/v1/projects/p/assistant/tasks/"+first.id};
 }
-test("P3c SQLite v27 to v30 preserves existing tasks and adds chat links, output selections and branch skips",()=>{
+test("P3c SQLite v27 to v31 preserves tasks, selections, branch skips and join checkpoint schema",()=>{
  const db=new DatabaseSync(":memory:");initializeSchema(db);
  try{
-  db.prepare("UPDATE schema_migrations SET version=27 WHERE version=30").run();
-  db.exec("DROP TABLE assistant_task_run_branch_skips");
+  db.prepare("UPDATE schema_migrations SET version=27 WHERE version=31").run();
+  db.exec("DROP TABLE assistant_task_run_joins");
+ db.exec("DROP TABLE assistant_task_run_branch_skips");
   db.exec("DROP TABLE assistant_task_run_input_selections");
   db.exec("DROP TABLE assistant_task_chat_links");
   initializeSchema(db);
-  assert.equal(db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v,30);
+  assert.equal(db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v,31);
   assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE name='assistant_task_run_branch_skips'").get());
+  assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE name='assistant_task_run_joins'").get());
   assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='assistant_task_run_input_selections'").get());
   assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='assistant_task_chat_links'").get());
   initializeSchema(db); // repeat startup must not duplicate schema migration
-  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM schema_migrations WHERE version=30").get().n,1);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM schema_migrations WHERE version=31").get().n,1);
  }finally{db.close()}
 });
-test("P3c3b schema v29 -> v30 migration preserves existing Task and does not create external Jobs",async t=>{
+test("P3c3c schema v29 -> v31 migration preserves existing Task and does not create external Jobs",async t=>{
  const {db,call,taskId,base}=await fixture(t);
  const original=db.prepare("SELECT status,active_plan_version,original_request FROM assistant_tasks WHERE id=?")
   .get(taskId);
- db.prepare("UPDATE schema_migrations SET version=29 WHERE version=30").run();
+ db.prepare("UPDATE schema_migrations SET version=29 WHERE version=31").run();
+ db.exec("DROP TABLE assistant_task_run_joins");
  db.exec("DROP TABLE assistant_task_run_branch_skips");
  initializeSchema(db);
  initializeSchema(db);
- assert.equal(db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v,30);
+ assert.equal(db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v,31);
  assert.deepEqual(db.prepare("SELECT status,active_plan_version,original_request FROM assistant_tasks WHERE id=?")
   .get(taskId),original);
  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n,0);
  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM assistant_task_run_branch_skips").get().n,0);
  assert.equal((await call("GET",base)).body.task.id,taskId);
 });
+test("P3c3c v30 -> v31 Join migration is idempotent and keeps Task state unchanged",async t=>{
+ const {db,call,taskId,base}=await fixture(t);
+ const task=db.prepare("SELECT status,active_plan_version,original_request FROM assistant_tasks WHERE id=?").get(taskId);
+ const jobs=db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n;
+ db.prepare("UPDATE schema_migrations SET version=30 WHERE version=31").run();
+ db.exec("DROP TABLE assistant_task_run_joins");
+ initializeSchema(db);initializeSchema(db);
+ assert.equal(db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v,31);
+ assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE name='assistant_task_run_joins'").get());
+ assert.deepEqual(db.prepare("SELECT status,active_plan_version,original_request FROM assistant_tasks WHERE id=?").get(taskId),task);
+ assert.equal(db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n,jobs);
+ assert.equal(db.prepare("SELECT COUNT(*) AS n FROM assistant_task_run_joins").get().n,0);
+ assert.equal((await call("GET",base)).body.task.id,taskId);
+});
 test("P3c chat link requires explicit command; original chat remains unchanged and replay is idempotent",async t=>{
  const {db,call,taskId,base}=await fixture(t);
- assert.equal(SCHEMA_VERSION,30);
+ assert.equal(SCHEMA_VERSION,31);
  const one=await call("GET","/api/v1/projects/p/assistant/tasks?chatSessionId=chat-one");
  assert.deepEqual(one.body.tasks[0].chatSessionIds,["chat-one"]);
  const before=await call("GET","/api/v1/projects/p/assistant/tasks?chatSessionId=chat-two");

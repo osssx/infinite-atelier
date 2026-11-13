@@ -21,8 +21,16 @@ export const validAssistantRunCondition=(value:unknown):value is AssistantRunCon
   ["gte","lt"].includes(String(v.op))&&Number.isInteger(v.count)&&
   Number(v.count)>=1&&Number(v.count)<=16;
 };
+export type AssistantRunJoin={indices:[0,1,2]};
+export const validAssistantRunJoin=(value:unknown):value is AssistantRunJoin=>{
+ if(!value||typeof value!=="object"||Array.isArray(value))return false;
+ const item=value as Record<string,unknown>;
+ return Object.keys(item).length===1&&Array.isArray(item.indices)&&
+  item.indices.length===3&&item.indices.every((index:number,i:number)=>index===i);
+};
 export type AssistantExecutionAction=
- |{type:"run_node";nodeId:string;mode?:CanvasGenerationMode;when?:AssistantRunCondition}
+ |{type:"run_node";nodeId:string;mode?:CanvasGenerationMode;when?:AssistantRunCondition;
+  join?:AssistantRunJoin}
  |{type:"run_workflow";nodeId:string;inputFromPrevious?:{sourceKind:"image"|"video"|"audio";toPortId:string};
   when?:AssistantRunCondition};
 export type AssistantNodeRun={

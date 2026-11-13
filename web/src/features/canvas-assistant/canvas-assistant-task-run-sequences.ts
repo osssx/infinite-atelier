@@ -7,6 +7,12 @@ export type AssistantRunSequenceView={
  sequence:{id:string;taskId:string;sourceMessageId:string;planVersion:number;
   actions:AssistantRunIntent[];status:string}|null;
  state:string;index?:number;stepId?:string;
+ join?:{index:3;planVersion:number;taskId:string;projectId:string;
+  sourceStepId:string;sourceMaterialStepId:string;
+  executedIndex:1|2;executedStepId:string;executedMaterialStepId:string;
+  skippedIndex:1|2;skipEvidenceDigest:string;evidenceDigest:string;dependsOn:string[]};
+ joins?:{index:3;receipt:{decision:string;receiptTrust:string;
+  evidenceDigest:string;dependsOn:string[]};joinedAt:number}[];
  skip?:{index:number;action:AssistantRunIntent;sourceStepId:string;materialStepId:string;
   count:number;verifiedCount:number;evidenceDigest:string};
  branchSkips?:{index:number;receipt:{decision:string;receiptTrust:string;condition:{sourceIndex:0;
@@ -32,7 +38,7 @@ export async function freezeAssistantRunSequence({
  refs:ReadonlyMap<string,string>;signal:AbortSignal
 }):Promise<AssistantRunSequenceView>{
  abort(signal);
- if(actions.length<2||actions.length>3)throw Error("assistant_task_run_invalid");
+ if(actions.length<2||actions.length>4)throw Error("assistant_task_run_invalid");
  const resolved=actions.map(action=>({...action,nodeId:refs.get(action.nodeId)??action.nodeId}));
  if(resolved.some(action=>!action.nodeId)||new Set(resolved.map(action=>action.nodeId)).size!==resolved.length)
   throw Error("assistant_task_run_invalid");

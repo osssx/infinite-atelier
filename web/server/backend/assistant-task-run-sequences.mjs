@@ -29,7 +29,7 @@ function validBranchCondition(value){
   value.count>=1&&value.count<=16;
 }
 function validActions(actions,doc){
- if(!Array.isArray(actions)||actions.length<2||actions.length>3)
+ if(!Array.isArray(actions)||actions.length<2||actions.length>4)
   throw fail("assistant_task_run_invalid",400);
  const nodes=new Map(doc.nodes.map(n=>[n.id,n])),used=new Set();
  for(const [index,action] of actions.entries()){
@@ -48,7 +48,7 @@ function validActions(actions,doc){
      throw fail("assistant_task_run_input_invalid",400);
    }
   }else if(action.type==="run_node"){
-   if(Object.keys(action).some(k=>!["type","nodeId","mode","when"].includes(k))||
+   if(Object.keys(action).some(k=>!["type","nodeId","mode","when","join"].includes(k))||
     !["text","image","video","audio","config"].includes(node?.type)||
     (action.mode!==undefined&&!modes.has(action.mode)))throw fail("assistant_task_run_target_invalid",400);
    const mode=node.type==="config"?(node.metadata?.generationMode??"image"):node.type;
@@ -57,15 +57,25 @@ function validActions(actions,doc){
   used.add(action.nodeId);
   if(action.when!==undefined&&(index===0||!validBranchCondition(action.when)))
    throw fail("assistant_task_run_branch_invalid",400);
+  if(action.join!==undefined&&!(index===3&&actions.length===4&&
+   action.type==="run_node"&&action.when===undefined&&
+   action.join&&typeof action.join==="object"&&!Array.isArray(action.join)&&
+   Object.keys(action.join).length===1&&
+   Array.isArray(action.join.indices)&&action.join.indices.length===3&&
+   action.join.indices.every((value,i)=>value===i)))
+   throw fail("assistant_task_run_join_invalid",400);
  }
  const conditioned=actions.filter(action=>action.when);
  if(conditioned.length){
-  if(actions.length!==3||conditioned.length!==2||!actions[1].when||!actions[2].when||
+  if((actions.length!==3&&actions.length!==4)||conditioned.length!==2||
+   !actions[1].when||!actions[2].when||
    actions[1].when.kind!==actions[2].when.kind||
    actions[1].when.count!==actions[2].when.count||
    actions[1].when.op===actions[2].when.op)
    throw fail("assistant_task_run_branch_invalid",400);
  }
+ if(actions.length===4&&(!actions[3].join||conditioned.length!==2))
+  throw fail("assistant_task_run_join_invalid",400);
 }
 const mediaKinds={image:"IMAGE",video:"VIDEO",audio:"AUDIO"};
 const sensitive=/(?:secret|token|password|api.?key|credential|authorization|密钥|密码|令牌)/i;
@@ -172,6 +182,74 @@ function branchSkipRow(db,seq,index){
  return db.prepare("SELECT * FROM assistant_task_run_branch_skips WHERE sequence_id=? AND run_index=?")
   .get(seq.id,index);
 }
+/** P3c3c: exactly two materialized, complete producer Steps plus one
+ * verified mutually exclusive skip. Neither text nor model claims count.
+ */
+function trustedJoinEvidence(db,projectId,seq,actions){
+ if(actions.length!==4||!actions[3]?.join)return null;
+ const trusted=trustedAssistantTaskOutputs(db,{projectId,taskId:seq.task_id,planVersion:seq.plan_version});
+ const completed=index=>{
+  const step=stepFor(db,seq,index);
+  if(!step||step.status!=="succeeded"||step.receipt_trust!=="server_committed")return null;
+  const mat=verifiedMaterialization(db,seq,step.id);
+  if(!mat)return null;
+  const receipt=JSON.parse(step.receipt_json??"null");
+  const ids=receipt?.artifactIds;
+  if(!Array.isArray(ids)||ids.length<1||ids.length>64||new Set(ids).size!==ids.length)return null;
+  const outputs=trusted.filter(out=>out.runSequenceId===seq.id&&out.runIndex===index&&
+   out.sourceStepId===step.id&&out.materialStepId===mat.id);
+  if(outputs.length!==ids.length||outputs.some(out=>!ids.includes(out.artifactId)))return null;
+  return {index,stepId:step.id,materialStepId:mat.id,
+   artifacts:outputs.map(out=>({id:out.artifactId,sha:out.sha256,kind:out.kind,
+    nodeId:out.nodeId})).sort((a,b)=>a.id.localeCompare(b.id))};
+ };
+ const source=completed(0);
+ const branches=[1,2].map(index=>({index,completed:completed(index),skip:branchSkipRow(db,seq,index)}));
+ const executed=branches.filter(item=>item.completed&&!item.skip);
+ const skipped=branches.filter(item=>!item.completed&&item.skip);
+ if(!source||executed.length!==1||skipped.length!==1||
+  executed[0].index===skipped[0].index)return null;
+ const branch=executed[0].completed,other=skipped[0];
+ const proof=branchEvidenceFor(db,projectId,null,seq,actions[other.index]);
+ if(!proof||proof.shouldRun||proof.evidenceDigest!==other.skip.evidence_digest||
+  proof.sourceStepId!==other.skip.source_step_id||
+  proof.materialStepId!==other.skip.material_step_id)return null;
+ const receipt=JSON.parse(other.skip.receipt_json??"null");
+ if(receipt?.decision!=="skip"||receipt?.receiptTrust!=="server_committed"||
+  receipt?.runIndex!==other.index||receipt?.evidenceDigest!==proof.evidenceDigest||
+  receipt?.sourceStepId!==proof.sourceStepId||
+  receipt?.materialStepId!==proof.materialStepId||
+  stableJson(receipt?.condition)!==stableJson(actions[other.index].when))return null;
+ const digest=hash({sequenceId:seq.id,planVersion:seq.plan_version,
+  source,executed:branch,skipped:{index:other.index,evidenceDigest:proof.evidenceDigest,
+   sourceStepId:proof.sourceStepId,materialStepId:proof.materialStepId}});
+ return {index:3,planVersion:seq.plan_version,taskId:seq.task_id,projectId,
+  sourceStepId:source.stepId,sourceMaterialStepId:source.materialStepId,
+  executedIndex:branch.index,executedStepId:branch.stepId,
+  executedMaterialStepId:branch.materialStepId,skippedIndex:other.index,
+  skipEvidenceDigest:proof.evidenceDigest,evidenceDigest:digest,
+  dependsOn:[source.materialStepId,branch.materialStepId]};
+}
+function savedJoin(db,seq){
+ return db.prepare("SELECT * FROM assistant_task_run_joins WHERE sequence_id=? AND run_index=3")
+  .get(seq.id);
+}
+function joinReceiptValid(row,proof){
+ if(!row||!proof)return false;
+ const receipt=JSON.parse(row.receipt_json??"null");
+ return row.run_index===3&&row.plan_version===proof.planVersion&&
+  row.task_id===proof.taskId&&row.project_id===proof.projectId&&
+  row.evidence_digest===proof.evidenceDigest&&
+  row.source_step_id===proof.sourceStepId&&
+  row.source_material_step_id===proof.sourceMaterialStepId&&
+  row.executed_index===proof.executedIndex&&
+  row.executed_step_id===proof.executedStepId&&
+  row.executed_material_step_id===proof.executedMaterialStepId&&
+  row.skipped_index===proof.skippedIndex&&row.skip_evidence_digest===proof.skipEvidenceDigest&&
+  receipt?.receiptTrust==="server_committed"&&receipt?.decision==="join"&&
+  receipt?.evidenceDigest===proof.evidenceDigest&&
+  stableJson(receipt?.dependsOn)===stableJson(proof.dependsOn);
+}
 export function nextAssistantRunInTransaction(db,projectId,taskId,seq){
  const task=taskWithGraph(db,projectId,taskId),actions=JSON.parse(seq.actions_json);
  const out={sequence:projection(seq),next:null};
@@ -181,6 +259,21 @@ export function nextAssistantRunInTransaction(db,projectId,taskId,seq){
   return {...out,state:"blocked"};
  let dep=seq.base_step_id;
  for(let index=0;index<actions.length;index++){
+  const action=actions[index];
+  const joinEvidence=action.join?trustedJoinEvidence(db,projectId,seq,actions):null;
+  if(action.join){
+   if(!joinEvidence)return {...out,state:"awaiting_verified_join_evidence",index};
+   const committed=savedJoin(db,seq);
+   if(!committed){
+    if(task.active_step_id!==null||!["ready","planning"].includes(task.status)||
+     db.prepare("SELECT 1 FROM assistant_task_steps WHERE task_id=? AND plan_version=? AND superseded_at IS NULL AND status NOT IN ('succeeded') LIMIT 1")
+      .get(taskId,seq.plan_version))
+     return {...out,state:"waiting_for_task",index};
+    return {...out,state:"join_ready",index,join:joinEvidence};
+   }
+   if(!joinReceiptValid(committed,joinEvidence))
+    return {...out,state:"join_evidence_invalidated",index};
+  }
   const existing=stepFor(db,seq,index);
   if(existing){
    if(existing.status!=="succeeded"||existing.receipt_trust!=="server_committed")
@@ -190,7 +283,6 @@ export function nextAssistantRunInTransaction(db,projectId,taskId,seq){
    dep=mat.id;
    continue;
   }
-   const action=actions[index];
    const skip=branchSkipRow(db,seq,index);
    if(skip){
     const proof=action.when&&branchEvidenceFor(db,projectId,task,seq,action);
@@ -244,7 +336,9 @@ export function nextAssistantRunInTransaction(db,projectId,taskId,seq){
     return {...out,state:"ready",next:{index,action,dependsOn:dep?[dep]:[],
      last:index===actions.length-1,inputBinding:binding,needsBinding:true}};
    }
-   return {...out,state:"ready",next:{index,action,dependsOn:dep?[dep]:[],
+   return {...out,state:"ready",next:{index,action,
+    dependsOn:joinEvidence?joinEvidence.dependsOn:dep?[dep]:[],
+    ...(joinEvidence?{joinEvidenceDigest:joinEvidence.evidenceDigest}:{}),
     last:index===actions.length-1}}; }
  return {...out,state:"completed"};
 }
@@ -254,8 +348,10 @@ export function getAssistantRunSequence(db,{projectId,taskId}){
  const state=seq?nextAssistantRunInTransaction(db,projectId,taskId,seq):{sequence:null,state:"none",next:null};
  const branchSkips=seq?db.prepare("SELECT run_index,receipt_json,skipped_at FROM assistant_task_run_branch_skips WHERE sequence_id=? ORDER BY run_index")
   .all(seq.id).map(row=>({index:row.run_index,receipt:JSON.parse(row.receipt_json),skippedAt:row.skipped_at})):[];
+ const joins=seq?db.prepare("SELECT run_index,receipt_json,joined_at FROM assistant_task_run_joins WHERE sequence_id=? ORDER BY run_index")
+  .all(seq.id).map(row=>({index:row.run_index,receipt:JSON.parse(row.receipt_json),joinedAt:row.joined_at})):[];
  const outputs=trustedAssistantTaskOutputs(db,{projectId,taskId,planVersion:task.active_plan_version});
- return {...state,branchSkips,outputs:seq?outputs.filter(output=>output.runSequenceId===seq.id):outputs};
+ return {...state,branchSkips,joins,outputs:seq?outputs.filter(output=>output.runSequenceId===seq.id):outputs};
 }
 export function registerAssistantRunSequence(db,{projectId,taskId,requestId,sourceMessageId,
  expectedPlanVersion,expectedProjectRevision,actions}){
@@ -303,6 +399,74 @@ export function registerAssistantRunSequence(db,{projectId,taskId,requestId,sour
    .run(projectId,requestId,taskId,digest,stableJson(response),now);
   return {...response,existing:false};
  });
+}
+/** P3c3c checkpoint: bind a deterministic two-parent Join to a trusted skip.
+ * No provider, graph, file or Task Step mutation is performed.
+ */
+export function commitAssistantRunJoin(db,{projectId,taskId,requestId,runSequenceId,runIndex,
+ expectedPlanVersion,expectedProjectRevision,evidenceDigest}){
+ if(!id(requestId)||!id(runSequenceId)||runIndex!==3||
+  !Number.isSafeInteger(expectedPlanVersion)||expectedPlanVersion<1||
+  !Number.isSafeInteger(expectedProjectRevision)||expectedProjectRevision<1||
+  typeof evidenceDigest!=="string"||!/^[0-9a-f]{64}$/.test(evidenceDigest))
+  throw fail("assistant_task_run_join_invalid",400);
+ const payload={taskId,runSequenceId,runIndex,expectedPlanVersion,expectedProjectRevision,evidenceDigest};
+ const digest=hash(payload);
+ return writeTransaction(db,()=>{
+  const prior=db.prepare("SELECT command_kind,payload_digest,response_json FROM assistant_task_commands WHERE project_id=? AND request_id=?")
+   .get(projectId,requestId);
+  if(prior){
+   if(prior.command_kind!=="run_join"||prior.payload_digest!==digest)
+    throw fail("assistant_task_command_conflict");
+   return {...JSON.parse(prior.response_json),existing:true};
+  }
+  const task=taskWithGraph(db,projectId,taskId);
+  if(task.read_only||task.cancel_requested_at!==null||terminal.has(task.status)||
+   task.active_plan_version!==expectedPlanVersion||task.revision!==expectedProjectRevision||
+   task.active_step_id!==null)throw fail("assistant_task_run_join_not_ready");
+  const seq=db.prepare("SELECT * FROM assistant_task_run_sequences WHERE id=? AND task_id=? AND project_id=? AND plan_version=? AND status='active'")
+   .get(runSequenceId,taskId,projectId,expectedPlanVersion);
+  if(!seq)throw fail("assistant_task_run_not_found",404);
+  const state=nextAssistantRunInTransaction(db,projectId,taskId,seq);
+  if(state.state!=="join_ready"||state.index!==3||
+   state.join?.evidenceDigest!==evidenceDigest)
+   throw fail("assistant_task_run_join_not_ready");
+  const joined=state.join,at=Date.now();
+  const receipt={decision:"join",receiptTrust:"server_committed",
+   sequenceId:seq.id,runIndex:3,planVersion:seq.plan_version,
+   sourceStepId:joined.sourceStepId,sourceMaterialStepId:joined.sourceMaterialStepId,
+   executedIndex:joined.executedIndex,executedStepId:joined.executedStepId,
+   executedMaterialStepId:joined.executedMaterialStepId,
+   skippedIndex:joined.skippedIndex,skipEvidenceDigest:joined.skipEvidenceDigest,
+   dependsOn:joined.dependsOn,evidenceDigest};
+  db.prepare("INSERT INTO assistant_task_run_joins(sequence_id,task_id,project_id,plan_version,run_index,source_step_id,source_material_step_id,executed_index,executed_step_id,executed_material_step_id,skipped_index,skip_evidence_digest,evidence_digest,receipt_json,joined_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+   .run(seq.id,taskId,projectId,expectedPlanVersion,3,
+    joined.sourceStepId,joined.sourceMaterialStepId,joined.executedIndex,
+    joined.executedStepId,joined.executedMaterialStepId,joined.skippedIndex,
+    joined.skipEvidenceDigest,evidenceDigest,stableJson(receipt),at);
+  db.prepare("INSERT INTO assistant_task_events(task_id,kind,payload_json,created_at) VALUES(?,?,?,?)")
+   .run(taskId,"run_join_committed",stableJson({sequenceId:seq.id,receipt}),at);
+  const response={sequenceId:seq.id,runIndex:3,joined:true,receipt,executionStarted:false};
+  db.prepare("INSERT INTO assistant_task_commands(project_id,request_id,task_id,command_kind,payload_digest,status,response_json,created_at) VALUES(?,?,?,'run_join',?,'completed',?,?)")
+   .run(projectId,requestId,taskId,digest,stableJson(response),at);
+  return {...response,existing:false};
+ });
+}
+/** Checked again at atomic paid enqueue, not just during initial plan freeze. */
+export function verifyAssistantFrozenRunJoin(db,{projectId,taskId,runSequenceId,runIndex,
+ expectedPlanVersion,joinEvidenceDigest,dependsOn}){
+ if(!id(runSequenceId)||runIndex!==3||
+  typeof joinEvidenceDigest!=="string"||!/^[0-9a-f]{64}$/.test(joinEvidenceDigest))
+  throw fail("assistant_task_run_join_not_ready");
+ const seq=db.prepare("SELECT * FROM assistant_task_run_sequences WHERE id=? AND task_id=? AND project_id=? AND plan_version=? AND status='active'")
+  .get(runSequenceId,taskId,projectId,expectedPlanVersion);
+ if(!seq)throw fail("assistant_task_run_join_not_ready");
+ const proof=trustedJoinEvidence(db,projectId,seq,JSON.parse(seq.actions_json));
+ if(!proof||proof.evidenceDigest!==joinEvidenceDigest||
+  stableJson(proof.dependsOn)!==stableJson(dependsOn)||
+  !joinReceiptValid(savedJoin(db,seq),proof))
+  throw fail("assistant_task_run_join_evidence_invalidated");
+ return proof;
 }
 /** Persist a server-computed false branch; no Job, graph mutation, Skill or provider side effects.
  * The evidence digest is bound to immutable producer/Materialize receipts and CAS identities.
@@ -462,7 +626,7 @@ export function assertNoPendingAssistantRunSequence(db,{projectId,taskId}){
 /** Called INSIDE external job planning transaction, before freezing parameters. */
 export function verifyAssistantRunSequenceJob(db,{projectId,taskId,runSequenceId,runIndex,
  expectedPlanVersion,job,kind,dependsOn}){
- if(!id(runSequenceId)||!Number.isInteger(runIndex)||runIndex<0||runIndex>2)
+ if(!id(runSequenceId)||!Number.isInteger(runIndex)||runIndex<0||runIndex>3)
   throw fail("assistant_task_run_invalid",400);
  const seq=db.prepare("SELECT * FROM assistant_task_run_sequences WHERE id=? AND task_id=? AND project_id=?").get(runSequenceId,taskId,projectId);
  if(!seq||seq.plan_version!==expectedPlanVersion)throw fail("assistant_task_run_not_found",404);
@@ -502,5 +666,5 @@ export function verifyAssistantRunSequenceJob(db,{projectId,taskId,runSequenceId
     e.assetId===binding.sourceSha256).length!==1)
    throw fail("assistant_task_run_input_binding_unverified");
  }
- return {finalizeTask:next.last};
+ return {finalizeTask:next.last,...(next.joinEvidenceDigest?{joinEvidenceDigest:next.joinEvidenceDigest}:{})};
 }

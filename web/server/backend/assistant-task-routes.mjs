@@ -6,7 +6,7 @@ import {decideAssistantTaskStep} from "./assistant-task-step-gate.mjs";
 import {planAssistantCanvasStep,executeAssistantCanvasStep} from "./assistant-task-canvas-executor.mjs";
 import {planAssistantExternalJobStep,enqueueAssistantExternalJobStep,reconcileAssistantExternalTask} from "./assistant-task-external-jobs.mjs";
 import {planAssistantSkillStep,executeAssistantSkillStep} from "./assistant-task-skills.mjs";
-import {registerAssistantRunSequence,getAssistantRunSequence,selectAssistantRunInput,skipAssistantRunBranch} from "./assistant-task-run-sequences.mjs";
+import {registerAssistantRunSequence,getAssistantRunSequence,selectAssistantRunInput,skipAssistantRunBranch,commitAssistantRunJoin} from "./assistant-task-run-sequences.mjs";
 import {inspectAssistantTaskRecovery,replanAssistantTaskSafely} from "./assistant-task-safe-replan.mjs";
 
 const id={type:"string",pattern:"^[A-Za-z0-9_-]{1,128}$"};
@@ -62,12 +62,12 @@ const externalJobBody={type:"object",additionalProperties:false,
  executionMode:{type:"string",enum:["immediate","stream","poll"]},
  snapshot:{type:"object"},skillAuthorizationId:{type:"string",pattern:"^[0-9a-f-]{36}$"}}},
  dependsOn:{type:"array",maxItems:20,uniqueItems:true,items:id},
- finalizeTask:{type:"boolean"},runSequenceId:id,runIndex:{type:"integer",minimum:0,maximum:2}}};
+ finalizeTask:{type:"boolean"},runSequenceId:id,runIndex:{type:"integer",minimum:0,maximum:3}}};
 const runSequenceBody={type:"object",additionalProperties:false,
  required:["requestId","sourceMessageId","expectedPlanVersion","expectedProjectRevision","actions"],
  properties:{requestId:id,sourceMessageId:id,
   expectedPlanVersion:{type:"integer",minimum:1},expectedProjectRevision:{type:"integer",minimum:1},
-  actions:{type:"array",minItems:2,maxItems:3,items:{type:"object"}}}};
+  actions:{type:"array",minItems:2,maxItems:4,items:{type:"object"}}}};
 const runInputSelectionBody={type:"object",additionalProperties:false,
  required:["requestId","runSequenceId","runIndex","artifactId","expectedPlanVersion","expectedProjectRevision"],
  properties:{requestId:id,runSequenceId:id,runIndex:{type:"integer",minimum:1,maximum:2},
@@ -76,6 +76,12 @@ const runInputSelectionBody={type:"object",additionalProperties:false,
 const runBranchSkipBody={type:"object",additionalProperties:false,
  required:["requestId","runSequenceId","runIndex","evidenceDigest","expectedPlanVersion","expectedProjectRevision"],
  properties:{requestId:id,runSequenceId:id,runIndex:{type:"integer",minimum:1,maximum:2},
+  evidenceDigest:{type:"string",pattern:"^[a-f0-9]{64}$"},
+  expectedPlanVersion:{type:"integer",minimum:1},
+  expectedProjectRevision:{type:"integer",minimum:1}}};
+const runJoinBody={type:"object",additionalProperties:false,
+ required:["requestId","runSequenceId","runIndex","evidenceDigest","expectedPlanVersion","expectedProjectRevision"],
+ properties:{requestId:id,runSequenceId:id,runIndex:{type:"integer",const:3},
   evidenceDigest:{type:"string",pattern:"^[a-f0-9]{64}$"},
   expectedPlanVersion:{type:"integer",minimum:1},
   expectedProjectRevision:{type:"integer",minimum:1}}};
@@ -133,6 +139,9 @@ export function registerAssistantTaskRoutes(app,db,{skillRegistry,blobStore}={})
     projectId:req.params.id,taskId:req.params.taskId,...req.body})));
  app.post(base+"/:taskId/run-sequences/skip",{schema:{params:taskParams,body:runBranchSkipBody}},
   (req,reply)=>result(reply,skipAssistantRunBranch(db,{
+   projectId:req.params.id,taskId:req.params.taskId,...req.body})));
+ app.post(base+"/:taskId/run-sequences/join",{schema:{params:taskParams,body:runJoinBody}},
+  (req,reply)=>result(reply,commitAssistantRunJoin(db,{
    projectId:req.params.id,taskId:req.params.taskId,...req.body})));
  // Local Job queue creation, Attempt and Step are one transaction.
  // No provider request is performed in these routes.

@@ -3,6 +3,7 @@
  */
 import {randomUUID} from "node:crypto";
 import {stableJson,assertNoRawCredentials} from "./repository.mjs";
+import {deriveAssistantTaskFacts} from "./assistant-task-facts.mjs";
 const invalid=()=>Object.assign(Error("archive_invalid_task_history"),{statusCode:422,code:"archive_invalid_task_history"});
 const id=v=>typeof v==="string"&&/^[A-Za-z0-9_-]{1,128}$/.test(v);
 const array=(v,max)=>Array.isArray(v)&&v.length<=max;
@@ -16,7 +17,8 @@ const json=value=>stableJson(value??{});
 export function exportAssistantTaskArchive(db,projectId){
  const tasks=db.prepare("SELECT * FROM assistant_tasks WHERE project_id=? ORDER BY created_at,id").all(projectId);
  const result={format:1,tasks:tasks.map(task=>({
-  task:pack(task),
+  task:pack({...task,summary_json:task.read_only?task.summary_json:
+    stableJson(deriveAssistantTaskFacts(db,task))}),
   steps:db.prepare("SELECT * FROM assistant_task_steps WHERE task_id=? ORDER BY plan_version,ordinal").all(task.id).map(pack),
   attempts:db.prepare("SELECT * FROM assistant_task_attempts WHERE task_id=? ORDER BY created_at,id").all(task.id).map(pack),
   events:db.prepare("SELECT * FROM assistant_task_events WHERE task_id=? ORDER BY seq").all(task.id).map(pack),

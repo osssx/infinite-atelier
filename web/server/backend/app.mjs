@@ -679,6 +679,7 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
         const frozenPolicy=getAssistantTaskTurnPolicy(db,{projectId:req.params.id,taskId:ref.taskId,
          messageId:ref.turnMessageId});
         taskContext=buildAssistantTaskProviderContext({task:{...snapshot,contextPolicy:frozenPolicy},document:project.document,
+         currentTurnMessageId:ref.turnMessageId,
          trustedOutputs:trustedAssistantTaskOutputs(db,{projectId:project.id,taskId:snapshot.id,planVersion:snapshot.activePlanVersion})});
         // P0b: client transcript may contain previously selected private nodes.
         // Only the current explicit user request enters the provider payload.

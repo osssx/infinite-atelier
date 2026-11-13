@@ -72,6 +72,26 @@ it("P3 imported read-only Task disables resume and cancellation controls",async(
  expect(mocks.api.mock.calls.some(([,method])=>method==="POST")).toBe(false);
 });
 
+it("P3 Task panel displays server-derived turns and current-plan trusted progress",async()=>{
+ const task={id:"summary-task",chatSessionId:"chat-a",chatSessionIds:["chat-a"],
+  rootMessageId:"original-user",originalRequest:"长期分镜",status:"ready",activePlanVersion:3,
+  recoveryMode:"canvas_atomic",steps:[],summary:{version:1,source:"server_derived",
+   userTurns:{total:28},execution:{currentPlan:{stepCount:7,trustedSteps:4,unverifiedSuccess:1,
+    stages:{needs_reconcile:2}}}}};
+ mocks.api.mockImplementation(async(url:string,method:string)=>{
+  if(method==="GET"&&url.includes("chatSessionId="))return {tasks:[task]};
+  if(method==="GET"&&url.endsWith("/summary-task"))return {task};
+  if(method==="GET"&&url.endsWith("/run-sequences"))return {sequence:null,state:"none",next:null};
+  if(method==="GET"&&url.endsWith("/model-calls"))return {calls:[]};
+  return {task};
+ });
+ await render("chat-a");
+ expect(container!.textContent).toContain("已记录续写 28 轮");
+ expect(container!.textContent).toContain("当前计划可信步骤 4/7");
+ expect(container!.textContent).toContain("待对账 2");
+ expect(mocks.api.mock.calls.some(([,method])=>method==="POST")).toBe(false);
+});
+
 describe("P3c cross-chat resume and safe replan UI",()=>{
  it("links an existing Task from another chat without executing any Job",async()=>{
   const previous={id:"task-old",chatSessionId:"chat-a",chatSessionIds:["chat-a"],

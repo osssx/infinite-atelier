@@ -11,8 +11,11 @@ type Step={id:string;kind:string;planVersion:number;status:string;actionDigest:s
  action?:{actions?:unknown[];center?:{x:number;y:number};job?:{targetNodeId:string;executionMode:string;snapshot:{adapterKind?:string}}};
  result?:{jobId?:string;jobStatus?:string;artifactIds?:string[];bindings?:{nodeId:string}[];
  runId?:string;status?:string;exitCode?:number|null;artifactCount?:number};receiptTrust?:string};
+type FactSummary={version?:number;source?:string;userTurns?:{total?:number};
+ execution?:{currentPlan?:{stepCount?:number;trustedSteps?:number;unverifiedSuccess?:number;
+  stages?:{needs_reconcile?:number}}}};
 type Task={id:string;chatSessionId:string;chatSessionIds?:string[];rootMessageId:string;originalRequest:string;
- activePlanVersion?:number;status:string;readOnly?:boolean;recoveryMode:"guidance_only"|"canvas_atomic"|"job_observation"|"skill_audit";steps?:Step[];lastError?:string|null};
+ activePlanVersion?:number;status:string;readOnly?:boolean;summary?:FactSummary;recoveryMode:"guidance_only"|"canvas_atomic"|"job_observation"|"skill_audit";steps?:Step[];lastError?:string|null};
 type Recovery={canReplan:boolean;reason:string;planVersion:number;projectRevision:number;completedArtifacts?:number;failedJobs?:number};
 type FailureRecovery={canRecover:boolean;reason:string;planVersion:number;projectRevision:number;
  failureReason?:string;sourceJobId?:string;fallbackAction?:{type:"run_node";nodeId:string;mode?:string};
@@ -437,6 +440,10 @@ export function useCanvasAssistantTasks({
     <span>状态：{taskStatusLabel[detail?.id===selected.id?detail.status:selected.status]??selected.status}</span>
     {currentTask?.readOnly?<span>只读归档（禁止恢复执行）</span>:null}
     <span>步骤：{detail?.id===selected.id?detail.steps?.length??0:0}</span>
+    {detail?.id===selected.id&&detail.summary?.source==="server_derived"?
+      <span>{detail.readOnly?"历史摘要":"事实摘要"}：已记录续写 {detail.summary.userTurns?.total??0} 轮；
+       当前计划可信步骤 {detail.summary.execution?.currentPlan?.trustedSteps??0}/{detail.summary.execution?.currentPlan?.stepCount??0}；
+       待对账 {detail.summary.execution?.currentPlan?.stages?.needs_reconcile??0}</span>:null}
     {detail?.id===selected.id&&detail.steps?.length?<span>{currentTask?.readOnly?"历史完成回执":"可信完成"}：{detail.steps.filter(s=>s.status==="succeeded"&&s.receiptTrust==="server_committed").length}/{detail.steps.length}</span>:null}
     <span>{currentTask?.readOnly?"仅供历史查看":detail?.id===selected.id&&detail.recoveryMode==="skill_audit"?"Skill 执行有可信 Run ID":detail?.id===selected.id&&detail.recoveryMode==="job_observation"?"生成与落图分阶段对账":detail?.id===selected.id&&detail.recoveryMode==="canvas_atomic"?"画布操作有可信回执":"仅指导恢复"}</span>
     {activeTask?<>

@@ -1,5 +1,6 @@
 import {createHash,randomUUID} from "node:crypto";
 import {assertNoRawCredentials,stableJson,writeTransaction} from "./repository.mjs";
+import {refreshAssistantTaskFacts} from "./assistant-task-facts.mjs";
 
 const fail=(code,statusCode=400)=>Object.assign(Error(code),{code,statusCode});
 const id=x=>typeof x==="string"&&/^[A-Za-z0-9_-]{1,128}$/.test(x);
@@ -23,11 +24,11 @@ function mustTask(db,projectId,taskId){
  return row;
 }
 const linkedChatIds=(db,taskId)=>db.prepare("SELECT chat_session_id FROM assistant_task_chat_links WHERE task_id=? ORDER BY linked_at,chat_session_id").all(taskId).map(row=>row.chat_session_id);
-function view(db,row){
+function view(db,row,facts=JSON.parse(row.summary_json)){
  return {id:row.id,projectId:row.project_id,chatSessionId:row.chat_session_id,
   chatSessionIds:[row.chat_session_id,...linkedChatIds(db,row.id).filter(id=>id!==row.chat_session_id)],rootMessageId:row.root_message_id,
  status:row.status,activePlanVersion:row.active_plan_version,activeStepId:row.active_step_id,
- originalRequest:row.original_request,goal:JSON.parse(row.goal_json),summary:JSON.parse(row.summary_json),
+ originalRequest:row.original_request,goal:JSON.parse(row.goal_json),summary:facts,
  contextPolicy:JSON.parse(row.context_policy_json),readOnly:!!row.read_only,
  cancelRequestedAt:row.cancel_requested_at,createdAt:row.created_at,updatedAt:row.updated_at,
  finishedAt:row.finished_at,recoveryMode:"guidance_only"};
@@ -40,10 +41,11 @@ const stepView=row=>({id:row.id,taskId:row.task_id,planVersion:row.plan_version,
  approvalDecision:JSON.parse(row.approval_json).decision??null});
 function snapshot(db,projectId,taskId){
  const row=mustTask(db,projectId,taskId);
+ const facts=refreshAssistantTaskFacts(db,row);
  const steps=db.prepare("SELECT * FROM assistant_task_steps WHERE task_id=? ORDER BY plan_version,ordinal").all(taskId).map(stepView);
  const lastSeq=db.prepare("SELECT COALESCE(MAX(seq),0) AS n FROM assistant_task_events WHERE task_id=?").get(taskId).n;
  const last=db.prepare("SELECT kind,payload_json FROM assistant_task_events WHERE task_id=? AND kind IN ('client_reported_error','client_reported_reply') ORDER BY seq DESC LIMIT 1").get(taskId);
- return {...view(db,row),recoveryMode:steps.some(step=>step.kind==="skill_script")?
+ return {...view(db,row,facts),recoveryMode:steps.some(step=>step.kind==="skill_script")?
   "skill_audit":steps.some(step=>["model_job","comfy_workflow","materialize"].includes(step.kind))?
   "job_observation":steps.some(step=>step.kind==="canvas_mutation"&&
   Array.isArray(step.action?.actions))?"canvas_atomic":"guidance_only",
@@ -120,7 +122,7 @@ export function linkAssistantTaskToChat(db,{projectId,taskId,requestId,chatSessi
  return {...linked,task:getAssistantTask(db,{projectId,taskId}).task};
 }
 export function getAssistantTask(db,{projectId,taskId}){
- active(db,projectId);db.exec("BEGIN");
+ active(db,projectId);db.exec("BEGIN IMMEDIATE");
  try{
   const task=snapshot(db,projectId,taskId);
   db.exec("COMMIT");return {task};

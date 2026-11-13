@@ -46,6 +46,46 @@ async function fixture(t,network,{includeContext=false,scope="selection",include
  });
  return {db,app,call,taskId,base,payload};
 }
+test("P3 provider receives durable user-intent history across 15 turns, not claimed client successes",async t=>{
+ let outbound="",upstreamCalls=0;
+ const fx=await fixture(t,async(_url,options)=>{
+  upstreamCalls++;outbound=JSON.stringify(JSON.parse(options.body));return answer("连续任务收到");
+ });
+ for(let i=1;i<=14;i++)appendAssistantTaskTurn(fx.db,{projectId:"p-model",taskId:fx.taskId,
+  requestId:"p3-turn-"+i,messageId:"p3-msg-"+i,
+  text:"用户第"+i+"轮：保持同一分镜目标",
+  contextPolicy:{includeContext:false,scope:"selection",includedIds:[]}});
+ appendAssistantTaskTurn(fx.db,{projectId:"p-model",taskId:fx.taskId,
+  requestId:"p3-current",messageId:"p3-current-msg",text:"本轮继续",
+  contextPolicy:{includeContext:false,scope:"selection",includedIds:[]}});
+ const req=fx.payload("p3-model-request","本轮继续");req.task.turnMessageId="p3-current-msg";
+ const result=await fx.call("POST",fx.base+"/assistant/chat",req);
+ assert.equal(result.status,200,JSON.stringify(result.body));
+ assert.equal(upstreamCalls,1);
+ assert.match(outbound,/累计用户续写轮次：16/);
+ assert.match(outbound,/用户第1轮/);
+ assert.match(outbound,/用户第14轮/);
+ assert.match(outbound,/原始任务要求/);
+ assert.doesNotMatch(outbound,/SECRET_CANVAS_NODE_TEXT_DO_NOT_SEND|隐私节点|展示节点|公开剧情内容/);
+ assert.equal(fx.db.prepare("SELECT COUNT(*) n FROM assistant_task_events WHERE task_id=? AND kind='user_turn'").get(fx.taskId).n,16);
+});
+
+test("P3 narrowed frozen context prevents repeating text from earlier private selection",async t=>{
+ let outbound="";
+ const fx=await fixture(t,async(_url,options)=>{outbound=options.body;return answer("继续");});
+ appendAssistantTaskTurn(fx.db,{projectId:"p-model",taskId:fx.taskId,
+  requestId:"private-old",messageId:"private-old-msg",text:"旧选择："+secret,
+  contextPolicy:{includeContext:true,scope:"selection",includedIds:["private"]}});
+ appendAssistantTaskTurn(fx.db,{projectId:"p-model",taskId:fx.taskId,
+  requestId:"new-closed",messageId:"new-closed-msg",text:"改为无画布上下文",
+  contextPolicy:{includeContext:false,scope:"selection",includedIds:[]}});
+ const req=fx.payload("private-narrowed","改为无画布上下文");req.task.turnMessageId="new-closed-msg";
+ const result=await fx.call("POST",fx.base+"/assistant/chat",req);
+ assert.equal(result.status,200,JSON.stringify(result.body));
+ assert.doesNotMatch(outbound,/SECRET_CANVAS_NODE_TEXT_DO_NOT_SEND|隐私节点|公开剧情内容|旧选择/);
+ assert.match(outbound,/累计用户续写轮次：3/);
+});
+
 test("P0b task model calls persist before POST, replay same command, and only send selected context",async t=>{
  let calls=0,body;
  const fx=await fixture(t,async(_url,options)=>{

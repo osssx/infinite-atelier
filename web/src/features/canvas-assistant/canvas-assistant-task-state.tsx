@@ -6,16 +6,17 @@ import type {AssistantContextScope} from "./canvas-assistant-context";
 import {executeFrozenAssistantCanvasTaskStep} from "./canvas-assistant-task-execution";
 
 type Step={id:string;kind:string;planVersion:number;status:string;actionDigest:string;
- action?:{actions?:unknown[];center?:{x:number;y:number}};receiptTrust?:string};
+ action?:{actions?:unknown[];center?:{x:number;y:number};job?:{targetNodeId:string;executionMode:string;snapshot:{adapterKind?:string}}};
+ result?:{jobId?:string;jobStatus?:string;artifactIds?:string[];bindings?:{nodeId:string}[]};receiptTrust?:string};
 type Task={id:string;chatSessionId:string;rootMessageId:string;originalRequest:string;
- status:string;recoveryMode:"guidance_only"|"canvas_atomic";steps?:Step[];lastError?:string|null};
+ status:string;recoveryMode:"guidance_only"|"canvas_atomic"|"job_observation";steps?:Step[];lastError?:string|null};
 type Args={projectId:string;activeChatId:string|null;session?:CanvasAssistantSession;
  open:boolean;sending:boolean;includeContext:boolean;scope:AssistantContextScope;includedIds:string[];
  onDraft:(value:string)=>void};
 type TaskResponse={task:Task;existing?:boolean;executionStarted?:boolean};
 const taskStatusLabel:Record<string,string>={planning:"待规划",ready:"可继续",waiting_approval:"等待确认",running:"执行中",waiting_external:"等待外部",blocked:"已阻断",needs_reconcile:"需要对账",cancelling:"正在取消",failed:"失败",completed:"已完成",cancelled:"已结束记录"};
 
-/** P1b canvas Steps are server-committed; external Job/Skill Steps remain guidance-only. */
+/** P2a observes durable Job and materialization evidence; Skill remains P2b. */
 export function useCanvasAssistantTasks({
  projectId,activeChatId,session,open,sending,includeContext,scope,includedIds,onDraft
 }:Args){
@@ -61,7 +62,8 @@ export function useCanvasAssistantTasks({
  },[base,open,selectedId,callRevision]);
 
  const selected=items.find(item=>item.id===selectedId&&item.chatSessionId===activeChatId)??null;
- const activeTask=selected?.status==="cancelled"||selected?.status==="completed"?null:selected;
+ const currentTask=detail?.id===selected?.id?detail:selected;
+ const activeTask=currentTask?.status==="cancelled"||currentTask?.status==="completed"?null:currentTask;
  const policy=()=>({includeContext,scope,includedIds:includeContext&&scope==="selection"?includedIds.slice(0,12):[]});
  const path=(id:string)=>base+"/"+encodeURIComponent(id);
  const observe=async(taskId:string|null,messageId:string,kind:"reply"|"error",text:string)=>{
@@ -129,6 +131,43 @@ export function useCanvasAssistantTasks({
  };
  const pendingCanvas=detail&&selected&&detail.id===selected.id?detail.steps?.filter(step=>step.kind==="canvas_mutation"&&
   ["waiting_approval","ready"].includes(step.status))??[]:[];
+ const refreshTask=async(taskId:string)=>{
+  const latest=await canvasApi<TaskResponse>(path(taskId),"GET");
+  setDetail(latest.task);
+  setItems(old=>old.map(task=>task.id===latest.task.id?latest.task:task));
+ };
+ const checkExternal=async()=>{
+  if(!selected||busy||sending)return;
+  setBusy(true);setError("");
+  try{
+   await canvasApi(path(selected.id)+"/reconcile","POST",{});
+   await refreshTask(selected.id);
+  }catch(error){setError("对账失败，不会重新提交 Job："+(error instanceof Error?error.message:"未知错误"));}
+  finally{setBusy(false);}
+ };
+ const resumeExternal=async(step:Step,decision?:"approve"|"reject")=>{
+  if(!selected||busy||sending)return;
+  setBusy(true);setError("");
+  const endpoint=path(selected.id)+"/steps/"+encodeURIComponent(step.id);
+  try{
+   if(decision)await canvasApi(endpoint+"/approval","POST",{
+    requestId:step.id+"-external-"+decision,expectedPlanVersion:step.planVersion,
+    actionDigest:step.actionDigest,decision
+   });
+   if(decision!=="reject"){
+    if(step.status==="waiting_approval"&&decision!=="approve")throw Error("步骤尚未获批准");
+    await canvasApi(endpoint+"/enqueue","POST",{
+     requestId:step.id+"-external-enqueue",expectedPlanVersion:step.planVersion,
+     actionDigest:step.actionDigest
+    });
+   }
+   await canvasApi(path(selected.id)+"/reconcile","POST",{});
+   await refreshTask(selected.id);
+  }catch(error){setError("可凭原 Step 查询已有 Job，不会再次生成："+(error instanceof Error?error.message:"执行失败"));}
+  finally{setBusy(false);}
+ };
+ const externalSteps=detail&&selected&&detail.id===selected.id?detail.steps?.filter(step=>
+  ["model_job","comfy_workflow","materialize"].includes(step.kind))??[]:[];
  const view=<section aria-label="任务状态" className="border-b px-3 py-2"
   style={{borderColor:"var(--assistant-border)",color:"var(--assistant-text)"}}>
   <div className="flex items-center gap-2">
@@ -147,10 +186,11 @@ export function useCanvasAssistantTasks({
    <div className="flex flex-wrap items-center gap-2">
     <span>状态：{taskStatusLabel[detail?.id===selected.id?detail.status:selected.status]??selected.status}</span>
     <span>步骤：{detail?.id===selected.id?detail.steps?.length??0:0}</span>
-    <span>{detail?.id===selected.id&&detail.recoveryMode==="canvas_atomic"?"画布操作有可信回执":"仅指导恢复"}</span>
+    <span>{detail?.id===selected.id&&detail.recoveryMode==="job_observation"?"生成与落图分阶段对账":detail?.id===selected.id&&detail.recoveryMode==="canvas_atomic"?"画布操作有可信回执":"仅指导恢复"}</span>
     {activeTask?<>
-     <button type="button" className="canvas-assistant-link" disabled={busy||sending}
-      title="只读取任务并填写继续指令，不自动运行" onClick={()=>void resume()}>继续</button>
+     {!["waiting_external","needs_reconcile","cancelling","waiting_approval","blocked"].includes(activeTask.status)?
+      <button type="button" className="canvas-assistant-link" disabled={busy||sending}
+       title="只读取任务并填写继续指令，不自动运行" onClick={()=>void resume()}>继续</button>:null}
      <button type="button" className="canvas-assistant-link" disabled={busy||sending}
       title="停止跟踪任务，不取消已提交的模型或 ComfyUI Job" onClick={()=>void cancel()}>结束记录</button>
     </>:null}
@@ -174,6 +214,34 @@ export function useCanvasAssistantTasks({
       onClick={()=>void resumeCanvasStep(step)}>继续已批准步骤</button>}
     </div>
    </div>)}
+    {externalSteps.length?<div className="mt-2 text-[11px]">
+      <button type="button" className="canvas-assistant-link" disabled={sending||busy}
+       title="仅查询已有 Job、产物及物化记录，绝不重新调用生成服务"
+       onClick={()=>void checkExternal()}>检查生成与落图状态（不重新提交）</button>
+      <p className="mt-1">“结束记录”不会自动停止已提交的 Job；需要停止生成时请使用 Job 历史中的停止操作。</p>
+      {externalSteps.map(step=><div key={step.id} className="mt-2 rounded-md border p-2"
+       style={{borderColor:"var(--assistant-border)"}}>
+       <div>{step.kind==="materialize"?"素材落图":step.kind==="comfy_workflow"?"ComfyUI 工作流":"模型生成"} · {taskStatusLabel[step.status]??step.status}
+        {step.receiptTrust==="server_committed"?" · 可信回执":""}</div>
+       {step.result?.jobId?<div className="break-all">Job ID：{step.result.jobId}</div>:null}
+       {step.result?.artifactIds?.length?<div>已确认产物：{step.result.artifactIds.length} 项</div>:null}
+       {step.kind!=="materialize"&&["waiting_approval","ready"].includes(step.status)?<>
+        <details className="mt-1"><summary className="cursor-pointer">核对冻结的生成请求</summary>
+         <pre className="mt-1 max-h-36 overflow-auto whitespace-pre-wrap break-all">{JSON.stringify(step.action,null,2)}</pre>
+        </details>
+        <div className="mt-1 flex gap-3">
+         {step.status==="waiting_approval"?<>
+          <button type="button" className="canvas-assistant-link" disabled={busy||sending}
+           title="将创建一个持久 Job，可能产生模型调用费用"
+           onClick={()=>void resumeExternal(step,"approve")}>批准并入队（可能计费）</button>
+          <button type="button" className="canvas-assistant-link" disabled={busy||sending}
+           onClick={()=>void resumeExternal(step,"reject")}>拒绝本次生成</button>
+         </>:<button type="button" className="canvas-assistant-link" disabled={busy||sending}
+          onClick={()=>void resumeExternal(step)}>提交已批准的 Job</button>}
+        </div>
+       </>:null}
+      </div>)}
+     </div>:null}
   </div>:null}
 
    {selected?<div className="mt-1 text-[11px]" style={{color:"var(--assistant-muted)"}}>

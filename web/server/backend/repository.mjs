@@ -169,12 +169,13 @@ export function matchesSourceFingerprint(document,targetNodeId,frozenFingerprint
  return matchesLegacyStandaloneComfy(document,targetNodeId,snapshot);
 }
 const emit=(db,jobId,kind,payload)=>db.prepare("INSERT INTO job_events(job_id,kind,payload_json,created_at) VALUES(?,?,?,?)").run(jobId,kind,stableJson(payload),Date.now());
-export function submitJob(db,{jobId=randomUUID(),principal="local-owner",projectId=null,targetNodeId=null,expectedProjectRevision=null,sourceNodeFingerprint=null,idempotencyKey,requestFingerprint,executionMode,snapshot,skillAuthorizationId,requireSkillGrant=false}){
+/** Caller must own BEGIN IMMEDIATE; Task P2a links Job and Attempt atomically. */
+export function submitJobInTransaction(db,{jobId=randomUUID(),principal="local-owner",projectId=null,targetNodeId=null,expectedProjectRevision=null,sourceNodeFingerprint=null,idempotencyKey,requestFingerprint,executionMode,snapshot,skillAuthorizationId,requireSkillGrant=false}){
  if(!idempotencyKey||!requestFingerprint||!EXECUTION_MODES.includes(executionMode)||!snapshot||typeof snapshot!=="object")throw invalid("invalid_job_request");
  assertNoRawCredentials(snapshot);
  if(projectId===null&&(targetNodeId!==null||expectedProjectRevision!==null||sourceNodeFingerprint!==null))throw invalid("invalid_project_reference");
  if(projectId!==null&&(!targetNodeId||!Number.isSafeInteger(expectedProjectRevision)||!sourceNodeFingerprint))throw invalid("generation_save_barrier_required");
- return writeTransaction(db,()=>{
+ return (()=>{
   const scope=projectId??"";
   const existing=db.prepare("SELECT id,request_fingerprint,execution_mode,snapshot_json,target_node_id,expected_project_revision,source_fingerprint FROM jobs WHERE principal=? AND project_scope=? AND idempotency_key=?").get(principal,scope,idempotencyKey);
   // Do not trust only the caller-provided request fingerprint: compare the actual frozen payload and source fence.
@@ -221,7 +222,10 @@ export function submitJob(db,{jobId=randomUUID(),principal="local-owner",project
   // The FK points to the new Job; both operations still commit or roll back together.
   if(requireSkillGrant)claimSkillJobGrant(db,{projectId,snapshot,skillAuthorizationId,jobId});
   emit(db,jobId,"job_queued",{status:"queued"});return{jobId,existing:false};
- });
+ })();
+}
+export function submitJob(db,options){
+ return writeTransaction(db,()=>submitJobInTransaction(db,options));
 }
 export function transitionJob(db,jobId,next,evidence={}){
  return writeTransaction(db,()=>{

@@ -34,14 +34,15 @@ const stepView=row=>({id:row.id,taskId:row.task_id,planVersion:row.plan_version,
  ordinal:row.ordinal,kind:row.kind,status:row.status,required:!!row.required,
  dependsOn:JSON.parse(row.depends_on_json),actionDigest:row.action_digest,
  receiptTrust:row.receipt_trust,result:JSON.parse(row.result_json),errorCode:row.error_code,
- action:row.kind==="canvas_mutation"?JSON.parse(row.action_json):undefined,
+ ...(["canvas_mutation","model_job","comfy_workflow"].includes(row.kind)?{action:JSON.parse(row.action_json)}:{}),
  approvalDecision:JSON.parse(row.approval_json).decision??null});
 function snapshot(db,projectId,taskId){
  const row=mustTask(db,projectId,taskId);
  const steps=db.prepare("SELECT * FROM assistant_task_steps WHERE task_id=? ORDER BY plan_version,ordinal").all(taskId).map(stepView);
  const lastSeq=db.prepare("SELECT COALESCE(MAX(seq),0) AS n FROM assistant_task_events WHERE task_id=?").get(taskId).n;
  const last=db.prepare("SELECT kind,payload_json FROM assistant_task_events WHERE task_id=? AND kind IN ('client_reported_error','client_reported_reply') ORDER BY seq DESC LIMIT 1").get(taskId);
- return {...view(row),recoveryMode:steps.some(step=>step.kind==="canvas_mutation"&&
+ return {...view(row),recoveryMode:steps.some(step=>["model_job","comfy_workflow","materialize"].includes(step.kind))?
+  "job_observation":steps.some(step=>step.kind==="canvas_mutation"&&
   Array.isArray(step.action?.actions))?"canvas_atomic":"guidance_only",
   steps,lastSeq,lastError:last?.kind==="client_reported_error"?JSON.parse(last.payload_json).preview:null};
 }
@@ -163,7 +164,12 @@ export function cancelAssistantTask(db,{projectId,taskId,requestId}){
     const step=db.prepare("SELECT * FROM assistant_task_steps WHERE id=? AND task_id=?").get(activeStepId,taskId);
     const attempt=step&&db.prepare("SELECT * FROM assistant_task_attempts WHERE step_id=? ORDER BY attempt_no DESC LIMIT 1")
      .get(step.id);
-    if(step&&attempt&&attempt.status==="prepared"&&attempt.submit_marker===null&&attempt.submitted_at===null){
+    if(step?.kind==="materialize"&&["waiting_external","needs_reconcile","blocked"].includes(step.status)){
+     db.prepare("UPDATE assistant_task_steps SET status='blocked',error_code='assistant_task_cancelled',updated_at=? WHERE id=?")
+      .run(at,step.id);
+     event(db,taskId,"materialize_tracking_cancelled",{jobId:JSON.parse(step.action_json).jobId},step.id,at);
+     activeStepId=null;
+    }else if(step&&attempt&&attempt.status==="prepared"&&attempt.submit_marker===null&&attempt.submitted_at===null){
      db.prepare("UPDATE assistant_task_attempts SET status='cancelled_pre_submit',finished_at=? WHERE id=?").run(at,attempt.id);
      db.prepare("UPDATE assistant_task_steps SET status='blocked',error_code='assistant_task_cancelled',lease_owner=NULL,lease_expires_at=NULL,updated_at=? WHERE id=?")
       .run(at,step.id);

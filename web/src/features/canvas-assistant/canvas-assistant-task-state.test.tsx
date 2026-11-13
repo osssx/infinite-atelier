@@ -53,6 +53,45 @@ beforeEach(()=>{
  });
 });
 afterEach(async()=>{if(root)await act(async()=>{root!.unmount();});root=null;container?.remove();container=null;});
+describe("P2a Task external Job UI",()=>{
+ it("requires explicit approval, enqueues with frozen Step identity and only observes on refresh",async()=>{
+  const step={id:"external-step-1",kind:"model_job",planVersion:1,
+   status:"waiting_approval",actionDigest:"a".repeat(64),receiptTrust:"none",
+   action:{job:{targetNodeId:"source",executionMode:"poll",snapshot:{adapterKind:"model"}}},
+   result:{}};
+  let task={id:"task-ext",chatSessionId:"chat-a",rootMessageId:"original-user",
+   originalRequest:"生成图片",status:"waiting_approval",recoveryMode:"job_observation",steps:[step]};
+  mocks.api.mockImplementation(async(url:string,method:string,payload?:Record<string,unknown>)=>{
+   if(method==="GET"&&url.includes("chatSessionId="))return {tasks:[task]};
+   if(method==="GET")return {task};
+   if(method==="POST"&&url.endsWith("/approval")){
+    expect(payload?.actionDigest).toBe(step.actionDigest);
+    expect(payload?.decision).toBe("approve");
+    step.status="ready";return {status:"ready"};
+   }
+   if(method==="POST"&&url.endsWith("/enqueue")){
+    expect(payload).toEqual({requestId:"external-step-1-external-enqueue",
+     expectedPlanVersion:1,actionDigest:step.actionDigest});
+    step.status="waiting_external";step.result={jobId:"existing-job-1"};
+    task={...task,status:"waiting_external"};
+    return {jobId:"existing-job-1",status:"waiting_external"};
+   }
+   if(method==="POST"&&url.endsWith("/reconcile"))return {advanced:0};
+   throw Error("unexpected request "+method+" "+url);
+  });
+  await render();
+  expect(container!.textContent).toContain("生成与落图分阶段对账");
+  expect(container!.textContent).toContain("批准并入队（可能计费）");
+  expect(mocks.api.mock.calls.some(call=>String(call[0]).endsWith("/enqueue"))).toBe(false);
+  await click("批准并入队（可能计费）");
+  expect(container!.textContent).toContain("Job ID：existing-job-1");
+  expect(mocks.api.mock.calls.filter(call=>String(call[0]).endsWith("/enqueue"))).toHaveLength(1);
+  await click("检查生成与落图状态（不重新提交）");
+  expect(mocks.api.mock.calls.filter(call=>String(call[0]).endsWith("/enqueue"))).toHaveLength(1);
+  expect(mocks.api.mock.calls.filter(call=>String(call[0]).endsWith("/reconcile"))).toHaveLength(2);
+ });
+});
+
 describe("P0a guidance-only task strip",()=>{
  it("creates from an existing user message, retains privacy scope, and does not execute tasks automatically",async()=>{
   await render();

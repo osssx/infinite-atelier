@@ -3,6 +3,7 @@ import {createAssistantTask,listAssistantTasks,getAssistantTask,appendAssistantT
 import {listAssistantModelCalls} from "./assistant-model-calls.mjs";
 import {decideAssistantTaskStep} from "./assistant-task-step-gate.mjs";
 import {planAssistantCanvasStep,executeAssistantCanvasStep} from "./assistant-task-canvas-executor.mjs";
+import {planAssistantExternalJobStep,enqueueAssistantExternalJobStep,reconcileAssistantExternalTask} from "./assistant-task-external-jobs.mjs";
 
 const id={type:"string",pattern:"^[A-Za-z0-9_-]{1,128}$"};
 const policy={type:"object",additionalProperties:false,required:["includeContext","scope","includedIds"],
@@ -41,6 +42,18 @@ const executeBody={type:"object",additionalProperties:false,
   requestId:id,expectedPlanVersion:{type:"integer",minimum:1},
   actionDigest:{type:"string",pattern:"^[a-f0-9]{64}$"}}};
 
+const externalJobBody={type:"object",additionalProperties:false,
+ required:["requestId","kind","expectedPlanVersion","expectedProjectRevision","job"],
+ properties:{requestId:id,kind:{type:"string",enum:["model_job","comfy_workflow"]},
+ expectedPlanVersion:{type:"integer",minimum:1},expectedProjectRevision:{type:"integer",minimum:1},
+ job:{type:"object",required:["targetNodeId","sourceNodeFingerprint","executionMode","snapshot"],
+ additionalProperties:false,properties:{
+ targetNodeId:{type:"string",minLength:1,maxLength:256},
+ sourceNodeFingerprint:{type:"string",minLength:1,maxLength:256},
+ executionMode:{type:"string",enum:["immediate","stream","poll"]},
+ snapshot:{type:"object"},skillAuthorizationId:{type:"string",pattern:"^[0-9a-f-]{36}$"}}},
+ dependsOn:{type:"array",maxItems:20,uniqueItems:true,items:id},
+ finalizeTask:{type:"boolean"}}};
 /** P1b: canvas mutation is backend-executed; external Skill/Comfy remain blocked. */
 export function registerAssistantTaskRoutes(app,db){
  const result=(reply,value)=>{reply.header("Cache-Control","no-store");return value};
@@ -63,6 +76,12 @@ export function registerAssistantTaskRoutes(app,db){
   cancelAssistantTask(db,{projectId:req.params.id,taskId:req.params.taskId,...req.body})));
  app.post(base+"/:taskId/canvas-steps",{schema:{params:taskParams,body:canvasStepBody}},(req,reply)=>result(reply,
   planAssistantCanvasStep(db,{projectId:req.params.id,taskId:req.params.taskId,...req.body})));
+ // Local Job queue creation, Attempt and Step are one transaction.
+ // No provider request is performed in these routes.
+ app.post(base+"/:taskId/external-jobs",{schema:{params:taskParams,body:externalJobBody}},(req,reply)=>result(reply,
+  planAssistantExternalJobStep(db,{projectId:req.params.id,taskId:req.params.taskId,...req.body})));
+ app.post(base+"/:taskId/reconcile",{schema:{params:taskParams,body:{type:"object",additionalProperties:false}}},(req,reply)=>result(reply,
+  reconcileAssistantExternalTask(db,{projectId:req.params.id,taskId:req.params.taskId})));
  // Approval binds the frozen Step; execute never accepts new action JSON.
  app.post(base+"/:taskId/steps/:stepId/approval",
   {schema:{params:stepParams,body:decisionBody}},(req,reply)=>result(reply,
@@ -70,6 +89,9 @@ export function registerAssistantTaskRoutes(app,db){
     stepId:req.params.stepId,...req.body})));
  app.post(base+"/:taskId/steps/:stepId/execute",{schema:{params:stepParams,body:executeBody}},(req,reply)=>result(reply,
   executeAssistantCanvasStep(db,{projectId:req.params.id,taskId:req.params.taskId,
+   stepId:req.params.stepId,...req.body})));
+ app.post(base+"/:taskId/steps/:stepId/enqueue",{schema:{params:stepParams,body:executeBody}},(req,reply)=>result(reply,
+  enqueueAssistantExternalJobStep(db,{projectId:req.params.id,taskId:req.params.taskId,
    stepId:req.params.stepId,...req.body})));
  app.get(base+"/:taskId/model-calls",{schema:{params:taskParams}},(req,reply)=>result(reply,
   listAssistantModelCalls(db,{projectId:req.params.id,taskId:req.params.taskId,

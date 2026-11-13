@@ -12,24 +12,24 @@ let root:Root|null=null,container:HTMLDivElement|null=null;
 const session:CanvasAssistantSession={id:"chat-a",title:"示例任务",
  createdAt:"2026-11-12",updatedAt:"2026-11-12",
  messages:[{id:"original-user",role:"user",text:"创建三个分镜节点"}]};
-function Harness({activeChatId="chat-a",runSequence}:{activeChatId?:string;
- runSequence?:(taskId:string,view:unknown)=>Promise<void>}){
- const [draft,setDraft]=useState("");
+function Harness({activeChatId="chat-a",runSequence,generate}:{activeChatId?:string;
+ runSequence?:(taskId:string,view:unknown)=>Promise<void>;
+ generate?:(taskId:string,turnId:string,signal:AbortSignal)=>Promise<void>}){ const [draft,setDraft]=useState("");
  const state=useCanvasAssistantTasks({
   projectId:"project",activeChatId,session:activeChatId==="chat-a"?session:undefined,
   open:true,sending:false,includeContext:false,scope:"selection",
-  includedIds:["private-node"],onDraft:setDraft,onRunSequenceStep:runSequence
- });
+   includedIds:["private-node"],onDraft:setDraft,onRunSequenceStep:runSequence,
+   onGenerateSemanticProposals:generate });
  return createElement("div",{},state.view,
   createElement("button",{type:"button",onClick:()=>void state.recordTurn(state.activeTaskId,"later-msg","继续",new AbortController().signal)},"记录下一条"),
   createElement("button",{type:"button",onClick:()=>void state.observe(state.activeTaskId,"later-msg","error","Skill 退出码 9009")},"记录失败"),
   createElement("output",{"aria-label":"续写草稿"},"草稿："+draft));
 }
-async function render(activeChatId?:string){
+async function render(activeChatId?:string,
+ generate?:(taskId:string,turnId:string,signal:AbortSignal)=>Promise<void>){
  container=document.createElement("div");document.body.appendChild(container);root=createRoot(container);
- await act(async()=>{root!.render(createElement(Harness,{activeChatId}));});
-}
-async function click(label:string){
+ await act(async()=>{root!.render(createElement(Harness,{activeChatId,generate}));});
+}async function click(label:string){
  const button=Array.from(container!.querySelectorAll("button")).find(b=>b.textContent===label);
  expect(button,label).toBeTruthy();
  await act(async()=>{button!.click();await Promise.resolve();});
@@ -155,6 +155,90 @@ it("P3 read-only archive can view long-term notes but cannot change them",async(
  expect(container!.textContent).toContain("历史关键决策");
  expect(container!.textContent).toContain("任务不可编辑");
  expect(container!.querySelector('textarea[aria-label="长期事项内容"]')).toBe(null);
+ expect(mocks.api.mock.calls.some(([,method])=>method==="POST")).toBe(false);
+});
+
+it("P3 AI proposals remain unconfirmed until each explicit accept/reject, and survive reopening",async()=>{
+ let task={id:"candidate-task",chatSessionId:"chat-a",chatSessionIds:["chat-a"],
+  rootMessageId:"original-user",originalRequest:"长视频分镜",status:"ready",readOnly:false,
+  recoveryMode:"guidance_only",steps:[],semantic:{revision:0,goal:null,
+   notes:[] as {id:string;kind:string;text:string}[]}};
+ const scope={includeContext:false,scope:"selection",includedIds:[]};
+ const initial=[
+  {id:"suggest-a",kind:"constraint",text:"所有镜头保持水彩画风",status:"pending",source:"model_suggested",contextPolicy:scope},
+  {id:"suggest-b",kind:"decision",text:"片尾使用开放式结局",status:"pending",source:"model_suggested",contextPolicy:scope}
+ ];
+ let proposals=initial.map(item=>({...item}));
+ const generation=vi.fn(async(_taskId:string,_turnId:string,_signal:AbortSignal)=>{
+  expect(_taskId).toBe("candidate-task");
+ });
+ let created=false;
+ mocks.api.mockImplementation(async(url:string,method:string,payload?:Record<string,unknown>)=>{
+  if(method==="GET"&&url.includes("chatSessionId="))return {tasks:[task]};
+  if(method==="GET"&&url.endsWith("/candidate-task"))return {task};
+  if(method==="GET"&&url.endsWith("/semantic-proposals"))return {proposals:created?proposals:[]};
+  if(method==="GET"&&url.endsWith("/run-sequences"))return {sequence:null,state:"none",next:null};
+  if(method==="GET"&&url.endsWith("/model-calls"))return {calls:[]};
+  if(method==="POST"&&url.endsWith("/turns")){
+   expect(payload?.contextPolicy).toMatchObject({includeContext:false,scope:"selection"});
+   created=true;return {task};
+  }
+  if(method==="POST"&&url.endsWith("/semantic-proposals/decision")){
+   const id=String(payload?.proposalId),decision=String(payload?.decision);
+   expect(payload?.confirmed).toBe(true);
+   expect(payload?.expectedRevision).toBe(task.semantic.revision);
+   proposals=proposals.map(item=>item.id===id?{...item,status:decision==="accept"?"accepted":"rejected"}:item);
+   if(decision==="accept")task={...task,semantic:{revision:1,goal:null,notes:[
+    {id:"saved-note",kind:"constraint",text:"所有镜头保持水彩画风"}]}};
+   return {proposalId:id,decision,semanticRevision:task.semantic.revision,executionStarted:false};
+  }
+  return {task};
+ });
+ await render("chat-a",generation);
+ await click("长期目标与决策");
+ expect(container!.textContent).toContain("暂无 AI 记忆候选");
+ await click("提取 AI 记忆候选");
+ expect(generation).toHaveBeenCalledTimes(1);
+ expect(container!.textContent).toContain("约束建议：所有镜头保持水彩画风");
+ expect(container!.textContent).toContain("决策建议：片尾使用开放式结局");
+ expect(container!.textContent).toContain("待人工确认");
+ expect(task.semantic.notes.length).toBe(0);
+ expect(mocks.api.mock.calls.filter(([url,method])=>method==="POST"&&url.endsWith("/semantic")).length).toBe(0);
+ await click("确认候选");
+ expect(task.semantic.notes[0].text).toBe("所有镜头保持水彩画风");
+ expect(container!.textContent).toContain("已确认");
+ await click("拒绝候选");
+ expect(container!.textContent).toContain("已拒绝");
+ await act(async()=>{root!.unmount();});root=null;container?.remove();container=null;
+ await render("chat-a",generation);
+ await click("长期目标与决策");
+ expect(container!.textContent).toContain("已确认");
+ expect(container!.textContent).toContain("已拒绝");
+ expect(generation).toHaveBeenCalledTimes(1);
+ expect(mocks.api.mock.calls.some(([url])=>url.includes("/enqueue")||url.includes("/run-skill")||url.includes("/jobs"))).toBe(false);
+});
+
+it("P3 archived candidate list is read-only, even if old items are still pending",async()=>{
+ const task={id:"archived-candidate-task",chatSessionId:"chat-a",chatSessionIds:["chat-a"],
+  rootMessageId:"original-user",originalRequest:"历史任务",status:"running",readOnly:true,
+  recoveryMode:"guidance_only",steps:[],semantic:{revision:0,goal:null,notes:[]}};
+ const proposals=[{id:"archived-candidate",kind:"goal",text:"历史建议",status:"pending",source:"model_suggested",
+  contextPolicy:{includeContext:false,scope:"selection",includedIds:[]}}];
+ mocks.api.mockImplementation(async(url:string,method:string)=>{
+  if(method==="GET"&&url.includes("chatSessionId="))return {tasks:[task]};
+  if(method==="GET"&&url.endsWith("/archived-candidate-task"))return {task};
+  if(method==="GET"&&url.endsWith("/semantic-proposals"))return {proposals};
+  if(method==="GET"&&url.endsWith("/model-calls"))return {calls:[]};
+  if(method==="GET"&&url.endsWith("/run-sequences"))return {sequence:null,state:"none",next:null};
+  return {task};
+ });
+ await render("chat-a",vi.fn());
+ await click("长期目标与决策");
+ expect(container!.textContent).toContain("历史建议");
+ expect(container!.textContent).toContain("待人工确认");
+ expect(container!.textContent).not.toContain("提取 AI 记忆候选");
+ expect(Array.from(container!.querySelectorAll("button")).some(b=>b.textContent==="确认候选")).toBe(false);
+ expect(Array.from(container!.querySelectorAll("button")).some(b=>b.textContent==="拒绝候选")).toBe(false);
  expect(mocks.api.mock.calls.some(([,method])=>method==="POST")).toBe(false);
 });
 

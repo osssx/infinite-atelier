@@ -1,5 +1,6 @@
 import {createHash,randomUUID} from "node:crypto";
 import {stableJson,writeTransaction} from "./repository.mjs";
+import {recordAssistantSemanticProposalsInTransaction} from "./assistant-semantic-proposals.mjs";
 
 const fail=(code,statusCode=409)=>Object.assign(Error(code),{code,statusCode});
 const identity=x=>typeof x==="string"&&/^[A-Za-z0-9_-]{1,128}$/.test(x);
@@ -69,7 +70,7 @@ export function createAssistantModelObserver(db,{projectId,taskId,requestId,prov
    errorCode:typeof errorCode==="string"&&errorCode.startsWith("assistant_")?errorCode:"assistant_upstream_unavailable"})
  };
 }
-export function completeAssistantModelCommand(db,{projectId,taskId,requestId,response}){
+export function completeAssistantModelCommand(db,{projectId,taskId,requestId,response,semanticProposalBatch=null}){
  const serialized=outputJson(response);
  return writeTransaction(db,()=>{
   const command=db.prepare("SELECT status FROM assistant_task_commands WHERE project_id=? AND request_id=? AND task_id=? AND command_kind='model_infer'")
@@ -82,6 +83,7 @@ export function completeAssistantModelCommand(db,{projectId,taskId,requestId,res
   if(unknown)throw fail("assistant_model_call_unknown");
   db.prepare("UPDATE assistant_task_commands SET status='completed',response_json=? WHERE project_id=? AND request_id=?")
    .run(serialized,projectId,requestId);
+  if(semanticProposalBatch)recordAssistantSemanticProposalsInTransaction(db,{taskId,proposals:semanticProposalBatch});
   event(db,taskId,"model_command_completed",{requestId,
    callCount:db.prepare("SELECT COUNT(*) AS n FROM assistant_model_calls WHERE project_id=? AND request_id=?").get(projectId,requestId).n});
   return response;

@@ -6,6 +6,7 @@ import {getCanvasViewport,putCanvasViewport,getCanvasChats,putCanvasChats} from 
 import {registerAssistantTaskRoutes} from "./assistant-task-routes.mjs";
 import {getAssistantTask,getAssistantTaskTurnPolicy} from "./assistant-tasks.mjs";
 import {beginAssistantModelCommand,createAssistantModelObserver,completeAssistantModelCommand,failAssistantModelCommand} from "./assistant-model-calls.mjs";
+import {prepareAssistantSemanticProposals} from "./assistant-semantic-proposals.mjs";
 import {buildAssistantTaskProviderContext} from "./assistant-task-context.mjs";
 import {trustedAssistantTaskOutputs} from "./assistant-task-produced-artifacts.mjs";
 import {submitJob,readJobsSnapshot,readEventsAfter} from "./repository.mjs";
@@ -111,6 +112,8 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
     "assistant_task_invalid","assistant_task_not_found","assistant_task_not_editable","assistant_task_payload_too_large","assistant_task_command_conflict",
      "assistant_task_semantic_invalid","assistant_task_semantic_sensitive_text",
      "assistant_task_semantic_conflict","assistant_task_semantic_not_found","assistant_task_semantic_limit",
+     "assistant_semantic_proposal_invalid","assistant_semantic_proposal_not_found",
+     "assistant_semantic_proposal_decided","assistant_semantic_proposal_scope_changed",
     "assistant_model_call_in_progress","assistant_model_call_unknown","assistant_model_call_not_active",
     "assistant_model_result_too_large","assistant_task_context_invalid","assistant_task_turn_not_found",
     "assistant_step_invalid","assistant_step_not_found","assistant_step_plan_conflict",
@@ -646,7 +649,7 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
         skillScriptProposalEnabled:{type:"boolean"},
         task:{type:"object",additionalProperties:false,required:["taskId","requestId","turnMessageId"],properties:{
          taskId:idSchema,requestId:idSchema,turnMessageId:idSchema,
-         callKind:{type:"string",enum:["initial","script_continuation"]}
+         callKind:{type:"string",enum:["initial","script_continuation","semantic_proposal"]}
         }},
         visualContext:{type:"object",required:["images"],additionalProperties:false,properties:{
          detail:{type:"string",enum:["auto","low","high"]},
@@ -669,23 +672,27 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
      const onClose=()=>controller.abort();
      reply.raw.on("close",onClose);
      const ref=req.body.task;
+      const proposalMode=ref?.callKind==="semantic_proposal";
      let commandStarted=false;
      try{
-       let observer=null,taskContext="",messages=req.body.messages;
+       if(proposalMode&&(!ref||req.body.canvasActions!==false||req.body.skills||
+         req.body.visualContext||req.body.messages.length!==1))
+         throw Object.assign(Error("assistant_semantic_proposal_invalid"),{code:"assistant_semantic_proposal_invalid",statusCode:400});
+        let observer=null,taskContext="",messages=req.body.messages,frozenPolicy=null;
        if(ref){
         const command=beginAssistantModelCommand(db,{projectId:req.params.id,taskId:ref.taskId,
          requestId:ref.requestId,requestPayload:req.body});
         if(command.cached){reply.header("Cache-Control","no-store");return command.response;}
         commandStarted=true;
         const snapshot=getAssistantTask(db,{projectId:req.params.id,taskId:ref.taskId}).task;
-        const frozenPolicy=getAssistantTaskTurnPolicy(db,{projectId:req.params.id,taskId:ref.taskId,
+        frozenPolicy=getAssistantTaskTurnPolicy(db,{projectId:req.params.id,taskId:ref.taskId,
          messageId:ref.turnMessageId});
         taskContext=buildAssistantTaskProviderContext({task:{...snapshot,contextPolicy:frozenPolicy},document:project.document,
          currentTurnMessageId:ref.turnMessageId,
          trustedOutputs:trustedAssistantTaskOutputs(db,{projectId:project.id,taskId:snapshot.id,planVersion:snapshot.activePlanVersion})});
         // P0b: client transcript may contain previously selected private nodes.
         // Only the current explicit user request enters the provider payload.
-        messages=[req.body.messages.at(-1)];
+        messages=proposalMode?[{role:"user",content:"仅根据本轮已授权的任务事实和用户历史，提取长期目标、约束或决策候选。无证据时返回空数组。"}]:[req.body.messages.at(-1)];
         observer=createAssistantModelObserver(db,{projectId:req.params.id,taskId:ref.taskId,
          requestId:ref.requestId,provider:req.body.provider,model:req.body.model});
        }
@@ -699,10 +706,13 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
        const result=await assistantChat({...chatInput,messages,skillContext:skill.context,
         skillTools:skill.toolEntries??[],visualImages:visual.images,
         visualDetail:req.body.visualContext?.detail??"high",signal:controller.signal,
-        ...(ref?{taskContext,callObserver:observer,modelCallKind:ref.callKind??"initial"}:{})});
-       const completed={...result,appliedSkillIds:skill.skillIds,usedVisualReferences:visual.references};
+        ...(ref?{taskContext,callObserver:observer,modelCallKind:proposalMode?"initial":ref.callKind??"initial",semanticProposal:proposalMode}:{})});
+       const proposed=proposalMode?prepareAssistantSemanticProposals({answer:result.answer,
+         requestId:ref.requestId,turnMessageId:ref.turnMessageId,contextPolicy:frozenPolicy}):null;
+        const completed={...result,appliedSkillIds:skill.skillIds,usedVisualReferences:visual.references,
+         ...(proposed?{proposals:proposed.candidates}:{})};
        if(ref)completeAssistantModelCommand(db,{projectId:req.params.id,taskId:ref.taskId,
-        requestId:ref.requestId,response:completed});
+        requestId:ref.requestId,response:completed,semanticProposalBatch:proposed});
        reply.header("Cache-Control","no-store");return completed;
      }catch(error){
        if(ref&&commandStarted){

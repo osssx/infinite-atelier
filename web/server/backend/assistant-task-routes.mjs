@@ -1,6 +1,8 @@
 import {createAssistantTask,listAssistantTasks,getAssistantTask,appendAssistantTaskTurn,
  observeAssistantTask,guideAssistantTaskResume,cancelAssistantTask,listAssistantTaskEvents,
- linkAssistantTaskToChat,changeAssistantTaskSemantic} from "./assistant-tasks.mjs";import {listAssistantModelCalls} from "./assistant-model-calls.mjs";
+ linkAssistantTaskToChat,changeAssistantTaskSemantic} from "./assistant-tasks.mjs";
+import {listAssistantModelCalls} from "./assistant-model-calls.mjs";
+import {listAssistantSemanticProposals,decideAssistantSemanticProposal} from "./assistant-semantic-proposals.mjs";
 import {decideAssistantTaskStep} from "./assistant-task-step-gate.mjs";
 import {planAssistantCanvasStep,executeAssistantCanvasStep} from "./assistant-task-canvas-executor.mjs";
 import {planAssistantExternalJobStep,enqueueAssistantExternalJobStep,reconcileAssistantExternalTask} from "./assistant-task-external-jobs.mjs";
@@ -39,6 +41,10 @@ const semanticBody={type:"object",additionalProperties:false,
   operation:{type:"string",enum:["set_goal","clear_goal","add_constraint","add_decision","update_note","remove_note"]},
   confirmed:{type:"boolean",const:true},
   text:{type:"string",minLength:1,maxLength:600},noteId:id,contextPolicy:policy}};
+const semanticProposalDecisionBody={type:"object",additionalProperties:false,
+ required:["requestId","proposalId","decision","expectedRevision","confirmed","contextPolicy"],
+ properties:{requestId:id,proposalId:id,decision:{type:"string",enum:["accept","reject"]},
+  expectedRevision:{type:"integer",minimum:0},confirmed:{type:"boolean",const:true},contextPolicy:policy}};
 const observationBody={type:"object",required:["requestId","kind","preview"],additionalProperties:false,
  properties:{requestId:id,kind:{type:"string",enum:["reply","error"]},
  preview:{type:"string",minLength:1,maxLength:1800}}};
@@ -136,7 +142,13 @@ export function registerAssistantTaskRoutes(app,db,{skillRegistry,blobStore}={})
   // Explicit user action only; semantic edits never enqueue a Job.
   app.post(base+"/:taskId/semantic",{schema:{params:taskParams,body:semanticBody}},
    (req,reply)=>result(reply,changeAssistantTaskSemantic(db,{
-    projectId:req.params.id,taskId:req.params.taskId,...req.body}))); app.post(base+"/:taskId/observations",{schema:{params:taskParams,body:observationBody}},(req,reply)=>result(reply,
+    projectId:req.params.id,taskId:req.params.taskId,...req.body})));
+  app.get(base+"/:taskId/semantic-proposals",{schema:{params:taskParams}},(req,reply)=>result(reply,
+   listAssistantSemanticProposals(db,{projectId:req.params.id,taskId:req.params.taskId})));
+  app.post(base+"/:taskId/semantic-proposals/decision",{schema:{params:taskParams,body:semanticProposalDecisionBody}},
+   (req,reply)=>result(reply,decideAssistantSemanticProposal(db,{projectId:req.params.id,
+    taskId:req.params.taskId,...req.body})));
+  app.post(base+"/:taskId/observations",{schema:{params:taskParams,body:observationBody}},(req,reply)=>result(reply,
   observeAssistantTask(db,{projectId:req.params.id,taskId:req.params.taskId,...req.body})));
  app.post(base+"/:taskId/resume",{schema:{params:taskParams,body:requestBody}},(req,reply)=>result(reply,
   guideAssistantTaskResume(db,{projectId:req.params.id,taskId:req.params.taskId,...req.body})));

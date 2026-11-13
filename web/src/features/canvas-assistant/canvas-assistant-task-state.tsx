@@ -17,6 +17,7 @@ type FactSummary={version?:number;source?:string;userTurns?:{total?:number};
 type SemanticNote={id:string;kind:"constraint"|"decision";text:string;provenance:"user_confirmed";
  contextPolicy:{includeContext:boolean;scope:AssistantContextScope;includedIds:string[]}};
 type SemanticState={revision:number;goal?:{text:string;provenance:"user_confirmed"}|null;notes:SemanticNote[]};
+type SemanticProposal={id:string;kind:"goal"|"constraint"|"decision";text:string;status:"pending"|"accepted"|"rejected";source:"model_suggested";contextPolicy:{includeContext:boolean;scope:AssistantContextScope;includedIds:string[]}};
 type Task={id:string;chatSessionId:string;chatSessionIds?:string[];rootMessageId:string;originalRequest:string;
  activePlanVersion?:number;status:string;readOnly?:boolean;summary?:FactSummary;semantic?:SemanticState;recoveryMode:"guidance_only"|"canvas_atomic"|"job_observation"|"skill_audit";steps?:Step[];lastError?:string|null};
 type Recovery={canReplan:boolean;reason:string;planVersion:number;projectRevision:number;completedArtifacts?:number;failedJobs?:number};
@@ -26,13 +27,14 @@ type FailureRecovery={canRecover:boolean;reason:string;planVersion:number;projec
 type Args={projectId:string;activeChatId:string|null;session?:CanvasAssistantSession;
  open:boolean;sending:boolean;includeContext:boolean;scope:AssistantContextScope;includedIds:string[];
  onDraft:(value:string)=>void;
- onRunSequenceStep?:(taskId:string,view:AssistantRunSequenceView)=>Promise<void>};
+ onRunSequenceStep?:(taskId:string,view:AssistantRunSequenceView)=>Promise<void>;
+ onGenerateSemanticProposals?:(taskId:string,turnMessageId:string,signal:AbortSignal)=>Promise<void>};
 type TaskResponse={task:Task;existing?:boolean;executionStarted?:boolean};
 const taskStatusLabel:Record<string,string>={planning:"待规划",ready:"可继续",waiting_approval:"等待确认",running:"执行中",waiting_external:"等待外部",blocked:"已阻断",needs_reconcile:"需要对账",cancelling:"正在取消",failed:"失败",completed:"已完成",cancelled:"已结束记录"};
 
 /** Task-associated Skill and Job runs are persisted before execution and observed by Run ID. */
 export function useCanvasAssistantTasks({
- projectId,activeChatId,session,open,sending,includeContext,scope,includedIds,onDraft,onRunSequenceStep
+ projectId,activeChatId,session,open,sending,includeContext,scope,includedIds,onDraft,onRunSequenceStep,onGenerateSemanticProposals
 }:Args){
  const [items,setItems]=useState<Task[]>([]);
  const [selectedId,setSelectedId]=useState<string|null>(null);
@@ -58,7 +60,11 @@ export function useCanvasAssistantTasks({
  const [semanticKind,setSemanticKind]=useState<"goal"|"constraint"|"decision">("constraint");
  const [semanticText,setSemanticText]=useState("");
  const [semanticEditingId,setSemanticEditingId]=useState<string|null>(null);
- useEffect(()=>{setSemanticOpen(false);setSemanticText("");setSemanticEditingId(null);},[selectedId]);
+ const [proposals,setProposals]=useState<SemanticProposal[]>([]);
+ const [proposalLoading,setProposalLoading]=useState(false);
+ const proposalAbort=useRef<AbortController|null>(null);
+ useEffect(()=>{setSemanticOpen(false);setSemanticText("");setSemanticEditingId(null);proposalAbort.current?.abort();proposalAbort.current=null;},[selectedId]);
+ useEffect(()=>()=>proposalAbort.current?.abort(),[]);
 
  const base="/api/v1/projects/"+encodeURIComponent(projectId)+"/assistant/tasks";
  useEffect(()=>{
@@ -222,8 +228,48 @@ export function useCanvasAssistantTasks({
   }catch{setError("移除长期事项失败，请刷新任务后重试；执行计划未改变。");}
   finally{setBusy(false);}
  };
- const resumeCanvasStep=async(step:Step,decision?:"approve"|"reject")=>{
-  if(!selected||busy||sending)return;
+ const fetchSemanticProposals=async(taskId:string)=>{
+  const received=await canvasApi<{proposals:SemanticProposal[]}>(path(taskId)+"/semantic-proposals","GET");
+  if(taskId===selectedId)setProposals(Array.isArray(received.proposals)?received.proposals:[]);
+ };
+ useEffect(()=>{
+  if(!open||!selectedId){setProposals([]);return;}
+  let live=true;
+  void canvasApi<{proposals:SemanticProposal[]}>(path(selectedId)+"/semantic-proposals","GET")
+   .then(data=>{if(live)setProposals(Array.isArray(data.proposals)?data.proposals:[]);},
+    ()=>{if(live)setProposals([]);});
+  return ()=>{live=false;};
+ },[open,selectedId,base]);
+ const generateSemanticProposals=async()=>{
+  if(!activeTask||busy||sending||!onGenerateSemanticProposals)return;
+  const controller=new AbortController(),taskId=activeTask.id,messageId=nanoid();
+  proposalAbort.current=controller;setBusy(true);setProposalLoading(true);setError("");
+  try{
+   await recordTurn(taskId,messageId,"请求 AI 提议需要长期保留的目标、约束和决策（未经用户确认）",controller.signal);
+   await onGenerateSemanticProposals(taskId,messageId,controller.signal);
+   await fetchSemanticProposals(taskId);setCallRevision(v=>v+1);
+  }catch(error){
+   if(!controller.signal.aborted)setError("AI 记忆候选提取未完成（不会自动保存）："+
+    (error instanceof Error?error.message:"模型请求失败"));
+  }finally{
+   if(proposalAbort.current===controller)proposalAbort.current=null;
+   setBusy(false);setProposalLoading(false);
+  }
+ };
+ const decideSemanticProposal=async(item:SemanticProposal,decision:"accept"|"reject")=>{
+  if(!activeTask||busy||sending||item.status!=="pending")return;
+  const taskId=activeTask.id;setBusy(true);setError("");
+  try{
+   await canvasApi(path(taskId)+"/semantic-proposals/decision","POST",{
+    requestId:nanoid(),proposalId:item.id,decision,expectedRevision:activeTask.semantic?.revision??0,
+    confirmed:true,contextPolicy:policy()});
+   await refreshTask(taskId);
+   await fetchSemanticProposals(taskId);
+  }catch(error){setError("处理候选项失败（可能已被其他会话处理或当前画布授权不足），请刷新："+
+   (error instanceof Error?error.message:"提交失败"));}
+  finally{setBusy(false);}
+ };
+ const resumeCanvasStep=async(step:Step,decision?:"approve"|"reject")=>{  if(!selected||busy||sending)return;
   setBusy(true);setError("");
   try{
    await executeFrozenAssistantCanvasTaskStep({projectId,taskId:selected.id,step:{
@@ -498,7 +544,8 @@ export function useCanvasAssistantTasks({
      <button type="button" className="canvas-assistant-link" aria-expanded={semanticOpen}
        onClick={()=>setSemanticOpen(x=>!x)}>{semanticOpen?"收起长期目标与决策":"长期目标与决策"}</button>
       <button type="button" className="canvas-assistant-link" disabled={busy||sending}
-       onClick={()=>void refreshTask(selected.id)}>刷新长期事项</button>     {semanticOpen?<div className="mt-2 space-y-2">
+       onClick={()=>void refreshTask(selected.id)}>刷新长期事项</button>
+      {semanticOpen?<div className="mt-2 space-y-2">
       <p>原始目标：{detail.originalRequest.slice(0,240)}</p>
       <p>当前确认目标：{detail.semantic?.goal?.text??"沿用原始目标"}</p>
       {detail.semantic?.goal&&activeTask?<button type="button" className="canvas-assistant-link"
@@ -514,8 +561,39 @@ export function useCanvasAssistantTasks({
         </div>:null}
        </li>)}
       </ul>:<p>尚未确认长期约束或决策。</p>}
+       <div className="rounded-md border p-2" style={{borderColor:"var(--assistant-border)"}}>
+        <div className="flex flex-wrap items-center gap-2">
+         {activeTask&&onGenerateSemanticProposals?<button type="button" className="canvas-assistant-link"
+          disabled={busy||sending} onClick={()=>void generateSemanticProposals()}
+          title="调用当前配置的文本模型，仅生成未确认的候选项；不执行任何画布操作">
+          {proposalLoading?"正在提取候选…":"提取 AI 记忆候选"}</button>:null}
+         <button type="button" className="canvas-assistant-link" disabled={busy||sending}
+          onClick={()=>void fetchSemanticProposals(selected.id).catch(()=>setError("读取记忆候选失败，请检查后端连接。"))}>刷新候选</button>
+        </div>
+        <p>AI 提案未经确认，不会自动成为长期记忆或执行回执。请逐项检查。</p>
+        {proposals.length?<ul className="mt-1 space-y-1.5">
+         {proposals.map(item=><li key={item.id} className="rounded border p-1.5"
+          style={{borderColor:"var(--assistant-border)"}}>
+          <p className="break-words">
+           {item.kind==="goal"?"目标":item.kind==="constraint"?"约束":"决策"}建议：{item.text}
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+           <span>{item.status==="pending"?"待人工确认":item.status==="accepted"?"已确认":"已拒绝"}</span>
+           {item.contextPolicy.includeContext?<span>来源含画布上下文，确认时需要相应授权</span>:null}
+           {activeTask&&item.status==="pending"?<>
+            <button type="button" className="canvas-assistant-link" disabled={busy||sending}
+             aria-label={"确认候选："+item.text}
+             onClick={()=>void decideSemanticProposal(item,"accept")}>确认候选</button>
+            <button type="button" className="canvas-assistant-link" disabled={busy||sending}
+             aria-label={"拒绝候选："+item.text}
+             onClick={()=>void decideSemanticProposal(item,"reject")}>拒绝候选</button>
+           </>:null}
+          </div>
+         </li>)}
+        </ul>:<p>暂无 AI 记忆候选。</p>}
+       </div>
       {activeTask?<div className="space-y-1.5">
-       <select aria-label="长期事项类型" className="w-full rounded-md border px-1.5 py-1"
+        <select aria-label="长期事项类型" className="w-full rounded-md border px-1.5 py-1"
         style={{background:"var(--assistant-surface)",borderColor:"var(--assistant-border)"}}
         value={semanticKind} disabled={busy||sending}
         onChange={e=>{setSemanticKind(e.target.value as "goal"|"constraint"|"decision");

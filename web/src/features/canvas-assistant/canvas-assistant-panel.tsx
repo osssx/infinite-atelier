@@ -288,7 +288,26 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
  const reversePromptRequest="请仔细观察引用图片的真实视觉内容，反推适合图像生成模型的提示词。请分别给出：画面主体与动作、场景与构图、镜头、光影色彩、材质与风格；完整英文正向提示词、中文版、可选负面提示词，以及无法从图像确定的信息。不要把猜测当成原始 Prompt、Seed 或 LoRA。";
  const session=sessions.find(item=>item.id===activeChatId);
  const taskTracker=useCanvasAssistantTasks({projectId,activeChatId,session,open,sending,includeContext,scope,includedIds,
-  onDraft:setDraft,onRunSequenceStep:async(taskId:string,view:AssistantRunSequenceView)=>{
+ onDraft:setDraft,onGenerateSemanticProposals:async(taskId,turnMessageId,signal)=>{
+  const channel=resolveModelChannel(config,chosenModel);
+  const provider=modelChannelProvider(channel,"text");
+  if(!chosenModel||!channel||!provider||provider==="volcengine_ark")
+   throw Error("请先配置支持文本生成的模型，再提取长期记忆候选。");
+  if(controllerRef.current)throw Error("另一个 AI 请求正在执行");
+  const controller=new AbortController();
+  controllerRef.current=controller;setSending(true);
+  try{
+   await ensureSqliteModelChannelForExecution(channel,provider);
+   await canvasApi("/api/v1/projects/"+encodeURIComponent(projectId)+"/assistant/chat","POST",{
+    channelId:channel.id,provider,baseUrl:channel.baseUrl,model:modelOptionName(chosenModel),
+    canvasActions:false,task:{taskId,turnMessageId,
+     requestId:turnMessageId+"-semantic-model",callKind:"semantic_proposal"},
+    messages:[{role:"user",content:"请提取需要由用户审核的长期创作记忆候选。"}]
+   },AbortSignal.any([signal,controller.signal]));
+  }finally{
+   controllerRef.current=null;setSending(false);
+  }
+ },onRunSequenceStep:async(taskId:string,view:AssistantRunSequenceView)=>{
    let next=canLaunchAssistantRunSequenceStep(view);
    const controller=new AbortController();
    if(controllerRef.current)throw Error("另一个 AI 任务正在执行");

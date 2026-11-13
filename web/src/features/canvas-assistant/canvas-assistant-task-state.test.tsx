@@ -54,6 +54,57 @@ beforeEach(()=>{
  });
 });
 afterEach(async()=>{if(root)await act(async()=>{root!.unmount();});root=null;container?.remove();container=null;});
+describe("P3c cross-chat resume and safe replan UI",()=>{
+ it("links an existing Task from another chat without executing any Job",async()=>{
+  const previous={id:"task-old",chatSessionId:"chat-a",chatSessionIds:["chat-a"],
+   rootMessageId:"old-user",originalRequest:"Moss 两张图片",status:"ready",
+   recoveryMode:"job_observation",activePlanVersion:1,steps:[]};
+  mocks.api.mockImplementation(async(url:string,method:string,payload?:Record<string,unknown>)=>{
+   if(method==="GET"&&url.includes("includeOther=true"))return {tasks:[previous]};
+   if(method==="GET"&&url.includes("chatSessionId=chat-b"))return {tasks:[]};
+   if(method==="POST"&&url.endsWith("/link-chat")){
+    expect(payload).toMatchObject({chatSessionId:"chat-b"});
+    return {task:{...previous,chatSessionIds:["chat-a","chat-b"]},executionStarted:false};
+   }
+   if(method==="GET"&&url.endsWith("/task-old"))return {task:{...previous,chatSessionIds:["chat-a","chat-b"]}};
+   if(method==="GET"&&url.endsWith("/run-sequences"))return {sequence:null,state:"none",next:null};
+   if(method==="GET"&&url.endsWith("/model-calls"))return {calls:[]};
+   return {task:previous};
+  });
+  await render("chat-b");
+  await click("从其他会话关联任务");
+  expect(container!.textContent).toContain("Moss 两张图片");
+  await click("关联并继续");
+  expect(container!.textContent).toContain("Moss 两张图片");
+  expect(mocks.api.mock.calls.filter(([url,method])=>method==="POST"&&url.endsWith("/link-chat")).length).toBe(1);
+  expect(mocks.api.mock.calls.some(([url])=>url.endsWith("/enqueue")||url.includes("/jobs"))).toBe(false);
+ });
+ it("safe replan only after server recovery verdict, and never POSTs a Job",async()=>{
+  let task={id:"task-broken",chatSessionId:"chat-a",chatSessionIds:["chat-a"],
+   rootMessageId:"original-user",originalRequest:"Moss 工作流",status:"blocked",
+   recoveryMode:"job_observation",activePlanVersion:1,steps:[]};
+  mocks.api.mockImplementation(async(url:string,method:string,payload?:Record<string,unknown>)=>{
+   if(method==="GET"&&url.includes("chatSessionId="))return {tasks:[task]};
+   if(method==="GET"&&url.endsWith("/task-broken"))return {task};
+   if(method==="GET"&&url.endsWith("/recovery"))return {canReplan:true,reason:"verified_safe_to_replan",
+    planVersion:1,projectRevision:42};
+   if(method==="POST"&&url.endsWith("/replan")){
+    expect(payload).toMatchObject({expectedPlanVersion:1,expectedProjectRevision:42});
+    task={...task,status:"planning",activePlanVersion:2};
+    return {activePlanVersion:2,executionStarted:false};
+   }
+   if(method==="GET"&&url.endsWith("/run-sequences"))return {sequence:null,state:"none",next:null};
+   if(method==="GET"&&url.endsWith("/model-calls"))return {calls:[]};
+   return {task};
+  });
+  await render("chat-a");
+  expect(container!.textContent).toContain("安全重新规划（不会自动生成）");
+  await click("安全重新规划（不会自动生成）");
+  expect(container!.textContent).toContain("草稿：请依据服务端可信回执重新规划剩余步骤");
+  expect(mocks.api.mock.calls.filter(([url,method])=>method==="POST"&&url.endsWith("/replan")).length).toBe(1);
+  expect(mocks.api.mock.calls.some(([url])=>url.endsWith("/enqueue")||url.includes("/jobs"))).toBe(false);
+ });
+});
 describe("P3b persisted multi-run UI resume",()=>{
  it("loads the next frozen target after refresh and never invents a second Job",async()=>{
   const task={id:"task-seq",chatSessionId:"chat-a",rootMessageId:"original-user",

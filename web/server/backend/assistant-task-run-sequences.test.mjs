@@ -61,7 +61,7 @@ function complete(ctx,jobId,index){
 }
 test("P3b freeze two intents; one Job at a time; approval and materialization gate next",t=>{
  const ctx=setup(t);
- assert.equal(SCHEMA_VERSION,27);
+ assert.equal(SCHEMA_VERSION,28);
  const seq=capture(ctx);
  assert.equal(seq.count,2);
  assert.equal(capture(ctx).sequenceId,seq.sequenceId);
@@ -86,6 +86,10 @@ test("P3b freeze two intents; one Job at a time; approval and materialization ga
  assert.equal(next.state,"ready");
  assert.equal(next.next.index,1);
  assert.deepEqual(next.next.dependsOn,[mat]);
+ assert.equal(next.outputs.length,1);
+ assert.deepEqual({index:next.outputs[0].runIndex,source:next.outputs[0].nodeId,
+  kind:next.outputs[0].kind,material:next.outputs[0].materialStepId},
+  {index:0,source:"first",kind:"text",material:mat});
  const second=plan(ctx,seq,1,[mat]);
  assert.equal(ctx.db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n,1);
  const pre=JSON.parse(ctx.db.prepare("SELECT preconditions_json FROM assistant_task_steps WHERE id=?").get(second.stepId).preconditions_json);
@@ -100,6 +104,20 @@ test("P3b freeze two intents; one Job at a time; approval and materialization ga
  assert.equal(ctx.db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n,2);
 });
 
+test("P3c trusted output references cannot be forged from an unverified materialization",t=>{
+ const ctx=setup(t),seq=capture(ctx);
+ const step=plan(ctx,seq,0,[]),queued=send(ctx,step,0),material=complete(ctx,queued.jobId,0);
+ assert.equal(getAssistantRunSequence(ctx.db,ctx.base).outputs.length,1);
+ ctx.db.prepare("UPDATE materializations SET node_id='forged' WHERE job_id=?").run(queued.jobId);
+ assert.equal(getAssistantRunSequence(ctx.db,ctx.base).outputs.length,0);
+ assert.equal(ctx.db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n,1);
+ ctx.db.prepare("UPDATE materializations SET node_id='first' WHERE job_id=?").run(queued.jobId);
+ ctx.db.prepare("UPDATE assistant_task_steps SET receipt_trust='none' WHERE id=?").run(material);
+ assert.equal(getAssistantRunSequence(ctx.db,ctx.base).outputs.length,0);
+ ctx.db.prepare("UPDATE assistant_task_steps SET receipt_trust='server_committed' WHERE id=?").run(material);
+ ctx.db.prepare("UPDATE blobs SET status='missing' WHERE id='blob-0'").run();
+ assert.equal(getAssistantRunSequence(ctx.db,ctx.base).outputs.length,0);
+});
 test("P3b Comfy Job target must match current pinned workflow template revision",t=>{
  const ctx=setup(t);
  const wf={id:"workflow",type:"comfy:workflow",title:"W",position:{x:10,y:10},

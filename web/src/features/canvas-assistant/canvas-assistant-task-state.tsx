@@ -10,8 +10,9 @@ type Step={id:string;kind:string;planVersion:number;status:string;actionDigest:s
  action?:{actions?:unknown[];center?:{x:number;y:number};job?:{targetNodeId:string;executionMode:string;snapshot:{adapterKind?:string}}};
  result?:{jobId?:string;jobStatus?:string;artifactIds?:string[];bindings?:{nodeId:string}[];
  runId?:string;status?:string;exitCode?:number|null;artifactCount?:number};receiptTrust?:string};
-type Task={id:string;chatSessionId:string;rootMessageId:string;originalRequest:string;
- status:string;recoveryMode:"guidance_only"|"canvas_atomic"|"job_observation"|"skill_audit";steps?:Step[];lastError?:string|null};
+type Task={id:string;chatSessionId:string;chatSessionIds?:string[];rootMessageId:string;originalRequest:string;
+ activePlanVersion?:number;status:string;recoveryMode:"guidance_only"|"canvas_atomic"|"job_observation"|"skill_audit";steps?:Step[];lastError?:string|null};
+type Recovery={canReplan:boolean;reason:string;planVersion:number;projectRevision:number;completedArtifacts?:number;failedJobs?:number};
 type Args={projectId:string;activeChatId:string|null;session?:CanvasAssistantSession;
  open:boolean;sending:boolean;includeContext:boolean;scope:AssistantContextScope;includedIds:string[];
  onDraft:(value:string)=>void;
@@ -38,16 +39,22 @@ export function useCanvasAssistantTasks({
  const [eventsBusy,setEventsBusy]=useState(false);
  const eventScope=useRef(0);
  const [runSequence,setRunSequence]=useState<AssistantRunSequenceView|null>(null);
+ const [otherTasks,setOtherTasks]=useState<Task[]>([]);
+ const [showOtherTasks,setShowOtherTasks]=useState(false);
+ const [linkCandidateId,setLinkCandidateId]=useState("");
+ const [recovery,setRecovery]=useState<Recovery|null>(null);
 
  const base="/api/v1/projects/"+encodeURIComponent(projectId)+"/assistant/tasks";
  useEffect(()=>{
-  if(!open||!activeChatId){setItems([]);setSelectedId(null);setDetail(null);return;}
+  if(!open||!activeChatId){setItems([]);setSelectedId(null);setDetail(null);setShowOtherTasks(false);return;}
+  setShowOtherTasks(false);setOtherTasks([]);
   let alive=true;
   setError("");
   void canvasApi<{tasks:Task[]}>(base+"?chatSessionId="+encodeURIComponent(activeChatId),"GET")
    .then(data=>{
     if(!alive)return;
-    const next=Array.isArray(data.tasks)?data.tasks.filter(task=>task.chatSessionId===activeChatId):[];
+    const next=Array.isArray(data.tasks)?data.tasks.filter(task=>
+    task.chatSessionId===activeChatId||task.chatSessionIds?.includes(activeChatId)):[];
     setItems(next);setSelectedId(id=>next.some(task=>task.id===id)?id:next[0]?.id??null);
    },()=>{if(alive)setError("无法读取任务列表，普通聊天仍可用。");});
   return ()=>{alive=false;};
@@ -93,7 +100,17 @@ export function useCanvasAssistantTasks({
    .then(value=>{if(alive)setRunSequence(value?.sequence?value:null);},()=>{if(alive)setRunSequence(null);});
   return ()=>{alive=false;};
  },[base,open,selectedId,detail]);
- const selected=items.find(item=>item.id===selectedId&&item.chatSessionId===activeChatId)??null;
+ useEffect(()=>{
+  if(!open||!selectedId||!detail||detail.id!==selectedId||!["failed","blocked"].includes(detail.status)){
+   setRecovery(null);return;
+  }
+  let alive=true;
+  void canvasApi<Recovery>(base+"/"+encodeURIComponent(selectedId)+"/recovery","GET")
+   .then(data=>{if(alive)setRecovery(data);},()=>{if(alive)setRecovery(null);});
+  return ()=>{alive=false;};
+ },[base,open,selectedId,detail]);
+ const selected=items.find(item=>item.id===selectedId&&(item.chatSessionId===activeChatId||
+  (activeChatId!==null&&item.chatSessionIds?.includes(activeChatId))))??null;
  const currentTask=detail?.id===selected?.id?detail:selected;
  const activeTask=currentTask?.status==="cancelled"||currentTask?.status==="completed"?null:currentTask;
  const policy=()=>({includeContext,scope,includedIds:includeContext&&scope==="selection"?includedIds.slice(0,12):[]});
@@ -240,6 +257,47 @@ export function useCanvasAssistantTasks({
   }catch(error){setError("Skill 已冻结；不会通过本次错误自动重新运行："+(error instanceof Error?error.message:"执行失败"));}
   finally{setBusy(false);}
  };
+ const showOtherChatTasks=async()=>{
+  if(!activeChatId||busy||sending)return;
+  if(showOtherTasks){setShowOtherTasks(false);return;}
+  setBusy(true);setError("");
+  try{
+   const data=await canvasApi<{tasks:Task[]}>(base+"?chatSessionId="+encodeURIComponent(activeChatId)+
+    "&includeOther=true&limit=100","GET");
+   const available=(data.tasks??[]).filter(item=>item.chatSessionId!==activeChatId&&
+    !item.chatSessionIds?.includes(activeChatId));
+   setOtherTasks(available);setLinkCandidateId(available[0]?.id??"");setShowOtherTasks(true);
+  }catch{setError("读取其他会话的任务失败，没有执行任何操作。");}
+  finally{setBusy(false);}
+ };
+ const linkOtherChatTask=async()=>{
+  if(!activeChatId||!linkCandidateId||busy||sending)return;
+  setBusy(true);setError("");
+  try{
+   const value=await canvasApi<TaskResponse>(path(linkCandidateId)+"/link-chat","POST",{
+    requestId:"link-"+linkCandidateId+"-"+activeChatId,chatSessionId:activeChatId
+   });
+   setItems(old=>[value.task,...old.filter(item=>item.id!==value.task.id)]);
+   setSelectedId(value.task.id);setDetail(value.task);setShowOtherTasks(false);
+   setOtherTasks([]);setLinkCandidateId("");
+  }catch(error){setError("关联任务失败；不会重新执行任何步骤："+(error instanceof Error?error.message:"请求失败"));}
+  finally{setBusy(false);}
+ };
+ const safelyReplan=async()=>{
+  if(!selected||!recovery?.canReplan||busy||sending)return;
+  setBusy(true);setError("");
+  try{
+   await canvasApi(path(selected.id)+"/replan","POST",{
+    requestId:"safe-replan-"+selected.id+"-"+recovery.planVersion,
+    expectedPlanVersion:recovery.planVersion,
+    expectedProjectRevision:recovery.projectRevision
+   });
+   await refreshTask(selected.id);
+   setRecovery(null);
+   onDraft("请依据服务端可信回执重新规划剩余步骤。不得重放结果不明或已经成功的生成任务。");
+  }catch(error){setError("不满足安全重新规划条件，原任务未重放："+(error instanceof Error?error.message:"请求失败"));}
+  finally{setBusy(false);}
+ };
  const view=<section aria-label="任务状态" className="border-b px-3 py-2"
   style={{borderColor:"var(--assistant-border)",color:"var(--assistant-text)"}}>
   <div className="flex items-center gap-2">
@@ -254,6 +312,23 @@ export function useCanvasAssistantTasks({
     <button type="button" className="canvas-assistant-link" disabled={busy||sending}
      title="将最后一条用户要求记录为持久任务" onClick={()=>void remember()}>记录为任务</button>:null}
   </div>
+  {activeChatId?<div className="mt-1 text-[11px]">
+   <button type="button" className="canvas-assistant-link" disabled={busy||sending}
+    onClick={()=>void showOtherChatTasks()}>{showOtherTasks?"收起其他会话任务":"从其他会话关联任务"}</button>
+   {showOtherTasks?<div className="mt-1 flex items-center gap-2">
+    <select aria-label="其他会话任务" className="min-w-0 flex-1 rounded-md border px-1.5 py-1"
+     style={{background:"var(--assistant-surface)",borderColor:"var(--assistant-border)"}}
+     value={linkCandidateId} onChange={e=>setLinkCandidateId(e.target.value)}>
+     {otherTasks.length?otherTasks.map(task=><option key={task.id} value={task.id}>
+      {task.originalRequest.slice(0,48)}
+     </option>):<option value="">没有其他会话任务</option>}
+    </select>
+    <button type="button" className="canvas-assistant-link"
+     disabled={busy||sending||!linkCandidateId} onClick={()=>void linkOtherChatTask()}>
+     关联并继续
+    </button>
+   </div>:null}
+  </div>:null}
   {selected?<div className="mt-1.5 text-[11px]" style={{color:"var(--assistant-muted)"}}>
    <div className="flex flex-wrap items-center gap-2">
     <span>状态：{taskStatusLabel[detail?.id===selected.id?detail.status:selected.status]??selected.status}</span>
@@ -271,6 +346,13 @@ export function useCanvasAssistantTasks({
    {detail?.id===selected.id&&detail.lastError?
     <p role="status" className="mt-1 break-words">上次错误：{detail.lastError.slice(0,200)}</p>:null}
 
+   {recovery&&selected&&detail?.id===selected.id&&["failed","blocked"].includes(detail.status)?
+    <div className="mt-2 rounded-md border p-2" style={{borderColor:"var(--assistant-border)"}}>
+     <p>恢复条件：{recovery.canReplan?"已有足够的可信终态证据":"需先完成已有执行结果的对账"}</p>
+     {recovery.canReplan?<button type="button" className="canvas-assistant-link"
+      disabled={busy||sending} onClick={()=>void safelyReplan()}>安全重新规划（不会自动生成）</button>:
+      <p className="break-words">原因：{recovery.reason}。不会重放未确认的生成或 Skill。</p>}
+    </div>:null}
    {currentTask?.status==="ready"&&detail?.steps?.some(s=>s.kind==="materialize"&&s.status==="succeeded"&&s.receiptTrust==="server_committed")?
     <p className="mt-1 text-[11px]">已核对生成产物和落图；可点击「继续」编排下一步。不会自动重新发起生成。</p>:null}
    <div className="mt-1.5 text-[11px]">
@@ -294,6 +376,12 @@ export function useCanvasAssistantTasks({
       onClick={()=>void resumeRunSequence()}>
       继续第 {runSequence.next.index+1}/{runSequence.sequence.actions.length} 项生成（需审批）
      </button>:null}
+    {runSequence.outputs?.length?<div className="mt-1">
+     <span>经服务端验证的落图引用：</span>
+     {runSequence.outputs.slice(-8).map(output=><div key={output.artifactId} className="break-all">
+      {output.kind} · 节点 {output.nodeId} · 产物 {output.artifactId.slice(0,12)}
+     </div>)}
+    </div>:null}
     {runSequence.state==="awaiting_materialization"?<p>等待产物落图对账，不能提前提交下一项。</p>:null}
    </div>:null}
    {pendingCanvas.map(step=><div key={step.id} className="mt-2 rounded-md border p-2"

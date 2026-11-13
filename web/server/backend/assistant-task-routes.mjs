@@ -1,11 +1,13 @@
 import {createAssistantTask,listAssistantTasks,getAssistantTask,appendAssistantTaskTurn,
- observeAssistantTask,guideAssistantTaskResume,cancelAssistantTask,listAssistantTaskEvents} from "./assistant-tasks.mjs";
+ observeAssistantTask,guideAssistantTaskResume,cancelAssistantTask,listAssistantTaskEvents,
+ linkAssistantTaskToChat} from "./assistant-tasks.mjs";
 import {listAssistantModelCalls} from "./assistant-model-calls.mjs";
 import {decideAssistantTaskStep} from "./assistant-task-step-gate.mjs";
 import {planAssistantCanvasStep,executeAssistantCanvasStep} from "./assistant-task-canvas-executor.mjs";
 import {planAssistantExternalJobStep,enqueueAssistantExternalJobStep,reconcileAssistantExternalTask} from "./assistant-task-external-jobs.mjs";
 import {planAssistantSkillStep,executeAssistantSkillStep} from "./assistant-task-skills.mjs";
 import {registerAssistantRunSequence,getAssistantRunSequence} from "./assistant-task-run-sequences.mjs";
+import {inspectAssistantTaskRecovery,replanAssistantTaskSafely} from "./assistant-task-safe-replan.mjs";
 
 const id={type:"string",pattern:"^[A-Za-z0-9_-]{1,128}$"};
 const policy={type:"object",additionalProperties:false,required:["includeContext","scope","includedIds"],
@@ -22,6 +24,10 @@ const decisionBody={type:"object",required:["requestId","expectedPlanVersion","a
  actionDigest:{type:"string",pattern:"^[a-f0-9]{64}$"},decision:{type:"string",enum:["approve","reject"]}}};
 const requestBody={type:"object",required:["requestId"],additionalProperties:false,
  properties:{requestId:id}};
+const linkChatBody={type:"object",required:["requestId","chatSessionId"],additionalProperties:false,
+ properties:{requestId:id,chatSessionId:id}};
+const safeReplanBody={type:"object",required:["requestId","expectedPlanVersion","expectedProjectRevision"],additionalProperties:false,
+ properties:{requestId:id,expectedPlanVersion:{type:"integer",minimum:1},expectedProjectRevision:{type:"integer",minimum:1}}};
 const taskPostBody={type:"object",required:["requestId","chatSessionId","rootMessageId","originalRequest"],
  additionalProperties:false,properties:{requestId:id,chatSessionId:id,rootMessageId:id,
   originalRequest:{type:"string",minLength:1,maxLength:8000},contextPolicy:policy}};
@@ -87,9 +93,15 @@ export function registerAssistantTaskRoutes(app,db,{skillRegistry,blobStore}={})
  });
  app.get(base,{schema:{params:projectParams}},(req,reply)=>result(reply,
   listAssistantTasks(db,{projectId:req.params.id,chatSessionId:req.query?.chatSessionId,
-   limit:Number(req.query?.limit??50)})));
+   limit:Number(req.query?.limit??50),includeOther:req.query?.includeOther==="true"})));
  app.get(base+"/:taskId",{schema:{params:taskParams}},(req,reply)=>result(reply,
   getAssistantTask(db,{projectId:req.params.id,taskId:req.params.taskId})));
+ app.post(base+"/:taskId/link-chat",{schema:{params:taskParams,body:linkChatBody}},(req,reply)=>result(reply,
+  linkAssistantTaskToChat(db,{projectId:req.params.id,taskId:req.params.taskId,...req.body})));
+ app.get(base+"/:taskId/recovery",{schema:{params:taskParams}},(req,reply)=>result(reply,
+  inspectAssistantTaskRecovery(db,{projectId:req.params.id,taskId:req.params.taskId})));
+ app.post(base+"/:taskId/replan",{schema:{params:taskParams,body:safeReplanBody}},(req,reply)=>result(reply,
+  replanAssistantTaskSafely(db,{projectId:req.params.id,taskId:req.params.taskId,...req.body})));
  app.post(base+"/:taskId/turns",{schema:{params:taskParams,body:turnBody}},(req,reply)=>result(reply,
   appendAssistantTaskTurn(db,{projectId:req.params.id,taskId:req.params.taskId,...req.body})));
  app.post(base+"/:taskId/observations",{schema:{params:taskParams,body:observationBody}},(req,reply)=>result(reply,

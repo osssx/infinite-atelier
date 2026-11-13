@@ -22,8 +22,10 @@ function mustTask(db,projectId,taskId){
  if(!row)throw fail("assistant_task_not_found",404);
  return row;
 }
-function view(row){
- return {id:row.id,projectId:row.project_id,chatSessionId:row.chat_session_id,rootMessageId:row.root_message_id,
+const linkedChatIds=(db,taskId)=>db.prepare("SELECT chat_session_id FROM assistant_task_chat_links WHERE task_id=? ORDER BY linked_at,chat_session_id").all(taskId).map(row=>row.chat_session_id);
+function view(db,row){
+ return {id:row.id,projectId:row.project_id,chatSessionId:row.chat_session_id,
+  chatSessionIds:[row.chat_session_id,...linkedChatIds(db,row.id).filter(id=>id!==row.chat_session_id)],rootMessageId:row.root_message_id,
  status:row.status,activePlanVersion:row.active_plan_version,activeStepId:row.active_step_id,
  originalRequest:row.original_request,goal:JSON.parse(row.goal_json),summary:JSON.parse(row.summary_json),
  contextPolicy:JSON.parse(row.context_policy_json),readOnly:!!row.read_only,
@@ -41,7 +43,7 @@ function snapshot(db,projectId,taskId){
  const steps=db.prepare("SELECT * FROM assistant_task_steps WHERE task_id=? ORDER BY plan_version,ordinal").all(taskId).map(stepView);
  const lastSeq=db.prepare("SELECT COALESCE(MAX(seq),0) AS n FROM assistant_task_events WHERE task_id=?").get(taskId).n;
  const last=db.prepare("SELECT kind,payload_json FROM assistant_task_events WHERE task_id=? AND kind IN ('client_reported_error','client_reported_reply') ORDER BY seq DESC LIMIT 1").get(taskId);
- return {...view(row),recoveryMode:steps.some(step=>step.kind==="skill_script")?
+ return {...view(db,row),recoveryMode:steps.some(step=>step.kind==="skill_script")?
   "skill_audit":steps.some(step=>["model_job","comfy_workflow","materialize"].includes(step.kind))?
   "job_observation":steps.some(step=>step.kind==="canvas_mutation"&&
   Array.isArray(step.action?.actions))?"canvas_atomic":"guidance_only",
@@ -93,10 +95,29 @@ export function createAssistantTask(db,{projectId,chatSessionId,rootMessageId,or
   return {task:snapshot(db,projectId,taskId)};
  });
 }
-export function listAssistantTasks(db,{projectId,chatSessionId,limit=50}){
+export function listAssistantTasks(db,{projectId,chatSessionId,limit=50,includeOther=false}){
  active(db,projectId);
- if(!id(chatSessionId)||!Number.isInteger(limit)||limit<1||limit>100)throw fail("assistant_task_invalid");
- return {tasks:db.prepare("SELECT * FROM assistant_tasks WHERE project_id=? AND chat_session_id=? ORDER BY updated_at DESC,id DESC LIMIT ?").all(projectId,chatSessionId,limit).map(view)};
+ if(!id(chatSessionId)||!Number.isInteger(limit)||limit<1||limit>100||
+  typeof includeOther!=="boolean")throw fail("assistant_task_invalid");
+ const rows=includeOther?db.prepare("SELECT * FROM assistant_tasks WHERE project_id=? ORDER BY updated_at DESC,id DESC LIMIT ?")
+  .all(projectId,limit):db.prepare("SELECT t.* FROM assistant_tasks t WHERE t.project_id=? AND (t.chat_session_id=? OR EXISTS(SELECT 1 FROM assistant_task_chat_links l WHERE l.task_id=t.id AND l.project_id=t.project_id AND l.chat_session_id=?)) ORDER BY t.updated_at DESC,t.id DESC LIMIT ?")
+  .all(projectId,chatSessionId,chatSessionId,limit);
+ return {tasks:rows.map(row=>view(db,row))};
+}
+export function linkAssistantTaskToChat(db,{projectId,taskId,requestId,chatSessionId}){
+ if(!id(chatSessionId))throw fail("assistant_task_invalid");
+ const linked=command(db,{projectId,requestId,kind:"link_chat_session",payload:{taskId,chatSessionId}},()=>{
+  const task=mustTask(db,projectId,taskId);
+  if(task.read_only)throw fail("assistant_task_not_editable",409);
+  const now=Date.now();
+  if(task.chat_session_id!==chatSessionId){
+   db.prepare("INSERT OR IGNORE INTO assistant_task_chat_links(task_id,project_id,chat_session_id,linked_at) VALUES(?,?,?,?)")
+    .run(taskId,projectId,chatSessionId,now);
+   event(db,taskId,"task_chat_linked",{chatSessionId,executionStarted:false},null,now);
+  }
+  return {taskId,chatSessionId,executionStarted:false};
+ });
+ return {...linked,task:getAssistantTask(db,{projectId,taskId}).task};
 }
 export function getAssistantTask(db,{projectId,taskId}){
  active(db,projectId);db.exec("BEGIN");

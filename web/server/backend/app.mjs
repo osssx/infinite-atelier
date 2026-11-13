@@ -7,6 +7,7 @@ import {registerAssistantTaskRoutes} from "./assistant-task-routes.mjs";
 import {getAssistantTask,getAssistantTaskTurnPolicy} from "./assistant-tasks.mjs";
 import {beginAssistantModelCommand,createAssistantModelObserver,completeAssistantModelCommand,failAssistantModelCommand} from "./assistant-model-calls.mjs";
 import {buildAssistantTaskProviderContext} from "./assistant-task-context.mjs";
+import {trustedAssistantTaskOutputs} from "./assistant-task-produced-artifacts.mjs";
 import {submitJob,readJobsSnapshot,readEventsAfter} from "./repository.mjs";
 import {EXECUTION_MODES} from "./contracts.mjs";
 import {CANVAS_NODE_ID_PATTERN} from "../canvas-node-id.mjs";
@@ -124,6 +125,7 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
     "assistant_task_run_invalid","assistant_task_run_target_invalid",
     "assistant_task_run_not_found","assistant_task_run_not_ready",
     "assistant_task_run_already_planned","assistant_task_run_sequence_active",
+    "assistant_task_replan_invalid","assistant_task_replan_blocked",
     "assistant_node_parameter_invalid","assistant_node_parameter_not_applicable",
     "assistant_node_parameter_uses_workflow","assistant_node_model_unavailable",
     "assistant_comfy_target_invalid","assistant_comfy_template_unavailable",
@@ -663,7 +665,8 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
         const snapshot=getAssistantTask(db,{projectId:req.params.id,taskId:ref.taskId}).task;
         const frozenPolicy=getAssistantTaskTurnPolicy(db,{projectId:req.params.id,taskId:ref.taskId,
          messageId:ref.turnMessageId});
-        taskContext=buildAssistantTaskProviderContext({task:{...snapshot,contextPolicy:frozenPolicy},document:project.document});
+        taskContext=buildAssistantTaskProviderContext({task:{...snapshot,contextPolicy:frozenPolicy},document:project.document,
+         trustedOutputs:trustedAssistantTaskOutputs(db,{projectId:project.id,taskId:snapshot.id,planVersion:snapshot.activePlanVersion})});
         // P0b: client transcript may contain previously selected private nodes.
         // Only the current explicit user request enters the provider payload.
         messages=[req.body.messages.at(-1)];

@@ -8,7 +8,7 @@ const safe=(value,max=1800)=>{
   .replace(/(?:api[_-]?key|access[_-]?token|password|secret)\s*[:=]\s*[^\s,;]+/gi,"[凭据省略]");
  return redacted.length>max?redacted.slice(0,max)+"[内容截断]":redacted;
 };
-export function buildAssistantTaskProviderContext({task,document}){
+export function buildAssistantTaskProviderContext({task,document,trustedOutputs=[]}){
  const policy=task.contextPolicy??{includeContext:false,scope:"selection",includedIds:[]};
  const lines=[
   "原始任务要求："+safe(task.originalRequest,1500),
@@ -59,5 +59,11 @@ export function buildAssistantTaskProviderContext({task,document}){
    if(visible.has(edge.fromNodeId)&&visible.has(edge.toNodeId))
     lines.push("连线："+safe(edge.fromNodeId,128)+" → "+safe(edge.toNodeId,128));
  }
- return lines.join("\n").slice(0,12000);
-}
+  const visible=policy.scope==="selection"?new Set((policy.includedIds??[]).slice(0,12)):null;
+  const products=Array.isArray(trustedOutputs)?trustedOutputs.filter(x=>
+   x&&typeof x.nodeId==="string"&&(visible?.has(x.nodeId)??false)&&
+   ["image","video","audio","text"].includes(x.kind)).slice(-8):[];
+  for(const output of products)lines.push("已验证的落图资源：节点 id="+safe(output.nodeId,128)+
+   "；类型="+safe(output.kind,10)+"；产物 id="+safe(output.artifactId,128)+
+   "（只作来源标识；不得视为已授权读取资源正文/媒体）");
+  return lines.join("\n").slice(0,12000);}

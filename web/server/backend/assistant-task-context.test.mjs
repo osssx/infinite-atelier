@@ -26,6 +26,24 @@ test("P3 factual Task context uses only trusted Step counts, preserves privacy a
   assert.equal(value.includes(v),false,"leaked "+v);
  assert.ok(value.length<=12000);
 });
+test("P3c provider context uses trusted materialized IDs only with explicit selection policy",()=>{
+ const output={nodeId:"rendered",kind:"image",artifactId:"artifact-1",sha256:"a".repeat(64)};
+ const doc={nodes:[{id:"rendered",type:"image",title:"Private image",metadata:{}}],
+  connections:[]};
+ const base={originalRequest:"继续生成",status:"ready",activePlanVersion:1,
+  contextPolicy:{includeContext:false,scope:"selection",includedIds:["rendered"]},steps:[]};
+ const hidden=buildAssistantTaskProviderContext({task:base,document:doc,trustedOutputs:[output]});
+ assert.doesNotMatch(hidden,/artifact-1|rendered|Private image/);
+ const scoped=buildAssistantTaskProviderContext({task:{...base,contextPolicy:{
+  ...base.contextPolicy,includeContext:true,includedIds:["another"]}},document:doc,
+  trustedOutputs:[output]});
+ assert.doesNotMatch(scoped,/artifact-1|rendered|Private image/);
+ const visible=buildAssistantTaskProviderContext({task:{...base,contextPolicy:{
+  ...base.contextPolicy,includeContext:true}},document:doc,trustedOutputs:[output]});
+ assert.match(visible,/已验证的落图资源/);
+ assert.match(visible,/artifact-1/);
+ assert.doesNotMatch(visible,/"a"{16}|sha256/);
+});
 test("P3 untrusted client-reported results cannot become server-backed facts",()=>{
  const value=buildAssistantTaskProviderContext({task:{
   originalRequest:"生成图像",status:"running",activePlanVersion:2,

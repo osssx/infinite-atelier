@@ -7,6 +7,8 @@ export type AssistantRunSequenceView={
  sequence:{id:string;taskId:string;sourceMessageId:string;planVersion:number;
   actions:AssistantRunIntent[];status:string}|null;
  state:string;index?:number;stepId?:string;
+ outputs?:{sourceStepId:string;materialStepId:string;runIndex:number|null;runSequenceId:string|null;
+  jobId:string;artifactId:string;nodeId:string;kind:string;portId:string|null;sha256:string}[];
  next:{index:number;action:AssistantRunIntent;dependsOn:string[];last:boolean}|null;
 };
 const base=(projectId:string,taskId:string)=>"/api/v1/projects/"+encodeURIComponent(projectId)+

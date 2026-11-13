@@ -5,6 +5,7 @@
  */
 import {randomUUID,createHash} from "node:crypto";
 import {stableJson,writeTransaction} from "./repository.mjs";
+import {trustedAssistantTaskOutputs} from "./assistant-task-produced-artifacts.mjs";
 const fail=(code,statusCode=409)=>Object.assign(Error(code),{code,statusCode});
 const id=x=>typeof x==="string"&&/^[A-Za-z0-9_-]{1,128}$/.test(x);
 const hash=x=>createHash("sha256").update(stableJson(x)).digest("hex");
@@ -86,7 +87,9 @@ export function nextAssistantRunInTransaction(db,projectId,taskId,seq){
 export function getAssistantRunSequence(db,{projectId,taskId}){
  const task=taskWithGraph(db,projectId,taskId);
  const seq=sequenceRows(db,taskId,task.active_plan_version).at(-1);
- return seq?nextAssistantRunInTransaction(db,projectId,taskId,seq):{sequence:null,state:"none",next:null};
+ const state=seq?nextAssistantRunInTransaction(db,projectId,taskId,seq):{sequence:null,state:"none",next:null};
+ const outputs=trustedAssistantTaskOutputs(db,{projectId,taskId,planVersion:task.active_plan_version});
+ return {...state,outputs:seq?outputs.filter(output=>output.runSequenceId===seq.id):outputs};
 }
 export function registerAssistantRunSequence(db,{projectId,taskId,requestId,sourceMessageId,
  expectedPlanVersion,expectedProjectRevision,actions}){

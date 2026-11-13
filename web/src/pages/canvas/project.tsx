@@ -117,6 +117,9 @@ import { startBackendComfyWorkflowRun } from "@/features/backend-sync/backend-co
 import {resolveComfyWorkflowSelection} from "@/features/comfy-workflow/comfy-workflow-selection";
 import {createSqliteComfyBridge} from "@/features/backend-sync/sqlite-comfy-bridge";
 import {startSqliteModelGeneration,openAiImageSize} from "@/features/backend-sync/sqlite-model-generation";
+import {submitAssistantTaskFrozenJob,type AssistantTaskJobContext} from "@/features/canvas-assistant/canvas-assistant-task-jobs";
+import type {BackendJobView} from "@/types/backend-contracts";
+type AssistantTaskJobSubmit=(payload:Record<string,unknown>)=>Promise<BackendJobView>;
 import {findSqliteModelRetrySource} from "@/features/backend-sync/sqlite-model-retry-source";
 import {freezeSqliteSkillCatalog,type FrozenSqliteSkillCatalog} from "@/features/backend-sync/frozen-sqlite-skills";
 import { assertTextPromptSize } from "@/features/backend-sync/text-model-limits";
@@ -2818,7 +2821,8 @@ function AtelierCanvasPage() {
     }, []);
 
     const handleGenerateNode = useCallback(
-        async (nodeId: string, mode: CanvasNodeGenerationMode, prompt: string, retryConfig?: typeof defaultConfig) => {
+        async (nodeId: string, mode: CanvasNodeGenerationMode, prompt: string, retryConfig?: typeof defaultConfig,
+            taskSubmit?:AssistantTaskJobSubmit) => {
             const sourceNode = nodesRef.current.find((node) => node.id === nodeId);
             const generationConfig = retryConfig ?? buildGenerationConfig(effectiveConfig, sourceNode, mode);
             const promptText = mode === "text" ? extractSkillMentions(prompt).text : prompt;
@@ -2845,16 +2849,18 @@ function AtelierCanvasPage() {
                     const job=await startBackendComfyWorkflowRun({bridge,projectId,workflowNode:sourceNode,...snapshot,
                         template,instanceId:mediaPreset.instanceId||globalComfyInstanceId,outputPortIds:outputs,
                         mediaSlots:mediaPreset.slots,prompt:comfyPrompt,mediaBinding:mediaPreset,workflowMode:mode,
-                        beforeSubmit:()=>assertCanvasSubmissionActive(projectId,submissionToken)});
+                        beforeSubmit:()=>assertCanvasSubmissionActive(projectId,submissionToken),
+                        ...(taskSubmit?{submitFrozenJob:taskSubmit}:{})});
                     sqliteGenerationJobsRef.current.set(nodeId,job.id);setRunningNodeId(nodeId);
                     trackCanvasTextJob(projectId,nodeId,job.id,job.status,submissionToken,mode);
                     message.info("ComfyUI 媒体任务已提交："+job.id);
                     monitorSqliteJobRef.current(job.id,true);
-                    if(canvasSubmissionStopped(projectId,submissionToken)){
+                    if(!taskSubmit&&canvasSubmissionStopped(projectId,submissionToken)){
                         await waitForCanvasNodeCancellation(projectId,nodeId);
                         await stopConfigGeneration(nodeId,job.id);
                     }
-                    return {jobId:job.id};                }catch(error){const detail=error instanceof Error?error.message:String(error);
+                    return {jobId:job.id};                }catch(error){if(taskSubmit)throw error;
+                    const detail=error instanceof Error?error.message:String(error);
                     if(detail!=="canvas_submission_stopped")message.error(detail);}
                 finally{sqliteModelSubmitLocksRef.current.delete(submissionKey);
                     finishCanvasTextSubmission(projectId,nodeId,submissionToken);}
@@ -2983,6 +2989,7 @@ function AtelierCanvasPage() {
                     }
                     const job=await startSqliteModelGeneration({
                         beforeSubmit:()=>assertCanvasSubmissionActive(projectId,textSubmissionToken),
+                        ...(taskSubmit?{submitFrozenJob:taskSubmit}:{}),
                         projectId,sourceNodeId:nodeId,
                         nodes:[...nodesRef.current],connections:[...connectionsRef.current],
                         channelId:selectedChannel.id,channelBaseUrl:selectedChannel.baseUrl,
@@ -3017,12 +3024,13 @@ function AtelierCanvasPage() {
                     if(textSubmissionToken)
                         trackCanvasTextJob(projectId,nodeId,job.id,job.status,textSubmissionToken,kind);
                     monitorSqliteJobRef.current(job.id,true);
-                    if(canvasSubmissionStopped(projectId,textSubmissionToken)){
+                    if(!taskSubmit&&canvasSubmissionStopped(projectId,textSubmissionToken)){
                         await waitForCanvasNodeCancellation(projectId,nodeId);
                         await stopConfigGeneration(nodeId,job.id);
                     }
                     return {jobId:job.id};                }catch(error){
                     const detail=error instanceof Error?error.message:String(error);
+                    if(taskSubmit)throw error;
                     if(detail==="canvas_submission_stopped")return;
                     if(detail.includes("backend_prior_job_not_terminal")){
                         message.warning("同一节点存在尚未结束的模型任务。已打开任务历史，请先核对原任务，必要时人工确认风险后结束等待。");
@@ -3464,7 +3472,7 @@ function AtelierCanvasPage() {
     // A synchronous per-node lock covers template lookup, staging and the HTTP request.
 
     // One SQLite JobCoordinator path for toolbar and inspector. No V2 fallback.
-    const executeComfyWorkflow=useCallback(async(nodeId:string):Promise<ComfyRunState>=>{
+    const executeComfyWorkflow=useCallback(async(nodeId:string,taskSubmit?:AssistantTaskJobSubmit):Promise<ComfyRunState>=>{
         const key=projectId+":"+nodeId;
         if(comfyExecuteLocksRef.current.has(key))
             throw new Error("该工作流正在提交，请勿重复点击");
@@ -3496,7 +3504,8 @@ function AtelierCanvasPage() {
             });
             const job=await startBackendComfyWorkflowRun({
                 bridge,projectId,workflowNode,...snapshot,template,
-                instanceId:globalComfyInstanceId,outputPortIds:outputs.map(port=>port.id)
+                instanceId:globalComfyInstanceId,outputPortIds:outputs.map(port=>port.id),
+                ...(taskSubmit?{submitFrozenJob:taskSubmit}:{})
             });
             if(activeProjectIdRef.current===projectId&&pageMountedRef.current){
                 setCanvasComfyExecution(projectId,nodeId,{runId:job.id,status:job.status,startedAt:job.createdAt,previewEnabled:Boolean(template.previewBinding)});
@@ -3549,7 +3558,8 @@ function AtelierCanvasPage() {
 
     // Reuse the node's durable generation paths; AI only orchestrates existing UI commands.
     const executeAssistantNodeActions=useCallback(async(
-        raw:unknown,refs:ReadonlyMap<string,string>,signal:AbortSignal
+        raw:unknown,refs:ReadonlyMap<string,string>,signal:AbortSignal,
+        taskContext?:AssistantTaskJobContext
     ):Promise<{submitted:number;jobIds:string[]}>=>{
         if(!projectLoaded||activeProjectIdRef.current!==projectId||!pageMountedRef.current)
             throw Error("当前画布已切换或尚未加载，未执行生成");
@@ -3557,6 +3567,8 @@ function AtelierCanvasPage() {
         const actions=raw.filter((action):action is AssistantExecutionAction=>
             action?.type==="run_node"||action?.type==="run_workflow");
         const planned=planAssistantNodeRuns(nodesRef.current,actions,refs);
+        if(taskContext&&planned.length!==1)
+            throw Error("Task 本轮仅支持冻结一个生成 Step；多个生成目标请分轮提交，不会绕过 Task 直接运行");
         const keys=planned.map(plan=>projectId+":"+plan.nodeId);
         if(keys.some(key=>assistantExecuteLocksRef.current.has(key))||
             planned.some(plan=>getCanvasTextExecution(plan.nodeId)||
@@ -3568,7 +3580,7 @@ function AtelierCanvasPage() {
         keys.forEach(key=>assistantExecuteLocksRef.current.add(key));
         const jobIds:string[]=[];
         try{
-            for(const plan of planned){
+            for(const [index,plan] of planned.entries()){
                 if(signal.aborted||activeProjectIdRef.current!==projectId||!pageMountedRef.current)
                     throw Error("已停止后续生成请求");
                 if(getCanvasTextExecution(plan.nodeId))
@@ -3579,18 +3591,23 @@ function AtelierCanvasPage() {
                 } as AssistantExecutionAction]);
                 if(current[0]?.prompt!==plan.prompt)
                     throw Error("节点提示词在生成前已变更，请重新发送指令");
+                const taskSubmit:AssistantTaskJobSubmit|undefined=taskContext?
+                    payload=>submitAssistantTaskFrozenJob({
+                        projectId,context:taskContext,actionIndex:index,payload,signal
+                    }):undefined;
                 let jobId:string;
                 if(plan.kind==="workflow"){
-                    const job=await executeComfyWorkflow(plan.nodeId);
+                    const job=await executeComfyWorkflow(plan.nodeId,taskSubmit);
                     if(!job.runId)throw Error("工作流未返回任务 ID");
                     jobId=job.runId;
                 }else{
-                    const job=await handleGenerateNode(plan.nodeId,plan.mode!,plan.prompt!);
+                    const job=await handleGenerateNode(plan.nodeId,plan.mode!,plan.prompt!,undefined,taskSubmit);
                     if(!job?.jobId)throw Error("模型任务未成功提交，请查看节点错误和任务历史");
                     jobId=job.jobId;
                 }
                 jobIds.push(jobId);
                 if(signal.aborted){
+                    if(taskContext)throw Error("Task Job 已持久入队："+jobId+"；停止聊天不会自动取消该任务，请在任务历史查看");
                     if(plan.kind==="workflow")await cancelComfyWorkflow(plan.nodeId);
                     else await stopConfigGeneration(plan.nodeId,jobId);
                     throw Error("生成提交后收到停止请求，已尝试停止对应后端任务");

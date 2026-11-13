@@ -26,6 +26,7 @@ export type BackendComfyWorkflowArgs={
  mediaBinding?:NonNullable<CanvasNodeData["metadata"]>["comfyMediaPreset"];
  workflowMode?:"image"|"video"|"audio";
  beforeSubmit?:()=>void;
+ submitFrozenJob?:(payload:Record<string,unknown>)=>Promise<BackendJobView>;
  readBlob?:(storageKey:string)=>Promise<Blob|null>;
  getBlob?:(url:string)=>Promise<Blob|null>;
  newKey?:()=>string;
@@ -159,7 +160,7 @@ export async function startBackendComfyWorkflowRun(args:BackendComfyWorkflowArgs
  args.beforeSubmit?.();
  // Lost HTTP replies are reconciled via the SQLite job snapshot; browser
  // storage must never retain a replayable frozen request payload.
- const result=await bridge.submitFrozenJob(payload); return result;
+ const result=await (args.submitFrozenJob??bridge.submitFrozenJob)(payload); return result;
 }
 
 function mediaOverrides(_template:ComfyWorkflowTemplate,binding:NonNullable<CanvasNodeData["metadata"]>["comfyMediaPreset"],prompt:string):Record<string,unknown>{

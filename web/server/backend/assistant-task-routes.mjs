@@ -96,7 +96,8 @@ export function registerAssistantTaskRoutes(app,db,{skillRegistry,blobStore}={})
   planAssistantCanvasStep(db,{projectId:req.params.id,taskId:req.params.taskId,...req.body})));
  // Local Job queue creation, Attempt and Step are one transaction.
  // No provider request is performed in these routes.
- app.post(base+"/:taskId/external-jobs",{schema:{params:taskParams,body:externalJobBody}},(req,reply)=>result(reply,
+ app.post(base+"/:taskId/external-jobs",{bodyLimit:600*1024,
+  schema:{params:taskParams,body:externalJobBody}},(req,reply)=>result(reply,
   planAssistantExternalJobStep(db,{projectId:req.params.id,taskId:req.params.taskId,...req.body})));
  app.post(base+"/:taskId/skill-steps",{
   bodyLimit:64*1024,schema:{params:taskParams,body:skillPlanBody}

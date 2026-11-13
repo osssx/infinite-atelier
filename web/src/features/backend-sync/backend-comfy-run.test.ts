@@ -76,6 +76,38 @@ describe("backend save fence + frozen Comfy submission",()=>{
 
   expect(bridge.submitFrozenJob).toHaveBeenCalledTimes(1);
  });
+ it("P2c freezes complete Comfy request, but submits exclusively through Task callback",async()=>{
+  const events:string[]=[];
+  const bridge={
+   state:{status:"connected"},
+   assertNoActiveJob:vi.fn(async()=>{}),
+   assertComfyReady:vi.fn(async()=>{}),
+   saveProjectNow:vi.fn(async()=>{events.push("save");return {projectId:"p1",
+    revision:9,sourceNodeFingerprint:"pinned-source"};}),
+   uploadFrozenBlob:vi.fn(async()=>{throw Error("unexpected asset")}),
+   submitFrozenJob:vi.fn(async()=>{throw Error("unsafe legacy Job POST");})
+  };
+  const callback=vi.fn(async(payload:Record<string,unknown>)=>{
+   events.push("task");
+   expect(payload).toMatchObject({
+    projectId:"p1",targetNodeId:"wf-1",expectedProjectRevision:9,
+    sourceNodeFingerprint:"pinned-source",executionMode:"poll",
+    snapshot:{adapterKind:"comfy",instanceId:"comfy-local",
+     comfyTemplate:{id:template.id,revision:template.revision},
+     comfyRequest:{schemaVersion:2,idempotencyKey:"browser-stage-only",
+      nodes:[{id:"wf-1",templateId:template.id,templateRevision:template.revision}],
+      rootOutputs:[{nodeId:"wf-1",portId:"image"}]}}});
+   return expectedJob;
+  });
+  const response=await startBackendComfyWorkflowRun({
+   bridge,projectId:"p1",workflowNode:workflow,nodes:[workflow],connections:[],
+   template,instanceId:"comfy-local",outputPortIds:["image"],
+   newKey:()=>"browser-stage-only",submitFrozenJob:callback
+  });
+  expect(response.id).toBe("new-job");
+  expect(events).toEqual(["save","task"]);
+  expect(bridge.submitFrozenJob).not.toHaveBeenCalled();
+ });
  it("P2.6 AI workflow input override and typed canvas link reach the actual frozen Comfy request",async()=>{
   registerCanvasPortResolver("comfy:workflow",node=>node.metadata?.comfyPorts??[]);
   try{

@@ -29,7 +29,7 @@ function normalizeGeminiEndpoint(value:string){
  */
 export async function startSqliteModelGeneration({
  projectId,sourceNodeId,nodes,connections,channelId,channelBaseUrl,provider="openai",task,
- skillAuthorizationId,referenceImages=[],maskImage,beforeSubmit,
+ skillAuthorizationId,referenceImages=[],maskImage,beforeSubmit,submitFrozenJob,
  api=canvasApi,bridge=createSqliteComfyBridge({projectId,
   getLocalGraph:()=>({nodes:[...nodes],connections:[...connections]})})
 }:{
@@ -44,6 +44,7 @@ export async function startSqliteModelGeneration({
   operation?:"edit";images?:FrozenModelImage[];mask?:FrozenModelImage;
   messages?:FrozenTextTurn[];stream?:boolean;skills?:{blobId:string};script?:string;writeBack?:boolean};
  beforeSubmit?:()=>void;
+ submitFrozenJob?:(payload:Record<string,unknown>)=>Promise<BackendJobView>;
  skillAuthorizationId?:string;
  referenceImages?:readonly ReferenceImage[];maskImage?:ReferenceImage;
  api?:typeof canvasApi;bridge?:ReturnType<typeof createSqliteComfyBridge>;
@@ -113,7 +114,7 @@ export async function startSqliteModelGeneration({
  const fence=await bridge.saveProjectNow(frozen,sourceNodeId);
  const idempotencyKey=crypto.randomUUID();
  beforeSubmit?.();
- return api<BackendJobView>("/api/v1/jobs","POST",{
+ const payload={
   ...(skillAuthorizationId?{skillAuthorizationId}:{}),
   projectId,targetNodeId:sourceNodeId,
   expectedProjectRevision:fence.revision,sourceNodeFingerprint:fence.sourceNodeFingerprint,
@@ -124,7 +125,8 @@ export async function startSqliteModelGeneration({
     ...(images.length?{images}:{}),
     ...(images.length&&task.kind==="image"?{operation:"edit"}:{}),
     ...(mask?{mask}:{})}}
- });
+ };
+ return submitFrozenJob?submitFrozenJob(payload):api<BackendJobView>("/api/v1/jobs","POST",payload);
 }
 export function openAiImageSize(value:string):"auto"|"1024x1024"|"1536x1024"|"1024x1536"{
  if(["1024x1024","1536x1024","1024x1536"].includes(value))

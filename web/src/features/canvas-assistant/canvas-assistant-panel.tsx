@@ -13,6 +13,7 @@ import {parseAssistantCanvasActions,isDangerousAssistantAction,dangerousAssistan
 import {buildCanvasAssistantTurns} from "./canvas-assistant-history";
 import {useCanvasAssistantTasks} from "./canvas-assistant-task-state";
 import {planAndExecuteAssistantCanvasActions,planAndRunAssistantSkillProposal} from "./canvas-assistant-task-execution";
+import type {AssistantTaskJobContext,AssistantTaskFrozenJob} from "./canvas-assistant-task-jobs";
 import {CanvasPromptChipInput} from "@/components/canvas/canvas-prompt-chip-input";
 import {canvasResourceReferenceToken,type CanvasResourceReference} from "@/lib/canvas/canvas-resource-references";
 import {collectAssistantImageMentions} from "./canvas-assistant-visual-mentions";
@@ -39,7 +40,8 @@ type Props={
    getResourceReferences?:()=>CanvasResourceReference[];
    getWorkflowTemplates:(ids:string[],signal:AbortSignal)=>Promise<{context:string;templates:Map<string,ComfyWorkflowTemplate>}>;
    onApplyActions:(actions:unknown,stage:AssistantCanvasStage,refs?:ReadonlyMap<string,string>,workflowTemplates?:ReadonlyMap<string,ComfyWorkflowTemplate>)=>{applied:number;refs:Map<string,string>};
-   onRunActions:(actions:unknown,refs:ReadonlyMap<string,string>,signal:AbortSignal)=>Promise<{submitted:number;jobIds:string[]}>;   config:AiConfig;};const now=()=>new Date().toISOString();
+   onRunActions:(actions:unknown,refs:ReadonlyMap<string,string>,signal:AbortSignal,
+    taskContext?:AssistantTaskJobContext)=>Promise<{submitted:number;jobIds:string[]}>;   config:AiConfig;};const now=()=>new Date().toISOString();
 const append=(list:CanvasAssistantSession[],id:string,message:CanvasAssistantMessage)=>{
  const stamp=now();
  const existing=list.find(session=>session.id===id);
@@ -203,6 +205,43 @@ function completedSkillRunId(message:CanvasAssistantMessage):string|null{
  return message.text.match(/运行 ID：([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i)?.[1]??null;
 }
 /** UI messages update only on send/terminal, not on every canvas pointer event. */
+
+/** Task confirmation is a cost boundary, not a cosmetic canvas edit approval.
+ * The full frozen request remains inspectable from the persisted Task Step.
+ */
+function confirmAssistantTaskJob(step:AssistantTaskFrozenJob,payload:Record<string,unknown>,
+ signal:AbortSignal,themeName:CanvasColorTheme):Promise<boolean>{
+ return new Promise(resolve=>{
+  if(signal.aborted){resolve(false);return;}
+  const snapshot=payload.snapshot as Record<string,unknown>;
+  const task=snapshot.task as Record<string,unknown>|undefined;
+  const template=snapshot.comfyTemplate as Record<string,unknown>|undefined;
+  const description=snapshot.adapterKind==="comfy"?
+   "ComfyUI · "+String(template?.name??template?.id??"工作流")+" · "+
+    String(template?.revision??"未指定版本"):
+   "模型 "+String(task?.model??"未指定")+" · "+String(task?.kind??"生成");
+  let done=false,dialog:ReturnType<typeof Modal.confirm>|undefined;
+  const finish=(accepted:boolean)=>{
+   if(done)return;done=true;
+   signal.removeEventListener("abort",onAbort);
+   resolve(accepted);
+  };
+  const onAbort=()=>{dialog?.destroy();finish(false);};
+  dialog=Modal.confirm({
+   ...canvasAssistantConfirmTheme(themeName),
+   title:"确认 Task 生成并可能产生费用",
+   icon:<AlertCircle size={19} className="canvas-assistant-confirm-icon"/>,
+   content:"已冻结并保存生成步骤："+step.stepId+
+    "。目标节点："+String(payload.targetNodeId)+
+    "；"+description+"。确认后由后端 JobCoordinator 入队，可能产生模型/GPU 费用。"+
+    "冻结的完整参数可在 Task 步骤中查看；取消不会提交 Job。",
+   okText:"批准并入队（可能计费）",okType:"danger",cancelText:"取消",
+   onOk:()=>finish(true),onCancel:()=>finish(false)
+  });
+  signal.addEventListener("abort",onAbort,{once:true});
+  if(signal.aborted)onAbort();
+ });
+}
 export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessions,setSessions,activeChatId,setActiveChatId,selectedNodes,getContext,getResourceReferences,getWorkflowTemplates,onApplyActions,onRunActions,getCanvasCenter,config}:Props){
   const themeName=useThemeStore(state=>state.theme);
   const theme=canvasThemes[themeName];
@@ -442,19 +481,35 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
        const actions=parseAssistantCanvasActions(response.actions??[]);
        if(!actions.length)notes.push("本轮没有执行任何画布操作，画布保持不变。");
        if(actions.length){
-        if(linkedTaskId){
-         const result=await planAndExecuteAssistantCanvasActions({
-          projectId,taskId:linkedTaskId,messageId:user.id,actions,
-          center:getCanvasCenter?.()??{x:0,y:0},signal:controller.signal,
-          confirm:async()=>confirmDangerousActions(
-           "Task 将持久提交 "+actions.length+" 项画布操作，审批绑定冻结摘要。请核对：\n"+
-           JSON.stringify(actions,null,2).slice(0,3200)+
-           (JSON.stringify(actions).length>3200?"\n[较长操作内容已截断，请在 Task 步骤详情中检查完整操作]":""),
-           controller.signal,themeName)
-         });
-         notes.push("Task 画布事务已提交 "+result.applied+" 项操作；修订版本 "+result.revision+"；步骤 "+result.stepId+"。");
-        }else{
-        const templates=new Map(workflowInfo.templates);
+         if(linkedTaskId){
+          const runActions=actions.filter(action=>action.type==="run_node"||action.type==="run_workflow");
+          const graphActions=actions.filter(action=>action.type!=="run_node"&&action.type!=="run_workflow");
+          // One Step remains active while its external Job is unresolved.
+          // Do not partially execute a multi-generation instruction.
+          if(runActions.length>1)throw Error("Task 同一轮暂不支持多个生成目标，请拆为独立轮次；没有提交 Job");
+          let taskRefs:ReadonlyMap<string,string>=new Map();
+          if(graphActions.length){
+           const result=await planAndExecuteAssistantCanvasActions({
+            projectId,taskId:linkedTaskId,messageId:user.id,actions:graphActions,
+            center:getCanvasCenter?.()??{x:0,y:0},signal:controller.signal,
+            confirm:async()=>confirmDangerousActions(
+             "Task 将持久提交 "+graphActions.length+" 项画布操作，审批绑定冻结摘要。请核对：\n"+
+             JSON.stringify(graphActions,null,2).slice(0,3200),
+             controller.signal,themeName)
+           });
+           taskRefs=result.refs;
+           notes.push("Task 画布事务已提交 "+result.applied+" 项操作；修订版本 "+result.revision+"；步骤 "+result.stepId+"。");
+          }
+          if(runActions.length){
+           const submitted=await onRunActions(runActions,taskRefs,controller.signal,{
+            taskId:linkedTaskId,messageId:user.id,
+            confirm:(step,payload)=>confirmAssistantTaskJob(step,payload,controller.signal,themeName)
+           });
+           if(submitted.submitted)notes.push("Task 已经原子入队 "+submitted.submitted+
+            " 项生成任务（Job ID："+submitted.jobIds.join("、")+"），可在任务状态与历史中对账。");
+          }
+         }else{
+         const templates=new Map(workflowInfo.templates);
          const workflowTargetIds=actions.flatMap(action=>
           action.type==="set_workflow_param"||action.type==="disconnect_workflow_port"?[action.nodeId]:
           action.type==="connect_workflow_port"||action.type==="replace_workflow_port"?[action.toNodeId]:[]);        const uncached=[...new Set(workflowTargetIds)].filter(target=>!templates.has(target));

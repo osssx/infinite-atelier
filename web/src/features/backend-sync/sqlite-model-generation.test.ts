@@ -51,6 +51,36 @@ describe("P4.4 ordinary SQLite model submit",()=>{
   expect(b.assertNoActiveJob).toHaveBeenCalledWith("text-1");
   expect(b.saveProjectNow).toHaveBeenCalledOnce();
  });
+ it("P2c Task callback receives the real frozen model snapshot, never a direct paid Job POST",async()=>{
+  const events:string[]=[];
+  const b=bridge();
+  b.saveProjectNow.mockImplementation(async()=>{
+   events.push("save");
+   return {projectId:"p1",revision:3,sourceNodeFingerprint:"fingerprint"};
+  });
+  const api=vi.fn(async(path:string)=>{
+   if(path==="/api/v1/execution/capabilities")return {autoDispatch:true,modelKinds:["image"]};
+   if(path==="/api/v1/channels/openai-channel")return {id:"openai-channel",provider:"openai",
+    hasKey:true,keyVersion:"v3-secret-reference"};
+   throw Error("unexpected direct HTTP "+path);
+  });
+  const submission=vi.fn(async(input:Record<string,unknown>)=>{
+   events.push("task");
+   expect(input).toMatchObject({
+    projectId:"p1",targetNodeId:"text-1",expectedProjectRevision:3,
+    sourceNodeFingerprint:"fingerprint",executionMode:"immediate",
+    snapshot:{adapterKind:"model",channelId:"openai-channel",
+     secretVersionRef:"v3-secret-reference",
+     task:{kind:"image",model:"gpt-image-2",prompt:"A fox"}}});
+   expect(JSON.stringify(input)).not.toContain("apiKey");
+   return fakeJob;
+  });
+  await expect(startSqliteModelGeneration({projectId:"p1",sourceNodeId:"text-1",nodes,connections,
+   channelId:"openai-channel",task:{kind:"image",model:"gpt-image-2",prompt:"A fox"},
+   bridge:b,api:api as unknown as typeof canvasApi,submitFrozenJob:submission})).resolves.toEqual(fakeJob);
+  expect(events).toEqual(["save","task"]);
+  expect(api.mock.calls.some(call=>call[0]==="/api/v1/jobs")).toBe(false);
+ });
  it("freezes arbitrary user-configured compatible endpoint without a server whitelist",async()=>{
   const calls:string[]=[];
   const api=vi.fn(async(path:string,method="GET",payload?:unknown)=>{

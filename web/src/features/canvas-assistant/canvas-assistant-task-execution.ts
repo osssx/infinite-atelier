@@ -57,7 +57,7 @@ export async function planAndExecuteAssistantCanvasActions({
 }:{
  projectId:string;taskId:string;messageId:string;actions:unknown[];
  center:{x:number;y:number};signal:AbortSignal;confirm:(step:FrozenCanvasTaskStep)=>Promise<boolean>;
-}):Promise<{applied:number;stepId:string;revision:number}>{
+}):Promise<{applied:number;stepId:string;revision:number;refs:Map<string,string>}>{
  requestError(signal);
  let committed:CanvasTaskCommit|null=null;
  let plan:FrozenCanvasTaskStep|null=null;
@@ -86,7 +86,8 @@ export async function planAndExecuteAssistantCanvasActions({
   return committed.project;
  });
  return {applied:(committed as CanvasTaskCommit|null)?.receipt.applied??actions.length,
-  stepId:(plan as FrozenCanvasTaskStep|null)?.stepId??"",revision:remote.revision};
+  stepId:(plan as FrozenCanvasTaskStep|null)?.stepId??"",revision:remote.revision,
+  refs:new Map(Object.entries((committed as CanvasTaskCommit|null)?.receipt.refs.nodes??{}))};
 }
 export type FrozenSkillTaskProposal={skill_id:string;version:string;script_path?:string;entry_id?:string;
  runtime?:string;args:string[];input_files:Record<string,string>;output_files:string[]};

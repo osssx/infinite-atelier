@@ -88,6 +88,55 @@ test("P2a approval and one local enqueue transaction bind Job, Attempt and Step"
  assert.throws(()=>enqueue(ctx,step,{requestId:"enqueue-"+step.stepId,actionDigest:"f".repeat(64)}),
   {code:"assistant_task_command_conflict"});
 });
+
+test("P2c Comfy Step enqueue atomically binds inner request key to the immutable Attempt",t=>{
+ const ctx=setup(t),snapshot={adapterKind:"comfy",instanceId:"comfy-local",
+  comfyRequest:{schemaVersion:2,projectId:"p",instanceId:"comfy-local",
+   idempotencyKey:"provisional-browser-uuid",nodes:[{id:"source",templateId:"demo",templateRevision:"rev"}],
+   rootOutputs:[{nodeId:"source",portId:"out"}],externalInputs:[],edges:[],runOptions:{}},
+  comfyTemplate:{id:"demo",revision:"rev",apiGraph:{"1":{class_type:"Image",inputs:{seed:3}}},
+   ports:[{id:"out",direction:"source",valueKind:"IMAGE"}]}};
+ const planned=planAssistantExternalJobStep(ctx.db,{projectId:"p",taskId:ctx.taskId,
+  requestId:"comfy-p2c-plan",kind:"comfy_workflow",expectedPlanVersion:1,expectedProjectRevision:1,
+  job:{targetNodeId:"source",sourceNodeFingerprint:fingerprintSource(doc,"source"),
+   executionMode:"poll",snapshot}});
+ assert.equal(count(ctx,"jobs"),0);
+ const frozen=ctx.db.prepare("SELECT action_json,action_digest FROM assistant_task_steps WHERE id=?").get(planned.stepId);
+ assert.equal(JSON.parse(frozen.action_json).job.snapshot.comfyRequest.idempotencyKey,"provisional-browser-uuid");
+ approve(ctx,planned);
+ const queued=enqueue(ctx,planned);
+ const record=ctx.db.prepare("SELECT idempotency_key,snapshot_json FROM jobs WHERE id=?").get(queued.jobId);
+ const submitted=JSON.parse(record.snapshot_json);
+ assert.equal(submitted.comfyRequest.idempotencyKey,record.idempotency_key);
+ assert.notEqual(record.idempotency_key,"provisional-browser-uuid");
+ assert.equal(submitted.comfyRequest.nodes[0].templateRevision,"rev");
+ assert.equal(ctx.db.prepare("SELECT action_digest FROM assistant_task_steps WHERE id=?").get(planned.stepId).action_digest,
+  frozen.action_digest);
+ assert.equal(enqueue(ctx,planned,{requestId:"another-click"}).jobId,queued.jobId);
+ assert.equal(count(ctx,"jobs"),1);assert.equal(count(ctx,"assistant_task_attempts"),1);
+ const attempt=ctx.db.prepare("SELECT execution_key,frozen_snapshot_json FROM assistant_task_attempts").get();
+ assert.equal(attempt.execution_key,record.idempotency_key);
+ assert.equal(JSON.parse(attempt.frozen_snapshot_json).job.snapshot.comfyRequest.idempotencyKey,record.idempotency_key);
+});
+test("P2c large Comfy frozen payload survives planning, approval and atomic enqueue",t=>{
+ const ctx=setup(t),bigTemplate={id:"long-workflow",revision:"rev-large",
+  name:"历史大工作流",apiGraph:{"1":{class_type:"Prompt",inputs:{text:"故事".repeat(26000)}}},
+  ports:[{id:"result",direction:"source",valueKind:"STRING"}]};
+ const planResult=planAssistantExternalJobStep(ctx.db,{projectId:"p",taskId:ctx.taskId,
+  requestId:"large-comfy-plan",kind:"comfy_workflow",expectedPlanVersion:1,expectedProjectRevision:1,
+  job:{targetNodeId:"source",sourceNodeFingerprint:fingerprintSource(doc,"source"),
+   executionMode:"poll",snapshot:{adapterKind:"comfy",instanceId:"comfy-local",
+    comfyRequest:{schemaVersion:2,projectId:"p",instanceId:"comfy-local",
+     idempotencyKey:"before-freeze",nodes:[{id:"source",templateId:"long-workflow",templateRevision:"rev-large"}]},
+    comfyTemplate:bigTemplate}}});
+ assert.equal(count(ctx,"jobs"),0);
+ approve(ctx,planResult);
+ const queued=enqueue(ctx,planResult);
+ assert.equal(count(ctx,"jobs"),1);
+ assert.equal(JSON.parse(ctx.db.prepare("SELECT snapshot_json FROM jobs").get().snapshot_json)
+  .comfyTemplate.apiGraph["1"].inputs.text,bigTemplate.apiGraph["1"].inputs.text);
+ assert.equal(enqueue(ctx,planResult).jobId,queued.jobId);
+});
 test("P2a fault after job insert before Task link rolls back all rows and leaves step re-executable",t=>{
  const ctx=setup(t),step=plan(ctx);approve(ctx,step);
  assert.throws(()=>enqueue(ctx,step,{beforeLink:()=>{throw Error("failure_after_job_insert")}}),/failure_after_job_insert/);

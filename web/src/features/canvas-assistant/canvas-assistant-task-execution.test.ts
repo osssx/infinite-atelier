@@ -47,7 +47,8 @@ describe("P1b browser Task canvas protocol",()=>{
    center:{x:12,y:34},signal:new AbortController().signal,
    confirm:async frozen=>{trace.push("user_confirm");expect(frozen).toEqual(step);return true;}
   });
-  expect(result).toEqual({applied:1,stepId:"step",revision:6});
+  expect(result).toEqual({applied:1,stepId:"step",revision:6,
+   refs:new Map([["chapter","task-node"]])});
   expect(trace).toEqual(["snapshot","plan","user_confirm","approval","execute"]);
   expect(mocks.barrier).toHaveBeenCalledTimes(1);
  });

@@ -66,7 +66,10 @@ function jobShape(kind,job,revision){
  const sanitized={targetNodeId:job.targetNodeId,sourceNodeFingerprint:job.sourceNodeFingerprint,
   executionMode:job.executionMode,snapshot:job.snapshot,
   ...(job.skillAuthorizationId?{skillAuthorizationId:job.skillAuthorizationId}:{})};
- freeze(sanitized,30000);
+ // Production Comfy graphs and frozen model prompt context frequently exceed 30KB.
+ // Keep a bounded, immutable Task snapshot rather than silently falling back
+ // to the ordinary paid /jobs route.
+ freeze(sanitized,512*1024);
  return {...sanitized,expectedProjectRevision:revision};
 }
 /** P2a: persist a plan without sending an upstream request or creating a Job.
@@ -98,7 +101,7 @@ export function planAssistantExternalJobStep(db,{projectId,taskId,requestId,kind
    projectGraphDigest:hash(JSON.parse(task.document_json)),
    requiresApproval:true,finalizeTask};
   db.prepare("INSERT INTO assistant_task_steps(id,task_id,plan_version,ordinal,kind,status,required,depends_on_json,action_json,action_digest,preconditions_json,created_at,updated_at) VALUES(?,?,?,?,?,'waiting_approval',1,?,?,?,?,?,?)")
-   .run(stepId,taskId,expectedPlanVersion,ordinal,kind,freeze(dependsOn),freeze(action),actionDigest,freeze(pre),at,at);
+   .run(stepId,taskId,expectedPlanVersion,ordinal,kind,freeze(dependsOn),freeze(action,550*1024),actionDigest,freeze(pre),at,at);
   db.prepare("UPDATE assistant_tasks SET status='waiting_approval',updated_at=? WHERE id=?").run(at,taskId);
   event(db,taskId,stepId,"external_step_frozen",{kind,actionDigest,
    targetNodeId:frozenJob.targetNodeId,adapterKind:frozenJob.snapshot.adapterKind},at);
@@ -146,8 +149,14 @@ export function enqueueAssistantExternalJobStep(db,{projectId,taskId,stepId,requ
   dependencyCheck(db,taskId,expectedPlanVersion,step.ordinal,JSON.parse(step.depends_on_json));
   const attemptNo=step.attempt_count+1,attemptId=randomUUID(),
    executionKey=hash({taskId,stepId,planVersion:expectedPlanVersion,attemptNo}),
-   job=action.job,at=Date.now();
-  // The Job idempotency key is derived from the immutable Attempt identity.
+   at=Date.now();
+  // Comfy requires the inner request key and the queued Job idempotency key
+  // to match. Replace the provisional browser key ONLY at atomic enqueue:
+  // the consent-bound frozen Step/action digest remains unchanged.
+  const job=action.kind==="comfy_workflow"?
+   {...action.job,snapshot:{...action.job.snapshot,
+    comfyRequest:{...action.job.snapshot.comfyRequest,idempotencyKey:executionKey}}}:
+   action.job;
   const requestFingerprint=hash({projectId,actionDigest,job});
   const queued=submitJobInTransaction(db,{principal:"local-owner",projectId,
    targetNodeId:job.targetNodeId,expectedProjectRevision:job.expectedProjectRevision,
@@ -159,7 +168,7 @@ export function enqueueAssistantExternalJobStep(db,{projectId,taskId,stepId,requ
    actionDigest,executionKey,requestFingerprint,job};
   db.prepare("INSERT INTO assistant_task_attempts(id,task_id,step_id,attempt_no,project_id,execution_key,action_digest,request_fingerprint,frozen_snapshot_json,status,external_kind,external_id,submit_marker,submitted_at,evidence_json,created_at) VALUES(?,?,?,?,?,?,?,?,?,'waiting_external','job',?,'job_queued_atomic',?,'{}',?)")
    .run(attemptId,taskId,stepId,attemptNo,projectId,executionKey,actionDigest,
-    requestFingerprint,freeze(frozen),queued.jobId,at,at);
+    requestFingerprint,freeze(frozen,550*1024),queued.jobId,at,at);
   db.prepare("UPDATE assistant_task_steps SET status='waiting_external',attempt_count=?,result_json=?,updated_at=? WHERE id=? AND status='ready'")
    .run(attemptNo,freeze({jobId:queued.jobId,jobStatus:"queued"}),at,stepId);
   db.prepare("UPDATE assistant_tasks SET status='waiting_external',active_step_id=?,updated_at=? WHERE id=?")

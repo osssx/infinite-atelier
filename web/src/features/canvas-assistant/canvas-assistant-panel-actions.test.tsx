@@ -20,7 +20,9 @@ const mocks=vi.hoisted(()=>({
  taskApi:vi.fn(),
  confirm:vi.fn(),
  ensure:vi.fn(async()=>{}),
- run:vi.fn(async(_actions:unknown,_refs:ReadonlyMap<string,string>,_signal:AbortSignal)=>({submitted:1,jobIds:["job-demo"]})), }));
+ run:vi.fn(async(_actions:unknown,_refs:ReadonlyMap<string,string>,_signal:AbortSignal,
+  _taskContext?:{taskId:string;messageId:string;confirm:(...args:any[])=>Promise<boolean>})=>
+   ({submitted:1,jobIds:["job-demo"]})), }));
 vi.mock("@/stores/use-theme-store",()=>({
  useThemeStore:(select:(value:{theme:"light"})=>unknown)=>select({theme:"light"})
 }));
@@ -137,6 +139,53 @@ describe("P0a task linkage in the existing assistant send flow",()=>{
  });
 });
 
+
+describe("P2c assistant Task routes node generation through frozen Job context",()=>{
+ const previous:CanvasAssistantSession[]=[{id:"chat-p2c",title:"生成任务",createdAt:"2026-11-13",
+  updatedAt:"2026-11-13",messages:[{id:"old-user",role:"user",text:"生成内容"}]}];
+ const installTask=()=>{
+  const task={id:"task-p2c",chatSessionId:"chat-p2c",rootMessageId:"old-user",
+   originalRequest:"生成内容",status:"planning",steps:[],recoveryMode:"guidance_only"};
+  mocks.taskApi.mockImplementation(async(url:string,method:string)=>{
+   if(method==="GET"&&url.includes("chatSessionId="))return {tasks:[]};
+   if(method==="GET"&&url.endsWith("/model-calls"))return {calls:[]};
+   if(method==="GET")return {task};
+   if(method==="POST")return {task};
+   return {tasks:[]};
+  });
+ };
+ const link=async(Harness:()=>React.ReactElement)=>{
+  await act(async()=>{root!.render(createElement(Harness));});
+  const remember=Array.from(container!.querySelectorAll("button")).find(btn=>btn.textContent==="记录为任务");
+  expect(remember).toBeTruthy();
+  await act(async()=>{remember!.click();await Promise.resolve();});
+  expect(container!.textContent).toContain("当前任务");
+ };
+ it("run_node receives task identity and approval callback; legacy direct submit never runs",async()=>{
+  const fixture=setup([{type:"run_node",nodeId:"text-existing",mode:"text"}],[],previous);
+  installTask();
+  await link(fixture.Harness);
+  await renderAndSend(fixture.Harness);
+  expect(mocks.run).toHaveBeenCalledTimes(1);
+  const args=mocks.run.mock.calls[0];
+  expect(args[0]).toEqual([{type:"run_node",nodeId:"text-existing",mode:"text"}]);
+  expect(args[3]).toMatchObject({taskId:"task-p2c"});
+  expect(args[3]?.messageId).toBeTruthy();
+  expect(typeof args[3]?.confirm).toBe("function");
+  expect(fixture.apply).not.toHaveBeenCalled();
+  expect(container!.textContent).toContain("Task 已经原子入队 1 项生成任务");
+ });
+ it("multiple run_node actions are blocked before any submission",async()=>{
+  const fixture=setup([{type:"run_node",nodeId:"text-existing",mode:"text"},
+   {type:"run_node",nodeId:"text-existing",mode:"text"}],[],previous);
+  installTask();
+  await link(fixture.Harness);
+  await renderAndSend(fixture.Harness);
+  expect(mocks.run).not.toHaveBeenCalled();
+  expect(fixture.apply).not.toHaveBeenCalled();
+  expect(container!.textContent).toContain("同一轮暂不支持多个生成目标");
+ });
+});
 describe("P2 assistant confirmation boundary",()=>{
  const actions=[
   {type:"create_text",ref:"newA",title:"新段落",content:"新正文"},

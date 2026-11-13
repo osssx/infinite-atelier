@@ -12,7 +12,7 @@ import type {AssistantContextResult,AssistantContextScope} from "./canvas-assist
 import {parseAssistantCanvasActions,isDangerousAssistantAction,dangerousAssistantActionSummary,type AssistantCanvasStage} from "./canvas-assistant-actions";
 import {buildCanvasAssistantTurns} from "./canvas-assistant-history";
 import {useCanvasAssistantTasks} from "./canvas-assistant-task-state";
-import {planAndExecuteAssistantCanvasActions} from "./canvas-assistant-task-execution";
+import {planAndExecuteAssistantCanvasActions,planAndRunAssistantSkillProposal} from "./canvas-assistant-task-execution";
 import {CanvasPromptChipInput} from "@/components/canvas/canvas-prompt-chip-input";
 import {canvasResourceReferenceToken,type CanvasResourceReference} from "@/lib/canvas/canvas-resource-references";
 import {collectAssistantImageMentions} from "./canvas-assistant-visual-mentions";
@@ -372,7 +372,6 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
      return true;
     };
     while(response.skillScriptProposal){
-     if(linkedTaskId)throw Error("已关联 Task 的 Skill 脚本需要 P2 可靠执行链路；本轮不会直接运行脚本。请取消 Task 关联后使用普通脚本功能，或等待 P2。");
      if(++scriptSteps>4)throw Error("单轮助手最多支持 4 次已确认的 Skill 脚本执行，请分轮继续。");
      const proposal=response.skillScriptProposal;
      if(selectedSkills&&response.appliedSkillIds?.length){
@@ -381,17 +380,25 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
        versionPins:Object.fromEntries(response.appliedSkillIds.map(skillId=>
         [skillId,selectedSkills.versionPins[skillId]]))};
      }
-     const allowed=await confirmSkillScriptExecution(proposal,controller.signal,themeName);
+     const run=linkedTaskId?
+      await planAndRunAssistantSkillProposal({
+       projectId,taskId:linkedTaskId,messageId:user.id,scriptIndex:scriptSteps,
+       proposal,signal:controller.signal,
+       confirm:()=>confirmSkillScriptExecution(proposal,controller.signal,themeName)
+      }):
+      await (async()=>{
+       const allowed=await confirmSkillScriptExecution(proposal,controller.signal,themeName);
+       if(controller.signal.aborted)throw new DOMException("Aborted","AbortError");
+       return allowed?canvasApi<AssistantSkillScriptRun>("/api/v1/skills/execute","POST",{
+        project_id:projectId,...proposal
+       },controller.signal):null;
+      })();
      if(controller.signal.aborted)throw new DOMException("Aborted","AbortError");
-     if(!allowed){
+     if(!run){
       setSessions(prev=>append(prev,id,{id:nanoid(),role:"assistant",
        text:"已取消待执行的 Skill 脚本。没有执行本次提案，也没有应用新的画布修改。"}));
       return;
-     }
-     const run=await canvasApi<AssistantSkillScriptRun>("/api/v1/skills/execute","POST",{
-      project_id:projectId,...proposal
-     },controller.signal);
-     if(controller.signal.aborted)throw new DOMException("Aborted","AbortError");
+     }     if(controller.signal.aborted)throw new DOMException("Aborted","AbortError");
      lastScriptFailed=run.status!=="completed"||
       run.exit_code!==undefined&&run.exit_code!==null&&run.exit_code!==0;
      latestCompletedRun=lastScriptFailed?undefined:run;
@@ -406,8 +413,8 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
        "已保存产物："+(run.artifacts??[]).map(item=>item.path).join("、")+"。")+
       failureDetails;
      // Persist the audit record before asking the model for the next step.
-     setSessions(prev=>append(prev,id,{id:nanoid(),role:"assistant",text:runNote,meta:"Skill 脚本运行记录"}));
-     // The latest audited result is the source of truth. Do not accumulate
+      setSessions(prev=>append(prev,id,{id:nanoid(),role:"assistant",text:runNote,meta:"Skill 脚本运行记录"}));
+      if(linkedTaskId&&lastScriptFailed)return; // Failed Task blocks unverified continuation.     // The latest audited result is the source of truth. Do not accumulate
      // old failure messages or truncated JSON on successive continuations.
      continuationText=assistantScriptContinuation(turns.at(-1)?.content??text,proposal,run);
      try{

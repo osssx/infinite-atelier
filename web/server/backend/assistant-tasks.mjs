@@ -34,14 +34,15 @@ const stepView=row=>({id:row.id,taskId:row.task_id,planVersion:row.plan_version,
  ordinal:row.ordinal,kind:row.kind,status:row.status,required:!!row.required,
  dependsOn:JSON.parse(row.depends_on_json),actionDigest:row.action_digest,
  receiptTrust:row.receipt_trust,result:JSON.parse(row.result_json),errorCode:row.error_code,
- ...(["canvas_mutation","model_job","comfy_workflow"].includes(row.kind)?{action:JSON.parse(row.action_json)}:{}),
+ ...(["canvas_mutation","model_job","comfy_workflow","skill_script"].includes(row.kind)?{action:JSON.parse(row.action_json)}:{}),
  approvalDecision:JSON.parse(row.approval_json).decision??null});
 function snapshot(db,projectId,taskId){
  const row=mustTask(db,projectId,taskId);
  const steps=db.prepare("SELECT * FROM assistant_task_steps WHERE task_id=? ORDER BY plan_version,ordinal").all(taskId).map(stepView);
  const lastSeq=db.prepare("SELECT COALESCE(MAX(seq),0) AS n FROM assistant_task_events WHERE task_id=?").get(taskId).n;
  const last=db.prepare("SELECT kind,payload_json FROM assistant_task_events WHERE task_id=? AND kind IN ('client_reported_error','client_reported_reply') ORDER BY seq DESC LIMIT 1").get(taskId);
- return {...view(row),recoveryMode:steps.some(step=>["model_job","comfy_workflow","materialize"].includes(step.kind))?
+ return {...view(row),recoveryMode:steps.some(step=>step.kind==="skill_script")?
+  "skill_audit":steps.some(step=>["model_job","comfy_workflow","materialize"].includes(step.kind))?
   "job_observation":steps.some(step=>step.kind==="canvas_mutation"&&
   Array.isArray(step.action?.actions))?"canvas_atomic":"guidance_only",
   steps,lastSeq,lastError:last?.kind==="client_reported_error"?JSON.parse(last.payload_json).preview:null};

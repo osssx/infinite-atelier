@@ -88,3 +88,48 @@ export async function planAndExecuteAssistantCanvasActions({
  return {applied:(committed as CanvasTaskCommit|null)?.receipt.applied??actions.length,
   stepId:(plan as FrozenCanvasTaskStep|null)?.stepId??"",revision:remote.revision};
 }
+export type FrozenSkillTaskProposal={skill_id:string;version:string;script_path?:string;entry_id?:string;
+ runtime?:string;args:string[];input_files:Record<string,string>;output_files:string[]};
+export type TaskSkillScriptResult={run_id:string;status:string;exit_code?:number|null;
+ stdout?:string;stderr?:string;artifacts?:{path:string;mime:string;blob_id:string;byte_length?:number;content?:string}[];
+ log_blobs?:Record<string,string>};
+/** Freeze with canvas save barrier, then release it before the long script run. */
+export async function planAndRunAssistantSkillProposal({
+ projectId,taskId,messageId,scriptIndex,proposal,signal,confirm
+}:{projectId:string;taskId:string;messageId:string;scriptIndex:number;
+ proposal:FrozenSkillTaskProposal;signal:AbortSignal;
+ confirm:(proposal:FrozenSkillTaskProposal)=>Promise<boolean>}):Promise<TaskSkillScriptResult|null>{
+ requestError(signal);
+ let plan:{stepId:string;planVersion:number;actionDigest:string}|null=null;
+ await commitAssistantCanvasGraphWithSaveBarrier(projectId,async frozen=>{
+  requestError(signal);
+  const snapshot=await canvasApi<{task:{activePlanVersion:number}}>(base(projectId,taskId),"GET",undefined,signal);
+  plan=await canvasApi<{stepId:string;planVersion:number;actionDigest:string}>(
+   base(projectId,taskId)+"/skill-steps","POST",{
+    requestId:messageId+"-skill-"+scriptIndex+"-plan",
+    expectedPlanVersion:snapshot.task.activePlanVersion,expectedProjectRevision:frozen.expectedRevision,
+    proposal,dependsOn:[]
+   },signal);
+  return {id:projectId,revision:frozen.expectedRevision,document:frozen.document};
+ });
+ if(!plan)throw Error("assistant_skill_task_plan_missing");
+ const frozen=plan as {stepId:string;planVersion:number;actionDigest:string};
+ requestError(signal);
+ const accepted=await confirm(proposal);
+ requestError(signal);
+ const endpoint=path(projectId,taskId,frozen.stepId);
+ await canvasApi(endpoint+"/approval","POST",{
+  requestId:messageId+"-skill-"+scriptIndex+"-decision",
+  expectedPlanVersion:frozen.planVersion,actionDigest:frozen.actionDigest,
+  decision:accepted?"approve":"reject"
+ },signal);
+ if(!accepted)return null;
+ requestError(signal);
+ const response=await canvasApi<TaskSkillScriptResult&{runId?:string}>(endpoint+"/run-skill","POST",{
+  requestId:messageId+"-skill-"+scriptIndex+"-run",
+  expectedPlanVersion:frozen.planVersion,actionDigest:frozen.actionDigest
+ },signal);
+ if(!response.run_id)throw Error("Task Skill 已存在运行记录 "+(response.runId??"未知")+
+  "；本次没有重复执行。请在任务记录中核对后继续。");
+ return response;
+}

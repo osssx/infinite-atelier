@@ -1,5 +1,5 @@
 import{JOB_STATUSES,EXECUTION_MODES,ARTIFACT_KINDS}from"./contracts.mjs";
-export const SCHEMA_VERSION=25;
+export const SCHEMA_VERSION=26;
 const quoted=x=>x.map(s=>"'"+s+"'").join(",");
 export const INITIAL_SCHEMA_SQL=`
 CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY,applied_at INTEGER NOT NULL);
@@ -514,6 +514,29 @@ CREATE TABLE IF NOT EXISTS assistant_model_calls(
 CREATE INDEX IF NOT EXISTS ix_assistant_model_calls_task ON assistant_model_calls(task_id,started_at,id);
 `;
 
+/** P2b: Task owns frozen CAS refs before Job or Skill Run exists. */
+export const ASSISTANT_TASK_BLOB_REFERENCE_SCHEMA_SQL=`
+CREATE TRIGGER IF NOT EXISTS blob_ref_dirty_assistant_tasks_insert AFTER INSERT ON assistant_tasks
+ BEGIN UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1; END;
+CREATE TRIGGER IF NOT EXISTS blob_ref_dirty_assistant_tasks_update AFTER UPDATE ON assistant_tasks
+ BEGIN UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1; END;
+CREATE TRIGGER IF NOT EXISTS blob_ref_dirty_assistant_tasks_delete AFTER DELETE ON assistant_tasks
+ BEGIN UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1; END;
+CREATE TRIGGER IF NOT EXISTS blob_ref_dirty_assistant_task_steps_insert AFTER INSERT ON assistant_task_steps
+ BEGIN UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1; END;
+CREATE TRIGGER IF NOT EXISTS blob_ref_dirty_assistant_task_steps_update AFTER UPDATE ON assistant_task_steps
+ BEGIN UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1; END;
+CREATE TRIGGER IF NOT EXISTS blob_ref_dirty_assistant_task_steps_delete AFTER DELETE ON assistant_task_steps
+ BEGIN UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1; END;
+CREATE TRIGGER IF NOT EXISTS blob_ref_dirty_assistant_task_attempts_insert AFTER INSERT ON assistant_task_attempts
+ BEGIN UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1; END;
+CREATE TRIGGER IF NOT EXISTS blob_ref_dirty_assistant_task_attempts_update AFTER UPDATE ON assistant_task_attempts
+ BEGIN UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1; END;
+CREATE TRIGGER IF NOT EXISTS blob_ref_dirty_assistant_task_attempts_delete AFTER DELETE ON assistant_task_attempts
+ BEGIN UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1; END;
+UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1;
+`;
+
 export function initializeSchema(db){
  db.exec("PRAGMA foreign_keys=ON;PRAGMA busy_timeout=5000;BEGIN IMMEDIATE");
  try{
@@ -566,6 +589,7 @@ export function initializeSchema(db){
   if(version<23)db.exec(COMFY_VERSION_NOTES_SCHEMA_SQL);
   if(version<24)db.exec(ASSISTANT_TASK_SCHEMA_SQL);
   if(version<25)db.exec(ASSISTANT_MODEL_CALL_SCHEMA_SQL);
+  if(version<26)db.exec(ASSISTANT_TASK_BLOB_REFERENCE_SCHEMA_SQL);
   if(version<SCHEMA_VERSION)db.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)").run(SCHEMA_VERSION,Date.now());
   db.exec("COMMIT");
  }catch(e){db.exec("ROLLBACK");throw e}

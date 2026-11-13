@@ -227,6 +227,16 @@ export function createComfyRegistry(db,{workflowsDir}={}){
    }
    for(const identity of references)get(identity).tasks.push({taskId:row.id});
   }
+  // Protect Task-frozen Comfy versions even before a Job has been queued.
+  for(const row of db.prepare("SELECT s.id,s.task_id,s.action_json FROM assistant_task_steps s JOIN assistant_tasks t ON t.id=s.task_id JOIN projects p ON p.id=t.project_id AND p.deleted_at IS NULL WHERE s.kind IN ('model_job','comfy_workflow') AND s.superseded_at IS NULL AND s.status NOT IN ('blocked','failed','skipped') AND t.cancel_requested_at IS NULL AND t.status NOT IN ('cancelled','completed','failed')").iterate()){
+   const action=JSON.parse(row.action_json),snapshot=action?.job?.snapshot,references=new Set();
+   if(snapshot?.comfyTemplate?.id&&snapshot.comfyTemplate?.revision)
+    references.add(key(snapshot.comfyTemplate.id,snapshot.comfyTemplate.revision));
+   for(const node of snapshot?.comfyRequest?.nodes??[]){
+    if(node.templateId&&node.templateRevision)references.add(key(node.templateId,node.templateRevision));
+   }
+   for(const identity of references)get(identity).tasks.push({taskId:row.task_id,stepId:row.id});
+  }
   const setting=db.prepare("SELECT value_json FROM ui_settings WHERE name='model_config'").get();
   if(setting){
    const config=JSON.parse(setting.value_json);

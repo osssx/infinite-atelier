@@ -4,6 +4,7 @@ import {listAssistantModelCalls} from "./assistant-model-calls.mjs";
 import {decideAssistantTaskStep} from "./assistant-task-step-gate.mjs";
 import {planAssistantCanvasStep,executeAssistantCanvasStep} from "./assistant-task-canvas-executor.mjs";
 import {planAssistantExternalJobStep,enqueueAssistantExternalJobStep,reconcileAssistantExternalTask} from "./assistant-task-external-jobs.mjs";
+import {planAssistantSkillStep,executeAssistantSkillStep} from "./assistant-task-skills.mjs";
 
 const id={type:"string",pattern:"^[A-Za-z0-9_-]{1,128}$"};
 const policy={type:"object",additionalProperties:false,required:["includeContext","scope","includedIds"],
@@ -54,8 +55,25 @@ const externalJobBody={type:"object",additionalProperties:false,
  snapshot:{type:"object"},skillAuthorizationId:{type:"string",pattern:"^[0-9a-f-]{36}$"}}},
  dependsOn:{type:"array",maxItems:20,uniqueItems:true,items:id},
  finalizeTask:{type:"boolean"}}};
-/** P1b: canvas mutation is backend-executed; external Skill/Comfy remain blocked. */
-export function registerAssistantTaskRoutes(app,db){
+const skillProposal={type:"object",additionalProperties:false,
+ required:["skill_id","version"],properties:{
+ skill_id:{type:"string",pattern:"^[a-z0-9]+(?:-[a-z0-9]+)*$",maxLength:80},
+ version:{type:"string",pattern:"^[a-f0-9]{12}$"},
+ script_path:{type:"string",minLength:1,maxLength:240},
+ entry_id:{type:"string",minLength:1,maxLength:64},
+ runtime:{type:"string",minLength:1,maxLength:260},
+ args:{type:"array",maxItems:64,items:{type:"string",maxLength:8192}},
+ input_files:{type:"object",maxProperties:32,additionalProperties:{type:"string",maxLength:262144}},
+ output_files:{type:"array",maxItems:32,items:{type:"string",maxLength:240}}
+ }};
+const skillPlanBody={type:"object",additionalProperties:false,
+ required:["requestId","expectedPlanVersion","expectedProjectRevision","proposal"],properties:{
+ requestId:id,expectedPlanVersion:{type:"integer",minimum:1},
+ expectedProjectRevision:{type:"integer",minimum:1},proposal:skillProposal,
+ dependsOn:{type:"array",uniqueItems:true,maxItems:20,items:id},finalizeTask:{type:"boolean"}
+ }};
+/** P2b: Task Skill execution is reserved before child process spawn. */
+export function registerAssistantTaskRoutes(app,db,{skillRegistry,blobStore}={}){
  const result=(reply,value)=>{reply.header("Cache-Control","no-store");return value};
  app.post(base,{schema:{params:projectParams,body:taskPostBody}},(req,reply)=>{
   const value=createAssistantTask(db,{projectId:req.params.id,...req.body});
@@ -80,6 +98,10 @@ export function registerAssistantTaskRoutes(app,db){
  // No provider request is performed in these routes.
  app.post(base+"/:taskId/external-jobs",{schema:{params:taskParams,body:externalJobBody}},(req,reply)=>result(reply,
   planAssistantExternalJobStep(db,{projectId:req.params.id,taskId:req.params.taskId,...req.body})));
+ app.post(base+"/:taskId/skill-steps",{
+  bodyLimit:64*1024,schema:{params:taskParams,body:skillPlanBody}
+ },(req,reply)=>result(reply,planAssistantSkillStep(db,{projectId:req.params.id,
+  taskId:req.params.taskId,...req.body,skillRegistry})));
  app.post(base+"/:taskId/reconcile",{schema:{params:taskParams,body:{type:"object",additionalProperties:false}}},(req,reply)=>result(reply,
   reconcileAssistantExternalTask(db,{projectId:req.params.id,taskId:req.params.taskId})));
  // Approval binds the frozen Step; execute never accepts new action JSON.
@@ -93,6 +115,18 @@ export function registerAssistantTaskRoutes(app,db){
  app.post(base+"/:taskId/steps/:stepId/enqueue",{schema:{params:stepParams,body:executeBody}},(req,reply)=>result(reply,
   enqueueAssistantExternalJobStep(db,{projectId:req.params.id,taskId:req.params.taskId,
    stepId:req.params.stepId,...req.body})));
+ app.post(base+"/:taskId/steps/:stepId/run-skill",{
+  bodyLimit:16*1024,schema:{params:stepParams,body:executeBody}
+ },async(req,reply)=>{
+  reply.header("Cache-Control","no-store");
+  const controller=new AbortController(),onAbort=()=>controller.abort(),
+   onClose=()=>{if(!reply.raw.writableEnded)controller.abort()};
+  req.raw.once("aborted",onAbort);reply.raw.once("close",onClose);
+  try{return await executeAssistantSkillStep({db,skillRegistry,blobStore,
+   projectId:req.params.id,taskId:req.params.taskId,stepId:req.params.stepId,
+   ...req.body,signal:controller.signal});}
+  finally{req.raw.removeListener("aborted",onAbort);reply.raw.removeListener("close",onClose)}
+ });
  app.get(base+"/:taskId/model-calls",{schema:{params:taskParams}},(req,reply)=>result(reply,
   listAssistantModelCalls(db,{projectId:req.params.id,taskId:req.params.taskId,
    limit:Number(req.query?.limit??100)})));

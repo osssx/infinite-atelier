@@ -89,3 +89,73 @@ describe("P1b browser Task canvas protocol",()=>{
   expect(mocks.barrier).not.toHaveBeenCalled();
  });
 });
+describe("P2b browser Task Skill protocol",()=>{
+ const proposal={skill_id:"fixture-skill",version:"abcdef123456",script_path:"scripts/render.js",
+  args:["draft.txt"],input_files:{"draft.txt":"hello"},output_files:["output.txt"]};
+ it("freezes Skill under canvas barrier but confirms and runs only after barrier releases",async()=>{
+  const trace:string[]=[];
+  let barrierHeld=false;
+  mocks.barrier.mockImplementation(async(_projectId,callback)=>{
+   barrierHeld=true;
+   try{return await callback({expectedRevision:5,document:{nodes:[],connections:[]}})}
+   finally{barrierHeld=false}
+  });
+  mocks.api.mockImplementation(async(url:string,method:string,payload?:Record<string,unknown>)=>{
+   if(method==="GET"){trace.push("snapshot");return {task:{activePlanVersion:2}};}
+   if(url.endsWith("/skill-steps")){
+    trace.push("plan");expect(payload?.expectedProjectRevision).toBe(5);
+    expect(payload?.proposal).toEqual(proposal);
+    return {stepId:"skill-step",planVersion:2,actionDigest:"b".repeat(64)};
+   }
+   if(url.endsWith("/approval")){
+    trace.push("approval");expect(payload?.decision).toBe("approve");
+    return {status:"ready"};
+   }
+   if(url.endsWith("/run-skill")){
+    trace.push("run");expect(barrierHeld).toBe(false);
+    expect(payload).toEqual({requestId:"m-skill-1-run",
+     expectedPlanVersion:2,actionDigest:"b".repeat(64)});
+    return {run_id:"trusted-run-1",status:"completed",exit_code:0,artifacts:[]};
+   }
+   throw Error("unexpected "+method+" "+url);
+  });
+  const {planAndRunAssistantSkillProposal}=await import("./canvas-assistant-task-execution");
+  const result=await planAndRunAssistantSkillProposal({
+   projectId:"p",taskId:"task",messageId:"m",scriptIndex:1,proposal,
+   signal:new AbortController().signal,confirm:async()=>{
+    trace.push("consent");expect(barrierHeld).toBe(false);return true;
+   }
+  });
+  expect(result?.run_id).toBe("trusted-run-1");
+  expect(trace).toEqual(["snapshot","plan","consent","approval","run"]);
+ });
+ it("rejection stores frozen approval decision and never submits a Skill",async()=>{
+  mocks.api.mockImplementation(async(url:string)=>{
+   if(url.endsWith("/task"))return {task:{activePlanVersion:2}};
+   if(url.endsWith("/skill-steps"))return {stepId:"skill-step",planVersion:2,actionDigest:"b".repeat(64)};
+   if(url.endsWith("/approval"))return {status:"blocked"};
+   throw Error("should_not_launch");
+  });
+  const {planAndRunAssistantSkillProposal}=await import("./canvas-assistant-task-execution");
+  const result=await planAndRunAssistantSkillProposal({
+   projectId:"p",taskId:"task",messageId:"m",scriptIndex:1,proposal,
+   signal:new AbortController().signal,confirm:async()=>false});
+  expect(result).toBeNull();
+  expect(mocks.api.mock.calls.some(call=>String(call[0]).endsWith("/run-skill"))).toBe(false);
+ });
+ it("HTTP replay returns original Run reference, not a new verified completion",async()=>{
+  mocks.api.mockImplementation(async(url:string)=>{
+   if(url.endsWith("/task"))return {task:{activePlanVersion:2}};
+   if(url.endsWith("/skill-steps"))return {stepId:"skill-step",planVersion:2,actionDigest:"b".repeat(64)};
+   if(url.endsWith("/approval"))return {status:"ready"};
+   if(url.endsWith("/run-skill"))return {runId:"original",status:"needs_reconcile",shouldLaunch:false};
+   throw Error("unexpected");
+  });
+  const {planAndRunAssistantSkillProposal}=await import("./canvas-assistant-task-execution");
+  await expect(planAndRunAssistantSkillProposal({
+   projectId:"p",taskId:"task",messageId:"m",scriptIndex:1,proposal,
+   signal:new AbortController().signal,confirm:async()=>true
+  })).rejects.toThrow("本次没有重复执行");
+  expect(mocks.api.mock.calls.filter(call=>String(call[0]).endsWith("/run-skill"))).toHaveLength(1);
+ });
+});

@@ -211,7 +211,7 @@ export function executeAssistantCanvasStep(db,{projectId,taskId,stepId,
 export function recoverAssistantCanvasTasksAtStartup(db){
  return writeTransaction(db,()=>{
   let released=0,unknown=0;
-  const rows=db.prepare("SELECT s.*,t.project_id,t.active_plan_version,t.cancel_requested_at,t.read_only,t.status AS task_status FROM assistant_task_steps s JOIN assistant_tasks t ON t.id=s.task_id WHERE s.status IN ('running','submitting')").all();
+  const rows=db.prepare("SELECT s.*,t.project_id,t.active_plan_version,t.cancel_requested_at,t.read_only,t.status AS task_status FROM assistant_task_steps s JOIN assistant_tasks t ON t.id=s.task_id WHERE s.kind='canvas_mutation' AND s.status IN ('running','submitting')").all();
   for(const step of rows){
    const attempt=db.prepare("SELECT * FROM assistant_task_attempts WHERE step_id=? ORDER BY attempt_no DESC LIMIT 1").get(step.id);
    if(!attempt)continue;

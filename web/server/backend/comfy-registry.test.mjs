@@ -32,7 +32,7 @@ test("v22 upgrade preserves existing versions, notes survive reopen and repeated
  const {createComfyRegistry}=await import("./comfy-registry.mjs");
  const registry=createComfyRegistry(db),original=template(7,"upgrade");registry.installMany([original]);
  db.exec("DROP TABLE comfy_template_version_notes; DELETE FROM schema_migrations WHERE version>22; INSERT OR IGNORE INTO schema_migrations VALUES(22,1)");
- initializeSchema(db);assert.equal(db.prepare("SELECT MAX(version) v FROM schema_migrations").get().v,23);
+ initializeSchema(db);assert.equal(db.prepare("SELECT MAX(version) v FROM schema_migrations").get().v,SCHEMA_VERSION);
  assert.deepEqual(registry.getVersionNote(original.id,original.revision),{note:""});
  registry.setVersionNote(original.id,original.revision,"保留配置");
  const before=db.prepare("SELECT created_at FROM comfy_workflow_versions").get().created_at;
@@ -69,6 +69,25 @@ test("history protects task snapshots, project nodes and defaults; batch deletio
  assert.equal((await call("GET",root+"/workflows/"+id+"/graphs/"+hash)).json().available,true);
 });
 
+
+test("P2b frozen, unsubmitted Task Job protects its Comfy template revision",async t=>{
+ const {db,call}=fixture(t),id="p2b-protected",v=template(13,id);
+ assert.equal((await call("POST","/api/v1/comfy/templates",{template:v})).statusCode,201);
+ createProject(db,{id:"task-project",document:{nodes:[],connections:[]}});
+ const {createAssistantTask,addAssistantTaskStep}=await import("./assistant-tasks.mjs");
+ const task=createAssistantTask(db,{projectId:"task-project",requestId:"task-init",
+  chatSessionId:"chat",rootMessageId:"root",originalRequest:"请生成工作流图"}).task;
+ addAssistantTaskStep(db,{projectId:"task-project",taskId:task.id,
+  expectedPlanVersion:1,kind:"comfy_workflow",ordinal:0,
+  action:{job:{snapshot:{adapterKind:"comfy",comfyTemplate:{id,revision:v.revision}}}}});
+ const url="/api/v1/comfy/templates/"+id+"/"+v.revision;
+ const locked=await call("GET",url+"/references");
+ assert.equal(locked.statusCode,200);
+ assert.ok(locked.json().references.tasks.some(ref=>ref.taskId===task.id));
+ assert.equal((await call("DELETE",url)).statusCode,409);
+ db.prepare("UPDATE assistant_task_steps SET status='blocked' WHERE task_id=?").run(task.id);
+ assert.equal((await call("DELETE",url)).statusCode,200);
+});
 test("complete restore preserves binding settings, preset identity and existing nodes, rejects other workflows",async t=>{
  const {db,call}=fixture(t),root="/api/v1/comfy",old=template(1,"restore-full"),next=template(2,"restore-full");
  old.ports.unshift({id:"seed",label:"Seed",direction:"target",valueKind:"INT",defaultValue:1,choices:[{label:"One",value:1}],inputBinding:{mode:"literal",targets:[{nodeId:"1",inputName:"seed"}]}});

@@ -1,6 +1,6 @@
 import Fastify from "fastify";
 import {randomUUID} from "node:crypto";
-import {unzipSync} from "fflate";
+import {resolveAuthorizedSkillScript} from "./skill-script-source.mjs";
 import {createProject,getProject,saveSingleUserCanvas,deleteProject,listProjectSummaries,projectEventCursor} from "./projects.mjs";
 import {getCanvasViewport,putCanvasViewport,getCanvasChats,putCanvasChats} from "./canvas-state.mjs";
 import {registerAssistantTaskRoutes} from "./assistant-task-routes.mjs";
@@ -121,6 +121,7 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
     "assistant_canvas_connection_invalid","assistant_canvas_target_invalid",
     "assistant_step_already_planned",
     "assistant_external_invalid","assistant_external_evidence_missing",
+    "assistant_skill_invalid","assistant_skill_evidence_missing","assistant_skill_outcome_unknown",
     "assistant_external_submission_unknown","assistant_external_artifacts_missing",
     "assistant_external_materialization_blocked","assistant_external_materialization_unknown",
    "chats_revision_conflict","viewport_revision_conflict",
@@ -487,37 +488,15 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
   output_files:{type:"array",maxItems:32,items:{type:"string",maxLength:240}}
  },additionalProperties:false}}},async(req,reply)=>{
   reply.header("Cache-Control","no-store");
-  const {skill_id,version,project_id,script_path,entry_id}=req.body;
-  if(Boolean(script_path)===Boolean(entry_id))throw Object.assign(Error("skill_script_arguments_invalid"),{code:"skill_script_arguments_invalid",statusCode:400});
-  const project=db.prepare("SELECT deleted_at FROM projects WHERE id=?").get(project_id);
-  if(!project||project.deleted_at!==null)throw Object.assign(Error("skill_project_not_found"),{code:"skill_project_not_found",statusCode:404});
-  const catalog=skillRegistry?skillRegistry.list():listSkillRegistry(db),selected=catalog.skills.find(item=>item.id===skill_id);
-  if(!selected||!selected.enabled||!selected.versions.includes(version)||
-    selected.scope?.type==="project"&&selected.scope.projectId!==project_id)
-   throw Object.assign(Error("skill_authorization_changed"),{code:"skill_authorization_changed",statusCode:409});
-  const loaded=skillRegistry?skillRegistry.get(skill_id,version):getSkillRegistryPackage(db,skill_id,version);
-  const pkg=loaded.package;if(pkg.manifest.hash.slice(0,12)!==version||!pkg.sourceArchiveBase64)
-   throw Object.assign(Error("skill_package_integrity_failed"),{code:"skill_package_integrity_failed",statusCode:422});
-  let packed;try{packed=unzipSync(Buffer.from(pkg.sourceArchiveBase64,"base64"))}catch{throw Object.assign(Error("skill_package_integrity_failed"),{code:"skill_package_integrity_failed",statusCode:422})}
-  const packageFiles={},scripts={};
-  for(const [path,bytes] of Object.entries(packed)){
-   packageFiles[path]=Buffer.from(bytes).toString("base64");
-   if(path.startsWith("scripts/"))try{scripts[path]=new TextDecoder("utf-8",{fatal:true}).decode(bytes)}catch{/* Non-text package data is never executable. */}
-  }
-  let selectedPath=script_path;
-  if(entry_id){
-   let entry={};if(packageFiles["execution.json"]){try{entry=JSON.parse(Buffer.from(packageFiles["execution.json"],"base64").toString("utf8")).entries??{}}catch{throw Object.assign(Error("model_skill_execution_manifest_invalid"),{code:"model_skill_execution_manifest_invalid",statusCode:422})}}
-   selectedPath=entry[entry_id];
-  }
-  if(typeof selectedPath!=="string"||!Object.hasOwn(scripts,selectedPath))
-   throw Object.assign(Error("skill_script_not_authorized"),{code:"skill_script_not_authorized",statusCode:403});
-  const runId=randomUUID(),now=Date.now();
+   const {skill_id,version,project_id}=req.body;
+   const {scriptPath:selectedPath,source,packageFiles}=resolveAuthorizedSkillScript(
+    db,skillRegistry,req.body);  const runId=randomUUID(),now=Date.now();
   db.prepare("INSERT INTO skill_script_runs(id,project_id,skill_id,version,status,result_json,blob_refs_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)")
    .run(runId,project_id,skill_id,version,"started","{}","[]",now,now);
   const controller=new AbortController(),onAbort=()=>controller.abort(),onClose=()=>{if(!reply.raw.writableEnded)controller.abort()};
   req.raw.once("aborted",onAbort);reply.raw.once("close",onClose);
   try{
-   const result=await runSkillScript({skillId:skill_id,version,scriptPath:selectedPath,source:scripts[selectedPath],packageFiles,
+   const result=await runSkillScript({skillId:skill_id,version,scriptPath:selectedPath,source,packageFiles,
     args:req.body.args??[],inputFiles:req.body.input_files??{},outputFiles:req.body.output_files??[],runtime:req.body.runtime,blobStore,signal:controller.signal});
    const refs=[...Object.values(result.log_blobs??{}),...(result.artifacts??[]).map(item=>item.blob_id)];
    db.prepare("UPDATE skill_script_runs SET status=?,result_json=?,blob_refs_json=?,updated_at=? WHERE id=?")
@@ -633,7 +612,7 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
  app.get("/api/v1/projects/:id/chats",{schema:{params:canvasParams}},req=>getCanvasChats(db,req.params.id));
  app.put("/api/v1/projects/:id/chats",{schema:{params:canvasParams,body:chatsBody}},req=>
   putCanvasChats(db,req.params.id,req.body));
- registerAssistantTaskRoutes(app,db);
+ registerAssistantTaskRoutes(app,db,{skillRegistry,blobStore});
    app.post("/api/v1/projects/:id/assistant/chat",{schema:{params:canvasParams,body:{type:"object",
      required:["channelId","provider","model","messages"],additionalProperties:false,properties:{
        channelId:idSchema,provider:{type:"string",enum:["openai","openai_compatible","google_gemini"]},

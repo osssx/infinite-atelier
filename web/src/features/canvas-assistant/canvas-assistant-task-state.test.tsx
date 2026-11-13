@@ -92,6 +92,43 @@ describe("P2a Task external Job UI",()=>{
  });
 });
 
+
+describe("P2b Task Skill recovery UI",()=>{
+ it("shows original Run ID and cannot resubmit unknown Skill from a refresh",async()=>{
+  const step={id:"skill-step",kind:"skill_script",planVersion:1,
+   status:"waiting_approval",actionDigest:"e".repeat(64),receiptTrust:"none",
+   action:{skill_id:"fixture-skill",version:"abcdef123456",script_path:"scripts/render.js"},
+   result:{}};
+  let task={id:"task-skill",chatSessionId:"chat-a",rootMessageId:"original-user",
+   originalRequest:"执行 Skill",status:"waiting_approval",recoveryMode:"skill_audit",steps:[step]};
+  mocks.api.mockImplementation(async(url:string,method:string,payload?:Record<string,unknown>)=>{
+   if(method==="GET"&&url.includes("chatSessionId="))return {tasks:[task]};
+   if(method==="GET"&&url.endsWith("/model-calls"))return {calls:[]};
+   if(method==="GET")return {task};
+   if(method==="POST"&&url.endsWith("/approval")){
+    expect(payload?.actionDigest).toBe(step.actionDigest);
+    expect(payload?.decision).toBe("approve");
+    step.status="ready";return {status:"ready"};
+   }
+   if(method==="POST"&&url.endsWith("/run-skill")){
+    expect(payload).toEqual({requestId:"skill-step-skill-execute",
+     expectedPlanVersion:1,actionDigest:step.actionDigest});
+    step.status="needs_reconcile";step.result={runId:"original-run-1",status:"needs_reconcile"};
+    task={...task,status:"needs_reconcile"};return {runId:"original-run-1",
+     status:"needs_reconcile",shouldLaunch:false};
+   }
+   throw Error("unexpected "+method+" "+url);
+  });
+  await render();
+  expect(container!.textContent).toContain("批准并运行 Skill");
+  expect(mocks.api.mock.calls.some(c=>String(c[0]).endsWith("/run-skill"))).toBe(false);
+  await click("批准并运行 Skill");
+  expect(container!.textContent).toContain("Run ID：original-run-1");
+  expect(container!.textContent).toContain("上次执行结果不明");
+  expect(container!.textContent).not.toContain("运行已批准的 Skill");
+  expect(mocks.api.mock.calls.filter(c=>String(c[0]).endsWith("/run-skill"))).toHaveLength(1);
+ });
+});
 describe("P0a guidance-only task strip",()=>{
  it("creates from an existing user message, retains privacy scope, and does not execute tasks automatically",async()=>{
   await render();

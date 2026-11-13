@@ -87,6 +87,54 @@ test("references recorded by artifacts and Ark assets persist, malformed ledger 
  assert.throws(()=>gc.sweep({now:future}),/no such table/);
  assert.equal(existsSync(f.blobStore.pathFor(media.blobId)),true);
 });
+
+test("P2b GC retains CAS referenced solely by a frozen, unexecuted Task Step",async t=>{
+ const f=fixture(t),media=await f.blobStore.put([png],{mime:"image/png"});
+ createProject(f.db,{id:"task-resource",document:{nodes:[],connections:[]}});
+ const {createAssistantTask,addAssistantTaskStep}=await import("./assistant-tasks.mjs");
+ const task=createAssistantTask(f.db,{projectId:"task-resource",requestId:"create-resource-task",
+  chatSessionId:"chat",rootMessageId:"root",originalRequest:"处理冻结图像"}).task;
+ rebuildBlobReferenceLedger(f.db,{force:true});
+ assert.equal(blobReferenceLedgerStatus(f.db).dirty,false);
+ addAssistantTaskStep(f.db,{projectId:"task-resource",taskId:task.id,
+  expectedPlanVersion:1,kind:"skill_script",ordinal:0,
+  action:{reference:"/api/v1/blobs/"+media.blobId}});
+ assert.equal(blobReferenceLedgerStatus(f.db).dirty,true);
+ const gc=createBlobGarbageCollector({db:f.db,blobStore:f.blobStore}),future=Date.now()+9*86400000;
+ assert.equal(gc.sweep({now:future}).candidates.some(item=>item.id===media.blobId),false);
+ assert.equal(persistedBlobReferences(f.db).has(media.blobId),true);
+ assert.equal(gc.sweep({now:future,dryRun:false,confirmation:"DELETE_UNREFERENCED"}).deletedCount,0);
+ assert.equal(existsSync(f.blobStore.pathFor(media.blobId)),true);
+ f.db.exec("BEGIN IMMEDIATE");
+ try{f.db.prepare("UPDATE assistant_task_steps SET action_json='{}' WHERE task_id=?").run(task.id)}
+ finally{f.db.exec("ROLLBACK")}
+ assert.equal(blobReferenceLedgerStatus(f.db).dirty,false);
+ assert.ok(persistedBlobReferences(f.db).has(media.blobId));
+});
+
+test("P2b v25 to v26 upgrades Task-owned blob reference triggers without losing frozen Steps",t=>{
+ const f=fixture(t),blobId="c".repeat(64);
+ createProject(f.db,{id:"migration-task",document:{nodes:[],connections:[]}});
+ const taskId="migration-task-id",stepId="migration-step-id",at=Date.now();
+ f.db.prepare("INSERT INTO assistant_tasks(id,project_id,chat_session_id,root_message_id,original_request,goal_json,constraints_json,summary_json,context_policy_json,created_at,updated_at) VALUES(?,?,?,?,?,'{}','{}','{}','{}',?,?)")
+  .run(taskId,"migration-task","chat","root","冻结素材",at,at);
+ f.db.prepare("INSERT INTO assistant_task_steps(id,task_id,plan_version,ordinal,kind,action_json,action_digest,depends_on_json,created_at,updated_at) VALUES(?,?,1,0,'model_job',?,?, '[]',?,?)")
+  .run(stepId,taskId,JSON.stringify({assetId:blobId}),"x".repeat(64),at,at);
+ const triggers=f.db.prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'blob_ref_dirty_assistant_%'").all().map(row=>row.name);
+ for(const name of triggers)f.db.exec("DROP TRIGGER "+name);
+ f.db.prepare("DELETE FROM schema_migrations WHERE version>25").run();
+ f.db.prepare("INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(25,?)").run(Date.now());
+ rebuildBlobReferenceLedger(f.db,{force:true});
+ assert.equal(blobReferenceLedgerStatus(f.db).dirty,false);
+ initializeSchema(f.db);
+ assert.equal(f.db.prepare("SELECT MAX(version) AS n FROM schema_migrations").get().n,SCHEMA_VERSION);
+ assert.equal(blobReferenceLedgerStatus(f.db).dirty,true);
+ rebuildBlobReferenceLedger(f.db);
+ assert.equal(persistedBlobReferences(f.db).has(blobId),true);
+ f.db.prepare("UPDATE assistant_task_steps SET action_json='{}' WHERE id=?").run(stepId);
+ assert.equal(blobReferenceLedgerStatus(f.db).dirty,true);
+
+});
 test("content-addressed workflow graph references enter the ledger and dirty it transactionally",t=>{
  const f=fixture(t),blobId="b".repeat(64),graph={"1":{class_type:"Image",inputs:{seed:1,asset:"cas:"+blobId}}};
  const ports=[{id:"out",label:"Output",direction:"source",valueKind:"IMAGE",outputBinding:{nodeId:"1",outputIndex:0},capture:{kind:"none"}}];

@@ -7,16 +7,17 @@ import {executeFrozenAssistantCanvasTaskStep} from "./canvas-assistant-task-exec
 
 type Step={id:string;kind:string;planVersion:number;status:string;actionDigest:string;
  action?:{actions?:unknown[];center?:{x:number;y:number};job?:{targetNodeId:string;executionMode:string;snapshot:{adapterKind?:string}}};
- result?:{jobId?:string;jobStatus?:string;artifactIds?:string[];bindings?:{nodeId:string}[]};receiptTrust?:string};
+ result?:{jobId?:string;jobStatus?:string;artifactIds?:string[];bindings?:{nodeId:string}[];
+ runId?:string;status?:string;exitCode?:number|null;artifactCount?:number};receiptTrust?:string};
 type Task={id:string;chatSessionId:string;rootMessageId:string;originalRequest:string;
- status:string;recoveryMode:"guidance_only"|"canvas_atomic"|"job_observation";steps?:Step[];lastError?:string|null};
+ status:string;recoveryMode:"guidance_only"|"canvas_atomic"|"job_observation"|"skill_audit";steps?:Step[];lastError?:string|null};
 type Args={projectId:string;activeChatId:string|null;session?:CanvasAssistantSession;
  open:boolean;sending:boolean;includeContext:boolean;scope:AssistantContextScope;includedIds:string[];
  onDraft:(value:string)=>void};
 type TaskResponse={task:Task;existing?:boolean;executionStarted?:boolean};
 const taskStatusLabel:Record<string,string>={planning:"待规划",ready:"可继续",waiting_approval:"等待确认",running:"执行中",waiting_external:"等待外部",blocked:"已阻断",needs_reconcile:"需要对账",cancelling:"正在取消",failed:"失败",completed:"已完成",cancelled:"已结束记录"};
 
-/** P2a observes durable Job and materialization evidence; Skill remains P2b. */
+/** Task-associated Skill and Job runs are persisted before execution and observed by Run ID. */
 export function useCanvasAssistantTasks({
  projectId,activeChatId,session,open,sending,includeContext,scope,includedIds,onDraft
 }:Args){
@@ -168,6 +169,32 @@ export function useCanvasAssistantTasks({
  };
  const externalSteps=detail&&selected&&detail.id===selected.id?detail.steps?.filter(step=>
   ["model_job","comfy_workflow","materialize"].includes(step.kind))??[]:[];
+ const skillSteps=detail&&selected&&detail.id===selected.id?
+  detail.steps?.filter(step=>step.kind==="skill_script")??[]:[];
+ const resumeSkill=async(step:Step,decision?:"approve"|"reject")=>{
+  if(!selected||busy||sending)return;
+  setBusy(true);setError("");
+  const endpoint=path(selected.id)+"/steps/"+encodeURIComponent(step.id);
+  try{
+   if(decision)await canvasApi(endpoint+"/approval","POST",{
+    requestId:step.id+"-skill-"+decision,expectedPlanVersion:step.planVersion,
+    actionDigest:step.actionDigest,decision
+   });
+   if(decision!=="reject"){
+    if(step.status==="waiting_approval"&&decision!=="approve")throw Error("步骤尚未批准");
+    const run=await canvasApi<{run_id?:string;runId?:string;status:string;shouldLaunch?:boolean}>(
+     endpoint+"/run-skill","POST",{
+      requestId:step.id+"-skill-execute",expectedPlanVersion:step.planVersion,
+      actionDigest:step.actionDigest
+     });
+    if(run.shouldLaunch===false&&run.status!=="completed")
+     setError("原运行 "+(run.runId??"")+
+      " 尚未确认完成；本轮没有重新执行 Skill。请核对运行记录。");
+   }
+   await refreshTask(selected.id);
+  }catch(error){setError("Skill 已冻结；不会通过本次错误自动重新运行："+(error instanceof Error?error.message:"执行失败"));}
+  finally{setBusy(false);}
+ };
  const view=<section aria-label="任务状态" className="border-b px-3 py-2"
   style={{borderColor:"var(--assistant-border)",color:"var(--assistant-text)"}}>
   <div className="flex items-center gap-2">
@@ -186,7 +213,7 @@ export function useCanvasAssistantTasks({
    <div className="flex flex-wrap items-center gap-2">
     <span>状态：{taskStatusLabel[detail?.id===selected.id?detail.status:selected.status]??selected.status}</span>
     <span>步骤：{detail?.id===selected.id?detail.steps?.length??0:0}</span>
-    <span>{detail?.id===selected.id&&detail.recoveryMode==="job_observation"?"生成与落图分阶段对账":detail?.id===selected.id&&detail.recoveryMode==="canvas_atomic"?"画布操作有可信回执":"仅指导恢复"}</span>
+    <span>{detail?.id===selected.id&&detail.recoveryMode==="skill_audit"?"Skill 执行有可信 Run ID":detail?.id===selected.id&&detail.recoveryMode==="job_observation"?"生成与落图分阶段对账":detail?.id===selected.id&&detail.recoveryMode==="canvas_atomic"?"画布操作有可信回执":"仅指导恢复"}</span>
     {activeTask?<>
      {!["waiting_external","needs_reconcile","cancelling","waiting_approval","blocked"].includes(activeTask.status)?
       <button type="button" className="canvas-assistant-link" disabled={busy||sending}
@@ -242,6 +269,29 @@ export function useCanvasAssistantTasks({
        </>:null}
       </div>)}
      </div>:null}
+   {skillSteps.length?<div className="mt-2 text-[11px]">
+    {skillSteps.map(step=><div key={step.id} className="mt-2 rounded-md border p-2"
+     style={{borderColor:"var(--assistant-border)"}}>
+     <div>Skill 脚本 · {taskStatusLabel[step.status]??step.status}
+      {step.receiptTrust==="server_committed"?" · 可信回执":""}</div>
+     {step.result?.runId?<div className="break-all">Run ID：{step.result.runId}</div>:null}
+     {step.status==="needs_reconcile"?<div role="status">上次执行结果不明；不会自动再次运行脚本</div>:null}
+     {["waiting_approval","ready"].includes(step.status)?<>
+      <details className="mt-1"><summary className="cursor-pointer">检查冻结 Skill、输入与输出路径</summary>
+       <pre className="mt-1 max-h-36 overflow-auto whitespace-pre-wrap break-all">{JSON.stringify(step.action,null,2)}</pre>
+      </details>
+      <div className="mt-1 flex gap-3">
+       {step.status==="waiting_approval"?<>
+        <button type="button" className="canvas-assistant-link" disabled={busy||sending}
+         onClick={()=>void resumeSkill(step,"approve")}>批准并运行 Skill</button>
+        <button type="button" className="canvas-assistant-link" disabled={busy||sending}
+         onClick={()=>void resumeSkill(step,"reject")}>拒绝 Skill</button>
+       </>:<button type="button" className="canvas-assistant-link" disabled={busy||sending}
+        onClick={()=>void resumeSkill(step)}>运行已批准的 Skill</button>}
+      </div>
+     </>:null}
+    </div>)}
+   </div>:null}
   </div>:null}
 
    {selected?<div className="mt-1 text-[11px]" style={{color:"var(--assistant-muted)"}}>

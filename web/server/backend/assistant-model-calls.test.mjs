@@ -52,7 +52,7 @@ test("P0b task model calls persist before POST, replay same command, and only se
   calls++;body=JSON.parse(options.body);
   return answer("任务提示已收到");
  },{includeContext:true,scope:"selection",includedIds:["visible"]});
- assert.equal(SCHEMA_VERSION,25);
+ assert.ok(SCHEMA_VERSION>=25);
  const path=fx.base+"/assistant/chat",req=fx.payload();
  const first=await fx.call("POST",path,req);
  assert.equal(first.status,200,JSON.stringify(first.body));
@@ -259,10 +259,10 @@ test("P0b v24 to v25 migration preserves Task records and creates call audit tab
   initializeSchema(db);
   db.prepare("INSERT INTO projects(id,document_json,revision) VALUES('legacy','{}',5)").run();
   db.exec("DROP TABLE assistant_model_calls");
-  db.prepare("DELETE FROM schema_migrations WHERE version=25").run();
+  db.prepare("DELETE FROM schema_migrations WHERE version>24").run();
   db.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES(24,1)").run();
   initializeSchema(db);
-  assert.equal(db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v,25);
+  assert.equal(db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v,SCHEMA_VERSION);
   assert.ok(db.prepare("SELECT name FROM sqlite_master WHERE name='assistant_model_calls'").get());
   assert.equal(db.prepare("SELECT revision FROM projects WHERE id='legacy'").get().revision,5);
  }finally{db.close()}

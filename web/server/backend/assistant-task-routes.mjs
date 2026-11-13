@@ -1,7 +1,6 @@
 import {createAssistantTask,listAssistantTasks,getAssistantTask,appendAssistantTaskTurn,
  observeAssistantTask,guideAssistantTaskResume,cancelAssistantTask,listAssistantTaskEvents,
- linkAssistantTaskToChat} from "./assistant-tasks.mjs";
-import {listAssistantModelCalls} from "./assistant-model-calls.mjs";
+ linkAssistantTaskToChat,changeAssistantTaskSemantic} from "./assistant-tasks.mjs";import {listAssistantModelCalls} from "./assistant-model-calls.mjs";
 import {decideAssistantTaskStep} from "./assistant-task-step-gate.mjs";
 import {planAssistantCanvasStep,executeAssistantCanvasStep} from "./assistant-task-canvas-executor.mjs";
 import {planAssistantExternalJobStep,enqueueAssistantExternalJobStep,reconcileAssistantExternalTask} from "./assistant-task-external-jobs.mjs";
@@ -34,6 +33,12 @@ const taskPostBody={type:"object",required:["requestId","chatSessionId","rootMes
   originalRequest:{type:"string",minLength:1,maxLength:8000},contextPolicy:policy}};
 const turnBody={type:"object",required:["requestId","messageId","text"],additionalProperties:false,
  properties:{requestId:id,messageId:id,text:{type:"string",minLength:1,maxLength:8000},contextPolicy:policy}};
+const semanticBody={type:"object",additionalProperties:false,
+ required:["requestId","expectedRevision","operation","confirmed","contextPolicy"],
+ properties:{requestId:id,expectedRevision:{type:"integer",minimum:0},
+  operation:{type:"string",enum:["set_goal","clear_goal","add_constraint","add_decision","update_note","remove_note"]},
+  confirmed:{type:"boolean",const:true},
+  text:{type:"string",minLength:1,maxLength:600},noteId:id,contextPolicy:policy}};
 const observationBody={type:"object",required:["requestId","kind","preview"],additionalProperties:false,
  properties:{requestId:id,kind:{type:"string",enum:["reply","error"]},
  preview:{type:"string",minLength:1,maxLength:1800}}};
@@ -126,9 +131,12 @@ export function registerAssistantTaskRoutes(app,db,{skillRegistry,blobStore}={})
   inspectAssistantTaskRecovery(db,{projectId:req.params.id,taskId:req.params.taskId})));
  app.post(base+"/:taskId/replan",{schema:{params:taskParams,body:safeReplanBody}},(req,reply)=>result(reply,
   replanAssistantTaskSafely(db,{projectId:req.params.id,taskId:req.params.taskId,...req.body})));
- app.post(base+"/:taskId/turns",{schema:{params:taskParams,body:turnBody}},(req,reply)=>result(reply,
-  appendAssistantTaskTurn(db,{projectId:req.params.id,taskId:req.params.taskId,...req.body})));
- app.post(base+"/:taskId/observations",{schema:{params:taskParams,body:observationBody}},(req,reply)=>result(reply,
+  app.post(base+"/:taskId/turns",{schema:{params:taskParams,body:turnBody}},(req,reply)=>result(reply,
+   appendAssistantTaskTurn(db,{projectId:req.params.id,taskId:req.params.taskId,...req.body})));
+  // Explicit user action only; semantic edits never enqueue a Job.
+  app.post(base+"/:taskId/semantic",{schema:{params:taskParams,body:semanticBody}},
+   (req,reply)=>result(reply,changeAssistantTaskSemantic(db,{
+    projectId:req.params.id,taskId:req.params.taskId,...req.body}))); app.post(base+"/:taskId/observations",{schema:{params:taskParams,body:observationBody}},(req,reply)=>result(reply,
   observeAssistantTask(db,{projectId:req.params.id,taskId:req.params.taskId,...req.body})));
  app.post(base+"/:taskId/resume",{schema:{params:taskParams,body:requestBody}},(req,reply)=>result(reply,
   guideAssistantTaskResume(db,{projectId:req.params.id,taskId:req.params.taskId,...req.body})));

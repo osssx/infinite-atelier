@@ -109,6 +109,8 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
    "invalid_project_id","project_document_too_large","expected_revision_required","invalid_project_reference",
    "invalid_canvas_chats","invalid_canvas_viewport","canvas_chats_too_large",
     "assistant_task_invalid","assistant_task_not_found","assistant_task_not_editable","assistant_task_payload_too_large","assistant_task_command_conflict",
+     "assistant_task_semantic_invalid","assistant_task_semantic_sensitive_text",
+     "assistant_task_semantic_conflict","assistant_task_semantic_not_found","assistant_task_semantic_limit",
     "assistant_model_call_in_progress","assistant_model_call_unknown","assistant_model_call_not_active",
     "assistant_model_result_too_large","assistant_task_context_invalid","assistant_task_turn_not_found",
     "assistant_step_invalid","assistant_step_not_found","assistant_step_plan_conflict",

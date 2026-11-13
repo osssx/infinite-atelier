@@ -24,11 +24,18 @@ function mustTask(db,projectId,taskId){
  return row;
 }
 const linkedChatIds=(db,taskId)=>db.prepare("SELECT chat_session_id FROM assistant_task_chat_links WHERE task_id=? ORDER BY linked_at,chat_session_id").all(taskId).map(row=>row.chat_session_id);
+/** P3 semantic state contains explicit user-confirmed guidance, not evidence. */
+function semanticState(row){
+ const goal=JSON.parse(row.goal_json),constraints=JSON.parse(row.constraints_json);
+ const state=constraints.semantic;
+ return {revision:Number.isSafeInteger(state?.revision)?state.revision:0,
+  goal:goal.current??null,notes:Array.isArray(state?.notes)?state.notes:[]};
+}
 function view(db,row,facts=JSON.parse(row.summary_json)){
  return {id:row.id,projectId:row.project_id,chatSessionId:row.chat_session_id,
   chatSessionIds:[row.chat_session_id,...linkedChatIds(db,row.id).filter(id=>id!==row.chat_session_id)],rootMessageId:row.root_message_id,
  status:row.status,activePlanVersion:row.active_plan_version,activeStepId:row.active_step_id,
- originalRequest:row.original_request,goal:JSON.parse(row.goal_json),summary:facts,
+ originalRequest:row.original_request,goal:JSON.parse(row.goal_json),semantic:semanticState(row),summary:facts,
  contextPolicy:JSON.parse(row.context_policy_json),readOnly:!!row.read_only,
  cancelRequestedAt:row.cancel_requested_at,createdAt:row.created_at,updatedAt:row.updated_at,
  finishedAt:row.finished_at,recoveryMode:"guidance_only"};
@@ -95,6 +102,63 @@ export function createAssistantTask(db,{projectId,chatSessionId,rootMessageId,or
     json({description:originalRequest}),"{}","{}",json(contextPolicyValue),at,at);
   event(db,taskId,"task_created",{rootMessageId,mode:"guidance_only"},null,at);
   return {task:snapshot(db,projectId,taskId)};
+ });
+}
+/** Explicit user confirmation only. Neither a model tool proposal nor a
+ * persisted message may silently mutate task semantics or execution state.
+ */
+export function changeAssistantTaskSemantic(db,{projectId,taskId,requestId,expectedRevision,
+ operation,text:content,noteId,confirmed,contextPolicy}){
+ if(confirmed!==true||!Number.isSafeInteger(expectedRevision)||expectedRevision<0||
+  !["set_goal","clear_goal","add_constraint","add_decision","update_note","remove_note"].includes(operation))
+  throw fail("assistant_task_semantic_invalid");
+ const needsText=["set_goal","add_constraint","add_decision","update_note"].includes(operation);
+ if(needsText?!text(content,operation==="set_goal"?600:400):content!==undefined)
+  throw fail("assistant_task_semantic_invalid");
+ const needsId=["update_note","remove_note"].includes(operation);
+ if(needsId?!id(noteId):noteId!==undefined)throw fail("assistant_task_semantic_invalid");
+ if(contextPolicy===undefined)throw fail("assistant_task_semantic_invalid");
+ const disclosure=policy(contextPolicy),cleanText=needsText?content.trim():undefined;
+ if(cleanText){
+  if(/\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|authorization|password|secret)\s*[:=]\s*\S+/i.test(cleanText)||
+   /\b(?:sk-[A-Za-z0-9_-]{16,}|Bearer\s+[A-Za-z0-9_-]{16,})/i.test(cleanText))
+   throw fail("assistant_task_semantic_sensitive_text");
+  json({text:cleanText},1024);
+ }
+ return command(db,{projectId,requestId,kind:"semantic_change",payload:{taskId,expectedRevision,
+  operation,...(cleanText===undefined?{}:{text:cleanText}),
+  ...(noteId===undefined?{}:{noteId}),confirmed,contextPolicy:disclosure}},()=>{
+  const row=mustTask(db,projectId,taskId);
+  if(row.read_only||row.cancel_requested_at!==null||["completed","cancelled","cancelling"].includes(row.status))
+   throw fail("assistant_task_not_editable",409);
+  const current=semanticState(row);
+  if(current.revision!==expectedRevision)throw fail("assistant_task_semantic_conflict",409);
+  const goal=JSON.parse(row.goal_json),constraints=JSON.parse(row.constraints_json),
+   notes=current.notes.map(item=>({...item})),now=Date.now();
+  let changedId=null;
+  if(operation==="set_goal")goal.current={text:cleanText,provenance:"user_confirmed",
+   confirmedAt:now,contextPolicy:disclosure};
+  else if(operation==="clear_goal")delete goal.current;
+  else if(operation==="add_constraint"||operation==="add_decision"){
+   if(notes.length>=16)throw fail("assistant_task_semantic_limit",409);
+   changedId=randomUUID();
+   notes.push({id:changedId,kind:operation==="add_constraint"?"constraint":"decision",
+    text:cleanText,provenance:"user_confirmed",confirmedAt:now,contextPolicy:disclosure});
+  }else{
+   const at=notes.findIndex(item=>item.id===noteId);
+   if(at<0)throw fail("assistant_task_semantic_not_found",404);
+   changedId=noteId;
+   if(operation==="remove_note")notes.splice(at,1);
+   else notes[at]={...notes[at],text:cleanText,contextPolicy:disclosure,confirmedAt:now,
+    provenance:"user_confirmed"};
+  }
+  constraints.semantic={revision:current.revision+1,notes};
+  const frozenGoal=json(goal,8000),frozenConstraints=json(constraints,16000);
+  db.prepare("UPDATE assistant_tasks SET goal_json=?,constraints_json=?,updated_at=? WHERE id=? AND project_id=?")
+   .run(frozenGoal,frozenConstraints,now,taskId,projectId);
+  event(db,taskId,"semantic_user_confirmed",{revision:current.revision+1,operation,
+   noteId:changedId,contentDigest:cleanText?hash(cleanText):null,executionStarted:false},null,now);
+  return {task:snapshot(db,projectId,taskId),executionStarted:false};
  });
 }
 export function listAssistantTasks(db,{projectId,chatSessionId,limit=50,includeOther=false}){

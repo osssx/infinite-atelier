@@ -92,6 +92,72 @@ it("P3 Task panel displays server-derived turns and current-plan trusted progres
  expect(mocks.api.mock.calls.some(([,method])=>method==="POST")).toBe(false);
 });
 
+it("P3 semantic panel requires explicit confirmation and never invokes a Job",async()=>{
+ let task={id:"semantic-task",chatSessionId:"chat-a",chatSessionIds:["chat-a"],
+  rootMessageId:"original-user",originalRequest:"制作分镜",status:"planning",
+  activePlanVersion:1,recoveryMode:"guidance_only",steps:[],
+  semantic:{revision:0,goal:null,notes:[] as {id:string;kind:string;text:string}[]}};
+ mocks.api.mockImplementation(async(url:string,method:string,payload?:Record<string,unknown>)=>{
+  if(method==="GET"&&url.includes("chatSessionId="))return {tasks:[task]};
+  if(method==="GET"&&url.endsWith("/semantic-task"))return {task};
+  if(method==="GET"&&url.endsWith("/run-sequences"))return {sequence:null,state:"none",next:null};
+  if(method==="GET"&&url.endsWith("/model-calls"))return {calls:[]};
+  if(method==="POST"&&url.endsWith("/semantic")){
+   expect(payload?.confirmed).toBe(true);
+   expect(payload?.expectedRevision).toBe(task.semantic.revision);
+   expect(payload?.contextPolicy).toMatchObject({includeContext:false,scope:"selection"});
+   if(payload?.operation==="add_constraint")
+    task={...task,semantic:{revision:1,goal:null,notes:[{id:"note-1",kind:"constraint",text:String(payload?.text)}]}};
+   else if(payload?.operation==="remove_note")
+    task={...task,semantic:{revision:2,goal:null,notes:[]}};
+   else throw Error("unexpected semantic operation");
+   return {task,executionStarted:false};
+  }
+  return {task};
+ });
+ await render("chat-a");
+ await click("长期目标与决策");
+ expect(container!.textContent).toContain("尚未确认长期约束或决策");
+ const field=container!.querySelector('textarea[aria-label="长期事项内容"]') as HTMLTextAreaElement;
+ expect(field).toBeTruthy();
+ await act(async()=>{
+  const setter=Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,"value")!.set!;
+  setter.call(field,"始终使用水彩画风");
+  field.dispatchEvent(new Event("input",{bubbles:true}));
+  await Promise.resolve();
+ });
+ expect((container!.querySelector('textarea[aria-label="长期事项内容"]') as HTMLTextAreaElement).value)
+  .toBe("始终使用水彩画风");
+ await click("确认保存长期事项");
+ expect(container!.textContent).toContain("约束：始终使用水彩画风");
+ await click("移除");
+ expect(container!.textContent).toContain("尚未确认长期约束或决策");
+ expect(mocks.api.mock.calls.filter(([url,method])=>method==="POST"&&url.endsWith("/semantic")).length).toBe(2);
+ expect(mocks.api.mock.calls.some(([url])=>url.includes("/enqueue")||url.includes("/jobs")||url.includes("/run-skill"))).toBe(false);
+});
+
+it("P3 read-only archive can view long-term notes but cannot change them",async()=>{
+ const task={id:"semantic-archive",chatSessionId:"chat-a",chatSessionIds:["chat-a"],
+  rootMessageId:"original-user",originalRequest:"长期任务",status:"running",readOnly:true,
+  activePlanVersion:1,recoveryMode:"guidance_only",steps:[],
+  semantic:{revision:5,goal:{text:"历史目标",provenance:"user_confirmed"},
+   notes:[{id:"n",kind:"decision",text:"历史关键决策",provenance:"user_confirmed"}]}};
+ mocks.api.mockImplementation(async(url:string,method:string)=>{
+  if(method==="GET"&&url.includes("chatSessionId="))return {tasks:[task]};
+  if(method==="GET"&&url.endsWith("/semantic-archive"))return {task};
+  if(method==="GET"&&url.endsWith("/run-sequences"))return {sequence:null,state:"none",next:null};
+  if(method==="GET"&&url.endsWith("/model-calls"))return {calls:[]};
+  return {task};
+ });
+ await render("chat-a");
+ await click("长期目标与决策");
+ expect(container!.textContent).toContain("历史目标");
+ expect(container!.textContent).toContain("历史关键决策");
+ expect(container!.textContent).toContain("任务不可编辑");
+ expect(container!.querySelector('textarea[aria-label="长期事项内容"]')).toBe(null);
+ expect(mocks.api.mock.calls.some(([,method])=>method==="POST")).toBe(false);
+});
+
 describe("P3c cross-chat resume and safe replan UI",()=>{
  it("links an existing Task from another chat without executing any Job",async()=>{
   const previous={id:"task-old",chatSessionId:"chat-a",chatSessionIds:["chat-a"],

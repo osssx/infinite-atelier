@@ -46,6 +46,44 @@ async function fixture(t,network,{includeContext=false,scope="selection",include
  });
  return {db,app,call,taskId,base,payload};
 }
+test("P3 HTTP model context retains confirmed decisions after 30 turns without widening private canvas scope",async t=>{
+ const payloads=[];
+ const fx=await fixture(t,async(_url,options)=>{
+  payloads.push(JSON.stringify(JSON.parse(options.body)));return answer("已读取长期约束");
+ });
+ const base=fx.base+"/assistant/tasks/"+fx.taskId+"/semantic";
+ const plain={includeContext:false,scope:"selection",includedIds:[]};
+ const selected={includeContext:true,scope:"selection",includedIds:["private"]};
+ const change=async(requestId,expectedRevision,operation,text,contextPolicy)=>{
+  const res=await fx.call("POST",base,{requestId,expectedRevision,operation,
+   text,confirmed:true,contextPolicy});
+  assert.equal(res.status,200,JSON.stringify(res.body));return res.body;
+ };
+ await change("goal-sem",0,"set_goal","系列短剧总长度八分钟",plain);
+ await change("private-sem",1,"add_constraint","分镜细节："+secret,selected);
+ await change("decision-sem",2,"add_decision","剧情结尾采用留白镜头",plain);
+ for(let i=0;i<30;i++)appendAssistantTaskTurn(fx.db,{projectId:"p-model",taskId:fx.taskId,
+  requestId:"historic-semantic-"+i,messageId:"historic-semantic-msg-"+i,
+  text:"第"+i+"轮：延续剧本",contextPolicy:plain});
+ const denied=await fx.call("POST",fx.base+"/assistant/chat",fx.payload("semantic-no-context","继续"));
+ assert.equal(denied.status,200,JSON.stringify(denied.body));
+ assert.match(payloads[0],/系列短剧总长度八分钟/);
+ assert.match(payloads[0],/剧情结尾采用留白镜头/);
+ assert.match(payloads[0],/累计用户续写轮次：31/);
+ assert.doesNotMatch(payloads[0],/分镜细节|SECRET_CANVAS_NODE_TEXT_DO_NOT_SEND|隐私节点/);
+ appendAssistantTaskTurn(fx.db,{projectId:"p-model",taskId:fx.taskId,requestId:"semantic-opt-in-turn",
+  messageId:"semantic-opt-in-message",text:"本轮授权私有节点",
+  contextPolicy:selected});
+ const req=fx.payload("semantic-allow-private","本轮授权私有节点");
+ req.task.turnMessageId="semantic-opt-in-message";
+ const allowed=await fx.call("POST",fx.base+"/assistant/chat",req);
+ assert.equal(allowed.status,200,JSON.stringify(allowed.body));
+ assert.match(payloads[1],/分镜细节/);
+ assert.match(payloads[1],/SECRET_CANVAS_NODE_TEXT_DO_NOT_SEND/);
+ assert.match(payloads[1],/剧情结尾采用留白镜头/);
+ assert.equal(fx.db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n,0);
+});
+
 test("P3 provider receives durable user-intent history across 15 turns, not claimed client successes",async t=>{
  let outbound="",upstreamCalls=0;
  const fx=await fixture(t,async(_url,options)=>{

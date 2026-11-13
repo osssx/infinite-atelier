@@ -14,8 +14,11 @@ type Step={id:string;kind:string;planVersion:number;status:string;actionDigest:s
 type FactSummary={version?:number;source?:string;userTurns?:{total?:number};
  execution?:{currentPlan?:{stepCount?:number;trustedSteps?:number;unverifiedSuccess?:number;
   stages?:{needs_reconcile?:number}}}};
+type SemanticNote={id:string;kind:"constraint"|"decision";text:string;provenance:"user_confirmed";
+ contextPolicy:{includeContext:boolean;scope:AssistantContextScope;includedIds:string[]}};
+type SemanticState={revision:number;goal?:{text:string;provenance:"user_confirmed"}|null;notes:SemanticNote[]};
 type Task={id:string;chatSessionId:string;chatSessionIds?:string[];rootMessageId:string;originalRequest:string;
- activePlanVersion?:number;status:string;readOnly?:boolean;summary?:FactSummary;recoveryMode:"guidance_only"|"canvas_atomic"|"job_observation"|"skill_audit";steps?:Step[];lastError?:string|null};
+ activePlanVersion?:number;status:string;readOnly?:boolean;summary?:FactSummary;semantic?:SemanticState;recoveryMode:"guidance_only"|"canvas_atomic"|"job_observation"|"skill_audit";steps?:Step[];lastError?:string|null};
 type Recovery={canReplan:boolean;reason:string;planVersion:number;projectRevision:number;completedArtifacts?:number;failedJobs?:number};
 type FailureRecovery={canRecover:boolean;reason:string;planVersion:number;projectRevision:number;
  failureReason?:string;sourceJobId?:string;fallbackAction?:{type:"run_node";nodeId:string;mode?:string};
@@ -51,6 +54,11 @@ export function useCanvasAssistantTasks({
  const [linkCandidateId,setLinkCandidateId]=useState("");
  const [recovery,setRecovery]=useState<Recovery|null>(null);
  const [failureRecovery,setFailureRecovery]=useState<FailureRecovery|null>(null);
+ const [semanticOpen,setSemanticOpen]=useState(false);
+ const [semanticKind,setSemanticKind]=useState<"goal"|"constraint"|"decision">("constraint");
+ const [semanticText,setSemanticText]=useState("");
+ const [semanticEditingId,setSemanticEditingId]=useState<string|null>(null);
+ useEffect(()=>{setSemanticOpen(false);setSemanticText("");setSemanticEditingId(null);},[selectedId]);
 
  const base="/api/v1/projects/"+encodeURIComponent(projectId)+"/assistant/tasks";
  useEffect(()=>{
@@ -181,6 +189,37 @@ export function useCanvasAssistantTasks({
    setItems(old=>old.map(item=>item.id===data.task.id?data.task:item));
    setDetail(data.task);
   }catch{setError("结束记录失败；已有生成任务不会受影响。");}
+  finally{setBusy(false);}
+ };
+ /** Only an explicit user click may persist confirmed semantics. */
+ const saveSemantic=async()=>{
+  if(!activeTask||busy||sending||!semanticText.trim())return;
+  const operation=semanticEditingId?"update_note":semanticKind==="goal"?"set_goal":
+   semanticKind==="constraint"?"add_constraint":"add_decision";
+  setBusy(true);setError("");
+  try{
+   const result=await canvasApi<TaskResponse>(path(activeTask.id)+"/semantic","POST",{
+    requestId:nanoid(),expectedRevision:activeTask.semantic?.revision??0,operation,
+    text:semanticText.trim(),...(semanticEditingId?{noteId:semanticEditingId}:{}),
+    confirmed:true,contextPolicy:policy()
+   });
+   setDetail(result.task);setItems(old=>old.map(t=>t.id===result.task.id?result.task:t));
+   setSemanticText("");setSemanticEditingId(null);
+  }catch(error){setError("长期目标或约束未保存，可能已被其他会话修改，请刷新任务："+
+   (error instanceof Error?error.message:"提交失败"));}
+  finally{setBusy(false);}
+ };
+ const removeSemantic=async(operation:"remove_note"|"clear_goal",noteId?:string)=>{
+  if(!activeTask||busy||sending)return;
+  setBusy(true);setError("");
+  try{
+   const result=await canvasApi<TaskResponse>(path(activeTask.id)+"/semantic","POST",{
+    requestId:nanoid(),expectedRevision:activeTask.semantic?.revision??0,
+    operation,...(noteId?{noteId}:{}),confirmed:true,contextPolicy:policy()
+   });
+   setDetail(result.task);setItems(old=>old.map(t=>t.id===result.task.id?result.task:t));
+   setSemanticText("");setSemanticEditingId(null);
+  }catch{setError("移除长期事项失败，请刷新任务后重试；执行计划未改变。");}
   finally{setBusy(false);}
  };
  const resumeCanvasStep=async(step:Step,decision?:"approve"|"reject")=>{
@@ -454,8 +493,54 @@ export function useCanvasAssistantTasks({
       title="停止跟踪任务，不取消已提交的模型或 ComfyUI Job" onClick={()=>void cancel()}>结束记录</button>
     </>:null}
    </div>
-   {detail?.id===selected.id&&detail.lastError?
-    <p role="status" className="mt-1 break-words">上次错误：{detail.lastError.slice(0,200)}</p>:null}
+    {detail?.id===selected.id?<div className="mt-2 rounded-md border p-2 text-[11px]"
+     style={{borderColor:"var(--assistant-border)"}}>
+     <button type="button" className="canvas-assistant-link" aria-expanded={semanticOpen}
+       onClick={()=>setSemanticOpen(x=>!x)}>{semanticOpen?"收起长期目标与决策":"长期目标与决策"}</button>
+      <button type="button" className="canvas-assistant-link" disabled={busy||sending}
+       onClick={()=>void refreshTask(selected.id)}>刷新长期事项</button>     {semanticOpen?<div className="mt-2 space-y-2">
+      <p>原始目标：{detail.originalRequest.slice(0,240)}</p>
+      <p>当前确认目标：{detail.semantic?.goal?.text??"沿用原始目标"}</p>
+      {detail.semantic?.goal&&activeTask?<button type="button" className="canvas-assistant-link"
+       disabled={busy||sending} onClick={()=>void removeSemantic("clear_goal")}>恢复原始目标</button>:null}
+      {detail.semantic?.notes?.length?<ul className="space-y-1">
+       {detail.semantic.notes.map(note=><li key={note.id} className="flex items-start gap-1">
+        <span className="min-w-0 flex-1 break-words">{note.kind==="constraint"?"约束":"决策"}：{note.text}</span>
+        {activeTask?<div className="flex shrink-0 gap-1">
+         <button type="button" className="canvas-assistant-link" disabled={busy||sending}
+          onClick={()=>{setSemanticKind(note.kind);setSemanticText(note.text);setSemanticEditingId(note.id);}}>编辑</button>
+         <button type="button" className="canvas-assistant-link" disabled={busy||sending}
+          onClick={()=>void removeSemantic("remove_note",note.id)}>移除</button>
+        </div>:null}
+       </li>)}
+      </ul>:<p>尚未确认长期约束或决策。</p>}
+      {activeTask?<div className="space-y-1.5">
+       <select aria-label="长期事项类型" className="w-full rounded-md border px-1.5 py-1"
+        style={{background:"var(--assistant-surface)",borderColor:"var(--assistant-border)"}}
+        value={semanticKind} disabled={busy||sending}
+        onChange={e=>{setSemanticKind(e.target.value as "goal"|"constraint"|"decision");
+         setSemanticText("");setSemanticEditingId(null);}}>
+        <option value="goal">修订目标</option><option value="constraint">增加约束</option>
+        <option value="decision">记录关键决策</option>
+       </select>
+       <textarea aria-label="长期事项内容" value={semanticText} rows={2}
+        maxLength={semanticKind==="goal"?600:400} disabled={busy||sending}
+        onChange={e=>setSemanticText(e.target.value)}
+        className="w-full resize-y rounded-md border p-1.5"
+        style={{background:"var(--assistant-surface)",borderColor:"var(--assistant-border)"}}
+        placeholder="输入由你明确确认、希望跨会话保留的要求"/>
+       <div className="flex items-center gap-2">
+        <button type="button" className="canvas-assistant-link" disabled={busy||sending||!semanticText.trim()}
+         onClick={()=>void saveSemantic()}>{semanticEditingId?"确认修改":"确认保存长期事项"}</button>
+        {semanticEditingId?<button type="button" className="canvas-assistant-link"
+         onClick={()=>{setSemanticEditingId(null);setSemanticText("");}}>取消编辑</button>:null}
+       </div>
+       <p>仅保存用户确认的长期意向；不自动修改执行计划、提交生成或认定任务成功。画布引用遵循本次授权范围。</p>
+      </div>:<p>任务不可编辑，历史事项仅供查看。</p>}
+     </div>:null}
+    </div>:null}
+    {detail?.id===selected.id&&detail.lastError?
+     <p role="status" className="mt-1 break-words">上次错误：{detail.lastError.slice(0,200)}</p>:null}
 
    {failureRecovery&&selected&&detail?.id===selected.id&&detail.status==="failed"?
     <div className="mt-2 rounded-md border p-2" style={{borderColor:"var(--assistant-border)"}}>

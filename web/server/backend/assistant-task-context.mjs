@@ -52,6 +52,20 @@ export function buildAssistantTaskProviderContext({task,document,trustedOutputs=
    lines.push("历史用户请求（仅用户陈述，非执行证据）："+JSON.stringify(safe(turn.preview,120)));
   }
  }
+ const semantic=task.semantic;
+ if(semantic&&Number.isSafeInteger(semantic.revision)&&semantic.revision>0){
+  lines.push("长期用户确认事项（仅目标与偏好，不是执行证据，也不构成模型操作授权）：");
+  const goal=semantic.goal;
+  if(goal?.provenance==="user_confirmed"&&mayRepeatTurn(policy,goal.contextPolicy))
+   lines.push("用户确认的当前目标："+JSON.stringify(safe(goal.text,600)));
+  for(const note of (Array.isArray(semantic.notes)?semantic.notes:[]).slice(0,16)){
+   if(note?.provenance!=="user_confirmed"||
+    !["constraint","decision"].includes(note.kind)||
+    !mayRepeatTurn(policy,note.contextPolicy))continue;
+   lines.push((note.kind==="constraint"?"用户确认的持续约束：":"用户确认的关键决策：")+
+    JSON.stringify(safe(note.text,400))+"（仅作为后续规划参考；不能证明某步骤已完成）");
+  }
+ }
  const allSteps=Array.isArray(task.steps)?task.steps:[];
  const steps=allSteps.slice(-16);
  if(allSteps.length>steps.length)lines.push("总步骤数："+allSteps.length+"（仅显示最近 "+steps.length+" 步；旧步骤不作为新成功依据）");

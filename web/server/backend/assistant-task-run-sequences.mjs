@@ -24,14 +24,21 @@ function validActions(actions,doc){
  if(!Array.isArray(actions)||actions.length<2||actions.length>3)
   throw fail("assistant_task_run_invalid",400);
  const nodes=new Map(doc.nodes.map(n=>[n.id,n])),used=new Set();
- for(const action of actions){
+ for(const [index,action] of actions.entries()){
   if(!action||typeof action!=="object"||Array.isArray(action)||
    !id(action.nodeId)||used.has(action.nodeId))throw fail("assistant_task_run_invalid",400);
   const node=nodes.get(action.nodeId);
   if(action.type==="run_workflow"){
-   if(Object.keys(action).some(k=>!["type","nodeId"].includes(k))||
+   if(Object.keys(action).some(k=>!["type","nodeId","inputFromPrevious"].includes(k))||
     node?.type!=="comfy:workflow"||!node.metadata?.comfyWorkflow?.templateId||
     !node.metadata?.comfyWorkflow?.templateRevision)throw fail("assistant_task_run_target_invalid",400);
+   if(action.inputFromPrevious!==undefined){
+    const input=action.inputFromPrevious;
+    if(index===0||!input||typeof input!=="object"||Array.isArray(input)||
+     Object.keys(input).some(k=>!["sourceKind","toPortId"].includes(k))||
+     !Object.hasOwn(mediaKinds,input.sourceKind)||!portId(input.toPortId))
+     throw fail("assistant_task_run_input_invalid",400);
+   }
   }else if(action.type==="run_node"){
    if(Object.keys(action).some(k=>!["type","nodeId","mode"].includes(k))||
     !["text","image","video","audio","config"].includes(node?.type)||
@@ -42,12 +49,62 @@ function validActions(actions,doc){
   used.add(action.nodeId);
  }
 }
+const mediaKinds={image:"IMAGE",video:"VIDEO",audio:"AUDIO"};
+const sensitive=/(?:secret|token|password|api.?key|credential|authorization|密钥|密码|令牌)/i;
+const portId=x=>typeof x==="string"&&/^[A-Za-z0-9_:\-.]{1,128}$/.test(x);
+function bindingStepFor(db,seq,index){
+ return db.prepare("SELECT * FROM assistant_task_steps WHERE task_id=? AND plan_version=? AND kind='canvas_mutation' AND json_extract(preconditions_json,'$.runSequenceId')=? AND json_extract(preconditions_json,'$.runBindingIndex')=? AND superseded_at IS NULL ORDER BY ordinal DESC LIMIT 1")
+  .get(seq.task_id,seq.plan_version,seq.id,index);
+}
+function resolveTrustedInput(db,projectId,task,seq,action,index,dep,{allowOccupied=false}={}){
+ const input=action.inputFromPrevious;
+ if(!input)return null;
+ const graph=JSON.parse(task.document_json);
+ const target=graph.nodes.find(n=>n.id===action.nodeId);
+ const targetBinding=target?.metadata?.comfyWorkflow;
+ const templateRow=targetBinding&&db.prepare("SELECT payload_json FROM comfy_template_versions WHERE template_id=? AND revision=?")
+  .get(targetBinding.templateId,targetBinding.templateRevision);
+ const template=templateRow&&JSON.parse(templateRow.payload_json);
+ const port=template?.ports?.find(p=>p.id===input.toPortId&&p.direction==="target");
+ const canvasPort=target?.metadata?.comfyPorts?.find(p=>p.id===input.toPortId&&p.direction==="target");
+ if(!port||port.valueKind!==mediaKinds[input.sourceKind]||
+  canvasPort?.valueKind!==port.valueKind||!["socket","media-file"].includes(port.inputBinding?.mode)||
+  !port.inputBinding?.targets?.length||sensitive.test(port.id+" "+port.label))
+  throw fail("assistant_task_run_input_port_invalid",400);
+ const outputs=trustedAssistantTaskOutputs(db,{projectId,taskId:seq.task_id,planVersion:seq.plan_version});
+ const candidates=outputs.filter(out=>out.runSequenceId===seq.id&&out.runIndex===index-1&&
+  out.materialStepId===dep&&out.kind===input.sourceKind&&
+  graph.nodes.some(node=>node.id===out.nodeId&&node.type===input.sourceKind));
+ if(candidates.length!==1)throw fail("assistant_task_run_input_unavailable");
+ const source=candidates[0];
+ if(!allowOccupied&&graph.connections.some(edge=>edge.toNodeId===action.nodeId&&edge.toPortId===input.toPortId))
+  throw fail("assistant_task_run_input_occupied");
+ return {sourceArtifactId:source.artifactId,sourceSha256:source.sha256,
+  sourceMaterialStepId:source.materialStepId,sourceNodeId:source.nodeId,
+  sourcePortId:input.sourceKind,toNodeId:action.nodeId,toPortId:input.toPortId,
+  sourceKind:input.sourceKind,valueKind:mediaKinds[input.sourceKind]};
+}
+function validateBoundInput(task,seq,index,step,binding){
+ const pre=JSON.parse(step.preconditions_json),receipt=JSON.parse(step.receipt_json);
+ const document=JSON.parse(task.document_json),edgeId=receipt.refs?.connections?.edge_0;
+ const edge=document.connections.find(c=>c.id===edgeId);
+ const action=JSON.parse(step.action_json)?.actions?.[0];
+ if(!edgeId||pre.runSequenceId!==seq.id||
+  pre.runSourceArtifactId!==binding.sourceArtifactId||
+  pre.runSourceSha256!==binding.sourceSha256||
+  pre.runBindingIndex!==index||
+  !JSON.parse(step.depends_on_json).includes(binding.sourceMaterialStepId)||
+  !edge||!action||action.type!=="connect_workflow_port"||
+  edge.fromNodeId!==binding.sourceNodeId||edge.fromPortId!==binding.sourcePortId||
+  edge.toNodeId!==binding.toNodeId||edge.toPortId!==binding.toPortId)
+  throw fail("assistant_task_run_input_binding_unverified");
+}
 function sequenceRows(db,taskId,planVersion){
  return db.prepare("SELECT * FROM assistant_task_run_sequences WHERE task_id=? AND plan_version=? ORDER BY created_at,id")
   .all(taskId,planVersion);
 }
 function stepFor(db,seq,index){
- return db.prepare("SELECT * FROM assistant_task_steps WHERE task_id=? AND plan_version=? AND json_extract(preconditions_json,'$.runSequenceId')=? AND json_extract(preconditions_json,'$.runIndex')=? AND superseded_at IS NULL ORDER BY ordinal DESC LIMIT 1")
+ return db.prepare("SELECT * FROM assistant_task_steps WHERE task_id=? AND plan_version=? AND kind IN ('model_job','comfy_workflow') AND json_extract(preconditions_json,'$.runSequenceId')=? AND json_extract(preconditions_json,'$.runIndex')=? AND superseded_at IS NULL ORDER BY ordinal DESC LIMIT 1")
   .get(seq.task_id,seq.plan_version,seq.id,index);
 }
 function verifiedMaterialization(db,seq,jobStepId){
@@ -75,13 +132,33 @@ export function nextAssistantRunInTransaction(db,projectId,taskId,seq){
    dep=mat.id;
    continue;
   }
-  if(task.active_step_id!==null||!["ready","planning"].includes(task.status))
-   return {...out,state:"waiting_for_task",index};
-  if(db.prepare("SELECT 1 FROM assistant_task_steps WHERE task_id=? AND plan_version=? AND superseded_at IS NULL AND status NOT IN ('succeeded') LIMIT 1")
-   .get(taskId,seq.plan_version))return {...out,state:"waiting_for_task",index};
-  return {...out,state:"ready",next:{index,action:actions[index],dependsOn:dep?[dep]:[],
-   last:index===actions.length-1}};
- }
+   const action=actions[index],bindingStep=action.type==="run_workflow"&&
+    action.inputFromPrevious?bindingStepFor(db,seq,index):null;
+   if(bindingStep&&(bindingStep.status!=="succeeded"||bindingStep.receipt_trust!=="server_committed"))
+    return {...out,state:bindingStep.status,stepId:bindingStep.id,index};
+   if(task.active_step_id!==null||!["ready","planning"].includes(task.status))
+    return {...out,state:"waiting_for_task",index};
+   if(db.prepare("SELECT 1 FROM assistant_task_steps WHERE task_id=? AND plan_version=? AND superseded_at IS NULL AND status NOT IN ('succeeded') LIMIT 1")
+    .get(taskId,seq.plan_version))return {...out,state:"waiting_for_task",index};
+   if(action.type==="run_workflow"&&action.inputFromPrevious){
+    let binding;
+    try{binding=resolveTrustedInput(db,projectId,task,seq,action,index,dep,{allowOccupied:!!bindingStep})}
+    catch(error){
+     if(error.code==="assistant_task_run_input_unavailable")return {...out,state:"awaiting_verified_input",index};
+     if(error.code==="assistant_task_run_input_occupied")return {...out,state:"binding_conflict",index};
+     throw error;
+    }
+    if(bindingStep){
+     try{validateBoundInput(task,seq,index,bindingStep,binding)}
+     catch{return {...out,state:"binding_unverified",index,stepId:bindingStep.id}}
+     return {...out,state:"ready",next:{index,action,dependsOn:[bindingStep.id],
+      last:index===actions.length-1,inputBinding:binding,needsBinding:false}};
+    }
+    return {...out,state:"ready",next:{index,action,dependsOn:dep?[dep]:[],
+     last:index===actions.length-1,inputBinding:binding,needsBinding:true}};
+   }
+   return {...out,state:"ready",next:{index,action,dependsOn:dep?[dep]:[],
+    last:index===actions.length-1}}; }
  return {...out,state:"completed"};
 }
 export function getAssistantRunSequence(db,{projectId,taskId}){
@@ -138,6 +215,48 @@ export function registerAssistantRunSequence(db,{projectId,taskId,requestId,sour
   return {...response,existing:false};
  });
 }
+/** P3c: one explicit graph Step can bind exactly one verified prior media artifact. */
+export function verifyAssistantRunInputBinding(db,{projectId,taskId,runSequenceId,runIndex,
+ expectedPlanVersion,actions,dependsOn}){
+ if(!id(runSequenceId)||!Number.isInteger(runIndex)||runIndex<1||runIndex>2)
+  throw fail("assistant_task_run_input_invalid",400);
+ const seq=db.prepare("SELECT * FROM assistant_task_run_sequences WHERE id=? AND task_id=? AND project_id=?")
+  .get(runSequenceId,taskId,projectId);
+ if(!seq||seq.plan_version!==expectedPlanVersion)throw fail("assistant_task_run_not_found",404);
+ const state=nextAssistantRunInTransaction(db,projectId,taskId,seq);
+ if(state.state!=="ready"||state.next?.index!==runIndex||
+  state.next.needsBinding!==true||!state.next.inputBinding)
+  throw fail("assistant_task_run_not_ready");
+ const binding=state.next.inputBinding;
+ const expected=[{type:"connect_workflow_port",fromNodeId:binding.sourceNodeId,
+  fromPortId:binding.sourcePortId,toNodeId:binding.toNodeId,toPortId:binding.toPortId}];
+ if(stableJson(actions)!==stableJson(expected)||
+  stableJson(dependsOn)!==stableJson(state.next.dependsOn))
+  throw fail("assistant_task_run_input_binding_unverified");
+ return {sourceArtifactId:binding.sourceArtifactId,sourceSha256:binding.sourceSha256};
+}
+/** Re-check durable producer evidence at graph commit; no Job/Skill side effects. */
+export function verifyAssistantCommittedRunInput(db,{projectId,taskId,runSequenceId,runBindingIndex,
+ expectedPlanVersion,actions,dependsOn,sourceArtifactId,sourceSha256}){
+ if(!id(runSequenceId)||!Number.isInteger(runBindingIndex)||runBindingIndex<1||
+  !Number.isInteger(expectedPlanVersion))throw fail("assistant_task_run_input_invalid",400);
+ const seq=db.prepare("SELECT * FROM assistant_task_run_sequences WHERE id=? AND task_id=? AND project_id=? AND plan_version=? AND status='active'")
+  .get(runSequenceId,taskId,projectId,expectedPlanVersion);
+ if(!seq)throw fail("assistant_task_run_not_found",404);
+ const task=taskWithGraph(db,projectId,taskId),list=JSON.parse(seq.actions_json);
+ const action=list[runBindingIndex],preceding=stepFor(db,seq,runBindingIndex-1);
+ if(task.active_plan_version!==expectedPlanVersion||action?.type!=="run_workflow"||
+  !action.inputFromPrevious||!preceding||preceding.status!=="succeeded"||
+  preceding.receipt_trust!=="server_committed")throw fail("assistant_task_run_not_ready");
+ const mat=verifiedMaterialization(db,seq,preceding.id);
+ if(!mat||stableJson(dependsOn)!==stableJson([mat.id]))
+  throw fail("assistant_step_dependency_unverified");
+ const binding=resolveTrustedInput(db,projectId,task,seq,action,runBindingIndex,mat.id);
+ const expected=[{type:"connect_workflow_port",fromNodeId:binding.sourceNodeId,
+  fromPortId:binding.sourcePortId,toNodeId:binding.toNodeId,toPortId:binding.toPortId}];
+ if(stableJson(actions)!==stableJson(expected)||sourceArtifactId!==binding.sourceArtifactId||
+  sourceSha256!==binding.sourceSha256)throw fail("assistant_task_run_input_binding_unverified");
+}
 /** Guard against bypassing an unfinished ordered generation intent. */
 export function assertNoPendingAssistantRunSequence(db,{projectId,taskId}){
  const task=taskWithGraph(db,projectId,taskId);
@@ -174,6 +293,19 @@ export function verifyAssistantRunSequenceJob(db,{projectId,taskId,runSequenceId
   if(!modes.has(mode)||next.action.mode!==undefined&&next.action.mode!==mode||
    kind==="model_job"&&job.snapshot?.task?.kind!==mode)
    throw fail("assistant_task_run_target_invalid",400);
+ }
+ if(next.needsBinding===true)throw fail("assistant_task_run_input_not_bound");
+ if(next.inputBinding){
+  const binding=next.inputBinding,req=job.snapshot?.comfyRequest;
+  if(kind!=="comfy_workflow"||!Array.isArray(req?.edges)||!Array.isArray(req?.externalInputs)||
+   req.edges.filter(e=>e.fromNodeId===binding.sourceNodeId&&
+    e.fromPortId===binding.sourcePortId&&e.toNodeId===binding.toNodeId&&
+    e.toPortId===binding.toPortId).length!==1||
+   req.externalInputs.filter(e=>e.kind==="asset"&&
+    e.sourceNodeId===binding.sourceNodeId&&e.sourcePortId===binding.sourcePortId&&
+    e.valueKind===binding.valueKind&&e.sha256===binding.sourceSha256&&
+    e.assetId===binding.sourceSha256).length!==1)
+   throw fail("assistant_task_run_input_binding_unverified");
  }
  return {finalizeTask:next.last};
 }

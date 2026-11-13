@@ -13,7 +13,7 @@ export type AssistantParameterKey=typeof assistantParameterKeys[number];
 export type AssistantParameterValue=string|number|boolean;
 export type AssistantExecutionAction=
  |{type:"run_node";nodeId:string;mode?:CanvasGenerationMode}
- |{type:"run_workflow";nodeId:string};
+ |{type:"run_workflow";nodeId:string;inputFromPrevious?:{sourceKind:"image"|"video"|"audio";toPortId:string}};
 export type AssistantNodeRun={
  kind:"node"|"workflow";nodeId:string;mode?:CanvasGenerationMode;prompt?:string;
 };

@@ -3566,6 +3566,9 @@ function AtelierCanvasPage() {
         if(!Array.isArray(raw))throw Error("生成操作格式无效");
         const actions=raw.filter((action):action is AssistantExecutionAction=>
             action?.type==="run_node"||action?.type==="run_workflow");
+        if(actions.some(action=>action.type==="run_workflow"&&action.inputFromPrevious)&&
+            !taskContext?.runSequenceId)
+            throw Error("引用上一项生成产物只能用于受控 Task 顺序计划，不能直接执行工作流");
         const planned=planAssistantNodeRuns(nodesRef.current,actions,refs);
         if(taskContext&&planned.length!==1)
             throw Error("Task 本轮仅支持冻结一个生成 Step；多个生成目标请分轮提交，不会绕过 Task 直接运行");

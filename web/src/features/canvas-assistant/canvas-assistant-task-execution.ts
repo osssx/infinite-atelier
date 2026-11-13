@@ -54,10 +54,11 @@ export async function executeFrozenAssistantCanvasTaskStep({
  * automatically reconstruct and approve a different set of actions.
  */
 export async function planAndExecuteAssistantCanvasActions({
- projectId,taskId,messageId,actions,center,signal,confirm
+ projectId,taskId,messageId,actions,center,signal,confirm,sequenceBinding
 }:{
  projectId:string;taskId:string;messageId:string;actions:unknown[];
  center:{x:number;y:number};signal:AbortSignal;confirm:(step:FrozenCanvasTaskStep)=>Promise<boolean>;
+ sequenceBinding?:{runSequenceId:string;runIndex:number;dependsOn:string[]};
 }):Promise<{applied:number;stepId:string;revision:number;refs:Map<string,string>}>{
  requestError(signal);
  let committed:CanvasTaskCommit|null=null;
@@ -65,11 +66,12 @@ export async function planAndExecuteAssistantCanvasActions({
  const remote=await commitAssistantCanvasGraphWithSaveBarrier(projectId,async frozen=>{
   requestError(signal);
   const snapshot=await canvasApi<{task:{status:string;activePlanVersion:number;steps:AssistantTaskDependencyStep[]}}>(base(projectId,taskId),"GET",undefined,signal);
-   const dependsOn=confirmedAssistantTaskDependencies(snapshot.task);
+   const dependsOn=sequenceBinding?.dependsOn??confirmedAssistantTaskDependencies(snapshot.task);
   plan=await canvasApi<FrozenCanvasTaskStep>(base(projectId,taskId)+"/canvas-steps","POST",{
    requestId:messageId+"-canvas-plan",
    expectedPlanVersion:snapshot.task.activePlanVersion,
-   expectedProjectRevision:frozen.expectedRevision,actions,center,dependsOn
+   expectedProjectRevision:frozen.expectedRevision,actions,center,dependsOn,
+   ...(sequenceBinding?{runSequenceId:sequenceBinding.runSequenceId,runIndex:sequenceBinding.runIndex}:{})
   },signal);
   requestError(signal);
   const accepted=await confirm(plan);

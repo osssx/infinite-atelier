@@ -10,6 +10,17 @@ const connection=(from:string,to:string,id="edge-1"):CanvasConnection=>
  ({id,fromNodeId:from,toNodeId:to});
 const center={x:320,y:220};
 
+describe("P3c2 prior generated asset action validation",()=>{
+ it("requires a later action and forbids caller-supplied media identity",()=>{
+  const valid=[{type:"run_node",nodeId:"source",mode:"image"},
+   {type:"run_workflow",nodeId:"wf",inputFromPrevious:{sourceKind:"image",toPortId:"image_in"}}];
+  expect(parseAssistantCanvasActions(valid)).toEqual(valid);
+  expect(()=>parseAssistantCanvasActions([valid[1]])).toThrow(/第一项生成/);
+  expect(()=>parseAssistantCanvasActions([valid[0],
+   {type:"run_workflow",nodeId:"wf",inputFromPrevious:{sourceKind:"image",
+    toPortId:"image_in",artifactId:"forged"}}])).toThrow();
+ });
+});
 describe("P2 canvas action executor",()=>{
  it("creates nodes and connects new refs to existing nodes atomically",()=>{
   const original={nodes:[node("text-existing")],connections:[] as CanvasConnection[]};

@@ -68,6 +68,35 @@ describe("P1b browser Task canvas protocol",()=>{
   expect(result.stepId).toBe("step");
   expect(mocks.api.mock.calls.filter(([url])=>url.endsWith("/canvas-steps"))).toHaveLength(1);
  });
+ it("P3c2 sends trusted sequence dependency through the original graph barrier, never a Job",async()=>{
+  const binding={runSequenceId:"sequence-one",runIndex:1,dependsOn:["material-trusted"]};
+  const actions=[{type:"connect_workflow_port",fromNodeId:"materialized-image",fromPortId:"image",
+   toNodeId:"wf",toPortId:"image_in"}];
+  const trace:string[]=[];
+  mocks.api.mockImplementation(async(url:string,method:string,payload:Record<string,unknown>)=>{
+   if(method==="GET")return {task:{status:"ready",activePlanVersion:2,steps:[]}};
+   if(url.endsWith("/canvas-steps")){
+    trace.push("freeze");
+    expect(payload).toMatchObject({expectedPlanVersion:2,expectedProjectRevision:5,
+     runSequenceId:binding.runSequenceId,runIndex:1,dependsOn:["material-trusted"],actions});
+    return step;
+   }
+   if(url.endsWith("/approval")){
+    trace.push("confirm");expect(payload.decision).toBe("approve");return {status:"ready"};
+   }
+   if(url.endsWith("/execute")){trace.push("commit");return committed;}
+   throw Error("No other calls are allowed while binding");
+  });
+  const result=await planAndExecuteAssistantCanvasActions({
+   projectId:"p",taskId:"task",messageId:"m-media-bind",
+   actions,center:{x:0,y:0},sequenceBinding:binding,
+   signal:new AbortController().signal,confirm:async()=>{trace.push("consent");return true;}
+  });
+  expect(result.stepId).toBe("step");
+  expect(trace).toEqual(["freeze","consent","confirm","commit"]);
+  expect(mocks.api.mock.calls.some(([url])=>String(url).endsWith("/enqueue")||
+   String(url).endsWith("/external-jobs"))).toBe(false);
+ });
  it("a rejection creates durable denied approval but cannot submit graph",async()=>{
   let executes=0;
   mocks.api.mockImplementation(async(url:string)=>{

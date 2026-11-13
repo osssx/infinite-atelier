@@ -374,7 +374,9 @@ export function useCanvasAssistantTasks({
     {runSequence.state==="ready"&&runSequence.next&&onRunSequenceStep?
      <button type="button" className="canvas-assistant-link" disabled={busy||sending}
       onClick={()=>void resumeRunSequence()}>
-      继续第 {runSequence.next.index+1}/{runSequence.sequence.actions.length} 项生成（需审批）
+      {runSequence.next.needsBinding?
+       "先连接可信产物，再生成第 "+(runSequence.next.index+1)+"/"+runSequence.sequence.actions.length+" 项（需审批）":
+       "继续第 "+(runSequence.next.index+1)+"/"+runSequence.sequence.actions.length+" 项生成（需审批）"}
      </button>:null}
     {runSequence.outputs?.length?<div className="mt-1">
      <span>经服务端验证的落图引用：</span>
@@ -382,6 +384,9 @@ export function useCanvasAssistantTasks({
       {output.kind} · 节点 {output.nodeId} · 产物 {output.artifactId.slice(0,12)}
      </div>)}
     </div>:null}
+    {runSequence.next?.needsBinding&&runSequence.next.inputBinding?<p className="mt-1 break-words">下游需要先确认连线：{runSequence.next.inputBinding.sourceNodeId} → {runSequence.next.inputBinding.toNodeId}.{runSequence.next.inputBinding.toPortId}；连线成功后才会单独确认生成费用。</p>:null}
+    {runSequence.state==="awaiting_verified_input"?<p>等待前一项的完整可信媒体产物及落图回执，不会提交下一项。</p>:null}
+    {["binding_conflict","binding_unverified"].includes(runSequence.state)?<p>工作流输入连线与冻结计划不一致，请先核对当前节点连接；不会发起下游生成。</p>:null}
     {runSequence.state==="awaiting_materialization"?<p>等待产物落图对账，不能提前提交下一项。</p>:null}
    </div>:null}
    {pendingCanvas.map(step=><div key={step.id} className="mt-2 rounded-md border p-2"

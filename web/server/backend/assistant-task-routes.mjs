@@ -44,7 +44,8 @@ const canvasStepBody={type:"object",additionalProperties:false,
   actions:{type:"array",minItems:1,maxItems:16,items:{type:"object"}},
   center:{type:"object",additionalProperties:false,required:["x","y"],properties:{
    x:{type:"number",minimum:-1000000,maximum:1000000},y:{type:"number",minimum:-1000000,maximum:1000000}}},
-  dependsOn:{type:"array",maxItems:20,uniqueItems:true,items:id},finalizeTask:{type:"boolean"}}};
+  dependsOn:{type:"array",maxItems:20,uniqueItems:true,items:id},finalizeTask:{type:"boolean"},
+  runSequenceId:id,runIndex:{type:"integer",minimum:1,maximum:2}}};
 const executeBody={type:"object",additionalProperties:false,
  required:["requestId","expectedPlanVersion","actionDigest"],properties:{
   requestId:id,expectedPlanVersion:{type:"integer",minimum:1},

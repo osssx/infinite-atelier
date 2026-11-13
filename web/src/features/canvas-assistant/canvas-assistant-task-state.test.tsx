@@ -137,6 +137,35 @@ describe("P3b persisted multi-run UI resume",()=>{
   expect(mocks.api.mock.calls.every(call=>call[1]==="GET")).toBe(true);
  });
 });
+describe("P3c2 typed media binding resume UI",()=>{
+ it("P3c2 after refresh labels the pending verified media binding separately from the paid Job",async()=>{
+  const task={id:"task-image-seq",chatSessionId:"chat-a",rootMessageId:"original-user",
+   originalRequest:"先出图再转视频",status:"ready",recoveryMode:"job_observation",steps:[]};
+  const actions=[{type:"run_node",nodeId:"image-source",mode:"image"},
+   {type:"run_workflow",nodeId:"video-workflow",inputFromPrevious:{sourceKind:"image",toPortId:"first_frame"}}];
+  const view={sequence:{id:"seq-i2v",taskId:task.id,sourceMessageId:"original-user",
+   planVersion:1,actions,status:"active"},state:"ready",
+   next:{index:1,action:actions[1],dependsOn:["trusted-material"],last:true,needsBinding:true,
+    inputBinding:{sourceNodeId:"rendered-image",sourcePortId:"image",toNodeId:"video-workflow",
+     toPortId:"first_frame",sourceArtifactId:"art-image",sourceSha256:"a".repeat(64),
+     sourceMaterialStepId:"trusted-material",sourceKind:"image",valueKind:"IMAGE"}},
+   outputs:[{artifactId:"art-image",nodeId:"rendered-image",kind:"image"}]};
+  const runner=vi.fn(async()=>{});
+  mocks.api.mockImplementation(async(url:string,method:string)=>{
+   if(method!=="GET")throw Error("state view is read-only");
+   if(url.includes("chatSessionId="))return {tasks:[task]};
+   if(url.endsWith("/model-calls"))return {calls:[]};
+   if(url.endsWith("/run-sequences"))return view;
+   return {task};
+  });
+  container=document.createElement("div");document.body.appendChild(container);root=createRoot(container);
+  await act(async()=>root!.render(createElement(Harness,{runSequence:runner})));
+  expect(container!.textContent).toContain("先连接可信产物，再生成第 2/2 项（需审批）");
+  expect(container!.textContent).toContain("rendered-image → video-workflow.first_frame");
+  expect(container!.textContent).toContain("经服务端验证的落图引用");
+  expect(mocks.api.mock.calls.every(call=>call[1]==="GET")).toBe(true);
+ });
+});
 describe("P3 task progress and read-only event pagination",()=>{
  it("shows trusted materialization and paginates 10+ turn evidence without executing steps",async()=>{
   const steps=[

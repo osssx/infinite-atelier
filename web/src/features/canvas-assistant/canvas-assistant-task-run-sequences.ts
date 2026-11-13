@@ -9,7 +9,10 @@ export type AssistantRunSequenceView={
  state:string;index?:number;stepId?:string;
  outputs?:{sourceStepId:string;materialStepId:string;runIndex:number|null;runSequenceId:string|null;
   jobId:string;artifactId:string;nodeId:string;kind:string;portId:string|null;sha256:string}[];
- next:{index:number;action:AssistantRunIntent;dependsOn:string[];last:boolean}|null;
+ next:{index:number;action:AssistantRunIntent;dependsOn:string[];last:boolean;
+  needsBinding?:boolean;inputBinding?:{sourceArtifactId:string;sourceSha256:string;
+   sourceMaterialStepId:string;sourceNodeId:string;sourcePortId:string;
+   toNodeId:string;toPortId:string;sourceKind:"image"|"video"|"audio";valueKind:string}}|null;
 };
 const base=(projectId:string,taskId:string)=>"/api/v1/projects/"+encodeURIComponent(projectId)+
  "/assistant/tasks/"+encodeURIComponent(taskId);

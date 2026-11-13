@@ -33,6 +33,21 @@ test("P2 parser fails closed on unsupported or malformed operations",()=>{
  assert.throws(()=>parseAssistantActionResponse('{"answer":"ok","actions":['),/assistant_actions_invalid/);
  assert.throws(()=>parseAssistantActionResponse(JSON.stringify({answer:"abc",actions:[],secret:"private"})),/assistant_actions_invalid/);
 });
+test("P3c2 model may propose one typed prior-media input, never arbitrary asset ID or first-step binding",()=>{
+ const wrap=actions=>JSON.stringify({answer:"媒体串行生成",actions});
+ const valid=[{type:"run_node",nodeId:"a",mode:"image"},
+  {type:"run_workflow",nodeId:"workflow",
+   inputFromPrevious:{sourceKind:"image",toPortId:"image_in"}}];
+ assert.deepEqual(parseAssistantActionResponse(wrap(valid)).actions,valid);
+ assert.match(CANVAS_ACTION_SYSTEM,/inputFromPrevious/);
+ for(const action of [
+  {type:"run_workflow",nodeId:"wf",inputFromPrevious:{sourceKind:"image",toPortId:"in"}},
+  {type:"run_workflow",nodeId:"wf",inputFromPrevious:{sourceKind:"MASK",toPortId:"image_in"}},
+  {type:"run_workflow",nodeId:"wf",inputFromPrevious:{sourceKind:"image",toPortId:"image_in",assetId:"fake"}},
+  {type:"run_workflow",nodeId:"wf",inputFromPrevious:{sourceKind:"image",toPortId:"../bad"}},
+  {type:"run_workflow",nodeId:"wf",inputFromPrevious:{sourceKind:"image",toPortId:"image_in",sha256:"a".repeat(64)}}
+ ])assert.throws(()=>parseAssistantActionResponse(wrap([action])),/assistant_actions_invalid/);
+});
 test("P2 assistant responds with structured plan but never mutates graph in backend",async()=>{
  const recorded=[];
  const vault={

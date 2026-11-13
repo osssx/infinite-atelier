@@ -15,7 +15,8 @@ export function trustedAssistantTaskOutputs(db,{projectId,taskId,planVersion}){
  if(!project||!task||planVersion!==task.active_plan_version)return [];
  const graph=unpack(project.document_json);
  if(!Array.isArray(graph?.nodes))return [];
- const nodeIds=new Set(graph.nodes.map(node=>node.id));
+ const nodesById=new Map(graph.nodes.map(node=>[node.id,node]));
+ const nodeIds=new Set(nodesById.keys());
  const steps=db.prepare("SELECT * FROM assistant_task_steps WHERE task_id=? AND plan_version=? AND superseded_at IS NULL ORDER BY ordinal")
   .all(taskId,planVersion);
  const byId=new Map(steps.map(step=>[step.id,step])),results=[];
@@ -48,11 +49,18 @@ export function trustedAssistantTaskOutputs(db,{projectId,taskId,planVersion}){
   }
   if(invalid||bindings.size!==action.artifactIds.length||
    action.artifactIds.some(id=>!bindings.has(id)))continue;
-  const artifacts=db.prepare("SELECT a.id,a.kind,a.port_id,a.sha256,a.blob_id,b.status AS blob_status,m.status AS materialization_status,m.node_id FROM artifacts a JOIN blobs b ON b.id=a.blob_id JOIN materializations m ON m.artifact_id=a.id AND m.project_id=? WHERE a.job_id=? ORDER BY a.id")
+  const artifacts=db.prepare("SELECT a.id,a.kind,a.port_id,a.sha256,a.blob_id,b.sha256 AS blob_sha256,b.status AS blob_status,m.status AS materialization_status,m.node_id FROM artifacts a JOIN blobs b ON b.id=a.blob_id JOIN materializations m ON m.artifact_id=a.id AND m.project_id=? WHERE a.job_id=? ORDER BY a.id")
    .all(projectId,action.jobId);
   if(artifacts.length!==action.artifactIds.length||
-   artifacts.some(row=>!bindings.has(row.id)||row.blob_status!=="ready"||
-    row.materialization_status!=="materialized"||row.node_id!==bindings.get(row.id)))continue;
+   artifacts.some(row=>{
+    const node=nodesById.get(row.node_id);
+    const attached=row.kind==="text"||node?.metadata?.storageKey==="cas:"+row.blob_id||
+     (node?.metadata?.images??[]).some(img=>img.storageKey==="cas:"+row.blob_id);
+    return !bindings.has(row.id)||!node||row.blob_status!=="ready"||
+     row.sha256!==row.blob_sha256||!/^[a-f0-9]{64}$/.test(row.sha256)||
+     !attached||row.materialization_status!=="materialized"||
+     row.node_id!==bindings.get(row.id);
+   }))continue;
   for(const artifact of artifacts){
    results.push({sourceStepId:source.id,materialStepId:mat.id,
     runIndex:stepIndex(source),runSequenceId:unpack(source.preconditions_json)?.runSequenceId??null,

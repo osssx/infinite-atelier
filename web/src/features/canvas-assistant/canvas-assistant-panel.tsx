@@ -289,11 +289,33 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
  const session=sessions.find(item=>item.id===activeChatId);
  const taskTracker=useCanvasAssistantTasks({projectId,activeChatId,session,open,sending,includeContext,scope,includedIds,
   onDraft:setDraft,onRunSequenceStep:async(taskId:string,view:AssistantRunSequenceView)=>{
-   const next=canLaunchAssistantRunSequenceStep(view);
+   let next=canLaunchAssistantRunSequenceStep(view);
    const controller=new AbortController();
    if(controllerRef.current)throw Error("另一个 AI 任务正在执行");
    controllerRef.current=controller;setSending(true);
    try{
+    if(next.needsBinding){
+     const binding=next.inputBinding;
+     if(!binding)throw Error("缺少经过服务端核验的输入产物");
+     await planAndExecuteAssistantCanvasActions({
+      projectId,taskId,messageId:view.sequence!.sourceMessageId+"-binding-"+next.index,
+      actions:[{type:"connect_workflow_port",fromNodeId:binding.sourceNodeId,
+       fromPortId:binding.sourcePortId,toNodeId:binding.toNodeId,toPortId:binding.toPortId}],
+      center:getCanvasCenter?.()??{x:0,y:0},signal:controller.signal,
+      sequenceBinding:{runSequenceId:view.sequence!.id,runIndex:next.index,
+       dependsOn:next.dependsOn},
+      confirm:async()=>confirmDangerousActions(
+       "将已生成的可信 "+binding.sourceKind+" 产物（"+binding.sourceArtifactId+
+       "）连接到工作流节点 "+binding.toNodeId+" 的输入端口 "+binding.toPortId+
+       "。这是独立的画布更改，需要确认；确认后下一项生成仍需单独批准。",
+       controller.signal,themeName)
+     });
+     const latest=await canvasApi<AssistantRunSequenceView>("/api/v1/projects/"+
+      encodeURIComponent(projectId)+"/assistant/tasks/"+encodeURIComponent(taskId)+
+      "/run-sequences","GET",undefined,controller.signal);
+     next=canLaunchAssistantRunSequenceStep(latest);
+     if(next.needsBinding)throw Error("可信产物连线尚未完成，不能生成");
+    }
     await onRunActions([next.action],new Map(),controller.signal,{
      taskId,messageId:view.sequence!.sourceMessageId,runSequenceId:view.sequence!.id,runIndex:next.index,
      confirm:(step,payload)=>confirmAssistantTaskJob(step,payload,controller.signal,themeName)
@@ -493,6 +515,8 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
     const notes:string[]=[];
      try{
        const actions=parseAssistantCanvasActions(response.actions??[]);
+       if(!linkedTaskId&&actions.some(action=>action.type==="run_workflow"&&action.inputFromPrevious))
+        throw Error("引用上一项生成产物需要先创建关联 Task 顺序计划，不会直接运行工作流。");
        if(!actions.length)notes.push("本轮没有执行任何画布操作，画布保持不变。");
        if(actions.length){
          if(linkedTaskId){

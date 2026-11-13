@@ -50,6 +50,12 @@ const boundedString=(value:unknown,max:number):value is string=>typeof value==="
 const keys=(obj:Record<string,unknown>,allowed:readonly string[])=>Object.keys(obj).every(key=>allowed.includes(key));
 const ids=(value:unknown,min:number,max:number):value is string[]=>
  Array.isArray(value)&&value.length>=min&&value.length<=max&&value.every(identifier)&&new Set(value).size===value.length;
+const validRunInput=(value:unknown)=>{
+ if(!value||typeof value!=="object"||Array.isArray(value))return false;
+ const input=value as Record<string,unknown>;
+ return keys(input,["sourceKind","toPortId"])&&
+  ["image","video","audio"].includes(String(input.sourceKind))&&identifier(input.toPortId);
+};
 export function isAssistantCanvasAction(value:unknown):value is AssistantCanvasAction{
  if(!value||typeof value!=="object"||Array.isArray(value))return false;
  const action=value as Record<string,unknown>;
@@ -90,8 +96,8 @@ export function isAssistantCanvasAction(value:unknown):value is AssistantCanvasA
    identifier(action.nodeId)&&validAssistantWorkflowScalar(action.portId,action.value);
   case "run_node":return keys(action,["type","nodeId","mode"])&&identifier(action.nodeId)&&
    (action.mode===undefined||["text","image","video","audio"].includes(String(action.mode)));
-  case "run_workflow":return keys(action,["type","nodeId"])&&identifier(action.nodeId);
-  case "set_text":return keys(action,["type","nodeId","content"])&&identifier(action.nodeId)&&boundedString(action.content,12000);
+  case "run_workflow":return keys(action,["type","nodeId","inputFromPrevious"])&&identifier(action.nodeId)&&
+   (action.inputFromPrevious===undefined||validRunInput(action.inputFromPrevious));  case "set_text":return keys(action,["type","nodeId","content"])&&identifier(action.nodeId)&&boundedString(action.content,12000);
   case "set_title":return keys(action,["type","nodeId","title"])&&identifier(action.nodeId)&&boundedString(action.title,120);
   case "delete_node":return keys(action,["type","nodeId"])&&identifier(action.nodeId);
   case "delete_connection":return keys(action,["type","connectionId"])&&identifier(action.connectionId);
@@ -101,6 +107,10 @@ export function isAssistantCanvasAction(value:unknown):value is AssistantCanvasA
 export function parseAssistantCanvasActions(value:unknown):AssistantCanvasAction[]{
  if(!Array.isArray(value)||value.length>MAX_ACTIONS||!value.every(isAssistantCanvasAction))
   throw Error("AI 返回了不支持的画布操作，未执行。");
+ const runs=value.filter(action=>action.type==="run_node"||action.type==="run_workflow");
+ if(runs.some((action,index)=>action.type==="run_workflow"&&
+  action.inputFromPrevious&&index===0))
+  throw Error("第一项生成没有可引用的上一项产物，未执行。");
  const aliases=new Set<string>();
  for(const action of value){
   if(action.type!=="create_text"&&action.type!=="create_node"&&action.type!=="create_group")continue;

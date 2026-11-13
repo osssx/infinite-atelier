@@ -3,7 +3,8 @@ import {stableJson,writeTransaction,assertNoRawCredentials} from "./repository.m
 import {validateProjectDocument,emitProjectEvent} from "./projects.mjs";
 import {deterministicAssistantRefs,claimAssistantTaskStep,verifyAssistantTaskClaim} from "./assistant-task-step-gate.mjs";
 import {assertAssistantCanvasPlan,applyFrozenAssistantCanvasPlan} from "./assistant-task-canvas-graph.mjs";
-import {assertNoPendingAssistantRunSequence} from "./assistant-task-run-sequences.mjs";
+import {assertNoPendingAssistantRunSequence,verifyAssistantRunInputBinding,
+ verifyAssistantCommittedRunInput} from "./assistant-task-run-sequences.mjs";
 const fail=(code,statusCode=409)=>Object.assign(Error(code),{code,statusCode});
 const id=value=>typeof value==="string"&&/^[A-Za-z0-9_-]{1,128}$/.test(value);
 const hash=value=>createHash("sha256").update(stableJson(value)).digest("hex");
@@ -73,14 +74,18 @@ function dependencies(db,taskId,step){
  * against an exact graph revision before any Step/command is inserted.
  */
 export function planAssistantCanvasStep(db,{projectId,taskId,requestId,
- expectedPlanVersion,expectedProjectRevision,actions,center,dependsOn=[],finalizeTask=false}){
+ expectedPlanVersion,expectedProjectRevision,actions,center,dependsOn=[],finalizeTask=false,
+ runSequenceId,runIndex}){
  if(!id(requestId)||!Number.isSafeInteger(expectedPlanVersion)||expectedPlanVersion<1||
   !Number.isSafeInteger(expectedProjectRevision)||expectedProjectRevision<1||
   !Array.isArray(dependsOn)||dependsOn.some(value=>!id(value))||
   new Set(dependsOn).size!==dependsOn.length||dependsOn.length>20||
   typeof finalizeTask!=="boolean")throw fail("assistant_step_invalid",400);
  const shape=assertAssistantCanvasPlan({actions,center});
- const payload={taskId,expectedPlanVersion,expectedProjectRevision,actions,center,dependsOn,finalizeTask};
+ if((runSequenceId===undefined)!==(runIndex===undefined)||runSequenceId!==undefined&&finalizeTask)
+  throw fail("assistant_task_run_input_invalid",400);
+ const payload={taskId,expectedPlanVersion,expectedProjectRevision,actions,center,dependsOn,finalizeTask,
+  ...(runSequenceId!==undefined?{runSequenceId,runIndex}:{})};
  const sig=signature("canvas_plan",payload);
  return writeTransaction(db,()=>{
   const existing=oldCommand(db,projectId,requestId,"canvas_plan",sig);
@@ -94,7 +99,9 @@ export function planAssistantCanvasStep(db,{projectId,taskId,requestId,
    throw fail("assistant_step_already_planned");
   if(task.active_plan_version!==expectedPlanVersion)throw fail("assistant_step_plan_conflict");
   if(task.revision!==expectedProjectRevision)throw fail("assistant_step_source_changed");
-  assertNoPendingAssistantRunSequence(db,{projectId,taskId});
+  const bindingProof=runSequenceId!==undefined?verifyAssistantRunInputBinding(db,{
+   projectId,taskId,runSequenceId,runIndex,expectedPlanVersion,actions,dependsOn}):null;
+  if(!bindingProof)assertNoPendingAssistantRunSequence(db,{projectId,taskId});
   const stepId=randomUUID(),action={actions,center},
    actionDigest=hash(action);
   const ordinal=db.prepare("SELECT COALESCE(MAX(ordinal)+1,0) AS ordinal FROM assistant_task_steps WHERE task_id=? AND plan_version=?")
@@ -110,6 +117,8 @@ export function planAssistantCanvasStep(db,{projectId,taskId,requestId,
   validateProjectDocument(preview.document);
   const preconditions={projectRevision:expectedProjectRevision,projectGraphDigest:hash(original),
    refs,requiresApproval:true,finalizeTask,
+   ...(bindingProof?{runSequenceId,runBindingIndex:runIndex,
+    runSourceArtifactId:bindingProof.sourceArtifactId,runSourceSha256:bindingProof.sourceSha256}:{}),
    ...(actions.some(a=>["set_node_param","set_workflow_param"].includes(a.type))?{modelConfigRevision:ui.revision}:{})};
   const at=Date.now();
   db.prepare("INSERT INTO assistant_task_steps(id,task_id,plan_version,ordinal,kind,status,required,depends_on_json,action_json,action_digest,preconditions_json,approval_json,receipt_json,receipt_trust,result_json,created_at,updated_at) VALUES(?,?,?,?,'canvas_mutation','waiting_approval',1,?,?,?,?,'{}','{}','none','{}',?,?)")
@@ -155,6 +164,11 @@ export function commitAssistantCanvasAttempt(db,{projectId,taskId,stepId,
   if(task.revision!==pre.projectRevision||hash(JSON.parse(task.document_json))!==pre.projectGraphDigest)
    throw fail("assistant_step_source_changed");
   const externalRefs=dependencies(db,taskId,step);
+  if(pre.runSequenceId)verifyAssistantCommittedRunInput(db,{projectId,taskId,
+   runSequenceId:pre.runSequenceId,runBindingIndex:pre.runBindingIndex,
+   expectedPlanVersion:planVersion,actions:action.actions,
+   dependsOn:JSON.parse(step.depends_on_json),sourceArtifactId:pre.runSourceArtifactId,
+   sourceSha256:pre.runSourceSha256});
   const ui=modelConfig(db);
   if(pre.modelConfigRevision!==undefined&&pre.modelConfigRevision!==ui.revision)
    throw fail("assistant_step_source_changed");

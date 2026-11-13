@@ -57,16 +57,17 @@ export function projectEventCursor(db){
  return db.prepare("SELECT COALESCE(MAX(seq),0) AS cursor FROM project_events").get().cursor;
 }
 
-export function createProject(db,{id=randomUUID(),document}){
+export function createProjectInTransaction(db,{id=randomUUID(),document}){
  if(!validId(id))throw problem("invalid_project_id");
  const content=validateProjectDocument(graphDocument(document));
- return writeTransaction(db,()=>{
-  if(db.prepare("SELECT id FROM projects WHERE id=?").get(id))throw problem("project_id_conflict",409);
-  db.prepare("INSERT INTO projects(id,document_json,revision) VALUES(?,?,1)").run(id,content);
-  initialCanvasState(db,id,document);
-  emitProjectEvent(db,{id,revision:1,kind:"created"});
-  return map(db.prepare("SELECT * FROM projects WHERE id=?").get(id));
- });
+ if(db.prepare("SELECT id FROM projects WHERE id=?").get(id))throw problem("project_id_conflict",409);
+ db.prepare("INSERT INTO projects(id,document_json,revision) VALUES(?,?,1)").run(id,content);
+ initialCanvasState(db,id,document);
+ emitProjectEvent(db,{id,revision:1,kind:"created"});
+ return map(db.prepare("SELECT * FROM projects WHERE id=?").get(id));
+}
+export function createProject(db,args){
+ return writeTransaction(db,()=>createProjectInTransaction(db,args));
 }
 export function getProject(db,id){
  const row=db.prepare("SELECT * FROM projects WHERE id=? AND deleted_at IS NULL").get(id);

@@ -54,6 +54,24 @@ beforeEach(()=>{
  });
 });
 afterEach(async()=>{if(root)await act(async()=>{root!.unmount();});root=null;container?.remove();container=null;});
+it("P3 imported read-only Task disables resume and cancellation controls",async()=>{
+ const task={id:"imported-task",chatSessionId:"chat-a",chatSessionIds:["chat-a"],
+  rootMessageId:"original-user",originalRequest:"历史运行",status:"running",readOnly:true,
+  activePlanVersion:1,recoveryMode:"job_observation",steps:[]};
+ mocks.api.mockImplementation(async(url:string,method:string)=>{
+  if(method==="GET"&&url.includes("chatSessionId="))return {tasks:[task]};
+  if(method==="GET"&&url.endsWith("/imported-task"))return {task};
+  if(method==="GET"&&url.endsWith("/run-sequences"))return {sequence:null,state:"none",next:null};
+  if(method==="GET"&&url.endsWith("/model-calls"))return {calls:[]};
+  return {task};
+ });
+ await render("chat-a");
+ expect(container!.textContent).toContain("只读归档（禁止恢复执行）");
+ expect(Array.from(container!.querySelectorAll("button")).some(b=>b.textContent==="继续")).toBe(false);
+ expect(Array.from(container!.querySelectorAll("button")).some(b=>b.textContent==="结束记录")).toBe(false);
+ expect(mocks.api.mock.calls.some(([,method])=>method==="POST")).toBe(false);
+});
+
 describe("P3c cross-chat resume and safe replan UI",()=>{
  it("links an existing Task from another chat without executing any Job",async()=>{
   const previous={id:"task-old",chatSessionId:"chat-a",chatSessionIds:["chat-a"],

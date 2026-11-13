@@ -12,7 +12,7 @@ type Step={id:string;kind:string;planVersion:number;status:string;actionDigest:s
  result?:{jobId?:string;jobStatus?:string;artifactIds?:string[];bindings?:{nodeId:string}[];
  runId?:string;status?:string;exitCode?:number|null;artifactCount?:number};receiptTrust?:string};
 type Task={id:string;chatSessionId:string;chatSessionIds?:string[];rootMessageId:string;originalRequest:string;
- activePlanVersion?:number;status:string;recoveryMode:"guidance_only"|"canvas_atomic"|"job_observation"|"skill_audit";steps?:Step[];lastError?:string|null};
+ activePlanVersion?:number;status:string;readOnly?:boolean;recoveryMode:"guidance_only"|"canvas_atomic"|"job_observation"|"skill_audit";steps?:Step[];lastError?:string|null};
 type Recovery={canReplan:boolean;reason:string;planVersion:number;projectRevision:number;completedArtifacts?:number;failedJobs?:number};
 type FailureRecovery={canRecover:boolean;reason:string;planVersion:number;projectRevision:number;
  failureReason?:string;sourceJobId?:string;fallbackAction?:{type:"run_node";nodeId:string;mode?:string};
@@ -127,7 +127,7 @@ export function useCanvasAssistantTasks({
  const selected=items.find(item=>item.id===selectedId&&(item.chatSessionId===activeChatId||
   (activeChatId!==null&&item.chatSessionIds?.includes(activeChatId))))??null;
  const currentTask=detail?.id===selected?.id?detail:selected;
- const activeTask=currentTask?.status==="cancelled"||currentTask?.status==="completed"?null:currentTask;
+ const activeTask=currentTask?.readOnly||currentTask?.status==="cancelled"||currentTask?.status==="completed"?null:currentTask;
  const policy=()=>({includeContext,scope,includedIds:includeContext&&scope==="selection"?includedIds.slice(0,12):[]});
  const path=(id:string)=>base+"/"+encodeURIComponent(id);
  const observe=async(taskId:string|null,messageId:string,kind:"reply"|"error",text:string)=>{
@@ -435,9 +435,10 @@ export function useCanvasAssistantTasks({
   {selected?<div className="mt-1.5 text-[11px]" style={{color:"var(--assistant-muted)"}}>
    <div className="flex flex-wrap items-center gap-2">
     <span>状态：{taskStatusLabel[detail?.id===selected.id?detail.status:selected.status]??selected.status}</span>
+    {currentTask?.readOnly?<span>只读归档（禁止恢复执行）</span>:null}
     <span>步骤：{detail?.id===selected.id?detail.steps?.length??0:0}</span>
-    {detail?.id===selected.id&&detail.steps?.length?<span>可信完成：{detail.steps.filter(s=>s.status==="succeeded"&&s.receiptTrust==="server_committed").length}/{detail.steps.length}</span>:null}
-    <span>{detail?.id===selected.id&&detail.recoveryMode==="skill_audit"?"Skill 执行有可信 Run ID":detail?.id===selected.id&&detail.recoveryMode==="job_observation"?"生成与落图分阶段对账":detail?.id===selected.id&&detail.recoveryMode==="canvas_atomic"?"画布操作有可信回执":"仅指导恢复"}</span>
+    {detail?.id===selected.id&&detail.steps?.length?<span>{currentTask?.readOnly?"历史完成回执":"可信完成"}：{detail.steps.filter(s=>s.status==="succeeded"&&s.receiptTrust==="server_committed").length}/{detail.steps.length}</span>:null}
+    <span>{currentTask?.readOnly?"仅供历史查看":detail?.id===selected.id&&detail.recoveryMode==="skill_audit"?"Skill 执行有可信 Run ID":detail?.id===selected.id&&detail.recoveryMode==="job_observation"?"生成与落图分阶段对账":detail?.id===selected.id&&detail.recoveryMode==="canvas_atomic"?"画布操作有可信回执":"仅指导恢复"}</span>
     {activeTask?<>
      {!["waiting_external","needs_reconcile","cancelling","waiting_approval","blocked"].includes(activeTask.status)?
       <button type="button" className="canvas-assistant-link" disabled={busy||sending}

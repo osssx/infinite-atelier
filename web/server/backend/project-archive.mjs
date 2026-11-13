@@ -3,9 +3,10 @@ import {createReadStream} from "node:fs";
 import {PassThrough} from "node:stream";
 import {Zip,ZipPassThrough} from "fflate";
 import {importStreamedArchive} from "./project-archive-import.mjs";
-import {createProject,getProject,validateProjectDocument} from "./projects.mjs";
+import {createProjectInTransaction,getProject,validateProjectDocument} from "./projects.mjs";
+import {exportAssistantTaskArchive,validateAssistantTaskArchive,importAssistantTaskArchive} from "./assistant-task-archive.mjs";
 import {getCanvasViewport,getCanvasChats} from "./canvas-state.mjs";
-import {assertNoRawCredentials} from "./repository.mjs";
+import {assertNoRawCredentials,writeTransaction} from "./repository.mjs";
 import {createComfyRegistry,validateComfyTemplate} from "./comfy-registry.mjs";
 
 const hashRe=/^[a-f0-9]{64}$/;
@@ -59,8 +60,8 @@ function boundTemplates(document){
 }
 function validatedManifest(manifest,registry){
  if(!manifest||manifest.app!=="infinite-atelier"||manifest.kind!=="sqlite-canvas-project"||
-  manifest.version!==1||!manifest.project||!Array.isArray(manifest.media))
-  throw error("archive_invalid_manifest");
+  ![1,2].includes(manifest.version)||!manifest.project||!Array.isArray(manifest.media))
+   throw error("archive_invalid_manifest");
  const p=manifest.project;
  if(!p.document||!p.viewport||!p.chats||typeof p.title!=="string"||
   p.title.length>500||typeof p.id!=="string")throw error("archive_invalid_manifest");
@@ -81,7 +82,9 @@ function validatedManifest(manifest,registry){
    throw error("archive_template_missing",422);
  if(!Array.isArray(p.chats.sessions)||p.chats.activeChatId===undefined)
   throw error("archive_invalid_manifest");
- const found=projectArchiveHashes({document:p.document,chats:p.chats});
+ if(manifest.version===2)validateAssistantTaskArchive(manifest.assistantTasks);
+ const found=projectArchiveHashes({document:p.document,chats:p.chats,
+   ...(manifest.version===2?{assistantTasks:manifest.assistantTasks}:{})});
  const media=new Map();
  for(const item of manifest.media){
   if(!item||!hashRe.test(item.sha256)||item.path!=="blobs/"+item.sha256||
@@ -100,7 +103,8 @@ export function createProjectArchive({db,blobStore,workflowsDir,registry:provide
  const registry=providedRegistry??createComfyRegistry(db,{workflowsDir});
  async function exportProject(id){
   const project=getProject(db,id),viewport=getCanvasViewport(db,id),chats=getCanvasChats(db,id);
-  const hashes=[...projectArchiveHashes({document:project.document,chats})].sort();
+  const assistantTasks=exportAssistantTaskArchive(db,id);
+  const hashes=[...projectArchiveHashes({document:project.document,chats,assistantTasks})].sort();
   if(hashes.length>ARCHIVE_MAX_FILES-1)throw error("archive_file_limit_exceeded",413);
   const media=[];let total=0;
   for(const hash of hashes){
@@ -114,11 +118,11 @@ export function createProjectArchive({db,blobStore,workflowsDir,registry:provide
    return template;
   });
   if(templates.length>64)throw error("archive_invalid_manifest",413);
-  const manifest={app:"infinite-atelier",kind:"sqlite-canvas-project",version:1,
+  const manifest={app:"infinite-atelier",kind:"sqlite-canvas-project",version:2,
    project:{id:project.id,title:project.document.title||project.id,
     revision:project.revision,document:project.document,
     viewport:viewport.viewport,chats:{sessions:chats.sessions,activeChatId:chats.activeChatId}},
-   media,templates};
+   media,templates,assistantTasks};
   const text=Buffer.from(stable(manifest),"utf8");
   if(text.length>5*1024*1024)throw error("archive_invalid_manifest",413);
   assertQuota(total+text.length);
@@ -177,13 +181,18 @@ export function createProjectArchive({db,blobStore,workflowsDir,registry:provide
    create:(manifest,media)=>{
     const p=manifest.project;
     registry.installMany(manifest.templates??[]);
-    const created=createProject(db,{id:randomUUID(),document:{
-     ...p.document,title:p.title,
-     viewport:p.viewport,chatSessions:p.chats.sessions,activeChatId:p.chats.activeChatId
-    }});
-    return {id:created.id,revision:created.revision,mediaCount:media.size,title:p.title};
-   }
-  });
+    return writeTransaction(db,()=>{
+     const created=createProjectInTransaction(db,{id:randomUUID(),document:{
+       ...p.document,title:p.title,
+       viewport:p.viewport,chatSessions:p.chats.sessions,activeChatId:p.chats.activeChatId
+      }});
+     const taskCount=manifest.version===2?
+      importAssistantTaskArchive(db,created.id,manifest.assistantTasks):0;
+     return {id:created.id,revision:created.revision,mediaCount:media.size,
+      taskCount,title:p.title};
+     });
+    }
+   });
  }
  return {exportProject,importProject};
 }

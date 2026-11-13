@@ -219,7 +219,10 @@ const materializationResults=(db,jobId,projectId,artifacts)=>{
  * a model, Skill, or Comfy job. Job success and materialization are separate.
  */
 function reconcileTaskInTransaction(db,projectId,taskId){
- const task=context(db,projectId,taskId),steps=db.prepare(
+ const task=context(db,projectId,taskId);
+ // Imported archives are historical evidence, never live reconciliation targets.
+ if(task.read_only)return {taskId,advanced:0,checked:0};
+ const steps=db.prepare(
   "SELECT * FROM assistant_task_steps WHERE task_id=? AND kind IN ('model_job','comfy_workflow','materialize') ORDER BY plan_version,ordinal").all(taskId);
  let advanced=0;
  for(const step of steps){
@@ -351,7 +354,7 @@ export function reconcileAssistantExternalTask(db,{projectId,taskId}){
  */
 export function recoverAssistantExternalTasksAtStartup(db){
  return writeTransaction(db,()=>{
-  const rows=db.prepare("SELECT DISTINCT t.project_id,t.id FROM assistant_tasks t JOIN assistant_task_steps s ON s.task_id=t.id JOIN projects p ON p.id=t.project_id AND p.deleted_at IS NULL WHERE s.kind IN ('model_job','comfy_workflow','materialize') AND s.status IN ('waiting_external','needs_reconcile')").all();
+  const rows=db.prepare("SELECT DISTINCT t.project_id,t.id FROM assistant_tasks t JOIN assistant_task_steps s ON s.task_id=t.id JOIN projects p ON p.id=t.project_id AND p.deleted_at IS NULL WHERE t.read_only=0 AND s.kind IN ('model_job','comfy_workflow','materialize') AND s.status IN ('waiting_external','needs_reconcile')").all();
   let advanced=0;
   for(const item of rows)advanced+=reconcileTaskInTransaction(db,item.project_id,item.id).advanced;
   return {tasks:rows.length,advanced};

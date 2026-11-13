@@ -2,7 +2,8 @@
  * Only reads registered templates from the user's real data. Generates real media
  * in a separately locked temporary SQLite/CAS root. Exactly one Moss image Job
  * and one MiniMax video Job; on uncertain response it NEVER retries /prompt.
- * Usage: ATELIER_MINIMAX_LIVE=1 node web/scripts/minimax-p3c2-live-acceptance.mjs
+ * Safe preflight: ATELIER_MINIMAX_PREFLIGHT=1 node web/scripts/minimax-p3c2-live-acceptance.mjs
+ * Live GPU generation (opt-in): ATELIER_MINIMAX_LIVE=1 node web/scripts/minimax-p3c2-live-acceptance.mjs
  */
 import {DatabaseSync} from "node:sqlite";
 import {createHash,randomUUID} from "node:crypto";
@@ -10,13 +11,17 @@ import {join} from "node:path";
 import {readFileSync,writeFileSync,existsSync,mkdtempSync,openSync,readSync,closeSync} from "node:fs";
 import {tmpdir} from "node:os";
 import {spawnSync} from "node:child_process";
-import {createLocalBackend} from "../server/backend/runtime.mjs";
+import {createLocalBackend,resolveLocalDataDir} from "../server/backend/runtime.mjs";
+import {loadBackendEnv} from "./load-backend-env.mjs";
 import {fingerprintSource,stableJson} from "../server/backend/repository.mjs";
 import {validateComfyTemplate} from "../server/backend/comfy-registry.mjs";
 import {compileSingleWorkflow} from "../server/comfy-workflow/compiler.mjs";
 
-if(process.env.ATELIER_MINIMAX_LIVE!=="1")throw Error("ATELIER_MINIMAX_LIVE=1 opt-in required");
-const origin="http://127.0.0.1:8188",instanceId="comfy-local";
+loadBackendEnv();
+const preflightOnly=process.env.ATELIER_MINIMAX_PREFLIGHT==="1";
+if(!preflightOnly&&process.env.ATELIER_MINIMAX_LIVE!=="1")throw Error("ATELIER_MINIMAX_LIVE=1 opt-in required");
+const origin=process.env.ATELIER_COMFY_URL||"http://127.0.0.1:8188",
+ instanceId=process.env.ATELIER_COMFY_INSTANCE_ID||"comfy-local";
 let projectId="minimax-p3c2-"+randomUUID().slice(0,8);
 const
  sourceId="moss-image-source",targetId="minimax-i2v-workflow";
@@ -36,8 +41,8 @@ if(resumeRoot){
   assert(typeof projectId==="string"&&projectId.startsWith("minimax-p3c2-"),"invalid_resume_project");
  }finally{saved.close()}
 }
-const templateFor=(db,liveRoot,id)=>{
- const row=db.prepare("SELECT payload_json,workflow_hash FROM comfy_template_versions WHERE template_id=? ORDER BY created_at DESC LIMIT 1").get(id);
+const templateFor=(db,liveRoot,id,revision)=>{
+ const row=db.prepare("SELECT payload_json,workflow_hash FROM comfy_template_versions WHERE template_id=? AND revision=?").get(id,revision);
  assert(row?.workflow_hash,"pinned_template_missing_"+id);
  const path=join(liveRoot,"workflows",row.workflow_hash+".json");
  assert(existsSync(path),"pinned_workflow_graph_missing_"+id);
@@ -45,8 +50,11 @@ const templateFor=(db,liveRoot,id)=>{
 };
 const imagePrompt="A small matte red ceramic teapot on an oak table, soft daylight, square studio product photograph, plain background, no text";
 const videoPrompt="A small matte red ceramic teapot on a wooden table slowly rotates a few degrees; gentle steam rises; smooth static camera, continuous shot, soft daylight, no text";
-const mossOverrides={["103cb43c3c4c"]:"1:1 (Square)",["1295e3e8695d"]:0.5,
- ["a7b915e81b56"]:false};
+let mossOverrides={};
+const overridePort=(t,match,value)=>{
+ const port=t.ports.find(p=>p.direction==="target"&&match(p));
+ assert(port,"missing_moss_port");return [port.id,value];
+};
 const miniOverrides={prompt:videoPrompt,duration:1,aspect_ratio:"1:1 (Square)",
  megapixels:0.2,lightning:true,lightning_steps:4,seed:42};
 const ready=async(method,url,body)=>{
@@ -94,17 +102,24 @@ const waitJob=async(jobId,label,maxMs)=>{
  throw Error("job_timeout_"+label+"_do_not_resubmit");
 };
 try{
- const liveRoot=join(process.env.LOCALAPPDATA||"","InfiniteAtelier","data"),liveDb=join(liveRoot,"db","atelier.sqlite");
+ const liveRoot=resolveLocalDataDir(),liveDb=join(liveRoot,"db","atelier.sqlite");
  assert(existsSync(liveDb),"live_db_missing");
  const reader=new DatabaseSync(liveDb,{readOnly:true});
  let moss,mini;
  try{
-  const mossPreset=reader.prepare("SELECT template_id,revision FROM comfy_presets WHERE name=?").get("Moss Image（文生图）");
-  assert(mossPreset,"moss_preset_missing");
-  moss=templateFor(reader,liveRoot,mossPreset.template_id);
-  mini=templateFor(reader,liveRoot,"video-minimax-h3-fl2v-turbo");
-  assert(moss.revision===mossPreset.revision,"moss_preset_version_changed");
- }finally{reader.close()}
+   const mossPreset=reader.prepare("SELECT template_id,revision FROM comfy_presets WHERE name LIKE 'Moss Image%' ORDER BY name LIMIT 1").get();
+   assert(mossPreset,"moss_preset_missing");
+   const miniPreset=reader.prepare("SELECT template_id,revision FROM comfy_presets WHERE template_id LIKE 'video-minimax-h3-%' ORDER BY CASE WHEN template_id='video-minimax-h3-i2v-turbo' THEN 0 ELSE 1 END,name LIMIT 1").get();
+   assert(miniPreset,"minimax_h3_preset_missing");
+   moss=templateFor(reader,liveRoot,mossPreset.template_id,mossPreset.revision);
+   mini=templateFor(reader,liveRoot,miniPreset.template_id,miniPreset.revision);
+   assert(moss.revision===mossPreset.revision&&mini.revision===miniPreset.revision,"pinned_preset_version_changed");
+   mossOverrides=Object.fromEntries([
+    overridePort(moss,p=>p.inputBinding?.targets?.some(t=>t.inputName==="aspect_ratio"),"1:1 (Square)"),
+    overridePort(moss,p=>p.inputBinding?.targets?.some(t=>t.inputName==="megapixels"),0.5),
+    overridePort(moss,p=>p.valueKind==="BOOLEAN"&&p.label?.includes("增强"),false)
+   ]);
+  }finally{reader.close()}
  report.templateVersions={moss:{id:moss.id,revision:moss.revision},
   mini:{id:mini.id,revision:mini.revision}};
  const queue=await fetch(origin+"/queue",{signal:AbortSignal.timeout(8000)}).then(r=>r.json());
@@ -131,17 +146,19 @@ try{
   externalInputs:[firstInput],runOptions:{}};
  const compiledMini=compileSingleWorkflow(mockMini,mini,{info,
   mediaFiles:{[placeholder]:"atelier_"+placeholder+".png"}});
- assert(compiledMini.decisions.first_frame==="edge"&&
-  compiledMini.decisions["8d3f27002a51"]==="auto-prune"&&
-  compiledMini.captureMap.some(x=>x.kind==="video"),"real_minimax_compilation_invalid");
- report.preflight={queue:"empty",mossNodes:Object.keys(compiledMoss.graph).length,
+  assert(compiledMini.decisions.first_frame==="edge"&&
+   compiledMini.captureMap.some(x=>x.kind==="video"),"real_minimax_compilation_invalid");
+  report.preflight={queue:"empty",mossNodes:Object.keys(compiledMoss.graph).length,
   miniNodes:Object.keys(compiledMini.graph).length,
-  miniGraphHash:compiledMini.graphHash,port:"first_frame",lastFrame:"auto_prune",
-  durationSeconds:miniOverrides.duration,lightning:true,megapixels:miniOverrides.megapixels};
+   miniGraphHash:compiledMini.graphHash,port:"first_frame",lastFrame:"not_required",
+   durationSeconds:miniOverrides.duration,lightning:true,megapixels:miniOverrides.megapixels};
  log("P3C2_MINIMAX_PREFLIGHT_PASS",report.preflight);
 
- root=resumeRoot??mkdtempSync(join(tmpdir(),"infinite-atelier-minimax-p3c2-"+Date.now()+"-"));
- report.root=root;report.resumed=Boolean(resumeRoot);
+  if(preflightOnly){report.phase="preflight_pass";report.completedAt=at();
+   log("MINIMAX_P3C2_PREFLIGHT_ONLY_PASS",{...report.preflight,noJobSubmitted:true,noDatasetModified:true});
+  }else{
+  root=resumeRoot??mkdtempSync(join(tmpdir(),"infinite-atelier-minimax-p3c2-"+Date.now()+"-"));
+  report.root=root;report.resumed=Boolean(resumeRoot);
  runtime=createLocalBackend({dataDir:root,comfyInstances:[{id:instanceId,url:origin}],
   enableComfyManagement:true,autoDispatch:true,autoLocalSession:true,dispatchIntervalMs:125});
  const auth=runtime.sessionAuth.issueLocalSession();
@@ -325,8 +342,9 @@ try{
   videoArtifacts:videos.length,sourceVerified:true,bindingStep:boundPlan.stepId,
   videoJob:miniQueued.jobId,trust:"server_committed",state:completed.task.status,
   sequence:finalSequence.state,noDuplicatePaidSubmit:true};
- log("MINIMAX_P3C2_LIVE_PASS",report.summary);
-}catch(error){
+  log("MINIMAX_P3C2_LIVE_PASS",report.summary);
+  }
+ }catch(error){
  report.phase="failed";report.completedAt=at();
  report.error={name:error?.name??"Error",code:error?.code??null,
   message:String(error?.message??error).slice(0,360)};

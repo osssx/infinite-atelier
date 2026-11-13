@@ -61,7 +61,7 @@ function complete(ctx,jobId,index){
 }
 test("P3b freeze two intents; one Job at a time; approval and materialization gate next",t=>{
  const ctx=setup(t);
- assert.equal(SCHEMA_VERSION,28);
+ assert.equal(SCHEMA_VERSION,29);
  const seq=capture(ctx);
  assert.equal(seq.count,2);
  assert.equal(capture(ctx).sequenceId,seq.sequenceId);

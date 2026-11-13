@@ -7,8 +7,11 @@ export type AssistantRunSequenceView={
  sequence:{id:string;taskId:string;sourceMessageId:string;planVersion:number;
   actions:AssistantRunIntent[];status:string}|null;
  state:string;index?:number;stepId?:string;
+ selectionCandidates?:{artifactId:string;nodeId:string;kind:string;portId:string|null;
+  itemKey:string;sha256:string;addressable:boolean}[];
  outputs?:{sourceStepId:string;materialStepId:string;runIndex:number|null;runSequenceId:string|null;
-  jobId:string;artifactId:string;nodeId:string;kind:string;portId:string|null;sha256:string}[];
+  jobId:string;artifactId:string;nodeId:string;kind:string;portId:string|null;
+  itemKey:string;sha256:string}[];
  next:{index:number;action:AssistantRunIntent;dependsOn:string[];last:boolean;
   needsBinding?:boolean;inputBinding?:{sourceArtifactId:string;sourceSha256:string;
    sourceMaterialStepId:string;sourceNodeId:string;sourcePortId:string;

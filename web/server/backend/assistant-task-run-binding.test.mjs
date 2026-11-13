@@ -12,9 +12,9 @@ import {createAssistantTask,getAssistantTask} from "./assistant-tasks.mjs";
 import {decideAssistantTaskStep,claimAssistantTaskStep} from "./assistant-task-step-gate.mjs";
 import {planAssistantCanvasStep,executeAssistantCanvasStep,recoverAssistantCanvasTasksAtStartup} from "./assistant-task-canvas-executor.mjs";
 import {planAssistantExternalJobStep,enqueueAssistantExternalJobStep,reconcileAssistantExternalTask,recoverAssistantExternalTasksAtStartup} from "./assistant-task-external-jobs.mjs";
-import {registerAssistantRunSequence,getAssistantRunSequence} from "./assistant-task-run-sequences.mjs";
+import {registerAssistantRunSequence,getAssistantRunSequence,selectAssistantRunInput} from "./assistant-task-run-sequences.mjs";
 
-const sha="a".repeat(64),revision="b".repeat(64);
+const sha="a".repeat(64),shaTwo="c".repeat(64),revision="b".repeat(64);
 const template={id:"demo-image-refine",revision,name:"Image refine",
  apiGraph:{"1":{class_type:"LoadImage",inputs:{image:"input.png"}},
   "2":{class_type:"SaveImage",inputs:{images:["1",0]}}},
@@ -64,18 +64,27 @@ function generateFirst(ctx){
   requestId:"enqueue-first",expectedPlanVersion:1,actionDigest:step.actionDigest});
  return queued.jobId;
 }
-function materialize(ctx,jobId){
+function materialize(ctx,jobId,{multi=false}={}){
  const {db}=ctx;
  db.prepare("UPDATE jobs SET status='succeeded' WHERE id=?").run(jobId);
  db.prepare("INSERT INTO blobs(id,sha256,byte_size,mime,relative_path,status) VALUES(?,?,100,'image/png','cas/test.png','ready')").run(sha,sha);
  db.prepare("INSERT INTO artifacts(id,job_id,port_id,item_key,blob_id,kind,mime,sha256,metadata_json) VALUES('art-rendered',?,'image','img',?,'image','image/png',?,'{}')")
   .run(jobId,sha,sha);
+ if(multi){
+  db.prepare("INSERT INTO blobs(id,sha256,byte_size,mime,relative_path,status) VALUES(?,?,110,'image/png','cas/test-two.png','ready')")
+   .run(shaTwo,shaTwo);
+  db.prepare("INSERT INTO artifacts(id,job_id,port_id,item_key,blob_id,kind,mime,sha256,metadata_json) VALUES('art-rendered-two',?,'image','img-2',?,'image','image/png',?,'{}')")
+   .run(jobId,shaTwo,shaTwo);
+ }
  reconcileAssistantExternalTask(db,ctx);
  const result=getProject(db,"p").document;
  result.nodes.push({id:"rendered",type:"image",title:"Generated source",
   position:{x:100,y:350},width:340,height:240,metadata:{storageKey:"cas:"+sha}});
+ if(multi)result.nodes.push({id:"rendered-two",type:"image",title:"Second trusted image",
+  position:{x:480,y:350},width:340,height:240,metadata:{storageKey:"cas:"+shaTwo}});
  db.prepare("UPDATE projects SET document_json=?,revision=revision+1 WHERE id='p'").run(JSON.stringify(result));
  db.prepare("INSERT INTO materializations(id,job_id,artifact_id,project_id,status,node_id) VALUES('mat',?,'art-rendered','p','materialized','rendered')").run(jobId);
+ if(multi)db.prepare("INSERT INTO materializations(id,job_id,artifact_id,project_id,status,node_id) VALUES('mat-two',?,'art-rendered-two','p','materialized','rendered-two')").run(jobId);
  reconcileAssistantExternalTask(db,ctx);
  assert.equal(getAssistantTask(db,ctx).task.status,"ready");
 }
@@ -122,6 +131,152 @@ function nextJob(ctx,alter){
  if(alter)alter(spec);
  return planAssistantExternalJobStep(ctx.db,spec);
 }
+test("P3c3a multiple trusted IMAGE artifacts require explicit immutable choice before binding or second Job",t=>{
+ const ctx=setup(t),jobId=generateFirst(ctx);
+ materialize(ctx,jobId,{multi:true});
+ const pending=getAssistantRunSequence(ctx.db,ctx);
+ assert.equal(pending.state,"selection_required");
+ assert.equal(pending.index,1);
+ assert.equal(pending.selectionCandidates.length,2);
+ assert.deepEqual(pending.selectionCandidates.map(v=>v.itemKey).sort(),["img","img-2"]);
+ assert.equal(count(ctx.db,"jobs"),1);
+ const intent={...ctx,runSequenceId:ctx.seq.sequenceId,runIndex:1,
+  expectedPlanVersion:1,expectedProjectRevision:2};
+ assert.throws(()=>selectAssistantRunInput(ctx.db,{...intent,requestId:"fake",
+  artifactId:"some-other-image"}),{code:"assistant_task_run_input_selection_unverified"});
+ assert.throws(()=>selectAssistantRunInput(ctx.db,{...intent,requestId:"wrong-version",
+  expectedProjectRevision:1,artifactId:"art-rendered-two"}),{code:"assistant_step_source_changed"});
+ assert.throws(()=>planAssistantCanvasStep(ctx.db,{...ctx,requestId:"selection-bypass",expectedPlanVersion:1,
+  expectedProjectRevision:2,actions:[{type:"connect_workflow_port",fromNodeId:"rendered",fromPortId:"image",
+   toNodeId:"wf",toPortId:"image_in"}],dependsOn:[],center:{x:0,y:0},
+  runSequenceId:ctx.seq.sequenceId,runIndex:1}),{code:"assistant_task_run_not_ready"});
+ assert.equal(count(ctx.db,"jobs"),1);
+ const selected=selectAssistantRunInput(ctx.db,{...intent,requestId:"select-second",
+  artifactId:"art-rendered-two"});
+ assert.equal(selected.selected,true);
+ assert.equal(selected.existing,false);
+ assert.equal(selectAssistantRunInput(ctx.db,{...intent,requestId:"select-second",
+  artifactId:"art-rendered-two"}).existing,true);
+ assert.equal(selectAssistantRunInput(ctx.db,{...intent,requestId:"select-again",
+  artifactId:"art-rendered-two"}).existing,true);
+ assert.throws(()=>selectAssistantRunInput(ctx.db,{...intent,requestId:"different-choice",
+  artifactId:"art-rendered"}),{code:"assistant_task_run_input_selection_conflict"});
+ assert.equal(count(ctx.db,"assistant_task_run_input_selections"),1);
+ const ready=getAssistantRunSequence(ctx.db,ctx);
+ assert.equal(ready.state,"ready");
+ assert.equal(ready.next.needsBinding,true);
+ assert.equal(ready.next.inputBinding.sourceArtifactId,"art-rendered-two");
+ assert.equal(ready.next.inputBinding.sourceSha256,shaTwo);
+ assert.equal(ready.next.inputBinding.sourceNodeId,"rendered-two");
+ assert.equal(getProject(ctx.db,"p").document.connections.length,0);
+ const {draft}=bind(ctx);
+ assert.equal(count(ctx.db,"jobs"),1);
+ commit(ctx,draft);
+ const follow=getAssistantRunSequence(ctx.db,ctx);
+ assert.equal(follow.next.needsBinding,false);
+ assert.equal(follow.next.inputBinding.sourceArtifactId,"art-rendered-two");
+ const frozen=nextJob(ctx);
+ const payload=JSON.parse(one(ctx.db,"SELECT action_json FROM assistant_task_steps WHERE id=?",frozen.stepId).action_json);
+ assert.equal(payload.job.snapshot.comfyRequest.externalInputs[0].assetId,shaTwo);
+ assert.equal(count(ctx.db,"jobs"),1);
+ approve(ctx,frozen);
+ enqueueAssistantExternalJobStep(ctx.db,{...ctx,stepId:frozen.stepId,requestId:"enqueue-multi-second",
+  expectedPlanVersion:1,actionDigest:frozen.actionDigest});
+ assert.equal(count(ctx.db,"jobs"),2);
+});
+test("P3c3a grouped multi-image batch cannot silently bind non-primary gallery image",t=>{
+ const ctx=setup(t),first=generateFirst(ctx);
+ materialize(ctx,first,{multi:true});
+ const db=ctx.db,graph=getProject(db,"p").document;
+ const primary=graph.nodes.find(node=>node.id==="rendered");
+ primary.metadata.images=[
+  {storageKey:"cas:"+sha,id:"img-a"},
+  {storageKey:"cas:"+shaTwo,id:"img-b"}
+ ];
+ graph.nodes=graph.nodes.filter(node=>node.id!=="rendered-two");
+ db.prepare("UPDATE materializations SET node_id='rendered' WHERE artifact_id='art-rendered-two'").run();
+ const materialStep=db.prepare("SELECT id,receipt_json FROM assistant_task_steps WHERE kind='materialize' AND task_id=?")
+  .get(ctx.taskId);
+ const materialReceipt=JSON.parse(materialStep.receipt_json);
+ materialReceipt.bindings=materialReceipt.bindings.map(b=>b.artifactId==="art-rendered-two"?
+  {...b,nodeId:"rendered"}:b);
+ db.prepare("UPDATE assistant_task_steps SET receipt_json=? WHERE id=?")
+  .run(JSON.stringify(materialReceipt),materialStep.id);
+ db.prepare("UPDATE projects SET document_json=?,revision=revision+1 WHERE id='p'").run(JSON.stringify(graph));
+ const before=getAssistantRunSequence(db,ctx);
+ assert.equal(before.state,"selection_required");
+ assert.equal(before.selectionCandidates.length,2);
+ assert.equal(before.selectionCandidates.find(v=>v.artifactId==="art-rendered").addressable,true);
+ assert.equal(before.selectionCandidates.find(v=>v.artifactId==="art-rendered-two").addressable,false);
+ const args={...ctx,runSequenceId:ctx.seq.sequenceId,runIndex:1,
+  expectedPlanVersion:1,expectedProjectRevision:3};
+ assert.throws(()=>selectAssistantRunInput(db,{...args,requestId:"non-primary",
+  artifactId:"art-rendered-two"}),{code:"assistant_task_run_input_selection_unverified"});
+ assert.equal(count(db,"assistant_task_run_input_selections"),0);
+ const chosen=selectAssistantRunInput(db,{...args,requestId:"primary",
+  artifactId:"art-rendered"});
+ assert.equal(chosen.selected,true);
+ assert.equal(getAssistantRunSequence(db,ctx).next.inputBinding.sourceSha256,sha);
+ // The selected artifact becomes unaddressable if the gallery primary changes.
+ // A previously frozen selection must not redirect to that other visible image.
+ primary.metadata.storageKey="cas:"+shaTwo;
+ primary.metadata.primaryImageId="img-b";
+ db.prepare("UPDATE projects SET document_json=?,revision=revision+1 WHERE id='p'").run(JSON.stringify(graph));
+ assert.equal(getAssistantRunSequence(db,ctx).state,"selection_invalidated");
+ assert.equal(count(db,"jobs"),1);
+});
+test("P3c3a HTTP selection preserves identity, rejects invalid inputs and never enqueues on selection",async t=>{
+ const ctx=setup(t),app=buildApp({db:ctx.db,authorize:()=>true});
+ t.after(async()=>app.close());
+ const first=generateFirst(ctx);materialize(ctx,first,{multi:true});
+ const path="/api/v1/projects/p/assistant/tasks/"+ctx.taskId+"/run-sequences";
+ const call=async(method,url,payload)=>{
+  const r=await app.inject({method,url,...(payload?{payload}:{})});
+  return {status:r.statusCode,body:r.json()};
+ };
+ const list=await call("GET",path);
+ assert.equal(list.status,200);
+ assert.equal(list.body.state,"selection_required");
+ assert.equal(list.body.selectionCandidates.length,2);
+ assert.equal(list.body.selectionCandidates.some(v=>v.itemKey==="img-2"),true);
+ const body={requestId:"http-pick-second",runSequenceId:ctx.seq.sequenceId,
+  runIndex:1,artifactId:"art-rendered-two",expectedPlanVersion:1,
+  expectedProjectRevision:2};
+ const invalid=await call("POST",path+"/select",{...body,requestId:"http-forged",
+  artifactId:"made-up"});
+ assert.equal(invalid.status,409);
+ const selection=await call("POST",path+"/select",body);
+ assert.equal(selection.status,200,JSON.stringify(selection.body));
+ assert.equal(selection.body.selected,true);
+ assert.equal((await call("POST",path+"/select",body)).body.existing,true);
+ assert.equal((await call("POST",path+"/select",{...body,requestId:"http-swap",
+  artifactId:"art-rendered"})).status,409);
+ assert.equal((await call("GET",path)).body.next.inputBinding.sourceArtifactId,"art-rendered-two");
+ assert.equal(count(ctx.db,"jobs"),1);
+ assert.equal(count(ctx.db,"assistant_task_steps"),2);
+});
+test("P3c3a selected output survives SQLite restart; missing CAS proof blocks without picking another",t=>{
+ const dir=mkdtempSync(join(tmpdir(),"atelier-p3c3a-")),file=join(dir,"db.sqlite");
+ const db=new DatabaseSync(file),ctx=setup(t,db);
+ let active=db;
+ t.after(()=>{try{active.close()}catch{};rmSync(dir,{recursive:true,force:true})});
+ const first=generateFirst(ctx);materialize(ctx,first,{multi:true});
+ selectAssistantRunInput(active,{...ctx,requestId:"disk-choice",
+  runSequenceId:ctx.seq.sequenceId,runIndex:1,artifactId:"art-rendered-two",
+  expectedPlanVersion:1,expectedProjectRevision:2});
+ active.close();active=new DatabaseSync(file);ctx.db=active;initializeSchema(active);
+ let recovered=getAssistantRunSequence(active,ctx);
+ assert.equal(recovered.next.inputBinding.sourceArtifactId,"art-rendered-two");
+ assert.equal(count(active,"jobs"),1);
+ active.prepare("UPDATE blobs SET status='missing' WHERE id=?").run(shaTwo);
+ assert.equal(getAssistantRunSequence(active,ctx).state,"awaiting_verified_input");
+ assert.equal(count(active,"jobs"),1);
+ active.prepare("UPDATE blobs SET status='ready' WHERE id=?").run(shaTwo);
+ recovered=getAssistantRunSequence(active,ctx);
+ assert.equal(recovered.state,"ready");
+ assert.equal(recovered.next.inputBinding.sourceArtifactId,"art-rendered-two");
+ assert.equal(count(active,"assistant_task_run_input_selections"),1);
+});
 test("P3c2 trusted media binding HTTP approval and independent downstream enqueue",async t=>{
  const ctx=setup(t),app=buildApp({db:ctx.db,authorize:()=>true});
  t.after(async()=>{await app.close()});

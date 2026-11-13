@@ -137,6 +137,58 @@ describe("P3b persisted multi-run UI resume",()=>{
   expect(mocks.api.mock.calls.every(call=>call[1]==="GET")).toBe(true);
  });
 });
+describe("P3c3a explicit multi-artifact selection UI",()=>{
+ it("shows two verified outputs and persists one selection without creating any Job",async()=>{
+  const task={id:"task-multi",chatSessionId:"chat-a",chatSessionIds:["chat-a"],
+   rootMessageId:"original-user",originalRequest:"生成两张图后选一张转视频",
+   status:"ready",activePlanVersion:1,recoveryMode:"job_observation",steps:[]};
+  const actions=[{type:"run_node",nodeId:"source",mode:"image"},
+   {type:"run_workflow",nodeId:"wf",inputFromPrevious:{sourceKind:"image",toPortId:"first_frame"}}];
+  const candidates=[
+   {artifactId:"art-image-a",nodeId:"rendered-a",kind:"image",portId:"image",itemKey:"0",sha256:"a".repeat(64),addressable:true},
+   {artifactId:"art-image-b",nodeId:"rendered-b",kind:"image",portId:"image",itemKey:"1",sha256:"b".repeat(64),addressable:true}
+  ];
+  let committed=false;
+  const apiCalls:{url:string;method:string;payload?:Record<string,unknown>}[]=[];
+  mocks.api.mockImplementation(async(url:string,method:string,payload?:Record<string,unknown>)=>{
+   apiCalls.push({url,method,payload});
+   if(method==="GET"&&url.includes("chatSessionId="))return {tasks:[task]};
+   if(method==="GET"&&url.endsWith("/model-calls"))return {calls:[]};
+   if(method==="GET"&&url.endsWith("/run-sequences"))return {
+    sequence:{id:"sequence-1",taskId:task.id,sourceMessageId:"original-user",
+     planVersion:1,actions,status:"active"},
+    state:committed?"ready":"selection_required",index:committed?undefined:1,
+    selectionCandidates:committed?undefined:candidates,
+    next:committed?{index:1,action:actions[1],dependsOn:["material-step"],last:true,
+     needsBinding:true,inputBinding:{sourceArtifactId:"art-image-b",sourceSha256:"b".repeat(64),
+      sourceMaterialStepId:"material-step",sourceNodeId:"rendered-b",sourcePortId:"image",
+      toNodeId:"wf",toPortId:"first_frame",sourceKind:"image",valueKind:"IMAGE"}}:null,
+    outputs:[]
+   };
+   if(method==="GET"&&url==="/api/v1/projects/project")return {revision:2};
+   if(method==="GET")return {task};
+   if(method==="POST"&&url.endsWith("/run-sequences/select")){
+    expect(payload).toMatchObject({runSequenceId:"sequence-1",runIndex:1,
+     expectedPlanVersion:1,expectedProjectRevision:2,artifactId:"art-image-b"});
+    committed=true;return {selected:true,artifactId:"art-image-b"};
+   }
+   throw Error("unexpected mutation: "+method+" "+url);
+  });
+  container=document.createElement("div");document.body.appendChild(container);root=createRoot(container);
+  await act(async()=>root!.render(createElement(Harness,{runSequence:vi.fn()})));
+  expect(container!.textContent).toContain("上一项生成了多个可信产物");
+  expect(container!.textContent).toContain("rendered-a");
+  expect(container!.textContent).toContain("rendered-b");
+  const buttons=Array.from(container!.querySelectorAll("button")).filter(b=>b.textContent==="使用此产物");
+  expect(buttons).toHaveLength(2);
+  await act(async()=>{buttons[1]!.click();await Promise.resolve();});
+  expect(committed).toBe(true);
+  expect(container!.textContent).toContain("先连接可信产物，再生成第 2/2 项");
+  expect(container!.textContent).not.toContain("上一项生成了多个可信产物");
+  expect(apiCalls.filter(c=>c.method==="POST"&&c.url.endsWith("/run-sequences/select"))).toHaveLength(1);
+  expect(apiCalls.some(c=>c.method==="POST"&&/\/enqueue$|\/external-jobs$|\/canvas-steps$/.test(c.url))).toBe(false);
+ });
+});
 describe("P3c2 typed media binding resume UI",()=>{
  it("P3c2 after refresh labels the pending verified media binding separately from the paid Job",async()=>{
   const task={id:"task-image-seq",chatSessionId:"chat-a",rootMessageId:"original-user",

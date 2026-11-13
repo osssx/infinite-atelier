@@ -6,7 +6,7 @@ import {decideAssistantTaskStep} from "./assistant-task-step-gate.mjs";
 import {planAssistantCanvasStep,executeAssistantCanvasStep} from "./assistant-task-canvas-executor.mjs";
 import {planAssistantExternalJobStep,enqueueAssistantExternalJobStep,reconcileAssistantExternalTask} from "./assistant-task-external-jobs.mjs";
 import {planAssistantSkillStep,executeAssistantSkillStep} from "./assistant-task-skills.mjs";
-import {registerAssistantRunSequence,getAssistantRunSequence} from "./assistant-task-run-sequences.mjs";
+import {registerAssistantRunSequence,getAssistantRunSequence,selectAssistantRunInput} from "./assistant-task-run-sequences.mjs";
 import {inspectAssistantTaskRecovery,replanAssistantTaskSafely} from "./assistant-task-safe-replan.mjs";
 
 const id={type:"string",pattern:"^[A-Za-z0-9_-]{1,128}$"};
@@ -68,6 +68,11 @@ const runSequenceBody={type:"object",additionalProperties:false,
  properties:{requestId:id,sourceMessageId:id,
   expectedPlanVersion:{type:"integer",minimum:1},expectedProjectRevision:{type:"integer",minimum:1},
   actions:{type:"array",minItems:2,maxItems:3,items:{type:"object"}}}};
+const runInputSelectionBody={type:"object",additionalProperties:false,
+ required:["requestId","runSequenceId","runIndex","artifactId","expectedPlanVersion","expectedProjectRevision"],
+ properties:{requestId:id,runSequenceId:id,runIndex:{type:"integer",minimum:1,maximum:2},
+  artifactId:id,expectedPlanVersion:{type:"integer",minimum:1},
+  expectedProjectRevision:{type:"integer",minimum:1}}};
 const skillProposal={type:"object",additionalProperties:false,
  required:["skill_id","version"],properties:{
  skill_id:{type:"string",pattern:"^[a-z0-9]+(?:-[a-z0-9]+)*$",maxLength:80},
@@ -117,6 +122,9 @@ export function registerAssistantTaskRoutes(app,db,{skillRegistry,blobStore}={})
   registerAssistantRunSequence(db,{projectId:req.params.id,taskId:req.params.taskId,...req.body})));
  app.get(base+"/:taskId/run-sequences",{schema:{params:taskParams}},(req,reply)=>result(reply,
   getAssistantRunSequence(db,{projectId:req.params.id,taskId:req.params.taskId})));
+  app.post(base+"/:taskId/run-sequences/select",{schema:{params:taskParams,body:runInputSelectionBody}},
+   (req,reply)=>result(reply,selectAssistantRunInput(db,{
+    projectId:req.params.id,taskId:req.params.taskId,...req.body})));
  // Local Job queue creation, Attempt and Step are one transaction.
  // No provider request is performed in these routes.
  app.post(base+"/:taskId/external-jobs",{bodyLimit:600*1024,

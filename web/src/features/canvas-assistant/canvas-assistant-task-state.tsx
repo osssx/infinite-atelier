@@ -1,6 +1,7 @@
 import {useEffect,useRef,useState} from "react";
 import {nanoid} from "nanoid";
 import {canvasApi} from "@/features/backend-sync/canvas-api";
+import {canvasCasPreviewUrl} from "@/features/backend-sync/canvas-cas";
 import type {CanvasAssistantSession} from "@/types/canvas";
 import type {AssistantContextScope} from "./canvas-assistant-context";
 import {executeFrozenAssistantCanvasTaskStep} from "./canvas-assistant-task-execution";
@@ -229,6 +230,34 @@ export function useCanvasAssistantTasks({
    (error instanceof Error?error.message:"请求失败"));}
   finally{setBusy(false);}
  };
+ const refreshRunCandidates=async()=>{
+  if(!selected||busy||sending)return;
+  setBusy(true);setError("");
+  try{
+   const latest=await canvasApi<AssistantRunSequenceView>(path(selected.id)+"/run-sequences","GET");
+   setRunSequence(latest?.sequence?latest:null);
+  }catch(error){setError("候选刷新失败，未进行任何生成："+(error instanceof Error?error.message:"请求失败"));}
+  finally{setBusy(false);}
+ };
+ const selectTrustedRunOutput=async(artifactId:string)=>{
+  if(!selected||!runSequence?.sequence||runSequence.state!=="selection_required"||
+   !runSequence.selectionCandidates?.some(option=>option.artifactId===artifactId&&option.addressable)||
+   busy||sending)return;
+  setBusy(true);setError("");
+  try{
+   const project=await canvasApi<{revision:number}>(
+    "/api/v1/projects/"+encodeURIComponent(projectId),"GET");
+   await canvasApi(path(selected.id)+"/run-sequences/select","POST",{
+    requestId:nanoid(),runSequenceId:runSequence.sequence.id,runIndex:runSequence.index,
+    artifactId,expectedPlanVersion:runSequence.sequence.planVersion,
+    expectedProjectRevision:project.revision
+   });
+   const latest=await canvasApi<AssistantRunSequenceView>(path(selected.id)+"/run-sequences","GET");
+   setRunSequence(latest?.sequence?latest:null);
+   await refreshTask(selected.id);
+  }catch(error){setError("产物尚未选定，未发起下游生成："+(error instanceof Error?error.message:"选择失败"));}
+  finally{setBusy(false);}
+ };
  const externalSteps=detail&&selected&&detail.id===selected.id?detail.steps?.filter(step=>
   ["model_job","comfy_workflow","materialize"].includes(step.kind))??[]:[];
  const skillSteps=detail&&selected&&detail.id===selected.id?
@@ -385,6 +414,31 @@ export function useCanvasAssistantTasks({
      </div>)}
     </div>:null}
     {runSequence.next?.needsBinding&&runSequence.next.inputBinding?<p className="mt-1 break-words">下游需要先确认连线：{runSequence.next.inputBinding.sourceNodeId} → {runSequence.next.inputBinding.toNodeId}.{runSequence.next.inputBinding.toPortId}；连线成功后才会单独确认生成费用。</p>:null}
+    {runSequence.state==="selection_required"&&runSequence.selectionCandidates?.length?
+     <div className="mt-2 flex flex-col gap-2">
+      <p>上一项生成了多个可信产物，请明确选择其中一个。选择将持久保存且不可直接改选；此操作不会触发生成，随后仍需分别审批连线和下游 Job。</p>
+      <button type="button" className="canvas-assistant-link self-start"
+       disabled={busy||sending} onClick={()=>void refreshRunCandidates()}>刷新候选（只读）</button>
+      {runSequence.selectionCandidates.map((candidate,index)=>
+       <div key={candidate.artifactId} className="flex items-center gap-2 rounded border p-2"
+        style={{borderColor:"var(--assistant-border)"}}>
+        {candidate.kind==="image"?
+         <img className="h-16 w-16 shrink-0 rounded object-contain"
+          src={canvasCasPreviewUrl("cas:"+candidate.sha256)??undefined}
+          alt={"第 "+(index+1)+" 张候选图片"} loading="lazy"/>:null}
+        <div className="min-w-0 flex-1 break-words">
+         <div>候选 {index+1} · {candidate.kind} · 节点 {candidate.nodeId}</div>
+         <div>输出 {candidate.portId??"默认"} · 条目 {candidate.itemKey?.slice(0,72)}</div>
+         <div className="break-all opacity-70">产物 {candidate.artifactId.slice(0,16)}</div>
+         {!candidate.addressable?<p>非当前主图：请先在画布图片集中切换为主图，再刷新候选。</p>:null}
+        </div>
+        <button type="button" className="canvas-assistant-link shrink-0"
+         disabled={busy||sending||!candidate.addressable}
+         onClick={()=>void selectTrustedRunOutput(candidate.artifactId)}>使用此产物</button>
+       </div>)}
+     </div>:null}
+    {runSequence.state==="selection_invalidated"?<p>已选择的产物不再有完整可信证据；必须先恢复原 CAS/落图回执，不能自动改用另一张图片。</p>:null}
+    {runSequence.state==="selection_overflow"?<p>可信产物超过单轮选择上限（32 项），请缩小生成数量后重新规划。</p>:null}
     {runSequence.state==="awaiting_verified_input"?<p>等待前一项的完整可信媒体产物及落图回执，不会提交下一项。</p>:null}
     {["binding_conflict","binding_unverified"].includes(runSequence.state)?<p>工作流输入连线与冻结计划不一致，请先核对当前节点连接；不会发起下游生成。</p>:null}
     {runSequence.state==="awaiting_materialization"?<p>等待产物落图对账，不能提前提交下一项。</p>:null}

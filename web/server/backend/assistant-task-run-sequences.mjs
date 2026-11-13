@@ -56,6 +56,19 @@ function bindingStepFor(db,seq,index){
  return db.prepare("SELECT * FROM assistant_task_steps WHERE task_id=? AND plan_version=? AND kind='canvas_mutation' AND json_extract(preconditions_json,'$.runSequenceId')=? AND json_extract(preconditions_json,'$.runBindingIndex')=? AND superseded_at IS NULL ORDER BY ordinal DESC LIMIT 1")
   .get(seq.task_id,seq.plan_version,seq.id,index);
 }
+function candidateOutputs(db,projectId,task,seq,action,index,dep){
+ const graph=JSON.parse(task.document_json);
+ return trustedAssistantTaskOutputs(db,{projectId,taskId:seq.task_id,planVersion:seq.plan_version})
+  .filter(out=>out.runSequenceId===seq.id&&out.runIndex===index-1&&
+   out.materialStepId===dep&&out.kind===action.inputFromPrevious.sourceKind&&
+   graph.nodes.some(node=>node.id===out.nodeId&&node.type===out.kind))
+  .map(out=>({...out,addressable:graph.nodes.some(node=>node.id===out.nodeId&&
+   node.metadata?.storageKey==="cas:"+out.sha256)}));
+}
+function savedInputSelection(db,seq,index){
+ return db.prepare("SELECT * FROM assistant_task_run_input_selections WHERE sequence_id=? AND run_index=?")
+  .get(seq.id,index);
+}
 function resolveTrustedInput(db,projectId,task,seq,action,index,dep,{allowOccupied=false}={}){
  const input=action.inputFromPrevious;
  if(!input)return null;
@@ -71,12 +84,14 @@ function resolveTrustedInput(db,projectId,task,seq,action,index,dep,{allowOccupi
   canvasPort?.valueKind!==port.valueKind||!["socket","media-file"].includes(port.inputBinding?.mode)||
   !port.inputBinding?.targets?.length||sensitive.test(port.id+" "+port.label))
   throw fail("assistant_task_run_input_port_invalid",400);
- const outputs=trustedAssistantTaskOutputs(db,{projectId,taskId:seq.task_id,planVersion:seq.plan_version});
- const candidates=outputs.filter(out=>out.runSequenceId===seq.id&&out.runIndex===index-1&&
-  out.materialStepId===dep&&out.kind===input.sourceKind&&
-  graph.nodes.some(node=>node.id===out.nodeId&&node.type===input.sourceKind));
- if(candidates.length!==1)throw fail("assistant_task_run_input_unavailable");
- const source=candidates[0];
+ const candidates=candidateOutputs(db,projectId,task,seq,action,index,dep);
+ if(!candidates.length)throw fail("assistant_task_run_input_unavailable");
+ const selection=savedInputSelection(db,seq,index);
+ if(candidates.length>32)throw fail("assistant_task_run_input_selection_overflow");
+ if(!selection&&candidates.length>1)throw fail("assistant_task_run_input_selection_required");
+ const source=selection?candidates.find(out=>out.artifactId===selection.artifact_id&&
+  out.materialStepId===selection.material_step_id&&out.sha256===selection.source_sha256):candidates[0];
+ if(!source||!source.addressable)throw fail("assistant_task_run_input_selection_invalidated");
  if(!allowOccupied&&graph.connections.some(edge=>edge.toNodeId===action.nodeId&&edge.toPortId===input.toPortId))
   throw fail("assistant_task_run_input_occupied");
  return {sourceArtifactId:source.artifactId,sourceSha256:source.sha256,
@@ -145,6 +160,17 @@ export function nextAssistantRunInTransaction(db,projectId,taskId,seq){
     try{binding=resolveTrustedInput(db,projectId,task,seq,action,index,dep,{allowOccupied:!!bindingStep})}
     catch(error){
      if(error.code==="assistant_task_run_input_unavailable")return {...out,state:"awaiting_verified_input",index};
+     if(error.code==="assistant_task_run_input_selection_required"){
+      const candidates=candidateOutputs(db,projectId,task,seq,action,index,dep);
+      return {...out,state:"selection_required",index,selectionCandidates:candidates.map(candidate=>({
+       artifactId:candidate.artifactId,nodeId:candidate.nodeId,kind:candidate.kind,
+       portId:candidate.portId,itemKey:candidate.itemKey,sha256:candidate.sha256,
+       addressable:candidate.addressable}))};
+     }
+     if(error.code==="assistant_task_run_input_selection_invalidated")
+      return {...out,state:"selection_invalidated",index};
+     if(error.code==="assistant_task_run_input_selection_overflow")
+      return {...out,state:"selection_overflow",index};
      if(error.code==="assistant_task_run_input_occupied")return {...out,state:"binding_conflict",index};
      throw error;
     }
@@ -213,6 +239,64 @@ export function registerAssistantRunSequence(db,{projectId,taskId,requestId,sour
   db.prepare("INSERT INTO assistant_task_commands(project_id,request_id,task_id,command_kind,payload_digest,status,response_json,created_at) VALUES(?,?,?,'run_sequence',?,'completed',?,?)")
    .run(projectId,requestId,taskId,digest,stableJson(response),now);
   return {...response,existing:false};
+ });
+}
+/** P3c3a: user-selected output identity is immutable within a frozen sequence.
+ * No graph mutation, Job, Skill, or provider call can occur in this transaction.
+ */
+export function selectAssistantRunInput(db,{projectId,taskId,requestId,runSequenceId,
+ runIndex,artifactId,expectedPlanVersion,expectedProjectRevision}){
+ if(!id(requestId)||!id(runSequenceId)||!id(artifactId)||
+  !Number.isInteger(runIndex)||runIndex<1||runIndex>2||
+  !Number.isInteger(expectedPlanVersion)||expectedPlanVersion<1||
+  !Number.isInteger(expectedProjectRevision)||expectedProjectRevision<1)
+  throw fail("assistant_task_run_input_selection_invalid",400);
+ const payload={taskId,runSequenceId,runIndex,artifactId,expectedPlanVersion,expectedProjectRevision};
+ const digest=hash(payload);
+ return writeTransaction(db,()=>{
+  const old=db.prepare("SELECT command_kind,payload_digest,response_json FROM assistant_task_commands WHERE project_id=? AND request_id=?")
+   .get(projectId,requestId);
+  if(old){
+   if(old.command_kind!=="run_input_select"||old.payload_digest!==digest)
+    throw fail("assistant_task_command_conflict");
+   return {...JSON.parse(old.response_json),existing:true};
+  }
+  const task=taskWithGraph(db,projectId,taskId);
+  if(task.active_plan_version!==expectedPlanVersion||task.read_only||
+   task.cancel_requested_at!==null||terminal.has(task.status))
+   throw fail("assistant_task_not_editable");
+  if(task.revision!==expectedProjectRevision)throw fail("assistant_step_source_changed");
+  const seq=db.prepare("SELECT * FROM assistant_task_run_sequences WHERE id=? AND task_id=? AND project_id=? AND plan_version=? AND status='active'")
+   .get(runSequenceId,taskId,projectId,expectedPlanVersion);
+  if(!seq)throw fail("assistant_task_run_not_found",404);
+  const prior=savedInputSelection(db,seq,runIndex);
+  if(prior){
+   if(prior.artifact_id!==artifactId)throw fail("assistant_task_run_input_selection_conflict");
+   const value={sequenceId:seq.id,runIndex,artifactId,selected:true};
+   db.prepare("INSERT INTO assistant_task_commands(project_id,request_id,task_id,command_kind,payload_digest,status,response_json,created_at) VALUES(?,?,?,'run_input_select',?,'completed',?,?)")
+    .run(projectId,requestId,taskId,digest,stableJson(value),Date.now());
+   return {...value,existing:true};
+  }
+  const state=nextAssistantRunInTransaction(db,projectId,taskId,seq);
+  if(bindingStepFor(db,seq,runIndex)||state.state!=="selection_required"||state.index!==runIndex)
+   throw fail("assistant_task_run_input_selection_not_ready");
+  const matching=state.selectionCandidates.filter(candidate=>candidate.artifactId===artifactId);
+  if(matching.length!==1||!matching[0].addressable)
+   throw fail("assistant_task_run_input_selection_unverified");
+  const output=matching[0],previous=stepFor(db,seq,runIndex-1);
+  const mat=previous&&verifiedMaterialization(db,seq,previous.id);
+  if(!mat||output.sha256!==db.prepare("SELECT sha256 FROM artifacts WHERE id=?").get(artifactId)?.sha256)
+   throw fail("assistant_task_run_input_selection_unverified");
+  const at=Date.now();
+  db.prepare("INSERT INTO assistant_task_run_input_selections(sequence_id,task_id,project_id,plan_version,run_index,artifact_id,material_step_id,source_sha256,project_revision,selected_at) VALUES(?,?,?,?,?,?,?,?,?,?)")
+   .run(seq.id,taskId,projectId,expectedPlanVersion,runIndex,artifactId,mat.id,output.sha256,expectedProjectRevision,at);
+  db.prepare("INSERT INTO assistant_task_events(task_id,kind,payload_json,created_at) VALUES(?,?,?,?)")
+   .run(taskId,"run_input_selected",stableJson({sequenceId:seq.id,runIndex,
+    artifactId,sourceMaterialStepId:mat.id}),at);
+  const value={sequenceId:seq.id,runIndex,artifactId,selected:true};
+  db.prepare("INSERT INTO assistant_task_commands(project_id,request_id,task_id,command_kind,payload_digest,status,response_json,created_at) VALUES(?,?,?,'run_input_select',?,'completed',?,?)")
+   .run(projectId,requestId,taskId,digest,stableJson(value),at);
+  return {...value,existing:false};
  });
 }
 /** P3c: one explicit graph Step can bind exactly one verified prior media artifact. */

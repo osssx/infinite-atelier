@@ -19,21 +19,23 @@ async function fixture(t){
   originalRequest:"持续执行工作流"})).body.task;
  return {db,call,taskId:first.id,base:"/api/v1/projects/p/assistant/tasks/"+first.id};
 }
-test("P3c SQLite v27 to v28 preserves existing tasks and adds chat links",()=>{
+test("P3c SQLite v27 to v29 preserves existing tasks and adds chat links plus output selections",()=>{
  const db=new DatabaseSync(":memory:");initializeSchema(db);
  try{
-  db.prepare("UPDATE schema_migrations SET version=27 WHERE version=28").run();
+  db.prepare("UPDATE schema_migrations SET version=27 WHERE version=29").run();
+  db.exec("DROP TABLE assistant_task_run_input_selections");
   db.exec("DROP TABLE assistant_task_chat_links");
   initializeSchema(db);
-  assert.equal(db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v,28);
+  assert.equal(db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v,29);
+  assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='assistant_task_run_input_selections'").get());
   assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='assistant_task_chat_links'").get());
   initializeSchema(db); // repeat startup must not duplicate schema migration
-  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM schema_migrations WHERE version=28").get().n,1);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM schema_migrations WHERE version=29").get().n,1);
  }finally{db.close()}
 });
 test("P3c chat link requires explicit command; original chat remains unchanged and replay is idempotent",async t=>{
  const {db,call,taskId,base}=await fixture(t);
- assert.equal(SCHEMA_VERSION,28);
+ assert.equal(SCHEMA_VERSION,29);
  const one=await call("GET","/api/v1/projects/p/assistant/tasks?chatSessionId=chat-one");
  assert.deepEqual(one.body.tasks[0].chatSessionIds,["chat-one"]);
  const before=await call("GET","/api/v1/projects/p/assistant/tasks?chatSessionId=chat-two");

@@ -49,7 +49,7 @@ export function trustedAssistantTaskOutputs(db,{projectId,taskId,planVersion}){
   }
   if(invalid||bindings.size!==action.artifactIds.length||
    action.artifactIds.some(id=>!bindings.has(id)))continue;
-  const artifacts=db.prepare("SELECT a.id,a.kind,a.port_id,a.sha256,a.blob_id,b.sha256 AS blob_sha256,b.status AS blob_status,m.status AS materialization_status,m.node_id FROM artifacts a JOIN blobs b ON b.id=a.blob_id JOIN materializations m ON m.artifact_id=a.id AND m.project_id=? WHERE a.job_id=? ORDER BY a.id")
+  const artifacts=db.prepare("SELECT a.id,a.kind,a.port_id,a.item_key,a.sha256,a.blob_id,b.sha256 AS blob_sha256,b.status AS blob_status,m.status AS materialization_status,m.node_id FROM artifacts a JOIN blobs b ON b.id=a.blob_id JOIN materializations m ON m.artifact_id=a.id AND m.project_id=? WHERE a.job_id=? ORDER BY a.id")
    .all(projectId,action.jobId);
   if(artifacts.length!==action.artifactIds.length||
    artifacts.some(row=>{
@@ -66,6 +66,7 @@ export function trustedAssistantTaskOutputs(db,{projectId,taskId,planVersion}){
     runIndex:stepIndex(source),runSequenceId:unpack(source.preconditions_json)?.runSequenceId??null,
     jobId:action.jobId,artifactId:artifact.id,
     nodeId:artifact.node_id,kind:artifact.kind,portId:artifact.port_id??null,
+     itemKey:artifact.item_key,
     sha256:artifact.sha256});
   }
  }

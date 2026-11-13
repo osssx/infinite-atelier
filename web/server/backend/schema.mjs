@@ -1,5 +1,5 @@
 import{JOB_STATUSES,EXECUTION_MODES,ARTIFACT_KINDS}from"./contracts.mjs";
-export const SCHEMA_VERSION=28;
+export const SCHEMA_VERSION=29;
 const quoted=x=>x.map(s=>"'"+s+"'").join(",");
 export const INITIAL_SCHEMA_SQL=`
 CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY,applied_at INTEGER NOT NULL);
@@ -567,6 +567,25 @@ CREATE INDEX IF NOT EXISTS ix_assistant_task_chat_links_project_chat
  ON assistant_task_chat_links(project_id,chat_session_id,linked_at DESC);
 `;
 
+/** P3c3a: user-committed, immutable selection of one trusted prior output.
+ * No Job or provider side effect is permitted at this stage.
+ */
+export const ASSISTANT_TASK_RUN_INPUT_SELECTION_SCHEMA_SQL=`
+CREATE TABLE IF NOT EXISTS assistant_task_run_input_selections(
+ sequence_id TEXT NOT NULL REFERENCES assistant_task_run_sequences(id),
+ task_id TEXT NOT NULL REFERENCES assistant_tasks(id),
+ project_id TEXT NOT NULL REFERENCES projects(id),
+ plan_version INTEGER NOT NULL CHECK(plan_version>0),
+ run_index INTEGER NOT NULL CHECK(run_index IN (1,2)),
+ artifact_id TEXT NOT NULL REFERENCES artifacts(id),
+ material_step_id TEXT NOT NULL REFERENCES assistant_task_steps(id),
+ source_sha256 TEXT NOT NULL CHECK(length(source_sha256)=64),
+ project_revision INTEGER NOT NULL CHECK(project_revision>0),
+ selected_at INTEGER NOT NULL,
+ PRIMARY KEY(sequence_id,run_index)
+);
+CREATE INDEX IF NOT EXISTS ix_assistant_task_run_input_selection_task ON assistant_task_run_input_selections(task_id,plan_version);
+`;
 export function initializeSchema(db){
  db.exec("PRAGMA foreign_keys=ON;PRAGMA busy_timeout=5000;BEGIN IMMEDIATE");
  try{
@@ -622,6 +641,7 @@ export function initializeSchema(db){
   if(version<26)db.exec(ASSISTANT_TASK_BLOB_REFERENCE_SCHEMA_SQL);
   if(version<27)db.exec(ASSISTANT_TASK_RUN_SEQUENCE_SCHEMA_SQL);
   if(version<28)db.exec(ASSISTANT_TASK_CHAT_LINK_SCHEMA_SQL);
+  if(version<29)db.exec(ASSISTANT_TASK_RUN_INPUT_SELECTION_SCHEMA_SQL);
   if(version<SCHEMA_VERSION)db.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)").run(SCHEMA_VERSION,Date.now());
   db.exec("COMMIT");
  }catch(e){db.exec("ROLLBACK");throw e}

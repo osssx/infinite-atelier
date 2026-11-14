@@ -60,6 +60,77 @@ test("P1b full HTTP plan/approve/execute chain is atomic and identical requests 
  assert.equal(oldPatch.status,409);
  assert.equal(oldPatch.data.code,"project_revision_conflict");
 });
+test("P1b character-card text creation, horizontal layout and group commit as one durable Task Step",async t=>{
+ const f=await setup(t),actions=[
+  {type:"create_node",ref:"n1",nodeType:"text",title:"主角小兔嘟嘟",content:"角色卡一：小白兔"},
+  {type:"create_node",ref:"n2",nodeType:"text",title:"兔妈妈",content:"角色卡二：温柔母亲"},
+  {type:"create_node",ref:"n3",nodeType:"text",title:"好友小龟慢慢",content:"角色卡三：小龟"},
+  {type:"layout_nodes",nodeIds:["n1","n2","n3"],direction:"horizontal",gap:48},
+  {type:"create_group",ref:"g1",title:"角色卡提示词",members:["n1","n2","n3"]}
+ ];
+ const plan={requestId:"role-cards-plan",expectedPlanVersion:1,expectedProjectRevision:1,
+  center:{x:200,y:150},actions};
+ const frozen=await f.call("POST",f.stepBase+"/canvas-steps",plan);
+ assert.equal(frozen.status,200,JSON.stringify(frozen.data));
+ assert.equal(frozen.data.status,"waiting_approval");
+ assert.equal(frozen.data.operationCount,5);
+ assert.deepEqual(Object.keys(frozen.data.preconditions.refs.nodes).sort(),["g1","n1","n2","n3"]);
+ assert.equal((await f.call("GET",f.base)).data.document.nodes.length,1,"no eager canvas writes");
+ const samePlan=await f.call("POST",f.stepBase+"/canvas-steps",plan);
+ assert.equal(samePlan.status,200);
+ assert.equal(samePlan.data.existing,true);
+ assert.equal(samePlan.data.stepId,frozen.data.stepId);
+ const endpoint=f.stepBase+"/steps/"+frozen.data.stepId;
+ const approval=await f.call("POST",endpoint+"/approval",{requestId:"cards-approve",
+  expectedPlanVersion:1,actionDigest:frozen.data.actionDigest,decision:"approve"});
+ assert.equal(approval.status,200,JSON.stringify(approval.data));
+ const executePayload={requestId:"cards-execute",expectedPlanVersion:1,actionDigest:frozen.data.actionDigest};
+ const saved=await f.call("POST",endpoint+"/execute",executePayload);
+ assert.equal(saved.status,200,JSON.stringify(saved.data));
+ assert.equal(saved.data.receipt.applied,5);
+ assert.equal(saved.data.project.revision,2);
+ const nodes=saved.data.project.document.nodes;
+ const group=nodes.find(node=>node.id===frozen.data.preconditions.refs.nodes.g1);
+ assert.equal(group.type,"group");
+ assert.equal(group.title,"角色卡提示词");
+ const cards=["n1","n2","n3"].map(ref=>nodes.find(node=>node.id===frozen.data.preconditions.refs.nodes[ref]));
+ assert.deepEqual(cards.map(node=>node.metadata.groupId),[group.id,group.id,group.id]);
+ assert.deepEqual(cards.map(node=>node.type),["text","text","text"]);
+ assert.deepEqual(cards.map(node=>node.position.y),[30,30,30]);
+ assert(cards[0].position.x<cards[1].position.x&&cards[1].position.x<cards[2].position.x);
+ assert(cards.every(card=>card.position.x>=group.position.x&&card.position.y>=group.position.y&&
+  card.position.x+card.width<=group.position.x+group.width&&card.position.y+card.height<=group.position.y+group.height));
+ assert.deepEqual(cards.map(node=>node.metadata.content),["角色卡一：小白兔","角色卡二：温柔母亲","角色卡三：小龟"]);
+ assert.equal(saved.data.project.document.connections.length,0);
+ assert.equal(saved.data.project.document.nodes[0].metadata.content,"before");
+ const retry=await f.call("POST",endpoint+"/execute",executePayload);
+ assert.equal(retry.status,200,JSON.stringify(retry.data));
+ assert.equal(retry.data.existing,true);
+ assert.equal((await f.call("GET",f.base)).data.document.nodes.length,5);
+ assert.equal(f.db.prepare("SELECT COUNT(*) n FROM assistant_task_steps").get().n,1);
+ assert.equal(f.db.prepare("SELECT COUNT(*) n FROM assistant_task_attempts").get().n,1);
+ assert.equal(f.db.prepare("SELECT receipt_trust FROM assistant_task_steps").get().receipt_trust,"server_committed");
+});
+test("P1b invalid group membership or missing layout target rejects entire Task plan",async t=>{
+ const f=await setup(t);
+ for(const [index,actions,status] of [
+  [1,[{type:"create_group",ref:"g1",title:"不完整",members:["old"]}],400],
+  [2,[{type:"create_group",ref:"g2",title:"不存在的成员",members:["old","missing"]}],409],
+  [3,[{type:"layout_nodes",nodeIds:["old","missing"],direction:"horizontal"}],409],
+  [4,[{type:"create_node",ref:"n1",nodeType:"text",content:"one",title:"一"},
+   {type:"create_group",ref:"g3",title:"错误组合",members:["n1","missing"]}],409]
+ ]){
+  const result=await f.call("POST",f.stepBase+"/canvas-steps",{
+   requestId:"bad-"+index,expectedPlanVersion:1,expectedProjectRevision:1,
+   center:{x:200,y:150},actions
+  });
+  assert.equal(result.status,status,JSON.stringify(result.data));
+  assert.equal(f.db.prepare("SELECT COUNT(*) n FROM assistant_task_steps").get().n,0);
+  assert.equal((await f.call("GET",f.base)).data.revision,1);
+  assert.equal((await f.call("GET",f.base)).data.document.nodes.length,1);
+ }
+});
+
 test("P1b direct user cannot submit a GPU/Skill plan or approve a mutated action",async t=>{
  const f=await setup(t);
  const unsupported=await f.call("POST",f.stepBase+"/canvas-steps",{

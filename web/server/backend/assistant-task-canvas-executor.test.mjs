@@ -65,6 +65,51 @@ test("P1b canvas graph, Step receipt and Attempt commit atomically, replay never
  assert.equal(ctx.db.prepare("SELECT COUNT(*) AS n FROM assistant_task_attempts").get().n,1);
  assert.equal(ctx.db.prepare("SELECT COUNT(*) AS n FROM assistant_task_events WHERE kind='step_graph_committed'").get().n,1);
 });
+test("P1b group membership, grouped layout and ungroup each retain durable receipts",t=>{
+ const ctx=setup(t);
+ const first=plan(ctx,{requestId:"make-cards",actions:[
+  {type:"create_node",ref:"newcard",nodeType:"text",title:"角色卡",content:"新朋友"},
+  {type:"create_group",ref:"cardgroup",title:"角色卡提示词",members:["original","newcard"]}
+ ]});
+ approve(ctx,first,"approve-card-group");
+ const committed=execute(ctx,first);
+ const groupId=first.preconditions.refs.nodes.cardgroup,cardId=first.preconditions.refs.nodes.newcard;
+ const card=committed.project.document.nodes.find(n=>n.id===cardId);
+ assert.equal(card.metadata.groupId,groupId);
+ assert.equal(committed.project.document.nodes.find(n=>n.id==="original").metadata.groupId,groupId);
+ const second=plan(ctx,{requestId:"move-card-group",actions:[
+  {type:"layout_nodes",nodeIds:[groupId],direction:"horizontal",gap:48}
+ ]});
+ approve(ctx,second,"approve-card-layout");
+ const changed=execute(ctx,second);
+ const movedCard=changed.project.document.nodes.find(n=>n.id===cardId);
+ const movedGroup=changed.project.document.nodes.find(n=>n.id===groupId);
+ assert.equal(movedCard.position.x-card.position.x,movedGroup.position.x-
+  committed.project.document.nodes.find(n=>n.id===groupId).position.x);
+ const remove=plan(ctx,{requestId:"remove-group-member",actions:[
+  {type:"remove_from_group",groupId,members:["original"]}
+ ]});
+ approve(ctx,remove,"approve-card-remove");
+ const removed=execute(ctx,remove);
+ assert.equal(removed.project.document.nodes.find(n=>n.id==="original").metadata.groupId,undefined);
+ assert.equal(removed.project.document.nodes.find(n=>n.id===cardId).metadata.groupId,groupId);
+ const add=plan(ctx,{requestId:"restore-group-member",actions:[
+  {type:"add_to_group",groupId,members:["original"]}
+ ]});
+ approve(ctx,add,"approve-card-add");
+ const restored=execute(ctx,add);
+ assert.equal(restored.project.document.nodes.find(n=>n.id==="original").metadata.groupId,groupId);
+ const dissolve=plan(ctx,{requestId:"dissolve-group",actions:[{type:"ungroup",groupId}]});
+ approve(ctx,dissolve,"approve-card-ungroup");
+ const final=execute(ctx,dissolve);
+ assert.equal(final.project.document.nodes.find(n=>n.id===groupId),undefined);
+ assert.equal(final.project.document.nodes.length,2);
+ assert.equal(final.project.document.nodes.find(n=>n.id===cardId).metadata.content,"新朋友");
+ assert(final.project.document.nodes.every(n=>n.metadata?.groupId===undefined));
+ assert.equal(ctx.db.prepare("SELECT COUNT(*) n FROM assistant_task_steps").get().n,5);
+ assert.equal(ctx.db.prepare("SELECT COUNT(*) n FROM assistant_task_steps WHERE receipt_trust='server_committed'").get().n,5);
+});
+
 test("P1b simulated crash after claim leaves no graph write and recovers a prepared local attempt",t=>{
  const ctx=setup(t),candidate=plan(ctx);approve(ctx,candidate);
  assert.throws(()=>execute(ctx,candidate,{afterClaim:()=>{throw Error("simulated_crash")}}),/simulated_crash/);

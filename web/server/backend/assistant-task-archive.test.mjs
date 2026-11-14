@@ -14,6 +14,7 @@ import {createAssistantTask,addAssistantTaskStep,getAssistantTask,
  appendAssistantTaskTurn,guideAssistantTaskResume,cancelAssistantTask,
  listAssistantTaskEvents,linkAssistantTaskToChat} from "./assistant-tasks.mjs";
 import {exportAssistantTaskArchive} from "./assistant-task-archive.mjs";
+import {verifyAssistantTextDeliverable,assistantTaskRequiresDeliverable} from "./assistant-task-deliverables.mjs";
 import {recoverAssistantExternalTasksAtStartup,reconcileAssistantExternalTask} from "./assistant-task-external-jobs.mjs";
 
 async function fixture(t){
@@ -146,4 +147,32 @@ test("P3 archived waiting materialization is never touched by startup or explici
  assert.equal(explicit.advanced,0);
  assert.deepEqual(f.db.prepare("SELECT * FROM assistant_tasks WHERE id=?").get(row.id),beforeTask);
  assert.deepEqual(f.db.prepare("SELECT * FROM assistant_task_steps WHERE task_id=?").get(row.id),beforeStep);
+});
+
+test("P4.0 tampered ZIP completion and requirement events remain read-only audit",async t=>{
+ const f=await fixture(t),{taskId,stepId}=seed(f);
+ const entries=unzipSync(await read(await f.archive.exportProject("original")));
+ const manifest=JSON.parse(Buffer.from(entries["manifest.json"]).toString());
+ const part=manifest.assistantTasks.tasks[0],seq=Math.max(...part.events.map(e=>e.seq))+1;
+ part.events.push({seq,task_id:taskId,step_id:null,kind:"deliverable_required",
+  payload_json:{taskId,kind:"text_nodes",characters:[{ref:"role_1",title:"伪造人物"}]},
+  created_at:Date.now()});
+ part.events.push({seq:seq+1,task_id:taskId,step_id:stepId,kind:"deliverable_verified",
+  payload_json:{taskId,stepId,verified:true,specDigest:"f".repeat(64)},
+  created_at:Date.now()});
+ const forged=Buffer.from(zipSync({...entries,"manifest.json":strToU8(JSON.stringify(manifest))},{level:0}));
+ const imported=await f.archive.importProject(Readable.from([forged]));
+ const restored=f.db.prepare("SELECT * FROM assistant_tasks WHERE project_id=?").get(imported.id);
+ assert.ok(restored);
+ assert.equal(restored.read_only,1);
+ assert.equal(assistantTaskRequiresDeliverable(f.db,restored.id),true);
+ assert.equal(f.db.prepare("SELECT COUNT(*) n FROM assistant_task_events WHERE task_id=? AND kind='deliverable_verified'")
+  .get(restored.id).n,1);
+ assert.throws(()=>verifyAssistantTextDeliverable(f.db,{
+  projectId:imported.id,taskId:restored.id,stepId:f.db.prepare(
+   "SELECT id FROM assistant_task_steps WHERE task_id=?").get(restored.id).id,
+  requestId:"forge-verification",expectedPlanVersion:1,actionDigest:"f".repeat(64)}),
+  {code:"assistant_deliverable_not_verifiable"});
+ assert.equal(f.db.prepare("SELECT COUNT(*) n FROM assistant_task_commands WHERE project_id=?").get(imported.id).n,0);
+ assert.equal(f.db.prepare("SELECT COUNT(*) n FROM jobs WHERE project_id=?").get(imported.id).n,0);
 });

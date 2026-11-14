@@ -1,5 +1,5 @@
 import Fastify from "fastify";
-import {randomUUID} from "node:crypto";
+import {randomUUID,createHash} from "node:crypto";
 import {resolveAuthorizedSkillScript} from "./skill-script-source.mjs";
 import {createProject,getProject,saveSingleUserCanvas,deleteProject,listProjectSummaries,projectEventCursor} from "./projects.mjs";
 import {getCanvasViewport,putCanvasViewport,getCanvasChats,putCanvasChats} from "./canvas-state.mjs";
@@ -9,7 +9,7 @@ import {beginAssistantModelCommand,createAssistantModelObserver,completeAssistan
 import {prepareAssistantSemanticProposals} from "./assistant-semantic-proposals.mjs";
 import {buildAssistantTaskProviderContext,loadAssistantTaskCreativeHistory} from "./assistant-task-context.mjs";
 import {trustedAssistantTaskOutputs} from "./assistant-task-produced-artifacts.mjs";
-import {submitJob,readJobsSnapshot,readEventsAfter} from "./repository.mjs";
+import {submitJob,readJobsSnapshot,readEventsAfter,stableJson} from "./repository.mjs";
 import {EXECUTION_MODES} from "./contracts.mjs";
 import {CANVAS_NODE_ID_PATTERN} from "../canvas-node-id.mjs";
 import {ARCHIVE_MAX_BYTES} from "./project-archive.mjs";
@@ -17,6 +17,7 @@ import {createComfyRegistry} from "./comfy-registry.mjs";
 import {freezeAuthorizedSkillGrant} from "./skill-job-grants.mjs";
 import {resolveAssistantSkills} from "./assistant-skills.mjs";
 import {resolveAssistantVisualContext} from "./assistant-visual-context.mjs";
+import {currentAssistantTextDeliverable} from "./assistant-task-deliverables.mjs";
 import {runSkillScript} from "./skill-script-runner.mjs";
 import {getProjectSkillAudit,replayProjectSkillJob,lookupProjectSkillReplay} from "./skill-job-audit.mjs";
 import {listProjectJobs,hideProjectJobHistory,closeUnverifiedModelJob} from "./project-job-history.mjs";
@@ -675,10 +676,32 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
       const proposalMode=ref?.callKind==="semantic_proposal";
      let commandStarted=false;
      try{
+       if(ref&&!proposalMode&&req.body.skills&&currentAssistantTextDeliverable(db,ref.taskId))
+        throw Object.assign(Error("assistant_deliverable_skill_not_supported"),
+         {code:"assistant_deliverable_skill_not_supported",statusCode:403});
        if(proposalMode&&(!ref||req.body.canvasActions!==false||req.body.skills||
          req.body.visualContext||req.body.messages.length!==1))
          throw Object.assign(Error("assistant_semantic_proposal_invalid"),{code:"assistant_semantic_proposal_invalid",statusCode:400});
         let observer=null,taskContext="",messages=req.body.messages,frozenPolicy=null;
+       if(ref&&!proposalMode&&ref.callKind==="script_continuation"&&
+        currentAssistantTextDeliverable(db,ref.taskId))
+        throw Object.assign(Error("assistant_deliverable_script_continuation_unsupported"),
+         {code:"assistant_deliverable_script_continuation_unsupported",statusCode:403});
+       // Legacy non-deliverable Skill continuations contain a server-produced
+       // execution result rather than the original user text. P4.0 does not
+       // upgrade their protocol; the direct text-card path disallows them.
+       if(ref&&!proposalMode&&ref.callKind!=="script_continuation"){
+        const current=req.body.messages.at(-1);
+        const turn=db.prepare("SELECT payload_json FROM assistant_task_events WHERE task_id=? AND kind='user_turn' AND json_extract(payload_json,'$.messageId')=? ORDER BY seq DESC LIMIT 1")
+         .get(ref.taskId,ref.turnMessageId);
+        const recorded=turn?JSON.parse(turn.payload_json):null;
+        const digest=typeof current?.content==="string"?
+         createHash("sha256").update(stableJson(current.content)).digest("hex"):null;
+        if(req.body.messages.length!==1||current?.role!=="user"||!recorded||
+         digest!==recorded.requestDigest)
+         throw Object.assign(Error("assistant_task_message_untrusted"),
+          {code:"assistant_task_message_untrusted",statusCode:403});
+       }
        if(ref){
         const command=beginAssistantModelCommand(db,{projectId:req.params.id,taskId:ref.taskId,
          requestId:ref.requestId,requestPayload:req.body});
@@ -693,6 +716,18 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
         taskContext=buildAssistantTaskProviderContext({task:{...snapshot,contextPolicy:frozenPolicy},document:project.document,
          currentTurnMessageId:ref.turnMessageId,creativeDrafts,
          trustedOutputs:trustedAssistantTaskOutputs(db,{projectId:project.id,taskId:snapshot.id,planVersion:snapshot.activePlanVersion})});
+        if(!proposalMode){
+         const requirement=currentAssistantTextDeliverable(db,ref.taskId);
+         if(requirement?.kind==="text_nodes"){
+          // Server-owned frozen cast: explicit aliases/titles must be used exactly.
+          taskContext+="\n本轮已确认的文本角色卡交付规格："+
+           JSON.stringify({characters:requirement.characters,allowEmptyTemplate:requirement.allowEmptyTemplate,
+            requiredFields:requirement.requiredFields})+
+           (requirement.allowEmptyTemplate?
+            "\n必须使用 create_text 且逐项匹配 ref/title；用户要求空白模板，允许空正文。":
+            "\n必须使用 create_text 且逐项匹配 ref/title；正文必须有具体角色特征，不得返回空白模板。");
+         }
+        }
         // P0b: client transcript may contain previously selected private nodes.
         // Only the current explicit user request enters the provider payload.
         messages=proposalMode?[{role:"user",content:"仅根据本轮已授权的任务事实和用户历史，提取长期目标、约束或决策候选。无证据时返回空数组。"}]:[req.body.messages.at(-1)];
@@ -702,6 +737,13 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
        if(req.body.skills&&req.body.skills.projectId!==req.params.id)
         throw Object.assign(Error("assistant_skill_selection_invalid"),{code:"assistant_skill_selection_invalid",statusCode:400});
        const skill=resolveAssistantSkills(db,skillRegistry,req.body.skills,messages);
+       if(ref&&req.body.visualContext){
+        const allowed=new Set(frozenPolicy?.includeContext&&frozenPolicy.scope==="selection"?
+         frozenPolicy.includedIds:[]);
+        if(req.body.visualContext.images.some(image=>!allowed.has(image.nodeId)))
+         throw Object.assign(Error("assistant_task_visual_not_authorized"),
+          {code:"assistant_task_visual_not_authorized",statusCode:403});
+       }
        const visual=await resolveAssistantVisualContext({
         document:project.document,visualContext:req.body.visualContext,blobStore,signal:controller.signal
        });
@@ -709,6 +751,19 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
        const result=await assistantChat({...chatInput,messages,skillContext:skill.context,
         skillTools:skill.toolEntries??[],visualImages:visual.images,
         visualDetail:req.body.visualContext?.detail??"high",signal:controller.signal,
+        ...(ref?{providerPayloadGuard:(requestBody)=>{
+         // Last-chance scan of the REAL serialized provider body, including
+         // corrections/Skill tools. Authorized sources were assembled server-side.
+         const visible=new Set(frozenPolicy?.includeContext&&frozenPolicy.scope==="selection"?
+          frozenPolicy.includedIds:[]);
+         for(const node of project.document.nodes??[]){
+          if(visible.has(node.id))continue;
+          const text=typeof node.metadata?.content==="string"?node.metadata.content:"";
+          if(text.length>=24&&!messages[0]?.content.includes(text)&&requestBody.includes(text))
+           throw Object.assign(Error("assistant_task_context_not_authorized"),
+            {code:"assistant_task_context_not_authorized",statusCode:403});
+         }
+        }}:{}),
         ...(ref?{taskContext,callObserver:observer,modelCallKind:proposalMode?"initial":ref.callKind??"initial",semanticProposal:proposalMode}:{})});
        const proposed=proposalMode?prepareAssistantSemanticProposals({answer:result.answer,
          requestId:ref.requestId,turnMessageId:ref.turnMessageId,contextPolicy:frozenPolicy}):null;

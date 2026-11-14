@@ -407,7 +407,8 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
      [contextSnapshot.text.slice(0,8500),
       ...(effectiveScope==="overview"&&mentionedContext?[mentionedContext.text.slice(0,6000)]:[]),
       modelHints,workflowInfo.context].filter(Boolean).join("\n\n"):undefined;
-    const turns=buildCanvasAssistantTurns(linkedTaskId?[]:prior,text,contextText);
+    // Task context is reconstructed by backend from the frozen turn disclosure.
+     const turns=buildCanvasAssistantTurns(linkedTaskId?[]:prior,text,linkedTaskId?undefined:contextText);
     let selectedSkills:undefined|{mode:"manual"|"auto";projectId:string;expectedRevision:number;skillIds:string[];versionPins:Record<string,string>};
     // Skill is always on: explicit / Skill mentions override automatic matching.
     // No enabled Skill is a normal state, not a reason to block an ordinary chat.
@@ -431,7 +432,32 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
      if(selected.length)selectedSkills={mode:explicitSkills?"manual":"auto",projectId,expectedRevision:registry.revision,
       skillIds:selected.map(entry=>entry.id),versionPins:Object.fromEntries(selected.map(entry=>[entry.id,entry.activeVersion]))};
     }
+    const explicitCardDelivery=!!linkedTaskId&&!textOnly&&/角色卡/.test(text)&&/(?:生成|创建|制作|添加)/.test(text);
+    // P4.0 only supports direct text cards, not Skill execution or fallback.
+    if(explicitCardDelivery&&explicitSkills)
+     throw Error("显式角色卡交付暂不支持同时执行 Skill；请先生成角色卡，再单独执行 Skill。");
+    if(explicitCardDelivery)selectedSkills=undefined;
     await taskTracker.recordTurn(linkedTaskId,user.id,text,controller.signal);
+    // P4.0: explicitly named and user-approved cast; historical discovery is P4.1.
+    if(explicitCardDelivery){
+     const cast=/(?:为|给)\s*(.+?)\s*(?:生成|创建|制作|添加).{0,30}角色卡/.exec(text);
+     const names=(cast?.[1]??"").split(/[、，,]|\s+和\s*|\s+与\s*/).map(s=>s.trim()).filter(Boolean);
+     if(!names.length||names.length>5||names.some(s=>/每个|所有|全部|哪些|哪个|角色们/.test(s)))
+      throw Error("P4.0 角色卡交付需要在本轮指令中明确角色名单，例如：为小兔嘟嘟、兔妈妈、小龟慢慢生成角色卡。");
+     const allowEmptyTemplate=/(?:空白角色卡|空模板|空白模板|不填正文)/.test(text);
+     const approved=await confirmDangerousActions(
+      "即将为以下角色冻结文本交付规格："+names.join("、")+
+      (allowEmptyTemplate?"\n用户明确要求空白模板，允许节点正文为空。":
+       "\n要求生成具体角色卡正文，不允许空模板。")+
+      "\n后续生成与验证均绑定这些角色及当前 Task。",controller.signal,themeName);
+     if(!approved)return;
+     await canvasApi("/api/v1/projects/"+encodeURIComponent(projectId)+
+      "/assistant/tasks/"+encodeURIComponent(linkedTaskId)+"/deliverables/text","POST",{
+       requestId:user.id+"-deliverable-require",sourceTurnMessageId:user.id,
+       characters:names.map((title,i)=>({ref:"role_"+(i+1),title})),
+       allowEmptyTemplate,requiredFields:[],confirmed:true
+      },controller.signal);
+    }
      await ensureSqliteModelChannelForExecution(channel,provider);
    if(controller.signal.aborted)return;
     type AssistantReply={answer:string;model:string;retryCount?:number;actions?:unknown;appliedSkillIds?:string[];skillResourceReads?:{skillId:string;path:string}[];skillToolCalls?:{name:string;skillId:string|null}[];skillToolsFallback?:boolean;skillScriptProposal?:AssistantSkillScriptProposal};
@@ -566,9 +592,9 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
            const result=await planAndExecuteAssistantCanvasActions({
             projectId,taskId:linkedTaskId,messageId:user.id,actions:graphActions,
             center:getCanvasCenter?.()??{x:0,y:0},signal:controller.signal,
-            confirm:async()=>confirmDangerousActions(
+            confirm:async(step)=>confirmDangerousActions(
              "Task 将持久提交 "+graphActions.length+" 项画布操作，审批绑定冻结摘要。请核对：\n"+
-             JSON.stringify(graphActions,null,2).slice(0,3200),
+             JSON.stringify({deliverableSpec:step.deliverableSpec??null,actions:graphActions},null,2).slice(0,3200),
              controller.signal,themeName)
            });
            taskRefs=result.refs;

@@ -10,6 +10,7 @@ import {planAssistantSkillStep,executeAssistantSkillStep} from "./assistant-task
 import {registerAssistantRunSequence,getAssistantRunSequence,selectAssistantRunInput,skipAssistantRunBranch,commitAssistantRunJoin} from "./assistant-task-run-sequences.mjs";
 import {inspectAssistantTaskRecovery,replanAssistantTaskSafely} from "./assistant-task-safe-replan.mjs";
 import {inspectAssistantRunFailureRecovery,confirmAssistantRunFailureRecovery} from "./assistant-task-failure-recovery.mjs";
+import {registerAssistantTextDeliverable,verifyAssistantTextDeliverable} from "./assistant-task-deliverables.mjs";
 
 const id={type:"string",pattern:"^[A-Za-z0-9_-]{1,128}$"};
 const policy={type:"object",additionalProperties:false,required:["includeContext","scope","includedIds"],
@@ -49,6 +50,17 @@ const observationBody={type:"object",required:["requestId","kind","preview"],add
  properties:{requestId:id,kind:{type:"string",enum:["reply","error"]},
  preview:{type:"string",minLength:1,maxLength:1800}}};
 
+const textDeliverableBody={type:"object",additionalProperties:false,
+ required:["requestId","sourceTurnMessageId","characters","confirmed"],properties:{
+ requestId:id,sourceTurnMessageId:id,confirmed:{type:"boolean",const:true},
+ characters:{type:"array",minItems:1,maxItems:5,items:{type:"object",additionalProperties:false,
+  required:["ref","title"],properties:{ref:id,title:{type:"string",minLength:1,maxLength:100},sourceNodeId:id}}},
+ requiredFields:{type:"array",maxItems:6,items:{type:"string",minLength:1,maxLength:60}},
+ allowEmptyTemplate:{type:"boolean"}}};
+const textVerifyBody={type:"object",additionalProperties:false,
+ required:["requestId","stepId","expectedPlanVersion","actionDigest"],properties:{
+ requestId:id,stepId:id,expectedPlanVersion:{type:"integer",minimum:1},
+ actionDigest:{type:"string",pattern:"^[a-f0-9]{64}$"}}};
 const canvasStepBody={type:"object",additionalProperties:false,
  required:["requestId","expectedPlanVersion","expectedProjectRevision","actions","center"],
  properties:{requestId:id,expectedPlanVersion:{type:"integer",minimum:1},
@@ -154,7 +166,14 @@ export function registerAssistantTaskRoutes(app,db,{skillRegistry,blobStore}={})
   guideAssistantTaskResume(db,{projectId:req.params.id,taskId:req.params.taskId,...req.body})));
  app.post(base+"/:taskId/cancel",{schema:{params:taskParams,body:requestBody}},(req,reply)=>result(reply,
   cancelAssistantTask(db,{projectId:req.params.id,taskId:req.params.taskId,...req.body})));
- app.post(base+"/:taskId/canvas-steps",{schema:{params:taskParams,body:canvasStepBody}},(req,reply)=>result(reply,
+ // Explicit text deliverable: the guard is durable before any model POST.
+  app.post(base+"/:taskId/deliverables/text",{schema:{params:taskParams,body:textDeliverableBody}},
+   (req,reply)=>result(reply,registerAssistantTextDeliverable(db,{
+    projectId:req.params.id,taskId:req.params.taskId,...req.body})));
+  app.post(base+"/:taskId/deliverables/text/verify",{schema:{params:taskParams,body:textVerifyBody}},
+   (req,reply)=>result(reply,verifyAssistantTextDeliverable(db,{
+    projectId:req.params.id,taskId:req.params.taskId,...req.body})));
+  app.post(base+"/:taskId/canvas-steps",{schema:{params:taskParams,body:canvasStepBody}},(req,reply)=>result(reply,
   planAssistantCanvasStep(db,{projectId:req.params.id,taskId:req.params.taskId,...req.body})));
  app.post(base+"/:taskId/run-sequences",{schema:{params:taskParams,body:runSequenceBody}},(req,reply)=>result(reply,
   registerAssistantRunSequence(db,{projectId:req.params.id,taskId:req.params.taskId,...req.body})));

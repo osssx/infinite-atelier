@@ -3,6 +3,8 @@ import {stableJson,writeTransaction,assertNoRawCredentials} from "./repository.m
 import {validateProjectDocument,emitProjectEvent} from "./projects.mjs";
 import {deterministicAssistantRefs,claimAssistantTaskStep,verifyAssistantTaskClaim} from "./assistant-task-step-gate.mjs";
 import {assertAssistantCanvasPlan,applyFrozenAssistantCanvasPlan} from "./assistant-task-canvas-graph.mjs";
+import {mayCompleteAssistantTask,currentAssistantTextDeliverable,freezeAssistantTextSpec,
+ assertAssistantTextActions,assertAssistantTextClaimBudget,assertAssistantDeliverableBinding} from "./assistant-task-deliverables.mjs";
 import {assertNoPendingAssistantRunSequence,verifyAssistantRunInputBinding,
  verifyAssistantCommittedRunInput} from "./assistant-task-run-sequences.mjs";
 const fail=(code,statusCode=409)=>Object.assign(Error(code),{code,statusCode});
@@ -102,7 +104,15 @@ export function planAssistantCanvasStep(db,{projectId,taskId,requestId,
   const bindingProof=runSequenceId!==undefined?verifyAssistantRunInputBinding(db,{
    projectId,taskId,runSequenceId,runIndex,expectedPlanVersion,actions,dependsOn}):null;
   if(!bindingProof)assertNoPendingAssistantRunSequence(db,{projectId,taskId});
-  const stepId=randomUUID(),action={actions,center},
+  const requirement=currentAssistantTextDeliverable(db,taskId);
+  const deliverableSpec=requirement?freezeAssistantTextSpec(requirement,{
+   taskId,planVersion:expectedPlanVersion,projectRevision:expectedProjectRevision}):null;
+  if(deliverableSpec){
+   if(runSequenceId!==undefined||finalizeTask)throw fail("assistant_deliverable_plan_invalid",400);
+   assertAssistantTextActions(deliverableSpec,actions);
+  }
+  const stepId=randomUUID(),action={actions,center,
+   ...(deliverableSpec?{deliverableSpecDigest:hash(deliverableSpec)}:{})},
    actionDigest=hash(action);
   const ordinal=db.prepare("SELECT COALESCE(MAX(ordinal)+1,0) AS ordinal FROM assistant_task_steps WHERE task_id=? AND plan_version=?")
    .get(taskId,expectedPlanVersion).ordinal;
@@ -117,9 +127,12 @@ export function planAssistantCanvasStep(db,{projectId,taskId,requestId,
   validateProjectDocument(preview.document);
   const preconditions={projectRevision:expectedProjectRevision,projectGraphDigest:hash(original),
    refs,requiresApproval:true,finalizeTask,
+   ...(deliverableSpec?{deliverableSpec,deliverableSpecDigest:hash(deliverableSpec)}:{}),
    ...(bindingProof?{runSequenceId,runBindingIndex:runIndex,
     runSourceArtifactId:bindingProof.sourceArtifactId,runSourceSha256:bindingProof.sourceSha256}:{}),
    ...(actions.some(a=>["set_node_param","set_workflow_param"].includes(a.type))?{modelConfigRevision:ui.revision}:{})};
+  if(deliverableSpec)assertAssistantTextClaimBudget({projectId,taskId,stepId,
+   planVersion:expectedPlanVersion,action,preconditions,actionDigest});
   const at=Date.now();
   db.prepare("INSERT INTO assistant_task_steps(id,task_id,plan_version,ordinal,kind,status,required,depends_on_json,action_json,action_digest,preconditions_json,approval_json,receipt_json,receipt_trust,result_json,created_at,updated_at) VALUES(?,?,?,?,'canvas_mutation','waiting_approval',1,?,?,?,?,'{}','{}','none','{}',?,?)")
    .run(stepId,taskId,expectedPlanVersion,ordinal,json(dependsOn),json(action,12000),
@@ -128,8 +141,11 @@ export function planAssistantCanvasStep(db,{projectId,taskId,requestId,
    .run(at,taskId);
   event(db,taskId,stepId,"step_frozen",{actionDigest,planVersion:expectedPlanVersion,
    projectRevision:expectedProjectRevision,refs,operationCount:actions.length},at);
+  if(deliverableSpec)event(db,taskId,stepId,"deliverable_spec_frozen",{
+   planVersion:expectedPlanVersion,specDigest:hash(deliverableSpec),actionDigest,stepId},at);
   const response={stepId,taskId,planVersion:expectedPlanVersion,actionDigest,
-   preconditions:{projectRevision:expectedProjectRevision,refs},status:"waiting_approval",
+   preconditions:{projectRevision:expectedProjectRevision,refs},
+   ...(deliverableSpec?{deliverableSpec}:{}),status:"waiting_approval",
    operationCount:actions.length,executionStarted:false};
   commandResult(db,{projectId,requestId,taskId,kind:"canvas_plan",digest:sig,response});
   return {...response,existing:false};
@@ -158,6 +174,7 @@ export function commitAssistantCanvasAttempt(db,{projectId,taskId,stepId,
   const task=taskAndProject(db,projectId,taskId);
   const step=db.prepare("SELECT * FROM assistant_task_steps WHERE id=? AND task_id=?").get(stepId,taskId);
   const action=JSON.parse(step.action_json),pre=JSON.parse(step.preconditions_json);
+  assertAssistantDeliverableBinding(action,pre);
   if(hash(action)!==step.action_digest||hash(action)!==actionDigest||
    hash(frozenSnapshot)!==active.requestFingerprint)
    throw fail("assistant_step_action_changed");
@@ -193,7 +210,8 @@ export function commitAssistantCanvasAttempt(db,{projectId,taskId,stepId,
   if(attemptUpdated.changes!==1)throw fail("assistant_step_lease_invalid");
   const remain=db.prepare("SELECT status,receipt_trust,required FROM assistant_task_steps WHERE task_id=? AND plan_version=? AND superseded_at IS NULL")
    .all(taskId,planVersion);
-  const done=pre.finalizeTask===true&&remain.length>0&&remain.every(row=>
+  const done=pre.finalizeTask===true&&mayCompleteAssistantTask(db,taskId)&&
+   remain.length>0&&remain.every(row=>
    !row.required||row.status==="succeeded"&&row.receipt_trust==="server_committed");
   db.prepare("UPDATE assistant_tasks SET status=?,active_step_id=NULL,updated_at=?,finished_at=? WHERE id=? AND active_plan_version=? AND active_step_id=?")
    .run(done?"completed":"ready",at,done?at:null,taskId,planVersion,stepId);

@@ -84,3 +84,30 @@ test("P2b frozen Skill rejected by HTTP when version does not exist",async t=>{
  assert.equal(invalid.status,409);
  assert.equal(f.db.prepare("SELECT COUNT(*) AS n FROM skill_script_runs").get().n,0);
 });
+
+
+test("P4.0 Task-level deliverable guard blocks Skill terminal auto-completion",async t=>{
+ const f=fixture(t);
+ const created=await f.call("POST",f.base,{
+  requestId:"create",chatSessionId:"c",rootMessageId:"r",originalRequest:"生成角色卡"});
+ assert.equal(created.status,201);
+ const taskId=created.body.task.id,taskUrl=f.base+"/"+taskId;
+ f.db.prepare("INSERT INTO assistant_task_events(task_id,kind,payload_json,created_at) VALUES(?,'deliverable_required','{}',?)")
+  .run(taskId,Date.now());
+ const planned=await f.call("POST",taskUrl+"/skill-steps",{
+  requestId:"plan",expectedPlanVersion:1,expectedProjectRevision:1,
+  proposal:{skill_id:f.skillId,version:f.version,script_path:f.scriptPath,output_files:["output.txt"]},
+  finalizeTask:true});
+ assert.equal(planned.status,200,JSON.stringify(planned.body));
+ const endpoint=taskUrl+"/steps/"+planned.body.stepId;
+ const approved=await f.call("POST",endpoint+"/approval",{requestId:"approve",
+  expectedPlanVersion:1,actionDigest:planned.body.actionDigest,decision:"approve"});
+ assert.equal(approved.status,200);
+ const run=await f.call("POST",endpoint+"/run-skill",{requestId:"run",
+  expectedPlanVersion:1,actionDigest:planned.body.actionDigest});
+ assert.equal(run.status,200,JSON.stringify(run.body));
+ assert.equal(run.body.status,"completed"); // Skill execution can finish independently
+ const task=(await f.call("GET",taskUrl)).body.task;
+ assert.equal(task.status,"ready"); // Task still awaits verified deliverable
+ assert.equal(task.steps[0].receiptTrust,"server_committed");
+});

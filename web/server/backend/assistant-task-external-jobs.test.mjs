@@ -243,3 +243,23 @@ test("P2a model vs Comfy job kinds are distinct and invalid snapshot is rejected
  assert.equal(enqueue(ctx,planned).status,"waiting_external");
  assert.equal(ctx.db.prepare("SELECT snapshot_json FROM jobs").get().snapshot_json.includes('"adapterKind":"comfy"'),true);
 });
+
+
+test("P4.0 Task-level deliverable guard blocks Job materialization finalizeTask",t=>{
+ const ctx=setup(t);
+ ctx.db.prepare("INSERT INTO assistant_task_events(task_id,kind,payload_json,created_at) VALUES(?,'deliverable_required','{}',?)")
+  .run(ctx.taskId,Date.now());
+ const step=plan(ctx);approve(ctx,step);
+ const queued=enqueue(ctx,step);setJob(ctx,queued.jobId,"succeeded");
+ artifact(ctx,queued.jobId,{status:"retry"});
+ reconcileAssistantExternalTask(ctx.db,ctx);
+ ctx.db.prepare("UPDATE materializations SET status='materialized',node_id='output-node'").run();
+ const graph=getProject(ctx.db,"p").document;
+ graph.nodes.push({id:"output-node",type:"text",title:"落盘",position:{x:450,y:0},
+  width:340,height:240,metadata:{content:"hello"}});
+ ctx.db.prepare("UPDATE projects SET document_json=?,revision=revision+1 WHERE id='p'").run(JSON.stringify(graph));
+ reconcileAssistantExternalTask(ctx.db,ctx);
+ assert.equal(ctx.db.prepare("SELECT status FROM assistant_tasks").get().status,"ready");
+ assert.equal(ctx.db.prepare("SELECT receipt_trust FROM assistant_task_steps WHERE kind='materialize'").get().receipt_trust,"server_committed");
+ assert.equal(ctx.db.prepare("SELECT COUNT(*) n FROM assistant_task_events WHERE kind='task_completed'").get().n,0);
+});

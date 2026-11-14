@@ -486,3 +486,17 @@ test("P3b refuses malformed and tampered targets before any Job / Step",t=>{
  assert.equal(ctx.db.prepare("SELECT COUNT(*) AS n FROM assistant_task_steps").get().n,0);
  assert.equal(ctx.db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n,0);
 });
+
+
+test("P4.0 deliverable guard blocks last Run Sequence skip completion",t=>{
+ const {ctx,seq,mat}=branchFixture(t,"text");
+ ctx.db.prepare("INSERT INTO assistant_task_events(task_id,kind,payload_json,created_at) VALUES(?,'deliverable_required','{}',?)")
+  .run(ctx.base.taskId,Date.now());
+ const second=plan(ctx,seq,1,[mat]),job=send(ctx,second,1);
+ complete(ctx,job.jobId,1);
+ const result=skipBranch(ctx,seq,2);
+ assert.equal(result.skipped,true);
+ assert.equal(result.completed,false);
+ assert.equal(getAssistantTask(ctx.db,ctx.base).task.status,"ready");
+ assert.equal(ctx.db.prepare("SELECT COUNT(*) n FROM assistant_task_run_branch_skips").get().n,1);
+});

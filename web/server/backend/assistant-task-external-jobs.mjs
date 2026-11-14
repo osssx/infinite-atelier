@@ -3,6 +3,7 @@ import {EXECUTION_MODES} from "./contracts.mjs";
 import {assertNoRawCredentials,stableJson,writeTransaction,submitJobInTransaction} from "./repository.mjs";
 import {verifyAssistantRunSequenceJob,assertNoPendingAssistantRunSequence,verifyAssistantFrozenRunJoin} from "./assistant-task-run-sequences.mjs";
 import {verifyAssistantFrozenFailover} from "./assistant-task-failure-recovery.mjs";
+import {mayCompleteAssistantTask} from "./assistant-task-deliverables.mjs";
 
 const fail=(code,statusCode=409)=>Object.assign(Error(code),{code,statusCode});
 const id=v=>typeof v==="string"&&/^[A-Za-z0-9_-]{1,128}$/.test(v);
@@ -330,7 +331,7 @@ function reconcileTaskInTransaction(db,projectId,taskId){
    event(db,taskId,step.id,"materialize_verified",{jobId:action.jobId,bindings},at);
    if(valid&&!cancelled){
     const all=db.prepare("SELECT status,receipt_trust,required FROM assistant_task_steps WHERE task_id=? AND plan_version=? AND superseded_at IS NULL").all(taskId,step.plan_version);
-    const completed=pre.finalizeTask===true&&all.every(s=>!s.required||s.status==="succeeded"&&s.receipt_trust==="server_committed");
+    const completed=pre.finalizeTask===true&&mayCompleteAssistantTask(db,taskId)&&all.every(s=>!s.required||s.status==="succeeded"&&s.receipt_trust==="server_committed");
     db.prepare("UPDATE assistant_tasks SET status=?,active_step_id=NULL,updated_at=?,finished_at=? WHERE id=?")
      .run(completed?"completed":"ready",at,completed?at:null,taskId);
     if(completed)event(db,taskId,null,"task_completed",{planVersion:step.plan_version,source:"materialize"},at);

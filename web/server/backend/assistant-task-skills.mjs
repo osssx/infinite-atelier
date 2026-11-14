@@ -4,6 +4,7 @@ import {resolveAuthorizedSkillScript} from "./skill-script-source.mjs";
 import {runSkillScript} from "./skill-script-runner.mjs";
 import {blockUnreachableAssistantTaskStepsWithinTransaction} from "./assistant-task-step-gate.mjs";
 import {assertNoPendingAssistantRunSequence} from "./assistant-task-run-sequences.mjs";
+import {mayCompleteAssistantTask} from "./assistant-task-deliverables.mjs";
 
 const fail=(code,statusCode=409)=>Object.assign(Error(code),{code,statusCode});
 const id=x=>typeof x==="string"&&/^[A-Za-z0-9_-]{1,128}$/.test(x);
@@ -245,6 +246,7 @@ export function settleAssistantSkillRun(db,{projectId,taskId,stepId,runId,
    }else{
     const all=db.prepare("SELECT status,receipt_trust,required FROM assistant_task_steps WHERE task_id=? AND plan_version=? AND superseded_at IS NULL").all(taskId,step.plan_version);
     const done=JSON.parse(step.preconditions_json).finalizeTask===true&&
+      mayCompleteAssistantTask(db,taskId)&&
      all.every(s=>!s.required||s.status==="succeeded"&&s.receipt_trust==="server_committed");
     db.prepare("UPDATE assistant_tasks SET status=?,active_step_id=NULL,updated_at=?,finished_at=? WHERE id=?")
      .run(done?"completed":"ready",at,done?at:null,taskId);

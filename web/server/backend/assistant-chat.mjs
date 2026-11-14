@@ -207,7 +207,7 @@ export function createAssistantChatService({vault,upstreamCall=fetch,
  const retries=Number.isInteger(maxRetries)?Math.max(0,Math.min(DEFAULT_RETRIES,maxRetries)):DEFAULT_RETRIES;
  const timeout=Number.isInteger(requestTimeoutMs)?Math.max(1,Math.min(DEFAULT_TIMEOUT_MS,requestTimeoutMs)):DEFAULT_TIMEOUT_MS;
  const backoff=Number.isInteger(retryDelayMs)?Math.max(0,Math.min(5000,retryDelayMs)):DEFAULT_RETRY_DELAY_MS;
-  return async function ask({channelId,provider,baseUrl,model,messages,signal,canvasActions=false,skillContext="",skillTools=[],skillScriptProposalEnabled=true,visualImages=[],visualDetail="high",taskContext="",callObserver=null,modelCallKind="initial",semanticProposal=false}){  if(!validId(channelId)||!validModel(model)||
+  return async function ask({channelId,provider,baseUrl,model,messages,signal,canvasActions=false,skillContext="",skillTools=[],skillScriptProposalEnabled=true,visualImages=[],visualDetail="high",taskContext="",callObserver=null,modelCallKind="initial",semanticProposal=false,providerPayloadGuard=null}){  if(!validId(channelId)||!validModel(model)||
    !["openai","openai_compatible","google_gemini"].includes(provider))
    throw fail("assistant_model_invalid");
   checkMessages(messages);
@@ -261,6 +261,9 @@ export function createAssistantChatService({vault,upstreamCall=fetch,
      if(signal?.aborted)throw fail("assistant_cancelled",499);
      const deadline=AbortSignal.timeout(timeout);
      const requestSignal=signal?AbortSignal.any([signal,deadline]):deadline;
+     // Audit the final serialized payload for EVERY upstream POST, including tool
+     // continuations, format repairs and Skill fallback, before submit marker.
+     providerPayloadGuard?.(requestBody,{kind,provider,model});
      const callId=callObserver?.start({kind,requestDigest:createHash("sha256").update(requestBody).digest("hex")});
      let responseArrived=false,responseStatus=null;
      try{

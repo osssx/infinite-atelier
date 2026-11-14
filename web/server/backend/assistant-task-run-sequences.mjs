@@ -4,6 +4,7 @@
  * when the previous Job has a trusted materialization receipt.
  */
 import {randomUUID,createHash} from "node:crypto";
+import {mayCompleteAssistantTask} from "./assistant-task-deliverables.mjs";
 import {stableJson,writeTransaction} from "./repository.mjs";
 import {trustedAssistantTaskOutputs} from "./assistant-task-produced-artifacts.mjs";
 import {verifyAssistantFrozenFailover} from "./assistant-task-failure-recovery.mjs";
@@ -513,11 +514,12 @@ export function skipAssistantRunBranch(db,{projectId,taskId,requestId,runSequenc
   db.prepare("INSERT INTO assistant_task_run_branch_skips(sequence_id,task_id,project_id,plan_version,run_index,source_step_id,material_step_id,evidence_digest,receipt_json,skipped_at) VALUES(?,?,?,?,?,?,?,?,?,?)")
    .run(seq.id,taskId,projectId,expectedPlanVersion,runIndex,skip.sourceStepId,
     skip.materialStepId,evidenceDigest,stableJson(receipt),at);
-  if(runIndex===actions.length-1)db.prepare("UPDATE assistant_tasks SET status='completed',updated_at=? WHERE id=? AND status IN ('ready','planning')").run(at,taskId);
+  const completed=runIndex===actions.length-1&&mayCompleteAssistantTask(db,taskId);
+  if(completed)db.prepare("UPDATE assistant_tasks SET status='completed',updated_at=? WHERE id=? AND status IN ('ready','planning')").run(at,taskId);
   db.prepare("INSERT INTO assistant_task_events(task_id,kind,payload_json,created_at) VALUES(?,?,?,?)")
    .run(taskId,"run_branch_skipped",stableJson({sequenceId:seq.id,receipt}),at);
   const response={sequenceId:seq.id,runIndex,skipped:true,
-   completed:runIndex===actions.length-1,receipt,executionStarted:false};
+   completed,receipt,executionStarted:false};
   db.prepare("INSERT INTO assistant_task_commands(project_id,request_id,task_id,command_kind,payload_digest,status,response_json,created_at) VALUES(?,?,?,'run_branch_skip',?,'completed',?,?)")
    .run(projectId,requestId,taskId,digest,stableJson(response),at);
   return {...response,existing:false};

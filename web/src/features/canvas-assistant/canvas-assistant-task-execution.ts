@@ -5,6 +5,7 @@ import {confirmedAssistantTaskDependencies,type AssistantTaskDependencyStep} fro
 export type FrozenCanvasTaskStep={
  stepId:string;taskId:string;planVersion:number;actionDigest:string;status:string;
  preconditions?:{projectRevision:number;refs:{nodes:Record<string,string>;connections:Record<string,string>}};
+ deliverableSpec?:{kind:"text_nodes";characters:{ref:string;title:string}[];allowEmptyTemplate:boolean;expectedCount:number};
 };
 export type CanvasTaskCommit={status:string;project:CanvasBackendProject;receipt:{
  stepId?:string;attemptId:string;projectRevision:number;refs:{nodes:Record<string,string>;connections:Record<string,string>};
@@ -89,6 +90,16 @@ export async function planAndExecuteAssistantCanvasActions({
    throw Error("assistant_task_graph_response_invalid");
   return committed.project;
  });
+ if((plan as FrozenCanvasTaskStep|null)?.deliverableSpec){
+  const step=plan as unknown as FrozenCanvasTaskStep;
+  const verified=await canvasApi<{verified:boolean;reason?:string}>(base(projectId,taskId)+
+   "/deliverables/text/verify","POST",{
+    requestId:messageId+"-deliverable-verify",stepId:step.stepId,
+    expectedPlanVersion:step.planVersion,actionDigest:step.actionDigest
+   },signal);
+  if(!verified.verified)throw Error("角色卡节点已提交但完整性验证不通过："+(verified.reason??"未知原因")+
+   "；Task 已阻断，可在任务面板重新规划。");
+ }
  return {applied:(committed as CanvasTaskCommit|null)?.receipt.applied??actions.length,
   stepId:(plan as FrozenCanvasTaskStep|null)?.stepId??"",revision:remote.revision,
   refs:new Map(Object.entries((committed as CanvasTaskCommit|null)?.receipt.refs.nodes??{}))};

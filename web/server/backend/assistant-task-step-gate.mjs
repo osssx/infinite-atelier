@@ -1,5 +1,6 @@
 import {createHash,randomUUID} from "node:crypto";
 import {assertNoRawCredentials,stableJson,writeTransaction} from "./repository.mjs";
+import {assertAssistantDeliverableBinding} from "./assistant-task-deliverables.mjs";
 
 const fail=(code,statusCode=409)=>Object.assign(Error(code),{code,statusCode});
 const id=x=>typeof x==="string"&&/^[A-Za-z0-9_-]{1,128}$/.test(x);
@@ -144,6 +145,7 @@ export function decideAssistantTaskStep(db,{projectId,taskId,stepId,requestId,
   if(step.action_digest!==actionDigest)throw fail("assistant_step_action_changed");
   assertFrozenAction(step);
   const frozen=JSON.parse(step.preconditions_json),approval=JSON.parse(step.approval_json);
+  assertAssistantDeliverableBinding(JSON.parse(step.action_json),frozen);
   if(!Number.isSafeInteger(frozen.projectRevision)||frozen.projectRevision!==task.revision||
    frozen.projectGraphDigest!==digest(JSON.parse(task.document_json)))
    throw fail("assistant_step_source_changed");
@@ -196,6 +198,7 @@ export function claimAssistantTaskStep(db,{projectId,taskId,stepId,expectedPlanV
   if(step.status!=="ready"||step.lease_owner!==null)throw fail("assistant_step_already_claimed");
   const action=assertFrozenAction(step),pre=JSON.parse(step.preconditions_json),
    approval=JSON.parse(step.approval_json);
+  assertAssistantDeliverableBinding(action,pre);
   if(!Number.isSafeInteger(pre.projectRevision)||task.revision!==pre.projectRevision||
    pre.projectGraphDigest!==digest(JSON.parse(task.document_json)))
    throw fail("assistant_step_source_changed");
@@ -239,6 +242,7 @@ export function verifyAssistantTaskClaim(db,{projectId,taskId,stepId,attemptId,l
  if(frozen.planVersion!==planVersion||frozen.actionDigest!==step.action_digest)
   throw fail("assistant_step_action_changed");
  assertFrozenAction(step);
+ assertAssistantDeliverableBinding(JSON.parse(step.action_json),frozen.preconditions);
  if(task.revision!==frozen.preconditions?.projectRevision||
   frozen.preconditions.projectGraphDigest!==digest(JSON.parse(task.document_json)))
   throw fail("assistant_step_source_changed");

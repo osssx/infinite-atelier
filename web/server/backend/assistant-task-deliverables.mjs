@@ -30,7 +30,8 @@ export function mayCompleteAssistantTask(db,taskId){
  return !assistantTaskRequiresDeliverable(db,taskId);
 }
 export function currentAssistantTextDeliverable(db,taskId){
- const row=requiredEvent(db,taskId);
+ const row=db.prepare("SELECT payload_json FROM assistant_task_events WHERE task_id=? AND kind IN ('deliverable_required','deliverable_revised') ORDER BY seq DESC LIMIT 1")
+  .get(taskId);
  return row?JSON.parse(row.payload_json):null;
 }
 const meaningful=text=>typeof text==="string"?
@@ -116,9 +117,94 @@ export function registerAssistantTextDeliverable(db,{projectId,taskId,requestId,
   return {...response,existing:false};
  });
 }
+/** P4.3: confirmed, typed text requirements. Revision only after public safe replan.
+ * No client or imported event can mark a Task completed. */
+const structuredTypes={
+ story:{keyword:/故事|剧情|大纲/,title:"故事大纲",minimum:60},
+ scene:{keyword:/场景|环境设定/,title:"场景设定",minimum:35},
+ storyboard:{keyword:/分镜|镜头提示词|镜头脚本/,title:"分镜提示词",minimum:40}
+};
+export function registerAssistantStructuredTextDeliverable(db,{projectId,taskId,requestId,
+ sourceTurnMessageId,deliverableType,entries,requiredFields=[],allowEmptyTemplate=false,
+ expectedPlanVersion,confirmed=false}){
+ const rule=structuredTypes[deliverableType];
+ if(![projectId,taskId,requestId,sourceTurnMessageId].every(id)||confirmed!==true||!rule||
+  !Number.isSafeInteger(expectedPlanVersion)||expectedPlanVersion<1||
+  !Array.isArray(entries)||entries.length<1||entries.length>8||
+  !Array.isArray(requiredFields)||requiredFields.length>6||
+  requiredFields.some(f=>typeof f!=="string"||!f.trim()||f.length>60)||
+  typeof allowEmptyTemplate!=="boolean")throw fail("assistant_deliverable_invalid",400);
+ const clean=entries.map(v=>{
+  if(!v||typeof v!=="object"||Array.isArray(v)||
+   Object.keys(v).some(k=>!["ref","title"].includes(k))||
+   !id(v.ref)||typeof v.title!=="string"||!v.title.trim()||v.title.length>100)
+   throw fail("assistant_deliverable_invalid",400);
+  return {ref:v.ref,title:v.title.trim()};
+ });
+ if(new Set(clean.map(v=>v.ref)).size!==clean.length||
+  new Set(clean.map(v=>v.title)).size!==clean.length)throw fail("assistant_deliverable_invalid",400);
+ const data={kind:"text_nodes",deliverableType,sourceTurnMessageId,entries:clean,
+  requiredFields:[...new Set(requiredFields.map(f=>f.trim()))],allowEmptyTemplate,
+  planVersion:expectedPlanVersion,minMeaningfulChars:rule.minimum};
+ const signature=sha({kind:"structured_deliverable_require",taskId,data});
+ return writeTransaction(db,()=>{
+  const old=db.prepare("SELECT command_kind,payload_digest,status,response_json FROM assistant_task_commands WHERE project_id=? AND request_id=?").get(projectId,requestId);
+  if(old){
+   if(old.command_kind!=="deliverable_require"||old.payload_digest!==signature)
+    throw fail("assistant_task_command_conflict");
+   if(old.status!=="completed")throw fail("assistant_step_state_conflict");
+   return {...JSON.parse(old.response_json),existing:true};
+  }
+  const task=db.prepare("SELECT * FROM assistant_tasks WHERE id=? AND project_id=?").get(taskId,projectId);
+  if(!task)throw fail("assistant_task_not_found",404);
+  if(task.read_only||task.cancel_requested_at!==null||task.status!=="planning"||
+   task.active_step_id!==null||task.active_plan_version!==expectedPlanVersion)
+   throw fail("assistant_task_not_editable");
+  if(db.prepare("SELECT 1 FROM assistant_task_steps WHERE task_id=? AND plan_version=? LIMIT 1")
+   .get(taskId,expectedPlanVersion))throw fail("assistant_deliverable_plan_already_started");
+  const current=currentAssistantTextDeliverable(db,taskId);
+  if(current){
+   if(!current.deliverableType||current.kind!=="text_nodes"||
+    current.planVersion!==expectedPlanVersion-1||current.deliverableType!==deliverableType)
+    throw fail("assistant_deliverable_revision_invalid");
+   if(!db.prepare("SELECT 1 FROM assistant_task_events WHERE task_id=? AND kind='safe_replan_authorized' AND json_extract(payload_json,'$.toPlanVersion')=? LIMIT 1").get(taskId,expectedPlanVersion))
+    throw fail("assistant_deliverable_revision_not_authorized",403);
+  }else if(expectedPlanVersion!==1)throw fail("assistant_deliverable_revision_invalid");
+  const turn=db.prepare("SELECT seq,payload_json FROM assistant_task_events WHERE task_id=? AND kind='user_turn' AND json_extract(payload_json,'$.messageId')=? ORDER BY seq DESC LIMIT 1").get(taskId,sourceTurnMessageId);
+  const latest=db.prepare("SELECT seq FROM assistant_task_events WHERE task_id=? AND kind='user_turn' ORDER BY seq DESC LIMIT 1").get(taskId);
+  if(!turn||turn.seq!==latest?.seq)throw fail("assistant_task_turn_not_current",403);
+  const preview=JSON.parse(turn.payload_json).preview??"";
+  if(!rule.keyword.test(preview)||
+   clean.some(v=>!preview.includes(v.title)&&!(clean.length===1&&v.title===rule.title))||
+   allowEmptyTemplate&&!/(空白|空模板|不填正文)/.test(preview))
+   throw fail("assistant_deliverable_source_unconfirmed",403);
+  const at=Date.now(),sourceTurnSeq=turn.seq,
+   digest=sha({taskId,data,sourceTurnSeq}),
+   value={...data,taskId,requestId,sourceTurnSeq,digest};
+  record(db,taskId,null,current?"deliverable_revised":"deliverable_required",value,at);
+  const response={taskId,kind:"text_nodes",deliverableType,requirementDigest:digest,
+   entries:clean,planVersion:expectedPlanVersion,
+   allowEmptyTemplate,requiredFields:data.requiredFields};
+  db.prepare("INSERT INTO assistant_task_commands(project_id,request_id,task_id,command_kind,payload_digest,status,response_json,created_at) VALUES(?,?,?,'deliverable_require',?,'completed',?,?)")
+   .run(projectId,requestId,taskId,signature,serialized(response),at);
+  return {...response,existing:false};
+ });
+}
 export function freezeAssistantTextSpec(requirement,{taskId,planVersion,projectRevision}){
  if(requirement?.kind!=="text_nodes"||requirement.taskId!==taskId)
   throw fail("assistant_deliverable_invalid");
+ if(requirement.deliverableType){
+  const rule=structuredTypes[requirement.deliverableType];
+  if(!rule||requirement.planVersion!==planVersion||
+   requirement.minMeaningfulChars!==rule.minimum||!Array.isArray(requirement.entries))
+   throw fail("assistant_deliverable_revision_invalid");
+  return {kind:"text_nodes",deliverableType:requirement.deliverableType,taskId,
+   planVersion,sourceProjectRevision:projectRevision,entries:requirement.entries,
+   sourceTurnMessageId:requirement.sourceTurnMessageId,sourceTurnSeq:requirement.sourceTurnSeq,
+   expectedCount:requirement.entries.length,minMeaningfulChars:rule.minimum,
+   requiredFields:requirement.requiredFields??[],
+   allowEmptyTemplate:requirement.allowEmptyTemplate===true,requirementDigest:requirement.digest};
+ }
  return {kind:"text_nodes",taskId,planVersion,sourceProjectRevision:projectRevision,
   characters:requirement.characters,expectedCount:requirement.characters.length,
   requiredFields:requirement.requiredFields??[],allowEmptyTemplate:requirement.allowEmptyTemplate===true,
@@ -133,17 +219,33 @@ export function assertAssistantTextActions(spec,actions){
   throw fail("assistant_deliverable_content_invalid",422);
  const byRef=new Map(cards.map(a=>[a.ref,a]));
  if(byRef.size!==cards.length)throw fail("assistant_deliverable_content_invalid",422);
- for(const c of spec.characters){
+ for(const c of spec.entries??spec.characters){
   const a=byRef.get(c.ref);
-  if(!a||a.title!==c.title)throw fail("assistant_deliverable_character_mismatch",422);
+  if(!a||a.title!==c.title)throw fail(spec.deliverableType?
+   "assistant_deliverable_target_mismatch":"assistant_deliverable_character_mismatch",422);
   const body=a.content;
   if(!spec.allowEmptyTemplate&&
-   (meaningful(body)<18||emptyLabels(body)>=3||
+   (meaningful(body)<(spec.minMeaningfulChars??18)||
+    (!spec.deliverableType&&emptyLabels(body)>=3)||
     spec.requiredFields.some(field=>!body?.includes(field))))
    throw fail("assistant_deliverable_content_invalid",422);
   if(spec.allowEmptyTemplate&&typeof body!=="string"&&body!==undefined)
    throw fail("assistant_deliverable_content_invalid",422);
  }
+}
+/** A newer user Turn revokes the authority of this immutable structured spec. */
+export function isAssistantStructuredSourceCurrent(db,taskId,spec){
+ if(!spec?.deliverableType)return true;
+ if(!id(spec.sourceTurnMessageId)||!Number.isSafeInteger(spec.sourceTurnSeq))
+  return false;
+ const latest=db.prepare("SELECT seq,payload_json FROM assistant_task_events WHERE task_id=? AND kind='user_turn' ORDER BY seq DESC LIMIT 1").get(taskId);
+ if(latest?.seq!==spec.sourceTurnSeq)return false;
+ try{return JSON.parse(latest.payload_json).messageId===spec.sourceTurnMessageId}
+ catch{return false}
+}
+export function assertAssistantStructuredSourceCurrent(db,taskId,spec){
+ if(!isAssistantStructuredSourceCurrent(db,taskId,spec))
+  throw fail("assistant_deliverable_source_turn_stale",409);
 }
 /** Same serialization as Step Claim. Plan checks the complete candidate early. */
 export function assertAssistantTextClaimBudget({projectId,taskId,stepId,planVersion,action,preconditions,actionDigest}){
@@ -198,26 +300,36 @@ export function verifyAssistantTextDeliverable(db,{projectId,taskId,stepId,reque
   const binding=assertAssistantDeliverableBinding(action,pre);
   if(!binding||binding.spec.taskId!==taskId||binding.spec.planVersion!==expectedPlanVersion)
    throw fail("assistant_deliverable_spec_changed");
+  if(binding.spec.deliverableType){
+   const current=currentAssistantTextDeliverable(db,taskId);
+   if(!current||current.digest!==binding.spec.requirementDigest||
+    current.planVersion!==expectedPlanVersion)
+    throw fail("assistant_deliverable_spec_changed");
+  }
   const approval=JSON.parse(step.approval_json);
   if(approval.decision!=="approved"||approval.actionDigest!==actionDigest||
    approval.planVersion!==expectedPlanVersion||approval.projectRevision!==pre.projectRevision)
    throw fail("assistant_step_approval_required");
   const receipt=JSON.parse(step.receipt_json),doc=JSON.parse(task.document_json);
   const projectDigest=sha(doc),receiptDigest=sha(receipt);
-  let reason=null;
+  let reason=binding.spec.deliverableType&&
+   !isAssistantStructuredSourceCurrent(db,taskId,binding.spec)?
+    "assistant_deliverable_source_turn_stale":null;
   if(task.revision!==receipt.projectRevision||projectDigest!==receipt.projectGraphDigest)
    reason="assistant_deliverable_source_changed";
   const byId=new Map((doc.nodes??[]).map(n=>[n.id,n]));
   const cardActions=new Map(action.actions.filter(a=>a.type==="create_text"||
    a.type==="create_node"&&a.nodeType==="text").map(a=>[a.ref,a]));
   const checkedNodeDigests={};
-  if(!reason)for(const c of binding.spec.characters){
+  if(!reason)for(const c of binding.spec.entries??binding.spec.characters){
    const nodeId=receipt.refs?.nodes?.[c.ref],node=byId.get(nodeId),planned=cardActions.get(c.ref);
    const body=node?.metadata?.content;
    if(!node||node.type!=="text"||node.title!==c.title||!planned||
     (body??"")!==(planned.content??"")||
-    !binding.spec.allowEmptyTemplate&&(meaningful(body)<18||emptyLabels(body)>=3||
-     binding.spec.requiredFields.some(field=>!body?.includes(field)))){
+    !binding.spec.allowEmptyTemplate&&
+     (meaningful(body)<(binding.spec.minMeaningfulChars??18)||
+      (!binding.spec.deliverableType&&emptyLabels(body)>=3)||
+      binding.spec.requiredFields.some(field=>!body?.includes(field)))){
     reason="assistant_deliverable_content_invalid";break;
    }
    checkedNodeDigests[nodeId]=sha({title:node.title,content:body??""});

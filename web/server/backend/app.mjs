@@ -19,7 +19,7 @@ import {createComfyRegistry} from "./comfy-registry.mjs";
 import {freezeAuthorizedSkillGrant} from "./skill-job-grants.mjs";
 import {resolveAssistantSkills} from "./assistant-skills.mjs";
 import {resolveAssistantVisualContext} from "./assistant-visual-context.mjs";
-import {currentAssistantTextDeliverable} from "./assistant-task-deliverables.mjs";
+import {currentAssistantTextDeliverable,assertAssistantStructuredSourceCurrent} from "./assistant-task-deliverables.mjs";
 import {resolveAuthorizedCreativeCharacters,formatAssistantCreativeSources} from "./assistant-creative-context.mjs";
 import {hasSelectedAssistantCreativeMaterials,loadSelectedAssistantCreativeMaterials,formatSelectedAssistantCreativeMaterials} from "./assistant-creative-materials.mjs";
 import {runSkillScript} from "./skill-script-runner.mjs";
@@ -740,6 +740,9 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
         frozenPolicy=getAssistantTaskTurnPolicy(db,{projectId:req.params.id,taskId:ref.taskId,
          messageId:ref.turnMessageId});
         const requirement=proposalMode?null:currentAssistantTextDeliverable(db,ref.taskId);
+        // Reject obsolete structured specs before the next billable POST.
+        if(requirement?.deliverableType)
+         assertAssistantStructuredSourceCurrent(db,ref.taskId,requirement);
         // An explicitly approved source set supersedes unrelated model drafts.
         const pinned=requirement?.characters?.some(c=>c.sourceRef)===true||chosenMaterials.length>0;
         const creativeDrafts=proposalMode||pinned?[]:loadAssistantTaskCreativeHistory(db,{
@@ -775,17 +778,23 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
         if(!proposalMode){
          if(requirement?.kind==="text_nodes"){
           // Source references are server resolved again for THIS turn's permission.
-          const sourced=requirement.characters.filter(c=>c.sourceRef);
+          const sourced=(requirement.characters??[]).filter(c=>c.sourceRef);
           const candidates=sourced.length?resolveAuthorizedCreativeCharacters(db,{
            projectId:req.params.id,taskId:ref.taskId,turnMessageId:ref.turnMessageId,
            characters:sourced}):[];
           const sourceContext=formatAssistantCreativeSources(candidates);
-          const specContext="\n本轮已确认的文本角色卡交付规格："+JSON.stringify({
-           characters:requirement.characters,allowEmptyTemplate:requirement.allowEmptyTemplate,
-           requiredFields:requirement.requiredFields})+
+          const structured=Boolean(requirement.deliverableType);
+          const labels={story:"故事大纲",scene:"场景设定",storyboard:"分镜提示词"};
+          const specContext="\n本轮已经过用户确认的文本交付规格："+JSON.stringify({
+           type:structured?labels[requirement.deliverableType]:"角色卡",
+           targets:structured?requirement.entries:requirement.characters,
+           allowEmptyTemplate:requirement.allowEmptyTemplate,
+           requiredFields:requirement.requiredFields,
+           ...(structured?{minMeaningfulChars:requirement.minMeaningfulChars}:{})})+
            (requirement.allowEmptyTemplate?
-            "\n必须使用 create_text 且逐项匹配 ref/title；用户要求空白模板，允许空正文。":
-            "\n必须使用 create_text 且逐项匹配 ref/title；正文必须有具体角色特征，不得返回空白模板。");
+            "\n必须使用 create_text 逐项精确匹配 ref/title；用户明确要求空白模板，允许空正文。":
+            "\n必须使用 create_text 逐项精确匹配 ref/title；正文不得为空白模板。"+
+            (structured?"每项应有完整具体内容，达到最低有效中文字量。":"应描写具体角色特征。"));
           if(Buffer.byteLength(taskContext+specContext+sourceContext,"utf8")>16*1024)
            throw Object.assign(Error("assistant_context_budget_insufficient"),
             {code:"assistant_context_budget_insufficient",statusCode:413});

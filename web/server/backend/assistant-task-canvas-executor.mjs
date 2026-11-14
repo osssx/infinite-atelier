@@ -4,7 +4,8 @@ import {validateProjectDocument,emitProjectEvent} from "./projects.mjs";
 import {deterministicAssistantRefs,claimAssistantTaskStep,verifyAssistantTaskClaim} from "./assistant-task-step-gate.mjs";
 import {assertAssistantCanvasPlan,applyFrozenAssistantCanvasPlan} from "./assistant-task-canvas-graph.mjs";
 import {mayCompleteAssistantTask,currentAssistantTextDeliverable,freezeAssistantTextSpec,
- assertAssistantTextActions,assertAssistantTextClaimBudget,assertAssistantDeliverableBinding} from "./assistant-task-deliverables.mjs";
+ assertAssistantTextActions,assertAssistantTextClaimBudget,assertAssistantDeliverableBinding,
+ assertAssistantStructuredSourceCurrent} from "./assistant-task-deliverables.mjs";
 import {freezeAssistantAgentCanvasBinding,assertAssistantAgentCanvasBinding} from "./assistant-agent-step-coordinator.mjs";
 import {assertNoPendingAssistantRunSequence,verifyAssistantRunInputBinding,
  verifyAssistantCommittedRunInput} from "./assistant-task-run-sequences.mjs";
@@ -114,6 +115,7 @@ export function planAssistantCanvasStep(db,{projectId,taskId,requestId,
   if(deliverableSpec){
    if(runSequenceId!==undefined||finalizeTask)throw fail("assistant_deliverable_plan_invalid",400);
    assertAssistantTextActions(deliverableSpec,actions);
+   assertAssistantStructuredSourceCurrent(db,taskId,deliverableSpec);
   }
   const agentRunBinding=agentRunId!==undefined?freezeAssistantAgentCanvasBinding(db,{
    projectId,taskId,runId:agentRunId,actions,expectedPlanVersion}):null;
@@ -190,6 +192,7 @@ export function commitAssistantCanvasAttempt(db,{projectId,taskId,stepId,
   const step=db.prepare("SELECT * FROM assistant_task_steps WHERE id=? AND task_id=?").get(stepId,taskId);
   const action=JSON.parse(step.action_json),pre=JSON.parse(step.preconditions_json);
   assertAssistantDeliverableBinding(action,pre);
+  assertAssistantStructuredSourceCurrent(db,taskId,pre.deliverableSpec);
   assertAssistantAgentCanvasBinding(db,{projectId,taskId,action,
    preconditions:pre,expectedPlanVersion:planVersion});
   if(hash(action)!==step.action_digest||hash(action)!==actionDigest||

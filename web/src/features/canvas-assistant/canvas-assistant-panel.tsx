@@ -12,6 +12,7 @@ import type {AssistantContextResult,AssistantContextScope} from "./canvas-assist
 import {parseAssistantCanvasActions,isDangerousAssistantAction,dangerousAssistantActionSummary,type AssistantCanvasStage} from "./canvas-assistant-actions";
 import {buildCanvasAssistantTurns} from "./canvas-assistant-history";
 import {parseAssistantCharacterCast} from "./canvas-assistant-character-cast";
+import {detectAssistantStructuredTextDelivery} from "./canvas-assistant-structured-deliverable-intent";
 import {wantsAssistantTaskReadTools} from "./canvas-assistant-read-tool-intent";
 import {detectAssistantCreativeMaterialIntent,selectAssistantCreativeMaterialsForRequest,summarizeAssistantCreativeMaterials,type AssistantCreativeMaterial} from "./canvas-assistant-creative-materials";
 import {isCanvasAssistantTextOnlyRequest,isCanvasAssistantSkillOptOutRequest,isCanvasAssistantCanvasActionRequest} from "./canvas-assistant-output-intent";
@@ -436,6 +437,11 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
       skillIds:selected.map(entry=>entry.id),versionPins:Object.fromEntries(selected.map(entry=>[entry.id,entry.activeVersion]))};
     }
     const explicitCardDelivery=!!linkedTaskId&&!textOnly&&/角色卡/.test(text)&&/(?:生成|创建|制作|添加)/.test(text);
+    const structuredDelivery=explicitCardDelivery?null:
+     detectAssistantStructuredTextDelivery(text,linkedTaskId,textOnly);
+    if(structuredDelivery&&explicitSkills)
+     throw Error("显式文本交付暂不支持同时执行 Skill；请分轮操作。");
+    if(structuredDelivery)selectedSkills=undefined;
     // P4.0 only supports direct text cards, not Skill execution or fallback.
     if(explicitCardDelivery&&explicitSkills)
      throw Error("显式角色卡交付暂不支持同时执行 Skill；请先生成角色卡，再单独执行 Skill。");
@@ -512,7 +518,31 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
        allowEmptyTemplate,requiredFields:[],confirmed:true
       },controller.signal);
     }
-     // P4.2a is explicitly opt-in before any model POST. No Skill/visual
+     // P4.3 server-frozen generic text requirement, before any Provider POST.
+    if(structuredDelivery&&linkedTaskId){
+     const approved=await confirmDangerousActions(
+      "即将冻结"+structuredDelivery.title+"文本交付规格。"+
+      "\n节点标题："+structuredDelivery.title+
+      "\n正文最低有效字数："+structuredDelivery.minimumMeaningfulChars+
+      (structuredDelivery.allowEmptyTemplate?
+       "\n用户要求空白模板，将允许空正文。":
+       "\n必须生成具体内容，不能用空白模板替代。")+
+      "\n确认后才能向模型提交请求；生成后还需验证实际节点正文。",
+      controller.signal,themeName);
+     if(!approved)return;
+     const taskUrl="/api/v1/projects/"+encodeURIComponent(projectId)+
+      "/assistant/tasks/"+encodeURIComponent(linkedTaskId);
+     const snapshot=await canvasApi<{task:{activePlanVersion:number}}>(
+      taskUrl,"GET",undefined,controller.signal);
+     await canvasApi(taskUrl+"/deliverables/structured-text","POST",{
+      requestId:user.id+"-structured-require",
+      sourceTurnMessageId:user.id,expectedPlanVersion:snapshot.task.activePlanVersion,
+      deliverableType:structuredDelivery.deliverableType,
+      entries:[{ref:structuredDelivery.ref,title:structuredDelivery.title}],
+      requiredFields:[],allowEmptyTemplate:structuredDelivery.allowEmptyTemplate,confirmed:true
+     },controller.signal);
+    }
+    // P4.2a is explicitly opt-in before any model POST. No Skill/visual
      // fallback or mixing with an independently confirmed material selection.
      const agentReadTools=wantsAssistantTaskReadTools(text,linkedTaskId)&&!wantsCreativeSources;
      if(agentReadTools){

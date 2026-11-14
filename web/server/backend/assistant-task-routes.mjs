@@ -10,7 +10,7 @@ import {planAssistantSkillStep,executeAssistantSkillStep} from "./assistant-task
 import {registerAssistantRunSequence,getAssistantRunSequence,selectAssistantRunInput,skipAssistantRunBranch,commitAssistantRunJoin} from "./assistant-task-run-sequences.mjs";
 import {inspectAssistantTaskRecovery,replanAssistantTaskSafely} from "./assistant-task-safe-replan.mjs";
 import {inspectAssistantRunFailureRecovery,confirmAssistantRunFailureRecovery} from "./assistant-task-failure-recovery.mjs";
-import {registerAssistantTextDeliverable,verifyAssistantTextDeliverable} from "./assistant-task-deliverables.mjs";
+import {registerAssistantTextDeliverable,registerAssistantStructuredTextDeliverable,verifyAssistantTextDeliverable} from "./assistant-task-deliverables.mjs";
 import {discoverAssistantCreativeCharacters} from "./assistant-creative-context.mjs";
 import {discoverAssistantCreativeMaterials,selectAssistantCreativeMaterials} from "./assistant-creative-materials.mjs";
 import {listAssistantAgentRuns,inspectAssistantAgentRun} from "./assistant-agent-run-ledger.mjs";
@@ -80,6 +80,15 @@ const textDeliverableBody={type:"object",additionalProperties:false,
     sourceRef:id,sourceDigest:{type:"string",pattern:"^[a-f0-9]{64}$"}}}},
  requiredFields:{type:"array",maxItems:6,items:{type:"string",minLength:1,maxLength:60}},
  allowEmptyTemplate:{type:"boolean"}}};
+const structuredDeliverableBody={type:"object",additionalProperties:false,
+ required:["requestId","sourceTurnMessageId","deliverableType","entries","expectedPlanVersion","confirmed"],
+ properties:{requestId:id,sourceTurnMessageId:id,
+  deliverableType:{type:"string",enum:["story","scene","storyboard"]},
+  expectedPlanVersion:{type:"integer",minimum:1},confirmed:{type:"boolean",const:true},
+  entries:{type:"array",minItems:1,maxItems:8,items:{type:"object",additionalProperties:false,
+   required:["ref","title"],properties:{ref:id,title:{type:"string",minLength:1,maxLength:100}}}},
+  requiredFields:{type:"array",maxItems:6,uniqueItems:true,items:{type:"string",minLength:1,maxLength:60}},
+  allowEmptyTemplate:{type:"boolean"}}};
 const textVerifyBody={type:"object",additionalProperties:false,
  required:["requestId","stepId","expectedPlanVersion","actionDigest"],properties:{
  requestId:id,stepId:id,expectedPlanVersion:{type:"integer",minimum:1},
@@ -218,6 +227,10 @@ export function registerAssistantTaskRoutes(app,db,{skillRegistry,blobStore}={})
   app.post(base+"/:taskId/deliverables/text",{schema:{params:taskParams,body:textDeliverableBody}},
    (req,reply)=>result(reply,registerAssistantTextDeliverable(db,{
     projectId:req.params.id,taskId:req.params.taskId,...req.body})));
+  app.post(base+"/:taskId/deliverables/structured-text",{
+   schema:{params:taskParams,body:structuredDeliverableBody}},(req,reply)=>result(reply,
+    registerAssistantStructuredTextDeliverable(db,{projectId:req.params.id,
+     taskId:req.params.taskId,...req.body})));
   app.post(base+"/:taskId/deliverables/text/verify",{schema:{params:taskParams,body:textVerifyBody}},
    (req,reply)=>result(reply,verifyAssistantTextDeliverable(db,{
     projectId:req.params.id,taskId:req.params.taskId,...req.body})));

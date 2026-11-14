@@ -1,6 +1,6 @@
 import {createHash,randomUUID} from "node:crypto";
 import {assertNoRawCredentials,stableJson,writeTransaction} from "./repository.mjs";
-import {assertAssistantDeliverableBinding} from "./assistant-task-deliverables.mjs";
+import {assertAssistantDeliverableBinding,assertAssistantStructuredSourceCurrent} from "./assistant-task-deliverables.mjs";
 import {assertAssistantAgentCanvasBinding} from "./assistant-agent-step-coordinator.mjs";
 
 const fail=(code,statusCode=409)=>Object.assign(Error(code),{code,statusCode});
@@ -147,16 +147,17 @@ export function decideAssistantTaskStep(db,{projectId,taskId,stepId,requestId,
   assertFrozenAction(step);
   const frozen=JSON.parse(step.preconditions_json),approval=JSON.parse(step.approval_json);
   assertAssistantDeliverableBinding(JSON.parse(step.action_json),frozen);
+  if(decision==="approve")assertAssistantStructuredSourceCurrent(db,taskId,frozen.deliverableSpec);
   // Rejecting a frozen Step must remain possible even if its model source was
   // revoked or changed. Rejection confers no write/Claim authority.
   if(decision==="approve")assertAssistantAgentCanvasBinding(db,{projectId,taskId,
    action:JSON.parse(step.action_json),preconditions:frozen,expectedPlanVersion});
-  if((decision==="approve"||!frozen.agentRunBinding)&&
+  if((decision==="approve"||!(frozen.agentRunBinding||frozen.deliverableSpec?.deliverableType))&&
    (!Number.isSafeInteger(frozen.projectRevision)||frozen.projectRevision!==task.revision||
    frozen.projectGraphDigest!==digest(JSON.parse(task.document_json))))
    throw fail("assistant_step_source_changed");
   const revoking=decision==="reject"&&approval.decision==="approved"&&
-   !!frozen.agentRunBinding&&step.kind==="canvas_mutation"&&step.status==="ready"&&task.active_step_id===null&&
+   (!!frozen.agentRunBinding||!!frozen.deliverableSpec?.deliverableType)&&step.kind==="canvas_mutation"&&step.status==="ready"&&task.active_step_id===null&&
    !db.prepare("SELECT 1 FROM assistant_task_attempts WHERE step_id=? AND (submit_marker IS NOT NULL OR submitted_at IS NOT NULL OR status IN ('succeeded','submitting','needs_reconcile')) LIMIT 1").get(stepId);
   let response;
   if(approval.decision&&!revoking){
@@ -212,6 +213,7 @@ export function claimAssistantTaskStep(db,{projectId,taskId,stepId,expectedPlanV
   const action=assertFrozenAction(step),pre=JSON.parse(step.preconditions_json),
    approval=JSON.parse(step.approval_json);
   assertAssistantDeliverableBinding(action,pre);
+  assertAssistantStructuredSourceCurrent(db,taskId,pre.deliverableSpec);
   assertAssistantAgentCanvasBinding(db,{projectId,taskId,action,
    preconditions:pre,expectedPlanVersion});
   if(!Number.isSafeInteger(pre.projectRevision)||task.revision!==pre.projectRevision||
@@ -261,6 +263,7 @@ export function verifyAssistantTaskClaim(db,{projectId,taskId,stepId,attemptId,l
   throw fail("assistant_step_action_changed");
  assertFrozenAction(step);
  assertAssistantDeliverableBinding(JSON.parse(step.action_json),frozen.preconditions);
+ assertAssistantStructuredSourceCurrent(db,taskId,frozen.preconditions.deliverableSpec);
  if(task.revision!==frozen.preconditions?.projectRevision||
   frozen.preconditions.projectGraphDigest!==digest(JSON.parse(task.document_json)))
   throw fail("assistant_step_source_changed");

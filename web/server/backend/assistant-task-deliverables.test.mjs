@@ -75,6 +75,23 @@ test("P4.0 three character cards: full spec binds approval and only verifier com
  assert.equal(f.db.prepare("SELECT COUNT(*) n FROM assistant_task_attempts").get().n,1);
 });
 
+test("P4.0 verifier refuses completion while another approved required step remains",t=>{
+ const f=fixture(t);requireCard(f);
+ const first=plan(f);approve(f,first);execute(f,first);
+ const next=plan(f,cardActions(),false,"next-plan");
+ decideAssistantTaskStep(f.db,{projectId:"p",taskId:f.taskId,stepId:next.stepId,
+  requestId:"next-approval",expectedPlanVersion:1,actionDigest:next.actionDigest,decision:"approve"});
+ assert.throws(()=>verify(f,first),{code:"assistant_deliverable_steps_incomplete"});
+ assert.equal(status(f),"ready");
+ assert.equal(count(f,"deliverable_verified"),0);
+ assert.equal(count(f,"task_completed"),0);
+ assert.equal(f.db.prepare("SELECT status FROM assistant_task_steps WHERE id=?").get(next.stepId).status,"ready");
+ executeAssistantCanvasStep(f.db,{projectId:"p",taskId:f.taskId,stepId:next.stepId,
+  requestId:"next-execute",expectedPlanVersion:1,actionDigest:next.actionDigest});
+ assert.equal(verify(f,next).verified,true);
+ assert.equal(status(f),"completed");
+});
+
 test("P4.0 requirement idempotency, unconfirmed names and blank-template permission",t=>{
  const f=fixture(t);
  assert.equal(requireCard(f).existing,false);

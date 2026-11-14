@@ -213,6 +213,9 @@ export function verifyAssistantTextDeliverable(db,{projectId,taskId,stepId,reque
    throw fail("assistant_deliverable_already_completed");
   }
   if(!["ready","planning"].includes(task.status))throw fail("assistant_deliverable_not_verifiable");
+  // A valid card receipt cannot complete other required work in this plan.
+  if(db.prepare("SELECT 1 FROM assistant_task_steps WHERE task_id=? AND plan_version=? AND superseded_at IS NULL AND required=1 AND (status!='succeeded' OR receipt_trust!='server_committed') LIMIT 1")
+   .get(taskId,expectedPlanVersion))throw fail("assistant_deliverable_steps_incomplete");
   const outcome={taskId,stepId,planVersion:expectedPlanVersion,specDigest:binding.digest,
    receiptDigest,projectRevision:task.revision,checkedNodeDigests,
    verified,...(reason?{reason}:{})};

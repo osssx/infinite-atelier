@@ -92,6 +92,22 @@ test("P4.0 last serialized provider-body guard rejects leaked private node text"
  assert.equal(attempts,1);
 });
 
+test("P4.0 final payload guard decodes escaped strings in nested provider fields",async t=>{
+ for(const suffix of ["\n下一行","\r\n下一行","\t缩进",'"引号"',"\\路径"]){
+  const secret=hiddenText+suffix;
+  const f=setup(t,{assistantChat:async input=>{
+   input.providerPayloadGuard(JSON.stringify({contents:[{parts:[{text:secret}]}]}));
+   return {model:"mock",answer:"should-never-complete"};
+  }});
+  f.db.prepare("UPDATE projects SET document_json=json_set(document_json,'$.nodes[1].metadata.content',?) WHERE id='p'")
+   .run(secret);
+  const response=await f.app.inject({method:"POST",url:f.endpoint,payload:f.body});
+  assert.equal(response.statusCode,403,response.body);
+  assert.equal(response.json().code,"assistant_task_context_not_authorized");
+  assert.equal(f.requests.length,0);
+ }
+});
+
 test("P4.0 HTTP text deliverable flow is frozen, approved, persisted and verified",async t=>{
  const f=setup(t);
  const {createAssistantTask,appendAssistantTaskTurn}=await import("./assistant-tasks.mjs");

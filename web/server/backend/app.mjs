@@ -756,10 +756,17 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
          // corrections/Skill tools. Authorized sources were assembled server-side.
          const visible=new Set(frozenPolicy?.includeContext&&frozenPolicy.scope==="selection"?
           frozenPolicy.includedIds:[]);
+         // Inspect decoded string values: JSON escaping must not hide source text.
+         const strings=[],pending=[JSON.parse(requestBody)];
+         while(pending.length){
+          const value=pending.pop();
+          if(typeof value==="string")strings.push(value);
+          else if(value&&typeof value==="object")pending.push(...Object.values(value));
+         }
          for(const node of project.document.nodes??[]){
           if(visible.has(node.id))continue;
           const text=typeof node.metadata?.content==="string"?node.metadata.content:"";
-          if(text.length>=24&&!messages[0]?.content.includes(text)&&requestBody.includes(text))
+          if(text.length>=24&&!messages[0]?.content.includes(text)&&strings.some(value=>value.includes(text)))
            throw Object.assign(Error("assistant_task_context_not_authorized"),
             {code:"assistant_task_context_not_authorized",statusCode:403});
          }

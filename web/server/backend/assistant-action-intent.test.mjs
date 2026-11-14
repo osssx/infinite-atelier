@@ -84,6 +84,37 @@ test("HTTP text-only planning returns prose and leaves a real project unmodified
  assert.equal(after.json().revision,1);
  assert.deepEqual(after.json().document.nodes,[]);
 });
+
+test("cross-chat Task topic clarification stays ordinary prose for legacy canvasActions=true",async()=>{
+ const calls=[];
+ const service=createAssistantChatService({vault,compatibleUpstreamCall:async(_url,options)=>{
+  calls.push(JSON.parse(options.body));
+  return answer("兔子儿童动画分镜：镜头一，小兔子走出蘑菇屋；镜头二，发现迷路的小松鼠；镜头三，一起找到回家的路。");
+ }});
+ const taskContext="原始目标：三镜头分镜规划，只输出文字，不修改画布，不调用 Skill，也不生成图像视频。聊天已跨会话关联。";
+ const result=await service({...base,taskContext,
+  messages:[{role:"user",content:"主题是关于兔子的儿童动画片"}]});
+ assert.equal(calls.length,1,"A text continuation must not trigger JSON format repair");
+ assert.match(calls[0].messages[0].content,/只能提供分析和建议/);
+ assert.doesNotMatch(calls[0].messages[0].content,/create_text/);
+ assert.match(calls[0].messages[0].content,/原始目标/);
+ assert.deepEqual(result.actions,[]);
+ assert.match(result.answer,/兔子儿童动画分镜/);
+});
+test("non-edit topic clarification tolerates malformed action JSON and discards unsolicited actions",async()=>{
+ const request="主题是关于兔子的儿童动画片";
+ for(const payload of ['{"answer":"小兔子", "actions":[',JSON.stringify({
+  answer:"兔子分镜 v3",actions:[{type:"create_text",ref:"unexpected",title:"自动创建",content:"不要执行"}]
+ })]){
+  let calls=0;
+  const result=await run(async()=>{calls++;return answer(payload)},[{role:"user",content:request}]);
+  assert.equal(calls,1);
+  assert.deepEqual(result.actions,[]);
+  if(payload.includes("v3"))assert.equal(result.answer,"兔子分镜 v3");
+  else assert.match(result.answer,/小兔子/);
+ }
+});
+
 test("extracts only the latest actual user request rather than interpreting reference context",()=>{
  assert.equal(latestCanvasUserRequest(wrapped),prompt);
  assert.equal(exactWholeCanvasGraphLayout(wrapped)?.type,"layout_graph");

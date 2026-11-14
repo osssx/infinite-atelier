@@ -181,6 +181,52 @@ describe("link existing Task from a brand-new empty conversation",()=>{
  });
 });
 
+
+describe("P3 linked Task topic follow-ups remain text-only",()=>{
+ const original="请帮我规划一个包含 3 个镜头的短视频分镜，只输出文字方案。不要修改画布、调用 Skill 或提交任何图片和视频生成任务。后续我会继续完善这个方案。";
+ it("does not reenable canvas edits or automatically matched Skills when adding the rabbit animation theme",async()=>{
+  const linkedTask={id:"rabbit-task",chatSessionId:"original-chat",chatSessionIds:["original-chat","new-chat"],
+   rootMessageId:"root-message",originalRequest:original,status:"planning",steps:[],recoveryMode:"guidance_only"};
+  const history:CanvasAssistantSession[]=[{id:"new-chat",title:"继续分镜",createdAt:"2026-11-14",
+   updatedAt:"2026-11-14",messages:[
+    {id:"turn-prev",role:"user",text:"继续完善刚才的三镜头方案"},
+    {id:"reply-prev",role:"assistant",text:"三镜头分镜方案 v2：建立、推进、收束。本轮仅文字，不改画布。"}
+   ]}];
+  const fixture=setup([{type:"create_text",ref:"surprise",title:"不应创建",content:"bad"}],[],history);
+  skillMocks.snapshot.mockResolvedValue({revision:7,skills:[{
+   id:"rabbit-story",name:"儿童故事",description:"兔子 儿童动画 分镜",enabled:true,
+   activeVersion:"aaaaaaaaaaaa",versions:["aaaaaaaaaaaa"],updatedAt:"2026-11-14"
+  }]});
+  mocks.taskApi.mockImplementation(async(url:string,method:string)=>{
+   if(method==="GET"&&url.includes("chatSessionId="))return {tasks:[linkedTask]};
+   if(method==="GET"&&url.endsWith("/model-calls"))return {calls:[]};
+   if(method==="GET"&&url.endsWith("/run-sequences"))return {sequence:null,state:"none"};
+   if(method==="GET"&&url.endsWith("/rabbit-task"))return {task:linkedTask};
+   if(method==="POST"&&url.endsWith("/turns"))return {task:linkedTask};
+   if(method==="POST"&&url.endsWith("/observations"))return {task:linkedTask};
+   return {task:linkedTask};
+  });
+  mocks.api.mockResolvedValueOnce({answer:"兔子儿童动画分镜 v3：小白兔去森林帮助朋友。",model:"demo",
+   actions:[{type:"create_text",ref:"surprise",title:"不应创建",content:"bad"}]});
+  await act(async()=>{root!.render(createElement(fixture.Harness));await Promise.resolve();});
+  expect(container!.textContent).toContain("待规划");
+  await renderAndSend(fixture.Harness,"主题是关于兔子的儿童动画片");
+  const requests=mocks.api.mock.calls.filter(([url])=>String(url).includes("/assistant/chat"));
+  expect(requests).toHaveLength(1);
+  expect(requests[0][2].canvasActions).toBe(false);
+  expect(requests[0][2].task?.taskId).toBe("rabbit-task");
+  expect(requests[0][2].skills).toBeUndefined();
+  expect(requests[0][2].messages).toHaveLength(1);
+  expect(requests[0][2].messages[0].content).toContain("主题是关于兔子");
+  expect(fixture.apply).not.toHaveBeenCalled();
+  expect(mocks.run).not.toHaveBeenCalled();
+  expect(container!.textContent).toContain("兔子儿童动画分镜 v3");
+  expect(container!.textContent).not.toContain("模型返回的画布操作格式不符合要求");
+  expect(fixture.getGraph().nodes).toHaveLength(1);
+  expect(mocks.taskApi.mock.calls.some(([url,method])=>method==="POST"&&String(url).endsWith("/turns"))).toBe(true);
+ });
+});
+
 describe("P0a task linkage in the existing assistant send flow",()=>{
  it("records later user instructions and client observations without marking a task complete",async()=>{
   const history:CanvasAssistantSession[]=[{id:"chat-existing",title:"画布任务",createdAt:"2026-11-12",

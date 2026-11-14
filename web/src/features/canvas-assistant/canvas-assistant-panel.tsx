@@ -11,7 +11,7 @@ import {CanvasNodeType,type CanvasAssistantMessage,type CanvasAssistantSession,t
 import type {AssistantContextResult,AssistantContextScope} from "./canvas-assistant-context";
 import {parseAssistantCanvasActions,isDangerousAssistantAction,dangerousAssistantActionSummary,type AssistantCanvasStage} from "./canvas-assistant-actions";
 import {buildCanvasAssistantTurns} from "./canvas-assistant-history";
-import {isCanvasAssistantTextOnlyRequest,isCanvasAssistantSkillOptOutRequest} from "./canvas-assistant-output-intent";
+import {isCanvasAssistantTextOnlyRequest,isCanvasAssistantSkillOptOutRequest,isCanvasAssistantCanvasActionRequest} from "./canvas-assistant-output-intent";
 import {useCanvasAssistantTasks} from "./canvas-assistant-task-state";
 import {planAndExecuteAssistantCanvasActions,planAndRunAssistantSkillProposal} from "./canvas-assistant-task-execution";
 import type {AssistantTaskJobContext,AssistantTaskFrozenJob} from "./canvas-assistant-task-jobs";
@@ -359,8 +359,10 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
   const parsedDraft=extractSkillMentions(draft.trim());
   const visual=collectAssistantImageMentions(parsedDraft.text.trim(),resourceReferences);
   const text=visual.text.trim();if(!text||controllerRef.current||!chosenModel)return;
-  const textOnly=isCanvasAssistantTextOnlyRequest(text);
-  const skipSkills=textOnly||isCanvasAssistantSkillOptOutRequest(text);
+  const textOnly=!isCanvasAssistantCanvasActionRequest(text);
+  const skipSkills=isCanvasAssistantTextOnlyRequest(text)||isCanvasAssistantSkillOptOutRequest(text)||
+   (!parsedDraft.skillIds.length&&Boolean(taskTracker.activeTaskOriginalRequest)&&
+    isCanvasAssistantSkillOptOutRequest(taskTracker.activeTaskOriginalRequest??""));
   const channel=resolveModelChannel(config,chosenModel);
   const provider=modelChannelProvider(channel,"text");
   if(!channel||!provider||provider==="volcengine_ark")return;

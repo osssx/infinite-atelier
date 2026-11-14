@@ -811,5 +811,6 @@ export function useCanvasAssistantTasks({
 
   {error?<p role="status" className="mt-1 text-[11px]" style={{color:"var(--assistant-error)"}}>{error}</p>:null}
  </section>;
- return {view,activeTaskId:activeTask?.id??null,recordTurn,observe,refreshTask};
+ return {view,activeTaskId:activeTask?.id??null,
+  activeTaskOriginalRequest:activeTask?.originalRequest??null,recordTurn,observe,refreshTask};
 }

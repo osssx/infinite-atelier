@@ -1,7 +1,33 @@
 import {describe,expect,it} from "vitest";
-import {isCanvasAssistantTextOnlyRequest,isCanvasAssistantSkillOptOutRequest} from "./canvas-assistant-output-intent";
+import {isCanvasAssistantTextOnlyRequest,isCanvasAssistantSkillOptOutRequest,isCanvasAssistantCanvasActionRequest} from "./canvas-assistant-output-intent";
 
 const request="请帮我规划一个包含 3 个镜头的短视频分镜，只输出文字方案。不要修改画布、调用 Skill 或提交任何图片和视频生成任务。后续我会继续完善这个方案。";
+
+
+describe("assistant action mode in long-form creative conversations",()=>{
+ it.each([
+  "主题是关于兔子的儿童动画片",
+  "主角是一只四岁的小白兔",
+  "第二镜头改成兔子在森林里遇见朋友",
+  "继续把三个镜头的故事写得更温暖",
+  "兔子故事应当适合幼儿观看",
+  "请分析当前画布结构",
+  "请为三镜头故事提供建议"
+ ])("routes creative follow-up as prose without JSON operations: %s",request=>{
+  expect(isCanvasAssistantCanvasActionRequest(request)).toBe(false);
+ });
+ it.each([
+  "创建三个分镜文本节点并依次连线",
+  "运行选中的图片节点",
+  "执行 ComfyUI 工作流节点",
+  "为图片节点设置模型",
+  "设置节点生成参数并运行",
+  "将整个画布按连线关系布局，不要修改节点内容",
+  "生成选中的视频节点"
+ ])("retains explicit canvas edit/execute mode: %s",request=>{
+  expect(isCanvasAssistantCanvasActionRequest(request)).toBe(true);
+ });
+});
 
 describe("AI canvas assistant explicit output intent",()=>{
  it("routes the original text-only Task smoke prompt away from canvas actions and Skill scripts",()=>{

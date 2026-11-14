@@ -1,6 +1,7 @@
 import {createHash,randomUUID} from "node:crypto";
 import {assertNoRawCredentials,stableJson,writeTransaction} from "./repository.mjs";
 import {assertAssistantDeliverableBinding} from "./assistant-task-deliverables.mjs";
+import {assertAssistantAgentCanvasBinding} from "./assistant-agent-step-coordinator.mjs";
 
 const fail=(code,statusCode=409)=>Object.assign(Error(code),{code,statusCode});
 const id=x=>typeof x==="string"&&/^[A-Za-z0-9_-]{1,128}$/.test(x);
@@ -146,6 +147,10 @@ export function decideAssistantTaskStep(db,{projectId,taskId,stepId,requestId,
   assertFrozenAction(step);
   const frozen=JSON.parse(step.preconditions_json),approval=JSON.parse(step.approval_json);
   assertAssistantDeliverableBinding(JSON.parse(step.action_json),frozen);
+  // Rejecting a frozen Step must remain possible even if its model source was
+  // revoked or changed. Rejection confers no write/Claim authority.
+  if(decision==="approve")assertAssistantAgentCanvasBinding(db,{projectId,taskId,
+   action:JSON.parse(step.action_json),preconditions:frozen,expectedPlanVersion});
   if(!Number.isSafeInteger(frozen.projectRevision)||frozen.projectRevision!==task.revision||
    frozen.projectGraphDigest!==digest(JSON.parse(task.document_json)))
    throw fail("assistant_step_source_changed");
@@ -167,6 +172,10 @@ export function decideAssistantTaskStep(db,{projectId,taskId,stepId,requestId,
    if(updated.changes!==1)throw fail("assistant_step_state_conflict");
    log(db,taskId,stepId,decision==="approve"?"step_approved":"step_rejected",
     {planVersion:expectedPlanVersion,actionDigest,decision:choice});
+   if(frozen.agentRunBinding)log(db,taskId,stepId,
+    decision==="approve"?"agent_step_approved":"agent_step_rejected",{
+     runId:frozen.agentRunBinding.runId,requestId:frozen.agentRunBinding.requestId,
+     stepId,planVersion:expectedPlanVersion,actionDigest});
    if(decision==="reject"){
     blockUnreachableAssistantTaskStepsWithinTransaction(db,taskId,expectedPlanVersion);
     db.prepare("UPDATE assistant_tasks SET status='blocked',updated_at=? WHERE id=?")
@@ -199,6 +208,8 @@ export function claimAssistantTaskStep(db,{projectId,taskId,stepId,expectedPlanV
   const action=assertFrozenAction(step),pre=JSON.parse(step.preconditions_json),
    approval=JSON.parse(step.approval_json);
   assertAssistantDeliverableBinding(action,pre);
+  assertAssistantAgentCanvasBinding(db,{projectId,taskId,action,
+   preconditions:pre,expectedPlanVersion});
   if(!Number.isSafeInteger(pre.projectRevision)||task.revision!==pre.projectRevision||
    pre.projectGraphDigest!==digest(JSON.parse(task.document_json)))
    throw fail("assistant_step_source_changed");
@@ -222,6 +233,9 @@ export function claimAssistantTaskStep(db,{projectId,taskId,stepId,expectedPlanV
    .run(stepId,at,taskId);
   log(db,taskId,stepId,"step_claim_prepared",{attemptId,attemptNo,executionKey,
    requestFingerprint,planVersion:expectedPlanVersion,executionStarted:false});
+  if(pre.agentRunBinding)log(db,taskId,stepId,"agent_step_claimed",{
+   runId:pre.agentRunBinding.runId,requestId:pre.agentRunBinding.requestId,
+   stepId,attemptId,actionDigest:step.action_digest});
   return {taskId,stepId,attemptId,attemptNo,planVersion:expectedPlanVersion,
    leaseOwner:owner,leaseExpiresAt:at+leaseMs,executionKey,requestFingerprint,
    frozenSnapshot:frozen,executionStarted:false};

@@ -14,6 +14,7 @@ import {registerAssistantTextDeliverable,verifyAssistantTextDeliverable} from ".
 import {discoverAssistantCreativeCharacters} from "./assistant-creative-context.mjs";
 import {discoverAssistantCreativeMaterials,selectAssistantCreativeMaterials} from "./assistant-creative-materials.mjs";
 import {listAssistantAgentRuns,inspectAssistantAgentRun} from "./assistant-agent-run-ledger.mjs";
+import {agentCanvasStepForRun} from "./assistant-agent-step-coordinator.mjs";
 
 const id={type:"string",pattern:"^[A-Za-z0-9_-]{1,128}$"};
 const policy={type:"object",additionalProperties:false,required:["includeContext","scope","includedIds"],
@@ -91,7 +92,7 @@ const canvasStepBody={type:"object",additionalProperties:false,
   center:{type:"object",additionalProperties:false,required:["x","y"],properties:{
    x:{type:"number",minimum:-1000000,maximum:1000000},y:{type:"number",minimum:-1000000,maximum:1000000}}},
   dependsOn:{type:"array",maxItems:20,uniqueItems:true,items:id},finalizeTask:{type:"boolean"},
-  runSequenceId:id,runIndex:{type:"integer",minimum:1,maximum:2}}};
+  runSequenceId:id,runIndex:{type:"integer",minimum:1,maximum:2},agentRunId:id}};
 const executeBody={type:"object",additionalProperties:false,
  required:["requestId","expectedPlanVersion","actionDigest"],properties:{
   requestId:id,expectedPlanVersion:{type:"integer",minimum:1},
@@ -177,9 +178,10 @@ export function registerAssistantTaskRoutes(app,db,{skillRegistry,blobStore}={})
     limit:Number(req.query?.limit??20)})));
  app.get(base+"/:taskId/agent-runs/:runId",{
   schema:{params:agentRunParams,querystring:agentRunDetailQuery}},(req,reply)=>result(reply,
-   inspectAssistantAgentRun(db,{projectId:req.params.id,taskId:req.params.taskId,
+   {...inspectAssistantAgentRun(db,{projectId:req.params.id,taskId:req.params.taskId,
     runId:req.params.runId,afterSeq:Number(req.query?.afterSeq??0),
-    limit:Number(req.query?.limit??50)})));
+    limit:Number(req.query?.limit??50)}),
+    agentStep:agentCanvasStepForRun(db,{taskId:req.params.taskId,runId:req.params.runId})}));
  app.post(base+"/:taskId/replan",{schema:{params:taskParams,body:safeReplanBody}},(req,reply)=>result(reply,
   replanAssistantTaskSafely(db,{projectId:req.params.id,taskId:req.params.taskId,...req.body})));
   app.post(base+"/:taskId/turns",{schema:{params:taskParams,body:turnBody}},(req,reply)=>result(reply,

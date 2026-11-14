@@ -8,7 +8,7 @@ import {executeFrozenAssistantCanvasTaskStep} from "./canvas-assistant-task-exec
 import {canLaunchAssistantRunSequenceStep,type AssistantRunSequenceView} from "./canvas-assistant-task-run-sequences";
 
 type Step={id:string;kind:string;planVersion:number;status:string;actionDigest:string;
- action?:{actions?:unknown[];center?:{x:number;y:number};job?:{targetNodeId:string;executionMode:string;snapshot:{adapterKind?:string}}};
+ action?:{actions?:unknown[];agentRunId?:string;center?:{x:number;y:number};job?:{targetNodeId:string;executionMode:string;snapshot:{adapterKind?:string}}};
  result?:{jobId?:string;jobStatus?:string;artifactIds?:string[];bindings?:{nodeId:string}[];
  runId?:string;status?:string;exitCode?:number|null;artifactCount?:number};receiptTrust?:string};
 type FactSummary={version?:number;source?:string;userTurns?:{total?:number};
@@ -745,6 +745,7 @@ export function useCanvasAssistantTasks({
    {pendingCanvas.map(step=><div key={step.id} className="mt-2 rounded-md border p-2"
     style={{borderColor:"var(--assistant-border)"}}>
     <div className="font-medium">待恢复画布步骤：{step.id.slice(0,8)} · {step.status}</div>
+     {step.action?.agentRunId?<div className="mt-1 text-xs opacity-70">来源 Agent Run：{step.action.agentRunId}</div>:null}
     <details className="mt-1"><summary className="cursor-pointer">查看冻结操作与参数</summary>
      <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-all">{JSON.stringify(step.action,null,2)}</pre>
     </details>

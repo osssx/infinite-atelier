@@ -55,11 +55,12 @@ export async function executeFrozenAssistantCanvasTaskStep({
  * automatically reconstruct and approve a different set of actions.
  */
 export async function planAndExecuteAssistantCanvasActions({
- projectId,taskId,messageId,actions,center,signal,confirm,sequenceBinding
+ projectId,taskId,messageId,actions,center,signal,confirm,sequenceBinding,agentRunId
 }:{
  projectId:string;taskId:string;messageId:string;actions:unknown[];
  center:{x:number;y:number};signal:AbortSignal;confirm:(step:FrozenCanvasTaskStep)=>Promise<boolean>;
  sequenceBinding?:{runSequenceId:string;runIndex:number;dependsOn:string[]};
+ agentRunId?:string;
 }):Promise<{applied:number;stepId:string;revision:number;refs:Map<string,string>}>{
  requestError(signal);
  let committed:CanvasTaskCommit|null=null;
@@ -72,7 +73,8 @@ export async function planAndExecuteAssistantCanvasActions({
    requestId:messageId+"-canvas-plan",
    expectedPlanVersion:snapshot.task.activePlanVersion,
    expectedProjectRevision:frozen.expectedRevision,actions,center,dependsOn,
-   ...(sequenceBinding?{runSequenceId:sequenceBinding.runSequenceId,runIndex:sequenceBinding.runIndex}:{})
+   ...(sequenceBinding?{runSequenceId:sequenceBinding.runSequenceId,runIndex:sequenceBinding.runIndex}:{}),
+   ...(agentRunId?{agentRunId}:{})
   },signal);
   requestError(signal);
   const accepted=await confirm(plan);

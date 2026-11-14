@@ -655,6 +655,7 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
           if(graphActions.length){
            const result=await planAndExecuteAssistantCanvasActions({
             projectId,taskId:linkedTaskId,messageId:user.id,actions:graphActions,
+            ...(response.agentRunId?{agentRunId:response.agentRunId}:{}),
             center:getCanvasCenter?.()??{x:0,y:0},signal:controller.signal,
             confirm:async(step)=>confirmDangerousActions(
              "Task 将持久提交 "+graphActions.length+" 项画布操作，审批绑定冻结摘要。请核对：\n"+

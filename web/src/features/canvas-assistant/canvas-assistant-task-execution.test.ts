@@ -52,7 +52,34 @@ describe("P1b browser Task canvas protocol",()=>{
   expect(trace).toEqual(["snapshot","plan","user_confirm","approval","execute"]);
   expect(mocks.barrier).toHaveBeenCalledTimes(1);
  });
- it("P3 freezes next canvas Step with an explicit trusted dependency",async()=>{
+ it("P4.2c binds Agent Run to planned actions but never sends them to execute",async()=>{
+   const runId="ar_"+"b".repeat(40),observed:string[]=[];
+   mocks.api.mockImplementation(async(url:string,method:string,payload:Record<string,unknown>)=>{
+    if(method==="GET")return {task:{activePlanVersion:2,steps:[]}};
+    if(url.endsWith("/canvas-steps")){
+     expect(payload.agentRunId).toBe(runId);
+     observed.push("plan");return {...step,agentRunId:runId};
+    }
+    if(url.endsWith("/approval")){
+     observed.push("approve");expect(payload).not.toHaveProperty("agentRunId");
+     return {status:"ready"};
+    }
+    if(url.endsWith("/execute")){
+     observed.push("execute");
+     expect(payload).toEqual({requestId:"m-agent-canvas-execute",
+      expectedPlanVersion:2,actionDigest:step.actionDigest});
+     return committed;
+    }
+    throw Error("unexpected request");
+   });
+   const result=await planAndExecuteAssistantCanvasActions({
+    projectId:"p",taskId:"task",messageId:"m-agent",agentRunId:runId,
+    actions:[{type:"create_text",ref:"chapter",title:"Chapter",content:"hello"}],
+    center:{x:12,y:34},signal:new AbortController().signal,confirm:async()=>true});
+   expect(result.stepId).toBe("step");
+   expect(observed).toEqual(["plan","approve","execute"]);
+  });
+  it("P3 freezes next canvas Step with an explicit trusted dependency",async()=>{
   const previous={id:"previous",planVersion:2,ordinal:0,kind:"canvas_mutation",
    status:"succeeded",receiptTrust:"server_committed",dependsOn:[]};
   mocks.api.mockImplementation(async(url:string,method:string,payload:Record<string,unknown>)=>{

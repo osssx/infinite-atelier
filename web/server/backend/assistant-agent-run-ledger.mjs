@@ -86,7 +86,8 @@ export function listAssistantAgentRuns(db,{projectId,taskId,limit=20}){
 }
 const EVENTS=["agent_run_started","agent_read_round_planned","agent_run_model_received",
  "agent_read_tool_completed","agent_run_completed","agent_run_needs_reconcile",
- "agent_run_preflight_released"];
+ "agent_run_preflight_released","agent_step_bound","agent_step_approved",
+ "agent_step_rejected","agent_step_claimed","agent_step_committed"];
 export function inspectAssistantAgentRun(db,{projectId,taskId,runId,afterSeq=0,limit=50}){
  const task=taskScope(db,projectId,taskId);
  if(!id(runId)||!Number.isInteger(afterSeq)||afterSeq<0||
@@ -102,7 +103,9 @@ export function inspectAssistantAgentRun(db,{projectId,taskId,runId,afterSeq=0,l
  const transcript=events.slice(0,limit).map(e=>{
   const data=JSON.parse(e.payload_json);
   const fields=["round","callId","callIndex","name","argsDigest","resultDigest",
-   "resultBytes","sourceRevision","errorCode","requestDigest","turnMessageId","status"];
+   "resultBytes","sourceRevision","errorCode","requestDigest","turnMessageId","status",
+   "stepId","planVersion","actionDigest","receiptDigest","attemptId","projectRevision",
+   "responseDigest"];
   return {seq:e.seq,type:e.kind,createdAt:e.created_at,
    data:Object.fromEntries(fields.filter(k=>Object.hasOwn(data,k)).map(k=>[k,data[k]]))};
  });

@@ -1,3 +1,4 @@
+import {assistantModelCommandTurns} from "./assistant-model-command-turns.mjs";
 /** Provider-side Task context: strictly smaller than the backend's local
  * graph/step evidence. Never serialize whole documents or task event payloads.
  */
@@ -151,12 +152,13 @@ export function loadAssistantTaskCreativeHistory(db,{taskId,currentTurnMessageId
   if(!recent.has(turn.messageId))recent.set(turn.messageId,turn);
  }
  const current=contextPolicy??{includeContext:false,scope:"selection",includedIds:[]};
- const commands=db.prepare("SELECT request_id,response_json FROM assistant_task_commands WHERE task_id=? AND command_kind='model_infer' AND status='completed' ORDER BY created_at DESC LIMIT 24").all(taskId);
+ const commands=db.prepare("SELECT request_id,payload_digest,response_json FROM assistant_task_commands WHERE task_id=? AND command_kind='model_infer' AND status='completed' ORDER BY created_at DESC LIMIT 24").all(taskId);
+ const commandTurn=assistantModelCommandTurns(db,taskId);
  const drafts=[];
  let used=0;
  for(const command of commands){
   if(drafts.length>=2||used>=5100)break;
-  const turn=[...recent.values()].find(t=>command.request_id.startsWith(t.messageId+"-model-"));
+  const turn=recent.get(commandTurn(command));
   if(!turn||turn.messageId===currentTurnMessageId||
    !mayRepeatTurn(current,turn.contextPolicy))continue;
   let response;

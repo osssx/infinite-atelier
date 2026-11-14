@@ -11,6 +11,8 @@ import {planAssistantCanvasStep,executeAssistantCanvasStep} from "./assistant-ta
 import {decideAssistantTaskStep} from "./assistant-task-step-gate.mjs";
 import {buildApp} from "./app.mjs";
 import {createAssistantChatService} from "./assistant-chat.mjs";
+import {beginAssistantModelCommand,completeAssistantModelCommand} from "./assistant-model-calls.mjs";
+import {loadAssistantTaskCreativeHistory} from "./assistant-task-context.mjs";
 
 const originalCast=["小兔嘟嘟","兔妈妈","小龟慢慢"];
 const storyAnswer="这是兔子儿童动画的故事，主要角色有（主角小兔嘟嘟、兔妈妈、好友小龟慢慢）。"+
@@ -27,9 +29,10 @@ function fixture(t,{priorPolicy=basePolicy,currentPolicy=basePolicy,document={no
  const append=(messageId,text,contextPolicy=basePolicy)=>appendAssistantTaskTurn(db,{
   projectId:"p",taskId,requestId:"append-"+messageId,messageId,text,contextPolicy});
  append("story","先设计三个角色",priorPolicy);
- const model=(requestId,answer=storyAnswer,actions=[])=>{
-  db.prepare("INSERT INTO assistant_task_commands(project_id,request_id,task_id,command_kind,payload_digest,status,response_json,created_at) VALUES(?,?,?,'model_infer',?,'completed',?,?)")
-   .run("p",requestId,taskId,"f".repeat(64),JSON.stringify({answer,actions}),Date.now());
+ const model=(requestId,answer=storyAnswer,actions=[],turnMessageId="story")=>{
+  beginAssistantModelCommand(db,{projectId:"p",taskId,requestId,
+   requestPayload:{task:{turnMessageId}}});
+  completeAssistantModelCommand(db,{projectId:"p",taskId,requestId,response:{answer,actions}});
  };
  model("story-model-initial");
  append("current","为每个角色生成角色卡提示词文本节点",currentPolicy);
@@ -53,6 +56,65 @@ test("P4.1 model answer cast is discovered but is explicitly labelled unconfirme
  assert.match(result.groups[0].characters[0].excerpt,/蓝色围巾/);
  assert.equal(f.db.prepare("SELECT COUNT(*) n FROM assistant_task_events WHERE kind='deliverable_required'").get().n,0,
   "read-only discovery cannot approve model candidates");
+});
+
+test("P4.1 arbitrary request IDs retain the actual source turn",t=>{
+ const f=fixture(t);
+ f.model("independent-uuid",storyAnswer);
+ assert.equal(f.context().groups.filter(g=>g.provenance==="model_draft").length,2);
+ assert.ok(f.context().groups.every(g=>g.characters[0].sourceMessageId==="story"));
+});
+
+test("P4.1 misleading request prefixes cannot widen the actual turn disclosure",t=>{
+ const f=fixture(t,{priorPolicy:selected(["private"])});
+ f.append("public","无画布资料的普通请求",basePolicy);
+ f.model("public-model-spoof",storyAnswer,[],"story");
+ f.append("later","为每个角色生成角色卡",basePolicy);
+ assert.deepEqual(discoverAssistantCreativeCharacters(f.db,{projectId:"p",taskId:f.taskId,turnMessageId:"later"}).groups,[]);
+ assert.deepEqual(loadAssistantTaskCreativeHistory(f.db,{taskId:f.taskId,currentTurnMessageId:"later",contextPolicy:basePolicy}),[]);
+});
+
+test("P4.1 legacy commands without recorded turn bindings cannot authorize sources",t=>{
+ const f=fixture(t);
+ f.db.prepare("DELETE FROM assistant_task_events WHERE task_id=? AND kind='model_command_started'").run(f.taskId);
+ assert.deepEqual(f.context().groups,[]);
+ assert.deepEqual(loadAssistantTaskCreativeHistory(f.db,{taskId:f.taskId,currentTurnMessageId:"current",contextPolicy:basePolicy}),[]);
+});
+
+test("P4.1 HTTP persists real source turns independently of request ID prefixes",async t=>{
+ for(const privateSource of [false,true]){
+  const f=fixture(t,{priorPolicy:privateSource?selected(["private"]):basePolicy});
+  f.append("public","普通请求",basePolicy);
+  const app=buildApp({db:f.db,authorize:()=>true,
+   assistantChat:async()=>({model:"mock",answer:storyAnswer})});
+  t.after(()=>app.close());
+  const requestId=privateSource?"public-model-spoof":"independent-uuid";
+  const response=await app.inject({method:"POST",url:"/api/v1/projects/p/assistant/chat",
+   payload:{channelId:"ch",provider:"openai_compatible",baseUrl:"http://127.0.0.1:8188/v1",
+    model:"mock",canvasActions:false,messages:[{role:"user",content:"先设计三个角色"}],
+    task:{taskId:f.taskId,turnMessageId:"story",requestId}}});
+  assert.equal(response.statusCode,200,response.body);
+  f.append("later","为每个角色生成角色卡",basePolicy);
+  const result=discoverAssistantCreativeCharacters(f.db,{projectId:"p",taskId:f.taskId,turnMessageId:"later"});
+  if(privateSource)assert.deepEqual(result.groups,[]);
+  else assert.equal(result.groups.filter(g=>g.provenance==="model_draft").length,2);
+ }
+});
+
+test("P4.1 source budget preserves every confirmed character and valid Unicode",()=>{
+ for(const count of [3,5]){
+  const candidates=Array.from({length:count},(_,i)=>({title:"角色"+i,sourceLabel:"当前选择的角色来源",
+   provenance:"canvas_current",sourceRef:"creative_"+String(i).repeat(32),
+   excerpt:"独特设定"+i+"汉😀\\\"".repeat(650)}));
+  const formatted=formatAssistantCreativeSources(candidates);
+  assert.ok(Buffer.byteLength(formatted)<=4000);
+  assert.ok(!formatted.includes("\uFFFD"));
+  for(const c of candidates){
+   assert.ok(formatted.includes(c.title));
+   assert.ok(formatted.includes(c.sourceRef));
+   assert.ok(formatted.includes("独特设定"+c.title.slice(2)));
+  }
+ }
 });
 
 test("P4.1 approved source digest freezes 3 characters through real SQLite Canvas and Task verifier",t=>{

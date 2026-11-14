@@ -11,6 +11,7 @@ import {CanvasNodeType,type CanvasAssistantMessage,type CanvasAssistantSession,t
 import type {AssistantContextResult,AssistantContextScope} from "./canvas-assistant-context";
 import {parseAssistantCanvasActions,isDangerousAssistantAction,dangerousAssistantActionSummary,type AssistantCanvasStage} from "./canvas-assistant-actions";
 import {buildCanvasAssistantTurns} from "./canvas-assistant-history";
+import {parseAssistantCharacterCast} from "./canvas-assistant-character-cast";
 import {isCanvasAssistantTextOnlyRequest,isCanvasAssistantSkillOptOutRequest,isCanvasAssistantCanvasActionRequest} from "./canvas-assistant-output-intent";
 import {useCanvasAssistantTasks} from "./canvas-assistant-task-state";
 import {planAndExecuteAssistantCanvasActions,planAndRunAssistantSkillProposal} from "./canvas-assistant-task-execution";
@@ -442,10 +443,7 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
     // server-authorized creative sources. Never promote model prose without an
     // explicit confirmation; verification happens again in the backend.
     if(explicitCardDelivery){
-     const cast=/(?:为|给)\s*(.+?)\s*(?:生成|创建|制作|添加).{0,30}角色卡/.exec(text);
-     const stated=(cast?.[1]??"").split(/[、，,]|\s+和\s*|\s+与\s*/).map(s=>s.trim()).filter(Boolean);
-     const generic=stated.length===0||stated.length>5||
-      stated.some(s=>/每个|所有|全部|这些|上述|那些|角色们|^角色$/.test(s));
+     const {names:stated,generic}=parseAssistantCharacterCast(text);
      type CharacterSource={title:string;sourceRef:string;sourceDigest:string;sourceNodeId?:string;
       excerpt:string;provenance:string;sourceLabel:string};
      let chosenSource:CharacterSource[]=[];

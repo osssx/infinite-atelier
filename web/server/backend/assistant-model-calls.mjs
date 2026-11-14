@@ -19,6 +19,8 @@ const event=(db,taskId,kind,data)=>db.prepare(
  */
 export function beginAssistantModelCommand(db,{projectId,taskId,requestId,requestPayload}){
  if(!identity(projectId)||!identity(taskId)||!identity(requestId))throw fail("assistant_task_invalid",400);
+ const turnMessageId=requestPayload?.task?.turnMessageId;
+ if(turnMessageId!==undefined&&(!identity(turnMessageId)||!db.prepare("SELECT 1 FROM assistant_task_events WHERE task_id=? AND kind='user_turn' AND json_extract(payload_json,'$.messageId')=? LIMIT 1").get(taskId,turnMessageId)))throw fail("assistant_task_turn_not_found",409);
  const requestDigest=digest({kind:"model_infer",taskId,requestPayload});
  return writeTransaction(db,()=>{
   const task=db.prepare("SELECT status,read_only,cancel_requested_at FROM assistant_tasks t JOIN projects p ON p.id=t.project_id WHERE t.id=? AND t.project_id=? AND p.deleted_at IS NULL")
@@ -36,7 +38,7 @@ export function beginAssistantModelCommand(db,{projectId,taskId,requestId,reques
    throw fail("assistant_task_not_editable",409);
   db.prepare("INSERT INTO assistant_task_commands(project_id,request_id,task_id,command_kind,payload_digest,status,response_json,created_at) VALUES(?,?,?,'model_infer',?,'in_progress','{}',?)")
    .run(projectId,requestId,taskId,requestDigest,Date.now());
-  event(db,taskId,"model_command_started",{requestId,requestDigest});
+  event(db,taskId,"model_command_started",{requestId,requestDigest,...(turnMessageId?{turnMessageId}:{})});
   return {cached:false};
  });
 }

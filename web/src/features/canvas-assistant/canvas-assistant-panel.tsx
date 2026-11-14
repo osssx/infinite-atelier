@@ -12,6 +12,7 @@ import type {AssistantContextResult,AssistantContextScope} from "./canvas-assist
 import {parseAssistantCanvasActions,isDangerousAssistantAction,dangerousAssistantActionSummary,type AssistantCanvasStage} from "./canvas-assistant-actions";
 import {buildCanvasAssistantTurns} from "./canvas-assistant-history";
 import {parseAssistantCharacterCast} from "./canvas-assistant-character-cast";
+import {detectAssistantCreativeMaterialIntent,selectAssistantCreativeMaterialsForRequest,summarizeAssistantCreativeMaterials,type AssistantCreativeMaterial} from "./canvas-assistant-creative-materials";
 import {isCanvasAssistantTextOnlyRequest,isCanvasAssistantSkillOptOutRequest,isCanvasAssistantCanvasActionRequest} from "./canvas-assistant-output-intent";
 import {useCanvasAssistantTasks} from "./canvas-assistant-task-state";
 import {planAndExecuteAssistantCanvasActions,planAndRunAssistantSkillProposal} from "./canvas-assistant-task-execution";
@@ -439,6 +440,29 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
      throw Error("显式角色卡交付暂不支持同时执行 Skill；请先生成角色卡，再单独执行 Skill。");
     if(explicitCardDelivery)selectedSkills=undefined;
     await taskTracker.recordTurn(linkedTaskId,user.id,text,controller.signal);
+    // Reuse prior story/scene/style only with a live, explicitly confirmed,
+    // Task-scoped source selection. Normal chat and unlinked Tasks are unchanged.
+    const {kinds:relevantKinds,shouldSelect:wantsCreativeSources}=
+     detectAssistantCreativeMaterialIntent(text,linkedTaskId);
+    if(wantsCreativeSources){
+     if(explicitSkills)throw Error("已授权创作资料暂不能和 Skill 混合执行，请分轮操作。");
+     selectedSkills=undefined;
+
+     const url="/api/v1/projects/"+encodeURIComponent(projectId)+"/assistant/tasks/"+
+      encodeURIComponent(linkedTaskId!)+"/creative-context/materials?turnMessageId="+encodeURIComponent(user.id);
+     const context=await canvasApi<{materials:AssistantCreativeMaterial[];truncated:boolean}>(
+      url,"GET",undefined,controller.signal);
+     const selected=selectAssistantCreativeMaterialsForRequest(context.materials,relevantKinds,text);
+     const approved=await confirmDangerousActions(
+      summarizeAssistantCreativeMaterials(selected),controller.signal,themeName);
+     if(!approved)return;
+     await canvasApi("/api/v1/projects/"+encodeURIComponent(projectId)+
+      "/assistant/tasks/"+encodeURIComponent(linkedTaskId!)+
+      "/creative-context/materials/select","POST",{
+       requestId:user.id+"-creative-materials",turnMessageId:user.id,confirmed:true,
+       references:selected.map(m=>({kind:m.kind,sourceRef:m.sourceRef,sourceDigest:m.sourceDigest}))
+      },controller.signal);
+    }
     // P4.1: when the user says "每个角色", use only Task-scoped,
     // server-authorized creative sources. Never promote model prose without an
     // explicit confirmation; verification happens again in the backend.

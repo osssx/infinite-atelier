@@ -19,6 +19,7 @@ import {resolveAssistantSkills} from "./assistant-skills.mjs";
 import {resolveAssistantVisualContext} from "./assistant-visual-context.mjs";
 import {currentAssistantTextDeliverable} from "./assistant-task-deliverables.mjs";
 import {resolveAuthorizedCreativeCharacters,formatAssistantCreativeSources} from "./assistant-creative-context.mjs";
+import {loadSelectedAssistantCreativeMaterials,formatSelectedAssistantCreativeMaterials} from "./assistant-creative-materials.mjs";
 import {runSkillScript} from "./skill-script-runner.mjs";
 import {getProjectSkillAudit,replayProjectSkillJob,lookupProjectSkillReplay} from "./skill-job-audit.mjs";
 import {listProjectJobs,hideProjectJobHistory,closeUnverifiedModelJob} from "./project-job-history.mjs";
@@ -703,6 +704,10 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
          throw Object.assign(Error("assistant_task_message_untrusted"),
           {code:"assistant_task_message_untrusted",statusCode:403});
        }
+       // Check frozen provenance before reserving a model inference command.
+       const chosenMaterials=ref&&!proposalMode&&ref.callKind!=="script_continuation"?
+        loadSelectedAssistantCreativeMaterials(db,{projectId:req.params.id,
+         taskId:ref.taskId,turnMessageId:ref.turnMessageId}):[];
        if(ref){
         const command=beginAssistantModelCommand(db,{projectId:req.params.id,taskId:ref.taskId,
          requestId:ref.requestId,requestPayload:req.body});
@@ -713,13 +718,34 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
          messageId:ref.turnMessageId});
         const requirement=proposalMode?null:currentAssistantTextDeliverable(db,ref.taskId);
         // An explicitly approved source set supersedes unrelated model drafts.
-        const pinned=requirement?.characters?.some(c=>c.sourceRef)===true;
+        const pinned=requirement?.characters?.some(c=>c.sourceRef)===true||chosenMaterials.length>0;
         const creativeDrafts=proposalMode||pinned?[]:loadAssistantTaskCreativeHistory(db,{
          taskId:ref.taskId,currentTurnMessageId:ref.turnMessageId,contextPolicy:frozenPolicy
         });
-        taskContext=buildAssistantTaskProviderContext({task:{...snapshot,contextPolicy:frozenPolicy},document:project.document,
+        // Pinned creative references narrow the prose context: old previews and
+        // unrelated model drafts are not part of the user's selected material set.
+        const scopedSummary=chosenMaterials.length?{
+         ...snapshot.summary,userTurns:{...(snapshot.summary?.userTurns??{}),recent:[]}
+        }:snapshot.summary;
+        // When the user pins concrete creative materials, limit the ordinary
+        // canvas context to those selected text-node sources as well. Canvas
+        // disclosure permission is a ceiling, not an instruction to send all
+        // selected nodes despite a narrower material confirmation.
+        const creativeNodeIds=new Set(chosenMaterials.map(item=>item.sourceNodeId).filter(Boolean));
+        const scopedDocument=chosenMaterials.length?{
+         ...project.document,
+         nodes:(project.document.nodes??[]).filter(node=>creativeNodeIds.has(node.id)),
+         connections:[]}:project.document;
+        taskContext=buildAssistantTaskProviderContext({task:{...snapshot,summary:scopedSummary,contextPolicy:frozenPolicy},document:scopedDocument,
          currentTurnMessageId:ref.turnMessageId,creativeDrafts,
          trustedOutputs:trustedAssistantTaskOutputs(db,{projectId:project.id,taskId:snapshot.id,planVersion:snapshot.activePlanVersion})});
+        if(chosenMaterials.length){
+         const creativeText=formatSelectedAssistantCreativeMaterials(chosenMaterials);
+         if(Buffer.byteLength(taskContext+"\n"+creativeText,"utf8")>16*1024)
+          throw Object.assign(Error("assistant_context_budget_insufficient"),
+           {code:"assistant_context_budget_insufficient",statusCode:413});
+         taskContext+="\n"+creativeText;
+        }
         if(!proposalMode){
          if(requirement?.kind==="text_nodes"){
           // Source references are server resolved again for THIS turn's permission.
@@ -764,10 +790,17 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
         skillTools:skill.toolEntries??[],visualImages:visual.images,
         visualDetail:req.body.visualContext?.detail??"high",signal:controller.signal,
         ...(ref?{providerPayloadGuard:(requestBody)=>{
+         // Another chat/turn or a graph edit may have happened while awaiting
+         // media or a previous tool round. Recheck the exact frozen source
+         // bindings immediately before EACH paid upstream POST.
+         if(chosenMaterials.length)loadSelectedAssistantCreativeMaterials(db,{
+          projectId:req.params.id,taskId:ref.taskId,turnMessageId:ref.turnMessageId});
          // Last-chance scan of the REAL serialized provider body, including
          // corrections/Skill tools. Authorized sources were assembled server-side.
-         const visible=new Set(frozenPolicy?.includeContext&&frozenPolicy.scope==="selection"?
-          frozenPolicy.includedIds:[]);
+         const visible=new Set(chosenMaterials.length?
+          chosenMaterials.map(item=>item.sourceNodeId).filter(Boolean):
+          frozenPolicy?.includeContext&&frozenPolicy.scope==="selection"?
+           frozenPolicy.includedIds:[]);
          // Inspect decoded string values: JSON escaping must not hide source text.
          const strings=[],pending=[JSON.parse(requestBody)];
          while(pending.length){

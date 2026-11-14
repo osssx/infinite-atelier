@@ -12,6 +12,7 @@ import {inspectAssistantTaskRecovery,replanAssistantTaskSafely} from "./assistan
 import {inspectAssistantRunFailureRecovery,confirmAssistantRunFailureRecovery} from "./assistant-task-failure-recovery.mjs";
 import {registerAssistantTextDeliverable,verifyAssistantTextDeliverable} from "./assistant-task-deliverables.mjs";
 import {discoverAssistantCreativeCharacters} from "./assistant-creative-context.mjs";
+import {discoverAssistantCreativeMaterials,selectAssistantCreativeMaterials} from "./assistant-creative-materials.mjs";
 
 const id={type:"string",pattern:"^[A-Za-z0-9_-]{1,128}$"};
 const policy={type:"object",additionalProperties:false,required:["includeContext","scope","includedIds"],
@@ -51,6 +52,13 @@ const observationBody={type:"object",required:["requestId","kind","preview"],add
  properties:{requestId:id,kind:{type:"string",enum:["reply","error"]},
  preview:{type:"string",minLength:1,maxLength:1800}}};
 
+const creativeMaterialsSelectionBody={type:"object",additionalProperties:false,
+ required:["requestId","turnMessageId","references","confirmed"],properties:{
+ requestId:id,turnMessageId:id,confirmed:{type:"boolean",const:true},
+ references:{type:"array",minItems:1,maxItems:4,items:{type:"object",additionalProperties:false,
+  required:["kind","sourceRef","sourceDigest"],properties:{
+   kind:{type:"string",enum:["story","scene","style"]},sourceRef:id,
+   sourceDigest:{type:"string",pattern:"^[a-f0-9]{64}$"}}}}}};
 const creativeTurnQuery={type:"object",additionalProperties:false,required:["turnMessageId"],
  properties:{turnMessageId:id}};
 const textDeliverableBody={type:"object",additionalProperties:false,
@@ -170,6 +178,14 @@ export function registerAssistantTaskRoutes(app,db,{skillRegistry,blobStore}={})
   guideAssistantTaskResume(db,{projectId:req.params.id,taskId:req.params.taskId,...req.body})));
  app.post(base+"/:taskId/cancel",{schema:{params:taskParams,body:requestBody}},(req,reply)=>result(reply,
   cancelAssistantTask(db,{projectId:req.params.id,taskId:req.params.taskId,...req.body})));
+ // P4.1b: read-only references, with user-approved server-frozen selection.
+ app.get(base+"/:taskId/creative-context/materials",{
+  schema:{params:taskParams,querystring:creativeTurnQuery}},(req,reply)=>result(reply,
+   discoverAssistantCreativeMaterials(db,{projectId:req.params.id,taskId:req.params.taskId,
+    turnMessageId:req.query.turnMessageId})));
+ app.post(base+"/:taskId/creative-context/materials/select",{
+  schema:{params:taskParams,body:creativeMaterialsSelectionBody}},(req,reply)=>result(reply,
+   selectAssistantCreativeMaterials(db,{projectId:req.params.id,taskId:req.params.taskId,...req.body})));
  // P4.1 discovery is read-only, scoped to the frozen current user turn.
  app.get(base+"/:taskId/creative-context/characters",{
   schema:{params:taskParams,querystring:creativeTurnQuery}},(req,reply)=>result(reply,

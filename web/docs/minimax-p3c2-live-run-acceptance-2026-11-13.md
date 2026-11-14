@@ -49,3 +49,23 @@ node scripts/minimax-p3c2-offline-recovery-check.mjs --root "H:\Temp\infinite-at
 ## 可重复命令
 
 无付费预检：`ATELIER_MINIMAX_PREFLIGHT=1 node scripts/minimax-p3c2-live-acceptance.mjs`。本次已经生成成功，不要为复查报告再次运行 `ATELIER_MINIMAX_LIVE=1`；应使用上述两个离线审计脚本。
+
+## 收尾补验：2026-11-14（实际后端 HTTP 启停）
+
+用户要求继续收尾。本轮确认正式后端和 ComfyUI 均未运行，因此**没有重启用户正式应用，也没有新的媒体生成**。现有验收结果的独立数据根仍可读取，两个 Job 仍处于 `succeeded`。
+
+新增 `web/scripts/minimax-p3c2-server-restart-check.mjs`，采用以下测试方式：
+
+1. 将成功生成的 SQLite 使用 `node:sqlite` 一致性备份到临时数据目录，复制仅需的 CAS 和工作流文件。生成独立数据集身份和临时 activation registry；**不会把原数据集身份或生产锁复制过来**。
+2. 在克隆目录调用真正的 `createLocalBackend`，禁用 `autoDispatch`、不提供任何 ComfyUI/模型 Provider 或 Coordinator。Fastify 以本机临时端口监听，调用实际 HTTP、会话 Cookie 和 CSRF 接口。
+3. 第一次启动：通过 HTTP 将已完成 Task 关联到新的聊天会话；从该聊天列出原 Task，读取 Run Sequence 图片和视频输出，并重复执行两次安全对账。
+4. 完整关闭后端，再次在**同一个克隆数据根**启动后端：新聊天仍能查询完成的 Task，Run Sequence 仍为 `completed`，2 Job、3 Attempt、2 Artifact、2 已物化产物完全不变。最后再次验证原始验收 SQLite 中任务、Job、Attempt、ChatLink 全未改变，销毁临时克隆。
+
+```powershell
+cd web
+node scripts/minimax-p3c2-server-restart-check.mjs --root "H:\Temp\infinite-atelier-minimax-p3c2-1794582059412-TEsJQK"
+```
+
+结果：`MINIMAX_P3C2_REAL_HTTP_BACKEND_RESTART_CLONE_PASS`；**2 次后端启动/关闭、2 次真实 HTTP 会话验收、0 次付费生成、0 个新增 Job**。
+
+新脚本与之前的 `offline-recovery-check` 不同，验证了实际后端装配、数据库启动恢复、HTTP 路由、会话授权与实例锁；但它仍是**隔离副本**，不能冒充正式生产后端重启。正式后端当前离线，需待用户主动启动正式应用，再检查其自身 Task/Chat；无需再次向 MiniMax 提交生成。

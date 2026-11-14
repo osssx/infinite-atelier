@@ -523,7 +523,7 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
      }
      await ensureSqliteModelChannelForExecution(channel,provider);
    if(controller.signal.aborted)return;
-    type AssistantReply={answer:string;model:string;retryCount?:number;actions?:unknown;appliedSkillIds?:string[];skillResourceReads?:{skillId:string;path:string}[];skillToolCalls?:{name:string;skillId:string|null}[];skillToolsFallback?:boolean;skillScriptProposal?:AssistantSkillScriptProposal};
+    type AssistantReply={answer:string;model:string;agentRunId?:string;agentReadRounds?:number;agentReadToolCalls?:{callId:string;name:string}[];retryCount?:number;actions?:unknown;appliedSkillIds?:string[];skillResourceReads?:{skillId:string;path:string}[];skillToolCalls?:{name:string;skillId:string|null}[];skillToolsFallback?:boolean;skillScriptProposal?:AssistantSkillScriptProposal};
     const endpoint="/api/v1/projects/"+encodeURIComponent(projectId)+"/assistant/chat";
     const request={channelId:channel.id,provider,baseUrl:channel.baseUrl,model:modelOptionName(chosenModel),
      messages:turns,canvasActions:!textOnly,
@@ -727,6 +727,8 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
        (response.appliedSkillIds?.length?" · Skill: "+response.appliedSkillIds.join("、"):"")+
        (response.skillResourceReads?.length?" · 读取资料 "+response.skillResourceReads.length+" 项":"")+
        (response.skillToolsFallback?" · 工具不支持，仅使用 Skill 指令":"")+
+       (response.agentRunId?" · Agent Run "+response.agentRunId:"")+
+       (response.agentReadToolCalls?.length?" · 只读工具 "+response.agentReadToolCalls.length+" 次":"")+
        (visual.images.length?" · 视觉图片 "+visual.images.length+" 张":"")}));
      await taskTracker.observe(linkedTaskId,user.id,"reply",answer);
    }catch(error){

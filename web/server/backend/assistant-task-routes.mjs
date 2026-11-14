@@ -13,6 +13,7 @@ import {inspectAssistantRunFailureRecovery,confirmAssistantRunFailureRecovery} f
 import {registerAssistantTextDeliverable,verifyAssistantTextDeliverable} from "./assistant-task-deliverables.mjs";
 import {discoverAssistantCreativeCharacters} from "./assistant-creative-context.mjs";
 import {discoverAssistantCreativeMaterials,selectAssistantCreativeMaterials} from "./assistant-creative-materials.mjs";
+import {listAssistantAgentRuns,inspectAssistantAgentRun} from "./assistant-agent-run-ledger.mjs";
 
 const id={type:"string",pattern:"^[A-Za-z0-9_-]{1,128}$"};
 const policy={type:"object",additionalProperties:false,required:["includeContext","scope","includedIds"],
@@ -24,6 +25,13 @@ const taskParams={type:"object",required:["id","taskId"],additionalProperties:fa
  properties:{id,taskId:id}};
 const stepParams={type:"object",required:["id","taskId","stepId"],additionalProperties:false,
  properties:{id,taskId:id,stepId:id}};
+const agentRunParams={type:"object",required:["id","taskId","runId"],additionalProperties:false,
+ properties:{id,taskId:id,runId:id}};
+const agentRunListQuery={type:"object",additionalProperties:false,
+ properties:{limit:{type:"integer",minimum:1,maximum:50}}};
+const agentRunDetailQuery={type:"object",additionalProperties:false,
+ properties:{limit:{type:"integer",minimum:1,maximum:100},
+  afterSeq:{type:"integer",minimum:0}}};
 const decisionBody={type:"object",required:["requestId","expectedPlanVersion","actionDigest","decision"],
  additionalProperties:false,properties:{requestId:id,expectedPlanVersion:{type:"integer",minimum:1},
  actionDigest:{type:"string",pattern:"^[a-f0-9]{64}$"},decision:{type:"string",enum:["approve","reject"]}}};
@@ -161,6 +169,17 @@ export function registerAssistantTaskRoutes(app,db,{skillRegistry,blobStore}={})
   linkAssistantTaskToChat(db,{projectId:req.params.id,taskId:req.params.taskId,...req.body})));
  app.get(base+"/:taskId/recovery",{schema:{params:taskParams}},(req,reply)=>result(reply,
   inspectAssistantTaskRecovery(db,{projectId:req.params.id,taskId:req.params.taskId})));
+ // P4.2b: introspection only. Run identity + status derive from real ModelCommand
+ // rows, never from an imported or caller-fabricated event.
+ app.get(base+"/:taskId/agent-runs",{
+  schema:{params:taskParams,querystring:agentRunListQuery}},(req,reply)=>result(reply,
+   listAssistantAgentRuns(db,{projectId:req.params.id,taskId:req.params.taskId,
+    limit:Number(req.query?.limit??20)})));
+ app.get(base+"/:taskId/agent-runs/:runId",{
+  schema:{params:agentRunParams,querystring:agentRunDetailQuery}},(req,reply)=>result(reply,
+   inspectAssistantAgentRun(db,{projectId:req.params.id,taskId:req.params.taskId,
+    runId:req.params.runId,afterSeq:Number(req.query?.afterSeq??0),
+    limit:Number(req.query?.limit??50)})));
  app.post(base+"/:taskId/replan",{schema:{params:taskParams,body:safeReplanBody}},(req,reply)=>result(reply,
   replanAssistantTaskSafely(db,{projectId:req.params.id,taskId:req.params.taskId,...req.body})));
   app.post(base+"/:taskId/turns",{schema:{params:taskParams,body:turnBody}},(req,reply)=>result(reply,

@@ -8,6 +8,7 @@ import {mayRepeatTurn,safe} from "./assistant-task-context.mjs";
 import {discoverAssistantCreativeCharacters} from "./assistant-creative-context.mjs";
 import {discoverAssistantCreativeMaterials} from "./assistant-creative-materials.mjs";
 import {validCanvasNodeId} from "../canvas-node-id.mjs";
+import {agentReadRunId,assertAgentRunOwner} from "./assistant-agent-run-ledger.mjs";
 
 const fail=(code,statusCode=403)=>Object.assign(Error(code),{code,statusCode});
 const id=v=>typeof v==="string"&&/^[A-Za-z0-9_-]{1,128}$/.test(v);
@@ -75,11 +76,13 @@ export function assertAssistantAgentReadClaim(db,{projectId,taskId,turnMessageId
   throw fail("assistant_agent_read_busy",409);
 }
 /** No mutating SQL or external network in any handler. */
-export function createAssistantAgentReadSession(db,{projectId,taskId,turnMessageId,requestId}){
+export function createAssistantAgentReadSession(db,{projectId,taskId,turnMessageId,requestId,enforceOwner=false}){
  const original=scoped(db,projectId,taskId,turnMessageId);
+ const runId=agentReadRunId(projectId,taskId,requestId);
  let totalBytes=0,callCount=0;
  const usedIds=new Map(),readCalls=[],seenRounds=new Set();
  const check=()=>{
+  if(enforceOwner)assertAgentRunOwner(db,{projectId,taskId,requestId});
   checkVersion(db,projectId,original.revision);
   const fresh=scoped(db,projectId,taskId,turnMessageId);
   if(stableJson(fresh.policy)!==stableJson(original.policy))
@@ -91,7 +94,7 @@ export function createAssistantAgentReadSession(db,{projectId,taskId,turnMessage
    throw fail("assistant_agent_round_invalid",409);
   // Stable Task+request+round identity; never an execution receipt or an
   // implicit retry. The model-call ledger records the actual POST separately.
-  const marker={requestId,turnMessageId,round,sourceRevision:original.revision};
+  const marker={runId,requestId,turnMessageId,round,sourceRevision:original.revision};
   writeTransaction(db,()=>{
    const existing=db.prepare("SELECT 1 FROM assistant_task_events WHERE task_id=? AND kind='agent_read_round_planned' AND json_extract(payload_json,'$.requestId')=? AND json_extract(payload_json,'$.round')=? LIMIT 1")
     .get(taskId,requestId,round);
@@ -215,7 +218,7 @@ export function createAssistantAgentReadSession(db,{projectId,taskId,turnMessage
    throw fail("assistant_agent_read_budget_exceeded",413);
   totalBytes+=bytes;
   usedIds.set(callId,fingerprint);
-  const event={requestId,turnMessageId,callId,round,name:definition.name,
+  const event={runId,requestId,turnMessageId,callId,round,name:definition.name,
    argsDigest:sha(args),resultDigest:sha(data),resultBytes:bytes,
    sourceRevision:original.revision};
   // Persist only hashes + metadata, never the full private tool output.
@@ -228,6 +231,6 @@ export function createAssistantAgentReadSession(db,{projectId,taskId,turnMessage
   readCalls.push({callId,name:definition.name,round,resultBytes:bytes});
   return value;
  }
- return {definitions:assistantReadToolDefinitions,invoke,check,recordRound,
+ return {runId,definitions:assistantReadToolDefinitions,invoke,check,recordRound,
   get calls(){return [...readCalls]},get bytes(){return totalBytes}};
 }

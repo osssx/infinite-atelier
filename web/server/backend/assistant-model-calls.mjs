@@ -1,6 +1,8 @@
 import {createHash,randomUUID} from "node:crypto";
 import {stableJson,writeTransaction} from "./repository.mjs";
 import {recordAssistantSemanticProposalsInTransaction} from "./assistant-semantic-proposals.mjs";
+import {agentReadRunId,recordAgentRunEventInTransaction,readAgentRunOwnership,
+ isAgentReadCommand} from "./assistant-agent-run-ledger.mjs";
 
 const fail=(code,statusCode=409)=>Object.assign(Error(code),{code,statusCode});
 const identity=x=>typeof x==="string"&&/^[A-Za-z0-9_-]{1,128}$/.test(x);
@@ -38,7 +40,8 @@ export function beginAssistantModelCommand(db,{projectId,taskId,requestId,reques
    throw fail("assistant_task_not_editable",409);
   // A read-tool model command owns the Task until terminal. Even an ordinary
   // inference from a second tab cannot race this reader.
-  const readOwner=db.prepare("SELECT 1 FROM assistant_task_commands c WHERE c.task_id=? AND c.command_kind='model_infer' AND c.status='in_progress' AND EXISTS(SELECT 1 FROM assistant_task_events e WHERE e.task_id=c.task_id AND e.kind='model_command_started' AND json_extract(e.payload_json,'$.requestId')=c.request_id AND json_extract(e.payload_json,'$.agentReadTools')=1) LIMIT 1").get(taskId);
+  const readOwner=readAgentRunOwnership(db,taskId);
+  if(readOwner?.status==="needs_reconcile")throw fail("assistant_agent_run_needs_reconcile",409);
   if(readOwner)throw fail("assistant_agent_read_busy",409);
   // Replayed responses need no new source authorization or provider call.
   beforeStart?.();
@@ -47,6 +50,10 @@ export function beginAssistantModelCommand(db,{projectId,taskId,requestId,reques
   event(db,taskId,"model_command_started",{requestId,requestDigest,
    ...(turnMessageId?{turnMessageId}:{}),
    ...(requestPayload?.agentReadTools===true?{agentReadTools:true}:{})});
+  if(requestPayload?.agentReadTools===true)recordAgentRunEventInTransaction(db,{
+   taskId,kind:"agent_run_started",data:{
+    runId:agentReadRunId(projectId,taskId,requestId),requestId,turnMessageId,
+    requestDigest,status:"planning"}});
   return {cached:false};
  });
 }
@@ -58,6 +65,10 @@ export function createAssistantModelObserver(db,{projectId,taskId,requestId,prov
   if(command?.status!=="in_progress"||command.task_id!==taskId)throw fail("assistant_model_call_not_active");
   const index=db.prepare("SELECT COUNT(*) AS n FROM assistant_model_calls WHERE project_id=? AND request_id=?")
    .get(projectId,requestId).n;
+  // Budget is per actual Provider POST, including JSON format repairs.
+  // Never only count function rounds or let a repaired response exceed 3.
+  if(isAgentReadCommand(db,taskId,requestId)&&index>=3)
+   throw fail("assistant_agent_model_budget_exceeded",413);
   const callId=randomUUID(),stamp=Date.now();
   db.prepare("INSERT INTO assistant_model_calls(id,project_id,task_id,request_id,call_index,call_kind,parent_call_id,provider,model,request_digest,status,submit_marker,started_at) VALUES(?,?,?,?,?,?,?,?,?,?,'submitting',?,?)")
    .run(callId,projectId,taskId,requestId,index,kind,previousCallId,provider,model,requestDigest,randomUUID(),stamp);
@@ -66,12 +77,16 @@ export function createAssistantModelObserver(db,{projectId,taskId,requestId,prov
   return callId;
  });
  const finish=(callId,{status,resultDigest=null,errorCode=null})=>writeTransaction(db,()=>{
-  const row=db.prepare("SELECT status FROM assistant_model_calls WHERE id=? AND project_id=? AND task_id=? AND request_id=?")
+  const row=db.prepare("SELECT status,call_index FROM assistant_model_calls WHERE id=? AND project_id=? AND task_id=? AND request_id=?")
    .get(callId,projectId,taskId,requestId);
   if(!row||row.status!=="submitting")throw fail("assistant_model_call_not_active");
   db.prepare("UPDATE assistant_model_calls SET status=?,result_digest=?,error_code=?,finished_at=? WHERE id=?")
    .run(status,resultDigest,errorCode,Date.now(),callId);
   event(db,taskId,"model_call_"+status,{callId,...(errorCode?{errorCode}:{})});
+  if(status==="succeeded"&&isAgentReadCommand(db,taskId,requestId))
+   recordAgentRunEventInTransaction(db,{taskId,kind:"agent_run_model_received",
+    data:{runId:agentReadRunId(projectId,taskId,requestId),requestId,
+     callId,callIndex:row.call_index,resultDigest}});
  });
  return {
   start,
@@ -96,6 +111,10 @@ export function completeAssistantModelCommand(db,{projectId,taskId,requestId,res
   if(semanticProposalBatch)recordAssistantSemanticProposalsInTransaction(db,{taskId,proposals:semanticProposalBatch});
   event(db,taskId,"model_command_completed",{requestId,
    callCount:db.prepare("SELECT COUNT(*) AS n FROM assistant_model_calls WHERE project_id=? AND request_id=?").get(projectId,requestId).n});
+  if(isAgentReadCommand(db,taskId,requestId))
+   recordAgentRunEventInTransaction(db,{taskId,kind:"agent_run_completed",
+    data:{runId:agentReadRunId(projectId,taskId,requestId),requestId,
+     resultDigest:digest(response),status:"completed"}});
   return response;
  });
 }
@@ -110,12 +129,19 @@ export function failAssistantModelCommand(db,{projectId,taskId,requestId}){
   const count=db.prepare("SELECT COUNT(*) AS n FROM assistant_model_calls WHERE project_id=? AND request_id=?")
    .get(projectId,requestId).n;
   if(!count){
+   if(isAgentReadCommand(db,taskId,requestId))
+    recordAgentRunEventInTransaction(db,{taskId,kind:"agent_run_preflight_released",
+     data:{runId:agentReadRunId(projectId,taskId,requestId),requestId,status:"preflight_released"}});
    db.prepare("DELETE FROM assistant_task_commands WHERE project_id=? AND request_id=?").run(projectId,requestId);
    return;
   }
   db.prepare("UPDATE assistant_task_commands SET status='needs_reconcile' WHERE project_id=? AND request_id=?")
    .run(projectId,requestId);
   event(db,taskId,"model_command_unresolved",{requestId,callCount:count});
+  if(isAgentReadCommand(db,taskId,requestId))
+   recordAgentRunEventInTransaction(db,{taskId,kind:"agent_run_needs_reconcile",
+    data:{runId:agentReadRunId(projectId,taskId,requestId),requestId,
+     status:"needs_reconcile",errorCode:"assistant_model_call_unknown"}});
  });
 }
 
@@ -136,6 +162,10 @@ export function recoverAssistantModelCallsAtStartup(db){
    const count=db.prepare("SELECT COUNT(*) AS n FROM assistant_model_calls WHERE project_id=? AND request_id=?")
     .get(row.project_id,row.request_id).n;
    if(!count){
+    if(isAgentReadCommand(db,row.task_id,row.request_id))
+     recordAgentRunEventInTransaction(db,{taskId:row.task_id,kind:"agent_run_preflight_released",
+      data:{runId:agentReadRunId(row.project_id,row.task_id,row.request_id),
+       requestId:row.request_id,status:"preflight_released"}});
     db.prepare("DELETE FROM assistant_task_commands WHERE project_id=? AND request_id=?")
      .run(row.project_id,row.request_id);
     preflightCommands++;
@@ -144,6 +174,11 @@ export function recoverAssistantModelCallsAtStartup(db){
      .run(row.project_id,row.request_id);
     event(db,row.task_id,"model_command_unresolved",{requestId:row.request_id,
      callCount:count,recoveredAtStartup:true});
+    if(isAgentReadCommand(db,row.task_id,row.request_id))
+     recordAgentRunEventInTransaction(db,{taskId:row.task_id,kind:"agent_run_needs_reconcile",
+      data:{runId:agentReadRunId(row.project_id,row.task_id,row.request_id),
+       requestId:row.request_id,status:"needs_reconcile",
+       errorCode:"assistant_model_call_unknown"}});
     unknownCommands++;
    }
   }

@@ -7,6 +7,7 @@ import {registerAssistantTaskRoutes} from "./assistant-task-routes.mjs";
 import {getAssistantTask,getAssistantTaskTurnPolicy} from "./assistant-tasks.mjs";
 import {beginAssistantModelCommand,createAssistantModelObserver,completeAssistantModelCommand,failAssistantModelCommand} from "./assistant-model-calls.mjs";
 import {assertAssistantAgentReadClaim,createAssistantAgentReadSession} from "./assistant-agent-read-tools.mjs";
+import {agentReadRunId} from "./assistant-agent-run-ledger.mjs";
 import {prepareAssistantSemanticProposals} from "./assistant-semantic-proposals.mjs";
 import {buildAssistantTaskProviderContext,loadAssistantTaskCreativeHistory} from "./assistant-task-context.mjs";
 import {trustedAssistantTaskOutputs} from "./assistant-task-produced-artifacts.mjs";
@@ -734,7 +735,7 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
         commandStarted=true;
         if(readMode)agentReadSession=createAssistantAgentReadSession(db,{
          projectId:req.params.id,taskId:ref.taskId,turnMessageId:ref.turnMessageId,
-         requestId:ref.requestId});
+         requestId:ref.requestId,enforceOwner:true});
         const snapshot=getAssistantTask(db,{projectId:req.params.id,taskId:ref.taskId}).task;
         frozenPolicy=getAssistantTaskTurnPolicy(db,{projectId:req.params.id,taskId:ref.taskId,
          messageId:ref.turnMessageId});
@@ -849,6 +850,7 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
        const proposed=proposalMode?prepareAssistantSemanticProposals({answer:result.answer,
          requestId:ref.requestId,turnMessageId:ref.turnMessageId,contextPolicy:frozenPolicy}):null;
         const completed={...result,appliedSkillIds:skill.skillIds,usedVisualReferences:visual.references,
+         ...(readMode?{agentRunId:agentReadRunId(req.params.id,ref.taskId,ref.requestId)}:{}),
          ...(proposed?{proposals:proposed.candidates}:{})};
        if(ref)completeAssistantModelCommand(db,{projectId:req.params.id,taskId:ref.taskId,
         requestId:ref.requestId,response:completed,semanticProposalBatch:proposed});

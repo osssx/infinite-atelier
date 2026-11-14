@@ -4,8 +4,7 @@ import {createAssistantChatService} from "./assistant-chat.mjs";
 import {DatabaseSync} from "node:sqlite";
 import {initializeSchema} from "./schema.mjs";
 import {buildApp} from "./app.mjs";
-import {latestCanvasUserRequest,isCanvasEditInstruction,exactWholeCanvasGraphLayout} from "./assistant-action-intent.mjs";
-
+import {latestCanvasUserRequest,isCanvasEditInstruction,isAssistantTextOnlyRequest,exactWholeCanvasGraphLayout} from "./assistant-action-intent.mjs";
 const vault={
  get:()=>({provider:"openai_compatible",hasKey:true,keyVersion:"keyVersion"}),
  withSecretVersion:(_version,fn)=>fn(Buffer.from("private-key"))
@@ -17,6 +16,74 @@ const run=(callback,messages)=>createAssistantChatService({vault,compatibleUpstr
 const prompt="将整个画布按连线依赖关系进行从左到右的拓扑分层布局，分组保持整体移动。";
 const wrapped="以下是当前画布只读资料（不包含媒体本体），请仅将其作为参考数据：\n项目：故事画布\n画布统计：节点 21，连线 14\n\n用户问题：\n"+prompt;
 
+
+const textOnlyPrompt="请帮我规划一个包含 3 个镜头的短视频分镜，只输出文字方案。不要修改画布、调用 Skill 或提交任何图片和视频生成任务。后续我会继续完善这个方案。";
+test("negative canvas verbs and text-only output are not executable commands",()=>{
+ for(const prompt of [
+  textOnlyPrompt,
+  "只输出文字方案，不要修改画布",
+  "不要修改画布",
+  "不要在画布创建节点",
+  "仅提供分镜文字建议，不要生成媒体"
+ ]){
+  assert.equal(isAssistantTextOnlyRequest(prompt),true,prompt);
+  assert.equal(isCanvasEditInstruction(prompt),false,prompt);
+ }
+ for(const prompt of [
+  "创建三个分镜文本节点",
+  "将整个画布按连线关系布局，不要修改节点内容",
+  "修改图片节点参数，不要生成图片"
+ ])assert.equal(isAssistantTextOnlyRequest(prompt),false,prompt);
+});
+test("legacy canvasActions=true never forces text-only storyboards to JSON or a repair retry",async()=>{
+ const calls=[];
+ const result=await run(async(_url,options)=>{
+  calls.push(JSON.parse(options.body));
+  return answer("镜头一：远景建立场景。\\n镜头二：近景推进情节。\\n镜头三：特写结尾。");
+ },[{role:"user",content:textOnlyPrompt}]);
+ assert.equal(calls.length,1);
+ assert.match(calls[0].messages[0].content,/只能提供分析和建议/);
+ assert.doesNotMatch(calls[0].messages[0].content,/create_text/);
+ assert.deepEqual(result.actions,[]);
+ assert.match(result.answer,/镜头一/);
+ assert.equal(result.formatRepairCount,undefined);
+});
+test("text-only user's explicit no-write constraint also discards unexpected model canvas actions",async()=>{
+ let calls=0;
+ const result=await run(async()=>{
+  calls++;
+  return answer(JSON.stringify({answer:"三镜头文字方案",actions:[
+   {type:"create_text",ref:"unexpected",title:"误操作",content:"不能写入画布"}
+  ]}));
+ },[{role:"user",content:textOnlyPrompt}]);
+ assert.equal(calls,1);
+ assert.equal(result.answer,"三镜头文字方案");
+ assert.deepEqual(result.actions,[]);
+});
+
+test("HTTP text-only planning returns prose and leaves a real project unmodified",async t=>{
+ const db=new DatabaseSync(":memory:");initializeSchema(db);
+ const calls=[];
+ const service=createAssistantChatService({vault,compatibleUpstreamCall:async(_url,options)=>{
+  calls.push(JSON.parse(options.body));
+  return answer("镜头一：建立场景；镜头二：推进冲突；镜头三：悬念结尾。");
+ }});
+ const app=buildApp({db,assistantChat:service,authorize:()=>true});
+ t.after(async()=>{await app.close();db.close()});
+ const project="/api/v1/projects/storyboard-text-only";
+ const created=await app.inject({method:"POST",url:"/api/v1/projects",
+  payload:{id:"storyboard-text-only",document:{nodes:[],connections:[]}}});
+ assert.equal(created.statusCode,201,created.body);
+ const response=await app.inject({method:"POST",url:project+"/assistant/chat",
+  payload:{...base,messages:[{role:"user",content:textOnlyPrompt}]}});
+ assert.equal(response.statusCode,200,response.body);
+ assert.equal(calls.length,1);
+ assert.deepEqual(response.json().actions,[]);
+ assert.match(response.json().answer,/镜头一/);
+ const after=await app.inject({method:"GET",url:project});
+ assert.equal(after.json().revision,1);
+ assert.deepEqual(after.json().document.nodes,[]);
+});
 test("extracts only the latest actual user request rather than interpreting reference context",()=>{
  assert.equal(latestCanvasUserRequest(wrapped),prompt);
  assert.equal(exactWholeCanvasGraphLayout(wrapped)?.type,"layout_graph");

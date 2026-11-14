@@ -90,15 +90,15 @@ function setup(actions:unknown[],resources:CanvasResourceReference[]=[],history:
  root=createRoot(container);
  return {Harness,apply,getContext,getGraph:()=>graph};
 }
-async function renderAndSend(Harness:()=>React.ReactElement){
+async function renderAndSend(Harness:()=>React.ReactElement,requestText?:string){
  await act(async()=>{root!.render(createElement(Harness));});
  const suggestion=Array.from(container!.querySelectorAll("button")).find(btn=>btn.textContent?.includes("创建三个分镜文本节点"));
- if(suggestion){
+ if(suggestion&&!requestText){
   await act(async()=>{suggestion.click();});
  }else{
   const input=container!.querySelector<HTMLElement>('[aria-label="向 AI 助手发送消息"]')!;
   await act(async()=>{
-   input.textContent="创建三个分镜文本节点并依次连线";
+   input.textContent=requestText??"创建三个分镜文本节点并依次连线";
    input.dispatchEvent(new Event("input",{bubbles:true}));
   });
  }
@@ -117,6 +117,30 @@ async function renderAndSend(Harness:()=>React.ReactElement){
 afterEach(async()=>{
  if(root)await act(async()=>{root!.unmount()});
  root=null;container?.remove();container=null;
+});
+describe("plain-text Task planning must not become canvas execution",()=>{
+ it("sends the user's storyboarding request as text-only and ignores unwanted model actions",async()=>{
+  const prompt="请帮我规划一个包含 3 个镜头的短视频分镜，只输出文字方案。不要修改画布、调用 Skill 或提交任何图片和视频生成任务。后续我会继续完善这个方案。";
+  const fixture=setup([{type:"create_text",ref:"wrong",title:"不应写入画布",content:"bad"}]);
+  // Even with an enabled Skill that auto-matches "分镜", the user's explicit
+  // text-only/no-Skill constraint must win over automatic matching.
+  skillMocks.snapshot.mockResolvedValue({revision:4,skills:[{
+   id:"storyboard",name:"分镜规划",description:"分镜创作",enabled:true,
+    activeVersion:"aaaaaaaaaaaa",versions:["aaaaaaaaaaaa"],updatedAt:"2026-11-14"
+  }]});
+  mocks.api.mockResolvedValueOnce({answer:"镜头一：交代地点。镜头二：人物行动。镜头三：悬念收束。",model:"demo",
+   actions:[{type:"create_text",ref:"wrong",title:"不应写入画布",content:"bad"}]});
+  await renderAndSend(fixture.Harness,prompt);
+  const calls=mocks.api.mock.calls.filter(call=>String(call[0]).includes("/assistant/chat"));
+  expect(calls).toHaveLength(1);
+  expect(calls[0][2].canvasActions).toBe(false);
+  expect(calls[0][2].skills).toBeUndefined();
+  expect(fixture.apply).not.toHaveBeenCalled();
+  expect(mocks.run).not.toHaveBeenCalled();
+  expect(container!.textContent).toContain("镜头一：交代地点");
+  expect(container!.textContent).not.toContain("模型未返回可执行的画布指令");
+  expect(fixture.getGraph().nodes).toHaveLength(1);
+ });
 });
 describe("P0a task linkage in the existing assistant send flow",()=>{
  it("records later user instructions and client observations without marking a task complete",async()=>{

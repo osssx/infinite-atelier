@@ -11,6 +11,7 @@ import {CanvasNodeType,type CanvasAssistantMessage,type CanvasAssistantSession,t
 import type {AssistantContextResult,AssistantContextScope} from "./canvas-assistant-context";
 import {parseAssistantCanvasActions,isDangerousAssistantAction,dangerousAssistantActionSummary,type AssistantCanvasStage} from "./canvas-assistant-actions";
 import {buildCanvasAssistantTurns} from "./canvas-assistant-history";
+import {isCanvasAssistantTextOnlyRequest,isCanvasAssistantSkillOptOutRequest} from "./canvas-assistant-output-intent";
 import {useCanvasAssistantTasks} from "./canvas-assistant-task-state";
 import {planAndExecuteAssistantCanvasActions,planAndRunAssistantSkillProposal} from "./canvas-assistant-task-execution";
 import type {AssistantTaskJobContext,AssistantTaskFrozenJob} from "./canvas-assistant-task-jobs";
@@ -348,6 +349,8 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
   const parsedDraft=extractSkillMentions(draft.trim());
   const visual=collectAssistantImageMentions(parsedDraft.text.trim(),resourceReferences);
   const text=visual.text.trim();if(!text||controllerRef.current||!chosenModel)return;
+  const textOnly=isCanvasAssistantTextOnlyRequest(text);
+  const skipSkills=textOnly||isCanvasAssistantSkillOptOutRequest(text);
   const channel=resolveModelChannel(config,chosenModel);
   const provider=modelChannelProvider(channel,"text");
   if(!channel||!provider||provider==="volcengine_ark")return;
@@ -406,7 +409,7 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
      if(explicitSkills)throw Error("无法验证指定的 Skill，请检查 Skill 服务后重试。");
      setSkillError("Skill 列表暂不可用，本轮按普通对话执行。");
     }
-    if(registry){
+    if(registry&&!skipSkills){
      const eligible=registry.skills.filter(item=>isEnabledSkillInProject(item,projectId));
      const selected=explicitSkills?parsedDraft.skillIds.map(skillId=>{
       const item=eligible.find(entry=>entry.id===skillId);
@@ -422,7 +425,7 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
     type AssistantReply={answer:string;model:string;retryCount?:number;actions?:unknown;appliedSkillIds?:string[];skillResourceReads?:{skillId:string;path:string}[];skillToolCalls?:{name:string;skillId:string|null}[];skillToolsFallback?:boolean;skillScriptProposal?:AssistantSkillScriptProposal};
     const endpoint="/api/v1/projects/"+encodeURIComponent(projectId)+"/assistant/chat";
     const request={channelId:channel.id,provider,baseUrl:channel.baseUrl,model:modelOptionName(chosenModel),
-     messages:turns,canvasActions:true,
+     messages:turns,canvasActions:!textOnly,
       ...(linkedTaskId?{task:{taskId:linkedTaskId,turnMessageId:user.id,requestId:user.id+"-model-initial"}}:{}),
      ...(visual.images.length?{visualContext:{detail:"high",images:visual.images}}:{})};
     let response:AssistantReply;
@@ -452,7 +455,7 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
     // This fallback works on immutable server-produced text artifacts only;
     // it does not invent or compile Skill-specific output.
     const deliverCompletedTextArtifacts=(reason:string):boolean=>{
-     if(!latestCompletedRun||controller.signal.aborted||linkedTaskId)return false;
+     if(!latestCompletedRun||controller.signal.aborted||linkedTaskId||textOnly)return false;
      const proposals=createSkillTextArtifactActions(latestCompletedRun);
      if(!proposals.length)return false;
      const actions=parseAssistantCanvasActions(proposals);
@@ -533,7 +536,7 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
     if(controller.signal.aborted)throw new DOMException("Aborted","AbortError");
     const notes:string[]=[];
      try{
-       const actions=parseAssistantCanvasActions(response.actions??[]);
+       const actions=parseAssistantCanvasActions(textOnly?[]:response.actions??[]);
        if(!linkedTaskId&&actions.some(action=>
         (action.type==="run_node"||action.type==="run_workflow")&&action.when))
         throw Error("条件分支需要先关联持久 Task；当前不会执行任何分支、修改画布或提交 GPU Job。");

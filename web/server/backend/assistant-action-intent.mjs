@@ -8,9 +8,21 @@ export function latestCanvasUserRequest(content){
  const markerAt=content.lastIndexOf(marker);
  return (markerAt<0?content:content.slice(markerAt+marker.length)).trim();
 }
+/** A user may mention “修改/生成/执行” solely to forbid those effects.
+ * Explicit response-only constraints take precedence over action keywords.
+ * Do not treat "不要修改画布" or "只输出文字方案" as a positive command.
+ */
+export function isAssistantTextOnlyRequest(content){
+ const request=latestCanvasUserRequest(content);
+ if(!request)return false;
+ return /(?:只|仅)(?:输出|回复|回答|返回|提供|给出|给我|展示|用|以)(?:[^\n。！？;；]{0,16})(?:文字|文本|方案|建议|分析|大纲)/.test(request)||
+  /(?:不要|别|请勿|禁止|无需|不需要|不允许)(?:再|去|对|在|直接|进行|任何|自动|实际|擅自|修改|更改|操作|编辑){0,5}(?:修改|更改|操作|编辑|写入|执行)(?:任何|当前|现有|原有|整个|此|该)?画布(?:[\s，。、；;！!]|$)/.test(request)||
+  /(?:不要|别|请勿|禁止|无需|不需要|不允许)(?:在|对)?画布(?:上|中)?(?:进行)?(?:修改|编辑|操作|更新|创建|添加|执行)(?:[^\n，。;；!?]{0,12})?(?:[\s，。、；;！!]|$)/.test(request);
+}
 export function isCanvasEditInstruction(content){
  const request=latestCanvasUserRequest(content);
  if(!request||request.length>12000)return false;
+ if(isAssistantTextOnlyRequest(request))return false;
  // A question, negative instruction or hypothetical must never trigger a canvas write.
  if(/^(?:(?:请|麻烦|帮我|你能)?(?:解释|介绍|分析|说明|讨论|比较|总结|评价)|如何|怎么|为什么|什么是|能否|能不能|可以吗|是否|要不要|如果|假设|假如|只需|只要|仅|先不)/.test(request))return false;
  if(/^(?:不要|别|请勿|禁止|先不要)|(?:不要执行|别执行|无需执行|不用操作|不需要执行|仅讨论|只回复|只分析|只要建议|只给建议|预览|假设|如果|建议如何|应该如何|怎么做|怎么办|是什么|会怎样|能否|可以吗|能不能|是否应该|模拟|演示|示例|给我.*建议)/.test(request))return false;

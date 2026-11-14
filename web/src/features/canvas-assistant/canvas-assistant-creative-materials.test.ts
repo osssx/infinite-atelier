@@ -13,6 +13,8 @@ describe("P4.1b Task 创作资料选择",()=>{
    kinds:["story","style"],shouldSelect:true});
   expect(detectAssistantCreativeMaterialIntent("根据之前的故事和画风继续创作",null).shouldSelect).toBe(false);
   expect(detectAssistantCreativeMaterialIntent("生成新的故事", "task").shouldSelect).toBe(false);
+  expect(detectAssistantCreativeMaterialIntent("根据以下文字创作一个新故事：小兔出门散步", "task").shouldSelect).toBe(false);
+  expect(detectAssistantCreativeMaterialIntent("不要参考之前的故事，写一个新故事", "task").shouldSelect).toBe(false);
   expect(detectAssistantCreativeMaterialIntent("保持此前森林场景的美术风格", "task")).toEqual({
    kinds:["scene","style"],shouldSelect:true});
  });
@@ -26,6 +28,10 @@ describe("P4.1b Task 创作资料选择",()=>{
   const values=Array.from({length:5},(_,i)=>item("scene","场景-"+i));
   expect(()=>selectAssistantCreativeMaterialsForRequest(values,["scene"],"根据之前场景继续")).toThrow(/超过本轮/);
   expect(()=>selectAssistantCreativeMaterialsForRequest([],["scene"],"根据之前场景继续")).toThrow(/没有找到/);
+ });
+ it("请求的每种资料都必须存在，不能静默忽略缺失类别",()=>{
+  expect(()=>selectAssistantCreativeMaterialsForRequest([item("story","森林故事")],
+   ["story","style"],"根据之前的故事和画风继续")).toThrow(/缺少.*美术风格/);
  });
  it("确认提示明确标明草稿未确认，摘要有长度限制",()=>{
   const value=item("story","森林故事");

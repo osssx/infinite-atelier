@@ -19,7 +19,7 @@ import {resolveAssistantSkills} from "./assistant-skills.mjs";
 import {resolveAssistantVisualContext} from "./assistant-visual-context.mjs";
 import {currentAssistantTextDeliverable} from "./assistant-task-deliverables.mjs";
 import {resolveAuthorizedCreativeCharacters,formatAssistantCreativeSources} from "./assistant-creative-context.mjs";
-import {loadSelectedAssistantCreativeMaterials,formatSelectedAssistantCreativeMaterials} from "./assistant-creative-materials.mjs";
+import {hasSelectedAssistantCreativeMaterials,loadSelectedAssistantCreativeMaterials,formatSelectedAssistantCreativeMaterials} from "./assistant-creative-materials.mjs";
 import {runSkillScript} from "./skill-script-runner.mjs";
 import {getProjectSkillAudit,replayProjectSkillJob,lookupProjectSkillReplay} from "./skill-job-audit.mjs";
 import {listProjectJobs,hideProjectJobHistory,closeUnverifiedModelJob} from "./project-job-history.mjs";
@@ -704,13 +704,18 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
          throw Object.assign(Error("assistant_task_message_untrusted"),
           {code:"assistant_task_message_untrusted",statusCode:403});
        }
-       // Check frozen provenance before reserving a model inference command.
-       const chosenMaterials=ref&&!proposalMode&&ref.callKind!=="script_continuation"?
-        loadSelectedAssistantCreativeMaterials(db,{projectId:req.params.id,
-         taskId:ref.taskId,turnMessageId:ref.turnMessageId}):[];
+       let chosenMaterials=[];
        if(ref){
         const command=beginAssistantModelCommand(db,{projectId:req.params.id,taskId:ref.taskId,
-         requestId:ref.requestId,requestPayload:req.body});
+         requestId:ref.requestId,requestPayload:req.body,beforeStart:()=>{
+          if(!proposalMode&&hasSelectedAssistantCreativeMaterials(db,ref.taskId,ref.turnMessageId)&&
+           (req.body.skills||ref.callKind==="script_continuation"))
+           throw Object.assign(Error("assistant_creative_skill_not_supported"),
+            {code:"assistant_creative_skill_not_supported",statusCode:403});
+          if(!proposalMode&&ref.callKind!=="script_continuation")
+           chosenMaterials=loadSelectedAssistantCreativeMaterials(db,{projectId:req.params.id,
+            taskId:ref.taskId,turnMessageId:ref.turnMessageId});
+         }});
         if(command.cached){reply.header("Cache-Control","no-store");return command.response;}
         commandStarted=true;
         const snapshot=getAssistantTask(db,{projectId:req.params.id,taskId:ref.taskId}).task;
@@ -734,11 +739,14 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
         const creativeNodeIds=new Set(chosenMaterials.map(item=>item.sourceNodeId).filter(Boolean));
         const scopedDocument=chosenMaterials.length?{
          ...project.document,
-         nodes:(project.document.nodes??[]).filter(node=>creativeNodeIds.has(node.id)),
+         // Only the frozen, budgeted excerpts below may supply source prose.
+         // Generic node serialization also includes unconfirmed metadata fields.
+         nodes:[],
          connections:[]}:project.document;
         taskContext=buildAssistantTaskProviderContext({task:{...snapshot,summary:scopedSummary,contextPolicy:frozenPolicy},document:scopedDocument,
          currentTurnMessageId:ref.turnMessageId,creativeDrafts,
-         trustedOutputs:trustedAssistantTaskOutputs(db,{projectId:project.id,taskId:snapshot.id,planVersion:snapshot.activePlanVersion})});
+         trustedOutputs:trustedAssistantTaskOutputs(db,{projectId:project.id,taskId:snapshot.id,planVersion:snapshot.activePlanVersion})
+          .filter(output=>!chosenMaterials.length||creativeNodeIds.has(output.nodeId))});
         if(chosenMaterials.length){
          const creativeText=formatSelectedAssistantCreativeMaterials(chosenMaterials);
          if(Buffer.byteLength(taskContext+"\n"+creativeText,"utf8")>16*1024)
@@ -776,7 +784,9 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
         throw Object.assign(Error("assistant_skill_selection_invalid"),{code:"assistant_skill_selection_invalid",statusCode:400});
        const skill=resolveAssistantSkills(db,skillRegistry,req.body.skills,messages);
        if(ref&&req.body.visualContext){
-        const allowed=new Set(frozenPolicy?.includeContext&&frozenPolicy.scope==="selection"?
+        // A confirmed text-material selection narrows this request to those
+        // references; an older canvas selection cannot also authorize media.
+        const allowed=new Set(!chosenMaterials.length&&frozenPolicy?.includeContext&&frozenPolicy.scope==="selection"?
          frozenPolicy.includedIds:[]);
         if(req.body.visualContext.images.some(image=>!allowed.has(image.nodeId)))
          throw Object.assign(Error("assistant_task_visual_not_authorized"),

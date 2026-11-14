@@ -17,14 +17,20 @@ export function detectAssistantCreativeMaterialIntent(text:string,taskId?:string
  if(/故事|剧情|剧本|世界观/.test(text))kinds.push("story");
  if(/场景|地点|环境设定/.test(text))kinds.push("scene");
  if(/美术风格|视觉风格|画风|美术规范/.test(text))kinds.push("style");
- return {kinds,shouldSelect:Boolean(taskId)&&kinds.length>0&&
-  /(之前|此前|前面|先前|已有|原来|参考|沿用|根据|继续|保持|一致|既定)/.test(text)};
+ const historical=/(?:之前|此前|前面|先前|已有|原来|既定)/.test(text);
+ const reuse=/(?:沿用|继续|保持|一致)/.test(text);
+ const excluded=/(?:不要|无需|不必|别|不再).{0,8}(?:参考|沿用|使用|根据|继续)/.test(text);
+ return {kinds,shouldSelect:Boolean(taskId)&&kinds.length>0&&!excluded&&(historical||reuse)};
 }
 export function selectAssistantCreativeMaterialsForRequest(
  materials:AssistantCreativeMaterial[],kinds:AssistantCreativeKind[],text:string){
  const available=materials.filter(m=>kinds.includes(m.kind));
  if(!available.length)
   throw Error("当前 Task 没有找到本轮获授权的故事/场景/画风资料，请先选择对应节点或明确提供相关内容。");
+ const missing=[...new Set(kinds)].filter(kind=>!available.some(m=>m.kind===kind));
+ if(missing.length)
+  throw Error("当前 Task 缺少本轮获授权的"+missing.map(kind=>names[kind]).join("、")+
+   "资料，请先选择对应节点或明确提供相关内容。");
  const selected=[...new Set(kinds)].flatMap(kind=>{
   const group=available.filter(m=>m.kind===kind);
   const named=group.filter(m=>m.title.length>3&&!genericTitles.has(m.title)&&text.includes(m.title));

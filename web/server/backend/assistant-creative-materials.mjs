@@ -43,7 +43,7 @@ function record({kind,origin,raw,title,sourceLabel,sourceTurnMessageId,provenanc
  const content=raw.trim();
  const sourceRef=originRef(kind,origin);
  return {kind,title:safe(title??titles[kind],70),sourceRef,
-  sourceDigest:sha({kind,origin,content}),sourceLabel,
+  sourceDigest:sha({kind,origin,content,title:safe(title??titles[kind],70)}),sourceLabel,
   sourceTurnMessageId:sourceTurnMessageId??null,provenance,
   ...(sourceNodeId?{sourceNodeId}:{}),
   excerpt:safe(content,480)};
@@ -61,7 +61,7 @@ export function discoverAssistantCreativeMaterials(db,{projectId,taskId,turnMess
  if(![projectId,taskId,turnMessageId].every(id)||!Array.isArray(kinds)||
   !kinds.length||kinds.length>3||kinds.some(k=>!TYPES.includes(k)))
   throw fail("assistant_creative_material_invalid",400);
- const task=db.prepare("SELECT id,read_only FROM assistant_tasks WHERE id=? AND project_id=?").get(taskId,projectId);
+ const task=db.prepare("SELECT id,read_only,root_message_id,original_request FROM assistant_tasks WHERE id=? AND project_id=?").get(taskId,projectId);
  if(!task)throw fail("assistant_task_not_found",404);
  const now=currentTurn(db,taskId,turnMessageId),policy=now.contextPolicy;
  const newest=db.prepare("SELECT COALESCE(MAX(seq),0) AS seq FROM assistant_task_events WHERE task_id=? AND kind='user_turn'").get(taskId).seq;
@@ -92,9 +92,18 @@ export function discoverAssistantCreativeMaterials(db,{projectId,taskId,turnMess
  }
  // User-authored, plainly labelled source text is evidence of a user statement,
  // not proof of completion and not automatically a confirmed long-term preference.
+ const root=db.prepare("SELECT seq,payload_json FROM assistant_task_events WHERE task_id=? AND kind='task_created' ORDER BY seq LIMIT 1").get(taskId);
+ const initial=root?JSON.parse(root.payload_json):null;
+ if(root?.seq<now.seq&&!turns.has(task.root_message_id)&&
+  mayRepeatTurn(policy,initial?.contextPolicy)){
+  for(const [index,section] of labelled(task.original_request).entries())
+   push(record({kind:section.kind,origin:"root:"+task.root_message_id+":"+index+":"+section.kind,
+    raw:section.content,title:section.title,sourceLabel:"初始任务用户陈述",
+    sourceTurnMessageId:task.root_message_id,provenance:"user_statement"}));
+ }
  for(const turn of turns.values()){
-  for(const section of labelled(turn.preview))
-   push(record({kind:section.kind,origin:"turn:"+turn.messageId+":"+section.kind,
+  for(const [index,section] of labelled(turn.preview).entries())
+   push(record({kind:section.kind,origin:"turn:"+turn.messageId+":"+index+":"+section.kind,
     raw:section.content,title:section.title,sourceLabel:"历史用户陈述",
     sourceTurnMessageId:turn.messageId,provenance:"user_statement"}));
  }
@@ -127,7 +136,8 @@ export function discoverAssistantCreativeMaterials(db,{projectId,taskId,turnMess
  return {turnMessageId,materials:unique.slice(0,18),truncated:unique.length>18};
 }
 export function resolveAssistantCreativeMaterials(db,{projectId,taskId,turnMessageId,references}){
- const found=discoverAssistantCreativeMaterials(db,{projectId,taskId,turnMessageId});
+ const found=discoverAssistantCreativeMaterials(db,{projectId,taskId,turnMessageId,
+  kinds:[...new Set(references.map(ref=>ref.kind))]});
  return references.map(ref=>{
   const matches=found.materials.filter(item=>item.sourceRef===ref.sourceRef&&
    item.sourceDigest===ref.sourceDigest&&item.kind===ref.kind);
@@ -137,6 +147,9 @@ export function resolveAssistantCreativeMaterials(db,{projectId,taskId,turnMessa
 }
 const selectionEvent=(db,taskId,turnMessageId)=>db.prepare(
  "SELECT payload_json FROM assistant_task_events WHERE task_id=? AND kind='creative_sources_selected' AND json_extract(payload_json,'$.turnMessageId')=? ORDER BY seq DESC LIMIT 1").get(taskId,turnMessageId);
+export function hasSelectedAssistantCreativeMaterials(db,taskId,turnMessageId){
+ return !!selectionEvent(db,taskId,turnMessageId);
+}
 export function selectAssistantCreativeMaterials(db,{projectId,taskId,requestId,turnMessageId,references,confirmed}){
  if(![projectId,taskId,requestId,turnMessageId].every(id)||confirmed!==true||
   !Array.isArray(references)||!references.length||references.length>4||

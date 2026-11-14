@@ -449,9 +449,11 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
      selectedSkills=undefined;
 
      const url="/api/v1/projects/"+encodeURIComponent(projectId)+"/assistant/tasks/"+
-      encodeURIComponent(linkedTaskId!)+"/creative-context/materials?turnMessageId="+encodeURIComponent(user.id);
+      encodeURIComponent(linkedTaskId!)+"/creative-context/materials?turnMessageId="+encodeURIComponent(user.id)+
+      "&kinds="+relevantKinds.join(",");
      const context=await canvasApi<{materials:AssistantCreativeMaterial[];truncated:boolean}>(
       url,"GET",undefined,controller.signal);
+     if(context.truncated)throw Error("候选创作资料过多，请缩小选择范围或在本轮明确提供所需资料。");
      const selected=selectAssistantCreativeMaterialsForRequest(context.materials,relevantKinds,text);
      const approved=await confirmDangerousActions(
       summarizeAssistantCreativeMaterials(selected),controller.signal,themeName);
@@ -516,7 +518,7 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
     const request={channelId:channel.id,provider,baseUrl:channel.baseUrl,model:modelOptionName(chosenModel),
      messages:turns,canvasActions:!textOnly,
       ...(linkedTaskId?{task:{taskId:linkedTaskId,turnMessageId:user.id,requestId:user.id+"-model-initial"}}:{}),
-     ...(visual.images.length?{visualContext:{detail:"high",images:visual.images}}:{})};
+     ...(!wantsCreativeSources&&visual.images.length?{visualContext:{detail:"high",images:visual.images}}:{})};
     let response:AssistantReply;
     try{
      response=await canvasApi<AssistantReply>(endpoint,"POST",

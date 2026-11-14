@@ -48,6 +48,125 @@ function fixture(t,{oldPolicy=policy,newPolicy=policy,withCanvas=false}={}){
  return {db,task,add,mock,discover,choose,document};
 }
 const refs=materials=>materials.map(m=>({kind:m.kind,sourceRef:m.sourceRef,sourceDigest:m.sourceDigest}));
+const inference=f=>({channelId:"ch",provider:"openai_compatible",baseUrl:"http://127.0.0.1:8188/v1",
+ model:"mock",canvasActions:false,
+ messages:[{role:"user",content:"请参考之前的故事梗概、场景设定和美术风格，继续创作分镜"}],
+ task:{taskId:f.task.id,turnMessageId:"current",requestId:"current-model-initial"}});
+
+test("P4.1b multiple scenes in one user turn remain independently selectable",t=>{
+ const f=fixture(t);
+ f.add("scenes","场景1："+forestScene+"\n场景2：夜晚的海边灯塔，星光倒映在海面，远处有暖色灯光与帆船。");
+ f.add("next","请参考之前的场景继续创作");
+ const scenes=f.discover("next").materials.filter(m=>m.sourceTurnMessageId==="scenes");
+ assert.equal(scenes.length,2);
+ assert.notEqual(scenes[0].sourceRef,scenes[1].sourceRef);
+ const result=f.choose(refs(scenes),{turnMessageId:"next"});
+ assert.equal(result.materials.length,2);
+});
+
+test("P4.1b initial task text uses its original frozen policy",t=>{
+ for(const restricted of [false,true]){
+  const f=fixture(t);
+  const task=createAssistantTask(f.db,{projectId:"p",chatSessionId:"root-chat",rootMessageId:"root-source",
+   originalRequest:"故事梗概："+longStory,requestId:"root-create",
+   contextPolicy:restricted?selection(["secret"]):policy}).task;
+  appendAssistantTaskTurn(f.db,{projectId:"p",taskId:task.id,requestId:"root-next",messageId:"root-next",
+   text:"沿用之前的故事",contextPolicy:policy});
+  const found=discoverAssistantCreativeMaterials(f.db,{projectId:"p",taskId:task.id,turnMessageId:"root-next"});
+  assert.equal(found.materials.length,restricted?0:1);
+  if(!restricted)assert.equal(found.materials[0].sourceTurnMessageId,"root-source");
+ }
+});
+
+test("P4.1b kind-filtered discovery and resolution retain style behind many scenes",async t=>{
+ const f=fixture(t);
+ for(let i=0;i<20;i++)f.add("scene-more-"+i,"场景设定："+forestScene+i);
+ f.add("last","沿用之前的画风");
+ const app=buildApp({db:f.db,authorize:()=>true,assistantChat:async()=>({model:"mock",answer:"ok"})});
+ t.after(()=>app.close());
+ const response=await app.inject({method:"GET",url:"/api/v1/projects/p/assistant/tasks/"+f.task.id+
+  "/creative-context/materials?turnMessageId=last&kinds=style"});
+ assert.equal(response.statusCode,200,response.body);
+ const found=response.json();
+ assert.equal(found.truncated,false);
+ assert.ok(found.materials.length>0);
+ assert.ok(found.materials.every(m=>m.kind==="style"));
+ assert.equal(f.choose(refs(found.materials),{turnMessageId:"last"}).materials.length,found.materials.length);
+});
+
+test("P4.1b changed source titles invalidate confirmed reference identity",t=>{
+ const f=fixture(t,{withCanvas:true,newPolicy:selection(["scene-node"])});
+ f.choose(refs(f.discover().materials.filter(m=>m.sourceNodeId==="scene-node")));
+ f.db.prepare("UPDATE projects SET document_json=json_set(document_json,'$.nodes[1].title','另一私有场景说明') WHERE id='p'").run();
+ assert.throws(()=>loadSelectedAssistantCreativeMaterials(f.db,{projectId:"p",taskId:f.task.id,turnMessageId:"current"}),
+  {code:"assistant_creative_source_changed"});
+});
+
+test("P4.1b pinned turns reject Skill inputs and legacy continuations before inference",async t=>{
+ const f=fixture(t);
+ f.choose(refs(f.discover().materials.filter(m=>m.provenance==="user_statement")));
+ let calls=0;
+ const app=buildApp({db:f.db,authorize:()=>true,assistantChat:async()=>{
+  calls++;return {model:"mock",answer:"不应外发"};
+ }});t.after(()=>app.close());
+ for(const extra of [
+  {skills:{mode:"auto",projectId:"p",expectedRevision:1,skillIds:["fixture"],versionPins:{fixture:"a".repeat(12)}}},
+  {task:{...inference(f).task,callKind:"script_continuation"}}
+ ]){
+  const response=await app.inject({method:"POST",url:"/api/v1/projects/p/assistant/chat",
+   payload:{...inference(f),...extra}});
+  assert.equal(response.statusCode,403,response.body);
+  assert.equal(response.json().code,"assistant_creative_skill_not_supported");
+ }
+ assert.equal(calls,0);
+ assert.equal(f.db.prepare("SELECT COUNT(*) n FROM assistant_task_commands WHERE request_id='current-model-initial'").get().n,0);
+});
+
+test("P4.1b selected text references cannot authorize other selected media",async t=>{
+ const f=fixture(t,{withCanvas:true,newPolicy:selection(["style-node","image"])});
+ const doc={...f.document,nodes:[...f.document.nodes,
+  {id:"image",type:"image",title:"未确认的图片",position:{x:0,y:0},width:320,height:240,metadata:{}}]};
+ f.db.prepare("UPDATE projects SET document_json=? WHERE id='p'").run(JSON.stringify(doc));
+ f.choose(refs(f.discover().materials.filter(m=>m.sourceNodeId==="style-node")));
+ let calls=0;
+ const app=buildApp({db:f.db,authorize:()=>true,assistantChat:async()=>{
+  calls++;return {model:"mock",answer:"不应外发"};
+ }});t.after(()=>app.close());
+ const response=await app.inject({method:"POST",url:"/api/v1/projects/p/assistant/chat",
+  payload:{...inference(f),visualContext:{images:[{nodeId:"image"}]}}});
+ assert.equal(response.statusCode,403,response.body);
+ assert.equal(response.json().code,"assistant_task_visual_not_authorized");
+ assert.equal(calls,0);
+});
+
+test("P4.1b pinned sources send only confirmed excerpts and cache survives later edits",async t=>{
+ const f=fixture(t,{withCanvas:true,newPolicy:selection(["style-node"])});
+ const content=cartoonStyle.repeat(30)+"未展示的正文末尾不应外发";
+ const doc={...f.document,nodes:f.document.nodes.map(n=>n.id==="style-node"?
+  {...n,metadata:{content,prompt:"确认摘要之外的隐藏提示词",composerContent:"确认摘要之外的参数输入"}}:n)};
+ f.db.prepare("UPDATE projects SET document_json=? WHERE id='p'").run(JSON.stringify(doc));
+ f.choose(refs(f.discover().materials.filter(m=>m.sourceNodeId==="style-node")));
+ const wire=[];
+ const vault={get:()=>({provider:"openai_compatible",hasKey:true,keyVersion:"v1"}),
+  withSecretVersion:(_v,cb)=>cb(Buffer.from("mock-key"))};
+ const assistantChat=createAssistantChatService({vault,compatibleUpstreamCall:async(_url,options)=>{
+  wire.push(JSON.parse(options.body));
+  return new Response(JSON.stringify({choices:[{message:{role:"assistant",content:"已接收参考"},finish_reason:"stop"}]}),{status:200});
+ }});
+ const app=buildApp({db:f.db,authorize:()=>true,assistantChat});t.after(()=>app.close());
+ const first=await app.inject({method:"POST",url:"/api/v1/projects/p/assistant/chat",payload:inference(f)});
+ assert.equal(first.statusCode,200,first.body);
+ const body=JSON.stringify(wire[0]);
+ assert.ok(body.includes(cartoonStyle));
+ for(const secret of ["未展示的正文末尾不应外发","确认摘要之外的隐藏提示词","确认摘要之外的参数输入"])
+  assert.ok(!body.includes(secret));
+ f.add("later","继续下一轮");
+ f.db.prepare("UPDATE projects SET document_json=json_set(document_json,'$.nodes[2].metadata.content','已修改的来源内容') WHERE id='p'").run();
+ const replay=await app.inject({method:"POST",url:"/api/v1/projects/p/assistant/chat",payload:inference(f)});
+ assert.equal(replay.statusCode,200,replay.body);
+ assert.deepEqual(replay.json(),first.json());
+ assert.equal(wire.length,1);
+});
 
 test("P4.1b enumerates story, scene and style as separate typed, sourced records",t=>{
  const f=fixture(t),found=f.discover();

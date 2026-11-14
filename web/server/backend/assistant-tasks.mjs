@@ -100,7 +100,7 @@ export function createAssistantTask(db,{projectId,chatSessionId,rootMessageId,or
   db.prepare("INSERT INTO assistant_tasks(id,project_id,chat_session_id,root_message_id,status,active_plan_version,original_request,goal_json,constraints_json,summary_json,context_policy_json,read_only,created_at,updated_at) VALUES(?,?,?,?,'planning',1,?,?,?,?,?,0,?,?)")
    .run(taskId,projectId,chatSessionId,rootMessageId,originalRequest,
     json({description:originalRequest}),"{}","{}",json(contextPolicyValue),at,at);
-  event(db,taskId,"task_created",{rootMessageId,mode:"guidance_only"},null,at);
+  event(db,taskId,"task_created",{rootMessageId,mode:"guidance_only",contextPolicy:contextPolicyValue},null,at);
   return {task:snapshot(db,projectId,taskId)};
  });
 }

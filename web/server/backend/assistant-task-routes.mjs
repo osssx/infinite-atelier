@@ -61,6 +61,8 @@ const creativeMaterialsSelectionBody={type:"object",additionalProperties:false,
    sourceDigest:{type:"string",pattern:"^[a-f0-9]{64}$"}}}}}};
 const creativeTurnQuery={type:"object",additionalProperties:false,required:["turnMessageId"],
  properties:{turnMessageId:id}};
+const creativeMaterialsQuery={...creativeTurnQuery,properties:{...creativeTurnQuery.properties,
+ kinds:{type:"string",pattern:"^(story|scene|style)(,(story|scene|style)){0,2}$"}}};
 const textDeliverableBody={type:"object",additionalProperties:false,
  required:["requestId","sourceTurnMessageId","characters","confirmed"],properties:{
  requestId:id,sourceTurnMessageId:id,confirmed:{type:"boolean",const:true},
@@ -180,9 +182,9 @@ export function registerAssistantTaskRoutes(app,db,{skillRegistry,blobStore}={})
   cancelAssistantTask(db,{projectId:req.params.id,taskId:req.params.taskId,...req.body})));
  // P4.1b: read-only references, with user-approved server-frozen selection.
  app.get(base+"/:taskId/creative-context/materials",{
-  schema:{params:taskParams,querystring:creativeTurnQuery}},(req,reply)=>result(reply,
+  schema:{params:taskParams,querystring:creativeMaterialsQuery}},(req,reply)=>result(reply,
    discoverAssistantCreativeMaterials(db,{projectId:req.params.id,taskId:req.params.taskId,
-    turnMessageId:req.query.turnMessageId})));
+    turnMessageId:req.query.turnMessageId,...(req.query.kinds?{kinds:req.query.kinds.split(",")}: {})})));
  app.post(base+"/:taskId/creative-context/materials/select",{
   schema:{params:taskParams,body:creativeMaterialsSelectionBody}},(req,reply)=>result(reply,
    selectAssistantCreativeMaterials(db,{projectId:req.params.id,taskId:req.params.taskId,...req.body})));

@@ -17,7 +17,7 @@ const event=(db,taskId,kind,data)=>db.prepare(
 /** The request identity is persisted before any upstream HTTP request.
  * No async work or model requests occur inside these SQLite transactions.
  */
-export function beginAssistantModelCommand(db,{projectId,taskId,requestId,requestPayload}){
+export function beginAssistantModelCommand(db,{projectId,taskId,requestId,requestPayload,beforeStart}){
  if(!identity(projectId)||!identity(taskId)||!identity(requestId))throw fail("assistant_task_invalid",400);
  const turnMessageId=requestPayload?.task?.turnMessageId;
  if(turnMessageId!==undefined&&(!identity(turnMessageId)||!db.prepare("SELECT 1 FROM assistant_task_events WHERE task_id=? AND kind='user_turn' AND json_extract(payload_json,'$.messageId')=? LIMIT 1").get(taskId,turnMessageId)))throw fail("assistant_task_turn_not_found",409);
@@ -36,6 +36,8 @@ export function beginAssistantModelCommand(db,{projectId,taskId,requestId,reques
   }
   if(task.read_only||task.cancel_requested_at!==null||["completed","cancelled","cancelling"].includes(task.status))
    throw fail("assistant_task_not_editable",409);
+  // Replayed responses need no new source authorization or provider call.
+  beforeStart?.();
   db.prepare("INSERT INTO assistant_task_commands(project_id,request_id,task_id,command_kind,payload_digest,status,response_json,created_at) VALUES(?,?,?,'model_infer',?,'in_progress','{}',?)")
    .run(projectId,requestId,taskId,requestDigest,Date.now());
   event(db,taskId,"model_command_started",{requestId,requestDigest,...(turnMessageId?{turnMessageId}:{})});

@@ -12,6 +12,7 @@ import type {AssistantContextResult,AssistantContextScope} from "./canvas-assist
 import {parseAssistantCanvasActions,isDangerousAssistantAction,dangerousAssistantActionSummary,type AssistantCanvasStage} from "./canvas-assistant-actions";
 import {buildCanvasAssistantTurns} from "./canvas-assistant-history";
 import {parseAssistantCharacterCast} from "./canvas-assistant-character-cast";
+import {wantsAssistantTaskReadTools} from "./canvas-assistant-read-tool-intent";
 import {detectAssistantCreativeMaterialIntent,selectAssistantCreativeMaterialsForRequest,summarizeAssistantCreativeMaterials,type AssistantCreativeMaterial} from "./canvas-assistant-creative-materials";
 import {isCanvasAssistantTextOnlyRequest,isCanvasAssistantSkillOptOutRequest,isCanvasAssistantCanvasActionRequest} from "./canvas-assistant-output-intent";
 import {useCanvasAssistantTasks} from "./canvas-assistant-task-state";
@@ -511,12 +512,22 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
        allowEmptyTemplate,requiredFields:[],confirmed:true
       },controller.signal);
     }
+     // P4.2a is explicitly opt-in before any model POST. No Skill/visual
+     // fallback or mixing with an independently confirmed material selection.
+     const agentReadTools=wantsAssistantTaskReadTools(text,linkedTaskId)&&!wantsCreativeSources;
+     if(agentReadTools){
+      if(provider==="google_gemini")throw Error("当前 Agent 只读工具仅支持 OpenAI 兼容接口。");
+      if(visual.images.length)throw Error("Agent 只读工具暂不支持同时上传图片，请分轮操作。");
+      if(explicitSkills)throw Error("Agent 只读工具暂不支持同时调用 Skill，请分轮操作。");
+      selectedSkills=undefined;
+     }
      await ensureSqliteModelChannelForExecution(channel,provider);
    if(controller.signal.aborted)return;
     type AssistantReply={answer:string;model:string;retryCount?:number;actions?:unknown;appliedSkillIds?:string[];skillResourceReads?:{skillId:string;path:string}[];skillToolCalls?:{name:string;skillId:string|null}[];skillToolsFallback?:boolean;skillScriptProposal?:AssistantSkillScriptProposal};
     const endpoint="/api/v1/projects/"+encodeURIComponent(projectId)+"/assistant/chat";
     const request={channelId:channel.id,provider,baseUrl:channel.baseUrl,model:modelOptionName(chosenModel),
      messages:turns,canvasActions:!textOnly,
+      ...(agentReadTools?{agentReadTools:true}:{}),
       ...(linkedTaskId?{task:{taskId:linkedTaskId,turnMessageId:user.id,requestId:user.id+"-model-initial"}}:{}),
      ...(!wantsCreativeSources&&visual.images.length?{visualContext:{detail:"high",images:visual.images}}:{})};
     let response:AssistantReply;

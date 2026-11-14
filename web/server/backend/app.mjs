@@ -6,6 +6,7 @@ import {getCanvasViewport,putCanvasViewport,getCanvasChats,putCanvasChats} from 
 import {registerAssistantTaskRoutes} from "./assistant-task-routes.mjs";
 import {getAssistantTask,getAssistantTaskTurnPolicy} from "./assistant-tasks.mjs";
 import {beginAssistantModelCommand,createAssistantModelObserver,completeAssistantModelCommand,failAssistantModelCommand} from "./assistant-model-calls.mjs";
+import {assertAssistantAgentReadClaim,createAssistantAgentReadSession} from "./assistant-agent-read-tools.mjs";
 import {prepareAssistantSemanticProposals} from "./assistant-semantic-proposals.mjs";
 import {buildAssistantTaskProviderContext,loadAssistantTaskCreativeHistory} from "./assistant-task-context.mjs";
 import {trustedAssistantTaskOutputs} from "./assistant-task-produced-artifacts.mjs";
@@ -649,6 +650,7 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
        channelId:idSchema,provider:{type:"string",enum:["openai","openai_compatible","google_gemini"]},
         baseUrl:{type:"string",maxLength:1024},model:{type:"string",minLength:1,maxLength:128},
         canvasActions:{type:"boolean"},
+        agentReadTools:{type:"boolean"},
         skillScriptProposalEnabled:{type:"boolean"},
         task:{type:"object",additionalProperties:false,required:["taskId","requestId","turnMessageId"],properties:{
          taskId:idSchema,requestId:idSchema,turnMessageId:idSchema,
@@ -676,8 +678,13 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
      reply.raw.on("close",onClose);
      const ref=req.body.task;
       const proposalMode=ref?.callKind==="semantic_proposal";
+      const readMode=req.body.agentReadTools===true;
      let commandStarted=false;
      try{
+       if(readMode&&(!ref||proposalMode||ref.callKind&&ref.callKind!=="initial"||
+        req.body.skills||req.body.visualContext||req.body.provider==="google_gemini"))
+        throw Object.assign(Error("assistant_agent_read_unsupported"),
+         {code:"assistant_agent_read_unsupported",statusCode:400});
        if(ref&&!proposalMode&&req.body.skills&&currentAssistantTextDeliverable(db,ref.taskId))
         throw Object.assign(Error("assistant_deliverable_skill_not_supported"),
          {code:"assistant_deliverable_skill_not_supported",statusCode:403});
@@ -704,10 +711,17 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
          throw Object.assign(Error("assistant_task_message_untrusted"),
           {code:"assistant_task_message_untrusted",statusCode:403});
        }
-       let chosenMaterials=[];
+       let chosenMaterials=[],agentReadSession=null;
        if(ref){
         const command=beginAssistantModelCommand(db,{projectId:req.params.id,taskId:ref.taskId,
          requestId:ref.requestId,requestPayload:req.body,beforeStart:()=>{
+          if(readMode){
+           if(hasSelectedAssistantCreativeMaterials(db,ref.taskId,ref.turnMessageId))
+            throw Object.assign(Error("assistant_agent_read_source_conflict"),
+             {code:"assistant_agent_read_source_conflict",statusCode:409});
+           assertAssistantAgentReadClaim(db,{projectId:req.params.id,
+            taskId:ref.taskId,turnMessageId:ref.turnMessageId});
+          }
           if(!proposalMode&&hasSelectedAssistantCreativeMaterials(db,ref.taskId,ref.turnMessageId)&&
            (req.body.skills||ref.callKind==="script_continuation"))
            throw Object.assign(Error("assistant_creative_skill_not_supported"),
@@ -718,6 +732,9 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
          }});
         if(command.cached){reply.header("Cache-Control","no-store");return command.response;}
         commandStarted=true;
+        if(readMode)agentReadSession=createAssistantAgentReadSession(db,{
+         projectId:req.params.id,taskId:ref.taskId,turnMessageId:ref.turnMessageId,
+         requestId:ref.requestId});
         const snapshot=getAssistantTask(db,{projectId:req.params.id,taskId:ref.taskId}).task;
         frozenPolicy=getAssistantTaskTurnPolicy(db,{projectId:req.params.id,taskId:ref.taskId,
          messageId:ref.turnMessageId});
@@ -800,6 +817,7 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
         skillTools:skill.toolEntries??[],visualImages:visual.images,
         visualDetail:req.body.visualContext?.detail??"high",signal:controller.signal,
         ...(ref?{providerPayloadGuard:(requestBody)=>{
+         agentReadSession?.check(); // reauthorize immediately before each POST
          // Another chat/turn or a graph edit may have happened while awaiting
          // media or a previous tool round. Recheck the exact frozen source
          // bindings immediately before EACH paid upstream POST.
@@ -826,7 +844,8 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
             {code:"assistant_task_context_not_authorized",statusCode:403});
          }
         }}:{}),
-        ...(ref?{taskContext,callObserver:observer,modelCallKind:proposalMode?"initial":ref.callKind??"initial",semanticProposal:proposalMode}:{})});
+        ...(ref?{taskContext,callObserver:observer,modelCallKind:proposalMode?"initial":ref.callKind??"initial",
+         semanticProposal:proposalMode,agentReadSession}:{})});
        const proposed=proposalMode?prepareAssistantSemanticProposals({answer:result.answer,
          requestId:ref.requestId,turnMessageId:ref.turnMessageId,contextPolicy:frozenPolicy}):null;
         const completed={...result,appliedSkillIds:skill.skillIds,usedVisualReferences:visual.references,

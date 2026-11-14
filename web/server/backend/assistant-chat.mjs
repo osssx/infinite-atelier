@@ -4,6 +4,7 @@ import {createHash} from "node:crypto";
 import {CANVAS_ACTION_SYSTEM,parseAssistantActionResponse} from "./assistant-actions.mjs";
 import {latestCanvasUserRequest,isCanvasEditInstruction,isAssistantTextOnlyRequest,exactWholeCanvasGraphLayout} from "./assistant-action-intent.mjs";
 import {runAssistantSkillRounds} from "./assistant-skill-rounds.mjs";
+import {runAssistantAgentReadRounds} from "./assistant-agent-read-rounds.mjs";
 import {assistantDeferredSkillScript,requireSkillExecutionMessage} from "./assistant-skill-completion.mjs";
 import {readSkillStream} from "./skill-stream-parser.mjs";
 import {openAiVisionContent,geminiVisionParts} from "./model-vision-parts.mjs";
@@ -207,7 +208,7 @@ export function createAssistantChatService({vault,upstreamCall=fetch,
  const retries=Number.isInteger(maxRetries)?Math.max(0,Math.min(DEFAULT_RETRIES,maxRetries)):DEFAULT_RETRIES;
  const timeout=Number.isInteger(requestTimeoutMs)?Math.max(1,Math.min(DEFAULT_TIMEOUT_MS,requestTimeoutMs)):DEFAULT_TIMEOUT_MS;
  const backoff=Number.isInteger(retryDelayMs)?Math.max(0,Math.min(5000,retryDelayMs)):DEFAULT_RETRY_DELAY_MS;
-  return async function ask({channelId,provider,baseUrl,model,messages,signal,canvasActions=false,skillContext="",skillTools=[],skillScriptProposalEnabled=true,visualImages=[],visualDetail="high",taskContext="",callObserver=null,modelCallKind="initial",semanticProposal=false,providerPayloadGuard=null}){  if(!validId(channelId)||!validModel(model)||
+  return async function ask({channelId,provider,baseUrl,model,messages,signal,canvasActions=false,skillContext="",skillTools=[],skillScriptProposalEnabled=true,visualImages=[],visualDetail="high",taskContext="",callObserver=null,modelCallKind="initial",semanticProposal=false,providerPayloadGuard=null,agentReadSession=null}){  if(!validId(channelId)||!validModel(model)||
    !["openai","openai_compatible","google_gemini"].includes(provider))
    throw fail("assistant_model_invalid");
   checkMessages(messages);
@@ -222,6 +223,9 @@ export function createAssistantChatService({vault,upstreamCall=fetch,
     throw fail("assistant_skill_context_too_large",413);
    if(!Array.isArray(skillTools)||skillTools.length>12)
     throw fail("assistant_skill_tool_unauthorized",422);
+   if(agentReadSession&&(skillTools.length||provider==="google_gemini"||semanticProposal||
+    !Array.isArray(agentReadSession.definitions)))
+    throw fail("assistant_agent_read_unsupported",400);
    if(typeof skillScriptProposalEnabled!=="boolean")throw fail("assistant_skill_tool_arguments_invalid",400);
    if(!Array.isArray(visualImages)||visualImages.length>4||
     visualImages.some(image=>!image||!Buffer.isBuffer(image.bytes)||
@@ -305,7 +309,11 @@ export function createAssistantChatService({vault,upstreamCall=fetch,
     throw fail("assistant_upstream_unavailable",502);
    };
    let first,toolFallback=false;
-   if(skillTools.length){
+   if(agentReadSession){
+    // No protocol fallback after any paid model call or externally visible tool read.
+    first=await runAssistantAgentReadRounds({initialBody:body,infer,
+     readAnswer:extractAnswer,session:agentReadSession,signal,initialKind:modelCallKind});
+   }else if(skillTools.length){
     try{
      first=await runAssistantSkillRounds({
       provider,initialBody:body,infer,readAnswer:extractAnswer,authorizedEntries:skillTools,signal,
@@ -337,7 +345,10 @@ export function createAssistantChatService({vault,upstreamCall=fetch,
    if(!skillScriptProposalEnabled&&skillTools.length&&
     assistantDeferredSkillScript({answer:first.answer,request,authorizedEntries:skillTools}))
     throw fail("assistant_skill_execution_incomplete",502);
-   const usage=skillTools.length?{
+   const usage=agentReadSession?{
+    agentReadToolCalls:first.agentReadToolCalls??[],
+    agentReadRounds:first.agentReadRounds??0,agentReadBytes:first.agentReadBytes??0
+   }:skillTools.length?{
     skillToolCalls:first.skillToolCalls??[],skillResourceReads:first.skillResourceReads??[],
     skillToolsFallback:toolFallback
    }:{};

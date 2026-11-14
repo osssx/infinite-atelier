@@ -36,11 +36,17 @@ export function beginAssistantModelCommand(db,{projectId,taskId,requestId,reques
   }
   if(task.read_only||task.cancel_requested_at!==null||["completed","cancelled","cancelling"].includes(task.status))
    throw fail("assistant_task_not_editable",409);
+  // A read-tool model command owns the Task until terminal. Even an ordinary
+  // inference from a second tab cannot race this reader.
+  const readOwner=db.prepare("SELECT 1 FROM assistant_task_commands c WHERE c.task_id=? AND c.command_kind='model_infer' AND c.status='in_progress' AND EXISTS(SELECT 1 FROM assistant_task_events e WHERE e.task_id=c.task_id AND e.kind='model_command_started' AND json_extract(e.payload_json,'$.requestId')=c.request_id AND json_extract(e.payload_json,'$.agentReadTools')=1) LIMIT 1").get(taskId);
+  if(readOwner)throw fail("assistant_agent_read_busy",409);
   // Replayed responses need no new source authorization or provider call.
   beforeStart?.();
   db.prepare("INSERT INTO assistant_task_commands(project_id,request_id,task_id,command_kind,payload_digest,status,response_json,created_at) VALUES(?,?,?,'model_infer',?,'in_progress','{}',?)")
    .run(projectId,requestId,taskId,requestDigest,Date.now());
-  event(db,taskId,"model_command_started",{requestId,requestDigest,...(turnMessageId?{turnMessageId}:{})});
+  event(db,taskId,"model_command_started",{requestId,requestDigest,
+   ...(turnMessageId?{turnMessageId}:{}),
+   ...(requestPayload?.agentReadTools===true?{agentReadTools:true}:{})});
   return {cached:false};
  });
 }

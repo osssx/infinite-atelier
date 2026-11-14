@@ -40,9 +40,8 @@ async function fixture(t,network,{includeContext=false,scope="selection",include
  const payload=(requestId="model-request",text="继续")=>({
   channelId:"channel-a",provider:"openai_compatible",model:"demo",baseUrl:"http://localhost:8080/v1",
   canvasActions:false,task:{taskId,turnMessageId:"source-turn",requestId},
-  messages:[{role:"user",content:"过期历史："+secret},
-   {role:"assistant",content:"缓存中的私有内容："+secret},
-   {role:"user",content:text}]
+  // The P4.0 Task boundary accepts only the frozen current user turn.
+  messages:[{role:"user",content:text}]
  });
  return {db,app,call,taskId,base,payload};
 }
@@ -144,8 +143,8 @@ test("P0b task model calls persist before POST, replay same command, and only se
  assert.deepEqual(repeated.body,first.body);
  assert.equal(calls,1,"same command must not result in a second upstream POST");
  const altered=await fx.call("POST",path,{...req,messages:[{role:"user",content:"换掉指令"}]});
- assert.equal(altered.status,409);
- assert.equal(altered.body.code,"assistant_task_command_conflict");
+ assert.equal(altered.status,403);
+ assert.equal(altered.body.code,"assistant_task_message_untrusted");
  const row=fx.db.prepare("SELECT status,call_kind,submit_marker,request_digest FROM assistant_model_calls").get();
  assert.equal(row.status,"succeeded");assert.equal(row.call_kind,"initial");
  assert.ok(row.submit_marker&&row.request_digest.length===64);
@@ -254,8 +253,8 @@ test("P0b a later tab changing Task defaults cannot expand a frozen turn's provi
  const callBefore=fx.db.prepare("SELECT COUNT(*) AS n FROM assistant_model_calls").get().n;
  const missing=fx.payload("missing-turn");missing.task.turnMessageId="not-registered";
  const denied=await fx.call("POST",fx.base+"/assistant/chat",missing);
- assert.equal(denied.status,409);
- assert.equal(denied.body.code,"assistant_task_turn_not_found");
+ assert.equal(denied.status,403);
+ assert.equal(denied.body.code,"assistant_task_message_untrusted");
  assert.equal(fx.db.prepare("SELECT COUNT(*) AS n FROM assistant_model_calls").get().n,callBefore);
 });
 
@@ -269,7 +268,12 @@ test("P0b format correction is a separately journaled model call, not a network 
     {type:"connect",from:"visible",to:"new"}
    ]}));
  },{includeContext:true,scope:"selection",includedIds:["visible"]});
+ appendAssistantTaskTurn(fx.db,{projectId:"p-model",taskId:fx.taskId,
+  requestId:"repair-turn",messageId:"repair-turn-msg",
+  text:"创建一个分镜节点并连接到已有节点",
+  contextPolicy:{includeContext:true,scope:"selection",includedIds:["visible"]}});
  const req=fx.payload("repair","创建一个分镜节点并连接到已有节点");
+ req.task.turnMessageId="repair-turn-msg";
  req.canvasActions=true;
  const response=await fx.call("POST",fx.base+"/assistant/chat",req);
  assert.equal(response.status,200,JSON.stringify(response.body));
@@ -355,8 +359,14 @@ test("linked Task model receives previous concrete character-card drafts but nev
  const record=(turnId,text,response,stamp)=>{
   appendAssistantTaskTurn(fx.db,{projectId:"p-model",taskId:fx.taskId,
    messageId:turnId,requestId:"turn-"+turnId,text,contextPolicy:policy});
-  fx.db.prepare("INSERT INTO assistant_task_commands(project_id,request_id,task_id,command_kind,payload_digest,status,response_json,created_at) VALUES(?,?,?,?,?,'completed',?,?)")
-   .run("p-model",turnId+"-model-initial",fx.taskId,"model_infer","a".repeat(64),JSON.stringify(response),stamp);
+  // An authorized draft must be tied to a real source Turn and model command.
+  const requestId=turnId+"-model-initial";
+  beginAssistantModelCommand(fx.db,{projectId:"p-model",taskId:fx.taskId,
+   requestId,requestPayload:{task:{turnMessageId:turnId}}});
+  completeAssistantModelCommand(fx.db,{projectId:"p-model",taskId:fx.taskId,
+   requestId,response});
+  fx.db.prepare("UPDATE assistant_task_commands SET created_at=? WHERE project_id='p-model' AND request_id=?")
+   .run(stamp,requestId);
  };
  record("older-concrete","为角色生成角色卡文本节点",{
   answer:"已按儿童动画主题规划三个具体角色",

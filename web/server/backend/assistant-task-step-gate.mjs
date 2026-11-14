@@ -151,24 +151,28 @@ export function decideAssistantTaskStep(db,{projectId,taskId,stepId,requestId,
   // revoked or changed. Rejection confers no write/Claim authority.
   if(decision==="approve")assertAssistantAgentCanvasBinding(db,{projectId,taskId,
    action:JSON.parse(step.action_json),preconditions:frozen,expectedPlanVersion});
-  if(!Number.isSafeInteger(frozen.projectRevision)||frozen.projectRevision!==task.revision||
-   frozen.projectGraphDigest!==digest(JSON.parse(task.document_json)))
+  if((decision==="approve"||!frozen.agentRunBinding)&&
+   (!Number.isSafeInteger(frozen.projectRevision)||frozen.projectRevision!==task.revision||
+   frozen.projectGraphDigest!==digest(JSON.parse(task.document_json))))
    throw fail("assistant_step_source_changed");
+  const revoking=decision==="reject"&&approval.decision==="approved"&&
+   !!frozen.agentRunBinding&&step.kind==="canvas_mutation"&&step.status==="ready"&&task.active_step_id===null&&
+   !db.prepare("SELECT 1 FROM assistant_task_attempts WHERE step_id=? AND (submit_marker IS NOT NULL OR submitted_at IS NOT NULL OR status IN ('succeeded','submitting','needs_reconcile')) LIMIT 1").get(stepId);
   let response;
-  if(approval.decision){
+  if(approval.decision&&!revoking){
    if(approval.decision!==(decision==="approve"?"approved":"rejected")||
     approval.planVersion!==expectedPlanVersion||approval.actionDigest!==actionDigest)
     throw fail("assistant_step_approval_conflict");
    response={stepId,decision:approval.decision,planVersion:expectedPlanVersion,
     actionDigest,approvedAt:approval.decidedAt,status:step.status,executionStarted:false};
   }else{
-   if(step.status!=="waiting_approval")throw fail("assistant_step_not_approvable");
+   if(step.status!=="waiting_approval"&&!revoking)throw fail("assistant_step_not_approvable");
    const decidedAt=stamp(),choice=decision==="approve"?"approved":"rejected";
    const record={decision:choice,planVersion:expectedPlanVersion,
     actionDigest,projectRevision:frozen.projectRevision,decidedAt};
    const next=decision==="approve"?"ready":"blocked";
-   const updated=db.prepare("UPDATE assistant_task_steps SET approval_json=?,status=?,updated_at=? WHERE id=? AND task_id=? AND status='waiting_approval' AND plan_version=?")
-    .run(encode(record),next,decidedAt,stepId,taskId,expectedPlanVersion);
+   const updated=db.prepare("UPDATE assistant_task_steps SET approval_json=?,status=?,updated_at=? WHERE id=? AND task_id=? AND status=? AND plan_version=?")
+    .run(encode(record),next,decidedAt,stepId,taskId,step.status,expectedPlanVersion);
    if(updated.changes!==1)throw fail("assistant_step_state_conflict");
    log(db,taskId,stepId,decision==="approve"?"step_approved":"step_rejected",
     {planVersion:expectedPlanVersion,actionDigest,decision:choice});

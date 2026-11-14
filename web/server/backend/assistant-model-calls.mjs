@@ -25,7 +25,7 @@ export function beginAssistantModelCommand(db,{projectId,taskId,requestId,reques
  if(turnMessageId!==undefined&&(!identity(turnMessageId)||!db.prepare("SELECT 1 FROM assistant_task_events WHERE task_id=? AND kind='user_turn' AND json_extract(payload_json,'$.messageId')=? LIMIT 1").get(taskId,turnMessageId)))throw fail("assistant_task_turn_not_found",409);
  const requestDigest=digest({kind:"model_infer",taskId,requestPayload});
  return writeTransaction(db,()=>{
-  const task=db.prepare("SELECT status,read_only,cancel_requested_at FROM assistant_tasks t JOIN projects p ON p.id=t.project_id WHERE t.id=? AND t.project_id=? AND p.deleted_at IS NULL")
+  const task=db.prepare("SELECT status,read_only,cancel_requested_at,p.revision AS project_revision FROM assistant_tasks t JOIN projects p ON p.id=t.project_id WHERE t.id=? AND t.project_id=? AND p.deleted_at IS NULL")
    .get(taskId,projectId);
   if(!task)throw fail("assistant_task_not_found",404);
   const old=db.prepare("SELECT command_kind,payload_digest,status,response_json FROM assistant_task_commands WHERE project_id=? AND request_id=?")
@@ -49,7 +49,7 @@ export function beginAssistantModelCommand(db,{projectId,taskId,requestId,reques
    .run(projectId,requestId,taskId,requestDigest,Date.now());
   event(db,taskId,"model_command_started",{requestId,requestDigest,
    ...(turnMessageId?{turnMessageId}:{}),
-   ...(requestPayload?.agentReadTools===true?{agentReadTools:true}:{})});
+   ...(requestPayload?.agentReadTools===true?{agentReadTools:true,sourceRevision:task.project_revision}:{})});
   if(requestPayload?.agentReadTools===true)recordAgentRunEventInTransaction(db,{
    taskId,kind:"agent_run_started",data:{
     runId:agentReadRunId(projectId,taskId,requestId),requestId,turnMessageId,

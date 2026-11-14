@@ -252,6 +252,7 @@ export function executeAssistantCanvasStep(db,{projectId,taskId,stepId,
   const old=oldCommand(db,projectId,requestId,"canvas_execute",sig);
   if(old)return {old};
   const task=taskAndProject(db,projectId,taskId);
+  if(task.read_only)throw fail("assistant_task_not_editable");
   const step=db.prepare("SELECT * FROM assistant_task_steps WHERE id=? AND task_id=?").get(stepId,taskId);
   if(!step)throw fail("assistant_step_not_found",404);
   if(step.action_digest!==actionDigest||step.plan_version!==expectedPlanVersion)

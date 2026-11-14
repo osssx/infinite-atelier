@@ -54,6 +54,27 @@ beforeEach(()=>{
  });
 });
 afterEach(async()=>{if(root)await act(async()=>{root!.unmount();});root=null;container?.remove();container=null;});
+it("allows explicit revocation of an approved unexecuted Agent Step",async()=>{
+ let task={id:"agent-task",chatSessionId:"chat-a",chatSessionIds:["chat-a"],
+  rootMessageId:"original-user",originalRequest:"检查并创建节点",status:"ready",activePlanVersion:1,
+  recoveryMode:"canvas_transaction",steps:[{id:"agent-step",kind:"canvas_mutation",planVersion:1,
+   status:"ready",actionDigest:"a".repeat(64),action:{actions:[],agentRunId:"ar_test"}}]};
+ mocks.api.mockImplementation(async(url:string,method:string,payload?:Record<string,unknown>)=>{
+  if(method==="GET"&&url.includes("chatSessionId="))return {tasks:[task]};
+  if(method==="POST"&&url.endsWith("/approval")){
+   expect(payload?.decision).toBe("reject");
+   task={...task,status:"blocked",steps:task.steps.map(step=>({...step,status:"blocked"}))};
+   return {status:"blocked"};
+  }
+  if(url.endsWith("/run-sequences"))return {sequence:null,state:"none",next:null};
+  if(url.endsWith("/model-calls"))return {calls:[]};
+  return {task};
+ });
+ await render();
+ await click("撤销此步骤并允许重新规划");
+ expect(task.status).toBe("blocked");
+ expect(mocks.api.mock.calls.some(([url])=>url.endsWith("/execute"))).toBe(false);
+});
 it("keeps a normal planning Task compact and restores every control on demand",async()=>{
  const task={id:"compact-task",chatSessionId:"chat-a",chatSessionIds:["chat-a"],
   rootMessageId:"original-user",originalRequest:"三镜头分镜文字规划",status:"planning",

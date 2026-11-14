@@ -757,6 +757,9 @@ export function useCanvasAssistantTasks({
        onClick={()=>void resumeCanvasStep(step,"reject")}>拒绝此步骤</button>
      </>:<button type="button" className="canvas-assistant-link" disabled={busy||sending}
       onClick={()=>void resumeCanvasStep(step)}>继续已批准步骤</button>}
+     {step.status==="ready"&&step.action?.agentRunId?<button type="button"
+      className="canvas-assistant-link" disabled={busy||sending}
+      onClick={()=>void resumeCanvasStep(step,"reject")}>撤销此步骤并允许重新规划</button>:null}
     </div>
    </div>)}
     {externalSteps.length?<div className="mt-2 text-[11px]">

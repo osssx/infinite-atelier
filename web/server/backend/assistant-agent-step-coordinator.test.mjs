@@ -5,8 +5,10 @@ import {initializeSchema,SCHEMA_VERSION} from "./schema.mjs";
 import {createProject,getProject} from "./projects.mjs";
 import {createAssistantTask,appendAssistantTaskTurn} from "./assistant-tasks.mjs";
 import {beginAssistantModelCommand,createAssistantModelObserver,
- completeAssistantModelCommand} from "./assistant-model-calls.mjs";
-import {agentReadRunId,inspectAssistantAgentRun} from "./assistant-agent-run-ledger.mjs";
+ completeAssistantModelCommand,failAssistantModelCommand} from "./assistant-model-calls.mjs";
+import {agentReadRunId,inspectAssistantAgentRun,isAgentReadCommand,listAssistantAgentRuns} from "./assistant-agent-run-ledger.mjs";
+import {exportAssistantTaskArchive,importAssistantTaskArchive} from "./assistant-task-archive.mjs";
+import {replanAssistantTaskSafely} from "./assistant-task-safe-replan.mjs";
 import {planAssistantCanvasStep,executeAssistantCanvasStep,
  commitAssistantCanvasAttempt} from "./assistant-task-canvas-executor.mjs";
 import {decideAssistantTaskStep,claimAssistantTaskStep} from "./assistant-task-step-gate.mjs";
@@ -131,6 +133,109 @@ test("P4.2c later user turn invalidates unplanned Run before Step freeze",t=>{
   messageId:"new-turn",text:"撤销先前的角色卡设定",
   contextPolicy:{includeContext:false,scope:"selection",includedIds:[]}});
  assert.throws(()=>f.plan(),{code:"assistant_agent_run_turn_stale"});
+});
+
+test("P4.2c reusing a message ID cannot authorize the old Run for a new Turn",t=>{
+ for(const phase of ["plan","approve","claim"]){
+  const f=fixture(t,{initial:true});
+  const step=phase!=="plan"?f.plan():null;
+  if(phase==="claim")f.decide(step);
+  appendAssistantTaskTurn(f.db,{projectId:"p",taskId:f.task.id,requestId:"reused-turn",
+   messageId:"turn-current",text:"撤销之前的授权，不再创建角色卡",
+   contextPolicy:{includeContext:false,scope:"selection",includedIds:[]}});
+  if(phase==="plan")assert.throws(()=>f.plan(),{code:"assistant_agent_run_turn_stale"});
+  else if(phase==="approve"){
+   assert.throws(()=>f.decide(step),{code:"assistant_agent_run_turn_stale"});
+   assert.equal(f.decide(step,"reject").status,"blocked");
+  }else assert.throws(()=>f.execute(step),{code:"assistant_agent_run_turn_stale"});
+  assert.equal(getProject(f.db,"p").revision,1);
+ }
+});
+
+test("P4.2c model output changed before freeze cannot replace the completed Run decision",t=>{
+ const f=fixture(t,{initial:true});
+ const forged=[{...actions[0],content:"被替换的提案内容，不是完成时记录的模型决策。"}];
+ const row=f.db.prepare("SELECT response_json FROM assistant_task_commands WHERE request_id=?").get(f.requestId);
+ f.db.prepare("UPDATE assistant_task_commands SET response_json=? WHERE request_id=?")
+  .run(JSON.stringify({...JSON.parse(row.response_json),actions:forged}),f.requestId);
+ assert.throws(()=>f.plan({actions:forged}),{code:"assistant_agent_proposal_changed"});
+ assert.equal(f.db.prepare("SELECT COUNT(*) n FROM assistant_task_steps").get().n,0);
+});
+
+test("P4.2c a Run cannot freeze decisions against a newer graph revision",t=>{
+ const f=fixture(t,{initial:true});
+ f.db.prepare("UPDATE projects SET revision=revision+1,document_json=json_set(document_json,'$.nodes[0].metadata.content','另一客户端刚保存的新正文') WHERE id='p'").run();
+ assert.throws(()=>f.plan(),{code:"assistant_agent_run_source_changed"});
+ assert.equal(getProject(f.db,"p").document.nodes[0].metadata.content,"另一客户端刚保存的新正文");
+});
+
+test("P4.2c safe preflight retries bind to the new revision and command mode",t=>{
+ for(const agent of [true,false]){
+  const f=fixture(t);f.start();
+  failAssistantModelCommand(f.db,{projectId:"p",taskId:f.task.id,requestId:f.requestId});
+  f.db.prepare("UPDATE projects SET revision=revision+1 WHERE id='p'").run();
+  if(agent)f.start();
+  else beginAssistantModelCommand(f.db,{projectId:"p",taskId:f.task.id,requestId:f.requestId,
+   requestPayload:{task:{taskId:f.task.id,turnMessageId:"turn-current",requestId:f.requestId}}});
+  assert.equal(isAgentReadCommand(f.db,f.task.id,f.requestId),agent);
+  f.complete();
+  if(agent)assert.equal(f.plan().status,"waiting_approval");
+  else{
+   assert.throws(()=>f.plan(),{code:"assistant_agent_run_not_completed"});
+   assert.deepEqual(listAssistantAgentRuns(f.db,{projectId:"p",taskId:f.task.id}).runs,[]);
+  }
+ }
+});
+
+test("P4.2c revoked ready or graph-stale pending Steps can be rejected and replanned",t=>{
+ for(const approved of [true,false]){
+  const f=fixture(t,{initial:true}),step=f.plan();
+  if(approved){
+   f.decide(step);
+   appendAssistantTaskTurn(f.db,{projectId:"p",taskId:f.task.id,requestId:"new-turn",
+    messageId:"new-message",text:"撤销旧操作",contextPolicy:{includeContext:false,scope:"selection",includedIds:[]}});
+   assert.throws(()=>f.execute(step),{code:"assistant_agent_run_turn_stale"});
+  }else f.db.prepare("UPDATE projects SET revision=revision+1 WHERE id='p'").run();
+  assert.equal(f.decide(step,"reject",{requestId:"revoke"}).status,"blocked");
+  const replanned=replanAssistantTaskSafely(f.db,{projectId:"p",taskId:f.task.id,
+   requestId:"safe-replan",expectedPlanVersion:1,expectedProjectRevision:getProject(f.db,"p").revision});
+  assert.ok(replanned);
+  assert.equal(f.db.prepare("SELECT COUNT(*) n FROM assistant_task_attempts WHERE status='succeeded'").get().n,0);
+ }
+});
+
+test("P4.2c trusted receipt projection validates Attempt evidence and remains historical across Turns",t=>{
+ const f=fixture(t,{initial:true}),step=f.plan();f.decide(step);f.execute(step);
+ appendAssistantTaskTurn(f.db,{projectId:"p",taskId:f.task.id,requestId:"later",
+  messageId:"later",text:"继续讨论",contextPolicy:{includeContext:false,scope:"selection",includedIds:[]}});
+ assert.equal(agentCanvasStepForRun(f.db,{taskId:f.task.id,runId:f.runId}).receiptTrusted,true);
+ f.db.prepare("UPDATE assistant_task_steps SET receipt_json=json_set(receipt_json,'$.applied',999) WHERE id=?").run(step.stepId);
+ assert.equal(agentCanvasStepForRun(f.db,{taskId:f.task.id,runId:f.runId}).receiptTrusted,false);
+});
+
+test("P4.2c real archive import exposes historical Run and remapped Step without execution authority",async t=>{
+ const f=fixture(t,{initial:true}),step=f.plan();f.decide(step);f.execute(step);
+ const archive=exportAssistantTaskArchive(f.db,"p");
+ createProject(f.db,{id:"restored",document:getProject(f.db,"p").document});
+ importAssistantTaskArchive(f.db,"restored",archive);
+ const task=f.db.prepare("SELECT id FROM assistant_tasks WHERE project_id='restored'").get();
+ const app=buildApp({db:f.db,authorize:()=>true});t.after(()=>app.close());
+ const base="/api/v1/projects/restored/assistant/tasks/"+task.id;
+ const list=await app.inject({method:"GET",url:base+"/agent-runs"});
+ assert.equal(list.statusCode,200,list.body);
+ assert.equal(list.json().runs[0].runId,f.runId);
+ assert.equal(list.json().runs[0].recovery,"historical_only");
+ const detail=await app.inject({method:"GET",url:base+"/agent-runs/"+f.runId});
+ assert.equal(detail.statusCode,200,detail.body);
+ const restored=detail.json();
+ assert.equal(restored.agentStep.historicalOnly,true);
+ assert.equal(restored.agentStep.receiptTrusted,false);
+ assert.notEqual(restored.agentStep.stepId,step.stepId);
+ assert.ok(restored.transcript.some(e=>e.type==="agent_step_committed"&&e.data.stepId===restored.agentStep.stepId));
+ assert.equal(f.db.prepare("SELECT COUNT(*) n FROM assistant_task_commands WHERE project_id='restored'").get().n,0);
+ const execute=await app.inject({method:"POST",url:base+"/steps/"+restored.agentStep.stepId+"/execute",
+  payload:{requestId:"forbidden",expectedPlanVersion:1,actionDigest:step.actionDigest}});
+ assert.equal(execute.statusCode,409,execute.body);
 });
 test("P4.2c tampered frozen Agent binding cannot pass approval or claim",t=>{
  const f=fixture(t,{initial:true}),step=f.plan();

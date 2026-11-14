@@ -20,14 +20,18 @@ export function readAgentRunOwnership(db,taskId){
    AND EXISTS(SELECT 1 FROM assistant_task_events e
     WHERE e.task_id=c.task_id AND e.kind='model_command_started'
     AND json_extract(e.payload_json,'$.requestId')=c.request_id
+    AND json_extract(e.payload_json,'$.requestDigest')=c.payload_digest
     AND json_extract(e.payload_json,'$.agentReadTools')=1)
   ORDER BY c.created_at DESC LIMIT 1`).get(taskId)??null;
 }
 export function isAgentReadCommand(db,taskId,requestId){
- return !!db.prepare(`SELECT 1 FROM assistant_task_events
-  WHERE task_id=? AND kind='model_command_started'
-   AND json_extract(payload_json,'$.requestId')=?
-   AND json_extract(payload_json,'$.agentReadTools')=1 LIMIT 1`).get(taskId,requestId);
+ const row=db.prepare(`SELECT e.payload_json FROM assistant_task_events e
+  JOIN assistant_task_commands c ON c.task_id=e.task_id
+   AND c.request_id=json_extract(e.payload_json,'$.requestId')
+  WHERE e.task_id=? AND c.request_id=? AND e.kind='model_command_started'
+   AND json_extract(e.payload_json,'$.requestDigest')=c.payload_digest
+  ORDER BY e.seq DESC LIMIT 1`).get(taskId,requestId);
+ return !!row&&JSON.parse(row.payload_json).agentReadTools===true;
 }
 export function assertAgentRunOwner(db,{projectId,taskId,requestId}){
  const row=db.prepare(`SELECT status FROM assistant_task_commands
@@ -43,22 +47,51 @@ function taskScope(db,projectId,taskId){
  return task;
 }
 function sourceRuns(db,projectId,taskId,limit){
+ if(db.prepare("SELECT read_only FROM assistant_tasks WHERE id=? AND project_id=?").get(taskId,projectId)?.read_only){
+  const rows=db.prepare("SELECT seq,payload_json FROM assistant_task_events WHERE task_id=? AND kind='archived_command' ORDER BY seq DESC").all(taskId);
+  const history=[];
+  for(const row of rows){
+   const command=JSON.parse(row.payload_json);
+   if(command.command_kind!=="model_infer")continue;
+   const started=db.prepare(`SELECT seq,payload_json FROM assistant_task_events WHERE task_id=?
+    AND kind='model_command_started' AND json_extract(payload_json,'$.requestId')=?
+    AND json_extract(payload_json,'$.requestDigest')=? ORDER BY seq DESC LIMIT 1`)
+    .get(taskId,command.request_id,command.payload_digest);
+   const start=started?JSON.parse(started.payload_json):null;
+   if(!start?.agentReadTools)continue;
+   const run=db.prepare(`SELECT json_extract(payload_json,'$.runId') AS runId FROM assistant_task_events
+    WHERE task_id=? AND kind='agent_run_started' AND json_extract(payload_json,'$.requestId')=?
+    AND json_extract(payload_json,'$.requestDigest')=? ORDER BY seq DESC LIMIT 1`)
+    .get(taskId,command.request_id,command.payload_digest);
+   if(!run?.runId)continue;
+   history.push({...command,start_seq:started.seq,turn_message_id:start.turnMessageId,
+    run_id:run.runId,archive:true});
+  }
+  if(history.length)return history.sort((a,b)=>b.created_at-a.created_at||b.start_seq-a.start_seq).slice(0,limit);
+ }
  return db.prepare(`SELECT c.request_id,c.status,c.created_at,
-    MIN(e.seq) AS start_seq,json_extract(e.payload_json,'$.turnMessageId') AS turn_message_id
+    MAX(e.seq) AS start_seq,json_extract(e.payload_json,'$.turnMessageId') AS turn_message_id
   FROM assistant_task_commands c JOIN assistant_task_events e ON e.task_id=c.task_id
    AND e.kind='model_command_started'
    AND json_extract(e.payload_json,'$.requestId')=c.request_id
+   AND json_extract(e.payload_json,'$.requestDigest')=c.payload_digest
    AND json_extract(e.payload_json,'$.agentReadTools')=1
   WHERE c.project_id=? AND c.task_id=? AND c.command_kind='model_infer'
   GROUP BY c.request_id ORDER BY c.created_at DESC,start_seq DESC LIMIT ?`)
   .all(projectId,taskId,limit);
+}
+function archivedModelCalls(db,taskId,requestId){
+ return db.prepare("SELECT payload_json FROM assistant_task_events WHERE task_id=? AND kind='archived_model_call' ORDER BY seq")
+  .all(taskId).map(row=>JSON.parse(row.payload_json)).filter(call=>call.request_id===requestId);
 }
 function compactRun(db,projectId,taskId,row,readOnly){
  const requestId=row.request_id;
  const counts=db.prepare(`SELECT status,COUNT(*) AS n FROM assistant_model_calls
   WHERE project_id=? AND task_id=? AND request_id=? GROUP BY status`)
   .all(projectId,taskId,requestId);
- const calls=Object.fromEntries(counts.map(r=>[r.status,r.n]));
+ const calls=row.archive?archivedModelCalls(db,taskId,requestId).reduce((out,call)=>{
+  out[call.status]=(out[call.status]??0)+1;return out;
+ },{}):Object.fromEntries(counts.map(r=>[r.status,r.n]));
  const rounds=db.prepare(`SELECT COUNT(*) AS n FROM assistant_task_events
   WHERE task_id=? AND kind='agent_read_round_planned'
     AND json_extract(payload_json,'$.requestId')=?`).get(taskId,requestId).n;
@@ -69,12 +102,12 @@ function compactRun(db,projectId,taskId,row,readOnly){
  const status=row.status==="completed"?"completed":
   row.status==="needs_reconcile"?"needs_reconcile":
   row.status==="in_progress"?(total?"reading":"planning"):"blocked";
- return {runId:agentReadRunId(projectId,taskId,requestId),taskId,requestId,
+ return {runId:row.run_id??agentReadRunId(projectId,taskId,requestId),taskId,requestId,
   turnMessageId:row.turn_message_id??null,readOnly:Boolean(readOnly),status,
   rounds,readToolCalls:reads,modelPosts:total,
   unknownModelPosts:(calls.submitting??0)+(calls.needs_reconcile??0),
   createdAt:row.created_at,completesTask:false,
-  recovery:status==="completed"?"cached_result_only":
+  recovery:row.archive?"historical_only":status==="completed"?"cached_result_only":
    status==="needs_reconcile"?"manual_reconciliation_required":
    status==="blocked"?"blocked":"no_automatic_resume"};
 }
@@ -93,10 +126,10 @@ export function inspectAssistantAgentRun(db,{projectId,taskId,runId,afterSeq=0,l
  if(!id(runId)||!Number.isInteger(afterSeq)||afterSeq<0||
   !Number.isInteger(limit)||limit<1||limit>100)throw fail("assistant_agent_run_invalid",400);
  const rows=sourceRuns(db,projectId,taskId,200);
- const row=rows.find(v=>agentReadRunId(projectId,taskId,v.request_id)===runId);
+ const row=rows.find(v=>(v.run_id??agentReadRunId(projectId,taskId,v.request_id))===runId);
  if(!row)throw fail("assistant_agent_run_not_found",404);
  const run=compactRun(db,projectId,taskId,row,task.read_only);
- const events=db.prepare(`SELECT seq,kind,payload_json,created_at FROM assistant_task_events
+ const events=db.prepare(`SELECT seq,step_id,kind,payload_json,created_at FROM assistant_task_events
   WHERE task_id=? AND seq>? AND kind IN (`+EVENTS.map(() => "?").join(",")+`)
    AND json_extract(payload_json,'$.requestId')=? ORDER BY seq LIMIT ?`)
   .all(taskId,afterSeq,...EVENTS,run.requestId,limit+1);
@@ -107,13 +140,13 @@ export function inspectAssistantAgentRun(db,{projectId,taskId,runId,afterSeq=0,l
    "stepId","planVersion","actionDigest","receiptDigest","attemptId","projectRevision",
    "responseDigest"];
   return {seq:e.seq,type:e.kind,createdAt:e.created_at,
-   data:Object.fromEntries(fields.filter(k=>Object.hasOwn(data,k)).map(k=>[k,data[k]]))};
+   data:Object.fromEntries(fields.filter(k=>Object.hasOwn(data,k)).map(k=>[k,k==="stepId"&&e.step_id?e.step_id:data[k]]))};
  });
- const modelCalls=db.prepare(`SELECT id,call_index,call_kind,parent_call_id,status,
+ const modelCalls=(row.archive?archivedModelCalls(db,taskId,run.requestId):db.prepare(`SELECT id,call_index,call_kind,parent_call_id,status,
    started_at,finished_at,error_code FROM assistant_model_calls
   WHERE project_id=? AND task_id=? AND request_id=? ORDER BY call_index`)
-  .all(projectId,taskId,run.requestId).map(r=>({
-   id:r.id,index:r.call_index,kind:r.call_kind,parentCallId:r.parent_call_id,
+  .all(projectId,taskId,run.requestId)).map((r,index)=>({
+   id:r.id,index:r.call_index??index,kind:r.call_kind,parentCallId:r.parent_call_id,
    status:r.status,startedAt:r.started_at,finishedAt:r.finished_at,errorCode:r.error_code
   }));
  return {run,transcript,modelCalls,nextAfterSeq:transcript.at(-1)?.seq??afterSeq,

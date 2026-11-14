@@ -27,6 +27,7 @@ type FailureRecovery={canRecover:boolean;reason:string;planVersion:number;projec
 type Args={projectId:string;activeChatId:string|null;session?:CanvasAssistantSession;
  open:boolean;sending:boolean;includeContext:boolean;scope:AssistantContextScope;includedIds:string[];
  onDraft:(value:string)=>void;
+ onStartChat?:()=>string;
  onRunSequenceStep?:(taskId:string,view:AssistantRunSequenceView)=>Promise<void>;
  onGenerateSemanticProposals?:(taskId:string,turnMessageId:string,signal:AbortSignal)=>Promise<void>};
 type TaskResponse={task:Task;existing?:boolean;executionStarted?:boolean};
@@ -34,7 +35,7 @@ const taskStatusLabel:Record<string,string>={planning:"待规划",ready:"可继�
 
 /** Task-associated Skill and Job runs are persisted before execution and observed by Run ID. */
 export function useCanvasAssistantTasks({
- projectId,activeChatId,session,open,sending,includeContext,scope,includedIds,onDraft,onRunSequenceStep,onGenerateSemanticProposals
+ projectId,activeChatId,session,open,sending,includeContext,scope,includedIds,onDraft,onStartChat,onRunSequenceStep,onGenerateSemanticProposals
 }:Args){
  const [items,setItems]=useState<Task[]>([]);
  const [selectedId,setSelectedId]=useState<string|null>(null);
@@ -429,14 +430,19 @@ export function useCanvasAssistantTasks({
   finally{setBusy(false);}
  };
  const showOtherChatTasks=async()=>{
-  if(!activeChatId||busy||sending)return;
+  if(busy||sending)return;
   if(showOtherTasks){setShowOtherTasks(false);return;}
+  // An empty new chat has no ID until the first message is sent.
+  // Establish a persisted empty session only when the user explicitly
+  // chooses to link a Task; never require an unrelated model request.
+  const chatId=activeChatId??onStartChat?.();
+  if(!chatId)return;
   setBusy(true);setError("");
   try{
-   const data=await canvasApi<{tasks:Task[]}>(base+"?chatSessionId="+encodeURIComponent(activeChatId)+
+   const data=await canvasApi<{tasks:Task[]}>(base+"?chatSessionId="+encodeURIComponent(chatId)+
     "&includeOther=true&limit=100","GET");
-   const available=(data.tasks??[]).filter(item=>item.chatSessionId!==activeChatId&&
-    !item.chatSessionIds?.includes(activeChatId));
+   const available=(data.tasks??[]).filter(item=>item.chatSessionId!==chatId&&
+    !item.chatSessionIds?.includes(chatId));
    setOtherTasks(available);setLinkCandidateId(available[0]?.id??"");setShowOtherTasks(true);
   }catch{setError("读取其他会话的任务失败，没有执行任何操作。");}
   finally{setBusy(false);}
@@ -503,8 +509,8 @@ export function useCanvasAssistantTasks({
     <button type="button" className="canvas-assistant-link" disabled={busy||sending}
      title="将最后一条用户要求记录为持久任务" onClick={()=>void remember()}>记录为任务</button>:null}
   </div>
-  {activeChatId?<div className="mt-1 text-[11px]">
-   <button type="button" className="canvas-assistant-link" disabled={busy||sending}
+   {(activeChatId||onStartChat)?<div className="mt-1 text-[11px]">
+    <button type="button" className="canvas-assistant-link" disabled={busy||sending}
     onClick={()=>void showOtherChatTasks()}>{showOtherTasks?"收起其他会话任务":"从其他会话关联任务"}</button>
    {showOtherTasks?<div className="mt-1 flex items-center gap-2">
     <select aria-label="其他会话任务" className="min-w-0 flex-1 rounded-md border px-1.5 py-1"

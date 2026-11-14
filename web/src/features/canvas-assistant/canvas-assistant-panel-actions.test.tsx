@@ -142,6 +142,45 @@ describe("plain-text Task planning must not become canvas execution",()=>{
   expect(fixture.getGraph().nodes).toHaveLength(1);
  });
 });
+describe("link existing Task from a brand-new empty conversation",()=>{
+ it("shows link control immediately, creates a persisted chat ID, and does not call a model",async()=>{
+  const fixture=setup([]);
+  const existingTask={id:"task-prev",chatSessionId:"chat-origin",chatSessionIds:["chat-origin"],
+   originalRequest:"三镜头纯文本规划",rootMessageId:"old-user",
+   status:"planning",steps:[],recoveryMode:"guidance_only"};
+  let linkedChatId="";
+  mocks.taskApi.mockImplementation(async(url:string,method:string,payload?:{chatSessionId?:string})=>{
+   if(method==="GET"&&url.includes("includeOther=true"))return {tasks:[existingTask]};
+   if(method==="GET"&&url.includes("chatSessionId="))return {tasks:[]};
+   if(method==="GET"&&url.endsWith("/model-calls"))return {calls:[]};
+   if(method==="GET"&&url.endsWith("/run-sequences"))return {sequence:null,state:"none"};
+   if(method==="GET"&&url.endsWith("/task-prev"))return {task:{...existingTask,chatSessionIds:["chat-origin",linkedChatId].filter(Boolean)}};
+   if(method==="POST"&&url.endsWith("/link-chat")){
+    linkedChatId=String(payload?.chatSessionId??"");
+    return {task:{...existingTask,chatSessionIds:["chat-origin",linkedChatId]},executionStarted:false};
+   }
+   throw Error("unexpected Task request: "+method+" "+url);
+  });
+  await act(async()=>{root!.render(createElement(fixture.Harness));});
+  const link=Array.from(container!.querySelectorAll("button")).find(b=>b.textContent==="从其他会话关联任务");
+  expect(link).toBeTruthy();
+  const history=container!.querySelector<HTMLSelectElement>("#canvas-assistant-session")!;
+  expect(history.value).toBe("");
+  await act(async()=>{link!.click();await Promise.resolve();});
+  const newChatId=history.value;
+  expect(newChatId).not.toBe("");
+  expect(container!.textContent).toContain("三镜头纯文本规划");
+  const chosen=Array.from(container!.querySelectorAll("button")).find(b=>b.textContent==="关联并继续");
+  expect(chosen).toBeTruthy();
+  await act(async()=>{chosen!.click();await Promise.resolve();});
+  expect(linkedChatId).toBe(newChatId);
+  expect(container!.textContent).toContain("待规划");
+  expect(mocks.api.mock.calls.filter(call=>String(call[0]).includes("/assistant/chat"))).toHaveLength(0);
+  expect(mocks.run).not.toHaveBeenCalled();
+  expect(fixture.apply).not.toHaveBeenCalled();
+ });
+});
+
 describe("P0a task linkage in the existing assistant send flow",()=>{
  it("records later user instructions and client observations without marking a task complete",async()=>{
   const history:CanvasAssistantSession[]=[{id:"chat-existing",title:"画布任务",createdAt:"2026-11-12",

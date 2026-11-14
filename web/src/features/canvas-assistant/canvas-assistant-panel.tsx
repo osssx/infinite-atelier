@@ -48,7 +48,9 @@ const append=(list:CanvasAssistantSession[],id:string,message:CanvasAssistantMes
  const stamp=now();
  const existing=list.find(session=>session.id===id);
  if(!existing)return [...list,{id,title:message.text.slice(0,30)||"新对话",messages:[message],createdAt:stamp,updatedAt:stamp}];
- return list.map(session=>session.id===id?{...session,messages:[...session.messages,message].slice(-40),updatedAt:stamp}:session);};
+ return list.map(session=>session.id===id?{...session,
+   title:session.messages.length===0&&session.title==="新对话"?message.text.slice(0,30)||"新对话":session.title,
+   messages:[...session.messages,message].slice(-40),updatedAt:stamp}:session);};
 const assistantErrorMessages:Record<string,string>={
  assistant_response_invalid:"模型返回的数据无法解析，请确认渠道兼容 Chat Completions 接口，或更换模型重试。",
  assistant_response_empty:"模型请求已完成，但没有返回可显示的最终正文。可能是模型只生成了推理内容；请尝试精简提问或更换模型。",
@@ -288,7 +290,15 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
  const firstImageReference=resourceReferences.find(item=>item.kind==="image");
  const reversePromptRequest="请仔细观察引用图片的真实视觉内容，反推适合图像生成模型的提示词。请分别给出：画面主体与动作、场景与构图、镜头、光影色彩、材质与风格；完整英文正向提示词、中文版、可选负面提示词，以及无法从图像确定的信息。不要把猜测当成原始 Prompt、Seed 或 LoRA。";
  const session=sessions.find(item=>item.id===activeChatId);
- const taskTracker=useCanvasAssistantTasks({projectId,activeChatId,session,open,sending,includeContext,scope,includedIds,
+ const startChatForTask=()=>{
+  // An empty chat exists only after the user chooses to link a Task.
+  // Persist its ID before the task can be linked, so refresh can recover it.
+  const id=nanoid(),stamp=now();
+  setSessions(prev=>[...prev,{id,title:"新对话",messages:[],createdAt:stamp,updatedAt:stamp}]);
+  setActiveChatId(id);
+  return id;
+ };
+ const taskTracker=useCanvasAssistantTasks({projectId,activeChatId,session,open,sending,includeContext,scope,includedIds,onStartChat:startChatForTask,
  onDraft:setDraft,onGenerateSemanticProposals:async(taskId,turnMessageId,signal)=>{
   const channel=resolveModelChannel(config,chosenModel);
   const provider=modelChannelProvider(channel,"text");

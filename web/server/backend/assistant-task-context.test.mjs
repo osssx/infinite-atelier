@@ -53,3 +53,18 @@ test("P3 untrusted client-reported results cannot become server-backed facts",()
  assert.doesNotMatch(value,/已确认产物=1/);
  assert.match(value,/client_reported/);
 });
+
+
+test("creative history stays inside a UTF-8 provider budget and cannot widen private canvas disclosure",()=>{
+ const task={originalRequest:"兔子儿童动画三镜头",status:"ready",activePlanVersion:1,
+  contextPolicy:{includeContext:false,scope:"selection",includedIds:[]},
+  steps:[]};
+ const context=buildAssistantTaskProviderContext({task,document:{nodes:[{
+  id:"private",type:"text",title:"私有",
+  metadata:{content:"FORBIDDEN_NODE_CONTENT"}
+ }],connections:[]},creativeDrafts:["兔子角色设定".repeat(1300),"小龟伙伴性格".repeat(1300)]});
+ assert.ok(Buffer.byteLength(context,"utf8")<=12000);
+ assert.ok(context.length<=12000);
+ assert.match(context,/历史 AI 创作草案/);
+ assert.doesNotMatch(context,/FORBIDDEN_NODE_CONTENT|\uFFFD/);
+});

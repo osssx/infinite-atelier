@@ -7,7 +7,7 @@ import {registerAssistantTaskRoutes} from "./assistant-task-routes.mjs";
 import {getAssistantTask,getAssistantTaskTurnPolicy} from "./assistant-tasks.mjs";
 import {beginAssistantModelCommand,createAssistantModelObserver,completeAssistantModelCommand,failAssistantModelCommand} from "./assistant-model-calls.mjs";
 import {prepareAssistantSemanticProposals} from "./assistant-semantic-proposals.mjs";
-import {buildAssistantTaskProviderContext} from "./assistant-task-context.mjs";
+import {buildAssistantTaskProviderContext,loadAssistantTaskCreativeHistory} from "./assistant-task-context.mjs";
 import {trustedAssistantTaskOutputs} from "./assistant-task-produced-artifacts.mjs";
 import {submitJob,readJobsSnapshot,readEventsAfter} from "./repository.mjs";
 import {EXECUTION_MODES} from "./contracts.mjs";
@@ -687,8 +687,11 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
         const snapshot=getAssistantTask(db,{projectId:req.params.id,taskId:ref.taskId}).task;
         frozenPolicy=getAssistantTaskTurnPolicy(db,{projectId:req.params.id,taskId:ref.taskId,
          messageId:ref.turnMessageId});
+        const creativeDrafts=proposalMode?[]:loadAssistantTaskCreativeHistory(db,{
+         taskId:ref.taskId,currentTurnMessageId:ref.turnMessageId,contextPolicy:frozenPolicy
+        });
         taskContext=buildAssistantTaskProviderContext({task:{...snapshot,contextPolicy:frozenPolicy},document:project.document,
-         currentTurnMessageId:ref.turnMessageId,
+         currentTurnMessageId:ref.turnMessageId,creativeDrafts,
          trustedOutputs:trustedAssistantTaskOutputs(db,{projectId:project.id,taskId:snapshot.id,planVersion:snapshot.activePlanVersion})});
         // P0b: client transcript may contain previously selected private nodes.
         // Only the current explicit user request enters the provider payload.

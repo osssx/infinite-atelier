@@ -4,7 +4,7 @@ import {DatabaseSync} from "node:sqlite";
 import {initializeSchema,SCHEMA_VERSION} from "./schema.mjs";
 import {buildApp} from "./app.mjs";
 import {createAssistantChatService} from "./assistant-chat.mjs";
-import {createAssistantTask,appendAssistantTaskTurn} from "./assistant-tasks.mjs";
+import {createAssistantTask,appendAssistantTaskTurn,linkAssistantTaskToChat} from "./assistant-tasks.mjs";
 import {beginAssistantModelCommand,createAssistantModelObserver,
  completeAssistantModelCommand,listAssistantModelCalls,recoverAssistantModelCallsAtStartup} from "./assistant-model-calls.mjs";
 
@@ -344,4 +344,76 @@ test("P0b v24 to v25 migration preserves Task records and creates call audit tab
   assert.ok(db.prepare("SELECT name FROM sqlite_master WHERE name='assistant_model_calls'").get());
   assert.equal(db.prepare("SELECT revision FROM projects WHERE id='legacy'").get().revision,5);
  }finally{db.close()}
+});
+
+
+test("linked Task model receives previous concrete character-card drafts but never blank templates",async t=>{
+ let outbound="";
+ const fx=await fixture(t,async(_url,options)=>{outbound=options.body;return answer("历史角色卡已可供续写");},
+  {includeContext:true,scope:"selection",includedIds:[]});
+ const policy={includeContext:true,scope:"selection",includedIds:[]};
+ const record=(turnId,text,response,stamp)=>{
+  appendAssistantTaskTurn(fx.db,{projectId:"p-model",taskId:fx.taskId,
+   messageId:turnId,requestId:"turn-"+turnId,text,contextPolicy:policy});
+  fx.db.prepare("INSERT INTO assistant_task_commands(project_id,request_id,task_id,command_kind,payload_digest,status,response_json,created_at) VALUES(?,?,?,?,?,'completed',?,?)")
+   .run("p-model",turnId+"-model-initial",fx.taskId,"model_infer","a".repeat(64),JSON.stringify(response),stamp);
+ };
+ record("older-concrete","为角色生成角色卡文本节点",{
+  answer:"已按儿童动画主题规划三个具体角色",
+  actions:[{type:"create_node",nodeType:"text",ref:"n1",title:"角色卡·小兔嘟嘟",
+   content:"小兔嘟嘟，奶白毛色，天蓝色背带裤，右耳呆毛，活泼但胆小，绘图角色三视图。"},
+   {type:"create_node",nodeType:"text",ref:"n2",title:"角色卡·兔妈妈",
+   content:"兔妈妈，米白长绒，藕粉围裙和左耳雏菊，温柔且有原则，角色设定三视图。"},
+   {type:"create_node",nodeType:"text",ref:"n3",title:"角色卡·小龟慢慢",
+   content:"小龟慢慢，草绿色圆龟，向日葵纹龟壳和圆镜框，橙色短裤，慢条斯理。"}]
+ },2000);
+ record("newer-blank","为角色生成角色卡提示词",{
+  answer:"画布当前没有角色信息，先创建三个空白角色卡模板",
+  actions:[{type:"create_text",ref:"n1",title:"角色一",
+   content:"角色卡提示词：\n- 姓名：\n- 身份/职业：\n- 外貌：\n- 性格：\n- 背景故事：\n- 目标与动机：\n- 标志性台词："}]
+ },3000);
+ const linked=linkAssistantTaskToChat(fx.db,{projectId:"p-model",taskId:fx.taskId,
+  requestId:"link-creative-followup",chatSessionId:"chat-b"});
+ assert.equal(linked.task.chatSessionIds.includes("chat-b"),true);
+ appendAssistantTaskTurn(fx.db,{projectId:"p-model",taskId:fx.taskId,
+  messageId:"new-chat-turn",requestId:"new-chat-turn-record",
+  text:"根据之前设定补全三个角色卡",contextPolicy:policy});
+ const request=fx.payload("new-chat-turn-model-initial","根据之前设定补全三个角色卡");
+ request.task.turnMessageId="new-chat-turn";
+ const response=await fx.call("POST",fx.base+"/assistant/chat",request);
+ assert.equal(response.status,200,JSON.stringify(response.body));
+ assert.match(outbound,/小兔嘟嘟|天蓝色背带裤/);
+ assert.match(outbound,/小龟慢慢|向日葵纹/);
+ assert.match(outbound,/历史 AI 创作草案/);
+ assert.match(outbound,/不是用户确认设定/);
+ assert.doesNotMatch(outbound,/姓名：\\n- 身份\/职业：|先创建三个空白角色卡模板/);
+ assert.doesNotMatch(outbound,/SECRET_CANVAS_NODE_TEXT_DO_NOT_SEND|私有内容：/);
+ assert.equal(fx.db.prepare("SELECT COUNT(*) n FROM jobs").get().n,0);
+ assert.equal(fx.db.prepare("SELECT COUNT(*) n FROM assistant_task_steps").get().n,0);
+});
+
+test("older model-created node content is suppressed after selected-node disclosure narrows",async t=>{
+ const captured=[];
+ const fx=await fixture(t,async(_url,options)=>{
+  captured.push(options.body);return answer("好的，我已读取本轮授权内容");
+ },{includeContext:true,scope:"selection",includedIds:["private"]});
+ const selected={includeContext:true,scope:"selection",includedIds:["private"]};
+ appendAssistantTaskTurn(fx.db,{projectId:"p-model",taskId:fx.taskId,requestId:"old-sensitive-turn",
+  messageId:"sensitive-old",text:"创作基于选择节点的角色",
+  contextPolicy:selected});
+ fx.db.prepare("INSERT INTO assistant_task_commands(project_id,request_id,task_id,command_kind,payload_digest,status,response_json,created_at) VALUES(?,?,?,?,?,'completed',?,?)")
+  .run("p-model","sensitive-old-model-initial",fx.taskId,"model_infer",
+   "a".repeat(64),JSON.stringify({answer:"先前模型看到了 PRIVATE_CANVAS_CHARACTER，曾规划故事。",
+    actions:[{type:"create_text",ref:"x",title:"机密角色",content:"PRIVATE_CANVAS_CHARACTER 家庭关系，特殊的毛色和服饰，禁止在其他会话泄漏。"}]}),1000);
+ const narrowed={includeContext:true,scope:"selection",includedIds:[]};
+ appendAssistantTaskTurn(fx.db,{projectId:"p-model",taskId:fx.taskId,
+  requestId:"narrowed-turn",messageId:"narrowed-msg",text:"不提供旧选择",
+  contextPolicy:narrowed});
+ const req=fx.payload("narrowed-model-request","不提供旧选择");
+ req.task.turnMessageId="narrowed-msg";
+ const result=await fx.call("POST",fx.base+"/assistant/chat",req);
+ assert.equal(result.status,200,JSON.stringify(result.body));
+ assert.doesNotMatch(captured[0],/PRIVATE_CANVAS_CHARACTER|机密角色/);
+ assert.doesNotMatch(captured[0],/SECRET_CANVAS_NODE_TEXT_DO_NOT_SEND/);
+ assert.equal(fx.db.prepare("SELECT COUNT(*) n FROM jobs").get().n,0);
 });

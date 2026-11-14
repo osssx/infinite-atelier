@@ -42,6 +42,7 @@ export async function runAssistantAgentReadRounds({initialBody,infer,readAnswer,
   session.recordRound?.(rounds); // durable pre-POST checkpoint
   const result=await infer(JSON.stringify(payload),true,
    rounds===0?initialKind:"initial"); // existing call_kind enum; precise round in Task event
+  session.check(); // cancellation or a source change also invalidates a final answer
   retryCount+=result.retryCount;
   const {data,reply,calls}=callsFrom(result.answer);
   if(!calls.length)return {

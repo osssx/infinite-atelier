@@ -3,6 +3,12 @@ import {isCanvasAssistantTextOnlyRequest,isCanvasAssistantSkillOptOutRequest,isC
 
 const request="请帮我规划一个包含 3 个镜头的短视频分镜，只输出文字方案。不要修改画布、调用 Skill 或提交任何图片和视频生成任务。后续我会继续完善这个方案。";
 
+it("keeps connection inspection read-only and preserves explicit follow-up edits",()=>{
+ expect(isCanvasAssistantCanvasActionRequest("检查画布节点连线")).toBe(false);
+ expect(isCanvasAssistantCanvasActionRequest("查看节点连接与布局")).toBe(false);
+ expect(isCanvasAssistantCanvasActionRequest("先检查画布节点连线，然后创建文本节点")).toBe(true);
+});
+
 
 describe("assistant action mode in long-form creative conversations",()=>{
  it.each([

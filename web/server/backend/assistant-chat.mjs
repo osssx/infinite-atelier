@@ -381,6 +381,9 @@ export function createAssistantChatService({vault,upstreamCall=fetch,
      actions:[knownLayout],model,retryCount:first.retryCount,...usage
     };
    }
+   // Read-tool runs already own a bounded, audited transcript. Never start an
+   // extra repair POST that bypasses that budget or drops the retrieved context.
+   if(agentReadSession)throw fail(invalid?"assistant_actions_invalid":"assistant_actions_missing",502);
    // All other edit requests get one corrective inference, not an unbounded loop.
    // It cannot write to the canvas; the live-graph executor still validates and
    // requires explicit confirmation for destructive operations.

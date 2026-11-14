@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {DatabaseSync} from "node:sqlite";
 import {initializeSchema} from "./schema.mjs";
 import {createProject} from "./projects.mjs";
-import {createAssistantTask,appendAssistantTaskTurn} from "./assistant-tasks.mjs";
+import {createAssistantTask,appendAssistantTaskTurn,cancelAssistantTask} from "./assistant-tasks.mjs";
 import {createAssistantAgentReadSession,ASSISTANT_READ_TOOL_REGISTRY} from "./assistant-agent-read-tools.mjs";
 import {buildApp} from "./app.mjs";
 import {createAssistantChatService} from "./assistant-chat.mjs";
@@ -18,7 +18,7 @@ function fixture(t,{policy=chosen}={}){
  const db=new DatabaseSync(":memory:");initializeSchema(db);t.after(()=>db.close());
  createProject(db,{id:"p",document:{nodes:[
   node("visible","小兔角色卡",visibleContent),node("secret","秘密故事",secretContent)
- ],connections:[{id:"edge1",fromNodeId:"visible",toNodeId:"secret",fromPort:"out",toPort:"in"}]}});
+ ],connections:[{id:"edge1",fromNodeId:"visible",toNodeId:"secret",fromPortId:"out",toPortId:"in"}]}});
  const task=createAssistantTask(db,{projectId:"p",chatSessionId:"chat",
   rootMessageId:"root",originalRequest:"找到角色节点",requestId:"task"}).task;
  appendAssistantTaskTurn(db,{projectId:"p",taskId:task.id,requestId:"old-turn",messageId:"old-message",
@@ -83,6 +83,45 @@ test("P4.2a connections never traverse an unselected endpoint",t=>{
  assert.deepEqual(invoke(s,"canvas_get_connections",{}).data.connections,[]);
  const map=invoke(s,"canvas_get_map",{},"map");
  assert.deepEqual(map.data.nodes.map(n=>n.id),["visible"]);
+});
+
+test("P4.2a connections preserve the actual canvas port IDs",t=>{
+ const f=fixture(t,{policy:{...chosen,includedIds:["visible","secret"]}});
+ const result=invoke(f.make(),"canvas_get_connections",{});
+ assert.deepEqual(result.data.connections,[{fromNodeId:"visible",toNodeId:"secret",fromPortId:"out",toPortId:"in"}]);
+});
+
+test("P4.2a explicitly selected plugin node IDs remain readable",t=>{
+ const nodeId="comfy:workflow/plugin.node@v1";
+ const f=fixture(t,{policy:{...chosen,includedIds:[nodeId]}});
+ f.db.prepare("UPDATE projects SET document_json=json_set(document_json,'$.nodes[0].id',?) WHERE id='p'").run(nodeId);
+ const result=invoke(f.make(),"canvas_read_nodes",{node_ids:[nodeId]});
+ assert.equal(result.data.nodes[0].id,nodeId);
+ assert.equal(result.data.nodes[0].content,visibleContent);
+});
+
+test("P4.2a tool call IDs are scoped to the model request",t=>{
+ const f=fixture(t);
+ invoke(f.make(),"canvas_get_map",{},"tool1");
+ const next=createAssistantAgentReadSession(f.db,{projectId:"p",taskId:f.task.id,
+  turnMessageId:"message",requestId:"next-model"});
+ assert.equal(invoke(next,"canvas_get_map",{},"tool1").ok,true);
+ const replay=f.make();
+ assert.throws(()=>invoke(replay,"canvas_get_map",{},"tool1"),{code:"assistant_agent_tool_replayed"});
+});
+
+test("P4.2a kind-filtered creative searches do not lose style behind scenes",t=>{
+ const f=fixture(t);
+ const append=(messageId,text)=>appendAssistantTaskTurn(f.db,{projectId:"p",taskId:f.task.id,
+  requestId:"append-"+messageId,messageId,text,contextPolicy:chosen});
+ append("style","美术风格：温暖柔光，柔和水彩质感与清晰圆润轮廓，低饱和绿色配色。");
+ for(let i=0;i<20;i++)append("scene-"+i,"场景设定：清晨的森林广场，有高大树木、柔和阳光与木质舞台。");
+ append("latest","请查找创作资料中的美术风格");
+ const session=createAssistantAgentReadSession(f.db,{projectId:"p",taskId:f.task.id,
+  turnMessageId:"latest",requestId:"style-search"});
+ const result=invoke(session,"creative_search",{kind:"style"});
+ assert.equal(result.data.matches.length,1);
+ assert.match(result.data.matches[0].excerpt,/柔和水彩/);
 });
 test("P4.2a tool names, arguments, byte budget and duplicate IDs fail closed",t=>{
  const f=fixture(t),s=f.make();
@@ -186,6 +225,50 @@ test("P4.2a more than 2 read rounds stops and cannot perform another upstream PO
  assert.equal(f.requests.length,3);
  assert.equal(f.db.prepare("SELECT COUNT(*) AS n FROM assistant_task_events WHERE kind='agent_read_round_planned'").get().n,3);
  assert.equal(f.db.prepare("SELECT COUNT(*) AS n FROM assistant_task_events WHERE kind='agent_read_tool_completed'").get().n,2);
+});
+
+test("P4.2a read runs never add an unaudited format-repair POST",async t=>{
+ const f=httpFixture(t,{responseGenerator:(_body,seq)=>seq<=2?
+  firstTool("canvas_get_map",{},"tool"+seq):
+  {choices:[{message:{role:"assistant",content:JSON.stringify({answer:"我会创建文本节点",actions:[]})},finish_reason:"stop"}]}});
+ const text="请查找画布中的角色节点并创建文本节点";
+ appendAssistantTaskTurn(f.db,{projectId:"p",taskId:f.task.id,requestId:"edit-turn",
+  messageId:"edit-message",text,contextPolicy:chosen});
+ const response=await f.app.inject({method:"POST",url:f.base,payload:{...f.req("read-edit"),
+  canvasActions:true,messages:[{role:"user",content:text}],
+  task:{taskId:f.task.id,turnMessageId:"edit-message",requestId:"read-edit"}}});
+ assert.equal(response.statusCode,502,response.body);
+ assert.equal(response.json().code,"assistant_actions_missing");
+ assert.equal(f.requests.length,3);
+ assert.equal(f.db.prepare("SELECT COUNT(*) n FROM assistant_model_calls WHERE call_kind='format_repair'").get().n,0);
+});
+
+test("P4.2a inspecting connections cannot return executable actions",async t=>{
+ const f=httpFixture(t,{responseGenerator:()=>({choices:[{message:{role:"assistant",
+  content:JSON.stringify({answer:"检查完成",actions:[{type:"delete_node",nodeId:"visible"}]})},finish_reason:"stop"}]})});
+ const text="检查画布节点连线";
+ appendAssistantTaskTurn(f.db,{projectId:"p",taskId:f.task.id,requestId:"inspect-turn",
+  messageId:"inspect-message",text,contextPolicy:chosen});
+ const response=await f.app.inject({method:"POST",url:f.base,payload:{...f.req("inspect"),canvasActions:true,
+  messages:[{role:"user",content:text}],task:{taskId:f.task.id,turnMessageId:"inspect-message",requestId:"inspect"}}});
+ assert.equal(response.statusCode,200,response.body);
+ assert.deepEqual(response.json().actions,[]);
+ assert.equal(f.requests.length,1);
+});
+
+test("P4.2a cancellation while a POST is pending stops reads, further POSTs and completion",async t=>{
+ for(const reply of [firstTool(),finalAnswer]){
+  const f=httpFixture(t,{responseGenerator:()=>{
+   cancelAssistantTask(f.db,{projectId:"p",taskId:f.task.id,requestId:"cancel"});
+   return reply;
+  }});
+  const response=await f.app.inject({method:"POST",url:f.base,payload:f.req("cancel-in-flight")});
+  assert.equal(response.statusCode,409,response.body);
+  assert.equal(response.json().code,"assistant_task_not_editable");
+  assert.equal(f.requests.length,1);
+  assert.equal(f.db.prepare("SELECT COUNT(*) n FROM assistant_task_events WHERE kind='agent_read_tool_completed'").get().n,0);
+  assert.notEqual(f.db.prepare("SELECT status FROM assistant_task_commands WHERE request_id='cancel-in-flight'").get().status,"completed");
+ }
 });
 test("P4.2a no Task, Gemini, Skill and visual mixes are rejected before any POST",async t=>{
  const f=httpFixture(t);

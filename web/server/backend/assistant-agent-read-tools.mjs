@@ -7,6 +7,7 @@ import {stableJson,writeTransaction} from "./repository.mjs";
 import {mayRepeatTurn,safe} from "./assistant-task-context.mjs";
 import {discoverAssistantCreativeCharacters} from "./assistant-creative-context.mjs";
 import {discoverAssistantCreativeMaterials} from "./assistant-creative-materials.mjs";
+import {validCanvasNodeId} from "../canvas-node-id.mjs";
 
 const fail=(code,statusCode=403)=>Object.assign(Error(code),{code,statusCode});
 const id=v=>typeof v==="string"&&/^[A-Za-z0-9_-]{1,128}$/.test(v);
@@ -50,9 +51,10 @@ const checkVersion=(db,projectId,revision)=>{
 };
 function scoped(db,projectId,taskId,turnMessageId){
  if(![projectId,taskId,turnMessageId].every(id))throw fail("assistant_agent_read_invalid",400);
- const task=db.prepare("SELECT id,read_only FROM assistant_tasks WHERE id=? AND project_id=?").get(taskId,projectId);
+ const task=db.prepare("SELECT id,read_only,status,cancel_requested_at FROM assistant_tasks WHERE id=? AND project_id=?").get(taskId,projectId);
  if(!task)throw fail("assistant_task_not_found",404);
- if(task.read_only)throw fail("assistant_task_not_editable",409);
+ if(task.read_only||task.cancel_requested_at!==null||
+  ["completed","cancelled","cancelling"].includes(task.status))throw fail("assistant_task_not_editable",409);
  const turn=db.prepare("SELECT seq,payload_json FROM assistant_task_events WHERE task_id=? AND kind='user_turn' AND json_extract(payload_json,'$.messageId')=? ORDER BY seq DESC LIMIT 1")
   .get(taskId,turnMessageId);
  if(!turn)throw fail("assistant_task_turn_not_found",409);
@@ -147,7 +149,7 @@ export function createAssistantAgentReadSession(db,{projectId,taskId,turnMessage
   }else if(name==="canvas_read_nodes"){
    if(!get(args,["node_ids"])||!Array.isArray(args.node_ids)||
     args.node_ids.length<1||args.node_ids.length>4||
-    args.node_ids.some(n=>!id(n))||new Set(args.node_ids).size!==args.node_ids.length)
+    args.node_ids.some(n=>!validCanvasNodeId(n))||new Set(args.node_ids).size!==args.node_ids.length)
     throw fail("assistant_agent_tool_arguments_invalid",400);
    if(!selected())throw fail("assistant_agent_context_scope_denied",403);
    const byId=new Map(allowed().map(n=>[n.id,n]));
@@ -164,8 +166,8 @@ export function createAssistantAgentReadSession(db,{projectId,taskId,turnMessage
    const edges=(original.document.connections??[]).filter(e=>ids.has(e.fromNodeId)&&ids.has(e.toNodeId));
    data={connections:edges.slice(0,40).map(e=>({
     fromNodeId:e.fromNodeId,toNodeId:e.toNodeId,
-    ...(typeof e.fromPort==="string"?{fromPort:safe(e.fromPort,40)}:{}),
-    ...(typeof e.toPort==="string"?{toPort:safe(e.toPort,40)}:{})
+    ...(typeof e.fromPortId==="string"?{fromPortId:safe(e.fromPortId,128)}:{}),
+    ...(typeof e.toPortId==="string"?{toPortId:safe(e.toPortId,128)}:{})
    })),truncated:edges.length>40};
   }else if(name==="task_read_history"){
    if(!get(args,["limit"])||args.limit!==undefined&&(!Number.isInteger(args.limit)||args.limit<1||args.limit>8))
@@ -196,7 +198,8 @@ export function createAssistantAgentReadSession(db,{projectId,taskId,turnMessage
       provenance:c.provenance,excerpt:safe(c.excerpt,260)});
    }
    if(args.kind!=="character"){
-    const context=discoverAssistantCreativeMaterials(db,{projectId,taskId,turnMessageId});
+    const context=discoverAssistantCreativeMaterials(db,{projectId,taskId,turnMessageId,
+     ...(args.kind?{kinds:[args.kind]}:{})});
     for(const m of context.materials)items.push({kind:m.kind,title:m.title,sourceRef:m.sourceRef,
      provenance:m.provenance,excerpt:safe(m.excerpt,260)});
    }
@@ -217,7 +220,7 @@ export function createAssistantAgentReadSession(db,{projectId,taskId,turnMessage
    sourceRevision:original.revision};
   // Persist only hashes + metadata, never the full private tool output.
   writeTransaction(db,()=>{
-   const exists=db.prepare("SELECT 1 FROM assistant_task_events WHERE task_id=? AND kind='agent_read_tool_completed' AND json_extract(payload_json,'$.callId')=? LIMIT 1").get(taskId,callId);
+   const exists=db.prepare("SELECT 1 FROM assistant_task_events WHERE task_id=? AND kind='agent_read_tool_completed' AND json_extract(payload_json,'$.requestId')=? AND json_extract(payload_json,'$.callId')=? LIMIT 1").get(taskId,requestId,callId);
    if(exists)throw fail("assistant_agent_tool_replayed",409);
    db.prepare("INSERT INTO assistant_task_events(task_id,kind,payload_json,created_at) VALUES(?,'agent_read_tool_completed',?,?)")
     .run(taskId,stableJson(event),Date.now());

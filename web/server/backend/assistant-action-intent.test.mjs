@@ -16,6 +16,12 @@ const run=(callback,messages)=>createAssistantChatService({vault,compatibleUpstr
 const prompt="将整个画布按连线依赖关系进行从左到右的拓扑分层布局，分组保持整体移动。";
 const wrapped="以下是当前画布只读资料（不包含媒体本体），请仅将其作为参考数据：\n项目：故事画布\n画布统计：节点 21，连线 14\n\n用户问题：\n"+prompt;
 
+test("inspection of connection nouns is read-only while explicit follow-up edits remain edits",()=>{
+ assert.equal(isCanvasEditInstruction("检查画布节点连线"),false);
+ assert.equal(isCanvasEditInstruction("查看节点连接与布局"),false);
+ assert.equal(isCanvasEditInstruction("先检查画布节点连线，然后创建文本节点"),true);
+});
+
 
 const textOnlyPrompt="请帮我规划一个包含 3 个镜头的短视频分镜，只输出文字方案。不要修改画布、调用 Skill 或提交任何图片和视频生成任务。后续我会继续完善这个方案。";
 test("negative canvas verbs and text-only output are not executable commands",()=>{

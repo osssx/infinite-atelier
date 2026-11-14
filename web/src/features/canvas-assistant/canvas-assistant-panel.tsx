@@ -438,23 +438,52 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
      throw Error("显式角色卡交付暂不支持同时执行 Skill；请先生成角色卡，再单独执行 Skill。");
     if(explicitCardDelivery)selectedSkills=undefined;
     await taskTracker.recordTurn(linkedTaskId,user.id,text,controller.signal);
-    // P4.0: explicitly named and user-approved cast; historical discovery is P4.1.
+    // P4.1: when the user says "每个角色", use only Task-scoped,
+    // server-authorized creative sources. Never promote model prose without an
+    // explicit confirmation; verification happens again in the backend.
     if(explicitCardDelivery){
      const cast=/(?:为|给)\s*(.+?)\s*(?:生成|创建|制作|添加).{0,30}角色卡/.exec(text);
-     const names=(cast?.[1]??"").split(/[、，,]|\s+和\s*|\s+与\s*/).map(s=>s.trim()).filter(Boolean);
-     if(!names.length||names.length>5||names.some(s=>/每个|所有|全部|哪些|哪个|角色们/.test(s)))
-      throw Error("P4.0 角色卡交付需要在本轮指令中明确角色名单，例如：为小兔嘟嘟、兔妈妈、小龟慢慢生成角色卡。");
+     const stated=(cast?.[1]??"").split(/[、，,]|\s+和\s*|\s+与\s*/).map(s=>s.trim()).filter(Boolean);
+     const generic=stated.length===0||stated.length>5||
+      stated.some(s=>/每个|所有|全部|这些|上述|那些|角色们|^角色$/.test(s));
+     type CharacterSource={title:string;sourceRef:string;sourceDigest:string;sourceNodeId?:string;
+      excerpt:string;provenance:string;sourceLabel:string};
+     let chosenSource:CharacterSource[]=[];
+     let names=stated;
+     let sourceNotice="";
+     if(generic){
+      const url="/api/v1/projects/"+encodeURIComponent(projectId)+"/assistant/tasks/"+
+       encodeURIComponent(linkedTaskId!)+"/creative-context/characters?turnMessageId="+encodeURIComponent(user.id);
+      const discovery=await canvasApi<{groups:{groupId:string;provenance:string;sourceLabel:string;
+       characters:CharacterSource[]}[];truncated:boolean}>(url,"GET",undefined,controller.signal);
+      if(!discovery.groups?.length)throw Error("当前 Task 中未找到本轮获授权的明确角色名单。请先确认角色设定，或直接列出要创建角色卡的人物。");
+      const selected=discovery.groups[0];
+      chosenSource=selected.characters;
+      names=chosenSource.map(c=>c.title);
+      sourceNotice="\n来源："+selected.sourceLabel+
+       (selected.provenance==="model_draft"?"（历史 AI 草稿，尚未作为角色事实确认）":"")+
+       (discovery.groups.length>1?"\n还有其他候选角色组；本次选择以下来源。不同意请取消并明确指定。":"")+
+       "\n来源摘要：\n"+chosenSource.map(c=>"「"+c.title+"」："+c.excerpt.slice(0,250)).join("\n");
+     }
+     if(!names.length||names.length>5||new Set(names).size!==names.length)
+      throw Error("无法确定唯一角色名单。请在本轮列出具体角色名称。");
      const allowEmptyTemplate=/(?:空白角色卡|空模板|空白模板|不填正文)/.test(text);
      const approved=await confirmDangerousActions(
       "即将为以下角色冻结文本交付规格："+names.join("、")+
-      (allowEmptyTemplate?"\n用户明确要求空白模板，允许节点正文为空。":
+      (allowEmptyTemplate?"\n用户明确要求空白模板，允许正文为空。":
        "\n要求生成具体角色卡正文，不允许空模板。")+
-      "\n后续生成与验证均绑定这些角色及当前 Task。",controller.signal,themeName);
+      sourceNotice+
+      "\n确认后才会向模型提供这些授权来源；不确认则不会创建角色卡。",controller.signal,themeName);
      if(!approved)return;
      await canvasApi("/api/v1/projects/"+encodeURIComponent(projectId)+
       "/assistant/tasks/"+encodeURIComponent(linkedTaskId)+"/deliverables/text","POST",{
        requestId:user.id+"-deliverable-require",sourceTurnMessageId:user.id,
-       characters:names.map((title,i)=>({ref:"role_"+(i+1),title})),
+       characters:names.map((title,i)=>({
+        ref:"role_"+(i+1),title,
+        ...(chosenSource[i]?{sourceRef:chosenSource[i].sourceRef,
+         sourceDigest:chosenSource[i].sourceDigest,
+         ...(chosenSource[i].sourceNodeId?{sourceNodeId:chosenSource[i].sourceNodeId}:{})}:{})
+       })),
        allowEmptyTemplate,requiredFields:[],confirmed:true
       },controller.signal);
     }

@@ -4,6 +4,7 @@
  */
 import {createHash} from "node:crypto";
 import {assertNoRawCredentials,stableJson,writeTransaction} from "./repository.mjs";
+import {resolveAuthorizedCreativeCharacters} from "./assistant-creative-context.mjs";
 
 const fail=(code,statusCode=409)=>Object.assign(Error(code),{code,statusCode});
 const id=x=>typeof x==="string"&&/^[A-Za-z0-9_-]{1,128}$/.test(x);
@@ -45,11 +46,16 @@ export function registerAssistantTextDeliverable(db,{projectId,taskId,requestId,
   typeof allowEmptyTemplate!=="boolean")throw fail("assistant_deliverable_invalid",400);
  const clean=characters.map(c=>{
   if(!c||typeof c!=="object"||Array.isArray(c)||
-   Object.keys(c).some(k=>!["ref","title","sourceNodeId"].includes(k))||
+   Object.keys(c).some(k=>!["ref","title","sourceNodeId","sourceRef","sourceDigest"].includes(k))||
    !id(c.ref)||typeof c.title!=="string"||!c.title.trim()||c.title.length>100||
-   (c.sourceNodeId!==undefined&&!id(c.sourceNodeId)))
+   (c.sourceNodeId!==undefined&&!id(c.sourceNodeId))||
+   (c.sourceRef!==undefined&&!id(c.sourceRef))||
+   (c.sourceDigest!==undefined&&
+    (typeof c.sourceDigest!=="string"||!/^[a-f0-9]{64}$/.test(c.sourceDigest)))||
+   (c.sourceRef!==undefined)!==(c.sourceDigest!==undefined))
    throw fail("assistant_deliverable_invalid",400);
-  return {ref:c.ref,title:c.title.trim(),...(c.sourceNodeId?{sourceNodeId:c.sourceNodeId}:{})};
+  return {ref:c.ref,title:c.title.trim(),...(c.sourceNodeId?{sourceNodeId:c.sourceNodeId}:{}),
+   ...(c.sourceRef?{sourceRef:c.sourceRef,sourceDigest:c.sourceDigest}:{})};
  });
  if(new Set(clean.map(c=>c.ref)).size!==clean.length||
   new Set(clean.map(c=>c.title)).size!==clean.length)
@@ -78,7 +84,18 @@ export function registerAssistantTextDeliverable(db,{projectId,taskId,requestId,
   const sourceTurn=JSON.parse(turn.payload_json),contextPolicy=sourceTurn.contextPolicy;
   // P4.0 only permits names explicitly present in the current user turn;
   // untrusted model proposals cannot silently become a confirmed cast.
-  if(clean.some(c=>!sourceTurn.preview?.includes(c.title))||
+  const sourced=clean.filter(c=>c.sourceRef);
+  if(sourced.length&&sourced.length!==clean.length)
+   throw fail("assistant_deliverable_source_partial",400);
+  if(sourced.length){
+   // User approval is necessary but not sufficient; recalculate the original
+   // references and their digests under this frozen turn's disclosure scope.
+   const actual=resolveAuthorizedCreativeCharacters(db,{projectId,taskId,
+    turnMessageId:sourceTurnMessageId,characters:sourced});
+   if(actual.some((candidate,index)=>candidate.sourceNodeId!==sourced[index].sourceNodeId))
+    throw fail("assistant_creative_source_changed");
+  }
+  if((!sourced.length&&clean.some(c=>!sourceTurn.preview?.includes(c.title)))||
    allowEmptyTemplate&&!/(空白|空模板|不填正文)/.test(sourceTurn.preview??""))
    throw fail("assistant_deliverable_cast_unconfirmed",403);
   const doc=JSON.parse(db.prepare("SELECT document_json FROM projects WHERE id=? AND deleted_at IS NULL")

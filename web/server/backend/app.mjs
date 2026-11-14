@@ -18,6 +18,7 @@ import {freezeAuthorizedSkillGrant} from "./skill-job-grants.mjs";
 import {resolveAssistantSkills} from "./assistant-skills.mjs";
 import {resolveAssistantVisualContext} from "./assistant-visual-context.mjs";
 import {currentAssistantTextDeliverable} from "./assistant-task-deliverables.mjs";
+import {resolveAuthorizedCreativeCharacters,formatAssistantCreativeSources} from "./assistant-creative-context.mjs";
 import {runSkillScript} from "./skill-script-runner.mjs";
 import {getProjectSkillAudit,replayProjectSkillJob,lookupProjectSkillReplay} from "./skill-job-audit.mjs";
 import {listProjectJobs,hideProjectJobHistory,closeUnverifiedModelJob} from "./project-job-history.mjs";
@@ -710,22 +711,33 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
         const snapshot=getAssistantTask(db,{projectId:req.params.id,taskId:ref.taskId}).task;
         frozenPolicy=getAssistantTaskTurnPolicy(db,{projectId:req.params.id,taskId:ref.taskId,
          messageId:ref.turnMessageId});
-        const creativeDrafts=proposalMode?[]:loadAssistantTaskCreativeHistory(db,{
+        const requirement=proposalMode?null:currentAssistantTextDeliverable(db,ref.taskId);
+        // An explicitly approved source set supersedes unrelated model drafts.
+        const pinned=requirement?.characters?.some(c=>c.sourceRef)===true;
+        const creativeDrafts=proposalMode||pinned?[]:loadAssistantTaskCreativeHistory(db,{
          taskId:ref.taskId,currentTurnMessageId:ref.turnMessageId,contextPolicy:frozenPolicy
         });
         taskContext=buildAssistantTaskProviderContext({task:{...snapshot,contextPolicy:frozenPolicy},document:project.document,
          currentTurnMessageId:ref.turnMessageId,creativeDrafts,
          trustedOutputs:trustedAssistantTaskOutputs(db,{projectId:project.id,taskId:snapshot.id,planVersion:snapshot.activePlanVersion})});
         if(!proposalMode){
-         const requirement=currentAssistantTextDeliverable(db,ref.taskId);
          if(requirement?.kind==="text_nodes"){
-          // Server-owned frozen cast: explicit aliases/titles must be used exactly.
-          taskContext+="\n本轮已确认的文本角色卡交付规格："+
-           JSON.stringify({characters:requirement.characters,allowEmptyTemplate:requirement.allowEmptyTemplate,
-            requiredFields:requirement.requiredFields})+
+          // Source references are server resolved again for THIS turn's permission.
+          const sourced=requirement.characters.filter(c=>c.sourceRef);
+          const candidates=sourced.length?resolveAuthorizedCreativeCharacters(db,{
+           projectId:req.params.id,taskId:ref.taskId,turnMessageId:ref.turnMessageId,
+           characters:sourced}):[];
+          const sourceContext=formatAssistantCreativeSources(candidates);
+          const specContext="\n本轮已确认的文本角色卡交付规格："+JSON.stringify({
+           characters:requirement.characters,allowEmptyTemplate:requirement.allowEmptyTemplate,
+           requiredFields:requirement.requiredFields})+
            (requirement.allowEmptyTemplate?
             "\n必须使用 create_text 且逐项匹配 ref/title；用户要求空白模板，允许空正文。":
             "\n必须使用 create_text 且逐项匹配 ref/title；正文必须有具体角色特征，不得返回空白模板。");
+          if(Buffer.byteLength(taskContext+specContext+sourceContext,"utf8")>16*1024)
+           throw Object.assign(Error("assistant_context_budget_insufficient"),
+            {code:"assistant_context_budget_insufficient",statusCode:413});
+          taskContext+=specContext+(sourceContext?"\n"+sourceContext:"");
          }
         }
         // P0b: client transcript may contain previously selected private nodes.

@@ -1,7 +1,7 @@
 /** Provider-side Task context: strictly smaller than the backend's local
  * graph/step evidence. Never serialize whole documents or task event payloads.
  */
-const safe=(value,max=1800)=>{
+export const safe=(value,max=1800)=>{
  if(typeof value!=="string")return "";
  const redacted=value.replace(/data:(?:image|video|audio)\/[^\s]+/gi,"[媒体数据省略]")
   .replace(/(?:sk-|Bearer\s+)[A-Za-z0-9_-]{16,}/gi,"[敏感值省略]")
@@ -14,7 +14,7 @@ const safe=(value,max=1800)=>{
  * Ordinary user-typed text (no graph references) is still a user statement,
  * never trusted proof of any tool or external Job completing.
  */
-function mayRepeatTurn(current,prior){
+export function mayRepeatTurn(current,prior){
  if(!prior||typeof prior.includeContext!=="boolean")return false;
  if(!prior.includeContext)return true;
  if(!current.includeContext||prior.scope!==current.scope)return false;

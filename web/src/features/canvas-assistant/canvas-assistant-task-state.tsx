@@ -54,6 +54,7 @@ export function useCanvasAssistantTasks({
  const [runSequence,setRunSequence]=useState<AssistantRunSequenceView|null>(null);
  const [otherTasks,setOtherTasks]=useState<Task[]>([]);
  const [showOtherTasks,setShowOtherTasks]=useState(false);
+ const [taskExpanded,setTaskExpanded]=useState(false);
  const [linkCandidateId,setLinkCandidateId]=useState("");
  const [recovery,setRecovery]=useState<Recovery|null>(null);
  const [failureRecovery,setFailureRecovery]=useState<FailureRecovery|null>(null);
@@ -146,6 +147,10 @@ export function useCanvasAssistantTasks({
   (activeChatId!==null&&item.chatSessionIds?.includes(activeChatId))))??null;
  const currentTask=detail?.id===selected?.id?detail:selected;
  const activeTask=currentTask?.readOnly||currentTask?.status==="cancelled"||currentTask?.status==="completed"?null:currentTask;
+ // Recovery-critical tasks open details immediately; planning tasks stay compact.
+ useEffect(()=>{
+  setTaskExpanded(["waiting_approval","waiting_external","needs_reconcile","blocked","failed"].includes(currentTask?.status??""));
+ },[selectedId,currentTask?.status]);
  const policy=()=>({includeContext,scope,includedIds:includeContext&&scope==="selection"?includedIds.slice(0,12):[]});
  const path=(id:string)=>base+"/"+encodeURIComponent(id);
  const observe=async(taskId:string|null,messageId:string,kind:"reply"|"error",text:string)=>{
@@ -495,20 +500,37 @@ export function useCanvasAssistantTasks({
   }catch(error){setError("不满足安全重新规划条件，原任务未重放："+(error instanceof Error?error.message:"请求失败"));}
   finally{setBusy(false);}
  };
- const view=<section aria-label="任务状态" className="border-b px-3 py-2"
+ const view=<section aria-label="任务状态" className="canvas-assistant-task"
   style={{borderColor:"var(--assistant-border)",color:"var(--assistant-text)"}}>
-  <div className="flex items-center gap-2">
-   <span className="shrink-0 text-[11px] font-medium">当前任务</span>
-   <select aria-label="任务列表" className="min-w-0 flex-1 rounded-md border px-1.5 py-1 text-[11px]"
+  <div className="canvas-assistant-task-selector">
+   <span className="canvas-assistant-task-caption">当前任务</span>
+   <select aria-label="任务列表" className="canvas-assistant-task-select"
     style={{background:"var(--assistant-surface)",borderColor:"var(--assistant-border)"}}
     value={selected?.id??""} disabled={sending||busy} onChange={e=>setSelectedId(e.target.value||null)}>
     <option value="">未关联任务</option>
     {items.map(task=><option key={task.id} value={task.id}>{task.originalRequest.slice(0,36)}</option>)}
    </select>
    {!selected&&session?.messages.some(message=>message.role==="user")?
-    <button type="button" className="canvas-assistant-link" disabled={busy||sending}
+    <button type="button" className="canvas-assistant-task-secondary-button" disabled={busy||sending}
      title="将最后一条用户要求记录为持久任务" onClick={()=>void remember()}>记录为任务</button>:null}
   </div>
+  {selected?<div className="canvas-assistant-task-summary">
+   <span className="canvas-assistant-task-status" data-status={currentTask?.status??selected.status}>
+    {taskStatusLabel[currentTask?.status??selected.status]??currentTask?.status??selected.status}
+   </span>
+   <span className="canvas-assistant-task-steps">步骤 {currentTask?.steps?.length??0}</span>
+   {currentTask?.readOnly?<span className="canvas-assistant-task-steps">只读归档（禁止恢复执行）</span>:null}
+   <div className="canvas-assistant-task-quick-actions">
+    {activeTask&&!["waiting_external","needs_reconcile","cancelling","waiting_approval","blocked"].includes(activeTask.status)?
+     <button type="button" className="canvas-assistant-task-primary-action" disabled={busy||sending}
+      title="只读取任务并填写继续指令，不自动运行" onClick={()=>void resume()}>继续</button>:null}
+    <button type="button" className="canvas-assistant-task-details-toggle"
+     aria-expanded={taskExpanded} aria-controls="canvas-assistant-task-content"
+     onClick={()=>setTaskExpanded(value=>!value)}>{taskExpanded?"收起详情":"任务详情"}</button>
+   </div>
+  </div>:null}
+  <div id="canvas-assistant-task-content" className="canvas-assistant-task-content"
+   hidden={Boolean(selected)&&!taskExpanded}>
    {(activeChatId||onStartChat)?<div className="mt-1 text-[11px]">
     <button type="button" className="canvas-assistant-link" disabled={busy||sending}
     onClick={()=>void showOtherChatTasks()}>{showOtherTasks?"收起其他会话任务":"从其他会话关联任务"}</button>
@@ -526,25 +548,17 @@ export function useCanvasAssistantTasks({
     </button>
    </div>:null}
   </div>:null}
-  {selected?<div className="mt-1.5 text-[11px]" style={{color:"var(--assistant-muted)"}}>
-   <div className="flex flex-wrap items-center gap-2">
-    <span>状态：{taskStatusLabel[detail?.id===selected.id?detail.status:selected.status]??selected.status}</span>
-    {currentTask?.readOnly?<span>只读归档（禁止恢复执行）</span>:null}
-    <span>步骤：{detail?.id===selected.id?detail.steps?.length??0:0}</span>
-    {detail?.id===selected.id&&detail.summary?.source==="server_derived"?
+   {selected?<div className="canvas-assistant-task-detail-body text-[11px]" style={{color:"var(--assistant-muted)"}}>
+    <div className="canvas-assistant-task-facts">
+     {detail?.id===selected.id&&detail.summary?.source==="server_derived"?
       <span>{detail.readOnly?"历史摘要":"事实摘要"}：已记录续写 {detail.summary.userTurns?.total??0} 轮；
        当前计划可信步骤 {detail.summary.execution?.currentPlan?.trustedSteps??0}/{detail.summary.execution?.currentPlan?.stepCount??0}；
        待对账 {detail.summary.execution?.currentPlan?.stages?.needs_reconcile??0}</span>:null}
-    {detail?.id===selected.id&&detail.steps?.length?<span>{currentTask?.readOnly?"历史完成回执":"可信完成"}：{detail.steps.filter(s=>s.status==="succeeded"&&s.receiptTrust==="server_committed").length}/{detail.steps.length}</span>:null}
-    <span>{currentTask?.readOnly?"仅供历史查看":detail?.id===selected.id&&detail.recoveryMode==="skill_audit"?"Skill 执行有可信 Run ID":detail?.id===selected.id&&detail.recoveryMode==="job_observation"?"生成与落图分阶段对账":detail?.id===selected.id&&detail.recoveryMode==="canvas_atomic"?"画布操作有可信回执":"仅指导恢复"}</span>
-    {activeTask?<>
-     {!["waiting_external","needs_reconcile","cancelling","waiting_approval","blocked"].includes(activeTask.status)?
-      <button type="button" className="canvas-assistant-link" disabled={busy||sending}
-       title="只读取任务并填写继续指令，不自动运行" onClick={()=>void resume()}>继续</button>:null}
-     <button type="button" className="canvas-assistant-link" disabled={busy||sending}
-      title="停止跟踪任务，不取消已提交的模型或 ComfyUI Job" onClick={()=>void cancel()}>结束记录</button>
-    </>:null}
-   </div>
+     {detail?.id===selected.id&&detail.steps?.length?<span>{currentTask?.readOnly?"历史完成回执":"可信完成"}：{detail.steps.filter(s=>s.status==="succeeded"&&s.receiptTrust==="server_committed").length}/{detail.steps.length}</span>:null}
+     <span>{currentTask?.readOnly?"仅供历史查看":detail?.id===selected.id&&detail.recoveryMode==="skill_audit"?"Skill 执行有可信 Run ID":detail?.id===selected.id&&detail.recoveryMode==="job_observation"?"生成与落图分阶段对账":detail?.id===selected.id&&detail.recoveryMode==="canvas_atomic"?"画布操作有可信回执":"仅指导恢复"}</span>
+     {activeTask?<button type="button" className="canvas-assistant-link" disabled={busy||sending}
+      title="停止跟踪任务，不取消已提交的模型或 ComfyUI Job" onClick={()=>void cancel()}>结束记录</button>:null}
+    </div>
     {detail?.id===selected.id?<div className="mt-2 rounded-md border p-2 text-[11px]"
      style={{borderColor:"var(--assistant-border)"}}>
      <button type="button" className="canvas-assistant-link" aria-expanded={semanticOpen}
@@ -808,8 +822,8 @@ export function useCanvasAssistantTasks({
       <span>暂无调用记录</span>}
     </div>:null}
    </div>:null}
-
-  {error?<p role="status" className="mt-1 text-[11px]" style={{color:"var(--assistant-error)"}}>{error}</p>:null}
+   </div>
+   {error?<p role="status" className="canvas-assistant-task-error" style={{color:"var(--assistant-error)"}}>{error}</p>:null}
  </section>;
  return {view,activeTaskId:activeTask?.id??null,
   activeTaskOriginalRequest:activeTask?.originalRequest??null,recordTurn,observe,refreshTask};

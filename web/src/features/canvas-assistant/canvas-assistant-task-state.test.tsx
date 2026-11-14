@@ -54,6 +54,55 @@ beforeEach(()=>{
  });
 });
 afterEach(async()=>{if(root)await act(async()=>{root!.unmount();});root=null;container?.remove();container=null;});
+it("keeps a normal planning Task compact and restores every control on demand",async()=>{
+ const task={id:"compact-task",chatSessionId:"chat-a",chatSessionIds:["chat-a"],
+  rootMessageId:"original-user",originalRequest:"三镜头分镜文字规划",status:"planning",
+  activePlanVersion:1,recoveryMode:"guidance_only",steps:[]};
+ mocks.api.mockImplementation(async(url:string,method:string)=>{
+  if(method==="GET"&&url.includes("chatSessionId="))return {tasks:[task]};
+  if(method==="GET"&&url.endsWith("/compact-task"))return {task};
+  if(method==="GET"&&url.endsWith("/run-sequences"))return {sequence:null,state:"none",next:null};
+  if(method==="GET"&&url.endsWith("/model-calls"))return {calls:[]};
+  return {task};
+ });
+ await render("chat-a");
+ const detail=container!.querySelector<HTMLDivElement>("#canvas-assistant-task-content");
+ const toggle=Array.from(container!.querySelectorAll<HTMLButtonElement>("button")).find(b=>b.textContent==="任务详情");
+ expect(detail?.hidden).toBe(true);
+ expect(toggle?.getAttribute("aria-expanded")).toBe("false");
+ expect(container!.querySelector(".canvas-assistant-task-status")?.textContent?.trim()).toBe("待规划");
+ expect(container!.querySelector(".canvas-assistant-task-steps")?.textContent).toContain("步骤 0");
+ expect(Array.from(container!.querySelectorAll("button")).some(b=>b.textContent==="继续")).toBe(true);
+ await click("任务详情");
+ expect(detail?.hidden).toBe(false);
+ expect(container!.textContent).toContain("长期目标与决策");
+ await click("收起详情");
+ expect(detail?.hidden).toBe(true);
+ expect(mocks.api.mock.calls.some(([,method])=>method==="POST")).toBe(false);
+});
+
+it.each(["waiting_approval","needs_reconcile","blocked","failed"] as const)(
+ "opens recovery controls by default when the server Task is %s",async status=>{
+ const task={id:"attention-task",chatSessionId:"chat-a",chatSessionIds:["chat-a"],
+  rootMessageId:"original-user",originalRequest:"儿童动画任务",status,
+  activePlanVersion:1,recoveryMode:"job_observation",steps:[]};
+ mocks.api.mockImplementation(async(url:string,method:string)=>{
+  if(method==="GET"&&url.includes("chatSessionId="))return {tasks:[task]};
+  if(method==="GET"&&url.endsWith("/attention-task"))return {task};
+  if(method==="GET"&&url.endsWith("/run-sequences"))return {sequence:null,state:"none"};
+  if(method==="GET"&&url.endsWith("/model-calls"))return {calls:[]};
+  if(method==="GET"&&url.endsWith("/recovery"))return {canReplan:false,reason:"needs_receipts"};
+  if(method==="GET"&&url.endsWith("/run-sequences/failure-recovery"))
+   return {canRecover:false,reason:"needs_receipts"};
+  return {task};
+ });
+ await render("chat-a");
+ const detail=container!.querySelector<HTMLDivElement>("#canvas-assistant-task-content");
+ expect(detail?.hidden).toBe(false);
+ expect(Array.from(container!.querySelectorAll("button")).some(b=>b.textContent==="收起详情")).toBe(true);
+ expect(mocks.api.mock.calls.some(([,method])=>method==="POST")).toBe(false);
+});
+
 it("P3 imported read-only Task disables resume and cancellation controls",async()=>{
  const task={id:"imported-task",chatSessionId:"chat-a",chatSessionIds:["chat-a"],
   rootMessageId:"original-user",originalRequest:"历史运行",status:"running",readOnly:true,

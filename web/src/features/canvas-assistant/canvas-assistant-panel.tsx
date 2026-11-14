@@ -864,10 +864,13 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
      </div>
     </div>
     {skillError?<p className="canvas-assistant-skill-error" role="status">{skillError}</p>:null}
-    <div className="canvas-assistant-hint">
-     <span>AI 建议仅供参考</span>
-      <span className="inline-flex items-center gap-1"><Check size={11}/>创建、布局、生成自动执行 · 修改已有提示词、参数及删除需确认</span>
-     </div>   </footer>
+     <div className="canvas-assistant-hint">
+      <span>AI 回复仅供参考</span>
+      <span className="inline-flex items-center gap-1" title="创建和生成可能涉及费用；修改已有参数、删除内容等敏感操作需要确认。">
+       <Check size={11}/>画布操作遵循审批规则
+      </span>
+     </div>
+    </footer>
   </aside>
  );
 }

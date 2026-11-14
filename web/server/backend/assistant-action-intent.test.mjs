@@ -20,10 +20,25 @@ test("inspection of connection nouns is read-only while explicit follow-up edits
  assert.equal(isCanvasEditInstruction("检查画布节点连线"),false);
  assert.equal(isCanvasEditInstruction("查看节点连接与布局"),false);
  assert.equal(isCanvasEditInstruction("先检查画布节点连线，然后创建文本节点"),true);
+ for(const request of ["先检查画布节点，再把 A 和 B 连接起来",
+  "检查连线，然后将整个画布按依赖从左到右排列","查看画布节点并连接 A 和 B"])
+  assert.equal(isCanvasEditInstruction(request),true,request);
+ for(const request of ["查看整个画布的分组和连线布局","检查图像生成节点的连线","检查画布的布局设置"]){
+  assert.equal(isCanvasEditInstruction(request),false,request);
+  assert.equal(exactWholeCanvasGraphLayout(request),null,request);
+ }
+ assert.equal(exactWholeCanvasGraphLayout("检查连线，然后将整个画布按依赖从左到右排列")?.type,"layout_graph");
 });
 
 
 const textOnlyPrompt="请帮我规划一个包含 3 个镜头的短视频分镜，只输出文字方案。不要修改画布、调用 Skill 或提交任何图片和视频生成任务。后续我会继续完善这个方案。";
+test("inspection followed by explicit layout keeps its proposed action",async()=>{
+ const text="检查连线，然后将整个画布按依赖从左到右排列";
+ const result=await run(async()=>answer(JSON.stringify({answer:"检查完成",actions:[]})),[{role:"user",content:text}]);
+ assert.equal(result.actions[0].type,"layout_graph");
+ assert.equal(result.actions[0].direction,"horizontal");
+});
+
 test("negative canvas verbs and text-only output are not executable commands",()=>{
  for(const prompt of [
   textOnlyPrompt,

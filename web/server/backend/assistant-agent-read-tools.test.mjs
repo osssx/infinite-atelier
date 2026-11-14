@@ -91,6 +91,32 @@ test("P4.2a connections preserve the actual canvas port IDs",t=>{
  assert.deepEqual(result.data.connections,[{fromNodeId:"visible",toNodeId:"secret",fromPortId:"out",toPortId:"in"}]);
 });
 
+test("P4.2a connection overviews fit complete edges into per-call and run byte budgets",t=>{
+ const f=fixture(t,{policy:{includeContext:true,scope:"overview",includedIds:[]}});
+ const nodes=Array.from({length:40},(_,i)=>({id:"image-fixture-"+i,type:"image",title:"图片"+i,
+  position:{x:0,y:0},width:320,height:240,metadata:{}}));
+ const connections=nodes.slice(1).map((n,i)=>({id:"edge-"+i,fromNodeId:nodes[i].id,toNodeId:n.id,
+  fromPortId:"image",toPortId:"reference"}));
+ f.db.prepare("UPDATE projects SET document_json=?,revision=revision+1 WHERE id='p'")
+  .run(JSON.stringify({nodes,connections}));
+ const session=f.make();
+ let firstCount=0;
+ for(let i=0;i<4;i++){
+  const raw=session.invoke("canvas_get_connections",{},{callId:"edges"+i});
+  assert.ok(Buffer.byteLength(raw)<=4000);
+  const result=JSON.parse(raw);
+  assert.equal(result.data.truncated,true);
+  assert.ok(session.bytes<=12*1024);
+  for(const edge of result.data.connections){
+   assert.equal(edge.fromPortId,"image");assert.equal(edge.toPortId,"reference");
+   assert.ok(nodes.some(n=>n.id===edge.fromNodeId));
+   assert.ok(nodes.some(n=>n.id===edge.toNodeId));
+  }
+  if(i===0){firstCount=result.data.connections.length;assert.ok(firstCount>0&&firstCount<39);}
+  if(i===3)assert.ok(result.data.connections.length<firstCount);
+ }
+});
+
 test("P4.2a explicitly selected plugin node IDs remain readable",t=>{
  const nodeId="comfy:workflow/plugin.node@v1";
  const f=fixture(t,{policy:{...chosen,includedIds:[nodeId]}});

@@ -212,8 +212,17 @@ export function createAssistantAgentReadSession(db,{projectId,taskId,turnMessage
    data={matches:matches.slice(0,8),truncated:matches.length>8};
   }else throw fail("assistant_agent_tool_unauthorized");
   // Never blindly truncate JSON into invalid UTF-8/JSON; fail closed.
-  const value=JSON.stringify({callId,ok:true,data,sourceRevision:original.revision});
-  const bytes=Buffer.byteLength(value,"utf8");
+  const encode=()=>JSON.stringify({callId,ok:true,data,sourceRevision:original.revision});
+  let value=encode(),bytes=Buffer.byteLength(value,"utf8");
+  // Port-bearing edges vary in size. Return complete records within both
+  // budgets rather than rejecting an otherwise readable connection overview.
+  if(name==="canvas_get_connections"){
+   const budget=Math.min(MAX_RESULT_BYTES,MAX_PER_RUN_BYTES-totalBytes);
+   while(bytes>budget&&data.connections.length){
+    data.connections.pop();data.truncated=true;
+    value=encode();bytes=Buffer.byteLength(value,"utf8");
+   }
+  }
   if(bytes>MAX_RESULT_BYTES||totalBytes+bytes>MAX_PER_RUN_BYTES)
    throw fail("assistant_agent_read_budget_exceeded",413);
   totalBytes+=bytes;

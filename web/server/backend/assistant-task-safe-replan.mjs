@@ -6,6 +6,7 @@
 import {createHash} from "node:crypto";
 import {stableJson,writeTransaction} from "./repository.mjs";
 import {trustedAssistantTaskOutputs} from "./assistant-task-produced-artifacts.mjs";
+import {currentAssistantTextDeliverable,isAssistantStructuredSourceCurrent} from "./assistant-task-deliverables.mjs";
 const fail=(code,statusCode=409)=>Object.assign(Error(code),{code,statusCode});
 const validId=x=>typeof x==="string"&&/^[A-Za-z0-9_-]{1,128}$/.test(x);
 const hash=x=>createHash("sha256").update(stableJson(x)).digest("hex");
@@ -20,9 +21,16 @@ function inspect(db,projectId,taskId){
  const task=context(db,projectId,taskId);
  const base={taskId,planVersion:task.active_plan_version,projectRevision:task.revision};
  const denied=(reason)=>({...base,canReplan:false,reason});
- if(!["failed","blocked"].includes(task.status))return denied("task_not_failed_or_blocked");
+ const requirement=currentAssistantTextDeliverable(db,taskId);
+ const staleUnplanned=task.status==="planning"&&requirement?.deliverableType&&
+  requirement.planVersion===task.active_plan_version&&
+  !isAssistantStructuredSourceCurrent(db,taskId,requirement)&&
+  !db.prepare("SELECT 1 FROM assistant_task_steps WHERE task_id=? AND plan_version=? LIMIT 1").get(taskId,task.active_plan_version);
+ if(!["failed","blocked"].includes(task.status)&&!staleUnplanned)return denied("task_not_failed_or_blocked");
  if(task.read_only||task.cancel_requested_at!==null)return denied("task_not_editable");
  if(task.active_step_id!==null)return denied("active_step_must_be_reconciled");
+ if(staleUnplanned&&db.prepare("SELECT 1 FROM assistant_task_commands WHERE task_id=? AND command_kind='model_infer' AND status IN ('in_progress','needs_reconcile') LIMIT 1").get(taskId))
+  return denied("active_or_unknown_model_must_be_reconciled");
  const steps=db.prepare("SELECT id,kind,status,receipt_trust FROM assistant_task_steps WHERE task_id=? AND plan_version=? AND superseded_at IS NULL")
   .all(taskId,task.active_plan_version);
  if(steps.some(step=>["running","submitting","waiting_external","needs_reconcile"].includes(step.status)))
@@ -76,7 +84,7 @@ export function replanAssistantTaskSafely(db,{projectId,taskId,requestId,expecte
    .run(now,now,taskId,expectedPlanVersion);
   db.prepare("UPDATE assistant_task_run_sequences SET status='cancelled',updated_at=? WHERE task_id=? AND plan_version=? AND status='active'")
    .run(now,taskId,expectedPlanVersion);
-  const changed=db.prepare("UPDATE assistant_tasks SET status='planning',active_plan_version=active_plan_version+1,active_step_id=NULL,finished_at=NULL,updated_at=? WHERE id=? AND project_id=? AND active_plan_version=? AND status IN ('blocked','failed') AND active_step_id IS NULL")
+  const changed=db.prepare("UPDATE assistant_tasks SET status='planning',active_plan_version=active_plan_version+1,active_step_id=NULL,finished_at=NULL,updated_at=? WHERE id=? AND project_id=? AND active_plan_version=? AND status IN ('blocked','failed','planning') AND active_step_id IS NULL")
    .run(now,taskId,projectId,expectedPlanVersion);
   if(changed.changes!==1)throw fail("assistant_step_plan_conflict");
   db.prepare("INSERT INTO assistant_task_events(task_id,kind,payload_json,created_at) VALUES(?,?,?,?)")

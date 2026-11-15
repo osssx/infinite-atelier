@@ -37,6 +37,8 @@ export function currentAssistantTextDeliverable(db,taskId){
 const meaningful=text=>typeof text==="string"?
  text.replace(/[\s，。；：、,.;:!*#\-=\d]/g,"").length:0;
 const emptyLabels=text=>(text.match(/(?:^|\n)\s*(?:[-*]\s*)?(?:姓名|身份\/职业|外貌|性格|背景故事|目标与动机|标志性台词)\s*[:：]\s*(?=\n|$)/g)??[]).length;
+const allowsEmptyTemplate=text=>/(空白|空模板|不填正文)/.test(text)&&
+ !/(?:不要|不允许|不能|禁止|避免|无需|不是|非|拒绝|不接受|不需要)[^。！？;\n]{0,16}(?:空白|空模板|不填正文)/.test(text);
 /** User-confirmed characters, not model-proposed names. No auto-generated identity from model text. */
 export function registerAssistantTextDeliverable(db,{projectId,taskId,requestId,
  sourceTurnMessageId,characters,requiredFields=[],allowEmptyTemplate=false,confirmed=false}){
@@ -97,7 +99,7 @@ export function registerAssistantTextDeliverable(db,{projectId,taskId,requestId,
     throw fail("assistant_creative_source_changed");
   }
   if((!sourced.length&&clean.some(c=>!sourceTurn.preview?.includes(c.title)))||
-   allowEmptyTemplate&&!/(空白|空模板|不填正文)/.test(sourceTurn.preview??""))
+   allowEmptyTemplate&&!allowsEmptyTemplate(sourceTurn.preview??""))
    throw fail("assistant_deliverable_cast_unconfirmed",403);
   const doc=JSON.parse(db.prepare("SELECT document_json FROM projects WHERE id=? AND deleted_at IS NULL")
    .get(projectId)?.document_json??"null");
@@ -176,7 +178,7 @@ export function registerAssistantStructuredTextDeliverable(db,{projectId,taskId,
   const preview=JSON.parse(turn.payload_json).preview??"";
   if(!rule.keyword.test(preview)||
    clean.some(v=>!preview.includes(v.title)&&!(clean.length===1&&v.title===rule.title))||
-   allowEmptyTemplate&&!/(空白|空模板|不填正文)/.test(preview))
+   allowEmptyTemplate&&!allowsEmptyTemplate(preview))
    throw fail("assistant_deliverable_source_unconfirmed",403);
   const at=Date.now(),sourceTurnSeq=turn.seq,
    digest=sha({taskId,data,sourceTurnSeq}),
@@ -243,9 +245,12 @@ export function isAssistantStructuredSourceCurrent(db,taskId,spec){
  try{return JSON.parse(latest.payload_json).messageId===spec.sourceTurnMessageId}
  catch{return false}
 }
-export function assertAssistantStructuredSourceCurrent(db,taskId,spec){
+export function assertAssistantStructuredSourceCurrent(db,taskId,spec,{turnMessageId}={}){
  if(!isAssistantStructuredSourceCurrent(db,taskId,spec))
   throw fail("assistant_deliverable_source_turn_stale",409);
+ if(spec?.deliverableType&&(spec.planVersion!==db.prepare("SELECT active_plan_version FROM assistant_tasks WHERE id=?").get(taskId)?.active_plan_version||
+  turnMessageId!==undefined&&turnMessageId!==spec.sourceTurnMessageId))
+  throw fail("assistant_deliverable_source_binding_invalid",409);
 }
 /** Same serialization as Step Claim. Plan checks the complete candidate early. */
 export function assertAssistantTextClaimBudget({projectId,taskId,stepId,planVersion,action,preconditions,actionDigest}){

@@ -13,6 +13,7 @@ describe("P4.3 显式文本交付意图",()=>{
  it("用户明确要求空白模板才允许空正文",()=>{
   expect(detect("创建空白场景设定模板","task",false)?.allowEmptyTemplate).toBe(true);
   expect(detect("创建场景设定","task",false)?.allowEmptyTemplate).toBe(false);
+  expect(detect("请创建场景设定文本节点，不要空白模板，要写出具体内容","task",false)?.allowEmptyTemplate).toBe(false);
  });
  it("纯讨论、非 Task 与文本问答不自动冻结规格",()=>{
   expect(detect("如何编写故事大纲？","task",false)).toBeNull();
@@ -38,11 +39,15 @@ describe("P4.3 显式文本交付意图",()=>{
   expect(detect("请生成三个场景设定文本节点","task",false)).toBeNull();
   expect(detect("请创建多个场景设定卡片","task",false)).toBeNull();
   expect(detect("请生成两篇故事大纲","task",false)).toBeNull();
+  expect(detect("请生成两个故事大纲文本节点","task",false)).toBeNull();
   expect(detect("你创建三个分镜文本节点并依次连线","task",false)).toBeNull();
   expect(detect("请创建分镜提示词节点并连接到已有故事节点","task",false)).toBeNull();
  });
  it("故事大纲作为来源时允许明确的分镜目标",()=>{
   expect(detect("根据故事大纲生成分镜提示词","task",false)?.deliverableType).toBe("storyboard");
   expect(detect("根据故事大纲生成场景设定","task",false)?.deliverableType).toBe("scene");
+  expect(detect("请根据故事大纲生成视频","task",false)).toBeNull();
+  expect(detect("请基于场景卡生成背景图片","task",false)).toBeNull();
+  expect(detect("请创建一个分镜提示词文本节点，标题为《雨夜归家》","task",false)?.title).toBe("雨夜归家");
  });
 });

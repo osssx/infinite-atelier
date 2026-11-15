@@ -712,7 +712,7 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
          throw Object.assign(Error("assistant_task_message_untrusted"),
           {code:"assistant_task_message_untrusted",statusCode:403});
        }
-       let chosenMaterials=[],agentReadSession=null;
+       let chosenMaterials=[],agentReadSession=null,structuredRequirement=null;
        if(ref){
         const command=beginAssistantModelCommand(db,{projectId:req.params.id,taskId:ref.taskId,
          requestId:ref.requestId,requestPayload:req.body,beforeStart:()=>{
@@ -741,8 +741,10 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
          messageId:ref.turnMessageId});
         const requirement=proposalMode?null:currentAssistantTextDeliverable(db,ref.taskId);
         // Reject obsolete structured specs before the next billable POST.
-        if(requirement?.deliverableType)
-         assertAssistantStructuredSourceCurrent(db,ref.taskId,requirement);
+        if(requirement?.deliverableType){
+         structuredRequirement=requirement;
+         assertAssistantStructuredSourceCurrent(db,ref.taskId,requirement,{turnMessageId:ref.turnMessageId});
+        }
         // An explicitly approved source set supersedes unrelated model drafts.
         const pinned=requirement?.characters?.some(c=>c.sourceRef)===true||chosenMaterials.length>0;
         const creativeDrafts=proposalMode||pinned?[]:loadAssistantTaskCreativeHistory(db,{
@@ -828,6 +830,12 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
         visualDetail:req.body.visualContext?.detail??"high",signal:controller.signal,
         ...(ref?{providerPayloadGuard:(requestBody)=>{
          agentReadSession?.check(); // reauthorize immediately before each POST
+         if(structuredRequirement){
+          assertAssistantStructuredSourceCurrent(db,ref.taskId,structuredRequirement,{turnMessageId:ref.turnMessageId});
+          if(currentAssistantTextDeliverable(db,ref.taskId)?.digest!==structuredRequirement.digest)
+           throw Object.assign(Error("assistant_deliverable_spec_changed"),
+            {code:"assistant_deliverable_spec_changed",statusCode:409});
+         }
          // Another chat/turn or a graph edit may have happened while awaiting
          // media or a previous tool round. Recheck the exact frozen source
          // bindings immediately before EACH paid upstream POST.

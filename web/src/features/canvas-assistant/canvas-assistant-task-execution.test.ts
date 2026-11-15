@@ -2,7 +2,7 @@ import {beforeEach,describe,expect,it,vi} from "vitest";
 const mocks=vi.hoisted(()=>({api:vi.fn(),barrier:vi.fn()}));
 vi.mock("@/features/backend-sync/canvas-api",()=>({canvasApi:mocks.api}));
 vi.mock("@/stores/canvas/use-canvas-store",()=>({commitAssistantCanvasGraphWithSaveBarrier:mocks.barrier}));
-import {planAndExecuteAssistantCanvasActions,executeFrozenAssistantCanvasTaskStep} from "./canvas-assistant-task-execution";
+import {planAndExecuteAssistantCanvasActions,executeFrozenAssistantCanvasTaskStep,verifyFrozenAssistantTextDeliverable} from "./canvas-assistant-task-execution";
 
 const step={taskId:"task",stepId:"step",planVersion:2,actionDigest:"a".repeat(64),status:"waiting_approval"};
 const doc={nodes:[{id:"task-node",type:"text"}],connections:[]};
@@ -17,6 +17,23 @@ beforeEach(()=>{
  }));
 });
 describe("P1b browser Task canvas protocol",()=>{
+ it("verifies restored deliverable commits and supports verification without graph replay",async()=>{
+  const trace:string[]=[];
+  mocks.api.mockImplementation(async(url:string,_method:string,payload:Record<string,unknown>)=>{
+   if(url.endsWith("/execute")){trace.push("execute");return committed;}
+   if(url.endsWith("/deliverables/text/verify")){
+    trace.push("verify");expect(payload.requestId).toBe("step-deliverable-verify");
+    return {verified:true};
+   }
+   throw Error("unexpected call");
+  });
+  await executeFrozenAssistantCanvasTaskStep({projectId:"p",taskId:"task",step:{...step,
+   deliverableSpecDigest:"b".repeat(64)},signal:new AbortController().signal});
+  expect(trace).toEqual(["execute","verify"]);
+  trace.length=0;
+  await verifyFrozenAssistantTextDeliverable({projectId:"p",taskId:"task",step,signal:new AbortController().signal});
+  expect(trace).toEqual(["verify"]);
+ });
  it("freezes project revision, asks approval, then posts only Step execution identity",async()=>{
   const trace:string[]=[];
   mocks.api.mockImplementation(async(url:string,method:string,payload:Record<string,unknown>)=>{

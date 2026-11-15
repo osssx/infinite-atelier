@@ -56,6 +56,73 @@ function fixture(t,type="story",extra={}){
 }
 function state(f){return f.db.prepare("SELECT status,active_plan_version FROM assistant_tasks WHERE id=?").get(f.task.id)}
 function count(f,kind){return f.db.prepare("SELECT COUNT(*) n FROM assistant_task_events WHERE task_id=? AND kind=?").get(f.task.id,kind).n}
+test("P4.3 obsolete requirements without Steps can safely replan and register a new version",t=>{
+ const f=fixture(t);f.register();
+ const fresh=f.turn("请生成新的故事大纲，采用修改后的设定");
+ assert.equal(inspectAssistantTaskRecovery(f.db,{projectId:"p",taskId:f.task.id}).canReplan,true);
+ replanAssistantTaskSafely(f.db,{projectId:"p",taskId:f.task.id,requestId:"replan-empty",
+  expectedPlanVersion:1,expectedProjectRevision:1});
+ assert.equal(f.register({requestId:"require-2",sourceTurnMessageId:fresh,expectedPlanVersion:2}).planVersion,2);
+ const step=f.plan({requestId:"plan-2",expectedPlanVersion:2});
+ f.approve(step);f.commit(step);
+ assert.equal(f.verify(step).verified,true);
+});
+
+test("P4.3 a negated blank-template request never grants empty completion",t=>{
+ const f=fixture(t,"scene");
+ const turn=f.turn("请创建场景设定文本节点，不要空白模板，要写出具体内容。");
+ assert.throws(()=>f.register({sourceTurnMessageId:turn,allowEmptyTemplate:true}),
+  {code:"assistant_deliverable_source_unconfirmed"});
+ assert.equal(count(f,"deliverable_required"),0);
+});
+
+test("P4.3 the final provider guard rechecks the structured requirement after async work",async t=>{
+ const f=fixture(t);f.register();let sent=0;
+ const app=buildApp({db:f.db,authorize:()=>true,assistantChat:async input=>{
+  f.turn("撤销故事大纲请求，先讨论新要求");
+  input.providerPayloadGuard(JSON.stringify({messages:input.messages}));
+  sent++;return {model:"mock",answer:"不应发送"};
+ }});t.after(()=>app.close());
+ const response=await app.inject({method:"POST",url:"/api/v1/projects/p/assistant/chat",payload:{
+  channelId:"ch",provider:"openai_compatible",baseUrl:"http://127.0.0.1:8188/v1",model:"mock",
+  messages:[{role:"user",content:definitions.story.request}],
+  task:{taskId:f.task.id,turnMessageId:f.userTurn,requestId:"revoked-during-await"}}});
+ assert.equal(response.statusCode,409,response.body);
+ assert.equal(response.json().code,"assistant_deliverable_source_turn_stale");
+ assert.equal(sent,0);
+});
+
+test("P4.3 a different source Turn cannot borrow the current requirement",async t=>{
+ const f=fixture(t);const current=f.turn(definitions.story.request);
+ f.register({sourceTurnMessageId:current});let sent=0;
+ const app=buildApp({db:f.db,authorize:()=>true,assistantChat:async()=>{sent++;return {model:"mock",answer:"不应发送"};}});
+ t.after(()=>app.close());
+ const response=await app.inject({method:"POST",url:"/api/v1/projects/p/assistant/chat",payload:{
+  channelId:"ch",provider:"openai_compatible",baseUrl:"http://127.0.0.1:8188/v1",model:"mock",
+  messages:[{role:"user",content:definitions.story.request}],
+  task:{taskId:f.task.id,turnMessageId:f.userTurn,requestId:"wrong-source-turn"}}});
+ assert.equal(response.statusCode,409,response.body);
+ assert.equal(response.json().code,"assistant_deliverable_source_binding_invalid");
+ assert.equal(sent,0);
+});
+
+test("P4.3 a replanned Task cannot infer using the previous plan's requirement",async t=>{
+ const f=fixture(t);f.register();const step=f.plan();
+ f.approve(step,{decision:"reject"});
+ replanAssistantTaskSafely(f.db,{projectId:"p",taskId:f.task.id,requestId:"replan",
+  expectedPlanVersion:1,expectedProjectRevision:1});
+ let posts=0;
+ const app=buildApp({db:f.db,authorize:()=>true,assistantChat:async()=>{
+  posts++;return {model:"mock",answer:"不应发送"};
+ }});t.after(()=>app.close());
+ const response=await app.inject({method:"POST",url:"/api/v1/projects/p/assistant/chat",payload:{
+  channelId:"ch",provider:"openai_compatible",baseUrl:"http://127.0.0.1:8188/v1",model:"mock",
+  messages:[{role:"user",content:definitions.story.request}],
+  task:{taskId:f.task.id,turnMessageId:f.userTurn,requestId:"old-plan-spec"}}});
+ assert.equal(response.statusCode,409,response.body);
+ assert.equal(response.json().code,"assistant_deliverable_source_binding_invalid");
+ assert.equal(posts,0);
+});
 for(const type of Object.keys(definitions)){
  test("P4.3 "+type+" has frozen spec, approved Step and only verifier completes Task",t=>{
   const f=fixture(t,type);

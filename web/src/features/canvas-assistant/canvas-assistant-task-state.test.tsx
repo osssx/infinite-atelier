@@ -54,11 +54,12 @@ beforeEach(()=>{
  });
 });
 afterEach(async()=>{if(root)await act(async()=>{root!.unmount();});root=null;container?.remove();container=null;});
-it("allows explicit revocation of an approved unexecuted Agent Step",async()=>{
+it.each(["agent","structured"])("allows explicit revocation of an approved unexecuted %s Step",async kind=>{
  let task={id:"agent-task",chatSessionId:"chat-a",chatSessionIds:["chat-a"],
   rootMessageId:"original-user",originalRequest:"检查并创建节点",status:"ready",activePlanVersion:1,
   recoveryMode:"canvas_transaction",steps:[{id:"agent-step",kind:"canvas_mutation",planVersion:1,
-   status:"ready",actionDigest:"a".repeat(64),action:{actions:[],agentRunId:"ar_test"}}]};
+   status:"ready",actionDigest:"a".repeat(64),canRevokeApproval:kind==="structured",
+   action:{actions:[],...(kind==="agent"?{agentRunId:"ar_test"}:{deliverableSpecDigest:"b".repeat(64)})}}]};
  mocks.api.mockImplementation(async(url:string,method:string,payload?:Record<string,unknown>)=>{
   if(method==="GET"&&url.includes("chatSessionId="))return {tasks:[task]};
   if(method==="POST"&&url.endsWith("/approval")){
@@ -74,6 +75,23 @@ it("allows explicit revocation of an approved unexecuted Agent Step",async()=>{
  await click("撤销此步骤并允许重新规划");
  expect(task.status).toBe("blocked");
  expect(mocks.api.mock.calls.some(([url])=>url.endsWith("/execute"))).toBe(false);
+});
+it("offers standalone verification of a committed deliverable after refresh",async()=>{
+ let task={id:"text-task",chatSessionId:"chat-a",chatSessionIds:["chat-a"],rootMessageId:"original-user",
+  originalRequest:"创建故事大纲文本节点",status:"ready",activePlanVersion:1,recoveryMode:"canvas_atomic",
+  steps:[{id:"text-step",kind:"canvas_mutation",planVersion:1,status:"succeeded",receiptTrust:"server_committed",
+   actionDigest:"a".repeat(64),action:{deliverableSpecDigest:"b".repeat(64)}}]};
+ mocks.api.mockImplementation(async(url:string,method:string)=>{
+  if(method==="GET"&&url.includes("chatSessionId="))return {tasks:[task]};
+  if(url.endsWith("/deliverables/text/verify")){task={...task,status:"completed"};return {verified:true};}
+  if(url.endsWith("/run-sequences"))return {sequence:null,state:"none",next:null};
+  if(url.endsWith("/model-calls"))return {calls:[]};
+  return {task};
+ });
+ await render();
+ await click("验证已提交交付物（不重放画布）");
+ expect(task.status).toBe("completed");
+ expect(mocks.api.mock.calls.some(([url])=>url.endsWith("/execute")||url.endsWith("/canvas-steps"))).toBe(false);
 });
 it("keeps a normal planning Task compact and restores every control on demand",async()=>{
  const task={id:"compact-task",chatSessionId:"chat-a",chatSessionIds:["chat-a"],

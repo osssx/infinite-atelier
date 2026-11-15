@@ -4,11 +4,12 @@ import {canvasApi} from "@/features/backend-sync/canvas-api";
 import {canvasCasPreviewUrl} from "@/features/backend-sync/canvas-cas";
 import type {CanvasAssistantSession} from "@/types/canvas";
 import type {AssistantContextScope} from "./canvas-assistant-context";
-import {executeFrozenAssistantCanvasTaskStep} from "./canvas-assistant-task-execution";
+import {executeFrozenAssistantCanvasTaskStep,verifyFrozenAssistantTextDeliverable} from "./canvas-assistant-task-execution";
 import {canLaunchAssistantRunSequenceStep,type AssistantRunSequenceView} from "./canvas-assistant-task-run-sequences";
 
 type Step={id:string;kind:string;planVersion:number;status:string;actionDigest:string;
- action?:{actions?:unknown[];agentRunId?:string;center?:{x:number;y:number};job?:{targetNodeId:string;executionMode:string;snapshot:{adapterKind?:string}}};
+ canRevokeApproval?:boolean;
+ action?:{actions?:unknown[];agentRunId?:string;deliverableSpecDigest?:string;center?:{x:number;y:number};job?:{targetNodeId:string;executionMode:string;snapshot:{adapterKind?:string}}};
  result?:{jobId?:string;jobStatus?:string;artifactIds?:string[];bindings?:{nodeId:string}[];
  runId?:string;status?:string;exitCode?:number|null;artifactCount?:number};receiptTrust?:string};
 type FactSummary={version?:number;source?:string;userTurns?:{total?:number};
@@ -125,7 +126,7 @@ export function useCanvasAssistantTasks({
   return ()=>{alive=false;};
  },[base,open,selectedId,detail]);
  useEffect(()=>{
-  if(!open||!selectedId||!detail||detail.id!==selectedId||!["failed","blocked"].includes(detail.status)){
+  if(!open||!selectedId||!detail||detail.id!==selectedId||!["planning","failed","blocked"].includes(detail.status)){
    setRecovery(null);return;
   }
   let alive=true;
@@ -279,16 +280,26 @@ export function useCanvasAssistantTasks({
   setBusy(true);setError("");
   try{
    await executeFrozenAssistantCanvasTaskStep({projectId,taskId:selected.id,step:{
-    stepId:step.id,planVersion:step.planVersion,actionDigest:step.actionDigest
+    stepId:step.id,planVersion:step.planVersion,actionDigest:step.actionDigest,
+    deliverableSpecDigest:step.action?.deliverableSpecDigest
    },decision,signal:new AbortController().signal});
-   const latest=await canvasApi<TaskResponse>(path(selected.id),"GET");
-   setDetail(latest.task);
-   setItems(old=>old.map(task=>task.id===latest.task.id?latest.task:task));
   }catch(error){setError("步骤仍保存在任务中，未强行重放："+(error instanceof Error?error.message:"执行失败"));}
-  finally{setBusy(false);}
+  finally{try{await refreshTask(selected.id);}catch{/* keep the recovery error visible */}finally{setBusy(false);}}
  };
  const pendingCanvas=detail&&selected&&detail.id===selected.id?detail.steps?.filter(step=>step.kind==="canvas_mutation"&&
   ["waiting_approval","ready"].includes(step.status))??[]:[];
+ const unverifiedDeliverables=detail?.status==="ready"&&!detail.readOnly?detail.steps?.filter(step=>
+  step.planVersion===detail.activePlanVersion&&step.status==="succeeded"&&
+  step.receiptTrust==="server_committed"&&step.action?.deliverableSpecDigest)??[]:[];
+ const verifyDeliverable=async(step:Step)=>{
+  if(!selected||busy||sending)return;
+  setBusy(true);setError("");
+  try{await verifyFrozenAssistantTextDeliverable({projectId,taskId:selected.id,
+   step:{stepId:step.id,planVersion:step.planVersion,actionDigest:step.actionDigest},
+   signal:new AbortController().signal});}
+  catch(error){setError(error instanceof Error?error.message:"交付验证失败");}
+  finally{try{await refreshTask(selected.id);}catch{/* keep the verification error visible */}finally{setBusy(false);}}
+ };
  const refreshTask=async(taskId:string)=>{
   const latest=await canvasApi<TaskResponse>(path(taskId),"GET");
   setDetail(latest.task);
@@ -654,7 +665,7 @@ export function useCanvasAssistantTasks({
       <p>不能自动选择失败备用路径：{failureRecovery.reason}。
        结果不明、产物下载失败或缺少预先冻结的独立目标时，不会触发备用生成。</p>}
     </div>:null}
-   {recovery&&selected&&detail?.id===selected.id&&["failed","blocked"].includes(detail.status)?
+   {recovery&&selected&&detail?.id===selected.id&&(["failed","blocked"].includes(detail.status)||recovery.canReplan)?
     <div className="mt-2 rounded-md border p-2" style={{borderColor:"var(--assistant-border)"}}>
      <p>恢复条件：{recovery.canReplan?"已有足够的可信终态证据":"需先完成已有执行结果的对账"}</p>
      {recovery.canReplan?<button type="button" className="canvas-assistant-link"
@@ -757,11 +768,16 @@ export function useCanvasAssistantTasks({
        onClick={()=>void resumeCanvasStep(step,"reject")}>拒绝此步骤</button>
      </>:<button type="button" className="canvas-assistant-link" disabled={busy||sending}
       onClick={()=>void resumeCanvasStep(step)}>继续已批准步骤</button>}
-     {step.status==="ready"&&step.action?.agentRunId?<button type="button"
+     {step.status==="ready"&&(step.action?.agentRunId||step.canRevokeApproval)?<button type="button"
       className="canvas-assistant-link" disabled={busy||sending}
       onClick={()=>void resumeCanvasStep(step,"reject")}>撤销此步骤并允许重新规划</button>:null}
     </div>
    </div>)}
+    {unverifiedDeliverables.map(step=><div key={step.id} className="mt-2 text-xs">
+     <span>文本节点已提交，交付完整性尚待验证。</span>
+     <button type="button" className="canvas-assistant-link" disabled={busy||sending}
+      onClick={()=>void verifyDeliverable(step)}>验证已提交交付物（不重放画布）</button>
+    </div>)}
     {externalSteps.length?<div className="mt-2 text-[11px]">
       <button type="button" className="canvas-assistant-link" disabled={sending||busy}
        title="仅查询已有 Job、产物及物化记录，绝不重新调用生成服务"

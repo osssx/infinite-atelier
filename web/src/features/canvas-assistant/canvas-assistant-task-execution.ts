@@ -24,7 +24,7 @@ const requestError=(signal:AbortSignal)=>{
 export async function executeFrozenAssistantCanvasTaskStep({
  projectId,taskId,step,signal,decision
 }:{
- projectId:string;taskId:string;step:Pick<FrozenCanvasTaskStep,"stepId"|"planVersion"|"actionDigest">;
+ projectId:string;taskId:string;step:Pick<FrozenCanvasTaskStep,"stepId"|"planVersion"|"actionDigest">&{deliverableSpecDigest?:string};
  signal:AbortSignal;decision?:"approve"|"reject"
 }):Promise<CanvasTaskCommit|null>{
  requestError(signal);
@@ -50,7 +50,19 @@ export async function executeFrozenAssistantCanvasTaskStep({
    if(saved.status!=="succeeded"||!saved.project?.document)throw Error("assistant_task_graph_response_invalid");
    return saved.project;
   });
+  if(step.deliverableSpecDigest)await verifyFrozenAssistantTextDeliverable({projectId,taskId,step,signal});
   return saved;}
+export async function verifyFrozenAssistantTextDeliverable({projectId,taskId,step,signal}:{
+ projectId:string;taskId:string;step:Pick<FrozenCanvasTaskStep,"stepId"|"planVersion"|"actionDigest">;signal:AbortSignal
+}){
+ requestError(signal);
+ const verified=await canvasApi<{verified:boolean;reason?:string}>(base(projectId,taskId)+"/deliverables/text/verify","POST",{
+  requestId:step.stepId+"-deliverable-verify",stepId:step.stepId,
+  expectedPlanVersion:step.planVersion,actionDigest:step.actionDigest
+ },signal);
+ if(!verified.verified)throw Error("文本节点已提交但交付验证不通过："+(verified.reason??"未知原因")+
+  "；Task 已阻断，可在任务面板重新规划。");
+}
 /** A frozen Step survives the browser tab. Approval is user-driven; never
  * automatically reconstruct and approve a different set of actions.
  */
@@ -94,13 +106,7 @@ export async function planAndExecuteAssistantCanvasActions({
  });
  if((plan as FrozenCanvasTaskStep|null)?.deliverableSpec){
   const step=plan as unknown as FrozenCanvasTaskStep;
-  const verified=await canvasApi<{verified:boolean;reason?:string}>(base(projectId,taskId)+
-   "/deliverables/text/verify","POST",{
-    requestId:messageId+"-deliverable-verify",stepId:step.stepId,
-    expectedPlanVersion:step.planVersion,actionDigest:step.actionDigest
-   },signal);
-  if(!verified.verified)throw Error("角色卡节点已提交但完整性验证不通过："+(verified.reason??"未知原因")+
-   "；Task 已阻断，可在任务面板重新规划。");
+  await verifyFrozenAssistantTextDeliverable({projectId,taskId,step,signal});
  }
  return {applied:(committed as CanvasTaskCommit|null)?.receipt.applied??actions.length,
   stepId:(plan as FrozenCanvasTaskStep|null)?.stepId??"",revision:remote.revision,

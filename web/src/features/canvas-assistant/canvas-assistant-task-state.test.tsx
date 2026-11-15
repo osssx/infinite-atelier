@@ -24,13 +24,13 @@ let root:Root|null=null,container:HTMLDivElement|null=null;
 const session:CanvasAssistantSession={id:"chat-a",title:"示例任务",
  createdAt:"2026-11-12",updatedAt:"2026-11-12",
  messages:[{id:"original-user",role:"user",text:"创建三个分镜节点"}]};
-function Harness({activeChatId="chat-a",runSequence,generate}:{activeChatId?:string;
- runSequence?:(taskId:string,view:unknown,grantId?:string)=>Promise<void>;
+function Harness({activeChatId="chat-a",runSequence,generate,comfyInstanceId}:{activeChatId?:string;comfyInstanceId?:string;
+ runSequence?:(taskId:string,view:unknown,grantId?:string,grantMode?:string)=>Promise<void>;
  generate?:(taskId:string,turnId:string,signal:AbortSignal)=>Promise<void>}){ const [draft,setDraft]=useState("");
  const state=useCanvasAssistantTasks({
   projectId:"project",activeChatId,session:activeChatId==="chat-a"?session:undefined,
   open:true,sending:false,includeContext:false,scope:"selection",
-   includedIds:["private-node"],onDraft:setDraft,onRunSequenceStep:runSequence,
+   includedIds:["private-node"],comfyInstanceId,onDraft:setDraft,onRunSequenceStep:runSequence,
    onGenerateSemanticProposals:generate });
  return createElement("div",{},state.view,
   createElement("button",{type:"button",onClick:()=>void state.recordTurn(state.activeTaskId,"later-msg","继续",new AbortController().signal)},"记录下一条"),
@@ -39,9 +39,10 @@ function Harness({activeChatId="chat-a",runSequence,generate}:{activeChatId?:str
 }
 async function render(activeChatId?:string,
  generate?:(taskId:string,turnId:string,signal:AbortSignal)=>Promise<void>,
- runSequence?:(taskId:string,view:unknown,grantId?:string)=>Promise<void>){
+ runSequence?:(taskId:string,view:unknown,grantId?:string,grantMode?:string)=>Promise<void>,
+  comfyInstanceId?:string){
  container=document.createElement("div");document.body.appendChild(container);root=createRoot(container);
- await act(async()=>{root!.render(createElement(Harness,{activeChatId,generate,runSequence}));});
+ await act(async()=>{root!.render(createElement(Harness,{activeChatId,generate,runSequence,comfyInstanceId}));});
 }async function click(label:string){
  const button=Array.from(container!.querySelectorAll("button")).find(b=>b.textContent===label);
  expect(button,label).toBeTruthy();
@@ -1278,4 +1279,84 @@ it.each(["waiting_external","awaiting_materialization"])("P4.5a retains local Co
  await act(async()=>{consent!.click()});
  await click("确认并启用有界自动生成");
  expect(mocks.api.mock.calls.some(([url,method])=>method==="POST"&&url.endsWith("/run-budget"))).toBe(true);
+});
+
+it("P4.5b explicit one-shot media grant can auto-bind unique CAS input and submit one downstream Comfy Job",async()=>{
+ const task={id:"media-task",chatSessionId:"chat-a",rootMessageId:"original-user",
+  originalRequest:"图片生成后连接本地视频工作流",status:"ready",readOnly:false,
+  activePlanVersion:1,recoveryMode:"job_observation",steps:[]};
+ const actions=[{type:"run_node",nodeId:"source",mode:"image"},
+  {type:"run_workflow",nodeId:"video-wf",
+   inputFromPrevious:{sourceKind:"image",toPortId:"first_frame"}}];
+ const sequence={id:"seq-media",taskId:task.id,sourceMessageId:"original-user",
+  planVersion:1,status:"active",actions};
+ const grant={grantId:"media-approval",sequenceId:sequence.id,planVersion:1,
+  mode:"local_comfy_media" as const,allowedIndices:[1],maxJobs:1,consumedJobs:0,
+  remainingJobs:1,expiresAt:Date.now()+1800000,active:true,revoked:false,
+  executionStarted:false,comfyScopeSummary:{instanceId:"comfy-local",
+   templateId:"i2v-template",templateRevision:"d".repeat(64)}};
+ let approved:typeof grant|null=null;
+ const calls:{method:string;url:string;body?:Record<string,unknown>}[]=[];
+ const started:{id:string;grantId?:string;mode?:string;needsBinding?:boolean}[]=[];
+ const view={sequence,state:"ready",index:1,next:{index:1,action:actions[1],
+  needsBinding:true,dependsOn:["materialized-1"],last:true,
+  inputBinding:{sourceArtifactId:"image-art",sourceSha256:"a".repeat(64),
+   sourceNodeId:"created-image",sourcePortId:"image",sourceKind:"image",
+   sourceMaterialStepId:"materialized-1",toNodeId:"video-wf",toPortId:"first_frame",valueKind:"IMAGE"}}};
+ mocks.api.mockImplementation(async(url:string,method:string,body?:Record<string,unknown>)=>{
+  calls.push({url,method,body});
+  if(method==="GET"&&url.includes("chatSessionId="))return {tasks:[task]};
+  if(method==="GET"&&url.endsWith("/run-sequences"))return view;
+  if(method==="GET"&&url.endsWith("/run-budget"))return {grant:approved};
+  if(method==="GET"&&url.endsWith("/model-calls"))return {calls:[]};
+  if(method==="GET"&&url.endsWith("/media-task"))return {task};
+  if(method==="POST"&&url.endsWith("/run-budget")){
+   expect(body).toMatchObject({mode:"local_comfy_media",instanceId:"comfy-local",
+    maxJobs:1,allowedIndices:[1],confirmed:true,sequenceId:"seq-media"});
+   approved=grant;return grant;
+  }
+  if(method==="POST"&&url.endsWith("/media-approval/revoke")){
+   approved={...grant,revoked:true,active:false};return approved;
+  }
+  throw Error("unexpected media write "+method+" "+url);
+ });
+ await render(undefined,undefined,async(id,run,grantId,mode)=>{
+  started.push({id,grantId,mode,needsBinding:(run as {next:{needsBinding:boolean}}).next.needsBinding});
+ }, "comfy-local");
+ expect(container!.textContent).toContain("可信媒体链预授权");
+ expect(started).toHaveLength(0);
+ const checkbox=container!.querySelector<HTMLInputElement>("input[aria-label='确认本地媒体链自动绑定与生成']");
+ expect(checkbox).toBeTruthy();
+ await act(async()=>checkbox!.click());
+ await click("批准唯一媒体连线及一次 ComfyUI 生成");
+ await vi.waitFor(()=>expect(started).toHaveLength(1));
+ expect(started[0]).toEqual({id:"media-task",grantId:"media-approval",
+  mode:"local_comfy_media",needsBinding:true});
+ expect(calls.filter(call=>call.method==="POST")).toHaveLength(1);
+ expect(calls[0].method).toBe("GET");
+ await click("撤销剩余自动入队授权");
+ expect(started).toHaveLength(1);
+ expect(container!.textContent).toContain("已撤销");
+});
+it("P4.5b dynamic Comfy media without user grant never auto-wires or launches",async()=>{
+ const task={id:"no-media-grant",chatSessionId:"chat-a",rootMessageId:"original-user",
+  originalRequest:"图生视频安全限制",status:"ready",readOnly:false,
+  activePlanVersion:1,recoveryMode:"job_observation",steps:[]};
+ const action={type:"run_workflow",nodeId:"wf",inputFromPrevious:{sourceKind:"image",toPortId:"first_frame"}};
+ const sequence={id:"seq-unapproved",taskId:task.id,sourceMessageId:"original-user",
+  planVersion:1,status:"active",actions:[{type:"run_node",nodeId:"source",mode:"image"},action]};
+ const view={sequence,state:"ready",next:{index:1,action,last:true,
+  needsBinding:true,dependsOn:["verified-material"]}};
+ const run=vi.fn(async()=>{});
+ mocks.api.mockImplementation(async(url:string,method:string)=>{
+  if(method!=="GET")throw Error("No auto writes without grant");
+  if(url.includes("chatSessionId="))return {tasks:[task]};
+  if(url.endsWith("/run-budget"))return {grant:null};
+  if(url.endsWith("/run-sequences"))return view;
+  if(url.endsWith("/model-calls"))return {calls:[]};
+  return {task};
+ });
+ await render(undefined,undefined,run,"comfy-local");
+ expect(run).not.toHaveBeenCalled();
+ expect(mocks.api.mock.calls.every(([,method])=>method==="GET")).toBe(true);
 });

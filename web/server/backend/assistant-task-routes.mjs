@@ -40,7 +40,7 @@ const agentRunDetailQuery={type:"object",additionalProperties:false,
   afterSeq:{type:"integer",minimum:0}}};
 const decisionBody={type:"object",required:["requestId","expectedPlanVersion","actionDigest","decision"],
  additionalProperties:false,properties:{requestId:id,expectedPlanVersion:{type:"integer",minimum:1},
- actionDigest:{type:"string",pattern:"^[a-f0-9]{64}$"},decision:{type:"string",enum:["approve","reject"]}}};
+ actionDigest:{type:"string",pattern:"^[a-f0-9]{64}$"},decision:{type:"string",enum:["approve","reject"]},grantId:id}};
 const requestBody={type:"object",required:["requestId"],additionalProperties:false,
  properties:{requestId:id}};
 const linkChatBody={type:"object",required:["requestId","chatSessionId"],additionalProperties:false,
@@ -108,7 +108,7 @@ const canvasStepBody={type:"object",additionalProperties:false,
   center:{type:"object",additionalProperties:false,required:["x","y"],properties:{
    x:{type:"number",minimum:-1000000,maximum:1000000},y:{type:"number",minimum:-1000000,maximum:1000000}}},
   dependsOn:{type:"array",maxItems:20,uniqueItems:true,items:id},finalizeTask:{type:"boolean"},
-  runSequenceId:id,runIndex:{type:"integer",minimum:1,maximum:2},agentRunId:id}};
+  runSequenceId:id,runIndex:{type:"integer",minimum:1,maximum:2},agentRunId:id,runMediaGrantId:id}};
 const executeBody={type:"object",additionalProperties:false,
  required:["requestId","expectedPlanVersion","actionDigest"],properties:{
   requestId:id,expectedPlanVersion:{type:"integer",minimum:1},
@@ -132,7 +132,7 @@ const runBudgetBody={type:"object",additionalProperties:false,
  maxJobs:{type:"integer",minimum:1,maximum:4},
  allowedIndices:{type:"array",minItems:1,maxItems:4,uniqueItems:true,items:{type:"integer",minimum:0,maximum:3}},
  expiresInMinutes:{type:"integer",minimum:1,maximum:1440},confirmed:{type:"boolean",const:true},
-  mode:{type:"string",enum:["model","local_comfy"]}}};
+  mode:{type:"string",enum:["model","local_comfy","local_comfy_media"]},instanceId:id}};
 const budgetGrantParams={type:"object",required:["id","taskId","grantId"],
  properties:{id,taskId:id,grantId:id}};
 const budgetRevokeBody={type:"object",additionalProperties:false,required:["requestId"],

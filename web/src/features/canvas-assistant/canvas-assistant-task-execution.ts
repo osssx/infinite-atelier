@@ -67,12 +67,12 @@ export async function verifyFrozenAssistantTextDeliverable({projectId,taskId,ste
  * automatically reconstruct and approve a different set of actions.
  */
 export async function planAndExecuteAssistantCanvasActions({
- projectId,taskId,messageId,actions,center,signal,confirm,sequenceBinding,agentRunId
+ projectId,taskId,messageId,actions,center,signal,confirm,sequenceBinding,agentRunId,mediaGrantId
 }:{
  projectId:string;taskId:string;messageId:string;actions:unknown[];
  center:{x:number;y:number};signal:AbortSignal;confirm:(step:FrozenCanvasTaskStep)=>Promise<boolean>;
  sequenceBinding?:{runSequenceId:string;runIndex:number;dependsOn:string[]};
- agentRunId?:string;
+ agentRunId?:string;mediaGrantId?:string;
 }):Promise<{applied:number;stepId:string;revision:number;refs:Map<string,string>}>{
  requestError(signal);
  let committed:CanvasTaskCommit|null=null;
@@ -86,14 +86,16 @@ export async function planAndExecuteAssistantCanvasActions({
    expectedPlanVersion:snapshot.task.activePlanVersion,
    expectedProjectRevision:frozen.expectedRevision,actions,center,dependsOn,
    ...(sequenceBinding?{runSequenceId:sequenceBinding.runSequenceId,runIndex:sequenceBinding.runIndex}:{}),
-   ...(agentRunId?{agentRunId}:{})
+   ...(agentRunId?{agentRunId}:{}),
+   ...(mediaGrantId?{runMediaGrantId:mediaGrantId}:{})
   },signal);
   requestError(signal);
   const accepted=await confirm(plan);
   requestError(signal);
   await canvasApi(path(projectId,taskId,plan.stepId)+"/approval","POST",{
    requestId:messageId+"-canvas-decision",expectedPlanVersion:plan.planVersion,
-   actionDigest:plan.actionDigest,decision:accepted?"approve":"reject"
+   actionDigest:plan.actionDigest,decision:accepted?"approve":"reject",
+   ...(mediaGrantId&&accepted?{grantId:mediaGrantId}:{})
   },signal);
   if(!accepted)throw Error("assistant_task_canvas_rejected");
   committed=await canvasApi<CanvasTaskCommit>(path(projectId,taskId,plan.stepId)+"/execute","POST",{

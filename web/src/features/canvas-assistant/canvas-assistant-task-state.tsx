@@ -28,7 +28,7 @@ type RunBudgetGrant={grantId:string;sequenceId:string;planVersion:number;
  maxJobs:number;consumedJobs:number;remainingJobs:number;allowedIndices:number[];
  expiresAt:number;active:boolean;revoked:boolean;executionStarted:boolean;
  modelScopeSummary?:{provider:string;kind:string;model:string};
- mode?:"local_comfy";comfyScopeSummary?:{instanceId:string;templateId:string;templateRevision:string}};
+ mode?:"model"|"local_comfy"|"local_comfy_media";comfyScopeSummary?:{instanceId:string;templateId:string;templateRevision:string}};
 type TaskCostReport={taskId:string;projectId:string;
  summary:{jobCount:number;reportedJobCount:number;unavailableJobCount:number;
  billingUnverifiedJobCount:number;notSubmittedJobCount:number;
@@ -48,17 +48,17 @@ type FailureRecovery={canRecover:boolean;reason:string;planVersion:number;projec
  failureReason?:string;sourceJobId?:string;fallbackAction?:{type:"run_node";nodeId:string;mode?:string};
  evidenceDigest?:string};
 type Args={projectId:string;activeChatId:string|null;session?:CanvasAssistantSession;
- open:boolean;sending:boolean;includeContext:boolean;scope:AssistantContextScope;includedIds:string[];
+ open:boolean;sending:boolean;includeContext:boolean;scope:AssistantContextScope;includedIds:string[];comfyInstanceId?:string|null;
  onDraft:(value:string)=>void;
  onStartChat?:()=>string;
- onRunSequenceStep?:(taskId:string,view:AssistantRunSequenceView,grantId?:string)=>Promise<void>;
+ onRunSequenceStep?:(taskId:string,view:AssistantRunSequenceView,grantId?:string,grantMode?:string)=>Promise<void>;
  onGenerateSemanticProposals?:(taskId:string,turnMessageId:string,signal:AbortSignal)=>Promise<void>};
 type TaskResponse={task:Task;existing?:boolean;executionStarted?:boolean};
 const taskStatusLabel:Record<string,string>={planning:"待规划",ready:"可继续",waiting_approval:"等待确认",running:"执行中",waiting_external:"等待外部",blocked:"已阻断",needs_reconcile:"需要对账",cancelling:"正在取消",failed:"失败",completed:"已完成",cancelled:"已结束记录"};
 
 /** Task-associated Skill and Job runs are persisted before execution and observed by Run ID. */
 export function useCanvasAssistantTasks({
- projectId,activeChatId,session,open,sending,includeContext,scope,includedIds,onDraft,onStartChat,onRunSequenceStep,onGenerateSemanticProposals
+ projectId,activeChatId,session,open,sending,includeContext,scope,includedIds,comfyInstanceId,onDraft,onStartChat,onRunSequenceStep,onGenerateSemanticProposals
 }:Args){
  const [items,setItems]=useState<Task[]>([]);
  const [selectedId,setSelectedId]=useState<string|null>(null);
@@ -88,6 +88,8 @@ export function useCanvasAssistantTasks({
  const [runSequence,setRunSequence]=useState<AssistantRunSequenceView|null>(null);
  const [runBudget,setRunBudget]=useState<RunBudgetGrant|null>(null);
  const [runBudgetConsent,setRunBudgetConsent]=useState(false);
+ const [runMediaConsent,setRunMediaConsent]=useState(false);
+ const mediaConsentKey=useRef("");
  const runBudgetConsentKey=useRef("");
  const [runBudgetLimit,setRunBudgetLimit]=useState(1);
  const runBudgetAttempted=useRef(new Set<string>());
@@ -496,6 +498,25 @@ export function useCanvasAssistantTasks({
       "当前工作流不符合静态同模板范围，请逐项审批生成。":error instanceof Error?error.message:"未知错误"));
   }finally{setBusy(false);}
  };
+ const grantMediaWorkflow=async()=>{
+  const seq=runSequence?.sequence;
+  if(!selected||!seq||mediaIndex<1||!comfyInstanceId||busy||sending||
+   runBudget?.active||!runMediaConsent||mediaConsentKey.current!==mediaScopeKey)return;
+  setBusy(true);setError("");
+  const epoch=continuationEpoch.current;
+  try{
+   const granted=await canvasApi<RunBudgetGrant>(path(selected.id)+"/run-budget","POST",{
+    requestId:nanoid(),sequenceId:seq.id,expectedPlanVersion:seq.planVersion,
+    mode:"local_comfy_media",instanceId:comfyInstanceId,allowedIndices:[mediaIndex],
+    maxJobs:1,expiresInMinutes:30,confirmed:true
+   });
+   if(epoch!==continuationEpoch.current)return;
+   runBudgetReadEpoch.current++;setRunBudget(granted);setRunMediaConsent(false);
+   setSafeContinuationNotice("已批准本地媒体链：仅连接前驱唯一可信产物至已指定端口，最多运行一个下游 ComfyUI Job；遇多候选或证据失效将停止。");
+  }catch(error){if(epoch===continuationEpoch.current)
+   setError("媒体链授权失败，未修改画布或提交 Job："+(error instanceof Error?error.message:"未知错误"));}
+  finally{setBusy(false);}
+ };
  const revokeRunBudget=async()=>{
   if(!selected||busy||!runBudget)return;
   setBusy(true);setError("");
@@ -691,8 +712,8 @@ export function useCanvasAssistantTasks({
   const view=runSequence,next=view?.next,grant=runBudget,task=selected;
   if(!open||busy||sending||!task||!onRunSequenceStep||!view?.sequence||
    view.sequence.taskId!==task.id||view.state!=="ready"||!next||
-   next.action.type!==(grant?.mode==="local_comfy"?"run_workflow":"run_node")||
-    next.needsBinding||!grant?.active||
+   next.action.type!==(grant?.mode==="local_comfy"||grant?.mode==="local_comfy_media"?"run_workflow":"run_node")||
+    (next.needsBinding&&grant?.mode!=="local_comfy_media")||!grant?.active||
    grant.sequenceId!==view.sequence.id||grant.planVersion!==view.sequence.planVersion||
    !grant.allowedIndices.includes(next.index)||grant.remainingJobs<1||detail?.readOnly||
    !["planning","ready","waiting_approval"].includes(detail?.status??""))
@@ -703,7 +724,7 @@ export function useCanvasAssistantTasks({
   const taskId=task.id,epoch=continuationEpoch.current;
   void (async()=>{
    let failed=false;
-   try{await onRunSequenceStep(taskId,view,grant.grantId);}
+   try{await onRunSequenceStep(taskId,view,grant.grantId,grant.mode);}
    catch(error){failed=true;if(epoch===continuationEpoch.current)
     setError("预授权自动步骤已停止；不会自动重复提交。请检查 Job/Task 回执："+(error instanceof Error?error.message:"未知错误"));}
    finally{
@@ -723,6 +744,13 @@ export function useCanvasAssistantTasks({
  },[open,busy,sending,selected?.id,onRunSequenceStep,
   runSequence?.state,runSequence?.next?.index,runBudget?.grantId,runBudget?.active,
   runBudget?.remainingJobs,detail?.readOnly,detail?.status]);
+ const mediaIndex=runSequence?.sequence?.actions.findIndex((action,index)=>
+  index>0&&index<=2&&action.type==="run_workflow"&&!!action.inputFromPrevious&&
+  !action.when&&index>=(runSequence?.next?.index??runSequence?.index??0))??-1;
+ const mediaAction=mediaIndex>=1?runSequence?.sequence?.actions[mediaIndex]:null;
+ const mediaScopeKey=JSON.stringify([projectId,selectedId,activeChatId,runSequence?.sequence?.id,
+  runSequence?.sequence?.planVersion,mediaIndex,mediaAction,comfyInstanceId]);
+ useEffect(()=>{setRunMediaConsent(false);mediaConsentKey.current="";},[mediaScopeKey]);
  const currentBudgetAction=runSequence?.next?.action??
   runSequence?.sequence?.actions[runSequence?.index??0];
  const nextBudgetMode=currentBudgetAction?.type==="run_workflow"?"local_comfy":"model";
@@ -963,6 +991,25 @@ export function useCanvasAssistantTasks({
          {runBudget.comfyScopeSummary.templateId} · {runBudget.comfyScopeSummary.templateRevision.slice(0,12)}</span>:null}</p>
       {runBudget.active?<button type="button" className="canvas-assistant-link"
        disabled={busy} onClick={()=>void revokeRunBudget()}>撤销剩余自动入队授权</button>:null}
+     </div>:null}
+    {!runBudget?.active&&mediaAction?.type==="run_workflow"&&mediaIndex>=1&&!detail?.readOnly?
+     <div className="mt-2 rounded border p-2 text-xs" style={{borderColor:"var(--assistant-border)"}}>
+      <p className="font-medium">本地 ComfyUI：可信媒体链预授权（仅一次）</p>
+      <p>前一步生成的唯一可信 {mediaAction.inputFromPrevious?.sourceKind} 产物，
+       连接到第 {mediaIndex+1} 项节点 {mediaAction.nodeId} 的
+       {mediaAction.inputFromPrevious?.toPortId} 端口，然后提交一个本地 ComfyUI Job。
+       多候选、输入冲突、缺失 CAS 或模板变化时停止；不会自动重新提交。</p>
+      <p>ComfyUI 实例：{comfyInstanceId??"未选择"}；有效期 30 分钟，仅画布打开时尝试。</p>
+      <label className="mt-2 flex items-start gap-2">
+       <input type="checkbox" aria-label="确认本地媒体链自动绑定与生成"
+        checked={runMediaConsent}
+        onChange={event=>{setRunMediaConsent(event.target.checked);
+         mediaConsentKey.current=event.target.checked?mediaScopeKey:"";}}/>
+       <span>我确认允许连接上述唯一可信产物并自动执行一次下游工作流，消耗本地 GPU 资源。</span>
+      </label>
+      <button type="button" className="canvas-assistant-link mt-1"
+       disabled={busy||sending||!comfyInstanceId||!runMediaConsent}
+       onClick={()=>void grantMediaWorkflow()}>批准唯一媒体连线及一次 ComfyUI 生成</button>
      </div>:null}
     {!runBudget?.active&&runBudgetEligible>0&&!detail?.readOnly?
      <div className="mt-2 rounded border p-2 text-xs" style={{borderColor:"var(--assistant-border)"}}>

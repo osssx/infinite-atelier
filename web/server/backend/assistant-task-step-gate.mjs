@@ -2,6 +2,7 @@ import {createHash,randomUUID} from "node:crypto";
 import {assertNoRawCredentials,stableJson,writeTransaction} from "./repository.mjs";
 import {assertAssistantDeliverableBinding,assertAssistantStructuredSourceCurrent} from "./assistant-task-deliverables.mjs";
 import {assertAssistantAgentCanvasBinding} from "./assistant-agent-step-coordinator.mjs";
+import {assertAssistantRunMediaBindingConsent} from "./assistant-task-run-media-grant.mjs";
 
 const fail=(code,statusCode=409)=>Object.assign(Error(code),{code,statusCode});
 const id=x=>typeof x==="string"&&/^[A-Za-z0-9_-]{1,128}$/.test(x);
@@ -127,11 +128,12 @@ export function blockUnreachableAssistantTaskStepsWithinTransaction(db,taskId,pl
  * persisted frozen action, plan, graph fence and decision on every fresh vote.
  */
 export function decideAssistantTaskStep(db,{projectId,taskId,stepId,requestId,
- expectedPlanVersion,actionDigest,decision}){
+ expectedPlanVersion,actionDigest,decision,grantId}){
  if(!id(requestId)||!["approve","reject"].includes(decision)||
   typeof actionDigest!=="string"||!/^[a-f0-9]{64}$/.test(actionDigest))
   throw fail("assistant_step_invalid",400);
- const signature=digest({kind:"step_decision",taskId,stepId,expectedPlanVersion,actionDigest,decision});
+ const signature=digest({kind:"step_decision",taskId,stepId,expectedPlanVersion,actionDigest,decision,
+  ...(grantId?{grantId}:{})});
  return writeTransaction(db,()=>{
   const known=db.prepare("SELECT command_kind,payload_digest,status,response_json FROM assistant_task_commands WHERE project_id=? AND request_id=?")
    .get(projectId,requestId);
@@ -146,6 +148,10 @@ export function decideAssistantTaskStep(db,{projectId,taskId,stepId,requestId,
   if(step.action_digest!==actionDigest)throw fail("assistant_step_action_changed");
   assertFrozenAction(step);
   const frozen=JSON.parse(step.preconditions_json),approval=JSON.parse(step.approval_json);
+  if(grantId&&grantId!==frozen.runMediaGrantId||
+   decision==="approve"&&(grantId??null)!==(frozen.runMediaGrantId??null))
+   throw fail("assistant_run_media_grant_required");
+  if(grantId&&decision==="approve")assertAssistantRunMediaBindingConsent(db,{projectId,taskId,step,grantId});
   assertAssistantDeliverableBinding(JSON.parse(step.action_json),frozen);
   if(decision==="approve")assertAssistantStructuredSourceCurrent(db,taskId,frozen.deliverableSpec);
   // Rejecting a frozen Step must remain possible even if its model source was
@@ -174,7 +180,8 @@ export function decideAssistantTaskStep(db,{projectId,taskId,stepId,requestId,
      .get(JSON.parse(step.action_json).job?.snapshot?.instanceId??null)?.url:null;
    const record={...(approvedComfy?{comfyInstanceUrl:approvedComfy}:{}),
     decision:choice,planVersion:expectedPlanVersion,
-    actionDigest,projectRevision:frozen.projectRevision,decidedAt};
+    actionDigest,projectRevision:frozen.projectRevision,decidedAt,
+    ...(grantId?{grantId}:{})};
    const next=decision==="approve"?"ready":"blocked";
    const updated=db.prepare("UPDATE assistant_task_steps SET approval_json=?,status=?,updated_at=? WHERE id=? AND task_id=? AND status=? AND plan_version=?")
     .run(encode(record),next,decidedAt,stepId,taskId,step.status,expectedPlanVersion);
@@ -223,6 +230,10 @@ export function claimAssistantTaskStep(db,{projectId,taskId,stepId,expectedPlanV
   if(!Number.isSafeInteger(pre.projectRevision)||task.revision!==pre.projectRevision||
    pre.projectGraphDigest!==digest(JSON.parse(task.document_json)))
    throw fail("assistant_step_source_changed");
+  if(pre.runMediaGrantId){
+   if(approval.grantId!==pre.runMediaGrantId)throw fail("assistant_run_media_grant_required");
+   assertAssistantRunMediaBindingConsent(db,{projectId,taskId,step,grantId:pre.runMediaGrantId});
+  }
   if(!pre.requiresApproval||approval.decision!=="approved"||
    approval.actionDigest!==step.action_digest||approval.planVersion!==expectedPlanVersion||
    approval.projectRevision!==pre.projectRevision)

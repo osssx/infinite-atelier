@@ -6,6 +6,7 @@ import {createHash,randomUUID} from "node:crypto";
 import {stableJson,writeTransaction,fingerprintSource} from "./repository.mjs";
 import {assertAssistantBudgetRunEvidence} from "./assistant-task-run-sequences.mjs";
 import {frozenLocalComfyScope} from "./assistant-local-comfy-scope.mjs";
+import {freezeAssistantRunMediaGrant,authorizeAssistantRunMediaJob} from "./assistant-task-run-media-grant.mjs";
 const fail=(code,statusCode=409)=>Object.assign(Error(code),{code,statusCode});
 const id=x=>typeof x==="string"&&/^[A-Za-z0-9_-]{1,128}$/.test(x);
 const hash=x=>createHash("sha256").update(stableJson(x)).digest("hex");
@@ -79,14 +80,15 @@ function stateFor(db,projectId,taskId,grantId){
  const active=!revoked&&!task.read_only&&task.cancel_requested_at===null&&
   (grant.mode!=="local_comfy"||!!grant.comfyInstanceUrl&&
    db.prepare("SELECT url FROM comfy_instances WHERE id=?").get(grant.comfyScopeSummary?.instanceId)?.url===grant.comfyInstanceUrl)&&
-  [1,2].includes(grant.payloadPolicyVersion)&&!!grant.payloadDigests&&!!grant.sourceFingerprints&&
+  [1,2,3].includes(grant.payloadPolicyVersion)&&!!grant.payloadDigests&&!!grant.sourceFingerprints&&
   !terminal.has(task.status)&&task.active_plan_version===grant.planVersion&&
   Date.now()<grant.expiresAt&&spent.length<grant.maxJobs;
  return {grantId,sequenceId:grant.sequenceId,planVersion:grant.planVersion,
   maxJobs:grant.maxJobs,consumedJobs:spent.length,remainingJobs:Math.max(0,grant.maxJobs-spent.length),
   allowedIndices:grant.allowedIndices,expiresAt:grant.expiresAt,revoked,active,
   modelScopeSummary:grant.modelScopeSummary,
-  ...(grant.mode==="local_comfy"?{mode:"local_comfy",comfyScopeSummary:grant.comfyScopeSummary}:{}),
+  ...(["local_comfy","local_comfy_media"].includes(grant.mode)?
+   {mode:grant.mode,comfyScopeSummary:grant.comfyScopeSummary}:{mode:"model"}),
   executionStarted:spent.length>0};
 }
 export function getAssistantRunBudgetState(db,{projectId,taskId}){
@@ -103,9 +105,10 @@ export function getAssistantRunBudgetGrant(db,{projectId,taskId,grantId}){
  return state;
 }
 export function createAssistantRunBudgetGrant(db,{projectId,taskId,requestId,sequenceId,
- expectedPlanVersion,maxJobs,allowedIndices,expiresInMinutes=30,confirmed,mode="model"}={}){
+ expectedPlanVersion,maxJobs,allowedIndices,expiresInMinutes=30,confirmed,mode="model",instanceId}={}){
  if(![projectId,taskId,requestId,sequenceId].every(id)||
-  !["model","local_comfy"].includes(mode)||
+  !["model","local_comfy","local_comfy_media"].includes(mode)||
+  mode==="local_comfy_media"&&(!id(instanceId)||maxJobs!==1||allowedIndices?.length!==1)||
   !Number.isSafeInteger(expectedPlanVersion)||expectedPlanVersion<1||confirmed!==true||
   !Number.isSafeInteger(maxJobs)||maxJobs<1||maxJobs>4||
   !Number.isSafeInteger(expiresInMinutes)||expiresInMinutes<1||expiresInMinutes>1440||
@@ -114,7 +117,7 @@ export function createAssistantRunBudgetGrant(db,{projectId,taskId,requestId,seq
   new Set(allowedIndices).size!==allowedIndices.length||maxJobs>allowedIndices.length)
   throw fail("assistant_run_budget_invalid",400);
  const payload={taskId,sequenceId,expectedPlanVersion,maxJobs,allowedIndices,expiresInMinutes,confirmed:true,
-  ...(mode==="local_comfy"?{mode}:{})};
+  ...(mode==="local_comfy_media"?{mode,instanceId}:mode==="local_comfy"?{mode}:{})};
  const signature=hash(payload);
  return writeTransaction(db,()=>{
   const prior=db.prepare("SELECT command_kind,payload_digest,response_json FROM assistant_task_commands "+
@@ -134,6 +137,8 @@ export function createAssistantRunBudgetGrant(db,{projectId,taskId,requestId,seq
    "WHERE task_id=? AND kind='run_budget_granted'").all(taskId);
   if(grants.some(row=>stateFor(db,projectId,taskId,row.id)?.active))
    throw fail("assistant_run_budget_already_active");
+  const mediaScope=mode==="local_comfy_media"?freezeAssistantRunMediaGrant(db,{
+   doc,actions,runIndex:allowedIndices[0],instanceId}):null;
   // A prior individual approval anchors the exact model/channel/kind. UI may
   // authorize only remaining homogeneous node generations under this anchor.
   const anchorRows=db.prepare("SELECT s.action_json,s.approval_json,s.preconditions_json FROM assistant_task_steps s "+
@@ -162,13 +167,17 @@ export function createAssistantRunBudgetGrant(db,{projectId,taskId,requestId,seq
   const nodeDigests={},sourceFingerprints={},payloadDigests={};
   for(const index of allowedIndices){
    const action=actions[index];
-   if(!action||action.type!==(mode==="local_comfy"?"run_workflow":"run_node")||
-    action.inputFromPrevious||action.join||
+   if(!action||action.type!==(mode==="model"?"run_node":"run_workflow")||
+    (mode!=="local_comfy_media"&&action.inputFromPrevious)||action.join||
     typeof action.nodeId!=="string"||!doc.nodes.some(n=>n.id===action.nodeId))
     throw fail("assistant_run_budget_scope_invalid",400);
    nodeDigests[index]=nodeDigest(doc,action.nodeId);
    sourceFingerprints[index]=fingerprintSource(doc,action.nodeId);
-   if(mode==="local_comfy"){
+   if(mode==="local_comfy_media"){
+    if(index!==allowedIndices[0]||action.nodeId!==mediaScope.targetNodeId)
+     throw fail("assistant_run_media_scope_invalid",400);
+    payloadDigests[index]=hash(mediaScope);
+   }else if(mode==="local_comfy"){
     const node=doc.nodes.find(n=>n.id===action.nodeId);
     if(node?.type!=="comfy:workflow"||node.metadata?.comfyMediaPreset||
      doc.connections.some(edge=>edge.toNodeId===action.nodeId)||
@@ -187,11 +196,14 @@ export function createAssistantRunBudgetGrant(db,{projectId,taskId,requestId,seq
   }
   const at=Date.now(),grantId=randomUUID(),grant={grantId,sequenceId,planVersion:expectedPlanVersion,
    intentDigest:seq.intent_digest,allowedIndices,maxJobs,nodeDigests,sourceFingerprints,payloadDigests,
-   payloadPolicyVersion:mode==="local_comfy"?2:1,
+   payloadPolicyVersion:mode==="local_comfy_media"?3:mode==="local_comfy"?2:1,
+   ...(mode==="local_comfy_media"?{mode,runIndex:allowedIndices[0],mediaScope,
+    comfyScopeSummary:{instanceId,templateId:mediaScope.templateId,
+     templateRevision:mediaScope.templateRevision}}:{}),
    ...(mode==="local_comfy"?{mode,comfyInstanceUrl,comfyScopeDigest:hash(anchorComfy),
     comfyScopeSummary:{instanceId:anchorComfy.instanceId,templateId:anchorComfy.templateId,
      templateRevision:anchorComfy.templateRevision}}:
-    {modelScopeDigest:hash(anchorScope),modelScopeSummary:{
+    mode==="local_comfy_media"?{}:{modelScopeDigest:hash(anchorScope),modelScopeSummary:{
      provider:anchorScope.provider,kind:anchorScope.kind,model:anchorScope.model}}),
    createdAt:at,
    expiresAt:at+expiresInMinutes*60000};
@@ -200,7 +212,8 @@ export function createAssistantRunBudgetGrant(db,{projectId,taskId,requestId,seq
   const response={grantId,sequenceId,planVersion:expectedPlanVersion,
    maxJobs,consumedJobs:0,remainingJobs:maxJobs,allowedIndices,expiresAt:grant.expiresAt,
    active:true,revoked:false,executionStarted:false,
-   ...(mode==="local_comfy"?{mode,comfyScopeSummary:grant.comfyScopeSummary}:
+   ...(mode==="local_comfy"||mode==="local_comfy_media"?
+    {mode,comfyScopeSummary:grant.comfyScopeSummary}:
     {modelScopeSummary:grant.modelScopeSummary})};
   db.prepare("INSERT INTO assistant_task_commands(project_id,request_id,task_id,command_kind,payload_digest,status,response_json,created_at) "+
    "VALUES(?,?,?,'run_budget_grant',?,'completed',?,?)")
@@ -228,6 +241,12 @@ export function authorizeAssistantRunBudgetEnqueue(db,{projectId,taskId,grantId,
  if(!state?.active)throw fail("assistant_run_budget_not_active");
  const grant=ledger(db,taskId,grantId).find(e=>e.kind==="run_budget_granted")?.payload;
  const pre=JSON.parse(step.preconditions_json),action=JSON.parse(step.action_json),seq=seqRow(db,task,grant.sequenceId);
+ if(grant.mode==="local_comfy_media"){
+  const admission=authorizeAssistantRunMediaJob(db,{projectId,taskId,grantId,step});
+  assertAssistantBudgetRunEvidence(db,{projectId,taskId,sequenceId:grant.sequenceId,
+   planVersion:grant.planVersion,runIndex:grant.runIndex});
+  return admission;
+ }
  const doc=JSON.parse(task.document_json);
  const comfy=grant.mode==="local_comfy"&&grant.payloadPolicyVersion===2;
  if(seq.intent_digest!==grant.intentDigest||pre.runSequenceId!==grant.sequenceId||

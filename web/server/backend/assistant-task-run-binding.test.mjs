@@ -13,6 +13,8 @@ import {decideAssistantTaskStep,claimAssistantTaskStep} from "./assistant-task-s
 import {planAssistantCanvasStep,executeAssistantCanvasStep,recoverAssistantCanvasTasksAtStartup} from "./assistant-task-canvas-executor.mjs";
 import {planAssistantExternalJobStep,enqueueAssistantExternalJobStep,reconcileAssistantExternalTask,recoverAssistantExternalTasksAtStartup} from "./assistant-task-external-jobs.mjs";
 import {registerAssistantRunSequence,getAssistantRunSequence,selectAssistantRunInput,skipAssistantRunBranch} from "./assistant-task-run-sequences.mjs";
+import {createAssistantRunBudgetGrant,getAssistantRunBudgetGrant,revokeAssistantRunBudgetGrant} from "./assistant-task-run-budget.mjs";
+import {assertAssistantRunMediaPlanConsent} from "./assistant-task-run-media-grant.mjs";
 
 const sha="a".repeat(64),shaTwo="c".repeat(64),revision="b".repeat(64);
 const template={id:"demo-image-refine",revision,name:"Image refine",
@@ -516,4 +518,185 @@ test("P3c2 binding rejects wrong source, wrong type, missing CAS and forged snap
  const actionJson=JSON.parse(one(ctx.db,"SELECT action_json FROM assistant_task_steps WHERE id=?",fresh.stepId).action_json);
  assert.equal(actionJson.job.snapshot.comfyRequest.externalInputs[0].sha256,sha);
  assert.equal(count(ctx.db,"jobs"),1);
+});
+
+function mediaAuthorization(ctx,opts={}){
+ ctx.db.prepare("INSERT OR IGNORE INTO comfy_instances(id,url) VALUES('comfy-local','http://127.0.0.1:8188')").run();
+ return createAssistantRunBudgetGrant(ctx.db,{projectId:"p",taskId:ctx.taskId,
+  requestId:"media-grant",sequenceId:ctx.seq.sequenceId,expectedPlanVersion:1,
+  mode:"local_comfy_media",instanceId:"comfy-local",
+  maxJobs:1,allowedIndices:[1],expiresInMinutes:30,confirmed:true,...opts});
+}
+function consentBoundMediaStep(ctx){
+ const view=getAssistantRunSequence(ctx.db,ctx),binding=view.next.inputBinding;
+ const graph=getProject(ctx.db,"p");
+ const step=planAssistantCanvasStep(ctx.db,{...ctx,requestId:"media-binding",
+  expectedPlanVersion:1,expectedProjectRevision:graph.revision,
+  actions:[{type:"connect_workflow_port",fromNodeId:binding.sourceNodeId,
+   fromPortId:binding.sourcePortId,toNodeId:binding.toNodeId,toPortId:binding.toPortId}],
+  center:{x:0,y:0},dependsOn:view.next.dependsOn,
+  runSequenceId:ctx.seq.sequenceId,runIndex:1,
+  runMediaGrantId:ctx.mediaGrant.grantId});
+ return step;
+}
+test("P4.5b one user consent freezes unique image CAS edge then authorizes exactly one downstream Comfy Job",t=>{
+ const ctx=setup(t),grant=mediaAuthorization(ctx);ctx.mediaGrant=grant;
+ assert.equal(grant.mode,"local_comfy_media");
+ assert.equal(grant.remainingJobs,1);
+ assert.equal(count(ctx.db,"jobs"),0);
+ const first=generateFirst(ctx);
+ assert.equal(count(ctx.db,"jobs"),1,"Consent alone must not enqueue a downstream Job");
+ materialize(ctx,first);
+ const step=consentBoundMediaStep(ctx);
+ assert.equal(step.status,"waiting_approval");
+ assert.equal(count(ctx.db,"jobs"),1);
+ assert.throws(()=>decideAssistantTaskStep(ctx.db,{...ctx,stepId:step.stepId,
+  requestId:"unprivileged-decision",expectedPlanVersion:1,
+  actionDigest:step.actionDigest,decision:"approve"}),{code:"assistant_run_media_grant_required"});
+ const approved=decideAssistantTaskStep(ctx.db,{...ctx,stepId:step.stepId,
+  requestId:"consented-decision",expectedPlanVersion:1,
+  actionDigest:step.actionDigest,decision:"approve",grantId:grant.grantId});
+ assert.equal(approved.status,"ready");
+ const applied=executeAssistantCanvasStep(ctx.db,{...ctx,stepId:step.stepId,
+  requestId:"consented-graph-commit",expectedPlanVersion:1,actionDigest:step.actionDigest});
+ assert.equal(applied.status,"succeeded");
+ const edge=applied.project.document.connections.find(e=>e.toNodeId==="wf");
+ assert.equal(edge.fromNodeId,"rendered");assert.equal(edge.toPortId,"image_in");
+ assert.equal(getAssistantRunSequence(ctx.db,ctx).next.needsBinding,false);
+ const planned=nextJob(ctx);
+ assert.equal(planned.status,"waiting_approval");
+ const sent=enqueueAssistantExternalJobStep(ctx.db,{...ctx,stepId:planned.stepId,
+  requestId:"media-once",expectedPlanVersion:1,actionDigest:planned.actionDigest,
+  grantId:grant.grantId});
+ assert.ok(sent.jobId);
+ assert.equal(count(ctx.db,"jobs"),2);
+ assert.equal(getAssistantRunBudgetGrant(ctx.db,{...ctx,grantId:grant.grantId}).remainingJobs,0);
+ const stored=JSON.parse(one(ctx.db,"SELECT snapshot_json FROM jobs WHERE id=?",sent.jobId).snapshot_json);
+ assert.equal(stored.comfyRequest.externalInputs[0].assetId,sha);
+ assert.equal(stored.comfyRequest.nodes[0].templateRevision,revision);
+ assert.equal(enqueueAssistantExternalJobStep(ctx.db,{...ctx,stepId:planned.stepId,
+  requestId:"media-replay-different-request",expectedPlanVersion:1,
+  actionDigest:planned.actionDigest,grantId:grant.grantId}).jobId,sent.jobId);
+ assert.equal(count(ctx.db,"jobs"),2,"No duplicate Comfy submit may be created");
+});
+test("P4.5b multiple verified images stop rather than silently choosing a media input",t=>{
+ const ctx=setup(t);ctx.mediaGrant=mediaAuthorization(ctx);
+ materialize(ctx,generateFirst(ctx),{multi:true});
+ assert.equal(getAssistantRunSequence(ctx.db,ctx).state,"selection_required");
+ assert.equal(count(ctx.db,"jobs"),1);
+ // Even a previous explicit selection does not authorize auto-binding multiple candidates.
+ const view=getAssistantRunSequence(ctx.db,ctx);
+ const graph=getProject(ctx.db,"p");
+ selectAssistantRunInput(ctx.db,{...ctx,requestId:"human-select",runSequenceId:ctx.seq.sequenceId,
+  runIndex:1,artifactId:view.selectionCandidates[0].artifactId,
+  expectedPlanVersion:1,expectedProjectRevision:graph.revision});
+ assert.equal(getAssistantRunSequence(ctx.db,ctx).state,"ready");
+ assert.throws(()=>consentBoundMediaStep(ctx),{code:"assistant_run_media_unique_source_required"});
+ assert.equal(count(ctx.db,"jobs"),1);
+ assert.equal(count(ctx.db,"assistant_task_steps"),2);
+});
+test("P4.5b missing CAS, repointed instance and changed Comfy pin invalidate the grant before graph mutation",t=>{
+ for(const variant of ["cas","endpoint","template"]){
+  const ctx=setup(t);ctx.mediaGrant=mediaAuthorization(ctx);
+  materialize(ctx,generateFirst(ctx));
+  if(variant==="cas")ctx.db.prepare("UPDATE blobs SET status='missing' WHERE id=?").run(sha);
+  if(variant==="endpoint")ctx.db.prepare("UPDATE comfy_instances SET url='http://127.0.0.1:9999'").run();
+  if(variant==="template"){
+   const graph=getProject(ctx.db,"p").document;graph.nodes.find(n=>n.id==="wf").metadata.comfyWorkflow.inputOverrides={seed:999};
+   ctx.db.prepare("UPDATE projects SET document_json=?,revision=revision+1 WHERE id='p'").run(JSON.stringify(graph));
+  }
+  assert.throws(()=>consentBoundMediaStep(ctx),undefined,variant);
+  assert.equal(count(ctx.db,"jobs"),1);
+  assert.equal(ctx.db.prepare("SELECT COUNT(*) n FROM assistant_task_steps WHERE kind='canvas_mutation'").get().n,0);
+ }
+});
+test("P4.5b media grant revocation after freeze blocks claim and never changes the graph",t=>{
+ const ctx=setup(t);ctx.mediaGrant=mediaAuthorization(ctx);
+ materialize(ctx,generateFirst(ctx));
+ const step=consentBoundMediaStep(ctx);
+ decideAssistantTaskStep(ctx.db,{...ctx,stepId:step.stepId,requestId:"approved-by-consent",
+  expectedPlanVersion:1,actionDigest:step.actionDigest,decision:"approve",grantId:ctx.mediaGrant.grantId});
+ revokeAssistantRunBudgetGrant(ctx.db,{...ctx,grantId:ctx.mediaGrant.grantId,requestId:"revoked"});
+ assert.throws(()=>executeAssistantCanvasStep(ctx.db,{...ctx,stepId:step.stepId,
+  requestId:"revoked-binding",expectedPlanVersion:1,actionDigest:step.actionDigest}),
+  {code:"assistant_run_media_grant_not_active"});
+ assert.equal(getProject(ctx.db,"p").document.connections.length,0);
+ assert.equal(count(ctx.db,"jobs"),1);
+});
+
+test("P4.5b media grant rejects hidden Comfy options and altered frozen payload before enqueue",t=>{
+ for(const [label,modify] of [
+  ["unapproved-run-options",spec=>{spec.job.snapshot.comfyRequest.runOptions={skipValidation:true}}],
+  ["extra-root",spec=>{spec.job.snapshot.comfyRequest.rootOutputs.push({nodeId:"wf",portId:"image_in"})}],
+  ["extra-request",spec=>{spec.job.snapshot.comfyRequest.otherPrompt="unapproved"}],
+  ["extra-snapshot",spec=>{spec.job.snapshot.comfyTargetBinding={mode:"video"}}],
+  ["changed-template",spec=>{spec.job.snapshot.comfyTemplate={...template,name:"changed"}}]
+ ]){
+  const ctx=setup(t);ctx.mediaGrant=mediaAuthorization(ctx);
+  materialize(ctx,generateFirst(ctx));
+  const binding=consentBoundMediaStep(ctx);
+  decideAssistantTaskStep(ctx.db,{...ctx,stepId:binding.stepId,requestId:"approve",
+   expectedPlanVersion:1,actionDigest:binding.actionDigest,decision:"approve",grantId:ctx.mediaGrant.grantId});
+  executeAssistantCanvasStep(ctx.db,{...ctx,stepId:binding.stepId,
+   requestId:"commit",expectedPlanVersion:1,actionDigest:binding.actionDigest});
+  let planned;
+  try{planned=nextJob(ctx,modify)}catch{
+   assert.equal(count(ctx.db,"jobs"),1,label);continue;
+  }
+  assert.throws(()=>enqueueAssistantExternalJobStep(ctx.db,{...ctx,stepId:planned.stepId,
+   requestId:"cannot-enqueue",expectedPlanVersion:1,
+   actionDigest:planned.actionDigest,grantId:ctx.mediaGrant.grantId}),undefined,label);
+  assert.equal(count(ctx.db,"jobs"),1,label);
+  assert.equal(getAssistantRunBudgetGrant(ctx.db,{...ctx,grantId:ctx.mediaGrant.grantId}).remainingJobs,1,label);
+ }
+});
+
+test("P4.5b HTTP requires explicit dynamic media consent for approval and downstream enqueue",async t=>{
+ const ctx=setup(t);
+ ctx.db.prepare("INSERT INTO comfy_instances(id,url) VALUES('comfy-local','http://127.0.0.1:8188')").run();
+ const app=buildApp({db:ctx.db,authorize:async()=>true});t.after(()=>app.close());
+ const url="/api/v1/projects/p/assistant/tasks/"+ctx.taskId;
+ const payload={requestId:"media-consent-http",sequenceId:ctx.seq.sequenceId,
+  expectedPlanVersion:1,mode:"local_comfy_media",instanceId:"comfy-local",
+  maxJobs:1,allowedIndices:[1],confirmed:true};
+ const denied=await app.inject({method:"POST",url:url+"/run-budget",
+  payload:{...payload,confirmed:false}});
+ assert.equal(denied.statusCode,400);
+ const consent=await app.inject({method:"POST",url:url+"/run-budget",payload});
+ assert.equal(consent.statusCode,200,consent.body);
+ const grantId=consent.json().grantId;
+ materialize(ctx,generateFirst(ctx));
+ const view=getAssistantRunSequence(ctx.db,ctx),binding=view.next.inputBinding;
+ const step=await app.inject({method:"POST",url:url+"/canvas-steps",payload:{
+  requestId:"http-media-bind",expectedPlanVersion:1,
+  expectedProjectRevision:getProject(ctx.db,"p").revision,center:{x:0,y:0},
+  runSequenceId:ctx.seq.sequenceId,runIndex:1,runMediaGrantId:grantId,
+  dependsOn:view.next.dependsOn,
+  actions:[{type:"connect_workflow_port",fromNodeId:binding.sourceNodeId,
+   fromPortId:binding.sourcePortId,toNodeId:binding.toNodeId,toPortId:binding.toPortId}]
+ }});
+ assert.equal(step.statusCode,200,step.body);
+ const path=url+"/steps/"+step.json().stepId;
+ const approval={requestId:"http-media-approve",expectedPlanVersion:1,
+  actionDigest:step.json().actionDigest,decision:"approve"};
+ const noConsent=await app.inject({method:"POST",url:path+"/approval",payload:approval});
+ assert.equal(noConsent.statusCode,409);
+ const approved=await app.inject({method:"POST",url:path+"/approval",
+  payload:{...approval,grantId}});
+ assert.equal(approved.statusCode,200,approved.body);
+ const committed=await app.inject({method:"POST",url:path+"/execute",payload:{
+  requestId:"http-media-exec",expectedPlanVersion:1,actionDigest:step.json().actionDigest}});
+ assert.equal(committed.statusCode,200,committed.body);
+ assert.equal(getAssistantRunSequence(ctx.db,ctx).next.needsBinding,false);
+ // The HTTP app reconciles stored templates on startup. The production
+ // browser uses this same canonical pinned registry payload for its snapshot.
+ const pinned=JSON.parse(ctx.db.prepare("SELECT payload_json FROM comfy_template_versions WHERE template_id=? AND revision=?")
+  .get(template.id,revision).payload_json);
+ const downstream=nextJob(ctx,spec=>{spec.job.snapshot.comfyTemplate=pinned});
+ const enqueued=await app.inject({method:"POST",url:url+"/steps/"+downstream.stepId+"/enqueue-authorized",
+  payload:{requestId:"http-media-job",expectedPlanVersion:1,
+   actionDigest:downstream.actionDigest,grantId}});
+ assert.equal(enqueued.statusCode,200,enqueued.body);
+ assert.equal(count(ctx.db,"jobs"),2);
+ assert.equal(getAssistantRunBudgetGrant(ctx.db,{...ctx,grantId}).remainingJobs,0);
 });

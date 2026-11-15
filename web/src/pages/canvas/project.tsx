@@ -3829,7 +3829,7 @@ function AtelierCanvasPage() {
                 />
 
                 {assistantEverOpened ? <Suspense fallback={null}>
-                <CanvasAssistantPanel key={projectId} projectId={projectId}
+                <CanvasAssistantPanel key={projectId} projectId={projectId} comfyInstanceId={globalComfyInstanceId}
                     projectTitle={currentProjectTitle||"未命名画布"} open={assistantOpen}
                     onClose={()=>setAssistantOpen(false)} sessions={chatSessions} setSessions={setChatSessions}
                     activeChatId={activeChatId} setActiveChatId={setActiveChatId}

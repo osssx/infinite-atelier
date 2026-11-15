@@ -38,7 +38,7 @@ function ReferenceIcon({type}:{type:CanvasNodeTypeId}){
  return <Icon size={12} aria-hidden="true"/>;
 }
 type Props={
- projectId:string;projectTitle:string;open:boolean;onClose:()=>void;
+ projectId:string;projectTitle:string;comfyInstanceId?:string|null;open:boolean;onClose:()=>void;
  sessions:CanvasAssistantSession[];setSessions:Dispatch<SetStateAction<CanvasAssistantSession[]>>;
  activeChatId:string|null;setActiveChatId:Dispatch<SetStateAction<string|null>>;
    selectedNodes:Choice[];getContext:(ids:string[],scope:AssistantContextScope)=>AssistantContextResult;
@@ -250,7 +250,7 @@ function confirmAssistantTaskJob(step:AssistantTaskFrozenJob,payload:Record<stri
   if(signal.aborted)onAbort();
  });
 }
-export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessions,setSessions,activeChatId,setActiveChatId,selectedNodes,getContext,getResourceReferences,getWorkflowTemplates,onApplyActions,onRunActions,getCanvasCenter,config}:Props){
+export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessions,setSessions,activeChatId,setActiveChatId,selectedNodes,getContext,getResourceReferences,getWorkflowTemplates,onApplyActions,onRunActions,getCanvasCenter,config,comfyInstanceId}:Props){
   const themeName=useThemeStore(state=>state.theme);
   const theme=canvasThemes[themeName];
   const [draft,setDraft]=useState(""); const [modelRef,setModelRef]=useState(config.textModel);
@@ -302,7 +302,7 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
   setActiveChatId(id);
   return id;
  };
- const taskTracker=useCanvasAssistantTasks({projectId,activeChatId,session,open,sending,includeContext,scope,includedIds,onStartChat:startChatForTask,
+ const taskTracker=useCanvasAssistantTasks({projectId,activeChatId,session,open,sending,includeContext,scope,includedIds,comfyInstanceId,onStartChat:startChatForTask,
  onDraft:setDraft,onGenerateSemanticProposals:async(taskId,turnMessageId,signal)=>{
   const channel=resolveModelChannel(config,chosenModel);
   const provider=modelChannelProvider(channel,"text");
@@ -322,13 +322,14 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
   }finally{
    controllerRef.current=null;setSending(false);
   }
- },onRunSequenceStep:async(taskId:string,view:AssistantRunSequenceView,grantId?:string)=>{
+ },onRunSequenceStep:async(taskId:string,view:AssistantRunSequenceView,grantId?:string,grantMode?:string)=>{
    let next=canLaunchAssistantRunSequenceStep(view);
    const controller=new AbortController();
    if(controllerRef.current)throw Error("另一个 AI 任务正在执行");
    controllerRef.current=controller;setSending(true);
    try{
-    if(grantId&&(!["run_node","run_workflow"].includes(next.action.type)||next.needsBinding))
+    if(grantId&&(!["run_node","run_workflow"].includes(next.action.type)||
+      (next.needsBinding&&grantMode!=="local_comfy_media")))
      throw Error("预授权仅允许冻结的独立生成步骤；动态连线需要单独确认");
     if(next.needsBinding){
      const binding=next.inputBinding;
@@ -340,7 +341,8 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
       center:getCanvasCenter?.()??{x:0,y:0},signal:controller.signal,
       sequenceBinding:{runSequenceId:view.sequence!.id,runIndex:next.index,
        dependsOn:next.dependsOn},
-      confirm:async()=>confirmDangerousActions(
+      ...(grantMode==="local_comfy_media"&&grantId?{mediaGrantId:grantId}:{}),
+      confirm:async()=>(grantMode==="local_comfy_media"&&!!grantId)||confirmDangerousActions(
        "将已生成的可信 "+binding.sourceKind+" 产物（"+binding.sourceArtifactId+
        "）连接到工作流节点 "+binding.toNodeId+" 的输入端口 "+binding.toPortId+
        "。这是独立的画布更改，需要确认；确认后下一项生成仍需单独批准。",

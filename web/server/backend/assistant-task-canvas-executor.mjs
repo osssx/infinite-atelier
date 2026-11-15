@@ -3,6 +3,7 @@ import {stableJson,writeTransaction,assertNoRawCredentials} from "./repository.m
 import {validateProjectDocument,emitProjectEvent} from "./projects.mjs";
 import {deterministicAssistantRefs,claimAssistantTaskStep,verifyAssistantTaskClaim} from "./assistant-task-step-gate.mjs";
 import {assertAssistantCanvasPlan,applyFrozenAssistantCanvasPlan} from "./assistant-task-canvas-graph.mjs";
+import {assertAssistantRunMediaPlanConsent,assertAssistantRunMediaBindingConsent} from "./assistant-task-run-media-grant.mjs";
 import {mayCompleteAssistantTask,currentAssistantTextDeliverable,freezeAssistantTextSpec,
  assertAssistantTextActions,assertAssistantTextClaimBudget,assertAssistantDeliverableBinding,
  assertAssistantStructuredSourceCurrent} from "./assistant-task-deliverables.mjs";
@@ -79,7 +80,7 @@ function dependencies(db,taskId,step){
  */
 export function planAssistantCanvasStep(db,{projectId,taskId,requestId,
  expectedPlanVersion,expectedProjectRevision,actions,center,dependsOn=[],finalizeTask=false,
- runSequenceId,runIndex,agentRunId}){
+ runSequenceId,runIndex,agentRunId,runMediaGrantId}){
  if(!id(requestId)||!Number.isSafeInteger(expectedPlanVersion)||expectedPlanVersion<1||
   !Number.isSafeInteger(expectedProjectRevision)||expectedProjectRevision<1||
   !Array.isArray(dependsOn)||dependsOn.some(value=>!id(value))||
@@ -87,12 +88,15 @@ export function planAssistantCanvasStep(db,{projectId,taskId,requestId,
   typeof finalizeTask!=="boolean")throw fail("assistant_step_invalid",400);
  if(agentRunId!==undefined&&(runSequenceId!==undefined||finalizeTask||!id(agentRunId)))
   throw fail("assistant_agent_step_binding_invalid",400);
+ if(runMediaGrantId!==undefined&&(!id(runMediaGrantId)||runSequenceId===undefined||agentRunId!==undefined||finalizeTask))
+  throw fail("assistant_run_media_grant_invalid",400);
  const shape=assertAssistantCanvasPlan({actions,center});
  if((runSequenceId===undefined)!==(runIndex===undefined)||runSequenceId!==undefined&&finalizeTask)
   throw fail("assistant_task_run_input_invalid",400);
  const payload={taskId,expectedPlanVersion,expectedProjectRevision,actions,center,dependsOn,finalizeTask,
   ...(runSequenceId!==undefined?{runSequenceId,runIndex}:{}),
-  ...(agentRunId!==undefined?{agentRunId}:{})};
+  ...(agentRunId!==undefined?{agentRunId}:{}),
+  ...(runMediaGrantId!==undefined?{runMediaGrantId}:{})};
  const sig=signature("canvas_plan",payload);
  return writeTransaction(db,()=>{
   const existing=oldCommand(db,projectId,requestId,"canvas_plan",sig);
@@ -108,6 +112,8 @@ export function planAssistantCanvasStep(db,{projectId,taskId,requestId,
   if(task.revision!==expectedProjectRevision)throw fail("assistant_step_source_changed");
   const bindingProof=runSequenceId!==undefined?verifyAssistantRunInputBinding(db,{
    projectId,taskId,runSequenceId,runIndex,expectedPlanVersion,actions,dependsOn}):null;
+  if(runMediaGrantId)assertAssistantRunMediaPlanConsent(db,{projectId,taskId,
+   grantId:runMediaGrantId,runSequenceId,runIndex,actions,dependsOn,bindingProof});
   if(!bindingProof)assertNoPendingAssistantRunSequence(db,{projectId,taskId});
   const requirement=currentAssistantTextDeliverable(db,taskId);
   const deliverableSpec=requirement?freezeAssistantTextSpec(requirement,{
@@ -141,6 +147,7 @@ export function planAssistantCanvasStep(db,{projectId,taskId,requestId,
    ...(agentRunBinding?{agentRunBinding}:{}),
    ...(bindingProof?{runSequenceId,runBindingIndex:runIndex,
     runSourceArtifactId:bindingProof.sourceArtifactId,runSourceSha256:bindingProof.sourceSha256}:{}),
+   ...(runMediaGrantId?{runMediaGrantId}:{}),
    ...(actions.some(a=>["set_node_param","set_workflow_param"].includes(a.type))?{modelConfigRevision:ui.revision}:{})};
   if(agentRunBinding)assertAssistantAgentCanvasBinding(db,{projectId,taskId,
    action,preconditions,expectedPlanVersion});
@@ -201,6 +208,8 @@ export function commitAssistantCanvasAttempt(db,{projectId,taskId,stepId,
   if(task.revision!==pre.projectRevision||hash(JSON.parse(task.document_json))!==pre.projectGraphDigest)
    throw fail("assistant_step_source_changed");
   const externalRefs=dependencies(db,taskId,step);
+  if(pre.runMediaGrantId)assertAssistantRunMediaBindingConsent(db,{projectId,taskId,
+   step,grantId:pre.runMediaGrantId});
   if(pre.runSequenceId)verifyAssistantCommittedRunInput(db,{projectId,taskId,
    runSequenceId:pre.runSequenceId,runBindingIndex:pre.runBindingIndex,
    expectedPlanVersion:planVersion,actions:action.actions,

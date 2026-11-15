@@ -9,6 +9,7 @@ import {planAssistantExternalJobStep,enqueueAssistantExternalJobStep,reconcileAs
 import {planAssistantSkillStep,executeAssistantSkillStep} from "./assistant-task-skills.mjs";
 import {registerAssistantRunSequence,getAssistantRunSequence,selectAssistantRunInput,skipAssistantRunBranch,commitAssistantRunJoin} from "./assistant-task-run-sequences.mjs";
 import {inspectAssistantTaskRecovery,replanAssistantTaskSafely} from "./assistant-task-safe-replan.mjs";
+import {continueAssistantTaskSafely} from "./assistant-task-safe-continuation.mjs";
 import {inspectAssistantRunFailureRecovery,confirmAssistantRunFailureRecovery} from "./assistant-task-failure-recovery.mjs";
 import {registerAssistantTextDeliverable,registerAssistantStructuredTextDeliverable,verifyAssistantTextDeliverable} from "./assistant-task-deliverables.mjs";
 import {discoverAssistantCreativeCharacters} from "./assistant-creative-context.mjs";
@@ -40,6 +41,8 @@ const requestBody={type:"object",required:["requestId"],additionalProperties:fal
  properties:{requestId:id}};
 const linkChatBody={type:"object",required:["requestId","chatSessionId"],additionalProperties:false,
  properties:{requestId:id,chatSessionId:id}};
+const safeContinueBody={type:"object",required:["requestId","expectedPlanVersion"],
+ additionalProperties:false,properties:{requestId:id,expectedPlanVersion:{type:"integer",minimum:1}}};
 const safeReplanBody={type:"object",required:["requestId","expectedPlanVersion","expectedProjectRevision"],additionalProperties:false,
  properties:{requestId:id,expectedPlanVersion:{type:"integer",minimum:1},expectedProjectRevision:{type:"integer",minimum:1}}};
 const taskPostBody={type:"object",required:["requestId","chatSessionId","rootMessageId","originalRequest"],
@@ -266,6 +269,10 @@ export function registerAssistantTaskRoutes(app,db,{skillRegistry,blobStore}={})
   taskId:req.params.taskId,...req.body,skillRegistry})));
  app.post(base+"/:taskId/reconcile",{schema:{params:taskParams,body:{type:"object",additionalProperties:false}}},(req,reply)=>result(reply,
   reconcileAssistantExternalTask(db,{projectId:req.params.id,taskId:req.params.taskId})));
+ // P4.4a: local-evidence-only progression; no paid Job enqueue or Skill spawn.
+ app.post(base+"/:taskId/continue-safe",{schema:{params:taskParams,body:safeContinueBody}},
+  (req,reply)=>result(reply,continueAssistantTaskSafely(db,{projectId:req.params.id,
+   taskId:req.params.taskId,...req.body})));
  // Approval binds the frozen Step; execute never accepts new action JSON.
  app.post(base+"/:taskId/steps/:stepId/approval",
   {schema:{params:stepParams,body:decisionBody}},(req,reply)=>result(reply,

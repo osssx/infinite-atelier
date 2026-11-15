@@ -237,8 +237,10 @@ function reconcileTaskInTransaction(db,projectId,taskId){
    job.request_fingerprint!==attempt.request_fingerprint||
    job.snapshot_json!==stableJson(frozen.job.snapshot)){
    db.prepare("UPDATE assistant_task_steps SET status='needs_reconcile',error_code='assistant_external_evidence_missing',updated_at=? WHERE id=?").run(Date.now(),step.id);
-   db.prepare("UPDATE assistant_tasks SET status=?,updated_at=? WHERE id=?")
-    .run(task.cancel_requested_at?"cancelling":"needs_reconcile",Date.now(),taskId);
+   // Stale Job evidence is audit only; never poison a newer active plan.
+   if(step.plan_version===task.active_plan_version&&step.superseded_at===null)
+    db.prepare("UPDATE assistant_tasks SET status=?,updated_at=? WHERE id=?")
+     .run(task.cancel_requested_at?"cancelling":"needs_reconcile",Date.now(),taskId);
    advanced++;continue;
   }
   if(step.status==="succeeded")continue;

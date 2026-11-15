@@ -814,3 +814,49 @@ describe("P0a guidance-only task strip",()=>{
   expect(container!.textContent).not.toContain("记录为任务");
  });
 });
+
+
+it("P4.4a user-triggered safe continuation never POSTs a paid Job or Skill",async()=>{
+ const task={id:"task-safe",chatSessionId:"chat-a",rootMessageId:"original-user",
+  originalRequest:"已批准但不可重复计费的顺序生成",status:"ready",activePlanVersion:1,
+  recoveryMode:"job_observation",readOnly:false,steps:[]};
+ const actions=[{type:"run_node",nodeId:"source",mode:"text"},
+  {type:"run_node",nodeId:"branch-false",mode:"text"},
+  {type:"run_node",nodeId:"branch-true",mode:"text"}];
+ let advanced=false;
+ const calls:{method:string;url:string;payload?:Record<string,unknown>}[]=[];
+ mocks.api.mockImplementation(async(url:string,method:string,payload?:Record<string,unknown>)=>{
+  calls.push({url,method,payload});
+  if(method==="GET"&&url.includes("chatSessionId="))return {tasks:[task]};
+  if(method==="GET"&&url.endsWith("/model-calls"))return {calls:[]};
+  if(method==="GET"&&url.endsWith("/run-sequences"))return {
+   sequence:{id:"seq-safe",taskId:task.id,sourceMessageId:"original-user",
+    planVersion:1,actions,status:"active"},
+   state:advanced?"ready":"skip_ready",
+   index:advanced?2:1,
+   skip:advanced?null:{index:1,action:actions[1],sourceStepId:"step-source",
+    materialStepId:"material-source",count:0,verifiedCount:0,evidenceDigest:"a".repeat(64)},
+   next:advanced?{index:2,action:actions[2],dependsOn:["material-source"],last:true}:null,
+   branchSkips:advanced?[{index:1,receipt:{receiptTrust:"server_committed"},skippedAt:1}]:[]
+  };
+  if(method==="POST"&&url.endsWith("/continue-safe")){
+   expect(payload?.expectedPlanVersion).toBe(1);
+   expect(typeof payload?.requestId).toBe("string");
+   advanced=true;
+   return {taskId:task.id,taskStatus:"ready",sequenceState:"ready",
+    checkpoints:[{kind:"skip",index:1}],reconciledJobs:1,requiresApproval:true,
+    requiresManualReview:false,reason:"paid_step_requires_approval",executionStarted:false,
+    next:{index:2,type:"run_node",nodeId:"branch-true"}};
+  }
+  if(method==="GET")return {task};
+  throw Error("unexpected side effect: "+method+" "+url);
+ });
+ await render();
+ await click("安全续行（不提交新生成或 Skill）");
+ expect(advanced).toBe(true);
+ expect(container!.textContent).toContain("已安全写入 跳过分支 #2");
+ expect(container!.textContent).toContain("第 3 项仍需单独审批生成");
+ expect(calls.filter(c=>c.method==="POST").map(c=>c.url)).toEqual([
+  "/api/v1/projects/project/assistant/tasks/task-safe/continue-safe"]);
+ expect(calls.some(c=>/\/enqueue$|\/external-jobs$|\/run-skill$|\/jobs$/.test(c.url))).toBe(false);
+});

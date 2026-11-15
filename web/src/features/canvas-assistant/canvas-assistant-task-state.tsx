@@ -22,6 +22,10 @@ type SemanticProposal={id:string;kind:"goal"|"constraint"|"decision";text:string
 type Task={id:string;chatSessionId:string;chatSessionIds?:string[];rootMessageId:string;originalRequest:string;
  activePlanVersion?:number;status:string;readOnly?:boolean;summary?:FactSummary;semantic?:SemanticState;recoveryMode:"guidance_only"|"canvas_atomic"|"job_observation"|"skill_audit";steps?:Step[];lastError?:string|null};
 type Recovery={canReplan:boolean;reason:string;planVersion:number;projectRevision:number;completedArtifacts?:number;failedJobs?:number};
+type SafeContinuation={taskId:string;taskStatus:string;sequenceState:string;
+ checkpoints:{kind:"skip"|"join";index:number}[];reconciledJobs:number;
+ requiresApproval:boolean;requiresManualReview:boolean;reason:string|null;
+ executionStarted:false;next:{index:number;type:string;nodeId:string}|null};
 type FailureRecovery={canRecover:boolean;reason:string;planVersion:number;projectRevision:number;
  failureReason?:string;sourceJobId?:string;fallbackAction?:{type:"run_node";nodeId:string;mode?:string};
  evidenceDigest?:string};
@@ -43,6 +47,7 @@ export function useCanvasAssistantTasks({
  const [detail,setDetail]=useState<Task|null>(null);
  const [busy,setBusy]=useState(false);
  const [error,setError]=useState("");
+ const [safeContinuationNotice,setSafeContinuationNotice]=useState("");
  const [calls,setCalls]=useState<{id:string;kind:string;status:string;errorCode?:string|null}[]>([]);
  const [callsOpen,setCallsOpen]=useState(false);
  const [callRevision,setCallRevision]=useState(0);
@@ -66,7 +71,7 @@ export function useCanvasAssistantTasks({
  const [proposals,setProposals]=useState<SemanticProposal[]>([]);
  const [proposalLoading,setProposalLoading]=useState(false);
  const proposalAbort=useRef<AbortController|null>(null);
- useEffect(()=>{setSemanticOpen(false);setSemanticText("");setSemanticEditingId(null);proposalAbort.current?.abort();proposalAbort.current=null;},[selectedId]);
+ useEffect(()=>{setSemanticOpen(false);setSemanticText("");setSemanticEditingId(null);setSafeContinuationNotice("");proposalAbort.current?.abort();proposalAbort.current=null;},[selectedId]);
  useEffect(()=>()=>proposalAbort.current?.abort(),[]);
 
  const base="/api/v1/projects/"+encodeURIComponent(projectId)+"/assistant/tasks";
@@ -304,6 +309,28 @@ export function useCanvasAssistantTasks({
   const latest=await canvasApi<TaskResponse>(path(taskId),"GET");
   setDetail(latest.task);
   setItems(old=>old.map(task=>task.id===latest.task.id?latest.task:task));
+ };
+ const continueSafely=async()=>{
+  if(!selected||busy||sending||!detail||detail.id!==selected.id||
+   !Number.isInteger(detail.activePlanVersion)||!detail.activePlanVersion)return;
+  setBusy(true);setError("");setSafeContinuationNotice("");
+  try{
+   const response=await canvasApi<SafeContinuation>(path(selected.id)+"/continue-safe","POST",{
+    requestId:nanoid(),expectedPlanVersion:detail.activePlanVersion
+   });
+   await refreshTask(selected.id);
+   const current=await canvasApi<AssistantRunSequenceView>(path(selected.id)+"/run-sequences","GET");
+   setRunSequence(current?.sequence?current:null);
+   const checkpoints=response.checkpoints.map(item=>
+    (item.kind==="skip"?"跳过分支":"可信汇合")+" #"+(item.index+1)).join("、");
+   const next=response.next?"；第 "+(response.next.index+1)+" 项仍需单独审批生成":"";
+   setSafeContinuationNotice(
+    (checkpoints?"已安全写入 "+checkpoints:"已核对现有 Job/Skill/落图记录，没有提交新的执行")+
+    next+(response.reason?"；状态："+response.reason:"")+
+    "。不会自动重试模型或 Skill。");
+  }catch(error){
+   setError("安全续行失败，未发起新 Job/Skill："+(error instanceof Error?error.message:"未知错误"));
+  }finally{setBusy(false);}
  };
  const checkExternal=async()=>{
   if(!selected||busy||sending)return;
@@ -687,7 +714,14 @@ export function useCanvasAssistantTasks({
       onClick={()=>void loadEvents()}>加载更多事件</button>:null}
     </div>:null}
    </div>
-   {runSequence?.sequence&&selected&&runSequence.sequence.taskId===selected.id?<div className="mt-2 rounded-md border p-2" style={{borderColor:"var(--assistant-border)"}}>
+   {selected&&!detail?.readOnly&&detail?.id===selected.id&&
+     !!detail.activePlanVersion&&(runSequence?.sequence||externalSteps.length||skillSteps.length)?<div className="mt-2 text-xs">
+      <button type="button" className="canvas-assistant-link" disabled={busy||sending}
+       title="仅使用持久 Job、物化和 Skill 回执，自动写入免付费的可信跳过/Join 检查点"
+       onClick={()=>void continueSafely()}>安全续行（不提交新生成或 Skill）</button>
+      {safeContinuationNotice?<p role="status" className="mt-1 break-words">{safeContinuationNotice}</p>:null}
+     </div>:null}
+    {runSequence?.sequence&&selected&&runSequence.sequence.taskId===selected.id?<div className="mt-2 rounded-md border p-2" style={{borderColor:"var(--assistant-border)"}}>
     <div className="font-medium">顺序生成计划：{runSequence.sequence.actions.length} 项 · {runSequence.state}</div>
     <p>每项单独批准费用，只有上一项落图验收后才执行下一项。</p>
     {runSequence.joins?.length?<p className="mt-1">已提交可信汇合检查点：第 1 项与执行分支均落图，未选择的分支已跳过。</p>:null}

@@ -411,7 +411,8 @@ export function createOpenAiModelAdapter({db,blobStore,vault,upstreamCall=fetch,
    if(task.messages&&task.images?.length){
     messages[messages.length-1]={role:"user",content};
    }
-   body=JSON.stringify({model:task.model,messages,stream:task.stream===true});
+   body=JSON.stringify({model:task.model,messages,stream:task.stream===true,
+    ...(task.stream===true?{stream_options:{include_usage:true}}:{})});
   }
   // Copy an unprotected key into an HTTP header only within the consumer.
   // The vault zeros the temporary Buffer immediately after returning.

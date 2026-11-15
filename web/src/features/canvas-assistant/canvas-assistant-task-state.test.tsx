@@ -1138,6 +1138,7 @@ describe("P4.4d upstream usage evidence (never a verified monetary charge)",()=>
  it("P4.4d stale cost report is not shown after chat and Task change",async()=>{
   let release!:(data:unknown)=>void;
   const deferred=new Promise(resolve=>{release=resolve});
+  let costRequests=0;
   const task={id:"old-meter",chatSessionId:"chat-a",chatSessionIds:["chat-a"],
    rootMessageId:"original-user",originalRequest:"旧任务",status:"ready",
    recoveryMode:"job_observation",activePlanVersion:1,steps:[]};
@@ -1146,7 +1147,7 @@ describe("P4.4d upstream usage evidence (never a verified monetary charge)",()=>
    if(method==="GET"&&url.includes("chatSessionId="))return {tasks:[task]};
    if(method==="GET"&&url.endsWith("/model-calls"))return {calls:[]};
    if(method==="GET"&&url.endsWith("/run-sequences"))return {sequence:null,state:"none",next:null};
-   if(method==="GET"&&url.endsWith("/cost-report"))return deferred;
+   if(method==="GET"&&url.endsWith("/cost-report"))return ++costRequests===1?deferred:null;
    if(method==="GET")return {task};
    throw Error("should remain read-only");
   });
@@ -1159,5 +1160,12 @@ describe("P4.4d upstream usage evidence (never a verified monetary charge)",()=>
   await act(async()=>{release({taskId:"old-meter",summary:{
    upstreamReportedTokens:{totalTokens:999999,inputTokens:1,outputTokens:999998}}});await Promise.resolve()});
   expect(container!.textContent).not.toContain("999999");
+  await act(async()=>{root!.render(createElement(Harness,{activeChatId:"chat-a"}))});
+  const reopened=Array.from(container!.querySelectorAll("button"))
+   .find(item=>item.textContent==="查看生成用量（只读）");
+  expect(reopened).toBeTruthy();
+  expect(reopened!.disabled).toBe(false);
+  await click("查看生成用量（只读）");
+  expect(mocks.api.mock.calls.filter(([url])=>url.endsWith("/cost-report"))).toHaveLength(2);
  });
 });

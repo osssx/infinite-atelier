@@ -48,10 +48,14 @@ function fixture(t,{provider="openai",stream=false,usage={prompt_tokens:11,compl
  const queued=enqueueAssistantExternalJobStep(db,{...base,stepId:planned.stepId,requestId:"enqueue",
   expectedPlanVersion:1,actionDigest:planned.actionDigest});
  let remoteCalls=0;
- const upstream=async()=>{
+ const upstream=async(_url,options)=>{
   remoteCalls++;
   if(upstreamError)throw Error("socket_lost_after_possible_accept");
+  const request=JSON.parse(options.body);
+  assert.equal(request.stream,stream);
+  if(!stream)assert.equal(request.stream_options,undefined);
   if(stream){
+   assert.equal(request.stream_options?.include_usage,true);
    const frames=[
     {choices:[{delta:{content:"Hello"},finish_reason:null}]},
     {choices:[{delta:{content:" world"},finish_reason:"stop"}]},

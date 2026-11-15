@@ -108,7 +108,7 @@ export function useCanvasAssistantTasks({
  useEffect(()=>()=>proposalAbort.current?.abort(),[]);
 
  const base="/api/v1/projects/"+encodeURIComponent(projectId)+"/assistant/tasks";
- useEffect(()=>{costEpoch.current++;setCostOpen(false);setCostReport(null);},[selectedId,base]);
+ useEffect(()=>{costEpoch.current++;setCostBusy(false);setCostOpen(false);setCostReport(null);},[selectedId,base]);
  useEffect(()=>{
   if(!open||!activeChatId){setItems([]);setSelectedId(null);setDetail(null);setShowOtherTasks(false);return;}
   setShowOtherTasks(false);setOtherTasks([]);

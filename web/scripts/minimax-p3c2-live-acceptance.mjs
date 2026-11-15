@@ -9,12 +9,13 @@
  */
 import {DatabaseSync} from "node:sqlite";
 import {createHash,randomUUID} from "node:crypto";
-import {join} from "node:path";
+import {join,resolve} from "node:path";
 import {readFileSync,writeFileSync,existsSync,mkdtempSync,openSync,readSync,closeSync} from "node:fs";
 import {tmpdir} from "node:os";
 import {spawnSync} from "node:child_process";
 import {createLocalBackend,resolveLocalDataDir} from "../server/backend/runtime.mjs";
 import {loadBackendEnv} from "./load-backend-env.mjs";
+import {startServer} from "../server/backend/app.mjs";
 import {fingerprintSource,stableJson} from "../server/backend/repository.mjs";
 import {validateComfyTemplate} from "../server/backend/comfy-registry.mjs";
 import {compileSingleWorkflow} from "../server/comfy-workflow/compiler.mjs";
@@ -22,6 +23,14 @@ import {compileSingleWorkflow} from "../server/comfy-workflow/compiler.mjs";
 loadBackendEnv();
 const preflightOnly=process.env.ATELIER_MINIMAX_PREFLIGHT==="1";
 const mediaConsent=process.env.ATELIER_MINIMAX_MEDIA_CONSENT==="1";
+// P4.5f: an explicitly gated real-Chrome acceptance pauses at the two user UI decisions.
+const browserGate=process.env.ATELIER_P45F_REAL_BROWSER_GATE==="1";
+const gateMarker=browserGate?resolve(process.env.ATELIER_P45F_GATE_MARKER??""):null;
+const gatePort=Number(process.env.ATELIER_BACKEND_PORT);
+if(browserGate&&(!mediaConsent||process.env.ATELIER_MINIMAX_LIVE!=="1"||
+  !gateMarker?.startsWith(resolve(join(tmpdir(),"infinite-atelier-p45f-live-")))||
+  !Number.isInteger(gatePort)||gatePort<1024||gatePort>65535))
+ throw Error("p45f_browser_gate_requires_explicit_live_media_consent_isolated_marker_and_port");
 if(!preflightOnly&&process.env.ATELIER_MINIMAX_LIVE!=="1")throw Error("ATELIER_MINIMAX_LIVE=1 opt-in required");
 const origin=process.env.ATELIER_COMFY_URL||"http://127.0.0.1:8188",
  instanceId=process.env.ATELIER_COMFY_INSTANCE_ID||"comfy-local";
@@ -32,6 +41,16 @@ const pause=ms=>new Promise(r=>setTimeout(r,ms));
 const assert=(condition,code)=>{if(!condition)throw Error("acceptance_assertion_failed:"+code)};
 const at=()=>new Date().toISOString();
 const log=(event,details={})=>console.log(JSON.stringify({at:at(),event,...details}));
+const publishGate=(stage,details={})=>{
+ if(!browserGate)return;
+ writeFileSync(gateMarker,JSON.stringify({stage,at:at(),...details},null,2),"utf8");
+ log("P45F_BROWSER_GATE_"+stage.toUpperCase(),details);
+};
+const waitGate=async(check,label,limitMs)=>{
+ const until=Date.now()+limitMs;
+ while(Date.now()<until){const result=await check();if(result)return result;await pause(400)}
+ throw Error("p45f_browser_gate_timeout_"+label+"_no_automatic_resubmission");
+};
 const report={phase:"preflight",startedAt:at(),live:"Moss→MiniMax H3",
  mode:mediaConsent?"p45d_local_comfy_media":"p3c2_individual_approvals",
  isolation:"temporary_SQLite_and_CAS",results:[]};
@@ -195,13 +214,30 @@ try{
   assert(countJobs()===0,"unexpected_initial_paid_job");
   log("sequence_frozen",{sequenceId:sequence.sequenceId,jobs:0});
   if(mediaConsent){
-   // This explicit, bounded pre-consent is created BEFORE image generation.
-   // It never mutates the graph or submits any Job by itself.
-   mediaGrant=await ready("POST",base+"/run-budget",{
-    requestId:"accept-media-consent",sequenceId:sequence.sequenceId,
-    expectedPlanVersion:1,maxJobs:1,allowedIndices:[1],
-    expiresInMinutes:30,mode:"local_comfy_media",instanceId,confirmed:true
-   });
+   // P4.5f: the actual Chrome confirmation must create the initial Grant;
+   // the historical P4.5d acceptance keeps its own explicit opt-in API path.
+   if(browserGate){
+    const now=at();
+    const session={id:"accept-chat",title:"P4.5f 真实浏览器 GPU 媒体链",
+     messages:[{id:"accept-user",role:"user",text:"在本地执行 Moss 首帧接入 MiniMax H3 视频"}],
+     createdAt:now,updatedAt:now};
+    runtime.db.prepare("UPDATE project_chats SET sessions_json=?,active_chat_id=?,updated_at=? WHERE project_id=?")
+     .run(JSON.stringify([session]),session.id,Date.now(),projectId);
+    await startServer(runtime.app,{host:"127.0.0.1",port:gatePort});
+    publishGate("consent_waiting",{root,projectId,taskId,sequenceId:sequence.sequenceId,
+     backendOrigin:"http://127.0.0.1:"+gatePort});
+    mediaGrant=await waitGate(async()=>{
+     const state=await ready("GET",base+"/run-budget");
+     return state.grant?.mode==="local_comfy_media"&&state.grant?.active?state.grant:null;
+    },"chrome_consent",120000);
+   }else{
+    // Existing P4.5d service-level opt-in, not browser consent.
+    mediaGrant=await ready("POST",base+"/run-budget",{
+     requestId:"accept-media-consent",sequenceId:sequence.sequenceId,
+     expectedPlanVersion:1,maxJobs:1,allowedIndices:[1],
+     expiresInMinutes:30,mode:"local_comfy_media",instanceId,confirmed:true
+    });
+   }
    assert(mediaGrant.mode==="local_comfy_media"&&mediaGrant.active&&
     mediaGrant.remainingJobs===1&&countJobs()===0,"media_grant_not_frozen_before_generation");
    log("P45D_MEDIA_GRANT_APPROVED",{grantId:mediaGrant.grantId,instanceId,
@@ -378,9 +414,21 @@ try{
  const miniPath=base+"/steps/"+miniPlan.stepId;
  if(!mediaConsent)await stepApprove(base,miniPlan,"minimax");
  const enqueueSuffix=mediaConsent?"/enqueue-authorized":"/enqueue";
- const miniQueued=await ready("POST",miniPath+enqueueSuffix,{
-  requestId:"accept-video-enqueue",expectedPlanVersion:1,actionDigest:miniPlan.actionDigest,
-  ...(mediaConsent?{grantId:mediaGrant.grantId}:{})});
+ let miniQueued;
+ if(browserGate){
+  publishGate("video_waiting",{root,projectId,taskId,videoStepId:miniPlan.stepId,
+   backendOrigin:"http://127.0.0.1:"+gatePort,sourceSha256:sourceProof.sha256});
+  miniQueued=await waitGate(async()=>{
+   if(countJobs()!==2)return null;
+   const job=runtime.db.prepare("SELECT id FROM jobs WHERE project_id=? AND target_node_id=? ORDER BY created_at DESC LIMIT 1")
+    .get(projectId,targetId);
+   return job?.id?{jobId:job.id}:null;
+  },"chrome_video_enqueue",120000);
+ }else{
+  miniQueued=await ready("POST",miniPath+enqueueSuffix,{
+   requestId:"accept-video-enqueue",expectedPlanVersion:1,actionDigest:miniPlan.actionDigest,
+   ...(mediaConsent?{grantId:mediaGrant.grantId}:{})});
+ }
  assert(miniQueued.jobId&&countJobs()===2,"video_job_not_unique");
  const miniReplay=await ready("POST",miniPath+enqueueSuffix,{
   requestId:"accept-video-enqueue-replay",expectedPlanVersion:1,
@@ -438,12 +486,18 @@ try{
   videoJob:miniQueued.jobId,trust:"server_committed",state:completed.task.status,
   sequence:finalSequence.state,noDuplicatePaidSubmit:true};
   log(mediaConsent?"MINIMAX_P45D_MEDIA_LIVE_PASS":"MINIMAX_P3C2_LIVE_PASS",report.summary);
+  if(browserGate){
+   publishGate("completed_waiting_browser",{root,projectId,taskId,
+    videoSha256:report.results[1].video?.sha256,videoBytes:report.results[1].video?.bytes});
+   await waitGate(()=>existsSync(gateMarker+".ack"),"browser_completion_verified",120000);
+  }
   }
  }catch(error){
  report.phase="failed";report.completedAt=at();
  report.error={name:error?.name??"Error",code:error?.code??null,
   message:String(error?.message??error).slice(0,360)};
  log("MINIMAX_P3C2_LIVE_FAIL",report.error);process.exitCode=1;
+ if(browserGate)publishGate("failed",{root,projectId,error:report.error});
 }finally{
  if(root){
   try{if(runtime){

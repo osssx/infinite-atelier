@@ -219,11 +219,21 @@ const materializationResults=(db,jobId,projectId,artifacts)=>{
 /** Reconcile local DB evidence only; never sends a provider POST or restarts
  * a model, Skill, or Comfy job. Job success and materialization are separate.
  */
-function reconcileTaskInTransaction(db,projectId,taskId){
+function reconcileTaskInTransaction(db,projectId,taskId,{onlyMaterializeStepId,expectedPlanVersion}={}){
  const task=context(db,projectId,taskId);
+ if(expectedPlanVersion!==undefined){
+  if(task.active_plan_version!==expectedPlanVersion)throw fail("assistant_step_plan_conflict");
+  if(task.read_only)throw fail("assistant_task_not_editable");
+  if(task.cancel_requested_at!==null||["completed","cancelled","cancelling","failed"].includes(task.status)||
+   task.status==="blocked"&&!onlyMaterializeStepId)return {taskId,advanced:0,checked:0};
+ }
  // Imported archives are historical evidence, never live reconciliation targets.
  if(task.read_only)return {taskId,advanced:0,checked:0};
- const steps=db.prepare(
+ if(onlyMaterializeStepId&&(task.cancel_requested_at!==null||task.status!=="blocked"||
+  task.active_step_id!==onlyMaterializeStepId||!db.prepare("SELECT 1 FROM assistant_task_steps WHERE id=? AND task_id=? AND plan_version=? AND superseded_at IS NULL AND kind='materialize' AND status='blocked' AND error_code='assistant_external_materialization_blocked'")
+   .get(onlyMaterializeStepId,taskId,task.active_plan_version)||db.prepare("SELECT 1 FROM assistant_task_steps WHERE task_id=? AND plan_version=? AND superseded_at IS NULL AND id!=? AND status!='succeeded' LIMIT 1")
+   .get(taskId,task.active_plan_version,onlyMaterializeStepId)))return {taskId,advanced:0,checked:0};
+ const steps=onlyMaterializeStepId?[]:db.prepare(
   "SELECT * FROM assistant_task_steps WHERE task_id=? AND kind IN ('model_job','comfy_workflow','materialize') ORDER BY plan_version,ordinal").all(taskId);
  let advanced=0;
  for(const step of steps){
@@ -309,7 +319,8 @@ function reconcileTaskInTransaction(db,projectId,taskId){
   advanced++;
  }
  // Materialization is observed and proven independently. Never invoke a new Job.
- const current=db.prepare("SELECT * FROM assistant_task_steps WHERE task_id=? AND kind='materialize' AND status IN ('waiting_external','needs_reconcile','blocked') ORDER BY ordinal").all(taskId);
+ const current=db.prepare("SELECT * FROM assistant_task_steps WHERE task_id=? AND kind='materialize' AND status IN ('waiting_external','needs_reconcile','blocked') ORDER BY ordinal").all(taskId)
+  .filter(step=>!onlyMaterializeStepId||step.id===onlyMaterializeStepId);
  for(const step of current){
   const action=JSON.parse(step.action_json),pre=JSON.parse(step.preconditions_json);
   const results=materializationResults(db,action.jobId,projectId,action.artifactIds);
@@ -349,8 +360,8 @@ function reconcileTaskInTransaction(db,projectId,taskId){
  }
  return {taskId,advanced,checked:steps.length};
 }
-export function reconcileAssistantExternalTask(db,{projectId,taskId}){
- return writeTransaction(db,()=>reconcileTaskInTransaction(db,projectId,taskId));
+export function reconcileAssistantExternalTask(db,{projectId,taskId,onlyMaterializeStepId,expectedPlanVersion}){
+ return writeTransaction(db,()=>reconcileTaskInTransaction(db,projectId,taskId,{onlyMaterializeStepId,expectedPlanVersion}));
 }
 /** Run only after the exclusive single-instance lock and DB migration.
  * This reads existing jobs/artifacts/materializations; never submits a Job.

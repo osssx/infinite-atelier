@@ -48,6 +48,12 @@ export function useCanvasAssistantTasks({
  const [busy,setBusy]=useState(false);
  const [error,setError]=useState("");
  const [safeContinuationNotice,setSafeContinuationNotice]=useState("");
+ const continuationIdentity=useRef("");
+ const continuationEpoch=useRef(0);
+ const identityKey=JSON.stringify([projectId,activeChatId,selectedId,open]);
+ if(continuationIdentity.current!==identityKey){
+  continuationIdentity.current=identityKey;continuationEpoch.current++;
+ }
  const [calls,setCalls]=useState<{id:string;kind:string;status:string;errorCode?:string|null}[]>([]);
  const [callsOpen,setCallsOpen]=useState(false);
  const [callRevision,setCallRevision]=useState(0);
@@ -314,12 +320,20 @@ export function useCanvasAssistantTasks({
   if(!selected||busy||sending||!detail||detail.id!==selected.id||
    !Number.isInteger(detail.activePlanVersion)||!detail.activePlanVersion)return;
   setBusy(true);setError("");setSafeContinuationNotice("");
+  const identity=continuationIdentity.current;
+  const epoch=continuationEpoch.current;
+  const isCurrent=()=>identity===continuationIdentity.current&&epoch===continuationEpoch.current;
   try{
    const response=await canvasApi<SafeContinuation>(path(selected.id)+"/continue-safe","POST",{
     requestId:nanoid(),expectedPlanVersion:detail.activePlanVersion
    });
-   await refreshTask(selected.id);
+   if(!isCurrent())return;
+   const latest=await canvasApi<TaskResponse>(path(selected.id),"GET");
+   if(!isCurrent())return;
+   setDetail(latest.task);
+   setItems(old=>old.map(task=>task.id===latest.task.id?latest.task:task));
    const current=await canvasApi<AssistantRunSequenceView>(path(selected.id)+"/run-sequences","GET");
+   if(!isCurrent())return;
    setRunSequence(current?.sequence?current:null);
    const checkpoints=response.checkpoints.map(item=>
     (item.kind==="skip"?"跳过分支":"可信汇合")+" #"+(item.index+1)).join("、");
@@ -329,7 +343,7 @@ export function useCanvasAssistantTasks({
     next+(response.reason?"；状态："+response.reason:"")+
     "。不会自动重试模型或 Skill。");
   }catch(error){
-   setError("安全续行失败，未发起新 Job/Skill："+(error instanceof Error?error.message:"未知错误"));
+   if(isCurrent())setError("安全续行失败，未发起新 Job/Skill："+(error instanceof Error?error.message:"未知错误"));
   }finally{setBusy(false);}
  };
  const checkExternal=async()=>{

@@ -93,6 +93,31 @@ it("offers standalone verification of a committed deliverable after refresh",asy
  expect(task.status).toBe("completed");
  expect(mocks.api.mock.calls.some(([url])=>url.endsWith("/execute")||url.endsWith("/canvas-steps"))).toBe(false);
 });
+it("discards a delayed safe-continuation response after switching chats",async()=>{
+ let resolveAdvance!:(value:unknown)=>void;
+ const deferred=new Promise(resolve=>{resolveAdvance=resolve;});
+ const makeTask=(suffix:string)=>({id:"task-"+suffix,chatSessionId:"chat-"+suffix,
+  chatSessionIds:["chat-"+suffix],rootMessageId:"original-user",originalRequest:"任务"+suffix,
+  status:"ready",activePlanVersion:1,recoveryMode:"job_observation",
+  steps:[{id:"job-"+suffix,kind:"model_job",planVersion:1,status:"succeeded",actionDigest:"a".repeat(64),receiptTrust:"server_committed"}]});
+ const a=makeTask("a"),b=makeTask("b");
+ mocks.api.mockImplementation(async(url:string,method:string)=>{
+  if(method==="POST"&&url.endsWith("/continue-safe"))return deferred;
+  if(url.includes("chatSessionId="))return {tasks:[url.includes("chat-b")?b:a]};
+  if(url.endsWith("/run-sequences"))return {sequence:null,state:"none",next:null};
+  if(url.endsWith("/model-calls"))return {calls:[]};
+  return {task:url.includes("task-b")?b:a};
+ });
+ await render();
+ await click("安全续行（不提交新生成或 Skill）");
+ await act(async()=>{root!.render(createElement(Harness,{activeChatId:"chat-b"}));});
+ const prior=mocks.api.mock.calls.length;
+ await act(async()=>{resolveAdvance({taskId:a.id,taskStatus:"ready",sequenceState:"ready",
+  checkpoints:[{kind:"skip",index:1}],reconciledJobs:1,requiresApproval:true,
+  requiresManualReview:false,reason:null,executionStarted:false,next:null});await deferred;});
+ expect(container!.textContent).not.toContain("已安全写入 跳过分支");
+ expect(mocks.api.mock.calls.slice(prior).some(([url])=>url.includes("task-a"))).toBe(false);
+});
 it("keeps a normal planning Task compact and restores every control on demand",async()=>{
  const task={id:"compact-task",chatSessionId:"chat-a",chatSessionIds:["chat-a"],
   rootMessageId:"original-user",originalRequest:"三镜头分镜文字规划",status:"planning",

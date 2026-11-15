@@ -14,6 +14,7 @@ import {planAssistantExternalJobStep,enqueueAssistantExternalJobStep,reconcileAs
 import {decideAssistantTaskStep} from "./assistant-task-step-gate.mjs";
 import {continueAssistantTaskSafely} from "./assistant-task-safe-continuation.mjs";
 import {buildApp} from "./app.mjs";
+import {replanAssistantTaskSafely} from "./assistant-task-safe-replan.mjs";
 import {zipSync,strToU8} from "fflate";
 import {planAssistantSkillStep,reserveAssistantSkillRun,settleAssistantSkillRun,
  recoverAssistantSkillTasksAtStartup} from "./assistant-task-skills.mjs";
@@ -70,6 +71,99 @@ function fixture(t,actions=branch){
  return {db,base,seq,plan,enqueue,complete,advance};
 }
 const count=(db,table)=>db.prepare("SELECT COUNT(*) n FROM "+table).get().n;
+
+test("P4.4a cached hints revalidate branch evidence and report missing evidence",t=>{
+ const f=fixture(t),step=f.plan(0),job=f.enqueue(step,0);f.complete(job,0);
+ assert.equal(f.advance("cached").next.index,1);
+ f.db.prepare("UPDATE blobs SET status='missing' WHERE id='blob-0'").run();
+ const replay=f.advance("cached");
+ assert.equal(replay.next,null);assert.equal(replay.requiresApproval,false);
+ assert.equal(replay.sequenceState,"awaiting_verified_branch_evidence");
+ assert.equal(replay.requiresManualReview,true);
+ const fresh=f.advance("fresh");
+ assert.equal(fresh.reason,"awaiting_verified_branch_evidence");
+ assert.equal(fresh.requiresManualReview,true);
+});
+
+test("P4.4a final CAS detects evidence changes without Task or graph revision changes",t=>{
+ const f=fixture(t),step=f.plan(0),job=f.enqueue(step,0);f.complete(job,0);
+ f.advance("materialized");
+ assert.throws(()=>f.advance("lost-before-commit",{beforeCommandCommit:()=>{
+  f.db.prepare("UPDATE blobs SET status='missing' WHERE id='blob-0'").run();
+ }}),{code:"assistant_safe_continue_state_changed"});
+ assert.equal(f.db.prepare("SELECT COUNT(*) n FROM assistant_task_commands WHERE request_id='lost-before-commit'").get().n,0);
+});
+
+test("P4.4a a repaired blocked materialization resumes without reviving a refused Step",t=>{
+ const f=fixture(t),step=f.plan(0),job=f.enqueue(step,0);f.complete(job,0);
+ f.db.prepare("UPDATE materializations SET status='blocked'").run();
+ assert.equal(f.advance("blocked").taskStatus,"blocked");
+ f.db.prepare("UPDATE materializations SET status='materialized'").run();
+ const fixed=f.advance("fixed");
+ assert.equal(fixed.taskStatus,"ready");assert.equal(fixed.next.index,1);
+ assert.equal(count(f.db,"jobs"),1);
+ const denied=fixture(t),pending=denied.plan(0);
+ decideAssistantTaskStep(denied.db,{...denied.base,stepId:pending.stepId,requestId:"reject",
+  expectedPlanVersion:1,actionDigest:pending.actionDigest,decision:"reject"});
+ assert.equal(denied.advance().reason,"task_requires_replan");
+ assert.equal(count(denied.db,"jobs"),0);
+});
+
+test("P4.4a approved queued intent and completed replay do not demand another approval",t=>{
+ const f=fixture(t),pending=f.plan(0);
+ decideAssistantTaskStep(f.db,{...f.base,stepId:pending.stepId,requestId:"approved-only",
+  expectedPlanVersion:1,actionDigest:pending.actionDigest,decision:"approve"});
+ const ready=f.advance();assert.equal(ready.requiresApproval,false);
+ assert.equal(ready.reason,"approved_step_ready");assert.equal(ready.requiresManualReview,false);
+ const completed=fixture(t),first=completed.plan(0),job=completed.enqueue(first,0);completed.complete(job,0);
+ completed.advance("next");
+ const mat=completed.db.prepare("SELECT id FROM assistant_task_steps WHERE kind='materialize'").get().id;
+ const second=completed.plan(1,[mat]),secondJob=completed.enqueue(second,1);completed.complete(secondJob,1);
+ const result=completed.advance("finished");assert.equal(result.taskStatus,"completed");
+ const replay=completed.advance("finished");
+ assert.deepEqual({...replay,existing:false},result);
+ assert.equal(replay.requiresManualReview,false);
+});
+
+test("P4.4a a checkpoint committed by another client is not claimed by both responses",t=>{
+ const f=fixture(t,[branch[0],{...branch[1],when:{...branch[1].when,kind:"image"}},
+  {...branch[2],when:{...branch[2].when,kind:"image"}}]);
+ const first=f.plan(0),job=f.enqueue(first,0);f.complete(job,0);
+ const exec=f.db.exec.bind(f.db);let transactions=0,other;
+ f.db.exec=sql=>{
+  if(sql==="BEGIN IMMEDIATE"&&++transactions===2){f.db.exec=exec;other=f.advance("client-B");}
+  return exec(sql);
+ };
+ const result=f.advance("client-A");f.db.exec=exec;
+ assert.equal(other.checkpoints.length,1);assert.equal(result.checkpoints.length,0);
+ assert.equal(count(f.db,"assistant_task_run_branch_skips"),1);
+});
+
+test("P4.4a a stale-plan request cannot reconcile the newer plan inside its first transaction",t=>{
+ const f=fixture(t),old=f.plan(0),oldJob=f.enqueue(old,0);
+ const exec=f.db.exec.bind(f.db);let newer;
+ f.db.exec=sql=>{
+  if(sql==="BEGIN IMMEDIATE"){
+   f.db.exec=exec;
+   f.db.prepare("UPDATE jobs SET status='failed' WHERE id=?").run(oldJob.jobId);
+   reconcileAssistantExternalTask(f.db,f.base);
+   replanAssistantTaskSafely(f.db,{...f.base,requestId:"replan",expectedPlanVersion:1,expectedProjectRevision:1});
+   const step=planAssistantExternalJobStep(f.db,{...f.base,requestId:"new-plan",kind:"model_job",
+    expectedPlanVersion:2,expectedProjectRevision:1,job:{targetNodeId:"first",
+     sourceNodeFingerprint:fingerprintSource(getProject(f.db,"p").document,"first"),executionMode:"poll",
+     snapshot:{adapterKind:"model",task:{kind:"text",model:"mock",prompt:"new"}}}});
+   decideAssistantTaskStep(f.db,{...f.base,stepId:step.stepId,requestId:"new-approval",
+    expectedPlanVersion:2,actionDigest:step.actionDigest,decision:"approve"});
+   newer=enqueueAssistantExternalJobStep(f.db,{...f.base,stepId:step.stepId,requestId:"new-enqueue",
+    expectedPlanVersion:2,actionDigest:step.actionDigest});
+   f.db.prepare("UPDATE jobs SET status='failed' WHERE id=?").run(newer.jobId);
+  }
+  return exec(sql);
+ };
+ assert.throws(()=>f.advance("old-request"),{code:"assistant_step_plan_conflict"});f.db.exec=exec;
+ assert.equal(f.db.prepare("SELECT status FROM assistant_tasks WHERE id=?").get(f.base.taskId).status,"waiting_external");
+ assert.equal(f.db.prepare("SELECT status FROM assistant_task_steps WHERE plan_version=2 AND kind='model_job'").get().status,"waiting_external");
+});
 
 test("P4.4a Job success without trusted materialization never advances sequence or issues a second Job",t=>{
  const f=fixture(t);assert.equal(SCHEMA_VERSION,32);

@@ -263,6 +263,53 @@ test("P4.8 authenticated project-scoped human reconciliation remains read-only u
  assert.equal((await post()).statusCode,409);
  assert.equal(posts,0);assert.equal(remoteChecks,2);
 });
+test("P4.6e project-scoped cancel rejects foreign job and preserves uncertain remote status",async t=>{
+ const db=new DatabaseSync(":memory:");initializeSchema(db);
+ createProject(db,{id:"p1",document:doc});createProject(db,{id:"p2",document:doc});
+ const create=(projectId,key)=>submitJob(db,{projectId,targetNodeId:"producer",
+  expectedProjectRevision:1,sourceNodeFingerprint:fingerprintSource(doc,"producer"),
+  idempotencyKey:key,requestFingerprint:key,executionMode:"poll",
+  snapshot:{adapterKind:"comfy",instanceId:"local"}}).jobId;
+ const a=create("p1","scoped-a"),b=create("p2","foreign-b");
+ for(const [id,remote] of [[a,"remote-a"],[b,"remote-b"]])
+  db.prepare("UPDATE jobs SET status='running',upstream_task_id=? WHERE id=?").run(remote,id);
+ let confirms=false,remoteCalls=0;
+ const {createJobCoordinator}=await import("./job-coordinator.mjs");
+ const c=createJobCoordinator({db,adapters:{comfy:{local:{
+  async cancel({job,remoteTaskId}){
+   remoteCalls++;assert.equal(job.id,a);assert.equal(remoteTaskId,"remote-a");
+   return confirms?{cancelled:true}:{cancelled:false,reason:"remote_cancel_unconfirmed"};
+  }
+ }}}});
+ c.recoverAtStartup();
+ const app=buildApp({db,coordinator:c,authorize:req=>req.headers["x-test-owner"]==="owner"});
+ t.after(async()=>{await app.close();db.close()});
+ const call=(projectId,id,headers={"x-test-owner":"owner"})=>
+  app.inject({method:"POST",url:"/api/v1/projects/"+projectId+"/jobs/"+id+"/cancel",
+   headers,payload:{}});
+ assert.equal((await call("p1",a,{})).statusCode,401);
+ assert.equal((await call("p1",a,{"x-test-owner":"owner",origin:"https://attacker.example"})).statusCode,403);
+ assert.equal((await call("p1",b)).statusCode,404);
+ assert.equal((await call("p2",a)).statusCode,404);
+ assert.equal(remoteCalls,0);
+ let answer=await call("p1",a);
+ assert.equal(answer.statusCode,200,answer.body);
+ assert.equal(answer.json().cancelled,false);
+ assert.equal(db.prepare("SELECT status FROM jobs WHERE id=?").get(a).status,"running");
+ assert.equal(db.prepare("SELECT lease_owner FROM jobs WHERE id=?").get(a).lease_owner,null);
+ confirms=true;answer=await call("p1",a);
+ assert.equal(answer.statusCode,200,answer.body);
+ assert.equal(answer.json().cancelled,true);
+ assert.equal(answer.json().remoteCancelled,true);
+ assert.equal(db.prepare("SELECT status FROM jobs WHERE id=?").get(a).status,"cancelled");
+ assert.equal(db.prepare("SELECT status FROM jobs WHERE id=?").get(b).status,"running");
+ assert.equal(remoteCalls,2);
+ const history=await app.inject({method:"GET",url:"/api/v1/projects/p1/jobs",
+  headers:{"x-test-owner":"owner"}});
+ assert.equal(history.json().jobs[0].status,"cancelled");
+ assert.equal((await call("p1",a)).json().cancelled,false);
+ assert.equal(remoteCalls,2);
+});
 test("P4.7 history reports blocked, retry and pending materializations without modifying successful jobs",async t=>{
  const f=fixture(t),jobId=f.make("succeeded");
  f.db.prepare("INSERT INTO blobs(id,sha256,byte_size,mime,relative_path,status) VALUES(?,?,?,?,?,?)")

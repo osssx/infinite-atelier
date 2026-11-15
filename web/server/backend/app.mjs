@@ -912,6 +912,16 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
   reply.header("Cache-Control","no-store");
   return coordinator.cancel(req.params.id);
  });
+ // P4.6e: the Canvas Task History can cancel only a Job belonging to
+ // its current project. The coordinator verifies this in its lease transaction.
+ if(coordinator)app.post("/api/v1/projects/:id/jobs/:jobId/cancel",{
+  schema:{params:{type:"object",required:["id","jobId"],
+   properties:{id:idSchema,jobId:idSchema},additionalProperties:false},
+   body:{type:"object",additionalProperties:false}}
+ },async(req,reply)=>{
+  reply.header("Cache-Control","no-store");
+  return coordinator.cancel(req.params.jobId,req.params.id);
+ });
 
  if(coordinator)app.post("/api/v1/projects/:id/jobs/:jobId/reconcile",{
   schema:{

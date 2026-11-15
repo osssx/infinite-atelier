@@ -1,6 +1,6 @@
 import {useCallback,useEffect,useRef,useState} from "react";
 import {Alert,App,Button,Drawer,Empty,Input,Spin,Tag,Tooltip} from "antd";
-import {RefreshCw,Trash2} from "lucide-react";
+import {RefreshCw,Square,Trash2} from "lucide-react";
 import {canvasApi,CanvasApiError} from "./canvas-api";
 
 export type CanvasJobArtifact={artifactId:string;kind:string;status:string;reason:string|null;nodeId:string|null};
@@ -225,6 +225,15 @@ export async function reconcileCanvasUnknownJob(
  return canvasApi("/api/v1/projects/"+encodeURIComponent(projectId)+"/jobs/"+
   encodeURIComponent(jobId)+"/reconcile","POST",remoteTaskId?{remoteTaskId}:{});
 }
+export const canCancelCanvasComfyJob=(job:CanvasJobHistoryItem)=>
+ job.kind==="comfy"&&["queued","running"].includes(job.status);
+export async function cancelCanvasComfyJob(projectId:string,job:CanvasJobHistoryItem):
+ Promise<{cancelled:boolean;remoteCancelled?:boolean;reason?:string}>{
+ if(!canCancelCanvasComfyJob(job)||job.projectId!==projectId)
+  throw Error("comfy_cancel_not_eligible");
+ return canvasApi("/api/v1/projects/"+encodeURIComponent(projectId)+"/jobs/"+
+  encodeURIComponent(job.id)+"/cancel","POST",{});
+}
 export function CanvasJobHistory({projectId,open,onClose,onObserveJob,onRefreshCanvas}:{
  projectId:string;open:boolean;onClose:()=>void;
  onObserveJob:(jobId:string)=>void;onRefreshCanvas:()=>Promise<boolean>;
@@ -307,6 +316,30 @@ export function CanvasJobHistory({projectId,open,onClose,onObserveJob,onRefreshC
       return; // close the charged-submit dialog; next action is read-only
      }
      message.error("冻结 Skill 重生成失败："+String(e));throw e
+    }finally{setWorking(null)}
+   }
+  });
+ }
+ function confirmCancelComfy(job:CanvasJobHistoryItem){
+  if(!canCancelCanvasComfyJob(job)||working)return;
+  modal.confirm({
+   title:"停止本地 ComfyUI 任务？",
+   content:job.status==="queued"?
+    "该任务尚未被本地执行器认领；仅取消当前项目的这个排队 Job，不影响其他任务。":
+    "仅请求取消当前 Job 对应的 ComfyUI 远端 prompt_id，不调用全局 /interrupt。只有远端明确确认取消后才会标记为已取消；若未确认，继续保持原状态。",
+   okText:"确认停止此任务",cancelText:"保留任务",okType:"danger",
+   onOk:async()=>{
+    setWorking(job.id);
+    try{
+     const result=await cancelCanvasComfyJob(projectId,job);
+     if(result.cancelled){
+      message.success(result.remoteCancelled?"远端已确认按 ID 取消此任务":"已取消本地排队任务");
+      onObserveJob(job.id);
+     }else message.warning("取消未确认："+(result.reason??"请检查任务状态")+"。不会宣称远端已停止。");
+     await refresh();
+    }catch(error){
+     message.error("停止任务失败，远端状态尚未确认："+String(error));
+     await refresh();
     }finally{setWorking(null)}
    }
   });
@@ -615,6 +648,11 @@ export function CanvasJobHistory({projectId,open,onClose,onObserveJob,onRefreshC
          <div className="opacity-65">有素材未核实或无法恢复；不会重复上传或发起生成。</div>}
        </div>:null}
      </div>:null}
+    {canCancelCanvasComfyJob(job)?
+     <Button size="small" danger icon={<Square size={13}/>}
+      aria-label="停止此 ComfyUI 任务" loading={working===job.id}
+      disabled={Boolean(working)&&working!==job.id}
+      onClick={()=>confirmCancelComfy(job)}>停止此 ComfyUI 任务</Button>:null}
     {canCloseUnknownModelJob(job)?
      <Button size="small" danger loading={working===job.id}
       onClick={()=>confirmCloseUnknownModelJob(job)}>

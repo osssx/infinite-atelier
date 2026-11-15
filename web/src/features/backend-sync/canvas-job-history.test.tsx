@@ -3,7 +3,7 @@ const api=vi.hoisted(()=>vi.fn());
 vi.mock("./canvas-api",async(importOriginal)=>({
  ...(await importOriginal<typeof import("./canvas-api")>()),canvasApi:api
 }));
-import {canRetryCanvasMaterialization,canReconcileUnknownJob,getCanvasJobHistory,getCanvasSkillAudit,replayCanvasSkillJob,hasPendingSkillReplay,lookupPendingSkillReplay,retryCanvasMaterialization,recoverCanvasPendingMaterialization,reconcileCanvasUnknownJob,canCloseUnknownModelJob,closeCanvasUnknownModelJob,canRemoveCanvasJobHistory,removeCanvasJobHistory,getCanvasScriptAssets,reconcileCanvasScriptAsset,resumeCanvasScriptAssets,auditCanvasScriptChunks,
+import {canCancelCanvasComfyJob,cancelCanvasComfyJob,canRetryCanvasMaterialization,canReconcileUnknownJob,getCanvasJobHistory,getCanvasSkillAudit,replayCanvasSkillJob,hasPendingSkillReplay,lookupPendingSkillReplay,retryCanvasMaterialization,recoverCanvasPendingMaterialization,reconcileCanvasUnknownJob,canCloseUnknownModelJob,closeCanvasUnknownModelJob,canRemoveCanvasJobHistory,removeCanvasJobHistory,getCanvasScriptAssets,reconcileCanvasScriptAsset,resumeCanvasScriptAssets,auditCanvasScriptChunks,
  type CanvasJobHistoryItem,type CanvasJobArtifact} from "./canvas-job-history";
 
 afterEach(()=>vi.unstubAllGlobals());
@@ -95,6 +95,20 @@ describe("P4.7 Canvas job history and recovery boundary",()=>{
   expect(api).toHaveBeenNthCalledWith(4,
    "/api/v1/projects/p1/jobs/job-1/resume-assets","POST",{});
   expect(api.mock.calls.some(([path])=>path==="/api/v1/jobs")).toBe(false);
+ });
+ it("P4.6e only queued/running same-project Comfy jobs expose scoped cancel",async()=>{
+  const running={...job,kind:"comfy" as const,status:"running"};
+  expect(canCancelCanvasComfyJob(running)).toBe(true);
+  expect(canCancelCanvasComfyJob({...running,status:"queued"})).toBe(true);
+  for(const status of ["preparing","submitting","submission_unknown","collecting","succeeded","failed","cancelled"])
+   expect(canCancelCanvasComfyJob({...running,status})).toBe(false);
+  expect(canCancelCanvasComfyJob({...running,kind:"model"})).toBe(false);
+  await expect(cancelCanvasComfyJob("p2",running)).rejects.toThrow("comfy_cancel_not_eligible");
+  api.mockResolvedValueOnce({cancelled:true,remoteCancelled:true});
+  expect(await cancelCanvasComfyJob("p1",running)).toEqual({cancelled:true,remoteCancelled:true});
+  expect(api).toHaveBeenCalledExactlyOnceWith(
+   "/api/v1/projects/p1/jobs/job-1/cancel","POST",{});
+  expect(api.mock.calls.some(([path])=>path==="/api/v1/jobs/job-1/cancel")).toBe(false);
  });
  it("P4.8 only eligible unknown Comfy task offers human reconciliation",()=>{
   const ready={...job,status:"submission_unknown",kind:"comfy" as const,reconciliationEligible:true};

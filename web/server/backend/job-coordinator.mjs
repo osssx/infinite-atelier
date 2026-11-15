@@ -416,10 +416,15 @@ export function createJobCoordinator({
   * OpenAI immediate requests may stop local waiting without claiming remote cancellation.
   * Remote cancellation otherwise requires provider confirmation.
   */
- async function cancel(jobId){
+ async function cancel(jobId,projectId){
+  if(projectId!==undefined&&
+     (typeof projectId!=="string"||!/^[A-Za-z0-9_-]{1,128}$/.test(projectId)))
+   throw blocked("cancel_project_invalid");
   const lease=randomUUID();
   const reserved=writeTransaction(db,()=>{
-   const row=db.prepare("SELECT * FROM jobs WHERE id=?").get(jobId);
+   const row=projectId!==undefined?
+    db.prepare("SELECT * FROM jobs WHERE id=? AND project_id=?").get(jobId,projectId):
+    db.prepare("SELECT * FROM jobs WHERE id=?").get(jobId);
    if(!row)throw Object.assign(Error("job_not_found"),{code:"job_not_found",statusCode:404});
    if(row.status==="queued"&&!row.lease_owner){
     transition(db,row,"cancelled",{},onTerminal);

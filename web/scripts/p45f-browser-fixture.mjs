@@ -152,6 +152,7 @@ try{
  const address=await startServer(runtime.app,{host:"127.0.0.1",port});
  const marker={mode:"p45f_browser_fixture",scenario,projectId,taskId:task.id,chatId,
   sequenceId:sequence.sequenceId,backendOrigin:"http://127.0.0.1:"+port,
+  initialProjectRevision:db.prepare("SELECT revision FROM projects WHERE id=?").get(projectId).revision,
   mediaScope:"one_grant_no_gpu",root};
  writeFileSync(join(root,"p45f-fixture.json"),JSON.stringify(marker,null,2),"utf8");
  console.log("P45F_FIXTURE_READY "+JSON.stringify(marker));

@@ -193,6 +193,8 @@ def main():
         wait_for(lambda:page.js("document.readyState")=="complete","page complete",55)
         wait_for(lambda:page.js("document.querySelectorAll('button').length")>12,"canvas UI",55)
         check("loaded_real_project_page",page.js("location.pathname")=="/canvas/"+fixture["projectId"])
+        check("hydrate_does_not_advance_frozen_canvas_revision",
+              db_stats(data,fixture)["projectRevision"]==fixture["initialProjectRevision"])
         # The product binds Alt+I to the assistant.
         page.js("""window.dispatchEvent(new KeyboardEvent('keydown',
           {key:'i',altKey:true,bubbles:true,cancelable:true}));true""")
@@ -232,6 +234,8 @@ def main():
                 "persisted frozen Step with same grant",35)
             check("waiting_video_step_survives_real_browser_reload",
                   db_stats(data,fixture)["jobs"]==1)
+            check("refresh_does_not_invalidate_frozen_project_revision",
+                  db_stats(data,fixture)["projectRevision"]==fixture["initialProjectRevision"])
             check("single_explicit_recovery_click",page.click(
                 "使用原授权恢复一次本地 ComfyUI 生成"))
             wait_for(lambda:db_stats(data,fixture)["jobs"]==2,
@@ -247,6 +251,8 @@ def main():
             check("recovery_does_not_reenqueue_after_reload",
                   db_stats(data,fixture)["jobs"]==2 and
                   db_stats(data,fixture)["consumed"]==1)
+            check("post_completion_browser_reload_has_no_graph_patch",
+                  db_stats(data,fixture)["projectRevision"]==fixture["initialProjectRevision"])
             writes=[q for q in page.network_requests if q["method"]=="POST"]
             check("one_real_authorized_step_enqueue_post",
                   sum(q["path"].endswith("/enqueue-authorized") for q in writes)==1)
@@ -282,6 +288,8 @@ def main():
         wait_for(lambda:task_content_contains(page,"撤销剩余自动入队授权"),
                  "persisted grant UI after reload",40)
         check("reloaded_grant_visible",True)
+        check("grant_refresh_has_no_spurious_graph_revision",
+              db_stats(data,fixture)["projectRevision"]==fixture["initialProjectRevision"])
         # Simulate a browser-side network outage while revoking. The HTTP
         # request must not reach SQLite, and the UI must not retry when back.
         page.call("Network.emulateNetworkConditions",{"offline":True,"latency":0,
@@ -360,6 +368,8 @@ def db_stats(root:Path,fixture:dict):
     con=sqlite3.connect(f"file:{(root/'db'/'atelier.sqlite').as_posix()}?mode=ro",uri=True,timeout=3)
     try:
         jobs=con.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
+        project_revision=con.execute("SELECT revision FROM projects WHERE id=?",
+                                     (fixture["projectId"],)).fetchone()[0]
         events=con.execute("""SELECT kind,payload_json FROM assistant_task_events
           WHERE task_id=? AND kind IN('run_budget_granted','run_budget_revoked','run_budget_consumed')""",
           (fixture["taskId"],)).fetchall()
@@ -370,6 +380,7 @@ def db_stats(root:Path,fixture:dict):
         task_status=con.execute("SELECT status FROM assistant_tasks WHERE id=?",
                                 (fixture["taskId"],)).fetchone()
         return {"jobs":jobs,"granted":granted,"revoked":revoked,
+                "projectRevision":project_revision,
                 "taskStatus":task_status[0] if task_status else None,
                 "consumed":consumed,"submitBarriers":submit_barriers,
                 "eventKinds":[k for k,_ in events]}

@@ -7,6 +7,7 @@ import { playCanvasVideosFromStart } from "@/lib/canvas/video-sync-playback";
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent as ReactChangeEvent, DragEvent as ReactDragEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react";
 import { useNavigate, useParams } from "react-router-dom";
+import {initialHydrationNeedsGraphSave} from "@/features/backend-sync/canvas-initial-hydration";
 import { Group, Video } from "lucide-react";
 import { saveAs } from "file-saver";
 import { useTranslation } from "react-i18next";
@@ -389,6 +390,14 @@ function AtelierCanvasPage() {
     // Readiness belongs to the loaded project ID, not to the page instance:
     // switching projects must immediately invalidate the prior ready state.
     const [loadedProjectId, setLoadedProjectId] = useState<string | null>(null);
+    // Hydrating the backend graph recreates object/array references even when
+    // no saved node/edge changes. The first render must not PATCH that identical
+    // graph and invalidate already frozen Task/Comfy approvals on browser refresh.
+    const initialGraphHydrationRef=useRef<{
+        id:string;nodes:CanvasNodeData[];connections:CanvasConnection[];
+        backgroundMode:CanvasBackgroundMode;showImageInfo:boolean;
+        comfyInstanceId:string|undefined;skip:boolean
+    }|null>(null);
     const projectLoaded = loadedProjectId === projectId;
     const [projectLoadError,setProjectLoadError]=useState<string|null>(null);
     const [projectLoadAttempt,setProjectLoadAttempt]=useState(0);
@@ -627,6 +636,7 @@ function AtelierCanvasPage() {
     useEffect(() => {
         if (!hydrated) return;
         setLoadedProjectId(null);
+        initialGraphHydrationRef.current=null;
         nodesRef.current = [];
         setProjectLoadError(null);
         connectionsRef.current = [];
@@ -638,10 +648,23 @@ function AtelierCanvasPage() {
                 return; // Backend is mandatory; never load origin-local projects.
             }
             if(cancelled)return;
-            const restoredNodes = await hydrateCanvasImages(resetInterruptedGeneration(project.nodes));
+            const resetNodes=resetInterruptedGeneration(project.nodes);
+            const restoredNodes = await hydrateCanvasImages(resetNodes);
             const restoredSessions = await hydrateAssistantImages(project.chatSessions || []);
             if (cancelled) return;
             const restoredConnections=reconcileComfyArtifactConnections(restoredNodes,project.connections,nanoid);
+            // Only a real interrupted-generation reset or invalid connection
+            // repair should persist on first load. Image hydration and local
+            // default-instance presentation are not user edits.
+            const needsRecoverySave=initialHydrationNeedsGraphSave({
+                persistedNodes:project.nodes,persistedConnections:project.connections,
+                resetNodes,reconciledConnections:restoredConnections
+            });
+            const restoredInstance=resolveCanvasComfyInstance(project);
+            initialGraphHydrationRef.current={id:projectId,nodes:restoredNodes,
+                connections:restoredConnections,backgroundMode:project.backgroundMode,
+                showImageInfo:project.showImageInfo||false,comfyInstanceId:restoredInstance,
+                skip:!needsRecoverySave};
             nodesRef.current = restoredNodes;
             connectionsRef.current = restoredConnections;
             setNodes(restoredNodes);
@@ -650,7 +673,7 @@ function AtelierCanvasPage() {
             setActiveChatId(project.activeChatId || null);
             setBackgroundMode(project.backgroundMode);
             setShowImageInfo(project.showImageInfo || false);
-            setComfyInstanceId(resolveCanvasComfyInstance(project));
+            setComfyInstanceId(restoredInstance);
             setViewport(project.viewport);
             historyRef.current = { past: [], future: [] };
             if (historyCommitTimerRef.current) {
@@ -704,6 +727,14 @@ function AtelierCanvasPage() {
     // graph, and viewport movement must never advance the graph revision.
     useEffect(() => {
         if (!projectLoaded || historyPausedRef.current) return;
+        const hydrated=initialGraphHydrationRef.current;
+        if(hydrated?.id===projectId){
+            initialGraphHydrationRef.current=null;
+            if(hydrated.skip&&hydrated.nodes===nodes&&hydrated.connections===connections&&
+                hydrated.backgroundMode===backgroundMode&&
+                hydrated.showImageInfo===showImageInfo&&hydrated.comfyInstanceId===comfyInstanceId)
+                return;
+        }
         updateProject(projectId, { nodes, connections, backgroundMode, showImageInfo, comfyInstanceId });
     }, [backgroundMode, connections, nodes, projectId, projectLoaded, showImageInfo, comfyInstanceId, updateProject]);
     useEffect(() => {

@@ -917,7 +917,7 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
   schema:{
    params:{type:"object",required:["id","jobId"],
     properties:{id:idSchema,jobId:idSchema},additionalProperties:false},
-   body:{type:"object",required:["remoteTaskId"],
+   body:{type:"object",
     properties:{remoteTaskId:idSchema},additionalProperties:false}
   }
  },async(req,reply)=>{

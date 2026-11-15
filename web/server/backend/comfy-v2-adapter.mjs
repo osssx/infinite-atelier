@@ -92,6 +92,21 @@ const validRemoteId=id=>typeof id==="string"&&/^[A-Za-z0-9_-]{1,128}$/.test(id);
 function historyEntry(body,remoteTaskId){
  return body&&typeof body==="object"?body[remoteTaskId]:null;
 }
+/** ComfyUI 0.45 records: [queueNo,promptId,graph,extraData,outputs]. */
+function matchesOriginalSubmission({db,job,prepared,tuple,remoteTaskId}){
+ if(!Array.isArray(tuple)||tuple.length<5||tuple[1]!==remoteTaskId||
+    !tuple[2]||typeof tuple[2]!=="object"||Array.isArray(tuple[2])||
+    !tuple[3]||typeof tuple[3]!=="object"||Array.isArray(tuple[3]))return false;
+ const extra=tuple[3];
+ if(extra.infinite_atelier_submit_marker!==job.submit_marker||
+    canonical(tuple[2])!==prepared.graph_json)return false;
+ if(extra.client_id!==undefined&&extra.client_id!==job.attempt_id){
+  const submitted=db.prepare("SELECT id FROM job_attempts WHERE job_id=? AND phase IN ('submitting','running') AND id=?")
+   .get(job.id,extra.client_id);
+  if(!submitted)return false;
+ }
+ return true;
+}
 function successful(entry){
  return entry?.status?.completed===true||entry?.status?.status_str==="success";
 }
@@ -254,24 +269,46 @@ export function createComfyV2Adapter({instance,db,blobStore,upstreamCall=comfyUp
    throw fail("comfy_reconciliation_evidence_missing",409);
   const history=await upstreamCall(trusted,"/history/"+encodeURIComponent(remoteTaskId));
   const entry=historyEntry(history,remoteTaskId);
-  if(!entry)return {kind:"unverified"};
-  const recorded=entry.prompt;
-  const extra=Array.isArray(recorded)?recorded[2]:null;
-  const marker=extra?.extra_data?.infinite_atelier_submit_marker;
-  // Comfy's history prompt tuple is [queue_number,prompt,extra_data,...].
-  if(!Array.isArray(recorded)||recorded.length<3||
-     canonical(recorded[1])!==prepared.graph_json||marker!==job.submit_marker)
-   return {kind:"mismatch"};
-  if(extra?.client_id!==undefined&&extra.client_id!==job.attempt_id){
-   // attempt_id may have been cleared on startup recovery; the recorded
-   // submit marker and graph are authoritative in that case.
-   const submitted=db.prepare("SELECT id FROM job_attempts WHERE job_id=? AND phase IN ('submitting','running') AND id=?")
-    .get(job.id,extra.client_id);
-   if(!submitted)return {kind:"mismatch"};
+  if(entry){
+   if(!matchesOriginalSubmission({db,job,prepared,tuple:entry.prompt,remoteTaskId}))
+    return {kind:"mismatch"};
+   if(failed(entry))return {kind:"failed"};
+   if(successful(entry))return {kind:"completed"};
+   return {kind:"pending"};
   }
-  if(failed(entry))return {kind:"failed"};
-  if(successful(entry))return {kind:"completed"};
-  return {kind:"pending"};
+  // A running prompt is not yet in /history. It may still be attested by the
+  // original marker, immutable graph and client ID in /queue.
+  const queue=await upstreamCall(trusted,"/queue",{timeoutMs:12000});
+  const rows=[...(Array.isArray(queue?.queue_running)?queue.queue_running:[]),
+              ...(Array.isArray(queue?.queue_pending)?queue.queue_pending:[])];
+  const tuple=rows.find(value=>Array.isArray(value)&&value[1]===remoteTaskId);
+  if(!tuple)return {kind:"unverified"};
+  return {kind:matchesOriginalSubmission({db,job,prepared,tuple,remoteTaskId})?"pending":"mismatch"};
+ }
+ /** Explicit human-triggered, read-only, bounded candidate discovery.
+  * No matching item is NOT proof that /prompt was rejected.
+  */
+ async function discover({job}){
+  snapshotOf(job,trusted.id);
+  const prepared=getPreparation(db,job.id);
+  if(!prepared||!job.submit_marker||!job.submission_started_at)
+   throw fail("comfy_reconciliation_evidence_missing",409);
+  const queue=await upstreamCall(trusted,"/queue",{timeoutMs:12000});
+  const history=await upstreamCall(trusted,"/history?max_items=16",{timeoutMs:12000});
+  const ids=new Set();
+  for(const group of [queue?.queue_running,queue?.queue_pending])
+   for(const tuple of Array.isArray(group)?group:[]){
+    const remoteTaskId=tuple?.[1];
+    if(validRemoteId(remoteTaskId)&&matchesOriginalSubmission({db,job,prepared,tuple,remoteTaskId}))
+     ids.add(remoteTaskId);
+   }
+  if(history&&typeof history==="object"&&!Array.isArray(history))
+   for(const [remoteTaskId,entry] of Object.entries(history))
+    if(validRemoteId(remoteTaskId)&&matchesOriginalSubmission({db,job,prepared,tuple:entry?.prompt,remoteTaskId}))
+     ids.add(remoteTaskId);
+  if(!ids.size)return {kind:"missing"};
+  if(ids.size!==1)return {kind:"ambiguous"};
+  return {kind:"found",remoteTaskId:[...ids][0]};
  }
  /** Cancel only the Comfy prompt ID returned for this immutable job.
   * Never call the unscoped /interrupt endpoint: older Comfy builds may
@@ -314,8 +351,9 @@ export function createComfyV2Adapter({instance,db,blobStore,upstreamCall=comfyUp
   catch{return {cancelled:false,reason:"comfy_cancel_history_unavailable"}}
   if(historyEntry(history,remoteTaskId))
    return {cancelled:false,reason:"comfy_cancel_raced_with_execution"};
-  liveHub?.disconnect(job.id);
-  return {cancelled:true};
+  // Legacy queue DELETE returned no per-prompt acknowledgement. Absence
+  // from /queue and /history is still not proof of remote cancellation.
+  return {cancelled:false,reason:"comfy_legacy_queue_delete_unconfirmed"};
  }
  async function poll({job,remoteTaskId}){
   snapshotOf(job,trusted.id);
@@ -377,7 +415,7 @@ export function createComfyV2Adapter({instance,db,blobStore,upstreamCall=comfyUp
    }
   }
  }
- return {prepare,submit,poll,collect,cancel,reconcile,instance:trusted};
+ return {prepare,submit,poll,collect,cancel,reconcile,discover,instance:trusted};
 }
 export function createComfyV2Adapters({instances,db,blobStore,upstreamCall,liveHub}={}){
  if(!Array.isArray(instances)||instances.length>16)throw fail("invalid_comfy_instances",400);

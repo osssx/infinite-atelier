@@ -111,6 +111,14 @@ describe("P4.7 Canvas job history and recovery boundary",()=>{
    "/api/v1/projects/p1/jobs/job-1/reconcile","POST",{remoteTaskId:"remote-1"});
   expect(api.mock.calls.some(call=>call[0]==="/api/v1/jobs")).toBe(false);
  });
+ it("P4.6c explicitly discovers original Comfy prompt ID with empty scoped payload",async()=>{
+  api.mockResolvedValueOnce({verified:false,status:"submission_unknown",reason:"remote_candidates_absent"});
+  const result=await reconcileCanvasUnknownJob("p1","job-1");
+  expect(result.reason).toBe("remote_candidates_absent");
+  expect(api).toHaveBeenCalledExactlyOnceWith(
+   "/api/v1/projects/p1/jobs/job-1/reconcile","POST",{});
+  expect(api.mock.calls.some(call=>call[0]==="/api/v1/jobs")).toBe(false);
+ });
  it("P5.4g reads only project-scoped Skill audit and replays after current revision fence",async()=>{
   api.mockResolvedValueOnce({jobId:"job-1",status:"succeeded",
    canReplay:true,versionPins:[{skillId:"camera",version:"v1",name:"Camera"}],toolEvents:[]});

@@ -350,7 +350,7 @@ export function createJobCoordinator({
  async function reconcileUnknown({jobId,projectId,remoteTaskId}={}){
   if(typeof jobId!=="string"||!/^[A-Za-z0-9_-]{1,128}$/.test(jobId)||
      typeof projectId!=="string"||!/^[A-Za-z0-9_-]{1,128}$/.test(projectId)||
-     typeof remoteTaskId!=="string"||!/^[A-Za-z0-9_-]{1,128}$/.test(remoteTaskId))
+     (remoteTaskId!=null&&(typeof remoteTaskId!=="string"||!/^[A-Za-z0-9_-]{1,128}$/.test(remoteTaskId))))
    throw blocked("reconciliation_invalid_input");
   const row=db.prepare("SELECT * FROM jobs WHERE id=? AND project_id=?").get(jobId,projectId);
   if(!row)throw Object.assign(Error("job_not_found"),{code:"job_not_found",statusCode:404});
@@ -364,9 +364,19 @@ export function createJobCoordinator({
   const adapter=adapterFor(lane);
   if(typeof adapter?.reconcile!=="function"||typeof adapter.poll!=="function")
    throw blocked("reconciliation_adapter_unavailable");
-  let proof;
-  try{proof=await adapter.reconcile({job:parse(row),remoteTaskId})}
-  catch{throw Object.assign(Error("reconciliation_upstream_unavailable"),
+  if(remoteTaskId==null&&typeof adapter.discover!=="function")
+   throw blocked("reconciliation_discovery_unavailable");
+  let proof,matchedRemoteId=remoteTaskId;
+  try{
+   if(matchedRemoteId==null){
+    const found=await adapter.discover({job:parse(row)});
+    if(found?.kind==="found"&&typeof found.remoteTaskId==="string"&&
+       /^[A-Za-z0-9_-]{1,128}$/.test(found.remoteTaskId))matchedRemoteId=found.remoteTaskId;
+    else proof={kind:found?.kind==="ambiguous"?"ambiguous":"missing"};
+   }
+   if(matchedRemoteId!=null)
+    proof=await adapter.reconcile({job:parse(row),remoteTaskId:matchedRemoteId});
+  }catch{throw Object.assign(Error("reconciliation_upstream_unavailable"),
    {code:"reconciliation_upstream_unavailable",statusCode:503})}
   const reconciled=writeTransaction(db,()=>{
    const current=db.prepare("SELECT * FROM jobs WHERE id=? AND project_id=?").get(jobId,projectId);
@@ -374,20 +384,22 @@ export function createJobCoordinator({
       current.submit_marker!==row.submit_marker||current.updated_at!==row.updated_at)
     throw blocked("reconciliation_state_changed");
    if(!["pending","completed","failed"].includes(proof?.kind)){
-    const reason=proof?.kind==="mismatch"?"remote_evidence_mismatch":"remote_evidence_absent";
+    const reason=proof?.kind==="mismatch"?"remote_evidence_mismatch":
+     proof?.kind==="ambiguous"?"remote_candidates_ambiguous":
+     proof?.kind==="missing"?"remote_candidates_absent":"remote_evidence_absent";
     event(db,jobId,"job_reconciliation_checked",{verified:false,reason});
     return {verified:false,status:"submission_unknown",reason};
    }
-   const linked=db.prepare("SELECT id FROM jobs WHERE upstream_task_id=? AND id<>? LIMIT 1").get(remoteTaskId,jobId);
+   const linked=db.prepare("SELECT id FROM jobs WHERE upstream_task_id=? AND id<>? LIMIT 1").get(matchedRemoteId,jobId);
    if(linked)throw blocked("reconciliation_remote_already_linked");
    const next=proof.kind==="pending"?"running":
      proof.kind==="completed"?"collecting":"failed";
    assertJobTransition(current.status,next,{
     executionMode:current.execution_mode,trustedRemoteMatch:true
    });
-   const receipt=next==="collecting"?saveReceipt({remoteTaskId}):null;
+   const receipt=next==="collecting"?saveReceipt({remoteTaskId:matchedRemoteId}):null;
    db.prepare("UPDATE jobs SET status=?,upstream_task_id=?,recovery_receipt_json=?,updated_at=? WHERE id=?")
-    .run(next,remoteTaskId,receipt,clock(),jobId);
+    .run(next,matchedRemoteId,receipt,clock(),jobId);
    // Clear stale schedules: this job's next tick is a read-only poll
    // or artifact collection. It can never re-enter the 'queued' path.
    db.prepare("DELETE FROM job_schedules WHERE job_id=?").run(jobId);

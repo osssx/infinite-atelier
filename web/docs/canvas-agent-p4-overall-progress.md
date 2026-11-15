@@ -15,10 +15,11 @@
 | P4.5f | [真实 Chrome 验收](./canvas-agent-p45f-real-browser-acceptance.md)，`04fc238c`、`b412151`、`fab4978`：A 17、B 13、C 18，**共 48 项断言通过**；C 实际生成 Moss 图片和 MiniMax H3 视频各一次 | 正常刷新恢复不同于浏览器 HTTP 入队响应丢失后的未知提交。 |
 | P4.6a | [本地取消竞争校验](./canvas-agent-p46a-comfy-cancel-reconcile.md)：旧版 Comfy 队列删除后查询历史，避免将已执行或历史不可达误报为确认取消；Comfy/Coordinator **42 项专项回归通过** | 仅缩小取消竞态窗口，仍无真实运行中 GPU 的 scoped cancel 验收。 |
 | P4.6b | [真实 Chrome 响应丢失验收](./canvas-agent-p46b-chrome-lost-ack.md)：`enqueue-authorized` 服务端 HTTP 200 后 Chrome 关闭响应，UI 提示不自动重试、刷新可见原 Job；**18 项浏览器断言通过** | 仅覆盖入队 API 的响应丢失；不等于 Comfy `/prompt` 响应丢失后的真实 GPU 人工对账。 |
+| P4.6c | [本地真实协议对账](./canvas-agent-p46c-comfy-native-reconcile.md)：修复 Comfy 0.45 五元素历史元组、活跃队列原始证据核验、无远端 ID 时显式有界查找、旧队列删除不再被误报为已确认取消；专项与只读实机协议预检通过 | 已只读核实当前 ComfyUI 0.45 的 scoped cancel 源码实现，但尚无真实运行中 GPU 取消实测；历史扫描不保证完整覆盖所有提交。 |
 
 ## 当前优先级
 
-- **继续 P4.6c**：对本地 Comfy 运行中取消建立**作用域明确**的支持检测和真实竞争验收；不使用无目标约束的全局 `/interrupt`，不把队列消失等同于远端确认取消。再验证 Comfy `POST /prompt` 响应丢失且无法获取远端 ID 时的人工查找/冻结证据对账。
+- **继续 P4.6d**：只在隔离受控任务中验收真实本地 Comfy 的 scoped cancel 与竞争结果；不使用无目标约束的全局 `/interrupt`，不允许根据队列消失推断远端已确认停止。
 - **后续内容质量验收**：使用真实文本 Provider 评估长故事角色和场景的一致性；静态文本验证不作语义正确性承诺。
 - **后续通用 Agent 扩展**：在权限、来源冻结和审计验证后再评估跨 Task/Project 检索与复杂工具编排。
 

@@ -220,10 +220,10 @@ export async function recoverCanvasPendingMaterialization(
   "/materializations/"+encodeURIComponent(artifactId)+"/recover","POST",{});
 }
 export async function reconcileCanvasUnknownJob(
- projectId:string,jobId:string,remoteTaskId:string
+ projectId:string,jobId:string,remoteTaskId?:string
 ):Promise<{verified:boolean;status:string;reason?:string}>{
  return canvasApi("/api/v1/projects/"+encodeURIComponent(projectId)+"/jobs/"+
-  encodeURIComponent(jobId)+"/reconcile","POST",{remoteTaskId});
+  encodeURIComponent(jobId)+"/reconcile","POST",remoteTaskId?{remoteTaskId}:{});
 }
 export function CanvasJobHistory({projectId,open,onClose,onObserveJob,onRefreshCanvas}:{
  projectId:string;open:boolean;onClose:()=>void;
@@ -312,26 +312,30 @@ export function CanvasJobHistory({projectId,open,onClose,onObserveJob,onRefreshC
   });
  }
  function confirmReconcile(job:CanvasJobHistoryItem){
-  if(!canReconcileUnknownJob(job)||!remoteTaskInput.trim()||working)return;
+  if(!canReconcileUnknownJob(job)||working)return;
   const remoteTaskId=remoteTaskInput.trim();
-  if(!/^[A-Za-z0-9_-]{1,128}$/.test(remoteTaskId)){
+  if(remoteTaskId&&!/^[A-Za-z0-9_-]{1,128}$/.test(remoteTaskId)){
    message.error("远端任务 ID 格式无效");return;
   }
   modal.confirm({
    title:"核实已有 ComfyUI 任务",
-   content:"只查询本地 ComfyUI 的历史记录，要求工作流图和原始随机提交标记均匹配。证据匹配后恢复轮询/收集，不会重新提交 /prompt。任务 ID 错误或历史记录尚未出现时将保持未知。",
-   okText:"验证远端历史",cancelText:"取消",
+   content:remoteTaskId?"只读核对本地 ComfyUI 的该任务历史或活动队列，必须匹配原始提交标记与冻结工作流；不会重新发送 /prompt。":
+    "只读扫描本地 ComfyUI 当前队列与最近 16 条历史。必须唯一匹配原始随机提交标记与冻结工作流；无匹配或多重匹配时保持未知，不会重新提交 /prompt。",
+   okText:remoteTaskId?"验证远端任务":"只读查找并核实",cancelText:"取消",
    onOk:async()=>{
     setWorking(job.id);
     try{
-     const result=await reconcileCanvasUnknownJob(projectId,job.id,remoteTaskId);
+     const result=await reconcileCanvasUnknownJob(projectId,job.id,remoteTaskId||undefined);
      if(result.verified){
       message.success("已核实原始远端任务，恢复已有任务的状态观察");
       onObserveJob(job.id);
       setReconcilingJob(null);setRemoteTaskInput("");
-     }else message.warning(result.reason==="remote_evidence_absent"?
-      "尚未找到远端任务历史；不能判断是否提交成功":
-      "远端历史与原始任务不匹配，已拒绝恢复");
+     }else message.warning(
+      ["remote_evidence_absent","remote_candidates_absent"].includes(result.reason??"")?
+       "未找到匹配的远端任务；不能据此认定原提交失败":
+       result.reason==="remote_candidates_ambiguous"?
+        "发现多个匹配项，已拒绝自动选择；请提供准确的远端任务 ID":
+        "远端记录与原始任务不匹配，已拒绝恢复");
      await refresh();
     }catch(e){message.error("人工对账失败："+String(e));throw e}
     finally{setWorking(null)}
@@ -627,13 +631,12 @@ export function CanvasJobHistory({projectId,open,onClose,onObserveJob,onRefreshC
       }}>人工核对 ComfyUI 任务</Button>
       {reconcilingJob===job.id?
        <div className="space-y-2">
-        <div className="text-xs opacity-70">从 ComfyUI 的 History 查找原任务 ID。禁止使用另一任务 ID 替代原任务。</div>
+        <div className="text-xs opacity-70">可填入原始 prompt_id 精确核对；留空只读检查当前队列与最近 16 条历史。远端不产生生成请求；证据唯一且可信时更新本地 Job 状态。</div>
         <Input size="small" placeholder="ComfyUI prompt_id"
          value={remoteTaskInput} maxLength={128}
          onChange={event=>setRemoteTaskInput(event.target.value)} />
         <Button size="small" type="primary" loading={working===job.id}
-         disabled={!remoteTaskInput.trim()}
-         onClick={()=>confirmReconcile(job)}>核实并恢复原任务</Button>
+         onClick={()=>confirmReconcile(job)}>{remoteTaskInput.trim()?"核实并恢复原任务":"只读查找远端并核实"}</Button>
        </div>:null}
      </div>:null}
     {job.status==="submission_unknown"?

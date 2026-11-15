@@ -225,6 +225,7 @@ test("P4.8 authenticated project-scoped human reconciliation remains read-only u
  let proof="unverified",remoteChecks=0,posts=0;
  const {createJobCoordinator}=await import("./job-coordinator.mjs");
  const coordinator=createJobCoordinator({db,adapters:{comfy:{local:{
+  async discover(){return proof==="completed"?{kind:"found",remoteTaskId:"remote-1"}:{kind:"missing"}},
   async reconcile({remoteTaskId,job}){
    remoteChecks++;assert.equal(remoteTaskId,"remote-1");
    assert.equal(job.submit_marker,"original-marker");return {kind:proof};
@@ -251,8 +252,11 @@ test("P4.8 authenticated project-scoped human reconciliation remains read-only u
  assert.equal(unknown.statusCode,200,unknown.body);
  assert.deepEqual(unknown.json(),{verified:false,status:"submission_unknown",reason:"remote_evidence_absent"});
  assert.equal(db.prepare("SELECT status FROM jobs WHERE id=?").get(jobId).status,"submission_unknown");
+ const discoveredUnknown=await post(url,{"x-test-owner":"owner"},{});
+ assert.equal(discoveredUnknown.statusCode,200,discoveredUnknown.body);
+ assert.equal(discoveredUnknown.json().reason,"remote_candidates_absent");
  proof="completed";
- const verified=await post();
+ const verified=await post(url,{"x-test-owner":"owner"},{});
  assert.equal(verified.statusCode,200,verified.body);
  assert.deepEqual(verified.json(),{verified:true,status:"collecting"});
  assert.equal(db.prepare("SELECT status FROM jobs WHERE id=?").get(jobId).status,"collecting");

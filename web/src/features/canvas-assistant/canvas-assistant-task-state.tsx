@@ -2,6 +2,7 @@ import {useEffect,useRef,useState} from "react";
 import {nanoid} from "nanoid";
 import {canvasApi} from "@/features/backend-sync/canvas-api";
 import {canvasCasPreviewUrl} from "@/features/backend-sync/canvas-cas";
+import {subscribeSqliteJobEvents} from "@/features/backend-sync/sqlite-job-events";
 import type {CanvasAssistantSession} from "@/types/canvas";
 import type {AssistantContextScope} from "./canvas-assistant-context";
 import {executeFrozenAssistantCanvasTaskStep,verifyFrozenAssistantTextDeliverable} from "./canvas-assistant-task-execution";
@@ -136,6 +137,40 @@ export function useCanvasAssistantTasks({
    .then(value=>{if(alive)setRunSequence(value?.sequence?value:null);},()=>{if(alive)setRunSequence(null);});
   return ()=>{alive=false;};
  },[base,open,selectedId,detail]);
+ // Existing Job SSE is shared per Canvas tab. React only READS Task and Run
+ // state after trustworthy terminal/materialization events, never POSTs a Job.
+ useEffect(()=>{
+  if(!open||!selectedId||!detail||detail.id!==selectedId||detail.readOnly)return;
+  const ids=[...new Set((detail.steps??[]).map(step=>step.result?.jobId)
+   .filter((value):value is string=>typeof value==="string"&&/^[A-Za-z0-9_-]{1,128}$/.test(value)))];
+  if(!ids.length)return;
+  let alive=true,loading=false,dirty=false;
+  const epoch=continuationEpoch.current,taskId=selectedId;
+  const reload=()=>{
+   if(loading){dirty=true;return;}
+   loading=true;
+   void (async()=>{
+    do{
+     dirty=false;
+     const response=await canvasApi<TaskResponse>(base+"/"+encodeURIComponent(taskId),"GET");
+     if(!alive||epoch!==continuationEpoch.current)return;
+     if(response.task?.id===taskId){
+      setDetail(response.task);
+      setItems(items=>items.map(task=>task.id===taskId?response.task:task));
+     }
+    }while(dirty&&alive);
+   })().catch(()=>{/* stale/partial network updates never trigger generation */})
+    .finally(()=>{loading=false});
+  };
+  const unsubscribe=ids.map(jobId=>subscribeSqliteJobEvents(jobId,event=>{
+   const payload=event.payload as {to?:string;status?:string}|undefined;
+   if(event.kind==="artifact_materialized"||
+    event.kind==="artifact_materialization"&&["materialized","blocked"].includes(payload?.status??"")||
+    event.kind==="job_status"&&["succeeded","failed","cancelled","submission_unknown","blocked_credential"].includes(payload?.to??""))
+    reload();
+  }));
+  return ()=>{alive=false;unsubscribe.forEach(dispose=>dispose())};
+ },[base,open,selectedId,detail?.steps,detail?.readOnly]);
  useEffect(()=>{
   if(!open||!selectedId||!detail||detail.id!==selectedId||!["planning","failed","blocked"].includes(detail.status)){
    setRecovery(null);return;

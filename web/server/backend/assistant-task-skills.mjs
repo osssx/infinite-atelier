@@ -265,7 +265,7 @@ export function settleAssistantSkillRun(db,{projectId,taskId,stepId,runId,
  */
 export async function executeAssistantSkillStep({
  db,skillRegistry,blobStore,projectId,taskId,stepId,requestId,
- expectedPlanVersion,actionDigest,signal,runner=runSkillScript,afterReserve
+ expectedPlanVersion,actionDigest,signal,runner=runSkillScript,afterReserve,onSettled
 }){
  const previous=db.prepare("SELECT a.external_id FROM assistant_task_attempts a JOIN assistant_task_steps s ON s.id=a.step_id WHERE a.step_id=? AND s.task_id=? AND s.kind='skill_script' ORDER BY a.attempt_no DESC LIMIT 1")
   .get(stepId,taskId);
@@ -306,11 +306,16 @@ export async function executeAssistantSkillStep({
    blobStore,signal});
   const completed=settleAssistantSkillRun(db,{projectId,taskId,stepId,
    runId:reservation.runId,result});
+  // Skill receipt has committed. No nested SQLite transaction is possible here.
+  try{onSettled?.(reservation.runId,completed.status)}catch{}
   return {...result,run_id:reservation.runId,taskStatus:completed.status};
  }catch(error){
   const code=typeof error?.code==="string"?error.code:"skill_script_failed";
-  try{settleAssistantSkillRun(db,{projectId,taskId,stepId,runId:reservation.runId,
-   reason:code});}catch{/* Persisted unknown state prohibits retry on startup. */}
+  try{
+   const settled=settleAssistantSkillRun(db,{projectId,taskId,stepId,runId:reservation.runId,
+    reason:code});
+   try{onSettled?.(reservation.runId,settled.status)}catch{}
+  }catch{/* Persisted unknown state prohibits retry on startup. */}
   throw error;
  }
 }

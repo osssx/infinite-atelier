@@ -96,7 +96,7 @@ function cursorOf(value){
  return Number(v);
 }
 export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobStore,mediaPreview,audioExtraction,blobGc,projectArchive,comfyWorkflowDir,vault,coordinator,materializer,worker,comfyRegistry,comfyLive,comfyInstanceIds=[],modelKinds=[],arkAssetUploadReady=false,
- arkChannelHealth,modelCatalog,mediaDownloader,skillRegistry,assistantChat,logger=false,streamPollMs=200}={}){
+ arkChannelHealth,modelCatalog,mediaDownloader,skillRegistry,onTaskSkillSettled,assistantChat,logger=false,streamPollMs=200}={}){
  if(!db||(!sessionAuth&&typeof authorize!=="function"))throw Error("backend_authorizer_required");
  const app=Fastify({logger,bodyLimit:5*1024*1024,trustProxy:false,genReqId:()=>randomUUID()});
  if(blobStore)app.addContentTypeParser("application/octet-stream",(req,stream,done)=>done(null,stream));
@@ -645,7 +645,7 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
  app.get("/api/v1/projects/:id/chats",{schema:{params:canvasParams}},req=>getCanvasChats(db,req.params.id));
  app.put("/api/v1/projects/:id/chats",{schema:{params:canvasParams,body:chatsBody}},req=>
   putCanvasChats(db,req.params.id,req.body));
- registerAssistantTaskRoutes(app,db,{skillRegistry,blobStore});
+ registerAssistantTaskRoutes(app,db,{skillRegistry,blobStore,onTaskSkillSettled});
    app.post("/api/v1/projects/:id/assistant/chat",{schema:{params:canvasParams,body:{type:"object",
      required:["channelId","provider","model","messages"],additionalProperties:false,properties:{
        channelId:idSchema,provider:{type:"string",enum:["openai","openai_compatible","google_gemini"]},

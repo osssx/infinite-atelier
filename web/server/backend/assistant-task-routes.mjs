@@ -167,7 +167,7 @@ const skillPlanBody={type:"object",additionalProperties:false,
  dependsOn:{type:"array",uniqueItems:true,maxItems:20,items:id},finalizeTask:{type:"boolean"}
  }};
 /** P2b: Task Skill execution is reserved before child process spawn. */
-export function registerAssistantTaskRoutes(app,db,{skillRegistry,blobStore}={}){
+export function registerAssistantTaskRoutes(app,db,{skillRegistry,blobStore,onTaskSkillSettled}={}){
  const result=(reply,value)=>{reply.header("Cache-Control","no-store");return value};
  app.post(base,{schema:{params:projectParams,body:taskPostBody}},(req,reply)=>{
   const value=createAssistantTask(db,{projectId:req.params.id,...req.body});
@@ -293,7 +293,7 @@ export function registerAssistantTaskRoutes(app,db,{skillRegistry,blobStore}={})
   req.raw.once("aborted",onAbort);reply.raw.once("close",onClose);
   try{return await executeAssistantSkillStep({db,skillRegistry,blobStore,
    projectId:req.params.id,taskId:req.params.taskId,stepId:req.params.stepId,
-   ...req.body,signal:controller.signal});}
+   ...req.body,signal:controller.signal,onSettled:onTaskSkillSettled});}
   finally{req.raw.removeListener("aborted",onAbort);reply.raw.removeListener("close",onClose)}
  });
  app.get(base+"/:taskId/model-calls",{schema:{params:taskParams}},(req,reply)=>result(reply,

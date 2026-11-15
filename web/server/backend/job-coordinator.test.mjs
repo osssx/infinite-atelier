@@ -125,12 +125,17 @@ test("coordinator cancels one confirmed Comfy remote run; other prompts and CAS 
  f.db.prepare("UPDATE jobs SET status='running',upstream_task_id=? WHERE id=?")
   .run("remote-two",second);
  let scopedCalls=0;
+ const terminal=[];
  const adapter={async cancel({job,remoteTaskId}){
   scopedCalls++;
   assert.equal(job.id,first);assert.equal(remoteTaskId,"remote-one");
   return {cancelled:true};
  }};
- const c=createJobCoordinator({db:f.db,adapters:{comfy:{local:adapter}}});
+ const c=createJobCoordinator({db:f.db,adapters:{comfy:{local:adapter}},
+  onTerminalCommitted:(jobId,status)=>{
+   assert.equal(f.db.prepare("SELECT lease_owner FROM jobs WHERE id=?").get(jobId).lease_owner,null);
+   terminal.push({jobId,status});
+  }});
  c.recoverAtStartup();
  const cancelled=await c.cancel(first);
  assert.equal(cancelled.cancelled,true);
@@ -139,6 +144,7 @@ test("coordinator cancels one confirmed Comfy remote run; other prompts and CAS 
  assert.equal(f.row(second).status,"running");
  assert.equal(f.row(first).upstream_task_id,"remote-one");
  assert.equal(scopedCalls,1);
+ assert.deepEqual(terminal,[{jobId:first,status:"cancelled"}]);
  assert.equal((await c.cancel(first)).cancelled,false);
  assert.equal(scopedCalls,1,"terminal job never requests remote cancellation twice");
  assert.equal(readEventsAfter(f.db,0).filter(e=>e.job_id===first&&e.kind==="job_remote_cancel_confirmed").length,1);
@@ -417,3 +423,26 @@ test("coordinator stop drains an already-submitting request and refuses new clai
 });
 
 
+
+test("P4.4b manually attested failed Comfy task notifies only after reconciliation commit",async t=>{
+ const f=fixture(t),jobId=projectJob(f,"failed-proof",{
+  executionMode:"poll",kind:"comfy",instanceId:"local"});
+ f.db.prepare("UPDATE jobs SET status='submission_unknown',submit_marker='frozen-marker',submission_started_at=123 WHERE id=?")
+  .run(jobId);
+ const events=[];
+ let submits=0;
+ const coordinator=createJobCoordinator({db:f.db,adapters:{comfy:{local:{
+  async submit(){submits++;throw Error("no_new_post")},
+  async reconcile(){return {kind:"failed"}},async poll(){throw Error("no_poll")}
+ }}},onTerminalCommitted:(id,status)=>{
+  assert.equal(f.row(id).status,"failed");
+  events.push({id,status});
+ }});
+ coordinator.recoverAtStartup();
+ const result=await coordinator.reconcileUnknown({jobId,projectId:"p",remoteTaskId:"remote-attested"});
+ assert.deepEqual(result,{verified:true,status:"failed"});
+ assert.deepEqual(events,[{id:jobId,status:"failed"}]);
+ assert.equal(submits,0);
+ assert.equal(f.row(jobId).status,"failed");
+ assert.equal(await coordinator.tick(),0);
+});

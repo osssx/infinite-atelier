@@ -4,8 +4,17 @@ import {createRoot,type Root} from "react-dom/client";
 import {afterEach,beforeEach,describe,expect,it,vi} from "vitest";
 import type {CanvasAssistantSession} from "@/types/canvas";
 
-const mocks=vi.hoisted(()=>({api:vi.fn()}));
+const mocks=vi.hoisted(()=>({api:vi.fn(),
+ jobWatchers:new Map<string,Set<(value:{jobId:string;kind:string;eventId:number;payload?:unknown})=>void>>()}));
 vi.mock("@/features/backend-sync/canvas-api",()=>({canvasApi:mocks.api}));
+vi.mock("@/features/backend-sync/sqlite-job-events",()=>({
+ subscribeSqliteJobEvents:(jobId:string,callback:(value:{jobId:string;kind:string;eventId:number;payload?:unknown})=>void)=>{
+  let listeners=mocks.jobWatchers.get(jobId);
+  if(!listeners){listeners=new Set();mocks.jobWatchers.set(jobId,listeners)}
+  listeners.add(callback);
+  return ()=>{listeners!.delete(callback);if(!listeners!.size)mocks.jobWatchers.delete(jobId)};
+ }
+}));
 import {useCanvasAssistantTasks} from "./canvas-assistant-task-state";
 
 let root:Root|null=null,container:HTMLDivElement|null=null;
@@ -37,6 +46,7 @@ async function render(activeChatId?:string,
 beforeEach(()=>{
  (globalThis as {IS_REACT_ACT_ENVIRONMENT?:boolean}).IS_REACT_ACT_ENVIRONMENT=true;
  mocks.api.mockReset();
+ mocks.jobWatchers.clear();
  let task:Record<string,unknown>|null=null;
  mocks.api.mockImplementation(async(url:string,method:string,payload?:Record<string,unknown>)=>{
   if(method==="GET"&&url.includes("chatSessionId="))return {tasks:task?[task]:[]};
@@ -884,4 +894,52 @@ it("P4.4a user-triggered safe continuation never POSTs a paid Job or Skill",asyn
  expect(calls.filter(c=>c.method==="POST").map(c=>c.url)).toEqual([
   "/api/v1/projects/project/assistant/tasks/task-safe/continue-safe"]);
  expect(calls.some(c=>/\/enqueue$|\/external-jobs$|\/run-skill$|\/jobs$/.test(c.url))).toBe(false);
+});
+
+it("P4.4b durable Job SSE reads Task details without triggering paid endpoints",async()=>{
+ let task={id:"event-task",chatSessionId:"chat-a",rootMessageId:"original-user",
+  originalRequest:"连续生成图像",status:"waiting_external",readOnly:false,
+  activePlanVersion:1,recoveryMode:"job_observation",
+  steps:[{id:"job-step",kind:"comfy_workflow",planVersion:1,status:"waiting_external",
+   actionDigest:"f".repeat(64),result:{jobId:"job-event-1"}}]};
+ const calls:{url:string;method:string}[]=[];
+ mocks.api.mockImplementation(async(url:string,method:string)=>{
+  calls.push({url,method});
+  if(method==="GET"&&url.includes("chatSessionId="))return {tasks:[task]};
+  if(method==="GET"&&url.endsWith("/event-task"))return {task};
+  if(method==="GET"&&url.endsWith("/run-sequences"))return {sequence:null,state:"none",next:null};
+  if(method==="GET"&&url.endsWith("/model-calls"))return {calls:[]};
+  if(method==="GET"&&url.endsWith("/recovery"))return {canReplan:false,reason:"pending"};
+  throw Error("unexpected read/write: "+method+" "+url);
+ });
+ await render();
+ expect(mocks.jobWatchers.get("job-event-1")?.size).toBe(1);
+ const before=calls.filter(c=>c.url.endsWith("/event-task")).length;
+ task={...task,status:"ready",steps:[{...task.steps[0],status:"succeeded"}]};
+ await act(async()=>{
+  for(const callback of mocks.jobWatchers.get("job-event-1")??[])
+   callback({jobId:"job-event-1",kind:"artifact_materialized",eventId:7,
+    payload:{artifactId:"artifact-good"}});
+  await Promise.resolve();
+ });
+ expect(calls.filter(c=>c.url.endsWith("/event-task")).length).toBeGreaterThan(before);
+ expect(container!.textContent).toContain("可继续");
+ expect(calls.filter(c=>c.method==="POST")).toHaveLength(0);
+});
+it("P4.4b archived Task never subscribes to live Job updates",async()=>{
+ const task={id:"event-archive",chatSessionId:"chat-a",rootMessageId:"original-user",
+  originalRequest:"历史媒体生成",status:"waiting_external",readOnly:true,
+  activePlanVersion:1,recoveryMode:"job_observation",
+  steps:[{id:"job-step",kind:"model_job",planVersion:1,status:"waiting_external",
+   actionDigest:"f".repeat(64),result:{jobId:"old-job-event"}}]};
+ mocks.api.mockImplementation(async(url:string,method:string)=>{
+  if(method==="GET"&&url.includes("chatSessionId="))return {tasks:[task]};
+  if(method==="GET"&&url.endsWith("/event-archive"))return {task};
+  if(method==="GET"&&url.endsWith("/model-calls"))return {calls:[]};
+  if(method==="GET"&&url.endsWith("/run-sequences"))return {sequence:null,state:"none",next:null};
+  return {task};
+ });
+ await render();
+ expect(mocks.jobWatchers.has("old-job-event")).toBe(false);
+ expect(mocks.api.mock.calls.some(([,method])=>method==="POST")).toBe(false);
 });

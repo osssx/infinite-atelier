@@ -51,7 +51,7 @@ function credentialAvailable(db,snapshot){
  * Unknown submit outcomes are NEVER automatically resubmitted.
  */
 export function createJobCoordinator({
- db,adapters={},modelConcurrency=2,comfyConcurrency=1,onTerminal,
+ db,adapters={},modelConcurrency=2,comfyConcurrency=1,onTerminal,onTerminalCommitted,
  leaseMs=120000,clock=()=>Date.now(),retryPolicy=null
 }={}){
  if(!db||!Number.isSafeInteger(modelConcurrency)||modelConcurrency<1||
@@ -318,6 +318,10 @@ export function createJobCoordinator({
    clearInterval(heartbeat);
    if(requestControllers.get(jobId)===controller)requestControllers.delete(jobId);
    try{finish(jobId,lease,outcome)}catch{/* an explicit startup recovery owns it now */}
+   // Invoked only after Job/Artifact transactions and lease cleanup commit.
+   const finalStatus=db.prepare("SELECT status FROM jobs WHERE id=?").get(jobId)?.status;
+   if(["succeeded","failed","cancelled","submission_unknown"].includes(finalStatus))
+    try{onTerminalCommitted?.(jobId,finalStatus)}catch{/* durable Job remains authoritative */}
   }
  }
  async function tick({maxClaims=32}={}){
@@ -364,7 +368,7 @@ export function createJobCoordinator({
   try{proof=await adapter.reconcile({job:parse(row),remoteTaskId})}
   catch{throw Object.assign(Error("reconciliation_upstream_unavailable"),
    {code:"reconciliation_upstream_unavailable",statusCode:503})}
-  return writeTransaction(db,()=>{
+  const reconciled=writeTransaction(db,()=>{
    const current=db.prepare("SELECT * FROM jobs WHERE id=? AND project_id=?").get(jobId,projectId);
    if(!current||current.status!=="submission_unknown"||current.lease_owner||
       current.submit_marker!==row.submit_marker||current.updated_at!==row.updated_at)
@@ -391,6 +395,9 @@ export function createJobCoordinator({
     to:next,remoteTaskVerified:true});
    return {verified:true,status:next};
   });
+  if(reconciled.verified&&reconciled.status==="failed")
+   try{onTerminalCommitted?.(jobId,"failed")}catch{}
+  return reconciled;
  }
  /** Cancel queued local jobs or remotely identified model/Comfy jobs.
   * A temporary lease serializes the decision with polling and collection.
@@ -433,10 +440,15 @@ export function createJobCoordinator({
   });
   if(reserved.state==="local_wait_stopped"){
    requestControllers.get(jobId)?.abort();
+   try{onTerminalCommitted?.(jobId,"cancelled")}catch{}
    return {cancelled:true,remoteCancelled:false,localWaitStopped:true};
   }
-  if(reserved.state==="cancelled")return {cancelled:true,remoteCancelled:false};
+  if(reserved.state==="cancelled"){
+   try{onTerminalCommitted?.(jobId,"cancelled")}catch{}
+   return {cancelled:true,remoteCancelled:false};
+  }
   if(reserved.state!=="reserved")return {cancelled:false,reason:reserved.reason};
+  let finalResult;
   try{
    let confirmed=false,reason="remote_cancel_unconfirmed";
    try{
@@ -444,7 +456,7 @@ export function createJobCoordinator({
     confirmed=result?.cancelled===true;
     if(!confirmed)reason=result?.reason??reason;
    }catch{reason="remote_cancel_unconfirmed"}
-   return writeTransaction(db,()=>{
+   finalResult=writeTransaction(db,()=>{
     const current=db.prepare("SELECT * FROM jobs WHERE id=?").get(jobId);
     if(!current||current.lease_owner!==lease||current.status!=="running")
      return {cancelled:false,reason:"cancel_lease_lost"};
@@ -461,6 +473,9 @@ export function createJobCoordinator({
      .run(jobId,lease);
    });
   }
+  if(finalResult?.cancelled)
+   try{onTerminalCommitted?.(jobId,"cancelled")}catch{}
+  return finalResult;
  }
  /** Human-triggered provider read-only audit. No task submit or PUT here. */
  async function reconcileChunkUpload({projectId,jobId,index,expectedUpdatedAt}){

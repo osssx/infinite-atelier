@@ -23,7 +23,7 @@ const validId=id=>typeof id==="string"&&/^[a-zA-Z0-9_-]{1,128}$/.test(id);
  * One DB transaction owns document revision, node, typed connection, record, event.
  * A failed/blocked materialization NEVER changes the successful generation job.
  */
-export function createCanvasMaterializer({db,blobStore,videoDimensionReader=readVideoDimensions}={}){
+export function createCanvasMaterializer({db,blobStore,videoDimensionReader=readVideoDimensions,onSettled}={}){
  if(!db||!blobStore)throw Error("invalid_canvas_materializer");
  const select=({projectId=null,artifactId=null}={})=>db.prepare(`SELECT a.*,j.project_id,j.target_node_id,j.source_fingerprint,j.status AS job_status,
   m.id AS materialization_id,m.status AS materialization_status
@@ -306,7 +306,12 @@ export function createCanvasMaterializer({db,blobStore,videoDimensionReader=read
   if(!Number.isSafeInteger(maxItems)||maxItems<1||maxItems>100)
    throw Error("invalid_materialization_limit");
   const rows=select().slice(0,maxItems),out=[];
-  for(const item of rows)out.push(await processArtifact(item));
+  for(const item of rows){
+   const result=await processArtifact(item);
+   out.push(result);
+   if(result&&["materialized","blocked"].includes(result.status)&&!result.existing)
+    try{onSettled?.(result)}catch{/* materialization remains committed */}
+  }
   return out;
  }
  /** Processes only an already-collected succeeded artifact. No model submit. */
@@ -314,7 +319,10 @@ export function createCanvasMaterializer({db,blobStore,videoDimensionReader=read
   if(!validId(projectId)||!validId(artifactId))throw fail("invalid_materialization_reference");
   const row=select({projectId,artifactId})[0];
   if(!row)return false;
-  return processArtifact(row);
+  const result=await processArtifact(row);
+  if(result&&["materialized","blocked"].includes(result.status)&&!result.existing)
+   try{onSettled?.(result)}catch{/* materialization remains committed */}
+  return result;
  }
  function retryBlocked({projectId,artifactId}={}){
   if(!validId(projectId)||!validId(artifactId))throw fail("invalid_materialization_reference");

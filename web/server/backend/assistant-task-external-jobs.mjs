@@ -264,6 +264,22 @@ function reconcileTaskInTransaction(db,projectId,taskId,{onlyMaterializeStepId,e
     .run(cancelled?"cancelling":"needs_reconcile",now,taskId);
    advanced++;continue;
   }
+  // OpenAI immediate cancellation can only stop local waiting: a Provider
+  // POST may already have happened. The explicit job_local_wait_stopped event
+  // distinguishes it from an attested remote cancellation and forbids paid
+  // task replay/replan based on a false terminal failure.
+  if(job.status==="cancelled"&&db.prepare("SELECT 1 FROM job_events WHERE job_id=? AND kind='job_local_wait_stopped' LIMIT 1").get(job.id)){
+   if(step.status==="needs_reconcile"&&step.error_code==="assistant_external_remote_cancel_unconfirmed")continue;
+   const reason="assistant_external_remote_cancel_unconfirmed";
+   db.prepare("UPDATE assistant_task_attempts SET status='needs_reconcile',evidence_json=? WHERE id=?")
+    .run(freeze({jobId:job.id,jobStatus:job.status,reason}),attempt.id);
+   db.prepare("UPDATE assistant_task_steps SET status='needs_reconcile',error_code=?,updated_at=? WHERE id=?")
+    .run(reason,now,step.id);
+   if(validPlan)db.prepare("UPDATE assistant_tasks SET status=?,updated_at=? WHERE id=?")
+    .run(cancelled?"cancelling":"needs_reconcile",now,taskId);
+   event(db,taskId,step.id,"external_remote_cancel_unconfirmed",{jobId:job.id,reason},now);
+   advanced++;continue;
+  }
   if(!["succeeded","failed","cancelled"].includes(job.status)){
    if(step.status==="needs_reconcile"){
     db.prepare("UPDATE assistant_task_steps SET status='waiting_external',error_code=NULL,updated_at=? WHERE id=?").run(now,step.id);

@@ -37,6 +37,7 @@ import {createTrustedMediaDownloader} from "./trusted-media-download.mjs";
 import {readArkAssetConfig,createArkAssetManager} from "./ark-asset-manager.mjs";
 import {createCanvasMaterializer} from "./canvas-materializer.mjs";
 import {createBackendWorker} from "./worker.mjs";
+import {createAssistantTaskContinuationEvents} from "./assistant-task-continuation-events.mjs";
 /** Resolve the user-data directory; reject worktree paths and junction aliases. */
 const sourceRoot=realpathSync(fileURLToPath(new URL("../../../",import.meta.url)));
 export function resolveLocalDataDir(dataDir=process.env.ATELIER_DATA_DIR){
@@ -116,12 +117,26 @@ export function createLocalBackend({dataDir,streamPollMs=200,adapters,comfyInsta
    }
   ])):null;
   const configured={...adapters,...(comfy?{comfy}:{}),...(model?{model}:{})};
+  const continuationEvents=createAssistantTaskContinuationEvents({db});
+  const signal=(kind,id)=>{
+   try{
+    if(kind==="job")continuationEvents.notifyJob(id);
+    else if(kind==="materialization")continuationEvents.notifyMaterialization(id);
+    else if(kind==="skill")continuationEvents.notifySkill(id);
+    continuationEvents.drain();
+   }catch{/* Original external receipt remains durable, startup replay recovers. */}
+  };
   if(autoDispatch&&!Object.keys(configured).length)throw Error("auto_dispatch_requires_adapters");
   const coordinator=Object.keys(configured).length?createJobCoordinator({db,adapters:configured,
    onTerminal:(jobId,row)=>{if(row.snapshot_json&&JSON.parse(row.snapshot_json).adapterKind==="comfy")comfyLive.disconnect(jobId)},
+   onTerminalCommitted:jobId=>signal("job",jobId),
    retryPolicy:autoDispatch?{pollMs:500,collectMs:1000,maxMs:60000}:null}):null;
   coordinator?.recoverAtStartup();
-  const materializer=createCanvasMaterializer({db,blobStore});
+  const materializer=createCanvasMaterializer({db,blobStore,
+   onSettled:result=>signal("materialization",result.artifactId)});
+  // One bounded replay of already persisted receipts after crash between
+  // external completion and event delivery. No remote request is possible.
+  try{continuationEvents.catchUp()}catch{/* explicit /continue-safe remains available */}
   const worker=autoDispatch?createBackendWorker({coordinator,materializer,intervalMs:dispatchIntervalMs}):null;
   const app=buildApp({db,sessionAuth,autoLocalSession,blobStore,mediaPreview,audioExtraction,blobGc,projectArchive,vault,skillRegistry,
     assistantChat:enableOpenAiModels?createAssistantChatService({vault,...(modelUpstreamCall?{upstreamCall:modelUpstreamCall}: {})}):null,
@@ -129,6 +144,7 @@ export function createLocalBackend({dataDir,streamPollMs=200,adapters,comfyInsta
    modelCatalog:openai||gemini?args=>vault.get(args.channelId).provider==="google_gemini"?
     gemini.listModels({channelId:args.channelId,endpointBaseUrl:args.endpointBaseUrl}):openai.listModels(args):null,
    mediaDownloader:createTrustedMediaDownloader({blobStore}),coordinator,materializer,worker,
+   onTaskSkillSettled:runId=>signal("skill",runId),
    comfyRegistry,comfyWorkflowDir,comfyLive,comfyInstanceIds:comfyRegistry?()=>comfyRegistry.list().map(item=>item.id):comfyInstances?.map(item=>item.id)??[],modelKinds:[...new Set([...(enableOpenAiModels?["image","audio","text","video"]:[]),...(enableArkVideos?["video"]:[])])],arkAssetUploadReady:Boolean(assetManager),streamPollMs});
   worker?.start();
   let closed=false;

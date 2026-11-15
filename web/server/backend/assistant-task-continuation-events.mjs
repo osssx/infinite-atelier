@@ -48,10 +48,11 @@ function lookupTasks(db,{kind,sourceId,projectId,taskId}){
    .all(run.status,sourceId).filter(row=>row.projectId===run.project_id);
  }
  if(kind==="startup"){
-  const row=db.prepare(`SELECT id AS taskId,project_id AS projectId,
-    active_plan_version AS planVersion,status AS evidenceStatus
-    FROM assistant_tasks WHERE id=? AND project_id=? AND read_only=0
-     AND cancel_requested_at IS NULL`).get(taskId,projectId);
+  const row=db.prepare(`SELECT t.id AS taskId,t.project_id AS projectId,
+    t.active_plan_version AS planVersion,t.status AS evidenceStatus,p.revision AS projectRevision
+    FROM assistant_tasks t JOIN projects p ON p.id=t.project_id AND p.deleted_at IS NULL
+    WHERE t.id=? AND t.project_id=? AND t.read_only=0
+     AND t.cancel_requested_at IS NULL`).get(taskId,projectId);
   if(!row)return [];
   // Catch-up request identity must include durable external evidence. A
   // materialization committed after an earlier startup can have the same Task
@@ -74,7 +75,12 @@ function lookupTasks(db,{kind,sourceId,projectId,taskId}){
    JOIN assistant_task_steps s ON s.id=a.step_id AND s.plan_version=?
    WHERE a.task_id=? AND a.external_kind='skill_run' ORDER BY r.id`)
    .all(row.planVersion,taskId);
-  return [{...row,evidenceStatus:hash({steps,jobs,mats,skills})}];
+  const blobs=db.prepare(`SELECT ar.id,ar.sha256,b.id AS blobId,b.sha256 AS blobSha256,b.status
+   FROM artifacts ar JOIN blobs b ON b.id=ar.blob_id
+   JOIN assistant_task_attempts a ON a.external_id=ar.job_id AND a.external_kind='job'
+   JOIN assistant_task_steps s ON s.id=a.step_id AND s.plan_version=? AND s.superseded_at IS NULL
+   WHERE a.task_id=? ORDER BY ar.id`).all(row.planVersion,taskId);
+  return [{...row,evidenceStatus:hash({projectRevision:row.projectRevision,steps,jobs,mats,skills,blobs})}];
  }
  return [];
 }

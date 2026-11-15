@@ -6,6 +6,7 @@ import {canvasApi} from "./canvas-api";
  */
 export type SqliteJobEvent={jobId:string;kind:string;eventId:number;payload?:unknown};
 const subscribers=new Map<string,Set<(event:SqliteJobEvent)=>void>>();
+const readySubscribers=new Set<()=>void>();
 let source:EventSource|null=null;
 let startGeneration=0;
 let connecting=false;
@@ -27,17 +28,23 @@ function start(){
     for(const callback of subscribers.get(row.jobId)??[])callback(row);
    }catch{/* malformed event never mutates Canvas state */}
   });
+  // Consumers can now reread their snapshot. Events after this cursor are
+  // replayed by SSE, including changes during that snapshot request.
+  for(const ready of [...readySubscribers])try{ready()}catch{}
  }).catch(()=>{/* backend unavailable: watchers continue polling */})
   .finally(()=>{if(generation===startGeneration)connecting=false});
 }
-export function subscribeSqliteJobEvents(jobId:string,callback:(event:SqliteJobEvent)=>void):()=>void{
+export function subscribeSqliteJobEvents(jobId:string,callback:(event:SqliteJobEvent)=>void,onReady?:()=>void):()=>void{
  if(!/^[A-Za-z0-9_-]{1,128}$/.test(jobId))throw Error("invalid_job_id");
  let listeners=subscribers.get(jobId);
  if(!listeners){listeners=new Set();subscribers.set(jobId,listeners)}
  listeners.add(callback);
+ const ready=()=>onReady?.();
+ if(onReady){readySubscribers.add(ready);if(source)try{ready()}catch{}}
  start();
  return ()=>{
   listeners!.delete(callback);
+  readySubscribers.delete(ready);
   if(!listeners!.size)subscribers.delete(jobId);
   if(!subscribers.size){
    startGeneration++;

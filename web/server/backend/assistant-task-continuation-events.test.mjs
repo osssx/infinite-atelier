@@ -6,12 +6,13 @@ import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {zipSync,strToU8} from "fflate";
 import {initializeSchema,SCHEMA_VERSION} from "./schema.mjs";
-import {createProject,getProject} from "./projects.mjs";
+import {createProject,getProject,saveSingleUserCanvas} from "./projects.mjs";
 import {createAssistantTask,cancelAssistantTask} from "./assistant-tasks.mjs";
 import {fingerprintSource,appendArtifact} from "./repository.mjs";
 import {createBlobStore} from "./blob-store.mjs";
 import {registerAssistantRunSequence,getAssistantRunSequence} from "./assistant-task-run-sequences.mjs";
-import {planAssistantExternalJobStep,enqueueAssistantExternalJobStep} from "./assistant-task-external-jobs.mjs";
+import {planAssistantExternalJobStep,enqueueAssistantExternalJobStep,reconcileAssistantExternalTask,recoverAssistantExternalTasksAtStartup} from "./assistant-task-external-jobs.mjs";
+import {inspectAssistantTaskRecovery,replanAssistantTaskSafely} from "./assistant-task-safe-replan.mjs";
 import {planAssistantSkillStep,executeAssistantSkillStep} from "./assistant-task-skills.mjs";
 import {decideAssistantTaskStep} from "./assistant-task-step-gate.mjs";
 import {createJobCoordinator} from "./job-coordinator.mjs";
@@ -23,7 +24,7 @@ const node=id=>({id,type:"text",title:id,position:{x:0,y:0},width:320,height:220
  metadata:{content:"",prompt:"请写一个动画故事："+id}});
 const doc={nodes:[node("first"),node("second"),node("third")],connections:[]};
 const count=(db,table)=>db.prepare("SELECT COUNT(*) n FROM "+table).get().n;
-function fixture(t,{sequence=true,autoJob=true,autoMaterialize=true,actions=[
+function fixture(t,{sequence=true,autoJob=true,autoMaterialize=true,prepare=async()=>{},actions=[
  {type:"run_node",nodeId:"first",mode:"text"},
  {type:"run_node",nodeId:"second",mode:"text"}
 ]}={}){
@@ -53,7 +54,7 @@ function fixture(t,{sequence=true,autoJob=true,autoMaterialize=true,actions=[
  let submits=0;
  const coordinator=createJobCoordinator({db,
   adapters:{model:{
-   async prepare(){},
+   prepare,
    async submit(){submits++;return {kind:"accepted",remoteTaskId:"remote-1"}},
    async poll(){return {kind:"completed",receipt:{remoteTaskId:"remote-1"}}},
    async collect({job}){
@@ -77,6 +78,63 @@ async function finish(f){
  assert.equal(f.submits(),1);
  assert.equal(f.db.prepare("SELECT status FROM jobs").get().status,"succeeded");
 }
+
+test("P4.4b cancellation during preparation remains safely unsubmitted",async t=>{
+ let ready,release;
+ const entered=new Promise(resolve=>{ready=resolve}),gate=new Promise(resolve=>{release=resolve});
+ const f=fixture(t,{prepare:async()=>{ready();await gate;}});
+ const pending=f.coordinator.tick();await entered;
+ const jobId=f.queued.jobId;
+ const before=f.db.prepare("SELECT status,submission_started_at FROM jobs WHERE id=?").get(jobId);
+ assert.equal(before.status,"preparing");assert.equal(before.submission_started_at,null);
+ await f.coordinator.cancel(jobId);release();await pending;
+ assert.equal(f.submits(),0);
+ assert.equal(f.db.prepare("SELECT status FROM assistant_tasks").get().status,"failed");
+ assert.equal(f.db.prepare("SELECT status FROM assistant_task_steps WHERE id=?").get(f.planned.stepId).status,"failed");
+ assert.equal(inspectAssistantTaskRecovery(f.db,f.base).canReplan,true);
+});
+
+test("P4.4b legacy failed local-stop receipts cannot authorize replan and are fenced at startup",t=>{
+ const f=fixture(t,{autoJob:false});const jobId=f.queued.jobId;
+ // Persisted shape from older versions: local stop was recorded as failure.
+ f.db.prepare("UPDATE jobs SET status='cancelled' WHERE id=?").run(jobId);
+ f.db.prepare("INSERT INTO job_events(job_id,kind,payload_json,created_at) VALUES(?,'job_local_wait_stopped',?,?)")
+  .run(jobId,JSON.stringify({remoteCancelled:false,submissionMayHaveOccurred:true}),Date.now());
+ f.db.prepare("UPDATE assistant_task_steps SET status='failed',receipt_trust='none' WHERE id=?").run(f.planned.stepId);
+ f.db.prepare("UPDATE assistant_task_attempts SET status='failed' WHERE step_id=?").run(f.planned.stepId);
+ f.db.prepare("UPDATE assistant_tasks SET status='failed',active_step_id=NULL WHERE id=?").run(f.task.id);
+ assert.equal(inspectAssistantTaskRecovery(f.db,f.base).reason,"job_remote_cancel_unconfirmed");
+ assert.throws(()=>replanAssistantTaskSafely(f.db,{...f.base,requestId:"forbidden-replan",
+  expectedPlanVersion:1,expectedProjectRevision:1}),{code:"assistant_task_replan_blocked"});
+ assert.equal(recoverAssistantExternalTasksAtStartup(f.db).advanced,1);
+ assert.equal(f.db.prepare("SELECT status FROM assistant_tasks").get().status,"needs_reconcile");
+ assert.equal(f.db.prepare("SELECT status FROM assistant_task_attempts WHERE step_id=?").get(f.planned.stepId).status,"needs_reconcile");
+ assert.equal(f.submits(),0);
+});
+
+test("P4.4b startup catch-up recognizes restored graph and CAS evidence",async t=>{
+ for(const lost of ["node","blob"]){
+  const f=fixture(t,{autoMaterialize:false,actions:[
+   {type:"run_node",nodeId:"first",mode:"text"},
+   {type:"run_node",nodeId:"second",mode:"text",when:{sourceIndex:0,kind:"image",op:"gte",count:1}},
+   {type:"run_node",nodeId:"third",mode:"text",when:{sourceIndex:0,kind:"image",op:"lt",count:1}}
+  ]});
+  await finish(f);await f.materializer.runOnce();reconcileAssistantExternalTask(f.db,f.base);
+  const saved=getProject(f.db,"p");
+  const material=f.db.prepare("SELECT node_id,artifact_id FROM materializations WHERE status='materialized'").get();
+  if(lost==="node")saveSingleUserCanvas(f.db,{id:"p",expectedRevision:saved.revision,
+   document:{...saved.document,nodes:saved.document.nodes.filter(n=>n.id!==material.node_id),connections:[]}});
+  else f.db.prepare("UPDATE blobs SET status='missing' WHERE id=(SELECT blob_id FROM artifacts WHERE id=?)").run(material.artifact_id);
+  const replay=createAssistantTaskContinuationEvents({db:f.db});
+  assert.equal(replay.catchUp().handled[0].reason,"awaiting_verified_branch_evidence");
+  if(lost==="node")saveSingleUserCanvas(f.db,{id:"p",expectedRevision:getProject(f.db,"p").revision,document:saved.document});
+  else f.db.prepare("UPDATE blobs SET status='ready' WHERE id=(SELECT blob_id FROM artifacts WHERE id=?)").run(material.artifact_id);
+  const restored=replay.catchUp();
+  assert.equal(restored.handled[0].checkpoints,1);
+  assert.equal(count(f.db,"assistant_task_run_branch_skips"),1);
+  assert.equal(f.submits(),1);
+ }
+});
 test("P4.4b Job terminal -> trusted Task receipt -> materialization -> Run ready, no second paid Job",async t=>{
  const f=fixture(t);
  assert.equal(SCHEMA_VERSION,32);
@@ -192,16 +250,16 @@ test("P4.4b Skill postsettlement event observes trusted run but cannot launch a 
  const first=await executeAssistantSkillStep({...command,
   runner:async()=>{launched++;return {status:"completed",exit_code:0,artifacts:[],log_blobs:{}}},
   onSettled:(runId,status)=>{
-   callbacks.push({runId,status});
-   assert.equal(db.prepare("SELECT status FROM skill_script_runs WHERE id=?").get(runId).status,"completed");
    events.notifySkill(runId);
-   const result=events.drain();
-   assert.equal(result.handled.length,1);
-   assert.equal(result.handled[0].taskStatus,"ready");
+   callbacks.push({runId,status,runStatus:db.prepare("SELECT status FROM skill_script_runs WHERE id=?").get(runId).status,
+    result:events.drain()});
   }});
  assert.equal(first.status,"completed");
  assert.equal(callbacks.length,1);
  assert.equal(callbacks[0].runId,first.run_id);
+ assert.equal(callbacks[0].runStatus,"completed");
+ assert.equal(callbacks[0].result.handled.length,1);
+ assert.equal(callbacks[0].result.handled[0].taskStatus,"ready");
  assert.equal(launched,1);
  assert.equal(db.prepare("SELECT status,receipt_trust FROM assistant_task_steps WHERE id=?")
   .get(planned.stepId).receipt_trust,"server_committed");
@@ -229,14 +287,15 @@ test("P4.4b Skill failure remains failed without retry or generating new Step",a
  decideAssistantTaskStep(db,{...base,stepId:step.stepId,requestId:"approve",
   expectedPlanVersion:1,actionDigest:step.actionDigest,decision:"approve"});
  const events=createAssistantTaskContinuationEvents({db});
- let launched=0,notified=0;
+ let launched=0,notified=0,notificationResult;
  const cmd={db,skillRegistry:registry,...base,stepId:step.stepId,requestId:"run",
   expectedPlanVersion:1,actionDigest:step.actionDigest,
-  onSettled:runId=>{notified++;events.notifySkill(runId);assert.equal(events.drain().handled.length,0)}};
+  onSettled:runId=>{notified++;events.notifySkill(runId);notificationResult=events.drain()}};
  await assert.rejects(executeAssistantSkillStep({...cmd,runner:async()=>{
   launched++;throw Object.assign(Error("failed"),{code:"mock_skill_failure"})}}),
   {code:"mock_skill_failure"});
  assert.equal(notified,1);
+ assert.equal(notificationResult.handled.length,0);
  assert.equal(db.prepare("SELECT status FROM assistant_tasks").get().status,"failed");
  assert.equal(count(db,"skill_script_runs"),1);assert.equal(launched,1);
  assert.equal((await executeAssistantSkillStep({...cmd,runner:async()=>{

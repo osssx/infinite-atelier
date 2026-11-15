@@ -238,10 +238,15 @@ function reconcileTaskInTransaction(db,projectId,taskId,{onlyMaterializeStepId,e
  let advanced=0;
  for(const step of steps){
   if(step.kind==="materialize")continue;
-  if(!["waiting_external","needs_reconcile","succeeded"].includes(step.status))continue;
+  if(!["waiting_external","needs_reconcile","succeeded","failed"].includes(step.status))continue;
   const attempt=db.prepare("SELECT * FROM assistant_task_attempts WHERE step_id=? AND external_kind='job' ORDER BY attempt_no DESC LIMIT 1").get(step.id);
   if(!attempt)continue;
   const job=db.prepare("SELECT * FROM jobs WHERE id=? AND project_id=?").get(attempt.external_id,projectId);
+  const localStop=job?.status==="cancelled"?db.prepare("SELECT payload_json FROM job_events WHERE job_id=? AND kind='job_local_wait_stopped' ORDER BY seq DESC LIMIT 1").get(job.id):null;
+  const uncertainCancellation=!!localStop&&(JSON.parse(localStop.payload_json).submissionMayHaveOccurred!==false||job.submission_started_at!==null);
+  // Repair only current native legacy failures that treated a local stop as
+  // attested remote cancellation; ordinary terminal failures remain immutable.
+  if(step.status==="failed"&&!(uncertainCancellation&&step.plan_version===task.active_plan_version&&step.superseded_at===null))continue;
   const frozen=JSON.parse(attempt.frozen_snapshot_json);
   if(!job||job.idempotency_key!==attempt.execution_key||
    job.request_fingerprint!==attempt.request_fingerprint||
@@ -268,7 +273,7 @@ function reconcileTaskInTransaction(db,projectId,taskId,{onlyMaterializeStepId,e
   // POST may already have happened. The explicit job_local_wait_stopped event
   // distinguishes it from an attested remote cancellation and forbids paid
   // task replay/replan based on a false terminal failure.
-  if(job.status==="cancelled"&&db.prepare("SELECT 1 FROM job_events WHERE job_id=? AND kind='job_local_wait_stopped' LIMIT 1").get(job.id)){
+  if(uncertainCancellation){
    if(step.status==="needs_reconcile"&&step.error_code==="assistant_external_remote_cancel_unconfirmed")continue;
    const reason="assistant_external_remote_cancel_unconfirmed";
    db.prepare("UPDATE assistant_task_attempts SET status='needs_reconcile',evidence_json=? WHERE id=?")
@@ -384,7 +389,16 @@ export function reconcileAssistantExternalTask(db,{projectId,taskId,onlyMaterial
  */
 export function recoverAssistantExternalTasksAtStartup(db){
  return writeTransaction(db,()=>{
-  const rows=db.prepare("SELECT DISTINCT t.project_id,t.id FROM assistant_tasks t JOIN assistant_task_steps s ON s.task_id=t.id JOIN projects p ON p.id=t.project_id AND p.deleted_at IS NULL WHERE t.read_only=0 AND s.kind IN ('model_job','comfy_workflow','materialize') AND s.status IN ('waiting_external','needs_reconcile')").all();
+  const rows=db.prepare(`SELECT DISTINCT t.project_id,t.id FROM assistant_tasks t
+   JOIN assistant_task_steps s ON s.task_id=t.id JOIN projects p ON p.id=t.project_id AND p.deleted_at IS NULL
+   WHERE t.read_only=0 AND s.kind IN ('model_job','comfy_workflow','materialize') AND
+    (s.status IN ('waiting_external','needs_reconcile') OR
+     s.status='failed' AND s.plan_version=t.active_plan_version AND s.superseded_at IS NULL AND EXISTS(
+      SELECT 1 FROM assistant_task_attempts a JOIN jobs j ON j.id=a.external_id AND j.project_id=t.project_id
+      WHERE a.step_id=s.id AND a.external_kind='job' AND j.status='cancelled'
+       AND EXISTS(SELECT 1 FROM job_events e WHERE e.job_id=j.id AND e.kind='job_local_wait_stopped')
+       AND (j.submission_started_at IS NOT NULL OR COALESCE((SELECT json_extract(e.payload_json,'$.submissionMayHaveOccurred')
+        FROM job_events e WHERE e.job_id=j.id AND e.kind='job_local_wait_stopped' ORDER BY e.seq DESC LIMIT 1),1)!=0)))`).all();
   let advanced=0;
   for(const item of rows)advanced+=reconcileTaskInTransaction(db,item.project_id,item.id).advanced;
   return {tasks:rows.length,advanced};

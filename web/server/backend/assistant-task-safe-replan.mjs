@@ -35,7 +35,7 @@ function inspect(db,projectId,taskId){
   .all(taskId,task.active_plan_version);
  if(steps.some(step=>["running","submitting","waiting_external","needs_reconcile"].includes(step.status)))
   return denied("active_or_unknown_step_must_be_reconciled");
- const attempts=db.prepare("SELECT a.external_kind,a.status AS attempt_status,a.external_id,s.kind,s.status AS step_status,s.receipt_trust,j.status AS job_status,j.id AS job_id FROM assistant_task_attempts a JOIN assistant_task_steps s ON s.id=a.step_id LEFT JOIN jobs j ON j.id=a.external_id AND j.project_id=? WHERE a.task_id=? AND s.plan_version=? ORDER BY a.created_at")
+ const attempts=db.prepare("SELECT a.external_kind,a.status AS attempt_status,a.external_id,s.kind,s.status AS step_status,s.receipt_trust,j.status AS job_status,j.id AS job_id,j.submission_started_at FROM assistant_task_attempts a JOIN assistant_task_steps s ON s.id=a.step_id LEFT JOIN jobs j ON j.id=a.external_id AND j.project_id=? WHERE a.task_id=? AND s.plan_version=? ORDER BY a.created_at")
   .all(projectId,taskId,task.active_plan_version);
  if(attempts.some(attempt=>attempt.external_kind==="skill_run"&&
   !(attempt.step_status==="succeeded"&&attempt.receipt_trust==="server_committed")))
@@ -43,6 +43,9 @@ function inspect(db,projectId,taskId){
  const outputs=trustedAssistantTaskOutputs(db,{projectId,taskId,planVersion:task.active_plan_version});
  for(const attempt of attempts){
   if(attempt.external_kind!=="job")continue;
+  const localStop=attempt.job_status==="cancelled"?db.prepare("SELECT payload_json FROM job_events WHERE job_id=? AND kind='job_local_wait_stopped' ORDER BY seq DESC LIMIT 1").get(attempt.job_id):null;
+  if(localStop&&(JSON.parse(localStop.payload_json).submissionMayHaveOccurred!==false||attempt.submission_started_at!==null))
+   return denied("job_remote_cancel_unconfirmed");
   if(!attempt.job_id||!["succeeded","failed","cancelled"].includes(attempt.job_status))
    return denied("job_outcome_unknown");
   if(attempt.job_status!=="succeeded"&&

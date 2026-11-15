@@ -21,6 +21,17 @@ class FakeEventSource{
 }
 afterEach(()=>{vi.unstubAllGlobals();vi.clearAllMocks();FakeEventSource.instances.length=0});
 describe("P4.2 shared SQLite SSE subscription",()=>{
+ it("announces snapshot readiness after establishing its replay cursor",async()=>{
+  vi.stubGlobal("EventSource",FakeEventSource);
+  const ready=vi.fn(),later=vi.fn();
+  const off=subscribeSqliteJobEvents("job-a",vi.fn(),ready);
+  expect(ready).not.toHaveBeenCalled();
+  await vi.waitFor(()=>expect(ready).toHaveBeenCalledOnce());
+  expect(FakeEventSource.instances[0].url).toBe("/api/v1/events?after=27");
+  const offLater=subscribeSqliteJobEvents("job-b",vi.fn(),later);
+  expect(later).toHaveBeenCalledOnce();
+  off();offLater();
+ });
  it("opens only one replay-safe authenticated stream and dispatches by job ID",async()=>{
   vi.stubGlobal("EventSource",FakeEventSource);
   const first=vi.fn(),second=vi.fn();

@@ -137,12 +137,14 @@ export function useCanvasAssistantTasks({
    .then(value=>{if(alive)setRunSequence(value?.sequence?value:null);},()=>{if(alive)setRunSequence(null);});
   return ()=>{alive=false;};
  },[base,open,selectedId,detail]);
+ const watchedJobIds=detail?.id===selectedId&&!detail?.readOnly?[...new Set((detail.steps??[])
+  .map(step=>step.result?.jobId).filter((value):value is string=>
+   typeof value==="string"&&/^[A-Za-z0-9_-]{1,128}$/.test(value)))].sort().join(","):"";
  // Existing Job SSE is shared per Canvas tab. React only READS Task and Run
  // state after trustworthy terminal/materialization events, never POSTs a Job.
  useEffect(()=>{
-  if(!open||!selectedId||!detail||detail.id!==selectedId||detail.readOnly)return;
-  const ids=[...new Set((detail.steps??[]).map(step=>step.result?.jobId)
-   .filter((value):value is string=>typeof value==="string"&&/^[A-Za-z0-9_-]{1,128}$/.test(value)))];
+  if(!open||!selectedId||!watchedJobIds)return;
+  const ids=watchedJobIds.split(",");
   if(!ids.length)return;
   let alive=true,loading=false,dirty=false;
   const epoch=continuationEpoch.current,taskId=selectedId;
@@ -166,11 +168,11 @@ export function useCanvasAssistantTasks({
    const payload=event.payload as {to?:string;status?:string}|undefined;
    if(event.kind==="artifact_materialized"||
     event.kind==="artifact_materialization"&&["materialized","blocked"].includes(payload?.status??"")||
-    event.kind==="job_status"&&["succeeded","failed","cancelled","submission_unknown","blocked_credential"].includes(payload?.to??""))
+    (event.kind==="job_status"||event.kind==="job_reconciliation_verified")&&["succeeded","failed","cancelled","submission_unknown","blocked_credential"].includes(payload?.to??""))
     reload();
-  }));
+  },reload));
   return ()=>{alive=false;unsubscribe.forEach(dispose=>dispose())};
- },[base,open,selectedId,detail?.steps,detail?.readOnly]);
+ },[base,open,activeChatId,selectedId,watchedJobIds]);
  useEffect(()=>{
   if(!open||!selectedId||!detail||detail.id!==selectedId||!["planning","failed","blocked"].includes(detail.status)){
    setRecovery(null);return;

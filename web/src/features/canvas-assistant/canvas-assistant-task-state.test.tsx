@@ -5,14 +5,17 @@ import {afterEach,beforeEach,describe,expect,it,vi} from "vitest";
 import type {CanvasAssistantSession} from "@/types/canvas";
 
 const mocks=vi.hoisted(()=>({api:vi.fn(),
+ jobReady:new Map<string,Set<()=>void>>(),
  jobWatchers:new Map<string,Set<(value:{jobId:string;kind:string;eventId:number;payload?:unknown})=>void>>()}));
 vi.mock("@/features/backend-sync/canvas-api",()=>({canvasApi:mocks.api}));
 vi.mock("@/features/backend-sync/sqlite-job-events",()=>({
- subscribeSqliteJobEvents:(jobId:string,callback:(value:{jobId:string;kind:string;eventId:number;payload?:unknown})=>void)=>{
+ subscribeSqliteJobEvents:(jobId:string,callback:(value:{jobId:string;kind:string;eventId:number;payload?:unknown})=>void,onReady?:()=>void)=>{
   let listeners=mocks.jobWatchers.get(jobId);
   if(!listeners){listeners=new Set();mocks.jobWatchers.set(jobId,listeners)}
   listeners.add(callback);
-  return ()=>{listeners!.delete(callback);if(!listeners!.size)mocks.jobWatchers.delete(jobId)};
+  if(onReady){const ready=mocks.jobReady.get(jobId)??new Set();ready.add(onReady);mocks.jobReady.set(jobId,ready);}
+  return ()=>{listeners!.delete(callback);if(!listeners!.size)mocks.jobWatchers.delete(jobId);
+   if(onReady)mocks.jobReady.get(jobId)?.delete(onReady);};
  }
 }));
 import {useCanvasAssistantTasks} from "./canvas-assistant-task-state";
@@ -47,6 +50,7 @@ beforeEach(()=>{
  (globalThis as {IS_REACT_ACT_ENVIRONMENT?:boolean}).IS_REACT_ACT_ENVIRONMENT=true;
  mocks.api.mockReset();
  mocks.jobWatchers.clear();
+ mocks.jobReady.clear();
  let task:Record<string,unknown>|null=null;
  mocks.api.mockImplementation(async(url:string,method:string,payload?:Record<string,unknown>)=>{
   if(method==="GET"&&url.includes("chatSessionId="))return {tasks:task?[task]:[]};
@@ -925,6 +929,37 @@ it("P4.4b durable Job SSE reads Task details without triggering paid endpoints",
  expect(calls.filter(c=>c.url.endsWith("/event-task")).length).toBeGreaterThan(before);
  expect(container!.textContent).toContain("可继续");
  expect(calls.filter(c=>c.method==="POST")).toHaveLength(0);
+});
+it("P4.4b snapshot readiness, stable subscriptions and shared-chat reconciliation keep Task fresh",async()=>{
+ let task={id:"shared-event",chatSessionId:"chat-a",chatSessionIds:["chat-a","chat-b"],
+  rootMessageId:"original-user",originalRequest:"共享事件任务",status:"waiting_external",readOnly:false,
+  activePlanVersion:1,recoveryMode:"job_observation",steps:[{id:"shared-step",kind:"comfy_workflow",
+   planVersion:1,status:"waiting_external",actionDigest:"a".repeat(64),result:{jobId:"shared-job"}}]};
+ mocks.api.mockImplementation(async(url:string,method:string)=>{
+  if(method!=="GET")throw Error("unexpected write");
+  if(url.includes("chatSessionId="))return {tasks:[structuredClone(task)]};
+  if(url.endsWith("/model-calls"))return {calls:[]};
+  if(url.endsWith("/run-sequences"))return {sequence:null,state:"none",next:null};
+  if(url.endsWith("/recovery"))return {canReplan:false,reason:"check_evidence"};
+  return {task:structuredClone(task)};
+ });
+ await render();
+ const first=[...mocks.jobWatchers.get("shared-job")!][0];
+ task={...task,status:"ready",steps:[{...task.steps[0],status:"succeeded"}]};
+ const before=mocks.api.mock.calls.filter(([url])=>url.endsWith("/shared-event")).length;
+ await act(async()=>{for(const ready of mocks.jobReady.get("shared-job")??[])ready();});
+ expect(mocks.api.mock.calls.filter(([url])=>url.endsWith("/shared-event")).length).toBeGreaterThan(before);
+ expect(mocks.jobWatchers.get("shared-job")?.has(first)).toBe(true);
+ await act(async()=>{root!.render(createElement(Harness,{activeChatId:"chat-b"}));});
+ expect(mocks.jobWatchers.get("shared-job")?.has(first)).toBe(false);
+ task={...task,status:"failed",steps:[{...task.steps[0],status:"failed"}]};
+ const current=[...mocks.jobWatchers.get("shared-job")!][0];
+ const previous=mocks.api.mock.calls.filter(([url])=>url.endsWith("/shared-event")).length;
+ await act(async()=>{current({jobId:"shared-job",kind:"job_reconciliation_verified",eventId:99,
+  payload:{verified:true,to:"failed"}});});
+ expect(mocks.api.mock.calls.filter(([url])=>url.endsWith("/shared-event")).length).toBeGreaterThan(previous);
+ expect(container!.textContent).toContain("失败");
+ expect(mocks.api.mock.calls.some(([,method])=>method==="POST")).toBe(false);
 });
 it("P4.4b archived Task never subscribes to live Job updates",async()=>{
  const task={id:"event-archive",chatSessionId:"chat-a",rootMessageId:"original-user",

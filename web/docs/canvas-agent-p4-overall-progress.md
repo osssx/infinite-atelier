@@ -16,10 +16,11 @@
 | P4.6a | [本地取消竞争校验](./canvas-agent-p46a-comfy-cancel-reconcile.md)：旧版 Comfy 队列删除后查询历史，避免将已执行或历史不可达误报为确认取消；Comfy/Coordinator **42 项专项回归通过** | 仅缩小取消竞态窗口，仍无真实运行中 GPU 的 scoped cancel 验收。 |
 | P4.6b | [真实 Chrome 响应丢失验收](./canvas-agent-p46b-chrome-lost-ack.md)：`enqueue-authorized` 服务端 HTTP 200 后 Chrome 关闭响应，UI 提示不自动重试、刷新可见原 Job；**18 项浏览器断言通过** | 仅覆盖入队 API 的响应丢失；不等于 Comfy `/prompt` 响应丢失后的真实 GPU 人工对账。 |
 | P4.6c | [本地真实协议对账](./canvas-agent-p46c-comfy-native-reconcile.md)：修复 Comfy 0.45 五元素历史元组、活跃队列原始证据核验、无远端 ID 时显式有界查找、旧队列删除不再被误报为已确认取消；专项与只读实机协议预检通过 | 已只读核实当前 ComfyUI 0.45 的 scoped cancel 源码实现，但尚无真实运行中 GPU 取消实测；历史扫描不保证完整覆盖所有提交。 |
+| P4.6d | [真实 scoped cancel 实机验收](./canvas-agent-p46d-scoped-cancel-live-acceptance.md)：本地 ComfyUI 0.45 使用两个 64×64 短时工作流验证排队/运行中按 ID 取消、彼此隔离、终态幂等及无全局中断；**14/14 实机检查通过** | 轻量 Sleep 工作流，非 MiniMax H3 GPU 核心推理；尚缺应用层 JobCoordinator + Task UI 的真实远端组合验收。 |
 
 ## 当前优先级
 
-- **继续 P4.6d**：只在隔离受控任务中验收真实本地 Comfy 的 scoped cancel 与竞争结果；不使用无目标约束的全局 `/interrupt`，不允许根据队列消失推断远端已确认停止。
+- **继续 P4.6e**：在隔离 SQLite/CAS 与测试浏览器/后端中，接通 JobCoordinator → 真实 ComfyUI scoped cancel → Task UI/刷新恢复，验证不会将未知取消误报为已确认。大型模型 GPU 推理与长视频负载测试仍延期。
 - **后续内容质量验收**：使用真实文本 Provider 评估长故事角色和场景的一致性；静态文本验证不作语义正确性承诺。
 - **后续通用 Agent 扩展**：在权限、来源冻结和审计验证后再评估跨 Task/Project 检索与复杂工具编排。
 

@@ -15,6 +15,7 @@ import {planAssistantExternalJobStep,enqueueAssistantExternalJobStep,reconcileAs
 import {registerAssistantRunSequence,getAssistantRunSequence,selectAssistantRunInput,skipAssistantRunBranch} from "./assistant-task-run-sequences.mjs";
 import {createAssistantRunBudgetGrant,getAssistantRunBudgetGrant,revokeAssistantRunBudgetGrant} from "./assistant-task-run-budget.mjs";
 import {assertAssistantRunMediaPlanConsent} from "./assistant-task-run-media-grant.mjs";
+import {createComfyRegistry} from "./comfy-registry.mjs";
 import {inspectAssistantTaskRecovery} from "./assistant-task-safe-replan.mjs";
 
 const sha="a".repeat(64),shaTwo="c".repeat(64),revision="b".repeat(64);
@@ -662,7 +663,11 @@ test("P4.5b media grant rejects hidden Comfy options and altered frozen payload 
   ["extra-root",spec=>{spec.job.snapshot.comfyRequest.rootOutputs.push({nodeId:"wf",portId:"image_in"})}],
   ["extra-request",spec=>{spec.job.snapshot.comfyRequest.otherPrompt="unapproved"}],
   ["extra-snapshot",spec=>{spec.job.snapshot.comfyTargetBinding={mode:"video"}}],
-  ["changed-template",spec=>{spec.job.snapshot.comfyTemplate={...template,name:"changed"}}]
+  ["changed-template",spec=>{spec.job.snapshot.comfyTemplate={...template,name:"changed"}}],
+  ["injected-workflow-graph",spec=>{
+   spec.job.snapshot.comfyTemplate={...template,apiGraph:structuredClone(template.apiGraph)};
+   spec.job.snapshot.comfyTemplate.apiGraph["2"].inputs.images=["1",99];
+  }]
  ]){
   const ctx=setup(t);ctx.mediaGrant=mediaAuthorization(ctx);
   materialize(ctx,generateFirst(ctx));
@@ -724,11 +729,55 @@ test("P4.5b HTTP requires explicit dynamic media consent for approval and downst
  // browser uses this same canonical pinned registry payload for its snapshot.
  const pinned=JSON.parse(ctx.db.prepare("SELECT payload_json FROM comfy_template_versions WHERE template_id=? AND revision=?")
   .get(template.id,revision).payload_json);
- const downstream=nextJob(ctx,spec=>{spec.job.snapshot.comfyTemplate=pinned});
+ // Registry v32 pins graph separately; a real frozen job includes both.
+ const downstream=nextJob(ctx,spec=>{spec.job.snapshot.comfyTemplate={
+  ...pinned,apiGraph:template.apiGraph};});
  const enqueued=await app.inject({method:"POST",url:url+"/steps/"+downstream.stepId+"/enqueue-authorized",
   payload:{requestId:"http-media-job",expectedPlanVersion:1,
    actionDigest:downstream.actionDigest,grantId}});
  assert.equal(enqueued.statusCode,200,enqueued.body);
  assert.equal(count(ctx.db,"jobs"),2);
  assert.equal(getAssistantRunBudgetGrant(ctx.db,{...ctx,grantId}).remainingJobs,0);
+});
+
+test("P4.5d media consent accepts the real Comfy registry hash for numeric node IDs, rejects a tampered graph",t=>{
+ for(const tampered of [false,true]){
+  const ctx=setup(t),db=ctx.db;
+  const graph={...template.apiGraph,
+   "92":{class_type:"LoadImage",inputs:{image:"unused-a.png"}},
+   "114":{class_type:"LoadImage",inputs:{image:"unused-b.png"}},
+   "105_104":{class_type:"LoadImage",inputs:{image:"unused-c.png"}}};
+  db.prepare("UPDATE comfy_template_versions SET payload_json=?,workflow_hash=NULL WHERE template_id=? AND revision=?")
+   .run(JSON.stringify({...template,apiGraph:graph}),template.id,revision);
+  const folder=mkdtempSync(join(tmpdir(),"atelier-p45d-published-graph-"));
+  t.after(()=>rmSync(folder,{recursive:true,force:true}));
+  const registry=createComfyRegistry(db,{workflowsDir:folder});
+  const pinned=registry.find(template.id,revision);
+  const official=db.prepare("SELECT workflow_hash FROM comfy_template_versions WHERE template_id=? AND revision=?")
+   .get(template.id,revision).workflow_hash;
+  assert.match(official,/^[a-f0-9]{64}$/);
+  ctx.mediaGrant=mediaAuthorization(ctx);
+  materialize(ctx,generateFirst(ctx));
+  const step=consentBoundMediaStep(ctx);
+  decideAssistantTaskStep(db,{...ctx,stepId:step.stepId,
+   requestId:"p45d-approve-"+tampered,expectedPlanVersion:1,
+   actionDigest:step.actionDigest,decision:"approve",grantId:ctx.mediaGrant.grantId});
+  executeAssistantCanvasStep(db,{...ctx,stepId:step.stepId,
+   requestId:"p45d-bind-"+tampered,expectedPlanVersion:1,actionDigest:step.actionDigest});
+  const submitted=nextJob(ctx,spec=>{
+   spec.job.snapshot.comfyTemplate=structuredClone(pinned);
+   if(tampered)spec.job.snapshot.comfyTemplate.apiGraph["92"].inputs.image="injected.png";
+  });
+  const args={...ctx,stepId:submitted.stepId,requestId:"p45d-enqueue-"+tampered,
+   expectedPlanVersion:1,actionDigest:submitted.actionDigest,grantId:ctx.mediaGrant.grantId};
+  if(tampered){
+   assert.throws(()=>enqueueAssistantExternalJobStep(db,args),{code:"assistant_run_media_job_scope_changed"});
+   assert.equal(count(db,"jobs"),1);
+   assert.equal(getAssistantRunBudgetGrant(db,{...ctx,grantId:ctx.mediaGrant.grantId}).remainingJobs,1);
+  }else{
+   assert.ok(enqueueAssistantExternalJobStep(db,args).jobId);
+   assert.equal(count(db,"jobs"),2);
+   assert.equal(getAssistantRunBudgetGrant(db,{...ctx,grantId:ctx.mediaGrant.grantId}).remainingJobs,0);
+  }
+ }
 });

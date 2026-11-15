@@ -9,6 +9,30 @@ import {trustedAssistantTaskOutputs} from "./assistant-task-produced-artifacts.m
 
 const fail=(code,statusCode=409)=>Object.assign(Error(code),{code,statusCode});
 const digest=x=>createHash("sha256").update(stableJson(x)).digest("hex");
+// The Comfy Registry stores workflow_hash = sha256(JSON.stringify(canonical(graph))).
+// JSON.stringify enumerates integer-like node IDs numerically even if they were
+// inserted lexicographically; repository.stableJson emits manual lexical keys.
+// These hashes differ for real MiniMax graphs with node IDs like "92" and "114".
+const publishedGraphHash=graph=>{
+ if(!graph||typeof graph!=="object"||Array.isArray(graph))
+  throw fail("assistant_run_media_template_invalid",400);
+ const canonical=value=>{
+  if(Array.isArray(value))return value.map(canonical);
+  if(value!==null&&typeof value==="object"){
+   const result={};
+   for(const key of Object.keys(value).sort()){
+    if(["__proto__","constructor","prototype"].includes(key))
+     throw fail("assistant_run_media_template_invalid",400);
+    result[key]=canonical(value[key]);
+   }
+   return result;
+  }
+  if(value===undefined||typeof value==="number"&&!Number.isFinite(value))
+   throw fail("assistant_run_media_template_invalid",400);
+  return value;
+ };
+ return createHash("sha256").update(JSON.stringify(canonical(graph))).digest("hex");
+};
 const id=x=>typeof x==="string"&&/^[A-Za-z0-9_-]{1,128}$/.test(x);
 const portId=x=>typeof x==="string"&&/^[A-Za-z0-9_:\-.]{1,128}$/.test(x);
 const mediaKinds={image:"IMAGE",video:"VIDEO",audio:"AUDIO"};
@@ -22,16 +46,27 @@ const pendingFor=db=>db.prepare("SELECT payload_json FROM assistant_task_events 
 const ledgerFor=db=>db.prepare("SELECT kind,payload_json FROM assistant_task_events "+
  "WHERE task_id=? AND kind IN ('run_budget_revoked','run_budget_consumed') "+
  "AND json_extract(payload_json,'$.grantId')=? ORDER BY seq");
-const templateFor=(db,node)=>{
+const metadata=template=>{
+ const {apiGraph,...binding}=template??{};
+ return binding;
+};
+const workflowHash=(db,node)=>{
  const pin=node?.metadata?.comfyWorkflow;
  if(!pin?.templateId||!pin.templateRevision)throw fail("assistant_run_media_template_invalid",400);
- const row=db.prepare("SELECT payload_json FROM comfy_template_versions WHERE template_id=? AND revision=?")
+ const row=db.prepare("SELECT payload_json,workflow_hash FROM comfy_template_versions WHERE template_id=? AND revision=?")
   .get(pin.templateId,pin.templateRevision);
  if(!row)throw fail("assistant_run_media_template_invalid",400);
  const template=JSON.parse(row.payload_json);
  if(template.id!==pin.templateId||template.revision!==pin.templateRevision)
   throw fail("assistant_run_media_template_invalid",400);
- return template;
+ // Legacy stores the graph in payload_json; the current registry publishes
+ // immutable graph bytes and pins their SHA-256 in workflow_hash.
+ const hash=row.workflow_hash??(template.apiGraph?publishedGraphHash(template.apiGraph):null);
+ if(!/^[a-f0-9]{64}$/.test(hash))throw fail("assistant_run_media_template_invalid",400);
+ return {template,hash};
+};
+const templateFor=(db,node)=>{
+ return workflowHash(db,node).template;
 };
 function scopeNow(db,{doc,action,index,instanceId}){
  const node=doc.nodes.find(n=>n.id===action?.nodeId);
@@ -67,7 +102,8 @@ function scopeNow(db,{doc,action,index,instanceId}){
  return {targetNodeId:action.nodeId,sourceKind:input.sourceKind,toPortId:input.toPortId,
   valueKind:mediaKinds[input.sourceKind],targetNodeDigest:digest(node),
   templateId:template.id,templateRevision:template.revision,
-  templateDigest:digest(template),outputPortIds:outputs.map(p=>p.id),
+  templateDigest:digest(metadata(template)),templateWorkflowHash:workflowHash(db,node).hash,
+  outputPortIds:outputs.map(p=>p.id),
   instanceId,instanceUrlDigest:digest(instanceUrl)};
 }
 export function freezeAssistantRunMediaGrant(db,{doc,actions,runIndex,instanceId}){
@@ -135,7 +171,8 @@ export function getAssistantMediaGrantForCheck(db,{projectId,taskId,grantId}){
  const doc=JSON.parse(task.document_json),target=doc.nodes.find(n=>n.id===action.nodeId);
  const currentUrl=db.prepare("SELECT url FROM comfy_instances WHERE id=?").get(grant.mediaScope.instanceId)?.url;
  if(!target||!currentUrl||digest(target)!==grant.mediaScope.targetNodeDigest||
-  digest(templateFor(db,target))!==grant.mediaScope.templateDigest||
+  digest(metadata(templateFor(db,target)))!==grant.mediaScope.templateDigest||
+  workflowHash(db,target).hash!==grant.mediaScope.templateWorkflowHash||
   digest(currentUrl)!==grant.mediaScope.instanceUrlDigest)
   throw fail("assistant_run_media_scope_changed");
  return {task,seq,grant,doc,action,revoked,consumed};
@@ -218,7 +255,9 @@ export function authorizeAssistantRunMediaJob(db,{projectId,taskId,grantId,step}
   req.nodes[0].id!==scope.targetNodeId||req.nodes[0].templateId!==scope.templateId||
   req.nodes[0].templateRevision!==scope.templateRevision||
   stableJson(req.nodes[0].inputOverrides)!==stableJson(doc.nodes.find(n=>n.id===scope.targetNodeId)?.metadata?.comfyWorkflow?.inputOverrides??{})||
-  digest(snap.comfyTemplate)!==scope.templateDigest||
+  digest(metadata(snap.comfyTemplate))!==scope.templateDigest||
+  !snap.comfyTemplate?.apiGraph||
+  publishedGraphHash(snap.comfyTemplate.apiGraph)!==scope.templateWorkflowHash||
   stableJson(req.rootOutputs)!==stableJson(scope.outputPortIds.map(portId=>({nodeId:scope.targetNodeId,portId})))||
   stableJson(req.runOptions)!=="{}"||
   !Array.isArray(req.edges)||req.edges.length!==1||

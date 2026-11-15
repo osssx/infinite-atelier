@@ -4,6 +4,8 @@
  * and one MiniMax video Job; on uncertain response it NEVER retries /prompt.
  * Safe preflight: ATELIER_MINIMAX_PREFLIGHT=1 node web/scripts/minimax-p3c2-live-acceptance.mjs
  * Live GPU generation (opt-in): ATELIER_MINIMAX_LIVE=1 node web/scripts/minimax-p3c2-live-acceptance.mjs
+ * P4.5d consent-bound path: add ATELIER_MINIMAX_MEDIA_CONSENT=1 to exercise
+ * one explicit Task media grant, automatic frozen binding and ONE authorized Job.
  */
 import {DatabaseSync} from "node:sqlite";
 import {createHash,randomUUID} from "node:crypto";
@@ -19,6 +21,7 @@ import {compileSingleWorkflow} from "../server/comfy-workflow/compiler.mjs";
 
 loadBackendEnv();
 const preflightOnly=process.env.ATELIER_MINIMAX_PREFLIGHT==="1";
+const mediaConsent=process.env.ATELIER_MINIMAX_MEDIA_CONSENT==="1";
 if(!preflightOnly&&process.env.ATELIER_MINIMAX_LIVE!=="1")throw Error("ATELIER_MINIMAX_LIVE=1 opt-in required");
 const origin=process.env.ATELIER_COMFY_URL||"http://127.0.0.1:8188",
  instanceId=process.env.ATELIER_COMFY_INSTANCE_ID||"comfy-local";
@@ -29,7 +32,9 @@ const pause=ms=>new Promise(r=>setTimeout(r,ms));
 const assert=(condition,code)=>{if(!condition)throw Error("acceptance_assertion_failed:"+code)};
 const at=()=>new Date().toISOString();
 const log=(event,details={})=>console.log(JSON.stringify({at:at(),event,...details}));
-const report={phase:"preflight",startedAt:at(),live:"Moss→MiniMax H3",isolation:"temporary_SQLite_and_CAS",results:[]};
+const report={phase:"preflight",startedAt:at(),live:"Moss→MiniMax H3",
+ mode:mediaConsent?"p45d_local_comfy_media":"p3c2_individual_approvals",
+ isolation:"temporary_SQLite_and_CAS",results:[]};
 let root=null,runtime=null;
 const resumeRoot=process.env.ATELIER_MINIMAX_RESUME_ROOT||null;
 if(resumeRoot){
@@ -65,11 +70,11 @@ const ready=async(method,url,body)=>{
 };
 let headers;
 const countJobs=()=>runtime.db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n;
-const stepApprove=async(base,planned,key)=>{
+const stepApprove=async(base,planned,key,grantId)=>{
  const path=base+"/steps/"+planned.stepId;
  const result=await ready("POST",path+"/approval",{
   requestId:key+"-approve",expectedPlanVersion:1,actionDigest:planned.actionDigest,
-  decision:"approve"});
+  decision:"approve",...(grantId?{grantId}:{})});
  assert(result.decision==="approved","step_approval_"+key);
  return path;
 };
@@ -164,7 +169,7 @@ try{
  const auth=runtime.sessionAuth.issueLocalSession();
  headers={host:"127.0.0.1:8788",origin:"http://127.0.0.1:8788",
   cookie:"atelier_session="+auth.id,"x-atelier-csrf":auth.csrf};
- let taskId,base,sequence,firstQueued;
+ let taskId,base,sequence,firstQueued,mediaGrant;
  if(!resumeRoot){
   await ready("POST","/api/v1/comfy/templates",{template:moss});
   await ready("POST","/api/v1/comfy/templates",{template:mini});
@@ -189,6 +194,19 @@ try{
     {type:"run_workflow",nodeId:targetId,inputFromPrevious:{sourceKind:"image",toPortId:"first_frame"}}]});
   assert(countJobs()===0,"unexpected_initial_paid_job");
   log("sequence_frozen",{sequenceId:sequence.sequenceId,jobs:0});
+  if(mediaConsent){
+   // This explicit, bounded pre-consent is created BEFORE image generation.
+   // It never mutates the graph or submits any Job by itself.
+   mediaGrant=await ready("POST",base+"/run-budget",{
+    requestId:"accept-media-consent",sequenceId:sequence.sequenceId,
+    expectedPlanVersion:1,maxJobs:1,allowedIndices:[1],
+    expiresInMinutes:30,mode:"local_comfy_media",instanceId,confirmed:true
+   });
+   assert(mediaGrant.mode==="local_comfy_media"&&mediaGrant.active&&
+    mediaGrant.remainingJobs===1&&countJobs()===0,"media_grant_not_frozen_before_generation");
+   log("P45D_MEDIA_GRANT_APPROVED",{grantId:mediaGrant.grantId,instanceId,
+    permittedIndex:1,expiresAt:mediaGrant.expiresAt,jobs:0});
+  }
   const sourceBinding=canvas.nodes[0].metadata.comfyMediaPreset;
   const sourceNodeFingerprint="v2c:"+createHash("sha256").update(stableJson({
    graphFingerprint:fingerprintSource(canvas,sourceId),
@@ -219,6 +237,13 @@ try{
   assert(pastProject?.id===projectId&&pastTask?.id&&pastSeq?.id&&
    first?.jobId&&countJobs()===1,"resume_original_job_not_found");
   taskId=pastTask.id;sequence={sequenceId:pastSeq.id};firstQueued={jobId:first.jobId};
+  if(mediaConsent){
+   const media=runtime.db.prepare("SELECT json_extract(payload_json,'$.grantId') id FROM assistant_task_events "+
+    "WHERE task_id=? AND kind='run_budget_granted' AND json_extract(payload_json,'$.mode')='local_comfy_media' "+
+    "ORDER BY seq DESC LIMIT 1").get(taskId);
+   assert(media?.id,"resumed_media_consent_missing");
+   mediaGrant={grantId:media.id};
+  }
   base="/api/v1/projects/"+projectId+"/assistant/tasks/"+taskId;
   report.results.push({stage:"moss_image",jobId:firstQueued.jobId,stepId:first.id,resumed:true});
   log("RESUME_EXISTING_MOSS_JOB_NO_REENQUEUE",{jobId:firstQueued.jobId,status:runtime.db.prepare("SELECT status FROM jobs WHERE id=?").get(firstQueued.jobId)?.status});
@@ -228,7 +253,13 @@ try{
  const imageDone=await waitJob(firstQueued.jobId,"moss",10*60*1000);
  await ready("POST",base+"/reconcile",{});
  const firstState=await ready("GET",base+"/run-sequences");
- assert(firstState.state==="ready"&&firstState.next?.index===1&&firstState.next.needsBinding,
+ // A frozen unapproved video Step makes Run Sequence report waiting_approval
+ // with next=null. This is a valid interruption point *only* when resuming
+ // a verified single-grant local Comfy run with zero video Jobs.
+ const frozenVideoResume=mediaConsent&&Boolean(resumeRoot)&&
+  firstState.state==="waiting_approval"&&firstState.index===1&&firstState.next===null;
+ assert(frozenVideoResume||firstState.state==="ready"&&firstState.next?.index===1&&
+  (firstState.next.needsBinding||mediaConsent&&Boolean(resumeRoot)),
   "trusted_binding_next_missing_"+firstState.state);
  const imageOutput=firstState.outputs.filter(x=>x.runIndex===0&&x.kind==="image");
  assert(imageOutput.length===1,"exactly_one_trusted_image_required");
@@ -241,27 +272,57 @@ try{
  log("image_verified",{nodeId:sourceProof.nodeId,shaPrefix:sourceProof.sha256.slice(0,12),
   bytes:imageArtifact.byte_size,jobId:firstQueued.jobId});
 
- // Independent, approval-bound graph connection from genuine Moss CAS artifact.
- const binding=firstState.next.inputBinding;
- assert(binding.sourceArtifactId===sourceProof.artifactId&&
-  binding.sourceSha256===sourceProof.sha256&&
-  binding.toPortId==="first_frame"&&binding.sourceNodeId===sourceProof.nodeId,
-  "trusted_input_binding_mismatch");
- const bindAction={type:"connect_workflow_port",fromNodeId:binding.sourceNodeId,
-  fromPortId:binding.sourcePortId,toNodeId:binding.toNodeId,toPortId:binding.toPortId};
- const graphBefore=await ready("GET","/api/v1/projects/"+projectId);
- const boundPlan=await ready("POST",base+"/canvas-steps",{
-  requestId:"accept-bind-plan",expectedPlanVersion:1,
-  expectedProjectRevision:graphBefore.revision,actions:[bindAction],center:{x:340,y:300},
-  dependsOn:firstState.next.dependsOn,runSequenceId:sequence.sequenceId,runIndex:1
- });
- assert(countJobs()===1&&boundPlan.status==="waiting_approval","bind_must_not_enqueue_video");
- const bindPath=await stepApprove(base,boundPlan,"bind");
- const bound=await ready("POST",bindPath+"/execute",{
-  requestId:"accept-bind-execute",expectedPlanVersion:1,actionDigest:boundPlan.actionDigest});
- assert(bound.status==="succeeded"&&bound.receipt.applied===1,"trusted_graph_step_uncommitted");
+ // Restore an already-committed media binding after a lost HTTP response
+ // or a previously rejected (zero-Job) downstream admission. This path only
+ // reads a previously server-committed Step; it NEVER draws a second edge.
+ let binding,boundPlan,bound;
+ if(frozenVideoResume||!firstState.next.needsBinding){
+  assert(mediaConsent&&resumeRoot,"unexpected_already_bound_input");
+  const committed=runtime.db.prepare("SELECT id,preconditions_json,receipt_json,status,receipt_trust FROM assistant_task_steps "+
+   "WHERE task_id=? AND kind='canvas_mutation' AND json_extract(preconditions_json,'$.runBindingIndex')=1 "+
+   "AND superseded_at IS NULL ORDER BY ordinal DESC LIMIT 1").get(taskId);
+  assert(committed?.status==="succeeded"&&committed.receipt_trust==="server_committed"&&
+   JSON.parse(committed.preconditions_json).runMediaGrantId===mediaGrant.grantId,
+   "resume_binding_receipt_missing");
+  const graph=await ready("GET","/api/v1/projects/"+projectId);
+  const matches=graph.document.connections.filter(edge=>
+   edge.fromNodeId===sourceProof.nodeId&&edge.toNodeId===targetId&&edge.toPortId==="first_frame");
+  const receipt=JSON.parse(committed.receipt_json);
+  assert(matches.length===1&&receipt.refs?.connections?.edge_0===matches[0].id,
+   "resume_binding_graph_mismatch");
+  binding={sourceArtifactId:sourceProof.artifactId,sourceSha256:sourceProof.sha256,
+   sourceNodeId:sourceProof.nodeId,sourcePortId:matches[0].fromPortId,
+   toNodeId:targetId,toPortId:"first_frame"};
+  boundPlan={stepId:committed.id};
+  bound={status:"succeeded",receipt};
+  log("P45D_BINDING_RESTORED",{bindingStepId:boundPlan.stepId,
+   edgeId:matches[0].id,grantId:mediaGrant.grantId,noNewEdge:true});
+ }else{
+  binding=firstState.next.inputBinding;
+  assert(binding.sourceArtifactId===sourceProof.artifactId&&
+   binding.sourceSha256===sourceProof.sha256&&
+   binding.toPortId==="first_frame"&&binding.sourceNodeId===sourceProof.nodeId,
+   "trusted_input_binding_mismatch");
+  const bindAction={type:"connect_workflow_port",fromNodeId:binding.sourceNodeId,
+   fromPortId:binding.sourcePortId,toNodeId:binding.toNodeId,toPortId:binding.toPortId};
+  const graphBefore=await ready("GET","/api/v1/projects/"+projectId);
+  boundPlan=await ready("POST",base+"/canvas-steps",{
+   requestId:"accept-bind-plan",expectedPlanVersion:1,
+   expectedProjectRevision:graphBefore.revision,actions:[bindAction],center:{x:340,y:300},
+   dependsOn:firstState.next.dependsOn,runSequenceId:sequence.sequenceId,runIndex:1,
+   ...(mediaConsent?{runMediaGrantId:mediaGrant.grantId}:{})
+  });
+  assert(countJobs()===1&&boundPlan.status==="waiting_approval","bind_must_not_enqueue_video");
+  const bindPath=await stepApprove(base,boundPlan,"bind",
+   mediaConsent?mediaGrant.grantId:undefined);
+  bound=await ready("POST",bindPath+"/execute",{
+   requestId:"accept-bind-execute",expectedPlanVersion:1,actionDigest:boundPlan.actionDigest});
+  assert(bound.status==="succeeded"&&bound.receipt.applied===1,"trusted_graph_step_uncommitted");
+ }
  const afterBind=await ready("GET",base+"/run-sequences");
- assert(afterBind.state==="ready"&&afterBind.next.index===1&&
+ assert(frozenVideoResume?
+  afterBind.state==="waiting_approval"&&afterBind.next===null&&afterBind.index===1:
+  afterBind.state==="ready"&&afterBind.next?.index===1&&
   afterBind.next.needsBinding===false&&
   afterBind.next.dependsOn.length===1&&
   afterBind.next.dependsOn[0]===boundPlan.stepId,"bind_receipt_not_trusted");
@@ -288,7 +349,21 @@ try{
   mediaFiles:{[mediaBlob.sha256]:"atelier_"+mediaBlob.sha256+".png"}});
  assert(compiledReal.decisions.first_frame==="edge"&&
   compiledReal.captureMap.some(x=>x.kind==="video"),"compiled_real_sha_missing");
- const miniPlan=await ready("POST",base+"/external-jobs",{
+ let miniPlan;
+ if(mediaConsent&&resumeRoot){
+  const stored=runtime.db.prepare("SELECT id,action_digest,status,preconditions_json,depends_on_json FROM assistant_task_steps "+
+   "WHERE task_id=? AND kind='comfy_workflow' AND json_extract(preconditions_json,'$.runIndex')=1 "+
+   "AND superseded_at IS NULL ORDER BY ordinal DESC LIMIT 1").get(taskId);
+  if(stored){
+   assert(stored.status==="waiting_approval"&&
+    JSON.parse(stored.preconditions_json).runSequenceId===sequence.sequenceId&&
+    JSON.stringify(JSON.parse(stored.depends_on_json))===JSON.stringify([boundPlan.stepId]),
+    "resume_existing_frozen_video_step_invalid");
+   miniPlan={stepId:stored.id,actionDigest:stored.action_digest,status:stored.status};
+   log("P45D_VIDEO_STEP_RESTORED",{stepId:stored.id,noNewFrozenStep:true});
+  }
+ }
+ if(!miniPlan)miniPlan=await ready("POST",base+"/external-jobs",{
   requestId:"accept-video-plan",expectedPlanVersion:1,
   expectedProjectRevision:snapDoc.revision,kind:"comfy_workflow",
   runSequenceId:sequence.sequenceId,runIndex:1,dependsOn:afterBind.next.dependsOn,
@@ -297,13 +372,32 @@ try{
     comfyRequest:miniRequest,comfyTemplate:mini}}
  });
  assert(countJobs()===1&&miniPlan.status==="waiting_approval","minimax_must_be_approved");
- const miniPath=await stepApprove(base,miniPlan,"minimax");
- const miniQueued=await ready("POST",miniPath+"/enqueue",{
-  requestId:"accept-video-enqueue",expectedPlanVersion:1,actionDigest:miniPlan.actionDigest});
+ // One explicit bounded grant replaces another separate Job approval;
+ // the backend verifies binding proof/instanced template/CAS and consumes
+ // exactly one allowance in the Job admission transaction.
+ const miniPath=base+"/steps/"+miniPlan.stepId;
+ if(!mediaConsent)await stepApprove(base,miniPlan,"minimax");
+ const enqueueSuffix=mediaConsent?"/enqueue-authorized":"/enqueue";
+ const miniQueued=await ready("POST",miniPath+enqueueSuffix,{
+  requestId:"accept-video-enqueue",expectedPlanVersion:1,actionDigest:miniPlan.actionDigest,
+  ...(mediaConsent?{grantId:mediaGrant.grantId}:{})});
  assert(miniQueued.jobId&&countJobs()===2,"video_job_not_unique");
- const miniReplay=await ready("POST",miniPath+"/enqueue",{
-  requestId:"accept-video-enqueue-replay",expectedPlanVersion:1,actionDigest:miniPlan.actionDigest});
+ const miniReplay=await ready("POST",miniPath+enqueueSuffix,{
+  requestId:"accept-video-enqueue-replay",expectedPlanVersion:1,
+  actionDigest:miniPlan.actionDigest,...(mediaConsent?{grantId:mediaGrant.grantId}:{})});
  assert(miniReplay.jobId===miniQueued.jobId&&countJobs()===2,"video_replay_duplicates");
+ if(mediaConsent){
+  const state=await ready("GET",base+"/run-budget");
+  assert(state.grant?.grantId===mediaGrant.grantId&&
+   state.grant.remainingJobs===0&&state.grant.executionStarted===true,
+   "media_grant_consumption_not_persisted");
+  const stats=runtime.db.prepare("SELECT COUNT(*) n FROM assistant_task_events "+
+   "WHERE task_id=? AND kind='run_budget_consumed' AND json_extract(payload_json,'$.grantId')=?")
+   .get(taskId,mediaGrant.grantId);
+  assert(stats.n===1,"media_grant_consumed_more_than_once");
+  log("P45D_MEDIA_GRANT_CONSUMED",{grantId:mediaGrant.grantId,
+   downstreamJobId:miniQueued.jobId,consumed:stats.n});
+ }
  report.results.push({stage:"minimax_h3_i2v",jobId:miniQueued.jobId,stepId:miniPlan.stepId,
   fromArtifactId:sourceProof.artifactId});
  log("minimax_job_queued_once",{jobId:miniQueued.jobId,workNodes:Object.keys(compiledReal.graph).length,
@@ -338,11 +432,12 @@ try{
  const finish=await ready("POST",base+"/reconcile",{});
  assert(countJobs()===2,"reconcile_resubmitted_gpu");
  report.phase="pass";report.completedAt=at();
- report.summary={jobs:2,mossImages:imageDone.artifacts.length,
+ report.summary={jobs:2,mediaGrantMode:mediaConsent?"local_comfy_media":null,
+  mossImages:imageDone.artifacts.length,
   videoArtifacts:videos.length,sourceVerified:true,bindingStep:boundPlan.stepId,
   videoJob:miniQueued.jobId,trust:"server_committed",state:completed.task.status,
   sequence:finalSequence.state,noDuplicatePaidSubmit:true};
-  log("MINIMAX_P3C2_LIVE_PASS",report.summary);
+  log(mediaConsent?"MINIMAX_P45D_MEDIA_LIVE_PASS":"MINIMAX_P3C2_LIVE_PASS",report.summary);
   }
  }catch(error){
  report.phase="failed";report.completedAt=at();

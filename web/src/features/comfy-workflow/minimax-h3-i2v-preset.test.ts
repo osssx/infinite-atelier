@@ -13,7 +13,9 @@ describe("MiniMax H3 I2V Turbo bundled API workflow",()=>{
         expect(configured.apiGraph).toEqual(graph);
         expect(configured.requirements.classTypes).toContain("MiniMaxH3ImageToVideo");
         expect(configured.requirements.modelAssets).toContain("minimax_h3_hybrid_fl2va_ref2va_b25-49-int8.safetensors");
-        expect(configured.requirements.modelAssets).toContain("minimax_h3_video_vae_int8_convrot_v2.safetensors");
+        expect(configured.requirements.modelAssets).toContain("minimax_h3_video_vae_int8_convrot.safetensors");
+        expect(graph["105_11"].inputs.vae_name).toBe("minimax_h3_video_vae_int8_convrot.safetensors");
+        expect(configured.requirements.modelAssets).not.toContain("minimax_h3_video_vae_int8_convrot_v2.safetensors");
     });
     it("exposes first-frame IMAGE filename, prompt, duration, aspect ratio and video capture",async()=>{
         const preset=minimaxH3I2VBundledTemplate();

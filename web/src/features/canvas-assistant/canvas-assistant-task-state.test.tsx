@@ -70,11 +70,12 @@ beforeEach(()=>{
  });
 });
 afterEach(async()=>{if(root)await act(async()=>{root!.unmount();});root=null;container?.remove();container=null;});
-it.each(["agent","structured"])("allows explicit revocation of an approved unexecuted %s Step",async kind=>{
+it.each(["agent","structured","media"])("allows explicit revocation of an approved unexecuted %s Step",async kind=>{
  let task={id:"agent-task",chatSessionId:"chat-a",chatSessionIds:["chat-a"],
   rootMessageId:"original-user",originalRequest:"检查并创建节点",status:"ready",activePlanVersion:1,
   recoveryMode:"canvas_transaction",steps:[{id:"agent-step",kind:"canvas_mutation",planVersion:1,
-   status:"ready",actionDigest:"a".repeat(64),canRevokeApproval:kind==="structured",
+   status:"ready",actionDigest:"a".repeat(64),canRevokeApproval:kind!=="agent",
+   runMediaGrantId:kind==="media"?"revoked-media-grant":null,
    action:{actions:[],...(kind==="agent"?{agentRunId:"ar_test"}:{deliverableSpecDigest:"b".repeat(64)})}}]};
  mocks.api.mockImplementation(async(url:string,method:string,payload?:Record<string,unknown>)=>{
   if(method==="GET"&&url.includes("chatSessionId="))return {tasks:[task]};

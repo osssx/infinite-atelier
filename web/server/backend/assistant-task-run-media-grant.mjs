@@ -50,6 +50,12 @@ function scopeNow(db,{doc,action,index,instanceId}){
   !Array.isArray(target.inputBinding.targets)||!target.inputBinding.targets.length||
   secret.test(String(target.id)+" "+String(target.label)))
   throw fail("assistant_run_media_port_invalid",400);
+ // This grant can supply exactly one edge. Reject scopes that cannot pass
+ // the normal workflow preflight without another media connection.
+ if(template.ports.some(p=>p.direction==="target"&&p.id!==input.toPortId&&
+  p.required===true&&["IMAGE","MASK","VIDEO","AUDIO"].includes(p.valueKind)&&
+  ["socket","media-file"].includes(p.inputBinding?.mode)))
+  throw fail("assistant_run_media_required_inputs_unsupported",400);
  const outputs=template.ports?.filter(p=>p.direction==="source"&&p.capture?.kind!=="none"&&
   typeof p.capture?.adapterId==="string"&&p.capture.adapterId.length>0)??[];
  if(!outputs.length||outputs.length>16||

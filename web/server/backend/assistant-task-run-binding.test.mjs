@@ -15,6 +15,7 @@ import {planAssistantExternalJobStep,enqueueAssistantExternalJobStep,reconcileAs
 import {registerAssistantRunSequence,getAssistantRunSequence,selectAssistantRunInput,skipAssistantRunBranch} from "./assistant-task-run-sequences.mjs";
 import {createAssistantRunBudgetGrant,getAssistantRunBudgetGrant,revokeAssistantRunBudgetGrant} from "./assistant-task-run-budget.mjs";
 import {assertAssistantRunMediaPlanConsent} from "./assistant-task-run-media-grant.mjs";
+import {inspectAssistantTaskRecovery} from "./assistant-task-safe-replan.mjs";
 
 const sha="a".repeat(64),shaTwo="c".repeat(64),revision="b".repeat(64);
 const template={id:"demo-image-refine",revision,name:"Image refine",
@@ -539,6 +540,26 @@ function consentBoundMediaStep(ctx){
   runMediaGrantId:ctx.mediaGrant.grantId});
  return step;
 }
+test("P4.5b media consent rejects additional required media inputs before granting or binding",t=>{
+ for(const valueKind of ["IMAGE","MASK","VIDEO","AUDIO"]){
+  for(const mode of ["socket","media-file"]){
+   const ctx=setup(t),pinned=structuredClone(template);
+   pinned.ports.push({id:"second_input",label:"Second input",direction:"target",
+    valueKind,required:true,inputBinding:{mode,targets:[{nodeId:"1",inputName:"image"}]}});
+   const save=()=>ctx.db.prepare("UPDATE comfy_template_versions SET payload_json=? WHERE template_id=? AND revision=?")
+    .run(JSON.stringify(pinned),template.id,revision);
+   save();
+   assert.throws(()=>mediaAuthorization(ctx),{code:"assistant_run_media_required_inputs_unsupported"});
+   assert.equal(count(ctx.db,"jobs"),0);
+   assert.equal(count(ctx.db,"assistant_task_steps"),0);
+   assert.equal(getProject(ctx.db,"p").document.connections.length,0);
+   assert.equal(one(ctx.db,"SELECT COUNT(*) n FROM assistant_task_events WHERE kind='run_budget_granted'").n,0);
+   pinned.ports.at(-1).required=false;save();
+   assert.equal(mediaAuthorization(ctx).active,true,"Optional media inputs remain supported");
+  }
+ }
+});
+
 test("P4.5b one user consent freezes unique image CAS edge then authorizes exactly one downstream Comfy Job",t=>{
  const ctx=setup(t),grant=mediaAuthorization(ctx);ctx.mediaGrant=grant;
  assert.equal(grant.mode,"local_comfy_media");
@@ -548,6 +569,8 @@ test("P4.5b one user consent freezes unique image CAS edge then authorizes exact
  assert.equal(count(ctx.db,"jobs"),1,"Consent alone must not enqueue a downstream Job");
  materialize(ctx,first);
  const step=consentBoundMediaStep(ctx);
+ const restored=getAssistantTask(ctx.db,{projectId:"p",taskId:ctx.taskId}).task.steps.find(s=>s.id===step.stepId);
+ assert.equal(restored.runMediaGrantId,grant.grantId,"Refresh retains the frozen grant identity before approval");
  assert.equal(step.status,"waiting_approval");
  assert.equal(count(ctx.db,"jobs"),1);
  assert.throws(()=>decideAssistantTaskStep(ctx.db,{...ctx,stepId:step.stepId,
@@ -622,6 +645,15 @@ test("P4.5b media grant revocation after freeze blocks claim and never changes t
   {code:"assistant_run_media_grant_not_active"});
  assert.equal(getProject(ctx.db,"p").document.connections.length,0);
  assert.equal(count(ctx.db,"jobs"),1);
+ const restored=getAssistantTask(ctx.db,{projectId:"p",taskId:ctx.taskId}).task.steps.find(s=>s.id===step.stepId);
+ assert.equal(restored.canRevokeApproval,true);
+ // Rejection must remain available after both grant and graph fences expire.
+ ctx.db.prepare("UPDATE projects SET revision=revision+1 WHERE id='p'").run();
+ const rejected=decideAssistantTaskStep(ctx.db,{...ctx,stepId:step.stepId,
+  requestId:"reject-revoked-binding",expectedPlanVersion:1,actionDigest:step.actionDigest,decision:"reject"});
+ assert.equal(rejected.status,"blocked");
+ assert.equal(getAssistantTask(ctx.db,{projectId:"p",taskId:ctx.taskId}).task.status,"blocked");
+ assert.equal(inspectAssistantTaskRecovery(ctx.db,{projectId:"p",taskId:ctx.taskId}).canReplan,true);
 });
 
 test("P4.5b media grant rejects hidden Comfy options and altered frozen payload before enqueue",t=>{

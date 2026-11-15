@@ -10,7 +10,7 @@ import {canLaunchAssistantRunSequenceStep,type AssistantRunSequenceView} from ".
 
 type Step={id:string;kind:string;planVersion:number;status:string;actionDigest:string;
  approvalDecision?:string|null;approvalGrantId?:string|null;
- canRevokeApproval?:boolean;
+ canRevokeApproval?:boolean;runMediaGrantId?:string|null;
  action?:{actions?:unknown[];agentRunId?:string;deliverableSpecDigest?:string;center?:{x:number;y:number};job?:{targetNodeId:string;executionMode:string;snapshot:{adapterKind?:string;provider?:string;channelId?:string;endpointBaseUrl?:string;task?:{kind?:string;model?:string}}}};
  result?:{jobId?:string;jobStatus?:string;artifactIds?:string[];bindings?:{nodeId:string}[];
  runId?:string;status?:string;exitCode?:number|null;artifactCount?:number};receiptTrust?:string};
@@ -380,7 +380,7 @@ export function useCanvasAssistantTasks({
   try{
    await executeFrozenAssistantCanvasTaskStep({projectId,taskId:selected.id,step:{
     stepId:step.id,planVersion:step.planVersion,actionDigest:step.actionDigest,
-    deliverableSpecDigest:step.action?.deliverableSpecDigest
+    deliverableSpecDigest:step.action?.deliverableSpecDigest,runMediaGrantId:step.runMediaGrantId
    },decision,signal:new AbortController().signal});
   }catch(error){setError("步骤仍保存在任务中，未强行重放："+(error instanceof Error?error.message:"执行失败"));}
   finally{try{await refreshTask(selected.id);}catch{/* keep the recovery error visible */}finally{setBusy(false);}}

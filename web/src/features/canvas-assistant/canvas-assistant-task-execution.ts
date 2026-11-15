@@ -24,7 +24,7 @@ const requestError=(signal:AbortSignal)=>{
 export async function executeFrozenAssistantCanvasTaskStep({
  projectId,taskId,step,signal,decision
 }:{
- projectId:string;taskId:string;step:Pick<FrozenCanvasTaskStep,"stepId"|"planVersion"|"actionDigest">&{deliverableSpecDigest?:string};
+ projectId:string;taskId:string;step:Pick<FrozenCanvasTaskStep,"stepId"|"planVersion"|"actionDigest">&{deliverableSpecDigest?:string;runMediaGrantId?:string|null};
  signal:AbortSignal;decision?:"approve"|"reject"
 }):Promise<CanvasTaskCommit|null>{
  requestError(signal);
@@ -40,7 +40,8 @@ export async function executeFrozenAssistantCanvasTaskStep({
    requestError(signal);
    if(decision==="approve")await canvasApi(path(projectId,taskId,step.stepId)+"/approval","POST",{
     requestId:step.stepId+"-approved",expectedPlanVersion:step.planVersion,
-    actionDigest:step.actionDigest,decision:"approve"
+    actionDigest:step.actionDigest,decision:"approve",
+    ...(step.runMediaGrantId?{grantId:step.runMediaGrantId}:{})
    },signal);
    requestError(signal);
    saved=await canvasApi<CanvasTaskCommit>(path(projectId,taskId,step.stepId)+"/execute","POST",{

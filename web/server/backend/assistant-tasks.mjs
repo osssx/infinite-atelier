@@ -42,7 +42,8 @@ function view(db,row,facts=JSON.parse(row.summary_json)){
 }
 const stepView=row=>({id:row.id,taskId:row.task_id,planVersion:row.plan_version,
  canRevokeApproval:row.kind==="canvas_mutation"&&row.status==="ready"&&Boolean(
-  JSON.parse(row.preconditions_json).agentRunBinding||JSON.parse(row.preconditions_json).deliverableSpec?.deliverableType),
+  JSON.parse(row.preconditions_json).agentRunBinding||JSON.parse(row.preconditions_json).deliverableSpec?.deliverableType||JSON.parse(row.preconditions_json).runMediaGrantId),
+ runMediaGrantId:JSON.parse(row.preconditions_json).runMediaGrantId??null,
  ordinal:row.ordinal,kind:row.kind,status:row.status,required:!!row.required,
  dependsOn:JSON.parse(row.depends_on_json),actionDigest:row.action_digest,
  receiptTrust:row.receipt_trust,result:JSON.parse(row.result_json),errorCode:row.error_code,

@@ -158,12 +158,12 @@ export function decideAssistantTaskStep(db,{projectId,taskId,stepId,requestId,
   // revoked or changed. Rejection confers no write/Claim authority.
   if(decision==="approve")assertAssistantAgentCanvasBinding(db,{projectId,taskId,
    action:JSON.parse(step.action_json),preconditions:frozen,expectedPlanVersion});
-  if((decision==="approve"||!(frozen.agentRunBinding||frozen.deliverableSpec?.deliverableType))&&
+  if((decision==="approve"||!(frozen.agentRunBinding||frozen.deliverableSpec?.deliverableType||frozen.runMediaGrantId))&&
    (!Number.isSafeInteger(frozen.projectRevision)||frozen.projectRevision!==task.revision||
    frozen.projectGraphDigest!==digest(JSON.parse(task.document_json))))
    throw fail("assistant_step_source_changed");
   const revoking=decision==="reject"&&approval.decision==="approved"&&
-   (!!frozen.agentRunBinding||!!frozen.deliverableSpec?.deliverableType)&&step.kind==="canvas_mutation"&&step.status==="ready"&&task.active_step_id===null&&
+   (!!frozen.agentRunBinding||!!frozen.deliverableSpec?.deliverableType||!!frozen.runMediaGrantId)&&step.kind==="canvas_mutation"&&step.status==="ready"&&task.active_step_id===null&&
    !db.prepare("SELECT 1 FROM assistant_task_attempts WHERE step_id=? AND (submit_marker IS NOT NULL OR submitted_at IS NOT NULL OR status IN ('succeeded','submitting','needs_reconcile')) LIMIT 1").get(stepId);
   let response;
   if(approval.decision&&!revoking){

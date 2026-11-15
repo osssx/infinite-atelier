@@ -17,6 +17,19 @@ beforeEach(()=>{
  }));
 });
 describe("P1b browser Task canvas protocol",()=>{
+ it("restores media consent identity when approving a frozen binding after refresh",async()=>{
+  mocks.api.mockImplementation(async(url:string,_method:string,payload:Record<string,unknown>)=>{
+   if(url.endsWith("/approval")){
+    expect(payload.grantId).toBe("original-media-grant");return {status:"ready"};
+   }
+   if(url.endsWith("/execute"))return committed;
+   throw Error("unexpected call");
+  });
+  await executeFrozenAssistantCanvasTaskStep({projectId:"p",taskId:"task",
+   step:{...step,runMediaGrantId:"original-media-grant"},decision:"approve",
+   signal:new AbortController().signal});
+  expect(mocks.api).toHaveBeenCalledTimes(2);
+ });
  it("verifies restored deliverable commits and supports verification without graph replay",async()=>{
   const trace:string[]=[];
   mocks.api.mockImplementation(async(url:string,_method:string,payload:Record<string,unknown>)=>{

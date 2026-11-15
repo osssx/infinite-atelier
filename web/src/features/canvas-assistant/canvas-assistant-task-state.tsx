@@ -28,6 +28,17 @@ type RunBudgetGrant={grantId:string;sequenceId:string;planVersion:number;
  maxJobs:number;consumedJobs:number;remainingJobs:number;allowedIndices:number[];
  expiresAt:number;active:boolean;revoked:boolean;executionStarted:boolean;
  modelScopeSummary?:{provider:string;kind:string;model:string}};
+type TaskCostReport={taskId:string;projectId:string;
+ summary:{jobCount:number;reportedJobCount:number;unavailableJobCount:number;
+ billingUnverifiedJobCount:number;notSubmittedJobCount:number;
+ assistantInferenceCallCount:number;assistantInferenceUsageUnavailableCount:number;
+ upstreamReportedTokens:{inputTokens:number;outputTokens:number;totalTokens:number};
+ totalSettledAmountMicros:null};
+ monetary:{currency:null;rateCardVersion:null;preflightMaxChargeMicros:null;
+ reservationSupported:false;settlementSupported:false;
+ hardCapSupported:false;settledAmountMicros:null;reason:string};
+ jobs:{jobId:string;status:string;provider:string|null;model:string|null;metering:string;
+ usage:{inputTokens:number;outputTokens:number;totalTokens:number}|null}[]};
 type SafeContinuation={taskId:string;taskStatus:string;sequenceState:string;
  checkpoints:{kind:"skip"|"join";index:number}[];reconciledJobs:number;
  requiresApproval:boolean;requiresManualReview:boolean;reason:string|null;
@@ -69,6 +80,10 @@ export function useCanvasAssistantTasks({
  const [eventsMore,setEventsMore]=useState(false);
  const [eventsBusy,setEventsBusy]=useState(false);
  const eventScope=useRef(0);
+ const [costReport,setCostReport]=useState<TaskCostReport|null>(null);
+ const [costBusy,setCostBusy]=useState(false);
+ const [costOpen,setCostOpen]=useState(false);
+ const costEpoch=useRef(0);
  const [runSequence,setRunSequence]=useState<AssistantRunSequenceView|null>(null);
  const [runBudget,setRunBudget]=useState<RunBudgetGrant|null>(null);
  const [runBudgetConsent,setRunBudgetConsent]=useState(false);
@@ -93,6 +108,7 @@ export function useCanvasAssistantTasks({
  useEffect(()=>()=>proposalAbort.current?.abort(),[]);
 
  const base="/api/v1/projects/"+encodeURIComponent(projectId)+"/assistant/tasks";
+ useEffect(()=>{costEpoch.current++;setCostOpen(false);setCostReport(null);},[selectedId,base]);
  useEffect(()=>{
   if(!open||!activeChatId){setItems([]);setSelectedId(null);setDetail(null);setShowOtherTasks(false);return;}
   setShowOtherTasks(false);setOtherTasks([]);
@@ -127,6 +143,19 @@ export function useCanvasAssistantTasks({
  },[base,open,selectedId,callRevision]);
 
  useEffect(()=>{eventScope.current++;setEventsOpen(false);setEvents([]);setEventsNext(0);setEventsMore(false);},[selectedId]);
+ // Read-only cost evidence, fetched only by user click. Never submit a Job.
+ const loadCosts=async()=>{
+  if(!open||!selectedId||costBusy)return;
+  const taskId=selectedId,epoch=++costEpoch.current;
+  setCostBusy(true);
+  try{
+   const value=await canvasApi<TaskCostReport>(base+"/"+encodeURIComponent(taskId)+"/cost-report","GET");
+   if(epoch!==costEpoch.current||!value||value.taskId!==taskId)return;
+   setCostReport(value);setCostOpen(true);
+  }catch{
+   if(epoch===costEpoch.current)setError("读取用量证据失败；没有生成 Job 或发起付费请求。");
+  }finally{if(epoch===costEpoch.current)setCostBusy(false);}
+ };
  const loadEvents=async(reset=false)=>{
   if(!selectedId||eventsBusy||sending)return;
   const scope=eventScope.current;
@@ -858,6 +887,33 @@ export function useCanvasAssistantTasks({
     </div>:null}
    {currentTask?.status==="ready"&&detail?.steps?.some(s=>s.kind==="materialize"&&s.status==="succeeded"&&s.receiptTrust==="server_committed")?
     <p className="mt-1 text-[11px]">已核对生成产物和落图；可点击「继续」编排下一步。不会自动重新发起生成。</p>:null}
+   <div className="mt-1.5 text-[11px]">
+    <button type="button" className="canvas-assistant-link" disabled={sending||costBusy}
+     onClick={()=>costOpen?setCostOpen(false):void loadCosts()}>
+     {costOpen?"收起生成用量":"查看生成用量（只读）"}
+    </button>
+    {costOpen&&costReport?.taskId===selected?.id?<div className="mt-1 rounded border p-2"
+     style={{borderColor:"var(--assistant-border)"}}>
+     <p>上游报告 tokens：输入 {costReport.summary.upstreamReportedTokens.inputTokens}、
+      输出 {costReport.summary.upstreamReportedTokens.outputTokens}、
+      合计 {costReport.summary.upstreamReportedTokens.totalTokens}。
+      有用量回执 {costReport.summary.reportedJobCount}/{costReport.summary.jobCount} 个 Job。</p>
+     <p>缺少用量 {costReport.summary.unavailableJobCount} 项，
+      结果不明可能已计费 {costReport.summary.billingUnverifiedJobCount} 项，
+      尚未提交 {costReport.summary.notSubmittedJobCount} 项；
+      助手推理调用 {costReport.summary.assistantInferenceCallCount??0} 次
+      （尚无独立用量回执，不包含在上方 token 合计中）。</p>
+     <p>以上不是已核实账单，无法承诺美元金额上限；未报告用量不代表免费。</p>
+     {costReport.jobs.slice(0,12).map(job=><div key={job.jobId} className="break-words">
+      {job.jobId.slice(0,12)} · {job.model??job.provider??"未知渠道"} · {job.status} ·
+      {job.metering==="upstream_reported"?
+       ("上游报告 "+job.usage?.totalTokens+" tokens"):
+       job.metering==="not_submitted"?"未提交":"费用待核实"}
+     </div>)}
+     <button type="button" className="canvas-assistant-link" disabled={costBusy}
+      onClick={()=>void loadCosts()}>刷新用量回执（只读）</button>
+    </div>:null}
+   </div>
    <div className="mt-1.5 text-[11px]">
     <button type="button" className="canvas-assistant-link" disabled={sending||eventsBusy}
      onClick={()=>eventsOpen?setEventsOpen(false):void loadEvents(true)}>

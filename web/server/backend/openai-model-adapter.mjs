@@ -5,6 +5,7 @@ import {Readable} from "node:stream";
 import {validateSkillRef,loadFrozenSkillCatalog,runSqliteSkillAgent} from "./sqlite-skill-agent.mjs";
 import {DEFAULT_OPENAI_ENDPOINT,compatEndpointFingerprint,normalizeOpenAiCompatBaseUrl,createPinnedOpenAiCompatCall} from "./openai-compat-endpoints.mjs";
 import {appendArtifact} from "./repository.mjs";
+import {recordAssistantModelUsage} from "./assistant-task-cost-metering.mjs";
 import {parseRestrictedModelScript,runRestrictedModelScript} from "./restricted-model-script.mjs";
 import {openAiVisionContent} from "./model-vision-parts.mjs";
 
@@ -106,7 +107,7 @@ function chatHistory(messages){
 async function streamOpenAiText(response,db,jobId){
  if(!response.body)throw failure("model_text_stream_missing",502);
  const decoder=new TextDecoder("utf-8",{fatal:true}),reader=response.body.getReader();
- let buffer="",text="",seenDone=false,finished=false,events=0,lastPublished=0,chars=0;
+ let buffer="",text="",seenDone=false,finished=false,events=0,lastPublished=0,chars=0,usage=null;
  const publish=()=>{
   if(events>=96||text.length===lastPublished)return;
   const delta=text.slice(lastPublished);
@@ -124,6 +125,9 @@ async function streamOpenAiText(response,db,jobId){
   let value;
   try{value=JSON.parse(json)}catch{throw failure("model_text_stream_invalid",502)}
   if(value?.error)throw failure("model_text_stream_error",502);
+  // SSE usage may arrive in an empty-choices terminal frame. Missing means
+  // unknown, not zero tokens.
+  if(value?.usage!==undefined&&value.usage!==null)usage=value.usage;
   const choice=value?.choices?.[0];
   if(choice?.delta?.tool_calls?.length||choice?.message?.tool_calls?.length)
    throw failure("model_text_tools_not_supported",502);
@@ -158,7 +162,7 @@ async function streamOpenAiText(response,db,jobId){
  }finally{reader.releaseLock()}
  if(!seenDone||!finished||!text)throw failure("model_text_stream_incomplete",502);
  publish();
- return text;
+ return {text,usage};
 }
 export function validateModelSnapshot(snapshot){
  if(!snapshot||snapshot.adapterKind!=="model"||!["openai","openai_compatible"].includes(snapshot.provider)||
@@ -438,7 +442,7 @@ export function createOpenAiModelAdapter({db,blobStore,vault,upstreamCall=fetch,
   }catch{throw failure("model_submission_uncertain",502)}
   if(response.status>=300&&response.status<400)throw failure("model_redirect_rejected",502);
   if(!response.ok)throw failure("model_upstream_error",502,response.status>=400&&response.status<500);
-  let record;
+  let record,reportedUsage=null;
   if(audio){
    const mime=MIME[task.format];
    if(!response.body)throw failure("model_response_missing",502);
@@ -460,7 +464,9 @@ export function createOpenAiModelAdapter({db,blobStore,vault,upstreamCall=fetch,
     }
     return {kind:"completed",receipt:{artifactReady:true,count:outputs.length}};
    }else{
-    const content=task.stream===true?await streamOpenAiText(response,db,job.id):json?.choices?.[0]?.message?.content;
+    const streamed=task.stream===true?await streamOpenAiText(response,db,job.id):null;
+    const content=streamed?streamed.text:json?.choices?.[0]?.message?.content;
+    reportedUsage=streamed?streamed.usage:json?.usage??null;
     if(typeof content!=="string"||Buffer.byteLength(content,"utf8")>2_000_000)
      throw failure("model_text_invalid",502);
     const blob=await blobStore.put([Buffer.from(content,"utf8")],{mime:"text/plain"});
@@ -471,6 +477,9 @@ export function createOpenAiModelAdapter({db,blobStore,vault,upstreamCall=fetch,
    appendArtifact(db,{jobId:job.id,portId:record.kind,itemKey:"0",
    blobId:record.blobId,sha256:record.sha256,mime:record.mimeType,kind:record.kind,
    metadata:{modelGeneration:{kind:task.kind,model:task.model}}});
+  // Persist ONLY sanitized upstream token counters, not an invoice or price.
+  if(task.kind==="text"&&reportedUsage!==null&&reportedUsage!==undefined)
+   recordAssistantModelUsage(db,{jobId:job.id,usage:reportedUsage});
   // Captured bytes & SQLite artifact are durable BEFORE completed is reported.
   return {kind:"completed",receipt:{artifactReady:true}};
  }

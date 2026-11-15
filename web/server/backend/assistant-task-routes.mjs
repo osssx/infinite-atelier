@@ -2,6 +2,7 @@ import {createAssistantTask,listAssistantTasks,getAssistantTask,appendAssistantT
  observeAssistantTask,guideAssistantTaskResume,cancelAssistantTask,listAssistantTaskEvents,
  linkAssistantTaskToChat,changeAssistantTaskSemantic} from "./assistant-tasks.mjs";
 import {listAssistantModelCalls} from "./assistant-model-calls.mjs";
+import {getAssistantTaskCostReport} from "./assistant-task-cost-metering.mjs";
 import {listAssistantSemanticProposals,decideAssistantSemanticProposal} from "./assistant-semantic-proposals.mjs";
 import {decideAssistantTaskStep} from "./assistant-task-step-gate.mjs";
 import {planAssistantCanvasStep,executeAssistantCanvasStep} from "./assistant-task-canvas-executor.mjs";
@@ -195,6 +196,9 @@ export function registerAssistantTaskRoutes(app,db,{skillRegistry,blobStore,onTa
    limit:Number(req.query?.limit??50),includeOther:req.query?.includeOther==="true"})));
  app.get(base+"/:taskId",{schema:{params:taskParams}},(req,reply)=>result(reply,
   getAssistantTask(db,{projectId:req.params.id,taskId:req.params.taskId})));
+ // P4.4d read-only, trusted Job-linked token counters, not an invoice.
+ app.get(base+"/:taskId/cost-report",{schema:{params:taskParams}},(req,reply)=>result(reply,
+  getAssistantTaskCostReport(db,{projectId:req.params.id,taskId:req.params.taskId})));
  app.post(base+"/:taskId/link-chat",{schema:{params:taskParams,body:linkChatBody}},(req,reply)=>result(reply,
   linkAssistantTaskToChat(db,{projectId:req.params.id,taskId:req.params.taskId,...req.body})));
  app.get(base+"/:taskId/recovery",{schema:{params:taskParams}},(req,reply)=>result(reply,

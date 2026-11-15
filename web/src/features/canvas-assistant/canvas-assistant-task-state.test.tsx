@@ -1094,3 +1094,70 @@ it("P4.4c blocked dynamic Comfy workflow never gets automatic paid authority",as
  expect(runs).toBe(0);
  expect(container!.textContent).toContain("先连接可信产物");
 });
+
+describe("P4.4d upstream usage evidence (never a verified monetary charge)",()=>{
+ it("P4.4d read-only Task usage panel does not fetch or bill before deliberate user interaction",async()=>{
+  const task={id:"metering-task",chatSessionId:"chat-a",chatSessionIds:["chat-a"],
+   rootMessageId:"original-user",originalRequest:"生成故事",status:"ready",
+   recoveryMode:"job_observation",activePlanVersion:1,steps:[]};
+  const report={taskId:task.id,projectId:"project",
+   summary:{jobCount:3,reportedJobCount:1,unavailableJobCount:1,
+    billingUnverifiedJobCount:1,notSubmittedJobCount:0,
+    assistantInferenceCallCount:2,assistantInferenceUsageUnavailableCount:2,
+    upstreamReportedTokens:{inputTokens:12,outputTokens:34,totalTokens:46},
+    totalSettledAmountMicros:null},
+   monetary:{currency:null,hardCapSupported:false,settledAmountMicros:null,
+    reason:"verified_provider_invoice_and_bounded_preflight_quote_unavailable"},
+   jobs:[{jobId:"job-abcd",status:"succeeded",provider:"openai",model:"test-model",
+    metering:"upstream_reported",usage:{inputTokens:12,outputTokens:34,totalTokens:46}}]};
+  const requests:{method:string;url:string}[]=[];
+  mocks.api.mockImplementation(async(url:string,method:string)=>{
+   requests.push({method,url});
+   if(method==="GET"&&url.includes("chatSessionId="))return {tasks:[task]};
+   if(method==="GET"&&url.endsWith("/model-calls"))return {calls:[]};
+   if(method==="GET"&&url.endsWith("/run-sequences"))return {sequence:null,state:"none",next:null};
+   if(method==="GET"&&url.endsWith("/cost-report"))return report;
+   if(method==="GET")return {task};
+   throw Error("cost report must never enqueue "+url);
+  });
+  await render();
+  expect(requests.some(r=>r.url.endsWith("/cost-report"))).toBe(false);
+  expect(container!.textContent).toContain("查看生成用量（只读）");
+  await click("查看生成用量（只读）");
+  expect(container!.textContent).toContain("合计 46");
+  expect(container!.textContent).toContain("缺少用量 1 项");
+  expect(container!.textContent).toContain("结果不明可能已计费 1 项");
+  expect(container!.textContent).toContain("无法承诺美元金额上限");
+  expect(container!.textContent).toContain("助手推理调用 2 次");
+  await click("刷新用量回执（只读）");
+  expect(requests.filter(r=>r.url.endsWith("/cost-report"))).toHaveLength(2);
+  await click("收起生成用量");
+  expect(container!.textContent).not.toContain("上游报告 tokens");
+  expect(requests.every(r=>r.method==="GET")).toBe(true);
+ });
+ it("P4.4d stale cost report is not shown after chat and Task change",async()=>{
+  let release!:(data:unknown)=>void;
+  const deferred=new Promise(resolve=>{release=resolve});
+  const task={id:"old-meter",chatSessionId:"chat-a",chatSessionIds:["chat-a"],
+   rootMessageId:"original-user",originalRequest:"旧任务",status:"ready",
+   recoveryMode:"job_observation",activePlanVersion:1,steps:[]};
+  mocks.api.mockImplementation(async(url:string,method:string)=>{
+   if(method==="GET"&&url.includes("chatSessionId=chat-b"))return {tasks:[]};
+   if(method==="GET"&&url.includes("chatSessionId="))return {tasks:[task]};
+   if(method==="GET"&&url.endsWith("/model-calls"))return {calls:[]};
+   if(method==="GET"&&url.endsWith("/run-sequences"))return {sequence:null,state:"none",next:null};
+   if(method==="GET"&&url.endsWith("/cost-report"))return deferred;
+   if(method==="GET")return {task};
+   throw Error("should remain read-only");
+  });
+  await render();
+  const button=Array.from(container!.querySelectorAll("button"))
+   .find(item=>item.textContent==="查看生成用量（只读）");
+  expect(button).toBeTruthy();
+  await act(async()=>{button!.click();await Promise.resolve()});
+  await act(async()=>{root!.render(createElement(Harness,{activeChatId:"chat-b"}))});
+  await act(async()=>{release({taskId:"old-meter",summary:{
+   upstreamReportedTokens:{totalTokens:999999,inputTokens:1,outputTokens:999998}}});await Promise.resolve()});
+  expect(container!.textContent).not.toContain("999999");
+ });
+});

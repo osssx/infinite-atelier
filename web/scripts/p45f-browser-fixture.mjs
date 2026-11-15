@@ -31,7 +31,7 @@ if(!Number.isInteger(port)||port<1024||port>65535)
 
 const projectId="p45f-browser-project",chatId="p45f-browser-chat";
 const scenario=process.env.ATELIER_P45F_BROWSER_SCENARIO??"grant";
-if(!["grant","recovery"].includes(scenario))throw Error("invalid_p45f_browser_scenario");
+if(!["grant","recovery","lost-ack"].includes(scenario))throw Error("invalid_p45f_browser_scenario");
 const revision="b".repeat(64);
 const template={id:"p45f-browser-local-comfy",revision,
  name:"P4.5f local Comfy test (no GPU)",apiGraph:{
@@ -76,7 +76,7 @@ try{
   expectedPlanVersion:1,expectedProjectRevision:1,
   actions:[{type:"run_node",nodeId:source.id,mode:"image"},
    {type:"run_workflow",nodeId:target.id,inputFromPrevious:{sourceKind:"image",toPortId:"first_frame"}}]});
- if(scenario==="recovery"){
+ if(scenario==="recovery"||scenario==="lost-ack"){
   const ctx={projectId,taskId:task.id};
   const grant=createAssistantRunBudgetGrant(db,{...ctx,requestId:"p45f-grant",
    sequenceId:sequence.sequenceId,expectedPlanVersion:1,mode:"local_comfy_media",

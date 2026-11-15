@@ -57,6 +57,8 @@ class ChromeCDP:
         self.responses = []
         self.network_requests = []
         self.exceptions = []
+        self.drop_enqueue_response = False
+        self.dropped_responses = []
         for cmd in ["Page.enable", "Runtime.enable", "Network.enable"]:
             self.call(cmd, {})
 
@@ -74,6 +76,22 @@ class ChromeCDP:
                     raise AssertionError(f"cdp:{method}:{event['error']}")
                 return event.get("result", {})
             kind = event.get("method")
+            if kind == "Fetch.requestPaused":
+                paused = event.get("params", {})
+                url = paused.get("request", {}).get("url", "")
+                if self.drop_enqueue_response and "/enqueue-authorized" in url and \
+                   paused.get("responseStatusCode") is not None and not self.dropped_responses:
+                    self.dropped_responses.append({"url": url,
+                       "status": paused.get("responseStatusCode")})
+                    self.next_id += 1
+                    self.ws.send(json.dumps({"id": self.next_id,
+                        "method": "Fetch.failRequest", "params": {
+                           "requestId": paused["requestId"], "errorReason": "ConnectionClosed"}}))
+                else:
+                    self.next_id += 1
+                    self.ws.send(json.dumps({"id": self.next_id,
+                        "method": "Fetch.continueResponse", "params": {"requestId": paused["requestId"]}}))
+                continue
             if kind == "Network.requestWillBeSent":
                 req = event.get("params", {}).get("request", {})
                 url = req.get("url", "")
@@ -140,8 +158,8 @@ def main():
     if not CHROME.exists():
         raise AssertionError("chrome_executable_missing")
     scenario = sys.argv[1] if len(sys.argv)>1 else "grant"
-    if scenario not in ("grant","recovery"):
-        raise AssertionError("p45f_browser_scenario_must_be_grant_or_recovery")
+    if scenario not in ("grant","recovery","lost-ack"):
+        raise AssertionError("p45f_browser_scenario_must_be_grant_recovery_or_lost_ack")
     root = Path(tempfile.mkdtemp(prefix="infinite-atelier-p45f-browser-"))
     data = root / "dataset"
     # Fixture validates basename against the temp root prefix. Use the root
@@ -202,11 +220,11 @@ def main():
                  "assistant task panel",40)
         if page.click("任务详情"):
             time.sleep(.4)
-        if scenario!="recovery":
+        if scenario not in ("recovery","lost-ack"):
             wait_for(lambda:bool(page.js(
                 "!!document.querySelector('input[aria-label=\"确认本地媒体链自动绑定与生成\"]')")),
                      "local media consent widget",40)
-        if scenario=="recovery":
+        if scenario in ("recovery","lost-ack"):
             # The fixture used the production Task planner, grant, canvas
             # executor and media materialization, but its predecessor image
             # is explicitly synthetic. The real browser resumes the existing
@@ -236,10 +254,24 @@ def main():
                   db_stats(data,fixture)["jobs"]==1)
             check("refresh_does_not_invalidate_frozen_project_revision",
                   db_stats(data,fixture)["projectRevision"]==fixture["initialProjectRevision"])
+            if scenario=="lost-ack":
+                # CDP response-stage interception: Fastify has already returned
+                # after the SQLite commit, but Chrome never sees the HTTP reply.
+                page.drop_enqueue_response=True
+                page.call("Fetch.enable",{"patterns":[{"urlPattern":"*enqueue-authorized*",
+                    "requestStage":"Response"}]})
             check("single_explicit_recovery_click",page.click(
                 "使用原授权恢复一次本地 ComfyUI 生成"))
             wait_for(lambda:db_stats(data,fixture)["jobs"]==2,
                      "one durable authorized downstream Job",35)
+            if scenario=="lost-ack":
+                wait_for(lambda:"可凭原 Step 查询已有 Job" in page.text(),
+                         "lost HTTP ack surfaced without automatic retry",35)
+                check("http_response_dropped_after_server_commit",
+                      len(page.dropped_responses)==1 and
+                      page.dropped_responses[0]["status"]==200)
+                check("lost_ack_user_sees_no_auto_retry_warning",
+                      "可凭原 Step 查询已有 Job，不会自动重试" in page.text())
             check("original_grant_consumed_exactly_once",
                   db_stats(data,fixture)["consumed"]==1)
             check("dispatch_disabled_no_remote_gpu_submission",
@@ -253,28 +285,45 @@ def main():
                   db_stats(data,fixture)["consumed"]==1)
             check("post_completion_browser_reload_has_no_graph_patch",
                   db_stats(data,fixture)["projectRevision"]==fixture["initialProjectRevision"])
+            if scenario=="lost-ack":
+                check("refresh_after_unknown_ack_not_reenqueued",
+                      db_stats(data,fixture)["jobs"]==2 and
+                      db_stats(data,fixture)["consumed"]==1 and
+                      db_stats(data,fixture)["submitBarriers"]==0)
+                if not page.js("!!document.querySelector('section[aria-label=\"任务状态\"]')"):
+                    page.js("""window.dispatchEvent(new KeyboardEvent('keydown',
+                        {key:'i',altKey:true,bubbles:true,cancelable:true}));true""")
+                wait_for(lambda:task_content_contains(page,"Job ID："),
+                         "restored Job receipt visible in real Task UI",35)
+                check("refresh_displays_preexisting_job_in_task_panel",
+                      "Job ID：" in page.text())
             writes=[q for q in page.network_requests if q["method"]=="POST"]
             check("one_real_authorized_step_enqueue_post",
                   sum(q["path"].endswith("/enqueue-authorized") for q in writes)==1)
             check("no_duplicate_enqueue_or_comfy_prompt",
                   not any(q["path"].endswith("/enqueue") or "/prompt" in q["path"]
                       for q in writes))
-            report.update(phase="pass",summary={"scenario":"recovery",
+            report.update(phase="pass",summary={"scenario":scenario,
                 "jobs":2,"sourceFixtureSynthetic":True,
                 "mediaAuthorizedJobs":1,"grantConsumed":1,"comfyGpuSubmits":0,
                 "chrome":report["chrome"],"fullProductPage":True,
                 "screenshots":["recovery-before-refresh.png",
                                "recovery-authorized-enqueue.png"]})
-            print("P45F_REAL_CHROME_RECOVERY_PASS "+
+            print(("P46B_REAL_CHROME_LOST_ACK_PASS " if scenario=="lost-ack" else "P45F_REAL_CHROME_RECOVERY_PASS ")+
                   json.dumps(report["summary"],ensure_ascii=False),flush=True)
             return
+        wait_for(lambda:task_content_contains(page,
+            "批准唯一媒体连线及一次 ComfyUI 生成"),
+            "media authorization task finished hydration",40)
         check("real_assistant_panel_and_media_consent_widget",True)
         check("zero_pregrant_jobs",db_stats(data,fixture)["jobs"]==0)
         page.js("""document.querySelector('input[aria-label="确认本地媒体链自动绑定与生成"]').click()""")
         wait_for(lambda:bool(page.js("""[...document.querySelectorAll('button')].some(
             b=>(b.innerText||'').trim()==='批准唯一媒体连线及一次 ComfyUI 生成'&&!b.disabled)""")),
                  "consent checkbox enables button",20)
-        check("click_confirmed_media_grant_button",page.click("批准唯一媒体连线及一次 ComfyUI 生成"))
+        check("click_confirmed_media_grant_button",bool(wait_for(
+            lambda:page.click("批准唯一媒体连线及一次 ComfyUI 生成"),
+            "actual enabled grant control click",25)))
         wait_for(lambda:db_stats(data,fixture)["granted"]==1,"grant persisted in SQLite",35)
         check("grant_persisted_zero_jobs",db_stats(data,fixture)["jobs"]==0)
         page.screenshot(root/"grant-approved.png")

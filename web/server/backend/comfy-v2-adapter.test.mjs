@@ -185,6 +185,7 @@ test("legacy Comfy removes only matching pending prompt, refuses global running 
    assert.deepEqual(JSON.parse(opts.body),{delete:["remote-test"]});
    pending=false;return {};
   }
+  if(path==="/history/remote-test")return {};
   throw Error("unexpected "+path);
  };
  const f=fixture(t,{transport});
@@ -200,6 +201,36 @@ test("legacy Comfy removes only matching pending prompt, refuses global running 
  assert.equal(refused.reason,"comfy_scoped_running_cancel_unsupported");
  assert.equal(calls.filter(p=>p==="/queue").length,4);
  assert.equal(calls.some(p=>p==="/interrupt"),false);
+});
+test("legacy queue deletion cannot claim cancellation if prompt has entered history",async t=>{
+ const calls=[];
+ let historyMode="finished";
+ const f=fixture(t,{transport:async(_instance,path,opts={})=>{
+  calls.push(path);
+  if(path==="/api/jobs/remote-test/cancel")
+   throw Object.assign(Error("not found"),{code:"comfy_upstream_404"});
+  if(path==="/queue"&&opts.method!=="POST"){
+   const after=calls.filter(value=>value==="/queue").length>1;
+   return {queue_running:[],queue_pending:after?[]:[[6,"remote-test"]]};
+  }
+  if(path==="/queue"&&opts.method==="POST")return {};
+  if(path==="/history/remote-test"){
+   if(historyMode==="offline")throw Error("history disconnected");
+   return {"remote-test":{status:{status_str:"success",completed:true}}};
+  }
+  throw Error("unexpected "+path);
+ }});
+ const id=f.queue("cancel-race");
+ f.db.prepare("UPDATE jobs SET status='running',upstream_task_id='remote-test' WHERE id=?").run(id);
+ const args={job:f.row(id),remoteTaskId:"remote-test"};
+ const result=await f.adapters["comfy-local"].cancel(args);
+ assert.deepEqual(result,{cancelled:false,reason:"comfy_cancel_raced_with_execution"});
+ assert.equal(f.row(id).status,"running");
+ assert.equal(calls.some(path=>path==="/interrupt"),false);
+ calls.length=0;historyMode="offline";
+ const unknown=await f.adapters["comfy-local"].cancel(args);
+ assert.deepEqual(unknown,{cancelled:false,reason:"comfy_cancel_history_unavailable"});
+ assert.equal(f.row(id).status,"running");
 });
 test("ambiguous Comfy cancel response never claims remote stopped",async t=>{
  const f=fixture(t,{transport:async(_instance,path)=>{

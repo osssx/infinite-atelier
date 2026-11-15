@@ -307,6 +307,13 @@ export function createComfyV2Adapter({instance,db,blobStore,upstreamCall=comfyUp
    return {cancelled:false,reason:"comfy_cancel_raced_with_execution"};
   if(contains(Array.isArray(after?.queue_pending)?after.queue_pending:[]))
    return {cancelled:false,reason:"comfy_cancel_not_confirmed"};
+  // A prompt can disappear from the queue by starting/finishing, not just deletion.
+  // Check its remote history before claiming the old queue API cancelled it.
+  let history;
+  try{history=await upstreamCall(trusted,"/history/"+encodeURIComponent(remoteTaskId),{timeoutMs:12000})}
+  catch{return {cancelled:false,reason:"comfy_cancel_history_unavailable"}}
+  if(historyEntry(history,remoteTaskId))
+   return {cancelled:false,reason:"comfy_cancel_raced_with_execution"};
   liveHub?.disconnect(job.id);
   return {cancelled:true};
  }

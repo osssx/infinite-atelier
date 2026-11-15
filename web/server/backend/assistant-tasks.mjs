@@ -44,6 +44,11 @@ const stepView=row=>({id:row.id,taskId:row.task_id,planVersion:row.plan_version,
  canRevokeApproval:row.kind==="canvas_mutation"&&row.status==="ready"&&Boolean(
   JSON.parse(row.preconditions_json).agentRunBinding||JSON.parse(row.preconditions_json).deliverableSpec?.deliverableType||JSON.parse(row.preconditions_json).runMediaGrantId),
  runMediaGrantId:JSON.parse(row.preconditions_json).runMediaGrantId??null,
+ // Only the frozen sequence identity is exposed for safe recovery; the
+ // complete private precondition document remains server-side.
+ runSequenceId:JSON.parse(row.preconditions_json).runSequenceId??null,
+ runIndex:Number.isSafeInteger(JSON.parse(row.preconditions_json).runIndex)?
+  JSON.parse(row.preconditions_json).runIndex:null,
  ordinal:row.ordinal,kind:row.kind,status:row.status,required:!!row.required,
  dependsOn:JSON.parse(row.depends_on_json),actionDigest:row.action_digest,
  receiptTrust:row.receipt_trust,result:JSON.parse(row.result_json),errorCode:row.error_code,

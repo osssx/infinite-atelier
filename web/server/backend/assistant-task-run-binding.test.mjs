@@ -589,6 +589,12 @@ test("P4.5b one user consent freezes unique image CAS edge then authorizes exact
  assert.equal(getAssistantRunSequence(ctx.db,ctx).next.needsBinding,false);
  const planned=nextJob(ctx);
  assert.equal(planned.status,"waiting_approval");
+ // P4.5e: a refreshed client must receive server-owned frozen sequence
+ // identity, not guess authorization from a matching node title alone.
+ const reopened=getAssistantTask(ctx.db,{projectId:"p",taskId:ctx.taskId}).task.steps
+  .find(row=>row.id===planned.stepId);
+ assert.equal(reopened.runSequenceId,ctx.seq.sequenceId);
+ assert.equal(reopened.runIndex,1);
  const sent=enqueueAssistantExternalJobStep(ctx.db,{...ctx,stepId:planned.stepId,
   requestId:"media-once",expectedPlanVersion:1,actionDigest:planned.actionDigest,
   grantId:grant.grantId});

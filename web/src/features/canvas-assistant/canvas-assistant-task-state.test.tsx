@@ -1361,3 +1361,196 @@ it("P4.5b dynamic Comfy media without user grant never auto-wires or launches",a
  expect(run).not.toHaveBeenCalled();
  expect(mocks.api.mock.calls.every(([,method])=>method==="GET")).toBe(true);
 });
+
+it("P4.5e refreshed Task exposes an explicit one-shot authorized Comfy recovery, never auto-replays",async()=>{
+ const taskId="media-resume-task",grantId="old-media-grant";
+ const actions=[{type:"run_node",nodeId:"img",mode:"image"},
+  {type:"run_workflow",nodeId:"i2v",inputFromPrevious:{sourceKind:"image",toPortId:"first_frame"}}];
+ const sequence={id:"media-seq",taskId,sourceMessageId:"original-user",planVersion:1,status:"active",actions};
+ const grant={grantId,sequenceId:sequence.id,planVersion:1,mode:"local_comfy_media",
+  allowedIndices:[1],maxJobs:1,consumedJobs:0,remainingJobs:1,
+  expiresAt:Date.now()+200000,active:true,revoked:false,executionStarted:false};
+ let task={id:taskId,chatSessionId:"chat-a",rootMessageId:"original-user",
+  originalRequest:"恢复本地 I2V",status:"waiting_approval",
+  activePlanVersion:1,recoveryMode:"job_observation",readOnly:false,
+  steps:[{id:"video-step",kind:"comfy_workflow",planVersion:1,status:"waiting_approval",
+   runSequenceId:sequence.id,runIndex:1,actionDigest:"a".repeat(64),
+   action:{kind:"comfy_workflow",job:{targetNodeId:"i2v",executionMode:"poll",
+    snapshot:{adapterKind:"comfy"}}}}]};
+ let currentGrant={...grant};
+ const requests:{url:string;method:string;body?:Record<string,unknown>}[]=[];
+ const runner=vi.fn(async()=>{});
+ mocks.api.mockImplementation(async(url:string,method:string,body?:Record<string,unknown>)=>{
+  requests.push({url,method,body});
+  if(method==="GET"&&url.includes("chatSessionId="))return {tasks:[task]};
+  if(method==="GET"&&url.endsWith("/run-sequences"))return {
+   sequence,state:"waiting_approval",index:1,next:null};
+  if(method==="GET"&&url.endsWith("/run-budget"))return {grant:currentGrant};
+  if(method==="GET"&&url.endsWith("/model-calls"))return {calls:[]};
+  if(method==="GET"&&url.endsWith("/"+taskId))return {task};
+  if(method==="POST"&&url.endsWith("/steps/video-step/enqueue-authorized")){
+   expect(body).toMatchObject({grantId,expectedPlanVersion:1,actionDigest:"a".repeat(64)});
+   currentGrant={...grant,remainingJobs:0,consumedJobs:1,active:false,executionStarted:true};
+   task={...task,status:"waiting_external",
+    steps:task.steps.map(item=>({...item,status:"waiting_external",result:{jobId:"original-video-job"}}))};
+   return {jobId:"original-video-job"};
+  }
+  if(method==="POST"&&url.endsWith("/reconcile"))return {task};
+  throw Error("unexpected recovery request: "+method+" "+url);
+ });
+ await render(undefined,undefined,runner,"gpu-local");
+ expect(container!.textContent).toContain("使用原授权恢复一次本地 ComfyUI 生成");
+ expect(runner).not.toHaveBeenCalled();
+ expect(requests.filter(item=>item.method==="POST")).toHaveLength(0);
+ await click("使用原授权恢复一次本地 ComfyUI 生成");
+ expect(requests.filter(item=>item.method==="POST").map(item=>item.url)).toEqual([
+  "/api/v1/projects/project/assistant/tasks/media-resume-task/steps/video-step/enqueue-authorized",
+  "/api/v1/projects/project/assistant/tasks/media-resume-task/reconcile"
+ ]);
+ expect(requests.some(item=>item.url.endsWith("/approval")||
+  item.url.endsWith("/enqueue"))).toBe(false);
+ expect(runner).not.toHaveBeenCalled();
+ // Re-render does not re-consume the grant or replay the original Job.
+ await act(async()=>root!.render(createElement(Harness,{runSequence:runner,comfyInstanceId:"gpu-local"})));
+ expect(requests.filter(item=>item.method==="POST")).toHaveLength(2);
+});
+it("P4.5e revoked, expired and cross-Step media grants cannot resume a frozen video job",async()=>{
+ for(const invalid of ["revoked","expired","different-index","different-sequence","cancelled"]){
+  const taskId="denied-recover",seqId="approved-sequence";
+  const actions=[{type:"run_node",nodeId:"img",mode:"image"},
+   {type:"run_workflow",nodeId:"i2v",inputFromPrevious:{sourceKind:"image",toPortId:"first_frame"}}];
+  const sequence={id:seqId,taskId,sourceMessageId:"original-user",planVersion:1,actions,status:"active"};
+  const grant={grantId:"granted",sequenceId:invalid==="different-sequence"?"wrong":seqId,
+   planVersion:1,mode:"local_comfy_media",allowedIndices:[invalid==="different-index"?0:1],
+   maxJobs:1,consumedJobs:0,remainingJobs:1,
+   expiresAt:Date.now()+(invalid==="expired"?-1000:180000),active:invalid!=="revoked",
+   revoked:invalid==="revoked",executionStarted:false};
+  const task={id:taskId,chatSessionId:"chat-a",rootMessageId:"original-user",
+   originalRequest:"安全恢复",status:"waiting_approval",readOnly:false,
+   cancelRequestedAt:invalid==="cancelled"?Date.now():null,
+   activePlanVersion:1,recoveryMode:"job_observation",
+   steps:[{id:"video-step",kind:"comfy_workflow",status:"waiting_approval",
+    runSequenceId:seqId,runIndex:1,planVersion:1,actionDigest:"b".repeat(64),
+    action:{job:{targetNodeId:"i2v",executionMode:"poll",snapshot:{adapterKind:"comfy"}}}}]};
+  mocks.api.mockClear();
+  mocks.api.mockImplementation(async(url:string,method:string)=>{
+   if(method!=="GET")throw Error("No write on untrusted grant");
+   if(url.includes("chatSessionId="))return {tasks:[task]};
+   if(url.endsWith("/run-sequences"))return {sequence,state:"waiting_approval",index:1,next:null};
+   if(url.endsWith("/run-budget"))return {grant};
+   if(url.endsWith("/model-calls"))return {calls:[]};
+   return {task};
+  });
+  const runner=vi.fn(async()=>{});
+  await render(undefined,undefined,runner,"gpu-local");
+  expect(container!.textContent,invalid).not.toContain("使用原授权恢复一次本地 ComfyUI 生成");
+  expect(runner).not.toHaveBeenCalled();
+  expect(mocks.api.mock.calls.every(([,method])=>method==="GET")).toBe(true);
+  await act(async()=>{root!.unmount()});root=null;container?.remove();container=null;
+ }
+});
+it("P4.5e latest grant revocation between render and click fails closed without any enqueue",async()=>{
+ const task={id:"stale-recovery",chatSessionId:"chat-a",rootMessageId:"original-user",
+  originalRequest:"恢复已冻结视频",status:"waiting_approval",activePlanVersion:1,
+  recoveryMode:"job_observation",steps:[{id:"stale-step",kind:"comfy_workflow",
+   status:"waiting_approval",planVersion:1,actionDigest:"c".repeat(64),
+   runSequenceId:"stale-seq",runIndex:1,
+   action:{job:{targetNodeId:"i2v",executionMode:"poll",snapshot:{adapterKind:"comfy"}}}}]};
+ const sequence={id:"stale-seq",taskId:task.id,sourceMessageId:"original-user",planVersion:1,
+  status:"active",actions:[{type:"run_node",nodeId:"image",mode:"image"},
+   {type:"run_workflow",nodeId:"i2v",inputFromPrevious:{sourceKind:"image",toPortId:"first_frame"}}]};
+ const grant={grantId:"stale-grant",sequenceId:"stale-seq",planVersion:1,
+  mode:"local_comfy_media",allowedIndices:[1],remainingJobs:1,maxJobs:1,
+  consumedJobs:0,expiresAt:Date.now()+200000,active:true,revoked:false,executionStarted:false};
+ let reads=0;
+ mocks.api.mockImplementation(async(url:string,method:string)=>{
+  if(method!=="GET")throw Error("Revoked grant must not create Job");
+  if(url.includes("chatSessionId="))return {tasks:[task]};
+  if(url.endsWith("/run-sequences"))return {sequence,state:"waiting_approval",index:1,next:null};
+  if(url.endsWith("/run-budget"))return {grant:++reads===1?grant:{...grant,revoked:true,active:false}};
+  if(url.endsWith("/model-calls"))return {calls:[]};
+  return {task};
+ });
+ await render();
+ expect(container!.textContent).toContain("使用原授权恢复一次本地 ComfyUI 生成");
+ await click("使用原授权恢复一次本地 ComfyUI 生成");
+ expect(container!.textContent).toContain("原媒体授权已撤销");
+ expect(mocks.api.mock.calls.filter(([,method])=>method==="POST")).toHaveLength(0);
+});
+
+it("P4.5e one trusted materialization SSE reload can start exactly one already-granted I2V run",async()=>{
+ const taskId="media-sse-task";
+ let task={id:taskId,chatSessionId:"chat-a",rootMessageId:"original-user",
+  originalRequest:"首帧后自动图生视频",status:"waiting_external",readOnly:false,
+  activePlanVersion:1,recoveryMode:"job_observation",
+  steps:[{id:"image-job-step",kind:"comfy_workflow",planVersion:1,status:"waiting_external",
+   actionDigest:"a".repeat(64),result:{jobId:"moss-image-job"}}]};
+ const actions=[{type:"run_node",nodeId:"source",mode:"image"},
+  {type:"run_workflow",nodeId:"h3",inputFromPrevious:{sourceKind:"image",toPortId:"first_frame"}}];
+ const sequence={id:"sse-sequence",taskId,planVersion:1,
+  sourceMessageId:"original-user",actions,status:"active"};
+ const grant={grantId:"sse-grant",sequenceId:sequence.id,planVersion:1,mode:"local_comfy_media",
+  allowedIndices:[1],remainingJobs:1,maxJobs:1,consumedJobs:0,
+  expiresAt:Date.now()+180000,active:true,revoked:false,executionStarted:false};
+ let ready=false;
+ const runner=vi.fn(async(_taskId:string,_view:unknown,_grantId?:string,_mode?:string)=>{});
+ mocks.api.mockImplementation(async(url:string,method:string)=>{
+  if(method!=="GET")throw Error("no implicit Job API writes from task watcher");
+  if(url.includes("chatSessionId="))return {tasks:[task]};
+  if(url.endsWith("/run-sequences"))return ready?{
+   sequence,state:"ready",index:1,next:{index:1,action:actions[1],dependsOn:["committed-image"],
+    needsBinding:true,last:true,inputBinding:{sourceNodeId:"rendered",
+     sourcePortId:"image",toNodeId:"h3",toPortId:"first_frame",sourceKind:"image",
+     sourceArtifactId:"trusted-image",sourceSha256:"a".repeat(64),valueKind:"IMAGE"}}}:
+   {sequence,state:"waiting_external",index:0,next:null};
+  if(url.endsWith("/run-budget"))return {grant};
+  if(url.endsWith("/model-calls"))return {calls:[]};
+  return {task};
+ });
+ await render(undefined,undefined,runner,"comfy-local");
+ expect(runner).not.toHaveBeenCalled();
+ expect(mocks.jobWatchers.get("moss-image-job")?.size).toBe(1);
+ ready=true;task={...task,status:"ready",
+  steps:[{...task.steps[0],status:"succeeded"}]};
+ await act(async()=>{
+  for(const callback of mocks.jobWatchers.get("moss-image-job")??[])
+   callback({jobId:"moss-image-job",kind:"artifact_materialized",eventId:17,payload:{}});
+  await Promise.resolve();
+ });
+ await vi.waitFor(()=>expect(runner).toHaveBeenCalledTimes(1));
+ expect(runner.mock.calls[0]?.[0]).toBe(taskId);
+ expect(runner.mock.calls[0]?.[2]).toBe("sse-grant");
+ expect(runner.mock.calls[0]?.[3]).toBe("local_comfy_media");
+ await act(async()=>{
+  for(const callback of mocks.jobWatchers.get("moss-image-job")??[])
+   callback({jobId:"moss-image-job",kind:"artifact_materialized",eventId:18,payload:{}});
+  await Promise.resolve();
+ });
+ expect(runner).toHaveBeenCalledTimes(1);
+ expect(mocks.api.mock.calls.every(([,method])=>method==="GET")).toBe(true);
+});
+it("P4.5e server cancellation intent blocks next media Job even before Task status updates",async()=>{
+ const task={id:"cancelled-inflight",chatSessionId:"chat-a",rootMessageId:"original-user",
+  originalRequest:"取消正在排队的媒体链",status:"ready",readOnly:false,
+  cancelRequestedAt:Date.now(),activePlanVersion:1,recoveryMode:"job_observation",steps:[]};
+ const actions=[{type:"run_node",nodeId:"source",mode:"image"},
+  {type:"run_workflow",nodeId:"h3",inputFromPrevious:{sourceKind:"image",toPortId:"first_frame"}}];
+ const sequence={id:"cancel-sequence",taskId:task.id,planVersion:1,sourceMessageId:"original-user",
+  actions,status:"active"};
+ const grant={grantId:"cancel-grant",sequenceId:sequence.id,planVersion:1,
+  mode:"local_comfy_media",allowedIndices:[1],maxJobs:1,remainingJobs:1,
+  expiresAt:Date.now()+180000,active:true,revoked:false,executionStarted:false};
+ const runner=vi.fn(async()=>{});
+ mocks.api.mockImplementation(async(url:string,method:string)=>{
+  if(method!=="GET")throw Error("cancelled Task must not perform writes");
+  if(url.includes("chatSessionId="))return {tasks:[task]};
+  if(url.endsWith("/run-sequences"))return {sequence,state:"ready",index:1,
+   next:{index:1,action:actions[1],needsBinding:true,dependsOn:[]}};
+  if(url.endsWith("/run-budget"))return {grant};
+  if(url.endsWith("/model-calls"))return {calls:[]};
+  return {task};
+ });
+ await render(undefined,undefined,runner,"comfy-local");
+ expect(runner).not.toHaveBeenCalled();
+ expect(mocks.api.mock.calls.every(([,method])=>method==="GET")).toBe(true);
+});

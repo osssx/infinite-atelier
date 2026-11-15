@@ -11,6 +11,7 @@ import {canLaunchAssistantRunSequenceStep,type AssistantRunSequenceView} from ".
 type Step={id:string;kind:string;planVersion:number;status:string;actionDigest:string;
  approvalDecision?:string|null;approvalGrantId?:string|null;
  canRevokeApproval?:boolean;runMediaGrantId?:string|null;
+ runSequenceId?:string|null;runIndex?:number|null;
  action?:{actions?:unknown[];agentRunId?:string;deliverableSpecDigest?:string;center?:{x:number;y:number};job?:{targetNodeId:string;executionMode:string;snapshot:{adapterKind?:string;provider?:string;channelId?:string;endpointBaseUrl?:string;task?:{kind?:string;model?:string}}}};
  result?:{jobId?:string;jobStatus?:string;artifactIds?:string[];bindings?:{nodeId:string}[];
  runId?:string;status?:string;exitCode?:number|null;artifactCount?:number};receiptTrust?:string};
@@ -22,13 +23,36 @@ type SemanticNote={id:string;kind:"constraint"|"decision";text:string;provenance
 type SemanticState={revision:number;goal?:{text:string;provenance:"user_confirmed"}|null;notes:SemanticNote[]};
 type SemanticProposal={id:string;kind:"goal"|"constraint"|"decision";text:string;status:"pending"|"accepted"|"rejected";source:"model_suggested";contextPolicy:{includeContext:boolean;scope:AssistantContextScope;includedIds:string[]}};
 type Task={id:string;chatSessionId:string;chatSessionIds?:string[];rootMessageId:string;originalRequest:string;
- activePlanVersion?:number;status:string;readOnly?:boolean;summary?:FactSummary;semantic?:SemanticState;recoveryMode:"guidance_only"|"canvas_atomic"|"job_observation"|"skill_audit";steps?:Step[];lastError?:string|null};
+ activePlanVersion?:number;status:string;readOnly?:boolean;cancelRequestedAt?:number|null;summary?:FactSummary;semantic?:SemanticState;recoveryMode:"guidance_only"|"canvas_atomic"|"job_observation"|"skill_audit";steps?:Step[];lastError?:string|null};
 type Recovery={canReplan:boolean;reason:string;planVersion:number;projectRevision:number;completedArtifacts?:number;failedJobs?:number};
 type RunBudgetGrant={grantId:string;sequenceId:string;planVersion:number;
  maxJobs:number;consumedJobs:number;remainingJobs:number;allowedIndices:number[];
  expiresAt:number;active:boolean;revoked:boolean;executionStarted:boolean;
  modelScopeSummary?:{provider:string;kind:string;model:string};
  mode?:"model"|"local_comfy"|"local_comfy_media";comfyScopeSummary?:{instanceId:string;templateId:string;templateRevision:string}};
+/** Refreshed Tabs may only associate a Grant with its original frozen Step.
+ * Server independently verifies the full Comfy graph, CAS and grant in one
+ * Job admission transaction.
+ */
+export function matchesActiveMediaGrant(step:Step,grant:RunBudgetGrant|null,task:Task|null,
+ sequence:AssistantRunSequenceView|null,at=Date.now()):boolean{
+ const action=grant&&sequence?.sequence?.actions[grant.allowedIndices[0]];
+ if(!grant||!grant.active||grant.revoked||grant.mode!=="local_comfy_media"||
+  grant.expiresAt<=at||grant.remainingJobs!==1||grant.allowedIndices.length!==1||
+  !task||task.readOnly||task.cancelRequestedAt!=null||
+  !["planning","ready","waiting_approval"].includes(task.status)||
+  step.kind!=="comfy_workflow"||step.status!=="waiting_approval"||
+  step.planVersion!==grant.planVersion||step.runSequenceId!==grant.sequenceId||
+  step.runIndex!==grant.allowedIndices[0]||
+  sequence?.sequence?.id!==grant.sequenceId||
+  sequence.sequence.taskId!==task.id||
+  sequence.sequence.planVersion!==grant.planVersion||
+  action?.type!=="run_workflow"||
+  !action.inputFromPrevious||
+  action.nodeId!==step.action?.job?.targetNodeId)
+  return false;
+ return true;
+}
 type TaskCostReport={taskId:string;projectId:string;
  summary:{jobCount:number;reportedJobCount:number;unavailableJobCount:number;
  billingUnverifiedJobCount:number;notSubmittedJobCount:number;
@@ -444,24 +468,51 @@ export function useCanvasAssistantTasks({
   finally{setBusy(false);}
  };
  const resumeExternal=async(step:Step,decision?:"approve"|"reject")=>{
-  if(!selected||busy||sending)return;
+  if(!selected||busy||sending||currentTask?.readOnly||currentTask?.cancelRequestedAt!=null)return;
   setBusy(true);setError("");
   const endpoint=path(selected.id)+"/steps/"+encodeURIComponent(step.id);
   try{
-   if(decision)await canvasApi(endpoint+"/approval","POST",{
-    requestId:step.id+"-external-"+decision,expectedPlanVersion:step.planVersion,
-    actionDigest:step.actionDigest,decision
-   });
-   if(decision!=="reject"){
-    if(step.status==="waiting_approval"&&decision!=="approve")throw Error("步骤尚未获批准");
-    await canvasApi(endpoint+"/enqueue","POST",{
-     requestId:step.id+"-external-enqueue",expectedPlanVersion:step.planVersion,
-     actionDigest:step.actionDigest
+   // Keep a formerly media-granted frozen Step on the grant path even when
+   // its cached expiry/remainingJobs is stale. Never silently switch a click
+   // originally intended for the grant into an ordinary paid enqueue.
+   const boundToMediaGrant=decision==="approve"&&
+    runBudget?.mode==="local_comfy_media"&&
+    step.kind==="comfy_workflow"&&step.status==="waiting_approval"&&
+    step.runSequenceId===runBudget.sequenceId&&
+    step.runIndex===runBudget.allowedIndices[0];
+   if(boundToMediaGrant){
+    // A refreshed Tab cannot infer new consent: it may only use the original
+    // frozen Step with a *fresh* server grant for one authorized Job.
+    const latest=await canvasApi<{grant:RunBudgetGrant|null}>(
+     path(selected.id)+"/run-budget","GET");
+    runBudgetReadEpoch.current++;
+    setRunBudget(latest.grant);
+    if(!matchesActiveMediaGrant(step,latest.grant,currentTask,runSequence))
+     throw Error("原媒体授权已撤销、过期或不属于此冻结步骤，请重新核对任务");
+    await canvasApi(endpoint+"/enqueue-authorized","POST",{
+     requestId:step.id+"-external-authorized-"+latest.grant!.grantId,
+     expectedPlanVersion:step.planVersion,actionDigest:step.actionDigest,
+     grantId:latest.grant!.grantId
     });
+    runBudgetReadEpoch.current++;setRunBudget({...latest.grant!,remainingJobs:0,active:false});
+   }else{
+    if(decision)await canvasApi(endpoint+"/approval","POST",{
+     requestId:step.id+"-external-"+decision,expectedPlanVersion:step.planVersion,
+     actionDigest:step.actionDigest,decision
+    });
+    if(decision!=="reject"){
+     if(step.status==="waiting_approval"&&decision!=="approve")
+      throw Error("步骤尚未获批准");
+     await canvasApi(endpoint+"/enqueue","POST",{
+      requestId:step.id+"-external-enqueue",expectedPlanVersion:step.planVersion,
+      actionDigest:step.actionDigest
+     });
+    }
    }
    await canvasApi(path(selected.id)+"/reconcile","POST",{});
    await refreshTask(selected.id);
-  }catch(error){setError("可凭原 Step 查询已有 Job，不会再次生成："+(error instanceof Error?error.message:"执行失败"));}
+  }catch(error){setError("可凭原 Step 查询已有 Job，不会自动重试："+
+   (error instanceof Error?error.message:"执行失败"));}
   finally{setBusy(false);}
  };
  const grantRunBudget=async()=>{
@@ -715,7 +766,7 @@ export function useCanvasAssistantTasks({
    next.action.type!==(grant?.mode==="local_comfy"||grant?.mode==="local_comfy_media"?"run_workflow":"run_node")||
     (next.needsBinding&&grant?.mode!=="local_comfy_media")||!grant?.active||
    grant.sequenceId!==view.sequence.id||grant.planVersion!==view.sequence.planVersion||
-   !grant.allowedIndices.includes(next.index)||grant.remainingJobs<1||detail?.readOnly||
+   !grant.allowedIndices.includes(next.index)||grant.remainingJobs<1||detail?.readOnly||detail?.cancelRequestedAt!=null||
    !["planning","ready","waiting_approval"].includes(detail?.status??""))
    return;
   const key=task.id+":"+grant.grantId+":"+next.index;
@@ -1150,7 +1201,9 @@ export function useCanvasAssistantTasks({
          {step.status==="waiting_approval"?<>
           <button type="button" className="canvas-assistant-link" disabled={busy||sending}
            title="将创建一个持久 Job，可能产生模型调用费用"
-           onClick={()=>void resumeExternal(step,"approve")}>批准并入队（可能计费）</button>
+           onClick={()=>void resumeExternal(step,"approve")}>
+            {matchesActiveMediaGrant(step,runBudget,currentTask,runSequence)?
+             "使用原授权恢复一次本地 ComfyUI 生成":"批准并入队（可能计费）"}</button>
           <button type="button" className="canvas-assistant-link" disabled={busy||sending}
            onClick={()=>void resumeExternal(step,"reject")}>拒绝本次生成</button>
          </>:<button type="button" className="canvas-assistant-link" disabled={busy||sending}

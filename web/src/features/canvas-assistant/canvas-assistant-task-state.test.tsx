@@ -1169,3 +1169,86 @@ describe("P4.4d upstream usage evidence (never a verified monetary charge)",()=>
   expect(mocks.api.mock.calls.filter(([url])=>url.endsWith("/cost-report"))).toHaveLength(2);
  });
 });
+
+it("P4.5a local Comfy template confirmation triggers only an authorized static next workflow",async()=>{
+ const task={id:"local-seq-task",chatSessionId:"chat-a",rootMessageId:"original-user",
+  originalRequest:"连续生成本地工作流",status:"ready",readOnly:false,activePlanVersion:1,
+  recoveryMode:"job_observation",steps:[{id:"human-approved",kind:"comfy_workflow",
+   planVersion:1,status:"succeeded",approvalDecision:"approved",
+   actionDigest:"a".repeat(64),action:{job:{targetNodeId:"a",snapshot:{
+    adapterKind:"comfy",instanceId:"gpu-local",comfyRequest:{nodes:[{
+     templateId:"local-template",templateRevision:"b".repeat(64)}]}}}}}]};
+ const actions=[{type:"run_workflow",nodeId:"a"},{type:"run_workflow",nodeId:"b"}];
+ const sequence={id:"seq-comfy",taskId:task.id,sourceMessageId:"original-user",
+  planVersion:1,status:"active",actions};
+ const grant={grantId:"comfy-grant",sequenceId:sequence.id,planVersion:1,
+  mode:"local_comfy" as const,allowedIndices:[1],maxJobs:1,consumedJobs:0,remainingJobs:1,
+  expiresAt:Date.now()+1800000,active:true,revoked:false,executionStarted:false,
+  comfyScopeSummary:{instanceId:"gpu-local",templateId:"local-template",
+   templateRevision:"b".repeat(64)}};
+ let current:typeof grant|null=null;
+ const calls:{url:string;method:string;body?:Record<string,unknown>}[]=[];
+ const started:{taskId:string;index:number;grantId?:string}[]=[];
+ mocks.api.mockImplementation(async(url:string,method:string,body?:Record<string,unknown>)=>{
+  calls.push({url,method,body});
+  if(method==="GET"&&url.includes("chatSessionId="))return {tasks:[task]};
+  if(method==="GET"&&url.endsWith("/run-sequences"))return {
+   sequence,state:"ready",index:1,next:{index:1,action:actions[1],dependsOn:["trusted-mat"],last:true}};
+  if(method==="GET"&&url.endsWith("/run-budget"))return {grant:current};
+  if(method==="GET"&&url.endsWith("/model-calls"))return {calls:[]};
+  if(method==="GET"&&url.endsWith("/local-seq-task"))return {task};
+  if(method==="POST"&&url.endsWith("/run-budget")){
+   expect(body).toMatchObject({mode:"local_comfy",maxJobs:1,
+    allowedIndices:[1],confirmed:true,sequenceId:"seq-comfy"});
+   current=grant;return grant;
+  }
+  if(method==="POST"&&url.endsWith("/comfy-grant/revoke")){
+   current={...grant,active:false,revoked:true};return current;
+  }
+  throw Error("unexpected operation: "+method+" "+url);
+ });
+ await render(undefined,undefined,async(id,view,grantId)=>{
+  started.push({taskId:id,index:(view as {next:{index:number}}).next.index,grantId});
+ });
+ expect(container!.textContent).toContain("本地 ComfyUI：仅允许同实例");
+ expect(container!.textContent).toContain("第 2 项 · b");
+ expect(started).toHaveLength(0);
+ const consent=container!.querySelector<HTMLInputElement>("input[aria-label='确认预授权可能产生费用']");
+ expect(consent).toBeTruthy();
+ await act(async()=>{consent!.click()});
+ await click("确认并启用有界自动生成");
+ await vi.waitFor(()=>expect(started).toHaveLength(1));
+ expect(started[0]).toEqual({taskId:"local-seq-task",index:1,grantId:"comfy-grant"});
+ expect(container!.textContent).toContain("gpu-local");
+ await click("撤销剩余自动入队授权");
+ expect(container!.textContent).toContain("已撤销");
+ expect(started).toHaveLength(1);
+ expect(calls.filter(x=>x.method==="POST").map(x=>x.url)).toEqual([
+  "/api/v1/projects/project/assistant/tasks/local-seq-task/run-budget",
+  "/api/v1/projects/project/assistant/tasks/local-seq-task/run-budget/comfy-grant/revoke"]);
+});
+it("P4.5a a Comfy workflow awaiting verified media binding never auto-enqueues",async()=>{
+ const task={id:"local-bind-task",chatSessionId:"chat-a",rootMessageId:"original-user",
+  originalRequest:"使用上一步素材",status:"ready",readOnly:false,
+  activePlanVersion:1,recoveryMode:"job_observation",steps:[]};
+ const actions=[{type:"run_workflow",nodeId:"a"},
+  {type:"run_workflow",nodeId:"b",inputFromPrevious:{sourceKind:"image",toPortId:"first_frame"}}];
+ const grant={grantId:"local-static-only",sequenceId:"bind-seq",planVersion:1,
+  mode:"local_comfy",allowedIndices:[1],maxJobs:1,consumedJobs:0,remainingJobs:1,
+  expiresAt:Date.now()+1800000,active:true,revoked:false};
+ const runner=vi.fn(async()=>{});
+ mocks.api.mockImplementation(async(url:string,method:string)=>{
+  if(method!=="GET")throw Error("no write permitted");
+  if(url.includes("chatSessionId="))return {tasks:[task]};
+  if(url.endsWith("/model-calls"))return {calls:[]};
+  if(url.endsWith("/run-budget"))return {grant};
+  if(url.endsWith("/run-sequences"))return {
+   sequence:{id:"bind-seq",taskId:task.id,sourceMessageId:"original-user",
+    planVersion:1,actions,status:"active"},state:"ready",index:1,
+   next:{index:1,action:actions[1],last:true,needsBinding:true,dependsOn:["trusted-mat"]}};
+  return {task};
+ });
+ await render(undefined,undefined,runner);
+ expect(runner).not.toHaveBeenCalled();
+ expect(mocks.api.mock.calls.every(([,method])=>method==="GET")).toBe(true);
+});

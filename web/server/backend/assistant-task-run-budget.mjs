@@ -5,6 +5,7 @@
 import {createHash,randomUUID} from "node:crypto";
 import {stableJson,writeTransaction,fingerprintSource} from "./repository.mjs";
 import {assertAssistantBudgetRunEvidence} from "./assistant-task-run-sequences.mjs";
+import {frozenLocalComfyScope} from "./assistant-local-comfy-scope.mjs";
 const fail=(code,statusCode=409)=>Object.assign(Error(code),{code,statusCode});
 const id=x=>typeof x==="string"&&/^[A-Za-z0-9_-]{1,128}$/.test(x);
 const hash=x=>createHash("sha256").update(stableJson(x)).digest("hex");
@@ -76,13 +77,14 @@ function stateFor(db,projectId,taskId,grantId){
  if(new Set(spent.map(e=>e.payload.stepId)).size!==spent.length)
   throw fail("assistant_run_budget_evidence_invalid");
  const active=!revoked&&!task.read_only&&task.cancel_requested_at===null&&
-  grant.payloadPolicyVersion===1&&!!grant.payloadDigests&&!!grant.sourceFingerprints&&
+  [1,2].includes(grant.payloadPolicyVersion)&&!!grant.payloadDigests&&!!grant.sourceFingerprints&&
   !terminal.has(task.status)&&task.active_plan_version===grant.planVersion&&
   Date.now()<grant.expiresAt&&spent.length<grant.maxJobs;
  return {grantId,sequenceId:grant.sequenceId,planVersion:grant.planVersion,
   maxJobs:grant.maxJobs,consumedJobs:spent.length,remainingJobs:Math.max(0,grant.maxJobs-spent.length),
   allowedIndices:grant.allowedIndices,expiresAt:grant.expiresAt,revoked,active,
   modelScopeSummary:grant.modelScopeSummary,
+  ...(grant.mode==="local_comfy"?{mode:"local_comfy",comfyScopeSummary:grant.comfyScopeSummary}:{}),
   executionStarted:spent.length>0};
 }
 export function getAssistantRunBudgetState(db,{projectId,taskId}){
@@ -99,8 +101,9 @@ export function getAssistantRunBudgetGrant(db,{projectId,taskId,grantId}){
  return state;
 }
 export function createAssistantRunBudgetGrant(db,{projectId,taskId,requestId,sequenceId,
- expectedPlanVersion,maxJobs,allowedIndices,expiresInMinutes=30,confirmed}={}){
+ expectedPlanVersion,maxJobs,allowedIndices,expiresInMinutes=30,confirmed,mode="model"}={}){
  if(![projectId,taskId,requestId,sequenceId].every(id)||
+  !["model","local_comfy"].includes(mode)||
   !Number.isSafeInteger(expectedPlanVersion)||expectedPlanVersion<1||confirmed!==true||
   !Number.isSafeInteger(maxJobs)||maxJobs<1||maxJobs>4||
   !Number.isSafeInteger(expiresInMinutes)||expiresInMinutes<1||expiresInMinutes>1440||
@@ -108,7 +111,8 @@ export function createAssistantRunBudgetGrant(db,{projectId,taskId,requestId,seq
   allowedIndices.some(n=>!Number.isInteger(n)||n<0||n>3)||
   new Set(allowedIndices).size!==allowedIndices.length||maxJobs>allowedIndices.length)
   throw fail("assistant_run_budget_invalid",400);
- const payload={taskId,sequenceId,expectedPlanVersion,maxJobs,allowedIndices,expiresInMinutes,confirmed:true};
+ const payload={taskId,sequenceId,expectedPlanVersion,maxJobs,allowedIndices,expiresInMinutes,confirmed:true,
+  ...(mode==="local_comfy"?{mode}:{})};
  const signature=hash(payload);
  return writeTransaction(db,()=>{
   const prior=db.prepare("SELECT command_kind,payload_digest,response_json FROM assistant_task_commands "+
@@ -132,34 +136,56 @@ export function createAssistantRunBudgetGrant(db,{projectId,taskId,requestId,seq
   // authorize only remaining homogeneous node generations under this anchor.
   const anchorRows=db.prepare("SELECT s.action_json,s.approval_json,s.preconditions_json FROM assistant_task_steps s "+
    "WHERE s.task_id=? AND s.plan_version=? AND s.superseded_at IS NULL "+
-   "AND s.kind='model_job' AND json_extract(s.preconditions_json,'$.runSequenceId')=? "+
-   "ORDER BY s.ordinal DESC").all(taskId,expectedPlanVersion,sequenceId);
+   "AND s.kind=? AND json_extract(s.preconditions_json,'$.runSequenceId')=? "+
+   "ORDER BY s.ordinal DESC")
+   .all(taskId,expectedPlanVersion,mode==="local_comfy"?"comfy_workflow":"model_job",sequenceId);
   const anchor=anchorRows.find(row=>{
    const approval=JSON.parse(row.approval_json);
    return approval.decision==="approved"&&!approval.grantId;
   });
-  const anchorScope=anchor&&modelScope(JSON.parse(anchor.action_json).job?.snapshot);
-  if(!anchorScope||!validModelScope(anchorScope))
+  const anchorJob=anchor&&JSON.parse(anchor.action_json).job;
+  const anchorScope=mode==="model"&&anchorJob&&modelScope(anchorJob.snapshot);
+  if(mode==="model"&&(!anchorScope||!validModelScope(anchorScope)))
    throw fail("assistant_run_budget_model_scope_missing");
-  const anchorJob=JSON.parse(anchor.action_json).job;
+  if(mode==="local_comfy"&&!anchorJob)throw fail("assistant_local_comfy_approval_required");
+  const anchorComfy=mode==="local_comfy"?frozenLocalComfyScope(anchorJob.snapshot,{
+   projectId,targetNodeId:anchorJob.targetNodeId,document:doc}):null;
+  if(mode==="local_comfy"&&anchorJob.executionMode!=="poll")
+   throw fail("assistant_local_comfy_scope_unsupported",400);
   const nodeDigests={},sourceFingerprints={},payloadDigests={};
   for(const index of allowedIndices){
    const action=actions[index];
-   if(!action||action.type!=="run_node"||action.inputFromPrevious||action.join||
+   if(!action||action.type!==(mode==="local_comfy"?"run_workflow":"run_node")||
+    action.inputFromPrevious||action.join||
     typeof action.nodeId!=="string"||!doc.nodes.some(n=>n.id===action.nodeId))
     throw fail("assistant_run_budget_scope_invalid",400);
    nodeDigests[index]=nodeDigest(doc,action.nodeId);
    sourceFingerprints[index]=fingerprintSource(doc,action.nodeId);
-   const approved=anchorRows.find(row=>JSON.parse(row.preconditions_json).runIndex===index&&
-    JSON.parse(row.approval_json).decision==="approved"&&!JSON.parse(row.approval_json).grantId);
-   const job=approved?JSON.parse(approved.action_json).job:simpleTextSnapshot(doc,action.nodeId,anchorJob);
-   if(hash(modelScope(job.snapshot))!==hash(anchorScope))throw fail("assistant_run_budget_scope_invalid",400);
-   payloadDigests[index]=payloadDigest(job);
+   if(mode==="local_comfy"){
+    const node=doc.nodes.find(n=>n.id===action.nodeId);
+    if(node?.type!=="comfy:workflow"||node.metadata?.comfyMediaPreset||
+     doc.connections.some(edge=>edge.toNodeId===action.nodeId)||
+     node.metadata?.comfyWorkflow?.templateId!==anchorComfy.templateId||
+     node.metadata?.comfyWorkflow?.templateRevision!==anchorComfy.templateRevision||
+     stableJson(node.metadata?.comfyWorkflow?.inputOverrides??{})!==stableJson(anchorComfy.inputOverrides))
+     throw fail("assistant_local_comfy_scope_unsupported",400);
+    payloadDigests[index]=hash(anchorComfy);
+   }else{
+    const approved=anchorRows.find(row=>JSON.parse(row.preconditions_json).runIndex===index&&
+     JSON.parse(row.approval_json).decision==="approved"&&!JSON.parse(row.approval_json).grantId);
+    const job=approved?JSON.parse(approved.action_json).job:simpleTextSnapshot(doc,action.nodeId,anchorJob);
+    if(hash(modelScope(job.snapshot))!==hash(anchorScope))throw fail("assistant_run_budget_scope_invalid",400);
+    payloadDigests[index]=payloadDigest(job);
+   }
   }
   const at=Date.now(),grantId=randomUUID(),grant={grantId,sequenceId,planVersion:expectedPlanVersion,
-   intentDigest:seq.intent_digest,allowedIndices,maxJobs,nodeDigests,sourceFingerprints,payloadDigests,payloadPolicyVersion:1,
-   modelScopeDigest:hash(anchorScope),modelScopeSummary:{
-    provider:anchorScope.provider,kind:anchorScope.kind,model:anchorScope.model},
+   intentDigest:seq.intent_digest,allowedIndices,maxJobs,nodeDigests,sourceFingerprints,payloadDigests,
+   payloadPolicyVersion:mode==="local_comfy"?2:1,
+   ...(mode==="local_comfy"?{mode,comfyScopeDigest:hash(anchorComfy),
+    comfyScopeSummary:{instanceId:anchorComfy.instanceId,templateId:anchorComfy.templateId,
+     templateRevision:anchorComfy.templateRevision}}:
+    {modelScopeDigest:hash(anchorScope),modelScopeSummary:{
+     provider:anchorScope.provider,kind:anchorScope.kind,model:anchorScope.model}}),
    createdAt:at,
    expiresAt:at+expiresInMinutes*60000};
   db.prepare("INSERT INTO assistant_task_events(task_id,kind,payload_json,created_at) "+
@@ -167,7 +193,8 @@ export function createAssistantRunBudgetGrant(db,{projectId,taskId,requestId,seq
   const response={grantId,sequenceId,planVersion:expectedPlanVersion,
    maxJobs,consumedJobs:0,remainingJobs:maxJobs,allowedIndices,expiresAt:grant.expiresAt,
    active:true,revoked:false,executionStarted:false,
-   modelScopeSummary:grant.modelScopeSummary};
+   ...(mode==="local_comfy"?{mode,comfyScopeSummary:grant.comfyScopeSummary}:
+    {modelScopeSummary:grant.modelScopeSummary})};
   db.prepare("INSERT INTO assistant_task_commands(project_id,request_id,task_id,command_kind,payload_digest,status,response_json,created_at) "+
    "VALUES(?,?,?,'run_budget_grant',?,'completed',?,?)")
    .run(projectId,requestId,taskId,signature,frozen(response),at);
@@ -194,13 +221,26 @@ export function authorizeAssistantRunBudgetEnqueue(db,{projectId,taskId,grantId,
  if(!state?.active)throw fail("assistant_run_budget_not_active");
  const grant=ledger(db,taskId,grantId).find(e=>e.kind==="run_budget_granted")?.payload;
  const pre=JSON.parse(step.preconditions_json),action=JSON.parse(step.action_json),seq=seqRow(db,task,grant.sequenceId);
+ const doc=JSON.parse(task.document_json);
+ const comfy=grant.mode==="local_comfy"&&grant.payloadPolicyVersion===2;
  if(seq.intent_digest!==grant.intentDigest||pre.runSequenceId!==grant.sequenceId||
   step.plan_version!==grant.planVersion||!state.allowedIndices.includes(pre.runIndex)||
-  !["waiting_approval","ready"].includes(step.status)||step.kind!=="model_job"||
-  action.kind!=="model_job"||action.job.targetNodeId!==JSON.parse(seq.actions_json)[pre.runIndex]?.nodeId||
-  nodeDigest(JSON.parse(task.document_json),action.job.targetNodeId)!==grant.nodeDigests[pre.runIndex]||
-  fingerprintSource(JSON.parse(task.document_json),action.job.targetNodeId)!==grant.sourceFingerprints?.[pre.runIndex]||
-  payloadDigest(action.job)!==grant.payloadDigests?.[pre.runIndex]||
+  !["waiting_approval","ready"].includes(step.status)||
+  step.kind!==(comfy?"comfy_workflow":"model_job")||
+  action.kind!==(comfy?"comfy_workflow":"model_job")||
+  action.job.targetNodeId!==JSON.parse(seq.actions_json)[pre.runIndex]?.nodeId||
+  nodeDigest(doc,action.job.targetNodeId)!==grant.nodeDigests[pre.runIndex]||
+  fingerprintSource(doc,action.job.targetNodeId)!==grant.sourceFingerprints?.[pre.runIndex])
+  throw fail("assistant_run_budget_scope_changed");
+ if(comfy){
+  const projected=frozenLocalComfyScope(action.job.snapshot,{projectId,
+   targetNodeId:action.job.targetNodeId,document:doc});
+  if(action.job.executionMode!=="poll"||
+   hash(projected)!==grant.comfyScopeDigest||
+   hash(projected)!==grant.payloadDigests?.[pre.runIndex]||
+   String(task.revision)!==action.job.snapshot.comfyRequest.canvasRevision)
+   throw fail("assistant_run_budget_scope_changed");
+ }else if(payloadDigest(action.job)!==grant.payloadDigests?.[pre.runIndex]||
   !validModelScope(modelScope(action.job.snapshot))||
   hash(modelScope(action.job.snapshot))!==grant.modelScopeDigest)
   throw fail("assistant_run_budget_scope_changed");

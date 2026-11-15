@@ -27,7 +27,8 @@ type Recovery={canReplan:boolean;reason:string;planVersion:number;projectRevisio
 type RunBudgetGrant={grantId:string;sequenceId:string;planVersion:number;
  maxJobs:number;consumedJobs:number;remainingJobs:number;allowedIndices:number[];
  expiresAt:number;active:boolean;revoked:boolean;executionStarted:boolean;
- modelScopeSummary?:{provider:string;kind:string;model:string}};
+ modelScopeSummary?:{provider:string;kind:string;model:string};
+ mode?:"local_comfy";comfyScopeSummary?:{instanceId:string;templateId:string;templateRevision:string}};
 type TaskCostReport={taskId:string;projectId:string;
  summary:{jobCount:number;reportedJobCount:number;unavailableJobCount:number;
  billingUnverifiedJobCount:number;notSubmittedJobCount:number;
@@ -466,16 +467,19 @@ export function useCanvasAssistantTasks({
   if(!selected||!seq||seq.taskId!==selected.id||busy||sending||!runBudgetConsent||
    runBudgetConsentKey.current!==runBudgetScopeKey||runBudget?.active)return;
   const from=runSequence?.next?.index??runSequence?.index??0;
+  const kind=runSequence?.next?.action.type==="run_workflow"?"local_comfy":"model";
   const indices=seq.actions.flatMap((action,index)=>
-   index>=from&&action.type==="run_node"&&!action.join?[index]:[]);
-  if(!indices.length){setError("计划中没有可预授权的固定节点；动态连线与 ComfyUI 仍需逐项批准");return;}
+   index>=from&&action.type===(kind==="local_comfy"?"run_workflow":"run_node")&&
+   (action.type==="run_workflow"?!action.inputFromPrevious:!action.join)?[index]:[]);
+  if(!indices.length){setError("计划中没有可预授权的固定节点；动态连线必须逐项批准");return;}
   const maxJobs=Math.min(Math.max(1,runBudgetLimit),indices.length);
   setBusy(true);setError("");
   const epoch=continuationEpoch.current;
   try{
    const granted=await canvasApi<RunBudgetGrant>(path(selected.id)+"/run-budget","POST",{
     requestId:nanoid(),sequenceId:seq.id,expectedPlanVersion:seq.planVersion,
-    maxJobs,allowedIndices:indices,expiresInMinutes:30,confirmed:true
+    maxJobs,allowedIndices:indices,expiresInMinutes:30,confirmed:true,
+    ...(kind==="local_comfy"?{mode:"local_comfy"}:{})
    });
    if(epoch!==continuationEpoch.current)return;
    runBudgetReadEpoch.current++;
@@ -682,7 +686,8 @@ export function useCanvasAssistantTasks({
   const view=runSequence,next=view?.next,grant=runBudget,task=selected;
   if(!open||busy||sending||!task||!onRunSequenceStep||!view?.sequence||
    view.sequence.taskId!==task.id||view.state!=="ready"||!next||
-   next.action.type!=="run_node"||next.needsBinding||!grant?.active||
+   next.action.type!==(grant?.mode==="local_comfy"?"run_workflow":"run_node")||
+    next.needsBinding||!grant?.active||
    grant.sequenceId!==view.sequence.id||grant.planVersion!==view.sequence.planVersion||
    !grant.allowedIndices.includes(next.index)||grant.remainingJobs<1||detail?.readOnly||
    !["planning","ready","waiting_approval"].includes(detail?.status??""))
@@ -713,16 +718,19 @@ export function useCanvasAssistantTasks({
  },[open,busy,sending,selected?.id,onRunSequenceStep,
   runSequence?.state,runSequence?.next?.index,runBudget?.grantId,runBudget?.active,
   runBudget?.remainingJobs,detail?.readOnly,detail?.status]);
- const runBudgetEligible=runSequence?.sequence?.actions.filter((action,index)=>
-  index>=(runSequence.next?.index??runSequence.index??0)&&
-  action.type==="run_node"&&!action.join).length??0;
+ const nextBudgetMode=runSequence?.next?.action.type==="run_workflow"?"local_comfy":"model";
+ const nextBudgetAction=nextBudgetMode==="local_comfy"?"run_workflow":"run_node";
  const runBudgetTargets=runSequence?.sequence?.actions.flatMap((action,index)=>
-  index>=(runSequence.next?.index??runSequence.index??0)&&action.type==="run_node"&&!action.join?
-   [{index,nodeId:action.nodeId}]:[])??[];
- const runBudgetAnchor=detail?.steps?.filter(step=>step.kind==="model_job"&&
+  index>=(runSequence.next?.index??runSequence.index??0)&&
+  action.type===nextBudgetAction&&(action.type==="run_workflow"?
+   !action.inputFromPrevious:!action.join)?
+  [{index,nodeId:action.nodeId}]:[])??[];
+ const runBudgetEligible=runBudgetTargets.length;
+ const runBudgetAnchor=detail?.steps?.filter(step=>step.kind===
+  (nextBudgetMode==="local_comfy"?"comfy_workflow":"model_job")&&
   step.approvalDecision==="approved"&&!step.approvalGrantId).at(-1);
  const runBudgetScopeKey=JSON.stringify([projectId,activeChatId,selectedId,runSequence?.sequence?.id,
-  runSequence?.sequence?.planVersion,runBudgetTargets,runBudgetLimit,runBudgetAnchor?.actionDigest]);
+  runSequence?.sequence?.planVersion,nextBudgetMode,runBudgetTargets,runBudgetLimit,runBudgetAnchor?.actionDigest]);
  useEffect(()=>{setRunBudgetConsent(false);runBudgetConsentKey.current="";},[runBudgetScopeKey]);
  const view=<section aria-label="任务状态" className="canvas-assistant-task"
   style={{borderColor:"var(--assistant-border)",color:"var(--assistant-text)"}}>
@@ -943,17 +951,22 @@ export function useCanvasAssistantTasks({
        已使用 {runBudget.consumedJobs}/{runBudget.maxJobs} 次 Job；有效期至
        {new Date(runBudget.expiresAt).toLocaleString()}。
        {runBudget.modelScopeSummary?<span>仅限 {runBudget.modelScopeSummary.provider} ·
-        {runBudget.modelScopeSummary.model} · {runBudget.modelScopeSummary.kind}</span>:null}</p>
+        {runBudget.modelScopeSummary.model} · {runBudget.modelScopeSummary.kind}</span>:null}
+        {runBudget.comfyScopeSummary?<span>本地 ComfyUI · 实例 {runBudget.comfyScopeSummary.instanceId} · 模板
+         {runBudget.comfyScopeSummary.templateId} · {runBudget.comfyScopeSummary.templateRevision.slice(0,12)}</span>:null}</p>
       {runBudget.active?<button type="button" className="canvas-assistant-link"
        disabled={busy} onClick={()=>void revokeRunBudget()}>撤销剩余自动入队授权</button>:null}
      </div>:null}
     {!runBudget?.active&&runBudgetEligible>0&&!detail?.readOnly?
      <div className="mt-2 rounded border p-2 text-xs" style={{borderColor:"var(--assistant-border)"}}>
-      <p>可为可完整冻结请求的固定节点预授权有限次数的自动生成；尚未批准的复杂输入、媒体、ComfyUI 工作流、动态连线和 Skill
-       仍需逐项审批。须先单独批准同计划中的一个模型 Step 以冻结模型/渠道范围；
-       次数不是金额上限，实际费用由模型渠道决定。仅在画布打开期间尝试自动提交。</p>
+      {nextBudgetMode==="local_comfy"?
+       <p>本地 ComfyUI：仅允许同实例、同模板版本、同参数与同输出端口的静态工作流。
+        先人工批准一个 ComfyUI Step 作为冻结依据；动态连线、外部媒体和 Skill
+        仍需逐项确认。仅在画布打开时尝试自动生成，消耗本地 GPU 资源。</p>:
+       <p>模型生成：仅允许已冻结的同渠道与同模型固定请求；
+        复杂输入和 Skill 仍需逐项批准，次数不是金额上限。</p>}
       <p>预授权目标：{runBudgetTargets.map(item=>"第 "+(item.index+1)+" 项 · "+item.nodeId).join("；")}</p>
-      <p>人工审批锚点：{runBudgetAnchor?.id??"尚无人工批准的模型步骤"}
+      <p>人工审批锚点：{runBudgetAnchor?.id??(nextBudgetMode==="local_comfy"?"尚无人工批准的 ComfyUI 工作流":"尚无人工批准的模型步骤")}
        {runBudgetAnchor?.action?.job?.snapshot.provider?" · "+runBudgetAnchor.action.job.snapshot.provider:""}
        {runBudgetAnchor?.action?.job?.snapshot.task?.model?" · "+runBudgetAnchor.action.job.snapshot.task.model:""}</p>
       <label className="mt-1 flex items-center gap-2">
@@ -969,7 +982,9 @@ export function useCanvasAssistantTasks({
        <input type="checkbox" checked={runBudgetConsent}
         onChange={event=>{setRunBudgetConsent(event.target.checked);runBudgetConsentKey.current=event.target.checked?runBudgetScopeKey:"";}}
         aria-label="确认预授权可能产生费用"/>
-       <span>我确认允许所列固定节点在 30 分钟内最多提交上述次数的 Job，可能产生费用；无法保证美元金额上限。</span>
+       <span>{nextBudgetMode==="local_comfy"?
+        "我确认允许所列静态 ComfyUI 工作流在 30 分钟内最多提交上述次数的 Job，使用本地 GPU 资源；动态输入仍需单独批准。":
+        "我确认允许所列固定模型节点在 30 分钟内最多提交上述次数的 Job，可能产生费用；无法保证美元金额上限。"}</span>
       </label>
       <button type="button" className="canvas-assistant-link mt-1" disabled={busy||sending||!runBudgetConsent}
        onClick={()=>void grantRunBudget()}>确认并启用有界自动生成</button>

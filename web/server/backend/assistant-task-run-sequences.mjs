@@ -691,7 +691,8 @@ export function assertAssistantBudgetRunEvidence(db,{projectId,taskId,sequenceId
  if(!seq||seq.plan_version!==planVersion||task.active_plan_version!==planVersion||
   seq.status!=="active")throw fail("assistant_run_budget_sequence_invalid");
  const actions=JSON.parse(seq.actions_json),current=actions[runIndex];
- if(!current||current.type!=="run_node")throw fail("assistant_run_budget_scope_changed");
+ if(!current||!["run_node","run_workflow"].includes(current.type))
+  throw fail("assistant_run_budget_scope_changed");
  const outputs=trustedAssistantTaskOutputs(db,{projectId,taskId,planVersion});
  for(let index=0;index<runIndex;index++){
   const predecessor=stepFor(db,seq,index);

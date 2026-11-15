@@ -131,7 +131,8 @@ const runBudgetBody={type:"object",additionalProperties:false,
  properties:{requestId:id,sequenceId:id,expectedPlanVersion:{type:"integer",minimum:1},
  maxJobs:{type:"integer",minimum:1,maximum:4},
  allowedIndices:{type:"array",minItems:1,maxItems:4,uniqueItems:true,items:{type:"integer",minimum:0,maximum:3}},
- expiresInMinutes:{type:"integer",minimum:1,maximum:1440},confirmed:{type:"boolean",const:true}}};
+ expiresInMinutes:{type:"integer",minimum:1,maximum:1440},confirmed:{type:"boolean",const:true},
+  mode:{type:"string",enum:["model","local_comfy"]}}};
 const budgetGrantParams={type:"object",required:["id","taskId","grantId"],
  properties:{id,taskId:id,grantId:id}};
 const budgetRevokeBody={type:"object",additionalProperties:false,required:["requestId"],

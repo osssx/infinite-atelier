@@ -3,7 +3,7 @@
  * A grant never builds provider payloads or executes unknown work.
  */
 import {createHash,randomUUID} from "node:crypto";
-import {stableJson,writeTransaction} from "./repository.mjs";
+import {stableJson,writeTransaction,fingerprintSource} from "./repository.mjs";
 import {assertAssistantBudgetRunEvidence} from "./assistant-task-run-sequences.mjs";
 const fail=(code,statusCode=409)=>Object.assign(Error(code),{code,statusCode});
 const id=x=>typeof x==="string"&&/^[A-Za-z0-9_-]{1,128}$/.test(x);
@@ -14,12 +14,38 @@ const nodeDigest=(doc,nodeId)=>hash(doc.nodes.find(n=>n.id===nodeId)??null);
 const modelScope=snapshot=>({
  adapterKind:snapshot?.adapterKind,provider:snapshot?.provider,
  channelId:snapshot?.channelId??null,secretVersionRef:snapshot?.secretVersionRef??null,
+ endpointBaseUrl:snapshot?.endpointBaseUrl??null,endpointFingerprint:snapshot?.endpointFingerprint??null,
  kind:snapshot?.task?.kind,model:snapshot?.task?.model
 });
 const validModelScope=scope=>scope.adapterKind==="model"&&
  typeof scope.provider==="string"&&scope.provider.length>0&&
  typeof scope.kind==="string"&&["text","image","audio","video"].includes(scope.kind)&&
  typeof scope.model==="string"&&scope.model.length>0;
+const payloadDigest=job=>hash({executionMode:job.executionMode,snapshot:job.snapshot,
+ skillAuthorizationId:job.skillAuthorizationId??null});
+function simpleTextSnapshot(doc,nodeId,anchorJob){
+ const node=doc.nodes.find(n=>n.id===nodeId),meta=node?.metadata??{};
+ const task=anchorJob.snapshot?.task;
+ const prompt=meta.composerContent??meta.prompt;
+ if(node?.type!=="text"||typeof prompt!=="string"||!prompt.trim()||
+  meta.content!==undefined&&meta.content!==null&&(typeof meta.content!=="string"||meta.content.trim())||
+  doc.connections.some(edge=>edge.toNodeId===nodeId)||
+  meta.skillBinding&&meta.skillBinding.mode!=="off"||task?.kind!=="text"||
+  anchorJob.skillAuthorizationId||task.script||task.skills||task.images||task.mask)
+  throw fail("assistant_run_budget_payload_requires_approval",400);
+ const snapshot=JSON.parse(stableJson(anchorJob.snapshot));
+ if(task.messages!==undefined){
+  if(!Array.isArray(task.messages)||task.messages.some(m=>!m||typeof m.content!=="string")||
+   task.messages.filter(m=>m.role==="user").length!==1||
+   task.messages.at(-1)?.role!=="user"||task.messages.at(-1)?.content!==task.prompt||
+   task.messages.some(m=>!["system","user"].includes(m.role)))
+   throw fail("assistant_run_budget_payload_requires_approval",400);
+  snapshot.task.messages=task.messages.map(m=>m.role==="user"?{...m,content:prompt.trim()}:m);
+ }
+ snapshot.task.prompt=prompt.trim();
+ if(Object.hasOwn(snapshot,"sourceNodeType"))snapshot.sourceNodeType=node.type;
+ return {...anchorJob,snapshot};
+}
 function context(db,projectId,taskId){
  if(!id(projectId)||!id(taskId))throw fail("assistant_run_budget_invalid",400);
  const row=db.prepare("SELECT t.*,p.revision,p.document_json FROM assistant_tasks t "+
@@ -50,6 +76,7 @@ function stateFor(db,projectId,taskId,grantId){
  if(new Set(spent.map(e=>e.payload.stepId)).size!==spent.length)
   throw fail("assistant_run_budget_evidence_invalid");
  const active=!revoked&&!task.read_only&&task.cancel_requested_at===null&&
+  grant.payloadPolicyVersion===1&&!!grant.payloadDigests&&!!grant.sourceFingerprints&&
   !terminal.has(task.status)&&task.active_plan_version===grant.planVersion&&
   Date.now()<grant.expiresAt&&spent.length<grant.maxJobs;
  return {grantId,sequenceId:grant.sequenceId,planVersion:grant.planVersion,
@@ -103,24 +130,34 @@ export function createAssistantRunBudgetGrant(db,{projectId,taskId,requestId,seq
    throw fail("assistant_run_budget_already_active");
   // A prior individual approval anchors the exact model/channel/kind. UI may
   // authorize only remaining homogeneous node generations under this anchor.
-  const anchorRows=db.prepare("SELECT s.action_json,s.approval_json FROM assistant_task_steps s "+
+  const anchorRows=db.prepare("SELECT s.action_json,s.approval_json,s.preconditions_json FROM assistant_task_steps s "+
    "WHERE s.task_id=? AND s.plan_version=? AND s.superseded_at IS NULL "+
    "AND s.kind='model_job' AND json_extract(s.preconditions_json,'$.runSequenceId')=? "+
    "ORDER BY s.ordinal DESC").all(taskId,expectedPlanVersion,sequenceId);
-  const anchor=anchorRows.find(row=>JSON.parse(row.approval_json).decision==="approved");
+  const anchor=anchorRows.find(row=>{
+   const approval=JSON.parse(row.approval_json);
+   return approval.decision==="approved"&&!approval.grantId;
+  });
   const anchorScope=anchor&&modelScope(JSON.parse(anchor.action_json).job?.snapshot);
   if(!anchorScope||!validModelScope(anchorScope))
    throw fail("assistant_run_budget_model_scope_missing");
-  const nodeDigests={};
+  const anchorJob=JSON.parse(anchor.action_json).job;
+  const nodeDigests={},sourceFingerprints={},payloadDigests={};
   for(const index of allowedIndices){
    const action=actions[index];
    if(!action||action.type!=="run_node"||action.inputFromPrevious||action.join||
     typeof action.nodeId!=="string"||!doc.nodes.some(n=>n.id===action.nodeId))
     throw fail("assistant_run_budget_scope_invalid",400);
    nodeDigests[index]=nodeDigest(doc,action.nodeId);
+   sourceFingerprints[index]=fingerprintSource(doc,action.nodeId);
+   const approved=anchorRows.find(row=>JSON.parse(row.preconditions_json).runIndex===index&&
+    JSON.parse(row.approval_json).decision==="approved"&&!JSON.parse(row.approval_json).grantId);
+   const job=approved?JSON.parse(approved.action_json).job:simpleTextSnapshot(doc,action.nodeId,anchorJob);
+   if(hash(modelScope(job.snapshot))!==hash(anchorScope))throw fail("assistant_run_budget_scope_invalid",400);
+   payloadDigests[index]=payloadDigest(job);
   }
   const at=Date.now(),grantId=randomUUID(),grant={grantId,sequenceId,planVersion:expectedPlanVersion,
-   intentDigest:seq.intent_digest,allowedIndices,maxJobs,nodeDigests,
+   intentDigest:seq.intent_digest,allowedIndices,maxJobs,nodeDigests,sourceFingerprints,payloadDigests,payloadPolicyVersion:1,
    modelScopeDigest:hash(anchorScope),modelScopeSummary:{
     provider:anchorScope.provider,kind:anchorScope.kind,model:anchorScope.model},
    createdAt:at,
@@ -162,6 +199,8 @@ export function authorizeAssistantRunBudgetEnqueue(db,{projectId,taskId,grantId,
   !["waiting_approval","ready"].includes(step.status)||step.kind!=="model_job"||
   action.kind!=="model_job"||action.job.targetNodeId!==JSON.parse(seq.actions_json)[pre.runIndex]?.nodeId||
   nodeDigest(JSON.parse(task.document_json),action.job.targetNodeId)!==grant.nodeDigests[pre.runIndex]||
+  fingerprintSource(JSON.parse(task.document_json),action.job.targetNodeId)!==grant.sourceFingerprints?.[pre.runIndex]||
+  payloadDigest(action.job)!==grant.payloadDigests?.[pre.runIndex]||
   !validModelScope(modelScope(action.job.snapshot))||
   hash(modelScope(action.job.snapshot))!==grant.modelScopeDigest)
   throw fail("assistant_run_budget_scope_changed");

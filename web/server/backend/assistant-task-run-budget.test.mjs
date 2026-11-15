@@ -15,7 +15,7 @@ import {buildApp} from "./app.mjs";
 import {createAssistantRunBudgetGrant,getAssistantRunBudgetGrant,revokeAssistantRunBudgetGrant} from "./assistant-task-run-budget.mjs";
 
 const node=id=>({id,type:"text",title:id,position:{x:0,y:0},width:300,height:200,
- metadata:{content:"Prompt for "+id}});
+ metadata:{content:"",prompt:id}});
 const document={nodes:[node("first"),node("second"),node("third")],connections:[]};
 const actions=[{type:"run_node",nodeId:"first",mode:"text"},
  {type:"run_node",nodeId:"second",mode:"text"}];
@@ -188,6 +188,49 @@ test("P4.4c later Step needs no per-step approval when model/channel scope is id
  assert.equal(getAssistantRunBudgetGrant(f.db,{...f.base,grantId:permit.grantId}).remainingJobs,0);
  assert.equal(count(f.db,"jobs"),2);
  assert.equal(count(f.db,"assistant_task_attempts"),2);
+});
+
+test("P4.4c endpoint and complete request changes require fresh individual approval",t=>{
+ for(const override of [
+  {endpointBaseUrl:"https://different-provider.invalid/v1"},
+  {task:{kind:"text",model:"mock",prompt:"未经授权的另一项请求"}},
+  {task:{kind:"text",model:"mock",prompt:"second",script:"different script"}},
+  {task:{kind:"text",model:"mock",prompt:"second",messages:[{role:"user",content:"hidden request"}]}}
+ ]){
+  const f=fixture(t),grant=f.grant(),first=f.plan(0),job=f.enqueue(first,grant.grantId);
+  const mat=f.complete(job,0),next=f.plan(1,[mat],override);
+  assert.throws(()=>f.enqueue(next,grant.grantId,"changed-payload"),{code:"assistant_run_budget_scope_changed"});
+  assert.equal(count(f.db,"jobs"),1);
+  assert.equal(getAssistantRunBudgetGrant(f.db,{...f.base,grantId:grant.grantId}).consumedJobs,1);
+ }
+});
+
+test("P4.4c upstream rewiring invalidates the grant even when the target is unchanged",t=>{
+ const f=fixture(t),grant=f.grant(),first=f.plan(0),job=f.enqueue(first,grant.grantId);
+ const mat=f.complete(job,0),prior=getProject(f.db,"p");
+ const originalTarget=JSON.stringify(prior.document.nodes.find(n=>n.id==="second"));
+ const document={...prior.document,connections:[{id:"new-input",fromNodeId:"third",toNodeId:"second"}]};
+ f.db.prepare("UPDATE projects SET document_json=?,revision=revision+1 WHERE id='p'").run(JSON.stringify(document));
+ assert.equal(JSON.stringify(document.nodes.find(n=>n.id==="second")),originalTarget);
+ const next=f.plan(1,[mat]);
+ assert.throws(()=>f.enqueue(next,grant.grantId,"rewired"),{code:"assistant_run_budget_scope_changed"});
+ assert.equal(count(f.db,"jobs"),1);
+});
+
+test("P4.4c complex future inputs cannot silently obtain a guessed request grant",t=>{
+ const f=fixture(t);const project=getProject(f.db,"p");
+ project.document.nodes.find(n=>n.id==="second").metadata.content="已有正文需要组合编辑提示词";
+ f.db.prepare("UPDATE projects SET document_json=? WHERE id='p'").run(JSON.stringify(project.document));
+ assert.throws(()=>f.grant(),{code:"assistant_run_budget_payload_requires_approval"});
+ assert.equal(f.db.prepare("SELECT COUNT(*) n FROM assistant_task_events WHERE kind='run_budget_granted'").get().n,0);
+});
+
+test("P4.4c legacy grants without frozen payload identity remain inspectable but cannot enqueue",t=>{
+ const f=fixture(t),grant=f.grant(),step=f.plan(0);
+ f.db.prepare("UPDATE assistant_task_events SET payload_json=json_remove(payload_json,'$.payloadPolicyVersion','$.payloadDigests','$.sourceFingerprints') WHERE kind='run_budget_granted'").run();
+ assert.equal(getAssistantRunBudgetGrant(f.db,{...f.base,grantId:grant.grantId}).active,false);
+ assert.throws(()=>f.enqueue(step,grant.grantId),{code:"assistant_run_budget_not_active"});
+ assert.equal(count(f.db,"jobs"),0);
 });
 test("P4.4c model/channel changes invalidate earlier user-confirmed scope",t=>{
  const f=fixture(t),permit=f.grant(),first=f.plan(0),job=f.enqueue(first,permit.grantId);

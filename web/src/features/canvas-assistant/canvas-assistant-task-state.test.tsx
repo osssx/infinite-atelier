@@ -1016,10 +1016,18 @@ it("P4.4c explicit Job count consent enables only in-scope auto run",async()=>{
   started.push({taskId,index:(view as {next:{index:number}}).next.index,grant});
  });
  expect(container!.textContent).toContain("次数不是金额上限");
+ expect(container!.textContent).toContain("第 1 项 · node-1");
+ expect(container!.textContent).toContain("第 2 项 · node-2");
  expect(started).toHaveLength(0);
  expect(calls.some(c=>c.method==="POST")).toBe(false);
  const consent=container!.querySelector<HTMLInputElement>("input[aria-label='确认预授权可能产生费用']");
  expect(consent).toBeTruthy();
+ await act(async()=>{consent!.click()});
+ const limit=container!.querySelector<HTMLSelectElement>("select[aria-label='最多新增 Job 数']")!;
+ await act(async()=>{limit.value="2";limit.dispatchEvent(new Event("change",{bubbles:true}));});
+ expect(consent!.checked).toBe(false);
+ await act(async()=>{limit.value="1";limit.dispatchEvent(new Event("change",{bubbles:true}));});
+ expect(consent!.checked).toBe(false);
  await act(async()=>{consent!.click()});
  await click("确认并启用有界自动生成");
  await vi.waitFor(()=>expect(started).toHaveLength(1));
@@ -1031,6 +1039,36 @@ it("P4.4c explicit Job count consent enables only in-scope auto run",async()=>{
  expect(started).toHaveLength(1);
  expect(calls.filter(c=>c.method==="POST")).toHaveLength(2);
  expect(calls.some(c=>/\/enqueue|\/run-skill|\/external-jobs|\/jobs$/.test(c.url))).toBe(false);
+});
+it("P4.4c failed auto enqueue refreshes the frozen Step without retrying generation",async()=>{
+ const task={id:"budget-failure",chatSessionId:"chat-a",rootMessageId:"original-user",
+  originalRequest:"预算入队失败恢复",status:"ready",readOnly:false,activePlanVersion:1,
+  recoveryMode:"job_observation",steps:[] as Record<string,unknown>[]};
+ const action={type:"run_node",nodeId:"next-text",mode:"text"};
+ const sequence={id:"failed-seq",taskId:task.id,planVersion:1,sourceMessageId:"original-user",actions:[action],status:"active"};
+ const grant={grantId:"failed-grant",sequenceId:sequence.id,planVersion:1,allowedIndices:[0],
+  maxJobs:1,consumedJobs:0,remainingJobs:1,expiresAt:Date.now()+1800000,active:true,revoked:false,executionStarted:false};
+ mocks.api.mockImplementation(async(url:string,method:string)=>{
+  if(method!=="GET")throw Error("unexpected write");
+  if(url.includes("chatSessionId="))return {tasks:[task]};
+  if(url.endsWith("/run-sequences"))return {sequence,state:task.steps.length?"waiting_approval":"ready",
+   next:task.steps.length?null:{index:0,action,dependsOn:[],last:true}};
+  if(url.endsWith("/run-budget"))return {grant};
+  if(url.endsWith("/model-calls"))return {calls:[]};
+  return {task};
+ });
+ const run=vi.fn(async()=>{
+  task.status="waiting_approval";
+  task.steps=[{id:"retained-step",kind:"model_job",planVersion:1,status:"waiting_approval",
+   actionDigest:"a".repeat(64),action:{job:{targetNodeId:"next-text",executionMode:"immediate",
+    snapshot:{adapterKind:"model"}}}}];
+  throw Error("assistant_run_budget_scope_changed");
+ });
+ await render(undefined,undefined,run);
+ await vi.waitFor(()=>expect(container!.textContent).toContain("批准并入队（可能计费）"));
+ expect(container!.textContent).toContain("预授权自动步骤已停止");
+ expect(run).toHaveBeenCalledOnce();
+ expect(mocks.api.mock.calls.some(([url,method])=>method==="POST"&&url.endsWith("/approval"))).toBe(false);
 });
 it("P4.4c blocked dynamic Comfy workflow never gets automatic paid authority",async()=>{
  const task={id:"budget-comfy",chatSessionId:"chat-a",rootMessageId:"original-user",

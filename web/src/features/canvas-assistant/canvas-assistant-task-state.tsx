@@ -9,8 +9,9 @@ import {executeFrozenAssistantCanvasTaskStep,verifyFrozenAssistantTextDeliverabl
 import {canLaunchAssistantRunSequenceStep,type AssistantRunSequenceView} from "./canvas-assistant-task-run-sequences";
 
 type Step={id:string;kind:string;planVersion:number;status:string;actionDigest:string;
+ approvalDecision?:string|null;approvalGrantId?:string|null;
  canRevokeApproval?:boolean;
- action?:{actions?:unknown[];agentRunId?:string;deliverableSpecDigest?:string;center?:{x:number;y:number};job?:{targetNodeId:string;executionMode:string;snapshot:{adapterKind?:string}}};
+ action?:{actions?:unknown[];agentRunId?:string;deliverableSpecDigest?:string;center?:{x:number;y:number};job?:{targetNodeId:string;executionMode:string;snapshot:{adapterKind?:string;provider?:string;channelId?:string;endpointBaseUrl?:string;task?:{kind?:string;model?:string}}}};
  result?:{jobId?:string;jobStatus?:string;artifactIds?:string[];bindings?:{nodeId:string}[];
  runId?:string;status?:string;exitCode?:number|null;artifactCount?:number};receiptTrust?:string};
 type FactSummary={version?:number;source?:string;userTurns?:{total?:number};
@@ -71,6 +72,7 @@ export function useCanvasAssistantTasks({
  const [runSequence,setRunSequence]=useState<AssistantRunSequenceView|null>(null);
  const [runBudget,setRunBudget]=useState<RunBudgetGrant|null>(null);
  const [runBudgetConsent,setRunBudgetConsent]=useState(false);
+ const runBudgetConsentKey=useRef("");
  const [runBudgetLimit,setRunBudgetLimit]=useState(1);
  const runBudgetAttempted=useRef(new Set<string>());
  const runBudgetReadEpoch=useRef(0);
@@ -432,23 +434,28 @@ export function useCanvasAssistantTasks({
  };
  const grantRunBudget=async()=>{
   const seq=runSequence?.sequence;
-  if(!selected||!seq||busy||sending||!runBudgetConsent||runBudget?.active)return;
+  if(!selected||!seq||seq.taskId!==selected.id||busy||sending||!runBudgetConsent||
+   runBudgetConsentKey.current!==runBudgetScopeKey||runBudget?.active)return;
   const from=runSequence?.next?.index??runSequence?.index??0;
   const indices=seq.actions.flatMap((action,index)=>
    index>=from&&action.type==="run_node"&&!action.join?[index]:[]);
   if(!indices.length){setError("计划中没有可预授权的固定节点；动态连线与 ComfyUI 仍需逐项批准");return;}
   const maxJobs=Math.min(Math.max(1,runBudgetLimit),indices.length);
   setBusy(true);setError("");
+  const epoch=continuationEpoch.current;
   try{
    const granted=await canvasApi<RunBudgetGrant>(path(selected.id)+"/run-budget","POST",{
     requestId:nanoid(),sequenceId:seq.id,expectedPlanVersion:seq.planVersion,
     maxJobs,allowedIndices:indices,expiresInMinutes:30,confirmed:true
    });
+   if(epoch!==continuationEpoch.current)return;
    runBudgetReadEpoch.current++;
    setRunBudget(granted);setRunBudgetConsent(false);
    setSafeContinuationNotice("已冻结最多 "+maxJobs+" 次 Job 授权；有效期 30 分钟。这不是金额上限，已提交 Job 不会因撤销而自动取消。");
   }catch(error){
-   setError("预授权失败，未生成任何任务："+(error instanceof Error?error.message:"未知错误"));
+   if(epoch===continuationEpoch.current)setError("预授权失败，未生成任何任务："+
+    (error instanceof Error&&error.message.includes("assistant_run_budget_payload_requires_approval")?
+     "当前输入无法安全预先冻结，请逐项审批生成。":error instanceof Error?error.message:"未知错误"));
   }finally{setBusy(false);}
  };
  const revokeRunBudget=async()=>{
@@ -654,26 +661,40 @@ export function useCanvasAssistantTasks({
   const key=task.id+":"+grant.grantId+":"+next.index;
   if(runBudgetAttempted.current.has(key))return;
   runBudgetAttempted.current.add(key);
-  const taskId=task.id,version=view.sequence.planVersion,epoch=continuationEpoch.current;
+  const taskId=task.id,epoch=continuationEpoch.current;
   void (async()=>{
-   await onRunSequenceStep(taskId,view,grant.grantId);
-   if(epoch!==continuationEpoch.current)return;
-   await refreshTask(taskId);
-   const current=await canvasApi<AssistantRunSequenceView>(path(taskId)+"/run-sequences","GET");
-   if(epoch===continuationEpoch.current&&current.sequence?.planVersion===version)
-    setRunSequence(current);
-   const authorized=await canvasApi<{grant:RunBudgetGrant|null}>(path(taskId)+"/run-budget","GET");
-   if(epoch===continuationEpoch.current)setRunBudget(authorized.grant??null);
-  })().catch(error=>{
-   if(epoch===continuationEpoch.current)
-    setError("预授权自动步骤已停止；不会自动重复提交。请检查 Job/Task 回执："+(error instanceof Error?error.message:"未知错误"));
-  });
+   let failed=false;
+   try{await onRunSequenceStep(taskId,view,grant.grantId);}
+   catch(error){failed=true;if(epoch===continuationEpoch.current)
+    setError("预授权自动步骤已停止；不会自动重复提交。请检查 Job/Task 回执："+(error instanceof Error?error.message:"未知错误"));}
+   finally{
+    if(epoch!==continuationEpoch.current)return;
+    try{
+     const latest=await canvasApi<TaskResponse>(path(taskId),"GET");
+     if(epoch!==continuationEpoch.current)return;
+     if(latest.task?.id===taskId){setDetail(latest.task);setItems(old=>old.map(item=>item.id===taskId?latest.task:item));}
+     const current=await canvasApi<AssistantRunSequenceView>(path(taskId)+"/run-sequences","GET");
+     if(epoch!==continuationEpoch.current)return;
+     setRunSequence(current?.sequence?current:null);
+     const authorized=await canvasApi<{grant:RunBudgetGrant|null}>(path(taskId)+"/run-budget","GET");
+     if(epoch===continuationEpoch.current)setRunBudget(authorized.grant??null);
+    }catch(error){if(!failed&&epoch===continuationEpoch.current)setError("无法刷新任务回执；不会重复提交："+(error instanceof Error?error.message:"未知错误"));}
+   }
+  })();
  },[open,busy,sending,selected?.id,onRunSequenceStep,
   runSequence?.state,runSequence?.next?.index,runBudget?.grantId,runBudget?.active,
   runBudget?.remainingJobs,detail?.readOnly,detail?.status]);
  const runBudgetEligible=runSequence?.sequence?.actions.filter((action,index)=>
   index>=(runSequence.next?.index??runSequence.index??0)&&
   action.type==="run_node"&&!action.join).length??0;
+ const runBudgetTargets=runSequence?.sequence?.actions.flatMap((action,index)=>
+  index>=(runSequence.next?.index??runSequence.index??0)&&action.type==="run_node"&&!action.join?
+   [{index,nodeId:action.nodeId}]:[])??[];
+ const runBudgetAnchor=detail?.steps?.filter(step=>step.kind==="model_job"&&
+  step.approvalDecision==="approved"&&!step.approvalGrantId).at(-1);
+ const runBudgetScopeKey=JSON.stringify([projectId,activeChatId,selectedId,runSequence?.sequence?.id,
+  runSequence?.sequence?.planVersion,runBudgetTargets,runBudgetLimit,runBudgetAnchor?.actionDigest]);
+ useEffect(()=>{setRunBudgetConsent(false);runBudgetConsentKey.current="";},[runBudgetScopeKey]);
  const view=<section aria-label="任务状态" className="canvas-assistant-task"
   style={{borderColor:"var(--assistant-border)",color:"var(--assistant-text)"}}>
   <div className="canvas-assistant-task-selector">
@@ -872,9 +893,13 @@ export function useCanvasAssistantTasks({
      </div>:null}
     {!runBudget?.active&&runBudgetEligible>0&&!detail?.readOnly?
      <div className="mt-2 rounded border p-2 text-xs" style={{borderColor:"var(--assistant-border)"}}>
-      <p>可为固定模型节点预授权有限次数的自动生成；ComfyUI 工作流、动态连线和 Skill
+      <p>可为可完整冻结请求的固定节点预授权有限次数的自动生成；尚未批准的复杂输入、媒体、ComfyUI 工作流、动态连线和 Skill
        仍需逐项审批。须先单独批准同计划中的一个模型 Step 以冻结模型/渠道范围；
        次数不是金额上限，实际费用由模型渠道决定。仅在画布打开期间尝试自动提交。</p>
+      <p>预授权目标：{runBudgetTargets.map(item=>"第 "+(item.index+1)+" 项 · "+item.nodeId).join("；")}</p>
+      <p>人工审批锚点：{runBudgetAnchor?.id??"尚无人工批准的模型步骤"}
+       {runBudgetAnchor?.action?.job?.snapshot.provider?" · "+runBudgetAnchor.action.job.snapshot.provider:""}
+       {runBudgetAnchor?.action?.job?.snapshot.task?.model?" · "+runBudgetAnchor.action.job.snapshot.task.model:""}</p>
       <label className="mt-1 flex items-center gap-2">
        最多新增 Job 数
        <select aria-label="最多新增 Job 数" value={Math.min(runBudgetLimit,runBudgetEligible)}
@@ -886,7 +911,7 @@ export function useCanvasAssistantTasks({
       </label>
       <label className="mt-2 flex items-start gap-2">
        <input type="checkbox" checked={runBudgetConsent}
-        onChange={event=>setRunBudgetConsent(event.target.checked)}
+        onChange={event=>{setRunBudgetConsent(event.target.checked);runBudgetConsentKey.current=event.target.checked?runBudgetScopeKey:"";}}
         aria-label="确认预授权可能产生费用"/>
        <span>我确认允许所列固定节点在 30 分钟内最多提交上述次数的 Job，可能产生费用；无法保证美元金额上限。</span>
       </label>

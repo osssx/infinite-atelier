@@ -47,7 +47,8 @@ const stepView=row=>({id:row.id,taskId:row.task_id,planVersion:row.plan_version,
  dependsOn:JSON.parse(row.depends_on_json),actionDigest:row.action_digest,
  receiptTrust:row.receipt_trust,result:JSON.parse(row.result_json),errorCode:row.error_code,
  ...(["canvas_mutation","model_job","comfy_workflow","skill_script"].includes(row.kind)?{action:JSON.parse(row.action_json)}:{}),
- approvalDecision:JSON.parse(row.approval_json).decision??null});
+ approvalDecision:JSON.parse(row.approval_json).decision??null,
+ approvalGrantId:JSON.parse(row.approval_json).grantId??null});
 function snapshot(db,projectId,taskId){
  const row=mustTask(db,projectId,taskId);
  const facts=refreshAssistantTaskFacts(db,row);

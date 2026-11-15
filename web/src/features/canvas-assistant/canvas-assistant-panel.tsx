@@ -322,12 +322,14 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
   }finally{
    controllerRef.current=null;setSending(false);
   }
- },onRunSequenceStep:async(taskId:string,view:AssistantRunSequenceView)=>{
+ },onRunSequenceStep:async(taskId:string,view:AssistantRunSequenceView,grantId?:string)=>{
    let next=canLaunchAssistantRunSequenceStep(view);
    const controller=new AbortController();
    if(controllerRef.current)throw Error("另一个 AI 任务正在执行");
    controllerRef.current=controller;setSending(true);
    try{
+    if(grantId&&(next.action.type!=="run_node"||next.needsBinding))
+     throw Error("预授权仅允许冻结的 run_node；动态连线需要单独确认");
     if(next.needsBinding){
      const binding=next.inputBinding;
      if(!binding)throw Error("缺少经过服务端核验的输入产物");
@@ -352,6 +354,7 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
     }
     await onRunActions([next.action],new Map(),controller.signal,{
      taskId,messageId:view.sequence!.sourceMessageId,runSequenceId:view.sequence!.id,runIndex:next.index,
+     ...(grantId?{runBudgetGrantId:grantId}:{}),
      confirm:(step,payload)=>confirmAssistantTaskJob(step,payload,controller.signal,themeName)
     });
    }finally{setSending(false);controllerRef.current=null;}

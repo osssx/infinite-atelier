@@ -679,3 +679,43 @@ export function verifyAssistantRunSequenceJob(db,{projectId,taskId,runSequenceId
  return {finalizeTask:next.last,...(next.joinEvidenceDigest?{joinEvidenceDigest:next.joinEvidenceDigest}:{}),
   ...(failover?{failoverEvidenceDigest:failover.evidence_digest}:{})};
 }
+
+/** P4.4c paid-step admission must revalidate producer/CAS evidence AFTER
+ * planning (which may have been frozen before a blob disappeared).
+ * Called only within the atomic budget-enqueue transaction.
+ */
+export function assertAssistantBudgetRunEvidence(db,{projectId,taskId,sequenceId,runIndex,planVersion}){
+ const task=taskWithGraph(db,projectId,taskId);
+ const seq=db.prepare("SELECT * FROM assistant_task_run_sequences WHERE id=? AND project_id=? AND task_id=?")
+  .get(sequenceId,projectId,taskId);
+ if(!seq||seq.plan_version!==planVersion||task.active_plan_version!==planVersion||
+  seq.status!=="active")throw fail("assistant_run_budget_sequence_invalid");
+ const actions=JSON.parse(seq.actions_json),current=actions[runIndex];
+ if(!current||current.type!=="run_node")throw fail("assistant_run_budget_scope_changed");
+ const outputs=trustedAssistantTaskOutputs(db,{projectId,taskId,planVersion});
+ for(let index=0;index<runIndex;index++){
+  const predecessor=stepFor(db,seq,index);
+  if(!predecessor){
+   const skipped=branchSkipRow(db,seq,index),priorAction=actions[index];
+   const proof=priorAction.when&&branchEvidenceFor(db,projectId,task,seq,priorAction);
+   if(!skipped||!proof||proof.shouldRun||skipped.evidence_digest!==proof.evidenceDigest)
+    throw fail("assistant_run_budget_prior_evidence_missing");
+   continue;
+  }
+  if(predecessor.status!=="succeeded"||predecessor.receipt_trust!=="server_committed")
+   throw fail("assistant_run_budget_prior_evidence_missing");
+  const mat=verifiedMaterialization(db,seq,predecessor.id);
+  if(!mat)throw fail("assistant_run_budget_prior_evidence_missing");
+  const expected=JSON.parse(predecessor.receipt_json??"null")?.artifactIds;
+  const actual=outputs.filter(out=>out.runSequenceId===seq.id&&out.runIndex===index&&
+   out.sourceStepId===predecessor.id&&out.materialStepId===mat.id);
+  if(!Array.isArray(expected)||!expected.length||expected.length!==actual.length||
+   new Set(expected).size!==expected.length||actual.some(out=>!expected.includes(out.artifactId)))
+   throw fail("assistant_run_budget_prior_evidence_missing");
+ }
+ if(current.when){
+  const proof=branchEvidenceFor(db,projectId,task,seq,current);
+  if(!proof||!proof.shouldRun)throw fail("assistant_run_budget_branch_unverified");
+ }
+ return true;
+}

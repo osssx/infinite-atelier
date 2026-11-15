@@ -25,7 +25,7 @@ const session:CanvasAssistantSession={id:"chat-a",title:"示例任务",
  createdAt:"2026-11-12",updatedAt:"2026-11-12",
  messages:[{id:"original-user",role:"user",text:"创建三个分镜节点"}]};
 function Harness({activeChatId="chat-a",runSequence,generate}:{activeChatId?:string;
- runSequence?:(taskId:string,view:unknown)=>Promise<void>;
+ runSequence?:(taskId:string,view:unknown,grantId?:string)=>Promise<void>;
  generate?:(taskId:string,turnId:string,signal:AbortSignal)=>Promise<void>}){ const [draft,setDraft]=useState("");
  const state=useCanvasAssistantTasks({
   projectId:"project",activeChatId,session:activeChatId==="chat-a"?session:undefined,
@@ -38,9 +38,10 @@ function Harness({activeChatId="chat-a",runSequence,generate}:{activeChatId?:str
   createElement("output",{"aria-label":"续写草稿"},"草稿："+draft));
 }
 async function render(activeChatId?:string,
- generate?:(taskId:string,turnId:string,signal:AbortSignal)=>Promise<void>){
+ generate?:(taskId:string,turnId:string,signal:AbortSignal)=>Promise<void>,
+ runSequence?:(taskId:string,view:unknown,grantId?:string)=>Promise<void>){
  container=document.createElement("div");document.body.appendChild(container);root=createRoot(container);
- await act(async()=>{root!.render(createElement(Harness,{activeChatId,generate}));});
+ await act(async()=>{root!.render(createElement(Harness,{activeChatId,generate,runSequence}));});
 }async function click(label:string){
  const button=Array.from(container!.querySelectorAll("button")).find(b=>b.textContent===label);
  expect(button,label).toBeTruthy();
@@ -977,4 +978,81 @@ it("P4.4b archived Task never subscribes to live Job updates",async()=>{
  await render();
  expect(mocks.jobWatchers.has("old-job-event")).toBe(false);
  expect(mocks.api.mock.calls.some(([,method])=>method==="POST")).toBe(false);
+});
+
+it("P4.4c explicit Job count consent enables only in-scope auto run",async()=>{
+ const task={id:"budget-task",chatSessionId:"chat-a",rootMessageId:"original-user",
+  originalRequest:"连续生成两段文本",status:"ready",readOnly:false,
+  activePlanVersion:1,recoveryMode:"job_observation",steps:[]};
+ const actions=[{type:"run_node",nodeId:"node-1",mode:"text"},
+  {type:"run_node",nodeId:"node-2",mode:"text"}];
+ const sequence={id:"budget-seq",taskId:task.id,planVersion:1,sourceMessageId:"original-user",
+  actions,status:"active"};
+ const budget={grantId:"grant-1",sequenceId:sequence.id,planVersion:1,
+  allowedIndices:[0,1],maxJobs:1,consumedJobs:0,remainingJobs:1,
+  expiresAt:Date.now()+1800000,active:true,revoked:false,executionStarted:false};
+ let stored:typeof budget|null=null;
+ const calls:{url:string;method:string;payload?:Record<string,unknown>}[]=[];
+ const started:{taskId:string;index:number;grant?:string}[]=[];
+ mocks.api.mockImplementation(async(url:string,method:string,payload?:Record<string,unknown>)=>{
+  calls.push({url,method,payload});
+  if(method==="GET"&&url.includes("chatSessionId="))return {tasks:[task]};
+  if(method==="GET"&&url.endsWith("/run-sequences"))return {
+   sequence,state:"ready",index:0,next:{index:0,action:actions[0],dependsOn:[],last:false}};
+  if(method==="GET"&&url.endsWith("/run-budget"))return {grant:stored};
+  if(method==="GET"&&url.endsWith("/model-calls"))return {calls:[]};
+  if(method==="GET"&&url.endsWith("/budget-task"))return {task};
+  if(method==="POST"&&url.endsWith("/run-budget")){
+   expect(payload).toMatchObject({sequenceId:"budget-seq",expectedPlanVersion:1,
+    maxJobs:1,allowedIndices:[0,1],expiresInMinutes:30,confirmed:true});
+   stored=budget;return stored;
+  }
+  if(method==="POST"&&url.endsWith("/run-budget/grant-1/revoke")){
+   stored={...budget,active:false,revoked:true};return stored;
+  }
+  throw Error("unexpected paid side-effect "+method+" "+url);
+ });
+ await render(undefined,undefined,async(taskId,view,grant)=>{
+  started.push({taskId,index:(view as {next:{index:number}}).next.index,grant});
+ });
+ expect(container!.textContent).toContain("次数不是金额上限");
+ expect(started).toHaveLength(0);
+ expect(calls.some(c=>c.method==="POST")).toBe(false);
+ const consent=container!.querySelector<HTMLInputElement>("input[aria-label='确认预授权可能产生费用']");
+ expect(consent).toBeTruthy();
+ await act(async()=>{consent!.click()});
+ await click("确认并启用有界自动生成");
+ await vi.waitFor(()=>expect(started).toHaveLength(1));
+ expect(started[0]).toEqual({taskId:"budget-task",index:0,grant:"grant-1"});
+ expect(calls.filter(c=>c.method==="POST").map(c=>c.url)).toEqual([
+  "/api/v1/projects/project/assistant/tasks/budget-task/run-budget"]);
+ await click("撤销剩余自动入队授权");
+ expect(container!.textContent).toContain("已撤销");
+ expect(started).toHaveLength(1);
+ expect(calls.filter(c=>c.method==="POST")).toHaveLength(2);
+ expect(calls.some(c=>/\/enqueue|\/run-skill|\/external-jobs|\/jobs$/.test(c.url))).toBe(false);
+});
+it("P4.4c blocked dynamic Comfy workflow never gets automatic paid authority",async()=>{
+ const task={id:"budget-comfy",chatSessionId:"chat-a",rootMessageId:"original-user",
+  originalRequest:"Comfy 转视频",status:"ready",activePlanVersion:1,
+  readOnly:false,recoveryMode:"job_observation",steps:[]};
+ const actions=[{type:"run_node",nodeId:"image",mode:"image"},
+  {type:"run_workflow",nodeId:"workflow",inputFromPrevious:{sourceKind:"image",toPortId:"first_frame"}}];
+ const grant={grantId:"grant-only-node",sequenceId:"seq-comfy",planVersion:1,
+  allowedIndices:[0],maxJobs:1,consumedJobs:0,remainingJobs:1,
+  expiresAt:Date.now()+1800000,active:true,revoked:false,executionStarted:false};
+ let runs=0;
+ mocks.api.mockImplementation(async(url:string,method:string)=>{
+  if(method==="GET"&&url.includes("chatSessionId="))return {tasks:[task]};
+  if(method==="GET"&&url.endsWith("/model-calls"))return {calls:[]};
+  if(method==="GET"&&url.endsWith("/run-sequences"))return {
+   sequence:{id:"seq-comfy",taskId:task.id,sourceMessageId:"original-user",planVersion:1,actions,status:"active"},
+   state:"ready",index:1,next:{index:1,action:actions[1],dependsOn:[],needsBinding:true,last:true}};
+  if(method==="GET"&&url.endsWith("/run-budget"))return {grant};
+  if(method==="GET"&&url.endsWith("/budget-comfy"))return {task};
+  throw Error("unexpected");
+ });
+ await render(undefined,undefined,async()=>{runs++});
+ expect(runs).toBe(0);
+ expect(container!.textContent).toContain("先连接可信产物");
 });

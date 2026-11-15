@@ -10,6 +10,9 @@ import {planAssistantSkillStep,executeAssistantSkillStep} from "./assistant-task
 import {registerAssistantRunSequence,getAssistantRunSequence,selectAssistantRunInput,skipAssistantRunBranch,commitAssistantRunJoin} from "./assistant-task-run-sequences.mjs";
 import {inspectAssistantTaskRecovery,replanAssistantTaskSafely} from "./assistant-task-safe-replan.mjs";
 import {continueAssistantTaskSafely} from "./assistant-task-safe-continuation.mjs";
+import {createAssistantRunBudgetGrant,getAssistantRunBudgetGrant,getAssistantRunBudgetState,
+ revokeAssistantRunBudgetGrant}
+ from "./assistant-task-run-budget.mjs";
 import {inspectAssistantRunFailureRecovery,confirmAssistantRunFailureRecovery} from "./assistant-task-failure-recovery.mjs";
 import {registerAssistantTextDeliverable,registerAssistantStructuredTextDeliverable,verifyAssistantTextDeliverable} from "./assistant-task-deliverables.mjs";
 import {discoverAssistantCreativeCharacters} from "./assistant-creative-context.mjs";
@@ -122,6 +125,20 @@ const externalJobBody={type:"object",additionalProperties:false,
  snapshot:{type:"object"},skillAuthorizationId:{type:"string",pattern:"^[0-9a-f-]{36}$"}}},
  dependsOn:{type:"array",maxItems:20,uniqueItems:true,items:id},
  finalizeTask:{type:"boolean"},runSequenceId:id,runIndex:{type:"integer",minimum:0,maximum:3}}};
+const runBudgetBody={type:"object",additionalProperties:false,
+ required:["requestId","sequenceId","expectedPlanVersion","maxJobs","allowedIndices","confirmed"],
+ properties:{requestId:id,sequenceId:id,expectedPlanVersion:{type:"integer",minimum:1},
+ maxJobs:{type:"integer",minimum:1,maximum:4},
+ allowedIndices:{type:"array",minItems:1,maxItems:4,uniqueItems:true,items:{type:"integer",minimum:0,maximum:3}},
+ expiresInMinutes:{type:"integer",minimum:1,maximum:1440},confirmed:{type:"boolean",const:true}}};
+const budgetGrantParams={type:"object",required:["id","taskId","grantId"],
+ properties:{id,taskId:id,grantId:id}};
+const budgetRevokeBody={type:"object",additionalProperties:false,required:["requestId"],
+ properties:{requestId:id}};
+const authorizedEnqueueBody={type:"object",additionalProperties:false,
+ required:["requestId","expectedPlanVersion","actionDigest","grantId"],
+ properties:{requestId:id,expectedPlanVersion:{type:"integer",minimum:1},
+ actionDigest:{type:"string",pattern:"^[a-f0-9]{64}$"},grantId:id}};
 const runSequenceBody={type:"object",additionalProperties:false,
  required:["requestId","sourceMessageId","expectedPlanVersion","expectedProjectRevision","actions"],
  properties:{requestId:id,sourceMessageId:id,
@@ -243,6 +260,17 @@ export function registerAssistantTaskRoutes(app,db,{skillRegistry,blobStore,onTa
   registerAssistantRunSequence(db,{projectId:req.params.id,taskId:req.params.taskId,...req.body})));
  app.get(base+"/:taskId/run-sequences",{schema:{params:taskParams}},(req,reply)=>result(reply,
   getAssistantRunSequence(db,{projectId:req.params.id,taskId:req.params.taskId})));
+ // P4.4c explicit bounded Job-count budget; not a currency-based spending guarantee.
+ app.get(base+"/:taskId/run-budget",{schema:{params:taskParams}},(req,reply)=>result(reply,
+  getAssistantRunBudgetState(db,{projectId:req.params.id,taskId:req.params.taskId})));
+ app.post(base+"/:taskId/run-budget",{schema:{params:taskParams,body:runBudgetBody}},(req,reply)=>result(reply,
+  createAssistantRunBudgetGrant(db,{projectId:req.params.id,taskId:req.params.taskId,...req.body})));
+ app.get(base+"/:taskId/run-budget/:grantId",{schema:{params:budgetGrantParams}},(req,reply)=>result(reply,
+  getAssistantRunBudgetGrant(db,{projectId:req.params.id,taskId:req.params.taskId,grantId:req.params.grantId})));
+ app.post(base+"/:taskId/run-budget/:grantId/revoke",
+  {schema:{params:budgetGrantParams,body:budgetRevokeBody}},(req,reply)=>result(reply,
+  revokeAssistantRunBudgetGrant(db,{projectId:req.params.id,taskId:req.params.taskId,
+   grantId:req.params.grantId,...req.body})));
   app.post(base+"/:taskId/run-sequences/select",{schema:{params:taskParams,body:runInputSelectionBody}},
    (req,reply)=>result(reply,selectAssistantRunInput(db,{
     projectId:req.params.id,taskId:req.params.taskId,...req.body})));
@@ -282,6 +310,10 @@ export function registerAssistantTaskRoutes(app,db,{skillRegistry,blobStore,onTa
   executeAssistantCanvasStep(db,{projectId:req.params.id,taskId:req.params.taskId,
    stepId:req.params.stepId,...req.body})));
  app.post(base+"/:taskId/steps/:stepId/enqueue",{schema:{params:stepParams,body:executeBody}},(req,reply)=>result(reply,
+  enqueueAssistantExternalJobStep(db,{projectId:req.params.id,taskId:req.params.taskId,
+   stepId:req.params.stepId,...req.body})));
+ app.post(base+"/:taskId/steps/:stepId/enqueue-authorized",
+  {schema:{params:stepParams,body:authorizedEnqueueBody}},(req,reply)=>result(reply,
   enqueueAssistantExternalJobStep(db,{projectId:req.params.id,taskId:req.params.taskId,
    stepId:req.params.stepId,...req.body})));
  app.post(base+"/:taskId/steps/:stepId/run-skill",{

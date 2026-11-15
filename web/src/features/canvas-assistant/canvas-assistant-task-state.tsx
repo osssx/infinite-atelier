@@ -23,6 +23,10 @@ type SemanticProposal={id:string;kind:"goal"|"constraint"|"decision";text:string
 type Task={id:string;chatSessionId:string;chatSessionIds?:string[];rootMessageId:string;originalRequest:string;
  activePlanVersion?:number;status:string;readOnly?:boolean;summary?:FactSummary;semantic?:SemanticState;recoveryMode:"guidance_only"|"canvas_atomic"|"job_observation"|"skill_audit";steps?:Step[];lastError?:string|null};
 type Recovery={canReplan:boolean;reason:string;planVersion:number;projectRevision:number;completedArtifacts?:number;failedJobs?:number};
+type RunBudgetGrant={grantId:string;sequenceId:string;planVersion:number;
+ maxJobs:number;consumedJobs:number;remainingJobs:number;allowedIndices:number[];
+ expiresAt:number;active:boolean;revoked:boolean;executionStarted:boolean;
+ modelScopeSummary?:{provider:string;kind:string;model:string}};
 type SafeContinuation={taskId:string;taskStatus:string;sequenceState:string;
  checkpoints:{kind:"skip"|"join";index:number}[];reconciledJobs:number;
  requiresApproval:boolean;requiresManualReview:boolean;reason:string|null;
@@ -34,7 +38,7 @@ type Args={projectId:string;activeChatId:string|null;session?:CanvasAssistantSes
  open:boolean;sending:boolean;includeContext:boolean;scope:AssistantContextScope;includedIds:string[];
  onDraft:(value:string)=>void;
  onStartChat?:()=>string;
- onRunSequenceStep?:(taskId:string,view:AssistantRunSequenceView)=>Promise<void>;
+ onRunSequenceStep?:(taskId:string,view:AssistantRunSequenceView,grantId?:string)=>Promise<void>;
  onGenerateSemanticProposals?:(taskId:string,turnMessageId:string,signal:AbortSignal)=>Promise<void>};
 type TaskResponse={task:Task;existing?:boolean;executionStarted?:boolean};
 const taskStatusLabel:Record<string,string>={planning:"待规划",ready:"可继续",waiting_approval:"等待确认",running:"执行中",waiting_external:"等待外部",blocked:"已阻断",needs_reconcile:"需要对账",cancelling:"正在取消",failed:"失败",completed:"已完成",cancelled:"已结束记录"};
@@ -65,6 +69,11 @@ export function useCanvasAssistantTasks({
  const [eventsBusy,setEventsBusy]=useState(false);
  const eventScope=useRef(0);
  const [runSequence,setRunSequence]=useState<AssistantRunSequenceView|null>(null);
+ const [runBudget,setRunBudget]=useState<RunBudgetGrant|null>(null);
+ const [runBudgetConsent,setRunBudgetConsent]=useState(false);
+ const [runBudgetLimit,setRunBudgetLimit]=useState(1);
+ const runBudgetAttempted=useRef(new Set<string>());
+ const runBudgetReadEpoch=useRef(0);
  const [otherTasks,setOtherTasks]=useState<Task[]>([]);
  const [showOtherTasks,setShowOtherTasks]=useState(false);
  const [taskExpanded,setTaskExpanded]=useState(false);
@@ -131,12 +140,20 @@ export function useCanvasAssistantTasks({
   finally{setEventsBusy(false);}
  };
  useEffect(()=>{
-  if(!open||!selectedId){setRunSequence(null);return;}
+  if(!open||!selectedId){setRunSequence(null);setRunBudget(null);return;}
   let alive=true;
   void canvasApi<AssistantRunSequenceView>(base+"/"+encodeURIComponent(selectedId)+"/run-sequences","GET")
    .then(value=>{if(alive)setRunSequence(value?.sequence?value:null);},()=>{if(alive)setRunSequence(null);});
   return ()=>{alive=false;};
  },[base,open,selectedId,detail]);
+ useEffect(()=>{
+  if(!open||!selectedId||!runSequence?.sequence){setRunBudget(null);return;}
+  let active=true;const readEpoch=++runBudgetReadEpoch.current;
+  void canvasApi<{grant:RunBudgetGrant|null}>(base+"/"+encodeURIComponent(selectedId)+"/run-budget","GET")
+   .then(data=>{if(active&&readEpoch===runBudgetReadEpoch.current)setRunBudget(data.grant??null)},
+    ()=>{if(active&&readEpoch===runBudgetReadEpoch.current)setRunBudget(null)});
+  return ()=>{active=false};
+ },[base,open,selectedId,runSequence?.sequence?.id,detail?.status]);
  const watchedJobIds=detail?.id===selectedId&&!detail?.readOnly?[...new Set((detail.steps??[])
   .map(step=>step.result?.jobId).filter((value):value is string=>
    typeof value==="string"&&/^[A-Za-z0-9_-]{1,128}$/.test(value)))].sort().join(","):"";
@@ -413,6 +430,39 @@ export function useCanvasAssistantTasks({
   }catch(error){setError("可凭原 Step 查询已有 Job，不会再次生成："+(error instanceof Error?error.message:"执行失败"));}
   finally{setBusy(false);}
  };
+ const grantRunBudget=async()=>{
+  const seq=runSequence?.sequence;
+  if(!selected||!seq||busy||sending||!runBudgetConsent||runBudget?.active)return;
+  const from=runSequence?.next?.index??runSequence?.index??0;
+  const indices=seq.actions.flatMap((action,index)=>
+   index>=from&&action.type==="run_node"&&!action.join?[index]:[]);
+  if(!indices.length){setError("计划中没有可预授权的固定节点；动态连线与 ComfyUI 仍需逐项批准");return;}
+  const maxJobs=Math.min(Math.max(1,runBudgetLimit),indices.length);
+  setBusy(true);setError("");
+  try{
+   const granted=await canvasApi<RunBudgetGrant>(path(selected.id)+"/run-budget","POST",{
+    requestId:nanoid(),sequenceId:seq.id,expectedPlanVersion:seq.planVersion,
+    maxJobs,allowedIndices:indices,expiresInMinutes:30,confirmed:true
+   });
+   runBudgetReadEpoch.current++;
+   setRunBudget(granted);setRunBudgetConsent(false);
+   setSafeContinuationNotice("已冻结最多 "+maxJobs+" 次 Job 授权；有效期 30 分钟。这不是金额上限，已提交 Job 不会因撤销而自动取消。");
+  }catch(error){
+   setError("预授权失败，未生成任何任务："+(error instanceof Error?error.message:"未知错误"));
+  }finally{setBusy(false);}
+ };
+ const revokeRunBudget=async()=>{
+  if(!selected||busy||!runBudget)return;
+  setBusy(true);setError("");
+  try{
+   const revoked=await canvasApi<RunBudgetGrant>(
+    path(selected.id)+"/run-budget/"+encodeURIComponent(runBudget.grantId)+"/revoke","POST",
+    {requestId:nanoid()});
+   runBudgetReadEpoch.current++;setRunBudget(revoked);
+   setSafeContinuationNotice("已撤销后续自动入队授权。已提交的 Job 不会因此自动取消。");
+  }catch(error){setError("撤销授权失败："+(error instanceof Error?error.message:"未知错误"));}
+  finally{setBusy(false);}
+ };
  const resumeRunSequence=async()=>{
   if(!selected||!onRunSequenceStep||busy||sending)return;
   setBusy(true);setError("");
@@ -589,6 +639,41 @@ export function useCanvasAssistantTasks({
   }catch(error){setError("不满足安全重新规划条件，原任务未重放："+(error instanceof Error?error.message:"请求失败"));}
   finally{setBusy(false);}
  };
+ // Browser-present best-effort dispatch: existing node generators still freeze
+ // the exact request; server grant admission is the authority for every Job.
+ // Never retry the same index automatically after an unknown response/error.
+ useEffect(()=>{
+  const view=runSequence,next=view?.next,grant=runBudget,task=selected;
+  if(!open||busy||sending||!task||!onRunSequenceStep||!view?.sequence||
+   view.sequence.taskId!==task.id||view.state!=="ready"||!next||
+   next.action.type!=="run_node"||next.needsBinding||!grant?.active||
+   grant.sequenceId!==view.sequence.id||grant.planVersion!==view.sequence.planVersion||
+   !grant.allowedIndices.includes(next.index)||grant.remainingJobs<1||detail?.readOnly||
+   !["planning","ready","waiting_approval"].includes(detail?.status??""))
+   return;
+  const key=task.id+":"+grant.grantId+":"+next.index;
+  if(runBudgetAttempted.current.has(key))return;
+  runBudgetAttempted.current.add(key);
+  const taskId=task.id,version=view.sequence.planVersion,epoch=continuationEpoch.current;
+  void (async()=>{
+   await onRunSequenceStep(taskId,view,grant.grantId);
+   if(epoch!==continuationEpoch.current)return;
+   await refreshTask(taskId);
+   const current=await canvasApi<AssistantRunSequenceView>(path(taskId)+"/run-sequences","GET");
+   if(epoch===continuationEpoch.current&&current.sequence?.planVersion===version)
+    setRunSequence(current);
+   const authorized=await canvasApi<{grant:RunBudgetGrant|null}>(path(taskId)+"/run-budget","GET");
+   if(epoch===continuationEpoch.current)setRunBudget(authorized.grant??null);
+  })().catch(error=>{
+   if(epoch===continuationEpoch.current)
+    setError("预授权自动步骤已停止；不会自动重复提交。请检查 Job/Task 回执："+(error instanceof Error?error.message:"未知错误"));
+  });
+ },[open,busy,sending,selected?.id,onRunSequenceStep,
+  runSequence?.state,runSequence?.next?.index,runBudget?.grantId,runBudget?.active,
+  runBudget?.remainingJobs,detail?.readOnly,detail?.status]);
+ const runBudgetEligible=runSequence?.sequence?.actions.filter((action,index)=>
+  index>=(runSequence.next?.index??runSequence.index??0)&&
+  action.type==="run_node"&&!action.join).length??0;
  const view=<section aria-label="任务状态" className="canvas-assistant-task"
   style={{borderColor:"var(--assistant-border)",color:"var(--assistant-text)"}}>
   <div className="canvas-assistant-task-selector">
@@ -774,7 +859,40 @@ export function useCanvasAssistantTasks({
      </div>:null}
     {runSequence?.sequence&&selected&&runSequence.sequence.taskId===selected.id?<div className="mt-2 rounded-md border p-2" style={{borderColor:"var(--assistant-border)"}}>
     <div className="font-medium">顺序生成计划：{runSequence.sequence.actions.length} 项 · {runSequence.state}</div>
-    <p>每项单独批准费用，只有上一项落图验收后才执行下一项。</p>
+    <p>无预授权时每项独立批准；只有上一项可信落图后才允许下一项。</p>
+    {runBudget?.sequenceId===runSequence.sequence.id?
+     <div className="mt-2 rounded border p-2 text-xs" style={{borderColor:"var(--assistant-border)"}}>
+      <p>预授权：{runBudget.revoked?"已撤销":runBudget.active?"有效":"已失效或额度已用尽"}；
+       已使用 {runBudget.consumedJobs}/{runBudget.maxJobs} 次 Job；有效期至
+       {new Date(runBudget.expiresAt).toLocaleString()}。
+       {runBudget.modelScopeSummary?<span>仅限 {runBudget.modelScopeSummary.provider} ·
+        {runBudget.modelScopeSummary.model} · {runBudget.modelScopeSummary.kind}</span>:null}</p>
+      {runBudget.active?<button type="button" className="canvas-assistant-link"
+       disabled={busy} onClick={()=>void revokeRunBudget()}>撤销剩余自动入队授权</button>:null}
+     </div>:null}
+    {!runBudget?.active&&runBudgetEligible>0&&!detail?.readOnly?
+     <div className="mt-2 rounded border p-2 text-xs" style={{borderColor:"var(--assistant-border)"}}>
+      <p>可为固定模型节点预授权有限次数的自动生成；ComfyUI 工作流、动态连线和 Skill
+       仍需逐项审批。须先单独批准同计划中的一个模型 Step 以冻结模型/渠道范围；
+       次数不是金额上限，实际费用由模型渠道决定。仅在画布打开期间尝试自动提交。</p>
+      <label className="mt-1 flex items-center gap-2">
+       最多新增 Job 数
+       <select aria-label="最多新增 Job 数" value={Math.min(runBudgetLimit,runBudgetEligible)}
+        onChange={event=>setRunBudgetLimit(Number(event.target.value))}
+        className="rounded border bg-transparent px-1 py-0.5">
+        {[1,2,3,4].filter(value=>value<=runBudgetEligible).map(value=>
+         <option key={value} value={value}>{value}</option>)}
+       </select>
+      </label>
+      <label className="mt-2 flex items-start gap-2">
+       <input type="checkbox" checked={runBudgetConsent}
+        onChange={event=>setRunBudgetConsent(event.target.checked)}
+        aria-label="确认预授权可能产生费用"/>
+       <span>我确认允许所列固定节点在 30 分钟内最多提交上述次数的 Job，可能产生费用；无法保证美元金额上限。</span>
+      </label>
+      <button type="button" className="canvas-assistant-link mt-1" disabled={busy||sending||!runBudgetConsent}
+       onClick={()=>void grantRunBudget()}>确认并启用有界自动生成</button>
+     </div>:null}
     {runSequence.joins?.length?<p className="mt-1">已提交可信汇合检查点：第 1 项与执行分支均落图，未选择的分支已跳过。</p>:null}
     {runSequence.state==="join_ready"&&runSequence.join?<div className="mt-2">
      <p>汇合待确认：上游第 1 项 + 第 {runSequence.join.executedIndex+1} 项已可信落图，

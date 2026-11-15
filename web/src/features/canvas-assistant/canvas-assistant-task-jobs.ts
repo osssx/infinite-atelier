@@ -8,6 +8,7 @@ export type AssistantTaskFrozenJob={
 };
 export type AssistantTaskJobContext={
  taskId:string;messageId:string;runSequenceId?:string;runIndex?:number;
+ runBudgetGrantId?:string;
  confirm:(step:AssistantTaskFrozenJob,payload:Record<string,unknown>)=>Promise<boolean>;
 };
 const taskPath=(projectId:string,taskId:string)=>"/api/v1/projects/"+
@@ -65,20 +66,23 @@ export async function submitAssistantTaskFrozenJob({
   throw Error("assistant_task_job_plan_invalid");
  const endpoint=base+"/steps/"+encodeURIComponent(plan.stepId);
  aborted(signal);
- const approved=await context.confirm(plan,payload);
- aborted(signal);
- await canvasApi(endpoint+"/approval","POST",{
-  requestId:stableId+"-decision",expectedPlanVersion:plan.planVersion,
-  actionDigest:plan.actionDigest,decision:approved?"approve":"reject"
- },signal);
- if(!approved)throw Error("assistant_task_job_rejected");
+ if(!context.runBudgetGrantId){
+  const approved=await context.confirm(plan,payload);
+  aborted(signal);
+  await canvasApi(endpoint+"/approval","POST",{
+   requestId:stableId+"-decision",expectedPlanVersion:plan.planVersion,
+   actionDigest:plan.actionDigest,decision:approved?"approve":"reject"
+  },signal);
+  if(!approved)throw Error("assistant_task_job_rejected");
+ }
  aborted(signal);
  // Atomic Job + Attempt + frozen Step enqueue; repeated requests only inspect
  // the existing Job, never create a second external execution.
  const queued=await canvasApi<{jobId:string;status:string}>(
-  endpoint+"/enqueue","POST",{
+  endpoint+(context.runBudgetGrantId?"/enqueue-authorized":"/enqueue"),"POST",{
    requestId:stableId+"-enqueue",expectedPlanVersion:plan.planVersion,
-   actionDigest:plan.actionDigest
+   actionDigest:plan.actionDigest,
+   ...(context.runBudgetGrantId?{grantId:context.runBudgetGrantId}:{})
   },signal);
  if(!queued.jobId)throw Error("assistant_task_job_receipt_missing");
  // This is a read-only lookup. Failure after enqueue must not re-submit.

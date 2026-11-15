@@ -164,3 +164,31 @@ describe("P2c Task job submission boundary",()=>{
   }
  });
 });
+
+it("P4.4c grant-mode freezes without fake per-Step approval; only bounded enqueue endpoint",async()=>{
+ const requests:{url:string;method:string;body?:Record<string,unknown>}[]=[];
+ const grantId="preauthorized-scope-1",confirm=vi.fn(async()=>{throw Error("should_not_prompt_again")});
+ mocks.api.mockImplementation(async(url:string,method:string,body?:Record<string,unknown>)=>{
+  if(!url)return undefined;
+  requests.push({url,method,body});
+  if((!method||method==="GET")&&url.endsWith("/task"))return {task:{activePlanVersion:2,steps:[]}};
+  if(method==="POST"&&url.endsWith("/external-jobs"))return frozen;
+  if(method==="POST"&&url.endsWith("/enqueue-authorized")){
+   expect(body).toEqual({requestId:"user-message-job-0-enqueue",
+    expectedPlanVersion:2,actionDigest:frozen.actionDigest,grantId});
+   return {jobId:job.id,status:"waiting_external"};
+  }
+  if((!method||method==="GET")&&url.endsWith("/jobs/job-1"))return job;
+  throw Error("unexpected charge or fake approval: "+method+" "+url);
+ });
+ const context:AssistantTaskJobContext={...makeContext(confirm),runBudgetGrantId:grantId,
+  runSequenceId:"sequence",runIndex:0};
+ const submitted=await submitAssistantTaskFrozenJob({projectId:"p",context,actionIndex:0,
+  payload,signal:new AbortController().signal});
+ expect(submitted.id).toBe("job-1");
+ expect(confirm).not.toHaveBeenCalled();
+ expect(requests.filter(r=>r.method==="POST").map(r=>r.url)).toEqual([
+  "/api/v1/projects/p/assistant/tasks/task/external-jobs",
+  "/api/v1/projects/p/assistant/tasks/task/steps/frozen-step/enqueue-authorized"]);
+ expect(requests.some(r=>r.url.endsWith("/approval")||r.url.endsWith("/enqueue"))).toBe(false);
+});

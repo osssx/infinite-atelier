@@ -1,5 +1,6 @@
 import {createHash,randomUUID} from "node:crypto";
 import {EXECUTION_MODES} from "./contracts.mjs";
+import {authorizeAssistantRunBudgetEnqueue,commitAssistantRunBudgetConsumption} from "./assistant-task-run-budget.mjs";
 import {assertNoRawCredentials,stableJson,writeTransaction,submitJobInTransaction} from "./repository.mjs";
 import {verifyAssistantRunSequenceJob,assertNoPendingAssistantRunSequence,verifyAssistantFrozenRunJoin} from "./assistant-task-run-sequences.mjs";
 import {verifyAssistantFrozenFailover} from "./assistant-task-failure-recovery.mjs";
@@ -129,10 +130,10 @@ export function planAssistantExternalJobStep(db,{projectId,taskId,requestId,kind
  * together; the coordinator is the sole party that may later contact providers.
  */
 export function enqueueAssistantExternalJobStep(db,{projectId,taskId,stepId,requestId,
- expectedPlanVersion,actionDigest,beforeLink}){
+ expectedPlanVersion,actionDigest,beforeLink,grantId}){
  if(!id(requestId)||!id(stepId)||!Number.isSafeInteger(expectedPlanVersion)||
    !/^[a-f0-9]{64}$/.test(actionDigest))throw fail("assistant_external_invalid",400);
- const payload={taskId,stepId,expectedPlanVersion,actionDigest};
+ const payload={taskId,stepId,expectedPlanVersion,actionDigest,...(grantId?{grantId}:{})};
  return writeTransaction(db,()=>{
   const {signature,response}=known(db,projectId,requestId,"external_enqueue",payload);
   if(response)return {...response,existing:true};
@@ -151,13 +152,20 @@ export function enqueueAssistantExternalJobStep(db,{projectId,taskId,stepId,requ
   }
   if(task.read_only||task.cancel_requested_at!==null||terminalStates.has(task.status))
    throw fail("assistant_task_not_editable");
-  if(step.status!=="ready"||task.active_step_id!==null)throw fail("assistant_step_already_claimed");
+  if(!["ready",...(grantId?["waiting_approval"]:[])].includes(step.status)||task.active_step_id!==null)
+   throw fail("assistant_step_already_claimed");
   const action=JSON.parse(step.action_json),pre=JSON.parse(step.preconditions_json),
    approval=JSON.parse(step.approval_json);
+  // A bounded grant is checked inside the same SQLite BEGIN IMMEDIATE as Job
+  // insertion; a prior UI click or raw client confirm is not an authority.
+  const admission=grantId?authorizeAssistantRunBudgetEnqueue(db,{
+   projectId,taskId,grantId,step,task}):null;
   if(hash(action)!==actionDigest)throw fail("assistant_step_action_changed");
-  if(approval.decision!=="approved"||approval.planVersion!==expectedPlanVersion||
-   approval.actionDigest!==actionDigest||approval.projectRevision!==pre.projectRevision)
+  if(!admission&&(approval.decision!=="approved"||approval.planVersion!==expectedPlanVersion||
+   approval.actionDigest!==actionDigest||approval.projectRevision!==pre.projectRevision))
    throw fail("assistant_step_approval_required");
+  if(admission&&approval.decision&&approval.decision!=="approved")
+   throw fail("assistant_step_approval_conflict");
   if(task.revision!==pre.projectRevision||hash(JSON.parse(task.document_json))!==pre.projectGraphDigest)
    throw fail("assistant_step_source_changed");
   dependencyCheck(db,taskId,expectedPlanVersion,step.ordinal,JSON.parse(step.depends_on_json));
@@ -172,6 +180,16 @@ export function enqueueAssistantExternalJobStep(db,{projectId,taskId,stepId,requ
    if(sourceFailover||pre.failoverEvidenceDigest)
     verifyAssistantFrozenFailover(db,{projectId,taskId,runSequenceId:pre.runSequenceId,
      expectedPlanVersion,evidenceDigest:pre.failoverEvidenceDigest});
+  }
+  if(admission&&step.status==="waiting_approval"){
+   const now=Date.now(),frozenApproval={decision:"approved",
+    planVersion:expectedPlanVersion,actionDigest,projectRevision:pre.projectRevision,
+    decidedAt:now,grantId};
+   const upgraded=db.prepare("UPDATE assistant_task_steps SET status='ready',approval_json=?,updated_at=? "+
+    "WHERE id=? AND task_id=? AND status='waiting_approval' AND superseded_at IS NULL")
+    .run(freeze(frozenApproval),now,stepId,taskId);
+   if(upgraded.changes!==1)throw fail("assistant_step_state_conflict");
+   event(db,taskId,stepId,"step_approved_by_run_budget",{grantId,runIndex:admission.runIndex},now);
   }
   const attemptNo=step.attempt_count+1,attemptId=randomUUID(),
    executionKey=hash({taskId,stepId,planVersion:expectedPlanVersion,attemptNo}),
@@ -201,6 +219,7 @@ export function enqueueAssistantExternalJobStep(db,{projectId,taskId,stepId,requ
    .run(stepId,at,taskId);
   event(db,taskId,stepId,"external_job_queued",{attemptId,jobId:queued.jobId,
    executionKey,kind:step.kind},at);
+  if(admission)commitAssistantRunBudgetConsumption(db,{taskId,admission,stepId,jobId:queued.jobId});
   const value={taskId,stepId,jobId:queued.jobId,status:"waiting_external",
    executionStarted:true};
   saveCommand(db,projectId,taskId,requestId,"external_enqueue",signature,value);

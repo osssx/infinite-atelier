@@ -34,6 +34,7 @@ const doc={nodes:[wf("a"),wf("b")],connections:[]};
 const count=(db,table)=>db.prepare("SELECT COUNT(*) n FROM "+table).get().n;
 function context(t){
  const db=new DatabaseSync(":memory:");initializeSchema(db);t.after(()=>db.close());
+ db.prepare("INSERT INTO comfy_instances(id,url) VALUES(?,?)").run("local-gpu","http://127.0.0.1:8188");
  createProject(db,{id:"p",document:doc});
  const task=createAssistantTask(db,{projectId:"p",chatSessionId:"chat",rootMessageId:"u",
   originalRequest:"两个本地 ComfyUI 工作流依次执行",requestId:"task"}).task;
@@ -272,4 +273,61 @@ test("P4.5a pending or cancelled predecessor never permits a subsequent paid loc
  cancelAssistantTask(f.db,{...f.base,requestId:"cancel"});
  assert.equal(getAssistantRunBudgetGrant(f.db,{...f.base,grantId:initial.grantId}).active,false);
  assert.equal(count(f.db,"jobs"),1);
+});
+
+
+test("P4.5a replacing a granted instance URL requires fresh consent before enqueue",t=>{
+ const f=context(t);f.finishFirst();const grant=f.grant(),step=f.plan(1);
+ f.db.prepare("UPDATE comfy_instances SET url=? WHERE id=?")
+  .run("http://127.0.0.1:8189","local-gpu");
+ assert.throws(()=>f.enqueue(step,grant.grantId),{code:"assistant_run_budget_not_active"});
+ assert.equal(count(f.db,"jobs"),1);
+ assert.equal(getAssistantRunBudgetGrant(f.db,{...f.base,grantId:grant.grantId}).remainingJobs,1);
+});
+
+
+test("P4.5a incomplete frozen scope returns the unsupported contract",t=>{
+ const f=context(t),document=getProject(f.db,"p").document;
+ for(const field of ["runOptions","inputOverrides"]){
+  const snapshot=f.job("a").snapshot;
+  if(field==="runOptions")delete snapshot.comfyRequest.runOptions;
+  else delete snapshot.comfyRequest.nodes[0].inputOverrides;
+  assert.throws(()=>frozenLocalComfyScope(snapshot,{projectId:"p",targetNodeId:"a",document}),
+   {code:"assistant_local_comfy_scope_unsupported",statusCode:400});
+ }
+});
+
+
+test("P4.5a HTTP preserves actionable local scope rejection codes",async t=>{
+ for(const missingApproval of [true,false]){
+  const f=context(t);f.finishFirst();
+  if(missingApproval)f.db.prepare("UPDATE assistant_task_steps SET approval_json='{}' WHERE id=?").run(f.first.stepId);
+  else {
+   const action=JSON.parse(f.db.prepare("SELECT action_json FROM assistant_task_steps WHERE id=?").get(f.first.stepId).action_json);
+   delete action.job.snapshot.comfyRequest.runOptions;
+   f.db.prepare("UPDATE assistant_task_steps SET action_json=? WHERE id=?").run(JSON.stringify(action),f.first.stepId);
+  }
+  const app=buildApp({db:f.db,authorize:async()=>true});t.after(()=>app.close());
+  const response=await app.inject({method:"POST",url:"/api/v1/projects/p/assistant/tasks/"+f.task.id+"/run-budget",
+   payload:{requestId:"invalid-grant",sequenceId:f.sequence.sequenceId,expectedPlanVersion:1,
+    maxJobs:1,allowedIndices:[1],mode:"local_comfy",confirmed:true}});
+  assert.equal(response.statusCode,missingApproval?409:400);
+  assert.equal(response.json().code,missingApproval?"assistant_local_comfy_approval_required":"assistant_local_comfy_scope_unsupported");
+ }
+});
+
+
+test("P4.5a address changed since individual approval cannot anchor a grant",t=>{
+ const f=context(t);f.finishFirst();
+ f.db.prepare("UPDATE comfy_instances SET url=? WHERE id=?").run("http://127.0.0.1:8189","local-gpu");
+ assert.throws(()=>f.grant(),{code:"assistant_local_comfy_scope_unsupported"});
+ assert.equal(count(f.db,"jobs"),1);
+});
+
+test("P4.5a legacy grants lacking endpoint evidence are inactive",t=>{
+ const f=context(t);f.finishFirst();const grant=f.grant();
+ const row=f.db.prepare("SELECT seq,payload_json FROM assistant_task_events WHERE kind='run_budget_granted'").get();
+ const payload=JSON.parse(row.payload_json);delete payload.comfyInstanceUrl;
+ f.db.prepare("UPDATE assistant_task_events SET payload_json=? WHERE seq=?").run(JSON.stringify(payload),row.seq);
+ assert.equal(getAssistantRunBudgetGrant(f.db,{...f.base,grantId:grant.grantId}).active,false);
 });

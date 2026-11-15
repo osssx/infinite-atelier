@@ -466,8 +466,9 @@ export function useCanvasAssistantTasks({
   const seq=runSequence?.sequence;
   if(!selected||!seq||seq.taskId!==selected.id||busy||sending||!runBudgetConsent||
    runBudgetConsentKey.current!==runBudgetScopeKey||runBudget?.active)return;
-  const from=runSequence?.next?.index??runSequence?.index??0;
-  const kind=runSequence?.next?.action.type==="run_workflow"?"local_comfy":"model";
+  const from=runSequence?.next?.index??((runSequence?.index??0)+1);
+  const currentAction=runSequence?.next?.action??seq.actions[runSequence?.index??0];
+  const kind=currentAction?.type==="run_workflow"?"local_comfy":"model";
   const indices=seq.actions.flatMap((action,index)=>
    index>=from&&action.type===(kind==="local_comfy"?"run_workflow":"run_node")&&
    (action.type==="run_workflow"?!action.inputFromPrevious:!action.join)?[index]:[]);
@@ -488,7 +489,11 @@ export function useCanvasAssistantTasks({
   }catch(error){
    if(epoch===continuationEpoch.current)setError("预授权失败，未生成任何任务："+
     (error instanceof Error&&error.message.includes("assistant_run_budget_payload_requires_approval")?
-     "当前输入无法安全预先冻结，请逐项审批生成。":error instanceof Error?error.message:"未知错误"));
+     "当前输入无法安全预先冻结，请逐项审批生成。":
+     error instanceof Error&&error.message.includes("assistant_local_comfy_approval_required")?
+      "请先人工批准同计划中的一个 ComfyUI 工作流。":
+     error instanceof Error&&error.message.includes("assistant_local_comfy_scope_unsupported")?
+      "当前工作流不符合静态同模板范围，请逐项审批生成。":error instanceof Error?error.message:"未知错误"));
   }finally{setBusy(false);}
  };
  const revokeRunBudget=async()=>{
@@ -718,10 +723,12 @@ export function useCanvasAssistantTasks({
  },[open,busy,sending,selected?.id,onRunSequenceStep,
   runSequence?.state,runSequence?.next?.index,runBudget?.grantId,runBudget?.active,
   runBudget?.remainingJobs,detail?.readOnly,detail?.status]);
- const nextBudgetMode=runSequence?.next?.action.type==="run_workflow"?"local_comfy":"model";
+ const currentBudgetAction=runSequence?.next?.action??
+  runSequence?.sequence?.actions[runSequence?.index??0];
+ const nextBudgetMode=currentBudgetAction?.type==="run_workflow"?"local_comfy":"model";
  const nextBudgetAction=nextBudgetMode==="local_comfy"?"run_workflow":"run_node";
  const runBudgetTargets=runSequence?.sequence?.actions.flatMap((action,index)=>
-  index>=(runSequence.next?.index??runSequence.index??0)&&
+  index>=(runSequence.next?.index??((runSequence.index??0)+1))&&
   action.type===nextBudgetAction&&(action.type==="run_workflow"?
    !action.inputFromPrevious:!action.join)?
   [{index,nodeId:action.nodeId}]:[])??[];

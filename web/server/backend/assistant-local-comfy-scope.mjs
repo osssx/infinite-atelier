@@ -28,11 +28,12 @@ export function frozenLocalComfyScope(snapshot,{projectId,targetNodeId,document}
   !Array.isArray(request.rootOutputs)||request.rootOutputs.length<1||
   request.rootOutputs.length>16||!Array.isArray(request.edges)||request.edges.length||
   !Array.isArray(request.externalInputs)||request.externalInputs.length||
-  stableJson(request.runOptions)!=="{}"||
+  !keys(request.runOptions,[])||
   !keys(request.nodes[0],["id","templateId","templateRevision","inputOverrides"])||
   request.nodes[0].id!==targetNodeId||
   request.nodes[0].templateId!==binding.templateId||
   request.nodes[0].templateRevision!==binding.templateRevision||
+  request.nodes[0].inputOverrides===undefined||
   stableJson(request.nodes[0].inputOverrides)!==stableJson(binding.inputOverrides??{})||
   !request.rootOutputs.every(out=>keys(out,["nodeId","portId"])&&
    out.nodeId===targetNodeId&&nonempty(out.portId))||

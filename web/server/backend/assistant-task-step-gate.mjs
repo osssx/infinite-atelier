@@ -169,7 +169,11 @@ export function decideAssistantTaskStep(db,{projectId,taskId,stepId,requestId,
   }else{
    if(step.status!=="waiting_approval"&&!revoking)throw fail("assistant_step_not_approvable");
    const decidedAt=stamp(),choice=decision==="approve"?"approved":"rejected";
-   const record={decision:choice,planVersion:expectedPlanVersion,
+   const approvedComfy=decision==="approve"&&step.kind==="comfy_workflow"?
+    db.prepare("SELECT url FROM comfy_instances WHERE id=?")
+     .get(JSON.parse(step.action_json).job?.snapshot?.instanceId??null)?.url:null;
+   const record={...(approvedComfy?{comfyInstanceUrl:approvedComfy}:{}),
+    decision:choice,planVersion:expectedPlanVersion,
     actionDigest,projectRevision:frozen.projectRevision,decidedAt};
    const next=decision==="approve"?"ready":"blocked";
    const updated=db.prepare("UPDATE assistant_task_steps SET approval_json=?,status=?,updated_at=? WHERE id=? AND task_id=? AND status=? AND plan_version=?")

@@ -111,7 +111,7 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
  });
  app.setErrorHandler((error,req,reply)=>{
   const status=error.statusCode>=400&&error.statusCode<600?error.statusCode:500;
-  const publicCodes=new Set(["project_revision_conflict","project_not_found","project_id_conflict","invalid_project_document",
+  const publicCodes=new Set(["assistant_local_comfy_approval_required","assistant_local_comfy_scope_unsupported","project_revision_conflict","project_not_found","project_id_conflict","invalid_project_document",
    "invalid_project_id","project_document_too_large","expected_revision_required","invalid_project_reference",
    "invalid_canvas_chats","invalid_canvas_viewport","canvas_chats_too_large",
     "assistant_task_invalid","assistant_task_not_found","assistant_task_not_editable","assistant_task_payload_too_large","assistant_task_command_conflict",

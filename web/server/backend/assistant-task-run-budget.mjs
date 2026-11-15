@@ -77,6 +77,8 @@ function stateFor(db,projectId,taskId,grantId){
  if(new Set(spent.map(e=>e.payload.stepId)).size!==spent.length)
   throw fail("assistant_run_budget_evidence_invalid");
  const active=!revoked&&!task.read_only&&task.cancel_requested_at===null&&
+  (grant.mode!=="local_comfy"||!!grant.comfyInstanceUrl&&
+   db.prepare("SELECT url FROM comfy_instances WHERE id=?").get(grant.comfyScopeSummary?.instanceId)?.url===grant.comfyInstanceUrl)&&
   [1,2].includes(grant.payloadPolicyVersion)&&!!grant.payloadDigests&&!!grant.sourceFingerprints&&
   !terminal.has(task.status)&&task.active_plan_version===grant.planVersion&&
   Date.now()<grant.expiresAt&&spent.length<grant.maxJobs;
@@ -150,6 +152,11 @@ export function createAssistantRunBudgetGrant(db,{projectId,taskId,requestId,seq
   if(mode==="local_comfy"&&!anchorJob)throw fail("assistant_local_comfy_approval_required");
   const anchorComfy=mode==="local_comfy"?frozenLocalComfyScope(anchorJob.snapshot,{
    projectId,targetNodeId:anchorJob.targetNodeId,document:doc}):null;
+  const comfyInstanceUrl=mode==="local_comfy"?db.prepare("SELECT url FROM comfy_instances WHERE id=?")
+   .get(anchorComfy.instanceId)?.url:null;
+  if(mode==="local_comfy"&&(!comfyInstanceUrl||
+   JSON.parse(anchor.approval_json).comfyInstanceUrl!==comfyInstanceUrl))
+   throw fail("assistant_local_comfy_scope_unsupported",400);
   if(mode==="local_comfy"&&anchorJob.executionMode!=="poll")
    throw fail("assistant_local_comfy_scope_unsupported",400);
   const nodeDigests={},sourceFingerprints={},payloadDigests={};
@@ -181,7 +188,7 @@ export function createAssistantRunBudgetGrant(db,{projectId,taskId,requestId,seq
   const at=Date.now(),grantId=randomUUID(),grant={grantId,sequenceId,planVersion:expectedPlanVersion,
    intentDigest:seq.intent_digest,allowedIndices,maxJobs,nodeDigests,sourceFingerprints,payloadDigests,
    payloadPolicyVersion:mode==="local_comfy"?2:1,
-   ...(mode==="local_comfy"?{mode,comfyScopeDigest:hash(anchorComfy),
+   ...(mode==="local_comfy"?{mode,comfyInstanceUrl,comfyScopeDigest:hash(anchorComfy),
     comfyScopeSummary:{instanceId:anchorComfy.instanceId,templateId:anchorComfy.templateId,
      templateRevision:anchorComfy.templateRevision}}:
     {modelScopeDigest:hash(anchorScope),modelScopeSummary:{
@@ -235,7 +242,12 @@ export function authorizeAssistantRunBudgetEnqueue(db,{projectId,taskId,grantId,
  if(comfy){
   const projected=frozenLocalComfyScope(action.job.snapshot,{projectId,
    targetNodeId:action.job.targetNodeId,document:doc});
-  if(action.job.executionMode!=="poll"||
+  // An instance ID can be repointed between terminal Jobs. Old grants lacking
+  // endpoint evidence must also require fresh consent.
+  const instanceUrl=db.prepare("SELECT url FROM comfy_instances WHERE id=?")
+   .get(projected.instanceId)?.url;
+  if(!grant.comfyInstanceUrl||instanceUrl!==grant.comfyInstanceUrl||
+   action.job.executionMode!=="poll"||
    hash(projected)!==grant.comfyScopeDigest||
    hash(projected)!==grant.payloadDigests?.[pre.runIndex]||
    String(task.revision)!==action.job.snapshot.comfyRequest.canvasRevision)

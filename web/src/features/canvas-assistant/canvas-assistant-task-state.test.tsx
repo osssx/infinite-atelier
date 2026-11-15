@@ -1252,3 +1252,30 @@ it("P4.5a a Comfy workflow awaiting verified media binding never auto-enqueues",
  expect(runner).not.toHaveBeenCalled();
  expect(mocks.api.mock.calls.every(([,method])=>method==="GET")).toBe(true);
 });
+
+
+it.each(["waiting_external","awaiting_materialization"])("P4.5a retains local Comfy consent while predecessor is %s",async state=>{
+ const task={id:"local-pending",chatSessionId:"chat-a",rootMessageId:"original-user",
+  originalRequest:"连续本地工作流",status:"waiting_external",activePlanVersion:1,
+  recoveryMode:"job_observation",steps:[]};
+ const sequence={id:"pending-seq",taskId:task.id,sourceMessageId:"original-user",
+  planVersion:1,status:"active",actions:[{type:"run_workflow",nodeId:"a"},{type:"run_workflow",nodeId:"b"}]};
+ mocks.api.mockImplementation(async(url:string,method:string,body?:Record<string,unknown>)=>{
+  if(method==="GET"&&url.includes("chatSessionId="))return {tasks:[task]};
+  if(url.endsWith("/model-calls"))return {calls:[]};
+  if(url.endsWith("/run-sequences"))return {sequence,state,index:0,next:null};
+  if(method==="GET"&&url.endsWith("/run-budget"))return {grant:null};
+  if(method==="POST"&&url.endsWith("/run-budget")){
+   expect(body).toMatchObject({mode:"local_comfy",allowedIndices:[1],maxJobs:1});
+   return null;
+  }
+  return {task};
+ });
+ await render();
+ expect(container!.textContent).toContain("本地 ComfyUI：仅允许同实例");
+ const consent=container!.querySelector<HTMLInputElement>("input[aria-label='确认预授权可能产生费用']");
+ expect(consent).toBeTruthy();
+ await act(async()=>{consent!.click()});
+ await click("确认并启用有界自动生成");
+ expect(mocks.api.mock.calls.some(([url,method])=>method==="POST"&&url.endsWith("/run-budget"))).toBe(true);
+});

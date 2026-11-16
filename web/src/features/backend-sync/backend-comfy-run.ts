@@ -1,3 +1,4 @@
+import {assignComfyMediaSlots,resolveComfyMediaMode} from "@/features/comfy-workflow/comfy-media-slot-assignment";
 import type {CanvasNodeData,CanvasConnection} from "@/types/canvas";
 import type {ComfyWorkflowTemplate} from "@/features/comfy-workflow/template-schema";
 import type {MediaModeId} from "@/services/media-capabilities";
@@ -70,12 +71,15 @@ export async function startBackendComfyWorkflowRun(args:BackendComfyWorkflowArgs
  // visual context only; only edges targeting declared Comfy ports can be sent.
  const incoming=mediaBinding?allIncoming.filter(edge=>!!edge.toPortId&&template.ports.some(port=>port.id===edge.toPortId)):allIncoming;
  const useCase=template.mediaUseCase;
- const generationMode=useCase?.mediaCapabilities?(args.generationMode??useCase.mediaCapabilities.defaultMode):undefined;
+ const generationMode=useCase?.mediaCapabilities?resolveComfyMediaMode(template,workflowNode.id,graph.nodes,graph.connections,mediaBinding?.mediaMode??args.generationMode):undefined;
  const modeBinding=generationMode?useCase?.modeBindings?.[generationMode]:undefined;
  const mappedPorts=new Set(Object.values(modeBinding?.rolePorts??{}).flat());
+ const autoAssignment=mediaBinding&&workflowNode.type!=="comfy:workflow"?assignComfyMediaSlots(template,workflowNode.id,graph.nodes,graph.connections,generationMode):undefined;
+ if(autoAssignment?.errors.length)throw Error(autoAssignment.errors.join("；"));
+ const selectedSlots=autoAssignment?.slots??args.mediaSlots??{};
  const mediaEdges:CanvasConnection[]=[];
  if(mediaBinding&&useCase){
-  const selected=args.mediaSlots??{};
+  const selected=selectedSlots;
   if(useCase.mediaCapabilities){
    const resolved=resolveMediaCapabilities({mediaCapabilities:useCase.mediaCapabilities},{kind:useCase.channel,
     supportedModes:Object.keys(useCase.modeBindings??{}),supportedParameters:[...new Set(Object.values(useCase.modeBindings??{}).flatMap(binding=>Object.keys(binding?.parameterPorts??{})))]});
@@ -140,7 +144,7 @@ export async function startBackendComfyWorkflowRun(args:BackendComfyWorkflowArgs
   // ports must be accepted when the UI has not materialized local port data.
   ...(useCase?.slots.map(slot=>slot.id)??[])
  ]);
- const imageIdsByTargetPort=new Map(Object.entries(args.mediaSlots??{}).flatMap(([slotId,ref])=>ref?.imageId?[[slotId,ref.imageId] as const]:[]));
+ const imageIdsByTargetPort=new Map(Object.entries(selectedSlots).flatMap(([slotId,ref])=>ref?.imageId?[[slotId,ref.imageId] as const]:[]));
  const external=prepareCanvasExternalInputSnapshot(graph.nodes,[...incoming,...mediaEdges],virtualMediaTargetPortIds,imageIdsByTargetPort);
  const externalInputs:Array<Record<string,unknown>>=[];
  for(const value of external){

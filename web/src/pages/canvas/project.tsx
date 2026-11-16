@@ -2880,8 +2880,8 @@ function AtelierCanvasPage() {
                     const comfyPrompt=buildNodeGenerationContext(nodeId,nodesRef.current,connectionsRef.current,promptText).prompt;
                     const job=await startBackendComfyWorkflowRun({bridge,projectId,workflowNode:sourceNode,...snapshot,
                         template,instanceId:mediaPreset.instanceId||globalComfyInstanceId,outputPortIds:outputs,
-                        mediaSlots:mediaPreset.slots,prompt:comfyPrompt,mediaBinding:mediaPreset,workflowMode:mode,
-                        ...((sourceNode.metadata?.comfyMediaPreset?.mediaMode??(mode==="video"?sourceNode.metadata?.videoMode:undefined))?{generationMode:sourceNode.metadata?.comfyMediaPreset?.mediaMode??sourceNode.metadata?.videoMode}:{}),
+                        prompt:comfyPrompt,mediaBinding:mediaPreset,workflowMode:mode,
+                        ...(mediaPreset.mediaMode?{generationMode:mediaPreset.mediaMode}:{}),
                         beforeSubmit:()=>assertCanvasSubmissionActive(projectId,submissionToken),
                         ...(taskSubmit?{submitFrozenJob:taskSubmit}:{})});
                     sqliteGenerationJobsRef.current.set(nodeId,job.id);setRunningNodeId(nodeId);

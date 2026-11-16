@@ -1,14 +1,14 @@
 import {lazy,Suspense,useCallback,useEffect,useMemo,useState,type ReactNode} from "react";
-import {Modal,Select} from "antd";
+import {Modal} from "antd";
 import type {CanvasConnection,CanvasNodeData,CanvasNodeMetadata} from "@/types/canvas";
 import {listComfyPresetCatalog,loadComfyPresetCatalogTemplates,type ComfyCatalogLoadFailure,type ComfyCatalogPreset} from "./preset-catalog";
 import {getComfyTemplate} from "./template-registry";
-import type {ComfyMediaUseCase,ComfyWorkflowTemplate} from "./template-schema";
+import type {ComfyWorkflowTemplate} from "./template-schema";
 import {withComfyMediaAspect} from "./comfy-media-aspect";
 import {ComfyMediaParameters} from "./comfy-media-parameters";
 import type {AiConfig,ModelCapability} from "@/stores/use-config-store";
 import type {CanvasTheme} from "@/lib/canvas-theme";
-import {isCanvasImageMaskValid,resolveCanvasImageMask} from "@/lib/canvas/canvas-image-mask";
+import {assignComfyMediaSlots,resolveComfyMediaMode} from "./comfy-media-slot-assignment";
 import type {MediaModeId} from "@/services/media-capabilities";
 
 const ComfyWorkflowPanel=lazy(()=>import("./comfy-workflow-panel").then(module=>({default:module.ComfyWorkflowPanel})));
@@ -27,13 +27,6 @@ function workflowCapabilityTags(template:ComfyWorkflowTemplate|undefined):string
  if(!useCase.mediaCapabilities)return [];
  const modes=useCase.mediaCapabilities.modes.filter(mode=>mode.enabled&&useCase.modeBindings?.[mode.id]);
  return modes.length?[...modes.map(mode=>modeLabels[mode.id]),...(modes.some(mode=>mode.layout)?["Layout"]:[])]:["暂无可用能力"];
-}
-function hasMedia(node:CanvasNodeData,kind:string){
- const m=node.metadata;
- if(kind==="image")return node.type==="image"&&Boolean(m?.storageKey||m?.content||m?.images?.length);
- if(kind==="video")return node.type==="video"&&Boolean(m?.storageKey||m?.content);
- if(kind==="mask")return node.type==="image"&&Boolean(resolveCanvasImageMask(node));
- return node.type==="audio"&&Boolean(m?.storageKey||m?.content);
 }
 export function useComfyMediaPresetControl({node,nodes,connections,config,theme,capability,onChange,onPickerOptionsChange,defaultPreset,settingsButtonClassName,settingsPlacement,mediaMode}:Props&{mediaMode?:MediaModeId}):{settings:ReactNode;slots:ReactNode;error?:string;supportsLayout:boolean}{
  const [editor,setEditor]=useState<CanvasNodeData|null>(null);
@@ -60,7 +53,7 @@ export function useComfyMediaPresetControl({node,nodes,connections,config,theme,
  }).catch(error=>{if(active)setBoundPresetError(error instanceof Error?error.message:String(error));});return()=>{active=false};},[activePreset?.templateId,activePreset?.templateRevision,templates]);
  const template=activePreset?templates[activePreset.templateId+"@"+activePreset.templateRevision]:undefined;
  const useCase=template?.mediaUseCase;
- const activeMode=(activePreset?.mediaMode??useCase?.mediaCapabilities?.defaultMode??mediaMode??useCase?.mediaCapabilities?.modes.find(mode=>mode.enabled)?.id) as MediaModeId|undefined;
+ const activeMode=template?resolveComfyMediaMode(template,node.id,nodes,connections,activePreset?.mediaMode,mediaMode):undefined;
  const options=useMemo(()=>catalog.map(item=>{
   const t=templates[item.templateId+"@"+item.revision];
   if(!t?.mediaUseCase)return null;
@@ -88,25 +81,8 @@ export function useComfyMediaPresetControl({node,nodes,connections,config,theme,
  ],[options,activePreset,template,catalog,capability,templates]);
  useEffect(()=>{onPickerOptionsChange?.(pickerOptions,selectPreset,activePreset?activePreset.templateId+"@"+activePreset.templateRevision:undefined);},
   [onPickerOptionsChange,pickerOptions,selectPreset,activePreset?.templateId,activePreset?.templateRevision]);
- const incoming=new Set(connections.filter(edge=>edge.toNodeId===node.id).map(edge=>edge.fromNodeId));
- const candidates=(slot:ComfyMediaUseCase["slots"][number])=>nodes.filter(source=>
-  hasMedia(source,slot.valueKind.toLowerCase())).sort((a,b)=>Number(incoming.has(b.id))-Number(incoming.has(a.id))||a.title.localeCompare(b.title));
- const assign=(slotId:string,ref:MediaBinding["slots"][string]|undefined)=>{
-  if(!activePreset)return;const slots={...activePreset.slots};if(ref)slots[slotId]=ref;else delete slots[slotId];onChange({comfyMediaPreset:{...activePreset,slots}});
- };
- const grouped=(kind:string)=>options.filter(option=>option.group===kind).map(({label,value})=>({label,value}));
- const slots=useCase?.slots.length?<div className="mt-2 min-w-0 max-w-[300px] space-y-1">{useCase.slots.map(slot=>{
-  const assets=candidates(slot);const value=activePreset?.slots[slot.id];
-   const selected=value?value.nodeId+"#"+(value.imageId??""):undefined;
-   const choices=assets.flatMap(source=>{
-    const images=source.type==="image"&&source.metadata?.images?.length?source.metadata.images:null;
-    if(images?.length)return images.filter(image=>slot.valueKind!=="MASK"||isCanvasImageMaskValid({id:image.id,storageKey:image.storageKey,width:image.naturalWidth,height:image.naturalHeight,mask:image.mask})).map(image=>({label:`${incoming.has(source.id)?"↑ ":""}${source.title} · 单张 ${image.id.slice(0,8)}`,value:source.id+"#"+image.id}));
-    if(slot.valueKind==="MASK"&&!resolveCanvasImageMask(source))return [];
-    return [{label:`${incoming.has(source.id)?"↑ ":""}${source.title} · 单张`,value:source.id+"#"}];
-   });
-   return <label key={slot.id} className="block"><Select className="w-full" allowClear placeholder={slot.label+(slot.required?"（必填）":"（可选）")}
-    value={selected} options={choices} onChange={(v:string|undefined)=>{if(!v){assign(slot.id,undefined);return;}const [nodeId,imageId]=v.split("#");assign(slot.id,{nodeId,...(imageId?{imageId}:{})});}}/></label>;
-  })}</div>:null;
+ const assignment=template?assignComfyMediaSlots(template,node.id,nodes,connections,activeMode):undefined;
+ const slots=null;
  const openPresetEditor=()=>{
   if(!template||!activePreset)return;
   const entry=catalog.find(item=>item.templateId===activePreset.templateId&&item.revision===activePreset.templateRevision)
@@ -145,5 +121,5 @@ export function useComfyMediaPresetControl({node,nodes,connections,config,theme,
   catalogFailures.length?`以下预设版本无法加载，请在工作流设置中重新导入：${catalogFailures.map(failure=>`${failure.name} (${failure.presetId}): ${failure.message}`).join("；")}`:
   boundPresetError?`当前绑定的工作流版本无法加载，请重新导入该版本：${boundPresetError}`:undefined;
  const supportsLayout=Boolean(activeMode&&useCase?.mediaCapabilities?.modes.some(mode=>mode.id===activeMode&&mode.enabled&&mode.layout&&useCase.modeBindings?.[mode.id]));
- return {settings,slots,error,supportsLayout};
+ return {settings,slots,error:error??assignment?.errors.join("；"),supportsLayout};
 }

@@ -79,39 +79,40 @@ export function getMentionResourceNodesFromIndex(index: CanvasGraphIndex, nodeId
     return node && isResourceNode(node) ? [node] : [];
 }
 
-export function getGenerationResourceNodes(nodeId: string, nodes: CanvasNodeData[], connections: CanvasConnection[]) {
-    return getGenerationResourceNodesFromIndex(buildCanvasGraphIndex(nodes, connections), nodeId);
+/** Include empty media nodes when callers need to diagnose unavailable references. */
+export function getGenerationResourceNodes(nodeId: string, nodes: CanvasNodeData[], connections: CanvasConnection[], includeUnavailable = false) {
+    return getGenerationResourceNodesFromIndex(buildCanvasGraphIndex(nodes, connections), nodeId, includeUnavailable);
 }
 
 /**
  * Same three tiers as the mention variant, minus the last one: generation has no self fallback.
  * The two must stay separate — folding them together would change what gets sent for generation.
  */
-export function getGenerationResourceNodesFromIndex(index: CanvasGraphIndex, nodeId: string) {
-    const configInputs = getConnectedConfigResourceNodesFromIndex(index, nodeId);
+export function getGenerationResourceNodesFromIndex(index: CanvasGraphIndex, nodeId: string, includeUnavailable = false) {
+    const configInputs = getConnectedConfigResourceNodesFromIndex(index, nodeId, includeUnavailable);
     if (configInputs.length) return configInputs;
-    const ownInputs = getContextResourceNodesFromIndex(index, nodeId);
+    const ownInputs = getContextResourceNodesFromIndex(index, nodeId, includeUnavailable);
     if (ownInputs.length) return ownInputs;
     return [];
 }
 
 /** Inbound resource nodes, in `connections` array order — that order drives the reference labels. */
-function getContextResourceNodesFromIndex(index: CanvasGraphIndex, nodeId: string) {
+function getContextResourceNodesFromIndex(index: CanvasGraphIndex, nodeId: string, includeUnavailable = false) {
     const inbound = index.inboundByNodeId.get(nodeId);
     if (!inbound) return [];
     const result: CanvasNodeData[] = [];
     for (const connection of inbound) {
         const node = index.nodeById.get(connection.fromNodeId);
-        if (node && isResourceNode(node)) result.push(node);
+        if (node && (isResourceNode(node) || includeUnavailable && ["image", "video", "audio"].includes(node.type))) result.push(node);
     }
     return result;
 }
 
-function getConnectedConfigResourceNodesFromIndex(index: CanvasGraphIndex, nodeId: string) {
+function getConnectedConfigResourceNodesFromIndex(index: CanvasGraphIndex, nodeId: string, includeUnavailable = false) {
     // First matching outbound edge wins, preserving the old `connections.find` semantics.
     const configConnection = index.outboundByNodeId.get(nodeId)?.find((connection) => index.nodeById.get(connection.toNodeId)?.type === CanvasNodeType.Config);
     if (!configConnection) return [];
-    return getContextResourceNodesFromIndex(index, configConnection.toNodeId).filter((node) => node.id !== nodeId);
+    return getContextResourceNodesFromIndex(index, configConnection.toNodeId, includeUnavailable).filter((node) => node.id !== nodeId);
 }
 
 function labelResourceNodes(nodes: CanvasNodeData[], active: boolean) {

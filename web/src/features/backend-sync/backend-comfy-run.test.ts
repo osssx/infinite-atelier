@@ -178,20 +178,20 @@ describe("backend save fence + frozen Comfy submission",()=>{
     {id:"image",label:"Image",direction:"source",valueKind:"IMAGE",outputBinding:{nodeId:"3",outputIndex:0},capture:{kind:"image",adapterId:"SaveImage"}}],
    mediaUseCase:{channel:"image",primaryOutputKind:"image",promptPortId:"prompt",slots:[{id:"reference",label:"Reference",valueKind:"IMAGE"}],primaryOutputPortId:"image"}};
   const context:CanvasNodeData={id:"context-text",type:"text",title:"Context",width:300,height:220,position:{x:-400,y:0},metadata:{content:"visual only"}};
-  const graph={nodes:[reference,mediaNode,context],connections:[{id:"legacy-context",fromNodeId:context.id,toNodeId:mediaNode.id}]};let frozen:any;
+  const graph={nodes:[reference,mediaNode,context],connections:[{id:"legacy-context",fromNodeId:context.id,toNodeId:mediaNode.id},{id:"reference-edge",fromNodeId:reference.id,toNodeId:mediaNode.id}]};let frozen:any;
   const bridge={state:{status:"connected"},assertNoActiveJob:vi.fn(async()=>{}),assertComfyReady:vi.fn(async()=>{}),
    saveProjectNow:vi.fn(async()=>({projectId:"p1",revision:9,sourceNodeFingerprint:"media-fence"})),
    uploadFrozenBlob:vi.fn(async(blob:Blob)=>({blobId:"a".repeat(64),sha256:"a".repeat(64),byteSize:blob.size} as BlobUploadResponse)),
    submitFrozenJob:vi.fn(async(payload:Record<string,unknown>)=>{frozen=payload;return expectedJob})};
   const result=await startBackendComfyWorkflowRun({bridge,projectId:"p1",workflowNode:mediaNode,...graph,template:mediaTemplate,
-   instanceId:"comfy-local",outputPortIds:["image"],mediaSlots:mediaNode.metadata!.comfyMediaPreset!.slots,prompt:"frozen prompt",
+   instanceId:"comfy-local",outputPortIds:["image"],mediaSlots:{reference:{nodeId:"stale-selection"}},prompt:"frozen prompt",
    readBlob:async()=>new Blob(["image"],{type:"image/png"}),beforeSubmit:vi.fn()});
   expect(result).toEqual(expectedJob);
   const request=(frozen.snapshot as any).comfyRequest;
   expect(request.nodes[0].inputOverrides).toEqual({steps:0,enabled:false,prompt:"frozen prompt"});
   expect(request.edges).toEqual([{fromNodeId:"reference",fromPortId:"image",toNodeId:"media-target",toPortId:"reference"}]);
   expect(request.externalInputs).toMatchObject([{kind:"asset",sourceNodeId:"reference",sourcePortId:"image",valueKind:"IMAGE",sha256:"a".repeat(64)}]);
-  expect(graph.connections).toEqual([{id:"legacy-context",fromNodeId:"context-text",toNodeId:"media-target"}]);
+  expect(graph.connections).toHaveLength(2);
  });
  it("AI workflow port override reaches frozen Comfy submission and does not overwrite source media",async()=>{
   const mediaTemplate:ComfyWorkflowTemplate={...template,id:"assistant-media",revision:"r-ai",

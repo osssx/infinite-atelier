@@ -59,7 +59,7 @@ export function CanvasConfigNodePanel({ node, onConfigChange, onGenerate, onStop
         else {delete next[mode as "image"|"video"|"audio"];onConfigChange(node.id,{comfyWorkflowSelections:next});}
     },[mode,node.id,node.metadata?.comfyWorkflowSelections,onConfigChange]);
     const comfyControls=useComfyMediaPresetControl({node:workflowNode,nodes,connections,config,theme,capability:mode,mediaMode:workflowNode.metadata?.comfyMediaPreset?.mediaMode??(mode==="video"?workflowNode.metadata?.videoMode??"text_to_video":mode==="image"?workflowNode.metadata?.mediaMode??"text_to_image":undefined),
-        defaultPreset:inheritedWorkflow,onChange:handleComfySelection,onPickerOptionsChange:onComfyOptionsChange,
+        showModeSelector:false,defaultPreset:inheritedWorkflow,onChange:handleComfySelection,onPickerOptionsChange:onComfyOptionsChange,
         settingsButtonClassName:"canvas-compact-control !h-10 !w-full !justify-start !rounded-lg !px-2",settingsPlacement:"topRight"});
     const chipStyle = { background: theme.node.fill, borderColor: theme.node.stroke, color: theme.node.text };
     const hasAnyInput = Boolean(inputSummary.textCount || inputSummary.imageCount || inputSummary.videoCount || inputSummary.audioCount);

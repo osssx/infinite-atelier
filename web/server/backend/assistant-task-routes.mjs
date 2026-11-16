@@ -19,7 +19,8 @@ import {registerAssistantTextDeliverable,registerAssistantStructuredTextDelivera
 import {discoverAssistantCreativeCharacters} from "./assistant-creative-context.mjs";
 import {discoverAssistantCreativeMaterials,selectAssistantCreativeMaterials} from "./assistant-creative-materials.mjs";
 import {listAssistantAgentRuns,inspectAssistantAgentRun} from "./assistant-agent-run-ledger.mjs";
-import {inspectAssistantStoryEventReview,decideAssistantStoryEventReview} from "./assistant-story-event-review.mjs";
+import {inspectAssistantStoryEventReview,decideAssistantStoryEventReview,
+ inspectAssistantStoryEventApplyPreflight} from "./assistant-story-event-review.mjs";
 import {agentCanvasStepForRun} from "./assistant-agent-step-coordinator.mjs";
 
 const id={type:"string",pattern:"^[A-Za-z0-9_-]{1,128}$"};
@@ -84,6 +85,11 @@ const storyEventDecisionBody={type:"object",additionalProperties:false,
   snapshotDigest:{type:"string",pattern:"^[a-f0-9]{64}$"},
   decision:{type:"string",enum:["acknowledge_candidate","request_revision"]},
   confirmed:{type:"boolean",const:true}}};
+const storyEventPreflightQuery={type:"object",additionalProperties:false,
+ required:["turnMessageId","snapshotDigest","stepId"],properties:{
+  turnMessageId:id,stepId:id,
+  snapshotDigest:{type:"string",pattern:"^[a-f0-9]{64}$"}
+ }};
 const creativeMaterialsQuery={...creativeTurnQuery,properties:{...creativeTurnQuery.properties,
  kinds:{type:"string",pattern:"^(story|scene|style)(,(story|scene|style)){0,2}$"}}};
 const textDeliverableBody={type:"object",additionalProperties:false,
@@ -257,6 +263,10 @@ export function registerAssistantTaskRoutes(app,db,{skillRegistry,blobStore,onTa
     turnMessageId:req.query.turnMessageId})));
  // P4.9i user-editor-only event review, bound to BOTH completed model
  // responses and frozen current Task/project revision. No Canvas/Job grants.
+ app.get(base+"/:taskId/story-events/review/preflight",{
+  schema:{params:taskParams,querystring:storyEventPreflightQuery}},(req,reply)=>result(reply,
+   inspectAssistantStoryEventApplyPreflight(db,{projectId:req.params.id,
+    taskId:req.params.taskId,...req.query})));
  app.get(base+"/:taskId/story-events/review",{
   schema:{params:taskParams,querystring:creativeTurnQuery}},(req,reply)=>result(reply,
    inspectAssistantStoryEventReview(db,{projectId:req.params.id,taskId:req.params.taskId,

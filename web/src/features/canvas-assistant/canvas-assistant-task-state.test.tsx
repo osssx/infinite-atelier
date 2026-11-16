@@ -135,6 +135,38 @@ it("discards a delayed safe-continuation response after switching chats",async()
  expect(container!.textContent).not.toContain("已安全写入 跳过分支");
  expect(mocks.api.mock.calls.slice(prior).some(([url])=>url.includes("task-a"))).toBe(false);
 });
+it("P4.9j mounts event audit in Task details and scopes GET to selected Task and latest session user turn",async()=>{
+ const task={id:"story-task",chatSessionId:"chat-a",chatSessionIds:["chat-a"],
+  rootMessageId:"original-user",originalRequest:"修订故事分镜",
+  status:"planning",activePlanVersion:1,recoveryMode:"guidance_only",steps:[]};
+ const source={
+  version:1,kind:"story_event_editorial_review",taskId:task.id,turnMessageId:"original-user",
+  snapshotDigest:"a".repeat(64),projectRevision:1,activePlanVersion:1,
+  semanticRevision:0,source:{requestId:"original",digest:"a".repeat(64)},
+  revision:{requestId:"revised",digest:"b".repeat(64)},
+  comparison:[{eventId:"star_returns_to_sky",label:"把星星放回天空",sourceShotIndex:3,
+   revisionShotIndex:null,detected:false,
+   warnings:["prior_story_action_not_observed"],decision:"pending"}],
+  reviewStatus:"pending",warnings:[{id:"star_returns_to_sky",code:"prior_story_action_not_observed",afterEventId:null}],
+  userConfirmed:false,semanticReview:"pending",
+  canvasExecutionAuthorized:false,taskCompletionAuthorized:false
+ };
+ mocks.api.mockImplementation(async(url:string,method:string)=>{
+  if(method==="GET"&&url.includes("chatSessionId="))return {tasks:[task]};
+  if(method==="GET"&&url.includes("/story-events/review?"))return source;
+  if(method==="GET"&&url.endsWith("/run-sequences"))return {sequence:null,state:"none",next:null};
+  if(method==="GET"&&url.endsWith("/model-calls"))return {calls:[]};
+  return {task};
+ });
+ await render();
+ await click("任务详情");
+ await click("剧情事件审核（只读差异）");
+ expect(container!.textContent).toContain("把星星放回天空");
+ expect(container!.textContent).toContain("修订中未观察到");
+ expect(mocks.api.mock.calls.some(([url,method])=>method==="GET"&&
+  url.includes("/tasks/story-task/story-events/review?turnMessageId=original-user"))).toBe(true);
+ expect(mocks.api.mock.calls.some(([,method])=>method==="POST")).toBe(false);
+});
 it("keeps a normal planning Task compact and restores every control on demand",async()=>{
  const task={id:"compact-task",chatSessionId:"chat-a",chatSessionIds:["chat-a"],
   rootMessageId:"original-user",originalRequest:"三镜头分镜文字规划",status:"planning",

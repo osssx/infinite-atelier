@@ -174,6 +174,68 @@ export function inspectAssistantStoryEventReview(db,{projectId,taskId,turnMessag
   sourceType:"unconfirmed_ai_storyboard",userConfirmed:false,
   semanticReview:"pending",canvasExecutionAuthorized:false,taskCompletionAuthorized:false};
 }
+
+/** Read-only pre-apply source check for a previously frozen Agent Canvas Step.
+ * It does NOT sign a grant, approve a Step, or bypass execution checks.
+ * Unsupported/plain Canvas steps deliberately fail closed.
+ */
+export function inspectAssistantStoryEventApplyPreflight(db,{
+ projectId,taskId,turnMessageId,snapshotDigest,stepId
+}){
+ if(!goodDigest(snapshotDigest)||!goodId(stepId))
+  fail("assistant_story_review_invalid",400);
+ const preview=inspectAssistantStoryEventReview(db,{projectId,taskId,turnMessageId});
+ if(preview.snapshotDigest!==snapshotDigest)fail("assistant_story_review_snapshot_stale");
+ const base={snapshotDigest,stepId,reviewStatus:preview.reviewStatus,
+  editorialOnly:true,canvasExecutionAuthorized:false,taskCompletionAuthorized:false};
+ if(preview.comparison.length===0)return {...base,verified:false,reason:"no_source_candidates"};
+ if(preview.comparison.some(item=>item.decision==="pending"))
+  return {...base,verified:false,reason:"editorial_decisions_pending"};
+ if(preview.comparison.some(item=>item.decision==="request_revision"))
+  return {...base,verified:false,reason:"editorial_revision_requested"};
+ if(preview.warnings.length)
+  return {...base,verified:false,reason:"story_event_warnings_unresolved"};
+ const task=validateOwnership(db,projectId,taskId).task;
+ if(task.read_only||task.cancel_requested_at!==null||
+  ["completed","cancelled","cancelling"].includes(task.status))
+  return {...base,verified:false,reason:"task_not_editable"};
+ const step=db.prepare("SELECT kind,status,plan_version,action_json,action_digest,preconditions_json,superseded_at FROM assistant_task_steps WHERE id=? AND task_id=?").get(stepId,taskId);
+ if(!step||step.kind!=="canvas_mutation"||step.superseded_at!==null||
+  !["waiting_approval","ready"].includes(step.status)||
+  step.plan_version!==preview.activePlanVersion)
+  return {...base,verified:false,reason:"frozen_step_unavailable"};
+ let action,pre;
+ try{action=JSON.parse(step.action_json);pre=JSON.parse(step.preconditions_json)}
+ catch{return {...base,verified:false,reason:"step_source_not_bound"}}
+ if(digest(action)!==step.action_digest||
+  pre.projectRevision!==preview.projectRevision||
+  pre.agentRunBinding?.requestId!==preview.revision.requestId||
+  !goodDigest(pre.agentRunBinding?.responseDigest)||
+  !goodDigest(pre.agentRunBinding?.actionsDigest)||
+  pre.agentRunBinding?.planVersion!==preview.activePlanVersion||
+  pre.agentRunBinding?.runId!==action.agentRunId||
+  action.agentOutputDigest!==pre.agentRunBinding.responseDigest||
+  action.agentActionsDigest!==pre.agentRunBinding.actionsDigest||
+  !Array.isArray(action.actions)||
+  digest(action.actions)!==pre.agentRunBinding.actionsDigest)
+  return {...base,verified:false,reason:"step_source_not_bound"};
+ // The frozen agent binding digest is over the parsed Provider response,
+ // whereas the editorial snapshot binds the originally persisted JSON bytes.
+ // Check both independently instead of comparing unlike hash domains.
+ const command=db.prepare("SELECT response_json,status FROM assistant_task_commands WHERE project_id=? AND task_id=? AND request_id=? AND command_kind='model_infer'").get(projectId,taskId,preview.revision.requestId);
+ let response;
+ try{response=JSON.parse(command?.response_json)}catch{}
+ if(command?.status!=="completed"||!response||
+  digest(command.response_json)!==preview.revision.digest||
+  digest(response)!==pre.agentRunBinding.responseDigest||
+  !Array.isArray(response.actions)||
+  digest(response.actions.filter(a=>a?.type!=="run_node"&&a?.type!=="run_workflow"))!==
+   pre.agentRunBinding.actionsDigest)
+  return {...base,verified:false,reason:"step_source_not_bound"};
+ return {...base,verified:true,reason:"bound_editorial_source_rechecked",
+  projectRevision:preview.projectRevision,
+  stepActionDigest:step.action_digest};
+}
 /** Explicit single-user editorial decision; does not accept any source body,
  * claimed event IR, plan, or Canvas actions from the browser.
  */

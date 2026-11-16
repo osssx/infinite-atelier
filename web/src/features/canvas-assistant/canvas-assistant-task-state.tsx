@@ -7,6 +7,7 @@ import type {CanvasAssistantSession} from "@/types/canvas";
 import type {AssistantContextScope} from "./canvas-assistant-context";
 import {executeFrozenAssistantCanvasTaskStep,verifyFrozenAssistantTextDeliverable} from "./canvas-assistant-task-execution";
 import {canLaunchAssistantRunSequenceStep,type AssistantRunSequenceView} from "./canvas-assistant-task-run-sequences";
+import {StoryEventReviewPanel} from "./canvas-assistant-story-review";
 
 type Step={id:string;kind:string;planVersion:number;status:string;actionDigest:string;
  approvalDecision?:string|null;approvalGrantId?:string|null;
@@ -818,6 +819,7 @@ export function useCanvasAssistantTasks({
  const runBudgetScopeKey=JSON.stringify([projectId,activeChatId,selectedId,runSequence?.sequence?.id,
   runSequence?.sequence?.planVersion,nextBudgetMode,runBudgetTargets,runBudgetLimit,runBudgetAnchor?.actionDigest]);
  useEffect(()=>{setRunBudgetConsent(false);runBudgetConsentKey.current="";},[runBudgetScopeKey]);
+ const latestUserTurnId=[...(session?.messages??[])].reverse().find(m=>m.role==="user")?.id??null;
  const view=<section aria-label="任务状态" className="canvas-assistant-task"
   style={{borderColor:"var(--assistant-border)",color:"var(--assistant-text)"}}>
   <div className="canvas-assistant-task-selector">
@@ -955,6 +957,11 @@ export function useCanvasAssistantTasks({
       </div>:<p>任务不可编辑，历史事项仅供查看。</p>}
      </div>:null}
     </div>:null}
+    {detail?.id===selected.id?
+     <StoryEventReviewPanel projectId={projectId} taskId={selected.id}
+      turnMessageId={latestUserTurnId} disabled={busy||sending}
+      frozenStep={pendingCanvas.find(step=>!!step.action?.agentRunId)??null}
+      readOnly={!!currentTask?.readOnly||!activeTask}/>:null}
     {detail?.id===selected.id&&detail.lastError?
      <p role="status" className="mt-1 break-words">上次错误：{detail.lastError.slice(0,200)}</p>:null}
 

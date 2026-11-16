@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {DatabaseSync} from "node:sqlite";
+import {createHash} from "node:crypto";
+import {stableJson} from "./repository.mjs";
 import {initializeSchema} from "./schema.mjs";
 import {createProject} from "./projects.mjs";
 import {createAssistantTask,appendAssistantTaskTurn,changeAssistantTaskSemantic} from "./assistant-tasks.mjs";
@@ -246,6 +248,82 @@ test("P4.9i server does not trust preview after candidate model response bytes c
  const reject=await f.decide(decision(before));
  assert.equal(reject.status,409);
  assert.equal(reject.body.code,"assistant_story_review_snapshot_stale");
+});
+
+function addFrozenAgentStep(db,taskId,projectId,{corrupt=false,stepId="review-step"}={}){
+ const row=db.prepare("SELECT response_json FROM assistant_task_commands WHERE task_id=? AND request_id='revision-call'").get(taskId);
+ const response=JSON.parse(row.response_json);
+ const digest=value=>createHash("sha256").update(stableJson(value)).digest("hex");
+ const binding={
+  runId:"storyboard-agent-run",requestId:"revision-call",planVersion:1,
+  responseDigest:digest(response),actionsDigest:digest(response.actions)
+ };
+ const action={actions:response.actions,center:{x:0,y:0},
+  agentRunId:binding.runId,agentOutputDigest:binding.responseDigest,
+  agentActionsDigest:binding.actionsDigest};
+ const revision=db.prepare("SELECT revision FROM projects WHERE id=?").get(projectId).revision;
+ const pre={projectRevision:revision,agentRunBinding:binding};
+ if(corrupt)pre.agentRunBinding.actionsDigest="f".repeat(64);
+ db.prepare("INSERT INTO assistant_task_steps(id,task_id,plan_version,ordinal,kind,status,required,depends_on_json,action_json,action_digest,preconditions_json,approval_json,receipt_json,receipt_trust,result_json,created_at,updated_at) VALUES(?,?,1,0,'canvas_mutation','waiting_approval',1,'[]',?,?,?,'{}','{}','none','{}',?,?)")
+  .run(stepId,taskId,stableJson(action),digest(action),stableJson(pre),Date.now(),Date.now());
+ return {stepId,actionDigest:digest(action)};
+}
+test("P4.9j read-only preflight verifies a frozen step bound to the exact revision output but grants no execution",async t=>{
+ const f=await setup(t,{revisedActions:cards("complete")});
+ let review=(await f.preview()).body;
+ const frozen=addFrozenAgentStep(f.db,f.taskId,f.projectId);
+ const url=f.base+"/preflight?turnMessageId=revision-turn&snapshotDigest="+review.snapshotDigest+"&stepId="+frozen.stepId;
+ let before=await f.app.inject({method:"GET",url});
+ assert.equal(before.statusCode,200,before.body);
+ assert.equal(before.json().verified,false);
+ assert.equal(before.json().reason,"editorial_decisions_pending");
+ for(const event of review.comparison){
+  const v=await f.decide(decision(review,event.eventId,"review-"+event.eventId,"acknowledge_candidate"));
+  assert.equal(v.status,200,v.body);
+ }
+ review=(await f.preview()).body;
+ assert.equal(review.reviewStatus,"recorded_only");
+ const passed=await f.app.inject({method:"GET",url});
+ assert.equal(passed.statusCode,200,passed.body);
+ assert.equal(passed.json().verified,true);
+ assert.equal(passed.json().stepActionDigest,frozen.actionDigest);
+ assert.equal(passed.json().canvasExecutionAuthorized,false);
+ assert.equal(passed.json().taskCompletionAuthorized,false);
+ assert.equal(f.db.prepare("SELECT COUNT(*) n FROM jobs").get().n,0);
+ assert.equal(f.db.prepare("SELECT COUNT(*) n FROM assistant_task_attempts").get().n,0);
+ assert.equal(f.posts,2);
+});
+test("P4.9j preflight rejects unresolved original story warnings, altered frozen binding, and stale snapshot",async t=>{
+ const f=await setup(t);
+ let review=(await f.preview()).body;
+ const frozen=addFrozenAgentStep(f.db,f.taskId,f.projectId,{corrupt:true});
+ const target=f.base+"/preflight?turnMessageId=revision-turn&snapshotDigest="+review.snapshotDigest+"&stepId="+frozen.stepId;
+ let missing=await f.app.inject({method:"GET",url:target});
+ assert.equal(missing.statusCode,200,missing.body);
+ assert.equal(missing.json().reason,"editorial_decisions_pending");
+ for(const event of review.comparison){
+  const v=await f.decide(decision(review,event.eventId,"review-"+event.eventId,"acknowledge_candidate"));
+  assert.equal(v.status,200,v.body);
+ }
+ missing=await f.app.inject({method:"GET",url:target});
+ assert.equal(missing.json().verified,false);
+ assert.equal(missing.json().reason,"story_event_warnings_unresolved");
+ f.db.prepare("UPDATE projects SET revision=revision+1 WHERE id=?").run(f.projectId);
+ const stale=await f.app.inject({method:"GET",url:target});
+ assert.equal(stale.statusCode,409);
+ assert.equal(stale.json().code,"assistant_story_review_snapshot_stale");
+});
+test("P4.9j preflight never treats a mismatched agent output as the user-approved revision",async t=>{
+ const f=await setup(t,{revisedActions:cards("complete")});
+ const review=(await f.preview()).body;
+ const frozen=addFrozenAgentStep(f.db,f.taskId,f.projectId,{corrupt:true});
+ for(const event of review.comparison){
+  assert.equal((await f.decide(decision(review,event.eventId,"review-"+event.eventId,"acknowledge_candidate"))).status,200);
+ }
+ const res=await f.app.inject({method:"GET",url:f.base+"/preflight?turnMessageId=revision-turn&snapshotDigest="+review.snapshotDigest+"&stepId="+frozen.stepId});
+ assert.equal(res.statusCode,200,res.body);
+ assert.equal(res.json().verified,false);
+ assert.equal(res.json().reason,"step_source_not_bound");
 });
 test("P4.9i stale semantic revision invalidates snapshot even if model drafts and graph remain unchanged",async t=>{
  const f=await setup(t),v=(await f.preview()).body;

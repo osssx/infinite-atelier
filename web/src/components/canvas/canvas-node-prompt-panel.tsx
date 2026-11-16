@@ -142,7 +142,7 @@ export function CanvasNodePromptPanel({ node, projectId, isRunning, onPromptChan
                                 onMissingConfig={() => openConfigDialog(true)}
                                 onOpenChange={onImageSettingsOpenChange}
                             />:comfyMediaControls.settings}
-                            {showLayoutEditor?<Tooltip title="Layout 编辑器"><Button type="text" aria-label="打开 BBox 编辑器" className="!h-8 !w-8 !min-w-8 shrink-0 !rounded-full !p-0" style={{color:theme.node.text}} icon={<PanelsTopLeft className="size-4"/>} onClick={()=>onBboxEdit?.(node)}/></Tooltip>:null}
+                            {showLayoutEditor?<Tooltip title="布局编辑器"><Button type="text" aria-label="打开布局编辑器" className="!h-8 !w-8 !min-w-8 shrink-0 !rounded-full !p-0" style={{color:theme.node.text}} icon={<PanelsTopLeft className="size-4"/>} onClick={()=>onBboxEdit?.(node)}/></Tooltip>:null}
                         </>
                     ) : mode === "video" ? (
                         <>

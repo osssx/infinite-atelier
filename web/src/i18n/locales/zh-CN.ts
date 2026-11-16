@@ -525,7 +525,7 @@ export default {
             landscape: "横向 · 1536 × 1024",
             portrait: "纵向 · 1024 × 1536",
             customDraft: "自定义 · {{width}} × {{height}}（仅草稿）",
-            generationSize: "生成尺寸",
+            generationSize: "画面比例",
             width: "宽度",
             height: "高度",
             previewHint: "预览布局：隐藏网格和选中标记，禁用画布编辑；不生成图片。",

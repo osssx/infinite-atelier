@@ -819,7 +819,6 @@ export function CanvasNodeBBoxLayoutDialog({
                                 options={[...new Set([8,16,32,64,128,pixelMultiple])].sort((a,b)=>a-b).map(value=>({value,label:`${value} 像素`}))}
                                 onChange={(value:number)=>{setPixelMultiple(value);const size=resolutionFromMegapixels(pixelRatio.current[0],pixelRatio.current[1],megapixels,value);commit(resizeBboxLayout(layout,size.width,size.height));}}/>
                         </label>
-                        <p className="text-xs opacity-65">与 ComfyUI 一致：1 MP = 1024² 像素，宽高按 {pixelMultiple} 像素对齐。</p>
                         <label className="block text-xs">
                             {t("canvas.bboxEditor.generationSize")}{" "}
                             <Select

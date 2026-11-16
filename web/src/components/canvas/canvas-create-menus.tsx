@@ -19,6 +19,8 @@ type CanvasMenuLocation = {
     viewport: ViewportTransform;
 };
 
+const canvasCreateMenuClassName = "z-[1200] max-h-[70vh] w-[248px] overflow-y-auto rounded-[14px] border p-2 shadow-2xl backdrop-blur thin-scrollbar";
+
 /** Keep canvas-world anchors, but render menus as fixed-size screen overlays. */
 function useCanvasMenuPlacement(anchor: Position, { canvasRef, viewport }: CanvasMenuLocation) {
     const menuRef = useRef<HTMLDivElement>(null);
@@ -33,7 +35,7 @@ function useCanvasMenuPlacement(anchor: Position, { canvasRef, viewport }: Canva
                 anchor,
                 viewport,
                 container.getBoundingClientRect(),
-                { width: menu.offsetWidth || 300, height: menu.offsetHeight || 400 },
+                { width: menu.offsetWidth || 248, height: menu.offsetHeight || 400 },
                 { width: window.innerWidth, height: window.innerHeight },
             );
             setScreenPosition((current) => current?.x === next.x && current.y === next.y ? current : next);
@@ -88,7 +90,7 @@ export function ConnectionCreateMenu({
     return createPortal(
         <div
             ref={menuRef}
-            className="z-[1200] max-h-[calc(100vh-24px)] w-[300px] overflow-y-auto rounded-[18px] border p-3 shadow-2xl backdrop-blur"
+            className={canvasCreateMenuClassName}
             data-connection-create-menu
             data-canvas-no-zoom
             style={{ ...style, background: theme.node.panel, borderColor: theme.node.stroke, color: theme.node.text }}
@@ -96,7 +98,7 @@ export function ConnectionCreateMenu({
             onPointerDown={(event) => event.stopPropagation()}
         >
             <div className="mb-2 flex items-center justify-between px-1">
-                <span className="text-sm font-medium" style={{ color: theme.node.muted }}>
+                <span className="text-xs font-medium" style={{ color: theme.node.muted }}>
                     {t("canvas.createMenu.fromNode")}
                 </span>
                 <button type="button" className="grid size-7 place-items-center rounded-lg text-base opacity-55 transition hover:bg-white/10 hover:opacity-100" onClick={onClose} aria-label={t("canvas.createMenu.close")}>
@@ -104,11 +106,11 @@ export function ConnectionCreateMenu({
                 </button>
             </div>
             <div className="grid gap-1">
-                <ConnectionCreateOption theme={theme} icon={<List className="size-5" />} title={t("canvas.createMenu.text")} description={t("canvas.createMenu.textDescription")} onClick={() => onCreate(CanvasNodeType.Text)} />
-                <ConnectionCreateOption theme={theme} icon={<ImageIcon className="size-5" />} title={t("canvas.createMenu.image")} onClick={() => onCreate(CanvasNodeType.Image)} />
-                <ConnectionCreateOption theme={theme} icon={<Video className="size-5" />} title={t("canvas.createMenu.video")} onClick={() => onCreate(CanvasNodeType.Video)} />
-                <ConnectionCreateOption theme={theme} icon={<Music2 className="size-5" />} title={t("canvas.createMenu.audio")} onClick={() => onCreate(CanvasNodeType.Audio)} />
-                <ConnectionCreateOption theme={theme} icon={<Settings2 className="size-5" />} title={t("canvas.createMenu.config")} description={t("canvas.createMenu.configDescription")} onClick={() => onCreate(CanvasNodeType.Config)} />
+                <ConnectionCreateOption compact theme={theme} icon={<List className="size-5" />} title={t("canvas.createMenu.text")} onClick={() => onCreate(CanvasNodeType.Text)} />
+                <ConnectionCreateOption compact theme={theme} icon={<ImageIcon className="size-5" />} title={t("canvas.createMenu.image")} onClick={() => onCreate(CanvasNodeType.Image)} />
+                <ConnectionCreateOption compact theme={theme} icon={<Video className="size-5" />} title={t("canvas.createMenu.video")} onClick={() => onCreate(CanvasNodeType.Video)} />
+                <ConnectionCreateOption compact theme={theme} icon={<Music2 className="size-5" />} title={t("canvas.createMenu.audio")} onClick={() => onCreate(CanvasNodeType.Audio)} />
+                <ConnectionCreateOption compact theme={theme} icon={<Settings2 className="size-5" />} title={t("canvas.createMenu.config")} onClick={() => onCreate(CanvasNodeType.Config)} />
             </div>
         </div>,
         document.body,
@@ -157,7 +159,7 @@ export function NodeCreateMenu({ position, canvasRef, viewport, onCreate, onClos
     return createPortal(
         <div
             ref={menuRef}
-            className="z-[1200] max-h-[70vh] w-[248px] overflow-y-auto rounded-[14px] border p-2 shadow-2xl backdrop-blur thin-scrollbar"
+            className={canvasCreateMenuClassName}
             data-canvas-no-zoom
             style={{ ...style, background: theme.node.panel, borderColor: theme.node.stroke, color: theme.node.text }}
             onPointerDown={(event) => event.stopPropagation()}

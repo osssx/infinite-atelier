@@ -68,7 +68,9 @@ export function reviewP49BCreativeActions(stage,actions){
   cards:cards.slice(0,8).map(a=>({
    title:sanitize(a.title).slice(0,100),length:bodyOf(a).length,
    digest:sha(bodyOf(a)),
-   text:sanitize(bodyOf(a)).slice(0,1600)
+   // Never silently treat a truncated excerpt as full human-review evidence.
+   truncated:bodyOf(a).length>8000,
+   text:sanitize(bodyOf(a)).slice(0,8000)
   })),
   // Never default to "passed" based on keywords, even if no flags exist.
   humanReview:{characterIdentity:"pending",characterAppearance:"pending",

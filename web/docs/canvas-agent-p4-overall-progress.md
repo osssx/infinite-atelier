@@ -20,10 +20,11 @@
 | P4.6e | [真实 Chrome → JobCoordinator → Comfy scoped cancel 闭环](./canvas-agent-p46e-real-browser-scoped-cancel.md)：新增项目级安全取消入口及任务历史停止按钮；Chrome 真实按钮、远端待执行任务定向取消、SQLite 终态与刷新恢复 **22/22 项检查通过** | 浏览器闭环验收的是远端**等待中**任务；运行中 scoped cancel 由 P4.6d 直接实机验证；非大型模型 GPU 内核中断或长视频负载测试。 |
 | P4.9a | [角色/故事/场景/分镜文本完整性](./canvas-agent-p49a-creative-text-completeness.md)：对明确生成具体创作文本节点的请求拒绝空白/占位符，最多纠错一次；修复补救模型请求遗失已授权 Task 上下文的问题；Mock Provider + 实际 SQLite/HTTP 验收及前端错误提示 | 静态正文完整性而非真实 Provider 的语义一致性验收；不自动生成用户未授权设定或跳过 Canvas 审批。 |
 | P4.9b | [多轮创作质量隔离验收](./canvas-agent-p49b-creative-quality-acceptance.md)：固定角色、场景、分镜和雨天修订，在真实 Task/SQLite/Fastify 下完成四轮 Mock 模型调用审计、上下文授权与跨会话草案连续性；输出自动疑点和人工复核报告 | 默认本地后端未启动，**仅 Mock Provider 通过**，真实模型语义评价和人工审核仍待执行。 |
+| P4.9c | [已配置在线渠道真实模型与人工复核](./canvas-agent-p49c-real-provider-acceptance.md)：只读读取现有 Cline 文本模型/DPAPI 渠道，真实模型首轮 3 张角色卡成功、审计成功；第二轮结果未知，按栅栏停止；人工复核摘要及在线渠道安全选择测试 | **实际调用 2 次**，第一轮成功，不代表场景和分镜完成；第二轮 `needs_reconcile`，未自动重发，真实四轮语义验收仍未完成。 |
 
 ## 当前优先级
 
-- **下一阶段 P4.9c：真实 Provider 创作质量受控验收**：渠道可用且明确模型后，使用 P4.9b 隔离工具进行至多 8 次上游请求并人工复核语义一致性；结果不参与 Task 完成授权。费用硬上限、长视频和负载测试仍延期。
+- **下一阶段 P4.9d：真实在线 Provider 未知回执诊断**：只读核对 P4.9c 第二轮 `needs_reconcile` 的错误分类与后续可观测性，不重放已知回执不明的模型请求；确认渠道和新的费用授权后再进行完整连续创作语义验收。费用硬上限、长视频和负载测试仍延期。
 - **后续通用 Agent 扩展**：在权限、来源冻结和审计验证后再评估跨 Task/Project 检索与复杂工具编排。
 
 ## 按用户决策延期

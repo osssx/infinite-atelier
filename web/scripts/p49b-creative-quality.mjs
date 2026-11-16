@@ -51,9 +51,18 @@ const asCompat=actions=>new Response(JSON.stringify({choices:[{
  finish_reason:"stop",message:{content:JSON.stringify({answer:"以下为等待审批的创作草案。",actions})}
 }]}),{status:200,headers:{"content-type":"application/json"}});
 
-export async function runP49BAcceptance(config=parseP49BArgs(["--mock"]),{outDir}={}){
+export async function runP49BAcceptance(config=parseP49BArgs(["--mock"]),
+ {outDir,mockUpstreamCall,vaultOverride}={}){
  if(!["mock","live"].includes(config.mode))throw Error("p49b_mode_invalid");
  if(config.mode==="live"&&config.ackCost!==true)throw Error("p49b_explicit_live_authorization_required");
+ if(mockUpstreamCall!==undefined&&(config.mode!=="mock"||typeof mockUpstreamCall!=="function"))
+  throw Error("p49b_mock_injection_forbidden_in_live_mode");
+ if(vaultOverride!==undefined&&(config.mode!=="live"||typeof vaultOverride?.get!=="function"||
+  typeof vaultOverride?.withSecretVersion!=="function"||
+  !/^[A-Za-z0-9_-]{1,128}$/.test(config.channelId??"")))
+  throw Error("p49b_live_vault_invalid");
+ if(config.mode==="live"&&!vaultOverride&&(!config.secret||typeof config.secret!=="string"))
+  throw Error("p49b_live_secret_missing");
  const directory=outDir??mkdtempSync(join(tmpdir(),"infinite-atelier-p49b-"));
  const reportPath=join(directory,"p49b-quality-report.json");
  const report={schemaVersion:1,scenario:P49B_CASE.id,mode:config.mode,
@@ -79,7 +88,9 @@ export async function runP49BAcceptance(config=parseP49BArgs(["--mock"]),{outDir
    operation,text,confirmed:true,contextPolicy:policy});
   confirm("set_goal",P49B_CASE.confirmedGoal);
   for(const note of P49B_CASE.confirmedNotes)confirm("add_constraint",note);
-  const vault={get:()=>({provider:config.provider,hasKey:true,keyVersion:"ephemeral"}),
+  // The configured-channel path supplies a read-only DPAPI-backed vault;
+  // never export, copy, or persist its decrypted API key.
+  const vault=vaultOverride??{get:()=>({provider:config.provider,hasKey:true,keyVersion:"ephemeral"}),
    withSecretVersion:(_v,fn)=>fn(Buffer.from(config.secret,"utf8"))};
   const pinned=createPinnedOpenAiCompatCall();
   const upstream=async(url,options)=>{
@@ -98,7 +109,10 @@ export async function runP49BAcceptance(config=parseP49BArgs(["--mock"]),{outDir
    if(report.providerPosts>=8)throw Object.assign(Error("p49b_model_post_budget_exceeded"),
     {code:"p49b_model_post_budget_exceeded"});
    report.providerPosts++;
-   return config.mode==="mock"?asCompat(mockBody(P49B_CASE.stages[activeStage],activeStage)):
+   return config.mode==="mock"?
+    mockUpstreamCall?mockUpstreamCall({stage:P49B_CASE.stages[activeStage],
+     stageIndex:activeStage,postNumber:report.providerPosts}):
+    asCompat(mockBody(P49B_CASE.stages[activeStage],activeStage)):
     pinned(url,options);
   };
   const chat=createAssistantChatService({vault,compatibleUpstreamCall:upstream,
@@ -115,12 +129,18 @@ export async function runP49BAcceptance(config=parseP49BArgs(["--mock"]),{outDir
     requestId:"append-"+(index+1),messageId,text:stage.request,contextPolicy:policy});
    const previousPosts=report.providerPosts;
    const response=await app.inject({method:"POST",url:endpoint,payload:{
-    channelId:"temporary-channel",provider:config.provider,baseUrl:config.baseUrl,
+    channelId:config.channelId??"temporary-channel",provider:config.provider,baseUrl:config.baseUrl,
     model:config.model,messages:[{role:"user",content:stage.request}],canvasActions:true,
     task:{taskId:task.id,turnMessageId:messageId,requestId}
    }});
    const result=response.json();
-   const audit=db.prepare("SELECT call_kind,status FROM assistant_model_calls WHERE project_id=? AND request_id=? ORDER BY call_index").all(projectId,requestId);
+   // Safe, bounded diagnostic fields from the durable model-call journal.
+   // Never export upstream response bodies, request headers or credentials.
+   const audit=db.prepare("SELECT call_kind,status,error_code,started_at,finished_at FROM assistant_model_calls WHERE project_id=? AND request_id=? ORDER BY call_index").all(projectId,requestId)
+    .map(row=>({call_kind:row.call_kind,status:row.status,
+     ...(typeof row.error_code==="string"&&/^assistant_[a-z0-9_]{1,80}$/.test(row.error_code)?
+      {errorCode:row.error_code}:{}),
+     elapsedMs:row.finished_at!==null?Math.max(0,row.finished_at-row.started_at):null}));
    if(response.statusCode!==200){
     report.stages.push({stageId:stage.id,status:response.statusCode,
      errorCode:/^[a-z][a-z0-9_]{1,90}$/.test(result.code??"")?result.code:"p49b_unknown_error",
@@ -132,8 +152,10 @@ export async function runP49BAcceptance(config=parseP49BArgs(["--mock"]),{outDir
    // A model must never cause a credential supplied through the process
    // environment to be persisted into the human-review artifact.
    const redacted=(result.actions??[]).map(action=>({...action,
-    ...(typeof action.title==="string"?{title:action.title.split(config.secret).join("[redacted]")}:{}),
-    ...(typeof action.content==="string"?{content:action.content.split(config.secret).join("[redacted]")}:{}),
+    ...(typeof action.title==="string"&&config.secret?
+     {title:action.title.split(config.secret).join("[redacted]")}:{}),
+    ...(typeof action.content==="string"&&config.secret?
+     {content:action.content.split(config.secret).join("[redacted]")}:{}),
    }));
    const review=reviewP49BCreativeActions(stage,redacted);
    report.stages.push({...review,status:response.statusCode,

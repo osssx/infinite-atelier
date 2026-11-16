@@ -19,6 +19,7 @@ import {registerAssistantTextDeliverable,registerAssistantStructuredTextDelivera
 import {discoverAssistantCreativeCharacters} from "./assistant-creative-context.mjs";
 import {discoverAssistantCreativeMaterials,selectAssistantCreativeMaterials} from "./assistant-creative-materials.mjs";
 import {listAssistantAgentRuns,inspectAssistantAgentRun} from "./assistant-agent-run-ledger.mjs";
+import {inspectAssistantStoryEventReview,decideAssistantStoryEventReview} from "./assistant-story-event-review.mjs";
 import {agentCanvasStepForRun} from "./assistant-agent-step-coordinator.mjs";
 
 const id={type:"string",pattern:"^[A-Za-z0-9_-]{1,128}$"};
@@ -77,6 +78,12 @@ const creativeMaterialsSelectionBody={type:"object",additionalProperties:false,
    sourceDigest:{type:"string",pattern:"^[a-f0-9]{64}$"}}}}}};
 const creativeTurnQuery={type:"object",additionalProperties:false,required:["turnMessageId"],
  properties:{turnMessageId:id}};
+const storyEventDecisionBody={type:"object",additionalProperties:false,
+ required:["requestId","turnMessageId","snapshotDigest","eventId","decision","confirmed"],
+ properties:{requestId:id,turnMessageId:id,eventId:id,
+  snapshotDigest:{type:"string",pattern:"^[a-f0-9]{64}$"},
+  decision:{type:"string",enum:["acknowledge_candidate","request_revision"]},
+  confirmed:{type:"boolean",const:true}}};
 const creativeMaterialsQuery={...creativeTurnQuery,properties:{...creativeTurnQuery.properties,
  kinds:{type:"string",pattern:"^(story|scene|style)(,(story|scene|style)){0,2}$"}}};
 const textDeliverableBody={type:"object",additionalProperties:false,
@@ -248,6 +255,16 @@ export function registerAssistantTaskRoutes(app,db,{skillRegistry,blobStore,onTa
   schema:{params:taskParams,querystring:creativeTurnQuery}},(req,reply)=>result(reply,
    discoverAssistantCreativeCharacters(db,{projectId:req.params.id,taskId:req.params.taskId,
     turnMessageId:req.query.turnMessageId})));
+ // P4.9i user-editor-only event review, bound to BOTH completed model
+ // responses and frozen current Task/project revision. No Canvas/Job grants.
+ app.get(base+"/:taskId/story-events/review",{
+  schema:{params:taskParams,querystring:creativeTurnQuery}},(req,reply)=>result(reply,
+   inspectAssistantStoryEventReview(db,{projectId:req.params.id,taskId:req.params.taskId,
+    turnMessageId:req.query.turnMessageId})));
+ app.post(base+"/:taskId/story-events/review",{
+  schema:{params:taskParams,body:storyEventDecisionBody}},(req,reply)=>result(reply,
+   decideAssistantStoryEventReview(db,{projectId:req.params.id,taskId:req.params.taskId,
+    ...req.body})));
  // Explicit text deliverable: the guard is durable before any model POST.
   app.post(base+"/:taskId/deliverables/text",{schema:{params:taskParams,body:textDeliverableBody}},
    (req,reply)=>result(reply,registerAssistantTextDeliverable(db,{

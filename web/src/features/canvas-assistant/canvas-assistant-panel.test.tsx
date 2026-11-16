@@ -33,6 +33,12 @@ describe("assistant error messages",()=>{
   expect(canvasAssistantErrorText(new CanvasApiError("assistant_upstream_rate_limited",502))).toContain("429");
    expect(canvasAssistantErrorText(new CanvasApiError("assistant_upstream_retry_exhausted",504))).toContain("重试 2 次");
    expect(canvasAssistantErrorText(new CanvasApiError("assistant_actions_missing",502))).toContain("画布仍未修改"); });
+ it("P4.9a explains blank creative content failure without claiming canvas writes",()=>{
+  const text=canvasAssistantErrorText(new CanvasApiError("assistant_creative_content_incomplete",502));
+  expect(text).toContain("空白");
+  expect(text).toContain("拒绝创建");
+  expect(text).toContain("画布未因此修改");
+ });
 });
 
 describe("canvas assistant confirm modal theme",()=>{

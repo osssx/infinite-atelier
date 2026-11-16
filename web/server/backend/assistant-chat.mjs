@@ -2,6 +2,7 @@ import {DEFAULT_OPENAI_ENDPOINT,normalizeOpenAiCompatBaseUrl,createPinnedOpenAiC
 import {setTimeout as delay} from "node:timers/promises";
 import {createHash} from "node:crypto";
 import {CANVAS_ACTION_SYSTEM,parseAssistantActionResponse} from "./assistant-actions.mjs";
+import {requiresPopulatedCreativeText,hasPopulatedCreativeTextActions} from "./assistant-creative-content.mjs";
 import {latestCanvasUserRequest,isCanvasEditInstruction,isAssistantTextOnlyRequest,exactWholeCanvasGraphLayout} from "./assistant-action-intent.mjs";
 import {runAssistantSkillRounds} from "./assistant-skill-rounds.mjs";
 import {runAssistantAgentReadRounds} from "./assistant-agent-read-rounds.mjs";
@@ -367,7 +368,14 @@ export function createAssistantChatService({vault,upstreamCall=fetch,
    let plan=null,invalid=false;
    try{plan=parseAssistantActionResponse(first.answer)}
    catch{invalid=true}
-   if(plan?.actions.length)return {...plan,model,retryCount:first.retryCount,...usage};
+   // A model may return structurally valid create_text actions with blank
+   // bodies. For explicitly populated creative nodes, do not commit those
+   // suggestions as if the user's requested content had been generated.
+   const populatedRequested=requiresPopulatedCreativeText(request);
+   const incompleteCreative=populatedRequested&&
+    !hasPopulatedCreativeTextActions(plan?.actions);
+   if(plan?.actions.length&&!incompleteCreative)
+    return {...plan,model,retryCount:first.retryCount,...usage};
    if(!isCanvasEditInstruction(request)){
     if(invalid)throw fail("assistant_actions_invalid",502);
     return {...plan,model,retryCount:first.retryCount,...usage};
@@ -383,16 +391,25 @@ export function createAssistantChatService({vault,upstreamCall=fetch,
    }
    // Read-tool runs already own a bounded, audited transcript. Never start an
    // extra repair POST that bypasses that budget or drops the retrieved context.
-   if(agentReadSession)throw fail(invalid?"assistant_actions_invalid":"assistant_actions_missing",502);
+   if(agentReadSession)throw fail(incompleteCreative?"assistant_creative_content_incomplete":
+    invalid?"assistant_actions_invalid":"assistant_actions_missing",502);
    // All other edit requests get one corrective inference, not an unbounded loop.
    // It cannot write to the canvas; the live-graph executor still validates and
    // requires explicit confirmation for destructive operations.
-   const correction=CANVAS_ACTION_SYSTEM+
-    "\nFORMAT CORRECTION: Your last response did not provide valid executable canvas actions."+
+   // Reuse the original authenticated Task/creative context, not a bare
+   // CANVAS_ACTION_SYSTEM: format repair must not forget the characters or
+   // scenes recovered from the persisted Task. Every extra provider POST is
+   // separately guarded and recorded by infer() under the same Task.
+   const correction=system+
+    "\nFORMAT CORRECTION: Your last response did not provide complete valid executable canvas actions."+
     " The user explicitly requested a canvas edit. Return ONLY one valid JSON object"+
     ' with non-empty "actions" and a short "answer". No prose outside JSON,'+
     " no Markdown or promises of future execution. Use real IDs from the provided"+
-    " context. If IDs are unavailable, do not invent IDs.";
+    " context. If IDs are unavailable, do not invent IDs."+
+    (populatedRequested?"\nCONTENT CORRECTION: The user explicitly requested populated creative text nodes. " +
+     "Create each requested text node with a concrete original body containing character/scene specifics, " +
+     "not empty content, label-only forms or placeholders. Use only context already authorized in this request; " +
+     "unverified model drafts are not user-confirmed facts.":"");
     // Retry with just the latest user request and its fresh canvas snapshot.
     // Old user-only error turns and prior action narratives can lock compatible
     // models into prose replies, even if a corrective system instruction is used.
@@ -406,5 +423,7 @@ export function createAssistantChatService({vault,upstreamCall=fetch,
    try{recovered=parseAssistantActionResponse(second.answer)}
    catch{throw fail("assistant_actions_invalid",502)}
    if(!recovered.actions.length)throw fail("assistant_actions_missing",502);
+   if(populatedRequested&&!hasPopulatedCreativeTextActions(recovered.actions))
+    throw fail("assistant_creative_content_incomplete",502);
    return {...recovered,model,retryCount:first.retryCount+second.retryCount,formatRepairCount:1,...usage};  };
 }

@@ -56,6 +56,7 @@ const append=(list:CanvasAssistantSession[],id:string,message:CanvasAssistantMes
    title:session.messages.length===0&&session.title==="新对话"?message.text.slice(0,30)||"新对话":session.title,
    messages:[...session.messages,message].slice(-40),updatedAt:stamp}:session);};
 const assistantErrorMessages:Record<string,string>={
+ assistant_creative_content_incomplete:"模型连续返回空白或待填写的角色卡、故事或分镜文本，已拒绝创建这些节点，画布未因此修改。请明确角色设定、缩小生成数量，或更换模型重试。",
  assistant_response_invalid:"模型返回的数据无法解析，请确认渠道兼容 Chat Completions 接口，或更换模型重试。",
  assistant_response_empty:"模型请求已完成，但没有返回可显示的最终正文。可能是模型只生成了推理内容；请尝试精简提问或更换模型。",
  assistant_response_incomplete:"模型回答未完成，可能达到输出长度限制或响应中断。请缩短上下文后重试。",

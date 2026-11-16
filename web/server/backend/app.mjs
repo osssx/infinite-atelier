@@ -121,6 +121,7 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
      "assistant_semantic_proposal_decided","assistant_semantic_proposal_scope_changed",
     "assistant_model_call_in_progress","assistant_model_call_unknown","assistant_model_call_not_active",
     "assistant_model_result_too_large","assistant_task_context_invalid","assistant_task_turn_not_found",
+    "assistant_creative_content_incomplete",
     "assistant_step_invalid","assistant_step_not_found","assistant_step_plan_conflict",
     "assistant_step_source_changed","assistant_step_not_preparable","assistant_step_dependency_invalid",
     "assistant_step_dependency_unverified","assistant_step_action_changed","assistant_step_approval_required",

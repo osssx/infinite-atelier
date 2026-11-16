@@ -19,7 +19,7 @@ type ModelPickerProps = {
     fullWidth?: boolean;
     placeholder?: string;
     onMissingConfig?: () => void;
-    externalOptions?:{value:string;label:string;disabled?:boolean}[];
+    externalOptions?:{value:string;label:string;disabled?:boolean;tags?:string[]}[];
     externalValue?:string;
     onExternalSelect?:(value:string)=>void;
 };
@@ -114,9 +114,12 @@ export function ModelPicker({ config, value, onChange, capability, mediaMode, cl
                 )}
                 {externalOptions.length?<SelectGroup><SelectLabel>ComfyUI 工作流预设</SelectLabel>
                     {externalOptions.map(option=><SelectItem key={option.value} value={EXTERNAL_MODEL_PREFIX+option.value} textValue={option.label} disabled={option.disabled}>
-                        <span className="flex min-w-0 items-center gap-2">
+                        <span className="flex min-w-0 flex-wrap items-center gap-2">
                             <Workflow className="size-4 shrink-0 opacity-70" aria-hidden="true"/>
                             <span className="truncate">{option.label}</span>
+                            {option.tags?.length ? <span className="flex flex-wrap gap-1" aria-label="工作流能力">{option.tags.map(tag => (
+                                <span key={tag} className="rounded border border-border/60 bg-muted/50 px-1.5 py-0.5 text-[10px] leading-none text-muted-foreground">{tag}</span>
+                            ))}</span> : null}
                         </span>
                     </SelectItem>)}
                 </SelectGroup>:null}
@@ -132,10 +135,30 @@ function emptyModelLabel(config: AiConfig, capability?: ModelCapability) {
 }
 
 function ModelLabel({ config, model }: { config: AiConfig; model: string }) {
+    const channel = resolveModelChannel(config, model);
+    const entry = channel?.models.find(item => item.name === modelOptionName(model));
+    const kind = entry?.capability;
+    const labels: Record<MediaModeId, string> = {
+        text_to_image: "文生图", reference_edit: "参考编辑", inpaint: "局部重绘",
+        text_to_video: "文生视频", first_frame: "首帧", last_frame: "尾帧", first_last_frame: "首尾帧", omni_reference: "全能参考",
+        text_to_speech: "语音合成", voice_clone: "参考音色", text_to_music: "音乐", text_to_sound: "音效",
+    };
+    const executor = { provider: modelChannelProvider(channel, kind) ?? channel?.apiFormat ?? "", kind: (kind === "text" || !kind ? "image" : kind), customScript: Boolean(entry?.script) };
+    const resolved = kind && kind !== "text" ? resolveMediaCapabilities(entry, {
+        kind, supportedModes: supportedMediaModes(executor), supportedParameters: supportedMediaParameters(executor),
+    }) : undefined;
+    const tags = resolved?.explicit
+        ? [...resolved.modes.map(mode => labels[mode.id as MediaModeId]), ...(entry?.mediaCapabilities?.modes.some(mode => mode.layout && resolved.modes.some(active => active.id === mode.id)) ? ["Layout"] : [])]
+        : [];
     return (
-        <span className="flex min-w-0 items-center gap-2">
-            <ModelIcon model={model} />
-            <span className="truncate">{modelOptionLabel(config, model)}</span>
+        <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+            <span className="flex min-w-0 items-center gap-2"><ModelIcon model={model} />
+                <span className="truncate">{modelOptionLabel(config, model)}</span></span>
+            {resolved?.explicit ? <span className="flex flex-wrap gap-1" aria-label="模型能力">
+                {(tags.length ? tags : ["暂无可用能力"]).map(tag => (
+                    <span key={tag} className="rounded border border-border/60 bg-muted/50 px-1.5 py-0.5 text-[10px] leading-none text-muted-foreground">{tag}</span>
+                ))}
+            </span> : null}
         </span>
     );
 }

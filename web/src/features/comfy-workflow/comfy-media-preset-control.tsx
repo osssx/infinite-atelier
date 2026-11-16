@@ -21,6 +21,13 @@ type Props={node:CanvasNodeData;nodes:readonly CanvasNodeData[];connections:read
  onPickerOptionsChange?:(options:{value:string;label:string;disabled?:boolean}[],select:(value:string)=>void,activeValue?:string)=>void};
 const family=(kind:string)=>kind==="image"?"image":kind==="video"?"video":kind==="mask"?"mask":"audio";
 const modeLabels:Record<MediaModeId,string>={text_to_image:"文生图",reference_edit:"参考编辑",inpaint:"局部重绘",text_to_video:"文生视频",first_frame:"首帧生成",last_frame:"尾帧生成",first_last_frame:"首尾帧生成",omni_reference:"全能参考",text_to_speech:"语音合成",voice_clone:"参考音色合成",text_to_music:"音乐生成",text_to_sound:"音效生成"};
+function workflowCapabilityTags(template:ComfyWorkflowTemplate|undefined):string[]{
+ const useCase=template?.mediaUseCase;
+ if(!useCase)return [];
+ if(!useCase.mediaCapabilities)return [];
+ const modes=useCase.mediaCapabilities.modes.filter(mode=>mode.enabled&&useCase.modeBindings?.[mode.id]);
+ return modes.length?[...modes.map(mode=>modeLabels[mode.id]),...(modes.some(mode=>mode.layout)?["Layout"]:[])]:["暂无可用能力"];
+}
 function hasMedia(node:CanvasNodeData,kind:string){
  const m=node.metadata;
  if(kind==="image")return node.type==="image"&&Boolean(m?.storageKey||m?.content||m?.images?.length);
@@ -75,11 +82,11 @@ export function useComfyMediaPresetControl({node,nodes,connections,config,theme,
    instanceId:prior?.instanceId,overrides:{},slots:{}}}));
  },[activePreset,catalog,node.metadata?.comfyMediaPresetCache,onChange,templates]);
  const pickerOptions=useMemo(()=>[
-  ...options.map(({label,value,disabled})=>({label,value,disabled})),
+  ...options.map(({label,value,disabled})=>({label,value,disabled,tags:workflowCapabilityTags(templates[value])})),
   ...(activePreset&&!options.some(option=>option.value===activePreset.templateId+"@"+activePreset.templateRevision)?
    [{label:template?.name??catalog.find(item=>item.templateId===activePreset.templateId&&item.revision===activePreset.templateRevision)?.name??"工作流版本不可用",
-     value:activePreset.templateId+"@"+activePreset.templateRevision,disabled:!template||Boolean(capability&&template.mediaUseCase?.channel!==capability)}]:[])
- ],[options,activePreset,template,catalog,capability]);
+     value:activePreset.templateId+"@"+activePreset.templateRevision,tags:workflowCapabilityTags(template),disabled:!template||Boolean(capability&&template.mediaUseCase?.channel!==capability)}]:[])
+ ],[options,activePreset,template,catalog,capability,templates]);
  useEffect(()=>{onPickerOptionsChange?.(pickerOptions,selectPreset,activePreset?activePreset.templateId+"@"+activePreset.templateRevision:undefined);},
   [onPickerOptionsChange,pickerOptions,selectPreset,activePreset?.templateId,activePreset?.templateRevision]);
  const incoming=new Set(connections.filter(edge=>edge.toNodeId===node.id).map(edge=>edge.fromNodeId));

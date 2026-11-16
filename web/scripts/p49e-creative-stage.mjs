@@ -55,6 +55,43 @@ const lock=directory=>{
  try{fd=openSync(join(directory,".single-writer.lock"),"wx")}catch{throw fail("p49e_run_locked")}
  return ()=>{closeSync(fd);unlinkSync(join(directory,".single-writer.lock"))};
 };
+const autoApprovalEnabled=db=>{
+ const table=db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='p49e_auto_approval'").get();
+ return Boolean(table&&db.prepare("SELECT enabled FROM p49e_auto_approval WHERE singleton=1").get()?.enabled===1);
+};
+const canAutoApprove=(db,state,index)=>{
+ const row=db.prepare("SELECT * FROM p49e_stages WHERE stage_index=?").get(index);
+ if(!row||row.status!=="review_pending"||
+  !/^[a-f0-9]{64}$/.test(row.result_digest??""))return false;
+ if(index>0){
+  const prior=db.prepare("SELECT status FROM p49e_stages WHERE stage_index=?").get(index-1);
+  if(!["approved_for_continuation","auto_approved_for_continuation"].includes(prior?.status))
+   return false;
+ }
+ let review;
+ try{review=JSON.parse(row.review_json)}catch{return false}
+ const expected=stages[index];
+ if(!expected||review?.stageId!==expected.id||review.expectedCount!==expected.count||
+  review.actualCount!==expected.count||review.objectiveChecksPassed!==true||
+  !Array.isArray(review.flags)||review.flags.length!==0||
+  !Array.isArray(review.cards)||review.cards.length!==expected.count||
+  review.cards.some(card=>card?.truncated!==false))return false;
+ const modelAudit=modelCalls(db,state,row.request_id);
+ if(modelAudit.length===0||modelAudit.some(call=>call.status!=="succeeded"))return false;
+ const project=getProject(db,state.project_id);
+ if(project.revision!==1||project.document.nodes.length!==1||
+  project.document.nodes[0].metadata.content!=="PRIVATE_P49E_NOT_AUTHORIZED"||
+  db.prepare("SELECT COUNT(*) n FROM jobs").get().n!==0)return false;
+ return true;
+};
+/** Auto-approval only permits a verified AI draft to continue as UNCONFIRMED
+ * context. It never updates confirmed Task facts or a Canvas Graph.
+ */
+function autoApproveEligibleStage(db,state,index){
+ if(!autoApprovalEnabled(db)||!canAutoApprove(db,state,index))return false;
+ return db.prepare("UPDATE p49e_stages SET status='auto_approved_for_continuation' WHERE stage_index=? AND status='review_pending'").run(index).changes===1;
+}
+
 function metadata(db){
  const state=db.prepare("SELECT * FROM p49e_state WHERE singleton=1").get();
  if(!state||state.scenario!==P49B_CASE.id)throw fail("p49e_run_identity_invalid");
@@ -81,7 +118,8 @@ function materialize(db,state,directory,{persist=true}={}){
   graphUnchanged:pj.revision===1&&pj.document.nodes.length===1&&
    pj.document.nodes[0].metadata.content==="PRIVATE_P49E_NOT_AUTHORIZED",
   jobs:db.prepare("SELECT COUNT(*) n FROM jobs").get().n,
-  stages:all,semanticVerdict:"human_review_required",
+  stages:all,autoApproveDrafts:autoApprovalEnabled(db),
+  semanticVerdict:"human_review_required",
   boundary:"isolated_test_only_not_task_completion"};
  // Atomic replace to avoid a half-written summary on process crash.
  if(persist){
@@ -95,6 +133,8 @@ function setup(db,config){
  initializeSchema(db);
  db.exec("CREATE TABLE p49e_state(singleton INTEGER PRIMARY KEY CHECK(singleton=1),scenario TEXT NOT NULL, mode TEXT NOT NULL, provider TEXT NOT NULL, model TEXT NOT NULL, config_fingerprint TEXT NOT NULL,project_id TEXT NOT NULL,task_id TEXT NOT NULL)");
  db.exec("CREATE TABLE p49e_stages(stage_index INTEGER PRIMARY KEY,stage_id TEXT NOT NULL UNIQUE,status TEXT NOT NULL,request_id TEXT NOT NULL UNIQUE,message_id TEXT NOT NULL UNIQUE,result_digest TEXT,review_json TEXT,error_code TEXT)");
+ db.exec("CREATE TABLE p49e_auto_approval(singleton INTEGER PRIMARY KEY CHECK(singleton=1),enabled INTEGER NOT NULL CHECK(enabled IN(0,1)),enabled_at INTEGER)");
+ db.prepare("INSERT INTO p49e_auto_approval(singleton,enabled) VALUES(1,0)").run();
  const projectId="p49e-"+randomUUID();
  createProject(db,{id:projectId,document:{title:"P4.9e isolated test",
   nodes:[{id:"private",type:"text",title:"not-authorized",
@@ -158,7 +198,7 @@ export async function executeP49EStage(directory,config,stageId,{vaultOverride,m
    throw fail("p49e_stage_already_reserved_no_replay");
   if(index>0){
    const prior=db.prepare("SELECT status FROM p49e_stages WHERE stage_index=?").get(index-1);
-   if(prior?.status!=="approved_for_continuation")
+   if(!["approved_for_continuation","auto_approved_for_continuation"].includes(prior?.status))
     throw fail("p49e_prior_human_approval_required");
   }
   const stage=stages[index],requestId="provider-"+stage.id;
@@ -214,6 +254,7 @@ export async function executeP49EStage(directory,config,stageId,{vaultOverride,m
    const digest=fingerprint(JSON.stringify(body.actions??[]));
    db.prepare("UPDATE p49e_stages SET status='review_pending',result_digest=?,review_json=? WHERE stage_index=?")
     .run(digest,JSON.stringify(review),index);
+   autoApproveEligibleStage(db,state,index);
   }
   const status=materialize(db,state,conn.directory);
   return {directory:conn.directory,stageId,status,providerPosts:count};
@@ -221,6 +262,28 @@ export async function executeP49EStage(directory,config,stageId,{vaultOverride,m
   await app?.close();db.close();release();
  }
 }
+/** User opt-in for this *isolated run only*: safe draft checks may grant
+ * continuing-context permission without waiting for another manual approval.
+ * No Provider POST, no user_confirmed Task fact mutation, no Canvas commit.
+ */
+export function enableP49EAutoApproval(directory){
+ const conn=open(directory,false);
+ let release;
+ try{release=lock(conn.directory)}catch(error){conn.db.close();throw error}
+ try{
+  const db=conn.db,state=metadata(db);
+  // Older P4.9e isolated runs predate this optional settings table.
+  db.exec("CREATE TABLE IF NOT EXISTS p49e_auto_approval(singleton INTEGER PRIMARY KEY CHECK(singleton=1),enabled INTEGER NOT NULL CHECK(enabled IN(0,1)),enabled_at INTEGER)");
+  db.prepare("INSERT INTO p49e_auto_approval(singleton,enabled,enabled_at) VALUES(1,1,?) ON CONFLICT(singleton) DO UPDATE SET enabled=1,enabled_at=excluded.enabled_at")
+   .run(Date.now());
+  const approved=[];
+  for(const row of db.prepare("SELECT stage_index,stage_id FROM p49e_stages ORDER BY stage_index").all()){
+   if(autoApproveEligibleStage(db,state,row.stage_index))approved.push(row.stage_id);
+  }
+  return {approved,status:materialize(db,state,conn.directory)};
+ }finally{conn.db.close();release()}
+}
+
 export function approveP49EStage(directory,stageId,digest){
  const index=stageIndex(stageId);
  if(index<0||!/^[a-f0-9]{64}$/.test(digest??""))throw fail("p49e_approval_invalid");
@@ -263,6 +326,9 @@ export function recoverP49E(directory){
      const review=reviewP49BCreativeActions(stage,response.actions);
      db.prepare("UPDATE p49e_stages SET status='review_pending',result_digest=?,review_json=? WHERE stage_index=?")
       .run(digest,JSON.stringify(review),row.stage_index);
+     // Restoring a completed, locally cached model reply can honor a
+     // previously enabled auto-continuation policy. Never issue a new POST.
+     autoApproveEligibleStage(db,state,row.stage_index);
      continue;
     }
    }
@@ -288,8 +354,8 @@ export function exportP49EReviewSource(directory){
  try{summary=materialize(db,metadata(db),canonical,{persist:false})}
  finally{db.close()}
  if(summary.stages.length!==4||!summary.graphUnchanged||summary.jobs!==0||
-  summary.stages.slice(0,3).some(s=>s.status!=="approved_for_continuation")||
-  !["review_pending","approved_for_continuation"].includes(summary.stages[3].status)||
+  summary.stages.slice(0,3).some(s=>!["approved_for_continuation","auto_approved_for_continuation"].includes(s.status))||
+  !["review_pending","approved_for_continuation","auto_approved_for_continuation"].includes(summary.stages[3].status)||
   summary.stages.some(s=>!s.review||s.modelCalls.some(c=>c.status!=="succeeded")))
   throw fail("p49e_complete_review_evidence_required");
  const report={schemaVersion:1,scenario:summary.scenario,mode:summary.mode,
@@ -323,6 +389,11 @@ if(process.argv[1]&&fileURLToPath(import.meta.url).toLowerCase()===process.argv[
   }else if(flag("--recover")>=0&&value("--dir")){
    const result=recoverP49E(value("--dir"));
    console.log("P49E_RECOVER",JSON.stringify({stages:result.stages.map(s=>({stageId:s.stageId,status:s.status,diagnostic:s.modelCalls.at(-1)?.diagnostic??null})),graphUnchanged:result.graphUnchanged}));
+  }else if(flag("--auto-approve")>=0&&value("--dir")){
+   const {approved,status}=enableP49EAutoApproval(value("--dir"));
+   console.log("P49E_AUTO_APPROVAL",JSON.stringify({enabled:status.autoApproveDrafts,
+    approved,stages:status.stages.map(s=>({stageId:s.stageId,status:s.status})),
+    semanticVerdict:status.semanticVerdict,boundary:status.boundary}));
   }else if(flag("--approve")>=0&&value("--dir")&&value("--digest")){
    const result=approveP49EStage(value("--dir"),value("--approve"),value("--digest"));
    console.log("P49E_APPROVAL",JSON.stringify({status:result.stages.at(-1).status,

@@ -53,6 +53,10 @@ node scripts/p49e-configured-channel.mjs --stage scenes --dir RUN_DIR --ack-cost
 
 每个**新的** `--stage` 都需要显式 `--ack-cost`；不带该标记不能发起付费请求。每阶段至多 2 次模型 POST，4 阶段合计上限 8 次；**请求数不等于金额硬上限，不能证明上游实际账单数额**。任何未知回执停止该实例的后续推进，不重新提交已提交的阶段。
 
+### 后续测试的自动草案续行批准（P4.9f 扩展，显式启用）
+
+经用户授权，可对**本次隔离实例**执行 `node scripts/p49e-creative-stage.mjs --auto-approve --dir RUN_DIR`，将 `autoApproveDrafts=true` 持久写入实例 SQLite。它只自动将内容完整、无客观异常、所有 Model Call 为 `succeeded` 且 Graph/Job 未变的 `review_pending` 阶段标记为 `auto_approved_for_continuation`，用于后续未确认 AI 草案上下文；自动恢复成功缓存时也遵守该条件。未知回执、空白或疑似设定冲突均不自动批准。**不会变更 Task 用户确认事实、跳过画布审批、将自动关键词结果冒充语义质量，也绝不自动发出后续付费模型请求**；每个新的在线阶段仍需要单独 `--ack-cost` 及用户费用授权。历史 P4.9e 独立实例也可使用该开关，且不迁移正式用户数据库。
+
 ### 恢复及审查
 
 ```powershell

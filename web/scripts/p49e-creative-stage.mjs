@@ -266,6 +266,50 @@ export async function executeP49EStage(directory,config,stageId,{vaultOverride,m
  * continuing-context permission without waiting for another manual approval.
  * No Provider POST, no user_confirmed Task fact mutation, no Canvas commit.
  */
+/** Re-score a successful, already cached creative response after a validator
+ * adjustment. This never calls the Provider, creates a Task command, or
+ * changes the immutable response content. Only a former title-alias flag is
+ * eligible to be cleared; any other flag requires separate human review.
+ */
+export function recheckP49EStageFromCache(directory,stageId){
+ const index=stageIndex(stageId);
+ if(index<0)throw fail("p49e_unknown_stage");
+ const conn=open(directory,false);
+ let release;
+ try{release=lock(conn.directory)}catch(error){conn.db.close();throw error}
+ try{
+  const db=conn.db,state=metadata(db);
+  const row=db.prepare("SELECT * FROM p49e_stages WHERE stage_index=?").get(index);
+  if(row?.status!=="review_pending"||!/^[a-f0-9]{64}$/.test(row.result_digest??""))
+   throw fail("p49e_recheck_stage_not_pending");
+  let previous;
+  try{previous=JSON.parse(row.review_json)}catch{throw fail("p49e_recheck_review_invalid")}
+  if(!Array.isArray(previous?.flags)||previous.flags.length===0||
+   previous.flags.some(item=>item?.code!=="expected_title_missing"))
+   throw fail("p49e_recheck_requires_title_only_flags");
+  const calls=modelCalls(db,state,row.request_id);
+  if(calls.length===0||calls.some(call=>call.status!=="succeeded"))
+   throw fail("p49e_recheck_upstream_not_confirmed");
+  const command=db.prepare("SELECT status,response_json FROM assistant_task_commands WHERE project_id=? AND request_id=?")
+   .get(state.project_id,row.request_id);
+  if(command?.status!=="completed")throw fail("p49e_recheck_cached_response_missing");
+  let response;
+  try{response=JSON.parse(command.response_json)}catch{throw fail("p49e_recheck_cached_response_invalid")}
+  if(!Array.isArray(response?.actions)||
+   fingerprint(JSON.stringify(response.actions))!==row.result_digest)
+   throw fail("p49e_recheck_digest_mismatch");
+  const current=reviewP49BCreativeActions(stages[index],response.actions);
+  if(current.cards.length!==previous.cards?.length||
+   current.cards.some((card,i)=>card.digest!==previous.cards[i]?.digest))
+   throw fail("p49e_recheck_content_changed");
+  db.prepare("UPDATE p49e_stages SET review_json=? WHERE stage_index=? AND status='review_pending'")
+   .run(JSON.stringify(current),index);
+  const autoApproved=autoApproveEligibleStage(db,state,index);
+  return {rechecked:stageId,autoApproved,
+   resolvedTitleFlags:previous.flags.length-current.flags.filter(f=>f.code==="expected_title_missing").length,
+   status:materialize(db,state,conn.directory)};
+ }finally{conn.db.close();release()}
+}
 export function enableP49EAutoApproval(directory){
  const conn=open(directory,false);
  let release;
@@ -389,6 +433,13 @@ if(process.argv[1]&&fileURLToPath(import.meta.url).toLowerCase()===process.argv[
   }else if(flag("--recover")>=0&&value("--dir")){
    const result=recoverP49E(value("--dir"));
    console.log("P49E_RECOVER",JSON.stringify({stages:result.stages.map(s=>({stageId:s.stageId,status:s.status,diagnostic:s.modelCalls.at(-1)?.diagnostic??null})),graphUnchanged:result.graphUnchanged}));
+  }else if(flag("--recheck")>=0&&value("--dir")){
+   const result=recheckP49EStageFromCache(value("--dir"),value("--recheck"));
+   console.log("P49E_RECHECK",JSON.stringify({stageId:result.rechecked,
+    autoApproved:result.autoApproved,resolvedTitleFlags:result.resolvedTitleFlags,
+    status:result.status.stages.at(-1)?.status,
+    semanticVerdict:result.status.semanticVerdict,
+    modelPosts:0,graphUnchanged:result.status.graphUnchanged}));
   }else if(flag("--auto-approve")>=0&&value("--dir")){
    const {approved,status}=enableP49EAutoApproval(value("--dir"));
    console.log("P49E_AUTO_APPROVAL",JSON.stringify({enabled:status.autoApproveDrafts,

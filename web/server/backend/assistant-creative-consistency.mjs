@@ -45,13 +45,32 @@ const sha=value=>createHash("sha256").update(value).digest("hex");
 const sanitize=value=>String(value??"").replace(/\b(?:sk-[A-Za-z0-9_-]{12,}|Bearer\s+\S{12,})\b/gi,"[redacted]")
  .replace(/(?:api[_-]?key|password|secret|access[_-]?token)\s*[:=]\s*[^\s,;]+/gi,"[redacted]");
 const bodyOf=action=>typeof action?.content==="string"?action.content:"";
+/** Prompt labels and creative title labels may use 镜头N / 分镜N interchangeably.
+ * Only match an anchored exact index so 镜头1 cannot be satisfied by 镜头10.
+ * Character and scene title checks remain strict.
+ */
+function matchesExpectedTitle(stage,actual,expected){
+ if(typeof actual!=="string")return false;
+ if(stage?.id!=="storyboard"&&stage?.id!=="revision")return actual.includes(expected);
+ const index=expected.match(/[1-6]$/)?.[0];
+ if(!index)return actual.includes(expected);
+ const front="^\\s*(?:【\\s*)?";
+ const shot="(?:镜头|分镜)\\s*0?"+index;
+ if(stage.id==="revision"){
+  // Both 修订镜头1 and 分镜1（修订） explicitly identify revision N.
+  const prefixed=new RegExp(front+"修订"+shot+"(?=$|[^\\d])");
+  const suffixed=new RegExp(front+shot+"\\s*[（(]修订[）)]");
+  return prefixed.test(actual)||suffixed.test(actual);
+ }
+ return new RegExp(front+shot+"(?=$|[^\\d])").test(actual);
+}
 export function reviewP49BCreativeActions(stage,actions){
  if(!stage||!Array.isArray(stage.titles)||!Array.isArray(actions))throw Error("p49b_review_input_invalid");
  const cards=actions.filter(a=>a?.type==="create_text"||a?.type==="create_node"&&a?.nodeType==="text");
  const flags=[],body=cards.map(a=>bodyOf(a)).join("\n");
  if(cards.length!==stage.count)flags.push({code:"node_count_mismatch",expected:stage.count,actual:cards.length});
  for(const title of stage.titles)
-  if(!cards.some(a=>typeof a.title==="string"&&a.title.includes(title)))
+  if(!cards.some(a=>matchesExpectedTitle(stage,a.title,title)))
    flags.push({code:"expected_title_missing",title});
  for(const [index,card] of cards.entries()){
   if(!isPopulatedCreativeBody(bodyOf(card)))flags.push({code:"body_incomplete",index,title:sanitize(card.title).slice(0,80)});

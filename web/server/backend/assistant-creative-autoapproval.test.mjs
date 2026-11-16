@@ -6,7 +6,7 @@ import {join} from "node:path";
 import {tmpdir} from "node:os";
 import {
  initP49E,inspectP49E,executeP49EStage,approveP49EStage,
- enableP49EAutoApproval,exportP49EReviewSource,recoverP49E
+ enableP49EAutoApproval,exportP49EReviewSource,recoverP49E,recheckP49EStageFromCache
 } from "../../scripts/p49e-creative-stage.mjs";
 import {P49B_CASE} from "./assistant-creative-consistency.mjs";
 const config={mode:"mock",provider:"openai_compatible",model:"p49e-mock",
@@ -105,6 +105,76 @@ test("P4.9f cached successful result recovers auto-continuation after interrupte
  finally{readonly.close()}
 });
 
+
+test("P4.9f storyboard title-only alias findings are safely rechecked using the cached model response and no new POST",async t=>{
+ const directory=start(t);
+ const chars=await executeP49EStage(directory,config,"characters");
+ approveP49EStage(directory,"characters",chars.status.stages[0].digest);
+ const scenes=await executeP49EStage(directory,config,"scenes");
+ approveP49EStage(directory,"scenes",scenes.status.stages[1].digest);
+ enableP49EAutoApproval(directory);
+ const story=P49B_CASE.stages[2];
+ const content="小兔嘟嘟穿蓝色斗篷，和兔妈妈及小龟慢慢从森林发现星星，来到石桥救援迷路动物，最后在草地团聚。摄影机推进，画面清晰，人物关系保持一致。";
+ const actual=await executeP49EStage(directory,config,"storyboard",{
+  mockUpstreamCall:async()=>asResponse(story.titles.map((t,i)=>({
+   type:"create_text",ref:"shot"+i,title:"分镜"+(i+1)+"·镜头动作",
+   content
+  })))
+ });
+ assert.equal(actual.providerPosts,1);
+ assert.equal(actual.status.stages[2].status,"auto_approved_for_continuation");
+ const originalDigest=actual.status.stages[2].digest;
+ const db=new DatabaseSync(join(directory,"acceptance.sqlite"));
+ try{
+  const row=db.prepare("SELECT review_json FROM p49e_stages WHERE stage_index=2").get();
+  const old=JSON.parse(row.review_json);
+  old.flags=story.titles.map(title=>({code:"expected_title_missing",title}));
+  old.objectiveChecksPassed=false;
+  db.prepare("UPDATE p49e_stages SET status='review_pending',review_json=? WHERE stage_index=2")
+   .run(JSON.stringify(old));
+ }finally{db.close()}
+ const rechecked=recheckP49EStageFromCache(directory,"storyboard");
+ assert.equal(rechecked.resolvedTitleFlags,6);
+ assert.equal(rechecked.autoApproved,true);
+ assert.equal(rechecked.status.stages[2].status,"auto_approved_for_continuation");
+ assert.equal(rechecked.status.stages[2].digest,originalDigest);
+ assert.equal(rechecked.status.stages[2].review.flags.length,0);
+ assert.equal(rechecked.status.stages[2].modelCalls.length,1);
+ assert.throws(()=>recheckP49EStageFromCache(directory,"storyboard"),/p49e_recheck_stage_not_pending/);
+ const after=new DatabaseSync(join(directory,"acceptance.sqlite"),{readOnly:true});
+ try{assert.equal(after.prepare("SELECT COUNT(*) n FROM assistant_model_calls").get().n,3)}
+ finally{after.close()}
+});
+test("P4.9f cached recheck blocks non-title findings, stale success and altered content digest",async t=>{
+ const directory=start(t);
+ enableP49EAutoApproval(directory);
+ const first=await executeP49EStage(directory,config,"characters",{
+  mockUpstreamCall:async()=>asResponse([
+   {type:"create_text",ref:"c0",title:"小兔嘟嘟",content:"小兔嘟嘟：雪白毛色，身穿蓝色斗篷，乐观好奇，在晨光森林发现星星，始终和朋友一起前进。"},
+   {type:"create_text",ref:"c1",title:"兔妈妈",content:"兔妈妈：米白毛色，身穿棕色围裙，温柔耐心，为孩子的森林冒险提供鼓励和温暖的支持。"},
+   {type:"create_text",ref:"c2",title:"小龟慢慢",content:"小龟慢慢：背着橄榄绿色龟壳，沉稳细致，是小兔嘟嘟可靠的朋友，一起完成森林旅行。"}
+  ])
+ });
+ assert.equal(first.status.stages[0].status,"auto_approved_for_continuation");
+ const db=new DatabaseSync(join(directory,"acceptance.sqlite"));
+ try{
+  const row=db.prepare("SELECT review_json FROM p49e_stages WHERE stage_index=0").get();
+  const old=JSON.parse(row.review_json);
+  old.objectiveChecksPassed=false;
+  old.flags=[{code:"rabbit_costume_drift"}];
+  db.prepare("UPDATE p49e_stages SET status='review_pending',review_json=? WHERE stage_index=0")
+   .run(JSON.stringify(old));
+ }finally{db.close()}
+ assert.throws(()=>recheckP49EStageFromCache(directory,"characters"),/p49e_recheck_requires_title_only_flags/);
+ const db2=new DatabaseSync(join(directory,"acceptance.sqlite"));
+ try{
+  const old=JSON.parse(db2.prepare("SELECT review_json FROM p49e_stages WHERE stage_index=0").get().review_json);
+  old.flags=[{code:"expected_title_missing",title:"小兔嘟嘟"}];
+  db2.prepare("UPDATE p49e_stages SET review_json=?,result_digest=? WHERE stage_index=0")
+   .run(JSON.stringify(old),"0".repeat(64));
+ }finally{db2.close()}
+ assert.throws(()=>recheckP49EStageFromCache(directory,"characters"),/p49e_recheck_digest_mismatch/);
+});
 test("P4.9f automatic approval never promotes unknown remote replies or triggers their replay",async t=>{
  const directory=start(t);let submitted=0;
  enableP49EAutoApproval(directory);

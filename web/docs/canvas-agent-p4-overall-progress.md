@@ -30,10 +30,11 @@
 | P4.9h | [通用剧情事件 IR 与正式 Task 只读提示](./canvas-agent-p49h-story-event-ir.md)：新增版本化、可声明的人物/道具/动作/状态变化/时序/来源证据事件目录与通用差异比较，P4.9g 旧入口迁移到 IR 适配层；正式 Assistant 只在明确“修订分镜”且历史命令完成、来源回合仍获授权时注入有限事件提示；用已有真实 Cline SQLite 只读复核事件遗漏 | **本轮在线模型新请求 0 次**；正式产品只提供修订前的编辑提示，未把事件规则加入生产 Canvas 事务完成验证器，不能视为生产自动语义质量验收。 |
 | P4.9i | [剧情事件候选审核与来源冻结](./canvas-agent-p49i-editorial-review.md)：新增正式 Task 的只读差异预览及编辑决定 API，对照本轮已完成修订和上一版已完成分镜的事件 ID/镜头序号、遗漏及倒序预警。用户显式的 `acknowledge_candidate` / `request_revision` 决定绑定项目 revision、Task 计划/长期语义版本、最新用户回合披露策略、双方模型响应和事件目录 SHA-256；使用既有 Task events/commands 审计，幂等并拒绝过期审查结果 | **本轮在线模型新请求 0 次**；接口仍仅是编辑审核记录，**不更新用户确认事实、不批准 Canvas、也不代表语义完成**。前端审核面板与应用前强制核对留待后续。 |
 | P4.9j | [任务详情事件审核面板与冻结步骤来源预检](./canvas-agent-p49j-story-review-panel.md)：正式 Canvas Assistant Task 详情可查看丢失/保留/倒序候选并逐项提交「已查看 / 需要修订」意见；读取/审批绑定当前 Task/用户回合与 P4.9i SHA-256 快照，切换任务自动丢弃旧异步结果。新增只读 `/story-events/review/preflight`，核对事件均已审核且无未解决警告、冻结 Agent Step 的 requestId/模型响应与 actionDigest/项目 revision 同源 | **本轮新在线模型请求 0 次**；预检不执行、不授权 Canvas、不自动完成 Task；真正 Canvas commit 前的服务端强制事件审核栅栏仍未实现。 |
+| P4.9k | [正式 Canvas 提交事务中的剧情审核来源栅栏](./canvas-agent-p49k-story-commit-gate.md)：新增用户显式的「准备应用已审核分镜（仅冻结步骤）」按钮与 `prepare-apply` API，仅从已完成/已授权 Agent Run 源冻结 Story Review 快照、原版/修订模型摘要与动作 hash 至 Graph Step；在后端计划、人工批准、Claim、**同一 SQLite 事务的 Graph COMMIT** 四处校验，故事缺失、待审核/要求修订、模型或语义版本变化均拒绝写入。Step 和 Graph 回执审计与现有幂等重用，故障注入可整事务回滚 | **本轮新增真实在线模型调用 0 次**；仅用户显式选择的可信 Agent Run 纯文本分镜应用步骤受剧情审核约束，不修改普通节点、媒体链和 Job 审批；无可信 Agent Run 的旧文本草案不能借审核生成执行权限。 |
 
 ## 当前优先级
 
-- **下一步 P4.9k·Canvas Graph 提交服务端事件来源栅栏**：P4.9j 已完成 Task 审核面板和冻结步骤只读预检。下一轮仅对明确选择「应用此轮分镜修订」的步骤，将已审核的事件快照、Agent Run ID/输出 digest 冻结到正式 Step preconditions，并在实际 Canvas commit 事务内再次核验，避免只依赖浏览器临时状态或误伤普通画布操作。当前对话文本模型测试无需逐轮授权，但不重放旧成功/未知回执请求；金额硬上限、长视频和负载测试仍延期。
+- **下一步 P4.9l·普通文本草案可信应用路径**：P4.9k 已完成专用 Agent Run 分镜审核→冻结→批准→Graph COMMIT 可信闭环。现有普通文本模型创作出的分镜修订通常只有成功 Model Command，没有已核实的 Agent Read Run，因此下一轮研究使这类已成功草案经“用户编辑审核 → 生成服务端可信提案 → 独立人工批准”的最小转换路径，不能凭空伪造旧 Run、重放 Provider 或绕过 Graph 校验。当前对话内在线文本模型测试无需逐轮授权；金额硬上限、长视频和负载测试仍延期。
 - **后续通用 Agent 扩展**：在权限、来源冻结和审计验证后再评估跨 Task/Project 检索与复杂工具编排。
 
 ## 按用户决策延期

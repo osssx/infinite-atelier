@@ -2,6 +2,7 @@ import {createHash,randomUUID} from "node:crypto";
 import {assertNoRawCredentials,stableJson,writeTransaction} from "./repository.mjs";
 import {assertAssistantDeliverableBinding,assertAssistantStructuredSourceCurrent} from "./assistant-task-deliverables.mjs";
 import {assertAssistantAgentCanvasBinding} from "./assistant-agent-step-coordinator.mjs";
+import {assertAssistantStoryReviewCanvasBinding} from "./assistant-story-event-review.mjs";
 import {assertAssistantRunMediaBindingConsent} from "./assistant-task-run-media-grant.mjs";
 
 const fail=(code,statusCode=409)=>Object.assign(Error(code),{code,statusCode});
@@ -158,6 +159,8 @@ export function decideAssistantTaskStep(db,{projectId,taskId,stepId,requestId,
   // revoked or changed. Rejection confers no write/Claim authority.
   if(decision==="approve")assertAssistantAgentCanvasBinding(db,{projectId,taskId,
    action:JSON.parse(step.action_json),preconditions:frozen,expectedPlanVersion});
+  if(decision==="approve")assertAssistantStoryReviewCanvasBinding(db,{projectId,taskId,
+   action:JSON.parse(step.action_json),preconditions:frozen,expectedPlanVersion});
   if((decision==="approve"||!(frozen.agentRunBinding||frozen.deliverableSpec?.deliverableType||frozen.runMediaGrantId))&&
    (!Number.isSafeInteger(frozen.projectRevision)||frozen.projectRevision!==task.revision||
    frozen.projectGraphDigest!==digest(JSON.parse(task.document_json))))
@@ -226,6 +229,8 @@ export function claimAssistantTaskStep(db,{projectId,taskId,stepId,expectedPlanV
   assertAssistantDeliverableBinding(action,pre);
   assertAssistantStructuredSourceCurrent(db,taskId,pre.deliverableSpec);
   assertAssistantAgentCanvasBinding(db,{projectId,taskId,action,
+   preconditions:pre,expectedPlanVersion});
+  assertAssistantStoryReviewCanvasBinding(db,{projectId,taskId,action,
    preconditions:pre,expectedPlanVersion});
   if(!Number.isSafeInteger(pre.projectRevision)||task.revision!==pre.projectRevision||
    pre.projectGraphDigest!==digest(JSON.parse(task.document_json)))

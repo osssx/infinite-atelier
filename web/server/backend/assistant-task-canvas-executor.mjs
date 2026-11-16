@@ -8,6 +8,7 @@ import {mayCompleteAssistantTask,currentAssistantTextDeliverable,freezeAssistant
  assertAssistantTextActions,assertAssistantTextClaimBudget,assertAssistantDeliverableBinding,
  assertAssistantStructuredSourceCurrent} from "./assistant-task-deliverables.mjs";
 import {freezeAssistantAgentCanvasBinding,assertAssistantAgentCanvasBinding} from "./assistant-agent-step-coordinator.mjs";
+import {freezeAssistantStoryReviewCanvasBinding,assertAssistantStoryReviewCanvasBinding} from "./assistant-story-event-review.mjs";
 import {assertNoPendingAssistantRunSequence,verifyAssistantRunInputBinding,
  verifyAssistantCommittedRunInput} from "./assistant-task-run-sequences.mjs";
 const fail=(code,statusCode=409)=>Object.assign(Error(code),{code,statusCode});
@@ -80,7 +81,7 @@ function dependencies(db,taskId,step){
  */
 export function planAssistantCanvasStep(db,{projectId,taskId,requestId,
  expectedPlanVersion,expectedProjectRevision,actions,center,dependsOn=[],finalizeTask=false,
- runSequenceId,runIndex,agentRunId,runMediaGrantId}){
+ runSequenceId,runIndex,agentRunId,runMediaGrantId,storyReview}){
  if(!id(requestId)||!Number.isSafeInteger(expectedPlanVersion)||expectedPlanVersion<1||
   !Number.isSafeInteger(expectedProjectRevision)||expectedProjectRevision<1||
   !Array.isArray(dependsOn)||dependsOn.some(value=>!id(value))||
@@ -90,13 +91,17 @@ export function planAssistantCanvasStep(db,{projectId,taskId,requestId,
   throw fail("assistant_agent_step_binding_invalid",400);
  if(runMediaGrantId!==undefined&&(!id(runMediaGrantId)||runSequenceId===undefined||agentRunId!==undefined||finalizeTask))
   throw fail("assistant_run_media_grant_invalid",400);
+ if(storyReview!==undefined&&(agentRunId===undefined||
+  runSequenceId!==undefined||runMediaGrantId!==undefined||finalizeTask))
+  throw fail("assistant_story_review_apply_invalid",400);
  const shape=assertAssistantCanvasPlan({actions,center});
  if((runSequenceId===undefined)!==(runIndex===undefined)||runSequenceId!==undefined&&finalizeTask)
   throw fail("assistant_task_run_input_invalid",400);
  const payload={taskId,expectedPlanVersion,expectedProjectRevision,actions,center,dependsOn,finalizeTask,
   ...(runSequenceId!==undefined?{runSequenceId,runIndex}:{}),
   ...(agentRunId!==undefined?{agentRunId}:{}),
-  ...(runMediaGrantId!==undefined?{runMediaGrantId}:{})};
+  ...(runMediaGrantId!==undefined?{runMediaGrantId}:{}),
+  ...(storyReview!==undefined?{storyReview}:{})};
  const sig=signature("canvas_plan",payload);
  return writeTransaction(db,()=>{
   const existing=oldCommand(db,projectId,requestId,"canvas_plan",sig);
@@ -125,7 +130,11 @@ export function planAssistantCanvasStep(db,{projectId,taskId,requestId,
   }
   const agentRunBinding=agentRunId!==undefined?freezeAssistantAgentCanvasBinding(db,{
    projectId,taskId,runId:agentRunId,actions,expectedPlanVersion}):null;
+  const storyReviewBinding=storyReview!==undefined?freezeAssistantStoryReviewCanvasBinding(db,{
+   projectId,taskId,storyReview,agentRunBinding,actions,
+   expectedPlanVersion,expectedProjectRevision}):null;
   const stepId=randomUUID(),action={actions,center,
+   ...(storyReviewBinding?{storyReview}:{}),
    ...(deliverableSpec?{deliverableSpecDigest:hash(deliverableSpec)}:{}),
    ...(agentRunBinding?{agentRunId,agentOutputDigest:agentRunBinding.responseDigest,
     agentActionsDigest:agentRunBinding.actionsDigest}:{})},
@@ -145,6 +154,7 @@ export function planAssistantCanvasStep(db,{projectId,taskId,requestId,
    refs,requiresApproval:true,finalizeTask,
    ...(deliverableSpec?{deliverableSpec,deliverableSpecDigest:hash(deliverableSpec)}:{}),
    ...(agentRunBinding?{agentRunBinding}:{}),
+   ...(storyReviewBinding?{storyReviewBinding}:{}),
    ...(bindingProof?{runSequenceId,runBindingIndex:runIndex,
     runSourceArtifactId:bindingProof.sourceArtifactId,runSourceSha256:bindingProof.sourceSha256}:{}),
    ...(runMediaGrantId?{runMediaGrantId}:{}),
@@ -166,6 +176,11 @@ export function planAssistantCanvasStep(db,{projectId,taskId,requestId,
   if(agentRunBinding)event(db,taskId,stepId,"agent_step_bound",{
    runId:agentRunBinding.runId,requestId:agentRunBinding.requestId,stepId,
    planVersion:expectedPlanVersion,actionDigest,responseDigest:agentRunBinding.responseDigest},at);
+  if(storyReviewBinding)event(db,taskId,stepId,"story_review_step_bound",{
+   snapshotDigest:storyReviewBinding.snapshotDigest,
+   revisionRequestId:storyReviewBinding.revisionRequestId,
+   agentRunId:storyReviewBinding.agentRunId,
+   actionDigest,planVersion:expectedPlanVersion},at);
   const response={stepId,taskId,planVersion:expectedPlanVersion,actionDigest,
    ...(agentRunBinding?{agentRunId:agentRunBinding.runId}:{}),
    preconditions:{projectRevision:expectedProjectRevision,refs},
@@ -201,6 +216,12 @@ export function commitAssistantCanvasAttempt(db,{projectId,taskId,stepId,
   assertAssistantDeliverableBinding(action,pre);
   assertAssistantStructuredSourceCurrent(db,taskId,pre.deliverableSpec);
   assertAssistantAgentCanvasBinding(db,{projectId,taskId,action,
+   preconditions:pre,expectedPlanVersion:planVersion});
+  // P4.9k: this check is inside the same BEGIN IMMEDIATE transaction as the
+  // project update, receipt and Task completion. A prior UI preflight is NOT
+  // authority; any altered user turn, source, event decision, semantic/plan
+  // version or Agent model output blocks the graph commit atomically.
+  assertAssistantStoryReviewCanvasBinding(db,{projectId,taskId,action,
    preconditions:pre,expectedPlanVersion:planVersion});
   if(hash(action)!==step.action_digest||hash(action)!==actionDigest||
    hash(frozenSnapshot)!==active.requestFingerprint)
@@ -249,6 +270,10 @@ export function commitAssistantCanvasAttempt(db,{projectId,taskId,stepId,
   if(pre.agentRunBinding)event(db,taskId,stepId,"agent_step_committed",{
    runId:pre.agentRunBinding.runId,requestId:pre.agentRunBinding.requestId,
    stepId,actionDigest,receiptDigest:hash(receipt),projectRevision:revision},at);
+  if(pre.storyReviewBinding)event(db,taskId,stepId,"story_review_step_committed",{
+   snapshotDigest:pre.storyReviewBinding.snapshotDigest,stepId,
+   revisionRequestId:pre.storyReviewBinding.revisionRequestId,
+   receiptDigest:hash(receipt),projectRevision:revision},at);
   if(done)event(db,taskId,null,"task_completed",{planVersion,receiptTrust:"server_committed"},at);
   return {receipt,project:{id:projectId,revision,document:applied.document},
    status:"succeeded",existing:false,executionStarted:true};

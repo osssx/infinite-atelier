@@ -303,7 +303,7 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
   setActiveChatId(id);
   return id;
  };
- const taskTracker=useCanvasAssistantTasks({projectId,activeChatId,session,open,sending,includeContext,scope,includedIds,comfyInstanceId,onStartChat:startChatForTask,
+ const taskTracker=useCanvasAssistantTasks({projectId,activeChatId,session,open,sending,includeContext,scope,includedIds,comfyInstanceId,getCanvasCenter,onStartChat:startChatForTask,
  onDraft:setDraft,onGenerateSemanticProposals:async(taskId,turnMessageId,signal)=>{
   const channel=resolveModelChannel(config,chosenModel);
   const provider=modelChannelProvider(channel,"text");

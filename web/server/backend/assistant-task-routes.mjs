@@ -21,6 +21,7 @@ import {discoverAssistantCreativeMaterials,selectAssistantCreativeMaterials} fro
 import {listAssistantAgentRuns,inspectAssistantAgentRun} from "./assistant-agent-run-ledger.mjs";
 import {inspectAssistantStoryEventReview,decideAssistantStoryEventReview,
  inspectAssistantStoryEventApplyPreflight} from "./assistant-story-event-review.mjs";
+import {prepareReviewedStoryboardCanvasStep} from "./assistant-story-review-apply.mjs";
 import {agentCanvasStepForRun} from "./assistant-agent-step-coordinator.mjs";
 
 const id={type:"string",pattern:"^[A-Za-z0-9_-]{1,128}$"};
@@ -90,6 +91,16 @@ const storyEventPreflightQuery={type:"object",additionalProperties:false,
   turnMessageId:id,stepId:id,
   snapshotDigest:{type:"string",pattern:"^[a-f0-9]{64}$"}
  }};
+const storyReviewApplyBody={type:"object",additionalProperties:false,
+ required:["requestId","turnMessageId","snapshotDigest","center","confirmed"],
+ properties:{
+  requestId:id,turnMessageId:id,
+  snapshotDigest:{type:"string",pattern:"^[a-f0-9]{64}$"},
+  center:{type:"object",additionalProperties:false,required:["x","y"],
+   properties:{x:{type:"number",minimum:-1000000,maximum:1000000},
+    y:{type:"number",minimum:-1000000,maximum:1000000}}},
+  confirmed:{type:"boolean",const:true}
+ }};
 const creativeMaterialsQuery={...creativeTurnQuery,properties:{...creativeTurnQuery.properties,
  kinds:{type:"string",pattern:"^(story|scene|style)(,(story|scene|style)){0,2}$"}}};
 const textDeliverableBody={type:"object",additionalProperties:false,
@@ -121,7 +132,11 @@ const canvasStepBody={type:"object",additionalProperties:false,
   center:{type:"object",additionalProperties:false,required:["x","y"],properties:{
    x:{type:"number",minimum:-1000000,maximum:1000000},y:{type:"number",minimum:-1000000,maximum:1000000}}},
   dependsOn:{type:"array",maxItems:20,uniqueItems:true,items:id},finalizeTask:{type:"boolean"},
-  runSequenceId:id,runIndex:{type:"integer",minimum:1,maximum:2},agentRunId:id,runMediaGrantId:id}};
+  runSequenceId:id,runIndex:{type:"integer",minimum:1,maximum:2},agentRunId:id,runMediaGrantId:id,
+  storyReview:{type:"object",additionalProperties:false,
+   required:["turnMessageId","snapshotDigest","confirmed"],properties:{
+    turnMessageId:id,snapshotDigest:{type:"string",pattern:"^[a-f0-9]{64}$"},
+    confirmed:{type:"boolean",const:true}}}}};
 const executeBody={type:"object",additionalProperties:false,
  required:["requestId","expectedPlanVersion","actionDigest"],properties:{
   requestId:id,expectedPlanVersion:{type:"integer",minimum:1},
@@ -263,6 +278,13 @@ export function registerAssistantTaskRoutes(app,db,{skillRegistry,blobStore,onTa
     turnMessageId:req.query.turnMessageId})));
  // P4.9i user-editor-only event review, bound to BOTH completed model
  // responses and frozen current Task/project revision. No Canvas/Job grants.
+ // A user-triggered opt-in freezes the already-completed, reviewed Agent
+ // storyboard response into an ordinary waiting-approval Canvas Step. No
+ // approval, graph commit, Skill, GPU Job or Model POST occurs here.
+ app.post(base+"/:taskId/story-events/review/prepare-apply",{
+  schema:{params:taskParams,body:storyReviewApplyBody}},(req,reply)=>result(reply,
+   prepareReviewedStoryboardCanvasStep(db,{projectId:req.params.id,
+    taskId:req.params.taskId,...req.body})));
  app.get(base+"/:taskId/story-events/review/preflight",{
   schema:{params:taskParams,querystring:storyEventPreflightQuery}},(req,reply)=>result(reply,
    inspectAssistantStoryEventApplyPreflight(db,{projectId:req.params.id,

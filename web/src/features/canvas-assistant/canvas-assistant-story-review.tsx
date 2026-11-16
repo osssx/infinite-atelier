@@ -35,10 +35,12 @@ export function storyReviewReadiness(review:StoryEventReview|null){
   return {ready:false,reason:"存在剧情遗漏或顺序变化，仍需修订或人工检查"};
  return {ready:true,reason:"当前剧情候选已检查；正式画布执行仍需独立步骤审批"};
 }
-export function StoryEventReviewPanel({projectId,taskId,turnMessageId,disabled,readOnly=false,frozenStep}:{
+export function StoryEventReviewPanel({projectId,taskId,turnMessageId,disabled,readOnly=false,frozenStep,
+ getCanvasCenter,onPrepared}:{
  projectId:string;taskId:string;turnMessageId:string|null;
  disabled:boolean;readOnly?:boolean;
- frozenStep?:{id:string;actionDigest:string}|null
+ frozenStep?:{id:string;actionDigest:string}|null;
+ getCanvasCenter?:()=>{x:number;y:number};onPrepared?:()=>Promise<void>
 }){
  const [expanded,setExpanded]=useState(false);
  const [review,setReview]=useState<StoryEventReview|null>(null);
@@ -119,6 +121,34 @@ export function StoryEventReviewPanel({projectId,taskId,turnMessageId,disabled,r
     "。请重新读取来源；没有执行画布操作。");
   }finally{if(serial===token.current)setBusy(false);}
  };
+ // Explicit opt-in. This creates only a server-frozen waiting-approval Step.
+ // Actual Graph mutation always requires the independent Step approval and
+ // a second source+review check inside the SQLite commit transaction.
+ const prepareApply=async()=>{
+  if(!currentReview||!turnMessageId||disabled||readOnly||busy||frozenStep||
+   !storyReviewReadiness(currentReview).ready)return;
+  const serial=++token.current;setBusy(true);setError("");setCheckedDigest(null);
+  try{
+   const planned=await canvasApi<{stepId:string;status:string;existing?:boolean}>(
+    endpoint+"/prepare-apply","POST",{
+     requestId:nanoid(),turnMessageId,
+     snapshotDigest:currentReview.snapshotDigest,
+     center:getCanvasCenter?.()??{x:0,y:0},confirmed:true
+    });
+   if(serial!==token.current)return;
+   if(!planned.stepId||planned.status!=="waiting_approval")
+    throw Error("未收到可信的待审批画布步骤");
+   await onPrepared?.();
+   if(serial!==token.current)return;
+   setError("已冻结待审批步骤 "+planned.stepId.slice(0,12)+
+    "；尚未修改画布。请在任务详情中独立批准并执行该步骤。");
+  }catch(e){
+   if(serial!==token.current)return;
+   setReview(null);
+   setError("无法准备应用此轮分镜（未执行画布）："+
+    (e instanceof Error?e.message:"来源不完整或审核失效"));
+  }finally{if(serial===token.current)setBusy(false);}
+ };
  const status=(e:StoryEventComparison)=>e.warnings.includes("prior_story_event_order_changed")?"顺序变化":
   !e.detected?"修订中未观察到":e.warnings.length?"需复核":"候选保留";
  return <div aria-label="剧情事件审核" className="mt-2 rounded-md border p-2 text-[11px]"
@@ -157,6 +187,11 @@ export function StoryEventReviewPanel({projectId,taskId,turnMessageId,disabled,r
     <p>审核记录：{currentReview.reviewStatus==="recorded_only"?"事件均已记录编辑决定":
      currentReview.reviewStatus==="no_source_candidates"?"没有事件候选":"仍有事件待审核"}。
      {storyReviewReadiness(currentReview).reason}。</p>
+    {!frozenStep&&!readOnly&&storyReviewReadiness(currentReview).ready?
+     <button type="button" className="canvas-assistant-task-primary-action"
+      disabled={disabled||busy} onClick={()=>void prepareApply()}>
+      准备应用已审核分镜（仅冻结步骤，仍需审批）
+     </button>:null}
     {!frozenStep?<p>尚无与本轮关联的待批准画布步骤；只能记录编辑意见，不能应用草案。</p>:null}
    <button type="button" className="canvas-assistant-link" disabled={busy||!turnMessageId||!frozenStep||readOnly}
      onClick={()=>void load({applyCheck:true})}>核对冻结步骤的应用来源（只读）</button>

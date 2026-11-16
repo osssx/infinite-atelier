@@ -74,7 +74,7 @@ type FailureRecovery={canRecover:boolean;reason:string;planVersion:number;projec
  evidenceDigest?:string};
 type Args={projectId:string;activeChatId:string|null;session?:CanvasAssistantSession;
  open:boolean;sending:boolean;includeContext:boolean;scope:AssistantContextScope;includedIds:string[];comfyInstanceId?:string|null;
- onDraft:(value:string)=>void;
+ getCanvasCenter?:()=>{x:number;y:number};onDraft:(value:string)=>void;
  onStartChat?:()=>string;
  onRunSequenceStep?:(taskId:string,view:AssistantRunSequenceView,grantId?:string,grantMode?:string)=>Promise<void>;
  onGenerateSemanticProposals?:(taskId:string,turnMessageId:string,signal:AbortSignal)=>Promise<void>};
@@ -83,7 +83,7 @@ const taskStatusLabel:Record<string,string>={planning:"待规划",ready:"可继�
 
 /** Task-associated Skill and Job runs are persisted before execution and observed by Run ID. */
 export function useCanvasAssistantTasks({
- projectId,activeChatId,session,open,sending,includeContext,scope,includedIds,comfyInstanceId,onDraft,onStartChat,onRunSequenceStep,onGenerateSemanticProposals
+ projectId,activeChatId,session,open,sending,includeContext,scope,includedIds,comfyInstanceId,getCanvasCenter,onDraft,onStartChat,onRunSequenceStep,onGenerateSemanticProposals
 }:Args){
  const [items,setItems]=useState<Task[]>([]);
  const [selectedId,setSelectedId]=useState<string|null>(null);
@@ -961,6 +961,8 @@ export function useCanvasAssistantTasks({
      <StoryEventReviewPanel projectId={projectId} taskId={selected.id}
       turnMessageId={latestUserTurnId} disabled={busy||sending}
       frozenStep={pendingCanvas.find(step=>!!step.action?.agentRunId)??null}
+      getCanvasCenter={getCanvasCenter}
+      onPrepared={async()=>{await refreshTask(selected.id);setTaskExpanded(true);}}
       readOnly={!!currentTask?.readOnly||!activeTask}/>:null}
     {detail?.id===selected.id&&detail.lastError?
      <p role="status" className="mt-1 break-words">上次错误：{detail.lastError.slice(0,200)}</p>:null}

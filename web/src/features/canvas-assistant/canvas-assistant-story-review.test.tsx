@@ -23,7 +23,10 @@ const template=():StoryEventReview=>({
  canvasExecutionAuthorized:false,taskCompletionAuthorized:false
 } as StoryEventReview);
 const props={projectId:"proj",taskId:"task-1",turnMessageId:"revision-turn",
- disabled:false,readOnly:false,frozenStep:{id:"frozen-step",actionDigest:diff}};
+ disabled:false,readOnly:false,frozenStep:{id:"frozen-step",actionDigest:diff} as
+  {id:string;actionDigest:string}|null,
+ getCanvasCenter:undefined as undefined|(()=>{x:number;y:number}),
+ onPrepared:undefined as undefined|(()=>Promise<void>)};
 async function render(override:Partial<typeof props>={}){
  container=document.createElement("div");document.body.appendChild(container);
  root=createRoot(container);
@@ -144,6 +147,40 @@ describe("P4.9j Task storyboard editorial review UI",()=>{
   await act(async()=>{resolve(template());await Promise.resolve()});
   expect(find("原第 6 镜")).toBe(false);
   expect(container!.querySelectorAll("button")).toHaveLength(1);
+ });
+
+ it("P4.9k explicit prepare-apply freezes a reviewed storyboard but never approves or executes Canvas",async()=>{
+  const good=template();
+  good.comparison[0]={...good.comparison[0],decision:"acknowledge_candidate",
+   detected:true,revisionShotIndex:6,warnings:[]};
+  good.reviewStatus="recorded_only";good.warnings=[];
+  const prepared=vi.fn(async()=>{});
+  mocked.api.mockImplementation(async(url:string,method:string,payload?:Record<string,unknown>)=>{
+   if(method==="POST"){
+    expect(url.endsWith("/story-events/review/prepare-apply")).toBe(true);
+    expect(payload?.confirmed).toBe(true);
+    expect(payload?.snapshotDigest).toBe(hash);
+    expect(payload?.turnMessageId).toBe("revision-turn");
+    expect(payload?.center).toEqual({x:125,y:275});
+    return {stepId:"frozen-step-id",status:"waiting_approval",existing:false};
+   }
+   return good;
+  });
+  await render({frozenStep:null,getCanvasCenter:()=>({x:125,y:275}),onPrepared:prepared});
+  await click("剧情事件审核（只读差异）");
+  await click("准备应用已审核分镜（仅冻结步骤，仍需审批）");
+  expect(prepared).toHaveBeenCalledTimes(1);
+  expect(find("已冻结待审批步骤")).toBe(true);
+  expect(mocked.api.mock.calls.filter(([,method])=>method==="POST")).toHaveLength(1);
+  expect(mocked.api.mock.calls.some(([url])=>url.endsWith("/execute")||
+   url.endsWith("/approval")||url.endsWith("/canvas-steps"))).toBe(false);
+ });
+ it("P4.9k omitted action or archived Task never offers the apply button",async()=>{
+  mocked.api.mockResolvedValue(template());
+  await render({frozenStep:null});
+  await click("剧情事件审核（只读差异）");
+  expect(find("准备应用已审核分镜")).toBe(false);
+  expect(mocked.api.mock.calls.some(([,method])=>method==="POST")).toBe(false);
  });
  it("read-only archived Task can inspect but cannot submit decisions or preflight",async()=>{
   mocked.api.mockResolvedValue(template());

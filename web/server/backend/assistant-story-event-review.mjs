@@ -236,6 +236,88 @@ export function inspectAssistantStoryEventApplyPreflight(db,{
   projectRevision:preview.projectRevision,
   stepActionDigest:step.action_digest};
 }
+
+/** Explicit apply-review selection, frozen into a real Canvas Step.
+ * No writable Canvas operation, Job or semantic fact can originate from
+ * the review itself; only preexisting, audited Agent graph actions qualify.
+ */
+export function freezeAssistantStoryReviewCanvasBinding(db,{
+ projectId,taskId,storyReview,agentRunBinding,actions,expectedPlanVersion,
+ expectedProjectRevision
+}){
+ if(!storyReview||Object.getPrototypeOf(storyReview)!==Object.prototype||
+  Object.keys(storyReview).sort().join(",")!=="confirmed,snapshotDigest,turnMessageId"||
+  storyReview.confirmed!==true||!goodDigest(storyReview.snapshotDigest)||
+  !goodId(storyReview.turnMessageId)||!agentRunBinding||
+  !Array.isArray(actions))fail("assistant_story_review_apply_invalid",400);
+ const review=inspectAssistantStoryEventReview(db,{projectId,taskId,
+  turnMessageId:storyReview.turnMessageId});
+ if(review.snapshotDigest!==storyReview.snapshotDigest||
+  review.projectRevision!==expectedProjectRevision||
+  review.activePlanVersion!==expectedPlanVersion)
+  fail("assistant_story_review_snapshot_stale");
+ if(!review.comparison.length)fail("assistant_story_review_no_candidates");
+ if(review.comparison.some(x=>x.decision==="pending"))
+  fail("assistant_story_review_decisions_pending");
+ if(review.comparison.some(x=>x.decision==="request_revision"))
+  fail("assistant_story_review_revision_requested");
+ if(review.warnings.length)fail("assistant_story_review_warnings_unresolved");
+ if(review.revision.requestId!==agentRunBinding.requestId||
+  !goodDigest(agentRunBinding.responseDigest)||
+  !goodDigest(agentRunBinding.actionsDigest))
+  fail("assistant_story_review_agent_source_mismatch");
+ const row=db.prepare("SELECT status,response_json FROM assistant_task_commands WHERE task_id=? AND project_id=? AND request_id=? AND command_kind='model_infer'")
+  .get(taskId,projectId,review.revision.requestId);
+ let response;
+ try{response=JSON.parse(row?.response_json)}catch{}
+ const graphActions=Array.isArray(response?.actions)?response.actions.filter(
+  a=>a?.type!=="run_node"&&a?.type!=="run_workflow"):null;
+ if(row?.status!=="completed"||digest(row.response_json)!==review.revision.digest||
+  !graphActions||digest(graphActions)!==agentRunBinding.actionsDigest||
+  digest(actions)!==agentRunBinding.actionsDigest||
+  digest(response)!==agentRunBinding.responseDigest)
+  fail("assistant_story_review_agent_source_mismatch");
+ return {
+  version:1,turnMessageId:storyReview.turnMessageId,
+  snapshotDigest:review.snapshotDigest,
+  sourceRequestId:review.source.requestId,sourceDigest:review.source.digest,
+  revisionRequestId:review.revision.requestId,revisionDigest:review.revision.digest,
+  catalogDigest:review.catalogDigest,
+  agentRunId:agentRunBinding.runId,agentResponseDigest:agentRunBinding.responseDigest,
+  agentActionsDigest:agentRunBinding.actionsDigest,
+  projectRevision:review.projectRevision,planVersion:review.activePlanVersion,
+  semanticRevision:review.semanticRevision,
+  editorialOnly:true,canvasExecutionAuthorized:false,taskCompletionAuthorized:false
+ };
+}
+/** Called INSIDE the graph commit write transaction, never merely in a
+ * preflight. Rejects deleting/substituting the frozen binding on disk.
+ */
+export function assertAssistantStoryReviewCanvasBinding(db,{
+ projectId,taskId,action,preconditions,expectedPlanVersion
+}){
+ const bound=preconditions?.storyReviewBinding;
+ if(!bound){
+  if(action?.storyReview!==undefined)fail("assistant_story_review_binding_changed");
+  return null; // unrelated Canvas Steps remain unchanged
+ }
+ if(!action?.storyReview||action.storyReview.turnMessageId!==bound.turnMessageId||
+  action.storyReview.snapshotDigest!==bound.snapshotDigest||
+  action.storyReview.confirmed!==true||
+  preconditions.agentRunBinding?.runId!==bound.agentRunId||
+  preconditions.agentRunBinding?.responseDigest!==bound.agentResponseDigest||
+  preconditions.agentRunBinding?.actionsDigest!==bound.agentActionsDigest)
+  fail("assistant_story_review_binding_changed");
+ const current=freezeAssistantStoryReviewCanvasBinding(db,{
+  projectId,taskId,storyReview:action.storyReview,
+  agentRunBinding:preconditions.agentRunBinding,
+  actions:action.actions,expectedPlanVersion,
+  expectedProjectRevision:preconditions.projectRevision
+ });
+ if(stableJson(current)!==stableJson(bound))
+  fail("assistant_story_review_binding_changed");
+ return current;
+}
 /** Explicit single-user editorial decision; does not accept any source body,
  * claimed event IR, plan, or Canvas actions from the browser.
  */

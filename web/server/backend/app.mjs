@@ -10,6 +10,7 @@ import {assertAssistantAgentReadClaim,createAssistantAgentReadSession} from "./a
 import {agentReadRunId} from "./assistant-agent-run-ledger.mjs";
 import {prepareAssistantSemanticProposals} from "./assistant-semantic-proposals.mjs";
 import {buildAssistantTaskProviderContext,loadAssistantTaskCreativeHistory} from "./assistant-task-context.mjs";
+import {loadAuthorizedStoryEventRevisionHints} from "./assistant-story-event-context.mjs";
 import {trustedAssistantTaskOutputs} from "./assistant-task-produced-artifacts.mjs";
 import {submitJob,readJobsSnapshot,readEventsAfter,stableJson} from "./repository.mjs";
 import {EXECUTION_MODES} from "./contracts.mjs";
@@ -803,6 +804,20 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
             {code:"assistant_context_budget_insufficient",statusCode:413});
           taskContext+=specContext+(sourceContext?"\n"+sourceContext:"");
          }
+        }
+        // P4.9h: only an explicit storyboard revision turn may reuse
+        // previously completed, still-disclosable model storyboard events.
+        // This is a bounded editorial hint, NOT a user-confirmed fact.
+        // An explicitly pinned source, structured deliverable or restricted
+        // read/Skill/media turn must never receive unsolicited model drafts.
+        if(!proposalMode&&!pinned&&!readMode&&!requirement&&!req.body.skills&&
+         !req.body.visualContext&&ref.callKind!=="script_continuation"){
+         const hints=loadAuthorizedStoryEventRevisionHints(db,{
+          taskId:ref.taskId,currentTurnMessageId:ref.turnMessageId,
+          contextPolicy:frozenPolicy,userRequest:req.body.messages.at(-1)?.content
+         });
+         if(hints&&Buffer.byteLength(taskContext+"\n"+hints,"utf8")<=16*1024)
+          taskContext+="\n"+hints;
         }
         // P0b: client transcript may contain previously selected private nodes.
         // Only the current explicit user request enters the provider payload.

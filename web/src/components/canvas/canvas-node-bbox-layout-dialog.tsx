@@ -1,7 +1,8 @@
 import "./canvas-node-bbox-layout-dialog.css";
 import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { createPortal } from "react-dom";
-import { App, Button, Input, Modal, Select, Switch, Tooltip } from "antd";
+import { App, Button, Input, InputNumber, Modal, Select, Switch, Tooltip } from "antd";
+import {resolutionFromMegapixels} from "@/features/comfy-workflow/comfy-media-dimensions";
 import { Box, UserRound, Type, Download, Upload, ClipboardCopy, Layers3, SlidersHorizontal, AlignCenterHorizontal, AlignCenterVertical, ArrowDown, ArrowUp, Copy, Eye, EyeOff, Lock, LockOpen, Redo2, Trash2, Undo2, ZoomIn, ZoomOut } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
@@ -50,7 +51,7 @@ export function CanvasNodeBBoxLayoutDialog({
     initialLayout?: BBoxLayout;
     initialPrompt?: string;
     initialSize: string;
-    initialDimensions?: {width:number;height:number};
+    initialDimensions?: {width:number;height:number;megapixels?:number;multiple?:number;aspectRatio?:string};
     onClose: () => void;
     onApply: (layout: BBoxLayout, promptJson: string, width: number, height: number) => void;
 }) {
@@ -70,6 +71,9 @@ export function CanvasNodeBBoxLayoutDialog({
         return initialDimensions?emptyBboxLayout(initialDimensions.width,initialDimensions.height):emptyBboxLayout(...initialBboxSize(initialSize));
     };
     const [layout, setLayout] = useState<BBoxLayout>(getInitialLayout);
+    const [megapixels,setMegapixels]=useState(initialDimensions?.megapixels??getInitialLayout().width*getInitialLayout().height/(1024*1024));
+    const [pixelMultiple,setPixelMultiple]=useState(initialDimensions?.multiple??16);
+    const pixelRatio=useRef(initialDimensions?.aspectRatio?.split(":").map(Number)??[getInitialLayout().width,getInitialLayout().height]);
     const [selected, setSelected] = useState<string[]>([]);
     const [error, setError] = useState("");
     const [snap, setSnap] = useState(true);
@@ -105,6 +109,10 @@ export function CanvasNodeBBoxLayoutDialog({
     useEffect(() => {
         if (!open) return;
         setLayout(getInitialLayout());
+        const initial=getInitialLayout();
+        pixelRatio.current=initialDimensions?.aspectRatio?.split(":").map(Number)??[initial.width,initial.height];
+        setMegapixels(initialDimensions?.megapixels??initial.width*initial.height/(1024*1024));
+        setPixelMultiple(initialDimensions?.multiple??16);
         setSelected([]);
         setError("");
         setHistory([]);
@@ -339,7 +347,7 @@ export function CanvasNodeBBoxLayoutDialog({
     };
 
     function changeSize(width: number, height: number) {
-        if (!Number.isInteger(width) || !Number.isInteger(height) || width < 16 || height < 16 || width % 16 || height % 16) {
+        if (!Number.isInteger(width) || !Number.isInteger(height) || width < 8 || height < 8 || width % 8 || height % 8) {
             setError("Dimensions must be positive multiples of 16.");
             return;
         }
@@ -802,6 +810,16 @@ export function CanvasNodeBBoxLayoutDialog({
                 <section className="bbox-panel flex h-[min(60dvh,560px)] min-h-0 min-w-0 flex-col overflow-hidden rounded-xl border border-black/10 bg-black/[0.02] p-3 dark:border-white/10 dark:bg-white/[0.02] lg:h-[calc(100dvh-180px)]">
                     <div className="thin-scrollbar min-h-0 flex-1 space-y-3 overflow-auto overscroll-contain pr-1">
                         <div className="bbox-panel-heading bbox-section-title"><SlidersHorizontal size={15} />{t("canvas.bboxEditor.canvasSettings")}</div>
+                        <label className="block text-xs">画面像素（百万 / MP）
+                            <InputNumber className="!w-full" min={0.01} max={16} step={0.1} precision={3} value={megapixels}
+                                onChange={value=>{if(value===null||value<=0)return;setMegapixels(value);const size=resolutionFromMegapixels(pixelRatio.current[0],pixelRatio.current[1],value,pixelMultiple);commit(resizeBboxLayout(layout,size.width,size.height));}}/>
+                        </label>
+                        <label className="block text-xs">像素对齐
+                            <Select className="w-full" value={pixelMultiple}
+                                options={[...new Set([8,16,32,64,128,pixelMultiple])].sort((a,b)=>a-b).map(value=>({value,label:`${value} 像素`}))}
+                                onChange={(value:number)=>{setPixelMultiple(value);const size=resolutionFromMegapixels(pixelRatio.current[0],pixelRatio.current[1],megapixels,value);commit(resizeBboxLayout(layout,size.width,size.height));}}/>
+                        </label>
+                        <p className="text-xs opacity-65">与 ComfyUI 一致：1 MP = 1024² 像素，宽高按 {pixelMultiple} 像素对齐。</p>
                         <label className="block text-xs">
                             {t("canvas.bboxEditor.generationSize")}{" "}
                             <Select
@@ -814,7 +832,9 @@ export function CanvasNodeBBoxLayoutDialog({
                                 onChange={(value) => {
                                     if (value === "custom") return;
                                     const [width, height] = value.split("x").map(Number);
-                                    changeSize(width, height);
+                                    pixelRatio.current=[width,height];
+                                    const size=resolutionFromMegapixels(width,height,megapixels,pixelMultiple);
+                                    changeSize(size.width, size.height);
                                 }}
                             />
                         </label>

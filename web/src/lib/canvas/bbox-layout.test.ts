@@ -293,7 +293,9 @@ describe("BBox graph apply", () => {
     });
     it("rejects a removed or image-filled target", () => {
         const args = { nodes: [imageNode({ content: "ready image" })], connections: [], nodeId: "image", layout: layout(), promptJson: "compiled", makeTextNode: () => makeText("new"), makeConnectionId: () => "edge" };
-        expect(applyBboxLayoutToGraph(args)).toBeNull();
+        const result = applyBboxLayoutToGraph(args)!;
+        expect(result.nodes.find(node => node.id === "image")?.metadata?.content).toBe("ready image");
+        expect(result.nodes.find(node => node.id === "image")?.metadata?.bboxLayout).toEqual(layout());
         expect(applyBboxLayoutToGraph({ ...args, nodes: [] })).toBeNull();
     });
 });

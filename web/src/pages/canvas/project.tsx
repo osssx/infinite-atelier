@@ -2597,11 +2597,11 @@ function AtelierCanvasPage() {
         const binding=node.metadata?.comfyMediaPreset??(defaults?{...defaults,overrides:{},slots:{}}:undefined);
         if(binding)try{
             const template=await getComfyTemplate(binding.templateId,binding.templateRevision);
-            if(template)dimensions=resolveComfyMediaDimensions(template,binding);
+            if(template)dimensions=resolveComfyMediaDimensions(template,binding,true);
         }catch{/* The editor remains usable with manual dimensions when a preset is unavailable. */}
         if(request!==bboxOpenRequest.current)return;
         const current=nodesRef.current.find(item=>item.id===node.id);
-        if(!current||current.type!==CanvasNodeType.Image||current.metadata?.content)return;
+        if(!current||current.type!==CanvasNodeType.Image)return;
         setBboxInitialDimensions(dimensions);
         setBboxLayoutNodeId(node.id);
     },[effectiveConfig.comfyWorkflowDefaults]);
@@ -2610,7 +2610,7 @@ function AtelierCanvasPage() {
         const latest = nodesRef.current.find((item) => item.id === nodeId);
         const issue = validateBboxLayout(layout);
         if (!latest) { message.warning(t("canvas.bboxEditor.targetRemoved")); setBboxLayoutNodeId(null); return; }
-        if (latest.type !== CanvasNodeType.Image || latest.metadata?.content) { message.warning(t("canvas.bboxEditor.emptyImageOnly")); setBboxLayoutNodeId(null); return; }
+        if (latest.type !== CanvasNodeType.Image) { message.warning(t("canvas.bboxEditor.targetChanged")); setBboxLayoutNodeId(null); return; }
         if (issue) {
             const text = issue.startsWith("Global caption") ? t("canvas.bboxEditor.captionRequired") : issue.startsWith("Add at least") ? t("canvas.bboxEditor.visibleRequired") : issue.startsWith("Complete the caption") ? t("canvas.bboxEditor.captionTextRequired", { kind: issue.split("for ").at(-1)?.replace(/\.$/, "") }) : issue.startsWith("Fix the bounds") ? t("canvas.bboxEditor.boundsInvalid", { kind: issue.split("for ").at(-1)?.replace(/\.$/, "") }) : issue;
             message.warning(text); return;
@@ -3452,8 +3452,16 @@ function AtelierCanvasPage() {
                     }
                 }
                 if(status==="materialized")message.success("任务产物已写入画布");
-                else if(status==="blocked"||status==="unavailable"||status==="needs_refresh")
-                    message.warning("后端任务产物需要检查或刷新画布："+(details??status));
+                else if(status==="blocked"||status==="unavailable"||status==="needs_refresh") {
+                    // Historical recovery is best-effort: edited/deleted artifacts
+                    // must not produce one warning per old job on every reload.
+                    // Keep the merge guard; only current task conflicts need a toast.
+                    if(status!=="needs_refresh"||notifyOnMaterialization)
+                        message.open({key:"sqlite-artifact-warning-"+projectId,type:"warning",
+                            content:status==="needs_refresh"
+                                ?"任务产物已保存；画布有新的修改，未自动合并。可在任务记录中查看。"
+                                :"后端任务产物需要检查："+(details??status)});
+                }
                 else if(status==="failed")
                     message.error("后端任务："+status);
                 else if(status==="cancelled")message.info("任务已停止");
@@ -3743,6 +3751,7 @@ function AtelierCanvasPage() {
             ) : (
                 <CanvasNodePromptPanel
                     node={panelNode}
+                    onBboxEdit={(node)=>void openBboxEditor(node)}
                     onStartReferenceSelection={startNodeReferenceSelection}
                     onDisconnectReference={(sourceId, targetId) => {
                         const configTarget = connectionsRef.current.find((connection) => connection.fromNodeId === targetId && nodesRef.current.some((node) => node.id === connection.toNodeId && node.type === CanvasNodeType.Config));
@@ -3764,7 +3773,7 @@ function AtelierCanvasPage() {
                     }}
                 />
             ),
-        [backendComfyEnabled,cancelComfyWorkflow,startNodeReferenceSelection,connections,nodes,executeComfyWorkflow,globalComfyInstanceId,
+        [backendComfyEnabled,cancelComfyWorkflow,startNodeReferenceSelection,connections,nodes,executeComfyWorkflow,globalComfyInstanceId,openBboxEditor,
             handleConfigNodeChange,handleGenerateNode,handleNodePromptChange,message,projectId,runningNodeId,stopConfigGeneration],
     );
 
@@ -4145,7 +4154,7 @@ function AtelierCanvasPage() {
                     <CanvasNodeMaskEditDialog dataUrl={maskEditSourceRef.current.content||canvasCasUrl(maskEditSourceRef.current.storageKey)||""} open={Boolean(maskEditNode)} onClose={() => setMaskEditNodeId(null)} onConfirm={(payload) => void maskEditImageNode(maskEditNode!, payload)} onSaveMask={(data)=>void saveImageNodeMask(maskEditNode,data).catch(error=>message.error(error instanceof Error?error.message:String(error)))} onClearMask={()=>clearImageNodeMask(maskEditNode)} hasSavedMask={Boolean(editedMask)} initialMaskDataUrl={(()=>{const key=editedMask?.mask.storageKey;return key?canvasCasUrl(key)??undefined:undefined})()}/>
                 ) : null}
 
-                {bboxLayoutNode && !bboxLayoutNode.metadata?.content ? <CanvasNodeBBoxLayoutDialog open initialDimensions={bboxInitialDimensions} initialLayout={bboxLayoutNode.metadata?.bboxLayout} initialPrompt={bboxLayoutNode.metadata?.composerContent ?? bboxLayoutNode.metadata?.prompt} initialSize={bboxSizeForNode(bboxLayoutNode,buildGenerationConfig(effectiveConfig, bboxLayoutNode, "image").size)} onClose={() => setBboxLayoutNodeId(null)} onApply={(layout, promptJson, width, height) => applyBboxLayout(bboxLayoutNode.id, layout, promptJson, width, height)} /> : null}
+                {bboxLayoutNode ? <CanvasNodeBBoxLayoutDialog open initialDimensions={bboxInitialDimensions} initialLayout={bboxLayoutNode.metadata?.bboxLayout} initialPrompt={bboxLayoutNode.metadata?.composerContent ?? bboxLayoutNode.metadata?.prompt} initialSize={bboxSizeForNode(bboxLayoutNode,buildGenerationConfig(effectiveConfig, bboxLayoutNode, "image").size)} onClose={() => setBboxLayoutNodeId(null)} onApply={(layout, promptJson, width, height) => applyBboxLayout(bboxLayoutNode.id, layout, promptJson, width, height)} /> : null}
 
                 {splitNode?.metadata?.content ? <CanvasNodeSplitDialog dataUrl={splitNode.metadata.content} open={Boolean(splitNode)} onClose={() => setSplitNodeId(null)} onConfirm={(params) => void splitImageNode(splitNode!, params)} /> : null}
 

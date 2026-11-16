@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowUp, LoaderCircle, Maximize2, Square } from "lucide-react";
+import { ArrowUp, LoaderCircle, Maximize2, Square, PanelsTopLeft } from "lucide-react";
 import { Button, Modal, Tooltip } from "antd";
 import { useTranslation } from "react-i18next";
 
 import { ModelPicker } from "@/components/model-picker";
-import { defaultConfig, modelMatchesCapability, resolveModelForCapability, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
+import { defaultConfig, modelMatchesCapability, modelOptionName, resolveModelChannel, resolveModelForCapability, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { CanvasNodeReferenceBar } from "./canvas-node-reference-bar";
@@ -32,13 +32,14 @@ type CanvasNodePromptPanelProps = {
     onConfigChange: (nodeId: string, patch: Partial<CanvasNodeData["metadata"]>) => void;
     onGenerate: (nodeId: string, mode: CanvasNodeGenerationMode, prompt: string) => void;
     onStop: (nodeId: string) => void;
+    onBboxEdit?: (node: CanvasNodeData) => void;
     onImageSettingsOpenChange?: (open: boolean) => void;
     modeOverride?: CanvasNodeGenerationMode; // Plugin nodes set their generation type through useBuiltinPanel.mode.
     nodes?:readonly CanvasNodeData[];
     connections?:readonly CanvasConnection[];
 };
 
-export function CanvasNodePromptPanel({ node, projectId, isRunning, onPromptChange, onConfigChange, onGenerate, onStop, onImageSettingsOpenChange, modeOverride,nodes=[],connections=[],onStartReferenceSelection,onDisconnectReference }: CanvasNodePromptPanelProps) {
+export function CanvasNodePromptPanel({ node, projectId, isRunning, onPromptChange, onConfigChange, onGenerate, onStop, onBboxEdit, onImageSettingsOpenChange, modeOverride,nodes=[],connections=[],onStartReferenceSelection,onDisconnectReference }: CanvasNodePromptPanelProps) {
     const { t } = useTranslation();
     const globalConfig = useEffectiveConfig();
     const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
@@ -96,6 +97,10 @@ export function CanvasNodePromptPanel({ node, projectId, isRunning, onPromptChan
     };
 
     const activeReferences = mentionReferences.filter((reference) => reference.active);
+    const selectedModel=resolveModelChannel(config,config.model)?.models.find(item=>item.name===modelOptionName(config.model));
+    const imageMode=node.metadata?.mediaMode??(connections.some(edge=>edge.toNodeId===node.id&&nodes.some(source=>source.id===edge.fromNodeId&&source.type===CanvasNodeType.Image))?"reference_edit":"text_to_image");
+    const supportsLayout=hasComfyWorkflow?comfyMediaControls.supportsLayout:Boolean(selectedModel?.mediaCapabilities?.modes.some(item=>item.id===imageMode&&item.enabled&&item.layout?.delivery==="prompt_json"));
+    const showLayoutEditor=mode==="image"&&node.type===CanvasNodeType.Image&&supportsLayout&&onBboxEdit;
 
     return (
         <div
@@ -137,6 +142,7 @@ export function CanvasNodePromptPanel({ node, projectId, isRunning, onPromptChan
                                 onMissingConfig={() => openConfigDialog(true)}
                                 onOpenChange={onImageSettingsOpenChange}
                             />:comfyMediaControls.settings}
+                            {showLayoutEditor?<Tooltip title="Layout 编辑器"><Button type="text" aria-label="打开 BBox 编辑器" className="!h-8 !w-8 !min-w-8 shrink-0 !rounded-full !p-0" style={{color:theme.node.text}} icon={<PanelsTopLeft className="size-4"/>} onClick={()=>onBboxEdit?.(node)}/></Tooltip>:null}
                         </>
                     ) : mode === "video" ? (
                         <>

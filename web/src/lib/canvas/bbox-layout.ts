@@ -8,7 +8,7 @@ export type BBoxSummary = { caption: string; meta?: string[]; canvas?: "single" 
 export type BBoxLayout = { version: 1; width: number; height: number; summary: BBoxSummary; items: BBoxItem[] };
 
 export function validBboxSize(width: number, height: number) {
-    return Number.isInteger(width) && Number.isInteger(height) && width > 0 && height > 0 && width % 16 === 0 && height % 16 === 0;
+    return Number.isInteger(width) && Number.isInteger(height) && width > 0 && height > 0 && width % 8 === 0 && height % 8 === 0;
 }
 export function resizeBboxLayout(layout: BBoxLayout, width: number, height: number): BBoxLayout {
     const sx = width / layout.width,
@@ -310,7 +310,7 @@ export function applyBboxLayoutToGraph(args: {
     makeConnectionId: () => string;
 }): { nodes: CanvasNodeData[]; connections: CanvasConnection[]; selectedNodeId: string | null } | null {
     const target = args.nodes.find((node) => node.id === args.nodeId);
-    if (!target || target.type !== CanvasNodeType.Image || target.metadata?.content) return null;
+    if (!target || target.type !== CanvasNodeType.Image) return null;
     const effectivePrompt = (target.metadata?.composerContent ?? target.metadata?.prompt ?? "").trim();
     const nodes = args.nodes.map((node) =>
         node.id === args.nodeId

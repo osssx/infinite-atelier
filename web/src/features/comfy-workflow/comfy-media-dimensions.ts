@@ -2,17 +2,22 @@ import type {CanvasNodeData,CanvasNodeMetadata} from "@/types/canvas";
 import {getComfyInstanceScalarFields} from "./instance-parameters";
 import type {ComfyWorkflowTemplate} from "./template-schema";
 
-export type ComfyMediaDimensions={width:number;height:number};
+export type ComfyMediaDimensions={width:number;height:number;megapixels?:number;multiple?:number;aspectRatio?:string};
 type Binding=NonNullable<CanvasNodeMetadata["comfyMediaPreset"]>;
 const valid=(width:unknown,height:unknown):ComfyMediaDimensions|undefined=>
  typeof width==="number"&&typeof height==="number"&&Number.isSafeInteger(width)&&Number.isSafeInteger(height)&&
  width>0&&height>0&&width<=32768&&height<=32768?{width,height}:undefined;
 // Python round uses ties to even; match ResolutionSelector rather than JS Math.round.
 const roundEven=(value:number)=>value%1===0.5?2*Math.round(value/2):Math.round(value);
+export function resolutionFromMegapixels(width:number,height:number,megapixels:number,multiple=16):ComfyMediaDimensions{
+ const scale=Math.sqrt(megapixels*1024*1024/(width*height));
+ return {width:Math.max(multiple,roundEven(width*scale/multiple)*multiple),height:Math.max(multiple,roundEven(height*scale/multiple)*multiple)};
+}
 
 /** Static evaluation only. Never execute arbitrary workflow nodes or infer from disconnected nodes. */
-export function resolveComfyMediaDimensions(template:ComfyWorkflowTemplate,binding:Binding):ComfyMediaDimensions|undefined{
+export function resolveComfyMediaDimensions(template:ComfyWorkflowTemplate,binding:Binding,includeSettings=false):ComfyMediaDimensions|undefined{
  const graph=template.apiGraph;
+ let resolutionSettings:{megapixels:number;multiple:number;aspectRatio:string}|undefined;
  const fields=getComfyInstanceScalarFields(template,{id:"dimensions",metadata:{}} as CanvasNodeData,[],binding.overrides);
  const fieldValue=(id:string)=>{const local=fields.find(field=>field.port.id===id)?.localValue;return local&&"value" in local?local.value:undefined;};
  const sync=template.mediaUseCase?.aspectSync;
@@ -35,8 +40,9 @@ export function resolveComfyMediaDimensions(template:ComfyWorkflowTemplate,bindi
    const w=Number(match[1]),h=Number(match[2]);
    if(w<=0||h<=0)return undefined;
    // ComfyUI core nodes_resolution.py: MP is measured in 1024² pixels.
-   const scale=Math.sqrt(mp*1024*1024/(w*h));
-   return roundEven((index===0?w:h)*scale/multiple)*multiple;
+   resolutionSettings={megapixels:mp,multiple,aspectRatio:w+":"+h};
+   const size=resolutionFromMegapixels(w,h,mp,multiple);
+   return index===0?size.width:size.height;
   }
   if(index===0&&["PrimitiveInt","PrimitiveFloat"].includes(upstream?.class_type))return input(source,"value",seen);
   return undefined;
@@ -61,7 +67,7 @@ export function resolveComfyMediaDimensions(template:ComfyWorkflowTemplate,bindi
   }
   if(candidates.length){
    const first=candidates[0];
-   return candidates.every(size=>size.width===first.width&&size.height===first.height)?first:undefined;
+   return candidates.every(size=>size.width===first.width&&size.height===first.height)?{...first,...(includeSettings?resolutionSettings:{})}:undefined;
   }
   level=next;
  }

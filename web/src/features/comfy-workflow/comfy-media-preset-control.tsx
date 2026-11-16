@@ -35,7 +35,7 @@ function hasMedia(node:CanvasNodeData,kind:string){
  if(kind==="mask")return node.type==="image"&&Boolean(resolveCanvasImageMask(node));
  return node.type==="audio"&&Boolean(m?.storageKey||m?.content);
 }
-export function useComfyMediaPresetControl({node,nodes,connections,config,theme,capability,onChange,onPickerOptionsChange,defaultPreset,settingsButtonClassName,settingsPlacement,mediaMode,showModeSelector=true}:Props&{mediaMode?:MediaModeId}):{settings:ReactNode;slots:ReactNode;error?:string}{
+export function useComfyMediaPresetControl({node,nodes,connections,config,theme,capability,onChange,onPickerOptionsChange,defaultPreset,settingsButtonClassName,settingsPlacement,mediaMode,showModeSelector=true}:Props&{mediaMode?:MediaModeId}):{settings:ReactNode;slots:ReactNode;error?:string;supportsLayout:boolean}{
  const [editor,setEditor]=useState<CanvasNodeData|null>(null);
  const [catalogRevision,setCatalogRevision]=useState(0);
  const [catalog,setCatalog]=useState<ComfyCatalogPreset[]>([]);
@@ -61,7 +61,7 @@ export function useComfyMediaPresetControl({node,nodes,connections,config,theme,
  const template=activePreset?templates[activePreset.templateId+"@"+activePreset.templateRevision]:undefined;
  const useCase=template?.mediaUseCase;
  const modeOptions=useCase?.mediaCapabilities?.modes.filter(mode=>mode.enabled).map(mode=>({label:modeLabels[mode.id],value:mode.id}))??[];
- const activeMode=(activePreset?.mediaMode??useCase?.mediaCapabilities?.defaultMode) as MediaModeId|undefined;
+ const activeMode=(activePreset?.mediaMode??useCase?.mediaCapabilities?.defaultMode??mediaMode??modeOptions[0]?.value) as MediaModeId|undefined;
  const options=useMemo(()=>catalog.map(item=>{
   const t=templates[item.templateId+"@"+item.revision];
   if(!t?.mediaUseCase)return null;
@@ -147,5 +147,6 @@ export function useComfyMediaPresetControl({node,nodes,connections,config,theme,
  const error=catalogError?`工作流预设目录加载失败：${catalogError}`:
   catalogFailures.length?`以下预设版本无法加载，请在工作流设置中重新导入：${catalogFailures.map(failure=>`${failure.name} (${failure.presetId}): ${failure.message}`).join("；")}`:
   boundPresetError?`当前绑定的工作流版本无法加载，请重新导入该版本：${boundPresetError}`:undefined;
- return {settings,slots,error};
+ const supportsLayout=Boolean(activeMode&&useCase?.mediaCapabilities?.modes.some(mode=>mode.id===activeMode&&mode.enabled&&mode.layout&&useCase.modeBindings?.[mode.id]));
+ return {settings,slots,error,supportsLayout};
 }

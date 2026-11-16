@@ -13,6 +13,7 @@ import {createProject,getProject} from "../server/backend/projects.mjs";
 import {createAssistantTask,appendAssistantTaskTurn,changeAssistantTaskSemantic,
  linkAssistantTaskToChat} from "../server/backend/assistant-tasks.mjs";
 import {createAssistantChatService} from "../server/backend/assistant-chat.mjs";
+import {listAssistantModelCalls} from "../server/backend/assistant-model-calls.mjs";
 import {createPinnedOpenAiCompatCall} from "../server/backend/openai-compat-endpoints.mjs";
 import {buildApp} from "../server/backend/app.mjs";
 import {P49B_CASE,reviewP49BCreativeActions} from "../server/backend/assistant-creative-consistency.mjs";
@@ -136,11 +137,14 @@ export async function runP49BAcceptance(config=parseP49BArgs(["--mock"]),
    const result=response.json();
    // Safe, bounded diagnostic fields from the durable model-call journal.
    // Never export upstream response bodies, request headers or credentials.
-   const audit=db.prepare("SELECT call_kind,status,error_code,started_at,finished_at FROM assistant_model_calls WHERE project_id=? AND request_id=? ORDER BY call_index").all(projectId,requestId)
-    .map(row=>({call_kind:row.call_kind,status:row.status,
-     ...(typeof row.error_code==="string"&&/^assistant_[a-z0-9_]{1,80}$/.test(row.error_code)?
-      {errorCode:row.error_code}:{}),
-     elapsedMs:row.finished_at!==null?Math.max(0,row.finished_at-row.started_at):null}));
+   const audit=listAssistantModelCalls(db,{projectId,taskId:task.id,limit:200}).calls
+    .filter(row=>row.requestId===requestId)
+    .sort((a,b)=>a.index-b.index)
+    .map(row=>({call_kind:row.kind,status:row.status,
+     ...(typeof row.errorCode==="string"&&/^assistant_[a-z0-9_]{1,80}$/.test(row.errorCode)?
+      {errorCode:row.errorCode}:{}),
+     ...(row.diagnostic?{diagnostic:row.diagnostic}:{}),
+     elapsedMs:row.finishedAt!==null?Math.max(0,row.finishedAt-row.startedAt):null}));
    if(response.statusCode!==200){
     report.stages.push({stageId:stage.id,status:response.statusCode,
      errorCode:/^[a-z][a-z0-9_]{1,90}$/.test(result.code??"")?result.code:"p49b_unknown_error",

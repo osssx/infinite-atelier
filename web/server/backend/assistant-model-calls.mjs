@@ -1,4 +1,5 @@
 import {createHash,randomUUID} from "node:crypto";
+import {isSafeAssistantModelDiagnostic} from "./assistant-model-call-diagnostics.mjs";
 import {stableJson,writeTransaction} from "./repository.mjs";
 import {recordAssistantSemanticProposalsInTransaction} from "./assistant-semantic-proposals.mjs";
 import {agentReadRunId,recordAgentRunEventInTransaction,readAgentRunOwnership,
@@ -76,13 +77,14 @@ export function createAssistantModelObserver(db,{projectId,taskId,requestId,prov
   event(db,taskId,"model_call_submitting",{callId,kind,index});
   return callId;
  });
- const finish=(callId,{status,resultDigest=null,errorCode=null})=>writeTransaction(db,()=>{
+ const finish=(callId,{status,resultDigest=null,errorCode=null,diagnostic=null})=>writeTransaction(db,()=>{
   const row=db.prepare("SELECT status,call_index FROM assistant_model_calls WHERE id=? AND project_id=? AND task_id=? AND request_id=?")
    .get(callId,projectId,taskId,requestId);
   if(!row||row.status!=="submitting")throw fail("assistant_model_call_not_active");
   db.prepare("UPDATE assistant_model_calls SET status=?,result_digest=?,error_code=?,finished_at=? WHERE id=?")
    .run(status,resultDigest,errorCode,Date.now(),callId);
-  event(db,taskId,"model_call_"+status,{callId,...(errorCode?{errorCode}:{})});
+  event(db,taskId,"model_call_"+status,{callId,...(errorCode?{errorCode}:{}),
+   ...(diagnostic&&isSafeAssistantModelDiagnostic(diagnostic)?{diagnostic}:{})});
   if(status==="succeeded"&&isAgentReadCommand(db,taskId,requestId))
    recordAgentRunEventInTransaction(db,{taskId,kind:"agent_run_model_received",
     data:{runId:agentReadRunId(projectId,taskId,requestId),requestId,
@@ -91,8 +93,9 @@ export function createAssistantModelObserver(db,{projectId,taskId,requestId,prov
  return {
   start,
   success:(callId,result)=>finish(callId,{status:"succeeded",resultDigest:digest(result)}),
-  failure:(callId,errorCode,unknown)=>finish(callId,{status:unknown?"needs_reconcile":"failed",
-   errorCode:typeof errorCode==="string"&&errorCode.startsWith("assistant_")?errorCode:"assistant_upstream_unavailable"})
+  failure:(callId,errorCode,unknown,diagnostic)=>finish(callId,{status:unknown?"needs_reconcile":"failed",
+   errorCode:typeof errorCode==="string"&&errorCode.startsWith("assistant_")?errorCode:"assistant_upstream_unavailable",
+   diagnostic})
  };
 }
 export function completeAssistantModelCommand(db,{projectId,taskId,requestId,response,semanticProposalBatch=null}){
@@ -193,8 +196,22 @@ export function listAssistantModelCalls(db,{projectId,taskId,limit=100}){
  if(!project)throw fail("project_not_found",404);
  const task=db.prepare("SELECT 1 FROM assistant_tasks WHERE id=? AND project_id=?").get(taskId,projectId);
  if(!task)throw fail("assistant_task_not_found",404);
- return {calls:db.prepare("SELECT id,request_id,call_index,call_kind,parent_call_id,provider,model,status,started_at,finished_at,error_code FROM assistant_model_calls WHERE project_id=? AND task_id=? ORDER BY started_at DESC,call_index DESC LIMIT ?")
-  .all(projectId,taskId,limit).map(row=>({id:row.id,requestId:row.request_id,
-   index:row.call_index,kind:row.call_kind,parentCallId:row.parent_call_id,provider:row.provider,
-   model:row.model,status:row.status,startedAt:row.started_at,finishedAt:row.finished_at,errorCode:row.error_code}))};
+ const rows=db.prepare("SELECT id,request_id,call_index,call_kind,parent_call_id,provider,model,status,started_at,finished_at,error_code FROM assistant_model_calls WHERE project_id=? AND task_id=? ORDER BY started_at DESC,call_index DESC LIMIT ?")
+  .all(projectId,taskId,limit);
+ if(!rows.length)return {calls:[]};
+ // No migration: the existing append-only Task event is the diagnostic
+ // envelope. Fetch only the IDs on this bounded result page.
+ const matching=db.prepare("SELECT payload_json FROM assistant_task_events WHERE task_id=? AND kind IN ('model_call_failed','model_call_needs_reconcile') AND json_extract(payload_json,'$.callId') IN ("+
+  rows.map(()=>"?").join(",")+")").all(taskId,...rows.map(row=>row.id));
+ const diagnostics=new Map();
+ for(const item of matching){
+  let payload;
+  try{payload=JSON.parse(item.payload_json)}catch{continue}
+  if(isSafeAssistantModelDiagnostic(payload?.diagnostic))
+   diagnostics.set(payload.callId,payload.diagnostic);
+ }
+ return {calls:rows.map(row=>({id:row.id,requestId:row.request_id,
+  index:row.call_index,kind:row.call_kind,parentCallId:row.parent_call_id,provider:row.provider,
+  model:row.model,status:row.status,startedAt:row.started_at,finishedAt:row.finished_at,
+  errorCode:row.error_code,...(diagnostics.has(row.id)?{diagnostic:diagnostics.get(row.id)}:{})}))};
 }

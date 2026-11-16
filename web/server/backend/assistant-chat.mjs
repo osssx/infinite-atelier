@@ -3,6 +3,7 @@ import {setTimeout as delay} from "node:timers/promises";
 import {createHash} from "node:crypto";
 import {CANVAS_ACTION_SYSTEM,parseAssistantActionResponse} from "./assistant-actions.mjs";
 import {requiresPopulatedCreativeText,hasPopulatedCreativeTextActions} from "./assistant-creative-content.mjs";
+import {classifyAssistantModelFailure} from "./assistant-model-call-diagnostics.mjs";
 import {latestCanvasUserRequest,isCanvasEditInstruction,isAssistantTextOnlyRequest,exactWholeCanvasGraphLayout} from "./assistant-action-intent.mjs";
 import {runAssistantSkillRounds} from "./assistant-skill-rounds.mjs";
 import {runAssistantAgentReadRounds} from "./assistant-agent-read-rounds.mjs";
@@ -285,7 +286,13 @@ export function createAssistantChatService({vault,upstreamCall=fetch,
       if(callObserver){
        const uncertain=!responseArrived||responseStatus>=500||signal?.aborted||deadline.aborted||
         ["assistant_upstream_timeout","assistant_upstream_unavailable","assistant_cancelled"].includes(code);
-       try{callObserver.failure(callId,code,uncertain);}
+       // The response may already have been accepted upstream. Persist a
+       // finite, content-free diagnostic alongside the original error code;
+       // never treat this evidence as authorization to retry.
+       const diagnostic=classifyAssistantModelFailure({responseArrived,
+        responseStatus,error,deadlineAborted:deadline.aborted,
+        requestAborted:signal?.aborted});
+       try{callObserver.failure(callId,code,uncertain,diagnostic);}
        catch{throw fail("assistant_model_call_unknown",409)}
        if(uncertain)throw fail("assistant_model_call_unknown",409);
        if(typeof code==="string"&&code.startsWith("assistant_"))throw error;

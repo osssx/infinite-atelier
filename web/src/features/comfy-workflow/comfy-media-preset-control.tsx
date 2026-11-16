@@ -16,7 +16,7 @@ const ComfyWorkflowPanel=lazy(()=>import("./comfy-workflow-panel").then(module=>
 type MediaBinding=NonNullable<CanvasNodeMetadata["comfyMediaPreset"]>;
 type Props={node:CanvasNodeData;nodes:readonly CanvasNodeData[];connections:readonly CanvasConnection[];config:AiConfig;theme:CanvasTheme;
  capability?:ModelCapability;defaultPreset?:Pick<MediaBinding,"templateId"|"templateRevision">;
- settingsButtonClassName?:string;settingsPlacement?:"topLeft"|"topRight";showModeSelector?:boolean;
+ settingsButtonClassName?:string;settingsPlacement?:"topLeft"|"topRight";
  onChange:(patch:Partial<CanvasNodeMetadata>)=>void;
  onPickerOptionsChange?:(options:{value:string;label:string;disabled?:boolean}[],select:(value:string)=>void,activeValue?:string)=>void};
 const family=(kind:string)=>kind==="image"?"image":kind==="video"?"video":kind==="mask"?"mask":"audio";
@@ -35,7 +35,7 @@ function hasMedia(node:CanvasNodeData,kind:string){
  if(kind==="mask")return node.type==="image"&&Boolean(resolveCanvasImageMask(node));
  return node.type==="audio"&&Boolean(m?.storageKey||m?.content);
 }
-export function useComfyMediaPresetControl({node,nodes,connections,config,theme,capability,onChange,onPickerOptionsChange,defaultPreset,settingsButtonClassName,settingsPlacement,mediaMode,showModeSelector=true}:Props&{mediaMode?:MediaModeId}):{settings:ReactNode;slots:ReactNode;error?:string;supportsLayout:boolean}{
+export function useComfyMediaPresetControl({node,nodes,connections,config,theme,capability,onChange,onPickerOptionsChange,defaultPreset,settingsButtonClassName,settingsPlacement,mediaMode}:Props&{mediaMode?:MediaModeId}):{settings:ReactNode;slots:ReactNode;error?:string;supportsLayout:boolean}{
  const [editor,setEditor]=useState<CanvasNodeData|null>(null);
  const [catalogRevision,setCatalogRevision]=useState(0);
  const [catalog,setCatalog]=useState<ComfyCatalogPreset[]>([]);
@@ -60,8 +60,7 @@ export function useComfyMediaPresetControl({node,nodes,connections,config,theme,
  }).catch(error=>{if(active)setBoundPresetError(error instanceof Error?error.message:String(error));});return()=>{active=false};},[activePreset?.templateId,activePreset?.templateRevision,templates]);
  const template=activePreset?templates[activePreset.templateId+"@"+activePreset.templateRevision]:undefined;
  const useCase=template?.mediaUseCase;
- const modeOptions=useCase?.mediaCapabilities?.modes.filter(mode=>mode.enabled).map(mode=>({label:modeLabels[mode.id],value:mode.id}))??[];
- const activeMode=(activePreset?.mediaMode??useCase?.mediaCapabilities?.defaultMode??mediaMode??modeOptions[0]?.value) as MediaModeId|undefined;
+ const activeMode=(activePreset?.mediaMode??useCase?.mediaCapabilities?.defaultMode??mediaMode??useCase?.mediaCapabilities?.modes.find(mode=>mode.enabled)?.id) as MediaModeId|undefined;
  const options=useMemo(()=>catalog.map(item=>{
   const t=templates[item.templateId+"@"+item.revision];
   if(!t?.mediaUseCase)return null;
@@ -131,8 +130,6 @@ export function useComfyMediaPresetControl({node,nodes,connections,config,theme,
   return true;
  };
  const settings=<>
-  {showModeSelector&&!editor&&activePreset&&modeOptions.length>0?<div className="mb-1 min-w-0 max-w-[300px]"><Select className="w-full" aria-label="生成模式" value={activeMode} options={modeOptions}
-   onChange={(value:MediaModeId)=>onChange({comfyMediaPreset:{...activePreset,mediaMode:value}})}/></div>:null}
   {!editor&&template?.mediaUseCase&&activePreset?<ComfyMediaParameters template={template} binding={activePreset} config={config} theme={theme} onChange={patch=>onChange(withComfyMediaAspect(template,patch))} onEditPreset={openPresetEditor}
    buttonClassName={settingsButtonClassName} placement={settingsPlacement}/>:null}
   <Modal open={!!editor} title="编辑工作流预设" footer={null} width="min(1200px, 95vw)" destroyOnHidden centered

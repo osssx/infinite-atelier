@@ -70,7 +70,7 @@ export function CanvasNodePromptPanel({ node, projectId, isRunning, onPromptChan
     const inheritedWorkflow=mode!=="text"&&!explicitChannelModel?globalConfig.comfyWorkflowDefaults?.[mode]:undefined;
     const hasComfyWorkflow=Boolean(node.metadata?.comfyMediaPreset??inheritedWorkflow);
     const comfyMediaControls=useComfyMediaPresetControl({node,nodes,connections,config,theme,mediaMode:node.metadata?.comfyMediaPreset?.mediaMode??(mode==="video"?node.metadata?.videoMode??"text_to_video":mode==="image"?node.metadata?.mediaMode??"text_to_image":undefined),
-        showModeSelector:false,defaultPreset:inheritedWorkflow,onChange:handleComfyConfigChange,capability:mode,onPickerOptionsChange:onComfyPickerOptionsChange});
+        defaultPreset:inheritedWorkflow,onChange:handleComfyConfigChange,capability:mode,onPickerOptionsChange:onComfyPickerOptionsChange});
 
     // Restore on node switches and external prompt updates (e.g. BBox apply).
     // Local edits are also committed to metadata, so this agrees with the draft;

@@ -5,13 +5,16 @@ import { useTranslation } from "react-i18next";
 import i18n from "@/i18n";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
-import { modelOptionLabel, modelOptionName, selectableModelsByCapability, type AiConfig, type ModelCapability } from "@/stores/use-config-store";
+import { modelOptionLabel, modelOptionName, resolveModelChannel, selectableModelsByCapability, type AiConfig, type ModelCapability } from "@/stores/use-config-store";
+import {modelChannelProvider} from "@/features/backend-sync/model-channel-autoroute";
+import {resolveMediaCapabilities,supportedMediaModes,supportedMediaParameters,type MediaModeId,type MediaKind} from "@/services/media-capabilities";
 
 type ModelPickerProps = {
     config: AiConfig;
     value?: string;
     onChange: (model: string) => void;
     capability?: ModelCapability;
+    mediaMode?:MediaModeId;
     className?: string;
     fullWidth?: boolean;
     placeholder?: string;
@@ -21,6 +24,13 @@ type ModelPickerProps = {
     onExternalSelect?:(value:string)=>void;
 };
 const EXTERNAL_MODEL_PREFIX="__atelier_external:";
+export function modelSupportsConfiguredMediaMode(config:AiConfig,value:string,mode:MediaModeId,kind:MediaKind):boolean{
+    const channel=resolveModelChannel(config,value),model=channel?.models.find(item=>item.name===modelOptionName(value));
+    if(!model?.mediaCapabilities)return true;
+    const executor={provider:modelChannelProvider(channel,kind)??channel?.apiFormat??"openai",kind,customScript:Boolean(model.script)};
+    const resolved=resolveMediaCapabilities(model,{kind,supportedModes:supportedMediaModes(executor),supportedParameters:supportedMediaParameters(executor)});
+    return resolved.modes.some(item=>item.id===mode);
+}
 export function modelPickerSelectValue(channelValue:string,externalValue:string|undefined,externalOptions:{value:string;label:string;disabled?:boolean}[]){
     return externalValue&&externalOptions.some(option=>option.value===externalValue)
         ?EXTERNAL_MODEL_PREFIX+externalValue:channelValue;
@@ -30,7 +40,7 @@ export function modelPickerSelection(selected:string,externalOptions:{value:stri
     return external?{kind:"external" as const,value:external.value}:{kind:"channel" as const,value:selected};
 }
 
-export function ModelPicker({ config, value, onChange, capability, className, fullWidth = false, placeholder, onMissingConfig,externalOptions=[],externalValue,onExternalSelect }: ModelPickerProps) {
+export function ModelPicker({ config, value, onChange, capability, mediaMode, className, fullWidth = false, placeholder, onMissingConfig,externalOptions=[],externalValue,onExternalSelect }: ModelPickerProps) {
     const { t } = useTranslation();
     const pickerId = useId();
     const [open, setOpen] = useState(false);
@@ -92,8 +102,8 @@ export function ModelPicker({ config, value, onChange, capability, className, fu
                     <SelectGroup>
                     <SelectLabel>渠道模型</SelectLabel>
                     {options.map((model) => (
-                        <SelectItem key={model} value={model} textValue={modelOptionLabel(config, model)}>
-                            <ModelLabel config={config} model={model} />
+                        <SelectItem key={model} value={model} disabled={Boolean(mediaMode&&capability&&(capability==="image"||capability==="video"||capability==="audio")&&!modelSupportsConfiguredMediaMode(config,model,mediaMode,capability))} textValue={modelOptionLabel(config, model)}>
+                            <ModelLabel config={config} model={model} />{mediaMode&&capability&&(capability==="image"||capability==="video"||capability==="audio")&&!modelSupportsConfiguredMediaMode(config,model,mediaMode,capability)?<span className="ml-2 text-xs text-muted-foreground">· 不支持此模式</span>:null}
                         </SelectItem>
                     ))}
                     </SelectGroup>

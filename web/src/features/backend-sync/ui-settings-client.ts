@@ -33,7 +33,8 @@ export function publicModelConfig(config:AiConfig):Record<string,unknown>{
     ...(model.videoCapabilities.generateAudio!==undefined?{generateAudio:model.videoCapabilities.generateAudio}:{}),
     ...(model.videoCapabilities.watermark!==undefined?{watermark:model.videoCapabilities.watermark}:{}),
     ...(model.videoCapabilities.returnLastFrame!==undefined?{returnLastFrame:model.videoCapabilities.returnLastFrame}:{})
-   }}:{})
+   }}:{}),
+   ...(model.mediaCapabilities?{mediaCapabilities:model.mediaCapabilities}:{})
   }))
  }));
  return result;

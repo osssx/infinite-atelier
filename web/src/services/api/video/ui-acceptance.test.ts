@@ -19,8 +19,11 @@ describe("independent video settings acceptance", () => {
     it("uses official Seedance capabilities after migrating an old channel preference", () => {
         const config: AiConfig = { ...defaultConfig, model: `router::${SEEDANCE_STANDARD}`, videoModel: `router::${SEEDANCE_STANDARD}`, channels: [{ id: "router", name: "Seedance2", apiFormat: "volcengine_ark", baseUrl: "http://127.0.0.1:8189/api/v3", apiKey: "local", seedanceAdapter: "router_local", models: [{ name: SEEDANCE_STANDARD, capability: "video", videoPreset: "seedance-2.0" }] } as never] };
         const markup = render(config);
-        expect(markup).toContain(">4k<");
-        expect(markup).toContain("settingsPanels.video.smart");
+        expect(markup).toContain("1080p");
+        expect(markup).not.toContain(">4k<");
+        expect(markup).not.toContain(">-1<");
+        expect(markup).toContain(">4s<");
+        expect(markup).toContain(">15s<");
         expect(markup).toContain("settingsPanels.video.returnLastFrame");
         expect(markup).toContain("settingsPanels.video.watermark");
         expect(markup).not.toContain("768P");

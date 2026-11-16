@@ -1,11 +1,14 @@
 import type {CanvasNodeData,CanvasConnection} from "@/types/canvas";
 import type {ComfyWorkflowTemplate} from "@/features/comfy-workflow/template-schema";
+import type {MediaModeId} from "@/services/media-capabilities";
+import {resolveMediaCapabilities,validateMediaRequest} from "@/services/media-capabilities";
 import {missingComfyMediaInputs} from "@/features/comfy-workflow/run-types";
 import {prepareCanvasExternalInputSnapshot} from "@/lib/canvas/canvas-external-input-snapshot";
 import type {BackendCanvasGraph} from "./canvas-backend-sync";
 import {canonicalBackendGraph,fingerprintComfyTargetBinding} from "./backend-source-fingerprint";
 import {canvasCasUrl,isCanvasCasKey} from "./canvas-cas";
 import type {BlobUploadResponse,BackendJobView} from "@/types/backend-contracts";
+import {bboxLayoutToModelJson,validateBboxLayout} from "@/lib/canvas/bbox-layout";
 
 type Submitter={
  state:{status:string};
@@ -25,6 +28,7 @@ export type BackendComfyWorkflowArgs={
  prompt?:string;
  mediaBinding?:NonNullable<CanvasNodeData["metadata"]>["comfyMediaPreset"];
  workflowMode?:"image"|"video"|"audio";
+ generationMode?:MediaModeId;
  beforeSubmit?:()=>void;
  submitFrozenJob?:(payload:Record<string,unknown>)=>Promise<BackendJobView>;
  readBlob?:(storageKey:string)=>Promise<Blob|null>;
@@ -66,12 +70,50 @@ export async function startBackendComfyWorkflowRun(args:BackendComfyWorkflowArgs
  // visual context only; only edges targeting declared Comfy ports can be sent.
  const incoming=mediaBinding?allIncoming.filter(edge=>!!edge.toPortId&&template.ports.some(port=>port.id===edge.toPortId)):allIncoming;
  const useCase=template.mediaUseCase;
+ const generationMode=useCase?.mediaCapabilities?(args.generationMode??useCase.mediaCapabilities.defaultMode):undefined;
+ const modeBinding=generationMode?useCase?.modeBindings?.[generationMode]:undefined;
+ const mappedPorts=new Set(Object.values(modeBinding?.rolePorts??{}).flat());
  const mediaEdges:CanvasConnection[]=[];
  if(mediaBinding&&useCase){
   const selected=args.mediaSlots??{};
+  if(useCase.mediaCapabilities){
+   const resolved=resolveMediaCapabilities({mediaCapabilities:useCase.mediaCapabilities},{kind:useCase.channel,
+    supportedModes:Object.keys(useCase.modeBindings??{}),supportedParameters:[...new Set(Object.values(useCase.modeBindings??{}).flatMap(binding=>Object.keys(binding?.parameterPorts??{})))]});
+   if(!generationMode)throw Error("Comfy 模板要求选择生成模式");
+   const mapping=useCase.modeBindings?.[generationMode];
+   if(!mapping)throw Error("当前 Comfy 模板未绑定该生成模式");
+   const activePorts=new Set(Object.values(mapping.rolePorts??{}).flat());
+   const refs:Array<{role:string;kind:string}>=[];
+   for(const [role,portIds] of Object.entries(mapping.rolePorts??{}))for(const portId of portIds){
+    if(selected[portId]||incoming.some(edge=>edge.toPortId===portId)){
+     const kind=template.ports.find(port=>port.id===portId)?.valueKind;
+     refs.push({role,kind:kind==="IMAGE"?"image":kind==="VIDEO"?"video":kind==="AUDIO"?"audio":"mask"});
+    }
+   for(const rule of useCase.mediaCapabilities.modes.find(mode=>mode.id===generationMode)?.inputs??[]){
+    const ports=mapping.rolePorts?.[rule.role]??[];
+    const count=ports.filter(portId=>Boolean(selected[portId])||incoming.some(edge=>edge.toPortId===portId)).length;
+    if(count<rule.minItems||count>rule.maxItems)throw Error("媒体角色数量不符合模式要求："+rule.role);
+   }
+   }
+   if(incoming.some(edge=>edge.toPortId&&!activePorts.has(edge.toPortId)&&useCase.slots.some(slot=>slot.id===edge.toPortId)))
+    throw Error("当前模式不接受已连接的媒体槽位");
+   const params:Record<string,unknown>={};
+   for(const spec of useCase.mediaCapabilities.modes.find(mode=>mode.id===generationMode)?.parameters??[]){
+    const portId=mapping.parameterPorts?.[spec.id];
+    params[spec.id]=(portId?mediaBinding?.overrides?.[portId]:undefined)??(spec.mode==="fixed"?spec.fixedValue:spec.defaultValue);
+   }
+   const diagnostics=validateMediaRequest({mode:generationMode,references:refs,parameters:params},resolved);
+   if(diagnostics.length)throw Error("Comfy 媒体能力校验失败："+diagnostics.map(item=>item.code).join("、"));
+  }
   for(const slot of useCase.slots){
+   if(useCase.mediaCapabilities&&!mappedPorts.has(slot.id)){
+    if(selected[slot.id]||incoming.some(edge=>edge.toPortId===slot.id))throw Error("当前模式不接受已连接的媒体槽位："+slot.label);
+    continue;
+   }
    const ref=selected[slot.id];
-   if(slot.required&&!ref)throw Error("请先选择必填媒体槽位："+slot.label);
+   const role=Object.entries(modeBinding?.rolePorts??{}).find(([,ids])=>ids.includes(slot.id))?.[0];
+   const rule=useCase.mediaCapabilities?.modes.find(item=>item.id===generationMode)?.inputs.find(item=>item.role===role);
+   if(!rule&&slot.required&&!ref)throw Error("请先选择必填媒体槽位："+slot.label);
    if(!ref)continue;
    const source=graph.nodes.find(node=>node.id===ref.nodeId);
    if(!source)throw Error("媒体槽位素材已从画布移除："+slot.label);
@@ -81,7 +123,11 @@ export async function startBackendComfyWorkflowRun(args:BackendComfyWorkflowArgs
   for(const id of Object.keys(selected))if(!useCase.slots.some(slot=>slot.id===id))throw Error("backend_unknown_media_slot");
  }
  // Use the same required-port validation as the inspector.
- const missing=missingComfyMediaInputs(template,workflowNode.id,[...incoming,...mediaEdges]);
+ const activeRules=useCase?.mediaCapabilities?.modes.find(item=>item.id===generationMode)?.inputs??[];
+ const requiredPortIds=new Set(activeRules.flatMap(rule=>(modeBinding?.rolePorts?.[rule.role]??[]).slice(0,rule.minItems)));
+ const validationTemplate=useCase?.mediaCapabilities?{...template,mediaUseCase:{...useCase,
+  slots:useCase.slots.filter(slot=>mappedPorts.has(slot.id)).map(slot=>({...slot,required:requiredPortIds.has(slot.id)}))}}:template;
+ const missing=missingComfyMediaInputs(validationTemplate,workflowNode.id,[...incoming,...mediaEdges]);
  if(missing.length)throw Error("请先连接必填媒体输入："+missing.map(p=>p.label).join("、"));
  if(incoming.some(edge=>!edge.toPortId||!edge.fromPortId))
   throw Error("工作流只能使用显式端口连线");
@@ -138,17 +184,17 @@ export async function startBackendComfyWorkflowRun(args:BackendComfyWorkflowArgs
  }
  if(canonicalBackendGraph(graph)!==original)throw Error("backend_frozen_graph_mutated");
  const fence=await bridge.saveProjectNow(graph,workflowNode.id);
- const comfyTargetBinding=mediaBinding?{mode:args.workflowMode??useCase?.channel??"image",binding:copy(mediaBinding)}:undefined;
+ const comfyTargetBinding=mediaBinding?{mode:args.workflowMode??useCase?.channel??"image",...(generationMode?{generationMode}:{}),binding:copy(mediaBinding)}:undefined;
  const sourceNodeFingerprint=comfyTargetBinding?await fingerprintComfyTargetBinding(fence.sourceNodeFingerprint,comfyTargetBinding):fence.sourceNodeFingerprint;
  const idempotencyKey=(args.newKey??(()=>crypto.randomUUID()))();
  const comfyRequest={
   schemaVersion:2,projectId,canvasRevision:String(fence.revision),instanceId,
   rootOutputs:outputPortIds.map(portId=>({nodeId:workflowNode.id,portId})),
   nodes:[{id:workflowNode.id,templateId:template.id,templateRevision:template.revision,
-   inputOverrides:mediaBinding?mediaOverrides(template,mediaBinding,args.prompt??""):copy(regularBinding?.inputOverrides??{})}],
+   inputOverrides:mediaBinding?mediaOverrides(template,mediaBinding,args.prompt??"",generationMode,workflowNode.metadata?.bboxLayout):copy(regularBinding?.inputOverrides??{})}],
   edges:[...incoming,...mediaEdges].map(edge=>({fromNodeId:edge.fromNodeId,fromPortId:edge.fromPortId!,
    toNodeId:edge.toNodeId,toPortId:edge.toPortId!})),
-  externalInputs,runOptions:{},idempotencyKey
+  externalInputs,runOptions:generationMode?{mediaMode:generationMode}:{},idempotencyKey
  };
  const payload={
   projectId,targetNodeId:workflowNode.id,
@@ -163,9 +209,20 @@ export async function startBackendComfyWorkflowRun(args:BackendComfyWorkflowArgs
  const result=await (args.submitFrozenJob??bridge.submitFrozenJob)(payload); return result;
 }
 
-function mediaOverrides(_template:ComfyWorkflowTemplate,binding:NonNullable<CanvasNodeData["metadata"]>["comfyMediaPreset"],prompt:string):Record<string,unknown>{
+function mediaOverrides(_template:ComfyWorkflowTemplate,binding:NonNullable<CanvasNodeData["metadata"]>["comfyMediaPreset"],prompt:string,generationMode?:MediaModeId,layout?:NonNullable<CanvasNodeData["metadata"]>["bboxLayout"]):Record<string,unknown>{
  const overrides=copy(binding?.overrides??{});
- const promptPort=_template.mediaUseCase!.promptPortId;
- overrides[promptPort]=prompt;
+ const mode=generationMode?_template.mediaUseCase?.modeBindings?.[generationMode]:undefined;
+ const contractMode=_template.mediaUseCase?.mediaCapabilities?.modes.find(item=>item.id===generationMode);
+ let deliveredPrompt=prompt;
+ if(contractMode?.layout&&layout){
+  const issue=validateBboxLayout(layout);if(issue)throw Error("结构化布局无效："+issue);
+  const layoutJson=bboxLayoutToModelJson(layout);
+  if(contractMode.layout.delivery==="prompt_json")deliveredPrompt=layoutJson;
+  else if(mode?.layoutPortId)overrides[mode.layoutPortId]=layoutJson;
+  else throw Error("当前生成模式未绑定结构化布局输入");
+ }
+ const promptPort=mode?.promptPortId??_template.mediaUseCase!.promptPortId;
+ overrides[promptPort]=deliveredPrompt;
+ for(const spec of contractMode?.parameters??[]){const portId=mode?.parameterPorts?.[spec.id];if(portId&&overrides[portId]===undefined&&spec.mode==="fixed")overrides[portId]=spec.fixedValue;}
  return overrides;
 }

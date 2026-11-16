@@ -26,17 +26,17 @@ const info={
  Motion:{input:{required:{image:["IMAGE",{}]}},output:["VIDEO"]},
  Sound:{input:{required:{}},output:["AUDIO"]},
  Text:{input:{required:{text:["STRING",{}]}},output:["STRING"]},
- Generate:{input:{required:{image:["IMAGE",{}]}},output:["IMAGE"]},
+ Generate:{input:{required:{image:["IMAGE",{}]},optional:{prompt:["STRING",{}]}},output:["IMAGE"]},
  LoadImage:{input:{required:{image:[["sample.png"],{}]}},output:["IMAGE","MASK"]},
  SaveImage:{input:{required:{images:["IMAGE",{}],filename_prefix:["STRING",{}]}},output:[]},
  SaveVideo:{input:{required:{video:["VIDEO",{}],filename_prefix:["STRING",{}]}},output:[]},
  SaveAudio:{input:{required:{audio:["AUDIO",{}],filename_prefix:["STRING",{}]}},output:[]},
  SaveText:{input:{required:{text:["STRING",{}],filename_prefix:["STRING",{}]}},output:[]}
 };
-function template({reference=false}={}){
+function template({reference=false,mediaContract=false}={}){
  const apiGraph=reference?{
   "1":{class_type:"SolidImage",inputs:{}},
-  "2":{class_type:"Generate",inputs:{image:["1",0]}}
+  "2":{class_type:"Generate",inputs:{image:["1",0],prompt:"base"}}
  }:{
   "1":{class_type:"SolidImage",inputs:{}},
   "2":{class_type:"Motion",inputs:{image:["1",0]}},
@@ -49,6 +49,8 @@ function template({reference=false}={}){
  const ports=reference?[
   {id:"source",label:"Input image",direction:"target",valueKind:"IMAGE",
    inputBinding:{mode:"socket",replaceInternalLink:true,targets:[{nodeId:"2",inputName:"image"}]}},
+  {id:"prompt",label:"Prompt",direction:"target",valueKind:"STRING",
+   inputBinding:{mode:"literal",targets:[{nodeId:"2",inputName:"prompt"}]}},
   {id:"image",label:"Image",direction:"source",valueKind:"IMAGE",
    outputBinding:{nodeId:"2",outputIndex:0},capture:{kind:"image",adapterId:"SaveImage"}}
  ]:[
@@ -63,6 +65,13 @@ function template({reference=false}={}){
  ];
  const payload={name:"Pinned fixture",apiGraph,ports,
   requirements:{classTypes:[...new Set(Object.values(apiGraph).map(n=>n.class_type))].sort()}};
+ if(mediaContract)payload.mediaUseCase={channel:"image",primaryOutputKind:"image",promptPortId:"prompt",primaryOutputPortId:"image",
+  slots:[{id:"source",label:"Reference image",valueKind:"IMAGE"}],
+  mediaCapabilities:{schemaVersion:1,kind:"image",defaultMode:"text_to_image",modes:[
+   {id:"text_to_image",enabled:true,inputs:[],parameters:[]},
+   {id:"reference_edit",enabled:true,inputs:[{role:"reference_image",kind:"image",minItems:1,maxItems:1}],parameters:[]}]},
+  modeBindings:{text_to_image:{promptPortId:"prompt",parameterPorts:{},rolePorts:{}},
+   reference_edit:{promptPortId:"prompt",parameterPorts:{},rolePorts:{reference_image:["source"]}}}};
  return {id:"pinned-demo",revision:sha256(canonical(payload)),...payload};
 }
 function request(t,{reference=false,asset}={}){
@@ -76,7 +85,7 @@ function request(t,{reference=false,asset}={}){
   runOptions:{}
  };
 }
-function fixture(t,{transport,requestOverride,reference=false}={}){
+function fixture(t,{transport,requestOverride,reference=false,mediaContract=false}={}){
  const dir=mkdtempSync(join(tmpdir(),"atelier-comfy-new-"));
  const db=new DatabaseSync(":memory:");
  initializeSchema(db);
@@ -84,7 +93,7 @@ function fixture(t,{transport,requestOverride,reference=false}={}){
  const blobStore=createBlobStore({dataDir:dir,db});
  const instances=[{id:"comfy-local",url:"http://127.0.0.1:8188"}];
  const adapters=createComfyV2Adapters({instances,db,blobStore,upstreamCall:transport});
- const tplt=template({reference}),req=request(tplt,requestOverride);
+ const tplt=template({reference,mediaContract}),req=request(tplt,requestOverride);
  function queue(name="q",{executionMode="poll",snapshotAdd={}}={}){
   req.idempotencyKey=name;
   return submitJob(db,{idempotencyKey:name,requestFingerprint:name,executionMode,snapshot:{
@@ -454,6 +463,22 @@ test("VIDEO/AUDIO media-file inputs compile only with matching verified staged m
  assert.ok(upstream.some(file=>file.bytes.equals(mp4)));
  assert.ok(upstream.some(file=>file.bytes.equals(wav)));
  assert.equal(JSON.parse(f.db.prepare("SELECT graph_json FROM comfy_job_preparations WHERE job_id=?").get(id).graph_json)["w_wf-1__8"].inputs.video,pinned[video.blobId]);
+});
+test("Comfy adapter freezes and compiles a non-default media mode through its role mapping",async t=>{
+ const {mock,prompts}=mockTransport();
+ const f=fixture(t,{transport:mock,reference:true,mediaContract:true});
+ const stored=await f.blobStore.put(Readable.from([png]),{mime:"image/png"});
+ Object.assign(f.req,request(f.tplt,{reference:true,asset:stored.blobId}));
+ f.req.runOptions={mediaMode:"reference_edit"};
+ const jobId=f.queue("mode-bound",{snapshotAdd:{comfyTargetBinding:{mode:"image",generationMode:"reference_edit",
+  binding:{templateId:f.tplt.id,templateRevision:f.tplt.revision,overrides:{},slots:{source:{}}}}}});
+ const coordinator=createJobCoordinator({db:f.db,adapters:{comfy:f.adapters}});
+ coordinator.recoverAtStartup();await coordinator.tick();
+ assert.equal(prompts.length,1);
+ assert.ok(f.row(jobId));
+ const submitted=prompts[0].prompt;
+ assert.equal(submitted["w_wf-1__2"].inputs.prompt,"base");
+ assert.match(submitted["w_wf-1__loader_source"].inputs.image,/\.png$/);
 });
 test("backend rejects a CAS video masquerading as IMAGE before any Comfy upload or GPU submit",async t=>{
  const calls=[];

@@ -5,7 +5,7 @@ export const SEEDANCE_FAST = "doubao-seedance-2-0-fast-260128";
 export const SEEDANCE_MINI = "doubao-seedance-2-0-mini-260615";
 export const SEEDANCE_RATIOS = ["adaptive", "16:9", "4:3", "1:1", "3:4", "9:16", "21:9"] as const;
 
-const standard: VideoCapabilities = { resolutions: ["480p", "720p", "1080p", "4k"], durations: [-1, ...Array.from({ length: 12 }, (_, index) => index + 4)], ratios: [...SEEDANCE_RATIOS], generateAudio: true, watermark: true, returnLastFrame: true };
+const standard: VideoCapabilities = { resolutions: ["480p", "720p", "1080p"], durations: Array.from({ length: 12 }, (_, index) => index + 4), ratios: [...SEEDANCE_RATIOS], generateAudio: true, watermark: true, returnLastFrame: true };
 const fast: VideoCapabilities = { ...standard, resolutions: ["480p", "720p"] };
 const mini: VideoCapabilities = { ...standard, resolutions: ["480p", "720p"] };
 

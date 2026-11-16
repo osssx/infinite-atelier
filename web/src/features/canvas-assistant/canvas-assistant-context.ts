@@ -1,4 +1,7 @@
 import {CanvasNodeType,type CanvasConnection,type CanvasNodeData,type CanvasAssistantReference} from "@/types/canvas";
+import {resolveModelChannel,modelOptionName,type AiConfig} from "@/stores/use-config-store";
+import {modelChannelProvider} from "@/features/backend-sync/model-channel-autoroute";
+import {MEDIA_MODES,resolveMediaCapabilities,supportedMediaModes,supportedMediaParameters,type MediaKind} from "@/services/media-capabilities";
 
 export type AssistantContextScope="selection"|"overview";
 export type AssistantContextResult={text:string;references:CanvasAssistantReference[];truncated:boolean};
@@ -11,9 +14,9 @@ const limitString=(value:unknown,max:number)=>{
  return safe.length>max?safe.slice(0,max)+"…":safe;
 };
 /** Read-only snapshot, captured at send time; never serialize the entire 200-node graph or media data. */
-export function buildCanvasAssistantContext({projectTitle,nodes,connections,nodeIds,scope="selection",maxChars=12000}:{
+export function buildCanvasAssistantContext({projectTitle,nodes,connections,nodeIds,scope="selection",maxChars=12000,config}:{
  projectTitle:string;nodes:readonly CanvasNodeData[];connections:readonly CanvasConnection[];
- nodeIds:readonly string[];scope?:AssistantContextScope;maxChars?:number;
+ nodeIds:readonly string[];scope?:AssistantContextScope;maxChars?:number;config?:AiConfig;
 }):AssistantContextResult{
  const allowed=Math.max(256,Math.min(maxChars,12000));
  const index=new Map(nodes.map(node=>[node.id,node]));
@@ -47,6 +50,13 @@ export function buildCanvasAssistantContext({projectTitle,nodes,connections,node
       meta?.audioVoice?"audioVoice="+limitString(meta.audioVoice,64):""
     ].filter(Boolean);
     if(safeSettings.length)lines.push("当前节点生成设置："+safeSettings.join("、"));
+    if(config&&([CanvasNodeType.Image,CanvasNodeType.Video,CanvasNodeType.Audio].includes(node.type as never))){
+     const kind=(node.type===CanvasNodeType.Image?"image":node.type===CanvasNodeType.Video?"video":"audio") as MediaKind;
+     const selected=String(meta?.model??(kind==="image"?config.imageModel:kind==="video"?config.videoModel:config.audioModel));
+     const channel=resolveModelChannel(config,selected),model=channel?.models.find(item=>item.name===modelOptionName(selected)),provider=modelChannelProvider(channel,kind)??channel?.apiFormat??"openai";
+     const modes=model?.mediaCapabilities?resolveMediaCapabilities(model,{kind,supportedModes:supportedMediaModes({provider,kind,customScript:Boolean(model.script)}),supportedParameters:supportedMediaParameters({provider,kind,customScript:Boolean(model.script)})}).modes.map(mode=>mode.id):MEDIA_MODES[kind];
+     lines.push("当前执行器可用媒体模式："+(modes.length?modes.join("、"):"没有可用模式")+(model?.mediaCapabilities?"（显式配置）":"（兼容模式，未限制）"));
+    }
     if(meta?.comfyWorkflow)lines.push("ComfyUI 工作流绑定状态："+meta.comfyWorkflow.bindingState);   if(node.type===CanvasNodeType.Image||node.type===CanvasNodeType.Video||node.type===CanvasNodeType.Audio)
     lines.push("媒体：仅提供标题及已有提示词；未提供图片、视频或音频内容");
   }

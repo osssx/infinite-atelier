@@ -12,9 +12,9 @@ export function validateSeedanceRequest(request: VideoGenerationRequest, capabil
     if (!("text_to_video" === request.mode || request.mode === "first_frame" || request.mode === "first_last_frame" || request.mode === "omni_reference")) throw new Error("Unsupported Seedance generation mode.");
     if (!capabilities.resolutions?.includes(request.resolution)) throw new Error(`Resolution ${request.resolution} is not supported by this model.`);
     if (!capabilities.ratios?.includes(request.ratio)) throw new Error(`Ratio ${request.ratio} is not supported by this model.`);
-    const allowedDurations = capabilities.durations || [-1, ...Array.from({ length: 12 }, (_, index) => index + 4)];
+    const allowedDurations = capabilities.durations || Array.from({ length: 12 }, (_, index) => index + 4);
     if (!allowedDurations.includes(request.durationSeconds)) throw new Error(`Duration ${request.durationSeconds} seconds is not supported by this model.`);
-    if (request.durationSeconds !== -1 && (!Number.isInteger(request.durationSeconds) || request.durationSeconds < 4 || request.durationSeconds > 15)) throw new Error("Seedance 2.0 duration must be 4–15 seconds, or smart duration (-1).");
+    if (!Number.isInteger(request.durationSeconds) || request.durationSeconds < 4 || request.durationSeconds > 15) throw new Error("Seedance 2.0 duration must be 4–15 seconds.");
     if (request.generateAudio && capabilities.generateAudio === false) throw new Error("Audio generation is not supported by this model.");
     if (request.watermark && capabilities.watermark === false) throw new Error("Watermark settings are not supported by this model.");
     if (request.returnLastFrame && capabilities.returnLastFrame === false) throw new Error("Returning the last frame is not supported by this model.");

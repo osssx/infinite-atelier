@@ -127,6 +127,7 @@ import { assertTextPromptSize } from "@/features/backend-sync/text-model-limits"
 import {freezeSeedanceReferences} from "@/features/backend-sync/seedance-frozen-references";
 import {capabilitiesForModel} from "@/services/api/video/model-capabilities";
 import {validateSeedanceRequest} from "@/services/api/video/seedance-content";
+import {resolveMediaCapabilities,supportedMediaModes,supportedMediaParameters,validateMediaRequest} from "@/services/media-capabilities";
 import {ensureSqliteModelChannelForExecution,modelChannelProvider} from "@/features/backend-sync/model-channel-autoroute";
 import {watchSqliteComfyJob} from "@/features/backend-sync/sqlite-comfy-job-watch";
 import {waitForCanvasNodeCancellation,cancelCanvasNodeExecution,canvasSubmissionStopped,assertCanvasSubmissionActive,beginCanvasTextSubmission,trackCanvasTextJob,finishCanvasTextSubmission,getCanvasTextExecution,
@@ -1038,7 +1039,7 @@ function AtelierCanvasPage() {
         buildAssistantResourceReferences(nodes),[nodes]);
     const getAssistantContext=useCallback((ids:string[],scope:AssistantContextScope)=>
         buildCanvasAssistantContext({projectTitle:currentProjectTitle||"未命名画布",nodes:nodesRef.current,
-            connections:connectionsRef.current,nodeIds:ids,scope}),[currentProjectTitle]);
+            connections:connectionsRef.current,nodeIds:ids,scope,config:effectiveConfig}),[currentProjectTitle,effectiveConfig]);
     const getAssistantWorkflowTemplates=useCallback(async(
         ids:string[],signal:AbortSignal
     )=>{
@@ -2880,6 +2881,7 @@ function AtelierCanvasPage() {
                     const job=await startBackendComfyWorkflowRun({bridge,projectId,workflowNode:sourceNode,...snapshot,
                         template,instanceId:mediaPreset.instanceId||globalComfyInstanceId,outputPortIds:outputs,
                         mediaSlots:mediaPreset.slots,prompt:comfyPrompt,mediaBinding:mediaPreset,workflowMode:mode,
+                        ...((sourceNode.metadata?.comfyMediaPreset?.mediaMode??(mode==="video"?sourceNode.metadata?.videoMode:undefined))?{generationMode:sourceNode.metadata?.comfyMediaPreset?.mediaMode??sourceNode.metadata?.videoMode}:{}),
                         beforeSubmit:()=>assertCanvasSubmissionActive(projectId,submissionToken),
                         ...(taskSubmit?{submitFrozenJob:taskSubmit}:{})});
                     sqliteGenerationJobsRef.current.set(nodeId,job.id);setRunningNodeId(nodeId);
@@ -2953,10 +2955,32 @@ function AtelierCanvasPage() {
                     if(mode!=="video"&&(context.referenceVideos.length||context.referenceAudios.length||
                         mode==="audio"&&context.referenceImages.length))
                         throw Error("当前仅支持图片生成/编辑与文本问答的图片参考输入；视频、音频参考请使用对应工作流");
-                    const text=context.prompt.trim();
+                    let text=context.prompt.trim();
                     if(!text)throw Error("请输入生成提示词");
                     const model=modelOptionName(generationConfig.model);
                     const kind=mode as "image"|"audio"|"text"|"video";
+                    const imageModelConfig=kind==="image"?selectedChannel.models.find(item=>item.name===model):undefined;
+                    if(imageModelConfig){
+                        const imageMode=context.referenceImages.length?"reference_edit":"text_to_image";
+                        const layoutMode=imageModelConfig.mediaCapabilities?.modes.find(item=>item.id===imageMode&&item.enabled&&item.layout);
+                        if(layoutMode){
+                            if(layoutMode.layout?.delivery!=="prompt_json")throw Error("当前 API 图片执行器只支持将结构化 Layout 作为完整提示词传递");
+                            const layoutSources=[sourceNode,...connectionsRef.current.filter(edge=>edge.toNodeId===nodeId)
+                                .map(edge=>nodesRef.current.find(item=>item.id===edge.fromNodeId))
+                                .filter((item):item is CanvasNodeData=>Boolean(item?.metadata?.bboxLayout))]
+                                .filter((item):item is CanvasNodeData=>Boolean(item?.metadata?.bboxLayout));
+                            if(layoutSources.length>1)throw Error("当前生成节点连接了多个结构化 Layout，无法确定来源");
+                            const layout=layoutSources[0]?.metadata?.bboxLayout;
+                            if(layout){
+                                const issue=validateBboxLayout(layout);if(issue)throw Error("结构化 Layout 无效："+issue);
+                                if(layoutSources[0].metadata?.size&&layoutSources[0].metadata.size!==`${layout.width}x${layout.height}`)throw Error("结构化 Layout 与保存的尺寸不一致，请重新保存布局");
+                                const compiled=bboxLayoutToModelJson(layout);
+                                const savedPrompt=(layoutSources[0].metadata?.composerContent??layoutSources[0].metadata?.prompt??"").trim();
+                                if(savedPrompt&&savedPrompt!==compiled)throw Error("结构化 Layout 对应的提示词已被修改，请重新保存布局或关闭 Layout 能力");
+                                text=compiled;
+                            }
+                        }
+                    }
                     if(kind==="image"&&getGenerationCount(generationConfig.count)>10&&
                        ["openai","gemini"].includes(selectedChannel.apiFormat))
                         throw Error("所选官方后端一次最多生成 10 张图片；请将图片数量调至 10 张以内再提交");
@@ -3007,6 +3031,12 @@ function AtelierCanvasPage() {
                         const modelConfig=selectedChannel.models.find(entry=>entry.name===model);
                         const caps=modelConfig?capabilitiesForModel(selectedChannel,modelConfig):null;
                         if(caps&&!selectedScript)validateSeedanceRequest(request,caps);
+                        if(modelConfig?.mediaCapabilities&&!selectedScript){
+                            const executor={provider:sqliteProvider,kind:"video" as const,customScript:Boolean(selectedScript)};
+                            const resolved=resolveMediaCapabilities(modelConfig,{kind:"video",supportedModes:supportedMediaModes(executor),supportedParameters:supportedMediaParameters(executor)});
+                            const diagnostics=validateMediaRequest({mode:request.mode,references:request.references.map(ref=>({role:ref.role??(ref.kind==="image"?"reference_image":ref.kind==="video"?"reference_video":"reference_audio"),kind:ref.kind})),parameters:{duration_seconds:request.durationSeconds}},resolved);
+                            if(diagnostics.length)throw Error("媒体能力校验失败："+diagnostics.map(item=>item.code+(item.role?" · "+item.role:"")).join("；"));
+                        }
                         seedanceMode=request.mode;
                         if(sqliteProvider==="volcengine_ark"&&!selectedScript&&request.references.some(ref=>ref.kind==="video"&&
                             !ref.url?.startsWith("asset://"))){

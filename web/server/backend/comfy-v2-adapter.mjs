@@ -3,6 +3,8 @@ import {createReadStream,openAsBlob} from "node:fs";
 import {createHash} from "node:crypto";
 import {Readable} from "node:stream";
 import {compileSingleWorkflow,verifyTemplate,validateSingleRequest,canonical,sha256} from "../comfy-workflow/compiler.mjs";
+import {resolveMediaCapabilities,validateMediaRequest} from "../../shared/media-capabilities.mjs";
+import {readMediaDurationMs} from "./media-duration.mjs";
 import {extractCapture,detectArtifactMime,captureLimits} from "../comfy-workflow/capture-adapters.mjs";
 import {appendArtifact,writeTransaction} from "./repository.mjs";
 import {makeComfyArtifactProvenance} from "./comfy-provenance.mjs";
@@ -81,6 +83,11 @@ function snapshotOf(job,instanceId){
      useCase?.channel!==target.mode||!binding.overrides||typeof binding.overrides!=="object"||Array.isArray(binding.overrides)||
      !binding.slots||typeof binding.slots!=="object"||Array.isArray(binding.slots))
    throw fail("comfy_target_binding_invalid",400);
+  if(target.generationMode!==undefined&&(!useCase.mediaCapabilities||!useCase.modeBindings?.[target.generationMode]||
+    !useCase.mediaCapabilities.modes.some(mode=>mode.id===target.generationMode&&mode.enabled)))
+   throw fail("comfy_target_generation_mode_invalid",400);
+  if(target.generationMode!==s.comfyRequest.runOptions?.mediaMode)
+   throw fail("comfy_target_generation_mode_mismatch",400);
  }
  return s;
 }
@@ -171,6 +178,7 @@ export function createComfyV2Adapter({instance,db,blobStore,upstreamCall=comfyUp
   };
   const sizes={IMAGE:captureLimits.image,MASK:captureLimits.image,VIDEO:captureLimits.video,AUDIO:captureLimits.audio};
   const items=request.externalInputs.filter(x=>x.kind==="asset");
+  const trustedMedia=new Map();
   for(const item of items){
    const blobId=snapshot.comfyAssetBlobs?.[item.assetId]??item.assetId;
    if(blobId!==item.sha256)throw fail("comfy_asset_snapshot_mismatch",400);
@@ -179,10 +187,33 @@ export function createComfyV2Adapter({instance,db,blobStore,upstreamCall=comfyUp
    if(blob.sha256!==item.sha256||!extension)
     throw fail("comfy_asset_reference_invalid",400);
    if(blob.byteSize>sizes[item.valueKind])throw fail("comfy_asset_too_large",413);
+   trustedMedia.set(item.sourceNodeId+"\0"+item.sourcePortId,{item,blob});
    mediaFiles[item.assetId]="atelier_"+item.sha256+"."+extension;
   }
+  const useCase=template.mediaUseCase,modeId=request.runOptions?.mediaMode;
+  const modeSpec=useCase?.mediaCapabilities?.modes.find(mode=>mode.id===modeId);
+  if(modeSpec){
+   const modeBinding=useCase.modeBindings?.[modeId],refs=[];
+   for(const [role,portIds] of Object.entries(modeBinding?.rolePorts??{}))for(const portId of portIds){
+    for(const edge of request.edges.filter(edge=>edge.toNodeId===request.nodes[0]?.id&&edge.toPortId===portId)){
+     const trusted=trustedMedia.get(edge.fromNodeId+"\0"+edge.fromPortId);if(!trusted)continue;
+     const {item,blob}=trusted,kind=item.valueKind==="IMAGE"?"image":item.valueKind==="VIDEO"?"video":item.valueKind==="AUDIO"?"audio":"mask";
+     const hasDurationLimit=modeSpec.inputs.some(rule=>rule.role===role&&rule.maxDurationSeconds!==undefined);
+     const durationMs=hasDurationLimit&&(kind==="video"||kind==="audio")?await readMediaDurationMs(blob.path,blob.mimeType):undefined;
+     if(hasDurationLimit&&(kind==="video"||kind==="audio")&&!durationMs)throw fail("media_reference_duration_unverified",422);
+     refs.push({role,kind,mimeType:blob.mimeType,bytes:blob.byteSize,...(durationMs?{durationMs}:{})});
+    }
+   }
+   const resolved=resolveMediaCapabilities({mediaCapabilities:useCase.mediaCapabilities},{kind:useCase.channel,
+    supportedModes:Object.keys(useCase.modeBindings??{}),supportedParameters:Object.keys(modeBinding?.parameterPorts??{})});
+   const runNode=request.nodes.find(node=>node.id===request.nodes[0]?.id);
+   const overrides=runNode?.inputOverrides??{};
+   const parameters=Object.fromEntries(modeSpec.parameters.map(spec=>[spec.id,modeBinding?.parameterPorts?.[spec.id]?overrides[modeBinding.parameterPorts[spec.id]]:undefined]));
+   const diagnostics=validateMediaRequest({mode:modeId,references:refs,parameters},resolved);
+   if(diagnostics.length)throw fail("media_capability_invalid",422);
+  }
   // Compilation validates every port and target binding BEFORE any upload.
-  const compiled=compileSingleWorkflow(request,template,{info,mediaFiles});
+  const compiled=compileSingleWorkflow(request,template,{info,mediaFiles,mediaMode:request.runOptions?.mediaMode});
   for(const item of items){
    const blobId=snapshot.comfyAssetBlobs?.[item.assetId]??item.assetId;
    const blob=await blobStore.stat(blobId);

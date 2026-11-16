@@ -68,8 +68,8 @@ export function CanvasNodePromptPanel({ node, projectId, isRunning, onPromptChan
     const explicitChannelModel=Boolean(node.metadata?.model&&modelMatchesCapability(globalConfig,node.metadata.model,mode));
     const inheritedWorkflow=mode!=="text"&&!explicitChannelModel?globalConfig.comfyWorkflowDefaults?.[mode]:undefined;
     const hasComfyWorkflow=Boolean(node.metadata?.comfyMediaPreset??inheritedWorkflow);
-    const comfyMediaControls=useComfyMediaPresetControl({node,nodes,connections,config,theme,
-        defaultPreset:inheritedWorkflow,onChange:handleComfyConfigChange,capability:mode,onPickerOptionsChange:onComfyPickerOptionsChange});
+    const comfyMediaControls=useComfyMediaPresetControl({node,nodes,connections,config,theme,mediaMode:node.metadata?.comfyMediaPreset?.mediaMode??(mode==="video"?node.metadata?.videoMode??"text_to_video":mode==="image"?node.metadata?.mediaMode??"text_to_image":undefined),
+        showModeSelector:false,defaultPreset:inheritedWorkflow,onChange:handleComfyConfigChange,capability:mode,onPickerOptionsChange:onComfyPickerOptionsChange});
 
     // Restore on node switches and external prompt updates (e.g. BBox apply).
     // Local edits are also committed to metadata, so this agrees with the draft;
@@ -140,7 +140,7 @@ export function CanvasNodePromptPanel({ node, projectId, isRunning, onPromptChan
                         </>
                     ) : mode === "video" ? (
                         <>
-                            <ModelPicker config={config} value={config.model} onChange={onModelChange} capability="video" onMissingConfig={() => openConfigDialog(true)} className="max-w-[190px]" externalOptions={comfyOptions} externalValue={comfyValue} onExternalSelect={value=>selectComfyPresetRef.current(value)}/>
+                            <ModelPicker config={config} value={config.model} onChange={onModelChange} capability="video" mediaMode={node.metadata?.videoMode??"text_to_video"} onMissingConfig={() => openConfigDialog(true)} className="max-w-[190px]" externalOptions={comfyOptions} externalValue={comfyValue} onExternalSelect={value=>selectComfyPresetRef.current(value)}/>
                             {!hasComfyWorkflow?<CanvasVideoSettingsPopover config={config} buttonClassName="!h-8 !max-w-[170px] !justify-start !rounded-full !px-3" onConfigChange={(key, value) => onConfigChange(node.id, videoConfigPatch(key, value))} />:comfyMediaControls.settings}
                         </>
                     ) : mode === "audio" ? (

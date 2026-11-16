@@ -47,7 +47,8 @@ describe("Seedance 2.0 request validation and content mapping", () => {
     it("enforces standard and fast resolution limits and 4–15 second duration", () => {
         expect(() => validateSeedanceRequest(request({ resolution: "4k" }), seedancePresets[1].videoCapabilities)).toThrow(/not supported/i);
         expect(() => validateSeedanceRequest(request({ durationSeconds: 3 }), seedancePresets[0].videoCapabilities)).toThrow(/duration/i);
-        expect(() => validateSeedanceRequest(request({ durationSeconds: -1 }), seedancePresets[0].videoCapabilities)).not.toThrow();
+        expect(() => validateSeedanceRequest(request({ durationSeconds: -1 }), seedancePresets[0].videoCapabilities)).toThrow(/duration/i);
+        expect(() => validateSeedanceRequest(request({ durationSeconds: undefined as never }), seedancePresets[0].videoCapabilities)).toThrow(/duration/i);
     });
 
     it("checks reference file sizes, dimensions, duration, and audio dependency", () => {

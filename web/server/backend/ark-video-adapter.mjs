@@ -36,7 +36,7 @@ export function validateArkReferences(task){
     throw fail("ark_video_reference_digest_invalid",true);
   }else if(ref.kind!=="video"||!asset||ref.mimeType!==undefined)
    throw fail("ark_video_reference_missing_cas",true);
-  if(ref.durationMs!==undefined&&(!Number.isInteger(ref.durationMs)||
+  if((ref.kind==="video"||ref.kind==="audio")&&ref.durationMs===undefined||ref.durationMs!==undefined&&(!Number.isInteger(ref.durationMs)||
     ref.durationMs<2000||ref.durationMs>15000))throw fail("ark_video_reference_duration_invalid",true);
   if(ref.width!==undefined&&(!Number.isInteger(ref.width)||ref.width<300||ref.width>6000)||
      ref.height!==undefined&&(!Number.isInteger(ref.height)||ref.height<300||ref.height>6000))

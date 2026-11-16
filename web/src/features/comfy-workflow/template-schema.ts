@@ -1,5 +1,7 @@
 import type { CanvasPortValueKind } from "@/types/canvas";
 import {inspectComfyInputSpec} from "./comfy-input-spec";
+import {validateComfyMediaContract} from "../../../shared/media-capabilities.mjs";
+import type {MediaCapabilities,MediaModeId,MediaRole} from "@/services/media-capabilities";
 
 export type ComfyNode = { class_type: string; inputs: Record<string, unknown>; _meta?: Record<string, unknown> };
 export type ComfyApiGraph = Record<string, ComfyNode>;
@@ -53,6 +55,9 @@ export type ComfyMediaUseCase = {
     slots: Array<{id:string;label:string;valueKind:"IMAGE"|"MASK"|"VIDEO"|"AUDIO";required?:boolean}>;
     primaryOutputPortId: string;
     additionalOutputPortIds?: string[];
+    /** Opt-in schema v1 contract. Omitted on historical revisions. */
+    mediaCapabilities?:MediaCapabilities;
+    modeBindings?:Partial<Record<MediaModeId,{promptPortId?:string;layoutPortId?:string;parameterPorts?:Record<string,string>;rolePorts?:Partial<Record<MediaRole,string[]>>}>>;
 };
 export type ComfyWorkflowTemplate = ComfyTemplatePayload & { id: string; revision: string; revisionName?:string };
 
@@ -237,6 +242,7 @@ export function validateComfyTemplatePayload(raw: unknown, info?: ComfyObjectInf
         if(new Set(outputs).size!==outputs.length)fail("duplicate media output port");
         for(const id of useCase.additionalOutputPortIds??[]){const port=byId.get(id);
             if(!port||port.direction!=="source"||!port.capture||port.capture.kind==="none"||!port.capture.adapterId)fail("media additional output port mismatch");}
+        if(useCase.mediaCapabilities!==undefined||useCase.modeBindings!==undefined){try{validateComfyMediaContract(useCase,raw.ports as ComfyTemplatePort[])}catch{fail("invalid media capability mode bindings");}}
     }
     if (raw.previewBinding !== undefined) {
         const binding=raw.previewBinding;

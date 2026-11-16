@@ -87,6 +87,31 @@ test("compiler explicitly rejects legacy mediaUseCase.settings instead of accept
  assert.throws(()=>compileSingleWorkflow(request,legacy,options()),/template_media_use_case_invalid/);
 });
 
+test("versioned Comfy media bindings compile default and non-default modes and reject inactive or mistyped roles",()=>{
+ const base=template();
+ const useCase={channel:"image",primaryOutputKind:"image",promptPortId:"text",slots:[{id:"source",label:"Reference image",valueKind:"IMAGE"}],primaryOutputPortId:"image",
+  mediaCapabilities:{schemaVersion:1,kind:"image",defaultMode:"text_to_image",modes:[
+   {id:"text_to_image",enabled:true,inputs:[],parameters:[]},
+   {id:"reference_edit",enabled:true,inputs:[{role:"reference_image",kind:"image",minItems:1,maxItems:1}],parameters:[]}]},
+  modeBindings:{text_to_image:{promptPortId:"text",parameterPorts:{},rolePorts:{}},
+   reference_edit:{promptPortId:"text",parameterPorts:{},rolePorts:{reference_image:["source"]}}}};
+ const payload={name:base.name,apiGraph:base.apiGraph,ports:base.ports,requirements:base.requirements,mediaUseCase:useCase};
+ const tplt={id:"demo",revision:sha256(canonical(payload)),...payload};
+ const defaultRun=req();defaultRun.nodes[0].templateRevision=tplt.revision;defaultRun.runOptions={mediaMode:"text_to_image"};
+ assert.doesNotThrow(()=>compileSingleWorkflow(defaultRun,tplt,options()));
+ const refAsset={assetId:"a".repeat(64),sha256:"a".repeat(64)};
+ const refRun=req(refAsset);refRun.nodes[0].templateRevision=tplt.revision;refRun.runOptions={mediaMode:"reference_edit"};
+ assert.doesNotThrow(()=>compileSingleWorkflow(refRun,tplt,options(refAsset)));
+ const inactiveRoleRun=req(refAsset);inactiveRoleRun.nodes[0].templateRevision=tplt.revision;inactiveRoleRun.runOptions={mediaMode:"text_to_image"};
+ assert.throws(()=>compileSingleWorkflow(inactiveRoleRun,tplt,options(refAsset)),/template_media_input_inactive/);
+ const missingRoleRun=req();missingRoleRun.nodes[0].templateRevision=tplt.revision;missingRoleRun.runOptions={mediaMode:"reference_edit"};
+ assert.throws(()=>compileSingleWorkflow(missingRoleRun,tplt,options()),/template_media_request_invalid/);
+ const invalidUseCase={...useCase,modeBindings:{...useCase.modeBindings,reference_edit:{...useCase.modeBindings.reference_edit,rolePorts:{reference_image:["text"]}}}};
+ const invalid={...tplt,mediaUseCase:invalidUseCase,revision:sha256(canonical({name:tplt.name,apiGraph:tplt.apiGraph,ports:tplt.ports,requirements:tplt.requirements,mediaUseCase:invalidUseCase}))};
+ const invalidRun=structuredClone(refRun);invalidRun.nodes[0].templateRevision=invalid.revision;
+ assert.throws(()=>compileSingleWorkflow(invalidRun,invalid,options(refAsset)),/template_media_capability_contract_invalid/);
+});
+
 test("dynamic COMFY_DYNAMICCOMBO_V3 dotted inputs follow selected option schema",()=>{
     const sample={
         TextGenerate:{input:{required:{

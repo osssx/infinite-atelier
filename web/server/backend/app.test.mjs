@@ -338,6 +338,32 @@ test("project save barrier before job enqueue and persistent idempotency",async 
  assert.equal(incomplete.statusCode,400);
  assert.equal(incomplete.json().code,"generation_save_barrier_required");
 });
+test("backend applies the current explicit media mode contract and returns existing idempotent jobs before rechecking config",async t=>{
+ const{call,db}=await fixture(t);
+ const document=doc();await call("POST","/api/v1/projects",{id:"p",document});
+ const mediaCapabilities={schemaVersion:1,kind:"video",defaultMode:"text_to_video",modes:[
+  {id:"text_to_video",enabled:true,inputs:[],parameters:[]},
+  {id:"first_frame",enabled:false,inputs:[{role:"first_frame",kind:"image",minItems:1,maxItems:1}],parameters:[]}
+ ]};
+ const config={channels:[{id:"ark",name:"Ark",baseUrl:"https://ark.cn-beijing.volces.com/api/v3",apiFormat:"volcengine_ark",models:[{name:"seedance",capability:"video",mediaCapabilities}]}]};
+ db.prepare("UPDATE ui_settings SET value_json=?,revision=revision+1 WHERE name='model_config'").run(JSON.stringify(config));
+ db.prepare("INSERT INTO channels(id,provider,display_name,created_at,updated_at) VALUES(?,?,?,?,?)").run("ark","volcengine_ark","Ark",1,1);
+ db.prepare("INSERT INTO credential_versions(id,channel_id,version_num,ciphertext,created_at) VALUES(?,?,?,?,?)").run("credential-v1","ark",1,Buffer.from("x"),1);
+ const makeBody=(mode,id)=>({projectId:"p",targetNodeId:"text",expectedProjectRevision:1,sourceNodeFingerprint:fingerprintSource(document,"text"),
+  executionMode:"poll",idempotencyKey:id,requestFingerprint:id,snapshot:{adapterKind:"model",provider:"volcengine_ark",channelId:"ark",
+   secretVersionRef:"credential-v1",
+   task:{kind:"video",model:"seedance",prompt:"test",mode,duration:6,ratio:"adaptive",resolution:"720p",generateAudio:false,watermark:false,references:[],
+    ...(mode==="first_frame"?{references:[{kind:"image",role:"first_frame"}]}:{})}}});
+ const denied=await call("POST","/api/v1/jobs",makeBody("first_frame","disabled-mode"));
+ assert.equal(denied.statusCode,422);assert.equal(denied.json().code,"media_capability_invalid");
+ const acceptedBody=makeBody("text_to_video","accepted-mode");
+ const accepted=await call("POST","/api/v1/jobs",acceptedBody);assert.equal(accepted.statusCode,201,accepted.body);
+ const revoked={...mediaCapabilities,modes:mediaCapabilities.modes.map(mode=>({...mode,enabled:false}))};
+ db.prepare("UPDATE ui_settings SET value_json=?,revision=revision+1 WHERE name='model_config'").run(JSON.stringify({...config,channels:[{...config.channels[0],models:[{...config.channels[0].models[0],mediaCapabilities:revoked}]}]}));
+ const replay=await call("POST","/api/v1/jobs",acceptedBody);
+ assert.equal(replay.statusCode,200,replay.body);assert.equal(replay.json().existing,true);
+ assert.equal(db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n,1);
+});
 test("multi-hop generation fingerprint includes all transitive upstream nodes",()=>{
  const chain={nodes:[
   {id:"first",type:"text",metadata:{prompt:"one"}},

@@ -1,4 +1,6 @@
-import {describe,it,expect} from "vitest";
+import {describe,it,expect,vi} from "vitest";
+vi.mock("@/stores/use-config-store",()=>({resolveModelChannel:()=>null,modelOptionName:(value:string)=>value}));
+vi.mock("@/features/backend-sync/model-channel-autoroute",()=>({modelChannelProvider:()=>null}));
 import {CanvasNodeType,type CanvasNodeData} from "@/types/canvas";
 import {buildCanvasAssistantContext} from "./canvas-assistant-context";
 const nodes:CanvasNodeData[]=[

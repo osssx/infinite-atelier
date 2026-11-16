@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { prepareCapture } from "./capture-adapters.mjs";
 import {validCanvasNodeId} from "../canvas-node-id.mjs";
+import {validateComfyMediaContract,resolveMediaCapabilities,validateMediaRequest} from "../../shared/media-capabilities.mjs";
 
 const has = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
 const fail = (code, status = 422) => { throw Object.assign(new Error(code), { code, status }); };
@@ -67,6 +68,7 @@ export function verifyTemplate(template) {
         if(!Array.isArray(u.additionalOutputPortIds??[])||outputs.some(id=>byId.get(id)?.direction!=="source"||
             !byId.get(id)?.capture||byId.get(id).capture.kind==="none"||!byId.get(id).capture.adapterId)||new Set(outputs).size!==outputs.length)
             fail("template_media_output_invalid");
+        try{validateComfyMediaContract(u,ports)}catch{fail("template_media_capability_contract_invalid")}
     }
     const ids = new Set(), claims = new Set();
     for (const [id, node] of Object.entries(apiGraph)) {
@@ -246,7 +248,8 @@ export function validateSingleRequest(req) {
     if (!validCanvasNodeId(node.id) || !validId(node.templateId) || !validSha(node.templateRevision) ||
         !object(node.inputOverrides) || roots.some(root=>root.nodeId!==node.id || !validId(root.portId)) ||
         new Set(roots.map(root=>root.portId)).size!==roots.length)fail("run_node_invalid");
-    if (!object(req.runOptions) || Object.keys(req.runOptions).length) fail("run_options_unsupported");
+    if (!object(req.runOptions)||Object.keys(req.runOptions).some(key=>key!=="mediaMode")||
+        req.runOptions.mediaMode!==undefined&&!new Set(["text_to_image","reference_edit","inpaint","text_to_video","first_frame","last_frame","first_last_frame","omni_reference","text_to_speech","voice_clone","text_to_music","text_to_sound"]).has(req.runOptions.mediaMode)) fail("run_options_unsupported");
     const inputs = new Map(), targetEdges = new Map();
     for (const x of req.externalInputs) {
         if (!object(x) || !validCanvasNodeId(x.sourceNodeId) || !validId(x.sourcePortId) ||
@@ -343,6 +346,26 @@ export function compileSingleWorkflow(req, template, opts = {}) {
     verifyTemplate(template);
     if (node.templateId !== template.id || node.templateRevision !== template.revision) fail("template_revision_unavailable");
     const ports = new Map(template.ports.map(p=>[p.id,p]));
+    if(template.mediaUseCase?.mediaCapabilities){
+        const useCase=template.mediaUseCase,modeId=opts.mediaMode??req.runOptions.mediaMode??useCase.mediaCapabilities.defaultMode;
+        if(!modeId||!useCase.modeBindings?.[modeId])fail("template_media_mode_binding_missing");
+        const resolved=resolveMediaCapabilities({mediaCapabilities:useCase.mediaCapabilities},{kind:useCase.channel,supportedModes:Object.keys(useCase.modeBindings),
+            supportedParameters:[...new Set(Object.values(useCase.modeBindings).flatMap(binding=>Object.keys(binding?.parameterPorts??{})))]});
+        const modeBinding=useCase.modeBindings[modeId],nodeInput=node.inputOverrides??{};
+        const mapped=new Set(Object.values(modeBinding.rolePorts??{}).flat());
+        const refs=[];
+        for(const [role,portIds] of Object.entries(modeBinding.rolePorts??{}))for(const portId of portIds){
+            if(targetEdges.has(portId)){const p=ports.get(portId);refs.push({role,kind:p.valueKind==="IMAGE"?"image":p.valueKind==="VIDEO"?"video":p.valueKind==="AUDIO"?"audio":"mask"});}
+        }
+        if(useCase.slots.some(slot=>targetEdges.has(slot.id)&&!mapped.has(slot.id)))fail("template_media_input_inactive");
+        const parameters={};
+        for(const spec of useCase.mediaCapabilities.modes.find(item=>item.id===modeId)?.parameters??[]){
+            const portId=modeBinding.parameterPorts[spec.id];
+            parameters[spec.id]=nodeInput[portId]??(spec.mode==="fixed"?spec.fixedValue:spec.defaultValue);
+        }
+        const diagnostics=validateMediaRequest({mode:modeId,references:refs,parameters},resolved);
+        if(diagnostics.length)fail("template_media_request_invalid");
+    }
     const outputs=roots.map(root=>{
         const output=ports.get(root.portId);
         if(!output || output.direction!=="source" || !output.capture || output.capture.kind==="none")

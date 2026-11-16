@@ -90,6 +90,7 @@ export type CanvasNodeMetadata = {
     generateAudio?: string;
     watermark?: string;
     videoMode?: "text_to_video" | "first_frame" | "first_last_frame" | "omni_reference";
+    mediaMode?: import("@/services/media-capabilities").MediaModeId;
     videoRatio?: string;
     returnLastFrame?: string;
     videoReferences?: CanvasVideoReference[];
@@ -146,6 +147,7 @@ export type CanvasNodeMetadata = {
     comfyMediaPreviewRatio?: string;
     comfyMediaPreset?: {
         templateId:string;templateRevision:string;instanceId?:string;
+        mediaMode?: import("@/services/media-capabilities").MediaModeId;
         overrides:Record<string,unknown>;
         slots:Record<string,{nodeId:string;imageId?:string}>;
         lastRunId?:string;

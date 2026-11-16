@@ -67,6 +67,22 @@ test("P5.4b rejects API keys, scripts, tokens and unknown fields anywhere in set
  assert.equal((await x.call("PUT","/api/v1/ui-settings/theme",
   {expectedRevision:1,value:"auto"})).statusCode,400);
 });
+test("mediaCapabilities uses its bounded shared schema without the generic tree depth limit",async t=>{
+ const x=fixture(t),put=(value,revision=1)=>x.call("PUT","/api/v1/ui-settings/model_config",{expectedRevision:revision,value});
+ const cap={schemaVersion:1,kind:"image",defaultMode:"text_to_image",modes:[{id:"text_to_image",enabled:true,inputs:[],parameters:[{id:"width",mode:"adjustable",type:"number",min:256,max:2048,step:64,defaultValue:1024}]}]};
+ const good={...publicConfig,channels:[{...publicConfig.channels[0],models:[{name:"image-model",capability:"image",mediaCapabilities:cap}]}]};
+ assert.equal((await put(good)).statusCode,200);
+ for(const invalid of [
+  {...cap,modes:[{...cap.modes[0],parameters:[{...cap.modes[0].parameters[0],defaultValue:{nested:{script:"bad"}}}]}]},
+  {...cap,modes:[{...cap.modes[0],parameters:[{...cap.modes[0].parameters[0],unsupported:"extra"}]}]},
+  {...cap,modes:[{...cap.modes[0],inputs:[{role:"mask",kind:"image",minItems:1,maxItems:1}]}]},
+  {...cap,defaultMode:"reference_edit"},
+  {...cap,modes:[{...cap.modes[0],allowedReferenceCombinations:[["image"],["image","image"]]}]},
+ ]){
+  const reply=await put({...publicConfig,channels:[{...publicConfig.channels[0],models:[{name:"image-model",capability:"image",mediaCapabilities:invalid}]}]},2);
+  assert.equal(reply.statusCode,400,reply.body);
+ }
+});
 test("P5.4b model/theme settings enforce auth, origin, independent revision fencing",async t=>{
  const x=fixture(t);
  assert.equal((await x.call("GET","/api/v1/ui-settings/model_config")).statusCode,200);

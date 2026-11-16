@@ -1,4 +1,5 @@
 import {writeTransaction} from "./repository.mjs";
+import {isMediaCapabilities} from "../../shared/media-capabilities.mjs";
 
 const names=new Set(["theme","model_config"]);
 const allowedConfig=new Set(["channelMode","baseUrl","apiFormat","channels","model","imageModel","videoModel",
@@ -7,7 +8,7 @@ const allowedConfig=new Set(["channelMode","baseUrl","apiFormat","channels","mod
  "systemPrompt","reasoningEffort","models","quality","size","background","count","comfyWorkflowDefaults",
  "canvasImageCount","comfyInstanceId","comfyAutoDetect"]);
 const allowedChannel=new Set(["id","name","baseUrl","apiFormat","models"]);
-const allowedModel=new Set(["name","capability","videoPreset","videoCapabilities"]);
+const allowedModel=new Set(["name","capability","videoPreset","videoCapabilities","mediaCapabilities"]);
 const allowedVideoCapabilities=new Set(["resolutions","durations","ratios","generateAudio","watermark","returnLastFrame"]);
 const allowedWorkflowDefaults=new Set(["image","video","audio"]);
 const fail=(code,statusCode=400)=>Object.assign(Error(code),{code,statusCode});
@@ -23,6 +24,7 @@ function safeTree(value,depth=0){
  for(const [key,v] of Object.entries(value)){
   if(/(?:api.?key|authorization|password|secret|credential|access.?token|private.?key|script)/i.test(key))
    throw fail("ui_setting_secret_forbidden",422);
+  if(key==="mediaCapabilities"){if(!isMediaCapabilities(v))throw fail("ui_setting_invalid");continue}
   safeTree(v,depth+1);
  }
 }

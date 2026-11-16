@@ -20,6 +20,8 @@ import {createComfyRegistry} from "./comfy-registry.mjs";
 import {freezeAuthorizedSkillGrant} from "./skill-job-grants.mjs";
 import {resolveAssistantSkills} from "./assistant-skills.mjs";
 import {resolveAssistantVisualContext} from "./assistant-visual-context.mjs";
+import {resolveMediaCapabilities,supportedMediaModes,supportedMediaParameters,validateMediaRequest} from "../../shared/media-capabilities.mjs";
+import {readMediaDurationMs} from "./media-duration.mjs";
 import {currentAssistantTextDeliverable,assertAssistantStructuredSourceCurrent} from "./assistant-task-deliverables.mjs";
 import {resolveAuthorizedCreativeCharacters,formatAssistantCreativeSources} from "./assistant-creative-context.mjs";
 import {hasSelectedAssistantCreativeMaterials,loadSelectedAssistantCreativeMaterials,formatSelectedAssistantCreativeMaterials} from "./assistant-creative-materials.mjs";
@@ -205,6 +207,7 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
    "model_catalog_key_missing","model_catalog_provider_invalid","model_catalog_origin_invalid",
    "model_catalog_upstream_unavailable","model_catalog_upstream_rejected",
    "model_catalog_unauthorized","model_catalog_timeout","model_catalog_dns_blocked",
+   "media_capability_invalid","media_reference_duration_unverified","media_reference_mime_mismatch",
    "model_catalog_response_invalid",
    "ark_channel_provider_invalid","ark_channel_key_missing",
    "upstream_url_invalid","upstream_destination_forbidden","upstream_dns_unavailable",
@@ -927,6 +930,48 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
   reply.header("Cache-Control","no-store");return result;
  });
  app.post("/api/v1/jobs",{schema:{body:jobBody}},async(req,reply)=>{
+  const snapshot=req.body.snapshot,task=snapshot?.task;
+  const existing=db.prepare("SELECT idempotency_key FROM jobs WHERE idempotency_key=?").get(req.body.idempotencyKey);
+  if(!existing&&snapshot?.adapterKind==="model"&&task&&["image","video","audio"].includes(task.kind)){
+   const setting=db.prepare("SELECT value_json FROM ui_settings WHERE name='model_config'").get();
+   const config=setting?JSON.parse(setting.value_json):{};
+   const channel=config.channels?.find(item=>item.id===snapshot.channelId);
+   const model=channel?.models?.find(item=>item.name===task.model);
+   if(model?.mediaCapabilities||snapshot.provider==="volcengine_ark"){
+    const supportedModes=supportedMediaModes({provider:snapshot.provider,kind:task.kind,customScript:typeof task.script==="string"});
+    const supportedParameters=supportedMediaParameters({provider:snapshot.provider,kind:task.kind,customScript:typeof task.script==="string"});
+    const resolved=model?.mediaCapabilities?resolveMediaCapabilities(model,{kind:task.kind,supportedModes,supportedParameters}):null;
+    const needsTrustedDuration=(ref)=>(ref.kind==="video"||ref.kind==="audio")&&
+     (snapshot.provider==="volcengine_ark"||!!model?.mediaCapabilities?.modes.some(mode=>mode.enabled&&mode.inputs.some(rule=>rule.role===ref.role&&rule.maxDurationSeconds!==undefined)));
+    const images=task.images??[];
+    const imageRefs=async(role,items)=>Promise.all(items.map(async image=>{const stat=await blobStore?.stat(image.blobId);return {role,kind:"image",mimeType:stat?.mimeType,bytes:stat?.byteSize}}));
+    const verifiedReferences=task.kind==="video"?await Promise.all((task.references??[]).map(async ref=>{
+      let blobId=ref.blobId;
+      if(!blobId&&snapshot.provider==="volcengine_ark"&&typeof ref.assetUrl==="string"){
+       const assetId=/^asset:\/\/([A-Za-z0-9_-]{1,160})$/.exec(ref.assetUrl)?.[1];
+       if(assetId)blobId=db.prepare("SELECT blob_id FROM ark_asset_uploads WHERE asset_id=? AND status='active'").get(assetId)?.blob_id;
+      }
+      const stat=blobId?await blobStore?.stat(blobId):undefined;
+      const durationMs=needsTrustedDuration(ref)?stat?await readMediaDurationMs(stat.path,stat.mimeType):undefined:undefined;
+      if(needsTrustedDuration(ref)&&(!durationMs||!stat))throw Object.assign(Error("media_reference_duration_unverified"),{code:"media_reference_duration_unverified",statusCode:422});
+      const mimeType=stat?.mimeType;
+      if(stat&&ref.mimeType&&ref.mimeType!==mimeType)throw Object.assign(Error("media_reference_mime_mismatch"),{code:"media_reference_mime_mismatch",statusCode:422});
+      return {frozen:{...ref,...(stat?{mimeType}:{}),...(durationMs?{durationMs}:{})},validation:{role:ref.role,kind:ref.kind,mimeType,bytes:stat?.byteSize,durationMs}};
+     })):
+     task.kind==="image"?[
+      ...(task.mask&&images.length?await imageRefs("source_image",[images[0]]):await imageRefs("reference_image",images)),
+      ...(task.mask?[{role:"mask",kind:"mask",mimeType:(await blobStore?.stat(task.mask.blobId))?.mimeType,bytes:(await blobStore?.stat(task.mask.blobId))?.byteSize}]:[])
+     ]:[];
+    const refs=task.kind==="video"?verifiedReferences.map(item=>item.validation):verifiedReferences;
+    if(task.kind==="video")task.references=verifiedReferences.map(item=>item.frozen);
+    const inferredMode=task.kind==="video"?task.mode:task.kind==="image"?task.mask?"inpaint":images.length?"reference_edit":"text_to_image":"text_to_speech";
+    const size=/^(\d{1,5})x(\d{1,5})$/.exec(String(task.size??""));
+    const parameters=task.kind==="video"?{duration_seconds:task.duration,resolution:task.resolution,aspect_ratio:task.ratio,generate_audio:task.generateAudio,watermark:task.watermark}:
+     task.kind==="image"?{count:task.count,size:task.size,width:size?Number(size[1]):undefined,height:size?Number(size[2]):undefined,output_format:task.outputFormat,negative_prompt:task.negativePrompt}: {voice:task.voice,speed:task.speed,output_format:task.format,instructions:task.instructions};
+    if(resolved){const errors=validateMediaRequest({mode:inferredMode,references:refs,parameters},resolved);
+     if(errors.length)throw Object.assign(Error("media_capability_invalid"),{code:"media_capability_invalid",statusCode:422,diagnostics:errors});}
+   }
+  }
   // Validation of secretVersionRef occurs inside repository's write transaction,
   // preserving idempotent replies even if a version is later revoked.
   const result=submitJob(db,{...req.body,requireSkillGrant:true}),row=db.prepare("SELECT * FROM jobs WHERE id=?").get(result.jobId);

@@ -1,0 +1,6 @@
+export function isMediaCapabilities(value: unknown): boolean;
+export function resolveMediaCapabilities(target: {mediaCapabilities?: unknown}, context: {kind: "image"|"video"|"audio";supportedModes?: string[];supportedParameters?:string[]}): {kind:string;source:string;explicit:boolean;modes:Array<{id:string;enabled:boolean;inputs:Array<{role:string;kind:string;minItems:number;maxItems:number}>;parameters:Array<{id:string;mode:"fixed"|"adjustable";type:string;defaultValue?:unknown;fixedValue?:unknown;min?:number;max?:number;step?:number;values?:Array<string|number>}>;maxTotalReferences?:number}>;unavailable:unknown[];defaultMode?:string};
+export function validateMediaRequest(request: {mode?:string;references?:Array<{role:string;kind:string}>;parameters?:Record<string,unknown>}, resolved: ReturnType<typeof resolveMediaCapabilities>): Array<{code:string;mode?:string;role?:string;parameter?:string}>;
+export function supportedMediaModes(context: {provider:string;kind:"image"|"video"|"audio";customScript?:boolean}): string[];
+export function supportedMediaParameters(context: {provider:string;kind:"image"|"video"|"audio";customScript?:boolean}): string[];
+export function validateComfyMediaContract(useCase: Record<string, any>, ports: Array<{id:string;direction:string;valueKind:string;inputBinding?:{mode:string}}>): true;

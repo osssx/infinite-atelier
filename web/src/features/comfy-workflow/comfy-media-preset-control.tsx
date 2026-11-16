@@ -9,16 +9,18 @@ import {ComfyMediaParameters} from "./comfy-media-parameters";
 import type {AiConfig,ModelCapability} from "@/stores/use-config-store";
 import type {CanvasTheme} from "@/lib/canvas-theme";
 import {isCanvasImageMaskValid,resolveCanvasImageMask} from "@/lib/canvas/canvas-image-mask";
+import type {MediaModeId} from "@/services/media-capabilities";
 
 const ComfyWorkflowPanel=lazy(()=>import("./comfy-workflow-panel").then(module=>({default:module.ComfyWorkflowPanel})));
 
 type MediaBinding=NonNullable<CanvasNodeMetadata["comfyMediaPreset"]>;
 type Props={node:CanvasNodeData;nodes:readonly CanvasNodeData[];connections:readonly CanvasConnection[];config:AiConfig;theme:CanvasTheme;
  capability?:ModelCapability;defaultPreset?:Pick<MediaBinding,"templateId"|"templateRevision">;
- settingsButtonClassName?:string;settingsPlacement?:"topLeft"|"topRight";
+ settingsButtonClassName?:string;settingsPlacement?:"topLeft"|"topRight";showModeSelector?:boolean;
  onChange:(patch:Partial<CanvasNodeMetadata>)=>void;
  onPickerOptionsChange?:(options:{value:string;label:string;disabled?:boolean}[],select:(value:string)=>void,activeValue?:string)=>void};
 const family=(kind:string)=>kind==="image"?"image":kind==="video"?"video":kind==="mask"?"mask":"audio";
+const modeLabels:Record<MediaModeId,string>={text_to_image:"文生图",reference_edit:"参考编辑",inpaint:"局部重绘",text_to_video:"文生视频",first_frame:"首帧生成",last_frame:"尾帧生成",first_last_frame:"首尾帧生成",omni_reference:"全能参考",text_to_speech:"语音合成",voice_clone:"参考音色合成",text_to_music:"音乐生成",text_to_sound:"音效生成"};
 function hasMedia(node:CanvasNodeData,kind:string){
  const m=node.metadata;
  if(kind==="image")return node.type==="image"&&Boolean(m?.storageKey||m?.content||m?.images?.length);
@@ -26,7 +28,7 @@ function hasMedia(node:CanvasNodeData,kind:string){
  if(kind==="mask")return node.type==="image"&&Boolean(resolveCanvasImageMask(node));
  return node.type==="audio"&&Boolean(m?.storageKey||m?.content);
 }
-export function useComfyMediaPresetControl({node,nodes,connections,config,theme,capability,onChange,onPickerOptionsChange,defaultPreset,settingsButtonClassName,settingsPlacement}:Props):{settings:ReactNode;slots:ReactNode;error?:string}{
+export function useComfyMediaPresetControl({node,nodes,connections,config,theme,capability,onChange,onPickerOptionsChange,defaultPreset,settingsButtonClassName,settingsPlacement,mediaMode,showModeSelector=true}:Props&{mediaMode?:MediaModeId}):{settings:ReactNode;slots:ReactNode;error?:string}{
  const [editor,setEditor]=useState<CanvasNodeData|null>(null);
  const [catalogRevision,setCatalogRevision]=useState(0);
  const [catalog,setCatalog]=useState<ComfyCatalogPreset[]>([]);
@@ -51,10 +53,14 @@ export function useComfyMediaPresetControl({node,nodes,connections,config,theme,
  }).catch(error=>{if(active)setBoundPresetError(error instanceof Error?error.message:String(error));});return()=>{active=false};},[activePreset?.templateId,activePreset?.templateRevision,templates]);
  const template=activePreset?templates[activePreset.templateId+"@"+activePreset.templateRevision]:undefined;
  const useCase=template?.mediaUseCase;
+ const modeOptions=useCase?.mediaCapabilities?.modes.filter(mode=>mode.enabled).map(mode=>({label:modeLabels[mode.id],value:mode.id}))??[];
+ const activeMode=(activePreset?.mediaMode??useCase?.mediaCapabilities?.defaultMode) as MediaModeId|undefined;
  const options=useMemo(()=>catalog.map(item=>{
   const t=templates[item.templateId+"@"+item.revision];
-  return t?.mediaUseCase?{label:item.name,value:item.templateId+"@"+item.revision,group:family(t.mediaUseCase.primaryOutputKind)}:null;
- }).filter((x):x is {label:string;value:string;group:string}=>!!x&&capability!=="text"&&x.group===(capability??family(node.type))),[catalog,templates,node.type,capability]);
+  if(!t?.mediaUseCase)return null;
+  const unavailable=Boolean(mediaMode&&t.mediaUseCase.mediaCapabilities&&!t.mediaUseCase.mediaCapabilities.modes.some(mode=>mode.id===mediaMode&&mode.enabled));
+  return {label:item.name+(unavailable?" · 当前模式不可用":""),value:item.templateId+"@"+item.revision,group:family(t.mediaUseCase.primaryOutputKind),disabled:unavailable};
+ }).filter((x):x is {label:string;value:string;group:string;disabled:boolean}=>!!x&&capability!=="text"&&x.group===(capability??family(node.type))),[catalog,templates,node.type,capability,mediaMode]);
  const selectPreset=useCallback(async(value:string)=>{
   if(!value){onChange({comfyMediaPreset:undefined});return;}
   const [templateId,revision]=value.split("@");
@@ -69,7 +75,7 @@ export function useComfyMediaPresetControl({node,nodes,connections,config,theme,
    instanceId:prior?.instanceId,overrides:{},slots:{}}}));
  },[activePreset,catalog,node.metadata?.comfyMediaPresetCache,onChange,templates]);
  const pickerOptions=useMemo(()=>[
-  ...options.map(({label,value})=>({label,value})),
+  ...options.map(({label,value,disabled})=>({label,value,disabled})),
   ...(activePreset&&!options.some(option=>option.value===activePreset.templateId+"@"+activePreset.templateRevision)?
    [{label:template?.name??catalog.find(item=>item.templateId===activePreset.templateId&&item.revision===activePreset.templateRevision)?.name??"工作流版本不可用",
      value:activePreset.templateId+"@"+activePreset.templateRevision,disabled:!template||Boolean(capability&&template.mediaUseCase?.channel!==capability)}]:[])
@@ -118,6 +124,8 @@ export function useComfyMediaPresetControl({node,nodes,connections,config,theme,
   return true;
  };
  const settings=<>
+  {showModeSelector&&!editor&&activePreset&&modeOptions.length>0?<div className="mb-1 min-w-0 max-w-[300px]"><Select className="w-full" aria-label="生成模式" value={activeMode} options={modeOptions}
+   onChange={(value:MediaModeId)=>onChange({comfyMediaPreset:{...activePreset,mediaMode:value}})}/></div>:null}
   {!editor&&template?.mediaUseCase&&activePreset?<ComfyMediaParameters template={template} binding={activePreset} config={config} theme={theme} onChange={patch=>onChange(withComfyMediaAspect(template,patch))} onEditPreset={openPresetEditor}
    buttonClassName={settingsButtonClassName} placement={settingsPlacement}/>:null}
   <Modal open={!!editor} title="编辑工作流预设" footer={null} width="min(1200px, 95vw)" destroyOnHidden centered

@@ -5,6 +5,7 @@ import { nanoid } from "nanoid";
 
 import i18n from "@/i18n";
 import {awaitModelConfigPersistence,createModelConfigStorage} from "@/features/backend-sync/model-config-persistence";
+import type {MediaCapabilities} from "@/services/media-capabilities";
 
 export type ApiCallFormat = "openai" | "gemini" | "volcengine_ark";
 export type ModelCapability = "image" | "video" | "text" | "audio";
@@ -22,6 +23,7 @@ export type ChannelModel = {
     script?: string;
     videoPreset?: "seedance-2.0" | "seedance-2.0-fast" | "seedance-2.0-mini";
     videoCapabilities?: VideoCapabilities;
+    mediaCapabilities?: MediaCapabilities;
 };
 
 export type ModelChannel = {
@@ -281,7 +283,8 @@ export function normalizeChannelModels(models: Array<string | ChannelModel> | un
         const script = typeof item === "string" ? undefined : item.script?.trim() || undefined;
         const videoPreset = typeof item === "string" ? undefined : item.videoPreset;
         const videoCapabilities = typeof item === "string" ? undefined : item.videoCapabilities;
-        result.push({ name, capability, script, videoPreset, videoCapabilities });
+        const mediaCapabilities = typeof item === "string" ? undefined : item.mediaCapabilities;
+        result.push({ name, capability, script, videoPreset, videoCapabilities, mediaCapabilities });
     }
     return result;
 }

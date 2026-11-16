@@ -58,7 +58,7 @@ export function CanvasConfigNodePanel({ node, onConfigChange, onGenerate, onStop
         if(patch.comfyMediaPreset){next[mode as "image"|"video"|"audio"]=patch.comfyMediaPreset;onConfigChange(node.id,{comfyWorkflowSelections:next,model:undefined});}
         else {delete next[mode as "image"|"video"|"audio"];onConfigChange(node.id,{comfyWorkflowSelections:next});}
     },[mode,node.id,node.metadata?.comfyWorkflowSelections,onConfigChange]);
-    const comfyControls=useComfyMediaPresetControl({node:workflowNode,nodes,connections,config,theme,capability:mode,
+    const comfyControls=useComfyMediaPresetControl({node:workflowNode,nodes,connections,config,theme,capability:mode,mediaMode:workflowNode.metadata?.comfyMediaPreset?.mediaMode??(mode==="video"?workflowNode.metadata?.videoMode??"text_to_video":mode==="image"?workflowNode.metadata?.mediaMode??"text_to_image":undefined),
         defaultPreset:inheritedWorkflow,onChange:handleComfySelection,onPickerOptionsChange:onComfyOptionsChange,
         settingsButtonClassName:"canvas-compact-control !h-10 !w-full !justify-start !rounded-lg !px-2",settingsPlacement:"topRight"});
     const chipStyle = { background: theme.node.fill, borderColor: theme.node.stroke, color: theme.node.text };
@@ -147,7 +147,7 @@ export function CanvasConfigNodePanel({ node, onConfigChange, onGenerate, onStop
             </div>
 
             <div className="mb-2 grid min-w-0 cursor-default grid-cols-[minmax(0,1fr)_148px] items-center gap-2" onMouseDown={(event) => event.stopPropagation()}>
-                <ModelPicker className="canvas-compact-control h-10" config={config} value={config.model} onChange={(model) => {
+                <ModelPicker className="canvas-compact-control h-10" config={config} value={config.model} mediaMode={mode==="video"?(node.metadata?.videoMode??"text_to_video"):mode==="image"?(node.metadata?.mediaMode??(mediaInputs.some(input=>input.type==="image")?"reference_edit":"text_to_image")):undefined} onChange={(model) => {
                     const next={...(node.metadata?.comfyWorkflowSelections??{})};delete next[mode as "image"|"video"|"audio"];
                     onConfigChange(node.id,{model,comfyWorkflowSelections:next});
                 }} capability={mode} onMissingConfig={() => openConfigDialog(true)} fullWidth

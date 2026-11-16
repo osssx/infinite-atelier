@@ -1,4 +1,4 @@
-import { App, Button, Drawer, Input, Segmented, Select, Space } from "antd";
+import { App, Button, Checkbox, Drawer, Input, InputNumber, Segmented, Select, Space } from "antd";
 import { ListPlus, RotateCw, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -9,6 +9,7 @@ import { ModelScriptEditor } from "./model-script-editor";
 import { ModelSelectModal } from "./model-select-modal";
 import {saveSqliteModelChannelFromEditor,modelChannelProvider, type VaultChannelView} from "@/features/backend-sync/model-channel-autoroute";
 import {canvasApi, CanvasApiError} from "@/features/backend-sync/canvas-api";
+import {MEDIA_MODES,supportedMediaModes,supportedMediaParameters,type MediaCapabilities,type MediaInputRule,type MediaKind,type MediaModeId,type MediaParameterSpec} from "@/services/media-capabilities";
 
 type ScriptTarget = { name: string; capability: ModelCapability; value: string };
 type VaultKeyStatus =
@@ -35,6 +36,7 @@ export function ChannelEditorDrawer({ open, channel, onSave, onClose }: { open: 
         { label: "Volcengine Ark", value: "volcengine_ark" },
     ];
     const capabilityOptions: Array<{ label: string; value: ModelCapability }> = ["image", "video", "text", "audio"].map((value) => ({ label: t(`config.channelEditor.capabilities.${value}`), value: value as ModelCapability }));
+    const mediaModeLabels:Record<MediaModeId,string>={text_to_image:"文生图",reference_edit:"参考编辑",inpaint:"局部重绘",text_to_video:"文生视频",first_frame:"首帧生成",last_frame:"尾帧生成",first_last_frame:"首尾帧生成",omni_reference:"全能参考",text_to_speech:"语音合成",voice_clone:"参考音色合成",text_to_music:"音乐生成",text_to_sound:"音效生成"};
 
     useEffect(() => {
         if (open && channel) {
@@ -100,6 +102,35 @@ export function ChannelEditorDrawer({ open, channel, onSave, onClose }: { open: 
         const selectedPreset = seedancePresets.find((item) => item.videoPreset === preset);
         return { ...model, videoPreset: selectedPreset?.videoPreset, videoCapabilities: selectedPreset?.videoCapabilities };
     }));
+    const toggleMediaMode=(model:ChannelModel,modeId:MediaModeId,enabled:boolean)=>{
+        const kind=model.capability as MediaKind;
+        const existing=model.mediaCapabilities?.kind===kind?model.mediaCapabilities:undefined;
+        const defaultInputs:Partial<Record<MediaModeId,Array<{role:"reference_image"|"source_image"|"mask"|"first_frame"|"last_frame"|"reference_video"|"reference_audio"|"voice_reference";kind:"image"|"video"|"audio"|"mask";minItems:number;maxItems:number}>>>={
+            reference_edit:[{role:"reference_image",kind:"image",minItems:1,maxItems:4}],inpaint:[{role:"source_image",kind:"image",minItems:1,maxItems:1},{role:"mask",kind:"mask",minItems:1,maxItems:1}],
+            first_frame:[{role:"first_frame",kind:"image",minItems:1,maxItems:1}],last_frame:[{role:"last_frame",kind:"image",minItems:1,maxItems:1}],
+            first_last_frame:[{role:"first_frame",kind:"image",minItems:1,maxItems:1},{role:"last_frame",kind:"image",minItems:1,maxItems:1}],
+            omni_reference:[{role:"reference_image",kind:"image",minItems:0,maxItems:9},{role:"reference_video",kind:"video",minItems:0,maxItems:3},{role:"reference_audio",kind:"audio",minItems:0,maxItems:3}],
+            voice_clone:[{role:"voice_reference",kind:"audio",minItems:1,maxItems:1}]};
+        const modes=existing?.modes??MEDIA_MODES[kind].map(id=>({id,enabled:false,inputs:defaultInputs[id]??[],parameters:[]}));
+        const nextModes=modes.map(mode=>mode.id===modeId?{...mode,enabled}:mode);
+        const nextDefault=existing?.defaultMode&&nextModes.some(mode=>mode.id===existing.defaultMode&&mode.enabled)?existing.defaultMode:enabled?modeId:nextModes.find(mode=>mode.enabled)?.id;
+        const next:MediaCapabilities={schemaVersion:1,kind,modes:nextModes,...(nextDefault?{defaultMode:nextDefault}:{})};
+        setModels(draft.models.map(item=>item.name===model.name?{...item,mediaCapabilities:next}:item));
+    };
+    const updateMediaMode=(model:ChannelModel,modeId:MediaModeId,update:(mode:MediaCapabilities["modes"][number])=>MediaCapabilities["modes"][number])=>setModels(draft.models.map(item=>{
+        if(item.name!==model.name||!item.mediaCapabilities)return item;
+        return {...item,mediaCapabilities:{...item.mediaCapabilities,modes:item.mediaCapabilities.modes.map(mode=>mode.id===modeId?update(mode):mode)}};
+    }));
+    const parameterChoices=(model:ChannelModel)=>supportedMediaParameters({provider:draft.apiFormat,kind:model.capability as MediaKind,customScript:Boolean(model.script)});
+    const addMediaParameter=(model:ChannelModel,modeId:MediaModeId,id:string)=>{
+        const type:MediaParameterSpec["type"]=id==="generate_audio"||id==="watermark"||id==="return_last_frame"||id==="transparent_background"?"boolean":
+            ["aspect_ratio","resolution","voice","output_format"].includes(id)?"enum":
+            ["negative_prompt","instructions"].includes(id)?"string":"number";
+        const values:MediaParameterSpec["values"]=type==="enum"?(id==="resolution"?["480p","720p","1080p"]:id==="aspect_ratio"?["16:9","9:16","1:1","4:3","3:4","21:9"]:id==="voice"?["alloy","echo","fable","onyx","nova","shimmer"]:["mp3","wav","flac"]):undefined;
+        const numericDefault=id==="duration_seconds"?6:id==="speed"?1:id==="count"?1:id==="width"||id==="height"?1024:0;
+        const spec:MediaParameterSpec={id,mode:"adjustable",type,...(type==="number"?{defaultValue:numericDefault}:type==="boolean"?{defaultValue:false}:values?{values,defaultValue:values[0]}:{defaultValue:""})};
+        updateMediaMode(model,modeId,mode=>({...mode,parameters:[...mode.parameters.filter(item=>item.id!==id),spec]}));
+    };
     const setScript = (name: string, script: string) => setModels(draft.models.map((model) => (model.name === name ? { ...model, script: script || undefined } : model)));
     const removeModel = (name: string) => setModels(draft.models.filter((model) => model.name !== name));
 
@@ -223,6 +254,48 @@ export function ChannelEditorDrawer({ open, channel, onSave, onClose }: { open: 
                                 </Button>
                                 <Button size="small" danger type="text" icon={<Trash2 className="size-3.5" />} onClick={() => removeModel(model.name)} />
                             </div>
+                            {model.capability!=="text"?<div className="basis-full border-t border-stone-100 pt-2 dark:border-stone-800">
+                                <div className="mb-1 text-[11px] font-medium text-stone-500">媒体能力（显式配置；旧模型维持兼容行为）</div>
+                                <div className="flex flex-wrap gap-x-3 gap-y-1">{MEDIA_MODES[model.capability as MediaKind].map(mode=>{
+                                    const isConfigured=model.mediaCapabilities?.kind===model.capability;
+                                    const enabled=isConfigured?!!model.mediaCapabilities?.modes.find(item=>item.id===mode)?.enabled:false;
+                                    const supported=supportedMediaModes({provider:draft.apiFormat,kind:model.capability as MediaKind,customScript:Boolean(model.script)}).includes(mode);
+                                    const whyUnsupported=!supported?(draft.apiFormat==="volcengine_ark"&&model.capability==="video"?"Ark 执行器仅支持文生视频、首帧、首尾帧和多模态参考，时长 4–15 秒，分辨率最高 1080p。":"当前执行器没有此模式的请求映射。"):undefined;
+                                    return <span key={mode} title={whyUnsupported}><Checkbox disabled={!supported} checked={enabled} onChange={event=>toggleMediaMode(model,mode,event.target.checked)}><span className="text-xs">{mediaModeLabels[mode]}{!supported?"（不可用）":""}</span></Checkbox></span>;
+                                })}</div>
+                                {model.mediaCapabilities?.kind===model.capability?<>
+                                 <label className="mt-2 flex items-center gap-2 text-[11px] text-stone-500">默认模式<Select size="small" className="w-40" allowClear value={model.mediaCapabilities.defaultMode}
+                                  options={model.mediaCapabilities.modes.filter(item=>item.enabled).map(item=>({value:item.id,label:mediaModeLabels[item.id]}))}
+                                  onChange={(value:MediaModeId|undefined)=>setModels(draft.models.map(item=>item.name===model.name?{...item,mediaCapabilities:{...model.mediaCapabilities!,...(value?{defaultMode:value}: {defaultMode:undefined})}}:item))}/></label>
+                                 {model.mediaCapabilities.modes.filter(item=>item.enabled).map(mediaMode=><div key={mediaMode.id} className="mt-2 rounded border border-stone-200 p-2 dark:border-stone-700">
+                                  <div className="mb-1 text-[11px] font-medium">{mediaModeLabels[mediaMode.id]} · 输入数量</div>
+                                  {model.capability==="image"&&(mediaMode.id==="text_to_image"||mediaMode.id==="reference_edit")?<Checkbox checked={Boolean(mediaMode.layout)} onChange={event=>updateMediaMode(model,mediaMode.id,current=>{
+                                   if(event.target.checked)return {...current,layout:{format:"atelier_bbox_json_v1",delivery:"prompt_json"}};
+                                   const {layout:_layout,...withoutLayout}=current;return withoutLayout;
+                                  })}><span className="text-[10px]">支持显式 BBox Layout（作为完整结构化提示词）</span></Checkbox>:null}
+                                  {mediaMode.inputs.map((rule:MediaInputRule)=><div key={rule.role} className="flex flex-wrap items-center gap-2 py-1 text-[10px]">
+                                   <span className="min-w-28">{rule.role}（{rule.kind}）</span><span>最少</span><InputNumber size="small" min={0} max={16} value={rule.minItems} className="w-16"
+                                    onChange={value=>updateMediaMode(model,mediaMode.id,current=>({...current,inputs:current.inputs.map(input=>input.role===rule.role?{...input,minItems:Number(value??0),maxItems:Math.max(Number(value??0),input.maxItems)}:input)}))}/>
+                                   <span>最多</span><InputNumber size="small" min={rule.minItems} max={16} value={rule.maxItems} className="w-16"
+                                    onChange={value=>updateMediaMode(model,mediaMode.id,current=>({...current,inputs:current.inputs.map(input=>input.role===rule.role?{...input,maxItems:Number(value??input.minItems)}:input)}))}/>
+                                  </div>)}
+                                  <div className="mt-1 flex items-center gap-2"><span className="text-[10px]">参数</span><Select size="small" className="w-48" placeholder="添加可配置参数" value={undefined}
+                                   options={parameterChoices(model).filter(id=>!mediaMode.parameters.some(parameter=>parameter.id===id)).map(id=>({value:id,label:id}))}
+                                   onChange={(id:string)=>addMediaParameter(model,mediaMode.id,id)}/></div>
+                                  {mediaMode.parameters.map(parameter=><div key={parameter.id} className="mt-2 flex flex-wrap items-center gap-2 text-[10px]">
+                                   <span className="w-28">{parameter.id}</span><Select size="small" className="w-24" value={parameter.mode} options={[{value:"adjustable",label:"可调"},{value:"fixed",label:"固定"}]}
+                                   onChange={(value:"adjustable"|"fixed")=>updateMediaMode(model,mediaMode.id,current=>({...current,parameters:current.parameters.map(item=>{if(item.id!==parameter.id)return item;const {fixedValue,...rest}=item;return value==="fixed"?{...rest,mode:value,fixedValue:item.defaultValue??(item.type==="number"?0:item.type==="boolean"?false:item.values?.[0]??"")}:rest.mode==="fixed"?{...rest,mode:value}: {...rest,mode:value};})}))}/>
+                                   {parameter.type==="number"?<><InputNumber size="small" placeholder="默认" value={typeof parameter.defaultValue==="number"?parameter.defaultValue:undefined} className="w-20" onChange={value=>updateMediaMode(model,mediaMode.id,current=>({...current,parameters:current.parameters.map(item=>item.id===parameter.id?{...item,defaultValue:value??undefined,...(item.mode==="fixed"?{fixedValue:value??undefined}:{})}:item)}))}/><InputNumber size="small" placeholder="最小" value={parameter.min} className="w-20" onChange={value=>updateMediaMode(model,mediaMode.id,current=>({...current,parameters:current.parameters.map(item=>item.id===parameter.id?{...item,min:value??undefined}:item)}))}/><InputNumber size="small" placeholder="最大" value={parameter.max} className="w-20" onChange={value=>updateMediaMode(model,mediaMode.id,current=>({...current,parameters:current.parameters.map(item=>item.id===parameter.id?{...item,max:value??undefined}:item)}))}/><InputNumber size="small" placeholder="步长" value={parameter.step} className="w-20" onChange={value=>updateMediaMode(model,mediaMode.id,current=>({...current,parameters:current.parameters.map(item=>item.id===parameter.id?{...item,step:value??undefined}:item)}))}/></>:
+                                    parameter.type==="boolean"?<Checkbox checked={Boolean(parameter.defaultValue)} onChange={event=>updateMediaMode(model,mediaMode.id,current=>({...current,parameters:current.parameters.map(item=>item.id===parameter.id?{...item,defaultValue:event.target.checked,...(item.mode==="fixed"?{fixedValue:event.target.checked}:{})}:item)}))}>默认值</Checkbox>:
+                                    parameter.type==="enum"?<Input size="small" className="w-44" value={(parameter.values??[]).join(",")} placeholder="允许值，以逗号分隔" onChange={event=>updateMediaMode(model,mediaMode.id,current=>({...current,parameters:current.parameters.map(item=>{if(item.id!==parameter.id)return item;const values=event.target.value.split(",").map(value=>value.trim()).filter(Boolean);const nextValue=values.includes(String(item.defaultValue))?item.defaultValue:values[0];return {...item,values,defaultValue:nextValue,...(item.mode==="fixed"?{fixedValue:nextValue}:{})};})}))}/>:
+                                    <Input size="small" className="w-36" value={typeof parameter.defaultValue==="string"?parameter.defaultValue:""} placeholder="默认值" onChange={event=>updateMediaMode(model,mediaMode.id,current=>({...current,parameters:current.parameters.map(item=>item.id===parameter.id?{...item,defaultValue:event.target.value,...(item.mode==="fixed"?{fixedValue:event.target.value}:{})}:item)}))}/>}
+                                   <Button size="small" type="link" danger className="h-auto p-0 text-[10px]" onClick={()=>updateMediaMode(model,mediaMode.id,current=>({...current,parameters:current.parameters.filter(item=>item.id!==parameter.id)}))}>删除</Button>
+                                  </div>)}
+                                 </div>)}
+                                 <div className="mt-1 text-[10px] text-stone-400">schema v1 · {model.mediaCapabilities.modes.filter(mode=>mode.enabled).length} 个已启用模式</div>
+                                 <Button size="small" type="link" className="h-auto p-0 text-[10px]" onClick={()=>setModels(draft.models.map(item=>item.name===model.name?{...item,mediaCapabilities:undefined}:item))}>恢复兼容配置</Button>
+                                </>:null}
+                            </div>:null}
                         </div>
                     ))
                 ) : (

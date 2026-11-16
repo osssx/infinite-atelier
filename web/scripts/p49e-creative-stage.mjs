@@ -17,6 +17,8 @@ import {recoverAssistantModelCallsAtStartup} from "../server/backend/assistant-m
 import {createPinnedOpenAiCompatCall} from "../server/backend/openai-compat-endpoints.mjs";
 import {buildApp} from "../server/backend/app.mjs";
 import {P49B_CASE,reviewP49BCreativeActions} from "../server/backend/assistant-creative-consistency.mjs";
+import {extractP49GActionEvidence,buildP49GRevisionGuidance,
+ reviewP49GRevisionContinuity} from "../server/backend/assistant-story-continuity.mjs";
 
 const prefix="infinite-atelier-p49e-", dbName="acceptance.sqlite";
 const fingerprint=x=>createHash("sha256").update(x).digest("hex");
@@ -175,6 +177,42 @@ const mockProvider=(stage,index)=>new Response(JSON.stringify({choices:[{
   }))
  })}}]}),{status:200});
 
+/** Only the immediately preceding, completed and hashed storyboard draft can
+ * provide P4.9g editorial anchors. Never read unselected Canvas contents or
+ * turn AI draft events into user-confirmed semantic constraints.
+ */
+function loadP49GSourceEvidence(db,state){
+ const stage=db.prepare("SELECT * FROM p49e_stages WHERE stage_id='storyboard'").get();
+ if(!stage||!["approved_for_continuation","auto_approved_for_continuation"].includes(stage.status))
+  throw fail("p49g_storyboard_not_approved");
+ const calls=modelCalls(db,state,stage.request_id);
+ if(!calls.length||calls.some(call=>call.status!=="succeeded"))
+  throw fail("p49g_storyboard_model_call_unverified");
+ const command=db.prepare("SELECT status,response_json FROM assistant_task_commands WHERE project_id=? AND request_id=?")
+  .get(state.project_id,stage.request_id);
+ if(command?.status!=="completed")throw fail("p49g_storyboard_cache_missing");
+ let result;
+ try{result=JSON.parse(command.response_json)}
+ catch{throw fail("p49g_storyboard_cache_invalid")}
+ if(!Array.isArray(result?.actions)||!stage.result_digest||
+  fingerprint(JSON.stringify(result.actions))!==stage.result_digest)
+  throw fail("p49g_storyboard_digest_mismatch");
+ return extractP49GActionEvidence(result.actions);
+}
+function reviewP49EStageActions(db,state,index,actions,sourceEvidence=null){
+ const review=reviewP49BCreativeActions(stages[index],actions);
+ if(index!==3)return review;
+ const source=sourceEvidence??loadP49GSourceEvidence(db,state);
+ const continuity=reviewP49GRevisionContinuity(source,actions);
+ review.continuity=continuity;
+ if(continuity.warnings.length){
+  review.flags.push(...continuity.warnings.map(w=>({
+   code:w.code,scope:"ai_draft_editorial_warning",sourceEventId:w.id
+  })));
+  review.objectiveChecksPassed=false;
+ }
+ return review;
+}
 export async function executeP49EStage(directory,config,stageId,{vaultOverride,mockUpstreamCall}={}){
  guardConfig(config,{paid:true});
  if(vaultOverride&&(config.mode!=="live"||typeof vaultOverride.get!=="function"||
@@ -202,6 +240,8 @@ export async function executeP49EStage(directory,config,stageId,{vaultOverride,m
     throw fail("p49e_prior_human_approval_required");
   }
   const stage=stages[index],requestId="provider-"+stage.id;
+  const sourceEvidence=index===3?loadP49GSourceEvidence(db,state):[];
+  const stageRequest=stage.request+(index===3?buildP49GRevisionGuidance(sourceEvidence):"");
   const messageId="user-"+stage.id;
   // Durable reservation BEFORE appending the turn/starting Provider POST.
   // If killed in the middle, next invocation sees the reservation and fails
@@ -212,7 +252,7 @@ export async function executeP49EStage(directory,config,stageId,{vaultOverride,m
    projectId:state.project_id,taskId:state.task_id,requestId:"link-session",
    chatSessionId:"continued-chat"});
   appendAssistantTaskTurn(db,{projectId:state.project_id,taskId:state.task_id,
-   requestId:"append-"+stage.id,messageId,text:stage.request,contextPolicy:frozenPolicy});
+   requestId:"append-"+stage.id,messageId,text:stageRequest,contextPolicy:frozenPolicy});
   const vault=vaultOverride??{
    get:()=>({provider:config.provider,hasKey:true,keyVersion:"fixture"}),
    withSecretVersion:(_v,fn)=>fn(Buffer.from(config.secret??"test-only"))
@@ -226,9 +266,14 @@ export async function executeP49EStage(directory,config,stageId,{vaultOverride,m
     options.body.includes("PRIVATE_P49E_NOT_AUTHORIZED")||
     index>0&&!sys.includes("历史 AI 创作草案"))
     throw fail("p49e_context_or_provenance_failed");
+   // Validate that the actual provider payload (not merely a local Task
+   // draft) contains the source-tagged, non-confirmed editorial guidance.
+   if(index===3&&sourceEvidence.length&&
+    !options.body.includes("前轮 AI 草案关键动作续写提醒"))
+    throw fail("p49g_guidance_not_sent_to_provider");
    if(++count>2)throw fail("p49e_one_stage_post_budget_exceeded");
    return config.mode==="mock"?
-    mockUpstreamCall?mockUpstreamCall({stage,index,count}):mockProvider(stage,index):
+    mockUpstreamCall?mockUpstreamCall({stage,index,count,requestText:stageRequest}):mockProvider(stage,index):
     pinned(url,options);
   };
   const service=createAssistantChatService({vault,compatibleUpstreamCall:upstream,
@@ -240,7 +285,7 @@ export async function executeP49EStage(directory,config,stageId,{vaultOverride,m
    url:"/api/v1/projects/"+state.project_id+"/assistant/chat",
    payload:{channelId:config.channelId??"temporary-channel",provider:config.provider,
     baseUrl:config.baseUrl,model:config.model,canvasActions:true,
-    messages:[{role:"user",content:stage.request}],
+    messages:[{role:"user",content:stageRequest}],
     task:{taskId:state.task_id,turnMessageId:messageId,requestId}}});
   const body=response.json();
   if(response.statusCode!==200){
@@ -250,7 +295,7 @@ export async function executeP49EStage(directory,config,stageId,{vaultOverride,m
     .run(unknown?"needs_reconcile":"rejected",
      /^assistant_[a-z0-9_]{2,80}$/.test(body.code??"")?body.code:"p49e_opaque_error",index);
   }else{
-   const review=reviewP49BCreativeActions(stage,body.actions??[]);
+   const review=reviewP49EStageActions(db,state,index,body.actions??[],sourceEvidence);
    const digest=fingerprint(JSON.stringify(body.actions??[]));
    db.prepare("UPDATE p49e_stages SET status='review_pending',result_digest=?,review_json=? WHERE stage_index=?")
     .run(digest,JSON.stringify(review),index);
@@ -298,7 +343,7 @@ export function recheckP49EStageFromCache(directory,stageId){
   if(!Array.isArray(response?.actions)||
    fingerprint(JSON.stringify(response.actions))!==row.result_digest)
    throw fail("p49e_recheck_digest_mismatch");
-  const current=reviewP49BCreativeActions(stages[index],response.actions);
+  const current=reviewP49EStageActions(db,state,index,response.actions);
   if(current.cards.length!==previous.cards?.length||
    current.cards.some((card,i)=>card.digest!==previous.cards[i]?.digest))
    throw fail("p49e_recheck_content_changed");
@@ -367,7 +412,7 @@ export function recoverP49E(directory){
     if(response&&Array.isArray(response.actions)){
      const stage=stages[row.stage_index];
      const digest=fingerprint(JSON.stringify(response.actions));
-     const review=reviewP49BCreativeActions(stage,response.actions);
+     const review=reviewP49EStageActions(db,state,row.stage_index,response.actions);
      db.prepare("UPDATE p49e_stages SET status='review_pending',result_digest=?,review_json=? WHERE stage_index=?")
       .run(digest,JSON.stringify(review),row.stage_index);
      // Restoring a completed, locally cached model reply can honor a
@@ -414,6 +459,35 @@ export function exportP49EReviewSource(directory){
  return {reportPath:destination,stages:report.stages.length,
   mode:report.mode,semanticVerdict:report.semanticVerdict};
 }
+/** Read-only retrospective assessment. In particular, do not mutate the
+ * previously successful P4.9f revision, its status, digest, or user facts.
+ */
+export function inspectP49ERevisionContinuity(directory){
+ const conn=open(directory,true);
+ try{
+  const db=conn.db,state=metadata(db);
+  const sourceEvidence=loadP49GSourceEvidence(db,state);
+  const row=db.prepare("SELECT * FROM p49e_stages WHERE stage_id='revision'").get();
+  if(!row||!row.result_digest)throw fail("p49g_revision_not_completed");
+  const journal=modelCalls(db,state,row.request_id);
+  if(journal.length===0||journal.some(call=>call.status!=="succeeded"))
+   throw fail("p49g_revision_model_call_unverified");
+  const command=db.prepare("SELECT status,response_json FROM assistant_task_commands WHERE project_id=? AND request_id=?")
+   .get(state.project_id,row.request_id);
+  if(command?.status!=="completed")throw fail("p49g_revision_cache_missing");
+  let result;
+  try{result=JSON.parse(command.response_json)}
+  catch{throw fail("p49g_revision_cache_invalid")}
+  if(!Array.isArray(result?.actions)||fingerprint(JSON.stringify(result.actions))!==row.result_digest)
+   throw fail("p49g_revision_digest_mismatch");
+  const verdict=reviewP49GRevisionContinuity(sourceEvidence,result.actions);
+  const summary=materialize(db,state,conn.directory,{persist:false});
+  return {stageId:"revision",stageStatus:row.status,
+   sourceStoryboardDigest:db.prepare("SELECT result_digest FROM p49e_stages WHERE stage_id='storyboard'").get().result_digest,
+   revisionDigest:row.result_digest,continuity:verdict,
+   modelPosts:0,graphUnchanged:summary.graphUnchanged,jobs:summary.jobs};
+ }finally{conn.db.close()}
+}
 if(process.argv[1]&&fileURLToPath(import.meta.url).toLowerCase()===process.argv[1].toLowerCase()){
  const args=process.argv.slice(2);
  const flag=key=>args.indexOf(key),value=key=>{const i=flag(key);return i>=0?args[i+1]:undefined};
@@ -433,6 +507,9 @@ if(process.argv[1]&&fileURLToPath(import.meta.url).toLowerCase()===process.argv[
   }else if(flag("--recover")>=0&&value("--dir")){
    const result=recoverP49E(value("--dir"));
    console.log("P49E_RECOVER",JSON.stringify({stages:result.stages.map(s=>({stageId:s.stageId,status:s.status,diagnostic:s.modelCalls.at(-1)?.diagnostic??null})),graphUnchanged:result.graphUnchanged}));
+  }else if(flag("--continuity")>=0&&value("--dir")){
+   const result=inspectP49ERevisionContinuity(value("--dir"));
+   console.log("P49G_CONTINUITY",JSON.stringify(result));
   }else if(flag("--recheck")>=0&&value("--dir")){
    const result=recheckP49EStageFromCache(value("--dir"),value("--recheck"));
    console.log("P49E_RECHECK",JSON.stringify({stageId:result.rechecked,

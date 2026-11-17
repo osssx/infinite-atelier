@@ -294,6 +294,17 @@ export function fingerprintRequest(req) {
  * reachability pruning discard the file loader and any unused processing nodes.
  * Never remove an /object_info required field on a live node.
  */
+function isOptionalMediaInput(node,schema,input) {
+    if(has(schema.optional??{},input))return true;
+    const dot=input.indexOf(".");
+    if(dot<=0)return false;
+    const root=input.slice(0,dot),suffix=input.slice(dot+1);
+    const selector=schema.required?.[root]??schema.optional?.[root];
+    const slots=autogrowSlots(selector);
+    if(!slots)return false;
+    const index=slots.names.indexOf(suffix);
+    return index>=slots.min;
+}
 function pruneAbsentMediaPort(graph, port, canvasNodeId, info) {
     if (!info) fail("comfy_auto_prune_object_info_required:"+port.id);
     const fields = port.inputBinding.targets;
@@ -303,7 +314,7 @@ function pruneAbsentMediaPort(graph, port, canvasNodeId, info) {
         if(!n || !has(n.inputs,field.inputName))fail("comfy_auto_prune_target_missing:"+port.id);
         const schema=info[n.class_type]?.input;
         if(!schema)fail("comfy_auto_prune_schema_missing:"+n.class_type);
-        if(has(schema.optional??{},field.inputName)) {
+        if(isOptionalMediaInput(n,schema,field.inputName)) {
             delete n.inputs[field.inputName];
         } else if(port.inputBinding.mode==="media-file" &&
             has(schema.required??{},field.inputName) &&
@@ -325,9 +336,9 @@ function pruneAbsentMediaPort(graph, port, canvasNodeId, info) {
                 if(!isLink(value)||value[0]!==source)continue;
                 const schema=info[consumer.class_type]?.input;
                 if(!schema)fail("comfy_auto_prune_schema_missing:"+consumer.class_type);
-                if(has(schema.optional??{},input)) {
+                if(isOptionalMediaInput(consumer,schema,input)) {
                     delete consumer.inputs[input];
-                } else if(has(schema.required??{},input)) {
+                } else if(has(schema.required??{},input)||hasDeclaredInput(consumer,{input:schema},input)) {
                     // An intermediate required processing node may be abandoned
                     // when its entire branch becomes unreachable. If it remains
                     // reachable the compiler will fail rather than silently omit it.

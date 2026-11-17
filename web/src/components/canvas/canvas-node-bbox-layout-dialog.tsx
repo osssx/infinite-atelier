@@ -79,7 +79,7 @@ export function CanvasNodeBBoxLayoutDialog({
     const [snap, setSnap] = useState(true);
     const [grid, setGrid] = useState(true);
     const [preview, setPreview] = useState(false);
-    const [drawKind, setDrawKind] = useState<BBoxKind | null>(null);
+    const [drawKind, setDrawKind] = useState<BBoxKind | null>(()=>getInitialLayout().items.length===0?"object":null);
     const [marquee, setMarquee] = useState<{ start: Point; end: Point } | null>(null);
     const [pasteJson, setPasteJson] = useState("");
     const [history, setHistory] = useState<BBoxLayout[]>([]);
@@ -108,8 +108,8 @@ export function CanvasNodeBBoxLayoutDialog({
 
     useEffect(() => {
         if (!open) return;
-        setLayout(getInitialLayout());
         const initial=getInitialLayout();
+        setLayout(initial);
         pixelRatio.current=initialDimensions?.aspectRatio?.split(":").map(Number)??[initial.width,initial.height];
         setMegapixels(initialDimensions?.megapixels??initial.width*initial.height/(1024*1024));
         setPixelMultiple(initialDimensions?.multiple??16);
@@ -118,7 +118,7 @@ export function CanvasNodeBBoxLayoutDialog({
         setHistory([]);
         setFuture([]);
         setPreview(false);
-        setDrawKind(null);
+        setDrawKind(initial.items.length===0?"object":null);
     }, [open, initialLayout, initialPrompt, initialSize, initialDimensions]);
 
     const commit = (next: BBoxLayout) => {

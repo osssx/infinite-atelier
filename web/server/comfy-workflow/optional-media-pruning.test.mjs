@@ -67,6 +67,21 @@ const k=id=>"w_wf-1__"+id;
 const opts=names=>({info,mediaFiles:Object.fromEntries(names.map(id=>["asset-"+id,"verified-"+id+".png"]))});
 const compile=names=>compileSingleWorkflow(request(names),template,opts(names));
 const versioned=p=>({...p,id:"optional-media",revision:sha256(canonical(p))});
+test("absent AUTOGROW reference leaves are pruned without making minimum required slots optional",()=>{
+    const p=structuredClone(payload);
+    p.apiGraph["10"].inputs["images.image_1"]=p.apiGraph["10"].inputs.first_frame;
+    delete p.apiGraph["10"].inputs.first_frame;
+    const tmpl=versioned(p),dynamicInfo=structuredClone(info);
+    delete dynamicInfo.AdaptiveVideo.input.optional.first_frame;
+    dynamicInfo.AdaptiveVideo.input.required.images=["COMFY_AUTOGROW_V3",{template:{names:["image_1","image_2"],min:0,input:{required:{image:["IMAGE",{}]}}}}];
+    const result=compileSingleWorkflow(request([],tmpl),tmpl,{...opts([]),info:dynamicInfo});
+    assert.equal(Object.hasOwn(result.graph[k("10")].inputs,"images.image_1"),false);
+    const supplied=compileSingleWorkflow(request(["first"],tmpl),tmpl,{...opts(["first"]),info:dynamicInfo});
+    assert.deepEqual(supplied.graph[k("10")].inputs["images.image_1"],[k("2"),0]);
+    dynamicInfo.AdaptiveVideo.input.required.images[1].template.min=1;
+    assert.throws(()=>compileSingleWorkflow(request([],tmpl),tmpl,{...opts([]),info:dynamicInfo}));
+});
+
 test("auto-prune is per media input, not a mode router or extra top-level schema",()=>{
     assert.doesNotThrow(()=>verifyTemplate(template));
     assert.equal(Object.hasOwn(template,"dynamicRoutes"),false);

@@ -96,7 +96,7 @@ export const CompactCanvasNode = memo(function CompactCanvasNode({
         >
             <CanvasExecutionHalo node={data} visible={hitActive} />
             <div data-canvas-compact-body className="relative h-full w-full overflow-hidden rounded-3xl border-2"
-                style={{ borderStyle: isGroup ? "dashed" : "solid", borderColor, background, boxSizing: "border-box", boxShadow: active ? "0 0 0 1px #2f80ff55" : undefined }}
+                style={{ borderStyle: isGroup ? "dashed" : "solid", borderColor, background, boxSizing: "border-box", boxShadow: isGroupDropTarget ? "0 0 0 1px #2f80ff55" : isSelected ? "0 0 0 1px #2f80ff55, 0 18px 48px rgba(0,0,0,.14)" : undefined }}
                 onMouseDown={(event) => onMouseDown(event, data.id)}
                 onDoubleClick={(event) => {
                     if (isImage && imageSource) {

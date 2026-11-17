@@ -2,11 +2,13 @@
 import {act,createElement} from "react";
 import {createRoot,type Root} from "react-dom/client";
 import {afterEach,describe,expect,it,vi} from "vitest";
-vi.mock("react-i18next",()=>({useTranslation:()=>({t:(key:string)=>key})}));
+const {themeState}=vi.hoisted(()=>({themeState:{theme:"dark" as "dark"|"light"}}));
+vi.mock("react-i18next",()=>({useTranslation:()=>({t:(key:string,values?:Record<string,unknown>)=>values?`${key}:${Object.values(values).join("/")}`:key})}));
 vi.mock("./canvas-text-markdown",()=>({CanvasTextMarkdown:({content}:{content:string})=>createElement("div",null,content)}));
-vi.mock("@/stores/use-theme-store",()=>({useThemeStore:(select:(state:{theme:"dark"})=>unknown)=>select({theme:"dark"})}));
+vi.mock("@/stores/use-theme-store",()=>({useThemeStore:(select:(state:{theme:"dark"|"light"})=>unknown)=>select(themeState)}));
 import {CanvasTextVersionsModal} from "./canvas-text-versions-modal";
 import type {TextVersion} from "@/features/canvas-text-versions";
+import {canvasThemes} from "@/lib/canvas-theme";
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT=true;
 describe("text version modal interactions",()=>{
@@ -15,20 +17,19 @@ describe("text version modal interactions",()=>{
  it("selects a preview and invokes save, delete, and restore actions",async()=>{
   host=document.createElement("div");document.body.append(host);root=createRoot(host);
   const version:TextVersion={id:"v1",createdAt:"2026-01-01T00:00:00.000Z",content:"# old text",note:"snapshot",source:"manual"};
-  const save=vi.fn(),remove=vi.fn(),restore=vi.fn(),close=vi.fn();
+  const save=vi.fn(async()=>{}),remove=vi.fn(),restore=vi.fn(),close=vi.fn();
   await act(async()=>root?.render(createElement(CanvasTextVersionsModal,{open:true,versions:[version],currentContent:"new text",onClose:close,onSave:save,onDelete:remove,onRestore:restore,onRetryPersistence:async()=>{},retryPending:false})));
-  const buttons=[...document.body.querySelectorAll("button")];
-  const preview=buttons.find(b=>b.textContent?.includes("snapshot"));expect(preview).toBeTruthy();
+  const preview=[...document.body.querySelectorAll("button")].find(b=>b.getAttribute("aria-label")==="snapshot");expect(preview).toBeTruthy();
   await act(async()=>preview?.click());
   expect(document.body.textContent).toContain("# old text");
-  const saveButton=buttons.find(b=>b.textContent==="canvas.textVersions.saveCurrent");
+  const saveButton=[...document.body.querySelectorAll("button")].find(b=>b.getAttribute("aria-label")==="canvas.textVersions.saveCurrent");
   await act(async()=>saveButton?.click());expect(save).toHaveBeenCalledTimes(1);
-  const deleteButton=[...document.body.querySelectorAll("button")].find(b=>b.textContent==="common.delete");
+  const deleteButton=[...document.body.querySelectorAll("button")].find(b=>b.getAttribute("aria-label")==="common.delete");
   await act(async()=>deleteButton?.click());
   const confirm=[...document.body.querySelectorAll("button")].find(b=>b.textContent==="OK");
   if(confirm)await act(async()=>confirm.click());
   expect(remove).toHaveBeenCalledWith("v1");
-  const restoreButton=[...document.body.querySelectorAll("button")].find(b=>b.textContent==="common.restore");
+  const restoreButton=[...document.body.querySelectorAll("button")].find(b=>b.getAttribute("aria-label")==="common.restore");
   await act(async()=>restoreButton?.click());expect(restore).toHaveBeenCalledWith(version);
  });
  it("selects a version added to an initially empty list and retries persistence",async()=>{
@@ -38,11 +39,36 @@ describe("text version modal interactions",()=>{
   await act(async()=>root?.render(createElement(CanvasTextVersionsModal,props)));
   await act(async()=>root?.render(createElement(CanvasTextVersionsModal,{...props,versions:[saved]})));
   expect(document.body.textContent).toContain("new body");
-  const restore=[...document.body.querySelectorAll("button")].find(b=>b.textContent==="common.restore");
+  const restore=[...document.body.querySelectorAll("button")].find(b=>b.getAttribute("aria-label")==="common.restore");
   expect(restore?.hasAttribute("disabled")).toBe(true);
   const retryButton=[...document.body.querySelectorAll("button")].find(b=>b.textContent==="canvas.textVersions.retry");
   await act(async()=>retryButton?.click());
   expect(retry).toHaveBeenCalledTimes(1);
+ });
+ it("clears a save note only after success and uses light/dark canvas surfaces",async()=>{
+  host=document.createElement("div");document.body.append(host);root=createRoot(host);
+  const versions:TextVersion[]=[];const fail=vi.fn(async()=>{throw Error("network");});
+  const props={open:true,versions,currentContent:"body",onClose:vi.fn(),onSave:fail,onDelete:vi.fn(),onRestore:vi.fn(),onRetryPersistence:async()=>{},retryPending:false};
+  themeState.theme="dark";
+  await act(async()=>root?.render(createElement(CanvasTextVersionsModal,props)));
+  const input=document.body.querySelector<HTMLInputElement>("input[aria-label='canvas.textVersions.notePlaceholder']")!;
+  const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value")?.set;
+  await act(async()=>{setter?.call(input,"keep this note");input.dispatchEvent(new Event("input",{bubbles:true}));});
+  const save=[...document.body.querySelectorAll("button")].find(button=>button.getAttribute("aria-label")==="canvas.textVersions.saveCurrent")!;
+  await act(async()=>save.click());
+  expect(input.value).toBe("keep this note");
+  expect(fail).toHaveBeenCalledWith("keep this note");
+
+  await act(async()=>root?.render(createElement(CanvasTextVersionsModal,{...props,onSave:async()=>{}})));
+  await act(async()=>save.click());
+  expect(input.value).toBe("");
+
+  const shell=document.body.querySelector<HTMLElement>(".ant-modal-container")!;
+  expect(shell.style.background).toBe(canvasThemes.dark.node.panel);
+  themeState.theme="light";
+  await act(async()=>root?.render(createElement(CanvasTextVersionsModal,{...props,onSave:async()=>{}})));
+  const lightShell=document.body.querySelector<HTMLElement>(".ant-modal-container")!;
+  expect(lightShell.style.background).toBe(canvasThemes.light.node.panel);
  });
  it("closes on Escape from modal focus, preserves nested overlays, and consumes Escape while busy",async()=>{
   host=document.createElement("div");document.body.append(host);root=createRoot(host);
@@ -56,7 +82,7 @@ describe("text version modal interactions",()=>{
   await act(async()=>root?.render(createElement(CanvasTextVersionsModal,props)));
   const version:TextVersion={id:"v",createdAt:"now",content:"saved",source:"manual"};
   await act(async()=>root?.render(createElement(CanvasTextVersionsModal,{...props,versions:[version]})));
-  const deleteButton=[...document.body.querySelectorAll("button")].find(button=>button.textContent==="common.delete")!;
+  const deleteButton=[...document.body.querySelectorAll("button")].find(button=>button.getAttribute("aria-label")==="common.delete")!;
   await act(async()=>deleteButton.click());
   expect(document.body.textContent).toContain("canvas.textVersions.deleteConfirm");
   await act(async()=>window.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",keyCode:27,which:27,bubbles:true,cancelable:true})));

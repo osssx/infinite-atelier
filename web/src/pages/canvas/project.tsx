@@ -2192,13 +2192,13 @@ function AtelierCanvasPage() {
     },[projectId]);
 
     const saveTextVersion = useCallback(async(nodeId:string,note?:string) => {
-        const node=nodesRef.current.find(value=>value.id===nodeId);if(!node)return;
+        const node=nodesRef.current.find(value=>value.id===nodeId);if(!node)throw Error("text_node_not_found");
         const versions=node.metadata?.textVersions??[];const content=node.metadata?.content??"";
-        if(!canSaveTextVersion(content,versions))return;
+        if(!canSaveTextVersion(content,versions))throw Error("text_version_save_not_allowed");
         const version:TextVersion={id:nanoid(),createdAt:new Date().toISOString(),content,note,source:"manual"};
         const next=nodesRef.current.map(value=>value.id===nodeId?withTextVersions(value,[version,...versions]):value);
         try{await commitTextVersionGraph(next);if(activeProjectIdRef.current===projectId)message.success(t("canvas.textVersions.saved"));}
-        catch(error){if(activeProjectIdRef.current===projectId)message.error(t("canvas.textVersions.saveFailed",{error:String(error)}));}
+        catch(error){if(activeProjectIdRef.current===projectId)message.error(t("canvas.textVersions.saveFailed",{error:String(error)}));throw error;}
     },[commitTextVersionGraph,message,projectId,t]);
 
     const deleteTextVersion = useCallback(async(nodeId:string,versionId:string) => {
@@ -4240,7 +4240,7 @@ function AtelierCanvasPage() {
                 <CanvasNodeInfoModal node={infoNode} open={Boolean(infoNode)} onClose={() => setInfoNodeId(null)} />
 
                 {textVersionsNode?<CanvasTextVersionsModal key={`${projectId}:${textVersionsNode.id}`} open versions={textVersionsNode.metadata?.textVersions??[]} currentContent={textVersionsNode.metadata?.content??""}
-                    onClose={()=>setTextVersionsNodeId(null)} onSave={note=>void saveTextVersion(textVersionsNode.id,note)}
+                    onClose={()=>setTextVersionsNodeId(null)} onSave={note=>saveTextVersion(textVersionsNode.id,note)}
                     onDelete={versionId=>void deleteTextVersion(textVersionsNode.id,versionId)} onRestore={version=>restoreTextVersion(textVersionsNode.id,version)}
                     retryPending={textVersionSavePending} busy={textVersionBusy}
                     onRetryPersistence={async()=>{

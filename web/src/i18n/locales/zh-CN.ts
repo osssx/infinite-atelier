@@ -295,7 +295,7 @@ export default {
         selectAll: "全选",
     },
     canvas: {
-        textVersions: { title:"历史版本", notePlaceholder:"备注（可选，最多100字）", saveCurrent:"保存当前正文", empty:"选择一个版本预览", emptyCannotSave:"正文为空，无法保存历史版本", deleteConfirm:"确定删除此历史版本？", saved:"历史版本已保存", deleted:"历史版本已删除", restored:"正文已恢复", saveFailed:"保存失败：{{error}}。可重试。", saveFailedGeneric:"画布尚未保存", retry:"重试保存", retrySuccess:"画布已保存", restoreTitle:"恢复历史正文", restorePrompt:"当前正文尚未备份，直接覆盖将丢失当前内容。可选择备份后恢复。", invalidRestore:"无法恢复此正文", backupRestore:"备份后恢复", overwrite:"直接覆盖", changedDuringConfirm:"确认期间正文已变化，请重新发起恢复。", limitReached:"已达到50个版本上限，无法备份恢复。", manual:"手动保存", restoreBackup:"恢复前自动备份", backupNote:"恢复前自动备份" },
+        textVersions: { title:"历史版本", subtitle:"保存和恢复文本节点正文", count:"{{count}} / {{max}} 个版本", notePlaceholder:"备注（可选，最多100字）", saveCurrent:"保存当前正文", empty:"选择一个版本预览", emptyCannotSave:"正文为空，无法保存历史版本", duplicateCannotSave:"当前正文已是最新版本，无需重复保存。", listTitle:"已保存版本", currentVersion:"当前正文", noVersionsTitle:"还没有历史版本", noVersionsHint:"保存当前正文后，可在这里查看并恢复。", previewTitle:"版本预览", noSelectionHint:"选择左侧的版本查看正文和恢复选项。", characterCount:"{{count}} 字符", deleteConfirm:"确定删除此历史版本？", saved:"历史版本已保存", deleted:"历史版本已删除", restored:"正文已恢复", saveFailed:"保存失败：{{error}}。可重试。", saveFailedGeneric:"画布尚未保存", retry:"重试保存", retrySuccess:"画布已保存", restoreTitle:"恢复历史正文", restorePrompt:"当前正文尚未备份，直接覆盖将丢失当前内容。可选择备份后恢复。", invalidRestore:"无法恢复此正文", backupRestore:"备份后恢复", overwrite:"直接覆盖", changedDuringConfirm:"确认期间正文已变化，请重新发起恢复。", limitReached:"已达到50个版本上限，无法备份恢复。", manual:"手动保存", restoreBackup:"恢复前自动备份", backupNote:"恢复前自动备份" },
         skillPicker: {
             autoUsed: "自动 Skill：已调用 {{count}} 个技能",
             autoTrace: "Skill 调用记录",

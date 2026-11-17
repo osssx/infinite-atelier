@@ -36,7 +36,7 @@ export function DirectPortControl({field,value,overridden,theme,onSet,onReset}:{
    <label className="min-w-0 flex-1 break-words text-xs font-medium leading-5" title={field.port.label}>{field.port.label}</label>
    {overridden?<Button size="small" type="text" className="!h-6 !w-6 shrink-0 !p-0" title="恢复默认" aria-label={`${field.port.label}恢复默认`} icon={<RotateCcw size={14}/>} onClick={reset}/>:null}
   </div>
-  {field.port.choices?.length?<ConfigProvider theme={{token:{colorBgContainer:theme.toolbar.panel,colorBgElevated:theme.toolbar.panel,
+  {field.port.choices?.length?<ConfigProvider theme={{token:{colorBgContainer:theme.node.fill,colorBgElevated:theme.toolbar.panel,
    colorText:theme.node.text,colorTextSecondary:theme.node.muted,colorBorder:theme.node.stroke,colorPrimary:theme.node.activeStroke},
    components:{Select:{optionSelectedBg:theme.node.fill,optionSelectedColor:theme.node.text,optionActiveBg:theme.toolbar.itemHover}}}}>
    <Select className="w-full" size="small" allowClear getPopupContainer={()=>document.body}
@@ -47,7 +47,7 @@ export function DirectPortControl({field,value,overridden,theme,onSet,onReset}:{
    placeholder={placeholder??"选择参数值"} options={field.port.choices.map((choice,index)=>({value:String(index),label:choice.label}))}
    onChange={(selected:string|undefined)=>{if(selected===undefined){reset();return;}const choice=field.port.choices?.[Number(selected)];if(choice)onSet(choice.value);}}/></ConfigProvider>:
   kind==="BOOLEAN"?<div className="flex min-h-8 items-center gap-2"><Switch size="small" checked={value===true} onChange={onSet}/><span className="text-xs opacity-70">{field.mixedTemplateValues&&value===undefined?"模板目标值不同，请指定覆盖值":value===undefined?"未设置":value?"开启":"关闭"}</span></div>:
-   numeric?<InputNumber className="w-full" size="small" stringMode value={draft||undefined} placeholder={placeholder}
+   numeric?<InputNumber className="!w-full" size="small" stringMode value={draft||undefined} placeholder={placeholder}
     onChange={next=>{setDraft(next==null?"":String(next));setError("");}}
     onBlur={saveNumber} onPressEnter={event=>event.currentTarget.blur()}/>:
    multiline?<Input.TextArea size="small" autoSize={{minRows:2,maxRows:5}} value={typeof value==="string"?value:""} placeholder={placeholder} onChange={event=>onSet(event.target.value)}/>:
@@ -66,9 +66,15 @@ export function ComfyMediaParameters({template,binding,config,theme,onChange,onE
  const reset=(field:ComfyInstanceScalarField)=>onChange(createComfyMediaResetPatch(binding,field.port.id));
  const aspectWarning=resolveComfyMediaAspect(template,binding).warning;
  const resetAll=()=>onChange(createComfyMediaResetPatch(binding));
- const controls=<ConfigProvider theme={{token:{colorBgContainer:theme.toolbar.panel,colorBgElevated:theme.toolbar.panel,
+ const controls=<ConfigProvider theme={{token:{colorBgContainer:theme.node.fill,colorBgElevated:theme.toolbar.panel,
+  controlHeight:34,controlHeightSM:34,borderRadius:8,borderRadiusSM:8,fontSize:12,fontSizeSM:12,
+  colorTextPlaceholder:theme.node.placeholder,colorTextDisabled:theme.node.faint,colorBgContainerDisabled:theme.node.fill,
+  colorTextLightSolid:theme.node.panel,
   colorText:theme.node.text,colorTextSecondary:theme.node.muted,colorBorder:theme.node.stroke,colorPrimary:theme.node.activeStroke,
-  controlOutline:theme.node.activeStroke},components:{Button:{defaultBg:theme.toolbar.panel,defaultBorderColor:theme.node.stroke,defaultColor:theme.node.text}}}}>
+  controlOutline:theme.node.activeStroke},components:{
+   Input:{activeBg:theme.node.fill,hoverBg:theme.node.fill},
+   InputNumber:{activeBg:theme.node.fill,hoverBg:theme.node.fill,handleBg:theme.node.panel},
+   Button:{defaultBg:theme.node.fill,defaultBorderColor:theme.node.stroke,defaultColor:theme.node.text}}}}>
   <div className="space-y-3" style={{color:theme.node.text}} data-comfy-media-native-settings>
    <header className="flex items-center justify-between gap-2 border-b pb-2" style={{borderColor:theme.node.stroke}}>
     <h3 className="m-0 text-sm font-semibold">工作流参数</h3>

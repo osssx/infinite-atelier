@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSPropert
 import { ArrowDown, ArrowUp, Check, ChevronDown, ChevronRight, FileUp, GripVertical, Link2, Plus, RefreshCw, Save, Search, Trash2, X } from "lucide-react";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { canToggleComfyInputPortVisibility } from "@/lib/canvas/canvas-ports";
-import { Input, Modal, Select, theme as antdTheme } from "antd";
+import { ConfigProvider, Input, Modal, Select, theme as antdTheme } from "antd";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { useConfigStore } from "@/stores/use-config-store";
 import {useComfyObjectInfo} from "./use-comfy-object-info";
@@ -132,6 +132,43 @@ export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,
         "--comfy-accent":token.colorPrimary,
     } as CSSProperties;
     const embedded = context==="preset";
+    const presetSelectTheme = embedded ? {
+        token: {
+            colorBgContainer: token.colorFillSecondary,
+            colorBgElevated: token.colorBgContainer,
+            colorText: token.colorText,
+            colorTextSecondary: token.colorTextSecondary,
+            colorTextPlaceholder: token.colorTextPlaceholder,
+            colorBorder: token.colorBorderSecondary,
+            colorPrimary: token.colorPrimary,
+            controlOutline: token.colorPrimary,
+        },
+        components: {
+            Select: {
+                optionActiveBg: token.controlItemBgHover,
+                optionSelectedBg: token.controlItemBgActive,
+                optionSelectedColor: token.colorText,
+            },
+        },
+    } : {
+        token: {
+            colorBgContainer: theme.node.fill,
+            colorBgElevated: theme.node.panel,
+            colorText: theme.node.text,
+            colorTextSecondary: theme.node.muted,
+            colorTextPlaceholder: theme.node.placeholder,
+            colorBorder: theme.node.stroke,
+            colorPrimary: theme.node.activeStroke,
+            controlOutline: theme.node.activeStroke,
+        },
+        components: {
+            Select: {
+                optionActiveBg: theme.node.fill,
+                optionSelectedBg: theme.node.fill,
+                optionSelectedColor: theme.node.text,
+            },
+        },
+    };
 
     const [presets,setPresets] = useState<ComfyCatalogPreset[]>([]);
     const [pendingPreset,setPendingPreset] = useState<ComfyCatalogPreset|null>(null);
@@ -497,17 +534,20 @@ export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,
                     <input type="file" accept=".json,application/json" className="sr-only" onChange={(e)=>void uploadGraph(e)}/>
                 </label>
                 <div data-comfy-preset-picker className="min-w-[160px] max-w-[260px] flex-1">
-                <Select aria-label="加载预设" className="w-full" popupMatchSelectWidth={320}
-                    disabled={busy}
-                    value={selectedPreset ? "preset:"+selectedPreset.id : undefined}
-                    placeholder={savedValue && draft ? "当前绑定："+draft.name : "加载预设"}
-                    options={presets.map(p=>({value:"preset:"+p.id,label:p.name}))}
-                    onChange={(value:string)=>{
-                        if(!value.startsWith("preset:"))return;
-                        const preset=presets.find(p=>p.id===value.slice("preset:".length));
-                        if(!preset)return;
-                        setPendingPreset(preset);
-                    }}/>
+                <ConfigProvider theme={presetSelectTheme}>
+                    <Select aria-label="加载预设" className="w-full" popupMatchSelectWidth={320}
+                        styles={{popup:{root:{background:embedded?token.colorBgContainer:theme.node.panel,color:embedded?token.colorText:theme.node.text,borderColor:embedded?token.colorBorderSecondary:theme.node.stroke}}}}
+                        disabled={busy}
+                        value={selectedPreset ? "preset:"+selectedPreset.id : undefined}
+                        placeholder={savedValue && draft ? "当前绑定："+draft.name : "加载预设"}
+                        options={presets.map(p=>({value:"preset:"+p.id,label:p.name}))}
+                        onChange={(value:string)=>{
+                            if(!value.startsWith("preset:"))return;
+                            const preset=presets.find(p=>p.id===value.slice("preset:".length));
+                            if(!preset)return;
+                            setPendingPreset(preset);
+                        }}/>
+                </ConfigProvider>
                 </div>
                 <Modal title="确认加载预设" open={pendingPreset!==null}
                     okText="确认加载" cancelText="取消" confirmLoading={busy}

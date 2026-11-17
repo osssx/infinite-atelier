@@ -588,11 +588,11 @@ export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,
             </div>:null}
             {status?<div role="status" className="mx-5 mt-2 shrink-0 text-xs text-[var(--comfy-muted)]">{status}</div>:null}
 
-            <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-5 py-3" data-comfy-template-settings-stack>
+            <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-5 py-3 [&>details]:shrink-0" data-comfy-template-settings-stack>
             {draft ? (
-                <details open={bindingsExpanded} onToggle={event=>setBindingsExpanded(event.currentTarget.open)} className="rounded-lg border border-[var(--comfy-border)] p-3" data-comfy-bindings-section>
+                <details open={bindingsExpanded} onToggle={event=>setBindingsExpanded(event.currentTarget.open)} className="rounded-lg border border-[var(--comfy-border)] p-3 open:flex open:min-h-[260px] open:flex-1 open:flex-col [&::details-content]:min-h-0 [&::details-content]:flex-1 [&[open]::details-content]:flex [&[open]::details-content]:flex-col" data-comfy-bindings-section>
                 <summary className="cursor-pointer text-[11px] font-medium text-[var(--comfy-muted)]">参数绑定</summary>
-                <div className="mt-1 flex h-[360px] min-h-0 min-w-0 flex-col overflow-hidden md:flex-row" data-comfy-editor-workspace>
+                <div className="mt-1 flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden md:flex-row" data-comfy-editor-workspace>
                     <aside className={embedded
                         ? "flex min-h-[128px] max-h-[35%] w-full shrink-0 flex-col border-b border-[var(--comfy-border)] md:max-h-none md:min-h-0 md:w-[255px] md:border-b-0 md:border-r"
                         : "flex min-h-[200px] w-full shrink-0 flex-col border-b border-[var(--comfy-border)] md:min-h-0 md:w-[290px] md:border-b-0 md:border-r"} data-comfy-node-list>

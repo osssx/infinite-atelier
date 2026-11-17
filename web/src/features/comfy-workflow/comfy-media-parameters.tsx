@@ -31,9 +31,9 @@ export function DirectPortControl({field,value,overridden,theme,onSet,onReset}:{
  };
  const placeholder=field.mixedTemplateValues&&value===undefined?"模板目标原值不同，请设置覆盖值":value===undefined?"使用工作流默认值":undefined;
  const reset=()=>{setDraft("");setError("");onReset();};
- return <div className="min-w-0 space-y-1.5" style={{color:theme.node.text}} data-comfy-media-port={field.port.id}>
+ return <div className="min-w-0 space-y-2.5" style={{color:theme.node.text}} data-comfy-media-port={field.port.id}>
   <div className="flex min-w-0 items-start gap-2">
-   <label className="min-w-0 flex-1 break-words text-xs font-medium leading-5" title={field.port.label}>{field.port.label}</label>
+   <label className="min-w-0 flex-1 break-words text-xs font-medium" style={{color:theme.node.muted}} title={field.port.label}>{field.port.label}</label>
    {overridden?<Button size="small" type="text" className="!h-6 !w-6 shrink-0 !p-0" title="恢复默认" aria-label={`${field.port.label}恢复默认`} icon={<RotateCcw size={14}/>} onClick={reset}/>:null}
   </div>
   {field.port.choices?.length?<ConfigProvider theme={{token:{colorBgContainer:theme.node.fill,colorBgElevated:theme.toolbar.panel,
@@ -67,7 +67,7 @@ export function ComfyMediaParameters({template,binding,config,theme,onChange,onE
  const aspectWarning=resolveComfyMediaAspect(template,binding).warning;
  const resetAll=()=>onChange(createComfyMediaResetPatch(binding));
  const controls=<ConfigProvider theme={{token:{colorBgContainer:theme.node.fill,colorBgElevated:theme.toolbar.panel,
-  controlHeight:34,controlHeightSM:34,borderRadius:8,borderRadiusSM:8,fontSize:12,fontSizeSM:12,
+  controlHeight:36,controlHeightSM:36,borderRadius:8,borderRadiusSM:8,fontSize:14,fontSizeSM:14,
   colorTextPlaceholder:theme.node.placeholder,colorTextDisabled:theme.node.faint,colorBgContainerDisabled:theme.node.fill,
   colorTextLightSolid:theme.node.panel,
   colorText:theme.node.text,colorTextSecondary:theme.node.muted,colorBorder:theme.node.stroke,colorPrimary:theme.node.activeStroke,
@@ -75,16 +75,16 @@ export function ComfyMediaParameters({template,binding,config,theme,onChange,onE
    Input:{activeBg:theme.node.fill,hoverBg:theme.node.fill},
    InputNumber:{activeBg:theme.node.fill,hoverBg:theme.node.fill,handleBg:theme.node.panel},
    Button:{defaultBg:theme.node.fill,defaultBorderColor:theme.node.stroke,defaultColor:theme.node.text}}}}>
-  <div className="space-y-3" style={{color:theme.node.text}} data-comfy-media-native-settings>
-   <header className="flex items-center justify-between gap-2 border-b pb-2" style={{borderColor:theme.node.stroke}}>
-    <h3 className="m-0 text-sm font-semibold">工作流参数</h3>
+  <div className="space-y-4 rounded-2xl px-1 py-0.5" style={{color:theme.node.text}} data-comfy-media-native-settings>
+   <header className="flex items-center justify-between gap-2">
+    <h3 className="m-0 text-lg font-semibold">工作流参数</h3>
     <div className="flex shrink-0 items-center gap-1">
      {onEditPreset?<Button size="small" type="text" title="编辑当前工作流预设" aria-label="编辑当前工作流预设" icon={<Pencil size={14}/>} onClick={onEditPreset}/>:null}
      <Button size="small" disabled={!Object.keys(binding.overrides).length} onClick={resetAll}>恢复默认</Button>
     </div>
    </header>
    {aspectWarning?<p role="status" className="text-xs opacity-70">{aspectWarning}</p>:null}
-   {fields.length?<div className="space-y-3" data-comfy-media-parameter-list>
+   {fields.length?<div className="space-y-4" data-comfy-media-parameter-list>
     {fields.map(field=><DirectPortControl key={field.port.id} field={field} value={localValue(field)} theme={theme}
      overridden={Object.hasOwn(binding.overrides,field.port.id)} onSet={value=>write(field,value)} onReset={()=>reset(field)}/>)}
    </div>:<p className="rounded-lg border p-3 text-xs opacity-65" style={{borderColor:theme.node.stroke}}>没有可编辑的标量参数。</p>}

@@ -588,13 +588,11 @@ export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,
             </div>:null}
             {status?<div role="status" className="mx-5 mt-2 shrink-0 text-xs text-[var(--comfy-muted)]">{status}</div>:null}
 
+            <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-5 py-3" data-comfy-template-settings-stack>
             {draft ? (
-                <div className={"flex min-h-0 min-w-0 flex-col overflow-hidden "+(bindingsExpanded?"flex-1":"shrink-0")} data-comfy-bindings-section>
-                <button type="button" className="flex shrink-0 items-center gap-2 border-b border-[var(--comfy-border)] px-5 py-3 text-left text-xs font-medium text-[var(--comfy-muted)]"
-                    aria-expanded={bindingsExpanded} onClick={()=>setBindingsExpanded(value=>!value)}>
-                    {bindingsExpanded?<ChevronDown size={13}/>:<ChevronRight size={13}/>}参数绑定
-                </button>
-                <div className={bindingsExpanded?"flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden md:flex-row":"hidden"} data-comfy-editor-workspace>
+                <details open={bindingsExpanded} onToggle={event=>setBindingsExpanded(event.currentTarget.open)} className="rounded-lg border border-[var(--comfy-border)] p-3" data-comfy-bindings-section>
+                <summary className="cursor-pointer text-[11px] font-medium text-[var(--comfy-muted)]">参数绑定</summary>
+                <div className="mt-3 flex h-[360px] min-h-0 min-w-0 flex-col overflow-hidden md:flex-row" data-comfy-editor-workspace>
                     <aside className={embedded
                         ? "flex min-h-[128px] max-h-[35%] w-full shrink-0 flex-col border-b border-[var(--comfy-border)] md:max-h-none md:min-h-0 md:w-[255px] md:border-b-0 md:border-r"
                         : "flex min-h-[200px] w-full shrink-0 flex-col border-b border-[var(--comfy-border)] md:min-h-0 md:w-[290px] md:border-b-0 md:border-r"} data-comfy-node-list>
@@ -969,18 +967,14 @@ export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,
                         </div>
                     </main>
                 </div>
-                </div>
+                </details>
             ) : <div className="flex min-h-44 flex-col items-center justify-center gap-2 px-5 py-8 text-center text-xs text-[var(--comfy-muted)]">
                 <FileUp size={26}/>
                 <p>导入 ComfyUI API 格式的 JSON 文件，即可查看节点并绑定参数。</p>
                 <p>也可以从上方选择已保存的工作流预设。</p>
             </div>}
 
-            {draft?<div className={embedded
-                ? "flex max-h-[38%] min-h-0 shrink-0 flex-col overflow-hidden border-t border-[var(--comfy-border)] bg-[var(--comfy-panel)] px-4 py-3 sm:px-5"
-                : "flex min-h-0 shrink flex-col overflow-hidden border-t border-[var(--comfy-border)] bg-[var(--comfy-panel)] px-5 py-3"} data-comfy-save-footer
-                style={embedded?undefined:{maxHeight:"min(380px, 48dvh)"}}>
-                <div className="mb-3 min-h-0 flex-1 space-y-3 overflow-y-auto" data-comfy-template-settings-stack>
+            {draft?<>
                 <details open={expandedAdvanced} onToggle={(e)=>setExpandedAdvanced((e.currentTarget as HTMLDetailsElement).open)} className="rounded-lg border border-[var(--comfy-border)] p-3">
                     <summary className="cursor-pointer text-[11px] font-medium text-[var(--comfy-muted)]">模板设置 · 名称、ID、模型依赖与执行预览</summary>
                     <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
@@ -1003,7 +997,9 @@ export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,
                 </details>
                 <ComfyMediaUseCaseEditor template={draft} onChange={mediaUseCase=>edit(current=>({...current,
                     ...(mediaUseCase?{mediaUseCase}:{mediaUseCase:undefined})}))}/>
+                </>:null}
                 </div>
+            {draft?<div className="shrink-0 border-t border-[var(--comfy-border)] bg-[var(--comfy-panel)] px-5 py-3" data-comfy-save-footer>
                 <div className="flex shrink-0 flex-wrap items-center justify-between gap-3" data-comfy-save-actions>
                     <span className="max-w-[440px] text-[11px] text-[var(--comfy-muted)]">{objectInfo?"已同步当前 ComfyUI 实例的节点定义":"尚未校验插槽类型；同步节点定义后可准确匹配"}</span>
                     {context==="preset"?<details className="min-w-0 flex-1 sm:max-w-xs">

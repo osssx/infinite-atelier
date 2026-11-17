@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import { App, Modal, Segmented, Tooltip } from "antd";
-import { Clapperboard, Download, Ellipsis, FolderPlus, Image as ImageIcon, Info, LayoutGrid, LoaderCircle, MessageSquare, Minus, Music2, Play, Plus, RefreshCw, Scissors, Settings2, Square, Trash2, Upload, Video } from "lucide-react";
+import { Clapperboard, Download, Ellipsis, FolderPlus, History, Image as ImageIcon, Info, LayoutGrid, LoaderCircle, MessageSquare, Minus, Music2, Play, Plus, RefreshCw, Scissors, Settings2, Square, Trash2, Upload, Video } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { canvasThemes, type CanvasTheme } from "@/lib/canvas-theme";
@@ -48,6 +48,7 @@ type CanvasNodeHoverToolbarProps = {
     onRetry: (node: CanvasNodeData) => void;
     onToggleFreeResize: (node: CanvasNodeData) => void;
     onDelete: (node: CanvasNodeData) => void;
+    onOpenTextVersions?: (nodeId:string)=>void;
 };
 
 type ToolbarTool = {
@@ -94,6 +95,7 @@ export function CanvasNodeHoverToolbar({
     onRetry,
     onToggleFreeResize,
     onDelete,
+    onOpenTextVersions,
 }: CanvasNodeHoverToolbarProps) {
     const [quickImageToolIds, setQuickImageToolIds] = useState<ImageQuickToolId[]>(defaultImageQuickToolIds);
     const [showImageToolLabels, setShowImageToolLabels] = useState(false);
@@ -187,6 +189,7 @@ export function CanvasNodeHoverToolbar({
         ...(hasVideo && extractingAudio && onCancelExtractAudio ? [{ id: "cancelExtractAudio", title: "取消音频提取", label: "取消提取", icon: <Square className="size-4" />, onClick: () => onCancelExtractAudio(node) }] : []),
         ...(hasAudio ? [{ id: "trimAudio", title: t("canvas.audioTrim.open"), label: t("canvas.audioTrim.open"), icon: <Scissors className="size-4" />, onClick: () => onTrimAudio(node) }] : []),
         ...(isText ? [{ id: "generateImage", title: t("canvas.node.generateImage"), label: t("canvas.node.generate"), icon: <ImageIcon className="size-4" />, onClick: () => onGenerateImage(node) }] : []),
+        ...(isText && onOpenTextVersions ? [{id:"textVersions",title:t("canvas.textVersions.title"),label:t("canvas.textVersions.title"),icon:<History className="size-4"/>,onClick:()=>{onKeep(node.id);onOpenTextVersions(node.id);}}] : []),
         ...(isConfig ? [{ id: "config", title: t("canvas.configNode.title"), label: t("canvas.configNode.title"), icon: <Settings2 className="size-4" />, onClick: () => onToggleDialog(node) }] : []),
         ...(node.type === CanvasNodeType.Director ? [{ id: "director", title: t("canvas.director.title"), label: t("canvas.director.title"), icon: <Clapperboard className="size-4" />, onClick: () => onToggleDialog(node) }] : []),
         ...(isText ? [{ id: "decreaseFont", title: t("canvas.nodeToolbar.decreaseFont"), label: t("canvas.nodeToolbar.zoomOut"), icon: <Minus className="size-4" />, onClick: () => onDecreaseFont(node) }] : []),
@@ -253,7 +256,7 @@ export function CanvasNodeHoverToolbar({
                 {hasImage ? <ToolbarAction id="more" title={t("canvas.imageTools.configure")} label={t("canvas.imageTools.more")} icon={<Ellipsis className="size-4" />} active={imageToolSettingsOpen} onClick={openImageToolSettings} theme={toolbarTheme} showLabel={showImageToolLabels} /> : null}
             </div>
             {hasImage ? (
-                <ImageToolSettingsModal
+            <ImageToolSettingsModal
                     open={imageToolSettingsOpen}
                     tools={selectableImageToolbarTools}
                     selectedIds={draftImageToolIds}

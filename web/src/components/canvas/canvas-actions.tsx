@@ -31,6 +31,7 @@ export type CanvasActions = {
     onDeleteBatchImage: (nodeId: string, imageId: string) => void;
     onRetry: (node: CanvasNodeData) => void;
     onGenerateImage: (node: CanvasNodeData) => void;
+    onOpenTextVersions: (nodeId:string) => void;
     onViewImage: (node: CanvasNodeData, imageId?: string) => void;
 };
 
@@ -72,6 +73,7 @@ export function CanvasActionsProvider({ actions, children }: { actions: CanvasAc
             onDeleteBatchImage: (nodeId, imageId) => latest.current.onDeleteBatchImage(nodeId, imageId),
             onRetry: (node) => latest.current.onRetry(node),
             onGenerateImage: (node) => latest.current.onGenerateImage(node),
+            onOpenTextVersions: (nodeId) => latest.current.onOpenTextVersions(nodeId),
             onViewImage: (node, imageId) => latest.current.onViewImage(node, imageId),
         }),
         [],

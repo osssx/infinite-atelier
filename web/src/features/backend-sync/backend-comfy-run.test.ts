@@ -38,6 +38,12 @@ describe("backend save fence + frozen Comfy submission",()=>{
   const graph={nodes,connections} as {nodes:CanvasNodeData[];connections:CanvasConnection[]};
   const hash=await fingerprintBackendSource(graph,"wf-1");
   expect(hash).toBe(fingerprintSource(copy(graph),"wf-1"));
+  const versioned={...graph,nodes:graph.nodes.map(n=>n.id==="ref"?{...n,metadata:{...n.metadata,textVersions:[{id:"v",createdAt:"now",content:"old body",source:"manual" as const}]}}:n)};
+  expect(await fingerprintBackendSource(versioned,"wf-1")).toBe(hash);
+  expect(fingerprintSource(copy(versioned),"wf-1")).toBe(fingerprintSource(copy(graph),"wf-1"));
+  const editedBody={...graph,nodes:graph.nodes.map(n=>n.id==="ref"?{...n,metadata:{...n.metadata,content:"updated image"}}:n)};
+  expect(await fingerprintBackendSource(editedBody,"wf-1")).not.toBe(hash);
+  expect(fingerprintSource(copy(editedBody),"wf-1")).not.toBe(fingerprintSource(copy(graph),"wf-1"));
   expect(hash).toBe(await fingerprintBackendSource({nodes:[...graph.nodes].reverse(),connections:[...connections].reverse()},"wf-1"));
   expect(hash).toBe(await fingerprintBackendSource({...graph,nodes:graph.nodes.map(n=>n.id==="scalar"?{...n,title:"new"}:n)},"wf-1"));
    // The saved "ref" image is a frozen input: editing its *old* text provenance

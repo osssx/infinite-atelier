@@ -17,7 +17,7 @@ export function canonicalBackendGraph(graph:BackendCanvasGraph):string{
  return stableJson(JSON.parse(JSON.stringify({nodes:graph.nodes,connections:graph.connections})));
 }
 // Exactly mirrors repository.mjs generationNode; unknown metadata is never ignored.
-const PRESENTATION_META=new Set(["status","errorDetails","comfyExecution","videoTask",
+const PRESENTATION_META=new Set(["status","errorDetails","comfyExecution","videoTask","textVersions",
  "videoDownloadError","skillTrace","skillMetrics","interactive","groupId",
  "fontSize","freeResize"]);
 function generationNode(node:BackendCanvasGraph["nodes"][number]){

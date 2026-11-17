@@ -295,6 +295,7 @@ export default {
         selectAll: "Select all",
     },
     canvas: {
+        textVersions: { title:"Text history", notePlaceholder:"Optional note (up to 100 characters)", saveCurrent:"Save current text", empty:"Select a version to preview", emptyCannotSave:"The text is empty, so it cannot be saved", deleteConfirm:"Delete this version?", saved:"Version saved", deleted:"Version deleted", restored:"Text restored", saveFailed:"Save failed: {{error}}. You can retry.", saveFailedGeneric:"Canvas changes are not saved", retry:"Retry save", retrySuccess:"Canvas saved", restoreTitle:"Restore text", restorePrompt:"The current text has not been backed up. Overwriting it will discard that text. You can back it up before restoring.", invalidRestore:"This text version cannot be restored", backupRestore:"Back up and restore", overwrite:"Overwrite directly", changedDuringConfirm:"Text changed during confirmation. Start the restore again.", limitReached:"The 50-version limit is reached; backup restore is unavailable.", manual:"Manual save", restoreBackup:"Backup before restore", backupNote:"Automatic backup before restore" },
         skillPicker: {
             autoUsed: "Auto Skills: {{count}} activated",
             autoTrace: "Skill execution trace",

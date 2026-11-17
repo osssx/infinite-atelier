@@ -33,7 +33,7 @@ export function assertNoRawCredentials(value,depth=0){
  * (fail closed on newly introduced generation controls).
  * This projection is mirrored by backend-source-fingerprint.ts.
  */
-const PRESENTATION_META=new Set(["status","errorDetails","comfyExecution","videoTask",
+const PRESENTATION_META=new Set(["status","errorDetails","comfyExecution","videoTask","textVersions",
  "videoDownloadError","skillTrace","skillMetrics","interactive","groupId",
  "fontSize","freeResize"]);
 function generationNode(node){

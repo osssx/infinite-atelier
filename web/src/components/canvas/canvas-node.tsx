@@ -22,6 +22,7 @@ import { useTranslation } from "react-i18next";
 import { acquireMediaPreview } from "@/services/media-preview-storage";
 import {ComfyWorkflowNodeVisual} from "@/features/comfy-workflow/comfy-workflow-node-visual";
 import {CanvasTextExecutionIndicator} from "./canvas-text-execution-indicator";
+import {CanvasTextVersionsButton} from "./canvas-text-versions-button";
 import { shouldPlayVideoCoverClick, videoCoverPressDragged, type VideoCoverPress } from "./canvas-video-cover-gesture";
 import { PERF_MODE } from "@/lib/perf-mode";
 
@@ -75,6 +76,7 @@ type NodeContentRendererProps = {
     onStopEditing: () => void;
     onRetry?: (node: CanvasNodeData) => void;
     onGenerateImage?: (node: CanvasNodeData) => void;
+    onOpenTextVersions?: (nodeId:string)=>void;
     onToggleBatch?: () => void;
     onSetBatchPrimary?: (imageId: string) => void;
     onDuplicateBatchImage?: (imageId: string) => void;
@@ -131,6 +133,7 @@ export const CanvasNode = React.memo(function CanvasNode({
         onDeleteBatchImage,
         onRetry,
         onGenerateImage,
+        onOpenTextVersions,
         onViewImage,
         onContextMenu,
     } = useCanvasActions();
@@ -521,6 +524,7 @@ export const CanvasNode = React.memo(function CanvasNode({
                         onStopEditing={() => setIsEditingContent(false)}
                         onRetry={onRetry}
                         onGenerateImage={onGenerateImage}
+                        onOpenTextVersions={onOpenTextVersions}
                         onToggleBatch={() => onToggleBatch?.(data.id)}
                         onSetBatchPrimary={(imageId) => onSetBatchPrimary?.(data.id, imageId)}
                         onDuplicateBatchImage={(imageId) => onDuplicateBatchImage?.(data, imageId)}
@@ -681,7 +685,7 @@ function MissingPluginContent({ theme, type }: Pick<NodeContentRendererProps, "t
     );
 }
 
-function TextContent({ node, theme, isEditingContent, textareaRef, onContentChange, onStopEditing, onGenerateImage }: NodeContentRendererProps) {
+function TextContent({ node, theme, isEditingContent, textareaRef, onContentChange, onStopEditing, onGenerateImage, onOpenTextVersions }: NodeContentRendererProps) {
     const { t } = useTranslation();
     const fontSize = node.metadata?.fontSize || 14;
     const skillTrace = node.metadata?.skillTrace || [];
@@ -703,9 +707,10 @@ function TextContent({ node, theme, isEditingContent, textareaRef, onContentChan
 
     return (
         <div className="flex h-full w-full flex-col overflow-hidden pt-12">
+            <div className="absolute right-3 top-3 z-20 flex items-center gap-1">
             <button
                 type="button"
-                className="absolute right-3 top-3 z-20 inline-flex h-8 items-center gap-1 rounded-full border px-2.5 text-xs font-medium opacity-85 backdrop-blur-md transition hover:scale-[1.02] hover:opacity-100"
+                className="inline-flex h-8 items-center gap-1 rounded-full border px-2.5 text-xs font-medium opacity-85 backdrop-blur-md transition hover:scale-[1.02] hover:opacity-100"
                 style={{ background: `${theme.toolbar.panel}dd`, borderColor: theme.node.stroke, color: theme.node.text }}
                 onClick={(event) => {
                     event.stopPropagation();
@@ -719,6 +724,8 @@ function TextContent({ node, theme, isEditingContent, textareaRef, onContentChan
                 <ImageIcon className="size-3.5" />
                 {t("canvas.node.generate")}
             </button>
+            {onOpenTextVersions?<CanvasTextVersionsButton nodeId={node.id} label={t("canvas.textVersions.title")} theme={theme} onOpen={onOpenTextVersions}/>:null}
+            </div>
             {isEditingContent ? (
                 <EditableTextContent node={node} textStyle={textStyle} textareaRef={textareaRef} onContentChange={onContentChange} onStopEditing={onStopEditing} />
             ) : (

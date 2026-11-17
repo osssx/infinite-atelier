@@ -62,7 +62,7 @@ export function ComfyMediaUseCaseEditor({template,onChange}:{template:ComfyTempl
   const values:MediaParameterSpec["values"]=type==="enum"?(id==="resolution"?["480p","720p","1080p"]:id==="aspect_ratio"?["16:9","9:16","1:1","4:3","3:4"]:id==="voice"?["alloy","echo","fable","onyx","nova","shimmer"]:id==="language"?["en","zh"]:id==="sample_rate"?[24000,44100,48000]:id==="channels"?[1,2]:["mp3","wav","flac"]):undefined;
   const def=type==="number"?(id==="duration_seconds"?6:id==="speed"?1:id==="count"?1:id==="width"||id==="height"?1024:0):type==="boolean"?false:values?.[0]??"";
   updateMode(modeId,mode=>({...mode,parameters:[...mode.parameters.filter(item=>item.id!==id),{id,mode:"adjustable",type,defaultValue:def,...(values?{values}:{})}]}));};
- return <details className="rounded-lg border border-[var(--comfy-border)] p-3" data-comfy-media-use-case-editor>
+ return <details className="rounded-lg border border-[var(--comfy-border)] p-3 [&_label]:text-[11px] [&_label]:font-medium [&_label]:text-[var(--comfy-muted)]" data-comfy-media-use-case-editor>
   <summary className="cursor-pointer text-[11px] font-medium text-[var(--comfy-muted)]">媒体预设用途</summary>
   <p className="mt-2 text-[11px] text-[var(--comfy-muted)]">启用后，图片/视频/音频节点可直接选择此模板。</p>
   <div className="mt-3 grid gap-2 sm:grid-cols-2">

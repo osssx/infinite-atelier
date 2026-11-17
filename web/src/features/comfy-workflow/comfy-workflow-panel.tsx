@@ -995,8 +995,22 @@ export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,
                         </label>
                     </div>
                 </details>
-                <ComfyMediaUseCaseEditor template={draft} onChange={mediaUseCase=>edit(current=>({...current,
-                    ...(mediaUseCase?{mediaUseCase}:{mediaUseCase:undefined})}))}/>
+                <ConfigProvider theme={{...presetSelectTheme,
+                    token:{...presetSelectTheme.token,
+                        controlHeight:34,controlHeightSM:34,borderRadius:8,borderRadiusSM:8,
+                        fontSize:12,fontSizeSM:12,
+                        colorTextLightSolid:embedded?token.colorTextLightSolid:theme.node.panel,
+                        controlItemBgActive:embedded?token.controlItemBgActive:theme.node.fill,
+                        controlItemBgHover:embedded?token.controlItemBgHover:theme.node.fill},
+                    components:{...presetSelectTheme.components,
+                        Select:{...presetSelectTheme.components.Select,
+                            colorText:embedded?token.colorTextSecondary:theme.node.muted},
+                        Button:{defaultBg:embedded?token.colorBgContainer:theme.node.panel,
+                            defaultColor:embedded?token.colorText:theme.node.text,
+                            defaultBorderColor:embedded?token.colorBorderSecondary:theme.node.stroke}}}}>
+                    <ComfyMediaUseCaseEditor template={draft} onChange={mediaUseCase=>edit(current=>({...current,
+                        ...(mediaUseCase?{mediaUseCase}:{mediaUseCase:undefined})}))}/>
+                </ConfigProvider>
                 </>:null}
                 </div>
             {draft?<div className="shrink-0 border-t border-[var(--comfy-border)] bg-[var(--comfy-panel)] px-5 py-3" data-comfy-save-footer>

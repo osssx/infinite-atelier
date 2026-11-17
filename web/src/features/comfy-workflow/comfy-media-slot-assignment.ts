@@ -7,6 +7,11 @@ import type {ComfyWorkflowTemplate} from "./template-schema";
 type Ref={nodeId:string;imageId?:string};
 function mediaResources(template:ComfyWorkflowTemplate,nodeId:string,nodes:readonly CanvasNodeData[],connections:readonly CanvasConnection[]){
  const resources=getGenerationResourceNodes(nodeId,[...nodes],[...connections],true).filter(source=>source.id!==nodeId);
+ const useCase=template.mediaUseCase;
+ const textOnlyImage=useCase?.channel==="image"&&(useCase.mediaCapabilities
+  ?useCase.mediaCapabilities.modes.some(mode=>mode.enabled&&mode.id==="text_to_image")&&!useCase.mediaCapabilities.modes.some(mode=>mode.enabled&&mode.inputs.some(input=>input.maxItems>0))
+  :!useCase.slots.some(slot=>["IMAGE","MASK","VIDEO","AUDIO"].includes(slot.valueKind)));
+ if(textOnlyImage)return resources.filter(source=>!["image","video","audio"].includes(source.type));
  // Editing a populated image node uses its frozen original when there are no
  // external media references, matching the image prompt panel reference bar.
  if(template.mediaUseCase?.channel==="image"&&template.mediaUseCase.slots.some(slot=>slot.valueKind==="IMAGE")&&!resources.some(source=>["image","video","audio"].includes(source.type))){

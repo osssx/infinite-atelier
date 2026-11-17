@@ -8,6 +8,13 @@ const template={mediaUseCase:{slots:[{id:"first",label:"First",valueKind:"IMAGE"
 const edge=(from:string,to="target",port?:string):CanvasConnection=>({id:from+to,fromNodeId:from,toNodeId:to,...(port?{toPortId:port,fromPortId:"image"}:{})});
 const run=(nodes:CanvasNodeData[],edges:CanvasConnection[],t=template)=>assignComfyMediaSlots(t,"target",nodes,edges);
 describe("automatic Comfy media slots",()=>{
+ it("keeps reference connections but ignores media for text-only image workflows",()=>{
+  const t={...template,mediaUseCase:{...template.mediaUseCase!,channel:"image",slots:[],mediaCapabilities:{schemaVersion:1,kind:"image",defaultMode:"text_to_image",modes:[{id:"text_to_image",enabled:true,inputs:[],parameters:[]}]},modeBindings:{text_to_image:{rolePorts:{}}}}} as ComfyWorkflowTemplate;
+  const nodes=[node("target"),node("reference")],edges=[edge("reference")];
+  expect(resolveComfyMediaMode(t,"target",nodes,edges)).toBe("text_to_image");
+  expect(assignComfyMediaSlots(t,"target",nodes,edges,"text_to_image")).toEqual({slots:{},errors:[]});
+  expect(edges).toEqual([edge("reference")]);
+ });
  it("freezes the current image as a reference and chooses editing without a canvas self-edge",()=>{
   const t={...template,mediaUseCase:{...template.mediaUseCase!,channel:"image",mediaCapabilities:{schemaVersion:1,kind:"image",defaultMode:"text_to_image",modes:[
    {id:"text_to_image",enabled:true,inputs:[],parameters:[]},

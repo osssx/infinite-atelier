@@ -235,7 +235,7 @@ export function validateGraph(graph, info) {
     for (const id of Object.keys(graph)) visit(id);
 }
 
-export function validateSingleRequest(req) {
+export function validateSingleRequest(req,template) {
     if(!object(req) || req.schemaVersion!==2)fail("unsupported_schema_version",400);
     if (!validId(req.projectId) || !validId(req.instanceId) ||
         typeof req.canvasRevision !== "string" || req.canvasRevision.length > 128 ||
@@ -265,7 +265,7 @@ export function validateSingleRequest(req) {
     for (const e of req.edges) {
         if (!object(e) || !validCanvasNodeId(e.fromNodeId) || !validId(e.fromPortId) ||
             e.toNodeId !== node.id || !validId(e.toPortId)) fail("only_external_source_edges_allowed");
-        if(e.fromNodeId===node.id&&!template.mediaUseCase?.slots.some(slot=>slot.id===e.toPortId))fail("self_external_input_invalid");
+        if(e.fromNodeId===node.id&&template&&!template.mediaUseCase?.slots.some(slot=>slot.id===e.toPortId))fail("self_external_input_invalid");
         const source=e.fromNodeId+"\0"+e.fromPortId;
         if (!inputs.has(source)) fail("missing_external_snapshot");
         if (targetEdges.has(e.toPortId)) fail("multiple_sources_for_input");
@@ -353,7 +353,7 @@ function pruneAbsentMediaPort(graph, port, canvasNodeId, info) {
 
 /** One pinned Comfy graph, one /prompt, any selected combination of supported output roots. */
 export function compileSingleWorkflow(req, template, opts = {}) {
-    const {node,roots,targetEdges} = validateSingleRequest(req);
+    const {node,roots,targetEdges} = validateSingleRequest(req,template);
     verifyTemplate(template);
     if (node.templateId !== template.id || node.templateRevision !== template.revision) fail("template_revision_unavailable");
     const ports = new Map(template.ports.map(p=>[p.id,p]));

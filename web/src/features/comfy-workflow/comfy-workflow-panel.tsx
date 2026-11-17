@@ -235,7 +235,15 @@ export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,
         setDraft((current)=>current?normalizeComfyTemplateMediaDraft(fn(current)):current);
     };
     const patchPort=(id:string, patch:Partial<ComfyTemplatePort>)=>edit((current)=>({
-        ...current,ports:current.ports.map((port)=>port.id===id?{...port,...patch}:port),
+        ...current,ports:current.ports.map((port)=>{
+            if(port.id!==id)return port;
+            const next={...port,...patch};
+            if(next.inputBinding?.mode==="media-file"||next.inputBinding?.mode==="socket"){
+                const {defaultValue:_default,choices:_choices,...mediaPort}=next;
+                return mediaPort;
+            }
+            return next;
+        }),
     }));
     const changePortOrder=(movingId:string,targetId:string,placement:"before"|"after")=>{
         if(!draft||busy)return;
@@ -334,10 +342,10 @@ export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,
         const inputBinding:ComfyInputBinding=mode==="socket"?{mode,targets,replaceInternalLink:false}
             :mode==="media-file"?{mode,targets,mediaKind:port.valueKind as "IMAGE"|"MASK"|"VIDEO"|"AUDIO"}
             :{mode,targets};
-        if(mode!=="literal" && port.choices){
+        if(mode!=="literal"){
             edit(current=>({...current,ports:current.ports.map(p=>{
                 if(p.id!==port.id)return p;
-                const {choices:_old,...rest}=p;
+                const {choices:_old,defaultValue:_default,...rest}=p;
                 return {...rest,inputBinding};
             })}));
         }else patchPort(port.id,{inputBinding,...(mode==="literal"?{absentPolicy:{mode:"keep-template"}}:{})});

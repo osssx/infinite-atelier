@@ -1,6 +1,6 @@
 import {test} from "node:test";
 import assert from "node:assert/strict";
-import {canonical,sha256,compileSingleWorkflow,verifyTemplate} from "./compiler.mjs";
+import {canonical,sha256,compileSingleWorkflow,verifyTemplate,validateSingleRequest} from "./compiler.mjs";
 
 const info={
     Text:{input:{required:{text:["STRING",{}]}},output:["STRING"]},
@@ -80,6 +80,16 @@ test("absent AUTOGROW reference leaves are pruned without making minimum require
     assert.deepEqual(supplied.graph[k("10")].inputs["images.image_1"],[k("2"),0]);
     dynamicInfo.AdaptiveVideo.input.required.images[1].template.min=1;
     assert.throws(()=>compileSingleWorkflow(request([],tmpl),tmpl,{...opts([]),info:dynamicInfo}));
+});
+
+test("a populated canvas image can provide its own frozen media slot",()=>{
+ const tmpl=structuredClone(template);
+ tmpl.mediaUseCase={channel:"video",slots:[{id:"first",valueKind:"IMAGE"}],promptPortId:"prompt",primaryOutputPortId:"output"};
+ const req=request(["first"],tmpl);
+ req.edges[0].fromNodeId="wf-1";
+ req.externalInputs[0].sourceNodeId="wf-1";
+ assert.doesNotThrow(()=>validateSingleRequest(req,tmpl));
+ assert.throws(()=>validateSingleRequest(req,template),/self_external_input_invalid/);
 });
 
 test("auto-prune is per media input, not a mode router or extra top-level schema",()=>{

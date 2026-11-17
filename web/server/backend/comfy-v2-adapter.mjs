@@ -75,7 +75,7 @@ function snapshotOf(job,instanceId){
    throw fail("comfy_project_mismatch",400);
  if(job.target_node_id&&s.comfyRequest.nodes?.[0]?.id!==job.target_node_id)
    throw fail("comfy_canvas_node_mismatch",400);
- validateSingleRequest(s.comfyRequest);verifyTemplate(s.comfyTemplate);
+ validateSingleRequest(s.comfyRequest,s.comfyTemplate);verifyTemplate(s.comfyTemplate);
  if(s.comfyTargetBinding!==undefined){
   const target=s.comfyTargetBinding,binding=target?.binding,useCase=s.comfyTemplate.mediaUseCase;
   if(!target||!(["image","video","audio"].includes(target.mode))||!binding||

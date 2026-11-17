@@ -8,6 +8,19 @@ const template={mediaUseCase:{slots:[{id:"first",label:"First",valueKind:"IMAGE"
 const edge=(from:string,to="target",port?:string):CanvasConnection=>({id:from+to,fromNodeId:from,toNodeId:to,...(port?{toPortId:port,fromPortId:"image"}:{})});
 const run=(nodes:CanvasNodeData[],edges:CanvasConnection[],t=template)=>assignComfyMediaSlots(t,"target",nodes,edges);
 describe("automatic Comfy media slots",()=>{
+ it("freezes the current image as a reference and chooses editing without a canvas self-edge",()=>{
+  const t={...template,mediaUseCase:{...template.mediaUseCase!,channel:"image",mediaCapabilities:{schemaVersion:1,kind:"image",defaultMode:"text_to_image",modes:[
+   {id:"text_to_image",enabled:true,inputs:[],parameters:[]},
+   {id:"reference_edit",enabled:true,inputs:[{role:"reference_image",kind:"image",minItems:1,maxItems:1}],parameters:[]}
+  ]},modeBindings:{text_to_image:{rolePorts:{}},reference_edit:{rolePorts:{reference_image:["first"]}}}}} as ComfyWorkflowTemplate;
+  const nodes=[node("target")],edges:CanvasConnection[]=[];
+  const mode=resolveComfyMediaMode(t,"target",nodes,edges);
+  expect(mode).toBe("reference_edit");
+  expect(assignComfyMediaSlots(t,"target",nodes,edges,mode)).toEqual({slots:{first:{nodeId:"target"}},errors:[]});
+  expect(edges).toEqual([]);
+  expect(nodes[0].metadata?.content).toBe("blob:target");
+  expect(resolveComfyMediaMode(t,"target",[{...nodes[0],metadata:{}}],edges)).toBe("text_to_image");
+ });
  it("switches a default text-to-video preset to first-frame when an image is connected",()=>{
   const t={...template,mediaUseCase:{...template.mediaUseCase!,mediaCapabilities:{schemaVersion:1,kind:"video",defaultMode:"text_to_video",modes:[
    {id:"text_to_video",enabled:true,inputs:[],parameters:[]},

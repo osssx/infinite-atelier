@@ -5,12 +5,23 @@ import type {MediaModeId} from "@/services/media-capabilities";
 import type {ComfyWorkflowTemplate} from "./template-schema";
 
 type Ref={nodeId:string;imageId?:string};
+function mediaResources(template:ComfyWorkflowTemplate,nodeId:string,nodes:readonly CanvasNodeData[],connections:readonly CanvasConnection[]){
+ const resources=getGenerationResourceNodes(nodeId,[...nodes],[...connections],true).filter(source=>source.id!==nodeId);
+ // Editing a populated image node uses its frozen original when there are no
+ // external media references, matching the image prompt panel reference bar.
+ if(template.mediaUseCase?.channel==="image"&&template.mediaUseCase.slots.some(slot=>slot.valueKind==="IMAGE")&&!resources.some(source=>["image","video","audio"].includes(source.type))){
+  const own=nodes.find(source=>source.id===nodeId&&source.type==="image");
+  const image=own?resolveCanvasImage(own):undefined;
+  if(own&&(image?.content||image?.storageKey))resources.push(own);
+ }
+ return resources;
+}
 /** Explicit workflow mode wins; otherwise choose a mode that accepts the live references. */
 export function resolveComfyMediaMode(template:ComfyWorkflowTemplate,nodeId:string,nodes:readonly CanvasNodeData[],connections:readonly CanvasConnection[],explicit?:MediaModeId,fallback?:MediaModeId):MediaModeId|undefined{
  if(explicit)return explicit;
  const useCase=template.mediaUseCase,capabilities=useCase?.mediaCapabilities;
  if(!capabilities)return fallback;
- const resources=[...new Map(getGenerationResourceNodes(nodeId,[...nodes],[...connections],true).filter(n=>n.id!==nodeId&&["image","video","audio"].includes(n.type)).map(n=>[n.id,n])).values()];
+ const resources=[...new Map(mediaResources(template,nodeId,nodes,connections).filter(n=>["image","video","audio"].includes(n.type)).map(n=>[n.id,n])).values()];
  const counts:Record<string,number>={image:0,video:0,audio:0,mask:0};
  for(const source of resources){counts[source.type]++;if(resolveCanvasImageMask(source))counts.mask++;}
  const compatible=capabilities.modes.filter(mode=>mode.enabled&&useCase?.modeBindings?.[mode.id]&&
@@ -28,7 +39,7 @@ export function assignComfyMediaSlots(template:ComfyWorkflowTemplate,nodeId:stri
  const mapping=activeMode?useCase.modeBindings?.[activeMode]:undefined;
  const activeIds=new Set(Object.values(mapping?.rolePorts??{}).flat());
  const activeSlots=useCase.slots.filter(slot=>!useCase.mediaCapabilities||activeIds.has(slot.id));
- const resources=getGenerationResourceNodes(nodeId,[...nodes],[...connections],true).filter(source=>source.id!==nodeId);
+ const resources=mediaResources(template,nodeId,nodes,connections);
  const used=new Set<string>(),usedMasks=new Set<string>();
  const refFor=(source:CanvasNodeData):Ref=>{const image=resolveCanvasImage(source);return {nodeId:source.id,...(image?.id?{imageId:image.id}:{})}};
  const available=(source:CanvasNodeData,kind:string)=>{

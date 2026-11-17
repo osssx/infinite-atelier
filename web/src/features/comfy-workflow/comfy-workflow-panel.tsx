@@ -592,11 +592,11 @@ export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,
             {draft ? (
                 <details open={bindingsExpanded} onToggle={event=>setBindingsExpanded(event.currentTarget.open)} className="rounded-lg border border-[var(--comfy-border)] p-3" data-comfy-bindings-section>
                 <summary className="cursor-pointer text-[11px] font-medium text-[var(--comfy-muted)]">参数绑定</summary>
-                <div className="mt-3 flex h-[360px] min-h-0 min-w-0 flex-col overflow-hidden md:flex-row" data-comfy-editor-workspace>
+                <div className="mt-1 flex h-[360px] min-h-0 min-w-0 flex-col overflow-hidden md:flex-row" data-comfy-editor-workspace>
                     <aside className={embedded
                         ? "flex min-h-[128px] max-h-[35%] w-full shrink-0 flex-col border-b border-[var(--comfy-border)] md:max-h-none md:min-h-0 md:w-[255px] md:border-b-0 md:border-r"
                         : "flex min-h-[200px] w-full shrink-0 flex-col border-b border-[var(--comfy-border)] md:min-h-0 md:w-[290px] md:border-b-0 md:border-r"} data-comfy-node-list>
-                        <div className="shrink-0 px-3 pb-2 pt-4">
+                        <div className="shrink-0 px-3 pb-2 pt-1">
                             <div className="flex items-center justify-between px-1">
                                 <span className={captionClass}>ComfyUI 节点</span>
                                 <span className="text-[11px] text-[var(--comfy-muted)]">{filteredItems.length}/{items.length}</span>
@@ -651,21 +651,21 @@ export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,
                     </aside>
 
                     <main className="flex min-h-0 min-w-0 flex-1 flex-col" data-comfy-binding-editor>
-                        <div className="shrink-0 border-b border-[var(--comfy-border)] px-4 pb-3 pt-4">
+                        <div className="shrink-0 border-b border-[var(--comfy-border)] px-3 pb-2 pt-1">
                             <div className="flex items-center justify-between gap-2">
                                 <span className={captionClass}>画布端口</span>
                                 <div className="flex gap-1.5">
-                                    <button className={buttonClass} type="button" onClick={()=>addPort("target")}><Plus size={12}/> 添加输入</button>
-                                    <button className={buttonClass} type="button" onClick={()=>addPort("source")}><Plus size={12}/> 添加输出</button>
+                                    <button className={buttonClass+" !min-h-6 !gap-1 !rounded-md !px-2 !py-1 !text-[11px]"} type="button" onClick={()=>addPort("target")}><Plus size={11}/> 添加输入</button>
+                                    <button className={buttonClass+" !min-h-6 !gap-1 !rounded-md !px-2 !py-1 !text-[11px]"} type="button" onClick={()=>addPort("source")}><Plus size={11}/> 添加输出</button>
                                 </div>
                             </div>
-                            <div ref={portListRef} className="mt-3 space-y-2.5" data-comfy-port-order-list>
+                            <div ref={portListRef} className="mt-2 space-y-1.5" data-comfy-port-order-list>
                                 {(["target","source"] as const).map(direction=>{
                                     const side=direction==="target"?inputPorts:outputPorts;
                                     if(!side.length)return null;
                                     return <div key={direction} data-comfy-port-order-group={direction} className="flex items-start gap-2">
-                                        <span className="w-7 shrink-0 pt-2 text-[10px] text-[var(--comfy-muted)]">{direction==="target"?"输入":"输出"}</span>
-                                        <div className="flex min-w-0 flex-1 flex-wrap gap-1.5">
+                                        <span className="w-6 shrink-0 pt-1 text-[10px] text-[var(--comfy-muted)]">{direction==="target"?"输入":"输出"}</span>
+                                        <div className="flex min-w-0 flex-1 flex-wrap gap-1">
                                             {side.map((p)=><button type="button" key={p.id}
                                                 draggable={false}
                                                 style={{touchAction:"none"}}
@@ -716,7 +716,7 @@ export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,
                                                 }}
                                                 onPointerCancel={()=>{portDragRef.current=null;setDraggingPortId(null);setDropPosition(null);}}
                                                 onLostPointerCapture={()=>{portDragRef.current=null;setDraggingPortId(null);setDropPosition(null);}}
-                                                className={"inline-flex max-w-[210px] select-none cursor-grab items-center gap-1.5 rounded-lg border px-2 py-1.5 text-xs transition active:cursor-grabbing "+
+                                                className={"inline-flex max-w-[210px] select-none cursor-grab items-center gap-1 rounded-md border px-1.5 py-1 text-[11px] leading-4 transition active:cursor-grabbing "+
                                                     (dropPosition?.id===p.id?"outline outline-2 outline-[var(--comfy-accent)] ":
                                                     bindingIssue?.portId===p.id?"border-red-500 bg-red-500/10 font-semibold ":
                                                     p.id===selectedPortId?"border-[var(--comfy-accent)] bg-[var(--comfy-fill)] font-semibold ":

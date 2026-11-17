@@ -44,4 +44,32 @@ describe("text version modal interactions",()=>{
   await act(async()=>retryButton?.click());
   expect(retry).toHaveBeenCalledTimes(1);
  });
+ it("closes on Escape from modal focus, preserves nested overlays, and consumes Escape while busy",async()=>{
+  host=document.createElement("div");document.body.append(host);root=createRoot(host);
+  const close=vi.fn();const props={open:true,versions:[] as TextVersion[],currentContent:"text",onClose:close,onSave:vi.fn(),onDelete:vi.fn(),onRestore:vi.fn(),onRetryPersistence:async()=>{},retryPending:false};
+  await act(async()=>root?.render(createElement(CanvasTextVersionsModal,props)));
+  const input=document.body.querySelector("input")!;
+  await act(async()=>input.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",keyCode:27,which:27,bubbles:true,cancelable:true})));
+  expect(close).toHaveBeenCalledTimes(1);
+
+  close.mockClear();
+  await act(async()=>root?.render(createElement(CanvasTextVersionsModal,props)));
+  const version:TextVersion={id:"v",createdAt:"now",content:"saved",source:"manual"};
+  await act(async()=>root?.render(createElement(CanvasTextVersionsModal,{...props,versions:[version]})));
+  const deleteButton=[...document.body.querySelectorAll("button")].find(button=>button.textContent==="common.delete")!;
+  await act(async()=>deleteButton.click());
+  expect(document.body.textContent).toContain("canvas.textVersions.deleteConfirm");
+  await act(async()=>window.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",keyCode:27,which:27,bubbles:true,cancelable:true})));
+  expect(close).not.toHaveBeenCalled();
+  const cancelPopover=[...(document.body.querySelector(".ant-popover")?.querySelectorAll("button")??[])].find(button=>button.textContent==="Cancel");
+  if(cancelPopover)await act(async()=>cancelPopover.click());
+  await act(async()=>new Promise(resolve=>setTimeout(resolve,250)));
+  await act(async()=>window.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",keyCode:27,which:27,bubbles:true,cancelable:true})));
+  expect(close).toHaveBeenCalledTimes(1);
+  close.mockClear();
+
+  await act(async()=>root?.render(createElement(CanvasTextVersionsModal,{...props,busy:true})));
+  await act(async()=>window.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",keyCode:27,which:27,bubbles:true,cancelable:true})));
+  expect(close).not.toHaveBeenCalled();
+ });
 });

@@ -29,7 +29,7 @@ function normalizeGeminiEndpoint(value:string){
  */
 export async function startSqliteModelGeneration({
  projectId,sourceNodeId,nodes,connections,channelId,channelBaseUrl,provider="openai",task,
- skillAuthorizationId,referenceImages=[],maskImage,beforeSubmit,submitFrozenJob,
+ skillAuthorizationId,referenceImages=[],maskImage,beforeSubmit,submitFrozenJob,assistantInitiated,
  api=canvasApi,bridge=createSqliteComfyBridge({projectId,
   getLocalGraph:()=>({nodes:[...nodes],connections:[...connections]})})
 }:{
@@ -44,6 +44,7 @@ export async function startSqliteModelGeneration({
   operation?:"edit";images?:FrozenModelImage[];mask?:FrozenModelImage;
   messages?:FrozenTextTurn[];stream?:boolean;skills?:{blobId:string};script?:string;writeBack?:boolean};
  beforeSubmit?:()=>void;
+ assistantInitiated?:boolean;
  submitFrozenJob?:(payload:Record<string,unknown>)=>Promise<BackendJobView>;
  skillAuthorizationId?:string;
  referenceImages?:readonly ReferenceImage[];maskImage?:ReferenceImage;
@@ -119,7 +120,7 @@ export async function startSqliteModelGeneration({
   projectId,targetNodeId:sourceNodeId,
   expectedProjectRevision:fence.revision,sourceNodeFingerprint:fence.sourceNodeFingerprint,
   idempotencyKey,requestFingerprint:idempotencyKey,executionMode:task.kind==="video"?"poll":"immediate",
-  snapshot:{adapterKind:"model",provider,channelId,
+  snapshot:{adapterKind:"model",provider,channelId,...(assistantInitiated?{generationOrigin:"assistant"}:{}),
     sourceNodeType:nodes.find(node=>node.id===sourceNodeId)?.type,
    secretVersionRef:channel.keyVersion,...(endpointBaseUrl?{endpointBaseUrl,endpointFingerprint}:{}),task:{...task,
     ...(images.length?{images}:{}),

@@ -6,6 +6,7 @@ import {makeComfyArtifactProvenance} from "./comfy-provenance.mjs";
 import {emitProjectEvent} from "./projects.mjs";
 import {imageNodeSize,readRasterImageDimensions} from "./image-dimensions.mjs";
 import {readVideoDimensions,videoNodeSize} from "./video-dimensions.mjs";
+import {generatedNodeTitle} from "./generated-node-title.mjs";
 
 function resizeVisualMediaWriteback(source, dimensions) {
  if(!["image","video"].includes(source.type)||source.metadata?.freeResize||!dimensions?.width||!dimensions?.height)return;
@@ -108,7 +109,8 @@ export function createCanvasMaterializer({db,blobStore,videoDimensionReader=read
      const size=imageNodeSize(first.naturalWidth&&first.naturalHeight?{width:first.naturalWidth,height:first.naturalHeight}:null);
      const count=doc.nodes.filter(n=>n.metadata?.modelArtifact?.sourceNodeId===artifact.target_node_id).length;
      const fallbackX=Math.max(0,...doc.nodes.map(n=>Number(n.position?.x)+Number(n.width)||0))+48;
-     doc.nodes.push({id:nodeId,type:"image",title:"Generated image",...size,
+     const title=generatedNodeTitle(db,{nodes:doc.nodes,source,kind:"image",jobId:artifact.job_id});
+     doc.nodes.push({id:nodeId,type:"image",title,...size,
       position:{x:source?source.position.x+source.width+48+Math.floor(count/4)*444:fallbackX,
        y:source?source.position.y+(count%4)*444:80},
       metadata:{...groupMetadata,...(source&&!sourceUnchanged?{sourceChangedSinceSubmit:true}:{})}});
@@ -255,7 +257,8 @@ export function createCanvasMaterializer({db,blobStore,videoDimensionReader=read
      const column=Math.floor(existingCount/4),row=existingCount%4;
      const fallbackX=Math.max(0,...doc.nodes.map(n=>Number(n.position?.x)+Number(n.width)||0))+48;
      const node=other??{
-      id:nodeId,type:artifact.kind,title:"Generated "+artifact.kind,
+      id:nodeId,type:artifact.kind,title:generatedNodeTitle(db,{
+       nodes:doc.nodes,source,kind:artifact.kind,jobId:artifact.job_id,isComfy}),
       position:{x:source?source.position.x+source.width+48+column*444:fallbackX+column*444,
        y:source?source.position.y+row*444:80+row*444},width,height,
       metadata:{status:"success",mimeType:artifact.mime,

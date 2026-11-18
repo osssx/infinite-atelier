@@ -30,8 +30,10 @@ function fixture(t){
  createProject(db,{id:"project-1",document:doc});
  const fingerprint=fingerprintSource(doc,"wf-1");
  t.after(()=>{db.close();rmSync(dir,{recursive:true,force:true})});
- async function addArtifacts({key="job1",count=kinds.length}={}){
-  const jobId=submitJob(db,{projectId:"project-1",targetNodeId:"wf-1",expectedProjectRevision:1,sourceNodeFingerprint:fingerprint,
+ async function addArtifacts({key="job1",count=kinds.length,targetNodeId="wf-1"}={}){
+  const project=getProject(db,"project-1");
+  const jobId=submitJob(db,{projectId:"project-1",targetNodeId,expectedProjectRevision:project.revision,
+   sourceNodeFingerprint:fingerprintSource(project.document,targetNodeId),
    idempotencyKey:key,requestFingerprint:key,executionMode:"poll",snapshot:{adapterKind:"comfy",instanceId:"comfy-local"}}).jobId;
   const created=[];
   for(let index=0;index<count;index++){
@@ -39,7 +41,7 @@ function fixture(t){
    const blob=await blobStore.put([bytes],{mime});
    const artifactId="a-"+key+"-"+index;
    appendArtifact(db,{id:artifactId,jobId,portId:port,itemKey:"item-"+index,blobId:blob.blobId,kind,mime,sha256:blob.sha256,
-    metadata:{comfyArtifact:{runId:jobId,artifactId,workflowNodeId:"wf-1",portId:port,kind,index}}});
+    metadata:{comfyArtifact:{runId:jobId,artifactId,workflowNodeId:targetNodeId,portId:port,kind,index}}});
    created.push(artifactId);
   }
   db.prepare("UPDATE jobs SET status='succeeded' WHERE id=?").run(jobId);
@@ -268,6 +270,7 @@ test("four artifact kinds become typed connected nodes and project revision adva
   const output=project.document.nodes.find(n=>n.id==="artifact-"+artifactId);
   const [kind,port,,,] = kinds[i];
   assert.equal(output.type,kind);
+  assert.equal(output.title,`Comfy · ${["图片","视频","音频","文本"][i]} 01`);
   assert.equal(output.metadata.comfyArtifact.artifactId,artifactId);
   assert.equal(output.metadata.comfyArtifact.workflowNodeId,"wf-1");
   assert.equal(output.metadata.comfyArtifact.portId,port);
@@ -352,11 +355,41 @@ test("frozen global workflow default materializes onto a media node without an e
 test("materializer replays after interruption; doesn't duplicate nodes/connections",async t=>{
  const f=fixture(t),{jobId}=await f.addArtifacts();
  await f.materializer.runOnce({maxItems:1});
+ const project=getProject(f.db,"project-1");
+ const output=project.document.nodes.find(node=>node.id.startsWith("artifact-"));
+ output.title="用户改名";
+ patchProject(f.db,{id:"project-1",expectedRevision:project.revision,document:project.document});
  const restart=createCanvasMaterializer({db:f.db,blobStore:f.blobStore});
  assert.equal((await restart.runOnce()).length,3);
  assert.equal((await restart.runOnce()).length,0);
  assert.equal(getProject(f.db,"project-1").document.nodes.length,5);
+ assert.equal(getProject(f.db,"project-1").document.nodes.find(node=>node.id===output.id).title,"用户改名");
  assert.equal(restart.status({jobId}).filter(x=>x.status==="materialized").length,4);
+});
+test("concurrent materializations share available numbers for the current normalized title",async t=>{
+ const f=fixture(t);
+ const first=await f.addArtifacts({key:"first",count:1});
+ const second=await f.addArtifacts({key:"second",count:1});
+ const project=getProject(f.db,"project-1");
+ project.document.nodes[0].title="  夜景\t\n"+ "🌙".repeat(35)+"  ";
+ project.document.nodes.push({...project.document.nodes[0],id:"same-title"});
+ const prefix="夜景 "+"🌙".repeat(28)+"… · 图片 ";
+ for(let number=1;number<=99;number++){
+  project.document.nodes.push({...f.source,id:"reserved-"+number,type:"text",
+   title:prefix+String(number).padStart(2,"0"),metadata:{}});
+ }
+ patchProject(f.db,{id:"project-1",expectedRevision:project.revision,document:project.document});
+ await Promise.all([first,second].map(({created})=>
+  f.materializer.recoverPending({projectId:"project-1",artifactId:created[0]})));
+ let saved=getProject(f.db,"project-1");
+ assert.deepEqual(saved.document.nodes.filter(node=>node.id.startsWith("artifact-"))
+  .map(node=>node.title).sort(),[prefix+"100",prefix+"101"]);
+ saved.document.nodes.find(node=>node.id==="reserved-2").title="用户改名";
+ patchProject(f.db,{id:"project-1",expectedRevision:saved.revision,document:saved.document});
+ const third=await f.addArtifacts({key:"third",count:1,targetNodeId:"same-title"});
+ await f.materializer.runOnce();
+ saved=getProject(f.db,"project-1");
+ assert.equal(saved.document.nodes.find(node=>node.id==="artifact-"+third.created[0]).title,prefix+"02");
 });
 test("landscape and portrait captured images create correctly proportioned nodes and persistent natural dimensions",async t=>{
  for(const {title,w,h,expected} of [
@@ -733,6 +766,7 @@ test("deleted workflow creates a standalone artifact with frozen provenance and 
  assert.equal(after.connections.length,0);
  assert.equal(after.nodes[0].metadata.sourceChangedSinceSubmit,true);
  assert.equal(after.nodes[0].metadata.comfyArtifact.workflowNodeId,"wf-1");
+ assert.equal(after.nodes[0].title,"ComfyUI · 图片 01");
  assert.equal(f.db.prepare("SELECT status FROM jobs WHERE id=?").get(jobId).status,"succeeded");
 });
 test("poll backoff is persisted; restart polls only when due and never issues new submit",async t=>{
@@ -921,6 +955,7 @@ for(const count of [1,2,3])test(`config model image output groups actual count $
  assert.equal(project.document.connections.length,1);
  const node=project.document.nodes[1];
  assert.equal(node.id,"artifact-batch-image-0");
+ assert.equal(node.title,"Source · 图片 01");
  if(count===1)assert.equal(node.metadata.images,undefined);
  else{
   assert.equal(node.metadata.images.length,count);
@@ -943,6 +978,7 @@ test("batch survives deleted source, and only Config sources are grouped",async 
  const doc=getProject(f.db,f.projectId).document;
  assert.equal(doc.nodes.length,1);
  assert.equal(doc.nodes[0].metadata.images.length,3);
+ assert.equal(doc.nodes[0].title,"模型生成 · 图片 01");
  assert.equal(doc.connections.length,0);
 });
 test("non-config multi-image results retain independent nodes",async t=>{
@@ -952,6 +988,17 @@ test("non-config multi-image results retain independent nodes",async t=>{
  assert.equal(doc.nodes.length,4);
  assert.equal(doc.connections.length,3);
  assert.ok(doc.nodes.slice(1).every(n=>!n.metadata.images));
+ assert.deepEqual(doc.nodes.slice(1).map(node=>node.title).sort(),
+  ["Source · 图片 01","Source · 图片 02","Source · 图片 03"]);
+});
+test("assistant generation falls back to its entry label when the source title is blank",async t=>{
+ const f=await modelImageBatch(t);
+ f.db.prepare("UPDATE jobs SET snapshot_json=json_set(snapshot_json,'$.generationOrigin','assistant') WHERE id=?").run(f.jobId);
+ const current=getProject(f.db,f.projectId);
+ current.document.nodes[0].title=" \t ";
+ patchProject(f.db,{id:f.projectId,expectedRevision:current.revision,document:current.document});
+ await f.materializer.runOnce();
+ assert.equal(getProject(f.db,f.projectId).document.nodes[1].title,"画布助手 · 图片 01");
 });
 test("an unchanged empty image source receives a single generated image in place",async t=>{
  const f=await modelImageBatch(t,{count:1,sourceType:"image"});
@@ -960,6 +1007,7 @@ test("an unchanged empty image source receives a single generated image in place
  assert.equal(doc.nodes.length,1);
  assert.equal(doc.connections.length,0);
  assert.equal(doc.nodes[0].id,f.sourceNodeId);
+ assert.equal(doc.nodes[0].title,"Source");
  assert.equal(doc.nodes[0].metadata.modelArtifact.artifactId,f.created[0].id);
  assert.equal(doc.nodes[0].metadata.content,"/api/v1/blobs/"+f.created[0].blob.blobId);
  assert.equal(doc.nodes[0].metadata.images,undefined);
@@ -1031,6 +1079,7 @@ test("a stale edited save demotes an in-place image group as one linked group",a
  assert.equal(saved.document.nodes[0].metadata.content,"/api/v1/blobs/user-edit");
  const group=saved.document.nodes[1];
  assert.equal(group.id,"artifact-"+f.created[0].id);
+ assert.equal(group.title,"Source · 图片 01");
  assert.equal(group.metadata.images.length,3);
  assert.deepEqual(saved.document.connections,[{id:"artifact-edge-"+f.created[0].id,
   fromNodeId:f.sourceNodeId,toNodeId:group.id}]);

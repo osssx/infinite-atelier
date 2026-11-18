@@ -69,7 +69,7 @@ describe("P4.4 ordinary SQLite model submit",()=>{
    expect(input).toMatchObject({
     projectId:"p1",targetNodeId:"text-1",expectedProjectRevision:3,
     sourceNodeFingerprint:"fingerprint",executionMode:"immediate",
-    snapshot:{adapterKind:"model",channelId:"openai-channel",
+    snapshot:{adapterKind:"model",channelId:"openai-channel",generationOrigin:"assistant",
      secretVersionRef:"v3-secret-reference",
      task:{kind:"image",model:"gpt-image-2",prompt:"A fox"}}});
    expect(JSON.stringify(input)).not.toContain("apiKey");
@@ -77,7 +77,7 @@ describe("P4.4 ordinary SQLite model submit",()=>{
   });
   await expect(startSqliteModelGeneration({projectId:"p1",sourceNodeId:"text-1",nodes,connections,
    channelId:"openai-channel",task:{kind:"image",model:"gpt-image-2",prompt:"A fox"},
-   bridge:b,api:api as unknown as typeof canvasApi,submitFrozenJob:submission})).resolves.toEqual(fakeJob);
+   bridge:b,api:api as unknown as typeof canvasApi,submitFrozenJob:submission,assistantInitiated:true})).resolves.toEqual(fakeJob);
   expect(events).toEqual(["save","task"]);
   expect(api.mock.calls.some(call=>call[0]==="/api/v1/jobs")).toBe(false);
  });

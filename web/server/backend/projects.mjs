@@ -2,6 +2,7 @@ import {randomUUID} from "node:crypto";
 import {stableJson,writeTransaction,assertNoRawCredentials,matchesSourceFingerprint} from "./repository.mjs";
 import {validCanvasNodeId} from "../canvas-node-id.mjs";
 import {initialCanvasState} from "./canvas-state.mjs";
+import {generatedNodeTitle} from "./generated-node-title.mjs";
 const problem=(code,statusCode=400,details)=>Object.assign(new Error(code),{code,statusCode,details});
 const validId=id=>typeof id==="string"&&/^[A-Za-z0-9_-]{1,128}$/.test(id);
 /** Separate project graph from P2 state. The old document fields never
@@ -111,6 +112,7 @@ export function saveSingleUserCanvas(db,{id,expectedRevision,document}){
    const ids=new Set(next.nodes.map(n=>n.id));
    const edges=new Set(next.connections.map(e=>e.id));
     const restored=new Set();
+    const newOutputs=[];
     const relocateMaterializedOutput=(sourceNode,targetNode,latest)=>{
      const origin=latest.metadata?.modelArtifact;
      const artifactIds=new Set([origin.artifactId,...(origin.kind==="image"&&Array.isArray(latest.metadata?.images)?
@@ -155,12 +157,12 @@ export function saveSingleUserCanvas(db,{id,expectedRevision,document}){
       const artifactId="artifact-"+origin.artifactId;
       let output=next.nodes.find(node=>node.id===artifactId);
       if(!output&&!ids.has(artifactId)){
-       output={...latest,id:artifactId,type:origin.kind,
-        title:latest.title||"Generated "+origin.kind,
+       output={...latest,id:artifactId,type:origin.kind,title:"",
         position:{x:Number(draft.position?.x||0)+Number(draft.width||420)+48,
          y:Number(draft.position?.y||0)},
         metadata:{...latest.metadata,modelArtifact:origin}};
        next.nodes.push(output);
+       newOutputs.push({node:output,source:draft,origin});
        ids.add(artifactId);restored.add(artifactId);
       }
       const edgeId="artifact-edge-"+origin.artifactId;
@@ -186,12 +188,17 @@ export function saveSingleUserCanvas(db,{id,expectedRevision,document}){
     if(!materialized)continue;
     if(detachedInPlaceMedia){
      if(ids.has(artifactNodeId))continue;
-     const detached={...node,id:artifactNodeId,type:origin.kind,title:"Generated "+origin.kind};
+     const detached={...node,id:artifactNodeId,type:origin.kind,title:""};
      next.nodes.push(detached);ids.add(artifactNodeId);restored.add(artifactNodeId);
+     newOutputs.push({node:detached,origin});
      relocateMaterializedOutput(node.id,artifactNodeId,node);
     }else{
      next.nodes.push(node);ids.add(node.id);restored.add(node.id);
     }
+   }
+   // Reserve titles of outputs restored by this save before naming new nodes.
+   for(const {node,source,origin} of newOutputs){
+    node.title=generatedNodeTitle(db,{nodes:next.nodes,source,kind:origin.kind,jobId:origin.jobId});
    }
    for(const edge of current.connections){
     if(!restored.has(edge.toNodeId)||edges.has(edge.id)||!ids.has(edge.fromNodeId))continue;

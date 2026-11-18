@@ -94,6 +94,7 @@ describe("backend save fence + frozen Comfy submission",()=>{
     calls.push("submit");
     expect(payload.expectedProjectRevision).toBe(4);
     expect(payload.sourceNodeFingerprint).toBe("fence-4");
+    expect(payload.snapshot).toMatchObject({generationOrigin:"assistant"});
     expect((payload.snapshot as any).comfyRequest.externalInputs).toEqual([]);
     expect(bridge.assertNoActiveJob).toHaveBeenCalledWith("wf-1");
     return expectedJob;
@@ -102,7 +103,7 @@ describe("backend save fence + frozen Comfy submission",()=>{
   const result=await startBackendComfyWorkflowRun({
    bridge,projectId:"p1",workflowNode:workflow,
    nodes:[workflow],connections:[],template,instanceId:"comfy-local",
-   outputPortIds:["image"],newKey:()=> "immutable-click"
+   outputPortIds:["image"],newKey:()=> "immutable-click",assistantInitiated:true
   });
   expect(result.id).toBe("new-job");
   expect(calls).toEqual(["save","submit"]);

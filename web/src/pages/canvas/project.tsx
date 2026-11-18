@@ -3214,7 +3214,7 @@ function AtelierCanvasPage() {
 
     const handleGenerateNode = useCallback(
         async (nodeId: string, mode: CanvasNodeGenerationMode, prompt: string, retryConfig?: typeof defaultConfig,
-            taskSubmit?:AssistantTaskJobSubmit) => {
+            taskSubmit?:AssistantTaskJobSubmit,assistantInitiated=false) => {
             const sourceNode = nodesRef.current.find((node) => node.id === nodeId);
             const generationConfig = retryConfig ?? buildGenerationConfig(effectiveConfig, sourceNode, mode);
             const promptText = mode === "text" ? extractSkillMentions(prompt).text : prompt;
@@ -3243,7 +3243,7 @@ function AtelierCanvasPage() {
                         prompt:comfyPrompt,mediaBinding:mediaPreset,workflowMode:mode,
                         ...(mediaPreset.mediaMode?{generationMode:mediaPreset.mediaMode}:{}),
                         beforeSubmit:()=>assertCanvasSubmissionActive(projectId,submissionToken),
-                        ...(taskSubmit?{submitFrozenJob:taskSubmit}:{})});
+                        assistantInitiated,...(taskSubmit?{submitFrozenJob:taskSubmit}:{})});
                     sqliteGenerationJobsRef.current.set(nodeId,job.id);setRunningNodeId(nodeId);
                     trackCanvasTextJob(projectId,nodeId,job.id,job.status,submissionToken,mode);
                     message.info("ComfyUI 媒体任务已提交："+job.id);
@@ -3410,6 +3410,7 @@ function AtelierCanvasPage() {
                     }
                     const job=await startSqliteModelGeneration({
                         beforeSubmit:()=>assertCanvasSubmissionActive(projectId,textSubmissionToken),
+                        assistantInitiated,
                         ...(taskSubmit?{submitFrozenJob:taskSubmit}:{}),
                         projectId,sourceNodeId:nodeId,
                         nodes:[...nodesRef.current],connections:[...connectionsRef.current],
@@ -3914,7 +3915,7 @@ function AtelierCanvasPage() {
     // A synchronous per-node lock covers template lookup, staging and the HTTP request.
 
     // One SQLite JobCoordinator path for toolbar and inspector. No V2 fallback.
-    const executeComfyWorkflow=useCallback(async(nodeId:string,taskSubmit?:AssistantTaskJobSubmit):Promise<ComfyRunState>=>{
+    const executeComfyWorkflow=useCallback(async(nodeId:string,taskSubmit?:AssistantTaskJobSubmit,assistantInitiated=false):Promise<ComfyRunState>=>{
         const key=projectId+":"+nodeId;
         if(comfyExecuteLocksRef.current.has(key))
             throw new Error("该工作流正在提交，请勿重复点击");
@@ -3946,7 +3947,7 @@ function AtelierCanvasPage() {
             });
             const job=await startBackendComfyWorkflowRun({
                 bridge,projectId,workflowNode,...snapshot,template,
-                instanceId:globalComfyInstanceId,outputPortIds:outputs.map(port=>port.id),
+                instanceId:globalComfyInstanceId,outputPortIds:outputs.map(port=>port.id),assistantInitiated,
                 ...(taskSubmit?{submitFrozenJob:taskSubmit}:{})
             });
             if(activeProjectIdRef.current===projectId&&pageMountedRef.current){
@@ -4042,11 +4043,11 @@ function AtelierCanvasPage() {
                     }):undefined;
                 let jobId:string;
                 if(plan.kind==="workflow"){
-                    const job=await executeComfyWorkflow(plan.nodeId,taskSubmit);
+                    const job=await executeComfyWorkflow(plan.nodeId,taskSubmit,true);
                     if(!job.runId)throw Error("工作流未返回任务 ID");
                     jobId=job.runId;
                 }else{
-                    const job=await handleGenerateNode(plan.nodeId,plan.mode!,plan.prompt!,undefined,taskSubmit);
+                    const job=await handleGenerateNode(plan.nodeId,plan.mode!,plan.prompt!,undefined,taskSubmit,true);
                     if(!job?.jobId)throw Error("模型任务未成功提交，请查看节点错误和任务历史");
                     jobId=job.jobId;
                 }

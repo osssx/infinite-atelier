@@ -31,6 +31,7 @@ export type BackendComfyWorkflowArgs={
  workflowMode?:"image"|"video"|"audio";
  generationMode?:MediaModeId;
  beforeSubmit?:()=>void;
+ assistantInitiated?:boolean;
  submitFrozenJob?:(payload:Record<string,unknown>)=>Promise<BackendJobView>;
  readBlob?:(storageKey:string)=>Promise<Blob|null>;
  getBlob?:(url:string)=>Promise<Blob|null>;
@@ -250,7 +251,8 @@ export async function startBackendComfyWorkflowRun(args:BackendComfyWorkflowArgs
   projectId,targetNodeId:workflowNode.id,
   expectedProjectRevision:fence.revision,sourceNodeFingerprint,
   executionMode:"poll",idempotencyKey,requestFingerprint:idempotencyKey,
-  snapshot:{adapterKind:"comfy",instanceId,comfyRequest:{...comfyRequest,projectId,canvasRevision:String(fence.revision),idempotencyKey},comfyTemplate:copy(template),
+  snapshot:{adapterKind:"comfy",instanceId,...(args.assistantInitiated?{generationOrigin:"assistant"}:{}),
+   comfyRequest:{...comfyRequest,projectId,canvasRevision:String(fence.revision),idempotencyKey},comfyTemplate:copy(template),
    ...(comfyTargetBinding?{comfyTargetBinding}:{})}
  };
  args.beforeSubmit?.();

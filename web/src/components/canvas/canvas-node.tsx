@@ -4,7 +4,8 @@ import { CanvasExecutionHalo } from "./canvas-execution-halo";
 import { isNativeDescendantEvent } from "@/lib/canvas/canvas-portal-events";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { ChevronRight, Clapperboard, Copy, Group, Image as ImageIcon, Music2, Puzzle, RefreshCw, Star, Trash2, Video } from "lucide-react";
+import { ChevronRight, Clapperboard, Copy, Image as ImageIcon, Music2, Puzzle, RefreshCw, Star, Trash2, Video } from "lucide-react";
+import { CanvasGroupNodeContent } from "./canvas-group-node-content";
 
 import { canvasThemes } from "@/lib/canvas-theme";
 import { formatBytes } from "@/lib/image-utils";
@@ -623,23 +624,7 @@ function DirectorNodeContent({ theme }: NodeContentRendererProps) {
 }
 
 function GroupNodeContent({ node, theme, groupChildCount }: NodeContentRendererProps) {
-    const { t } = useTranslation();
-    return (
-        <div className="pointer-events-none flex h-full w-full flex-col p-4">
-            <div className="flex items-center gap-2 text-sm font-semibold" style={{ color: theme.node.text }}>
-                <span className="grid size-8 place-items-center rounded-xl" style={{ background: theme.toolbar.activeBg, color: theme.node.muted }}>
-                    <Group className="size-4" />
-                </span>
-                <span className="min-w-0 flex-1 truncate" title={node.title || t("canvas.node.group")}>
-                    {node.title || t("canvas.node.group")}
-                </span>
-                <span className="ml-auto rounded-full px-2 py-1 text-[11px] font-medium" style={{ background: theme.node.fill, color: theme.node.muted }}>
-                    {t("canvas.node.nodeCount", { count: groupChildCount })}
-                </span>
-            </div>
-            <div className="mt-3 flex-1 rounded-2xl border border-dashed" style={{ borderColor: theme.node.stroke, background: `${theme.node.fill}55` }} />
-        </div>
-    );
+    return <CanvasGroupNodeContent title={node.title} theme={theme} groupChildCount={groupChildCount} />;
 }
 
 function LoadingContent({ theme }: Pick<NodeContentRendererProps, "theme">) {

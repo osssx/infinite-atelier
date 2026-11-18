@@ -47,7 +47,7 @@ export function createShotBatches({db,blobStore,tailFrames,instanceIds,instanceO
   const setting=db.prepare("SELECT value_json FROM ui_settings WHERE name='model_config'").get();
   const config=setting?JSON.parse(setting.value_json):{};
   const explicitVideo=node?.metadata?.comfyMediaPreset??node?.metadata?.comfyWorkflowSelections?.video;
-  const workflowDefault=node?.type==="video"&&!explicitVideo?config.comfyWorkflowDefaults?.video:null;
+  const workflowDefault=["video","config"].includes(node?.type)&&!explicitVideo?config.comfyWorkflowDefaults?.video:null;
   return digest({origin:instanceOrigin(item.snapshot.instanceId)??null,workflowDefault,
    defaultInstance:item.snapshot.comfyTargetBinding?.binding?.instanceId?null:config.comfyInstanceId});
  }
@@ -74,7 +74,9 @@ export function createShotBatches({db,blobStore,tailFrames,instanceIds,instanceO
      !req.rootOutputs?.some(output=>template.ports?.some(port=>port.id===output.portId&&port.capture?.kind==="video")))
    throw fail("shot_local_video_workflow_required",422);
   const node=project.document.nodes.find(value=>value.id===item.nodeId);
-  if(!node||!["video","comfy:workflow"].includes(node.type)||!matchesSourceFingerprint(project.document,item.nodeId,item.sourceNodeFingerprint,snap))
+  const videoConfig=node?.type==="config"&&node.metadata?.generationMode==="video"&&snap.comfyTargetBinding?.mode==="video";
+  if(!node||!(node.type==="video"||node.type==="comfy:workflow"||videoConfig)||
+     !matchesSourceFingerprint(project.document,item.nodeId,item.sourceNodeFingerprint,snap))
    throw fail("stale_generation_source");
   const binding=node.type==="comfy:workflow"?node.metadata?.comfyWorkflow:
    node.metadata?.comfyMediaPreset??node.metadata?.comfyWorkflowSelections?.video??snap.comfyTargetBinding?.binding;

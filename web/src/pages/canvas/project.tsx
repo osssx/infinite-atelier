@@ -1241,7 +1241,9 @@ function AtelierCanvasPage() {
         return true;
     }, []);
 
-    const isShotNode=(node:CanvasNodeData)=>node.type===CanvasNodeType.Video||node.type===COMFY_WORKFLOW_MOCK_TYPE;
+    const isVideoShotNode=(node:CanvasNodeData)=>node.type===CanvasNodeType.Video||
+        node.type===CanvasNodeType.Config&&node.metadata?.generationMode==="video";
+    const isShotNode=(node:CanvasNodeData)=>isVideoShotNode(node)||node.type===COMFY_WORKFLOW_MOCK_TYPE;
     const selectedShots=(onlyVideo=false)=>nodesRef.current
         .filter(node=>selectedNodeIdsRef.current.has(node.id)&&(!onlyVideo||isShotNode(node)))
         .sort((a,b)=>a.position.y-b.position.y||a.position.x-b.position.x||a.id.localeCompare(b.id))
@@ -1253,7 +1255,7 @@ function AtelierCanvasPage() {
         const candidates=selectedShots(true);
         const supported=await Promise.all(candidates.map(async shot=>{
             const node=nodesRef.current.find(item=>item.id===shot.generationNodeId);
-            if(node?.type===CanvasNodeType.Video)return shot;
+            if(node&&isVideoShotNode(node))return shot;
             const binding=node?.metadata?.comfyWorkflow;
             const template=binding&&await getComfyTemplate(binding.templateId,binding.templateRevision);
             return template?.ports.some(port=>port.direction==="source"&&port.capture?.kind==="video"&&port.capture.adapterId)?shot:null;
@@ -3062,8 +3064,8 @@ function AtelierCanvasPage() {
                 const node=graph.nodes.find(candidate=>candidate.id===shot.generationNodeId);
                 if(!node||group&&node.metadata?.groupId!==group.id)throw Error("镜头节点已移除或离开镜头组");
                 if(!isShotNode(node))throw Error("请选择视频生成节点");
-                const mediaBinding=node.type===CanvasNodeType.Video?resolveComfyWorkflowSelection(effectiveConfig,node,"video"):undefined;
-                const binding=node.type===CanvasNodeType.Video?mediaBinding:node.metadata?.comfyWorkflow;
+                const mediaBinding=isVideoShotNode(node)?resolveComfyWorkflowSelection(effectiveConfig,node,"video"):undefined;
+                const binding=isVideoShotNode(node)?mediaBinding:node.metadata?.comfyWorkflow;
                 if(!binding)throw Error("此节点未使用本地 ComfyUI 视频工作流");
                 const template=await getComfyTemplate(binding.templateId,binding.templateRevision);
                 if(!template||mediaBinding&&template.mediaUseCase?.channel!=="video")throw Error("本地视频工作流模板不可用");
@@ -3737,17 +3739,18 @@ function AtelierCanvasPage() {
             onStatus:(status,details,job)=>{
                 if(controller.signal.aborted||activeProjectIdRef.current!==projectId)return;
                 const targetKind=job?.targetNodeId?nodesRef.current.find(node=>node.id===job.targetNodeId)?.type:undefined;
-                const sourceKind=job?.modelKind??([CanvasNodeType.Image,CanvasNodeType.Video,CanvasNodeType.Audio,
-                    CanvasNodeType.Text].includes(targetKind as CanvasNodeType)?targetKind:undefined);
                 const shotNodeId=job?.targetNodeId;
                 const isShotJob=Boolean(shotNodeId&&observedShotJobs.current.has(jobId));
+                const videoShot=isShotJob&&(targetKind===CanvasNodeType.Video||targetKind===CanvasNodeType.Config);
+                const sourceKind=videoShot?"video":job?.modelKind??([CanvasNodeType.Image,CanvasNodeType.Video,CanvasNodeType.Audio,
+                    CanvasNodeType.Text].includes(targetKind as CanvasNodeType)?targetKind:undefined);
                 if(isShotJob&&shotNodeId&&job&&targetKind){
                     const previous=getCanvasComfyExecution(shotNodeId);
                     if(isComfyRunActive(status)&&previous?.runId!==jobId&&
                        (!isComfyRunActive(previous?.status)||Boolean(previous?.runId&&(previous.startedAt??0)<=job.createdAt))){
                         setCanvasComfyExecution(projectId,shotNodeId,{runId:jobId,status,startedAt:job.createdAt});
                     }
-                    if(targetKind===CanvasNodeType.Video&&isComfyRunActive(status)){
+                    if(videoShot&&isComfyRunActive(status)){
                         trackCanvasTextJob(projectId,shotNodeId,jobId,status,undefined,"video");
                         sqliteGenerationJobsRef.current.set(shotNodeId,jobId);
                     }
@@ -4427,7 +4430,7 @@ function AtelierCanvasPage() {
 
                 {isMiniMapOpen ? <Minimap nodes={nodes} viewport={viewport} viewportSize={size} onViewportChange={handleViewportChange} /> : null}
 
-                {shotPanel&&<CanvasShotPanel title={activeShotGroup?.title??"批量生成检查"} shots={panelShots} nodes={nodes}
+                {shotPanel&&<CanvasShotPanel title={activeShotGroup?.title??"批量生成检查"} theme={theme} shots={panelShots} nodes={nodes}
                     editable={Boolean(activeShotGroup)} busy={shotBusy} checks={shotChecks} items={shotBatch?.items??[]}
                     excluded={excludedShots} onToggle={(shotId,enabled)=>{
                         setExcludedShots(current=>{const next=new Set(current);if(enabled)next.delete(shotId);else next.add(shotId);return next;});

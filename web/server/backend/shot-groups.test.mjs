@@ -35,13 +35,15 @@ function template(continuity=false){
  const payload={name:continuity?"Offline continuation":"Offline clip",apiGraph,ports,requirements:{classTypes:[...new Set(Object.values(apiGraph).map(node=>node.class_type))].sort()},...(mediaUseCase?{mediaUseCase}:{})};
  return {id:continuity?"local-continuity":"local-video",revision:sha256(canonical(payload)),...payload};
 }
-function fixture(db,{normalVideo=false}={}){
+function fixture(db,{normalVideo=false,videoConfig=false}={}){
  const shots=["a","b","c"].map(id=>({shotId:id,generationNodeId:"node-"+id,mode:id==="b"?"continuity":"independent"}));
  const graph={title:"Offline tests",nodes:[{id:"g",type:"group",metadata:{shotGroup:{shots}}},...shots.map(shot=>{
   const t=template(shot.mode==="continuity");
   const binding={templateId:t.id,templateRevision:t.revision};
-  return {id:shot.generationNodeId,type:normalVideo&&shot.shotId==="b"?"video":"comfy:workflow",title:shot.shotId,position:{x:0,y:0},width:200,height:160,
-   metadata:{groupId:"g",...(normalVideo&&shot.shotId==="b"?{comfyMediaPreset:{...binding,overrides:{},slots:{},mediaMode:"first_frame"}}:{comfyWorkflow:binding})}};
+  const usesMediaPreset=(normalVideo||videoConfig)&&shot.shotId==="b";
+  return {id:shot.generationNodeId,type:usesMediaPreset?(videoConfig?"config":"video"):"comfy:workflow",title:shot.shotId,position:{x:0,y:0},width:200,height:160,
+   metadata:{groupId:"g",...(videoConfig&&usesMediaPreset?{generationMode:"video"}:{}),
+    ...(usesMediaPreset?{comfyMediaPreset:{...binding,overrides:{},slots:{},mediaMode:"first_frame"}}:{comfyWorkflow:binding})}};
  })],connections:[]};
  const project=createProject(db,{id:"offline-shots",document:graph});
  const items=shots.map(shot=>{
@@ -84,6 +86,14 @@ test("a blocked predecessor pauses its dependent shot and preserves independent 
  const [result]=service.list(project.id);
  assert.deepEqual(result.items.map(item=>item.status),["submission_unknown","blocked","queued"]);
  assert.equal(db.prepare("SELECT count(*) AS n FROM jobs").get().n,2);
+});
+
+test("video-mode generation configuration nodes can join a local continuity batch",t=>{
+ const db=new DatabaseSync(":memory:");t.after(()=>db.close());initializeSchema(db);
+ const {project,body}=fixture(db,{videoConfig:true});
+ const service=createShotBatches({db,instanceIds:()=>["local"]});
+ const batch=service.create(project.id,body);
+ assert.equal(batch.items[1].status,"waiting");
 });
 
 test("reordering a pending chain pauses the changed handoff",async t=>{
@@ -139,7 +149,7 @@ test("real local Comfy creates three videos across backend restart and uses the 
  let backend;
  try{
   backend=createLocalBackend(options);
-  const {project,body}=fixture(backend.db,{normalVideo:true});
+  const {project,body}=fixture(backend.db,{videoConfig:true});
   for(const item of body.items){
    const inspected=await backend.app.inject({method:"POST",url:`/api/v1/projects/${project.id}/shot-batches/inspect`,headers:await auth(backend),payload:item.snapshot});
    assert.equal(inspected.statusCode,200,inspected.body);

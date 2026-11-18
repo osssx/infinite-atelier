@@ -1,4 +1,5 @@
 import { CanvasExecutionHalo } from "./canvas-execution-halo";
+import { CanvasGroupNodeContent } from "./canvas-group-node-content";
 import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { canvasThemes } from "@/lib/canvas-theme";
@@ -155,16 +156,7 @@ export const CompactCanvasNode = memo(function CompactCanvasNode({
                     </div>
                 ) : null}
                 {isGroup ? (
-                    <div className="pointer-events-none flex h-full w-full flex-col p-4" style={{ color: theme.node.text }}>
-                        <div className="flex items-center gap-2 text-sm font-semibold">
-                            <span className="grid size-8 shrink-0 place-items-center rounded-xl" style={{ background: theme.toolbar.activeBg, color: theme.node.muted }}>
-                                <span className="size-3 rounded-sm border" style={{ borderColor: accent }} />
-                            </span>
-                            <span className="truncate">{data.title}</span>
-                            <span className="ml-auto rounded-full px-2 py-1 text-[11px]" style={{ background: theme.node.fill, color: theme.node.muted }}>{groupChildCount}</span>
-                        </div>
-                        <div className="mt-3 flex-1 rounded-2xl border border-dashed" style={{ borderColor: theme.node.stroke, background: `${theme.node.fill}55` }} />
-                    </div>
+                    <CanvasGroupNodeContent title={data.title} theme={theme} groupChildCount={groupChildCount} />
                 ) : null}
                 {(data.type === CanvasNodeType.Config || data.type === CanvasNodeType.Director ||
                     (!isGroup && !isImage && !isVideo && !isAudio && data.type !== CanvasNodeType.Text)) ? (

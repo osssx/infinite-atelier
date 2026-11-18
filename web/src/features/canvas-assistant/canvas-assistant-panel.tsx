@@ -1175,14 +1175,16 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
           </div>
          ):null}
          {item.historyQuote?<details className="canvas-assistant-history-quote">
-          <summary>已引用 · {item.historyQuote.label}</summary>
+          <summary><Link2 size={13} aria-hidden="true"/><span>已引用 · {item.historyQuote.label}</span></summary>
+          <div className="canvas-assistant-quote-body">
+          <pre>{item.historyQuote.text}</pre>
           {item.historyQuote.localSourceMessageId||item.historyQuote.sourceTurnMessageId?<button
-           type="button" className="canvas-assistant-copy"
+           type="button" className="canvas-assistant-quote-action"
            onClick={()=>document.getElementById(historyMessageAnchor(session.id,
             item.historyQuote!.localSourceMessageId??item.historyQuote!.sourceTurnMessageId!))?.scrollIntoView({block:"nearest"})}>
-           跳到来源回合
+           <ArrowUpRight size={12} aria-hidden="true"/>跳到来源回合
           </button>:null}
-          <pre>{item.historyQuote.text}</pre>
+          </div>
          </details>:null}
          {item.role==="assistant"?(
           <div className="canvas-assistant-message-tools">
@@ -1194,15 +1196,17 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
             <FileText size={12}/>{restoringSkillRun===completedSkillRunId(item)?"恢复中":"恢复产物"}
            </button>:null}
            {taskTracker.activeTaskId?<button type="button" className="canvas-assistant-copy" disabled={sending}
-            onClick={()=>setManualQuoteSource({chatId:session.id,messageId:item.id})}>引用原文</button>:null}
+            onClick={()=>setManualQuoteSource({chatId:session.id,messageId:item.id})}><Link2 size={12} aria-hidden="true"/>引用原文</button>:null}
            <CopyAssistantReply text={item.text}/>
           </div>
          ):null}
          {manualQuoteSource?.chatId===session.id&&manualQuoteSource.messageId===item.id?(
-          <div className="canvas-assistant-history-quote">
+          <div className="canvas-assistant-history-quote canvas-assistant-quote-body">
            <textarea ref={historyQuoteSelectionRef} aria-label="选择历史原文" readOnly rows={5} value={item.text}
             onFocus={event=>event.currentTarget.select()}/>
-           <button type="button" className="canvas-assistant-copy" disabled={sending} onClick={()=>{
+           <div className="canvas-assistant-quote-actions">
+           <button type="button" className="canvas-assistant-quote-action" onClick={()=>setManualQuoteSource(null)}>取消</button>
+           <button type="button" className="canvas-assistant-quote-action is-primary" disabled={sending} onClick={()=>{
             const selection=historyQuoteSelectionRef.current;
             if(!selection)return;
             const quote=selection.value.slice(selection.selectionStart,selection.selectionEnd);
@@ -1210,7 +1214,7 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
             setDraftHistoryQuote({chatId:session.id,messageId:item.id,text:quote});
             setManualQuoteSource(null);setHistoryQuoteChoices(null);setHistoryQuoteError("");
            }}>确认引用选段</button>
-           <button type="button" className="canvas-assistant-copy" onClick={()=>setManualQuoteSource(null)}>取消</button>
+           </div>
           </div>
          ):null}
         </div>
@@ -1224,25 +1228,32 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
    <footer className="canvas-assistant-footer">
     <div className="canvas-assistant-composer">
      {historyQuoteChoices&&historyQuoteChoices.chatId===session?.id&&historyQuoteChoices.request===draft?(
-      <fieldset className="canvas-assistant-history-quote">
-       <legend>选择要使用的历史镜头</legend>
-       {historyQuoteChoices.items.map((item,index)=><details key={("sourceRequestId" in item?item.sourceRequestId:item.messageId)+":"+item.start} open={historyQuoteChoices.items.length===1}>
-        <summary>{index+1}. {item.label}</summary>
-        <small>{historyQuoteChoiceSource(item,session.messages)}</small><pre>{item.text}</pre>
-        <button type="button" className="canvas-assistant-copy" disabled={sending} onClick={()=>void send(item)}>引用并发送</button>
+      <section className="canvas-assistant-quote-picker" aria-label="选择要使用的历史镜头">
+       <h3><Link2 size={14} aria-hidden="true"/>选择要使用的历史镜头</h3>
+       <div className="canvas-assistant-quote-options">
+       {historyQuoteChoices.items.map(item=><details className="canvas-assistant-history-quote" key={("sourceRequestId" in item?item.sourceRequestId:item.messageId)+":"+item.start} open={historyQuoteChoices.items.length===1}>
+        <summary><span>{item.label}<small>{historyQuoteChoiceSource(item,session.messages)}</small></span></summary>
+        <div className="canvas-assistant-quote-body">
+         <pre>{item.text}</pre>
+         <button type="button" className="canvas-assistant-quote-action is-primary" disabled={sending} onClick={()=>void send(item)}>引用并发送</button>
+        </div>
        </details>)}
-      </fieldset>
+       </div>
+      </section>
      ):null}
-     {draftHistoryQuote&&draftHistoryQuote.chatId===session?.id?<details className="canvas-assistant-history-quote">
-      <summary>待发送的历史引文</summary><pre>{draftHistoryQuote.text}</pre>
-      <button type="button" className="canvas-assistant-copy" disabled={sending} onClick={()=>setDraftHistoryQuote(null)}>移除引文</button>
+     {draftHistoryQuote&&draftHistoryQuote.chatId===session?.id?<details className="canvas-assistant-history-quote canvas-assistant-quote-draft">
+      <summary><Link2 size={13} aria-hidden="true"/><span>待发送的历史引文</span></summary>
+      <div className="canvas-assistant-quote-body">
+       <pre>{draftHistoryQuote.text}</pre>
+       <button type="button" className="canvas-assistant-quote-action" disabled={sending} onClick={()=>setDraftHistoryQuote(null)}>移除引文</button>
+      </div>
      </details>:null}
      {taskTracker.activeTaskId&&selectedImageReferences.length>0&&selectedImageReferences.length<=4?(
-      <button type="button" className="canvas-assistant-copy" disabled={sending} onClick={()=>{
+      <button type="button" className="canvas-assistant-quote-action canvas-assistant-quote-attach" disabled={sending} onClick={()=>{
        setDraft(current=>current+(current?" ":"")+selectedImageReferences.map(canvasResourceReferenceToken).join(" "));
-      }}>附加选中的 {selectedImageReferences.length} 张参考图</button>
+      }}><ImageIcon size={13} aria-hidden="true"/>附加选中的 {selectedImageReferences.length} 张参考图</button>
      ):null}
-     {historyQuoteError?<p className="canvas-assistant-skill-error" role="status">{historyQuoteError}</p>:null}
+     {historyQuoteError?<p className="canvas-assistant-error canvas-assistant-quote-error" role="status"><AlertCircle size={14} aria-hidden="true"/>{historyQuoteError}</p>:null}
      <CanvasPromptChipInput value={draft} references={resourceReferences} referenceSerialization="identity" onChange={setDraft}
       onSubmit={()=>void send()} submitShortcut="mod-enter" ariaLabel="向 AI 助手发送消息"
       enableSkills projectId={projectId} skillCatalog={skills}

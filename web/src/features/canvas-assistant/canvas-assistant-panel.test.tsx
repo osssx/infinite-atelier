@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
-import {createElement,type ComponentProps} from "react";
+import {act,createElement,type ComponentProps} from "react";
+import {createRoot} from "react-dom/client";
 import {renderToStaticMarkup} from "react-dom/server";
 import {describe,expect,it,vi} from "vitest";
 import {canvasThemes} from "@/lib/canvas-theme";
@@ -93,5 +94,34 @@ describe("canvas assistant visual shell",()=>{
  });
  it("does not render while closed",()=>{
   expect(renderToStaticMarkup(createElement(CanvasAssistantPanel,{...props,open:false}))).toBe("");
+ });
+ it("confirms a copied reply and resets its button",async()=>{
+  const container=document.createElement("div");
+  const root=createRoot(container);
+  const writeText=vi.spyOn(navigator.clipboard,"writeText").mockResolvedValue(undefined);
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT",true);
+  try{
+   await act(async()=>root.render(createElement(CanvasAssistantPanel,{
+    ...props,activeChatId:"chat-1",
+    sessions:[{id:"chat-1",title:"分镜讨论",createdAt:"2026-11-10",updatedAt:"2026-11-10",messages:[
+     {id:"m1",role:"assistant",text:"建议强化转折"},
+    ]}],
+   })));
+   vi.useFakeTimers();
+   const button=container.querySelector<HTMLButtonElement>('button[aria-label="复制回答"]')!;
+   await act(async()=>button.click());
+   expect(writeText).toHaveBeenCalledWith("建议强化转折");
+   expect(button.textContent).toBe("已复制");
+   act(()=>vi.advanceTimersByTime(2000));
+   expect(button.textContent).toBe("复制");
+   writeText.mockRejectedValueOnce(new Error("Clipboard unavailable"));
+   await act(async()=>button.click());
+   expect(button.textContent).toBe("复制失败");
+  }finally{
+   await act(async()=>root.unmount());
+   vi.useRealTimers();
+   vi.unstubAllGlobals();
+   writeText.mockRestore();
+  }
  });
 });

@@ -35,6 +35,35 @@ import type {ComfyWorkflowTemplate} from "@/features/comfy-workflow/template-sch
 import "./canvas-assistant-panel.css";
 
 const assistantMarkdownComponents: Components = {pre:CanvasMarkdownPre};
+
+function CopyAssistantReply({text}:{text:string}){
+ const [feedback,setFeedback]=useState<"idle"|"copied"|"failed">("idle");
+ const resetTimer=useRef<ReturnType<typeof setTimeout>|undefined>(undefined);
+
+ useEffect(()=>{
+  return ()=>clearTimeout(resetTimer.current);
+ },[]);
+
+ async function copy(){
+  let result:"copied"|"failed";
+  try{
+   await navigator.clipboard.writeText(text);
+   result="copied";
+  }catch{
+   result="failed";
+  }
+  clearTimeout(resetTimer.current);
+  setFeedback(result);
+  resetTimer.current=setTimeout(()=>setFeedback("idle"),2000);
+ }
+
+ const Icon=feedback==="copied"?Check:Copy;
+ return <button type="button" className="canvas-assistant-copy" aria-label="复制回答" title="复制回答" onClick={()=>void copy()}>
+  <Icon size={12} aria-hidden="true"/>
+  <span aria-live="polite">{feedback==="copied"?"已复制":feedback==="failed"?"复制失败":"复制"}</span>
+ </button>;
+}
+
 type Choice={id:string;title:string;type:CanvasNodeTypeId};
 function ReferenceIcon({type}:{type:CanvasNodeTypeId}){
  const Icon=type===CanvasNodeType.Text?FileText:type===CanvasNodeType.Image?ImageIcon:
@@ -1082,7 +1111,7 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
             onClick={()=>void restoreSkillRun(completedSkillRunId(item)!)}>
             <FileText size={12}/>{restoringSkillRun===completedSkillRunId(item)?"恢复中":"恢复产物"}
            </button>:null}
-           <button type="button" className="canvas-assistant-copy" aria-label="复制回答" title="复制回答" onClick={()=>void navigator.clipboard.writeText(item.text)}><Copy size={12}/>复制</button>
+           <CopyAssistantReply text={item.text}/>
           </div>
          ):null}
         </div>

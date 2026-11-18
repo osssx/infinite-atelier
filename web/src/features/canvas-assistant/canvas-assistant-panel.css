@@ -424,6 +424,7 @@
   color: var(--assistant-muted) !important; cursor: pointer; font-size: 10px !important;
 }
 .canvas-assistant-copy:hover { background: var(--assistant-hover); color: var(--assistant-text) !important; }
+.canvas-assistant-copy > span { white-space: nowrap; }
 .canvas-assistant-message-refs { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin-top: 8px; font-size: 10px; color: var(--assistant-muted); }
 .canvas-assistant-message-refs span { max-width: 132px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border-radius: 5px; background: var(--assistant-fill); padding: 2px 6px; }
 .canvas-assistant-error { display: flex; gap: 8px; padding: 9px 10px; border: 1px solid var(--assistant-border); border-radius: 10px; color: var(--assistant-error); background: var(--assistant-surface); font-size: 11px; line-height: 1.6; }

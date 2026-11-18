@@ -201,17 +201,21 @@ export function getAssistantTask(db,{projectId,taskId}){
   db.exec("COMMIT");return {task};
  }catch(e){db.exec("ROLLBACK");throw e}
 }
-export function appendAssistantTaskTurn(db,{projectId,taskId,requestId,text:message,messageId,contextPolicy}){
- if(!text(message,8000)||!id(messageId))throw fail("assistant_task_invalid");
+export function appendAssistantTaskTurn(db,{projectId,taskId,requestId,text:message,messageId,contextPolicy,chatSessionId}){
+ if(!text(message,8000)||!id(messageId)||(chatSessionId!==undefined&&!id(chatSessionId)))throw fail("assistant_task_invalid");
  const contextPolicyValue=contextPolicy===undefined?undefined:policy(contextPolicy);
- return command(db,{projectId,requestId,kind:"turn",payload:{taskId,message,messageId,...(contextPolicyValue?{contextPolicyValue}:{})}},()=>{
+ return command(db,{projectId,requestId,kind:"turn",payload:{taskId,message,messageId,...(contextPolicyValue?{contextPolicyValue}:{}),...(chatSessionId?{chatSessionId}:{})}},()=>{
   const row=mustTask(db,projectId,taskId);
+  if(chatSessionId&&chatSessionId!==row.chat_session_id&&!linkedChatIds(db,taskId).includes(chatSessionId))
+   throw fail("assistant_history_quote_scope",403);
+  if(db.prepare("SELECT 1 FROM assistant_task_events WHERE task_id=? AND kind='user_turn' AND json_extract(payload_json,'$.messageId')=?")
+   .get(taskId,messageId))throw fail("assistant_task_turn_duplicate",409);
   if(row.cancel_requested_at!==null||row.read_only)throw fail("assistant_task_not_editable",409);
   const at=Date.now();
   if(contextPolicyValue)db.prepare("UPDATE assistant_tasks SET context_policy_json=?,updated_at=? WHERE id=?")
    .run(json(contextPolicyValue),at,taskId);
   else db.prepare("UPDATE assistant_tasks SET updated_at=? WHERE id=?").run(at,taskId);
-  event(db,taskId,"user_turn",{messageId,preview:message.slice(0,160),requestDigest:hash(message),
+  event(db,taskId,"user_turn",{messageId,preview:message.slice(0,160),requestDigest:hash(message),...(chatSessionId?{chatSessionId}:{}),
    contextPolicy:contextPolicyValue??JSON.parse(row.context_policy_json)},null,at);
   return {task:snapshot(db,projectId,taskId)};
  });

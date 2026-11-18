@@ -12,6 +12,8 @@ import {canvasThemes,type CanvasColorTheme} from "@/lib/canvas-theme";import {us
 import {CanvasNodeType,type CanvasAssistantMessage,type CanvasAssistantSession,type CanvasNodeTypeId} from "@/types/canvas";
 import type {AssistantContextResult,AssistantContextScope} from "./canvas-assistant-context";
 import {parseAssistantCanvasActions,isDangerousAssistantAction,dangerousAssistantActionSummary,type AssistantCanvasStage} from "./canvas-assistant-actions";
+import {findHistoryShotRanges,requestedHistoryShot} from "../../../shared/assistant-history-quote.mjs";
+import {assertHistoryQuoteBudget,historyQuoteReference,manualHistoryQuote,type HistoryQuoteCandidate,type HistoryQuoteReference,type UsedHistoryQuote} from "./canvas-assistant-history-quote";
 import {buildCanvasAssistantTurns} from "./canvas-assistant-history";
 import {parseAssistantCharacterCast} from "./canvas-assistant-character-cast";
 import {detectAssistantStructuredTextDelivery} from "./canvas-assistant-structured-deliverable-intent";
@@ -92,7 +94,23 @@ const append=(list:CanvasAssistantSession[],id:string,message:CanvasAssistantMes
  return list.map(session=>session.id===id?{...session,
    title:session.messages.length===0&&session.title==="新对话"?message.text.slice(0,30)||"新对话":session.title,
    messages:[...session.messages,message].slice(-40),updatedAt:stamp}:session);};
+type HistoryQuoteChoice=HistoryQuoteCandidate|{messageId:string;text:string;label:string;start:number};
+
+const historyMessageAnchor=(chatId:string,messageId:string)=>"canvas-assistant-message-"+chatId+"-"+messageId;
+function historyQuoteChoiceSource(item:HistoryQuoteChoice,messages:CanvasAssistantMessage[]){
+ const message=messages.find(entry=>entry.id===("sourceRequestId" in item?item.sourceTurnMessageId:item.messageId));
+ if(!message)return "来源：任务历史回复";
+ if("sourceRequestId" in item)return "来源提问："+message.text.slice(0,100);
+ return "来源：聊天记录第 "+(messages.indexOf(message)+1)+" 条回复";
+}
+
 const assistantErrorMessages:Record<string,string>={
+ assistant_history_quote_scope:"历史引用的来源不在当前任务会话中，请重新选择回复。",
+ assistant_history_quote_invalid:"无法验证这段历史引用，请重新选择原文。",
+ assistant_history_quote_changed:"历史引用已改变，请重新选择。",
+ assistant_history_quote_ambiguous:"找到多个与本轮请求匹配的历史片段，请选择一个。",
+ assistant_history_quote_budget:"历史引文超出本轮上下文预算，请缩短选段。",
+ assistant_history_quote_material_conflict:"当前创作资料选择与本轮图片或 Skill 冲突，请调整后重试。",
  assistant_creative_content_incomplete:"模型连续返回空白或待填写的角色卡、故事或分镜文本，已拒绝创建这些节点，画布未因此修改。请明确角色设定、缩小生成数量，或更换模型重试。",
  assistant_response_invalid:"模型返回的数据无法解析，请确认渠道兼容 Chat Completions 接口，或更换模型重试。",
  assistant_response_empty:"模型请求已完成，但没有返回可显示的最终正文。可能是模型只生成了推理内容；请尝试精简提问或更换模型。",
@@ -292,6 +310,11 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
   const themeName=useThemeStore(state=>state.theme);
   const theme=canvasThemes[themeName];
   const [draft,setDraft]=useState(""); const [modelRef,setModelRef]=useState(config.textModel);
+ const [historyQuoteChoices,setHistoryQuoteChoices]=useState<{chatId:string;request:string;items:HistoryQuoteChoice[]}|null>(null);
+ const [manualQuoteSource,setManualQuoteSource]=useState<{chatId:string;messageId:string}|null>(null);
+ const [draftHistoryQuote,setDraftHistoryQuote]=useState<{chatId:string;messageId:string;text:string}|null>(null);
+ const [historyQuoteError,setHistoryQuoteError]=useState("");
+ const historyQuoteSelectionRef=useRef<HTMLTextAreaElement>(null);
  const [fullGraphGrant,setFullGraphGrant]=useState(false);
  const [taskUndo,setTaskUndo]=useState<(()=>Promise<void>)|null>(null);
  const [scope,setScope]=useState<AssistantContextScope>("selection");
@@ -334,6 +357,10 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
   prioritizeAssistantResourceReferences(getResourceReferences?.()??[],selectedNodes.map(node=>node.id)):
   [],[getResourceReferences,includeContext,previewRevision,signature]);
  const firstImageReference=resourceReferences.find(item=>item.kind==="image");
+ const selectedImageReferences=includedIds.flatMap(id=>{
+  const images=resourceReferences.filter(item=>item.nodeId===id&&item.kind==="image"&&item.active);
+  return images.length===1?images:[];
+ }).filter(item=>!draft.includes(canvasResourceReferenceToken(item)));
  const reversePromptRequest="请仔细观察引用图片的真实视觉内容，反推适合图像生成模型的提示词。请分别给出：画面主体与动作、场景与构图、镜头、光影色彩、材质与风格；完整英文正向提示词、中文版、可选负面提示词，以及无法从图像确定的信息。不要把猜测当成原始 Prompt、Seed 或 LoRA。";
  const session=sessions.find(item=>item.id===activeChatId);
  const startChatForTask=()=>{
@@ -468,7 +495,7 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
   setSessions(prev=>prev.map(chat=>chat.id===active.chatId?{...chat,messages:chat.messages.map(item=>
    item.id===active.turnId+"-reply"?{...item,meta:"已停止生成"}:item)}:chat));
  },[projectId,setSessions]);
- const send=useCallback(async()=>{
+ const send=useCallback(async(picked?:HistoryQuoteChoice)=>{
   const parsedDraft=extractSkillMentions(draft.trim());
   const visual=collectAssistantImageMentions(parsedDraft.text.trim(),resourceReferences);
   const text=visual.text.trim();if(!text||controllerRef.current||!chosenModel)return;
@@ -482,7 +509,6 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
   // Explicit @ references take priority over implicitly selected nodes.
   const frozen=freezeCanvasEdit?.(includeContext&&scope==="selection"?includedIds:[],visual.nodeIds,includeContext&&scope==="overview"&&fullGraphGrant);
   const assertTurnCurrent=frozen?.assertCurrent??assertCanvasCurrent;
-  setFullGraphGrant(false);
   const contextIds=[...new Set([...visual.nodeIds,...(effectiveScope==="selection"?includedIds:[])])];
   const mentionedContext=includeContext&&visual.nodeIds.length?getContext(contextIds,"selection"):null;
   const contextSnapshot=includeContext?(effectiveScope==="selection"?
@@ -493,10 +519,39 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
    ...(userReferences.length?{references:userReferences}:{})};
   const id=session?.id??nanoid();
      const linkedTaskId=taskTracker.activeTaskId;
+    const earlierShot=linkedTaskId?requestedHistoryShot(text):null;
+    const manualQuote=linkedTaskId&&draftHistoryQuote?.chatId===session?.id?draftHistoryQuote:null;
     const prior=session?.messages??[];
     const controller=new AbortController();controllerRef.current=controller;
-    setSending(true);setDraft("");setSessions(prev=>append(prev,id,user));setActiveChatId(id);
+    let historyQuote:HistoryQuoteReference|undefined;
+    let published=false;
+    setSending(true);
+    setHistoryQuoteError("");
    try{
+    if(manualQuote)historyQuote=await manualHistoryQuote(manualQuote.text);
+    else if(picked){
+     assertHistoryQuoteBudget(picked.text);
+     historyQuote="sourceRequestId" in picked?historyQuoteReference(picked,"selected"):await manualHistoryQuote(picked.text);
+    }
+    else if(earlierShot!==null&&session){
+     const quoteEndpoint="/api/v1/projects/"+encodeURIComponent(projectId)+"/assistant/tasks/"+
+      encodeURIComponent(linkedTaskId!)+"/history-quotes";
+     const {candidates}=await canvasApi<{candidates:HistoryQuoteCandidate[]}>(quoteEndpoint,"POST",{
+      chatSessionId:session.id,text
+     },controller.signal);
+     const local=prior.flatMap(item=>item.role==="assistant"?
+      findHistoryShotRanges(item.text,earlierShot).map(range=>({...range,messageId:item.id})):[]);
+     const unverified=local.filter(item=>!candidates.some(candidate=>candidate.text===item.text));
+     if(candidates.length!==1||unverified.length){
+      const items=[...candidates,...unverified];
+      setHistoryQuoteChoices(items.length?{chatId:id,request:draft,items}:null);
+      if(!items.length)setHistoryQuoteError("没有找到可自动引用的镜头。可在历史回复中选择「引用原文」。");
+      return;
+     }
+     assertHistoryQuoteBudget(candidates[0].text);
+     historyQuote=historyQuoteReference(candidates[0],"auto");
+    }
+    if(historyQuote)setHistoryQuoteChoices(null);
     if(contextIds.length>12)throw Error("AI 助手一轮最多引用 12 个节点，请减少 @ 或已选节点引用。");
     if(visual.images.length>4)throw Error("AI 助手一轮最多引用 4 张图片，请减少 @ 图片引用。");
     if(visual.unresolved)throw Error("画布节点引用已失效，请重新选择 @ 节点。");
@@ -558,11 +613,19 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
     if(explicitCardDelivery&&explicitSkills)
      throw Error("显式角色卡交付暂不支持同时执行 Skill；请先生成角色卡，再单独执行 Skill。");
     if(explicitCardDelivery)selectedSkills=undefined;
-    await taskTracker.recordTurn(linkedTaskId,user.id,text,controller.signal);
     // Reuse prior story/scene/style only with a live, explicitly confirmed,
     // Task-scoped source selection. Normal chat and unlinked Tasks are unchanged.
     const {kinds:relevantKinds,shouldSelect:wantsCreativeSources}=
      detectAssistantCreativeMaterialIntent(text,linkedTaskId);
+    if(historyQuote&&wantsCreativeSources&&(selectedSkills||visual.images.length))
+     throw Error("assistant_history_quote_material_conflict");
+    const turnScope=scope==="selection"&&visual.nodeIds.length?"selection":scope;
+    await taskTracker.recordTurn(linkedTaskId,user.id,text,controller.signal,{
+     includeContext,scope:turnScope,includedIds:includeContext&&turnScope==="selection"?contextIds:[]
+    });
+    if(controller.signal.aborted)return;
+    setFullGraphGrant(false);
+    setDraft(current=>current===draft?"":current);setSessions(prev=>append(prev,id,user));setActiveChatId(id);published=true;
     if(wantsCreativeSources){
      if(explicitSkills)throw Error("已授权创作资料暂不能和 Skill 混合执行，请分轮操作。");
      selectedSkills=undefined;
@@ -658,6 +721,7 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
      // fallback or mixing with an independently confirmed material selection.
      const agentReadTools=wantsAssistantTaskReadTools(text,linkedTaskId)&&!wantsCreativeSources;
      if(agentReadTools){
+      if(historyQuote)throw Error("历史引文暂不能与 Agent 只读工具一起发送，请分轮操作。");
       if(provider==="google_gemini")throw Error("当前 Agent 只读工具仅支持 OpenAI 兼容接口。");
       if(visual.images.length)throw Error("Agent 只读工具暂不支持同时上传图片，请分轮操作。");
       if(explicitSkills)throw Error("Agent 只读工具暂不支持同时调用 Skill，请分轮操作。");
@@ -665,12 +729,12 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
      }
      await ensureSqliteModelChannelForExecution(channel,provider);
    if(controller.signal.aborted)return;
-    type AssistantReply={answer:string;model:string;agentRunId?:string;agentReadRounds?:number;agentReadToolCalls?:{callId:string;name:string}[];retryCount?:number;actions?:unknown;appliedSkillIds?:string[];skillResourceReads?:{skillId:string;path:string}[];skillToolCalls?:{name:string;skillId:string|null}[];skillToolsFallback?:boolean;skillScriptProposal?:AssistantSkillScriptProposal};
+    type AssistantReply={answer:string;model:string;usedHistoryQuote?:UsedHistoryQuote;agentRunId?:string;agentReadRounds?:number;agentReadToolCalls?:{callId:string;name:string}[];retryCount?:number;actions?:unknown;appliedSkillIds?:string[];skillResourceReads?:{skillId:string;path:string}[];skillToolCalls?:{name:string;skillId:string|null}[];skillToolsFallback?:boolean;skillScriptProposal?:AssistantSkillScriptProposal};
     const endpoint="/api/v1/projects/"+encodeURIComponent(projectId)+"/assistant/chat";
     const request={channelId:channel.id,provider,baseUrl:channel.baseUrl,model:modelOptionName(chosenModel),
      messages:turns,canvasActions:!textOnly,
       ...(agentReadTools?{agentReadTools:true}:{}),
-      ...(linkedTaskId?{task:{taskId:linkedTaskId,turnMessageId:user.id,requestId:user.id+"-model-initial"}}:{}),
+      ...(linkedTaskId?{task:{taskId:linkedTaskId,turnMessageId:user.id,requestId:user.id+"-model-initial",...(historyQuote?{historyQuote}:{})}}:{}),
      ...(!wantsCreativeSources&&visual.images.length?{visualContext:{detail:"high",images:visual.images}}:{})};
     let response:AssistantReply;let streamedId:string|undefined;
     try{
@@ -696,7 +760,7 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
      if(!safeAutoFallback||controller.signal.aborted)throw error;
      setSkillError("Skill 自动匹配未成功，本轮按普通对话继续。");
      response=await canvasApi<AssistantReply>(endpoint,"POST",{
-       ...request,...(linkedTaskId?{task:{taskId:linkedTaskId,turnMessageId:user.id,requestId:user.id+"-model-skill-fallback"}}:{})
+       ...request,...(request.task?{task:{...request.task,requestId:user.id+"-model-skill-fallback"}}:{})
       },controller.signal);
     }
     // The Skill determines which scripts and artifacts are needed. A script
@@ -774,7 +838,7 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
      try{
       response=await canvasApi<AssistantReply>(endpoint,"POST",{
        ...request,messages:[{role:"user",content:continuationText}],
-        ...(linkedTaskId?{task:{taskId:linkedTaskId,turnMessageId:user.id,requestId:user.id+"-model-script-"+scriptSteps,
+        ...(request.task?{task:{...request.task,requestId:user.id+"-model-script-"+scriptSteps,
          callKind:"script_continuation"}}:{}),
        skillScriptProposalEnabled:scriptSteps<4,
        ...(followUpSkills?{skills:followUpSkills}:{})
@@ -884,7 +948,9 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
         setDraft(current=>current||draft);
        notes.push("画布操作未完成："+(operationError instanceof Error?operationError.message:"执行失败"));
      }    const answer=[response.answer,...notes].filter(Boolean).join("\n\n");
+    const localSourceMessageId=manualQuote?.messageId??(picked&&"messageId" in picked?picked.messageId:undefined);
     const finalMessage:CanvasAssistantMessage={id:streamedId??nanoid(),role:"assistant",text:answer,
+      ...(response.usedHistoryQuote?{historyQuote:{...response.usedHistoryQuote,localSourceMessageId}}:{}),
       meta:response.model+(response.retryCount?` · 网络自动重试 ${response.retryCount} 次`:"")+
        (response.appliedSkillIds?.length?" · Skill: "+response.appliedSkillIds.join("、"):"")+
        (response.skillResourceReads?.length?" · 读取资料 "+response.skillResourceReads.length+" 项":"")+
@@ -893,9 +959,15 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
        (response.agentReadToolCalls?.length?" · 只读工具 "+response.agentReadToolCalls.length+" 次":"")+
        (visual.images.length?" · 视觉图片 "+visual.images.length+" 张":"")};
     setSessions(prev=>streamedId?prev.map(item=>item.id===id?{...item,messages:item.messages.map(message=>message.id===streamedId?finalMessage:message)}:item):append(prev,id,finalMessage));
+    if(manualQuote)setDraftHistoryQuote(current=>current===manualQuote?null:current);
      await taskTracker.observe(linkedTaskId,user.id,"reply",answer);
    }catch(error){
    const stopped=controller.signal.aborted;
+   if(!published){
+    if(!stopped)setHistoryQuoteError(canvasAssistantErrorText(error));
+    return;
+   }
+   if(!stopped&&historyQuote)setDraft(current=>current||draft);
    const replyId=activeStreamTurnRef.current?.turnId===user.id||stopped?user.id+"-reply":null;
    if(replyId)setSessions(prev=>prev.map(chat=>chat.id===id?{...chat,messages:chat.messages.map(item=>item.id===replyId?{...item,meta:stopped?"已停止生成":"回复中断"}:item)}:chat));
    if(!stopped&&activeStreamTurnRef.current?.turnId===user.id)setDraft(current=>current||parsedDraft.text);
@@ -906,7 +978,7 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
       if(activeStreamTurnRef.current?.chatId===id){activeStreamTurnRef.current=null;if(!controller.signal.aborted)sessionStorage.removeItem("infinite-atelier:assistant-stream:"+projectId);}
    setSending(false);
   }
-  },[draft,chosenModel,config,includeContext,getContext,includedIds,effectiveScope,session,setSessions,setActiveChatId,projectId,onApplyActions,onRunActions,getWorkflowTemplates,themeName,resourceReferences,taskTracker,getCanvasCenter,freezeCanvasEdit,prepareCanvasEdit,assertCanvasCurrent,fullGraphGrant,scope]);
+  },[draft,chosenModel,config,includeContext,getContext,includedIds,effectiveScope,session,setSessions,setActiveChatId,projectId,onApplyActions,onRunActions,getWorkflowTemplates,themeName,resourceReferences,taskTracker,getCanvasCenter,freezeCanvasEdit,prepareCanvasEdit,assertCanvasCurrent,fullGraphGrant,scope,draftHistoryQuote]);
   const restoreSkillRun=async(runId:string)=>{
    if(sending||restoringSkillRun)return;
    setRestoringSkillRun(runId);
@@ -1084,7 +1156,7 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
       {session.messages.map(item=>item.role==="error"?(
        <div key={item.id} className="canvas-assistant-error" role="status"><AlertCircle size={15} className="mt-[2px] shrink-0"/><span>{item.text}</span></div>
       ):(
-       <article key={item.id} className={"canvas-assistant-message "+(item.role==="user"?"is-user":"is-assistant")}>
+       <article key={item.id} id={historyMessageAnchor(session.id,item.id)} className={"canvas-assistant-message "+(item.role==="user"?"is-user":"is-assistant")}>
         <span className="canvas-assistant-avatar" aria-hidden="true">{item.role==="user"?<UserRound size={14}/>:<Sparkles size={14}/>}</span>
         <div className="canvas-assistant-message-body">
          <div className="canvas-assistant-speaker">{item.role==="user"?"你":"AI 助手"}</div>
@@ -1102,6 +1174,16 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
            {item.references.length>3?<small>+{item.references.length-3}</small>:null}
           </div>
          ):null}
+         {item.historyQuote?<details className="canvas-assistant-history-quote">
+          <summary>已引用 · {item.historyQuote.label}</summary>
+          {item.historyQuote.localSourceMessageId||item.historyQuote.sourceTurnMessageId?<button
+           type="button" className="canvas-assistant-copy"
+           onClick={()=>document.getElementById(historyMessageAnchor(session.id,
+            item.historyQuote!.localSourceMessageId??item.historyQuote!.sourceTurnMessageId!))?.scrollIntoView({block:"nearest"})}>
+           跳到来源回合
+          </button>:null}
+          <pre>{item.historyQuote.text}</pre>
+         </details>:null}
          {item.role==="assistant"?(
           <div className="canvas-assistant-message-tools">
            <span className="min-w-0 truncate" title={item.meta}>{item.meta||"AI 回复"}</span>
@@ -1111,7 +1193,24 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
             onClick={()=>void restoreSkillRun(completedSkillRunId(item)!)}>
             <FileText size={12}/>{restoringSkillRun===completedSkillRunId(item)?"恢复中":"恢复产物"}
            </button>:null}
+           {taskTracker.activeTaskId?<button type="button" className="canvas-assistant-copy" disabled={sending}
+            onClick={()=>setManualQuoteSource({chatId:session.id,messageId:item.id})}>引用原文</button>:null}
            <CopyAssistantReply text={item.text}/>
+          </div>
+         ):null}
+         {manualQuoteSource?.chatId===session.id&&manualQuoteSource.messageId===item.id?(
+          <div className="canvas-assistant-history-quote">
+           <textarea ref={historyQuoteSelectionRef} aria-label="选择历史原文" readOnly rows={5} value={item.text}
+            onFocus={event=>event.currentTarget.select()}/>
+           <button type="button" className="canvas-assistant-copy" disabled={sending} onClick={()=>{
+            const selection=historyQuoteSelectionRef.current;
+            if(!selection)return;
+            const quote=selection.value.slice(selection.selectionStart,selection.selectionEnd);
+            if(!quote.trim()){setHistoryQuoteError("请先圈选要引用的原文。");return;}
+            setDraftHistoryQuote({chatId:session.id,messageId:item.id,text:quote});
+            setManualQuoteSource(null);setHistoryQuoteChoices(null);setHistoryQuoteError("");
+           }}>确认引用选段</button>
+           <button type="button" className="canvas-assistant-copy" onClick={()=>setManualQuoteSource(null)}>取消</button>
           </div>
          ):null}
         </div>
@@ -1124,6 +1223,26 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
 
    <footer className="canvas-assistant-footer">
     <div className="canvas-assistant-composer">
+     {historyQuoteChoices&&historyQuoteChoices.chatId===session?.id&&historyQuoteChoices.request===draft?(
+      <fieldset className="canvas-assistant-history-quote">
+       <legend>选择要使用的历史镜头</legend>
+       {historyQuoteChoices.items.map((item,index)=><details key={("sourceRequestId" in item?item.sourceRequestId:item.messageId)+":"+item.start} open={historyQuoteChoices.items.length===1}>
+        <summary>{index+1}. {item.label}</summary>
+        <small>{historyQuoteChoiceSource(item,session.messages)}</small><pre>{item.text}</pre>
+        <button type="button" className="canvas-assistant-copy" disabled={sending} onClick={()=>void send(item)}>引用并发送</button>
+       </details>)}
+      </fieldset>
+     ):null}
+     {draftHistoryQuote&&draftHistoryQuote.chatId===session?.id?<details className="canvas-assistant-history-quote">
+      <summary>待发送的历史引文</summary><pre>{draftHistoryQuote.text}</pre>
+      <button type="button" className="canvas-assistant-copy" disabled={sending} onClick={()=>setDraftHistoryQuote(null)}>移除引文</button>
+     </details>:null}
+     {taskTracker.activeTaskId&&selectedImageReferences.length>0&&selectedImageReferences.length<=4?(
+      <button type="button" className="canvas-assistant-copy" disabled={sending} onClick={()=>{
+       setDraft(current=>current+(current?" ":"")+selectedImageReferences.map(canvasResourceReferenceToken).join(" "));
+      }}>附加选中的 {selectedImageReferences.length} 张参考图</button>
+     ):null}
+     {historyQuoteError?<p className="canvas-assistant-skill-error" role="status">{historyQuoteError}</p>:null}
      <CanvasPromptChipInput value={draft} references={resourceReferences} referenceSerialization="identity" onChange={setDraft}
       onSubmit={()=>void send()} submitShortcut="mod-enter" ariaLabel="向 AI 助手发送消息"
       enableSkills projectId={projectId} skillCatalog={skills}

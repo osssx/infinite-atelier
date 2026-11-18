@@ -210,6 +210,7 @@ export type CanvasAssistantMessage = {
     meta?: string;
     detail?: unknown;
     references?: CanvasAssistantReference[];
+    historyQuote?: {text:string;label:string;sourceRequestId?:string;sourceTurnMessageId?:string;localSourceMessageId?:string};
 };
 
 export type CanvasAssistantSession = {

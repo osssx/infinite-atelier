@@ -287,11 +287,11 @@ export function useCanvasAssistantTasks({
    setCallRevision(value=>value+1);
   }catch{setError("任务结果未能保存；聊天记录不受影响。");}
  };
- const recordTurn=async(taskId:string|null,messageId:string,text:string,signal:AbortSignal)=>{
+ const recordTurn=async(taskId:string|null,messageId:string,text:string,signal:AbortSignal,contextPolicy=policy())=>{
   if(!taskId)return;
   try{
    await canvasApi(path(taskId)+"/turns","POST",{
-    requestId:messageId,messageId,text,contextPolicy:policy()
+    requestId:messageId,messageId,text,contextPolicy,...(session?{chatSessionId:session.id}:{})
    },signal);
   }catch(error){setError("任务指令未写入持久记录；为避免未记账的模型调用，本轮任务推理已停止。");throw error;}
  };

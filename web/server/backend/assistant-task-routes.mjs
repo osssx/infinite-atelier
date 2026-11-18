@@ -24,6 +24,8 @@ import {inspectAssistantStoryEventReview,decideAssistantStoryEventReview,
 import {prepareReviewedStoryboardCanvasStep} from "./assistant-story-review-apply.mjs";
 import {agentCanvasStepForRun} from "./assistant-agent-step-coordinator.mjs";
 
+import {assistantHistoryQuotesBody,discoverAssistantHistoryQuotes} from "./assistant-history-quote.mjs";
+
 const id={type:"string",pattern:"^[A-Za-z0-9_-]{1,128}$"};
 const policy={type:"object",additionalProperties:false,required:["includeContext","scope","includedIds"],
  properties:{includeContext:{type:"boolean"},scope:{type:"string",enum:["selection","overview"]},
@@ -56,7 +58,7 @@ const taskPostBody={type:"object",required:["requestId","chatSessionId","rootMes
  additionalProperties:false,properties:{requestId:id,chatSessionId:id,rootMessageId:id,
   originalRequest:{type:"string",minLength:1,maxLength:8000},contextPolicy:policy}};
 const turnBody={type:"object",required:["requestId","messageId","text"],additionalProperties:false,
- properties:{requestId:id,messageId:id,text:{type:"string",minLength:1,maxLength:8000},contextPolicy:policy}};
+ properties:{requestId:id,messageId:id,chatSessionId:id,text:{type:"string",minLength:1,maxLength:8000},contextPolicy:policy}};
 const semanticBody={type:"object",additionalProperties:false,
  required:["requestId","expectedRevision","operation","confirmed","contextPolicy"],
  properties:{requestId:id,expectedRevision:{type:"integer",minimum:0},
@@ -246,6 +248,8 @@ export function registerAssistantTaskRoutes(app,db,{skillRegistry,blobStore,onTa
     agentStep:agentCanvasStepForRun(db,{taskId:req.params.taskId,runId:req.params.runId})}));
  app.post(base+"/:taskId/replan",{schema:{params:taskParams,body:safeReplanBody}},(req,reply)=>result(reply,
   replanAssistantTaskSafely(db,{projectId:req.params.id,taskId:req.params.taskId,...req.body})));
+  app.post(base+"/:taskId/history-quotes",{schema:{params:taskParams,body:assistantHistoryQuotesBody}},(req,reply)=>result(reply,
+   discoverAssistantHistoryQuotes(db,{projectId:req.params.id,taskId:req.params.taskId,...req.body})));
   app.post(base+"/:taskId/turns",{schema:{params:taskParams,body:turnBody}},(req,reply)=>result(reply,
    appendAssistantTaskTurn(db,{projectId:req.params.id,taskId:req.params.taskId,...req.body})));
   // Explicit user action only; semantic edits never enqueue a Job.

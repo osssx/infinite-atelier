@@ -9,6 +9,7 @@ import {beginAssistantModelCommand,createAssistantModelObserver,completeAssistan
 import {assertAssistantAgentReadClaim,createAssistantAgentReadSession} from "./assistant-agent-read-tools.mjs";
 import {agentReadRunId} from "./assistant-agent-run-ledger.mjs";
 import {prepareAssistantSemanticProposals} from "./assistant-semantic-proposals.mjs";
+import {assistantHistoryQuoteSchema,formatAssistantHistoryQuote,resolveAssistantHistoryQuote} from "./assistant-history-quote.mjs";
 import {buildAssistantTaskProviderContext,loadAssistantTaskCreativeHistory} from "./assistant-task-context.mjs";
 import {loadAuthorizedStoryEventRevisionHints} from "./assistant-story-event-context.mjs";
 import {trustedAssistantTaskOutputs} from "./assistant-task-produced-artifacts.mjs";
@@ -686,7 +687,7 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
         agentReadTools:{type:"boolean"},
         skillScriptProposalEnabled:{type:"boolean"},
         task:{type:"object",additionalProperties:false,required:["taskId","requestId","turnMessageId"],properties:{
-         taskId:idSchema,requestId:idSchema,turnMessageId:idSchema,
+         taskId:idSchema,requestId:idSchema,turnMessageId:idSchema,historyQuote:assistantHistoryQuoteSchema,
          callKind:{type:"string",enum:["initial","script_continuation","semantic_proposal"]}
         }},
         visualContext:{type:"object",required:["images"],additionalProperties:false,properties:{
@@ -763,10 +764,20 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
          throw Object.assign(Error("assistant_task_message_untrusted"),
           {code:"assistant_task_message_untrusted",statusCode:403});
        }
-       let chosenMaterials=[],agentReadSession=null,structuredRequirement=null;
+       let chosenMaterials=[],agentReadSession=null,structuredRequirement=null,usedHistoryQuote=null,quoteContext="";
        if(ref){
         const command=beginAssistantModelCommand(db,{projectId:req.params.id,taskId:ref.taskId,
          requestId:ref.requestId,requestPayload:req.body,beforeStart:()=>{
+          if(ref.historyQuote&&(readMode||proposalMode))
+           throw Object.assign(Error("assistant_history_quote_invalid"),{code:"assistant_history_quote_invalid",statusCode:409});
+          if(ref.historyQuote&&(req.body.visualContext||req.body.skills)&&
+           hasSelectedAssistantCreativeMaterials(db,ref.taskId,ref.turnMessageId))
+           throw Object.assign(Error("assistant_history_quote_material_conflict"),
+            {code:"assistant_history_quote_material_conflict",statusCode:409});
+          if(!proposalMode)usedHistoryQuote=resolveAssistantHistoryQuote(db,{projectId:req.params.id,taskId:ref.taskId,
+           turnMessageId:ref.turnMessageId,historyQuote:ref.historyQuote,request:req.body.messages[0]?.content,
+           continuation:ref.callKind==="script_continuation"});
+          if(usedHistoryQuote)quoteContext=formatAssistantHistoryQuote(usedHistoryQuote);
           if(readMode){
            if(hasSelectedAssistantCreativeMaterials(db,ref.taskId,ref.turnMessageId))
             throw Object.assign(Error("assistant_agent_read_source_conflict"),
@@ -798,7 +809,7 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
         }
         // An explicitly approved source set supersedes unrelated model drafts.
         const pinned=requirement?.characters?.some(c=>c.sourceRef)===true||chosenMaterials.length>0;
-        const creativeDrafts=proposalMode||pinned?[]:loadAssistantTaskCreativeHistory(db,{
+        const creativeDrafts=proposalMode||pinned||usedHistoryQuote?[]:loadAssistantTaskCreativeHistory(db,{
          taskId:ref.taskId,currentTurnMessageId:ref.turnMessageId,contextPolicy:frozenPolicy
         });
         // Pinned creative references narrow the prose context: old previews and
@@ -859,7 +870,7 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
         // This is a bounded editorial hint, NOT a user-confirmed fact.
         // An explicitly pinned source, structured deliverable or restricted
         // read/Skill/media turn must never receive unsolicited model drafts.
-        if(!proposalMode&&!pinned&&!readMode&&!requirement&&!req.body.skills&&
+        if(!proposalMode&&!pinned&&!usedHistoryQuote&&!readMode&&!requirement&&!req.body.skills&&
          !req.body.visualContext&&ref.callKind!=="script_continuation"){
          const hints=loadAuthorizedStoryEventRevisionHints(db,{
           taskId:ref.taskId,currentTurnMessageId:ref.turnMessageId,
@@ -868,6 +879,8 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
          if(hints&&Buffer.byteLength(taskContext+"\n"+hints,"utf8")<=16*1024)
           taskContext+="\n"+hints;
         }
+        if(Buffer.byteLength(taskContext+quoteContext,"utf8")>16*1024)
+         throw Object.assign(Error("assistant_history_quote_budget"),{code:"assistant_history_quote_budget",statusCode:413});
         // P0b: client transcript may contain previously selected private nodes.
         // Only the current explicit user request enters the provider payload.
         messages=proposalMode?[{role:"user",content:"仅根据本轮已授权的任务事实和用户历史，提取长期目标、约束或决策候选。无证据时返回空数组。"}]:[req.body.messages.at(-1)];
@@ -914,7 +927,22 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
           frozenPolicy?.includeContext&&frozenPolicy.scope==="selection"?
            frozenPolicy.includedIds:[]);
          // Inspect decoded string values: JSON escaping must not hide source text.
-         const strings=[],pending=[JSON.parse(requestBody)];
+         const body=JSON.parse(requestBody);
+         if(usedHistoryQuote){
+          const rechecked=resolveAssistantHistoryQuote(db,{projectId:req.params.id,taskId:ref.taskId,
+           turnMessageId:ref.turnMessageId,historyQuote:ref.historyQuote,record:false,
+           continuation:ref.callKind==="script_continuation"});
+          const withoutQuote=value=>{
+           const start=value.lastIndexOf(quoteContext);
+           if(start<0||rechecked.text!==usedHistoryQuote.text)
+            throw Object.assign(Error("assistant_history_quote_changed"),{code:"assistant_history_quote_changed",statusCode:409});
+           return value.slice(0,start)+value.slice(start+quoteContext.length);
+          };
+          if(req.body.provider==="google_gemini")
+           body.systemInstruction.parts[0].text=withoutQuote(body.systemInstruction.parts[0].text);
+          else body.messages[0].content=withoutQuote(body.messages[0].content);
+         }
+         const strings=[],pending=[body];
          while(pending.length){
           const value=pending.pop();
           if(typeof value==="string")strings.push(value);
@@ -928,11 +956,12 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
             {code:"assistant_task_context_not_authorized",statusCode:403});
          }
         }}:{}),
-        ...(ref?{taskContext,callObserver:observer,modelCallKind:proposalMode?"initial":ref.callKind??"initial",
+        ...(ref?{taskContext,quoteContext,callObserver:observer,modelCallKind:proposalMode?"initial":ref.callKind??"initial",
          semanticProposal:proposalMode,agentReadSession}:{})});
        const proposed=proposalMode?prepareAssistantSemanticProposals({answer:result.answer,
          requestId:ref.requestId,turnMessageId:ref.turnMessageId,contextPolicy:frozenPolicy}):null;
         const completed={...result,appliedSkillIds:skill.skillIds,usedVisualReferences:visual.references,
+         ...(usedHistoryQuote?{usedHistoryQuote}:{}),
          ...(readMode?{agentRunId:agentReadRunId(req.params.id,ref.taskId,ref.requestId)}:{}),
          ...(proposed?{proposals:proposed.candidates}:{})};
        if(ref)completeAssistantModelCommand(db,{projectId:req.params.id,taskId:ref.taskId,

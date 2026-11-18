@@ -1255,3 +1255,79 @@ describe("P2 assistant confirmation boundary",()=>{
   expect(container!.textContent).toContain("已自动执行 5 项画布操作");
  });
 });
+
+describe("Task historical shot references",()=>{
+ const shot="### 镜头 1｜发现\n- 小兔听见蒲公英丛里有小鸟呼救。";
+ const prompt="把刚才的镜头 1 转成 H3 Ref2VA";
+ const history:CanvasAssistantSession[]=[{id:"shot-chat",title:"三镜头分镜",createdAt:"2026-11-18",
+  updatedAt:"2026-11-18",messages:[
+   {id:"shot-turn",role:"user",text:"输出三镜头分镜"},
+   {id:"shot-reply",role:"assistant",text:shot+"\n\n### 镜头 2｜帮助\n小兔救出小鸟。"}
+  ]}];
+ const candidate={sourceRequestId:"shot-infer",sourceTurnMessageId:"shot-turn",start:0,end:shot.length,
+  text:shot,label:"镜头 1｜发现",digest:"a".repeat(64)};
+ function mockTask(candidates:typeof candidate[]){
+  const task={id:"shot-task",chatSessionId:"shot-chat",chatSessionIds:["shot-chat"],
+   rootMessageId:"shot-turn",originalRequest:"输出三镜头分镜",status:"planning",steps:[],recoveryMode:"guidance_only"};
+  mocks.taskApi.mockImplementation(async(url:string,method:string)=>{
+   if(method==="GET"&&url.includes("chatSessionId="))return {tasks:[task]};
+   if(url.endsWith("/model-calls"))return {calls:[]};
+   if(url.endsWith("/run-sequences"))return {sequence:null,state:"none"};
+   if(url.endsWith("/history-quotes"))return {candidates};
+   return {task};
+  });
+ }
+ it("sends the unique verified excerpt automatically with images and the selected H3 Skill",async()=>{
+  mockTask([candidate]);
+  const image:CanvasResourceReference={id:"bunny",nodeId:"bunny",kind:"image",label:"图片 A",title:"小兔嘟嘟",active:true};
+  skillMocks.snapshot.mockResolvedValue({revision:7,skills:[{
+   id:"h3",name:"H3",description:"H3 Ref2VA",enabled:true,
+   activeVersion:"aaaaaaaaaaaa",versions:["aaaaaaaaaaaa"],updatedAt:"2026-11-18"
+  }]});
+  const fixture=setup([],[image],history);
+  mocks.api.mockResolvedValueOnce({answer:"已转写",model:"demo",
+   usedHistoryQuote:{text:shot,label:candidate.label,sourceTurnMessageId:"shot-turn"}});
+  await renderAndSend(fixture.Harness,prompt+" "+canvasResourceReferenceToken(image)+" /[skill:h3]");
+  expect(mocks.confirm).not.toHaveBeenCalled();
+  expect(container!.textContent).not.toContain("选择要使用的历史镜头");
+  expect(mocks.api.mock.calls[0]?.[2]).toMatchObject({
+   task:{historyQuote:{mode:"auto",sourceRequestId:"shot-infer",start:0,end:shot.length,digest:candidate.digest}},
+   visualContext:{images:[{nodeId:"bunny"}]},skills:{skillIds:["h3"]}
+  });
+  const turn=mocks.taskApi.mock.calls.find(([url])=>url.endsWith("/turns"));
+  expect(turn?.[2]).toMatchObject({chatSessionId:"shot-chat",contextPolicy:{includedIds:["bunny"]}});
+  expect(container!.textContent).toContain("已引用 · 镜头 1｜发现");
+  expect(container!.querySelector(".canvas-assistant-history-quote pre")?.textContent).toBe(shot);
+ });
+ it("waits for the user to choose between matching versions",async()=>{
+  mockTask([candidate,{...candidate,sourceRequestId:"another-infer",text:"### 镜头 1｜建立\n小兔在草地上奔跑。",label:"镜头 1｜建立"}]);
+  const fixture=setup([],[],history);
+  await renderAndSend(fixture.Harness,prompt);
+  expect(mocks.api).not.toHaveBeenCalled();
+  expect(container!.textContent).toContain("选择要使用的历史镜头");
+  const choices=[...container!.querySelectorAll("button")].filter(button=>button.textContent==="引用并发送");
+  expect(choices).toHaveLength(2);
+  await act(async()=>{choices[0].click();});
+  expect(mocks.api.mock.calls[0]?.[2].task.historyQuote).toMatchObject({mode:"selected",sourceRequestId:"shot-infer"});
+ });
+ it("previews an unbound legacy shot and sends it only after explicit selection",async()=>{
+  mockTask([]);
+  const fixture=setup([],[],history);
+  await renderAndSend(fixture.Harness,prompt);
+  expect(mocks.api).not.toHaveBeenCalled();
+  expect(container!.textContent).toContain("选择要使用的历史镜头");
+  const confirm=[...container!.querySelectorAll("button")].find(button=>button.textContent==="引用并发送");
+  await act(async()=>{
+   confirm!.click();
+   await vi.waitFor(()=>expect(mocks.api.mock.calls[0]?.[2].task.historyQuote).toMatchObject({mode:"user",text:shot}));
+  });
+ });
+ it("restores the draft if the backend cannot verify a discovered quote",async()=>{
+  mockTask([candidate]);
+  const fixture=setup([],[],history);
+  mocks.api.mockRejectedValueOnce(new CanvasApiError("assistant_history_quote_invalid",409));
+  await renderAndSend(fixture.Harness,prompt);
+  expect(container!.textContent).toContain("无法验证这段历史引用");
+  expect(container!.querySelector('[aria-label="向 AI 助手发送消息"]')?.textContent).toContain(prompt);
+ });
+});

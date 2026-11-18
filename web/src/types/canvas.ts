@@ -37,6 +37,13 @@ export type CanvasPortDescriptor = {
 export type CanvasNodeStatus = "idle" | "success" | "loading" | "error";
 export type CanvasGenerationMode = "text" | "image" | "video" | "audio";
 export type CanvasImageGenerationType = "generation" | "edit";
+export type CanvasShot = {
+    shotId: string;
+    generationNodeId: string;
+    mode: "independent" | "continuity";
+    take?: { storageKey: string; artifactId?: string; jobId?: string };
+};
+
 export type CanvasVideoReference = { id: string; kind: "image" | "video" | "audio"; role?: "first_frame" | "last_frame" | "reference_image" | "reference_video" | "reference_audio"; storageKey?: string; url?: string; dataUrl?: string; mimeType?: string; durationMs?: number; bytes?: number; width?: number; height?: number };
 export type CanvasVideoTask = { provider: "volcengine_ark" | "router_local" | "openai" | "plugin"; channelId?: string; model: string; taskId: string; startedAt: number; status: "queued" | "running" | "succeeded" | "failed" | "cancelled" | "expired" };
 
@@ -123,6 +130,7 @@ export type CanvasNodeMetadata = {
     bytes?: number;
     durationMs?: number;
     groupId?: string;
+    shotGroup?: { shots: CanvasShot[] };
     interactive?: boolean; // Plugin node interaction/move state; see CanvasNodeDefinition.interactionToggle.
     /** Provenance of any durable ComfyUI artifact (single V2 contract; no legacy fields). */
     /** SQLite JobCoordinator output from a non-Comfy model job. */

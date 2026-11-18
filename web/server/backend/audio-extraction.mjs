@@ -10,7 +10,7 @@ const check=signal=>{if(signal.aborted)throw signal.reason??cancelled()};
 
 /** No shell, remote protocols or user-supplied command arguments. Wait for close
  * after killing so the caller can safely remove temporary files on Windows. */
-export function runMediaProcess(executable,args,{signal}={}){
+export function runMediaProcess(executable,args,{signal,onStderr}={}){
  return new Promise((resolve,reject)=>{
   if(signal?.aborted){reject(signal.reason??cancelled());return}
   const child=spawn(executable,args,{windowsHide:true,stdio:["ignore","pipe","pipe"]});
@@ -24,7 +24,7 @@ export function runMediaProcess(executable,args,{signal}={}){
    if(output.length+chunk.length>65536){failure=extractionError("audio_extraction_failed");child.kill()}
    else output+=String(chunk);
   });
-  child.stderr.on("data",()=>{});
+  child.stderr.on("data",chunk=>onStderr?.(chunk));
   child.on("error",()=>{failure=extractionError("audio_extraction_tool_unavailable",503)});
   child.on("close",code=>{
    clearTimeout(killTimer);signal?.removeEventListener("abort",abort);

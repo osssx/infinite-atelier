@@ -48,7 +48,7 @@ const modelResponse=(message)=>({choices:[{message:{role:"assistant",content:mes
  finish_reason:"stop"}]});
 test("P4.2b stable Run ID, no Schema migration and only Task-backed runs",t=>{
  const f=fixture(t);
- assert.equal(SCHEMA_VERSION,32);
+ assert.equal(SCHEMA_VERSION,33);
  assert.equal(f.runs().runs.length,0);
  const id=agentReadRunId("p",f.task.id,f.requestId);
  assert.equal(id,agentReadRunId("p",f.task.id,f.requestId));

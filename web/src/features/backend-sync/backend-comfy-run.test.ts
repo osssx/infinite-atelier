@@ -2,7 +2,7 @@
 import {describe,expect,it,vi} from "vitest";
 import type {CanvasNodeData,CanvasConnection} from "@/types/canvas";
 import type {ComfyWorkflowTemplate} from "@/features/comfy-workflow/template-schema";
-import {startBackendComfyWorkflowRun} from "./backend-comfy-run";
+import {prepareBackendComfyWorkflowRun,startBackendComfyWorkflowRun} from "./backend-comfy-run";
 import {defaultConfig} from "@/stores/use-config-store";
 import {setAssistantWorkflowParameter} from "@/features/canvas-assistant/canvas-assistant-workflow-params";
 import {applyAssistantCanvasActions} from "@/features/canvas-assistant/canvas-assistant-actions";
@@ -28,6 +28,33 @@ const expectedJob:BackendJobView={id:"new-job",projectId:"p1",executionMode:"pol
  attemptId:null,submitMarker:null,submissionStartedAt:null};
 const copy=<T,>(v:T):T=>JSON.parse(JSON.stringify(v)) as T;
 describe("backend save fence + frozen Comfy submission",()=>{
+ it("selects an inferred first-frame mode for a video shot with only text connected",async()=>{
+  const bridge={state:{status:"connected"},assertNoActiveJob:vi.fn(async()=>{}),assertComfyReady:vi.fn(async()=>{}),
+   saveProjectNow:vi.fn(async()=>{throw Error("read-only check saved the canvas")}),
+   uploadFrozenBlob:vi.fn(async()=>{throw Error("read-only check uploaded an asset")}),
+   submitFrozenJob:vi.fn(async()=>{throw Error("read-only check submitted a job")})};
+  const binding={templateId:"video",templateRevision:"r1",overrides:{},slots:{}};
+  const video={...workflow,id:"video",type:"video",metadata:{comfyMediaPreset:binding}} as CanvasNodeData;
+  const text={...workflow,id:"prompt-text",type:"text",metadata:{content:"next shot"}} as CanvasNodeData;
+  const videoTemplate={...template,id:"video",revision:"r1",ports:[
+   {id:"opening",label:"首帧",direction:"target",valueKind:"IMAGE"},
+   {id:"video",label:"Video",direction:"source",valueKind:"VIDEO",capture:{kind:"video",adapterId:"SaveVideo"}}
+  ],mediaUseCase:{channel:"video",primaryOutputKind:"video",promptPortId:"prompt",primaryOutputPortId:"video",
+   slots:[{id:"opening",label:"首帧",valueKind:"IMAGE"}],
+   mediaCapabilities:{schemaVersion:1,kind:"video",defaultMode:"text_to_video",modes:[
+    {id:"text_to_video",enabled:true,inputs:[],parameters:[]},
+    {id:"first_frame",enabled:true,inputs:[{role:"first_frame",kind:"image",minItems:1,maxItems:1}],parameters:[]}
+   ]},modeBindings:{text_to_video:{rolePorts:{},parameterPorts:{}},first_frame:{rolePorts:{first_frame:["opening"]},parameterPorts:{}}}
+  }} as ComfyWorkflowTemplate;
+  const prepared=await prepareBackendComfyWorkflowRun({bridge,projectId:"p1",workflowNode:video,nodes:[video,text],
+   connections:[{id:"text-input",fromNodeId:text.id,toNodeId:video.id}],template:videoTemplate,instanceId:"comfy-local",
+   outputPortIds:["video"],mediaBinding:binding,workflowMode:"video",prompt:"next shot"},
+   {readOnly:true,continuitySourceId:"pending-tail"});
+  expect(prepared.comfyRequest.runOptions.mediaMode).toBe("first_frame");
+  expect(prepared.comfyRequest.edges).toEqual([{fromNodeId:"pending-tail",fromPortId:"image",toNodeId:video.id,toPortId:"opening"}]);
+  expect(prepared.graph.nodes.map(node=>node.id)).toEqual([video.id,text.id]);
+  expect(bridge.submitFrozenJob).not.toHaveBeenCalled();
+ });
  it("browser source fingerprint matches SQLite server across transitive ancestors",async()=>{
   const nodes=[{id:"scalar",type:"text",title:"txt",width:300,height:220,position:{x:0,y:0},metadata:{content:"seed"}},
    {id:"ref",type:"image",title:"reference",width:300,height:220,position:{x:350,y:0},metadata:{content:"abc"}},workflow];

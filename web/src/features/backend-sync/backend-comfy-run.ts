@@ -42,8 +42,9 @@ async function fromBrowserUrl(url:string):Promise<Blob|null>{
  return response.ok?response.blob():null;
 }
 
-export async function startBackendComfyWorkflowRun(args:BackendComfyWorkflowArgs):Promise<BackendJobView>{
- const {bridge,projectId,workflowNode,template,instanceId,outputPortIds}=args;
+export async function prepareBackendComfyWorkflowRun(args:BackendComfyWorkflowArgs,
+ {readOnly=false,continuitySourceId}:{readOnly?:boolean;continuitySourceId?:string}={}){
+ const {bridge,workflowNode,template,instanceId,outputPortIds}=args;
  if(bridge.state.status!=="connected")throw Error("backend_sync_not_connected");
  await bridge.assertComfyReady(instanceId);
  // The SQLite JobCoordinator owns pending status, recovery and the retry fence.
@@ -71,10 +72,38 @@ export async function startBackendComfyWorkflowRun(args:BackendComfyWorkflowArgs
  // visual context only; only edges targeting declared Comfy ports can be sent.
  const incoming=mediaBinding?allIncoming.filter(edge=>!!edge.toPortId&&template.ports.some(port=>port.id===edge.toPortId)):allIncoming;
  const useCase=template.mediaUseCase;
- const generationMode=useCase?.mediaCapabilities?resolveComfyMediaMode(template,workflowNode.id,graph.nodes,graph.connections,mediaBinding?.mediaMode??args.generationMode):undefined;
+ const explicitMode=mediaBinding?.mediaMode??args.generationMode;
+ let generationMode=useCase?.mediaCapabilities?resolveComfyMediaMode(template,workflowNode.id,graph.nodes,graph.connections,explicitMode):undefined;
+ let continuityPort:string|undefined;
+ const assignmentGraph=continuitySourceId?copy(graph):graph;
+ if(continuitySourceId){
+  if(graph.nodes.some(node=>node.id===continuitySourceId))throw Error("接力素材标识已占用");
+  assignmentGraph.nodes.push({id:continuitySourceId,type:"image" as CanvasNodeData["type"],title:"接力尾帧",
+   position:{x:0,y:0},width:1,height:1,metadata:{storageKey:"cas:"+"0".repeat(64),mimeType:"image/png"}});
+  const modes=(useCase?.mediaCapabilities?.modes??[]).filter(mode=>mode.enabled&&(!explicitMode||mode.id===explicitMode));
+  modes.sort((a,b)=>Number(b.id==="first_frame")-Number(a.id==="first_frame"));
+  let diagnostic="该工作流的当前模式没有首帧输入，请选择支持首帧的模式";
+  for(const mode of modes){
+   const ports=useCase?.modeBindings?.[mode.id]?.rolePorts?.first_frame;
+   const portId=ports?.[0];
+   if(ports?.length!==1||!portId||!template.ports.some(port=>port.id===portId&&port.direction==="target"&&port.valueKind==="IMAGE"))continue;
+   const manual=assignComfyMediaSlots(template,workflowNode.id,graph.nodes,graph.connections,mode.id);
+   if(incoming.some(edge=>edge.toPortId===portId)||args.mediaSlots?.[portId]||manual.slots[portId]||
+      Object.hasOwn(mediaBinding?.overrides??regularBinding?.inputOverrides??{},portId)){
+    diagnostic="首帧输入已占用，请清除手动首帧或选择独立开场";continue;
+   }
+   const edge={id:"handoff-"+continuitySourceId,fromNodeId:continuitySourceId,fromPortId:"image",toNodeId:workflowNode.id,toPortId:portId};
+   if(mediaBinding&&workflowNode.type!=="comfy:workflow"){
+    const candidate=assignComfyMediaSlots(template,workflowNode.id,assignmentGraph.nodes,[...graph.connections,edge],mode.id);
+    if(candidate.errors.length){diagnostic=candidate.errors.join("；");continue;}
+   }
+   generationMode=mode.id;continuityPort=portId;assignmentGraph.connections.push(edge);incoming.push(edge);break;
+  }
+  if(!continuityPort)throw Error(diagnostic);
+ }
  const modeBinding=generationMode?useCase?.modeBindings?.[generationMode]:undefined;
  const mappedPorts=new Set(Object.values(modeBinding?.rolePorts??{}).flat());
- const autoAssignment=mediaBinding&&workflowNode.type!=="comfy:workflow"?assignComfyMediaSlots(template,workflowNode.id,graph.nodes,graph.connections,generationMode):undefined;
+ const autoAssignment=mediaBinding&&workflowNode.type!=="comfy:workflow"?assignComfyMediaSlots(template,workflowNode.id,assignmentGraph.nodes,assignmentGraph.connections,generationMode):undefined;
  if(autoAssignment?.errors.length)throw Error(autoAssignment.errors.join("；"));
  const selectedSlots=autoAssignment?.slots??args.mediaSlots??{};
  const mediaEdges:CanvasConnection[]=[];
@@ -119,7 +148,7 @@ export async function startBackendComfyWorkflowRun(args:BackendComfyWorkflowArgs
    const rule=useCase.mediaCapabilities?.modes.find(item=>item.id===generationMode)?.inputs.find(item=>item.role===role);
    if(!rule&&slot.required&&!ref)throw Error("请先选择必填媒体槽位："+slot.label);
    if(!ref)continue;
-   const source=graph.nodes.find(node=>node.id===ref.nodeId);
+   const source=assignmentGraph.nodes.find(node=>node.id===ref.nodeId);
    if(!source)throw Error("媒体槽位素材已从画布移除："+slot.label);
    if(!incoming.some(edge=>edge.toPortId===slot.id))mediaEdges.push({id:"media-slot-"+slot.id,fromNodeId:source.id,toNodeId:workflowNode.id,
     fromPortId:slot.valueKind.toLowerCase(),toPortId:slot.id});
@@ -135,7 +164,7 @@ export async function startBackendComfyWorkflowRun(args:BackendComfyWorkflowArgs
  if(missing.length)throw Error("请先连接必填媒体输入："+missing.map(p=>p.label).join("、"));
  if(incoming.some(edge=>!edge.toPortId||!edge.fromPortId))
   throw Error("工作流只能使用显式端口连线");
- if(incoming.some(edge=>!graph.nodes.some(n=>n.id===edge.fromNodeId&&["text","image","video","audio"].includes(n.type))))
+ if(incoming.some(edge=>!assignmentGraph.nodes.some(n=>n.id===edge.fromNodeId&&["text","image","video","audio"].includes(n.type))))
   throw Error("工作流外部输入仅支持 Text / Image / Video / Audio 节点");
  const virtualMediaTargetPortIds=new Set([
   ...mediaEdges.map(edge=>edge.toPortId!),
@@ -145,11 +174,16 @@ export async function startBackendComfyWorkflowRun(args:BackendComfyWorkflowArgs
   ...(useCase?.slots.map(slot=>slot.id)??[])
  ]);
  const imageIdsByTargetPort=new Map(Object.entries(selectedSlots).flatMap(([slotId,ref])=>ref?.imageId?[[slotId,ref.imageId] as const]:[]));
- const external=prepareCanvasExternalInputSnapshot(graph.nodes,[...incoming,...mediaEdges],virtualMediaTargetPortIds,imageIdsByTargetPort);
+ const external=prepareCanvasExternalInputSnapshot(assignmentGraph.nodes,[...incoming,...mediaEdges],virtualMediaTargetPortIds,imageIdsByTargetPort);
  const externalInputs:Array<Record<string,unknown>>=[];
  for(const value of external){
   if(value.kind==="scalar"){
    externalInputs.push({...value});continue;
+  }
+  if(value.sourceNodeId===continuitySourceId){
+   externalInputs.push({kind:"asset",sourceNodeId:value.sourceNodeId,sourcePortId:value.sourcePortId,
+    valueKind:value.valueKind,assetId:"0".repeat(64),sha256:"0".repeat(64)});
+   continue;
   }
   const accepted:Record<"IMAGE"|"MASK"|"VIDEO"|"AUDIO",readonly string[]>={
    IMAGE:["image/png","image/jpeg","image/webp"],
@@ -181,30 +215,42 @@ export async function startBackendComfyWorkflowRun(args:BackendComfyWorkflowArgs
   const mime=blob.type||value.mimeType||"";
   if(!accepted[value.valueKind].includes(mime))
    throw Error("ComfyUI 外部媒体格式与端口类型不匹配："+value.valueKind);
+  if(readOnly){
+   if(!blob.size)throw Error("外部媒体文件为空");
+   const digest=Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256",await blob.arrayBuffer())),byte=>byte.toString(16).padStart(2,"0")).join("");
+   externalInputs.push({kind:"asset",sourceNodeId:value.sourceNodeId,sourcePortId:value.sourcePortId,valueKind:value.valueKind,assetId:digest,sha256:digest});
+   continue;
+  }
   const uploaded=await bridge.uploadFrozenBlob(blob,mime);
   if(uploaded.blobId!==uploaded.sha256)throw Error("backend_asset_hash_mismatch");
   externalInputs.push({kind:"asset",sourceNodeId:value.sourceNodeId,sourcePortId:value.sourcePortId,
    valueKind:value.valueKind,assetId:uploaded.blobId,sha256:uploaded.sha256});
  }
  if(canonicalBackendGraph(graph)!==original)throw Error("backend_frozen_graph_mutated");
- const fence=await bridge.saveProjectNow(graph,workflowNode.id);
  const comfyTargetBinding=mediaBinding?{mode:args.workflowMode??useCase?.channel??"image",...(generationMode?{generationMode}:{}),binding:copy(mediaBinding)}:undefined;
- const sourceNodeFingerprint=comfyTargetBinding?await fingerprintComfyTargetBinding(fence.sourceNodeFingerprint,comfyTargetBinding):fence.sourceNodeFingerprint;
- const idempotencyKey=(args.newKey??(()=>crypto.randomUUID()))();
  const comfyRequest={
-  schemaVersion:2,projectId,canvasRevision:String(fence.revision),instanceId,
+  schemaVersion:2,instanceId,
   rootOutputs:outputPortIds.map(portId=>({nodeId:workflowNode.id,portId})),
   nodes:[{id:workflowNode.id,templateId:template.id,templateRevision:template.revision,
    inputOverrides:mediaBinding?mediaOverrides(template,mediaBinding,args.prompt??"",generationMode,workflowNode.metadata?.bboxLayout):copy(regularBinding?.inputOverrides??{})}],
   edges:[...incoming,...mediaEdges].map(edge=>({fromNodeId:edge.fromNodeId,fromPortId:edge.fromPortId!,
    toNodeId:edge.toNodeId,toPortId:edge.toPortId!})),
-  externalInputs,runOptions:generationMode?{mediaMode:generationMode}:{},idempotencyKey
+  externalInputs,runOptions:generationMode?{mediaMode:generationMode}:{}
  };
+ return {graph,comfyRequest,comfyTargetBinding,continuityPort};
+}
+
+export async function startBackendComfyWorkflowRun(args:BackendComfyWorkflowArgs):Promise<BackendJobView>{
+ const {bridge,projectId,workflowNode,template,instanceId}=args;
+ const {graph,comfyRequest,comfyTargetBinding}=await prepareBackendComfyWorkflowRun(args);
+ const fence=await bridge.saveProjectNow(graph,workflowNode.id);
+ const sourceNodeFingerprint=comfyTargetBinding?await fingerprintComfyTargetBinding(fence.sourceNodeFingerprint,comfyTargetBinding):fence.sourceNodeFingerprint;
+ const idempotencyKey=(args.newKey??(()=>crypto.randomUUID()))();
  const payload={
   projectId,targetNodeId:workflowNode.id,
   expectedProjectRevision:fence.revision,sourceNodeFingerprint,
   executionMode:"poll",idempotencyKey,requestFingerprint:idempotencyKey,
-  snapshot:{adapterKind:"comfy",instanceId,comfyRequest,comfyTemplate:copy(template),
+  snapshot:{adapterKind:"comfy",instanceId,comfyRequest:{...comfyRequest,projectId,canvasRevision:String(fence.revision),idempotencyKey},comfyTemplate:copy(template),
    ...(comfyTargetBinding?{comfyTargetBinding}:{})}
  };
  args.beforeSubmit?.();

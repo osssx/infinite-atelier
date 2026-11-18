@@ -7,6 +7,7 @@ const sourceQueries=[
  ["project","SELECT id AS owner,document_json AS body FROM projects WHERE deleted_at IS NULL"],
  ["chat","SELECT project_id AS owner,sessions_json AS body FROM project_chats c JOIN projects p ON p.id=c.project_id WHERE p.deleted_at IS NULL"],
  ["job","SELECT id AS owner,snapshot_json AS body FROM jobs"],
+ ["shot_batch","SELECT b.id AS owner,b.snapshot_json AS body FROM local_shot_batches b JOIN projects p ON p.id=b.project_id WHERE p.deleted_at IS NULL"],
  ["comfy_graph","SELECT job_id AS owner,graph_json AS body FROM comfy_job_preparations"],
  ["comfy_files","SELECT job_id AS owner,image_files_json AS body FROM comfy_job_preparations"],
  ["artifact","SELECT id AS owner,blob_id AS body FROM artifacts"],

@@ -116,7 +116,9 @@ import type {ComfyRunState} from "@/features/comfy-workflow/run-types";
 import { getComfyTemplate } from "@/features/comfy-workflow/template-registry";
 import { resolveCanvasComfyInstance } from "@/features/comfy-workflow/canvas-instance";
 import { CanvasRefreshShell } from "@/components/canvas/canvas-refresh-shell";
-import { startBackendComfyWorkflowRun } from "@/features/backend-sync/backend-comfy-run";
+import { prepareBackendComfyWorkflowRun, startBackendComfyWorkflowRun } from "@/features/backend-sync/backend-comfy-run";
+import {fingerprintBackendSource,fingerprintComfyTargetBinding} from "@/features/backend-sync/backend-source-fingerprint";
+import {CanvasShotPanel,shotTakes,type ShotBatchItem,type ShotCheck} from "@/components/canvas/canvas-shot-panel";
 import {resolveComfyWorkflowSelection} from "@/features/comfy-workflow/comfy-workflow-selection";
 import {createSqliteComfyBridge} from "@/features/backend-sync/sqlite-comfy-bridge";
 import {startSqliteModelGeneration,openAiImageSize} from "@/features/backend-sync/sqlite-model-generation";
@@ -138,7 +140,7 @@ import {setCanvasComfyExecutionScope,setCanvasComfyExecution,observeCanvasComfyE
     getCanvasComfyExecution,markCanvasComfyRunUnobservable,observeCanvasComfyLive} from "@/features/comfy-workflow/canvas-execution-visual";
 import {refreshSqliteComfyArtifacts} from "@/features/backend-sync/sqlite-comfy-job-watch";
 import {CanvasJobHistory} from "@/features/backend-sync/canvas-job-history";
-import {canvasApi} from "@/features/backend-sync/canvas-api";
+import {canvasApi,CanvasApiError} from "@/features/backend-sync/canvas-api";
 import {preserveValidCanvasViewport} from "@/features/backend-sync/canvas-state-persistence";
 import { CanvasTopBar } from "@/components/canvas/canvas-top-bar";
 import { ConnectionCreateMenu, NodeCreateMenu, type PendingConnectionCreate } from "@/components/canvas/canvas-create-menus";
@@ -150,6 +152,7 @@ import {
     type CanvasNodeData,
     type CanvasNodeImage,
     type CanvasNodeMetadata,
+    type CanvasShot,
     type CanvasNodeTypeId,
     type ConnectionHandle,
     type ContextMenuState,
@@ -369,6 +372,14 @@ function AtelierCanvasPage() {
             ? window.devicePixelRatio : 1,
     );
     const [selectedNodeIds, setSelectedNodeIds] = useState<Set<string>>(new Set());
+    const [shotPanel, setShotPanel] = useState<{groupId?:string;shots:CanvasShot[]}|null>(null);
+    const [shotChecks, setShotChecks] = useState<ShotCheck[]>([]);
+    const [excludedShots,setExcludedShots] = useState(new Set<string>());
+    const [shotBatch, setShotBatch] = useState<{id:string;groupId?:string;items:ShotBatchItem[]}|null>(null);
+    const [shotBusy,setShotBusy] = useState(false);
+    const shotOperation = useRef(false);
+    const checkedShots = useRef(new Map<string,string>());
+    const pendingShotConfirmation=useRef<{path:string;body:Record<string,unknown>}|null>(null);
     const [selectedConnectionId, setSelectedConnectionId] = useState<string | null>(null);
     const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
     const [connectingParams, setConnectingParams] = useState<ConnectionHandle | null>(null);
@@ -1228,6 +1239,34 @@ function AtelierCanvasPage() {
         return true;
     }, []);
 
+    const isShotNode=(node:CanvasNodeData)=>node.type===CanvasNodeType.Video||node.type===COMFY_WORKFLOW_MOCK_TYPE;
+    const selectedShots=(onlyVideo=false)=>nodesRef.current
+        .filter(node=>selectedNodeIdsRef.current.has(node.id)&&(!onlyVideo||isShotNode(node)))
+        .sort((a,b)=>a.position.y-b.position.y||a.position.x-b.position.x||a.id.localeCompare(b.id))
+        .map((node):CanvasShot=>({shotId:nanoid(),generationNodeId:node.id,mode:"independent"}));
+    const openShotPanel=(value:NonNullable<typeof shotPanel>)=>{
+        checkedShots.current.clear();setShotChecks([]);setShotBatch(null);setExcludedShots(new Set());setShotPanel(value);
+    };
+    const createShotGroup=async()=>{
+        const candidates=selectedShots(true);
+        const supported=await Promise.all(candidates.map(async shot=>{
+            const node=nodesRef.current.find(item=>item.id===shot.generationNodeId);
+            if(node?.type===CanvasNodeType.Video)return shot;
+            const binding=node?.metadata?.comfyWorkflow;
+            const template=binding&&await getComfyTemplate(binding.templateId,binding.templateRevision);
+            return template?.ports.some(port=>port.direction==="source"&&port.capture?.kind==="video"&&port.capture.adapterId)?shot:null;
+        }));
+        if(activeProjectIdRef.current!==projectId||!pageMountedRef.current)return;
+        const shots=supported.filter((shot):shot is CanvasShot=>shot!==null);
+        if(shots.length<2){message.warning("请选择至少两个视频生成节点");return;}
+        const template=createCanvasNode(CanvasNodeType.Group,{x:0,y:0});
+        const group={...template,title:"镜头组",metadata:{...template.metadata,shotGroup:{shots}}};
+        const result=groupSelectedCanvasNodes(nodesRef.current,new Set(shots.map(shot=>shot.generationNodeId)),group);
+        if(!result){message.warning("无法将所选节点编入镜头组");return;}
+        setNodes(result.nodes);setSelectedNodeIds(new Set([result.group.id]));setSelectedConnectionId(null);
+        openShotPanel({groupId:result.group.id,shots:[]});
+    };
+
     const deleteNodes = useCallback(
         (ids: Set<string>) => {
             if (!ids.size) return;
@@ -1318,6 +1357,10 @@ function AtelierCanvasPage() {
             metadata: source.metadata ? {
                 ...source.metadata,
                 ...(source.metadata.groupId ? { groupId: idMap.get(source.metadata.groupId) ?? source.metadata.groupId } : {}),
+                ...(source.metadata.shotGroup?{shotGroup:{shots:source.metadata.shotGroup.shots.flatMap(shot=>{
+                    const generationNodeId=idMap.get(shot.generationNodeId);
+                    return generationNodeId?[{...shot,shotId:nanoid(),generationNodeId}]:[];
+                })}}:{}),
             } : undefined,
         }));
         const copiedConnections = connectionsRef.current.flatMap((connection) => {
@@ -1387,8 +1430,13 @@ function AtelierCanvasPage() {
 
         const pastedNodes = nextNodes.map((node) => {
             const groupId = node.metadata?.groupId;
-            if (!groupId) return node;
-            return { ...node, metadata: { ...node.metadata, groupId: idMap.get(groupId) } };
+            const shotGroup=node.metadata?.shotGroup;
+            if (!groupId&&!shotGroup) return node;
+            return { ...node, metadata: { ...node.metadata, ...(groupId?{groupId:idMap.get(groupId)}:{}),
+                ...(shotGroup?{shotGroup:{shots:shotGroup.shots.flatMap(shot=>{
+                    const generationNodeId=idMap.get(shot.generationNodeId);
+                    return generationNodeId?[{...shot,shotId:nanoid(),generationNodeId}]:[];
+                })}}:{}) } };
         });
 
         const nextConnections = clipboard.connections.flatMap((connection, index) => {
@@ -2945,6 +2993,167 @@ function AtelierCanvasPage() {
         setContextMenu(null);
     }, []);
 
+    const activeShotGroup=shotPanel?.groupId?nodes.find(node=>node.id===shotPanel.groupId&&node.metadata?.shotGroup):undefined;
+    const panelShots=activeShotGroup?.metadata?.shotGroup?.shots??shotPanel?.shots??[];
+    const shotBatchPath=`/api/v1/projects/${encodeURIComponent(projectId)}/shot-batches`;
+    useEffect(()=>{setShotPanel(null);setShotBatch(null);},[projectId]);
+    useEffect(()=>{
+        if(!projectLoaded)return;
+        let disposed=false;
+        const observed=new Set<string>();
+        const refresh=()=>void canvasApi<Array<NonNullable<typeof shotBatch>>>(shotBatchPath).then(batches=>{
+            if(disposed)return;
+            if(shotPanel)setShotBatch(batches.find(batch=>shotPanel.groupId?batch.groupId===shotPanel.groupId:
+                !batch.groupId&&batch.items.some(item=>shotPanel.shots.some(shot=>shot.shotId===item.shotId)))??null);
+            for(const batch of batches){
+                for(const item of batch.items){
+                    if(!item.jobId||observed.has(item.jobId)||["failed","cancelled","submission_unknown"].includes(item.status))continue;
+                    observed.add(item.jobId);
+                    if(item.status!=="succeeded"||!nodesRef.current.some(node=>node.metadata?.comfyArtifact?.runId===item.jobId))
+                        monitorSqliteJobRef.current(item.jobId,item.status!=="succeeded");
+                }
+            }
+        }).catch(()=>{});
+        refresh();
+        const timer=window.setInterval(refresh,1500);
+        return ()=>{disposed=true;window.clearInterval(timer);};
+    },[projectLoaded,shotBatchPath,shotPanel]);
+    const editShotGroup=(shots:CanvasShot[])=>{
+        if(!activeShotGroup)return;
+        checkedShots.current.clear();
+        setShotChecks(shots.flatMap((shot,index)=>{
+            const oldIndex=panelShots.findIndex(item=>item.shotId===shot.shotId);
+            const oldPrevious=panelShots[oldIndex-1]?.shotId;
+            const previous=shots[index-1]?.shotId;
+            return shot.mode==="continuity"&&oldPrevious!==previous?
+                [{shotId:shot.shotId,state:"blocked" as const,reason:"前镜已变化，请重新检查"}]:[];
+        }));
+        setNodes(current=>current.map(node=>{
+            if(node.id===activeShotGroup.id)return {...node,metadata:{...node.metadata,shotGroup:{shots}}};
+            if(node.metadata?.groupId===activeShotGroup.id&&
+               panelShots.some(shot=>shot.generationNodeId===node.id)&&!shots.some(shot=>shot.generationNodeId===node.id))
+                return {...node,metadata:{...node.metadata,groupId:undefined}};
+            return node;
+        }));
+    };
+    const prepareShotBatch=async(readOnly:boolean,confirmedIds?:Set<string>,resumingItems:ShotBatchItem[]=[])=>{
+        const graph={nodes:nodesRef.current,connections:connectionsRef.current};
+        const group=shotPanel?.groupId?graph.nodes.find(node=>node.id===shotPanel.groupId):undefined;
+        const shots=group?.metadata?.shotGroup?.shots??panelShots;
+        const bridge=createSqliteComfyBridge({projectId,getLocalGraph:()=>({nodes:nodesRef.current,connections:connectionsRef.current})});
+        const checks:ShotCheck[]=[];
+        const signatures=new Map<string,string>();
+        const items:Array<{
+            shotId:string;nodeId:string;sourceNodeFingerprint:string;previousShotId?:string;take?:CanvasShot["take"];continuitySourceId?:string;
+            snapshot:{adapterKind:string;instanceId:string;comfyTemplate:NonNullable<Awaited<ReturnType<typeof getComfyTemplate>>>;
+                comfyRequest:Awaited<ReturnType<typeof prepareBackendComfyWorkflowRun>>["comfyRequest"];
+                comfyTargetBinding?:Awaited<ReturnType<typeof prepareBackendComfyWorkflowRun>>["comfyTargetBinding"]};
+        }>=[];
+        let tailAvailable:Promise<boolean>|undefined;
+        for(const [index,shot] of shots.entries()){
+            if(!confirmedIds&&excludedShots.has(shot.shotId))continue;
+            if(confirmedIds&&!confirmedIds.has(shot.shotId))continue;
+            try{
+                const node=graph.nodes.find(candidate=>candidate.id===shot.generationNodeId);
+                if(!node||group&&node.metadata?.groupId!==group.id)throw Error("镜头节点已移除或离开镜头组");
+                if(!isShotNode(node))throw Error("请选择视频生成节点");
+                const mediaBinding=node.type===CanvasNodeType.Video?resolveComfyWorkflowSelection(effectiveConfig,node,"video"):undefined;
+                const binding=node.type===CanvasNodeType.Video?mediaBinding:node.metadata?.comfyWorkflow;
+                if(!binding)throw Error("此节点未使用本地 ComfyUI 视频工作流");
+                const template=await getComfyTemplate(binding.templateId,binding.templateRevision);
+                if(!template||mediaBinding&&template.mediaUseCase?.channel!=="video")throw Error("本地视频工作流模板不可用");
+                const instanceId=(mediaBinding?.instanceId||globalComfyInstanceId);
+                if(!instanceId)throw Error("请先设置本地 ComfyUI 实例");
+                const ports=template.ports.filter(port=>port.direction==="source"&&port.capture?.adapterId&&port.capture.kind!=="none");
+                if(!ports.some(port=>port.capture?.kind==="video"))throw Error("工作流没有可捕获的视频输出");
+                const outputPortIds=mediaBinding&&template.mediaUseCase?[template.mediaUseCase.primaryOutputPortId,...(template.mediaUseCase.additionalOutputPortIds??[])]:ports.map(port=>port.id);
+                const previous=shot.mode==="continuity"?shots[index-1]:undefined;
+                if(shot.mode==="continuity"&&!previous)throw Error("没有可承接的上一镜");
+                if(previous){
+                    tailAvailable??=canvasApi<{tailFrames:boolean}>(shotBatchPath+"/capabilities").then(value=>value.tailFrames);
+                    if(!await tailAvailable)throw Error("本地 FFmpeg 不可用");
+                }
+                const previousIncluded=previous&&(items.some(item=>item.shotId===previous.shotId)||
+                    resumingItems.some(item=>item.shotId===previous.shotId&&item.jobId));
+                const takes=previous?shotTakes(previous,graph.nodes):[];
+                const take=previous&&!previousIncluded?(previous.take??(takes.length===1?takes[0]:undefined)):undefined;
+                if(previous&&!previousIncluded&&!take&&takes.length>1){checks.push({shotId:shot.shotId,state:"choose",reason:"请选定上一镜成品"});continue;}
+                if(previous&&!previousIncluded&&!take)throw Error("上一镜没有可用成品或未通过检查");
+                if(take){
+                    const url=canvasCasUrl(take.storageKey);
+                    const stat=url&&await fetch(url,{method:"HEAD",credentials:"same-origin",cache:"no-store"});
+                    if(!stat||!stat.ok||!stat.headers.get("content-type")?.startsWith("video/"))throw Error("已选上一镜成品不可读");
+                }
+                const continuitySourceId=previous?`shot-tail-${shot.shotId}`:undefined;
+                const prompt=buildNodeGenerationContext(node.id,graph.nodes,graph.connections,node.metadata?.composerContent??node.metadata?.prompt??"").prompt;
+                const prepared=await prepareBackendComfyWorkflowRun({bridge,projectId,workflowNode:node,...graph,template,instanceId,outputPortIds,
+                    ...(mediaBinding?{mediaBinding,prompt,workflowMode:"video",generationMode:mediaBinding.mediaMode}:{}),
+                },{readOnly,continuitySourceId});
+                const inspection=await canvasApi<{ready:boolean;reason?:string}>(shotBatchPath+"/inspect","POST",{
+                    instanceId,comfyTemplate:template,comfyRequest:prepared.comfyRequest,
+                });
+                if(!inspection.ready)throw Error(inspection.reason==="shot_online_comfy_node"?"该工作流包含需要线上服务的 ComfyUI 节点":
+                    inspection.reason==="shot_comfy_node_missing"?"本地 ComfyUI 缺少工作流节点":inspection.reason??"本地工作流检查失败");
+                const fingerprint=await fingerprintBackendSource(graph,node.id);
+                const sourceNodeFingerprint=prepared.comfyTargetBinding?await fingerprintComfyTargetBinding(fingerprint,prepared.comfyTargetBinding):fingerprint;
+                const signature=JSON.stringify({sourceNodeFingerprint,previous:previous?.shotId,take,instanceId,template:template.revision});
+                if(!readOnly&&checkedShots.current.get(shot.shotId)!==signature)throw Error("镜头或素材已变化，请重新检查");
+                signatures.set(shot.shotId,signature);
+                items.push({shotId:shot.shotId,nodeId:node.id,sourceNodeFingerprint,previousShotId:previous?.shotId,
+                    take,continuitySourceId,snapshot:{adapterKind:"comfy",instanceId,comfyTemplate:template,
+                        comfyRequest:prepared.comfyRequest,comfyTargetBinding:prepared.comfyTargetBinding}});
+                checks.push({shotId:shot.shotId,state:take?"takeReady":previous?"waiting":"ready"});
+            }catch(error){checks.push({shotId:shot.shotId,state:"blocked",reason:error instanceof Error?error.message:String(error)});}
+        }
+        return {graph,checks,items,signatures};
+    };
+    const runShotAction=async(work:()=>Promise<void>)=>{
+        if(shotOperation.current)return;
+        shotOperation.current=true;setShotBusy(true);
+        try{await work();}catch(error){message.error(error instanceof Error?error.message:String(error));}
+        finally{shotOperation.current=false;setShotBusy(false);}
+    };
+    const inspectShotBatch=()=>void runShotAction(async()=>{
+        const result=await prepareShotBatch(true);
+        checkedShots.current=result.signatures;setShotChecks(result.checks);
+    });
+    const confirmShotBatch=()=>void runShotAction(async()=>{
+        const submit=async(body:Record<string,unknown>)=>{
+            pendingShotConfirmation.current={path:shotBatchPath,body};
+            let batch:NonNullable<typeof shotBatch>;
+            try{batch=await canvasApi<NonNullable<typeof shotBatch>>(shotBatchPath,"POST",body);}
+            catch(error){if(error instanceof CanvasApiError&&error.status>=400&&error.status<500)pendingShotConfirmation.current=null;throw error;}
+            pendingShotConfirmation.current=null;
+            if(activeProjectIdRef.current===projectId&&pageMountedRef.current){setShotBatch(batch);checkedShots.current.clear();setShotChecks([]);}
+        };
+        const pending=pendingShotConfirmation.current;
+        if(pending?.path===shotBatchPath){await submit(pending.body);return;}
+        const result=await prepareShotBatch(false,new Set(checkedShots.current.keys()));
+        setShotChecks(result.checks);
+        if(!result.items.length)return;
+        if(activeProjectIdRef.current!==projectId||!pageMountedRef.current)throw Error("画布已切换");
+        const bridge=createSqliteComfyBridge({projectId,getLocalGraph:()=>({nodes:nodesRef.current,connections:connectionsRef.current})});
+        const saved=await bridge.saveProjectNow(result.graph,result.items[0].nodeId);
+        await submit({groupId:shotPanel?.groupId,expectedProjectRevision:saved.revision,idempotencyKey:crypto.randomUUID(),items:result.items});
+    });
+    const changeShotBatch=(action:"stop"|"choose"|"resume",shotId?:string,artifactId?:string)=>void runShotAction(async()=>{
+        if(!shotBatch)return;
+        let body:Record<string,unknown>={action,shotId,artifactId};
+        if(action==="resume"){
+            const blocked=new Set(shotBatch.items.filter(item=>item.status==="blocked"&&!item.jobId).map(item=>item.shotId));
+            const inspection=await prepareShotBatch(true,blocked,shotBatch.items);
+            checkedShots.current=inspection.signatures;setShotChecks(inspection.checks);
+            const result=await prepareShotBatch(false,new Set(inspection.signatures.keys()),shotBatch.items);
+            if(!result.items.length)return;
+            if(activeProjectIdRef.current!==projectId||!pageMountedRef.current)throw Error("画布已切换");
+            const bridge=createSqliteComfyBridge({projectId,getLocalGraph:()=>({nodes:nodesRef.current,connections:connectionsRef.current})});
+            const saved=await bridge.saveProjectNow(result.graph,result.items[0].nodeId);
+            body={action,expectedProjectRevision:saved.revision,items:result.items};
+        }
+        const updated=await canvasApi<NonNullable<typeof shotBatch>>(`${shotBatchPath}/${encodeURIComponent(shotBatch.id)}/actions`,"POST",body);
+        setShotBatch(updated);
+    });
+
     const handleGenerateNode = useCallback(
         async (nodeId: string, mode: CanvasNodeGenerationMode, prompt: string, retryConfig?: typeof defaultConfig,
             taskSubmit?:AssistantTaskJobSubmit) => {
@@ -4183,6 +4392,11 @@ function AtelierCanvasPage() {
                     onAddConfig={() => createNode(CanvasNodeType.Config)}
                     onAddGroup={() => createNode(CanvasNodeType.Group)}
                     onGroupSelected={groupSelectedNodes}
+                    onShotGroup={canGroupSelectedNodes&&nodes.filter(node=>selectedNodeIds.has(node.id)&&isShotNode(node)).length>=2?
+                        ()=>void createShotGroup().catch(error=>message.error(String(error))):undefined}
+                    onShotCheck={singleSelectedNodeId&&nodes.some(node=>node.id===singleSelectedNodeId&&node.metadata?.shotGroup)?
+                        ()=>openShotPanel({groupId:singleSelectedNodeId,shots:[]}):hasMultipleSelectedNodes&&nodes.some(node=>selectedNodeIds.has(node.id)&&isShotNode(node))?
+                        ()=>openShotPanel({shots:selectedShots()}):undefined}
                     onAddDirector={() => createNode(CanvasNodeType.Director)}
                     onUndo={undoCanvas}
                     onRedo={redoCanvas}
@@ -4195,6 +4409,16 @@ function AtelierCanvasPage() {
                 />
 
                 {isMiniMapOpen ? <Minimap nodes={nodes} viewport={viewport} viewportSize={size} onViewportChange={handleViewportChange} /> : null}
+
+                {shotPanel&&<CanvasShotPanel title={activeShotGroup?.title??"批量生成检查"} shots={panelShots} nodes={nodes}
+                    editable={Boolean(activeShotGroup)} busy={shotBusy} checks={shotChecks} items={shotBatch?.items??[]}
+                    excluded={excludedShots} onToggle={(shotId,enabled)=>{
+                        setExcludedShots(current=>{const next=new Set(current);if(enabled)next.delete(shotId);else next.add(shotId);return next;});
+                        checkedShots.current.clear();setShotChecks([]);
+                    }}
+                    onClose={()=>setShotPanel(null)} onEdit={editShotGroup} onCheck={inspectShotBatch} onConfirm={confirmShotBatch}
+                    onStop={()=>changeShotBatch("stop")} onSelectOutput={(shotId,artifactId)=>changeShotBatch("choose",shotId,artifactId)}
+                    onResume={()=>changeShotBatch("resume")}/>}
 
                 <CanvasZoomControls scale={viewport.k} onScaleChange={setZoomScale} onFitView={fitViewport} canFocusSelected={nodes.some((node) => selectedNodeIds.has(node.id))} onFocusSelected={focusSelectedNodes} isMiniMapOpen={isMiniMapOpen} onToggleMiniMap={() => setIsMiniMapOpen((value) => !value)} />
 

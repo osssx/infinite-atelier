@@ -1,5 +1,5 @@
 import{JOB_STATUSES,EXECUTION_MODES,ARTIFACT_KINDS}from"./contracts.mjs";
-export const SCHEMA_VERSION=32;
+export const SCHEMA_VERSION=33;
 const quoted=x=>x.map(s=>"'"+s+"'").join(",");
 export const INITIAL_SCHEMA_SQL=`
 CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY,applied_at INTEGER NOT NULL);
@@ -708,6 +708,7 @@ export function initializeSchema(db){
   if(version<30)db.exec(ASSISTANT_TASK_RUN_BRANCH_SCHEMA_SQL);
   if(version<31)db.exec(ASSISTANT_TASK_RUN_JOIN_SCHEMA_SQL);
   if(version<32)db.exec(ASSISTANT_TASK_RUN_FAILOVER_SCHEMA_SQL);
+  if(version<33)db.exec(LOCAL_SHOT_BATCH_SCHEMA_SQL);
   if(version<SCHEMA_VERSION)db.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)").run(SCHEMA_VERSION,Date.now());
   db.exec("COMMIT");
  }catch(e){db.exec("ROLLBACK");throw e}
@@ -718,6 +719,17 @@ CREATE TABLE IF NOT EXISTS comfy_template_version_notes(
  template_id TEXT NOT NULL,revision TEXT NOT NULL,note TEXT NOT NULL DEFAULT '' CHECK(length(note)<=200),
  PRIMARY KEY(template_id,revision),FOREIGN KEY(template_id,revision) REFERENCES comfy_template_versions(template_id,revision) ON DELETE CASCADE
 );
+`;
+
+const LOCAL_SHOT_BATCH_SCHEMA_SQL=`
+CREATE TABLE IF NOT EXISTS local_shot_batches(
+ id TEXT PRIMARY KEY,project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,group_id TEXT,
+ request_key TEXT NOT NULL,request_digest TEXT NOT NULL,snapshot_json TEXT NOT NULL CHECK(json_valid(snapshot_json)),
+ created_at INTEGER NOT NULL,UNIQUE(project_id,request_key));
+CREATE INDEX IF NOT EXISTS local_shot_batches_project ON local_shot_batches(project_id,created_at DESC);
+CREATE TABLE IF NOT EXISTS local_shot_tails(source_blob_id TEXT PRIMARY KEY,receipt_json TEXT NOT NULL CHECK(json_valid(receipt_json)));
+${["INSERT","UPDATE","DELETE"].map(event=>`CREATE TRIGGER IF NOT EXISTS blob_ref_dirty_local_shot_batches_${event.toLowerCase()} AFTER ${event} ON local_shot_batches
+ BEGIN UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1; END;`).join("\n")}
 `;
 
 export const SKILL_SCRIPT_RUNS_SCHEMA_SQL=`

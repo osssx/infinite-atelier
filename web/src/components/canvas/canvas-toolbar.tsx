@@ -23,6 +23,8 @@ export function CanvasToolbar({
     onAddConfig,
     onAddGroup,
     onGroupSelected,
+    onShotGroup,
+    onShotCheck,
     onAddDirector,
     onUndo,
     onRedo,
@@ -47,6 +49,8 @@ export function CanvasToolbar({
     onAddConfig: () => void;
     onAddGroup: () => void;
     onGroupSelected: () => void;
+    onShotGroup?: () => void;
+    onShotCheck?: () => void;
     onAddDirector: () => void;
     onUndo: () => void;
     onRedo: () => void;
@@ -148,6 +152,12 @@ export function CanvasToolbar({
                                 <Group className="size-4.5" />
                             </ToolbarButton>
                         ) : null}
+                        {onShotGroup && <ToolbarButton id="tool-shot-group" label="创建镜头组" hovered={hovered} hoverStyle={hoverStyle} wrapRef={wrapRef} onTipX={setTipX} onHover={setHovered} onClick={onShotGroup}>
+                            <Clapperboard className="size-4.5" />
+                        </ToolbarButton>}
+                        {onShotCheck && <ToolbarButton id="tool-shot-check" label="批量生成检查" hovered={hovered} hoverStyle={hoverStyle} wrapRef={wrapRef} onTipX={setTipX} onHover={setHovered} onClick={onShotCheck}>
+                            <Video className="size-4.5" />
+                        </ToolbarButton>}
                         <ToolbarButton id="tool-delete" label={t("canvas.deleteSelected")} hovered={hovered} hoverStyle={hoverStyle} wrapRef={wrapRef} onTipX={setTipX} onHover={setHovered} onClick={onDelete} danger>
                             <Trash2 className="size-4.5" />
                         </ToolbarButton>

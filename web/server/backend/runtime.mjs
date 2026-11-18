@@ -19,7 +19,7 @@ import {buildApp} from "./app.mjs";
 import {createWindowsDpapiProtector} from "./credential-protection.mjs";
 import {createCredentialVault} from "./credential-vault.mjs";
 import {createJobCoordinator} from "./job-coordinator.mjs";
-import {createComfyV2Adapters} from "./comfy-v2-adapter.mjs";
+import {createComfyV2Adapters,comfyUpstream} from "./comfy-v2-adapter.mjs";
 import {createComfyLiveHub} from "./comfy-live.mjs";
 import {createComfyInstanceRegistry} from "./comfy-instances.mjs";
 import {createOpenAiModelAdapter} from "./openai-model-adapter.mjs";
@@ -37,6 +37,8 @@ import {createTrustedMediaDownloader} from "./trusted-media-download.mjs";
 import {readArkAssetConfig,createArkAssetManager} from "./ark-asset-manager.mjs";
 import {createCanvasMaterializer} from "./canvas-materializer.mjs";
 import {createBackendWorker} from "./worker.mjs";
+import {createShotBatches} from "./shot-groups.mjs";
+import {createTailFrameExtractionService} from "./tail-frame-extraction.mjs";
 import {createAssistantTaskContinuationEvents} from "./assistant-task-continuation-events.mjs";
 /** Resolve the user-data directory; reject worktree paths and junction aliases. */
 const sourceRoot=realpathSync(fileURLToPath(new URL("../../../",import.meta.url)));
@@ -137,13 +139,18 @@ export function createLocalBackend({dataDir,streamPollMs=200,adapters,comfyInsta
   // One bounded replay of already persisted receipts after crash between
   // external completion and event delivery. No remote request is possible.
   try{continuationEvents.catchUp()}catch{/* explicit /continue-safe remains available */}
-  const worker=autoDispatch?createBackendWorker({coordinator,materializer,intervalMs:dispatchIntervalMs}):null;
+  const shotBatches=autoDispatch?createShotBatches({db,blobStore,tailFrames:createTailFrameExtractionService({dataDir:root,blobStore}),
+   instanceIds:()=>comfyRegistry?comfyRegistry.list().map(item=>item.id):comfyInstances?.map(item=>item.id)??[],
+   instanceOrigin:id=>(comfyRegistry?comfyRegistry.list():comfyInstances)?.find(instance=>instance.id===id)?.url,
+   objectInfo:async id=>comfyRegistry?(await comfyRegistry.objectInfo(id)).objectInfo:
+    (comfyUpstreamCall??comfyUpstream)(comfyInstances.find(instance=>instance.id===id),"/object_info",{timeoutMs:10000})}):null;
+  const worker=autoDispatch?createBackendWorker({coordinator,materializer,shotBatches,intervalMs:dispatchIntervalMs}):null;
   const app=buildApp({db,sessionAuth,autoLocalSession,blobStore,mediaPreview,audioExtraction,blobGc,projectArchive,vault,skillRegistry,
     assistantChat:enableOpenAiModels?createAssistantChatService({vault,...(modelUpstreamCall?{upstreamCall:modelUpstreamCall}: {})}):null,
    arkChannelHealth:createArkChannelHealth({vault}),
    modelCatalog:openai||gemini?args=>vault.get(args.channelId).provider==="google_gemini"?
     gemini.listModels({channelId:args.channelId,endpointBaseUrl:args.endpointBaseUrl}):openai.listModels(args):null,
-   mediaDownloader:createTrustedMediaDownloader({blobStore}),coordinator,materializer,worker,
+   mediaDownloader:createTrustedMediaDownloader({blobStore}),coordinator,materializer,worker,shotBatches,
    onTaskSkillSettled:runId=>signal("skill",runId),
    comfyRegistry,comfyWorkflowDir,comfyLive,comfyInstanceIds:comfyRegistry?()=>comfyRegistry.list().map(item=>item.id):comfyInstances?.map(item=>item.id)??[],modelKinds:[...new Set([...(enableOpenAiModels?["image","audio","text","video"]:[]),...(enableArkVideos?["video"]:[])])],arkAssetUploadReady:Boolean(assetManager),streamPollMs});
   worker?.start();

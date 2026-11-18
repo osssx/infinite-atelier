@@ -97,7 +97,7 @@ function context(t){
 }
 test("P4.5a same frozen local template admitted after prior verified materialization, no extra approval",t=>{
  const f=context(t);
- assert.equal(SCHEMA_VERSION,32);
+ assert.equal(SCHEMA_VERSION,33);
  // Already-enqueued frozen Step remains idempotently inspectable; a forged
  // grant cannot create a second Job or authorize another workflow.
  assert.equal(f.enqueue(f.first,"forged").jobId,f.queued.jobId);

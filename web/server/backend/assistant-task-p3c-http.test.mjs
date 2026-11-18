@@ -83,7 +83,7 @@ test("P3c3d v31 -> v32 failure recovery migration preserves existing Task and Jo
 });
 test("P3c chat link requires explicit command; original chat remains unchanged and replay is idempotent",async t=>{
  const {db,call,taskId,base}=await fixture(t);
- assert.equal(SCHEMA_VERSION,32);
+ assert.equal(SCHEMA_VERSION,33);
  const one=await call("GET","/api/v1/projects/p/assistant/tasks?chatSessionId=chat-one");
  assert.deepEqual(one.body.tasks[0].chatSessionIds,["chat-one"]);
  const before=await call("GET","/api/v1/projects/p/assistant/tasks?chatSessionId=chat-two");

@@ -126,7 +126,7 @@ test("P4.3 a replanned Task cannot infer using the previous plan's requirement",
 for(const type of Object.keys(definitions)){
  test("P4.3 "+type+" has frozen spec, approved Step and only verifier completes Task",t=>{
   const f=fixture(t,type);
-  assert.equal(SCHEMA_VERSION,32);
+  assert.equal(SCHEMA_VERSION,33);
   const registered=f.register();
   assert.equal(registered.deliverableType,type);
   assert.equal(f.register().existing,true);

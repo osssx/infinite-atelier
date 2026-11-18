@@ -65,6 +65,23 @@ test("complete ZIP roundtrip restores graph, separate viewport/chat and both med
  assert.deepEqual((await f.blobStore.stat(vid.blobId)).byteSize,mp4.length);
 });
 
+test("shot groups restore ordered nodes and selected CAS takes without recreating batches",async t=>{
+ const f=await fixture(t);
+ const take=await f.blobStore.put([mp4],{mime:"video/mp4"});
+ const group={id:"shots",type:"group",metadata:{shotGroup:{shots:[
+  {shotId:"first",generationNodeId:"a",mode:"independent",take:{storageKey:"cas:"+take.blobId}},
+  {shotId:"second",generationNodeId:"b",mode:"continuity"}
+ ]}}};
+ const original=createProject(f.db,{document:{title:"Shots",nodes:[group,
+  {id:"a",type:"video",metadata:{groupId:group.id}},{id:"b",type:"video",metadata:{groupId:group.id}}
+ ],connections:[]}});
+ const archive=await f.archive.exportProject(original.id);
+ const imported=await f.archive.importProject(archive.stream);
+ assert.equal(imported.mediaCount,1);
+ assert.deepEqual(getProject(f.db,imported.id).document.nodes,original.document.nodes);
+ assert.equal(f.db.prepare("SELECT count(*) AS n FROM local_shot_batches WHERE project_id=?").get(imported.id).n,0);
+});
+
 test("P4.5 project archive embeds immutable Comfy versions and restores them in another SQLite database",async t=>{
  const {createHash}=await import("node:crypto");
  const {createComfyRegistry}=await import("./comfy-registry.mjs");

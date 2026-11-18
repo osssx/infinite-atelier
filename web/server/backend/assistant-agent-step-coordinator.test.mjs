@@ -54,7 +54,7 @@ function fixture(t,{initial=false}={}){
 }
 test("P4.2c completed Run freezes exact model actions into a waiting-approval Step",t=>{
  const f=fixture(t,{initial:true});
- assert.equal(SCHEMA_VERSION,32);
+ assert.equal(SCHEMA_VERSION,33);
  const step=f.plan();
  assert.equal(step.status,"waiting_approval");
  assert.equal(step.agentRunId,f.runId);

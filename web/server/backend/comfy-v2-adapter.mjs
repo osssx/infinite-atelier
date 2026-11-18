@@ -168,6 +168,8 @@ export function createComfyV2Adapter({instance,db,blobStore,upstreamCall=comfyUp
   if(getPreparation(db,job.id))return; // immutable compilation, including across restarts
   const request=snapshot.comfyRequest,template=snapshot.comfyTemplate;
   const info=await upstreamCall(trusted,"/object_info");
+  if(snapshot.localShotBatch&&snapshot.comfyTemplate.requirements.classTypes.some(type=>info?.[type]?.api_node||info?.[type]?.apiNode))
+   throw fail("shot_local_video_workflow_required",422);
   // Names are content-derived and uploads can safely be repeated before /prompt.
   const mediaFiles={};
   const allowed={

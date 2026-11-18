@@ -32,6 +32,7 @@ import {getAssetCatalog,putAssetCatalog} from "./asset-catalog.mjs";
 import {listSkillRegistry,getSkillRegistryPackage,getAuthorizedSkillCatalog,updateSqliteSkill} from "./sqlite-skill-registry.mjs";
 import {getUiSetting,putUiSetting} from "./ui-settings.mjs";
 import {listScriptAssetReconciliation,reconcileScriptAsset,resumeReconciledVideoJob} from "./script-asset-reconciliation.mjs";
+import {registerShotGroupRoutes} from "./shot-group-routes.mjs";
 const nonempty={type:"string",minLength:1,maxLength:256};
 const idSchema={type:"string",pattern:"^[A-Za-z0-9_-]{1,128}$"};
 const canvasNodeIdSchema={type:"string",pattern:CANVAS_NODE_ID_PATTERN};
@@ -99,7 +100,7 @@ function cursorOf(value){
  return Number(v);
 }
 export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobStore,mediaPreview,audioExtraction,blobGc,projectArchive,comfyWorkflowDir,vault,coordinator,materializer,worker,comfyRegistry,comfyLive,comfyInstanceIds=[],modelKinds=[],arkAssetUploadReady=false,
- arkChannelHealth,modelCatalog,mediaDownloader,skillRegistry,onTaskSkillSettled,assistantChat,logger=false,streamPollMs=200}={}){
+ arkChannelHealth,modelCatalog,mediaDownloader,skillRegistry,onTaskSkillSettled,assistantChat,shotBatches,logger=false,streamPollMs=200}={}){
  if(!db||(!sessionAuth&&typeof authorize!=="function"))throw Error("backend_authorizer_required");
  const app=Fastify({logger,bodyLimit:5*1024*1024,trustProxy:false,genReqId:()=>randomUUID()});
  if(blobStore)app.addContentTypeParser("application/octet-stream",(req,stream,done)=>done(null,stream));
@@ -114,7 +115,7 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
  });
  app.setErrorHandler((error,req,reply)=>{
   const status=error.statusCode>=400&&error.statusCode<600?error.statusCode:500;
-  const publicCodes=new Set(["assistant_local_comfy_approval_required","assistant_local_comfy_scope_unsupported","project_revision_conflict","project_not_found","project_id_conflict","invalid_project_document",
+  const publicCodes=new Set(["assistant_local_comfy_approval_required","assistant_local_comfy_scope_unsupported","project_revision_conflict","project_not_found","project_id_conflict","invalid_project_document","shot_batch_invalid","shot_batch_not_found","shot_choice_invalid","shot_action_invalid",
    "invalid_project_id","project_document_too_large","expected_revision_required","invalid_project_reference",
    "invalid_canvas_chats","invalid_canvas_viewport","canvas_chats_too_large",
     "assistant_task_invalid","assistant_task_not_found","assistant_task_not_editable","assistant_task_payload_too_large","assistant_task_command_conflict",
@@ -662,6 +663,7 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
  app.put("/api/v1/projects/:id/chats",{schema:{params:canvasParams,body:chatsBody}},req=>
   putCanvasChats(db,req.params.id,req.body));
  registerAssistantTaskRoutes(app,db,{skillRegistry,blobStore,onTaskSkillSettled});
+ registerShotGroupRoutes(app,{shotBatches});
    app.post("/api/v1/projects/:id/assistant/chat",{schema:{params:canvasParams,body:{type:"object",
      required:["channelId","provider","model","messages"],additionalProperties:false,properties:{
        channelId:idSchema,provider:{type:"string",enum:["openai","openai_compatible","google_gemini"]},

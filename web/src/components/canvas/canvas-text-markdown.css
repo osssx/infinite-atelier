@@ -28,8 +28,6 @@
 /* One inset code surface that belongs to the node, rather than Streamdown's
    default bright card + second bordered editor. The tokens come from CanvasTheme. */
 .canvas-node-markdown .canvas-md-code-block {
-    position: relative;
-    min-width: 0;
     margin: .35em 0 .8em;
 }
 .canvas-node-markdown .canvas-md-code-block [data-streamdown="code-block"] {
@@ -65,14 +63,11 @@
 }
 /* Keep both actions in Streamdown's original toolbar; no independent vertical offsets. */
 .canvas-node-markdown .canvas-md-code-block [data-streamdown="code-block"] > div:has(> [data-streamdown="code-block-actions"]) {
-    position: absolute;
-    inset: .3125rem .5rem auto auto;
     z-index: 21;
     display: flex;
     align-items: center;
     justify-content: flex-end;
     height: 1.625rem;
-    margin: 0;
     padding: 0;
     background: transparent;
     border: 0;

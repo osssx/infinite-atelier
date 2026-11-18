@@ -438,6 +438,43 @@
 .canvas-assistant-markdown :is(pre,code) { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
 .canvas-assistant-markdown :not(pre) > code { border-radius: 4px; padding: 2px 4px; background: var(--assistant-code-surface); }
 .canvas-assistant-markdown pre { max-width: 100%; overflow-x: auto; padding: 10px; border: 1px solid var(--assistant-code-border); border-radius: 8px; background: var(--assistant-code-surface); }
+.canvas-assistant-markdown [data-streamdown="code-block"] {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  max-width: 100%;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--assistant-code-border);
+  border-radius: 8px;
+  background: var(--assistant-code-surface);
+  /* Streamdown supplies content-visibility inline. */
+  content-visibility: visible !important;
+}
+.canvas-assistant-markdown [data-streamdown="code-block-header"] {
+  display: flex;
+  align-items: center;
+  min-height: 2.5rem;
+  padding: 0 3rem 0 10px;
+  border-bottom: 1px solid var(--assistant-code-border);
+  color: var(--assistant-muted);
+}
+.canvas-assistant-markdown [data-streamdown="code-block-body"] {
+  min-width: 0;
+  overflow-x: auto;
+  padding: 10px;
+  border: 0;
+  background: transparent;
+}
+.canvas-assistant-markdown [data-streamdown="code-block-body"] pre {
+  width: max-content;
+  min-width: 100%;
+  max-width: none;
+  padding: 0;
+  overflow: visible;
+  border: 0;
+  background: transparent;
+}
 .canvas-assistant-markdown blockquote { padding-left: 9px; border-left: 2px solid var(--assistant-border); color: var(--assistant-muted); }
 .canvas-assistant-markdown table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; }
 .canvas-assistant-markdown :is(td,th) { border: 1px solid var(--assistant-border); padding: 4px 6px; }

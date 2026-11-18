@@ -470,6 +470,18 @@
     mix-blend-mode: normal;
 }
 
+/* Keep Streamdown's toolbar attached to the code block as its parent scrolls. */
+:is(.canvas-node-markdown .canvas-md-code-block, .canvas-assistant-markdown [data-streamdown="code-block"]) {
+    position: relative;
+    min-width: 0;
+}
+
+:is(.canvas-node-markdown .canvas-md-code-block, .canvas-assistant-markdown) [data-streamdown="code-block"] > div:has(> [data-streamdown="code-block-actions"]) {
+    position: absolute;
+    inset: .3125rem .5rem auto auto;
+    margin: 0;
+}
+
 .agent-streamdown {
     overflow-wrap: anywhere;
 }

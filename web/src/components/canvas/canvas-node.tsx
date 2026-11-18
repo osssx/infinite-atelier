@@ -159,7 +159,6 @@ export const CanvasNode = React.memo(function CanvasNode({
     // Transparent nodes such as SVGs blend into the canvas while retaining outlines for selected or related states.
     const transparentBg = Boolean(definition?.transparentBackground);
     const isActive = isConnectionTarget || isSelected || isFocusRelated;
-    const imageBorderColor = isActive ? selectionBlue : isRelated ? theme.node.muted : "transparent";
     const textareaRef = useRef<HTMLTextAreaElement>(null);
     const titleInputRef = useRef<HTMLInputElement>(null);
     const dragRuntimeElementRef = useRef<HTMLDivElement>(null);
@@ -471,13 +470,11 @@ export const CanvasNode = React.memo(function CanvasNode({
                         ? isGroupDropTarget || isActive
                             ? selectionBlue
                             : theme.node.stroke
-                        : hasImageContent
-                          ? imageBorderColor
-                          : isActive
+                        : isActive
                             ? selectionBlue
                             : isRelated
                               ? theme.node.muted
-                              : transparentBg
+                              : hasImageContent || hasVideoContent || transparentBg
                                 ? "transparent"
                                 : theme.node.stroke,
                     borderStyle: isGroup ? "dashed" : "solid",
@@ -894,7 +891,7 @@ function VideoNodeContent({ node, theme, onMediaPlaybackChange }: NodeContentRen
 
     const poster = storageKey && cover?.key === storageKey ? cover.url : PERF_MODE ? node.metadata?.perfStaticPosterUrl ?? null : null;
     return (
-        <div className="relative h-full w-full overflow-hidden rounded-[18px] bg-black" data-canvas-video-shell>
+        <div className="relative h-full w-full bg-black" data-canvas-video-shell>
             <video ref={videoRef}
                 controls={frameReady}
                 preload="none"

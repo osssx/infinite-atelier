@@ -77,11 +77,12 @@ export const CompactCanvasNode = memo(function CompactCanvasNode({
         : isVideo && PERF_MODE ? data.metadata?.perfStaticPosterUrl ?? null : imageSource;
 
     const hasImage = Boolean(imageSource);
+    const hasVideo = isVideo && Boolean(data.metadata?.content);
     const active = isSelected || isGroupDropTarget;
     const accent = definition?.minimapColor || theme.node.muted;
     const transparent = Boolean(definition?.transparentBackground);
-    const borderColor = active ? "#2f80ff" : isGroup ? theme.node.stroke : hasImage ? "transparent" : isRelated ? theme.node.muted : transparent ? "transparent" : theme.node.stroke;
-    const background = isGroup ? `${theme.toolbar.panel}66` : hasImage || (isVideo && data.metadata?.content) || transparent ? "transparent" : theme.node.fill;
+    const borderColor = active ? "#2f80ff" : isGroup ? theme.node.stroke : hasImage ? "transparent" : isRelated ? theme.node.muted : hasVideo || transparent ? "transparent" : theme.node.stroke;
+    const background = isGroup ? `${theme.toolbar.panel}66` : hasImage || hasVideo || transparent ? "transparent" : theme.node.fill;
 
     return (
         <div ref={dragRuntimeElementRef} data-node-id={hitActive ? data.id : undefined} data-canvas-compact-node={hitActive ? "" : undefined} data-canvas-lod-node={data.id} title={data.type === CanvasNodeType.Text ? data.metadata?.content || data.title : data.title}
@@ -122,7 +123,7 @@ export const CompactCanvasNode = memo(function CompactCanvasNode({
                 ) : null}
                 {isImage && !imageSource ? <div className="pointer-events-none grid h-full w-full place-items-center" style={{ color: theme.node.placeholder }}><span className="text-2xl opacity-40">▧</span></div> : null}
                 {isVideo ? (
-                    <div className="pointer-events-none flex h-full w-full items-center justify-center" style={{ background: data.metadata?.content ? "#000" : theme.node.fill }}>
+                    <div className="pointer-events-none flex h-full w-full items-center justify-center" style={{ background: hasVideo ? "#000" : theme.node.fill }}>
                         {showImagePreview && previewUrl && isVideo ? (
                             <img src={previewUrl} alt="" draggable={false} decoding="async"
                                 data-canvas-compact-poster

@@ -58,11 +58,12 @@ export function CanvasShotPanel({title,shots,nodes,editable,busy,checks,items,ex
    const node=nodes.find(value=>value.id===shot.generationNodeId),check=checks.find(value=>value.shotId===shot.shotId);
    const item=items.find(value=>value.shotId===shot.shotId),takes=shotTakes(shot,nodes);
    const take=shot.take??(takes.length===1?takes[0]:undefined);
+   const generationLabel=item?(batchLabels[item.status]??item.status):takes.length?"已完成":undefined;
    const reason=check?.reason??(item?.reason&&(batchReasons[item.reason]??item.reason));
    return <section key={shot.shotId} className="mb-3 space-y-2 rounded-lg border border-solid border-current/15 p-3">
     <div className="flex flex-wrap items-center justify-between gap-2">
      <strong><Checkbox disabled={busy} checked={!excluded.has(shot.shotId)} onChange={event=>onToggle(shot.shotId,event.target.checked)}>{index+1}. {node?.title||"节点已移除"}</Checkbox></strong>
-     <Space>{item&&<Tag>{batchLabels[item.status]??item.status}</Tag>}{check&&<Tag>{checkLabels[check.state]}</Tag>}</Space>
+     <Space wrap>{generationLabel&&<Tag>{generationLabel}</Tag>}{item&&item.status!=="succeeded"&&takes.length>0&&<Tag>已有成品</Tag>}{check&&<Tag>{checkLabels[check.state]}</Tag>}</Space>
     </div>
     {editable&&<Space wrap>
      <Select aria-label="镜头承接方式" value={shot.mode} disabled={busy} onChange={mode=>edit(index,{mode})} options={[

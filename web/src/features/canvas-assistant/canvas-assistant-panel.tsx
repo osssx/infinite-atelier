@@ -1,3 +1,4 @@
+import type {FrozenCanvasEditContext} from "./canvas-edit-authorization";
 import {useCallback,useEffect,useMemo,useRef,useState,type CSSProperties,type Dispatch,type SetStateAction} from "react";
 import {Modal} from "antd";
 import {AlertCircle,ArrowUp,ArrowUpRight,Bot,Check,ChevronDown,ChevronUp,Clock3,Copy,FileText,Image as ImageIcon,Layers3,Link2,LoaderCircle,MessageSquarePlus,Music2,Plus,RefreshCw,Sparkles,Square,Trash2,UserRound,Video,X} from "lucide-react";
@@ -17,7 +18,7 @@ import {wantsAssistantTaskReadTools} from "./canvas-assistant-read-tool-intent";
 import {detectAssistantCreativeMaterialIntent,selectAssistantCreativeMaterialsForRequest,summarizeAssistantCreativeMaterials,type AssistantCreativeMaterial} from "./canvas-assistant-creative-materials";
 import {isCanvasAssistantTextOnlyRequest,isCanvasAssistantSkillOptOutRequest,isCanvasAssistantCanvasActionRequest} from "./canvas-assistant-output-intent";
 import {useCanvasAssistantTasks} from "./canvas-assistant-task-state";
-import {planAndExecuteAssistantCanvasActions,planAndRunAssistantSkillProposal} from "./canvas-assistant-task-execution";
+import {planAndExecuteAssistantCanvasActions,planAndRunAssistantSkillProposal,type AssistantTaskGraphPreview} from "./canvas-assistant-task-execution";
 import type {AssistantTaskJobContext,AssistantTaskFrozenJob} from "./canvas-assistant-task-jobs";
 import {CanvasPromptChipInput} from "@/components/canvas/canvas-prompt-chip-input";
 import {canvasResourceReferenceToken,type CanvasResourceReference} from "@/lib/canvas/canvas-resource-references";
@@ -43,9 +44,13 @@ type Props={
  activeChatId:string|null;setActiveChatId:Dispatch<SetStateAction<string|null>>;
    selectedNodes:Choice[];getContext:(ids:string[],scope:AssistantContextScope)=>AssistantContextResult;
    getCanvasCenter?:()=>{x:number;y:number};
+   /** Re-checks the send-time graph fence immediately before Task commit. */
+   assertCanvasCurrent?:()=>void;
    getResourceReferences?:()=>CanvasResourceReference[];
    getWorkflowTemplates:(ids:string[],signal:AbortSignal)=>Promise<{context:string;templates:Map<string,ComfyWorkflowTemplate>}>;
    onApplyActions:(actions:unknown,stage:AssistantCanvasStage,refs?:ReadonlyMap<string,string>,workflowTemplates?:ReadonlyMap<string,ComfyWorkflowTemplate>)=>{applied:number;refs:Map<string,string>};
+   freezeCanvasEdit?:(selected:string[],explicit:string[],full:boolean)=>{context:FrozenCanvasEditContext;assertCurrent:()=>void};
+   prepareCanvasEdit?:(actions:unknown,templates:ReadonlyMap<string,ComfyWorkflowTemplate>|undefined,frozen:{context:FrozenCanvasEditContext;assertCurrent:()=>void},taskPreview?:AssistantTaskGraphPreview)=>{requiresPreview:boolean;summary:string;commit:()=>{applied:number;refs:Map<string,string>}};
    onRunActions:(actions:unknown,refs:ReadonlyMap<string,string>,signal:AbortSignal,
     taskContext?:AssistantTaskJobContext)=>Promise<{submitted:number;jobIds:string[]}>;   config:AiConfig;};const now=()=>new Date().toISOString();
 const append=(list:CanvasAssistantSession[],id:string,message:CanvasAssistantMessage)=>{
@@ -251,10 +256,12 @@ function confirmAssistantTaskJob(step:AssistantTaskFrozenJob,payload:Record<stri
   if(signal.aborted)onAbort();
  });
 }
-export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessions,setSessions,activeChatId,setActiveChatId,selectedNodes,getContext,getResourceReferences,getWorkflowTemplates,onApplyActions,onRunActions,getCanvasCenter,config,comfyInstanceId}:Props){
+export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessions,setSessions,activeChatId,setActiveChatId,selectedNodes,getContext,getResourceReferences,getWorkflowTemplates,onApplyActions,freezeCanvasEdit,prepareCanvasEdit,onRunActions,getCanvasCenter,assertCanvasCurrent,config,comfyInstanceId}:Props){
   const themeName=useThemeStore(state=>state.theme);
   const theme=canvasThemes[themeName];
   const [draft,setDraft]=useState(""); const [modelRef,setModelRef]=useState(config.textModel);
+ const [fullGraphGrant,setFullGraphGrant]=useState(false);
+ const [taskUndo,setTaskUndo]=useState<(()=>Promise<void>)|null>(null);
  const [scope,setScope]=useState<AssistantContextScope>("selection");
  const [skills,setSkills]=useState<SkillCatalogEntry[]>([]);
  const [skillError,setSkillError]=useState("");
@@ -342,6 +349,7 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
       actions:[{type:"connect_workflow_port",fromNodeId:binding.sourceNodeId,
        fromPortId:binding.sourcePortId,toNodeId:binding.toNodeId,toPortId:binding.toPortId}],
       center:getCanvasCenter?.()??{x:0,y:0},signal:controller.signal,
+      assertCurrent:assertCanvasCurrent,
       sequenceBinding:{runSequenceId:view.sequence!.id,runIndex:next.index,
        dependsOn:next.dependsOn},
       ...(grantMode==="local_comfy_media"&&grantId?{mediaGrantId:grantId}:{}),
@@ -440,6 +448,9 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
   const provider=modelChannelProvider(channel,"text");
   if(!channel||!provider||provider==="volcengine_ark")return;
   // Explicit @ references take priority over implicitly selected nodes.
+  const frozen=freezeCanvasEdit?.(includeContext&&scope==="selection"?includedIds:[],visual.nodeIds,includeContext&&scope==="overview"&&fullGraphGrant);
+  const assertTurnCurrent=frozen?.assertCurrent??assertCanvasCurrent;
+  setFullGraphGrant(false);
   const contextIds=[...new Set([...visual.nodeIds,...(effectiveScope==="selection"?includedIds:[])])];
   const mentionedContext=includeContext&&visual.nodeIds.length?getContext(contextIds,"selection"):null;
   const contextSnapshot=includeContext?(effectiveScope==="selection"?
@@ -671,7 +682,9 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
      const proposals=createSkillTextArtifactActions(latestCompletedRun);
      if(!proposals.length)return false;
      const actions=parseAssistantCanvasActions(proposals);
-     const result=onApplyActions(actions,"safe",undefined,workflowInfo.templates);
+     const prepared=frozen&&prepareCanvasEdit?.(actions,workflowInfo.templates,frozen);
+     if(prepared?.requiresPreview)throw Error("此 Skill 产物包含需要预览的画布修改。");
+     const result=prepared?prepared.commit():onApplyActions(actions,"safe",undefined,workflowInfo.templates);
      if(result.applied<1)return false;
      setSessions(prev=>append(prev,id,{id:nanoid(),role:"assistant",
       text:"脚本已经执行成功，但 AI 未能完成最后的画布操作（"+reason+"）。"+
@@ -767,10 +780,16 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
             projectId,taskId:linkedTaskId,messageId:user.id,actions:graphActions,
             ...(response.agentRunId?{agentRunId:response.agentRunId}:{}),
             center:getCanvasCenter?.()??{x:0,y:0},signal:controller.signal,
-            confirm:async(step)=>confirmDangerousActions(
+            assertCurrent:assertTurnCurrent,
+            onUndoReady:undo=>setTaskUndo(()=>undo),
+            confirm:async(step)=>{
+             const prepared=frozen&&prepareCanvasEdit?.(graphActions,workflowInfo.templates,frozen,step.graphPreview);
+             if(prepared)return !prepared.requiresPreview||await confirmDangerousActions(prepared.summary,controller.signal,themeName);
+             return confirmDangerousActions(
              "Task 将持久提交 "+graphActions.length+" 项画布操作，审批绑定冻结摘要。请核对：\n"+
              JSON.stringify({deliverableSpec:step.deliverableSpec??null,actions:graphActions},null,2).slice(0,3200),
-             controller.signal,themeName)
+             controller.signal,themeName);
+            }
            });
            taskRefs=result.refs;
            notes.push("Task 画布事务已提交 "+result.applied+" 项操作；修订版本 "+result.revision+"；步骤 "+result.stepId+"。");
@@ -804,24 +823,22 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
         }
         if(workflowTargetIds.some(target=>!templates.has(target)))
           throw Error("找不到节点当前绑定的 ComfyUI 工作流预设端口定义，请检查该节点的模板版本。");        if(controller.signal.aborted)throw new DOMException("Aborted","AbortError");
-        const safe=onApplyActions(actions,"safe",undefined,templates);        if(safe.applied)notes.push("已自动执行 "+safe.applied+" 项画布操作。");
         const dangerous=actions.filter(isDangerousAssistantAction);
-        let approved=true;
-        if(dangerous.length){
-         const confirmed=await confirmDangerousActions(dangerousAssistantActionSummary(dangerous),controller.signal,themeName);
-         if(controller.signal.aborted)throw new DOMException("Aborted","AbortError");
-         if(confirmed){
-           const result=onApplyActions(actions,"dangerous",safe.refs,templates);          if(result.applied)notes.push("已确认并执行 "+result.applied+" 项内容或参数修改。");
-         }else{
-          approved=false;
-          notes.push("你已取消修改或删除操作，其他已执行的操作不受影响。");
-         }
-        }
+        const prepared=frozen&&prepareCanvasEdit?.(actions,templates,frozen);
+        const needsConfirmation=prepared?.requiresPreview??Boolean(dangerous.length);
+        const approved=!needsConfirmation||await confirmDangerousActions(prepared?.summary??dangerousAssistantActionSummary(dangerous),controller.signal,themeName);
+        if(controller.signal.aborted)throw new DOMException("Aborted","AbortError");
+        let appliedRefs:ReadonlyMap<string,string>=new Map();
+        if(approved){
+         const result=prepared?prepared.commit():onApplyActions(actions,needsConfirmation?"dangerous":"safe",undefined,templates);
+         appliedRefs=result.refs;
+         if(result.applied)notes.push(needsConfirmation?"已确认并执行 "+result.applied+" 项内容或参数修改。":"已自动执行 "+result.applied+" 项画布操作。");
+        }else notes.push("你已取消整批画布操作。");
         const runs=actions.filter(action=>action.type==="run_node"||action.type==="run_workflow");
         if(runs.length){
          if(!approved)notes.push("因你拒绝了本轮参数或内容修改，已跳过全部 "+runs.length+" 项生成执行。");
          else{
-          const result=await onRunActions(runs,safe.refs,controller.signal);
+          const result=await onRunActions(runs,appliedRefs,controller.signal);
           if(controller.signal.aborted)throw new DOMException("Aborted","AbortError");
           if(result.submitted)notes.push("已通过原有节点执行链路提交 "+result.submitted+
            " 项生成任务（任务 ID："+result.jobIds.join("、")+"）。可在节点或任务历史查看进度并停止。");
@@ -831,6 +848,8 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
        }
      }catch(operationError){
        if(controller.signal.aborted)throw operationError;
+       if(operationError instanceof Error&&(/重新生成|assistant_step_source_changed|project_unsaved_local_edits/.test(operationError.message)))
+        setDraft(current=>current||draft);
        notes.push("画布操作未完成："+(operationError instanceof Error?operationError.message:"执行失败"));
      }    const answer=[response.answer,...notes].filter(Boolean).join("\n\n");
     const finalMessage:CanvasAssistantMessage={id:streamedId??nanoid(),role:"assistant",text:answer,
@@ -855,7 +874,7 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
       if(activeStreamTurnRef.current?.chatId===id){activeStreamTurnRef.current=null;if(!controller.signal.aborted)sessionStorage.removeItem("infinite-atelier:assistant-stream:"+projectId);}
    setSending(false);
   }
-  },[draft,chosenModel,config,includeContext,getContext,includedIds,effectiveScope,session,setSessions,setActiveChatId,projectId,onApplyActions,onRunActions,getWorkflowTemplates,themeName,resourceReferences,taskTracker,getCanvasCenter]);
+  },[draft,chosenModel,config,includeContext,getContext,includedIds,effectiveScope,session,setSessions,setActiveChatId,projectId,onApplyActions,onRunActions,getWorkflowTemplates,themeName,resourceReferences,taskTracker,getCanvasCenter,freezeCanvasEdit,prepareCanvasEdit,assertCanvasCurrent,fullGraphGrant,scope]);
   const restoreSkillRun=async(runId:string)=>{
    if(sending||restoringSkillRun)return;
    setRestoringSkillRun(runId);
@@ -870,7 +889,10 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
     if(!actions.length)throw Error("此运行没有可恢复的完整文本产物，请查看原始运行记录。");
     if(taskTracker.activeTaskId)throw Error("当前已关联 Task，Skill 产物可靠落图将在 P2 接入；不能绕过 Task 执行账本。");
     const parsed=parseAssistantCanvasActions(actions);
-    const result=onApplyActions(parsed,"safe");
+    const current=freezeCanvasEdit?.(includedIds,[],false);
+    const prepared=current&&prepareCanvasEdit?.(parsed,undefined,current);
+    if(prepared?.requiresPreview&&!await confirmDangerousActions(prepared.summary,new AbortController().signal,themeName))return;
+    const result=prepared?prepared.commit():onApplyActions(parsed,"safe");
     if(result.applied!==parsed.length)throw Error("部分产物未能写入画布，请检查节点状态。");
     if(!activeChatId)return;
     setSessions(prev=>append(prev,activeChatId,{id:nanoid(),role:"assistant",
@@ -956,13 +978,16 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
       <span className="canvas-assistant-context-divider" aria-hidden="true"/>
       {resourceReferences.length?<span className="canvas-assistant-reference-count">可 @ 引用节点</span>:null}
       <div className="flex min-w-0 items-center gap-0.5">
-       <button type="button" className="canvas-assistant-scope-button" aria-pressed={scope==="selection"} disabled={!includeContext} onClick={()=>setScope("selection")}>选中节点</button>
+       <button type="button" className="canvas-assistant-scope-button" aria-pressed={scope==="selection"} disabled={!includeContext} onClick={()=>{setScope("selection");setFullGraphGrant(false);}}>选中节点</button>
        <button type="button" className="canvas-assistant-scope-button" aria-pressed={scope==="overview"} disabled={!includeContext} onClick={()=>setScope("overview")}>画布概览</button>
       </div>
       <button type="button" className="canvas-assistant-link" aria-expanded={previewOpen} disabled={!includeContext} onClick={()=>setPreviewOpen(value=>!value)}>
        {previewOpen?"收起":"预览"}{previewOpen?<ChevronUp size={12}/>:<ChevronDown size={12}/>}
       </button>
      </div>
+     {freezeCanvasEdit&&scope==="overview"&&includeContext&&<label className="canvas-assistant-reference">
+      <input type="checkbox" checked={fullGraphGrant} onChange={event=>setFullGraphGrant(event.target.checked)}/>允许修改整张画布（仅本轮）
+     </label>}
      {includeContext&&scope==="selection"&&selectedNodes.length>0?(
       <div className="canvas-assistant-reference-list" aria-label="引用节点列表">
        {selectedNodes.slice(0,12).map(node=>{
@@ -995,6 +1020,12 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
    </section>
 
    {taskTracker.view}
+    {taskUndo&&<button type="button" disabled={sending} onClick={()=>{
+     setTaskUndo(null);
+     void taskUndo().catch(error=>{
+      if(activeChatId)setSessions(prev=>append(prev,activeChatId,{id:nanoid(),role:"error",text:String(error instanceof Error?error.message:error)}));
+     });
+    }}>撤销最近一次 Task 改图</button>}
     <div ref={scrollRef} className="canvas-assistant-transcript" aria-live="polite" onScroll={event=>{
      const transcript=event.currentTarget;
      followOutputRef.current=transcript.scrollHeight-transcript.scrollTop-transcript.clientHeight<48;

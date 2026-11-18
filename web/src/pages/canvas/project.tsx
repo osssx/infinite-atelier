@@ -49,7 +49,9 @@ import { pipelineSink } from "@/lib/canvas/canvas-perf-bridge-state";
 import { CanvasNodeContextMenu } from "@/components/canvas/canvas-context-menu";
 const CanvasAssistantPanel=lazy(()=>import("@/features/canvas-assistant/canvas-assistant-panel").then(mod=>({default:mod.CanvasAssistantPanel})));
 import {buildCanvasAssistantContext,type AssistantContextScope} from "@/features/canvas-assistant/canvas-assistant-context";
-import {applyAssistantCanvasActions,assistantCreatedSelection,type AssistantCanvasStage} from "@/features/canvas-assistant/canvas-assistant-actions";
+import type {AssistantTaskGraphPreview} from "@/features/canvas-assistant/canvas-assistant-task-execution";
+import {applyTaskEditPreview,assertCanvasEditCurrent,describeCanvasEdit,freezeCanvasEditContext,type FrozenCanvasEditContext} from "@/features/canvas-assistant/canvas-edit-authorization";
+import {parseAssistantCanvasActions,applyAssistantCanvasActions,assistantCreatedSelection,type AssistantCanvasStage} from "@/features/canvas-assistant/canvas-assistant-actions";
 import {planAssistantNodeRuns,type AssistantExecutionAction} from "@/features/canvas-assistant/canvas-assistant-node-control";
 import {assistantWorkflowBinding,assistantWorkflowTemplateContext,assistantComfyWorkflowScalarContext} from "@/features/canvas-assistant/canvas-assistant-workflow-params";
 import {assistantWorkflowPortContext} from "@/features/canvas-assistant/canvas-assistant-workflow-ports";
@@ -81,7 +83,7 @@ import { AssetPickerModal, type InsertAssetPayload } from "@/components/canvas/a
 import { CanvasSidePanel } from "@/components/canvas/canvas-side-panel";
 import { CanvasZoomControls } from "@/components/canvas/canvas-zoom-controls";
 import { DirectorPanel } from "@/components/canvas/director-panel";
-import { flushCanvasStorePersistence,awaitCanvasStorePersistence,useCanvasStore,subscribeSavedCanvasGraph } from "@/stores/canvas/use-canvas-store";
+import { flushCanvasStorePersistence,awaitCanvasStorePersistence,useCanvasStore,subscribeSavedCanvasGraph,savedCanvasGraphRevision } from "@/stores/canvas/use-canvas-store";
 import { buildCanvasGraphIndex, reuseCanvasSemanticNodes } from "@/lib/canvas/canvas-graph-index";
 import { connectCanvasPortsByDrag, prepareCanvasPortConnection, reconcileComfyArtifactConnections } from "@/lib/canvas/canvas-port-connections";
 import { getCanvasVisiblePorts, pickCanvasDropHandle } from "@/lib/canvas/canvas-ports";
@@ -185,6 +187,7 @@ type CanvasHistoryEntry = Pick<CanvasClipboard, "nodes" | "connections"> & {
     backgroundMode: CanvasBackgroundMode;
     showImageInfo: boolean;
     comfyInstanceId?: string;
+    assistantGraphOnly?: boolean;
 };
 
 function sameCanvasHistoryEntry(left: CanvasHistoryEntry | null, right: CanvasHistoryEntry) {
@@ -733,6 +736,10 @@ function AtelierCanvasPage() {
         const next = createHistoryEntry();
         const previous = lastHistoryRef.current;
         if (sameCanvasHistoryEntry(previous, next)) return;
+        if (previous && sameCanvasHistoryEntry({...previous,chatSessions:next.chatSessions,activeChatId:next.activeChatId},next)) {
+            lastHistoryRef.current=next;
+            return;
+        }
 
         if (historyCommitTimerRef.current) clearTimeout(historyCommitTimerRef.current);
         historyCommitTimerRef.current = setTimeout(() => {
@@ -1123,6 +1130,50 @@ function AtelierCanvasPage() {
         }
         return {applied:result.applied,refs:result.refs};
     },[projectLoaded,projectId,getCanvasCenter,cleanupCanvasFiles,chatSessions,effectiveConfig]);
+    // Simulate both halves against one frozen graph, then publish one final
+    // graph. This prevents a mixed safe/dangerous batch from partially writing.
+    const freezeAssistantEdit=useCallback((selectedNodeIds:string[],explicitNodeIds:string[],fullGraphGrant:boolean)=>{
+        const graph={nodes:nodesRef.current,connections:connectionsRef.current};
+        const context=freezeCanvasEditContext(graph,{projectId,projectRevision:savedCanvasGraphRevision(projectId),selectedNodeIds,selectedConnectionId:selectedConnectionId??undefined,
+            explicitReferences:explicitNodeIds.map(nodeId=>({nodeId})),fullGraphGrant});
+        const assertCurrent=()=>{
+            if(!pageMountedRef.current||activeProjectIdRef.current!==projectId)throw Error("画布项目已切换，请重新生成提案。");
+            assertCanvasEditCurrent({nodes:nodesRef.current,connections:connectionsRef.current},context);
+        };
+        return {context,assertCurrent};
+    },[projectId,selectedConnectionId]);
+    const prepareAssistantGraphBatch=useCallback((raw:unknown,workflowTemplates:ReadonlyMap<string,ComfyWorkflowTemplate>|undefined,
+        frozen:{context:FrozenCanvasEditContext;assertCurrent:()=>void},taskPreview?:AssistantTaskGraphPreview)=>{
+        frozen.assertCurrent();
+        const actions=parseAssistantCanvasActions(raw);
+        const before={nodes:nodesRef.current,connections:connectionsRef.current};
+        if(taskPreview)return {...describeCanvasEdit(before,applyTaskEditPreview(before,taskPreview),actions,frozen.context),
+            commit:()=>{throw Error("Task 预览必须由服务端事务提交。");}};
+        const center=getCanvasCenter();
+        const safe=applyAssistantCanvasActions(before,actions,"safe",center,undefined,effectiveConfig,workflowTemplates);
+        const result=applyAssistantCanvasActions(safe,actions,"dangerous",center,safe.refs,effectiveConfig,workflowTemplates);
+        const diff=describeCanvasEdit(before,result,actions,frozen.context);
+        return {...diff,commit:()=>{
+            frozen.assertCurrent();
+            const applied=safe.applied+result.applied;
+            if(applied){
+                const previous={...createHistoryEntry(),...before};
+                if(historyCommitTimerRef.current){clearTimeout(historyCommitTimerRef.current);historyCommitTimerRef.current=null;}
+                const baseline=lastHistoryRef.current;
+                const past=[...historyRef.current.past];
+                if(baseline&&!sameCanvasHistoryEntry(baseline,previous))past.push(baseline);
+                historyRef.current={past:[...past,{...previous,assistantGraphOnly:true}].slice(-50),future:[]};
+                lastHistoryRef.current={...previous,nodes:result.nodes,connections:result.connections};
+                setHistoryState({canUndo:true,canRedo:false});
+                nodesRef.current=result.nodes;connectionsRef.current=result.connections;
+                setNodes(result.nodes);setConnections(result.connections);
+                if(safe.createdNodeIds.length)setSelectedNodeIds(new Set(assistantCreatedSelection({...result,createdNodeIds:safe.createdNodeIds})));
+                else {const kept=new Set(result.nodes.map(node=>node.id));setSelectedNodeIds(ids=>new Set([...ids].filter(id=>kept.has(id))));}
+                setSelectedConnectionId(null);
+            }
+            return {applied,refs:result.refs};
+        }};
+    },[getCanvasCenter,effectiveConfig,createHistoryEntry]);
     // The toolbar follows a single selected node selected by click, creation, marquee, or keyboard.    // It stays hidden for multi-selection and while isNodeDragging is true.
     const singleSelectedNodeId = selectedNodeIds.size === 1 ? Array.from(selectedNodeIds)[0] : null;
     const toolbarNode = (toolbarNodeId ? nodeById.get(toolbarNodeId) || null : null) || (singleSelectedNodeId ? nodeById.get(singleSelectedNodeId) || null : null);
@@ -1580,17 +1631,17 @@ function AtelierCanvasPage() {
         const previous = historyRef.current.past.pop();
         const current = lastHistoryRef.current;
         if (!previous || !current) return;
-        historyRef.current.future.push(current);
-        applyHistory(previous);
-    }, [applyHistory]);
+        historyRef.current.future.push({...current,assistantGraphOnly:previous.assistantGraphOnly});
+        applyHistory(previous.assistantGraphOnly?{...createHistoryEntry(),nodes:previous.nodes,connections:previous.connections}:previous);
+    }, [applyHistory,createHistoryEntry]);
 
     const redoCanvas = useCallback(() => {
         const next = historyRef.current.future.pop();
         const current = lastHistoryRef.current;
         if (!next || !current) return;
-        historyRef.current.past.push(current);
-        applyHistory(next);
-    }, [applyHistory]);
+        historyRef.current.past.push({...current,assistantGraphOnly:next.assistantGraphOnly});
+        applyHistory(next.assistantGraphOnly?{...createHistoryEntry(),nodes:next.nodes,connections:next.connections}:next);
+    }, [applyHistory,createHistoryEntry]);
 
     const createAndOpenProject = useCallback(async () => {
         try{
@@ -4228,7 +4279,8 @@ function AtelierCanvasPage() {
                     activeChatId={activeChatId} setActiveChatId={setActiveChatId}
                     selectedNodes={assistantSelectedNodes} getContext={getAssistantContext} getResourceReferences={getAssistantResourceReferences}
                     getWorkflowTemplates={getAssistantWorkflowTemplates} getCanvasCenter={getCanvasCenter}
-                    onApplyActions={applyAssistantGraphActions} onRunActions={executeAssistantNodeActions} config={effectiveConfig}/>                </Suspense> : null}
+                    assertCanvasCurrent={()=>{if(activeProjectIdRef.current!==projectId)throw Error("画布项目已切换，请重新生成 Task 预览");}}
+                    onApplyActions={applyAssistantGraphActions} freezeCanvasEdit={freezeAssistantEdit} prepareCanvasEdit={prepareAssistantGraphBatch} onRunActions={executeAssistantNodeActions} config={effectiveConfig}/>                </Suspense> : null}
 
                 <CanvasJobHistory projectId={projectId} open={jobHistoryOpen}
                     onClose={()=>setJobHistoryOpen(false)}

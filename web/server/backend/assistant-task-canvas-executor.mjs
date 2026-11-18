@@ -53,9 +53,9 @@ function oldCommand(db,projectId,requestId,kind,digest){
  if(row.status!=="completed")throw fail("assistant_step_state_conflict");
  return JSON.parse(row.response_json);
 }
-function commandResult(db,{projectId,requestId,taskId,kind,digest:commandDigest,response}){
+function commandResult(db,{projectId,requestId,taskId,kind,digest:commandDigest,response,maxBytes}){
  db.prepare("INSERT INTO assistant_task_commands(project_id,request_id,task_id,command_kind,payload_digest,status,response_json,created_at) VALUES(?,?,?,?,?,'completed',?,?)")
-  .run(projectId,requestId,taskId,kind,commandDigest,json(response),Date.now());
+  .run(projectId,requestId,taskId,kind,commandDigest,json(response,maxBytes),Date.now());
 }
 /** Only a directly depended-on, server-committed Step can provide an alias.
  * References use "stepId:alias" and never parse untrusted historical model text.
@@ -150,6 +150,12 @@ export function planAssistantCanvasStep(db,{projectId,taskId,requestId,
   const preview=applyFrozenAssistantCanvasPlan(original,action,refs,{externalRefs,
    loadTemplate:loadPinnedComfyTemplate(db),config:ui.value});
   validateProjectDocument(preview.document);
+  const graphPreview=Object.fromEntries(["nodes","connections"].map(key=>{
+   const before=new Map(original[key].map(item=>[item.id,item]));
+   const after=new Map(preview.document[key].map(item=>[item.id,item]));
+   return [key,{removed:[...before.keys()].filter(id=>!after.has(id)),
+    upserted:[...after.values()].filter(item=>!before.has(item.id)||hash(item)!==hash(before.get(item.id)))}];
+  }));
   const preconditions={projectRevision:expectedProjectRevision,projectGraphDigest:hash(original),
    refs,requiresApproval:true,finalizeTask,
    ...(deliverableSpec?{deliverableSpec,deliverableSpecDigest:hash(deliverableSpec)}:{}),
@@ -185,8 +191,8 @@ export function planAssistantCanvasStep(db,{projectId,taskId,requestId,
    ...(agentRunBinding?{agentRunId:agentRunBinding.runId}:{}),
    preconditions:{projectRevision:expectedProjectRevision,refs},
    ...(deliverableSpec?{deliverableSpec}:{}),status:"waiting_approval",
-   operationCount:actions.length,executionStarted:false};
-  commandResult(db,{projectId,requestId,taskId,kind:"canvas_plan",digest:sig,response});
+   operationCount:actions.length,executionStarted:false,graphPreview};
+  commandResult(db,{projectId,requestId,taskId,kind:"canvas_plan",digest:sig,response,maxBytes:6*1024*1024});
   return {...response,existing:false};
  });
 }

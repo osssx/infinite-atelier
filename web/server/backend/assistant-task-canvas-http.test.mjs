@@ -45,6 +45,10 @@ test("P1b full HTTP plan/approve/execute chain is atomic and identical requests 
  assert.equal(executed.status,200,JSON.stringify(executed.data));
  assert.equal(executed.data.project.revision,2);
  assert.equal(executed.data.receipt.applied,2);
+ const graph=executed.data.project.document,preview=created.data.graphPreview;
+ assert.deepEqual(preview.nodes.removed,[]);
+ assert.deepEqual(preview.nodes.upserted,graph.nodes.filter(node=>node.id!=="old"));
+ assert.deepEqual(preview.connections.upserted,graph.connections);
  const fresh=await f.call("GET",f.stepBase);
  assert.equal(fresh.data.task.recoveryMode,"canvas_atomic");
  assert.equal(fresh.data.task.steps[0].receiptTrust,"server_committed");

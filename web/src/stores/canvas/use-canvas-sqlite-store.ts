@@ -163,15 +163,15 @@ export async function awaitCanvasStorePersistence(projectId?:string):Promise<voi
   if(failure)throw failure;
  }else if(lastErrors.size)throw lastErrors.values().next().value;
 }
-/** P1a browser save barrier for the future P1b Task graph executor.
+export function savedCanvasGraphRevision(projectId:string){
+ return revisions.get(projectId);
+}
+/** Browser save barrier for the Task graph executor.
  * Flush every earlier PATCH before freezing the current revision. Local edits
  * occurring during the remote transaction stay in memory and are never
  * overwritten by a late authoritative response.
  */
-export async function commitAssistantCanvasGraphWithSaveBarrier(
- projectId:string,
- submit:(frozen:{expectedRevision:number;document:ReturnType<typeof asDocument>})=>Promise<CanvasBackendProject>
-):Promise<CanvasBackendProject>{
+export async function readAssistantCanvasGraphBaseline(projectId:string){
  if(taskCanvasBarriers.has(projectId))throw Error("canvas_task_save_barrier_active");
  await awaitCanvasStorePersistence(projectId);
  if(taskCanvasBarriers.has(projectId)||activeWrites.has(projectId)||dirty.has(projectId))
@@ -179,9 +179,22 @@ export async function commitAssistantCanvasGraphWithSaveBarrier(
  const project=useCanvasStore.getState().openProject(projectId),revision=revisions.get(projectId);
  if(!project||revision===undefined)throw Error("project_not_loaded");
  const frozen=JSON.parse(JSON.stringify(asDocument(project))) as ReturnType<typeof asDocument>;
+ return {expectedRevision:revision,document:frozen};
+}
+export async function commitAssistantCanvasGraphWithSaveBarrier(
+ projectId:string,
+ submit:(frozen:{expectedRevision:number;document:ReturnType<typeof asDocument>;assertCurrent:()=>void})=>Promise<CanvasBackendProject>
+):Promise<CanvasBackendProject>{
+ const frozen=await readAssistantCanvasGraphBaseline(projectId),revision=frozen.expectedRevision;
+ const assertCurrent=()=>{
+  if(dirty.has(projectId)||activeWrites.has(projectId)||revisions.get(projectId)!==revision)
+   throw Error("project_unsaved_local_edits");
+ };
+ assertCurrent();
+ if(taskCanvasBarriers.has(projectId))throw Error("canvas_task_save_barrier_active");
  taskCanvasBarriers.add(projectId);
  try{
-  const remote=await submit({expectedRevision:revision,document:frozen});
+  const remote=await submit({...frozen,assertCurrent});
   if(remote.id!==projectId||!Number.isSafeInteger(remote.revision)||
    remote.revision<revision||!Array.isArray(remote.document.nodes)||
    !Array.isArray(remote.document.connections))throw Error("assistant_task_graph_response_invalid");
@@ -190,7 +203,7 @@ export async function commitAssistantCanvasGraphWithSaveBarrier(
   // graph without the revision advancing.
   if(remote.revision===revision&&canonicalBackendGraph({
    nodes:remote.document.nodes as CanvasNodeData[],connections:remote.document.connections as CanvasConnection[]
-  })!==canonicalBackendGraph({nodes:project.nodes,connections:project.connections}))
+  })!==canonicalBackendGraph({nodes:frozen.document.nodes,connections:frozen.document.connections}))
    throw Error("assistant_task_graph_response_invalid");
   if(dirty.has(projectId)){
    const conflict=Error("project_revision_conflict");

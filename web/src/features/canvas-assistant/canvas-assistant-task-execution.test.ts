@@ -1,7 +1,7 @@
 import {beforeEach,describe,expect,it,vi} from "vitest";
-const mocks=vi.hoisted(()=>({api:vi.fn(),barrier:vi.fn()}));
+const mocks=vi.hoisted(()=>({api:vi.fn(),barrier:vi.fn(),baseline:vi.fn()}));
 vi.mock("@/features/backend-sync/canvas-api",()=>({canvasApi:mocks.api}));
-vi.mock("@/stores/canvas/use-canvas-store",()=>({commitAssistantCanvasGraphWithSaveBarrier:mocks.barrier}));
+vi.mock("@/stores/canvas/use-canvas-store",()=>({commitAssistantCanvasGraphWithSaveBarrier:mocks.barrier,readAssistantCanvasGraphBaseline:mocks.baseline}));
 import {planAndExecuteAssistantCanvasActions,executeFrozenAssistantCanvasTaskStep,verifyFrozenAssistantTextDeliverable} from "./canvas-assistant-task-execution";
 
 const step={taskId:"task",stepId:"step",planVersion:2,actionDigest:"a".repeat(64),status:"waiting_approval"};
@@ -12,8 +12,9 @@ const committed={status:"succeeded",project,receipt:{attemptId:"a1",projectRevis
 
 beforeEach(()=>{
  mocks.api.mockReset();mocks.barrier.mockReset();
+ mocks.baseline.mockReset().mockResolvedValue({expectedRevision:5,document:{title:"before",nodes:[],connections:[]}});
  mocks.barrier.mockImplementation(async(_projectId,callback)=>callback({
-  expectedRevision:5,document:{title:"before",nodes:[],connections:[]}
+  expectedRevision:5,document:{title:"before",nodes:[],connections:[]},assertCurrent:()=>{}
  }));
 });
 describe("P1b browser Task canvas protocol",()=>{
@@ -75,12 +76,56 @@ describe("P1b browser Task canvas protocol",()=>{
    projectId:"p",taskId:"task",messageId:"m1",
    actions:[{type:"create_text",ref:"chapter",title:"Chapter",content:"hello"}],
    center:{x:12,y:34},signal:new AbortController().signal,
-   confirm:async frozen=>{trace.push("user_confirm");expect(frozen).toEqual(step);return true;}
+   confirm:async frozen=>{trace.push("user_confirm");expect(frozen).toEqual(step);expect(mocks.barrier).not.toHaveBeenCalled();return true;}
   });
   expect(result).toEqual({applied:1,stepId:"step",revision:6,
    refs:new Map([["chapter","task-node"]])});
   expect(trace).toEqual(["snapshot","plan","user_confirm","approval","execute"]);
   expect(mocks.barrier).toHaveBeenCalledTimes(1);
+ });
+ it("rejects an expired proposal without executing when the graph changes during confirmation",async()=>{
+  let changed=false;
+  mocks.api.mockImplementation(async(url:string,method:string,payload:Record<string,unknown>)=>{
+   if(method==="GET")return {task:{activePlanVersion:2,steps:[]}};
+   if(url.endsWith("/canvas-steps"))return step;
+   if(url.endsWith("/approval")){expect(payload.decision).toBe("reject");return {};}
+   throw Error("unexpected write");
+  });
+  await expect(planAndExecuteAssistantCanvasActions({projectId:"p",taskId:"task",messageId:"m-stale",
+   actions:[{type:"create_text",ref:"chapter",title:"Chapter",content:"hello"}],center:{x:0,y:0},
+   signal:new AbortController().signal,confirm:async()=>{changed=true;return true;},
+   assertCurrent:()=>{if(changed)throw Error("assistant_step_source_changed");}
+  })).rejects.toThrow("assistant_step_source_changed");
+  expect(mocks.barrier).not.toHaveBeenCalled();
+  expect(mocks.api.mock.calls.some(([url])=>url.endsWith("/execute"))).toBe(false);
+ });
+ it("only offers a revision-checked graph inverse for the Task commit",async()=>{
+  let revision=5;
+  let undo:(()=>Promise<void>)|undefined;
+  mocks.barrier.mockImplementation(async(_id,callback)=>callback({
+   expectedRevision:revision,document:{title:"current",...doc},assertCurrent:()=>{}
+  }));
+  mocks.api.mockImplementation(async(url:string,method:string)=>{
+   if(method==="GET")return {task:{activePlanVersion:2,steps:[]}};
+   if(url.endsWith("/canvas-steps"))return step;
+   if(url.endsWith("/approval"))return {};
+   if(url.endsWith("/execute"))return committed;
+   if(method==="PATCH")return {...project,revision:7};
+   throw Error("unexpected call");
+  });
+  await planAndExecuteAssistantCanvasActions({projectId:"p",taskId:"task",messageId:"m-undo",
+   actions:[],center:{x:0,y:0},signal:new AbortController().signal,confirm:async()=>true,
+   onUndoReady:action=>{undo=action;}
+  });
+  expect(undo).toBeTypeOf("function");
+  revision=7;
+  await expect(undo!()).rejects.toThrow("无法撤销");
+  expect(mocks.api.mock.calls.some(([,method])=>method==="PATCH")).toBe(false);
+  revision=6;
+  await undo!();
+  expect(mocks.api).toHaveBeenLastCalledWith("/api/v1/projects/p","PATCH",{
+   expectedRevision:6,document:{title:"current",nodes:[],connections:[]}
+  });
  });
  it("P4.2c binds Agent Run to planned actions but never sends them to execute",async()=>{
    const runId="ar_"+"b".repeat(40),observed:string[]=[];

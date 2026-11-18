@@ -71,7 +71,8 @@ function setup(actions:unknown[],resources:CanvasResourceReference[]=[],history:
  let graph=makeGraph();
  const getContext=vi.fn((ids:string[])=>({text:"节点：现有文本 (text, id=text-existing)\n明确引用："+ids.join(","),references:[],truncated:false}));
  const apply=vi.fn((items:unknown,stage:AssistantCanvasStage,refs?:ReadonlyMap<string,string>)=>{
-  const result=applyAssistantCanvasActions(graph,items,stage,{x:400,y:300},refs);
+  const safe=stage==="dangerous"?applyAssistantCanvasActions(graph,items,"safe",{x:400,y:300}):null;
+  const result=applyAssistantCanvasActions(safe??graph,items,stage,{x:400,y:300},safe?.refs??refs);
   graph={nodes:result.nodes,connections:result.connections};
   return {applied:result.applied,refs:result.refs};
  });
@@ -374,11 +375,11 @@ describe("P2 assistant confirmation boundary",()=>{
   {type:"connect",from:"text-existing",to:"newA"},
   {type:"set_text",nodeId:"text-existing",content:"AI 覆盖正文"}
  ];
- it("auto-applies additive changes but blocks content edits until acceptance",async()=>{
+ it("holds the entire mixed batch until acceptance",async()=>{
   const fixture=setup(actions);
   await renderAndSend(fixture.Harness);
-  expect(fixture.getGraph().nodes).toHaveLength(2);
-  expect(fixture.getGraph().connections).toHaveLength(1);
+  expect(fixture.getGraph().nodes).toHaveLength(1);
+  expect(fixture.getGraph().connections).toHaveLength(0);
   expect(fixture.getGraph().nodes[0].metadata?.content).toBe(originalContent);
   expect(mocks.confirm).toHaveBeenCalledTimes(1);
   const props=mocks.confirm.mock.calls[0][0];
@@ -389,17 +390,17 @@ describe("P2 assistant confirmation boundary",()=>{
   expect(props.rootClassName).toBe("canvas-assistant-confirm-root");
   await act(async()=>{props.onOk();await Promise.resolve();});
   expect(fixture.getGraph().nodes[0].metadata?.content).toBe("AI 覆盖正文");
-  expect(fixture.apply).toHaveBeenCalledTimes(2);
+  expect(fixture.apply).toHaveBeenCalledTimes(1);
   expect(container!.textContent).toContain("已确认并执行");
  });
- it("cancel leaves existing content untouched while preserving safe new nodes",async()=>{
+ it("cancel leaves the entire mixed batch unapplied",async()=>{
   const fixture=setup(actions);
   await renderAndSend(fixture.Harness);
-  expect(fixture.getGraph().nodes).toHaveLength(2);
+  expect(fixture.getGraph().nodes).toHaveLength(1);
   const props=mocks.confirm.mock.calls[0][0];
   await act(async()=>{props.onCancel();await Promise.resolve();});
   expect(fixture.getGraph().nodes[0].metadata?.content).toBe(originalContent);
-  expect(fixture.apply).toHaveBeenCalledTimes(1);
+  expect(fixture.apply).not.toHaveBeenCalled();
   expect(container!.textContent).toContain("你已取消");
  });
  it("stop aborts the pending confirmation without executing content edits",async()=>{
@@ -409,7 +410,7 @@ describe("P2 assistant confirmation boundary",()=>{
   expect(stop).toBeTruthy();
   await act(async()=>{stop!.click();await Promise.resolve();});
   expect(fixture.getGraph().nodes[0].metadata?.content).toBe(originalContent);
-  expect(fixture.apply).toHaveBeenCalledTimes(1);
+  expect(fixture.apply).not.toHaveBeenCalled();
   expect(container!.textContent).toContain("已停止生成");
  });
  it("P2.2 automatically creates mixed nodes, layouts and groups without confirmation",async()=>{
@@ -439,16 +440,16 @@ describe("P2 assistant confirmation boundary",()=>{
   ];
   const fixture=setup(actions);
   await renderAndSend(fixture.Harness);
-  expect(fixture.apply).toHaveBeenCalledTimes(1);
-  expect(fixture.getGraph().nodes.filter(n=>n.type===CanvasNodeType.Group)).toHaveLength(1);
-  expect(fixture.getGraph().nodes).toHaveLength(3);
+  expect(fixture.apply).not.toHaveBeenCalled();
+  expect(fixture.getGraph().nodes.filter(n=>n.type===CanvasNodeType.Group)).toHaveLength(0);
+  expect(fixture.getGraph().nodes).toHaveLength(1);
   expect(mocks.confirm).toHaveBeenCalledTimes(1);
   const props=mocks.confirm.mock.calls[0][0];
   expect(props.content).toContain("解散 1 个分组");
   expect(props.content).toContain("保留");
   await act(async()=>{props.onCancel();await Promise.resolve();});
-  expect(fixture.apply).toHaveBeenCalledTimes(1);
-  expect(fixture.getGraph().nodes.filter(n=>n.type===CanvasNodeType.Group)).toHaveLength(1);
+  expect(fixture.apply).not.toHaveBeenCalled();
+  expect(fixture.getGraph().nodes.filter(n=>n.type===CanvasNodeType.Group)).toHaveLength(0);
   expect(fixture.getGraph().nodes.find(n=>n.id==="text-existing")?.metadata?.content).toBe(originalContent);
  });
  it("P2.3 ungroup after acceptance removes only the shell, not its members or connections",async()=>{
@@ -461,7 +462,7 @@ describe("P2 assistant confirmation boundary",()=>{
   await renderAndSend(fixture.Harness);
   const props=mocks.confirm.mock.calls[0][0];
   await act(async()=>{props.onOk();await Promise.resolve();});
-  expect(fixture.apply).toHaveBeenCalledTimes(2);
+  expect(fixture.apply).toHaveBeenCalledTimes(1);
   expect(fixture.getGraph().nodes).toHaveLength(2);
   expect(fixture.getGraph().nodes.some(n=>n.type===CanvasNodeType.Group)).toBe(false);
   expect(fixture.getGraph().nodes.every(n=>!n.metadata?.groupId)).toBe(true);

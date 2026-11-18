@@ -1,9 +1,14 @@
 import {canvasApi,type CanvasBackendProject} from "@/features/backend-sync/canvas-api";
-import {commitAssistantCanvasGraphWithSaveBarrier} from "@/stores/canvas/use-canvas-store";
+import {commitAssistantCanvasGraphWithSaveBarrier,readAssistantCanvasGraphBaseline} from "@/stores/canvas/use-canvas-store";
 import {confirmedAssistantTaskDependencies,type AssistantTaskDependencyStep} from "./canvas-assistant-task-dependencies";
+import type {CanvasConnection,CanvasNodeData} from "@/types/canvas";
+
+type GraphPreviewChanges<T>={removed:string[];upserted:T[]};
+export type AssistantTaskGraphPreview={nodes:GraphPreviewChanges<CanvasNodeData>;connections:GraphPreviewChanges<CanvasConnection>};
 
 export type FrozenCanvasTaskStep={
  stepId:string;taskId:string;planVersion:number;actionDigest:string;status:string;
+ graphPreview?:AssistantTaskGraphPreview;
  preconditions?:{projectRevision:number;refs:{nodes:Record<string,string>;connections:Record<string,string>}};
  deliverableSpec?:{kind:"text_nodes";characters:{ref:string;title:string}[];allowEmptyTemplate:boolean;expectedCount:number};
 };
@@ -36,7 +41,7 @@ export async function executeFrozenAssistantCanvasTaskStep({
   return null;
  }
   let saved:CanvasTaskCommit|null=null;
-  await commitAssistantCanvasGraphWithSaveBarrier(projectId,async()=>{
+ await commitAssistantCanvasGraphWithSaveBarrier(projectId,async frozen=>{
    requestError(signal);
    if(decision==="approve")await canvasApi(path(projectId,taskId,step.stepId)+"/approval","POST",{
     requestId:step.stepId+"-approved",expectedPlanVersion:step.planVersion,
@@ -44,6 +49,7 @@ export async function executeFrozenAssistantCanvasTaskStep({
     ...(step.runMediaGrantId?{grantId:step.runMediaGrantId}:{})
    },signal);
    requestError(signal);
+   frozen.assertCurrent();
    saved=await canvasApi<CanvasTaskCommit>(path(projectId,taskId,step.stepId)+"/execute","POST",{
     requestId:step.stepId+"-execute",expectedPlanVersion:step.planVersion,
     actionDigest:step.actionDigest
@@ -68,37 +74,47 @@ export async function verifyFrozenAssistantTextDeliverable({projectId,taskId,ste
  * automatically reconstruct and approve a different set of actions.
  */
 export async function planAndExecuteAssistantCanvasActions({
- projectId,taskId,messageId,actions,center,signal,confirm,sequenceBinding,agentRunId,mediaGrantId
+ projectId,taskId,messageId,actions,center,signal,confirm,sequenceBinding,agentRunId,mediaGrantId,assertCurrent,onUndoReady
 }:{
  projectId:string;taskId:string;messageId:string;actions:unknown[];
  center:{x:number;y:number};signal:AbortSignal;confirm:(step:FrozenCanvasTaskStep)=>Promise<boolean>;
  sequenceBinding?:{runSequenceId:string;runIndex:number;dependsOn:string[]};
  agentRunId?:string;mediaGrantId?:string;
+ assertCurrent?:()=>void;
+ onUndoReady?:(undo:()=>Promise<void>)=>void;
 }):Promise<{applied:number;stepId:string;revision:number;refs:Map<string,string>}>{
  requestError(signal);
  let committed:CanvasTaskCommit|null=null;
- let plan:FrozenCanvasTaskStep|null=null;
- const remote=await commitAssistantCanvasGraphWithSaveBarrier(projectId,async frozen=>{
-  requestError(signal);
+ assertCurrent?.();
+ const baseline=await readAssistantCanvasGraphBaseline(projectId);
+ assertCurrent?.();
   const snapshot=await canvasApi<{task:{status:string;activePlanVersion:number;steps:AssistantTaskDependencyStep[]}}>(base(projectId,taskId),"GET",undefined,signal);
    const dependsOn=sequenceBinding?.dependsOn??confirmedAssistantTaskDependencies(snapshot.task);
-  plan=await canvasApi<FrozenCanvasTaskStep>(base(projectId,taskId)+"/canvas-steps","POST",{
+  const plan=await canvasApi<FrozenCanvasTaskStep>(base(projectId,taskId)+"/canvas-steps","POST",{
    requestId:messageId+"-canvas-plan",
    expectedPlanVersion:snapshot.task.activePlanVersion,
-   expectedProjectRevision:frozen.expectedRevision,actions,center,dependsOn,
+   expectedProjectRevision:baseline.expectedRevision,actions,center,dependsOn,
    ...(sequenceBinding?{runSequenceId:sequenceBinding.runSequenceId,runIndex:sequenceBinding.runIndex}:{}),
    ...(agentRunId?{agentRunId}:{}),
    ...(mediaGrantId?{runMediaGrantId:mediaGrantId}:{})
   },signal);
   requestError(signal);
-  const accepted=await confirm(plan);
+  let accepted=false;
+  let stale:unknown;
+  try{assertCurrent?.();accepted=await confirm(plan);assertCurrent?.();}catch(error){stale=error;}
   requestError(signal);
   await canvasApi(path(projectId,taskId,plan.stepId)+"/approval","POST",{
    requestId:messageId+"-canvas-decision",expectedPlanVersion:plan.planVersion,
-   actionDigest:plan.actionDigest,decision:accepted?"approve":"reject",
-   ...(mediaGrantId&&accepted?{grantId:mediaGrantId}:{})
+   actionDigest:plan.actionDigest,decision:accepted&&!stale?"approve":"reject",
+   ...(mediaGrantId&&accepted&&!stale?{grantId:mediaGrantId}:{})
   },signal);
+  if(stale)throw stale;
   if(!accepted)throw Error("assistant_task_canvas_rejected");
+ const remote=await commitAssistantCanvasGraphWithSaveBarrier(projectId,async frozen=>{
+  requestError(signal);
+  assertCurrent?.();
+  frozen.assertCurrent();
+  if(frozen.expectedRevision!==baseline.expectedRevision)throw Error("assistant_step_source_changed");
   committed=await canvasApi<CanvasTaskCommit>(path(projectId,taskId,plan.stepId)+"/execute","POST",{
    requestId:messageId+"-canvas-execute",expectedPlanVersion:plan.planVersion,
    actionDigest:plan.actionDigest
@@ -107,10 +123,17 @@ export async function planAndExecuteAssistantCanvasActions({
    throw Error("assistant_task_graph_response_invalid");
   return committed.project;
  });
- if((plan as FrozenCanvasTaskStep|null)?.deliverableSpec){
-  const step=plan as unknown as FrozenCanvasTaskStep;
-  await verifyFrozenAssistantTextDeliverable({projectId,taskId,step,signal});
- }
+ onUndoReady?.(async()=>{
+  await commitAssistantCanvasGraphWithSaveBarrier(projectId,async frozen=>{
+   frozen.assertCurrent();
+   if(frozen.expectedRevision!==remote.revision)throw Error("画布已更新，无法撤销这次 Task 修改。");
+   return canvasApi<CanvasBackendProject>("/api/v1/projects/"+encodeURIComponent(projectId),"PATCH",{
+    expectedRevision:remote.revision,
+    document:{...frozen.document,nodes:baseline.document.nodes,connections:baseline.document.connections}
+   });
+  });
+ });
+ if(plan.deliverableSpec)await verifyFrozenAssistantTextDeliverable({projectId,taskId,step:plan,signal});
  return {applied:(committed as CanvasTaskCommit|null)?.receipt.applied??actions.length,
   stepId:(plan as FrozenCanvasTaskStep|null)?.stepId??"",revision:remote.revision,
   refs:new Map(Object.entries((committed as CanvasTaskCommit|null)?.receipt.refs.nodes??{}))};

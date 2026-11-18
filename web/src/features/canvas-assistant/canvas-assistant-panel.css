@@ -455,9 +455,17 @@
   display: flex;
   align-items: center;
   min-height: 2.5rem;
-  padding: 0 3rem 0 10px;
+  padding: 0 5rem 0 10px;
   border-bottom: 1px solid var(--assistant-code-border);
   color: var(--assistant-muted);
+}
+.canvas-assistant-markdown .canvas-md-code-wrap-toggle {
+  padding: .25rem;
+  border-radius: .25rem;
+  cursor: pointer;
+}
+.canvas-assistant-markdown .canvas-md-code-wrap-toggle:is(:hover, [aria-pressed="true"]) {
+  background: var(--assistant-code-surface);
 }
 .canvas-assistant-markdown [data-streamdown="code-block-body"] {
   min-width: 0;

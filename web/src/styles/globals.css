@@ -471,16 +471,30 @@
 }
 
 /* Keep Streamdown's toolbar attached to the code block as its parent scrolls. */
-:is(.canvas-node-markdown .canvas-md-code-block, .canvas-assistant-markdown [data-streamdown="code-block"]) {
+.canvas-md-code-block {
     position: relative;
     min-width: 0;
 }
 
-:is(.canvas-node-markdown .canvas-md-code-block, .canvas-assistant-markdown) [data-streamdown="code-block"] > div:has(> [data-streamdown="code-block-actions"]) {
+.canvas-md-code-block [data-streamdown="code-block"] > div:has(> [data-streamdown="code-block-actions"]) {
     position: absolute;
     inset: .3125rem .5rem auto auto;
     margin: 0;
 }
+
+:is(.canvas-node-markdown, .canvas-assistant-markdown) .canvas-md-code-block[data-canvas-code-wrap="on"] [data-streamdown="code-block-body"] {
+    overflow-x: hidden;
+}
+
+:is(.canvas-node-markdown, .canvas-assistant-markdown) .canvas-md-code-block[data-canvas-code-wrap="on"] [data-streamdown="code-block-body"] :is(pre, code) {
+    width: 100%;
+    min-width: 0;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+
+.canvas-md-code-wrap-toggle { order: -1; }
 
 .agent-streamdown {
     overflow-wrap: anywhere;

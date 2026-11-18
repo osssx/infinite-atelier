@@ -105,7 +105,6 @@
     box-shadow: none;
     cursor: pointer;
 }
-.canvas-node-markdown .canvas-md-code-wrap-toggle { order: -1; }
 .canvas-node-markdown .canvas-md-code-wrap-toggle svg,
 .canvas-node-markdown .canvas-md-code-block [data-streamdown="code-block-actions"] > button svg {
     width: .875rem;
@@ -162,17 +161,6 @@
     padding: 0;
     color: inherit;
 }
-.canvas-node-markdown [data-canvas-code-wrap="on"] [data-streamdown="code-block-body"] {
-    overflow-x: hidden;
-}
-.canvas-node-markdown [data-canvas-code-wrap="on"] [data-streamdown="code-block-body"] :is(pre, code) {
-    width: 100%;
-    min-width: 0;
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-    word-break: break-word;
-}
-
 .canvas-node-markdown :is(table, th, td) { border: 1px solid var(--canvas-md-border); }
 .canvas-node-markdown table { border-collapse: collapse; width: max-content; min-width: 100%; font-size: .92em; }
 .canvas-node-markdown th, .canvas-node-markdown td { padding: .28em .55em; text-align: left; }

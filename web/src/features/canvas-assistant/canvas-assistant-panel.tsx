@@ -2,7 +2,8 @@ import type {FrozenCanvasEditContext} from "./canvas-edit-authorization";
 import {useCallback,useEffect,useMemo,useRef,useState,type CSSProperties,type Dispatch,type SetStateAction} from "react";
 import {Modal} from "antd";
 import {AlertCircle,ArrowUp,ArrowUpRight,Bot,Check,ChevronDown,ChevronUp,Clock3,Copy,FileText,Image as ImageIcon,Layers3,Link2,LoaderCircle,MessageSquarePlus,Music2,Plus,RefreshCw,Sparkles,Square,Trash2,UserRound,Video,X} from "lucide-react";
-import {Streamdown} from "streamdown";
+import {Streamdown,type Components} from "streamdown";
+import {CanvasMarkdownPre} from "@/components/canvas/canvas-markdown-pre";
 import {nanoid} from "nanoid";
 import {CanvasApiError,canvasApi,canvasApiStream,readCanvasAssistantStream,cancelCanvasAssistantStream} from "@/features/backend-sync/canvas-api";
 import {ensureSqliteModelChannelForExecution,modelChannelProvider} from "@/features/backend-sync/model-channel-autoroute";
@@ -32,6 +33,8 @@ import {getSkillRegistrySnapshot,SKILL_REGISTRY_CHANNEL} from "@/features/skills
 import {isEnabledSkillInProject,type SkillCatalogEntry} from "@/features/skills/types";
 import type {ComfyWorkflowTemplate} from "@/features/comfy-workflow/template-schema";
 import "./canvas-assistant-panel.css";
+
+const assistantMarkdownComponents: Components = {pre:CanvasMarkdownPre};
 type Choice={id:string;title:string;type:CanvasNodeTypeId};
 function ReferenceIcon({type}:{type:CanvasNodeTypeId}){
  const Icon=type===CanvasNodeType.Text?FileText:type===CanvasNodeType.Image?ImageIcon:
@@ -1059,7 +1062,7 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
          <div className="canvas-assistant-bubble">
           {item.role==="assistant"?(
            <div className="canvas-assistant-markdown">
-            <Streamdown mode="static" skipHtml controls={{code:{copy:true,download:false},table:false,mermaid:false}}>{item.text}</Streamdown>
+            <Streamdown mode="static" skipHtml components={assistantMarkdownComponents} controls={{code:{copy:true,download:false},table:false,mermaid:false}}>{item.text}</Streamdown>
            </div>
           ):<span className="whitespace-pre-wrap break-words">{item.text}</span>}
          </div>

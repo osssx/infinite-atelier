@@ -10,6 +10,16 @@ const vault={
  withSecretVersion(version,consumer){assert.equal(version,"v1");return consumer(Buffer.from(credential))}
 };
 const messages=[{role:"user",content:"你好"}];
+test("bounded streaming accepts more than 2000 valid upstream deltas",async()=>{
+ const frame='data: {"choices":[{"delta":{"content":"字"}}]}\r\n\r\n';
+ const ask=createAssistantChatService({vault,compatibleUpstreamCall:async()=>new Response(
+  frame.repeat(2001)+"data: [DONE]\r\n\r\n",{headers:{"content-type":"text/event-stream"}})});
+ let count=0;
+ const answer=await ask({channelId:"c1",provider:"openai_compatible",baseUrl:"http://localhost:8080/v1",
+  model:"demo",messages,stream:true,onDelta:()=>count++});
+ assert.equal(count,2001);
+ assert.equal(answer.answer,"字".repeat(2001));
+});
 test("direct assistant uses backend vault and keeps conversation history",async()=>{
  let received;
  const ask=createAssistantChatService({vault,compatibleUpstreamCall:async(url,options)=>{
@@ -288,6 +298,53 @@ test("HTTP assistant route integrates compatible response extraction and safe er
  assert.doesNotMatch(second.body,/hidden-reasoning|mock-api-key/);
  const unchanged=await app.inject({method:"GET",url:"/api/v1/projects/p-integration",headers});
  assert.equal(unchanged.json().revision,1);
+});
+test("ordinary chat SSE works over a real HTTP socket and is recoverable/cancellable",async t=>{
+ const db=new DatabaseSync(":memory:");initializeSchema(db);let aborted=false;
+ const service=createAssistantChatService({vault,compatibleUpstreamCall:async(_url,options)=>{
+  options.signal.addEventListener("abort",()=>{aborted=true},{once:true});
+  const body="data: "+JSON.stringify({choices:[{delta:{content:"真"}}]})+"\n\n"+
+   "data: "+JSON.stringify({choices:[{delta:{content:"实"},finish_reason:"stop"}]})+"\n\n"+
+   "data: [DONE]\n\n";
+  return new Response(body,{status:200,headers:{"content-type":"text/event-stream"}});
+ }});
+ const app=buildApp({db,authorize:req=>req.headers["x-test-owner"]==="owner",assistantChat:service});
+ const address=await app.listen({host:"127.0.0.1",port:0});t.after(async()=>{await app.close();db.close()});
+ const headers={"x-test-owner":"owner","content-type":"application/json",accept:"text/event-stream"};
+ await fetch(address+"/api/v1/projects",{method:"POST",headers:{...headers,accept:"application/json"},body:JSON.stringify({id:"p-stream",document:{nodes:[],connections:[]}})});
+ const endpoint=address+"/api/v1/projects/p-stream/assistant/chat";const payload={channelId:"c1",provider:"openai_compatible",baseUrl:"http://localhost:8080/v1",model:"demo",turnId:"turn-real",canvasActions:false,messages};
+ const response=await fetch(endpoint,{method:"POST",headers,body:JSON.stringify(payload)});assert.equal(response.status,200);const text=await response.text();assert.match(text,/event: delta/);assert.match(text,/event: done/);
+ const replay=await fetch(address+"/api/v1/projects/p-stream/assistant/chat/stream/turn-real?after=0",{headers:{"x-test-owner":"owner"}});assert.equal(replay.status,200);assert.equal((await replay.json()).terminal,true);
+ const cancel=await fetch(address+"/api/v1/projects/p-stream/assistant/chat/stream/turn-real/cancel",{method:"POST",headers:{...headers,accept:"application/json"},body:"{}"});assert.equal(cancel.status,200);assert.equal(aborted,false);
+});
+
+test("disconnect resumes the same paid turn and cancel aborts an active stream",{timeout:8000},async t=>{
+ const db=new DatabaseSync(":memory:");initializeSchema(db);
+ let calls=0,finish,aborted=false;
+ const app=buildApp({db,authorize:()=>true,assistantChat:async({onDelta,signal})=>{
+  calls++;onDelta("前");
+  await new Promise((resolve,reject)=>{
+   finish=resolve;
+   signal.addEventListener("abort",()=>{aborted=true;reject(signal.reason)},{once:true});
+  });
+  onDelta("后");return {answer:"前后",model:"demo"};
+ }});
+ const address=await app.listen({host:"127.0.0.1",port:0});t.after(async()=>{await app.close();db.close()});
+ const headers={"content-type":"application/json"};
+ await fetch(address+"/api/v1/projects",{method:"POST",headers,body:JSON.stringify({id:"resume",document:{nodes:[],connections:[]}})});
+ const endpoint=address+"/api/v1/projects/resume/assistant/chat";
+ const start=turnId=>fetch(endpoint,{method:"POST",headers:{...headers,accept:"text/event-stream"},body:JSON.stringify({channelId:"c1",provider:"openai",model:"demo",turnId,messages,canvasActions:false})});
+ const reader=(await start("original")).body.getReader();
+ assert.match(new TextDecoder().decode((await reader.read()).value),/event: delta/);
+ await reader.cancel();
+ const duplicate=await start("original");assert.equal(duplicate.status,409);await duplicate.text();
+ assert.equal(calls,1);assert.equal(aborted,false);finish();
+ const replay=await (await fetch(endpoint+"/stream/original?after=1")).json();
+ assert.deepEqual(replay.events.map(event=>event.type),["delta","done"]);
+ const active=(await start("stop")).body.getReader();await active.read();
+ const stopped=await fetch(endpoint+"/stream/stop/cancel",{method:"POST",headers,body:"{}"});assert.equal(stopped.status,200);await stopped.text();
+ const terminal=new TextDecoder().decode((await active.read()).value);
+ assert.match(terminal,/event: cancelled/);assert.equal((await active.read()).done,true);assert.equal(aborted,true);
 });
 
 test("assistant route verifies project and authorization without mutating canvas",async t=>{

@@ -33,6 +33,7 @@ import {listSkillRegistry,getSkillRegistryPackage,getAuthorizedSkillCatalog,upda
 import {getUiSetting,putUiSetting} from "./ui-settings.mjs";
 import {listScriptAssetReconciliation,reconcileScriptAsset,resumeReconciledVideoJob} from "./script-asset-reconciliation.mjs";
 import {registerShotGroupRoutes} from "./shot-group-routes.mjs";
+import {createAssistantChatStreamLedger} from "./assistant-chat-stream-ledger.mjs";
 const nonempty={type:"string",minLength:1,maxLength:256};
 const idSchema={type:"string",pattern:"^[A-Za-z0-9_-]{1,128}$"};
 const canvasNodeIdSchema={type:"string",pattern:CANVAS_NODE_ID_PATTERN};
@@ -100,9 +101,10 @@ function cursorOf(value){
  return Number(v);
 }
 export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobStore,mediaPreview,audioExtraction,blobGc,projectArchive,comfyWorkflowDir,vault,coordinator,materializer,worker,comfyRegistry,comfyLive,comfyInstanceIds=[],modelKinds=[],arkAssetUploadReady=false,
- arkChannelHealth,modelCatalog,mediaDownloader,skillRegistry,onTaskSkillSettled,assistantChat,shotBatches,logger=false,streamPollMs=200}={}){
+ arkChannelHealth,modelCatalog,mediaDownloader,skillRegistry,onTaskSkillSettled,assistantChat,assistantChatStreamLedger=createAssistantChatStreamLedger(),shotBatches,logger=false,streamPollMs=200}={}){
  if(!db||(!sessionAuth&&typeof authorize!=="function"))throw Error("backend_authorizer_required");
  const app=Fastify({logger,bodyLimit:5*1024*1024,trustProxy:false,genReqId:()=>randomUUID()});
+ const assistantStreamControllers=new Map();
  if(blobStore)app.addContentTypeParser("application/octet-stream",(req,stream,done)=>done(null,stream));
  if(projectArchive)app.addContentTypeParser("application/zip",(req,stream,done)=>done(null,stream));
  app.addHook("onRequest",async(req,reply)=>{
@@ -662,11 +664,23 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
  app.get("/api/v1/projects/:id/chats",{schema:{params:canvasParams}},req=>getCanvasChats(db,req.params.id));
  app.put("/api/v1/projects/:id/chats",{schema:{params:canvasParams,body:chatsBody}},req=>
   putCanvasChats(db,req.params.id,req.body));
+ const assistantStreamParams={type:"object",required:["id","turnId"],additionalProperties:false,properties:{id:idSchema,turnId:idSchema}};
+ app.get("/api/v1/projects/:id/assistant/chat/stream/:turnId",{schema:{params:assistantStreamParams,querystring:{type:"object",properties:{after:{type:"integer",minimum:0}},additionalProperties:false}}},async(req,reply)=>{
+  getProject(db,req.params.id);const after=Number(req.query.after??0);const state=assistantChatStreamLedger.read(req.params.id,req.params.turnId,after);
+  if(!state)return reply.code(404).send({code:"assistant_turn_not_found"});
+  const first=state.events[0]?.seq; if(first!==undefined&&after<first-1)return reply.code(409).send({code:"assistant_stream_cursor_expired",oldestSeq:first});
+  reply.header("Cache-Control","no-store");return state;
+ });
+ app.post("/api/v1/projects/:id/assistant/chat/stream/:turnId/cancel",{schema:{params:assistantStreamParams,body:{type:"object",additionalProperties:false}}},async(req,reply)=>{
+  getProject(db,req.params.id);const state=assistantChatStreamLedger.cancel(req.params.id,req.params.turnId);if(!state)return reply.code(404).send({code:"assistant_turn_not_found"});
+  if(state.cancelled)assistantStreamControllers.get(req.params.id+"\0"+req.params.turnId)?.abort();
+  reply.header("Cache-Control","no-store");return {turnId:req.params.turnId,cancelled:state.cancelled};
+ });
  registerAssistantTaskRoutes(app,db,{skillRegistry,blobStore,onTaskSkillSettled});
  registerShotGroupRoutes(app,{shotBatches});
    app.post("/api/v1/projects/:id/assistant/chat",{schema:{params:canvasParams,body:{type:"object",
      required:["channelId","provider","model","messages"],additionalProperties:false,properties:{
-       channelId:idSchema,provider:{type:"string",enum:["openai","openai_compatible","google_gemini"]},
+       channelId:idSchema,turnId:idSchema,provider:{type:"string",enum:["openai","openai_compatible","google_gemini"]},
         baseUrl:{type:"string",maxLength:1024},model:{type:"string",minLength:1,maxLength:128},
         canvasActions:{type:"boolean"},
         agentReadTools:{type:"boolean"},
@@ -692,10 +706,29 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
       }}}},async(req,reply)=>{
      const project=getProject(db,req.params.id); // Verify project before any paid provider call.
      if(!assistantChat)return reply.code(503).send({code:"assistant_unavailable"});
-     const controller=new AbortController();
-     const onClose=()=>controller.abort();
-     reply.raw.on("close",onClose);
      const ref=req.body.task;
+     const streamMode=req.headers.accept?.toLowerCase().includes("text/event-stream")&&
+      req.body.provider!=="google_gemini"&&!ref&&!req.body.skills&&!req.body.visualContext&&req.body.agentReadTools!==true&&req.body.canvasActions===false;
+     const streamTurnId=streamMode?req.body.turnId:null;
+     if(streamMode&&!streamTurnId)return reply.code(400).send({code:"assistant_turn_required"});
+     if(streamMode&&assistantChatStreamLedger.isReplayExpired(req.params.id,streamTurnId))
+      return reply.code(409).send({code:"assistant_stream_cursor_expired"});
+     const existingStream=streamMode&&assistantChatStreamLedger.has(req.params.id,streamTurnId)?assistantChatStreamLedger.read(req.params.id,streamTurnId,0):null;
+     if(existingStream){
+      if(!existingStream.terminal)return reply.code(409).send({code:"assistant_model_call_in_progress",turnId:streamTurnId});
+      if(existingStream.oldestSeq>1)return reply.code(409).send({code:"assistant_stream_cursor_expired"});
+      reply.hijack();reply.raw.writeHead(200,{"Content-Type":"text/event-stream; charset=utf-8","Cache-Control":"no-store","X-Assistant-Turn-Id":streamTurnId});
+      for(const event of existingStream.events)reply.raw.write("id: "+event.seq+"\nevent: "+event.type+"\ndata: "+JSON.stringify(event)+"\n\n");reply.raw.end();return reply;
+     }
+     if(streamMode){
+      if(!assistantChatStreamLedger.ensure(req.params.id,streamTurnId))return reply.code(429).send({code:"assistant_stream_capacity"});
+      reply.hijack();reply.raw.writeHead(200,{"Content-Type":"text/event-stream; charset=utf-8","Cache-Control":"no-cache, no-store","Connection":"keep-alive","X-Assistant-Turn-Id":streamTurnId});
+      reply.raw.flushHeaders();
+     }
+     const controller=new AbortController();
+     if(streamMode)assistantStreamControllers.set(req.params.id+"\0"+streamTurnId,controller);
+     const onClose=()=>controller.abort();
+     if(!streamMode)reply.raw.on("close",onClose);
       const proposalMode=ref?.callKind==="semantic_proposal";
       const readMode=req.body.agentReadTools===true;
      let commandStarted=false;
@@ -860,6 +893,7 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
        const result=await assistantChat({...chatInput,messages,skillContext:skill.context,
         skillTools:skill.toolEntries??[],visualImages:visual.images,
         visualDetail:req.body.visualContext?.detail??"high",signal:controller.signal,
+        ...(streamMode?{stream:true,onDelta:(delta)=>{const event=assistantChatStreamLedger.append(req.params.id,streamTurnId,"delta",{text:delta});if(event&&!reply.raw.destroyed)reply.raw.write("id: "+event.seq+"\nevent: delta\ndata: "+JSON.stringify(event)+"\n\n");}}:{}),
         ...(ref?{providerPayloadGuard:(requestBody)=>{
          agentReadSession?.check(); // reauthorize immediately before each POST
          if(structuredRequirement){
@@ -903,6 +937,13 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
          ...(proposed?{proposals:proposed.candidates}:{})};
        if(ref)completeAssistantModelCommand(db,{projectId:req.params.id,taskId:ref.taskId,
         requestId:ref.requestId,response:completed,semanticProposalBatch:proposed});
+       if(streamMode){const event=assistantChatStreamLedger.append(req.params.id,streamTurnId,"done",{result:completed});
+        if(!reply.raw.destroyed){
+         const terminal=event??assistantChatStreamLedger.read(req.params.id,streamTurnId,0)?.events.at(-1);
+         if(terminal)reply.raw.write("id: "+terminal.seq+"\nevent: "+terminal.type+"\ndata: "+JSON.stringify(terminal)+"\n\n");
+         reply.raw.end();
+        }return reply;
+       }
        reply.header("Cache-Control","no-store");return completed;
      }catch(error){
        if(ref&&commandStarted){
@@ -910,8 +951,15 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
         catch{ /* A durable submitting record will still prohibit replay on restart. */ }
        }
        const code=typeof error?.code==="string"&&error.code.startsWith("assistant_")?error.code:"assistant_failed";
+       if(streamMode){const event=assistantChatStreamLedger.append(req.params.id,streamTurnId,"error",{code});
+        if(!reply.raw.destroyed){
+         const terminal=event??assistantChatStreamLedger.read(req.params.id,streamTurnId,0)?.events.at(-1);
+         if(terminal)reply.raw.write("id: "+terminal.seq+"\nevent: "+terminal.type+"\ndata: "+JSON.stringify(terminal)+"\n\n");
+         reply.raw.end();
+        }return reply;
+       }
        return reply.code(error?.statusCode>=400&&error.statusCode<600?error.statusCode:502).send({code});
-     }finally{reply.raw.off("close",onClose)}
+     }finally{reply.raw.off("close",onClose);if(streamMode)assistantStreamControllers.delete(req.params.id+"\0"+streamTurnId)}
    });
   if(projectArchive){
   app.get("/api/v1/projects/:id/archive",{schema:{params:canvasParams}},async(req,reply)=>{

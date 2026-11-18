@@ -93,37 +93,36 @@ function extractAnswer(json,provider){
 /** A few compatible gateways reply with SSE despite stream:false. Accept only completed text events. */
 function extractEventStream(source,provider){
  const blocks=source.replace(/\r\n/g,"\n").split(/\n\n+/);
- let text="",done=false,finished=false,completed=null,events=0;
+ let text="",done=false,finished=false,completed=null,answerBytes=0;
  for(const block of blocks){
   const data=block.split("\n").filter(line=>line.startsWith("data:"))
    .map(line=>line.slice(5).trimStart()).join("\n").trim();
   if(!data)continue;
   if(data==="[DONE]"){done=true;continue;}
-  if(++events>2000)throw fail("assistant_response_invalid",502);
   let value;
   try{value=JSON.parse(data)}catch{throw fail("assistant_response_invalid",502)}
   if(value?.error||value?.type==="error"||value?.type==="response.failed")
    throw fail("assistant_upstream_error",502);
-  if(value?.type==="response.output_text.delta"&&typeof value.delta==="string"){
-   text+=value.delta;continue;
-  }
-  if(value?.type==="response.output_text.done"&&!text&&typeof value.text==="string")text=value.text;
+  let delta="";
+  if(value?.type==="response.output_text.delta"&&typeof value.delta==="string")delta=value.delta;
+  if(value?.type==="response.output_text.done"&&!text&&typeof value.text==="string")delta=value.text;
   if(value?.type==="response.completed"){completed=value.response;finished=true;}
   const choice=value?.choices?.[0];
   if(choice){
    checkFinishReason(choice.finish_reason);
    if(choice.finish_reason==="stop")finished=true;
-   const delta=contentText(choice.delta?.content);
-   text+=delta||contentText(choice.message?.content);
+   delta=contentText(choice.delta?.content)||contentText(choice.message?.content);
   }
-  if(Buffer.byteLength(text,"utf8")>MAX_ANSWER_BYTES)throw fail("assistant_response_too_large",502);
+  answerBytes+=Buffer.byteLength(delta,"utf8");
+  if(answerBytes>MAX_ANSWER_BYTES)throw fail("assistant_response_too_large",502);
+  text+=delta;
  }
  if(!done&&!finished)throw fail("assistant_response_incomplete",502);
  if(!text.trim()&&completed)return extractAnswer(completed,provider);
  if(!text.trim())throw fail("assistant_response_empty",502);
  return text.trim();
 }
-async function readBoundedAnswer(response,provider){
+async function readBoundedAnswer(response,provider,onDelta){
  if(!response.ok){
   if([408,504,522,524].includes(response.status))throw fail("assistant_upstream_timeout",504);
   if(response.status===429)throw fail("assistant_upstream_rate_limited",502);
@@ -132,11 +131,29 @@ async function readBoundedAnswer(response,provider){
  }
  if(!response.body)throw fail("assistant_response_invalid",502);
  const chunks=[];let size=0;
+ const decoder=onDelta?new TextDecoder():null;
+ let pending="";
+ const emitBlock=block=>{
+  if(!onDelta)return;
+  const data=block.split("\n").filter(line=>line.startsWith("data:"))
+   .map(line=>line.slice(5).trimStart()).join("\n").trim();
+  if(!data||data==="[DONE]")return;
+  try{const value=JSON.parse(data);let delta="";
+   if(value?.type==="response.output_text.delta"&&typeof value.delta==="string")delta=value.delta;
+   const choice=value?.choices?.[0];if(!delta&&choice)delta=contentText(choice.delta?.content);
+   if(delta)onDelta(delta);
+  }catch{/* final bounded parser reports malformed SSE */}
+ };
  try{
   for await(const part of response.body){
    size+=part.byteLength;
    if(size>MAX_RESPONSE_BYTES)throw fail("assistant_response_too_large",502);
-   chunks.push(Buffer.from(part));
+   const chunk=Buffer.from(part);chunks.push(chunk);
+   if(decoder){
+    const blocks=(pending+decoder.decode(chunk,{stream:true})).split(/\r?\n\r?\n/);
+    pending=blocks.pop()??"";
+    for(const block of blocks)emitBlock(block.replace(/\r\n/g,"\n"));
+   }
   }
  }catch(error){
   if(error?.code?.startsWith?.("assistant_"))throw error;
@@ -210,7 +227,7 @@ export function createAssistantChatService({vault,upstreamCall=fetch,
  const retries=Number.isInteger(maxRetries)?Math.max(0,Math.min(DEFAULT_RETRIES,maxRetries)):DEFAULT_RETRIES;
  const timeout=Number.isInteger(requestTimeoutMs)?Math.max(1,Math.min(DEFAULT_TIMEOUT_MS,requestTimeoutMs)):DEFAULT_TIMEOUT_MS;
  const backoff=Number.isInteger(retryDelayMs)?Math.max(0,Math.min(5000,retryDelayMs)):DEFAULT_RETRY_DELAY_MS;
-  return async function ask({channelId,provider,baseUrl,model,messages,signal,canvasActions=false,skillContext="",skillTools=[],skillScriptProposalEnabled=true,visualImages=[],visualDetail="high",taskContext="",callObserver=null,modelCallKind="initial",semanticProposal=false,providerPayloadGuard=null,agentReadSession=null}){  if(!validId(channelId)||!validModel(model)||
+ return async function ask({channelId,provider,baseUrl,model,messages,signal,canvasActions=false,skillContext="",skillTools=[],skillScriptProposalEnabled=true,visualImages=[],visualDetail="high",taskContext="",callObserver=null,modelCallKind="initial",semanticProposal=false,providerPayloadGuard=null,agentReadSession=null,stream=false,onDelta=null}){  if(!validId(channelId)||!validModel(model)||
    !["openai","openai_compatible","google_gemini"].includes(provider))
    throw fail("assistant_model_invalid");
   checkMessages(messages);
@@ -258,11 +275,11 @@ export function createAssistantChatService({vault,upstreamCall=fetch,
     body=JSON.stringify({model,messages:[{role:"system",content:system},
      ...effectiveMessages.map((item,index)=>visualImages.length&&index===effectiveMessages.length-1?
       {...item,content:openAiVisionContent(item.content,visualImages,{detail:visualDetail})}:item)
-    ],stream:false});   network=provider==="openai"?upstreamCall:compatibleUpstreamCall;
+    ],stream:Boolean(stream)});   network=provider==="openai"?upstreamCall:compatibleUpstreamCall;
   }
    // P0b: task calls record each upstream POST and never retry ambiguous responses.
    const infer=async(requestBody,toolPayload=false,kind=modelCallKind)=>{
-    const attempts=callObserver?0:retries;
+    const attempts=callObserver||stream?0:retries;
     for(let attempt=0;attempt<=attempts;attempt++){
      if(signal?.aborted)throw fail("assistant_cancelled",499);
      const deadline=AbortSignal.timeout(timeout);
@@ -276,7 +293,8 @@ export function createAssistantChatService({vault,upstreamCall=fetch,
       const response=await network(url,{method:"POST",headers,body:requestBody,redirect:"manual",signal:requestSignal});
       responseArrived=true;responseStatus=response.status;
       if(signal?.aborted)throw fail("assistant_cancelled",499);
-      const answer=toolPayload?await readBoundedToolPayload(response):await readBoundedAnswer(response,provider);
+      const answer=toolPayload?await readBoundedToolPayload(response):await readBoundedAnswer(response,provider,
+       stream&&!toolPayload?onDelta:null);
       if(signal?.aborted)throw fail("assistant_cancelled",499);
       if(deadline.aborted)throw fail("assistant_upstream_timeout",504);
       callObserver?.success(callId,answer);
@@ -306,7 +324,10 @@ export function createAssistantChatService({vault,upstreamCall=fetch,
        if(typeof code==="string"&&code.startsWith("assistant_"))throw error;
        throw fail("assistant_upstream_unavailable",502);
       }
-      if(attempt===attempts)throw fail("assistant_upstream_retry_exhausted",504);
+      if(attempt===attempts){
+       if(stream)throw fail("assistant_stream_interrupted",502);
+       throw fail("assistant_upstream_retry_exhausted",504);
+      }
       try{await delay(backoff*2**attempt,undefined,{signal});}
       catch{
        if(signal?.aborted)throw fail("assistant_cancelled",499);

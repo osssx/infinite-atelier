@@ -58,5 +58,56 @@ export async function canvasApi<T>(path:string,method="GET",payload?:unknown,sig
  }
  throw new CanvasApiError("backend_unauthorized",401);
 }
+type AssistantStreamEvent<T>={seq:number;type:string;text?:string;result?:T;code?:string};
+export async function canvasApiStream<T>(path:string,payload:{turnId:string},signal:AbortSignal,onDelta?:(text:string)=>void):Promise<T>{
+ let token=await canvasSession();
+ let cursor=0;
+ const consume=(event:AssistantStreamEvent<T>)=>{
+  if(event.seq<=cursor)return;
+  if(event.seq!==cursor+1)throw new CanvasApiError("assistant_stream_incomplete",502);
+  cursor=event.seq;
+  if(event.type==="delta")onDelta?.(event.text??"");
+  if(event.type==="error"||event.type==="cancelled")throw new CanvasApiError(event.code??"assistant_failed",502);
+  return event.type==="done"?event.result:undefined;
+ };
+ try{
+  const send=()=>fetch(path,{method:"POST",credentials:"same-origin",cache:"no-store",signal,
+   headers:{accept:"text/event-stream","content-type":"application/json","x-atelier-csrf":token},body:JSON.stringify(payload)});
+  let response=await send();
+  if(response.status===401){await response.body?.cancel();token=await canvasSession(true);response=await send();}
+  if(!response.ok){const data=await response.json().catch(()=>null);throw new CanvasApiError(data?.code??"backend_http_error",response.status,"POST",path);}
+  if(!response.body)throw new CanvasApiError("backend_invalid_stream",response.status);
+  const reader=response.body.getReader();const decoder=new TextDecoder();let buffer="";
+  try{
+   for(;;){const part=await reader.read();if(part.done)break;buffer+=decoder.decode(part.value,{stream:true});
+    const blocks=buffer.split("\n\n");buffer=blocks.pop()??"";
+    for(const block of blocks){const data=block.split("\n").find(line=>line.startsWith("data:"))?.slice(5).trim();if(!data)continue;
+     const result=consume(JSON.parse(data));if(result!==undefined)return result;
+    }
+   }
+  }finally{void reader.cancel().catch(()=>{});}
+ }catch(error){
+  if(signal.aborted||(error instanceof CanvasApiError&&error.code!=="assistant_model_call_in_progress"&&error.code!=="assistant_stream_incomplete"))throw error;
+ }
+ if(payload.turnId){
+  const deadline=Date.now()+5*60_000;
+  while(!signal.aborted&&Date.now()<deadline){
+   let state;
+   try{state=await readCanvasAssistantStream<T>(path,payload.turnId,cursor,signal);}
+   catch(error){if(signal.aborted)throw error;if(error instanceof CanvasApiError&&error.status>=400&&error.status<500)break;}
+   for(const event of state?.events??[]){const result=consume(event);if(result!==undefined)return result;}
+   if(state?.terminal)break;
+   await new Promise(resolve=>setTimeout(resolve,600));
+  }
+ }
+ signal.throwIfAborted();
+ throw new CanvasApiError("assistant_stream_incomplete",502);
+}
+export async function readCanvasAssistantStream<T>(path:string,turnId:string,after=0,signal?:AbortSignal):Promise<{events:AssistantStreamEvent<T>[];terminal:boolean}>{
+ return canvasApi(path+"/stream/"+encodeURIComponent(turnId)+"?after="+after,"GET",undefined,signal);
+}
+export async function cancelCanvasAssistantStream(path:string,turnId:string,signal?:AbortSignal){
+ return canvasApi<{turnId:string;cancelled:boolean}>(path+"/stream/"+encodeURIComponent(turnId)+"/cancel","POST",{},signal);
+}
 export type CanvasBackendProject={id:string;revision:number;document:Record<string,unknown>};
 export type CanvasBackendSummary={id:string;title:string;revision:number;createdAt?:string;updatedAt?:string;nodeCount:number;connectionCount:number};

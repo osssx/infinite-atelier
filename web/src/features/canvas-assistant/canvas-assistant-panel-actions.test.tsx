@@ -52,7 +52,10 @@ vi.mock("@/features/backend-sync/canvas-api",async importOriginal=>{
  const original=await importOriginal<typeof import("@/features/backend-sync/canvas-api")>();
  // Task-state requests should not consume legacy model request mock expectations.
  return {...original,canvasApi:(url:string,...args:unknown[])=>String(url).includes("/assistant/tasks")?
-  mocks.taskApi(url,...args):mocks.api(url,...args)};
+  mocks.taskApi(url,...args):mocks.api(url,...args),
+  canvasApiStream:async(url:string,payload:unknown,_signal:AbortSignal,onDelta?:(text:string)=>void)=>{
+   const value=await mocks.api(url,"POST",payload);onDelta?.((value as {answer?:string}).answer??"");return value;
+  }};
 });
 vi.mock("antd",()=>({Modal:{confirm:mocks.confirm}}));
 vi.mock("streamdown",()=>({Streamdown:({children}:{children:unknown})=>children}));

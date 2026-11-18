@@ -3,7 +3,7 @@ import {Modal} from "antd";
 import {AlertCircle,ArrowUp,ArrowUpRight,Bot,Check,ChevronDown,ChevronUp,Clock3,Copy,FileText,Image as ImageIcon,Layers3,Link2,LoaderCircle,MessageSquarePlus,Music2,Plus,RefreshCw,Sparkles,Square,Trash2,UserRound,Video,X} from "lucide-react";
 import {Streamdown} from "streamdown";
 import {nanoid} from "nanoid";
-import {CanvasApiError,canvasApi} from "@/features/backend-sync/canvas-api";
+import {CanvasApiError,canvasApi,canvasApiStream,readCanvasAssistantStream,cancelCanvasAssistantStream} from "@/features/backend-sync/canvas-api";
 import {ensureSqliteModelChannelForExecution,modelChannelProvider} from "@/features/backend-sync/model-channel-autoroute";
 import {modelOptionLabel,modelOptionName,resolveModelChannel,resolveModelScript,selectableModelsByCapability,type AiConfig} from "@/stores/use-config-store";
 import {canvasThemes,type CanvasColorTheme} from "@/lib/canvas-theme";import {useThemeStore} from "@/stores/use-theme-store";
@@ -265,7 +265,9 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
  const [previewOpen,setPreviewOpen]=useState(false);
  const [previewRevision,setPreviewRevision]=useState(0);
  const controllerRef=useRef<AbortController|null>(null);
+ const activeStreamTurnRef=useRef<{turnId:string;chatId:string}|null>(null);
  const scrollRef=useRef<HTMLDivElement>(null);
+ const followOutputRef=useRef(true);
  const signature=selectedNodes.map(node=>node.id).join("|");
  useEffect(()=>{setIncludedIds(selectedNodes.slice(0,12).map(node=>node.id));setPreviewRevision(n=>n+1);},[signature]);
  useEffect(()=>()=>controllerRef.current?.abort(),[]);
@@ -363,8 +365,69 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
    }finally{setSending(false);controllerRef.current=null;}
   }
  });
- useEffect(()=>{if(open)scrollRef.current?.scrollTo({top:scrollRef.current.scrollHeight});},[open,session?.id,session?.messages.length,sending]);
- const stop=useCallback(()=>controllerRef.current?.abort(),[]);
+ useEffect(()=>{followOutputRef.current=true;},[open,session?.id]);
+ useEffect(()=>{const transcript=scrollRef.current;if(open&&transcript&&followOutputRef.current)transcript.scrollTo({top:transcript.scrollHeight});},[open,session?.messages,sending]);
+ useEffect(()=>{
+  if(!open||activeStreamTurnRef.current)return;
+  const key="infinite-atelier:assistant-stream:"+projectId;
+  const pending=sessionStorage.getItem(key);
+  if(!pending)return;
+  const [chatId,turnId]=pending.split("\0");
+  if(!chatId||!turnId)return;
+  const controller=new AbortController();
+  activeStreamTurnRef.current={turnId,chatId};
+  controllerRef.current=controller;
+  setSending(true);
+  const endpoint="/api/v1/projects/"+encodeURIComponent(projectId)+"/assistant/chat";
+  const deadline=Date.now()+5*60_000;
+  let text="",cursor=0;
+  const update=(meta:string)=>setSessions(prev=>prev.map(chat=>{
+   if(chat.id!==chatId)return chat;
+   const message:CanvasAssistantMessage={id:turnId+"-reply",role:text?"assistant":"error",text:text||meta,meta};
+   return chat.messages.some(item=>item.id===message.id)?{...chat,messages:chat.messages.map(item=>item.id===message.id?message:item)}:
+    {...chat,messages:[...chat.messages,message].slice(-40)};
+  }));
+  const release=()=>{
+   if(controllerRef.current!==controller)return;
+   controllerRef.current=null;
+   activeStreamTurnRef.current=null;
+   setSending(false);
+  };
+  void (async()=>{
+   try{
+    while(!controller.signal.aborted){
+     let state;
+     try{state=await readCanvasAssistantStream<{answer?:string}>(endpoint,turnId,cursor,controller.signal);}
+     catch(error){
+      if(controller.signal.aborted)break;
+      if(Date.now()>=deadline||(error instanceof CanvasApiError&&error.status>=400&&error.status<500))throw error;
+      await new Promise(resolve=>setTimeout(resolve,600));
+      continue;
+     }
+     if(controller.signal.aborted)return;
+     for(const event of state.events){cursor=event.seq;if(event.type==="delta")text+=event.text??"";if(event.type==="done")text=event.result?.answer??text;}
+     const end=state.events.at(-1);
+     if(state.terminal){update(end?.type==="done"?"已恢复":end?.type==="cancelled"?"已停止生成":"回复中断");break;}
+     if(text)update("正在恢复回复");
+     if(Date.now()>=deadline)throw new Error("assistant_stream_incomplete");
+     await new Promise(resolve=>setTimeout(resolve,600));
+    }
+   }catch{if(!controller.signal.aborted)update("回复中断");}
+   if(!controller.signal.aborted&&sessionStorage.getItem(key)===pending)sessionStorage.removeItem(key);
+   release();
+  })();
+  return ()=>{controller.abort();release();};
+ },[open,projectId,setSessions]);
+ const stop=useCallback(()=>{
+  const active=activeStreamTurnRef.current;
+  controllerRef.current?.abort();
+  if(!active)return;
+  const endpoint="/api/v1/projects/"+encodeURIComponent(projectId)+"/assistant/chat";
+  void cancelCanvasAssistantStream(endpoint,active.turnId).catch(()=>{});
+  sessionStorage.removeItem("infinite-atelier:assistant-stream:"+projectId);
+  setSessions(prev=>prev.map(chat=>chat.id===active.chatId?{...chat,messages:chat.messages.map(item=>
+   item.id===active.turnId+"-reply"?{...item,meta:"已停止生成"}:item)}:chat));
+ },[projectId,setSessions]);
  const send=useCallback(async()=>{
   const parsedDraft=extractSkillMentions(draft.trim());
   const visual=collectAssistantImageMentions(parsedDraft.text.trim(),resourceReferences);
@@ -566,10 +629,21 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
       ...(agentReadTools?{agentReadTools:true}:{}),
       ...(linkedTaskId?{task:{taskId:linkedTaskId,turnMessageId:user.id,requestId:user.id+"-model-initial"}}:{}),
      ...(!wantsCreativeSources&&visual.images.length?{visualContext:{detail:"high",images:visual.images}}:{})};
-    let response:AssistantReply;
+    let response:AssistantReply;let streamedId:string|undefined;
     try{
-     response=await canvasApi<AssistantReply>(endpoint,"POST",
-      {...request,...(selectedSkills?{skills:selectedSkills}:{})},controller.signal);
+      const streamOrdinary=!linkedTaskId&&!selectedSkills&&!visual.images.length&&!agentReadTools&&textOnly&&
+       (provider==="openai"||provider==="openai_compatible");
+      const requestBody={...request,...(selectedSkills?{skills:selectedSkills}:{})};
+      if(streamOrdinary){activeStreamTurnRef.current={turnId:user.id,chatId:id};sessionStorage.setItem("infinite-atelier:assistant-stream:"+projectId,id+"\0"+user.id);}
+      response=streamOrdinary?await canvasApiStream<AssistantReply>(endpoint,{...requestBody,turnId:user.id},controller.signal,(delta)=>{
+       const replyId=streamedId??=user.id+"-reply";
+       setSessions(prev=>{
+        const current=prev.find(item=>item.id===id);if(!current)return prev;
+        const existing=current.messages.find(item=>item.id===replyId);
+        const message:CanvasAssistantMessage={id:replyId,role:"assistant",text:(existing?.text??"")+delta,meta:"正在生成"};
+        return existing?prev.map(item=>item.id===id?{...item,messages:item.messages.map(m=>m.id===replyId?message:m)}:item):append(prev,id,message);
+       });
+      }):await canvasApi<AssistantReply>(endpoint,"POST",requestBody,controller.signal);
     }catch(error){
      // The server validates Skills before running inference: if automatic
      // matching is stale or too large, retry the same question without Skill.
@@ -759,21 +833,26 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
        if(controller.signal.aborted)throw operationError;
        notes.push("画布操作未完成："+(operationError instanceof Error?operationError.message:"执行失败"));
      }    const answer=[response.answer,...notes].filter(Boolean).join("\n\n");
-    setSessions(prev=>append(prev,id,{id:nanoid(),role:"assistant",text:answer,
+    const finalMessage:CanvasAssistantMessage={id:streamedId??nanoid(),role:"assistant",text:answer,
       meta:response.model+(response.retryCount?` · 网络自动重试 ${response.retryCount} 次`:"")+
        (response.appliedSkillIds?.length?" · Skill: "+response.appliedSkillIds.join("、"):"")+
        (response.skillResourceReads?.length?" · 读取资料 "+response.skillResourceReads.length+" 项":"")+
        (response.skillToolsFallback?" · 工具不支持，仅使用 Skill 指令":"")+
        (response.agentRunId?" · Agent Run "+response.agentRunId:"")+
        (response.agentReadToolCalls?.length?" · 只读工具 "+response.agentReadToolCalls.length+" 次":"")+
-       (visual.images.length?" · 视觉图片 "+visual.images.length+" 张":"")}));
+       (visual.images.length?" · 视觉图片 "+visual.images.length+" 张":"")};
+    setSessions(prev=>streamedId?prev.map(item=>item.id===id?{...item,messages:item.messages.map(message=>message.id===streamedId?finalMessage:message)}:item):append(prev,id,finalMessage));
      await taskTracker.observe(linkedTaskId,user.id,"reply",answer);
    }catch(error){
    const stopped=controller.signal.aborted;
+   const replyId=activeStreamTurnRef.current?.turnId===user.id||stopped?user.id+"-reply":null;
+   if(replyId)setSessions(prev=>prev.map(chat=>chat.id===id?{...chat,messages:chat.messages.map(item=>item.id===replyId?{...item,meta:stopped?"已停止生成":"回复中断"}:item)}:chat));
+   if(!stopped&&activeStreamTurnRef.current?.turnId===user.id)setDraft(current=>current||parsedDraft.text);
    setSessions(prev=>append(prev,id,{id:nanoid(),role:"error",text:stopped?"已停止生成":canvasAssistantErrorText(error)}));
     await taskTracker.observe(linkedTaskId,user.id,"error",stopped?"已停止生成":canvasAssistantErrorText(error));
   }finally{
-   if(controllerRef.current===controller)controllerRef.current=null;
+      if(controllerRef.current===controller)controllerRef.current=null;
+      if(activeStreamTurnRef.current?.chatId===id){activeStreamTurnRef.current=null;if(!controller.signal.aborted)sessionStorage.removeItem("infinite-atelier:assistant-stream:"+projectId);}
    setSending(false);
   }
   },[draft,chosenModel,config,includeContext,getContext,includedIds,effectiveScope,session,setSessions,setActiveChatId,projectId,onApplyActions,onRunActions,getWorkflowTemplates,themeName,resourceReferences,taskTracker,getCanvasCenter]);
@@ -916,7 +995,10 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
    </section>
 
    {taskTracker.view}
-    <div ref={scrollRef} className="canvas-assistant-transcript" aria-live="polite">
+    <div ref={scrollRef} className="canvas-assistant-transcript" aria-live="polite" onScroll={event=>{
+     const transcript=event.currentTarget;
+     followOutputRef.current=transcript.scrollHeight-transcript.scrollTop-transcript.clientHeight<48;
+    }}>
     {!session?.messages.length?(
      <div className="canvas-assistant-empty">
       <span className="canvas-assistant-empty-icon" aria-hidden="true"><Sparkles size={22}/></span>

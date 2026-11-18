@@ -119,6 +119,7 @@ import { CanvasRefreshShell } from "@/components/canvas/canvas-refresh-shell";
 import { prepareBackendComfyWorkflowRun, startBackendComfyWorkflowRun } from "@/features/backend-sync/backend-comfy-run";
 import {fingerprintBackendSource,fingerprintComfyTargetBinding} from "@/features/backend-sync/backend-source-fingerprint";
 import {CanvasShotPanel,shotTakes,type ShotBatchItem,type ShotCheck} from "@/components/canvas/canvas-shot-panel";
+import {isComfyRunActive} from "@/features/comfy-workflow/run-status";
 import {resolveComfyWorkflowSelection} from "@/features/comfy-workflow/comfy-workflow-selection";
 import {createSqliteComfyBridge} from "@/features/backend-sync/sqlite-comfy-bridge";
 import {startSqliteModelGeneration,openAiImageSize} from "@/features/backend-sync/sqlite-model-generation";
@@ -379,6 +380,7 @@ function AtelierCanvasPage() {
     const [shotBusy,setShotBusy] = useState(false);
     const shotOperation = useRef(false);
     const checkedShots = useRef(new Map<string,string>());
+    const observedShotJobs=useRef(new Set<string>());
     const pendingShotConfirmation=useRef<{path:string;body:Record<string,unknown>}|null>(null);
     const [selectedConnectionId, setSelectedConnectionId] = useState<string | null>(null);
     const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
@@ -3011,6 +3013,7 @@ function AtelierCanvasPage() {
                 for(const item of batch.items){
                     if(!item.jobId||observed.has(item.jobId)||["failed","cancelled","submission_unknown"].includes(item.status))continue;
                     observed.add(item.jobId);
+                    observedShotJobs.current.add(item.jobId);
                     if(item.status!=="succeeded"||!nodesRef.current.some(node=>node.metadata?.comfyArtifact?.runId===item.jobId))
                         monitorSqliteJobRef.current(item.jobId,item.status!=="succeeded");
                 }
@@ -3728,7 +3731,7 @@ function AtelierCanvasPage() {
             onComfyLive:(event,job)=>{
                 if(controller.signal.aborted||activeProjectIdRef.current!==projectId)return;
                 if(job.projectId!==projectId||!job.targetNodeId)return;
-                if(nodesRef.current.some(node=>node.id===job.targetNodeId&&node.type===COMFY_WORKFLOW_MOCK_TYPE))
+                if(observedShotJobs.current.has(job.id)||nodesRef.current.some(node=>node.id===job.targetNodeId&&node.type===COMFY_WORKFLOW_MOCK_TYPE))
                     observeCanvasComfyLive(projectId,job.targetNodeId,job.id,event);
             },
             onStatus:(status,details,job)=>{
@@ -3736,9 +3739,21 @@ function AtelierCanvasPage() {
                 const targetKind=job?.targetNodeId?nodesRef.current.find(node=>node.id===job.targetNodeId)?.type:undefined;
                 const sourceKind=job?.modelKind??([CanvasNodeType.Image,CanvasNodeType.Video,CanvasNodeType.Audio,
                     CanvasNodeType.Text].includes(targetKind as CanvasNodeType)?targetKind:undefined);
+                const shotNodeId=job?.targetNodeId;
+                const isShotJob=Boolean(shotNodeId&&observedShotJobs.current.has(jobId));
+                if(isShotJob&&shotNodeId&&job&&targetKind){
+                    const previous=getCanvasComfyExecution(shotNodeId);
+                    if(isComfyRunActive(status)&&previous?.runId!==jobId&&
+                       (!isComfyRunActive(previous?.status)||Boolean(previous?.runId&&(previous.startedAt??0)<=job.createdAt))){
+                        setCanvasComfyExecution(projectId,shotNodeId,{runId:jobId,status,startedAt:job.createdAt});
+                    }
+                    if(targetKind===CanvasNodeType.Video&&isComfyRunActive(status)){
+                        trackCanvasTextJob(projectId,shotNodeId,jobId,status,undefined,"video");
+                        sqliteGenerationJobsRef.current.set(shotNodeId,jobId);
+                    }
+                }
                 updateCanvasTextJob(projectId,jobId,canvasModelExecutionPhase(status,sourceKind));
-                if(job?.targetNodeId && nodesRef.current.some(node=>node.id===job.targetNodeId&&
-                    node.type===COMFY_WORKFLOW_MOCK_TYPE)) {
+                if(job?.targetNodeId&&(isShotJob||targetKind===COMFY_WORKFLOW_MOCK_TYPE)) {
                     observeCanvasComfyExecution(projectId,job.targetNodeId,{
                         runId:job.id,status:job.status,startedAt:job.createdAt,
                         ...(job.status==="failed"&&details?{error:details}:{})
@@ -3781,7 +3796,7 @@ function AtelierCanvasPage() {
     useEffect(()=>{monitorSqliteJobRef.current=monitorSqliteJob},[monitorSqliteJob]);
 
     // A route change must never carry another project’s cancel target.
-    useEffect(()=>{sqliteGenerationJobsRef.current.clear()},[projectId]);
+    useEffect(()=>()=>{sqliteGenerationJobsRef.current.clear();observedShotJobs.current.clear();},[projectId]);
 
     // Refreshing the page must recover already-submitted jobs from SQLite,
     // including succeeded jobs whose materialization has not completed.

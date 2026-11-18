@@ -1,6 +1,8 @@
 import {Button, Checkbox, Drawer, Select, Space, Tag} from "antd";
 import type {CanvasNodeData, CanvasShot} from "@/types/canvas";
 import {canvasCasUrl} from "@/features/backend-sync/canvas-cas";
+import {useCanvasComfyExecution} from "@/features/comfy-workflow/canvas-execution-visual";
+import {isComfyRunActive} from "@/features/comfy-workflow/run-status";
 
 export type ShotCheck = {shotId:string;state:"ready"|"takeReady"|"waiting"|"choose"|"blocked";reason?:string};
 export type ShotBatchItem = {shotId:string;status:string;reason?:string;jobId?:string;tail?:{blobId:string};choices?:Array<{artifactId:string;storageKey?:string}>};
@@ -29,6 +31,26 @@ export function shotTakes(shot:CanvasShot,nodes:CanvasNodeData[]){
  }
  if(shot.take&&!takes.has(shot.take.storageKey))takes.set(shot.take.storageKey,shot.take);
  return [...takes.values()];
+}
+
+function ShotProgress({nodeId,item}:{nodeId:string;item:ShotBatchItem}){
+ const execution=useCanvasComfyExecution(nodeId);
+ const live=execution?.runId===item.jobId?execution:undefined;
+ const status=live?.status??item.status;
+ if(!item.jobId||!isComfyRunActive(status))return null;
+ const progress=status==="running"?live?.progress:undefined;
+ const value=progress?.value;
+ const percent=typeof value==="number"&&Number.isFinite(value)?Math.round(Math.max(0,Math.min(1,value))*100):undefined;
+ const label=progress?.nodeName??batchLabels[status]??"任务进行中";
+ return <div className="space-y-1 text-xs">
+  <div className="flex justify-between gap-2"><span>{label}</span>{percent!==undefined&&
+    <span>{progress?.step!=null&&progress?.steps!=null?`${progress.step}/${progress.steps} · `:""}{percent}%</span>}</div>
+  <div role="progressbar" aria-label={label} aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent}
+   className="h-1.5 overflow-hidden rounded-full bg-slate-400/25">
+   <div className={`h-full rounded-full bg-blue-500 ${percent===undefined?"w-1/3 motion-safe:animate-pulse":"transition-[width]"}`}
+    style={percent===undefined?undefined:{width:`${percent}%`}}/>
+  </div>
+ </div>;
 }
 
 export function CanvasShotPanel({title,shots,nodes,editable,busy,checks,items,excluded,onToggle,onClose,onEdit,onCheck,onConfirm,onStop,onSelectOutput,onResume}:{
@@ -76,6 +98,7 @@ export function CanvasShotPanel({title,shots,nodes,editable,busy,checks,items,ex
     {shot.mode==="continuity"&&<div>前镜 {index>0?nodes.find(value=>value.id===shots[index-1].generationNodeId)?.title||`#${index}`:"缺失，请切换为独立开场"}</div>}
     {editable&&takes.length>1&&<Select aria-label="选定成品" placeholder="选择当前成品" value={take?.storageKey} onChange={key=>edit(index,{take:takes.find(value=>value.storageKey===key)})} options={takes.map((value,i)=>({value:value.storageKey,label:`成品 ${i+1} · ${value.storageKey.slice(4,12)}`}))}/>}
     {take&&<video controls preload="metadata" aria-label="当前成品" className="max-h-32 max-w-full" src={canvasCasUrl(take.storageKey)??undefined}/>}
+    {item&&<ShotProgress nodeId={shot.generationNodeId} item={item}/>}
     {Boolean(item?.choices?.length)&&<div className="flex flex-wrap gap-2">{item?.choices?.map((choice,i)=><div key={choice.artifactId}>
      {choice.storageKey&&<video controls preload="metadata" className="max-h-24 max-w-40" src={canvasCasUrl(choice.storageKey)??undefined}/>}
      <Button disabled={busy} onClick={()=>onSelectOutput(shot.shotId,choice.artifactId)}>使用成品 {i+1}</Button>

@@ -1264,6 +1264,7 @@ function AtelierCanvasPage() {
         const result=groupSelectedCanvasNodes(nodesRef.current,new Set(shots.map(shot=>shot.generationNodeId)),group);
         if(!result){message.warning("无法将所选节点编入镜头组");return;}
         setNodes(result.nodes);setSelectedNodeIds(new Set([result.group.id]));setSelectedConnectionId(null);
+        setDialogNodeId(null);
         openShotPanel({groupId:result.group.id,shots:[]});
     };
 
@@ -1669,6 +1670,7 @@ function AtelierCanvasPage() {
             nextSelected.add(nodeId);
         }
         setSelectedNodeIds(nextSelected);
+        setDialogNodeId((current) => current && nextSelected.has(current) ? current : null);
         const soloId = nextSelected.size === 1 && nextSelected.has(nodeId) ? nodeId : null;
         setToolbarNodeId(soloId);
         return { nextSelected, soloId };

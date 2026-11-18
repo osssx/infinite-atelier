@@ -891,7 +891,7 @@ function VideoNodeContent({ node, theme, onMediaPlaybackChange }: NodeContentRen
 
     const poster = storageKey && cover?.key === storageKey ? cover.url : PERF_MODE ? node.metadata?.perfStaticPosterUrl ?? null : null;
     return (
-        <div className="relative h-full w-full bg-black" data-canvas-video-shell>
+        <div className="relative h-full w-full" data-canvas-video-shell>
             <video ref={videoRef}
                 controls={frameReady}
                 preload="none"
@@ -906,14 +906,14 @@ function VideoNodeContent({ node, theme, onMediaPlaybackChange }: NodeContentRen
                 onPause={() => onMediaPlaybackChange?.(node.id, false)}
                 onEnded={() => onMediaPlaybackChange?.(node.id, false)}
                 onError={() => { setFailed(true); setRequested(false); setFrameReady(false); onMediaPlaybackChange?.(node.id, false); }}
-                className={`h-full w-full object-contain ${frameReady ? "opacity-100" : "opacity-0"}`}
+                className={`block h-full w-full bg-black object-contain ${frameReady ? "opacity-100" : "opacity-0"}`}
                 style={{ pointerEvents: frameReady ? undefined : "none" }}
                 data-canvas-no-zoom
                 data-canvas-video-player
             />
             {!frameReady ? (
                 <button type="button" data-canvas-video-cover data-canvas-no-zoom
-                    className="absolute inset-0 flex h-full w-full items-center justify-center overflow-hidden bg-black text-white"
+                    className={`absolute inset-0 h-full w-full text-white ${poster ? "bg-transparent" : "bg-black"}`}
                     onMouseDown={(event) => {
                         // Bubble to the canvas node's drag handler. The cover also acts as
                         // a drag surface; it must not consume mouse down until playback.
@@ -946,8 +946,8 @@ function VideoNodeContent({ node, theme, onMediaPlaybackChange }: NodeContentRen
                                 onVideoDimensions(node.id,event.currentTarget.naturalWidth,
                                     event.currentTarget.naturalHeight,"poster");
                         }}
-                        className="pointer-events-none absolute inset-0 h-full w-full object-contain" /> : null}
-                    <span className="relative z-10 grid size-12 place-items-center rounded-full border border-white/40 bg-black/50">
+                        className="pointer-events-none block h-full w-full object-contain" /> : null}
+                    <span className="absolute left-1/2 top-1/2 grid size-12 -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full border border-white/40 bg-black/50">
                         {requested ? <span className="text-xs">···</span> : failed
                             ? <RefreshCw className="size-5" />
                             : <span className="ml-1 h-0 w-0 border-y-[8px] border-y-transparent border-l-[12px] border-l-white" />}

@@ -123,7 +123,7 @@ export const CompactCanvasNode = memo(function CompactCanvasNode({
                 ) : null}
                 {isImage && !imageSource ? <div className="pointer-events-none grid h-full w-full place-items-center" style={{ color: theme.node.placeholder }}><span className="text-2xl opacity-40">▧</span></div> : null}
                 {isVideo ? (
-                    <div className="pointer-events-none flex h-full w-full items-center justify-center" style={{ background: hasVideo ? "#000" : theme.node.fill }}>
+                    <div className="pointer-events-none flex h-full w-full items-center justify-center" style={{ background: showImagePreview && previewUrl ? "transparent" : hasVideo ? "#000" : theme.node.fill }}>
                         {showImagePreview && previewUrl && isVideo ? (
                             <img src={previewUrl} alt="" draggable={false} decoding="async"
                                 data-canvas-compact-poster

@@ -29,6 +29,9 @@ export function ordinaryConversationPolicy(value,visual,project){
 }
 
 export function recoverConversationRequests(db){
+ db.exec(`UPDATE assistant_conversation_requests SET state='failed'
+  WHERE state='needs_reconcile' AND error_code IN (
+   'assistant_actions_invalid','assistant_actions_missing','assistant_creative_content_incomplete')`);
  db.exec(`UPDATE assistant_conversation_requests
   SET state=CASE state WHEN 'submitting' THEN 'needs_reconcile' ELSE 'failed' END,
   error_code=CASE state WHEN 'submitting' THEN 'assistant_model_call_unknown' ELSE 'assistant_stream_interrupted' END
@@ -145,8 +148,10 @@ export function completeConversationRequest(db,request,response){
 }
 
 export function failConversationRequest(db,request,errorCode){
- return db.prepare(`UPDATE assistant_conversation_requests SET state=CASE state WHEN 'submitting' THEN 'needs_reconcile' ELSE 'failed' END,error_code=?
- WHERE turn_seq=? AND request_id=? AND state IN ('pending','submitting') RETURNING state`).get(errorCode,request.seq,request.requestId)?.state;
+ const knownFormatFailure=["assistant_actions_invalid","assistant_actions_missing","assistant_creative_content_incomplete"].includes(errorCode);
+ return db.prepare(`UPDATE assistant_conversation_requests SET state=CASE WHEN state='submitting' AND ?=0 THEN 'needs_reconcile' ELSE 'failed' END,error_code=?
+ WHERE turn_seq=? AND request_id=? AND state IN ('pending','submitting') RETURNING state`)
+  .get(Number(knownFormatFailure),errorCode,request.seq,request.requestId)?.state;
 }
 
 export function removeConversationInTransaction(db,projectId,chatSessionId){

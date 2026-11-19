@@ -8,7 +8,9 @@ it("keeps connection inspection read-only and preserves explicit follow-up edits
  expect(isCanvasAssistantCanvasActionRequest("查看节点连接与布局")).toBe(false);
  expect(isCanvasAssistantCanvasActionRequest("先检查画布节点连线，然后创建文本节点")).toBe(true);
  for(const request of ["先检查画布节点，再把 A 和 B 连接起来",
-  "检查连线，然后将整个画布按依赖从左到右排列","查看画布节点并连接 A 和 B"])
+  "检查连线，然后将整个画布按依赖从左到右排列","查看画布节点并连接 A 和 B",
+  "读取人物ch04 / ch05 / ch06提示词提取到新建文本节点并配置好生图参数",
+  "读取角色提示词提取到新建文本节点"])
   expect(isCanvasAssistantCanvasActionRequest(request),request).toBe(true);
  for(const request of ["查看整个画布的分组和连线布局","检查图像生成节点的连线","检查画布的布局设置"])
   expect(isCanvasAssistantCanvasActionRequest(request),request).toBe(false);

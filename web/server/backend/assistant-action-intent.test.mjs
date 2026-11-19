@@ -21,7 +21,9 @@ test("inspection of connection nouns is read-only while explicit follow-up edits
  assert.equal(isCanvasEditInstruction("查看节点连接与布局"),false);
  assert.equal(isCanvasEditInstruction("先检查画布节点连线，然后创建文本节点"),true);
  for(const request of ["先检查画布节点，再把 A 和 B 连接起来",
-  "检查连线，然后将整个画布按依赖从左到右排列","查看画布节点并连接 A 和 B"])
+  "检查连线，然后将整个画布按依赖从左到右排列","查看画布节点并连接 A 和 B",
+  "读取人物ch04 / ch05 / ch06提示词提取到新建文本节点并配置好生图参数",
+  "读取角色提示词提取到新建文本节点"])
   assert.equal(isCanvasEditInstruction(request),true,request);
  for(const request of ["查看整个画布的分组和连线布局","检查图像生成节点的连线","检查画布的布局设置"]){
   assert.equal(isCanvasEditInstruction(request),false,request);
@@ -32,6 +34,38 @@ test("inspection of connection nouns is read-only while explicit follow-up edits
 
 
 const textOnlyPrompt="请帮我规划一个包含 3 个镜头的短视频分镜，只输出文字方案。不要修改画布、调用 Skill 或提交任何图片和视频生成任务。后续我会继续完善这个方案。";
+test("semantic canvas turns interpret a contextual confirmation in one model request",async()=>{
+ const calls=[];
+ const action={type:"create_text",ref:"role",title:"CH04",content:"角色原文"};
+ const service=createAssistantChatService({vault,compatibleUpstreamCall:async(_url,options)=>{
+  calls.push(JSON.parse(options.body));
+  return answer(JSON.stringify({answer:"角色文本节点",actions:[action]}));
+ }});
+ const latest="就按你上面提的方案办";
+ assert.equal(isCanvasEditInstruction(latest),false);
+ const result=await service({...base,semanticCanvasIntent:true,messages:[
+  {role:"user",content:"先讨论 CH04 的处理方式"},
+  {role:"assistant",content:"可以在画布上添加 CH04 文本节点"},
+  {role:"user",content:latest}
+ ]});
+ assert.equal(calls.length,1);
+ assert.match(calls[0].messages[0].content,/Infer the user's intent/);
+ assert.deepEqual(result.actions,[action]);
+});
+test("semantic canvas turns accept prose and enforce explicit no-write and no-run constraints",async()=>{
+ const calls=[];
+ const create={type:"create_node",ref:"portrait",nodeType:"image",title:"定妆照",prompt:"角色定妆"};
+ const service=createAssistantChatService({vault,compatibleUpstreamCall:async(_url,options)=>{
+  calls.push(JSON.parse(options.body));
+  if(calls.length===1)return answer("这是一个说明。");
+  return answer(JSON.stringify({answer:"配置节点",actions:[create,{type:"run_node",nodeId:"portrait"}]}));
+ }});
+ const ask=content=>service({...base,semanticCanvasIntent:true,messages:[{role:"user",content}]});
+ assert.deepEqual((await ask("这种构图有什么利弊？")).actions,[]);
+ assert.deepEqual((await ask("只给文字方案，不要修改画布")).actions,[]);
+ assert.deepEqual((await ask("先建好定妆照节点，不提交生成")).actions,[create]);
+ assert.equal(calls.length,3);
+});
 test("inspection followed by explicit layout keeps its proposed action",async()=>{
  const text="检查连线，然后将整个画布按依赖从左到右排列";
  const result=await run(async()=>answer(JSON.stringify({answer:"检查完成",actions:[]})),[{role:"user",content:text}]);

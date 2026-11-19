@@ -32,6 +32,30 @@ const boundedProviderContext=(lines)=>{
  // Avoid cutting into the middle of a UTF-8 character.
  return bytes.length<=12000?value:bytes.subarray(0,12000).toString("utf8").replace(/\uFFFD$/,"");
 };
+export const MAX_SELECTED_CANVAS_TEXT_BYTES=32*1024;
+export function formatSelectedCanvasText({policy,document}){
+ if(!policy.includeContext||policy.scope!=="selection")return "";
+ const byId=new Map(document.nodes.map(node=>[node.id,node]));
+ const sources=[...new Set(policy.includedIds)].slice(0,12).map(id=>byId.get(id)).filter(node=>
+  node?.type==="text"&&typeof node.metadata?.content==="string"&&node.metadata.content.length>1600);
+ const lines=[];
+ const truncated="\n[正文超出本轮预算，未提供其余内容]";
+ let remaining=MAX_SELECTED_CANVAS_TEXT_BYTES-Buffer.byteLength(truncated);
+ for(const node of sources){
+  const entry=JSON.stringify({nodeId:node.id,title:safe(node.title,90),
+   content:safe(node.metadata.content,Infinity,{preserveFormatting:true})}).replace(/</g,"\\u003c");
+  const bytes=Buffer.byteLength(entry)+1;
+  if(bytes>remaining){
+   lines.push(JSON.stringify({nodeId:node.id,status:"正文超出本轮预算，未提供全文"}));
+   remaining-=Buffer.byteLength(lines.at(-1))+1;
+   if(remaining<0){lines.pop();lines.push(truncated);break;}
+   continue;
+  }
+  lines.push(entry);
+  remaining-=bytes;
+ }
+ return lines.join("\n");
+}
 export function buildAssistantTaskProviderContext({task,document,trustedOutputs=[],currentTurnMessageId=null,creativeDrafts=[],config,loadTemplate}){
  const policy=task.contextPolicy??{includeContext:false,scope:"selection",includedIds:[]};
  const lines=[

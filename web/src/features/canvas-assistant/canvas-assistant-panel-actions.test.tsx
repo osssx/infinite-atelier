@@ -268,13 +268,13 @@ describe("P3 linked Task topic follow-ups remain text-only",()=>{
    return {task:linkedTask};
   });
   mocks.api.mockResolvedValueOnce({answer:"兔子儿童动画分镜 v3：小白兔去森林帮助朋友。",model:"demo",
-   actions:[{type:"create_text",ref:"surprise",title:"不应创建",content:"bad"}]});
+   actions:[]});
   await act(async()=>{root!.render(createElement(fixture.Harness));await Promise.resolve();});
   expect(container!.textContent).toContain("待规划");
   await renderAndSend(fixture.Harness,"主题是关于兔子的儿童动画片");
   const requests=mocks.api.mock.calls.filter(([url])=>String(url).includes("/assistant/chat"));
   expect(requests).toHaveLength(1);
-  expect(requests[0][2].canvasActions).toBe(false);
+  expect(requests[0][2].semanticCanvasIntent).toBe(true);
   expect(requests[0][2].task?.taskId).toBe("rabbit-task");
   expect(requests[0][2].skills).toBeUndefined();
   expect(requests[0][2].messages).toHaveLength(1);

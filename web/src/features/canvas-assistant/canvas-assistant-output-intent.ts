@@ -28,11 +28,12 @@ export function isCanvasAssistantCanvasActionRequest(request:string):boolean{
  if(!text||text.length>12000||isCanvasAssistantTextOnlyRequest(text))return false;
  // Inspect each instruction separately: nouns inside a read clause are not
  // edits, while a later affirmative connection/layout instruction remains one.
- const clauses=text.split(/[，,。；;\n]|(?:然后|之后|接着|随后|并且|同时|再|并(?=把|将|给|为|对|创建|新建|添加|删除|修改|更新|连接|连线|布局|排版|排列|执行|运行|生成))/).map(part=>part.trim()).filter(Boolean);
+ const clauses=text.split(/[，,。；;\n]|(?:然后|之后|接着|随后|并且|同时|再|并(?=把|将|给|为|对|创建|新建|添加|删除|修改|更新|连接|连线|布局|排版|排列|执行|运行|生成|设置|配置))/).map(part=>part.trim()).filter(Boolean);
  const inspection=/^(?:请|麻烦|帮我|你能|先|\s)*(?:查看|查找|检索|搜索|查询|读取|列出|检查|定位|梳理)/;
  const edit=/(?:布局|排版|排列|整理(?:画布|节点|工作流)|创建|新建|添加|插入|连接|连线|删除|移除|修改|更新|替换|解散|分组|设置|配置|切换|执行|运行|生成|调整.*位置)/;
  if(clauses.some(part=>inspection.test(part))&&
-  !clauses.some(part=>!inspection.test(part)&&edit.test(part)))return false;
+  !clauses.some(part=>!inspection.test(part)&&edit.test(part)||
+   /(?:提取|复制|写入)(?:到|至|进)?(?:新建|新创建)(?:的)?(?:文本|图片|生图)?节点$/.test(part)))return false;
  if(/^(?:(?:请|麻烦|帮我|你能)?(?:解释|介绍|分析|说明|讨论|比较|总结|评价)|如何|怎么|为什么|什么是|能否|能不能|可以吗|是否|要不要|如果|假设|假如|只需|只要|仅|先不)/.test(text))return false;
  if(/^(?:不要|别|请勿|禁止|先不要)|(?:不要执行|别执行|无需执行|不用操作|不需要执行|仅讨论|只回复|只分析|只要建议|只给建议|预览|假设|如果|建议如何|应该如何|怎么做|怎么办|是什么|会怎样|能否|可以吗|能不能|是否应该|模拟|演示|示例|给我.*建议)/.test(text))return false;
  return /(?:布局|排版|排列|整理(?:画布|节点|工作流)|创建|新建|添加|插入|连接|连线|删除|移除|修改|更新|替换|解散|分组|设置|配置|切换(?:[^\n]{0,24})?(?:模型|参数)|(?:执行|运行|生成)(?:节点|工作流|模型|图片|图像|视频|音频|文本|选中|当前)?|调整.*位置)/.test(text);

@@ -10,7 +10,7 @@ import {assertAssistantAgentReadClaim,createAssistantAgentReadSession} from "./a
 import {agentReadRunId} from "./assistant-agent-run-ledger.mjs";
 import {prepareAssistantSemanticProposals} from "./assistant-semantic-proposals.mjs";
 import {assistantHistoryQuoteSchema,formatAssistantHistoryQuote,resolveAssistantHistoryQuote} from "./assistant-history-quote.mjs";
-import {buildAssistantTaskProviderContext,formatAssistantCanvasContext,loadAssistantTaskCreativeHistory} from "./assistant-task-context.mjs";
+import {buildAssistantTaskProviderContext,formatAssistantCanvasContext,formatSelectedCanvasText,loadAssistantTaskCreativeHistory} from "./assistant-task-context.mjs";
 import {loadAuthorizedStoryEventRevisionHints} from "./assistant-story-event-context.mjs";
 import {trustedAssistantTaskOutputs} from "./assistant-task-produced-artifacts.mjs";
 import {submitJob,readJobsSnapshot,readEventsAfter,stableJson} from "./repository.mjs";
@@ -745,6 +745,7 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
        provider:{type:"string",enum:["openai","openai_compatible","google_gemini"]},
         baseUrl:{type:"string",maxLength:1024},model:{type:"string",minLength:1,maxLength:128},
         canvasActions:{type:"boolean"},
+        semanticCanvasIntent:{type:"boolean"},
         agentReadTools:{type:"boolean"},
         skillScriptProposalEnabled:{type:"boolean"},
         task:{type:"object",additionalProperties:false,required:["taskId","requestId","turnMessageId"],properties:{
@@ -1028,7 +1029,7 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
        let stablePromptPrefix=Boolean(conversation&&assistantCacheRollout({...rollout,stage:"prefix"}));
        const batchHistory=Boolean(conversation&&assistantCacheRollout({...rollout,stage:"batch_history"}));
        let liveToolContext="";
-       let plainCanvasChat=false;
+       let plainCanvasChat=false,selectedCanvasText="";
        if(conversation){
         const restrict=restrictConversation||Boolean(req.body.conversationContinuation||req.body.visualContext||req.body.skills);
         if(!restrict)liveToolContext=resolveConversationToolReferences(db,conversation,{taskId:ref?.taskId,policy:frozenPolicy,project});
@@ -1040,8 +1041,10 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
           taskContext=formatAssistantCanvasContext({policy:frozenPolicy,document:project.document,
            config:config?JSON.parse(config.value_json):{},loadTemplate:registry.find});
          }
+        if(!ref||!restrictConversation)
+         selectedCanvasText=formatSelectedCanvasText({policy:frozenPolicy,document:project.document});
         let reservedBytes=stablePromptPrefix?Buffer.byteLength(assistantCurrentReferenceData({
-         taskContext:plainCanvasChat?"":taskContext,liveToolContext,skillContext:skill.context,quoteContext}).text):0;
+         taskContext:plainCanvasChat?"":taskContext,liveToolContext,skillContext:skill.context,quoteContext,selectedCanvasText}).text):0;
         // Keep the legacy layout available when the user turn and independently
         // bounded system context fit separately but would not fit together.
         if(reservedBytes&&Buffer.byteLength(messages.at(-1).content)+reservedBytes>MAX_ASSISTANT_MESSAGE_BYTES){
@@ -1072,7 +1075,7 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
         document:project.document,visualContext:req.body.visualContext,blobStore,signal:controller.signal
        });
        const {skills:_selection,visualContext:_visual,task:_task,...chatInput}=req.body;
-       const result=await assistantChat({...chatInput,messages,conversationMemory,skillContext:skill.context,
+       const result=await assistantChat({...chatInput,messages,conversationMemory,skillContext:skill.context,selectedCanvasText,
         stablePromptPrefix,plainCanvasChat,liveToolContext:stablePromptPrefix?liveToolContext:"",
         compatibleStreamUsage:req.body.provider==="openai_compatible"&&
          process.env.ATELIER_ASSISTANT_CACHE_STREAM_USAGE_CHANNELS?.split(",").some(id=>id.trim()===req.body.channelId),

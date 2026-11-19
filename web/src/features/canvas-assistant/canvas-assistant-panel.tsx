@@ -198,7 +198,7 @@ const assistantErrorMessages:Record<string,string>={
   assistant_visual_not_materialized:"引用的图片尚未保存到项目素材库，请先保存图片后重试。",
   assistant_visual_image_invalid:"图片格式或文件体积不符合视觉模型要求。",
   assistant_visual_image_integrity:"图片文件校验失败，请重新导入图片。",
-  assistant_actions_invalid:"模型返回的画布操作格式不符合要求，未执行画布修改。请尝试更明确地描述操作。",
+  assistant_actions_invalid:"模型返回的画布操作格式不符合要求，画布未修改。",
   assistant_actions_missing:"模型未返回可执行的画布指令，已尝试重新生成操作计划，但画布仍未修改。请明确要执行的操作，或更换支持结构化 JSON 输出的模型。",};
 export function canvasAssistantErrorText(error:unknown){
  if(error instanceof CanvasApiError)return assistantErrorMessages[error.code]??error.message;
@@ -612,7 +612,8 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
   const parsedDraft=extractSkillMentions(draft.trim());
   const visual=collectAssistantImageMentions(parsedDraft.text.trim(),resourceReferences);
   const text=visual.text.trim();if(!text||controllerRef.current||!chosenModel)return;
-  const textOnly=!isCanvasAssistantCanvasActionRequest(text);
+  const textOnly=isCanvasAssistantTextOnlyRequest(text);
+  const explicitCanvasEdit=isCanvasAssistantCanvasActionRequest(text);
   const skipSkills=isCanvasAssistantTextOnlyRequest(text)||isCanvasAssistantSkillOptOutRequest(text)||
    (!parsedDraft.skillIds.length&&Boolean(taskTracker.activeTaskOriginalRequest)&&
     isCanvasAssistantSkillOptOutRequest(taskTracker.activeTaskOriginalRequest??""));
@@ -711,9 +712,9 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
      if(selected.length)selectedSkills={mode:explicitSkills?"manual":"auto",projectId,expectedRevision:registry.revision,
       skillIds:selected.map(entry=>entry.id),versionPins:Object.fromEntries(selected.map(entry=>[entry.id,entry.activeVersion]))};
     }
-    const explicitCardDelivery=!!linkedTaskId&&!textOnly&&/角色卡/.test(text)&&/(?:生成|创建|制作|添加)/.test(text);
+    const explicitCardDelivery=!!linkedTaskId&&explicitCanvasEdit&&/角色卡/.test(text)&&/(?:生成|创建|制作|添加)/.test(text);
     const structuredDelivery=explicitCardDelivery?null:
-     detectAssistantStructuredTextDelivery(text,linkedTaskId,textOnly);
+     detectAssistantStructuredTextDelivery(text,linkedTaskId,!explicitCanvasEdit);
     if(structuredDelivery&&explicitSkills)
      throw Error("显式文本交付暂不支持同时执行 Skill；请分轮操作。");
     if(structuredDelivery)selectedSkills=undefined;
@@ -840,7 +841,7 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
     type AssistantReply={answer:string;model:string;usedHistoryQuote?:UsedHistoryQuote;agentRunId?:string;agentReadRounds?:number;agentReadToolCalls?:{callId:string;name:string}[];retryCount?:number;actions?:unknown;appliedSkillIds?:string[];skillResourceReads?:{skillId:string;path:string}[];skillToolCalls?:{name:string;skillId:string|null}[];skillToolsFallback?:boolean;skillScriptProposal?:AssistantSkillScriptProposal};
     const endpoint="/api/v1/projects/"+encodeURIComponent(projectId)+"/assistant/chat";
     const request={channelId:channel.id,provider,baseUrl:channel.baseUrl,model:modelOptionName(chosenModel),
-     messages:turns,canvasActions:!textOnly,chatSessionId:id,turnId:user.id,
+     messages:turns,canvasActions:!textOnly,semanticCanvasIntent:!textOnly,chatSessionId:id,turnId:user.id,
      conversationRequestId:user.id+"-model-initial",
      ...(!linkedTaskId?{conversationContext:{includeContext,scope:effectiveScope,
       includedIds:includeContext?(effectiveScope==="selection"?contextIds:visual.nodeIds):[]}}:{}),

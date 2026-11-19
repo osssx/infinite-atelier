@@ -12,7 +12,7 @@ import {createComfyRegistry} from "./comfy-registry.mjs";
 import {stableJson} from "./repository.mjs";
 import {createAssistantTask,appendAssistantTaskTurn,linkAssistantTaskToChat} from "./assistant-tasks.mjs";
 import {createAssistantChatService} from "./assistant-chat.mjs";
-import {beginConversationRequest,startConversationSubmission} from "./assistant-conversation.mjs";
+import {beginConversationRequest,recoverConversationRequests,startConversationSubmission} from "./assistant-conversation.mjs";
 import {buildApp} from "./app.mjs";
 
 const plain={includeContext:false,scope:"selection",includedIds:[]};
@@ -48,6 +48,43 @@ function input(chatSessionId,turnId,content,extras={}){
 }
 const send=(app,payload,stream=false)=>app.inject({method:"POST",url:chatURL,payload,
  ...(stream?{headers:{accept:"text/event-stream"}}:{})});
+test("semantic canvas format repair retries once and records a known outcome without writing to the canvas",async t=>{
+ const captured=[];
+ const {db,app}=fixture(t,payload=>{
+  captured.push(payload);
+  if(captured.length===2)return normalResponse(JSON.stringify({answer:"已给出节点方案",actions:[
+   {type:"create_node",nodeType:"image",ref:"portrait",title:"定妆照",prompt:"半身照"},
+   {type:"run_node",nodeId:"portrait"}
+  ]}));
+  return normalResponse('{"answer":"错误提案","actions":[{"type":"unknown"}]}');
+ });
+ const request="按方案建好定妆照节点，不提交生成";
+ const extra={canvasActions:true,semanticCanvasIntent:true};
+ const repaired=await send(app,input("format","repair",request,extra));
+ assert.equal(repaired.statusCode,200,repaired.body);
+ assert.equal(repaired.json().formatRepairCount,1);
+ assert.deepEqual(repaired.json().actions.map(action=>action.type),["create_node"]);
+ assert.match(captured[1].messages[0].content,/FORMAT CORRECTION/);
+ const failed=await send(app,input("format","failed",request,extra));
+ assert.equal(failed.statusCode,200,failed.body);
+ assert.deepEqual(failed.json().actions,[]);
+ assert.match(failed.json().answer,/画布未修改/);
+ assert.equal(captured.length,4);
+ assert.deepEqual(db.prepare("SELECT state FROM assistant_conversation_requests ORDER BY turn_seq").all().map(row=>row.state),
+  ["completed","completed"]);
+ assert.equal(getProject(db,projectId).revision,1);
+});
+test("recovery distinguishes an old format rejection from an unknown provider result",async t=>{
+ const {db,app}=fixture(t,()=>normalResponse("答复"));
+ for(const id of ["format","unknown"])assert.equal((await send(app,input("recovery",id,"测试"))).statusCode,200);
+ db.prepare("UPDATE assistant_conversation_requests SET state='needs_reconcile',error_code=? WHERE request_id=?")
+  .run("assistant_actions_invalid","format-model");
+ db.prepare("UPDATE assistant_conversation_requests SET state='submitting',error_code=NULL WHERE request_id=?")
+  .run("unknown-model");
+ recoverConversationRequests(db);
+ assert.deepEqual(db.prepare("SELECT state FROM assistant_conversation_requests ORDER BY turn_seq").all().map(row=>row.state),
+  ["failed","needs_reconcile"]);
+});
 
 test("plain chat appends exact turns and excludes canvas context after revocation",async t=>{
  const captured=[];
@@ -77,6 +114,28 @@ test("large managed turns keep independently bounded canvas references",async t=
  assert.equal(captured[0].messages.at(-1).content,text);
  assert.ok(captured[0].messages[0].content.includes(marker));
  assert.equal(samples[0].stablePromptPrefix,false);
+});
+test("ordinary canvas edits receive authorized long node text beyond the preview and can return actions",async t=>{
+ const request="读取人物ch04 / ch05 / ch06提示词提取到新建文本节点并配置好生图参数";
+ const source="定妆照与三视图设定。\n".repeat(440)+"\nCH04\n  原始提示词\nCH05\nCH06";
+ const captured=[];
+ const {db,app}=fixture(t,payload=>{
+  captured.push(payload);
+  return normalResponse(JSON.stringify({answer:"提取并新建角色文本节点",
+   actions:[{type:"create_node",nodeType:"text",ref:"ch04",title:"CH04",content:"原始提示词"}]}));
+ });
+ const project=getProject(db,projectId);
+ saveSingleUserCanvas(db,{id:projectId,expectedRevision:project.revision,
+  document:{nodes:[{...node,metadata:{content:source}}],connections:[]}});
+ const result=await send(app,input("long-node","one",request,{canvasActions:true,conversationContext:selected}));
+ assert.equal(result.statusCode,200,result.body);
+ assert.equal(result.json().actions[0].ref,"ch04");
+ const sourceLine=captured[0].messages.flatMap(message=>message.content.split("\n"))
+  .find(line=>line.startsWith('{"nodeId":"private"'));
+ assert.equal(JSON.parse(sourceLine).content,source);
+ const revoked=await send(app,input("long-node","two","还记得什么？"));
+ assert.equal(revoked.statusCode,200,revoked.body);
+ assert.doesNotMatch(JSON.stringify(captured[1]),/原始提示词|Selected canvas sources/);
 });
 test("managed chats default to both cache optimizations and can roll each back independently",async t=>{
  const names=["PREFIX","BATCH_HISTORY","PLAIN_CHAT","CHANNELS","MODELS","MODES"].map(name=>"ATELIER_ASSISTANT_CACHE_"+name);

@@ -137,7 +137,7 @@ test("P4.4b startup catch-up recognizes restored graph and CAS evidence",async t
 });
 test("P4.4b Job terminal -> trusted Task receipt -> materialization -> Run ready, no second paid Job",async t=>{
  const f=fixture(t);
- assert.equal(SCHEMA_VERSION,33);
+ assert.ok(SCHEMA_VERSION>=33);
  assert.equal(f.events.notifyJob(f.queued.jobId),true);
  assert.equal(f.events.drain().handled.length,0,"queued Job is not a terminal receipt");
  await finish(f);

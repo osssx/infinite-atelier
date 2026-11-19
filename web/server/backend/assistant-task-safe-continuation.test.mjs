@@ -166,7 +166,7 @@ test("P4.4a a stale-plan request cannot reconcile the newer plan inside its firs
 });
 
 test("P4.4a Job success without trusted materialization never advances sequence or issues a second Job",t=>{
- const f=fixture(t);assert.equal(SCHEMA_VERSION,33);
+ const f=fixture(t);assert.ok(SCHEMA_VERSION>=33);
  const step=f.plan(0),job=f.enqueue(step,0);
  f.db.prepare("UPDATE jobs SET status='succeeded' WHERE id=?").run(job.jobId);
  f.db.prepare("INSERT INTO blobs(id,sha256,byte_size,mime,relative_path,status) VALUES('b1',?,4,'text/plain','a','ready')")

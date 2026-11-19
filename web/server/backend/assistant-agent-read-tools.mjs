@@ -17,6 +17,11 @@ const sha=v=>createHash("sha256").update(stableJson(v)).digest("hex");
 const MAX_RESULT_BYTES=4000,MAX_PER_RUN_BYTES=12*1024;
 const valueLimit=(value,max)=>Buffer.from(value,"utf8").subarray(0,max).toString("utf8").replace(/\uFFFD$/,"");
 const get=(args,names)=>plain(args)&&Object.keys(args).every(key=>names.includes(key));
+export function describeAssistantReadableCanvasNode(node){
+ return {id:node.id,type:node.type,title:safe(node.title,90),
+  ...(node.type==="text"&&typeof node.metadata?.content==="string"?{content:safe(node.metadata.content,1300)}:{}),
+  ...(typeof node.metadata?.prompt==="string"?{prompt:safe(node.metadata.prompt,500)}:{})};
+}
 export const ASSISTANT_READ_TOOL_REGISTRY=Object.freeze([
  {name:"canvas.get_map",providerName:"canvas_get_map",effect:"read",approval:"none",
   description:"List ONLY the currently authorized canvas node IDs, types and titles; overview has no node bodies.",
@@ -80,6 +85,7 @@ export function createAssistantAgentReadSession(db,{projectId,taskId,turnMessage
  const original=scoped(db,projectId,taskId,turnMessageId);
  const runId=agentReadRunId(projectId,taskId,requestId);
  let totalBytes=0,callCount=0;
+ const references=[];
  const usedIds=new Map(),readCalls=[],seenRounds=new Set();
  const check=()=>{
   if(enforceOwner)assertAgentRunOwner(db,{projectId,taskId,requestId});
@@ -157,12 +163,7 @@ export function createAssistantAgentReadSession(db,{projectId,taskId,turnMessage
    if(!selected())throw fail("assistant_agent_context_scope_denied",403);
    const byId=new Map(allowed().map(n=>[n.id,n]));
    if(args.node_ids.some(n=>!byId.has(n)))throw fail("assistant_agent_context_scope_denied",403);
-   data={nodes:args.node_ids.map(nodeId=>{
-    const n=byId.get(nodeId);
-    return {id:nodeId,type:n.type,title:safe(n.title,90),
-     ...(n.type==="text"&&typeof n.metadata?.content==="string"?{content:safe(n.metadata.content,1300)}:{}),
-     ...(typeof n.metadata?.prompt==="string"?{prompt:safe(n.metadata.prompt,500)}:{})};
-   })};
+   data={nodes:args.node_ids.map(nodeId=>describeAssistantReadableCanvasNode(byId.get(nodeId)))};
   }else if(name==="canvas_get_connections"){
    if(!get(args,[]))throw fail("assistant_agent_tool_arguments_invalid",400);
    const ids=new Set(allowed().map(n=>n.id));
@@ -238,8 +239,10 @@ export function createAssistantAgentReadSession(db,{projectId,taskId,turnMessage
     .run(taskId,stableJson(event),Date.now());
   });
   readCalls.push({callId,name:definition.name,round,resultBytes:bytes});
+  references.push({callId,kind:definition.name,nodeIds:name==="canvas_read_nodes"?data.nodes.map(node=>node.id):[]});
   return value;
  }
  return {runId,definitions:assistantReadToolDefinitions,invoke,check,recordRound,
+  get references(){return [...references]},
   get calls(){return [...readCalls]},get bytes(){return totalBytes}};
 }

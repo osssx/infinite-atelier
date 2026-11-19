@@ -2,9 +2,10 @@ import {assistantModelCommandTurns} from "./assistant-model-command-turns.mjs";
 /** Provider-side Task context: strictly smaller than the backend's local
  * graph/step evidence. Never serialize whole documents or task event payloads.
  */
+export const stripAssistantGraphAnnotations=value=>value.replace(/【(?:引用节点|参考图片)：[^】]*】/g,"[历史画布引用]");
 export const safe=(value,max=1800)=>{
  if(typeof value!=="string")return "";
- const redacted=value.replace(/data:(?:image|video|audio)\/[^\s]+/gi,"[媒体数据省略]")
+ const redacted=stripAssistantGraphAnnotations(value).replace(/data:(?:image|video|audio)\/[^\s]+/gi,"[媒体数据省略]")
   .replace(/(?:sk-|Bearer\s+)[A-Za-z0-9_-]{16,}/gi,"[敏感值省略]")
   .replace(/(?:api[_-]?key|access[_-]?token|password|secret)\s*[:=]\s*[^\s,;]+/gi,"[凭据省略]")
   .replace(/[\r\n\t]+/g," ");
@@ -98,9 +99,79 @@ export function buildAssistantTaskProviderContext({task,document,trustedOutputs=
    "；可信回执="+safe(step.receiptTrust,40)+verified);
  }
  if(task.lastError)lines.push("上轮有失败的客户端观察记录；不能作为服务端执行证据。");
+ appendAssistantCanvasContext(lines,{policy,document,trustedOutputs});
+ return boundedProviderContext(lines);
+}
+export function formatAssistantCanvasContext({policy,document,config={},loadTemplate}){
+ if(!policy.includeContext)return "用户未授权发送画布资料。不得引用本地图节点和连线。";
+ const lines=["画布统计：节点 "+document.nodes.length+"，连线 "+document.connections.length];
+ const index=new Map(document.nodes.map(node=>[node.id,node]));
+ const selected=policy.includedIds.slice(0,12).map(id=>index.get(id)).filter(Boolean);
+ if(policy.scope==="overview"){
+  lines.push("画布范围：概要（仅节点类型、标题、ID 和拓扑）");
+  for(const node of document.nodes.slice(0,30))
+   lines.push("节点："+safe(node.title,90)+" ["+safe(node.type,40)+", id="+safe(node.id,256)+
+    (node.metadata?.groupId?", groupId="+safe(node.metadata.groupId,256):"")+"]");
+  for(const edge of document.connections.slice(0,24))
+   lines.push("连线：id="+safe(edge.id,256)+"，from="+safe(edge.fromNodeId,256)+"，to="+safe(edge.toNodeId,256));
+ }
+ const channels=Array.isArray(config.channels)?config.channels:[];
+ for(const kind of ["text","image","video","audio"]){
+  const models=channels.flatMap(channel=>(channel.models??[]).filter(model=>model.capability===kind)
+   .map(model=>safe(channel.id,120)+"::"+safe(model.name,128))).slice(0,16);
+  if(models.length)lines.push(kind+" 生成模型："+models.join("、"));
+ }
+ if(selected.length){
+  lines.push("下列正文和参数仅来自明确选中的节点。");
+  formatSelectedWorkflowContext(lines,{selected,connections:document.connections,loadTemplate,config,channels});
+  appendAssistantCanvasContext(lines,{policy:{...policy,scope:"selection"},document});
+ }
+ return boundedProviderContext(lines);
+}
+const sensitivePort=/(?:secret|token|password|api.?key|credential|authorization|密钥|密码|令牌)/i;
+const outputKind={text:"STRING",image:"IMAGE",video:"VIDEO",audio:"AUDIO"};
+function formatSelectedWorkflowContext(lines,{selected,connections,loadTemplate,config,channels}){
+ if(!loadTemplate)return;
+ const visible=new Set(selected.map(node=>node.id));
+ const selectedEdges=connections.filter(edge=>visible.has(edge.fromNodeId)&&visible.has(edge.toNodeId));
+ for(const node of selected){
+  const meta=node.metadata??{};
+  const independent=node.type==="comfy:workflow";
+  const mode=node.type==="config"?meta.generationMode??"image":node.type;
+  if(!independent&&!["image","video","audio"].includes(mode))continue;
+  const configured=channels.some(channel=>(channel.models??[]).some(model=>
+   model.capability===mode&&(meta.model===model.name||meta.model===channel.id+"::"+model.name)));
+  const binding=independent?meta.comfyWorkflow:meta.comfyMediaPreset??meta.comfyWorkflowSelections?.[mode]??
+   (configured?null:config.comfyWorkflowDefaults?.[mode]);
+  if(!binding?.templateId||!binding?.templateRevision)continue;
+  const template=loadTemplate(binding.templateId,binding.templateRevision);
+  if(!template||!independent&&template.mediaUseCase?.channel!==mode)continue;
+  const excluded=new Set([template.mediaUseCase?.promptPortId,...(template.mediaUseCase?.slots??[]).map(slot=>slot.id)]);
+  const ports=(template.ports??[]).filter(port=>port.direction==="target"&&port.inputBinding?.targets?.length&&
+   !sensitivePort.test(port.id+" "+port.label)&&(independent?
+    meta.comfyPorts?.some(actual=>actual.direction==="target"&&actual.id===port.id&&actual.valueKind===port.valueKind):
+    !excluded.has(port.id)&&port.inputBinding.mode==="literal"&&["STRING","INT","FLOAT","BOOLEAN"].includes(port.valueKind)));
+  lines.push("ComfyUI 工作流 id="+safe(node.id,256)+"，预设="+safe(template.name,72)+
+   "；使用准确的 portId，使用 set_workflow_param 修改未连接的标量端口。");
+  for(const port of ports.slice(0,30)){
+   const edges=connections.filter(edge=>edge.toNodeId===node.id&&edge.toPortId===port.id);
+   const sources=selectedEdges.filter(edge=>edge.toNodeId===node.id&&edge.toPortId===port.id);
+   const choices=(port.choices??[]).slice(0,10).map(value=>safe(JSON.stringify(value.value),60));
+   lines.push("输入 portId="+safe(port.id,128)+"，名称="+safe(port.label,64)+"，类型="+safe(port.valueKind,32)+
+    (edges.length?"，已连接"+(sources.length?" "+sources.map(edge=>safe(edge.fromNodeId+"."+edge.fromPortId,170)).join("、"):""):"，未连接")+
+    (choices.length?"，候选值=["+choices.join("、")+"]":""));
+  }
+  if(independent)for(const source of selected){
+   const kind=outputKind[source.type];
+   if(!kind||!ports.some(port=>port.valueKind===kind))continue;
+   lines.push("候选输出 sourceNodeId="+safe(source.id,256)+"，sourcePortId="+source.type+"，类型="+kind);
+  }
+ }
+}
+function appendAssistantCanvasContext(lines,{policy,document,trustedOutputs=[]}){
  if(!policy.includeContext){
   lines.push("用户未授权发送画布资料。不得引用任何本地图节点标题、内容、提示词或媒体。");
-  return boundedProviderContext(lines);
+  return;
  }
  const nodes=Array.isArray(document?.nodes)?document.nodes:[];
  const byId=new Map(nodes.map(node=>[node.id,node]));
@@ -132,7 +203,7 @@ export function buildAssistantTaskProviderContext({task,document,trustedOutputs=
   for(const output of products)lines.push("已验证的落图资源：节点 id="+safe(output.nodeId,128)+
    "；类型="+safe(output.kind,10)+"；产物 id="+safe(output.artifactId,128)+
    "（只作来源标识；不得视为已授权读取资源正文/媒体）");
-  return boundedProviderContext(lines);}
+}
 
 /** Read prior creative drafts only from completed inference commands for user
  * turns whose frozen disclosure policy remains authorized this turn.

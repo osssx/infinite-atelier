@@ -10,7 +10,7 @@ import {assertAssistantAgentReadClaim,createAssistantAgentReadSession} from "./a
 import {agentReadRunId} from "./assistant-agent-run-ledger.mjs";
 import {prepareAssistantSemanticProposals} from "./assistant-semantic-proposals.mjs";
 import {assistantHistoryQuoteSchema,formatAssistantHistoryQuote,resolveAssistantHistoryQuote} from "./assistant-history-quote.mjs";
-import {buildAssistantTaskProviderContext,loadAssistantTaskCreativeHistory} from "./assistant-task-context.mjs";
+import {buildAssistantTaskProviderContext,formatAssistantCanvasContext,loadAssistantTaskCreativeHistory} from "./assistant-task-context.mjs";
 import {loadAuthorizedStoryEventRevisionHints} from "./assistant-story-event-context.mjs";
 import {trustedAssistantTaskOutputs} from "./assistant-task-produced-artifacts.mjs";
 import {submitJob,readJobsSnapshot,readEventsAfter,stableJson} from "./repository.mjs";
@@ -35,6 +35,9 @@ import {getUiSetting,putUiSetting} from "./ui-settings.mjs";
 import {listScriptAssetReconciliation,reconcileScriptAsset,resumeReconciledVideoJob} from "./script-asset-reconciliation.mjs";
 import {registerShotGroupRoutes} from "./shot-group-routes.mjs";
 import {createAssistantChatStreamLedger} from "./assistant-chat-stream-ledger.mjs";
+import {assertConversationTaskTurn,beginConversationRequest,buildConversationMessages,completeConversationRequest,
+ completeConversationRequestInTransaction,failConversationRequest,findConversationRequest,listConversationTurns,ordinaryConversationPolicy,removeConversation,
+ resolveConversationToolReferences,sanitizeConversationReply,startConversationSubmission} from "./assistant-conversation.mjs";
 const nonempty={type:"string",minLength:1,maxLength:256};
 const idSchema={type:"string",pattern:"^[A-Za-z0-9_-]{1,128}$"};
 const canvasNodeIdSchema={type:"string",pattern:CANVAS_NODE_ID_PATTERN};
@@ -127,6 +130,8 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
      "assistant_semantic_proposal_invalid","assistant_semantic_proposal_not_found",
      "assistant_semantic_proposal_decided","assistant_semantic_proposal_scope_changed",
     "assistant_model_call_in_progress","assistant_model_call_unknown","assistant_model_call_not_active",
+    "assistant_conversation_not_found","assistant_conversation_request_conflict","assistant_conversation_busy",
+    "assistant_turn_not_found","assistant_context_budget_insufficient",
     "assistant_model_result_too_large","assistant_task_context_invalid","assistant_task_turn_not_found",
     "assistant_creative_content_incomplete",
     "assistant_story_review_invalid","assistant_story_review_invalid_source",
@@ -665,6 +670,40 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
  app.get("/api/v1/projects/:id/chats",{schema:{params:canvasParams}},req=>getCanvasChats(db,req.params.id));
  app.put("/api/v1/projects/:id/chats",{schema:{params:canvasParams,body:chatsBody}},req=>
   putCanvasChats(db,req.params.id,req.body));
+ const conversationParams={type:"object",required:["id","chatSessionId"],additionalProperties:false,
+  properties:{id:idSchema,chatSessionId:idSchema}};
+ const conversationMetrics={conflicts:0,needs_reconcile:0,budget_exceeded:0,checkpoint_invalid:0,checkpoint_write_failed:0};
+ app.decorate("assistantConversationMetrics",conversationMetrics);
+ const countConversationError=(code)=>{
+  if(code==="assistant_conversation_request_conflict"||code==="assistant_conversation_busy")conversationMetrics.conflicts++;
+  if(code==="assistant_context_budget_insufficient")conversationMetrics.budget_exceeded++;
+ };
+ const conversationRequestParams={type:"object",additionalProperties:false,required:["id","chatSessionId","turnId","requestId"],
+  properties:{...conversationParams.properties,turnId:idSchema,requestId:idSchema}};
+ app.delete("/api/v1/projects/:id/assistant/conversations/:chatSessionId",{schema:{params:conversationParams}},req=>
+  removeConversation(db,req.params.id,req.params.chatSessionId));
+ app.get("/api/v1/projects/:id/assistant/conversations/:chatSessionId/turns",{schema:{params:conversationParams,
+  querystring:{type:"object",additionalProperties:false,properties:{before:{type:"integer",minimum:1},
+   limit:{type:"integer",minimum:1,maximum:50}}}}},(req,reply)=>{
+  reply.header("Cache-Control","no-store");
+  return listConversationTurns(db,{projectId:req.params.id,chatSessionId:req.params.chatSessionId,
+   before:req.query.before,limit:req.query.limit});
+ });
+ app.get("/api/v1/projects/:id/assistant/conversations/:chatSessionId/turns/:turnId/:requestId",{schema:{
+  params:conversationRequestParams}},(req,reply)=>{
+  const state=findConversationRequest(db,{projectId:req.params.id,...req.params});
+  if(!state)return reply.code(404).send({code:"assistant_turn_not_found"});
+  reply.header("Cache-Control","no-store");return state;
+ });
+ app.post("/api/v1/projects/:id/assistant/conversations/:chatSessionId/turns/:turnId/:requestId/cancel",
+  {schema:{params:conversationRequestParams}},(req,reply)=>{
+   const state=findConversationRequest(db,{projectId:req.params.id,...req.params});
+   if(!state)return reply.code(404).send({code:"assistant_turn_not_found"});
+   const key=[req.params.id,req.params.chatSessionId,req.params.turnId,req.params.requestId].join("\0");
+   const running=assistantStreamControllers.get(key);
+   running?.abort();
+   return {cancelled:Boolean(running)};
+  });
  const assistantStreamParams={type:"object",required:["id","turnId"],additionalProperties:false,properties:{id:idSchema,turnId:idSchema}};
  app.get("/api/v1/projects/:id/assistant/chat/stream/:turnId",{schema:{params:assistantStreamParams,querystring:{type:"object",properties:{after:{type:"integer",minimum:0}},additionalProperties:false}}},async(req,reply)=>{
   getProject(db,req.params.id);const after=Number(req.query.after??0);const state=assistantChatStreamLedger.read(req.params.id,req.params.turnId,after);
@@ -681,7 +720,12 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
  registerShotGroupRoutes(app,{shotBatches});
    app.post("/api/v1/projects/:id/assistant/chat",{schema:{params:canvasParams,body:{type:"object",
      required:["channelId","provider","model","messages"],additionalProperties:false,properties:{
-       channelId:idSchema,turnId:idSchema,provider:{type:"string",enum:["openai","openai_compatible","google_gemini"]},
+       channelId:idSchema,turnId:idSchema,chatSessionId:idSchema,conversationRequestId:idSchema,
+       conversationContinuation:{type:"boolean"},
+       conversationContext:{type:"object",additionalProperties:false,required:["includeContext","scope","includedIds"],
+        properties:{includeContext:{type:"boolean"},scope:{type:"string",enum:["selection","overview"]},
+         includedIds:{type:"array",maxItems:100,uniqueItems:true,items:canvasNodeIdSchema}}},
+       provider:{type:"string",enum:["openai","openai_compatible","google_gemini"]},
         baseUrl:{type:"string",maxLength:1024},model:{type:"string",minLength:1,maxLength:128},
         canvasActions:{type:"boolean"},
         agentReadTools:{type:"boolean"},
@@ -708,31 +752,67 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
      const project=getProject(db,req.params.id); // Verify project before any paid provider call.
      if(!assistantChat)return reply.code(503).send({code:"assistant_unavailable"});
      const ref=req.body.task;
+     const chatSessionId=req.body.chatSessionId;
+     const managed=Boolean(chatSessionId&&!((ref?.callKind)==="semantic_proposal"));
+     if(managed&&(!req.body.turnId||!req.body.conversationRequestId||req.body.messages.length!==1||
+       req.body.messages[0].role!=="user"||ref&&(ref.turnMessageId!==req.body.turnId||
+        ref.requestId!==req.body.conversationRequestId)))
+      return reply.code(400).send({code:"assistant_turn_required"});
      const streamMode=req.headers.accept?.toLowerCase().includes("text/event-stream")&&
       req.body.provider!=="google_gemini"&&!ref&&!req.body.skills&&!req.body.visualContext&&req.body.agentReadTools!==true&&req.body.canvasActions===false;
      const streamTurnId=streamMode?req.body.turnId:null;
      if(streamMode&&!streamTurnId)return reply.code(400).send({code:"assistant_turn_required"});
-     if(streamMode&&assistantChatStreamLedger.isReplayExpired(req.params.id,streamTurnId))
+     if(streamMode&&managed){
+      let state;
+      try{state=findConversationRequest(db,{projectId:req.params.id,chatSessionId,turnId:streamTurnId,
+       requestId:req.body.conversationRequestId,requestPayload:req.body});}
+      catch(error){countConversationError(error.code);throw error;}
+      if(state){
+       if(state.state!=="completed"){
+        const code=state.state==="needs_reconcile"?"assistant_model_call_unknown":state.errorCode??"assistant_conversation_busy";
+        countConversationError(code);
+        return reply.code(409).send({code});
+       }
+       const event={seq:1,type:"done",result:state.response};
+       reply.hijack();reply.raw.writeHead(200,{"Content-Type":"text/event-stream; charset=utf-8","Cache-Control":"no-store"});
+       reply.raw.end("id: 1\nevent: done\ndata: "+JSON.stringify(event)+"\n\n");return reply;
+      }
+     }
+     if(streamMode&&!managed&&assistantChatStreamLedger.isReplayExpired(req.params.id,streamTurnId))
       return reply.code(409).send({code:"assistant_stream_cursor_expired"});
-     const existingStream=streamMode&&assistantChatStreamLedger.has(req.params.id,streamTurnId)?assistantChatStreamLedger.read(req.params.id,streamTurnId,0):null;
+     const existingStream=streamMode&&!managed&&assistantChatStreamLedger.has(req.params.id,streamTurnId)?
+      assistantChatStreamLedger.read(req.params.id,streamTurnId,0):null;
      if(existingStream){
       if(!existingStream.terminal)return reply.code(409).send({code:"assistant_model_call_in_progress",turnId:streamTurnId});
       if(existingStream.oldestSeq>1)return reply.code(409).send({code:"assistant_stream_cursor_expired"});
       reply.hijack();reply.raw.writeHead(200,{"Content-Type":"text/event-stream; charset=utf-8","Cache-Control":"no-store","X-Assistant-Turn-Id":streamTurnId});
       for(const event of existingStream.events)reply.raw.write("id: "+event.seq+"\nevent: "+event.type+"\ndata: "+JSON.stringify(event)+"\n\n");reply.raw.end();return reply;
      }
-     if(streamMode){
-      if(!assistantChatStreamLedger.ensure(req.params.id,streamTurnId))return reply.code(429).send({code:"assistant_stream_capacity"});
+     let streamStarted=false,streamSequence=0;
+     const startStream=()=>{
       reply.hijack();reply.raw.writeHead(200,{"Content-Type":"text/event-stream; charset=utf-8","Cache-Control":"no-cache, no-store","Connection":"keep-alive","X-Assistant-Turn-Id":streamTurnId});
       reply.raw.flushHeaders();
+      streamStarted=true;
+     };
+     const streamEvent=(type,payload)=>{
+      const event=managed?{seq:++streamSequence,type,...payload}:
+       assistantChatStreamLedger.append(req.params.id,streamTurnId,type,payload);
+      if(event&&!reply.raw.destroyed)reply.raw.write("id: "+event.seq+"\nevent: "+event.type+"\ndata: "+JSON.stringify(event)+"\n\n");
+      return event;
+     };
+     if(streamMode&&!managed){
+      if(!assistantChatStreamLedger.ensure(req.params.id,streamTurnId))return reply.code(429).send({code:"assistant_stream_capacity"});
+      startStream();
      }
      const controller=new AbortController();
-     if(streamMode)assistantStreamControllers.set(req.params.id+"\0"+streamTurnId,controller);
+     const controllerKey=managed?[req.params.id,chatSessionId,req.body.turnId,req.body.conversationRequestId].join("\0"):
+      req.params.id+"\0"+streamTurnId;
+     if(streamMode&&!managed)assistantStreamControllers.set(controllerKey,controller);
      const onClose=()=>controller.abort();
      if(!streamMode)reply.raw.on("close",onClose);
       const proposalMode=ref?.callKind==="semantic_proposal";
       const readMode=req.body.agentReadTools===true;
-     let commandStarted=false;
+     let commandStarted=false,conversation=null,conversationPolicy=null,restrictConversation=false,conversationMemory="",usedRevisionHints=false;
      try{
        if(readMode&&(!ref||proposalMode||ref.callKind&&ref.callKind!=="initial"||
         req.body.skills||req.body.visualContext||req.body.provider==="google_gemini"))
@@ -764,6 +844,28 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
          throw Object.assign(Error("assistant_task_message_untrusted"),
           {code:"assistant_task_message_untrusted",statusCode:403});
        }
+       if(managed){
+        if(ref)assertConversationTaskTurn(db,{projectId:req.params.id,chatSessionId,taskId:ref.taskId,turnId:req.body.turnId});
+        frozenPolicy=ref?getAssistantTaskTurnPolicy(db,{projectId:req.params.id,taskId:ref.taskId,messageId:ref.turnMessageId}):
+         ordinaryConversationPolicy(req.body.conversationContext,req.body.visualContext,project);
+        const reservation=beginConversationRequest(db,{projectId:req.params.id,chatSessionId,turnId:req.body.turnId,
+         requestId:req.body.conversationRequestId,taskId:ref?.taskId??null,userText:messages[0].content,
+         requestPayload:req.body,continuation:req.body.conversationContinuation===true,policy:frozenPolicy});
+        if(reservation.cached){
+         if(streamMode){
+          startStream();
+          streamEvent("done",{result:reservation.response});
+          reply.raw.end();
+          return reply;
+         }
+         reply.header("Cache-Control","no-store");return reservation.response;
+        }
+        conversation=reservation;
+        if(streamMode){
+         assistantStreamControllers.set(controllerKey,controller);
+         startStream();
+        }
+       }
        let chosenMaterials=[],agentReadSession=null,structuredRequirement=null,usedHistoryQuote=null,quoteContext="";
        if(ref){
         const command=beginAssistantModelCommand(db,{projectId:req.params.id,taskId:ref.taskId,
@@ -793,14 +895,20 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
            chosenMaterials=loadSelectedAssistantCreativeMaterials(db,{projectId:req.params.id,
             taskId:ref.taskId,turnMessageId:ref.turnMessageId});
          }});
-        if(command.cached){reply.header("Cache-Control","no-store");return command.response;}
+        if(command.cached){
+         if(conversation){
+          startConversationSubmission(db,conversation,{...frozenPolicy,opaque:true});
+          completeConversationRequest(db,conversation,command.response);
+         }
+         reply.header("Cache-Control","no-store");return command.response;
+        }
         commandStarted=true;
         if(readMode)agentReadSession=createAssistantAgentReadSession(db,{
          projectId:req.params.id,taskId:ref.taskId,turnMessageId:ref.turnMessageId,
          requestId:ref.requestId,enforceOwner:true});
         const snapshot=getAssistantTask(db,{projectId:req.params.id,taskId:ref.taskId}).task;
-        frozenPolicy=getAssistantTaskTurnPolicy(db,{projectId:req.params.id,taskId:ref.taskId,
-         messageId:ref.turnMessageId});
+         frozenPolicy={...getAssistantTaskTurnPolicy(db,{projectId:req.params.id,taskId:ref.taskId,
+          messageId:ref.turnMessageId}),revision:project.revision};
         const requirement=proposalMode?null:currentAssistantTextDeliverable(db,ref.taskId);
         // Reject obsolete structured specs before the next billable POST.
         if(requirement?.deliverableType){
@@ -809,12 +917,13 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
         }
         // An explicitly approved source set supersedes unrelated model drafts.
         const pinned=requirement?.characters?.some(c=>c.sourceRef)===true||chosenMaterials.length>0;
-        const creativeDrafts=proposalMode||pinned||usedHistoryQuote?[]:loadAssistantTaskCreativeHistory(db,{
+        restrictConversation=pinned||Boolean(usedHistoryQuote)||readMode||Boolean(requirement);
+        const creativeDrafts=managed||proposalMode||pinned||usedHistoryQuote?[]:loadAssistantTaskCreativeHistory(db,{
          taskId:ref.taskId,currentTurnMessageId:ref.turnMessageId,contextPolicy:frozenPolicy
         });
         // Pinned creative references narrow the prose context: old previews and
         // unrelated model drafts are not part of the user's selected material set.
-        const scopedSummary=chosenMaterials.length?{
+         const scopedSummary=managed||chosenMaterials.length?{
          ...snapshot.summary,userTurns:{...(snapshot.summary?.userTurns??{}),recent:[]}
         }:snapshot.summary;
         // When the user pins concrete creative materials, limit the ordinary
@@ -876,8 +985,10 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
           taskId:ref.taskId,currentTurnMessageId:ref.turnMessageId,
           contextPolicy:frozenPolicy,userRequest:req.body.messages.at(-1)?.content
          });
-         if(hints&&Buffer.byteLength(taskContext+"\n"+hints,"utf8")<=16*1024)
+         if(hints&&Buffer.byteLength(taskContext+"\n"+hints,"utf8")<=16*1024){
           taskContext+="\n"+hints;
+          usedRevisionHints=true;
+         }
         }
         if(Buffer.byteLength(taskContext+quoteContext,"utf8")>16*1024)
          throw Object.assign(Error("assistant_history_quote_budget"),{code:"assistant_history_quote_budget",statusCode:413});
@@ -890,6 +1001,25 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
        if(req.body.skills&&req.body.skills.projectId!==req.params.id)
         throw Object.assign(Error("assistant_skill_selection_invalid"),{code:"assistant_skill_selection_invalid",statusCode:400});
        const skill=resolveAssistantSkills(db,skillRegistry,req.body.skills,messages);
+       if(conversation){
+        const built=buildConversationMessages(db,conversation,{current:messages.at(-1),policy:frozenPolicy,project,
+         restrict:restrictConversation||Boolean(req.body.conversationContinuation||req.body.visualContext||req.body.skills),
+         onDiagnostic:key=>conversationMetrics[key]++});
+        messages=built.messages;
+        conversationPolicy=built.policy;
+        if(usedRevisionHints)conversationPolicy={...conversationPolicy,opaque:true};
+        conversationMemory=built.compactedHistory;
+        if(!restrictConversation&&!req.body.conversationContinuation&&!req.body.visualContext&&!req.body.skills){
+         const retrieved=resolveConversationToolReferences(db,conversation,{taskId:ref?.taskId,policy:frozenPolicy,project});
+         if(retrieved&&Buffer.byteLength(conversationMemory+"\n"+retrieved)<8*1024)
+          conversationMemory+="\n当前重新核验的历史工具节点：\n"+retrieved;
+        }
+         if(!ref){
+          const config=db.prepare("SELECT value_json FROM ui_settings WHERE name='model_config'").get();
+          taskContext=formatAssistantCanvasContext({policy:frozenPolicy,document:project.document,
+           config:config?JSON.parse(config.value_json):{},loadTemplate:registry.find});
+         }
+       }
        if(ref&&req.body.visualContext){
         // A confirmed text-material selection narrows this request to those
         // references; an older canvas selection cannot also authorize media.
@@ -903,11 +1033,16 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
         document:project.document,visualContext:req.body.visualContext,blobStore,signal:controller.signal
        });
        const {skills:_selection,visualContext:_visual,task:_task,...chatInput}=req.body;
-       const result=await assistantChat({...chatInput,messages,skillContext:skill.context,
+       const result=await assistantChat({...chatInput,messages,conversationMemory,skillContext:skill.context,
         skillTools:skill.toolEntries??[],visualImages:visual.images,
         visualDetail:req.body.visualContext?.detail??"high",signal:controller.signal,
-        ...(streamMode?{stream:true,onDelta:(delta)=>{const event=assistantChatStreamLedger.append(req.params.id,streamTurnId,"delta",{text:delta});if(event&&!reply.raw.destroyed)reply.raw.write("id: "+event.seq+"\nevent: delta\ndata: "+JSON.stringify(event)+"\n\n");}}:{}),
-        ...(ref?{providerPayloadGuard:(requestBody)=>{
+        ...(streamMode?{stream:true,onDelta:delta=>streamEvent("delta",{text:delta})}:{}),
+        ...((ref||conversation)?{providerPayloadGuard:(requestBody)=>{
+         if(conversation&&Buffer.byteLength(requestBody)>34*1024*1024)
+          throw Object.assign(Error("assistant_context_budget_insufficient"),{code:"assistant_context_budget_insufficient",statusCode:413});
+         if(conversation&&(conversationPolicy.includeContext||req.body.visualContext)&&getProject(db,req.params.id).revision!==project.revision)
+          throw Object.assign(Error("assistant_task_context_not_authorized"),{code:"assistant_task_context_not_authorized",statusCode:403});
+         if(!ref){startConversationSubmission(db,conversation,conversationPolicy);return;}
          agentReadSession?.check(); // reauthorize immediately before each POST
          if(structuredRequirement){
           assertAssistantStructuredSourceCurrent(db,ref.taskId,structuredRequirement,{turnMessageId:ref.turnMessageId});
@@ -951,24 +1086,27 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
          for(const node of project.document.nodes??[]){
           if(visible.has(node.id))continue;
           const text=typeof node.metadata?.content==="string"?node.metadata.content:"";
-          if(text.length>=24&&!messages[0]?.content.includes(text)&&strings.some(value=>value.includes(text)))
+          if(text.length>=24&&!messages.at(-1)?.content.includes(text)&&strings.some(value=>value.includes(text)))
            throw Object.assign(Error("assistant_task_context_not_authorized"),
             {code:"assistant_task_context_not_authorized",statusCode:403});
          }
+         if(conversation)startConversationSubmission(db,conversation,conversationPolicy);
         }}:{}),
         ...(ref?{taskContext,quoteContext,callObserver:observer,modelCallKind:proposalMode?"initial":ref.callKind??"initial",
-         semanticProposal:proposalMode,agentReadSession}:{})});
+         semanticProposal:proposalMode,agentReadSession}:conversation?{taskContext,durableRequest:true}:{})});
        const proposed=proposalMode?prepareAssistantSemanticProposals({answer:result.answer,
          requestId:ref.requestId,turnMessageId:ref.turnMessageId,contextPolicy:frozenPolicy}):null;
-        const completed={...result,appliedSkillIds:skill.skillIds,usedVisualReferences:visual.references,
+       const completed={...(conversation?sanitizeConversationReply(result):result),appliedSkillIds:skill.skillIds,usedVisualReferences:visual.references,
          ...(usedHistoryQuote?{usedHistoryQuote}:{}),
          ...(readMode?{agentRunId:agentReadRunId(req.params.id,ref.taskId,ref.requestId)}:{}),
          ...(proposed?{proposals:proposed.candidates}:{})};
        if(ref)completeAssistantModelCommand(db,{projectId:req.params.id,taskId:ref.taskId,
-        requestId:ref.requestId,response:completed,semanticProposalBatch:proposed});
-       if(streamMode){const event=assistantChatStreamLedger.append(req.params.id,streamTurnId,"done",{result:completed});
+        requestId:ref.requestId,response:completed,semanticProposalBatch:proposed,
+        onCompleted:conversation?()=>completeConversationRequestInTransaction(db,conversation,completed,agentReadSession?.references):null});
+       else if(conversation)completeConversationRequest(db,conversation,completed);
+       if(streamMode){const event=streamEvent("done",{result:completed});
         if(!reply.raw.destroyed){
-         const terminal=event??assistantChatStreamLedger.read(req.params.id,streamTurnId,0)?.events.at(-1);
+         const terminal=!event&&!managed?assistantChatStreamLedger.read(req.params.id,streamTurnId,0)?.events.at(-1):null;
          if(terminal)reply.raw.write("id: "+terminal.seq+"\nevent: "+terminal.type+"\ndata: "+JSON.stringify(terminal)+"\n\n");
          reply.raw.end();
         }return reply;
@@ -980,15 +1118,18 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
         catch{ /* A durable submitting record will still prohibit replay on restart. */ }
        }
        const code=typeof error?.code==="string"&&error.code.startsWith("assistant_")?error.code:"assistant_failed";
-       if(streamMode){const event=assistantChatStreamLedger.append(req.params.id,streamTurnId,"error",{code});
+       if(managed)countConversationError(code);
+       if(conversation&&failConversationRequest(db,conversation,code)==="needs_reconcile")
+        conversationMetrics.needs_reconcile++;
+       if(streamStarted){const event=streamEvent("error",{code});
         if(!reply.raw.destroyed){
-         const terminal=event??assistantChatStreamLedger.read(req.params.id,streamTurnId,0)?.events.at(-1);
+         const terminal=!event&&!managed?assistantChatStreamLedger.read(req.params.id,streamTurnId,0)?.events.at(-1):null;
          if(terminal)reply.raw.write("id: "+terminal.seq+"\nevent: "+terminal.type+"\ndata: "+JSON.stringify(terminal)+"\n\n");
          reply.raw.end();
         }return reply;
        }
        return reply.code(error?.statusCode>=400&&error.statusCode<600?error.statusCode:502).send({code});
-     }finally{reply.raw.off("close",onClose);if(streamMode)assistantStreamControllers.delete(req.params.id+"\0"+streamTurnId)}
+     }finally{reply.raw.off("close",onClose);if(streamStarted)assistantStreamControllers.delete(controllerKey)}
    });
   if(projectArchive){
   app.get("/api/v1/projects/:id/archive",{schema:{params:canvasParams}},async(req,reply)=>{

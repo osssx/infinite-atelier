@@ -65,7 +65,7 @@ function fixture(t,{maxJobs=2,indices=[0,1],actions:runActions=actions}={}){
 }
 test("P4.4c explicit user budget grant admits frozen run_node and atomically charges one Job",t=>{
  const f=fixture(t);
- assert.equal(SCHEMA_VERSION,33);
+ assert.ok(SCHEMA_VERSION>=33);
  const budget=f.grant(),step=f.plan(0);
  assert.equal(budget.remainingJobs,2);
  assert.equal(f.db.prepare("SELECT status FROM assistant_task_steps WHERE id=?").get(step.stepId).status,"ready");

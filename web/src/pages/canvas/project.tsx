@@ -4281,6 +4281,7 @@ function AtelierCanvasPage() {
                     selectedNodes={assistantSelectedNodes} getContext={getAssistantContext} getResourceReferences={getAssistantResourceReferences}
                     getWorkflowTemplates={getAssistantWorkflowTemplates} getCanvasCenter={getCanvasCenter}
                     assertCanvasCurrent={()=>{if(activeProjectIdRef.current!==projectId)throw Error("画布项目已切换，请重新生成 Task 预览");}}
+                    persistCanvasContext={()=>awaitCanvasStorePersistence(projectId)}
                     onApplyActions={applyAssistantGraphActions} freezeCanvasEdit={freezeAssistantEdit} prepareCanvasEdit={prepareAssistantGraphBatch} onRunActions={executeAssistantNodeActions} config={effectiveConfig}/>                </Suspense> : null}
 
                 <CanvasJobHistory projectId={projectId} open={jobHistoryOpen}

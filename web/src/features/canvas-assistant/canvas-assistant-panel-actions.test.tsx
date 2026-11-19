@@ -17,6 +17,7 @@ vi.mock("@/features/skills/skill-registry",()=>({
 }));
 const mocks=vi.hoisted(()=>({
  api:vi.fn(),
+ conversationApi:vi.fn(),
  taskApi:vi.fn(),
  freezeSeq:vi.fn(),
  confirm:vi.fn(),
@@ -52,7 +53,8 @@ vi.mock("@/features/backend-sync/canvas-api",async importOriginal=>{
  const original=await importOriginal<typeof import("@/features/backend-sync/canvas-api")>();
  // Task-state requests should not consume legacy model request mock expectations.
  return {...original,canvasApi:(url:string,...args:unknown[])=>String(url).includes("/assistant/tasks")?
-  mocks.taskApi(url,...args):mocks.api(url,...args),
+  mocks.taskApi(url,...args):String(url).includes("/assistant/conversations/")?
+   mocks.conversationApi(url,...args):mocks.api(url,...args),
   canvasApiStream:async(url:string,payload:unknown,_signal:AbortSignal,onDelta?:(text:string)=>void)=>{
    const value=await mocks.api(url,"POST",payload);onDelta?.((value as {answer?:string}).answer??"");return value;
   }};
@@ -112,7 +114,8 @@ async function renderAndSend(Harness:()=>React.ReactElement,requestText?:string)
  await act(async()=>{send!.click();await Promise.resolve();});
 }beforeEach(()=>{
  (globalThis as {IS_REACT_ACT_ENVIRONMENT?:boolean}).IS_REACT_ACT_ENVIRONMENT=true;
- mocks.api.mockReset();mocks.confirm.mockReset();mocks.ensure.mockClear();mocks.run.mockClear();
+ mocks.api.mockReset();mocks.conversationApi.mockReset().mockResolvedValue({turns:[],nextBefore:null});
+ mocks.confirm.mockReset();mocks.ensure.mockClear();mocks.run.mockClear();
  mocks.taskApi.mockReset();mocks.taskApi.mockResolvedValue({tasks:[]});
  mocks.run.mockResolvedValue({submitted:1,jobIds:["job-demo"]});
  mocks.confirm.mockImplementation(()=>({destroy:vi.fn()}));
@@ -121,6 +124,29 @@ async function renderAndSend(Harness:()=>React.ReactElement,requestText?:string)
 afterEach(async()=>{
  if(root)await act(async()=>{root!.unmount()});
  root=null;container?.remove();container=null;
+});
+it("merges older durable pages with the local transcript in order without duplicate replies",async()=>{
+ const stamp="2026-11-19T00:00:00.000Z";
+ const fixture=setup([],[],[{id:"chat",title:"历史",createdAt:stamp,updatedAt:stamp,messages:[
+  {id:"legacy",role:"user",text:"旧版记录"},
+  {id:"middle",role:"user",text:"中间问题"},
+  {id:"middle-reply",role:"assistant",text:"中间回复"},
+  {id:"latest",role:"user",text:"最近问题"},
+  {id:"latest-reply",role:"assistant",text:"最近回复"}
+ ]}]);
+ mocks.conversationApi.mockResolvedValueOnce({turns:[
+  {turnId:"latest",userText:"最近问题",status:"completed",answer:"最近回复"}
+ ],nextBefore:3}).mockResolvedValueOnce({turns:[
+  {turnId:"earliest",userText:"最早问题",status:"completed",answer:"最早回复"},
+  {turnId:"middle",userText:"中间问题",status:"completed",answer:"中间回复"}
+ ],nextBefore:null});
+ await act(async()=>{root!.render(createElement(fixture.Harness));});
+ const load=Array.from(container!.querySelectorAll("button")).find(button=>button.textContent==="加载更早消息");
+ expect(load).toBeTruthy();
+ await act(async()=>{load!.click();});
+ const messages=Array.from(container!.querySelectorAll("article")).map(article=>article.textContent??"");
+ expect(messages.map(message=>message.match(/旧版记录|最早问题|最早回复|中间问题|中间回复|最近问题|最近回复/)?.[0]))
+  .toEqual(["旧版记录","最早问题","最早回复","中间问题","中间回复","最近问题","最近回复"]);
 });
 describe("plain-text Task planning must not become canvas execution",()=>{
  it("sends the user's storyboarding request as text-only and ignores unwanted model actions",async()=>{
@@ -489,12 +515,11 @@ describe("P2 assistant confirmation boundary",()=>{
    mocks.api.mockRejectedValueOnce(new CanvasApiError("assistant_actions_missing",502));
    for(let i=0;i<4;i++)await renderAndSend(fixture.Harness);
    expect(mocks.api).toHaveBeenCalledTimes(4);
-    for(const [index,call] of mocks.api.mock.calls.entries()){
+    for(const call of mocks.api.mock.calls){
      const messages=call[2].messages as Array<{role:string;content:string}>;
-     expect(messages).toHaveLength(1+index*2);
+     expect(messages).toHaveLength(1);
      expect(messages.at(-1)?.role).toBe("user");
      expect(messages.at(-1)?.content).toContain("创建三个分镜文本节点");
-     if(index)expect(messages.some(item=>item.content.includes("模型未返回可执行的画布指令"))).toBe(true);
     }   expect(fixture.apply).toHaveBeenCalledTimes(1);
    expect(fixture.getGraph().nodes).toHaveLength(2);
    expect(container!.textContent).toContain("已自动执行 1 项画布操作");
@@ -543,7 +568,10 @@ describe("P2 assistant confirmation boundary",()=>{
   container=document.createElement("div");document.body.appendChild(container);
   root=createRoot(container);
   await renderAndSend(Harness);
-  expect(getWorkflowTemplates).toHaveBeenCalled();  expect((mocks.api.mock.calls[0][2].messages as {role:string;content:string}[]).at(-1)?.content).toContain("端口 id=steps");
+  expect(getWorkflowTemplates).toHaveBeenCalled();
+  expect(mocks.api.mock.calls[0][2].conversationContext).toMatchObject({
+   includeContext:true,scope:"selection",includedIds:["img-source"]
+  });
   expect(graph.nodes[0].metadata?.comfyMediaPreset?.overrides).toEqual({steps:16});
   expect(mocks.confirm).toHaveBeenCalledTimes(1);
    expect(mocks.confirm.mock.calls[0][0].content).toContain("工作流输入参数");
@@ -601,7 +629,7 @@ describe("P2 assistant confirmation boundary",()=>{
    root=createRoot(container);
    await renderAndSend(Harness);
    expect(load).toHaveBeenCalled();
-   expect((mocks.api.mock.calls[0][2].messages as {role:string;content:string}[]).at(-1)?.content).toContain("portId=text_in");
+   expect(mocks.api.mock.calls[0][2].conversationContext).toMatchObject({includeContext:true,scope:"selection"});
    expect(mocks.confirm).toHaveBeenCalledOnce();
    expect(mocks.confirm.mock.calls[0][0].content).toContain("替换 1 条工作流输入连线");
    expect(graph.connections).toEqual([oldEdge]);
@@ -1190,7 +1218,7 @@ describe("P2 assistant confirmation boundary",()=>{
   expect(sent).toBeTruthy();
   expect(sent?.[2].visualContext).toBeUndefined();
   expect(sent?.[2].messages.at(-1).content).toContain("【引用节点：分镜脚本（text，id=text-1）】");
-  expect(sent?.[2].messages.at(-1).content).toContain("明确引用：text-1,video-1,workflow-1");
+  expect(sent?.[2].conversationContext.includedIds).toEqual(["text-1","video-1","workflow-1"]);
   expect(fixture.getContext).toHaveBeenCalledWith(["text-1","video-1","workflow-1"],"selection");
  });
   it("plain chat never sends canvas pictures implicitly even with image references selected",async()=>{

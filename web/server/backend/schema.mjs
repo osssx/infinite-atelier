@@ -1,5 +1,5 @@
 import{JOB_STATUSES,EXECUTION_MODES,ARTIFACT_KINDS}from"./contracts.mjs";
-export const SCHEMA_VERSION=33;
+export const SCHEMA_VERSION=34;
 const quoted=x=>x.map(s=>"'"+s+"'").join(",");
 export const INITIAL_SCHEMA_SQL=`
 CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY,applied_at INTEGER NOT NULL);
@@ -649,12 +649,46 @@ CREATE TABLE IF NOT EXISTS assistant_task_run_failovers(
 CREATE INDEX IF NOT EXISTS ix_assistant_task_run_failovers_task
  ON assistant_task_run_failovers(task_id,plan_version);
 `;
+const ASSISTANT_CONVERSATION_SCHEMA_SQL=`
+CREATE TABLE IF NOT EXISTS assistant_conversation_deletions(
+ project_id TEXT NOT NULL REFERENCES projects(id), session_id TEXT NOT NULL,
+ PRIMARY KEY(project_id,session_id)
+);
+CREATE TABLE IF NOT EXISTS assistant_conversation_turns(
+ seq INTEGER PRIMARY KEY AUTOINCREMENT,
+ project_id TEXT NOT NULL REFERENCES projects(id), session_id TEXT NOT NULL,
+ turn_id TEXT NOT NULL, user_text TEXT NOT NULL, task_id TEXT, created_at INTEGER NOT NULL,
+ UNIQUE(project_id,session_id,turn_id)
+);
+CREATE INDEX IF NOT EXISTS assistant_conversation_history
+ ON assistant_conversation_turns(project_id,session_id,seq);
+CREATE TABLE IF NOT EXISTS assistant_conversation_requests(
+ turn_seq INTEGER NOT NULL REFERENCES assistant_conversation_turns(seq) ON DELETE CASCADE,
+ request_id TEXT NOT NULL, digest TEXT NOT NULL, state TEXT NOT NULL,
+ final INTEGER NOT NULL DEFAULT 0, policy_json TEXT NOT NULL, response_json TEXT,
+ error_code TEXT, PRIMARY KEY(turn_seq,request_id)
+);
+CREATE INDEX IF NOT EXISTS assistant_conversation_in_progress
+ ON assistant_conversation_requests(turn_seq) WHERE state IN ('pending','submitting');
+CREATE TABLE IF NOT EXISTS assistant_conversation_tool_refs(
+ turn_seq INTEGER NOT NULL, request_id TEXT NOT NULL, call_id TEXT NOT NULL,
+ kind TEXT NOT NULL, node_ids_json TEXT NOT NULL,
+ PRIMARY KEY(turn_seq,request_id,call_id,kind),
+ FOREIGN KEY(turn_seq,request_id) REFERENCES assistant_conversation_requests(turn_seq,request_id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS assistant_conversation_checkpoints(
+ project_id TEXT NOT NULL REFERENCES projects(id), session_id TEXT NOT NULL,
+ policy_key TEXT NOT NULL, through_seq INTEGER NOT NULL, version INTEGER NOT NULL,
+ entries_json TEXT NOT NULL, PRIMARY KEY(project_id,session_id,policy_key,through_seq,version)
+);
+`;
 export function initializeSchema(db){
  db.exec("PRAGMA foreign_keys=ON;PRAGMA busy_timeout=5000;BEGIN IMMEDIATE");
  try{
   db.exec(INITIAL_SCHEMA_SQL);
   const version=db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v??0;
   if(version>SCHEMA_VERSION)throw Error("database_schema_too_new");
+  if(version<34)db.exec(ASSISTANT_CONVERSATION_SCHEMA_SQL);
   if(version<2)db.exec(CREDENTIAL_SCHEMA_SQL);
   if(version<3)db.exec(COORDINATOR_SCHEMA_SQL);
   if(version<4)db.exec(COMFY_PREPARATIONS_SCHEMA_SQL);

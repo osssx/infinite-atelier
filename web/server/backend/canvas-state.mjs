@@ -1,4 +1,5 @@
 import {writeTransaction,stableJson,assertNoRawCredentials} from "./repository.mjs";
+import {filterConversationSnapshot,overlayConversationCatalog} from "./assistant-conversation.mjs";
 const fail=(code,statusCode=400,details)=>Object.assign(Error(code),{code,statusCode,details});
 export const DEFAULT_VIEWPORT=Object.freeze({x:0,y:0,k:1});
 function activeProject(db,id){
@@ -56,16 +57,19 @@ export function putCanvasViewport(db,id,{viewport,expectedRevision}){
 export function getCanvasChats(db,id){
  activeProject(db,id);
  const row=db.prepare("SELECT sessions_json,active_chat_id,revision FROM project_chats WHERE project_id=?").get(id);
- return {sessions:row?JSON.parse(row.sessions_json):[],activeChatId:row?.active_chat_id??null,revision:row?.revision??1};
+ return overlayConversationCatalog(db,id,
+  {sessions:row?JSON.parse(row.sessions_json):[],activeChatId:row?.active_chat_id??null,revision:row?.revision??1});
 }
 export function putCanvasChats(db,id,{sessions,activeChatId,expectedRevision}){
- const json=encodeChats(sessions,activeChatId);
+ encodeChats(sessions,activeChatId);
  if(!Number.isSafeInteger(expectedRevision)||expectedRevision<1)throw fail("expected_revision_required");
  return writeTransaction(db,()=>{
   activeProject(db,id);
+  const filtered=filterConversationSnapshot(db,id,{sessions,activeChatId});
+  const json=stableJson(filtered.sessions);
   const result=db.prepare("UPDATE project_chats SET sessions_json=?,active_chat_id=?,revision=revision+1,updated_at=? WHERE project_id=? AND revision=?")
-   .run(json,activeChatId,Date.now(),id,expectedRevision);
+   .run(json,filtered.activeChatId,Date.now(),id,expectedRevision);
   if(!result.changes)throw fail("chats_revision_conflict",409);
-  return {sessions:JSON.parse(json),activeChatId,revision:expectedRevision+1};
+  return {sessions:JSON.parse(json),activeChatId:filtered.activeChatId,revision:expectedRevision+1};
  });
 }

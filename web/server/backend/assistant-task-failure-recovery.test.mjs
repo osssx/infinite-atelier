@@ -75,7 +75,7 @@ function planFallback(fixture){
 function count(db,table){return db.prepare("SELECT COUNT(*) AS n FROM "+table).get().n}
 test("P3c3d confirmed not accepted atomically freezes independent fallback; no Job before approval",t=>{
  const f=setup(t),{ctx,jobId}=f;
- assert.equal(SCHEMA_VERSION,33);
+ assert.ok(SCHEMA_VERSION>=33);
  assert.equal(getAssistantTask(ctx.db,ctx).task.status,"failed");
  const state=inspect(f);
  assert.equal(state.canRecover,true);

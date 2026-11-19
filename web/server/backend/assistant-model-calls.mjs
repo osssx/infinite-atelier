@@ -98,7 +98,7 @@ export function createAssistantModelObserver(db,{projectId,taskId,requestId,prov
    diagnostic})
  };
 }
-export function completeAssistantModelCommand(db,{projectId,taskId,requestId,response,semanticProposalBatch=null}){
+export function completeAssistantModelCommand(db,{projectId,taskId,requestId,response,semanticProposalBatch=null,onCompleted=null}){
  const serialized=outputJson(response);
  return writeTransaction(db,()=>{
   const command=db.prepare("SELECT status FROM assistant_task_commands WHERE project_id=? AND request_id=? AND task_id=? AND command_kind='model_infer'")
@@ -118,6 +118,7 @@ export function completeAssistantModelCommand(db,{projectId,taskId,requestId,res
    recordAgentRunEventInTransaction(db,{taskId,kind:"agent_run_completed",
     data:{runId:agentReadRunId(projectId,taskId,requestId),requestId,
      resultDigest:digest(response),status:"completed"}});
+  onCompleted?.();
   return response;
  });
 }

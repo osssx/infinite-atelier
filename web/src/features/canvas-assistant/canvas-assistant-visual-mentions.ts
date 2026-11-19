@@ -16,7 +16,7 @@ export function collectAssistantImageMentions(text:string,references:readonly Ca
    nodeIds.push(candidate.nodeId);
    foundNodes.add(candidate.nodeId);
   }
-  const title=candidate.title.replace(/[\r\n]/g," ").slice(0,80);
+  const title=candidate.title.replace(/[\r\n【】]/g," ").slice(0,80);
   if(candidate.kind!=="image")return "【引用节点："+title+"（"+candidate.kind+"，id="+candidate.nodeId+"）】";
   const key=candidate.nodeId+":"+(candidate.imageId??"");
   if(!foundImages.has(key)){

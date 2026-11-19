@@ -14,7 +14,6 @@ import type {AssistantContextResult,AssistantContextScope} from "./canvas-assist
 import {parseAssistantCanvasActions,isDangerousAssistantAction,dangerousAssistantActionSummary,type AssistantCanvasStage} from "./canvas-assistant-actions";
 import {findHistoryShotRanges,requestedHistoryShot} from "../../../shared/assistant-history-quote.mjs";
 import {assertHistoryQuoteBudget,historyQuoteReference,manualHistoryQuote,type HistoryQuoteCandidate,type HistoryQuoteReference,type UsedHistoryQuote} from "./canvas-assistant-history-quote";
-import {buildCanvasAssistantTurns} from "./canvas-assistant-history";
 import {parseAssistantCharacterCast} from "./canvas-assistant-character-cast";
 import {detectAssistantStructuredTextDelivery} from "./canvas-assistant-structured-deliverable-intent";
 import {wantsAssistantTaskReadTools} from "./canvas-assistant-read-tool-intent";
@@ -80,6 +79,7 @@ type Props={
    getCanvasCenter?:()=>{x:number;y:number};
    /** Re-checks the send-time graph fence immediately before Task commit. */
    assertCanvasCurrent?:()=>void;
+   persistCanvasContext?:()=>Promise<void>;
    getResourceReferences?:()=>CanvasResourceReference[];
    getWorkflowTemplates:(ids:string[],signal:AbortSignal)=>Promise<{context:string;templates:Map<string,ComfyWorkflowTemplate>}>;
    onApplyActions:(actions:unknown,stage:AssistantCanvasStage,refs?:ReadonlyMap<string,string>,workflowTemplates?:ReadonlyMap<string,ComfyWorkflowTemplate>)=>{applied:number;refs:Map<string,string>};
@@ -97,6 +97,51 @@ const append=(list:CanvasAssistantSession[],id:string,message:CanvasAssistantMes
 type HistoryQuoteChoice=HistoryQuoteCandidate|{messageId:string;text:string;label:string;start:number};
 
 const historyMessageAnchor=(chatId:string,messageId:string)=>"canvas-assistant-message-"+chatId+"-"+messageId;
+type DurableTurn={turnId:string;userText:string;answer?:string;status:string;errorCode?:string};
+type DurablePage={turns:DurableTurn[];nextBefore:number|null};
+function conversationPath(projectId:string,chatId:string){
+ return "/api/v1/projects/"+encodeURIComponent(projectId)+"/assistant/conversations/"+encodeURIComponent(chatId);
+}
+function durableRequestPath(projectId:string,chatId:string,turnId:string,requestId:string){
+ return conversationPath(projectId,chatId)+"/turns/"+encodeURIComponent(turnId)+"/"+encodeURIComponent(requestId);
+}
+function mergeDurableTranscript(local:CanvasAssistantMessage[],turns:DurableTurn[]){
+ const byId=new Map(local.map(message=>[message.id,message]));
+ const remote:CanvasAssistantMessage[]=[];
+ const matched=new Set(turns.map(turn=>turn.turnId));
+ const firstLocalManaged=local.findIndex(message=>matched.has(message.id)||matched.has(message.id.replace(/-reply$/,"")));
+ if(firstLocalManaged>=0)remote.push(...local.slice(0,firstLocalManaged));
+ const emitted=new Set(remote.map(message=>message.id));
+ const localNotes=new Map<string,CanvasAssistantMessage[]>();
+ let owner:string|null=null;
+ for(const message of local){
+  if(message.role==="user"){owner=matched.has(message.id)?message.id:null;continue;}
+  if(owner&&message.id!==owner+"-reply"){
+   const notes=localNotes.get(owner)??[];
+   notes.push(message);
+   localNotes.set(owner,notes);
+  }
+ }
+ for(const turn of turns){
+  const source=byId.get(turn.turnId);
+  const replyId=turn.turnId+"-reply";
+  const localReply=byId.get(replyId);
+  const user=source??{id:turn.turnId,role:"user",text:turn.userText};
+  remote.push(user);
+  emitted.add(user.id);
+  if(turn.answer!==undefined||localReply||turn.status==="needs_reconcile"||turn.status==="awaiting_followup"){
+   const answer=localReply?.meta!=="正在生成"?localReply:undefined;
+   remote.push(answer??{id:replyId,role:turn.answer===undefined?"error":"assistant",
+    text:turn.answer??(turn.status==="awaiting_followup"?"Skill 流程尚未完成，可查看运行记录。":"模型请求结果待对账")});
+   emitted.add(replyId);
+  }
+  for(const note of localNotes.get(turn.turnId)??[]){
+   remote.push(note);
+   emitted.add(note.id);
+  }
+ }
+ return [...remote,...local.filter(message=>!emitted.has(message.id))];
+}
 function historyQuoteChoiceSource(item:HistoryQuoteChoice,messages:CanvasAssistantMessage[]){
  const message=messages.find(entry=>entry.id===("sourceRequestId" in item?item.sourceTurnMessageId:item.messageId));
  if(!message)return "来源：任务历史回复";
@@ -123,6 +168,9 @@ const assistantErrorMessages:Record<string,string>={
  assistant_upstream_unavailable:"无法连接模型渠道或请求超时，请检查网络、渠道地址和服务状态。",
  assistant_upstream_retry_exhausted:"模型请求网络异常或超时，已自动重试 2 次仍未成功。请检查网络与模型服务状态后再试。",
  assistant_model_call_unknown:"模型请求可能已被服务商受理，但结果无法确认。已阻止自动重发以避免重复计费，请查看调用记录。",
+ assistant_conversation_busy:"该会话已有请求正在处理，请等待已有请求结束。",
+ assistant_conversation_request_conflict:"这条消息的请求状态已变化，请刷新会话后再继续。",
+ assistant_context_budget_insufficient:"本轮必要上下文超出模型请求预算，请缩短输入或减少画布资料。",
  assistant_model_call_in_progress:"相同任务模型请求正在执行，请勿重复提交。",
  assistant_task_command_conflict:"同一任务调用标识的参数已改变，已阻止执行。",
  assistant_task_not_editable:"任务已取消或只读，无法继续推理。",
@@ -306,7 +354,7 @@ function confirmAssistantTaskJob(step:AssistantTaskFrozenJob,payload:Record<stri
   if(signal.aborted)onAbort();
  });
 }
-export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessions,setSessions,activeChatId,setActiveChatId,selectedNodes,getContext,getResourceReferences,getWorkflowTemplates,onApplyActions,freezeCanvasEdit,prepareCanvasEdit,onRunActions,getCanvasCenter,assertCanvasCurrent,config,comfyInstanceId}:Props){
+export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessions,setSessions,activeChatId,setActiveChatId,selectedNodes,getContext,getResourceReferences,getWorkflowTemplates,onApplyActions,freezeCanvasEdit,prepareCanvasEdit,onRunActions,getCanvasCenter,assertCanvasCurrent,persistCanvasContext,config,comfyInstanceId}:Props){
   const themeName=useThemeStore(state=>state.theme);
   const theme=canvasThemes[themeName];
   const [draft,setDraft]=useState(""); const [modelRef,setModelRef]=useState(config.textModel);
@@ -327,7 +375,10 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
  const [previewOpen,setPreviewOpen]=useState(false);
  const [previewRevision,setPreviewRevision]=useState(0);
  const controllerRef=useRef<AbortController|null>(null);
- const activeStreamTurnRef=useRef<{turnId:string;chatId:string}|null>(null);
+ const activeStreamTurnRef=useRef<{turnId:string;chatId:string;requestId?:string}|null>(null);
+ const [durableHistory,setDurableHistory]=useState<{chatId:string;page:DurablePage}|null>(null);
+ const [historyLoading,setHistoryLoading]=useState(false);
+ const [conversationError,setConversationError]=useState("");
  const scrollRef=useRef<HTMLDivElement>(null);
  const followOutputRef=useRef(true);
  const signature=selectedNodes.map(node=>node.id).join("|");
@@ -363,6 +414,42 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
  }).filter(item=>!draft.includes(canvasResourceReferenceToken(item)));
  const reversePromptRequest="请仔细观察引用图片的真实视觉内容，反推适合图像生成模型的提示词。请分别给出：画面主体与动作、场景与构图、镜头、光影色彩、材质与风格；完整英文正向提示词、中文版、可选负面提示词，以及无法从图像确定的信息。不要把猜测当成原始 Prompt、Seed 或 LoRA。";
  const session=sessions.find(item=>item.id===activeChatId);
+ const loadedHistory=durableHistory?.chatId===activeChatId?durableHistory.page:null;
+ const renderedMessages=loadedHistory?.turns.length?
+  mergeDurableTranscript(session?.messages??[],loadedHistory.turns):session?.messages??[];
+ useEffect(()=>{
+  if(!open||!activeChatId||sending)return;
+  const controller=new AbortController();
+  let timer:ReturnType<typeof setTimeout>|undefined;
+  const refresh=async()=>{
+   try{
+    const page=await canvasApi<DurablePage>(conversationPath(projectId,activeChatId)+"/turns","GET",undefined,controller.signal);
+    if(controller.signal.aborted)return;
+    setConversationError("");
+    setDurableHistory(current=>{
+     if(current?.chatId!==activeChatId||!current.page.turns.length)return {chatId:activeChatId,page};
+     const byId=new Map([...current.page.turns,...page.turns].map(turn=>[turn.turnId,turn]));
+     return {chatId:activeChatId,page:{turns:[...byId.values()],nextBefore:
+      current.page.turns[0]?.turnId!==page.turns[0]?.turnId?current.page.nextBefore:page.nextBefore}};
+    });
+    if(page.turns.some(turn=>turn.status==="pending"||turn.status==="submitting"))
+     timer=setTimeout(()=>void refresh(),800);
+   }catch(error){if(!controller.signal.aborted)setConversationError(canvasAssistantErrorText(error));}
+  };
+  void refresh();
+  return ()=>{controller.abort();clearTimeout(timer);};
+ },[open,activeChatId,projectId,sending]);
+ const loadOlderHistory=async()=>{
+  if(!activeChatId||!loadedHistory?.nextBefore||historyLoading)return;
+  const chatId=activeChatId;
+  setHistoryLoading(true);
+  try{
+   const page=await canvasApi<DurablePage>(conversationPath(projectId,chatId)+"/turns?before="+loadedHistory.nextBefore);
+   setDurableHistory(current=>current?.chatId===chatId?{chatId,page:{...page,
+    turns:[...new Map([...page.turns,...current.page.turns].map(turn=>[turn.turnId,turn])).values()]}}:current);
+  }catch(error){setConversationError(canvasAssistantErrorText(error));}
+  finally{setHistoryLoading(false);}
+ };
  const startChatForTask=()=>{
   // An empty chat exists only after the user chooses to link a Task.
   // Persist its ID before the task can be linked, so refresh can recover it.
@@ -433,16 +520,16 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
   }
  });
  useEffect(()=>{followOutputRef.current=true;},[open,session?.id]);
- useEffect(()=>{const transcript=scrollRef.current;if(open&&transcript&&followOutputRef.current)transcript.scrollTo({top:transcript.scrollHeight});},[open,session?.messages,sending]);
+ useEffect(()=>{const transcript=scrollRef.current;if(open&&transcript&&followOutputRef.current)transcript.scrollTo({top:transcript.scrollHeight});},[open,session?.messages,loadedHistory?.turns,sending]);
  useEffect(()=>{
   if(!open||activeStreamTurnRef.current)return;
   const key="infinite-atelier:assistant-stream:"+projectId;
   const pending=sessionStorage.getItem(key);
   if(!pending)return;
-  const [chatId,turnId]=pending.split("\0");
+  const [chatId,turnId,requestId]=pending.split("\0");
   if(!chatId||!turnId)return;
   const controller=new AbortController();
-  activeStreamTurnRef.current={turnId,chatId};
+  activeStreamTurnRef.current={turnId,chatId,requestId};
   controllerRef.current=controller;
   setSending(true);
   const endpoint="/api/v1/projects/"+encodeURIComponent(projectId)+"/assistant/chat";
@@ -463,6 +550,17 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
   void (async()=>{
    try{
     while(!controller.signal.aborted){
+     if(requestId){
+      const state=await canvasApi<{state:string;response?:{answer?:string};errorCode?:string}>(
+       durableRequestPath(projectId,chatId,turnId,requestId),"GET",undefined,controller.signal);
+      if(state.state==="completed"){text=state.response?.answer??"";update("已恢复");break;}
+      if(state.state==="needs_reconcile"||state.state==="failed"){
+       update(state.state==="needs_reconcile"?"模型请求结果待对账":"回复中断");break;
+      }
+      if(Date.now()>=deadline)throw new Error("assistant_stream_incomplete");
+      await new Promise(resolve=>setTimeout(resolve,600));
+      continue;
+     }
      let state;
      try{state=await readCanvasAssistantStream<{answer?:string}>(endpoint,turnId,cursor,controller.signal);}
      catch(error){
@@ -490,7 +588,8 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
   controllerRef.current?.abort();
   if(!active)return;
   const endpoint="/api/v1/projects/"+encodeURIComponent(projectId)+"/assistant/chat";
-  void cancelCanvasAssistantStream(endpoint,active.turnId).catch(()=>{});
+  void (active.requestId?canvasApi(durableRequestPath(projectId,active.chatId,active.turnId,active.requestId)+"/cancel","POST",{}):
+   cancelCanvasAssistantStream(endpoint,active.turnId)).catch(()=>{});
   sessionStorage.removeItem("infinite-atelier:assistant-stream:"+projectId);
   setSessions(prev=>prev.map(chat=>chat.id===active.chatId?{...chat,messages:chat.messages.map(item=>
    item.id===active.turnId+"-reply"?{...item,meta:"已停止生成"}:item)}:chat));
@@ -507,8 +606,6 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
   const provider=modelChannelProvider(channel,"text");
   if(!channel||!provider||provider==="volcengine_ark")return;
   // Explicit @ references take priority over implicitly selected nodes.
-  const frozen=freezeCanvasEdit?.(includeContext&&scope==="selection"?includedIds:[],visual.nodeIds,includeContext&&scope==="overview"&&fullGraphGrant);
-  const assertTurnCurrent=frozen?.assertCurrent??assertCanvasCurrent;
   const contextIds=[...new Set([...visual.nodeIds,...(effectiveScope==="selection"?includedIds:[])])];
   const mentionedContext=includeContext&&visual.nodeIds.length?getContext(contextIds,"selection"):null;
   const contextSnapshot=includeContext?(effectiveScope==="selection"?
@@ -521,13 +618,19 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
      const linkedTaskId=taskTracker.activeTaskId;
     const earlierShot=linkedTaskId?requestedHistoryShot(text):null;
     const manualQuote=linkedTaskId&&draftHistoryQuote?.chatId===session?.id?draftHistoryQuote:null;
-    const prior=session?.messages??[];
+    const prior=renderedMessages;
     const controller=new AbortController();controllerRef.current=controller;
     let historyQuote:HistoryQuoteReference|undefined;
     let published=false;
     setSending(true);
     setHistoryQuoteError("");
    try{
+    if(includeContext||visual.images.length){
+     await persistCanvasContext?.();
+     if(controller.signal.aborted)return;
+    }
+    const frozen=freezeCanvasEdit?.(includeContext&&scope==="selection"?includedIds:[],visual.nodeIds,includeContext&&scope==="overview"&&fullGraphGrant);
+    const assertTurnCurrent=frozen?.assertCurrent??assertCanvasCurrent;
     if(manualQuote)historyQuote=await manualHistoryQuote(manualQuote.text);
     else if(picked){
      assertHistoryQuoteBudget(picked.text);
@@ -570,16 +673,7 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
       workflowInfo.context="所选工作流预设端口定义读取失败："+(error instanceof Error?error.message:String(error));
      }
     }
-    const modelHints=(["text","image","video","audio"] as const).map(mode=>{
-     const models=selectableModelsByCapability(config,mode).slice(0,16);
-     return mode+" 生成模型："+(models.length?models.join("、"):"未配置");
-    }).join("\n").slice(0,2500);
-    const contextText=contextSnapshot?.text?
-     [contextSnapshot.text.slice(0,8500),
-      ...(effectiveScope==="overview"&&mentionedContext?[mentionedContext.text.slice(0,6000)]:[]),
-      modelHints,workflowInfo.context].filter(Boolean).join("\n\n"):undefined;
-    // Task context is reconstructed by backend from the frozen turn disclosure.
-     const turns=buildCanvasAssistantTurns(linkedTaskId?[]:prior,text,linkedTaskId?undefined:contextText);
+    const turns=[{role:"user" as const,content:text}];
     let selectedSkills:undefined|{mode:"manual"|"auto";projectId:string;expectedRevision:number;skillIds:string[];versionPins:Record<string,string>};
     // Skill is always on: explicit / Skill mentions override automatic matching.
     // No enabled Skill is a normal state, not a reason to block an ordinary chat.
@@ -732,7 +826,10 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
     type AssistantReply={answer:string;model:string;usedHistoryQuote?:UsedHistoryQuote;agentRunId?:string;agentReadRounds?:number;agentReadToolCalls?:{callId:string;name:string}[];retryCount?:number;actions?:unknown;appliedSkillIds?:string[];skillResourceReads?:{skillId:string;path:string}[];skillToolCalls?:{name:string;skillId:string|null}[];skillToolsFallback?:boolean;skillScriptProposal?:AssistantSkillScriptProposal};
     const endpoint="/api/v1/projects/"+encodeURIComponent(projectId)+"/assistant/chat";
     const request={channelId:channel.id,provider,baseUrl:channel.baseUrl,model:modelOptionName(chosenModel),
-     messages:turns,canvasActions:!textOnly,
+     messages:turns,canvasActions:!textOnly,chatSessionId:id,turnId:user.id,
+     conversationRequestId:user.id+"-model-initial",
+     ...(!linkedTaskId?{conversationContext:{includeContext,scope:effectiveScope,
+      includedIds:includeContext?(effectiveScope==="selection"?contextIds:visual.nodeIds):[]}}:{}),
       ...(agentReadTools?{agentReadTools:true}:{}),
       ...(linkedTaskId?{task:{taskId:linkedTaskId,turnMessageId:user.id,requestId:user.id+"-model-initial",...(historyQuote?{historyQuote}:{})}}:{}),
      ...(!wantsCreativeSources&&visual.images.length?{visualContext:{detail:"high",images:visual.images}}:{})};
@@ -741,7 +838,10 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
       const streamOrdinary=!linkedTaskId&&!selectedSkills&&!visual.images.length&&!agentReadTools&&textOnly&&
        (provider==="openai"||provider==="openai_compatible");
       const requestBody={...request,...(selectedSkills?{skills:selectedSkills}:{})};
-      if(streamOrdinary){activeStreamTurnRef.current={turnId:user.id,chatId:id};sessionStorage.setItem("infinite-atelier:assistant-stream:"+projectId,id+"\0"+user.id);}
+      if(streamOrdinary){
+       activeStreamTurnRef.current={turnId:user.id,chatId:id,requestId:request.conversationRequestId};
+       sessionStorage.setItem("infinite-atelier:assistant-stream:"+projectId,[id,user.id,request.conversationRequestId].join("\0"));
+      }
       response=streamOrdinary?await canvasApiStream<AssistantReply>(endpoint,{...requestBody,turnId:user.id},controller.signal,(delta)=>{
        const replyId=streamedId??=user.id+"-reply";
        setSessions(prev=>{
@@ -760,7 +860,8 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
      if(!safeAutoFallback||controller.signal.aborted)throw error;
      setSkillError("Skill 自动匹配未成功，本轮按普通对话继续。");
      response=await canvasApi<AssistantReply>(endpoint,"POST",{
-       ...request,...(request.task?{task:{...request.task,requestId:user.id+"-model-skill-fallback"}}:{})
+       ...request,conversationRequestId:user.id+"-model-skill-fallback",
+       ...(request.task?{task:{...request.task,requestId:user.id+"-model-skill-fallback"}}:{})
       },controller.signal);
     }
     // The Skill determines which scripts and artifacts are needed. A script
@@ -838,6 +939,7 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
      try{
       response=await canvasApi<AssistantReply>(endpoint,"POST",{
        ...request,messages:[{role:"user",content:continuationText}],
+       conversationContinuation:true,conversationRequestId:user.id+"-model-script-"+scriptSteps,
         ...(request.task?{task:{...request.task,requestId:user.id+"-model-script-"+scriptSteps,
          callKind:"script_continuation"}}:{}),
        skillScriptProposalEnabled:scriptSteps<4,
@@ -949,7 +1051,7 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
        notes.push("画布操作未完成："+(operationError instanceof Error?operationError.message:"执行失败"));
      }    const answer=[response.answer,...notes].filter(Boolean).join("\n\n");
     const localSourceMessageId=manualQuote?.messageId??(picked&&"messageId" in picked?picked.messageId:undefined);
-    const finalMessage:CanvasAssistantMessage={id:streamedId??nanoid(),role:"assistant",text:answer,
+    const finalMessage:CanvasAssistantMessage={id:streamedId??user.id+"-reply",role:"assistant",text:answer,
       ...(response.usedHistoryQuote?{historyQuote:{...response.usedHistoryQuote,localSourceMessageId}}:{}),
       meta:response.model+(response.retryCount?` · 网络自动重试 ${response.retryCount} 次`:"")+
        (response.appliedSkillIds?.length?" · Skill: "+response.appliedSkillIds.join("、"):"")+
@@ -978,7 +1080,7 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
       if(activeStreamTurnRef.current?.chatId===id){activeStreamTurnRef.current=null;if(!controller.signal.aborted)sessionStorage.removeItem("infinite-atelier:assistant-stream:"+projectId);}
    setSending(false);
   }
-  },[draft,chosenModel,config,includeContext,getContext,includedIds,effectiveScope,session,setSessions,setActiveChatId,projectId,onApplyActions,onRunActions,getWorkflowTemplates,themeName,resourceReferences,taskTracker,getCanvasCenter,freezeCanvasEdit,prepareCanvasEdit,assertCanvasCurrent,fullGraphGrant,scope,draftHistoryQuote]);
+  },[draft,chosenModel,config,includeContext,getContext,includedIds,effectiveScope,session,renderedMessages,setSessions,setActiveChatId,projectId,onApplyActions,onRunActions,getWorkflowTemplates,themeName,resourceReferences,taskTracker,getCanvasCenter,freezeCanvasEdit,prepareCanvasEdit,assertCanvasCurrent,persistCanvasContext,fullGraphGrant,scope,draftHistoryQuote]);
   const restoreSkillRun=async(runId:string)=>{
    if(sending||restoringSkillRun)return;
    setRestoringSkillRun(runId);
@@ -1009,9 +1111,12 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
   };
   const clear=()=>{
   if(!session||sending)return;
-  Modal.confirm({...canvasAssistantConfirmTheme(themeName),icon:<AlertCircle className="canvas-assistant-confirm-icon" size={19} aria-hidden="true"/>,title:"删除当前对话？",content:"删除后无法恢复。",okText:"删除",okType:"danger",cancelText:"取消",onOk:()=>{
-   setSessions(prev=>prev.filter(item=>item.id!==session.id));
-   setActiveChatId(null);
+  Modal.confirm({...canvasAssistantConfirmTheme(themeName),icon:<AlertCircle className="canvas-assistant-confirm-icon" size={19} aria-hidden="true"/>,title:"删除当前对话？",content:"删除后无法恢复。",okText:"删除",okType:"danger",cancelText:"取消",onOk:async()=>{
+   try{
+    await canvasApi(conversationPath(projectId,session.id),"DELETE");
+    setSessions(prev=>prev.filter(item=>item.id!==session.id));
+    setActiveChatId(null);
+   }catch(error){setConversationError(canvasAssistantErrorText(error));throw error;}
   }});
  };
  const assistantStyle={
@@ -1134,7 +1239,9 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
      const transcript=event.currentTarget;
      followOutputRef.current=transcript.scrollHeight-transcript.scrollTop-transcript.clientHeight<48;
     }}>
-    {!session?.messages.length?(
+    {conversationError?<p role="status">{conversationError}</p>:null}
+    {loadedHistory?.nextBefore?<button type="button" disabled={historyLoading} onClick={()=>void loadOlderHistory()}>加载更早消息</button>:null}
+    {!session||!renderedMessages.length?(
      <div className="canvas-assistant-empty">
       <span className="canvas-assistant-empty-icon" aria-hidden="true"><Sparkles size={22}/></span>
       <h3 className="mt-4 text-[14px] font-semibold">从画布开始创作</h3>
@@ -1153,7 +1260,7 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
      </div>
     ):(
      <div className="canvas-assistant-message-list">
-      {session.messages.map(item=>item.role==="error"?(
+      {renderedMessages.map(item=>item.role==="error"?(
        <div key={item.id} className="canvas-assistant-error" role="status"><AlertCircle size={15} className="mt-[2px] shrink-0"/><span>{item.text}</span></div>
       ):(
        <article key={item.id} id={historyMessageAnchor(session.id,item.id)} className={"canvas-assistant-message "+(item.role==="user"?"is-user":"is-assistant")}>
@@ -1232,7 +1339,7 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
        <h3><Link2 size={14} aria-hidden="true"/>选择要使用的历史镜头</h3>
        <div className="canvas-assistant-quote-options">
        {historyQuoteChoices.items.map(item=><details className="canvas-assistant-history-quote" key={("sourceRequestId" in item?item.sourceRequestId:item.messageId)+":"+item.start} open={historyQuoteChoices.items.length===1}>
-        <summary><span>{item.label}<small>{historyQuoteChoiceSource(item,session.messages)}</small></span></summary>
+        <summary><span>{item.label}<small>{historyQuoteChoiceSource(item,renderedMessages)}</small></span></summary>
         <div className="canvas-assistant-quote-body">
          <pre>{item.text}</pre>
          <button type="button" className="canvas-assistant-quote-action is-primary" disabled={sending} onClick={()=>void send(item)}>引用并发送</button>

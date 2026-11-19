@@ -1,7 +1,7 @@
 import type {FrozenCanvasEditContext} from "./canvas-edit-authorization";
 import {useCallback,useEffect,useMemo,useRef,useState,type CSSProperties,type Dispatch,type SetStateAction} from "react";
 import {Modal} from "antd";
-import {AlertCircle,ArrowUp,ArrowUpRight,Bot,Check,ChevronDown,ChevronUp,Clock3,Copy,FileText,Image as ImageIcon,Layers3,Link2,LoaderCircle,MessageSquarePlus,Music2,Plus,RefreshCw,Sparkles,Square,Trash2,UserRound,Video,X} from "lucide-react";
+import {AlertCircle,ArrowLeft,ArrowUp,ArrowUpRight,Bot,Check,ChevronDown,ChevronUp,Clock3,Copy,FileText,Image as ImageIcon,Layers3,Link2,LoaderCircle,MessageSquarePlus,ListTodo,Music2,Plus,RefreshCw,Search,Sparkles,Square,Trash2,UserRound,Video,X} from "lucide-react";
 import {Streamdown,type Components} from "streamdown";
 import {CanvasMarkdownPre} from "@/components/canvas/canvas-markdown-pre";
 import {nanoid} from "nanoid";
@@ -385,6 +385,27 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
  const [durableHistory,setDurableHistory]=useState<{chatId:string;page:DurablePage}|null>(null);
  const [historyLoading,setHistoryLoading]=useState(false);
  const [conversationError,setConversationError]=useState("");
+ const [historyOpen,setHistoryOpen]=useState(false);
+ const [historyQuery,setHistoryQuery]=useState("");
+ const [expandedSection,setExpandedSection]=useState<"context"|"task"|null>(null);
+ const sessionTriggerRef=useRef<HTMLButtonElement>(null);
+ const historySearchRef=useRef<HTMLInputElement>(null);
+ const restoreSessionFocusRef=useRef(false);
+ function closeHistory(){
+  restoreSessionFocusRef.current=true;
+  setHistoryOpen(false);
+ }
+ useEffect(()=>{
+  if(!open){
+   setHistoryOpen(false);
+   setExpandedSection(null);
+  }else if(historyOpen){
+   historySearchRef.current?.focus();
+  }else if(restoreSessionFocusRef.current){
+   restoreSessionFocusRef.current=false;
+   sessionTriggerRef.current?.focus();
+  }
+ },[open,historyOpen]);
  const scrollRef=useRef<HTMLDivElement>(null);
  const followOutputRef=useRef(true);
  const signature=selectedNodes.map(node=>node.id).join("|");
@@ -526,7 +547,7 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
   }
  });
  useEffect(()=>{followOutputRef.current=true;},[open,session?.id]);
- useEffect(()=>{const transcript=scrollRef.current;if(open&&transcript&&followOutputRef.current)transcript.scrollTo({top:transcript.scrollHeight});},[open,session?.messages,loadedHistory?.turns,sending]);
+ useEffect(()=>{const transcript=scrollRef.current;if(open&&!historyOpen&&transcript&&followOutputRef.current)transcript.scrollTo({top:transcript.scrollHeight});},[open,historyOpen,session?.messages,loadedHistory?.turns,sending]);
  useEffect(()=>{
   if(!open||activeStreamTurnRef.current)return;
   const key="infinite-atelier:assistant-stream:"+projectId;
@@ -637,6 +658,7 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
     const controller=new AbortController();controllerRef.current=controller;
     let historyQuote:HistoryQuoteReference|undefined;
     let published=false;
+    setHistoryOpen(false);
     setSending(true);
     setHistoryQuoteError("");
    try{
@@ -1164,9 +1186,26 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
   "--assistant-shadow":themeName==="dark"?"0 22px 64px rgba(0,0,0,.45)":"0 20px 65px rgba(41,37,36,.18)",
  } as CSSProperties;
  if(!open)return null;
+ const sessionTitle=session?.title||"新对话";
+ const query=historyQuery.trim().toLowerCase();
+ const matchingSessions=sessions.filter(item=>item.title.toLowerCase().includes(query));
+ const contextLabel=fullGraphGrant&&freezeCanvasEdit&&includeContext&&scope==="overview"
+  ?"本轮允许整图修改"
+  :!includeContext?"已关闭":scope==="selection"&&includedIds.length
+   ?includedIds.length+" 个节点":effectiveScope==="overview"?"画布概览":"未引用节点";
+ function toggleSection(section:"context"|"task"){
+  setHistoryOpen(false);
+  setExpandedSection(current=>current===section?null:section);
+ }
  return (
   <aside data-canvas-no-zoom aria-label="画布 AI 助手" className="canvas-assistant-shell pointer-events-auto" style={assistantStyle}
-   onPointerDown={event=>event.stopPropagation()} onWheel={event=>event.stopPropagation()} onKeyDown={event=>event.stopPropagation()}>
+   onPointerDown={event=>event.stopPropagation()} onWheel={event=>event.stopPropagation()} onKeyDown={event=>{
+    event.stopPropagation();
+    if(event.key==="Escape"&&historyOpen&&!event.defaultPrevented&&!event.nativeEvent.isComposing){
+     event.preventDefault();
+     closeHistory();
+    }
+   }}>
    <header className="canvas-assistant-header">
     <span className="canvas-assistant-brand" aria-hidden="true"><Sparkles size={17}/></span>
     <div className="min-w-0 flex-1">
@@ -1174,24 +1213,52 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
      <p className="truncate text-[10.5px] leading-4" style={{color:theme.node.muted}} title={projectTitle}>{projectTitle}</p>
     </div>
     <div className="canvas-assistant-actions">
-     <button type="button" className="canvas-assistant-icon" aria-label="新建对话" title="新建对话" disabled={sending} onClick={()=>setActiveChatId(null)}><MessageSquarePlus size={16}/></button>
+     <button type="button" className="canvas-assistant-icon" aria-label="新建对话" title="新建对话" disabled={sending} onClick={()=>{setHistoryOpen(false);setActiveChatId(null);}}><MessageSquarePlus size={16}/></button>
      <button type="button" className="canvas-assistant-icon" aria-label="删除当前对话" title="删除当前对话" disabled={!session||sending} onClick={clear}><Trash2 size={15}/></button>
      <button type="button" className="canvas-assistant-icon" aria-label="收起助手" title="收起助手" onClick={onClose}><X size={17}/></button>
     </div>
    </header>
 
-   <section className="canvas-assistant-settings" aria-label="助手配置">
-     <div className="canvas-assistant-field">
-      <label className="canvas-assistant-field-label" htmlFor="canvas-assistant-session">历史会话</label>
-      <div className="canvas-assistant-select-wrap">
-       <Clock3 size={13} className="canvas-assistant-select-icon" aria-hidden="true"/>
-       <select id="canvas-assistant-session" className="canvas-assistant-select" value={session?.id??""} onChange={event=>setActiveChatId(event.target.value||null)} disabled={sending}>
-        <option value="">新对话</option>
-        {sessions.map(item=><option value={item.id} key={item.id}>{item.title}</option>)}
-       </select>
-       <ChevronDown size={13} className="canvas-assistant-select-chevron" aria-hidden="true"/>
-      </div>
-     </div>
+   <div className="canvas-assistant-toolbar" hidden={historyOpen}>
+    <button ref={sessionTriggerRef} type="button" className="canvas-assistant-toolbar-button canvas-assistant-session-trigger"
+     aria-label={"历史会话 · "+sessionTitle} aria-expanded={historyOpen}
+     title={"历史会话 · "+sessionTitle}
+     disabled={sending} onClick={()=>{
+      setHistoryQuery("");
+      setExpandedSection(null);
+      setHistoryOpen(true);
+     }}>
+     <Clock3 size={14} aria-hidden="true"/><span>{sessionTitle}</span><ChevronDown size={12} aria-hidden="true"/>
+    </button>
+    <button type="button" className="canvas-assistant-toolbar-button canvas-assistant-section-trigger"
+     aria-controls="canvas-assistant-context-settings" aria-expanded={expandedSection==="context"}
+     onClick={()=>toggleSection("context")}>
+     <Link2 size={13} aria-hidden="true"/>
+     <span>画布引用<small>{contextLabel}</small></span>
+    </button>
+    <button type="button" className="canvas-assistant-toolbar-button canvas-assistant-section-trigger"
+     aria-controls="canvas-assistant-task-settings" aria-expanded={expandedSection==="task"}
+     onClick={()=>toggleSection("task")}>
+     <ListTodo size={13} aria-hidden="true"/>
+     <span>任务<small>{taskTracker.taskLabel??"未关联"}</small></span>
+    </button>
+   </div>
+
+   {historyOpen?(
+    <div className="canvas-assistant-toolbar canvas-assistant-history-controls">
+     <button type="button" className="canvas-assistant-toolbar-button" onClick={closeHistory}>
+      <ArrowLeft size={14} aria-hidden="true"/>返回对话
+     </button>
+     <label className="canvas-assistant-history-search">
+      <Search size={14} aria-hidden="true"/>
+      <input ref={historySearchRef} type="search" aria-label="搜索历史会话" placeholder="搜索会话标题"
+       value={historyQuery} onChange={event=>setHistoryQuery(event.target.value)}/>
+     </label>
+    </div>
+   ):null}
+
+   <section id="canvas-assistant-context-settings" className="canvas-assistant-settings canvas-assistant-details"
+    aria-label="画布引用设置" hidden={expandedSection!=="context"}>
     <div className="canvas-assistant-context">
      <div className="canvas-assistant-context-bar">
       <label className="canvas-assistant-context-toggle" title="在提问时附带只读画布资料">
@@ -1241,14 +1308,34 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
       <p className="canvas-assistant-context-help">输入 @ 可引用文本、媒体、工作流等节点；图片最多 4 张可发送视觉内容，视频和音频仅提供节点信息。</p>:null}
    </section>
 
-   {taskTracker.view}
-    {taskUndo&&<button type="button" disabled={sending} onClick={()=>{
+   <div id="canvas-assistant-task-settings" className="canvas-assistant-details" hidden={expandedSection!=="task"}>
+    {taskTracker.view}
+   </div>
+   {historyOpen?<section id="canvas-assistant-history" className="canvas-assistant-history" aria-label="历史会话">
+    {matchingSessions.length?<ul className="canvas-assistant-history-list">
+     {matchingSessions.map(item=><li key={item.id}>
+      <button type="button" className="canvas-assistant-history-item" title={item.title}
+       aria-current={item.id===session?.id?"true":undefined} disabled={sending} onClick={()=>{
+        if(item.id!==session?.id)setActiveChatId(item.id);
+        closeHistory();
+       }}>
+       <span>{item.title}</span>
+       {item.id===session?.id?<Check size={15} aria-hidden="true"/>:null}
+      </button>
+     </li>)}
+    </ul>:<p className="canvas-assistant-history-empty" role="status">
+     {sessions.length?"没有匹配的会话":"暂无历史会话"}
+    </p>}
+   </section>:null}
+
+   {taskUndo&&!historyOpen&&<button type="button" disabled={sending} onClick={()=>{
      setTaskUndo(null);
      void taskUndo().catch(error=>{
       if(activeChatId)setSessions(prev=>append(prev,activeChatId,{id:nanoid(),role:"error",text:String(error instanceof Error?error.message:error)}));
      });
     }}>撤销最近一次 Task 改图</button>}
-    <div ref={scrollRef} className="canvas-assistant-transcript" aria-live="polite" onScroll={event=>{
+    <div ref={scrollRef} className="canvas-assistant-transcript" hidden={historyOpen} aria-live="polite" onScroll={event=>{
+     if(historyOpen)return;
      const transcript=event.currentTarget;
      followOutputRef.current=transcript.scrollHeight-transcript.scrollTop-transcript.clientHeight<48;
     }}>

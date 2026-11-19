@@ -96,6 +96,23 @@ function setup(actions:unknown[],resources:CanvasResourceReference[]=[],history:
  root=createRoot(container);
  return {Harness,apply,getContext,getGraph:()=>graph};
 }
+function sectionTrigger(section:"context"|"task"){
+ return container!.querySelector<HTMLButtonElement>(`button[aria-controls="canvas-assistant-${section}-settings"]`)!;
+}
+function historyTrigger(){
+ return container!.querySelector<HTMLButtonElement>(".canvas-assistant-session-trigger")!;
+}
+function historySearch(){
+ return container!.querySelector<HTMLInputElement>('[aria-label="搜索历史会话"]')!;
+}
+async function searchHistory(query:string){
+ await act(async()=>{
+  const input=historySearch();
+  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value")!.set!.call(input,query);
+  input.dispatchEvent(new Event("input",{bubbles:true}));
+ });
+}
+
 async function renderAndSend(Harness:()=>React.ReactElement,requestText?:string){
  await act(async()=>{root!.render(createElement(Harness));});
  const suggestion=Array.from(container!.querySelectorAll("button")).find(btn=>btn.textContent?.includes("创建三个分镜文本节点"));
@@ -125,6 +142,92 @@ afterEach(async()=>{
  if(root)await act(async()=>{root!.unmount()});
  root=null;container?.remove();container=null;
 });
+describe("assistant panel navigation",()=>{
+ const history=Array.from({length:24},(_,index):CanvasAssistantSession=>({
+  id:"chat-"+index,title:index===23?"唯一标题 "+("Long title ".repeat(20)):"会话 "+index,
+  createdAt:"2026-11-19",updatedAt:"2026-11-19",
+  messages:[{id:"message-"+index,role:"assistant",text:"对话正文 "+index}],
+ }));
+ const historyItems=()=>Array.from(container!.querySelectorAll<HTMLButtonElement>(".canvas-assistant-history-item"));
+
+ it("shows the history in order, filters by title, and restores the original conversation and draft on return",async()=>{
+  const fixture=setup([],[],history);
+  await act(async()=>root!.render(createElement(fixture.Harness)));
+  const editor=container!.querySelector<HTMLElement>('[aria-label="向 AI 助手发送消息"]')!;
+  await act(async()=>{
+   editor.textContent="保留的草稿";
+   editor.dispatchEvent(new Event("input",{bubbles:true}));
+   historyTrigger().click();
+  });
+  expect(document.activeElement).toBe(historySearch());
+  expect(container!.querySelector<HTMLDivElement>(".canvas-assistant-transcript")?.hidden).toBe(true);
+  expect(historyItems().map(item=>item.title)).toEqual(history.map(item=>item.title));
+  expect(historyItems()[0].getAttribute("aria-current")).toBe("true");
+  await searchHistory("不存在");
+  expect(container!.textContent).toContain("没有匹配的会话");
+  await act(async()=>historySearch().dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true})));
+  expect(document.activeElement).toBe(historyTrigger());
+  expect(historySearch()).toBeNull();
+  expect(historyTrigger().textContent).toBe("会话 0");
+  expect(editor.textContent).toBe("保留的草稿");
+  expect(container!.querySelector<HTMLDivElement>(".canvas-assistant-transcript")?.hidden).toBe(false);
+
+  await act(async()=>historyTrigger().click());
+  expect(historySearch().value).toBe("");
+  await searchHistory("  long TITLE ");
+  expect(historyItems()).toHaveLength(1);
+  expect(historyItems()[0].title).toBe(history[23].title);
+  await act(async()=>historyItems()[0].click());
+  expect(document.activeElement).toBe(historyTrigger());
+  expect(historySearch()).toBeNull();
+  expect(container!.querySelector(".canvas-assistant-transcript")?.textContent).toContain("对话正文 23");
+  expect(mocks.conversationApi.mock.calls.some(call=>String(call[0]).includes("/chat-23"))).toBe(true);
+ });
+
+ it("shows an empty history and only opens one settings section without resetting its controls",async()=>{
+  const fixture=setup([]);
+  await act(async()=>root!.render(createElement(fixture.Harness)));
+  const context=container!.querySelector<HTMLElement>("#canvas-assistant-context-settings")!;
+  const task=container!.querySelector<HTMLElement>("#canvas-assistant-task-settings")!;
+  expect(context.hidden&&task.hidden).toBe(true);
+  await act(async()=>historyTrigger().click());
+  expect(container!.textContent).toContain("暂无历史会话");
+  const back=Array.from(container!.querySelectorAll("button")).find(button=>button.textContent==="返回对话")!;
+  await act(async()=>back.click());
+  expect(document.activeElement).toBe(historyTrigger());
+
+  await act(async()=>sectionTrigger("context").click());
+  const include=context.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+  await act(async()=>include.click());
+  expect(sectionTrigger("context").textContent).toContain("已关闭");
+  await act(async()=>sectionTrigger("task").click());
+  expect(context.hidden).toBe(true);
+  expect(task.hidden).toBe(false);
+  await act(async()=>sectionTrigger("context").click());
+  expect(task.hidden).toBe(true);
+  expect(context.hidden).toBe(false);
+  expect(include.checked).toBe(false);
+ });
+
+ it("disables conversation switching and mutations during a pending reply",async()=>{
+  const fixture=setup([],[],history);
+  let respond!: (value:unknown)=>void;
+  mocks.api.mockImplementationOnce(()=>new Promise(resolve=>{respond=resolve;}));
+  await renderAndSend(fixture.Harness,"继续讨论");
+  try{
+   expect(historyTrigger().disabled).toBe(true);
+   for(const label of ["新建对话","删除当前对话"]){
+    expect(container!.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)?.disabled).toBe(true);
+   }
+   await act(async()=>historyTrigger().click());
+   expect(historySearch()).toBeNull();
+  }finally{
+   await act(async()=>respond({answer:"已收到",model:"demo",actions:[]}));
+  }
+  expect(historyTrigger().disabled).toBe(false);
+ });
+});
+
 it("merges older durable pages with the local transcript in order without duplicate replies",async()=>{
  const stamp="2026-11-19T00:00:00.000Z";
  const fixture=setup([],[],[{id:"chat",title:"历史",createdAt:stamp,updatedAt:stamp,messages:[
@@ -223,18 +326,21 @@ describe("link existing Task from a brand-new empty conversation",()=>{
    throw Error("unexpected Task request: "+method+" "+url);
   });
   await act(async()=>{root!.render(createElement(fixture.Harness));});
+  await act(async()=>sectionTrigger("task").click());
   const link=Array.from(container!.querySelectorAll("button")).find(b=>b.textContent==="从其他会话关联任务");
   expect(link).toBeTruthy();
-  const history=container!.querySelector<HTMLSelectElement>("#canvas-assistant-session")!;
-  expect(history.value).toBe("");
+  expect(historyTrigger().textContent).toBe("新对话");
   await act(async()=>{link!.click();await Promise.resolve();});
-  const newChatId=history.value;
-  expect(newChatId).not.toBe("");
   expect(container!.textContent).toContain("三镜头纯文本规划");
   const chosen=Array.from(container!.querySelectorAll("button")).find(b=>b.textContent==="关联并继续");
   expect(chosen).toBeTruthy();
   await act(async()=>{chosen!.click();await Promise.resolve();});
-  expect(linkedChatId).toBe(newChatId);
+  expect(linkedChatId).toBeTruthy();
+  expect(mocks.conversationApi.mock.calls.some(call=>String(call[0]).includes("/"+linkedChatId))).toBe(true);
+  expect(sectionTrigger("task").textContent).toContain("待规划");
+  await act(async()=>sectionTrigger("task").click());
+  expect(sectionTrigger("task").textContent).toContain("待规划");
+  await act(async()=>sectionTrigger("task").click());
   expect(container!.textContent).toContain("待规划");
   expect(mocks.api.mock.calls.filter(call=>String(call[0]).includes("/assistant/chat"))).toHaveLength(0);
   expect(mocks.run).not.toHaveBeenCalled();
@@ -302,6 +408,7 @@ describe("P0a task linkage in the existing assistant send flow",()=>{
    return {tasks:[]};
   });
   await act(async()=>{root!.render(createElement(fixture.Harness));});
+  await act(async()=>sectionTrigger("task").click());
   const remember=Array.from(container!.querySelectorAll("button")).find(btn=>btn.textContent==="记录为任务");
   expect(remember).toBeTruthy();
   await act(async()=>{remember!.click();await Promise.resolve();});
@@ -334,6 +441,7 @@ describe("P2c assistant Task routes node generation through frozen Job context",
  };
  const link=async(Harness:()=>React.ReactElement)=>{
   await act(async()=>{root!.render(createElement(Harness));});
+  await act(async()=>sectionTrigger("task").click());
   const remember=Array.from(container!.querySelectorAll("button")).find(btn=>btn.textContent==="记录为任务");
   expect(remember).toBeTruthy();
   await act(async()=>{remember!.click();await Promise.resolve();});
@@ -545,7 +653,7 @@ describe("P2 assistant confirmation boundary",()=>{
    mocks.api.mockRejectedValueOnce(new CanvasApiError("assistant_actions_missing",502));
    mocks.api.mockRejectedValueOnce(new CanvasApiError("assistant_actions_missing",502));
    mocks.api.mockRejectedValueOnce(new CanvasApiError("assistant_actions_missing",502));
-   for(let i=0;i<4;i++)await renderAndSend(fixture.Harness);
+   for(let i=0;i<4;i++)await renderAndSend(fixture.Harness,"创建三个分镜文本节点并依次连线");
    expect(mocks.api).toHaveBeenCalledTimes(4);
     for(const call of mocks.api.mock.calls){
      const messages=call[2].messages as Array<{role:string;content:string}>;
@@ -1238,6 +1346,7 @@ describe("P2 assistant confirmation boundary",()=>{
   ];
   const fixture=setup([],refs);
   await act(async()=>{root!.render(createElement(fixture.Harness));});
+  await act(async()=>sectionTrigger("context").click());
   const overview=Array.from(container!.querySelectorAll("button")).find(button=>button.textContent==="画布概览")!;
   await act(async()=>{overview.click();});
   const editor=container!.querySelector<HTMLElement>('[aria-label="向 AI 助手发送消息"]')!;

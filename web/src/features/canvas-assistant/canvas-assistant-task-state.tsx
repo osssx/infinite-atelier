@@ -820,6 +820,7 @@ export function useCanvasAssistantTasks({
   runSequence?.sequence?.planVersion,nextBudgetMode,runBudgetTargets,runBudgetLimit,runBudgetAnchor?.actionDigest]);
  useEffect(()=>{setRunBudgetConsent(false);runBudgetConsentKey.current="";},[runBudgetScopeKey]);
  const latestUserTurnId=[...(session?.messages??[])].reverse().find(m=>m.role==="user")?.id??null;
+ const taskLabel=selected?(taskStatusLabel[currentTask?.status??selected.status]??selected.status):null;
  const view=<section aria-label="任务状态" className="canvas-assistant-task"
   style={{borderColor:"var(--assistant-border)",color:"var(--assistant-text)"}}>
   <div className="canvas-assistant-task-selector">
@@ -836,7 +837,7 @@ export function useCanvasAssistantTasks({
   </div>
   {selected?<div className="canvas-assistant-task-summary">
    <span className="canvas-assistant-task-status" data-status={currentTask?.status??selected.status}>
-    {taskStatusLabel[currentTask?.status??selected.status]??currentTask?.status??selected.status}
+    {taskLabel}
    </span>
    <span className="canvas-assistant-task-steps">步骤 {currentTask?.steps?.length??0}</span>
    {currentTask?.readOnly?<span className="canvas-assistant-task-steps">只读归档（禁止恢复执行）</span>:null}
@@ -1260,6 +1261,6 @@ export function useCanvasAssistantTasks({
    </div>
    {error?<p role="status" className="canvas-assistant-task-error" style={{color:"var(--assistant-error)"}}>{error}</p>:null}
  </section>;
- return {view,activeTaskId:activeTask?.id??null,
+ return {view,taskLabel,activeTaskId:activeTask?.id??null,
   activeTaskOriginalRequest:activeTask?.originalRequest??null,recordTurn,observe,refreshTask};
 }

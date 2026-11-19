@@ -4,12 +4,50 @@ import {DatabaseSync} from "node:sqlite";
 import {initializeSchema} from "./schema.mjs";
 import {buildApp} from "./app.mjs";
 import {createAssistantChatService} from "./assistant-chat.mjs";
+import {readSkillStream} from "./skill-stream-parser.mjs";
 const credential="mock-api-key";
 const vault={
  get(id){if(id!=="c1")throw Error("channel_not_found");return {provider:"openai_compatible",hasKey:true,keyVersion:"v1"}},
  withSecretVersion(version,consumer){assert.equal(version,"v1");return consumer(Buffer.from(credential))}
 };
 const messages=[{role:"user",content:"你好"}];
+test("prompt telemetry distinguishes zero from missing and captures the final SSE usage once",async()=>{
+ const samples=[],requests=[];
+ const usage={prompt_tokens:1536,prompt_tokens_details:{cached_tokens:0}};
+ const frames=[
+  {choices:[{delta:{content:"答"},finish_reason:null}],usage:{prompt_tokens:100}},
+  {choices:[{delta:{},finish_reason:"stop"}]},
+  {choices:[],usage}
+ ];
+ const sse=packets=>new Response(packets.map(packet=>"data: "+JSON.stringify(packet)+"\n\n").join("")+
+  "data: [DONE]\n\n",{headers:{"content-type":"text/event-stream"}});
+ const answers=[
+  sse(frames),
+  Response.json({data:{choices:[{message:{content:"答"}}],usage:{prompt_tokens:1536}}}),
+  sse([{type:"response.output_text.delta",delta:"答"},
+   {type:"response.completed",response:{usage:{input_tokens:2048,input_tokens_details:{cached_tokens:1024}}}}])
+ ];
+ const ask=createAssistantChatService({vault,compatibleUpstreamCall:async(_url,{body})=>{
+  requests.push(JSON.parse(body));
+  return answers.shift();
+ }});
+ const input={channelId:"c1",provider:"openai_compatible",baseUrl:"http://localhost:8080/v1",
+  model:"demo",messages,onPromptUsage:sample=>samples.push(sample)};
+ await ask({...input,stream:true});
+ await ask(input);
+ await ask({...input,stream:true});
+ assert.deepEqual(samples.map(({inputTokens,cachedInputTokens})=>[inputTokens,cachedInputTokens]),
+  [[1536,0],[1536,null],[2048,1024]]);
+ assert.ok(samples.every(sample=>sample.elapsedMs>=0));
+ assert.ok(samples[0].firstTokenMs>=0&&samples[2].firstTokenMs>=0);
+ assert.equal(samples[1].firstTokenMs,null);
+ assert.ok(requests.every(request=>!("stream_options" in request)));
+ const toolPayload=await readSkillStream(sse([
+  {choices:[{index:0,delta:{content:"答"},finish_reason:"stop"}]},{choices:[],usage}
+ ]));
+ assert.deepEqual(toolPayload.usage,usage);
+ assert.equal(toolPayload.choices[0].message.content,"答");
+});
 test("bounded streaming accepts more than 2000 valid upstream deltas",async()=>{
  const frame='data: {"choices":[{"delta":{"content":"字"}}]}\r\n\r\n';
  const ask=createAssistantChatService({vault,compatibleUpstreamCall:async()=>new Response(

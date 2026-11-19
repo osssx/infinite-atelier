@@ -27,18 +27,18 @@ const normalResponse=answer=>new Response(JSON.stringify({choices:[{message:{con
 const geminiResponse=answer=>new Response(JSON.stringify({candidates:[{content:{parts:[{text:answer}]},finishReason:"STOP"}]}),
  {headers:{"content-type":"application/json"}});
 
-function createApp(db,onPayload){
+function createApp(db,onPayload,options){
  const vault={get:id=>({provider:id,hasKey:true,keyVersion:"v1"}),
   withSecretVersion:(version,use)=>use(Buffer.from("fixture-key"))};
  const capture=async(url,request)=>onPayload(JSON.parse(request.body),url);
  const assistantChat=createAssistantChatService({vault,upstreamCall:capture,compatibleUpstreamCall:capture});
- return buildApp({db,authorize:()=>true,assistantChat});
+ return buildApp({db,authorize:()=>true,assistantChat,...options});
 }
-function fixture(t,onPayload){
+function fixture(t,onPayload,options){
  const db=new DatabaseSync(":memory:");
  initializeSchema(db);
  createProject(db,{id:projectId,document:{nodes:[node],connections:[]}});
- const app=createApp(db,onPayload);
+ const app=createApp(db,onPayload,options);
  t.after(async()=>{await app.close();db.close();});
  return {db,app};
 }
@@ -48,6 +48,107 @@ function input(chatSessionId,turnId,content,extras={}){
 }
 const send=(app,payload,stream=false)=>app.inject({method:"POST",url:chatURL,payload,
  ...(stream?{headers:{accept:"text/event-stream"}}:{})});
+
+test("managed chats default to both cache optimizations and can roll each back independently",async t=>{
+ const names=["PREFIX","BATCH_HISTORY","CHANNELS","MODELS","MODES"].map(name=>"ATELIER_ASSISTANT_CACHE_"+name);
+ const previous=new Map(names.map(name=>[name,process.env[name]]));
+ t.after(()=>{
+  for(const [name,value] of previous){
+   if(value===undefined)delete process.env[name];
+   else process.env[name]=value;
+  }
+ });
+ for(const name of names)delete process.env[name];
+ const samples=[];
+ const {app}=fixture(t,()=>normalResponse("答复"),{onAssistantPromptUsage:sample=>samples.push(sample)});
+ const ask=async turn=>{
+  const response=await send(app,input("rollout",turn,"测试 "+turn));
+  assert.equal(response.statusCode,200,response.body);
+  const {stablePromptPrefix,batchHistory}=samples.at(-1);
+  return [stablePromptPrefix,batchHistory];
+ };
+ assert.deepEqual(await ask("default"),[true,true]);
+ process.env.ATELIER_ASSISTANT_CACHE_PREFIX="0";
+ assert.deepEqual(await ask("prefix-off"),[false,true]);
+ delete process.env.ATELIER_ASSISTANT_CACHE_PREFIX;
+ process.env.ATELIER_ASSISTANT_CACHE_BATCH_HISTORY="0";
+ assert.deepEqual(await ask("batch-off"),[true,false]);
+ delete process.env.ATELIER_ASSISTANT_CACHE_BATCH_HISTORY;
+ process.env.ATELIER_ASSISTANT_CACHE_MODES="task";
+ assert.deepEqual(await ask("filtered"),[false,false]);
+});
+
+for(const provider of ["openai","google_gemini"]){
+ test(`${provider} keeps the authorized history prefix while current canvas details change`,async t=>{
+  const captured=[],samples=[];
+  const {app,db}=fixture(t,payload=>{
+   captured.push(payload);
+   return provider==="openai"?Response.json({choices:[{message:{content:"公开回复"},finish_reason:"stop"}],
+    usage:{prompt_tokens:1500,prompt_tokens_details:{cached_tokens:1024}}}):
+    Response.json({candidates:[{content:{parts:[{text:"公开回复"}]},finishReason:"STOP"}],
+     usageMetadata:{promptTokenCount:1500,cachedContentTokenCount:1024}});
+  },{assistantCacheRollout:()=>true,onAssistantPromptUsage:sample=>samples.push(sample)});
+  const config={provider,channelId:provider,...(provider==="google_gemini"?{baseUrl:"https://example.com/v1beta"}:{})};
+  const ask=(id,context)=>send(app,input("stable",id,"用户问题 "+id,{...config,conversationContext:context}));
+  assert.equal((await ask("one",plain)).statusCode,200);
+  assert.equal((await ask("two",selected)).statusCode,200);
+  const nextMarker=marker+" 更新后的资料";
+  const existing=getProject(db,projectId);
+  saveSingleUserCanvas(db,{id:projectId,expectedRevision:existing.revision,
+   document:{...existing.document,nodes:[{...node,metadata:{content:nextMarker}}]}});
+  assert.equal((await ask("three",selected)).statusCode,200);
+  const system=payload=>payload.systemInstruction?.parts[0].text??payload.messages[0].content;
+  const history=payload=>payload.contents??payload.messages.slice(1);
+  assert.equal(system(captured[1]),system(captured[2]));
+  assert.deepEqual(history(captured[1]).slice(0,2),history(captured[2]).slice(0,2));
+  assert.match(JSON.stringify(history(captured[1]).at(-1)),new RegExp(marker));
+  assert.match(JSON.stringify(history(captured[2]).at(-1)),new RegExp(nextMarker));
+  assert.equal((await ask("four",plain)).statusCode,200);
+  assert.doesNotMatch(JSON.stringify(captured.at(-1)),new RegExp(marker));
+  assert.equal(samples.length,4);
+  assert.ok(samples.every(sample=>sample.inputTokens===1500&&sample.cachedInputTokens===1024&&sample.firstTokenMs===null));
+ });
+}
+
+test("batch retention keeps its checkpoint through multiple appends and database restart",async t=>{
+ const root=mkdtempSync(join(tmpdir(),"assistant-cache-batch-"));
+ let db=openMainDatabase(root),app;
+ t.after(async()=>{await app?.close();db?.close();rmSync(root,{recursive:true,force:true});});
+ createProject(db,{id:projectId,document:{nodes:[node],connections:[]}});
+ const payloads=[];
+ const open=()=>createApp(db,payload=>{payloads.push(payload);return normalResponse("答复");},
+  {assistantCacheRollout:()=>true});
+ const ask=async index=>{
+  const result=await send(app,input("cached","turn-"+index,"第 "+index+" 条"));
+  assert.equal(result.statusCode,200,result.body);
+  return payloads.at(-1);
+ };
+ const checkpoint=()=>db.prepare(`SELECT through_seq,entries_json FROM assistant_conversation_checkpoints
+  WHERE policy_key LIKE 'retained:%' ORDER BY through_seq DESC LIMIT 1`).get();
+ app=open();
+ for(let index=0;index<10;index++)await ask(index);
+ assert.equal(checkpoint(),undefined);
+ const trimmed=await ask(10),saved=checkpoint();
+ assert.ok(saved.through_seq>0);
+ assert.ok(trimmed.messages.length<=16);
+ assert.equal(checkpoint().entries_json,saved.entries_json);
+ await app.close();db.close();
+ db=openMainDatabase(root);app=open();
+ const appended=await ask(11);
+ assert.equal(appended.messages[0].content,trimmed.messages[0].content);
+ assert.deepEqual(appended.messages.slice(1,-3),trimmed.messages.slice(1,-1));
+ assert.deepEqual(checkpoint(),saved);
+ db.prepare("UPDATE assistant_conversation_checkpoints SET entries_json='invalid'").run();
+ assert.equal((await ask(12)).messages[0].content,trimmed.messages[0].content);
+ assert.deepEqual(checkpoint(),saved);
+ db.exec(`CREATE TRIGGER reject_checkpoint BEFORE INSERT ON assistant_conversation_checkpoints
+  BEGIN SELECT RAISE(ABORT,'test checkpoint unavailable'); END;`);
+ for(let index=13;index<17;index++)assert.ok((await ask(index)).messages.length<=21);
+ assert.deepEqual(checkpoint(),saved);
+ db.exec("DROP TRIGGER reject_checkpoint");
+ await ask(17);
+ assert.ok(checkpoint().through_seq>saved.through_seq);
+});
 function registerTaskTurn(db,taskId,chatSessionId,turnId,text,policy){
  appendAssistantTaskTurn(db,{projectId,taskId,chatSessionId,requestId:turnId+"-register",messageId:turnId,text,contextPolicy:policy});
  return input(chatSessionId,turnId,text,{task:{taskId,turnMessageId:turnId,requestId:turnId+"-model"}});
@@ -65,7 +166,8 @@ test("managed ordinary and Task history enforce canvas revocation, current turn 
  assert.equal(follow.statusCode,200,follow.body);
  assert.match(JSON.stringify(captured.at(-1)),/保留我的风格设定/);
  assert.doesNotMatch(JSON.stringify(captured.at(-1)),new RegExp(marker));
- assert.equal(captured.at(-1).messages.filter(message=>message.content==="继续但关闭画布").length,1);
+ assert.equal(captured.at(-1).messages.filter(message=>
+  message.role==="user"&&message.content.split("\n\n<Current turn reference data>\n")[0]==="继续但关闭画布").length,1);
  assert.equal((await send(app,input("fresh","a","另一会话"))).statusCode,200);
  assert.doesNotMatch(JSON.stringify(captured.at(-1)),/保留我的风格设定/);
  const task=createAssistantTask(db,{projectId,chatSessionId:"task-chat",rootMessageId:"root",
@@ -227,8 +329,9 @@ test("long Gemini chats paginate and recover checkpoints while retaining an earl
  assert.deepEqual(oldest.json().turns,[{turnId:"turn-0",userText:fixed,status:"completed",answer:"收到"}]);
 });
 
-test("managed Task tools save distinct references and re-resolve only authorized nodes",async t=>{
+for(const optimized of [false,true])test(`managed Task tools re-resolve only authorized nodes (optimized=${optimized})`,async t=>{
  const captured=[];
+ const samples=[],turns=[];
  const {app,db}=fixture(t,body=>{
   captured.push(body);
   if(captured.length!==1)return normalResponse("记录已分析");
@@ -236,23 +339,29 @@ test("managed Task tools save distinct references and re-resolve only authorized
    tool_calls:["read-1","read-2"].map(id=>({id,type:"function",function:{
     name:"canvas_read_nodes",arguments:JSON.stringify({node_ids:["private"]})}}))}}]}),
    {headers:{"content-type":"application/json"}});
- });
+ },{assistantCacheRollout:()=>optimized,onAssistantPromptUsage:sample=>samples.push(sample),
+  onAssistantPromptTurnUsage:sample=>turns.push(sample)});
  const task=createAssistantTask(db,{projectId,chatSessionId:"task-chat",rootMessageId:"root",
   originalRequest:"分析取景",requestId:"create"}).task;
  const asked=registerTaskTurn(db,task.id,"task-chat","tool-a","请读取当前画布节点",selected);
  const result=await send(app,{...asked,agentReadTools:true});
  assert.equal(result.statusCode,200,result.body);
+ assert.equal(samples.length,2);
+ assert.equal(turns[0].posts,2);
+ assert.equal(turns[0].inputReports,0);
  const refs=db.prepare("SELECT call_id,node_ids_json FROM assistant_conversation_tool_refs ORDER BY call_id").all();
  assert.deepEqual(refs.map(({call_id})=>call_id),["read-1","read-2"]);
  assert.ok(refs.every(ref=>!ref.node_ids_json.includes(marker)));
  const allowed=registerTaskTurn(db,task.id,"task-chat","tool-b","延续上个发现",selected);
  const allowedResult=await send(app,allowed);
  assert.equal(allowedResult.statusCode,200,allowedResult.body);
- assert.match(captured.at(-1).messages[0].content,/当前重新核验的历史工具节点/);
- assert.match(captured.at(-1).messages[0].content,new RegExp(marker));
+ const messages=captured.at(-1).messages;
+ const references=optimized?/Live tool references/:/当前重新核验的历史工具节点/;
+ assert.match(messages.at(optimized?-1:0).content,references);
+ assert.match(messages.at(optimized?-1:0).content,new RegExp(marker));
  const denied=registerTaskTurn(db,task.id,"task-chat","tool-c","停止读取画布",plain);
  assert.equal((await send(app,denied)).statusCode,200);
- assert.doesNotMatch(JSON.stringify(captured.at(-1)),/当前重新核验的历史工具节点/);
+ assert.doesNotMatch(JSON.stringify(captured.at(-1)),references);
  assert.doesNotMatch(JSON.stringify(captured.at(-1)),new RegExp(marker));
 });
 

@@ -284,9 +284,8 @@ function renderCheckpointEntries(db,entries,policy,project){
 /** Store immutable sources. User statement excerpts remain distinct from
  * derived model drafts, whose canvas permission is checked on every render.
  * Confirmed Task goals and constraints are read live from the Task projection. */
-function compactConversationPrefix(db,conversation,before,policy,project,onDiagnostic){
+function compactConversationPrefix(db,conversation,before,policy,project,onDiagnostic,{policyKey="explicit_user_text",force=false}={}){
  const {projectId,chatSessionId}=conversation;
- const policyKey="explicit_user_text";
  const prior=db.prepare(`SELECT through_seq,entries_json FROM assistant_conversation_checkpoints
   WHERE project_id=? AND session_id=? AND policy_key=? AND version=? AND through_seq<?
   ORDER BY through_seq DESC LIMIT 1`).get(projectId,chatSessionId,policyKey,CHECKPOINT_VERSION,before);
@@ -302,7 +301,7 @@ function compactConversationPrefix(db,conversation,before,policy,project,onDiagn
  const lower=validated?prior.through_seq:0;
  const count=db.prepare(`SELECT COUNT(*) AS count FROM assistant_conversation_turns
   WHERE project_id=? AND session_id=? AND seq>? AND seq<=?`).get(projectId,chatSessionId,lower,last.seq).count;
- if(count<CHECKPOINT_GROUP)
+ if(count===0||!force&&count<CHECKPOINT_GROUP)
   return renderCheckpointEntries(db,validated??[],policy,project);
  const scope=[projectId,chatSessionId,lower,last.seq];
  const select=(order,limit)=>db.prepare(`SELECT t.seq,t.user_text,r.request_id AS draft
@@ -316,22 +315,33 @@ function compactConversationPrefix(db,conversation,before,policy,project,onDiagn
  // The captured prefix is immutable and this write is a single SQLite
  // statement. On failure, continue with the verified source excerpts.
  try{
-  db.prepare(`INSERT OR IGNORE INTO assistant_conversation_checkpoints(project_id,session_id,policy_key,through_seq,version,entries_json)
-   VALUES(?,?,?,?,?,?)`).run(projectId,chatSessionId,policyKey,last.seq,CHECKPOINT_VERSION,
+  db.prepare(`INSERT INTO assistant_conversation_checkpoints(project_id,session_id,policy_key,through_seq,version,entries_json)
+   VALUES(?,?,?,?,?,?) ON CONFLICT(project_id,session_id,policy_key,through_seq,version)
+   DO UPDATE SET entries_json=excluded.entries_json`).run(projectId,chatSessionId,policyKey,last.seq,CHECKPOINT_VERSION,
     stableJson(next.map(({seq,digest,draft})=>({seq,digest,...(draft?{draft}:{})}))));
  }catch{onDiagnostic?.("checkpoint_write_failed");}
  return renderCheckpointEntries(db,next,policy,project);
 }
 
-export function buildConversationMessages(db,conversation,{current,policy,project,restrict=false,onDiagnostic}){
+export function buildConversationMessages(db,conversation,{current,policy,project,restrict=false,onDiagnostic,
+ retainedHistoryMode=null,reservedBytes=0}){
+ if(reservedBytes&&Buffer.byteLength(current.content)+reservedBytes>MAX_BYTES)
+  throw fail("assistant_context_budget_insufficient",413);
  if(restrict)return {messages:[current],policy:{...policy,opaque:true},compactedHistory:""};
+ const policyKey=retainedHistoryMode? "retained:"+digest({
+  mode:retainedHistoryMode,includeContext:policy.includeContext,scope:policy.scope,
+  includedIds:[...new Set(policy.includedIds??[])].sort()
+ }):null;
+ const boundary=policyKey?db.prepare(`SELECT through_seq FROM assistant_conversation_checkpoints
+  WHERE project_id=? AND session_id=? AND policy_key=? AND version=? AND through_seq<?
+  ORDER BY through_seq DESC LIMIT 1`).get(conversation.projectId,conversation.chatSessionId,policyKey,CHECKPOINT_VERSION,conversation.seq):null;
  const history=db.prepare(`
  SELECT t.seq,t.user_text,r.policy_json,r.response_json
  FROM assistant_conversation_turns t LEFT JOIN assistant_conversation_requests r ON r.turn_seq=t.seq AND r.final=1
- WHERE t.project_id=? AND t.session_id=? AND t.seq<? ORDER BY t.seq DESC LIMIT 40`)
-  .all(conversation.projectId,conversation.chatSessionId,conversation.seq);
- const messages=[current];
- let bytes=Buffer.byteLength(current.content),oldest=conversation.seq;
+ WHERE t.project_id=? AND t.session_id=? AND t.seq<? AND t.seq>? ORDER BY t.seq DESC LIMIT 40`)
+  .all(conversation.projectId,conversation.chatSessionId,conversation.seq,boundary?.through_seq??0);
+ const groups=[];
+ let bytes=Buffer.byteLength(current.content)+reservedBytes,count=1,overflow=false;
  const derivedPolicy=stripAssistantGraphAnnotations(current.content)===current.content?{...policy}:{...policy,opaque:true};
  for(const row of history){
   const prior=row.policy_json?JSON.parse(row.policy_json):null;
@@ -339,10 +349,24 @@ export function buildConversationMessages(db,conversation,{current,policy,projec
   const group=[{role:"user",content:stripAssistantGraphAnnotations(row.user_text)}];
   if(typeof answer==="string"&&answer.trim())group.push({role:"assistant",content:redactDurableText(answer)});
   const size=group.reduce((sum,entry)=>sum+Buffer.byteLength(entry.content),0);
-  if(messages.length+group.length>MAX_MESSAGES||bytes+size>MAX_BYTES)break;
-  messages.unshift(...group);
+  if(count+group.length>MAX_MESSAGES||bytes+size>MAX_BYTES){
+   overflow=true;
+   break;
+  }
+  groups.push({seq:row.seq,group,size});
   bytes+=size;
-  oldest=row.seq;
+  count+=group.length;
  }
- return {messages,policy:derivedPolicy,compactedHistory:compactConversationPrefix(db,conversation,oldest,policy,project,onDiagnostic)};
+ if(policyKey&&overflow){
+  while(groups.length&&(count>Math.floor(MAX_MESSAGES*.75)||bytes>Math.floor(MAX_BYTES*.75))){
+   const removed=groups.pop();
+   count-=removed.group.length;
+   bytes-=removed.size;
+  }
+ }
+ const oldest=groups.at(-1)?.seq??conversation.seq;
+ const before=policyKey&&!overflow?(boundary?.through_seq??0)+1:oldest;
+ const compactedHistory=before>1?compactConversationPrefix(db,conversation,before,policy,project,onDiagnostic,
+  policyKey?{policyKey,force:overflow||Boolean(boundary)}:undefined):"";
+ return {messages:[...groups.reverse().flatMap(entry=>entry.group),current],policy:derivedPolicy,compactedHistory};
 }

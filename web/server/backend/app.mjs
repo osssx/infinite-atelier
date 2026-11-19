@@ -35,6 +35,7 @@ import {getUiSetting,putUiSetting} from "./ui-settings.mjs";
 import {listScriptAssetReconciliation,reconcileScriptAsset,resumeReconciledVideoJob} from "./script-asset-reconciliation.mjs";
 import {registerShotGroupRoutes} from "./shot-group-routes.mjs";
 import {createAssistantChatStreamLedger} from "./assistant-chat-stream-ledger.mjs";
+import {assistantCurrentReferenceData} from "./assistant-chat.mjs";
 import {assertConversationTaskTurn,beginConversationRequest,buildConversationMessages,completeConversationRequest,
  completeConversationRequestInTransaction,failConversationRequest,findConversationRequest,listConversationTurns,ordinaryConversationPolicy,removeConversation,
  resolveConversationToolReferences,sanitizeConversationReply,startConversationSubmission} from "./assistant-conversation.mjs";
@@ -104,8 +105,22 @@ function cursorOf(value){
  if(!/^(0|[1-9][0-9]*)$/.test(v)||!Number.isSafeInteger(Number(v)))throw Object.assign(Error("invalid_event_cursor"),{statusCode:400,code:"invalid_event_cursor"});
  return Number(v);
 }
+function defaultAssistantCacheRollout({stage,channelId,model,mode}){
+ const enabled=process.env[stage==="prefix"?"ATELIER_ASSISTANT_CACHE_PREFIX":"ATELIER_ASSISTANT_CACHE_BATCH_HISTORY"]??"1";
+ if(enabled!=="1")return false;
+ return [["CHANNELS",channelId],["MODELS",model],["MODES",mode]].every(([filter,value])=>{
+  const configured=process.env["ATELIER_ASSISTANT_CACHE_"+filter];
+  return !configured||configured.split(",").some(item=>item.trim()===value);
+ });
+}
+const promptUsageLog=(event,sample)=>process.stdout.write(JSON.stringify({event,...sample})+"\n");
 export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobStore,mediaPreview,audioExtraction,blobGc,projectArchive,comfyWorkflowDir,vault,coordinator,materializer,worker,comfyRegistry,comfyLive,comfyInstanceIds=[],modelKinds=[],arkAssetUploadReady=false,
- arkChannelHealth,modelCatalog,mediaDownloader,skillRegistry,onTaskSkillSettled,assistantChat,assistantChatStreamLedger=createAssistantChatStreamLedger(),shotBatches,logger=false,streamPollMs=200}={}){
+ arkChannelHealth,modelCatalog,mediaDownloader,skillRegistry,onTaskSkillSettled,assistantChat,assistantChatStreamLedger=createAssistantChatStreamLedger(),shotBatches,logger=false,streamPollMs=200,
+ assistantCacheRollout=defaultAssistantCacheRollout,
+ onAssistantPromptUsage=process.env.ATELIER_ASSISTANT_CACHE_TELEMETRY_LOG==="1"?
+  sample=>promptUsageLog("assistant_prompt_usage",sample):null,
+ onAssistantPromptTurnUsage=process.env.ATELIER_ASSISTANT_CACHE_TELEMETRY_LOG==="1"?
+  sample=>promptUsageLog("assistant_prompt_turn_usage",sample):null}={}){
  if(!db||(!sessionAuth&&typeof authorize!=="function"))throw Error("backend_authorizer_required");
  const app=Fastify({logger,bodyLimit:5*1024*1024,trustProxy:false,genReqId:()=>randomUUID()});
  const assistantStreamControllers=new Map();
@@ -813,6 +828,7 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
       const proposalMode=ref?.callKind==="semantic_proposal";
       const readMode=req.body.agentReadTools===true;
      let commandStarted=false,conversation=null,conversationPolicy=null,restrictConversation=false,conversationMemory="",usedRevisionHints=false;
+     let promptTurnUsage=null;
      try{
        if(readMode&&(!ref||proposalMode||ref.callKind&&ref.callKind!=="initial"||
         req.body.skills||req.body.visualContext||req.body.provider==="google_gemini"))
@@ -1001,24 +1017,32 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
        if(req.body.skills&&req.body.skills.projectId!==req.params.id)
         throw Object.assign(Error("assistant_skill_selection_invalid"),{code:"assistant_skill_selection_invalid",statusCode:400});
        const skill=resolveAssistantSkills(db,skillRegistry,req.body.skills,messages);
+       const mode=proposalMode?"semantic_proposal":readMode?"agent_read":req.body.skills?"skill":
+        ref?"task":req.body.canvasActions?"canvas":"chat";
+       const rollout={channelId:req.body.channelId,provider:req.body.provider,model:req.body.model,mode};
+       const stablePromptPrefix=Boolean(conversation&&assistantCacheRollout({...rollout,stage:"prefix"}));
+       const batchHistory=Boolean(conversation&&assistantCacheRollout({...rollout,stage:"batch_history"}));
+       const promptCohort={...rollout,stablePromptPrefix,batchHistory};
+       if(onAssistantPromptTurnUsage)promptTurnUsage={...promptCohort,posts:0,inputReports:0,inputTokens:0};
+       let liveToolContext="";
        if(conversation){
-        const built=buildConversationMessages(db,conversation,{current:messages.at(-1),policy:frozenPolicy,project,
-         restrict:restrictConversation||Boolean(req.body.conversationContinuation||req.body.visualContext||req.body.skills),
-         onDiagnostic:key=>conversationMetrics[key]++});
-        messages=built.messages;
-        conversationPolicy=built.policy;
-        if(usedRevisionHints)conversationPolicy={...conversationPolicy,opaque:true};
-        conversationMemory=built.compactedHistory;
-        if(!restrictConversation&&!req.body.conversationContinuation&&!req.body.visualContext&&!req.body.skills){
-         const retrieved=resolveConversationToolReferences(db,conversation,{taskId:ref?.taskId,policy:frozenPolicy,project});
-         if(retrieved&&Buffer.byteLength(conversationMemory+"\n"+retrieved)<8*1024)
-          conversationMemory+="\n当前重新核验的历史工具节点：\n"+retrieved;
-        }
+        const restrict=restrictConversation||Boolean(req.body.conversationContinuation||req.body.visualContext||req.body.skills);
+        if(!restrict)liveToolContext=resolveConversationToolReferences(db,conversation,{taskId:ref?.taskId,policy:frozenPolicy,project});
          if(!ref){
           const config=db.prepare("SELECT value_json FROM ui_settings WHERE name='model_config'").get();
           taskContext=formatAssistantCanvasContext({policy:frozenPolicy,document:project.document,
            config:config?JSON.parse(config.value_json):{},loadTemplate:registry.find});
          }
+        const reservedBytes=stablePromptPrefix?Buffer.byteLength(assistantCurrentReferenceData({
+         taskContext,liveToolContext,skillContext:skill.context,quoteContext}).text):0;
+        const built=buildConversationMessages(db,conversation,{current:messages.at(-1),policy:frozenPolicy,project,
+         restrict,reservedBytes,retainedHistoryMode:batchHistory?{mode,taskId:ref?.taskId??null}:null,
+         onDiagnostic:key=>conversationMetrics[key]++});
+        messages=built.messages;
+        conversationPolicy=usedRevisionHints?{...built.policy,opaque:true}:built.policy;
+        conversationMemory=built.compactedHistory;
+        if(!stablePromptPrefix&&liveToolContext&&Buffer.byteLength(conversationMemory+"\n"+liveToolContext)<8*1024)
+         conversationMemory+="\n当前重新核验的历史工具节点：\n"+liveToolContext;
        }
        if(ref&&req.body.visualContext){
         // A confirmed text-material selection narrows this request to those
@@ -1034,10 +1058,21 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
        });
        const {skills:_selection,visualContext:_visual,task:_task,...chatInput}=req.body;
        const result=await assistantChat({...chatInput,messages,conversationMemory,skillContext:skill.context,
+        stablePromptPrefix,liveToolContext:stablePromptPrefix?liveToolContext:"",
+        onPromptUsage:onAssistantPromptUsage||promptTurnUsage?sample=>{
+         if(promptTurnUsage){
+          promptTurnUsage.posts++;
+          if(sample.inputTokens!==null){
+           promptTurnUsage.inputReports++;
+           promptTurnUsage.inputTokens+=sample.inputTokens;
+          }
+         }
+         onAssistantPromptUsage?.({...sample,...promptCohort});
+        }:null,
         skillTools:skill.toolEntries??[],visualImages:visual.images,
         visualDetail:req.body.visualContext?.detail??"high",signal:controller.signal,
         ...(streamMode?{stream:true,onDelta:delta=>streamEvent("delta",{text:delta})}:{}),
-        ...((ref||conversation)?{providerPayloadGuard:(requestBody)=>{
+        ...((ref||conversation)?{providerPayloadGuard:(requestBody,{quote}={})=>{
          if(conversation&&Buffer.byteLength(requestBody)>34*1024*1024)
           throw Object.assign(Error("assistant_context_budget_insufficient"),{code:"assistant_context_budget_insufficient",statusCode:413});
          if(conversation&&(conversationPolicy.includeContext||req.body.visualContext)&&getProject(db,req.params.id).revision!==project.revision)
@@ -1067,15 +1102,14 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
           const rechecked=resolveAssistantHistoryQuote(db,{projectId:req.params.id,taskId:ref.taskId,
            turnMessageId:ref.turnMessageId,historyQuote:ref.historyQuote,record:false,
            continuation:ref.callKind==="script_continuation"});
-          const withoutQuote=value=>{
-           const start=value.lastIndexOf(quoteContext);
-           if(start<0||rechecked.text!==usedHistoryQuote.text)
+          const path=quote?.path??(req.body.provider==="google_gemini"?["systemInstruction","parts",0,"text"]:["messages",0,"content"]);
+          const owner=path.slice(0,-1).reduce((value,key)=>value?.[key],body);
+          const key=path.at(-1),value=owner?.[key];
+          const start=quote?.offset??(typeof value==="string"?value.lastIndexOf(quoteContext):-1);
+          if(typeof value!=="string"||start<0||!value.startsWith(quoteContext,start)||rechecked.text!==usedHistoryQuote.text||
+           (stablePromptPrefix&&!quote))
             throw Object.assign(Error("assistant_history_quote_changed"),{code:"assistant_history_quote_changed",statusCode:409});
-           return value.slice(0,start)+value.slice(start+quoteContext.length);
-          };
-          if(req.body.provider==="google_gemini")
-           body.systemInstruction.parts[0].text=withoutQuote(body.systemInstruction.parts[0].text);
-          else body.messages[0].content=withoutQuote(body.messages[0].content);
+          owner[key]=value.slice(0,start)+value.slice(start+quoteContext.length);
          }
          const strings=[],pending=[body];
          while(pending.length){
@@ -1086,7 +1120,7 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
          for(const node of project.document.nodes??[]){
           if(visible.has(node.id))continue;
           const text=typeof node.metadata?.content==="string"?node.metadata.content:"";
-          if(text.length>=24&&!messages.at(-1)?.content.includes(text)&&strings.some(value=>value.includes(text)))
+          if(text.length>=24&&(proposalMode||!req.body.messages.at(-1)?.content.includes(text))&&strings.some(value=>value.includes(text)))
            throw Object.assign(Error("assistant_task_context_not_authorized"),
             {code:"assistant_task_context_not_authorized",statusCode:403});
          }
@@ -1129,7 +1163,14 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
         }return reply;
        }
        return reply.code(error?.statusCode>=400&&error.statusCode<600?error.statusCode:502).send({code});
-     }finally{reply.raw.off("close",onClose);if(streamStarted)assistantStreamControllers.delete(controllerKey)}
+     }finally{
+      reply.raw.off("close",onClose);
+      if(streamStarted)assistantStreamControllers.delete(controllerKey);
+      if(promptTurnUsage?.posts){
+       try{onAssistantPromptTurnUsage(promptTurnUsage);}
+       catch{/* Telemetry cannot change a paid request's outcome. */}
+      }
+     }
    });
   if(projectArchive){
   app.get("/api/v1/projects/:id/archive",{schema:{params:canvasParams}},async(req,reply)=>{

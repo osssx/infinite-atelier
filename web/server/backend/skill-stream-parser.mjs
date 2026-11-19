@@ -6,7 +6,7 @@ export async function readSkillStream(response,{db,jobId,round}={}){
  if(!response.body)throw error("model_skill_stream_missing");
  const reader=response.body.getReader();
  const decoder=new TextDecoder("utf-8",{fatal:true});
- let buffer="",text="",done=false,finish=null,count=0;
+ let buffer="",text="",done=false,finish=null,count=0,usage;
  const tools=new Map(),seenIndexes=new Set();
  let sent=0,events=0;
  const publish=()=>{
@@ -25,6 +25,11 @@ export async function readSkillStream(response,{db,jobId,round}={}){
   let packet;
   try{packet=JSON.parse(raw)}catch{throw error("model_skill_stream_invalid")}
   if(packet?.error)throw error("model_skill_stream_upstream_error");
+  if(++count>12000)throw error("model_skill_stream_too_many_events");
+  if(packet?.usage&&typeof packet.usage==="object"){
+   usage=packet.usage;
+   if(Array.isArray(packet.choices)&&packet.choices.length===0)return;
+  }
   if(!Array.isArray(packet?.choices)||packet.choices.length!==1||
     packet.choices[0]?.index!==0)
    throw error("model_skill_stream_invalid");
@@ -70,7 +75,6 @@ export async function readSkillStream(response,{db,jobId,round}={}){
     throw error("model_skill_stream_too_large");
    tools.set(item.index,previous);seenIndexes.add(item.index);
   }
-  count++;if(count>12000)throw error("model_skill_stream_too_many_events");
  }
  try{
   for(;;){
@@ -95,5 +99,5 @@ export async function readSkillStream(response,{db,jobId,round}={}){
  if(toolCalls.some(tool=>!tool.id||!tool.function.name||!tool.function.arguments))
   throw error("model_skill_stream_incomplete");
  publish();
- return {choices:[{finish_reason:finish,message:{role:"assistant",content:text,tool_calls:toolCalls}}]};
+ return {choices:[{finish_reason:finish,message:{role:"assistant",content:text,tool_calls:toolCalls}}],...(usage?{usage}:{})};
 }

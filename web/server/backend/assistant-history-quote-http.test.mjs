@@ -28,7 +28,7 @@ const skillBody="输出格式使用 H3 Ref2VA，给三个角色参考图依次�
 const hash=text=>createHash("sha256").update(text).digest("hex");
 const policy=includedIds=>({includeContext:true,scope:"selection",includedIds});
 
-async function fixture(t,{authorizedSkillText=skillBody}={}) {
+async function fixture(t,{authorizedSkillText=skillBody,managed=false}={}) {
  const db=new DatabaseSync(":memory:");
  initializeSchema(db);
  const temp=mkdtempSync(join(tmpdir(),"atelier-history-quote-"));
@@ -57,16 +57,18 @@ async function fixture(t,{authorizedSkillText=skillBody}={}) {
  const skillRegistry={authorized:()=>({entries:[
   {id:skillId,version,name:"H3",description:"H3 Ref2VA",skillMd:authorizedSkillText}
  ]})};
- const app=buildApp({db,blobStore,assistantChat:service,skillRegistry,authorize:()=>true});
+ const app=buildApp({db,blobStore,assistantChat:service,skillRegistry,authorize:()=>true,
+  assistantCacheRollout:()=>managed});
  t.after(async()=>{await app.close();db.close();rmSync(temp,{recursive:true,force:true})});
  function append(messageId,text,includedIds=ids,chatSessionId){
   return appendAssistantTaskTurn(db,{projectId:"p",taskId:task.id,requestId:"turn-"+messageId,
    messageId,text,contextPolicy:policy(includedIds),chatSessionId});
  }
- function call(turnMessageId,text,{requestId="infer-"+turnMessageId,historyQuote,withMedia=false}={}){
+ function call(turnMessageId,text,{requestId="infer-"+turnMessageId,historyQuote,withMedia=false,canvasActions=false}={}){
   return app.inject({method:"POST",url:"/api/v1/projects/p/assistant/chat",payload:{
    channelId:"ch",provider:"openai_compatible",baseUrl:"http://127.0.0.1:8188/v1",
-   model:"mock",messages:[{role:"user",content:text}],canvasActions:false,
+   model:"mock",messages:[{role:"user",content:text}],canvasActions,
+   ...(managed?{chatSessionId:"chat-a",turnId:turnMessageId,conversationRequestId:requestId}:{}),
    task:{taskId:task.id,turnMessageId,requestId,...(historyQuote?{historyQuote}:{})},
    ...(withMedia?{visualContext:{images:ids.map(nodeId=>({nodeId})),detail:"high"},
     skills:{mode:"manual",projectId:"p",expectedRevision:1,skillIds:[skillId],versionPins:{[skillId]:version}}}:{})
@@ -86,6 +88,41 @@ async function fixture(t,{authorizedSkillText=skillBody}={}) {
  }
  return {db,task,append,call,upstream,quote,bytes,discover,answers};
 }
+
+test("optimized Task validates the exact quote in the multimodal tail",async t=>{
+ const f=await fixture(t,{managed:true});
+ f.append("convert",question,undefined,"chat-a");
+ const converted=await f.call("convert",question,{historyQuote:f.quote,withMedia:true});
+ assert.equal(converted.statusCode,200,converted.body);
+ const payload=f.upstream.at(-1);
+ assert.ok(!payload.messages[0].content.includes(shot));
+ const parts=payload.messages.at(-1).content;
+ assert.ok(parts[0].text.startsWith(question));
+ assert.ok(parts[0].text.includes(shot));
+ assert.ok(!parts[0].text.includes(oldCard));
+ assert.equal(parts.filter(part=>part.type==="image_url").length,3);
+});
+
+test("optimized quote location survives format repair and never exempts another copy",async t=>{
+ const f=await fixture(t,{managed:true,authorizedSkillText:oldCard});
+ const edit="请在画布创建一个文本节点";
+ const historyQuote={mode:"user",text:oldCard,digest:hash(oldCard)};
+ f.append("repair",edit,undefined,"chat-a");
+ f.answers.push("无效回复",JSON.stringify({answer:"已提议",actions:[{type:"create_text",ref:"card",title:"分镜",content:"对白"}]}));
+ const repaired=await f.call("repair",edit,{historyQuote,canvasActions:true});
+ assert.equal(repaired.statusCode,200,repaired.body);
+ assert.equal(repaired.json().formatRepairCount,1);
+ assert.equal(f.upstream.length,3);
+ for(const payload of f.upstream.slice(1)){
+  assert.doesNotMatch(payload.messages[0].content,new RegExp(oldCard));
+  assert.equal(payload.messages.at(-1).content.split(oldCard).length,2);
+ }
+ f.append("duplicated",question,undefined,"chat-a");
+ const blocked=await f.call("duplicated",question,{historyQuote,withMedia:true});
+ assert.equal(blocked.statusCode,403,blocked.body);
+ assert.equal(blocked.json().code,"assistant_task_context_not_authorized");
+ assert.equal(f.upstream.length,3);
+});
 
 test("Task HTTP sends the unique historical shot, ordered image pixels and H3 Skill in the same provider call",async t=>{
  const f=await fixture(t);

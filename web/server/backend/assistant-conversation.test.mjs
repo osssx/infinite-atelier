@@ -49,8 +49,25 @@ function input(chatSessionId,turnId,content,extras={}){
 const send=(app,payload,stream=false)=>app.inject({method:"POST",url:chatURL,payload,
  ...(stream?{headers:{accept:"text/event-stream"}}:{})});
 
+test("plain chat appends exact turns and excludes canvas context after revocation",async t=>{
+ const captured=[];
+ const {app}=fixture(t,payload=>{
+  captured.push(payload);
+  return normalResponse(captured.length===3?marker:"已收到");
+ },{assistantCacheRollout:()=>true});
+ for(const [id,context] of [["one",plain],["two",plain],["allowed",selected],["revoked",plain]]){
+  const result=await send(app,input("plain",id,"问题 "+id,{conversationContext:context}));
+  assert.equal(result.statusCode,200,result.body);
+ }
+ assert.equal(captured[0].messages.at(-1).content,"问题 one");
+ assert.deepEqual(captured[1].messages.slice(0,2),captured[0].messages);
+ assert.equal(captured[1].messages.at(-1).content,"问题 two");
+ assert.match(captured[2].messages.at(-1).content,new RegExp(marker));
+ assert.equal(captured[3].messages.at(-1).content,"问题 revoked");
+ assert.doesNotMatch(JSON.stringify(captured[3]),new RegExp(marker));
+});
 test("managed chats default to both cache optimizations and can roll each back independently",async t=>{
- const names=["PREFIX","BATCH_HISTORY","CHANNELS","MODELS","MODES"].map(name=>"ATELIER_ASSISTANT_CACHE_"+name);
+ const names=["PREFIX","BATCH_HISTORY","PLAIN_CHAT","CHANNELS","MODELS","MODES"].map(name=>"ATELIER_ASSISTANT_CACHE_"+name);
  const previous=new Map(names.map(name=>[name,process.env[name]]));
  t.after(()=>{
   for(const [name,value] of previous){
@@ -59,8 +76,9 @@ test("managed chats default to both cache optimizations and can roll each back i
   }
  });
  for(const name of names)delete process.env[name];
- const samples=[];
- const {app}=fixture(t,()=>normalResponse("答复"),{onAssistantPromptUsage:sample=>samples.push(sample)});
+ const samples=[],captured=[];
+ const {app}=fixture(t,payload=>{captured.push(payload);return normalResponse("答复");},
+  {onAssistantPromptUsage:sample=>samples.push(sample)});
  const ask=async turn=>{
   const response=await send(app,input("rollout",turn,"测试 "+turn));
   assert.equal(response.statusCode,200,response.body);
@@ -68,6 +86,11 @@ test("managed chats default to both cache optimizations and can roll each back i
   return [stablePromptPrefix,batchHistory];
  };
  assert.deepEqual(await ask("default"),[true,true]);
+ assert.equal(captured.at(-1).messages.at(-1).content,"测试 default");
+ process.env.ATELIER_ASSISTANT_CACHE_PLAIN_CHAT="0";
+ assert.deepEqual(await ask("plain-off"),[true,true]);
+ assert.match(captured.at(-1).messages.at(-1).content,/<Current turn reference data>/);
+ delete process.env.ATELIER_ASSISTANT_CACHE_PLAIN_CHAT;
  process.env.ATELIER_ASSISTANT_CACHE_PREFIX="0";
  assert.deepEqual(await ask("prefix-off"),[false,true]);
  delete process.env.ATELIER_ASSISTANT_CACHE_PREFIX;
@@ -334,6 +357,8 @@ for(const optimized of [false,true])test(`managed Task tools re-resolve only aut
  const samples=[],turns=[];
  const {app,db}=fixture(t,body=>{
   captured.push(body);
+  if(captured.length===2)return Response.json({choices:[{message:{content:"记录已分析"},finish_reason:"stop"}],
+   usage:{prompt_tokens:200,prompt_cache_hit_tokens:120,prompt_cache_miss_tokens:80}});
   if(captured.length!==1)return normalResponse("记录已分析");
   return new Response(JSON.stringify({choices:[{finish_reason:"tool_calls",message:{content:null,
    tool_calls:["read-1","read-2"].map(id=>({id,type:"function",function:{
@@ -348,7 +373,8 @@ for(const optimized of [false,true])test(`managed Task tools re-resolve only aut
  assert.equal(result.statusCode,200,result.body);
  assert.equal(samples.length,2);
  assert.equal(turns[0].posts,2);
- assert.equal(turns[0].inputReports,0);
+ assert.equal(turns[0].inputReports,1);
+ assert.equal(samples[1].cachedInputTokens,120);
  const refs=db.prepare("SELECT call_id,node_ids_json FROM assistant_conversation_tool_refs ORDER BY call_id").all();
  assert.deepEqual(refs.map(({call_id})=>call_id),["read-1","read-2"]);
  assert.ok(refs.every(ref=>!ref.node_ids_json.includes(marker)));

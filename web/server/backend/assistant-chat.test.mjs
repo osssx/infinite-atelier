@@ -11,6 +11,29 @@ const vault={
  withSecretVersion(version,consumer){assert.equal(version,"v1");return consumer(Buffer.from(credential))}
 };
 const messages=[{role:"user",content:"你好"}];
+test("DeepSeek native cache usage handles JSON, SSE, missing and contradictory counters",async()=>{
+ const reports=[
+  {prompt_tokens:100,prompt_cache_hit_tokens:0,prompt_cache_miss_tokens:100},
+  {prompt_cache_hit_tokens:80,prompt_cache_miss_tokens:20},
+  {prompt_tokens:100,prompt_cache_hit_tokens:90,prompt_cache_miss_tokens:20},
+  {prompt_tokens:100,prompt_cache_hit_tokens:80,prompt_cache_miss_tokens:20,prompt_tokens_details:{cached_tokens:70}},
+  {prompt_tokens:100,prompt_cache_hit_tokens:-1},
+  {prompt_tokens:100}
+ ];
+ const samples=[];
+ const ask=createAssistantChatService({vault,compatibleUpstreamCall:async()=>{
+  const usage=reports.shift();
+  if(usage.prompt_tokens===undefined)return new Response(
+   'data: {"choices":[{"delta":{"content":"OK"},"finish_reason":"stop"}]}\n\n'+
+   "data: "+JSON.stringify({choices:[],usage})+"\n\ndata: [DONE]\n\n",
+   {headers:{"content-type":"text/event-stream"}});
+  return Response.json({data:{choices:[{message:{content:"OK"}}],usage}});
+ }});
+ while(reports.length)await ask({channelId:"c1",provider:"openai_compatible",baseUrl:"http://localhost:8080/v1",
+  model:"demo",messages,onPromptUsage:sample=>samples.push(sample)});
+ assert.deepEqual(samples.map(({inputTokens,cachedInputTokens})=>[inputTokens,cachedInputTokens]),
+  [[100,0],[100,80],[100,null],[100,null],[100,null],[100,null]]);
+});
 test("prompt telemetry distinguishes zero from missing and captures the final SSE usage once",async()=>{
  const samples=[],requests=[];
  const usage={prompt_tokens:1536,prompt_tokens_details:{cached_tokens:0}};

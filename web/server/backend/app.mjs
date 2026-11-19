@@ -106,7 +106,9 @@ function cursorOf(value){
  return Number(v);
 }
 function defaultAssistantCacheRollout({stage,channelId,model,mode}){
- const enabled=process.env[stage==="prefix"?"ATELIER_ASSISTANT_CACHE_PREFIX":"ATELIER_ASSISTANT_CACHE_BATCH_HISTORY"]??"1";
+ const flags={prefix:"ATELIER_ASSISTANT_CACHE_PREFIX",batch_history:"ATELIER_ASSISTANT_CACHE_BATCH_HISTORY",
+  plain_chat:"ATELIER_ASSISTANT_CACHE_PLAIN_CHAT"};
+ const enabled=process.env[flags[stage]]??"1";
  if(enabled!=="1")return false;
  return [["CHANNELS",channelId],["MODELS",model],["MODES",mode]].every(([filter,value])=>{
   const configured=process.env["ATELIER_ASSISTANT_CACHE_"+filter];
@@ -1025,16 +1027,20 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
        const promptCohort={...rollout,stablePromptPrefix,batchHistory};
        if(onAssistantPromptTurnUsage)promptTurnUsage={...promptCohort,posts:0,inputReports:0,inputTokens:0};
        let liveToolContext="";
+       let plainCanvasChat=false;
        if(conversation){
         const restrict=restrictConversation||Boolean(req.body.conversationContinuation||req.body.visualContext||req.body.skills);
         if(!restrict)liveToolContext=resolveConversationToolReferences(db,conversation,{taskId:ref?.taskId,policy:frozenPolicy,project});
+         plainCanvasChat=stablePromptPrefix&&!ref&&!frozenPolicy.includeContext&&!req.body.canvasActions&&
+          !restrict&&!skill.context&&!skill.toolEntries?.length&&!liveToolContext&&!quoteContext&&
+          assistantCacheRollout({...rollout,stage:"plain_chat"});
          if(!ref){
           const config=db.prepare("SELECT value_json FROM ui_settings WHERE name='model_config'").get();
           taskContext=formatAssistantCanvasContext({policy:frozenPolicy,document:project.document,
            config:config?JSON.parse(config.value_json):{},loadTemplate:registry.find});
          }
         const reservedBytes=stablePromptPrefix?Buffer.byteLength(assistantCurrentReferenceData({
-         taskContext,liveToolContext,skillContext:skill.context,quoteContext}).text):0;
+         taskContext:plainCanvasChat?"":taskContext,liveToolContext,skillContext:skill.context,quoteContext}).text):0;
         const built=buildConversationMessages(db,conversation,{current:messages.at(-1),policy:frozenPolicy,project,
          restrict,reservedBytes,retainedHistoryMode:batchHistory?{mode,taskId:ref?.taskId??null}:null,
          onDiagnostic:key=>conversationMetrics[key]++});
@@ -1058,7 +1064,7 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
        });
        const {skills:_selection,visualContext:_visual,task:_task,...chatInput}=req.body;
        const result=await assistantChat({...chatInput,messages,conversationMemory,skillContext:skill.context,
-        stablePromptPrefix,liveToolContext:stablePromptPrefix?liveToolContext:"",
+        stablePromptPrefix,plainCanvasChat,liveToolContext:stablePromptPrefix?liveToolContext:"",
         onPromptUsage:onAssistantPromptUsage||promptTurnUsage?sample=>{
          if(promptTurnUsage){
           promptTurnUsage.posts++;

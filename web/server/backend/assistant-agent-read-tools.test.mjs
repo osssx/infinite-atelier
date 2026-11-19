@@ -14,10 +14,10 @@ const secretContent="隐藏节点中的私人剧本和故事结局不允许外�
 const node=(id,title,content)=>({id,type:"text",title,position:{x:0,y:0},
  width:340,height:240,metadata:{content}});
 const chosen={includeContext:true,scope:"selection",includedIds:["visible"]};
-function fixture(t,{policy=chosen}={}){
+function fixture(t,{policy=chosen,content=visibleContent}={}){
  const db=new DatabaseSync(":memory:");initializeSchema(db);t.after(()=>db.close());
  createProject(db,{id:"p",document:{nodes:[
-  node("visible","小兔角色卡",visibleContent),node("secret","秘密故事",secretContent)
+  node("visible","小兔角色卡",content),node("secret","秘密故事",secretContent)
  ],connections:[{id:"edge1",fromNodeId:"visible",toNodeId:"secret",fromPortId:"out",toPortId:"in"}]}});
  const task=createAssistantTask(db,{projectId:"p",chatSessionId:"chat",
   rootMessageId:"root",originalRequest:"找到角色节点",requestId:"task"}).task;
@@ -34,9 +34,29 @@ function invoke(session,name,args,callId="call1",round=0){
  return JSON.parse(session.invoke(name,args,{callId,round}));
 }
 test("P4.2a Tool Registry has only no-approval, read-only functions",()=>{
- assert.equal(ASSISTANT_READ_TOOL_REGISTRY.length,6);
+ assert.equal(ASSISTANT_READ_TOOL_REGISTRY.length,7);
  assert.ok(ASSISTANT_READ_TOOL_REGISTRY.every(t=>t.effect==="read"&&t.approval==="none"));
  assert.ok(!ASSISTANT_READ_TOOL_REGISTRY.some(t=>/(?:write|execute|delete|submit|run_skill)/.test(t.providerName)));
+});
+test("paginates authorized text without changing whitespace or splitting Unicode characters",t=>{
+ const content="第一段\n  角色😀\t\n".repeat(220);
+ const f=fixture(t,{content}),session=f.make();
+ const first=invoke(session,"canvas_read_nodes",{node_ids:["visible"],offset:0}).data;
+ const second=invoke(session,"canvas_read_nodes",{node_ids:["visible"],offset:first.nextOffset},"call2").data;
+ assert.ok(first.nextOffset>0);
+ assert.equal(first.nodes[0].content+second.nodes[0].content,content.slice(0,second.endOffset));
+ assert.throws(()=>invoke(session,"canvas_read_nodes",{node_ids:["secret"],offset:0},"call3"),
+  {code:"assistant_agent_context_scope_denied"});
+});
+test("reads effective defaults without disclosing unauthorized node settings",t=>{
+ const f=fixture(t);
+ f.db.prepare("UPDATE ui_settings SET value_json=? WHERE name='model_config'").run(JSON.stringify({
+  comfyWorkflowDefaults:{image:{templateId:"moss",templateRevision:"r1"}}
+ }));
+ const session=f.make();
+ assert.match(invoke(session,"canvas_get_generation_settings",{}).data.settings.join("\n"),/ComfyUI 工作流 moss/);
+ assert.throws(()=>invoke(session,"canvas_get_generation_settings",{node_id:"secret"},"call2"),
+  {code:"assistant_agent_context_scope_denied"});
 });
 
 test("P4.2a selected node text is readable, hidden neighbor is not",t=>{

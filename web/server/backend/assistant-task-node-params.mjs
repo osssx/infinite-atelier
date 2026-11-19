@@ -14,6 +14,9 @@ const allowed={
  video:new Set(["model","seconds","videoRatio","vquality","generateAudio"]),
  audio:new Set(["model","audioVoice","audioFormat","audioSpeed","audioInstructions"])
 };
+export function assistantChannelParameterKeys(mode){
+ return modes.has(mode)?[...allowed[mode]]:[];
+}
 const oneOf=(v,...values)=>typeof v==="string"&&values.includes(v);
 export function assertFrozenNodeParameterAction(action){
  if(!own(action,["type","nodeId","key","value"])||

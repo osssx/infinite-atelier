@@ -488,6 +488,7 @@ describe("P2 assistant confirmation boundary",()=>{
   expect(graph.nodes.find(n=>n.type===CanvasNodeType.Image)?.metadata?.prompt).toBe("人物海报");
   expect(graph.nodes.find(n=>n.id==="text-existing")?.metadata?.content).toBe(originalContent);
   expect(container!.textContent).toContain("已自动执行 4 项画布操作");
+  expect(container!.textContent).toContain("已创建节点：封面图、场景文本、第一幕");
  });
  it("P2.3 requires confirmation for dissolving a group, preserving its child nodes when cancelled",async()=>{
   const actions=[
@@ -610,7 +611,7 @@ describe("P2 assistant confirmation boundary",()=>{
   expect(graph.nodes[0].metadata?.comfyMediaPreset?.overrides).toEqual({steps:42});
   expect(graph.nodes[0].metadata?.content).toBe(source.metadata?.content);
   expect(mocks.run).toHaveBeenCalledOnce();
-  expect(container!.textContent).toContain("已确认并执行 1 项内容或参数修改"); });
+  expect(container!.textContent).toContain("已确认并执行 1 项画布操作"); });
  it("P2.6 confirms replacement of a connected Comfy workflow input before running",async()=>{
   registerCanvasPortResolver("comfy:workflow",node=>node.metadata?.comfyPorts??[]);
   const template:ComfyWorkflowTemplate={id:"wf-tpl",revision:"rev1",name:"Workflow",
@@ -1275,10 +1276,12 @@ describe("P2 assistant confirmation boundary",()=>{
  });
  it("P2.5 reports execution failure without falsely claiming successful submission",async()=>{
   const fixture=setup([{type:"run_node",nodeId:"text-existing"}]);
+  mocks.api.mockResolvedValueOnce({answer:"生成任务已提交",model:"demo",actions:[{type:"run_node",nodeId:"text-existing"}]});
   mocks.run.mockRejectedValueOnce(Error("任务未成功提交"));
   await renderAndSend(fixture.Harness);
   expect(container!.textContent).toContain("画布操作未完成：任务未成功提交");
   expect(container!.textContent).not.toContain("已通过原有节点执行链路提交");
+  expect(container!.textContent).not.toContain("生成任务已提交");
  });
  it("P2.5 passes an abortable signal and stops waiting on a pending submission",async()=>{
   const fixture=setup([{type:"run_node",nodeId:"text-existing"}]);

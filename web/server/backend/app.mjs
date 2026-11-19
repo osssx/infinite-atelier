@@ -923,7 +923,7 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
         commandStarted=true;
         if(readMode)agentReadSession=createAssistantAgentReadSession(db,{
          projectId:req.params.id,taskId:ref.taskId,turnMessageId:ref.turnMessageId,
-         requestId:ref.requestId,enforceOwner:true});
+         requestId:ref.requestId,enforceOwner:true,loadTemplate:registry.find});
         const snapshot=getAssistantTask(db,{projectId:req.params.id,taskId:ref.taskId}).task;
          frozenPolicy={...getAssistantTaskTurnPolicy(db,{projectId:req.params.id,taskId:ref.taskId,
           messageId:ref.turnMessageId}),revision:project.revision};

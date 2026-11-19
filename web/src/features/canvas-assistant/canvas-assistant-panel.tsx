@@ -972,6 +972,14 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
      deliverCompletedTextArtifacts("模型未返回可执行的画布操作"))return;
     if(controller.signal.aborted)throw new DOMException("Aborted","AbortError");
     const notes:string[]=[];
+    const hasProposedActions=!textOnly&&response.actions!=null&&
+     (!Array.isArray(response.actions)||response.actions.length>0);
+    const noteCreatedNodes=(actions:ReturnType<typeof parseAssistantCanvasActions>,refs:ReadonlyMap<string,string>)=>{
+     const created=actions.flatMap(action=>
+      (action.type==="create_node"||action.type==="create_text"||action.type==="create_group")&&refs.has(action.ref)?
+       [action.title?.trim()||refs.get(action.ref)!]:[]);
+     if(created.length)notes.push("已创建节点："+created.join("、")+"。");
+    };
      try{
        const actions=parseAssistantCanvasActions(textOnly?[]:response.actions??[]);
        if(!linkedTaskId&&actions.some(action=>
@@ -1005,6 +1013,7 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
            });
            taskRefs=result.refs;
            notes.push("Task 画布事务已提交 "+result.applied+" 项操作；修订版本 "+result.revision+"；步骤 "+result.stepId+"。");
+           noteCreatedNodes(graphActions,result.refs);
           }
           if(runActions.length){
            const sequence=runActions.length>1?await freezeAssistantRunSequence({
@@ -1044,7 +1053,10 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
         if(approved){
          const result=prepared?prepared.commit():onApplyActions(actions,needsConfirmation?"dangerous":"safe",undefined,templates);
          appliedRefs=result.refs;
-         if(result.applied)notes.push(needsConfirmation?"已确认并执行 "+result.applied+" 项内容或参数修改。":"已自动执行 "+result.applied+" 项画布操作。");
+         if(result.applied){
+          notes.push(needsConfirmation?"已确认并执行 "+result.applied+" 项画布操作。":"已自动执行 "+result.applied+" 项画布操作。");
+          noteCreatedNodes(actions,result.refs);
+         }
         }else notes.push("你已取消整批画布操作。");
         const runs=actions.filter(action=>action.type==="run_node"||action.type==="run_workflow");
         if(runs.length){
@@ -1063,7 +1075,7 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
        if(operationError instanceof Error&&(/重新生成|assistant_step_source_changed|project_unsaved_local_edits/.test(operationError.message)))
         setDraft(current=>current||draft);
        notes.push("画布操作未完成："+(operationError instanceof Error?operationError.message:"执行失败"));
-     }    const answer=[response.answer,...notes].filter(Boolean).join("\n\n");
+     }    const answer=[hasProposedActions?null:response.answer,...notes].filter(Boolean).join("\n\n");
     const localSourceMessageId=manualQuote?.messageId??(picked&&"messageId" in picked?picked.messageId:undefined);
     const finalMessage:CanvasAssistantMessage={id:streamedId??user.id+"-reply",role:"assistant",text:answer,
       ...(response.usedHistoryQuote?{historyQuote:{...response.usedHistoryQuote,localSourceMessageId}}:{}),

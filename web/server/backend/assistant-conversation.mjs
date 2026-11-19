@@ -214,9 +214,11 @@ export function listConversationTurns(db,{projectId,chatSessionId,before=Number.
  const requests=db.prepare("SELECT request_id,state,final,response_json,error_code FROM assistant_conversation_requests WHERE turn_seq=? ORDER BY rowid DESC");
  const turns=rows.slice(0,limit).map(row=>{
   const calls=requests.all(row.seq),final=calls.find(call=>call.final);
+  const response=final?JSON.parse(final.response_json):null;
   const status=calls[0]?.state==="completed"&&!final?"awaiting_followup":calls[0]?.state??"failed";
   return {turnId:row.turn_id,userText:row.user_text,status,
-   ...(final?{answer:JSON.parse(final.response_json).answer}:{}),
+   ...(response?{answer:response.actions?.length?
+    "助手已提出画布操作。此处没有可核验的执行结果，请查看画布或 Task 记录。":response.answer}:{}),
    ...(calls[0]?.error_code?{errorCode:calls[0].error_code}:{})};
  });
  return {turns:turns.reverse(),nextBefore:more?rows[limit-1].seq:null};

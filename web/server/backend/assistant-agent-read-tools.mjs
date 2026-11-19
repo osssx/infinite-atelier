@@ -4,7 +4,7 @@
  */
 import {createHash} from "node:crypto";
 import {stableJson,writeTransaction} from "./repository.mjs";
-import {mayRepeatTurn,safe} from "./assistant-task-context.mjs";
+import {formatAssistantGenerationSettings,mayRepeatTurn,safe} from "./assistant-task-context.mjs";
 import {discoverAssistantCreativeCharacters} from "./assistant-creative-context.mjs";
 import {discoverAssistantCreativeMaterials} from "./assistant-creative-materials.mjs";
 import {validCanvasNodeId} from "../canvas-node-id.mjs";
@@ -16,6 +16,15 @@ const plain=v=>v!==null&&typeof v==="object"&&!Array.isArray(v);
 const sha=v=>createHash("sha256").update(stableJson(v)).digest("hex");
 const MAX_RESULT_BYTES=4000,MAX_PER_RUN_BYTES=12*1024;
 const valueLimit=(value,max)=>Buffer.from(value,"utf8").subarray(0,max).toString("utf8").replace(/\uFFFD$/,"");
+function pageText(text,offset,limit){
+ let end=offset,bytes=0;
+ for(const character of text.slice(offset)){
+  bytes+=Buffer.byteLength(character,"utf8");
+  if(bytes>limit)break;
+  end+=character.length;
+ }
+ return text.slice(offset,end);
+}
 const get=(args,names)=>plain(args)&&Object.keys(args).every(key=>names.includes(key));
 export function describeAssistantReadableCanvasNode(node){
  return {id:node.id,type:node.type,title:safe(node.title,90),
@@ -31,9 +40,12 @@ export const ASSISTANT_READ_TOOL_REGISTRY=Object.freeze([
   parameters:{type:"object",additionalProperties:false,required:["query"],
    properties:{query:{type:"string",maxLength:80}}}},
  {name:"canvas.read_nodes",providerName:"canvas_read_nodes",effect:"read",approval:"none",
-  description:"Read content of up to 4 nodes explicitly selected in the current frozen Task turn. Never read unselected nodes.",
+  description:"Read up to 4 selected nodes. For a single text node, supply offset:0 to read paginated text with whitespace preserved, then follow nextOffset until null. Never read unselected nodes.",
   parameters:{type:"object",additionalProperties:false,required:["node_ids"],
-   properties:{node_ids:{type:"array",minItems:1,maxItems:4,items:{type:"string"}}}}},
+   properties:{node_ids:{type:"array",minItems:1,maxItems:4,items:{type:"string"}},offset:{type:"integer",minimum:0}}}},
+ {name:"canvas.get_generation_settings",providerName:"canvas_get_generation_settings",effect:"read",approval:"none",
+  description:"Inspect current generation defaults and channel models. Supply a selected node ID to inspect its effective configuration and editable workflow ports.",
+  parameters:{type:"object",additionalProperties:false,properties:{node_id:{type:"string"}}}},
  {name:"canvas.get_connections",providerName:"canvas_get_connections",effect:"read",approval:"none",
   description:"Read connections where both endpoints are currently authorized; never traverse into hidden nodes.",
   parameters:{type:"object",additionalProperties:false,properties:{}}},
@@ -81,7 +93,7 @@ export function assertAssistantAgentReadClaim(db,{projectId,taskId,turnMessageId
   throw fail("assistant_agent_read_busy",409);
 }
 /** No mutating SQL or external network in any handler. */
-export function createAssistantAgentReadSession(db,{projectId,taskId,turnMessageId,requestId,enforceOwner=false}){
+export function createAssistantAgentReadSession(db,{projectId,taskId,turnMessageId,requestId,enforceOwner=false,loadTemplate}){
  const original=scoped(db,projectId,taskId,turnMessageId);
  const runId=agentReadRunId(projectId,taskId,requestId);
  let totalBytes=0,callCount=0;
@@ -140,6 +152,7 @@ export function createAssistantAgentReadSession(db,{projectId,taskId,turnMessage
    throw fail("assistant_agent_tool_replayed",409);
   }
   if(++callCount>6)throw fail("assistant_agent_read_budget_exceeded",413);
+  const budget=Math.min(MAX_RESULT_BYTES,MAX_PER_RUN_BYTES-totalBytes);
   let data;
   if(name==="canvas_get_map"){
    if(!get(args,[]))throw fail("assistant_agent_tool_arguments_invalid",400);
@@ -156,14 +169,34 @@ export function createAssistantAgentReadSession(db,{projectId,taskId,turnMessage
    data={matches:found.slice(0,12).map(n=>({id:n.id,type:n.type,title:safe(n.title,90)})),
     truncated:found.length>12};
   }else if(name==="canvas_read_nodes"){
-   if(!get(args,["node_ids"])||!Array.isArray(args.node_ids)||
+   if(!get(args,["node_ids","offset"])||!Array.isArray(args.node_ids)||
     args.node_ids.length<1||args.node_ids.length>4||
+    args.offset!==undefined&&(args.node_ids.length!==1||!Number.isSafeInteger(args.offset)||args.offset<0)||
     args.node_ids.some(n=>!validCanvasNodeId(n))||new Set(args.node_ids).size!==args.node_ids.length)
     throw fail("assistant_agent_tool_arguments_invalid",400);
    if(!selected())throw fail("assistant_agent_context_scope_denied",403);
    const byId=new Map(allowed().map(n=>[n.id,n]));
    if(args.node_ids.some(n=>!byId.has(n)))throw fail("assistant_agent_context_scope_denied",403);
-   data={nodes:args.node_ids.map(nodeId=>describeAssistantReadableCanvasNode(byId.get(nodeId)))};
+   if(args.offset===undefined)data={nodes:args.node_ids.map(nodeId=>describeAssistantReadableCanvasNode(byId.get(nodeId)))};
+   else{
+    const node=byId.get(args.node_ids[0]);
+    if(node.type!=="text")throw fail("assistant_agent_tool_arguments_invalid",400);
+    const text=safe(node.metadata?.content,Infinity,{preserveFormatting:true});
+    if(args.offset>text.length)throw fail("assistant_agent_tool_arguments_invalid",400);
+    const content=pageText(text,args.offset,2400);
+    const end=args.offset+content.length;
+    data={nodes:[{id:node.id,type:node.type,title:safe(node.title,90),content}],
+     offset:args.offset,endOffset:end,nextOffset:end<text.length?end:null};
+   }
+  }else if(name==="canvas_get_generation_settings"){
+   if(!get(args,["node_id"])||args.node_id!==undefined&&!validCanvasNodeId(args.node_id))
+    throw fail("assistant_agent_tool_arguments_invalid",400);
+   if(!original.policy.includeContext)throw fail("assistant_agent_context_scope_denied",403);
+   const node=args.node_id===undefined?undefined:allowed().find(n=>n.id===args.node_id);
+   if(args.node_id!==undefined&&(!selected()||!node))throw fail("assistant_agent_context_scope_denied",403);
+   const row=db.prepare("SELECT value_json FROM ui_settings WHERE name='model_config'").get();
+   const config=row?JSON.parse(row.value_json):{};
+   data={settings:formatAssistantGenerationSettings({config,loadTemplate,document:original.document,node}),truncated:false};
   }else if(name==="canvas_get_connections"){
    if(!get(args,[]))throw fail("assistant_agent_tool_arguments_invalid",400);
    const ids=new Set(allowed().map(n=>n.id));
@@ -218,11 +251,25 @@ export function createAssistantAgentReadSession(db,{projectId,taskId,turnMessage
   // Port-bearing edges vary in size. Return complete records within both
   // budgets rather than rejecting an otherwise readable connection overview.
   if(name==="canvas_get_connections"){
-   const budget=Math.min(MAX_RESULT_BYTES,MAX_PER_RUN_BYTES-totalBytes);
    while(bytes>budget&&data.connections.length){
     data.connections.pop();data.truncated=true;
     value=encode();bytes=Buffer.byteLength(value,"utf8");
    }
+  }
+  if(name==="canvas_get_generation_settings"){
+   while(bytes>budget&&data.settings.length){
+    data.settings.pop();data.truncated=true;
+    value=encode();bytes=Buffer.byteLength(value,"utf8");
+   }
+  }
+  if(name==="canvas_read_nodes"&&args.offset!==undefined){
+   while(bytes>budget&&data.nodes[0].content){
+    const item=data.nodes[0];
+    item.content=pageText(item.content,0,Math.floor(Buffer.byteLength(item.content,"utf8")/2));
+    data.nextOffset=data.endOffset=data.offset+item.content.length;
+    value=encode();bytes=Buffer.byteLength(value,"utf8");
+   }
+   if(data.nextOffset===data.offset)throw fail("assistant_agent_read_budget_exceeded",413);
   }
   if(bytes>MAX_RESULT_BYTES||totalBytes+bytes>MAX_PER_RUN_BYTES)
    throw fail("assistant_agent_read_budget_exceeded",413);

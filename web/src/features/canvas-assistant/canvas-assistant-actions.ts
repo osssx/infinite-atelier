@@ -355,7 +355,12 @@ export function applyAssistantCanvasActions(
      const id=mapped.get(action.nodeId)??action.nodeId;
      const i=nodes.findIndex(node=>node.id===id);
      if(i<0)throw Error("目标节点不存在，未执行。");
-     nodes[i]=setAssistantNodeParameter(nodes[i],action.key,action.value,config);applied++;break;
+     try{
+      nodes[i]=setAssistantNodeParameter(nodes[i],action.key,action.value,config);
+     }catch(error){
+      throw Error("节点「"+(nodes[i].title||id)+"」的 "+action.key+" 参数校验失败："+(error instanceof Error?error.message:String(error)),{cause:error});
+     }
+     applied++;break;
     }
      case "replace_workflow_port":
      case "disconnect_workflow_port":{

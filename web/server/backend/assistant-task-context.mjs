@@ -1,15 +1,16 @@
 import {assistantModelCommandTurns} from "./assistant-model-command-turns.mjs";
+import {assistantChannelParameterKeys} from "./assistant-task-node-params.mjs";
 /** Provider-side Task context: strictly smaller than the backend's local
  * graph/step evidence. Never serialize whole documents or task event payloads.
  */
 export const stripAssistantGraphAnnotations=value=>value.replace(/【(?:引用节点|参考图片)：[^】]*】/g,"[历史画布引用]");
-export const safe=(value,max=1800)=>{
+export const safe=(value,max=1800,{preserveFormatting=false}={})=>{
  if(typeof value!=="string")return "";
  const redacted=stripAssistantGraphAnnotations(value).replace(/data:(?:image|video|audio)\/[^\s]+/gi,"[媒体数据省略]")
   .replace(/(?:sk-|Bearer\s+)[A-Za-z0-9_-]{16,}/gi,"[敏感值省略]")
-  .replace(/(?:api[_-]?key|access[_-]?token|password|secret)\s*[:=]\s*[^\s,;]+/gi,"[凭据省略]")
-  .replace(/[\r\n\t]+/g," ");
- return redacted.length>max?redacted.slice(0,max)+"[内容截断]":redacted;
+  .replace(/(?:api[_-]?key|access[_-]?token|password|secret)\s*[:=]\s*[^\s,;]+/gi,"[凭据省略]");
+ const formatted=preserveFormatting?redacted:redacted.replace(/[\r\n\t]+/g," ");
+ return formatted.length>max?formatted.slice(0,max)+"[内容截断]":formatted;
 };
 /** A past turn may have referenced local canvas nodes. Never widen that
  * past disclosure when the user narrows the scope on this request.
@@ -124,6 +125,27 @@ export function formatAssistantCanvasContext({policy,document,config={},loadTemp
   appendAssistantCanvasContext(lines,{policy:{...policy,scope:"selection"},document});
  }
  return boundedProviderContext(lines);
+}
+export function formatAssistantGenerationSettings({config,loadTemplate,document,node}){
+ const lines=[];
+ if(node){
+  const mode=node.type==="config"?node.metadata?.generationMode??"image":node.type;
+  const model=node.metadata?.model;
+  const channels=Array.isArray(config.channels)?config.channels:[];
+  const explicitChannel=channels.some(channel=>(channel.models??[]).some(item=>
+   item.capability===mode&&(model===item.name||model===channel.id+"::"+item.name)));
+  const explicitWorkflow=node.type==="comfy:workflow"||node.metadata?.comfyMediaPreset||node.metadata?.comfyWorkflowSelections?.[mode];
+  lines.push("目标节点："+safe(node.id,256)+"，模式："+safe(mode,40)+
+   (explicitWorkflow?"，显式绑定工作流":explicitChannel?"，显式渠道模型："+safe(model,128):"，继承默认设置"));
+  if(!explicitWorkflow&&(explicitChannel||!config.comfyWorkflowDefaults?.[mode])){
+   const keys=assistantChannelParameterKeys(mode);
+   if(node.type==="config")keys.push("generationMode");
+   if(keys.length)lines.push("可编辑渠道参数："+keys.join("、"));
+  }
+  formatSelectedWorkflowContext(lines,{selected:[node],connections:document.connections,loadTemplate,config,channels});
+ }
+ appendGenerationSettings(lines,config,loadTemplate);
+ return lines;
 }
 function appendGenerationSettings(lines,config,loadTemplate){
  const channels=Array.isArray(config.channels)?config.channels:[];

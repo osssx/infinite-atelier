@@ -31,13 +31,14 @@ const boundedProviderContext=(lines)=>{
  // Avoid cutting into the middle of a UTF-8 character.
  return bytes.length<=12000?value:bytes.subarray(0,12000).toString("utf8").replace(/\uFFFD$/,"");
 };
-export function buildAssistantTaskProviderContext({task,document,trustedOutputs=[],currentTurnMessageId=null,creativeDrafts=[]}){
+export function buildAssistantTaskProviderContext({task,document,trustedOutputs=[],currentTurnMessageId=null,creativeDrafts=[],config,loadTemplate}){
  const policy=task.contextPolicy??{includeContext:false,scope:"selection",includedIds:[]};
  const lines=[
   "原始任务要求："+safe(task.originalRequest,1500),
   "任务状态："+safe(task.status,40)+"（仅阶段状态；不得推断任何画布操作或脚本已经成功）",
   "有效计划版本："+Number(task.activePlanVersion??1)
  ];
+ if(policy.includeContext&&config)appendGenerationSettings(lines,config,loadTemplate);
  const facts=task.summary;
  if(facts?.version===1&&facts?.source==="server_derived"&&facts.execution?.currentPlan){
   const plan=facts.execution.currentPlan,model=facts.modelCalls??{},turns=facts.userTurns??{};
@@ -105,6 +106,7 @@ export function buildAssistantTaskProviderContext({task,document,trustedOutputs=
 export function formatAssistantCanvasContext({policy,document,config={},loadTemplate}){
  if(!policy.includeContext)return "用户未授权发送画布资料。不得引用本地图节点和连线。";
  const lines=["画布统计：节点 "+document.nodes.length+"，连线 "+document.connections.length];
+ appendGenerationSettings(lines,config,loadTemplate);
  const index=new Map(document.nodes.map(node=>[node.id,node]));
  const selected=policy.includedIds.slice(0,12).map(id=>index.get(id)).filter(Boolean);
  if(policy.scope==="overview"){
@@ -115,18 +117,29 @@ export function formatAssistantCanvasContext({policy,document,config={},loadTemp
   for(const edge of document.connections.slice(0,24))
    lines.push("连线：id="+safe(edge.id,256)+"，from="+safe(edge.fromNodeId,256)+"，to="+safe(edge.toNodeId,256));
  }
- const channels=Array.isArray(config.channels)?config.channels:[];
- for(const kind of ["text","image","video","audio"]){
-  const models=channels.flatMap(channel=>(channel.models??[]).filter(model=>model.capability===kind)
-   .map(model=>safe(channel.id,120)+"::"+safe(model.name,128))).slice(0,16);
-  if(models.length)lines.push(kind+" 生成模型："+models.join("、"));
- }
  if(selected.length){
   lines.push("下列正文和参数仅来自明确选中的节点。");
-  formatSelectedWorkflowContext(lines,{selected,connections:document.connections,loadTemplate,config,channels});
+  formatSelectedWorkflowContext(lines,{selected,connections:document.connections,loadTemplate,config,
+   channels:Array.isArray(config.channels)?config.channels:[]});
   appendAssistantCanvasContext(lines,{policy:{...policy,scope:"selection"},document});
  }
  return boundedProviderContext(lines);
+}
+function appendGenerationSettings(lines,config,loadTemplate){
+ const channels=Array.isArray(config.channels)?config.channels:[];
+ for(const kind of ["text","image","video","audio"]){
+  const models=channels.flatMap(channel=>(channel.models??[]).filter(model=>model.capability===kind)
+   .map(model=>safe(channel.id,120)+"::"+safe(model.name,128).trim()));
+  const workflow=kind==="text"?null:config.comfyWorkflowDefaults?.[kind];
+  const defaultModel=config[kind+"Model"];
+  if(workflow?.templateId&&workflow.templateRevision){
+   const template=loadTemplate?.(workflow.templateId,workflow.templateRevision);
+   lines.push(kind+" 新节点默认：ComfyUI 工作流 "+safe(template?.name||workflow.templateId,120));
+  }else if(models.includes(defaultModel)){
+   lines.push(kind+" 新节点默认渠道模型："+defaultModel);
+  }
+  if(models.length)lines.push(kind+" 可选渠道模型："+models.slice(0,16).join("、"));
+ }
 }
 const sensitivePort=/(?:secret|token|password|api.?key|credential|authorization|密钥|密码|令牌)/i;
 const outputKind={text:"STRING",image:"IMAGE",video:"VIDEO",audio:"AUDIO"};

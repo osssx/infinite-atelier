@@ -1,8 +1,36 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {buildAssistantTaskProviderContext} from "./assistant-task-context.mjs";
+import {buildAssistantTaskProviderContext,formatAssistantCanvasContext} from "./assistant-task-context.mjs";
 const step=(i,kind,status="succeeded",receiptTrust="server_committed",result={})=>({
  id:"step-"+i,kind,status,receiptTrust,result
+});
+test("assistant canvas context distinguishes the effective workflow default from available channel models",()=>{
+ const policy={includeContext:true,scope:"selection",includedIds:[]};
+ const document={nodes:[],connections:[]};
+ const config={
+  imageModel:"moss-channel::qwen-21",
+  channels:[{id:"default",models:[{name:"gpt-image-2",capability:"image"}]},
+   {id:"moss-channel",models:[{name:"qwen-21",capability:"image"}]}],
+  comfyWorkflowDefaults:{image:{templateId:"moss",templateRevision:"r1"}}
+ };
+ const loadTemplate=(id,revision)=>{
+  assert.equal(id,"moss");
+  assert.equal(revision,"r1");
+  return {name:"Moss Image（文生图）"};
+ };
+ const task={originalRequest:"创建生图节点",status:"ready",contextPolicy:policy};
+ for(const value of [
+  formatAssistantCanvasContext({policy,document,config,loadTemplate}),
+  buildAssistantTaskProviderContext({task,document,config,loadTemplate})
+ ]){
+  assert.match(value,/image 新节点默认：ComfyUI 工作流 Moss Image（文生图）/);
+  assert.match(value,/image 可选渠道模型：default::gpt-image-2、moss-channel::qwen-21/);
+  assert.doesNotMatch(value,/image 新节点默认渠道模型/);
+ }
+ const channelOnly=formatAssistantCanvasContext({policy,document,config:{...config,comfyWorkflowDefaults:{}}});
+ assert.match(channelOnly,/image 新节点默认渠道模型：moss-channel::qwen-21/);
+ const hidden=formatAssistantCanvasContext({policy:{...policy,includeContext:false},document,config,loadTemplate});
+ assert.doesNotMatch(hidden,/Moss Image|gpt-image-2/);
 });
 test("P3 factual Task context uses only trusted Step counts, preserves privacy after 20+ turns",()=>{
  const task={originalRequest:"创建分镜",status:"ready",activePlanVersion:1,

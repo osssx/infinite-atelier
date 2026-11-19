@@ -955,7 +955,10 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
          // Generic node serialization also includes unconfirmed metadata fields.
          nodes:[],
          connections:[]}:project.document;
+        const modelSettings=req.body.canvasActions&&frozenPolicy.includeContext?
+         db.prepare("SELECT value_json FROM ui_settings WHERE name='model_config'").get():null;
         taskContext=buildAssistantTaskProviderContext({task:{...snapshot,summary:scopedSummary,contextPolicy:frozenPolicy},document:scopedDocument,
+         config:modelSettings?JSON.parse(modelSettings.value_json):undefined,loadTemplate:registry.find,
          currentTurnMessageId:ref.turnMessageId,creativeDrafts,
          trustedOutputs:trustedAssistantTaskOutputs(db,{projectId:project.id,taskId:snapshot.id,planVersion:snapshot.activePlanVersion})
           .filter(output=>!chosenMaterials.length||creativeNodeIds.has(output.nodeId))});

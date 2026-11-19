@@ -714,6 +714,15 @@ function TextContent({ node, theme, isEditingContent, textareaRef, onContentChan
                 <div className="thin-scrollbar block h-full w-full overflow-y-auto break-words bg-transparent px-4 pt-0 pb-4"
                     data-canvas-text-preview
                     style={textStyle}
+                    onMouseDown={(event) => {
+                        const preview = event.currentTarget;
+                        if (event.target !== preview || preview.scrollHeight <= preview.clientHeight) return;
+
+                        const { left, width } = preview.getBoundingClientRect();
+                        // The canvas zoom scales the rendered scrollbar, but not the layout widths.
+                        const contentRight = left + width * (preview.clientLeft + preview.clientWidth) / preview.offsetWidth;
+                        if (event.clientX >= contentRight) event.stopPropagation();
+                    }}
                     onWheel={(event) => event.stopPropagation()}
                 >
                     {node.metadata?.content ? (

@@ -54,7 +54,7 @@ export function applyFrozenNodeParameterAction({document,action,resolve,config={
  }
  const metadata=node.metadata??{};
  if(metadata.comfyMediaPreset||metadata.comfyWorkflowSelections?.[mode]||
-  (!metadata.model&&config.comfyWorkflowDefaults?.[mode]))
+  (action.key!=="model"&&!metadata.model&&config.comfyWorkflowDefaults?.[mode]))
   throw fail("assistant_node_parameter_uses_workflow");
  if(!allowed[mode].has(action.key))throw fail("assistant_node_parameter_not_applicable");
  if(action.key==="model"){

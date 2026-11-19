@@ -76,11 +76,6 @@
   padding: 12px 15px 11px;
   border-bottom: 1px solid var(--assistant-border);
 }
-.canvas-assistant-settings-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
-  gap: 9px;
-}
 .canvas-assistant-field { min-width: 0; }
 .canvas-assistant-field-label {
   display: block;
@@ -517,9 +512,11 @@
 }
 .canvas-assistant-composer .canvas-assistant-draft-input:focus-visible { outline: none; }
 .canvas-assistant-composer-footer { display: flex; min-height: 37px; align-items: center; justify-content: space-between; gap: 6px; padding: 3px 5px 5px 12px; }
-.canvas-assistant-shortcut { min-width: 0; color: var(--assistant-muted); font-size: 10px; line-height: 1.4; }
+.canvas-assistant-composer-model { flex: 1; max-width: 240px; }
+.canvas-assistant-composer-model .canvas-assistant-select { height: 29px; }
 .canvas-assistant-send {
   display: inline-flex;
+  flex-shrink: 0;
   height: 29px;
   min-width: 29px;
   align-items: center;
@@ -548,7 +545,6 @@
 .canvas-assistant-header { min-height: 58px; padding: 10px 14px; gap: 10px; }
 .canvas-assistant-brand { width: 33px; height: 33px; border-radius: 11px; }
 .canvas-assistant-settings { padding: 9px 14px 10px; }
-.canvas-assistant-settings-grid { gap: 8px; }
 .canvas-assistant-select { height: 33px; }
 .canvas-assistant-context { margin-top: 8px; padding: 7px 9px; }
 .canvas-assistant-context-bar { flex-wrap: wrap; gap: 6px 7px; }

@@ -129,10 +129,15 @@ function mergeDurableTranscript(local:CanvasAssistantMessage[],turns:DurableTurn
   const user=source??{id:turn.turnId,role:"user",text:turn.userText};
   remote.push(user);
   emitted.add(user.id);
-  if(turn.answer!==undefined||localReply||turn.status==="needs_reconcile"||turn.status==="awaiting_followup"){
-   const answer=localReply?.meta!=="正在生成"?localReply:undefined;
-   remote.push(answer??{id:replyId,role:turn.answer===undefined?"error":"assistant",
-    text:turn.answer??(turn.status==="awaiting_followup"?"Skill 流程尚未完成，可查看运行记录。":"模型请求结果待对账")});
+  const statusText=turn.status==="failed"?(turn.errorCode?canvasAssistantErrorText(new Error(turn.errorCode)):"回复中断"):
+   turn.status==="needs_reconcile"?"模型请求结果待对账":
+   turn.status==="awaiting_followup"?"Skill 流程尚未完成，可查看运行记录。":undefined;
+  if(turn.answer!==undefined||localReply||statusText){
+   const finalLocal=localReply?.role==="assistant"&&
+    !["正在生成","正在恢复回复","回复中断","已停止生成"].includes(localReply.meta??"");
+   remote.push(turn.answer!==undefined?
+    (finalLocal?localReply:{id:replyId,role:"assistant",text:turn.answer}):
+    localReply??{id:replyId,role:"error",text:statusText??"回复中断"});
    emitted.add(replyId);
   }
   for(const note of localNotes.get(turn.turnId)??[]){
@@ -169,6 +174,7 @@ const assistantErrorMessages:Record<string,string>={
  assistant_upstream_retry_exhausted:"模型请求网络异常或超时，已自动重试 2 次仍未成功。请检查网络与模型服务状态后再试。",
  assistant_model_call_unknown:"模型请求可能已被服务商受理，但结果无法确认。已阻止自动重发以避免重复计费，请查看调用记录。",
  assistant_conversation_busy:"该会话已有请求正在处理，请等待已有请求结束。",
+ assistant_conversation_limit:"已达到项目的对话数量上限，请删除不需要的对话后再新建。",
  assistant_conversation_request_conflict:"这条消息的请求状态已变化，请刷新会话后再继续。",
  assistant_context_budget_insufficient:"本轮必要上下文超出模型请求预算，请缩短输入或减少画布资料。",
  assistant_model_call_in_progress:"相同任务模型请求正在执行，请勿重复提交。",
@@ -551,8 +557,16 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
    try{
     while(!controller.signal.aborted){
      if(requestId){
-      const state=await canvasApi<{state:string;response?:{answer?:string};errorCode?:string}>(
-       durableRequestPath(projectId,chatId,turnId,requestId),"GET",undefined,controller.signal);
+      let state;
+      try{
+       state=await canvasApi<{state:string;response?:{answer?:string};errorCode?:string}>(
+        durableRequestPath(projectId,chatId,turnId,requestId),"GET",undefined,controller.signal);
+      }catch(error){
+       if(controller.signal.aborted)break;
+       if(Date.now()>=deadline||(error instanceof CanvasApiError&&error.status>=400&&error.status<500))throw error;
+       await new Promise(resolve=>setTimeout(resolve,600));
+       continue;
+      }
       if(state.state==="completed"){text=state.response?.answer??"";update("已恢复");break;}
       if(state.state==="needs_reconcile"||state.state==="failed"){
        update(state.state==="needs_reconcile"?"模型请求结果待对账":"回复中断");break;
@@ -1154,17 +1168,6 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
    </header>
 
    <section className="canvas-assistant-settings" aria-label="助手配置">
-    <div className="canvas-assistant-settings-grid">
-     <div className="canvas-assistant-field">
-      <label className="canvas-assistant-field-label" htmlFor="canvas-assistant-model">文字模型</label>
-      <div className="canvas-assistant-select-wrap">
-       <Bot size={14} className="canvas-assistant-select-icon" aria-hidden="true"/>
-       <select id="canvas-assistant-model" className="canvas-assistant-select" value={chosenModel} onChange={event=>setModelRef(event.target.value)} disabled={sending} title={options.find(option=>option.value===chosenModel)?.label||"选择文字模型"}>
-        {!options.length?<option value="">未配置文字模型</option>:options.map(option=><option key={option.value} value={option.value}>{option.label}</option>)}
-       </select>
-       <ChevronDown size={13} className="canvas-assistant-select-chevron" aria-hidden="true"/>
-      </div>
-     </div>
      <div className="canvas-assistant-field">
       <label className="canvas-assistant-field-label" htmlFor="canvas-assistant-session">历史会话</label>
       <div className="canvas-assistant-select-wrap">
@@ -1176,8 +1179,6 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
        <ChevronDown size={13} className="canvas-assistant-select-chevron" aria-hidden="true"/>
       </div>
      </div>
-    </div>
-
     <div className="canvas-assistant-context">
      <div className="canvas-assistant-context-bar">
       <label className="canvas-assistant-context-toggle" title="在提问时附带只读画布资料">
@@ -1225,7 +1226,6 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
     </div>
     {resourceReferences.length?
       <p className="canvas-assistant-context-help">输入 @ 可引用文本、媒体、工作流等节点；图片最多 4 张可发送视觉内容，视频和音频仅提供节点信息。</p>:null}
-    {!options.length?<p className="mt-2 flex items-center gap-1 text-[11px]" style={{color:theme.node.muted}}><AlertCircle size={12}/>请先在设置中配置文字模型渠道。</p>:null}
    </section>
 
    {taskTracker.view}
@@ -1366,14 +1366,21 @@ export function CanvasAssistantPanel({projectId,projectTitle,open,onClose,sessio
       enableSkills projectId={projectId} skillCatalog={skills}
       className="canvas-assistant-draft-input" placeholder="提问或输入 / 指定 Skill，输入 @ 引用画布节点（默认自动匹配）…"/>
      <div className="canvas-assistant-composer-footer">
-      <span className="canvas-assistant-shortcut">Ctrl / ⌘ + Enter 发送 · @ 引用节点 · / 指定 Skill</span>
+      <div className="canvas-assistant-select-wrap canvas-assistant-composer-model">
+       <Bot size={14} className="canvas-assistant-select-icon" aria-hidden="true"/>
+       <select aria-label="文字模型" className="canvas-assistant-select" value={chosenModel} onChange={event=>setModelRef(event.target.value)} disabled={sending||!options.length} title={options.find(option=>option.value===chosenModel)?.label||"选择文字模型"}>
+        {!options.length?<option value="">未配置文字模型</option>:options.map(option=><option key={option.value} value={option.value}>{option.label}</option>)}
+       </select>
+       <ChevronDown size={13} className="canvas-assistant-select-chevron" aria-hidden="true"/>
+      </div>
       {sending?(
        <button type="button" className="canvas-assistant-send canvas-assistant-stop" aria-label="停止生成" onClick={stop}><Square size={13}/>停止</button>
       ):(
-       <button type="button" className="canvas-assistant-send" aria-label="发送消息" disabled={!extractSkillMentions(draft).text.trim()||!chosenModel} onClick={()=>void send()}><ArrowUp size={15}/>发送</button>
+       <button type="button" className="canvas-assistant-send" aria-label="发送消息" title="Ctrl / ⌘ + Enter 发送" disabled={!extractSkillMentions(draft).text.trim()||!chosenModel} onClick={()=>void send()}><ArrowUp size={15}/>发送</button>
       )}
      </div>
     </div>
+    {!options.length?<p className="mt-2 flex items-center gap-1 text-[11px]" style={{color:theme.node.muted}}><AlertCircle size={12}/>请先在设置中配置文字模型渠道。</p>:null}
     {skillError?<p className="canvas-assistant-skill-error" role="status">{skillError}</p>:null}
      <div className="canvas-assistant-hint">
       <span>AI 回复仅供参考</span>

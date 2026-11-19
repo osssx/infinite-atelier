@@ -59,6 +59,22 @@ describe("AI workflow preset scalar overrides",()=>{
   for(const [key,value] of [["count",2],["size","1024x1024"],["quality","high"]] as const)
    expect(()=>setAssistantNodeParameter(selected(),key,value,config)).toThrow(/set_workflow_param/);  expect(()=>setAssistantNodeParameter(media(),"count",2,config)).toThrow(/set_workflow_param/);
  });
+ it("allows a new image node to select a channel model over the global workflow default",()=>{
+  const model="default::gpt-image-2";
+  const configured:AiConfig={...config,channels:[{...config.channels[0],id:"default",
+   models:[{name:"gpt-image-2",capability:"image"}]}]};
+  const actions=parseAssistantCanvasActions([
+   {type:"create_node",ref:"image",nodeType:"image",title:"定妆照",prompt:"a dragon"},
+   {type:"set_node_param",nodeId:"image",key:"model",value:model}
+  ]);
+  const center={x:0,y:0};
+  const safe=applyAssistantCanvasActions({nodes:[],connections:[]},actions,"safe",center,undefined,configured);
+  expect(assistantWorkflowBinding(safe.nodes[0],configured)?.binding.templateId).toBe(template.id);
+  const result=applyAssistantCanvasActions(safe,actions,"dangerous",center,safe.refs,configured);
+  expect(result.nodes[0].metadata).toMatchObject({model,prompt:"a dragon"});
+  expect(assistantWorkflowBinding(result.nodes[0],configured)).toBeNull();
+  expect(()=>setAssistantNodeParameter(selected(),"model",model,configured)).toThrow(/解除绑定/);
+ });
  it("verifies pinned revision, scalar types, choices and excludes prompt/media ports",()=>{
   const source=selected();
   expect(()=>setAssistantWorkflowParameter(source,"missing",4,config,template)).toThrow(/不存在/);

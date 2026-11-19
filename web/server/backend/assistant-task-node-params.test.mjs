@@ -89,3 +89,19 @@ test("P3b global workflow fallback rejects ineffective ordinary channel params",
  assert.throws(()=>plan(fx,[{type:"set_node_param",nodeId:"img",key:"quality",value:"high"}]),
   {code:"assistant_node_parameter_uses_workflow"});
 });
+test("a Task can create an image node and select a channel model over the global workflow default",t=>{
+ const fx=fixture(t);
+ const model="default::gpt-image-2";
+ fx.db.prepare("UPDATE ui_settings SET revision=revision+1,value_json=? WHERE name='model_config'")
+  .run(JSON.stringify({channels:[{id:"default",models:[{name:"gpt-image-2",capability:"image"}]}],
+   comfyWorkflowDefaults:{image:{templateId:"preset",templateRevision:"a".repeat(64)}}}));
+ const candidate=plan(fx,[
+  {type:"create_node",ref:"portrait",nodeType:"image",title:"定妆照",prompt:"a fox"},
+  {type:"set_node_param",nodeId:"portrait",key:"model",value:model}
+ ]);
+ const result=execute(fx,candidate);
+ assert.equal(result.receipt.applied,2);
+ const node=result.project.document.nodes.find(n=>n.title==="定妆照");
+ assert.equal(node.metadata.model,model);
+ assert.equal(node.metadata.prompt,"a fox");
+});

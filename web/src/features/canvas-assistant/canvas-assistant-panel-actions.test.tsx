@@ -148,6 +148,37 @@ it("merges older durable pages with the local transcript in order without duplic
  expect(messages.map(message=>message.match(/旧版记录|最早问题|最早回复|中间问题|中间回复|最近问题|最近回复/)?.[0]))
   .toEqual(["旧版记录","最早问题","最早回复","中间问题","中间回复","最近问题","最近回复"]);
 });
+it("replaces interrupted local stream text with the saved answer and displays durable errors",async()=>{
+ const fixture=setup([],[],[{id:"chat",title:"历史",createdAt:"now",updatedAt:"now",messages:[
+  {id:"interrupted",role:"user",text:"已恢复的问题"},
+  {id:"interrupted-reply",role:"assistant",text:"断流时的部分文本",meta:"回复中断"}
+ ]}]);
+ mocks.conversationApi.mockResolvedValue({turns:[
+  {turnId:"interrupted",userText:"已恢复的问题",status:"completed",answer:"保存的完整回复"},
+  {turnId:"failed",userText:"另一个问题",status:"failed",errorCode:"assistant_upstream_rate_limited"}
+ ],nextBefore:null});
+ await act(async()=>{root!.render(createElement(fixture.Harness));});
+ expect(container!.textContent).toContain("保存的完整回复");
+ expect(container!.textContent).not.toContain("断流时的部分文本");
+ expect(container!.textContent).toContain("模型渠道请求过于频繁");
+});
+it("retries a transient error while recovering a saved stream",async()=>{
+ const fixture=setup([],[],[{id:"chat",title:"历史",createdAt:"now",updatedAt:"now",messages:[]}]);
+ const key="infinite-atelier:assistant-stream:p1";
+ sessionStorage.setItem(key,["chat","turn","request"].join("\0"));
+ let attempts=0;
+ mocks.conversationApi.mockImplementation(async(url:string)=>{
+  if(!url.endsWith("/turns/turn/request"))return {turns:[],nextBefore:null};
+  if(++attempts===1)throw new CanvasApiError("backend_unavailable",503);
+  return {state:"completed",response:{answer:"重连后的已保存回复"}};
+ });
+ try{
+  await act(async()=>{root!.render(createElement(fixture.Harness));});
+  await act(async()=>{await vi.waitFor(()=>expect(sessionStorage.getItem(key)).toBeNull(),{timeout:2000});});
+  expect(attempts).toBe(2);
+  expect(container!.textContent).toContain("重连后的已保存回复");
+ }finally{sessionStorage.removeItem(key);}
+});
 describe("plain-text Task planning must not become canvas execution",()=>{
  it("sends the user's storyboarding request as text-only and ignores unwanted model actions",async()=>{
   const prompt="请帮我规划一个包含 3 个镜头的短视频分镜，只输出文字方案。不要修改画布、调用 Skill 或提交任何图片和视频生成任务。后续我会继续完善这个方案。";

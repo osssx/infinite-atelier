@@ -88,17 +88,19 @@ export function setAssistantNodeParameter(
   if(node.type!==CanvasNodeType.Config)throw Error("只有配置节点可调整生成模式。");
   return {...node,metadata:{...node.metadata,generationMode:value as CanvasGenerationMode}};
  }
-  const mode=assistantNodeMode(node);
-  if(node.metadata?.comfyMediaPreset||node.metadata?.comfyWorkflowSelections?.[mode==="text"?"image":mode]||
-   config&&assistantWorkflowBinding(node,config))
-   throw Error("该节点使用 ComfyUI 工作流预设，请使用 set_workflow_param 按实际工作流端口 ID 修改参数；普通渠道参数不会生效。"); const allowed=mode==="text"?["model","reasoningEffort","textCount"]:
+ const mode=assistantNodeMode(node);
+ const hasExplicitWorkflow=Boolean(node.metadata?.comfyMediaPreset||
+  node.metadata?.comfyWorkflowSelections?.[mode==="text"?"image":mode]);
+ if(key!=="model"&&(hasExplicitWorkflow||config&&assistantWorkflowBinding(node,config)))
+  throw Error("该节点使用 ComfyUI 工作流预设，请使用 set_workflow_param 按实际工作流端口 ID 修改参数；普通渠道参数不会生效。");
+ const allowed=mode==="text"?["model","reasoningEffort","textCount"]:
   mode==="image"?["model","quality","size","count"]:
   mode==="video"?["model","seconds","videoRatio","vquality","generateAudio"]:
   ["model","audioVoice","audioFormat","audioSpeed","audioInstructions"];
  if(!allowed.includes(key))throw Error("该参数不适用于当前节点生成模式。");
  if(key==="model"){
   if(!config)throw Error("缺少可用模型配置，未修改节点。");
-  if(node.metadata?.comfyMediaPreset||node.metadata?.comfyWorkflowSelections?.[mode==="text"?"image":mode])
+  if(hasExplicitWorkflow)
    throw Error("节点已绑定 ComfyUI 预设，请先在参数面板解除绑定后切换渠道模型。");
   if(!selectableModelsByCapability(config,mode).includes(value as string))
    throw Error("模型未在当前渠道配置中找到，或不支持节点生成类型。");

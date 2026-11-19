@@ -250,15 +250,41 @@ test("duplicate managed SSE and JSON requests use durable replies across a datab
  assert.equal(paid,1);
  const chats=await app.inject({url:"/api/v1/projects/p/chats"});
  assert.equal(chats.json().sessions[0].id,"chat");
+ assert.equal(chats.json().activeChatId,"chat");
+ const savedSelection=await app.inject({method:"PUT",url:"/api/v1/projects/p/chats",payload:{
+  sessions:chats.json().sessions,activeChatId:null,expectedRevision:chats.json().revision
+ }});
+ assert.equal(savedSelection.statusCode,200,savedSelection.body);
  const interruptedBody=input("chat","unresolved","中断前发送");
  const reserved=beginConversationRequest(db,{projectId,chatSessionId:"chat",turnId:"unresolved",
   requestId:"unresolved-model",userText:interruptedBody.messages[0].content,requestPayload:interruptedBody});
  startConversationSubmission(db,reserved,plain);
  await app.close();db.close();
  db=openMainDatabase(root);app=createApp(db,onPayload);
+ assert.equal((await app.inject({url:"/api/v1/projects/p/chats"})).json().activeChatId,null);
  assert.equal((await app.inject({url:durableURL("chat")+"/turns/unresolved/unresolved-model"})).json().state,"needs_reconcile");
  assert.equal((await send(app,interruptedBody)).json().code,"assistant_model_call_unknown");
  assert.equal(paid,1);
+});
+
+test("an overflowing recovered catalog stays writable and new turns cannot create more sessions",async t=>{
+ let posts=0;
+ const {app,db}=fixture(t,()=>{posts++;return normalResponse("答复");});
+ const insert=db.prepare(`INSERT INTO assistant_conversation_turns(project_id,session_id,turn_id,user_text,created_at)
+  VALUES(?,?,?,?,?)`);
+ for(let index=0;index<501;index++)insert.run(projectId,"chat-"+index,"turn","已恢复会话",index);
+ const url="/api/v1/projects/p/chats";
+ const catalog=(await app.inject({url})).json();
+ assert.equal(catalog.sessions.length,500);
+ assert.equal(catalog.activeChatId,"chat-500");
+ const saved=await app.inject({method:"PUT",url,payload:{
+  sessions:catalog.sessions,activeChatId:null,expectedRevision:catalog.revision
+ }});
+ assert.equal(saved.statusCode,200,saved.body);
+ const rejected=await send(app,input("one-more","turn","超过上限"));
+ assert.equal(rejected.statusCode,409,rejected.body);
+ assert.equal(rejected.json().code,"assistant_conversation_limit");
+ assert.equal(posts,0);
 });
 
 test("concurrent managed turns are isolated and ambiguous requests are never submitted again",async t=>{

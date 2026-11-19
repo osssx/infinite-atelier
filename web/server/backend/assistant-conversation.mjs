@@ -7,6 +7,7 @@ const fail=(code,statusCode=409)=>Object.assign(Error(code),{code,statusCode});
 const digest=value=>createHash("sha256").update(stableJson(value)).digest("hex");
 const emptyPolicy={includeContext:false,scope:"selection",includedIds:[]};
 const MAX_MESSAGES=20,MAX_BYTES=96*1024;
+export const MAX_CANVAS_CHAT_SESSIONS=500,MAX_CANVAS_CHAT_SNAPSHOT_BYTES=4*1024*1024;
 const CHECKPOINT_VERSION=1,CHECKPOINT_GROUP=8,CHECKPOINT_ENTRIES=16;
 const CHECKPOINT_BYTES=8*1024-1700;
 const SAFE_SKILL_FALLBACK_CODES=new Set(["assistant_skill_catalog_changed","assistant_skill_unavailable",
@@ -99,6 +100,15 @@ export function beginConversationRequest(db,{projectId,chatSessionId,turnId,requ
   if(active)throw fail("assistant_conversation_busy");
   if(continuation&&(!turn||db.prepare("SELECT MAX(seq) AS seq FROM assistant_conversation_turns WHERE project_id=? AND session_id=?")
    .get(projectId,chatSessionId).seq!==turn.seq))throw fail("assistant_conversation_request_conflict");
+  if(!turn&&!db.prepare("SELECT 1 FROM assistant_conversation_turns WHERE project_id=? AND session_id=? LIMIT 1")
+   .get(projectId,chatSessionId)){
+   const snapshot=db.prepare("SELECT sessions_json FROM project_chats WHERE project_id=?").get(projectId);
+   const ids=new Set(JSON.parse(snapshot?.sessions_json??"[]").map(session=>session.id));
+   for(const row of db.prepare("SELECT DISTINCT session_id FROM assistant_conversation_turns WHERE project_id=?").all(projectId))
+    ids.add(row.session_id);
+   ids.add(chatSessionId);
+   if(ids.size>MAX_CANVAS_CHAT_SESSIONS)throw fail("assistant_conversation_limit");
+  }
   const seq=turn?.seq??Number(db.prepare("INSERT INTO assistant_conversation_turns(project_id,session_id,turn_id,user_text,task_id,created_at) VALUES(?,?,?,?,?,?)")
    .run(projectId,chatSessionId,turnId,storedUserText,taskId,Date.now()).lastInsertRowid);
   db.prepare("INSERT INTO assistant_conversation_requests(turn_seq,request_id,digest,state,policy_json) VALUES(?,?,?,'pending',?)")
@@ -174,16 +184,25 @@ export function overlayConversationCatalog(db,projectId,snapshot){
  const filtered=filterConversationSnapshot(db,projectId,snapshot);
  const sessions=filtered.sessions;
  const known=new Set(sessions.map(session=>session.id));
+ let snapshotBytes=Buffer.byteLength(stableJson(sessions));
  const managed=db.prepare(`SELECT session_id,MIN(created_at) AS created_at,MAX(created_at) AS updated_at
-  FROM assistant_conversation_turns WHERE project_id=? GROUP BY session_id ORDER BY updated_at DESC`).all(projectId);
+  FROM assistant_conversation_turns WHERE project_id=? GROUP BY session_id ORDER BY updated_at DESC,MAX(seq) DESC`).all(projectId);
  for(const row of managed){
+  if(sessions.length>=MAX_CANVAS_CHAT_SESSIONS)break;
   if(known.has(row.session_id))continue;
   const first=db.prepare("SELECT user_text FROM assistant_conversation_turns WHERE project_id=? AND session_id=? ORDER BY seq LIMIT 1")
    .get(projectId,row.session_id);
-  sessions.push({id:row.session_id,title:first.user_text.slice(0,36),messages:[],
-   createdAt:new Date(row.created_at).toISOString(),updatedAt:new Date(row.updated_at).toISOString()});
+  const recovered={id:row.session_id,title:first.user_text.slice(0,36),messages:[],
+   createdAt:new Date(row.created_at).toISOString(),updatedAt:new Date(row.updated_at).toISOString()};
+  const bytes=Buffer.byteLength(stableJson(recovered))+(sessions.length?1:0);
+  if(snapshotBytes+bytes>MAX_CANVAS_CHAT_SNAPSHOT_BYTES)continue;
+  sessions.push(recovered);
+  snapshotBytes+=bytes;
  }
- const activeChatId=filtered.activeChatId??managed[0]?.session_id??null;
+ // Only infer a selection from recovered turns before the first chat save.
+ // A saved null is the explicit selection of a new, blank conversation.
+ const recoverSelection=snapshot.revision===1&&snapshot.sessions.length===0;
+ const activeChatId=filtered.activeChatId??(recoverSelection?sessions[0]?.id:null)??null;
  return {...snapshot,sessions,activeChatId};
 }
 

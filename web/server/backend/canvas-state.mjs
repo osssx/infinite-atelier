@@ -1,5 +1,6 @@
 import {writeTransaction,stableJson,assertNoRawCredentials} from "./repository.mjs";
-import {filterConversationSnapshot,overlayConversationCatalog} from "./assistant-conversation.mjs";
+import {filterConversationSnapshot,overlayConversationCatalog,
+ MAX_CANVAS_CHAT_SESSIONS,MAX_CANVAS_CHAT_SNAPSHOT_BYTES} from "./assistant-conversation.mjs";
 const fail=(code,statusCode=400,details)=>Object.assign(Error(code),{code,statusCode,details});
 export const DEFAULT_VIEWPORT=Object.freeze({x:0,y:0,k:1});
 function activeProject(db,id){
@@ -14,7 +15,7 @@ function encodeViewport(value){
  return stableJson({x:value.x,y:value.y,k:value.k});
 }
 function encodeChats(sessions,activeChatId){
- if(!Array.isArray(sessions)||sessions.length>500||!(activeChatId===null||
+ if(!Array.isArray(sessions)||sessions.length>MAX_CANVAS_CHAT_SESSIONS||!(activeChatId===null||
   (typeof activeChatId==="string"&&activeChatId.length>0&&activeChatId.length<=128)))
   throw fail("invalid_canvas_chats");
  const ids=new Set();
@@ -28,7 +29,7 @@ function encodeChats(sessions,activeChatId){
  if(activeChatId!==null&&!ids.has(activeChatId))throw fail("invalid_canvas_chats");
  assertNoRawCredentials({sessions});
  const json=stableJson(sessions);
- if(Buffer.byteLength(json)>4*1024*1024)throw fail("canvas_chats_too_large",413);
+ if(Buffer.byteLength(json)>MAX_CANVAS_CHAT_SNAPSHOT_BYTES)throw fail("canvas_chats_too_large",413);
  return json;
 }
 export function initialCanvasState(db,id,{viewport,chatSessions,activeChatId}={}){

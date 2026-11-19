@@ -12,9 +12,9 @@ for await(const line of createInterface({input:process.stdin,crlfDelay:Infinity}
  let sample;
  try{sample=JSON.parse(line)}catch{continue}
  if(sample?.event!=="assistant_prompt_usage"&&sample?.event!=="assistant_prompt_turn_usage")continue;
- const {provider,channelId,model,mode,kind,stablePromptPrefix,batchHistory,inputTokens,
+ const {provider,channelId,model,mode,kind,stablePromptPrefix,batchHistory,plainCanvasChat,inputTokens,
   cachedInputTokens,firstTokenMs,elapsedMs}=sample;
- const cohort={provider,channelId,model,mode,stablePromptPrefix,batchHistory};
+ const cohort={provider,channelId,model,mode,stablePromptPrefix,batchHistory,plainCanvasChat};
  if(sample.event==="assistant_prompt_turn_usage"){
   const key=JSON.stringify(cohort);
   const group=turns.get(key)??{...cohort,turns:0,fullyReportedTurns:0,inputTokens:0};

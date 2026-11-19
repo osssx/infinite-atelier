@@ -35,7 +35,7 @@ import {getUiSetting,putUiSetting} from "./ui-settings.mjs";
 import {listScriptAssetReconciliation,reconcileScriptAsset,resumeReconciledVideoJob} from "./script-asset-reconciliation.mjs";
 import {registerShotGroupRoutes} from "./shot-group-routes.mjs";
 import {createAssistantChatStreamLedger} from "./assistant-chat-stream-ledger.mjs";
-import {assistantCurrentReferenceData} from "./assistant-chat.mjs";
+import {assistantCurrentReferenceData,MAX_ASSISTANT_MESSAGE_BYTES} from "./assistant-chat.mjs";
 import {assertConversationTaskTurn,beginConversationRequest,buildConversationMessages,completeConversationRequest,
  completeConversationRequestInTransaction,failConversationRequest,findConversationRequest,listConversationTurns,ordinaryConversationPolicy,removeConversation,
  resolveConversationToolReferences,sanitizeConversationReply,startConversationSubmission} from "./assistant-conversation.mjs";
@@ -1022,10 +1022,8 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
        const mode=proposalMode?"semantic_proposal":readMode?"agent_read":req.body.skills?"skill":
         ref?"task":req.body.canvasActions?"canvas":"chat";
        const rollout={channelId:req.body.channelId,provider:req.body.provider,model:req.body.model,mode};
-       const stablePromptPrefix=Boolean(conversation&&assistantCacheRollout({...rollout,stage:"prefix"}));
+       let stablePromptPrefix=Boolean(conversation&&assistantCacheRollout({...rollout,stage:"prefix"}));
        const batchHistory=Boolean(conversation&&assistantCacheRollout({...rollout,stage:"batch_history"}));
-       const promptCohort={...rollout,stablePromptPrefix,batchHistory};
-       if(onAssistantPromptTurnUsage)promptTurnUsage={...promptCohort,posts:0,inputReports:0,inputTokens:0};
        let liveToolContext="";
        let plainCanvasChat=false;
        if(conversation){
@@ -1039,8 +1037,14 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
           taskContext=formatAssistantCanvasContext({policy:frozenPolicy,document:project.document,
            config:config?JSON.parse(config.value_json):{},loadTemplate:registry.find});
          }
-        const reservedBytes=stablePromptPrefix?Buffer.byteLength(assistantCurrentReferenceData({
+        let reservedBytes=stablePromptPrefix?Buffer.byteLength(assistantCurrentReferenceData({
          taskContext:plainCanvasChat?"":taskContext,liveToolContext,skillContext:skill.context,quoteContext}).text):0;
+        // Keep the legacy layout available when the user turn and independently
+        // bounded system context fit separately but would not fit together.
+        if(reservedBytes&&Buffer.byteLength(messages.at(-1).content)+reservedBytes>MAX_ASSISTANT_MESSAGE_BYTES){
+         stablePromptPrefix=false;
+         reservedBytes=0;
+        }
         const built=buildConversationMessages(db,conversation,{current:messages.at(-1),policy:frozenPolicy,project,
          restrict,reservedBytes,retainedHistoryMode:batchHistory?{mode,taskId:ref?.taskId??null}:null,
          onDiagnostic:key=>conversationMetrics[key]++});
@@ -1050,6 +1054,8 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
         if(!stablePromptPrefix&&liveToolContext&&Buffer.byteLength(conversationMemory+"\n"+liveToolContext)<8*1024)
          conversationMemory+="\n当前重新核验的历史工具节点：\n"+liveToolContext;
        }
+       const promptCohort={...rollout,stablePromptPrefix,batchHistory,plainCanvasChat};
+       if(onAssistantPromptTurnUsage)promptTurnUsage={...promptCohort,posts:0,inputReports:0,inputTokens:0};
        if(ref&&req.body.visualContext){
         // A confirmed text-material selection narrows this request to those
         // references; an older canvas selection cannot also authorize media.
@@ -1065,6 +1071,8 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
        const {skills:_selection,visualContext:_visual,task:_task,...chatInput}=req.body;
        const result=await assistantChat({...chatInput,messages,conversationMemory,skillContext:skill.context,
         stablePromptPrefix,plainCanvasChat,liveToolContext:stablePromptPrefix?liveToolContext:"",
+        compatibleStreamUsage:req.body.provider==="openai_compatible"&&
+         process.env.ATELIER_ASSISTANT_CACHE_STREAM_USAGE_CHANNELS?.split(",").some(id=>id.trim()===req.body.channelId),
         onPromptUsage:onAssistantPromptUsage||promptTurnUsage?sample=>{
          if(promptTurnUsage){
           promptTurnUsage.posts++;

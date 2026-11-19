@@ -45,10 +45,11 @@ test("prompt telemetry distinguishes zero from missing and captures the final SS
  const sse=packets=>new Response(packets.map(packet=>"data: "+JSON.stringify(packet)+"\n\n").join("")+
   "data: [DONE]\n\n",{headers:{"content-type":"text/event-stream"}});
  const answers=[
-  sse(frames),
+  sse([...frames,{choices:[],usage:{completion_tokens:1}},{choices:[],usage:{}}]),
   Response.json({data:{choices:[{message:{content:"答"}}],usage:{prompt_tokens:1536}}}),
   sse([{type:"response.output_text.delta",delta:"答"},
-   {type:"response.completed",response:{usage:{input_tokens:2048,input_tokens_details:{cached_tokens:1024}}}}])
+   {type:"response.completed",response:{usage:{input_tokens:2048,input_tokens_details:{cached_tokens:1024}}}}]),
+  sse(frames)
  ];
  const ask=createAssistantChatService({vault,compatibleUpstreamCall:async(_url,{body})=>{
   requests.push(JSON.parse(body));
@@ -59,12 +60,14 @@ test("prompt telemetry distinguishes zero from missing and captures the final SS
  await ask({...input,stream:true});
  await ask(input);
  await ask({...input,stream:true});
+ await ask({...input,stream:true,compatibleStreamUsage:true});
  assert.deepEqual(samples.map(({inputTokens,cachedInputTokens})=>[inputTokens,cachedInputTokens]),
-  [[1536,0],[1536,null],[2048,1024]]);
+  [[1536,0],[1536,null],[2048,1024],[1536,0]]);
  assert.ok(samples.every(sample=>sample.elapsedMs>=0));
  assert.ok(samples[0].firstTokenMs>=0&&samples[2].firstTokenMs>=0);
  assert.equal(samples[1].firstTokenMs,null);
- assert.ok(requests.every(request=>!("stream_options" in request)));
+ assert.ok(requests.slice(0,3).every(request=>!("stream_options" in request)));
+ assert.deepEqual(requests[3].stream_options,{include_usage:true});
  const toolPayload=await readSkillStream(sse([
   {choices:[{index:0,delta:{content:"答"},finish_reason:"stop"}]},{choices:[],usage}
  ]));

@@ -66,6 +66,18 @@ test("plain chat appends exact turns and excludes canvas context after revocatio
  assert.equal(captured[3].messages.at(-1).content,"问题 revoked");
  assert.doesNotMatch(JSON.stringify(captured[3]),new RegExp(marker));
 });
+
+test("large managed turns keep independently bounded canvas references",async t=>{
+ const captured=[],samples=[];
+ const {app}=fixture(t,payload=>{captured.push(payload);return normalResponse("答复");},
+  {assistantCacheRollout:()=>true,onAssistantPromptUsage:sample=>samples.push(sample)});
+ const text="x".repeat(96*1024-8);
+ const result=await send(app,input("large","one",text,{conversationContext:selected}));
+ assert.equal(result.statusCode,200,result.body);
+ assert.equal(captured[0].messages.at(-1).content,text);
+ assert.ok(captured[0].messages[0].content.includes(marker));
+ assert.equal(samples[0].stablePromptPrefix,false);
+});
 test("managed chats default to both cache optimizations and can roll each back independently",async t=>{
  const names=["PREFIX","BATCH_HISTORY","PLAIN_CHAT","CHANNELS","MODELS","MODES"].map(name=>"ATELIER_ASSISTANT_CACHE_"+name);
  const previous=new Map(names.map(name=>[name,process.env[name]]));
@@ -76,9 +88,9 @@ test("managed chats default to both cache optimizations and can roll each back i
   }
  });
  for(const name of names)delete process.env[name];
- const samples=[],captured=[];
+ const samples=[],captured=[],turns=[];
  const {app}=fixture(t,payload=>{captured.push(payload);return normalResponse("答复");},
-  {onAssistantPromptUsage:sample=>samples.push(sample)});
+  {onAssistantPromptUsage:sample=>samples.push(sample),onAssistantPromptTurnUsage:sample=>turns.push(sample)});
  const ask=async turn=>{
   const response=await send(app,input("rollout",turn,"测试 "+turn));
   assert.equal(response.statusCode,200,response.body);
@@ -87,9 +99,13 @@ test("managed chats default to both cache optimizations and can roll each back i
  };
  assert.deepEqual(await ask("default"),[true,true]);
  assert.equal(captured.at(-1).messages.at(-1).content,"测试 default");
+ assert.equal(samples.at(-1).plainCanvasChat,true);
+ assert.equal(turns.at(-1).plainCanvasChat,true);
  process.env.ATELIER_ASSISTANT_CACHE_PLAIN_CHAT="0";
  assert.deepEqual(await ask("plain-off"),[true,true]);
  assert.match(captured.at(-1).messages.at(-1).content,/<Current turn reference data>/);
+ assert.equal(samples.at(-1).plainCanvasChat,false);
+ assert.equal(turns.at(-1).plainCanvasChat,false);
  delete process.env.ATELIER_ASSISTANT_CACHE_PLAIN_CHAT;
  process.env.ATELIER_ASSISTANT_CACHE_PREFIX="0";
  assert.deepEqual(await ask("prefix-off"),[false,true]);

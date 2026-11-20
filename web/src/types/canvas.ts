@@ -69,6 +69,7 @@ export type CanvasNodeMetadata = {
     dramaConfirmed?: string;
     dramaFilmStyle?: string;
     dramaStage?: string;
+    dramaShotId?: string;
     dramaAssetReferences?: import("@/features/canvas-assistant/canvas-drama-pipeline").DramaAssetReference[];
     targetEpisodes?: number;
     sourceFilename?: string;

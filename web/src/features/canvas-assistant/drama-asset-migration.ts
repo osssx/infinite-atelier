@@ -61,3 +61,39 @@ export function mergeLegacyDramaAssets(nodes: CanvasNodeData[], connections: Can
         changed:true,
     };
 }
+
+export function mergeLegacyDramaFirstFrames(nodes: CanvasNodeData[], connections: CanvasConnection[]) {
+    const byId = new Map(nodes.map(node => [node.id, node]));
+    const removed = new Map<string, string>();
+    for (const node of nodes) {
+        if (node.type !== "drama:first_frames" ||
+            [node.metadata?.dramaDraft, node.metadata?.dramaConfirmed, node.metadata?.content].some(value => value?.trim())) continue;
+        const incoming = connections.filter(edge => edge.toNodeId === node.id);
+        const outgoing = connections.filter(edge => edge.fromNodeId === node.id);
+        const storyboardEdges = incoming.filter(edge => byId.get(edge.fromNodeId)?.type === "drama:storyboard");
+        if (storyboardEdges.length !== 1 || [...incoming, ...outgoing].some(edge => edge.fromPortId || edge.toPortId)) continue;
+        const storyboard = byId.get(storyboardEdges[0].fromNodeId);
+        if (!storyboard || storyboard.metadata?.groupId !== node.metadata?.groupId ||
+            incoming.some(edge => edge.fromNodeId !== storyboard.id &&
+                (byId.get(edge.fromNodeId)?.type !== "drama:assets" ||
+                 !connections.some(input => input.fromNodeId === edge.fromNodeId && input.toNodeId === storyboard.id))) ||
+            outgoing.some(edge => byId.get(edge.toNodeId)?.type !== "image")) continue;
+        removed.set(node.id, storyboard.id);
+    }
+    if (!removed.size) return { nodes, connections, changed: false };
+    const seen = new Set(connections.filter(edge => !removed.has(edge.fromNodeId) && !edge.fromPortId && !edge.toPortId)
+        .map(edge => JSON.stringify([edge.fromNodeId, edge.toNodeId])));
+    return {
+        nodes: nodes.filter(node => !removed.has(node.id)),
+        connections: connections.flatMap(edge => {
+            if (removed.has(edge.toNodeId)) return [];
+            const source = removed.get(edge.fromNodeId);
+            if (!source) return [edge];
+            const pair = JSON.stringify([source, edge.toNodeId]);
+            if (seen.has(pair)) return [];
+            seen.add(pair);
+            return [{ ...edge, fromNodeId: source }];
+        }),
+        changed: true,
+    };
+}

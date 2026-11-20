@@ -81,9 +81,9 @@ import { CanvasNodePromptPanel, type CanvasNodeGenerationMode } from "@/componen
 import { CanvasToolbar } from "@/components/canvas/canvas-toolbar";
 import { DramaPipelineNodePanel, isDramaPipelineNode } from "@/features/canvas-assistant/drama-pipeline-node-panel";
 import { DramaSourceNode } from "@/features/canvas-assistant/drama-source-node";
-import { isInlineDramaNode } from "@/features/canvas-assistant/canvas-drama-pipeline";
-import { mergeLegacyDramaAssets } from "@/features/canvas-assistant/drama-asset-migration";
-import type { DramaFirstFrameInput } from "@/features/canvas-assistant/drama-pipeline-media";
+import { isInlineDramaNode, readStoryboardDraft } from "@/features/canvas-assistant/canvas-drama-pipeline";
+import { mergeLegacyDramaAssets, mergeLegacyDramaFirstFrames } from "@/features/canvas-assistant/drama-asset-migration";
+import { buildDramaVideoConfigGraph, findDramaVideoConfigs } from "@/features/canvas-assistant/drama-video-config";
 import { AssetPickerModal, type InsertAssetPayload } from "@/components/canvas/asset-picker-modal";
 import { CanvasSidePanel } from "@/components/canvas/canvas-side-panel";
 import { CanvasZoomControls } from "@/components/canvas/canvas-zoom-controls";
@@ -689,18 +689,19 @@ function AtelierCanvasPage() {
             }
             if(cancelled)return;
             const mergedAssets = mergeLegacyDramaAssets(project.nodes, project.connections);
-            const resetNodes=resetInterruptedGeneration(mergedAssets.nodes);
+            const mergedDrama = mergeLegacyDramaFirstFrames(mergedAssets.nodes, mergedAssets.connections);
+            const resetNodes=resetInterruptedGeneration(mergedDrama.nodes);
             const restoredNodes = (await hydrateCanvasImages(resetNodes)).map(node =>
                 isInlineDramaNode(node.type) && node.width === 340 && node.height === 200
                     ? {...node, height: node.type === "drama:source" ? 340 : 400}
                     : node);
             const restoredSessions = await hydrateAssistantImages(project.chatSessions || []);
             if (cancelled) return;
-            const restoredConnections=reconcileComfyArtifactConnections(restoredNodes,mergedAssets.connections,nanoid);
+            const restoredConnections=reconcileComfyArtifactConnections(restoredNodes,mergedDrama.connections,nanoid);
             // Only a real interrupted-generation reset or invalid connection
             // repair should persist on first load. Image hydration and local
             // default-instance presentation are not user edits.
-            const needsRecoverySave=mergedAssets.changed || initialHydrationNeedsGraphSave({
+            const needsRecoverySave=mergedAssets.changed || mergedDrama.changed || initialHydrationNeedsGraphSave({
                 persistedNodes:project.nodes,persistedConnections:project.connections,
                 resetNodes,reconciledConnections:restoredConnections
             });
@@ -4117,26 +4118,26 @@ function AtelierCanvasPage() {
             })();
             const ratio = pipelineSource?.metadata?.videoRatio;
             const style = pipelineSource?.metadata?.dramaFilmStyle?.trim();
-            const directAssets = panelNode.type === "drama:first_frames" ? nodes.find(item => item.type === "drama:assets" &&
+            const directAssets = panelNode.type === "drama:storyboard" ? nodes.find(item => item.type === "drama:assets" &&
                 connections.some(edge => edge.fromNodeId === item.id && edge.toNodeId === panelNode.id)) : undefined;
             return isDramaPipelineNode(panelNode.type) ? <DramaPipelineNodePanel key={panelNode.id} node={panelNode} projectId={projectId}
                 legacyAssetPlanning={panelNode.type === "drama:assets" && connections.some(edge => edge.fromNodeId === panelNode.id &&
                     nodes.some(item => item.id === edge.toNodeId && item.type === "drama:asset_references"))}
-                mergedReferences={directAssets ? directAssets.metadata?.dramaAssetReferences ?? [] : undefined}
+                mergedReferences={directAssets?.metadata?.dramaAssetReferences}
                 onPickCanvasImage={onPick => startNodeReferenceSelection(panelNode.id, onPick)}
                 productionContext={[ratio && `视频画幅：${ratio}`, style && `影片风格：${style}`].filter(Boolean).join("\n")}
                 upstreamText={nodes.find(item => item.type === "drama:source" && connections.some(edge => edge.fromNodeId === item.id && edge.toNodeId === panelNode.id))?.metadata?.dramaConfirmed}
                 upstreamArtifacts={nodes.filter(item => item.type !== "drama:source" && connections.some(edge => edge.fromNodeId === item.id && edge.toNodeId === panelNode.id)).flatMap(item => item.metadata?.dramaConfirmed ? [item.metadata.dramaConfirmed] : [])}
-                savedAssetReferences={panelNode.type === "drama:first_frames" ? nodes.find(item =>
-                    item.type === "drama:asset_references" && connections.some(edge =>
-                        edge.fromNodeId === item.id && edge.toNodeId === panelNode.id))?.metadata?.dramaDraft : undefined}
-                confirmedAssetPlan={panelNode.type === "drama:first_frames" ? directAssets?.metadata?.dramaConfirmed ?? (() => {
-                    const parentIds = new Set(connections.filter(edge => edge.toNodeId === panelNode.id).map(edge => edge.fromNodeId));
-                    const assetParents = new Set(nodes.filter(item => parentIds.has(item.id) &&
-                        (item.type === "drama:asset_references" || item.type === "drama:storyboard")).map(item => item.id));
-                    return nodes.find(item => item.type === "drama:assets" && item.metadata?.dramaConfirmed &&
-                        connections.some(edge => edge.fromNodeId === item.id && assetParents.has(edge.toNodeId)))?.metadata?.dramaConfirmed;
-                })() : undefined}
+                confirmedAssetPlan={directAssets?.metadata?.dramaConfirmed}
+                savedAssetReferences={directAssets ? nodes.find(item => item.type === "drama:asset_references" &&
+                    connections.some(edge => edge.fromNodeId === directAssets.id && edge.toNodeId === item.id))
+                    ?.metadata?.dramaDraft : undefined}
+                videoConfigs={panelNode.type === "drama:storyboard" ? findDramaVideoConfigs(panelNode.id, nodes, connections) : undefined}
+                onOpenVideoConfig={id => {
+                    setSelectedNodeIds(new Set([id]));
+                    setSelectedConnectionId(null);
+                    setDialogNodeId(id);
+                }}
                 imageNodes={nodes.filter(item => item.type === CanvasNodeType.Image)}
                 onCreateReferenceConfig={(assetName, prompt) => {
                     const imagePrompt = [prompt, style && `影片风格：${style}`, ratio && `画幅：${ratio}`].filter(Boolean).join("\n");
@@ -4151,30 +4152,22 @@ function AtelierCanvasPage() {
                 onOpenVersions={() => openTextVersions(panelNode.id)}
                 onConfirmVersion={draft => confirmDramaVersion(panelNode.id,draft)}
                 versionBusy={textVersionBusy||textVersionSavePending}
-                onChange={patch => handleConfigNodeChange(panelNode.id, patch)} onRenderFirstFrame={(prompt, input?: DramaFirstFrameInput) => {
-                const imagePrompt = [prompt, style && `影片风格：${style}`, ratio && `画幅：${ratio}`].filter(Boolean).join("\n");
-                const frame = createCanvasNode(CanvasNodeType.Image, {x:panelNode.position.x+430,y:panelNode.position.y}, {prompt:imagePrompt,composerContent:imagePrompt,...(ratio ? {size:ratio,videoRatio:ratio} : {})});
-                const refs=(input?.referenceImages??[]).map((reference,index)=>({
-                    ...createCanvasNode(CanvasNodeType.Image,
-                        {x:panelNode.position.x-260,y:panelNode.position.y+index*180},
-                        {content:reference.storageKey?canvasCasUrl(reference.storageKey)??"":undefined,
-                            storageKey:reference.storageKey,status:"success",mimeType:reference.type,naturalWidth:1,naturalHeight:1,bytes:0}),
-                    title:`参考图 · ${reference.name}`,
-                }));
-                const nextNodes = [...nodesRef.current, ...refs, frame];
-                const nextConnections = [
-                    ...connectionsRef.current,
-                    {id:nanoid(),fromNodeId:panelNode.id,toNodeId:frame.id},
-                    ...refs.map(reference=>({id:nanoid(),fromNodeId:reference.id,toNodeId:frame.id})),
-                ];
-                nodesRef.current = nextNodes;
-                connectionsRef.current = nextConnections;
-                setNodes(nextNodes);
-                setConnections(nextConnections);
-                setSelectedNodeIds(new Set([frame.id]));
-                setDialogNodeId(frame.id);
-                void handleGenerateNode(frame.id,"image",imagePrompt);
-            }} /> :
+                onChange={patch => handleConfigNodeChange(panelNode.id, patch)} onCreateVideoConfigs={(inputs, batch) => {
+                    const source = nodesRef.current.find(item => item.id === panelNode.id);
+                    if (!source) return;
+                    const confirmed = readStoryboardDraft(source.metadata?.dramaConfirmed ?? "");
+                    const validInputs = inputs.filter(input => confirmed?.shots.some(shot =>
+                        shot.id === input.shot.id && JSON.stringify(shot) === JSON.stringify(input.shot)));
+                    const graph = buildDramaVideoConfigGraph(source, validInputs, nodesRef.current, connectionsRef.current, style, ratio);
+                    if (!graph.configIds.length) return;
+                    nodesRef.current = graph.nodes;
+                    connectionsRef.current = graph.connections;
+                    setNodes(graph.nodes);
+                    setConnections(graph.connections);
+                    setSelectedNodeIds(new Set(graph.configIds));
+                    setSelectedConnectionId(null);
+                    setDialogNodeId(batch ? null : graph.configIds[0]);
+                }} /> :
             panelNode.type === CanvasNodeType.Director ? null : panelNode.type === COMFY_WORKFLOW_MOCK_TYPE ? (
                 <Suspense fallback={<div className="rounded-xl p-4">正在加载工作流参数…</div>}>
                     <ComfyWorkflowInstancePanel
@@ -4591,11 +4584,11 @@ function AtelierCanvasPage() {
                     onAddDirector={() => createNode(CanvasNodeType.Director)}
                     onAddDramaPipeline={() => {
                         const center = getCanvasCenter();
-                        const stageIds = ["source", "assets", "episodes", "storyboard", "first_frames"] as const;
-                        const positions = [{x:center.x-780,y:center.y-160},{x:center.x-380,y:center.y-275},{x:center.x-380,y:center.y+180},{x:center.x+20,y:center.y},{x:center.x+420,y:center.y-140}];
+                        const stageIds = ["source", "assets", "episodes", "storyboard"] as const;
+                        const positions = [{x:center.x-780,y:center.y-160},{x:center.x-380,y:center.y-275},{x:center.x-380,y:center.y+180},{x:center.x+20,y:center.y}];
                         const created = stageIds.map((stage,index) => createCanvasNode(`drama:${stage}`, positions[index], {dramaStage:stage,dramaDraft:"",dramaConfirmed:""}));
                         const ids = Object.fromEntries(stageIds.map((stage,index)=>[stage,created[index].id]));
-                        const edges = [["source","assets"],["source","episodes"],["assets","storyboard"],["episodes","storyboard"],["assets","first_frames"],["storyboard","first_frames"]] as const;
+                        const edges = [["source","assets"],["source","episodes"],["assets","storyboard"],["episodes","storyboard"]] as const;
                         setNodes(previous => [...previous,...created]);
                         setConnections(previous => [...previous,...edges.map(([from,to])=>({id:nanoid(),fromNodeId:ids[from],toNodeId:ids[to]}))]);
                         setSelectedNodeIds(new Set(created.map(node=>node.id)));

@@ -7,12 +7,13 @@ import { canvasApi } from "@/features/backend-sync/canvas-api";
 import { canvasCasUrl } from "@/features/backend-sync/canvas-cas";
 import { CanvasNodeReferenceBar } from "@/components/canvas/canvas-node-reference-bar";
 import { ensureSqliteModelChannelForExecution, modelChannelProvider } from "@/features/backend-sync/model-channel-autoroute";
-import { buildDramaFirstFrameInput, dramaFirstFrameMissingReferenceIds } from "./drama-pipeline-media";
-import { dramaAssetSlots, dramaReferenceImageKeys, referencesForDramaAssets, validateDramaShotReferences, type DramaAssetReference, type DramaPipelineSnapshot } from "./canvas-drama-pipeline";
+import { buildDramaVideoInput, dramaVideoMissingReferenceIds } from "./drama-pipeline-media";
+import { dramaAssetSlots, dramaReferenceImageKeys, referencesForDramaAssets, type DramaAssetReference, type DramaPipelineSnapshot } from "./canvas-drama-pipeline";
 import { useEffectiveConfig, resolveModelChannel, modelOptionName } from "@/stores/use-config-store";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { DramaAssetFields } from "./drama-asset-fields";
+import { DramaVideoConfigFields } from "./drama-video-config-fields";
 import { DramaStoryboardFields } from "./drama-storyboard-fields";
 import { DramaEpisodeFields } from "./drama-episode-fields";
 import { readEpisodeDraft } from "../../../server/canvas-text-content.mjs";
@@ -51,10 +52,12 @@ function describeDramaValidation(errors: {code:string;shotId?:string;id?:string}
         : []).join("\n");
 }
 
-export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, onCreateReferenceConfig, onPickCanvasImage, projectId, upstreamText = "", upstreamContext = "", upstreamArtifacts = [], confirmedAssetPlan, savedAssetReferences, mergedReferences, legacyAssetPlanning = false, imageNodes = [], productionContext = "", onOpenVersions, onConfirmVersion, versionBusy = false }: {
+export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, videoConfigs, onOpenVideoConfig, onCreateReferenceConfig, onPickCanvasImage, projectId, upstreamText = "", upstreamContext = "", upstreamArtifacts = [], confirmedAssetPlan, savedAssetReferences, mergedReferences, legacyAssetPlanning = false, imageNodes = [], productionContext = "", onOpenVersions, onConfirmVersion, versionBusy = false }: {
     node: CanvasNodeData;
     onChange: (patch: Partial<CanvasNodeData["metadata"]>) => void;
-    onRenderFirstFrame?: (prompt: string, input?: ReturnType<typeof buildDramaFirstFrameInput>) => void;
+    onCreateVideoConfigs?: (inputs: ReturnType<typeof buildDramaVideoInput>[], batch: boolean) => void;
+    videoConfigs?: ReadonlyMap<string, CanvasNodeData>;
+    onOpenVideoConfig?: (id: string) => void;
     onCreateReferenceConfig?: (assetName: string, prompt: string) => void;
     onPickCanvasImage?: (onPick: (storageKey: string) => void) => void;
     projectId?: string;
@@ -77,6 +80,7 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, onC
     const [localConfirmed, setConfirmed] = useState(String(node.metadata?.dramaConfirmed ?? ""));
     const [validation, setValidation] = useState<string>("");
     const [generating, setGenerating] = useState(false);
+    const [storyboardView, setStoryboardView] = useState<"shots" | "video">("shots");
     const [assetEditorExpanded, setAssetEditorExpanded] = useState(false);
     const [targetEpisodes, setTargetEpisodes] = useState(Number(node.metadata?.targetEpisodes ?? 10));
     const upstream = upstreamArtifacts.map(readDraft);
@@ -123,7 +127,11 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, onC
         ...slot, imageStorageKeys:dramaReferenceImageKeys(storedReferences?.find(ref =>
             ref.assetId === slot.assetId && ref.variantId === slot.variantId)),
     })) : upstreamReferences ?? previous?.references ?? [];
-    const parsedSnapshot: DramaPipelineSnapshot = {version:1,stage:stage ?? "source",revision:1,inputRevisions:{},assets,references,shots};
+    const parsedSnapshot: DramaPipelineSnapshot = {version:1,stage:stage ?? "source",revision:1,inputRevisions:{},assets,references:storyboard ? [] : references,shots};
+    const confirmedShots = storyboard ? readStoryboardDraft(confirmed)?.shots ?? [] : [];
+    const videoSnapshot = { ...parsedSnapshot, references };
+    const videoInputs = confirmedShots.map(shot => buildDramaVideoInput(videoSnapshot, shot));
+    const missingConfigs = videoInputs.filter(input => !videoConfigs?.has(input.shot.id));
     const images = imageNodes.flatMap(item => {
         const metadata = item.metadata;
         const keys = [metadata?.storageKey, ...(metadata?.images ?? []).map(image => image.storageKey)];
@@ -151,6 +159,11 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, onC
     const assetConfirmed = Boolean(confirmed && draft === confirmed);
     const inlineReady = referenceEditing ? references.length > 0 : episodePlanning ? Boolean(episodeDraft?.episodes.length) : storyboard ? shots.length > 0 : Boolean(previous);
     if (!stage) return null;
+    if (stage === "first_frames") return <section className="rounded-xl p-4">
+        <strong>首帧渲染存档</strong>
+        {[...new Set([draft, confirmed].filter(Boolean))].map(content =>
+            <pre key={content} className="max-h-48 overflow-auto whitespace-pre-wrap">{content}</pre>)}
+    </section>;
     const editor = <section className={inlineEditor ? assetEditorExpanded
         ? "flex h-full min-h-0 flex-col gap-4 text-sm"
         : dramaInlineNodeClass
@@ -196,20 +209,41 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, onC
                 }} />
                 {draft && !episodeDraft && <p role="alert">这份剧集草案格式无法读取，请重新生成。</p>}
             </> : storyboard ? <>
-                <DramaStoryboardFields shots={shots} episodes={linkedEpisodes} scenes={scenes}
-                    expanded={assetEditorExpanded} disabled={generating || versionBusy} control={control} onChange={nextShots => {
-                        onChange({dramaDraft:JSON.stringify({...storyboardDraft,shots:nextShots})});
-                        setValidation("");
-                    }} />
-                {draft && !storyboardDraft && <p role="alert">这份分镜草案格式无法读取，可在下方修正或重新生成。</p>}
-                <details className="text-xs">
-                    <summary>编辑结构化草案</summary>
-                    <TextArea aria-label="分镜草案 JSON" value={draft} disabled={generating || versionBusy}
-                        style={control} autoSize={{minRows:3,maxRows:10}} onChange={event => {
-                            onChange({dramaDraft:event.target.value});
+                <div role="group" aria-label="分镜配置视图" className="grid grid-cols-2 gap-1 rounded-xl border p-1" style={control}>
+                    {([{id:"shots", label:"分镜表"}, {id:"video", label:"视频配置"}] as const).map(view =>
+                        <button key={view.id} type="button" aria-pressed={storyboardView === view.id}
+                            className="rounded-lg px-2 py-1.5 font-medium focus-visible:outline focus-visible:outline-2"
+                            style={storyboardView === view.id ? {background:theme.toolbar.activeBg, color:theme.toolbar.activeText} : undefined}
+                            onClick={() => setStoryboardView(view.id)}>{view.label}</button>)}
+                </div>
+                <div className={storyboardView === "shots" ? "grid min-w-0 gap-3" : "hidden"}>
+                    <DramaStoryboardFields shots={shots} episodes={linkedEpisodes} scenes={scenes}
+                        expanded={assetEditorExpanded} disabled={generating || versionBusy} control={control} onChange={nextShots => {
+                            onChange({dramaDraft:JSON.stringify({...storyboardDraft,shots:nextShots})});
                             setValidation("");
                         }} />
-                </details>
+                    {draft && !storyboardDraft && <p role="alert">这份分镜草案格式无法读取，可在下方修正或重新生成。</p>}
+                    <details className="text-xs">
+                        <summary>编辑结构化草案</summary>
+                        <TextArea aria-label="分镜草案 JSON" value={draft} disabled={generating || versionBusy}
+                            style={control} autoSize={{minRows:3,maxRows:10}} onChange={event => {
+                                onChange({dramaDraft:event.target.value});
+                                setValidation("");
+                            }} />
+                    </details>
+                </div>
+                <div className={storyboardView === "video" ? "min-w-0" : "hidden"}>
+                    <DramaVideoConfigFields inputs={videoInputs} episodes={linkedEpisodes}
+                        configs={videoConfigs} missingCount={missingConfigs.length}
+                        missingFor={input => dramaVideoMissingReferenceIds(videoSnapshot, input.shot)}
+                        hasUnconfirmedChanges={draft !== confirmed} disabled={versionBusy} theme={theme}
+                        onCreateAll={() => { setAssetEditorExpanded(false); onCreateVideoConfigs?.(missingConfigs, true); }}
+                        onAction={(input, existing) => {
+                            setAssetEditorExpanded(false);
+                            if (existing) onOpenVideoConfig?.(existing.id);
+                            else onCreateVideoConfigs?.([input], false);
+                        }} />
+                </div>
             </> : <DramaAssetFields assets={assets} theme={theme} expanded={assetEditorExpanded} disabled={generating} onChange={assetPlanning ? nextAssets => {
                 const next = JSON.stringify({...previous, assets:nextAssets});
                 setDraft(next);
@@ -357,19 +391,6 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, onC
                 {scenes.map(scene => <option key={scene.id} value={scene.id}>{scene.name}（{scene.id}）</option>)}
             </select>
         </label>)}
-        {stage === "first_frames" && parsedSnapshot ? <div className="mt-3 space-y-2">
-            {!upstreamReferences?.length && <p className="text-sm">请在已连接的资产节点添加参考图。选图会自动保存。</p>}
-            {parsedSnapshot.shots.map(shot => {
-                const problems = validateDramaShotReferences(shot, assets);
-                if (!problems.length) problems.push(...dramaFirstFrameMissingReferenceIds(parsedSnapshot, shot).map(id => `缺少主图：${id}`));
-                const input = problems.length ? null : buildDramaFirstFrameInput(parsedSnapshot, shot);
-                return <div className="space-y-1" key={shot.id}>
-                    <span className="text-sm">镜头 {shot.order} · {shot.description}</span>
-                    <Button size="small" disabled={!input} onClick={() => input && onRenderFirstFrame?.(input.prompt, input)}>生成</Button>
-                    <p className="text-xs">{problems.join("、") || input?.referenceImages.map(image => image.name).join("、")}</p>
-                </div>;
-            })}
-        </div> : null}
         {confirmed && !inlineEditor ? <details className="mt-3"><summary>已确认内容</summary><pre className="max-h-48 overflow-auto whitespace-pre-wrap">{confirmed}</pre></details> : null}
         </div>
     </section>;

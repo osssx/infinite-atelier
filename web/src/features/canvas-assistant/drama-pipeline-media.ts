@@ -2,7 +2,7 @@ import type { ReferenceImage } from "@/types/image";
 import type { DramaAsset, DramaAssetReference, DramaPipelineSnapshot, DramaShot } from "./canvas-drama-pipeline";
 import { dramaReferenceImageKeys } from "./canvas-drama-pipeline";
 
-export type DramaFirstFrameInput = {
+export type DramaVideoInput = {
     shot: DramaShot;
     prompt: string;
     referenceImages: ReferenceImage[];
@@ -23,7 +23,7 @@ function refForId(references: readonly DramaAssetReference[], assets: readonly D
 /** Converts the confirmed asset references used by a shot into trusted image
  * inputs for startSqliteModelGeneration. Data URLs are intentionally omitted.
  */
-export function buildDramaFirstFrameInput(snapshot: DramaPipelineSnapshot, shot: DramaShot): DramaFirstFrameInput {
+export function buildDramaVideoInput(snapshot: DramaPipelineSnapshot, shot: DramaShot): DramaVideoInput {
     const ids = [...shot.characterVariantIds,
         ...(shot.sceneVariantId ? [shot.sceneVariantId] : shot.sceneId ? [shot.sceneId] : []),
         ...shot.propIds];
@@ -48,10 +48,20 @@ export function buildDramaFirstFrameInput(snapshot: DramaPipelineSnapshot, shot:
         return prop ? [`${prop.name}：${prop.description}`] : [];
     });
     const prompt = [shot.description, propDescriptions.length ? `可见道具：${propDescriptions.join("；")}` : ""].filter(Boolean).join("\n");
-    return { shot, prompt, referenceImages };
+    return {
+        shot,
+        referenceImages,
+        prompt: [
+            prompt,
+            shot.shotSize?.trim() && `景别：${shot.shotSize}`,
+            shot.camera?.trim() && `机位 / 运镜：${shot.camera}`,
+            shot.action?.trim() && `动作：${shot.action}`,
+            shot.dialogue?.trim() && `对白：${shot.dialogue}`,
+        ].filter(Boolean).join("\n"),
+    };
 }
 
-export function dramaFirstFrameMissingReferenceIds(snapshot: DramaPipelineSnapshot, shot: DramaShot): string[] {
+export function dramaVideoMissingReferenceIds(snapshot: DramaPipelineSnapshot, shot: DramaShot): string[] {
     const ids = [...shot.characterVariantIds,
         ...(shot.sceneVariantId ? [shot.sceneVariantId] : shot.sceneId ? [shot.sceneId] : []),
         ...shot.keyPropIds];

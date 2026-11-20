@@ -25,7 +25,7 @@ export const DRAMA_PIPELINE_STAGE_LABELS: Record<DramaPipelineStage, string> = {
     assets: "资产",
     asset_references: "资产参考图",
     episodes: "剧集规划",
-    storyboard: "分镜表",
+    storyboard: "分镜配置",
     first_frames: "首帧渲染",
 };
 

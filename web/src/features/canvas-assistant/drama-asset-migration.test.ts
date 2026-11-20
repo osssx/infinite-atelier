@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { CanvasConnection, CanvasNodeData } from "@/types/canvas";
-import { mergeLegacyDramaAssets } from "./drama-asset-migration";
+import { mergeLegacyDramaAssets, mergeLegacyDramaFirstFrames } from "./drama-asset-migration";
 
 const key = "cas:" + "a".repeat(64);
 const node = (id:string, type:string, metadata:CanvasNodeData["metadata"] = {}): CanvasNodeData =>
@@ -40,5 +40,25 @@ describe("legacy drama asset merge", () => {
     it("keeps malformed reference data intact", () => {
         const invalid = nodes.map(item => item.id === "refs" ? {...item,metadata:{dramaDraft:"{"}} : item);
         expect(mergeLegacyDramaAssets(invalid,edges).nodes).toBe(invalid);
+    });
+});
+
+describe("legacy first-frame merge", () => {
+    const storyboard = node("story", "drama:storyboard", { dramaConfirmed: '{"shots":[]}' });
+    const graphNodes = [nodes[0], storyboard, nodes[2], nodes[3]];
+    const graphEdges = [edge("assets","story"), edge("assets","frames"), edge("story","frames"), edge("frames","image")];
+
+    it("keeps the storyboard and image and moves the output edge once", () => {
+        const result = mergeLegacyDramaFirstFrames(graphNodes, graphEdges);
+        expect(result.nodes).toEqual([nodes[0], storyboard, nodes[3]]);
+        expect(result.connections).toEqual([graphEdges[0], { ...graphEdges[3], fromNodeId:"story" }]);
+        expect(mergeLegacyDramaFirstFrames(result.nodes, result.connections).changed).toBe(false);
+    });
+
+    it("preserves independent content and custom wires", () => {
+        const custom = [...graphEdges.slice(0, 3), { ...graphEdges[3], fromPortId:"frame" }];
+        expect(mergeLegacyDramaFirstFrames(graphNodes, custom).connections).toBe(custom);
+        const saved = graphNodes.map(item => item.id === "frames" ? { ...item, metadata:{ dramaDraft:"saved" } } : item);
+        expect(mergeLegacyDramaFirstFrames(saved, graphEdges).nodes).toBe(saved);
     });
 });

@@ -47,7 +47,7 @@ export function registerBuiltinNodes() {
             minimapColor: "#0f766e",
             defaultSize: { width: 340, height: stage === "source" ? 340 : isInlineDramaNode(DRAMA_PIPELINE_NODE_TYPES[stage]) ? 400 : 200 },
             defaultMetadata: { dramaStage: stage, dramaDraft: "", dramaConfirmed: "" },
-            showInCreateMenu: stage !== "first_frames",
+            showInCreateMenu: stage !== "asset_references" && stage !== "first_frames",
             autoOpenPanel: !isInlineDramaNode(DRAMA_PIPELINE_NODE_TYPES[stage]),
             hidePanel: isInlineDramaNode(DRAMA_PIPELINE_NODE_TYPES[stage]),
         })),

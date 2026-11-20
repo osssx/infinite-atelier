@@ -21,7 +21,7 @@ export function isInlineDramaNode(type: string) {
 }
 
 export const DRAMA_PIPELINE_STAGE_LABELS: Record<DramaPipelineStage, string> = {
-    source: "原文",
+    source: "故事",
     assets: "资产",
     asset_references: "资产参考图",
     episodes: "剧集规划",

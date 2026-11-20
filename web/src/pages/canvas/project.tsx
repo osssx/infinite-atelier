@@ -691,10 +691,12 @@ function AtelierCanvasPage() {
             const mergedAssets = mergeLegacyDramaAssets(project.nodes, project.connections);
             const mergedDrama = mergeLegacyDramaFirstFrames(mergedAssets.nodes, mergedAssets.connections);
             const resetNodes=resetInterruptedGeneration(mergedDrama.nodes);
-            const restoredNodes = (await hydrateCanvasImages(resetNodes)).map(node =>
-                isInlineDramaNode(node.type) && node.width === 340 && node.height === 200
+            const restoredNodes = (await hydrateCanvasImages(resetNodes)).map(node => {
+                if (node.type === "drama:source" && node.title === "原文") node = {...node, title: "故事"};
+                return isInlineDramaNode(node.type) && node.width === 340 && node.height === 200
                     ? {...node, height: node.type === "drama:source" ? 340 : 400}
-                    : node);
+                    : node;
+            });
             const restoredSessions = await hydrateAssistantImages(project.chatSessions || []);
             if (cancelled) return;
             const restoredConnections=reconcileComfyArtifactConnections(restoredNodes,mergedDrama.connections,nanoid);

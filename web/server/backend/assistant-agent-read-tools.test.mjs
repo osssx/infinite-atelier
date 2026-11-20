@@ -401,6 +401,32 @@ test("canvas_read_nodes returns the storyboard draft, confirmed and legacy bodie
  assert.throws(()=>read("other"),{code:"assistant_agent_context_scope_denied"});
 });
 
+test("reads authorized story and targeted drama versions without exposing legacy asset metadata",()=>{
+ const hero={id:"hero",kind:"character",name:"阿晴",description:"侦探",sourceRefs:["p1"],storageKey:"private-asset"};
+ const episode={id:"ep1",title:"雨夜",synopsis:"追踪",ending:"归家",events:[],sourceRefs:["p1"]};
+ const nodes=[
+  {id:"story",type:"drama:source",title:"故事",metadata:{dramaDraft:"新故事",dramaConfirmed:"旧故事"}},
+  {id:"assets",type:"drama:assets",title:"资产",metadata:{
+   dramaDraft:JSON.stringify({assets:[hero],references:[{imageStorageKey:"private-reference"}]}),
+   dramaConfirmed:JSON.stringify({assets:[{...hero,name:"正式阿晴"}]}),
+  }},
+  {id:"episodes",type:"drama:episodes",title:"剧集",metadata:{dramaDraft:JSON.stringify({episodes:[episode]})}},
+  {id:"hidden",type:"drama:assets",title:"隐藏",metadata:{dramaDraft:JSON.stringify({assets:[hero]})}},
+ ];
+ const reader=createCanvasNodeReader({includeContext:true,scope:"selection",includedIds:["story","assets","episodes"]},{nodes});
+ const read=(args,callId)=>JSON.parse(reader.invoke(args,callId)).nodes[0];
+ assert.equal(read({node_ids:["story"],offset:0},"story-draft").content,"新故事");
+ assert.equal(read({node_ids:["story"],version:"confirmed"},"story-confirmed").content,"旧故事");
+ const full=read({node_ids:["assets"],offset:0},"asset-page");
+ assert.equal(full.source,"dramaDraft");
+ assert.doesNotMatch(full.content,/private-|references|storageKey/);
+ const item=read({node_ids:["assets"],asset_id:"hero",version:"confirmed"},"asset-entry");
+ assert.equal(item.source,"dramaConfirmed");
+ assert.equal(item.asset.name,"正式阿晴");
+ assert.equal(item.asset.storageKey,undefined);
+ assert.deepEqual(read({node_ids:["episodes"],episode_id:"ep1"},"episode").episode,episode);
+ assert.throws(()=>read({node_ids:["hidden"],asset_id:"hero"},"hidden"),{code:"assistant_agent_context_scope_denied"});
+});
 test("targeted storyboard reads reach shot 13 without paging earlier shots",()=>{
  const make=(episode,index)=>({id:episode+"_shot_"+(index+1),episodeId:episode,order:index,
   description:index===12?"目标镜头":"前序内容".repeat(360),characterVariantIds:["hero"],propIds:["ball"],keyPropIds:[]});

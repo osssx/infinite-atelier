@@ -117,11 +117,40 @@ describe("P2 canvas action executor",()=>{
    .toThrow(/草案格式无效/);
   expect(original.nodes[0].metadata.dramaDraft).toBe("旧草案");
  });
+ it("writes connected drama drafts by new refs after safe creation",()=>{
+  const actions=[
+   {type:"create_node",ref:"source",nodeType:"drama:source"},
+   {type:"create_node",ref:"cast",nodeType:"drama:assets"},
+   {type:"create_node",ref:"episodes",nodeType:"drama:episodes"},
+   {type:"create_node",ref:"shots",nodeType:"drama:storyboard"},
+   ...[["source","cast"],["source","episodes"],["cast","shots"],["episodes","shots"]]
+    .map(([from,to])=>({type:"connect",from,to})),
+   {type:"set_text",nodeId:"source",content:"一场夜雨。"},
+   {type:"set_text",nodeId:"cast",content:JSON.stringify({
+    assets:[{id:"hero",kind:"character",name:"阿晴",description:"侦探",sourceRefs:[]}],
+   })},
+   {type:"set_text",nodeId:"episodes",content:JSON.stringify({
+    episodes:[{id:"ep1",title:"雨夜",synopsis:"搜寻证据",sourceRefs:[],events:[],ending:"到家"}],
+   })},
+   {type:"set_text",nodeId:"shots",content:JSON.stringify({
+    shots:[{id:"s1",episodeId:"ep1",order:1,description:"雨夜",characterVariantIds:["hero"],propIds:[],keyPropIds:[]}],
+   })},
+  ];
+  const safe=applyAssistantCanvasActions({nodes:[],connections:[]},actions,"safe",center);
+  expect(safe.nodes).toHaveLength(4);
+  expect(safe.connections).toHaveLength(4);
+  expect(safe.nodes.every(item=>!item.metadata?.dramaDraft)).toBe(true);
+  const applied=applyAssistantCanvasActions(safe,actions,"dangerous",center,safe.refs);
+  expect(applied.nodes[0].metadata).toMatchObject({dramaDraft:"一场夜雨。",content:"一场夜雨。"});
+  expect(applied.nodes[3].metadata?.dramaDraft).toContain('"characterVariantIds":["hero"]');
+  expect(()=>applyAssistantCanvasActions({...safe,connections:[]} ,actions,"dangerous",center,safe.refs))
+   .toThrow(/分镜表草案格式无效/);
+ });
  it("applies storyboard set_text only in the confirmed edit stage",()=>{
   const shot={id:"shot1",episodeId:"ep1",order:1,description:"雨夜",characterVariantIds:["hero-night"],
    propIds:["lantern"],keyPropIds:["lantern"],sceneId:"bridge",camera:"推镜",sourceRefs:["p1"]};
   const content=JSON.stringify({shots:[shot]});
-  const metadata={dramaDraft:"原草案",dramaConfirmed:"已确认稿"};
+  const metadata={dramaDraft:JSON.stringify({shots:[{...shot,description:"旧草案"}]}),dramaConfirmed:"已确认稿"};
   const original={nodes:[{...node("storyboard"),type:"drama:storyboard",metadata}],connections:[]};
   const actions=[{type:"set_text",nodeId:"storyboard",content}];
   expect(applyAssistantCanvasActions(original,actions,"safe",center).nodes[0].metadata).toEqual(metadata);

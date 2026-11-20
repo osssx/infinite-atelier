@@ -1,6 +1,6 @@
 import {assertFrozenComfyAction,applyFrozenComfyAction} from "./assistant-task-comfy-canvas.mjs";
 import {assertFrozenNodeParameterAction,applyFrozenNodeParameterAction} from "./assistant-task-node-params.mjs";
-import {canvasTextContentPatch,storyboardShotContentPatch,validStoryboardShotChanges} from "../canvas-text-content.mjs";
+import {dramaNodeSpecs,isAssistantDramaNodeType,validAssistantDramaConnection,validDramaEntryChanges,dramaEntryContentPatch,validStoryboardDraftReferences,canvasTextContentPatch,storyboardShotContentPatch,validStoryboardShotChanges} from "../canvas-text-content.mjs";
 
 /** Deterministic, backend-only ordinary canvas operations.
  * No network, filesystem, Comfy, Skill or GPU work. Unsupported actions
@@ -11,7 +11,7 @@ const own=(obj,fields)=>Object.keys(obj).every(key=>fields.includes(key));
 const alias=x=>typeof x==="string"&&/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(x);
 const nodeName=x=>typeof x==="string"&&/^[A-Za-z0-9_:@./-]{1,256}$/.test(x);
 const short=(x,max)=>typeof x==="string"&&x.length<=max;
-const types=new Set(["text","image","video","audio","config","director"]);
+const types=new Set(["text","image","video","audio","config","director",...Object.keys(dramaNodeSpecs)]);
 const specs={text:[340,240],image:[340,240],video:[420,236],
  audio:[340,120],config:[340,240],director:[340,240]};
 const titles={text:"文本",image:"图片",video:"视频",audio:"音频",config:"配置",director:"导演"};
@@ -33,6 +33,8 @@ export function assertAssistantCanvasPlan({actions,center}){
   ungroup:["type","groupId"],
   connect:["type","from","to"],
   set_text:["type","nodeId","content"],
+  patch_drama_asset:["type","nodeId","assetId","variantId","changes"],
+  patch_drama_episode:["type","nodeId","episodeId","changes"],
   patch_storyboard_shot:["type","nodeId","shotId","changes"],
   set_title:["type","nodeId","title"],
   set_prompt:["type","nodeId","prompt"],
@@ -59,7 +61,7 @@ export function assertAssistantCanvasPlan({actions,center}){
     (a.type==="create_text"&&!short(a.content,12000))||
     (a.type==="create_node"&&(!types.has(a.nodeType)||
      (a.content!==undefined&&(a.nodeType!=="text"||!short(a.content,12000)))||
-     (a.prompt!==undefined&&(a.nodeType==="text"||!short(a.prompt,3000)))))||
+     (a.prompt!==undefined&&(a.nodeType==="text"||isAssistantDramaNodeType(a.nodeType)||!short(a.prompt,3000)))))||
     (a.type==="create_group"&&(!allNodeNames(a.members,0,12)||
      (a.members.length!==0&&a.members.length<2))))
     throw fail("assistant_canvas_plan_invalid",400);
@@ -73,6 +75,12 @@ export function assertAssistantCanvasPlan({actions,center}){
   }else if(a.type==="connect"){
    if(a.from===a.to)throw fail("assistant_canvas_plan_invalid",400);
    edges.push("edge_"+index);
+  }else if(a.type==="patch_drama_asset"||a.type==="patch_drama_episode"){
+   const entryId=a.type==="patch_drama_asset"?a.assetId:a.episodeId;
+   if(!short(entryId,256)||!entryId.trim()||
+    (a.variantId!==undefined&&(!short(a.variantId,256)||!a.variantId.trim()))||
+    !validDramaEntryChanges(a.changes,a.type,a.variantId!==undefined))
+    throw fail("assistant_canvas_plan_invalid",400);
   }else if(a.type==="patch_storyboard_shot"){
    if(!nodeName(a.nodeId)||!short(a.shotId,128)||!a.shotId.trim()||!validStoryboardShotChanges(a.changes))
     throw fail("assistant_canvas_plan_invalid",400);
@@ -153,14 +161,15 @@ export function applyFrozenAssistantCanvasPlan(document,plan,refs,{externalRefs=
   if(a.type!=="create_text"&&a.type!=="create_node")continue;
   const nodeId=refs.nodes[a.ref],type=a.type==="create_text"?"text":a.nodeType;
   if(seen.has(nodeId)||seen.has(a.ref))throw fail("assistant_canvas_ref_conflict");
-  const [width,height]=specs[type],idx=created++;
+  const drama=dramaNodeSpecs[type];
+  const [width,height]=drama?[340,drama.height]:specs[type],idx=created++;
   const position={x:plan.center.x+(idx%3)*440-width/2,
    y:plan.center.y+Math.floor(idx/3)*320-height/2};
-  const metadata={content:"",status:"idle",...(type==="text"?{fontSize:14}:{}),
+  const metadata=drama?{dramaStage:type.slice(6),dramaDraft:"",dramaConfirmed:""}:{content:"",status:"idle",...(type==="text"?{fontSize:14}:{}),
    ...(type==="config"?{generationMode:"image"}:{})};
   if(type==="text"&&a.content!==undefined){metadata.content=a.content;metadata.status="success";}
   if(a.type==="create_node"&&a.prompt!==undefined)metadata.prompt=a.prompt;
-  nodes.push({id:nodeId,type,title:(a.title||"").trim()||titles[type],position,width,height,metadata});
+  nodes.push({id:nodeId,type,title:(a.title||"").trim()||drama?.title||titles[type],position,width,height,metadata});
   seen.add(nodeId);applied++;
  }
  for(let index=0;index<plan.actions.length;index++){
@@ -252,6 +261,7 @@ export function applyFrozenAssistantCanvasPlan(document,plan,refs,{externalRefs=
    const from=resolve(a.from),to=resolve(a.to),edgeId=refs.connections["edge_"+index];
    if(!seen.has(from)||!seen.has(to)||from===to||seenEdges.has(edgeId)||
     connections.some(edge=>edge.fromNodeId===from&&edge.toNodeId===to)||
+    !validAssistantDramaConnection(nodes.find(node=>node.id===from)?.type,nodes.find(node=>node.id===to)?.type)||
     reachable(from,to,connections))throw fail("assistant_canvas_connection_invalid");
    connections.push({id:edgeId,fromNodeId:from,toNodeId:to});
    seenEdges.add(edgeId);
@@ -263,13 +273,18 @@ export function applyFrozenAssistantCanvasPlan(document,plan,refs,{externalRefs=
    const target=resolve(a.nodeId),idx=nodes.findIndex(node=>node.id===target);
    if(idx<0)throw fail("assistant_canvas_target_invalid");
    const node=nodes[idx];
-   if(type==="patch_storyboard_shot"){
+   if(type==="patch_drama_asset"||type==="patch_drama_episode"){
+    const patch=dramaEntryContentPatch(node,a);
+    if(!patch)throw fail("assistant_drama_entry_invalid",400);
+    nodes[idx]={...node,metadata:{...node.metadata,...patch}};
+   }else if(type==="patch_storyboard_shot"){
     const patch=storyboardShotContentPatch(node.type,node.metadata,a.shotId,a.changes);
     if(!patch)throw fail("assistant_storyboard_shot_invalid",400);
     nodes[idx]={...node,metadata:{...node.metadata,...patch}};
    }else if(type==="set_text"){
     const patch=canvasTextContentPatch(node.type,a.content);
-    if(!patch){
+    if(!patch||!validStoryboardDraftReferences(node,a.content,nodes,connections)){
+     if(node.type==="drama:assets")throw fail("assistant_asset_draft_invalid",400);
      if(node.type==="drama:episodes")throw fail("assistant_episode_draft_invalid",400);
      if(node.type==="drama:storyboard")throw fail("assistant_storyboard_draft_invalid",400);
      throw fail("assistant_canvas_target_invalid");

@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {DatabaseSync} from "node:sqlite";
 import {initializeSchema} from "./schema.mjs";
-import {createProject,getProject} from "./projects.mjs";
+import {createProject,getProject,patchProject} from "./projects.mjs";
 import {createAssistantTask,getAssistantTask,cancelAssistantTask} from "./assistant-tasks.mjs";
 import {decideAssistantTaskStep} from "./assistant-task-step-gate.mjs";
 import {planAssistantCanvasStep,executeAssistantCanvasStep,
@@ -82,7 +82,7 @@ test("Task set_text validates and saves the episode draft through the approved g
 test("Task set_text writes only the approved storyboard draft and rejects duplicate shots",t=>{
  const shot={id:"shot1",episodeId:"ep1",order:1,description:"雨夜",sceneId:"bridge",camera:"推镜",
   characterVariantIds:["hero-night"],propIds:["lantern"],keyPropIds:["lantern"],sourceRefs:["p1"]};
- const metadata={dramaDraft:"旧草案",dramaConfirmed:"已确认稿",textVersions:[
+ const metadata={dramaDraft:JSON.stringify({shots:[{...shot,description:"旧草案"}]}),dramaConfirmed:"已确认稿",textVersions:[
   {id:"archived",createdAt:"2026-11-20T00:00:00Z",content:"旧稿",source:"confirmation"}
  ]};
  const ctx=setup(t,{...origin,nodes:[{...node,type:"drama:storyboard",metadata}]});
@@ -120,6 +120,65 @@ test("an approved shot patch preserves every other shot in a long storyboard",t=
  assert.deepEqual(JSON.parse(saved.dramaDraft),{
   note:"保留表级数据",shots:[{...shots[0],...action.changes},...shots.slice(1)]
  });
+});
+test("creates and edits a complete drama pipeline using approved new-node refs",t=>{
+ const ctx=setup(t,{...origin,nodes:[]});
+ const hero={id:"hero",kind:"character",name:"阿晴",description:"侦探",sourceRefs:["p1"],
+  variants:[{id:"hero-night",name:"雨衣",description:"蓝色"}]};
+ const episode={id:"ep1",title:"入夜",synopsis:"追踪线索",ending:"到达桥边",events:[],sourceRefs:["p1"]};
+ const shot={id:"shot1",episodeId:"ep1",order:1,description:"雨夜",
+  characterVariantIds:["hero-night"],propIds:[],keyPropIds:[]};
+ const actions=[
+  ...["source","assets","episodes","storyboard"].map(stage=>({type:"create_node",ref:stage,nodeType:"drama:"+stage})),
+  ...[["source","assets"],["source","episodes"],["assets","storyboard"],["episodes","storyboard"]]
+   .map(([from,to])=>({type:"connect",from,to})),
+  {type:"set_text",nodeId:"source",content:"阿晴在雨夜追踪线索。"},
+  {type:"set_text",nodeId:"assets",content:JSON.stringify({assets:[hero],storageKey:"discarded"})},
+  {type:"set_text",nodeId:"episodes",content:JSON.stringify({episodes:[episode]})},
+  {type:"set_text",nodeId:"storyboard",content:JSON.stringify({shots:[shot]})},
+  {type:"patch_drama_asset",nodeId:"assets",assetId:"hero",variantId:"hero-night",changes:{name:"夜间雨衣"}},
+  {type:"patch_drama_episode",nodeId:"episodes",episodeId:"ep1",changes:{synopsis:"沿桥追踪线索"}},
+ ];
+ assert.throws(()=>plan(ctx,{requestId:"bad-direction",actions:[...actions.slice(0,4),
+  {type:"connect",from:"storyboard",to:"source"}]}),{code:"assistant_canvas_connection_invalid"});
+ const bad=actions.map(action=>action.type==="set_text"&&action.nodeId==="storyboard"?
+  {...action,content:JSON.stringify({shots:[{...shot,characterVariantIds:["missing"]}]})}:action);
+ assert.throws(()=>plan(ctx,{requestId:"unknown-asset",actions:bad}),{code:"assistant_storyboard_draft_invalid"});
+ const candidate=plan(ctx,{actions});
+ assert.deepEqual(getProject(ctx.db,"p").document.nodes,[]);
+ approve(ctx,candidate);
+ const result=execute(ctx,candidate).project.document;
+ assert.equal(result.connections.length,4);
+ assert.deepEqual(result.nodes.map(item=>item.title),["故事","资产","剧集规划","分镜配置"]);
+ assert.equal(result.nodes[0].metadata.content,"阿晴在雨夜追踪线索。");
+ assert.deepEqual(JSON.parse(result.nodes[1].metadata.dramaDraft),{
+  assets:[{...hero,variants:[{...hero.variants[0],name:"夜间雨衣"}]}]
+ });
+ assert.deepEqual(JSON.parse(result.nodes[2].metadata.dramaDraft),{episodes:[{...episode,synopsis:"沿桥追踪线索"}]});
+ assert.deepEqual(JSON.parse(result.nodes[3].metadata.dramaDraft),{shots:[shot]});
+ assert.ok(result.nodes.every(item=>item.metadata.dramaConfirmed===""));
+});
+test("rejecting or superseding an asset draft edit leaves the persisted draft intact",t=>{
+ const metadata={dramaDraft:JSON.stringify({assets:[{
+  id:"hero",kind:"character",name:"阿晴",description:"侦探",sourceRefs:[],
+ }]}),dramaConfirmed:"正式稿",dramaAssetReferences:[{assetId:"hero",requiredForRendering:true}]};
+ const document={...origin,nodes:[{...node,type:"drama:assets",metadata}]};
+ const actions=[{type:"patch_drama_asset",nodeId:"original",assetId:"hero",changes:{name:"旧提案"}}];
+ const rejected=setup(t,document),rejectedStep=plan(rejected,{actions});
+ decideAssistantTaskStep(rejected.db,{projectId:"p",taskId:rejected.taskId,stepId:rejectedStep.stepId,
+  expectedPlanVersion:1,actionDigest:rejectedStep.actionDigest,decision:"reject",requestId:"reject"});
+ assert.throws(()=>execute(rejected,rejectedStep),{code:"assistant_task_not_editable"});
+ assert.deepEqual(getProject(rejected.db,"p").document.nodes[0].metadata,metadata);
+ const concurrent=setup(t,document),candidate=plan(concurrent,{actions});
+ approve(concurrent,candidate);
+ const newBody=JSON.parse(metadata.dramaDraft);
+ newBody.assets[0].name="用户后续编辑";
+ const edited={...metadata,dramaDraft:JSON.stringify(newBody)};
+ patchProject(concurrent.db,{id:"p",expectedRevision:1,document:{
+  ...document,nodes:[{...document.nodes[0],metadata:edited}],
+ }});
+ assert.throws(()=>execute(concurrent,candidate),{code:"assistant_step_source_changed"});
+ assert.deepEqual(getProject(concurrent.db,"p").document.nodes[0].metadata,edited);
 });
 test("P1b group membership, grouped layout and ungroup each retain durable receipts",t=>{
  const ctx=setup(t);

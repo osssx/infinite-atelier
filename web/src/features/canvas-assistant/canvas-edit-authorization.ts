@@ -85,7 +85,19 @@ export function describeCanvasEdit(before:AssistantCanvasGraph,after:AssistantCa
     requiresPreview ||= cascades || changes.some(change=>!change.startsWith("position ")&&!change.startsWith("width ")&&!change.startsWith("height ")&&!change.startsWith("groupId ∅ → "));
     rows.push(`${cascades?"级联：":""}${node.title??""} [${id}] ${changes.join("，")}`);
   }
-  for(const [id,node] of nextNodes)if(!nodes.has(id))rows.push(`新增节点 ${node.title??""} [${id}]`);
+  for(const [id,node] of nextNodes)if(!nodes.has(id)){
+    const draft=node.type.startsWith("drama:")&&node.metadata?.dramaDraft;
+    rows.push(`新增节点 ${node.title??""} [${id}]${draft?` 草案 ${clip(draft)}`:""}`);
+  }
+  for(const action of actions){
+    if(action.type==="patch_drama_asset"){
+      rows.push(`资产条目 ${action.assetId}${action.variantId?` / ${action.variantId}`:""} [${action.nodeId}] ${clip(action.changes)}`);
+    }else if(action.type==="patch_drama_episode"){
+      rows.push(`剧集条目 ${action.episodeId} [${action.nodeId}] ${clip(action.changes)}`);
+    }else if(action.type==="patch_storyboard_shot"){
+      rows.push(`分镜条目 ${action.shotId} [${action.nodeId}] ${clip(action.changes)}`);
+    }
+  }
   for(const [id,edge] of edges){
     const next=nextEdges.get(id);
     if(!next||stable(next)!==stable(edge)){

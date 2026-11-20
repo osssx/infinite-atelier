@@ -1,5 +1,5 @@
 import {nanoid} from "nanoid";
-import {canvasTextContentPatch,storyboardShotContentPatch,validStoryboardShotChanges,type StoryboardShotChanges} from "../../../server/canvas-text-content.mjs";
+import {dramaNodeSpecs,isAssistantDramaNodeType,validAssistantDramaConnection,validDramaEntryChanges,dramaEntryContentPatch,validStoryboardDraftReferences,type DramaAssetChanges,type DramaEpisodeChanges,canvasTextContentPatch,storyboardShotContentPatch,validStoryboardShotChanges,type StoryboardShotChanges} from "../../../server/canvas-text-content.mjs";
 import {createCanvasNode} from "@/lib/canvas/canvas-node-factory";
 import {groupSelectedCanvasNodes} from "@/lib/canvas/canvas-node-geometry";
 import {prepareCanvasPortConnection} from "@/lib/canvas/canvas-port-connections";
@@ -11,7 +11,7 @@ import {validAssistantWorkflowScalar,setAssistantWorkflowParameter,type Assistan
 import type {ComfyWorkflowTemplate} from "@/features/comfy-workflow/template-schema";
 import {applyAssistantWorkflowPortAction,type AssistantWorkflowPortAction} from "./canvas-assistant-workflow-ports";
 
-export type AssistantCreatableNodeType="text"|"image"|"video"|"audio"|"config"|"director";
+export type AssistantCreatableNodeType="text"|"image"|"video"|"audio"|"config"|"director"|"drama:source"|"drama:assets"|"drama:episodes"|"drama:storyboard";
 export type AssistantLayoutDirection="horizontal"|"vertical"|"grid";
 export type AssistantCanvasAction=
  |{type:"create_text";ref:string;title:string;content:string}
@@ -24,6 +24,8 @@ export type AssistantCanvasAction=
  |{type:"layout_graph";nodeIds:string[];direction?:AssistantGraphLayoutDirection;gap?:number;layerGap?:number}
  |{type:"connect";from:string;to:string}
  |AssistantWorkflowPortAction |{type:"set_text";nodeId:string;content:string}
+ |{type:"patch_drama_asset";nodeId:string;assetId:string;variantId?:string;changes:DramaAssetChanges}
+ |{type:"patch_drama_episode";nodeId:string;episodeId:string;changes:DramaEpisodeChanges}
  |{type:"patch_storyboard_shot";nodeId:string;shotId:string;changes:StoryboardShotChanges}
  |{type:"set_title";nodeId:string;title:string}
  |{type:"delete_node";nodeId:string}
@@ -45,7 +47,7 @@ export function assistantCreatedSelection(result:Pick<AssistantCanvasOutcome,"no
  });
 }
 const MAX_ACTIONS=16,MAX_CREATED=12,MAX_COORD=1_000_000;
-const creatable=new Set<AssistantCreatableNodeType>(["text","image","video","audio","config","director"]);
+const creatable=new Set<AssistantCreatableNodeType>(["text","image","video","audio","config","director",...Object.keys(dramaNodeSpecs) as AssistantCreatableNodeType[]]);
 const directions=new Set<AssistantLayoutDirection>(["horizontal","vertical","grid"]);
 const identifier=(value:unknown):value is string=>typeof value==="string"&&/^[A-Za-z0-9_:\-.]{1,128}$/.test(value);
 const boundedString=(value:unknown,max:number):value is string=>typeof value==="string"&&value.length<=max;
@@ -68,7 +70,7 @@ export function isAssistantCanvasAction(value:unknown):value is AssistantCanvasA
    identifier(action.ref)&&creatable.has(action.nodeType as AssistantCreatableNodeType)&&
    (action.title===undefined||boundedString(action.title,120))&&
    (action.content===undefined||(action.nodeType==="text"&&boundedString(action.content,12000)))&&
-   (action.prompt===undefined||(action.nodeType!=="text"&&boundedString(action.prompt,3000)));
+   (action.prompt===undefined||(action.nodeType!=="text"&&!isAssistantDramaNodeType(action.nodeType)&&boundedString(action.prompt,3000)));
   case "create_group":return keys(action,["type","ref","title","members"])&&
    identifier(action.ref)&&boundedString(action.title,120)&&
    (ids(action.members,0,0)||ids(action.members,2,MAX_CREATED));
@@ -91,6 +93,12 @@ export function isAssistantCanvasAction(value:unknown):value is AssistantCanvasA
    identifier(action.toNodeId)&&identifier(action.toPortId)&&action.fromNodeId!==action.toNodeId;
   case "disconnect_workflow_port":return keys(action,["type","nodeId","portId"])&&
    identifier(action.nodeId)&&identifier(action.portId);
+  case "patch_drama_asset":return keys(action,["type","nodeId","assetId","variantId","changes"])&&identifier(action.nodeId)&&
+   boundedString(action.assetId,256)&&Boolean(action.assetId.trim())&&
+   (action.variantId===undefined||boundedString(action.variantId,256)&&Boolean(action.variantId.trim()))&&
+   validDramaEntryChanges(action.changes,action.type,action.variantId!==undefined);
+  case "patch_drama_episode":return keys(action,["type","nodeId","episodeId","changes"])&&identifier(action.nodeId)&&
+   boundedString(action.episodeId,256)&&Boolean(action.episodeId.trim())&&validDramaEntryChanges(action.changes,action.type);
   case "patch_storyboard_shot":return keys(action,["type","nodeId","shotId","changes"])&&identifier(action.nodeId)&&
    boundedString(action.shotId,128)&&Boolean(action.shotId.trim())&&validStoryboardShotChanges(action.changes);
   case "set_prompt":return keys(action,["type","nodeId","prompt"])&&identifier(action.nodeId)&&boundedString(action.prompt,12000);
@@ -142,10 +150,12 @@ export function parseAssistantCanvasActions(value:unknown):AssistantCanvasAction
  return value;
 }
 export const isDangerousAssistantAction=(action:AssistantCanvasAction)=>
- action.type==="set_text"||action.type==="patch_storyboard_shot"||action.type==="set_title"||action.type==="delete_node"||action.type==="delete_connection"||action.type==="ungroup"||action.type==="set_prompt"||action.type==="set_node_param"||action.type==="set_workflow_param"||action.type==="replace_workflow_port"||action.type==="disconnect_workflow_port";
+ action.type==="set_text"||action.type==="patch_drama_asset"||action.type==="patch_drama_episode"||action.type==="patch_storyboard_shot"||action.type==="set_title"||action.type==="delete_node"||action.type==="delete_connection"||action.type==="ungroup"||action.type==="set_prompt"||action.type==="set_node_param"||action.type==="set_workflow_param"||action.type==="replace_workflow_port"||action.type==="disconnect_workflow_port";
 export function dangerousAssistantActionSummary(actions:readonly AssistantCanvasAction[]){
  const count=(type:AssistantCanvasAction["type"])=>actions.filter(action=>action.type===type).length;
  return [
+  count("patch_drama_asset")?"修改 "+count("patch_drama_asset")+" 个资产条目":"",
+  count("patch_drama_episode")?"修改 "+count("patch_drama_episode")+" 个剧集条目":"",
   count("patch_storyboard_shot")?"修改 "+count("patch_storyboard_shot")+" 个分镜镜头": "",
   count("set_text")?"修改 "+count("set_text")+" 个节点内容":"",
   count("set_title")?"修改 "+count("set_title")+" 个节点标题":"",
@@ -329,6 +339,8 @@ export function applyAssistantCanvasActions(
    if(action.type==="connect"){
     const from=resolve(action.from),to=resolve(action.to);
     if(from===to)throw Error("不能连接同一个节点。");
+    if(!validAssistantDramaConnection(nodes.find(node=>node.id===from)?.type,nodes.find(node=>node.id===to)?.type))
+     throw Error("剧本流程连线方向无效。");
     if(createsCycle(from,to,connections))throw Error("连线会构成循环，未执行。");
     const result=prepareCanvasPortConnection({nodeId:from,handleType:"source"},
      {nodeId:to,handleType:"target"},nodes,connections);
@@ -383,6 +395,14 @@ export function applyAssistantCanvasActions(
      nodes[i]=setAssistantWorkflowParameter(nodes[i],action.portId,action.value,config,template,connections);
      applied++;break;
     }
+    case "patch_drama_asset":
+    case "patch_drama_episode":{
+     const i=nodes.findIndex(node=>node.id===(mapped.get(action.nodeId)??action.nodeId));
+     const node=nodes[i];
+     const patch=node&&dramaEntryContentPatch(node,action);
+     if(!patch)throw Error("草案条目不存在或修改字段无效，未执行。");
+     nodes[i]={...node,metadata:{...node.metadata,...patch}};applied++;break;
+    }
     case "patch_storyboard_shot":{
      const i=nodes.findIndex(node=>node.id===action.nodeId);
      const node=nodes[i];
@@ -391,10 +411,11 @@ export function applyAssistantCanvasActions(
      nodes[i]={...node,metadata:{...node.metadata,...patch}};applied++;break;
     }
     case "set_text":{
-     const i=nodes.findIndex(node=>node.id===action.nodeId);
+     const i=nodes.findIndex(node=>node.id===(mapped.get(action.nodeId)??action.nodeId));
      const node=nodes[i];
      const patch=node&&canvasTextContentPatch(node.type,action.content);
-     if(!patch){
+     if(!patch||!validStoryboardDraftReferences(node,action.content,nodes,connections)){
+      if(node?.type==="drama:assets")throw Error("资产草案格式无效，原草案已保留。");
       if(node?.type==="drama:episodes")throw Error("剧集规划草案格式无效，原草案已保留。");
       if(node?.type==="drama:storyboard")throw Error("分镜表草案格式无效，原草案已保留。");
       throw Error("文本节点不存在或类型不支持，未执行。");

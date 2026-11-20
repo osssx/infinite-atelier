@@ -2,7 +2,7 @@
  * Canonical names use dotted namespaces; Provider names use underscores.
  * The sole executable write path remains approved Task Step/Executor.
  */
-import {canvasTextContentPatch,readStoryboardDraft} from "../canvas-text-content.mjs";
+import {canvasDramaAssetFields,canvasTextContentPatch,isAssistantDramaNodeType,readAssetDraft,readEpisodeDraft,readStoryboardDraft} from "../canvas-text-content.mjs";
 import {createHash} from "node:crypto";
 import {stableJson,writeTransaction} from "./repository.mjs";
 import {formatAssistantGenerationSettings,mayRepeatTurn,safe} from "./assistant-task-context.mjs";
@@ -27,29 +27,42 @@ function pageText(text,offset,limit){
  return text.slice(offset,end);
 }
 const get=(args,names)=>plain(args)&&Object.keys(args).every(key=>names.includes(key));
-function canvasNodeBody(node,{redact=true}={}){
- const fields=["drama:episodes","drama:storyboard"].includes(node.type)?["dramaDraft","dramaConfirmed","content"]:
+function redactDramaFields(value){
+ if(Array.isArray(value))return value.map(redactDramaFields);
+ if(plain(value))return Object.fromEntries(Object.entries(value).map(([key,field])=>[key,redactDramaFields(field)]));
+ return safe(value,Infinity,{preserveFormatting:true});
+}
+function canvasNodeBody(node,{redact=true,version}={}){
+ const fields=isAssistantDramaNodeType(node.type)?
+  version==="confirmed"?["dramaConfirmed"]:version==="draft"?["dramaDraft"]:
+  node.type==="drama:source"?["dramaDraft","content","dramaConfirmed"]:["dramaDraft","dramaConfirmed","content"]:
   node.type==="text"?["content"]:[];
  if(!fields.length)return null;
  for(const source of fields){
   const value=node.metadata?.[source];
-  if(typeof value==="string"&&value.trim())
-   return {source,content:redact?safe(value,Infinity,{preserveFormatting:true}):value};
+  if(typeof value==="string"&&(value.trim()||node.type==="drama:source"&&source==="dramaDraft")){
+   if(!redact)return {source,content:value};
+   const assets=node.type==="drama:assets"?readAssetDraft(value)?.assets:undefined;
+   if(node.type==="drama:assets"&&!assets)return {source,content:"",status:"invalid_draft"};
+   const content=assets?JSON.stringify({assets:assets.map(asset=>redactDramaFields(canvasDramaAssetFields(asset)))}):
+    safe(value,Infinity,{preserveFormatting:true});
+   return {source,content,...(!value.trim()?{status:"empty"}:{})};
+  }
  }
  return {source:null,content:""};
 }
-export function describeAssistantReadableCanvasNode(node){
- const body=canvasNodeBody(node);
+export function describeAssistantReadableCanvasNode(node,version){
+ const body=canvasNodeBody(node,{version});
  return {id:node.id,type:node.type,title:safe(node.title,90),
   ...(body?{source:body.source,content:pageText(body.content,0,560),
-   ...(body.source===null?{status:"empty"}:{}),
+   ...(body.source===null?{status:"empty"}:body.status?{status:body.status}:{}),
    ...(Buffer.byteLength(body.content)>560?{truncated:true}:{})}:{}),
   ...(typeof node.metadata?.prompt==="string"?{prompt:safe(node.metadata.prompt,500)}:{})};
 }
 const shotTextFields=["id","episodeId","description","sceneId","sceneVariantId","shotSize","camera","action","dialogue"];
 const shotListFields=["characterVariantIds","propIds","keyPropIds","sourceRefs"];
-function readStoryboardShot(node,{shot_id,shot_number,episode_id,offset}){
- const body=canvasNodeBody(node,{redact:false});
+function readStoryboardShot(node,{shot_id,shot_number,episode_id,offset,version}){
+ const body=canvasNodeBody(node,{redact:false,version});
  const item={id:node.id,type:node.type,title:safe(node.title,90),source:body.source};
  if(!body.source)return {nodes:[{...item,status:"empty"}]};
  const draft=readStoryboardDraft(body.content);
@@ -94,17 +107,43 @@ function pageNodeBody(item,text,offset){
  result.nextOffset=result.endOffset<text.length?result.endOffset:null;
  return result;
 }
+const validSelector=value=>typeof value==="string"&&Boolean(value.trim())&&value.length<=256;
+function readDramaEntry(node,{asset_id,episode_id,version,offset}){
+ const body=canvasNodeBody(node,{redact:false,version});
+ const item={id:node.id,type:node.type,title:safe(node.title,90),source:body.source};
+ if(!body.source)return {nodes:[{...item,status:"empty"}]};
+ const draft=asset_id!==undefined?readAssetDraft(body.content):readEpisodeDraft(body.content);
+ if(!draft)return {nodes:[{...item,status:"invalid_draft"}]};
+ const entry=asset_id!==undefined?draft.assets.find(asset=>asset.id===asset_id):
+  draft.episodes.find(episode=>episode.id===episode_id);
+ if(!entry)return {nodes:[{...item,status:"entry_not_found"}]};
+ // Project only editor fields before redaction. Legacy draft extras may include media metadata.
+ const fields=asset_id!==undefined?canvasDramaAssetFields(entry):
+  Object.fromEntries(["id","title","synopsis","events","sourceRefs","ending"].map(key=>[key,entry[key]]));
+ const data=redactDramaFields(fields);
+ const full={nodes:[{...item,[asset_id!==undefined?"asset":"episode"]:data}]};
+ if(offset===undefined&&Buffer.byteLength(JSON.stringify(full))<=MAX_RESULT_BYTES-256)return full;
+ return pageNodeBody(item,JSON.stringify(data),offset??0);
+}
 function readCanvasNodes(byId,args){
- if(!get(args,["node_ids","offset","shot_id","shot_number","episode_id"])||!Array.isArray(args.node_ids)||
+ if(!get(args,["node_ids","offset","shot_id","shot_number","episode_id","asset_id","version"])||!Array.isArray(args.node_ids)||
+  args.version!==undefined&&!["draft","confirmed"].includes(args.version)||
   args.node_ids.length<1||args.node_ids.length>4||
   args.offset!==undefined&&(args.node_ids.length!==1||!Number.isSafeInteger(args.offset)||args.offset<0)||
   args.node_ids.some(nodeId=>!validCanvasNodeId(nodeId))||new Set(args.node_ids).size!==args.node_ids.length)
   throw fail("assistant_agent_tool_arguments_invalid",400);
  if(args.node_ids.some(nodeId=>!byId.has(nodeId)))throw fail("assistant_agent_context_scope_denied",403);
  const targeted=args.shot_id!==undefined||args.shot_number!==undefined;
+ const node=byId.get(args.node_ids[0]);
+ if(args.version!==undefined&&args.node_ids.some(nodeId=>!isAssistantDramaNodeType(byId.get(nodeId).type)))
+  throw fail("assistant_agent_tool_arguments_invalid",400);
+ if(args.asset_id!==undefined||(!targeted&&args.episode_id!==undefined&&node.type==="drama:episodes")){
+  if(args.node_ids.length!==1||(args.asset_id!==undefined?
+   node.type!=="drama:assets"||!validSelector(args.asset_id)||targeted||args.episode_id!==undefined:
+   !validSelector(args.episode_id)))throw fail("assistant_agent_tool_arguments_invalid",400);
+  return readDramaEntry(node,args);
+ }
  if(targeted||args.episode_id!==undefined){
-  const node=byId.get(args.node_ids[0]);
-  const validSelector=value=>typeof value==="string"&&Boolean(value.trim())&&value.length<=256;
   if(args.node_ids.length!==1||node.type!=="drama:storyboard"||
    (args.shot_id!==undefined?!validSelector(args.shot_id)||args.shot_number!==undefined:
     !Number.isSafeInteger(args.shot_number)||args.shot_number<1)||
@@ -113,14 +152,14 @@ function readCanvasNodes(byId,args){
   return readStoryboardShot(node,args);
  }
  if(args.offset===undefined)
-  return {nodes:args.node_ids.map(nodeId=>describeAssistantReadableCanvasNode(byId.get(nodeId)))};
- const node=byId.get(args.node_ids[0]),body=canvasNodeBody(node);
+  return {nodes:args.node_ids.map(nodeId=>describeAssistantReadableCanvasNode(byId.get(nodeId),args.version))};
+ const body=canvasNodeBody(node,{version:args.version});
  if(!body)throw fail("assistant_agent_tool_arguments_invalid",400);
  return pageNodeBody({id:node.id,type:node.type,title:safe(node.title,90),source:body.source,
-  ...(body.source===null?{status:"empty"}:{})},body.content,args.offset);
+  ...(body.source===null?{status:"empty"}:body.status?{status:body.status}:{})},body.content,args.offset);
 }
 
-const NODE_READ_ARGUMENT_GUIDANCE="Use node_ids as an array of exact IDs from the authorized canvas references. To read the body, use one ID and offset:0. Continue with the returned nextOffset only when it is a number. For one storyboard, use shot_id or the 1-based shot_number shown in the editor, optionally with episode_id. Prefer targeted reads for individual edits. If ambiguous, ask which episode. For a paged shot, repeat the same selector and pass the returned nextOffset.";
+const NODE_READ_ARGUMENT_GUIDANCE="Use node_ids as an array of exact IDs from the authorized canvas references. To read the body, use one ID and offset:0. Continue with the returned nextOffset only when it is a number. For one storyboard, use shot_id or the 1-based shot_number shown in the editor, optionally with episode_id. For a single asset use asset_id, or an episode plan use episode_id. For drama nodes, version can be draft or confirmed; omit it for the effective draft. Prefer targeted reads for individual edits. If ambiguous, ask which episode. For a paged shot, repeat the same selector and pass the returned nextOffset.";
 
 export function recoverCanvasReadArguments(invoke){
  try{return invoke();}
@@ -145,7 +184,7 @@ export function createCanvasNodeReader(policy,document){
   if(!body)return {id:node.id,type:node.type,title:safe(node.title,90)};
   const content=pageText(body.content,0,1600);
   return {id:node.id,type:node.type,title:safe(node.title,90),source:body.source,content,
-   ...(body.source===null?{status:"empty"}:{}),truncated:content.length<body.content.length};
+   ...(body.source===null?{status:"empty"}:body.status?{status:body.status}:{}),truncated:content.length<body.content.length};
  })).replace(/</g,"\\u003c");
  const manifest=JSON.stringify(nodes.map(node=>({id:node.id,type:node.type,title:safe(node.title,90)})))
   .replace(/</g,"\\u003c");
@@ -153,12 +192,13 @@ export function createCanvasNodeReader(policy,document){
   for(const action of actions){
    if(action.type!=="set_text")continue;
    const type=selected.get(action.nodeId)?.type;
-   if((type==="drama:episodes"||type==="drama:storyboard")&&!canvasTextContentPatch(type,action.content))
+   if((type==="drama:episodes"||type==="drama:storyboard"||type==="drama:assets")&&!canvasTextContentPatch(type,action.content))
     throw Object.assign(Error("assistant_actions_invalid"),{reason:type==="drama:storyboard"?
      "set_text.content must be a JSON string containing a nonempty, valid shots array.":
+     type==="drama:assets"?"set_text.content must be a JSON string containing a valid assets array.":
      "set_text.content must be a JSON string containing a nonempty, valid episodes array.",
      userMessage:type==="drama:storyboard"?"模型未能提交完整、有效的分镜草案，画布未修改。":
-      "模型未能提交完整、有效的剧集草案，画布未修改。"});
+      type==="drama:assets"?"模型未能提交有效的资产草案，画布未修改。":"模型未能提交完整、有效的剧集草案，画布未修改。"});
   }
  },withContext(context){
   const text="本轮引用节点："+manifest+"\n"+context;
@@ -189,10 +229,10 @@ export const ASSISTANT_READ_TOOL_REGISTRY=Object.freeze([
   parameters:{type:"object",additionalProperties:false,required:["query"],
    properties:{query:{type:"string",maxLength:80}}}},
  {name:"canvas.read_nodes",providerName:"canvas_read_nodes",effect:"read",approval:"none",
-  description:"Read up to 4 selected nodes. Supports paginated bodies for text, episode plans, and storyboards. "+NODE_READ_ARGUMENT_GUIDANCE,
+  description:"Read up to 4 selected nodes. Supports paginated bodies for text, stories, assets, episode plans, and storyboards. "+NODE_READ_ARGUMENT_GUIDANCE,
   parameters:{type:"object",additionalProperties:false,required:["node_ids"],
    properties:{node_ids:{type:"array",minItems:1,maxItems:4,items:{type:"string"}},offset:{type:"integer",minimum:0},shot_id:{type:"string"},
-    shot_number:{type:"integer",minimum:1},episode_id:{type:"string"}}}},
+    shot_number:{type:"integer",minimum:1},episode_id:{type:"string"},asset_id:{type:"string"},version:{type:"string",enum:["draft","confirmed"]}}}},
  {name:"canvas.get_generation_settings",providerName:"canvas_get_generation_settings",effect:"read",approval:"none",
   description:"Inspect current generation defaults and channel models. Supply a selected node ID to inspect its effective configuration and editable workflow ports.",
   parameters:{type:"object",additionalProperties:false,properties:{node_id:{type:"string"}}}},

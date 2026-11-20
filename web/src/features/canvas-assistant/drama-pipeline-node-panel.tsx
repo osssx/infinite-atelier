@@ -90,8 +90,9 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
     const episodePlanning = stage === "episodes";
     const storyboard = stage === "storyboard";
     const versioned = episodePlanning || storyboard;
-    const draft = versioned ? storedDraft : localDraft;
-    const confirmed = versioned ? node.metadata?.dramaConfirmed ?? "" : localConfirmed;
+    const readsStoredDraft = assetPlanning || versioned;
+    const draft = readsStoredDraft ? storedDraft : localDraft;
+    const confirmed = readsStoredDraft ? node.metadata?.dramaConfirmed ?? "" : localConfirmed;
     const episodeDraft = episodePlanning ? readEpisodeDraft(draft) : null;
     const storyboardDraft = storyboard ? readStoryboardDraft(draft) : null;
     const inlineEditor = assetPlanning || referenceEditing || versioned;

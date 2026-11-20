@@ -117,6 +117,33 @@ describe("P2 canvas action executor",()=>{
    .toThrow(/草案格式无效/);
   expect(original.nodes[0].metadata.dramaDraft).toBe("旧草案");
  });
+ it("applies storyboard set_text only in the confirmed edit stage",()=>{
+  const shot={id:"shot1",episodeId:"ep1",order:1,description:"雨夜",characterVariantIds:["hero-night"],
+   propIds:["lantern"],keyPropIds:["lantern"],sceneId:"bridge",camera:"推镜",sourceRefs:["p1"]};
+  const content=JSON.stringify({shots:[shot]});
+  const metadata={dramaDraft:"原草案",dramaConfirmed:"已确认稿"};
+  const original={nodes:[{...node("storyboard"),type:"drama:storyboard",metadata}],connections:[]};
+  const actions=[{type:"set_text",nodeId:"storyboard",content}];
+  expect(applyAssistantCanvasActions(original,actions,"safe",center).nodes[0].metadata).toEqual(metadata);
+  expect(applyAssistantCanvasActions(original,actions,"dangerous",center).nodes[0].metadata)
+   .toEqual({...metadata,dramaDraft:content});
+  expect(()=>applyAssistantCanvasActions(original,[{...actions[0],content:'{"shots":[]}'}],"dangerous",center))
+   .toThrow(/分镜表草案格式无效/);
+ });
+ it("gates a partial storyboard update and leaves the shot references and other shots intact",()=>{
+  const shot={id:"shot1",episodeId:"ep1",order:1,description:"雨夜",characterVariantIds:["hero"],
+   sceneId:"yard",propIds:["ball"],keyPropIds:[],sourceRefs:["p1"]};
+  const other={...shot,id:"shot2",order:2};
+  const draft=JSON.stringify({shots:[shot,other]});
+  const original={nodes:[{...node("storyboard"),type:"drama:storyboard",metadata:{dramaDraft:draft,dramaConfirmed:draft}}],connections:[]};
+  const action={type:"patch_storyboard_shot",nodeId:"storyboard",shotId:"shot1",changes:{camera:"缓慢推近"}};
+  const safe=applyAssistantCanvasActions(original,[action],"safe",center);
+  expect(safe.nodes[0].metadata?.dramaDraft).toBe(draft);
+  const edited=applyAssistantCanvasActions(original,[action],"dangerous",center);
+  expect(JSON.parse(edited.nodes[0].metadata!.dramaDraft!)).toEqual({shots:[{...shot,camera:"缓慢推近"},other]});
+  expect(edited.nodes[0].metadata?.dramaConfirmed).toBe(draft);
+  expect(()=>parseAssistantCanvasActions([{...action,changes:{propIds:[]}}])).toThrow();
+ });
  it("fails closed on missing ids, invalid operations and conflicting ports",()=>{
   const original={nodes:[node("one"),node("two")],
    connections:[connection("one","two")]};

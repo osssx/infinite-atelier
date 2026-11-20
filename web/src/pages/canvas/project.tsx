@@ -72,7 +72,7 @@ import { CanvasNodeUpscaleDialog, type CanvasImageUpscaleParams } from "@/compon
 import { buildNodeGenerationContext, buildNodeResponseMessages, hydrateNodeGenerationContext } from "@/components/canvas/canvas-node-generation";
 import { CanvasNodeHoverToolbar, CanvasNodeInfoModal } from "@/components/canvas/canvas-node-hover-toolbar";
 import { CanvasTextVersionsModal } from "@/components/canvas/canvas-text-versions-modal";
-import { canSaveTextVersion, canRestoreNodeVersion, documentFitsCanvasLimit, getTextRestoreDecision, isEpisodeVersionNode, prepareEpisodeConfirmation, prepareTextRestore, supportsTextVersions, versionNodeContent, withTextVersions, type TextVersion } from "@/features/canvas-text-versions";
+import { canSaveTextVersion, canRestoreNodeVersion, documentFitsCanvasLimit, getTextRestoreDecision, isDramaVersionNode, prepareDramaConfirmation, prepareTextRestore, supportsTextVersions, versionNodeContent, withTextVersions, type TextVersion } from "@/features/canvas-text-versions";
 import { AtelierCanvas } from "@/components/canvas/atelier-canvas";
 import { Minimap } from "@/components/canvas/canvas-mini-map";
 import { NodeLayer, type SharedNodeProps } from "@/components/canvas/canvas-node-layer";
@@ -2341,19 +2341,19 @@ function AtelierCanvasPage() {
             const prepared=prepareTextRestore(latestContent,liveVersion,versions,backup?"backup":"direct",backupVersion);
             if(!prepared){confirmation?.destroy();restoring=false;message.error(t(backup?"canvas.textVersions.limitReached":"canvas.textVersions.invalidRestore"));return Promise.reject(Error("text_restore_unavailable"));}
             const next=nodesRef.current.map(value=>value.id===nodeId?withTextVersions(value,prepared.versions,prepared.content):value);
-            return commitTextVersionGraph(next).then(()=>{confirmation?.destroy();if(activeProjectIdRef.current===projectId)message.success(t(isEpisodeVersionNode(initial)?"canvas.textVersions.draftRestored":"canvas.textVersions.restored"));}).catch(error=>{confirmation?.destroy();if(activeProjectIdRef.current===projectId)message.error(t("canvas.textVersions.saveFailed",{error:String(error)}));throw error;}).finally(()=>{restoring=false;});
+            return commitTextVersionGraph(next).then(()=>{confirmation?.destroy();if(activeProjectIdRef.current===projectId)message.success(t(isDramaVersionNode(initial)?"canvas.textVersions.draftRestored":"canvas.textVersions.restored"));}).catch(error=>{confirmation?.destroy();if(activeProjectIdRef.current===projectId)message.error(t("canvas.textVersions.saveFailed",{error:String(error)}));throw error;}).finally(()=>{restoring=false;});
         };
         const decision=getTextRestoreDecision(current,version.content,initial.metadata?.textVersions??[]);
         if(decision==="noop")return;
         if(decision==="direct"){void restore(false).catch(()=>{});return;}
-        confirmation=Modal.confirm({title:t(isEpisodeVersionNode(initial)?"canvas.textVersions.restoreDraft":"canvas.textVersions.restoreTitle"),content:<div data-canvas-shortcuts-ignore>{t(isEpisodeVersionNode(initial)?"canvas.textVersions.restoreDraftPrompt":"canvas.textVersions.restorePrompt")}{decision==="backup-unavailable"?<p>{t("canvas.textVersions.limitReached")}</p>:null}</div>,okText:t("canvas.textVersions.backupRestore"),okButtonProps:{disabled:decision==="backup-unavailable"},cancelText:t("common.cancel"),onOk:()=>restore(true),footer:(_, {OkBtn,CancelBtn})=><div data-canvas-shortcuts-ignore className="flex justify-end gap-2"><CancelBtn/><Button onClick={()=>{void restore(false).then(()=>confirmation?.destroy()).catch(()=>{});}}>{t("canvas.textVersions.overwrite")}</Button><OkBtn/></div>});
+        confirmation=Modal.confirm({title:t(isDramaVersionNode(initial)?"canvas.textVersions.restoreDraft":"canvas.textVersions.restoreTitle"),content:<div data-canvas-shortcuts-ignore>{t(isDramaVersionNode(initial)?"canvas.textVersions.restoreDraftPrompt":"canvas.textVersions.restorePrompt")}{decision==="backup-unavailable"?<p>{t("canvas.textVersions.limitReached")}</p>:null}</div>,okText:t("canvas.textVersions.backupRestore"),okButtonProps:{disabled:decision==="backup-unavailable"},cancelText:t("common.cancel"),onOk:()=>restore(true),footer:(_, {OkBtn,CancelBtn})=><div data-canvas-shortcuts-ignore className="flex justify-end gap-2"><CancelBtn/><Button onClick={()=>{void restore(false).then(()=>confirmation?.destroy()).catch(()=>{});}}>{t("canvas.textVersions.overwrite")}</Button><OkBtn/></div>});
     },[commitTextVersionGraph,message,t]);
 
-    const confirmEpisodeVersion = useCallback(async(nodeId:string,expectedDraft:string)=>{
+    const confirmDramaVersion = useCallback(async(nodeId:string,expectedDraft:string)=>{
         const node=nodesRef.current.find(item=>item.id===nodeId);
         if(!node||versionNodeContent(node)!==expectedDraft)throw Error(t("canvas.textVersions.changedDuringConfirm"));
         try{
-            const confirmed=prepareEpisodeConfirmation(node,{id:nanoid(),createdAt:new Date().toISOString()});
+            const confirmed=prepareDramaConfirmation(node,{id:nanoid(),createdAt:new Date().toISOString()});
             await commitTextVersionGraph(nodesRef.current.map(item=>item.id===nodeId?confirmed:item));
         }catch(error){
             if(activeProjectIdRef.current===projectId&&textVersionPendingProjectRef.current===projectId)
@@ -4149,7 +4149,7 @@ function AtelierCanvasPage() {
                     setDialogNodeId(configNode.id);
                 }}
                 onOpenVersions={() => openTextVersions(panelNode.id)}
-                onConfirmEpisodes={draft => confirmEpisodeVersion(panelNode.id,draft)}
+                onConfirmVersion={draft => confirmDramaVersion(panelNode.id,draft)}
                 versionBusy={textVersionBusy||textVersionSavePending}
                 onChange={patch => handleConfigNodeChange(panelNode.id, patch)} onRenderFirstFrame={(prompt, input?: DramaFirstFrameInput) => {
                 const imagePrompt = [prompt, style && `影片风格：${style}`, ratio && `画幅：${ratio}`].filter(Boolean).join("\n");
@@ -4253,7 +4253,7 @@ function AtelierCanvasPage() {
         },
         [backendComfyEnabled,cancelComfyWorkflow,startNodeReferenceSelection,connections,nodes,executeComfyWorkflow,globalComfyInstanceId,openBboxEditor,
             handleConfigNodeChange,handleGenerateNode,handleNodePromptChange,message,projectId,runningNodeId,stopConfigGeneration,
-            openTextVersions,confirmEpisodeVersion,textVersionBusy,textVersionSavePending],
+            openTextVersions,confirmDramaVersion,textVersionBusy,textVersionSavePending],
     );
 
     const handleDirectorExport = useCallback(
@@ -4666,7 +4666,8 @@ function AtelierCanvasPage() {
                 <CanvasNodeInfoModal node={infoNode} open={Boolean(infoNode)} onClose={() => setInfoNodeId(null)} />
 
                 {textVersionsNode?<CanvasTextVersionsModal key={`${projectId}:${textVersionsNode.id}`} open versions={textVersionsNode.metadata?.textVersions??[]} currentContent={versionNodeContent(textVersionsNode)}
-                    confirmedContent={isEpisodeVersionNode(textVersionsNode)?textVersionsNode.metadata?.dramaConfirmed??"":undefined}
+                    storyboard={textVersionsNode.type==="drama:storyboard"}
+                    confirmedContent={isDramaVersionNode(textVersionsNode)?textVersionsNode.metadata?.dramaConfirmed??"":undefined}
                     onClose={()=>setTextVersionsNodeId(null)} onSave={note=>saveTextVersion(textVersionsNode.id,note)}
                     onDelete={versionId=>void deleteTextVersion(textVersionsNode.id,versionId)} onRestore={version=>restoreTextVersion(textVersionsNode.id,version)}
                     retryPending={textVersionSavePending} busy={textVersionBusy}

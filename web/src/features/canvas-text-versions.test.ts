@@ -1,5 +1,5 @@
 import {describe,it,expect} from "vitest";
-import {canRestoreNodeVersion,canSaveTextVersion,prepareEpisodeConfirmation,versionNodeContent,CANVAS_DOCUMENT_LIMIT_BYTES,documentFitsCanvasLimit,getTextRestoreDecision,isValidTextRestore,prepareTextRestore,withTextVersions} from "./canvas-text-versions";
+import {canRestoreNodeVersion,canSaveTextVersion,prepareDramaConfirmation,versionNodeContent,CANVAS_DOCUMENT_LIMIT_BYTES,documentFitsCanvasLimit,getTextRestoreDecision,isValidTextRestore,prepareTextRestore,withTextVersions} from "./canvas-text-versions";
 import {CanvasNodeType,type CanvasNodeData} from "@/types/canvas";
 
 const node:CanvasNodeData={id:"t",type:CanvasNodeType.Text,title:"Text",position:{x:0,y:0},width:100,height:100,metadata:{content:"body"}};
@@ -46,18 +46,18 @@ describe("episode version rules",()=>{
  const archive={id:"archived",createdAt:"2026-11-20T00:00:00Z"};
  const episode:CanvasNodeData={...node,type:"drama:episodes",metadata:{content:"历史正文",dramaDraft:draft("初稿")}};
  it("keeps the first confirmation and archives the previous one when the draft changes",()=>{
-  const first=prepareEpisodeConfirmation(episode,archive);
+  const first=prepareDramaConfirmation(episode,archive);
   expect(first.metadata?.dramaConfirmed).toBe(draft("初稿"));
   expect(first.metadata?.textVersions).toEqual([]);
   const revised=withTextVersions(first,[],draft("新稿"));
-  const second=prepareEpisodeConfirmation(revised,archive);
+  const second=prepareDramaConfirmation(revised,archive);
   expect(second.metadata?.dramaConfirmed).toBe(draft("新稿"));
   expect(second.metadata?.textVersions).toEqual([{...archive,content:draft("初稿"),source:"confirmation"}]);
-  expect(prepareEpisodeConfirmation(second,{...archive,id:"another"})).toEqual(second);
+  expect(prepareDramaConfirmation(second,{...archive,id:"another"})).toEqual(second);
  });
  it("restores only the draft, keeps archived versions across serialization and rejects invalid episode content",()=>{
-  const confirmed=prepareEpisodeConfirmation(episode,archive);
-  const newer=prepareEpisodeConfirmation(withTextVersions(confirmed,[],draft("新稿")),archive);
+  const confirmed=prepareDramaConfirmation(episode,archive);
+  const newer=prepareDramaConfirmation(withTextVersions(confirmed,[],draft("新稿")),archive);
   const versions=newer.metadata!.textVersions!;
   const current=withTextVersions(newer,versions,draft("未备份草案"));
   const backup={id:"backup",createdAt:archive.createdAt,content:versionNodeContent(current),source:"restore-backup" as const};
@@ -70,12 +70,30 @@ describe("episode version rules",()=>{
   expect(canRestoreNodeVersion(restored,"纯文本")).toBe(false);
  });
  it("blocks a full archive only if the previous confirmation needs a new record",()=>{
-  const current=prepareEpisodeConfirmation(episode,archive);
+  const current=prepareDramaConfirmation(episode,archive);
   const full=Array.from({length:50},(_,index)=>({id:String(index),createdAt:"",content:draft(String(index)),source:"manual" as const}));
   const revised=withTextVersions(current,full,draft("新稿"));
-  expect(()=>prepareEpisodeConfirmation(revised,archive)).toThrow("episode_history_full");
+  expect(()=>prepareDramaConfirmation(revised,archive)).toThrow("episode_history_full");
   expect(revised.metadata?.dramaConfirmed).toBe(draft("初稿"));
   const alreadySaved=withTextVersions(revised,[{...full[0],content:draft("初稿")},...full.slice(1)]);
-  expect(prepareEpisodeConfirmation(alreadySaved,archive).metadata?.textVersions).toHaveLength(50);
+  expect(prepareDramaConfirmation(alreadySaved,archive).metadata?.textVersions).toHaveLength(50);
  });
+});
+
+it("archives storyboard confirmations and restores a complete shot draft with links intact",()=>{
+ const shot={id:"shot1",episodeId:"ep1",order:1,description:"旧画面",camera:"推镜",
+  sceneId:"scene1",sceneVariantId:"night",characterVariantIds:["costume1"],propIds:["prop1"],
+  keyPropIds:["prop1"],sourceRefs:["source1"]};
+ const original=JSON.stringify({shots:[shot]});
+ const updated=JSON.stringify({shots:[{...shot,description:"新画面"}]});
+ const storyboard:CanvasNodeData={...node,type:"drama:storyboard",metadata:{dramaConfirmed:original,dramaDraft:updated}};
+ const confirmed=prepareDramaConfirmation(storyboard,{id:"archived",createdAt:"now"});
+ const versions=confirmed.metadata?.textVersions??[];
+ expect(versions[0]?.content).toBe(original);
+ expect(confirmed.metadata?.dramaStage).toBe("storyboard");
+ expect(canRestoreNodeVersion(confirmed,original)).toBe(true);
+ expect(canRestoreNodeVersion(confirmed,JSON.stringify({shots:[shot,shot]}))).toBe(false);
+ const restored=withTextVersions(confirmed,versions,original);
+ expect(JSON.parse(versionNodeContent(restored)).shots).toEqual([shot]);
+ expect(restored.metadata?.dramaConfirmed).toBe(updated);
 });

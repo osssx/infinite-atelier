@@ -1,5 +1,5 @@
 import {nanoid} from "nanoid";
-import {canvasTextContentPatch} from "../../../server/canvas-text-content.mjs";
+import {canvasTextContentPatch,storyboardShotContentPatch,validStoryboardShotChanges,type StoryboardShotChanges} from "../../../server/canvas-text-content.mjs";
 import {createCanvasNode} from "@/lib/canvas/canvas-node-factory";
 import {groupSelectedCanvasNodes} from "@/lib/canvas/canvas-node-geometry";
 import {prepareCanvasPortConnection} from "@/lib/canvas/canvas-port-connections";
@@ -24,6 +24,7 @@ export type AssistantCanvasAction=
  |{type:"layout_graph";nodeIds:string[];direction?:AssistantGraphLayoutDirection;gap?:number;layerGap?:number}
  |{type:"connect";from:string;to:string}
  |AssistantWorkflowPortAction |{type:"set_text";nodeId:string;content:string}
+ |{type:"patch_storyboard_shot";nodeId:string;shotId:string;changes:StoryboardShotChanges}
  |{type:"set_title";nodeId:string;title:string}
  |{type:"delete_node";nodeId:string}
  |{type:"delete_connection";connectionId:string}
@@ -90,6 +91,8 @@ export function isAssistantCanvasAction(value:unknown):value is AssistantCanvasA
    identifier(action.toNodeId)&&identifier(action.toPortId)&&action.fromNodeId!==action.toNodeId;
   case "disconnect_workflow_port":return keys(action,["type","nodeId","portId"])&&
    identifier(action.nodeId)&&identifier(action.portId);
+  case "patch_storyboard_shot":return keys(action,["type","nodeId","shotId","changes"])&&identifier(action.nodeId)&&
+   boundedString(action.shotId,128)&&Boolean(action.shotId.trim())&&validStoryboardShotChanges(action.changes);
   case "set_prompt":return keys(action,["type","nodeId","prompt"])&&identifier(action.nodeId)&&boundedString(action.prompt,12000);
   case "set_node_param":return keys(action,["type","nodeId","key","value"])&&
    identifier(action.nodeId)&&assistantValueHasSupportedShape(action.key,action.value);
@@ -139,10 +142,11 @@ export function parseAssistantCanvasActions(value:unknown):AssistantCanvasAction
  return value;
 }
 export const isDangerousAssistantAction=(action:AssistantCanvasAction)=>
- action.type==="set_text"||action.type==="set_title"||action.type==="delete_node"||action.type==="delete_connection"||action.type==="ungroup"||action.type==="set_prompt"||action.type==="set_node_param"||action.type==="set_workflow_param"||action.type==="replace_workflow_port"||action.type==="disconnect_workflow_port";
+ action.type==="set_text"||action.type==="patch_storyboard_shot"||action.type==="set_title"||action.type==="delete_node"||action.type==="delete_connection"||action.type==="ungroup"||action.type==="set_prompt"||action.type==="set_node_param"||action.type==="set_workflow_param"||action.type==="replace_workflow_port"||action.type==="disconnect_workflow_port";
 export function dangerousAssistantActionSummary(actions:readonly AssistantCanvasAction[]){
  const count=(type:AssistantCanvasAction["type"])=>actions.filter(action=>action.type===type).length;
  return [
+  count("patch_storyboard_shot")?"修改 "+count("patch_storyboard_shot")+" 个分镜镜头": "",
   count("set_text")?"修改 "+count("set_text")+" 个节点内容":"",
   count("set_title")?"修改 "+count("set_title")+" 个节点标题":"",
   count("delete_node")?"删除 "+count("delete_node")+" 个节点":"",
@@ -379,12 +383,22 @@ export function applyAssistantCanvasActions(
      nodes[i]=setAssistantWorkflowParameter(nodes[i],action.portId,action.value,config,template,connections);
      applied++;break;
     }
+    case "patch_storyboard_shot":{
+     const i=nodes.findIndex(node=>node.id===action.nodeId);
+     const node=nodes[i];
+     const patch=node&&storyboardShotContentPatch(node.type,node.metadata,action.shotId,action.changes);
+     if(!patch)throw Error("分镜表草案或目标镜头不可用，原草案已保留。");
+     nodes[i]={...node,metadata:{...node.metadata,...patch}};applied++;break;
+    }
     case "set_text":{
      const i=nodes.findIndex(node=>node.id===action.nodeId);
      const node=nodes[i];
      const patch=node&&canvasTextContentPatch(node.type,action.content);
-     if(!patch)throw Error(node?.type==="drama:episodes"?
-      "剧集规划草案格式无效，原草案已保留。":"文本节点不存在或类型不支持，未执行。");
+     if(!patch){
+      if(node?.type==="drama:episodes")throw Error("剧集规划草案格式无效，原草案已保留。");
+      if(node?.type==="drama:storyboard")throw Error("分镜表草案格式无效，原草案已保留。");
+      throw Error("文本节点不存在或类型不支持，未执行。");
+     }
      nodes[i]={...node,metadata:{...node.metadata,...patch}};applied++;break;
     }
     case "set_title":{

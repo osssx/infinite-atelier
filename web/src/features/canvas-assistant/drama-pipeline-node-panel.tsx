@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Button, Input, Modal, Tag } from "antd";
 import { History, Maximize2 } from "lucide-react";
 import type { CanvasNodeData } from "@/types/canvas";
-import { DRAMA_PIPELINE_NODE_TYPES, DRAMA_PIPELINE_STAGE_LABELS, type DramaPipelineStage } from "./canvas-drama-pipeline";
+import { DRAMA_PIPELINE_NODE_TYPES, DRAMA_PIPELINE_STAGE_LABELS, readStoryboardDraft, type DramaPipelineStage } from "./canvas-drama-pipeline";
 import { canvasApi } from "@/features/backend-sync/canvas-api";
 import { canvasCasUrl } from "@/features/backend-sync/canvas-cas";
 import { CanvasNodeReferenceBar } from "@/components/canvas/canvas-node-reference-bar";
@@ -13,6 +13,7 @@ import { useEffectiveConfig, resolveModelChannel, modelOptionName } from "@/stor
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { DramaAssetFields } from "./drama-asset-fields";
+import { DramaStoryboardFields } from "./drama-storyboard-fields";
 import { DramaEpisodeFields } from "./drama-episode-fields";
 import { readEpisodeDraft } from "../../../server/canvas-text-content.mjs";
 import { dramaInlineNodeClass, dramaNodeControl, dramaNodePrimary, DramaNodeStatus } from "./drama-node-style";
@@ -50,7 +51,7 @@ function describeDramaValidation(errors: {code:string;shotId?:string;id?:string}
         : []).join("\n");
 }
 
-export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, onCreateReferenceConfig, onPickCanvasImage, projectId, upstreamText = "", upstreamContext = "", upstreamArtifacts = [], confirmedAssetPlan, savedAssetReferences, mergedReferences, legacyAssetPlanning = false, imageNodes = [], productionContext = "", onOpenVersions, onConfirmEpisodes, versionBusy = false }: {
+export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, onCreateReferenceConfig, onPickCanvasImage, projectId, upstreamText = "", upstreamContext = "", upstreamArtifacts = [], confirmedAssetPlan, savedAssetReferences, mergedReferences, legacyAssetPlanning = false, imageNodes = [], productionContext = "", onOpenVersions, onConfirmVersion, versionBusy = false }: {
     node: CanvasNodeData;
     onChange: (patch: Partial<CanvasNodeData["metadata"]>) => void;
     onRenderFirstFrame?: (prompt: string, input?: ReturnType<typeof buildDramaFirstFrameInput>) => void;
@@ -66,7 +67,7 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, onC
     legacyAssetPlanning?: boolean;
     productionContext?: string;
     onOpenVersions?: () => void;
-    onConfirmEpisodes?: (draft: string) => Promise<void>;
+    onConfirmVersion?: (draft: string) => Promise<void>;
     versionBusy?: boolean;
     imageNodes?: CanvasNodeData[];
 }) {
@@ -83,10 +84,13 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, onC
     const referenceEditing = stage === "asset_references";
     const mergedEditing = assetPlanning && !legacyAssetPlanning;
     const episodePlanning = stage === "episodes";
-    const draft = episodePlanning ? storedDraft : localDraft;
-    const confirmed = episodePlanning ? node.metadata?.dramaConfirmed ?? "" : localConfirmed;
+    const storyboard = stage === "storyboard";
+    const versioned = episodePlanning || storyboard;
+    const draft = versioned ? storedDraft : localDraft;
+    const confirmed = versioned ? node.metadata?.dramaConfirmed ?? "" : localConfirmed;
     const episodeDraft = episodePlanning ? readEpisodeDraft(draft) : null;
-    const inlineEditor = assetPlanning || referenceEditing || episodePlanning;
+    const storyboardDraft = storyboard ? readStoryboardDraft(draft) : null;
+    const inlineEditor = assetPlanning || referenceEditing || versioned;
     const previous = assetPlanning ? readAssetDraft(draft) : readDraft(draft);
     const liveAssets = readDraft(confirmedAssetPlan ?? "")?.assets;
     const assets = liveAssets ?? upstream.find(item => Array.isArray(item?.assets))?.assets ?? previous?.assets ?? [];
@@ -94,7 +98,9 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, onC
     const upstreamReferences = (mergedReferences ? referencesForDramaAssets(liveAssets ?? [], mergedReferences) : undefined) ??
         (Array.isArray(savedReferences) ? savedReferences : undefined) ??
         upstream.find(item => Array.isArray(item?.references))?.references;
-    const shots = upstream.find(item => Array.isArray(item?.shots))?.shots ?? previous?.shots ?? [];
+    const shots = storyboard ? storyboardDraft?.shots ?? [] :
+        upstream.find(item => Array.isArray(item?.shots))?.shots ?? previous?.shots ?? [];
+    const linkedEpisodes = storyboard ? upstreamArtifacts.flatMap(item => readEpisodeDraft(item)?.episodes ?? []) : [];
     const scenes = assets.filter(asset => asset.kind === "scene");
     const invalidSceneIds = stage === "storyboard" ? [...new Set(shots.flatMap(shot =>
         shot?.sceneId && !scenes.some(scene => scene.id === shot.sceneId) ? [shot.sceneId] : [],
@@ -108,8 +114,7 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, onC
             }
             return updated;
         });
-        const next = JSON.stringify({ ...previous, shots: nextShots }, null, 2);
-        setDraft(next);
+        const next = JSON.stringify({ ...storyboardDraft, shots: nextShots });
         onChange({dramaDraft: next});
         setValidation(`已替换 ${oldId}，请检查并确认草案`);
     };
@@ -144,7 +149,7 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, onC
     const theme = canvasThemes[useThemeStore(state => state.theme)];
     const control = inlineEditor ? dramaNodeControl(theme) : undefined;
     const assetConfirmed = Boolean(confirmed && draft === confirmed);
-    const inlineReady = referenceEditing ? references.length > 0 : episodePlanning ? Boolean(episodeDraft?.episodes.length) : Boolean(previous);
+    const inlineReady = referenceEditing ? references.length > 0 : episodePlanning ? Boolean(episodeDraft?.episodes.length) : storyboard ? shots.length > 0 : Boolean(previous);
     if (!stage) return null;
     const editor = <section className={inlineEditor ? assetEditorExpanded
         ? "flex h-full min-h-0 flex-col gap-4 text-sm"
@@ -161,7 +166,7 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, onC
             {!assetEditorExpanded && <strong className={inlineEditor ? "text-sm" : undefined}>{DRAMA_PIPELINE_STAGE_LABELS[stage]}</strong>}
             {inlineEditor ? <div className="flex items-center gap-2">
                 <DramaNodeStatus theme={theme} confirmed={assetConfirmed} />
-                {episodePlanning && onOpenVersions && <Button size="small" icon={<History size={14} />}
+                {versioned && onOpenVersions && <Button size="small" icon={<History size={14} />}
                     style={control} onClick={onOpenVersions}>历史版本</Button>}
                 {!assetEditorExpanded && <button type="button" title="最大化编辑器" aria-label={`最大化${DRAMA_PIPELINE_STAGE_LABELS[stage]}`}
                     className="inline-grid size-7 place-items-center rounded-md border" style={control}
@@ -173,7 +178,7 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, onC
             "thin-scrollbar min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain px-1" : "contents"}
             onMouseDown={inlineEditor ? event => event.stopPropagation() : undefined}
             onPointerDown={inlineEditor ? event => event.stopPropagation() : undefined}>
-        {inlineEditor ? <div className={assetEditorExpanded ? "thin-scrollbar min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain pr-1" : episodePlanning ? "grid gap-3" : "contents"}>
+        {inlineEditor ? <div className={assetEditorExpanded ? "thin-scrollbar min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain pr-1" : versioned ? "grid gap-3" : "contents"}>
             {episodePlanning ? <>
                 <label className="flex items-center justify-between gap-3 rounded-xl border px-3 py-1.5 font-medium" style={control}>目标集数
                     <Input size="small" className="!w-20" type="number" min={1} max={100} value={targetEpisodes} disabled={generating} style={control}
@@ -190,6 +195,21 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, onC
                     onChange({dramaDraft:next});
                 }} />
                 {draft && !episodeDraft && <p role="alert">这份剧集草案格式无法读取，请重新生成。</p>}
+            </> : storyboard ? <>
+                <DramaStoryboardFields shots={shots} episodes={linkedEpisodes} scenes={scenes}
+                    expanded={assetEditorExpanded} disabled={generating || versionBusy} control={control} onChange={nextShots => {
+                        onChange({dramaDraft:JSON.stringify({...storyboardDraft,shots:nextShots})});
+                        setValidation("");
+                    }} />
+                {draft && !storyboardDraft && <p role="alert">这份分镜草案格式无法读取，可在下方修正或重新生成。</p>}
+                <details className="text-xs">
+                    <summary>编辑结构化草案</summary>
+                    <TextArea aria-label="分镜草案 JSON" value={draft} disabled={generating || versionBusy}
+                        style={control} autoSize={{minRows:3,maxRows:10}} onChange={event => {
+                            onChange({dramaDraft:event.target.value});
+                            setValidation("");
+                        }} />
+                </details>
             </> : <DramaAssetFields assets={assets} theme={theme} expanded={assetEditorExpanded} disabled={generating} onChange={assetPlanning ? nextAssets => {
                 const next = JSON.stringify({...previous, assets:nextAssets});
                 setDraft(next);
@@ -251,11 +271,11 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, onC
             {!inlineEditor && <Button onClick={() => { onChange({ dramaDraft: draft, ...(stage === "source" ? { content: draft } : {}) }); }}>保存草案</Button>}
             <Button size={inlineEditor && !assetEditorExpanded ? "small" : "middle"} className={inlineEditor ? "order-last" : undefined}
                 style={inlineEditor && inlineReady && !generating ? dramaNodePrimary(theme) : undefined}
-                type="primary" disabled={inlineEditor ? generating || !inlineReady || (episodePlanning && versionBusy) : !draft.trim()} onClick={async () => {
+                type="primary" disabled={inlineEditor ? generating || !inlineReady || (versioned && versionBusy) : !draft.trim()} onClick={async () => {
                 try {
                     if (stage === "assets" || stage === "episodes" || stage === "storyboard") {
                         const parsed: {assets?:unknown; episodes?:unknown; shots?:unknown} =
-                            assetPlanning ? previous ?? {} : episodePlanning ? episodeDraft ?? {} : JSON.parse(draft);
+                            assetPlanning ? previous ?? {} : episodePlanning ? episodeDraft ?? {} : storyboardDraft ?? {};
                         const collection = stage === "assets" ? parsed.assets : stage === "episodes" ? parsed.episodes : parsed.shots;
                         if (!Array.isArray(collection) || (!assetPlanning && !collection.length)) throw Error("请确认有效的结构化 JSON 草案");
                         if (stage === "episodes" && collection.length !== targetEpisodes) throw Error(`剧集草案必须包含 ${targetEpisodes} 集`);
@@ -264,8 +284,8 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, onC
                             if (!result.valid) throw Error(describeDramaValidation(result.errors, assets));
                         }
                     }
-                    if (episodePlanning && onConfirmEpisodes) {
-                        await onConfirmEpisodes(draft);
+                    if (versioned && onConfirmVersion) {
+                        await onConfirmVersion(draft);
                         setValidation("阶段已确认");
                         return;
                     }
@@ -288,7 +308,7 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, onC
                 const result = await canvasApi<{valid:boolean;errors:{code:string}[]}>(`/api/v1/projects/${encodeURIComponent(projectId ?? "")}/drama-pipeline/validate`, "POST", {snapshot:parsedSnapshot});
                 setValidation(result.valid ? "检查通过" : describeDramaValidation(result.errors, assets));
             } catch (error) { setValidation(error instanceof Error ? error.message : "校验失败"); }
-        }} disabled={!projectId || (inlineEditor && (!inlineReady || generating))}>{referenceEditing ? "校验主图" : assetPlanning ? "校验资产" : episodePlanning ? "校验剧集" : "校验结构化草案"}</Button>
+        }} disabled={!projectId || (inlineEditor && (!inlineReady || generating))}>{referenceEditing ? "校验主图" : assetPlanning ? "校验资产" : episodePlanning ? "校验剧集" : storyboard ? "校验分镜" : "校验结构化草案"}</Button>
         {stage === "assets" || stage === "episodes" || stage === "storyboard" ? <Button size={inlineEditor && !assetEditorExpanded ? "small" : "middle"} style={control} loading={generating} onClick={async () => {
             setGenerating(true);
             try {
@@ -316,14 +336,16 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, onC
                 const generatedEpisodes = episodePlanning ? readEpisodeDraft(result.answer) : undefined;
                 if (assetPlanning && !assetDraft) throw Error("模型返回的资产格式有误，已保留原草案");
                 if (episodePlanning && !generatedEpisodes?.episodes.length) throw Error("模型返回的剧集格式有误，已保留原草案");
-                const structured = assetDraft ?? generatedEpisodes;
+                const generatedStoryboard = storyboard ? readStoryboardDraft(result.answer) : undefined;
+                if (storyboard && !generatedStoryboard?.shots.length) throw Error("模型返回的分镜格式有误，已保留原草案");
+                const structured = assetDraft ?? generatedEpisodes ?? generatedStoryboard;
                 const answer = structured ? JSON.stringify(structured) : result.answer;
                 setDraft(answer);
                 setValidation("已生成草案，请检查并保存或确认");
                 onChange({dramaDraft:answer});
             } catch (error) { setValidation(error instanceof Error ? error.message : "生成失败"); }
             finally { setGenerating(false); }
-        }} disabled={!projectId}>生成草案</Button> : null}
+        }} disabled={!projectId || (versioned && versionBusy)}>生成草案</Button> : null}
         </div>
         {validation ? <p role="status" className={`mt-2 whitespace-pre-wrap text-sm ${assetEditorExpanded ? "thin-scrollbar max-h-24 shrink-0 overflow-y-auto" : ""}`}>{validation}</p> : null}
         {invalidSceneIds.map(id => <label className="mt-2 block text-sm" key={id}>

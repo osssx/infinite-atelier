@@ -1,3 +1,5 @@
+export { readStoryboardDraft } from "../../../server/canvas-text-content.mjs";
+
 /** Shared contracts and dependency checks for the canvas drama pipeline. */
 export const DRAMA_PIPELINE_STAGES = [
     "source",
@@ -15,7 +17,7 @@ export const DRAMA_PIPELINE_NODE_TYPES = Object.fromEntries(
 export function isInlineDramaNode(type: string) {
     return type === DRAMA_PIPELINE_NODE_TYPES.source ||
         type === DRAMA_PIPELINE_NODE_TYPES.assets || type === DRAMA_PIPELINE_NODE_TYPES.asset_references ||
-        type === DRAMA_PIPELINE_NODE_TYPES.episodes;
+        type === DRAMA_PIPELINE_NODE_TYPES.episodes || type === DRAMA_PIPELINE_NODE_TYPES.storyboard;
 }
 
 export const DRAMA_PIPELINE_STAGE_LABELS: Record<DramaPipelineStage, string> = {
@@ -86,6 +88,11 @@ export type DramaShot = {
     sceneVariantId?: string;
     propIds: string[];
     keyPropIds: string[];
+    shotSize?: string;
+    camera?: string;
+    action?: string;
+    dialogue?: string;
+    sourceRefs?: string[];
 };
 
 export type DramaPipelineSnapshot = {

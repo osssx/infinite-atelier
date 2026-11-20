@@ -97,7 +97,25 @@ const append=(list:CanvasAssistantSession[],id:string,message:CanvasAssistantMes
 type HistoryQuoteChoice=HistoryQuoteCandidate|{messageId:string;text:string;label:string;start:number};
 
 const historyMessageAnchor=(chatId:string,messageId:string)=>"canvas-assistant-message-"+chatId+"-"+messageId;
-type DurableTurn={turnId:string;userText:string;answer?:string;status:string;errorCode?:string};
+type DurableTurn={turnId:string;userText:string;answer?:string;status:string;errorCode?:string;
+ failureDetail?:{kind:string;diagnostic:{category:string;phase:string;httpStatus:number|null}}};
+const assistantFailureStages:Record<string,string>={
+ initial:"首次模型请求",skill_tool_round:"工具回合",skill_fallback:"无工具回退",
+ skill_execution_repair:"Skill 纠正",format_repair:"动作格式纠正",script_continuation:"Skill 后续请求"
+};
+const assistantFailureReasons:Record<string,string>={
+ deadline_expired:"超过本地等待时限",transport_timeout:"网络传输超时",transport_disconnected:"连接中断",
+ response_body_timeout:"读取模型回复超时",http_request_timeout:"模型渠道返回超时",
+ http_server_error:"模型渠道服务端错误",dns_resolution_failure:"域名解析失败",tls_certificate_rejected:"TLS 校验失败"
+};
+function conversationReconcileText(detail:DurableTurn["failureDetail"]){
+ if(!detail)return "模型请求结果待对账";
+ const stage=assistantFailureStages[detail.kind]??"模型请求";
+ const reason=assistantFailureReasons[detail.diagnostic.category]??
+  (detail.diagnostic.phase==="read_response"?"读取回复时失败":"等待渠道响应时失败");
+ const status=detail.diagnostic.httpStatus;
+ return `模型请求结果待对账（${stage} · ${reason}${status?` · HTTP ${status}`:""}）`;
+}
 type DurablePage={turns:DurableTurn[];nextBefore:number|null};
 function conversationPath(projectId:string,chatId:string){
  return "/api/v1/projects/"+encodeURIComponent(projectId)+"/assistant/conversations/"+encodeURIComponent(chatId);
@@ -130,7 +148,7 @@ function mergeDurableTranscript(local:CanvasAssistantMessage[],turns:DurableTurn
   remote.push(user);
   emitted.add(user.id);
   const statusText=turn.status==="failed"?(turn.errorCode?canvasAssistantErrorText(new Error(turn.errorCode)):"回复中断"):
-   turn.status==="needs_reconcile"?"模型请求结果待对账":
+   turn.status==="needs_reconcile"?conversationReconcileText(turn.failureDetail):
    turn.status==="awaiting_followup"?"Skill 流程尚未完成，可查看运行记录。":undefined;
   if(turn.answer!==undefined||localReply||statusText){
    const finalLocal=localReply?.role==="assistant"&&

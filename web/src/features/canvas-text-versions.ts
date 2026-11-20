@@ -1,4 +1,5 @@
 import {readEpisodeDraft} from "../../server/canvas-text-content.mjs";
+import {readStoryboardDraft} from "./canvas-assistant/canvas-drama-pipeline";
 import type {CanvasNodeData} from "@/types/canvas";
 
 export const TEXT_VERSIONS_LIMIT=50;
@@ -8,34 +9,38 @@ export function canSaveTextVersion(content:string,versions:TextVersion[]=[]){
  return Boolean(content.trim())&&versions[0]?.content!==content&&versions.length<TEXT_VERSIONS_LIMIT;
 }
 export function isValidTextRestore(content:string){return Boolean(content.trim());}
-export const isEpisodeVersionNode=(node:CanvasNodeData)=>node.type==="drama:episodes";
-export const supportsTextVersions=(node:CanvasNodeData)=>node.type==="text"||isEpisodeVersionNode(node);
+export const isDramaVersionNode=(node:CanvasNodeData)=>node.type==="drama:episodes"||node.type==="drama:storyboard";
+export const supportsTextVersions=(node:CanvasNodeData)=>node.type==="text"||isDramaVersionNode(node);
 export function versionNodeContent(node:CanvasNodeData){
  const metadata=node.metadata;
- return isEpisodeVersionNode(node)?
+ return isDramaVersionNode(node)?
   metadata?.dramaDraft||metadata?.dramaConfirmed||metadata?.content||"":metadata?.content??"";
 }
 export function canRestoreNodeVersion(node:CanvasNodeData,content:string){
- return isEpisodeVersionNode(node)?Boolean(readEpisodeDraft(content)?.episodes.length):isValidTextRestore(content);
+ if(node.type==="drama:episodes")return Boolean(readEpisodeDraft(content)?.episodes.length);
+ if(node.type==="drama:storyboard")return Boolean(readStoryboardDraft(content)?.shots.length);
+ return isValidTextRestore(content);
 }
 export function withTextVersions(node:CanvasNodeData,versions:TextVersion[],content?:string){
- const patch=content===undefined?{}:isEpisodeVersionNode(node)?{dramaDraft:content}:{content};
+ const patch=content===undefined?{}:isDramaVersionNode(node)?{dramaDraft:content}:{content};
  return {...node,metadata:{...node.metadata,...patch,textVersions:versions}};
 }
-export function prepareEpisodeConfirmation(node:CanvasNodeData,archive:{id:string;createdAt:string}){
- const draft=readEpisodeDraft(versionNodeContent(node));
- if(!isEpisodeVersionNode(node)||!draft?.episodes.length)throw Error("episode_draft_invalid");
+export function prepareDramaConfirmation(node:CanvasNodeData,archive:{id:string;createdAt:string}){
+ const readDraft=node.type==="drama:storyboard"?readStoryboardDraft:readEpisodeDraft;
+ const stored=versionNodeContent(node);
+ const draft=readDraft(stored);
+ if(!isDramaVersionNode(node)||!draft||!canRestoreNodeVersion(node,stored))throw Error("drama_draft_invalid");
  const content=JSON.stringify(draft);
  const previous=node.metadata?.dramaConfirmed??"";
  const versions=node.metadata?.textVersions??[];
- const normalize=(value:string)=>JSON.stringify(readEpisodeDraft(value)??value);
+ const normalize=(value:string)=>JSON.stringify(readDraft(value)??value);
  const previousKey=normalize(previous);
  const shouldArchive=Boolean(previous.trim())&&previousKey!==content&&
   !versions.some(version=>normalize(version.content)===previousKey);
  if(shouldArchive&&versions.length>=TEXT_VERSIONS_LIMIT)throw Error("episode_history_full");
  const next=withTextVersions(node,shouldArchive?
   [{...archive,source:"confirmation",content:previous},...versions]:versions,content);
- return {...next,metadata:{...next.metadata,dramaConfirmed:content,dramaStage:"episodes" as const}};
+ return {...next,metadata:{...next.metadata,dramaConfirmed:content,dramaStage:node.type==="drama:storyboard"?"storyboard" as const:"episodes" as const}};
 }
 export function documentFitsCanvasLimit(document:unknown,reserveBytes=0){
  return new TextEncoder().encode(typeof document==="string"?document:JSON.stringify(document)).byteLength+reserveBytes<=CANVAS_DOCUMENT_LIMIT_BYTES;

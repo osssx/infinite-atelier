@@ -28,7 +28,7 @@ describe("node handoff render callbacks", () => {
         expect(selectNodeRenderCallbacks({ ...shared, renderPanel: changedPanel }, CanvasNodeType.Image, true).renderPanel).toBe(changedPanel);
     });
 
-    it.each([CanvasNodeType.Config, "drama:source", "drama:assets", "drama:asset_references", "drama:episodes"])("keeps inline content for %s with its panel closed", (nodeType) => {
+    it.each([CanvasNodeType.Config, "drama:source", "drama:assets", "drama:asset_references", "drama:episodes", "drama:storyboard"])("keeps inline content for %s with its panel closed", (nodeType) => {
         const callbacks = selectNodeRenderCallbacks(shared, nodeType, false);
         expect(callbacks.renderPanel).toBeUndefined();
         expect(callbacks.renderNodeContent).toBe(configContent);

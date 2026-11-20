@@ -195,6 +195,150 @@ test("episode planning tools let the model read first and optionally activate an
  assert.equal(getProject(db,projectId).revision,project.revision+1);
 });
 
+test("a numbered follow-up keeps prior options only with the same authorized Skill and canvas scope",async t=>{
+ const skill={id:"drama-05-revise-shot",version:"a".repeat(12),name:"修改镜头",
+  description:"优化画面",skillMd:"修改分镜",resources:{}};
+ const skills={mode:"auto",projectId,expectedRevision:1,skillIds:[skill.id],versionPins:{[skill.id]:skill.version}};
+ const captured=[];
+ const {app}=fixture(t,payload=>{
+  captured.push(payload);
+  return normalResponse(captured.length===1?"① 强化氛围。② 用皮球滚入画面做开场钩子。":"已收到选择。");
+ },{skillRegistry:{authorized:()=>({entries:[skill]})}});
+ for(const [turn,request,policy,catalog] of [
+  ["one","优化镜头1",selected,skills],
+  ["two","2",selected,skills],
+  ["three","2",selected,{...skills,expectedRevision:2}],
+  ["four","2",plain,skills]
+ ]){
+  const response=await send(app,input("numbered",turn,request,{conversationContext:policy,skills:catalog}));
+  assert.equal(response.statusCode,200,response.body);
+ }
+ assert.ok(captured[1].messages.some(message=>message.role==="assistant"&&message.content.includes("皮球滚入画面")));
+ assert.doesNotMatch(JSON.stringify(captured[2]),/皮球滚入画面/);
+ assert.doesNotMatch(JSON.stringify(captured[3]),/皮球滚入画面/);
+});
+
+test("a durable model network failure is reported as unknown without claiming retries",async t=>{
+ let posts=0;
+ const {app,db}=fixture(t,()=>{
+  if(++posts===1)return toolResponse("read","canvas_read_nodes",{node_ids:["private"],offset:0});
+  throw new TypeError("fetch failed",{cause:{code:"ECONNRESET"}});
+ });
+ const response=await send(app,input("timeout","one","2",{conversationContext:selected}));
+ assert.equal(response.body.includes("assistant_model_call_unknown"),true);
+ assert.equal(posts,2);
+ assert.equal(db.prepare("SELECT state FROM assistant_conversation_requests").get().state,"needs_reconcile");
+ const history=await app.inject({method:"GET",url:durableURL("timeout")+"/turns"});
+ assert.equal(history.statusCode,200,history.body);
+ assert.deepEqual(history.json().turns[0].failureDetail,{kind:"skill_tool_round",
+  diagnostic:{version:1,category:"transport_disconnected",phase:"await_response",httpStatus:null}});
+ assert.doesNotMatch(history.body,/fetch failed|ECONNRESET/);
+});
+
+test("ordinary chat records the upstream HTTP status, separating rejection from an unknown result",async t=>{
+ let status=503;
+ const {app}=fixture(t,()=>new Response("private upstream body",{status}));
+ for(const [turn,expected,category] of [
+  ["unavailable","needs_reconcile","http_server_error"],["rejected","failed","http_client_rejected"]
+ ]){
+  const result=await send(app,input(turn,"one","优化镜头"));
+  assert.ok(result.statusCode>=400);
+  const history=await app.inject({url:durableURL(turn)+"/turns"});
+  const saved=history.json().turns[0];
+  assert.equal(saved.status,expected);
+  assert.deepEqual(saved.failureDetail,{kind:"initial",
+   diagnostic:{version:1,category,phase:"read_response",httpStatus:status}});
+  assert.doesNotMatch(history.body,/private upstream body/);
+  status=400;
+ }
+});
+
+test("a malformed storyboard read and write are corrected inside the same assistant turn",async t=>{
+ const captured=[];
+ const shot={id:"shot1",episodeId:"ep1",order:1,description:"远处的灯塔熄灭。",
+  characterVariantIds:[],propIds:[],keyPropIds:[]};
+ const revised=JSON.stringify({shots:[{...shot,description:"近景中，灯塔的光束骤然熄灭。"}]});
+ const {db,app}=fixture(t,payload=>{
+  captured.push(payload);
+  const last=payload.messages.at(-1);
+  if(captured.length===1)
+   return toolResponse("incorrect","canvas_read_nodes",{node_ids:["private"],shot:1});
+  if(captured.length===2){
+   const failure=JSON.parse(last.content);
+   assert.equal(failure.error,"assistant_agent_tool_arguments_invalid");
+   assert.match(failure.message,/offset:0/);
+   assert.equal("nodes" in failure,false);
+   return toolResponse("corrected","canvas_read_nodes",{node_ids:["private"],offset:0});
+  }
+  if(captured.length===3){
+   assert.deepEqual(JSON.parse(JSON.parse(last.content).nodes[0].content).shots,[shot]);
+   return normalResponse(JSON.stringify({answer:"修改镜头",actions:[
+    {type:"set_text",nodeId:"private",content:"近景中，灯塔的光束骤然熄灭。"}
+   ]}));
+  }
+  assert.equal(payload.tools,undefined);
+  assert.match(payload.messages[0].content,/FORMAT CORRECTION/);
+  assert.match(payload.messages[0].content,/nonempty, valid shots array/);
+  assert.match(payload.messages[0].content,/远处的灯塔熄灭/);
+  return normalResponse(JSON.stringify({answer:"已提出镜头 1 的改写",actions:[
+   {type:"set_text",nodeId:"private",content:revised}
+  ]}));
+ });
+ const project=getProject(db,projectId);
+ saveSingleUserCanvas(db,{id:projectId,expectedRevision:project.revision,
+  document:{nodes:[{...node,type:"drama:storyboard",title:"分镜表",
+   metadata:{dramaDraft:JSON.stringify({shots:[shot]})}}],connections:[]}});
+ const result=await send(app,input("storyboard","one","优化镜头1",{
+  canvasActions:true,semanticCanvasIntent:true,conversationContext:selected
+ }));
+ assert.equal(result.statusCode,200,result.body);
+ assert.equal(captured.length,4);
+ assert.equal(result.json().formatRepairCount,1);
+ assert.equal(result.json().actions[0].content,revised);
+ assert.equal(result.json().agentReadToolCalls.length,1);
+ assert.equal(getProject(db,projectId).revision,project.revision+1);
+});
+
+test("storyboard reads and Skills finish from retrieved data after the tool budget is used",async t=>{
+ const captured=[];
+ const skill={id:"shot-edit",name:"修改分镜",description:"写作建议",version:"a".repeat(12),skillMd:"保持镜头衔接。",resources:{}};
+ const skills={mode:"auto",projectId,expectedRevision:1,skillIds:[skill.id],versionPins:{[skill.id]:skill.version}};
+ const {app}=fixture(t,payload=>{
+  captured.push(payload);
+  if(captured.length===1)return toolResponse("skill","activate_skill",{skill_id:skill.id});
+  if(captured.length<5)return toolResponse("read-"+captured.length,"canvas_read_nodes",{node_ids:["private"],offset:0});
+  assert.equal(payload.tools,undefined);
+  assert.equal(payload.tool_choice,undefined);
+  assert.ok(payload.messages.every(message=>message.role!=="tool"));
+  assert.match(payload.messages[0].content,/The tool budget is exhausted/);
+  assert.match(JSON.stringify(payload),/保持镜头衔接/);
+  assert.match(JSON.stringify(payload),new RegExp(marker));
+  return normalResponse(JSON.stringify({answer:"建议让皮球滚入画面。",actions:[]}));
+ },{skillRegistry:{authorized:()=>({entries:[skill]})}});
+ const result=await send(app,input("bounded","one","优化镜头1",{
+  canvasActions:true,semanticCanvasIntent:true,conversationContext:selected,skills
+ }));
+ assert.equal(result.statusCode,200,result.body);
+ assert.equal(captured.length,5);
+ assert.equal(result.json().answer,"建议让皮球滚入画面。");
+ assert.equal(result.json().agentReadToolCalls.length,3);
+ assert.deepEqual(result.json().appliedSkillIds,[skill.id]);
+});
+
+test("repeated invalid read parameters end as a known failure",async t=>{
+ let attempt=0;
+ const {db,app}=fixture(t,()=>toolResponse("read-"+(++attempt),"canvas_read_nodes",{node_ids:"private"}));
+ const payload=input("invalid-reads","one","读取节点",{conversationContext:selected});
+ const result=await send(app,payload);
+ assert.equal(result.json().code,"assistant_skill_tool_round_limit");
+ const row=db.prepare("SELECT state,error_code FROM assistant_conversation_requests").get();
+ assert.deepEqual({...row},{state:"failed",error_code:"assistant_skill_tool_round_limit"});
+ db.prepare("UPDATE assistant_conversation_requests SET state='needs_reconcile', error_code=?")
+  .run("assistant_agent_tool_arguments_invalid");
+ recoverConversationRequests(db);
+ assert.equal(db.prepare("SELECT state FROM assistant_conversation_requests").get().state,"failed");
+});
+
 test("models rejecting node tools receive bounded episode excerpts without a tool declaration",async t=>{
  const captured=[];
  const {db,app}=fixture(t,payload=>{

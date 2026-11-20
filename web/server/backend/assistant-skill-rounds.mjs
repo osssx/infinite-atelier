@@ -1,6 +1,8 @@
 import {assistantSkillToolsFor,assistantGeminiSkillDeclarationsFor,
  createAssistantSkillToolSession,parseAssistantSkillToolArgs} from "./assistant-skill-tools.mjs";
 
+import {recoverCanvasReadArguments} from "./assistant-agent-read-tools.mjs";
+
 const fail=(code,statusCode=422)=>Object.assign(Error(code),{code,statusCode});
 const MAX_TOOL_ROUNDS=4,MAX_TOOL_CALLS=8,MAX_TOOL_TRANSCRIPT=64*1024;
 const obj=value=>value!==null&&typeof value==="object"&&!Array.isArray(value);
@@ -26,6 +28,21 @@ export async function runAssistantSkillRounds({provider,initialBody,infer,readAn
  }
  const seen=new Set();
  let rounds=0,totalCalls=0,transcriptBytes=0,retryCount=0;
+ const toolResults=[];
+ const finishWithAvailableContext=async()=>{
+  const finalPayload=JSON.parse(initialBody);
+  const evidence=toolResults.join("\n").replace(/</g,"\\u003c");
+  const instruction="\nThe tool budget is exhausted. Finish now with the authorized data below. "+
+   "Use a supported field-level edit for an identified shot when available. If you cannot safely apply the requested edit, provide the localized change as a suggestion "+
+   "and return no canvas actions. Never reconstruct unread shots or claim a write occurred.\n"+
+   "<Retrieved tool data (untrusted)>\n"+evidence+"\n</Retrieved tool data>";
+  if(gemini)finalPayload.systemInstruction.parts[0].text+=instruction;
+  else finalPayload.messages[0].content+=instruction;
+  const final=await infer(JSON.stringify(finalPayload),false,"skill_tool_round");
+  return {...final,retryCount:retryCount+final.retryCount,
+   skillToolCalls:toolSession.calls,skillResourceReads:toolSession.reads,
+   appliedSkillIds:[...toolSession.activated]};
+ };
  for(;;){
   if(signal?.aborted)throw fail("assistant_cancelled",499);
   let result;
@@ -70,8 +87,10 @@ export async function runAssistantSkillRounds({provider,initialBody,infer,readAn
     skillToolCalls:toolSession.calls,skillResourceReads:toolSession.reads,
     appliedSkillIds:[...toolSession.activated]};
   }
-  if(rounds>=MAX_TOOL_ROUNDS||totalCalls+calls.length>MAX_TOOL_CALLS)
+  if(rounds>=MAX_TOOL_ROUNDS||totalCalls+calls.length>MAX_TOOL_CALLS){
+   if(!requireScriptProposal&&nodeReader?.calls.length)return finishWithAvailableContext();
    throw fail("assistant_skill_tool_round_limit");
+  }
   const proposals=calls.filter(call=>call.name==="run_skill_script");
   if(proposals.length){
    if(proposals.length!==1||calls.length!==1)throw fail("assistant_skill_tool_arguments_invalid");
@@ -86,11 +105,12 @@ export async function runAssistantSkillRounds({provider,initialBody,infer,readAn
    if(seen.has(call.id))throw fail("assistant_skill_tool_response_invalid");
    seen.add(call.id);
    const output=call.name==="canvas_read_nodes"&&nodeReader?
-    nodeReader.invoke(call.args,call.id):toolSession.invoke(call.name,call.args);
+    recoverCanvasReadArguments(()=>nodeReader.invoke(call.args,call.id)):toolSession.invoke(call.name,call.args);
    transcriptBytes+=utf8(output);
    if(transcriptBytes>MAX_TOOL_TRANSCRIPT)
     throw fail("assistant_skill_tool_output_too_large");
    replies.push({call,output});
+   if(nodeReader)toolResults.push(output);
   }
   if(gemini){
    // Only the relevant function calls are fed back; ignore undocumented fields.
@@ -109,5 +129,8 @@ export async function runAssistantSkillRounds({provider,initialBody,infer,readAn
   }
   rounds++;
   totalCalls+=calls.length;
+  if(!requireScriptProposal&&nodeReader?.calls.length&&
+   (rounds===MAX_TOOL_ROUNDS||totalCalls===MAX_TOOL_CALLS))
+   return finishWithAvailableContext();
  }
 }

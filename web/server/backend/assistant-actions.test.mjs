@@ -20,6 +20,13 @@ test("P2 server action parser accepts bounded typed operations and JSON fences",
  assert.deepEqual(parseAssistantActionResponse("普通文本建议"),{answer:"普通文本建议",actions:[]});
  assert.match(CANVAS_ACTION_SYSTEM,/Use existing IDs ONLY when provided/i);
 });
+test("canvas action parser accepts a partial storyboard edit with only writable fields",()=>{
+ const action={type:"patch_storyboard_shot",nodeId:"drama:storyboard-1",shotId:"shot_1",changes:{camera:"缓慢推近"}};
+ const parse=item=>parseAssistantActionResponse(JSON.stringify({answer:"修改镜头1",actions:[item]}));
+ assert.deepEqual(parse(action).actions,[action]);
+ assert.throws(()=>parse({...action,changes:{episodeId:"different"}}),/assistant_actions_invalid/);
+ assert.throws(()=>parse({...action,changes:{}}),/assistant_actions_invalid/);
+});
 test("P2 parser fails closed on unsupported or malformed operations",()=>{
  const wrap=actions=>JSON.stringify({answer:"test",actions});
  for(const invalid of [

@@ -1074,8 +1074,17 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
        let liveToolContext="";
        let plainCanvasChat=false,selectedCanvasText="";
        if(conversation){
-        const restrict=restrictConversation||Boolean(req.body.conversationContinuation||req.body.visualContext||req.body.skills);
-        if(!restrict)liveToolContext=resolveConversationToolReferences(db,conversation,{taskId:ref?.taskId,policy:frozenPolicy,project});
+        const autoSkills=req.body.skills?.mode==="auto";
+        const restrict=restrictConversation||Boolean(req.body.conversationContinuation||req.body.visualContext||
+         (req.body.skills&&!autoSkills));
+        if(autoSkills&&!restrict){
+         // Skill-assisted prose can enter later turns only under the same authorized catalog.
+         const {expectedRevision,versionPins,skillIds}=req.body.skills;
+         const catalog=[...skillIds].sort().map(id=>[id,versionPins[id]]);
+         frozenPolicy={...frozenPolicy,skillHistoryKey:createHash("sha256")
+          .update(stableJson({expectedRevision,catalog})).digest("hex")};
+        }
+        if(!restrict&&!req.body.skills)liveToolContext=resolveConversationToolReferences(db,conversation,{taskId:ref?.taskId,policy:frozenPolicy,project});
          plainCanvasChat=stablePromptPrefix&&!ref&&!frozenPolicy.includeContext&&!req.body.canvasActions&&
           !restrict&&!skill.context&&!skill.toolEntries?.length&&!liveToolContext&&!quoteContext&&
           assistantCacheRollout({...rollout,stage:"plain_chat"});
@@ -1219,7 +1228,7 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
        }
        const code=typeof error?.code==="string"&&error.code.startsWith("assistant_")?error.code:"assistant_failed";
        if(managed)countConversationError(code);
-       if(conversation&&failConversationRequest(db,conversation,code)==="needs_reconcile")
+       if(conversation&&failConversationRequest(db,conversation,code,error?.failureDetail)==="needs_reconcile")
         conversationMetrics.needs_reconcile++;
        if(streamStarted){const event=streamEvent("error",{code});
         if(!reply.raw.destroyed){

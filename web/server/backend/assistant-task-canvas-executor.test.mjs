@@ -79,6 +79,48 @@ test("Task set_text validates and saves the episode draft through the approved g
  const result=execute(ctx,candidate);
  assert.deepEqual(result.project.document.nodes[0].metadata,{...metadata,dramaDraft:content});
 });
+test("Task set_text writes only the approved storyboard draft and rejects duplicate shots",t=>{
+ const shot={id:"shot1",episodeId:"ep1",order:1,description:"雨夜",sceneId:"bridge",camera:"推镜",
+  characterVariantIds:["hero-night"],propIds:["lantern"],keyPropIds:["lantern"],sourceRefs:["p1"]};
+ const metadata={dramaDraft:"旧草案",dramaConfirmed:"已确认稿",textVersions:[
+  {id:"archived",createdAt:"2026-11-20T00:00:00Z",content:"旧稿",source:"confirmation"}
+ ]};
+ const ctx=setup(t,{...origin,nodes:[{...node,type:"drama:storyboard",metadata}]});
+ const actions=shots=>[{type:"set_text",nodeId:"original",content:JSON.stringify({shots})}];
+ assert.throws(()=>plan(ctx,{requestId:"invalid",actions:actions([shot,shot])}),
+  {code:"assistant_storyboard_draft_invalid"});
+ const candidate=plan(ctx,{actions:actions([shot])});
+ assert.equal(candidate.status,"waiting_approval");
+ assert.deepEqual(getProject(ctx.db,"p").document.nodes[0].metadata,metadata);
+ approve(ctx,candidate);
+ const result=execute(ctx,candidate);
+ assert.deepEqual(result.project.document.nodes[0].metadata,{...metadata,dramaDraft:JSON.stringify({shots:[shot]})});
+});
+test("an approved shot patch preserves every other shot in a long storyboard",t=>{
+ const shots=Array.from({length:14},(_,index)=>({
+  id:"shot_"+(index+1),episodeId:"ep1",order:index+1,description:"原始画面".repeat(450),camera:"横移",
+  characterVariantIds:["hero"],sceneId:"yard",propIds:["ball"],keyPropIds:[],sourceRefs:["p1"]
+ }));
+ const original=JSON.stringify({shots,note:"保留表级数据"});
+ const metadata={dramaDraft:original,dramaConfirmed:original};
+ const ctx=setup(t,{...origin,nodes:[{...node,type:"drama:storyboard",metadata}]});
+ const action={type:"patch_storyboard_shot",nodeId:"original",shotId:"shot_1",
+  changes:{description:"推近毛毛的睡脸，皮球滚入画面。",camera:"缓慢推近"}};
+ assert.throws(()=>plan(ctx,{requestId:"missing",actions:[{...action,shotId:"unknown"}]}),
+  {code:"assistant_storyboard_shot_invalid"});
+ assert.throws(()=>plan(ctx,{requestId:"forbidden",actions:[{...action,changes:{sceneId:"other"}}]}),
+  {code:"assistant_canvas_plan_invalid"});
+ const candidate=plan(ctx,{actions:[action]});
+ assert.equal(candidate.status,"waiting_approval");
+ assert.equal(getProject(ctx.db,"p").document.nodes[0].metadata.dramaDraft,original);
+ approve(ctx,candidate);
+ const result=execute(ctx,candidate);
+ const saved=result.project.document.nodes[0].metadata;
+ assert.equal(saved.dramaConfirmed,original);
+ assert.deepEqual(JSON.parse(saved.dramaDraft),{
+  note:"保留表级数据",shots:[{...shots[0],...action.changes},...shots.slice(1)]
+ });
+});
 test("P1b group membership, grouped layout and ungroup each retain durable receipts",t=>{
  const ctx=setup(t);
  const first=plan(ctx,{requestId:"make-cards",actions:[

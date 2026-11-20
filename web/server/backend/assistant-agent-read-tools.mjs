@@ -2,6 +2,7 @@
  * Canonical names use dotted namespaces; Provider names use underscores.
  * The sole executable write path remains approved Task Step/Executor.
  */
+import {canvasTextContentPatch,readStoryboardDraft} from "../canvas-text-content.mjs";
 import {createHash} from "node:crypto";
 import {stableJson,writeTransaction} from "./repository.mjs";
 import {formatAssistantGenerationSettings,mayRepeatTurn,safe} from "./assistant-task-context.mjs";
@@ -26,14 +27,14 @@ function pageText(text,offset,limit){
  return text.slice(offset,end);
 }
 const get=(args,names)=>plain(args)&&Object.keys(args).every(key=>names.includes(key));
-function canvasNodeBody(node){
- const fields=node.type==="drama:episodes"?["dramaDraft","dramaConfirmed","content"]:
+function canvasNodeBody(node,{redact=true}={}){
+ const fields=["drama:episodes","drama:storyboard"].includes(node.type)?["dramaDraft","dramaConfirmed","content"]:
   node.type==="text"?["content"]:[];
  if(!fields.length)return null;
  for(const source of fields){
   const value=node.metadata?.[source];
   if(typeof value==="string"&&value.trim())
-   return {source,content:safe(value,Infinity,{preserveFormatting:true})};
+   return {source,content:redact?safe(value,Infinity,{preserveFormatting:true}):value};
  }
  return {source:null,content:""};
 }
@@ -45,29 +46,88 @@ export function describeAssistantReadableCanvasNode(node){
    ...(Buffer.byteLength(body.content)>560?{truncated:true}:{})}:{}),
   ...(typeof node.metadata?.prompt==="string"?{prompt:safe(node.metadata.prompt,500)}:{})};
 }
+const shotTextFields=["id","episodeId","description","sceneId","sceneVariantId","shotSize","camera","action","dialogue"];
+const shotListFields=["characterVariantIds","propIds","keyPropIds","sourceRefs"];
+function readStoryboardShot(node,{shot_id,shot_number,episode_id,offset}){
+ const body=canvasNodeBody(node,{redact:false});
+ const item={id:node.id,type:node.type,title:safe(node.title,90),source:body.source};
+ if(!body.source)return {nodes:[{...item,status:"empty"}]};
+ const draft=readStoryboardDraft(body.content);
+ if(!draft)return {nodes:[{...item,status:"invalid_storyboard"}]};
+ const groups=new Map();
+ for(const shot of draft.shots){
+  const group=groups.get(shot.episodeId)??[];
+  group.push(shot);
+  groups.set(shot.episodeId,group);
+ }
+ const matches=[];
+ for(const [episodeId,shots] of groups){
+  if(episode_id!==undefined&&episodeId!==episode_id)continue;
+  shots.sort((a,b)=>a.order-b.order);
+  if(shot_id!==undefined){
+   const index=shots.findIndex(shot=>shot.id===shot_id);
+   if(index!==-1)matches.push({shot:shots[index],number:index+1});
+  }else if(shots[shot_number-1])matches.push({shot:shots[shot_number-1],number:shot_number});
+ }
+ if(!matches.length)return {nodes:[{...item,status:"shot_not_found"}]};
+ const clean=value=>safe(value,Infinity,{preserveFormatting:true});
+ if(matches.length>1)return {nodes:[{...item,status:"ambiguous_shot",
+  candidates:matches.slice(0,8).map(({shot})=>({episodeId:safe(shot.episodeId,90),shotId:safe(shot.id,90)})),
+  moreMatches:matches.length>8}]};
+ const {shot,number}=matches[0];
+ const data={order:shot.order};
+ for(const key of shotTextFields)if(shot[key]!==undefined)data[key]=clean(shot[key]);
+ for(const key of shotListFields)if(shot[key]!==undefined)data[key]=shot[key].map(clean);
+ const match={...item,shotId:safe(shot.id,128),episodeId:safe(shot.episodeId,128),shotNumber:number};
+ const full={nodes:[{...match,shot:data}]};
+ if(offset===undefined&&Buffer.byteLength(JSON.stringify(full))<=MAX_RESULT_BYTES-256)return full;
+ return pageNodeBody(match,JSON.stringify(data),offset??0);
+}
+function pageNodeBody(item,text,offset){
+ if(offset>text.length||(text.charCodeAt(offset)&0xfc00)===0xdc00)
+  throw fail("assistant_agent_tool_arguments_invalid",400);
+ item.content=pageText(text,offset,2400);
+ const result={nodes:[item],offset,endOffset:offset,nextOffset:null};
+ while(Buffer.byteLength(JSON.stringify(result))>MAX_RESULT_BYTES-256)
+  item.content=pageText(item.content,0,Math.floor(Buffer.byteLength(item.content)/2));
+ result.endOffset=offset+item.content.length;
+ result.nextOffset=result.endOffset<text.length?result.endOffset:null;
+ return result;
+}
 function readCanvasNodes(byId,args){
- if(!get(args,["node_ids","offset"])||!Array.isArray(args.node_ids)||
+ if(!get(args,["node_ids","offset","shot_id","shot_number","episode_id"])||!Array.isArray(args.node_ids)||
   args.node_ids.length<1||args.node_ids.length>4||
   args.offset!==undefined&&(args.node_ids.length!==1||!Number.isSafeInteger(args.offset)||args.offset<0)||
   args.node_ids.some(nodeId=>!validCanvasNodeId(nodeId))||new Set(args.node_ids).size!==args.node_ids.length)
   throw fail("assistant_agent_tool_arguments_invalid",400);
  if(args.node_ids.some(nodeId=>!byId.has(nodeId)))throw fail("assistant_agent_context_scope_denied",403);
+ const targeted=args.shot_id!==undefined||args.shot_number!==undefined;
+ if(targeted||args.episode_id!==undefined){
+  const node=byId.get(args.node_ids[0]);
+  const validSelector=value=>typeof value==="string"&&Boolean(value.trim())&&value.length<=256;
+  if(args.node_ids.length!==1||node.type!=="drama:storyboard"||
+   (args.shot_id!==undefined?!validSelector(args.shot_id)||args.shot_number!==undefined:
+    !Number.isSafeInteger(args.shot_number)||args.shot_number<1)||
+   args.episode_id!==undefined&&!validSelector(args.episode_id))
+   throw fail("assistant_agent_tool_arguments_invalid",400);
+  return readStoryboardShot(node,args);
+ }
  if(args.offset===undefined)
   return {nodes:args.node_ids.map(nodeId=>describeAssistantReadableCanvasNode(byId.get(nodeId)))};
  const node=byId.get(args.node_ids[0]),body=canvasNodeBody(node);
- if(!body||args.offset>body.content.length||
-  (body.content.charCodeAt(args.offset)&0xfc00)===0xdc00)
-  throw fail("assistant_agent_tool_arguments_invalid",400);
- // Bound the serialized result as well as the text, including JSON escape overhead.
- const content=pageText(body.content,args.offset,2400);
- const item={id:node.id,type:node.type,title:safe(node.title,90),source:body.source,content,
-  ...(body.source===null?{status:"empty"}:{})};
- const result={nodes:[item],offset:args.offset,endOffset:args.offset,nextOffset:null};
- while(Buffer.byteLength(JSON.stringify(result))>MAX_RESULT_BYTES-256)
-  item.content=pageText(item.content,0,Math.floor(Buffer.byteLength(item.content)/2));
- result.endOffset=args.offset+item.content.length;
- result.nextOffset=result.endOffset<body.content.length?result.endOffset:null;
- return result;
+ if(!body)throw fail("assistant_agent_tool_arguments_invalid",400);
+ return pageNodeBody({id:node.id,type:node.type,title:safe(node.title,90),source:body.source,
+  ...(body.source===null?{status:"empty"}:{})},body.content,args.offset);
+}
+
+const NODE_READ_ARGUMENT_GUIDANCE="Use node_ids as an array of exact IDs from the authorized canvas references. To read the body, use one ID and offset:0. Continue with the returned nextOffset only when it is a number. For one storyboard, use shot_id or the 1-based shot_number shown in the editor, optionally with episode_id. Prefer targeted reads for individual edits. If ambiguous, ask which episode. For a paged shot, repeat the same selector and pass the returned nextOffset.";
+
+export function recoverCanvasReadArguments(invoke){
+ try{return invoke();}
+ catch(error){
+  if(error?.code!=="assistant_agent_tool_arguments_invalid")throw error;
+  return JSON.stringify({ok:false,error:error.code,message:NODE_READ_ARGUMENT_GUIDANCE});
+ }
 }
 
 export function createCanvasNodeReader(policy,document){
@@ -78,7 +138,7 @@ export function createCanvasNodeReader(policy,document){
  if(!selected.size)return null;
  const nodes=[...selected.values()];
  const definition=ASSISTANT_READ_TOOL_REGISTRY.find(item=>item.providerName==="canvas_read_nodes");
- const calls=[],references=[];
+ const calls=[],references=[],evidence=[];
  let bytes=0;
  const fallback=()=>JSON.stringify(nodes.map(node=>{
   const body=canvasNodeBody(node);
@@ -89,7 +149,18 @@ export function createCanvasNodeReader(policy,document){
  })).replace(/</g,"\\u003c");
  const manifest=JSON.stringify(nodes.map(node=>({id:node.id,type:node.type,title:safe(node.title,90)})))
   .replace(/</g,"\\u003c");
- return {withContext(context){
+ return {evidence,validateDraftActions(actions){
+  for(const action of actions){
+   if(action.type!=="set_text")continue;
+   const type=selected.get(action.nodeId)?.type;
+   if((type==="drama:episodes"||type==="drama:storyboard")&&!canvasTextContentPatch(type,action.content))
+    throw Object.assign(Error("assistant_actions_invalid"),{reason:type==="drama:storyboard"?
+     "set_text.content must be a JSON string containing a nonempty, valid shots array.":
+     "set_text.content must be a JSON string containing a nonempty, valid episodes array.",
+     userMessage:type==="drama:storyboard"?"模型未能提交完整、有效的分镜草案，画布未修改。":
+      "模型未能提交完整、有效的剧集草案，画布未修改。"});
+  }
+ },withContext(context){
   const text="本轮引用节点："+manifest+"\n"+context;
   const limit=16*1024,notice="\n[画布上下文已截断]";
   return Buffer.byteLength(text)<=limit?text:valueLimit(text,limit-Buffer.byteLength(notice))+notice;
@@ -102,6 +173,7 @@ export function createCanvasNodeReader(policy,document){
    if(size>MAX_RESULT_BYTES||bytes+size>MAX_PER_RUN_BYTES)
     throw fail("assistant_agent_read_budget_exceeded",413);
    bytes+=size;
+   evidence.push(output);
    calls.push({callId,name:definition.providerName});
    references.push({callId,kind:definition.name,nodeIds:data.nodes.map(node=>node.id)});
    return output;
@@ -117,9 +189,10 @@ export const ASSISTANT_READ_TOOL_REGISTRY=Object.freeze([
   parameters:{type:"object",additionalProperties:false,required:["query"],
    properties:{query:{type:"string",maxLength:80}}}},
  {name:"canvas.read_nodes",providerName:"canvas_read_nodes",effect:"read",approval:"none",
-  description:"Read up to 4 selected nodes. For a single text or episode planning node, supply offset:0 to read paginated text with whitespace preserved, then follow nextOffset until null. Never read unselected nodes.",
+  description:"Read up to 4 selected nodes. Supports paginated bodies for text, episode plans, and storyboards. "+NODE_READ_ARGUMENT_GUIDANCE,
   parameters:{type:"object",additionalProperties:false,required:["node_ids"],
-   properties:{node_ids:{type:"array",minItems:1,maxItems:4,items:{type:"string"}},offset:{type:"integer",minimum:0}}}},
+   properties:{node_ids:{type:"array",minItems:1,maxItems:4,items:{type:"string"}},offset:{type:"integer",minimum:0},shot_id:{type:"string"},
+    shot_number:{type:"integer",minimum:1},episode_id:{type:"string"}}}},
  {name:"canvas.get_generation_settings",providerName:"canvas_get_generation_settings",effect:"read",approval:"none",
   description:"Inspect current generation defaults and channel models. Supply a selected node ID to inspect its effective configuration and editable workflow ports.",
   parameters:{type:"object",additionalProperties:false,properties:{node_id:{type:"string"}}}},
@@ -322,7 +395,7 @@ export function createAssistantAgentReadSession(db,{projectId,taskId,turnMessage
     value=encode();bytes=Buffer.byteLength(value,"utf8");
    }
   }
-  if(name==="canvas_read_nodes"&&args.offset!==undefined){
+  if(name==="canvas_read_nodes"&&data.offset!==undefined){
    while(bytes>budget&&data.nodes[0].content){
     const item=data.nodes[0];
     item.content=pageText(item.content,0,Math.floor(Buffer.byteLength(item.content,"utf8")/2));

@@ -2,6 +2,8 @@
  * P4.2a does NOT create a second canvas writer, retry unknown model POSTs,
  * or replay a result after a process crash.
  */
+import {recoverCanvasReadArguments} from "./assistant-agent-read-tools.mjs";
+
 const fail=(code,statusCode=409)=>Object.assign(Error(code),{code,statusCode});
 const isObject=x=>x!==null&&typeof x==="object"&&!Array.isArray(x);
 const MAX_READ_ROUNDS=2,MAX_READ_CALLS=6;
@@ -55,7 +57,8 @@ export async function runAssistantAgentReadRounds({initialBody,infer,readAnswer,
   for(const call of calls){
    if(seen.has(call.id))throw fail("assistant_agent_tool_replayed",409);
    seen.add(call.id);
-   const output=session.invoke(call.name,call.args,{callId:call.id,round:rounds});
+   const invoke=()=>session.invoke(call.name,call.args,{callId:call.id,round:rounds});
+   const output=call.name==="canvas_read_nodes"?recoverCanvasReadArguments(invoke):invoke();
    outputs.push({id:call.id,output});
   }
   payload.messages.push({role:"assistant",content:typeof reply.content==="string"?reply.content:null,

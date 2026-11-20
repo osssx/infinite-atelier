@@ -378,3 +378,50 @@ test("episode reader pins authorized text across pages and reports empty and leg
  assert.equal(createCanvasNodeReader({...policy,scope:"overview"},{nodes}),null);
  assert.equal(createCanvasNodeReader({...policy,includeContext:false},{nodes}),null);
 });
+
+test("canvas_read_nodes returns the storyboard draft, confirmed and legacy bodies under selection scope",()=>{
+ const shots={shots:[{id:"shot1",episodeId:"ep1",description:"夜幕下的桥。".repeat(200)}]};
+ const original=JSON.stringify(shots);
+ const nodes=[
+  {id:"draft",type:"drama:storyboard",title:"分镜表",metadata:{dramaDraft:original,dramaConfirmed:"旧稿"}},
+  {id:"confirmed",type:"drama:storyboard",title:"分镜表",metadata:{dramaConfirmed:"确认稿",content:"旧正文"}},
+  {id:"legacy",type:"drama:storyboard",title:"分镜表",metadata:{content:"旧正文"}},
+  {id:"other",type:"drama:storyboard",title:"隐藏分镜",metadata:{dramaDraft:"隐藏"}}
+ ];
+ const reader=createCanvasNodeReader({includeContext:true,scope:"selection",includedIds:["draft","confirmed","legacy"]},{nodes});
+ const read=(id,offset=0)=>JSON.parse(reader.invoke({node_ids:[id],offset},id));
+ const first=read("draft");
+ assert.equal(first.nodes[0].source,"dramaDraft");
+ assert.ok(first.nextOffset>0);
+ const second=read("draft",first.nextOffset);
+ assert.equal(first.nodes[0].content+second.nodes[0].content,original);
+ assert.equal(second.nextOffset,null);
+ assert.equal(read("confirmed").nodes[0].content,"确认稿");
+ assert.equal(read("legacy").nodes[0].source,"content");
+ assert.throws(()=>read("other"),{code:"assistant_agent_context_scope_denied"});
+});
+
+test("targeted storyboard reads reach shot 13 without paging earlier shots",()=>{
+ const make=(episode,index)=>({id:episode+"_shot_"+(index+1),episodeId:episode,order:index,
+  description:index===12?"目标镜头":"前序内容".repeat(360),characterVariantIds:["hero"],propIds:["ball"],keyPropIds:[]});
+ const shots=["ep1","ep2"].flatMap(episode=>Array.from({length:15},(_,index)=>make(episode,index))).reverse();
+ const storyboard={id:"story",type:"drama:storyboard",title:"分镜表",metadata:{dramaDraft:JSON.stringify({shots})}};
+ const reader=createCanvasNodeReader({includeContext:true,scope:"selection",includedIds:["story"]},{nodes:[storyboard]});
+ const read=args=>JSON.parse(reader.invoke({node_ids:["story"],...args},"target")).nodes[0];
+ const match=read({shot_number:13,episode_id:"ep2"});
+ assert.equal(match.shotId,"ep2_shot_13");
+ assert.equal(match.shot.description,"目标镜头");
+ assert.deepEqual(match.shot.propIds,["ball"]);
+ assert.deepEqual(read({shot_id:"ep2_shot_13"}),match);
+ const ambiguous=read({shot_number:13});
+ assert.equal(ambiguous.status,"ambiguous_shot");
+ assert.equal(ambiguous.candidates.length,2);
+ assert.equal(ambiguous.shot,undefined);
+ assert.equal(read({shot_number:99}).status,"shot_not_found");
+ assert.throws(()=>read({shot_number:0}),{code:"assistant_agent_tool_arguments_invalid"});
+ const first=JSON.parse(reader.invoke({node_ids:["story"],shot_id:"ep1_shot_1"},"large"));
+ assert.ok(first.nextOffset>0);
+ const second=JSON.parse(reader.invoke({node_ids:["story"],shot_id:"ep1_shot_1",offset:first.nextOffset},"page"));
+ assert.equal(second.nextOffset,null);
+ assert.equal(JSON.parse(first.nodes[0].content+second.nodes[0].content).description,"前序内容".repeat(360));
+});

@@ -1,6 +1,6 @@
 import {assertFrozenComfyAction,applyFrozenComfyAction} from "./assistant-task-comfy-canvas.mjs";
 import {assertFrozenNodeParameterAction,applyFrozenNodeParameterAction} from "./assistant-task-node-params.mjs";
-import {canvasTextContentPatch} from "../canvas-text-content.mjs";
+import {canvasTextContentPatch,storyboardShotContentPatch,validStoryboardShotChanges} from "../canvas-text-content.mjs";
 
 /** Deterministic, backend-only ordinary canvas operations.
  * No network, filesystem, Comfy, Skill or GPU work. Unsupported actions
@@ -33,6 +33,7 @@ export function assertAssistantCanvasPlan({actions,center}){
   ungroup:["type","groupId"],
   connect:["type","from","to"],
   set_text:["type","nodeId","content"],
+  patch_storyboard_shot:["type","nodeId","shotId","changes"],
   set_title:["type","nodeId","title"],
   set_prompt:["type","nodeId","prompt"],
   delete_node:["type","nodeId"],
@@ -72,6 +73,9 @@ export function assertAssistantCanvasPlan({actions,center}){
   }else if(a.type==="connect"){
    if(a.from===a.to)throw fail("assistant_canvas_plan_invalid",400);
    edges.push("edge_"+index);
+  }else if(a.type==="patch_storyboard_shot"){
+   if(!nodeName(a.nodeId)||!short(a.shotId,128)||!a.shotId.trim()||!validStoryboardShotChanges(a.changes))
+    throw fail("assistant_canvas_plan_invalid",400);
   }else if(["set_text","set_title","set_prompt"].includes(a.type)){
    const bound=a.type==="set_title"?120:12000;
    if(!short(a[a.type==="set_title"?"title":a.type==="set_text"?"content":"prompt"],bound))
@@ -259,9 +263,17 @@ export function applyFrozenAssistantCanvasPlan(document,plan,refs,{externalRefs=
    const target=resolve(a.nodeId),idx=nodes.findIndex(node=>node.id===target);
    if(idx<0)throw fail("assistant_canvas_target_invalid");
    const node=nodes[idx];
-   if(type==="set_text"){
+   if(type==="patch_storyboard_shot"){
+    const patch=storyboardShotContentPatch(node.type,node.metadata,a.shotId,a.changes);
+    if(!patch)throw fail("assistant_storyboard_shot_invalid",400);
+    nodes[idx]={...node,metadata:{...node.metadata,...patch}};
+   }else if(type==="set_text"){
     const patch=canvasTextContentPatch(node.type,a.content);
-    if(!patch)throw node.type==="drama:episodes"?fail("assistant_episode_draft_invalid",400):fail("assistant_canvas_target_invalid");
+    if(!patch){
+     if(node.type==="drama:episodes")throw fail("assistant_episode_draft_invalid",400);
+     if(node.type==="drama:storyboard")throw fail("assistant_storyboard_draft_invalid",400);
+     throw fail("assistant_canvas_target_invalid");
+    }
     nodes[idx]={...node,metadata:{...node.metadata,...patch}};
    }else if(type==="set_title")nodes[idx]={...node,title:a.title.trim()||node.title};
    else if(type==="set_prompt"){

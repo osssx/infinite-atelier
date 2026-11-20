@@ -216,7 +216,7 @@ export function assertAssistantTextActions(spec,actions){
  const cards=actions.filter(a=>a.type==="create_text"||
   a.type==="create_node"&&a.nodeType==="text");
  if(cards.length!==spec.expectedCount||
-  actions.some(a=>a.type==="set_text"||a.type==="set_title"||a.type==="delete_node"||
+  actions.some(a=>a.type==="set_text"||a.type==="patch_storyboard_shot"||a.type==="set_title"||a.type==="delete_node"||
    a.type==="create_node"&&a.nodeType!=="text"))
   throw fail("assistant_deliverable_content_invalid",422);
  const byRef=new Map(cards.map(a=>[a.ref,a]));

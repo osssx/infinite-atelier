@@ -1,3 +1,4 @@
+import {isSafeAssistantModelDiagnostic} from "./assistant-model-call-diagnostics.mjs";
 import {createHash} from "node:crypto";
 import {assertNoRawCredentials,stableJson,writeTransaction} from "./repository.mjs";
 import {mayRepeatTurn,safe,stripAssistantGraphAnnotations} from "./assistant-task-context.mjs";
@@ -12,6 +13,9 @@ const CHECKPOINT_VERSION=1,CHECKPOINT_GROUP=8,CHECKPOINT_ENTRIES=16;
 const CHECKPOINT_BYTES=8*1024-1700;
 const SAFE_SKILL_FALLBACK_CODES=new Set(["assistant_skill_catalog_changed","assistant_skill_unavailable",
  "assistant_skill_context_too_large"]);
+const KNOWN_RESPONSE_FAILURES=["assistant_actions_invalid","assistant_actions_missing",
+ "assistant_creative_content_incomplete","assistant_agent_tool_arguments_invalid",
+ "assistant_skill_tool_round_limit","assistant_agent_tool_round_limit"];
 const redactDurableText=value=>value.replace(/(?:sk-|Bearer\s+)[A-Za-z0-9_-]{16,}/gi,"[敏感值省略]")
  .replace(/((?:api[_-]?key|access[_-]?token|password|secret)\s*[:=]\s*)[^\s,;]+/gi,"$1[凭据省略]")
  .replace(/data:(?:image|video|audio)\/[^\s]+/gi,"[媒体数据省略]");
@@ -29,9 +33,9 @@ export function ordinaryConversationPolicy(value,visual,project){
 }
 
 export function recoverConversationRequests(db){
- db.exec(`UPDATE assistant_conversation_requests SET state='failed'
-  WHERE state='needs_reconcile' AND error_code IN (
-   'assistant_actions_invalid','assistant_actions_missing','assistant_creative_content_incomplete')`);
+ db.prepare(`UPDATE assistant_conversation_requests SET state='failed'
+  WHERE state='needs_reconcile' AND error_code IN (${KNOWN_RESPONSE_FAILURES.map(()=>"?").join(",")})`)
+  .run(...KNOWN_RESPONSE_FAILURES);
  db.exec(`UPDATE assistant_conversation_requests
   SET state=CASE state WHEN 'submitting' THEN 'needs_reconcile' ELSE 'failed' END,
   error_code=CASE state WHEN 'submitting' THEN 'assistant_model_call_unknown' ELSE 'assistant_stream_interrupted' END
@@ -147,11 +151,17 @@ export function completeConversationRequest(db,request,response){
  return writeTransaction(db,()=>completeConversationRequestInTransaction(db,request,response));
 }
 
-export function failConversationRequest(db,request,errorCode){
- const knownFormatFailure=["assistant_actions_invalid","assistant_actions_missing","assistant_creative_content_incomplete"].includes(errorCode);
- return db.prepare(`UPDATE assistant_conversation_requests SET state=CASE WHEN state='submitting' AND ?=0 THEN 'needs_reconcile' ELSE 'failed' END,error_code=?
+const failureKinds=new Set(["initial","skill_tool_round","skill_fallback","skill_execution_repair","format_repair","script_continuation"]);
+const validFailureDetail=detail=>failureKinds.has(detail?.kind)&&isSafeAssistantModelDiagnostic(detail?.diagnostic);
+export function failConversationRequest(db,request,errorCode,failureDetail){
+ const knownResponseFailure=KNOWN_RESPONSE_FAILURES.includes(errorCode);
+ const detail=validFailureDetail(failureDetail)?JSON.stringify(failureDetail):null;
+ const status=detail?failureDetail.diagnostic.httpStatus:null;
+ const rejected=status>=400&&status<500&&status!==408;
+ return db.prepare(`UPDATE assistant_conversation_requests SET state=CASE WHEN state='submitting' AND ?=0 THEN 'needs_reconcile' ELSE 'failed' END,error_code=?,
+ policy_json=CASE WHEN ? IS NULL THEN policy_json ELSE json_set(policy_json,'$.failureDetail',json(?)) END
  WHERE turn_seq=? AND request_id=? AND state IN ('pending','submitting') RETURNING state`)
-  .get(Number(knownFormatFailure),errorCode,request.seq,request.requestId)?.state;
+  .get(Number(knownResponseFailure||rejected),errorCode,detail,detail,request.seq,request.requestId)?.state;
 }
 
 export function removeConversationInTransaction(db,projectId,chatSessionId){
@@ -216,21 +226,24 @@ export function listConversationTurns(db,{projectId,chatSessionId,before=Number.
  const rows=db.prepare("SELECT seq,turn_id,user_text FROM assistant_conversation_turns WHERE project_id=? AND session_id=? AND seq<? ORDER BY seq DESC LIMIT ?")
   .all(projectId,chatSessionId,before,limit+1);
  const more=rows.length>limit;
- const requests=db.prepare("SELECT request_id,state,final,response_json,error_code FROM assistant_conversation_requests WHERE turn_seq=? ORDER BY rowid DESC");
+ const requests=db.prepare("SELECT request_id,state,final,response_json,error_code,policy_json FROM assistant_conversation_requests WHERE turn_seq=? ORDER BY rowid DESC");
  const turns=rows.slice(0,limit).map(row=>{
   const calls=requests.all(row.seq),final=calls.find(call=>call.final);
   const response=final?JSON.parse(final.response_json):null;
+  const failureDetail=calls[0]?.policy_json?JSON.parse(calls[0].policy_json).failureDetail:null;
   const status=calls[0]?.state==="completed"&&!final?"awaiting_followup":calls[0]?.state??"failed";
   return {turnId:row.turn_id,userText:row.user_text,status,
    ...(response?{answer:response.actions?.length?
     "助手已提出画布操作。此处没有可核验的执行结果，请查看画布或 Task 记录。":response.answer}:{}),
-   ...(calls[0]?.error_code?{errorCode:calls[0].error_code}:{})};
+   ...(calls[0]?.error_code?{errorCode:calls[0].error_code}:{}),
+   ...(validFailureDetail(failureDetail)?{failureDetail}:{})};
  });
  return {turns:turns.reverse(),nextBefore:more?rows[limit-1].seq:null};
 }
 
 function canRepeat(current,prior,project){
- if(prior.opaque||!mayRepeatTurn(current,prior))return false;
+ if(prior.opaque||(prior.skillHistoryKey&&prior.skillHistoryKey!==current.skillHistoryKey)||
+  !mayRepeatTurn(current,prior))return false;
  if(!prior.includeContext)return true;
  if(prior.revision!==project.revision)return false;
  if(prior.scope==="overview")

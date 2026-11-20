@@ -237,7 +237,9 @@ export const NodeLayer = memo(function NodeLayer({
                 // Hover-only promotion is suspended during wheel input. An otherwise pinned
                 // heavy media/editor node can stall zoom; selection and playing media still win.
                 const hoveredForPromotion = shouldPromoteHoveredNode(scale, node.width, node.height, wheelZoomActive) ? activeNodeId : null;
-                const showFull = (actuallyVisibleIds.has(node.id) || priorityIds.has(node.id)) && shouldRenderFullNode(node.id, stagedCompact, selectedNodeIds, hoveredForPromotion, connectionTargetNodeId, panelNodeId, playingNodeIds.has(node.id));
+                const inlineEditorVisible = (node.type === "drama:source" || node.type === "drama:assets") && actuallyVisibleIds.has(node.id);
+                const showFull = inlineEditorVisible || ((actuallyVisibleIds.has(node.id) || priorityIds.has(node.id)) &&
+                    shouldRenderFullNode(node.id, stagedCompact, selectedNodeIds, hoveredForPromotion, connectionTargetNodeId, panelNodeId, playingNodeIds.has(node.id)));
 
                 const hasOriginal = originalImageIds.current.has(node.id);
                 const wantOriginal = (!wheelZoomActive || hasOriginal) && node.type === CanvasNodeType.Image && shouldUseOriginalCanvasImage(

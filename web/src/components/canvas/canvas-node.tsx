@@ -584,7 +584,7 @@ function NodeContent(props: NodeContentRendererProps) {
     if (props.node.type === COMFY_WORKFLOW_MOCK_TYPE) {
         return <ComfyWorkflowNodeVisual node={props.node} theme={props.theme} visible={props.visualShown}/>;
     }
-    if (props.node.type === CanvasNodeType.Config && props.renderNodeContent) return props.renderNodeContent(props.node);
+    if ((props.node.type === CanvasNodeType.Config || props.node.type === "drama:source" || props.node.type === "drama:assets") && props.renderNodeContent) return props.renderNodeContent(props.node);
     if (props.isBatchRoot) return <ImageNodeContent {...props} />;
     if (props.node.metadata?.status === "loading") return <LoadingContent theme={props.theme} />;
     if (props.node.metadata?.status === "error") return <ErrorContent node={props.node} theme={props.theme} onRetry={props.onRetry} />;

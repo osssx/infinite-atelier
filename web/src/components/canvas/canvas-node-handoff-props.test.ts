@@ -28,8 +28,8 @@ describe("node handoff render callbacks", () => {
         expect(selectNodeRenderCallbacks({ ...shared, renderPanel: changedPanel }, CanvasNodeType.Image, true).renderPanel).toBe(changedPanel);
     });
 
-    it("keeps live content for Config nodes without enabling panels", () => {
-        const callbacks = selectNodeRenderCallbacks(shared, CanvasNodeType.Config, false);
+    it.each([CanvasNodeType.Config, "drama:source", "drama:assets"])("keeps inline content for %s with its panel closed", (nodeType) => {
+        const callbacks = selectNodeRenderCallbacks(shared, nodeType, false);
         expect(callbacks.renderPanel).toBeUndefined();
         expect(callbacks.renderNodeContent).toBe(configContent);
     });

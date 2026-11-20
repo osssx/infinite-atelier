@@ -1,7 +1,7 @@
 import type { CSSProperties, MouseEvent as ReactMouseEvent, ReactNode, RefObject } from "react";
 import { useEffect, useRef, useState } from "react";
 import { Button, Segmented, Switch } from "antd";
-import { CircleDot, Clapperboard, Eraser, Grid2x2, Group, Hand, Image as ImageIcon, Info, Moon, MousePointer2, Music2, Palette, Redo2, Settings2, Square, Sun, Trash2, Type, Undo2, Upload, Video } from "lucide-react";
+import { CircleDot, Clapperboard, Eraser, Grid2x2, Group, Hand, Image as ImageIcon, Info, Moon, MousePointer2, Music2, Palette, Redo2, Settings2, Square, Sun, Trash2, Type, Undo2, Upload, Video, Workflow } from "lucide-react";
 
 import { canvasThemes, type CanvasBackgroundMode, type CanvasColorTheme, type CanvasTheme } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
@@ -26,6 +26,7 @@ export function CanvasToolbar({
     onShotGroup,
     onShotCheck,
     onAddDirector,
+    onAddDramaPipeline,
     onUndo,
     onRedo,
     onUpload,
@@ -52,6 +53,7 @@ export function CanvasToolbar({
     onShotGroup?: () => void;
     onShotCheck?: () => void;
     onAddDirector: () => void;
+    onAddDramaPipeline: () => void;
     onUndo: () => void;
     onRedo: () => void;
     onUpload: () => void;
@@ -122,6 +124,9 @@ export function CanvasToolbar({
                 </ToolbarButton>
                 <ToolbarButton id="tool-director" label={t("canvas.toolbar.director")} hovered={hovered} hoverStyle={hoverStyle} wrapRef={wrapRef} onTipX={setTipX} onHover={setHovered} onClick={onAddDirector}>
                     <Clapperboard className="size-4.5" />
+                </ToolbarButton>
+                <ToolbarButton id="tool-drama-pipeline" label="原文到首帧" hovered={hovered} hoverStyle={hoverStyle} wrapRef={wrapRef} onTipX={setTipX} onHover={setHovered} onClick={onAddDramaPipeline}>
+                    <Workflow className="size-4.5" />
                 </ToolbarButton>
                 <ToolbarButton id="tool-upload" label={t("canvas.toolbar.upload")} hovered={hovered} hoverStyle={hoverStyle} wrapRef={wrapRef} onTipX={setTipX} onHover={setHovered} onClick={onUpload}>
                     <Upload className="size-4.5" />

@@ -7,6 +7,7 @@ import { registerNodeDefinitions } from "@/lib/canvas/node-registry";
 import { COMFY_WORKFLOW_MOCK_TYPE } from "@/lib/canvas/canvas-ports";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
 import type { CanvasNodeDefinition, CanvasNodeResource } from "@/types/canvas-plugin";
+import { DRAMA_PIPELINE_NODE_TYPES, DRAMA_PIPELINE_STAGE_LABELS, DRAMA_PIPELINE_STAGES } from "@/features/canvas-assistant/canvas-drama-pipeline";
 
 // Extensible metadata for built-in nodes, reusing NODE_SPECS for size and initial metadata.
 // Rendering remains in canvas-node's internal renderer, so no Content component is provided.
@@ -39,6 +40,16 @@ export function registerBuiltinNodes() {
     registered = true;
     registerNodeDefinitions([
         ...BUILTIN_DEFINITIONS,
+        ...DRAMA_PIPELINE_STAGES.map(stage => ({
+            type: DRAMA_PIPELINE_NODE_TYPES[stage],
+            title: DRAMA_PIPELINE_STAGE_LABELS[stage],
+            icon: <Clapperboard className={iconClass} />,
+            minimapColor: "#0f766e",
+            defaultSize: { width: 340, height: stage === "assets" ? 400 : stage === "source" ? 340 : 200 },
+            defaultMetadata: { dramaStage: stage, dramaDraft: "", dramaConfirmed: "" },
+            autoOpenPanel: stage !== "source" && stage !== "assets",
+            hidePanel: stage === "source" || stage === "assets",
+        })),
         {
             type: COMFY_WORKFLOW_MOCK_TYPE,
             title: "工作流",

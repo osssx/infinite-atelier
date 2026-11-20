@@ -9,6 +9,8 @@ export function selectNodeRenderCallbacks(
 ): Pick<SharedNodeProps, "renderPanel" | "renderNodeContent"> {
     return {
         renderPanel: showPanel ? shared.renderPanel : undefined,
-        renderNodeContent: nodeType === CanvasNodeType.Config ? shared.renderNodeContent : undefined,
+        renderNodeContent: nodeType === CanvasNodeType.Config || nodeType === "drama:source" || nodeType === "drama:assets"
+            ? shared.renderNodeContent
+            : undefined,
     };
 }

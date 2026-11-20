@@ -34,6 +34,7 @@ import {listSkillRegistry,getSkillRegistryPackage,getAuthorizedSkillCatalog,upda
 import {getUiSetting,putUiSetting} from "./ui-settings.mjs";
 import {listScriptAssetReconciliation,reconcileScriptAsset,resumeReconciledVideoJob} from "./script-asset-reconciliation.mjs";
 import {registerShotGroupRoutes} from "./shot-group-routes.mjs";
+import {validateDramaPipelineSnapshot,buildDramaStagePrompt} from "./drama-pipeline.mjs";
 import {createAssistantChatStreamLedger} from "./assistant-chat-stream-ledger.mjs";
 import {assistantCurrentReferenceData,MAX_ASSISTANT_MESSAGE_BYTES} from "./assistant-chat.mjs";
 import {assertConversationTaskTurn,beginConversationRequest,buildConversationMessages,completeConversationRequest,
@@ -676,6 +677,45 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
  });
  app.patch("/api/v1/projects/:id",{schema:{params:{type:"object",required:["id"],properties:{id:idSchema}},body:editBody}},async(req,reply)=>{
   const project=saveSingleUserCanvas(db,{id:req.params.id,...req.body});reply.header("ETag",'"'+project.revision+'"');return project;
+ });
+ // Pure preflight for the drama pipeline. The canvas keeps the editable draft
+ // in its document, while this endpoint gives every client the same reference
+ // and render-readiness rules before submitting an image job.
+ app.post("/api/v1/projects/:id/drama-pipeline/validate",{schema:{
+  params:{type:"object",required:["id"],additionalProperties:false,properties:{id:idSchema}},
+  body:{type:"object",required:["snapshot"],additionalProperties:false,
+   properties:{snapshot:{type:"object",additionalProperties:true}}}
+ }},async(req,reply)=>{
+  getProject(db,req.params.id);
+  try{return validateDramaPipelineSnapshot(req.body.snapshot)}
+  catch(error){
+   const status=Number(error?.statusCode)||400;
+   return reply.code(status).send({valid:false,errors:[{code:error?.code||"drama_pipeline_snapshot_invalid"}]});
+  }
+ });
+ app.post("/api/v1/projects/:id/drama-pipeline/generate",{schema:{
+  params:{type:"object",required:["id"],additionalProperties:false,properties:{id:idSchema}},
+  body:{type:"object",required:["stage","channelId","provider","model"],additionalProperties:false,
+   properties:{stage:{type:"string",enum:["assets","episodes","storyboard"]},channelId:idSchema,
+    provider:{type:"string",enum:["openai","openai_compatible","google_gemini"]},
+    baseUrl:{type:"string",maxLength:1024},model:{type:"string",minLength:1,maxLength:128},
+    sourceText:{type:"string",maxLength:98304},context:{type:"string",maxLength:48000},
+    targetEpisodes:{type:"integer",minimum:1,maximum:100}}}
+ }},async(req,reply)=>{
+  getProject(db,req.params.id);
+  if(!assistantChat)return reply.code(503).send({code:"assistant_unavailable"});
+  try{
+   const prompt=buildDramaStagePrompt(req.body);
+   const result=await assistantChat({channelId:req.body.channelId,provider:req.body.provider,
+    baseUrl:req.body.baseUrl,model:req.body.model,messages:[{role:"user",content:prompt}],
+    canvasActions:false,semanticCanvasIntent:false,skillContext:"",skillTools:[],
+    selectedCanvasText:"",taskContext:"",plainCanvasChat:true});
+   reply.header("Cache-Control","no-store");
+   return {stage:req.body.stage,answer:result.answer};
+  }catch(error){
+   const status=Number(error?.statusCode)||400;
+   return reply.code(status).send({code:typeof error?.code==="string"?error.code:"drama_pipeline_generation_failed"});
+  }
  });
 
  // These independent revisions never increment the graph revision or pollute

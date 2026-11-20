@@ -65,6 +65,13 @@ export type CanvasNodeImage = {
 export type CanvasImageMask = { storageKey:string; width:number; height:number; bytes:number; sourceStorageKey:string; sourceImageId?:string };
 
 export type CanvasNodeMetadata = {
+    dramaDraft?: string;
+    dramaConfirmed?: string;
+    dramaFilmStyle?: string;
+    dramaStage?: string;
+    targetEpisodes?: number;
+    sourceFilename?: string;
+    revision?: number;
     /** User-saved text body snapshots. Kept out of generation fingerprints. */
     textVersions?: { id: string; createdAt: string; content: string; note?: string; source: "manual" | "restore-backup" }[];
     videoFrame?: { sourceNodeId: string; timeMs: number };

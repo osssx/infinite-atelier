@@ -53,6 +53,9 @@ function referenceErrors(references, assets) {
     if (!ref || !id(ref.assetId) || seen.has(key) || !owner ||
       (ref.variantId !== undefined && (!id(ref.variantId) || !variantOwner.has(ref.variantId) || variantOwner.get(ref.variantId)?.id !== ref.assetId)) ||
       (ref.imageStorageKey !== undefined && !text(ref.imageStorageKey, 512)) ||
+      (ref.imageStorageKeys !== undefined && (!Array.isArray(ref.imageStorageKeys) ||
+        ref.imageStorageKeys.some(key => typeof key !== "string" || !/^cas:[a-f0-9]{64}$/.test(key)) ||
+        new Set(ref.imageStorageKeys).size !== ref.imageStorageKeys.length)) ||
       typeof ref.requiredForRendering !== "boolean") {
       errors.push({code: "asset_reference_invalid", id: key ?? null});
       continue;
@@ -99,7 +102,8 @@ export function validateDramaPipelineSnapshot(snapshot) {
   errors.push(...referenceErrors(snapshot.references, snapshot.assets), ...shotErrors(snapshot.shots, snapshot.assets));
   if (errors.length) return {valid: false, errors};
   if (snapshot.stage === "first_frames") {
-    const refs = new Set(snapshot.references.filter(item => item.imageStorageKey).map(item => item.variantId ?? item.assetId));
+    const refs = new Set(snapshot.references.filter(item => Array.isArray(item.imageStorageKeys) ? item.imageStorageKeys.length : item.imageStorageKey)
+      .map(item => item.variantId ?? item.assetId));
     const variantOwner = new Map(snapshot.assets.flatMap(asset => (asset.variants ?? []).map(v => [v.id, asset])));
     for (const shot of snapshot.shots) {
       const required = [...shot.characterVariantIds, ...(shot.sceneVariantId ? [shot.sceneVariantId] : shot.sceneId ? [shot.sceneId] : []), ...shot.keyPropIds];

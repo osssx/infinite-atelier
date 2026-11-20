@@ -4,9 +4,11 @@ import { Maximize2 } from "lucide-react";
 import type { CanvasNodeData } from "@/types/canvas";
 import { DRAMA_PIPELINE_NODE_TYPES, DRAMA_PIPELINE_STAGE_LABELS, type DramaPipelineStage } from "./canvas-drama-pipeline";
 import { canvasApi } from "@/features/backend-sync/canvas-api";
+import { canvasCasUrl } from "@/features/backend-sync/canvas-cas";
+import { CanvasNodeReferenceBar } from "@/components/canvas/canvas-node-reference-bar";
 import { ensureSqliteModelChannelForExecution, modelChannelProvider } from "@/features/backend-sync/model-channel-autoroute";
 import { buildDramaFirstFrameInput, dramaFirstFrameMissingReferenceIds } from "./drama-pipeline-media";
-import { validateDramaShotReferences, type DramaPipelineSnapshot } from "./canvas-drama-pipeline";
+import { dramaReferenceImageKeys, validateDramaShotReferences, type DramaPipelineSnapshot } from "./canvas-drama-pipeline";
 import { useEffectiveConfig, resolveModelChannel, modelOptionName } from "@/stores/use-config-store";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
@@ -46,10 +48,11 @@ function describeDramaValidation(errors: {code:string;shotId?:string;id?:string}
         : []).join("\n");
 }
 
-export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, projectId, upstreamText = "", upstreamContext = "", upstreamArtifacts = [], confirmedAssetPlan, savedAssetReferences, imageNodes = [], productionContext = "" }: {
+export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, onPickCanvasImage, projectId, upstreamText = "", upstreamContext = "", upstreamArtifacts = [], confirmedAssetPlan, savedAssetReferences, imageNodes = [], productionContext = "" }: {
     node: CanvasNodeData;
     onChange: (patch: Partial<CanvasNodeData["metadata"]>) => void;
     onRenderFirstFrame?: (prompt: string, input?: ReturnType<typeof buildDramaFirstFrameInput>) => void;
+    onPickCanvasImage?: (onPick: (storageKey: string) => void) => void;
     projectId?: string;
     upstreamText?: string;
     upstreamContext?: string;
@@ -67,8 +70,10 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, pro
     const [assetEditorExpanded, setAssetEditorExpanded] = useState(false);
     const [targetEpisodes, setTargetEpisodes] = useState(Number(node.metadata?.targetEpisodes ?? 10));
     const upstream = upstreamArtifacts.map(readDraft);
-    const inlineAssets = stage === "assets";
-    const previous = inlineAssets ? readAssetDraft(draft) : readDraft(draft);
+    const assetPlanning = stage === "assets";
+    const referenceEditing = stage === "asset_references";
+    const inlineEditor = assetPlanning || referenceEditing;
+    const previous = assetPlanning ? readAssetDraft(draft) : readDraft(draft);
     const liveAssets = readDraft(confirmedAssetPlan ?? "")?.assets;
     const assets = liveAssets ?? upstream.find(item => Array.isArray(item?.assets))?.assets ?? previous?.assets ?? [];
     const savedReferences = readDraft(savedAssetReferences ?? "")?.references;
@@ -99,7 +104,7 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, pro
         return slots.map(variant => ({
             assetId: asset.id,
             variantId: variant?.id,
-            imageStorageKey: previous?.references?.find(ref => ref.assetId === asset.id && ref.variantId === variant?.id)?.imageStorageKey,
+            imageStorageKeys: dramaReferenceImageKeys(previous?.references?.find(ref => ref.assetId === asset.id && ref.variantId === variant?.id)),
             requiredForRendering: asset.kind !== "prop",
         }));
     }) : upstreamReferences ?? previous?.references ?? [];
@@ -109,50 +114,91 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, pro
         const keys = [metadata?.storageKey, ...(metadata?.images ?? []).map(image => image.storageKey)];
         return [...new Set(keys)].flatMap(key => key && /^cas:[a-f0-9]{64}$/.test(key) ? [{key,title:item.title}] : []);
     });
-    const updateReference = (assetId: string, variantId: string | undefined, imageStorageKey: string) => {
-        const references = parsedSnapshot.references.map(reference => reference.assetId === assetId && reference.variantId === variantId ? { ...reference, imageStorageKey: imageStorageKey.trim() || undefined } : reference);
+    const updateReference = (assetId: string, variantId: string | undefined, key: string, remove = false) => {
+        const references = parsedSnapshot.references.map(reference => {
+            if (reference.assetId !== assetId || reference.variantId !== variantId) return reference;
+            const keys = dramaReferenceImageKeys(reference);
+            const imageStorageKeys = remove ? keys.filter(item => item !== key) : [...new Set([...keys, key])];
+            return {assetId, variantId, requiredForRendering:reference.requiredForRendering, imageStorageKeys};
+        });
         const next = JSON.stringify({ ...parsedSnapshot, references }, null, 2);
         setDraft(next);
         onChange({ dramaDraft: next });
     };
     const config = useEffectiveConfig();
     const theme = canvasThemes[useThemeStore(state => state.theme)];
-    const control = inlineAssets ? dramaNodeControl(theme) : undefined;
+    const control = inlineEditor ? dramaNodeControl(theme) : undefined;
     const assetConfirmed = Boolean(confirmed && draft === confirmed);
+    const inlineReady = referenceEditing ? references.length > 0 : Boolean(previous);
     if (!stage) return null;
-    const editor = <section className={inlineAssets ? assetEditorExpanded
+    const editor = <section className={inlineEditor ? assetEditorExpanded
         ? "flex h-full min-h-0 flex-col gap-4 text-sm"
         : dramaInlineNodeClass
         : "rounded-xl border border-slate-200 bg-white p-4 shadow-xl"}
-        style={inlineAssets ? {color:theme.node.text} : undefined} data-canvas-no-zoom={inlineAssets ? "" : undefined}
-        onWheel={inlineAssets ? event => event.stopPropagation() : undefined}
-        onMouseDown={inlineAssets ? event => {
+        style={inlineEditor ? {color:theme.node.text} : undefined} data-canvas-no-zoom={inlineEditor ? "" : undefined}
+        onWheel={inlineEditor ? event => event.stopPropagation() : undefined}
+        onMouseDown={inlineEditor ? event => {
             if (event.target instanceof Element && event.target.closest("input, textarea, select, button, summary")) event.stopPropagation();
         } : undefined}
-        onDoubleClick={inlineAssets ? event => event.stopPropagation() : undefined}
-        onKeyDown={inlineAssets ? event => event.stopPropagation() : undefined}>
-        <header className={`flex items-center justify-between gap-2 ${inlineAssets ? "" : "mb-3"}`}>
-            {!assetEditorExpanded && <strong className={inlineAssets ? "text-sm" : undefined}>{DRAMA_PIPELINE_STAGE_LABELS[stage]}</strong>}
-            {inlineAssets ? <div className="flex items-center gap-2">
+        onDoubleClick={inlineEditor ? event => event.stopPropagation() : undefined}
+        onKeyDown={inlineEditor ? event => event.stopPropagation() : undefined}>
+        <header className={`flex items-center justify-between gap-2 ${inlineEditor ? "" : "mb-3"}`}>
+            {!assetEditorExpanded && <strong className={inlineEditor ? "text-sm" : undefined}>{DRAMA_PIPELINE_STAGE_LABELS[stage]}</strong>}
+            {inlineEditor ? <div className="flex items-center gap-2">
                 <DramaNodeStatus theme={theme} confirmed={assetConfirmed} />
-                {!assetEditorExpanded && <button type="button" title="最大化资产编辑器" aria-label="最大化资产编辑器"
+                {!assetEditorExpanded && <button type="button" title="最大化编辑器" aria-label={`最大化${DRAMA_PIPELINE_STAGE_LABELS[stage]}`}
                     className="inline-grid size-7 place-items-center rounded-md border" style={control}
                     onClick={() => setAssetEditorExpanded(true)}><Maximize2 className="size-3.5" /></button>}
             </div> :
                 <Tag color={confirmed ? "green" : "default"}>{confirmed ? "已确认" : "草案"}</Tag>}
         </header>
-        <div className={inlineAssets ? assetEditorExpanded ? "flex min-h-0 flex-1 flex-col gap-4" :
-            "thin-scrollbar min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain" : "contents"}
-            onMouseDown={inlineAssets ? event => event.stopPropagation() : undefined}
-            onPointerDown={inlineAssets ? event => event.stopPropagation() : undefined}>
-        {inlineAssets ? <div className={assetEditorExpanded ? "thin-scrollbar min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain pr-1" : "contents"}>
-            <DramaAssetFields assets={assets} theme={theme} expanded={assetEditorExpanded} disabled={generating} onChange={nextAssets => {
+        <div className={inlineEditor ? assetEditorExpanded ? "flex min-h-0 flex-1 flex-col gap-4" :
+            "thin-scrollbar min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain px-1" : "contents"}
+            onMouseDown={inlineEditor ? event => event.stopPropagation() : undefined}
+            onPointerDown={inlineEditor ? event => event.stopPropagation() : undefined}>
+        {inlineEditor ? <div className={assetEditorExpanded ? "thin-scrollbar min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain pr-1" : "contents"}>
+            <DramaAssetFields assets={assets} theme={theme} expanded={assetEditorExpanded} disabled={generating} onChange={assetPlanning ? nextAssets => {
                 const next = JSON.stringify({...previous, assets:nextAssets});
                 setDraft(next);
                 setValidation("");
                 onChange({dramaDraft:next});
-            }} />
-            {draft && !previous && <p role="alert">这份资产草案无法读取，请重新生成或添加资产。</p>}
+            } : undefined} renderReferences={referenceEditing ? asset => <div className="min-w-0 space-y-3">
+                {references.filter(reference => reference.assetId === asset.id).map(reference => {
+                    const variant = asset.variants?.find(item => item.id === reference.variantId);
+                    const name = variant?.name || asset.name;
+                    const keys = dramaReferenceImageKeys(reference);
+                    return <section key={reference.variantId ?? asset.id} className="space-y-3 rounded-xl border p-3" style={control}>
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                            <h3 className="font-semibold">{name}</h3>
+                            <span className="text-xs" style={{color:theme.node.muted}}>{keys.length ? `已选 ${keys.length} 张` : "待选参考图"}</span>
+                        </div>
+                        <CanvasNodeReferenceBar nodeId={node.id}
+                            references={keys.map((key, index) => ({
+                                id:key, nodeId:key, kind:"image", active:true,
+                                title:images.find(image => image.key === key)?.title || `${name}参考图 ${index + 1}`,
+                                label:`参考图 ${index + 1}`, previewUrl:canvasCasUrl(key) ?? undefined,
+                            }))}
+                            onDisconnect={key => updateReference(asset.id, reference.variantId, key, true)}
+                            onStartSelection={!assetEditorExpanded && onPickCanvasImage
+                                ? () => onPickCanvasImage(key => updateReference(asset.id, reference.variantId, key))
+                                : undefined} />
+                        <div className="flex flex-wrap items-center gap-2">
+                            {assetEditorExpanded ? <select className="min-w-0 flex-1 rounded-lg border px-2 py-1.5" style={control}
+                                aria-label={`添加${name}参考图`} value=""
+                                onChange={event => { if (event.target.value) updateReference(asset.id, reference.variantId, event.target.value); }}>
+                                <option value="">从画布图片列表添加</option>
+                                {images.filter(image => !keys.includes(image.key)).map((image, index) => <option key={`${image.key}:${index}`} value={image.key}>{image.title} · {image.key.slice(4,12)}</option>)}
+                            </select> : null}
+                            <Button size="small" style={control} onClick={() => onRenderFirstFrame?.([
+                                `制作单张${asset.kind === "scene" ? "场景" : asset.kind === "prop" ? "道具" : "角色"}参考图。`,
+                                asset.name, asset.description, variant?.description,
+                            ].filter(Boolean).join("\n"))}>生成参考图</Button>
+                        </div>
+                    </section>;
+                })}
+            </div> : undefined} />
+            {assetPlanning && draft && !previous && <p role="alert">这份资产草案无法读取，请重新生成或添加资产。</p>}
+            {referenceEditing && !assets.length && <p style={{color:theme.node.muted}}>请先在已连接的资产规划节点确认资产。</p>}
         </div> : <TextArea value={draft} onChange={event => setDraft(event.target.value)} autoSize={{ minRows: 5, maxRows: 16 }}
             placeholder={stage === "source" ? "粘贴小说或剧本原文" : "填写或粘贴本阶段结构化草案"} />}
         {stage === "source" ? <label className="mt-2 block text-sm">导入文本文件
@@ -169,38 +215,38 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, pro
                 setTargetEpisodes(count); onChange({targetEpisodes:count});
             }} />
         </label> : null}
-        <div className={inlineAssets
+        <div className={inlineEditor
             ? `flex flex-wrap items-center justify-end gap-2 pt-2 ${assetEditorExpanded ? "order-last shrink-0" : ""}`
             : "mt-3 flex gap-2"}>
-            {!inlineAssets && <Button onClick={() => { onChange({ dramaDraft: draft, ...(stage === "source" ? { content: draft } : {}) }); }}>保存草案</Button>}
-            <Button size={inlineAssets && !assetEditorExpanded ? "small" : "middle"} className={inlineAssets ? "order-last" : undefined}
-                style={inlineAssets && previous && !generating ? dramaNodePrimary(theme) : undefined}
-                type="primary" disabled={inlineAssets ? generating || !previous : !draft.trim() && !(stage === "asset_references" && references.length)} onClick={async () => {
+            {!inlineEditor && <Button onClick={() => { onChange({ dramaDraft: draft, ...(stage === "source" ? { content: draft } : {}) }); }}>保存草案</Button>}
+            <Button size={inlineEditor && !assetEditorExpanded ? "small" : "middle"} className={inlineEditor ? "order-last" : undefined}
+                style={inlineEditor && inlineReady && !generating ? dramaNodePrimary(theme) : undefined}
+                type="primary" disabled={inlineEditor ? generating || !inlineReady : !draft.trim()} onClick={async () => {
                 try {
                     if (stage === "assets" || stage === "episodes" || stage === "storyboard") {
                         const parsed: {assets?:unknown; episodes?:unknown; shots?:unknown} =
-                            inlineAssets ? previous ?? {} : JSON.parse(draft);
+                            assetPlanning ? previous ?? {} : JSON.parse(draft);
                         const collection = stage === "assets" ? parsed.assets : stage === "episodes" ? parsed.episodes : parsed.shots;
-                        if (!Array.isArray(collection) || (!inlineAssets && !collection.length)) throw Error("请确认有效的结构化 JSON 草案");
+                        if (!Array.isArray(collection) || (!assetPlanning && !collection.length)) throw Error("请确认有效的结构化 JSON 草案");
                         if (stage === "episodes" && collection.length !== targetEpisodes) throw Error(`剧集草案必须包含 ${targetEpisodes} 集`);
                         if (stage !== "episodes") {
                             const result = await canvasApi<{valid:boolean;errors:{code:string}[]}>(`/api/v1/projects/${encodeURIComponent(projectId ?? "")}/drama-pipeline/validate`, "POST", {snapshot:parsedSnapshot});
                             if (!result.valid) throw Error(describeDramaValidation(result.errors, assets));
                         }
                     }
-                    const content = stage === "asset_references" ? JSON.stringify(parsedSnapshot, null, 2) : inlineAssets ? JSON.stringify(previous) : draft;
+                    const content = stage === "asset_references" ? JSON.stringify(parsedSnapshot, null, 2) : assetPlanning ? JSON.stringify(previous) : draft;
                     setDraft(content); setConfirmed(content); setValidation("阶段已确认");
                     onChange({ dramaDraft: content, dramaConfirmed: content, dramaStage: stage, ...(stage === "source" ? { content } : {}) });
                 } catch (error) { setValidation(error instanceof Error ? error.message : "结构化结果无效"); }
             }}>确认阶段</Button>
-        <Button size={inlineAssets && !assetEditorExpanded ? "small" : "middle"} style={control} onClick={async () => {
+        <Button size={inlineEditor && !assetEditorExpanded ? "small" : "middle"} style={control} onClick={async () => {
             try {
-                if (!previous || typeof previous !== "object" || Array.isArray(previous)) throw Error("请填写有效的结构化 JSON 草案");
+                if (!referenceEditing && (!previous || typeof previous !== "object" || Array.isArray(previous))) throw Error("请填写有效的结构化 JSON 草案");
                 const result = await canvasApi<{valid:boolean;errors:{code:string}[]}>(`/api/v1/projects/${encodeURIComponent(projectId ?? "")}/drama-pipeline/validate`, "POST", {snapshot:parsedSnapshot});
                 setValidation(result.valid ? "检查通过" : describeDramaValidation(result.errors, assets));
             } catch (error) { setValidation(error instanceof Error ? error.message : "校验失败"); }
-        }} disabled={!projectId || (inlineAssets && (!previous || generating))}>{inlineAssets ? "校验资产" : "校验结构化草案"}</Button>
-        {stage === "assets" || stage === "episodes" || stage === "storyboard" ? <Button size={inlineAssets && !assetEditorExpanded ? "small" : "middle"} style={control} loading={generating} onClick={async () => {
+        }} disabled={!projectId || (inlineEditor && (!inlineReady || generating))}>{referenceEditing ? "校验主图" : assetPlanning ? "校验资产" : "校验结构化草案"}</Button>
+        {stage === "assets" || stage === "episodes" || stage === "storyboard" ? <Button size={inlineEditor && !assetEditorExpanded ? "small" : "middle"} style={control} loading={generating} onClick={async () => {
             setGenerating(true);
             try {
                 const model = config.textModel;
@@ -223,8 +269,8 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, pro
                     context,
                     targetEpisodes,
                 });
-                const assetDraft = inlineAssets ? readAssetDraft(result.answer) : undefined;
-                if (inlineAssets && !assetDraft) throw Error("模型返回的资产格式有误，已保留原草案");
+                const assetDraft = assetPlanning ? readAssetDraft(result.answer) : undefined;
+                if (assetPlanning && !assetDraft) throw Error("模型返回的资产格式有误，已保留原草案");
                 const answer = assetDraft ? JSON.stringify(assetDraft) : result.answer;
                 setDraft(answer);
                 setValidation("已生成草案，请检查并保存或确认");
@@ -243,21 +289,6 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, pro
                 {scenes.map(scene => <option key={scene.id} value={scene.id}>{scene.name}（{scene.id}）</option>)}
             </select>
         </label>)}
-        {stage === "asset_references" ? <div className="mt-3 space-y-2">
-            <p className="text-sm font-medium">资产主图</p>
-            {parsedSnapshot.references.map(reference => {
-                const asset = parsedSnapshot.assets.find(item => item.id === reference.assetId);
-                const variant = asset?.variants?.find(item => item.id === reference.variantId);
-                return <div className="space-y-1 text-xs" key={`${reference.assetId}:${reference.variantId ?? "base"}`}>
-                    <span>{asset?.name ?? reference.assetId}{variant ? ` · ${variant.name}` : ""}</span>
-                    <Button size="small" onClick={() => onRenderFirstFrame?.(`制作单张${asset?.kind === "scene" ? "场景" : asset?.kind === "prop" ? "道具" : "角色"}参考图。\n${asset?.name}\n${asset?.description}\n${variant?.description ?? ""}`)}>生成参考图</Button>
-                    <select aria-label={`${asset?.name ?? reference.assetId}主图`} value={reference.imageStorageKey ?? ""} onChange={event => updateReference(reference.assetId, reference.variantId, event.target.value)}>
-                        <option value="">选择画布图片</option>
-                        {images.map((image, index) => <option key={`${image.key}:${index}`} value={image.key}>{image.title} · {image.key.slice(4,12)}</option>)}
-                    </select>
-                </div>;
-            })}
-        </div> : null}
         {stage === "first_frames" && parsedSnapshot ? <div className="mt-3 space-y-2">
             {!upstreamReferences && <p className="text-sm">请在已连接的「资产参考图」节点选定主图。选图会自动保存，首帧渲染会读取最新选择。</p>}
             {parsedSnapshot.shots.map(shot => {
@@ -271,13 +302,13 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, pro
                 </div>;
             })}
         </div> : null}
-        {confirmed && !inlineAssets ? <details className="mt-3"><summary>已确认内容</summary><pre className="max-h-48 overflow-auto whitespace-pre-wrap">{confirmed}</pre></details> : null}
+        {confirmed && !inlineEditor ? <details className="mt-3"><summary>已确认内容</summary><pre className="max-h-48 overflow-auto whitespace-pre-wrap">{confirmed}</pre></details> : null}
         </div>
     </section>;
-    if (!inlineAssets || !assetEditorExpanded) return editor;
+    if (!inlineEditor || !assetEditorExpanded) return editor;
     return <>
         <div className="flex h-full items-center justify-center text-xs" style={{color:theme.node.text}}>正在大面板中编辑</div>
-        <Modal open centered title={<span style={{color:theme.node.text}}>资产规划</span>} width="min(1280px, calc(100vw - 32px))"
+        <Modal open centered title={<span style={{color:theme.node.text}}>{DRAMA_PIPELINE_STAGE_LABELS[stage]}</span>} width="min(1280px, calc(100vw - 32px))"
             footer={null} onCancel={() => setAssetEditorExpanded(false)}
             styles={{
                 container:{background:theme.node.fill},

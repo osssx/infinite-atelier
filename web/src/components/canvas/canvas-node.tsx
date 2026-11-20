@@ -584,7 +584,7 @@ function NodeContent(props: NodeContentRendererProps) {
     if (props.node.type === COMFY_WORKFLOW_MOCK_TYPE) {
         return <ComfyWorkflowNodeVisual node={props.node} theme={props.theme} visible={props.visualShown}/>;
     }
-    if ((props.node.type === CanvasNodeType.Config || props.node.type === "drama:source" || props.node.type === "drama:assets") && props.renderNodeContent) return props.renderNodeContent(props.node);
+    if ((props.node.type === CanvasNodeType.Config || isInlineDramaNode(props.node.type)) && props.renderNodeContent) return props.renderNodeContent(props.node);
     if (props.isBatchRoot) return <ImageNodeContent {...props} />;
     if (props.node.metadata?.status === "loading") return <LoadingContent theme={props.theme} />;
     if (props.node.metadata?.status === "error") return <ErrorContent node={props.node} theme={props.theme} onRetry={props.onRetry} />;
@@ -1321,3 +1321,4 @@ function ConnectionHandleDot({ side, visible, onMouseDown, top, hitSize, portId,
         </div>
     );
 }
+import { isInlineDramaNode } from "@/features/canvas-assistant/canvas-drama-pipeline";

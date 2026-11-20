@@ -12,6 +12,11 @@ export const DRAMA_PIPELINE_NODE_TYPES = Object.fromEntries(
     DRAMA_PIPELINE_STAGES.map(stage => [stage, `drama:${stage}`]),
 ) as Record<DramaPipelineStage, string>;
 
+export function isInlineDramaNode(type: string) {
+    return type === DRAMA_PIPELINE_NODE_TYPES.source ||
+        type === DRAMA_PIPELINE_NODE_TYPES.assets || type === DRAMA_PIPELINE_NODE_TYPES.asset_references;
+}
+
 export const DRAMA_PIPELINE_STAGE_LABELS: Record<DramaPipelineStage, string> = {
     source: "原文",
     assets: "资产规划",
@@ -46,8 +51,14 @@ export type DramaAssetReference = {
     assetId: string;
     variantId?: string;
     imageStorageKey?: string;
+    imageStorageKeys?: string[];
     requiredForRendering: boolean;
 };
+
+export function dramaReferenceImageKeys(reference?: DramaAssetReference) {
+    if (Array.isArray(reference?.imageStorageKeys)) return reference.imageStorageKeys;
+    return reference?.imageStorageKey ? [reference.imageStorageKey] : [];
+}
 
 export type DramaShot = {
     id: string;
@@ -105,7 +116,7 @@ export function missingDramaShotReferences(
     if (shot.sceneVariantId) ids.push(shot.sceneVariantId);
     else if (shot.sceneId) ids.push(shot.sceneId);
     ids.push(...shot.keyPropIds);
-    const selected = new Set(references.filter(item => item.imageStorageKey).map(item =>
+    const selected = new Set(references.filter(item => dramaReferenceImageKeys(item).length).map(item =>
         item.variantId ?? item.assetId));
     return [...new Set(ids)].filter(id => {
         const asset = assets.find(item => item.id === id || item.variants?.some(variant => variant.id === id));

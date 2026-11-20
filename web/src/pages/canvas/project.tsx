@@ -81,6 +81,7 @@ import { CanvasNodePromptPanel, type CanvasNodeGenerationMode } from "@/componen
 import { CanvasToolbar } from "@/components/canvas/canvas-toolbar";
 import { DramaPipelineNodePanel, isDramaPipelineNode } from "@/features/canvas-assistant/drama-pipeline-node-panel";
 import { DramaSourceNode } from "@/features/canvas-assistant/drama-source-node";
+import { isInlineDramaNode } from "@/features/canvas-assistant/canvas-drama-pipeline";
 import type { DramaFirstFrameInput } from "@/features/canvas-assistant/drama-pipeline-media";
 import { AssetPickerModal, type InsertAssetPayload } from "@/components/canvas/asset-picker-modal";
 import { CanvasSidePanel } from "@/components/canvas/canvas-side-panel";
@@ -436,7 +437,8 @@ function AtelierCanvasPage() {
     const [toolbarNodeId, setToolbarNodeId] = useState<string | null>(null);
     const [editingNodeTitleId, setEditingNodeTitleId] = useState<string | null>(null);
     const [nodeImageSettingsOpen, setNodeImageSettingsOpen] = useState(false);
-    const [referencePickerNodeId, setReferencePickerNodeId] = useState<string | null>(null);
+    const [referencePicker, setReferencePicker] = useState<{nodeId:string; onImagePick?: (storageKey:string) => void} | null>(null);
+    const referencePickerNodeId = referencePicker?.nodeId;
     const [dialogNodeId, setDialogNodeId] = useState<string | null>(null);
     const [infoNodeId, setInfoNodeId] = useState<string | null>(null);
     const [cropNodeId, setCropNodeId] = useState<string | null>(null);
@@ -687,8 +689,8 @@ function AtelierCanvasPage() {
             if(cancelled)return;
             const resetNodes=resetInterruptedGeneration(project.nodes);
             const restoredNodes = (await hydrateCanvasImages(resetNodes)).map(node =>
-                (node.type === "drama:source" || node.type === "drama:assets") && node.width === 340 && node.height === 200
-                    ? {...node, height: node.type === "drama:assets" ? 400 : 340}
+                isInlineDramaNode(node.type) && node.width === 340 && node.height === 200
+                    ? {...node, height: node.type === "drama:source" ? 340 : 400}
                     : node);
             const restoredSessions = await hydrateAssistantImages(project.chatSessions || []);
             if (cancelled) return;
@@ -945,8 +947,8 @@ function AtelierCanvasPage() {
         ? buildNodeMentionReferencesFromIndex(graphIndex, referencePickerNodeId).map((reference) => reference.nodeId)
         : []), [graphIndex, referencePickerNodeId]);
 
-    const startNodeReferenceSelection = useCallback((nodeId: string) => {
-        setReferencePickerNodeId(nodeId);
+    const startNodeReferenceSelection = useCallback((nodeId: string, onImagePick?: (storageKey:string) => void) => {
+        setReferencePicker({nodeId,onImagePick});
         setSelectedNodeIds(new Set([nodeId]));
         setSelectedConnectionId(null);
         setDialogNodeId(null);
@@ -957,9 +959,9 @@ function AtelierCanvasPage() {
     const exitNodeReferenceSelection = useCallback(() => {
         if (!referencePickerNodeId) return;
         setSelectedNodeIds(new Set([referencePickerNodeId]));
-        setDialogNodeId(referencePickerNodeId);
-        setReferencePickerNodeId(null);
-    }, [referencePickerNodeId]);
+        setDialogNodeId(referencePicker?.onImagePick ? null : referencePickerNodeId);
+        setReferencePicker(null);
+    }, [referencePicker, referencePickerNodeId]);
 
     useEffect(() => {
         if (!referencePickerNodeId) return;
@@ -4099,6 +4101,7 @@ function AtelierCanvasPage() {
             const ratio = pipelineSource?.metadata?.videoRatio;
             const style = pipelineSource?.metadata?.dramaFilmStyle?.trim();
             return isDramaPipelineNode(panelNode.type) ? <DramaPipelineNodePanel key={panelNode.id} node={panelNode} projectId={projectId}
+                onPickCanvasImage={onPick => startNodeReferenceSelection(panelNode.id, onPick)}
                 productionContext={[ratio && `视频画幅：${ratio}`, style && `影片风格：${style}`].filter(Boolean).join("\n")}
                 upstreamText={nodes.find(item => item.type === "drama:source" && connections.some(edge => edge.fromNodeId === item.id && edge.toNodeId === panelNode.id))?.metadata?.dramaConfirmed}
                 upstreamArtifacts={nodes.filter(item => item.type !== "drama:source" && connections.some(edge => edge.fromNodeId === item.id && edge.toNodeId === panelNode.id)).flatMap(item => item.metadata?.dramaConfirmed ? [item.metadata.dramaConfirmed] : [])}
@@ -4244,7 +4247,7 @@ function AtelierCanvasPage() {
     const renderNodeContentPanel = useCallback(
         (contentNode: CanvasNodeData) => contentNode.type === "drama:source" ? (
             <DramaSourceNode key={contentNode.id} node={contentNode} onChange={patch => handleConfigNodeChange(contentNode.id, patch)} />
-        ) : contentNode.type === "drama:assets" ? renderNodePanel(contentNode) : (
+        ) : isInlineDramaNode(contentNode.type) ? renderNodePanel(contentNode) : (
             <CanvasConfigNodePanel
                 node={contentNode}
                 nodes={inputGraphNodes}
@@ -4449,8 +4452,12 @@ function AtelierCanvasPage() {
                     </CanvasActionsProvider>
 
                     {referencePickerNodeId ? visibleNodes.map((node) => {
-                        const available = node.id !== referencePickerNodeId && isResourceNode(node) && !referenceConnectedNodeIds.has(node.id);
-                        const label = node.id === referencePickerNodeId ? "正在添加参考" : referenceConnectedNodeIds.has(node.id) ? "已添加" : available ? "选取为参考" : "不可选取";
+                        const pickImage = referencePicker?.onImagePick;
+                        const storageKey = pickImage && node.type === CanvasNodeType.Image ? resolveCanvasImage(node)?.storageKey : undefined;
+                        const available = node.id !== referencePickerNodeId && (pickImage
+                            ? Boolean(storageKey && isCanvasCasKey(storageKey))
+                            : isResourceNode(node) && !referenceConnectedNodeIds.has(node.id));
+                        const label = node.id === referencePickerNodeId ? "正在添加参考" : !pickImage && referenceConnectedNodeIds.has(node.id) ? "已添加" : available ? "选取为参考" : "不可选取";
                         return <button key={`reference-picker:${node.id}`} type="button" aria-label={`${label}：${node.title || node.id}`} aria-disabled={!available}
                             className={`absolute z-[80] grid place-items-center rounded-3xl border-2 ${available ? "cursor-pointer hover:border-current" : "cursor-not-allowed"}`}
                             style={{ transform: `translate(${node.position.x}px, ${node.position.y}px)`, width: node.width, height: node.height, borderColor: available ? theme.node.muted : "transparent", background: `color-mix(in srgb, ${theme.canvas.background} ${available ? 20 : 65}%, transparent)`, color: theme.node.text }}
@@ -4459,7 +4466,13 @@ function AtelierCanvasPage() {
                             onDoubleClick={(event) => event.stopPropagation()}
                             onClick={(event) => {
                                 event.stopPropagation();
-                                if (available) connectNodes({ nodeId: node.id, handleType: "source" }, { nodeId: referencePickerNodeId, handleType: "target" });
+                                if (!available) return;
+                                if (pickImage && storageKey) {
+                                    pickImage(storageKey);
+                                    exitNodeReferenceSelection();
+                                } else {
+                                    connectNodes({ nodeId: node.id, handleType: "source" }, { nodeId: referencePickerNodeId, handleType: "target" });
+                                }
                             }}>
                             <span className="rounded-lg px-3 py-2 text-sm font-medium" style={{ background: theme.toolbar.panel }}>{label}</span>
                         </button>;
@@ -4479,7 +4492,7 @@ function AtelierCanvasPage() {
                         />
                     ) : null}
                 </AtelierCanvas>
-                {referencePickerNodeId ? <button type="button" className="absolute left-1/2 top-4 z-[90] -translate-x-1/2 rounded-full border px-4 py-2 text-sm font-medium shadow-lg" style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border }} onClick={exitNodeReferenceSelection}>点击画布节点添加参考 · 完成选取（Esc）</button> : null}
+                {referencePickerNodeId ? <button type="button" className="absolute left-1/2 top-4 z-[90] -translate-x-1/2 rounded-full border px-4 py-2 text-sm font-medium shadow-lg" style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border }} onClick={exitNodeReferenceSelection}>{referencePicker?.onImagePick ? "点击画布图片添加参考图 · 取消（Esc）" : "点击画布节点添加参考 · 完成选取（Esc）"}</button> : null}
 
                 {directorPanelNode ? <DirectorPanel nodeId={directorPanelNode.id} open onClose={() => setDialogNodeId(null)} onExport={handleDirectorExport(directorPanelNode.id)} /> : null}
 
@@ -4543,7 +4556,7 @@ function AtelierCanvasPage() {
                     onAddDramaPipeline={() => {
                         const center = getCanvasCenter();
                         const stageIds = ["source", "assets", "asset_references", "episodes", "storyboard", "first_frames"] as const;
-                        const positions = [{x:center.x-780,y:center.y-160},{x:center.x-380,y:center.y-275},{x:center.x+20,y:center.y-275},{x:center.x-380,y:center.y+180},{x:center.x+20,y:center.y},{x:center.x+420,y:center.y-140}];
+                        const positions = [{x:center.x-780,y:center.y-160},{x:center.x-380,y:center.y-275},{x:center.x+20,y:center.y-275},{x:center.x-380,y:center.y+180},{x:center.x+20,y:center.y+180},{x:center.x+420,y:center.y-140}];
                         const created = stageIds.map((stage,index) => createCanvasNode(`drama:${stage}`, positions[index], {dramaStage:stage,dramaDraft:"",dramaConfirmed:""}));
                         const ids = Object.fromEntries(stageIds.map((stage,index)=>[stage,created[index].id]));
                         const edges = [["source","assets"],["assets","asset_references"],["source","episodes"],["assets","storyboard"],["episodes","storyboard"],["asset_references","first_frames"],["storyboard","first_frames"]] as const;

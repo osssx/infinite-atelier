@@ -30,6 +30,17 @@ test("reports missing key prop reference without rejecting the editable storyboa
   assert.ok(result.errors.some(error => error.code === "render_reference_missing" && error.id === "star"));
 });
 
+test("supports multiple CAS images and treats an explicitly emptied collection as missing", () => {
+  const snapshot = structuredClone(base);
+  const keys = ["cas:" + "a".repeat(64), "cas:" + "b".repeat(64)];
+  snapshot.references[0].imageStorageKeys = keys;
+  assert.equal(validateDramaPipelineSnapshot(snapshot).valid, true);
+  snapshot.references[0].imageStorageKeys = [keys[0], keys[0]];
+  assert.equal(validateDramaPipelineSnapshot(snapshot).errors[0].code, "asset_reference_invalid");
+  snapshot.references[0].imageStorageKeys = [];
+  assert.equal(validateDramaPipelineSnapshot(snapshot).errors[0].code, "render_reference_missing");
+});
+
 test("rejects a prop accidentally used as a scene or an unlinked key prop", () => {
   const snapshot = structuredClone(base);
   snapshot.shots[0].sceneId = "star";

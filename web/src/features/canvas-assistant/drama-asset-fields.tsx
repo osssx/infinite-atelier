@@ -1,4 +1,4 @@
-import { useState, type CSSProperties } from "react";
+import { useState, type CSSProperties, type ReactNode } from "react";
 import { Box, ChevronRight, Mountain, Plus, Trash2, UserRound } from "lucide-react";
 import type { CanvasTheme } from "@/lib/canvas-theme";
 import type { DramaAsset, DramaAssetKind } from "./canvas-drama-pipeline";
@@ -7,18 +7,19 @@ const kinds: Record<DramaAssetKind, string> = {character:"角色", scene:"场景
 const kindIcons = {character:UserRound, scene:Mountain, prop:Box};
 const fieldClass = "thin-scrollbar w-full min-w-0 rounded-lg border px-3 py-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1";
 
-export function DramaAssetFields({assets, theme, expanded, disabled, onChange}: {
+export function DramaAssetFields({assets, theme, expanded, disabled, onChange, renderReferences}: {
     assets: DramaAsset[];
     theme: CanvasTheme;
     expanded: boolean;
     disabled: boolean;
-    onChange: (assets: DramaAsset[]) => void;
+    onChange?: (assets: DramaAsset[]) => void;
+    renderReferences?: (asset: DramaAsset) => ReactNode;
 }) {
     const [kind, setKind] = useState<DramaAssetKind>("character");
     const [activeId, setActiveId] = useState("");
     const rows = assets.filter(asset => asset.kind === kind);
     const active = rows.find(asset => asset.id === activeId) ?? rows[0];
-    const edit = (patch: Partial<DramaAsset>) => onChange(assets.map(asset =>
+    const edit = (patch: Partial<DramaAsset>) => onChange?.(assets.map(asset =>
         asset === active ? {...asset, ...patch} : asset));
     const variants = active?.variants ?? [];
     const surface: CSSProperties = {background:theme.node.panel, borderColor:theme.node.stroke};
@@ -26,7 +27,7 @@ export function DramaAssetFields({assets, theme, expanded, disabled, onChange}: 
     const selected: CSSProperties = {background:theme.toolbar.activeBg, color:theme.toolbar.activeText, borderColor:theme.node.muted};
     const addAsset = () => {
         const id = `${kind}_${crypto.randomUUID()}`;
-        onChange([...assets, {id, kind, name:"", description:"", sourceRefs:[],
+        onChange?.([...assets, {id, kind, name:"", description:"", sourceRefs:[],
             ...(kind === "character" ? {variants:[{id:`outfit_${crypto.randomUUID()}`,name:"默认造型",description:""}]} : {})}]);
         setActiveId(id);
     };
@@ -47,7 +48,7 @@ export function DramaAssetFields({assets, theme, expanded, disabled, onChange}: 
         {expanded ? <div className="space-y-3 rounded-xl border p-3" style={surface}>
             <div className="flex items-center justify-between gap-2">
                 <h3 className="font-semibold">{kinds[kind]}列表</h3>
-                <button type="button" className="inline-flex items-center gap-1 rounded-lg border px-2.5 py-1.5 hover:opacity-75" style={control} onClick={addAsset}><Plus className="size-4" />添加</button>
+                {onChange && <button type="button" className="inline-flex items-center gap-1 rounded-lg border px-2.5 py-1.5 hover:opacity-75" style={control} onClick={addAsset}><Plus className="size-4" />添加</button>}
             </div>
             <div className="thin-scrollbar grid max-h-56 gap-1.5 overflow-y-auto md:max-h-[52dvh]" aria-label={`${kinds[kind]}列表`}>
                 {rows.map(asset => <button type="button" key={asset.id} aria-pressed={active === asset}
@@ -59,19 +60,19 @@ export function DramaAssetFields({assets, theme, expanded, disabled, onChange}: 
                 {!rows.length && <p className="px-2 py-3" style={{color:theme.node.muted}}>暂无{kinds[kind]}</p>}
             </div>
         </div> : <div className="flex gap-2">
-            <select aria-label={`选择${kinds[kind]}`} className={fieldClass} style={control} value={active?.id ?? ""}
+            <select aria-label={`选择${kinds[kind]}`} className={`${fieldClass} focus-visible:outline-offset-[-2px]`} style={control} value={active?.id ?? ""}
                 onChange={event => setActiveId(event.target.value)}>
                 {rows.length ? rows.map(asset => <option key={asset.id} value={asset.id}>{asset.name || "未命名"}</option>) : <option value="">暂无{kinds[kind]}</option>}
             </select>
-            <button type="button" className="inline-flex shrink-0 items-center gap-1 rounded-lg border px-2 hover:opacity-75" style={control} onClick={addAsset}><Plus className="size-3.5" />添加</button>
+            {onChange && <button type="button" className="inline-flex shrink-0 items-center gap-1 rounded-lg border px-2 hover:opacity-75" style={control} onClick={addAsset}><Plus className="size-3.5" />添加</button>}
         </div>}
-        {active && <div className={`min-w-0 space-y-3 rounded-xl border ${expanded ? "p-5" : "p-3"}`} style={surface}>
+        {active && (renderReferences ? renderReferences(active) : <div className={`min-w-0 space-y-3 rounded-xl border ${expanded ? "p-5" : "p-3"}`} style={surface}>
             <div className="flex items-center justify-between gap-2">
                 <h3 className="truncate font-semibold">{active.name || `新${kinds[kind]}`}</h3>
                 <button type="button" className="inline-grid size-8 shrink-0 place-items-center rounded-lg hover:opacity-75" title="从草案删除"
                 aria-label={`删除${kinds[kind]}${active.name ? `：${active.name}` : ""}`}
                 onClick={() => {
-                    onChange(assets.filter(asset => asset !== active));
+                    onChange?.(assets.filter(asset => asset !== active));
                     setActiveId("");
                 }}><Trash2 className="size-4" /></button>
             </div>
@@ -95,7 +96,7 @@ export function DramaAssetFields({assets, theme, expanded, disabled, onChange}: 
                 <button type="button" disabled={variants.length >= 32} className="rounded-md border px-2 py-1" style={control}
                     onClick={() => edit({variants:[...variants, {id:`variant_${crypto.randomUUID()}`,name:"",description:""}]})}>添加{kind === "character" ? "造型" : "变体"}</button>
             </details>}
-        </div>}
+        </div>)}
         </div>
     </fieldset>;
 }

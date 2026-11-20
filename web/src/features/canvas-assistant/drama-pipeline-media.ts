@@ -1,5 +1,6 @@
 import type { ReferenceImage } from "@/types/image";
 import type { DramaAsset, DramaAssetReference, DramaPipelineSnapshot, DramaShot } from "./canvas-drama-pipeline";
+import { dramaReferenceImageKeys } from "./canvas-drama-pipeline";
 
 export type DramaFirstFrameInput = {
     shot: DramaShot;
@@ -30,15 +31,17 @@ export function buildDramaFirstFrameInput(snapshot: DramaPipelineSnapshot, shot:
     const referenceImages: ReferenceImage[] = [];
     for (const id of ids) {
         const reference = refForId(snapshot.references, snapshot.assets, id);
-        if (!reference?.imageStorageKey || seen.has(reference.imageStorageKey)) continue;
-        seen.add(reference.imageStorageKey);
-        referenceImages.push({
-            id: `${shot.id}-${id}`,
-            name: assetForId(snapshot.assets, id)?.name ?? id,
-            type: "image/png",
-            dataUrl: "",
-            storageKey: reference.imageStorageKey,
-        });
+        for (const storageKey of dramaReferenceImageKeys(reference)) {
+            if (seen.has(storageKey)) continue;
+            seen.add(storageKey);
+            referenceImages.push({
+                id: `${shot.id}-${id}-${referenceImages.length + 1}`,
+                name: assetForId(snapshot.assets, id)?.name ?? id,
+                type: "image/png",
+                dataUrl: "",
+                storageKey,
+            });
+        }
     }
     const propDescriptions = shot.propIds.flatMap(id => {
         const prop = assetForId(snapshot.assets, id);
@@ -52,5 +55,5 @@ export function dramaFirstFrameMissingReferenceIds(snapshot: DramaPipelineSnapsh
     const ids = [...shot.characterVariantIds,
         ...(shot.sceneVariantId ? [shot.sceneVariantId] : shot.sceneId ? [shot.sceneId] : []),
         ...shot.keyPropIds];
-    return ids.filter(id => !refForId(snapshot.references, snapshot.assets, id)?.imageStorageKey);
+    return ids.filter(id => !dramaReferenceImageKeys(refForId(snapshot.references, snapshot.assets, id)).length);
 }

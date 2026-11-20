@@ -1,4 +1,5 @@
 import { CanvasNodeType } from "@/types/canvas";
+import { isInlineDramaNode } from "@/features/canvas-assistant/canvas-drama-pipeline";
 import type { SharedNodeProps } from "./canvas-node-layer";
 
 /** Keep stateful render callbacks off memoized nodes that cannot use them. */
@@ -9,7 +10,7 @@ export function selectNodeRenderCallbacks(
 ): Pick<SharedNodeProps, "renderPanel" | "renderNodeContent"> {
     return {
         renderPanel: showPanel ? shared.renderPanel : undefined,
-        renderNodeContent: nodeType === CanvasNodeType.Config || nodeType === "drama:source" || nodeType === "drama:assets"
+        renderNodeContent: nodeType === CanvasNodeType.Config || isInlineDramaNode(nodeType)
             ? shared.renderNodeContent
             : undefined,
     };

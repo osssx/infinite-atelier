@@ -32,4 +32,17 @@ describe("drama pipeline media inputs", () => {
         missing.references = missing.references.filter(reference => reference.assetId !== "star");
         expect(dramaFirstFrameMissingReferenceIds(missing, shot)).toEqual(["star"]);
     });
+
+    it("passes all selected images in order and deduplicates across asset slots", () => {
+        const multi = structuredClone(snapshot);
+        const first = "cas:" + "a".repeat(64);
+        const second = "cas:" + "d".repeat(64);
+        multi.references[0].imageStorageKeys = [first, second];
+        multi.references[1].imageStorageKeys = [second, "cas:" + "b".repeat(64)];
+        const images = buildDramaFirstFrameInput(multi, shot).referenceImages;
+        expect(images.map(image => image.storageKey)).toEqual([first, second, "cas:" + "b".repeat(64), "cas:" + "c".repeat(64)]);
+        expect(new Set(images.map(image => image.id)).size).toBe(4);
+        multi.references[0].imageStorageKeys = [];
+        expect(dramaFirstFrameMissingReferenceIds(multi, shot)).toEqual(["hero-day"]);
+    });
 });

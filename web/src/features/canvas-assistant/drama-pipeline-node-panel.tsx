@@ -13,6 +13,7 @@ import { useEffectiveConfig, resolveModelChannel, modelOptionName } from "@/stor
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { DramaAssetFields } from "./drama-asset-fields";
+import { DramaEpisodeFields, type DramaEpisode } from "./drama-episode-fields";
 import { dramaInlineNodeClass, dramaNodeControl, dramaNodePrimary, DramaNodeStatus } from "./drama-node-style";
 
 const { TextArea } = Input;
@@ -34,6 +35,18 @@ function readAssetDraft(value: string) {
         (asset.variants === undefined || (Array.isArray(asset.variants) && asset.variants.every(variant =>
             variant && typeof variant.id === "string" && typeof variant.name === "string" && typeof variant.description === "string"))))) return null;
     return draft as typeof draft & {assets: NonNullable<typeof draft.assets>};
+}
+
+function readEpisodeDraft(value: string): {episodes:DramaEpisode[]} | null {
+    try {
+        const draft = JSON.parse(value.trim().replace(/^```(?:json)?\s*([\s\S]*?)\s*```$/i, "$1"));
+        if (!Array.isArray(draft?.episodes) || !draft.episodes.every((episode:DramaEpisode) => episode &&
+            typeof episode.id === "string" && episode.id.trim() &&
+            [episode.title,episode.synopsis,episode.ending].every(item => typeof item === "string") &&
+            [episode.sourceRefs,episode.events].every(items => Array.isArray(items) && items.every(item => typeof item === "string")))) return null;
+        if (new Set(draft.episodes.map((episode:DramaEpisode) => episode.id)).size !== draft.episodes.length) return null;
+        return draft;
+    } catch { return null; }
 }
 
 function describeDramaValidation(errors: {code:string;shotId?:string;id?:string}[], assets: DramaPipelineSnapshot["assets"]) {
@@ -76,7 +89,9 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, onC
     const assetPlanning = stage === "assets";
     const referenceEditing = stage === "asset_references";
     const mergedEditing = assetPlanning && !legacyAssetPlanning;
-    const inlineEditor = assetPlanning || referenceEditing;
+    const episodePlanning = stage === "episodes";
+    const episodeDraft = episodePlanning ? readEpisodeDraft(draft) : null;
+    const inlineEditor = assetPlanning || referenceEditing || episodePlanning;
     const previous = assetPlanning ? readAssetDraft(draft) : readDraft(draft);
     const liveAssets = readDraft(confirmedAssetPlan ?? "")?.assets;
     const assets = liveAssets ?? upstream.find(item => Array.isArray(item?.assets))?.assets ?? previous?.assets ?? [];
@@ -134,7 +149,7 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, onC
     const theme = canvasThemes[useThemeStore(state => state.theme)];
     const control = inlineEditor ? dramaNodeControl(theme) : undefined;
     const assetConfirmed = Boolean(confirmed && draft === confirmed);
-    const inlineReady = referenceEditing ? references.length > 0 : Boolean(previous);
+    const inlineReady = referenceEditing ? references.length > 0 : episodePlanning ? Boolean(episodeDraft?.episodes.length) : Boolean(previous);
     if (!stage) return null;
     const editor = <section className={inlineEditor ? assetEditorExpanded
         ? "flex h-full min-h-0 flex-col gap-4 text-sm"
@@ -161,8 +176,25 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, onC
             "thin-scrollbar min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain px-1" : "contents"}
             onMouseDown={inlineEditor ? event => event.stopPropagation() : undefined}
             onPointerDown={inlineEditor ? event => event.stopPropagation() : undefined}>
-        {inlineEditor ? <div className={assetEditorExpanded ? "thin-scrollbar min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain pr-1" : "contents"}>
-            <DramaAssetFields assets={assets} theme={theme} expanded={assetEditorExpanded} disabled={generating} onChange={assetPlanning ? nextAssets => {
+        {inlineEditor ? <div className={assetEditorExpanded ? "thin-scrollbar min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain pr-1" : episodePlanning ? "grid gap-3" : "contents"}>
+            {episodePlanning ? <>
+                <label className="flex items-center justify-between gap-3 rounded-xl border px-3 py-2.5 font-medium" style={control}>目标集数
+                    <Input className="!w-20" type="number" min={1} max={100} value={targetEpisodes} disabled={generating} style={control}
+                        onChange={event => {
+                            const count = Math.max(1, Math.min(100, Math.trunc(Number(event.target.value)) || 1));
+                            setTargetEpisodes(count);
+                            setValidation("");
+                            onChange({targetEpisodes:count});
+                        }} />
+                </label>
+                <DramaEpisodeFields episodes={episodeDraft?.episodes ?? []} expanded={assetEditorExpanded} disabled={generating} control={control} onChange={episodes => {
+                    const next = JSON.stringify({...episodeDraft,episodes});
+                    setDraft(next);
+                    setValidation("");
+                    onChange({dramaDraft:next});
+                }} />
+                {draft && !episodeDraft && <p role="alert">这份剧集草案格式无法读取，请重新生成。</p>}
+            </> : <DramaAssetFields assets={assets} theme={theme} expanded={assetEditorExpanded} disabled={generating} onChange={assetPlanning ? nextAssets => {
                 const next = JSON.stringify({...previous, assets:nextAssets});
                 setDraft(next);
                 setValidation("");
@@ -204,7 +236,7 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, onC
                         </div>
                     </section>;
                 })}
-            </div> : undefined} />
+            </div> : undefined} />}
             {assetPlanning && draft && !previous && <p role="alert">这份资产草案无法读取，请重新生成或添加资产。</p>}
             {referenceEditing && !assets.length && <p style={{color:theme.node.muted}}>请先在已连接的资产规划节点确认资产。</p>}
         </div> : <TextArea value={draft} onChange={event => setDraft(event.target.value)} autoSize={{ minRows: 5, maxRows: 16 }}
@@ -217,12 +249,6 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, onC
                 catch { setValidation("无法读取该文本文件"); }
             }} />
         </label> : null}
-        {stage === "episodes" ? <label className="mt-2 block text-sm">目标集数
-            <Input type="number" min={1} max={100} value={targetEpisodes} onChange={event => {
-                const count = Math.max(1, Math.min(100, Number(event.target.value) || 1));
-                setTargetEpisodes(count); onChange({targetEpisodes:count});
-            }} />
-        </label> : null}
         <div className={inlineEditor
             ? `flex flex-wrap items-center justify-end gap-2 pt-2 ${assetEditorExpanded ? "order-last shrink-0" : ""}`
             : "mt-3 flex gap-2"}>
@@ -233,7 +259,7 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, onC
                 try {
                     if (stage === "assets" || stage === "episodes" || stage === "storyboard") {
                         const parsed: {assets?:unknown; episodes?:unknown; shots?:unknown} =
-                            assetPlanning ? previous ?? {} : JSON.parse(draft);
+                            assetPlanning ? previous ?? {} : episodePlanning ? episodeDraft ?? {} : JSON.parse(draft);
                         const collection = stage === "assets" ? parsed.assets : stage === "episodes" ? parsed.episodes : parsed.shots;
                         if (!Array.isArray(collection) || (!assetPlanning && !collection.length)) throw Error("请确认有效的结构化 JSON 草案");
                         if (stage === "episodes" && collection.length !== targetEpisodes) throw Error(`剧集草案必须包含 ${targetEpisodes} 集`);
@@ -242,7 +268,8 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, onC
                             if (!result.valid) throw Error(describeDramaValidation(result.errors, assets));
                         }
                     }
-                    const content = stage === "asset_references" ? JSON.stringify(parsedSnapshot, null, 2) : assetPlanning ? JSON.stringify(previous) : draft;
+                    const content = stage === "asset_references" ? JSON.stringify(parsedSnapshot, null, 2) :
+                        assetPlanning ? JSON.stringify(previous) : episodePlanning ? JSON.stringify(episodeDraft) : draft;
                     setDraft(content); setConfirmed(content); setValidation("阶段已确认");
                     onChange({ dramaDraft: content, dramaConfirmed: content, dramaStage: stage,
                         ...(mergedEditing ? {dramaAssetReferences:referencesForDramaAssets(assets, storedReferences ?? [])} : {}),
@@ -251,11 +278,16 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, onC
             }}>确认阶段</Button>
         <Button size={inlineEditor && !assetEditorExpanded ? "small" : "middle"} style={control} onClick={async () => {
             try {
+                if (episodePlanning) {
+                    if (episodeDraft?.episodes.length !== targetEpisodes) throw Error(`剧集草案必须包含 ${targetEpisodes} 集`);
+                    setValidation("检查通过");
+                    return;
+                }
                 if (!referenceEditing && (!previous || typeof previous !== "object" || Array.isArray(previous))) throw Error("请填写有效的结构化 JSON 草案");
                 const result = await canvasApi<{valid:boolean;errors:{code:string}[]}>(`/api/v1/projects/${encodeURIComponent(projectId ?? "")}/drama-pipeline/validate`, "POST", {snapshot:parsedSnapshot});
                 setValidation(result.valid ? "检查通过" : describeDramaValidation(result.errors, assets));
             } catch (error) { setValidation(error instanceof Error ? error.message : "校验失败"); }
-        }} disabled={!projectId || (inlineEditor && (!inlineReady || generating))}>{referenceEditing ? "校验主图" : assetPlanning ? "校验资产" : "校验结构化草案"}</Button>
+        }} disabled={!projectId || (inlineEditor && (!inlineReady || generating))}>{referenceEditing ? "校验主图" : assetPlanning ? "校验资产" : episodePlanning ? "校验剧集" : "校验结构化草案"}</Button>
         {stage === "assets" || stage === "episodes" || stage === "storyboard" ? <Button size={inlineEditor && !assetEditorExpanded ? "small" : "middle"} style={control} loading={generating} onClick={async () => {
             setGenerating(true);
             try {
@@ -280,8 +312,11 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, onC
                     targetEpisodes,
                 });
                 const assetDraft = assetPlanning ? readAssetDraft(result.answer) : undefined;
+                const generatedEpisodes = episodePlanning ? readEpisodeDraft(result.answer) : undefined;
                 if (assetPlanning && !assetDraft) throw Error("模型返回的资产格式有误，已保留原草案");
-                const answer = assetDraft ? JSON.stringify(assetDraft) : result.answer;
+                if (episodePlanning && !generatedEpisodes?.episodes.length) throw Error("模型返回的剧集格式有误，已保留原草案");
+                const structured = assetDraft ?? generatedEpisodes;
+                const answer = structured ? JSON.stringify(structured) : result.answer;
                 setDraft(answer);
                 setValidation("已生成草案，请检查并保存或确认");
                 onChange({dramaDraft:answer});

@@ -14,7 +14,8 @@ export const DRAMA_PIPELINE_NODE_TYPES = Object.fromEntries(
 
 export function isInlineDramaNode(type: string) {
     return type === DRAMA_PIPELINE_NODE_TYPES.source ||
-        type === DRAMA_PIPELINE_NODE_TYPES.assets || type === DRAMA_PIPELINE_NODE_TYPES.asset_references;
+        type === DRAMA_PIPELINE_NODE_TYPES.assets || type === DRAMA_PIPELINE_NODE_TYPES.asset_references ||
+        type === DRAMA_PIPELINE_NODE_TYPES.episodes;
 }
 
 export const DRAMA_PIPELINE_STAGE_LABELS: Record<DramaPipelineStage, string> = {

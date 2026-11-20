@@ -11,6 +11,7 @@ import { useEffectiveConfig, resolveModelChannel, modelOptionName } from "@/stor
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { DramaAssetFields } from "./drama-asset-fields";
+import { dramaInlineNodeClass, dramaNodeControl, dramaNodePrimary, DramaNodeStatus } from "./drama-node-style";
 
 const { TextArea } = Input;
 
@@ -116,12 +117,12 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, pro
     };
     const config = useEffectiveConfig();
     const theme = canvasThemes[useThemeStore(state => state.theme)];
-    const control = inlineAssets ? {background:theme.node.panel, color:theme.node.text, borderColor:theme.node.stroke} : undefined;
+    const control = inlineAssets ? dramaNodeControl(theme) : undefined;
     const assetConfirmed = Boolean(confirmed && draft === confirmed);
     if (!stage) return null;
     const editor = <section className={inlineAssets ? assetEditorExpanded
         ? "flex h-full min-h-0 flex-col gap-4 text-sm"
-        : "flex h-full w-full min-h-0 flex-col gap-3 px-3 pb-4 pt-7 text-xs"
+        : dramaInlineNodeClass
         : "rounded-xl border border-slate-200 bg-white p-4 shadow-xl"}
         style={inlineAssets ? {color:theme.node.text} : undefined} data-canvas-no-zoom={inlineAssets ? "" : undefined}
         onWheel={inlineAssets ? event => event.stopPropagation() : undefined}
@@ -133,11 +134,7 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, pro
         <header className={`flex items-center justify-between gap-2 ${inlineAssets ? "" : "mb-3"}`}>
             {!assetEditorExpanded && <strong className={inlineAssets ? "text-sm" : undefined}>{DRAMA_PIPELINE_STAGE_LABELS[stage]}</strong>}
             {inlineAssets ? <div className="flex items-center gap-2">
-                <span className="rounded-full border px-2 py-1 text-xs" style={{
-                    borderColor:theme.node.stroke,
-                    background:assetConfirmed ? theme.toolbar.activeBg : theme.node.panel,
-                    color:assetConfirmed ? theme.toolbar.activeText : theme.node.muted,
-                }}>{assetConfirmed ? "已确认" : "草案"}</span>
+                <DramaNodeStatus theme={theme} confirmed={assetConfirmed} />
                 {!assetEditorExpanded && <button type="button" title="最大化资产编辑器" aria-label="最大化资产编辑器"
                     className="inline-grid size-7 place-items-center rounded-md border" style={control}
                     onClick={() => setAssetEditorExpanded(true)}><Maximize2 className="size-3.5" /></button>}
@@ -177,7 +174,7 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, pro
             : "mt-3 flex gap-2"}>
             {!inlineAssets && <Button onClick={() => { onChange({ dramaDraft: draft, ...(stage === "source" ? { content: draft } : {}) }); }}>保存草案</Button>}
             <Button size={inlineAssets && !assetEditorExpanded ? "small" : "middle"} className={inlineAssets ? "order-last" : undefined}
-                style={inlineAssets && previous && !generating ? {background:theme.node.activeStroke,color:theme.node.fill,borderColor:theme.node.activeStroke} : undefined}
+                style={inlineAssets && previous && !generating ? dramaNodePrimary(theme) : undefined}
                 type="primary" disabled={inlineAssets ? generating || !previous : !draft.trim() && !(stage === "asset_references" && references.length)} onClick={async () => {
                 try {
                     if (stage === "assets" || stage === "episodes" || stage === "storyboard") {

@@ -5,7 +5,7 @@ import type { DramaAsset, DramaAssetKind } from "./canvas-drama-pipeline";
 
 const kinds: Record<DramaAssetKind, string> = {character:"角色", scene:"场景", prop:"道具"};
 const kindIcons = {character:UserRound, scene:Mountain, prop:Box};
-const fieldClass = "w-full min-w-0 rounded-lg border px-3 py-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1";
+const fieldClass = "thin-scrollbar w-full min-w-0 rounded-lg border px-3 py-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1";
 
 export function DramaAssetFields({assets, theme, expanded, disabled, onChange}: {
     assets: DramaAsset[];
@@ -49,7 +49,7 @@ export function DramaAssetFields({assets, theme, expanded, disabled, onChange}: 
                 <h3 className="font-semibold">{kinds[kind]}列表</h3>
                 <button type="button" className="inline-flex items-center gap-1 rounded-lg border px-2.5 py-1.5 hover:opacity-75" style={control} onClick={addAsset}><Plus className="size-4" />添加</button>
             </div>
-            <div className="grid max-h-56 gap-1.5 overflow-y-auto md:max-h-[52dvh]" aria-label={`${kinds[kind]}列表`}>
+            <div className="thin-scrollbar grid max-h-56 gap-1.5 overflow-y-auto md:max-h-[52dvh]" aria-label={`${kinds[kind]}列表`}>
                 {rows.map(asset => <button type="button" key={asset.id} aria-pressed={active === asset}
                     className="flex min-w-0 items-center gap-2 rounded-lg border border-transparent px-3 py-2.5 text-left hover:opacity-75"
                     style={active === asset ? selected : undefined} onClick={() => setActiveId(asset.id)}>

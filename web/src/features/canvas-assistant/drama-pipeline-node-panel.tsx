@@ -120,7 +120,7 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, pro
     const assetConfirmed = Boolean(confirmed && draft === confirmed);
     if (!stage) return null;
     const editor = <section className={inlineAssets ? assetEditorExpanded
-        ? "space-y-5 text-sm"
+        ? "flex h-full min-h-0 flex-col gap-4 text-sm"
         : "flex h-full w-full min-h-0 flex-col gap-3 px-3 pb-4 pt-7 text-xs"
         : "rounded-xl border border-slate-200 bg-white p-4 shadow-xl"}
         style={inlineAssets ? {color:theme.node.text} : undefined} data-canvas-no-zoom={inlineAssets ? "" : undefined}
@@ -144,11 +144,11 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, pro
             </div> :
                 <Tag color={confirmed ? "green" : "default"}>{confirmed ? "已确认" : "草案"}</Tag>}
         </header>
-        <div className={inlineAssets ? assetEditorExpanded ? "space-y-5" :
-            "min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain" : "contents"}
+        <div className={inlineAssets ? assetEditorExpanded ? "flex min-h-0 flex-1 flex-col gap-4" :
+            "thin-scrollbar min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain" : "contents"}
             onMouseDown={inlineAssets ? event => event.stopPropagation() : undefined}
             onPointerDown={inlineAssets ? event => event.stopPropagation() : undefined}>
-        {inlineAssets ? <>
+        {inlineAssets ? <div className={assetEditorExpanded ? "thin-scrollbar min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain pr-1" : "contents"}>
             <DramaAssetFields assets={assets} theme={theme} expanded={assetEditorExpanded} disabled={generating} onChange={nextAssets => {
                 const next = JSON.stringify({...previous, assets:nextAssets});
                 setDraft(next);
@@ -156,7 +156,7 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, pro
                 onChange({dramaDraft:next});
             }} />
             {draft && !previous && <p role="alert">这份资产草案无法读取，请重新生成或添加资产。</p>}
-        </> : <TextArea value={draft} onChange={event => setDraft(event.target.value)} autoSize={{ minRows: 5, maxRows: 16 }}
+        </div> : <TextArea value={draft} onChange={event => setDraft(event.target.value)} autoSize={{ minRows: 5, maxRows: 16 }}
             placeholder={stage === "source" ? "粘贴小说或剧本原文" : "填写或粘贴本阶段结构化草案"} />}
         {stage === "source" ? <label className="mt-2 block text-sm">导入文本文件
             <input className="ml-2" type="file" accept=".txt,.md,text/plain,text/markdown" onChange={async event => {
@@ -172,8 +172,9 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, pro
                 setTargetEpisodes(count); onChange({targetEpisodes:count});
             }} />
         </label> : null}
-        <div className={inlineAssets ? "flex flex-wrap items-center justify-end gap-2 border-t pt-3" : "mt-3 flex gap-2"}
-            style={inlineAssets ? {borderColor:theme.node.stroke} : undefined}>
+        <div className={inlineAssets
+            ? `flex flex-wrap items-center justify-end gap-2 pt-2 ${assetEditorExpanded ? "order-last shrink-0" : ""}`
+            : "mt-3 flex gap-2"}>
             {!inlineAssets && <Button onClick={() => { onChange({ dramaDraft: draft, ...(stage === "source" ? { content: draft } : {}) }); }}>保存草案</Button>}
             <Button size={inlineAssets && !assetEditorExpanded ? "small" : "middle"} className={inlineAssets ? "order-last" : undefined}
                 style={inlineAssets && previous && !generating ? {background:theme.node.activeStroke,color:theme.node.fill,borderColor:theme.node.activeStroke} : undefined}
@@ -235,7 +236,7 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, pro
             finally { setGenerating(false); }
         }} disabled={!projectId}>生成草案</Button> : null}
         </div>
-        {validation ? <p role="status" className="mt-2 whitespace-pre-wrap text-sm">{validation}</p> : null}
+        {validation ? <p role="status" className={`mt-2 whitespace-pre-wrap text-sm ${assetEditorExpanded ? "thin-scrollbar max-h-24 shrink-0 overflow-y-auto" : ""}`}>{validation}</p> : null}
         {invalidSceneIds.map(id => <label className="mt-2 block text-sm" key={id}>
             将所有引用 {id} 的镜头改为
             <select className="ml-2" value="" onChange={event => {
@@ -284,7 +285,7 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, pro
             styles={{
                 container:{background:theme.node.fill},
                 header:{background:theme.node.fill},
-                body:{height:"min(880px, calc(100dvh - 128px))", overflowY:"auto", overscrollBehavior:"contain", padding:"12px 4px 16px"},
+                body:{height:"min(880px, calc(100dvh - 128px))", overflow:"hidden", padding:"12px 4px 16px"},
             }}>
             {editor}
         </Modal>

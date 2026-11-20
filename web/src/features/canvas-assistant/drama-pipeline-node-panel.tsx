@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Button, Input, Modal, Tag } from "antd";
-import { Maximize2 } from "lucide-react";
+import { History, Maximize2 } from "lucide-react";
 import type { CanvasNodeData } from "@/types/canvas";
 import { DRAMA_PIPELINE_NODE_TYPES, DRAMA_PIPELINE_STAGE_LABELS, type DramaPipelineStage } from "./canvas-drama-pipeline";
 import { canvasApi } from "@/features/backend-sync/canvas-api";
@@ -50,7 +50,7 @@ function describeDramaValidation(errors: {code:string;shotId?:string;id?:string}
         : []).join("\n");
 }
 
-export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, onCreateReferenceConfig, onPickCanvasImage, projectId, upstreamText = "", upstreamContext = "", upstreamArtifacts = [], confirmedAssetPlan, savedAssetReferences, mergedReferences, legacyAssetPlanning = false, imageNodes = [], productionContext = "" }: {
+export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, onCreateReferenceConfig, onPickCanvasImage, projectId, upstreamText = "", upstreamContext = "", upstreamArtifacts = [], confirmedAssetPlan, savedAssetReferences, mergedReferences, legacyAssetPlanning = false, imageNodes = [], productionContext = "", onOpenVersions, onConfirmEpisodes, versionBusy = false }: {
     node: CanvasNodeData;
     onChange: (patch: Partial<CanvasNodeData["metadata"]>) => void;
     onRenderFirstFrame?: (prompt: string, input?: ReturnType<typeof buildDramaFirstFrameInput>) => void;
@@ -65,12 +65,15 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, onC
     mergedReferences?: DramaAssetReference[];
     legacyAssetPlanning?: boolean;
     productionContext?: string;
+    onOpenVersions?: () => void;
+    onConfirmEpisodes?: (draft: string) => Promise<void>;
+    versionBusy?: boolean;
     imageNodes?: CanvasNodeData[];
 }) {
     const stage = Object.entries(DRAMA_PIPELINE_NODE_TYPES).find(([, type]) => type === node.type)?.[0] as DramaPipelineStage | undefined;
     const storedDraft = node.metadata?.dramaDraft || node.metadata?.dramaConfirmed || node.metadata?.content || "";
     const [localDraft, setDraft] = useState(storedDraft);
-    const [confirmed, setConfirmed] = useState(String(node.metadata?.dramaConfirmed ?? ""));
+    const [localConfirmed, setConfirmed] = useState(String(node.metadata?.dramaConfirmed ?? ""));
     const [validation, setValidation] = useState<string>("");
     const [generating, setGenerating] = useState(false);
     const [assetEditorExpanded, setAssetEditorExpanded] = useState(false);
@@ -81,6 +84,7 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, onC
     const mergedEditing = assetPlanning && !legacyAssetPlanning;
     const episodePlanning = stage === "episodes";
     const draft = episodePlanning ? storedDraft : localDraft;
+    const confirmed = episodePlanning ? node.metadata?.dramaConfirmed ?? "" : localConfirmed;
     const episodeDraft = episodePlanning ? readEpisodeDraft(draft) : null;
     const inlineEditor = assetPlanning || referenceEditing || episodePlanning;
     const previous = assetPlanning ? readAssetDraft(draft) : readDraft(draft);
@@ -157,6 +161,8 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, onC
             {!assetEditorExpanded && <strong className={inlineEditor ? "text-sm" : undefined}>{DRAMA_PIPELINE_STAGE_LABELS[stage]}</strong>}
             {inlineEditor ? <div className="flex items-center gap-2">
                 <DramaNodeStatus theme={theme} confirmed={assetConfirmed} />
+                {episodePlanning && onOpenVersions && <Button size="small" icon={<History size={14} />}
+                    style={control} onClick={onOpenVersions}>历史版本</Button>}
                 {!assetEditorExpanded && <button type="button" title="最大化编辑器" aria-label={`最大化${DRAMA_PIPELINE_STAGE_LABELS[stage]}`}
                     className="inline-grid size-7 place-items-center rounded-md border" style={control}
                     onClick={() => setAssetEditorExpanded(true)}><Maximize2 className="size-3.5" /></button>}
@@ -245,7 +251,7 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, onC
             {!inlineEditor && <Button onClick={() => { onChange({ dramaDraft: draft, ...(stage === "source" ? { content: draft } : {}) }); }}>保存草案</Button>}
             <Button size={inlineEditor && !assetEditorExpanded ? "small" : "middle"} className={inlineEditor ? "order-last" : undefined}
                 style={inlineEditor && inlineReady && !generating ? dramaNodePrimary(theme) : undefined}
-                type="primary" disabled={inlineEditor ? generating || !inlineReady : !draft.trim()} onClick={async () => {
+                type="primary" disabled={inlineEditor ? generating || !inlineReady || (episodePlanning && versionBusy) : !draft.trim()} onClick={async () => {
                 try {
                     if (stage === "assets" || stage === "episodes" || stage === "storyboard") {
                         const parsed: {assets?:unknown; episodes?:unknown; shots?:unknown} =
@@ -257,6 +263,11 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, onC
                             const result = await canvasApi<{valid:boolean;errors:{code:string}[]}>(`/api/v1/projects/${encodeURIComponent(projectId ?? "")}/drama-pipeline/validate`, "POST", {snapshot:parsedSnapshot});
                             if (!result.valid) throw Error(describeDramaValidation(result.errors, assets));
                         }
+                    }
+                    if (episodePlanning && onConfirmEpisodes) {
+                        await onConfirmEpisodes(draft);
+                        setValidation("阶段已确认");
+                        return;
                     }
                     const content = stage === "asset_references" ? JSON.stringify(parsedSnapshot, null, 2) :
                         assetPlanning ? JSON.stringify(previous) : episodePlanning ? JSON.stringify(episodeDraft) : draft;

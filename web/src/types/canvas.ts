@@ -74,7 +74,7 @@ export type CanvasNodeMetadata = {
     sourceFilename?: string;
     revision?: number;
     /** User-saved text body snapshots. Kept out of generation fingerprints. */
-    textVersions?: { id: string; createdAt: string; content: string; note?: string; source: "manual" | "restore-backup" }[];
+    textVersions?: { id: string; createdAt: string; content: string; note?: string; source: "manual" | "restore-backup" | "confirmation" }[];
     videoFrame?: { sourceNodeId: string; timeMs: number };
     audioExtraction?: { sourceNodeId: string; sourceBlobId: string };
     audioTrim?: { sourceNodeId: string; startMs: number; endMs: number };

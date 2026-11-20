@@ -72,7 +72,7 @@ import { CanvasNodeUpscaleDialog, type CanvasImageUpscaleParams } from "@/compon
 import { buildNodeGenerationContext, buildNodeResponseMessages, hydrateNodeGenerationContext } from "@/components/canvas/canvas-node-generation";
 import { CanvasNodeHoverToolbar, CanvasNodeInfoModal } from "@/components/canvas/canvas-node-hover-toolbar";
 import { CanvasTextVersionsModal } from "@/components/canvas/canvas-text-versions-modal";
-import { canSaveTextVersion, documentFitsCanvasLimit, getTextRestoreDecision, isValidTextRestore, prepareTextRestore, withTextVersions, type TextVersion } from "@/features/canvas-text-versions";
+import { canSaveTextVersion, canRestoreNodeVersion, documentFitsCanvasLimit, getTextRestoreDecision, isEpisodeVersionNode, prepareEpisodeConfirmation, prepareTextRestore, supportsTextVersions, versionNodeContent, withTextVersions, type TextVersion } from "@/features/canvas-text-versions";
 import { AtelierCanvas } from "@/components/canvas/atelier-canvas";
 import { Minimap } from "@/components/canvas/canvas-mini-map";
 import { NodeLayer, type SharedNodeProps } from "@/components/canvas/canvas-node-layer";
@@ -361,7 +361,7 @@ function AtelierCanvasPage() {
     const [textVersionBusy,setTextVersionBusy]=useState(false);
     const [textVersionsNodeId,setTextVersionsNodeId]=useState<string|null>(null);
     useEffect(()=>{
-        if(textVersionsNodeId&&!nodes.some(node=>node.id===textVersionsNodeId&&node.type===CanvasNodeType.Text))
+        if(textVersionsNodeId&&!nodes.some(node=>node.id===textVersionsNodeId&&supportsTextVersions(node)))
             setTextVersionsNodeId(null);
     },[nodes,textVersionsNodeId]);
     const textVersionBusyRef=useRef(false);
@@ -2302,13 +2302,13 @@ function AtelierCanvasPage() {
     },[createHistoryEntry,projectId,updateProject]);
 
     const openTextVersions = useCallback((nodeId:string)=>{
-        const target=nodesRef.current.find(node=>node.id===nodeId&&node.type===CanvasNodeType.Text);
+        const target=nodesRef.current.find(node=>node.id===nodeId&&supportsTextVersions(node));
         if(target&&activeProjectIdRef.current===projectId)setTextVersionsNodeId(nodeId);
     },[projectId]);
 
     const saveTextVersion = useCallback(async(nodeId:string,note?:string) => {
         const node=nodesRef.current.find(value=>value.id===nodeId);if(!node)throw Error("text_node_not_found");
-        const versions=node.metadata?.textVersions??[];const content=node.metadata?.content??"";
+        const versions=node.metadata?.textVersions??[];const content=versionNodeContent(node);
         if(!canSaveTextVersion(content,versions))throw Error("text_version_save_not_allowed");
         const version:TextVersion={id:nanoid(),createdAt:new Date().toISOString(),content,note,source:"manual"};
         const next=nodesRef.current.map(value=>value.id===nodeId?withTextVersions(value,[version,...versions]):value);
@@ -2323,8 +2323,8 @@ function AtelierCanvasPage() {
     },[commitTextVersionGraph,message,t]);
 
     const restoreTextVersion = useCallback((nodeId:string,version:TextVersion) => {
-        const initial=nodesRef.current.find(value=>value.id===nodeId);if(!initial||!isValidTextRestore(version.content))return;
-        const current=initial.metadata?.content??"";
+        const initial=nodesRef.current.find(value=>value.id===nodeId);if(!initial||!canRestoreNodeVersion(initial,version.content))return;
+        const current=versionNodeContent(initial);
         let confirmation:ReturnType<typeof Modal.confirm>|undefined;
         let restoring=false;
         const restore=(backup:boolean):Promise<void>=>{
@@ -2332,22 +2332,37 @@ function AtelierCanvasPage() {
             restoring=true;
             confirmation?.update({okButtonProps:{disabled:true,loading:true},cancelButtonProps:{disabled:true},closable:false,maskClosable:false,keyboard:false,footer:(_:unknown, {OkBtn,CancelBtn}:{OkBtn:ComponentType<any>;CancelBtn:ComponentType<any>})=><div data-canvas-shortcuts-ignore className="flex justify-end gap-2"><CancelBtn disabled/><Button disabled loading>{t("canvas.textVersions.overwrite")}</Button><OkBtn/></div>});
             const latest=nodesRef.current.find(value=>value.id===nodeId);if(!latest){restoring=false;return Promise.resolve();}
-            const liveVersion=latest.metadata?.textVersions?.find(item=>item.id===version.id);if(!liveVersion){confirmation?.destroy();restoring=false;return Promise.reject(Error("text_version_removed"));}
-            const latestContent=latest.metadata?.content??"";
+            const liveVersion=latest.metadata?.textVersions?.find(item=>item.id===version.id);if(!liveVersion||liveVersion.content!==version.content||latest.type!==initial.type){confirmation?.destroy();restoring=false;return Promise.reject(Error("text_version_removed"));}
+            const latestContent=versionNodeContent(latest);
             if(latestContent!==current){confirmation?.destroy();restoring=false;message.warning(t("canvas.textVersions.changedDuringConfirm"));return Promise.reject(Error("text_changed_during_confirmation"));}
             const versions=latest.metadata?.textVersions??[];
             if(latestContent===version.content){confirmation?.destroy();restoring=false;return Promise.resolve();}
             const backupVersion=backup?{id:nanoid(),createdAt:new Date().toISOString(),content:latestContent,note:t("canvas.textVersions.backupNote"),source:"restore-backup" as const}:undefined;
-            const prepared=prepareTextRestore(latestContent,version,versions,backup?"backup":"direct",backupVersion);
+            const prepared=prepareTextRestore(latestContent,liveVersion,versions,backup?"backup":"direct",backupVersion);
             if(!prepared){confirmation?.destroy();restoring=false;message.error(t(backup?"canvas.textVersions.limitReached":"canvas.textVersions.invalidRestore"));return Promise.reject(Error("text_restore_unavailable"));}
             const next=nodesRef.current.map(value=>value.id===nodeId?withTextVersions(value,prepared.versions,prepared.content):value);
-            return commitTextVersionGraph(next).then(()=>{confirmation?.destroy();if(activeProjectIdRef.current===projectId)message.success(t("canvas.textVersions.restored"));}).catch(error=>{confirmation?.destroy();if(activeProjectIdRef.current===projectId)message.error(t("canvas.textVersions.saveFailed",{error:String(error)}));throw error;}).finally(()=>{restoring=false;});
+            return commitTextVersionGraph(next).then(()=>{confirmation?.destroy();if(activeProjectIdRef.current===projectId)message.success(t(isEpisodeVersionNode(initial)?"canvas.textVersions.draftRestored":"canvas.textVersions.restored"));}).catch(error=>{confirmation?.destroy();if(activeProjectIdRef.current===projectId)message.error(t("canvas.textVersions.saveFailed",{error:String(error)}));throw error;}).finally(()=>{restoring=false;});
         };
         const decision=getTextRestoreDecision(current,version.content,initial.metadata?.textVersions??[]);
         if(decision==="noop")return;
         if(decision==="direct"){void restore(false).catch(()=>{});return;}
-        confirmation=Modal.confirm({title:t("canvas.textVersions.restoreTitle"),content:<div data-canvas-shortcuts-ignore>{t("canvas.textVersions.restorePrompt")}{decision==="backup-unavailable"?<p>{t("canvas.textVersions.limitReached")}</p>:null}</div>,okText:t("canvas.textVersions.backupRestore"),okButtonProps:{disabled:decision==="backup-unavailable"},cancelText:t("common.cancel"),onOk:()=>restore(true),footer:(_, {OkBtn,CancelBtn})=><div data-canvas-shortcuts-ignore className="flex justify-end gap-2"><CancelBtn/><Button onClick={()=>{void restore(false).then(()=>confirmation?.destroy()).catch(()=>{});}}>{t("canvas.textVersions.overwrite")}</Button><OkBtn/></div>});
+        confirmation=Modal.confirm({title:t(isEpisodeVersionNode(initial)?"canvas.textVersions.restoreDraft":"canvas.textVersions.restoreTitle"),content:<div data-canvas-shortcuts-ignore>{t(isEpisodeVersionNode(initial)?"canvas.textVersions.restoreDraftPrompt":"canvas.textVersions.restorePrompt")}{decision==="backup-unavailable"?<p>{t("canvas.textVersions.limitReached")}</p>:null}</div>,okText:t("canvas.textVersions.backupRestore"),okButtonProps:{disabled:decision==="backup-unavailable"},cancelText:t("common.cancel"),onOk:()=>restore(true),footer:(_, {OkBtn,CancelBtn})=><div data-canvas-shortcuts-ignore className="flex justify-end gap-2"><CancelBtn/><Button onClick={()=>{void restore(false).then(()=>confirmation?.destroy()).catch(()=>{});}}>{t("canvas.textVersions.overwrite")}</Button><OkBtn/></div>});
     },[commitTextVersionGraph,message,t]);
+
+    const confirmEpisodeVersion = useCallback(async(nodeId:string,expectedDraft:string)=>{
+        const node=nodesRef.current.find(item=>item.id===nodeId);
+        if(!node||versionNodeContent(node)!==expectedDraft)throw Error(t("canvas.textVersions.changedDuringConfirm"));
+        try{
+            const confirmed=prepareEpisodeConfirmation(node,{id:nanoid(),createdAt:new Date().toISOString()});
+            await commitTextVersionGraph(nodesRef.current.map(item=>item.id===nodeId?confirmed:item));
+        }catch(error){
+            if(activeProjectIdRef.current===projectId&&textVersionPendingProjectRef.current===projectId)
+                setTextVersionsNodeId(nodeId);
+            if(error instanceof Error&&["episode_history_full","text_versions_document_too_large"].includes(error.message))
+                throw Error(t("canvas.textVersions.episodeArchiveLimit"));
+            throw error;
+        }
+    },[commitTextVersionGraph,projectId,t]);
 
     const handleNodeContentChange = useCallback((nodeId: string, content: string) => {
         setNodes((prev) => prev.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, content } } : node)));
@@ -4133,6 +4148,9 @@ function AtelierCanvasPage() {
                     setSelectedConnectionId(null);
                     setDialogNodeId(configNode.id);
                 }}
+                onOpenVersions={() => openTextVersions(panelNode.id)}
+                onConfirmEpisodes={draft => confirmEpisodeVersion(panelNode.id,draft)}
+                versionBusy={textVersionBusy||textVersionSavePending}
                 onChange={patch => handleConfigNodeChange(panelNode.id, patch)} onRenderFirstFrame={(prompt, input?: DramaFirstFrameInput) => {
                 const imagePrompt = [prompt, style && `影片风格：${style}`, ratio && `画幅：${ratio}`].filter(Boolean).join("\n");
                 const frame = createCanvasNode(CanvasNodeType.Image, {x:panelNode.position.x+430,y:panelNode.position.y}, {prompt:imagePrompt,composerContent:imagePrompt,...(ratio ? {size:ratio,videoRatio:ratio} : {})});
@@ -4234,7 +4252,8 @@ function AtelierCanvasPage() {
             );
         },
         [backendComfyEnabled,cancelComfyWorkflow,startNodeReferenceSelection,connections,nodes,executeComfyWorkflow,globalComfyInstanceId,openBboxEditor,
-            handleConfigNodeChange,handleGenerateNode,handleNodePromptChange,message,projectId,runningNodeId,stopConfigGeneration],
+            handleConfigNodeChange,handleGenerateNode,handleNodePromptChange,message,projectId,runningNodeId,stopConfigGeneration,
+            openTextVersions,confirmEpisodeVersion,textVersionBusy,textVersionSavePending],
     );
 
     const handleDirectorExport = useCallback(
@@ -4646,7 +4665,8 @@ function AtelierCanvasPage() {
 
                 <CanvasNodeInfoModal node={infoNode} open={Boolean(infoNode)} onClose={() => setInfoNodeId(null)} />
 
-                {textVersionsNode?<CanvasTextVersionsModal key={`${projectId}:${textVersionsNode.id}`} open versions={textVersionsNode.metadata?.textVersions??[]} currentContent={textVersionsNode.metadata?.content??""}
+                {textVersionsNode?<CanvasTextVersionsModal key={`${projectId}:${textVersionsNode.id}`} open versions={textVersionsNode.metadata?.textVersions??[]} currentContent={versionNodeContent(textVersionsNode)}
+                    confirmedContent={isEpisodeVersionNode(textVersionsNode)?textVersionsNode.metadata?.dramaConfirmed??"":undefined}
                     onClose={()=>setTextVersionsNodeId(null)} onSave={note=>saveTextVersion(textVersionsNode.id,note)}
                     onDelete={versionId=>void deleteTextVersion(textVersionsNode.id,versionId)} onRestore={version=>restoreTextVersion(textVersionsNode.id,version)}
                     retryPending={textVersionSavePending} busy={textVersionBusy}

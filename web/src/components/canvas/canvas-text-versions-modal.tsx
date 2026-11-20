@@ -3,17 +3,20 @@ import { Button, ConfigProvider, Input, Modal, Popconfirm, Typography } from "an
 import { AlertCircle, Check, Clock3, FileText, History, RotateCcw, Save, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
-import type { TextVersion } from "@/features/canvas-text-versions";
+import { readEpisodeDraft } from "../../../server/canvas-text-content.mjs";
+import { TEXT_VERSIONS_LIMIT, type TextVersion } from "@/features/canvas-text-versions";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
 
 const LazyCanvasTextMarkdown = lazy(() => import("./canvas-text-markdown").then(({ CanvasTextMarkdown }) => ({ default: CanvasTextMarkdown })));
-const MAX_VERSIONS = 50;
+const sourceLabel = (source: TextVersion["source"]) => source === "confirmation" ? "canvas.textVersions.confirmation" :
+    source === "restore-backup" ? "canvas.textVersions.restoreBackup" : "canvas.textVersions.manual";
 
 type Props = {
     open: boolean;
     versions: TextVersion[];
     currentContent: string;
+    confirmedContent?: string;
     onClose: () => void;
     onSave: (note?: string) => Promise<void>;
     onDelete: (id: string) => void;
@@ -27,6 +30,7 @@ export function CanvasTextVersionsModal({
     open,
     versions,
     currentContent,
+    confirmedContent,
     onClose,
     onSave,
     onDelete,
@@ -37,6 +41,7 @@ export function CanvasTextVersionsModal({
 }: Props) {
     const { t } = useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const [previewKind, setPreviewKind] = useState<"draft" | "confirmed" | "history">("draft");
     const [note, setNote] = useState("");
     const [selectedId, setSelectedId] = useState<string | null>(null);
     const [retrying, setRetrying] = useState(false);
@@ -45,15 +50,23 @@ export function CanvasTextVersionsModal({
     const [saveFailed, setSaveFailed] = useState(false);
     const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
 
-    const selected = versions.find((version) => version.id === selectedId) ?? versions[0] ?? null;
+    const episodes = confirmedContent !== undefined;
+    const selected = !episodes || previewKind === "history" ? versions.find((version) => version.id === selectedId) ?? versions[0] ?? null : null;
+    const preview = selected?.content ?? (episodes && previewKind !== "history" ?
+        previewKind === "confirmed" ? confirmedContent : currentContent : "");
+    const episodeDraft = episodes && preview ? readEpisodeDraft(preview) : null;
+    const restoreDisabled = busy || retryPending || !selected || !selected.content.trim() ||
+        selected.content === currentContent || (episodes && !episodeDraft?.episodes.length);
+    const saveLabel = t(episodes ? "canvas.textVersions.saveDraft" : "canvas.textVersions.saveCurrent");
     const isBlank = !currentContent.trim();
     const isDuplicate = !isBlank && versions[0]?.content === currentContent;
-    const isFull = versions.length >= MAX_VERSIONS;
+    const isFull = versions.length >= TEXT_VERSIONS_LIMIT;
     const saveDisabled = busy || retryPending || saving || isBlank || isDuplicate || isFull;
 
     useEffect(() => {
         if (!open) return;
         setNote("");
+        setPreviewKind("draft");
         setSelectedId(versions[0]?.id ?? null);
         setSaveFailed(false);
         setDeleteConfirmOpen(false);
@@ -132,7 +145,7 @@ export function CanvasTextVersionsModal({
                         </span>
                         <div className="min-w-0 flex-1">
                             <div className="text-base font-semibold leading-6">{t("canvas.textVersions.title")}</div>
-                            <div className="mt-0.5 text-xs font-normal leading-5" style={{ color: theme.node.muted }}>{t("canvas.textVersions.subtitle")}</div>
+                            <div className="mt-0.5 text-xs font-normal leading-5" style={{ color: theme.node.muted }}>{t(episodes ? "canvas.textVersions.episodeSubtitle" : "canvas.textVersions.subtitle")}</div>
                         </div>
                     </div>
                 }
@@ -165,14 +178,14 @@ export function CanvasTextVersionsModal({
                                 style={{ minWidth: 0, background: theme.node.code.surface, borderColor: theme.toolbar.border, color: theme.node.text }}
                             />
                             <Button
-                                aria-label={t("canvas.textVersions.saveCurrent")}
+                                aria-label={saveLabel}
                                 icon={<Save className="size-4" aria-hidden="true" />}
                                 loading={saving}
                                 disabled={saveDisabled}
                                 onClick={() => void handleSave()}
                                 style={{ height: 40, flexShrink: 0, background: theme.node.activeStroke, borderColor: theme.node.activeStroke, color: theme.node.fill, fontWeight: 600, opacity: saveDisabled ? 0.56 : 1 }}
                             >
-                                {t("canvas.textVersions.saveCurrent")}
+                                {saveLabel}
                             </Button>
                         </div>
                         <div className="mt-2 min-h-4 text-xs" style={{ color: saveFailed ? "#c2413b" : theme.node.muted }} role={saveFailed ? "alert" : undefined}>
@@ -184,7 +197,7 @@ export function CanvasTextVersionsModal({
                         <section className="flex min-h-0 flex-col overflow-hidden border-b md:border-b-0 md:border-r" style={{ background: theme.node.panel, borderColor: theme.node.stroke }}>
                             <div className="flex h-[52px] shrink-0 items-center justify-between border-b px-4 py-0" style={{ borderColor: theme.node.stroke }}>
                                 <div className="text-sm font-semibold leading-5" style={{ color: theme.node.muted }}>{t("canvas.textVersions.listTitle")}</div>
-                                <span className="text-xs tabular-nums" style={{ color: theme.node.faint }}>{t("canvas.textVersions.count", { count: versions.length, max: MAX_VERSIONS })}</span>
+                                <span className="text-xs tabular-nums" style={{ color: theme.node.faint }}>{t("canvas.textVersions.count", { count: versions.length, max: TEXT_VERSIONS_LIMIT })}</span>
                             </div>
                             <div aria-label={t("canvas.textVersions.listTitle")} className="max-h-44 min-h-0 flex-1 overflow-y-auto p-2 md:max-h-none">
                                 {versions.length ? versions.map((version) => {
@@ -196,18 +209,18 @@ export function CanvasTextVersionsModal({
                                             type="button"
                                             disabled={busy || retryPending}
                                             aria-current={isSelected ? "true" : undefined}
-                                            aria-label={version.note || t(version.source === "manual" ? "canvas.textVersions.manual" : "canvas.textVersions.restoreBackup")}
-                                            onClick={() => { setDeleteConfirmOpen(false); setSelectedId(version.id); }}
+                                            aria-label={version.note || t(sourceLabel(version.source))}
+                                            onClick={() => { setDeleteConfirmOpen(false); setSelectedId(version.id); setPreviewKind("history"); }}
                                             className="mb-2 block w-full rounded-xl border p-3 text-left transition-colors disabled:cursor-not-allowed"
                                             style={{ background: isSelected ? theme.toolbar.activeBg : "transparent", borderColor: isSelected ? theme.node.activeStroke : theme.node.stroke, color: theme.node.text, boxShadow: isSelected ? `inset 0 0 0 1px ${theme.node.activeStroke}22` : undefined }}
                                         >
                                             <div className="flex items-start justify-between gap-2">
-                                                <span className="min-w-0 truncate text-sm font-medium">{version.note || t(version.source === "manual" ? "canvas.textVersions.manual" : "canvas.textVersions.restoreBackup")}</span>
+                                                <span className="min-w-0 truncate text-sm font-medium">{version.note || t(sourceLabel(version.source))}</span>
                                                 {matchesCurrent ? <span className="inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium" style={{ background: theme.node.panel, color: theme.node.muted }}><Check className="size-3" aria-hidden="true" />{t("canvas.textVersions.currentVersion")}</span> : null}
                                             </div>
                                             <div className="mt-1 flex items-center gap-1 text-[11px]" style={{ color: theme.node.muted }}><Clock3 className="size-3" aria-hidden="true" /><span>{dateLabel(version.createdAt)}</span></div>
                                             <Typography.Paragraph ellipsis={{ rows: 2 }} className="!mb-0 !mt-2 text-xs" style={{ color: theme.node.muted }}>{version.content.replace(/\s+/g, " ").trim()}</Typography.Paragraph>
-                                            <span className="mt-2 inline-flex rounded-md border px-1.5 py-0.5 text-[10px]" style={{ borderColor: theme.node.stroke, color: theme.node.faint }}>{t(version.source === "manual" ? "canvas.textVersions.manual" : "canvas.textVersions.restoreBackup")}</span>
+                                            <span className="mt-2 inline-flex rounded-md border px-1.5 py-0.5 text-[10px]" style={{ borderColor: theme.node.stroke, color: theme.node.faint }}>{t(sourceLabel(version.source))}</span>
                                         </button>
                                     );
                                 }) : (
@@ -223,13 +236,31 @@ export function CanvasTextVersionsModal({
                         <section className="flex min-h-0 flex-col overflow-hidden" style={{ background: theme.node.panel }}>
                             <div className="flex h-[52px] shrink-0 items-center justify-between gap-3 border-b px-4 py-0 sm:px-5" style={{ borderColor: theme.node.stroke, background: theme.node.panel }}>
                                 <div className="min-w-0">
-                                    <div className="truncate text-sm font-semibold">{selected?.note || (selected ? t(selected.source === "manual" ? "canvas.textVersions.manual" : "canvas.textVersions.restoreBackup") : t("canvas.textVersions.previewTitle"))}</div>
+                                    <div className="truncate text-sm font-semibold">{selected?.note || (selected ? t(sourceLabel(selected.source)) : t(episodes && previewKind !== "history" ?
+                                        previewKind === "confirmed" ? "canvas.textVersions.confirmedDraft" : "canvas.textVersions.currentDraft" : "canvas.textVersions.previewTitle"))}</div>
                                     {selected ? <div className="mt-1 flex items-center gap-1 text-[11px] leading-4" style={{ color: theme.node.muted }}><Clock3 className="size-3" aria-hidden="true" />{dateLabel(selected.createdAt)}</div> : null}
                                 </div>
                                 {selected ? <span className="shrink-0 text-xs tabular-nums" style={{ color: theme.node.muted }}>{t("canvas.textVersions.characterCount", { count: selected.content.length })}</span> : null}
                             </div>
+                            {episodes && <div className="flex shrink-0 gap-2 border-b px-4 py-2" style={{ borderColor: theme.node.stroke }}>
+                                <Button size="small" aria-pressed={previewKind === "draft"} onClick={() => { setDeleteConfirmOpen(false); setPreviewKind("draft"); }}>
+                                    {t("canvas.textVersions.currentDraft")}
+                                </Button>
+                                <Button size="small" aria-pressed={previewKind === "confirmed"} onClick={() => { setDeleteConfirmOpen(false); setPreviewKind("confirmed"); }}>
+                                    {t("canvas.textVersions.confirmedDraft")}
+                                </Button>
+                            </div>}
                             <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-5" style={{ background: theme.node.panel, color: theme.node.text }}>
-                                {selected ? <Suspense fallback={<div className="whitespace-pre-wrap text-sm">{selected.content}</div>}><LazyCanvasTextMarkdown content={selected.content} theme={theme} /></Suspense> : (
+                                {episodeDraft?.episodes.length ? <div className="space-y-3">
+                                    {episodeDraft.episodes.map((episode, index) => <article key={episode.id} className="space-y-2 rounded-lg border p-3" style={{ borderColor: theme.node.stroke }}>
+                                        <h3 className="font-semibold">{t("canvas.textVersions.episodeTitle", { number: index + 1, title: episode.title })}</h3>
+                                        <p className="whitespace-pre-wrap break-words">{episode.synopsis}</p>
+                                        {episode.events.length > 0 && <ul className="list-disc pl-5">{episode.events.map((event, eventIndex) => <li key={eventIndex} className="whitespace-pre-wrap break-words">{event}</li>)}</ul>}
+                                        <div className="whitespace-pre-wrap break-words"><strong>{t("canvas.textVersions.episodeEnding")} </strong>{episode.ending}</div>
+                                    </article>)}
+                                </div> : preview ? episodes ? <pre className="whitespace-pre-wrap break-words text-sm">{preview}</pre> :
+                                    <Suspense fallback={<div className="whitespace-pre-wrap text-sm">{preview}</div>}><LazyCanvasTextMarkdown content={preview} theme={theme} /></Suspense> :
+                                    episodes && previewKind !== "history" ? <p>{t(previewKind === "confirmed" ? "canvas.textVersions.unconfirmed" : "canvas.textVersions.emptyCannotSave")}</p> : (
                                     <div className="flex h-full min-h-0 flex-col items-center justify-center text-center" style={{ color: theme.node.muted }}>
                                         <FileText className="mb-3 size-8 opacity-50" aria-hidden="true" />
                                         <div className="text-sm font-medium">{t("canvas.textVersions.empty")}</div>
@@ -253,13 +284,13 @@ export function CanvasTextVersionsModal({
                                     >{t("common.delete")}</Button>
                                 </Popconfirm>
                                 <Button
-                                    aria-label={t("common.restore")}
+                                    aria-label={t(episodes ? "canvas.textVersions.restoreDraft" : "common.restore")}
                                     type="primary"
-                                    disabled={busy || retryPending || !selected || !selected.content.trim() || selected.content === currentContent}
+                                    disabled={restoreDisabled}
                                     icon={<RotateCcw className="size-4" aria-hidden="true" />}
                                     onClick={() => selected && onRestore(selected)}
-                                    style={{ background: theme.node.activeStroke, borderColor: theme.node.activeStroke, color: theme.node.panel, fontWeight: 600, opacity: busy || retryPending || !selected || !selected.content.trim() || selected.content === currentContent ? 0.56 : 1 }}
-                                >{t("common.restore")}</Button>
+                                    style={{ background: theme.node.activeStroke, borderColor: theme.node.activeStroke, color: theme.node.panel, fontWeight: 600, opacity: restoreDisabled ? 0.56 : 1 }}
+                                >{t(episodes ? "canvas.textVersions.restoreDraft" : "common.restore")}</Button>
                             </div>
                         </section>
                     </div>

@@ -1,5 +1,5 @@
 import {describe,it,expect} from "vitest";
-import {canSaveTextVersion,CANVAS_DOCUMENT_LIMIT_BYTES,documentFitsCanvasLimit,getTextRestoreDecision,isValidTextRestore,prepareTextRestore,withTextVersions} from "./canvas-text-versions";
+import {canRestoreNodeVersion,canSaveTextVersion,prepareEpisodeConfirmation,versionNodeContent,CANVAS_DOCUMENT_LIMIT_BYTES,documentFitsCanvasLimit,getTextRestoreDecision,isValidTextRestore,prepareTextRestore,withTextVersions} from "./canvas-text-versions";
 import {CanvasNodeType,type CanvasNodeData} from "@/types/canvas";
 
 const node:CanvasNodeData={id:"t",type:CanvasNodeType.Text,title:"Text",position:{x:0,y:0},width:100,height:100,metadata:{content:"body"}};
@@ -38,5 +38,44 @@ describe("text version rules",()=>{
   expect(prepareTextRestore("current",target,[],"backup",backup)).toEqual({content:"target",versions:[backup]});
   expect(prepareTextRestore("current",{...target,content:" "},[],"overwrite")).toBeNull();
   expect(prepareTextRestore("current",target,[],"backup",{...backup,content:"wrong"})).toBeNull();
+ });
+});
+
+describe("episode version rules",()=>{
+ const draft=(title:string)=>JSON.stringify({episodes:[{id:"ep1",title,synopsis:"梗概",events:["事件"],sourceRefs:[],ending:"结尾"}]});
+ const archive={id:"archived",createdAt:"2026-11-20T00:00:00Z"};
+ const episode:CanvasNodeData={...node,type:"drama:episodes",metadata:{content:"历史正文",dramaDraft:draft("初稿")}};
+ it("keeps the first confirmation and archives the previous one when the draft changes",()=>{
+  const first=prepareEpisodeConfirmation(episode,archive);
+  expect(first.metadata?.dramaConfirmed).toBe(draft("初稿"));
+  expect(first.metadata?.textVersions).toEqual([]);
+  const revised=withTextVersions(first,[],draft("新稿"));
+  const second=prepareEpisodeConfirmation(revised,archive);
+  expect(second.metadata?.dramaConfirmed).toBe(draft("新稿"));
+  expect(second.metadata?.textVersions).toEqual([{...archive,content:draft("初稿"),source:"confirmation"}]);
+  expect(prepareEpisodeConfirmation(second,{...archive,id:"another"})).toEqual(second);
+ });
+ it("restores only the draft, keeps archived versions across serialization and rejects invalid episode content",()=>{
+  const confirmed=prepareEpisodeConfirmation(episode,archive);
+  const newer=prepareEpisodeConfirmation(withTextVersions(confirmed,[],draft("新稿")),archive);
+  const versions=newer.metadata!.textVersions!;
+  const current=withTextVersions(newer,versions,draft("未备份草案"));
+  const backup={id:"backup",createdAt:archive.createdAt,content:versionNodeContent(current),source:"restore-backup" as const};
+  const prepared=prepareTextRestore(backup.content,versions[0],versions,"backup",backup)!;
+  const restored:CanvasNodeData=JSON.parse(JSON.stringify(withTextVersions(current,prepared.versions,prepared.content)));
+  expect(versionNodeContent(restored)).toBe(draft("初稿"));
+  expect(restored.metadata?.dramaConfirmed).toBe(draft("新稿"));
+  expect(restored.metadata?.content).toBe("历史正文");
+  expect(restored.metadata?.textVersions?.[0]).toEqual(backup);
+  expect(canRestoreNodeVersion(restored,"纯文本")).toBe(false);
+ });
+ it("blocks a full archive only if the previous confirmation needs a new record",()=>{
+  const current=prepareEpisodeConfirmation(episode,archive);
+  const full=Array.from({length:50},(_,index)=>({id:String(index),createdAt:"",content:draft(String(index)),source:"manual" as const}));
+  const revised=withTextVersions(current,full,draft("新稿"));
+  expect(()=>prepareEpisodeConfirmation(revised,archive)).toThrow("episode_history_full");
+  expect(revised.metadata?.dramaConfirmed).toBe(draft("初稿"));
+  const alreadySaved=withTextVersions(revised,[{...full[0],content:draft("初稿")},...full.slice(1)]);
+  expect(prepareEpisodeConfirmation(alreadySaved,archive).metadata?.textVersions).toHaveLength(50);
  });
 });

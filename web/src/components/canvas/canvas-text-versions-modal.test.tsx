@@ -32,6 +32,31 @@ describe("text version modal interactions",()=>{
   const restoreButton=[...document.body.querySelectorAll("button")].find(b=>b.getAttribute("aria-label")==="common.restore");
   await act(async()=>restoreButton?.click());expect(restore).toHaveBeenCalledWith(version);
  });
+ it("previews drafts and confirmed plans individually and restores a history entry as a draft",async()=>{
+  host=document.createElement("div");document.body.append(host);root=createRoot(host);
+  const content=(title:string,synopsis:string)=>JSON.stringify({episodes:[
+   {id:"e1",title,synopsis,events:["关键事件"],sourceRefs:[],ending:"结尾钩子"}
+  ]});
+  const version:TextVersion={id:"archived",createdAt:"now",content:content("旧稿","旧稿梗概"),source:"confirmation"};
+  const restore=vi.fn();
+  const props={open:true,versions:[version],currentContent:content("草案","草案梗概"),
+   confirmedContent:"",onClose:vi.fn(),onSave:vi.fn(),onDelete:vi.fn(),onRestore:restore,
+   onRetryPersistence:vi.fn(),retryPending:false};
+  const click=async(label:string)=>await act(async()=>[...document.body.querySelectorAll("button")]
+   .find(button=>button.textContent===label||button.getAttribute("aria-label")===label)?.click());
+  await act(async()=>root?.render(createElement(CanvasTextVersionsModal,props)));
+  expect(document.body.textContent).toContain("草案梗概");
+  expect(document.body.textContent).toContain("关键事件");
+  expect(document.body.textContent).toContain("结尾钩子");
+  await click("canvas.textVersions.confirmedDraft");
+  expect(document.body.textContent).toContain("canvas.textVersions.unconfirmed");
+  await act(async()=>root?.render(createElement(CanvasTextVersionsModal,{...props,confirmedContent:content("确认稿","已确认梗概")})));
+  expect(document.body.textContent).toContain("已确认梗概");
+  await click("canvas.textVersions.confirmation");
+  expect(document.body.textContent).toContain("旧稿梗概");
+  await click("canvas.textVersions.restoreDraft");
+  expect(restore).toHaveBeenCalledWith(version);
+ });
  it("selects a version added to an initially empty list and retries persistence",async()=>{
   host=document.createElement("div");document.body.append(host);root=createRoot(host);
   const retry=vi.fn(async()=>{});const saved:TextVersion={id:"new",createdAt:"now",content:"new body",source:"manual"};

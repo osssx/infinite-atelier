@@ -1,6 +1,6 @@
 import {migrateTextVersions} from "./canvas-text-versions.mjs";
 import{JOB_STATUSES,EXECUTION_MODES,ARTIFACT_KINDS}from"./contracts.mjs";
-export const SCHEMA_VERSION=35;
+export const SCHEMA_VERSION=36;
 const quoted=x=>x.map(s=>"'"+s+"'").join(",");
 export const INITIAL_SCHEMA_SQL=`
 CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY,applied_at INTEGER NOT NULL);
@@ -745,6 +745,15 @@ export function initializeSchema(db){
   if(version<32)db.exec(ASSISTANT_TASK_RUN_FAILOVER_SCHEMA_SQL);
   if(version<33)db.exec(LOCAL_SHOT_BATCH_SCHEMA_SQL);
   if(version<35)migrateTextVersions(db);
+  if(version<36){
+   for(const action of ["INSERT","UPDATE","DELETE"]){
+    db.exec(`CREATE TRIGGER IF NOT EXISTS blob_ref_dirty_canvas_text_versions_${action.toLowerCase()}
+     AFTER ${action} ON canvas_text_versions BEGIN
+      UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1;
+     END`);
+   }
+   db.exec("UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1");
+  }
   if(version<SCHEMA_VERSION)db.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)").run(SCHEMA_VERSION,Date.now());
   db.exec("COMMIT");
  }catch(e){db.exec("ROLLBACK");throw e}

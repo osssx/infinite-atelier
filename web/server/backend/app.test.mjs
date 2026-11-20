@@ -464,3 +464,32 @@ test("node history routes keep snapshots out of graph responses",async t=>{
  assert.equal(graph.revision,3);
  assert.deepEqual(graph.document.nodes[0].metadata,{content:"One",dramaDraft:"One"});
 });
+
+
+test("text history extraction leaves malformed nodes to project validation",async t=>{
+ const {call}=await fixture(t);
+ const valid={title:"Canvas",nodes:[],connections:[]};
+ const invalid={...valid,nodes:[null]};
+ const created=await call("POST","/api/v1/projects",{id:"invalid-node",document:invalid});
+ assert.equal(created.statusCode,400,created.body);
+ assert.equal(created.json().code,"invalid_project_document");
+ assert.equal((await call("POST","/api/v1/projects",{id:"valid-node",document:valid})).statusCode,201);
+ const patched=await call("PATCH","/api/v1/projects/valid-node",{expectedRevision:1,document:invalid});
+ assert.equal(patched.statusCode,400,patched.body);
+ assert.equal(patched.json().code,"invalid_project_document");
+});
+
+test("legacy graph updates with inline history fail visibly without dropping snapshots",async t=>{
+ const {call}=await fixture(t);
+ const node={id:"text",type:"text",metadata:{content:"Before"}};
+ const document={title:"Canvas",nodes:[node],connections:[]};
+ assert.equal((await call("POST","/api/v1/projects",{id:"legacy-history",document})).statusCode,201);
+ const next={...document,nodes:[{...node,metadata:{content:"After",textVersions:[
+  {id:"legacy",content:"After",createdAt:"now",source:"manual"}
+ ]}}]};
+ const rejected=await call("PATCH","/api/v1/projects/legacy-history",{document:next,expectedRevision:1});
+ assert.equal(rejected.statusCode,409,rejected.body);
+ assert.equal(rejected.json().code,"legacy_text_versions_reload_required");
+ const saved=await call("GET","/api/v1/projects/legacy-history");
+ assert.equal(saved.json().document.nodes[0].metadata.content,"Before");
+});

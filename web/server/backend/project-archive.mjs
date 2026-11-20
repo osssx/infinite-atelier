@@ -2,7 +2,7 @@ import {randomUUID,createHash} from "node:crypto";
 import {createReadStream,mkdtempSync,rmSync,openSync,closeSync,readSync,writeFileSync} from "node:fs";
 import {join} from "node:path";
 import {tmpdir} from "node:os";
-import {insertTextVersions,textVersionNodeTypes} from "./canvas-text-versions.mjs";
+import {extractTextVersions,insertTextVersions,textVersionNodeTypes} from "./canvas-text-versions.mjs";
 import {PassThrough} from "node:stream";
 import {Zip,ZipPassThrough} from "fflate";
 import {importStreamedArchive,TEXT_HISTORY_ENTRY} from "./project-archive-import.mjs";
@@ -61,7 +61,7 @@ function boundTemplates(document){
  }
  return [...refs.values()].sort((a,b)=>(a.id+"@"+a.revision).localeCompare(b.id+"@"+b.revision));
 }
-function validatedManifest(manifest,registry){
+function validatedManifest(manifest,registry,historyPath){
  if(!manifest||manifest.app!=="infinite-atelier"||manifest.kind!=="sqlite-canvas-project"||
   ![1,2,3].includes(manifest.version)||!manifest.project||!Array.isArray(manifest.media))
    throw error("archive_invalid_manifest");
@@ -91,8 +91,15 @@ function validatedManifest(manifest,registry){
  if(manifest.version===3?(!history||!Number.isSafeInteger(history.bytes)||history.bytes<1||
   history.bytes>ARCHIVE_MAX_BYTES||!hashRe.test(history.sha256)):history!==undefined)
   throw error("archive_invalid_manifest");
+ if(manifest.version===3&&extractTextVersions(p.document).hasInline)throw error("archive_invalid_text_history");
  const found=projectArchiveHashes({document:p.document,chats:p.chats,
    ...(manifest.version>=2?{assistantTasks:manifest.assistantTasks}:{})});
+ if(historyPath){
+  for(const row of readHistory(historyPath,p.document)){
+   for(const hash of projectArchiveHashes(row))found.add(hash);
+   if(found.size>ARCHIVE_MAX_FILES-1)throw error("archive_file_limit_exceeded",413);
+  }
+ }
  const media=new Map();
  for(const item of manifest.media){
   if(!item||!hashRe.test(item.sha256)||item.path!=="blobs/"+item.sha256||
@@ -133,11 +140,13 @@ function stageHistory(db,project,remaining){
  const ids=new Set(project.document.nodes.filter(node=>textVersionNodeTypes.has(node.type)).map(node=>node.id));
  const rows=db.prepare(`SELECT node_id AS nodeId,id,created_at AS createdAt,source,note,content
    FROM canvas_text_versions WHERE project_id=? ORDER BY seq`).iterate(project.id);
- const hash=createHash("sha256");
+ const hash=createHash("sha256"),references=new Set();
  let root,path,fd,bytes=0;
  try{
   for(const row of rows){
    if(!ids.has(row.nodeId))continue;
+   for(const ref of projectArchiveHashes(row))references.add(ref);
+   if(references.size>ARCHIVE_MAX_FILES-1)throw error("archive_file_limit_exceeded",413);
    const line=Buffer.from(JSON.stringify(row)+"\n");
    bytes+=line.length;
    if(bytes>remaining||line.length>5*1024*1024)throw error("archive_size_exceeded",413);
@@ -148,7 +157,7 @@ function stageHistory(db,project,remaining){
    }
    writeFileSync(fd,line);hash.update(line);
   }
-  return root?{root,path,bytes,sha256:hash.digest("hex")}:null;
+  return root?{root,path,bytes,sha256:hash.digest("hex"),references}:null;
  }catch(e){
   if(fd!==undefined){closeSync(fd);fd=undefined}
   if(root)rmSync(root,{recursive:true,force:true});
@@ -162,29 +171,30 @@ export function createProjectArchive({db,blobStore,workflowsDir,registry:provide
  async function exportProject(id){
   const project=getProject(db,id),viewport=getCanvasViewport(db,id),chats=getCanvasChats(db,id);
   const assistantTasks=exportAssistantTaskArchive(db,id);
-  const hashes=[...projectArchiveHashes({document:project.document,chats,assistantTasks})].sort();
-  if(hashes.length>ARCHIVE_MAX_FILES-1)throw error("archive_file_limit_exceeded",413);
-  const media=[];let total=0;
-  for(const hash of hashes){
-   const item=await blobStore.stat(hash);
-   total+=item.byteSize;assertQuota(total);
-   media.push({sha256:hash,path:"blobs/"+hash,bytes:item.byteSize,mimeType:item.mimeType});
-  }
-  const templates=boundTemplates(project.document).map(ref=>{
-   const template=registry.find(ref.id,ref.revision);
-   if(!template)throw error("archive_template_missing",422);
-   return template;
-  });
-  if(templates.length>64)throw error("archive_invalid_manifest",413);
-  const manifest={app:"infinite-atelier",kind:"sqlite-canvas-project",version:2,
-   project:{id:project.id,title:project.document.title||project.id,
-    revision:project.revision,document:project.document,
-    viewport:viewport.viewport,chats:{sessions:chats.sessions,activeChatId:chats.activeChatId}},
-   media,templates,assistantTasks};
-  if(getProject(db,id).revision!==project.revision)throw error("project_revision_conflict",409);
-  const history=stageHistory(db,project,ARCHIVE_MAX_BYTES-total);
-  let text;
+  const history=stageHistory(db,project,ARCHIVE_MAX_BYTES);
+  let media,text;
   try{
+   const hashes=[...new Set([...projectArchiveHashes({document:project.document,chats,assistantTasks}),
+    ...(history?.references??[])])].sort();
+   if(hashes.length>ARCHIVE_MAX_FILES-1)throw error("archive_file_limit_exceeded",413);
+   media=[];let total=0;
+   for(const hash of hashes){
+    const item=await blobStore.stat(hash);
+    total+=item.byteSize;assertQuota(total);
+    media.push({sha256:hash,path:"blobs/"+hash,bytes:item.byteSize,mimeType:item.mimeType});
+   }
+   const templates=boundTemplates(project.document).map(ref=>{
+    const template=registry.find(ref.id,ref.revision);
+    if(!template)throw error("archive_template_missing",422);
+    return template;
+   });
+   if(templates.length>64)throw error("archive_invalid_manifest",413);
+   const manifest={app:"infinite-atelier",kind:"sqlite-canvas-project",version:2,
+    project:{id:project.id,title:project.document.title||project.id,
+     revision:project.revision,document:project.document,
+     viewport:viewport.viewport,chats:{sessions:chats.sessions,activeChatId:chats.activeChatId}},
+    media,templates,assistantTasks};
+   if(getProject(db,id).revision!==project.revision)throw error("project_revision_conflict",409);
    if(history){manifest.version=3;manifest.textHistory={bytes:history.bytes,sha256:history.sha256}}
    text=Buffer.from(stable(manifest),"utf8");
    if(text.length>5*1024*1024)throw error("archive_invalid_manifest",413);
@@ -246,7 +256,7 @@ export function createProjectArchive({db,blobStore,workflowsDir,registry:provide
  async function importProject(source){
   return importStreamedArchive(source,{
    limit:ARCHIVE_MAX_BYTES,maxFiles:ARCHIVE_MAX_FILES+1,
-   validateManifest:manifest=>validatedManifest(manifest,registry),blobStore,
+   validateManifest:(manifest,historyPath)=>validatedManifest(manifest,registry,historyPath),blobStore,
    create:(manifest,media,historyPath)=>{
     const p=manifest.project;
     registry.installMany(manifest.templates??[]);

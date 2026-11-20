@@ -203,7 +203,7 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
    "chats_revision_conflict","viewport_revision_conflict",
    "text_node_not_found","text_version_not_found","text_version_limit","text_version_backup_required",
    "text_version_invalid_restore","text_version_save_not_allowed","text_version_operation_conflict",
-   "invalid_text_versions","invalid_text_version_command","drama_draft_invalid",
+   "invalid_text_versions","legacy_text_versions_reload_required","invalid_text_version_command","drama_draft_invalid",
    "archive_invalid_text_history","archive_text_history_integrity_error",
    "stale_generation_source","cyclic_generation_source","generation_save_barrier_required","invalid_job_request","idempotency_key_conflict","backend_prior_job_not_terminal","job_not_found","invalid_project_job_history_request","invalid_project_job_history_cursor","project_job_not_found","project_job_not_terminal",
    "unknown_model_close_invalid","unknown_model_close_not_eligible","unknown_model_close_state_changed","reconciliation_invalid_input","reconciliation_not_eligible","reconciliation_provider_unsupported","reconciliation_adapter_unavailable","reconciliation_state_changed","reconciliation_upstream_unavailable","reconciliation_remote_already_linked",

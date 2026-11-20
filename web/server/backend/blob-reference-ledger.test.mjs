@@ -7,9 +7,10 @@ import {join} from "node:path";
 import {initializeSchema,SCHEMA_VERSION} from "./schema.mjs";
 import {createBlobStore} from "./blob-store.mjs";
 import {createBlobGarbageCollector} from "./blob-gc.mjs";
-import {createProject,patchProject} from "./projects.mjs";
+import {createProject,patchProject,validateProjectDocument,emitProjectEvent} from "./projects.mjs";
 import {blobReferenceLedgerStatus,rebuildBlobReferenceLedger,persistedBlobReferences} from "./blob-reference-ledger.mjs";
 import {createComfyRegistry} from "./comfy-registry.mjs";
+import {mutateTextVersions} from "./canvas-text-versions.mjs";
 import {createHash} from "node:crypto";
 
 const png=Buffer.from([137,80,78,71,13,10,26,10,0,0,0,0,0,0,0,0]);
@@ -144,4 +145,22 @@ test("content-addressed workflow graph references enter the ledger and dirty it 
  createComfyRegistry(f.db,{workflowsDir:join(f.root,"workflows")}).installMany([template]);
  assert.equal(blobReferenceLedgerStatus(f.db).dirty,true);rebuildBlobReferenceLedger(f.db);
  assert.equal(persistedBlobReferences(f.db).has(blobId),true);
+});
+
+test("GC retains blobs referenced only by a text snapshot until it is deleted",async t=>{
+ const {db,blobStore}=fixture(t);
+ const blob=await blobStore.put([png],{mime:"image/png"});
+ const node={id:"text",type:"text",metadata:{content:"[image](/api/v1/blobs/"+blob.blobId+")"}};
+ const document={nodes:[node],connections:[]};
+ createProject(db,{id:"p-history",document});
+ rebuildBlobReferenceLedger(db);
+ const mutate=command=>mutateTextVersions(db,"p-history",node.id,command,validateProjectDocument,emitProjectEvent);
+ mutate({action:"save",operationId:"snapshot",expectedRevision:1});
+ assert.equal(blobReferenceLedgerStatus(db).dirty,true);
+ patchProject(db,{id:"p-history",expectedRevision:1,document:{...document,nodes:[{...node,metadata:{content:"New"}}]}});
+ const gc=createBlobGarbageCollector({db,blobStore}),now=Date.now()+8*86400000;
+ assert.equal(gc.sweep({now}).candidates.some(item=>item.id===blob.blobId),false);
+ mutate({action:"delete",operationId:"remove",versionId:"snapshot"});
+ assert.equal(blobReferenceLedgerStatus(db).dirty,true);
+ assert.equal(gc.sweep({now}).candidates.some(item=>item.id===blob.blobId),true);
 });

@@ -241,3 +241,32 @@ test("imports legacy ZIP versions into SQLite",async t=>{
  const row=db.prepare("SELECT id, note, content FROM canvas_text_versions WHERE project_id=?").get(restored.id);
  assert.deepEqual({...row},{id:version.id,note:version.note,content:version.content});
 });
+
+test("rejects a v3 archive that combines inline and streamed text history",async t=>{
+ const {db,archive}=await fixture(t);
+ const version={id:"original",createdAt:"now",source:"manual",content:"Earlier"};
+ const document={title:"History",nodes:[{id:"text",type:"text",metadata:{content:"Current",textVersions:[version]}}],connections:[]};
+ createProject(db,{id:"history",document});
+ const exported=await archive.exportProject("history");
+ const members=unzipSync(Buffer.concat(await Array.fromAsync(exported.stream)));
+ const manifest=JSON.parse(Buffer.from(members["manifest.json"]).toString());
+ manifest.project.document.nodes[0].metadata.textVersions=[{...version,id:"embedded"}];
+ members["manifest.json"]=strToU8(JSON.stringify(manifest));
+ await assert.rejects(archive.importProject(Readable.from([zipSync(members,{level:0})])),/archive_invalid_text_history/);
+ assert.equal(db.prepare("SELECT COUNT(*) AS count FROM projects").get().count,1);
+});
+
+test("exports and imports a blob referenced only by a text version",async t=>{
+ const source=await fixture(t),destination=await fixture(t);
+ const blob=await source.blobStore.put([png],{mime:"image/png"});
+ const content="/api/v1/blobs/"+blob.blobId;
+ createProject(source.db,{id:"history-media",document:{nodes:[{id:"text",type:"text",metadata:{
+  content:"New",textVersions:[{id:"snapshot",content,source:"manual",createdAt:"now"}]
+ }}],connections:[]}});
+ const {stream}=await source.archive.exportProject("history-media");
+ const restored=await destination.archive.importProject(stream);
+ assert.equal(restored.mediaCount,1);
+ assert.equal((await destination.blobStore.stat(blob.blobId)).byteSize,png.length);
+ const version=destination.db.prepare("SELECT content FROM canvas_text_versions WHERE project_id=?").get(restored.id);
+ assert.equal(version.content,content);
+});

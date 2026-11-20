@@ -98,7 +98,8 @@ export function saveSingleUserCanvas(db,{id,expectedRevision,document}){
  if(!validId(id))throw problem("invalid_project_id");
  if(expectedRevision!==undefined&&(!Number.isSafeInteger(expectedRevision)||expectedRevision<1))
   throw problem("expected_revision_required");
- const incoming=extractTextVersions(graphDocument(document)).document;
+ const incoming=graphDocument(document);
+ if(extractTextVersions(incoming).hasInline)throw problem("legacy_text_versions_reload_required",409);
  validateProjectDocument(incoming);
  return writeTransaction(db,()=>{
   const row=db.prepare("SELECT * FROM projects WHERE id=? AND deleted_at IS NULL").get(id);

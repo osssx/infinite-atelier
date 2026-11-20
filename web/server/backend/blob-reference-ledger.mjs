@@ -5,6 +5,9 @@ import {writeTransaction} from "./repository.mjs";
 const hashes=/[a-f0-9]{64}/g;
 const sourceQueries=[
  ["project","SELECT id AS owner,document_json AS body FROM projects WHERE deleted_at IS NULL"],
+ ["text_version",`SELECT CAST(v.seq AS TEXT) AS owner,
+  json_object('id',v.id,'createdAt',v.created_at,'note',v.note,'content',v.content) AS body
+  FROM canvas_text_versions v JOIN projects p ON p.id=v.project_id WHERE p.deleted_at IS NULL`],
  ["chat","SELECT project_id AS owner,sessions_json AS body FROM project_chats c JOIN projects p ON p.id=c.project_id WHERE p.deleted_at IS NULL"],
  ["job","SELECT id AS owner,snapshot_json AS body FROM jobs"],
  ["shot_batch","SELECT b.id AS owner,b.snapshot_json AS body FROM local_shot_batches b JOIN projects p ON p.id=b.project_id WHERE p.deleted_at IS NULL"],

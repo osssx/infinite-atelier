@@ -181,9 +181,39 @@ export async function readAssistantCanvasGraphBaseline(projectId:string){
  const frozen=JSON.parse(JSON.stringify(asDocument(project))) as ReturnType<typeof asDocument>;
  return {expectedRevision:revision,document:frozen};
 }
+const textVersionFields = ["content", "dramaDraft", "dramaConfirmed", "dramaStage"] as const;
+
+function mergeTextVersionCommit(
+ nodeId:string, baseline:ReturnType<typeof asDocument>, local:CanvasProject,
+ saved:Pick<CanvasProject,"nodes"|"connections">
+){
+ const before=baseline.nodes.find(node=>node.id===nodeId);
+ const after=saved.nodes.find(node=>node.id===nodeId);
+ if(!before||!after||before.type!==after.type)return null;
+ // Only a version command's text fields may advance during this rebase.
+ const stripped={...after,metadata:{...after.metadata}};
+ for(const key of textVersionFields)delete stripped.metadata[key];
+ const baseNode={...before,metadata:{...before.metadata}};
+ for(const key of textVersionFields)delete baseNode.metadata[key];
+ const baseGraph={nodes:baseline.nodes.map(node=>node.id===nodeId?baseNode:node),connections:baseline.connections};
+ const checkedGraph={nodes:saved.nodes.map(node=>node.id===nodeId?stripped:node),connections:saved.connections};
+ if(canonicalBackendGraph(baseGraph)!==canonicalBackendGraph(checkedGraph))return null;
+ const nodes=local.nodes.map(node=>{
+  if(node.id!==nodeId||node.type!==before.type)return node;
+  const metadata={...node.metadata};
+  for(const key of textVersionFields){
+   if(metadata[key]===before.metadata?.[key]&&after.metadata?.[key]!==before.metadata?.[key])
+    metadata[key]=after.metadata?.[key];
+  }
+  return {...node,metadata};
+ });
+ return {nodes,connections:local.connections};
+}
+
 export async function commitAssistantCanvasGraphWithSaveBarrier(
  projectId:string,
- submit:(frozen:{expectedRevision:number;document:ReturnType<typeof asDocument>;assertCurrent:()=>void})=>Promise<CanvasBackendProject>
+ submit:(frozen:{expectedRevision:number;document:ReturnType<typeof asDocument>;assertCurrent:()=>void})=>Promise<CanvasBackendProject>,
+ options?:{textVersionNodeId:string}
 ):Promise<CanvasBackendProject>{
  const frozen=await readAssistantCanvasGraphBaseline(projectId),revision=frozen.expectedRevision;
  const assertCurrent=()=>{
@@ -193,6 +223,7 @@ export async function commitAssistantCanvasGraphWithSaveBarrier(
  assertCurrent();
  if(taskCanvasBarriers.has(projectId))throw Error("canvas_task_save_barrier_active");
  taskCanvasBarriers.add(projectId);
+ let resumeAutosave=false;
  try{
   const remote=await submit({...frozen,assertCurrent});
   if(remote.id!==projectId||!Number.isSafeInteger(remote.revision)||
@@ -205,28 +236,38 @@ export async function commitAssistantCanvasGraphWithSaveBarrier(
    nodes:remote.document.nodes as CanvasNodeData[],connections:remote.document.connections as CanvasConnection[]
   })!==canonicalBackendGraph({nodes:frozen.document.nodes,connections:frozen.document.connections}))
    throw Error("assistant_task_graph_response_invalid");
+  let graph={nodes:remote.document.nodes as CanvasNodeData[],
+   connections:remote.document.connections as CanvasConnection[]};
   if(dirty.has(projectId)){
-   const conflict=Error("project_revision_conflict");
-   lastErrors.set(projectId,conflict);
-   useCanvasStore.setState({error:conflict.message});
-   throw conflict;
+   const local=useCanvasStore.getState().openProject(projectId);
+   const merged=options&&local&&remote.revision<=revision+1?
+    mergeTextVersionCommit(options.textVersionNodeId,frozen.document,local,graph):null;
+   if(!merged)throw Error("project_revision_conflict");
+   graph=merged;
+   resumeAutosave=true;
   }
   revisions.set(projectId,remote.revision);
   lastErrors.delete(projectId);
-  const graph={nodes:remote.document.nodes as CanvasNodeData[],
-   connections:remote.document.connections as CanvasConnection[]};
   useCanvasStore.setState(state=>({projects:state.projects.map(item=>item.id===projectId?
    {...item,nodes:graph.nodes,connections:graph.connections}:item),error:null}));
   for(const listener of savedGraphListeners){try{listener(projectId,graph)}catch{/* already committed */}}
   return remote;
  }catch(error){
   if(dirty.has(projectId)){
-   const conflict=Error("project_revision_conflict");
-   lastErrors.set(projectId,conflict);
-   useCanvasStore.setState({error:conflict.message});
+   // These history rejections are transactional and leave the saved graph untouched.
+   resumeAutosave=!!options&&error instanceof Error&&
+    /^(text_version_backup_required|text_version_limit|text_version_not_found|text_version_invalid_restore|drama_draft_invalid|project_document_too_large)\b/.test(error.message);
+   if(!resumeAutosave){
+    const conflict=Error("project_revision_conflict");
+    lastErrors.set(projectId,conflict);
+    useCanvasStore.setState({error:conflict.message});
+   }
   }
   throw error;
- }finally{taskCanvasBarriers.delete(projectId)}
+ }finally{
+  taskCanvasBarriers.delete(projectId);
+  if(resumeAutosave)schedule(projectId);
+ }
 }
 
 function updateCached(id:string,update:(project:CanvasProject)=>CanvasProject){

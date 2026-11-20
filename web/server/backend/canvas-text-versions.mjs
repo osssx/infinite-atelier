@@ -9,15 +9,18 @@ const digest=content=>createHash("sha256").update(content).digest("hex");
 const sources=new Set(["manual","restore-backup","confirmation"]);
 
 export function extractTextVersions(document){
+ if(!Array.isArray(document?.nodes))return {document,entries:[],hasInline:false};
+ let hasInline=false;
  const entries=[];
  const nodes=document.nodes.map(node=>{
-  if(!textVersionNodeTypes.has(node.type)||!Object.hasOwn(node.metadata??{},"textVersions"))return node;
+  if(!textVersionNodeTypes.has(node?.type)||!Object.hasOwn(node.metadata??{},"textVersions"))return node;
+  hasInline=true;
   const {textVersions,...metadata}=node.metadata;
   if(!Array.isArray(textVersions))throw fail("invalid_text_versions");
   textVersions.forEach(version=>entries.push({...version,nodeId:node.id}));
   return {...node,metadata};
  });
- return {document:{...document,nodes},entries};
+ return {document:{...document,nodes},entries,hasInline};
 }
 
 export function insertTextVersions(db,projectId,entries,{legacy=false}={}){

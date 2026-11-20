@@ -119,3 +119,32 @@ describe("P1a browser autosave conflict safety",()=>{
   expect(useCanvasStore.getState().openProject(id)?.nodes.map(node=>node.id)).toEqual(["committed"]);
  });
 });
+
+it("rebases a text confirmation over edits made during the save barrier",async()=>{
+ type Graph = {title:string;nodes:import("@/types/canvas").CanvasNodeData[];connections:[]};
+ let remote={id:"",revision:1,document:{title:"History",nodes:[],connections:[]} as Graph};
+ mock.api.mockImplementation(async(_path:string,method="GET",payload?:{id?:string;document?:Graph;expectedRevision?:number})=>{
+  if(method==="POST"){remote={id:payload!.id!,revision:1,document:payload!.document!};return remote;}
+  if(method==="PATCH"){
+   expect(payload!.expectedRevision).toBe(remote.revision);
+   remote={...remote,revision:remote.revision+1,document:payload!.document!};
+   return remote;
+  }
+  throw Error("unexpected "+method);
+ });
+ const id=await useCanvasStore.getState().createProject("History");
+ const story={id:"story",type:"drama:source" as const,title:"Story",position:{x:0,y:0},width:300,height:200,
+  metadata:{content:"first",dramaDraft:"first"}};
+ useCanvasStore.getState().updateProject(id,{nodes:[story]});
+ await commitAssistantCanvasGraphWithSaveBarrier(id,async frozen=>{
+  const newer={...story,metadata:{content:"second",dramaDraft:"second",dramaFilmStyle:"ink"}};
+  useCanvasStore.getState().updateProject(id,{nodes:[newer]});
+  remote={...remote,revision:frozen.expectedRevision+1,document:{...remote.document,
+   nodes:[{...story,metadata:{...story.metadata,dramaConfirmed:"first",dramaStage:"source"}}]}};
+  return remote;
+ },{textVersionNodeId:"story"});
+ await awaitCanvasStorePersistence(id);
+ expect(remote.document.nodes[0].metadata).toEqual({
+  content:"second",dramaDraft:"second",dramaFilmStyle:"ink",dramaConfirmed:"first",dramaStage:"source"
+ });
+});

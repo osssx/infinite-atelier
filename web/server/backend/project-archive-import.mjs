@@ -92,11 +92,11 @@ export async function importStreamedArchive(source,{limit,maxFiles,validateManif
    Buffer.concat(manifestChunks,meta.bytes)))}
   catch{throw error("archive_invalid_manifest")}
   manifestChunks=[];
-  const media=validateManifest(manifest);
   const history=entries.get(TEXT_HISTORY_ENTRY);
-  if(Boolean(history)!==Boolean(manifest.textHistory)||
+  if(Boolean(history)!==Boolean(manifest?.textHistory)||
      (history&&(history.bytes!==manifest.textHistory.bytes||history.digest!==manifest.textHistory.sha256)))
    throw error("archive_text_history_integrity_error",422);
+  const media=validateManifest(manifest,history?.path);
   if(entries.size!==media.size+1+Number(Boolean(history)))throw error("archive_unexpected_files");
   for(const item of media.values()){
    const staged=entries.get(item.path);

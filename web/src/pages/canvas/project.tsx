@@ -2360,7 +2360,7 @@ function AtelierCanvasPage() {
                     before = createHistoryEntry();
                     beforeRevision = expectedRevision;
                     return submit<CanvasBackendProject>(expectedRevision);
-                });
+                }, {textVersionNodeId:nodeId});
                 if (before && saved.revision > beforeRevision && activeProjectIdRef.current === projectId) {
                     if (historyCommitTimerRef.current) clearTimeout(historyCommitTimerRef.current);
                     historyCommitTimerRef.current = null;

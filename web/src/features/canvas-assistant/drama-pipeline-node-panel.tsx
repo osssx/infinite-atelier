@@ -116,11 +116,12 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, pro
     };
     const config = useEffectiveConfig();
     const theme = canvasThemes[useThemeStore(state => state.theme)];
-    const control = inlineAssets ? {background:theme.node.fill, color:theme.node.text, borderColor:theme.node.stroke} : undefined;
+    const control = inlineAssets ? {background:theme.node.panel, color:theme.node.text, borderColor:theme.node.stroke} : undefined;
+    const assetConfirmed = Boolean(confirmed && draft === confirmed);
     if (!stage) return null;
     const editor = <section className={inlineAssets ? assetEditorExpanded
-        ? "space-y-3 text-sm"
-        : "h-full w-full space-y-2 overflow-y-auto overscroll-contain px-3 pb-3 pt-7 text-xs"
+        ? "space-y-5 text-sm"
+        : "flex h-full w-full min-h-0 flex-col gap-3 px-3 pb-4 pt-7 text-xs"
         : "rounded-xl border border-slate-200 bg-white p-4 shadow-xl"}
         style={inlineAssets ? {color:theme.node.text} : undefined} data-canvas-no-zoom={inlineAssets ? "" : undefined}
         onWheel={inlineAssets ? event => event.stopPropagation() : undefined}
@@ -129,18 +130,26 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, pro
         } : undefined}
         onDoubleClick={inlineAssets ? event => event.stopPropagation() : undefined}
         onKeyDown={inlineAssets ? event => event.stopPropagation() : undefined}>
-        <header className="mb-3 flex items-center justify-between">
-            {!assetEditorExpanded && <strong>{DRAMA_PIPELINE_STAGE_LABELS[stage]}</strong>}
+        <header className={`flex items-center justify-between gap-2 ${inlineAssets ? "" : "mb-3"}`}>
+            {!assetEditorExpanded && <strong className={inlineAssets ? "text-sm" : undefined}>{DRAMA_PIPELINE_STAGE_LABELS[stage]}</strong>}
             {inlineAssets ? <div className="flex items-center gap-2">
-                <span>{confirmed && draft === confirmed ? "已确认" : "草案"}</span>
+                <span className="rounded-full border px-2 py-1 text-xs" style={{
+                    borderColor:theme.node.stroke,
+                    background:assetConfirmed ? theme.toolbar.activeBg : theme.node.panel,
+                    color:assetConfirmed ? theme.toolbar.activeText : theme.node.muted,
+                }}>{assetConfirmed ? "已确认" : "草案"}</span>
                 {!assetEditorExpanded && <button type="button" title="最大化资产编辑器" aria-label="最大化资产编辑器"
                     className="inline-grid size-7 place-items-center rounded-md border" style={control}
                     onClick={() => setAssetEditorExpanded(true)}><Maximize2 className="size-3.5" /></button>}
             </div> :
                 <Tag color={confirmed ? "green" : "default"}>{confirmed ? "已确认" : "草案"}</Tag>}
         </header>
+        <div className={inlineAssets ? assetEditorExpanded ? "space-y-5" :
+            "min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain" : "contents"}
+            onMouseDown={inlineAssets ? event => event.stopPropagation() : undefined}
+            onPointerDown={inlineAssets ? event => event.stopPropagation() : undefined}>
         {inlineAssets ? <>
-            <DramaAssetFields assets={assets} control={control ?? {}} disabled={generating} onChange={nextAssets => {
+            <DramaAssetFields assets={assets} theme={theme} expanded={assetEditorExpanded} disabled={generating} onChange={nextAssets => {
                 const next = JSON.stringify({...previous, assets:nextAssets});
                 setDraft(next);
                 setValidation("");
@@ -163,9 +172,12 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, pro
                 setTargetEpisodes(count); onChange({targetEpisodes:count});
             }} />
         </label> : null}
-        <div className="mt-3 flex gap-2">
+        <div className={inlineAssets ? "flex flex-wrap items-center justify-end gap-2 border-t pt-3" : "mt-3 flex gap-2"}
+            style={inlineAssets ? {borderColor:theme.node.stroke} : undefined}>
             {!inlineAssets && <Button onClick={() => { onChange({ dramaDraft: draft, ...(stage === "source" ? { content: draft } : {}) }); }}>保存草案</Button>}
-            <Button size={inlineAssets ? "small" : "middle"} style={control} type="primary" disabled={inlineAssets ? generating || !previous : !draft.trim() && !(stage === "asset_references" && references.length)} onClick={async () => {
+            <Button size={inlineAssets && !assetEditorExpanded ? "small" : "middle"} className={inlineAssets ? "order-last" : undefined}
+                style={inlineAssets && previous && !generating ? {background:theme.node.activeStroke,color:theme.node.fill,borderColor:theme.node.activeStroke} : undefined}
+                type="primary" disabled={inlineAssets ? generating || !previous : !draft.trim() && !(stage === "asset_references" && references.length)} onClick={async () => {
                 try {
                     if (stage === "assets" || stage === "episodes" || stage === "storyboard") {
                         const parsed: {assets?:unknown; episodes?:unknown; shots?:unknown} =
@@ -183,15 +195,14 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, pro
                     onChange({ dramaDraft: content, dramaConfirmed: content, dramaStage: stage, ...(stage === "source" ? { content } : {}) });
                 } catch (error) { setValidation(error instanceof Error ? error.message : "结构化结果无效"); }
             }}>确认阶段</Button>
-        </div>
-        <Button size={inlineAssets ? "small" : "middle"} style={control} className="mt-2" onClick={async () => {
+        <Button size={inlineAssets && !assetEditorExpanded ? "small" : "middle"} style={control} onClick={async () => {
             try {
                 if (!previous || typeof previous !== "object" || Array.isArray(previous)) throw Error("请填写有效的结构化 JSON 草案");
                 const result = await canvasApi<{valid:boolean;errors:{code:string}[]}>(`/api/v1/projects/${encodeURIComponent(projectId ?? "")}/drama-pipeline/validate`, "POST", {snapshot:parsedSnapshot});
                 setValidation(result.valid ? "检查通过" : describeDramaValidation(result.errors, assets));
             } catch (error) { setValidation(error instanceof Error ? error.message : "校验失败"); }
         }} disabled={!projectId || (inlineAssets && (!previous || generating))}>{inlineAssets ? "校验资产" : "校验结构化草案"}</Button>
-        {stage === "assets" || stage === "episodes" || stage === "storyboard" ? <Button size={inlineAssets ? "small" : "middle"} style={control} className="mt-2 ml-2" loading={generating} onClick={async () => {
+        {stage === "assets" || stage === "episodes" || stage === "storyboard" ? <Button size={inlineAssets && !assetEditorExpanded ? "small" : "middle"} style={control} loading={generating} onClick={async () => {
             setGenerating(true);
             try {
                 const model = config.textModel;
@@ -223,6 +234,7 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, pro
             } catch (error) { setValidation(error instanceof Error ? error.message : "生成失败"); }
             finally { setGenerating(false); }
         }} disabled={!projectId}>生成草案</Button> : null}
+        </div>
         {validation ? <p role="status" className="mt-2 whitespace-pre-wrap text-sm">{validation}</p> : null}
         {invalidSceneIds.map(id => <label className="mt-2 block text-sm" key={id}>
             将所有引用 {id} 的镜头改为
@@ -262,6 +274,7 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, pro
             })}
         </div> : null}
         {confirmed && !inlineAssets ? <details className="mt-3"><summary>已确认内容</summary><pre className="max-h-48 overflow-auto whitespace-pre-wrap">{confirmed}</pre></details> : null}
+        </div>
     </section>;
     if (!inlineAssets || !assetEditorExpanded) return editor;
     return <>
@@ -271,7 +284,7 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, pro
             styles={{
                 container:{background:theme.node.fill},
                 header:{background:theme.node.fill},
-                body:{height:"min(880px, calc(100dvh - 128px))", overflowY:"auto", overscrollBehavior:"contain", padding:"4px 2px 12px"},
+                body:{height:"min(880px, calc(100dvh - 128px))", overflowY:"auto", overscrollBehavior:"contain", padding:"12px 4px 16px"},
             }}>
             {editor}
         </Modal>

@@ -8,7 +8,7 @@ export const DRAMA_PIPELINE_STAGES = [
 ];
 export const DRAMA_PIPELINE_STAGE_INPUTS = {
   source: [], assets: ["source"], asset_references: ["assets"], episodes: ["source"],
-  storyboard: ["assets", "episodes"], first_frames: ["asset_references", "storyboard"],
+  storyboard: ["assets", "episodes"], first_frames: ["assets", "storyboard"],
 };
 const ASSET_KINDS = new Set(["character", "scene", "prop"]);
 const fail = (code, statusCode = 400) => Object.assign(Error(code), {code, statusCode});

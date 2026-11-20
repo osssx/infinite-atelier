@@ -19,7 +19,7 @@ export function isInlineDramaNode(type: string) {
 
 export const DRAMA_PIPELINE_STAGE_LABELS: Record<DramaPipelineStage, string> = {
     source: "原文",
-    assets: "资产规划",
+    assets: "资产",
     asset_references: "资产参考图",
     episodes: "剧集规划",
     storyboard: "分镜表",
@@ -32,7 +32,7 @@ export const DRAMA_PIPELINE_STAGE_INPUTS: Record<DramaPipelineStage, DramaPipeli
     asset_references: ["assets"],
     episodes: ["source"],
     storyboard: ["assets", "episodes"],
-    first_frames: ["asset_references", "storyboard"],
+    first_frames: ["assets", "storyboard"],
 };
 
 export type DramaPipelineStage = typeof DRAMA_PIPELINE_STAGES[number];
@@ -58,6 +58,21 @@ export type DramaAssetReference = {
 export function dramaReferenceImageKeys(reference?: DramaAssetReference) {
     if (Array.isArray(reference?.imageStorageKeys)) return reference.imageStorageKeys;
     return reference?.imageStorageKey ? [reference.imageStorageKey] : [];
+}
+
+export function dramaAssetSlots(assets: readonly DramaAsset[]) {
+    return assets.flatMap(asset => {
+        const variants = asset.variants ?? [];
+        const slots = asset.kind === "character" && variants.length ? variants : [undefined, ...variants];
+        return slots.map(variant => ({assetId:asset.id, variantId:variant?.id, requiredForRendering:asset.kind !== "prop"}));
+    });
+}
+
+export function referencesForDramaAssets(assets: readonly DramaAsset[], references: readonly DramaAssetReference[]) {
+    return dramaAssetSlots(assets).flatMap(slot => {
+        const previous = references.find(ref => ref.assetId === slot.assetId && ref.variantId === slot.variantId);
+        return previous ? [{...slot,imageStorageKeys:dramaReferenceImageKeys(previous)}] : [];
+    });
 }
 
 export type DramaShot = {

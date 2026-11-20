@@ -82,6 +82,7 @@ import { CanvasToolbar } from "@/components/canvas/canvas-toolbar";
 import { DramaPipelineNodePanel, isDramaPipelineNode } from "@/features/canvas-assistant/drama-pipeline-node-panel";
 import { DramaSourceNode } from "@/features/canvas-assistant/drama-source-node";
 import { isInlineDramaNode } from "@/features/canvas-assistant/canvas-drama-pipeline";
+import { mergeLegacyDramaAssets } from "@/features/canvas-assistant/drama-asset-migration";
 import type { DramaFirstFrameInput } from "@/features/canvas-assistant/drama-pipeline-media";
 import { AssetPickerModal, type InsertAssetPayload } from "@/components/canvas/asset-picker-modal";
 import { CanvasSidePanel } from "@/components/canvas/canvas-side-panel";
@@ -687,18 +688,19 @@ function AtelierCanvasPage() {
                 return; // Backend is mandatory; never load origin-local projects.
             }
             if(cancelled)return;
-            const resetNodes=resetInterruptedGeneration(project.nodes);
+            const mergedAssets = mergeLegacyDramaAssets(project.nodes, project.connections);
+            const resetNodes=resetInterruptedGeneration(mergedAssets.nodes);
             const restoredNodes = (await hydrateCanvasImages(resetNodes)).map(node =>
                 isInlineDramaNode(node.type) && node.width === 340 && node.height === 200
                     ? {...node, height: node.type === "drama:source" ? 340 : 400}
                     : node);
             const restoredSessions = await hydrateAssistantImages(project.chatSessions || []);
             if (cancelled) return;
-            const restoredConnections=reconcileComfyArtifactConnections(restoredNodes,project.connections,nanoid);
+            const restoredConnections=reconcileComfyArtifactConnections(restoredNodes,mergedAssets.connections,nanoid);
             // Only a real interrupted-generation reset or invalid connection
             // repair should persist on first load. Image hydration and local
             // default-instance presentation are not user edits.
-            const needsRecoverySave=initialHydrationNeedsGraphSave({
+            const needsRecoverySave=mergedAssets.changed || initialHydrationNeedsGraphSave({
                 persistedNodes:project.nodes,persistedConnections:project.connections,
                 resetNodes,reconciledConnections:restoredConnections
             });
@@ -4100,7 +4102,12 @@ function AtelierCanvasPage() {
             })();
             const ratio = pipelineSource?.metadata?.videoRatio;
             const style = pipelineSource?.metadata?.dramaFilmStyle?.trim();
+            const directAssets = panelNode.type === "drama:first_frames" ? nodes.find(item => item.type === "drama:assets" &&
+                connections.some(edge => edge.fromNodeId === item.id && edge.toNodeId === panelNode.id)) : undefined;
             return isDramaPipelineNode(panelNode.type) ? <DramaPipelineNodePanel key={panelNode.id} node={panelNode} projectId={projectId}
+                legacyAssetPlanning={panelNode.type === "drama:assets" && connections.some(edge => edge.fromNodeId === panelNode.id &&
+                    nodes.some(item => item.id === edge.toNodeId && item.type === "drama:asset_references"))}
+                mergedReferences={directAssets ? directAssets.metadata?.dramaAssetReferences ?? [] : undefined}
                 onPickCanvasImage={onPick => startNodeReferenceSelection(panelNode.id, onPick)}
                 productionContext={[ratio && `视频画幅：${ratio}`, style && `影片风格：${style}`].filter(Boolean).join("\n")}
                 upstreamText={nodes.find(item => item.type === "drama:source" && connections.some(edge => edge.fromNodeId === item.id && edge.toNodeId === panelNode.id))?.metadata?.dramaConfirmed}
@@ -4108,7 +4115,7 @@ function AtelierCanvasPage() {
                 savedAssetReferences={panelNode.type === "drama:first_frames" ? nodes.find(item =>
                     item.type === "drama:asset_references" && connections.some(edge =>
                         edge.fromNodeId === item.id && edge.toNodeId === panelNode.id))?.metadata?.dramaDraft : undefined}
-                confirmedAssetPlan={panelNode.type === "drama:first_frames" ? (() => {
+                confirmedAssetPlan={panelNode.type === "drama:first_frames" ? directAssets?.metadata?.dramaConfirmed ?? (() => {
                     const parentIds = new Set(connections.filter(edge => edge.toNodeId === panelNode.id).map(edge => edge.fromNodeId));
                     const assetParents = new Set(nodes.filter(item => parentIds.has(item.id) &&
                         (item.type === "drama:asset_references" || item.type === "drama:storyboard")).map(item => item.id));
@@ -4116,6 +4123,16 @@ function AtelierCanvasPage() {
                         connections.some(edge => edge.fromNodeId === item.id && assetParents.has(edge.toNodeId)))?.metadata?.dramaConfirmed;
                 })() : undefined}
                 imageNodes={nodes.filter(item => item.type === CanvasNodeType.Image)}
+                onCreateReferenceConfig={(assetName, prompt) => {
+                    const imagePrompt = [prompt, style && `影片风格：${style}`, ratio && `画幅：${ratio}`].filter(Boolean).join("\n");
+                    const configNode = createCanvasNode(CanvasNodeType.Config,
+                        {x:panelNode.position.x+panelNode.width+48,y:panelNode.position.y},
+                        {generationMode:"image",prompt:imagePrompt,composerContent:imagePrompt,count:1,...(ratio ? {size:ratio} : {})});
+                    setNodes(previous => [...previous,{...configNode,title:assetName.trim() || "资产参考图"}]);
+                    setSelectedNodeIds(new Set([configNode.id]));
+                    setSelectedConnectionId(null);
+                    setDialogNodeId(configNode.id);
+                }}
                 onChange={patch => handleConfigNodeChange(panelNode.id, patch)} onRenderFirstFrame={(prompt, input?: DramaFirstFrameInput) => {
                 const imagePrompt = [prompt, style && `影片风格：${style}`, ratio && `画幅：${ratio}`].filter(Boolean).join("\n");
                 const frame = createCanvasNode(CanvasNodeType.Image, {x:panelNode.position.x+430,y:panelNode.position.y}, {prompt:imagePrompt,composerContent:imagePrompt,...(ratio ? {size:ratio,videoRatio:ratio} : {})});
@@ -4555,11 +4572,11 @@ function AtelierCanvasPage() {
                     onAddDirector={() => createNode(CanvasNodeType.Director)}
                     onAddDramaPipeline={() => {
                         const center = getCanvasCenter();
-                        const stageIds = ["source", "assets", "asset_references", "episodes", "storyboard", "first_frames"] as const;
-                        const positions = [{x:center.x-780,y:center.y-160},{x:center.x-380,y:center.y-275},{x:center.x+20,y:center.y-275},{x:center.x-380,y:center.y+180},{x:center.x+20,y:center.y+180},{x:center.x+420,y:center.y-140}];
+                        const stageIds = ["source", "assets", "episodes", "storyboard", "first_frames"] as const;
+                        const positions = [{x:center.x-780,y:center.y-160},{x:center.x-380,y:center.y-275},{x:center.x-380,y:center.y+180},{x:center.x+20,y:center.y},{x:center.x+420,y:center.y-140}];
                         const created = stageIds.map((stage,index) => createCanvasNode(`drama:${stage}`, positions[index], {dramaStage:stage,dramaDraft:"",dramaConfirmed:""}));
                         const ids = Object.fromEntries(stageIds.map((stage,index)=>[stage,created[index].id]));
-                        const edges = [["source","assets"],["assets","asset_references"],["source","episodes"],["assets","storyboard"],["episodes","storyboard"],["asset_references","first_frames"],["storyboard","first_frames"]] as const;
+                        const edges = [["source","assets"],["source","episodes"],["assets","storyboard"],["episodes","storyboard"],["assets","first_frames"],["storyboard","first_frames"]] as const;
                         setNodes(previous => [...previous,...created]);
                         setConnections(previous => [...previous,...edges.map(([from,to])=>({id:nanoid(),fromNodeId:ids[from],toNodeId:ids[to]}))]);
                         setSelectedNodeIds(new Set(created.map(node=>node.id)));

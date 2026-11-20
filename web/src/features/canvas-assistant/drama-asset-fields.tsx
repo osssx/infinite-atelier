@@ -13,7 +13,7 @@ export function DramaAssetFields({assets, theme, expanded, disabled, onChange, r
     expanded: boolean;
     disabled: boolean;
     onChange?: (assets: DramaAsset[]) => void;
-    renderReferences?: (asset: DramaAsset) => ReactNode;
+    renderReferences?: (asset: DramaAsset, variantId?: string) => ReactNode;
 }) {
     const [kind, setKind] = useState<DramaAssetKind>("character");
     const [activeId, setActiveId] = useState("");
@@ -66,7 +66,7 @@ export function DramaAssetFields({assets, theme, expanded, disabled, onChange, r
             </select>
             {onChange && <button type="button" className="inline-flex shrink-0 items-center gap-1 rounded-lg border px-2 hover:opacity-75" style={control} onClick={addAsset}><Plus className="size-3.5" />添加</button>}
         </div>}
-        {active && (renderReferences ? renderReferences(active) : <div className={`min-w-0 space-y-3 rounded-xl border ${expanded ? "p-5" : "p-3"}`} style={surface}>
+        {active && (!onChange && renderReferences ? renderReferences(active) : <div className={`min-w-0 space-y-3 rounded-xl border ${expanded ? "p-5" : "p-3"}`} style={surface}>
             <div className="flex items-center justify-between gap-2">
                 <h3 className="truncate font-semibold">{active.name || `新${kinds[kind]}`}</h3>
                 <button type="button" className="inline-grid size-8 shrink-0 place-items-center rounded-lg hover:opacity-75" title="从草案删除"
@@ -85,6 +85,7 @@ export function DramaAssetFields({assets, theme, expanded, disabled, onChange, r
                     onChange={event => edit({description:event.target.value})} />
             </label>
             {active.sourceRefs.length > 0 && <p className="break-words text-xs" style={{color:theme.node.muted}}>原文出处 {active.sourceRefs.join("、")}</p>}
+            {renderReferences && (active.kind !== "character" || !variants.length) && renderReferences(active)}
             {kind !== "prop" && <details key={active.id} className="space-y-3 border-t pt-3" style={{borderColor:theme.node.stroke}}>
                 <summary className="cursor-pointer font-medium">{kind === "character" ? "造型" : "场景变体"} · {variants.length}</summary>
                 {variants.map((variant, index) => <div key={variant.id} className="space-y-2 rounded-lg border p-3" style={{background:theme.node.code.surface,borderColor:theme.node.stroke}}>
@@ -92,6 +93,9 @@ export function DramaAssetFields({assets, theme, expanded, disabled, onChange, r
                         onChange={event => edit({variants:variants.map(item => item === variant ? {...item, name:event.target.value} : item)})} />
                     <textarea aria-label={`变体 ${index + 1} 描述`} className={fieldClass} style={control} maxLength={20000} value={variant.description}
                         onChange={event => edit({variants:variants.map(item => item === variant ? {...item, description:event.target.value} : item)})} />
+                    {renderReferences?.(active, variant.id)}
+                    <button type="button" className="rounded-md border px-2 py-1" style={control}
+                        onClick={() => edit({variants:variants.filter(item => item !== variant)})}>从草案删除变体</button>
                 </div>)}
                 <button type="button" disabled={variants.length >= 32} className="rounded-md border px-2 py-1" style={control}
                     onClick={() => edit({variants:[...variants, {id:`variant_${crypto.randomUUID()}`,name:"",description:""}]})}>添加{kind === "character" ? "造型" : "变体"}</button>

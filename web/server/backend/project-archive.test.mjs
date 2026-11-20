@@ -65,6 +65,19 @@ test("complete ZIP roundtrip restores graph, separate viewport/chat and both med
  assert.deepEqual((await f.blobStore.stat(vid.blobId)).byteSize,mp4.length);
 });
 
+test("merged drama asset references survive archive export and restore without separate image nodes",async t=>{
+ const f=await fixture(t);
+ const img=await f.blobStore.put([png],{mime:"image/png"});
+ const assets={id:"assets",type:"drama:assets",metadata:{dramaAssetReferences:[
+  {assetId:"hero",variantId:"hero-day",imageStorageKeys:["cas:"+img.blobId],requiredForRendering:true},
+ ]}};
+ createProject(f.db,{id:"drama",document:{title:"Drama",nodes:[assets],connections:[]}});
+ const archive=await f.archive.exportProject("drama");
+ const imported=await f.archive.importProject(archive.stream);
+ assert.equal(imported.mediaCount,1);
+ assert.deepEqual(getProject(f.db,imported.id).document.nodes,[assets]);
+});
+
 test("shot groups restore ordered nodes and selected CAS takes without recreating batches",async t=>{
  const f=await fixture(t);
  const take=await f.blobStore.put([mp4],{mime:"video/mp4"});

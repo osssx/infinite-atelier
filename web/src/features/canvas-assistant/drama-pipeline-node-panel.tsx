@@ -8,7 +8,7 @@ import { canvasCasUrl } from "@/features/backend-sync/canvas-cas";
 import { CanvasNodeReferenceBar } from "@/components/canvas/canvas-node-reference-bar";
 import { ensureSqliteModelChannelForExecution, modelChannelProvider } from "@/features/backend-sync/model-channel-autoroute";
 import { buildDramaFirstFrameInput, dramaFirstFrameMissingReferenceIds } from "./drama-pipeline-media";
-import { dramaReferenceImageKeys, validateDramaShotReferences, type DramaPipelineSnapshot } from "./canvas-drama-pipeline";
+import { dramaAssetSlots, dramaReferenceImageKeys, referencesForDramaAssets, validateDramaShotReferences, type DramaAssetReference, type DramaPipelineSnapshot } from "./canvas-drama-pipeline";
 import { useEffectiveConfig, resolveModelChannel, modelOptionName } from "@/stores/use-config-store";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
@@ -48,10 +48,11 @@ function describeDramaValidation(errors: {code:string;shotId?:string;id?:string}
         : []).join("\n");
 }
 
-export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, onPickCanvasImage, projectId, upstreamText = "", upstreamContext = "", upstreamArtifacts = [], confirmedAssetPlan, savedAssetReferences, imageNodes = [], productionContext = "" }: {
+export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, onCreateReferenceConfig, onPickCanvasImage, projectId, upstreamText = "", upstreamContext = "", upstreamArtifacts = [], confirmedAssetPlan, savedAssetReferences, mergedReferences, legacyAssetPlanning = false, imageNodes = [], productionContext = "" }: {
     node: CanvasNodeData;
     onChange: (patch: Partial<CanvasNodeData["metadata"]>) => void;
     onRenderFirstFrame?: (prompt: string, input?: ReturnType<typeof buildDramaFirstFrameInput>) => void;
+    onCreateReferenceConfig?: (assetName: string, prompt: string) => void;
     onPickCanvasImage?: (onPick: (storageKey: string) => void) => void;
     projectId?: string;
     upstreamText?: string;
@@ -59,6 +60,8 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, onP
     upstreamArtifacts?: string[];
     confirmedAssetPlan?: string;
     savedAssetReferences?: string;
+    mergedReferences?: DramaAssetReference[];
+    legacyAssetPlanning?: boolean;
     productionContext?: string;
     imageNodes?: CanvasNodeData[];
 }) {
@@ -72,12 +75,14 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, onP
     const upstream = upstreamArtifacts.map(readDraft);
     const assetPlanning = stage === "assets";
     const referenceEditing = stage === "asset_references";
+    const mergedEditing = assetPlanning && !legacyAssetPlanning;
     const inlineEditor = assetPlanning || referenceEditing;
     const previous = assetPlanning ? readAssetDraft(draft) : readDraft(draft);
     const liveAssets = readDraft(confirmedAssetPlan ?? "")?.assets;
     const assets = liveAssets ?? upstream.find(item => Array.isArray(item?.assets))?.assets ?? previous?.assets ?? [];
     const savedReferences = readDraft(savedAssetReferences ?? "")?.references;
-    const upstreamReferences = (Array.isArray(savedReferences) ? savedReferences : undefined) ??
+    const upstreamReferences = (mergedReferences ? referencesForDramaAssets(liveAssets ?? [], mergedReferences) : undefined) ??
+        (Array.isArray(savedReferences) ? savedReferences : undefined) ??
         upstream.find(item => Array.isArray(item?.references))?.references;
     const shots = upstream.find(item => Array.isArray(item?.shots))?.shots ?? previous?.shots ?? [];
     const scenes = assets.filter(asset => asset.kind === "scene");
@@ -98,16 +103,11 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, onP
         onChange({dramaDraft: next});
         setValidation(`已替换 ${oldId}，请检查并确认草案`);
     };
-    const references = stage === "asset_references" ? assets.flatMap(asset => {
-        const variants = asset.variants ?? [];
-        const slots = asset.kind === "character" && variants.length ? variants : [undefined, ...variants];
-        return slots.map(variant => ({
-            assetId: asset.id,
-            variantId: variant?.id,
-            imageStorageKeys: dramaReferenceImageKeys(previous?.references?.find(ref => ref.assetId === asset.id && ref.variantId === variant?.id)),
-            requiredForRendering: asset.kind !== "prop",
-        }));
-    }) : upstreamReferences ?? previous?.references ?? [];
+    const storedReferences = mergedEditing ? node.metadata?.dramaAssetReferences : previous?.references;
+    const references = referenceEditing || mergedEditing ? dramaAssetSlots(assets).map(slot => ({
+        ...slot, imageStorageKeys:dramaReferenceImageKeys(storedReferences?.find(ref =>
+            ref.assetId === slot.assetId && ref.variantId === slot.variantId)),
+    })) : upstreamReferences ?? previous?.references ?? [];
     const parsedSnapshot: DramaPipelineSnapshot = {version:1,stage:stage ?? "source",revision:1,inputRevisions:{},assets,references,shots};
     const images = imageNodes.flatMap(item => {
         const metadata = item.metadata;
@@ -115,13 +115,18 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, onP
         return [...new Set(keys)].flatMap(key => key && /^cas:[a-f0-9]{64}$/.test(key) ? [{key,title:item.title}] : []);
     });
     const updateReference = (assetId: string, variantId: string | undefined, key: string, remove = false) => {
-        const references = parsedSnapshot.references.map(reference => {
-            if (reference.assetId !== assetId || reference.variantId !== variantId) return reference;
-            const keys = dramaReferenceImageKeys(reference);
-            const imageStorageKeys = remove ? keys.filter(item => item !== key) : [...new Set([...keys, key])];
-            return {assetId, variantId, requiredForRendering:reference.requiredForRendering, imageStorageKeys};
-        });
-        const next = JSON.stringify({ ...parsedSnapshot, references }, null, 2);
+        const slot = references.find(ref => ref.assetId === assetId && ref.variantId === variantId);
+        if (!slot) return;
+        const keys = dramaReferenceImageKeys(slot);
+        const imageStorageKeys = remove ? keys.filter(item => item !== key) : [...new Set([...keys, key])];
+        const referencesToKeep = (mergedEditing ? storedReferences ?? [] : references)
+            .filter(ref => ref.assetId !== assetId || ref.variantId !== variantId);
+        const referencesNext = [...referencesToKeep, {...slot, imageStorageKeys}];
+        if (mergedEditing) {
+            onChange({dramaAssetReferences:referencesNext});
+            return;
+        }
+        const next = JSON.stringify({ ...parsedSnapshot, references:referencesNext }, null, 2);
         setDraft(next);
         onChange({ dramaDraft: next });
     };
@@ -162,8 +167,8 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, onP
                 setDraft(next);
                 setValidation("");
                 onChange({dramaDraft:next});
-            } : undefined} renderReferences={referenceEditing ? asset => <div className="min-w-0 space-y-3">
-                {references.filter(reference => reference.assetId === asset.id).map(reference => {
+            } : undefined} renderReferences={referenceEditing || mergedEditing ? (asset, variantId) => <div className="min-w-0 space-y-3">
+                {references.filter(reference => reference.assetId === asset.id && (!mergedEditing || reference.variantId === variantId)).map(reference => {
                     const variant = asset.variants?.find(item => item.id === reference.variantId);
                     const name = variant?.name || asset.name;
                     const keys = dramaReferenceImageKeys(reference);
@@ -189,10 +194,13 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, onP
                                 <option value="">从画布图片列表添加</option>
                                 {images.filter(image => !keys.includes(image.key)).map((image, index) => <option key={`${image.key}:${index}`} value={image.key}>{image.title} · {image.key.slice(4,12)}</option>)}
                             </select> : null}
-                            <Button size="small" style={control} onClick={() => onRenderFirstFrame?.([
-                                `制作单张${asset.kind === "scene" ? "场景" : asset.kind === "prop" ? "道具" : "角色"}参考图。`,
-                                asset.name, asset.description, variant?.description,
-                            ].filter(Boolean).join("\n"))}>生成参考图</Button>
+                            <Button size="small" style={control} disabled={!onCreateReferenceConfig} onClick={() => {
+                                onCreateReferenceConfig?.(asset.name, [
+                                    `制作单张${asset.kind === "scene" ? "场景" : asset.kind === "prop" ? "道具" : "角色"}参考图。`,
+                                    asset.name, asset.description, variant?.name, variant?.description,
+                                ].filter(Boolean).join("\n"));
+                                setAssetEditorExpanded(false);
+                            }}>创建生图配置</Button>
                         </div>
                     </section>;
                 })}
@@ -236,7 +244,9 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, onP
                     }
                     const content = stage === "asset_references" ? JSON.stringify(parsedSnapshot, null, 2) : assetPlanning ? JSON.stringify(previous) : draft;
                     setDraft(content); setConfirmed(content); setValidation("阶段已确认");
-                    onChange({ dramaDraft: content, dramaConfirmed: content, dramaStage: stage, ...(stage === "source" ? { content } : {}) });
+                    onChange({ dramaDraft: content, dramaConfirmed: content, dramaStage: stage,
+                        ...(mergedEditing ? {dramaAssetReferences:referencesForDramaAssets(assets, storedReferences ?? [])} : {}),
+                        ...(stage === "source" ? { content } : {}) });
                 } catch (error) { setValidation(error instanceof Error ? error.message : "结构化结果无效"); }
             }}>确认阶段</Button>
         <Button size={inlineEditor && !assetEditorExpanded ? "small" : "middle"} style={control} onClick={async () => {
@@ -290,7 +300,7 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, onP
             </select>
         </label>)}
         {stage === "first_frames" && parsedSnapshot ? <div className="mt-3 space-y-2">
-            {!upstreamReferences && <p className="text-sm">请在已连接的「资产参考图」节点选定主图。选图会自动保存，首帧渲染会读取最新选择。</p>}
+            {!upstreamReferences?.length && <p className="text-sm">请在已连接的资产节点添加参考图。选图会自动保存。</p>}
             {parsedSnapshot.shots.map(shot => {
                 const problems = validateDramaShotReferences(shot, assets);
                 if (!problems.length) problems.push(...dramaFirstFrameMissingReferenceIds(parsedSnapshot, shot).map(id => `缺少主图：${id}`));

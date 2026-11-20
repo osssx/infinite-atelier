@@ -192,9 +192,11 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
             "thin-scrollbar min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain px-1" : "contents"}
             onMouseDown={inlineEditor ? event => event.stopPropagation() : undefined}
             onPointerDown={inlineEditor ? event => event.stopPropagation() : undefined}>
-        {inlineEditor ? <div className={assetEditorExpanded ? "thin-scrollbar min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain pr-1" : versioned ? "grid gap-3" : "contents"}>
+        {inlineEditor ? <div className={assetEditorExpanded
+            ? `thin-scrollbar min-h-0 flex-1 overflow-y-auto overscroll-contain pr-1 ${episodePlanning ? "flex flex-col gap-3" : "space-y-3"}`
+            : versioned ? "grid gap-3" : "contents"}>
             {episodePlanning ? <>
-                <label className="flex items-center justify-between gap-3 rounded-xl border px-3 py-1.5 font-medium" style={control}>目标集数
+                <label className="flex shrink-0 items-center justify-between gap-3 rounded-xl border px-3 py-1.5 font-medium" style={control}>目标集数
                     <Input size="small" className="!w-20" type="number" min={1} max={100} value={targetEpisodes} disabled={generating} style={control}
                         onChange={event => {
                             const count = Math.max(1, Math.min(100, Math.trunc(Number(event.target.value)) || 1));

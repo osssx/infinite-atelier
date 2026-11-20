@@ -5,7 +5,7 @@ import { useTranslation } from "react-i18next";
 
 import { readStoryboardDraft } from "@/features/canvas-assistant/canvas-drama-pipeline";
 import { readEpisodeDraft } from "../../../server/canvas-text-content.mjs";
-import { TEXT_VERSIONS_LIMIT, type TextVersion } from "@/features/canvas-text-versions";
+import { TEXT_VERSIONS_LIMIT, type TextVersion, type TextVersionSummary } from "@/features/canvas-text-versions";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
 
@@ -15,7 +15,11 @@ const sourceLabel = (source: TextVersion["source"]) => source === "confirmation"
 
 type Props = {
     open: boolean;
-    versions: TextVersion[];
+    versions: TextVersionSummary[];
+    story?: boolean;
+    loadVersion?: (id: string, signal: AbortSignal) => Promise<TextVersion>;
+    listError?: boolean;
+    listLoading?: boolean;
     currentContent: string;
     confirmedContent?: string;
     storyboard?: boolean;
@@ -34,6 +38,10 @@ export function CanvasTextVersionsModal({
     currentContent,
     confirmedContent,
     storyboard = false,
+    story = false,
+    loadVersion,
+    listError = false,
+    listLoading = false,
     onClose,
     onSave,
     onDelete,
@@ -54,18 +62,48 @@ export function CanvasTextVersionsModal({
     const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
 
     const drama = confirmedContent !== undefined;
+    const [loadedVersion, setLoadedVersion] = useState<TextVersion | null>(null);
+    const [previewError, setPreviewError] = useState(false);
+    const [previewAttempt, setPreviewAttempt] = useState(0);
+    const [currentDigest, setCurrentDigest] = useState<string>();
     const selected = !drama || previewKind === "history" ? versions.find((version) => version.id === selectedId) ?? versions[0] ?? null : null;
-    const preview = selected?.content ?? (drama && previewKind !== "history" ?
+    const selectedIdToLoad = selected?.content === undefined ? selected?.id : undefined;
+    useEffect(() => {
+        setLoadedVersion(null);
+        setPreviewError(false);
+        if (!open || !selectedIdToLoad || !loadVersion) return;
+        const controller = new AbortController();
+        void loadVersion(selectedIdToLoad, controller.signal).then(version => {
+            if (!controller.signal.aborted) setLoadedVersion(version);
+        }, () => {
+            if (!controller.signal.aborted) setPreviewError(true);
+        });
+        return () => controller.abort();
+    }, [open, selectedIdToLoad, loadVersion, previewAttempt]);
+    useEffect(() => {
+        let active = true;
+        setCurrentDigest(undefined);
+        if (loadVersion && globalThis.crypto?.subtle) {
+            void crypto.subtle.digest("SHA-256", new TextEncoder().encode(currentContent)).then(bytes => {
+                if (active) setCurrentDigest(Array.from(new Uint8Array(bytes), byte => byte.toString(16).padStart(2, "0")).join(""));
+            }).catch(() => {});
+        }
+        return () => { active = false; };
+    }, [currentContent, loadVersion]);
+    const selectedContent = selected?.content ?? (loadedVersion?.id === selected?.id ? loadedVersion?.content : undefined);
+    const matchesCurrent = (version: TextVersionSummary) => version.content === currentContent ||
+        Boolean(currentDigest && version.digest === currentDigest);
+    const preview = selected ? selectedContent ?? "" : (drama && previewKind !== "history" ?
         previewKind === "confirmed" ? confirmedContent : currentContent : "");
-    const episodeDraft = drama && !storyboard && preview ? readEpisodeDraft(preview) : null;
+    const episodeDraft = drama && !story && !storyboard && preview ? readEpisodeDraft(preview) : null;
     const shots = storyboard && preview ? readStoryboardDraft(preview)?.shots : undefined;
-    const restoreDisabled = busy || retryPending || !selected || !selected.content.trim() ||
-        selected.content === currentContent || (drama && !(storyboard ? shots?.length : episodeDraft?.episodes.length));
+    const restoreDisabled = busy || retryPending || !selected || !selectedContent?.trim() ||
+        selectedContent === currentContent || (drama && !story && !(storyboard ? shots?.length : episodeDraft?.episodes.length));
     const saveLabel = t(drama ? "canvas.textVersions.saveDraft" : "canvas.textVersions.saveCurrent");
     const isBlank = !currentContent.trim();
-    const isDuplicate = !isBlank && versions[0]?.content === currentContent;
+    const isDuplicate = !isBlank && Boolean(versions[0] && matchesCurrent(versions[0]));
     const isFull = versions.length >= TEXT_VERSIONS_LIMIT;
-    const saveDisabled = busy || retryPending || saving || isBlank || isDuplicate || isFull;
+    const saveDisabled = listError || listLoading || busy || retryPending || saving || isBlank || isDuplicate || isFull;
 
     useEffect(() => {
         if (!open) return;
@@ -149,7 +187,7 @@ export function CanvasTextVersionsModal({
                         </span>
                         <div className="min-w-0 flex-1">
                             <div className="text-base font-semibold leading-6">{t("canvas.textVersions.title")}</div>
-                            <div className="mt-0.5 text-xs font-normal leading-5" style={{ color: theme.node.muted }}>{t(storyboard ? "canvas.textVersions.storyboardSubtitle" : drama ? "canvas.textVersions.episodeSubtitle" : "canvas.textVersions.subtitle")}</div>
+                            <div className="mt-0.5 text-xs font-normal leading-5" style={{ color: theme.node.muted }}>{t(story ? "canvas.textVersions.storySubtitle" : storyboard ? "canvas.textVersions.storyboardSubtitle" : drama ? "canvas.textVersions.episodeSubtitle" : "canvas.textVersions.subtitle")}</div>
                         </div>
                     </div>
                 }
@@ -204,9 +242,9 @@ export function CanvasTextVersionsModal({
                                 <span className="text-xs tabular-nums" style={{ color: theme.node.faint }}>{t("canvas.textVersions.count", { count: versions.length, max: TEXT_VERSIONS_LIMIT })}</span>
                             </div>
                             <div aria-label={t("canvas.textVersions.listTitle")} className="max-h-44 min-h-0 flex-1 overflow-y-auto p-2 md:max-h-none">
-                                {versions.length ? versions.map((version) => {
+                                {listError ? <Button onClick={() => void handleRetry()}>{t("canvas.textVersions.retry")}</Button> : listLoading ? <p role="status">{t("canvas.textVersions.loading")}</p> : versions.length ? versions.map((version) => {
                                     const isSelected = selected?.id === version.id;
-                                    const matchesCurrent = version.content === currentContent;
+                                    const isCurrent = matchesCurrent(version);
                                     return (
                                         <button
                                             key={version.id}
@@ -220,10 +258,10 @@ export function CanvasTextVersionsModal({
                                         >
                                             <div className="flex items-start justify-between gap-2">
                                                 <span className="min-w-0 truncate text-sm font-medium">{version.note || t(sourceLabel(version.source))}</span>
-                                                {matchesCurrent ? <span className="inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium" style={{ background: theme.node.panel, color: theme.node.muted }}><Check className="size-3" aria-hidden="true" />{t("canvas.textVersions.currentVersion")}</span> : null}
+                                                {isCurrent ? <span className="inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium" style={{ background: theme.node.panel, color: theme.node.muted }}><Check className="size-3" aria-hidden="true" />{t("canvas.textVersions.currentVersion")}</span> : null}
                                             </div>
                                             <div className="mt-1 flex items-center gap-1 text-[11px]" style={{ color: theme.node.muted }}><Clock3 className="size-3" aria-hidden="true" /><span>{dateLabel(version.createdAt)}</span></div>
-                                            <Typography.Paragraph ellipsis={{ rows: 2 }} className="!mb-0 !mt-2 text-xs" style={{ color: theme.node.muted }}>{version.content.replace(/\s+/g, " ").trim()}</Typography.Paragraph>
+                                            <Typography.Paragraph ellipsis={{ rows: 2 }} className="!mb-0 !mt-2 text-xs" style={{ color: theme.node.muted }}>{(version.preview ?? version.content ?? "").replace(/\s+/g, " ").trim()}</Typography.Paragraph>
                                             <span className="mt-2 inline-flex rounded-md border px-1.5 py-0.5 text-[10px]" style={{ borderColor: theme.node.stroke, color: theme.node.faint }}>{t(sourceLabel(version.source))}</span>
                                         </button>
                                     );
@@ -244,7 +282,7 @@ export function CanvasTextVersionsModal({
                                         previewKind === "confirmed" ? "canvas.textVersions.confirmedDraft" : "canvas.textVersions.currentDraft" : "canvas.textVersions.previewTitle"))}</div>
                                     {selected ? <div className="mt-1 flex items-center gap-1 text-[11px] leading-4" style={{ color: theme.node.muted }}><Clock3 className="size-3" aria-hidden="true" />{dateLabel(selected.createdAt)}</div> : null}
                                 </div>
-                                {selected ? <span className="shrink-0 text-xs tabular-nums" style={{ color: theme.node.muted }}>{t("canvas.textVersions.characterCount", { count: selected.content.length })}</span> : null}
+                                {selectedContent !== undefined ? <span className="shrink-0 text-xs tabular-nums" style={{ color: theme.node.muted }}>{t("canvas.textVersions.characterCount", { count: selectedContent.length })}</span> : null}
                             </div>
                             {drama && <div className="flex shrink-0 gap-2 border-b px-4 py-2" style={{ borderColor: theme.node.stroke }}>
                                 <Button size="small" aria-pressed={previewKind === "draft"} onClick={() => { setDeleteConfirmOpen(false); setPreviewKind("draft"); }}>
@@ -255,7 +293,7 @@ export function CanvasTextVersionsModal({
                                 </Button>
                             </div>}
                             <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-5" style={{ background: theme.node.panel, color: theme.node.text }}>
-                                {episodeDraft?.episodes.length ? <div className="space-y-3">
+                                {selected && selectedContent === undefined ? previewError ? <Button onClick={() => setPreviewAttempt(attempt => attempt + 1)}>{t("canvas.textVersions.retry")}</Button> : <p role="status">{t("canvas.textVersions.loading")}</p> : episodeDraft?.episodes.length ? <div className="space-y-3">
                                     {episodeDraft.episodes.map((episode, index) => <article key={episode.id} className="space-y-2 rounded-lg border p-3" style={{ borderColor: theme.node.stroke }}>
                                         <h3 className="font-semibold">{t("canvas.textVersions.episodeTitle", { number: index + 1, title: episode.title })}</h3>
                                         <p className="whitespace-pre-wrap break-words">{episode.synopsis}</p>
@@ -298,7 +336,7 @@ export function CanvasTextVersionsModal({
                                     type="primary"
                                     disabled={restoreDisabled}
                                     icon={<RotateCcw className="size-4" aria-hidden="true" />}
-                                    onClick={() => selected && onRestore(selected)}
+                                    onClick={() => selected && selectedContent !== undefined && onRestore({...selected, note:selected.note ?? undefined, content:selectedContent})}
                                     style={{ background: theme.node.activeStroke, borderColor: theme.node.activeStroke, color: theme.node.panel, fontWeight: 600, opacity: restoreDisabled ? 0.56 : 1 }}
                                 >{t(drama ? "canvas.textVersions.restoreDraft" : "common.restore")}</Button>
                             </div>

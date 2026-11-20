@@ -1,3 +1,4 @@
+import type { CanvasBackendProject } from "@/features/backend-sync/canvas-api";
 import type { WheelZoomDirection } from "@/lib/canvas/canvas-wheel-pressure";
 import {createVideoAudioExtractionController,extractedAudioMetadata,audioExtractionErrorMessage,type ExtractedAudio} from "@/features/backend-sync/video-audio-extraction";
 import { isResourceNode, buildNodeMentionReferencesFromIndex } from "@/lib/canvas/canvas-resource-references";
@@ -5,7 +6,7 @@ import {buildAssistantResourceReferences} from "@/features/canvas-assistant/canv
 import { CanvasImageCompareDialog } from "@/components/canvas/canvas-image-compare-dialog";
 import { playCanvasVideosFromStart } from "@/lib/canvas/video-sync-playback";
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { ChangeEvent as ReactChangeEvent, ComponentType, DragEvent as ReactDragEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react";
+import type { ChangeEvent as ReactChangeEvent, DragEvent as ReactDragEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {initialHydrationNeedsGraphSave} from "@/features/backend-sync/canvas-initial-hydration";
 import { Group, Video } from "lucide-react";
@@ -72,7 +73,7 @@ import { CanvasNodeUpscaleDialog, type CanvasImageUpscaleParams } from "@/compon
 import { buildNodeGenerationContext, buildNodeResponseMessages, hydrateNodeGenerationContext } from "@/components/canvas/canvas-node-generation";
 import { CanvasNodeHoverToolbar, CanvasNodeInfoModal } from "@/components/canvas/canvas-node-hover-toolbar";
 import { CanvasTextVersionsModal } from "@/components/canvas/canvas-text-versions-modal";
-import { canSaveTextVersion, canRestoreNodeVersion, documentFitsCanvasLimit, getTextRestoreDecision, isDramaVersionNode, prepareDramaConfirmation, prepareTextRestore, supportsTextVersions, versionNodeContent, withTextVersions, type TextVersion } from "@/features/canvas-text-versions";
+import { TEXT_VERSIONS_LIMIT, canRestoreNodeVersion, isDramaVersionNode, supportsTextVersions, versionNodeContent, type TextVersion, type TextVersionSummary } from "@/features/canvas-text-versions";
 import { AtelierCanvas } from "@/components/canvas/atelier-canvas";
 import { Minimap } from "@/components/canvas/canvas-mini-map";
 import { NodeLayer, type SharedNodeProps } from "@/components/canvas/canvas-node-layer";
@@ -88,7 +89,7 @@ import { AssetPickerModal, type InsertAssetPayload } from "@/components/canvas/a
 import { CanvasSidePanel } from "@/components/canvas/canvas-side-panel";
 import { CanvasZoomControls } from "@/components/canvas/canvas-zoom-controls";
 import { DirectorPanel } from "@/components/canvas/director-panel";
-import { flushCanvasStorePersistence,awaitCanvasStorePersistence,useCanvasStore,subscribeSavedCanvasGraph,savedCanvasGraphRevision } from "@/stores/canvas/use-canvas-store";
+import { commitAssistantCanvasGraphWithSaveBarrier, flushCanvasStorePersistence,awaitCanvasStorePersistence,useCanvasStore,subscribeSavedCanvasGraph,savedCanvasGraphRevision } from "@/stores/canvas/use-canvas-store";
 import { buildCanvasGraphIndex, reuseCanvasSemanticNodes } from "@/lib/canvas/canvas-graph-index";
 import { connectCanvasPortsByDrag, prepareCanvasPortConnection, reconcileComfyArtifactConnections } from "@/lib/canvas/canvas-port-connections";
 import { getCanvasVisiblePorts, pickCanvasDropHandle } from "@/lib/canvas/canvas-ports";
@@ -357,7 +358,6 @@ function AtelierCanvasPage() {
     const currentProjectTitle = useCanvasStore((state) => state.projects.find((project) => project.id === projectId)?.title);
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const [nodes, setNodes] = useState<CanvasNodeData[]>([]);
-    const [textVersionSavePending,setTextVersionSavePending]=useState(false);
     const [textVersionBusy,setTextVersionBusy]=useState(false);
     const [textVersionsNodeId,setTextVersionsNodeId]=useState<string|null>(null);
     useEffect(()=>{
@@ -365,7 +365,36 @@ function AtelierCanvasPage() {
             setTextVersionsNodeId(null);
     },[nodes,textVersionsNodeId]);
     const textVersionBusyRef=useRef(false);
-    const textVersionPendingProjectRef=useRef<string|null>(null);
+    const pendingTextVersionRequest = useRef<{
+        key:string; content?:string; id:string; revision?:number;
+    } | null>(null);
+    const [textVersions, setTextVersions] = useState<TextVersionSummary[]>([]);
+    const [versionsLoading, setVersionsLoading] = useState(false);
+    const [versionsLoadError, setVersionsLoadError] = useState(false);
+    const [versionsRefresh, refreshVersions] = useState(0);
+    const versionPath = useCallback((nodeId: string) =>
+        `/api/v1/projects/${encodeURIComponent(projectId)}/nodes/${encodeURIComponent(nodeId)}/text-versions`, [projectId]);
+    useEffect(() => {
+        setTextVersions([]);
+        setVersionsLoadError(false);
+        setVersionsLoading(Boolean(textVersionsNodeId));
+        if (!textVersionsNodeId) return;
+        const controller = new AbortController();
+        const request = () => canvasApi<{versions:TextVersionSummary[]}>(versionPath(textVersionsNodeId), "GET", undefined, controller.signal);
+        void request().catch(async error => {
+            if (!(error instanceof CanvasApiError) || error.code !== "text_node_not_found" || controller.signal.aborted) throw error;
+            await awaitCanvasStorePersistence(projectId);
+            return request();
+        }).then(
+            result => { if (!controller.signal.aborted) setTextVersions(result.versions); },
+            () => { if (!controller.signal.aborted) setVersionsLoadError(true); },
+        ).finally(() => { if (!controller.signal.aborted) setVersionsLoading(false); });
+        return () => controller.abort();
+    }, [projectId, textVersionsNodeId, versionPath, versionsRefresh]);
+    const loadTextVersion = useCallback(async (id: string, signal: AbortSignal) => {
+        if (!textVersionsNodeId) throw Error("text_node_not_found");
+        return (await canvasApi<{version:TextVersion}>(`${versionPath(textVersionsNodeId)}/${encodeURIComponent(id)}`, "GET", undefined, signal)).version;
+    }, [textVersionsNodeId, versionPath]);
     const [connections, setConnections] = useState<CanvasConnection[]>([]);
     const [chatSessions, setChatSessions] = useState<CanvasAssistantSession[]>([]);
     const [activeChatId, setActiveChatId] = useState<string | null>(null);
@@ -478,8 +507,8 @@ function AtelierCanvasPage() {
     useEffect(()=>{
         activeProjectIdRef.current=projectId;
         textVersionBusyRef.current=false;
-        textVersionPendingProjectRef.current=null;
-        setTextVersionBusy(false);setTextVersionSavePending(false);setTextVersionsNodeId(null);
+        pendingTextVersionRequest.current=null;
+        setTextVersionBusy(false);setTextVersionsNodeId(null);
     },[projectId]);
     const pageMountedRef = useRef(true);
     useEffect(()=>{
@@ -2277,95 +2306,146 @@ function AtelierCanvasPage() {
         );
     }, []);
 
-    const commitTextVersionGraph = useCallback(async (nextNodes:CanvasNodeData[]) => {
-        if(textVersionBusyRef.current)throw Error("text_versions_operation_busy");
-        if(textVersionPendingProjectRef.current===projectId)throw Error("text_versions_retry_pending");
-        if(activeProjectIdRef.current!==projectId)throw Error("project_changed");
-        textVersionBusyRef.current=true;setTextVersionBusy(true);
-        const stored=useCanvasStore.getState().openProject(projectId);
-        try{
-            const previous=createHistoryEntry();
-            const requestBody=JSON.stringify({expectedRevision:1,document:{title:stored?.title??"",createdAt:stored?.createdAt??"",updatedAt:stored?.updatedAt??"",nodes:nextNodes,connections:previous.connections,backgroundMode:previous.backgroundMode,showImageInfo:previous.showImageInfo,comfyInstanceId:previous.comfyInstanceId}});
-            if(!stored||!documentFitsCanvasLimit(requestBody,1024))throw Error("text_versions_document_too_large");
-            if(historyCommitTimerRef.current){clearTimeout(historyCommitTimerRef.current);historyCommitTimerRef.current=null;}
-            const baseline=lastHistoryRef.current;const past=[...historyRef.current.past];
-            if(baseline&&!sameCanvasHistoryEntry(baseline,previous))past.push(baseline);
-            if(!sameCanvasHistoryEntry(previous,{...previous,nodes:nextNodes}))past.push(previous);
-            historyRef.current.past=past.slice(-50);historyRef.current.future=[];
-            const entry={...previous,nodes:nextNodes};lastHistoryRef.current=entry;nodesRef.current=nextNodes;
-            setHistoryState({canUndo:historyRef.current.past.length>0,canRedo:false});setNodes(nextNodes);
-            updateProject(projectId,{nodes:nextNodes,connections:previous.connections});
-            await awaitCanvasStorePersistence(projectId);
-        }catch(error){
-            if(activeProjectIdRef.current===projectId&&!(error instanceof Error&&["text_versions_document_too_large","text_versions_operation_busy","text_versions_retry_pending","text_restore_unavailable","project_changed"].includes(error.message))){textVersionPendingProjectRef.current=projectId;setTextVersionSavePending(true);}
-            throw error;
-        }finally{
-            if(activeProjectIdRef.current===projectId){textVersionBusyRef.current=false;setTextVersionBusy(false);}
-        }
-    },[createHistoryEntry,projectId,updateProject]);
+    const openTextVersions = useCallback((nodeId: string) => {
+        if (nodesRef.current.some(node => node.id === nodeId && supportsTextVersions(node))) setTextVersionsNodeId(nodeId);
+    }, []);
 
-    const openTextVersions = useCallback((nodeId:string)=>{
-        const target=nodesRef.current.find(node=>node.id===nodeId&&supportsTextVersions(node));
-        if(target&&activeProjectIdRef.current===projectId)setTextVersionsNodeId(nodeId);
-    },[projectId]);
-
-    const saveTextVersion = useCallback(async(nodeId:string,note?:string) => {
-        const node=nodesRef.current.find(value=>value.id===nodeId);if(!node)throw Error("text_node_not_found");
-        const versions=node.metadata?.textVersions??[];const content=versionNodeContent(node);
-        if(!canSaveTextVersion(content,versions))throw Error("text_version_save_not_allowed");
-        const version:TextVersion={id:nanoid(),createdAt:new Date().toISOString(),content,note,source:"manual"};
-        const next=nodesRef.current.map(value=>value.id===nodeId?withTextVersions(value,[version,...versions]):value);
-        try{await commitTextVersionGraph(next);if(activeProjectIdRef.current===projectId)message.success(t("canvas.textVersions.saved"));}
-        catch(error){if(activeProjectIdRef.current===projectId)message.error(t("canvas.textVersions.saveFailed",{error:String(error)}));throw error;}
-    },[commitTextVersionGraph,message,projectId,t]);
-
-    const deleteTextVersion = useCallback(async(nodeId:string,versionId:string) => {
-        const next=nodesRef.current.map(value=>value.id!==nodeId?value:withTextVersions(value,(value.metadata?.textVersions??[]).filter(item=>item.id!==versionId)));
-        try{await commitTextVersionGraph(next);if(activeProjectIdRef.current===projectId)message.success(t("canvas.textVersions.deleted"));}
-        catch(error){if(activeProjectIdRef.current===projectId)message.error(t("canvas.textVersions.saveFailed",{error:String(error)}));}
-    },[commitTextVersionGraph,message,t]);
-
-    const restoreTextVersion = useCallback((nodeId:string,version:TextVersion) => {
-        const initial=nodesRef.current.find(value=>value.id===nodeId);if(!initial||!canRestoreNodeVersion(initial,version.content))return;
-        const current=versionNodeContent(initial);
-        let confirmation:ReturnType<typeof Modal.confirm>|undefined;
-        let restoring=false;
-        const restore=(backup:boolean):Promise<void>=>{
-            if(restoring)return Promise.reject(Error("text_versions_operation_busy"));
-            restoring=true;
-            confirmation?.update({okButtonProps:{disabled:true,loading:true},cancelButtonProps:{disabled:true},closable:false,maskClosable:false,keyboard:false,footer:(_:unknown, {OkBtn,CancelBtn}:{OkBtn:ComponentType<any>;CancelBtn:ComponentType<any>})=><div data-canvas-shortcuts-ignore className="flex justify-end gap-2"><CancelBtn disabled/><Button disabled loading>{t("canvas.textVersions.overwrite")}</Button><OkBtn/></div>});
-            const latest=nodesRef.current.find(value=>value.id===nodeId);if(!latest){restoring=false;return Promise.resolve();}
-            const liveVersion=latest.metadata?.textVersions?.find(item=>item.id===version.id);if(!liveVersion||liveVersion.content!==version.content||latest.type!==initial.type){confirmation?.destroy();restoring=false;return Promise.reject(Error("text_version_removed"));}
-            const latestContent=versionNodeContent(latest);
-            if(latestContent!==current){confirmation?.destroy();restoring=false;message.warning(t("canvas.textVersions.changedDuringConfirm"));return Promise.reject(Error("text_changed_during_confirmation"));}
-            const versions=latest.metadata?.textVersions??[];
-            if(latestContent===version.content){confirmation?.destroy();restoring=false;return Promise.resolve();}
-            const backupVersion=backup?{id:nanoid(),createdAt:new Date().toISOString(),content:latestContent,note:t("canvas.textVersions.backupNote"),source:"restore-backup" as const}:undefined;
-            const prepared=prepareTextRestore(latestContent,liveVersion,versions,backup?"backup":"direct",backupVersion);
-            if(!prepared){confirmation?.destroy();restoring=false;message.error(t(backup?"canvas.textVersions.limitReached":"canvas.textVersions.invalidRestore"));return Promise.reject(Error("text_restore_unavailable"));}
-            const next=nodesRef.current.map(value=>value.id===nodeId?withTextVersions(value,prepared.versions,prepared.content):value);
-            return commitTextVersionGraph(next).then(()=>{confirmation?.destroy();if(activeProjectIdRef.current===projectId)message.success(t(isDramaVersionNode(initial)?"canvas.textVersions.draftRestored":"canvas.textVersions.restored"));}).catch(error=>{confirmation?.destroy();if(activeProjectIdRef.current===projectId)message.error(t("canvas.textVersions.saveFailed",{error:String(error)}));throw error;}).finally(()=>{restoring=false;});
+    const runTextVersionCommand = useCallback(async (nodeId: string, command: {
+        action: "save" | "delete" | "confirm" | "restore";
+        versionId?: string;
+        note?: string;
+        mode?: "direct" | "backup" | "overwrite";
+    }, expectedContent?: string) => {
+        if (textVersionBusyRef.current || activeProjectIdRef.current !== projectId) throw Error("text_versions_operation_busy");
+        textVersionBusyRef.current = true;
+        setTextVersionBusy(true);
+        const key = JSON.stringify([projectId, nodeId, command]);
+        const submit = async <T,>(expectedRevision?: number) => {
+            const pending = pendingTextVersionRequest.current;
+            const operation = pending?.key === key && pending.content === expectedContent ?
+                pending : {key, content:expectedContent, id:nanoid(), revision:expectedRevision};
+            const payload = {...command, operationId:operation.id, expectedRevision:operation.revision};
+            const request = () => canvasApi<T>(versionPath(nodeId), "POST", payload);
+            const uncertain = (error: unknown) => error instanceof CanvasApiError &&
+                (error.status === 0 || error.status >= 500 || error.code === "backend_invalid_json");
+            try {
+                const result = await request().catch(error => {
+                    if (uncertain(error)) return request();
+                    throw error;
+                });
+                if (pendingTextVersionRequest.current === operation) pendingTextVersionRequest.current = null;
+                return result;
+            } catch (error) {
+                if (activeProjectIdRef.current === projectId) {
+                    if (uncertain(error)) pendingTextVersionRequest.current = operation;
+                    else if (pendingTextVersionRequest.current === operation) pendingTextVersionRequest.current = null;
+                }
+                throw error;
+            }
         };
-        const decision=getTextRestoreDecision(current,version.content,initial.metadata?.textVersions??[]);
-        if(decision==="noop")return;
-        if(decision==="direct"){void restore(false).catch(()=>{});return;}
-        confirmation=Modal.confirm({title:t(isDramaVersionNode(initial)?"canvas.textVersions.restoreDraft":"canvas.textVersions.restoreTitle"),content:<div data-canvas-shortcuts-ignore>{t(isDramaVersionNode(initial)?"canvas.textVersions.restoreDraftPrompt":"canvas.textVersions.restorePrompt")}{decision==="backup-unavailable"?<p>{t("canvas.textVersions.limitReached")}</p>:null}</div>,okText:t("canvas.textVersions.backupRestore"),okButtonProps:{disabled:decision==="backup-unavailable"},cancelText:t("common.cancel"),onOk:()=>restore(true),footer:(_, {OkBtn,CancelBtn})=><div data-canvas-shortcuts-ignore className="flex justify-end gap-2"><CancelBtn/><Button onClick={()=>{void restore(false).then(()=>confirmation?.destroy()).catch(()=>{});}}>{t("canvas.textVersions.overwrite")}</Button><OkBtn/></div>});
-    },[commitTextVersionGraph,message,t]);
+        const assertContent = () => {
+            const node = nodesRef.current.find(item => item.id === nodeId);
+            if (activeProjectIdRef.current !== projectId || !node ||
+                (expectedContent !== undefined && versionNodeContent(node) !== expectedContent)) {
+                throw Error(t("canvas.textVersions.changedDuringConfirm"));
+            }
+        };
+        try {
+            if (command.action === "confirm" || command.action === "restore") {
+                let before: CanvasHistoryEntry | undefined;
+                let beforeRevision = 0;
+                const saved = await commitAssistantCanvasGraphWithSaveBarrier(projectId, ({expectedRevision, assertCurrent}) => {
+                    assertContent();
+                    assertCurrent();
+                    before = createHistoryEntry();
+                    beforeRevision = expectedRevision;
+                    return submit<CanvasBackendProject>(expectedRevision);
+                });
+                if (before && saved.revision > beforeRevision && activeProjectIdRef.current === projectId) {
+                    if (historyCommitTimerRef.current) clearTimeout(historyCommitTimerRef.current);
+                    historyCommitTimerRef.current = null;
+                    const baseline = lastHistoryRef.current;
+                    const past = [...historyRef.current.past];
+                    if (baseline && !sameCanvasHistoryEntry(baseline, before)) past.push(baseline);
+                    historyRef.current.past = [...past, before].slice(-50);
+                    historyRef.current.future = [];
+                    lastHistoryRef.current = createHistoryEntry();
+                    setHistoryState({canUndo:true,canRedo:false});
+                }
+            } else if (command.action === "save") {
+                await awaitCanvasStorePersistence(projectId);
+                const expectedRevision = savedCanvasGraphRevision(projectId);
+                if (expectedRevision === undefined) throw Error("project_not_loaded");
+                assertContent();
+                await submit<{ok:true}>(expectedRevision);
+            } else {
+                await submit<{ok:true}>();
+            }
+            if (activeProjectIdRef.current === projectId) refreshVersions(value => value + 1);
+        } finally {
+            if (activeProjectIdRef.current === projectId) {
+                textVersionBusyRef.current = false;
+                setTextVersionBusy(false);
+            }
+        }
+    }, [createHistoryEntry, projectId, t, versionPath]);
 
-    const confirmDramaVersion = useCallback(async(nodeId:string,expectedDraft:string)=>{
-        const node=nodesRef.current.find(item=>item.id===nodeId);
-        if(!node||versionNodeContent(node)!==expectedDraft)throw Error(t("canvas.textVersions.changedDuringConfirm"));
-        try{
-            const confirmed=prepareDramaConfirmation(node,{id:nanoid(),createdAt:new Date().toISOString()});
-            await commitTextVersionGraph(nodesRef.current.map(item=>item.id===nodeId?confirmed:item));
-        }catch(error){
-            if(activeProjectIdRef.current===projectId&&textVersionPendingProjectRef.current===projectId)
-                setTextVersionsNodeId(nodeId);
-            if(error instanceof Error&&["episode_history_full","text_versions_document_too_large"].includes(error.message))
+    const saveTextVersion = useCallback(async (nodeId: string, note?: string) => {
+        const node = nodesRef.current.find(item => item.id === nodeId);
+        if (!node) return;
+        await runTextVersionCommand(nodeId, {action:"save", note}, versionNodeContent(node));
+        message.success(t("canvas.textVersions.saved"));
+    }, [message, runTextVersionCommand, t]);
+
+    const deleteTextVersion = useCallback(async (nodeId: string, versionId: string) => {
+        try {
+            await runTextVersionCommand(nodeId, {action:"delete", versionId});
+            message.success(t("canvas.textVersions.deleted"));
+        } catch (error) {
+            message.error(t("canvas.textVersions.saveFailed", {error:String(error)}));
+        }
+    }, [message, runTextVersionCommand, t]);
+
+    const restoreTextVersion = useCallback((nodeId: string, version: TextVersion) => {
+        const node = nodesRef.current.find(item => item.id === nodeId);
+        if (!node || !canRestoreNodeVersion(node, version.content)) return;
+        const current = versionNodeContent(node);
+        const drama = isDramaVersionNode(node);
+        const restore = async (mode: "direct" | "backup" | "overwrite") => {
+            await runTextVersionCommand(nodeId, {action:"restore", versionId:version.id, mode,
+                note:mode === "backup" ? t("canvas.textVersions.backupNote") : undefined}, current);
+            message.success(t(drama ? "canvas.textVersions.draftRestored" : "canvas.textVersions.restored"));
+        };
+        const report = (error: unknown) => message.error(error instanceof Error && error.message.startsWith("text_version_limit") ?
+            t("canvas.textVersions.limitReached") : t("canvas.textVersions.saveFailed", {error:String(error)}));
+        void restore("direct").catch(error => {
+            if (!(error instanceof Error) || !error.message.startsWith("text_version_backup_required")) {
+                report(error);
+                return;
+            }
+            const full = textVersions.length >= TEXT_VERSIONS_LIMIT;
+            const confirmation = Modal.confirm({
+                title:t(drama ? "canvas.textVersions.restoreDraft" : "canvas.textVersions.restoreTitle"),
+                content:<div data-canvas-shortcuts-ignore>{t(drama ? "canvas.textVersions.restoreDraftPrompt" : "canvas.textVersions.restorePrompt")}{full && <p>{t("canvas.textVersions.limitReached")}</p>}</div>,
+                okText:t("canvas.textVersions.backupRestore"), okButtonProps:{disabled:full}, cancelText:t("common.cancel"),
+                onOk:() => restore("backup").catch(failure => { report(failure); throw failure; }),
+                footer:(_, {OkBtn, CancelBtn}) => <div data-canvas-shortcuts-ignore className="flex justify-end gap-2">
+                    <CancelBtn/><Button onClick={() => void restore("overwrite").then(() => confirmation.destroy(), report)}>{t("canvas.textVersions.overwrite")}</Button><OkBtn/>
+                </div>,
+            });
+        });
+    }, [message, runTextVersionCommand, t, textVersions.length]);
+
+    const confirmDramaVersion = useCallback(async (nodeId: string, draft: string) => {
+        try {
+            await runTextVersionCommand(nodeId, {action:"confirm"}, draft);
+        } catch (error) {
+            if (error instanceof Error && error.message.startsWith("text_version_limit")) {
                 throw Error(t("canvas.textVersions.episodeArchiveLimit"));
+            }
             throw error;
         }
-    },[commitTextVersionGraph,projectId,t]);
+    }, [runTextVersionCommand, t]);
 
     const handleNodeContentChange = useCallback((nodeId: string, content: string) => {
         setNodes((prev) => prev.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, content } } : node)));
@@ -4153,7 +4233,7 @@ function AtelierCanvasPage() {
                 }}
                 onOpenVersions={() => openTextVersions(panelNode.id)}
                 onConfirmVersion={draft => confirmDramaVersion(panelNode.id,draft)}
-                versionBusy={textVersionBusy||textVersionSavePending}
+                versionBusy={textVersionBusy}
                 onChange={patch => handleConfigNodeChange(panelNode.id, patch)} onCreateVideoConfigs={(inputs, batch) => {
                     const source = nodesRef.current.find(item => item.id === panelNode.id);
                     if (!source) return;
@@ -4248,7 +4328,7 @@ function AtelierCanvasPage() {
         },
         [backendComfyEnabled,cancelComfyWorkflow,startNodeReferenceSelection,connections,nodes,executeComfyWorkflow,globalComfyInstanceId,openBboxEditor,
             handleConfigNodeChange,handleGenerateNode,handleNodePromptChange,message,projectId,runningNodeId,stopConfigGeneration,
-            openTextVersions,confirmDramaVersion,textVersionBusy,textVersionSavePending],
+            openTextVersions,confirmDramaVersion,textVersionBusy],
     );
 
     const handleDirectorExport = useCallback(
@@ -4277,7 +4357,9 @@ function AtelierCanvasPage() {
 
     const renderNodeContentPanel = useCallback(
         (contentNode: CanvasNodeData) => contentNode.type === "drama:source" ? (
-            <DramaSourceNode key={contentNode.id} node={contentNode} onChange={patch => handleConfigNodeChange(contentNode.id, patch)} />
+            <DramaSourceNode key={contentNode.id} node={contentNode} onChange={patch => handleConfigNodeChange(contentNode.id, patch)}
+                onOpenVersions={() => openTextVersions(contentNode.id)} onConfirmVersion={draft => confirmDramaVersion(contentNode.id,draft)}
+                versionBusy={textVersionBusy} />
         ) : isInlineDramaNode(contentNode.type) ? renderNodePanel(contentNode) : (
             <CanvasConfigNodePanel
                 node={contentNode}
@@ -4292,7 +4374,7 @@ function AtelierCanvasPage() {
                 }}
             />
         ),
-        [stopConfigGeneration, handleConfigNodeChange, handleGenerateNode,inputGraphNodes,connections,renderNodePanel],
+        [stopConfigGeneration, handleConfigNodeChange, handleGenerateNode,inputGraphNodes,connections,renderNodePanel,openTextVersions,confirmDramaVersion,textVersionBusy],
     );
 
     // Grouped so NodeLayer's prop list stays readable. The node still receives each entry as its own
@@ -4660,18 +4742,14 @@ function AtelierCanvasPage() {
 
                 <CanvasNodeInfoModal node={infoNode} open={Boolean(infoNode)} onClose={() => setInfoNodeId(null)} />
 
-                {textVersionsNode?<CanvasTextVersionsModal key={`${projectId}:${textVersionsNode.id}`} open versions={textVersionsNode.metadata?.textVersions??[]} currentContent={versionNodeContent(textVersionsNode)}
+                {textVersionsNode?<CanvasTextVersionsModal key={`${projectId}:${textVersionsNode.id}`} open versions={textVersions} listLoading={versionsLoading} listError={versionsLoadError} loadVersion={loadTextVersion} currentContent={versionNodeContent(textVersionsNode)}
+                    story={textVersionsNode.type==="drama:source"}
                     storyboard={textVersionsNode.type==="drama:storyboard"}
                     confirmedContent={isDramaVersionNode(textVersionsNode)?textVersionsNode.metadata?.dramaConfirmed??"":undefined}
                     onClose={()=>setTextVersionsNodeId(null)} onSave={note=>saveTextVersion(textVersionsNode.id,note)}
                     onDelete={versionId=>void deleteTextVersion(textVersionsNode.id,versionId)} onRestore={version=>restoreTextVersion(textVersionsNode.id,version)}
-                    retryPending={textVersionSavePending} busy={textVersionBusy}
-                    onRetryPersistence={async()=>{
-                        if(activeProjectIdRef.current!==projectId||textVersionBusyRef.current)throw Error("text_versions_operation_busy");
-                        textVersionBusyRef.current=true;setTextVersionBusy(true);
-                        try{await awaitCanvasStorePersistence(projectId);if(activeProjectIdRef.current===projectId){textVersionPendingProjectRef.current=null;setTextVersionSavePending(false);message.success(t("canvas.textVersions.retrySuccess"));}}
-                        finally{if(activeProjectIdRef.current===projectId){textVersionBusyRef.current=false;setTextVersionBusy(false);}}
-                    }} />:null}
+                    retryPending={false} busy={textVersionBusy}
+                    onRetryPersistence={async () => { refreshVersions(value => value + 1); }} />:null}
 
                 {videoFrameNode ? <CanvasVideoFrameDialog key={`${projectId}:${videoFrameNode.id}:${videoFrameNode.metadata?.storageKey || ""}:${videoFrameNode.metadata?.content || ""}`} node={videoFrameNode} open onClose={() => setVideoFrameNodeId(null)} onCapture={(blob, timeMs) => captureVideoFrame(videoFrameNode, blob, timeMs)} /> : null}
 

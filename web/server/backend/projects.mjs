@@ -1,3 +1,4 @@
+import {extractTextVersions,insertTextVersions} from "./canvas-text-versions.mjs";
 import {randomUUID} from "node:crypto";
 import {stableJson,writeTransaction,assertNoRawCredentials,matchesSourceFingerprint} from "./repository.mjs";
 import {validCanvasNodeId} from "../canvas-node-id.mjs";
@@ -60,9 +61,11 @@ export function projectEventCursor(db){
 
 export function createProjectInTransaction(db,{id=randomUUID(),document}){
  if(!validId(id))throw problem("invalid_project_id");
- const content=validateProjectDocument(graphDocument(document));
+ const legacy=extractTextVersions(graphDocument(document));
+ const content=validateProjectDocument(legacy.document);
  if(db.prepare("SELECT id FROM projects WHERE id=?").get(id))throw problem("project_id_conflict",409);
  db.prepare("INSERT INTO projects(id,document_json,revision) VALUES(?,?,1)").run(id,content);
+ insertTextVersions(db,id,legacy.entries.reverse(),{legacy:true});
  initialCanvasState(db,id,document);
  emitProjectEvent(db,{id,revision:1,kind:"created"});
  return map(db.prepare("SELECT * FROM projects WHERE id=?").get(id));
@@ -95,7 +98,7 @@ export function saveSingleUserCanvas(db,{id,expectedRevision,document}){
  if(!validId(id))throw problem("invalid_project_id");
  if(expectedRevision!==undefined&&(!Number.isSafeInteger(expectedRevision)||expectedRevision<1))
   throw problem("expected_revision_required");
- const incoming=graphDocument(document);
+ const incoming=extractTextVersions(graphDocument(document)).document;
  validateProjectDocument(incoming);
  return writeTransaction(db,()=>{
   const row=db.prepare("SELECT * FROM projects WHERE id=? AND deleted_at IS NULL").get(id);
@@ -104,7 +107,8 @@ export function saveSingleUserCanvas(db,{id,expectedRevision,document}){
   // Non-Task single-user saves preserve the existing media reconciliation behavior.
   // The fence remains even after Task cancellation or archival.
   const taskManaged=!!db.prepare("SELECT 1 FROM assistant_tasks WHERE project_id=? LIMIT 1").get(id);
-  if(taskManaged&&expectedRevision!==row.revision)
+  const historyRevision=db.prepare("SELECT MAX(graph_revision) AS revision FROM canvas_text_version_operations WHERE project_id=?").get(id).revision;
+  if((taskManaged&&expectedRevision!==row.revision)||(historyRevision!==null&&(expectedRevision??0)<historyRevision))
    throw problem("project_revision_conflict",409,{currentRevision:row.revision});
   const current=JSON.parse(row.document_json);
   const next={...incoming,nodes:[...incoming.nodes],connections:[...incoming.connections]};

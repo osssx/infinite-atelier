@@ -12,7 +12,7 @@ import {zipSync,unzipSync,strToU8} from "fflate";
 import {initializeSchema} from "./schema.mjs";
 import {createBlobStore} from "./blob-store.mjs";
 import {createProjectArchive,ARCHIVE_MAX_BYTES} from "./project-archive.mjs";
-import {createProject,deleteProject,getProject} from "./projects.mjs";
+import {createProject,deleteProject,getProject,saveSingleUserCanvas} from "./projects.mjs";
 import {getCanvasViewport,getCanvasChats} from "./canvas-state.mjs";
 import {buildApp} from "./app.mjs";
 
@@ -202,4 +202,42 @@ test("authenticated ZIP endpoints export/import and keep project scoped",async t
  const result=post.json();assert.notEqual(result.id,"original");
  assert.equal(getProject(f.db,result.id).document.nodes.length,2);
  assert.equal((await app.inject({method:"GET",url:"/api/v1/projects/missing/archive",headers:{"x-test-owner":"yes"}})).statusCode,404);
+});
+
+test("archives large text history separately from the graph and restores version order",async t=>{
+ const {db,archive}=await fixture(t);
+ const versions=Array.from({length:6},(_,index)=>({id:"v"+index,createdAt:"now",source:"manual",
+  note:"note "+index,content:String(index).repeat(1024*1024)}));
+ const document={title:"Large history",nodes:[{id:"story",type:"drama:source",metadata:{
+  dramaDraft:"Current",textVersions:versions
+ }}],connections:[]};
+ createProject(db,{id:"large-history",document});
+ const graph=getProject(db,"large-history").document;
+ const edited=saveSingleUserCanvas(db,{id:"large-history",expectedRevision:1,document:{...graph,title:"Edited"}});
+ assert.equal(edited.document.title,"Edited");
+ assert.ok(!JSON.stringify(edited.document).includes("textVersions"));
+ const exported=await archive.exportProject("large-history");
+ const zip=Buffer.concat(await Array.fromAsync(exported.stream));
+ const members=unzipSync(zip);
+ const manifest=JSON.parse(Buffer.from(members["manifest.json"]).toString());
+ assert.equal(manifest.version,3);
+ assert.equal(manifest.project.document.nodes[0].metadata.textVersions,undefined);
+ assert.ok(members["text-history.jsonl"].length>5*1024*1024);
+ const imported=await archive.importProject(Readable.from([zip]));
+ assert.equal(getProject(db,imported.id).document.nodes[0].metadata.dramaDraft,"Current");
+ const rows=db.prepare("SELECT id,note,content FROM canvas_text_versions WHERE project_id=? ORDER BY seq DESC").all(imported.id);
+ assert.deepEqual(rows.map(row=>({...row})),versions.map(({id,note,content})=>({id,note,content})));
+});
+
+test("imports legacy ZIP versions into SQLite",async t=>{
+ const {db,archive}=await fixture(t);
+ const version={id:"legacy",createdAt:"now",note:"First",source:"manual",content:"Earlier text"};
+ const document={title:"Legacy",nodes:[{id:"text",type:"text",metadata:{content:"Current",textVersions:[version]}}],connections:[]};
+ const manifest={app:"infinite-atelier",kind:"sqlite-canvas-project",version:1,
+  project:{id:"old",title:"Legacy",document,viewport:{x:0,y:0,k:1},chats:{sessions:[],activeChatId:null}},media:[]};
+ const zip=zipSync({"manifest.json":strToU8(JSON.stringify(manifest))},{level:0});
+ const restored=await archive.importProject(Readable.from([zip]));
+ assert.deepEqual(getProject(db,restored.id).document.nodes[0].metadata,{content:"Current"});
+ const row=db.prepare("SELECT id, note, content FROM canvas_text_versions WHERE project_id=?").get(restored.id);
+ assert.deepEqual({...row},{id:version.id,note:version.note,content:version.content});
 });

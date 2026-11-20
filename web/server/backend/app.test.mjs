@@ -441,3 +441,26 @@ test("startServer rejects wide-area binding",async t=>{
  const{app}=await fixture(t);
  await assert.rejects(startServer(app,{host:"0.0.0.0",port:0}),/loopback_only/);
 });
+
+test("node history routes keep snapshots out of graph responses",async t=>{
+ const {call}=await fixture(t);
+ const document={title:"History",nodes:[{id:"story",type:"drama:source",metadata:{content:"One"}}],connections:[]};
+ assert.equal((await call("POST","/api/v1/projects",{id:"history",document})).statusCode,201);
+ const path="/api/v1/projects/history/nodes/story/text-versions";
+ const saved=await call("POST",path,{operationId:"save-id",action:"save",expectedRevision:1,note:"First"});
+ assert.equal(saved.statusCode,200,saved.body);
+ const summary=(await call("GET",path)).json().versions[0];
+ assert.equal(summary.note,"First");
+ assert.equal("content" in summary,false);
+ assert.equal((await call("GET",path+"/save-id")).json().version.content,"One");
+ const updated={...document,nodes:[{...document.nodes[0],metadata:{content:"Two"}}]};
+ assert.equal((await call("PATCH","/api/v1/projects/history",{expectedRevision:1,document:updated})).statusCode,200);
+ const rejected=await call("POST",path,{operationId:"restore-id",action:"restore",versionId:"save-id",mode:"direct",expectedRevision:2});
+ assert.equal(rejected.statusCode,409);
+ assert.equal(rejected.json().code,"text_version_backup_required");
+ const restored=await call("POST",path,{operationId:"restore-id",action:"restore",versionId:"save-id",mode:"backup",expectedRevision:2});
+ assert.equal(restored.statusCode,200,restored.body);
+ const graph=(await call("GET","/api/v1/projects/history")).json();
+ assert.equal(graph.revision,3);
+ assert.deepEqual(graph.document.nodes[0].metadata,{content:"One",dramaDraft:"One"});
+});

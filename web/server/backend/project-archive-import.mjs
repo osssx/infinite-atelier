@@ -12,6 +12,7 @@ import {Unzip} from "fflate";
 const error=(code,statusCode=400)=>Object.assign(Error(code),{code,statusCode});
 const NAME=/^blobs\/([a-f0-9]{64})$/;
 const MANIFEST="manifest.json";
+export const TEXT_HISTORY_ENTRY="text-history.jsonl";
 const META_LIMIT=5*1024*1024;
 function completeZip(tail,total,count){
  return tail.length===22&&tail.readUInt32LE(0)===0x06054b50&&
@@ -29,13 +30,13 @@ export async function importStreamedArchive(source,{limit,maxFiles,validateManif
  const unzip=new Unzip(entry=>{
   if(failure)return;
   const name=entry.name;
-  if((name!==MANIFEST&&!NAME.test(name))||entry.compression!==0||
+  if((name!==MANIFEST&&name!==TEXT_HISTORY_ENTRY&&!NAME.test(name))||entry.compression!==0||
      opened.has(name)||opened.size>=maxFiles){abort(error("archive_invalid_entry"));return}
   opened.add(name);
   const hasher=createHash("sha256");
   let bytes=0,output=null;
   if(name!==MANIFEST){
-   output=createWriteStream(join(root,name.slice(6)),{flags:"wx",mode:0o600,highWaterMark:256*1024});
+   output=createWriteStream(join(root,name===TEXT_HISTORY_ENTRY?TEXT_HISTORY_ENTRY:name.slice(6)),{flags:"wx",mode:0o600,highWaterMark:256*1024});
    output.on("error",abort);
    writers.push(output);
    finishing.push(finished(output).catch(abort));
@@ -53,15 +54,15 @@ export async function importStreamedArchive(source,{limit,maxFiles,validateManif
     // Feed at most one input frame ahead of an OS file write. Large media
     // are never buffered as an array of decompressed chunks.
     backpressure.push(new Promise((resolve,reject)=>{
-     const done=()=>{output.off("drain",drain);output.off("close",close);output.off("error",close)};
+     const done=()=>{output.off("drain",drain);output.off("finish",drain);output.off("close",close);output.off("error",close)};
      const drain=()=>{done();resolve()};
      const close=()=>{done();reject(error("archive_stage_write_failed",503))};
-     output.once("drain",drain);output.once("close",close);output.once("error",close);
+     output.once("drain",drain);output.once("finish",drain);output.once("close",close);output.once("error",close);
     }));
    }
    if(final){
     if(output)output.end();
-    entries.set(name,{bytes,digest:hasher.digest("hex"),path:name===MANIFEST?null:join(root,name.slice(6))});
+    entries.set(name,{bytes,digest:hasher.digest("hex"),path:name===MANIFEST?null:join(root,name===TEXT_HISTORY_ENTRY?TEXT_HISTORY_ENTRY:name.slice(6))});
    }
   };
   entry.start();
@@ -92,7 +93,11 @@ export async function importStreamedArchive(source,{limit,maxFiles,validateManif
   catch{throw error("archive_invalid_manifest")}
   manifestChunks=[];
   const media=validateManifest(manifest);
-  if(entries.size!==media.size+1)throw error("archive_unexpected_files");
+  const history=entries.get(TEXT_HISTORY_ENTRY);
+  if(Boolean(history)!==Boolean(manifest.textHistory)||
+     (history&&(history.bytes!==manifest.textHistory.bytes||history.digest!==manifest.textHistory.sha256)))
+   throw error("archive_text_history_integrity_error",422);
+  if(entries.size!==media.size+1+Number(Boolean(history)))throw error("archive_unexpected_files");
   for(const item of media.values()){
    const staged=entries.get(item.path);
    if(!staged||staged.bytes!==item.bytes||staged.digest!==item.sha256)
@@ -105,7 +110,7 @@ export async function importStreamedArchive(source,{limit,maxFiles,validateManif
    });
    if(saved.blobId!==item.sha256)throw error("archive_media_integrity_error",422);
   }
-  return create(manifest,media);
+  return create(manifest,media,history?.path);
  }finally{
   // Reject malformed or oversized uploads without leaving open files.
   // Destroy only writers that were not completed (Windows cannot unlink

@@ -57,6 +57,26 @@ describe("text version modal interactions",()=>{
   await click("canvas.textVersions.restoreDraft");
   expect(restore).toHaveBeenCalledWith(version);
  });
+ it("loads a story version body only when selected",async()=>{
+  host=document.createElement("div");document.body.append(host);root=createRoot(host);
+  const version:TextVersion={id:"old",createdAt:"now",content:"Full original story",note:"Old story",source:"manual"};
+  const {content,...summary}=version;
+  const loadVersion=vi.fn(async()=>version);
+  const restore=vi.fn();
+  await act(async()=>root?.render(createElement(CanvasTextVersionsModal,{
+   open:true,story:true,versions:[{...summary,preview:"Excerpt"}],currentContent:"Current story",
+   confirmedContent:"Confirmed story",loadVersion,onClose:vi.fn(),onSave:vi.fn(),onDelete:vi.fn(),
+   onRestore:restore,onRetryPersistence:vi.fn(),retryPending:false,
+  })));
+  expect(loadVersion).not.toHaveBeenCalled();
+  const click=async(label:string)=>await act(async()=>[...document.body.querySelectorAll("button")]
+   .find(button=>button.getAttribute("aria-label")===label)?.click());
+  await click("Old story");
+  expect(loadVersion).toHaveBeenCalledWith("old",expect.any(AbortSignal));
+  expect(document.body.textContent).toContain(content);
+  await click("canvas.textVersions.restoreDraft");
+  expect(restore).toHaveBeenCalledWith(expect.objectContaining(version));
+ });
  it("selects a version added to an initially empty list and retries persistence",async()=>{
   host=document.createElement("div");document.body.append(host);root=createRoot(host);
   const retry=vi.fn(async()=>{});const saved:TextVersion={id:"new",createdAt:"now",content:"new body",source:"manual"};

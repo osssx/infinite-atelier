@@ -1,7 +1,8 @@
 import Fastify from "fastify";
 import {randomUUID,createHash} from "node:crypto";
 import {resolveAuthorizedSkillScript} from "./skill-script-source.mjs";
-import {createProject,getProject,saveSingleUserCanvas,deleteProject,listProjectSummaries,projectEventCursor} from "./projects.mjs";
+import {readTextVersions,mutateTextVersions} from "./canvas-text-versions.mjs";
+import {validateProjectDocument,emitProjectEvent,createProject,getProject,saveSingleUserCanvas,deleteProject,listProjectSummaries,projectEventCursor} from "./projects.mjs";
 import {getCanvasViewport,putCanvasViewport,getCanvasChats,putCanvasChats} from "./canvas-state.mjs";
 import {registerAssistantTaskRoutes} from "./assistant-task-routes.mjs";
 import {getAssistantTask,getAssistantTaskTurnPolicy} from "./assistant-tasks.mjs";
@@ -200,6 +201,10 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
     "assistant_external_submission_unknown","assistant_external_artifacts_missing",
     "assistant_external_materialization_blocked","assistant_external_materialization_unknown",
    "chats_revision_conflict","viewport_revision_conflict",
+   "text_node_not_found","text_version_not_found","text_version_limit","text_version_backup_required",
+   "text_version_invalid_restore","text_version_save_not_allowed","text_version_operation_conflict",
+   "invalid_text_versions","invalid_text_version_command","drama_draft_invalid",
+   "archive_invalid_text_history","archive_text_history_integrity_error",
    "stale_generation_source","cyclic_generation_source","generation_save_barrier_required","invalid_job_request","idempotency_key_conflict","backend_prior_job_not_terminal","job_not_found","invalid_project_job_history_request","invalid_project_job_history_cursor","project_job_not_found","project_job_not_terminal",
    "unknown_model_close_invalid","unknown_model_close_not_eligible","unknown_model_close_state_changed","reconciliation_invalid_input","reconciliation_not_eligible","reconciliation_provider_unsupported","reconciliation_adapter_unavailable","reconciliation_state_changed","reconciliation_upstream_unavailable","reconciliation_remote_already_linked",
    "script_asset_job_not_found","script_asset_job_not_eligible","script_asset_identity_mismatch",
@@ -677,6 +682,19 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
  });
  app.patch("/api/v1/projects/:id",{schema:{params:{type:"object",required:["id"],properties:{id:idSchema}},body:editBody}},async(req,reply)=>{
   const project=saveSingleUserCanvas(db,{id:req.params.id,...req.body});reply.header("ETag",'"'+project.revision+'"');return project;
+ });
+ const versionPath="/api/v1/projects/:id/nodes/:nodeId/text-versions";
+ app.get(versionPath,req=>readTextVersions(db,req.params.id,req.params.nodeId));
+ app.get(versionPath+"/:versionId",req=>readTextVersions(db,req.params.id,req.params.nodeId,req.params.versionId));
+ app.post(versionPath,{schema:{body:{type:"object",required:["operationId","action"],additionalProperties:false,properties:{
+  operationId:idSchema,action:{enum:["save","delete","restore","confirm"]},
+  expectedRevision:{type:"integer",minimum:1},versionId:{type:"string",minLength:1,maxLength:128},
+  mode:{enum:["direct","backup","overwrite"]},note:{type:"string",maxLength:100}
+ }}}},req=>{
+  const {action,versionId,mode}=req.body;
+  if((["delete","restore"].includes(action)&&!versionId)||(action==="restore"&&!mode))
+   return Promise.reject(Object.assign(Error("invalid_text_version_command"),{code:"invalid_text_version_command",statusCode:400}));
+  return mutateTextVersions(db,req.params.id,req.params.nodeId,req.body,validateProjectDocument,emitProjectEvent);
  });
  // Pure preflight for the drama pipeline. The canvas keeps the editable draft
  // in its document, while this endpoint gives every client the same reference

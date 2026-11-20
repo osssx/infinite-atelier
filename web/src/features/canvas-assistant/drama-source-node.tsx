@@ -1,14 +1,20 @@
 import { useState } from "react";
-import { Upload } from "lucide-react";
+import { Button } from "antd";
+import { useTranslation } from "react-i18next";
+import { History, Upload } from "lucide-react";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
 import type { CanvasNodeData, CanvasNodeMetadata } from "@/types/canvas";
 import { dramaInlineNodeClass, dramaNodeControl, dramaNodePrimary, DramaNodeStatus } from "./drama-node-style";
 
-export function DramaSourceNode({node, onChange}: {
+export function DramaSourceNode({node, onChange, onOpenVersions, onConfirmVersion, versionBusy}: {
     node: CanvasNodeData;
+    onOpenVersions: () => void;
+    onConfirmVersion: (draft: string) => Promise<void>;
+    versionBusy: boolean;
     onChange: (patch: Partial<CanvasNodeMetadata>) => void;
 }) {
+    const {t} = useTranslation();
     const theme = canvasThemes[useThemeStore(state => state.theme)];
     const [error, setError] = useState("");
     const source = node.metadata?.dramaDraft ?? node.metadata?.content ?? node.metadata?.dramaConfirmed ?? "";
@@ -20,7 +26,11 @@ export function DramaSourceNode({node, onChange}: {
         onWheel={event => event.stopPropagation()}>
         <div className="flex items-center justify-between gap-2">
             <label className="text-sm font-semibold" htmlFor={`drama-source-${node.id}`}>小说或剧本</label>
-            <DramaNodeStatus theme={theme} confirmed={confirmed} />
+            <div className="flex items-center gap-2">
+                <DramaNodeStatus theme={theme} confirmed={confirmed} />
+                <Button size="small" icon={<History size={14} />} style={control}
+                    onMouseDown={event => event.stopPropagation()} onClick={onOpenVersions}>{t("canvas.textVersions.title")}</Button>
+            </div>
         </div>
         <div className="thin-scrollbar flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto overscroll-contain"
             onMouseDown={event => event.stopPropagation()} onPointerDown={event => event.stopPropagation()}>
@@ -59,7 +69,10 @@ export function DramaSourceNode({node, onChange}: {
                 }} />
             </label>
             <button type="button" className="rounded-md border px-2 py-1 font-medium disabled:opacity-50" style={source.trim() && !confirmed ? dramaNodePrimary(theme) : control}
-                disabled={!source.trim() || confirmed} onClick={() => onChange({dramaConfirmed:source})}>确认原文</button>
+                disabled={versionBusy || !source.trim() || confirmed} onClick={() => {
+                    setError("");
+                    void onConfirmVersion(source).catch(error => setError(error.message));
+                }}>确认原文</button>
         </div>
         {error && <p role="alert">{error}</p>}
         </div>

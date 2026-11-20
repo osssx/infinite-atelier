@@ -1,8 +1,11 @@
 import {randomUUID,createHash} from "node:crypto";
-import {createReadStream} from "node:fs";
+import {createReadStream,mkdtempSync,rmSync,openSync,closeSync,readSync,writeFileSync} from "node:fs";
+import {join} from "node:path";
+import {tmpdir} from "node:os";
+import {insertTextVersions,textVersionNodeTypes} from "./canvas-text-versions.mjs";
 import {PassThrough} from "node:stream";
 import {Zip,ZipPassThrough} from "fflate";
-import {importStreamedArchive} from "./project-archive-import.mjs";
+import {importStreamedArchive,TEXT_HISTORY_ENTRY} from "./project-archive-import.mjs";
 import {createProjectInTransaction,getProject,validateProjectDocument} from "./projects.mjs";
 import {exportAssistantTaskArchive,validateAssistantTaskArchive,importAssistantTaskArchive} from "./assistant-task-archive.mjs";
 import {getCanvasViewport,getCanvasChats} from "./canvas-state.mjs";
@@ -60,7 +63,7 @@ function boundTemplates(document){
 }
 function validatedManifest(manifest,registry){
  if(!manifest||manifest.app!=="infinite-atelier"||manifest.kind!=="sqlite-canvas-project"||
-  ![1,2].includes(manifest.version)||!manifest.project||!Array.isArray(manifest.media))
+  ![1,2,3].includes(manifest.version)||!manifest.project||!Array.isArray(manifest.media))
    throw error("archive_invalid_manifest");
  const p=manifest.project;
  if(!p.document||!p.viewport||!p.chats||typeof p.title!=="string"||
@@ -68,6 +71,7 @@ function validatedManifest(manifest,registry){
  validateProjectDocument(p.document);
  assertNoRawCredentials(manifest);
  const templates=manifest.templates??[];
+ if(manifest.media.length>ARCHIVE_MAX_FILES-1)throw error("archive_file_limit_exceeded",413);
  if(!Array.isArray(templates)||templates.length>64)throw error("archive_invalid_manifest");
  const included=new Set();
  for(const raw of templates){
@@ -82,9 +86,13 @@ function validatedManifest(manifest,registry){
    throw error("archive_template_missing",422);
  if(!Array.isArray(p.chats.sessions)||p.chats.activeChatId===undefined)
   throw error("archive_invalid_manifest");
- if(manifest.version===2)validateAssistantTaskArchive(manifest.assistantTasks);
+ if(manifest.version>=2)validateAssistantTaskArchive(manifest.assistantTasks);
+ const history=manifest.textHistory;
+ if(manifest.version===3?(!history||!Number.isSafeInteger(history.bytes)||history.bytes<1||
+  history.bytes>ARCHIVE_MAX_BYTES||!hashRe.test(history.sha256)):history!==undefined)
+  throw error("archive_invalid_manifest");
  const found=projectArchiveHashes({document:p.document,chats:p.chats,
-   ...(manifest.version===2?{assistantTasks:manifest.assistantTasks}:{})});
+   ...(manifest.version>=2?{assistantTasks:manifest.assistantTasks}:{})});
  const media=new Map();
  for(const item of manifest.media){
   if(!item||!hashRe.test(item.sha256)||item.path!=="blobs/"+item.sha256||
@@ -96,6 +104,56 @@ function validatedManifest(manifest,registry){
  if(media.size!==found.size||[...found].some(h=>!media.has(h)))
   throw error("archive_media_manifest_mismatch",422);
  return media;
+}
+function* readHistory(path,document){
+ const nodeIds=new Set(document.nodes.filter(node=>textVersionNodeTypes.has(node.type)).map(node=>node.id));
+ const fd=openSync(path,"r"),buffer=Buffer.allocUnsafe(64*1024);
+ let pending=Buffer.alloc(0);
+ try{
+  for(let size;(size=readSync(fd,buffer))>0;){
+   const data=Buffer.concat([pending,buffer.subarray(0,size)]);
+   let start=0;
+   for(let next;(next=data.indexOf(10,start))!==-1;){
+    if(next-start>5*1024*1024)throw error("archive_invalid_text_history",413);
+    let entry;
+    try{entry=JSON.parse(new TextDecoder("utf-8",{fatal:true}).decode(data.subarray(start,next)))}
+    catch{throw error("archive_invalid_text_history")}
+    if(!nodeIds.has(entry?.nodeId))throw error("archive_invalid_text_history");
+    yield entry;
+    start=next+1;
+   }
+   pending=data.subarray(start);
+   if(pending.length>5*1024*1024)throw error("archive_invalid_text_history",413);
+  }
+  if(pending.length)throw error("archive_invalid_text_history");
+ }finally{closeSync(fd)}
+}
+
+function stageHistory(db,project,remaining){
+ const ids=new Set(project.document.nodes.filter(node=>textVersionNodeTypes.has(node.type)).map(node=>node.id));
+ const rows=db.prepare(`SELECT node_id AS nodeId,id,created_at AS createdAt,source,note,content
+   FROM canvas_text_versions WHERE project_id=? ORDER BY seq`).iterate(project.id);
+ const hash=createHash("sha256");
+ let root,path,fd,bytes=0;
+ try{
+  for(const row of rows){
+   if(!ids.has(row.nodeId))continue;
+   const line=Buffer.from(JSON.stringify(row)+"\n");
+   bytes+=line.length;
+   if(bytes>remaining||line.length>5*1024*1024)throw error("archive_size_exceeded",413);
+   if(fd===undefined){
+    root=mkdtempSync(join(tmpdir(),"atelier-history-"));
+    path=join(root,TEXT_HISTORY_ENTRY);
+    fd=openSync(path,"wx",0o600);
+   }
+   writeFileSync(fd,line);hash.update(line);
+  }
+  return root?{root,path,bytes,sha256:hash.digest("hex")}:null;
+ }catch(e){
+  if(fd!==undefined){closeSync(fd);fd=undefined}
+  if(root)rmSync(root,{recursive:true,force:true});
+  throw e;
+ }finally{if(fd!==undefined)closeSync(fd)}
 }
 function assertQuota(n){if(n>ARCHIVE_MAX_BYTES)throw error("archive_size_exceeded",413)}
 export function createProjectArchive({db,blobStore,workflowsDir,registry:providedRegistry}={}){
@@ -123,9 +181,18 @@ export function createProjectArchive({db,blobStore,workflowsDir,registry:provide
     revision:project.revision,document:project.document,
     viewport:viewport.viewport,chats:{sessions:chats.sessions,activeChatId:chats.activeChatId}},
    media,templates,assistantTasks};
-  const text=Buffer.from(stable(manifest),"utf8");
-  if(text.length>5*1024*1024)throw error("archive_invalid_manifest",413);
-  assertQuota(total+text.length);
+  if(getProject(db,id).revision!==project.revision)throw error("project_revision_conflict",409);
+  const history=stageHistory(db,project,ARCHIVE_MAX_BYTES-total);
+  let text;
+  try{
+   if(history){manifest.version=3;manifest.textHistory={bytes:history.bytes,sha256:history.sha256}}
+   text=Buffer.from(stable(manifest),"utf8");
+   if(text.length>5*1024*1024)throw error("archive_invalid_manifest",413);
+   assertQuota(total+text.length+(history?.bytes??0));
+  }catch(e){
+   if(history)rmSync(history.root,{recursive:true,force:true});
+   throw e;
+  }
   const stream=new PassThrough({highWaterMark:256*1024});
   const zip=new Zip((e,chunk,final)=>{
    if(stream.destroyed)return;
@@ -157,6 +224,7 @@ export function createProjectArchive({db,blobStore,workflowsDir,registry:provide
   void (async()=>{
    try{
     await emit(manifestName,[text]);
+    if(history)await emit(TEXT_HISTORY_ENTRY,createReadStream(history.path));
     for(const item of media){
      const source=await blobStore.stat(item.sha256);
      const digest=createHash("sha256");let bytes=0;
@@ -171,14 +239,15 @@ export function createProjectArchive({db,blobStore,workflowsDir,registry:provide
     }
     zip.end();
    }catch(e){zip.terminate();stream.destroy(e)}
+   finally{if(history)rmSync(history.root,{recursive:true,force:true});}
   })();
   return {stream,fileName:project.id+".atelier.zip"};
  }
  async function importProject(source){
   return importStreamedArchive(source,{
-   limit:ARCHIVE_MAX_BYTES,maxFiles:ARCHIVE_MAX_FILES,
+   limit:ARCHIVE_MAX_BYTES,maxFiles:ARCHIVE_MAX_FILES+1,
    validateManifest:manifest=>validatedManifest(manifest,registry),blobStore,
-   create:(manifest,media)=>{
+   create:(manifest,media,historyPath)=>{
     const p=manifest.project;
     registry.installMany(manifest.templates??[]);
     return writeTransaction(db,()=>{
@@ -186,7 +255,8 @@ export function createProjectArchive({db,blobStore,workflowsDir,registry:provide
        ...p.document,title:p.title,
        viewport:p.viewport,chatSessions:p.chats.sessions,activeChatId:p.chats.activeChatId
       }});
-     const taskCount=manifest.version===2?
+     if(historyPath)insertTextVersions(db,created.id,readHistory(historyPath,p.document));
+     const taskCount=manifest.version>=2?
       importAssistantTaskArchive(db,created.id,manifest.assistantTasks):0;
      return {id:created.id,revision:created.revision,mediaCount:media.size,
       taskCount,title:p.title};

@@ -57,7 +57,7 @@ export const assistantSkillProposalToolDefinition={
  }
 };
 const geminiParameter=spec=>({
- type:spec.type==="array"?"ARRAY":spec.type==="object"?"OBJECT":"STRING",
+ type:spec.type==="array"?"ARRAY":spec.type==="object"?"OBJECT":spec.type==="integer"?"INTEGER":"STRING",
  ...(spec.items?{items:geminiParameter(spec.items)}:{}),
  ...(spec.properties?{properties:Object.fromEntries(Object.entries(spec.properties)
   .map(([key,value])=>[key,geminiParameter(value)]))}:{}),
@@ -71,8 +71,8 @@ export function assistantGeminiSkillDeclarationsFor(definitions){
  return definitions.map(item=>({name:item.function.name,description:item.function.description,
   parameters:geminiParameter(item.function.parameters)}));
 }
-export function createAssistantSkillToolSession(authorizedEntries,{scriptProposalEnabled=false}={}){
- if(!Array.isArray(authorizedEntries)||authorizedEntries.length>12)
+export function createAssistantSkillToolSession(authorizedEntries,{scriptProposalEnabled=false,discover=false}={}){
+ if(!Array.isArray(authorizedEntries)||authorizedEntries.length>(discover?100:12))
   throw fail("assistant_skill_tool_unauthorized");
  const skills=new Map(),activated=new Set();
  for(const entry of authorizedEntries){
@@ -82,7 +82,7 @@ export function createAssistantSkillToolSession(authorizedEntries,{scriptProposa
   skills.set(entry.id,entry);
   // These Skills' SKILL.md instructions are already present in the user-level
   // context. Their resources can be read without a redundant activate call.
-  activated.add(entry.id);
+  if(!discover)activated.add(entry.id);
  }
  function propose(args){
   if(!scriptProposalEnabled||!object(args)||typeof args.skill_id!=="string"||
@@ -91,7 +91,7 @@ export function createAssistantSkillToolSession(authorizedEntries,{scriptProposa
    throw fail("assistant_skill_tool_unauthorized");
   const skill=skills.get(args.skill_id);
   const paths=skill?.scriptPaths??[];
-  if(!skill||!Array.isArray(paths)||!paths.includes(args.script_path)||
+  if(!skill||!activated.has(skill.id)||!Array.isArray(paths)||!paths.includes(args.script_path)||
    !safeScriptPath(args.script_path))
    throw fail("assistant_skill_tool_unauthorized");
   const argv=args.args??[],out=args.output_files??[];
@@ -152,7 +152,7 @@ export function createAssistantSkillToolSession(authorizedEntries,{scriptProposa
   reads.push({skillId:skill.id,path:args.path});
   return output;
  }
- return {invoke,propose,reads,calls,authorizedSkillIds:[...skills.keys()]};
+ return {invoke,propose,reads,calls,activated,authorizedSkillIds:[...skills.keys()]};
 }
 
 /** Model-provided JSON arguments must obey a narrow server-side schema. */

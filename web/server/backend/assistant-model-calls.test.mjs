@@ -20,7 +20,7 @@ const doc={nodes:[
  {id:"visible",type:"text",title:"展示节点",metadata:{content:"公开剧情内容"}},
  {id:"private",type:"text",title:"隐私节点",metadata:{content:secret}}
 ],connections:[]};
-async function fixture(t,network,{includeContext=false,scope="selection",includedIds=[]}={}){
+async function fixture(t,network,{includeContext=false,scope="selection",includedIds=[],document=doc}={}){
  const db=new DatabaseSync(":memory:");initializeSchema(db);
  const service=createAssistantChatService({vault,retryDelayMs:0,compatibleUpstreamCall:network});
  const app=buildApp({db,authorize:()=>true,assistantChat:service});
@@ -30,7 +30,7 @@ async function fixture(t,network,{includeContext=false,scope="selection",include
   return {status:response.statusCode,body:response.json()};
  };
  const projectId="p-model";
- assert.equal((await call("POST","/api/v1/projects",{id:projectId,document:doc})).status,201);
+ assert.equal((await call("POST","/api/v1/projects",{id:projectId,document})).status,201);
  const task=createAssistantTask(db,{projectId,chatSessionId:"chat-a",rootMessageId:"root-msg",
   requestId:"create-task",originalRequest:"请完成已有节点的创作任务",
   contextPolicy:{includeContext,scope,includedIds}});
@@ -45,6 +45,32 @@ async function fixture(t,network,{includeContext=false,scope="selection",include
  });
  return {db,app,call,taskId,base,payload};
 }
+test("a linked Task can read only its frozen episode reference without requesting Agent mode",async t=>{
+ const captured=[];
+ const draft=JSON.stringify({episodes:[{id:"ep1",title:"无声灯塔",ending:"灯塔忽然灭了"}]});
+ const document={...doc,nodes:[{...doc.nodes[0],type:"drama:episodes",title:"剧集规划",
+  metadata:{dramaDraft:draft}},doc.nodes[1]]};
+ const fx=await fixture(t,async(_url,options)=>{
+  const payload=JSON.parse(options.body);
+  captured.push(payload);
+  assert.doesNotMatch(JSON.stringify(payload),new RegExp(secret));
+  if(captured.length===1){
+   assert.match(JSON.stringify(payload),/剧集规划/);
+   assert.doesNotMatch(JSON.stringify(payload),/灯塔忽然灭了/);
+   return new Response(JSON.stringify({choices:[{finish_reason:"tool_calls",message:{tool_calls:[{
+    id:"read-episode",type:"function",function:{name:"canvas_read_nodes",
+     arguments:JSON.stringify({node_ids:["visible"],offset:0})}
+   }]}}]}),{headers:{"content-type":"application/json"}});
+  }
+  assert.equal(JSON.parse(payload.messages.at(-1).content).nodes[0].content,draft);
+  return answer("在灯塔熄灭前加入一个短暂的求救信号。");
+ },{includeContext:true,includedIds:["visible"],document});
+ const result=await fx.call("POST",fx.base+"/assistant/chat",fx.payload());
+ assert.equal(result.status,200,JSON.stringify(result.body));
+ assert.equal(captured.length,2);
+ assert.equal(result.body.agentReadToolCalls[0].name,"canvas_read_nodes");
+});
+
 test("P3 HTTP model context retains confirmed decisions after 30 turns without widening private canvas scope",async t=>{
  const payloads=[];
  const fx=await fixture(t,async(_url,options)=>{

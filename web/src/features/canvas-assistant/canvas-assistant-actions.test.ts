@@ -104,6 +104,19 @@ describe("P2 canvas action executor",()=>{
   expect(confirmed.connections).toHaveLength(0);
   expect(dangerousAssistantActionSummary(parseAssistantCanvasActions(actions))).toContain("删除 1 个节点");
  });
+ it("routes approved set_text edits to the episode draft and rejects prose",()=>{
+  const draft={episodes:[{id:"ep1",title:"第一集",synopsis:"主角发现证据",events:["证据丢失"],sourceRefs:["source-1"],ending:"门开了"}]};
+  const content=JSON.stringify(draft);
+  const original={nodes:[{...node("episodes"),type:"drama:episodes",
+   metadata:{content:"历史正文",dramaDraft:"旧草案",dramaConfirmed:"已确认稿"}}],connections:[]};
+  const actions=[{type:"set_text",nodeId:"episodes",content}];
+  expect(applyAssistantCanvasActions(original,actions,"safe",center).nodes[0].metadata?.dramaDraft).toBe("旧草案");
+  const result=applyAssistantCanvasActions(original,actions,"dangerous",center);
+  expect(result.nodes[0].metadata).toEqual({content:"历史正文",dramaDraft:content,dramaConfirmed:"已确认稿"});
+  expect(()=>applyAssistantCanvasActions(original,[{...actions[0],content:"普通文本"}],"dangerous",center))
+   .toThrow(/草案格式无效/);
+  expect(original.nodes[0].metadata.dramaDraft).toBe("旧草案");
+ });
  it("fails closed on missing ids, invalid operations and conflicting ports",()=>{
   const original={nodes:[node("one"),node("two")],
    connections:[connection("one","two")]};

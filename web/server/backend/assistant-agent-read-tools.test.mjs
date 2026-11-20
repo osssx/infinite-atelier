@@ -4,7 +4,7 @@ import {DatabaseSync} from "node:sqlite";
 import {initializeSchema} from "./schema.mjs";
 import {createProject} from "./projects.mjs";
 import {createAssistantTask,appendAssistantTaskTurn,cancelAssistantTask} from "./assistant-tasks.mjs";
-import {createAssistantAgentReadSession,ASSISTANT_READ_TOOL_REGISTRY} from "./assistant-agent-read-tools.mjs";
+import {createAssistantAgentReadSession,createCanvasNodeReader,ASSISTANT_READ_TOOL_REGISTRY} from "./assistant-agent-read-tools.mjs";
 import {buildApp} from "./app.mjs";
 import {createAssistantChatService} from "./assistant-chat.mjs";
 import {beginAssistantModelCommand,failAssistantModelCommand} from "./assistant-model-calls.mjs";
@@ -350,4 +350,31 @@ test("P4.2a active Task read round blocks a second tab even when it does not req
  const complete=await initial;
  assert.equal(complete.statusCode,200,complete.body);
  assert.equal(f.db.prepare("SELECT COUNT(*) AS n FROM assistant_model_calls").get().n,1);
+});
+
+
+test("episode reader pins authorized text across pages and reports empty and legacy sources",()=>{
+ const nodes=[
+  {id:"draft",type:"drama:episodes",title:"剧集规划",metadata:{
+   dramaDraft:"逐集梗概🌙\n".repeat(190),dramaConfirmed:"旧稿",content:"历史原文"}},
+  {id:"legacy",type:"drama:episodes",title:"旧版",metadata:{content:"历史原文"}},
+  {id:"empty",type:"drama:episodes",title:"空白",metadata:{dramaDraft:" "}},
+  {id:"secret",type:"drama:episodes",title:"未授权",metadata:{dramaDraft:"不可读取"}}
+ ];
+ const policy={includeContext:true,scope:"selection",includedIds:["draft","legacy","empty"]};
+ const reader=createCanvasNodeReader(policy,{nodes});
+ const read=(node_id,offset=0)=>JSON.parse(reader.invoke({node_ids:[node_id],offset},"call"));
+ const original=nodes[0].metadata.dramaDraft;
+ const first=read("draft");
+ assert.equal(first.nodes[0].source,"dramaDraft");
+ assert.ok(first.nextOffset>0);
+ nodes[0].metadata.dramaDraft="更新后的草案";
+ const second=read("draft",first.nextOffset);
+ assert.equal(first.nodes[0].content+second.nodes[0].content,original);
+ assert.equal(second.nextOffset,null);
+ assert.equal(read("legacy").nodes[0].source,"content");
+ assert.equal(read("empty").nodes[0].status,"empty");
+ assert.throws(()=>read("secret"),{code:"assistant_agent_context_scope_denied"});
+ assert.equal(createCanvasNodeReader({...policy,scope:"overview"},{nodes}),null);
+ assert.equal(createCanvasNodeReader({...policy,includeContext:false},{nodes}),null);
 });

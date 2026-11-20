@@ -143,10 +143,9 @@ export function formatAssistantCanvasContext({policy,document,config={},loadTemp
    lines.push("连线：id="+safe(edge.id,256)+"，from="+safe(edge.fromNodeId,256)+"，to="+safe(edge.toNodeId,256));
  }
  if(selected.length){
-  lines.push("下列正文和参数仅来自明确选中的节点。");
   formatSelectedWorkflowContext(lines,{selected,connections:document.connections,loadTemplate,config,
    channels:Array.isArray(config.channels)?config.channels:[]});
-  appendAssistantCanvasContext(lines,{policy:{...policy,scope:"selection"},document});
+  if(policy.scope==="selection")appendAssistantCanvasContext(lines,{policy,document});
  }
  return boundedProviderContext(lines);
 }

@@ -115,14 +115,29 @@ test("large managed turns keep independently bounded canvas references",async t=
  assert.ok(captured[0].messages[0].content.includes(marker));
  assert.equal(samples[0].stablePromptPrefix,false);
 });
-test("ordinary canvas edits receive authorized long node text beyond the preview and can return actions",async t=>{
+const toolResponse=(id,name,args)=>new Response(JSON.stringify({choices:[{
+ message:{content:null,tool_calls:[{id,type:"function",function:{name,arguments:JSON.stringify(args)}}]},
+ finish_reason:"tool_calls"
+}]}),{headers:{"content-type":"application/json"}});
+
+test("ordinary canvas edits read authorized node text on demand and can return actions",async t=>{
  const request="读取人物ch04 / ch05 / ch06提示词提取到新建文本节点并配置好生图参数";
- const source="定妆照与三视图设定。\n".repeat(440)+"\nCH04\n  原始提示词\nCH05\nCH06";
- const captured=[];
+ const source="定妆照与三视图设定。\n".repeat(180)+"\nCH04\n  原始提示词\nCH05\nCH06";
+ const captured=[],pages=[];
  const {db,app}=fixture(t,payload=>{
   captured.push(payload);
-  return normalResponse(JSON.stringify({answer:"提取并新建角色文本节点",
-   actions:[{type:"create_node",nodeType:"text",ref:"ch04",title:"CH04",content:"原始提示词"}]}));
+  const last=payload.messages.at(-1);
+  if(payload.tools&&last.role==="user")
+   return toolResponse("read-first","canvas_read_nodes",{node_ids:["private"],offset:0});
+  if(last.role==="tool"){
+   const page=JSON.parse(last.content);
+   pages.push(page.nodes[0].content);
+   if(page.nextOffset!==null)
+    return toolResponse("read-"+page.nextOffset,"canvas_read_nodes",{node_ids:["private"],offset:page.nextOffset});
+   return normalResponse(JSON.stringify({answer:"提取并新建角色文本节点",
+    actions:[{type:"create_node",nodeType:"text",ref:"ch04",title:"CH04",content:"原始提示词"}]}));
+  }
+  return normalResponse("资料未授权。");
  });
  const project=getProject(db,projectId);
  saveSingleUserCanvas(db,{id:projectId,expectedRevision:project.revision,
@@ -130,13 +145,78 @@ test("ordinary canvas edits receive authorized long node text beyond the preview
  const result=await send(app,input("long-node","one",request,{canvasActions:true,conversationContext:selected}));
  assert.equal(result.statusCode,200,result.body);
  assert.equal(result.json().actions[0].ref,"ch04");
- const sourceLine=captured[0].messages.flatMap(message=>message.content.split("\n"))
-  .find(line=>line.startsWith('{"nodeId":"private"'));
- assert.equal(JSON.parse(sourceLine).content,source);
+ assert.equal(pages.join(""),source);
+ assert.ok(pages.length>1);
+ assert.doesNotMatch(JSON.stringify(captured[0]),/原始提示词/);
  const revoked=await send(app,input("long-node","two","还记得什么？"));
  assert.equal(revoked.statusCode,200,revoked.body);
- assert.doesNotMatch(JSON.stringify(captured[1]),/原始提示词|Selected canvas sources/);
+ assert.doesNotMatch(JSON.stringify(captured.at(-1)),/原始提示词|Selected canvas sources|canvas_read_nodes/);
 });
+
+test("episode planning tools let the model read first and optionally activate an image Skill",async t=>{
+ const original=JSON.stringify({episodes:[{id:"ep1",title:"断桥",synopsis:"女主发现断桥下的旧钥匙",events:["钥匙失窃"],ending:"目击者是她的亲人"}]},null,2);
+ const image={id:"qwen-image",name:"Qwen-Image",description:"Image prompt generation",
+  version:"a".repeat(12),skillMd:"Format a Qwen image prompt.",resources:{}};
+ const skills={mode:"auto",projectId,expectedRevision:1,skillIds:[image.id],versionPins:{[image.id]:image.version}};
+ const captured=[];
+ const {db,app}=fixture(t,payload=>{
+  captured.push(payload);
+  const last=payload.messages.at(-1);
+  if(last.role==="user"){
+   assert.doesNotMatch(JSON.stringify(payload),/钥匙失窃|Format a Qwen image prompt/);
+   assert.match(JSON.stringify(payload),/剧集规划|Qwen-Image/);
+   if(last.content.includes("只是问好"))return normalResponse("你好。");
+   return toolResponse("episode-read","canvas_read_nodes",{node_ids:["private"],offset:0});
+  }
+  const content=JSON.parse(last.content);
+  if(content.skill_id)return normalResponse("断桥下的旧钥匙，逆光近景。");
+  assert.equal(content.nodes[0].source,"dramaDraft");
+  assert.equal(content.nodes[0].content,original);
+  if(payload.messages.some(item=>item.role==="user"&&item.content.includes("生图")))
+   return toolResponse("image-skill","activate_skill",{skill_id:image.id});
+  return normalResponse("把钥匙失窃移到结尾，让亲人成为唯一目击者。");
+ },{skillRegistry:{authorized:()=>({entries:[image]})}});
+ const project=getProject(db,projectId);
+ saveSingleUserCanvas(db,{id:projectId,expectedRevision:project.revision,
+  document:{nodes:[{...node,type:"drama:episodes",title:"剧集规划",
+   metadata:{dramaDraft:original,dramaConfirmed:"旧稿"}}],connections:[]}});
+ for(const [turn,request,skillIds,count] of [
+  ["a","帮我优化剧情",[],1],
+  ["b","把这集最后的悬念再往前铺一铺",[],1],
+  ["c","为本集的断桥场景写生图提示词",[image.id],1],
+  ["d","只是问好",[],0]
+ ]){
+  const result=await send(app,input("episodes-"+turn,turn,request,{conversationContext:selected,skills}));
+  assert.equal(result.statusCode,200,result.body);
+  assert.deepEqual(result.json().appliedSkillIds,skillIds);
+  assert.equal(result.json().agentReadToolCalls.length,count);
+ }
+ assert.equal(captured.length,8);
+ assert.equal(getProject(db,projectId).revision,project.revision+1);
+});
+
+test("models rejecting node tools receive bounded episode excerpts without a tool declaration",async t=>{
+ const captured=[];
+ const {db,app}=fixture(t,payload=>{
+  captured.push(payload);
+  if(payload.tools)return new Response("tools unsupported",{status:400});
+  assert.match(payload.messages[0].content,/已确认版本/);
+  assert.match(payload.messages[0].content,/dramaConfirmed/);
+  assert.match(payload.messages[0].content,/"truncated":true/);
+  return normalResponse("根据已确认版本提供建议。");
+ });
+ const project=getProject(db,projectId);
+ saveSingleUserCanvas(db,{id:projectId,expectedRevision:project.revision,
+  document:{nodes:[{...node,type:"drama:episodes",title:"剧集规划",
+   metadata:{dramaDraft:" ",dramaConfirmed:"已确认版本。".repeat(500),content:"历史原文"}}],connections:[]}});
+ const result=await send(app,input("unsupported","one","帮我调整节奏",{conversationContext:selected}));
+ assert.equal(result.statusCode,200,result.body);
+ assert.equal(captured.length,2);
+ assert.equal(result.json().nodeReadFallback,true);
+ assert.doesNotMatch(JSON.stringify(captured[0]),/已确认版本/);
+ assert.doesNotMatch(JSON.stringify(captured[1]),/历史原文/);
+});
+
 test("managed chats default to both cache optimizations and can roll each back independently",async t=>{
  const names=["PREFIX","BATCH_HISTORY","PLAIN_CHAT","CHANNELS","MODELS","MODES"].map(name=>"ATELIER_ASSISTANT_CACHE_"+name);
  const previous=new Map(names.map(name=>[name,process.env[name]]));

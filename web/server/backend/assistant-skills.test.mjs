@@ -27,7 +27,7 @@ const registry={authorized(_db,query){
  if(query.skillIds.includes("disabled"))throw Object.assign(Error("skill_authorization_changed"),{code:"skill_authorization_changed"});
  return {revision:4,entries:query.skillIds.map(id=>catalog.find(entry=>entry.id===id))};
 }};
-test("assistant Skill resolver reuses authorized versions; manual order and auto matching",()=>{
+test("assistant Skill resolver reuses authorized versions; manual order and an optional Skill catalog",()=>{
  const manual=resolveAssistantSkills(null,registry,selection("manual",["color","story"]),messages);
  assert.deepEqual(manual.skillIds,["color","story"]);
  assert.ok(manual.context.indexOf("调色指南")<manual.context.indexOf("短剧编剧"));
@@ -40,7 +40,9 @@ test("assistant Skill resolver reuses authorized versions; manual order and auto
  assert.equal(manual.toolEntries[0].resources["references/extra.md"],"not automatically loaded");
  assert.equal(manual.toolEntries[0].scripts,undefined);
  const auto=resolveAssistantSkills(null,registry,selection("auto"),messages);
- assert.deepEqual(auto.skillIds,["story"]);
+ assert.deepEqual(auto.skillIds,[]);
+ assert.deepEqual(auto.toolEntries.map(entry=>entry.id),["story","color","coding"]);
+ assert.doesNotMatch(auto.context,/按三幕结构/);
  assert.deepEqual(resolveAssistantSkills(null,registry,selection("auto"),[{role:"user",content:"随便聊聊"}]).skillIds,[]);
  assert.deepEqual(resolveAssistantSkills(null,registry,undefined,messages),{context:"",skillIds:[]});
  assert.throws(()=>resolveAssistantSkills(null,registry,selection("manual",Array(13).fill("story")),messages),
@@ -90,7 +92,8 @@ test("assistant HTTP injects authorized Skill into user turn only, preserves act
  assert.doesNotMatch(captured[1].messages[1].content,/selected-skill/);
  const auto=await send(selection("auto"));
  assert.equal(auto.statusCode,200,auto.body);
- assert.deepEqual(auto.json().appliedSkillIds,["story"]);
+ assert.deepEqual(auto.json().appliedSkillIds,[]);
+ assert.doesNotMatch(JSON.stringify(captured[2]),/按三幕结构/);
  const mismatch=await send(selection("manual",["story"],"other-project"));
  assert.equal(mismatch.statusCode,400);
  assert.equal(mismatch.json().code,"assistant_skill_selection_invalid");

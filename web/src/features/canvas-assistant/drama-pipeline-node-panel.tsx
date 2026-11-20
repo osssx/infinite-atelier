@@ -13,7 +13,8 @@ import { useEffectiveConfig, resolveModelChannel, modelOptionName } from "@/stor
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { DramaAssetFields } from "./drama-asset-fields";
-import { DramaEpisodeFields, type DramaEpisode } from "./drama-episode-fields";
+import { DramaEpisodeFields } from "./drama-episode-fields";
+import { readEpisodeDraft } from "../../../server/canvas-text-content.mjs";
 import { dramaInlineNodeClass, dramaNodeControl, dramaNodePrimary, DramaNodeStatus } from "./drama-node-style";
 
 const { TextArea } = Input;
@@ -35,18 +36,6 @@ function readAssetDraft(value: string) {
         (asset.variants === undefined || (Array.isArray(asset.variants) && asset.variants.every(variant =>
             variant && typeof variant.id === "string" && typeof variant.name === "string" && typeof variant.description === "string"))))) return null;
     return draft as typeof draft & {assets: NonNullable<typeof draft.assets>};
-}
-
-function readEpisodeDraft(value: string): {episodes:DramaEpisode[]} | null {
-    try {
-        const draft = JSON.parse(value.trim().replace(/^```(?:json)?\s*([\s\S]*?)\s*```$/i, "$1"));
-        if (!Array.isArray(draft?.episodes) || !draft.episodes.every((episode:DramaEpisode) => episode &&
-            typeof episode.id === "string" && episode.id.trim() &&
-            [episode.title,episode.synopsis,episode.ending].every(item => typeof item === "string") &&
-            [episode.sourceRefs,episode.events].every(items => Array.isArray(items) && items.every(item => typeof item === "string")))) return null;
-        if (new Set(draft.episodes.map((episode:DramaEpisode) => episode.id)).size !== draft.episodes.length) return null;
-        return draft;
-    } catch { return null; }
 }
 
 function describeDramaValidation(errors: {code:string;shotId?:string;id?:string}[], assets: DramaPipelineSnapshot["assets"]) {
@@ -79,7 +68,8 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, onC
     imageNodes?: CanvasNodeData[];
 }) {
     const stage = Object.entries(DRAMA_PIPELINE_NODE_TYPES).find(([, type]) => type === node.type)?.[0] as DramaPipelineStage | undefined;
-    const [draft, setDraft] = useState(String(node.metadata?.dramaDraft || node.metadata?.dramaConfirmed || node.metadata?.content || ""));
+    const storedDraft = node.metadata?.dramaDraft || node.metadata?.dramaConfirmed || node.metadata?.content || "";
+    const [localDraft, setDraft] = useState(storedDraft);
     const [confirmed, setConfirmed] = useState(String(node.metadata?.dramaConfirmed ?? ""));
     const [validation, setValidation] = useState<string>("");
     const [generating, setGenerating] = useState(false);
@@ -90,6 +80,7 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, onC
     const referenceEditing = stage === "asset_references";
     const mergedEditing = assetPlanning && !legacyAssetPlanning;
     const episodePlanning = stage === "episodes";
+    const draft = episodePlanning ? storedDraft : localDraft;
     const episodeDraft = episodePlanning ? readEpisodeDraft(draft) : null;
     const inlineEditor = assetPlanning || referenceEditing || episodePlanning;
     const previous = assetPlanning ? readAssetDraft(draft) : readDraft(draft);
@@ -189,7 +180,6 @@ export function DramaPipelineNodePanel({ node, onChange, onRenderFirstFrame, onC
                 </label>
                 <DramaEpisodeFields episodes={episodeDraft?.episodes ?? []} expanded={assetEditorExpanded} disabled={generating} control={control} onChange={episodes => {
                     const next = JSON.stringify({...episodeDraft,episodes});
-                    setDraft(next);
                     setValidation("");
                     onChange({dramaDraft:next});
                 }} />

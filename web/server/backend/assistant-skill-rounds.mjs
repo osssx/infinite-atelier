@@ -10,9 +10,10 @@ const utf8=value=>Buffer.byteLength(value,"utf8");
  * canvas writes. All model tool calls are validated against the one request's
  * server-authorized, version-pinned catalog before execution.
  */
-export async function runAssistantSkillRounds({provider,initialBody,infer,readAnswer,authorizedEntries,signal,scriptProposalEnabled=true,requireScriptProposal=false,initialKind="initial"}){
- const toolSession=createAssistantSkillToolSession(authorizedEntries,{scriptProposalEnabled});
- const toolDefinitions=assistantSkillToolsFor(authorizedEntries,scriptProposalEnabled);
+export async function runAssistantSkillRounds({provider,initialBody,infer,readAnswer,authorizedEntries,signal,scriptProposalEnabled=true,requireScriptProposal=false,initialKind="initial",discover=false,nodeReader=null}){
+ const toolSession=createAssistantSkillToolSession(authorizedEntries,{scriptProposalEnabled,discover});
+ const toolDefinitions=authorizedEntries.length?[...assistantSkillToolsFor(authorizedEntries,scriptProposalEnabled)]:[];
+ if(nodeReader)toolDefinitions.push(nodeReader.definition);
  const payload=JSON.parse(initialBody);
  const gemini=provider==="google_gemini";
  if(gemini){
@@ -66,7 +67,8 @@ export async function runAssistantSkillRounds({provider,initialBody,infer,readAn
    // A repair request MUST not become a draft-only canvas plan.
    if(requireScriptProposal)throw fail("assistant_skill_execution_incomplete",502);
    return {answer:readAnswer(data,provider),retryCount,
-    skillToolCalls:toolSession.calls,skillResourceReads:toolSession.reads};
+    skillToolCalls:toolSession.calls,skillResourceReads:toolSession.reads,
+    appliedSkillIds:[...toolSession.activated]};
   }
   if(rounds>=MAX_TOOL_ROUNDS||totalCalls+calls.length>MAX_TOOL_CALLS)
    throw fail("assistant_skill_tool_round_limit");
@@ -77,13 +79,14 @@ export async function runAssistantSkillRounds({provider,initialBody,infer,readAn
    // A proposal is NOT a tool result; stop the model conversation at this point.
    // An explicit click in the client must invoke the separately audited API.
    return {pendingSkillScript,retryCount,skillToolCalls:toolSession.calls,
-    skillResourceReads:toolSession.reads};
+    skillResourceReads:toolSession.reads,appliedSkillIds:[...toolSession.activated]};
   }
   const replies=[];
   for(const call of calls){
    if(seen.has(call.id))throw fail("assistant_skill_tool_response_invalid");
    seen.add(call.id);
-   const output=toolSession.invoke(call.name,call.args);
+   const output=call.name==="canvas_read_nodes"&&nodeReader?
+    nodeReader.invoke(call.args,call.id):toolSession.invoke(call.name,call.args);
    transcriptBytes+=utf8(output);
    if(transcriptBytes>MAX_TOOL_TRANSCRIPT)
     throw fail("assistant_skill_tool_output_too_large");
@@ -91,9 +94,7 @@ export async function runAssistantSkillRounds({provider,initialBody,infer,readAn
   }
   if(gemini){
    // Only the relevant function calls are fed back; ignore undocumented fields.
-   payload.contents.push({role:"model",parts:calls.map(item=>({
-    functionCall:{name:item.name,args:item.args}
-   }))});
+   payload.contents.push({role:"model",parts:reply.filter(item=>obj(item?.functionCall))});
    payload.contents.push({role:"user",parts:replies.map(item=>({
     functionResponse:{name:item.call.name,response:JSON.parse(item.output)}
    }))});

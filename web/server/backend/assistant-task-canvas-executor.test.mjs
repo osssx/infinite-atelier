@@ -11,9 +11,9 @@ import {planAssistantCanvasStep,executeAssistantCanvasStep,
 const node={id:"original",type:"text",title:"原节点",position:{x:0,y:0},width:340,height:240,
  metadata:{content:"初始内容",status:"success",fontSize:14}};
 const origin={title:"新画布",nodes:[node],connections:[]};
-function setup(t){
+function setup(t,document=origin){
  const db=new DatabaseSync(":memory:");initializeSchema(db);t.after(()=>db.close());
- createProject(db,{id:"p",document:origin});
+ createProject(db,{id:"p",document});
  const task=createAssistantTask(db,{projectId:"p",chatSessionId:"chat",rootMessageId:"root",
   originalRequest:"创作故事",requestId:"root-task"}).task;
  const ids={db,projectId:"p",taskId:task.id};
@@ -64,6 +64,20 @@ test("P1b canvas graph, Step receipt and Attempt commit atomically, replay never
  assert.equal(getProject(ctx.db,"p").revision,2);
  assert.equal(ctx.db.prepare("SELECT COUNT(*) AS n FROM assistant_task_attempts").get().n,1);
  assert.equal(ctx.db.prepare("SELECT COUNT(*) AS n FROM assistant_task_events WHERE kind='step_graph_committed'").get().n,1);
+});
+test("Task set_text validates and saves the episode draft through the approved graph transaction",t=>{
+ const episode={id:"ep1",title:"第一集",synopsis:"主角发现证据",events:[],sourceRefs:["source-1"],ending:"门开了"};
+ const content=JSON.stringify({episodes:[episode]});
+ const metadata={content:"历史正文",dramaDraft:"旧草案",dramaConfirmed:"已确认稿"};
+ const ctx=setup(t,{...origin,nodes:[{...node,type:"drama:episodes",metadata}]});
+ assert.throws(()=>plan(ctx,{requestId:"invalid",actions:[{type:"set_text",nodeId:"original",content:"纯文本"}]}),
+  {code:"assistant_episode_draft_invalid"});
+ const candidate=plan(ctx,{actions:[{type:"set_text",nodeId:"original",content}]});
+ assert.equal(candidate.status,"waiting_approval");
+ assert.deepEqual(getProject(ctx.db,"p").document.nodes[0].metadata,metadata);
+ approve(ctx,candidate);
+ const result=execute(ctx,candidate);
+ assert.deepEqual(result.project.document.nodes[0].metadata,{...metadata,dramaDraft:content});
 });
 test("P1b group membership, grouped layout and ungroup each retain durable receipts",t=>{
  const ctx=setup(t);

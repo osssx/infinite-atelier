@@ -6,7 +6,7 @@ import {getCanvasViewport,putCanvasViewport,getCanvasChats,putCanvasChats} from 
 import {registerAssistantTaskRoutes} from "./assistant-task-routes.mjs";
 import {getAssistantTask,getAssistantTaskTurnPolicy} from "./assistant-tasks.mjs";
 import {beginAssistantModelCommand,createAssistantModelObserver,completeAssistantModelCommand,failAssistantModelCommand} from "./assistant-model-calls.mjs";
-import {assertAssistantAgentReadClaim,createAssistantAgentReadSession} from "./assistant-agent-read-tools.mjs";
+import {assertAssistantAgentReadClaim,createAssistantAgentReadSession,createCanvasNodeReader} from "./assistant-agent-read-tools.mjs";
 import {agentReadRunId} from "./assistant-agent-run-ledger.mjs";
 import {prepareAssistantSemanticProposals} from "./assistant-semantic-proposals.mjs";
 import {assistantHistoryQuoteSchema,formatAssistantHistoryQuote,resolveAssistantHistoryQuote} from "./assistant-history-quote.mjs";
@@ -925,7 +925,7 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
          startStream();
         }
        }
-       let chosenMaterials=[],agentReadSession=null,structuredRequirement=null,usedHistoryQuote=null,quoteContext="";
+       let nodeReader=null,chosenMaterials=[],agentReadSession=null,structuredRequirement=null,usedHistoryQuote=null,quoteContext="";
        if(ref){
         const command=beginAssistantModelCommand(db,{projectId:req.params.id,taskId:ref.taskId,
          requestId:ref.requestId,requestPayload:req.body,beforeStart:()=>{
@@ -996,6 +996,8 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
          // Generic node serialization also includes unconfirmed metadata fields.
          nodes:[],
          connections:[]}:project.document;
+        if(!proposalMode&&!readMode&&!pinned)
+         nodeReader=createCanvasNodeReader(frozenPolicy,scopedDocument);
         const modelSettings=req.body.canvasActions&&frozenPolicy.includeContext?
          db.prepare("SELECT value_json FROM ui_settings WHERE name='model_config'").get():null;
         taskContext=buildAssistantTaskProviderContext({task:{...snapshot,summary:scopedSummary,contextPolicy:frozenPolicy},document:scopedDocument,
@@ -1063,6 +1065,7 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
        if(req.body.skills&&req.body.skills.projectId!==req.params.id)
         throw Object.assign(Error("assistant_skill_selection_invalid"),{code:"assistant_skill_selection_invalid",statusCode:400});
        const skill=resolveAssistantSkills(db,skillRegistry,req.body.skills,messages);
+       if(!ref&&!streamMode)nodeReader=createCanvasNodeReader(frozenPolicy,project.document);
        const mode=proposalMode?"semantic_proposal":readMode?"agent_read":req.body.skills?"skill":
         ref?"task":req.body.canvasActions?"canvas":"chat";
        const rollout={channelId:req.body.channelId,provider:req.body.provider,model:req.body.model,mode};
@@ -1081,7 +1084,8 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
           taskContext=formatAssistantCanvasContext({policy:frozenPolicy,document:project.document,
            config:config?JSON.parse(config.value_json):{},loadTemplate:registry.find});
          }
-        if(!ref||!restrictConversation)
+        if(nodeReader)taskContext=nodeReader.withContext(taskContext);
+        if(!nodeReader&&(!ref||!restrictConversation))
          selectedCanvasText=formatSelectedCanvasText({policy:frozenPolicy,document:project.document});
         let reservedBytes=stablePromptPrefix?Buffer.byteLength(assistantCurrentReferenceData({
          taskContext:plainCanvasChat?"":taskContext,liveToolContext,skillContext:skill.context,quoteContext,selectedCanvasText}).text):0;
@@ -1111,6 +1115,7 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
          throw Object.assign(Error("assistant_task_visual_not_authorized"),
           {code:"assistant_task_visual_not_authorized",statusCode:403});
        }
+       if(nodeReader&&!conversation)taskContext=nodeReader.withContext(taskContext);
        const visual=await resolveAssistantVisualContext({
         document:project.document,visualContext:req.body.visualContext,blobStore,signal:controller.signal
        });
@@ -1129,13 +1134,14 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
          }
          onAssistantPromptUsage?.({...sample,...promptCohort});
         }:null,
-        skillTools:skill.toolEntries??[],visualImages:visual.images,
+        skillTools:skill.toolEntries??[],discoverSkills:skill.discover===true,nodeReader,visualImages:visual.images,
         visualDetail:req.body.visualContext?.detail??"high",signal:controller.signal,
         ...(streamMode?{stream:true,onDelta:delta=>streamEvent("delta",{text:delta})}:{}),
         ...((ref||conversation)?{providerPayloadGuard:(requestBody,{quote}={})=>{
          if(conversation&&Buffer.byteLength(requestBody)>34*1024*1024)
           throw Object.assign(Error("assistant_context_budget_insufficient"),{code:"assistant_context_budget_insufficient",statusCode:413});
-         if(conversation&&(conversationPolicy.includeContext||req.body.visualContext)&&getProject(db,req.params.id).revision!==project.revision)
+         if((nodeReader||conversation&&(conversationPolicy.includeContext||req.body.visualContext))&&
+          getProject(db,req.params.id).revision!==project.revision)
           throw Object.assign(Error("assistant_task_context_not_authorized"),{code:"assistant_task_context_not_authorized",statusCode:403});
          if(!ref){startConversationSubmission(db,conversation,conversationPolicy);return;}
          agentReadSession?.check(); // reauthorize immediately before each POST
@@ -1190,13 +1196,13 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
          semanticProposal:proposalMode,agentReadSession}:conversation?{taskContext,durableRequest:true}:{})});
        const proposed=proposalMode?prepareAssistantSemanticProposals({answer:result.answer,
          requestId:ref.requestId,turnMessageId:ref.turnMessageId,contextPolicy:frozenPolicy}):null;
-       const completed={...(conversation?sanitizeConversationReply(result):result),appliedSkillIds:skill.skillIds,usedVisualReferences:visual.references,
+       const completed={...(conversation?sanitizeConversationReply(result):result),appliedSkillIds:result.appliedSkillIds??skill.skillIds,usedVisualReferences:visual.references,
          ...(usedHistoryQuote?{usedHistoryQuote}:{}),
          ...(readMode?{agentRunId:agentReadRunId(req.params.id,ref.taskId,ref.requestId)}:{}),
          ...(proposed?{proposals:proposed.candidates}:{})};
        if(ref)completeAssistantModelCommand(db,{projectId:req.params.id,taskId:ref.taskId,
         requestId:ref.requestId,response:completed,semanticProposalBatch:proposed,
-        onCompleted:conversation?()=>completeConversationRequestInTransaction(db,conversation,completed,agentReadSession?.references):null});
+        onCompleted:conversation?()=>completeConversationRequestInTransaction(db,conversation,completed,(agentReadSession??nodeReader)?.references):null});
        else if(conversation)completeConversationRequest(db,conversation,completed);
        if(streamMode){const event=streamEvent("done",{result:completed});
         if(!reply.raw.destroyed){

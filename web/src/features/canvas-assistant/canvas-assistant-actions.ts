@@ -1,4 +1,5 @@
 import {nanoid} from "nanoid";
+import {canvasTextContentPatch} from "../../../server/canvas-text-content.mjs";
 import {createCanvasNode} from "@/lib/canvas/canvas-node-factory";
 import {groupSelectedCanvasNodes} from "@/lib/canvas/canvas-node-geometry";
 import {prepareCanvasPortConnection} from "@/lib/canvas/canvas-port-connections";
@@ -380,8 +381,11 @@ export function applyAssistantCanvasActions(
     }
     case "set_text":{
      const i=nodes.findIndex(node=>node.id===action.nodeId);
-     if(i<0||nodes[i].type!==CanvasNodeType.Text)throw Error("文本节点不存在或类型不支持，未执行。");
-     nodes[i]={...nodes[i],metadata:{...nodes[i].metadata,content:action.content}};applied++;break;
+     const node=nodes[i];
+     const patch=node&&canvasTextContentPatch(node.type,action.content);
+     if(!patch)throw Error(node?.type==="drama:episodes"?
+      "剧集规划草案格式无效，原草案已保留。":"文本节点不存在或类型不支持，未执行。");
+     nodes[i]={...node,metadata:{...node.metadata,...patch}};applied++;break;
     }
     case "set_title":{
      const i=nodes.findIndex(node=>node.id===action.nodeId);

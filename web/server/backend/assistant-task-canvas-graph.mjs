@@ -1,5 +1,6 @@
 import {assertFrozenComfyAction,applyFrozenComfyAction} from "./assistant-task-comfy-canvas.mjs";
 import {assertFrozenNodeParameterAction,applyFrozenNodeParameterAction} from "./assistant-task-node-params.mjs";
+import {canvasTextContentPatch} from "../canvas-text-content.mjs";
 
 /** Deterministic, backend-only ordinary canvas operations.
  * No network, filesystem, Comfy, Skill or GPU work. Unsupported actions
@@ -259,8 +260,9 @@ export function applyFrozenAssistantCanvasPlan(document,plan,refs,{externalRefs=
    if(idx<0)throw fail("assistant_canvas_target_invalid");
    const node=nodes[idx];
    if(type==="set_text"){
-    if(node.type!=="text")throw fail("assistant_canvas_target_invalid");
-    nodes[idx]={...node,metadata:{...node.metadata,content:a.content}};
+    const patch=canvasTextContentPatch(node.type,a.content);
+    if(!patch)throw node.type==="drama:episodes"?fail("assistant_episode_draft_invalid",400):fail("assistant_canvas_target_invalid");
+    nodes[idx]={...node,metadata:{...node.metadata,...patch}};
    }else if(type==="set_title")nodes[idx]={...node,title:a.title.trim()||node.title};
    else if(type==="set_prompt"){
     if(!["image","video","audio","config","director","text"].includes(node.type))

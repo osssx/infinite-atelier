@@ -26,11 +26,88 @@ function pageText(text,offset,limit){
  return text.slice(offset,end);
 }
 const get=(args,names)=>plain(args)&&Object.keys(args).every(key=>names.includes(key));
+function canvasNodeBody(node){
+ const fields=node.type==="drama:episodes"?["dramaDraft","dramaConfirmed","content"]:
+  node.type==="text"?["content"]:[];
+ if(!fields.length)return null;
+ for(const source of fields){
+  const value=node.metadata?.[source];
+  if(typeof value==="string"&&value.trim())
+   return {source,content:safe(value,Infinity,{preserveFormatting:true})};
+ }
+ return {source:null,content:""};
+}
 export function describeAssistantReadableCanvasNode(node){
+ const body=canvasNodeBody(node);
  return {id:node.id,type:node.type,title:safe(node.title,90),
-  ...(node.type==="text"&&typeof node.metadata?.content==="string"?{content:safe(node.metadata.content,1300)}:{}),
+  ...(body?{source:body.source,content:pageText(body.content,0,560),
+   ...(body.source===null?{status:"empty"}:{}),
+   ...(Buffer.byteLength(body.content)>560?{truncated:true}:{})}:{}),
   ...(typeof node.metadata?.prompt==="string"?{prompt:safe(node.metadata.prompt,500)}:{})};
 }
+function readCanvasNodes(byId,args){
+ if(!get(args,["node_ids","offset"])||!Array.isArray(args.node_ids)||
+  args.node_ids.length<1||args.node_ids.length>4||
+  args.offset!==undefined&&(args.node_ids.length!==1||!Number.isSafeInteger(args.offset)||args.offset<0)||
+  args.node_ids.some(nodeId=>!validCanvasNodeId(nodeId))||new Set(args.node_ids).size!==args.node_ids.length)
+  throw fail("assistant_agent_tool_arguments_invalid",400);
+ if(args.node_ids.some(nodeId=>!byId.has(nodeId)))throw fail("assistant_agent_context_scope_denied",403);
+ if(args.offset===undefined)
+  return {nodes:args.node_ids.map(nodeId=>describeAssistantReadableCanvasNode(byId.get(nodeId)))};
+ const node=byId.get(args.node_ids[0]),body=canvasNodeBody(node);
+ if(!body||args.offset>body.content.length||
+  (body.content.charCodeAt(args.offset)&0xfc00)===0xdc00)
+  throw fail("assistant_agent_tool_arguments_invalid",400);
+ // Bound the serialized result as well as the text, including JSON escape overhead.
+ const content=pageText(body.content,args.offset,2400);
+ const item={id:node.id,type:node.type,title:safe(node.title,90),source:body.source,content,
+  ...(body.source===null?{status:"empty"}:{})};
+ const result={nodes:[item],offset:args.offset,endOffset:args.offset,nextOffset:null};
+ while(Buffer.byteLength(JSON.stringify(result))>MAX_RESULT_BYTES-256)
+  item.content=pageText(item.content,0,Math.floor(Buffer.byteLength(item.content)/2));
+ result.endOffset=args.offset+item.content.length;
+ result.nextOffset=result.endOffset<body.content.length?result.endOffset:null;
+ return result;
+}
+
+export function createCanvasNodeReader(policy,document){
+ if(!policy?.includeContext||policy.scope!=="selection")return null;
+ const byId=new Map(document.nodes.map(node=>[node.id,node]));
+ const selected=new Map([...new Set(policy.includedIds)].slice(0,12).filter(id=>byId.has(id))
+  .map(id=>[id,structuredClone(byId.get(id))]));
+ if(!selected.size)return null;
+ const nodes=[...selected.values()];
+ const definition=ASSISTANT_READ_TOOL_REGISTRY.find(item=>item.providerName==="canvas_read_nodes");
+ const calls=[],references=[];
+ let bytes=0;
+ const fallback=()=>JSON.stringify(nodes.map(node=>{
+  const body=canvasNodeBody(node);
+  if(!body)return {id:node.id,type:node.type,title:safe(node.title,90)};
+  const content=pageText(body.content,0,1600);
+  return {id:node.id,type:node.type,title:safe(node.title,90),source:body.source,content,
+   ...(body.source===null?{status:"empty"}:{}),truncated:content.length<body.content.length};
+ })).replace(/</g,"\\u003c");
+ const manifest=JSON.stringify(nodes.map(node=>({id:node.id,type:node.type,title:safe(node.title,90)})))
+  .replace(/</g,"\\u003c");
+ return {withContext(context){
+  const text="本轮引用节点："+manifest+"\n"+context;
+  const limit=16*1024,notice="\n[画布上下文已截断]";
+  return Buffer.byteLength(text)<=limit?text:valueLimit(text,limit-Buffer.byteLength(notice))+notice;
+ },
+  definition:{type:"function",function:{name:definition.providerName,description:definition.description,
+  parameters:definition.parameters}},calls,references,fallback,invoke(args,callId){
+   const data=readCanvasNodes(selected,args);
+   const output=JSON.stringify(data);
+   const size=Buffer.byteLength(output);
+   if(size>MAX_RESULT_BYTES||bytes+size>MAX_PER_RUN_BYTES)
+    throw fail("assistant_agent_read_budget_exceeded",413);
+   bytes+=size;
+   calls.push({callId,name:definition.providerName});
+   references.push({callId,kind:definition.name,nodeIds:data.nodes.map(node=>node.id)});
+   return output;
+ }};
+}
+
 export const ASSISTANT_READ_TOOL_REGISTRY=Object.freeze([
  {name:"canvas.get_map",providerName:"canvas_get_map",effect:"read",approval:"none",
   description:"List ONLY the currently authorized canvas node IDs, types and titles; overview has no node bodies.",
@@ -40,7 +117,7 @@ export const ASSISTANT_READ_TOOL_REGISTRY=Object.freeze([
   parameters:{type:"object",additionalProperties:false,required:["query"],
    properties:{query:{type:"string",maxLength:80}}}},
  {name:"canvas.read_nodes",providerName:"canvas_read_nodes",effect:"read",approval:"none",
-  description:"Read up to 4 selected nodes. For a single text node, supply offset:0 to read paginated text with whitespace preserved, then follow nextOffset until null. Never read unselected nodes.",
+  description:"Read up to 4 selected nodes. For a single text or episode planning node, supply offset:0 to read paginated text with whitespace preserved, then follow nextOffset until null. Never read unselected nodes.",
   parameters:{type:"object",additionalProperties:false,required:["node_ids"],
    properties:{node_ids:{type:"array",minItems:1,maxItems:4,items:{type:"string"}},offset:{type:"integer",minimum:0}}}},
  {name:"canvas.get_generation_settings",providerName:"canvas_get_generation_settings",effect:"read",approval:"none",
@@ -169,25 +246,8 @@ export function createAssistantAgentReadSession(db,{projectId,taskId,turnMessage
    data={matches:found.slice(0,12).map(n=>({id:n.id,type:n.type,title:safe(n.title,90)})),
     truncated:found.length>12};
   }else if(name==="canvas_read_nodes"){
-   if(!get(args,["node_ids","offset"])||!Array.isArray(args.node_ids)||
-    args.node_ids.length<1||args.node_ids.length>4||
-    args.offset!==undefined&&(args.node_ids.length!==1||!Number.isSafeInteger(args.offset)||args.offset<0)||
-    args.node_ids.some(n=>!validCanvasNodeId(n))||new Set(args.node_ids).size!==args.node_ids.length)
-    throw fail("assistant_agent_tool_arguments_invalid",400);
    if(!selected())throw fail("assistant_agent_context_scope_denied",403);
-   const byId=new Map(allowed().map(n=>[n.id,n]));
-   if(args.node_ids.some(n=>!byId.has(n)))throw fail("assistant_agent_context_scope_denied",403);
-   if(args.offset===undefined)data={nodes:args.node_ids.map(nodeId=>describeAssistantReadableCanvasNode(byId.get(nodeId)))};
-   else{
-    const node=byId.get(args.node_ids[0]);
-    if(node.type!=="text")throw fail("assistant_agent_tool_arguments_invalid",400);
-    const text=safe(node.metadata?.content,Infinity,{preserveFormatting:true});
-    if(args.offset>text.length)throw fail("assistant_agent_tool_arguments_invalid",400);
-    const content=pageText(text,args.offset,2400);
-    const end=args.offset+content.length;
-    data={nodes:[{id:node.id,type:node.type,title:safe(node.title,90),content}],
-     offset:args.offset,endOffset:end,nextOffset:end<text.length?end:null};
-   }
+   data=readCanvasNodes(new Map(allowed().map(node=>[node.id,node])),args);
   }else if(name==="canvas_get_generation_settings"){
    if(!get(args,["node_id"])||args.node_id!==undefined&&!validCanvasNodeId(args.node_id))
     throw fail("assistant_agent_tool_arguments_invalid",400);
@@ -269,7 +329,7 @@ export function createAssistantAgentReadSession(db,{projectId,taskId,turnMessage
     data.nextOffset=data.endOffset=data.offset+item.content.length;
     value=encode();bytes=Buffer.byteLength(value,"utf8");
    }
-   if(data.nextOffset===data.offset)throw fail("assistant_agent_read_budget_exceeded",413);
+   if(data.nextOffset===data.offset&&data.nextOffset!==null)throw fail("assistant_agent_read_budget_exceeded",413);
   }
   if(bytes>MAX_RESULT_BYTES||totalBytes+bytes>MAX_PER_RUN_BYTES)
    throw fail("assistant_agent_read_budget_exceeded",413);

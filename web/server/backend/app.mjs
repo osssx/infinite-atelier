@@ -777,8 +777,8 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
    baseUrl:{type:"string",maxLength:1024},model:{type:"string",minLength:1,maxLength:128}}}}},req=>dramaRuns.submit(req.params.id,req.body));
  app.get(dramaRunPath,{schema:{querystring:{type:"object",required:["nodeId"],properties:{nodeId:canvasNodeIdSchema}}}},
   req=>dramaRuns.list(req.params.id,req.query.nodeId));
- app.get(`${dramaRunPath}/:runId`,req=>dramaRuns.get(req.params.id,req.params.runId));
- app.post(`${dramaRunPath}/:runId/adopt`,{schema:{body:{type:"object",additionalProperties:false,
+  app.get(`${dramaRunPath}/:runId`,req=>dramaRuns.get(req.params.id,req.params.runId));
+  app.get(`${dramaRunPath}/:runId/preview`,req=>dramaRuns.preview(req.params.id,req.params.runId)); app.post(`${dramaRunPath}/:runId/adopt`,{schema:{body:{type:"object",additionalProperties:false,
   properties:{shotIds:{type:"array",minItems:1,maxItems:500,uniqueItems:true,items:{type:"string",minLength:1,maxLength:128}}}}}},
   req=>dramaRuns.adopt(req.params.id,req.params.runId,req.body?.shotIds));
  app.post(`${dramaRunPath}/:runId/cancel`,req=>dramaRuns.cancel(req.params.id,req.params.runId));

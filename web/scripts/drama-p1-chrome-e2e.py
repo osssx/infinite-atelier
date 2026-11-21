@@ -126,6 +126,19 @@ def main():
             return page.js("""(async()=>{const r=await fetch('%s');return await r.json()})()"""%runpath)
         ready=wait_for(lambda:next((r for r in runs() if r.get("status")=="ready"),None),"candidate ready",35)
         check("browser_model_mock_produced_ready_candidate",ready["episodeId"]=="ep-two")
+        def candidate_diff_visible():
+            return bool(page.js("""(() => {
+              const root=document.querySelector('[data-node-id="board"]');
+              const detail=[...(root?.querySelectorAll('details')||[])].find(d=>
+                (d.querySelector(':scope > summary')?.textContent||'').includes('ready'));
+              if(!detail)return false;
+              if(!detail.open){detail.open=true;detail.dispatchEvent(new Event('toggle',{bubbles:true}));}
+              const preview=detail.querySelector('[aria-label="分镜候选差异预览"]');
+              return !!preview && (preview.textContent||'').includes('替换') &&
+                (preview.textContent||'').includes('浏览器实际触发');
+            })()"""))
+        check("p22_candidate_diff_visible_in_real_browser",
+              bool(wait_for(candidate_diff_visible,"candidate diff panel",25)))
         check("candidate_explicit_adopt_ui",bool(wait_for(lambda:click_run_candidate(page),"adopt candidate button",25)))
         def changed():
             g=graph(page,pid)

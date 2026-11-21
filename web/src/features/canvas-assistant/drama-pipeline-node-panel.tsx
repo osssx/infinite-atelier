@@ -23,6 +23,15 @@ import { dramaInlineNodeClass, dramaNodeControl, dramaNodePrimary, DramaNodeStat
 
 const { TextArea } = Input;
 type DramaRun = {id:string; episodeId:string; status:string; error?:string; candidate?:{episodeCount?:number;episodes?:{id:string;title:string;synopsis:string;events:string[];ending:string}[];shots?:{id:string;description:string}[];completedSequenceIds?:string[];adoptedShotIds?:string[];shotCount?:number}};
+type DramaRunChange = {id:string;kind:"added"|"replaced"|"deleted"|"reordered"|"unchanged";
+    changed:boolean;reordered:boolean;conflict:boolean;adopted:boolean;
+    before?:{order:number;description:string;sequenceId?:string|null}|null;
+    after?:{order:number;description:string;sequenceId?:string|null}|null;
+    current?:{order:number;description:string}|null};
+type DramaRunPreview = {runId:string;status:string;sourceChanged:boolean;fullAdoptBlocked:boolean;
+    items:DramaRunChange[];manualExtraIds:string[];
+    summary:{added:number;replaced:number;deleted:number;reordered:number;unchanged:number;conflicts:number}};
+
 
 export function isDramaPipelineNode(type: string): type is string {
     return Object.values(DRAMA_PIPELINE_NODE_TYPES).includes(type);
@@ -106,6 +115,7 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
     const [runs,setRuns] = useState<DramaRun[]>([]);
     const [expandedRuns,setExpandedRuns] = useState<Record<string,boolean>>({});
     const [selectedCandidates,setSelectedCandidates] = useState<Record<string,string[]>>({});
+    const [runPreviews,setRunPreviews] = useState<Record<string,DramaRunPreview>>({});
     const [dependencyReport,setDependencyReport] = useState<{status:string;changes:{nodeId:string;kind:string;entryIds:string[]}[];impact?:{assetIds:string[];episodeIds:string[];sequenceIds:string[];shotIds:string[];mediaShotIds:string[];configIds:string[];needsReview:string[];pending?:{assetIds:string[];episodeIds:string[];sequenceIds:string[];shotIds:string[];configIds:string[];needsReview:string[]}}}>();
     const runPath = `/api/v1/projects/${encodeURIComponent(projectId ?? "")}/drama-pipeline/runs`;
     useEffect(() => {
@@ -273,6 +283,30 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
                             <p>引用待核对：{dependencyReport.impact.pending.needsReview.join("、")}</p>}
                         <p>这是预警，不表示当前确认分镜已经变动；请先审核并确认中间阶段。</p>
                     </div>}
+
+                {storyboard&&<div className="flex flex-wrap gap-1.5 border-t pt-2" aria-label="从影响范围选择局部重跑">
+                    {dependencyReport.impact.episodeIds.filter(id=>linkedEpisodes.some(episode=>episode.id===id)).map(id=>
+                        <Button key={"ep-"+id} size="small" onClick={()=>{
+                            setSelectedEpisode(id);setSelectedSequence("");setSelectedRunShot("");
+                            setValidation("已选择受影响剧集，点击「生成分镜候选」后才会执行模型请求");
+                        }}>按集重跑 · {linkedEpisodes.find(episode=>episode.id===id)?.title??id}</Button>)}
+                    {dependencyReport.impact.sequenceIds.flatMap(value=>{
+                        const shot=shots.find(item=>item.episodeId+"/"+item.sequenceId===value);
+                        if(!shot)return [];
+                        return [<Button key={"seq-"+value} size="small" onClick={()=>{
+                            setSelectedEpisode(shot.episodeId);setSelectedSequence(shot.sequenceId??"");setSelectedRunShot("");
+                            setValidation("已选择受影响场次，点击「生成分镜候选」后才会执行模型请求");
+                        }}>按场重跑 · {value}</Button>];
+                    })}
+                    {dependencyReport.impact.shotIds.flatMap(id=>{
+                        const shot=shots.find(item=>item.id===id);
+                        if(!shot)return [];
+                        return [<Button key={"shot-"+id} size="small" onClick={()=>{
+                            setSelectedEpisode(shot.episodeId);setSelectedSequence(shot.sequenceId??"");setSelectedRunShot(id);
+                            setValidation("已选择受影响镜头，点击「生成分镜候选」后才会执行模型请求");
+                        }}>按镜重跑 · {id}</Button>];
+                    })}
+                </div>}
                 <p>这里仅预览确认版本的影响；不会自动修改草案或视频 Config。可按集、场、镜生成候选，
                     在视频配置页逐项选择采用更新。</p>
             </div>}
@@ -524,6 +558,10 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
             if(open&&!run.candidate?.shots?.length&&!run.candidate?.episodes?.length)void canvasApi<DramaRun>(`${runPath}/${encodeURIComponent(run.id)}`,"GET")
                 .then(updated=>setRuns(current=>current.map(item=>item.id===run.id?updated:item)))
                 .catch(()=>setValidation("无法读取候选详情"));
+            if(open&&storyboard&&["ready","adopted"].includes(run.status))
+                void canvasApi<DramaRunPreview>(`${runPath}/${encodeURIComponent(run.id)}/preview`,"GET")
+                    .then(preview=>setRunPreviews(current=>({...current,[run.id]:preview})))
+                    .catch(()=>setValidation("无法获取分镜差异预览"));
         }}>
             <summary>{run.episodeId==="*"?"完整剧集计划":(episodePlanning?episodeDraft?.episodes:linkedEpisodes)?.find(episode=>episode.id===run.episodeId)?.title ?? run.episodeId} · {run.status}</summary>
             {run.error && <p>{run.error}</p>}
@@ -540,31 +578,77 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
                 <strong>{episode.title}</strong><p>{episode.synopsis}</p>
                 {episode.events.map((event,index)=><p key={index}>{index+1}. {event}</p>)}<p>{episode.ending}</p>
             </article>)}
-            {run.candidate?.shots?.map(shot=><label key={shot.id} className="block">
-                {run.status==="ready"&&<input type="checkbox" checked={(selectedCandidates[run.id]??[]).includes(shot.id)}
-                    disabled={run.candidate?.adoptedShotIds?.includes(shot.id)} onChange={event=>{
-                        const checked=event.target.checked;
-                        setSelectedCandidates(current=>({...current,[run.id]:checked?[...current[run.id]??[],shot.id]:
-                            (current[run.id]??[]).filter(id=>id!==shot.id)}));
-                    }}/>} {run.candidate?.adoptedShotIds?.includes(shot.id)?"已采用 · ":""}{shot.description}
-            </label>)}
-            {storyboard&&run.status==="ready"&&<Button disabled={!selectedCandidates[run.id]?.length} onClick={async()=>{
-                try{
-                    await onAdoptDramaRun?.(`${runPath}/${encodeURIComponent(run.id)}/adopt`,selectedCandidates[run.id]);
-                    const updated=await canvasApi<DramaRun>(`${runPath}/${encodeURIComponent(run.id)}`,"GET");
-                    setRuns(current=>current.map(item=>item.id===run.id?updated:item));
-                    setSelectedCandidates(current=>({...current,[run.id]:[]}));
-                    setValidation("已合入所选镜头，其他候选继续保留");
-                }catch(error){setValidation(error instanceof Error?error.message:"候选采用失败");}
-            }}>采用所选镜头</Button>}
-            {run.status==="ready" && <Button onClick={async()=>{
-                try{
-                    await onAdoptDramaRun?.(`${runPath}/${encodeURIComponent(run.id)}/adopt`);
-                    setRuns(current=>current.map(item=>item.id===run.id?{...item,status:"adopted"}:item));
-                    setValidation("已合入目标剧集草案，请确认发布");
-                }catch(error){setValidation(error instanceof Error?error.message:"候选采用失败");}
-            }}>采用到草案</Button>}
-        </details>)}
+             {storyboard&&runPreviews[run.id]&&<div className="grid gap-2 rounded-lg border p-2" aria-label="分镜候选差异预览">
+                 <p>差异：新增 {runPreviews[run.id].summary.added} · 替换 {runPreviews[run.id].summary.replaced}
+                     · 删除 {runPreviews[run.id].summary.deleted} · 重排 {runPreviews[run.id].summary.reordered}
+                     · 无变化 {runPreviews[run.id].summary.unchanged}</p>
+                 {runPreviews[run.id].sourceChanged&&<p role="alert">确认的上游输入已变化，请重新生成候选。</p>}
+                 <Button size="small" onClick={async()=>{
+                     try{
+                         const preview=await canvasApi<DramaRunPreview>(`${runPath}/${encodeURIComponent(run.id)}/preview`,"GET");
+                         setRunPreviews(current=>({...current,[run.id]:preview}));
+                         setSelectedCandidates(current=>({...current,[run.id]:(current[run.id]??[]).filter(id=>
+                             !preview.sourceChanged&&preview.items.some(item=>
+                                 item.id===id&&item.changed&&!item.conflict&&!item.adopted))}));
+                         setValidation("已刷新差异与人工编辑冲突状态");
+                     }catch(error){setValidation(error instanceof Error?error.message:"无法刷新差异预览");}
+                 }}>刷新差异与冲突</Button>
+                 {!!runPreviews[run.id].manualExtraIds.length&&<p role="alert">
+                     模型运行期间新增了人工镜头（{runPreviews[run.id].manualExtraIds.join("、")}）。
+                     整批采用将覆盖人工编辑，因此已禁用；可单独采用无冲突候选。
+                 </p>}
+                 {run.status==="ready"&&<Button size="small" disabled={runPreviews[run.id].sourceChanged||
+                     !runPreviews[run.id].items.some(item=>item.changed&&!item.conflict&&!item.adopted)}
+                     onClick={()=>setSelectedCandidates(current=>({...current,[run.id]:
+                         runPreviews[run.id].items.filter(item=>item.changed&&!item.conflict&&!item.adopted).map(item=>item.id)}))}>
+                     选择全部无冲突差异
+                 </Button>}
+                 {runPreviews[run.id].items.map(item=><label key={item.id} className="grid gap-1 rounded-md border p-2">
+                     <span className="flex items-center gap-2">
+                         {run.status==="ready"&&item.changed&&<input type="checkbox" aria-label={`选择差异 ${item.id}`}
+                             checked={(selectedCandidates[run.id]??[]).includes(item.id)}
+                             disabled={item.conflict||item.adopted||runPreviews[run.id].sourceChanged}
+                             onChange={event=>setSelectedCandidates(current=>({...current,[run.id]:event.target.checked?
+                                 [...new Set([...(current[run.id]??[]),item.id])]:
+                                 (current[run.id]??[]).filter(id=>id!==item.id)}))}/>}
+                         <strong>{item.kind==="added"?"新增":item.kind==="deleted"?"删除":
+                             item.kind==="reordered"?"重排":item.kind==="replaced"?"替换":"无变化"}</strong>
+                         <span>{item.id}</span>
+                         {item.adopted&&<span>已采用</span>}
+                         {item.conflict&&<span role="alert">人工编辑冲突，暂不可采用</span>}
+                         {item.reordered&&item.kind!=="reordered"&&<span>含顺序调整</span>}
+                     </span>
+                     {item.before&&<p className="break-words opacity-75">原镜头 {item.before.order}：{item.before.description}</p>}
+                     {item.after&&<p className="break-words">候选镜头 {item.after.order}：{item.after.description}</p>}
+                 </label>)}
+             </div>}
+             {storyboard&&run.status==="ready"&&!runPreviews[run.id]&&<p>打开运行详情后加载差异预览，再选择采用。</p>}
+             {storyboard&&run.status==="ready"&&<Button disabled={!runPreviews[run.id]||
+                 !selectedCandidates[run.id]?.length||runPreviews[run.id].sourceChanged||
+                 selectedCandidates[run.id]?.some(id=>!runPreviews[run.id].items.some(item=>
+                     item.id===id&&item.changed&&!item.conflict&&!item.adopted))} onClick={async()=>{
+                 try{
+                     await onAdoptDramaRun?.(`${runPath}/${encodeURIComponent(run.id)}/adopt`,selectedCandidates[run.id]);
+                     const updated=await canvasApi<DramaRun>(`${runPath}/${encodeURIComponent(run.id)}`,"GET");
+                     const preview=await canvasApi<DramaRunPreview>(`${runPath}/${encodeURIComponent(run.id)}/preview`,"GET");
+                     setRuns(current=>current.map(item=>item.id===run.id?updated:item));
+                     setRunPreviews(current=>({...current,[run.id]:preview}));
+                     setSelectedCandidates(current=>({...current,[run.id]:[]}));
+                     setValidation("已合入所选差异，删除与顺序调整也按项处理，其他候选仍保留");
+                 }catch(error){setValidation(error instanceof Error?error.message:"候选采用失败，请刷新差异预览");}
+             }}>采用所选差异</Button>}
+             {run.status==="ready" && <Button disabled={storyboard&&(!runPreviews[run.id]||
+                 runPreviews[run.id].fullAdoptBlocked)} onClick={async()=>{
+                 try{
+                     await onAdoptDramaRun?.(`${runPath}/${encodeURIComponent(run.id)}/adopt`);
+                     setRuns(current=>current.map(item=>item.id===run.id?{...item,status:"adopted"}:item));
+                     if(storyboard){
+                         const preview=await canvasApi<DramaRunPreview>(`${runPath}/${encodeURIComponent(run.id)}/preview`,"GET");
+                         setRunPreviews(current=>({...current,[run.id]:preview}));
+                     }
+                     setValidation("已合入目标剧集草案，请检查后确认发布");
+                 }catch(error){setValidation(error instanceof Error?error.message:"候选采用失败，请刷新差异预览");}
+             }}>采用到草案</Button>}        </details>)}
         {validation ? <p role="status" className={`mt-2 whitespace-pre-wrap text-sm ${assetEditorExpanded ? "thin-scrollbar max-h-24 shrink-0 overflow-y-auto" : ""}`}>{validation}</p> : null}
         {invalidSceneIds.map(id => <label className="mt-2 block text-sm" key={id}>
             将所有引用 {id} 的镜头改为

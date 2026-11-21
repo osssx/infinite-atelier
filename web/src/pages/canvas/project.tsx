@@ -4270,7 +4270,18 @@ function AtelierCanvasPage() {
                         return canvasApi<CanvasBackendProject>(path,"POST",{shotIds});
                     }, {textVersionNodeId:panelNode.id});
                 }}
-                versionBusy={textVersionBusy}
+                onMigrateDramaSequences={async(path,command)=>{
+                    await commitAssistantCanvasGraphWithSaveBarrier(projectId,({assertCurrent})=>{
+                        assertCurrent();
+                        return canvasApi<CanvasBackendProject>(path,"POST",command);
+                    },{textVersionNodeId:panelNode.id});
+                }}
+                onAdoptDramaAssetCandidate={async(path,command)=>{
+                    await commitAssistantCanvasGraphWithSaveBarrier(projectId,({assertCurrent})=>{
+                        assertCurrent();
+                        return canvasApi<CanvasBackendProject>(path,"POST",command);
+                    },{textVersionNodeId:panelNode.id});
+                }}                versionBusy={textVersionBusy}
                 onChange={patch => handleConfigNodeChange(panelNode.id, patch)} onCreateVideoConfigs={(inputs, batch) => {
                     const source = nodesRef.current.find(item => item.id === panelNode.id);
                     if (!source) return;

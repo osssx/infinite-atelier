@@ -78,20 +78,33 @@ export function previewDramaImpact(document,nodeId){
   if(node.type!=="drama:storyboard")continue;
   const allAssets=ancestors.flatMap(parent=>parsed(parent,readAssetDraft)?.assets??[]);
   const assetById=new Map(allAssets.map(asset=>[asset.id,asset]));
-  if(kind==="drama:episodes"&&change.kind==="updated"){
-   for(const id of change.entryIds){
-    impact.episodeIds.add(id);
-    const detail=change.entryDetails?.find(entry=>entry.id===id);
-    if(detail?.bodyChanged===false&&Array.isArray(detail.sequenceIds)&&detail.sequenceIds.length>0){
-     for(const seqId of detail.sequenceIds){
-      impact.sequenceIds.add(id+"/"+seqId);
-      markShots(shot=>shot.episodeId===id&&shot.sequenceId===seqId);
+   if(kind==="drama:episodes"&&change.kind==="updated"){
+    for(const id of change.entryIds){
+     impact.episodeIds.add(id);
+     const detail=change.entryDetails?.find(entry=>entry.id===id);
+     const episode=parsed(upstream,readEpisodeDraft)?.episodes.find(item=>item.id===id);
+     const sequenceIds=new Set(detail?.sequenceIds??[]);
+     let uncertain=false;
+     if(detail?.bodyChanged===false&&Array.isArray(detail.eventIds)){
+      for(const eventId of detail.eventIds){
+       const matching=(episode?.sequences??[]).filter(seq=>seq.eventRefs?.includes(eventId));
+       if(!matching.length)uncertain=true;
+       for(const seq of matching)sequenceIds.add(seq.id);
+      }
      }
-     for(const shot of shots.filter(shot=>shot.episodeId===id&&!shot.sequenceId))
-      impact.needsReview.add("sequence-unmapped-shot:"+shot.id);
-    }else markShots(shot=>shot.episodeId===id);
-   }
-  }else if(kind==="drama:assets"&&change.kind==="updated"){
+     if(detail?.bodyChanged===false&&!uncertain&&sequenceIds.size){
+      for(const seqId of sequenceIds){
+       impact.sequenceIds.add(id+"/"+seqId);
+       markShots(shot=>shot.episodeId===id&&shot.sequenceId===seqId);
+      }
+      for(const shot of shots.filter(shot=>shot.episodeId===id&&!shot.sequenceId))
+       impact.needsReview.add("sequence-unmapped-shot:"+shot.id);
+     }else{
+      if(uncertain)impact.needsReview.add("event-unmapped:"+id);
+      markShots(shot=>shot.episodeId===id);
+     }
+    }
+   }else if(kind==="drama:assets"&&change.kind==="updated"){
    for(const id of change.entryIds){
     impact.assetIds.add(id);
     const asset=assetById.get(id),detail=change.entryDetails?.find(entry=>entry.id===id);
@@ -132,12 +145,33 @@ export function previewDramaImpact(document,nodeId){
  // episode/assets, while their underlying story source has changed. This is
  // only a *pending* downstream preview: never silently regenerate/publish it.
  const pending={assetIds:new Set(),episodeIds:new Set(),sequenceIds:new Set(),
-  shotIds:new Set(),configIds:new Set(),needsReview:new Set()};
+  shotIds:new Set(),configIds:new Set(),visualConfigIds:new Set(),needsReview:new Set()};
  if(node.type==="drama:storyboard"){
   for(const parent of ancestors.filter(item=>["drama:assets","drama:episodes"].includes(item.type))){
    const upstream=previewDramaImpact(document,parent.id);
    if(upstream.status==="current")continue;
    for(const note of upstream.impact.needsReview)pending.needsReview.add(parent.id+":"+note);
+   for(const change of upstream.changes.filter(item=>item.kind==="visual_updated")){
+    if(change.visualStyleChanged===null){
+     pending.needsReview.add("visual-scope-unknown:"+change.nodeId);
+     continue;
+    }
+    if(!change.visualStyleChanged){
+     pending.needsReview.add("visual-art-direction:"+change.nodeId);
+     continue;
+    }
+    for(const config of configs){
+     const source=config.metadata.dramaVideoSource;
+     if(typeof source?.visualStyle!=="string"){
+      pending.needsReview.add("visual-config-unknown:"+config.id);
+      continue;
+     }
+     if(source.visualStyle===change.previousVisualStyle){
+      pending.visualConfigIds.add(config.id);
+      pending.configIds.add(config.id);
+     }
+    }
+   }
    if(parent.type==="drama:episodes"){
     const sequences=new Set(upstream.impact.sequenceIds);
     for(const episodeId of upstream.impact.episodeIds){

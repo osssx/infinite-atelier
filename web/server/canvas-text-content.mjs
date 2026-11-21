@@ -1,4 +1,6 @@
-/** @typedef {{id:string,title:string,synopsis:string,ending:string,events:string[],sourceRefs:string[],targetDurationSec?:number,sequences?:{id:string,title:string,sourceRefs?:string[],eventRefs?:string[]}[]}} DramaEpisode */
+import {validEpisodeEventItems,normalizeEpisodeEvents} from "./drama-episode-links.mjs";
+
+/** @typedef {{id:string,title:string,synopsis:string,ending:string,events:string[],sourceRefs:string[],targetDurationSec?:number,sequences?:{id:string,title:string,sourceRefs?:string[],eventRefs?:string[],replaces?:string[]}[],eventItems?:{id:string,text:string,replaces?:string[],status?:string}[]}} DramaEpisode */
 
 /** @param {string} value @returns {{episodes:DramaEpisode[]}|null} */
 export function readEpisodeDraft(value) {
@@ -8,10 +10,11 @@ export function readEpisodeDraft(value) {
    typeof episode.id==="string"&&episode.id.trim()&&
    [episode.title,episode.synopsis,episode.ending].every(item=>typeof item==="string")&&
    [episode.sourceRefs,episode.events].every(items=>Array.isArray(items)&&items.every(item=>typeof item==="string"))&&
+    validEpisodeEventItems(episode)&&
    (episode.targetDurationSec===undefined||Number.isFinite(episode.targetDurationSec)&&episode.targetDurationSec>0)&&
    (episode.sequences===undefined||Array.isArray(episode.sequences)&&episode.sequences.every(sequence=>
     sequence&&typeof sequence.id==="string"&&sequence.id.trim()&&typeof sequence.title==="string"&&
-     [sequence.sourceRefs,sequence.eventRefs].every(refs=>refs===undefined||
+     [sequence.sourceRefs,sequence.eventRefs,sequence.replaces].every(refs=>refs===undefined||
       Array.isArray(refs)&&refs.every(ref=>typeof ref==="string"&&ref.length<=256)))&&
     new Set(episode.sequences.map(sequence=>sequence.id)).size===episode.sequences.length)))
    return null;
@@ -131,9 +134,10 @@ export function dramaEntryContentPatch(node,action){
  const draft=readEpisodeDraft(body);
  const episode=draft?.episodes.find(item=>item.id===action.episodeId);
  if(!episode)return null;
- Object.assign(episode,action.changes);
- return {dramaDraft:JSON.stringify(draft)};
-}
+  const previous=structuredClone(episode);
+  Object.assign(episode,action.changes);
+  Object.assign(episode,normalizeEpisodeEvents(episode,previous));
+  return {dramaDraft:JSON.stringify(draft)};}
 
 function dramaDraftBody(metadata){
  return [metadata?.dramaDraft,metadata?.dramaConfirmed,metadata?.content].find(value=>value?.trim())??"";

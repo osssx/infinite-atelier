@@ -1,14 +1,17 @@
 import { useState, type CSSProperties } from "react";
+import {normalizeEpisodeEvents,unresolvedEventRefs} from "../../../server/drama-episode-links.mjs";
+import {splitEpisodeSequence,mergeEpisodeSequences} from "../../../server/drama-sequence-relations.mjs";
 
 export type DramaEpisode = {
     id: string;
     title: string;
     synopsis: string;
     events: string[];
+    eventItems?: {id:string;text:string;replaces?:string[];status?:string}[];
     sourceRefs: string[];
     ending: string;
     targetDurationSec?: number;
-    sequences?: {id:string;title:string;sourceRefs?:string[];eventRefs?:string[]}[];
+    sequences?: {id:string;title:string;sourceRefs?:string[];eventRefs?:string[];replaces?:string[]}[];
 };
 
 export function DramaEpisodeFields({episodes, expanded, disabled, control, onChange}: {
@@ -43,7 +46,14 @@ export function DramaEpisodeFields({episodes, expanded, disabled, control, onCha
             </label>
             <label className={`gap-1.5 font-medium ${expanded ? "flex grow-[2] flex-col" : "grid"}`}>剧情事件（每行一条）
                 <textarea className={`thin-scrollbar ${field}${expanded ? " grow resize-none" : ""}`} style={control} rows={expanded ? 6 : 4} value={active.events.join("\n")}
-                    onChange={event => edit({events:event.target.value.split("\n")})} />
+                    onChange={event => {
+                        const normalized=normalizeEpisodeEvents({...active,events:event.target.value.split("\n")},active);
+                        edit({events:normalized.events,eventItems:normalized.eventItems,sequences:normalized.sequences});
+                    }} />
+                <button type="button" className="text-xs underline" onClick={()=>{
+                    const normalized=normalizeEpisodeEvents(active,active);
+                    edit({eventItems:normalized.eventItems,sequences:normalized.sequences});
+                }}>补齐旧事件的稳定 ID</button>
             </label>
             <label className="grid gap-1.5 font-medium">本集结尾
                 <textarea className={`thin-scrollbar ${field}`} style={control} rows={2} value={active.ending} onChange={event => edit({ending:event.target.value})} />
@@ -69,19 +79,29 @@ export function DramaEpisodeFields({episodes, expanded, disabled, control, onCha
                                  ? {...item,sourceRefs:event.target.value.split("\n").map(ref=>ref.trim()).filter(Boolean)}:item)})}/>
                      </label>
                      <div className="grid gap-1.5">
-                         <span>本场关联事件（精确匹配当前事件文本）</span>
-                         {active.events.filter(text=>text.trim()).map((event,index)=><label key={index} className="flex items-start gap-2">
-                             <input type="checkbox" checked={(sequence.eventRefs??[]).includes(event)} onChange={change=>edit({
-                                 sequences:active.sequences?.map(item=>item.id===sequence.id?
-                                     {...item,eventRefs:change.target.checked?[...new Set([...(item.eventRefs??[]),event])]:
-                                         (item.eventRefs??[]).filter(text=>text!==event)}:item)
-                             })}/><span className="break-words">{event}</span>
-                         </label>)}
-                         {(sequence.eventRefs??[]).some(ref=>!active.events.includes(ref))&&
-                             <p>有事件引用与当前剧集事件不匹配，请核对后更新。</p>}
-                     </div>
-                 </div>)}
-                <button type="button" className={field} style={control} onClick={()=>edit({
+                         <span>本场关联剧情事件（稳定 ID）</span>
+                          {(active.eventItems??active.events.map(text=>({id:text,text}))).filter(entry=>entry.text.trim()).map((eventItem,index)=><label key={eventItem.id||index} className="flex items-start gap-2">
+                              <input type="checkbox" checked={(sequence.eventRefs??[]).includes(eventItem.id)||(sequence.eventRefs??[]).includes(eventItem.text)} onChange={change=>edit({
+                                  sequences:active.sequences?.map(seq=>seq.id===sequence.id?
+                                      {...seq,eventRefs:change.target.checked?[...new Set([...(seq.eventRefs??[]),eventItem.id])]:
+                                          (seq.eventRefs??[]).filter(ref=>ref!==eventItem.id&&ref!==eventItem.text)}:seq)
+                              })}/><span className="break-words">{eventItem.text}</span>
+                          </label>)}
+                          {(sequence.eventRefs??[]).some(ref=>!active.events.includes(ref)&&!active.eventItems?.some(item=>item.id===ref))&&
+                              <p>事件引用缺失或有歧义，请核对稳定 ID 后更新。</p>}
+                          {(sequence.replaces?.length??0)>0&&<p className="text-xs">替代旧场次：{sequence.replaces?.join("、")}。请审核旧镜头的场次迁移。</p>}
+                          <div className="flex flex-wrap gap-2">
+                              <button type="button" className="rounded border px-2 py-1 text-xs" onClick={()=>edit({
+                                  sequences:splitEpisodeSequence(active,sequence.id).sequences,
+                              })}>拆成两场</button>
+                              {(active.sequences?.findIndex(item=>item.id===sequence.id)??0)>0&&
+                                  <button type="button" className="rounded border px-2 py-1 text-xs" onClick={()=>{
+                                      const index=active.sequences?.findIndex(item=>item.id===sequence.id)??0;
+                                      edit({sequences:mergeEpisodeSequences(active,active.sequences![index-1].id,sequence.id).sequences});
+                                  }}>并入上一场</button>}
+                          </div>
+                      </div>
+                  </div>)}                <button type="button" className={field} style={control} onClick={()=>edit({
                     sequences:[...(active.sequences??[]),{id:crypto.randomUUID(),title:"新场次"}],
                 })}>添加场次</button>
             </div>

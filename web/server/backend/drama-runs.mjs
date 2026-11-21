@@ -4,6 +4,7 @@ import {validateDramaPipelineSnapshot} from "./drama-pipeline.mjs";
 import {writeTransaction,stableJson} from "./repository.mjs";
 import {normalizeOpenAiCompatBaseUrl} from "./openai-compat-endpoints.mjs";
 import {planDramaShotDiff,mergeDramaSelectedShots} from "./drama-run-diff.mjs";
+import {normalizeEpisodeEvents} from "../drama-episode-links.mjs";
 
 const digest=value=>createHash("sha256").update(stableJson(value)).digest("hex");
 const fail=(code,statusCode=409)=>Object.assign(Error(code),{code,statusCode});
@@ -148,7 +149,7 @@ export function createDramaRunService({db,getProject,validateDocument,emitEvent,
      const existing=frozen.baseline.find(item=>item.id===episode.id&&!usedIds.has(item.id))??
       frozen.baseline.find((item,offset)=>offset===index&&!usedIds.has(item.id));
      const id=episodeId!=="*"?episodeId:existing?.id??randomUUID();
-     usedIds.add(id);return {...episode,id};
+     usedIds.add(id);return normalizeEpisodeEvents({...episode,id},existing??episode);
     });
     db.prepare("UPDATE drama_runs SET state='ready',candidate=? WHERE project_id=? AND id=? AND state='running'")
      .run(stableJson({episodes}),projectId,requestId);

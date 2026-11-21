@@ -14,7 +14,6 @@ import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { DramaAssetFields } from "./drama-asset-fields";
 import {DramaAssetCandidates} from "./drama-asset-candidates";
-import {mergeAssetCandidates} from "./drama-asset-merge";
 import { DramaVideoConfigFields } from "./drama-video-config-fields";
 import { DramaStoryboardFields } from "./drama-storyboard-fields";
 import { DramaEpisodeFields } from "./drama-episode-fields";
@@ -28,6 +27,9 @@ type DramaRunChange = {id:string;kind:"added"|"replaced"|"deleted"|"reordered"|"
     before?:{order:number;description:string;sequenceId?:string|null}|null;
     after?:{order:number;description:string;sequenceId?:string|null}|null;
     current?:{order:number;description:string}|null};
+type DramaSequenceMigration = {projectRevision:number;nodeId:string;episodeId:string;
+    episodeDigest:string;rows:{shotId:string;sourceSequenceId:string|null;
+        possibleSequenceIds:string[];shotDigest:string;status:string}[]};
 type DramaRunPreview = {runId:string;status:string;sourceChanged:boolean;fullAdoptBlocked:boolean;
     items:DramaRunChange[];manualExtraIds:string[];
     summary:{added:number;replaced:number;deleted:number;reordered:number;unchanged:number;conflicts:number}};
@@ -64,7 +66,7 @@ function describeDramaValidation(errors: {code:string;shotId?:string;id?:string}
         : []).join("\n");
 }
 
-export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, videoConfigs, onRefreshVideoConfig, onOpenVideoConfig, onCreateReferenceConfig, onPickCanvasImage, projectId, upstreamText = "", upstreamContext = "", upstreamArtifacts = [], supplementalEpisodes = [], assetUsage = {}, confirmedAssetPlan, savedAssetReferences, mergedReferences, legacyAssetPlanning = false, imageNodes = [], productionContext = "", productionStyle, onOpenVersions, onConfirmVersion, onBeforeDramaRun, onAdoptDramaRun, versionBusy = false }: {
+export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, videoConfigs, onRefreshVideoConfig, onOpenVideoConfig, onCreateReferenceConfig, onPickCanvasImage, projectId, upstreamText = "", upstreamContext = "", upstreamArtifacts = [], supplementalEpisodes = [], assetUsage = {}, confirmedAssetPlan, savedAssetReferences, mergedReferences, legacyAssetPlanning = false, imageNodes = [], productionContext = "", productionStyle, onOpenVersions, onConfirmVersion, onBeforeDramaRun, onAdoptDramaRun, onMigrateDramaSequences, onAdoptDramaAssetCandidate, versionBusy = false }: {
     node: CanvasNodeData;
     onChange: (patch: Partial<CanvasNodeData["metadata"]>) => void;
     onCreateVideoConfigs?: (inputs: ReturnType<typeof buildDramaVideoInput>[], batch: boolean) => void;
@@ -89,6 +91,8 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
     onConfirmVersion?: (draft: string) => Promise<void>;
     onBeforeDramaRun?: () => Promise<unknown>;
     onAdoptDramaRun?: (path:string,shotIds?:string[]) => Promise<void>;
+    onMigrateDramaSequences?: (path:string,command:Record<string,unknown>) => Promise<void>;
+    onAdoptDramaAssetCandidate?: (path:string,command:Record<string,unknown>) => Promise<void>;
     versionBusy?: boolean;
     imageNodes?: CanvasNodeData[];
 }) {
@@ -116,7 +120,9 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
     const [expandedRuns,setExpandedRuns] = useState<Record<string,boolean>>({});
     const [selectedCandidates,setSelectedCandidates] = useState<Record<string,string[]>>({});
     const [runPreviews,setRunPreviews] = useState<Record<string,DramaRunPreview>>({});
-    const [dependencyReport,setDependencyReport] = useState<{status:string;changes:{nodeId:string;kind:string;entryIds:string[]}[];impact?:{assetIds:string[];episodeIds:string[];sequenceIds:string[];shotIds:string[];mediaShotIds:string[];configIds:string[];needsReview:string[];pending?:{assetIds:string[];episodeIds:string[];sequenceIds:string[];shotIds:string[];configIds:string[];needsReview:string[]}}}>();
+    const [sequenceMigration,setSequenceMigration] = useState<DramaSequenceMigration>();
+    const [sequenceChoices,setSequenceChoices] = useState<Record<string,string>>({});
+    const [dependencyReport,setDependencyReport] = useState<{status:string;changes:{nodeId:string;kind:string;entryIds:string[]}[];impact?:{assetIds:string[];episodeIds:string[];sequenceIds:string[];shotIds:string[];mediaShotIds:string[];configIds:string[];needsReview:string[];pending?:{assetIds:string[];episodeIds:string[];sequenceIds:string[];shotIds:string[];configIds:string[];visualConfigIds?:string[];needsReview:string[]}}}>();
     const runPath = `/api/v1/projects/${encodeURIComponent(projectId ?? "")}/drama-pipeline/runs`;
     useEffect(() => {
         if ((!storyboard&&!episodePlanning) || !projectId) return;
@@ -238,15 +244,19 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
             key={node.metadata.dramaAssetCandidate.id} assets={previous?.assets??[]}
             candidates={node.metadata.dramaAssetCandidate.assets} disabled={generating||versionBusy}
             onDiscard={()=>onChange({dramaAssetCandidate:undefined})}
-            onApply={decisions=>{
+            onApply={async decisions=>{
                 try{
                     const candidate=node.metadata?.dramaAssetCandidate;
                     if(!candidate)return;
                     if(candidate.baseline!==storedDraft)throw Error("资产草案已修改，请重新提取候选后审核");
-                    const assets=mergeAssetCandidates(previous?.assets??[],candidate.assets,decisions);
-                    onChange({dramaDraft:JSON.stringify({assets}),dramaAssetCandidate:undefined});
-                    setValidation("已合入所选资产，请检查并确认");
-                }catch(error){setValidation(error instanceof Error?error.message:"合入失败");}
+                    if(!onAdoptDramaAssetCandidate)throw Error("原子资产合入服务未连接，不能直接修改草案");
+                    await onBeforeDramaRun?.();
+                    await onAdoptDramaAssetCandidate(
+                        `/api/v1/projects/${encodeURIComponent(projectId??"")}/drama-pipeline/asset-candidates/adopt`,{
+                            nodeId:node.id,candidateId:candidate.id,decisions,
+                        });
+                    setValidation("已在同一事务中合入资产与受影响的分镜草案引用；请核对后确认资产");
+                }catch(error){setValidation(error instanceof Error?error.message:"资产合入失败");}
             }}/>}
         {versioned && <details>
             <summary onClick={()=>void canvasApi<NonNullable<typeof dependencyReport>>(
@@ -279,6 +289,8 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
                             <p>可能受影响的镜头：{dependencyReport.impact.pending.shotIds.join("、")}</p>}
                         {dependencyReport.impact.pending.configIds.length>0&&
                             <p>可能受影响的视频配置：{dependencyReport.impact.pending.configIds.join("、")}</p>}
+                        {(dependencyReport.impact.pending.visualConfigIds?.length??0)>0&&
+                            <p>确实采用旧影片风格、需复核的 Config：{dependencyReport.impact.pending.visualConfigIds?.join("、")}</p>}
                         {dependencyReport.impact.pending.needsReview.length>0&&
                             <p>引用待核对：{dependencyReport.impact.pending.needsReview.join("、")}</p>}
                         <p>这是预警，不表示当前确认分镜已经变动；请先审核并确认中间阶段。</p>
@@ -552,6 +564,46 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
             finally { setGenerating(false); }
         }} disabled={!projectId || (versioned && versionBusy) || (storyboard && !selectedEpisode)}>{storyboard ? "生成分镜候选" : episodePlanning ? "生成剧集候选" : "生成草案"}</Button> : null}
         </div>
+        {storyboard&&selectedEpisode&&<details className="grid gap-2 rounded-lg border p-2">
+            <summary>场次拆分／合并后的镜头引用迁移</summary>
+            <p className="text-xs">先确认新的剧集场次，再扫描旧镜头。场次一对多拆分时，必须逐镜指定新场次，不自动覆盖人工配置。</p>
+            <Button size="small" disabled={!projectId||versionBusy} onClick={async()=>{
+                try{
+                    await onBeforeDramaRun?.();
+                    const data=await canvasApi<DramaSequenceMigration>(
+                        `/api/v1/projects/${encodeURIComponent(projectId??"")}/drama-pipeline/sequence-migration?nodeId=${encodeURIComponent(node.id)}&episodeId=${encodeURIComponent(selectedEpisode)}`,"GET");
+                    setSequenceMigration(data);setSequenceChoices({});
+                    setValidation(data.rows.length?"请审核每个旧镜头所属的新场次":"当前剧集没有需要迁移的旧镜头");
+                }catch(error){setValidation(error instanceof Error?error.message:"场次迁移扫描失败");}
+            }}>扫描场次引用</Button>
+            {sequenceMigration?.episodeId===selectedEpisode&&<>
+                {sequenceMigration.rows.map(row=><label key={row.shotId} className="grid gap-1 rounded border p-2 text-xs">
+                    <span>镜头 {row.shotId} · 旧场次 {row.sourceSequenceId??"未指定"}</span>
+                    <select aria-label={`镜头 ${row.shotId} 迁入场次`} className="rounded border p-1" style={control}
+                        value={sequenceChoices[row.shotId]??""} onChange={event=>setSequenceChoices(old=>({...old,[row.shotId]:event.target.value}))}>
+                        <option value="">保留原归属，暂不迁移</option>
+                        {row.possibleSequenceIds.map(id=><option value={id} key={id}>{id}</option>)}
+                    </select>
+                    {row.status==="unresolved"&&<span>没有确定的继承关系，请先在剧集规划补充 replaces 关系。</span>}
+                    {row.status==="choice_required"&&<span>拆场存在多个候选归属，必须人工选择。</span>}
+                </label>)}
+                <Button disabled={versionBusy||!Object.values(sequenceChoices).some(Boolean)} onClick={async()=>{
+                    try{
+                        const changes=sequenceMigration.rows.filter(row=>sequenceChoices[row.shotId]).map(row=>({
+                            shotId:row.shotId,sequenceId:sequenceChoices[row.shotId],
+                            expectedShotDigest:row.shotDigest,
+                        }));
+                        await onMigrateDramaSequences?.(
+                            `/api/v1/projects/${encodeURIComponent(projectId??"")}/drama-pipeline/sequence-migration`,{
+                                nodeId:node.id,episodeId:selectedEpisode,expectedRevision:sequenceMigration.projectRevision,
+                                episodeDigest:sequenceMigration.episodeDigest,changes,
+                            });
+                        setSequenceMigration(undefined);setSequenceChoices({});
+                        setValidation("已原子迁移所选镜头，其他镜头及历史视频 Config 保持原样；请重新检查并确认分镜");
+                    }catch(error){setValidation(error instanceof Error?error.message:"场次引用迁移冲突，请重新扫描");}
+                }}>确认迁移所选镜头</Button>
+            </>}
+        </details>}
         {(storyboard||episodePlanning) && runs.map(run=><details key={run.id} open={Boolean(expandedRuns[run.id])} onToggle={event=>{
             const open=event.currentTarget.open;
             setExpandedRuns(current=>current[run.id]===open?current:{...current,[run.id]:open});

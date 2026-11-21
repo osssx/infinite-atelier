@@ -120,6 +120,17 @@ def main():
               "!!document.querySelector('[data-node-id=\"episodes\"]')&&!!document.querySelector('[data-node-id=\"story\"]')")))
         wait_for(lambda:choose_episode(page),"episode selector",25)
         check("episode_two_selected",True)
+        check("p2_event_identity_edit_action_visible",bool(page.js("""(() => {
+            const root=document.querySelector('[data-node-id="episodes"]');
+            return [...(root?.querySelectorAll('button')||[])].some(btn=>
+              (btn.textContent||'').includes('补齐旧事件的稳定 ID'));
+        })()""")))
+        check("p2_sequence_migration_entry_visible",bool(page.js("""(() => {
+            const root=document.querySelector('[data-node-id="board"]');
+            return [...(root?.querySelectorAll('summary')||[])].some(sum=>
+              (sum.textContent||'').includes('场次拆分／合并后的镜头引用迁移'));
+        })()""")))
+
         check("real_generate_candidate_click",node_button(page,"board","生成分镜候选"))
         runpath=f"/api/v1/projects/{pid}/drama-pipeline/runs?nodeId=board"
         def runs():

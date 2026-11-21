@@ -11,8 +11,11 @@ const describeEntry=(item,type)=>{
   return {...result,bodyDigest:hash(body),variants:(item.variants??[]).map(variant=>({id:variant.id,digest:hash(variant)}))};
  }
  if(type==="drama:episodes"){
-  const {sequences:_,...body}=item;
-  return {...result,bodyDigest:hash(body),sequences:(item.sequences??[]).map(sequence=>({id:sequence.id,digest:hash(sequence)}))};
+  const {sequences:_,events:__,eventItems:___,...body}=item;
+  const events=(item.eventItems??(item.events??[]).map((text,index)=>({id:"legacy-event-"+index,text})))
+   .map(event=>({id:event.id,digest:hash(event)}));
+  return {...result,bodyDigest:hash(body),events,
+   sequences:(item.sequences??[]).map(sequence=>({id:sequence.id,digest:hash(sequence)}))};
  }
  return result;
 };
@@ -33,6 +36,7 @@ export function dramaDependencies(document,nodeId){
    mediaRevisionId:node.metadata?.dramaAssetReferenceRevisionId??null,
    mediaEntries:structuredClone(node.metadata?.dramaAssetReferenceEntries??[]),
    visualDigest:hash(node.metadata?.dramaConfirmedVisual??{}),
+    visualStyle:node.metadata?.dramaConfirmedVisual?.visualStyle??null,
    digest:hash(content),entries:entries.map(item=>describeEntry(item,node.type))}];
  });
 }
@@ -48,7 +52,9 @@ export function inspectDramaDependencies(document,nodeId){
   const latest=current.find(item=>item.nodeId===dependency.nodeId&&item.edgeId===dependency.edgeId);
   if(!latest){changes.push({nodeId:dependency.nodeId,kind:"disconnected",entryIds:[]});continue;}
   if(dependency.visualDigest&&latest.visualDigest!==dependency.visualDigest)
-   changes.push({nodeId:dependency.nodeId,kind:"visual_updated",entryIds:[]});
+   changes.push({nodeId:dependency.nodeId,kind:"visual_updated",entryIds:[],
+     visualStyleChanged:dependency.visualStyle===undefined?null:dependency.visualStyle!==latest.visualStyle,
+     previousVisualStyle:dependency.visualStyle??null});
   if(latest.mediaRevisionId!==(dependency.mediaRevisionId??null)){
    const oldEntries=dependency.mediaEntries??[],newEntries=latest.mediaEntries;
    const mediaIds=new Set([...oldEntries.map(item=>item.id),...newEntries.map(item=>item.id)]);
@@ -63,7 +69,8 @@ export function inspectDramaDependencies(document,nodeId){
      const before=oldEntries.find(item=>item.id===id),after=newEntries.find(item=>item.id===id);
      return {id,bodyChanged:!before?.bodyDigest||!after?.bodyDigest||before.bodyDigest!==after.bodyDigest,
       ...(before?.variants&&after?.variants?{variantIds:changedNested(before.variants,after.variants)}:{}),
-      ...(before?.sequences&&after?.sequences?{sequenceIds:changedNested(before.sequences,after.sequences)}:{})};
+      ...(before?.sequences&&after?.sequences?{sequenceIds:changedNested(before.sequences,after.sequences)}:{}),
+       ...(before?.events&&after?.events?{eventIds:changedNested(before.events,after.events)}:{})};
     })});
   } for(const dependency of current){
   if(!previous.some(item=>item.nodeId===dependency.nodeId&&item.edgeId===dependency.edgeId))

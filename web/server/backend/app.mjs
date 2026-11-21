@@ -38,6 +38,8 @@ import {registerShotGroupRoutes} from "./shot-group-routes.mjs";
 import {validateDramaPipelineSnapshot,buildDramaStagePrompt} from "./drama-pipeline.mjs";
 import {createDramaRunService,initDramaRuns} from "./drama-runs.mjs";
 import {previewDramaImpact} from "./drama-impact.mjs";
+import {previewDramaSequenceMigration,applyDramaSequenceMigration} from "./drama-sequence-migration.mjs";
+import {adoptDramaAssetCandidates} from "./drama-asset-adoption.mjs";
 import {readCreativePayload} from "./creative-payloads.mjs";
 import {createAssistantChatStreamLedger} from "./assistant-chat-stream-ledger.mjs";
 import {assistantCurrentReferenceData,MAX_ASSISTANT_MESSAGE_BYTES} from "./assistant-chat.mjs";
@@ -768,8 +770,26 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
   });
  app.get("/api/v1/projects/:id/drama-pipeline/dependencies",{schema:{querystring:{
   type:"object",required:["nodeId"],properties:{nodeId:canvasNodeIdSchema}}}},
-  req=>previewDramaImpact(getProject(db,req.params.id).document,req.query.nodeId));
- app.post(dramaRunPath,{schema:{body:{type:"object",additionalProperties:false,
+   req=>previewDramaImpact(getProject(db,req.params.id).document,req.query.nodeId));
+  app.post("/api/v1/projects/:id/drama-pipeline/asset-candidates/adopt",{schema:{body:{
+   type:"object",additionalProperties:false,required:["nodeId","candidateId","decisions"],
+   properties:{nodeId:canvasNodeIdSchema,candidateId:idSchema,
+    decisions:{type:"object",maxProperties:300,additionalProperties:{type:"object",additionalProperties:false,
+     required:["action"],properties:{action:{enum:["skip","new","reuse","variant"]},targetId:idSchema}}}}}}},
+   req=>adoptDramaAssetCandidates({db,getProject,validateDocument:validateProjectDocument,emitEvent:emitProjectEvent},
+    req.params.id,req.body));  const sequenceMigrationPath="/api/v1/projects/:id/drama-pipeline/sequence-migration";
+  app.get(sequenceMigrationPath,{schema:{querystring:{type:"object",additionalProperties:false,
+   required:["nodeId","episodeId"],properties:{nodeId:canvasNodeIdSchema,episodeId:idSchema}}}},
+   req=>previewDramaSequenceMigration(db,getProject,req.params.id,req.query));
+  app.post(sequenceMigrationPath,{schema:{body:{type:"object",additionalProperties:false,
+   required:["nodeId","episodeId","expectedRevision","episodeDigest","changes"],
+   properties:{nodeId:canvasNodeIdSchema,episodeId:idSchema,expectedRevision:{type:"integer",minimum:1},
+    episodeDigest:{type:"string",pattern:"^[a-f0-9]{64}$"},
+    changes:{type:"array",minItems:1,maxItems:500,items:{type:"object",additionalProperties:false,
+     required:["shotId","sequenceId","expectedShotDigest"],
+     properties:{shotId:idSchema,sequenceId:idSchema,expectedShotDigest:{type:"string",pattern:"^[a-f0-9]{64}$"}}}}}}}},
+   req=>applyDramaSequenceMigration({db,getProject,validateDocument:validateProjectDocument,emitEvent:emitProjectEvent},
+    req.params.id,req.body)); app.post(dramaRunPath,{schema:{body:{type:"object",additionalProperties:false,
   required:["requestId","nodeId","episodeId","channelId","provider","model"],
   properties:{requestId:idSchema,nodeId:canvasNodeIdSchema,episodeId:{type:"string",minLength:1,maxLength:128},
    sequenceId:{type:"string",minLength:1,maxLength:128},shotId:{type:"string",minLength:1,maxLength:128},

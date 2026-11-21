@@ -237,6 +237,36 @@ test("P2: real confirmation transaction changes one reference slot without repub
  assert.deepEqual(previewDramaImpact(result.document,"board").impact.mediaShotIds,["shot-blue"]);
  assert.deepEqual(previewDramaImpact(result.document,"board").impact.configIds,["config-blue"]);
 });
+test("P2.5: confirmed visual style change flags only Configs that adopted the earlier style",()=>{
+ const graph=blueprint(),source=locate(graph,"story");
+ source.metadata.dramaConfirmedVisual={artDirection:{},visualStyle:"Noir"};
+ for(const id of ["assets","episodes","board"])
+  locate(graph,id).metadata.dramaInputDependencies=dramaDependencies(graph,id);
+ locate(graph,"config-blue").metadata.dramaVideoSource.visualStyle="Noir";
+ locate(graph,"config-red").metadata.dramaVideoSource.visualStyle="Watercolor";
+ source.metadata.dramaConfirmedVisual={artDirection:{},visualStyle:"Sketch"};
+ const report=previewDramaImpact(graph,"board");
+ assert.equal(report.status,"current","storyboard content has not changed");
+ assert.deepEqual(report.impact.shotIds,[]);
+ assert.deepEqual(report.impact.pending.visualConfigIds,["config-blue"]);
+ assert.deepEqual(report.impact.pending.configIds,["config-blue"]);
+ assert.ok(report.impact.pending.needsReview.some(item=>item==="visual-config-unknown:config-manual-first"));
+ assert.ok(!report.impact.pending.configIds.includes("config-red"));
+});
+test("P2.5: old visual snapshots without style provenance stay review-only, no guessed Config rewrite",()=>{
+ const graph=blueprint(),source=locate(graph,"story");
+ source.metadata.dramaConfirmedVisual={artDirection:{},visualStyle:"Noir"};
+ for(const id of ["assets","episodes","board"]){
+  locate(graph,id).metadata.dramaInputDependencies=dramaDependencies(graph,id).map(dep=>{
+   const {visualStyle:_,...legacy}=dep;
+   return legacy;
+  });
+ }
+ source.metadata.dramaConfirmedVisual={artDirection:{},visualStyle:"New"};
+ const report=previewDramaImpact(graph,"board");
+ assert.deepEqual(report.impact.pending.visualConfigIds,[]);
+ assert.ok(report.impact.pending.needsReview.includes("visual-scope-unknown:story"));
+});
 test("P2: real authenticated dependency endpoint returns fine-grained impact",async t=>{
  const db=new DatabaseSync(":memory:");initializeSchema(db);
  const graph=confirmedGraph();

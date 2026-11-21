@@ -5,6 +5,7 @@ import {validCanvasNodeId} from "../canvas-node-id.mjs";
 import {writeTransaction,assertNoRawCredentials,stableJson} from "./repository.mjs";
 import {reconcileSourceParagraphs} from "./drama-source-paragraphs.mjs";
 import {dramaDependencies} from "./drama-dependencies.mjs";
+import {normalizeEpisodeEvents} from "../drama-episode-links.mjs";
 import {removedDramaAssetUsages} from "./drama-asset-usage.mjs";
 import {hydrateCreativeDocument} from "./creative-payloads.mjs";
 
@@ -216,10 +217,14 @@ export function mutateTextVersions(db,projectId,nodeId,command,validateDocument,
      {content:target.content,dramaDraft:target.content}:{dramaDraft:target.content};
    }
   }else if(action==="confirm"){
-   const normalized=content.trim()&&node.type!=="text"&&canvasTextContentPatch(node.type,content);
-   if(!normalized)throw fail("drama_draft_invalid");
-   const next=normalized.dramaDraft;
-   const previous=node.metadata?.dramaConfirmed??"";
+    let normalized=content.trim()&&node.type!=="text"&&canvasTextContentPatch(node.type,content);
+    if(!normalized)throw fail("drama_draft_invalid");
+    if(node.type==="drama:episodes"){
+     const draft=readEpisodeDraft(normalized.dramaDraft),earlier=readEpisodeDraft(node.metadata?.dramaConfirmed??"");
+     normalized={dramaDraft:stableJson({episodes:draft.episodes.map(episode=>
+      normalizeEpisodeEvents(episode,earlier?.episodes.find(item=>item.id===episode.id)??episode))})};
+    }
+    const next=normalized.dramaDraft;   const previous=node.metadata?.dramaConfirmed??"";
    const dependencies=dramaDependencies(document,nodeId);
    const dependenciesChanged=stableJson(dependencies)!==stableJson(node.metadata?.dramaInputDependencies??[]);
    const priorId=node.metadata?.dramaAssetReferenceRevisionId??node.metadata?.dramaConfirmedVersionId;

@@ -221,7 +221,7 @@ export function mutateTextVersions(db,projectId,nodeId,command,validateDocument,
    const next=normalized.dramaDraft;
    const previous=node.metadata?.dramaConfirmed??"";
    const dependencies=dramaDependencies(document,nodeId);
-   const dependenciesChanged=JSON.stringify(dependencies)!==JSON.stringify(node.metadata?.dramaInputDependencies??[]);
+   const dependenciesChanged=stableJson(dependencies)!==stableJson(node.metadata?.dramaInputDependencies??[]);
    const priorId=node.metadata?.dramaAssetReferenceRevisionId??node.metadata?.dramaConfirmedVersionId;
    const priorRecord=priorId&&db.prepare("SELECT provenance_json FROM canvas_text_versions WHERE project_id=? AND node_id=? AND id=?")
     .get(projectId,nodeId,priorId);

@@ -86,6 +86,7 @@ import {LazyCreativeNode} from "@/features/canvas-assistant/lazy-creative-node";
 import { isInlineDramaNode, readStoryboardDraft } from "@/features/canvas-assistant/canvas-drama-pipeline";
 import { mergeLegacyDramaAssets, mergeLegacyDramaFirstFrames } from "@/features/canvas-assistant/drama-asset-migration";
 import { buildDramaVideoConfigGraph, findDramaVideoConfigs,refreshDramaVideoConfigGraph } from "@/features/canvas-assistant/drama-video-config";
+import {resolveDramaShotGroupConfigs} from "@/features/canvas-assistant/drama-shot-group-plan";
 import {readEpisodeDraft} from "../../../server/canvas-text-content.mjs";
 import { AssetPickerModal, type InsertAssetPayload } from "@/components/canvas/asset-picker-modal";
 import { CanvasSidePanel } from "@/components/canvas/canvas-side-panel";
@@ -1346,8 +1347,15 @@ function AtelierCanvasPage() {
     const openShotPanel=(value:NonNullable<typeof shotPanel>)=>{
         checkedShots.current.clear();setShotChecks([]);setShotBatch(null);setExcludedShots(new Set());setShotPanel(value);
     };
-    const createShotGroup=async()=>{
-        const candidates=selectedShots(true);
+    const createShotGroup=async(explicitNodeIds?:string[])=>{
+        if(explicitNodeIds&&new Set(explicitNodeIds).size!==explicitNodeIds.length)
+            throw Error("不能重复选择同一镜头配置");
+        const candidates:CanvasShot[]=explicitNodeIds?
+            explicitNodeIds.map(generationNodeId=>({shotId:nanoid(),generationNodeId,mode:"independent"})):
+            selectedShots(true);
+        if(explicitNodeIds&&candidates.some(shot=>!nodesRef.current.some(node=>
+            node.id===shot.generationNodeId&&isVideoShotNode(node))))
+            throw Error("选中的视频配置不存在或不是视频生成节点");
         const supported=await Promise.all(candidates.map(async shot=>{
             const node=nodesRef.current.find(item=>item.id===shot.generationNodeId);
             if(node&&isVideoShotNode(node))return shot;
@@ -4281,8 +4289,16 @@ function AtelierCanvasPage() {
                         assertCurrent();
                         return canvasApi<CanvasBackendProject>(path,"POST",command);
                     },{textVersionNodeId:panelNode.id});
-                }}                versionBusy={textVersionBusy}
-                onChange={patch => handleConfigNodeChange(panelNode.id, patch)} onCreateVideoConfigs={(inputs, batch) => {
+                }}
+                versionBusy={textVersionBusy}
+                onCreateDramaShotGroup={async shotIds=>{
+                    const source=nodesRef.current.find(node=>node.id===panelNode.id);
+                    const confirmed=readStoryboardDraft(source?.metadata?.dramaConfirmed??"");
+                    if(!confirmed)throw Error("请先确认分镜后再组建批量任务");
+                    const configs=findDramaVideoConfigs(panelNode.id,nodesRef.current,connectionsRef.current);
+                    const ids=resolveDramaShotGroupConfigs(confirmed.shots,shotIds,configs);
+                    await createShotGroup(ids);
+                }}                onChange={patch => handleConfigNodeChange(panelNode.id, patch)} onCreateVideoConfigs={(inputs, batch) => {
                     const source = nodesRef.current.find(item => item.id === panelNode.id);
                     if (!source) return;
                     const confirmed = readStoryboardDraft(source.metadata?.dramaConfirmed ?? "");

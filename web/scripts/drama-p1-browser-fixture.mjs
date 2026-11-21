@@ -50,14 +50,19 @@ const blob=await blobStore.put([png],{mime:"image/png"}),key="cas:"+blob.blobId;
 const before=getProject(db,projectId);
 before.document.nodes.push(format("legacy-image","image",1360,520,{
  storageKey:key,content:"/api/v1/blobs/"+blob.blobId,status:"success"
-}),format("first-config","config",1280,40,{
- generationMode:"video",dramaShotId:"shot-one",dramaVideoSource:{nodeId:"board",revisionId:"board-v1",
- shot:JSON.stringify(e1),referenceKeys:[key],prompt:"手工编辑的第一集提示词",basePrompt:e1.description},
- prompt:"手工编辑的第一集提示词",composerContent:"手工编辑的第一集提示词",
- seconds:"9",videoRatio:"4:3",videoMode:"first_frame",videoReferences:[{id:"legacy-image",kind:"image",role:"first_frame"}]
-}));
+ }),format("first-config","config",1280,40,{
+  generationMode:"video",dramaShotId:"shot-one",dramaVideoSource:{nodeId:"board",revisionId:"board-v1",
+  shot:JSON.stringify(e1),referenceKeys:[key],prompt:"手工编辑的第一集提示词",basePrompt:e1.description},
+  prompt:"手工编辑的第一集提示词",composerContent:"手工编辑的第一集提示词",
+  seconds:"9",videoRatio:"4:3",videoMode:"first_frame",videoReferences:[{id:"legacy-image",kind:"image",role:"first_frame"}]
+ }),format("second-config","config",1280,370,{
+  generationMode:"video",dramaShotId:"shot-two",dramaVideoSource:{nodeId:"board",revisionId:"board-v1",
+  shot:JSON.stringify(e2),referenceKeys:[],prompt:e2.description,basePrompt:e2.description},
+  prompt:e2.description,composerContent:e2.description,videoMode:"text_to_video",seconds:"6"
+ }));
 before.document.connections.push({id:"board-config",fromNodeId:"board",toNodeId:"first-config"},
  {id:"image-config",fromNodeId:"legacy-image",toNodeId:"first-config"});
+before.document.connections.push({id:"board-second-config",fromNodeId:"board",toNodeId:"second-config"});
 saveSingleUserCanvas(db,{id:projectId,expectedRevision:before.revision,document:before.document});
 
 const settings={channels:[{id:"p1mock",name:"P1 fixture only",baseUrl:"https://example.com/v1",apiKey:"",

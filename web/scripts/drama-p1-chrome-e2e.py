@@ -174,6 +174,32 @@ def main():
         confirmed=wait_for(published,"confirmed candidate",35)
         check("confirmation_published_second_episode",True)
         check("first_config_unchanged_after_confirmation",find_node(confirmed["data"],"first-config")==original)
+        check("p3_video_production_tab_available",bool(page.js("""(() => {
+          const board=document.querySelector('[data-node-id="board"]');
+          const toggle=[...(board?.querySelectorAll('button')||[])].find(
+            b=>(b.textContent||'').trim()==='视频配置');
+          if(!toggle)return false;
+          toggle.click();
+          return true;
+        })()""")))
+        check("p3_input_preflight_panel_visible",bool(wait_for(lambda:page.js("""(() => {
+          const board=document.querySelector('[data-node-id="board"]');
+          const panel=board?.querySelector('[aria-label="逐镜媒体输入预检"]');
+          return !!panel&&(panel.textContent||'').includes('实际提交 Prompt') &&
+                 (panel.textContent||'').includes('确认分镜与绑定素材');
+        })()"""),"P3 media preflight UI",25)))
+        check("p3_configured_shot_group_entry_visible",bool(page.js("""(() => {
+          const board=document.querySelector('[data-node-id="board"]');
+          return [...(board?.querySelectorAll('summary')||[])].some(
+            s=>(s.textContent||'').includes('从已配置镜头组建批量生成'));
+        })()""")))
+        check("p3_unsupported_video_modes_disabled",bool(wait_for(lambda:page.js("""(() => {
+          const board=document.querySelector('[data-node-id="board"]');
+          const select=[...(board?.querySelectorAll('select')||[])].find(
+            s=>(s.parentElement?.textContent||'').includes('视频输入模式'));
+          return !!select?.querySelector('option[value="first_last_frame"]')?.disabled;
+        })()"""),"P3 disabled unsupported mode",25)))
+
         # Authenticated ZIP HTTP roundtrip with genuine browser session and CSRF.
         archived=page.js("""(async()=>{
           const csrf=(await (await fetch('/api/v1/session')).json()).csrfToken;
@@ -197,6 +223,58 @@ def main():
         page.call("Page.reload",{"ignoreCache":True})
         wait_for(lambda:page.js("document.readyState")=="complete","browser refresh",25)
         check("browser_refresh_did_not_delete_config",find_node(graph(page,pid)["data"],"first-config")==original)
+
+        # P3: two real Video Configs (one per episode) -> choose range -> Shot Group.
+        # Run only after archive + legacy Config regression checks: grouping may add groupId metadata.
+        if node_button(page,"board","打开创作内容"):
+            wait_for(lambda:bool(page.js("""(() => {
+                const root=document.querySelector('[data-node-id="board"]');
+                return [...(root?.querySelectorAll('button')||[])].some(b=>(b.textContent||'').trim()==='视频配置');
+            })()""")),"reopen board for P3 grouping",25)
+        if not node_button(page,"board","视频配置"):
+            raise AssertionError("P3 video configuration tab missing after reload")
+        def open_p3_batch_selector():
+            return bool(page.js("""(() => {
+              const root=document.querySelector('[data-node-id="board"]');
+              const detail=root?.querySelector('details[aria-label="P3 选镜头组建批量生成"]');
+              if(!detail)return false;
+              if(!detail.open){detail.open=true;detail.dispatchEvent(new Event('toggle',{bubbles:true}));}
+              return detail.querySelectorAll('input[type="checkbox"]').length>=2;
+            })()"""))
+        check("p3_two_episode_batch_selector_visible",bool(wait_for(open_p3_batch_selector,"P3 batch config options",25)))
+        check("p3_explicit_two_config_selection",bool(page.js("""(() => {
+          const root=document.querySelector('[data-node-id="board"]');
+          const detail=root?.querySelector('details[aria-label="P3 选镜头组建批量生成"]');
+          const checks=[...(detail?.querySelectorAll('input[type="checkbox"]')||[])];
+          if(checks.length!==2)return false;
+          checks.forEach(input=>{if(!input.checked)input.click();});
+          return checks.every(input=>input.checked);
+        })()""")))
+        def create_p3_batch():
+            return bool(page.js("""(() => {
+              const root=document.querySelector('[data-node-id="board"]');
+              const detail=root?.querySelector('details[aria-label="P3 选镜头组建批量生成"]');
+              const button=[...(detail?.querySelectorAll('button')||[])].find(btn=>
+                (btn.textContent||'').includes('组建所选镜头并进入批量预检'));
+              if(!button||button.disabled)return false;
+              button.click();return true;
+            })()"""))
+        check("p3_explicit_create_group_click",bool(wait_for(create_p3_batch,"P3 create shot group",25)))
+        def grouped_p3():
+            g=graph(page,pid)
+            if not g["ok"]:return None
+            for n in g["data"]["document"]["nodes"]:
+                if n["type"]=="group" and n.get("metadata",{}).get("shotGroup",{}).get("shots"):
+                    return g,n
+            return None
+        p3_group=wait_for(grouped_p3,"persisted P3 shot group",25)
+        group_shots=p3_group[1]["metadata"]["shotGroup"]["shots"]
+        check("p3_shotgroup_selected_config_ids",
+              [x["generationNodeId"] for x in group_shots]==["first-config","second-config"])
+        check("p3_shotgroup_independent_by_default",all(x["mode"]=="independent" for x in group_shots))
+        check("p3_shotgroup_does_not_automatically_submit_media",not any(
+            "/api/v1/jobs" in item["path"] and item["method"]=="POST"
+            for item in page.network_requests))
         check("no_real_model_or_media_requests",not any(
              "/api/v1/jobs" in item["path"] and item["method"]=="POST"
              for item in page.network_requests))

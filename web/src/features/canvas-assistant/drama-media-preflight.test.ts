@@ -3,7 +3,7 @@ import {describe,it,expect,vi} from "vitest";
 import {defaultConfig,type AiConfig} from "@/stores/use-config-store";
 import {preflightDramaVideo,prepareDramaProduction} from "./drama-media-preflight";
 vi.mock("@/features/comfy-workflow/template-registry",()=>({getComfyTemplate:async()=>({
-    ports:[{id:"duration",defaultValue:5}],mediaUseCase:{channel:"video",modeBindings:{first_frame:{
+    ports:[{id:"duration",direction:"target",defaultValue:5},{id:"frame",direction:"target",valueKind:"IMAGE"}],mediaUseCase:{channel:"video",modeBindings:{first_frame:{
         rolePorts:{first_frame:["frame"]},parameterPorts:{duration_seconds:"duration"},
     }},mediaCapabilities:{schemaVersion:1,kind:"video",modes:[{id:"first_frame",enabled:true,
         inputs:[{role:"first_frame",kind:"image",minItems:1,maxItems:1}],parameters:[{

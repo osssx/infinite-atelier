@@ -66,10 +66,11 @@ function describeDramaValidation(errors: {code:string;shotId?:string;id?:string}
         : []).join("\n");
 }
 
-export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, videoConfigs, onRefreshVideoConfig, onOpenVideoConfig, onCreateReferenceConfig, onPickCanvasImage, projectId, upstreamText = "", upstreamContext = "", upstreamArtifacts = [], supplementalEpisodes = [], assetUsage = {}, confirmedAssetPlan, savedAssetReferences, mergedReferences, legacyAssetPlanning = false, imageNodes = [], productionContext = "", productionStyle, onOpenVersions, onConfirmVersion, onBeforeDramaRun, onAdoptDramaRun, onMigrateDramaSequences, onAdoptDramaAssetCandidate, versionBusy = false }: {
+export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, videoConfigs, onRefreshVideoConfig, onOpenVideoConfig, onCreateReferenceConfig, onPickCanvasImage, onCreateDramaShotGroup, projectId, upstreamText = "", upstreamContext = "", upstreamArtifacts = [], supplementalEpisodes = [], assetUsage = {}, confirmedAssetPlan, savedAssetReferences, mergedReferences, legacyAssetPlanning = false, imageNodes = [], productionContext = "", productionStyle, onOpenVersions, onConfirmVersion, onBeforeDramaRun, onAdoptDramaRun, onMigrateDramaSequences, onAdoptDramaAssetCandidate, versionBusy = false }: {
     node: CanvasNodeData;
     onChange: (patch: Partial<CanvasNodeData["metadata"]>) => void;
     onCreateVideoConfigs?: (inputs: ReturnType<typeof buildDramaVideoInput>[], batch: boolean) => void;
+    onCreateDramaShotGroup?: (shotIds:string[])=>Promise<void>;
     videoConfigs?: ReadonlyMap<string, CanvasNodeData>;
     onOpenVideoConfig?: (id: string) => void;
     onRefreshVideoConfig?: (id:string,input:ReturnType<typeof buildDramaVideoInput>,fields:{prompt:boolean;duration:boolean;references?:boolean;overwrite:boolean})=>void;
@@ -371,7 +372,8 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
                     </details>
                 </div>
                 <div className={storyboardView === "video" ? "min-w-0" : "hidden"}>
-                    <DramaVideoConfigFields productionStyle={productionStyle} inputs={videoInputs} episodes={linkedEpisodes}
+                    <DramaVideoConfigFields productionStyle={productionStyle} confirmedRevisionId={node.metadata?.dramaConfirmedVersionId}
+                        inputs={videoInputs} episodes={linkedEpisodes}
                         onRefresh={onRefreshVideoConfig} configs={videoConfigs} missingCount={missingConfigs.length}
                         production={node.metadata?.dramaShotProduction}
                         onProductionChange={(shotId,value)=>onChange({dramaShotProduction:{...node.metadata?.dramaShotProduction,[shotId]:value}})}
@@ -379,6 +381,7 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
                         missingFor={input => dramaVideoMissingReferenceIds(videoSnapshot, input.shot)}
                         hasUnconfirmedChanges={draft !== confirmed} disabled={versionBusy} theme={theme}
                         onCreateSelected={selected => { setAssetEditorExpanded(false); onCreateVideoConfigs?.(selected, true); }}
+                        onCreateBatch={onCreateDramaShotGroup}
                         onAction={(input, existing) => {
                             setAssetEditorExpanded(false);
                             if (existing) onOpenVideoConfig?.(existing.id);

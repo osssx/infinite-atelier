@@ -729,11 +729,11 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
     sourceParagraphs:input.paragraphs,artDirection:input.artDirection,visualStyle:input.visualStyle});
    const prompt=buildDramaStagePrompt({stage,targetEpisodes:input.targetEpisodes,sourceText:input.story,sourceParagraphs:input.paragraphs,context})+
     (stage==="episodes"?"\n输出 episodes。scope.episodeId 非 * 时仅重写该集，保留该集 ID、场次 ID 和原文范围，不改写其他集。":
-    "\n只输出指定集的镜头。scope.sequenceId 存在时只输出该场并为每镜复用该 ID。scope.shotId 存在时只输出该镜头。");
+    "\n只输出 episode.id 指定集的镜头。scope.sequenceId 存在时只输出该场并为每镜复用该 ID。scope.shotId 存在时只输出该镜头。所有角色造型、场景和道具 ID 都必须来自已确认 assets；不得把原文出现但未登记的道具编造成 propIds/keyPropIds，若无合法道具则这两个数组均为 []。");
    const messages=[{role:"user",content:prompt}];
    if(repair){
     messages.push({role:"assistant",content:repair.response});
-    messages.push({role:"user",content:`上一次输出未通过结构校验。仅修复 JSON 结构和字段类型，保留内容与引用 ID。输出应符合先前给定的 ${stage==="episodes"?"episodes":"shots"} Schema。`});
+    messages.push({role:"user",content:`上一次输出未通过结构或引用校验。${repair.reason??""}\n只修复必要的字段和非法引用；保留合法 ID 与文本，不要加入新剧情或未确认资产。输出应符合先前给定的 ${stage==="episodes"?"episodes":"shots"} Schema。`});
    }
    const result=await assistantChat({...config,signal,messages,canvasActions:false,
     semanticCanvasIntent:false,skillContext:"",skillTools:[],selectedCanvasText:"",taskContext:"",plainCanvasChat:true});

@@ -166,21 +166,40 @@ export function createDramaRunService({db,getProject,validateDocument,emitEvent,
     const baseline=currentSequence?frozen.baseline.filter(shot=>shot.sequenceId===currentSequence):frozen.baseline;
     let answer=await generate(frozen.config,input,baseline,controller.signal);
     if(controller.signal.aborted)return get(projectId,requestId);
-    let parsed=readStoryboardDraft(answer);
-    if(!parsed&&typeof answer==="string"&&answer.length<=32000){
-     answer=await generate(frozen.config,input,baseline,controller.signal,{
-      response:answer,reason:"Return a valid JSON object with a shots array matching the requested schema. Preserve the supplied content and IDs.",
-     });
+    const inspect=answer=>{
+     const parsed=readStoryboardDraft(answer);
+     if(!parsed?.shots.length)return {parsed:null,reason:"只返回合法 JSON 对象，shots 必须是非空数组，每镜包含 characterVariantIds、propIds、keyPropIds 数组。"};
+     const errors=[];
+     if(shotId&&parsed.shots.length!==1)errors.push({code:"shot_scope_count_invalid"});
+     if(parsed.shots.some(shot=>shot.episodeId!==episodeId))
+      errors.push({code:"shot_episode_mismatch",expectedEpisodeId:episodeId});
+     if(parsed.shots.some(shot=>currentSequence&&shot.sequenceId!==currentSequence||
+       shot.sequenceId!==undefined&&!frozen.input.episode.sequences?.some(sequence=>sequence.id===shot.sequenceId)))
+      errors.push({code:"shot_sequence_mismatch",expectedSequenceId:currentSequence??null});
+     errors.push(...validateDramaPipelineSnapshot({version:1,revision:1,stage:"storyboard",
+      assets:frozen.input.assets,references:[],shots:parsed.shots}).errors);
+     if(!errors.length)return {parsed};
+     const permitted={
+      characters:frozen.input.assets.filter(asset=>asset.kind==="character").flatMap(asset=>(asset.variants??[]).map(item=>item.id)),
+      scenes:frozen.input.assets.filter(asset=>asset.kind==="scene").map(asset=>({
+       id:asset.id,variantIds:(asset.variants??[]).map(item=>item.id)})),
+      props:frozen.input.assets.filter(asset=>asset.kind==="prop").map(asset=>asset.id),
+     };
+     return {parsed:null,reason:"只修复以下不合法的镜头字段，不改变镜头叙事内容。错误："+JSON.stringify(errors.slice(0,24))+
+      "。已确认合法资产 ID："+JSON.stringify(permitted)+
+      "。禁止创造其他角色造型、场景或道具 ID；没有已确认道具时 propIds 和 keyPropIds 必须是空数组；episodeId 必须为 "+episodeId+
+      (currentSequence?"；sequenceId 必须为 "+currentSequence:"")+
+      "。保留已合法的镜头 ID、镜头顺序和文本；输出完整的 shots JSON 对象。"};
+    };
+    let checked=inspect(answer);
+    if(!checked.parsed&&typeof answer==="string"&&answer.length<=32000){
+     answer=await generate(frozen.config,input,baseline,controller.signal,{response:answer,reason:checked.reason});
      if(controller.signal.aborted)return get(projectId,requestId);
-     parsed=readStoryboardDraft(answer);
+     checked=inspect(answer);
     }
+    if(!checked.parsed)throw fail("drama_candidate_invalid",422);
     const existingIds=new Set(frozen.baseline.map(shot=>shot.id));
-    if(!parsed?.shots.length||parsed.shots.some(shot=>shot.episodeId!==episodeId||
-       (currentSequence&&shot.sequenceId!==currentSequence)||
-       (shot.sequenceId!==undefined&&!frozen.input.episode.sequences?.some(sequence=>sequence.id===shot.sequenceId)))||
-       (shotId&&parsed.shots.length!==1))
-     throw fail("drama_candidate_invalid",422);
-    const shots=parsed.shots.map(shot=>{
+    const shots=checked.parsed.shots.map(shot=>{
      if(!shotId)return {...shot,id:existingIds.has(shot.id)?shot.id:randomUUID()};
      const scoped={...shot,id:shotId,order:frozen.baseline[0].order};
      if(frozen.baseline[0].sequenceId)scoped.sequenceId=frozen.baseline[0].sequenceId;

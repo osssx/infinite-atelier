@@ -102,7 +102,8 @@ export function CanvasTextVersionsModal({
     const saveLabel = t(drama ? "canvas.textVersions.saveDraft" : "canvas.textVersions.saveCurrent");
     const isBlank = !currentContent.trim();
     const isDuplicate = !isBlank && Boolean(versions[0] && matchesCurrent(versions[0]));
-    const isFull = versions.length >= TEXT_VERSIONS_LIMIT;
+    const manualCount = versions.filter(version => version.source !== "confirmation").length;
+    const isFull = manualCount >= TEXT_VERSIONS_LIMIT;
     const saveDisabled = listError || listLoading || busy || retryPending || saving || isBlank || isDuplicate || isFull;
 
     useEffect(() => {
@@ -239,7 +240,7 @@ export function CanvasTextVersionsModal({
                         <section className="flex min-h-0 flex-col overflow-hidden border-b md:border-b-0 md:border-r" style={{ background: theme.node.panel, borderColor: theme.node.stroke }}>
                             <div className="flex h-[52px] shrink-0 items-center justify-between border-b px-4 py-0" style={{ borderColor: theme.node.stroke }}>
                                 <div className="text-sm font-semibold leading-5" style={{ color: theme.node.muted }}>{t("canvas.textVersions.listTitle")}</div>
-                                <span className="text-xs tabular-nums" style={{ color: theme.node.faint }}>{t("canvas.textVersions.count", { count: versions.length, max: TEXT_VERSIONS_LIMIT })}</span>
+                                <span className="text-xs tabular-nums" style={{ color: theme.node.faint }}>{t("canvas.textVersions.count", { count: manualCount, max: TEXT_VERSIONS_LIMIT })}</span>
                             </div>
                             <div aria-label={t("canvas.textVersions.listTitle")} className="max-h-44 min-h-0 flex-1 overflow-y-auto p-2 md:max-h-none">
                                 {listError ? <Button onClick={() => void handleRetry()}>{t("canvas.textVersions.retry")}</Button> : listLoading ? <p role="status">{t("canvas.textVersions.loading")}</p> : versions.length ? versions.map((version) => {

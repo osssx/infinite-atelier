@@ -4,6 +4,7 @@ import {DatabaseSync} from "node:sqlite";
 import {initializeSchema} from "./schema.mjs";
 import {createProject,getProject,saveSingleUserCanvas,validateProjectDocument,emitProjectEvent} from "./projects.mjs";
 import {mutateTextVersions,readTextVersions} from "./canvas-text-versions.mjs";
+import {createDramaRunService,exportDramaRuns,importDramaRuns,initDramaRuns} from "./drama-runs.mjs";
 
 const snapshot=(id,content)=>({id,content,createdAt:"2026-11-20T00:00:00Z",source:"manual",note:id});
 const story=(metadata)=>({id:"story",type:"drama:source",metadata});
@@ -12,6 +13,44 @@ function setup(t){
  const db=new DatabaseSync(":memory:");initializeSchema(db);t.after(()=>db.close());
  return db;
 }
+
+test("a single-episode candidate is idempotent and preserves unrelated edits",async t=>{
+ const db=setup(t);
+ initDramaRuns(db);
+ const episode=id=>({id,title:id,synopsis:"Intro",events:[],sourceRefs:[],ending:"End"});
+ const shot=(id,episodeId,description)=>({id,episodeId,description,order:1,characterVariantIds:[],propIds:[],keyPropIds:[]});
+ const nodes=[story({dramaConfirmed:"Story"}),{id:"assets",type:"drama:assets",metadata:{dramaConfirmed:'{"assets":[]}'}},
+  {id:"episodes",type:"drama:episodes",metadata:{dramaConfirmed:JSON.stringify({episodes:[episode("one"),episode("two")]})}},
+  {id:"board",type:"drama:storyboard",metadata:{dramaDraft:JSON.stringify({shots:[shot("one-shot","one","Original")]})}}];
+ const connections=[["story","assets"],["story","episodes"],["assets","board"],["episodes","board"]]
+  .map(([fromNodeId,toNodeId],index)=>({id:`edge-${index}`,fromNodeId,toNodeId}));
+ createProject(db,{id:"p",document:{...document(nodes),connections}});
+ let calls=0;
+ const runs=createDramaRunService({db,getProject,validateDocument:validateProjectDocument,emitEvent:emitProjectEvent,
+  async generate(){calls++;return JSON.stringify({shots:[shot("generated","two","Candidate")]});}});
+ const request={requestId:"run",nodeId:"board",episodeId:"two",channelId:"channel",provider:"openai",model:"model"};
+ assert.equal((await runs.submit("p",request)).status,"ready");
+ assert.equal((await runs.submit("p",request)).status,"ready");
+ assert.equal(calls,1);
+ const graph=getProject(db,"p").document;
+ graph.nodes[3].metadata.dramaDraft=JSON.stringify({shots:[shot("one-shot","one","Human edit")]});
+ saveSingleUserCanvas(db,{id:"p",expectedRevision:1,document:graph});
+ const adopted=runs.adopt("p","run");
+ assert.deepEqual(JSON.parse(adopted.document.nodes[3].metadata.dramaDraft).shots.map(item=>item.description),
+  ["Human edit","Candidate"]);
+ assert.equal(runs.adopt("p","run").revision,adopted.revision);
+ const next=await runs.submit("p",{...request,requestId:"conflict"});
+ assert.equal(next.status,"ready");
+ const latest=getProject(db,"p");
+ latest.document.nodes[3].metadata.dramaDraft=JSON.stringify({shots:[shot("other","two","Manual replacement")]});
+ saveSingleUserCanvas(db,{id:"p",expectedRevision:latest.revision,document:latest.document});
+ assert.throws(()=>runs.adopt("p","conflict"),/drama_candidate_conflict/);
+ assert.equal(runs.get("p","conflict").status,"ready");
+ const source=getProject(db,"p").document;
+ createProject(db,{id:"restored",document:source});
+ importDramaRuns(db,"restored",source,exportDramaRuns(db,"p",source));
+ assert.deepEqual(runs.get("restored","conflict"),runs.get("p","conflict"));
+});
 
 test("migrates all four node types in place, preserving ordering and current graph revision",t=>{
  const db=setup(t);
@@ -45,36 +84,35 @@ test("story confirmation, stale autosave, backup restore and replay are transact
  assert.equal(change(confirm).revision,2);
  assert.equal(change(confirm).revision,2);
  assert.throws(()=>saveSingleUserCanvas(db,{id:"p",expectedRevision:1,document:initial}),/project_revision_conflict/);
- assert.deepEqual(readTextVersions(db,"p","story").versions.map(v=>v.id),["c"]);
- assert.throws(()=>change({operationId:"r",action:"restore",expectedRevision:2,versionId:"c",mode:"direct"}),/text_version_backup_required/);
- const restore={operationId:"r",action:"restore",expectedRevision:2,versionId:"c",mode:"backup"};
- assert.equal(change(restore).revision,3);
- assert.equal(change(restore).revision,3);
+ const [published,legacy]=readTextVersions(db,"p","story").versions;
+ assert.equal(published.id,"c");
+ assert.throws(()=>change({operationId:"delete",action:"delete",versionId:"c"}),/text_version_in_use/);
+ const edited=getProject(db,"p").document;
+ Object.assign(edited.nodes[0].metadata,{dramaDraft:"unsaved",content:"unsaved"});
+ saveSingleUserCanvas(db,{id:"p",expectedRevision:2,document:edited});
+ assert.throws(()=>change({operationId:"r",action:"restore",expectedRevision:3,versionId:legacy.id,mode:"direct"}),/text_version_backup_required/);
+ const restore={operationId:"r",action:"restore",expectedRevision:3,versionId:legacy.id,mode:"backup"};
+ assert.equal(change(restore).revision,4);
+ assert.equal(change(restore).revision,4);
  assert.deepEqual(getProject(db,"p").document.nodes[0].metadata,{
-  content:"old",dramaDraft:"old",dramaConfirmed:"new\n",dramaStage:"source",videoRatio:"16:9",dramaFilmStyle:"paint"
+  content:"old",dramaDraft:"old",dramaConfirmed:"new\n",dramaConfirmedVersionId:"c",dramaStage:"source",videoRatio:"16:9",dramaFilmStyle:"paint"
  });
- assert.equal(readTextVersions(db,"p","story","r").version.content,"new\n");
- saveSingleUserCanvas(db,{id:"p",expectedRevision:3,document:document([])});
+ assert.equal(readTextVersions(db,"p","story","r").version.content,"unsaved");
+ saveSingleUserCanvas(db,{id:"p",expectedRevision:4,document:document([])});
  assert.throws(()=>readTextVersions(db,"p","story"),/text_node_not_found/);
- saveSingleUserCanvas(db,{id:"p",expectedRevision:4,document:document([initial.nodes[0],{...initial.nodes[0],id:"copy"}])});
- assert.equal(readTextVersions(db,"p","story").versions.length,2);
+ saveSingleUserCanvas(db,{id:"p",expectedRevision:5,document:document([initial.nodes[0],{...initial.nodes[0],id:"copy"}])});
+ assert.equal(readTextVersions(db,"p","story").versions.length,3);
  assert.equal(readTextVersions(db,"p","copy").versions.length,0);
 });
 
-test("a full history only blocks confirmation when a new archive is needed",t=>{
+test("a full manual history permits publication",t=>{
  const db=setup(t);
  const versions=Array.from({length:50},(_,index)=>snapshot("v"+index,"body "+index));
  const current=document([story({dramaDraft:"next",dramaConfirmed:"previous",textVersions:versions})]);
  createProject(db,{id:"p",document:current});
  const change=command=>mutateTextVersions(db,"p","story",command,validateProjectDocument,emitProjectEvent);
- assert.throws(()=>change({operationId:"full",action:"confirm",expectedRevision:1}),/text_version_limit/);
- assert.equal(getProject(db,"p").document.nodes[0].metadata.dramaConfirmed,"previous");
- assert.equal(readTextVersions(db,"p","story").versions.length,50);
- const graph=getProject(db,"p").document;
- graph.nodes[0].metadata.dramaConfirmed="body 45";
- saveSingleUserCanvas(db,{id:"p",expectedRevision:1,document:graph});
- change({operationId:"already-saved",action:"confirm",expectedRevision:2});
- assert.equal(readTextVersions(db,"p","story").versions.length,50);
+ change({operationId:"full",action:"confirm",expectedRevision:1});
+ assert.equal(readTextVersions(db,"p","story").versions.length,52);
  assert.equal(getProject(db,"p").document.nodes[0].metadata.dramaConfirmed,"next");
 });
 

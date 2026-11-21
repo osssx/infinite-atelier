@@ -36,6 +36,7 @@ import {getUiSetting,putUiSetting} from "./ui-settings.mjs";
 import {listScriptAssetReconciliation,reconcileScriptAsset,resumeReconciledVideoJob} from "./script-asset-reconciliation.mjs";
 import {registerShotGroupRoutes} from "./shot-group-routes.mjs";
 import {validateDramaPipelineSnapshot,buildDramaStagePrompt} from "./drama-pipeline.mjs";
+import {createDramaRunService,initDramaRuns} from "./drama-runs.mjs";
 import {createAssistantChatStreamLedger} from "./assistant-chat-stream-ledger.mjs";
 import {assistantCurrentReferenceData,MAX_ASSISTANT_MESSAGE_BYTES} from "./assistant-chat.mjs";
 import {assertConversationTaskTurn,beginConversationRequest,buildConversationMessages,completeConversationRequest,
@@ -205,6 +206,9 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
    "text_version_invalid_restore","text_version_save_not_allowed","text_version_operation_conflict",
    "invalid_text_versions","legacy_text_versions_reload_required","invalid_text_version_command","drama_draft_invalid",
    "archive_invalid_text_history","archive_text_history_integrity_error",
+   "text_version_in_use","archive_invalid_drama_runs","drama_storyboard_not_found","drama_upstream_ambiguous_or_missing",
+   "drama_story_source_mismatch","drama_upstream_unconfirmed","drama_sequence_not_found","drama_shot_not_found",
+   "drama_run_not_found","drama_run_id_conflict","drama_candidate_not_ready","drama_candidate_conflict",
    "stale_generation_source","cyclic_generation_source","generation_save_barrier_required","invalid_job_request","idempotency_key_conflict","backend_prior_job_not_terminal","job_not_found","invalid_project_job_history_request","invalid_project_job_history_cursor","project_job_not_found","project_job_not_terminal",
    "unknown_model_close_invalid","unknown_model_close_not_eligible","unknown_model_close_state_changed","reconciliation_invalid_input","reconciliation_not_eligible","reconciliation_provider_unsupported","reconciliation_adapter_unavailable","reconciliation_state_changed","reconciliation_upstream_unavailable","reconciliation_remote_already_linked",
    "script_asset_job_not_found","script_asset_job_not_eligible","script_asset_identity_mismatch",
@@ -711,6 +715,29 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
    return reply.code(status).send({valid:false,errors:[{code:error?.code||"drama_pipeline_snapshot_invalid"}]});
   }
  });
+ initDramaRuns(db);
+ const dramaRuns=createDramaRunService({db,getProject,validateDocument:validateProjectDocument,emitEvent:emitProjectEvent,
+  async generate(config,input,baseline){
+   if(!assistantChat)throw Object.assign(Error("assistant_unavailable"),{code:"assistant_unavailable"});
+   const context=JSON.stringify({episode:input.episode,scope:input.scope,assets:input.assets,existingShots:baseline});
+   const prompt=buildDramaStagePrompt({stage:"storyboard",sourceText:input.story,context})+
+    "\n只输出指定集的镜头。scope.sequenceId 存在时只输出该场并为每镜复用该 ID。scope.shotId 存在时只输出该镜头。";
+   const result=await assistantChat({...config,messages:[{role:"user",content:prompt}],canvasActions:false,
+    semanticCanvasIntent:false,skillContext:"",skillTools:[],selectedCanvasText:"",taskContext:"",plainCanvasChat:true});
+   return result.answer;
+  }});
+ const dramaRunPath="/api/v1/projects/:id/drama-pipeline/runs";
+ app.post(dramaRunPath,{schema:{body:{type:"object",additionalProperties:false,
+  required:["requestId","nodeId","episodeId","channelId","provider","model"],
+  properties:{requestId:idSchema,nodeId:canvasNodeIdSchema,episodeId:{type:"string",minLength:1,maxLength:128},
+   sequenceId:{type:"string",minLength:1,maxLength:128},shotId:{type:"string",minLength:1,maxLength:128},
+   channelId:idSchema,provider:{enum:["openai","openai_compatible","google_gemini"]},
+   baseUrl:{type:"string",maxLength:1024},model:{type:"string",minLength:1,maxLength:128}}}}},req=>dramaRuns.submit(req.params.id,req.body));
+ app.get(dramaRunPath,{schema:{querystring:{type:"object",required:["nodeId"],properties:{nodeId:canvasNodeIdSchema}}}},
+  req=>dramaRuns.list(req.params.id,req.query.nodeId));
+ app.get(`${dramaRunPath}/:runId`,req=>dramaRuns.get(req.params.id,req.params.runId));
+ app.post(`${dramaRunPath}/:runId/adopt`,req=>dramaRuns.adopt(req.params.id,req.params.runId));
+
  app.post("/api/v1/projects/:id/drama-pipeline/generate",{schema:{
   params:{type:"object",required:["id"],additionalProperties:false,properties:{id:idSchema}},
   body:{type:"object",required:["stage","channelId","provider","model"],additionalProperties:false,

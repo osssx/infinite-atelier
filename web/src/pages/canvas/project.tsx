@@ -2423,7 +2423,7 @@ function AtelierCanvasPage() {
                 report(error);
                 return;
             }
-            const full = textVersions.length >= TEXT_VERSIONS_LIMIT;
+            const full = textVersions.filter(version=>version.source!=="confirmation").length >= TEXT_VERSIONS_LIMIT;
             const confirmation = Modal.confirm({
                 title:t(drama ? "canvas.textVersions.restoreDraft" : "canvas.textVersions.restoreTitle"),
                 content:<div data-canvas-shortcuts-ignore>{t(drama ? "canvas.textVersions.restoreDraftPrompt" : "canvas.textVersions.restorePrompt")}{full && <p>{t("canvas.textVersions.limitReached")}</p>}</div>,
@@ -2434,7 +2434,7 @@ function AtelierCanvasPage() {
                 </div>,
             });
         });
-    }, [message, runTextVersionCommand, t, textVersions.length]);
+    }, [message, runTextVersionCommand, t, textVersions]);
 
     const confirmDramaVersion = useCallback(async (nodeId: string, draft: string) => {
         try {
@@ -4233,6 +4233,13 @@ function AtelierCanvasPage() {
                 }}
                 onOpenVersions={() => openTextVersions(panelNode.id)}
                 onConfirmVersion={draft => confirmDramaVersion(panelNode.id,draft)}
+                onBeforeDramaRun={() => awaitCanvasStorePersistence(projectId)}
+                onAdoptDramaRun={async path => {
+                    await commitAssistantCanvasGraphWithSaveBarrier(projectId, ({assertCurrent}) => {
+                        assertCurrent();
+                        return canvasApi<CanvasBackendProject>(path,"POST",{});
+                    }, {textVersionNodeId:panelNode.id});
+                }}
                 versionBusy={textVersionBusy}
                 onChange={patch => handleConfigNodeChange(panelNode.id, patch)} onCreateVideoConfigs={(inputs, batch) => {
                     const source = nodesRef.current.find(item => item.id === panelNode.id);

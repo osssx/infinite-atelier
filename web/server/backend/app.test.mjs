@@ -18,6 +18,33 @@ async function fixture(t,extra={}){
  const call=(method,url,payload,headers={})=>app.inject({method,url,headers:{"x-test-owner":"owner",...headers},...(payload===undefined?{}:{payload})});
  return{db,app,call};
 }
+test("drama run routes accept canvas node IDs with type prefixes",async t=>{
+ const {call}=await fixture(t,{assistantChat:async()=>({answer:JSON.stringify({shots:[
+  {id:"shot",episodeId:"ep",sequenceId:"scene",order:1,description:"Opening",characterVariantIds:[],propIds:[],keyPropIds:[]},
+ ]})})});
+ const episode={id:"ep",title:"One",synopsis:"Intro",events:[],sourceRefs:[],ending:"End",sequences:[{id:"scene",title:"Opening"}]};
+ const nodes=[
+  {id:"drama:source-1",type:"drama:source",metadata:{dramaConfirmed:"Story"}},
+  {id:"drama:assets-1",type:"drama:assets",metadata:{dramaConfirmed:'{"assets":[]}'}},
+  {id:"drama:episodes-1",type:"drama:episodes",metadata:{dramaConfirmed:JSON.stringify({episodes:[episode]})}},
+  {id:"drama:storyboard-1",type:"drama:storyboard",metadata:{}},
+ ];
+ const connections=[[0,1],[0,2],[1,3],[2,3]].map(([from,to],i)=>({
+  id:`edge-${i}`,fromNodeId:nodes[from].id,toNodeId:nodes[to].id,
+ }));
+ const project=await call("POST","/api/v1/projects",{id:"drama-project",document:{nodes,connections}});
+ assert.equal(project.statusCode,201,project.body);
+ const path="/api/v1/projects/drama-project/drama-pipeline/runs";
+ const nodeId=nodes[3].id;
+ const run=await call("POST",path,{requestId:"run",nodeId,episodeId:"ep",sequenceId:"scene",
+  channelId:"channel",provider:"openai",model:"model"});
+ assert.equal(run.statusCode,200,run.body);
+ assert.equal(run.json().status,"ready");
+ const history=await call("GET",`${path}?nodeId=${encodeURIComponent(nodeId)}`);
+ assert.equal(history.statusCode,200,history.body);
+ assert.equal(history.json()[0].id,"run");
+});
+
 test("preview endpoint is same-origin authenticated, no-store, and refuses terminal jobs",async t=>{
  const hub=createComfyLiveHub({WebSocketImpl:null}),{db,call,app}=await fixture(t,{comfyLive:hub});
  await call("POST","/api/v1/projects",{id:"preview-project",document:doc()});

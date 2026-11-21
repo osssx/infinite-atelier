@@ -60,6 +60,13 @@ export function buildDramaVideoConfigGraph(
             generationMode: "video",
             videoMode: refs.length ? "omni_reference" : "text_to_video",
             dramaShotId: shot.id,
+            dramaVideoSource: {
+                nodeId: source.id,
+                revisionId: source.metadata?.dramaConfirmedVersionId,
+                shot: JSON.stringify(shot),
+                referenceKeys: referenceImages.flatMap(reference => reference.storageKey ? [reference.storageKey] : []),
+                prompt: text,
+            },
             prompt: text,
             composerContent: text,
             ...(ratio ? { videoRatio: ratio } : {}),

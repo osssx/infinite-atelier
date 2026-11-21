@@ -3,7 +3,7 @@ import type { DramaAsset, DramaShot } from "./canvas-drama-pipeline";
 
 export function DramaStoryboardFields({shots, episodes, scenes, expanded, disabled, control, onChange}: {
     shots: DramaShot[];
-    episodes: {id:string; title:string}[];
+    episodes: {id:string; title:string; targetDurationSec?:number; sequences?:{id:string;title:string}[]}[];
     scenes: DramaAsset[];
     expanded: boolean;
     disabled: boolean;
@@ -20,6 +20,8 @@ export function DramaStoryboardFields({shots, episodes, scenes, expanded, disabl
 
     const write = (updated: DramaShot) => onChange(shots.map(shot => shot.id === active.id ? updated : shot));
     const scene = scenes.find(item => item.id === active.sceneId);
+    const episode = episodes.find(item=>item.id===activeEpisode);
+    const duration = episodeShots.reduce((sum,shot)=>sum+(shot.durationSec??0),0);
     const field = "w-full min-w-0 rounded-lg border px-3 py-1.5 leading-relaxed";
     const shotName = (shot: DramaShot, index: number) => `镜头 ${index + 1} · ${shot.shotSize || shot.id}`;
     return <fieldset disabled={disabled} className="grid min-w-0 gap-3">
@@ -35,7 +37,24 @@ export function DramaStoryboardFields({shots, episodes, scenes, expanded, disabl
                 </select>
             </label>
         </div>
+        {episode?.targetDurationSec && <p>已设置镜头时长合计 {duration} 秒，目标 {episode.targetDurationSec} 秒。</p>}
         <div className={expanded ? "grid gap-3 md:grid-cols-2" : "grid gap-2"}>
+            <label className="grid min-w-0 gap-1">镜头时长（秒）
+                <input className={field} style={control} type="number" min="0.1" step="0.1"
+                    value={active.durationSec??""} onChange={event=>{
+                        const duration=event.target.valueAsNumber;
+                        if(!event.target.value||duration>0)write({...active,durationSec:duration>0?duration:undefined});
+                    }}/>
+            </label>
+            {(episode?.sequences?.length||active.sequenceId) && <label className="grid min-w-0 gap-1">所属场次
+                <select className={field} style={control} value={active.sequenceId??""}
+                    onChange={event=>write({...active,sequenceId:event.target.value||undefined})}>
+                    <option value="">未指定场次</option>
+                    {active.sequenceId&&!episode?.sequences?.some(item=>item.id===active.sequenceId)&&
+                        <option value={active.sequenceId}>未确认：{active.sequenceId}</option>}
+                    {episode?.sequences?.map(item=><option key={item.id} value={item.id}>{item.title}</option>)}
+                </select>
+            </label>}
             <label className="grid min-w-0 gap-1 md:col-span-2">画面描述
                 <textarea className={field} style={control} rows={expanded ? 5 : 3} value={active.description}
                     onChange={event => write({...active,description:event.target.value})} />

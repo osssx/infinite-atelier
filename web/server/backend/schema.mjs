@@ -1,6 +1,7 @@
 import {migrateTextVersions} from "./canvas-text-versions.mjs";
+import {DRAMA_RUN_SCHEMA} from "./drama-runs.mjs";
 import{JOB_STATUSES,EXECUTION_MODES,ARTIFACT_KINDS}from"./contracts.mjs";
-export const SCHEMA_VERSION=36;
+export const SCHEMA_VERSION=37;
 const quoted=x=>x.map(s=>"'"+s+"'").join(",");
 export const INITIAL_SCHEMA_SQL=`
 CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY,applied_at INTEGER NOT NULL);
@@ -754,6 +755,7 @@ export function initializeSchema(db){
    }
    db.exec("UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1");
   }
+  if(version<37)db.exec(DRAMA_RUN_SCHEMA);
   if(version<SCHEMA_VERSION)db.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)").run(SCHEMA_VERSION,Date.now());
   db.exec("COMMIT");
  }catch(e){db.exec("ROLLBACK");throw e}

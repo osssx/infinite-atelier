@@ -67,9 +67,17 @@ export type CanvasImageMask = { storageKey:string; width:number; height:number; 
 export type CanvasNodeMetadata = {
     dramaDraft?: string;
     dramaConfirmed?: string;
+    dramaConfirmedVersionId?: string;
     dramaFilmStyle?: string;
     dramaStage?: string;
     dramaShotId?: string;
+    dramaVideoSource?: {
+        nodeId: string;
+        revisionId?: string;
+        shot: string;
+        referenceKeys: string[];
+        prompt: string;
+    };
     dramaAssetReferences?: import("@/features/canvas-assistant/canvas-drama-pipeline").DramaAssetReference[];
     targetEpisodes?: number;
     sourceFilename?: string;

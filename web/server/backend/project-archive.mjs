@@ -3,6 +3,7 @@ import {createReadStream,mkdtempSync,rmSync,openSync,closeSync,readSync,writeFil
 import {join} from "node:path";
 import {tmpdir} from "node:os";
 import {extractTextVersions,insertTextVersions,textVersionNodeTypes} from "./canvas-text-versions.mjs";
+import {exportDramaRuns,importDramaRuns} from "./drama-runs.mjs";
 import {PassThrough} from "node:stream";
 import {Zip,ZipPassThrough} from "fflate";
 import {importStreamedArchive,TEXT_HISTORY_ENTRY} from "./project-archive-import.mjs";
@@ -92,7 +93,7 @@ function validatedManifest(manifest,registry,historyPath){
   history.bytes>ARCHIVE_MAX_BYTES||!hashRe.test(history.sha256)):history!==undefined)
   throw error("archive_invalid_manifest");
  if(manifest.version===3&&extractTextVersions(p.document).hasInline)throw error("archive_invalid_text_history");
- const found=projectArchiveHashes({document:p.document,chats:p.chats,
+ const found=projectArchiveHashes({document:p.document,chats:p.chats,dramaRuns:manifest.dramaRuns,
    ...(manifest.version>=2?{assistantTasks:manifest.assistantTasks}:{})});
  if(historyPath){
   for(const row of readHistory(historyPath,p.document)){
@@ -171,10 +172,11 @@ export function createProjectArchive({db,blobStore,workflowsDir,registry:provide
  async function exportProject(id){
   const project=getProject(db,id),viewport=getCanvasViewport(db,id),chats=getCanvasChats(db,id);
   const assistantTasks=exportAssistantTaskArchive(db,id);
+  const dramaRuns=exportDramaRuns(db,id,project.document);
   const history=stageHistory(db,project,ARCHIVE_MAX_BYTES);
   let media,text;
   try{
-   const hashes=[...new Set([...projectArchiveHashes({document:project.document,chats,assistantTasks}),
+   const hashes=[...new Set([...projectArchiveHashes({document:project.document,chats,assistantTasks,dramaRuns}),
     ...(history?.references??[])])].sort();
    if(hashes.length>ARCHIVE_MAX_FILES-1)throw error("archive_file_limit_exceeded",413);
    media=[];let total=0;
@@ -193,7 +195,7 @@ export function createProjectArchive({db,blobStore,workflowsDir,registry:provide
     project:{id:project.id,title:project.document.title||project.id,
      revision:project.revision,document:project.document,
      viewport:viewport.viewport,chats:{sessions:chats.sessions,activeChatId:chats.activeChatId}},
-    media,templates,assistantTasks};
+    media,templates,assistantTasks,...(dramaRuns.length?{dramaRuns}:{})};
    if(getProject(db,id).revision!==project.revision)throw error("project_revision_conflict",409);
    if(history){manifest.version=3;manifest.textHistory={bytes:history.bytes,sha256:history.sha256}}
    text=Buffer.from(stable(manifest),"utf8");
@@ -266,6 +268,7 @@ export function createProjectArchive({db,blobStore,workflowsDir,registry:provide
        viewport:p.viewport,chatSessions:p.chats.sessions,activeChatId:p.chats.activeChatId
       }});
      if(historyPath)insertTextVersions(db,created.id,readHistory(historyPath,p.document));
+     importDramaRuns(db,created.id,p.document,manifest.dramaRuns);
      const taskCount=manifest.version>=2?
       importAssistantTaskArchive(db,created.id,manifest.assistantTasks):0;
      return {id:created.id,revision:created.revision,mediaCount:media.size,

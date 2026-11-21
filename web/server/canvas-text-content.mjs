@@ -1,4 +1,4 @@
-/** @typedef {{id:string,title:string,synopsis:string,ending:string,events:string[],sourceRefs:string[]}} DramaEpisode */
+/** @typedef {{id:string,title:string,synopsis:string,ending:string,events:string[],sourceRefs:string[],targetDurationSec?:number,sequences?:{id:string,title:string}[]}} DramaEpisode */
 
 /** @param {string} value @returns {{episodes:DramaEpisode[]}|null} */
 export function readEpisodeDraft(value) {
@@ -7,14 +7,18 @@ export function readEpisodeDraft(value) {
   if(!Array.isArray(draft?.episodes)||!draft.episodes.every(episode=>episode&&
    typeof episode.id==="string"&&episode.id.trim()&&
    [episode.title,episode.synopsis,episode.ending].every(item=>typeof item==="string")&&
-   [episode.sourceRefs,episode.events].every(items=>Array.isArray(items)&&items.every(item=>typeof item==="string"))))
+   [episode.sourceRefs,episode.events].every(items=>Array.isArray(items)&&items.every(item=>typeof item==="string"))&&
+   (episode.targetDurationSec===undefined||Number.isFinite(episode.targetDurationSec)&&episode.targetDurationSec>0)&&
+   (episode.sequences===undefined||Array.isArray(episode.sequences)&&episode.sequences.every(sequence=>
+    sequence&&typeof sequence.id==="string"&&sequence.id.trim()&&typeof sequence.title==="string")&&
+    new Set(episode.sequences.map(sequence=>sequence.id)).size===episode.sequences.length)))
    return null;
   if(new Set(draft.episodes.map(episode=>episode.id)).size!==draft.episodes.length)return null;
   return draft;
  }catch{return null;}
 }
 
-/** @typedef {{id:string,episodeId:string,order:number,description:string,characterVariantIds:string[],sceneId?:string,sceneVariantId?:string,propIds:string[],keyPropIds:string[],shotSize?:string,camera?:string,action?:string,dialogue?:string,sourceRefs?:string[]}} DramaShot */
+/** @typedef {{id:string,episodeId:string,order:number,description:string,characterVariantIds:string[],sceneId?:string,sceneVariantId?:string,propIds:string[],keyPropIds:string[],shotSize?:string,camera?:string,action?:string,dialogue?:string,sourceRefs?:string[],sequenceId?:string,durationSec?:number}} DramaShot */
 
 /** @param {string} value @returns {{shots: DramaShot[]}|null} */
 export function readStoryboardDraft(value) {
@@ -26,8 +30,9 @@ export function readStoryboardDraft(value) {
             typeof shot.id === "string" && shot.id.trim() && typeof shot.episodeId === "string" &&
             shot.episodeId.trim() && Number.isSafeInteger(shot.order) && shot.order >= 0 &&
             typeof shot.description === "string" &&
-            [shot.sceneId, shot.sceneVariantId, shot.shotSize, shot.camera, shot.action, shot.dialogue]
+            [shot.sceneId, shot.sceneVariantId, shot.shotSize, shot.camera, shot.action, shot.dialogue, shot.sequenceId]
                 .every(field => field === undefined || typeof field === "string") &&
+            (shot.durationSec === undefined || Number.isFinite(shot.durationSec) && shot.durationSec > 0) &&
             [shot.characterVariantIds, shot.propIds, shot.keyPropIds].every(strings) &&
             (shot.sourceRefs === undefined || strings(shot.sourceRefs)))) return null;
         if (new Set(draft.shots.map((shot) => shot.id)).size !== draft.shots.length) return null;

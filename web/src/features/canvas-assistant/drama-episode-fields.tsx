@@ -7,6 +7,8 @@ export type DramaEpisode = {
     events: string[];
     sourceRefs: string[];
     ending: string;
+    targetDurationSec?: number;
+    sequences?: {id:string;title:string}[];
 };
 
 export function DramaEpisodeFields({episodes, expanded, disabled, control, onChange}: {
@@ -46,6 +48,23 @@ export function DramaEpisodeFields({episodes, expanded, disabled, control, onCha
             <label className="grid gap-1.5 font-medium">本集结尾
                 <textarea className={`thin-scrollbar ${field}`} style={control} rows={2} value={active.ending} onChange={event => edit({ending:event.target.value})} />
             </label>
+            <label className="grid gap-1.5 font-medium">目标时长（秒）
+                <input className={field} style={control} type="number" min="0.1" step="0.1"
+                    value={active.targetDurationSec ?? ""} onChange={event => {
+                        const duration=event.target.valueAsNumber;
+                        if (!event.target.value || duration>0) edit({targetDurationSec:duration>0?duration:undefined});
+                    }} />
+            </label>
+            <div className="grid gap-2">
+                {active.sequences?.map(sequence=><label key={sequence.id} className="grid gap-1.5">场次
+                    <input className={field} style={control} value={sequence.title}
+                        onChange={event=>edit({sequences:active.sequences?.map(item=>item.id===sequence.id
+                            ? {...item,title:event.target.value}:item)})}/>
+                </label>)}
+                <button type="button" className={field} style={control} onClick={()=>edit({
+                    sequences:[...(active.sequences??[]),{id:crypto.randomUUID(),title:"新场次"}],
+                })}>添加场次</button>
+            </div>
             {active.sourceRefs.length > 0 && <details className="min-w-0 border-t pt-2 text-xs" style={{borderColor:control?.borderColor}}>
                 <summary className="cursor-pointer opacity-75">原文出处 · {active.sourceRefs.length} 处</summary>
                 <p className="mt-2 break-words leading-relaxed opacity-75">{active.sourceRefs.join("、")}</p>

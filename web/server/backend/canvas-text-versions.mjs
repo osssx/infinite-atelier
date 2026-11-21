@@ -1,9 +1,10 @@
 import {createHash} from "node:crypto";
-import {canvasTextContentPatch} from "../canvas-text-content.mjs";
+import {canvasTextContentPatch,readAssetDraft,readEpisodeDraft,readStoryboardDraft} from "../canvas-text-content.mjs";
+import {validateDramaPipelineSnapshot} from "./drama-pipeline.mjs";
 import {validCanvasNodeId} from "../canvas-node-id.mjs";
 import {writeTransaction} from "./repository.mjs";
 
-export const textVersionNodeTypes=new Set(["text","drama:source","drama:episodes","drama:storyboard"]);
+export const textVersionNodeTypes=new Set(["text","drama:source","drama:assets","drama:episodes","drama:storyboard"]);
 const fail=(code,statusCode=400)=>Object.assign(Error(code),{code,statusCode});
 const digest=content=>createHash("sha256").update(content).digest("hex");
 const sources=new Set(["manual","restore-backup","confirmation"]);
@@ -30,7 +31,7 @@ export function insertTextVersions(db,projectId,entries,{legacy=false}={}){
  const counts=new Map();
  for(const entry of entries){
   const {nodeId,id,createdAt,source,note,content}=entry;
-  const count=(counts.get(nodeId)??0)+1;
+  const count=(counts.get(nodeId)??0)+(source==="confirmation"?0:1);
   if(count>50||!validCanvasNodeId(nodeId)||typeof id!=="string"||!id||id.length>128||
      typeof createdAt!=="string"||!sources.has(source)||typeof content!=="string"||
      (!legacy&&Buffer.byteLength(JSON.stringify(content))>4*1024*1024)||
@@ -84,6 +85,24 @@ function currentContent(node){
  return m?.dramaDraft||m?.dramaConfirmed||m?.content||"";
 }
 
+function validateDramaConfirmation(node,content,document){
+ if(node.type!=="drama:storyboard"&&node.type!=="drama:assets")return;
+ const parents=document.nodes.filter(parent=>document.connections.some(edge=>edge.fromNodeId===parent.id&&edge.toNodeId===node.id));
+ const confirmed=(type,parse)=>{
+  const matches=parents.filter(parent=>parent.type===type);
+  return matches.length===1?parse(matches[0].metadata?.dramaConfirmed??""):null;
+ };
+ const assetDraft=node.type==="drama:assets"?readAssetDraft(content):confirmed("drama:assets",readAssetDraft);
+ const shots=node.type==="drama:storyboard"?readStoryboardDraft(content).shots:[];
+ const episodes=node.type==="drama:storyboard"?confirmed("drama:episodes",readEpisodeDraft):null;
+ if(!assetDraft||(shots.length&&(!episodes||shots.some(shot=>!episodes.episodes.some(episode=>episode.id===shot.episodeId&&
+   (shot.sequenceId===undefined||episode.sequences?.some(sequence=>sequence.id===shot.sequenceId)))))))
+  throw fail("drama_draft_invalid",422);
+ const result=validateDramaPipelineSnapshot({version:1,revision:1,stage:node.type.slice(6),
+  assets:assetDraft.assets,references:[],shots});
+ if(!result.valid)throw fail("drama_draft_invalid",422);
+}
+
 export function mutateTextVersions(db,projectId,nodeId,command,validateDocument,emitEvent){
  const {operationId,action,expectedRevision,versionId,mode,note}=command;
  const fingerprint=digest(JSON.stringify([action,expectedRevision,versionId,mode,note]));
@@ -98,9 +117,10 @@ export function mutateTextVersions(db,projectId,nodeId,command,validateDocument,
   }
   if(action!=="delete"&&expectedRevision!==revision)throw fail("project_revision_conflict",409);
   const content=currentContent(node);
-  const versions=db.prepare("SELECT id,digest FROM canvas_text_versions WHERE project_id=? AND node_id=? ORDER BY seq DESC").all(projectId,nodeId);
+  const versions=db.prepare("SELECT id,digest,source FROM canvas_text_versions WHERE project_id=? AND node_id=? ORDER BY seq DESC").all(projectId,nodeId);
   const add=(value,source,versionNote)=>{
-   if(versions.length>=50)throw fail("text_version_limit",409);
+   if(source!=="confirmation"&&versions.filter(version=>version.source!=="confirmation").length>=50)
+    throw fail("text_version_limit",409);
    insertTextVersions(db,projectId,[{nodeId,id:operationId,createdAt:new Date().toISOString(),source,note:versionNote,content:value}]);
   };
   let patch;
@@ -108,6 +128,12 @@ export function mutateTextVersions(db,projectId,nodeId,command,validateDocument,
    if(!content.trim()||versions[0]?.digest===digest(content))throw fail("text_version_save_not_allowed",409);
    add(content,"manual",note);
   }else if(action==="delete"){
+   if(versionId===node.metadata?.dramaConfirmedVersionId||document.nodes.some(item=>
+    item.metadata?.dramaVideoSource?.nodeId===nodeId&&item.metadata.dramaVideoSource.revisionId===versionId)||
+    db.prepare(`SELECT 1 FROM drama_runs AS run, json_each(run.frozen,'$.revisions') AS revision
+      WHERE run.project_id=? AND json_extract(revision.value,'$.nodeId')=?
+      AND json_extract(revision.value,'$.revisionId')=? LIMIT 1`).get(projectId,nodeId,versionId))
+    throw fail("text_version_in_use",409);
    db.prepare("DELETE FROM canvas_text_versions WHERE project_id=? AND node_id=? AND id=?").run(projectId,nodeId,versionId);
   }else if(action==="restore"){
    const target=db.prepare("SELECT content FROM canvas_text_versions WHERE project_id=? AND node_id=? AND id=?").get(projectId,nodeId,versionId);
@@ -125,17 +151,18 @@ export function mutateTextVersions(db,projectId,nodeId,command,validateDocument,
    if(!normalized)throw fail("drama_draft_invalid");
    const next=normalized.dramaDraft;
    const previous=node.metadata?.dramaConfirmed??"";
-   const key=value=>canvasTextContentPatch(node.type,value)?.dramaDraft??value;
-   if(previous.trim()&&key(previous)!==next){
-    const previousKey=key(previous);
-    let archived=versions.some(version=>version.digest===digest(previous));
-    const existing=db.prepare("SELECT content FROM canvas_text_versions WHERE project_id=? AND node_id=?").iterate(projectId,nodeId);
-    if(!archived&&node.type!=="drama:source"){
-     for(const version of existing){if(key(version.content)===previousKey){archived=true;break}}
+   if(previous!==next||!node.metadata?.dramaConfirmedVersionId){
+    validateDramaConfirmation(node,next,document);
+    if(previous.trim()&&previous!==next&&!node.metadata?.dramaConfirmedVersionId&&
+       !versions.some(version=>version.digest===digest(previous))){
+     insertTextVersions(db,projectId,[{nodeId,id:`legacy:${digest(previous)}`,createdAt:new Date().toISOString(),
+      source:"confirmation",note:null,content:previous}]);
     }
-    if(!archived)add(previous,"confirmation");
+    add(next,"confirmation");
+    patch={...normalized,dramaConfirmed:next,dramaStage:node.type.slice(6),dramaConfirmedVersionId:operationId};
+   }else if(content!==next){
+    patch=normalized;
    }
-   if(content!==next||previous!==next)patch={...normalized,dramaConfirmed:next,dramaStage:node.type.slice(6)};
   }
   const nextRevision=patch?revision+1:revision;
   if(patch){

@@ -181,7 +181,7 @@ export async function readAssistantCanvasGraphBaseline(projectId:string){
  const frozen=JSON.parse(JSON.stringify(asDocument(project))) as ReturnType<typeof asDocument>;
  return {expectedRevision:revision,document:frozen};
 }
-const textVersionFields = ["content", "dramaDraft", "dramaConfirmed", "dramaStage"] as const;
+const textVersionFields = ["content", "dramaDraft", "dramaConfirmed", "dramaStage", "dramaConfirmedVersionId"] as const;
 
 function mergeTextVersionCommit(
  nodeId:string, baseline:ReturnType<typeof asDocument>, local:CanvasProject,

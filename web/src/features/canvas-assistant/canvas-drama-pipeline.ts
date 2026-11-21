@@ -92,6 +92,8 @@ export type DramaShot = {
     camera?: string;
     action?: string;
     dialogue?: string;
+    sequenceId?: string;
+    durationSec?: number;
     sourceRefs?: string[];
 };
 

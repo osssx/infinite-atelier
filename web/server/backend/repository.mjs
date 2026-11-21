@@ -1,3 +1,4 @@
+import {hydrateCreativeDocument} from "./creative-payloads.mjs";
 import{randomUUID,createHash}from"node:crypto";
 import {claimSkillJobGrant} from "./skill-job-grants.mjs";
 import{EXECUTION_MODES,assertJobTransition}from"./contracts.mjs";
@@ -186,7 +187,7 @@ export function submitJobInTransaction(db,{jobId=randomUUID(),principal="local-o
   // Every new request still has its own idempotency key and credential fence.
   if(projectId!==null&&((snapshot.adapterKind==="model"&&snapshot.task?.kind!=="text")||snapshot.adapterKind==="comfy")){
    const projectRow=db.prepare("SELECT document_json FROM projects WHERE id=?").get(projectId);
-   const source=projectRow&&JSON.parse(projectRow.document_json).nodes?.find(node=>node.id===targetNodeId);
+   const source=projectRow&&hydrateCreativeDocument(db,projectId,JSON.parse(projectRow.document_json)).nodes?.find(node=>node.id===targetNodeId);
    const mediaSource=["image","video","audio"].includes(source?.type);
    const active=db.prepare("SELECT id,snapshot_json FROM jobs WHERE principal=? AND project_id=? AND target_node_id=? AND status NOT IN ('succeeded','failed','cancelled')")
     .all(principal,projectId,targetNodeId).find(row=>{
@@ -210,7 +211,7 @@ export function submitJobInTransaction(db,{jobId=randomUUID(),principal="local-o
   if(projectId!==null){
    const project=db.prepare("SELECT document_json,revision,deleted_at FROM projects WHERE id=?").get(projectId);
    if(!project||project.deleted_at!==null||project.revision!==expectedProjectRevision)throw problem("stale_generation_source");
-   const graph=JSON.parse(project.document_json);
+   const graph=hydrateCreativeDocument(db,projectId,JSON.parse(project.document_json));
    const current=snapshot.adapterKind==="comfy"&&snapshot.comfyTargetBinding?
     "v2c:"+createHash("sha256").update(stableJson({graphFingerprint:fingerprintSource(graph,targetNodeId),targetBinding:snapshot.comfyTargetBinding})).digest("hex"):
     sourceNodeFingerprint.startsWith("v2:")?fingerprintSource(graph,targetNodeId):fingerprintSourceLegacy(graph,targetNodeId);

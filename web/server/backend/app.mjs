@@ -1,7 +1,7 @@
 import Fastify from "fastify";
 import {randomUUID,createHash} from "node:crypto";
 import {resolveAuthorizedSkillScript} from "./skill-script-source.mjs";
-import {readTextVersions,mutateTextVersions} from "./canvas-text-versions.mjs";
+import {readTextVersions,mutateTextVersions,readDramaRevisionScope,patchDramaShotDraft} from "./canvas-text-versions.mjs";
 import {validateProjectDocument,emitProjectEvent,createProject,getProject,saveSingleUserCanvas,deleteProject,listProjectSummaries,projectEventCursor} from "./projects.mjs";
 import {getCanvasViewport,putCanvasViewport,getCanvasChats,putCanvasChats} from "./canvas-state.mjs";
 import {registerAssistantTaskRoutes} from "./assistant-task-routes.mjs";
@@ -37,6 +37,8 @@ import {listScriptAssetReconciliation,reconcileScriptAsset,resumeReconciledVideo
 import {registerShotGroupRoutes} from "./shot-group-routes.mjs";
 import {validateDramaPipelineSnapshot,buildDramaStagePrompt} from "./drama-pipeline.mjs";
 import {createDramaRunService,initDramaRuns} from "./drama-runs.mjs";
+import {inspectDramaDependencies} from "./drama-dependencies.mjs";
+import {readCreativePayload} from "./creative-payloads.mjs";
 import {createAssistantChatStreamLedger} from "./assistant-chat-stream-ledger.mjs";
 import {assistantCurrentReferenceData,MAX_ASSISTANT_MESSAGE_BYTES} from "./assistant-chat.mjs";
 import {assertConversationTaskTurn,beginConversationRequest,buildConversationMessages,completeConversationRequest,
@@ -207,6 +209,7 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
    "invalid_text_versions","legacy_text_versions_reload_required","invalid_text_version_command","drama_draft_invalid",
    "archive_invalid_text_history","archive_text_history_integrity_error",
    "text_version_in_use","archive_invalid_drama_runs","drama_storyboard_not_found","drama_upstream_ambiguous_or_missing",
+   "drama_asset_in_use",
    "drama_story_source_mismatch","drama_upstream_unconfirmed","drama_sequence_not_found","drama_shot_not_found",
    "drama_run_not_found","drama_run_id_conflict","drama_candidate_not_ready","drama_candidate_conflict",
    "stale_generation_source","cyclic_generation_source","generation_save_barrier_required","invalid_job_request","idempotency_key_conflict","backend_prior_job_not_terminal","job_not_found","invalid_project_job_history_request","invalid_project_job_history_cursor","project_job_not_found","project_job_not_terminal",
@@ -682,10 +685,11 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
   const created=createProject(db,req.body);reply.header("ETag",'"'+created.revision+'"').code(201);return created;
  });
  app.get("/api/v1/projects/:id",{schema:{params:{type:"object",required:["id"],properties:{id:idSchema}}}},async(req,reply)=>{
-  const project=getProject(db,req.params.id);reply.header("ETag",'"'+project.revision+'"');return project;
+  const project=getProject(db,req.params.id,{compact:req.query.creative==="summary"});reply.header("ETag",'"'+project.revision+'"');return project;
  });
  app.patch("/api/v1/projects/:id",{schema:{params:{type:"object",required:["id"],properties:{id:idSchema}},body:editBody}},async(req,reply)=>{
-  const project=saveSingleUserCanvas(db,{id:req.params.id,...req.body});reply.header("ETag",'"'+project.revision+'"');return project;
+  const project=saveSingleUserCanvas(db,{id:req.params.id,...req.body});reply.header("ETag",'"'+project.revision+'"');
+  return req.query.creative==="summary"?getProject(db,req.params.id,{compact:true}):project;
  });
  const versionPath="/api/v1/projects/:id/nodes/:nodeId/text-versions";
  app.get(versionPath,req=>readTextVersions(db,req.params.id,req.params.nodeId));
@@ -717,16 +721,54 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
  });
  initDramaRuns(db);
  const dramaRuns=createDramaRunService({db,getProject,validateDocument:validateProjectDocument,emitEvent:emitProjectEvent,
-  async generate(config,input,baseline){
+  async generate(config,input,baseline,signal,repair){
    if(!assistantChat)throw Object.assign(Error("assistant_unavailable"),{code:"assistant_unavailable"});
-   const context=JSON.stringify({episode:input.episode,scope:input.scope,assets:input.assets,existingShots:baseline});
-   const prompt=buildDramaStagePrompt({stage:"storyboard",sourceText:input.story,context})+
-    "\n只输出指定集的镜头。scope.sequenceId 存在时只输出该场并为每镜复用该 ID。scope.shotId 存在时只输出该镜头。";
-   const result=await assistantChat({...config,messages:[{role:"user",content:prompt}],canvasActions:false,
+   const stage=input.stage==="episodes"?"episodes":"storyboard";
+   const context=JSON.stringify({episode:input.episode,scope:input.scope,assets:input.assets,
+    ...(stage==="episodes"?{existingEpisodes:baseline}:{existingShots:baseline}),
+    sourceParagraphs:input.paragraphs,artDirection:input.artDirection,visualStyle:input.visualStyle});
+   const prompt=buildDramaStagePrompt({stage,targetEpisodes:input.targetEpisodes,sourceText:input.story,sourceParagraphs:input.paragraphs,context})+
+    (stage==="episodes"?"\n输出 episodes。scope.episodeId 非 * 时仅重写该集，保留该集 ID、场次 ID 和原文范围，不改写其他集。":
+    "\n只输出指定集的镜头。scope.sequenceId 存在时只输出该场并为每镜复用该 ID。scope.shotId 存在时只输出该镜头。");
+   const messages=[{role:"user",content:prompt}];
+   if(repair){
+    messages.push({role:"assistant",content:repair.response});
+    messages.push({role:"user",content:`上一次输出未通过结构校验。仅修复 JSON 结构和字段类型，保留内容与引用 ID。输出应符合先前给定的 ${stage==="episodes"?"episodes":"shots"} Schema。`});
+   }
+   const result=await assistantChat({...config,signal,messages,canvasActions:false,
     semanticCanvasIntent:false,skillContext:"",skillTools:[],selectedCanvasText:"",taskContext:"",plainCanvasChat:true});
    return result.answer;
   }});
  const dramaRunPath="/api/v1/projects/:id/drama-pipeline/runs";
+ app.get("/api/v1/projects/:id/drama-pipeline/payload",{schema:{querystring:{type:"object",required:["nodeId"],
+  properties:{nodeId:canvasNodeIdSchema}}}},req=>{
+   const payload=readCreativePayload(db,req.params.id,req.query.nodeId);
+   if(!payload)throw Object.assign(Error("text_node_not_found"),{code:"text_node_not_found",statusCode:404});
+   return payload;
+  });
+ app.get("/api/v1/projects/:id/drama-pipeline/revision-scope",{schema:{querystring:{type:"object",additionalProperties:false,
+  required:["nodeId"],properties:{nodeId:canvasNodeIdSchema,versionId:{type:"string",maxLength:128},
+   episodeId:{type:"string",maxLength:128},sequenceId:{type:"string",maxLength:128},
+   offset:{type:"integer",minimum:0,default:0},limit:{type:"integer",minimum:1,maximum:100,default:50},summaryOnly:{type:"boolean",default:false},draft:{type:"boolean",default:false}}}}},
+  req=>readDramaRevisionScope(db,req.params.id,req.query.nodeId,req.query));
+ app.patch("/api/v1/projects/:id/drama-pipeline/shot-draft",{schema:{body:{type:"object",additionalProperties:false,
+  required:["nodeId","shotId","operationId","expectedDigest","changes"],properties:{nodeId:canvasNodeIdSchema,
+   shotId:{type:"string",minLength:1,maxLength:128},operationId:idSchema,expectedDigest:{type:"string",pattern:"^[a-f0-9]{64}$"},
+   changes:{type:"object",minProperties:1,additionalProperties:false,properties:{description:{type:"string",maxLength:20000},
+    camera:{type:"string",maxLength:2000},shotSize:{type:"string",maxLength:256},action:{type:"string",maxLength:20000},
+    dialogue:{type:"string",maxLength:20000},durationSec:{type:["number","null"],exclusiveMinimum:0},
+    sceneId:{type:["string","null"],maxLength:128},sceneVariantId:{type:["string","null"],maxLength:128},
+    sourceRefs:{type:"array",maxItems:64,items:{type:"string",maxLength:256}},
+    characterVariantIds:{type:"array",uniqueItems:true,maxItems:64,items:{type:"string",maxLength:128}},
+    propIds:{type:"array",uniqueItems:true,maxItems:64,items:{type:"string",maxLength:128}},
+    keyPropIds:{type:"array",uniqueItems:true,maxItems:64,items:{type:"string",maxLength:128}}}}}}}},req=>{
+   const {nodeId,...command}=req.body;
+   patchDramaShotDraft(db,req.params.id,nodeId,command,validateProjectDocument,emitProjectEvent);
+   return getProject(db,req.params.id,{compact:true});
+  });
+ app.get("/api/v1/projects/:id/drama-pipeline/dependencies",{schema:{querystring:{
+  type:"object",required:["nodeId"],properties:{nodeId:canvasNodeIdSchema}}}},
+  req=>inspectDramaDependencies(getProject(db,req.params.id).document,req.query.nodeId));
  app.post(dramaRunPath,{schema:{body:{type:"object",additionalProperties:false,
   required:["requestId","nodeId","episodeId","channelId","provider","model"],
   properties:{requestId:idSchema,nodeId:canvasNodeIdSchema,episodeId:{type:"string",minLength:1,maxLength:128},
@@ -736,7 +778,11 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
  app.get(dramaRunPath,{schema:{querystring:{type:"object",required:["nodeId"],properties:{nodeId:canvasNodeIdSchema}}}},
   req=>dramaRuns.list(req.params.id,req.query.nodeId));
  app.get(`${dramaRunPath}/:runId`,req=>dramaRuns.get(req.params.id,req.params.runId));
- app.post(`${dramaRunPath}/:runId/adopt`,req=>dramaRuns.adopt(req.params.id,req.params.runId));
+ app.post(`${dramaRunPath}/:runId/adopt`,{schema:{body:{type:"object",additionalProperties:false,
+  properties:{shotIds:{type:"array",minItems:1,maxItems:500,uniqueItems:true,items:{type:"string",minLength:1,maxLength:128}}}}}},
+  req=>dramaRuns.adopt(req.params.id,req.params.runId,req.body?.shotIds));
+ app.post(`${dramaRunPath}/:runId/cancel`,req=>dramaRuns.cancel(req.params.id,req.params.runId));
+ app.post(`${dramaRunPath}/:runId/retry`,req=>dramaRuns.retry(req.params.id,req.params.runId));
 
  app.post("/api/v1/projects/:id/drama-pipeline/generate",{schema:{
   params:{type:"object",required:["id"],additionalProperties:false,properties:{id:idSchema}},

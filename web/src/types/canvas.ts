@@ -68,7 +68,16 @@ export type CanvasNodeMetadata = {
     dramaDraft?: string;
     dramaConfirmed?: string;
     dramaConfirmedVersionId?: string;
+    dramaAssetReferenceRevisionId?: string;
+    dramaAssetReferenceEntries?: {id:string;digest:string}[];
+    creativePayloadRef?: {nodeId:string;schemaVersion:1};
+    dramaShotProduction?: Record<string,import("@/features/canvas-assistant/drama-pipeline-media").DramaShotProduction>;
+    dramaAssetCandidate?: {id:string;baseline:string;assets:import("@/features/canvas-assistant/canvas-drama-pipeline").DramaAsset[]};
+    dramaSourceParagraphs?: {id:string;text:string;line:number;status:string;replaces?:string[]}[];
+    dramaInputDependencies?: {nodeId:string;edgeId:string;revisionId:string|null;mediaRevisionId?:string|null;mediaEntries?:{id:string;digest:string}[];visualDigest?:string;digest:string;entries:{id:string;digest:string}[]}[];
     dramaFilmStyle?: string;
+    dramaArtDirection?: {palette:string;lighting:string;characterDesign:string;anchors:string};
+    dramaConfirmedVisual?: {artDirection:Partial<Record<"palette"|"lighting"|"characterDesign"|"anchors",string>>;visualStyle:string};
     dramaStage?: string;
     dramaShotId?: string;
     dramaVideoSource?: {
@@ -76,7 +85,12 @@ export type CanvasNodeMetadata = {
         revisionId?: string;
         shot: string;
         referenceKeys: string[];
+        referenceBaseline?: string;
+        visualStyle?: string;
         prompt: string;
+        basePrompt?: string;
+        seconds?: string;
+        promptShot?: string;
     };
     dramaAssetReferences?: import("@/features/canvas-assistant/canvas-drama-pipeline").DramaAssetReference[];
     targetEpisodes?: number;

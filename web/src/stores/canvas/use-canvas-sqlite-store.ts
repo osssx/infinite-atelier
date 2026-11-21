@@ -54,6 +54,44 @@ const auxiliary=createCanvasStatePersistence(error=>{
 export type PersistTiming={sequence:number;stringifyMs:number;bytes:number;writeMs:number;onHide:boolean};
 export const drainPersistTimings=():PersistTiming[]=>[];
 const now=()=>new Date().toISOString();
+const creativeFields=["dramaDraft","dramaConfirmed","content","dramaSourceParagraphs","dramaAssetReferences","dramaAssetCandidate"] as const;
+function preserveLoadedBodies(nodes:CanvasNodeData[],previous:CanvasNodeData[]){
+ return nodes.map(node=>{
+  const old=previous.find(item=>item.id===node.id);
+  if(!node.metadata?.creativePayloadRef||!old||old.metadata?.creativePayloadRef)return node;
+  const {creativePayloadRef,...metadata}=node.metadata;
+  for(const field of creativeFields)if(old.metadata?.[field]!==undefined)Object.assign(metadata,{[field]:old.metadata[field]});
+  return {...node,metadata};
+ });
+}
+
+export async function ensureCreativeNodesLoaded(projectId:string,nodeIds?:string[]){
+ await awaitCanvasStorePersistence(projectId);
+ const initial=useCanvasStore.getState().openProject(projectId);
+ if(!initial)return;
+ const ids=new Set(nodeIds??initial.nodes.map(node=>node.id));
+ let previousSize=-1;
+ while(previousSize!==ids.size){
+  previousSize=ids.size;
+  for(const edge of initial.connections)if(ids.has(edge.toNodeId))ids.add(edge.fromNodeId);
+ }
+ const pending=initial.nodes.filter(node=>ids.has(node.id)&&node.metadata?.creativePayloadRef);
+ if(!pending.length)return;
+ const payloads=await Promise.all(pending.map(async node=>({nodeId:node.id,
+  ...await canvasApi<{projectRevision:number;payload:Record<string,unknown>}>(
+   `/api/v1/projects/${encodeURIComponent(projectId)}/drama-pipeline/payload?nodeId=${encodeURIComponent(node.id)}`)})));
+ if(payloads.some(item=>item.projectRevision!==revisions.get(projectId)))throw Error("project_revision_conflict");
+ const current=useCanvasStore.getState().openProject(projectId);
+ if(!current)return;
+ const nodes=current.nodes.map(node=>{
+  const result=payloads.find(item=>item.nodeId===node.id);
+  if(!result||!node.metadata?.creativePayloadRef)return node;
+  const {creativePayloadRef,...metadata}=node.metadata;
+  return {...node,metadata:{...Object.fromEntries(Object.entries(result.payload).filter(([,value])=>value!==null)),...metadata}} as CanvasNodeData;
+ });
+ useCanvasStore.setState(state=>({projects:state.projects.map(project=>project.id===projectId?{...project,nodes}:project)}));
+ for(const callback of savedGraphListeners)callback(projectId,{nodes,connections:current.connections});
+}
 function asProject(remote:CanvasBackendProject):CanvasProject{
  const doc=remote.document;
  if(!Array.isArray(doc.nodes)||!Array.isArray(doc.connections))throw Error("invalid_project_document");
@@ -116,14 +154,14 @@ async function saveProject(id:string):Promise<void>{
    const revision=revisions.get(id);
    if(revision===undefined)throw Error("project_not_loaded");
    try{
-    const response=await canvasApi<CanvasBackendProject>("/api/v1/projects/"+encodeURIComponent(id),"PATCH",{
+    const response=await canvasApi<CanvasBackendProject>("/api/v1/projects/"+encodeURIComponent(id)+"?creative=summary","PATCH",{
      expectedRevision:revision,document:asDocument(project)
     });
     revisions.set(id,response.revision);
     lastErrors.delete(id);
     // A new local edit while PATCH was in flight remains dirty, and the next
     // save keeps any background output that appeared since this save.
-    const saved={nodes:response.document.nodes as CanvasNodeData[],
+    const saved={nodes:preserveLoadedBodies(response.document.nodes as CanvasNodeData[],project.nodes),
      connections:response.document.connections as CanvasConnection[]};
     const current=useCanvasStore.getState().openProject(id);
     const graph=dirty.has(id)&&current?appendSavedOutputs(current,saved):
@@ -171,9 +209,10 @@ export function savedCanvasGraphRevision(projectId:string){
  * occurring during the remote transaction stay in memory and are never
  * overwritten by a late authoritative response.
  */
-export async function readAssistantCanvasGraphBaseline(projectId:string){
+export async function readAssistantCanvasGraphBaseline(projectId:string,hydrate=true){
  if(taskCanvasBarriers.has(projectId))throw Error("canvas_task_save_barrier_active");
  await awaitCanvasStorePersistence(projectId);
+ if(hydrate)await ensureCreativeNodesLoaded(projectId);
  if(taskCanvasBarriers.has(projectId)||activeWrites.has(projectId)||dirty.has(projectId))
   throw Error("project_unsaved_local_edits");
  const project=useCanvasStore.getState().openProject(projectId),revision=revisions.get(projectId);
@@ -181,7 +220,7 @@ export async function readAssistantCanvasGraphBaseline(projectId:string){
  const frozen=JSON.parse(JSON.stringify(asDocument(project))) as ReturnType<typeof asDocument>;
  return {expectedRevision:revision,document:frozen};
 }
-const textVersionFields = ["content", "dramaDraft", "dramaConfirmed", "dramaStage", "dramaConfirmedVersionId"] as const;
+const textVersionFields = ["content", "dramaDraft", "dramaConfirmed", "dramaStage", "dramaConfirmedVersionId", "dramaAssetReferenceRevisionId", "dramaAssetReferenceEntries", "dramaSourceParagraphs", "dramaInputDependencies"] as const;
 
 function mergeTextVersionCommit(
  nodeId:string, baseline:ReturnType<typeof asDocument>, local:CanvasProject,
@@ -203,7 +242,7 @@ function mergeTextVersionCommit(
   const metadata={...node.metadata};
   for(const key of textVersionFields){
    if(metadata[key]===before.metadata?.[key]&&after.metadata?.[key]!==before.metadata?.[key])
-    metadata[key]=after.metadata?.[key];
+    Object.assign(metadata,{[key]:after.metadata?.[key]});
   }
   return {...node,metadata};
  });
@@ -213,9 +252,9 @@ function mergeTextVersionCommit(
 export async function commitAssistantCanvasGraphWithSaveBarrier(
  projectId:string,
  submit:(frozen:{expectedRevision:number;document:ReturnType<typeof asDocument>;assertCurrent:()=>void})=>Promise<CanvasBackendProject>,
- options?:{textVersionNodeId:string}
+ options?:{textVersionNodeId:string;keepCreativePointers?:boolean}
 ):Promise<CanvasBackendProject>{
- const frozen=await readAssistantCanvasGraphBaseline(projectId),revision=frozen.expectedRevision;
+ const frozen=await readAssistantCanvasGraphBaseline(projectId,!options?.keepCreativePointers),revision=frozen.expectedRevision;
  const assertCurrent=()=>{
   if(dirty.has(projectId)||activeWrites.has(projectId)||revisions.get(projectId)!==revision)
    throw Error("project_unsaved_local_edits");
@@ -226,6 +265,9 @@ export async function commitAssistantCanvasGraphWithSaveBarrier(
  let resumeAutosave=false;
  try{
   const remote=await submit({...frozen,assertCurrent});
+  if(options?.keepCreativePointers){
+   remote.document.nodes=preserveLoadedBodies(remote.document.nodes as CanvasNodeData[],frozen.document.nodes);
+  }
   if(remote.id!==projectId||!Number.isSafeInteger(remote.revision)||
    remote.revision<revision||!Array.isArray(remote.document.nodes)||
    !Array.isArray(remote.document.connections))throw Error("assistant_task_graph_response_invalid");
@@ -307,7 +349,7 @@ export const useCanvasStore=create<CanvasStore>((set,get)=>({
   }
   if(dirty.has(id)||activeWrites.has(id)||auxiliary.hasPending(id))throw Error("project_unsaved_local_edits");
   const [remote,state]=await Promise.all([
-   canvasApi<CanvasBackendProject>("/api/v1/projects/"+encodeURIComponent(id)),
+   canvasApi<CanvasBackendProject>("/api/v1/projects/"+encodeURIComponent(id)+"?creative=summary"),
    auxiliary.load(id)
   ]);
   const project={...asProject(remote),viewport:state.viewport,chatSessions:state.sessions,activeChatId:state.activeChatId};

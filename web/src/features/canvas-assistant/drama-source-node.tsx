@@ -18,7 +18,11 @@ export function DramaSourceNode({node, onChange, onOpenVersions, onConfirmVersio
     const theme = canvasThemes[useThemeStore(state => state.theme)];
     const [error, setError] = useState("");
     const source = node.metadata?.dramaDraft ?? node.metadata?.content ?? node.metadata?.dramaConfirmed ?? "";
-    const confirmed = Boolean(source.trim()) && source === node.metadata?.dramaConfirmed;
+    const publishedVisual=node.metadata?.dramaConfirmedVisual;
+    const visualConfirmed=!publishedVisual||(publishedVisual.visualStyle===(node.metadata?.dramaFilmStyle??"")&&
+        (["palette","lighting","characterDesign","anchors"] as const).every(key=>
+            (publishedVisual.artDirection[key]??"")===(node.metadata?.dramaArtDirection?.[key]??"")));
+    const confirmed = Boolean(source.trim()) && source === node.metadata?.dramaConfirmed&&visualConfirmed;
     const control = dramaNodeControl(theme);
     const changeSource = (text: string) => onChange({dramaDraft:text, content:text});
     return <section className={dramaInlineNodeClass}
@@ -53,7 +57,25 @@ export function DramaSourceNode({node, onChange, onOpenVersions, onConfirmVersio
                     onChange={event => onChange({dramaFilmStyle:event.target.value})} />
             </label>
         </div>
+        <details className="rounded-xl border p-3" style={control}>
+            <summary>作品美术指导</summary>
+            {([{key:"palette",label:"色彩方案"},{key:"lighting",label:"光影"},
+                {key:"characterDesign",label:"角色设计规则"},{key:"anchors",label:"一致性锚点"}] as const).map(({key,label})=>
+                <label key={key} className="mt-2 grid gap-1 text-sm">{label}
+                    <textarea className="w-full rounded-lg border p-2" style={control} rows={2} maxLength={2000}
+                        value={node.metadata?.dramaArtDirection?.[key]??""}
+                        onChange={event=>onChange({dramaArtDirection:{palette:"",lighting:"",characterDesign:"",anchors:"",
+                            ...node.metadata?.dramaArtDirection,[key]:event.target.value}})}/>
+                </label>)}
+        </details>
         <div className="flex flex-wrap items-center justify-end gap-2 pt-2">
+            {!!node.metadata?.dramaSourceParagraphs?.length && <details className="w-full">
+                <summary>已确认原文定位 · {node.metadata.dramaSourceParagraphs.length} 段</summary>
+                {node.metadata.dramaSourceParagraphs.map(paragraph=><p key={paragraph.id} className="break-words text-xs">
+                    {paragraph.id} · {paragraph.status==="needs_review"?"待校对":"已定位"} · {paragraph.text}
+                    {!!paragraph.replaces?.length&&<span> · 原段落 {paragraph.replaces.join("、")}</span>}
+                </p>)}
+            </details>}
             <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border px-2 py-1" style={control}>
                 <Upload aria-hidden className="size-3.5" />
                 导入 TXT / MD
@@ -69,10 +91,10 @@ export function DramaSourceNode({node, onChange, onOpenVersions, onConfirmVersio
                 }} />
             </label>
             <button type="button" className="rounded-md border px-2 py-1 font-medium disabled:opacity-50" style={source.trim() && !confirmed ? dramaNodePrimary(theme) : control}
-                disabled={versionBusy || !source.trim() || confirmed} onClick={() => {
+                disabled={versionBusy || !source.trim()} onClick={() => {
                     setError("");
                     void onConfirmVersion(source).catch(error => setError(error.message));
-                }}>确认原文</button>
+                }}>{confirmed ? "确认原文与美术设定" : "确认原文"}</button>
         </div>
         {error && <p role="alert">{error}</p>}
         </div>

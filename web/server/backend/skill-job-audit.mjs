@@ -1,3 +1,4 @@
+import {hydrateCreativeDocument} from "./creative-payloads.mjs";
 import {submitJob,fingerprintSource,fingerprintSourceLegacy} from "./repository.mjs";
 import {loadFrozenSkillCatalog} from "./sqlite-skill-agent.mjs";
 const bad=(code,statusCode=409)=>Object.assign(Error(code),{code,statusCode});
@@ -68,7 +69,7 @@ export function replayProjectSkillJob(db,{
  const project=db.prepare("SELECT document_json,revision,deleted_at FROM projects WHERE id=?").get(projectId);
  if(!project||project.deleted_at!==null||project.revision!==expectedProjectRevision)
   throw bad("skill_replay_source_changed");
- const document=JSON.parse(project.document_json);
+ const document=hydrateCreativeDocument(db,projectId,JSON.parse(project.document_json));
  const currentFingerprint=job.source_fingerprint.startsWith("v2:")?
   fingerprintSource(document,job.target_node_id):fingerprintSourceLegacy(document,job.target_node_id);
  if(currentFingerprint!==job.source_fingerprint)

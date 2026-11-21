@@ -1,3 +1,4 @@
+import {hydrateCreativeDocument} from "./creative-payloads.mjs";
 /** P4.0, schema-free, server-owned text deliverables.
  * An imported Task is always read-only; archive events are audit only.
  * The existing Task/Step/Attempt tables remain the only execution authority.
@@ -101,8 +102,8 @@ export function registerAssistantTextDeliverable(db,{projectId,taskId,requestId,
   if((!sourced.length&&clean.some(c=>!sourceTurn.preview?.includes(c.title)))||
    allowEmptyTemplate&&!allowsEmptyTemplate(sourceTurn.preview??""))
    throw fail("assistant_deliverable_cast_unconfirmed",403);
-  const doc=JSON.parse(db.prepare("SELECT document_json FROM projects WHERE id=? AND deleted_at IS NULL")
-   .get(projectId)?.document_json??"null");
+  const doc=hydrateCreativeDocument(db,projectId,JSON.parse(db.prepare("SELECT document_json FROM projects WHERE id=? AND deleted_at IS NULL")
+   .get(projectId)?.document_json??"null"));
   if(!doc)throw fail("project_not_found",404);
   const byId=new Map((doc.nodes??[]).map(n=>[n.id,n]));
   for(const c of clean)if(c.sourceNodeId&&
@@ -315,7 +316,7 @@ export function verifyAssistantTextDeliverable(db,{projectId,taskId,stepId,reque
   if(approval.decision!=="approved"||approval.actionDigest!==actionDigest||
    approval.planVersion!==expectedPlanVersion||approval.projectRevision!==pre.projectRevision)
    throw fail("assistant_step_approval_required");
-  const receipt=JSON.parse(step.receipt_json),doc=JSON.parse(task.document_json);
+  const receipt=JSON.parse(step.receipt_json),doc=hydrateCreativeDocument(db,task.project_id,JSON.parse(task.document_json));
   const projectDigest=sha(doc),receiptDigest=sha(receipt);
   let reason=binding.spec.deliverableType&&
    !isAssistantStructuredSourceCurrent(db,taskId,binding.spec)?

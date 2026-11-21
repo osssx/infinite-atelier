@@ -10,9 +10,38 @@ vi.mock("@/features/backend-sync/canvas-state-persistence",()=>({
  }),
  preserveValidCanvasViewport:(value:unknown)=>value
 }));
-import {useCanvasStore,awaitCanvasStorePersistence,commitAssistantCanvasGraphWithSaveBarrier} from "./use-canvas-sqlite-store";
+import {useCanvasStore,awaitCanvasStorePersistence,commitAssistantCanvasGraphWithSaveBarrier,ensureCreativeNodesLoaded} from "./use-canvas-sqlite-store";
 
 describe("P1a browser autosave conflict safety",()=>{
+ it("loads selected creative bodies and their ancestors while preserving unopened payload pointers",async()=>{
+  const id="lazy-creative";
+  const nodes=["source","assets","other"].map((name,index)=>({id:name,type:"drama:"+(index===0?"source":"assets"),
+   title:name,position:{x:index*400,y:0},width:340,height:400,
+   metadata:{creativePayloadRef:{nodeId:name,schemaVersion:1 as const}}}));
+  let revision=1;
+  const paths:string[]=[];
+  const document={title:"Lazy",nodes,connections:[{id:"edge",fromNodeId:"source",toNodeId:"assets"}]};
+  mock.api.mockImplementation(async(path:string,method="GET")=>{
+   if(path.includes("/payload?")){
+    paths.push(path);
+    const nodeId=new URL(path,"http://localhost").searchParams.get("nodeId");
+    return {projectRevision:revision,payload:{dramaDraft:nodeId==="source"?"Story":'{"assets":[]}',content:null}};
+   }
+   if(method==="PATCH")revision++;
+   return {id,revision,document:structuredClone(document)};
+  });
+  await useCanvasStore.getState().loadProject(id);
+  await ensureCreativeNodesLoaded(id,["assets"]);
+  const loaded=useCanvasStore.getState().openProject(id)!;
+  expect(paths).toHaveLength(2);
+  expect(loaded.nodes[0].metadata?.dramaDraft).toBe("Story");
+  expect(loaded.nodes[1].metadata?.creativePayloadRef).toBeUndefined();
+  expect(loaded.nodes[2].metadata?.creativePayloadRef?.nodeId).toBe("other");
+  useCanvasStore.getState().updateProject(id,{nodes:loaded.nodes.map(node=>({...node,position:{...node.position,y:10}}))});
+  await awaitCanvasStorePersistence(id);
+  expect(useCanvasStore.getState().openProject(id)!.nodes[0].metadata?.dramaDraft).toBe("Story");
+  expect(useCanvasStore.getState().openProject(id)!.nodes[2].metadata?.creativePayloadRef?.nodeId).toBe("other");
+ });
  it("preserves the local unsaved graph, does not advance the cached revision, and prevents silent reload",async()=>{
   const remote:{id:string;revision:number;document:{title:string;nodes:{id:string;type:string;title:string}[];connections:unknown[]}}={id:"autosave-p1a",revision:1,document:{title:"任务项目",nodes:[],connections:[]}};
   const submissions:unknown[]=[];

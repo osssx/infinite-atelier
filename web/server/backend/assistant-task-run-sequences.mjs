@@ -1,3 +1,4 @@
+import {hydrateCreativeDocument} from "./creative-payloads.mjs";
 /** P3b: persist an ordered run *intent*, never a provider request.
  * Each target is resolved/pinned in the graph before inserting the sequence.
  * Actual Job snapshots are rebuilt from the same production generator only
@@ -87,7 +88,7 @@ function bindingStepFor(db,seq,index){
   .get(seq.task_id,seq.plan_version,seq.id,index);
 }
 function candidateOutputs(db,projectId,task,seq,action,index,dep){
- const graph=JSON.parse(task.document_json);
+ const graph=hydrateCreativeDocument(db,task.project_id,JSON.parse(task.document_json));
  return trustedAssistantTaskOutputs(db,{projectId,taskId:seq.task_id,planVersion:seq.plan_version})
   .filter(out=>out.runSequenceId===seq.id&&out.runIndex===(action.when?.sourceIndex??index-1)&&
    out.materialStepId===dep&&out.kind===action.inputFromPrevious.sourceKind&&
@@ -102,7 +103,7 @@ function savedInputSelection(db,seq,index){
 function resolveTrustedInput(db,projectId,task,seq,action,index,dep,{allowOccupied=false}={}){
  const input=action.inputFromPrevious;
  if(!input)return null;
- const graph=JSON.parse(task.document_json);
+ const graph=hydrateCreativeDocument(db,task.project_id,JSON.parse(task.document_json));
  const target=graph.nodes.find(n=>n.id===action.nodeId);
  const targetBinding=target?.metadata?.comfyWorkflow;
  const templateRow=targetBinding&&db.prepare("SELECT payload_json FROM comfy_template_versions WHERE template_id=? AND revision=?")
@@ -131,7 +132,7 @@ function resolveTrustedInput(db,projectId,task,seq,action,index,dep,{allowOccupi
 }
 function validateBoundInput(task,seq,index,step,binding){
  const pre=JSON.parse(step.preconditions_json),receipt=JSON.parse(step.receipt_json);
- const document=JSON.parse(task.document_json),edgeId=receipt.refs?.connections?.edge_0;
+ const document=hydrateCreativeDocument(db,task.project_id,JSON.parse(task.document_json)),edgeId=receipt.refs?.connections?.edge_0;
  const edge=document.connections.find(c=>c.id===edgeId);
  const action=JSON.parse(step.action_json)?.actions?.[0];
  if(!edgeId||pre.runSequenceId!==seq.id||
@@ -380,7 +381,7 @@ export function registerAssistantRunSequence(db,{projectId,taskId,requestId,sour
    task.active_plan_version!==expectedPlanVersion||task.active_step_id!==null)
    throw fail("assistant_task_not_editable");
   if(task.revision!==expectedProjectRevision)throw fail("assistant_step_source_changed");
-  validActions(actions,JSON.parse(task.document_json));
+  validActions(actions,hydrateCreativeDocument(db,task.project_id,JSON.parse(task.document_json)));
   const previous=db.prepare("SELECT * FROM assistant_task_steps WHERE task_id=? AND plan_version=? AND superseded_at IS NULL ORDER BY ordinal").all(taskId,expectedPlanVersion);
   if(task.status!=="ready"&&task.status!=="planning"||
    previous.some(step=>step.status!=="succeeded"||step.receipt_trust!=="server_committed"))
@@ -647,7 +648,7 @@ export function verifyAssistantRunSequenceJob(db,{projectId,taskId,runSequenceId
   next.action.type==="run_workflow"&&kind!=="comfy_workflow")
   throw fail("assistant_task_run_target_invalid",400);
  const task=taskWithGraph(db,projectId,taskId);
- const node=JSON.parse(task.document_json).nodes.find(n=>n.id===next.action.nodeId);
+ const node=hydrateCreativeDocument(db,task.project_id,JSON.parse(task.document_json)).nodes.find(n=>n.id===next.action.nodeId);
  if(!node)throw fail("assistant_task_run_target_invalid",400);
  if(next.action.type==="run_workflow"){
   const pinned=node.metadata?.comfyWorkflow;

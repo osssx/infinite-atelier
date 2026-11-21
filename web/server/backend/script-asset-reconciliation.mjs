@@ -1,3 +1,4 @@
+import {hydrateCreativeDocument} from "./creative-payloads.mjs";
 import {createHash} from "node:crypto";
 import {writeTransaction,matchesSourceFingerprint} from "./repository.mjs";
 import {validateRestrictedVideoSnapshot} from "./restricted-video-adapter.mjs";
@@ -193,7 +194,7 @@ export function resumeReconciledVideoJob(db,{projectId,jobId}={}){
     .get(projectId);
    if(!project||project.deleted_at!==null||
      project.revision!==job.expected_project_revision||
-     !matchesSourceFingerprint(JSON.parse(project.document_json),
+     !matchesSourceFingerprint(hydrateCreativeDocument(db,projectId,JSON.parse(project.document_json)),
       job.target_node_id,job.source_fingerprint,snapshot))
     throw fail("script_asset_source_changed");
    // Do not overlap another in-flight model generation on the same source.

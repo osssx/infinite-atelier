@@ -86,15 +86,18 @@ test("Task set_text writes only the approved storyboard draft and rejects duplic
   {id:"archived",createdAt:"2026-11-20T00:00:00Z",content:"旧稿",source:"confirmation"}
  ]};
  const ctx=setup(t,{...origin,nodes:[{...node,type:"drama:storyboard",metadata}]});
+ const {textVersions,...currentMetadata}=metadata;
  const actions=shots=>[{type:"set_text",nodeId:"original",content:JSON.stringify({shots})}];
  assert.throws(()=>plan(ctx,{requestId:"invalid",actions:actions([shot,shot])}),
   {code:"assistant_storyboard_draft_invalid"});
  const candidate=plan(ctx,{actions:actions([shot])});
  assert.equal(candidate.status,"waiting_approval");
- assert.deepEqual(getProject(ctx.db,"p").document.nodes[0].metadata,metadata);
+ assert.deepEqual(getProject(ctx.db,"p").document.nodes[0].metadata,currentMetadata);
+ assert.equal(ctx.db.prepare("SELECT content FROM canvas_text_versions WHERE project_id=? AND node_id=? AND id=?")
+  .get("p","original","archived").content,"旧稿");
  approve(ctx,candidate);
  const result=execute(ctx,candidate);
- assert.deepEqual(result.project.document.nodes[0].metadata,{...metadata,dramaDraft:JSON.stringify({shots:[shot]})});
+ assert.deepEqual(result.project.document.nodes[0].metadata,{...currentMetadata,dramaDraft:JSON.stringify({shots:[shot]})});
 });
 test("an approved shot patch preserves every other shot in a long storyboard",t=>{
  const shots=Array.from({length:14},(_,index)=>({

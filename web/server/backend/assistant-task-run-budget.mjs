@@ -1,3 +1,4 @@
+import {hydrateCreativeDocument} from "./creative-payloads.mjs";
 /** P4.4c: durable bounded permission for frozen run_node jobs only.
  * This is a cap on new Job submissions, NOT a monetary price guarantee.
  * A grant never builds provider payloads or executes unknown work.
@@ -131,7 +132,7 @@ export function createAssistantRunBudgetGrant(db,{projectId,taskId,requestId,seq
   const task=context(db,projectId,taskId);
   if(task.read_only||task.cancel_requested_at!==null||terminal.has(task.status)||
    task.active_plan_version!==expectedPlanVersion)throw fail("assistant_task_not_editable");
-  const seq=seqRow(db,task,sequenceId),actions=JSON.parse(seq.actions_json),doc=JSON.parse(task.document_json);
+  const seq=seqRow(db,task,sequenceId),actions=JSON.parse(seq.actions_json),doc=hydrateCreativeDocument(db,task.project_id,JSON.parse(task.document_json));
   // No two simultaneously active budget envelopes for the same Task/Sequence.
   const grants=db.prepare("SELECT json_extract(payload_json,'$.grantId') id FROM assistant_task_events "+
    "WHERE task_id=? AND kind='run_budget_granted'").all(taskId);
@@ -247,7 +248,7 @@ export function authorizeAssistantRunBudgetEnqueue(db,{projectId,taskId,grantId,
    planVersion:grant.planVersion,runIndex:grant.runIndex});
   return admission;
  }
- const doc=JSON.parse(task.document_json);
+ const doc=hydrateCreativeDocument(db,task.project_id,JSON.parse(task.document_json));
  const comfy=grant.mode==="local_comfy"&&grant.payloadPolicyVersion===2;
  if(seq.intent_digest!==grant.intentDigest||pre.runSequenceId!==grant.sequenceId||
   step.plan_version!==grant.planVersion||!state.allowedIndices.includes(pre.runIndex)||

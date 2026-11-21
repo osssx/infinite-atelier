@@ -15,6 +15,7 @@ import {createProjectArchive,ARCHIVE_MAX_BYTES} from "./project-archive.mjs";
 import {createProject,deleteProject,getProject,saveSingleUserCanvas} from "./projects.mjs";
 import {getCanvasViewport,getCanvasChats} from "./canvas-state.mjs";
 import {buildApp} from "./app.mjs";
+import {insertTextVersions,readTextVersions} from "./canvas-text-versions.mjs";
 
 async function fixture(t){
  const dir=mkdtempSync(join(tmpdir(),"atelier-archive-"));
@@ -25,6 +26,18 @@ async function fixture(t){
  return {db,dir,blobStore,archive};
 }
 const png=Buffer.from([137,80,78,71,13,10,26,10,0,0,0,0,0,0,0,0]);
+test("confirmed provenance and its media survive a ZIP roundtrip",async t=>{
+ const f=await fixture(t);
+ const blob=await f.blobStore.put([png],{mime:"image/png"});
+ createProject(f.db,{id:"provenance",document:{nodes:[{id:"assets",type:"drama:assets",metadata:{}}],connections:[]}});
+ const provenance={inputDependencies:[{nodeId:"story",revisionId:"old-story"}],references:[{storageKey:"cas:"+blob.blobId}]};
+ insertTextVersions(f.db,"provenance",[{nodeId:"assets",id:"published",createdAt:"now",source:"confirmation",
+  content:'{"assets":[]}',provenance}]);
+ const bytes=Buffer.concat(await Array.fromAsync((await f.archive.exportProject("provenance")).stream));
+ const restored=await f.archive.importProject(Readable.from([bytes]));
+ assert.deepEqual(readTextVersions(f.db,restored.id,"assets","published").version.provenance,provenance);
+ assert.equal(restored.mediaCount,1);
+});
 const mp4=Buffer.concat([Buffer.alloc(4),Buffer.from("ftyp"),Buffer.from("isom0000"),Buffer.alloc(20,3)]);
 async function seed(f){
  const img=await f.blobStore.put([png],{mime:"image/png"});

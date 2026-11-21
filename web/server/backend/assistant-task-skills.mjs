@@ -1,3 +1,4 @@
+import {hydrateCreativeDocument} from "./creative-payloads.mjs";
 import {randomUUID,createHash} from "node:crypto";
 import {assertNoRawCredentials,stableJson,writeTransaction} from "./repository.mjs";
 import {resolveAuthorizedSkillScript} from "./skill-script-source.mjs";
@@ -109,7 +110,7 @@ export function planAssistantSkillStep(db,{projectId,taskId,requestId,
   }
   const stepId=randomUUID(),at=Date.now(),actionDigest=digest(action),
    preconditions={projectRevision:expectedProjectRevision,
-    projectGraphDigest:digest(JSON.parse(task.document_json)),requiresApproval:true,finalizeTask};
+    projectGraphDigest:digest(hydrateCreativeDocument(db,task.project_id,JSON.parse(task.document_json))),requiresApproval:true,finalizeTask};
   db.prepare("INSERT INTO assistant_task_steps(id,task_id,plan_version,ordinal,kind,status,required,depends_on_json,action_json,action_digest,preconditions_json,created_at,updated_at) VALUES(?,?,?,?,'skill_script','waiting_approval',1,?,?,?,?,?,?)")
    .run(stepId,taskId,expectedPlanVersion,ordinal,freeze(dependsOn),freeze(action),actionDigest,freeze(preconditions),at,at);
   db.prepare("UPDATE assistant_tasks SET status='waiting_approval',updated_at=? WHERE id=?")
@@ -161,7 +162,7 @@ export function reserveAssistantSkillRun(db,{projectId,taskId,stepId,
    approval.planVersion!==expectedPlanVersion||approval.projectRevision!==pre.projectRevision)
    throw fail("assistant_step_approval_required");
   if(task.revision!==pre.projectRevision||
-   digest(JSON.parse(task.document_json))!==pre.projectGraphDigest)
+   digest(hydrateCreativeDocument(db,task.project_id,JSON.parse(task.document_json)))!==pre.projectGraphDigest)
    throw fail("assistant_step_source_changed");
   const deps=JSON.parse(step.depends_on_json);
   for(const depId of deps){

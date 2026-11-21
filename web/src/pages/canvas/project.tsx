@@ -82,9 +82,11 @@ import { CanvasNodePromptPanel, type CanvasNodeGenerationMode } from "@/componen
 import { CanvasToolbar } from "@/components/canvas/canvas-toolbar";
 import { DramaPipelineNodePanel, isDramaPipelineNode } from "@/features/canvas-assistant/drama-pipeline-node-panel";
 import { DramaSourceNode } from "@/features/canvas-assistant/drama-source-node";
+import {LazyCreativeNode} from "@/features/canvas-assistant/lazy-creative-node";
 import { isInlineDramaNode, readStoryboardDraft } from "@/features/canvas-assistant/canvas-drama-pipeline";
 import { mergeLegacyDramaAssets, mergeLegacyDramaFirstFrames } from "@/features/canvas-assistant/drama-asset-migration";
-import { buildDramaVideoConfigGraph, findDramaVideoConfigs } from "@/features/canvas-assistant/drama-video-config";
+import { buildDramaVideoConfigGraph, findDramaVideoConfigs,refreshDramaVideoConfigGraph } from "@/features/canvas-assistant/drama-video-config";
+import {readEpisodeDraft} from "../../../server/canvas-text-content.mjs";
 import { AssetPickerModal, type InsertAssetPayload } from "@/components/canvas/asset-picker-modal";
 import { CanvasSidePanel } from "@/components/canvas/canvas-side-panel";
 import { CanvasZoomControls } from "@/components/canvas/canvas-zoom-controls";
@@ -2440,6 +2442,9 @@ function AtelierCanvasPage() {
         try {
             await runTextVersionCommand(nodeId, {action:"confirm"}, draft);
         } catch (error) {
+            if(error instanceof Error&&error.message.startsWith("drama_asset_in_use")){
+                throw Error("待删除的资产或变体仍被分镜草案或已确认镜头使用，请先迁移相关镜头引用并重新确认");
+            }
             if (error instanceof Error && error.message.startsWith("text_version_limit")) {
                 throw Error(t("canvas.textVersions.episodeArchiveLimit"));
             }
@@ -4199,14 +4204,32 @@ function AtelierCanvasPage() {
                 }
             })();
             const ratio = pipelineSource?.metadata?.videoRatio;
-            const style = pipelineSource?.metadata?.dramaFilmStyle?.trim();
+            const publishedVisual=pipelineSource?.metadata?.dramaConfirmedVisual;
+            const style = [(publishedVisual?.visualStyle??pipelineSource?.metadata?.dramaFilmStyle)?.trim(),
+                ...Object.entries(publishedVisual?.artDirection??pipelineSource?.metadata?.dramaArtDirection??{}).filter(([,value])=>value.trim())
+                    .map(([key,value])=>`${({palette:"色彩",lighting:"光影",characterDesign:"角色设计",anchors:"一致性锚点"} as Record<string,string>)[key]}：${value}`),
+            ].filter(Boolean).join("\n");
             const directAssets = panelNode.type === "drama:storyboard" ? nodes.find(item => item.type === "drama:assets" &&
                 connections.some(edge => edge.fromNodeId === item.id && edge.toNodeId === panelNode.id)) : undefined;
             return isDramaPipelineNode(panelNode.type) ? <DramaPipelineNodePanel key={panelNode.id} node={panelNode} projectId={projectId}
                 legacyAssetPlanning={panelNode.type === "drama:assets" && connections.some(edge => edge.fromNodeId === panelNode.id &&
                     nodes.some(item => item.id === edge.toNodeId && item.type === "drama:asset_references"))}
                 mergedReferences={directAssets?.metadata?.dramaAssetReferences}
+                assetUsage={Object.fromEntries(nodes.filter(item=>item.type==="drama:storyboard"&&connections.some(edge=>
+                    edge.fromNodeId===panelNode.id&&edge.toNodeId===item.id)).flatMap(item=>{
+                        const draftShots=readStoryboardDraft(item.metadata?.dramaDraft??"")?.shots??[];
+                        const publishedShots=readStoryboardDraft(item.metadata?.dramaConfirmed??"")?.shots??[];
+                        const shots=[...draftShots,...publishedShots];
+                        const ids=[...new Set(shots.flatMap(shot=>[...shot.characterVariantIds,...shot.propIds,
+                            ...(shot.sceneId?[shot.sceneId]:[]),...(shot.sceneVariantId?[shot.sceneVariantId]:[])]))];
+                        return ids.map(id=>[id,shots.filter(shot=>[...shot.characterVariantIds,...shot.propIds,shot.sceneId,shot.sceneVariantId]
+                            .includes(id)).map(shot=>`${shot.episodeId} · 镜头 ${shot.order}`)]);
+                    }))}
+                supplementalEpisodes={panelNode.type==="drama:assets"&&pipelineSource?nodes.filter(item=>
+                    item.type==="drama:episodes"&&connections.some(edge=>edge.fromNodeId===pipelineSource.id&&edge.toNodeId===item.id))
+                    .flatMap(item=>readEpisodeDraft(item.metadata?.dramaConfirmed??"")?.episodes??[]):[]}
                 onPickCanvasImage={onPick => startNodeReferenceSelection(panelNode.id, onPick)}
+                productionStyle={style}
                 productionContext={[ratio && `视频画幅：${ratio}`, style && `影片风格：${style}`].filter(Boolean).join("\n")}
                 upstreamText={nodes.find(item => item.type === "drama:source" && connections.some(edge => edge.fromNodeId === item.id && edge.toNodeId === panelNode.id))?.metadata?.dramaConfirmed}
                 upstreamArtifacts={nodes.filter(item => item.type !== "drama:source" && connections.some(edge => edge.fromNodeId === item.id && edge.toNodeId === panelNode.id)).flatMap(item => item.metadata?.dramaConfirmed ? [item.metadata.dramaConfirmed] : [])}
@@ -4219,6 +4242,13 @@ function AtelierCanvasPage() {
                     setSelectedNodeIds(new Set([id]));
                     setSelectedConnectionId(null);
                     setDialogNodeId(id);
+                }}
+                onRefreshVideoConfig={(id,input,fields)=>{
+                    const current=nodesRef.current.find(node=>node.id===id);
+                    if(!current)throw Error("视频配置已删除");
+                    const graph=refreshDramaVideoConfigGraph(panelNode,input,id,nodesRef.current,connectionsRef.current,fields,style,ratio);
+                    nodesRef.current=graph.nodes;connectionsRef.current=graph.connections;
+                    setNodes(graph.nodes);setConnections(graph.connections);
                 }}
                 imageNodes={nodes.filter(item => item.type === CanvasNodeType.Image)}
                 onCreateReferenceConfig={(assetName, prompt) => {
@@ -4234,10 +4264,10 @@ function AtelierCanvasPage() {
                 onOpenVersions={() => openTextVersions(panelNode.id)}
                 onConfirmVersion={draft => confirmDramaVersion(panelNode.id,draft)}
                 onBeforeDramaRun={() => awaitCanvasStorePersistence(projectId)}
-                onAdoptDramaRun={async path => {
+                onAdoptDramaRun={async (path,shotIds) => {
                     await commitAssistantCanvasGraphWithSaveBarrier(projectId, ({assertCurrent}) => {
                         assertCurrent();
-                        return canvasApi<CanvasBackendProject>(path,"POST",{});
+                        return canvasApi<CanvasBackendProject>(path,"POST",{shotIds});
                     }, {textVersionNodeId:panelNode.id});
                 }}
                 versionBusy={textVersionBusy}
@@ -4363,7 +4393,9 @@ function AtelierCanvasPage() {
     );
 
     const renderNodeContentPanel = useCallback(
-        (contentNode: CanvasNodeData) => contentNode.type === "drama:source" ? (
+        (contentNode: CanvasNodeData) => contentNode.metadata?.creativePayloadRef ? (
+            <LazyCreativeNode projectId={projectId} nodeId={contentNode.id} storyboard={contentNode.type==="drama:storyboard"}/>
+        ) : contentNode.type === "drama:source" ? (
             <DramaSourceNode key={contentNode.id} node={contentNode} onChange={patch => handleConfigNodeChange(contentNode.id, patch)}
                 onOpenVersions={() => openTextVersions(contentNode.id)} onConfirmVersion={draft => confirmDramaVersion(contentNode.id,draft)}
                 versionBusy={textVersionBusy} />

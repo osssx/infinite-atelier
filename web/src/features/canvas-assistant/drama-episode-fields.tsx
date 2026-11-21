@@ -67,7 +67,9 @@ export function DramaEpisodeFields({episodes, expanded, disabled, control, onCha
             </div>
             {active.sourceRefs.length > 0 && <details className="min-w-0 border-t pt-2 text-xs" style={{borderColor:control?.borderColor}}>
                 <summary className="cursor-pointer opacity-75">原文出处 · {active.sourceRefs.length} 处</summary>
-                <p className="mt-2 break-words leading-relaxed opacity-75">{active.sourceRefs.join("、")}</p>
+                <textarea aria-label="剧集原文段落 ID" className={field} style={control} rows={2} value={active.sourceRefs.join("\n")}
+                    onChange={event=>edit({sourceRefs:event.target.value.split("\n").map(item=>item.trim()).filter(Boolean)})}/>
+                {active.sourceRefs.some(ref=>/^p\d+$/.test(ref))&&<p>含旧行号引用，请对照故事段落定位核对。</p>}
             </details>}
         </div>
     </fieldset>;

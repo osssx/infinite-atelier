@@ -1,3 +1,4 @@
+import {hydrateCreativeDocument} from "./creative-payloads.mjs";
 import {randomUUID} from "node:crypto";
 import {readFile} from "node:fs/promises";
 import {matchesSourceFingerprint,stableJson,writeTransaction} from "./repository.mjs";
@@ -59,7 +60,7 @@ export function createCanvasMaterializer({db,blobStore,videoDimensionReader=read
   if(snapshot?.adapterKind!=="model"||snapshot.task?.kind!=="image"||snapshot.task.writeBack||
      !["openai","openai_compatible","google_gemini"].includes(snapshot.provider))return null;
   const project=db.prepare("SELECT document_json FROM projects WHERE id=? AND deleted_at IS NULL").get(artifact.project_id);
-  const source=project?JSON.parse(project.document_json).nodes.find(n=>n.id===artifact.target_node_id):null;
+  const source=project?hydrateCreativeDocument(db,artifact.project_id,JSON.parse(project.document_json)).nodes.find(n=>n.id===artifact.target_node_id):null;
   const sourceType=snapshot.sourceNodeType??source?.type;
   const rows=db.prepare("SELECT * FROM artifacts WHERE job_id=? ORDER BY CAST(item_key AS INTEGER),item_key,id").all(artifact.job_id);
   if((rows.length<2||sourceType!=="image"&&sourceType!=="config")||
@@ -87,7 +88,7 @@ export function createCanvasMaterializer({db,blobStore,videoDimensionReader=read
     // Another watcher may have adopted the batch while CAS reads were pending.
     if(db.prepare("SELECT 1 FROM materializations WHERE artifact_id=? AND project_id=? AND status='materialized'")
       .get(artifact.id,artifact.project_id))return {artifactId:artifact.id,status:"materialized",existing:true};
-    const doc=JSON.parse(current.document_json),source=doc.nodes.find(n=>n.id===artifact.target_node_id);
+    const doc=hydrateCreativeDocument(db,artifact.project_id,JSON.parse(current.document_json)),source=doc.nodes.find(n=>n.id===artifact.target_node_id);
     let sourceUnchanged=false;
     if(source&&job)try{sourceUnchanged=matchesSourceFingerprint(doc,source.id,job.source_fingerprint,snapshot)}catch{}
     const sourceEmpty=source?.type==="image"&&!String(source.metadata?.content??"").trim()&&
@@ -165,7 +166,7 @@ export function createCanvasMaterializer({db,blobStore,videoDimensionReader=read
     const project=db.prepare("SELECT * FROM projects WHERE id=? AND deleted_at IS NULL")
       .get(artifact.project_id);
     if(!project)throw fail("materialization_project_deleted");
-    const doc=JSON.parse(project.document_json);
+    const doc=hydrateCreativeDocument(db,artifact.project_id,JSON.parse(project.document_json));
     const source=doc.nodes.find(n=>n.id===artifact.target_node_id);
     // A successful immutable artifact survives deletion or edits of its source.
     // An absent/incompatible source prevents a link, not persistence of the blob.

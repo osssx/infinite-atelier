@@ -1,3 +1,4 @@
+import {hydrateCreativeDocument} from "./creative-payloads.mjs";
 /** P4.5b: one consent-bound media edge + one local Comfy Job.
  * The durable grant contains only hashes/IDs; source CAS is resolved AFTER
  * a server-committed predecessor materialization. No browser-selected artifact
@@ -168,7 +169,7 @@ export function getAssistantMediaGrantForCheck(db,{projectId,taskId,grantId}){
   action.inputFromPrevious?.sourceKind!==grant.mediaScope.sourceKind||
   action.inputFromPrevious?.toPortId!==grant.mediaScope.toPortId)
   throw fail("assistant_run_media_sequence_changed");
- const doc=JSON.parse(task.document_json),target=doc.nodes.find(n=>n.id===action.nodeId);
+ const doc=hydrateCreativeDocument(db,task.project_id,JSON.parse(task.document_json)),target=doc.nodes.find(n=>n.id===action.nodeId);
  const currentUrl=db.prepare("SELECT url FROM comfy_instances WHERE id=?").get(grant.mediaScope.instanceId)?.url;
  if(!target||!currentUrl||digest(target)!==grant.mediaScope.targetNodeDigest||
   digest(metadata(templateFor(db,target)))!==grant.mediaScope.templateDigest||

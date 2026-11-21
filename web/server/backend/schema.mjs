@@ -1,7 +1,8 @@
 import {migrateTextVersions} from "./canvas-text-versions.mjs";
 import {DRAMA_RUN_SCHEMA} from "./drama-runs.mjs";
+import {CREATIVE_PAYLOAD_SCHEMA} from "./creative-payloads.mjs";
 import{JOB_STATUSES,EXECUTION_MODES,ARTIFACT_KINDS}from"./contracts.mjs";
-export const SCHEMA_VERSION=37;
+export const SCHEMA_VERSION=41;
 const quoted=x=>x.map(s=>"'"+s+"'").join(",");
 export const INITIAL_SCHEMA_SQL=`
 CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY,applied_at INTEGER NOT NULL);
@@ -756,6 +757,29 @@ export function initializeSchema(db){
    db.exec("UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1");
   }
   if(version<37)db.exec(DRAMA_RUN_SCHEMA);
+  if(version<38){
+   for(const action of ["INSERT","UPDATE","DELETE"]){
+    db.exec(`CREATE TRIGGER IF NOT EXISTS blob_ref_dirty_drama_runs_${action.toLowerCase()}
+     AFTER ${action} ON drama_runs BEGIN
+      UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1;
+     END`);
+   }
+   db.exec("UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1");
+  }
+  if(version<39){
+   ensureColumn(db,"canvas_text_versions","provenance_json","TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(provenance_json))");
+   db.exec("UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1");
+  }
+  if(version<40){
+   db.exec(CREATIVE_PAYLOAD_SCHEMA);
+   db.exec("UPDATE projects SET document_json=document_json");
+  }
+  if(version<41){
+   db.exec("DROP TRIGGER IF EXISTS creative_payload_insert; DROP TRIGGER IF EXISTS creative_payload_update");
+   db.exec(CREATIVE_PAYLOAD_SCHEMA);
+   db.exec("UPDATE projects SET document_json=document_json");
+   db.exec("UPDATE blob_ref_ledger_state SET dirty=1,change_seq=change_seq+1 WHERE id=1");
+  }
   if(version<SCHEMA_VERSION)db.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)").run(SCHEMA_VERSION,Date.now());
   db.exec("COMMIT");
  }catch(e){db.exec("ROLLBACK");throw e}

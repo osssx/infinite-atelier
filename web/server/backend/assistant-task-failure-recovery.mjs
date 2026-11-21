@@ -1,3 +1,4 @@
+import {hydrateCreativeDocument} from "./creative-payloads.mjs";
 /** P3c3d: an explicitly confirmed, no-provider failover to a previously
  * frozen independent run target. A failed Job is NOT by itself proof of failure.
  * Never treat collecting->failed or submission_unknown as permission to retry.
@@ -101,7 +102,7 @@ function candidate(db,projectId,taskId){
  if(action?.type!=="run_node"||action.when!==undefined||action.join!==undefined||
   action.inputFromPrevious!==undefined||!id(action.nodeId)||
   action.nodeId===actions[index]?.nodeId)return denied("no_frozen_independent_fallback");
- const nodes=JSON.parse(task.document_json).nodes??[];
+ const nodes=hydrateCreativeDocument(db,task.project_id,JSON.parse(task.document_json)).nodes??[];
  const node=nodes.find(n=>n.id===action.nodeId);
  const mode=node?.type==="config"?node.metadata?.generationMode??"image":node?.type;
  if(!allowedNodes.has(node?.type)||!modes.has(mode)||

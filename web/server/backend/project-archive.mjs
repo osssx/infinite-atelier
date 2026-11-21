@@ -139,12 +139,14 @@ function* readHistory(path,document){
 
 function stageHistory(db,project,remaining){
  const ids=new Set(project.document.nodes.filter(node=>textVersionNodeTypes.has(node.type)).map(node=>node.id));
- const rows=db.prepare(`SELECT node_id AS nodeId,id,created_at AS createdAt,source,note,content
+ const rows=db.prepare(`SELECT node_id AS nodeId,id,created_at AS createdAt,source,note,content,provenance_json
    FROM canvas_text_versions WHERE project_id=? ORDER BY seq`).iterate(project.id);
  const hash=createHash("sha256"),references=new Set();
  let root,path,fd,bytes=0;
  try{
-  for(const row of rows){
+  for(const stored of rows){
+   const {provenance_json,...fields}=stored;
+   const row={...fields,provenance:JSON.parse(provenance_json)};
    if(!ids.has(row.nodeId))continue;
    for(const ref of projectArchiveHashes(row))references.add(ref);
    if(references.size>ARCHIVE_MAX_FILES-1)throw error("archive_file_limit_exceeded",413);

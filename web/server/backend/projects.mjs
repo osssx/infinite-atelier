@@ -4,6 +4,7 @@ import {stableJson,writeTransaction,assertNoRawCredentials,matchesSourceFingerpr
 import {validCanvasNodeId} from "../canvas-node-id.mjs";
 import {initialCanvasState} from "./canvas-state.mjs";
 import {generatedNodeTitle} from "./generated-node-title.mjs";
+import {hydrateCreativeDocument} from "./creative-payloads.mjs";
 const problem=(code,statusCode=400,details)=>Object.assign(new Error(code),{code,statusCode,details});
 const validId=id=>typeof id==="string"&&/^[A-Za-z0-9_-]{1,128}$/.test(id);
 /** Separate project graph from P2 state. The old document fields never
@@ -37,7 +38,7 @@ export function validateProjectDocument(document){
  if(Buffer.byteLength(json)>4*1024*1024)throw problem("project_document_too_large",413);
  return json;
 }
-const map=row=>row?{id:row.id,revision:row.revision,document:JSON.parse(row.document_json),deletedAt:row.deleted_at}:null;
+const map=(row,db)=>row?{id:row.id,revision:row.revision,document:hydrateCreativeDocument(db,row.id,JSON.parse(row.document_json)),deletedAt:row.deleted_at}:null;
 export function emitProjectEvent(db,{id,revision,kind}){
  db.prepare("INSERT INTO project_events(project_id,revision,kind,created_at) VALUES(?,?,?,?)")
   .run(id,revision,kind,Date.now());
@@ -68,15 +69,15 @@ export function createProjectInTransaction(db,{id=randomUUID(),document}){
  insertTextVersions(db,id,legacy.entries.reverse(),{legacy:true});
  initialCanvasState(db,id,document);
  emitProjectEvent(db,{id,revision:1,kind:"created"});
- return map(db.prepare("SELECT * FROM projects WHERE id=?").get(id));
+ return map(db.prepare("SELECT * FROM projects WHERE id=?").get(id),db);
 }
 export function createProject(db,args){
  return writeTransaction(db,()=>createProjectInTransaction(db,args));
 }
-export function getProject(db,id){
+export function getProject(db,id,{compact=false}={}){
  const row=db.prepare("SELECT * FROM projects WHERE id=? AND deleted_at IS NULL").get(id);
  if(!row)throw problem("project_not_found",404);
- return map(row);
+ return compact?{id:row.id,revision:row.revision,document:JSON.parse(row.document_json),deletedAt:row.deleted_at}:map(row,db);
 }
 export function deleteProject(db,id){
  if(!validId(id))throw problem("invalid_project_id");
@@ -98,7 +99,7 @@ export function saveSingleUserCanvas(db,{id,expectedRevision,document}){
  if(!validId(id))throw problem("invalid_project_id");
  if(expectedRevision!==undefined&&(!Number.isSafeInteger(expectedRevision)||expectedRevision<1))
   throw problem("expected_revision_required");
- const incoming=graphDocument(document);
+ const incoming=hydrateCreativeDocument(db,id,graphDocument(document));
  if(extractTextVersions(incoming).hasInline)throw problem("legacy_text_versions_reload_required",409);
  validateProjectDocument(incoming);
  return writeTransaction(db,()=>{
@@ -111,7 +112,7 @@ export function saveSingleUserCanvas(db,{id,expectedRevision,document}){
   const historyRevision=db.prepare("SELECT MAX(graph_revision) AS revision FROM canvas_text_version_operations WHERE project_id=?").get(id).revision;
   if((taskManaged&&expectedRevision!==row.revision)||(historyRevision!==null&&(expectedRevision??0)<historyRevision))
    throw problem("project_revision_conflict",409,{currentRevision:row.revision});
-  const current=JSON.parse(row.document_json);
+  const current=hydrateCreativeDocument(db,id,JSON.parse(row.document_json));
   const next={...incoming,nodes:[...incoming.nodes],connections:[...incoming.connections]};
   if(expectedRevision===undefined||expectedRevision<row.revision){
    const ids=new Set(next.nodes.map(n=>n.id));
@@ -221,7 +222,7 @@ export function saveSingleUserCanvas(db,{id,expectedRevision,document}){
   db.prepare("UPDATE projects SET document_json=?,revision=? WHERE id=? AND deleted_at IS NULL")
    .run(content,revision,id);
   emitProjectEvent(db,{id,revision,kind:"updated"});
-  return map(db.prepare("SELECT * FROM projects WHERE id=?").get(id));
+  return map(db.prepare("SELECT * FROM projects WHERE id=?").get(id),db);
  });
 }
 
@@ -236,6 +237,6 @@ export function patchProject(db,{id,expectedRevision,document}){
    throw problem("project_revision_conflict",409,{currentRevision:current.revision});
   }
   emitProjectEvent(db,{id,revision:expectedRevision+1,kind:"updated"});
-  return map(db.prepare("SELECT * FROM projects WHERE id=?").get(id));
+  return map(db.prepare("SELECT * FROM projects WHERE id=?").get(id),db);
  });
 }

@@ -7,13 +7,14 @@ const kinds: Record<DramaAssetKind, string> = {character:"角色", scene:"场景
 const kindIcons = {character:UserRound, scene:Mountain, prop:Box};
 const fieldClass = "thin-scrollbar w-full min-w-0 rounded-lg border px-3 py-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1";
 
-export function DramaAssetFields({assets, theme, expanded, disabled, onChange, renderReferences}: {
+export function DramaAssetFields({assets, theme, expanded, disabled, onChange, renderReferences,usage={}}: {
     assets: DramaAsset[];
     theme: CanvasTheme;
     expanded: boolean;
     disabled: boolean;
     onChange?: (assets: DramaAsset[]) => void;
     renderReferences?: (asset: DramaAsset, variantId?: string) => ReactNode;
+    usage?:Record<string,string[]>;
 }) {
     const [kind, setKind] = useState<DramaAssetKind>("character");
     const [activeId, setActiveId] = useState("");
@@ -80,11 +81,22 @@ export function DramaAssetFields({assets, theme, expanded, disabled, onChange, r
                 <input className={fieldClass} style={control} value={active.name} maxLength={240}
                     onChange={event => edit({name:event.target.value})} />
             </label>
+            {[...new Set([active.id,...variants.map(variant=>variant.id)].flatMap(id=>usage[id]??[]))].length>0 &&
+                <p className="text-xs">使用位置 · {[...new Set([active.id,...variants.map(variant=>variant.id)]
+                    .flatMap(id=>usage[id]??[]))].join("、")}</p>}
             <label className="grid gap-1.5 font-medium">描述
                 <textarea className={`${fieldClass} resize-y font-normal leading-relaxed`} style={control} value={active.description} rows={expanded ? 6 : 3} maxLength={20000}
                     onChange={event => edit({description:event.target.value})} />
             </label>
-            {active.sourceRefs.length > 0 && <p className="break-words text-xs" style={{color:theme.node.muted}}>原文出处 {active.sourceRefs.join("、")}</p>}
+            <label className="grid gap-1.5 font-medium">别名（每行一个）
+                <textarea className={fieldClass} style={control} rows={2} value={(active.aliases??[]).join("\n")}
+                    onChange={event=>edit({aliases:event.target.value.split("\n").map(name=>name.trim()).filter(Boolean).slice(0,64)})}/>
+            </label>
+            <label className="grid gap-1.5 text-sm">原文段落 ID（每行一个）
+                <textarea className={fieldClass} style={control} rows={2} value={active.sourceRefs.join("\n")}
+                    onChange={event=>edit({sourceRefs:event.target.value.split("\n").map(item=>item.trim()).filter(Boolean)})}/>
+                {active.sourceRefs.some(ref=>/^p\d+$/.test(ref))&&<span>含旧行号引用，请对照故事节点的段落定位核对。</span>}
+            </label>
             {renderReferences && (active.kind !== "character" || !variants.length) && renderReferences(active)}
             {kind !== "prop" && <details key={active.id} className="space-y-3 border-t pt-3" style={{borderColor:theme.node.stroke}}>
                 <summary className="cursor-pointer font-medium">{kind === "character" ? "造型" : "场景变体"} · {variants.length}</summary>

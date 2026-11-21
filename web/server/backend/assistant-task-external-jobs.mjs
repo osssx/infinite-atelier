@@ -1,3 +1,4 @@
+import {hydrateCreativeDocument} from "./creative-payloads.mjs";
 import {createHash,randomUUID} from "node:crypto";
 import {EXECUTION_MODES} from "./contracts.mjs";
 import {authorizeAssistantRunBudgetEnqueue,commitAssistantRunBudgetConsumption} from "./assistant-task-run-budget.mjs";
@@ -109,7 +110,7 @@ export function planAssistantExternalJobStep(db,{projectId,taskId,requestId,kind
   dependencyCheck(db,taskId,expectedPlanVersion,ordinal,dependsOn);
   const stepId=randomUUID(),actionDigest=hash(action),at=Date.now();
   const pre={projectRevision:expectedProjectRevision,
-   projectGraphDigest:hash(JSON.parse(task.document_json)),
+   projectGraphDigest:hash(hydrateCreativeDocument(db,task.project_id,JSON.parse(task.document_json))),
    requiresApproval:true,finalizeTask:sequence?.finalizeTask??finalizeTask,
    ...(sequence?{runSequenceId,runIndex,
      ...(sequence.joinEvidenceDigest?{joinEvidenceDigest:sequence.joinEvidenceDigest}:{}),
@@ -166,7 +167,7 @@ export function enqueueAssistantExternalJobStep(db,{projectId,taskId,stepId,requ
    throw fail("assistant_step_approval_required");
   if(admission&&approval.decision&&approval.decision!=="approved")
    throw fail("assistant_step_approval_conflict");
-  if(task.revision!==pre.projectRevision||hash(JSON.parse(task.document_json))!==pre.projectGraphDigest)
+  if(task.revision!==pre.projectRevision||hash(hydrateCreativeDocument(db,task.project_id,JSON.parse(task.document_json)))!==pre.projectGraphDigest)
    throw fail("assistant_step_source_changed");
   dependencyCheck(db,taskId,expectedPlanVersion,step.ordinal,JSON.parse(step.depends_on_json));
   if(pre.runIndex===3){

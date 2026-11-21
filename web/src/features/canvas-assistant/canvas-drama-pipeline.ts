@@ -47,6 +47,7 @@ export type DramaAsset = {
     name: string;
     description: string;
     sourceRefs: string[];
+    aliases?: string[];
     variants?: { id: string; name: string; description: string }[];
 };
 

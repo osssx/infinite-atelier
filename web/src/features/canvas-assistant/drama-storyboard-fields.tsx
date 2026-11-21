@@ -39,6 +39,11 @@ export function DramaStoryboardFields({shots, episodes, scenes, expanded, disabl
         </div>
         {episode?.targetDurationSec && <p>已设置镜头时长合计 {duration} 秒，目标 {episode.targetDurationSec} 秒。</p>}
         <div className={expanded ? "grid gap-3 md:grid-cols-2" : "grid gap-2"}>
+            <label className="grid gap-1">原文段落 ID（每行一个）
+                <textarea className={field} style={control} rows={2} value={(active.sourceRefs??[]).join("\n")}
+                    onChange={event=>write({...active,sourceRefs:event.target.value.split("\n").map(item=>item.trim()).filter(Boolean)})}/>
+                {active.sourceRefs?.some(ref=>/^p\d+$/.test(ref))&&<span>含旧行号引用，请对照故事段落定位核对。</span>}
+            </label>
             <label className="grid min-w-0 gap-1">镜头时长（秒）
                 <input className={field} style={control} type="number" min="0.1" step="0.1"
                     value={active.durationSec??""} onChange={event=>{

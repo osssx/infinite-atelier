@@ -1,3 +1,4 @@
+import {hydrateCreativeDocument} from "./creative-payloads.mjs";
 import {createHash,randomUUID} from "node:crypto";
 import {stableJson,writeTransaction,assertNoRawCredentials} from "./repository.mjs";
 import {validateProjectDocument,emitProjectEvent} from "./projects.mjs";
@@ -33,7 +34,7 @@ function taskAndProject(db,projectId,taskId){
 const projectView=(db,projectId)=>{
  const row=db.prepare("SELECT id,revision,document_json FROM projects WHERE id=? AND deleted_at IS NULL").get(projectId);
  if(!row)throw fail("project_not_found",404);
- return {id:row.id,revision:row.revision,document:JSON.parse(row.document_json)};
+ return {id:row.id,revision:row.revision,document:hydrateCreativeDocument(db,projectId,JSON.parse(row.document_json))};
 };
 const signature=(kind,payload)=>hash({kind,payload});
 const loadPinnedComfyTemplate=(db)=>(templateId,revision)=>{
@@ -145,7 +146,7 @@ export function planAssistantCanvasStep(db,{projectId,taskId,requestId,
   const skeleton={plan_version:expectedPlanVersion,ordinal,
    depends_on_json:json(dependsOn)};
   const externalRefs=dependencies(db,taskId,skeleton);
-  const original=JSON.parse(task.document_json);
+  const original=hydrateCreativeDocument(db,task.project_id,JSON.parse(task.document_json));
   const ui=modelConfig(db);
   const preview=applyFrozenAssistantCanvasPlan(original,action,refs,{externalRefs,
    loadTemplate:loadPinnedComfyTemplate(db),config:ui.value});
@@ -232,7 +233,7 @@ export function commitAssistantCanvasAttempt(db,{projectId,taskId,stepId,
   if(hash(action)!==step.action_digest||hash(action)!==actionDigest||
    hash(frozenSnapshot)!==active.requestFingerprint)
    throw fail("assistant_step_action_changed");
-  if(task.revision!==pre.projectRevision||hash(JSON.parse(task.document_json))!==pre.projectGraphDigest)
+  if(task.revision!==pre.projectRevision||hash(hydrateCreativeDocument(db,task.project_id,JSON.parse(task.document_json)))!==pre.projectGraphDigest)
    throw fail("assistant_step_source_changed");
   const externalRefs=dependencies(db,taskId,step);
   if(pre.runMediaGrantId)assertAssistantRunMediaBindingConsent(db,{projectId,taskId,
@@ -245,7 +246,7 @@ export function commitAssistantCanvasAttempt(db,{projectId,taskId,stepId,
   const ui=modelConfig(db);
   if(pre.modelConfigRevision!==undefined&&pre.modelConfigRevision!==ui.revision)
    throw fail("assistant_step_source_changed");
-  const applied=applyFrozenAssistantCanvasPlan(JSON.parse(task.document_json),action,pre.refs,{externalRefs,
+  const applied=applyFrozenAssistantCanvasPlan(hydrateCreativeDocument(db,task.project_id,JSON.parse(task.document_json)),action,pre.refs,{externalRefs,
    loadTemplate:loadPinnedComfyTemplate(db),config:ui.value});
   const content=validateProjectDocument(applied.document),at=Date.now(),revision=task.revision+1;
   // No async/external side effects may occur inside this BEGIN IMMEDIATE block.
@@ -347,7 +348,7 @@ export function recoverAssistantCanvasTasksAtStartup(db){
    const pre=JSON.parse(step.preconditions_json);
    const valid=step.kind==="canvas_mutation"&&step.plan_version===step.active_plan_version&&
     !step.cancel_requested_at&&!step.read_only&&current&&current.deleted_at===null&&
-    current.revision===pre.projectRevision&&hash(JSON.parse(current.document_json))===pre.projectGraphDigest;
+    current.revision===pre.projectRevision&&hash(hydrateCreativeDocument(db,step.project_id,JSON.parse(current.document_json)))===pre.projectGraphDigest;
    db.prepare("UPDATE assistant_task_attempts SET status='released_pre_submit',finished_at=? WHERE id=?")
     .run(at,attempt.id);
    db.prepare("UPDATE assistant_task_steps SET status=?,lease_owner=NULL,lease_expires_at=NULL,updated_at=?,error_code=? WHERE id=?")

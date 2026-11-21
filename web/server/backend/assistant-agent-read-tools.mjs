@@ -4,6 +4,7 @@
  */
 import {canvasDramaAssetFields,canvasTextContentPatch,isAssistantDramaNodeType,readAssetDraft,readEpisodeDraft,readStoryboardDraft} from "../canvas-text-content.mjs";
 import {createHash} from "node:crypto";
+import {hydrateCreativeDocument} from "./creative-payloads.mjs";
 import {stableJson,writeTransaction} from "./repository.mjs";
 import {formatAssistantGenerationSettings,mayRepeatTurn,safe} from "./assistant-task-context.mjs";
 import {discoverAssistantCreativeCharacters} from "./assistant-creative-context.mjs";
@@ -273,7 +274,7 @@ function scoped(db,projectId,taskId,turnMessageId){
   !Array.isArray(policy.includedIds))throw fail("assistant_task_context_invalid",409);
  const project=db.prepare("SELECT document_json,revision FROM projects WHERE id=? AND deleted_at IS NULL").get(projectId);
  if(!project)throw fail("project_not_found",404);
- return {policy,document:JSON.parse(project.document_json),revision:project.revision};
+ return {policy,document:hydrateCreativeDocument(db,projectId,JSON.parse(project.document_json)),revision:project.revision};
 }
 export function assertAssistantAgentReadClaim(db,{projectId,taskId,turnMessageId}){
  scoped(db,projectId,taskId,turnMessageId);

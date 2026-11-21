@@ -6,7 +6,27 @@ export type DramaVideoInput = {
     shot: DramaShot;
     prompt: string;
     referenceImages: ReferenceImage[];
+    mode?: "text_to_video"|"first_frame"|"first_last_frame"|"omni_reference";
+    comfyBinding?: NonNullable<import("@/types/canvas").CanvasNodeMetadata["comfyMediaPreset"]>;
 };
+export type DramaShotProduction = {mode:NonNullable<DramaVideoInput["mode"]>;firstFrame?:string;lastFrame?:string;gridInput?:boolean;gridImage?:string};
+
+export function applyDramaProduction(input:DramaVideoInput,settings?:DramaShotProduction):DramaVideoInput{
+    if(!settings)return input;
+    if(settings.gridInput){
+        if(!settings.gridImage||!/^cas:[a-f0-9]{64}$/.test(settings.gridImage))throw Error("请先选择分镜网格图");
+        return {...input,mode:"omni_reference",prompt:input.prompt+"\n参考图是一张分镜网格。按从左到右、从上到下的顺序展开连续镜头，输出完整连续视频画面。",
+            referenceImages:[{id:`${input.shot.id}-grid`,name:"分镜网格",type:"image/png",dataUrl:"",storageKey:settings.gridImage}]};
+    }
+    if(settings.mode==="text_to_video")return {...input,mode:settings.mode,referenceImages:[]};
+    if(settings.mode==="omni_reference")return {...input,mode:settings.mode};
+    const keys=settings.mode==="first_frame"?[settings.firstFrame]:[settings.firstFrame,settings.lastFrame];
+    if(keys.some(key=>!key||!/^cas:[a-f0-9]{64}$/.test(key)))throw Error("请先绑定所需首帧和尾帧");
+    if(new Set(keys).size!==keys.length)throw Error("首帧和尾帧需要选择不同图片");
+    return {...input,mode:settings.mode,referenceImages:keys.map((storageKey,index)=>({
+        id:`${input.shot.id}-frame-${index}`,name:index?"尾帧":"首帧",type:"image/png",dataUrl:"",storageKey,
+    }))};
+}
 
 function assetForId(assets: readonly DramaAsset[], id: string) {
     return assets.find(asset => asset.id === id || asset.variants?.some(variant => variant.id === id));

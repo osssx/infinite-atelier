@@ -13,6 +13,7 @@ const fake=vi.hoisted(()=>({
 vi.mock("@/features/backend-sync/canvas-api",async importOriginal=>{
  const actual=await importOriginal<typeof import("@/features/backend-sync/canvas-api")>();
  return {...actual,canvasApi:vi.fn(async(path:string,method="GET",payload?:any)=>{
+  path=path.split("?")[0];
   fake.methods.push(method+" "+path);
   const match=path.match(/^\/api\/v1\/projects\/([^/]+)\/(viewport|chats)$/);
   if(match){

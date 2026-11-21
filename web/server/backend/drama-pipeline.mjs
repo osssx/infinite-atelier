@@ -120,12 +120,15 @@ export function normalizeDramaPipelineSnapshot(snapshot) {
 }
 
 /** Build the bounded user prompt used by the dedicated stage endpoint. */
-export function buildDramaStagePrompt({stage, sourceText = "", targetEpisodes = 1, context = ""} = {}) {
+export function buildDramaStagePrompt({stage, sourceText = "", targetEpisodes = 1, context = "", sourceParagraphs = []} = {}) {
   if (!DRAMA_PIPELINE_STAGES.includes(stage) || stage === "source" || stage === "asset_references" || stage === "first_frames") {
     throw fail("drama_pipeline_stage_not_text_generable");
   }
   if (!text(sourceText, 98304) && !text(context, 48000)) throw fail("drama_pipeline_source_required");
-  const numberedSource = sourceText.split(/\r?\n/).map((line, index) => line.trim() ? `[p${index + 1}] ${line}` : "").join("\n");
+  const stableParagraphs=Array.isArray(sourceParagraphs)&&sourceParagraphs.length&&sourceParagraphs.every(item=>
+    item&&text(item.id,256)&&typeof item.text==="string")?sourceParagraphs:null;
+  const numberedSource = stableParagraphs ? stableParagraphs.map(item=>`[${item.id}] ${item.text}`).join("\n") :
+    sourceText.split(/\r?\n/).map((line, index) => line.trim() ? `[p${index + 1}] ${line}` : "").join("\n");
   const input = [sourceText && `<source>\n${numberedSource}\n</source>`, context && `<confirmed-context>\n${context}\n</confirmed-context>`].filter(Boolean).join("\n");
   const instructions = {
     assets: "提取角色、场景和道具资产。每项给出稳定的短名称、可用于绘图的完整描述、原文段落引用。角色补充关系和造型变体，场景补充地点、时间天气变体，道具标记关键道具。",
@@ -137,5 +140,5 @@ export function buildDramaStagePrompt({stage, sourceText = "", targetEpisodes = 
     episodes: '{"episodes":[{"id":"ep_1","title":"标题","synopsis":"梗概","events":["事件"],"sourceRefs":["p1"],"ending":"结尾"}]}',
     storyboard: '{"shots":[{"id":"shot_1","episodeId":"ep_1","order":1,"description":"自包含首帧画面描述","shotSize":"景别","camera":"机位或运镜","action":"动作","dialogue":"对白","sourceRefs":["p1"],"characterVariantIds":["outfit_1"],"sceneId":"scene_1","propIds":[],"keyPropIds":[]}]}',
   };
-  return `你是短剧制作流水线助手。只依据资料创作，输出一个 JSON 对象，不要使用 Markdown。所有 ID 全局唯一且只含英文字母、数字、下划线或短横线。每个角色都应有至少一个造型。分镜复用上下文中的集、造型、场景和道具 ID；无场景时省略 sceneId，无变体时省略 sceneVariantId；关键道具必须出现在 propIds 中。段落出处使用输入中的 p 编号。\n${instructions}\n结构示例：${shapes[stage]}\n${input}`;
+  return `你是短剧制作流水线助手。只依据资料创作，输出一个 JSON 对象，不要使用 Markdown。所有 ID 全局唯一且只含英文字母、数字、下划线或短横线。每个角色都应有至少一个造型。分镜复用上下文中的集、造型、场景和道具 ID；无场景时省略 sceneId，无变体时省略 sceneVariantId；关键道具必须出现在 propIds 中。段落出处必须使用 source 方括号中的完整段落 ID，不得重编号。\n${instructions}\n结构示例：${shapes[stage]}\n${input}`;
 }

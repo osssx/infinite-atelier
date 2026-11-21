@@ -73,3 +73,11 @@ test("generation prompt supplies stable source anchors and the requested output 
   assert.match(prompt, /\[p1\] 第一行/);
   assert.match(prompt, /\[p3\] 第三行/);
 });
+
+
+test("generation uses frozen stable paragraph IDs instead of line-number aliases",()=>{
+ const prompt=buildDramaStagePrompt({stage:"storyboard",sourceText:"Edited source",sourceParagraphs:[{id:"paragraph-stable",text:"Edited source"}]});
+ assert.match(prompt,/\[paragraph-stable\] Edited source/);
+ assert.doesNotMatch(prompt,/\[p1\] Edited source/);
+ assert.match(prompt,/不得重编号/);
+});

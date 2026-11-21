@@ -4,9 +4,14 @@ import {writeTransaction} from "./repository.mjs";
 // owned JSON. False positives retain bytes; false negatives risk data loss.
 const hashes=/[a-f0-9]{64}/g;
 const sourceQueries=[
+ ["creative_payload",`SELECT c.project_id || ':' || c.node_id AS owner,c.payload_json AS body
+  FROM creative_node_payloads c JOIN projects p ON p.id=c.project_id WHERE p.deleted_at IS NULL`],
+ ["drama_run",`SELECT r.project_id || ':' || r.id AS owner,
+  json_object('frozen',r.frozen,'candidate',r.candidate) AS body
+  FROM drama_runs r JOIN projects p ON p.id=r.project_id WHERE p.deleted_at IS NULL`],
  ["project","SELECT id AS owner,document_json AS body FROM projects WHERE deleted_at IS NULL"],
  ["text_version",`SELECT CAST(v.seq AS TEXT) AS owner,
-  json_object('id',v.id,'createdAt',v.created_at,'note',v.note,'content',v.content) AS body
+  json_object('id',v.id,'createdAt',v.created_at,'note',v.note,'content',v.content,'provenance',v.provenance_json) AS body
   FROM canvas_text_versions v JOIN projects p ON p.id=v.project_id WHERE p.deleted_at IS NULL`],
  ["chat","SELECT project_id AS owner,sessions_json AS body FROM project_chats c JOIN projects p ON p.id=c.project_id WHERE p.deleted_at IS NULL"],
  ["job","SELECT id AS owner,snapshot_json AS body FROM jobs"],

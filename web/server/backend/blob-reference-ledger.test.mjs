@@ -14,6 +14,34 @@ import {mutateTextVersions} from "./canvas-text-versions.mjs";
 import {createHash} from "node:crypto";
 
 const png=Buffer.from([137,80,78,71,13,10,26,10,0,0,0,0,0,0,0,0]);
+test("GC retains media stored only in an external creative payload",async t=>{
+ const {db,blobStore}=fixture(t);
+ const blob=await blobStore.put([png],{mime:"image/png"});
+ createProject(db,{id:"creative-media",document:{nodes:[{id:"assets",type:"drama:assets",metadata:{
+  dramaDraft:'{"assets":[]}',dramaAssetReferences:[{assetId:"hero",imageStorageKey:"cas:"+blob.blobId}],
+ }}],connections:[]}});
+ const raw=db.prepare("SELECT document_json FROM projects WHERE id=?").get("creative-media").document_json;
+ assert.equal(raw.includes(blob.blobId),false);
+ rebuildBlobReferenceLedger(db);
+ assert.equal(persistedBlobReferences(db).has(blob.blobId),true);
+ const gc=createBlobGarbageCollector({db,blobStore});
+ assert.equal(gc.sweep({now:Date.now()+8*86400000}).candidates.some(item=>item.id===blob.blobId),false);
+});
+test("drama run snapshots retain their media and invalidate the ledger on deletion",async t=>{
+ const {db,blobStore}=fixture(t);
+ const blob=await blobStore.put([png],{mime:"image/png"});
+ createProject(db,{id:"drama-ledger",document:{nodes:[],connections:[]}});
+ rebuildBlobReferenceLedger(db);
+ db.prepare("INSERT INTO drama_runs VALUES(?,?,?,?,?,?,?,?,?)").run("drama-ledger","run","board","ep",
+  "digest",JSON.stringify({reference:"cas:"+blob.blobId}),"ready",null,null);
+ assert.equal(blobReferenceLedgerStatus(db).dirty,true);
+ rebuildBlobReferenceLedger(db);
+ assert.equal(persistedBlobReferences(db).has(blob.blobId),true);
+ db.prepare("DELETE FROM drama_runs WHERE project_id=?").run("drama-ledger");
+ assert.equal(blobReferenceLedgerStatus(db).dirty,true);
+ rebuildBlobReferenceLedger(db);
+ assert.equal(persistedBlobReferences(db).has(blob.blobId),false);
+});
 function fixture(t){
  const root=mkdtempSync(join(tmpdir(),"atelier-ledger-"));
  const db=new DatabaseSync(join(root,"db.sqlite"));initializeSchema(db);

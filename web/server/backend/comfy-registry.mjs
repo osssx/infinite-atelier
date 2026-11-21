@@ -1,3 +1,4 @@
+import {hydrateCreativeDocument} from "./creative-payloads.mjs";
 import {createHash} from "node:crypto";
 import {mkdirSync,writeFileSync,readFileSync,renameSync,openSync,fsyncSync,closeSync,existsSync,unlinkSync,mkdtempSync} from "node:fs";
 import {join,dirname} from "node:path";
@@ -209,7 +210,7 @@ export function createComfyRegistry(db,{workflowsDir}={}){
   }
   // Stream snapshots once per operation; never scan all tasks once per version.
   for(const row of db.prepare("SELECT id,document_json FROM projects").iterate()){
-   const doc=JSON.parse(row.document_json);
+   const doc=hydrateCreativeDocument(db,row.id,JSON.parse(row.document_json));
    for(const node of doc.nodes??[]){
     const references=new Set();
     for(const prop of ["comfyWorkflow","comfyMediaPreset"]){

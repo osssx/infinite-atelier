@@ -58,7 +58,7 @@ export function validAssistantDramaConnection(from,to){
 }
 
 /** @typedef {{id:string,name:string,description:string}} DramaVariant */
-/** @typedef {DramaVariant & {kind:"character"|"scene"|"prop",sourceRefs:string[],variants?:DramaVariant[]}} DramaAsset */
+/** @typedef {DramaVariant & {kind:"character"|"scene"|"prop",sourceRefs:string[],aliases?:string[],variants?:DramaVariant[]}} DramaAsset */
 const strings=value=>Array.isArray(value)&&value.every(item=>typeof item==="string");
 const entry=value=>value&&typeof value.id==="string"&&value.id.trim()&&
  typeof value.name==="string"&&typeof value.description==="string";
@@ -69,6 +69,7 @@ export function readAssetDraft(value){
   const draft=JSON.parse(value.trim().replace(/^```(?:json)?\s*([\s\S]*?)\s*```$/i,"$1"));
   if(!Array.isArray(draft?.assets)||!draft.assets.every(asset=>entry(asset)&&
    ["character","scene","prop"].includes(asset.kind)&&strings(asset.sourceRefs)&&
+   (asset.aliases===undefined||strings(asset.aliases)&&asset.aliases.length<=64)&&
    (asset.variants===undefined||Array.isArray(asset.variants)&&asset.variants.every(entry))))return null;
   const ids=draft.assets.flatMap(asset=>[asset.id,...(asset.variants??[]).map(variant=>variant.id)]);
   return new Set(ids).size===ids.length?draft:null;
@@ -76,8 +77,8 @@ export function readAssetDraft(value){
 }
 
 /** @param {DramaAsset} asset */
-export function canvasDramaAssetFields({id,kind,name,description,sourceRefs,variants}){
- return {id,kind,name,description,sourceRefs,...(variants===undefined?{}:{
+export function canvasDramaAssetFields({id,kind,name,description,sourceRefs,variants,aliases}){
+ return {id,kind,name,description,sourceRefs,...(aliases===undefined?{}:{aliases}),...(variants===undefined?{}:{
   variants:variants.map(({id,name,description})=>({id,name,description})),
  })};
 }

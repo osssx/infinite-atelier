@@ -8,7 +8,7 @@ export type DramaEpisode = {
     sourceRefs: string[];
     ending: string;
     targetDurationSec?: number;
-    sequences?: {id:string;title:string}[];
+    sequences?: {id:string;title:string;sourceRefs?:string[];eventRefs?:string[]}[];
 };
 
 export function DramaEpisodeFields({episodes, expanded, disabled, control, onChange}: {
@@ -56,21 +56,41 @@ export function DramaEpisodeFields({episodes, expanded, disabled, control, onCha
                     }} />
             </label>
             <div className="grid gap-2">
-                {active.sequences?.map(sequence=><label key={sequence.id} className="grid gap-1.5">场次
-                    <input className={field} style={control} value={sequence.title}
-                        onChange={event=>edit({sequences:active.sequences?.map(item=>item.id===sequence.id
-                            ? {...item,title:event.target.value}:item)})}/>
-                </label>)}
+                 {active.sequences?.map(sequence=><div key={sequence.id} className="grid gap-2 rounded-lg border p-2" style={control}>
+                     <label className="grid gap-1.5">场次名称
+                         <input className={field} style={control} value={sequence.title}
+                             onChange={event=>edit({sequences:active.sequences?.map(item=>item.id===sequence.id
+                                 ? {...item,title:event.target.value}:item)})}/>
+                     </label>
+                     <label className="grid gap-1.5">场次原文段落 ID（每行一个）
+                         <textarea className={field} style={control} rows={2}
+                             value={(sequence.sourceRefs??[]).join("\n")}
+                             onChange={event=>edit({sequences:active.sequences?.map(item=>item.id===sequence.id
+                                 ? {...item,sourceRefs:event.target.value.split("\n").map(ref=>ref.trim()).filter(Boolean)}:item)})}/>
+                     </label>
+                     <div className="grid gap-1.5">
+                         <span>本场关联事件（精确匹配当前事件文本）</span>
+                         {active.events.filter(text=>text.trim()).map((event,index)=><label key={index} className="flex items-start gap-2">
+                             <input type="checkbox" checked={(sequence.eventRefs??[]).includes(event)} onChange={change=>edit({
+                                 sequences:active.sequences?.map(item=>item.id===sequence.id?
+                                     {...item,eventRefs:change.target.checked?[...new Set([...(item.eventRefs??[]),event])]:
+                                         (item.eventRefs??[]).filter(text=>text!==event)}:item)
+                             })}/><span className="break-words">{event}</span>
+                         </label>)}
+                         {(sequence.eventRefs??[]).some(ref=>!active.events.includes(ref))&&
+                             <p>有事件引用与当前剧集事件不匹配，请核对后更新。</p>}
+                     </div>
+                 </div>)}
                 <button type="button" className={field} style={control} onClick={()=>edit({
                     sequences:[...(active.sequences??[]),{id:crypto.randomUUID(),title:"新场次"}],
                 })}>添加场次</button>
             </div>
-            {active.sourceRefs.length > 0 && <details className="min-w-0 border-t pt-2 text-xs" style={{borderColor:control?.borderColor}}>
+            <details className="min-w-0 border-t pt-2 text-xs" style={{borderColor:control?.borderColor}}>
                 <summary className="cursor-pointer opacity-75">原文出处 · {active.sourceRefs.length} 处</summary>
                 <textarea aria-label="剧集原文段落 ID" className={field} style={control} rows={2} value={active.sourceRefs.join("\n")}
                     onChange={event=>edit({sourceRefs:event.target.value.split("\n").map(item=>item.trim()).filter(Boolean)})}/>
                 {active.sourceRefs.some(ref=>/^p\d+$/.test(ref))&&<p>含旧行号引用，请对照故事段落定位核对。</p>}
-            </details>}
+            </details>
         </div>
     </fieldset>;
 }

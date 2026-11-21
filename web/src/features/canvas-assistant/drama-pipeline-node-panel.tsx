@@ -106,7 +106,7 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
     const [runs,setRuns] = useState<DramaRun[]>([]);
     const [expandedRuns,setExpandedRuns] = useState<Record<string,boolean>>({});
     const [selectedCandidates,setSelectedCandidates] = useState<Record<string,string[]>>({});
-    const [dependencyReport,setDependencyReport] = useState<{status:string;changes:{nodeId:string;kind:string;entryIds:string[]}[]}>();
+    const [dependencyReport,setDependencyReport] = useState<{status:string;changes:{nodeId:string;kind:string;entryIds:string[]}[];impact?:{assetIds:string[];episodeIds:string[];sequenceIds:string[];shotIds:string[];mediaShotIds:string[];configIds:string[];needsReview:string[];pending?:{assetIds:string[];episodeIds:string[];sequenceIds:string[];shotIds:string[];configIds:string[];needsReview:string[]}}}>();
     const runPath = `/api/v1/projects/${encodeURIComponent(projectId ?? "")}/drama-pipeline/runs`;
     useEffect(() => {
         if ((!storyboard&&!episodePlanning) || !projectId) return;
@@ -247,6 +247,35 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
             {dependencyReport?.changes.map(item=><p key={item.nodeId}>
                 {item.kind==="disconnected"?"已断开":item.kind==="connected"?"新增连接":item.kind==="references_updated"?"参考图更新":item.kind==="visual_updated"?"美术设定更新":"内容更新"} · {item.entryIds.join("、")||item.nodeId}
             </p>)}
+            {dependencyReport?.impact && <div className="mt-2 grid gap-1 rounded-lg border p-2 text-xs" aria-label="细粒度影响预览">
+                {([
+                    ["assetIds","关联资产"],["episodeIds","受影响剧集"],["sequenceIds","受影响场次"],
+                    ["shotIds","需检查分镜"],["mediaShotIds","仅媒体参考图受影响的镜头"],
+                    ["configIds","需检查视频配置"],
+                ] as const).filter(([key])=>dependencyReport.impact?.[key]?.length).map(([key,label])=>
+                    <p key={key} className="break-words">{label}：{dependencyReport.impact?.[key].join("、")}</p>)}
+                {dependencyReport.impact.needsReview.length>0&&<p role="status" className="break-words">
+                    部分旧引用缺少精确关系，需人工核对：{dependencyReport.impact.needsReview.join("、")}
+                </p>}
+                {dependencyReport.impact.pending &&
+                    (dependencyReport.impact.pending.shotIds.length>0||dependencyReport.impact.pending.needsReview.length>0) &&
+                    <div className="grid gap-1 border-t pt-2" aria-label="尚未确认的上游影响">
+                        <strong>源头已有更新，但中间剧集／资产尚未重新确认：</strong>
+                        {dependencyReport.impact.pending.episodeIds.length>0&&
+                            <p>待核对剧集：{dependencyReport.impact.pending.episodeIds.join("、")}</p>}
+                        {dependencyReport.impact.pending.sequenceIds.length>0&&
+                            <p>待核对场次：{dependencyReport.impact.pending.sequenceIds.join("、")}</p>}
+                        {dependencyReport.impact.pending.shotIds.length>0&&
+                            <p>可能受影响的镜头：{dependencyReport.impact.pending.shotIds.join("、")}</p>}
+                        {dependencyReport.impact.pending.configIds.length>0&&
+                            <p>可能受影响的视频配置：{dependencyReport.impact.pending.configIds.join("、")}</p>}
+                        {dependencyReport.impact.pending.needsReview.length>0&&
+                            <p>引用待核对：{dependencyReport.impact.pending.needsReview.join("、")}</p>}
+                        <p>这是预警，不表示当前确认分镜已经变动；请先审核并确认中间阶段。</p>
+                    </div>}
+                <p>这里仅预览确认版本的影响；不会自动修改草案或视频 Config。可按集、场、镜生成候选，
+                    在视频配置页逐项选择采用更新。</p>
+            </div>}
         </details>}
         <div className={inlineEditor ? assetEditorExpanded ? "flex min-h-0 flex-1 flex-col gap-4" :
             "thin-scrollbar min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain px-1" : "contents"}

@@ -3,6 +3,24 @@ import {stableJson} from "./repository.mjs";
 import {readAssetDraft,readEpisodeDraft,readStoryboardDraft} from "../canvas-text-content.mjs";
 
 const hash=value=>createHash("sha256").update(stableJson(value)).digest("hex");
+/** Nested hashes allow exact scope in new snapshots; old snapshots stay readable. */
+const describeEntry=(item,type)=>{
+ const result={id:item.id,digest:hash(item)};
+ if(type==="drama:assets"){
+  const {variants:_,...body}=item;
+  return {...result,bodyDigest:hash(body),variants:(item.variants??[]).map(variant=>({id:variant.id,digest:hash(variant)}))};
+ }
+ if(type==="drama:episodes"){
+  const {sequences:_,...body}=item;
+  return {...result,bodyDigest:hash(body),sequences:(item.sequences??[]).map(sequence=>({id:sequence.id,digest:hash(sequence)}))};
+ }
+ return result;
+};
+const changedNested=(oldEntries=[],newEntries=[])=>{
+ const ids=new Set([...oldEntries.map(item=>item.id),...newEntries.map(item=>item.id)]);
+ return [...ids].filter(id=>oldEntries.find(item=>item.id===id)?.digest!==newEntries.find(item=>item.id===id)?.digest);
+};
+
 
 export function dramaDependencies(document,nodeId){
  return document.connections.filter(edge=>edge.toNodeId===nodeId).flatMap(edge=>{
@@ -13,9 +31,9 @@ export function dramaDependencies(document,nodeId){
    readStoryboardDraft(content)?.shots??node.metadata?.dramaSourceParagraphs??[];
   return [{nodeId:node.id,edgeId:edge.id,revisionId:node.metadata?.dramaConfirmedVersionId??null,
    mediaRevisionId:node.metadata?.dramaAssetReferenceRevisionId??null,
-   mediaEntries:node.metadata?.dramaAssetReferenceEntries??[],
+   mediaEntries:structuredClone(node.metadata?.dramaAssetReferenceEntries??[]),
    visualDigest:hash(node.metadata?.dramaConfirmedVisual??{}),
-   digest:hash(content),entries:entries.map(item=>({id:item.id,digest:hash(item)}))}];
+   digest:hash(content),entries:entries.map(item=>describeEntry(item,node.type))}];
  });
 }
 
@@ -38,11 +56,16 @@ export function inspectDramaDependencies(document,nodeId){
     oldEntries.find(item=>item.id===id)?.digest!==newEntries.find(item=>item.id===id)?.digest)});
   }
   if(latest.digest===dependency.digest)continue;
-  const ids=new Set([...dependency.entries.map(item=>item.id),...latest.entries.map(item=>item.id)]);
-  changes.push({nodeId:dependency.nodeId,kind:"updated",entryIds:[...ids].filter(id=>
-   dependency.entries.find(item=>item.id===id)?.digest!==latest.entries.find(item=>item.id===id)?.digest)});
- }
- for(const dependency of current){
+   const oldEntries=dependency.entries??[],newEntries=latest.entries;
+   const entryIds=changedNested(oldEntries,newEntries);
+   changes.push({nodeId:dependency.nodeId,kind:"updated",entryIds,
+    entryDetails:entryIds.map(id=>{
+     const before=oldEntries.find(item=>item.id===id),after=newEntries.find(item=>item.id===id);
+     return {id,bodyChanged:!before?.bodyDigest||!after?.bodyDigest||before.bodyDigest!==after.bodyDigest,
+      ...(before?.variants&&after?.variants?{variantIds:changedNested(before.variants,after.variants)}:{}),
+      ...(before?.sequences&&after?.sequences?{sequenceIds:changedNested(before.sequences,after.sequences)}:{})};
+    })});
+  } for(const dependency of current){
   if(!previous.some(item=>item.nodeId===dependency.nodeId&&item.edgeId===dependency.edgeId))
    changes.push({nodeId:dependency.nodeId,kind:"connected",entryIds:dependency.entries.map(item=>item.id)});
  }

@@ -1,4 +1,4 @@
-/** @typedef {{id:string,title:string,synopsis:string,ending:string,events:string[],sourceRefs:string[],targetDurationSec?:number,sequences?:{id:string,title:string}[]}} DramaEpisode */
+/** @typedef {{id:string,title:string,synopsis:string,ending:string,events:string[],sourceRefs:string[],targetDurationSec?:number,sequences?:{id:string,title:string,sourceRefs?:string[],eventRefs?:string[]}[]}} DramaEpisode */
 
 /** @param {string} value @returns {{episodes:DramaEpisode[]}|null} */
 export function readEpisodeDraft(value) {
@@ -10,7 +10,9 @@ export function readEpisodeDraft(value) {
    [episode.sourceRefs,episode.events].every(items=>Array.isArray(items)&&items.every(item=>typeof item==="string"))&&
    (episode.targetDurationSec===undefined||Number.isFinite(episode.targetDurationSec)&&episode.targetDurationSec>0)&&
    (episode.sequences===undefined||Array.isArray(episode.sequences)&&episode.sequences.every(sequence=>
-    sequence&&typeof sequence.id==="string"&&sequence.id.trim()&&typeof sequence.title==="string")&&
+    sequence&&typeof sequence.id==="string"&&sequence.id.trim()&&typeof sequence.title==="string"&&
+     [sequence.sourceRefs,sequence.eventRefs].every(refs=>refs===undefined||
+      Array.isArray(refs)&&refs.every(ref=>typeof ref==="string"&&ref.length<=256)))&&
     new Set(episode.sequences.map(sequence=>sequence.id)).size===episode.sequences.length)))
    return null;
   if(new Set(draft.episodes.map(episode=>episode.id)).size!==draft.episodes.length)return null;

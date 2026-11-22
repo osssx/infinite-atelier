@@ -60,9 +60,13 @@
 ## 工作区 Tab 描述改为 Tooltip（2026-11-22）
 
 - 将剧集规划／分镜配置最大化面板的每个 Tab 下方通用说明行移除，减少一层固定布局占位，内容区直接接在 Tab 导航下方；各 Tab 的原说明文字保留且迁移为对应按钮的 Tooltip。
-- Tooltip 采用每个 Tab 内部独立状态的轻量 Portal，支持鼠标悬停与键盘焦点，在导航滚动容器之外渲染以防裁切，也不因鼠标移动重新渲染完整编辑器；随 `canvasThemes` 的浅色／深色主题改变背景、边框、文字颜色。导航按钮保留 `aria-description`，显示时增加 `aria-describedby`，供辅助技术读取。
+- Tooltip 采用每个 Tab 内部独立状态的轻量 Portal，仅支持鼠标悬停触发、键盘焦点不触发提示，在导航滚动容器之外渲染以防裁切，也不因鼠标移动重新渲染完整编辑器；随 `canvasThemes` 的浅色／深色主题改变背景、边框、文字颜色。导航按钮保留 `aria-description`，显示时增加 `aria-describedby`，供辅助技术读取。
 - 未保存草案提醒不属于 Tab 说明，仍仅在 `pendingCount>0` 时出现；切换 Tab、分页 CAS 保存冲突保护、历史页独立滚动与异步加载逻辑全部不变。
-- 工作区专项验证全部剧集/分镜 Tab 的 Tooltip 文案、键盘聚焦时独立 Portal 挂载与失焦卸载、无常驻说明行和未保存提醒保留；真实 Chrome **132/132 PASS**，检查说明行消失、所有 Tab 说明属性、模拟 React 鼠标悬停后主题提示出现且不切换 Tab。TypeScript、P3 前端 **42/42 PASS**、生产构建通过；真实在线模型 POST 0。
+- 工作区专项验证全部剧集/分镜 Tab 的 Tooltip 文案、键盘聚焦不会显示 Tooltip、鼠标悬停时 Portal 挂载并在离开后卸载、无常驻说明行和未保存提醒保留；真实 Chrome **132/132 PASS**，检查说明行消失、所有 Tab 说明属性、模拟 React 鼠标悬停后主题提示出现且不切换 Tab。TypeScript、P3 前端 **42/42 PASS**、生产构建通过；真实在线模型 POST 0。
+
+## Tab Tooltip 仅悬停显示（2026-11-22）
+
+按交互反馈取消 Tab 键盘聚焦时的 Tooltip 展示，保留键盘焦点轮廓、按钮键盘可操作性及 `aria-description`。只有鼠标悬停才挂载提示层，鼠标离开卸载。补充单测与真实 Chrome 断言，避免焦点单独触发 Tooltip 的回归。
 
 ## 边界
 

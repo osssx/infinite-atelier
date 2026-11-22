@@ -19,9 +19,8 @@ function WorkspaceTabButton({item,description,active,theme,onSelect}:{
  const buttonRef=useRef<HTMLButtonElement>(null);
  const tipId=useId();
  const [hovered,setHovered]=useState(false);
- const [focused,setFocused]=useState(false);
  const [position,setPosition]=useState<{top:number;left:number}|null>(null);
- const visible=hovered||focused;
+ const visible=hovered;
  const updatePosition=useCallback(()=>{
   const rect=buttonRef.current?.getBoundingClientRect();
   if(!rect)return;
@@ -49,8 +48,7 @@ function WorkspaceTabButton({item,description,active,theme,onSelect}:{
     {background:"transparent",color:theme.node.muted,borderColor:"transparent",
      outlineColor:theme.node.activeStroke}}
    onMouseEnter={()=>setHovered(true)} onMouseLeave={()=>setHovered(false)}
-   onFocus={()=>setFocused(true)} onBlur={()=>setFocused(false)}
-   onClick={()=>{setHovered(false);setFocused(false);onSelect();}}>
+   onClick={()=>{setHovered(false);onSelect();}}>
    <Icon size={14} aria-hidden="true"/>{item.label}
   </button>
   {visible&&position&&typeof document!=="undefined"&&createPortal(

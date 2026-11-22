@@ -214,6 +214,15 @@ def main():
                       buttons[i].textContent.trim()===label&&buttons[i].getAttribute('aria-description')===tip)&&
                       ![...root.querySelectorAll('p')].some(p=>pairs.some(([,tip])=>p.textContent.trim()===tip));
                 })()""")))
+                check("episode_tab_keyboard_focus_without_tooltip",bool(page.js("""(() => {
+                    const nav=document.querySelector('[data-creative-workspace-node-id="episodes"] nav');
+                    const btn=[...(nav?.querySelectorAll('button')||[])].find(b=>b.textContent.trim()==='影响与历史');
+                    if(!btn)return false;
+                    btn.focus();
+                    return document.activeElement===btn&&
+                        !document.querySelector('[data-drama-tab-tooltip="history"]')&&
+                        !!btn.getAttribute('aria-description');
+                })()""")))
                 check("episode_tab_tooltip_hover_trigger",bool(page.js("""(() => {
                     const nav=document.querySelector('[data-creative-workspace-node-id="episodes"] nav');
                     const btn=[...(nav?.querySelectorAll('button')||[])].find(b=>b.textContent.trim()==='影响与历史');

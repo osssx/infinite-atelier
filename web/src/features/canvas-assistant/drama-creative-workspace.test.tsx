@@ -66,9 +66,13 @@ describe("P3.4b3 workspace lifecycle",()=>{
    expect(tabs[index].getAttribute("aria-description")).toBe(description);
      }
   await act(async()=>{tabs[3].focus();});
-   expect(document.querySelector('[data-drama-tab-tooltip="history"]')?.textContent).toBe(expected[3][1]);
-   await act(async()=>{tabs[3].blur();});
+   expect(document.activeElement).toBe(tabs[3]);
    expect(document.querySelector('[data-drama-tab-tooltip="history"]')).toBeNull();
+   await act(async()=>{tabs[3].dispatchEvent(new MouseEvent("mouseover",{bubbles:true}));});
+   expect(document.querySelector('[data-drama-tab-tooltip="history"]')?.textContent).toBe(expected[3][1]);
+   await act(async()=>{tabs[3].dispatchEvent(new MouseEvent("mouseout",{bubbles:true}));});
+   expect(document.querySelector('[data-drama-tab-tooltip="history"]')).toBeNull();
+   expect(document.activeElement).toBe(tabs[3]);
    expect(workspace.textContent).not.toContain("按页读取、精准保存和批量提交草案");
   expect(workspace.querySelector('[role="status"]')).toBeNull();
 

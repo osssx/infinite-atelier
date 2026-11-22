@@ -9,6 +9,7 @@ import {normalizeEpisodeEvents} from "../drama-episode-links.mjs";
 import {removedDramaAssetUsages} from "./drama-asset-usage.mjs";
 import {hydrateCreativeDocument} from "./creative-payloads.mjs";
 import {readPagedDramaScope} from "./drama-scoped-storage.mjs";
+import {tryPatchIndexedShotDraft} from "./drama-shot-cas.mjs";
 
 export const textVersionNodeTypes=new Set(["text","drama:source","drama:assets","drama:episodes","drama:storyboard"]);
 const fail=(code,statusCode=400)=>Object.assign(Error(code),{code,statusCode});
@@ -123,14 +124,22 @@ export function readDramaRevisionScope(db,projectId,nodeId,{versionId,episodeId,
 
 export function patchDramaShotDraft(db,projectId,nodeId,command,validateDocument,emitEvent){
  return writeTransaction(db,()=>{
-  const {node,document,revision}=readNode(db,projectId,nodeId);
-  if(node.type!=="drama:storyboard")throw fail("drama_draft_invalid",422);
-  const fingerprint=digest(stableJson(command));
-  const receipt=db.prepare("SELECT fingerprint FROM canvas_text_version_operations WHERE project_id=? AND node_id=? AND id=?")
-   .get(projectId,nodeId,command.operationId);
-  if(receipt){if(receipt.fingerprint!==fingerprint)throw fail("text_version_operation_conflict",409);return;}
-  const parsed=readStoryboardDraft(currentContent(node));
-  const shot=parsed?.shots.find(item=>item.id===command.shotId);
+   const fingerprint=digest(stableJson(command));
+   const receipt=db.prepare("SELECT fingerprint FROM canvas_text_version_operations WHERE project_id=? AND node_id=? AND id=?")
+    .get(projectId,nodeId,command.operationId);
+   if(receipt){
+    if(receipt.fingerprint!==fingerprint)throw fail("text_version_operation_conflict",409);
+    // Replay still checks that the full creative source exists and can be
+    // hydrated; a removed node or broken pointer is not a successful replay.
+    const {node:replayNode}=readNode(db,projectId,nodeId);
+    if(replayNode.type!=="drama:storyboard")throw fail("drama_draft_invalid",422);
+    return;
+   }   if(tryPatchIndexedShotDraft(db,projectId,nodeId,command,validateDocument,emitEvent,fingerprint))return;
+   // Legacy or invalid-index fallback uses the full graph/reference validation path.
+   const {node,document,revision}=readNode(db,projectId,nodeId);
+   if(node.type!=="drama:storyboard")throw fail("drama_draft_invalid",422);
+   const parsed=readStoryboardDraft(currentContent(node));
+   const shot=parsed?.shots.find(item=>item.id===command.shotId);
   if(!shot||digest(stableJson(shot))!==command.expectedDigest)throw fail("drama_candidate_conflict",409);
   const updated={...shot,...command.changes};
   for(const key of ["sceneId","sceneVariantId","sequenceId","durationSec"])if(updated[key]===null)delete updated[key];

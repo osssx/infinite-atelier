@@ -337,11 +337,13 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
             onPointerDown={inlineEditor ? event => event.stopPropagation() : undefined}>
         {(!workspaceMode||workspaceTab==="editor"||workspaceTab==="video") && <>
         {inlineEditor ? <div className={assetEditorExpanded
-            ? `thin-scrollbar min-h-0 flex-1 overflow-y-auto overscroll-contain pr-1 ${episodePlanning ? "flex flex-col gap-3" : "space-y-3"}`
+            ? episodePlanning ? "flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-hidden" : "thin-scrollbar min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain pr-1"
             : versioned ? "grid gap-3" : "contents"}>
             {episodePlanning ? <>
-                <label className="flex shrink-0 items-center justify-between gap-3 rounded-xl border px-3 py-1.5 font-medium" style={control}>目标集数
-                    <Input size="small" className="!w-20" type="number" min={1} max={100} value={targetEpisodes} disabled={generating} style={control}
+                <label className="flex shrink-0 flex-wrap items-center justify-between gap-2 rounded-xl border px-3 py-2.5" style={control}>
+                    <span className="flex min-w-0 flex-col gap-0.5"><strong className="text-xs font-semibold">规划目标集数</strong>
+                     <span className="text-[11px]" style={{color:theme.node.muted}}>生成完整剧集计划时使用，调整不会直接修改现有条目</span></span>
+                    <Input aria-label="剧集规划目标集数" size="small" className="!w-20 shrink-0" type="number" min={1} max={100} value={targetEpisodes} disabled={generating} style={control}
                         onChange={event => {
                             const count = Math.max(1, Math.min(100, Math.trunc(Number(event.target.value)) || 1));
                             setTargetEpisodes(count);
@@ -451,9 +453,12 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
                 catch { setValidation("无法读取该文本文件"); }
             }} />
         </label> : null}
-        <div className={inlineEditor
+        <div aria-label={episodePlanning&&assetEditorExpanded?"剧集生成与确认操作":undefined}
+         className={inlineEditor&&episodePlanning&&assetEditorExpanded
+            ? "flex min-w-0 shrink-0 flex-wrap items-center justify-end gap-2 border-t pt-3 [&>button]:min-h-9 [&>select]:min-h-9 [&>select]:min-w-[160px] [&>select]:max-w-full [&>select]:flex-1 [&>select]:rounded-lg [&>select]:border [&>select]:px-3 [&>select]:py-1.5"
+            : inlineEditor
             ? `grid min-w-0 grid-cols-2 items-center gap-2 pt-2 [&>select]:min-w-0 [&>select]:max-w-full [&>select]:rounded-md [&>select]:border [&>select]:px-2 [&>select]:py-1 [&>button]:min-w-0 ${assetEditorExpanded ? "order-last shrink-0" : ""}`
-            : "mt-3 flex gap-2"}>
+            : "mt-3 flex gap-2"} style={episodePlanning&&assetEditorExpanded?{borderColor:theme.node.stroke}:undefined}>
             {!inlineEditor && <Button onClick={() => { onChange({ dramaDraft: draft, ...(stage === "source" ? { content: draft } : {}) }); }}>保存草案</Button>}
             <Button size={inlineEditor && !assetEditorExpanded ? "small" : "middle"} className={inlineEditor ? "order-last" : undefined}
                 style={inlineEditor && inlineReady && !generating ? dramaNodePrimary(theme) : undefined}
@@ -499,7 +504,7 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
             <option value="">从完整故事提取</option>
             {supplementalEpisodes.map(episode=><option key={episode.id} value={episode.id}>补提 · {episode.title}</option>)}
         </select>}
-        {episodePlanning && <select aria-label="剧集规划生成范围" value={selectedEpisode} onChange={event=>setSelectedEpisode(event.target.value)}>
+        {episodePlanning && <select aria-label="剧集规划生成范围" style={control} value={selectedEpisode} onChange={event=>setSelectedEpisode(event.target.value)}>
             <option value="">完整剧集计划</option>
             {episodeDraft?.episodes.map(episode=><option key={episode.id} value={episode.id}>重跑 · {episode.title}</option>)}
         </select>}

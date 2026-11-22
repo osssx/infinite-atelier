@@ -189,6 +189,30 @@ def main():
                 check("p34b2_episode_full_editor_open",bool(wait_for(
                     lambda:node_button(page,"episodes","打开完整编辑器 ↗"),
                     "episode maximize action",35)))
+                check("episode_workspace_theme_and_navigation",bool(wait_for(lambda:page.js("""(() => {
+                    const root=document.querySelector('[data-creative-workspace-node-id="episodes"]');
+                    if(!root)return false;
+                    const fg=root.dataset.dramaWorkspaceTheme==='dark'?'rgb(245, 245, 244)':'rgb(41, 37, 36)';
+                    const tabs=root.querySelector('nav[aria-label="创作工作区功能"]');
+                    return ['dark','light'].includes(root.dataset.dramaWorkspaceTheme)&&
+                       getComputedStyle(root).color===fg&&
+                      tabs?.querySelector('button[aria-pressed="true"]')?.textContent?.trim()==='剧集编辑'&&
+                      tabs.scrollWidth>0;
+                })()"""),"maximized episode theme and tabs",35)))
+                check("episode_workspace_split_editor",bool(wait_for(lambda:page.js("""(() => {
+                    const root=document.querySelector('[data-creative-workspace-node-id="episodes"]');
+                    const layout=root?.querySelector('[data-episode-editor-layout="expanded"]');
+                    const nav=layout?.querySelector('[aria-label="剧集导航"]');
+                    const field=layout?.querySelector('[aria-label="当前剧集编辑区"]');
+                    const target=root?.querySelector('[aria-label="剧集规划目标集数"]');
+                    const actions=root?.querySelector('[aria-label="剧集生成与确认操作"]');
+                    const rect=root?.getBoundingClientRect(),r=actions?.getBoundingClientRect();
+                    return !!layout&&!!nav&&!!field&&!!target&&!!actions&&
+                       nav.querySelectorAll('button').length>=2&&
+                       field.querySelectorAll('textarea').length>=3&&
+                       !!r&&!!rect&&r.width>0&&r.bottom<=rect.bottom+4&&
+                       !!field.querySelector('section[aria-label="场次规划"]');
+                })()"""),"maximized episode split editor and action footer",35)))
                 check("p34b3_episodes_scoped_tab",bool(wait_for(
                     lambda:node_button(page,"episodes","分页与单条 CAS"),"episodes scoped tab",25)))
                 wait_for(lambda:page.js("""

@@ -1,4 +1,6 @@
 import {useEffect,useRef,useState} from "react";
+import {canvasThemes} from "@/lib/canvas-theme";
+import {useThemeStore} from "@/stores/use-theme-store";
 import type {WorkspacePendingRegistration} from "./drama-creative-workspace";
 import {canvasApi} from "@/features/backend-sync/canvas-api";
 import type {CanvasBackendProject} from "@/features/backend-sync/canvas-api";
@@ -22,6 +24,8 @@ function DraftEntryFields({value,fields,onSave,onStage,disabled=false,pendingKey
     const [values,setValues]=useState<Partial<Record<Field,string>>>(value);
     const [busy,setBusy]=useState(false);
     const [error,setError]=useState("");
+    const theme=canvasThemes[useThemeStore(state=>state.theme)];
+    const fieldStyle={background:theme.node.fill,color:theme.node.text,borderColor:theme.node.stroke};
     const changes=Object.fromEntries(fields.filter(field=>values[field]!==value[field])
         .map(field=>[field,values[field]??""])) as Partial<Record<Field,string>>;
     const saveRef=useRef(onSave);saveRef.current=onSave;
@@ -35,24 +39,24 @@ function DraftEntryFields({value,fields,onSave,onStage,disabled=false,pendingKey
     },[pendingKey,onPendingChange,pendingJson]);
     const cannotSubmit=disabled||busy||!Object.keys(changes).length||
         ("name" in changes&&!changes.name?.trim())||("title" in changes&&!changes.title?.trim());
-    return <div className="grid min-w-0 gap-2 border-t p-2">
-        {fields.map(field=><label key={field} className="grid min-w-0 gap-1">{fieldsLabel[field]}
+    return <div className="grid min-w-0 gap-3 border-t px-2 py-3" style={{borderColor:theme.node.stroke}}>
+        {fields.map(field=><label key={field} className="grid min-w-0 gap-1.5 text-xs font-medium" style={{color:theme.node.muted}}>{fieldsLabel[field]}
             {field==="name"||field==="title"?
-                <input className="min-w-0 rounded border bg-transparent p-1" maxLength={12000}
+                <input className="min-w-0 rounded-lg border px-3 py-2 text-sm outline-none focus-visible:ring-2" style={fieldStyle} maxLength={12000}
                     value={values[field]??""} disabled={busy}
                     onChange={event=>setValues(current=>({...current,[field]:event.target.value}))}/>:
-                <textarea className="min-w-0 rounded border bg-transparent p-1" rows={3} maxLength={12000}
+                <textarea className="min-w-0 rounded-lg border px-3 py-2 text-sm leading-relaxed outline-none focus-visible:ring-2" style={fieldStyle} rows={3} maxLength={12000}
                     value={values[field]??""} disabled={busy}
                     onChange={event=>setValues(current=>({...current,[field]:event.target.value}))}/>}
         </label>)}
-        <button type="button" disabled={cannotSubmit}
+        <button type="button" className="min-h-9 rounded-lg px-3 text-xs font-semibold disabled:opacity-40" style={{background:theme.node.text,color:theme.node.panel}} disabled={cannotSubmit}
             onClick={async()=>{
                 setBusy(true);setError("");
                 try{await onSave(changes);}
                 catch(error){setError(error instanceof Error?error.message:"局部草案保存失败");}
                 finally{setBusy(false);}
             }}>{busy?"正在保存…":"保存当前条目草案"}</button>
-        {onStage&&<button type="button" disabled={cannotSubmit} onClick={()=>{onStage(changes);setValues(value);}}>
+        {onStage&&<button type="button" className="min-h-9 rounded-lg border px-3 text-xs font-medium disabled:opacity-40" style={fieldStyle} disabled={cannotSubmit} onClick={()=>{onStage(changes);setValues(value);}}>
             加入批量修改
         </button>}
         {error&&<p role="alert">{error}</p>}
@@ -76,6 +80,9 @@ export function DramaCreativeScopeBrowser({projectId,nodeId,kind,initialEntryId,
     const [page,setPage]=useState<ScopedPage|null>(null);
     const [error,setError]=useState("");
     const [loading,setLoading]=useState(false);
+    const theme=canvasThemes[useThemeStore(state=>state.theme)];
+    const cardStyle={background:theme.node.panel,borderColor:theme.node.stroke,color:theme.node.text};
+    const buttonClass="min-h-8 rounded-lg border px-3 text-xs font-medium transition-opacity hover:opacity-80 disabled:opacity-40";
     useEffect(()=>{
         if(!expanded)return;
         let current=true;
@@ -134,22 +141,22 @@ export function DramaCreativeScopeBrowser({projectId,nodeId,kind,initialEntryId,
         onPendingChange(id,pending.length?()=>batchSaveRef.current():null);
         return ()=>onPendingChange(id,null);
     },[nodeId,onPendingChange,pending.length]);
-    return <section aria-label={label+"独立存储分页浏览"} className="grid min-w-0 gap-2 rounded-xl border p-2 text-xs">
-        <button type="button" aria-expanded={expanded} className="text-left font-medium"
+    return <section aria-label={label+"独立存储分页浏览"} className="grid min-w-0 gap-3 rounded-xl border p-3 text-xs" style={cardStyle}>
+        <button type="button" aria-expanded={expanded} className="rounded-lg px-2 py-1.5 text-left font-semibold" style={{background:theme.toolbar.activeBg,color:theme.node.text}}
             onClick={()=>setExpanded(value=>!value)}>
             {expanded?"收起":"按需浏览"}{draft?"草案":"已确认"}{label}（每次 10 项）
         </button>
         {expanded&&<>
-            {pinnedEntry&&<button type="button" className="underline" onClick={()=>{setPinnedEntry("");setOffset(0);}}>显示完整列表</button>}
-            <label><input type="checkbox" checked={draft} onChange={event=>{
+            {pinnedEntry&&<button type="button" className={buttonClass+" justify-self-start"} style={cardStyle} onClick={()=>{setPinnedEntry("");setOffset(0);}}>显示完整列表</button>}
+            <label className="inline-flex items-center gap-2 text-xs"><input type="checkbox" checked={draft} onChange={event=>{
                 setDraft(event.target.checked);setOffset(0);setPage(null);
             }}/> 浏览当前草案</label>
             {draft&&<div aria-label="批量范围草案修改" className="flex flex-wrap items-center gap-2">
                 <span>已暂存 {pending.length} 项（全部通过后一次提交）</span>
-                <button type="button" disabled={!pending.length||batchBusy} onClick={()=>void commitBatch().catch(()=>{/* Error shown beside pending batch. */})}>
+                <button type="button" className={buttonClass} style={{background:theme.node.text,color:theme.node.panel}} disabled={!pending.length||batchBusy} onClick={()=>void commitBatch().catch(()=>{/* Error shown beside pending batch. */})}>
                     {batchBusy?"正在批量提交…":"提交全部暂存修改"}
                 </button>
-                <button type="button" disabled={!pending.length||batchBusy} onClick={()=>{setPending([]);setBatchError("");}}>
+                <button type="button" className={buttonClass} style={cardStyle} disabled={!pending.length||batchBusy} onClick={()=>{setPending([]);setBatchError("");}}>
                     清空暂存
                 </button>
                 {batchError&&<p role="alert">{batchError}</p>}
@@ -159,7 +166,7 @@ export function DramaCreativeScopeBrowser({projectId,nodeId,kind,initialEntryId,
             {page&&<>
                 <p role="status">{label}共 {page.total} 项 · {page.versionId?"已确认版本 "+page.versionId:
                     draft?"当前草案":"无已确认版本"}</p>
-                {page.entries.map(entry=><details key={entry.id} className="min-w-0 rounded border p-1">
+                {page.entries.map(entry=><details key={entry.id} className="min-w-0 rounded-lg border p-2" style={cardStyle}>
                     <summary className="break-words font-medium">
                         {entry.title??entry.name??entry.id}{entry.kind?" · "+entry.kind:""}
                     </summary>
@@ -172,7 +179,7 @@ export function DramaCreativeScopeBrowser({projectId,nodeId,kind,initialEntryId,
                     {draft&&page.entryDigests.find(item=>item.id===entry.id)?.digest&&(()=>{
                         const digest=page.entryDigests.find(item=>item.id===entry.id)!.digest;
                         return <div className="grid gap-2">
-                            <details aria-label="编辑当前资产或剧集条目" className="rounded border p-1">
+                            <details aria-label="编辑当前资产或剧集条目" className="rounded-lg border p-2" style={cardStyle}>
                                 <summary>编辑当前条目</summary>
                                 <DraftEntryFields key={digest+"-entry"} value={entry} pendingKey={`${nodeId}:${entry.id}:entry`} onPendingChange={onPendingChange} fields={kind==="assets"?
                                     ["name","description"]:["title","synopsis","ending"]}
@@ -180,7 +187,7 @@ export function DramaCreativeScopeBrowser({projectId,nodeId,kind,initialEntryId,
                                     onStage={changes=>stage(entry.id,digest,changes)}/>
                             </details>
                             {kind==="assets"&&entry.variants?.map(variant=><details
-                                key={variant.id} className="rounded border p-1">
+                                key={variant.id} className="rounded-lg border p-2" style={cardStyle}>
                                 <summary>编辑变体：{variant.name}</summary>
                                 <DraftEntryFields key={digest+"-"+variant.id} value={variant} pendingKey={`${nodeId}:${entry.id}:variant:${variant.id}`} onPendingChange={onPendingChange}
                                     fields={["name","description"]}
@@ -189,7 +196,7 @@ export function DramaCreativeScopeBrowser({projectId,nodeId,kind,initialEntryId,
                                     onStage={changes=>stage(entry.id,digest,changes,{variantId:variant.id})}/>
                             </details>)}
                             {kind==="episodes"&&entry.sequences?.map(sequence=><details
-                                key={sequence.id} className="rounded border p-1">
+                                key={sequence.id} className="rounded-lg border p-2" style={cardStyle}>
                                 <summary>编辑场次标题：{sequence.title}</summary>
                                 <DraftEntryFields key={digest+"-"+sequence.id} value={sequence} pendingKey={`${nodeId}:${entry.id}:sequence:${sequence.id}`} onPendingChange={onPendingChange} fields={["title"]}
                                     onSave={changes=>save(entry.id,digest,changes,{sequenceId:sequence.id})}
@@ -200,10 +207,10 @@ export function DramaCreativeScopeBrowser({projectId,nodeId,kind,initialEntryId,
                     })()}
                 </details>)}
                 {page.total>perPage&&<div className="flex justify-between gap-2">
-                    <button type="button" disabled={loading||offset===0}
+                    <button type="button" className={buttonClass} style={cardStyle} disabled={loading||offset===0}
                         onClick={()=>setOffset(value=>Math.max(0,value-perPage))}>上一页</button>
                     <span>{page.total?offset+1:0}–{Math.min(offset+perPage,page.total)} / {page.total}</span>
-                    <button type="button" disabled={loading||offset+perPage>=page.total}
+                    <button type="button" className={buttonClass} style={cardStyle} disabled={loading||offset+perPage>=page.total}
                         onClick={()=>setOffset(value=>value+perPage)}>下一页</button>
                 </div>}
             </>}

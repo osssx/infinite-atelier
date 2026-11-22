@@ -6,6 +6,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+from collections import Counter
 from pathlib import Path
 import socket
 import subprocess
@@ -120,8 +121,54 @@ def screenshot_metadata(page):
         return info?gl.getParameter(info.UNMASKED_RENDERER_WEBGL):gl.getParameter(gl.RENDERER);})()
     }))()""")
 
-def run(output=None,gpu=False):
+def run_workspace_tab_pressure(page):
+    """Three real tab mounts against isolated workbench data; no generation posts."""
+    def click(label,selector):
+        return bool(js(page,"""(() => {
+           const root=document.querySelector(%s);
+           const button=[...(root?.querySelectorAll('button')||[])].find(b=>
+             (b.textContent||'').trim()===%s);
+           if(!button||button.disabled)return false;
+           button.click();return true;
+        })()"""%(json.dumps(selector),json.dumps(label,ensure_ascii=False))))
+    card='[data-node-id="board"] [aria-label="分镜配置摘要"]'
+    portal='[data-creative-workspace-node-id="board"]'
+    before=len(page.network_requests)
+    start=time.monotonic()
+    assert wait_for(lambda:click("打开完整编辑器 ↗",card),
+                    "open storyboard workspace",20)
+    wait_for(lambda:bool(js(page,"!!document.querySelector("+json.dumps(portal)+")")),
+             "storyboard workspace mounted",45)
+    results=[{"tab":"editor","latencyMs":round((time.monotonic()-start)*1000,1)}]
+    for label,name in (("视频配置","video"),("生成候选","runs"),("影响与历史","history")):
+        start=time.monotonic()
+        assert wait_for(lambda:click(label,portal),"open "+name+" tab",20)
+        wait_for(lambda:bool(js(page,"""(() => {
+            const root=document.querySelector(%s);
+            const active=[...(root?.querySelectorAll('nav button')||[])].find(b=>
+                b.getAttribute('aria-pressed')==='true');
+            return (active?.textContent||'').trim()===%s;
+        })()"""%(json.dumps(portal),json.dumps(label,ensure_ascii=False)))),name+" tab settled",20)
+        time.sleep(.18)
+        results.append({"tab":name,"latencyMs":round((time.monotonic()-start)*1000,1),
+                        "domNodes":js(page,"document.querySelectorAll('*').length")})
+    runs_open=len([item for item in page.network_requests if "/drama-pipeline/runs" in item.get("path","")])
+    js(page,"document.querySelector('.ant-modal-close')?.click();true")
+    wait_for(lambda:not js(page,"!!document.querySelector("+json.dumps(portal)+")"),
+             "storyboard workspace closed",25)
+    time.sleep(3.3)
+    runs_closed=len([item for item in page.network_requests if "/drama-pipeline/runs" in item.get("path","")])
+    assert runs_open==runs_closed,("runs_polling_leaked_after_close",runs_open,runs_closed)
+    writes=[item for item in page.network_requests[before:] if item.get("method") in ("POST","PATCH","DELETE")]
+    assert not writes,("workspace_tabs_unexpected_write",writes)
+    return {"scenarios":results,"runsRequestsAfterClose":runs_closed-runs_open,
+        "apiRequests":len(page.network_requests)-before,
+        "closedEditorUnmounted":True,"afterCloseHeapBytes":heap(page)}
+
+def run(output=None,gpu=False,mode="development",frontend_root=ROOT,rounds=3,cpu_profile=False,label="current",workspace_tabs=False):
     if not cdp.CHROME.exists():raise AssertionError("Chrome not installed:"+str(cdp.CHROME))
+    if mode not in ("development","production") or rounds<3 or rounds>12:raise ValueError("invalid p34b measurement configuration")
+    frontend_root=Path(frontend_root).resolve()
     root=Path(tempfile.mkdtemp(prefix="infinite-atelier-p34b-browser-"))
     chrome_profile=root.parent/(root.name+"-chrome-profile")
     backend_port,vite_port,chrome_port=port(),port(),port()
@@ -131,14 +178,15 @@ def run(output=None,gpu=False):
     processes=[]
     logs=[]
     page=None
-    report={"schemaVersion":1,"stage":"P3.4b","fixture":None,"environment":None,
+    report={"schemaVersion":2,"stage":"P3.4b5","label":label,"mode":mode,"rounds":rounds,
+            "frontendRoot":str(frontend_root),"fixture":None,"environment":None,
             "scenarios":[],"scopes":[],"memory":{},"network":{},"strictTargets":
             {"fpsMin":58,"p95MaxMs":18,"p99MaxMs":33.4,"longTaskMax":0},
             "caveat":"Headless Chrome baseline: compare its WebGL renderer and blank-page cadence before extrapolating to desktop GPU."}
-    def launch(name,argv,environment):
+    def launch(name,argv,environment,cwd=ROOT):
         log=open(root/(name+".log"),"w",encoding="utf-8",errors="replace")
         logs.append(log)
-        proc=subprocess.Popen(argv,cwd=ROOT,env=environment,stdin=subprocess.DEVNULL,
+        proc=subprocess.Popen(argv,cwd=cwd,env=environment,stdin=subprocess.DEVNULL,
                               stdout=log,stderr=subprocess.STDOUT)
         processes.append(proc)
         return proc
@@ -151,9 +199,15 @@ def run(output=None,gpu=False):
         wait_for(lambda:urllib.request.urlopen(fixture["backendOrigin"]+"/health",timeout=2).status==200,
                  "backend health",20)
         front=f"http://127.0.0.1:{vite_port}"
-        launch("vite",["node","node_modules/vite/bin/vite.js","--host","127.0.0.1",
-          "--port",str(vite_port),"--strictPort"],
-          dict(env,ATELIER_BACKEND_URL=fixture["backendOrigin"]))
+        if mode=="development":
+            launch("vite",["node",str(ROOT/"node_modules/vite/bin/vite.js"),
+              "--host","127.0.0.1","--port",str(vite_port),"--strictPort"],
+              dict(env,ATELIER_BACKEND_URL=fixture["backendOrigin"]),cwd=frontend_root)
+        else:
+            dist=frontend_root/"dist"
+            if not (dist/"index.html").exists():raise AssertionError("production_build_required:"+str(dist))
+            launch("static",["node",str(ROOT/"scripts/drama-p34b-static-frontend.mjs"),
+              "--port",str(vite_port),"--backend",fixture["backendOrigin"],"--dist",str(dist)],env)
         wait_for(lambda:urllib.request.urlopen(front,timeout=2).status==200,"vite ready",60)
         launch("chrome",[str(cdp.CHROME),"--headless=new",*([] if gpu else ["--disable-gpu"]),
          "--enable-precise-memory-info","--no-default-browser-check","--no-first-run",
@@ -277,8 +331,11 @@ def run(output=None,gpu=False):
         center=sample_center(page)
         assert center and center["width"]>200 and center["renderedNodes"]>=3,center
         # Real CDP hardware-style input, not synthetic DOM dispatch or direct transform.
+        if cpu_profile:
+            page.call("Profiler.enable",{})
+            page.call("Profiler.start",{})
         for kind in ("pan","zoom"):
-            for round_id in range(1,3):
+            for round_id in range(1,rounds+1):
                 cpu_before=renderer_metrics(page)
                 start_probe(page,kind+"-"+str(round_id))
                 x,y=center["x"],center["y"]
@@ -312,6 +369,17 @@ def run(output=None,gpu=False):
                     measure["longTaskCount"]==0)
                 report["scenarios"].append(measure)
                 print("P34B_BROWSER_ROUND",json.dumps(measure,ensure_ascii=False),flush=True)
+        if cpu_profile:
+            sampling=page.call("Profiler.stop",{}).get("profile",{})
+            nodes={n["id"]:n.get("callFrame",{}) for n in sampling.get("nodes",[])}
+            sample_counts=Counter(sampling.get("samples",[]))
+            ranked=[]
+            for node_id,count in sample_counts.most_common(22):
+                frame=nodes.get(node_id,{})
+                ranked.append({"samples":count,"function":frame.get("functionName"),
+                    "url":frame.get("url"),"line":frame.get("lineNumber")})
+            report["cpuProfile"]={"samples":sum(sample_counts.values()),"topSelfSamples":ranked}
+            page.call("Profiler.disable",{})
         report["memory"]["afterGesturesHeapBytes"]=heap(page)
         report["memory"]["growthAfterGCBytes"]=report["memory"]["afterGesturesHeapBytes"]-report["memory"]["afterLoadHeapBytes"]
         report["environment"]["finalVisibleDomNodes"]=js(page,"document.querySelectorAll('[data-node-id]').length")
@@ -321,7 +389,11 @@ def run(output=None,gpu=False):
           "browserExceptions":page.exceptions}
         assert not any("enqueue" in x.get("path","") or "/jobs" in x.get("path","")
           for x in report["network"]["writeRequests"]),report["network"]
+        if workspace_tabs:
+            report["workspaceTabs"]=run_workspace_tab_pressure(page)
+            print("P34B_WORKSPACE_TAB_PRESSURE",json.dumps(report["workspaceTabs"],ensure_ascii=False),flush=True)
         report["strictPass"]=all(x["strictPass"] for x in report["scenarios"])
+        report["roundsPerGesture"]=rounds
         report["result"]="pass" if report["strictPass"] else "below-target"
         report["isolation"]="Temporary SQLite + CAS, temporary Chrome profile, no configured model, no ComfyUI calls."
         if output:
@@ -344,16 +416,20 @@ def run(output=None,gpu=False):
         shutil.rmtree(chrome_profile,ignore_errors=True)
 
 if __name__=="__main__":
-    out=None
-    args=list(sys.argv[1:])
-    gpu="--gpu" in args
-    if gpu:args.remove("--gpu")
-    strict="--enforce-targets" in args
-    if strict:args.remove("--enforce-targets")
-    if args:
-        if len(args)!=2 or args[0]!="--output":raise SystemExit("usage: ... [--gpu] [--enforce-targets] [--output ABSOLUTE.json]")
-        out=Path(args[1])
-        if not out.is_absolute():raise SystemExit("output_path_must_be_absolute")
-    measured=run(out,gpu=gpu)
-    if strict and not measured["strictPass"]:
+    import argparse
+    parser=argparse.ArgumentParser(description="P3.4b5 isolated real Chrome benchmark")
+    parser.add_argument("--output",type=Path)
+    parser.add_argument("--gpu",action="store_true")
+    parser.add_argument("--enforce-targets",action="store_true")
+    parser.add_argument("--mode",choices=["development","production"],default="development")
+    parser.add_argument("--frontend-root",type=Path,default=ROOT)
+    parser.add_argument("--rounds",type=int,default=3)
+    parser.add_argument("--cpu-profile",action="store_true")
+    parser.add_argument("--workspace-tabs",action="store_true")
+    parser.add_argument("--label",default="current")
+    args=parser.parse_args()
+    if args.output and not args.output.is_absolute():raise SystemExit("output_path_must_be_absolute")
+    measured=run(args.output,gpu=args.gpu,mode=args.mode,frontend_root=args.frontend_root,
+                 rounds=args.rounds,cpu_profile=args.cpu_profile,label=args.label,workspace_tabs=args.workspace_tabs)
+    if args.enforce_targets and not measured["strictPass"]:
         raise SystemExit("P34B_STRICT_PERFORMANCE_BELOW_TARGET")

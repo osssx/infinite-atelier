@@ -19,6 +19,26 @@ type EpisodeFieldProps={
  count?:(value:string)=>string;placeholder?:string;
 };
 function canvasThemeForField(appearance:"light"|"dark"){return canvasThemes[appearance];}
+type EpisodeFieldTheme=ReturnType<typeof canvasThemeForField>;
+function EpisodeEditActions({theme,label,disabled,onCancel,onConfirm}:{
+ theme:EpisodeFieldTheme;label:string;disabled:boolean;onCancel:()=>void;onConfirm:()=>void;
+}){
+ const common="inline-flex min-h-9 min-w-[84px] items-center justify-center gap-1.5 rounded-lg border px-3 text-xs font-semibold transition-[background-color,opacity] hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 disabled:cursor-not-allowed disabled:opacity-45";
+ return <div data-episode-edit-actions="" aria-label={label+"操作"}
+  className="flex min-w-0 flex-wrap items-center justify-end gap-2 border-t pt-3"
+  style={{borderColor:theme.node.stroke}}>
+  <button type="button" data-episode-action="cancel" className={common}
+   style={{background:theme.node.panel,borderColor:theme.node.stroke,color:theme.node.muted,
+    outlineColor:theme.node.activeStroke}} onClick={onCancel}>
+   <X size={14} aria-hidden="true"/>取消
+  </button>
+  <button type="button" data-episode-action="confirm" aria-label={"确认"+label} className={common}
+   style={{background:theme.node.text,borderColor:theme.node.text,color:theme.node.panel,
+    outlineColor:theme.node.activeStroke}} disabled={disabled} onClick={onConfirm}>
+   <Check size={14} aria-hidden="true"/>确认
+  </button>
+ </div>;
+}
 function EpisodeReadEditField({id,label,value,disabled,theme,onConfirm,multiline=false,rows=2,type="text",count,placeholder="未填写"}:EpisodeFieldProps){
  const [editing,setEditing]=useState(false);
  const [draft,setDraft]=useState(value);
@@ -27,9 +47,8 @@ function EpisodeReadEditField({id,label,value,disabled,theme,onConfirm,multiline
  const valid=type!=="number"||draft.trim()===""||(Number.isFinite(Number(draft))&&Number(draft)>0);
  const text=editing?draft:value;
  const headingStyle={color:theme.node.muted};
- const inputStyle={background:theme.node.fill,color:theme.node.text,borderColor:theme.node.stroke,
+ const inputStyle={background:theme.node.panel,color:theme.node.text,borderColor:theme.node.stroke,
   "--tw-ring-color":theme.node.activeStroke} as CSSProperties;
- const smallButton="inline-flex min-h-7 items-center justify-center gap-1 rounded-md border px-2 text-xs font-medium transition-opacity hover:opacity-80 focus-visible:outline focus-visible:outline-2 disabled:opacity-40";
  const begin=()=>{setBaseline(value);setDraft(value);setEditing(true);};
  const cancel=()=>{setEditing(false);setDraft(value);};
  const confirm=()=>{
@@ -38,51 +57,53 @@ function EpisodeReadEditField({id,label,value,disabled,theme,onConfirm,multiline
   setEditing(false);
  };
  return <section data-episode-editable-field={id} data-episode-field-mode={editing?"editing":"reading"}
-   aria-label={label+"区域"} className="min-w-0 space-y-1.5">
-   <div className="flex min-h-7 items-center justify-between gap-2 text-xs font-medium" style={headingStyle}>
-    <div className="flex min-w-0 items-center gap-1.5">
-     <span>{label}</span>
-     {!editing&&<button type="button" aria-label={"编辑"+label} title={"编辑"+label}
-       className="inline-grid size-7 shrink-0 place-items-center rounded-md border border-transparent hover:opacity-80 focus-visible:outline focus-visible:outline-2"
-       style={{color:theme.node.muted,outlineColor:theme.node.activeStroke}} disabled={disabled}
-       onClick={begin}><Pencil size={13} aria-hidden="true"/></button>}
-    </div>
-    {count&&<span className="shrink-0 text-[11px] font-normal tabular-nums">{count(text)}</span>}
+  aria-label={label+"区域"} className={editing
+   ?"min-w-0 space-y-3 rounded-xl border p-3 sm:p-4"
+   :"min-w-0 space-y-1.5 border border-transparent"}
+  style={editing?{background:theme.node.fill,borderColor:theme.node.stroke}:undefined}>
+  <div className="flex min-h-7 items-center justify-between gap-2 text-xs font-medium" style={headingStyle}>
+   <div className="flex min-w-0 items-center gap-1.5">
+    <span>{label}</span>
+    {!editing&&<button type="button" aria-label={"编辑"+label} title={"编辑"+label}
+      className="inline-grid size-7 shrink-0 place-items-center rounded-md border border-transparent hover:opacity-80 focus-visible:outline focus-visible:outline-2"
+      style={{color:theme.node.muted,outlineColor:theme.node.activeStroke}} disabled={disabled}
+      onClick={begin}><Pencil size={13} aria-hidden="true"/></button>}
    </div>
-   {editing?<>
-    {multiline?
-      <textarea aria-label={label==="剧情事件（每行一条）"?"剧情事件":label}
-       className="thin-scrollbar w-full min-w-0 resize-y rounded-lg border px-3 py-2.5 text-sm leading-relaxed outline-none focus-visible:ring-2"
-       style={inputStyle} rows={rows} value={draft} disabled={disabled}
-       onChange={event=>setDraft(event.target.value)}/>:
-      <input aria-label={label} type={type} min={type==="number"?"0.1":undefined}
-       step={type==="number"?"0.1":undefined} maxLength={type==="text"?12000:undefined}
-       className="w-full min-w-0 rounded-lg border px-3 py-2.5 text-sm leading-relaxed outline-none focus-visible:ring-2"
-       style={inputStyle} value={draft} disabled={disabled}
-       onChange={event=>setDraft(event.target.value)}/>}
-    {stale&&<p role="alert" className="text-xs" style={headingStyle}>内容已在其他位置更新，请取消并重新编辑。</p>}
-    {!valid&&<p role="alert" className="text-xs" style={headingStyle}>目标时长必须是大于 0 的数字，或留空。</p>}
-    <div className="flex justify-end gap-2" aria-label={label+"操作"}>
-     <button type="button" className={smallButton}
-      style={{background:theme.node.panel,color:theme.node.text,borderColor:theme.node.stroke}}
-      onClick={cancel}><X size={13} aria-hidden="true"/>取消</button>
-     <button type="button" aria-label={"确认"+label} className={smallButton}
-      style={{background:theme.node.text,color:theme.node.panel,borderColor:theme.node.text}}
-      disabled={disabled||stale||!valid} onClick={confirm}><Check size={13} aria-hidden="true"/>确认</button>
-    </div>
-   </>:
-    <div data-episode-readonly={id} aria-label={label+"内容"}
-     className={"min-w-0 rounded-lg border px-3 py-2.5 text-sm leading-relaxed "+(id==="title"?"font-semibold":"")}
-     style={{background:theme.node.fill,color:value.trim()?theme.node.text:theme.node.muted,borderColor:theme.node.stroke}}>
-     {id==="events"&&value.trim()?<ol className="space-y-2">
-       {value.split("\n").filter(line=>line.trim()).map((line,index)=>
-        <li key={index} className="flex min-w-0 gap-2">
-         <span className="w-5 shrink-0 text-right text-[11px] tabular-nums" style={headingStyle}>{index+1}.</span>
-         <span className="min-w-0 flex-1 whitespace-pre-wrap break-words">{line}</span>
-        </li>)}
-      </ol>:<div className="whitespace-pre-wrap break-words">{value.trim()?value:placeholder}</div>}
-    </div>}
-  </section>;
+   <div className="flex shrink-0 items-center gap-2">
+    {editing&&<span className="rounded-md px-2 py-0.5 text-[11px] font-semibold"
+      style={{background:theme.toolbar.activeBg,color:theme.toolbar.activeText}}>编辑中</span>}
+    {count&&<span className="text-[11px] font-normal tabular-nums">{count(text)}</span>}
+   </div>
+  </div>
+  {editing?<>
+   {multiline?
+     <textarea aria-label={label==="剧情事件（每行一条）"?"剧情事件":label}
+      className="thin-scrollbar w-full min-w-0 resize-y rounded-lg border px-3 py-2.5 text-sm leading-relaxed outline-none transition-shadow focus-visible:ring-2"
+      style={inputStyle} rows={rows} value={draft} disabled={disabled}
+      onChange={event=>setDraft(event.target.value)}/>:
+     <input aria-label={label} type={type} min={type==="number"?"0.1":undefined}
+      step={type==="number"?"0.1":undefined} maxLength={type==="text"?12000:undefined}
+      className="w-full min-w-0 rounded-lg border px-3 py-2.5 text-sm leading-relaxed outline-none transition-shadow focus-visible:ring-2"
+      style={inputStyle} value={draft} disabled={disabled}
+      onChange={event=>setDraft(event.target.value)}/>}
+   {stale&&<p role="alert" className="text-xs" style={headingStyle}>内容已在其他位置更新，请取消并重新编辑。</p>}
+   {!valid&&<p role="alert" className="text-xs" style={headingStyle}>目标时长必须是大于 0 的数字，或留空。</p>}
+   <EpisodeEditActions theme={theme} label={label} disabled={disabled||stale||!valid}
+    onCancel={cancel} onConfirm={confirm}/>
+  </>:
+   <div data-episode-readonly={id} aria-label={label+"内容"}
+    className={"min-w-0 rounded-md border-l-2 px-3 py-2.5 text-sm leading-relaxed "+(id==="title"?"font-semibold":"")}
+    style={{background:theme.toolbar.activeBg,color:value.trim()?theme.node.text:theme.node.muted,
+     borderLeftColor:theme.node.stroke}}>
+    {id==="events"&&value.trim()?<ol className="space-y-2">
+      {value.split("\n").filter(line=>line.trim()).map((line,index)=>
+       <li key={index} className="flex min-w-0 gap-2">
+        <span className="w-5 shrink-0 text-right text-[11px] tabular-nums" style={headingStyle}>{index+1}.</span>
+        <span className="min-w-0 flex-1 whitespace-pre-wrap break-words">{line}</span>
+       </li>)}
+     </ol>:<div className="whitespace-pre-wrap break-words">{value.trim()?value:placeholder}</div>}
+   </div>}
+ </section>;
 }
 type EpisodeSequence=NonNullable<DramaEpisode["sequences"]>[number];
 function SequenceReadEditFields({sequence,index,events,items,theme,disabled,onConfirm,startEditing=false}:{
@@ -110,11 +131,16 @@ function SequenceReadEditFields({sequence,index,events,items,theme,disabled,onCo
     eventRefs.join("\n")!==(sequence.eventRefs??[]).join("\n"))onConfirm(next);
   setEditing(false);
  };
- const control={background:theme.node.fill,color:theme.node.text,borderColor:theme.node.stroke};
- const secondary="inline-flex min-h-8 items-center justify-center gap-1 rounded-lg border px-2.5 text-xs font-medium hover:opacity-80";
- return <div data-episode-sequence-mode={editing?"editing":"reading"} className="space-y-3" aria-label={"场次 "+(index+1)+" 详情"}>
-   <div className="flex items-center gap-1.5">
+ const control={background:theme.node.panel,color:theme.node.text,borderColor:theme.node.stroke,
+  "--tw-ring-color":theme.node.activeStroke} as CSSProperties;
+ return <div data-episode-sequence-mode={editing?"editing":"reading"}
+  className={editing?"min-w-0 space-y-3 rounded-xl border p-3 sm:p-4":"min-w-0 space-y-2"}
+  style={editing?{background:theme.node.fill,borderColor:theme.node.stroke}:undefined}
+  aria-label={"场次 "+(index+1)+" 详情"}>
+   <div className="flex min-h-7 items-center gap-1.5">
     <strong className="text-xs">场次详情</strong>
+    {editing&&<span className="rounded-md px-2 py-0.5 text-[11px] font-semibold"
+     style={{background:theme.toolbar.activeBg,color:theme.toolbar.activeText}}>编辑中</span>}
     {!editing&&<button type="button" aria-label={"编辑场次 "+(index+1)+" 详情"} title="编辑场次详情"
       disabled={disabled} className="inline-grid size-7 shrink-0 place-items-center rounded-md border border-transparent hover:opacity-80 focus-visible:outline focus-visible:outline-2"
       style={{color:theme.node.muted,outlineColor:theme.node.activeStroke}} onClick={begin}>
@@ -124,12 +150,12 @@ function SequenceReadEditFields({sequence,index,events,items,theme,disabled,onCo
    {editing?<>
     <label className="grid min-w-0 gap-1.5">
      <span style={{color:theme.node.muted}}>场次名称</span>
-     <input aria-label={`场次 ${index+1} 名称`} className="w-full min-w-0 rounded-lg border px-3 py-2 text-xs"
+     <input aria-label={`场次 ${index+1} 名称`} className="w-full min-w-0 rounded-lg border px-3 py-2.5 text-sm leading-relaxed outline-none transition-shadow focus-visible:ring-2"
       style={control} value={title} disabled={disabled} onChange={event=>setTitle(event.target.value)}/>
     </label>
     <label className="grid min-w-0 gap-1.5">
      <span style={{color:theme.node.muted}}>场次原文段落 ID（每行一个）</span>
-     <textarea aria-label={`场次 ${index+1} 原文段落`} className="thin-scrollbar w-full min-w-0 rounded-lg border px-3 py-2 text-xs"
+     <textarea aria-label={`场次 ${index+1} 原文段落`} className="thin-scrollbar w-full min-w-0 rounded-lg border px-3 py-2.5 text-sm leading-relaxed outline-none transition-shadow focus-visible:ring-2"
       style={control} rows={2} value={refs} disabled={disabled} onChange={event=>setRefs(event.target.value)}/>
     </label>
     <div className="space-y-1.5">
@@ -144,14 +170,11 @@ function SequenceReadEditFields({sequence,index,events,items,theme,disabled,onCo
       </label>)}
     </div>
     {stale&&<p role="alert" className="text-xs">场次已在其他位置更新，请取消并重新编辑。</p>}
-    <div className="flex justify-end gap-2">
-     <button type="button" className={secondary} style={control} onClick={cancel}><X size={13}/>取消</button>
-     <button type="button" aria-label={"确认场次 "+(index+1)+" 详情"} className={secondary}
-      style={{background:theme.node.text,color:theme.node.panel,borderColor:theme.node.text}}
-      disabled={disabled||stale} onClick={confirm}><Check size={13}/>确认</button>
-    </div>
+    <EpisodeEditActions theme={theme} label={"场次 "+(index+1)+" 详情"}
+     disabled={disabled||stale} onCancel={cancel} onConfirm={confirm}/>
    </>:
-    <div className="grid min-w-0 gap-2 rounded-lg border p-3 text-xs" style={control}>
+    <div data-episode-sequence-readonly="" className="grid min-w-0 gap-2 rounded-md border-l-2 px-3 py-2.5 text-xs leading-relaxed"
+     style={{background:theme.toolbar.activeBg,color:theme.node.text,borderLeftColor:theme.node.stroke}}>
      <p><span style={{color:theme.node.muted}}>名称：</span>{sequence.title||"未命名场次"}</p>
      <p className="break-words"><span style={{color:theme.node.muted}}>原文段落：</span>{sequence.sourceRefs?.join("、")||"未设置"}</p>
      <div>

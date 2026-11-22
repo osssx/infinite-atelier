@@ -279,6 +279,19 @@ def main():
                         !!field.querySelector('button[aria-label^="编辑"]'))&&
                       !!editor.querySelector('[data-episode-readonly="events"]');
                 })()"""),"all episode content is initially read-only",35)))
+                check("episode_reading_cards_visual_distinction",bool(page.js("""(() => {
+                    const root=document.querySelector('[data-creative-workspace-node-id="episodes"]');
+                    const section=root?.querySelector('[data-episode-editable-field="synopsis"]');
+                    const card=section?.querySelector('[data-episode-readonly="synopsis"]');
+                    const first=root?.querySelector('[data-episode-editable-field="title"] [data-episode-readonly]');
+                    if(!card||!first||!section)return false;
+                    const cardCss=getComputedStyle(card);
+                    const expected=root.dataset.dramaWorkspaceTheme==='dark'?'rgb(58, 54, 49)':'rgb(231, 229, 223)';
+                    return cardCss.backgroundColor===expected&&
+                       cardCss.borderLeftWidth==='2px'&&cardCss.borderTopWidth==='0px'&&
+                       getComputedStyle(first).backgroundColor===expected&&
+                       section.dataset.episodeFieldMode==='reading';
+                })()""")))
                 check("episode_open_local_field_edit",bool(page.js("""(() => {
                     const field=document.querySelector('[data-creative-workspace-node-id="episodes"] [data-episode-editable-field="synopsis"]');
                     const edit=field?.querySelector('button[aria-label="编辑剧情梗概"]');
@@ -294,6 +307,30 @@ def main():
                     textarea.dispatchEvent(new Event('input',{bubbles:true}));
                     return true;
                 })()"""),"episode synopsis edit input mounted",25)))
+                check("episode_editing_panel_and_actions_follow_canvas_theme",bool(wait_for(lambda:page.js("""(() => {
+                    const root=document.querySelector('[data-creative-workspace-node-id="episodes"]');
+                    const section=root?.querySelector('[data-episode-editable-field="synopsis"]');
+                    const input=section?.querySelector('textarea[aria-label="剧情梗概"]');
+                    const footer=section?.querySelector('[data-episode-edit-actions]');
+                    const cancel=footer?.querySelector('[data-episode-action="cancel"]');
+                    const confirm=footer?.querySelector('[data-episode-action="confirm"]');
+                    if(!section||!input||!footer||!cancel||!confirm)return false;
+                    const dark=root.dataset.dramaWorkspaceTheme==='dark';
+                    const fill=dark?'rgb(41, 37, 36)':'rgb(231, 229, 223)';
+                    const panel=dark?'rgb(31, 29, 26)':'rgb(251, 250, 247)';
+                    const card=dark?'rgb(58, 54, 49)':'rgb(231, 229, 223)';
+                    const c=cancel.getBoundingClientRect(),p=confirm.getBoundingClientRect();
+                    return section.dataset.episodeFieldMode==='editing'&&
+                     getComputedStyle(section).backgroundColor===fill&&
+                     getComputedStyle(input).backgroundColor===panel&&
+                     getComputedStyle(section).borderTopWidth==='1px'&&
+                     section.textContent?.includes('编辑中')&&
+                     getComputedStyle(footer).borderTopWidth==='1px'&&
+                     getComputedStyle(cancel).backgroundColor===panel&&
+                     getComputedStyle(confirm).backgroundColor!==(card)&&
+                     c.width>=83&&p.width>=83&&Math.abs(c.top-p.top)<=2&&c.right<=p.left&&
+                     footer.getAttribute('aria-label')==='剧情梗概操作';
+                })()"""),"editing surface and two aligned themed actions",25)))
                 check("episode_staged_field_cancel",bool(wait_for(lambda:page.js("""(() => {
                     const field=document.querySelector('[data-creative-workspace-node-id="episodes"] [data-episode-editable-field="synopsis"]');
                     const cancel=field?.querySelector('[aria-label="剧情梗概操作"] button:first-child');

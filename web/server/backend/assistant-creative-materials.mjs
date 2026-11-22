@@ -1,4 +1,4 @@
-import {hydrateCreativeDocument} from "./creative-payloads.mjs";
+// Selected material search uses ordinary text nodes; no creative payload hydration.
 /** P4.1b: read-only, regenerable creative material references.
  * No cross-Task search, no schema migration and no unapproved provider context.
  */
@@ -82,7 +82,7 @@ export function discoverAssistantCreativeMaterials(db,{projectId,taskId,turnMess
   const project=db.prepare("SELECT document_json FROM projects WHERE id=? AND deleted_at IS NULL").get(projectId);
   if(!project)throw fail("project_not_found",404);
   const selected=new Set((policy.includedIds??[]).slice(0,12));
-  const nodes=hydrateCreativeDocument(db,projectId,JSON.parse(project.document_json)).nodes??[];
+  const nodes=JSON.parse(project.document_json).nodes??[];
   for(const node of nodes){
    if(node?.type!=="text"||!selected.has(node.id))continue;
    const kind=classifyTitle(node.title),content=node.metadata?.content;

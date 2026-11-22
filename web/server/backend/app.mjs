@@ -954,7 +954,10 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
          additionalProperties:false,properties:{role:{type:"string",enum:["user","assistant"]},
            content:{type:"string",maxLength:98304}}}}
       }}}},async(req,reply)=>{
-     const project=getProject(db,req.params.id); // Verify project before any paid provider call.
+     // Agent read-only rounds must not deserialize every creative payload merely
+      // to authorize a query. Ordinary writes and Task executors keep their
+      // fully validated graph path and frozen approval semantics.
+      const project=getProject(db,req.params.id,{compact:req.body.agentReadTools===true}); // Verify before provider POST.
      if(!assistantChat)return reply.code(503).send({code:"assistant_unavailable"});
      const ref=req.body.task;
      const chatSessionId=req.body.chatSessionId;

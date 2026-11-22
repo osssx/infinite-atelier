@@ -5,6 +5,7 @@
 import {canvasDramaAssetFields,canvasTextContentPatch,isAssistantDramaNodeType,readAssetDraft,readEpisodeDraft,readStoryboardDraft} from "../canvas-text-content.mjs";
 import {createHash} from "node:crypto";
 import {hydrateCreativeDocument} from "./creative-payloads.mjs";
+import {readPagedDramaScope} from "./drama-scoped-storage.mjs";
 import {stableJson,writeTransaction} from "./repository.mjs";
 import {formatAssistantGenerationSettings,mayRepeatTurn,safe} from "./assistant-task-context.mjs";
 import {discoverAssistantCreativeCharacters} from "./assistant-creative-context.mjs";
@@ -125,6 +126,95 @@ function readDramaEntry(node,{asset_id,episode_id,version,offset}){
  const full={nodes:[{...item,[asset_id!==undefined?"asset":"episode"]:data}]};
  if(offset===undefined&&Buffer.byteLength(JSON.stringify(full))<=MAX_RESULT_BYTES-256)return full;
  return pageNodeBody(item,JSON.stringify(data),offset??0);
+}
+/** Read one authorized, indexed creative entry without hydrating a
+ * storyboard/asset/episode body into the Agent process. The frozen Task turn
+ * still bounds which nodes can be read. Other request forms use the legacy
+ * selected-node reader for precise compatibility (shot_number, arbitrary
+ * text pagination, unindexed legacy or malformed drafts).
+ */
+function tryReadIndexedAgentEntry(db,projectId,byId,args){
+ if(!Array.isArray(args.node_ids)||args.node_ids.length!==1)return null;
+ const nodeId=args.node_ids[0];
+ if(!validCanvasNodeId(nodeId)||!byId.has(nodeId))
+  throw fail("assistant_agent_context_scope_denied",403);
+ const node=byId.get(nodeId),ref=node?.metadata?.creativePayloadRef;
+ if(!ref)return null;
+ const asset=args.asset_id!==undefined&&node.type==="drama:assets"&&
+  validSelector(args.asset_id)&&args.episode_id===undefined&&args.shot_id===undefined&&args.shot_number===undefined;
+ const episode=args.episode_id!==undefined&&node.type==="drama:episodes"&&
+  validSelector(args.episode_id)&&args.asset_id===undefined&&args.shot_id===undefined&&args.shot_number===undefined;
+ const shot=args.shot_id!==undefined&&node.type==="drama:storyboard"&&validSelector(args.shot_id)&&
+  args.asset_id===undefined&&args.shot_number===undefined&&
+  (args.episode_id===undefined||validSelector(args.episode_id));
+ if(!asset&&!episode&&!shot)return null;
+ if(!get(args,["node_ids","offset","shot_id","episode_id","asset_id","version"])||
+  args.version!==undefined&&!["draft","confirmed"].includes(args.version)||
+  args.offset!==undefined&&(!Number.isSafeInteger(args.offset)||args.offset<0))
+  throw fail("assistant_agent_tool_arguments_invalid",400);
+ if(ref.nodeId!==nodeId||ref.schemaVersion!==1||
+  ["dramaDraft","dramaConfirmed","content"].some(key=>Object.hasOwn(node.metadata??{},key)))
+  throw fail("creative_payload_reference_invalid",422);
+ const entryId=asset?args.asset_id:episode?args.episode_id:args.shot_id;
+ const draft=args.version!=="confirmed",kind=asset?"assets":episode?"episodes":"shots";
+ const stage=draft?"draft":"confirmed";
+ const pinned=draft?null:node.metadata?.dramaConfirmedVersionId??null;
+ // No index -> the original authorized one-node reader handles fenced legacy
+ // bodies and old version rows. Never guess a missing authoritative source.
+ const state=pinned?db.prepare(`SELECT 1 FROM creative_scope_history_state
+   WHERE project_id=? AND node_id=? AND version_id=? AND kind=?`).get(projectId,nodeId,pinned,kind):
+  db.prepare(`SELECT 1 FROM creative_scope_index_state
+   WHERE project_id=? AND node_id=? AND stage=? AND kind=?`).get(projectId,nodeId,stage,kind);
+ if(!state)return null;
+ const page=readPagedDramaScope(db,projectId,nodeId,{draft,entryId,
+  ...(shot&&args.episode_id?{episodeId:args.episode_id}:{}),
+  limit:1,offset:0,includeReferenceChoices:false});
+ const source=draft?db.prepare(`SELECT CASE
+   WHEN length(trim(COALESCE(json_extract(payload_json,'$.dramaDraft'),'')))>0 THEN 'dramaDraft'
+   WHEN length(trim(COALESCE(json_extract(payload_json,'$.dramaConfirmed'),'')))>0 THEN 'dramaConfirmed'
+   WHEN length(trim(COALESCE(json_extract(payload_json,'$.content'),'')))>0 THEN 'content'
+   ELSE NULL END AS source FROM creative_node_payloads
+   WHERE project_id=? AND node_id=?`).get(projectId,nodeId)?.source:
+   "dramaConfirmed";
+ const meta={id:nodeId,type:node.type,title:safe(node.title,90),source};
+ if(!page.total||!page.entries.length)
+  return {nodes:[{...meta,status:source?"entry_not_found":"empty"}]};
+ const entry=page.entries[0];
+ if(asset||episode){
+  const fields=asset?canvasDramaAssetFields(entry):
+   Object.fromEntries(["id","title","synopsis","events","sourceRefs","ending"].map(key=>[key,entry[key]]));
+  const data=redactDramaFields(fields);
+  const full={nodes:[{...meta,[asset?"asset":"episode"]:data}]};
+  if(args.offset===undefined&&Buffer.byteLength(JSON.stringify(full))<=MAX_RESULT_BYTES-256)return full;
+  return pageNodeBody(meta,JSON.stringify(data),args.offset??0);
+ }
+ // A shot's UI ordinal means sorted order within its own episode, not its
+ // position in the raw persisted array. Compute its rank with indexed JSON1.
+ const table=pinned?"creative_scope_history_entries":"creative_scope_entry_index";
+ const stageColumn=pinned?"version_id":"stage",stageValue=pinned??stage;
+ const rank=db.prepare(`SELECT (
+    SELECT COUNT(*) FROM ${table} AS before
+     WHERE before.project_id=target.project_id AND before.node_id=target.node_id
+      AND before.${stageColumn}=target.${stageColumn} AND before.kind='shots'
+      AND before.episode_id=target.episode_id AND
+       (CAST(json_extract(before.entry_json,'$.order') AS REAL)<
+        CAST(json_extract(target.entry_json,'$.order') AS REAL)
+        OR (CAST(json_extract(before.entry_json,'$.order') AS REAL)=
+        CAST(json_extract(target.entry_json,'$.order') AS REAL)
+        AND before.ordinal<target.ordinal))
+   )+1 AS number FROM ${table} AS target
+   WHERE target.project_id=? AND target.node_id=? AND target.${stageColumn}=?
+    AND target.kind='shots' AND target.entry_id=?`)
+  .get(projectId,nodeId,stageValue,entryId);
+ if(!rank||!Number.isSafeInteger(rank.number))return null;
+ const data={order:entry.order};
+ const clean=value=>safe(value,Infinity,{preserveFormatting:true});
+ for(const key of shotTextFields)if(entry[key]!==undefined)data[key]=clean(entry[key]);
+ for(const key of shotListFields)if(entry[key]!==undefined)data[key]=entry[key].map(clean);
+ const match={...meta,shotId:safe(entry.id,128),episodeId:safe(entry.episodeId,128),shotNumber:rank.number};
+ const full={nodes:[{...match,shot:data}]};
+ if(args.offset===undefined&&Buffer.byteLength(JSON.stringify(full))<=MAX_RESULT_BYTES-256)return full;
+ return pageNodeBody(match,JSON.stringify(data),args.offset??0);
 }
 function readCanvasNodes(byId,args){
  if(!get(args,["node_ids","offset","shot_id","shot_number","episode_id","asset_id","version"])||!Array.isArray(args.node_ids)||
@@ -274,7 +364,8 @@ function scoped(db,projectId,taskId,turnMessageId){
   !Array.isArray(policy.includedIds))throw fail("assistant_task_context_invalid",409);
  const project=db.prepare("SELECT document_json,revision FROM projects WHERE id=? AND deleted_at IS NULL").get(projectId);
  if(!project)throw fail("project_not_found",404);
- return {policy,document:hydrateCreativeDocument(db,projectId,JSON.parse(project.document_json)),revision:project.revision};
+ // Read-only model rounds use a compact graph manifest, not all creative bodies.
+  return {policy,document:JSON.parse(project.document_json),revision:project.revision};
 }
 export function assertAssistantAgentReadClaim(db,{projectId,taskId,turnMessageId}){
  scoped(db,projectId,taskId,turnMessageId);
@@ -322,6 +413,7 @@ export function createAssistantAgentReadSession(db,{projectId,taskId,turnMessage
   seenRounds.add(round);
  }
  const nodes=()=>Array.isArray(original.document.nodes)?original.document.nodes:[];
+  const hydrateSelected=items=>hydrateCreativeDocument(db,projectId,{nodes:items}).nodes;
  const allowed=()=>{
   if(!original.policy.includeContext)return [];
   if(original.policy.scope==="overview")return nodes().slice(0,40);
@@ -354,19 +446,44 @@ export function createAssistantAgentReadSession(db,{projectId,taskId,turnMessage
    if(!get(args,["query"])||typeof args.query!=="string"||args.query.trim().length<1||args.query.length>80)
     throw fail("assistant_agent_tool_arguments_invalid",400);
    const term=args.query.trim().toLocaleLowerCase();
-   const found=allowed().filter(n=>
-    String(n.title??"").toLocaleLowerCase().includes(term)||
-    selected()&&typeof n.metadata?.content==="string"&&n.metadata.content.toLocaleLowerCase().includes(term));
-   data={matches:found.slice(0,12).map(n=>({id:n.id,type:n.type,title:safe(n.title,90)})),
+   const found=allowed().filter(n=>{
+    if(String(n.title??"").toLocaleLowerCase().includes(term))return true;
+    if(!selected())return false;
+    if(typeof n.metadata?.content==="string"&&n.metadata.content.toLocaleLowerCase().includes(term))
+     return true;
+    const ref=n.metadata?.creativePayloadRef;
+    if(!ref)return false;
+    if(ref.nodeId!==n.id||ref.schemaVersion!==1)throw fail("creative_payload_reference_invalid",422);
+    // Search selected text in SQLite without materializing full creative bodies.
+    const match=db.prepare(`SELECT instr(lower(COALESCE(
+      json_extract(payload_json,'$.content'),'')),?)>0 AS found
+      FROM creative_node_payloads WHERE project_id=? AND node_id=?`)
+     .get(term,projectId,n.id);
+    if(!match)throw fail("creative_payload_missing",422);
+    return !!match.found;
+   });
+    data={matches:found.slice(0,12).map(n=>({id:n.id,type:n.type,title:safe(n.title,90)})),
     truncated:found.length>12};
   }else if(name==="canvas_read_nodes"){
    if(!selected())throw fail("assistant_agent_context_scope_denied",403);
-   data=readCanvasNodes(new Map(allowed().map(node=>[node.id,node])),args);
-  }else if(name==="canvas_get_generation_settings"){
+    const compact=new Map(allowed().map(node=>[node.id,node]));
+    // Check the selection before fetching any creative payload, including
+    // when a request has invalid IDs or attempts to name an unselected node.
+    if(!Array.isArray(args.node_ids)||args.node_ids.length<1||args.node_ids.length>4||
+     args.node_ids.some(id=>!validCanvasNodeId(id))||
+     new Set(args.node_ids).size!==args.node_ids.length)
+     throw fail("assistant_agent_tool_arguments_invalid",400);
+    if(args.node_ids.some(id=>!compact.has(id)))
+     throw fail("assistant_agent_context_scope_denied",403);
+    const indexed=tryReadIndexedAgentEntry(db,projectId,compact,args);
+    data=indexed??readCanvasNodes(new Map(hydrateSelected(
+     args.node_ids.map(id=>compact.get(id))).map(node=>[node.id,node])),args);
+   }else if(name==="canvas_get_generation_settings"){
    if(!get(args,["node_id"])||args.node_id!==undefined&&!validCanvasNodeId(args.node_id))
     throw fail("assistant_agent_tool_arguments_invalid",400);
    if(!original.policy.includeContext)throw fail("assistant_agent_context_scope_denied",403);
-   const node=args.node_id===undefined?undefined:allowed().find(n=>n.id===args.node_id);
+   const compactNode=args.node_id===undefined?undefined:allowed().find(n=>n.id===args.node_id);
+    const node=compactNode?hydrateSelected([compactNode])[0]:undefined;
    if(args.node_id!==undefined&&(!selected()||!node))throw fail("assistant_agent_context_scope_denied",403);
    const row=db.prepare("SELECT value_json FROM ui_settings WHERE name='model_config'").get();
    const config=row?JSON.parse(row.value_json):{};

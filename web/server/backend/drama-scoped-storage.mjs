@@ -79,7 +79,7 @@ function readReferenceChoices(db,projectId,nodeId){
 }
 
 /** Returns null only for stages handled by the legacy source-paragraph route. */
-export function readPagedDramaScope(db,projectId,nodeId,{versionId,episodeId,sequenceId,entryId,offset=0,limit=50,summaryOnly=false,draft=false}={}){
+export function readPagedDramaScope(db,projectId,nodeId,{versionId,episodeId,sequenceId,entryId,offset=0,limit=50,summaryOnly=false,draft=false,includeReferenceChoices=true}={}){
  const node=db.prepare(nodeInfoSql).get(projectId,nodeId);
  if(!node){
   const project=db.prepare("SELECT 1 FROM projects WHERE id=? AND deleted_at IS NULL").get(projectId);
@@ -90,7 +90,7 @@ export function readPagedDramaScope(db,projectId,nodeId,{versionId,episodeId,seq
  if(!Number.isSafeInteger(offset)||offset<0||!Number.isSafeInteger(limit)||limit<1||limit>100)
   throw fail("drama_scope_pagination_invalid",400);
  const indexed=readIndexedDramaScope(db,projectId,nodeId,node,{draft,versionId,episodeId,sequenceId,entryId,offset,limit,summaryOnly});
- if(indexed)return {...indexed,referenceChoices:summaryOnly||node.type!=="drama:storyboard"?[]:
+ if(indexed)return {...indexed,referenceChoices:summaryOnly||!includeReferenceChoices||node.type!=="drama:storyboard"?[]:
   readReferenceChoices(db,projectId,nodeId)};
  const selected=resolveBody(db,projectId,nodeId,node,{draft,versionId});
  // Older drafts sometimes used fenced JSON. They remain readable without
@@ -134,7 +134,7 @@ export function readPagedDramaScope(db,projectId,nodeId,{versionId,episodeId,seq
    node.type==="drama:episodes"?readEpisodeDraft(pageBody):readAssetDraft(pageBody);
   if(!valid)throw fail("drama_draft_invalid");
  }
- const referenceChoices=summaryOnly||node.type!=="drama:storyboard"?[]:readReferenceChoices(db,projectId,nodeId);
+ const referenceChoices=summaryOnly||!includeReferenceChoices||node.type!=="drama:storyboard"?[]:readReferenceChoices(db,projectId,nodeId);
  return {versionId:selected.versionId,total,offset,limit,groups,entries,referenceChoices,
   entryDigests:entries.map(item=>({id:item.id,digest:digest(item)}))};
 }

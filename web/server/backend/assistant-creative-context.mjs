@@ -1,5 +1,5 @@
 import {assistantModelCommandTurns} from "./assistant-model-command-turns.mjs";
-import {hydrateCreativeDocument} from "./creative-payloads.mjs";
+// Character discovery uses only selected ordinary text nodes, never large creative payloads.
 /** P4.1: derive creative character candidates on demand from authoritative records.
  * No persistent index, no implicit promotion of model drafts into confirmed facts.
  * A candidate is only usable when the current frozen Task turn can disclose its source.
@@ -91,7 +91,7 @@ export function discoverAssistantCreativeCharacters(db,{projectId,taskId,turnMes
   const project=db.prepare("SELECT document_json,revision FROM projects WHERE id=? AND deleted_at IS NULL")
    .get(projectId);
   if(!project)throw fail("project_not_found",404);
-  const document=hydrateCreativeDocument(db,projectId,JSON.parse(project.document_json));
+  const document=JSON.parse(project.document_json);
   const chosen=new Set((policy.includedIds??[]).slice(0,12));
   const nodes=(document.nodes??[]).filter(n=>chosen.has(n.id)&&n.type==="text"&&
    (/(?:角色|人物|姓名)/.test(n.title??"")||/(?:角色|人物|姓名|外貌|性格)/.test(n.metadata?.content??"")));

@@ -50,6 +50,37 @@ async function press(div:HTMLElement,label:string){
  await act(async()=>{await new Promise(resolve=>setTimeout(resolve,20))});
 }
 describe("P3.4b3 workspace lifecycle",()=>{
+ it("renders tab descriptions only as tooltip triggers",async()=>{
+  const episode=await mount("episodes");
+  const workspace=episode.div.querySelector('[data-creative-workspace-node-id="episodes"]')!;
+  const expected=[
+   ["剧集编辑","按集编辑剧情、事件、场次及来源引用"],
+   ["分页与单条 CAS","按页读取、精准保存和批量提交草案"],
+   ["生成候选","按运行状态浏览候选，展开查看内容与采用选项"],
+   ["影响与历史","版本快照与上游影响直接在工作区内查看"],
+  ];
+  const tabs=[...workspace.querySelectorAll<HTMLButtonElement>('nav[aria-label="创作工作区功能"] button')];
+  expect(tabs).toHaveLength(expected.length);
+  for(const [index,[label,description]] of expected.entries()){
+   expect(tabs[index].textContent?.trim()).toBe(label);
+   expect(tabs[index].getAttribute("aria-description")).toBe(description);
+     }
+  await act(async()=>{tabs[3].focus();});
+   expect(document.querySelector('[data-drama-tab-tooltip="history"]')?.textContent).toBe(expected[3][1]);
+   await act(async()=>{tabs[3].blur();});
+   expect(document.querySelector('[data-drama-tab-tooltip="history"]')).toBeNull();
+   expect(workspace.textContent).not.toContain("按页读取、精准保存和批量提交草案");
+  expect(workspace.querySelector('[role="status"]')).toBeNull();
+
+  const board=await mount("storyboard");
+  const boardTabs=[...board.div.querySelectorAll<HTMLButtonElement>('nav[aria-label="创作工作区功能"] button')];
+  expect(boardTabs).toHaveLength(5);
+  expect(boardTabs[0].getAttribute("aria-description")).toBe("检查分镜结构与镜头安排");
+  expect(boardTabs[2].getAttribute("aria-description")).toBe("按镜头配置独立的视频生成参数");
+  await press(board.div,"分页与单条 CAS");
+  await press(board.div,"修改局部草案");
+  expect(board.div.querySelector('[role="status"]')?.textContent).toContain("1 组尚未保存");
+ });
  it("uses canvas theme tokens and keeps the same active tab when theme changes",async()=>{
   const {div,renderPanel}=await mount("episodes");
   const root=div.querySelector<HTMLElement>('[data-creative-workspace-node-id="episodes"]')!;

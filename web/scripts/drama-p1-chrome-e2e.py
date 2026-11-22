@@ -199,6 +199,38 @@ def main():
                       tabs?.querySelector('button[aria-pressed="true"]')?.textContent?.trim()==='剧集编辑'&&
                       tabs.scrollWidth>0;
                 })()"""),"maximized episode theme and tabs",35)))
+                check("episode_tabs_descriptions_only_on_tooltips",bool(page.js("""(() => {
+                    const root=document.querySelector('[data-creative-workspace-node-id="episodes"]');
+                    const nav=root?.querySelector('nav[aria-label="创作工作区功能"]');
+                    if(!nav||nav.nextElementSibling!==root.querySelector('[data-drama-workspace-content]'))return false;
+                    const pairs=[
+                     ['剧集编辑','按集编辑剧情、事件、场次及来源引用'],
+                     ['分页与单条 CAS','按页读取、精准保存和批量提交草案'],
+                     ['生成候选','按运行状态浏览候选，展开查看内容与采用选项'],
+                     ['影响与历史','版本快照与上游影响直接在工作区内查看']
+                    ];
+                    const buttons=[...nav.querySelectorAll('button')];
+                    return buttons.length===pairs.length&&pairs.every(([label,tip],i)=>
+                      buttons[i].textContent.trim()===label&&buttons[i].getAttribute('aria-description')===tip)&&
+                      ![...root.querySelectorAll('p')].some(p=>pairs.some(([,tip])=>p.textContent.trim()===tip));
+                })()""")))
+                check("episode_tab_tooltip_hover_trigger",bool(page.js("""(() => {
+                    const nav=document.querySelector('[data-creative-workspace-node-id="episodes"] nav');
+                    const btn=[...(nav?.querySelectorAll('button')||[])].find(b=>b.textContent.trim()==='影响与历史');
+                    if(!btn)return false;
+                    btn.dispatchEvent(new MouseEvent('mouseover',{bubbles:true}));
+                    return true;
+                })()""")))
+                check("episode_tab_tooltip_visible_on_hover",bool(wait_for(lambda:page.js("""(() => {
+                    const tip=document.querySelector('[data-drama-tab-tooltip="history"][role="tooltip"]');
+                    return !!tip&&tip.getBoundingClientRect().width>0&&
+                      tip.textContent?.trim()==='版本快照与上游影响直接在工作区内查看'&&
+                      document.querySelector('[data-creative-workspace-node-id="episodes"] nav button[aria-pressed="true"]')?.textContent?.trim()==='剧集编辑';
+                })()"""),"portal tooltip visible on React hover",18)))
+                page.js("""(() => {
+                    const btn=[...document.querySelectorAll('[data-creative-workspace-node-id="episodes"] nav button')].find(b=>b.textContent.trim()==='影响与历史');
+                    btn?.dispatchEvent(new MouseEvent('mouseout',{bubbles:true}));
+                })()""")
                 check("episode_workspace_split_editor",bool(wait_for(lambda:page.js("""(() => {
                     const root=document.querySelector('[data-creative-workspace-node-id="episodes"]');
                     const layout=root?.querySelector('[data-episode-editor-layout="expanded"]');

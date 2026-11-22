@@ -1,7 +1,8 @@
-import {lazy,Suspense,useCallback,useEffect,useRef,useState,type ReactNode} from "react";
+import {lazy,Suspense,useCallback,useEffect,useId,useRef,useState,type ReactNode} from "react";
+import {createPortal} from "react-dom";
 import {ConfigProvider,Modal} from "antd";
 import {BookOpenText,Clapperboard,Database,Film,History,LayoutList,ShieldAlert,Sparkles,X} from "lucide-react";
-import {canvasThemes} from "@/lib/canvas-theme";
+import {canvasThemes,type CanvasTheme} from "@/lib/canvas-theme";
 import {useThemeStore} from "@/stores/use-theme-store";
 import type {DramaWorkspaceTab} from "./drama-pipeline-node-panel";
 const EpisodeBrowser=lazy(()=>import("./drama-creative-scope-browser").then(m=>({default:m.DramaCreativeScopeBrowser})));
@@ -9,6 +10,59 @@ const StoryboardBrowser=lazy(()=>import("./drama-revision-browser").then(m=>({de
 
 export type DramaWorkspaceFocus={episodeId?:string;sequenceId?:string;shotId?:string};
 export type WorkspacePendingRegistration=(key:string,save:(()=>Promise<void>)|null)=>void;
+
+type WorkspaceTabItem={id:DramaWorkspaceTab;label:string;icon:typeof BookOpenText};
+
+function WorkspaceTabButton({item,description,active,theme,onSelect}:{
+ item:WorkspaceTabItem;description:string;active:boolean;theme:CanvasTheme;onSelect:()=>void;
+}){
+ const buttonRef=useRef<HTMLButtonElement>(null);
+ const tipId=useId();
+ const [hovered,setHovered]=useState(false);
+ const [focused,setFocused]=useState(false);
+ const [position,setPosition]=useState<{top:number;left:number}|null>(null);
+ const visible=hovered||focused;
+ const updatePosition=useCallback(()=>{
+  const rect=buttonRef.current?.getBoundingClientRect();
+  if(!rect)return;
+  const half=160;
+  const left=Math.max(Math.min(window.innerWidth-half-12,rect.left+rect.width/2),Math.min(half+12,window.innerWidth/2));
+  setPosition({top:rect.bottom+8,left});
+ },[]);
+ useEffect(()=>{
+  if(!visible)return;
+  updatePosition();
+  window.addEventListener("scroll",updatePosition,true);
+  window.addEventListener("resize",updatePosition);
+  return ()=>{
+   window.removeEventListener("scroll",updatePosition,true);
+   window.removeEventListener("resize",updatePosition);
+  };
+ },[visible,updatePosition]);
+ const Icon=item.icon;
+ return <>
+  <button ref={buttonRef} type="button" aria-pressed={active} aria-description={description}
+   aria-describedby={visible&&position?tipId:undefined}
+   className="inline-flex min-h-9 shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-lg border px-3 text-xs font-medium transition-opacity hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
+   style={active?{background:theme.toolbar.activeBg,color:theme.toolbar.activeText,
+    borderColor:theme.node.stroke,outlineColor:theme.node.activeStroke}:
+    {background:"transparent",color:theme.node.muted,borderColor:"transparent",
+     outlineColor:theme.node.activeStroke}}
+   onMouseEnter={()=>setHovered(true)} onMouseLeave={()=>setHovered(false)}
+   onFocus={()=>setFocused(true)} onBlur={()=>setFocused(false)}
+   onClick={()=>{setHovered(false);setFocused(false);onSelect();}}>
+   <Icon size={14} aria-hidden="true"/>{item.label}
+  </button>
+  {visible&&position&&typeof document!=="undefined"&&createPortal(
+   <span id={tipId} role="tooltip" data-drama-tab-tooltip={item.id}
+    className="pointer-events-none rounded-lg border px-3 py-2 text-xs leading-relaxed"
+    style={{position:"fixed",left:position.left,top:position.top,transform:"translateX(-50%)",
+     maxWidth:"min(320px,calc(100vw - 24px))",zIndex:10000,background:theme.node.panel,
+     color:theme.node.text,borderColor:theme.node.stroke,boxShadow:"0 8px 24px rgba(0,0,0,.20)"}}>
+    {description}
+   </span>,document.body)}
+ </>;
+}
 
 /** One page-level workspace, never a child of the culled CanvasNode. Each tab
  * mounts only its active feature. The unsaved CAS navigation guard is shared by
@@ -110,22 +164,16 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,onClose,onTa
     style={{color:theme.node.text,colorScheme:appearance}}>
     <nav aria-label="创作工作区功能" className="thin-scrollbar flex shrink-0 gap-1.5 overflow-x-auto border-b pb-2"
      style={{borderColor:theme.node.stroke}}>
-     {tabs.map(item=><button type="button" key={item.id} aria-pressed={tab===item.id}
-      className="inline-flex min-h-9 shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-lg border px-3 text-xs font-medium transition-opacity hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
-      style={tab===item.id?{background:theme.toolbar.activeBg,color:theme.toolbar.activeText,
-       borderColor:theme.node.stroke,outlineColor:theme.node.activeStroke}:
-       {background:"transparent",color:theme.node.muted,borderColor:"transparent",
-        outlineColor:theme.node.activeStroke}}
-      onClick={()=>request(item.id)}><item.icon size={14} aria-hidden="true"/>{item.label}</button>)}
+     {tabs.map(item=><WorkspaceTabButton key={item.id} item={item}
+       description={paneDesc[item.id]} active={tab===item.id} theme={theme}
+       onSelect={()=>request(item.id)}/>)}
     </nav>
-    <div className="flex min-h-0 shrink-0 items-center justify-between gap-2">
-     <p className="truncate text-[11px]" style={{color:theme.node.muted}}>{paneDesc[tab]}</p>
-     {pendingCount>0&&<span role="status"
-      className="shrink-0 rounded-md border px-2 py-1 text-[11px]"
+    {pendingCount>0&&<div className="flex min-h-0 shrink-0 justify-end">
+     <span role="status" className="rounded-md border px-2 py-1 text-[11px]"
       style={{...subtle,background:theme.toolbar.activeBg}}>
       {pendingCount} 组尚未保存的局部草案修改
-     </span>}
-    </div>
+     </span>
+    </div>}
     <div data-drama-workspace-content="" className={`thin-scrollbar min-h-0 min-w-0 flex-1 rounded-xl border p-3 sm:p-4 ${tab==="history"?"flex flex-col overflow-hidden":"overflow-y-auto overscroll-contain"}`}
      style={{...subtle}}>
      <Suspense fallback={<p role="status" className="text-xs" style={{color:theme.node.muted}}>正在按需加载工作区…</p>}>

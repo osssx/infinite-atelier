@@ -126,7 +126,7 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,onClose,onTa
       {pendingCount} 组尚未保存的局部草案修改
      </span>}
     </div>
-    <div data-drama-workspace-content="" className="thin-scrollbar min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain rounded-xl border p-3 sm:p-4"
+    <div data-drama-workspace-content="" className={`thin-scrollbar min-h-0 min-w-0 flex-1 rounded-xl border p-3 sm:p-4 ${tab==="history"?"flex flex-col overflow-hidden":"overflow-y-auto overscroll-contain"}`}
      style={{...subtle}}>
      <Suspense fallback={<p role="status" className="text-xs" style={{color:theme.node.muted}}>正在按需加载工作区…</p>}>
       {tab==="scope"?(episodeMode?
@@ -136,15 +136,15 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,onClose,onTa
         initialEpisodeId={focus.episodeId} initialShotId={focus.shotId} initialSequenceId={focus.sequenceId}
         onPendingChange={registerPending}/>):
        tab==="history"&&renderHistoryPanel
-        ? <div data-drama-history-layout="" className="grid min-h-0 min-w-0 gap-3 xl:grid-cols-[minmax(0,1.7fr)_minmax(280px,0.8fr)]">
-           <section aria-label="历史版本面板" className="min-w-0 space-y-2">
-            <div className="flex items-center justify-between gap-2 px-1">
+        ? <div data-drama-history-layout="" className="grid h-full min-h-0 min-w-0 flex-1 grid-rows-[minmax(0,2fr)_minmax(0,1fr)] gap-3 xl:grid-cols-[minmax(0,1.7fr)_minmax(280px,0.8fr)] xl:grid-rows-[minmax(0,1fr)]">
+           <section aria-label="历史版本面板" className="flex min-h-0 min-w-0 flex-col gap-2">
+            <div className="flex shrink-0 items-center justify-between gap-2 px-1">
              <h3 className="text-sm font-semibold">历史版本</h3>
              <span className="text-[11px]" style={{color:theme.node.muted}}>可查看、保存或恢复剧集草案快照</span>
             </div>
-            {renderHistoryPanel()}
+            <div data-drama-history-fill="" className="min-h-0 min-w-0 flex-1">{renderHistoryPanel()}</div>
            </section>
-           <section aria-label="上游影响面板" className="min-w-0 space-y-2">
+           <section aria-label="上游影响面板" className="thin-scrollbar min-h-0 min-w-0 space-y-2 overflow-y-auto overscroll-contain">
             <h3 className="px-1 text-sm font-semibold">上游影响</h3>
             {renderPanel(tab)}
            </section>

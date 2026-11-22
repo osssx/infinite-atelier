@@ -235,6 +235,27 @@ def main():
                     const preview=inline?.querySelector('article');
                     return !!chosen&&!!preview&&(preview.textContent||'').includes('第一集');
                 })()"""),"version list and historical episode preview",35)))
+                check("episode_history_fills_available_workspace_height",bool(wait_for(lambda:page.js("""(() => {
+                    const workspace=document.querySelector('[data-creative-workspace-node-id="episodes"]');
+                    const content=workspace?.querySelector('[data-drama-workspace-content]');
+                    const layout=content?.querySelector('[data-drama-history-layout]');
+                    const fill=layout?.querySelector('[data-drama-history-fill]');
+                    const inline=fill?.querySelector('[data-canvas-text-versions-inline]');
+                    const body=inline?.querySelector('[data-canvas-shortcuts-ignore]');
+                    const grid=body?.querySelector('.grid');
+                    const panes=grid?.querySelectorAll(':scope > section');
+                    if(!content||!layout||!fill||!inline||!body||!grid||!panes||panes.length!==2)return false;
+                    const a=content.getBoundingClientRect(),b=layout.getBoundingClientRect(),
+                      f=fill.getBoundingClientRect(),i=inline.getBoundingClientRect(),
+                      v=body.getBoundingClientRect(),g=grid.getBoundingClientRect();
+                    const close=(x,y)=>Math.abs(x-y)<=5;
+                    return b.height>360&&i.height>330&&g.height>160&&
+                       close(f.height,i.height)&&close(i.height,v.height)&&
+                       close(a.bottom-16,b.bottom)&&close(f.bottom,i.bottom)&&
+                       close(v.bottom,i.bottom)&&close(g.bottom,v.bottom)&&
+                       getComputedStyle(panes[0]).overflow==='hidden'&&
+                       getComputedStyle(panes[1]).overflow==='hidden';
+                })()"""),"inline historical versions stretch to full workspace height",35)))
                 check("episode_history_has_no_second_dialog",bool(page.js("""(() => {
                     const inline=document.querySelector('[data-canvas-text-versions-inline]');
                     const parent=inline?.closest('.ant-modal');

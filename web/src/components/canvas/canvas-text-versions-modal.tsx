@@ -169,7 +169,7 @@ export function CanvasTextVersionsModal({
 
     const body = (
         <div data-canvas-shortcuts-ignore className="flex min-h-0 min-w-0 flex-col"
-            style={{height:inline?"min(550px, calc(100dvh - 225px))":"min(620px, calc(100dvh - 140px))"}}
+            style={{height:inline?"100%":"min(620px, calc(100dvh - 140px))"}}
             onKeyDown={(event) => { if (event.key !== "Escape") event.stopPropagation(); }}>
                     <section className="shrink-0 border-b px-5 py-4 sm:px-6" style={{ borderColor: theme.node.stroke, background: theme.node.panel }}>
                         <div className="flex flex-col gap-2 sm:flex-row">
@@ -198,13 +198,13 @@ export function CanvasTextVersionsModal({
                         </div>
                     </section>
 
-                    <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-[minmax(100px,0.4fr)_minmax(0,1fr)] overflow-hidden md:h-[min(500px,62vh)] md:grid-cols-[280px_minmax(0,1fr)] md:grid-rows-1">
+                    <div className={`grid min-h-0 flex-1 grid-cols-1 overflow-hidden md:grid-cols-[280px_minmax(0,1fr)] md:grid-rows-1 ${inline?"grid-rows-[minmax(0,0.4fr)_minmax(0,1fr)]":"grid-rows-[minmax(100px,0.4fr)_minmax(0,1fr)] md:h-[min(500px,62vh)]"}`}>
                         <section className="flex min-h-0 flex-col overflow-hidden border-b md:border-b-0 md:border-r" style={{ background: theme.node.panel, borderColor: theme.node.stroke }}>
                             <div className="flex h-[52px] shrink-0 items-center justify-between border-b px-4 py-0" style={{ borderColor: theme.node.stroke }}>
                                 <div className="text-sm font-semibold leading-5" style={{ color: theme.node.muted }}>{t("canvas.textVersions.listTitle")}</div>
                                 <span className="text-xs tabular-nums" style={{ color: theme.node.faint }}>{t("canvas.textVersions.count", { count: manualCount, max: TEXT_VERSIONS_LIMIT })}</span>
                             </div>
-                            <div aria-label={t("canvas.textVersions.listTitle")} className="max-h-44 min-h-0 flex-1 overflow-y-auto p-2 md:max-h-none">
+                            <div aria-label={t("canvas.textVersions.listTitle")} className={`min-h-0 flex-1 overflow-y-auto p-2 ${inline?"max-h-none":"max-h-44 md:max-h-none"}`}>
                                 {listError ? <Button onClick={() => void handleRetry()}>{t("canvas.textVersions.retry")}</Button> : listLoading ? <p role="status">{t("canvas.textVersions.loading")}</p> : versions.length ? versions.map((version) => {
                                     const isSelected = selected?.id === version.id;
                                     const isCurrent = matchesCurrent(version);
@@ -321,7 +321,7 @@ export function CanvasTextVersionsModal({
       }}}>
        {inline
          ? <section aria-label="内嵌历史版本" data-canvas-text-versions-inline=""
-              className="min-h-0 min-w-0 overflow-hidden rounded-xl border"
+              className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-xl border"
               style={{background:theme.node.panel,borderColor:theme.node.stroke,color:theme.node.text}}>
               {body}
            </section>

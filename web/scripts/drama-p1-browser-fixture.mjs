@@ -23,7 +23,7 @@ const blobStore=createBlobStore({db,dataDir:root,maxBlobBytes:10000000});
 const projectArchive=createProjectArchive({db,blobStore});
 const projectId="drama-p1-browser",runModel="fixture-text";
 const e1={id:"shot-one",episodeId:"ep-one",order:1,description:"第一集，主角在家",characterVariantIds:["hero-day"],sceneId:"home",sceneVariantId:"home-day",propIds:[],keyPropIds:[]};
-const e2={...e1,id:"shot-two",episodeId:"ep-two",description:"第二集，主角出门"};
+const e2={...e1,id:"shot-two",episodeId:"ep-two",sequenceId:"seq-harbor",description:"第二集，主角出门"};
 const assetPlan={assets:[
  {id:"hero",kind:"character",name:"主角",description:"穿蓝色衣服",sourceRefs:[],variants:[{id:"hero-day",name:"日常",description:"蓝衣"}]},
  {id:"home",kind:"scene",name:"家",description:"共用场景",sourceRefs:[],variants:[{id:"home-day",name:"白天",description:"日光"}]}
@@ -34,7 +34,8 @@ const nodes=[
  format("assets","drama:assets",430,40,{dramaDraft:JSON.stringify(assetPlan)}),
  format("episodes","drama:episodes",430,450,{targetEpisodes:2,dramaDraft:JSON.stringify({episodes:[
   {id:"ep-one",title:"第一集",synopsis:"离开家",events:[],sourceRefs:[],ending:"出发"},
-  {id:"ep-two",title:"第二集",synopsis:"回家",events:[],sourceRefs:[],ending:"回家"}]})}),
+  {id:"ep-two",title:"第二集",synopsis:"回家",events:[],sourceRefs:[],ending:"回家",
+    sequences:[{id:"seq-harbor",title:"码头送别"}]}]})}),
  format("board","drama:storyboard",840,40,{dramaDraft:JSON.stringify({shots:[e1,e2]})})
 ];
 const connections=[["story","assets"],["story","episodes"],["assets","board"],["episodes","board"]]

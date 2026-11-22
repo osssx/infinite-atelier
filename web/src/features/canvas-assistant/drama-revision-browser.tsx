@@ -6,7 +6,7 @@ import {commitAssistantCanvasGraphWithSaveBarrier} from "@/stores/canvas/use-can
 import type {CanvasBackendProject} from "@/features/backend-sync/canvas-api";
 
 type Choice={id:string;name:string;kind:string;variants:{id:string;name:string}[]};
-type Scope={versionId:string|null;total:number;groups:{episodeId:string;total:number;sequenceIds:string[]}[];entries:DramaShot[];entryDigests:{id:string;digest:string}[];referenceChoices:Choice[]};
+type Scope={versionId:string|null;total:number;groups:{episodeId:string;total:number;sequenceIds:string[];sequenceTitles?:Record<string,string>}[];entries:DramaShot[];entryDigests:{id:string;digest:string}[];referenceChoices:Choice[]};
 function ShotDraftEditor({shot,choices,onSave,onPendingChange,pendingKey}:{shot:DramaShot;choices:Choice[];onSave:(changes:Record<string,unknown>)=>Promise<void>;onPendingChange?:WorkspacePendingRegistration;pendingKey?:string}){
     const [description,setDescription]=useState(shot.description);
     const [action,setAction]=useState(shot.action??"");
@@ -108,6 +108,7 @@ export function DramaRevisionBrowser({projectId,nodeId,initialEpisodeId,initialS
             .finally(()=>{if(active)setLoading(false);});
         return ()=>{active=false;};
     },[path,episodeId,sequenceId,offset,revisionId,refresh,pinnedShot]);
+    const selectedGroup=groups.find(item=>item.episodeId===episodeId);
     return <div className="grid min-w-0 gap-2 text-sm">
         {pinnedShot&&<button type="button" className="underline text-left" onClick={()=>{setPinnedShot("");setOffset(0);}}>显示当前剧集完整镜头列表</button>}
         <label><input type="checkbox" checked={editing} onChange={event=>{setEditing(event.target.checked);setPage(undefined);}}/> 编辑当前镜头草案</label>
@@ -119,7 +120,13 @@ export function DramaRevisionBrowser({projectId,nodeId,initialEpisodeId,initialS
         {!!episodeId&&<select aria-label="浏览场次" className="min-w-0 rounded border bg-transparent p-1" value={sequenceId}
             onChange={event=>{setSequence(event.target.value);setOffset(0);setPinnedShot("");}}>
             <option value="">全部场次</option>
-            {groups.find(item=>item.episodeId===episodeId)?.sequenceIds.map(id=><option key={id} value={id}>{id}</option>)}
+            {selectedGroup?.sequenceIds.map(id=>{
+                const titles=selectedGroup.sequenceTitles;
+                const title=(titles&&Object.hasOwn(titles,id)?titles[id]:undefined)?.trim();
+                return <option key={id} value={id} title={id}>
+                    {title||`未命名场次 · ${id.slice(0,8)}${id.length>8?"…":""}`}
+                </option>;
+            })}
         </select>}
         {loading&&<p role="status">正在读取…</p>}
         {error&&<p role="alert">{error}</p>}

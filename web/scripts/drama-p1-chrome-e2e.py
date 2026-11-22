@@ -1119,6 +1119,42 @@ def main():
              !content.querySelector('textarea')&&
              left?.right<=right?.left+3&&left?.top>=right?.top-5&&left?.top<=right?.top+5;
         })()"""),"storyboard responsive shot directory and read-only details",35)))
+        check("storyboard_scope_tab_open_for_sequence_titles",bool(wait_for(
+            lambda:node_button(page,"board","分页与单条 CAS"),"storyboard scoped CAS tab",25)))
+        check("storyboard_scope_select_second_episode",bool(wait_for(lambda:page.js("""(() => {
+            const root=document.querySelector('[data-creative-workspace-node-id="board"]');
+            const selector=[...(root?.querySelectorAll('label')||[])].find(label=>
+              (label.textContent||'').includes('浏览已确认剧集'))?.querySelector('select');
+            if(!selector||![...selector.options].some(opt=>opt.value==='ep-two'))return false;
+            Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set.call(selector,'ep-two');
+            selector.dispatchEvent(new Event('change',{bubbles:true}));
+            return selector.value==='ep-two';
+        })()"""),"select storyboard episode for named sequence",25)))
+        check("storyboard_scope_sequence_option_shows_name_not_uuid",bool(wait_for(lambda:page.js("""(() => {
+            const root=document.querySelector('[data-creative-workspace-node-id="board"]');
+            const select=root?.querySelector('select[aria-label="浏览场次"]');
+            const option=[...(select?.options||[])].find(item=>item.value==='seq-harbor');
+            return !!option&&option.textContent?.trim()==='码头送别'&&
+             option.value==='seq-harbor'&&
+             ![...select.options].some(item=>item.textContent?.trim()==='seq-harbor');
+        })()"""),"sequence stable ID rendered using upstream name",35)))
+        check("storyboard_scope_sequence_filter_preserves_stable_id",bool(wait_for(lambda:page.js("""(() => {
+            const root=document.querySelector('[data-creative-workspace-node-id="board"]');
+            const select=root?.querySelector('select[aria-label="浏览场次"]');
+            if(!select||![...select.options].some(item=>item.value==='seq-harbor'))return false;
+            Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set.call(select,'seq-harbor');
+            select.dispatchEvent(new Event('change',{bubbles:true}));
+            return select.value==='seq-harbor';
+        })()"""),"scope filter keeps sequenceId value",25)))
+        check("storyboard_scope_sequence_filter_loads_matching_shot",bool(wait_for(lambda:page.js("""(() => {
+            const root=document.querySelector('[data-creative-workspace-node-id="board"]');
+            const select=root?.querySelector('select[aria-label="浏览场次"]');
+            return select?.value==='seq-harbor'&&
+             [...(root?.querySelectorAll('details > summary')||[])].some(item=>
+               item.textContent?.trim()==='镜头 1 · shot-two');
+        })()"""),"named sequence filter returns correct shot",35)))
+        check("storyboard_scope_back_to_table",bool(wait_for(
+            lambda:node_button(page,"board","分镜表"),"return to storyboard table",25)))
         check("storyboard_field_local_edit_opens",bool(page.js("""(() => {
             const field=document.querySelector('[data-creative-workspace-node-id="board"] [data-shot-editable-field="description"]');
             const btn=field?.querySelector('button[aria-label="编辑画面描述"]');

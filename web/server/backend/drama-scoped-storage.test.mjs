@@ -15,8 +15,10 @@ const shot=(index,description="Shot "+index)=>({
 const stories=Array.from({length:100},(_,index)=>shot(index,"Description "+index+" ".repeat(1000)));
 const assets=Array.from({length:50},(_,index)=>({id:"prop-"+index,kind:"prop",
  name:"Prop "+index,description:"Description "+index,sourceRefs:[]}));
-const episodes=[{id:"episode-one",title:"One",synopsis:"A",ending:"Done",events:[],sourceRefs:[]},
- {id:"episode-two",title:"Two",synopsis:"B",ending:"Done",events:[],sourceRefs:[]}];
+const episodes=[{id:"episode-one",title:"One",synopsis:"A",ending:"Done",events:[],sourceRefs:[],
+  sequences:[{id:"one",title:"森林初遇"},{id:"two",title:"河边约定"}]},
+ {id:"episode-two",title:"Two",synopsis:"B",ending:"Done",events:[],sourceRefs:[],
+  sequences:[{id:"three",title:"寻找灯塔"},{id:"four",title:"风暴夜"}]}];
 const node=(id,type,metadata)=>({id,type,metadata});
 const projectDocument=()=>({title:"Paged scenes",nodes:[
  node("assets","drama:assets",{dramaDraft:JSON.stringify({assets}),dramaConfirmed:JSON.stringify({assets})}),
@@ -52,6 +54,12 @@ test("P3.3 200 nodes / 100 shots / 50 assets: SQLite filters one episode+sequenc
  assert.equal(summary.referenceChoices.length,0);
  assert.deepEqual(summary.groups.map(item=>[item.episodeId,item.total,item.sequenceIds]),
   [["episode-one",50,["one","two"]],["episode-two",50,["three","four"]]]);
+ assert.deepEqual(summary.groups.map(group=>group.sequenceTitles),
+  [{one:"森林初遇",two:"河边约定"},{three:"寻找灯塔",four:"风暴夜"}]);
+ const confirmed=readDramaRevisionScope(db,"large","board",{summaryOnly:true});
+ assert.equal(confirmed.groups[1].sequenceTitles.four,"风暴夜");
+ const historic=readPagedDramaScope(db,"large","board",{versionId:"published-old",summaryOnly:true});
+ assert.equal(historic.groups[0].sequenceTitles.one,"森林初遇");
 });
 test("P3.3 confirmed, frozen history and draft remain distinct; editing a page preserves all other shots",t=>{
  const db=fixture(t);

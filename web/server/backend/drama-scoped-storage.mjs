@@ -78,6 +78,70 @@ function readReferenceChoices(db,projectId,nodeId){
  });
 }
 
+/** Add human-readable titles from the single linked confirmed episode plan.
+ * The stable IDs stay untouched. The indexed path projects just sequence
+ * titles in SQLite without fetching whole episode bodies into JavaScript.
+ */
+function withSequenceTitles(db,projectId,nodeId,groups){
+ if(!groups.some(group=>group.sequenceIds?.length))return groups;
+ try{
+  const parents=jsonQuery(db,`SELECT json_extract(n.value,'$.id') AS id
+   FROM projects p,json_each(p.document_json,'$.nodes') AS n
+   WHERE p.id=? AND p.deleted_at IS NULL
+    AND json_extract(n.value,'$.type')='drama:episodes'
+    AND EXISTS(SELECT 1 FROM json_each(p.document_json,'$.connections') AS edge
+     WHERE json_extract(edge.value,'$.fromNodeId')=json_extract(n.value,'$.id')
+      AND json_extract(edge.value,'$.toNodeId')=?)`,projectId,nodeId);
+  if(parents.length!==1)return groups;
+  const parentId=parents[0].id;
+  const parent=db.prepare(nodeInfoSql).get(projectId,parentId);
+  if(!parent)return groups;
+  const confirmedId=parent.confirmedVersionId;
+  const historical=confirmedId&&db.prepare(`SELECT entry_count,unique_count FROM creative_scope_history_state
+   WHERE project_id=? AND node_id=? AND version_id=? AND kind='episodes'`)
+   .get(projectId,parentId,confirmedId);
+  const current=!confirmedId&&db.prepare(`SELECT entry_count,unique_count FROM creative_scope_index_state
+   WHERE project_id=? AND node_id=? AND stage='confirmed' AND kind='episodes'`)
+   .get(projectId,parentId);
+  let rows=[];
+  if(historical&&historical.entry_count===historical.unique_count){
+   rows=jsonQuery(db,`SELECT json_extract(i.entry_json,'$.id') AS episodeId,
+    json_extract(seq.value,'$.id') AS sequenceId,json_extract(seq.value,'$.title') AS title
+    FROM creative_scope_history_entries AS i,json_each(i.entry_json,'$.sequences') AS seq
+    WHERE i.project_id=? AND i.node_id=? AND i.version_id=? AND i.kind='episodes'`,
+    projectId,parentId,confirmedId);
+  }else if(current&&current.entry_count===current.unique_count){
+   rows=jsonQuery(db,`SELECT json_extract(i.entry_json,'$.id') AS episodeId,
+    json_extract(seq.value,'$.id') AS sequenceId,json_extract(seq.value,'$.title') AS title
+    FROM creative_scope_entry_index AS i,json_each(i.entry_json,'$.sequences') AS seq
+    WHERE i.project_id=? AND i.node_id=? AND i.stage='confirmed' AND i.kind='episodes'`,
+    projectId,parentId);
+  }else{
+   const selected=resolveBody(db,projectId,parentId,parent,{draft:false});
+   const body=selected.body.trim().replace(/^```(?:json)?\s*([\s\S]*?)\s*```$/i,"$1");
+   if(body&&db.prepare("SELECT json_valid(?) AS valid").get(body).valid){
+    rows=jsonQuery(db,`SELECT json_extract(ep.value,'$.id') AS episodeId,
+     json_extract(seq.value,'$.id') AS sequenceId,json_extract(seq.value,'$.title') AS title
+     FROM json_each(?,'$.episodes') AS ep,json_each(ep.value,'$.sequences') AS seq`,body);
+   }
+  }
+  const names=new Map();
+  for(const row of rows){
+   if(typeof row.episodeId==="string"&&typeof row.sequenceId==="string"&&
+    typeof row.title==="string"&&row.title.trim())
+    names.set(row.episodeId+"\u0000"+row.sequenceId,row.title.trim());
+  }
+  return groups.map(group=>({...group,sequenceTitles:Object.fromEntries(
+   group.sequenceIds.flatMap(id=>{
+    const title=names.get(group.episodeId+"\u0000"+id);
+    return title?[[id,title]]:[];
+   }))}));
+ }catch{
+  // Missing/legacy upstream metadata must not block the scoped shot query.
+  return groups;
+ }
+}
+
 /** Returns null only for stages handled by the legacy source-paragraph route. */
 export function readPagedDramaScope(db,projectId,nodeId,{versionId,episodeId,sequenceId,entryId,offset=0,limit=50,summaryOnly=false,draft=false,includeReferenceChoices=true}={}){
  const node=db.prepare(nodeInfoSql).get(projectId,nodeId);
@@ -90,7 +154,9 @@ export function readPagedDramaScope(db,projectId,nodeId,{versionId,episodeId,seq
  if(!Number.isSafeInteger(offset)||offset<0||!Number.isSafeInteger(limit)||limit<1||limit>100)
   throw fail("drama_scope_pagination_invalid",400);
  const indexed=readIndexedDramaScope(db,projectId,nodeId,node,{draft,versionId,episodeId,sequenceId,entryId,offset,limit,summaryOnly});
- if(indexed)return {...indexed,referenceChoices:summaryOnly||!includeReferenceChoices||node.type!=="drama:storyboard"?[]:
+ if(indexed)return {...indexed,groups:node.type==="drama:storyboard"?
+  withSequenceTitles(db,projectId,nodeId,indexed.groups):indexed.groups,
+  referenceChoices:summaryOnly||!includeReferenceChoices||node.type!=="drama:storyboard"?[]:
   readReferenceChoices(db,projectId,nodeId)};
  const selected=resolveBody(db,projectId,nodeId,node,{draft,versionId});
  // Older drafts sometimes used fenced JSON. They remain readable without
@@ -135,6 +201,7 @@ export function readPagedDramaScope(db,projectId,nodeId,{versionId,episodeId,seq
   if(!valid)throw fail("drama_draft_invalid");
  }
  const referenceChoices=summaryOnly||!includeReferenceChoices||node.type!=="drama:storyboard"?[]:readReferenceChoices(db,projectId,nodeId);
- return {versionId:selected.versionId,total,offset,limit,groups,entries,referenceChoices,
-  entryDigests:entries.map(item=>({id:item.id,digest:digest(item)}))};
+ return {versionId:selected.versionId,total,offset,limit,
+  groups:node.type==="drama:storyboard"?withSequenceTitles(db,projectId,nodeId,groups):groups,
+  entries,referenceChoices,entryDigests:entries.map(item=>({id:item.id,digest:digest(item)}))};
 }

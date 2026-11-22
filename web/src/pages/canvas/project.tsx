@@ -3253,7 +3253,8 @@ function AtelierCanvasPage() {
                     if(!await tailAvailable)throw Error("本地 FFmpeg 不可用");
                 }
                 const previousIncluded=previous&&(items.some(item=>item.shotId===previous.shotId)||
-                    resumingItems.some(item=>item.shotId===previous.shotId&&item.jobId));
+                    resumingItems.some(item=>item.shotId===previous.shotId&&item.jobId&&
+                        !["failed","cancelled","blocked","submission_unknown","blocked_credential"].includes(item.status)));
                 const takes=previous?shotTakes(previous,graph.nodes):[];
                 const take=previous&&!previousIncluded?(previous.take??(takes.length===1?takes[0]:undefined)):undefined;
                 if(previous&&!previousIncluded&&!take&&takes.length>1){checks.push({shotId:shot.shotId,state:"choose",reason:"请选定上一镜成品"});continue;}
@@ -3319,7 +3320,8 @@ function AtelierCanvasPage() {
         if(!shotBatch)return;
         let body:Record<string,unknown>={action,shotId,artifactId};
         if(action==="resume"){
-            const blocked=new Set(shotBatch.items.filter(item=>item.status==="blocked"&&!item.jobId).map(item=>item.shotId));
+            const blocked=new Set(shotBatch.items.filter(item=>(item.status==="blocked"&&!item.jobId)||
+                (["failed","cancelled"].includes(item.status)&&Boolean(item.jobId))).map(item=>item.shotId));
             const inspection=await prepareShotBatch(true,blocked,shotBatch.items);
             checkedShots.current=inspection.signatures;setShotChecks(inspection.checks);
             const result=await prepareShotBatch(false,new Set(inspection.signatures.keys()),shotBatch.items);

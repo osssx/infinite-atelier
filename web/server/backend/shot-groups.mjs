@@ -11,7 +11,7 @@ const encode=value=>stableJson(JSON.parse(JSON.stringify(value)));
 const digest=value=>createHash("sha256").update(encode(value)).digest("hex");
 const terminal=new Set(["succeeded","failed","cancelled","blocked_credential"]);
 const parse=row=>JSON.parse(row.snapshot_json);
-const publicView=(row,items)=>({id:row.id,groupId:row.group_id??undefined,items:items.map(({shotId,status,reason,jobId,tail,choices})=>({shotId,status,reason,jobId,tail,choices}))});
+const publicView=(row,items)=>({id:row.id,groupId:row.group_id??undefined,items:items.map(({shotId,status,reason,jobId,tail,choices,retryCount,retryFromJobId})=>({shotId,status,reason,jobId,tail,choices,retryCount,retryFromJobId}))});
 
 export function createShotBatches({db,blobStore,tailFrames,instanceIds,instanceOrigin=()=>null,objectInfo}){
  const inspections=new Map();
@@ -61,7 +61,8 @@ export function createShotBatches({db,blobStore,tailFrames,instanceIds,instanceO
   if(!shot||Boolean(item.continuitySourceId)!==(shot.mode==="continuity")||
      (previous?.shotId??null)!==(item.previousShotId??null)||
      !project.document.nodes.some(node=>node.id===item.nodeId&&node.metadata?.groupId===groupId)||
-     (item.take&&previous?.take&&stableJson(previous.take)!==stableJson(item.take)))
+     (item.take&&previous?.take&&stableJson(previous.take)!==stableJson(item.take))||
+      (item.predecessorTakeDigest!==undefined&&item.predecessorTakeDigest!==digest(previous?.take??null)))
    throw fail("shot_group_changed");
   if(item.take&&item.takeSourceNodeId&&previous?.generationNodeId!==item.takeSourceNodeId)throw fail("shot_group_changed");
   return previous;
@@ -102,12 +103,15 @@ export function createShotBatches({db,blobStore,tailFrames,instanceIds,instanceO
  function enqueue(row,project,item,tail){
   validate(project,row.group_id,item);
   if(active(project.id,item.nodeId))throw fail("backend_prior_job_not_terminal");
-  const idempotencyKey="shot-"+digest([row.id,item.shotId]);
+  const idempotencyKey="shot-"+digest((item.retryCount??0)>0?
+   [row.id,item.shotId,item.retryCount]:[row.id,item.shotId]);
   const original=item.snapshot.comfyRequest;
   const request={...original,projectId:project.id,canvasRevision:String(project.revision),idempotencyKey,
    externalInputs:original.externalInputs.map(ref=>tail&&ref.sourceNodeId===item.continuitySourceId?
     {...ref,assetId:tail.blobId,sha256:tail.blobId}:ref)};
-  const snapshot={...item.snapshot,comfyRequest:request,localShotBatch:true};
+  const snapshot={...item.snapshot,comfyRequest:request,localShotBatch:true,
+    ...((item.retryCount??0)>0?{localShotRetry:{batchId:row.id,shotId:item.shotId,
+     retryCount:item.retryCount,retryFromJobId:item.retryFromJobId}}:{})};
   const {jobId}=submitJobInTransaction(db,{projectId:project.id,targetNodeId:item.nodeId,expectedProjectRevision:project.revision,
    sourceNodeFingerprint:item.sourceNodeFingerprint,idempotencyKey,requestFingerprint:digest(snapshot),executionMode:"poll",snapshot});
   return {...item,status:"queued",jobId,tail,choices:undefined,reason:undefined};
@@ -127,7 +131,13 @@ export function createShotBatches({db,blobStore,tailFrames,instanceIds,instanceO
    if(project.revision!==expectedProjectRevision)throw fail("project_revision_conflict");
    const row={id:randomUUID(),project_id:projectId,group_id:groupId??null};
    const items=[];
-   for(const item of input){
+   for(const inputItem of input){
+     // Attempt number and selected predecessor evidence are server-owned,
+     // never accepted from a fresh batch submission.
+     const item=inputItem&&typeof inputItem==="object"&&!Array.isArray(inputItem)?{...inputItem}:inputItem;
+     if(item&&typeof item==="object"){
+      delete item.retryCount;delete item.retryFromJobId;delete item.predecessorTakeDigest;
+     }
     try{
      const dependency=groupFence(project,groupId,item);
      validate(project,groupId,item);
@@ -135,7 +145,8 @@ export function createShotBatches({db,blobStore,tailFrames,instanceIds,instanceO
      if(item.continuitySourceId){
       if(!item.take&&!items.some(previous=>previous.shotId===dependency.shotId&&previous.status!=="blocked"))throw fail("shot_handoff_wait");
       if(item.take&&items.some(previous=>previous.shotId===dependency.shotId))throw fail("shot_batch_source_conflict");
-      items.push({...item,configFence:configFence(project,item),takeSourceNodeId:dependency.generationNodeId,status:"waiting"});
+      items.push({...item,configFence:configFence(project,item),takeSourceNodeId:dependency.generationNodeId,
+        predecessorTakeDigest:digest(dependency.take??null),status:"waiting"});
      }else items.push(enqueue(row,project,item));
     }catch(error){items.push({shotId:item.shotId,nodeId:item.nodeId,status:"blocked",reason:error.code??error.message,snapshot:item.snapshot,sourceNodeFingerprint:item.sourceNodeFingerprint,previousShotId:item.previousShotId,take:item.take,continuitySourceId:item.continuitySourceId});}
    }
@@ -255,16 +266,43 @@ export function createShotBatches({db,blobStore,tailFrames,instanceIds,instanceO
     if(!choices?.some(choice=>choice.artifactId===body.artifactId))throw fail("shot_choice_invalid",400);
     updated=items.map(value=>value===item?{...value,status:"waiting",choice:body.artifactId,choices:undefined}:value);
    }else if(body?.action==="resume"){
-    if(project.revision!==body.expectedProjectRevision||!Array.isArray(body.items))throw fail("stale_generation_source");
+    if(project.revision!==body.expectedProjectRevision||!Array.isArray(body.items))
+     throw fail("stale_generation_source");
+    if(body.items.length>128||new Set(body.items.map(item=>item?.shotId)).size!==body.items.length)
+     throw fail("shot_batch_invalid",400);
     const replacements=new Map(body.items.map(item=>[item.shotId,item]));
     updated=items.map(item=>{
-     if(item.jobId||item.status!=="blocked"||!replacements.has(item.shotId))return item;
      const replacement=replacements.get(item.shotId);
+     if(!replacement)return item;
+     // Persisted batch snapshots may say "queued" even when their Job
+     // has since failed. The authoritative Job terminal state decides
+     // if an explicit retry is legal. Unknown/submitting/running/blocked
+     // credentials are NEVER assumed safe to resubmit.
+     const prior=item.jobId?db.prepare("SELECT status FROM jobs WHERE id=? AND project_id=?")
+      .get(item.jobId,projectId):null;
+     const failedJob=prior&&["failed","cancelled"].includes(prior.status);
+     if(item.jobId&&!failedJob||!item.jobId&&item.status!=="blocked")return item;
      try{
-      if(replacement.nodeId!==item.nodeId)throw fail("shot_item_invalid");
+      if(replacement.nodeId!==item.nodeId||replacement.shotId!==item.shotId)
+       throw fail("shot_item_invalid");
       const previous=groupFence(project,row.group_id,replacement);
       validate(project,row.group_id,replacement);
-      return replacement.continuitySourceId?{...replacement,configFence:configFence(project,replacement),takeSourceNodeId:previous.generationNodeId,status:"waiting"}:enqueue(row,project,replacement);
+      const retryCount=(item.retryCount??0)+(failedJob?1:0);
+      if(!Number.isSafeInteger(retryCount)||retryCount>20)throw fail("shot_retry_limit_exceeded",422);
+      // Server-owned retry history and per-attempt key; never reuse the
+      // original request's immutable idempotency key after terminal failure.
+      const next={shotId:item.shotId,nodeId:item.nodeId,
+       sourceNodeFingerprint:replacement.sourceNodeFingerprint,
+       snapshot:replacement.snapshot,
+       ...(replacement.previousShotId?{previousShotId:replacement.previousShotId}:{}),
+       ...(replacement.continuitySourceId?{continuitySourceId:replacement.continuitySourceId}:{}),
+       ...(replacement.take?{take:replacement.take}:{}),
+       ...(retryCount?{retryCount}:{}),
+       ...(failedJob?{retryFromJobId:item.jobId}:
+        item.retryFromJobId?{retryFromJobId:item.retryFromJobId}:{})};
+      return next.continuitySourceId?{...next,configFence:configFence(project,next),
+       takeSourceNodeId:previous.generationNodeId,
+       predecessorTakeDigest:digest(previous.take??null),status:"waiting"}:enqueue(row,project,next);
      }catch(error){return {...item,reason:error.code??error.message};}
     });
    }else throw fail("shot_action_invalid",400);

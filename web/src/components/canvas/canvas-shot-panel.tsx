@@ -9,7 +9,7 @@ import {acquireMediaPreview} from "@/services/media-preview-storage";
 import type {CanvasTheme} from "@/lib/canvas-theme";
 
 export type ShotCheck = {shotId:string;state:"ready"|"takeReady"|"waiting"|"choose"|"blocked";reason?:string};
-export type ShotBatchItem = {shotId:string;status:string;reason?:string;jobId?:string;tail?:{blobId:string};choices?:Array<{artifactId:string;storageKey?:string}>};
+export type ShotBatchItem = {shotId:string;status:string;reason?:string;jobId?:string;tail?:{blobId:string};choices?:Array<{artifactId:string;storageKey?:string}>;retryCount?:number;retryFromJobId?:string};
 
 const checkLabels={ready:"可立即提交",takeReady:"前镜已就绪 · 待确认",waiting:"等待前镜生成",choose:"需选择成品",blocked:"需修复"};
 const batchLabels:Record<string,string>={pending:"待提交",waiting:"等待前镜",choose:"需选择成品",queued:"已入队",preparing:"准备中",submitting:"提交中",running:"生成中",collecting:"正在收集产物",succeeded:"已完成",failed:"失败",blocked:"已暂停",stopped:"已停止",cancelled:"已取消",submission_unknown:"待核实"};
@@ -20,6 +20,7 @@ const batchReasons:Record<string,string>={
  shot_handoff_artifact_missing:"前镜缺少可用成品，请检查落图状态或选用本地成品",
  shot_handoff_source_changed:"已选用的前镜成品变化，请重新检查",
  backend_prior_job_not_terminal:"此镜头已有活动或待核实任务，请先处理原任务",
+ shot_retry_limit_exceeded:"该镜头已达到显式重试次数上限，请另建批次",
  audio_extraction_tool_unavailable:"本地 FFmpeg 不可用",
 };
 
@@ -103,7 +104,7 @@ export function CanvasShotPanel({title,theme,shots,nodes,editable,busy,checks,it
    <Button type="primary" disabled={busy||ready+takeReady+waiting===0} onClick={onConfirm}>{takeReady&&!ready&&!waiting?
     `提取尾帧并生成 ${takeReady} 镜`:`确认生成 ${ready+takeReady+waiting} 镜`}</Button>
    {hasPending&&<Button disabled={busy} onClick={onStop}>停止后续提交</Button>}
-   {items.some(item=>item.status==="blocked")&&<Button disabled={busy} onClick={onResume}>重新检查并继续</Button>}
+   {items.some(item=>["blocked","failed","cancelled"].includes(item.status))&&<Button disabled={busy} onClick={onResume}>重新检查并继续</Button>}
   </Space>
  </div>}>
   {shots.map((shot,index)=>{
@@ -123,6 +124,7 @@ export function CanvasShotPanel({title,theme,shots,nodes,editable,busy,checks,it
        </Checkbox>
        <div className="flex flex-wrap justify-end gap-1">
         {generationLabel&&<Tag style={badge} className="m-0">{generationLabel}</Tag>}
+         {item?.retryCount&&<Tag style={badge} className="m-0" title={item.retryFromJobId?`上一 Job：${item.retryFromJobId}`:undefined}>重试第 {item.retryCount} 次</Tag>}
         {item&&item.status!=="succeeded"&&takes.length>0&&<Tag style={badge} className="m-0">已有成品</Tag>}
         {check&&<Tag style={{...badge,background:colors.panel,borderColor:check.state==="blocked"?colors.muted:colors.stroke}} className="m-0">{checkLabels[check.state]}</Tag>}
        </div>

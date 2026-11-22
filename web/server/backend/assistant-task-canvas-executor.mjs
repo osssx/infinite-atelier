@@ -1,4 +1,5 @@
 import {hydrateCreativeDocument} from "./creative-payloads.mjs";
+import {freezeAssistantTaskScopedPatches,applyAssistantTaskScopedPatches} from "./assistant-task-scoped-patches.mjs";
 import {freezeAssistantCanvasScopeWitness,assertAssistantCanvasScopeWitness} from "./assistant-task-canvas-scope-witness.mjs";
 import {createHash,randomUUID} from "node:crypto";
 import {stableJson,writeTransaction,assertNoRawCredentials} from "./repository.mjs";
@@ -154,6 +155,8 @@ export function planAssistantCanvasStep(db,{projectId,taskId,requestId,
   const preview=applyFrozenAssistantCanvasPlan(original,action,refs,{externalRefs,
    loadTemplate:loadPinnedComfyTemplate(db),config:ui.value});
   validateProjectDocument(preview.document);
+  const scopedPatches=scopeWitness?freezeAssistantTaskScopedPatches(db,projectId,
+   compact,original,preview.document,actions):null;
   const graphPreview=Object.fromEntries(["nodes","connections"].map(key=>{
    const before=new Map(original[key].map(item=>[item.id,item]));
    const after=new Map(preview.document[key].map(item=>[item.id,item]));
@@ -163,6 +166,7 @@ export function planAssistantCanvasStep(db,{projectId,taskId,requestId,
   const preconditions={projectRevision:expectedProjectRevision,projectGraphDigest:hash(original),
    refs,requiresApproval:true,finalizeTask,
    ...(scopeWitness?{scopeWitness}:{}),
+   ...(scopedPatches?{scopedPatches}:{}),
    ...(deliverableSpec?{deliverableSpec,deliverableSpecDigest:hash(deliverableSpec)}:{}),
    ...(agentRunBinding?{agentRunBinding}:{}),
    ...(storyReviewBinding?{storyReviewBinding}:{}),
@@ -254,20 +258,39 @@ export function commitAssistantCanvasAttempt(db,{projectId,taskId,stepId,
   const ui=modelConfig(db);
   if(pre.modelConfigRevision!==undefined&&pre.modelConfigRevision!==ui.revision)
    throw fail("assistant_step_source_changed");
-  const applied=applyFrozenAssistantCanvasPlan(current,action,pre.refs,{externalRefs,
-   loadTemplate:loadPinnedComfyTemplate(db),config:ui.value});
-  const content=validateProjectDocument(applied.document),at=Date.now(),revision=task.revision+1;
-  // No async/external side effects may occur inside this BEGIN IMMEDIATE block.
-  const updated=db.prepare("UPDATE projects SET document_json=?,revision=? WHERE id=? AND revision=? AND deleted_at IS NULL")
-   .run(content,revision,projectId,task.revision);
-  if(updated.changes!==1)throw fail("assistant_step_source_changed");
+  const at=Date.now(),revision=task.revision+1;
+  let applied;
+  if(pre.scopedPatches){
+   // The Step/Attempt still owns ONE transaction. No separate HTTP batch,
+   // approval shortcut, project document rewrite or Task receipt is allowed.
+   const count=applyAssistantTaskScopedPatches(db,projectId,action.actions,
+    pre.scopedPatches,validateProjectDocument,emitProjectEvent);
+   const updated=db.prepare("UPDATE projects SET revision=? WHERE id=? AND revision=? AND deleted_at IS NULL")
+    .run(revision,projectId,task.revision);
+   if(updated.changes!==1)throw fail("assistant_step_source_changed");
+   const next=hydrateCreativeDocument(db,projectId,compact);
+   validateProjectDocument(next);
+   // The model was approved against the FULL original graph preview.
+   // SQL updates must reproduce that exact result or the transaction rolls back.
+   if(hash(next)!==pre.scopedPatches.expectedPostGraphDigest)
+    throw fail("assistant_step_source_changed");
+   applied={document:next,applied:count};
+  }else{
+   applied=applyFrozenAssistantCanvasPlan(current,action,pre.refs,{externalRefs,
+    loadTemplate:loadPinnedComfyTemplate(db),config:ui.value});
+   const content=validateProjectDocument(applied.document);
+   const updated=db.prepare("UPDATE projects SET document_json=?,revision=? WHERE id=? AND revision=? AND deleted_at IS NULL")
+    .run(content,revision,projectId,task.revision);
+   if(updated.changes!==1)throw fail("assistant_step_source_changed");
+  }
   emitProjectEvent(db,{id:projectId,revision,kind:"updated"});
   // Fault-injection only; a throw proves even a committed project UPDATE rolls back.
   if(beforeReceipt)beforeReceipt();
   const receipt={attemptId,executionKey:active.executionKey,planVersion,actionDigest,
    projectRevision:revision,projectGraphDigest:hash(applied.document),
    refs:pre.refs,applied:applied.applied,committedAt:at,
-   ...(pre.scopeWitness?{scopeWitnessDigest:pre.scopeWitness.contentDigest}:{})};
+   ...(pre.scopeWitness?{scopeWitnessDigest:pre.scopeWitness.contentDigest}:{}),
+   ...(pre.scopedPatches?{executionPath:"scoped_cas"}:{})};
   const finalized=db.prepare("UPDATE assistant_task_steps SET status='succeeded',receipt_json=?,receipt_trust='server_committed',result_json=?,lease_owner=NULL,lease_expires_at=NULL,updated_at=? WHERE id=? AND status='running' AND lease_owner=? AND plan_version=?")
    .run(json(receipt),json({applied:applied.applied,refs:pre.refs}),at,stepId,leaseOwner,planVersion);
   if(finalized.changes!==1)throw fail("assistant_step_lease_invalid");

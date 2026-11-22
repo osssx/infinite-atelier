@@ -333,7 +333,15 @@ test("P3.2f real local Comfy: pre-submit failed predecessor resumes after two ba
    assert.ok(current,"durable batch was lost");
    assert.ok(!current.items.some(item=>["submission_unknown","blocked"].includes(item.status)),
     JSON.stringify({items:current.items,jobs:backend.db.prepare("SELECT id,status,upstream_task_id FROM jobs").all()}));
-   if(current.items.every(item=>item.status==="succeeded")){completed=current;break;}
+   if(current.items.every(item=>item.status==="succeeded")){
+    // Comfy Job terminal receipt is ahead of the separate asynchronous CAS
+    // materializer. Await all three materializations, not just Job status.
+    const ids=current.items.map(item=>item.jobId);
+    const ready=backend.db.prepare(`SELECT COUNT(*) n FROM artifacts a JOIN materializations m ON m.artifact_id=a.id
+     WHERE a.job_id IN (?,?,?) AND a.kind='video' AND m.status='materialized'`)
+     .get(...ids).n;
+    if(ready>=3){completed=current;break;}
+   }
    await new Promise(resolve=>setTimeout(resolve,300));
   }
   assert.ok(completed,"real Comfy retry+continuation did not complete after SQLite restart");

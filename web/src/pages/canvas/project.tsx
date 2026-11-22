@@ -4421,7 +4421,7 @@ function AtelierCanvasPage() {
 
     const renderNodeContentPanel = useCallback(
         (contentNode: CanvasNodeData) => contentNode.metadata?.creativePayloadRef ? (
-            <LazyCreativeNode projectId={projectId} nodeId={contentNode.id} storyboard={contentNode.type==="drama:storyboard"}/>
+            <LazyCreativeNode projectId={projectId} nodeId={contentNode.id} stage={contentNode.type}/>
         ) : contentNode.type === "drama:source" ? (
             <DramaSourceNode key={contentNode.id} node={contentNode} onChange={patch => handleConfigNodeChange(contentNode.id, patch)}
                 onOpenVersions={() => openTextVersions(contentNode.id)} onConfirmVersion={draft => confirmDramaVersion(contentNode.id,draft)}

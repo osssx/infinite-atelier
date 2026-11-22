@@ -110,6 +110,32 @@ def main():
         check("loaded_backend_project",first["ok"] is True)
         original=find_node(first["data"],"first-config")
         original_links=[e for e in first["data"]["document"]["connections"] if e["toNodeId"]=="first-config"]
+
+        # P3.3: browse the off-graph asset/episode summaries while full editor
+        # content is still unloaded; this must not expand whole drama bodies.
+        for stage,count,label in (("assets",2,"资产"),("episodes",2,"剧集")):
+            def open_scope():
+                return bool(page.js("""(() => {
+                  const root=document.querySelector('[data-node-id=%s]');
+                  const button=root?.querySelector('[aria-label=%s] button[aria-expanded]');
+                  if(!button)return false;
+                  if(button.getAttribute('aria-expanded')==='false')button.click();
+                  return true;
+                })()"""%(json.dumps(stage),json.dumps(label+"独立存储分页浏览",ensure_ascii=False))))
+            check("p33_lazy_"+stage+"_browse_click",bool(wait_for(open_scope,"P3.3 open scope "+stage,25)))
+            def scope_loaded():
+                return bool(page.js("""(() => {
+                   const root=document.querySelector('[data-node-id=%s]');
+                   const browser=root?.querySelector('[aria-label=%s]');
+                   return !!browser&&(browser.textContent||'').includes(%s);
+                })()"""%(json.dumps(stage),json.dumps(label+"独立存储分页浏览",ensure_ascii=False),
+                        json.dumps(label+"共 "+str(count)+" 项",ensure_ascii=False))))
+            check("p33_lazy_"+stage+"_shows_count_without_editor",bool(wait_for(scope_loaded,"P3.3 count "+stage,25)))
+            check("p33_lazy_"+stage+"_editor_still_unloaded",bool(page.js("""(() => {
+                const root=document.querySelector('[data-node-id=%s]');
+                return [...(root?.querySelectorAll('button')||[])].some(
+                  btn=>(btn.textContent||'').trim()==='打开创作内容');
+            })()"""%json.dumps(stage))))
         # The compact graph uses lazy creative payloads. Open the genuine node panel before editing.
         for name in ("assets","episodes","board"):
             if node_button(page,name,"打开创作内容"):
@@ -226,13 +252,13 @@ def main():
 
         # P3: two real Video Configs (one per episode) -> choose range -> Shot Group.
         # Run only after archive + legacy Config regression checks: grouping may add groupId metadata.
-        if node_button(page,"board","打开创作内容"):
-            wait_for(lambda:bool(page.js("""(() => {
-                const root=document.querySelector('[data-node-id="board"]');
-                return [...(root?.querySelectorAll('button')||[])].some(b=>(b.textContent||'').trim()==='视频配置');
-            })()""")),"reopen board for P3 grouping",25)
-        if not node_button(page,"board","视频配置"):
-            raise AssertionError("P3 video configuration tab missing after reload")
+        wait_for(lambda:node_button(page,"board","打开创作内容"),"reopen board after refresh",35)
+        wait_for(lambda:bool(page.js("""(() => {
+            const root=document.querySelector('[data-node-id="board"]');
+            return [...(root?.querySelectorAll('button')||[])].some(b=>(b.textContent||'').trim()==='视频配置');
+        })()""")),"P3 board video tab",25)
+        check("p3_video_tab_reopened_after_reload",bool(wait_for(lambda:node_button(page,"board","视频配置"),
+            "P3 video configuration tab after reload",25)))
         def open_p3_batch_selector():
             return bool(page.js("""(() => {
               const root=document.querySelector('[data-node-id="board"]');

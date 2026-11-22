@@ -8,6 +8,7 @@ import {dramaDependencies} from "./drama-dependencies.mjs";
 import {normalizeEpisodeEvents} from "../drama-episode-links.mjs";
 import {removedDramaAssetUsages} from "./drama-asset-usage.mjs";
 import {hydrateCreativeDocument} from "./creative-payloads.mjs";
+import {readPagedDramaScope} from "./drama-scoped-storage.mjs";
 
 export const textVersionNodeTypes=new Set(["text","drama:source","drama:assets","drama:episodes","drama:storyboard"]);
 const fail=(code,statusCode=400)=>Object.assign(Error(code),{code,statusCode});
@@ -91,6 +92,10 @@ export function readTextVersions(db,projectId,nodeId,id){
 }
 
 export function readDramaRevisionScope(db,projectId,nodeId,{versionId,episodeId,sequenceId,offset=0,limit=50,summaryOnly=false,draft=false}={}){
+  // P3.3: let SQLite filter the large off-graph payload; only the selected
+  // source paragraphs retain the historical whole-text fallback.
+  const scoped=readPagedDramaScope(db,projectId,nodeId,{versionId,episodeId,sequenceId,offset,limit,summaryOnly,draft});
+  if(scoped)return scoped;
  const {node,document}=readNode(db,projectId,nodeId);
  const selected=versionId??node.metadata?.dramaConfirmedVersionId;
  const version=draft?{id:null,content:currentContent(node),provenance:{}}:selected?readTextVersions(db,projectId,nodeId,selected).version:

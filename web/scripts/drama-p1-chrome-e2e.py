@@ -265,10 +265,47 @@ def main():
                     const rect=root?.getBoundingClientRect(),r=actions?.getBoundingClientRect();
                     return !!layout&&!!nav&&!!field&&!!target&&!!actions&&
                        nav.querySelectorAll('button').length>=2&&
-                       field.querySelectorAll('textarea').length>=3&&
+                       field.querySelectorAll('[data-episode-editable-field][data-episode-field-mode="reading"]').length===5&&
+                       field.querySelectorAll('textarea').length===0&&
                        !!r&&!!rect&&r.width>0&&r.bottom<=rect.bottom+4&&
                        !!field.querySelector('section[aria-label="场次规划"]');
                 })()"""),"maximized episode split editor and action footer",35)))
+                check("episode_readonly_sections_default",bool(wait_for(lambda:page.js("""(() => {
+                    const root=document.querySelector('[data-creative-workspace-node-id="episodes"]');
+                    const editor=root?.querySelector('[aria-label="当前剧集编辑区"]');
+                    const fields=editor?.querySelectorAll('[data-episode-editable-field][data-episode-field-mode="reading"]');
+                    return fields?.length===5&&editor.querySelectorAll('textarea').length===0&&
+                      [...fields].every(field=>!!field.querySelector('[data-episode-readonly]')&&
+                        !!field.querySelector('button[aria-label^="编辑"]'))&&
+                      !!editor.querySelector('[data-episode-readonly="events"]');
+                })()"""),"all episode content is initially read-only",35)))
+                check("episode_open_local_field_edit",bool(page.js("""(() => {
+                    const field=document.querySelector('[data-creative-workspace-node-id="episodes"] [data-episode-editable-field="synopsis"]');
+                    const edit=field?.querySelector('button[aria-label="编辑剧情梗概"]');
+                    if(!edit)return false;
+                    edit.click();return true;
+                })()""")))
+                check("episode_staged_input_no_commit",bool(wait_for(lambda:page.js("""(() => {
+                    const field=document.querySelector('[data-creative-workspace-node-id="episodes"] [data-episode-editable-field="synopsis"]');
+                    const textarea=field?.querySelector('textarea[aria-label="剧情梗概"]');
+                    if(!textarea)return false;
+                    const setter=Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set;
+                    setter.call(textarea,'Chrome 未确认的剧情梗概');
+                    textarea.dispatchEvent(new Event('input',{bubbles:true}));
+                    return true;
+                })()"""),"episode synopsis edit input mounted",25)))
+                check("episode_staged_field_cancel",bool(wait_for(lambda:page.js("""(() => {
+                    const field=document.querySelector('[data-creative-workspace-node-id="episodes"] [data-episode-editable-field="synopsis"]');
+                    const cancel=field?.querySelector('[aria-label="剧情梗概操作"] button:first-child');
+                    if(!cancel)return false;cancel.click();return true;
+                })()"""),"cancel field-level editor",25)))
+                check("episode_cancel_keeps_readonly_source",bool(wait_for(lambda:page.js("""(() => {
+                    const field=document.querySelector('[data-creative-workspace-node-id="episodes"] [data-episode-editable-field="synopsis"]');
+                    return field?.dataset.episodeFieldMode==='reading'&&
+                      (field.querySelector('[data-episode-readonly="synopsis"]')?.textContent||'').includes('离开家')&&
+                      !field.textContent?.includes('Chrome 未确认的剧情梗概')&&
+                      !field.querySelector('textarea');
+                })()"""),"cancel leaves original read-only synopsis intact",25)))
                 check("episode_original_sources_editor_hidden",bool(page.js("""(() => {
                     const root=document.querySelector('[data-creative-workspace-node-id="episodes"]');
                     return !!root&&!root.textContent?.includes('原文出处')&&
@@ -989,6 +1026,33 @@ def main():
             return root?.querySelectorAll(':scope > details').length===%d&&
               !root.querySelector('[role="alertdialog"]');
         })()"""%before_scenes),"scene returned to previous count",25)))
+        check("episode_field_confirm_opens_title_editor",bool(wait_for(lambda:page.js("""(() => {
+            const area=document.querySelector('[data-creative-workspace-node-id="episodes"] [data-episode-editable-field="title"]');
+            const edit=area?.querySelector('button[aria-label="编辑集标题"]');
+            if(!edit)return false;edit.click();return true;
+        })()"""),"title editor opened after scene test",25)))
+        check("episode_field_confirm_stage_title",bool(wait_for(lambda:page.js("""(() => {
+            const input=document.querySelector('[data-creative-workspace-node-id="episodes"] input[aria-label="集标题"]');
+            if(!input)return false;
+            const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;
+            setter.call(input,'Chrome 单字段确认标题');
+            input.dispatchEvent(new Event('input',{bubbles:true}));
+            return true;
+        })()"""),"field title staged",25)))
+        check("episode_field_confirm_commits_title",bool(wait_for(lambda:page.js("""(() => {
+            const area=document.querySelector('[data-creative-workspace-node-id="episodes"] [data-episode-editable-field="title"]');
+            const button=area?.querySelector('button[aria-label="确认集标题"]');
+            if(!button||!area.querySelector('input[aria-label="集标题"]')||button.disabled)return false;
+            button.click();return true;
+        })()"""),"explicit title confirm",25)))
+        check("episode_field_confirm_returns_readonly",bool(wait_for(lambda:page.js("""(() => {
+            const root=document.querySelector('[data-creative-workspace-node-id="episodes"]');
+            const title=root?.querySelector('[data-episode-editable-field="title"]');
+            const others=root?.querySelectorAll('[data-episode-editable-field]:not([data-episode-field-mode="reading"])');
+            return title?.dataset.episodeFieldMode==='reading'&&
+              title.querySelector('[data-episode-readonly="title"]')?.textContent?.trim()==='Chrome 单字段确认标题'&&
+              !title.querySelector('input')&&others?.length===0;
+        })()"""),"title applied only once and other fields stay read-only",25)))
         check("no_real_model_or_media_requests",not any(
              "/api/v1/jobs" in item["path"] and item["method"]=="POST"
              for item in page.network_requests))

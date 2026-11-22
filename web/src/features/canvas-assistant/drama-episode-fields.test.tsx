@@ -48,21 +48,125 @@ async function click(button:Element|null){
  await act(async()=>{(button as HTMLElement).click();});
 }
 describe("maximized episode planning layout",()=>{
- it("isolates current episode editing, preserves other episode and updates theme without data loss",async()=>{
+ it("reads fields by default, keeps each edit local, saves only on confirm and preserves theme",async()=>{
   const {container,changes}=await mount("ep-b");
   const fieldset=container.querySelector<HTMLElement>('[data-episode-editor-layout="expanded"]')!;
-  const active=()=>[...container.querySelectorAll<HTMLElement>('[aria-label="剧集导航"] button')].find(el=>el.getAttribute("aria-pressed")==="true");
+  const active=()=>[...container.querySelectorAll<HTMLElement>('[aria-label="剧集导航"] button')]
+   .find(el=>el.getAttribute("aria-pressed")==="true");
   expect(active()?.textContent).toContain("出发");
-  expect(container.querySelector('[aria-label="当前剧集编辑区"]')).toBeTruthy();
-  await enter(container,'[aria-label="剧情梗概"]',"出发时下雨");
-  expect(changes).toHaveBeenCalled();
-  expect(changes.mock.lastCall?.[0][0]).toEqual(original[0]);
-  expect(changes.mock.lastCall?.[0][1].synopsis).toBe("出发时下雨");
+  for(const key of ["title","duration","synopsis","events","ending"]){
+   expect(container.querySelector(`[data-episode-editable-field="${key}"][data-episode-field-mode="reading"]`)).toBeTruthy();
+  }
+  expect(container.querySelector('textarea[aria-label="剧情梗概"]')).toBeNull();
+  await click(container.querySelector('[aria-label="编辑剧情梗概"]'));
+  await enter(container,'textarea[aria-label="剧情梗概"]',"出发时下雨");
+  expect(changes).not.toHaveBeenCalled();
+  expect(container.querySelector('[data-episode-readonly="synopsis"]')).toBeNull();
   await act(async()=>useThemeStore.setState({theme:"light"}));
   expect(fieldset.style.color).toBe(canvasThemes.light.node.text);
   expect((container.querySelector('[aria-label="剧情梗概"]') as HTMLTextAreaElement).value).toBe("出发时下雨");
+  await click(container.querySelector('[aria-label="剧情梗概操作"] button:first-child'));
+  expect(changes).not.toHaveBeenCalled();
+  expect(container.querySelector('[data-episode-readonly="synopsis"]')?.textContent).toBe("第二天出发");
+  await click(container.querySelector('[aria-label="编辑剧情梗概"]'));
+  await enter(container,'textarea[aria-label="剧情梗概"]',"出发时下雨");
+  await click(container.querySelector('[aria-label="确认剧情梗概"]'));
+  expect(changes).toHaveBeenCalledTimes(1);
+  expect(changes.mock.lastCall?.[0][0]).toEqual(original[0]);
+  expect(changes.mock.lastCall?.[0][1].synopsis).toBe("出发时下雨");
+  expect(container.querySelector('[data-episode-readonly="synopsis"]')?.textContent).toBe("出发时下雨");
   await act(async()=>useThemeStore.setState({theme:"dark"}));
   expect(fieldset.style.color).toBe(canvasThemes.dark.node.text);
+ });
+ it("commits title and duration independently, rejects invalid duration, and cancels without a write",async()=>{
+  const {container,changes}=await mount("ep-a");
+  expect(container.querySelector('[aria-label="集标题"]')).toBeNull();
+  expect(container.querySelector('[data-episode-readonly="title"]')?.textContent).toBe("相遇");
+  expect(container.querySelector('[data-episode-readonly="duration"]')?.textContent).toBe("120");
+  await click(container.querySelector('[aria-label="编辑集标题"]'));
+  await click(container.querySelector('[aria-label="编辑目标时长（秒）"]'));
+  await enter(container,'input[aria-label="集标题"]',"新的相遇");
+  await enter(container,'input[aria-label="目标时长（秒）"]',"-5");
+  expect(container.querySelector<HTMLButtonElement>('[aria-label="确认目标时长（秒）"]')?.disabled).toBe(true);
+  expect(changes).not.toHaveBeenCalled();
+  await click(container.querySelector('[aria-label="确认集标题"]'));
+  expect(changes).toHaveBeenCalledTimes(1);
+  expect(changes.mock.lastCall?.[0][0].title).toBe("新的相遇");
+  expect(changes.mock.lastCall?.[0][0].targetDurationSec).toBe(120);
+  expect((container.querySelector('[aria-label="目标时长（秒）"]') as HTMLInputElement).value).toBe("-5");
+  await click(container.querySelector('[aria-label="目标时长（秒）操作"] button:first-child'));
+  expect(changes).toHaveBeenCalledTimes(1);
+  await click(container.querySelector('[aria-label="编辑目标时长（秒）"]'));
+  await enter(container,'input[aria-label="目标时长（秒）"]',"180.5");
+  await click(container.querySelector('[aria-label="确认目标时长（秒）"]'));
+  expect(changes).toHaveBeenCalledTimes(2);
+  expect(changes.mock.lastCall?.[0][0].targetDurationSec).toBe(180.5);
+  expect(changes.mock.lastCall?.[0][0].title).toBe("新的相遇");
+ });
+ it("commits event lines only on confirm and preserves stable event and scene references",async()=>{
+  const {container,changes}=await mount("ep-a");
+  const field=container.querySelector<HTMLElement>('[data-episode-editable-field="events"]')!;
+  expect(field.dataset.episodeFieldMode).toBe("reading");
+  expect(field.querySelectorAll('ol > li')).toHaveLength(2);
+  await click(field.querySelector('[aria-label="编辑剧情事件（每行一条）"]'));
+  await enter(container,'[aria-label="剧情事件"]',"兔子来了\n乌龟来了\n狐狸出现");
+  expect(changes).not.toHaveBeenCalled();
+  await click(field.querySelector('[aria-label="剧情事件（每行一条）操作"] button:first-child'));
+  expect(changes).not.toHaveBeenCalled();
+  expect(field.querySelectorAll('ol > li')).toHaveLength(2);
+  await click(field.querySelector('[aria-label="编辑剧情事件（每行一条）"]'));
+  await enter(container,'[aria-label="剧情事件"]',"兔子来了\n乌龟来了\n狐狸出现");
+  await click(field.querySelector('[aria-label="确认剧情事件（每行一条）"]'));
+  expect(changes).toHaveBeenCalledTimes(1);
+  const first=changes.mock.lastCall?.[0][0] as DramaEpisode;
+  expect(first.events).toEqual(["兔子来了","乌龟来了","狐狸出现"]);
+  expect(first.eventItems?.[0].id).toBe("event-1");
+  expect(first.eventItems?.[1].id).toBe("event-2");
+  expect(first.sequences?.[0].eventRefs).toEqual(["event-1"]);
+  expect(first.sourceRefs).toEqual(["story-1"]);
+  expect(changes.mock.lastCall?.[0][1]).toEqual(original[1]);
+  expect(field.querySelectorAll('ol > li')).toHaveLength(3);
+ });
+ it("keeps ending edits uncommitted until confirmation and clears them when switching episodes",async()=>{
+  const {container,changes}=await mount("ep-a");
+  await click(container.querySelector('[aria-label="编辑本集结尾"]'));
+  await enter(container,'[aria-label="本集结尾"]',"全新的结尾");
+  expect(changes).not.toHaveBeenCalled();
+  await click(container.querySelector('[aria-label^="选择第 2 集"]'));
+  expect(container.querySelector('[data-episode-readonly="ending"]')?.textContent).toBe("天黑");
+  expect(container.querySelector('[aria-label="本集结尾"]')).toBeNull();
+  await click(container.querySelector('[aria-label^="选择第 1 集"]'));
+  expect(container.querySelector('[data-episode-readonly="ending"]')?.textContent).toBe("两人见面");
+  expect(changes).not.toHaveBeenCalled();
+  await click(container.querySelector('[aria-label="编辑本集结尾"]'));
+  await enter(container,'[aria-label="本集结尾"]',"新的结尾");
+  await click(container.querySelector('[aria-label="确认本集结尾"]'));
+  expect(changes.mock.lastCall?.[0][0].ending).toBe("新的结尾");
+ });
+ it("stages scene name, paragraph refs, and event links together; cancel never writes",async()=>{
+  const {container,changes}=await mount("ep-a");
+  const scene=container.querySelector<HTMLDetailsElement>('section[aria-label="场次规划"] details')!;
+  await click(scene.querySelector("summary"));
+  await click(scene.querySelector('[aria-label="编辑场次 1 详情"]'));
+  await enter(container,'[aria-label="场次 1 名称"]',"河畔");
+  await enter(container,'[aria-label="场次 1 原文段落"]',"story-3\nstory-4");
+  const boxes=[...scene.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')];
+  expect(boxes).toHaveLength(2);
+  await act(async()=>{boxes[1].click();});
+  expect(changes).not.toHaveBeenCalled();
+  await click([...scene.querySelectorAll('[aria-label="场次 1 详情"] button')].find(button=>button.textContent?.trim()==="取消")??null);
+  expect(changes).not.toHaveBeenCalled();
+  expect(scene.querySelector('[data-episode-sequence-mode="reading"]')?.textContent).toContain("森林入口");
+  await click(scene.querySelector('[aria-label="编辑场次 1 详情"]'));
+  await enter(container,'[aria-label="场次 1 名称"]',"河畔");
+  await enter(container,'[aria-label="场次 1 原文段落"]',"story-3\nstory-4");
+  await act(async()=>{(scene.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')[1]!).click();});
+  await click(scene.querySelector('[aria-label="确认场次 1 详情"]'));
+  expect(changes).toHaveBeenCalledTimes(1);
+  expect(changes.mock.lastCall?.[0][0].sequences?.[0]).toMatchObject({
+   id:"scene-1",title:"河畔",sourceRefs:["story-3","story-4"],eventRefs:["event-1","event-2"]
+  });
+  expect(changes.mock.lastCall?.[0][1]).toEqual(original[1]);
  });
  it("keeps scene title, split, refs and add-scene actions accessible in a collapsed section",async()=>{
   const {container,changes}=await mount("ep-a");
@@ -70,7 +174,12 @@ describe("maximized episode planning layout",()=>{
   expect(scene.open).toBe(false);
   await click(scene.querySelector("summary"));
   expect(scene.open).toBe(true);
+  expect(scene.querySelector('[data-episode-sequence-mode="reading"]')).toBeTruthy();
+  expect(scene.querySelector('input[aria-label="场次 1 名称"]')).toBeNull();
+  await click(scene.querySelector('[aria-label="编辑场次 1 详情"]'));
   await enter(container,'[aria-label="场次 1 名称"]',"新的森林入口");
+  expect(changes).not.toHaveBeenCalled();
+  await click(scene.querySelector('[aria-label="确认场次 1 详情"]'));
   expect(changes.mock.lastCall?.[0][0].sequences?.[0].title).toBe("新的森林入口");
   expect(changes.mock.lastCall?.[0][0].sequences?.[0].eventRefs).toEqual(["event-1"]);
   const split=[...scene.querySelectorAll("button")].find(el=>el.textContent?.includes("拆成两场"))!;
@@ -100,7 +209,10 @@ describe("maximized episode planning layout",()=>{
   expect(current.sourceRefs).toEqual(["story-1"]);
   const last=container.querySelectorAll<HTMLDetailsElement>('section[aria-label="场次规划"] > details')[1]!;
   expect(last.open).toBe(true);
+  expect(last.querySelector('[data-episode-sequence-mode="editing"]')).toBeTruthy();
   await enter(container,'[aria-label="场次 2 名称"]',"河边的约定");
+  expect(changes.mock.lastCall?.[0][0].sequences?.[1].title).toBe("新场次 2");
+  await click(last.querySelector('[aria-label="确认场次 2 详情"]'));
   expect(changes.mock.lastCall?.[0][0].sequences?.[1].title).toBe("河边的约定");
   expect(changes.mock.lastCall?.[0][0].sequences?.[0]).toEqual(original[0].sequences![0]);
   expect(changes.mock.lastCall?.[0][1]).toEqual(original[1]);

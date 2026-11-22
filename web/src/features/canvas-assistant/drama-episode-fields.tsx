@@ -1,5 +1,5 @@
 import {useRef,useState,type CSSProperties} from "react";
-import {GitBranch,Layers3,Plus,Split,Merge,BookText,Trash2,AlertTriangle} from "lucide-react";
+import {GitBranch,Layers3,Plus,Split,Merge,BookText,Trash2,AlertTriangle,Pencil,Check,X} from "lucide-react";
 import {canvasThemes} from "@/lib/canvas-theme";
 import {useThemeStore} from "@/stores/use-theme-store";
 import {normalizeEpisodeEvents} from "../../../server/drama-episode-links.mjs";
@@ -11,6 +11,164 @@ export type DramaEpisode={
  sourceRefs:string[];ending:string;targetDurationSec?:number;
  sequences?:{id:string;title:string;sourceRefs?:string[];eventRefs?:string[];replaces?:string[]}[];
 };
+
+type EpisodeFieldKey="title"|"duration"|"synopsis"|"events"|"ending";
+type EpisodeFieldProps={
+ id:EpisodeFieldKey;label:string;value:string;disabled:boolean;theme:ReturnType<typeof canvasThemeForField>;
+ onConfirm:(value:string)=>void;multiline?:boolean;rows?:number;type?:"text"|"number";
+ count?:(value:string)=>string;placeholder?:string;
+};
+function canvasThemeForField(appearance:"light"|"dark"){return canvasThemes[appearance];}
+function EpisodeReadEditField({id,label,value,disabled,theme,onConfirm,multiline=false,rows=2,type="text",count,placeholder="未填写"}:EpisodeFieldProps){
+ const [editing,setEditing]=useState(false);
+ const [draft,setDraft]=useState(value);
+ const [baseline,setBaseline]=useState(value);
+ const stale=editing&&baseline!==value;
+ const valid=type!=="number"||draft.trim()===""||(Number.isFinite(Number(draft))&&Number(draft)>0);
+ const text=editing?draft:value;
+ const headingStyle={color:theme.node.muted};
+ const inputStyle={background:theme.node.fill,color:theme.node.text,borderColor:theme.node.stroke,
+  "--tw-ring-color":theme.node.activeStroke} as CSSProperties;
+ const smallButton="inline-flex min-h-7 items-center justify-center gap-1 rounded-md border px-2 text-xs font-medium transition-opacity hover:opacity-80 focus-visible:outline focus-visible:outline-2 disabled:opacity-40";
+ const begin=()=>{setBaseline(value);setDraft(value);setEditing(true);};
+ const cancel=()=>{setEditing(false);setDraft(value);};
+ const confirm=()=>{
+  if(stale||!valid)return;
+  if(draft!==value)onConfirm(draft);
+  setEditing(false);
+ };
+ return <section data-episode-editable-field={id} data-episode-field-mode={editing?"editing":"reading"}
+   aria-label={label+"区域"} className="min-w-0 space-y-1.5">
+   <div className="flex min-h-7 items-center justify-between gap-2 text-xs font-medium" style={headingStyle}>
+    <div className="flex min-w-0 items-center gap-1.5">
+     <span>{label}</span>
+     {!editing&&<button type="button" aria-label={"编辑"+label} title={"编辑"+label}
+       className="inline-grid size-7 shrink-0 place-items-center rounded-md border border-transparent hover:opacity-80 focus-visible:outline focus-visible:outline-2"
+       style={{color:theme.node.muted,outlineColor:theme.node.activeStroke}} disabled={disabled}
+       onClick={begin}><Pencil size={13} aria-hidden="true"/></button>}
+    </div>
+    {count&&<span className="shrink-0 text-[11px] font-normal tabular-nums">{count(text)}</span>}
+   </div>
+   {editing?<>
+    {multiline?
+      <textarea aria-label={label==="剧情事件（每行一条）"?"剧情事件":label}
+       className="thin-scrollbar w-full min-w-0 resize-y rounded-lg border px-3 py-2.5 text-sm leading-relaxed outline-none focus-visible:ring-2"
+       style={inputStyle} rows={rows} value={draft} disabled={disabled}
+       onChange={event=>setDraft(event.target.value)}/>:
+      <input aria-label={label} type={type} min={type==="number"?"0.1":undefined}
+       step={type==="number"?"0.1":undefined} maxLength={type==="text"?12000:undefined}
+       className="w-full min-w-0 rounded-lg border px-3 py-2.5 text-sm leading-relaxed outline-none focus-visible:ring-2"
+       style={inputStyle} value={draft} disabled={disabled}
+       onChange={event=>setDraft(event.target.value)}/>}
+    {stale&&<p role="alert" className="text-xs" style={headingStyle}>内容已在其他位置更新，请取消并重新编辑。</p>}
+    {!valid&&<p role="alert" className="text-xs" style={headingStyle}>目标时长必须是大于 0 的数字，或留空。</p>}
+    <div className="flex justify-end gap-2" aria-label={label+"操作"}>
+     <button type="button" className={smallButton}
+      style={{background:theme.node.panel,color:theme.node.text,borderColor:theme.node.stroke}}
+      onClick={cancel}><X size={13} aria-hidden="true"/>取消</button>
+     <button type="button" aria-label={"确认"+label} className={smallButton}
+      style={{background:theme.node.text,color:theme.node.panel,borderColor:theme.node.text}}
+      disabled={disabled||stale||!valid} onClick={confirm}><Check size={13} aria-hidden="true"/>确认</button>
+    </div>
+   </>:
+    <div data-episode-readonly={id} aria-label={label+"内容"}
+     className={"min-w-0 rounded-lg border px-3 py-2.5 text-sm leading-relaxed "+(id==="title"?"font-semibold":"")}
+     style={{background:theme.node.fill,color:value.trim()?theme.node.text:theme.node.muted,borderColor:theme.node.stroke}}>
+     {id==="events"&&value.trim()?<ol className="space-y-2">
+       {value.split("\n").filter(line=>line.trim()).map((line,index)=>
+        <li key={index} className="flex min-w-0 gap-2">
+         <span className="w-5 shrink-0 text-right text-[11px] tabular-nums" style={headingStyle}>{index+1}.</span>
+         <span className="min-w-0 flex-1 whitespace-pre-wrap break-words">{line}</span>
+        </li>)}
+      </ol>:<div className="whitespace-pre-wrap break-words">{value.trim()?value:placeholder}</div>}
+    </div>}
+  </section>;
+}
+type EpisodeSequence=NonNullable<DramaEpisode["sequences"]>[number];
+function SequenceReadEditFields({sequence,index,events,items,theme,disabled,onConfirm,startEditing=false}:{
+ sequence:EpisodeSequence;index:number;events:string[];
+ items:NonNullable<DramaEpisode["eventItems"]>;theme:ReturnType<typeof canvasThemeForField>;disabled:boolean;
+ onConfirm:(next:EpisodeSequence)=>void;startEditing?:boolean;
+}){
+ const [editing,setEditing]=useState(startEditing);
+ const [title,setTitle]=useState(sequence.title);
+ const [refs,setRefs]=useState((sequence.sourceRefs??[]).join("\n"));
+ const [eventRefs,setEventRefs]=useState([...(sequence.eventRefs??[])]);
+ const [baseline,setBaseline]=useState(sequence);
+ const stale=editing&&(baseline.title!==sequence.title||
+  (baseline.sourceRefs??[]).join("\n")!==(sequence.sourceRefs??[]).join("\n")||
+  (baseline.eventRefs??[]).join("\n")!==(sequence.eventRefs??[]).join("\n"));
+ const begin=()=>{setBaseline(sequence);setTitle(sequence.title);setRefs((sequence.sourceRefs??[]).join("\n"));
+  setEventRefs([...(sequence.eventRefs??[])]);setEditing(true);};
+ const cancel=()=>{setEditing(false);setTitle(sequence.title);setRefs((sequence.sourceRefs??[]).join("\n"));
+  setEventRefs([...(sequence.eventRefs??[])]);};
+ const confirm=()=>{
+  if(stale||disabled)return;
+  const sourceRefs=refs.split("\n").map(ref=>ref.trim()).filter(Boolean);
+  const next={...sequence,title,sourceRefs,eventRefs};
+  if(title!==sequence.title||sourceRefs.join("\n")!==(sequence.sourceRefs??[]).join("\n")||
+    eventRefs.join("\n")!==(sequence.eventRefs??[]).join("\n"))onConfirm(next);
+  setEditing(false);
+ };
+ const control={background:theme.node.fill,color:theme.node.text,borderColor:theme.node.stroke};
+ const secondary="inline-flex min-h-8 items-center justify-center gap-1 rounded-lg border px-2.5 text-xs font-medium hover:opacity-80";
+ return <div data-episode-sequence-mode={editing?"editing":"reading"} className="space-y-3" aria-label={"场次 "+(index+1)+" 详情"}>
+   <div className="flex items-center gap-1.5">
+    <strong className="text-xs">场次详情</strong>
+    {!editing&&<button type="button" aria-label={"编辑场次 "+(index+1)+" 详情"} title="编辑场次详情"
+      disabled={disabled} className="inline-grid size-7 shrink-0 place-items-center rounded-md border border-transparent hover:opacity-80 focus-visible:outline focus-visible:outline-2"
+      style={{color:theme.node.muted,outlineColor:theme.node.activeStroke}} onClick={begin}>
+      <Pencil size={13} aria-hidden="true"/>
+     </button>}
+   </div>
+   {editing?<>
+    <label className="grid min-w-0 gap-1.5">
+     <span style={{color:theme.node.muted}}>场次名称</span>
+     <input aria-label={`场次 ${index+1} 名称`} className="w-full min-w-0 rounded-lg border px-3 py-2 text-xs"
+      style={control} value={title} disabled={disabled} onChange={event=>setTitle(event.target.value)}/>
+    </label>
+    <label className="grid min-w-0 gap-1.5">
+     <span style={{color:theme.node.muted}}>场次原文段落 ID（每行一个）</span>
+     <textarea aria-label={`场次 ${index+1} 原文段落`} className="thin-scrollbar w-full min-w-0 rounded-lg border px-3 py-2 text-xs"
+      style={control} rows={2} value={refs} disabled={disabled} onChange={event=>setRefs(event.target.value)}/>
+    </label>
+    <div className="space-y-1.5">
+     <span style={{color:theme.node.muted}}>本场关联剧情事件（稳定 ID）</span>
+     {items.filter(item=>item.text.trim()).map((item,index)=>
+      <label key={item.id||index} className="flex items-start gap-2">
+       <input type="checkbox" className="mt-0.5" disabled={disabled}
+        checked={eventRefs.includes(item.id)||eventRefs.includes(item.text)}
+        onChange={change=>setEventRefs(current=>change.target.checked?
+         [...new Set([...current,item.id])]:current.filter(ref=>ref!==item.id&&ref!==item.text))}/>
+       <span className="break-words">{item.text}</span>
+      </label>)}
+    </div>
+    {stale&&<p role="alert" className="text-xs">场次已在其他位置更新，请取消并重新编辑。</p>}
+    <div className="flex justify-end gap-2">
+     <button type="button" className={secondary} style={control} onClick={cancel}><X size={13}/>取消</button>
+     <button type="button" aria-label={"确认场次 "+(index+1)+" 详情"} className={secondary}
+      style={{background:theme.node.text,color:theme.node.panel,borderColor:theme.node.text}}
+      disabled={disabled||stale} onClick={confirm}><Check size={13}/>确认</button>
+    </div>
+   </>:
+    <div className="grid min-w-0 gap-2 rounded-lg border p-3 text-xs" style={control}>
+     <p><span style={{color:theme.node.muted}}>名称：</span>{sequence.title||"未命名场次"}</p>
+     <p className="break-words"><span style={{color:theme.node.muted}}>原文段落：</span>{sequence.sourceRefs?.join("、")||"未设置"}</p>
+     <div>
+      <span style={{color:theme.node.muted}}>关联事件：</span>
+      <span>{sequence.eventRefs?.length??0} 条</span>
+      {sequence.eventRefs?.length? <ul className="mt-1 list-inside list-disc space-y-1">
+       {sequence.eventRefs.map(ref=><li key={ref} className="break-words">
+        {items.find(item=>item.id===ref||item.text===ref)?.text??ref}
+       </li>)}
+      </ul>:null}
+     </div>
+    </div>}
+    {(sequence.eventRefs??[]).some(ref=>!events.includes(ref)&&!items.some(item=>item.id===ref))&&
+      <p role="alert" className="text-[11px]">事件引用缺失或有歧义，请核对稳定 ID 后更新。</p>}
+    {(sequence.replaces?.length??0)>0&&<p className="text-[11px]">替代旧场次：{sequence.replaces?.join("、")}。请审核旧镜头的场次迁移。</p>}
+  </div>;
+}
 
 export function DramaEpisodeFields({episodes,expanded,disabled,control,onChange,initialEpisodeId}:{
  episodes:DramaEpisode[];expanded:boolean;disabled:boolean;control?:CSSProperties;
@@ -93,54 +251,34 @@ export function DramaEpisodeFields({episodes,expanded,disabled,control,onChange,
     <span className="rounded-lg border px-2 py-1 text-[11px] tabular-nums"
      style={cardStyle}>{active.events.length} 条事件 · {active.sequences?.length??0} 场</span>
    </header>}
-   <div className={expanded?"grid min-w-0 gap-3 md:grid-cols-[minmax(0,1fr)_160px]":"grid gap-3"}>
-    <label className="grid min-w-0 gap-1.5 text-xs font-medium">
-     <span style={captionStyle}>集标题</span>
-     <input aria-label="集标题" className={field} style={fieldStyle} maxLength={12000}
-      value={active.title} onChange={event=>edit({title:event.target.value})}/>
-    </label>
-    <label className="grid min-w-0 gap-1.5 text-xs font-medium">
-     <span style={captionStyle}>目标时长（秒）</span>
-     <input aria-label="目标时长（秒）" className={field} style={fieldStyle}
-      type="number" min="0.1" step="0.1" value={active.targetDurationSec??""}
-      onChange={event=>{
-       const duration=event.target.valueAsNumber;
-       if(!event.target.value||duration>0)edit({targetDurationSec:duration>0?duration:undefined});
-      }}/>
-    </label>
+   <div className={expanded?"grid min-w-0 gap-3 md:grid-cols-[minmax(0,1fr)_190px]":"grid gap-3"}>
+    <EpisodeReadEditField key={active.id+":title"} id="title" label="集标题" value={active.title}
+     disabled={disabled} theme={theme} onConfirm={title=>edit({title})}/>
+    <EpisodeReadEditField key={active.id+":duration"} id="duration" label="目标时长（秒）"
+     value={active.targetDurationSec===undefined?"":String(active.targetDurationSec)} placeholder="未设置"
+     disabled={disabled} theme={theme} type="number"
+     onConfirm={duration=>edit({targetDurationSec:duration.trim()?Number(duration):undefined})}/>
    </div>
-   <section className={expanded?"grid gap-3":"grid gap-3"} aria-label="剧情内容">
-    <label className="grid min-w-0 gap-1.5 text-xs font-medium">
-     <span className="flex items-center justify-between gap-2" style={captionStyle}>
-      剧情梗概 <span className="text-[11px] font-normal tabular-nums">{active.synopsis.length} 字</span>
-     </span>
-     <textarea aria-label="剧情梗概" className={field+" thin-scrollbar resize-y"} style={fieldStyle}
-      rows={expanded?4:3} value={active.synopsis}
-      onChange={event=>edit({synopsis:event.target.value})}/>
-    </label>
-    <label className="grid min-w-0 gap-1.5 text-xs font-medium">
-     <span className="flex items-center justify-between gap-2" style={captionStyle}>
-      剧情事件（每行一条）
-      <span className="text-[11px] font-normal tabular-nums">{active.events.length} 条</span>
-     </span>
-     <textarea aria-label="剧情事件" className={field+" thin-scrollbar resize-y"} style={fieldStyle}
-      rows={expanded?6:4} value={active.events.join("\n")}
-      onChange={event=>{
-       const normalized=normalizeEpisodeEvents({...active,events:event.target.value.split("\n")},active);
-       edit({events:normalized.events,eventItems:normalized.eventItems,sequences:normalized.sequences});
-      }}/>
-    </label>
+   <section className="grid min-w-0 gap-3" aria-label="剧情内容">
+    <EpisodeReadEditField key={active.id+":synopsis"} id="synopsis" label="剧情梗概"
+     value={active.synopsis} disabled={disabled} theme={theme} multiline rows={expanded?5:3}
+     count={value=>value.length+" 字"} onConfirm={synopsis=>edit({synopsis})}/>
+    <EpisodeReadEditField key={active.id+":events"} id="events" label="剧情事件（每行一条）"
+     value={active.events.join("\n")} disabled={disabled} theme={theme} multiline rows={expanded?9:4}
+     count={value=>value.split("\n").filter(line=>line.trim()).length+" 条"}
+     onConfirm={text=>{
+      const normalized=normalizeEpisodeEvents({...active,events:text.split("\n")},active);
+      edit({events:normalized.events,eventItems:normalized.eventItems,sequences:normalized.sequences});
+     }}/>
     <div className="flex justify-end">
      <button type="button" className={smallAction} style={cardStyle} onClick={()=>{
       const normalized=normalizeEpisodeEvents(active,active);
       edit({eventItems:normalized.eventItems,sequences:normalized.sequences});
      }}>补齐旧事件的稳定 ID</button>
     </div>
-    <label className="grid min-w-0 gap-1.5 text-xs font-medium">
-     <span style={captionStyle}>本集结尾</span>
-     <textarea aria-label="本集结尾" className={field+" thin-scrollbar resize-y"} style={fieldStyle}
-      rows={2} value={active.ending} onChange={event=>edit({ending:event.target.value})}/>
-    </label>
+    <EpisodeReadEditField key={active.id+":ending"} id="ending" label="本集结尾"
+     value={active.ending} disabled={disabled} theme={theme} multiline rows={2}
+     onConfirm={ending=>edit({ending})}/>
    </section>
    <section aria-label="场次规划" className="min-w-0 space-y-2 border-t pt-4" style={{borderColor:theme.node.stroke}}>
     <div className="flex flex-wrap items-center justify-between gap-2">
@@ -180,32 +318,11 @@ export function DramaEpisodeFields({episodes,expanded,disabled,control,onChange,
       </span>
      </summary>
      <div className="grid min-w-0 gap-3 border-t p-3 text-xs" style={{borderColor:theme.node.stroke}}>
-      <label className="grid min-w-0 gap-1.5">
-       <span style={captionStyle}>场次名称</span>
-       <input className={field} style={fieldStyle} aria-label={`场次 ${index+1} 名称`}
-        value={sequence.title} onChange={event=>edit({sequences:active.sequences?.map(item=>
-         item.id===sequence.id?{...item,title:event.target.value}:item)})}/>
-      </label>
-      <label className="grid min-w-0 gap-1.5">
-       <span style={captionStyle}>场次原文段落 ID（每行一个）</span>
-       <textarea className={field+" thin-scrollbar resize-y"} style={fieldStyle} rows={2}
-        value={(sequence.sourceRefs??[]).join("\n")}
-        onChange={event=>edit({sequences:active.sequences?.map(item=>item.id===sequence.id?
-         {...item,sourceRefs:event.target.value.split("\n").map(ref=>ref.trim()).filter(Boolean)}:item)})}/>
-      </label>
-      <div className="grid gap-2">
-       <span style={captionStyle}>本场关联剧情事件（稳定 ID）</span>
-       {(active.eventItems??active.events.map(text=>({id:text,text}))).filter(item=>item.text.trim()).map((eventItem,eventIndex)=>
-        <label key={eventItem.id||eventIndex} className="flex items-start gap-2">
-         <input type="checkbox" className="mt-0.5" checked={(sequence.eventRefs??[]).includes(eventItem.id)||(sequence.eventRefs??[]).includes(eventItem.text)}
-          onChange={change=>edit({sequences:active.sequences?.map(seq=>seq.id===sequence.id?
-           {...seq,eventRefs:change.target.checked?[...new Set([...(seq.eventRefs??[]),eventItem.id])]:
-            (seq.eventRefs??[]).filter(ref=>ref!==eventItem.id&&ref!==eventItem.text)}:seq)})}/>
-         <span className="break-words">{eventItem.text}</span>
-        </label>)}
-       {(sequence.eventRefs??[]).some(ref=>!active.events.includes(ref)&&!active.eventItems?.some(item=>item.id===ref))&&
-        <p role="alert" className="text-[11px]">事件引用缺失或有歧义，请核对稳定 ID 后更新。</p>}
-       {(sequence.replaces?.length??0)>0&&<p className="text-[11px]">替代旧场次：{sequence.replaces?.join("、")}。请审核旧镜头的场次迁移。</p>}
+       <SequenceReadEditFields key={active.id+":"+sequence.id} sequence={sequence}
+        index={index} events={active.events} items={active.eventItems??active.events.map(text=>({id:text,text}))}
+        theme={theme} disabled={disabled} startEditing={recentlyAdded===sequence.id}
+        onConfirm={updated=>edit({sequences:active.sequences?.map(item=>
+         item.id===sequence.id?updated:item)})}/>
        <div className="flex flex-wrap gap-2 border-t pt-3" style={{borderColor:theme.node.stroke}}>
         <button type="button" className={smallAction} style={cardStyle}
          onClick={()=>edit({sequences:splitEpisodeSequence(active,sequence.id).sequences})}>
@@ -249,7 +366,6 @@ export function DramaEpisodeFields({episodes,expanded,disabled,control,onChange,
           </div>
          </div>}
       </div>
-     </div>
     </details>)}
    </section>
   </div>

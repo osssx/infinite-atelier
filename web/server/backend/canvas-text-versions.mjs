@@ -91,10 +91,10 @@ export function readTextVersions(db,projectId,nodeId,id){
  return {version:{...summary,provenance:JSON.parse(provenance_json)}};
 }
 
-export function readDramaRevisionScope(db,projectId,nodeId,{versionId,episodeId,sequenceId,offset=0,limit=50,summaryOnly=false,draft=false}={}){
+export function readDramaRevisionScope(db,projectId,nodeId,{versionId,episodeId,sequenceId,entryId,offset=0,limit=50,summaryOnly=false,draft=false}={}){
   // P3.3: let SQLite filter the large off-graph payload; only the selected
   // source paragraphs retain the historical whole-text fallback.
-  const scoped=readPagedDramaScope(db,projectId,nodeId,{versionId,episodeId,sequenceId,offset,limit,summaryOnly,draft});
+  const scoped=readPagedDramaScope(db,projectId,nodeId,{versionId,episodeId,sequenceId,entryId,offset,limit,summaryOnly,draft});
   if(scoped)return scoped;
  const {node,document}=readNode(db,projectId,nodeId);
  const selected=versionId??node.metadata?.dramaConfirmedVersionId;
@@ -107,7 +107,7 @@ export function readDramaRevisionScope(db,projectId,nodeId,{versionId,episodeId,
  else if(node.type==="drama:source")entries=version.provenance?.paragraphs??reconcileSourceParagraphs(version.content);
  if(!entries)throw fail("drama_draft_invalid",422);
  const filtered=entries.filter(item=>(!episodeId||item.episodeId===episodeId||item.id===episodeId)&&
-  (!sequenceId||item.sequenceId===sequenceId));
+  (!sequenceId||item.sequenceId===sequenceId)&&(!entryId||item.id===entryId));
  const groups=node.type==="drama:storyboard"?[...new Set(entries.map(item=>item.episodeId))].map(id=>({
   episodeId:id,total:entries.filter(item=>item.episodeId===id).length,
   sequenceIds:[...new Set(entries.filter(item=>item.episodeId===id&&item.sequenceId).map(item=>item.sequenceId))],

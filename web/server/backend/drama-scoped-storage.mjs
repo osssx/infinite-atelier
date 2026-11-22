@@ -9,6 +9,7 @@
 import {createHash} from "node:crypto";
 import {stableJson} from "./repository.mjs";
 import {readAssetDraft,readEpisodeDraft,readStoryboardDraft} from "../canvas-text-content.mjs";
+import {readIndexedDramaScope,readIndexedAssetChoices} from "./creative-scope-reads.mjs";
 
 const fail=(code,statusCode=422)=>Object.assign(Error(code),{code,statusCode});
 const digest=value=>createHash("sha256").update(stableJson(value)).digest("hex");
@@ -63,6 +64,8 @@ function readReferenceChoices(db,projectId,nodeId){
   let text=parent.inlineConfirmed;
   if(parent.pointerRaw!==null){
    if(parent.pointerNodeId!==parent.id||parent.pointerSchemaVersion!==1)throw fail("creative_payload_reference_invalid");
+   const indexed=readIndexedAssetChoices(db,projectId,parent.id);
+   if(indexed)return indexed;
    const row=db.prepare(`SELECT json_extract(payload_json,'$.dramaConfirmed') AS content
     FROM creative_node_payloads WHERE project_id=? AND node_id=?`).get(projectId,parent.id);
    if(!row)throw fail("creative_payload_missing");
@@ -76,7 +79,7 @@ function readReferenceChoices(db,projectId,nodeId){
 }
 
 /** Returns null only for stages handled by the legacy source-paragraph route. */
-export function readPagedDramaScope(db,projectId,nodeId,{versionId,episodeId,sequenceId,offset=0,limit=50,summaryOnly=false,draft=false}={}){
+export function readPagedDramaScope(db,projectId,nodeId,{versionId,episodeId,sequenceId,entryId,offset=0,limit=50,summaryOnly=false,draft=false}={}){
  const node=db.prepare(nodeInfoSql).get(projectId,nodeId);
  if(!node){
   const project=db.prepare("SELECT 1 FROM projects WHERE id=? AND deleted_at IS NULL").get(projectId);
@@ -86,6 +89,9 @@ export function readPagedDramaScope(db,projectId,nodeId,{versionId,episodeId,seq
  if(!path)return null;
  if(!Number.isSafeInteger(offset)||offset<0||!Number.isSafeInteger(limit)||limit<1||limit>100)
   throw fail("drama_scope_pagination_invalid",400);
+ const indexed=readIndexedDramaScope(db,projectId,nodeId,node,{draft,versionId,episodeId,sequenceId,entryId,offset,limit,summaryOnly});
+ if(indexed)return {...indexed,referenceChoices:summaryOnly||node.type!=="drama:storyboard"?[]:
+  readReferenceChoices(db,projectId,nodeId)};
  const selected=resolveBody(db,projectId,nodeId,node,{draft,versionId});
  // Older drafts sometimes used fenced JSON. They remain readable without
  // migrating / mutating the node or changing any selected history revision.
@@ -96,8 +102,9 @@ export function readPagedDramaScope(db,projectId,nodeId,{versionId,episodeId,seq
   throw fail("drama_draft_invalid");
  // JSON1 iterates over entries without returning the entire collection to JS.
  const where=`(?='' OR json_extract(value,'$.episodeId')=? OR json_extract(value,'$.id')=?)
-   AND (?='' OR json_extract(value,'$.sequenceId')=?)`;
- const params=[episodeId??"",episodeId??"",episodeId??"",sequenceId??"",sequenceId??""];
+   AND (?='' OR json_extract(value,'$.sequenceId')=?)
+   AND (?='' OR json_extract(value,'$.id')=?)`;
+ const params=[episodeId??"",episodeId??"",episodeId??"",sequenceId??"",sequenceId??"",entryId??"",entryId??""];
  const total=db.prepare(`SELECT COUNT(*) AS total FROM json_each(?,?) WHERE ${where}`).get(body,path,...params).total;
  // A duplicated ID outside the displayed page must not make an otherwise
  // valid-looking edit target ambiguous. Enforce global identities in SQL.

@@ -750,7 +750,7 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
   });
  app.get("/api/v1/projects/:id/drama-pipeline/revision-scope",{schema:{querystring:{type:"object",additionalProperties:false,
   required:["nodeId"],properties:{nodeId:canvasNodeIdSchema,versionId:{type:"string",maxLength:128},
-   episodeId:{type:"string",maxLength:128},sequenceId:{type:"string",maxLength:128},
+   episodeId:{type:"string",maxLength:128},sequenceId:{type:"string",maxLength:128},entryId:{type:"string",maxLength:128},
    offset:{type:"integer",minimum:0,default:0},limit:{type:"integer",minimum:1,maximum:100,default:50},summaryOnly:{type:"boolean",default:false},draft:{type:"boolean",default:false}}}}},
   req=>readDramaRevisionScope(db,req.params.id,req.query.nodeId,req.query));
  app.patch("/api/v1/projects/:id/drama-pipeline/shot-draft",{schema:{body:{type:"object",additionalProperties:false,

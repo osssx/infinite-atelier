@@ -42,6 +42,7 @@ import {previewDramaSequenceMigration,applyDramaSequenceMigration} from "./drama
 import {adoptDramaAssetCandidates} from "./drama-asset-adoption.mjs";
 import {readCreativePayload} from "./creative-payloads.mjs";
 import {patchDramaEntryDraft} from "./drama-entry-cas.mjs";
+import {patchDramaScopedBatch} from "./drama-scoped-batch-cas.mjs";
 import {createAssistantChatStreamLedger} from "./assistant-chat-stream-ledger.mjs";
 import {assistantCurrentReferenceData,MAX_ASSISTANT_MESSAGE_BYTES} from "./assistant-chat.mjs";
 import {assertConversationTaskTurn,beginConversationRequest,buildConversationMessages,completeConversationRequest,
@@ -768,6 +769,24 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
       title:{type:"string",maxLength:12000},synopsis:{type:"string",maxLength:12000},
       ending:{type:"string",maxLength:12000}}}}}}},req=>{
    patchDramaEntryDraft(db,req.params.id,req.body,validateProjectDocument,emitProjectEvent);
+   return getProject(db,req.params.id,{compact:true});
+  });
+  // An explicit batch of scoped edits: all-or-nothing across creative nodes.
+  // Frozen Agent Task plans retain their original approval/commit path.
+  app.post("/api/v1/projects/:id/drama-pipeline/batch-draft",{schema:{body:{
+   type:"object",additionalProperties:false,
+   required:["operationId","expectedRevision","edits"],
+   properties:{operationId:idSchema,expectedRevision:{type:"integer",minimum:1},
+    edits:{type:"array",minItems:1,maxItems:16,
+     items:{type:"object",additionalProperties:false,
+      required:["nodeId","kind","entryId","expectedDigest","changes"],
+      properties:{nodeId:canvasNodeIdSchema,kind:{enum:["assets","episodes","shots"]},
+       entryId:{type:"string",minLength:1,maxLength:256},
+       variantId:{type:"string",minLength:1,maxLength:256},
+       sequenceId:{type:"string",minLength:1,maxLength:256},
+       expectedDigest:{type:"string",pattern:"^[a-f0-9]{64}$"},
+       changes:{type:"object",minProperties:1,maxProperties:15}}}}}}}},req=>{
+   patchDramaScopedBatch(db,req.params.id,req.body,validateProjectDocument,emitProjectEvent);
    return getProject(db,req.params.id,{compact:true});
   });
   app.patch("/api/v1/projects/:id/drama-pipeline/shot-draft",{schema:{body:{type:"object",additionalProperties:false,

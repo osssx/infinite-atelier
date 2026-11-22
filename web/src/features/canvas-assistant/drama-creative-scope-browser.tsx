@@ -11,14 +11,19 @@ type ScopedPage={versionId:string|null;total:number;offset:number;limit:number;
 const perPage=10;
 
 type Field="name"|"description"|"title"|"synopsis"|"ending";
+type PendingEdit={nodeId:string;kind:"assets"|"episodes";entryId:string;expectedDigest:string;
+    changes:Partial<Record<Field,string>>;variantId?:string;sequenceId?:string};
 const fieldsLabel:Record<Field,string>={name:"名称",description:"描述",title:"标题",synopsis:"剧情概要",ending:"结尾"};
-function DraftEntryFields({value,fields,onSave}:{value:Partial<Record<Field,string>>;
-    fields:Field[];onSave:(changes:Partial<Record<Field,string>>)=>Promise<void>}){
+function DraftEntryFields({value,fields,onSave,onStage,disabled=false}:{value:Partial<Record<Field,string>>;
+    fields:Field[];onSave:(changes:Partial<Record<Field,string>>)=>Promise<void>;
+    onStage?:(changes:Partial<Record<Field,string>>)=>void;disabled?:boolean}){
     const [values,setValues]=useState<Partial<Record<Field,string>>>(value);
     const [busy,setBusy]=useState(false);
     const [error,setError]=useState("");
     const changes=Object.fromEntries(fields.filter(field=>values[field]!==value[field])
         .map(field=>[field,values[field]??""])) as Partial<Record<Field,string>>;
+    const cannotSubmit=disabled||busy||!Object.keys(changes).length||
+        ("name" in changes&&!changes.name?.trim())||("title" in changes&&!changes.title?.trim());
     return <div className="grid min-w-0 gap-2 border-t p-2">
         {fields.map(field=><label key={field} className="grid min-w-0 gap-1">{fieldsLabel[field]}
             {field==="name"||field==="title"?
@@ -29,14 +34,16 @@ function DraftEntryFields({value,fields,onSave}:{value:Partial<Record<Field,stri
                     value={values[field]??""} disabled={busy}
                     onChange={event=>setValues(current=>({...current,[field]:event.target.value}))}/>}
         </label>)}
-        <button type="button" disabled={busy||!Object.keys(changes).length||
-            ("name" in changes&&!changes.name?.trim())||("title" in changes&&!changes.title?.trim())}
+        <button type="button" disabled={cannotSubmit}
             onClick={async()=>{
                 setBusy(true);setError("");
                 try{await onSave(changes);}
                 catch(error){setError(error instanceof Error?error.message:"局部草案保存失败");}
                 finally{setBusy(false);}
             }}>{busy?"正在保存…":"保存当前条目草案"}</button>
+        {onStage&&<button type="button" disabled={cannotSubmit} onClick={()=>onStage(changes)}>
+            加入批量修改
+        </button>}
         {error&&<p role="alert">{error}</p>}
     </div>;
 }
@@ -50,6 +57,9 @@ export function DramaCreativeScopeBrowser({projectId,nodeId,kind}:{
     const [draft,setDraft]=useState(false);
     const [offset,setOffset]=useState(0);
     const [refresh,setRefresh]=useState(0);
+    const [pending,setPending]=useState<PendingEdit[]>([]);
+    const [batchBusy,setBatchBusy]=useState(false);
+    const [batchError,setBatchError]=useState("");
     const [page,setPage]=useState<ScopedPage|null>(null);
     const [error,setError]=useState("");
     const [loading,setLoading]=useState(false);
@@ -74,7 +84,33 @@ export function DramaCreativeScopeBrowser({projectId,nodeId,kind}:{
             {nodeId,kind,entryId,expectedDigest,operationId:crypto.randomUUID(),changes,...target}),
             {textVersionNodeId:nodeId,keepCreativePointers:true,invalidateCreativeNodeId:nodeId});
         await ensureCreativeNodesLoaded(projectId,[nodeId]);
+        setPending(current=>current.filter(item=>item.entryId!==entryId));
         setRefresh(current=>current+1);
+    };
+    const stage=(entryId:string,expectedDigest:string,changes:Partial<Record<Field,string>>,
+        target?:{variantId?:string;sequenceId?:string})=>{
+        if(pending.some(item=>item.entryId===entryId)){
+            setBatchError("同一条目已有暂存修改，请先清除或提交，避免覆盖同一条目。");
+            return;
+        }
+        if(pending.length>=16){setBatchError("一次最多暂存 16 项修改。");return;}
+        setPending(current=>[...current,{nodeId,kind,entryId,expectedDigest,changes,...target}]);
+        setBatchError("");
+    };
+    const commitBatch=async()=>{
+        if(!pending.length||batchBusy)return;
+        setBatchBusy(true);setBatchError("");
+        try{
+            await commitAssistantCanvasGraphWithSaveBarrier(projectId,({expectedRevision})=>
+                canvasApi<CanvasBackendProject>(
+                    `/api/v1/projects/${encodeURIComponent(projectId)}/drama-pipeline/batch-draft`,"POST",
+                    {operationId:crypto.randomUUID(),expectedRevision,edits:pending}),
+                {keepCreativePointers:true,invalidateCreativeNodeIds:[nodeId]});
+
+            setPending([]);setRefresh(value=>value+1);
+        }catch(error){
+            setBatchError(error instanceof Error?error.message:"批量修改未提交，所有暂存项均未落盘");
+        }finally{setBatchBusy(false);}
     };
     return <section aria-label={label+"独立存储分页浏览"} className="grid min-w-0 gap-2 rounded-xl border p-2 text-xs">
         <button type="button" aria-expanded={expanded} className="text-left font-medium"
@@ -85,6 +121,16 @@ export function DramaCreativeScopeBrowser({projectId,nodeId,kind}:{
             <label><input type="checkbox" checked={draft} onChange={event=>{
                 setDraft(event.target.checked);setOffset(0);setPage(null);
             }}/> 浏览当前草案</label>
+            {draft&&<div aria-label="批量范围草案修改" className="flex flex-wrap items-center gap-2">
+                <span>已暂存 {pending.length} 项（全部通过后一次提交）</span>
+                <button type="button" disabled={!pending.length||batchBusy} onClick={()=>void commitBatch()}>
+                    {batchBusy?"正在批量提交…":"提交全部暂存修改"}
+                </button>
+                <button type="button" disabled={!pending.length||batchBusy} onClick={()=>{setPending([]);setBatchError("");}}>
+                    清空暂存
+                </button>
+                {batchError&&<p role="alert">{batchError}</p>}
+            </div>}
             {loading&&<p role="status">正在读取当前页…</p>}
             {error&&<p role="alert">{error}</p>}
             {page&&<>
@@ -107,20 +153,25 @@ export function DramaCreativeScopeBrowser({projectId,nodeId,kind}:{
                                 <summary>编辑当前条目</summary>
                                 <DraftEntryFields key={digest+"-entry"} value={entry} fields={kind==="assets"?
                                     ["name","description"]:["title","synopsis","ending"]}
-                                    onSave={changes=>save(entry.id,digest,changes)}/>
+                                    onSave={changes=>save(entry.id,digest,changes)} disabled={batchBusy}
+                                    onStage={changes=>stage(entry.id,digest,changes)}/>
                             </details>
                             {kind==="assets"&&entry.variants?.map(variant=><details
                                 key={variant.id} className="rounded border p-1">
                                 <summary>编辑变体：{variant.name}</summary>
                                 <DraftEntryFields key={digest+"-"+variant.id} value={variant}
                                     fields={["name","description"]}
-                                    onSave={changes=>save(entry.id,digest,changes,{variantId:variant.id})}/>
+                                    onSave={changes=>save(entry.id,digest,changes,{variantId:variant.id})}
+                                    disabled={batchBusy}
+                                    onStage={changes=>stage(entry.id,digest,changes,{variantId:variant.id})}/>
                             </details>)}
                             {kind==="episodes"&&entry.sequences?.map(sequence=><details
                                 key={sequence.id} className="rounded border p-1">
                                 <summary>编辑场次标题：{sequence.title}</summary>
                                 <DraftEntryFields key={digest+"-"+sequence.id} value={sequence} fields={["title"]}
-                                    onSave={changes=>save(entry.id,digest,changes,{sequenceId:sequence.id})}/>
+                                    onSave={changes=>save(entry.id,digest,changes,{sequenceId:sequence.id})}
+                                    disabled={batchBusy}
+                                    onStage={changes=>stage(entry.id,digest,changes,{sequenceId:sequence.id})}/>
                             </details>)}
                         </div>;
                     })()}

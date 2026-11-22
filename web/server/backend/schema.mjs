@@ -2,8 +2,9 @@ import {migrateTextVersions} from "./canvas-text-versions.mjs";
 import {DRAMA_RUN_SCHEMA} from "./drama-runs.mjs";
 import {CREATIVE_PAYLOAD_SCHEMA} from "./creative-payloads.mjs";
 import {CREATIVE_SCOPE_INDEX_SCHEMA} from "./creative-scope-index.mjs";
+import {DRAMA_SCOPE_BATCH_SCHEMA} from "./drama-scoped-batch-cas.mjs";
 import{JOB_STATUSES,EXECUTION_MODES,ARTIFACT_KINDS}from"./contracts.mjs";
-export const SCHEMA_VERSION=42;
+export const SCHEMA_VERSION=43;
 const quoted=x=>x.map(s=>"'"+s+"'").join(",");
 export const INITIAL_SCHEMA_SQL=`
 CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY,applied_at INTEGER NOT NULL);
@@ -787,8 +788,9 @@ export function initializeSchema(db){
    db.exec("UPDATE creative_node_payloads SET payload_json=payload_json");
    db.exec("UPDATE canvas_text_versions SET content=content WHERE source='confirmation'");
   }
-  if(version<SCHEMA_VERSION)db.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)").run(SCHEMA_VERSION,Date.now());  db.exec("COMMIT");
- }catch(e){db.exec("ROLLBACK");throw e}
+   if(version<43)db.exec(DRAMA_SCOPE_BATCH_SCHEMA);
+   if(version<SCHEMA_VERSION)db.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)").run(SCHEMA_VERSION,Date.now());
+   db.exec("COMMIT"); }catch(e){db.exec("ROLLBACK");throw e}
 }
 
 export const COMFY_VERSION_NOTES_SCHEMA_SQL=`

@@ -205,6 +205,95 @@ def main():
             check("p33d_"+stage+"_authoritative_saved",bool(wait_for(persisted_draft,
                 "P3.3d saved "+stage,35)))
         check("p33d_original_config_unchanged",find_node(graph(page,pid)["data"],"first-config")==original)
+        # P3.3e: stage two different assets through the real React input
+        # controls, then commit them as ONE scoped transaction and revision.
+        # Single-entry save hydrates its full creative node, replacing the
+        # compact-only scope browser. Reload to exercise batch edits via the
+        # real cold-start/pointer-only browser rather than relying on stale UI.
+        page.call("Page.reload",{"ignoreCache":True})
+        wait_for(lambda:page.js("document.readyState")=="complete","P3.3e reload compact canvas",35)
+        def open_batch_scope():
+            return bool(page.js("""(() => {
+                const node=document.querySelector('[data-node-id="assets"]');
+                const browser=node?.querySelector('[aria-label="资产独立存储分页浏览"]');
+                const button=browser?.querySelector('button[aria-expanded]');
+                if(!button)return false;
+                if(button.getAttribute('aria-expanded')==='false')button.click();
+                const checkbox=browser.querySelector('input[type="checkbox"]');
+                if(!checkbox)return false;
+                if(!checkbox.checked)checkbox.click();
+                return checkbox.checked;
+            })()"""))
+        check("p33e_batch_scope_reopened",bool(wait_for(open_batch_scope,"P3.3e scope after reload",35)))
+        check("p33e_batch_scope_loaded",bool(wait_for(lambda:page.js("""(() => {
+            const b=document.querySelector('[data-node-id="assets"] [aria-label="资产独立存储分页浏览"]');
+            return !!b&&(b.textContent||'').includes('资产共 2 项')&&
+                !!b.querySelector('input[type="checkbox"]:checked');
+        })()"""),"P3.3e draft page",35)))
+        prior_batch_revision=graph(page,pid)["data"]["revision"]
+        for index,field,new_value in (
+            (0,"名称","浏览器批量改名的主角"),
+            (1,"描述","浏览器批量修改家的描述")
+        ):
+            def stage_entry():
+                return bool(page.js("""(() => {
+                    const browser=document.querySelector('[data-node-id="assets"] [aria-label="资产独立存储分页浏览"]');
+                    const entry=browser?.querySelectorAll(':scope > details')[%s];
+                    if(!entry)return false;
+                    entry.open=true;
+                    const editor=entry.querySelector('details[aria-label="编辑当前资产或剧集条目"]');
+                    if(!editor)return false;
+                    editor.open=true;
+                    const label=[...(editor.querySelectorAll('label')||[])].find(l=>
+                        (l.textContent||'').includes(%s));
+                    const input=label?.querySelector('input,textarea');
+                    if(!input)return false;
+                    const proto=input.tagName==='INPUT'?HTMLInputElement.prototype:HTMLTextAreaElement.prototype;
+                    Object.getOwnPropertyDescriptor(proto,'value').set.call(input,%s);
+                    input.dispatchEvent(new Event('input',{bubbles:true}));
+                    return true;
+                })()"""%(index,json.dumps(field,ensure_ascii=False),json.dumps(new_value,ensure_ascii=False))))
+            check("p33e_batch_input_"+str(index),bool(wait_for(stage_entry,"P3.3e asset input "+str(index),25)))
+            def stage_button():
+                return bool(page.js("""(() => {
+                    const browser=document.querySelector('[data-node-id="assets"] [aria-label="资产独立存储分页浏览"]');
+                    const entry=browser?.querySelectorAll(':scope > details')[%s];
+                    const editor=entry?.querySelector('details[aria-label="编辑当前资产或剧集条目"]');
+                    const button=[...(editor?.querySelectorAll('button')||[])].find(b=>
+                        (b.textContent||'').includes('加入批量修改'));
+                    if(!button||button.disabled)return false;
+                    button.click();
+                    return true;
+                })()"""%index))
+            check("p33e_batch_staged_"+str(index),bool(wait_for(stage_button,"P3.3e stage "+str(index),25)))
+        check("p33e_batch_two_pending",bool(page.js("""(() => {
+            const browser=document.querySelector('[data-node-id="assets"] [aria-label="资产独立存储分页浏览"]');
+            return (browser?.textContent||'').includes('已暂存 2 项');
+        })()""")))
+        check("p33e_batch_click",bool(page.js("""(() => {
+            const browser=document.querySelector('[data-node-id="assets"] [aria-label="资产独立存储分页浏览"]');
+            const button=[...(browser?.querySelectorAll('button')||[])].find(b=>
+                (b.textContent||'').includes('提交全部暂存修改'));
+            if(!button||button.disabled)return false;
+            button.click();
+            return true;
+        })()""")))
+        def batch_persisted():
+            g=graph(page,pid)
+            if not g.get("ok"):return None
+            try:
+                row=json.loads(find_node(g["data"],"assets")["metadata"]["dramaDraft"])["assets"]
+                if row[0]["name"]=="浏览器批量改名的主角" and row[1]["description"]=="浏览器批量修改家的描述":
+                    return g
+            except (ValueError,KeyError,TypeError):pass
+            return None
+        successful_batch=wait_for(batch_persisted,"P3.3e batch authoritative save",35)
+        check("p33e_batch_saved_together",bool(successful_batch))
+        check("p33e_batch_one_revision",successful_batch["data"]["revision"]==prior_batch_revision+1)
+        check("p33e_batch_cleared",bool(wait_for(lambda:page.js("""(() => {
+            const browser=document.querySelector('[data-node-id="assets"] [aria-label="资产独立存储分页浏览"]');
+            return (browser?.textContent||'').includes('已暂存 0 项');
+        })()"""),"P3.3e clear staged edits",25)))
         # The compact graph uses lazy creative payloads. Open the genuine node panel before editing.
         for name in ("assets","episodes","board"):
             if node_button(page,name,"打开创作内容"):
@@ -322,11 +411,15 @@ def main():
                 return assets[0]["description"]=="浏览器局部修改资产描述" and episodes[0]["synopsis"]=="浏览器局部修改第一集概要"
             except (ValueError,KeyError,TypeError):return False
         check("p33d_zip_preserves_both_local_drafts",persisted_p33d_values(copied["data"]))
+        check("p33e_zip_preserves_two_asset_edits",bool(
+            json.loads(find_node(copied["data"],"assets")["metadata"]["dramaDraft"])["assets"][0]["name"]=="浏览器批量改名的主角" and
+            json.loads(find_node(copied["data"],"assets")["metadata"]["dramaDraft"])["assets"][1]["description"]=="浏览器批量修改家的描述"))
 
         page.call("Page.reload",{"ignoreCache":True})
         wait_for(lambda:page.js("document.readyState")=="complete","browser refresh",25)
         check("browser_refresh_did_not_delete_config",find_node(graph(page,pid)["data"],"first-config")==original)
         check("p33d_browser_reload_keeps_local_CAS_edits",persisted_p33d_values(graph(page,pid)["data"]))
+        check("p33e_browser_reload_keeps_batch_edits",bool(batch_persisted()))
 
 
         # P3: two real Video Configs (one per episode) -> choose range -> Shot Group.

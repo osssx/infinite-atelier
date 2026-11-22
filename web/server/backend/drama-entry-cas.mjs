@@ -147,66 +147,76 @@ function assertNode(db,projectId,nodeId,kind){
 /** Exactly one target entry or one nested stable-name field per command.
  * No asset IDs, variant IDs, event identities, or sequence topology can change.
  */
-export function patchDramaEntryDraft(db,projectId,command,validateDocument,emitEvent){
- return writeTransaction(db,()=>{
-  const {nodeId,kind,entryId,variantId,sequenceId,operationId,expectedDigest}=command;
-  if(!Object.hasOwn(types,kind)||!id(entryId)||!id(nodeId)||!id(operationId)||
-   !/^[A-Za-z0-9_-]{1,128}$/.test(operationId)||
-   typeof expectedDigest!=="string"||!/^[a-f0-9]{64}$/.test(expectedDigest)||
-   (variantId!==undefined&&(!id(variantId)||kind!=="assets"))||
-   (sequenceId!==undefined&&(!id(sequenceId)||kind!=="episodes"))||
-   (variantId&&sequenceId))throw fail("drama_draft_invalid");
-  const fingerprint=digest(command);
-  const receipt=db.prepare(`SELECT fingerprint FROM canvas_text_version_operations
-   WHERE project_id=? AND node_id=? AND id=?`).get(projectId,nodeId,operationId);
-  if(receipt&&receipt.fingerprint!==fingerprint)throw fail("text_version_operation_conflict",409);
-  const {row,document}=assertNode(db,projectId,nodeId,kind);
-  if(receipt){
-   if(!db.prepare("SELECT 1 FROM creative_node_payloads WHERE project_id=? AND node_id=?")
-    .get(projectId,nodeId))throw fail("creative_payload_missing");
-   return;
-  }
-  const state=db.prepare(`SELECT entry_count,unique_count FROM creative_scope_index_state
+/** Caller must already hold BEGIN IMMEDIATE. Deliberately does not advance
+ * project revision or write a receipt: a batch can apply multiple entries and
+ * commit them with ONE project revision and one batch receipt.
+ */
+export function applyDramaEntryDraftWithinTransaction(db,projectId,command,validateDocument){
+ const {nodeId,kind,entryId,variantId,sequenceId,expectedDigest}=command;
+ if(!Object.hasOwn(types,kind)||!id(entryId)||!id(nodeId)||
+  typeof expectedDigest!=="string"||!/^[a-f0-9]{64}$/.test(expectedDigest)||
+  (variantId!==undefined&&(!id(variantId)||kind!=="assets"))||
+  (sequenceId!==undefined&&(!id(sequenceId)||kind!=="episodes"))||
+  (variantId&&sequenceId))throw fail("drama_draft_invalid");
+ const {row,document}=assertNode(db,projectId,nodeId,kind);
+ const state=db.prepare(`SELECT entry_count,unique_count FROM creative_scope_index_state
    WHERE project_id=? AND node_id=? AND stage='draft' AND kind=?`).get(projectId,nodeId,kind);
-  if(!state)throw fail("drama_entry_edit_unavailable",409);
-  assertIndexedDraftValid(db,projectId,nodeId,kind,state);
-  const matches=db.prepare(`SELECT ordinal,entry_json FROM creative_scope_entry_index
+ if(!state)throw fail("drama_entry_edit_unavailable",409);
+ assertIndexedDraftValid(db,projectId,nodeId,kind,state);
+ const matches=db.prepare(`SELECT ordinal,entry_json FROM creative_scope_entry_index
    WHERE project_id=? AND node_id=? AND stage='draft' AND kind=? AND entry_id=?`)
    .all(projectId,nodeId,kind,entryId);
-  if(matches.length!==1)throw fail("drama_entry_target_not_found",404);
-  const item=matches[0],current=JSON.parse(item.entry_json);
-  if(digest(current)!==expectedDigest)throw fail("drama_candidate_conflict",409);
-  const next=applyChanges(kind,current,command);
-  const source=db.prepare(`SELECT json_type(payload_json,'$.dramaDraft') AS draftType,
+ if(matches.length!==1)throw fail("drama_entry_target_not_found",404);
+ const item=matches[0],current=JSON.parse(item.entry_json);
+ if(digest(current)!==expectedDigest)throw fail("drama_candidate_conflict",409);
+ const next=applyChanges(kind,current,command);
+ const source=db.prepare(`SELECT json_type(payload_json,'$.dramaDraft') AS draftType,
    json_valid(${body}) AS valid,
    json_type(CASE WHEN json_valid(${body}) THEN ${body} ELSE '{}' END,?) AS listType,
    json_array_length(CASE WHEN json_valid(${body}) THEN ${body} ELSE '{}' END,?) AS length,
    json_extract(CASE WHEN json_valid(${body}) THEN ${body} ELSE '{}' END,?) AS entry
    FROM creative_node_payloads WHERE project_id=? AND node_id=?`)
    .get(`$.${kind}`,`$.${kind}`,`$.${kind}[${item.ordinal}]`,projectId,nodeId);
-  if(!source)throw fail("creative_payload_missing");
-  if(!source.valid||source.listType!=="array"||
-   source.draftType!==null&&source.draftType!=="text")
-   throw fail("drama_entry_edit_unavailable",409);
-  if(source.length!==state.entry_count)throw fail("drama_draft_invalid");
-  let authoritative;
-  try{authoritative=JSON.parse(source.entry);}catch{throw fail("drama_draft_invalid");}
-  if(digest(authoritative)!==digest(current))throw fail("drama_candidate_conflict",409);
-  validateDocument(document);
-  // Retain the legacy STRING representation of dramaDraft. A JSON subtype
-  // object here would break getProject(), Agent runs and ZIP restore.
-  const patched=db.prepare(`UPDATE creative_node_payloads
+ if(!source)throw fail("creative_payload_missing");
+ if(!source.valid||source.listType!=="array"||
+  source.draftType!==null&&source.draftType!=="text")
+  throw fail("drama_entry_edit_unavailable",409);
+ if(source.length!==state.entry_count)throw fail("drama_draft_invalid");
+ let authoritative;
+ try{authoritative=JSON.parse(source.entry);}catch{throw fail("drama_draft_invalid");}
+ if(digest(authoritative)!==digest(current))throw fail("drama_candidate_conflict",409);
+ validateDocument(document);
+ const patched=db.prepare(`UPDATE creative_node_payloads
    SET payload_json=json_set(payload_json,'$.dramaDraft',
     (json_set(${body},?,json(?)) || '')),
     project_revision=?
    WHERE project_id=? AND node_id=?`)
    .run(`$.${kind}[${item.ordinal}]`,JSON.stringify(next),row.revision+1,projectId,nodeId);
-  if(patched.changes!==1)throw fail("creative_payload_missing");
+ if(patched.changes!==1)throw fail("creative_payload_missing");
+ return {revision:row.revision+1,nodeId,kind,entryId};
+}
+export function patchDramaEntryDraft(db,projectId,command,validateDocument,emitEvent){
+ return writeTransaction(db,()=>{
+  const {nodeId,operationId}=command;
+  if(!id(operationId)||!/^[A-Za-z0-9_-]{1,128}$/.test(operationId))
+   throw fail("drama_draft_invalid");
+  const fingerprint=digest(command);
+  const receipt=db.prepare(`SELECT fingerprint FROM canvas_text_version_operations
+   WHERE project_id=? AND node_id=? AND id=?`).get(projectId,nodeId,operationId);
+  if(receipt&&receipt.fingerprint!==fingerprint)throw fail("text_version_operation_conflict",409);
+  // Even a replay must reject a deleted project, missing node or bad pointer.
+  const {row}=assertNode(db,projectId,nodeId,command.kind);
+  if(receipt){
+   if(!db.prepare("SELECT 1 FROM creative_node_payloads WHERE project_id=? AND node_id=?")
+    .get(projectId,nodeId))throw fail("creative_payload_missing");
+   return;
+  }
+  const result=applyDramaEntryDraftWithinTransaction(db,projectId,command,validateDocument);
   const updated=db.prepare("UPDATE projects SET revision=revision+1 WHERE id=? AND revision=?")
    .run(projectId,row.revision);
   if(updated.changes!==1)throw fail("project_revision_conflict",409);
   db.prepare("INSERT INTO canvas_text_version_operations VALUES(?,?,?,?,?)")
-   .run(projectId,nodeId,operationId,fingerprint,row.revision+1);
-  emitEvent(db,{id:projectId,revision:row.revision+1,kind:"updated"});
+   .run(projectId,nodeId,operationId,fingerprint,result.revision);
+  emitEvent(db,{id:projectId,revision:result.revision,kind:"updated"});
  });
 }

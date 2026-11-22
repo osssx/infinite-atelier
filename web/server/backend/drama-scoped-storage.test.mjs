@@ -186,7 +186,7 @@ test("P3.3b: invalid drafts and duplicate IDs fail closed but do not prevent sav
  update(JSON.stringify({shots:[shot(0,"Recovered")]}));
  assert.equal(readDramaRevisionScope(db,"large","board",{draft:true,limit:1}).entries[0].description,"Recovered");
 });
-test("P3.3b: schema 41 to 42 backfills entry index without altering the project revision or original payloads",t=>{
+test("P3.3b: schema 41 to current backfills entry index without altering the project revision or original payloads",t=>{
  const db=fixture(t);
  const before=getProject(db,"large"),payload=db.prepare("SELECT payload_json FROM creative_node_payloads "+
   "WHERE project_id='large' AND node_id='board'").get().payload_json;
@@ -194,7 +194,7 @@ test("P3.3b: schema 41 to 42 backfills entry index without altering the project 
   "DROP TABLE creative_scope_entry_index;DROP TABLE creative_scope_index_state;"+
   "DROP TRIGGER creative_scope_history_insert;DROP TRIGGER creative_scope_history_update;"+
   "DROP TABLE creative_scope_history_entries;DROP TABLE creative_scope_history_state;"+
-  "UPDATE schema_migrations SET version=41 WHERE version=42");
+  "UPDATE schema_migrations SET version=41 WHERE version=(SELECT MAX(version) FROM schema_migrations)");
  initializeSchema(db);
  const after=getProject(db,"large");
  assert.equal(after.revision,before.revision);

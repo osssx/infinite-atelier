@@ -67,7 +67,7 @@ function indexedDraftMalformed(db,projectId,nodeId){
 /** Returns false when the old project must use the fully hydrated path.
  * No return value means already completed successfully.
  */
-export function tryPatchIndexedShotDraft(db,projectId,nodeId,command,validateDocument,emitEvent,fingerprint){
+export function tryPatchIndexedShotDraft(db,projectId,nodeId,command,validateDocument,emitEvent,fingerprint,{deferProjectCommit=false}={}){
  const project=db.prepare("SELECT revision,document_json FROM projects WHERE id=? AND deleted_at IS NULL").get(projectId);
  if(!project)throw fail("project_not_found",404);
  const graph=JSON.parse(project.document_json);
@@ -127,7 +127,8 @@ export function tryPatchIndexedShotDraft(db,projectId,nodeId,command,validateDoc
  if(source.shotCount!==state.entry_count)throw fail("drama_draft_invalid");
  let actual;
  try{actual=JSON.parse(source.exact);}catch{throw fail("drama_draft_invalid");}
- if(digest(actual)!==digest(shot))throw fail("drama_candidate_conflict",409); // The old graph has not changed; validating its compact pointer document
+ if(digest(actual)!==digest(shot))throw fail("drama_candidate_conflict",409);
+  // The old graph has not changed; validating its compact pointer document
  // preserves the existing size/credentials/dangling-edge guard.
  validateDocument(graph);
  const newPath=`$.shots[${entry.ordinal}]`;
@@ -137,7 +138,8 @@ export function tryPatchIndexedShotDraft(db,projectId,nodeId,command,validateDoc
   project_revision=? WHERE project_id=? AND node_id=?`)
   .run(newPath,JSON.stringify(updated),project.revision+1,projectId,nodeId);
  if(wrote.changes!==1)throw fail("creative_payload_missing");
- const revision=db.prepare("UPDATE projects SET revision=revision+1 WHERE id=? AND revision=?")
+ if(deferProjectCommit)return true;
+  const revision=db.prepare("UPDATE projects SET revision=revision+1 WHERE id=? AND revision=?")
   .run(projectId,project.revision);
  if(revision.changes!==1)throw fail("project_revision_conflict",409);
  db.prepare("INSERT INTO canvas_text_version_operations VALUES(?,?,?,?,?)")

@@ -157,7 +157,7 @@ test("creates and edits a complete drama pipeline using approved new-node refs",
  assert.deepEqual(JSON.parse(result.nodes[1].metadata.dramaDraft),{
   assets:[{...hero,variants:[{...hero.variants[0],name:"夜间雨衣"}]}]
  });
- assert.deepEqual(JSON.parse(result.nodes[2].metadata.dramaDraft),{episodes:[{...episode,synopsis:"沿桥追踪线索"}]});
+ assert.deepEqual(JSON.parse(result.nodes[2].metadata.dramaDraft),{episodes:[{...episode,eventItems:[],synopsis:"沿桥追踪线索"}]});
  assert.deepEqual(JSON.parse(result.nodes[3].metadata.dramaDraft),{shots:[shot]});
  assert.ok(result.nodes.every(item=>item.metadata.dramaConfirmed===""));
 });
@@ -227,6 +227,65 @@ test("P1b group membership, grouped layout and ungroup each retain durable recei
  assert.equal(ctx.db.prepare("SELECT COUNT(*) n FROM assistant_task_steps").get().n,5);
  assert.equal(ctx.db.prepare("SELECT COUNT(*) n FROM assistant_task_steps WHERE receipt_trust='server_committed'").get().n,5);
 });
+// P3.3e safety fence: the separately approved Task path is intentionally NOT
+// rewritten as scoped batch CAS. A mixed Task still freezes a full graph digest,
+// checks user approval, and commits all three node updates + receipt together.
+const scopedTaskGraph=()=>{
+ const assets={assets:[{id:"hero",kind:"character",name:"小兔",
+  description:"白毛",sourceRefs:[],variants:[]}]};
+ const episodes={episodes:[{id:"ep1",title:"第一集",synopsis:"开始",
+  ending:"回家",events:[],sourceRefs:[]}]};
+ const board={shots:[{id:"shot1",episodeId:"ep1",order:1,
+  description:"走进森林",characterVariantIds:[],propIds:[],keyPropIds:[]}]};
+ return {title:"混合 Task 流水线",nodes:[
+  {...node,id:"assets",type:"drama:assets",metadata:{dramaDraft:JSON.stringify(assets),dramaConfirmed:JSON.stringify(assets)}},
+  {...node,id:"episodes",type:"drama:episodes",metadata:{dramaDraft:JSON.stringify(episodes),dramaConfirmed:JSON.stringify(episodes)}},
+  {...node,id:"board",type:"drama:storyboard",metadata:{dramaDraft:JSON.stringify(board),dramaConfirmed:JSON.stringify(board)}}
+ ],connections:[{id:"asset-board",fromNodeId:"assets",toNodeId:"board"},
+  {id:"episodes-board",fromNodeId:"episodes",toNodeId:"board"}]};
+};
+const scopedTaskActions=[
+ {type:"patch_drama_asset",nodeId:"assets",assetId:"hero",changes:{description:"幼儿动画主角"}},
+ {type:"patch_drama_episode",nodeId:"episodes",episodeId:"ep1",changes:{synopsis:"新故事"}},
+ {type:"patch_storyboard_shot",nodeId:"board",shotId:"shot1",changes:{description:"森林广角镜头"}}
+];
+test("P3.3e existing approved Agent Task commits three creative node patches with one trusted receipt",t=>{
+ const ctx=setup(t,scopedTaskGraph()),before=getProject(ctx.db,"p");
+ const candidate=plan(ctx,{requestId:"frozen-multi",actions:scopedTaskActions});
+ assert.equal(candidate.status,"waiting_approval");
+ assert.deepEqual(getProject(ctx.db,"p").document,before.document);
+ approve(ctx,candidate);
+ const result=execute(ctx,candidate);
+ assert.equal(result.status,"succeeded");
+ assert.equal(result.project.revision,2);
+ assert.equal(result.receipt.applied,3);
+ assert.equal(result.receipt.projectRevision,2);
+ const project=getProject(ctx.db,"p");
+ const stored=new Map(project.document.nodes.map(item=>[item.id,item.metadata]));
+ assert.equal(JSON.parse(stored.get("assets").dramaDraft).assets[0].description,"幼儿动画主角");
+ assert.equal(JSON.parse(stored.get("episodes").dramaDraft).episodes[0].synopsis,"新故事");
+ assert.equal(JSON.parse(stored.get("board").dramaDraft).shots[0].description,"森林广角镜头");
+ for(const id of ["assets","episodes","board"])
+  assert.equal(stored.get(id).dramaConfirmed,
+   before.document.nodes.find(item=>item.id===id).metadata.dramaConfirmed);
+ assert.equal(ctx.db.prepare("SELECT COUNT(*) AS n FROM project_events WHERE project_id='p'").get().n,2);
+ assert.equal(ctx.db.prepare("SELECT COUNT(*) AS n FROM assistant_task_attempts WHERE status='succeeded'").get().n,1);
+ assert.equal(ctx.db.prepare("SELECT COUNT(*) AS n FROM assistant_task_steps WHERE receipt_trust='server_committed'").get().n,1);
+ assert.equal(execute(ctx,candidate).existing,true);
+ assert.equal(getProject(ctx.db,"p").revision,2);
+});
+test("P3.3e existing frozen Task rolls back every creative patch when receipt writing is interrupted",t=>{
+ const ctx=setup(t,scopedTaskGraph()),before=getProject(ctx.db,"p");
+ const candidate=plan(ctx,{requestId:"frozen-multi-fault",actions:scopedTaskActions});
+ approve(ctx,candidate);
+ assert.throws(()=>execute(ctx,candidate,{beforeReceipt:()=>{throw Error("injected_task_receipt_failure");}}),
+  /injected_task_receipt_failure/);
+ assert.deepEqual(getProject(ctx.db,"p").document,before.document);
+ assert.equal(getProject(ctx.db,"p").revision,1);
+ assert.equal(ctx.db.prepare("SELECT COUNT(*) AS n FROM project_events WHERE project_id='p'").get().n,1);
+ assert.equal(ctx.db.prepare("SELECT COUNT(*) AS n FROM assistant_task_steps WHERE receipt_trust='server_committed'").get().n,0);
+});
+
 
 test("P1b simulated crash after claim leaves no graph write and recovers a prepared local attempt",t=>{
  const ctx=setup(t),candidate=plan(ctx);approve(ctx,candidate);

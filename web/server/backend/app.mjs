@@ -41,6 +41,7 @@ import {previewDramaImpact} from "./drama-impact.mjs";
 import {previewDramaSequenceMigration,applyDramaSequenceMigration} from "./drama-sequence-migration.mjs";
 import {adoptDramaAssetCandidates} from "./drama-asset-adoption.mjs";
 import {readCreativePayload} from "./creative-payloads.mjs";
+import {patchDramaEntryDraft} from "./drama-entry-cas.mjs";
 import {createAssistantChatStreamLedger} from "./assistant-chat-stream-ledger.mjs";
 import {assistantCurrentReferenceData,MAX_ASSISTANT_MESSAGE_BYTES} from "./assistant-chat.mjs";
 import {assertConversationTaskTurn,beginConversationRequest,buildConversationMessages,completeConversationRequest,
@@ -753,7 +754,23 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
    episodeId:{type:"string",maxLength:128},sequenceId:{type:"string",maxLength:128},entryId:{type:"string",maxLength:128},
    offset:{type:"integer",minimum:0,default:0},limit:{type:"integer",minimum:1,maximum:100,default:50},summaryOnly:{type:"boolean",default:false},draft:{type:"boolean",default:false}}}}},
   req=>readDramaRevisionScope(db,req.params.id,req.query.nodeId,req.query));
- app.patch("/api/v1/projects/:id/drama-pipeline/shot-draft",{schema:{body:{type:"object",additionalProperties:false,
+ // P3.3d: stable-ID metadata CAS; split/merge and ID migration stay separate.
+  app.patch("/api/v1/projects/:id/drama-pipeline/entry-draft",{schema:{body:{
+   type:"object",additionalProperties:false,
+   required:["nodeId","kind","entryId","operationId","expectedDigest","changes"],
+   properties:{nodeId:canvasNodeIdSchema,kind:{enum:["assets","episodes"]},
+    entryId:{type:"string",minLength:1,maxLength:256},
+    variantId:{type:"string",minLength:1,maxLength:256},
+    sequenceId:{type:"string",minLength:1,maxLength:256},
+    operationId:idSchema,expectedDigest:{type:"string",pattern:"^[a-f0-9]{64}$"},
+    changes:{type:"object",minProperties:1,additionalProperties:false,
+     properties:{name:{type:"string",maxLength:12000},description:{type:"string",maxLength:12000},
+      title:{type:"string",maxLength:12000},synopsis:{type:"string",maxLength:12000},
+      ending:{type:"string",maxLength:12000}}}}}}},req=>{
+   patchDramaEntryDraft(db,req.params.id,req.body,validateProjectDocument,emitProjectEvent);
+   return getProject(db,req.params.id,{compact:true});
+  });
+  app.patch("/api/v1/projects/:id/drama-pipeline/shot-draft",{schema:{body:{type:"object",additionalProperties:false,
   required:["nodeId","shotId","operationId","expectedDigest","changes"],properties:{nodeId:canvasNodeIdSchema,
    shotId:{type:"string",minLength:1,maxLength:128},operationId:idSchema,expectedDigest:{type:"string",pattern:"^[a-f0-9]{64}$"},
    changes:{type:"object",minProperties:1,additionalProperties:false,properties:{description:{type:"string",maxLength:20000},

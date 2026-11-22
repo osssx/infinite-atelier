@@ -136,6 +136,75 @@ def main():
                 return [...(root?.querySelectorAll('button')||[])].some(
                   btn=>(btn.textContent||'').trim()==='打开创作内容');
             })()"""%json.dumps(stage))))
+
+        # P3.3d: perform real controlled-input edits in the compact node
+        # browser, not by calling the API directly. Afterwards the canvas
+        # state must rehydrate the updated authoritative payload.
+        for stage,label,field,updated in (
+            ("assets","资产","描述","浏览器局部修改资产描述"),
+            ("episodes","剧集","剧情概要","浏览器局部修改第一集概要")
+        ):
+            def open_draft():
+                return bool(page.js("""(() => {
+                    const root=document.querySelector('[data-node-id=%s]');
+                    const browser=root?.querySelector('[aria-label=%s]');
+                    const checkbox=browser?.querySelector('input[type="checkbox"]');
+                    if(!checkbox)return false;
+                    if(!checkbox.checked)checkbox.click();
+                    return checkbox.checked;
+                })()"""%(json.dumps(stage),json.dumps(label+"独立存储分页浏览",ensure_ascii=False))))
+            check("p33d_"+stage+"_draft_toggle",bool(wait_for(open_draft,"P3.3d draft "+stage,25)))
+            def editor_open():
+                return bool(page.js("""(() => {
+                    const root=document.querySelector('[data-node-id=%s]');
+                    const browser=root?.querySelector('[aria-label=%s]');
+                    const entry=browser?.querySelector('details');
+                    if(!entry)return false;
+                    if(!entry.open)entry.open=true;
+                    const editor=entry.querySelector('details[aria-label="编辑当前资产或剧集条目"]');
+                    if(!editor)return false;
+                    if(!editor.open)editor.open=true;
+                    return [...editor.querySelectorAll('label')].some(l=>
+                        (l.textContent||'').includes(%s)&&!!l.querySelector('textarea'));
+                })()"""%(json.dumps(stage),json.dumps(label+"独立存储分页浏览",ensure_ascii=False),
+                        json.dumps(field,ensure_ascii=False))))
+            check("p33d_"+stage+"_editor_ready",bool(wait_for(editor_open,"P3.3d editor "+stage,25)))
+            check("p33d_"+stage+"_react_input",bool(page.js("""(() => {
+                const root=document.querySelector('[data-node-id=%s]');
+                const editor=root?.querySelector('details[aria-label="编辑当前资产或剧集条目"]');
+                const label=[...(editor?.querySelectorAll('label')||[])].find(l=>
+                    (l.textContent||'').includes(%s));
+                const input=label?.querySelector('textarea');
+                if(!input)return false;
+                const setter=Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set;
+                setter.call(input,%s);
+                input.dispatchEvent(new Event('input',{bubbles:true}));
+                return true;
+            })()"""%(json.dumps(stage),json.dumps(field,ensure_ascii=False),
+                     json.dumps(updated,ensure_ascii=False)))))
+            def click_draft_save():
+                return bool(page.js("""(() => {
+                    const root=document.querySelector('[data-node-id=%s]');
+                    const editor=root?.querySelector('details[aria-label="编辑当前资产或剧集条目"]');
+                    const button=[...(editor?.querySelectorAll('button')||[])].find(b=>
+                        (b.textContent||'').includes('保存当前条目草案'));
+                    if(!button||button.disabled)return false;
+                    button.click();
+                    return true;
+                })()"""%json.dumps(stage)))
+            check("p33d_"+stage+"_save_clicked",bool(wait_for(click_draft_save,"P3.3d save "+stage,25)))
+            def persisted_draft():
+                g=graph(page,pid)
+                if not g.get("ok"):return None
+                try:
+                    item=json.loads(find_node(g["data"],stage)["metadata"]["dramaDraft"])
+                    chosen=item["assets"][0] if stage=="assets" else item["episodes"][0]
+                    actual=chosen["description"] if stage=="assets" else chosen["synopsis"]
+                    return g if actual==updated else None
+                except Exception:return None
+            check("p33d_"+stage+"_authoritative_saved",bool(wait_for(persisted_draft,
+                "P3.3d saved "+stage,35)))
+        check("p33d_original_config_unchanged",find_node(graph(page,pid)["data"],"first-config")==original)
         # The compact graph uses lazy creative payloads. Open the genuine node panel before editing.
         for name in ("assets","episodes","board"):
             if node_button(page,name,"打开创作内容"):
@@ -246,9 +315,19 @@ def main():
         check("zip_restores_first_config",find_node(copied["data"],"first-config")==original)
         check("zip_restores_second_episode_revision",
               "浏览器实际触发" in find_node(copied["data"],"board")["metadata"]["dramaConfirmed"])
+        def persisted_p33d_values(result):
+            try:
+                assets=json.loads(find_node(result,"assets")["metadata"]["dramaDraft"])["assets"]
+                episodes=json.loads(find_node(result,"episodes")["metadata"]["dramaDraft"])["episodes"]
+                return assets[0]["description"]=="浏览器局部修改资产描述" and episodes[0]["synopsis"]=="浏览器局部修改第一集概要"
+            except (ValueError,KeyError,TypeError):return False
+        check("p33d_zip_preserves_both_local_drafts",persisted_p33d_values(copied["data"]))
+
         page.call("Page.reload",{"ignoreCache":True})
         wait_for(lambda:page.js("document.readyState")=="complete","browser refresh",25)
         check("browser_refresh_did_not_delete_config",find_node(graph(page,pid)["data"],"first-config")==original)
+        check("p33d_browser_reload_keeps_local_CAS_edits",persisted_p33d_values(graph(page,pid)["data"]))
+
 
         # P3: two real Video Configs (one per episode) -> choose range -> Shot Group.
         # Run only after archive + legacy Config regression checks: grouping may add groupId metadata.

@@ -55,8 +55,9 @@ export type PersistTiming={sequence:number;stringifyMs:number;bytes:number;write
 export const drainPersistTimings=():PersistTiming[]=>[];
 const now=()=>new Date().toISOString();
 const creativeFields=["dramaDraft","dramaConfirmed","content","dramaSourceParagraphs","dramaAssetReferences","dramaAssetCandidate"] as const;
-function preserveLoadedBodies(nodes:CanvasNodeData[],previous:CanvasNodeData[]){
+function preserveLoadedBodies(nodes:CanvasNodeData[],previous:CanvasNodeData[],invalidateNodeId?:string){
  return nodes.map(node=>{
+   if(node.id===invalidateNodeId)return node;
   const old=previous.find(item=>item.id===node.id);
   if(!node.metadata?.creativePayloadRef||!old||old.metadata?.creativePayloadRef)return node;
   const {creativePayloadRef,...metadata}=node.metadata;
@@ -252,7 +253,7 @@ function mergeTextVersionCommit(
 export async function commitAssistantCanvasGraphWithSaveBarrier(
  projectId:string,
  submit:(frozen:{expectedRevision:number;document:ReturnType<typeof asDocument>;assertCurrent:()=>void})=>Promise<CanvasBackendProject>,
- options?:{textVersionNodeId:string;keepCreativePointers?:boolean}
+ options?:{textVersionNodeId:string;keepCreativePointers?:boolean;invalidateCreativeNodeId?:string}
 ):Promise<CanvasBackendProject>{
  const frozen=await readAssistantCanvasGraphBaseline(projectId,!options?.keepCreativePointers),revision=frozen.expectedRevision;
  const assertCurrent=()=>{
@@ -266,7 +267,7 @@ export async function commitAssistantCanvasGraphWithSaveBarrier(
  try{
   const remote=await submit({...frozen,assertCurrent});
   if(options?.keepCreativePointers){
-   remote.document.nodes=preserveLoadedBodies(remote.document.nodes as CanvasNodeData[],frozen.document.nodes);
+   remote.document.nodes=preserveLoadedBodies(remote.document.nodes as CanvasNodeData[],frozen.document.nodes,options.invalidateCreativeNodeId);
   }
   if(remote.id!==projectId||!Number.isSafeInteger(remote.revision)||
    remote.revision<revision||!Array.isArray(remote.document.nodes)||

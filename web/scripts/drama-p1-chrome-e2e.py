@@ -1094,6 +1094,105 @@ def main():
               title.querySelector('[data-episode-readonly="title"]')?.textContent?.trim()==='Chrome 单字段确认标题'&&
               !title.querySelector('input')&&others?.length===0;
         })()"""),"title applied only once and other fields stay read-only",25)))
+        # Maximize the storyboard summary, verify editor parity with episodes and
+        # never write local field text before the explicit confirm action.
+        check("storyboard_maximized_editor_open",bool(wait_for(
+            lambda:node_button(page,"board","打开完整编辑器 ↗"),"storyboard maximize action",35)))
+        check("storyboard_editor_directory_and_readonly",bool(wait_for(lambda:page.js("""(() => {
+            const root=document.querySelector('[data-creative-workspace-node-id="board"]');
+            const layout=root?.querySelector('[data-storyboard-editor-layout="expanded"]');
+            const aside=layout?.querySelector('[aria-label="镜头目录"]');
+            const content=layout?.querySelector('[aria-label="当前分镜编辑区"]');
+            const nav=aside?.querySelector('[aria-label="分镜镜头导航"]');
+            const fields=content?.querySelectorAll('[data-shot-editable-field]');
+            const left=aside?.getBoundingClientRect(),right=content?.getBoundingClientRect();
+            return root?.dataset.dramaWorkspaceKind==='storyboard'&&
+             root.querySelector('nav[aria-label="创作工作区功能"] button[aria-pressed="true"]')?.textContent?.trim()==='分镜表'&&
+             !!aside&&!!content&&!!nav&&nav.querySelectorAll('button').length>=1&&
+             fields?.length>=8&&[...fields].every(field=>
+               field.dataset.shotFieldMode==='reading'&&
+               !!field.querySelector('[data-shot-readonly]')&&
+               !!field.querySelector('button[aria-label^="编辑"]'))&&
+             !content.querySelector('textarea')&&
+             left?.right<=right?.left+3&&left?.top>=right?.top-5&&left?.top<=right?.top+5;
+        })()"""),"storyboard responsive shot directory and read-only details",35)))
+        check("storyboard_field_local_edit_opens",bool(page.js("""(() => {
+            const field=document.querySelector('[data-creative-workspace-node-id="board"] [data-shot-editable-field="description"]');
+            const btn=field?.querySelector('button[aria-label="编辑画面描述"]');
+            if(!btn)return false;btn.click();return true;
+        })()""")))
+        check("storyboard_compact_actions_themed_without_border",bool(wait_for(lambda:page.js("""(() => {
+            const root=document.querySelector('[data-creative-workspace-node-id="board"]');
+            const field=root?.querySelector('[data-shot-editable-field="description"]');
+            const textarea=field?.querySelector('textarea[aria-label="画面描述"]');
+            const footer=field?.querySelector('[data-drama-edit-actions]');
+            const cancel=footer?.querySelector('[data-drama-action="cancel"]');
+            const confirm=footer?.querySelector('[data-drama-action="confirm"]');
+            if(!textarea||!footer||!cancel||!confirm)return false;
+            const rc=cancel.getBoundingClientRect(),rp=confirm.getBoundingClientRect();
+            const dark=root.dataset.dramaWorkspaceTheme==='dark';
+            const panel=dark?'rgb(31, 29, 26)':'rgb(251, 250, 247)';
+            return field.dataset.shotFieldMode==='editing'&&
+             field.textContent?.includes('编辑中')&&
+             getComputedStyle(textarea).backgroundColor===panel&&
+             getComputedStyle(footer).borderTopWidth==='0px'&&
+             rc.width>=67&&rc.width<=95&&rp.width>=67&&rp.width<=95&&
+             rc.height>=27&&rc.height<=33&&rp.height>=27&&rp.height<=33&&
+             rc.right<rp.left&&Math.abs(rc.top-rp.top)<=2;
+        })()"""),"storyboard same small theme actions as episode",30)))
+        check("storyboard_field_stage_not_written",bool(page.js("""(() => {
+            const textarea=document.querySelector('[data-creative-workspace-node-id="board"] textarea[aria-label="画面描述"]');
+            if(!textarea)return false;
+            const setter=Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set;
+            setter.call(textarea,'浏览器测试：未确认分镜文本');
+            textarea.dispatchEvent(new Event('input',{bubbles:true}));
+            return true;
+        })()""")))
+        check("storyboard_field_cancel",bool(wait_for(lambda:page.js("""(() => {
+            const root=document.querySelector('[data-creative-workspace-node-id="board"]');
+            const btn=root?.querySelector('[data-shot-editable-field="description"] [data-drama-action="cancel"]');
+            if(!btn)return false;btn.click();return true;
+        })()"""),"cancel storyboard field",25)))
+        check("storyboard_cancel_restores_readonly",bool(wait_for(lambda:page.js("""(() => {
+            const field=document.querySelector('[data-creative-workspace-node-id="board"] [data-shot-editable-field="description"]');
+            return field?.dataset.shotFieldMode==='reading'&&
+              !!field.querySelector('[data-shot-readonly="description"]')&&
+              !field.querySelector('textarea')&&
+              !field.textContent?.includes('浏览器测试：未确认分镜文本');
+        })()"""),"storyboard canceled text not persisted",25)))
+        check("storyboard_video_tab_switch",bool(wait_for(
+            lambda:node_button(page,"board","视频配置"),"storyboard video tab",25)))
+        check("storyboard_video_tab_themed_readonly_preview",bool(wait_for(lambda:page.js("""(() => {
+            const root=document.querySelector('[data-creative-workspace-node-id="board"]');
+            const preview=root?.querySelector('[data-storyboard-video-description]');
+            if(!preview)return false;
+            const css=getComputedStyle(preview);
+            const expected=root.dataset.dramaWorkspaceTheme==='dark'?
+              'rgb(58, 54, 49)':'rgb(231, 229, 223)';
+            const active=root?.querySelector('nav[aria-label="创作工作区功能"] button[aria-pressed="true"]');
+            return active?.textContent?.trim()==='视频配置'&&
+              css.backgroundColor===expected&&css.borderLeftWidth==='2px'&&
+              !!root.querySelector('[aria-label="镜头视频配置"]')&&
+              !root.querySelector('[aria-label="分镜配置视图"]');
+        })()"""),"video config keeps independent themed preview",35)))
+        check("storyboard_back_to_readonly_editor",bool(wait_for(
+            lambda:node_button(page,"board","分镜表"),"return to storyboard editor",25)))
+        check("storyboard_back_to_editor_no_uncommitted_values",bool(wait_for(lambda:page.js("""(() => {
+            const root=document.querySelector('[data-creative-workspace-node-id="board"]');
+            const preview=root?.querySelector('[data-shot-readonly="description"]');
+            return !!preview&&!!root?.querySelector('[aria-label="镜头目录"]')&&
+             !root.querySelector('textarea[aria-label="画面描述"]');
+        })()"""),"local staged values do not leak through other tabs",30)))
+        check("storyboard_workspace_close",bool(page.js("""(() => {
+            const root=document.querySelector('[data-creative-workspace-node-id="board"]');
+            const close=[...document.querySelectorAll('.ant-modal-close')].find(button=>
+              button.getBoundingClientRect().width>0);
+            if(!root||!close)return false;close.click();return true;
+        })()""")))
+        check("storyboard_maximized_unmounts",bool(wait_for(lambda:page.js("""(() =>
+            !document.querySelector('[data-creative-workspace-node-id="board"]')
+        )()"""),"storyboard maximized workspace closed",25)))
+
         check("no_real_model_or_media_requests",not any(
              "/api/v1/jobs" in item["path"] and item["method"]=="POST"
              for item in page.network_requests))

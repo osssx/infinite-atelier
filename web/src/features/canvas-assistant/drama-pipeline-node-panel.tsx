@@ -376,7 +376,7 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
             onPointerDown={inlineEditor ? event => event.stopPropagation() : undefined}>
         {(!workspaceMode||workspaceTab==="editor"||workspaceTab==="video") && <>
         {inlineEditor ? <div className={assetEditorExpanded
-            ? episodePlanning ? "flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-hidden" : "thin-scrollbar min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain pr-1"
+            ? episodePlanning||storyboard ? "flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-hidden" : "thin-scrollbar min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain pr-1"
             : versioned ? "grid gap-3" : "contents"}>
             {episodePlanning ? <>
                 <label className="flex shrink-0 flex-wrap items-center justify-between gap-2 rounded-xl border px-3 py-2.5" style={control}>
@@ -397,21 +397,23 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
                 }} />
                 {draft && !episodeDraft && <p role="alert">这份剧集草案格式无法读取，请重新生成。</p>}
             </> : storyboard ? <>
-                <div role="group" aria-label="分镜配置视图" className="grid grid-cols-2 gap-1 rounded-xl border p-1" style={control}>
-                    {(!workspaceMode ? ([{id:"shots", label:"分镜表"}, {id:"video", label:"视频配置"}] as const) : []).map(view =>
+                {!workspaceMode&&<div role="group" aria-label="分镜配置视图" className="grid grid-cols-2 gap-1 rounded-xl border p-1" style={control}>
+                    {([{id:"shots", label:"分镜表"}, {id:"video", label:"视频配置"}] as const).map(view =>
                         <button key={view.id} type="button" aria-pressed={storyboardView === view.id}
                             className="rounded-lg px-2 py-1.5 font-medium focus-visible:outline focus-visible:outline-2"
                             style={storyboardView === view.id ? {background:theme.toolbar.activeBg, color:theme.toolbar.activeText} : undefined}
                             onClick={() => setStoryboardView(view.id)}>{view.label}</button>)}
-                </div>
-                <div className={effectiveStoryboardView === "shots" ? "grid min-w-0 gap-3" : "hidden"}>
+                </div>}
+                <div className={effectiveStoryboardView === "shots"
+                    ? assetEditorExpanded ? "flex min-h-0 min-w-0 flex-1 flex-col gap-3" : "grid min-w-0 gap-3"
+                    : "hidden"}>
                     <DramaStoryboardFields shots={shots} episodes={linkedEpisodes} scenes={scenes} initialEpisodeId={initialEpisodeId} initialShotId={initialShotId}
                         expanded={assetEditorExpanded} disabled={generating || versionBusy} control={control} onChange={nextShots => {
                             onChange({dramaDraft:JSON.stringify({...storyboardDraft,shots:nextShots})});
                             setValidation("");
                         }} />
                     {draft && !storyboardDraft && <p role="alert">这份分镜草案格式无法读取，可在下方修正或重新生成。</p>}
-                    <details className="text-xs">
+                    <details className="shrink-0 text-xs">
                         <summary>编辑结构化草案</summary>
                         <TextArea aria-label="分镜草案 JSON" value={draft} disabled={generating || versionBusy}
                             style={control} autoSize={{minRows:3,maxRows:10}} onChange={event => {
@@ -420,7 +422,8 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
                             }} />
                     </details>
                 </div>
-                {effectiveStoryboardView==="video" && <div className="min-w-0">
+                {effectiveStoryboardView==="video" && <div className={assetEditorExpanded
+                    ?"thin-scrollbar min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain":"min-w-0"}>
                     <Suspense fallback={<p role="status">正在加载视频配置…</p>}><DramaVideoConfigFields productionStyle={productionStyle} confirmedRevisionId={node.metadata?.dramaConfirmedVersionId}
                         inputs={videoInputs} episodes={linkedEpisodes}
                         onRefresh={onRefreshVideoConfig} configs={videoConfigs} missingCount={missingConfigs.length}

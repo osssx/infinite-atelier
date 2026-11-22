@@ -88,13 +88,13 @@ export function DramaVideoConfigFields({
         JSON.stringify(source.referenceKeys)!==JSON.stringify(referenceKeys));
     const field = "w-full min-w-0 rounded-lg border px-3 py-1.5 leading-relaxed";
     return <section aria-label="镜头视频配置" className="grid min-w-0 gap-3">
-        <div className="grid grid-cols-2 gap-2">
-            <label className="grid min-w-0 gap-1">剧集
+        <div className="grid min-w-0 grid-cols-1 gap-2 sm:grid-cols-2">
+            <label className="grid min-w-0 gap-1 text-xs">剧集
                 <select className={field} style={control} value={activeEpisode} onChange={event => setEpisodeId(event.target.value)}>
                     {episodeIds.map(id => <option key={id} value={id}>{episodes.find(episode => episode.id === id)?.title || id}</option>)}
                 </select>
             </label>
-            <label className="grid min-w-0 gap-1">镜头
+            <label className="grid min-w-0 gap-1 text-xs">镜头
                 <select className={field} style={control} value={active.shot.id} onChange={event => setShotId(event.target.value)}>
                     {episodeInputs.map(({shot}, index) => <option key={shot.id} value={shot.id}>
                         镜头 {index + 1} · {shot.shotSize || shot.id}
@@ -102,10 +102,15 @@ export function DramaVideoConfigFields({
                 </select>
             </label>
         </div>
-        <div className="grid min-w-0 gap-2 rounded-xl border p-3" style={control}>
-            <span className="font-medium">画面描述</span>
-            <p className="line-clamp-3 break-words whitespace-pre-wrap">{active.shot.description}</p>
-            <label className="grid gap-1">视频输入模式
+        <div className="grid min-w-0 gap-3 rounded-xl border p-3 sm:p-4" style={{...control,background:theme.node.panel}}>
+            <div className="grid min-w-0 gap-1.5">
+                <span className="text-xs font-medium" style={{color:theme.node.muted}}>画面描述</span>
+                <p data-storyboard-video-description="" className="min-w-0 rounded-md border-l-2 px-3 py-2.5 text-sm leading-relaxed break-words whitespace-pre-wrap"
+                    style={{background:theme.toolbar.activeBg,borderLeftColor:theme.node.stroke,color:theme.node.text}}>
+                    {active.shot.description?.trim()||"未填写"}
+                </p>
+            </div>
+            <label className="grid gap-1.5 text-xs">视频输入模式
                 <select className={field} style={control} disabled={disabled} value={setting.gridInput?"grid":setting.mode}
                     onChange={event=>onProductionChange?.(active.shot.id,{...setting,
                         gridInput:event.target.value==="grid",mode:event.target.value==="grid"?"omni_reference":event.target.value as DramaShotProduction["mode"]})}>

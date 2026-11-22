@@ -1,4 +1,5 @@
 import {hydrateCreativeDocument} from "./creative-payloads.mjs";
+import {freezeAssistantCanvasScopeWitness,assertAssistantCanvasScopeWitness} from "./assistant-task-canvas-scope-witness.mjs";
 import {createHash,randomUUID} from "node:crypto";
 import {stableJson,writeTransaction,assertNoRawCredentials} from "./repository.mjs";
 import {validateProjectDocument,emitProjectEvent} from "./projects.mjs";
@@ -146,7 +147,9 @@ export function planAssistantCanvasStep(db,{projectId,taskId,requestId,
   const skeleton={plan_version:expectedPlanVersion,ordinal,
    depends_on_json:json(dependsOn)};
   const externalRefs=dependencies(db,taskId,skeleton);
-  const original=hydrateCreativeDocument(db,task.project_id,JSON.parse(task.document_json));
+  const compact=JSON.parse(task.document_json);
+  const scopeWitness=freezeAssistantCanvasScopeWitness(db,projectId,compact,actions);
+  const original=hydrateCreativeDocument(db,task.project_id,compact);
   const ui=modelConfig(db);
   const preview=applyFrozenAssistantCanvasPlan(original,action,refs,{externalRefs,
    loadTemplate:loadPinnedComfyTemplate(db),config:ui.value});
@@ -159,6 +162,7 @@ export function planAssistantCanvasStep(db,{projectId,taskId,requestId,
   }));
   const preconditions={projectRevision:expectedProjectRevision,projectGraphDigest:hash(original),
    refs,requiresApproval:true,finalizeTask,
+   ...(scopeWitness?{scopeWitness}:{}),
    ...(deliverableSpec?{deliverableSpec,deliverableSpecDigest:hash(deliverableSpec)}:{}),
    ...(agentRunBinding?{agentRunBinding}:{}),
    ...(storyReviewBinding?{storyReviewBinding}:{}),
@@ -177,7 +181,8 @@ export function planAssistantCanvasStep(db,{projectId,taskId,requestId,
   db.prepare("UPDATE assistant_tasks SET status='waiting_approval',updated_at=? WHERE id=?")
    .run(at,taskId);
   event(db,taskId,stepId,"step_frozen",{actionDigest,planVersion:expectedPlanVersion,
-   projectRevision:expectedProjectRevision,refs,operationCount:actions.length},at);
+   projectRevision:expectedProjectRevision,refs,operationCount:actions.length,
+   ...(scopeWitness?{scopeWitnessDigest:scopeWitness.contentDigest}:{})},at);
   if(deliverableSpec)event(db,taskId,stepId,"deliverable_spec_frozen",{
    planVersion:expectedPlanVersion,specDigest:hash(deliverableSpec),actionDigest,stepId},at);
   if(agentRunBinding)event(db,taskId,stepId,"agent_step_bound",{
@@ -233,8 +238,11 @@ export function commitAssistantCanvasAttempt(db,{projectId,taskId,stepId,
   if(hash(action)!==step.action_digest||hash(action)!==actionDigest||
    hash(frozenSnapshot)!==active.requestFingerprint)
    throw fail("assistant_step_action_changed");
-  if(task.revision!==pre.projectRevision||hash(hydrateCreativeDocument(db,task.project_id,JSON.parse(task.document_json)))!==pre.projectGraphDigest)
-   throw fail("assistant_step_source_changed");
+  if(task.revision!==pre.projectRevision)throw fail("assistant_step_source_changed");
+  const compact=JSON.parse(task.document_json);
+  assertAssistantCanvasScopeWitness(db,projectId,compact,action.actions,pre.scopeWitness);
+  const current=hydrateCreativeDocument(db,task.project_id,compact);
+  if(hash(current)!==pre.projectGraphDigest)throw fail("assistant_step_source_changed");
   const externalRefs=dependencies(db,taskId,step);
   if(pre.runMediaGrantId)assertAssistantRunMediaBindingConsent(db,{projectId,taskId,
    step,grantId:pre.runMediaGrantId});
@@ -246,7 +254,7 @@ export function commitAssistantCanvasAttempt(db,{projectId,taskId,stepId,
   const ui=modelConfig(db);
   if(pre.modelConfigRevision!==undefined&&pre.modelConfigRevision!==ui.revision)
    throw fail("assistant_step_source_changed");
-  const applied=applyFrozenAssistantCanvasPlan(hydrateCreativeDocument(db,task.project_id,JSON.parse(task.document_json)),action,pre.refs,{externalRefs,
+  const applied=applyFrozenAssistantCanvasPlan(current,action,pre.refs,{externalRefs,
    loadTemplate:loadPinnedComfyTemplate(db),config:ui.value});
   const content=validateProjectDocument(applied.document),at=Date.now(),revision=task.revision+1;
   // No async/external side effects may occur inside this BEGIN IMMEDIATE block.
@@ -258,7 +266,8 @@ export function commitAssistantCanvasAttempt(db,{projectId,taskId,stepId,
   if(beforeReceipt)beforeReceipt();
   const receipt={attemptId,executionKey:active.executionKey,planVersion,actionDigest,
    projectRevision:revision,projectGraphDigest:hash(applied.document),
-   refs:pre.refs,applied:applied.applied,committedAt:at};
+   refs:pre.refs,applied:applied.applied,committedAt:at,
+   ...(pre.scopeWitness?{scopeWitnessDigest:pre.scopeWitness.contentDigest}:{})};
   const finalized=db.prepare("UPDATE assistant_task_steps SET status='succeeded',receipt_json=?,receipt_trust='server_committed',result_json=?,lease_owner=NULL,lease_expires_at=NULL,updated_at=? WHERE id=? AND status='running' AND lease_owner=? AND plan_version=?")
    .run(json(receipt),json({applied:applied.applied,refs:pre.refs}),at,stepId,leaseOwner,planVersion);
   if(finalized.changes!==1)throw fail("assistant_step_lease_invalid");
@@ -346,9 +355,17 @@ export function recoverAssistantCanvasTasksAtStartup(db){
    // graph+receipt share the same transaction. Release without re-running.
    const current=db.prepare("SELECT revision,document_json,deleted_at FROM projects WHERE id=?").get(step.project_id);
    const pre=JSON.parse(step.preconditions_json);
-   const valid=step.kind==="canvas_mutation"&&step.plan_version===step.active_plan_version&&
+   let valid=false;
+   if(step.kind==="canvas_mutation"&&step.plan_version===step.active_plan_version&&
     !step.cancel_requested_at&&!step.read_only&&current&&current.deleted_at===null&&
-    current.revision===pre.projectRevision&&hash(hydrateCreativeDocument(db,step.project_id,JSON.parse(current.document_json)))===pre.projectGraphDigest;
+    current.revision===pre.projectRevision){
+    try{
+     const compact=JSON.parse(current.document_json);
+     const action=JSON.parse(step.action_json);
+     assertAssistantCanvasScopeWitness(db,step.project_id,compact,action.actions,pre.scopeWitness);
+     valid=hash(hydrateCreativeDocument(db,step.project_id,compact))===pre.projectGraphDigest;
+    }catch{valid=false;}
+   }
    db.prepare("UPDATE assistant_task_attempts SET status='released_pre_submit',finished_at=? WHERE id=?")
     .run(at,attempt.id);
    db.prepare("UPDATE assistant_task_steps SET status=?,lease_owner=NULL,lease_expires_at=NULL,updated_at=?,error_code=? WHERE id=?")

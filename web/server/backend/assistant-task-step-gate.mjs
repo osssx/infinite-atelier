@@ -1,4 +1,5 @@
 import {hydrateCreativeDocument} from "./creative-payloads.mjs";
+import {assertAssistantCanvasScopeWitness} from "./assistant-task-canvas-scope-witness.mjs";
 import {createHash,randomUUID} from "node:crypto";
 import {assertNoRawCredentials,stableJson,writeTransaction} from "./repository.mjs";
 import {assertAssistantDeliverableBinding,assertAssistantStructuredSourceCurrent} from "./assistant-task-deliverables.mjs";
@@ -162,6 +163,9 @@ export function decideAssistantTaskStep(db,{projectId,taskId,stepId,requestId,
    action:JSON.parse(step.action_json),preconditions:frozen,expectedPlanVersion});
   if(decision==="approve")assertAssistantStoryReviewCanvasBinding(db,{projectId,taskId,
    action:JSON.parse(step.action_json),preconditions:frozen,expectedPlanVersion});
+  if(decision==="approve"&&step.kind==="canvas_mutation")
+   assertAssistantCanvasScopeWitness(db,projectId,JSON.parse(task.document_json),
+    JSON.parse(step.action_json).actions,frozen.scopeWitness);
   if((decision==="approve"||!(frozen.agentRunBinding||frozen.deliverableSpec?.deliverableType||frozen.runMediaGrantId))&&
    (!Number.isSafeInteger(frozen.projectRevision)||frozen.projectRevision!==task.revision||
    frozen.projectGraphDigest!==digest(hydrateCreativeDocument(db,task.project_id,JSON.parse(task.document_json)))))
@@ -233,8 +237,11 @@ export function claimAssistantTaskStep(db,{projectId,taskId,stepId,expectedPlanV
    preconditions:pre,expectedPlanVersion});
   assertAssistantStoryReviewCanvasBinding(db,{projectId,taskId,action,
    preconditions:pre,expectedPlanVersion});
-  if(!Number.isSafeInteger(pre.projectRevision)||task.revision!==pre.projectRevision||
-   pre.projectGraphDigest!==digest(hydrateCreativeDocument(db,task.project_id,JSON.parse(task.document_json))))
+  if(!Number.isSafeInteger(pre.projectRevision)||task.revision!==pre.projectRevision)
+   throw fail("assistant_step_source_changed");
+  const compact=JSON.parse(task.document_json);
+  assertAssistantCanvasScopeWitness(db,projectId,compact,action.actions,pre.scopeWitness);
+  if(pre.projectGraphDigest!==digest(hydrateCreativeDocument(db,task.project_id,compact)))
    throw fail("assistant_step_source_changed");
   if(pre.runMediaGrantId){
    if(approval.grantId!==pre.runMediaGrantId)throw fail("assistant_run_media_grant_required");
@@ -285,8 +292,12 @@ export function verifyAssistantTaskClaim(db,{projectId,taskId,stepId,attemptId,l
  assertFrozenAction(step);
  assertAssistantDeliverableBinding(JSON.parse(step.action_json),frozen.preconditions);
  assertAssistantStructuredSourceCurrent(db,taskId,frozen.preconditions.deliverableSpec);
- if(task.revision!==frozen.preconditions?.projectRevision||
-  frozen.preconditions.projectGraphDigest!==digest(hydrateCreativeDocument(db,task.project_id,JSON.parse(task.document_json))))
+ if(task.revision!==frozen.preconditions?.projectRevision)
+  throw fail("assistant_step_source_changed");
+ const compact=JSON.parse(task.document_json);
+ assertAssistantCanvasScopeWitness(db,projectId,compact,
+  JSON.parse(step.action_json).actions,frozen.preconditions.scopeWitness);
+ if(frozen.preconditions.projectGraphDigest!==digest(hydrateCreativeDocument(db,task.project_id,compact)))
   throw fail("assistant_step_source_changed");
  const approval=JSON.parse(step.approval_json);
  if(approval.decision!=="approved"||approval.actionDigest!==step.action_digest||

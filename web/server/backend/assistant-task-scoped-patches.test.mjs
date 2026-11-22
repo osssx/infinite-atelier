@@ -7,8 +7,8 @@ import {tmpdir} from "node:os";
 import {initializeSchema} from "./schema.mjs";
 import {createProject,getProject,validateProjectDocument} from "./projects.mjs";
 import {createAssistantTask} from "./assistant-tasks.mjs";
-import {decideAssistantTaskStep} from "./assistant-task-step-gate.mjs";
-import {planAssistantCanvasStep,executeAssistantCanvasStep,
+import {decideAssistantTaskStep,claimAssistantTaskStep,verifyAssistantTaskClaim} from "./assistant-task-step-gate.mjs";
+import {planAssistantCanvasStep,executeAssistantCanvasStep,commitAssistantCanvasAttempt,
  recoverAssistantCanvasTasksAtStartup} from "./assistant-task-canvas-executor.mjs";
 import {readCreativePayload} from "./creative-payloads.mjs";
 import {readDramaRevisionScope,insertTextVersions} from "./canvas-text-versions.mjs";
@@ -69,6 +69,46 @@ const execute=(ctx,step,id="execute",extras={})=>executeAssistantCanvasStep(ctx.
 });
 const step=(ctx,candidate)=>ctx.db.prepare("SELECT * FROM assistant_task_steps WHERE id=?").get(candidate.stepId);
 const frozen=(ctx,candidate)=>JSON.parse(step(ctx,candidate).preconditions_json);
+
+test("P3.3i: verified graph is only exposed by explicit opt-in after lease, witness and full digest checks",t=>{
+ const ctx=setup(t),candidate=plan(ctx);
+ approval(ctx,candidate);
+ const claim=claimAssistantTaskStep(ctx.db,{projectId:"p",taskId:ctx.taskId,
+  stepId:candidate.stepId,expectedPlanVersion:1});
+ const query={projectId:"p",taskId:ctx.taskId,stepId:candidate.stepId,
+  attemptId:claim.attemptId,leaseOwner:claim.leaseOwner,planVersion:1};
+ const ordinary=verifyAssistantTaskClaim(ctx.db,query);
+ assert.equal(ordinary.verifiedGraph,undefined);
+ const proof=verifyAssistantTaskClaim(ctx.db,{...query,includeVerifiedGraph:true});
+ assert.equal(proof.verifiedGraph.compact.nodes.length,200);
+ assert.equal(proof.verifiedGraph.document.nodes.length,200);
+ assert.equal(proof.verifiedGraph.document.nodes.find(n=>n.id==="board").metadata.dramaDraft,text.shots);
+ assert.ok(proof.verifiedGraph.compact.nodes.find(n=>n.id==="board").metadata.creativePayloadRef);
+ assert.throws(()=>verifyAssistantTaskClaim(ctx.db,{...query,leaseOwner:"forged",includeVerifiedGraph:true}),
+  {code:"assistant_step_lease_invalid"});
+ const result=commitAssistantCanvasAttempt(ctx.db,{...query,actionDigest:candidate.actionDigest});
+ assert.equal(result.receipt.executionPath,"scoped_cas");
+ assert.equal(rev(ctx),2);
+});
+
+test("P3.3i: altered Step preconditions after Claim cannot borrow the verified Attempt graph",t=>{
+ const ctx=setup(t),candidate=plan(ctx);
+ approval(ctx,candidate);
+ const claim=claimAssistantTaskStep(ctx.db,{projectId:"p",taskId:ctx.taskId,
+  stepId:candidate.stepId,expectedPlanVersion:1});
+ const pre=frozen(ctx,candidate);
+ pre.scopedPatches.expectedPostGraphDigest="0".repeat(64);
+ ctx.db.prepare("UPDATE assistant_task_steps SET preconditions_json=? WHERE id=?")
+  .run(JSON.stringify(pre),candidate.stepId);
+ assert.throws(()=>commitAssistantCanvasAttempt(ctx.db,{projectId:"p",taskId:ctx.taskId,
+  stepId:candidate.stepId,attemptId:claim.attemptId,
+  leaseOwner:claim.leaseOwner,planVersion:1,actionDigest:candidate.actionDigest}),
+  {code:"assistant_step_action_changed"});
+ assert.equal(rev(ctx),1);
+ assert.equal(body(ctx,"assets","assets")[0].description,"Hero");
+ assert.equal(step(ctx,candidate).receipt_trust,"none");
+ assert.equal(ctx.db.prepare("SELECT COUNT(*) AS n FROM project_events WHERE project_id='p'").get().n,1);
+});
 
 test("P3.3h: approved 200-node three-kind Task applies SQLite JSON1 patches without rewriting compact graph",t=>{
  const ctx=setup(t),candidate=plan(ctx),pre=frozen(ctx,candidate);

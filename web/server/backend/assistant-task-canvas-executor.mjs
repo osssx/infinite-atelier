@@ -223,7 +223,7 @@ export function commitAssistantCanvasAttempt(db,{projectId,taskId,stepId,
   const committed=committedStep(db,{projectId,taskId,stepId});
   if(committed)return committed;
   const active=verifyAssistantTaskClaim(db,{projectId,taskId,stepId,
-   attemptId,leaseOwner,planVersion});
+   attemptId,leaseOwner,planVersion,includeVerifiedGraph:true});
   const {frozenSnapshot}=active;
   if(frozenSnapshot.actionDigest!==actionDigest)throw fail("assistant_step_action_changed");
   const task=taskAndProject(db,projectId,taskId);
@@ -243,10 +243,12 @@ export function commitAssistantCanvasAttempt(db,{projectId,taskId,stepId,
    hash(frozenSnapshot)!==active.requestFingerprint)
    throw fail("assistant_step_action_changed");
   if(task.revision!==pre.projectRevision)throw fail("assistant_step_source_changed");
-  const compact=JSON.parse(task.document_json);
-  assertAssistantCanvasScopeWitness(db,projectId,compact,action.actions,pre.scopeWitness);
-  const current=hydrateCreativeDocument(db,task.project_id,compact);
-  if(hash(current)!==pre.projectGraphDigest)throw fail("assistant_step_source_changed");
+  // verifyAssistantTaskClaim has already checked the authoritative graph,
+  // the P3.3g witness, and the frozen digest under THIS SAME transaction.
+  // A mutated Step precondition cannot borrow the verified Attempt graph.
+  if(hash(pre)!==hash(frozenSnapshot.preconditions))
+   throw fail("assistant_step_action_changed");
+  const {compact,document:current}=active.verifiedGraph;
   const externalRefs=dependencies(db,taskId,step);
   if(pre.runMediaGrantId)assertAssistantRunMediaBindingConsent(db,{projectId,taskId,
    step,grantId:pre.runMediaGrantId});

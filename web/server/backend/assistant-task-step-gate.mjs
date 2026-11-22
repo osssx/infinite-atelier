@@ -276,7 +276,8 @@ export function claimAssistantTaskStep(db,{projectId,taskId,stepId,expectedPlanV
  });
 }
 /** Strict ownership check intended for subsequent P1b commit barrier. */
-export function verifyAssistantTaskClaim(db,{projectId,taskId,stepId,attemptId,leaseOwner,planVersion}){
+export function verifyAssistantTaskClaim(db,{projectId,taskId,stepId,attemptId,leaseOwner,planVersion,
+ includeVerifiedGraph=false}){
  if(!id(attemptId)||!id(leaseOwner))throw fail("assistant_step_invalid",400);
  const {task,step}=get(db,projectId,taskId,stepId);
  validActive(task,step,planVersion);
@@ -297,13 +298,18 @@ export function verifyAssistantTaskClaim(db,{projectId,taskId,stepId,attemptId,l
  const compact=JSON.parse(task.document_json);
  assertAssistantCanvasScopeWitness(db,projectId,compact,
   JSON.parse(step.action_json).actions,frozen.preconditions.scopeWitness);
- if(frozen.preconditions.projectGraphDigest!==digest(hydrateCreativeDocument(db,task.project_id,compact)))
+ const verifiedDocument=hydrateCreativeDocument(db,task.project_id,compact);
+ if(frozen.preconditions.projectGraphDigest!==digest(verifiedDocument))
   throw fail("assistant_step_source_changed");
  const approval=JSON.parse(step.approval_json);
  if(approval.decision!=="approved"||approval.actionDigest!==step.action_digest||
   approval.planVersion!==planVersion)throw fail("assistant_step_approval_required");
  return {attemptId,executionKey:attempt.execution_key,requestFingerprint:attempt.request_fingerprint,
-  frozenSnapshot:frozen,executionStarted:false};
+  frozenSnapshot:frozen,executionStarted:false,
+  // Only the synchronous final Task writer, inside its existing BEGIN
+  // IMMEDIATE transaction, may reuse this exact verified graph. Callers
+  // outside that transaction must not cache or treat it as authorization.
+  ...(includeVerifiedGraph?{verifiedGraph:{compact,document:verifiedDocument}}:{})};
 }
 /** Releasing a genuinely unsubmitted reservation needs the exact live lease. */
 export function releaseUnsubmittedAssistantTaskClaim(db,{projectId,taskId,stepId,attemptId,leaseOwner,planVersion}){

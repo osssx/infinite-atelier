@@ -213,6 +213,11 @@ def main():
                        !!r&&!!rect&&r.width>0&&r.bottom<=rect.bottom+4&&
                        !!field.querySelector('section[aria-label="场次规划"]');
                 })()"""),"maximized episode split editor and action footer",35)))
+                check("episode_original_sources_editor_hidden",bool(page.js("""(() => {
+                    const root=document.querySelector('[data-creative-workspace-node-id="episodes"]');
+                    return !!root&&!root.textContent?.includes('原文出处')&&
+                     !root.querySelector('[aria-label="剧集原文段落 ID"]');
+                })()""")))
                 check("p34b3_episodes_scoped_tab",bool(wait_for(
                     lambda:node_button(page,"episodes","分页与单条 CAS"),"episodes scoped tab",25)))
                 wait_for(lambda:page.js("""
@@ -747,6 +752,66 @@ def main():
             return !!card&&!card.querySelector('textarea')&&
               (card.textContent||'').includes('P3.4b4 并发用户更新的标题');
         })()"""),"fresh episode summary after conflict",25)))
+        # The prior test deliberately PATCHes an external CAS revision. Reload
+        # the current authoritative graph before unrelated scene UI mutations.
+        page.call("Page.reload",{"ignoreCache":True})
+        check("episode_scene_reloaded_authoritative_graph",bool(wait_for(lambda:page.js("""(() => {
+            const nav=performance.getEntriesByType('navigation')[0];
+            const summary=document.querySelector('[data-node-id="episodes"] [aria-label="剧集规划摘要"]');
+            return nav?.type==='reload'&&!!summary&&
+               (summary.textContent||'').includes('已规划 2 集');
+        })()"""),"reloaded authoritative scene editor",45)))
+        check("episode_scene_editor_reopen",bool(wait_for(
+            lambda:node_button(page,"episodes","打开完整编辑器 ↗"),"reopen episode scene editor",25)))
+        wait_for(lambda:page.js("""!!document.querySelector('[data-creative-workspace-node-id="episodes"] [data-episode-editor-layout="expanded"]')"""),
+                 "episode scene editor ready",25)
+        before_scenes=int(page.js("""(() => {
+            const root=document.querySelector('[data-creative-workspace-node-id="episodes"] section[aria-label="场次规划"]');
+            return root?.querySelectorAll(':scope > details').length ?? -1;
+        })()"""))
+        check("episode_add_scene_click",node_button(page,"episodes","添加场次"))
+        check("episode_added_scene_auto_expanded",bool(wait_for(lambda:page.js("""(() => {
+            const root=document.querySelector('[data-creative-workspace-node-id="episodes"] section[aria-label="场次规划"]');
+            const scenes=[...(root?.querySelectorAll(':scope > details')||[])];
+            const last=scenes.at(-1);
+            return scenes.length===%d&&!!last?.open&&
+              last.querySelector('input[aria-label^="场次 "]')?.value.startsWith('新场次 ');
+        })()"""%(before_scenes+1)),"new episode scene auto expands",25)))
+        check("episode_scene_delete_opens_confirmation",bool(page.js("""(() => {
+            const root=document.querySelector('[data-creative-workspace-node-id="episodes"] section[aria-label="场次规划"]');
+            const last=[...(root?.querySelectorAll(':scope > details')||[])].at(-1);
+            const action=last?.querySelector('button[aria-label^="删除场次 "]');
+            if(!action)return false;action.click();
+            return true;
+        })()""")))
+        check("episode_scene_cancel_keeps_scene",bool(wait_for(lambda:page.js("""(() => {
+            const root=document.querySelector('[data-creative-workspace-node-id="episodes"] section[aria-label="场次规划"]');
+            const prompt=root?.querySelector('[role="alertdialog"]');
+            const cancel=[...(prompt?.querySelectorAll('button')||[])].find(b=>b.textContent.trim()==='取消');
+            if(!cancel)return false;cancel.click();
+            return true;
+        })()"""),"scene delete confirmation cancel",25)))
+        check("episode_scene_cancel_does_not_delete",bool(page.js("""(() => {
+            const root=document.querySelector('[data-creative-workspace-node-id="episodes"] section[aria-label="场次规划"]');
+            return root?.querySelectorAll(':scope > details').length===%d&&
+              !root.querySelector('[role="alertdialog"]');
+        })()"""%(before_scenes+1))))
+        check("episode_scene_delete_confirmed",bool(wait_for(lambda:page.js("""(() => {
+            const root=document.querySelector('[data-creative-workspace-node-id="episodes"] section[aria-label="场次规划"]');
+            const last=[...(root?.querySelectorAll(':scope > details')||[])].at(-1);
+            const trigger=last?.querySelector('button[aria-label^="删除场次 "]');
+            if(!trigger)return false;
+            trigger.click();
+            const confirm=root.querySelector('button[aria-label^="确认删除场次 "]');
+            if(!confirm)return false;
+            confirm.click();
+            return true;
+        })()"""),"confirm remove newly created scene",25)))
+        check("episode_scene_removed_without_mutating_other_scenes",bool(wait_for(lambda:page.js("""(() => {
+            const root=document.querySelector('[data-creative-workspace-node-id="episodes"] section[aria-label="场次规划"]');
+            return root?.querySelectorAll(':scope > details').length===%d&&
+              !root.querySelector('[role="alertdialog"]');
+        })()"""%before_scenes),"scene returned to previous count",25)))
         check("no_real_model_or_media_requests",not any(
              "/api/v1/jobs" in item["path"] and item["method"]=="POST"
              for item in page.network_requests))

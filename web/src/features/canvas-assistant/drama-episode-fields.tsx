@@ -1,5 +1,5 @@
-import {useState,type CSSProperties} from "react";
-import {GitBranch,Layers3,Plus,Split,Merge,BookText} from "lucide-react";
+import {useRef,useState,type CSSProperties} from "react";
+import {GitBranch,Layers3,Plus,Split,Merge,BookText,Trash2,AlertTriangle} from "lucide-react";
 import {canvasThemes} from "@/lib/canvas-theme";
 import {useThemeStore} from "@/stores/use-theme-store";
 import {normalizeEpisodeEvents} from "../../../server/drama-episode-links.mjs";
@@ -19,6 +19,9 @@ export function DramaEpisodeFields({episodes,expanded,disabled,control,onChange,
  const appearance=useThemeStore(state=>state.theme);
  const theme=canvasThemes[appearance];
  const [selected,setSelected]=useState(initialEpisodeId??"");
+ const [recentlyAdded,setRecentlyAdded]=useState("");
+ const openedAddedRef=useRef("");
+ const [pendingDelete,setPendingDelete]=useState<{episodeId:string;sequenceId:string}|null>(null);
  const active=episodes.find(episode=>episode.id===selected)??episodes[0];
  const activeIndex=active?episodes.findIndex(episode=>episode.id===active.id):-1;
  const edit=(patch:Partial<DramaEpisode>)=>onChange(episodes.map(episode=>
@@ -57,7 +60,7 @@ export function DramaEpisodeFields({episodes,expanded,disabled,control,onChange,
       style={current?{background:theme.toolbar.activeBg,color:theme.node.text,
        borderColor:theme.node.stroke,outlineColor:theme.node.activeStroke}:
        {background:"transparent",color:theme.node.text,borderColor:"transparent",outlineColor:theme.node.activeStroke}}
-      onClick={()=>setSelected(episode.id)}>
+      onClick={()=>{setPendingDelete(null);setRecentlyAdded("");setSelected(episode.id);}}>
       <span className="mt-0.5 shrink-0 text-[11px] font-semibold tabular-nums" style={captionStyle}>
        {String(index+1).padStart(2,"0")}
       </span>
@@ -73,7 +76,7 @@ export function DramaEpisodeFields({episodes,expanded,disabled,control,onChange,
     })}
    </div>
   </aside>:<select aria-label="选择剧集" className={field+" pr-7 font-medium"} style={fieldStyle}
-   value={active.id} onChange={event=>setSelected(event.target.value)}>
+   value={active.id} onChange={event=>{setPendingDelete(null);setRecentlyAdded("");setSelected(event.target.value);}}>
    {episodes.map((episode,index)=><option key={episode.id} value={episode.id}>
     第 {index+1} 集 · {episode.title||"未命名"}
    </option>)}
@@ -147,12 +150,25 @@ export function DramaEpisodeFields({episodes,expanded,disabled,control,onChange,
       <span className="text-[11px] tabular-nums" style={captionStyle}>{active.sequences?.length??0} 场</span>
      </div>
      <button type="button" className={smallAction} style={cardStyle}
-      onClick={()=>edit({sequences:[...(active.sequences??[]),{id:crypto.randomUUID(),title:"新场次"}]})}>
+      onClick={()=>{
+        const sequences=active.sequences??[];
+        const used=new Set(sequences.map(item=>item.title));
+        let next=sequences.length+1;
+        while(used.has(`新场次 ${next}`))next++;
+        const id=`sequence_${crypto.randomUUID()}`;
+        setPendingDelete(null);setRecentlyAdded(id);
+        edit({sequences:[...sequences,{id,title:`新场次 ${next}`,sourceRefs:[],eventRefs:[]}]});
+       }}>
       <Plus size={13} aria-hidden="true"/>添加场次
      </button>
     </div>
-    <p className="text-[11px] leading-relaxed" style={captionStyle}>展开场次可编辑名称、来源段落及事件关联，并执行拆分/合并。</p>
+    <p className="text-[11px] leading-relaxed" style={captionStyle}>新增场次会自动展开；展开已有场次可编辑名称、来源与事件关联，或拆分、合并和删除。</p>
     {active.sequences?.map((sequence,index)=><details key={sequence.id}
+     ref={element=>{
+      if(element&&recentlyAdded===sequence.id&&openedAddedRef.current!==sequence.id){
+       element.open=true;openedAddedRef.current=sequence.id;
+      }
+     }}
      className="min-w-0 rounded-lg border" style={cardStyle}>
      <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-3 py-3">
       <span className="flex min-w-0 items-center gap-2 text-xs font-medium">
@@ -199,21 +215,43 @@ export function DramaEpisodeFields({episodes,expanded,disabled,control,onChange,
          edit({sequences:mergeEpisodeSequences(active,active.sequences![index-1].id,sequence.id).sequences})}>
          <Merge size={12} aria-hidden="true"/>并入上一场
         </button>}
-       </div>
+         <button type="button" aria-label={`删除场次 ${index+1}：${sequence.title||"未命名"}`}
+          className={smallAction+" ml-auto"} style={cardStyle}
+          onClick={()=>setPendingDelete({episodeId:active.id,sequenceId:sequence.id})}>
+          <Trash2 size={12} aria-hidden="true"/>删除场次
+         </button>
+        </div>
+        {pendingDelete?.episodeId===active.id&&pendingDelete.sequenceId===sequence.id&&
+         <div role="alertdialog" aria-label={`确认删除场次 ${index+1}`}
+          className="space-y-2 rounded-lg border p-3" style={{...cardStyle,background:theme.toolbar.activeBg}}>
+          <div className="flex items-start gap-2">
+           <AlertTriangle size={16} className="mt-0.5 shrink-0" aria-hidden="true" style={captionStyle}/>
+           <div className="min-w-0 space-y-1 text-xs">
+            <p className="font-semibold">确定删除“{sequence.title||`场次 ${index+1}`}”？</p>
+            <p className="leading-relaxed" style={captionStyle}>
+             将仅从当前剧集草案中移除此场次{(sequence.eventRefs?.length??0)>0?`（包含 ${sequence.eventRefs?.length} 项事件关联）`:""}。
+             剧情事件及其他场次不会删除；已有分镜与视频配置也不会被自动修改。
+             如有镜头引用该场次，需在确认新剧集规划后检查并迁移相关镜头。
+            </p>
+           </div>
+          </div>
+          <div className="flex flex-wrap justify-end gap-2">
+           <button type="button" className={smallAction} style={cardStyle}
+            onClick={()=>setPendingDelete(null)}>取消</button>
+           <button type="button" aria-label={`确认删除场次 ${index+1}`}
+            className={smallAction+" font-semibold"} style={{background:theme.node.text,color:theme.node.panel,borderColor:theme.node.stroke}}
+            onClick={()=>{
+             if(active.sequences?.some(item=>item.id===sequence.id)){
+              edit({sequences:active.sequences.filter(item=>item.id!==sequence.id)});
+             }
+             setPendingDelete(null);setRecentlyAdded("");
+            }}>确认删除</button>
+          </div>
+         </div>}
       </div>
      </div>
     </details>)}
    </section>
-   <details className="min-w-0 rounded-lg border text-xs" style={cardStyle}>
-    <summary className="cursor-pointer p-3 font-medium">原文出处 · {active.sourceRefs.length} 处</summary>
-    <div className="space-y-2 border-t p-3" style={{borderColor:theme.node.stroke}}>
-     <textarea aria-label="剧集原文段落 ID" className={field+" thin-scrollbar resize-y"} style={fieldStyle}
-      rows={3} value={active.sourceRefs.join("\n")}
-      onChange={event=>edit({sourceRefs:event.target.value.split("\n").map(item=>item.trim()).filter(Boolean)})}/>
-     {active.sourceRefs.some(ref=>/^p\d+$/.test(ref))&&
-      <p className="text-[11px]" style={captionStyle}>含旧行号引用，请对照故事段落定位核对。</p>}
-    </div>
-   </details>
   </div>
  </fieldset>;
 }

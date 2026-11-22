@@ -45,6 +45,27 @@ def choose_episode(page):
       select.dispatchEvent(new Event('change',{bubbles:true}));
       return select.value==='ep-two';
     })()"""))
+def quick_card_select(page,node_id,aria,value):
+    return bool(page.js("""(() => {
+      const root=document.querySelector('[data-node-id=%s]');
+      const select=[...(root?.querySelectorAll('select')||[])].find(s=>s.getAttribute('aria-label')===%s);
+      if(!select)return false;
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set.call(select,%s);
+      select.dispatchEvent(new Event('change',{bubbles:true}));
+      return select.value===%s;
+    })()"""%(json.dumps(node_id),json.dumps(aria,ensure_ascii=False),
+           json.dumps(value,ensure_ascii=False),json.dumps(value,ensure_ascii=False))))
+def quick_card_input(page,node_id,aria,value):
+    return bool(page.js("""(() => {
+      const root=document.querySelector('[data-node-id=%s]');
+      const input=[...(root?.querySelectorAll('input,textarea')||[])].find(el=>el.getAttribute('aria-label')===%s);
+      if(!input)return false;
+      const proto=input.tagName==='INPUT'?HTMLInputElement.prototype:HTMLTextAreaElement.prototype;
+      Object.getOwnPropertyDescriptor(proto,'value').set.call(input,%s);
+      input.dispatchEvent(new Event('input',{bubbles:true}));
+      return input.value===%s;
+    })()"""%(json.dumps(node_id),json.dumps(aria,ensure_ascii=False),
+           json.dumps(value,ensure_ascii=False),json.dumps(value,ensure_ascii=False))))
 def graph(page,pid):
     return jseval(page,"""(async()=>{
       const res=await fetch('/api/v1/projects/%s',{credentials:'same-origin'});
@@ -551,6 +572,122 @@ def main():
         check("p3_shotgroup_does_not_automatically_submit_media",not any(
             "/api/v1/jobs" in item["path"] and item["method"]=="POST"
             for item in page.network_requests))
+        # P3.4b4: true indexed single-entry CAS quick editing from compact cards.
+        # All earlier legacy, archive, generation and config assertions have completed.
+        wait_for(lambda:page.js("!document.querySelector('[data-creative-workspace-node-id]')"),
+                 "P3.4b4 previous modal closed",25)
+        before_quick=graph(page,pid)["data"]
+        before_ep=find_node(before_quick,"episodes")
+        before_board=find_node(before_quick,"board")
+        old_episodes=json.loads(before_ep["metadata"]["dramaDraft"])["episodes"]
+        old_shots=json.loads(before_board["metadata"]["dramaDraft"])["shots"]
+        check("p34b4_episode_switch_to_draft",bool(wait_for(
+            lambda:quick_card_select(page,"episodes","剧集规划版本","draft"),"episode card draft",25)))
+        check("p34b4_quick_episode_open",bool(wait_for(
+            lambda:node_button(page,"episodes","快速编辑"),"episode quick edit",25)))
+        check("p34b4_episode_two_fields_only",bool(wait_for(lambda:page.js("""(() => {
+            const card=document.querySelector('[data-node-id="episodes"] [aria-label="剧集快速编辑"]');
+            return !!card&&card.querySelectorAll('textarea').length===1&&
+                !!card.querySelector('[aria-label="快速编辑集标题"]')&&
+                !card.textContent.includes('剧情事件')&&!card.textContent.includes('确认阶段');
+        })()"""),"episode quick fields",25)))
+        check("p34b4_episode_input",quick_card_input(page,"episodes","快速编辑剧情概要",
+              "P3.4b4 画布快速编辑的第一集概要"))
+        check("p34b4_episode_explicit_save",bool(wait_for(lambda:node_button(page,"episodes","保存草案"),
+              "episode indexed save",25)))
+        def quick_episode_saved():
+            g=graph(page,pid)
+            if not g.get("ok"):return None
+            try:
+                episodes=json.loads(find_node(g["data"],"episodes")["metadata"]["dramaDraft"])["episodes"]
+                return g["data"] if episodes[0]["synopsis"]=="P3.4b4 画布快速编辑的第一集概要" else None
+            except (ValueError,KeyError,TypeError):return None
+        episode_after=wait_for(quick_episode_saved,"P3.4b4 episode indexed commit",35)
+        new_episodes=json.loads(find_node(episode_after,"episodes")["metadata"]["dramaDraft"])["episodes"]
+        check("p34b4_episode_other_entry_untouched",new_episodes[1]==old_episodes[1])
+        check("p34b4_episode_confirmed_immutable",find_node(episode_after,"episodes")["metadata"]["dramaConfirmed"]==
+              before_ep["metadata"]["dramaConfirmed"])
+        check("p34b4_episode_single_cas_revision",episode_after["revision"]==before_quick["revision"]+1)
+        check("p34b4_episode_save_keeps_draft_view",bool(wait_for(lambda:page.js("""(() => {
+           const select=document.querySelector('[data-node-id="episodes"] select[aria-label="剧集规划版本"]');
+           return select?.value==='draft';
+        })()"""),"draft version kept",25)))
+
+        check("p34b4_storyboard_switch_to_draft",bool(wait_for(
+            lambda:quick_card_select(page,"board","分镜配置版本","draft"),"board card draft",25)))
+        check("p34b4_storyboard_choose_episode",bool(wait_for(
+            lambda:quick_card_select(page,"board","摘要选择剧集","ep-two"),"board episode two",25)))
+        check("p34b4_quick_shot_open",bool(wait_for(
+            lambda:node_button(page,"board","快速编辑"),"shot quick edit",25)))
+        check("p34b4_shot_two_fields_only",bool(wait_for(lambda:page.js("""(() => {
+           const card=document.querySelector('[data-node-id="board"] [aria-label="镜头快速编辑"]');
+           return !!card&&card.querySelectorAll('textarea').length===1&&
+               !!card.querySelector('[aria-label="快速编辑镜头时长"]')&&
+               !card.textContent.includes('视频配置');
+        })()"""),"shot quick fields",25)))
+        check("p34b4_shot_description_input",quick_card_input(
+            page,"board","快速编辑画面描述","P3.4b4 单镜头画面描述更新"))
+        check("p34b4_shot_duration_input",quick_card_input(page,"board","快速编辑镜头时长","8.5"))
+        check("p34b4_shot_explicit_save",bool(wait_for(lambda:node_button(page,"board","保存草案"),
+              "shot indexed save",25)))
+        def quick_shot_saved():
+            g=graph(page,pid)
+            if not g.get("ok"):return None
+            try:
+                shots=json.loads(find_node(g["data"],"board")["metadata"]["dramaDraft"])["shots"]
+                return g["data"] if any(shot["episodeId"]=="ep-two" and
+                    shot["description"]=="P3.4b4 单镜头画面描述更新" and
+                    shot.get("durationSec")==8.5 for shot in shots) else None
+            except (ValueError,KeyError,TypeError):return None
+        shot_after=wait_for(quick_shot_saved,"P3.4b4 single shot indexed commit",35)
+        updated_shots=json.loads(find_node(shot_after,"board")["metadata"]["dramaDraft"])["shots"]
+        check("p34b4_other_shot_untouched",next(x for x in updated_shots if x["episodeId"]=="ep-one")==
+              next(x for x in old_shots if x["episodeId"]=="ep-one"))
+        check("p34b4_confirmed_shots_immutable",find_node(shot_after,"board")["metadata"]["dramaConfirmed"]==
+              before_board["metadata"]["dramaConfirmed"])
+        check("p34b4_media_config_unchanged",find_node(shot_after,"first-config")==
+              find_node(before_quick,"first-config") and find_node(shot_after,"second-config")==
+              find_node(before_quick,"second-config"))
+
+        # Genuine concurrent patch after a form was opened: stale expectedDigest
+        # must be rejected without overwriting newer server content or local input.
+        check("p34b4_conflict_editor_open",bool(wait_for(
+            lambda:node_button(page,"episodes","快速编辑"),"open stale episode editor",25)))
+        check("p34b4_conflict_local_input",quick_card_input(
+            page,"episodes","快速编辑剧情概要","这段本地修改尚未提交"))
+        external=page.js("""(async()=>{
+            const pid=%s;
+            const src=await fetch('/api/v1/projects/'+pid+
+              '/drama-pipeline/revision-scope?nodeId=episodes&draft=true&entryId=ep-one&limit=1');
+            if(!src.ok)return {stage:'read',status:src.status};
+            const state=await src.json();
+            const digest=state.entryDigests?.[0]?.digest;
+            const csrf=(await (await fetch('/api/v1/session')).json()).csrfToken;
+            const patch=await fetch('/api/v1/projects/'+pid+'/drama-pipeline/entry-draft',{
+              method:'PATCH',credentials:'same-origin',
+              headers:{'content-type':'application/json','x-atelier-csrf':csrf},
+              body:JSON.stringify({nodeId:'episodes',kind:'episodes',entryId:'ep-one',
+                operationId:crypto.randomUUID(),expectedDigest:digest,
+                changes:{title:'P3.4b4 并发用户更新的标题'}})
+            });
+            return {stage:'patch',status:patch.status};
+        })()"""%json.dumps(pid))
+        check("p34b4_external_cas_succeeded",external.get("status")==200)
+        check("p34b4_conflicting_save_clicked",bool(wait_for(
+            lambda:node_button(page,"episodes","保存草案"),"stale digest save",25)))
+        check("p34b4_conflict_visible_and_keeps_input",bool(wait_for(lambda:page.js("""(() => {
+            const root=document.querySelector('[data-node-id="episodes"] [aria-label="剧集快速编辑"]');
+            return !!root&&(root.textContent||'').includes('未覆盖任何内容')&&
+                root.querySelector('[aria-label="快速编辑剧情概要"]')?.value==='这段本地修改尚未提交';
+        })()"""),"quick edit conflict",25)))
+        check("p34b4_conflict_explicit_reload",bool(wait_for(
+            lambda:node_button(page,"episodes","重新读取最新草案（放弃本次输入）"),
+            "reload conflicted draft",25)))
+        check("p34b4_conflict_reload_displays_current",bool(wait_for(lambda:page.js("""(() => {
+            const card=document.querySelector('[data-node-id="episodes"] [aria-label="剧集规划摘要"]');
+            return !!card&&!card.querySelector('textarea')&&
+              (card.textContent||'').includes('P3.4b4 并发用户更新的标题');
+        })()"""),"fresh episode summary after conflict",25)))
         check("no_real_model_or_media_requests",not any(
              "/api/v1/jobs" in item["path"] and item["method"]=="POST"
              for item in page.network_requests))

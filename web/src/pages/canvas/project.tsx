@@ -4851,6 +4851,8 @@ function AtelierCanvasPage() {
                         projectId={projectId} nodeId={creativeWorkspaceNode.id}
                         kind={creativeWorkspaceNode.type==="drama:episodes"?"episodes":"storyboard"}
                         focus={creativeWorkspaceFocus}
+                        versionConfirmed={Boolean(creativeWorkspaceNode.metadata?.dramaConfirmed &&
+                            (creativeWorkspaceNode.metadata.dramaDraft || creativeWorkspaceNode.metadata.dramaConfirmed || creativeWorkspaceNode.metadata.content || "") === creativeWorkspaceNode.metadata.dramaConfirmed)}
                         color={{fill:theme.node.fill,text:theme.node.text,muted:theme.node.muted}}
                         onClose={closeCreativeWorkspace}
                         onTabChange={tab=>{

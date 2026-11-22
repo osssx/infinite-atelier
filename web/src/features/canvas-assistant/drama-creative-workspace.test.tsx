@@ -31,14 +31,15 @@ import {useThemeStore} from "@/stores/use-theme-store";
 const roots:Root[]=[];
 beforeEach(()=>{stats.save.mockReset();stats.browserMount.mockReset();vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT",true)});
 afterEach(async()=>{for(const root of roots)await act(async()=>root.unmount());roots.length=0;vi.unstubAllGlobals()});
-async function mount(kind:"episodes"|"storyboard"="storyboard",withHistory=false){
+async function mount(kind:"episodes"|"storyboard"="storyboard",withHistory=false,versionConfirmed=false){
  const div=document.createElement("div");document.body.append(div);
  const root=createRoot(div);roots.push(root);
  const close=vi.fn(async()=>{});
  const onTabChange=vi.fn();
  const renderPanel=vi.fn(tab=><section aria-label="完整编辑器内容">{tab}</section>);
  await act(async()=>root.render(<DramaCreativeWorkspace projectId="p1" nodeId={kind==="episodes"?"episodes":"board"} kind={kind}
-  focus={{episodeId:"ep-two",shotId:"shot-2"}} color={{fill:"#fff",text:"#000",muted:"#888"}}
+  focus={{episodeId:"ep-two",shotId:"shot-2"}} versionConfirmed={versionConfirmed}
+  color={{fill:"#fff",text:"#000",muted:"#888"}}
   onClose={close} onTabChange={onTabChange} renderPanel={renderPanel}
   renderHistoryPanel={withHistory?()=> <section aria-label="测试内嵌历史">历史预览</section>:undefined}/>));
  return {div,close,renderPanel,onTabChange};
@@ -83,7 +84,21 @@ describe("P3.4b3 workspace lifecycle",()=>{
   expect(boardTabs[2].getAttribute("aria-description")).toBe("按镜头配置独立的视频生成参数");
   await press(board.div,"分页与单条 CAS");
   await press(board.div,"修改局部草案");
-  expect(board.div.querySelector('[role="status"]')?.textContent).toContain("1 组尚未保存");
+  expect(board.div.querySelector('[data-creative-workspace-node-id="board"] [role="status"]')?.textContent).toContain("1 组尚未保存");
+ });
+ it("places the draft or confirmed state beside the workspace title instead of a separate row",async()=>{
+  const draft=await mount("episodes");
+  const root=draft.div.querySelector<HTMLElement>('[data-creative-workspace-node-id="episodes"]')!;
+  const header=draft.div.querySelector<HTMLElement>('[data-drama-workspace-title]')!;
+  const titleRow=header.querySelector<HTMLElement>('[data-drama-workspace-title-row]')!;
+  expect(titleRow.textContent).toContain("剧集规划");
+  expect(titleRow.querySelector('[data-drama-workspace-version-status]')?.textContent).toBe("草案");
+  expect(draft.div.querySelectorAll('[data-drama-workspace-version-status]')).toHaveLength(1);
+  expect(root.querySelector('[data-drama-workspace-version-status]')).toBeNull();
+  const confirmed=await mount("storyboard",false,true);
+  const other=confirmed.div.querySelector<HTMLElement>('[data-drama-workspace-title-row]')!;
+  expect(other.textContent).toContain("分镜配置");
+  expect(other.querySelector('[data-drama-workspace-version-status]')?.textContent).toBe("已确认");
  });
  it("uses canvas theme tokens and keeps the same active tab when theme changes",async()=>{
   const {div,renderPanel}=await mount("episodes");

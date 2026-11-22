@@ -4,6 +4,7 @@ import {ConfigProvider,Modal} from "antd";
 import {BookOpenText,Clapperboard,Database,Film,History,LayoutList,ShieldAlert,Sparkles,X} from "lucide-react";
 import {canvasThemes,type CanvasTheme} from "@/lib/canvas-theme";
 import {useThemeStore} from "@/stores/use-theme-store";
+import {DramaNodeStatus} from "./drama-node-style";
 import type {DramaWorkspaceTab} from "./drama-pipeline-node-panel";
 const EpisodeBrowser=lazy(()=>import("./drama-creative-scope-browser").then(m=>({default:m.DramaCreativeScopeBrowser})));
 const StoryboardBrowser=lazy(()=>import("./drama-revision-browser").then(m=>({default:m.DramaRevisionBrowser})));
@@ -66,8 +67,9 @@ function WorkspaceTabButton({item,description,active,theme,onSelect}:{
  * mounts only its active feature. The unsaved CAS navigation guard is shared by
  * every visual close/tab action.
  */
-export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,onClose,onTabChange,renderPanel,renderHistoryPanel}:{
+export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfirmed,onClose,onTabChange,renderPanel,renderHistoryPanel}:{
  projectId:string;nodeId:string;kind:"episodes"|"storyboard";focus:DramaWorkspaceFocus;
+ versionConfirmed:boolean;
  color?:{fill:string;text:string;muted:string};
  onClose:()=>Promise<void>;
  onTabChange?:(tab:DramaWorkspaceTab)=>void;
@@ -137,8 +139,13 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,onClose,onTa
     </span>
     <div className="min-w-0">
      <p className="text-[11px] font-medium tracking-wide" style={{color:theme.node.muted}}>INFINITE ATELIER · 创作工作区</p>
-     <div className="truncate text-base font-semibold" style={{color:theme.node.text}}>
-      {episodeMode?"剧集规划":"分镜配置"}
+     <div className="flex min-w-0 items-center gap-2" data-drama-workspace-title-row="">
+      <span className="truncate text-base font-semibold" style={{color:theme.node.text}}>
+       {episodeMode?"剧集规划":"分镜配置"}
+      </span>
+      <span data-drama-workspace-version-status="" className="shrink-0">
+       <DramaNodeStatus theme={theme} confirmed={versionConfirmed}/>
+      </span>
      </div>
     </div>
    </div>}

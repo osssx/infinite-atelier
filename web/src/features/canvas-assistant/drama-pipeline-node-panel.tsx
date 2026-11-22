@@ -261,7 +261,7 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
         } : undefined}
         onDoubleClick={inlineEditor ? event => event.stopPropagation() : undefined}
         onKeyDown={inlineEditor ? event => event.stopPropagation() : undefined}>
-        <header className={`flex items-center justify-between gap-2 ${inlineEditor ? "" : "mb-3"}`}>
+        {!workspaceMode&&<header className={`flex items-center justify-between gap-2 ${inlineEditor ? "" : "mb-3"}`}>
             {!assetEditorExpanded && <strong className={inlineEditor ? "text-sm" : undefined}>{DRAMA_PIPELINE_STAGE_LABELS[stage]}</strong>}
             {inlineEditor ? <div className="flex items-center gap-2">
                 <DramaNodeStatus theme={theme} confirmed={assetConfirmed} />
@@ -272,7 +272,7 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
                     onClick={() => setAssetEditorExpanded(true)}><Maximize2 className="size-3.5" /></button>}
             </div> :
                 <Tag color={confirmed ? "green" : "default"}>{confirmed ? "已确认" : "草案"}</Tag>}
-        </header>
+        </header>}
         {assetPlanning && node.metadata?.dramaAssetCandidate && <DramaAssetCandidates
             key={node.metadata.dramaAssetCandidate.id} assets={previous?.assets??[]}
             candidates={node.metadata.dramaAssetCandidate.assets} disabled={generating||versionBusy}

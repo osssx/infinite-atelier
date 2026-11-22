@@ -199,6 +199,21 @@ def main():
                       tabs?.querySelector('button[aria-pressed="true"]')?.textContent?.trim()==='剧集编辑'&&
                       tabs.scrollWidth>0;
                 })()"""),"maximized episode theme and tabs",35)))
+                check("episode_workspace_status_inline_with_title",bool(wait_for(lambda:page.js("""(() => {
+                    const root=document.querySelector('[data-creative-workspace-node-id="episodes"]');
+                    const title=document.querySelector('[data-drama-workspace-title-row]');
+                    const label=title?.querySelector('span.truncate');
+                    const status=title?.querySelector('[data-drama-workspace-version-status]');
+                    const editor=root?.querySelector('[data-drama-workspace-content] section[data-canvas-no-zoom]');
+                    if(!label||!status||!editor||!title)return false;
+                    const l=label.getBoundingClientRect(),s=status.getBoundingClientRect();
+                    return label.textContent?.trim()==='剧集规划'&&
+                     ['草案','已确认'].includes(status.textContent?.trim())&&
+                     Math.abs((l.top+l.bottom)/2-(s.top+s.bottom)/2)<=5&&
+                     s.left>=l.right&&
+                     !editor.querySelector(':scope > header')&&
+                     root.querySelectorAll('[data-drama-workspace-version-status]').length===0;
+                })()"""),"episode editor status moved into modal title row",35)))
                 check("episode_tabs_descriptions_only_on_tooltips",bool(page.js("""(() => {
                     const root=document.querySelector('[data-creative-workspace-node-id="episodes"]');
                     const nav=root?.querySelector('nav[aria-label="创作工作区功能"]');

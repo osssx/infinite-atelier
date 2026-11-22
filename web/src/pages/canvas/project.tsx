@@ -4451,8 +4451,9 @@ function AtelierCanvasPage() {
             await awaitCanvasStorePersistence(projectId);
             creativeWorkspaceRequestRef.current++;
             setCreativeWorkspaceNodeId(null);
+            setTextVersionsNodeId(current=>current===creativeWorkspaceNodeId?null:current);
         }catch(error){message.error(error instanceof Error?error.message:"保存失败，编辑器保持打开");}
-    },[projectId,message]);
+    },[projectId,message,creativeWorkspaceNodeId]);
     const creativeWorkspaceNode=creativeWorkspaceNodeId?
         nodes.find(node=>node.id===creativeWorkspaceNodeId):undefined;
 
@@ -4852,12 +4853,29 @@ function AtelierCanvasPage() {
                         focus={creativeWorkspaceFocus}
                         color={{fill:theme.node.fill,text:theme.node.text,muted:theme.node.muted}}
                         onClose={closeCreativeWorkspace}
-                        renderPanel={tab=>renderNodePanel(creativeWorkspaceNode,true,tab,creativeWorkspaceFocus)}/>
+                        onTabChange={tab=>{
+                            if(tab==="history")openTextVersions(creativeWorkspaceNode.id);
+                            else setTextVersionsNodeId(current=>current===creativeWorkspaceNode.id?null:current);
+                        }}
+                        renderPanel={tab=>renderNodePanel(creativeWorkspaceNode,true,tab,creativeWorkspaceFocus)}
+                        renderHistoryPanel={()=>textVersionsNode?.id===creativeWorkspaceNode.id?
+                            <CanvasTextVersionsModal inline key={`${projectId}:${creativeWorkspaceNode.id}:inline`}
+                                open versions={textVersions} listLoading={versionsLoading} listError={versionsLoadError}
+                                loadVersion={loadTextVersion} currentContent={versionNodeContent(textVersionsNode)}
+                                storyboard={textVersionsNode.type==="drama:storyboard"}
+                                confirmedContent={textVersionsNode.metadata?.dramaConfirmed??""}
+                                onClose={()=>setTextVersionsNodeId(null)}
+                                onSave={note=>saveTextVersion(textVersionsNode.id,note)}
+                                onDelete={versionId=>void deleteTextVersion(textVersionsNode.id,versionId)}
+                                onRestore={version=>restoreTextVersion(textVersionsNode.id,version)}
+                                retryPending={false} busy={textVersionBusy}
+                                onRetryPersistence={async()=>{refreshVersions(value=>value+1);}}/>:
+                            <p role="status" className="p-4 text-xs" style={{color:theme.node.muted}}>正在加载历史版本…</p>}/>
                 </Suspense>}
 
                 <CanvasNodeInfoModal node={infoNode} open={Boolean(infoNode)} onClose={() => setInfoNodeId(null)} />
 
-                {textVersionsNode?<CanvasTextVersionsModal key={`${projectId}:${textVersionsNode.id}`} open versions={textVersions} listLoading={versionsLoading} listError={versionsLoadError} loadVersion={loadTextVersion} currentContent={versionNodeContent(textVersionsNode)}
+                {textVersionsNode&&textVersionsNode.id!==creativeWorkspaceNode?.id?<CanvasTextVersionsModal key={`${projectId}:${textVersionsNode.id}`} open versions={textVersions} listLoading={versionsLoading} listError={versionsLoadError} loadVersion={loadTextVersion} currentContent={versionNodeContent(textVersionsNode)}
                     story={textVersionsNode.type==="drama:source"}
                     storyboard={textVersionsNode.type==="drama:storyboard"}
                     confirmedContent={isDramaVersionNode(textVersionsNode)?textVersionsNode.metadata?.dramaConfirmed??"":undefined}

@@ -15,6 +15,8 @@ const sourceLabel = (source: TextVersion["source"]) => source === "confirmation"
 
 type Props = {
     open: boolean;
+    /** Embeds the existing version editor directly in the creative workspace, without a nested Modal. */
+    inline?: boolean;
     versions: TextVersionSummary[];
     story?: boolean;
     loadVersion?: (id: string, signal: AbortSignal) => Promise<TextVersion>;
@@ -34,6 +36,7 @@ type Props = {
 
 export function CanvasTextVersionsModal({
     open,
+    inline = false,
     versions,
     currentContent,
     confirmedContent,
@@ -52,7 +55,7 @@ export function CanvasTextVersionsModal({
 }: Props) {
     const { t } = useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
-    const [previewKind, setPreviewKind] = useState<"draft" | "confirmed" | "history">("draft");
+    const [previewKind, setPreviewKind] = useState<"draft" | "confirmed" | "history">(inline ? "history" : "draft");
     const [note, setNote] = useState("");
     const [selectedId, setSelectedId] = useState<string | null>(null);
     const [retrying, setRetrying] = useState(false);
@@ -109,7 +112,7 @@ export function CanvasTextVersionsModal({
     useEffect(() => {
         if (!open) return;
         setNote("");
-        setPreviewKind("draft");
+        setPreviewKind(inline ? "history" : "draft");
         setSelectedId(versions[0]?.id ?? null);
         setSaveFailed(false);
         setDeleteConfirmOpen(false);
@@ -164,51 +167,10 @@ export function CanvasTextVersionsModal({
 
     if (!open) return null;
 
-    return (
-        <ConfigProvider
-            theme={{
-                token: {
-                    colorBgContainer: theme.node.panel,
-                    colorBgElevated: theme.node.panel,
-                    colorText: theme.node.text,
-                    colorTextSecondary: theme.node.muted,
-                    colorBorder: theme.toolbar.border,
-                    colorPrimary: theme.node.activeStroke,
-                    colorTextLightSolid: theme.node.panel,
-                    borderRadius: 12,
-                    controlItemBgActive: theme.toolbar.activeBg,
-                },
-            }}
-        >
-            <Modal
-                title={
-                    <div className="flex min-w-0 items-start gap-3">
-                        <span className="mt-0.5 flex size-10 shrink-0 items-center justify-center rounded-xl border" style={{ background: theme.toolbar.activeBg, borderColor: theme.toolbar.border, color: theme.node.activeStroke }}>
-                            <History className="size-5" aria-hidden="true" />
-                        </span>
-                        <div className="min-w-0 flex-1">
-                            <div className="text-base font-semibold leading-6">{t("canvas.textVersions.title")}</div>
-                            <div className="mt-0.5 text-xs font-normal leading-5" style={{ color: theme.node.muted }}>{t(story ? "canvas.textVersions.storySubtitle" : storyboard ? "canvas.textVersions.storyboardSubtitle" : drama ? "canvas.textVersions.episodeSubtitle" : "canvas.textVersions.subtitle")}</div>
-                        </div>
-                    </div>
-                }
-                open={open}
-                onCancel={close}
-                closable={!busy}
-                footer={null}
-                centered
-                width="min(960px, calc(100vw - 24px))"
-                style={{ top: 0, paddingBottom: 0 }}
-                destroyOnHidden
-                keyboard={!busy && !deleteConfirmOpen}
-                mask={{ closable: !busy }}
-                styles={{
-                    container: { background: theme.node.panel, border: `1px solid ${theme.node.stroke}`, borderRadius: 22, overflow: "hidden", padding: 0, display: "flex", flexDirection: "column", maxHeight: "calc(100dvh - 32px)" },
-                    header: { background: theme.node.panel, borderBottom: `1px solid ${theme.node.stroke}`, margin: 0, padding: "18px 56px 18px 24px", flexShrink: 0 },
-                    body: { background: theme.node.panel, padding: 0, color: theme.node.text, minHeight: 0, display: "flex", flexDirection: "column", overflow: "hidden" },
-                }}
-            >
-                <div data-canvas-shortcuts-ignore className="flex min-h-0 flex-col" style={{ height: "min(620px, calc(100dvh - 140px))" }} onKeyDown={(event) => { if (event.key !== "Escape") event.stopPropagation(); }}>
+    const body = (
+        <div data-canvas-shortcuts-ignore className="flex min-h-0 min-w-0 flex-col"
+            style={{height:inline?"min(550px, calc(100dvh - 225px))":"min(620px, calc(100dvh - 140px))"}}
+            onKeyDown={(event) => { if (event.key !== "Escape") event.stopPropagation(); }}>
                     <section className="shrink-0 border-b px-5 py-4 sm:px-6" style={{ borderColor: theme.node.stroke, background: theme.node.panel }}>
                         <div className="flex flex-col gap-2 sm:flex-row">
                             <Input
@@ -344,7 +306,52 @@ export function CanvasTextVersionsModal({
                         </section>
                     </div>
                 </div>
-            </Modal>
-        </ConfigProvider>
+    );
+    return (
+      <ConfigProvider theme={{token:{
+          colorBgContainer:theme.node.panel,
+          colorBgElevated:theme.node.panel,
+          colorText:theme.node.text,
+          colorTextSecondary:theme.node.muted,
+          colorBorder:theme.toolbar.border,
+          colorPrimary:theme.node.activeStroke,
+          colorTextLightSolid:theme.node.panel,
+          borderRadius:12,
+          controlItemBgActive:theme.toolbar.activeBg,
+      }}}>
+       {inline
+         ? <section aria-label="内嵌历史版本" data-canvas-text-versions-inline=""
+              className="min-h-0 min-w-0 overflow-hidden rounded-xl border"
+              style={{background:theme.node.panel,borderColor:theme.node.stroke,color:theme.node.text}}>
+              {body}
+           </section>
+         : <Modal
+            title={<div className="flex min-w-0 items-start gap-3">
+                <span className="mt-0.5 flex size-10 shrink-0 items-center justify-center rounded-xl border"
+                    style={{background:theme.toolbar.activeBg,borderColor:theme.toolbar.border,color:theme.node.activeStroke}}>
+                    <History className="size-5" aria-hidden="true"/>
+                </span>
+                <div className="min-w-0 flex-1">
+                    <div className="text-base font-semibold leading-6">{t("canvas.textVersions.title")}</div>
+                    <div className="mt-0.5 text-xs font-normal leading-5" style={{color:theme.node.muted}}>
+                      {t(story?"canvas.textVersions.storySubtitle":storyboard?"canvas.textVersions.storyboardSubtitle":drama?"canvas.textVersions.episodeSubtitle":"canvas.textVersions.subtitle")}
+                    </div>
+                </div>
+              </div>}
+            open={open} onCancel={close} closable={!busy} footer={null}
+            centered width="min(960px, calc(100vw - 24px))"
+            style={{top:0,paddingBottom:0}} destroyOnHidden
+            keyboard={!busy&&!deleteConfirmOpen} mask={{closable:!busy}}
+            styles={{
+                container:{background:theme.node.panel,border:`1px solid ${theme.node.stroke}`,borderRadius:22,
+                    overflow:"hidden",padding:0,display:"flex",flexDirection:"column",maxHeight:"calc(100dvh - 32px)"},
+                header:{background:theme.node.panel,borderBottom:`1px solid ${theme.node.stroke}`,
+                    margin:0,padding:"18px 56px 18px 24px",flexShrink:0},
+                body:{background:theme.node.panel,padding:0,color:theme.node.text,minHeight:0,
+                    display:"flex",flexDirection:"column",overflow:"hidden"},
+            }}>
+            {body}
+           </Modal>}
+      </ConfigProvider>
     );
 }

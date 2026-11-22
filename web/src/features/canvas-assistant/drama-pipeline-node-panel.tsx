@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { Button, Input, Modal, Tag } from "antd";
-import { History, Maximize2 } from "lucide-react";
+import { History, Maximize2, RefreshCw, Sparkles, ShieldAlert } from "lucide-react";
 import type { CanvasNodeData } from "@/types/canvas";
 import { DRAMA_PIPELINE_NODE_TYPES, DRAMA_PIPELINE_STAGE_LABELS, readStoryboardDraft, type DramaPipelineStage } from "./canvas-drama-pipeline";
 import { canvasApi } from "@/features/backend-sync/canvas-api";
@@ -149,6 +149,24 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
         return () => { active = false; clearTimeout(timer); };
     }, [node.id, projectId, runPath, storyboard,episodePlanning,workspaceMode,workspaceTab,generating,runs.some(run=>run.status==="running")]);
     const versioned = assetPlanning || episodePlanning || storyboard;
+    const [dependencyLoading,setDependencyLoading]=useState(false);
+    const [dependencyError,setDependencyError]=useState("");
+    const dependencyPath=`/api/v1/projects/${encodeURIComponent(projectId??"")}/drama-pipeline/dependencies?nodeId=${encodeURIComponent(node.id)}`;
+    const loadDependencies=(signal?:AbortSignal)=>{
+        setDependencyLoading(true);setDependencyError("");
+        return canvasApi<NonNullable<typeof dependencyReport>>(dependencyPath,"GET",undefined,signal)
+            .then(report=>{if(!signal?.aborted)setDependencyReport(report);})
+            .catch(error=>{if(!signal?.aborted)setDependencyError(error instanceof Error?error.message:"无法检查上游更新");})
+            .finally(()=>{if(!signal?.aborted)setDependencyLoading(false);});
+    };
+    useEffect(()=>{
+        if(!workspaceMode||workspaceTab!=="history"||!versioned||!projectId)return;
+        const controller=new AbortController();
+        void canvasApi<NonNullable<typeof dependencyReport>>(dependencyPath,"GET",undefined,controller.signal)
+            .then(report=>{if(!controller.signal.aborted){setDependencyReport(report);setDependencyError("");}})
+            .catch(error=>{if(!controller.signal.aborted)setDependencyError(error instanceof Error?error.message:"无法检查上游更新");});
+        return ()=>controller.abort();
+    },[workspaceMode,workspaceTab,versioned,projectId,dependencyPath]);
     const readsStoredDraft = assetPlanning || versioned;
     const draft = readsStoredDraft ? storedDraft : localDraft;
     const confirmed = readsStoredDraft ? node.metadata?.dramaConfirmed ?? "" : localConfirmed;
@@ -225,6 +243,8 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
         {[...new Set([draft, confirmed].filter(Boolean))].map(content =>
             <pre key={content} className="max-h-48 overflow-auto whitespace-pre-wrap">{content}</pre>)}
     </section>;
+    const ImpactContainer=workspaceMode?"section":"details";
+    const ImpactHeading=workspaceMode?"header":"summary";
     const editor = <section className={inlineEditor ? assetEditorExpanded
         ? "flex h-full min-h-0 flex-col gap-4 text-sm"
         : dramaInlineNodeClass
@@ -240,7 +260,7 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
             {!assetEditorExpanded && <strong className={inlineEditor ? "text-sm" : undefined}>{DRAMA_PIPELINE_STAGE_LABELS[stage]}</strong>}
             {inlineEditor ? <div className="flex items-center gap-2">
                 <DramaNodeStatus theme={theme} confirmed={assetConfirmed} />
-                {versioned && onOpenVersions && <Button size="small" icon={<History size={14} />}
+                {versioned && onOpenVersions && !workspaceMode && <Button size="small" icon={<History size={14} />}
                     style={control} onClick={onOpenVersions}>历史版本</Button>}
                 {!workspaceMode && !assetEditorExpanded && <button type="button" title="最大化编辑器" aria-label={`最大化${DRAMA_PIPELINE_STAGE_LABELS[stage]}`}
                     className="inline-grid size-7 place-items-center rounded-md border" style={control}
@@ -266,10 +286,24 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
                     setValidation("已在同一事务中合入资产与受影响的分镜草案引用；请核对后确认资产");
                 }catch(error){setValidation(error instanceof Error?error.message:"资产合入失败");}
             }}/>}
-        {versioned && (!workspaceMode || workspaceTab==="history") && <details>
-            <summary onClick={()=>void canvasApi<NonNullable<typeof dependencyReport>>(
-                `/api/v1/projects/${encodeURIComponent(projectId??"")}/drama-pipeline/dependencies?nodeId=${encodeURIComponent(node.id)}`,"GET")
-                .then(setDependencyReport).catch(()=>setValidation("无法检查上游更新"))}>检查上游更新</summary>
+        {versioned && (!workspaceMode || workspaceTab==="history") &&
+         <ImpactContainer aria-label={workspaceMode?"上游影响检查":undefined}
+             className={workspaceMode?"min-w-0 space-y-3 rounded-xl border p-3 text-xs":"text-xs"}
+             style={workspaceMode?{borderColor:theme.node.stroke,background:theme.node.panel,color:theme.node.text}:undefined}>
+             <ImpactHeading
+                 className={workspaceMode?"flex flex-wrap items-center justify-between gap-2 border-b pb-3 font-semibold":"cursor-pointer"}
+                 style={workspaceMode?{borderColor:theme.node.stroke}:undefined}
+                 onClick={workspaceMode?undefined:()=>void loadDependencies()}>
+                 <span className="flex items-center gap-2">
+                     {workspaceMode&&<ShieldAlert size={14} style={{color:theme.node.muted}} aria-hidden="true"/>}
+                     {workspaceMode?"依赖影响概览":"检查上游更新"}
+                 </span>
+                 {workspaceMode&&<Button size="small" aria-label="刷新上游影响"
+                    icon={<RefreshCw size={13}/>} loading={dependencyLoading}
+                    onClick={()=>void loadDependencies()} style={control}>刷新影响</Button>}
+             </ImpactHeading>
+             {dependencyError&&<p role="alert" className="break-words" style={{color:theme.node.text}}>{dependencyError}</p>}
+             {workspaceMode&&!dependencyReport&&!dependencyError&&<p role="status" style={{color:theme.node.muted}}>正在读取上游影响…</p>}
             {dependencyReport && <p>{dependencyReport.status==="current"?"当前确认结果与上游一致":
                 dependencyReport.status==="unknown"?"此版本缺少历史依赖，请核对后重新确认":"上游已有更新，请核对受影响条目后生成候选或重新确认"}</p>}
             {dependencyReport?.changes.map(item=><p key={item.nodeId}>
@@ -330,7 +364,7 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
                 <p>这里仅预览确认版本的影响；不会自动修改草案或视频 Config。可按集、场、镜生成候选，
                     在视频配置页逐项选择采用更新。</p>
             </div>}
-        </details>}
+        </ImpactContainer>}
         <div className={inlineEditor ? assetEditorExpanded ? "flex min-h-0 flex-1 flex-col gap-4" :
             "thin-scrollbar min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain px-1" : "contents"}
             onMouseDown={inlineEditor ? event => event.stopPropagation() : undefined}
@@ -621,7 +655,32 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
             </>}
         </details>}
         </>}
-        {(storyboard||episodePlanning) && (!workspaceMode || workspaceTab==="runs") && runs.map(run=><details key={run.id} open={Boolean(expandedRuns[run.id])} onToggle={event=>{
+        {(storyboard||episodePlanning) && (!workspaceMode || workspaceTab==="runs") && <>
+         {workspaceMode&&<section data-drama-runs-panel="" aria-label="生成候选记录"
+             className="min-w-0 space-y-2 rounded-xl border p-3 sm:p-4"
+             style={{background:theme.node.panel,borderColor:theme.node.stroke,color:theme.node.text}}>
+             <div className="flex flex-wrap items-center justify-between gap-2">
+                 <div className="flex items-center gap-2">
+                     <Sparkles size={17} aria-hidden="true" style={{color:theme.node.muted}}/>
+                     <h3 className="text-sm font-semibold">生成候选记录</h3>
+                 </div>
+                 <span className="rounded-md border px-2 py-1 text-[11px] tabular-nums"
+                   style={{borderColor:theme.node.stroke,color:theme.node.muted,background:theme.toolbar.activeBg}}>
+                     共 {runs.length} 条 · 待采用 {runs.filter(run=>run.status==="ready").length} 条
+                 </span>
+             </div>
+             <p className="text-xs leading-relaxed" style={{color:theme.node.muted}}>
+                 仅查看候选不会覆盖现有草案。展开运行记录可预览候选、检查冲突并选择采用；记录在此页面打开期间自动刷新。
+             </p>
+             {runs.length===0&&<div role="status" className="rounded-lg border border-dashed px-4 py-8 text-center"
+               style={{borderColor:theme.node.stroke,color:theme.node.muted}}>
+                 暂无生成候选记录。返回剧集编辑页生成候选后，可在这里查看状态与结果。
+             </div>}
+         </section>}
+         {runs.map(run=><details key={run.id}
+            className="min-w-0 overflow-hidden rounded-xl border"
+            style={{background:theme.node.panel,borderColor:theme.node.stroke,color:theme.node.text}}
+            open={Boolean(expandedRuns[run.id])} onToggle={event=>{
             const open=event.currentTarget.open;
             setExpandedRuns(current=>current[run.id]===open?current:{...current,[run.id]:open});
             if(open&&!run.candidate?.shots?.length&&!run.candidate?.episodes?.length)void canvasApi<DramaRun>(`${runPath}/${encodeURIComponent(run.id)}`,"GET")
@@ -632,8 +691,19 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
                     .then(preview=>setRunPreviews(current=>({...current,[run.id]:preview})))
                     .catch(()=>setValidation("无法获取分镜差异预览"));
         }}>
-            <summary>{run.episodeId==="*"?"完整剧集计划":(episodePlanning?episodeDraft?.episodes:linkedEpisodes)?.find(episode=>episode.id===run.episodeId)?.title ?? run.episodeId} · {run.status}</summary>
-            {run.error && <p>{run.error}</p>}
+            <summary className="flex cursor-pointer list-none flex-wrap items-center justify-between gap-2 px-3 py-3">
+                <span className="min-w-0 truncate text-xs font-semibold">
+                  {run.episodeId==="*"?"完整剧集计划":(episodePlanning?episodeDraft?.episodes:linkedEpisodes)?.find(episode=>episode.id===run.episodeId)?.title ?? run.episodeId}
+                </span>
+                <span className="shrink-0 rounded-md border px-2 py-1 text-[11px] font-medium"
+                    style={{borderColor:theme.node.stroke,background:theme.toolbar.activeBg,color:theme.node.text}}>
+                    {run.status}{run.status==="ready"?" · 待采用":run.status==="running"?" · 生成中":
+                      run.status==="adopted"?" · 已采用":run.status==="failed"?" · 可重试":""}
+                </span>
+            </summary>
+            <div className="min-w-0 space-y-3 border-t p-3" style={{borderColor:theme.node.stroke}}>
+            {run.error && <p role="alert" className="break-words rounded-lg border px-3 py-2 text-xs"
+                 style={{borderColor:theme.node.stroke,background:theme.toolbar.activeBg}}>{run.error}</p>}
             {!!run.candidate?.completedSequenceIds?.length && <p>已保存 {run.candidate.completedSequenceIds.length} 个场次，重试将继续未完成场次。</p>}
             {(run.status==="running"||["failed","interrupted","cancelled"].includes(run.status)) &&
                 <Button onClick={async()=>{
@@ -643,11 +713,11 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
                         setRuns(current=>current.map(item=>item.id===run.id?result:item));
                     }catch(error){setValidation(error instanceof Error?error.message:"运行操作失败");}
                 }}>{run.status==="running"?"取消生成":"使用原输入重试"}</Button>}
-            {run.candidate?.episodes?.map(episode=><article key={episode.id} className="rounded-lg border p-2">
+            {run.candidate?.episodes?.map(episode=><article key={episode.id} className="space-y-2 rounded-lg border p-3" style={{borderColor:theme.node.stroke,background:theme.node.fill}}>
                 <strong>{episode.title}</strong><p>{episode.synopsis}</p>
                 {episode.events.map((event,index)=><p key={index}>{index+1}. {event}</p>)}<p>{episode.ending}</p>
             </article>)}
-             {storyboard&&runPreviews[run.id]&&<div className="grid gap-2 rounded-lg border p-2" aria-label="分镜候选差异预览">
+             {storyboard&&runPreviews[run.id]&&<div className="grid gap-3 rounded-lg border p-3" style={{borderColor:theme.node.stroke,background:theme.node.fill}} aria-label="分镜候选差异预览">
                  <p>差异：新增 {runPreviews[run.id].summary.added} · 替换 {runPreviews[run.id].summary.replaced}
                      · 删除 {runPreviews[run.id].summary.deleted} · 重排 {runPreviews[run.id].summary.reordered}
                      · 无变化 {runPreviews[run.id].summary.unchanged}</p>
@@ -672,7 +742,7 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
                          runPreviews[run.id].items.filter(item=>item.changed&&!item.conflict&&!item.adopted).map(item=>item.id)}))}>
                      选择全部无冲突差异
                  </Button>}
-                 {runPreviews[run.id].items.map(item=><label key={item.id} className="grid gap-1 rounded-md border p-2">
+                 {runPreviews[run.id].items.map(item=><label key={item.id} className="grid gap-1 rounded-lg border p-3" style={{borderColor:theme.node.stroke,background:theme.node.panel}}>
                      <span className="flex items-center gap-2">
                          {run.status==="ready"&&item.changed&&<input type="checkbox" aria-label={`选择差异 ${item.id}`}
                              checked={(selectedCandidates[run.id]??[]).includes(item.id)}
@@ -717,7 +787,10 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
                      }
                      setValidation("已合入目标剧集草案，请检查后确认发布");
                  }catch(error){setValidation(error instanceof Error?error.message:"候选采用失败，请刷新差异预览");}
-             }}>采用到草案</Button>}        </details>)}
+             }}>采用到草案</Button>}
+            </div>
+         </details>)}
+         </>}
         {validation ? <p role="status" className={`mt-2 whitespace-pre-wrap text-sm ${assetEditorExpanded ? "thin-scrollbar max-h-24 shrink-0 overflow-y-auto" : ""}`}>{validation}</p> : null}
         {invalidSceneIds.map(id => <label className="mt-2 block text-sm" key={id}>
             将所有引用 {id} 的镜头改为

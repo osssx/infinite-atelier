@@ -218,6 +218,57 @@ def main():
                     return !!root&&!root.textContent?.includes('原文出处')&&
                      !root.querySelector('[aria-label="剧集原文段落 ID"]');
                 })()""")))
+                check("episode_history_tab_open",bool(wait_for(
+                    lambda:node_button(page,"episodes","影响与历史"),"episode history tab",25)))
+                check("episode_history_direct_inline_panel",bool(wait_for(lambda:page.js("""(() => {
+                    const root=document.querySelector('[data-creative-workspace-node-id="episodes"]');
+                    const inline=root?.querySelector('[data-canvas-text-versions-inline]');
+                    const impact=root?.querySelector('[aria-label="上游影响检查"]');
+                    const versions=inline?.querySelector('[aria-label]');
+                    return !!inline&&!!impact&&!!versions&&
+                     !!inline.closest('[data-drama-history-layout]')&&
+                     !root.querySelector('button[aria-label="历史版本"]');
+                })()"""),"inline text versions and impact panel",40)))
+                check("episode_history_initial_version_selected",bool(wait_for(lambda:page.js("""(() => {
+                    const inline=document.querySelector('[data-canvas-text-versions-inline]');
+                    const chosen=inline?.querySelector('button[aria-current="true"]');
+                    const preview=inline?.querySelector('article');
+                    return !!chosen&&!!preview&&(preview.textContent||'').includes('第一集');
+                })()"""),"version list and historical episode preview",35)))
+                check("episode_history_has_no_second_dialog",bool(page.js("""(() => {
+                    const inline=document.querySelector('[data-canvas-text-versions-inline]');
+                    const parent=inline?.closest('.ant-modal');
+                    return !!parent&&[...document.querySelectorAll('.ant-modal')].filter(el=>
+                       getComputedStyle(el).display!=='none'&&el.getBoundingClientRect().width>0).every(el=>el===parent);
+                })()""")))
+                check("episode_history_scoped_version_api",bool(wait_for(lambda:any(
+                    "/nodes/episodes/text-versions" in req.get("path","") and req.get("method")=="GET"
+                    for req in page.network_requests),"scoped version list request",25)))
+                check("episode_history_impact_auto_loaded",bool(wait_for(lambda:page.js("""(() => {
+                    const root=document.querySelector('[data-creative-workspace-node-id="episodes"]');
+                    const section=root?.querySelector('[aria-label="上游影响检查"]');
+                    if(!section)return false;
+                    const text=section.textContent||'';
+                    return text.includes('当前确认结果与上游一致')||
+                      text.includes('上游已有更新')||text.includes('此版本缺少历史依赖');
+                })()"""),"inline upstream impact read",25)))
+                check("episode_runs_tab_open",bool(wait_for(
+                    lambda:node_button(page,"episodes","生成候选"),"episode run candidates tab",25)))
+                check("episode_runs_summary_theme",bool(wait_for(lambda:page.js("""(() => {
+                    const root=document.querySelector('[data-creative-workspace-node-id="episodes"]');
+                    const runs=root?.querySelector('[data-drama-runs-panel]');
+                    if(!runs)return false;
+                    const computed=getComputedStyle(runs);
+                    const expected=root.dataset.dramaWorkspaceTheme==='dark'?'rgb(31, 29, 26)':'rgb(251, 250, 247)';
+                    return computed.backgroundColor===expected&&
+                       (runs.textContent||'').includes('生成候选记录')&&
+                       (runs.textContent||'').includes('待采用');
+                })()"""),"runs summary card themed",25)))
+                check("episode_history_unmounted_on_exit",bool(page.js("""(() => {
+                    const root=document.querySelector('[data-creative-workspace-node-id="episodes"]');
+                    return !!root&&!root.querySelector('[data-canvas-text-versions-inline]')&&
+                       !root.querySelector('[data-drama-history-layout]');
+                })()""")))
                 check("p34b3_episodes_scoped_tab",bool(wait_for(
                     lambda:node_button(page,"episodes","分页与单条 CAS"),"episodes scoped tab",25)))
                 wait_for(lambda:page.js("""

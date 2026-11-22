@@ -1,5 +1,5 @@
 import {lazy,Suspense,useCallback,useEffect,useRef,useState,type ReactNode} from "react";
-import {Modal} from "antd";
+import {ConfigProvider,Modal} from "antd";
 import {BookOpenText,Clapperboard,Database,Film,History,LayoutList,ShieldAlert,Sparkles,X} from "lucide-react";
 import {canvasThemes} from "@/lib/canvas-theme";
 import {useThemeStore} from "@/stores/use-theme-store";
@@ -14,10 +14,13 @@ export type WorkspacePendingRegistration=(key:string,save:(()=>Promise<void>)|nu
  * mounts only its active feature. The unsaved CAS navigation guard is shared by
  * every visual close/tab action.
  */
-export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,onClose,renderPanel}:{
+export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,onClose,onTabChange,renderPanel,renderHistoryPanel}:{
  projectId:string;nodeId:string;kind:"episodes"|"storyboard";focus:DramaWorkspaceFocus;
  color?:{fill:string;text:string;muted:string};
- onClose:()=>Promise<void>;renderPanel:(tab:DramaWorkspaceTab)=>ReactNode;
+ onClose:()=>Promise<void>;
+ onTabChange?:(tab:DramaWorkspaceTab)=>void;
+ renderPanel:(tab:DramaWorkspaceTab)=>ReactNode;
+ renderHistoryPanel?:()=>ReactNode;
 }){
  const appearance=useThemeStore(state=>state.theme);
  const theme=canvasThemes[appearance];
@@ -34,8 +37,9 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,onClose,rend
  },[]);
  useEffect(()=>()=>{pending.current.clear()},[nodeId,projectId]);
  const perform=useCallback(async(target:DramaWorkspaceTab|"close")=>{
-  if(target==="close")await onClose();else setTab(target);
- },[onClose]);
+  if(target==="close")await onClose();
+  else {setTab(target);onTabChange?.(target);}
+ },[onClose,onTabChange]);
  const request=useCallback((target:DramaWorkspaceTab|"close")=>{
   if(target===tab)return;
   if(pending.current.size){setPendingAction(target);return;}
@@ -66,8 +70,8 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,onClose,rend
   editor:episodeMode?"按集编辑剧情、事件、场次及来源引用":"检查分镜结构与镜头安排",
   scope:"按页读取、精准保存和批量提交草案",
   video:"按镜头配置独立的视频生成参数",
-  runs:"查看候选结果并选择性采用",
-  history:"确认版本与追踪上下游变更",
+  runs:"按运行状态浏览候选，展开查看内容与采用选项",
+  history:"版本快照与上游影响直接在工作区内查看",
  };
  const subtle={background:theme.node.panel,borderColor:theme.node.stroke,color:theme.node.text};
  const action="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-lg border px-3 text-xs font-medium transition-opacity hover:opacity-80 disabled:cursor-not-allowed disabled:opacity-40";
@@ -95,6 +99,12 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,onClose,rend
     body:{height:"min(920px, calc(100dvh - 122px))",minHeight:0,overflow:"hidden",
      padding:"12px 0 0"},
    }}>
+   <ConfigProvider theme={{token:{
+    colorBgContainer:theme.node.panel,colorBgElevated:theme.node.panel,
+    colorText:theme.node.text,colorTextSecondary:theme.node.muted,
+    colorBorder:theme.node.stroke,colorPrimary:theme.node.activeStroke,
+    colorTextLightSolid:theme.node.panel,controlItemBgActive:theme.toolbar.activeBg,borderRadius:10,
+   }}}>
    <div data-creative-workspace-node-id={nodeId} data-drama-workspace-theme={appearance}
     data-drama-workspace-kind={kind} className="flex h-full min-h-0 flex-col gap-2.5"
     style={{color:theme.node.text,colorScheme:appearance}}>
@@ -125,12 +135,27 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,onClose,rend
        <StoryboardBrowser key={nodeId} projectId={projectId} nodeId={nodeId}
         initialEpisodeId={focus.episodeId} initialShotId={focus.shotId} initialSequenceId={focus.sequenceId}
         onPendingChange={registerPending}/>):
-       renderPanel(tab)}
+       tab==="history"&&renderHistoryPanel
+        ? <div data-drama-history-layout="" className="grid min-h-0 min-w-0 gap-3 xl:grid-cols-[minmax(0,1.7fr)_minmax(280px,0.8fr)]">
+           <section aria-label="历史版本面板" className="min-w-0 space-y-2">
+            <div className="flex items-center justify-between gap-2 px-1">
+             <h3 className="text-sm font-semibold">历史版本</h3>
+             <span className="text-[11px]" style={{color:theme.node.muted}}>可查看、保存或恢复剧集草案快照</span>
+            </div>
+            {renderHistoryPanel()}
+           </section>
+           <section aria-label="上游影响面板" className="min-w-0 space-y-2">
+            <h3 className="px-1 text-sm font-semibold">上游影响</h3>
+            {renderPanel(tab)}
+           </section>
+          </div>
+        : renderPanel(tab)}
      </Suspense>
     </div>
     {error&&<p role="alert" className="shrink-0 rounded-lg border p-2 text-xs"
       style={{...subtle,background:theme.toolbar.activeBg}}>{error}</p>}
    </div>
+   </ConfigProvider>
   </Modal>
   <Modal title={<span style={{color:theme.node.text}}>存在未提交的草案修改</span>}
    open={pendingAction!==null} closable={!busy}

@@ -7,6 +7,7 @@ vi.mock("@/stores/use-theme-store",async()=>({
 }));
 const stats=vi.hoisted(()=>({save:vi.fn(async()=>{}),browserMount:vi.fn()}));
 vi.mock("antd",()=>({
+ ConfigProvider:({children}:{children:React.ReactNode})=><>{children}</>,
  Modal:({open,children,title,onCancel,styles}:{open:boolean;children:React.ReactNode;title:React.ReactNode;onCancel:()=>void;styles?:{container?:React.CSSProperties;body?:React.CSSProperties}})=>
   open?<div role="dialog" style={styles?.container}><header>{title}<button aria-label="关闭工作区对话框" onClick={onCancel}>关闭</button></header><div data-test-modal-body="" style={styles?.body}>{children}</div></div>:null,
 }));
@@ -30,15 +31,17 @@ import {useThemeStore} from "@/stores/use-theme-store";
 const roots:Root[]=[];
 beforeEach(()=>{stats.save.mockReset();stats.browserMount.mockReset();vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT",true)});
 afterEach(async()=>{for(const root of roots)await act(async()=>root.unmount());roots.length=0;vi.unstubAllGlobals()});
-async function mount(kind:"episodes"|"storyboard"="storyboard"){
+async function mount(kind:"episodes"|"storyboard"="storyboard",withHistory=false){
  const div=document.createElement("div");document.body.append(div);
  const root=createRoot(div);roots.push(root);
  const close=vi.fn(async()=>{});
+ const onTabChange=vi.fn();
  const renderPanel=vi.fn(tab=><section aria-label="完整编辑器内容">{tab}</section>);
  await act(async()=>root.render(<DramaCreativeWorkspace projectId="p1" nodeId={kind==="episodes"?"episodes":"board"} kind={kind}
   focus={{episodeId:"ep-two",shotId:"shot-2"}} color={{fill:"#fff",text:"#000",muted:"#888"}}
-  onClose={close} renderPanel={renderPanel}/>));
- return {div,close,renderPanel};
+  onClose={close} onTabChange={onTabChange} renderPanel={renderPanel}
+  renderHistoryPanel={withHistory?()=> <section aria-label="测试内嵌历史">历史预览</section>:undefined}/>));
+ return {div,close,renderPanel,onTabChange};
 }
 async function press(div:HTMLElement,label:string){
  const button=[...div.querySelectorAll("button")].find(b=>b.textContent?.trim()===label);
@@ -65,6 +68,31 @@ describe("P3.4b3 workspace lifecycle",()=>{
   await act(async()=>{useThemeStore.setState({theme:"dark"});});
   expect(active()).toBe("分页与单条 CAS");
   expect(renderPanel).toHaveBeenCalledWith("editor");
+ });
+ it("renders inline history only in its tab and clears it on exit",async()=>{
+  const {div,onTabChange}=await mount("episodes",true);
+  expect(div.querySelector('[aria-label="测试内嵌历史"]')).toBeNull();
+  await press(div,"影响与历史");
+  expect(div.querySelector('[data-drama-history-layout]')).toBeTruthy();
+  expect(div.querySelector('[aria-label="历史版本面板"] [aria-label="测试内嵌历史"]')).toBeTruthy();
+  expect(div.querySelector('[aria-label="上游影响面板"]')).toBeTruthy();
+  expect(onTabChange).toHaveBeenCalledWith("history");
+  await act(async()=>useThemeStore.setState({theme:"light"}));
+  expect(div.querySelector('[aria-label="测试内嵌历史"]')).toBeTruthy();
+  await press(div,"生成候选");
+  expect(div.querySelector('[aria-label="测试内嵌历史"]')).toBeNull();
+  expect(onTabChange).toHaveBeenCalledWith("runs");
+ });
+ it("blocks history loading while a local CAS draft is dirty",async()=>{
+  const {div,onTabChange}=await mount("storyboard",true);
+  await press(div,"分页与单条 CAS");
+  await press(div,"修改局部草案");
+  onTabChange.mockClear();
+  await press(div,"影响与历史");
+  expect(div.textContent).toContain("存在未提交的草案修改");
+  expect(onTabChange).not.toHaveBeenCalled();
+  expect(div.querySelector('[aria-label="测试内嵌历史"]')).toBeNull();
+  await press(div,"继续编辑");
  });
  it("mounts scoped browser only on its tab and passes exact shot selection",async()=>{
   const {div}=await mount();

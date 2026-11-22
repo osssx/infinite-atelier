@@ -9,11 +9,11 @@ type Choice={value:string;label:string};
 type ShotFieldProps={
  id:string;label:string;value:string;theme:CanvasTheme;disabled:boolean;
  onConfirm:(value:string)=>void;multiline?:boolean;rows?:number;
- type?:"text"|"number"|"select";options?:Choice[];placeholder?:string;hint?:string;
+ type?:"text"|"number"|"select";options?:Choice[];placeholder?:string;
 };
 /** This component owns only a temporary field value; the graph changes at explicit confirmation. */
 function ShotEditableField({id,label,value,theme,disabled,onConfirm,multiline=false,rows=2,
- type="text",options,placeholder="未填写",hint}:ShotFieldProps){
+ type="text",options,placeholder="未填写"}:ShotFieldProps){
  const [editing,setEditing]=useState(false);
  const [draft,setDraft]=useState(value);
  const [baseline,setBaseline]=useState(value);
@@ -80,7 +80,6 @@ function ShotEditableField({id,label,value,theme,disabled,onConfirm,multiline=fa
      borderLeftColor:theme.node.stroke}}>
     <div className="whitespace-pre-wrap break-words">{read}</div>
    </div>}
-  {hint&&<p className="text-[11px] leading-relaxed" style={{color:theme.node.muted}}>{hint}</p>}
  </section>;
 }
 
@@ -224,11 +223,6 @@ export function DramaStoryboardFields({shots,episodes,scenes,expanded,disabled,c
      <ShotEditableField key={active.id+":"+field.key} id={field.key} label={field.label}
       theme={theme} disabled={disabled} multiline rows={field.rows} value={active[field.key]??""}
       onConfirm={value=>optional(field.key,value)}/>)}
-    <ShotEditableField key={active.id+":sourceRefs"} id="sourceRefs" label="原文段落 ID（每行一个）"
-     theme={theme} disabled={disabled} multiline rows={2} placeholder="未引用原文段落"
-     value={(active.sourceRefs??[]).join("\n")}
-     hint={active.sourceRefs?.some(ref=>/^p\d+$/.test(ref))?"含旧行号引用，请对照故事段落定位核对。":undefined}
-     onConfirm={value=>patch("sourceRefs",value.split("\n").map(ref=>ref.trim()).filter(Boolean))}/>
     <ShotEditableField key={active.id+":scene"} id="scene" label="场景"
      theme={theme} disabled={disabled} type="select" options={sceneOptions}
      value={active.sceneId??""} placeholder="未指定场景"

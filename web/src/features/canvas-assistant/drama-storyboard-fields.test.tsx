@@ -80,7 +80,9 @@ describe("maximized storyboard editor mirrors episode localized read/edit UX",()
   expect(side.querySelectorAll('[aria-label="分镜镜头导航"] button')).toHaveLength(2);
   expect(side.querySelector('[aria-label="分镜镜头导航"] button[aria-pressed="true"]')?.textContent).toContain("全景");
   expect(content.textContent).toContain("第 1 集 · 镜头 1");
-  for(const id of ["duration","sequence","description","shotSize","camera","action","dialogue","sourceRefs","scene","sceneVariant"]){
+  expect(content.querySelector('[data-shot-editable-field="sourceRefs"]')).toBeNull();
+  expect(content.textContent).not.toContain("原文段落 ID（每行一个）");
+  for(const id of ["duration","sequence","description","shotSize","camera","action","dialogue","scene","sceneVariant"]){
    const item=content.querySelector<HTMLElement>(`[data-shot-editable-field="${id}"]`)!;
    expect(item?.dataset.shotFieldMode).toBe("reading");
    expect(item?.querySelector(`[data-shot-readonly="${id}"]`)).toBeTruthy();
@@ -161,28 +163,26 @@ describe("maximized storyboard editor mirrors episode localized read/edit UX",()
   expect(changes.mock.lastCall?.[0][0].sceneVariantId).toBe("variant-2");
   expect(changes.mock.lastCall?.[0][0].characterVariantIds).toEqual(["rabbit"]);
  });
- it("preserves stable shot references, supports scene selection, and resets unsaved edits on shot switch",async()=>{
-  const {div,changes}=await mount();
-  await click(div.querySelector('[aria-label="编辑所属场次"]'));
-  await select(div,'select[aria-label="所属场次"]',"seq-2");
-  await click(div.querySelector('[aria-label="确认所属场次"]'));
-  await click(div.querySelector('[aria-label="编辑原文段落 ID（每行一个）"]'));
-  await enter(div,'textarea[aria-label="原文段落 ID（每行一个）"]',"p3\np4\n");
-  await click(div.querySelector('[aria-label="确认原文段落 ID（每行一个）"]'));
-  expect(changes.mock.lastCall?.[0][0].sequenceId).toBe("seq-2");
-  expect(changes.mock.lastCall?.[0][0].sourceRefs).toEqual(["p3","p4"]);
-  await click(div.querySelector('[aria-label="编辑对白"]'));
-  await enter(div,'textarea[aria-label="对白"]',"待确认的一句台词");
-  await click(div.querySelector('[aria-label^="选择镜头 2"]'));
-  expect(div.querySelector('[data-shot-readonly="description"]')?.textContent).toBe("乌龟回应");
-  expect(div.querySelector('textarea[aria-label="对白"]')).toBeNull();
-  await click(div.querySelector('[aria-label^="选择镜头 1"]'));
-  expect(div.querySelector('[data-shot-readonly="dialogue"]')?.textContent).toBe("早上好");
-  expect(changes).toHaveBeenCalledTimes(2);
-  await select(div,'select[aria-label="选择分镜剧集"]',"ep-2");
-  expect(div.querySelector('[data-shot-readonly="description"]')?.textContent).toBe("转场");
-  expect(changes).toHaveBeenCalledTimes(2);
- });
+  it("preserves hidden source references while selecting scenes and switching shots",async()=>{
+   const {div,changes}=await mount();
+   expect(div.textContent).not.toContain("原文段落 ID（每行一个）");
+   await click(div.querySelector('[aria-label="编辑所属场次"]'));
+   await select(div,'select[aria-label="所属场次"]',"seq-2");
+   await click(div.querySelector('[aria-label="确认所属场次"]'));
+   expect(changes.mock.lastCall?.[0][0].sequenceId).toBe("seq-2");
+   expect(changes.mock.lastCall?.[0][0].sourceRefs).toEqual(["p1"]);
+   await click(div.querySelector('[aria-label="编辑对白"]'));
+   await enter(div,'textarea[aria-label="对白"]',"待确认的一句台词");
+   await click(div.querySelector('[aria-label^="选择镜头 2"]'));
+   expect(div.querySelector('[data-shot-readonly="description"]')?.textContent).toBe("乌龟回应");
+   expect(div.querySelector('textarea[aria-label="对白"]')).toBeNull();
+   await click(div.querySelector('[aria-label^="选择镜头 1"]'));
+   expect(div.querySelector('[data-shot-readonly="dialogue"]')?.textContent).toBe("早上好");
+   expect(changes).toHaveBeenCalledTimes(1);
+   await select(div,'select[aria-label="选择分镜剧集"]',"ep-2");
+   expect(div.querySelector('[data-shot-readonly="description"]')?.textContent).toBe("转场");
+   expect(changes).toHaveBeenCalledTimes(1);
+  });
  it("blocks stale staged edits after an external update and permits an explicit reload",async()=>{
   const {div,changes,externalUpdate}=await mount();
   const field=div.querySelector<HTMLElement>('[data-shot-editable-field="description"]')!;

@@ -16,11 +16,11 @@ function ShotDraftEditor({shot,choices,onSave,onPendingChange,pendingKey}:{shot:
     const [error,setError]=useState("");
     const updates={description,action,dialogue,shotSize:extra.shotSize??"",camera:extra.camera??"",
         durationSec:extra.durationSec??null,sceneId:extra.sceneId??null,sceneVariantId:extra.sceneVariantId??null,
-        characterVariantIds:extra.characterVariantIds,propIds:extra.propIds,keyPropIds:extra.keyPropIds,sourceRefs:extra.sourceRefs??[]};
+        characterVariantIds:extra.characterVariantIds,propIds:extra.propIds,keyPropIds:extra.keyPropIds};
     const previous={description:shot.description,action:shot.action??"",dialogue:shot.dialogue??"",shotSize:shot.shotSize??"",
         camera:shot.camera??"",durationSec:shot.durationSec??null,sceneId:shot.sceneId??null,
         sceneVariantId:shot.sceneVariantId??null,characterVariantIds:shot.characterVariantIds,
-        propIds:shot.propIds,keyPropIds:shot.keyPropIds,sourceRefs:shot.sourceRefs??[]};
+        propIds:shot.propIds,keyPropIds:shot.keyPropIds};
     const changed=JSON.stringify(updates)!==JSON.stringify(previous);
     const serialized=JSON.stringify(updates);
     const onSaveRef=useRef(onSave);onSaveRef.current=onSave;
@@ -69,10 +69,6 @@ function ShotDraftEditor({shot,choices,onSave,onPendingChange,pendingKey}:{shot:
                         {field.options.map(item=><option key={item.id} value={item.id}>{item.name}</option>)}
                     </select>
                 </label>)}
-        <label className="grid gap-1">原文段落 ID（每行一个）
-            <textarea className="rounded border bg-transparent p-1" rows={2} value={(extra.sourceRefs??[]).join("\n")} disabled={busy}
-                onChange={event=>setExtra(current=>({...current,sourceRefs:event.target.value.split("\n").map(item=>item.trim()).filter(Boolean)}))}/>
-        </label>
         <button disabled={busy} onClick={async()=>{
             setBusy(true);setError("");
             try{await onSave(updates);}catch(error){setError(error instanceof Error?error.message:"保存失败");}

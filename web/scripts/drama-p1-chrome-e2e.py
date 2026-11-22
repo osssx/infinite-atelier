@@ -1109,7 +1109,10 @@ def main():
             return root?.dataset.dramaWorkspaceKind==='storyboard'&&
              root.querySelector('nav[aria-label="创作工作区功能"] button[aria-pressed="true"]')?.textContent?.trim()==='分镜表'&&
              !!aside&&!!content&&!!nav&&nav.querySelectorAll('button').length>=1&&
-             fields?.length>=8&&[...fields].every(field=>
+             fields?.length>=7&&
+             !content.querySelector('[data-shot-editable-field="sourceRefs"]')&&
+             !content.textContent?.includes('原文段落 ID（每行一个）')&&
+             [...fields].every(field=>
                field.dataset.shotFieldMode==='reading'&&
                !!field.querySelector('[data-shot-readonly]')&&
                !!field.querySelector('button[aria-label^="编辑"]'))&&

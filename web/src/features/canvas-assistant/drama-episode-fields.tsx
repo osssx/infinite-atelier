@@ -23,19 +23,18 @@ type EpisodeFieldTheme=ReturnType<typeof canvasThemeForField>;
 function EpisodeEditActions({theme,label,disabled,onCancel,onConfirm}:{
  theme:EpisodeFieldTheme;label:string;disabled:boolean;onCancel:()=>void;onConfirm:()=>void;
 }){
- const common="inline-flex min-h-9 min-w-[84px] items-center justify-center gap-1.5 rounded-lg border px-3 text-xs font-semibold transition-[background-color,opacity] hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 disabled:cursor-not-allowed disabled:opacity-45";
+ const common="inline-flex min-h-7 min-w-[68px] items-center justify-center gap-1 rounded-md border px-2.5 text-[11px] font-semibold leading-none transition-[background-color,opacity] hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 disabled:cursor-not-allowed disabled:opacity-45";
  return <div data-episode-edit-actions="" aria-label={label+"操作"}
-  className="flex min-w-0 flex-wrap items-center justify-end gap-2 border-t pt-3"
-  style={{borderColor:theme.node.stroke}}>
+  className="flex min-w-0 flex-wrap items-center justify-end gap-1.5 pt-1">
   <button type="button" data-episode-action="cancel" className={common}
    style={{background:theme.node.panel,borderColor:theme.node.stroke,color:theme.node.muted,
     outlineColor:theme.node.activeStroke}} onClick={onCancel}>
-   <X size={14} aria-hidden="true"/>取消
+   <X size={12} aria-hidden="true"/>取消
   </button>
   <button type="button" data-episode-action="confirm" aria-label={"确认"+label} className={common}
    style={{background:theme.node.text,borderColor:theme.node.text,color:theme.node.panel,
     outlineColor:theme.node.activeStroke}} disabled={disabled} onClick={onConfirm}>
-   <Check size={14} aria-hidden="true"/>确认
+   <Check size={12} aria-hidden="true"/>确认
   </button>
  </div>;
 }

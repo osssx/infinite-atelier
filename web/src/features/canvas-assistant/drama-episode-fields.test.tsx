@@ -97,9 +97,11 @@ describe("maximized episode planning layout",()=>{
   expect(field.classList.contains("rounded-xl")).toBe(true);
   expect(field.textContent).toContain("编辑中");
   expect(footer.classList.contains("justify-end")).toBe(true);
-  expect(footer.classList.contains("border-t")).toBe(true);
-  expect(cancel.classList.contains("min-w-[84px]")).toBe(true);
-  expect(confirm.classList.contains("min-w-[84px]")).toBe(true);
+  expect(footer.classList.contains("border-t")).toBe(false);
+  expect(footer.classList.contains("pt-1")).toBe(true);
+  expect(cancel.classList.contains("min-h-7")).toBe(true);
+  expect(cancel.classList.contains("min-w-[68px]")).toBe(true);
+  expect(confirm.classList.contains("min-w-[68px]")).toBe(true);
   expect(cancel.style.background).toBe(canvasThemes.dark.node.panel);
   expect(confirm.style.background).toBe(canvasThemes.dark.node.text);
   expect(confirm.getAttribute("aria-label")).toBe("确认剧情梗概");
@@ -131,6 +133,9 @@ describe("maximized episode planning layout",()=>{
   expect(footer?.getAttribute("aria-label")).toBe("场次 1 详情操作");
   expect(footer.querySelector('[data-episode-action="cancel"]')?.textContent).toContain("取消");
   expect(footer.querySelector('[data-episode-action="confirm"]')?.textContent).toContain("确认");
+  expect(footer.classList.contains("border-t")).toBe(false);
+  expect(footer.querySelector<HTMLButtonElement>('[data-episode-action="cancel"]')?.classList.contains("min-h-7")).toBe(true);
+  expect(footer.querySelector<HTMLButtonElement>('[data-episode-action="confirm"]')?.classList.contains("min-w-[68px]")).toBe(true);
   await click(footer.querySelector('[data-episode-action="cancel"]'));
   expect(area.dataset.episodeSequenceMode).toBe("reading");
   expect(changes).not.toHaveBeenCalled();

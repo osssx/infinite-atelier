@@ -320,15 +320,19 @@ def main():
                     const panel=dark?'rgb(31, 29, 26)':'rgb(251, 250, 247)';
                     const card=dark?'rgb(58, 54, 49)':'rgb(231, 229, 223)';
                     const c=cancel.getBoundingClientRect(),p=confirm.getBoundingClientRect();
+                    const area=section.getBoundingClientRect(),inputRect=input.getBoundingClientRect();
                     return section.dataset.episodeFieldMode==='editing'&&
                      getComputedStyle(section).backgroundColor===fill&&
                      getComputedStyle(input).backgroundColor===panel&&
                      getComputedStyle(section).borderTopWidth==='1px'&&
                      section.textContent?.includes('编辑中')&&
-                     getComputedStyle(footer).borderTopWidth==='1px'&&
+                     getComputedStyle(footer).borderTopWidth==='0px'&&
                      getComputedStyle(cancel).backgroundColor===panel&&
                      getComputedStyle(confirm).backgroundColor!==(card)&&
-                     c.width>=83&&p.width>=83&&Math.abs(c.top-p.top)<=2&&c.right<=p.left&&
+                     c.width>=67&&c.width<=90&&p.width>=67&&p.width<=90&&
+                     c.height>=27&&c.height<=32&&p.height>=27&&p.height<=32&&
+                     c.top>=inputRect.bottom+4&&Math.abs(c.top-p.top)<=2&&c.right<p.left&&
+                     c.left>=area.left&&p.right<=area.right&&p.bottom<=area.bottom&&
                      footer.getAttribute('aria-label')==='剧情梗概操作';
                 })()"""),"editing surface and two aligned themed actions",25)))
                 check("episode_staged_field_cancel",bool(wait_for(lambda:page.js("""(() => {

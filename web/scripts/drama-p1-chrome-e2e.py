@@ -30,14 +30,14 @@ def jseval(page,source):
     return page.js(source)
 def node_button(page,node_id,label):
     return bool(jseval(page,"""(() => {
-      const root=document.querySelector('[data-node-id=%s]');
+      const node=document.querySelector('[data-node-id=%s]');const portal=document.querySelector('[data-creative-workspace-node-id]');const root=portal?.getAttribute('data-creative-workspace-node-id')===node?.dataset.nodeId?portal:node;
       const target=[...(root?.querySelectorAll('button')||[])].find(b=>(b.innerText||b.textContent||'').trim()===%s);
       if(!target||target.disabled)return false;
       target.click();return true;
     })()"""%(json.dumps(node_id),json.dumps(label,ensure_ascii=False))))
 def choose_episode(page):
     return bool(jseval(page,"""(() => {
-      const root=document.querySelector('[data-node-id="board"]');
+      const root=(document.querySelector('[data-creative-workspace-node-id="board"]')||document.querySelector('[data-node-id="board"]'));
       const select=root?.querySelector('select[aria-label="生成范围：剧集"]');
       if(!select)return false;
       const setter=Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set;
@@ -54,7 +54,7 @@ def find_node(g,node_id):
     return next(n for n in g["document"]["nodes"] if n["id"]==node_id)
 def click_run_candidate(page):
     return bool(jseval(page,"""(() => {
-      const board=document.querySelector('[data-node-id="board"]');
+      const board=(document.querySelector('[data-creative-workspace-node-id="board"]')||document.querySelector('[data-node-id="board"]'));
       const detail=[...(board?.querySelectorAll('details')||[])].find(d=>
          (d.querySelector(':scope > summary')?.textContent||'').includes('ready'));
       if(!detail)return false;
@@ -114,9 +114,21 @@ def main():
         # P3.3: browse the off-graph asset/episode summaries while full editor
         # content is still unloaded; this must not expand whole drama bodies.
         for stage,count,label in (("assets",2,"资产"),("episodes",2,"剧集")):
+            if stage=="episodes":
+                check("p34b2_episodes_summary_visible",bool(wait_for(lambda:page.js("""
+                    !!document.querySelector('[data-node-id="episodes"] [aria-label="剧集规划摘要"]')
+                """),"lightweight episodes summary",25)))
+                check("p34b2_episodes_count_without_editor",bool(wait_for(lambda:page.js("""
+                    (document.querySelector('[data-node-id="episodes"] [aria-label="剧集规划摘要"]')?.textContent||'').includes('已规划 2 集')
+                """),"episodes summary count",25)))
+                check("p34b2_episodes_editor_not_mounted",bool(page.js("""
+                    (()=>{const el=document.querySelector('[data-node-id="episodes"]');
+                    return !el?.querySelector('textarea') && !el?.textContent?.includes('剧情事件')})()
+                """)))
+                continue
             def open_scope():
                 return bool(page.js("""(() => {
-                  const root=document.querySelector('[data-node-id=%s]');
+                  const node=document.querySelector('[data-node-id=%s]');const portal=document.querySelector('[data-creative-workspace-node-id]');const root=portal?.getAttribute('data-creative-workspace-node-id')===node?.dataset.nodeId?portal:node;
                   const button=root?.querySelector('[aria-label=%s] button[aria-expanded]');
                   if(!button)return false;
                   if(button.getAttribute('aria-expanded')==='false')button.click();
@@ -125,17 +137,25 @@ def main():
             check("p33_lazy_"+stage+"_browse_click",bool(wait_for(open_scope,"P3.3 open scope "+stage,25)))
             def scope_loaded():
                 return bool(page.js("""(() => {
-                   const root=document.querySelector('[data-node-id=%s]');
+                   const node=document.querySelector('[data-node-id=%s]');const portal=document.querySelector('[data-creative-workspace-node-id]');const root=portal?.getAttribute('data-creative-workspace-node-id')===node?.dataset.nodeId?portal:node;
                    const browser=root?.querySelector('[aria-label=%s]');
                    return !!browser&&(browser.textContent||'').includes(%s);
                 })()"""%(json.dumps(stage),json.dumps(label+"独立存储分页浏览",ensure_ascii=False),
                         json.dumps(label+"共 "+str(count)+" 项",ensure_ascii=False))))
             check("p33_lazy_"+stage+"_shows_count_without_editor",bool(wait_for(scope_loaded,"P3.3 count "+stage,25)))
             check("p33_lazy_"+stage+"_editor_still_unloaded",bool(page.js("""(() => {
-                const root=document.querySelector('[data-node-id=%s]');
+                const node=document.querySelector('[data-node-id=%s]');const portal=document.querySelector('[data-creative-workspace-node-id]');const root=portal?.getAttribute('data-creative-workspace-node-id')===node?.dataset.nodeId?portal:node;
                 return [...(root?.querySelectorAll('button')||[])].some(
                   btn=>(btn.textContent||'').trim()==='打开创作内容');
             })()"""%json.dumps(stage))))
+
+        check("p34b2_storyboard_summary_without_full_editor",bool(wait_for(lambda:page.js("""
+            (()=>{const el=document.querySelector('[data-node-id="board"] [aria-label="分镜配置摘要"]');
+             return !!el&&(el.textContent||'').includes('2 镜头')&&
+               !el.querySelector('textarea')&&
+               !document.querySelector('[data-creative-workspace-node-id]');
+            })()
+        """),"lightweight storyboard summary",25)))
 
         # P3.3d: perform real controlled-input edits in the compact node
         # browser, not by calling the API directly. Afterwards the canvas
@@ -144,9 +164,22 @@ def main():
             ("assets","资产","描述","浏览器局部修改资产描述"),
             ("episodes","剧集","剧情概要","浏览器局部修改第一集概要")
         ):
+            if stage=="episodes":
+                check("p34b2_episode_full_editor_open",bool(wait_for(
+                    lambda:node_button(page,"episodes","打开完整编辑器 ↗"),
+                    "episode maximize action",35)))
+                wait_for(lambda:page.js("""
+                   !!document.querySelector('[data-creative-workspace-node-id="episodes"] [aria-label="剧集独立存储分页浏览"]')
+                """),"episode scoped editor mounted",35)
+                wait_for(lambda:page.js("""(() => {
+                    const button=document.querySelector('[data-creative-workspace-node-id="episodes"] [aria-label="剧集独立存储分页浏览"] button[aria-expanded]');
+                    if(!button)return false;
+                    if(button.getAttribute('aria-expanded')==='false')button.click();
+                    return true;
+                })()"""),"open scoped episode browser within workspace",25)
             def open_draft():
                 return bool(page.js("""(() => {
-                    const root=document.querySelector('[data-node-id=%s]');
+                    const node=document.querySelector('[data-node-id=%s]');const portal=document.querySelector('[data-creative-workspace-node-id]');const root=portal?.getAttribute('data-creative-workspace-node-id')===node?.dataset.nodeId?portal:node;
                     const browser=root?.querySelector('[aria-label=%s]');
                     const checkbox=browser?.querySelector('input[type="checkbox"]');
                     if(!checkbox)return false;
@@ -156,7 +189,7 @@ def main():
             check("p33d_"+stage+"_draft_toggle",bool(wait_for(open_draft,"P3.3d draft "+stage,25)))
             def editor_open():
                 return bool(page.js("""(() => {
-                    const root=document.querySelector('[data-node-id=%s]');
+                    const node=document.querySelector('[data-node-id=%s]');const portal=document.querySelector('[data-creative-workspace-node-id]');const root=portal?.getAttribute('data-creative-workspace-node-id')===node?.dataset.nodeId?portal:node;
                     const browser=root?.querySelector('[aria-label=%s]');
                     const entry=browser?.querySelector('details');
                     if(!entry)return false;
@@ -170,7 +203,7 @@ def main():
                         json.dumps(field,ensure_ascii=False))))
             check("p33d_"+stage+"_editor_ready",bool(wait_for(editor_open,"P3.3d editor "+stage,25)))
             check("p33d_"+stage+"_react_input",bool(page.js("""(() => {
-                const root=document.querySelector('[data-node-id=%s]');
+                const node=document.querySelector('[data-node-id=%s]');const portal=document.querySelector('[data-creative-workspace-node-id]');const root=portal?.getAttribute('data-creative-workspace-node-id')===node?.dataset.nodeId?portal:node;
                 const editor=root?.querySelector('details[aria-label="编辑当前资产或剧集条目"]');
                 const label=[...(editor?.querySelectorAll('label')||[])].find(l=>
                     (l.textContent||'').includes(%s));
@@ -184,7 +217,7 @@ def main():
                      json.dumps(updated,ensure_ascii=False)))))
             def click_draft_save():
                 return bool(page.js("""(() => {
-                    const root=document.querySelector('[data-node-id=%s]');
+                    const node=document.querySelector('[data-node-id=%s]');const portal=document.querySelector('[data-creative-workspace-node-id]');const root=portal?.getAttribute('data-creative-workspace-node-id')===node?.dataset.nodeId?portal:node;
                     const editor=root?.querySelector('details[aria-label="编辑当前资产或剧集条目"]');
                     const button=[...(editor?.querySelectorAll('button')||[])].find(b=>
                         (b.textContent||'').includes('保存当前条目草案'));
@@ -294,23 +327,36 @@ def main():
             const browser=document.querySelector('[data-node-id="assets"] [aria-label="资产独立存储分页浏览"]');
             return (browser?.textContent||'').includes('已暂存 0 项');
         })()"""),"P3.3e clear staged edits",25)))
-        # The compact graph uses lazy creative payloads. Open the genuine node panel before editing.
-        for name in ("assets","episodes","board"):
-            if node_button(page,name,"打开创作内容"):
-                wait_for(lambda n=name:bool(page.js(
-                  "(document.querySelector('[data-node-id=%s]')?.innerText||'').includes('确认阶段')"%json.dumps(n))),
-                  "load "+name+" content",25)
+        # Full creative editors now live outside the canvas; verify the new
+        # page-level workspace instead of treating an inline node as an editor.
+        if node_button(page,"assets","打开创作内容"):
+            wait_for(lambda:page.js(
+                "(document.querySelector('[data-node-id=\"assets\"]')?.textContent||'').includes('确认阶段')"),
+                "load assets content",25)
         check("story_and_episode_nodes_visible",bool(page.js(
               "!!document.querySelector('[data-node-id=\"episodes\"]')&&!!document.querySelector('[data-node-id=\"story\"]')")))
-        wait_for(lambda:choose_episode(page),"episode selector",25)
-        check("episode_two_selected",True)
-        check("p2_event_identity_edit_action_visible",bool(page.js("""(() => {
-            const root=document.querySelector('[data-node-id="episodes"]');
+        check("p34b2_episode_full_editor_reopen",bool(wait_for(
+            lambda:node_button(page,"episodes","打开完整编辑器 ↗"),"reopen episodes workspace",35)))
+        wait_for(lambda:page.js(
+            "!!document.querySelector('[data-creative-workspace-node-id=\"episodes\"]')"),
+            "episodes workspace mounted",30)
+        check("p2_event_identity_edit_action_visible",bool(wait_for(lambda:page.js("""(() => {
+            const root=document.querySelector('[data-creative-workspace-node-id="episodes"]');
             return [...(root?.querySelectorAll('button')||[])].some(btn=>
               (btn.textContent||'').includes('补齐旧事件的稳定 ID'));
-        })()""")))
+        })()"""),"episode full editor events",30)))
+        page.js("""document.querySelector('.ant-modal-close')?.click();true""")
+        wait_for(lambda:page.js("!document.querySelector('[data-creative-workspace-node-id=\"episodes\"]')"),
+                 "close episodes workspace",35)
+        check("p34b2_storyboard_full_editor_open",bool(wait_for(
+            lambda:node_button(page,"board","打开完整编辑器 ↗"),"open storyboard workspace",35)))
+        wait_for(lambda:page.js(
+            "!!document.querySelector('[data-creative-workspace-node-id=\"board\"]')"),
+            "storyboard workspace mounted",30)
+        wait_for(lambda:choose_episode(page),"episode selector",25)
+        check("episode_two_selected",True)
         check("p2_sequence_migration_entry_visible",bool(page.js("""(() => {
-            const root=document.querySelector('[data-node-id="board"]');
+            const root=(document.querySelector('[data-creative-workspace-node-id="board"]')||document.querySelector('[data-node-id="board"]'));
             return [...(root?.querySelectorAll('summary')||[])].some(sum=>
               (sum.textContent||'').includes('场次拆分／合并后的镜头引用迁移'));
         })()""")))
@@ -323,7 +369,7 @@ def main():
         check("browser_model_mock_produced_ready_candidate",ready["episodeId"]=="ep-two")
         def candidate_diff_visible():
             return bool(page.js("""(() => {
-              const root=document.querySelector('[data-node-id="board"]');
+              const root=(document.querySelector('[data-creative-workspace-node-id="board"]')||document.querySelector('[data-node-id="board"]'));
               const detail=[...(root?.querySelectorAll('details')||[])].find(d=>
                 (d.querySelector(':scope > summary')?.textContent||'').includes('ready'));
               if(!detail)return false;
@@ -359,7 +405,7 @@ def main():
         check("confirmation_published_second_episode",True)
         check("first_config_unchanged_after_confirmation",find_node(confirmed["data"],"first-config")==original)
         check("p3_video_production_tab_available",bool(page.js("""(() => {
-          const board=document.querySelector('[data-node-id="board"]');
+          const board=(document.querySelector('[data-creative-workspace-node-id="board"]')||document.querySelector('[data-node-id="board"]'));
           const toggle=[...(board?.querySelectorAll('button')||[])].find(
             b=>(b.textContent||'').trim()==='视频配置');
           if(!toggle)return false;
@@ -367,18 +413,18 @@ def main():
           return true;
         })()""")))
         check("p3_input_preflight_panel_visible",bool(wait_for(lambda:page.js("""(() => {
-          const board=document.querySelector('[data-node-id="board"]');
+          const board=(document.querySelector('[data-creative-workspace-node-id="board"]')||document.querySelector('[data-node-id="board"]'));
           const panel=board?.querySelector('[aria-label="逐镜媒体输入预检"]');
           return !!panel&&(panel.textContent||'').includes('实际提交 Prompt') &&
                  (panel.textContent||'').includes('确认分镜与绑定素材');
         })()"""),"P3 media preflight UI",25)))
         check("p3_configured_shot_group_entry_visible",bool(page.js("""(() => {
-          const board=document.querySelector('[data-node-id="board"]');
+          const board=(document.querySelector('[data-creative-workspace-node-id="board"]')||document.querySelector('[data-node-id="board"]'));
           return [...(board?.querySelectorAll('summary')||[])].some(
             s=>(s.textContent||'').includes('从已配置镜头组建批量生成'));
         })()""")))
         check("p3_unsupported_video_modes_disabled",bool(wait_for(lambda:page.js("""(() => {
-          const board=document.querySelector('[data-node-id="board"]');
+          const board=(document.querySelector('[data-creative-workspace-node-id="board"]')||document.querySelector('[data-node-id="board"]'));
           const select=[...(board?.querySelectorAll('select')||[])].find(
             s=>(s.parentElement?.textContent||'').includes('视频输入模式'));
           return !!select?.querySelector('option[value="first_last_frame"]')?.disabled;
@@ -424,16 +470,16 @@ def main():
 
         # P3: two real Video Configs (one per episode) -> choose range -> Shot Group.
         # Run only after archive + legacy Config regression checks: grouping may add groupId metadata.
-        wait_for(lambda:node_button(page,"board","打开创作内容"),"reopen board after refresh",35)
+        wait_for(lambda:node_button(page,"board","打开完整编辑器 ↗"),"reopen board after refresh",35)
         wait_for(lambda:bool(page.js("""(() => {
-            const root=document.querySelector('[data-node-id="board"]');
+            const root=(document.querySelector('[data-creative-workspace-node-id="board"]')||document.querySelector('[data-node-id="board"]'));
             return [...(root?.querySelectorAll('button')||[])].some(b=>(b.textContent||'').trim()==='视频配置');
         })()""")),"P3 board video tab",25)
         check("p3_video_tab_reopened_after_reload",bool(wait_for(lambda:node_button(page,"board","视频配置"),
             "P3 video configuration tab after reload",25)))
         def open_p3_batch_selector():
             return bool(page.js("""(() => {
-              const root=document.querySelector('[data-node-id="board"]');
+              const root=(document.querySelector('[data-creative-workspace-node-id="board"]')||document.querySelector('[data-node-id="board"]'));
               const detail=root?.querySelector('details[aria-label="P3 选镜头组建批量生成"]');
               if(!detail)return false;
               if(!detail.open){detail.open=true;detail.dispatchEvent(new Event('toggle',{bubbles:true}));}
@@ -441,7 +487,7 @@ def main():
             })()"""))
         check("p3_two_episode_batch_selector_visible",bool(wait_for(open_p3_batch_selector,"P3 batch config options",25)))
         check("p3_explicit_two_config_selection",bool(page.js("""(() => {
-          const root=document.querySelector('[data-node-id="board"]');
+          const root=(document.querySelector('[data-creative-workspace-node-id="board"]')||document.querySelector('[data-node-id="board"]'));
           const detail=root?.querySelector('details[aria-label="P3 选镜头组建批量生成"]');
           const checks=[...(detail?.querySelectorAll('input[type="checkbox"]')||[])];
           if(checks.length!==2)return false;
@@ -450,7 +496,7 @@ def main():
         })()""")))
         def create_p3_batch():
             return bool(page.js("""(() => {
-              const root=document.querySelector('[data-node-id="board"]');
+              const root=(document.querySelector('[data-creative-workspace-node-id="board"]')||document.querySelector('[data-node-id="board"]'));
               const detail=root?.querySelector('details[aria-label="P3 选镜头组建批量生成"]');
               const button=[...(detail?.querySelectorAll('button')||[])].find(btn=>
                 (btn.textContent||'').includes('组建所选镜头并进入批量预检'));

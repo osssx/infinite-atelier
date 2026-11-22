@@ -66,7 +66,7 @@ function describeDramaValidation(errors: {code:string;shotId?:string;id?:string}
         : []).join("\n");
 }
 
-export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, videoConfigs, onRefreshVideoConfig, onOpenVideoConfig, onCreateReferenceConfig, onPickCanvasImage, onCreateDramaShotGroup, projectId, upstreamText = "", upstreamContext = "", upstreamArtifacts = [], supplementalEpisodes = [], assetUsage = {}, confirmedAssetPlan, savedAssetReferences, mergedReferences, legacyAssetPlanning = false, imageNodes = [], productionContext = "", productionStyle, onOpenVersions, onConfirmVersion, onBeforeDramaRun, onAdoptDramaRun, onMigrateDramaSequences, onAdoptDramaAssetCandidate, versionBusy = false }: {
+export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, videoConfigs, onRefreshVideoConfig, onOpenVideoConfig, onCreateReferenceConfig, onPickCanvasImage, onCreateDramaShotGroup, projectId, upstreamText = "", upstreamContext = "", upstreamArtifacts = [], supplementalEpisodes = [], assetUsage = {}, confirmedAssetPlan, savedAssetReferences, mergedReferences, legacyAssetPlanning = false, imageNodes = [], productionContext = "", productionStyle, onOpenVersions, onConfirmVersion, onBeforeDramaRun, onAdoptDramaRun, onMigrateDramaSequences, onAdoptDramaAssetCandidate, versionBusy = false, workspaceMode = false }: {
     node: CanvasNodeData;
     onChange: (patch: Partial<CanvasNodeData["metadata"]>) => void;
     onCreateVideoConfigs?: (inputs: ReturnType<typeof buildDramaVideoInput>[], batch: boolean) => void;
@@ -94,7 +94,8 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
     onAdoptDramaRun?: (path:string,shotIds?:string[]) => Promise<void>;
     onMigrateDramaSequences?: (path:string,command:Record<string,unknown>) => Promise<void>;
     onAdoptDramaAssetCandidate?: (path:string,command:Record<string,unknown>) => Promise<void>;
-    versionBusy?: boolean;
+    versionBusy?: boolean;    /** Full editor only: host outside CanvasNode, no nested Modal. */
+    workspaceMode?: boolean;
     imageNodes?: CanvasNodeData[];
 }) {
     const stage = Object.entries(DRAMA_PIPELINE_NODE_TYPES).find(([, type]) => type === node.type)?.[0] as DramaPipelineStage | undefined;
@@ -104,7 +105,7 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
     const [validation, setValidation] = useState<string>("");
     const [generating, setGenerating] = useState(false);
     const [storyboardView, setStoryboardView] = useState<"shots" | "video">("shots");
-    const [assetEditorExpanded, setAssetEditorExpanded] = useState(false);
+    const [assetEditorExpanded, setAssetEditorExpanded] = useState(workspaceMode);
     const [targetEpisodes, setTargetEpisodes] = useState(Number(node.metadata?.targetEpisodes ?? 10));
     const upstreamKey=JSON.stringify(upstreamArtifacts);
     const upstream=useMemo(()=>upstreamArtifacts.map(readDraft),[upstreamKey]);
@@ -235,7 +236,7 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
                 <DramaNodeStatus theme={theme} confirmed={assetConfirmed} />
                 {versioned && onOpenVersions && <Button size="small" icon={<History size={14} />}
                     style={control} onClick={onOpenVersions}>历史版本</Button>}
-                {!assetEditorExpanded && <button type="button" title="最大化编辑器" aria-label={`最大化${DRAMA_PIPELINE_STAGE_LABELS[stage]}`}
+                {!workspaceMode && !assetEditorExpanded && <button type="button" title="最大化编辑器" aria-label={`最大化${DRAMA_PIPELINE_STAGE_LABELS[stage]}`}
                     className="inline-grid size-7 place-items-center rounded-md border" style={control}
                     onClick={() => setAssetEditorExpanded(true)}><Maximize2 className="size-3.5" /></button>}
             </div> :
@@ -717,7 +718,7 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
         {confirmed && !inlineEditor ? <details className="mt-3"><summary>已确认内容</summary><pre className="max-h-48 overflow-auto whitespace-pre-wrap">{confirmed}</pre></details> : null}
         </div>
     </section>;
-    if (!inlineEditor || !assetEditorExpanded) return editor;
+    if (workspaceMode || !inlineEditor || !assetEditorExpanded) return editor;
     return <>
         <div className="flex h-full items-center justify-center text-xs" style={{color:theme.node.text}}>正在大面板中编辑</div>
         <Modal open centered title={<span style={{color:theme.node.text}}>{DRAMA_PIPELINE_STAGE_LABELS[stage]}</span>} width="min(1280px, calc(100vw - 32px))"

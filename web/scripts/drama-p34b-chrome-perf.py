@@ -196,14 +196,23 @@ def run(output=None,gpu=False):
         # P3.3 lazy nodes: browsing one page must issue scoped backend requests.
         for stage,count,label in (("assets",50,"资产"),("episodes",4,"剧集")):
             began=time.monotonic()
-            wait_for(lambda:scope_click(page,stage,label),"open "+label+" scope",40)
-            wait_for(lambda:bool(js(page,"""(() => {
-              const el=document.querySelector('[data-node-id=%s] [aria-label=%s]');
-              return el&&(el.textContent||'').includes(%s);
-            })()"""%(json.dumps(stage),
-                json.dumps(label+"独立存储分页浏览",ensure_ascii=False),
-                json.dumps(label+"共 "+str(count)+" 项",ensure_ascii=False)))),
-                label+" backend paged scope",35)
+            if stage=="episodes":
+                # P3.4b2: the episode card is now a scoped summary, not a
+                # mounted editor or a manually opened scope browser.
+                wait_for(lambda:bool(js(page,"""(() => {
+                  const card=document.querySelector('[data-node-id=episodes] [aria-label="剧集规划摘要"]');
+                  return card&&(card.textContent||'').includes('已规划 4 集') &&
+                      !card.querySelector('textarea');
+                })()""")),"lightweight episodes summary",40)
+            else:
+                wait_for(lambda:scope_click(page,stage,label),"open "+label+" scope",40)
+                wait_for(lambda:bool(js(page,"""(() => {
+                  const el=document.querySelector('[data-node-id=%s] [aria-label=%s]');
+                  return el&&(el.textContent||'').includes(%s);
+                })()"""%(json.dumps(stage),
+                    json.dumps(label+"独立存储分页浏览",ensure_ascii=False),
+                    json.dumps(label+"共 "+str(count)+" 项",ensure_ascii=False)))),
+                    label+" backend paged scope",35)
             elapsed=(time.monotonic()-began)*1000
             scoped=[req for req in page.network_requests if
                "/drama-pipeline/revision-scope" in req.get("path","") and "nodeId="+stage in req.get("path","")]
@@ -230,14 +239,14 @@ def run(output=None,gpu=False):
         })()""")),"asset page 11–20",30)
         assert any("offset=10" in req.get("path","") for req in page.network_requests),"asset page did not request paged offset"
         report["memory"]["afterScopeHeapBytes"]=heap(page)
-        # Exercise the scoped storyboard browser WITHOUT clicking "打开创作内容".
-        # Clicking that control hydrates the entire editor and invalidates the
-        # P3.3 lazy-data measurement. Full editor is a distinct scenario.
+        # P3.4b2: selection lives in a fixed-height summary card. Full
+        # storyboard editing, runs and video Config must remain unmounted.
         wait_for(lambda:bool(js(page,"""(() => {
-          const root=document.querySelector('[data-node-id=board]');
-          return [...(root?.querySelectorAll('label')||[])].some(
-            l=>(l.textContent||'').includes('浏览已确认剧集')&&l.querySelector('select'));
-        })()""")),"P3.3 scoped board review",40)
+          const root=document.querySelector('[data-node-id=board] [aria-label="分镜配置摘要"]');
+          return root && !!root.querySelector('select[aria-label="摘要选择剧集"]') &&
+              !root.querySelector('textarea');
+        })()""")),"P3.4b2 scoped storyboard summary",40)
+        assert not js(page,"""document.querySelector('[data-creative-workspace-node-id]')!==null"""),"full editor unexpectedly mounted"
         board_state=js(page,"""(() => {
           const b=document.querySelector('[data-node-id=board]');
           const selects=[...(b?.querySelectorAll('select')||[])];
@@ -248,9 +257,7 @@ def run(output=None,gpu=False):
         # Repeat real episode navigation while the board remains visible; heap measured after GC.
         for i in range(15):
             js(page,"""(() => {
-              const label=[...document.querySelectorAll('[data-node-id=board] label')].find(
-                e=>(e.textContent||'').includes('浏览已确认剧集'));
-              const select=label?.querySelector('select');
+              const select=document.querySelector('[data-node-id=board] select[aria-label="摘要选择剧集"]');
               if(select&&select.options.length>1){
                 const set=Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set;
                 set.call(select,select.options[(%d+1)%%select.options.length].value);
@@ -261,9 +268,7 @@ def run(output=None,gpu=False):
         time.sleep(.65)
         report["memory"]["afterRepeatedScopesHeapBytes"]=heap(page)
         selected=js(page,"""(() => {
-          const label=[...document.querySelectorAll('[data-node-id=board] label')].find(
-           e=>(e.textContent||'').includes('浏览已确认剧集'));
-          const select=label?.querySelector('select');
+          const select=document.querySelector('[data-node-id=board] select[aria-label="摘要选择剧集"]');
           return {value:select?.value??null,options:select?.options.length??0};
         })()""")
         assert selected["options"]==4 and selected["value"] in ("ep-0","ep-1","ep-2","ep-3"),selected

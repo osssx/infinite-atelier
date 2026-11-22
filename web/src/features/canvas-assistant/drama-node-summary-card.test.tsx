@@ -2,7 +2,13 @@
 import {act} from "react";
 import {createRoot,type Root} from "react-dom/client";
 import {afterEach,beforeEach,describe,expect,it,vi} from "vitest";
+// Isolate theme changes from authenticated UI-settings persistence in this DOM-only test.
+vi.mock("@/stores/use-theme-store",async()=>({
+ useThemeStore:(await import("zustand")).create<{theme:"light"|"dark"}>(()=>({theme:"dark"}))
+}));
 import type {CanvasNodeData} from "@/types/canvas";
+import {canvasThemes} from "@/lib/canvas-theme";
+import {useThemeStore} from "@/stores/use-theme-store";
 const evidence=vi.hoisted(()=>({requests:[] as string[],delayFirst:false}));
 vi.mock("@/features/backend-sync/canvas-api",()=>({
  canvasApi:vi.fn(async(path:string)=>{
@@ -53,6 +59,45 @@ describe("P3.4b2 lightweight creative cards",()=>{
   expect(evidence.requests.some(x=>x.includes("limit=1"))).toBe(true);
   expect(evidence.requests.every(x=>x.includes("revision-scope")&&
    !x.includes("/payload")&&!x.includes("/runs"))).toBe(true);
+ });
+ it("matches canvas light/dark tokens without refetching and keeps one indexed entry",async()=>{
+  const {container}=await mount("episodes");
+  const card=container.querySelector<HTMLElement>('[aria-label="剧集规划摘要"]')!;
+  const initialRequests=evidence.requests.length;
+  await act(async()=>{useThemeStore.setState({theme:"light"});});
+  expect(card.dataset.dramaCardTheme).toBe("light");
+  expect(card.style.color).toBe(canvasThemes.light.node.text);
+  expect(card.querySelector<HTMLElement>(".rounded-xl")?.style.background).toBe(canvasThemes.light.node.panel);
+  await act(async()=>{useThemeStore.setState({theme:"dark"});});
+  expect(card.dataset.dramaCardTheme).toBe("dark");
+  expect(card.style.color).toBe(canvasThemes.dark.node.text);
+  expect(card.querySelector<HTMLElement>(".rounded-xl")?.style.background).toBe(canvasThemes.dark.node.panel);
+  expect(evidence.requests.length).toBe(initialRequests);
+ });
+ it("navigates episodes in the compact card and opens the currently selected episode",async()=>{
+  const onOpen=vi.fn(async(_id:string)=>{});
+  const {container}=await mount("episodes",onOpen);
+  expect(container.textContent).toContain("第一集");
+  const next=container.querySelector<HTMLButtonElement>('button[aria-label="下一条摘要"]')!;
+  const previous=container.querySelector<HTMLButtonElement>('button[aria-label="上一条摘要"]')!;
+  expect(previous.disabled).toBe(true);
+  await act(async()=>{next.click();await new Promise(resolve=>setTimeout(resolve,22))});
+  expect(container.textContent).toContain("第二集");
+  expect(container.textContent).toContain("第二集概要");
+  expect(next.disabled).toBe(true);
+  const button=container.querySelector<HTMLButtonElement>('button[aria-label="打开剧集规划完整编辑器"]')!;
+  await act(async()=>{button.click();await Promise.resolve()});
+  expect(onOpen).toHaveBeenCalledWith("episodes",{episodeId:"ep-two"});
+ });
+ it("switches from confirmed to draft using the edit hint without changing server data",async()=>{
+  const {container}=await mount("episodes");
+  const hint=[...container.querySelectorAll<HTMLButtonElement>("button")].find(x=>
+   x.textContent?.includes("快速编辑请切换至「草案」"))!;
+  expect(hint).toBeTruthy();
+  await act(async()=>{hint.click();await new Promise(resolve=>setTimeout(resolve,20));});
+  expect((container.querySelector('select[aria-label="剧集规划版本"]') as HTMLSelectElement).value).toBe("draft");
+  expect(container.querySelector('[aria-label="快速编辑当前剧集"]')).toBeTruthy();
+  expect(evidence.requests.every(path=>path.includes("revision-scope"))).toBe(true);
  });
  it("scopes selected storyboard episode and does not load 100 shots",async()=>{
   const {container}=await mount("storyboard");

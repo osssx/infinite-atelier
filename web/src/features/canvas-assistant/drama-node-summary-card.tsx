@@ -1,4 +1,7 @@
 import {lazy,memo,Suspense,useEffect,useRef,useState} from "react";
+import {BookOpenText,ChevronLeft,ChevronRight,Clapperboard,Pencil,RefreshCw} from "lucide-react";
+import {canvasThemes} from "@/lib/canvas-theme";
+import {useThemeStore} from "@/stores/use-theme-store";
 import type {CanvasNodeData} from "@/types/canvas";
 import {canvasApi} from "@/features/backend-sync/canvas-api";
 
@@ -18,14 +21,16 @@ function short(value:unknown,max=110){
  const str=typeof value==="string"?value.trim():"";
  return str.length>max?str.slice(0,max)+"…":str;
 }
-/** Tiny indexed page/entry reader. The CAS editor chunk is not imported or
- * mounted until the user explicitly starts a draft edit.
+/** Summary-only indexed card. The form and full creative workspace stay unmounted
+ * until the user explicitly chooses to edit.
  */
 export const DramaNodeSummaryCard=memo(function DramaNodeSummaryCard({node,projectId,onOpen}:{
  node:CanvasNodeData;projectId:string;
  onOpen:(nodeId:string,focus?:{episodeId?:string;sequenceId?:string;shotId?:string})=>Promise<void>;
 }){
  const kind:Kind=node.type==="drama:storyboard"?"storyboard":"episodes";
+ const appearance=useThemeStore(state=>state.theme);
+ const theme=canvasThemes[appearance];
  const [data,setData]=useState<Data|null>(null);
  const [view,setView]=useState<"confirmed"|"draft">("confirmed");
  const [episodeId,setEpisodeId]=useState("");
@@ -39,7 +44,6 @@ export const DramaNodeSummaryCard=memo(function DramaNodeSummaryCard({node,proje
  const initializedFor=useRef("");
  const scopeKey=`${projectId}:${node.id}`;
  useEffect(()=>{setEditing(null);setSelected(null);setData(null);initializedFor.current="";},[scopeKey]);
- // Reading or paging is local-only UI state, not a Canvas revision.
  useEffect(()=>{
   let live=true;const abort=new AbortController();
   setLoading(true);setError("");
@@ -53,8 +57,6 @@ export const DramaNodeSummaryCard=memo(function DramaNodeSummaryCard({node,proje
      setView(confirmed.total>0?"confirmed":"draft");
      setOffset(0);setEpisodeId("");
     }else{
-     // A save or a new confirmed version must not silently reset an explicit
-     // draft selection back to confirmed.
      setView(previous=>previous==="draft"&&draft.total===0&&confirmed.total>0?"confirmed":
       previous==="confirmed"&&confirmed.total===0&&draft.total>0?"draft":previous);
     }
@@ -87,86 +89,138 @@ export const DramaNodeSummaryCard=memo(function DramaNodeSummaryCard({node,proje
  const activeSelection=selected?.key===selectionKey?selected:null;
  const entry=activeSelection?.entry;
  const index=pageOffset;
- const status=view==="confirmed"?"已确认":"草案";
  const title=kind==="episodes"?"剧集规划":"分镜配置";
+ const isEpisodes=kind==="episodes";
  const prev=()=>setOffset(i=>Math.max(0,i-1));
  const next=()=>setOffset(i=>Math.min(count-1,i+1));
  const refreshDraft=()=>{setEditing(null);setView("draft");setRefresh(i=>i+1);};
- return <section aria-label={title+"摘要"}
-  className="flex h-full min-h-0 flex-col gap-2 overflow-hidden p-3 text-sm"
-  onPointerDown={event=>{if((event.target as Element).closest("button,select,input,textarea"))event.stopPropagation()}}
-  onMouseDown={event=>{if((event.target as Element).closest("button,select,input,textarea"))event.stopPropagation()}}
+ const primaryButton="inline-flex h-8 min-w-0 items-center justify-center gap-1.5 rounded-lg px-3 text-xs font-semibold transition-opacity hover:opacity-85 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 disabled:cursor-not-allowed disabled:opacity-40";
+ const secondaryButton="inline-flex h-8 min-w-0 items-center justify-center gap-1 rounded-lg border px-2.5 text-xs font-medium transition-colors hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 disabled:cursor-not-allowed disabled:opacity-40";
+ const buttonPrimaryStyle={background:theme.node.text,color:theme.node.panel,outlineColor:theme.node.activeStroke};
+ const buttonSecondaryStyle={background:theme.node.panel,color:theme.node.text,borderColor:theme.node.stroke,outlineColor:theme.node.activeStroke};
+ const iconButtonStyle={color:theme.node.muted,borderColor:theme.node.stroke,background:theme.toolbar.panel,outlineColor:theme.node.activeStroke};
+ const total=kind==="episodes"?(data?.draft.total??0):(current.total);
+ const confirmedTotal=data?.confirmed.total??0;
+ return <section aria-label={title+"摘要"} data-drama-summary-kind={kind} data-drama-card-theme={appearance}
+  className="flex h-full min-h-0 w-full flex-col gap-2 overflow-hidden px-3 pb-3 pt-2.5 text-sm"
+  style={{color:theme.node.text,colorScheme:appearance}}
+  onPointerDown={event=>{if((event.target as Element).closest("button,select,input,textarea,form"))event.stopPropagation()}}
+  onMouseDown={event=>{if((event.target as Element).closest("button,select,input,textarea,form"))event.stopPropagation()}}
   onDoubleClick={event=>event.stopPropagation()}>
-  <div className="flex shrink-0 items-center justify-between gap-2">
-   <strong>{title}</strong>
-   <div className="flex items-center gap-1.5">
-    {!editing&&<button type="button" aria-label={"刷新"+title+"摘要"} className="text-xs underline opacity-75"
-     onClick={()=>setRefresh(i=>i+1)}>刷新</button>}
-    <span className="rounded border px-1.5 py-0.5 text-xs opacity-75">{status}</span>
+  <header className="flex shrink-0 items-center justify-between gap-2">
+   <div className="flex min-w-0 items-center gap-2">
+    <span aria-hidden="true" className="grid size-7 shrink-0 place-items-center rounded-lg"
+     style={{background:theme.toolbar.activeBg,color:theme.node.text}}>
+     {isEpisodes?<BookOpenText size={15}/>:<Clapperboard size={15}/>}
+    </span>
+    <strong className="truncate text-[13px] font-semibold tracking-tight">{title}</strong>
    </div>
-  </div>
-  {editing?<Suspense fallback={<p role="status">正在加载轻量编辑器…</p>}>
-   <DramaNodeQuickEditor key={scopeKey+":"+String(editing.entry.id)}
-    kind={kind} projectId={projectId} nodeId={node.id}
-    entry={editing.entry} expectedDigest={editing.digest!}
+   <div className="flex shrink-0 items-center gap-1.5">
+    {!editing&&<button type="button" aria-label={"刷新"+title+"摘要"} title="刷新摘要"
+     className="grid size-7 place-items-center rounded-md border border-transparent transition-colors hover:opacity-75 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
+     style={{color:theme.node.muted,outlineColor:theme.node.activeStroke}}
+     onClick={()=>setRefresh(i=>i+1)}><RefreshCw size={13}/></button>}
+    <span className="rounded-md border px-1.5 py-0.5 text-[10px] font-semibold tracking-wide"
+     style={{background:editing||view==="draft"?theme.toolbar.activeBg:theme.node.panel,
+      borderColor:theme.node.stroke,color:theme.node.muted}}>
+     {editing?"编辑草案":view==="draft"?"草案":"已确认"}
+    </span>
+   </div>
+  </header>
+  {editing?<Suspense fallback={<p role="status" className="text-xs" style={{color:theme.node.muted}}>正在加载轻量编辑器…</p>}>
+   <DramaNodeQuickEditor key={selectionKey+":"+String(editing.entry.id)}
+    kind={kind} projectId={projectId} nodeId={node.id} entry={editing.entry} expectedDigest={editing.digest!}
+    position={index+1} total={count}
     onSaved={refreshDraft} onReload={refreshDraft} onCancel={()=>setEditing(null)}/>
-  </Suspense>:loading?<p role="status" className="opacity-70">正在读取摘要…</p>:error?
-   <div role="alert" className="min-h-0 text-xs">
-    <p className="line-clamp-2 break-all">{error}</p>
-    <button type="button" className="underline" onClick={()=>setRefresh(i=>i+1)}>重试</button>
+  </Suspense>:loading?
+   <p role="status" className="flex-1 text-xs" style={{color:theme.node.muted}}>正在读取摘要…</p>:
+   error?<div role="alert" className="flex min-h-0 flex-1 flex-col items-start gap-2 text-xs">
+    <p className="line-clamp-3 break-all" style={{color:theme.node.text}}>{error}</p>
+    <button type="button" className={secondaryButton} style={buttonSecondaryStyle}
+     onClick={()=>setRefresh(i=>i+1)}>重试</button>
    </div>:<>
-   <p className="truncate text-xs opacity-70">
-    {kind==="episodes"?
-     `已规划 ${data?.draft.total??0} 集 · 已确认 ${data?.confirmed.total??0} 集`:
-     `${current.groups.length} 集 · ${current.total} 镜头`}
-   </p>
-   {(data?.draft.total??0)>0&&(data?.confirmed.total??0)>0&&
-    <label className="flex items-center gap-2 text-xs">查看
-     <select aria-label={title+"版本"} className="min-w-0 rounded border bg-transparent px-1" value={view}
-      onChange={event=>setView(event.target.value as "draft"|"confirmed")}>
-      <option value="confirmed">已确认</option><option value="draft">草案</option>
-     </select>
-    </label>}
+   <div className="flex shrink-0 items-center justify-between gap-2">
+    <p className="truncate text-[11px] tabular-nums" style={{color:theme.node.muted}}>
+     {isEpisodes?`已规划 ${total} 集 · 已确认 ${confirmedTotal} 集`:`${current.groups.length} 集 · ${current.total} 镜头`}
+    </p>
+    {(data?.draft.total??0)>0&&confirmedTotal>0&&
+     <label className="flex shrink-0 items-center gap-1 text-[11px]" style={{color:theme.node.muted}}>
+      <span className="sr-only">查看</span>
+      <select aria-label={title+"版本"} className="max-w-[78px] rounded-md border px-1.5 py-1 text-[11px] font-medium outline-none focus-visible:ring-2"
+       style={{background:theme.node.panel,borderColor:theme.node.stroke,color:theme.node.text}}
+       value={view} onChange={event=>{setOffset(0);setEpisodeId("");setView(event.target.value as "draft"|"confirmed")}}>
+       <option value="confirmed">已确认</option><option value="draft">草案</option>
+      </select>
+     </label>}
+   </div>
    {kind==="storyboard"&&current.groups.length>1&&
-    <select aria-label="摘要选择剧集" className="min-w-0 rounded border bg-transparent p-1 text-xs"
+    <select aria-label="摘要选择剧集" className="w-full min-w-0 shrink-0 rounded-lg border px-2 py-1.5 text-xs outline-none focus-visible:ring-2"
+     style={{background:theme.node.panel,borderColor:theme.node.stroke,color:theme.node.text}}
      value={activeEpisode} onChange={event=>{setEpisodeId(event.target.value);setOffset(0)}}>
      {current.groups.map(g=><option key={g.episodeId} value={g.episodeId}>
       {g.episodeId}（{g.total} 镜头）</option>)}
     </select>}
-   {current.total===0?<p className="min-h-0 flex-1 text-xs opacity-70">尚无内容，可打开完整编辑器规划。</p>:
-    <div className="min-h-0 flex-1 overflow-hidden">
-     <div className="flex items-center justify-between gap-2">
-      <strong className="truncate text-xs">{kind==="episodes"?
-       short(entry?.title,64)||`第 ${index+1} 集`:
-       `镜头 ${String(entry?.order??index+1)} · ${short(entry?.shotSize,30)||"未设置景别"}`}</strong>
-      {kind==="storyboard"&&typeof entry?.durationSec==="number"&&
-       <span className="shrink-0 text-xs">{entry.durationSec}秒</span>}
+   <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border px-3 py-2.5"
+    style={{background:theme.node.panel,borderColor:theme.node.stroke}}>
+    {current.total===0?
+     <div className="flex min-h-0 flex-1 flex-col justify-center gap-1">
+      <strong className="text-xs">尚无{isEpisodes?"剧集内容":"镜头内容"}</strong>
+      <p className="text-[11px] leading-4" style={{color:theme.node.muted}}>打开完整编辑器开始规划</p>
+     </div>:<>
+     <div className="mb-1.5 flex shrink-0 items-center justify-between gap-2">
+      <span className="truncate text-[10px] font-semibold tracking-wide" style={{color:theme.node.muted}}>
+       {isEpisodes?`当前剧集 · 第 ${index+1} 集`:`当前镜头 · 第 ${index+1} 条`}
+      </span>
+      {count>1&&<nav aria-label="摘要条目切换" className="flex shrink-0 items-center gap-1">
+       <button type="button" aria-label="上一条摘要" title="上一条摘要"
+        className="grid size-6 place-items-center rounded-md border transition-opacity hover:opacity-70 disabled:opacity-30"
+        style={iconButtonStyle} disabled={index===0} onClick={prev}><ChevronLeft size={13}/></button>
+       <span className="min-w-[30px] text-center text-[10px] tabular-nums" style={{color:theme.node.muted}}>
+        {index+1} / {count}
+       </span>
+       <button type="button" aria-label="下一条摘要" title="下一条摘要"
+        className="grid size-6 place-items-center rounded-md border transition-opacity hover:opacity-70 disabled:opacity-30"
+        style={iconButtonStyle} disabled={index>=count-1} onClick={next}><ChevronRight size={13}/></button>
+      </nav>}
      </div>
-     <p className="mt-1 line-clamp-2 break-words text-xs opacity-75">
-      {kind==="episodes"?short(entry?.synopsis)||"无剧情概要":short(entry?.description)||"无画面描述"}
-     </p>
-    </div>}
-   {count>1&&<div className="flex items-center justify-between gap-2 text-xs">
-    <button type="button" aria-label="上一条摘要" disabled={index===0} onClick={prev}>上一条</button>
-    <span>{index+1} / {count}</span>
-    <button type="button" aria-label="下一条摘要" disabled={index>=count-1} onClick={next}>下一条</button>
-   </div>}
-   {view==="confirmed"&&(data?.draft.total??0)>0&&<p className="text-xs opacity-65">快速编辑请切换至「草案」。</p>}
-   <div className="mt-auto flex shrink-0 gap-2">
+     <strong className="block shrink-0 truncate text-[13px] font-semibold leading-5" title={isEpisodes?String(entry?.title??""):undefined}>
+      {isEpisodes?short(entry?.title,64)||`第 ${index+1} 集`:
+       `镜头 ${String(entry?.order??index+1)} · ${short(entry?.shotSize,30)||"未设置景别"}`}
+     </strong>
+     <div className="mt-2 min-h-0 flex-1 overflow-y-auto thin-scrollbar" data-canvas-no-zoom>
+      <p className="mb-1 text-[10px] font-medium" style={{color:theme.node.muted}}>
+       {isEpisodes?"剧情概要":"画面描述"}
+      </p>
+      <p className="break-words text-xs leading-[1.55]" style={{color:theme.node.text,opacity:.85}}>
+       {isEpisodes?short(entry?.synopsis,300)||"暂无概要":short(entry?.description,300)||"暂无画面描述"}
+      </p>
+      {!isEpisodes&&typeof entry?.durationSec==="number"&&
+       <p className="mt-1.5 text-[10px] tabular-nums" style={{color:theme.node.muted}}>时长 {entry.durationSec} 秒</p>}
+     </div>
+    </>}
+   </div>
+   {view==="confirmed"&&(data?.draft.total??0)>0&&
+    <button type="button" className="shrink-0 self-start text-[11px] underline underline-offset-2"
+     style={{color:theme.node.muted}} onClick={()=>setView("draft")}>
+     快速编辑请切换至「草案」。
+    </button>}
+   <footer className="flex shrink-0 gap-2">
     {view==="draft"&&activeSelection?.digest&&
-     <button type="button" aria-label={"快速编辑"+(kind==="episodes"?"当前剧集":"当前镜头")}
-      className="rounded border px-2 py-1.5 text-xs" onClick={()=>setEditing(activeSelection)}>快速编辑</button>}
+     <button type="button" aria-label={"快速编辑"+(isEpisodes?"当前剧集":"当前镜头")}
+      className={secondaryButton+" flex-1"} style={buttonSecondaryStyle}
+      onClick={()=>setEditing(activeSelection)}><Pencil size={12} aria-hidden="true"/>快速编辑</button>}
     <button type="button" aria-label={"打开"+title+"完整编辑器"} disabled={busy}
-     className="min-w-0 flex-1 rounded-md border px-2 py-1.5 text-xs font-medium hover:opacity-80 disabled:opacity-40"
+     className={primaryButton+" flex-[1.25]"} style={buttonPrimaryStyle}
      onClick={()=>{
       setBusy(true);setError("");
-      void onOpen(node.id,kind==="episodes"?{episodeId:String(entry?.id??"")}:
+      void onOpen(node.id,isEpisodes?{episodeId:String(entry?.id??"")}:
        {episodeId:activeEpisode,sequenceId:String(entry?.sequenceId??""),shotId:String(entry?.id??"")})
        .catch(e=>setError(e instanceof Error?e.message:"打开编辑器失败")).finally(()=>setBusy(false));
      }}>
-     {busy?"正在加载完整编辑器…":"打开完整编辑器 ↗"}
+     <span className="truncate">{busy?"正在加载完整编辑器…":"打开完整编辑器 ↗"}</span>
+
     </button>
-   </div>
+   </footer>
   </>}
  </section>;
 });

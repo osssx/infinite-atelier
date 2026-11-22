@@ -581,6 +581,25 @@ def main():
         before_board=find_node(before_quick,"board")
         old_episodes=json.loads(before_ep["metadata"]["dramaDraft"])["episodes"]
         old_shots=json.loads(before_board["metadata"]["dramaDraft"])["shots"]
+        # Episode summary and edit layout: actual Chrome DOM bounds and active canvas tokens.
+        check("episode_card_theme_matches_canvas",bool(wait_for(lambda:page.js("""(() => {
+          const card=document.querySelector('[data-node-id="episodes"] [aria-label="剧集规划摘要"]');
+          if(!card)return false;
+          const color=card.dataset.dramaCardTheme==='dark'?'rgb(245, 245, 244)':'rgb(41, 37, 36)';
+          const summary=card.querySelector('div.rounded-xl');
+          return ['light','dark'].includes(card.dataset.dramaCardTheme)&&
+            getComputedStyle(card).color===color&&!!summary&&
+            getComputedStyle(summary).backgroundColor!=='rgba(0, 0, 0, 0)'&&
+            !!card.querySelector('nav[aria-label="摘要条目切换"]')&&
+            !!card.querySelector('footer');
+        })()"""),"episode card theme and hierarchy",25)))
+        check("episode_card_actions_fit_node",bool(page.js("""(() => {
+          const card=document.querySelector('[data-node-id="episodes"] [aria-label="剧集规划摘要"]');
+          const footer=card?.querySelector('footer');
+          if(!footer)return false;
+          const a=card.getBoundingClientRect(),f=footer.getBoundingClientRect();
+          return a.width>=200&&f.top>=a.top&&f.bottom<=a.bottom+3&&f.height>=26;
+        })()""")))
         check("p34b4_episode_switch_to_draft",bool(wait_for(
             lambda:quick_card_select(page,"episodes","剧集规划版本","draft"),"episode card draft",25)))
         check("p34b4_quick_episode_open",bool(wait_for(
@@ -591,6 +610,22 @@ def main():
                 !!card.querySelector('[aria-label="快速编辑集标题"]')&&
                 !card.textContent.includes('剧情事件')&&!card.textContent.includes('确认阶段');
         })()"""),"episode quick fields",25)))
+        check("episode_quick_editor_theme_and_fixed_footer",bool(wait_for(lambda:page.js("""(() => {
+          const form=document.querySelector('[data-node-id="episodes"] [aria-label="剧集快速编辑"]');
+          const input=form?.querySelector('[aria-label="快速编辑集标题"]');
+          const area=form?.querySelector('[aria-label="快速编辑剧情概要"]');
+          const fields=form?.querySelector('.overflow-y-auto');
+          const footer=form?.querySelector('footer');
+          if(!form||!input||!area||!footer||!fields)return false;
+          const editorBounds=form.getBoundingClientRect(),footBounds=footer.getBoundingClientRect();
+          const expected=form.dataset.dramaEditorTheme==='dark'?'rgb(41, 37, 36)':'rgb(231, 229, 223)';
+          return getComputedStyle(input).backgroundColor===expected&&
+            footBounds.top>=editorBounds.top&&footBounds.bottom<=editorBounds.bottom+3&&
+            fields.clientHeight<fields.scrollHeight&&
+            !!form.querySelector('[data-canvas-no-zoom]')===false&&
+            form.hasAttribute('data-canvas-no-zoom')&&
+            footer.querySelectorAll('button').length===2;
+        })()"""),"episode quick edit layout and palette",25)))
         check("p34b4_episode_input",quick_card_input(page,"episodes","快速编辑剧情概要",
               "P3.4b4 画布快速编辑的第一集概要"))
         check("p34b4_episode_explicit_save",bool(wait_for(lambda:node_button(page,"episodes","保存草案"),

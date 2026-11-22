@@ -2,6 +2,9 @@
 import {act} from "react";
 import {createRoot,type Root} from "react-dom/client";
 import {afterEach,beforeEach,describe,expect,it,vi} from "vitest";
+vi.mock("@/stores/use-theme-store",async()=>({
+ useThemeStore:(await import("zustand")).create<{theme:"light"|"dark"}>(()=>({theme:"dark"}))
+}));
 const evidence=vi.hoisted(()=>({
  requests:[] as {path:string;method:string;body:Record<string,unknown>}[],
  options:[] as Record<string,unknown>[],
@@ -23,6 +26,8 @@ vi.mock("@/stores/canvas/use-canvas-store",()=>({
  })
 }));
 import {DramaNodeQuickEditor} from "./drama-node-quick-editor";
+import {canvasThemes} from "@/lib/canvas-theme";
+import {useThemeStore} from "@/stores/use-theme-store";
 const roots:Root[]=[];
 beforeEach(()=>{evidence.requests=[];evidence.options=[];evidence.rejectNext=false;
  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT",true)});
@@ -101,6 +106,23 @@ describe("P3.4b4 indexed quick editing",()=>{
   expect(evidence.requests[0].body.expectedDigest).toBe("a".repeat(64));
   await click(el,"重新读取最新草案（放弃本次输入）");
   expect(reload).toHaveBeenCalledTimes(1);
+ });
+ it("uses canvas theme colors, fixed action footer and local dirty state",async()=>{
+  const {el}=await mount("episodes",{id:"ep-one",title:"原题",synopsis:"原概要"});
+  const editor=el.querySelector<HTMLElement>('[aria-label="剧集快速编辑"]')!;
+  const input=el.querySelector<HTMLInputElement>('[aria-label="快速编辑集标题"]')!;
+  const footer=editor.querySelector("footer")!;
+  expect(footer.querySelectorAll("button")).toHaveLength(2);
+  await act(async()=>useThemeStore.setState({theme:"light"}));
+  expect(editor.dataset.dramaEditorTheme).toBe("light");
+  expect(input.style.background).toBe(canvasThemes.light.node.fill);
+  await act(async()=>useThemeStore.setState({theme:"dark"}));
+  expect(editor.dataset.dramaEditorTheme).toBe("dark");
+  expect(input.style.background).toBe(canvasThemes.dark.node.fill);
+  await change(el,"快速编辑剧情概要","修改后只保存在表单状态");
+  expect(el.textContent).toContain("有未保存修改");
+  expect(footer.querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled).toBe(false);
+  expect(evidence.requests).toHaveLength(0);
  });
  it("cancel and an unchanged form do not write",async()=>{
   const {el,cancel}=await mount("episodes",{id:"ep-one",title:"原题",synopsis:"原概要"});

@@ -1,4 +1,7 @@
 import {useRef,useState,type FormEvent} from "react";
+import {Check,RotateCcw,X} from "lucide-react";
+import {canvasThemes} from "@/lib/canvas-theme";
+import {useThemeStore} from "@/stores/use-theme-store";
 import {canvasApi,type CanvasBackendProject} from "@/features/backend-sync/canvas-api";
 import {commitAssistantCanvasGraphWithSaveBarrier} from "@/stores/canvas/use-canvas-store";
 
@@ -8,10 +11,12 @@ export type DramaQuickEditEntry=Record<string,unknown>;
 /** This small form is loaded ONLY after explicit quick-edit activation.
  * It never parses/rewrites a whole node draft or hydrates upstream payloads.
  */
-export function DramaNodeQuickEditor({kind,projectId,nodeId,entry,expectedDigest,onSaved,onCancel,onReload}:{
+export function DramaNodeQuickEditor({kind,projectId,nodeId,entry,expectedDigest,position=1,total=1,onSaved,onCancel,onReload}:{
  kind:DramaQuickEditKind;projectId:string;nodeId:string;entry:DramaQuickEditEntry;
- expectedDigest:string;onSaved:()=>void;onCancel:()=>void;onReload:()=>void;
+ expectedDigest:string;position?:number;total?:number;onSaved:()=>void;onCancel:()=>void;onReload:()=>void;
 }){
+ const appearance=useThemeStore(state=>state.theme);
+ const theme=canvasThemes[appearance];
  const entryId=String(entry.id??"");
  // Freeze the snapshot witness: a concurrent card refresh cannot upgrade the
  // digest behind a form that is already being edited.
@@ -66,43 +71,89 @@ export function DramaNodeQuickEditor({kind,projectId,nodeId,entry,expectedDigest
     "保存未完成，请检查后重试。")+"（"+message+"）");
   }finally{setSaving(false);}
  };
- const field="w-full min-w-0 rounded border bg-transparent px-1.5 py-1 text-xs";
- return <form aria-label={kind==="episodes"?"剧集快速编辑":"镜头快速编辑"} onSubmit={event=>void submit(event)}
-  className="flex min-h-0 flex-1 flex-col gap-1.5 overflow-hidden text-xs"
+ const isEpisodes=kind==="episodes";
+ const field="w-full min-w-0 rounded-lg border px-2.5 py-2 text-xs leading-relaxed outline-none transition-colors focus-visible:ring-2 disabled:opacity-60";
+ const fieldStyle={background:theme.node.fill,color:theme.node.text,borderColor:theme.node.stroke,
+  "--tw-ring-color":theme.node.activeStroke} as React.CSSProperties;
+ const actionStyle={borderColor:theme.node.stroke,color:theme.node.text,
+  background:theme.toolbar.panel,outlineColor:theme.node.activeStroke};
+ const saveStyle={background:theme.node.text,color:theme.node.panel,outlineColor:theme.node.activeStroke};
+ const onFieldEdit=()=>{operationId.current=null;setError("");};
+ return <form aria-label={isEpisodes?"剧集快速编辑":"镜头快速编辑"} data-canvas-no-zoom
+  data-drama-editor-theme={appearance} style={{colorScheme:appearance}}
+  onSubmit={event=>void submit(event)}
+  className="flex min-h-0 flex-1 flex-col gap-2 overflow-hidden text-xs"
   onPointerDown={event=>event.stopPropagation()} onMouseDown={event=>event.stopPropagation()}
-  onKeyDown={event=>event.stopPropagation()} onWheel={event=>event.stopPropagation()}>
-  <div className="min-h-0 flex-1 space-y-1.5 overflow-y-auto thin-scrollbar">
-   {kind==="episodes"?<>
-    <label className="block">本集标题
-     <input className={field} aria-label="快速编辑集标题" maxLength={12000} value={title} disabled={saving}
-      onChange={event=>setTitle(event.target.value)}/>
+  onKeyDown={event=>{
+   event.stopPropagation();
+   if((event.ctrlKey||event.metaKey)&&event.key==="Enter"&&!saving&&!invalid&&changed){
+    event.preventDefault();event.currentTarget.requestSubmit();
+   }
+  }}>
+  <div className="flex shrink-0 items-center justify-between gap-2">
+   <span className="truncate text-[11px] font-medium" style={{color:theme.node.muted}}>
+    {isEpisodes?"编辑当前剧集":"编辑当前镜头"} · {position} / {Math.max(total,1)}
+   </span>
+   <span aria-live="polite" className="shrink-0 text-[10px] font-medium"
+    style={{color:changed?theme.node.text:theme.node.muted}}>
+    {saving?"正在保存":changed?"有未保存修改":"尚未修改"}
+   </span>
+  </div>
+  <div className="min-h-0 flex-1 space-y-3 overflow-y-auto rounded-xl border p-2.5 thin-scrollbar"
+   style={{background:theme.node.panel,borderColor:theme.node.stroke}}>
+   {isEpisodes?<>
+    <label className="block space-y-1.5">
+     <span className="block text-[11px] font-medium" style={{color:theme.node.muted}}>本集标题</span>
+     <input className={field} style={fieldStyle} aria-label="快速编辑集标题" maxLength={12000}
+      value={title} disabled={saving} onChange={event=>{onFieldEdit();setTitle(event.target.value)}}/>
     </label>
-    <label className="block">剧情概要
-     <textarea className={field} aria-label="快速编辑剧情概要" rows={2} maxLength={12000} value={synopsis} disabled={saving}
-      onChange={event=>setSynopsis(event.target.value)}/>
+    <label className="block space-y-1.5">
+     <span className="flex items-center justify-between text-[11px] font-medium" style={{color:theme.node.muted}}>
+      剧情概要 <span className="tabular-nums opacity-70">{synopsis.length} 字</span>
+     </span>
+     <textarea className={field+" min-h-[92px] resize-y"} style={fieldStyle}
+      aria-label="快速编辑剧情概要" rows={4} maxLength={12000} value={synopsis}
+      disabled={saving} onChange={event=>{onFieldEdit();setSynopsis(event.target.value)}}/>
     </label>
    </>:<>
-    <label className="block">画面描述
-     <textarea className={field} aria-label="快速编辑画面描述" rows={2} maxLength={20000} value={description} disabled={saving}
-      onChange={event=>setDescription(event.target.value)}/>
+    <label className="block space-y-1.5">
+     <span className="flex items-center justify-between text-[11px] font-medium" style={{color:theme.node.muted}}>
+      画面描述 <span className="tabular-nums opacity-70">{description.length} 字</span>
+     </span>
+     <textarea className={field+" min-h-[92px] resize-y"} style={fieldStyle}
+      aria-label="快速编辑画面描述" rows={4} maxLength={20000} value={description}
+      disabled={saving} onChange={event=>{onFieldEdit();setDescription(event.target.value)}}/>
     </label>
-    <label className="block">时长（秒，可留空）
-     <input className={field} aria-label="快速编辑镜头时长" type="number" step="any" min="0.1" value={duration} disabled={saving}
-      onChange={event=>setDuration(event.target.value)}/>
+    <label className="block space-y-1.5">
+     <span className="block text-[11px] font-medium" style={{color:theme.node.muted}}>镜头时长（秒，可留空）</span>
+     <input className={field} style={fieldStyle} aria-label="快速编辑镜头时长" type="number"
+      step="any" min="0.1" value={duration} disabled={saving}
+      onChange={event=>{onFieldEdit();setDuration(event.target.value)}}/>
     </label>
    </>}
-   {invalid&&<p role="alert">请输入有效的{kind==="episodes"?"剧集标题":"镜头时长（大于 0 秒）"}。</p>}
-   {error&&<div role="alert" className="break-all">
-    <p>{error}</p>
-    <button type="button" className="underline" disabled={saving}
-      onClick={onReload}>重新读取最新草案（放弃本次输入）</button>
+   {invalid&&<p role="alert" className="rounded-lg px-2 py-1.5 text-[11px]"
+    style={{background:theme.toolbar.activeBg,color:theme.node.text}}>
+    请输入有效的{isEpisodes?"剧集标题":"镜头时长（大于 0 秒）"}。
+   </p>}
+   {error&&<div role="alert" className="space-y-2 rounded-lg border p-2 text-[11px]"
+    style={{borderColor:theme.node.stroke,color:theme.node.text,background:theme.toolbar.activeBg}}>
+    <p className="break-words">{error}</p>
+    <button type="button" className="inline-flex items-center gap-1 underline underline-offset-2"
+     disabled={saving} onClick={onReload}>
+     <RotateCcw size={11} aria-hidden="true"/>重新读取最新草案（放弃本次输入）
+    </button>
    </div>}
   </div>
-  <div className="flex shrink-0 justify-end gap-2">
-   <button type="button" className="rounded border px-2 py-1" disabled={saving} onClick={onCancel}>取消</button>
-   <button type="submit" className="rounded border px-2 py-1 font-medium" disabled={saving||!changed||invalid}>
-    {saving?"保存中…":"保存草案"}
+  <footer className="flex shrink-0 items-center justify-end gap-2 border-t pt-2"
+   style={{borderColor:theme.node.stroke}}>
+   <button type="button"
+    className="inline-flex h-8 items-center justify-center gap-1 rounded-lg border px-3 text-xs font-medium transition-opacity hover:opacity-75 disabled:opacity-40"
+    style={actionStyle} disabled={saving} onClick={onCancel}><X size={12} aria-hidden="true"/>取消</button>
+   <button type="submit"
+    className="inline-flex h-8 flex-1 items-center justify-center gap-1 rounded-lg px-3 text-xs font-semibold transition-opacity hover:opacity-85 disabled:cursor-not-allowed disabled:opacity-40"
+    style={saveStyle} disabled={saving||!changed||invalid}>
+    <Check size={13} aria-hidden="true"/>{saving?"保存中…":"保存草案"}
    </button>
-  </div>
+  </footer>
  </form>;
 }

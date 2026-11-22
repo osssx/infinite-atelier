@@ -256,6 +256,46 @@ def main():
                        getComputedStyle(panes[0]).overflow==='hidden'&&
                        getComputedStyle(panes[1]).overflow==='hidden';
                 })()"""),"inline historical versions stretch to full workspace height",35)))
+                check("episode_history_impact_left_versions_right",bool(wait_for(lambda:page.js("""(() => {
+                    const layout=document.querySelector('[data-drama-history-layout]');
+                    const sections=[...(layout?.querySelectorAll(':scope > section')||[])];
+                    if(sections.length!==2)return false;
+                    const [impact,versions]=sections;
+                    const left=impact.getBoundingClientRect(),right=versions.getBoundingClientRect();
+                    const wide=window.innerWidth>=1280;
+                    return impact.getAttribute('aria-label')==='上游影响面板'&&
+                      versions.getAttribute('aria-label')==='历史版本面板'&&
+                      (wide?left.left<right.left&&left.right<=right.left+3&&
+                        Math.abs(left.top-right.top)<=5:
+                        left.top<right.top&&left.bottom<=right.top+3);
+                })()"""),"upstream impact appears before versions in responsive workspace",30)))
+                check("episode_history_impact_scrollbar_only_on_overflow",bool(wait_for(lambda:page.js("""(() => {
+                    const impact=document.querySelector('[aria-label="上游影响面板"]');
+                    if(!impact)return false;
+                    const styles=getComputedStyle(impact);
+                    if(styles.overflowY!=='auto'||styles.scrollbarGutter!=='auto')return false;
+                    const original=[...impact.children];
+                    const display=original.map(child=>child.style.display);
+                    try{
+                        // Simulate a short impact report: no overflow or reserved scrollbar gutter.
+                        original.forEach(child=>{child.style.display='none'});
+                        impact.scrollTop=0;
+                        const shortFits=impact.scrollHeight<=impact.clientHeight+2;
+                        const filler=document.createElement('div');
+                        filler.style.height=String(impact.clientHeight+200)+'px';
+                        impact.appendChild(filler);
+                        // Simulate a long impact report: scrollbar appears and scrollTop changes.
+                        const nowOverflows=impact.scrollHeight>impact.clientHeight+100;
+                        impact.scrollTop=100;
+                        const canScroll=impact.scrollTop>0;
+                        filler.remove();
+                        return shortFits&&nowOverflows&&canScroll&&
+                           impact.scrollHeight<=impact.clientHeight+2;
+                    } finally {
+                        original.forEach((child,index)=>{child.style.display=display[index]});
+                        impact.scrollTop=0;
+                    }
+                })()"""),"overflow-y-auto hides unnecessary scrollbar and scrolls long impact",30)))
                 check("episode_history_has_no_second_dialog",bool(page.js("""(() => {
                     const inline=document.querySelector('[data-canvas-text-versions-inline]');
                     const parent=inline?.closest('.ant-modal');

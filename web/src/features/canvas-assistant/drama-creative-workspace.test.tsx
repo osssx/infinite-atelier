@@ -76,6 +76,11 @@ describe("P3.4b3 workspace lifecycle",()=>{
   expect(div.querySelector('[data-drama-history-layout]')).toBeTruthy();
   expect(div.querySelector('[aria-label="历史版本面板"] [aria-label="测试内嵌历史"]')).toBeTruthy();
   expect(div.querySelector('[aria-label="上游影响面板"]')).toBeTruthy();
+  const sections=[...div.querySelectorAll<HTMLElement>('[data-drama-history-layout] > section')];
+  expect(sections.map(section=>section.getAttribute("aria-label"))).toEqual(["上游影响面板","历史版本面板"]);
+  expect(sections[0].classList.contains("overflow-y-auto")).toBe(true);
+  expect(sections[0].style.scrollbarGutter).toBe("auto");
+  expect(sections[1].querySelector('[data-drama-history-fill]')).toBeTruthy();
   expect(onTabChange).toHaveBeenCalledWith("history");
   await act(async()=>useThemeStore.setState({theme:"light"}));
   expect(div.querySelector('[aria-label="测试内嵌历史"]')).toBeTruthy();

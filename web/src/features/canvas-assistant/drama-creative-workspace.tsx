@@ -136,10 +136,12 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,onClose,onTa
         initialEpisodeId={focus.episodeId} initialShotId={focus.shotId} initialSequenceId={focus.sequenceId}
         onPendingChange={registerPending}/>):
        tab==="history"&&renderHistoryPanel
-         ? <div data-drama-history-layout="" className="grid h-full min-h-0 min-w-0 flex-1 grid-rows-[minmax(0,1fr)_minmax(0,2fr)] gap-3 xl:grid-cols-[minmax(280px,0.8fr)_minmax(0,1.7fr)] xl:grid-rows-[minmax(0,1fr)]">
-            <section aria-label="上游影响面板" className="thin-scrollbar min-h-0 min-w-0 overflow-y-auto overscroll-contain" style={{scrollbarGutter:"auto"}}>
-             <h3 className="mb-2 px-1 text-sm font-semibold">上游影响</h3>
-             {renderPanel(tab)}
+         ? <div data-drama-history-layout="" className="grid h-full min-h-0 min-w-0 flex-1 grid-rows-[minmax(0,1fr)_minmax(0,2fr)] gap-3 xl:grid-cols-[minmax(220px,260px)_minmax(0,1fr)] xl:grid-rows-[minmax(0,1fr)]">
+            <section aria-label="上游影响面板" className="min-h-0 min-w-0 overflow-hidden">
+             <div data-drama-impact-scroll="" className="thin-scrollbar max-h-full min-w-0 overflow-y-auto overscroll-contain" style={{scrollbarGutter:"auto"}}>
+              <h3 className="mb-2 px-1 text-sm font-semibold">上游影响</h3>
+              {renderPanel(tab)}
+             </div>
             </section>
             <section aria-label="历史版本面板" className="flex min-h-0 min-w-0 flex-col gap-2">
              <div className="flex shrink-0 items-center justify-between gap-2 px-1">

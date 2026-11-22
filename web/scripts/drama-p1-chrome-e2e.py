@@ -265,24 +265,33 @@ def main():
                     const wide=window.innerWidth>=1280;
                     return impact.getAttribute('aria-label')==='上游影响面板'&&
                       versions.getAttribute('aria-label')==='历史版本面板'&&
-                      (wide?left.left<right.left&&left.right<=right.left+3&&
+                      (wide?left.width>=220&&left.width<=270&&
+                        left.left<right.left&&left.right<=right.left+3&&
                         Math.abs(left.top-right.top)<=5:
                         left.top<right.top&&left.bottom<=right.top+3);
                 })()"""),"upstream impact appears before versions in responsive workspace",30)))
                 check("episode_history_impact_scrollbar_only_on_overflow",bool(wait_for(lambda:page.js("""(() => {
-                    const impact=document.querySelector('[aria-label="上游影响面板"]');
+                    const impact=document.querySelector('[data-drama-impact-scroll]');
                     if(!impact)return false;
+                    const panel=impact.querySelector('[aria-label="上游影响检查"]');
+                    const loaded=(panel?.textContent||'').includes('当前确认结果与上游一致');
+                    if(!loaded||panel.querySelector('[aria-label="细粒度影响预览"]'))return false;
                     const styles=getComputedStyle(impact);
                     if(styles.overflowY!=='auto'||styles.scrollbarGutter!=='auto')return false;
+                    // The real empty-impact report must not scroll, not just a synthetic hidden case.
+                    const naturallyFits=impact.scrollHeight<=impact.clientHeight+2&&
+                        impact.getBoundingClientRect().height<impact.parentElement.clientHeight-12;
+                    if(!naturallyFits)return false;
                     const original=[...impact.children];
                     const display=original.map(child=>child.style.display);
                     try{
                         // Simulate a short impact report: no overflow or reserved scrollbar gutter.
                         original.forEach(child=>{child.style.display='none'});
                         impact.scrollTop=0;
-                        const shortFits=impact.scrollHeight<=impact.clientHeight+2;
+                        const shortFits=impact.scrollHeight<=impact.clientHeight+2&&
+                          impact.getBoundingClientRect().height<impact.parentElement.clientHeight-20;
                         const filler=document.createElement('div');
-                        filler.style.height=String(impact.clientHeight+200)+'px';
+                        filler.style.height=String(impact.parentElement.clientHeight+200)+'px';
                         impact.appendChild(filler);
                         // Simulate a long impact report: scrollbar appears and scrollTop changes.
                         const nowOverflows=impact.scrollHeight>impact.clientHeight+100;

@@ -130,6 +130,11 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
     const [sequenceMigration,setSequenceMigration] = useState<DramaSequenceMigration>();
     const [sequenceChoices,setSequenceChoices] = useState<Record<string,string>>({});
     const [dependencyReport,setDependencyReport] = useState<{status:string;changes:{nodeId:string;kind:string;entryIds:string[]}[];impact?:{assetIds:string[];episodeIds:string[];sequenceIds:string[];shotIds:string[];mediaShotIds:string[];configIds:string[];needsReview:string[];pending?:{assetIds:string[];episodeIds:string[];sequenceIds:string[];shotIds:string[];configIds:string[];visualConfigIds?:string[];needsReview:string[]}}}>();
+    const upstreamImpact=dependencyReport?.impact;
+    const hasUpstreamImpactDetails=Boolean(dependencyReport?.changes.length ||
+        (upstreamImpact && (["assetIds","episodeIds","sequenceIds","shotIds","mediaShotIds","configIds","needsReview"] as const)
+            .some(key=>upstreamImpact[key].length>0)) ||
+        (upstreamImpact?.pending && Object.values(upstreamImpact.pending).some(ids=>ids?.length)));
     const runPath = `/api/v1/projects/${encodeURIComponent(projectId ?? "")}/drama-pipeline/runs`;
     useEffect(() => {
         if ((!storyboard&&!episodePlanning) || !projectId || (workspaceMode && workspaceTab!=="runs" && !generating && !runs.some(run=>run.status==="running"))) return;
@@ -309,7 +314,7 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
             {dependencyReport?.changes.map(item=><p key={item.nodeId}>
                 {item.kind==="disconnected"?"已断开":item.kind==="connected"?"新增连接":item.kind==="references_updated"?"参考图更新":item.kind==="visual_updated"?"美术设定更新":"内容更新"} · {item.entryIds.join("、")||item.nodeId}
             </p>)}
-            {dependencyReport?.impact && <div className="mt-2 grid gap-1 rounded-lg border p-2 text-xs" aria-label="细粒度影响预览">
+            {dependencyReport?.impact && hasUpstreamImpactDetails && <div className="mt-2 grid gap-1 rounded-lg border p-2 text-xs" aria-label="细粒度影响预览">
                 {([
                     ["assetIds","关联资产"],["episodeIds","受影响剧集"],["sequenceIds","受影响场次"],
                     ["shotIds","需检查分镜"],["mediaShotIds","仅媒体参考图受影响的镜头"],

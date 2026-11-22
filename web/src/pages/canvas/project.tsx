@@ -81,8 +81,10 @@ import { SelectionOverlay } from "@/components/canvas/canvas-selection-overlay";
 import { CanvasNodePromptPanel, type CanvasNodeGenerationMode } from "@/components/canvas/canvas-node-prompt-panel";
 import { CanvasToolbar } from "@/components/canvas/canvas-toolbar";
 const DramaPipelineNodePanel = lazy(() => import("@/features/canvas-assistant/drama-pipeline-node-panel").then(m => ({default:m.DramaPipelineNodePanel})));
-import {DramaNodeSummaryCard} from "@/features/canvas-assistant/drama-node-summary-card";const DramaCreativeScopeBrowser=lazy(()=>import("@/features/canvas-assistant/drama-creative-scope-browser").then(m=>({default:m.DramaCreativeScopeBrowser})));
-const DramaRevisionBrowser=lazy(()=>import("@/features/canvas-assistant/drama-revision-browser").then(m=>({default:m.DramaRevisionBrowser})));
+import {DramaNodeSummaryCard} from "@/features/canvas-assistant/drama-node-summary-card";
+import type {DramaWorkspaceTab} from "@/features/canvas-assistant/drama-pipeline-node-panel";
+import type {DramaWorkspaceFocus} from "@/features/canvas-assistant/drama-creative-workspace";
+const DramaCreativeWorkspace=lazy(()=>import("@/features/canvas-assistant/drama-creative-workspace").then(m=>({default:m.DramaCreativeWorkspace})));
 import { DramaSourceNode } from "@/features/canvas-assistant/drama-source-node";
 import {LazyCreativeNode} from "@/features/canvas-assistant/lazy-creative-node";
 import {DRAMA_PIPELINE_NODE_TYPES,isInlineDramaNode, readStoryboardDraft } from "@/features/canvas-assistant/canvas-drama-pipeline";const isDramaPipelineNode=(type:string)=>Object.values(DRAMA_PIPELINE_NODE_TYPES).includes(type);
@@ -476,8 +478,9 @@ function AtelierCanvasPage() {
     const referencePickerNodeId = referencePicker?.nodeId;
     const [dialogNodeId, setDialogNodeId] = useState<string | null>(null);
     const [creativeWorkspaceNodeId,setCreativeWorkspaceNodeId]=useState<string|null>(null);
+    const [creativeWorkspaceFocus,setCreativeWorkspaceFocus]=useState<DramaWorkspaceFocus>({});
     const creativeWorkspaceRequestRef=useRef(0);
-    useEffect(()=>{creativeWorkspaceRequestRef.current++;setCreativeWorkspaceNodeId(null)},[projectId]);
+    useEffect(()=>{creativeWorkspaceRequestRef.current++;setCreativeWorkspaceNodeId(null);setCreativeWorkspaceFocus({})},[projectId]);
     const [infoNodeId, setInfoNodeId] = useState<string | null>(null);
     const [cropNodeId, setCropNodeId] = useState<string | null>(null);
     const [videoFrameNodeId, setVideoFrameNodeId] = useState<string | null>(null);
@@ -4199,7 +4202,7 @@ function AtelierCanvasPage() {
     },[cancelComfyWorkflow,executeComfyWorkflow,handleGenerateNode,projectId,projectLoaded,stopConfigGeneration]);
 
     const renderNodePanel = useCallback(
-        (panelNode: CanvasNodeData,workspaceMode=false) => {
+        (panelNode: CanvasNodeData,workspaceMode=false,workspaceTab:DramaWorkspaceTab="editor",focus:DramaWorkspaceFocus={}) => {
             if (panelNode.type === "drama:source") return null;
             const pipelineSource = (() => {
                 if (!isDramaPipelineNode(panelNode.type)) return undefined;
@@ -4226,7 +4229,7 @@ function AtelierCanvasPage() {
             ].filter(Boolean).join("\n");
             const directAssets = panelNode.type === "drama:storyboard" ? nodes.find(item => item.type === "drama:assets" &&
                 connections.some(edge => edge.fromNodeId === item.id && edge.toNodeId === panelNode.id)) : undefined;
-            return Object.values(DRAMA_PIPELINE_NODE_TYPES).includes(panelNode.type) ? <Suspense fallback={<p role="status" className="p-3">正在加载创作编辑器…</p>}><DramaPipelineNodePanel key={panelNode.id} node={panelNode} projectId={projectId} workspaceMode={workspaceMode}
+            return Object.values(DRAMA_PIPELINE_NODE_TYPES).includes(panelNode.type) ? <Suspense fallback={<p role="status" className="p-3">正在加载创作编辑器…</p>}><DramaPipelineNodePanel key={panelNode.id} node={panelNode} projectId={projectId} workspaceMode={workspaceMode} workspaceTab={workspaceTab} initialEpisodeId={focus.episodeId} initialShotId={focus.shotId}
                 legacyAssetPlanning={panelNode.type === "drama:assets" && connections.some(edge => edge.fromNodeId === panelNode.id &&
                     nodes.some(item => item.id === edge.toNodeId && item.type === "drama:asset_references"))}
                 mergedReferences={directAssets?.metadata?.dramaAssetReferences}
@@ -4435,13 +4438,13 @@ function AtelierCanvasPage() {
 
     // P3.4b2: full editor is a single page-level workspace, never a child of
     // a culled/LOD canvas node. This is the only path that hydrates full bodies.
-    const openCreativeWorkspace=useCallback(async(nodeId:string)=>{
+    const openCreativeWorkspace=useCallback(async(nodeId:string,focus?:DramaWorkspaceFocus)=>{
         const target=nodesRef.current.find(node=>node.id===nodeId);
         if(!target||!["drama:episodes","drama:storyboard"].includes(target.type))
             throw Error("创作节点不存在");
         const request=++creativeWorkspaceRequestRef.current;
         await ensureCreativeNodesLoaded(projectId,[nodeId]);
-        if(creativeWorkspaceRequestRef.current===request)setCreativeWorkspaceNodeId(nodeId);
+        if(creativeWorkspaceRequestRef.current===request){setCreativeWorkspaceFocus(focus??{});setCreativeWorkspaceNodeId(nodeId);}
     },[projectId]);
     const closeCreativeWorkspace=useCallback(async()=>{
         try{
@@ -4842,25 +4845,15 @@ function AtelierCanvasPage() {
 
                 <input ref={imageInputRef} type="file" multiple accept="image/*,video/*,audio/mpeg,audio/wav,audio/x-wav,.mp3,.wav" className="hidden" onChange={handleImageInputChange} />
 
-                {creativeWorkspaceNode&&<Modal open centered title={<span style={{color:theme.node.text}}>{creativeWorkspaceNode.type==="drama:episodes"?"剧集规划 · 完整编辑器":"分镜配置 · 完整编辑器"}</span>}
-                    width="min(1360px, calc(100vw - 24px))" footer={null}
-                    onCancel={()=>void closeCreativeWorkspace()}
-                    destroyOnHidden
-                    styles={{container:{background:theme.node.fill,color:theme.node.text},header:{background:theme.node.fill},body:{height:"min(900px, calc(100dvh - 128px))",overflow:"hidden",padding:"12px 4px 16px"}}}>
-                    <div data-creative-workspace-node-id={creativeWorkspaceNode.id} className="flex h-full min-h-0 gap-3">
-                        <aside className="thin-scrollbar hidden w-64 shrink-0 overflow-y-auto rounded-lg border p-3 lg:block"
-                            style={{borderColor:theme.node.muted}} aria-label="创作分页与单条编辑">
-                            <Suspense fallback={<p>正在加载分页浏览…</p>}>
-                                {creativeWorkspaceNode.type==="drama:episodes"?
-                                    <DramaCreativeScopeBrowser projectId={projectId} nodeId={creativeWorkspaceNode.id} kind="episodes"/>:
-                                    <DramaRevisionBrowser projectId={projectId} nodeId={creativeWorkspaceNode.id}/>}
-                            </Suspense>
-                        </aside>
-                        <div className="min-h-0 min-w-0 flex-1">
-                            {renderNodePanel(creativeWorkspaceNode,true)}
-                        </div>
-                    </div>
-                </Modal>}
+                {creativeWorkspaceNode&&<Suspense fallback={<p role="status">正在加载创作工作区…</p>}>
+                    <DramaCreativeWorkspace key={projectId+":"+creativeWorkspaceNode.id}
+                        projectId={projectId} nodeId={creativeWorkspaceNode.id}
+                        kind={creativeWorkspaceNode.type==="drama:episodes"?"episodes":"storyboard"}
+                        focus={creativeWorkspaceFocus}
+                        color={{fill:theme.node.fill,text:theme.node.text,muted:theme.node.muted}}
+                        onClose={closeCreativeWorkspace}
+                        renderPanel={tab=>renderNodePanel(creativeWorkspaceNode,true,tab,creativeWorkspaceFocus)}/>
+                </Suspense>}
 
                 <CanvasNodeInfoModal node={infoNode} open={Boolean(infoNode)} onClose={() => setInfoNodeId(null)} />
 

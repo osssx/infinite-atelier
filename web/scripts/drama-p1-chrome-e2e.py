@@ -168,6 +168,8 @@ def main():
                 check("p34b2_episode_full_editor_open",bool(wait_for(
                     lambda:node_button(page,"episodes","打开完整编辑器 ↗"),
                     "episode maximize action",35)))
+                check("p34b3_episodes_scoped_tab",bool(wait_for(
+                    lambda:node_button(page,"episodes","分页与单条 CAS"),"episodes scoped tab",25)))
                 wait_for(lambda:page.js("""
                    !!document.querySelector('[data-creative-workspace-node-id="episodes"] [aria-label="剧集独立存储分页浏览"]')
                 """),"episode scoped editor mounted",35)
@@ -215,6 +217,32 @@ def main():
                 return true;
             })()"""%(json.dumps(stage),json.dumps(field,ensure_ascii=False),
                      json.dumps(updated,ensure_ascii=False)))))
+            if stage=="episodes":
+                check("p34b3_scope_unmounts_full_fields",bool(page.js("""(() => {
+                    const root=document.querySelector('[data-creative-workspace-node-id="episodes"]');
+                    return !!root&&!root.textContent?.includes('剧情事件（每行一条）');
+                })()""")))
+                check("p34b3_unsaved_form_detected",bool(wait_for(lambda:page.js("""(() => {
+                    const root=document.querySelector('[data-creative-workspace-node-id="episodes"]');
+                    return (root?.textContent||'').includes('尚未保存的局部草案修改');
+                })()"""),"P3.4b3 local dirty guard",25)))
+                check("p34b3_tab_switch_prompts",bool(page.js("""(() => {
+                    const root=document.querySelector('[data-creative-workspace-node-id="episodes"]');
+                    const button=[...(root?.querySelectorAll('nav button')||[])].find(
+                        b=>(b.textContent||'').trim()==='生成候选');
+                    if(!button)return false;
+                    button.click();return true;
+                })()""")))
+                check("p34b3_pending_confirmation",bool(wait_for(lambda:page.js("""(() => {
+                    return [...document.querySelectorAll('.ant-modal')].some(
+                        node=>(node.textContent||'').includes('存在未提交的草案修改'));
+                })()"""),"P3.4b3 unsaved confirmation",25)))
+                check("p34b3_continue_preserves_editor",bool(page.js("""(() => {
+                    const button=[...document.querySelectorAll('.ant-modal button')].find(
+                        b=>(b.textContent||'').trim()==='继续编辑');
+                    if(!button)return false;
+                    button.click();return true;
+                })()""")))
             def click_draft_save():
                 return bool(page.js("""(() => {
                     const node=document.querySelector('[data-node-id=%s]');const portal=document.querySelector('[data-creative-workspace-node-id]');const root=portal?.getAttribute('data-creative-workspace-node-id')===node?.dataset.nodeId?portal:node;
@@ -367,6 +395,8 @@ def main():
             return page.js("""(async()=>{const r=await fetch('%s');return await r.json()})()"""%runpath)
         ready=wait_for(lambda:next((r for r in runs() if r.get("status")=="ready"),None),"candidate ready",35)
         check("browser_model_mock_produced_ready_candidate",ready["episodeId"]=="ep-two")
+        check("p34b3_runs_tab",bool(wait_for(
+            lambda:node_button(page,"board","生成候选"),"open candidate tab",25)))
         def candidate_diff_visible():
             return bool(page.js("""(() => {
               const root=(document.querySelector('[data-creative-workspace-node-id="board"]')||document.querySelector('[data-node-id="board"]'));
@@ -394,6 +424,8 @@ def main():
             [e for e in after["data"]["document"]["connections"] if e["toNodeId"]=="first-config"]==original_links)
         check("first_episode_shot_unchanged",
             next(x for x in json.loads(find_node(after["data"],"board")["metadata"]["dramaDraft"])["shots"] if x["episodeId"]=="ep-one")["description"]=="第一集，主角在家")
+        check("p34b3_return_shots_tab",bool(wait_for(
+            lambda:node_button(page,"board","分镜表"),"return storyboard editor",25)))
         if not node_button(page,"board","确认阶段"):
             raise AssertionError("no visible confirmation button")
         def published():

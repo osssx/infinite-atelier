@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { Button, Input, Modal, Tag } from "antd";
 import { History, Maximize2 } from "lucide-react";
 import type { CanvasNodeData } from "@/types/canvas";
@@ -14,7 +14,7 @@ import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { DramaAssetFields } from "./drama-asset-fields";
 import {DramaAssetCandidates} from "./drama-asset-candidates";
-import { DramaVideoConfigFields } from "./drama-video-config-fields";
+const DramaVideoConfigFields = lazy(() => import("./drama-video-config-fields").then(m=>({default:m.DramaVideoConfigFields})));
 import { DramaStoryboardFields } from "./drama-storyboard-fields";
 import { DramaEpisodeFields } from "./drama-episode-fields";
 import { readEpisodeDraft } from "../../../server/canvas-text-content.mjs";
@@ -66,7 +66,9 @@ function describeDramaValidation(errors: {code:string;shotId?:string;id?:string}
         : []).join("\n");
 }
 
-export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, videoConfigs, onRefreshVideoConfig, onOpenVideoConfig, onCreateReferenceConfig, onPickCanvasImage, onCreateDramaShotGroup, projectId, upstreamText = "", upstreamContext = "", upstreamArtifacts = [], supplementalEpisodes = [], assetUsage = {}, confirmedAssetPlan, savedAssetReferences, mergedReferences, legacyAssetPlanning = false, imageNodes = [], productionContext = "", productionStyle, onOpenVersions, onConfirmVersion, onBeforeDramaRun, onAdoptDramaRun, onMigrateDramaSequences, onAdoptDramaAssetCandidate, versionBusy = false, workspaceMode = false }: {
+export type DramaWorkspaceTab="editor"|"scope"|"video"|"runs"|"history";
+
+export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, videoConfigs, onRefreshVideoConfig, onOpenVideoConfig, onCreateReferenceConfig, onPickCanvasImage, onCreateDramaShotGroup, projectId, upstreamText = "", upstreamContext = "", upstreamArtifacts = [], supplementalEpisodes = [], assetUsage = {}, confirmedAssetPlan, savedAssetReferences, mergedReferences, legacyAssetPlanning = false, imageNodes = [], productionContext = "", productionStyle, onOpenVersions, onConfirmVersion, onBeforeDramaRun, onAdoptDramaRun, onMigrateDramaSequences, onAdoptDramaAssetCandidate, versionBusy = false, workspaceMode = false, workspaceTab = "editor", initialEpisodeId, initialShotId }: {
     node: CanvasNodeData;
     onChange: (patch: Partial<CanvasNodeData["metadata"]>) => void;
     onCreateVideoConfigs?: (inputs: ReturnType<typeof buildDramaVideoInput>[], batch: boolean) => void;
@@ -96,6 +98,9 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
     onAdoptDramaAssetCandidate?: (path:string,command:Record<string,unknown>) => Promise<void>;
     versionBusy?: boolean;    /** Full editor only: host outside CanvasNode, no nested Modal. */
     workspaceMode?: boolean;
+    workspaceTab?: DramaWorkspaceTab;
+    initialEpisodeId?: string;
+    initialShotId?: string;
     imageNodes?: CanvasNodeData[];
 }) {
     const stage = Object.entries(DRAMA_PIPELINE_NODE_TYPES).find(([, type]) => type === node.type)?.[0] as DramaPipelineStage | undefined;
@@ -114,10 +119,10 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
     const mergedEditing = assetPlanning && !legacyAssetPlanning;
     const episodePlanning = stage === "episodes";
     const storyboard = stage === "storyboard";
-    const [selectedEpisode,setSelectedEpisode] = useState("");
+    const [selectedEpisode,setSelectedEpisode] = useState(initialEpisodeId ?? "");
     const [assetEpisode,setAssetEpisode] = useState("");
     const [selectedSequence,setSelectedSequence] = useState("");
-    const [selectedRunShot,setSelectedRunShot] = useState("");
+    const [selectedRunShot,setSelectedRunShot] = useState(initialShotId ?? "");
     const [runs,setRuns] = useState<DramaRun[]>([]);
     const [expandedRuns,setExpandedRuns] = useState<Record<string,boolean>>({});
     const [selectedCandidates,setSelectedCandidates] = useState<Record<string,string[]>>({});
@@ -127,7 +132,7 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
     const [dependencyReport,setDependencyReport] = useState<{status:string;changes:{nodeId:string;kind:string;entryIds:string[]}[];impact?:{assetIds:string[];episodeIds:string[];sequenceIds:string[];shotIds:string[];mediaShotIds:string[];configIds:string[];needsReview:string[];pending?:{assetIds:string[];episodeIds:string[];sequenceIds:string[];shotIds:string[];configIds:string[];visualConfigIds?:string[];needsReview:string[]}}}>();
     const runPath = `/api/v1/projects/${encodeURIComponent(projectId ?? "")}/drama-pipeline/runs`;
     useEffect(() => {
-        if ((!storyboard&&!episodePlanning) || !projectId) return;
+        if ((!storyboard&&!episodePlanning) || !projectId || (workspaceMode && workspaceTab!=="runs" && !generating && !runs.some(run=>run.status==="running"))) return;
         let active = true;
         let timer: ReturnType<typeof setTimeout> | undefined;
         const refresh = () => canvasApi<DramaRun[]>(`${runPath}?nodeId=${encodeURIComponent(node.id)}`,"GET")
@@ -142,7 +147,7 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
             .finally(() => { if(active) timer=setTimeout(refresh,3000); });
         void refresh();
         return () => { active = false; clearTimeout(timer); };
-    }, [node.id, projectId, runPath, storyboard,episodePlanning]);
+    }, [node.id, projectId, runPath, storyboard,episodePlanning,workspaceMode,workspaceTab,generating,runs.some(run=>run.status==="running")]);
     const versioned = assetPlanning || episodePlanning || storyboard;
     const readsStoredDraft = assetPlanning || versioned;
     const draft = readsStoredDraft ? storedDraft : localDraft;
@@ -185,7 +190,8 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
     const parsedSnapshot: DramaPipelineSnapshot = {version:1,stage:stage ?? "source",revision:1,inputRevisions:{},assets,references:storyboard ? [] : references,shots};
     const confirmedShots = useMemo(()=>storyboard ? readStoryboardDraft(confirmed)?.shots ?? [] : [],[storyboard,confirmed]);
     const videoSnapshot = { ...parsedSnapshot, references };
-    const videoInputs = storyboardView==="video"?confirmedShots.map(shot => buildDramaVideoInput(videoSnapshot, shot)):[];
+    const effectiveStoryboardView = workspaceMode ? (workspaceTab==="video"?"video":"shots") : storyboardView;
+    const videoInputs = effectiveStoryboardView==="video"?confirmedShots.map(shot => buildDramaVideoInput(videoSnapshot, shot)):[];
     const missingConfigs = videoInputs.filter(input => !videoConfigs?.has(input.shot.id));
     const images = imageNodes.flatMap(item => {
         const metadata = item.metadata;
@@ -260,7 +266,7 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
                     setValidation("已在同一事务中合入资产与受影响的分镜草案引用；请核对后确认资产");
                 }catch(error){setValidation(error instanceof Error?error.message:"资产合入失败");}
             }}/>}
-        {versioned && <details>
+        {versioned && (!workspaceMode || workspaceTab==="history") && <details>
             <summary onClick={()=>void canvasApi<NonNullable<typeof dependencyReport>>(
                 `/api/v1/projects/${encodeURIComponent(projectId??"")}/drama-pipeline/dependencies?nodeId=${encodeURIComponent(node.id)}`,"GET")
                 .then(setDependencyReport).catch(()=>setValidation("无法检查上游更新"))}>检查上游更新</summary>
@@ -329,6 +335,7 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
             "thin-scrollbar min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain px-1" : "contents"}
             onMouseDown={inlineEditor ? event => event.stopPropagation() : undefined}
             onPointerDown={inlineEditor ? event => event.stopPropagation() : undefined}>
+        {(!workspaceMode||workspaceTab==="editor"||workspaceTab==="video") && <>
         {inlineEditor ? <div className={assetEditorExpanded
             ? `thin-scrollbar min-h-0 flex-1 overflow-y-auto overscroll-contain pr-1 ${episodePlanning ? "flex flex-col gap-3" : "space-y-3"}`
             : versioned ? "grid gap-3" : "contents"}>
@@ -342,7 +349,7 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
                             onChange({targetEpisodes:count});
                         }} />
                 </label>
-                <DramaEpisodeFields episodes={episodeDraft?.episodes ?? []} expanded={assetEditorExpanded} disabled={generating} control={control} onChange={episodes => {
+                <DramaEpisodeFields episodes={episodeDraft?.episodes ?? []} initialEpisodeId={initialEpisodeId} expanded={assetEditorExpanded} disabled={generating} control={control} onChange={episodes => {
                     const next = JSON.stringify({...episodeDraft,episodes});
                     setValidation("");
                     onChange({dramaDraft:next});
@@ -350,14 +357,14 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
                 {draft && !episodeDraft && <p role="alert">这份剧集草案格式无法读取，请重新生成。</p>}
             </> : storyboard ? <>
                 <div role="group" aria-label="分镜配置视图" className="grid grid-cols-2 gap-1 rounded-xl border p-1" style={control}>
-                    {([{id:"shots", label:"分镜表"}, {id:"video", label:"视频配置"}] as const).map(view =>
+                    {(!workspaceMode ? ([{id:"shots", label:"分镜表"}, {id:"video", label:"视频配置"}] as const) : []).map(view =>
                         <button key={view.id} type="button" aria-pressed={storyboardView === view.id}
                             className="rounded-lg px-2 py-1.5 font-medium focus-visible:outline focus-visible:outline-2"
                             style={storyboardView === view.id ? {background:theme.toolbar.activeBg, color:theme.toolbar.activeText} : undefined}
                             onClick={() => setStoryboardView(view.id)}>{view.label}</button>)}
                 </div>
-                <div className={storyboardView === "shots" ? "grid min-w-0 gap-3" : "hidden"}>
-                    <DramaStoryboardFields shots={shots} episodes={linkedEpisodes} scenes={scenes}
+                <div className={effectiveStoryboardView === "shots" ? "grid min-w-0 gap-3" : "hidden"}>
+                    <DramaStoryboardFields shots={shots} episodes={linkedEpisodes} scenes={scenes} initialEpisodeId={initialEpisodeId} initialShotId={initialShotId}
                         expanded={assetEditorExpanded} disabled={generating || versionBusy} control={control} onChange={nextShots => {
                             onChange({dramaDraft:JSON.stringify({...storyboardDraft,shots:nextShots})});
                             setValidation("");
@@ -372,8 +379,8 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
                             }} />
                     </details>
                 </div>
-                <div className={storyboardView === "video" ? "min-w-0" : "hidden"}>
-                    <DramaVideoConfigFields productionStyle={productionStyle} confirmedRevisionId={node.metadata?.dramaConfirmedVersionId}
+                {effectiveStoryboardView==="video" && <div className="min-w-0">
+                    <Suspense fallback={<p role="status">正在加载视频配置…</p>}><DramaVideoConfigFields productionStyle={productionStyle} confirmedRevisionId={node.metadata?.dramaConfirmedVersionId}
                         inputs={videoInputs} episodes={linkedEpisodes}
                         onRefresh={onRefreshVideoConfig} configs={videoConfigs} missingCount={missingConfigs.length}
                         production={node.metadata?.dramaShotProduction}
@@ -387,8 +394,8 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
                             setAssetEditorExpanded(false);
                             if (existing) onOpenVideoConfig?.(existing.id);
                             else onCreateVideoConfigs?.([input], false);
-                        }} />
-                </div>
+                        }} /></Suspense>
+                </div>}
             </> : <DramaAssetFields usage={assetUsage} assets={assets} theme={theme} expanded={assetEditorExpanded} disabled={generating} onChange={assetPlanning ? nextAssets => {
                 const next = JSON.stringify({...previous, assets:nextAssets});
                 setDraft(next);
@@ -608,7 +615,8 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
                 }}>确认迁移所选镜头</Button>
             </>}
         </details>}
-        {(storyboard||episodePlanning) && runs.map(run=><details key={run.id} open={Boolean(expandedRuns[run.id])} onToggle={event=>{
+        </>}
+        {(storyboard||episodePlanning) && (!workspaceMode || workspaceTab==="runs") && runs.map(run=><details key={run.id} open={Boolean(expandedRuns[run.id])} onToggle={event=>{
             const open=event.currentTarget.open;
             setExpandedRuns(current=>current[run.id]===open?current:{...current,[run.id]:open});
             if(open&&!run.candidate?.shots?.length&&!run.candidate?.episodes?.length)void canvasApi<DramaRun>(`${runPath}/${encodeURIComponent(run.id)}`,"GET")

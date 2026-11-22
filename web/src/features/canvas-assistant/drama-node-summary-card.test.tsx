@@ -68,6 +68,6 @@ describe("P3.4b2 lightweight creative cards",()=>{
   const button=container.querySelector('button[aria-label="打开剧集规划完整编辑器"]') as HTMLButtonElement;
   await act(async()=>{button.click();await Promise.resolve()});
   expect(onOpen).toHaveBeenCalledTimes(1);
-  expect(onOpen).toHaveBeenCalledWith("episodes");
+  expect(onOpen).toHaveBeenCalledWith("episodes",{episodeId:"ep-one"});
  });
 });

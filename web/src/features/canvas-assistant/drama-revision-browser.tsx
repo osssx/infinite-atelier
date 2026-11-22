@@ -1,4 +1,5 @@
-import {useEffect,useState} from "react";
+import {useEffect,useRef,useState} from "react";
+import type {WorkspacePendingRegistration} from "./drama-creative-workspace";
 import {canvasApi} from "@/features/backend-sync/canvas-api";
 import type {DramaShot} from "./canvas-drama-pipeline";
 import {commitAssistantCanvasGraphWithSaveBarrier} from "@/stores/canvas/use-canvas-sqlite-store";
@@ -6,13 +7,28 @@ import type {CanvasBackendProject} from "@/features/backend-sync/canvas-api";
 
 type Choice={id:string;name:string;kind:string;variants:{id:string;name:string}[]};
 type Scope={versionId:string|null;total:number;groups:{episodeId:string;total:number;sequenceIds:string[]}[];entries:DramaShot[];entryDigests:{id:string;digest:string}[];referenceChoices:Choice[]};
-function ShotDraftEditor({shot,choices,onSave}:{shot:DramaShot;choices:Choice[];onSave:(changes:Record<string,unknown>)=>Promise<void>}){
+function ShotDraftEditor({shot,choices,onSave,onPendingChange,pendingKey}:{shot:DramaShot;choices:Choice[];onSave:(changes:Record<string,unknown>)=>Promise<void>;onPendingChange?:WorkspacePendingRegistration;pendingKey?:string}){
     const [description,setDescription]=useState(shot.description);
     const [action,setAction]=useState(shot.action??"");
     const [dialogue,setDialogue]=useState(shot.dialogue??"");
     const [extra,setExtra]=useState(shot);
     const [busy,setBusy]=useState(false);
     const [error,setError]=useState("");
+    const updates={description,action,dialogue,shotSize:extra.shotSize??"",camera:extra.camera??"",
+        durationSec:extra.durationSec??null,sceneId:extra.sceneId??null,sceneVariantId:extra.sceneVariantId??null,
+        characterVariantIds:extra.characterVariantIds,propIds:extra.propIds,keyPropIds:extra.keyPropIds,sourceRefs:extra.sourceRefs??[]};
+    const previous={description:shot.description,action:shot.action??"",dialogue:shot.dialogue??"",shotSize:shot.shotSize??"",
+        camera:shot.camera??"",durationSec:shot.durationSec??null,sceneId:shot.sceneId??null,
+        sceneVariantId:shot.sceneVariantId??null,characterVariantIds:shot.characterVariantIds,
+        propIds:shot.propIds,keyPropIds:shot.keyPropIds,sourceRefs:shot.sourceRefs??[]};
+    const changed=JSON.stringify(updates)!==JSON.stringify(previous);
+    const serialized=JSON.stringify(updates);
+    const onSaveRef=useRef(onSave);onSaveRef.current=onSave;
+    useEffect(()=>{
+        if(!pendingKey||!onPendingChange)return;
+        onPendingChange(pendingKey,changed?()=>onSaveRef.current(JSON.parse(serialized) as Record<string,unknown>):null);
+        return ()=>onPendingChange(pendingKey,null);
+    },[pendingKey,onPendingChange,changed,serialized]);
     return <div className="grid gap-2 p-1">
         {([{label:"画面描述",value:description,set:setDescription},{label:"动作",value:action,set:setAction},
             {label:"对白",value:dialogue,set:setDialogue}]).map(field=><label key={field.label} className="grid gap-1">{field.label}
@@ -59,20 +75,18 @@ function ShotDraftEditor({shot,choices,onSave}:{shot:DramaShot;choices:Choice[];
         </label>
         <button disabled={busy} onClick={async()=>{
             setBusy(true);setError("");
-            try{await onSave({description,action,dialogue,shotSize:extra.shotSize??"",camera:extra.camera??"",
-                durationSec:extra.durationSec??null,sceneId:extra.sceneId??null,sceneVariantId:extra.sceneVariantId??null,
-                characterVariantIds:extra.characterVariantIds,propIds:extra.propIds,keyPropIds:extra.keyPropIds,sourceRefs:extra.sourceRefs??[],
-            });}catch(error){setError(error instanceof Error?error.message:"保存失败");}
+            try{await onSave(updates);}catch(error){setError(error instanceof Error?error.message:"保存失败");}
             finally{setBusy(false);}
         }}>{busy?"保存中…":"保存镜头草案"}</button>
         {error&&<p role="alert">{error}</p>}
     </div>;
 }
-export function DramaRevisionBrowser({projectId,nodeId}:{projectId:string;nodeId:string}){
+export function DramaRevisionBrowser({projectId,nodeId,initialEpisodeId,initialSequenceId,initialShotId,onPendingChange}:{projectId:string;nodeId:string;initialEpisodeId?:string;initialSequenceId?:string;initialShotId?:string;onPendingChange?:WorkspacePendingRegistration}){
     const [groups,setGroups]=useState<Scope["groups"]>([]);
     const [revisionId,setRevisionId]=useState<string|null>(null);
-    const [episodeId,setEpisode]=useState("");
-    const [sequenceId,setSequence]=useState("");
+    const [episodeId,setEpisode]=useState(initialEpisodeId??"");
+    const [sequenceId,setSequence]=useState(initialSequenceId??"");
+    const [pinnedShot,setPinnedShot]=useState(initialShotId??"");
     const [offset,setOffset]=useState(0);
     const [page,setPage]=useState<Scope>();
     const [error,setError]=useState("");
@@ -84,29 +98,30 @@ export function DramaRevisionBrowser({projectId,nodeId}:{projectId:string;nodeId
         let active=true;
         canvasApi<Scope>(path+"&summaryOnly=true","GET").then(result=>{
             if(!active)return;
-            setGroups(result.groups);setRevisionId(result.versionId);setEpisode(result.groups[0]?.episodeId??"");setLoading(false);
+            setGroups(result.groups);setRevisionId(result.versionId);setEpisode(result.groups.some(g=>g.episodeId===initialEpisodeId)?initialEpisodeId!:result.groups[0]?.episodeId??"");setLoading(false);
         }).catch(()=>{if(active){setError("无法读取已确认分镜索引");setLoading(false);}});
         return ()=>{active=false;};
-    },[path]);
+    },[path,initialEpisodeId]);
     useEffect(()=>{
         if(!episodeId)return;
         let active=true;setLoading(true);setPage(undefined);
         const version=revisionId?`&versionId=${encodeURIComponent(revisionId)}`:"";
-        canvasApi<Scope>(`${path}${version}&episodeId=${encodeURIComponent(episodeId)}&sequenceId=${encodeURIComponent(sequenceId)}&offset=${offset}&limit=10`,"GET")
+        canvasApi<Scope>(`${path}${version}&episodeId=${encodeURIComponent(episodeId)}&sequenceId=${encodeURIComponent(sequenceId)}&offset=${offset}&limit=${pinnedShot?1:10}`+(pinnedShot?`&entryId=${encodeURIComponent(pinnedShot)}`:""),"GET")
             .then(result=>{if(active){setPage(result);setError("");}})
             .catch(()=>{if(active)setError("无法读取当前镜头页");})
             .finally(()=>{if(active)setLoading(false);});
         return ()=>{active=false;};
-    },[path,episodeId,sequenceId,offset,revisionId,refresh]);
+    },[path,episodeId,sequenceId,offset,revisionId,refresh,pinnedShot]);
     return <div className="grid min-w-0 gap-2 text-sm">
+        {pinnedShot&&<button type="button" className="underline text-left" onClick={()=>{setPinnedShot("");setOffset(0);}}>显示当前剧集完整镜头列表</button>}
         <label><input type="checkbox" checked={editing} onChange={event=>{setEditing(event.target.checked);setPage(undefined);}}/> 编辑当前镜头草案</label>
         <label className="grid gap-1">浏览已确认剧集
             <select className="min-w-0 rounded border bg-transparent p-1" value={episodeId} onChange={event=>{
-                setEpisode(event.target.value);setSequence("");setOffset(0);
+                setEpisode(event.target.value);setSequence("");setOffset(0);setPinnedShot("");
             }}>{groups.map(group=><option key={group.episodeId} value={group.episodeId}>{group.episodeId} · {group.total} 镜头</option>)}</select>
         </label>
         {!!episodeId&&<select aria-label="浏览场次" className="min-w-0 rounded border bg-transparent p-1" value={sequenceId}
-            onChange={event=>{setSequence(event.target.value);setOffset(0);}}>
+            onChange={event=>{setSequence(event.target.value);setOffset(0);setPinnedShot("");}}>
             <option value="">全部场次</option>
             {groups.find(item=>item.episodeId===episodeId)?.sequenceIds.map(id=><option key={id} value={id}>{id}</option>)}
         </select>}
@@ -117,7 +132,7 @@ export function DramaRevisionBrowser({projectId,nodeId}:{projectId:string;nodeId
             <summary>镜头 {shot.order} · {shot.shotSize??shot.id}</summary>
             <p className="whitespace-pre-wrap break-words">{shot.description}</p>
             {shot.action&&<p>{shot.action}</p>}{shot.dialogue&&<p>{shot.dialogue}</p>}
-            {editing&&<ShotDraftEditor key={page.entryDigests.find(item=>item.id===shot.id)?.digest} shot={shot} choices={page.referenceChoices} onSave={async changes=>{
+            {editing&&<ShotDraftEditor key={page.entryDigests.find(item=>item.id===shot.id)?.digest} shot={shot} choices={page.referenceChoices} onPendingChange={onPendingChange} pendingKey={`${nodeId}:shot:${shot.id}`} onSave={async changes=>{
                 const expectedDigest=page.entryDigests.find(item=>item.id===shot.id)?.digest;
                 await commitAssistantCanvasGraphWithSaveBarrier(projectId,()=>canvasApi<CanvasBackendProject>(
                     `/api/v1/projects/${encodeURIComponent(projectId)}/drama-pipeline/shot-draft`,"PATCH",

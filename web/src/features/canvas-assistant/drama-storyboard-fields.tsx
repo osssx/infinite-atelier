@@ -1,7 +1,7 @@
 import { useState, type CSSProperties } from "react";
 import type { DramaAsset, DramaShot } from "./canvas-drama-pipeline";
 
-export function DramaStoryboardFields({shots, episodes, scenes, expanded, disabled, control, onChange}: {
+export function DramaStoryboardFields({shots, episodes, scenes, expanded, disabled, control, onChange, initialEpisodeId, initialShotId}: {
     shots: DramaShot[];
     episodes: {id:string; title:string; targetDurationSec?:number; sequences?:{id:string;title:string}[]}[];
     scenes: DramaAsset[];
@@ -9,9 +9,11 @@ export function DramaStoryboardFields({shots, episodes, scenes, expanded, disabl
     disabled: boolean;
     control?: CSSProperties;
     onChange: (shots: DramaShot[]) => void;
+    initialEpisodeId?:string;
+    initialShotId?:string;
 }) {
-    const [episodeId, setEpisodeId] = useState("");
-    const [shotId, setShotId] = useState("");
+    const [episodeId, setEpisodeId] = useState(initialEpisodeId || shots.find(shot=>shot.id===initialShotId)?.episodeId || "");
+    const [shotId, setShotId] = useState(initialShotId ?? "");
     const groups = [...new Set(shots.map(shot => shot.episodeId))];
     const activeEpisode = groups.includes(episodeId) ? episodeId : groups[0];
     const episodeShots = shots.filter(shot => shot.episodeId === activeEpisode).sort((a,b) => a.order-b.order);

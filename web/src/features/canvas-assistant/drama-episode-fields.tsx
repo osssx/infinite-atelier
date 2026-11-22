@@ -14,14 +14,15 @@ export type DramaEpisode = {
     sequences?: {id:string;title:string;sourceRefs?:string[];eventRefs?:string[];replaces?:string[]}[];
 };
 
-export function DramaEpisodeFields({episodes, expanded, disabled, control, onChange}: {
+export function DramaEpisodeFields({episodes, expanded, disabled, control, onChange, initialEpisodeId}: {
     episodes: DramaEpisode[];
     expanded: boolean;
     disabled: boolean;
     control?: CSSProperties;
     onChange: (episodes: DramaEpisode[]) => void;
+    initialEpisodeId?: string;
 }) {
-    const [selected, setSelected] = useState("");
+    const [selected, setSelected] = useState(initialEpisodeId ?? "");
     const active = episodes.find(episode => episode.id === selected) ?? episodes[0];
     const edit = (patch: Partial<DramaEpisode>) => onChange(episodes.map(episode =>
         episode === active ? {...episode, ...patch} : episode));

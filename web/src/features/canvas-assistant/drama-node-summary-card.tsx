@@ -20,7 +20,7 @@ function short(value:unknown,max=110){
  * use the same backend scope reader and do not parse large JSON in React.
  */
 export const DramaNodeSummaryCard=memo(function DramaNodeSummaryCard({node,projectId,onOpen}:{
- node:CanvasNodeData;projectId:string;onOpen:(nodeId:string)=>Promise<void>;
+ node:CanvasNodeData;projectId:string;onOpen:(nodeId:string,focus?:{episodeId?:string;sequenceId?:string;shotId?:string})=>Promise<void>;
 }){
  const kind:Kind=node.type==="drama:storyboard"?"storyboard":"episodes";
  const [data,setData]=useState<Data|null>(null);
@@ -117,7 +117,7 @@ export const DramaNodeSummaryCard=memo(function DramaNodeSummaryCard({node,proje
   </>}
   <button type="button" aria-label={"打开"+title+"完整编辑器"} disabled={busy}
    className="mt-auto shrink-0 rounded-md border px-2 py-1.5 text-xs font-medium hover:opacity-80 disabled:opacity-40"
-   onClick={()=>{setBusy(true);setError("");void onOpen(node.id).catch(e=>setError(e instanceof Error?e.message:"打开编辑器失败")).finally(()=>setBusy(false));}}>
+   onClick={()=>{setBusy(true);setError("");void onOpen(node.id,kind==="episodes"?{episodeId:String(entry?.id??"")}:{episodeId:activeEpisode,sequenceId:String(entry?.sequenceId??""),shotId:String(entry?.id??"")}).catch(e=>setError(e instanceof Error?e.message:"打开编辑器失败")).finally(()=>setBusy(false));}}>
    {busy?"正在加载完整编辑器…":"打开完整编辑器 ↗"}
   </button>
  </section>;

@@ -1,0 +1,246 @@
+{
+  "schemaVersion": 1,
+  "stage": "P3.4b",
+  "fixture": {
+    "backendOrigin": "http://127.0.0.1:52063",
+    "projectId": "p34b-browser-200",
+    "nodes": 200,
+    "assets": 50,
+    "episodes": 4,
+    "shots": 100,
+    "media": {
+      "images": 70,
+      "videos": 15
+    },
+    "connections": 70,
+    "imageBytes": 68,
+    "videoBytes": 1668
+  },
+  "environment": {
+    "chrome": "Chrome/157.0.8103.79",
+    "width": 2048,
+    "height": 1152,
+    "dpr": 1.25,
+    "visibility": "visible",
+    "hardwareConcurrency": 12,
+    "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.0.0 Safari/537.36",
+    "heap": 114328416,
+    "board": true,
+    "renderedNodes": 56,
+    "canvases": 3,
+    "glRenderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 3080 (0x00002206) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+    "launchFlags": [
+      "--headless=new",
+      "--enable-precise-memory-info"
+    ],
+    "viewportCss": {
+      "width": 2048,
+      "height": 1152
+    },
+    "targetDPR": 1.25,
+    "finalVisibleDomNodes": 48
+  },
+  "scenarios": [
+    {
+      "scenario": "pan-1",
+      "frames": 253,
+      "durationMs": 2621.5559999999987,
+      "fps": 96.50757031320335,
+      "p50Ms": 6.600000000000364,
+      "p95Ms": 37.899999999999636,
+      "p99Ms": 44.600000000000364,
+      "maxMs": 67.80000000000109,
+      "over33Ms": 17,
+      "over50Ms": 2,
+      "longTaskCount": 1,
+      "longTaskMaxMs": 64,
+      "longTaskUnsupported": null,
+      "wallElapsedMs": 2620,
+      "engineMetricsDelta": {
+        "Nodes": 32,
+        "LayoutCount": 78,
+        "RecalcStyleCount": 103,
+        "LayoutDuration": 0.01453,
+        "RecalcStyleDuration": 0.03067,
+        "ScriptDuration": 1.08275,
+        "TaskDuration": 1.72759
+      },
+      "strictPass": false
+    },
+    {
+      "scenario": "pan-2",
+      "frames": 257,
+      "durationMs": 2432.2000000000007,
+      "fps": 105.66565249568289,
+      "p50Ms": 6.600000000000364,
+      "p95Ms": 27.400000000001455,
+      "p99Ms": 39,
+      "maxMs": 40.19999999999891,
+      "over33Ms": 10,
+      "over50Ms": 0,
+      "longTaskCount": 0,
+      "longTaskMaxMs": 0,
+      "longTaskUnsupported": null,
+      "wallElapsedMs": 2429,
+      "engineMetricsDelta": {
+        "Nodes": 0,
+        "LayoutCount": 77,
+        "RecalcStyleCount": 118,
+        "LayoutDuration": 0.01437,
+        "RecalcStyleDuration": 0.02537,
+        "ScriptDuration": 0.87845,
+        "TaskDuration": 1.42494
+      },
+      "strictPass": false
+    },
+    {
+      "scenario": "zoom-1",
+      "frames": 284,
+      "durationMs": 3136.5,
+      "fps": 90.54678782081939,
+      "p50Ms": 7,
+      "p95Ms": 32.400000000001455,
+      "p99Ms": 44.30000000000291,
+      "maxMs": 93.20000000000073,
+      "over33Ms": 10,
+      "over50Ms": 1,
+      "longTaskCount": 2,
+      "longTaskMaxMs": 54,
+      "longTaskUnsupported": null,
+      "wallElapsedMs": 3138,
+      "engineMetricsDelta": {
+        "Nodes": -29,
+        "LayoutCount": 106,
+        "RecalcStyleCount": 100,
+        "LayoutDuration": 0.02035,
+        "RecalcStyleDuration": 0.0151,
+        "ScriptDuration": 1.19801,
+        "TaskDuration": 1.80822
+      },
+      "strictPass": false
+    },
+    {
+      "scenario": "zoom-2",
+      "frames": 291,
+      "durationMs": 3068,
+      "fps": 94.85006518904824,
+      "p50Ms": 7,
+      "p95Ms": 32.39999999999782,
+      "p99Ms": 40,
+      "maxMs": 41.89999999999782,
+      "over33Ms": 9,
+      "over50Ms": 0,
+      "longTaskCount": 0,
+      "longTaskMaxMs": 0,
+      "longTaskUnsupported": null,
+      "wallElapsedMs": 3070,
+      "engineMetricsDelta": {
+        "Nodes": -192,
+        "LayoutCount": 109,
+        "RecalcStyleCount": 129,
+        "LayoutDuration": 0.02357,
+        "RecalcStyleDuration": 0.02632,
+        "ScriptDuration": 1.24161,
+        "TaskDuration": 1.83341
+      },
+      "strictPass": false
+    }
+  ],
+  "scopes": [
+    {
+      "stage": "assets",
+      "uiVisibleMs": 515.9999999887077,
+      "requests": 1,
+      "ok": true,
+      "bytes": 6184,
+      "entries": 10,
+      "total": 50,
+      "hasWholeDraft": false
+    },
+    {
+      "stage": "episodes",
+      "uiVisibleMs": 422.0000000059372,
+      "requests": 1,
+      "ok": true,
+      "bytes": 2869,
+      "entries": 4,
+      "total": 4,
+      "hasWholeDraft": false
+    }
+  ],
+  "memory": {
+    "afterLoadHeapBytes": 57607660,
+    "afterScopeHeapBytes": 61894896,
+    "afterRepeatedScopesHeapBytes": 61934136,
+    "beforeGesturesHeapBytes": 61934136,
+    "afterGesturesHeapBytes": 61940792,
+    "growthAfterGCBytes": 4333132
+  },
+  "network": {
+    "totalApiRequests": 48,
+    "scopedRequests": 23,
+    "writeRequests": [],
+    "browserExceptions": []
+  },
+  "strictTargets": {
+    "fpsMin": 58,
+    "p95MaxMs": 18,
+    "p99MaxMs": 33.4,
+    "longTaskMax": 0
+  },
+  "caveat": "Headless Chrome baseline: compare its WebGL renderer and blank-page cadence before extrapolating to desktop GPU.",
+  "blankBaseline": {
+    "scenario": "blank",
+    "frames": 503,
+    "durationMs": 3303.499999999998,
+    "fps": 152.2627516270623,
+    "p50Ms": 6.5,
+    "p95Ms": 7.100000000000136,
+    "p99Ms": 7.599999999999909,
+    "maxMs": 7.7000000000000455,
+    "over33Ms": 0,
+    "over50Ms": 0,
+    "longTaskCount": 0,
+    "longTaskMaxMs": 0,
+    "longTaskUnsupported": null,
+    "wallElapsedMs": 3312
+  },
+  "projectLoad": {
+    "ok": true,
+    "status": 200,
+    "nodes": 200,
+    "hasBoard": true,
+    "hasCreativeInlineBodies": false,
+    "hasCreativePointers": 3,
+    "payloadBytes": 63559
+  },
+  "boardSelectors": [
+    {
+      "label": null,
+      "options": 4,
+      "values": [
+        "ep-0",
+        "ep-1",
+        "ep-2",
+        "ep-3"
+      ]
+    },
+    {
+      "label": "浏览场次",
+      "options": 4,
+      "values": [
+        "",
+        "ep-0-seq-0",
+        "ep-0-seq-1",
+        "ep-0-seq-2"
+      ]
+    }
+  ],
+  "storyboardEpisodeSwitch": {
+    "value": "ep-3",
+    "options": 4
+  },
+  "strictPass": false,
+  "result": "below-target",
+  "isolation": "Temporary SQLite + CAS, temporary Chrome profile, no configured model, no ComfyUI calls."
+}

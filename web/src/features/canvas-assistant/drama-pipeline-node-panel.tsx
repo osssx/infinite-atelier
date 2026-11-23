@@ -110,7 +110,8 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
     const [validation, setValidation] = useState<string>("");
     const [generating, setGenerating] = useState(false);
     const [scopeOpen,setScopeOpen]=useState(false);
-    useEffect(()=>{if(!workspaceMode||workspaceTab!=="editor")setScopeOpen(false);},[workspaceMode,workspaceTab]);
+    // Both storyboard tabs share the same footer; close an open range menu when switching tabs.
+    useEffect(()=>setScopeOpen(false),[workspaceMode,workspaceTab]);
     const [storyboardView, setStoryboardView] = useState<"shots" | "video">("shots");
     const [assetEditorExpanded, setAssetEditorExpanded] = useState(workspaceMode);
     const [targetEpisodes, setTargetEpisodes] = useState(Number(node.metadata?.targetEpisodes ?? 10));
@@ -253,7 +254,8 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
     </section>;
     const ImpactContainer=workspaceMode?"section":"details";
     const ImpactHeading=workspaceMode?"header":"summary";
-    const compactStoryboardActions=storyboard&&workspaceMode&&assetEditorExpanded&&workspaceTab==="editor";
+    const compactStoryboardActions=storyboard&&workspaceMode&&assetEditorExpanded&&
+        (workspaceTab==="editor"||workspaceTab==="video");
     const scopeEpisode=linkedEpisodes.find(item=>item.id===selectedEpisode);
     const scopeLabel=selectedEpisode
         ? [scopeEpisode?.title||selectedEpisode,

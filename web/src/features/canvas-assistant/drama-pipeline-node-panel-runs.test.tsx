@@ -85,7 +85,7 @@ it.each(["dark","light"] as const)("matches episode planning footer button sizin
  expect(scope.classList.contains("ant-btn-sm")).toBe(false);
  expect(scope.style.background).toBe(canvasThemes[appearance].node.panel);
 });
-it("keeps the maximized storyboard footer to one themed toolbar; scopes and migration live in a popover",async()=>{
+it.each(["editor","video"] as const)("keeps the %s tab footer compact; scopes and migration live in a popover",async workspaceTab=>{
  const {useThemeStore}=await import("@/stores/use-theme-store");
  useThemeStore.setState({theme:"dark"});
  const node={id:"storyboard-1",type:"drama:storyboard",title:"分镜配置",position:{x:0,y:0},
@@ -101,13 +101,16 @@ it("keeps the maximized storyboard footer to one themed toolbar; scopes and migr
  const root=createRoot(container);roots.push(root);
  await act(async()=>root.render(<DramaPipelineNodePanel node={node}
   upstreamArtifacts={upstreamArtifacts} initialEpisodeId="episode-1" onChange={()=>{}}
-  projectId="project-1" workspaceMode workspaceTab="editor"/>));
+  projectId="project-1" workspaceMode workspaceTab={workspaceTab}/>));
  const toolbar=container.querySelector<HTMLElement>('[data-drama-storyboard-toolbar]')!;
  expect(toolbar).toBeTruthy();
  expect(toolbar.getAttribute("aria-label")).toBe("分镜生成与确认工具栏");
  expect(toolbar.classList.contains("flex")).toBe(true);
  expect(toolbar.classList.contains("grid-cols-2")).toBe(false);
  expect(toolbar.querySelectorAll("button")).toHaveLength(4);
+ expect(container.querySelectorAll('[data-drama-storyboard-toolbar]')).toHaveLength(1);
+ expect(container.querySelectorAll('select[aria-label="生成范围：剧集"]')).toHaveLength(0);
+ expect(container.querySelector('[data-drama-sequence-migration]')).toBeNull();
  expect(toolbar.textContent).toContain("生成范围");
  expect(toolbar.textContent).toContain("校验分镜");
  expect(toolbar.textContent).toContain("生成分镜候选");
@@ -150,4 +153,40 @@ it("keeps the maximized storyboard footer to one themed toolbar; scopes and migr
  });
  expect(toolbar.querySelector('[data-drama-storyboard-scope-summary]')?.textContent)
   .toContain("森林入口");
+});
+it("switches between storyboard and video footer without restoring legacy rows or leaving a stale popup",async()=>{
+ const node={id:"storyboard-switch",type:"drama:storyboard",title:"分镜配置",position:{x:0,y:0},
+  metadata:{dramaDraft:JSON.stringify({shots:[{
+   id:"shot-1",episodeId:"ep-1",order:1,description:"测试镜头",
+   characterVariantIds:[],propIds:[],keyPropIds:[]}]})}} as CanvasNodeData;
+ const upstreamArtifacts=[
+  JSON.stringify({assets:[]}),
+  JSON.stringify({episodes:[{id:"ep-1",title:"毛毛和豆豆",synopsis:"",ending:"",events:[],sourceRefs:[]}]})
+ ];
+ const container=document.createElement("div");document.body.append(container);
+ const root=createRoot(container);roots.push(root);
+ const render=async(workspaceTab:"editor"|"video")=>act(async()=>root.render(
+  <DramaPipelineNodePanel node={node} upstreamArtifacts={upstreamArtifacts}
+   projectId="project-1" initialEpisodeId="ep-1" onChange={()=>{}}
+   workspaceMode workspaceTab={workspaceTab}/>
+ ));
+ await render("editor");
+ const toolbar=()=>container.querySelector<HTMLElement>('[data-drama-storyboard-toolbar]');
+ expect(toolbar()?.classList.contains("flex")).toBe(true);
+ await act(async()=>{
+  toolbar()!.querySelector<HTMLButtonElement>('[aria-label="设置分镜生成范围"]')!.click();
+  await new Promise(resolve=>setTimeout(resolve,70));
+ });
+ expect(document.querySelector('[data-drama-storyboard-options]')).toBeTruthy();
+ await render("video");
+ expect(toolbar()?.classList.contains("flex")).toBe(true);
+ expect(toolbar()?.querySelectorAll("button")).toHaveLength(4);
+ expect(container.querySelector('[data-drama-sequence-migration]')).toBeNull();
+ expect(container.querySelector('select[aria-label="生成范围：场次"]')).toBeNull();
+ const movedOverlay=document.querySelector<HTMLElement>('[data-drama-storyboard-options]')?.closest<HTMLElement>(".ant-popover");
+ // AntD keeps the overlay in the DOM during its exit transition, but must disable interaction.
+ expect(movedOverlay?.style.pointerEvents).toBe("none");
+ await render("editor");
+ expect(toolbar()?.querySelectorAll("button")).toHaveLength(4);
+ expect(toolbar()?.querySelector<HTMLButtonElement>('[aria-label="设置分镜生成范围"]')).toBeTruthy();
 });

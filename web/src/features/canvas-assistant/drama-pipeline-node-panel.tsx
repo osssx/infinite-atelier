@@ -699,14 +699,16 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
                     .then(preview=>setRunPreviews(current=>({...current,[run.id]:preview})))
                     .catch(()=>setValidation("无法获取分镜差异预览"));
         }}>
-            <summary className="flex cursor-pointer list-none flex-wrap items-center justify-between gap-2 px-3 py-3">
-                <span className="min-w-0 truncate text-xs font-semibold">
-                  {run.episodeId==="*"?"完整剧集计划":(episodePlanning?episodeDraft?.episodes:linkedEpisodes)?.find(episode=>episode.id===run.episodeId)?.title ?? run.episodeId}
-                </span>
-                <span className="shrink-0 rounded-md border px-2 py-1 text-[11px] font-medium"
-                    style={{borderColor:theme.node.stroke,background:theme.toolbar.activeBg,color:theme.node.text}}>
-                    {run.status}{run.status==="ready"?" · 待采用":run.status==="running"?" · 生成中":
-                      run.status==="adopted"?" · 已采用":run.status==="failed"?" · 可重试":""}
+            <summary className="cursor-pointer list-none px-3 py-3">
+                <span className="flex w-full min-w-0 items-center gap-2" data-drama-run-summary-content>
+                    <span className="min-w-0 flex-1 truncate text-xs font-semibold">
+                      {run.episodeId==="*"?"完整剧集计划":(episodePlanning?episodeDraft?.episodes:linkedEpisodes)?.find(episode=>episode.id===run.episodeId)?.title ?? run.episodeId}
+                    </span>
+                    <span className="shrink-0 whitespace-nowrap rounded-md border px-2 py-1 text-[11px] font-medium"
+                        style={{borderColor:theme.node.stroke,background:theme.toolbar.activeBg,color:theme.node.text}}>
+                        {run.status}{run.status==="ready"?" · 待采用":run.status==="running"?" · 生成中":
+                          run.status==="adopted"?" · 已采用":run.status==="failed"?" · 可重试":""}
+                    </span>
                 </span>
             </summary>
             <div className="min-w-0 space-y-3 border-t p-3" style={{borderColor:theme.node.stroke}}>

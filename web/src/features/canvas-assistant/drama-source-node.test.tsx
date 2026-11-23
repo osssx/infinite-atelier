@@ -22,7 +22,7 @@ async function mount(hideTextEditor=false){
   metadata:{dramaDraft:"这是一段相当长的故事。".repeat(200),videoRatio:"16:9"}} as CanvasNodeData;
  await act(async()=>root.render(<DramaSourceNode node={node} onChange={onChange}
   onOpenEditor={hideTextEditor?undefined:onOpen} hideTextEditor={hideTextEditor}
-  onOpenVersions={()=>{}} onConfirmVersion={async()=>{}} versionBusy={false}/>));
+  onConfirmVersion={async()=>{}} versionBusy={false}/>));
  return {element,onOpen,onChange};
 }
 it("renders a compact, bounded story preview that opens the full editor",async()=>{
@@ -32,6 +32,8 @@ it("renders a compact, bounded story preview that opens the full editor",async()
  expect(preview.textContent).toContain("完整编辑器");
  expect(preview.textContent!.length).toBeLessThan(470);
  expect(element.querySelector('textarea[placeholder="粘贴原文"]')).toBeNull();
+ expect(element.textContent).not.toContain("历史版本");
+ expect(element.querySelector('button[aria-label*="历史"]')).toBeNull();
  await act(async()=>preview.click());
  expect(onOpen).toHaveBeenCalledTimes(1);
 });

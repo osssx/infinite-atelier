@@ -4464,7 +4464,7 @@ function AtelierCanvasPage() {
         ) : contentNode.type === "drama:source" ? (
             <DramaSourceNode key={contentNode.id} node={contentNode} onChange={patch => handleConfigNodeChange(contentNode.id, patch)}
                 onOpenEditor={()=>void openCreativeWorkspace(contentNode.id).catch(error=>message.error(String(error)))}
-                onOpenVersions={() => openTextVersions(contentNode.id)} onConfirmVersion={draft => confirmDramaVersion(contentNode.id,draft)}
+                onConfirmVersion={draft => confirmDramaVersion(contentNode.id,draft)}
                 versionBusy={textVersionBusy} />
         ) : contentNode.metadata?.creativePayloadRef ? (
             <LazyCreativeNode projectId={projectId} nodeId={contentNode.id} stage={contentNode.type}/>
@@ -4868,7 +4868,6 @@ function AtelierCanvasPage() {
                                 versionBusy={textVersionBusy} onPendingChange={onPendingChange}/>:
                             tab==="settings"?<DramaSourceNode node={creativeWorkspaceNode} hideTextEditor
                                 onChange={patch=>handleConfigNodeChange(creativeWorkspaceNode.id,patch)}
-                                onOpenVersions={()=>openTextVersions(creativeWorkspaceNode.id)}
                                 onConfirmVersion={draft=>confirmDramaVersion(creativeWorkspaceNode.id,draft)}
                                 versionBusy={textVersionBusy}/>:
                             <p className="text-xs" style={{color:theme.node.muted}}>故事是创作流水线的原文入口。下游节点将依据已确认的原文与美术设定生成内容。</p>:

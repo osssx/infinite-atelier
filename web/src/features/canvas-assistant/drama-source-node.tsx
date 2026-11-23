@@ -1,22 +1,19 @@
 import { useState } from "react";
 import { Button } from "antd";
-import { useTranslation } from "react-i18next";
-import { History, Upload, Maximize2 } from "lucide-react";
+import { Upload, Maximize2 } from "lucide-react";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
 import type { CanvasNodeData, CanvasNodeMetadata } from "@/types/canvas";
 import { dramaInlineNodeClass, dramaNodeControl, dramaNodePrimary, DramaNodeStatus } from "./drama-node-style";
 
-export function DramaSourceNode({node, onChange, onOpenVersions, onConfirmVersion, versionBusy,onOpenEditor,hideTextEditor=false}: {
+export function DramaSourceNode({node, onChange, onConfirmVersion, versionBusy,onOpenEditor,hideTextEditor=false}: {
     node: CanvasNodeData;
-    onOpenVersions: () => void;
     onConfirmVersion: (draft: string) => Promise<void>;
     versionBusy: boolean;
     onOpenEditor?:()=>void;
     hideTextEditor?:boolean;
     onChange: (patch: Partial<CanvasNodeMetadata>) => void;
 }) {
-    const {t} = useTranslation();
     const theme = canvasThemes[useThemeStore(state => state.theme)];
     const [error, setError] = useState("");
     const source = node.metadata?.dramaDraft ?? node.metadata?.content ?? node.metadata?.dramaConfirmed ?? "";
@@ -36,8 +33,6 @@ export function DramaSourceNode({node, onChange, onOpenVersions, onConfirmVersio
                 <DramaNodeStatus theme={theme} confirmed={confirmed} />
                 {onOpenEditor&&<Button size="small" icon={<Maximize2 size={14}/>} style={control}
                     onClick={onOpenEditor} onMouseDown={event=>event.stopPropagation()}>完整编辑</Button>}
-                <Button size="small" icon={<History size={14} />} style={control}
-                    onMouseDown={event => event.stopPropagation()} onClick={onOpenVersions}>{t("canvas.textVersions.title")}</Button>
             </div>
         </div>
         <div className="thin-scrollbar flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto overscroll-contain"

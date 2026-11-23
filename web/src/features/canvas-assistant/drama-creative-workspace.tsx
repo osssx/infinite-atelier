@@ -1,12 +1,11 @@
 import {lazy,Suspense,useCallback,useEffect,useId,useRef,useState,type ReactNode} from "react";
 import {createPortal} from "react-dom";
 import {ConfigProvider,Modal} from "antd";
-import {BookOpenText,Clapperboard,Database,Film,History,LayoutList,ShieldAlert,Sparkles,X} from "lucide-react";
+import {BookOpenText,Clapperboard,Film,History,LayoutList,ShieldAlert,Sparkles,X} from "lucide-react";
 import {canvasThemes,type CanvasTheme} from "@/lib/canvas-theme";
 import {useThemeStore} from "@/stores/use-theme-store";
 import {DramaNodeStatus} from "./drama-node-style";
 import type {DramaWorkspaceTab} from "./drama-pipeline-node-panel";
-const EpisodeBrowser=lazy(()=>import("./drama-creative-scope-browser").then(m=>({default:m.DramaCreativeScopeBrowser})));
 
 export type DramaWorkspaceFocus={episodeId?:string;sequenceId?:string;shotId?:string};
 export type WorkspacePendingRegistration=(key:string,save:(()=>Promise<void>)|null)=>void;
@@ -114,14 +113,12 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
  };
  const tabs:{id:DramaWorkspaceTab;label:string;icon:typeof BookOpenText}[]=[
   {id:"editor",label:episodeMode?"剧集编辑":"分镜表",icon:LayoutList},
-  ...(episodeMode?[{id:"scope" as const,label:"分页与单条 CAS",icon:Database}]:[]),
   ...(episodeMode?[]:[{id:"video" as const,label:"视频配置",icon:Film}]),
   {id:"runs",label:"生成候选",icon:Sparkles},
   {id:"history",label:"影响与历史",icon:History},
  ];
  const paneDesc:Record<DramaWorkspaceTab,string>={
   editor:episodeMode?"按集编辑剧情、事件、场次及来源引用":"检查分镜结构与镜头安排",
-  scope:"按页读取、精准保存和批量提交草案",
   video:"按镜头配置独立的视频生成参数",
   runs:"按运行状态浏览候选，展开查看内容与采用选项",
   history:"版本快照与上游影响直接在工作区内查看",
@@ -181,10 +178,7 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
     <div data-drama-workspace-content="" className={`thin-scrollbar min-h-0 min-w-0 flex-1 rounded-xl border p-3 sm:p-4 ${tab==="history"?"flex flex-col overflow-hidden":"overflow-y-auto overscroll-contain"}`}
      style={{...subtle}}>
      <Suspense fallback={<p role="status" className="text-xs" style={{color:theme.node.muted}}>正在按需加载工作区…</p>}>
-      {tab==="scope"&&episodeMode?
-       <EpisodeBrowser key={nodeId} projectId={projectId} nodeId={nodeId} kind="episodes"
-        initialEntryId={focus.episodeId} onPendingChange={registerPending}/>:
-       tab==="history"&&renderHistoryPanel
+      {tab==="history"&&renderHistoryPanel
          ? <div data-drama-history-layout="" className="grid h-full min-h-0 min-w-0 flex-1 grid-rows-[minmax(0,1fr)_minmax(0,2fr)] gap-3 xl:grid-cols-[minmax(220px,260px)_minmax(0,1fr)] xl:grid-rows-[minmax(0,1fr)]">
             <section aria-label="上游影响面板" className="min-h-0 min-w-0 overflow-hidden">
              <div data-drama-impact-scroll="" className="thin-scrollbar max-h-full min-w-0 overflow-y-auto overscroll-contain" style={{scrollbarGutter:"auto"}}>

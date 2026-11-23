@@ -7,8 +7,8 @@ export function LazyCreativeNode({projectId,nodeId,stage}:{projectId:string;node
     const [error,setError]=useState("");
     return <section className="thin-scrollbar flex h-full min-h-24 flex-col gap-3 overflow-y-auto p-4">
         {stage==="drama:storyboard"&&<p className="text-xs">请使用分镜配置的完整工作区编辑当前镜头。</p>}
-        {(stage==="drama:assets"||stage==="drama:episodes")&&<DramaCreativeScopeBrowser
-            projectId={projectId} nodeId={nodeId} kind={stage==="drama:assets"?"assets":"episodes"}/>}
+        {stage==="drama:episodes"&&<p className="text-xs">请使用剧集规划的完整工作区编辑当前剧集。</p>}
+        {stage==="drama:assets"&&<DramaCreativeScopeBrowser projectId={projectId} nodeId={nodeId} kind="assets"/>}
         <button className="rounded-lg border px-4 py-2 disabled:opacity-50" disabled={loading} onClick={async()=>{
             setLoading(true);setError("");
             try{await ensureCreativeNodesLoaded(projectId,[nodeId]);}

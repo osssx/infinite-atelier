@@ -67,7 +67,7 @@ function describeDramaValidation(errors: {code:string;shotId?:string;id?:string}
         : []).join("\n");
 }
 
-export type DramaWorkspaceTab="editor"|"scope"|"video"|"runs"|"history";
+export type DramaWorkspaceTab="editor"|"video"|"runs"|"history";
 
 export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, videoConfigs, onRefreshVideoConfig, onOpenVideoConfig, onCreateReferenceConfig, onPickCanvasImage, onCreateDramaShotGroup, projectId, upstreamText = "", upstreamContext = "", upstreamArtifacts = [], supplementalEpisodes = [], assetUsage = {}, confirmedAssetPlan, savedAssetReferences, mergedReferences, legacyAssetPlanning = false, imageNodes = [], productionContext = "", productionStyle, onOpenVersions, onConfirmVersion, onBeforeDramaRun, onAdoptDramaRun, onMigrateDramaSequences, onAdoptDramaAssetCandidate, versionBusy = false, workspaceMode = false, workspaceTab = "editor", initialEpisodeId, initialShotId }: {
     node: CanvasNodeData;
@@ -445,7 +445,25 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
                             onChange({targetEpisodes:count});
                         }} />
                 </label>
-                <DramaEpisodeFields episodes={episodeDraft?.episodes ?? []} initialEpisodeId={initialEpisodeId} expanded={assetEditorExpanded} disabled={generating} control={control} onChange={episodes => {
+                <DramaEpisodeFields episodes={episodeDraft?.episodes ?? []} initialEpisodeId={initialEpisodeId}
+                    projectId={workspaceMode?projectId:undefined} nodeId={workspaceMode?node.id:undefined}
+                    onWaitForDraftSave={workspaceMode&&workspaceTab==="editor"&&onBeforeDramaRun?async()=>{
+                        await onBeforeDramaRun();
+                    }:undefined}
+                    onReloadEpisode={workspaceMode&&projectId&&workspaceTab==="editor"?async()=>{
+                        await useCanvasStore.getState().loadProject(projectId);
+                        await ensureCreativeNodesLoaded(projectId,[node.id]);
+                    }:undefined}
+                    onPatchEpisode={workspaceMode&&projectId&&workspaceTab==="editor"?async(entryId,expectedDigest,changes,sequenceId)=>{
+                        await commitAssistantCanvasGraphWithSaveBarrier(projectId,()=>
+                            canvasApi<CanvasBackendProject>(
+                                `/api/v1/projects/${encodeURIComponent(projectId)}/drama-pipeline/entry-draft`,"PATCH",
+                                {nodeId:node.id,kind:"episodes",entryId,expectedDigest,operationId:crypto.randomUUID(),
+                                    changes,...(sequenceId?{sequenceId}:{})}),
+                            {textVersionNodeId:node.id,keepCreativePointers:true,invalidateCreativeNodeId:node.id});
+                        await ensureCreativeNodesLoaded(projectId,[node.id]);
+                    }:undefined}
+                    expanded={assetEditorExpanded} disabled={generating||versionBusy} control={control} onChange={episodes => {
                     const next = JSON.stringify({...episodeDraft,episodes});
                     setValidation("");
                     onChange({dramaDraft:next});

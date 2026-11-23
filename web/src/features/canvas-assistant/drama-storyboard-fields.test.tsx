@@ -41,17 +41,17 @@ const props:DramaAsset[]=[
 const roots:Root[]=[];
 beforeEach(()=>{vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT",true);useThemeStore.setState({theme:"dark"});});
 afterEach(async()=>{for(const x of roots)await act(async()=>x.unmount());roots.length=0;vi.unstubAllGlobals();});
-async function mount(opts:{expanded?:boolean;initialShotId?:string;disabled?:boolean;assets?:DramaAsset[]}={}){
+async function mount(opts:{expanded?:boolean;initialShotId?:string;initialEpisodeId?:string;initialShots?:DramaShot[];disabled?:boolean;assets?:DramaAsset[]}={}){
  const div=document.createElement("div");document.body.append(div);
  const root=createRoot(div);roots.push(root);
  const changes=vi.fn<(shots:DramaShot[])=>void>();
  let updateShots:Dispatch<SetStateAction<DramaShot[]>>=()=>{};
  function Editor(){
-  const [shots,setShots]=useState<DramaShot[]>(original);
+  const [shots,setShots]=useState<DramaShot[]>(opts.initialShots??original);
   updateShots=setShots;
   return <div style={{height:720,width:1150}}>
    <DramaStoryboardFields shots={shots} episodes={episodes} assets={opts.assets??[...scenes,...characters,...props]}
-    expanded={opts.expanded??true} disabled={opts.disabled??false} initialShotId={opts.initialShotId}
+    expanded={opts.expanded??true} disabled={opts.disabled??false} initialEpisodeId={opts.initialEpisodeId} initialShotId={opts.initialShotId}
     onChange={next=>{changes(next);setShots(next)}}/>
   </div>;
  }
@@ -98,6 +98,94 @@ describe("maximized storyboard editor mirrors episode localized read/edit UX",()
    expect(item?.querySelector(`[data-shot-readonly="${id}"]`)).toBeTruthy();
    expect(item?.querySelector('input,textarea,select')).toBeNull();
   }
+  expect(changes).not.toHaveBeenCalled();
+ });
+
+ it("adds a blank shot with stable ID in the current episode and selects it for editing",async()=>{
+  const {div,changes}=await mount({initialShotId:"shot-1"});
+  const add=div.querySelector<HTMLButtonElement>('[aria-label="镜头目录"] button[aria-label="添加镜头"]')!;
+  expect(add).toBeTruthy();
+  expect(add.style.background).toBe(canvasThemes.dark.node.panel);
+  await click(add);
+  expect(changes).toHaveBeenCalledTimes(1);
+  const next=changes.mock.lastCall![0];
+  expect(next).toHaveLength(4);
+  expect(next.slice(0,3)).toEqual(original);
+  expect(next[3]).toEqual({
+   id:expect.stringMatching(/^shot_[a-z0-9-]+$/i),episodeId:"ep-1",order:3,description:"",
+   characterVariantIds:[],propIds:[],keyPropIds:[]
+  });
+  expect(next[3].id).not.toBe("shot-1");
+  expect(div.querySelector('[aria-label="分镜镜头导航"] button[aria-pressed="true"]')
+   ?.getAttribute("aria-label")).toContain("镜头 3");
+  expect(div.querySelector('[data-shot-readonly="description"]')?.textContent).toBe("未填写");
+  expect(div.querySelector('[aria-label="镜头目录"]')?.textContent).toContain("3 镜");
+ });
+ it("requires canvas-themed confirmation for deleting, supports cancel, and selects the adjacent shot",async()=>{
+  const {div,changes}=await mount({initialShotId:"shot-1"});
+  await click(div.querySelector('[aria-label="删除镜头 1"]'));
+  const dialog=div.querySelector<HTMLElement>('[role="alertdialog"][aria-label="确认删除镜头 1"]')!;
+  expect(dialog).toBeTruthy();
+  expect(dialog.style.background).toBe(canvasThemes.dark.toolbar.activeBg);
+  expect(dialog.textContent).toContain("已确认版本、视频配置和已生成媒体不会自动删除");
+  expect(changes).not.toHaveBeenCalled();
+  await click([...dialog.querySelectorAll("button")].find(el=>el.textContent==="取消")!);
+  expect(div.querySelector('[role="alertdialog"]')).toBeNull();
+  expect(changes).not.toHaveBeenCalled();
+  await click(div.querySelector('[aria-label="删除镜头 1"]'));
+  await act(async()=>useThemeStore.setState({theme:"light"}));
+  expect(div.querySelector<HTMLElement>('[role="alertdialog"]')?.style.background)
+   .toBe(canvasThemes.light.toolbar.activeBg);
+  const confirm=div.querySelector<HTMLButtonElement>('button[aria-label="确认删除镜头 1"]')!;
+  expect(confirm.style.background).toBe(canvasThemes.light.node.text);
+  await click(confirm);
+  expect(changes).toHaveBeenCalledTimes(1);
+  expect(changes.mock.lastCall![0]).toEqual([{...original[1],order:1},original[2]]);
+  expect(div.querySelector('[role="alertdialog"]')).toBeNull();
+  expect(div.querySelector('[data-shot-readonly="description"]')?.textContent).toBe("乌龟回应");
+  expect(div.querySelector('[aria-label="镜头目录"]')?.textContent).toContain("1 镜");
+ });
+ it("keeps the empty episode editable when deleting its last shot",async()=>{
+  const {div,changes}=await mount({initialShotId:"shot-3"});
+  expect(div.querySelector('[data-shot-readonly="description"]')?.textContent).toBe("转场");
+  await click(div.querySelector('[aria-label="删除镜头 1"]'));
+  await click(div.querySelector('button[aria-label="确认删除镜头 1"]'));
+  expect(changes.mock.lastCall![0]).toEqual(original.slice(0,2));
+  expect(div.textContent).toContain("当前剧集暂无镜头");
+  expect(div.querySelector<HTMLSelectElement>('select[aria-label="选择分镜剧集"]')?.value).toBe("ep-2");
+  await click(div.querySelector('button[aria-label="添加镜头"]'));
+  const next=changes.mock.lastCall![0];
+  expect(next).toHaveLength(3);
+  expect(next[2].episodeId).toBe("ep-2");
+  expect(next[2].order).toBe(1);
+  expect(div.querySelector('[data-shot-readonly="description"]')?.textContent).toBe("未填写");
+ });
+ it("lets an entirely empty storyboard add its first shot in a confirmed episode",async()=>{
+  const {div,changes}=await mount({initialShots:[],initialEpisodeId:"ep-1"});
+  expect(div.textContent).toContain("当前剧集暂无镜头");
+  await click(div.querySelector('button[aria-label="添加镜头"]'));
+  expect(changes.mock.lastCall![0]).toHaveLength(1);
+  expect(changes.mock.lastCall![0][0].episodeId).toBe("ep-1");
+  expect(div.querySelector('[aria-label="当前分镜编辑区"]')).toBeTruthy();
+ });
+ it("blocks stale deletion after the active shot changes and clears confirmation on selection",async()=>{
+  const {div,changes,externalUpdate}=await mount({initialShotId:"shot-1"});
+  await click(div.querySelector('[aria-label="删除镜头 1"]'));
+  await externalUpdate(shot=>({...shot,description:"外部更新"}));
+  const dialog=div.querySelector<HTMLElement>('[role="alertdialog"]')!;
+  expect(dialog.textContent).toContain("镜头内容已变化");
+  expect(dialog.querySelector<HTMLButtonElement>('button[aria-label="确认删除镜头 1"]')?.disabled).toBe(true);
+  expect(changes).not.toHaveBeenCalled();
+  await click([...dialog.querySelectorAll("button")].find(el=>el.textContent==="取消")!);
+  await click(div.querySelector('[aria-label="删除镜头 1"]'));
+  await click(div.querySelector('[aria-label^="选择镜头 2"]'));
+  expect(div.querySelector('[role="alertdialog"]')).toBeNull();
+  expect(changes).not.toHaveBeenCalled();
+ });
+ it("disables structural shot changes during generation",async()=>{
+  const {div,changes}=await mount({disabled:true});
+  expect(div.querySelector<HTMLButtonElement>('button[aria-label="添加镜头"]')?.disabled).toBe(true);
+  expect(div.querySelector<HTMLButtonElement>('button[aria-label="删除镜头 1"]')?.disabled).toBe(true);
   expect(changes).not.toHaveBeenCalled();
  });
  it("shows current characters, props and scene as themed read-only fields",async()=>{

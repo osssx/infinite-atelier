@@ -1,5 +1,5 @@
 import {useState,type CSSProperties} from "react";
-import {Clapperboard,Pencil} from "lucide-react";
+import {AlertTriangle,Clapperboard,Pencil,Plus,Trash2} from "lucide-react";
 import {canvasThemes,type CanvasTheme} from "@/lib/canvas-theme";
 import {useThemeStore} from "@/stores/use-theme-store";
 import type {DramaAsset,DramaShot} from "./canvas-drama-pipeline";
@@ -167,19 +167,63 @@ export function DramaStoryboardFields({shots,episodes,assets,expanded,disabled,c
   "--tw-ring-color":theme.node.activeStroke} as CSSProperties;
  const [episodeId,setEpisodeId]=useState(initialEpisodeId||shots.find(shot=>shot.id===initialShotId)?.episodeId||"");
  const [shotId,setShotId]=useState(initialShotId??"");
- const groups=[...new Set(shots.map(shot=>shot.episodeId))];
+ const [pendingDelete,setPendingDelete]=useState<{episodeId:string;shotId:string;snapshot:string}|null>(null);
+ const groups=[...new Set([...episodes.map(item=>item.id),...shots.map(shot=>shot.episodeId)])];
  const activeEpisode=groups.includes(episodeId)?episodeId:groups[0];
  const episodeShots=shots.filter(shot=>shot.episodeId===activeEpisode).sort((a,b)=>a.order-b.order);
  const active=episodeShots.find(shot=>shot.id===shotId)??episodeShots[0];
  const episode=episodes.find(item=>item.id===activeEpisode);
  const duration=episodeShots.reduce((sum,shot)=>sum+(shot.durationSec??0),0);
- const chooseEpisode=(id:string)=>{setEpisodeId(id);setShotId("");};
- const chooseShot=(id:string)=>setShotId(id);
+ const chooseEpisode=(id:string)=>{setPendingDelete(null);setEpisodeId(id);setShotId("");};
+ const chooseShot=(id:string)=>{setPendingDelete(null);setShotId(id);};
  const selectedShotIndex=active?episodeShots.findIndex(shot=>shot.id===active.id):-1;
  const summary=(shot:DramaShot)=>shot.shotSize?.trim()||"未设置景别";
- if(!active)return <p className="rounded-xl border border-dashed px-3 py-4" style={control??card}>
-  确认资产和剧集规划后，点击「生成草案」。
- </p>;
+ const smallAction="inline-flex min-h-8 items-center justify-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-medium transition-opacity hover:opacity-80 focus-visible:outline focus-visible:outline-2 disabled:cursor-not-allowed disabled:opacity-40";
+ const addShot=()=>{
+  if(disabled||!activeEpisode)return;
+  const used=new Set(shots.map(item=>item.id));
+  let id:string;
+  do{id="shot_"+crypto.randomUUID();}while(used.has(id));
+  const order=episodeShots.reduce((max,shot)=>Math.max(max,shot.order),0)+1;
+  if(!Number.isSafeInteger(order))return;
+  const next:DramaShot={id,episodeId:activeEpisode,order,description:"",
+   characterVariantIds:[],propIds:[],keyPropIds:[]};
+  setPendingDelete(null);
+  setEpisodeId(activeEpisode);setShotId(id);
+  onChange([...shots,next]);
+ };
+ if(!active)return <fieldset disabled={disabled} data-storyboard-editor-layout={expanded?"expanded":"compact"}
+  className="min-w-0 rounded-xl border p-4" style={{...card,colorScheme:appearance}}>
+  <div className="flex min-w-0 flex-wrap items-end justify-between gap-3">
+   <div className="min-w-0 flex-1 space-y-2">
+    <p className="text-sm font-semibold">{groups.length?"当前剧集暂无镜头":"尚无可编辑的分镜"}</p>
+    <p className="text-xs" style={caption}>{groups.length?"可添加一个空白镜头，逐项填写内容。":"请先在剧集规划中确认剧集，再添加镜头。"}</p>
+    {groups.length>0&&<select aria-label="选择分镜剧集" value={activeEpisode}
+      className="min-w-0 max-w-full rounded-lg border px-2.5 py-2 text-xs"
+      style={fieldStyle} onChange={event=>chooseEpisode(event.target.value)}>
+      {groups.map(id=><option key={id} value={id}>{episodes.find(item=>item.id===id)?.title||id}</option>)}
+    </select>}
+   </div>
+   <button type="button" className={smallAction} style={card} onClick={addShot}
+    disabled={!activeEpisode} aria-label="添加镜头"><Plus size={14} aria-hidden="true"/>添加镜头</button>
+  </div>
+ </fieldset>;
+ const deleteStale=Boolean(pendingDelete&&(
+  pendingDelete.shotId!==active.id||pendingDelete.episodeId!==active.episodeId||
+  pendingDelete.snapshot!==JSON.stringify(active)));
+ const deleteShot=()=>{
+  if(disabled||!pendingDelete||deleteStale)return;
+  const index=episodeShots.findIndex(item=>item.id===active.id);
+  const nextSelected=episodeShots[index+1]??episodeShots[index-1];
+  const nextOrder=new Map(episodeShots.filter(shot=>shot.id!==active.id)
+   .map((shot,index)=>[shot.id,index+1]));
+  setShotId(nextSelected?.id??"");
+  setPendingDelete(null);
+  onChange(shots.filter(shot=>shot.id!==active.id).map(shot=>{
+   const order=nextOrder.get(shot.id);
+   return order!==undefined&&order!==shot.order?{...shot,order}:shot;
+  }));
+ };
  const write=(next:DramaShot)=>onChange(shots.map(shot=>shot.id===active.id?next:shot));
  const patch=<K extends keyof DramaShot>(key:K,value:DramaShot[K])=>write({...active,[key]:value});
  const optional=(key:"shotSize"|"camera"|"action"|"dialogue"|"sequenceId"|"sceneVariantId",value:string)=>{
@@ -217,8 +261,14 @@ export function DramaStoryboardFields({shots,episodes,assets,expanded,disabled,c
      <span className="inline-flex items-center gap-2 text-sm font-semibold">
       <Clapperboard size={15} style={caption}/>镜头目录
      </span>
-     <span className="rounded-md px-2 py-1 text-[11px] font-medium tabular-nums"
-      style={{background:theme.toolbar.activeBg,color:theme.node.muted}}>{episodeShots.length} 镜</span>
+     <div className="flex shrink-0 items-center gap-1.5">
+      <span className="rounded-md px-2 py-1 text-[11px] font-medium tabular-nums"
+       style={{background:theme.toolbar.activeBg,color:theme.node.muted}}>{episodeShots.length} 镜</span>
+      <button type="button" title="添加镜头" aria-label="添加镜头"
+       className={smallAction} style={card} onClick={addShot} disabled={disabled}>
+       <Plus size={13} aria-hidden="true"/>添加
+      </button>
+     </div>
     </div>
     <label className="grid min-w-0 gap-1 text-xs" style={caption}>当前剧集
      <select aria-label="选择分镜剧集" className="w-full min-w-0 rounded-lg border px-2.5 py-2 text-xs"
@@ -274,10 +324,42 @@ export function DramaStoryboardFields({shots,episodes,assets,expanded,disabled,c
      <p className="text-[11px] font-medium" style={caption}>第 {groups.indexOf(activeEpisode)+1} 集 · 镜头 {selectedShotIndex+1}</p>
      <h3 className="mt-1 truncate text-base font-semibold">{summary(active)}</h3>
     </div>
-    <span className="rounded-lg border px-2 py-1 text-[11px] tabular-nums" style={card}>
-     {active.durationSec??"—"} 秒 · {episodeShots.length} 镜
-    </span>
+    <div className="flex shrink-0 flex-wrap items-center gap-2">
+     <span className="rounded-lg border px-2 py-1 text-[11px] tabular-nums" style={card}>
+      {active.durationSec??"—"} 秒 · {episodeShots.length} 镜
+     </span>
+     <button type="button" aria-label={`删除镜头 ${selectedShotIndex+1}`}
+      className={smallAction} style={card} disabled={disabled}
+      onClick={()=>setPendingDelete({episodeId:active.episodeId,shotId:active.id,snapshot:JSON.stringify(active)})}>
+      <Trash2 size={13} aria-hidden="true"/>删除镜头
+     </button>
+    </div>
    </header>}
+   {expanded&&pendingDelete?.episodeId===active.episodeId&&pendingDelete.shotId===active.id&&
+    <div role="alertdialog" aria-label={`确认删除镜头 ${selectedShotIndex+1}`}
+     className="space-y-3 rounded-xl border p-3 sm:p-4"
+     style={{...card,background:theme.toolbar.activeBg}}>
+     <div className="flex items-start gap-2">
+      <AlertTriangle size={16} className="mt-0.5 shrink-0" aria-hidden="true" style={caption}/>
+      <div className="min-w-0 space-y-1">
+       <p className="text-sm font-semibold">确定删除当前第 {selectedShotIndex+1} 个镜头？</p>
+       <p className="text-xs leading-relaxed" style={caption}>
+        删除仅影响当前分镜草案。其他镜头、已确认版本、视频配置和已生成媒体不会自动删除。
+        如有视频配置引用此镜头，后续需自行检查。
+       </p>
+       {deleteStale&&<p role="alert" className="text-xs" style={caption}>
+        镜头内容已变化，请取消后重新发起删除。
+       </p>}
+      </div>
+     </div>
+     <div className="flex flex-wrap justify-end gap-2">
+      <button type="button" className={smallAction} style={card} onClick={()=>setPendingDelete(null)}>取消</button>
+      <button type="button" aria-label={`确认删除镜头 ${selectedShotIndex+1}`}
+       className={smallAction+" font-semibold"} disabled={deleteStale}
+       style={{background:theme.node.text,color:theme.node.panel,borderColor:theme.node.stroke}}
+       onClick={deleteShot}>确认删除</button>
+     </div>
+    </div>}
    {episode?.targetDurationSec&&<p className="text-xs" style={caption}>
     当前剧集镜头时长合计 {duration} 秒 · 目标 {episode.targetDurationSec} 秒
    </p>}

@@ -4,6 +4,7 @@ import type {ReactNode} from "react";
 import {createRoot,type Root} from "react-dom/client";
 import {afterEach,beforeEach,expect,it,vi} from "vitest";
 import type {DramaAsset} from "./canvas-drama-pipeline";
+import type {AssetDecision} from "./drama-asset-merge";
 
 vi.mock("antd",()=>({
  Button:({children,disabled,onClick}:{children:ReactNode;disabled?:boolean;onClick?:()=>void})=>
@@ -21,10 +22,10 @@ afterEach(async()=>{
  for(const root of roots)await act(async()=>root.unmount());
  roots.length=0;document.body.replaceChildren();vi.unstubAllGlobals();
 });
-async function mount(disabled=false){
+async function mount(disabled=false,applyImpl?:(decisions:Record<string,AssetDecision>)=>Promise<void>|void){
  const div=document.createElement("div");document.body.append(div);
  const root=createRoot(div);roots.push(root);
- const apply=vi.fn(),discard=vi.fn(),parentWheel=vi.fn(),parentPointer=vi.fn();
+ const apply=vi.fn(applyImpl??(()=>{})),discard=vi.fn(),parentWheel=vi.fn(),parentPointer=vi.fn();
  await act(async()=>root.render(<div onWheel={parentWheel} onPointerDown={parentPointer}>
   <DramaAssetCandidates assets={[]} candidates={candidates}
    disabled={disabled} onApply={apply} onDiscard={discard}/>
@@ -58,6 +59,25 @@ it("keeps the header and actions outside a bounded, keyboard-scrollable candidat
  const commit=[...details.querySelectorAll("button")].find(button=>button.textContent==="合入所选资产")!;
  await act(async()=>commit.click());
  expect(apply).toHaveBeenCalledWith({"candidate-12":{action:"new",targetId:undefined}});
+});
+it("submits a candidate review only once while its backend transaction is pending",async()=>{
+ let complete:()=>void=()=>{};
+ const pending=new Promise<void>(resolve=>{complete=resolve;});
+ const {div,apply,discard}=await mount(false,()=>pending);
+ const button=[...div.querySelectorAll<HTMLButtonElement>("button")].find(b=>b.textContent==="合入所选资产")!;
+ await act(async()=>{
+  button.click();button.click();
+  await Promise.resolve();
+ });
+ expect(apply).toHaveBeenCalledTimes(1);
+ expect(button.disabled).toBe(true);
+ expect(div.querySelector<HTMLSelectElement>('[aria-label="候选 1处理方式"]')?.disabled).toBe(true);
+ const discardButton=[...div.querySelectorAll<HTMLButtonElement>("button")].find(b=>b.textContent==="丢弃候选")!;
+ expect(discardButton.disabled).toBe(true);
+ await act(async()=>{complete();await pending;});
+ expect(button.disabled).toBe(false);
+ expect(discardButton.disabled).toBe(false);
+ expect(discard).not.toHaveBeenCalled();
 });
 it("prevents scroll/drag gestures in candidate list from reaching the canvas and retains the discard action",async()=>{
  const {div,discard,parentWheel,parentPointer}=await mount();

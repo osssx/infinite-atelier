@@ -205,6 +205,86 @@ test("P2.4: first-time asset creation adopts 12 generated candidates from an emp
  assert.equal(stale.statusCode,409,stale.body);
  assert.equal(stale.json().code,"drama_asset_candidate_conflict");
 });
+
+test("P2.4: adopting into a connected but completely blank storyboard preserves its empty state",async t=>{
+ const db=new DatabaseSync(":memory:");initializeSchema(db);t.after(()=>db.close());
+ const base=JSON.stringify({assets});
+ const proposed=[...suggested,...Array.from({length:10},(_,i)=>makeAsset("extra-prop-"+i,"prop","道具 "+i))];
+ const nodes=[
+  {id:"assets",type:"drama:assets",metadata:{dramaDraft:base,dramaConfirmed:base,
+   dramaAssetCandidate:{id:"review",baseline:base,assets:proposed}}},
+  {id:"empty-board",type:"drama:storyboard",metadata:{dramaDraft:"",dramaConfirmed:""}},
+ ];
+ createProject(db,{id:"asset-blank-board",document:{title:"Blank board",nodes,
+  connections:[{id:"asset-to-board",fromNodeId:"assets",toNodeId:"empty-board"}]}});
+ const app=buildApp({db,authorize:req=>req.headers["x-p24"]==="ok"});
+ t.after(async()=>app.close());
+ const path="/api/v1/projects/asset-blank-board/drama-pipeline/asset-candidates/adopt";
+ const before=getProject(db,"asset-blank-board"),boardBefore=before.document.nodes[1];
+ const payload={nodeId:"assets",candidateId:"review",
+  decisions:Object.fromEntries(proposed.map(asset=>[asset.id,{action:"new"}]))};
+ const response=await app.inject({method:"POST",url:path,headers:{"x-p24":"ok"},payload});
+ assert.equal(response.statusCode,200,response.body);
+ const after=getProject(db,"asset-blank-board");
+ assert.equal(after.revision,before.revision+1);
+ assert.deepEqual(after.document.nodes.find(node=>node.id==="empty-board"),boardBefore);
+ assert.equal(readAssetDraft(after.document.nodes.find(node=>node.id==="assets").metadata.dramaDraft).assets.length,14);
+ assert.equal(after.document.nodes.find(node=>node.id==="assets").metadata.dramaConfirmed,base);
+ const retry=await app.inject({method:"POST",url:path,headers:{"x-p24":"ok"},payload});
+ assert.equal(retry.statusCode,409,retry.body);
+ assert.equal(retry.json().code,"drama_asset_candidate_conflict");
+});
+test("P2.4: empty current storyboard draft with confirmed shots creates a mapped draft but keeps confirmation",t=>{
+ const {db,get,service,command}=fixture(t);
+ const before=get();
+ const graph=structuredClone(before.document);
+ const board=graph.nodes.find(node=>node.id==="board");
+ const confirmed=board.metadata.dramaConfirmed;
+ board.metadata.dramaDraft="";
+ db.prepare("UPDATE projects SET document_json=?,revision=? WHERE id=?")
+  .run(validateProjectDocument(graph),before.revision+1,"asset-p24");
+ const result=adoptDramaAssetCandidates(service,"asset-p24",command({
+  "generated-hero":{action:"variant",targetId:"hero"},
+  "generated-prop":{action:"new"},
+ }));
+ assert.equal(result.revision,3);
+ const after=get().document.nodes.find(node=>node.id==="board");
+ assert.equal(after.metadata.dramaConfirmed,confirmed);
+ const shots=readStoryboardDraft(after.metadata.dramaDraft).shots;
+ assert.equal(shots[1].characterVariantIds[0],result.mapping.variantIds["blue-coat"]);
+ assert.equal(shots[1].propIds[0],result.mapping.assetIds["generated-prop"]);
+});
+test("P2.4: nonempty invalid storyboard draft still rejects atomically (not silently skipped)",t=>{
+ const {db,get,service,command}=fixture(t);
+ const before=get();
+ const graph=structuredClone(before.document);
+ graph.nodes.find(node=>node.id==="board").metadata.dramaDraft="broken-storyboard";
+ db.prepare("UPDATE projects SET document_json=?,revision=? WHERE id=?")
+  .run(validateProjectDocument(graph),before.revision+1,"asset-p24");
+ const snapshot=get();
+ assert.throws(()=>adoptDramaAssetCandidates(service,"asset-p24",command({
+  "generated-hero":{action:"variant",targetId:"hero"},
+  "generated-prop":{action:"new"},
+ })),/drama_asset_candidate_conflict/);
+ assert.deepEqual(get().document,snapshot.document);
+});
+test("P2.4: old asset nodes with content-only drafts accept a matching candidate; changed baselines remain conflicts",t=>{
+ const db=new DatabaseSync(":memory:");initializeSchema(db);t.after(()=>db.close());
+ const base=JSON.stringify({assets});
+ createProject(db,{id:"asset-content-only",document:{title:"Legacy",nodes:[{
+  id:"assets",type:"drama:assets",metadata:{content:base,
+   dramaAssetCandidate:{id:"review",baseline:base,assets:suggested}},
+ }],connections:[]}});
+ const svc={db,getProject,validateDocument:validateProjectDocument,emitEvent:emitProjectEvent};
+ const command={nodeId:"assets",candidateId:"review",decisions:{
+  "generated-hero":{action:"new"},"generated-prop":{action:"new"}}};
+ const result=adoptDramaAssetCandidates(svc,"asset-content-only",command);
+ assert.equal(result.revision,2);
+ assert.equal(readAssetDraft(getProject(db,"asset-content-only").document.nodes[0].metadata.dramaDraft).assets.length,4);
+ const stale=getProject(db,"asset-content-only");
+ assert.throws(()=>adoptDramaAssetCandidates(svc,"asset-content-only",command),/drama_asset_candidate_conflict/);
+ assert.equal(getProject(db,"asset-content-only").revision,stale.revision);
+});
 test("P2.4: authenticated adoption endpoint checks identity and rejects duplicate second apply",async t=>{
  const {db,get,service,command}=fixture(t);
  const app=buildApp({db,authorize:req=>req.headers["x-p24"]==="ok"});

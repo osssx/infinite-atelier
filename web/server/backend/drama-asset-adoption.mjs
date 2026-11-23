@@ -18,8 +18,10 @@ export function adoptDramaAssetCandidates({db,getProject,validateDocument,emitEv
   const node=document.nodes.find(item=>item.id===nodeId&&item.type==="drama:assets");
   if(!node)throw fail("drama_asset_not_found",404);
   const candidate=node.metadata?.dramaAssetCandidate;
-  if(!candidate||candidate.id!==candidateId||
-   candidate.baseline!==(node.metadata?.dramaDraft||node.metadata?.dramaConfirmed||""))
+  // Match the editor's draft preference, including the legacy content-only
+  // asset nodes. A genuinely changed draft still invalidates the candidate.
+  const currentBaseline=node.metadata?.dramaDraft||node.metadata?.dramaConfirmed||node.metadata?.content||"";
+  if(!candidate||candidate.id!==candidateId||candidate.baseline!==currentBaseline)
    throw fail("drama_asset_candidate_conflict",409);
   // A newly created asset node has no prior draft; its first reviewed
   // generation must be able to establish an empty asset collection.
@@ -85,7 +87,12 @@ export function adoptDramaAssetCandidates({db,getProject,validateDocument,emitEv
    document.nodes.filter(item=>item.id===edge.toNodeId&&item.type==="drama:storyboard"));
   const targetBodies=[];
   for(const board of boards){
-   const parsed=readStoryboardDraft(board.metadata?.dramaDraft??board.metadata?.dramaConfirmed??"");
+   // A storyboard may be connected before any shots exist. It has no draft
+   // references to remap and must not block adopting the first assets.
+   // Keep malformed nonempty storyboard bodies as real conflicts.
+   const boardBody=board.metadata?.dramaDraft||board.metadata?.dramaConfirmed||board.metadata?.content||"";
+   if(!boardBody.trim())continue;
+   const parsed=readStoryboardDraft(boardBody);
    if(!parsed)throw fail("drama_asset_candidate_conflict",409);
    const shots=parsed.shots.map(shot=>({...shot,
     characterVariantIds:shot.characterVariantIds.map(id=>mapped(id,variantMapping)),

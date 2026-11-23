@@ -184,13 +184,23 @@ export function DramaStoryboardFields({shots,episodes,assets,expanded,disabled,c
   const used=new Set(shots.map(item=>item.id));
   let id:string;
   do{id="shot_"+crypto.randomUUID();}while(used.has(id));
-  const order=episodeShots.reduce((max,shot)=>Math.max(max,shot.order),0)+1;
-  if(!Number.isSafeInteger(order))return;
-  const next:DramaShot={id,episodeId:activeEpisode,order,description:"",
+  // Insert at the selected shot in logical order, not at the end of the draft.
+  // Renumber only this episode; other episodes and all stable shot IDs stay intact.
+  const insertAt=active?selectedShotIndex+1:0;
+  const next:DramaShot={id,episodeId:activeEpisode,order:insertAt+1,description:"",
    characterVariantIds:[],propIds:[],keyPropIds:[]};
+  const ordered=[...episodeShots];
+  ordered.splice(insertAt,0,next);
+  const orderById=new Map(ordered.map((shot,index)=>[shot.id,index+1]));
+  const updated=shots.map(shot=>{
+   const order=orderById.get(shot.id);
+   return order!==undefined&&shot.order!==order?{...shot,order}:shot;
+  });
+  const position=active?shots.findIndex(shot=>shot.id===active.id)+1:updated.length;
+  updated.splice(position,0,next);
   setPendingDelete(null);
   setEpisodeId(activeEpisode);setShotId(id);
-  onChange([...shots,next]);
+  onChange(updated);
  };
  if(!active)return <fieldset disabled={disabled} data-storyboard-editor-layout={expanded?"expanded":"compact"}
   className="min-w-0 rounded-xl border p-4" style={{...card,colorScheme:appearance}}>

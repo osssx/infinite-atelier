@@ -101,7 +101,7 @@ describe("maximized storyboard editor mirrors episode localized read/edit UX",()
   expect(changes).not.toHaveBeenCalled();
  });
 
- it("adds a blank shot with stable ID in the current episode and selects it for editing",async()=>{
+ it("inserts a new shot after the first selected shot and shifts later orders",async()=>{
   const {div,changes}=await mount({initialShotId:"shot-1"});
   const add=div.querySelector<HTMLButtonElement>('[aria-label="镜头目录"] button[aria-label="添加镜头"]')!;
   expect(add).toBeTruthy();
@@ -110,16 +110,52 @@ describe("maximized storyboard editor mirrors episode localized read/edit UX",()
   expect(changes).toHaveBeenCalledTimes(1);
   const next=changes.mock.lastCall![0];
   expect(next).toHaveLength(4);
-  expect(next.slice(0,3)).toEqual(original);
-  expect(next[3]).toEqual({
-   id:expect.stringMatching(/^shot_[a-z0-9-]+$/i),episodeId:"ep-1",order:3,description:"",
+  expect(next[0]).toEqual(original[0]);
+  expect(next[1]).toEqual({
+   id:expect.stringMatching(/^shot_[a-z0-9-]+$/i),episodeId:"ep-1",order:2,description:"",
    characterVariantIds:[],propIds:[],keyPropIds:[]
   });
-  expect(next[3].id).not.toBe("shot-1");
+  expect(next[1].id).not.toBe("shot-1");
+  expect(next[2]).toEqual({...original[1],order:3});
+  expect(next[3]).toEqual(original[2]);
   expect(div.querySelector('[aria-label="分镜镜头导航"] button[aria-pressed="true"]')
-   ?.getAttribute("aria-label")).toContain("镜头 3");
+   ?.getAttribute("aria-label")).toContain("镜头 2");
   expect(div.querySelector('[data-shot-readonly="description"]')?.textContent).toBe("未填写");
   expect(div.querySelector('[aria-label="镜头目录"]')?.textContent).toContain("3 镜");
+ });
+ it("inserts after a selected middle shot even when the source array is out of order",async()=>{
+  const extra:DramaShot={id:"shot-middle",episodeId:"ep-1",order:20,description:"中间镜头",
+   characterVariantIds:[],propIds:[],keyPropIds:[]};
+  const initial=[{...original[1],order:30},original[2],extra,{...original[0],order:10}];
+  const {div,changes}=await mount({initialShotId:"shot-middle",initialShots:initial});
+  await click(div.querySelector('button[aria-label="添加镜头"]'));
+  const next=changes.mock.lastCall![0] as DramaShot[];
+  expect(next).toHaveLength(5);
+  const inserted=next.find(shot=>!initial.some(before=>before.id===shot.id))!;
+  expect(inserted.episodeId).toBe("ep-1");
+  expect(inserted.order).toBe(3);
+  expect(next.map(shot=>shot.id)).toEqual([
+   "shot-2","shot-3","shot-middle",inserted.id,"shot-1"
+  ]);
+  expect(next.find(shot=>shot.id==="shot-1")?.order).toBe(1);
+  expect(next.find(shot=>shot.id==="shot-middle")?.order).toBe(2);
+  expect(next.find(shot=>shot.id==="shot-2")?.order).toBe(4);
+  expect(next.find(shot=>shot.id==="shot-3")).toBe(initial[1]);
+  expect(div.querySelector('[aria-label="分镜镜头导航"] button[aria-pressed="true"]')
+   ?.getAttribute("aria-label")).toContain("镜头 3");
+ });
+ it("appends directly after a manually selected last shot and leaves other episodes unchanged",async()=>{
+  const {div,changes}=await mount({initialShotId:"shot-1"});
+  await click(div.querySelector('[aria-label^="选择镜头 2"]'));
+  await click(div.querySelector('button[aria-label="添加镜头"]'));
+  const next=changes.mock.lastCall![0] as DramaShot[];
+  expect(next).toHaveLength(4);
+  expect(next[0]).toBe(original[0]);
+  expect(next[1]).toBe(original[1]);
+  expect(next[2]).toMatchObject({episodeId:"ep-1",order:3,description:""});
+  expect(next[3]).toBe(original[2]);
+  expect(div.querySelector('[aria-label="分镜镜头导航"] button[aria-pressed="true"]')
+   ?.getAttribute("aria-label")).toContain("镜头 3");
  });
  it("requires canvas-themed confirmation for deleting, supports cancel, and selects the adjacent shot",async()=>{
   const {div,changes}=await mount({initialShotId:"shot-1"});

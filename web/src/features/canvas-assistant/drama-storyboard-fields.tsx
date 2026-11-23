@@ -293,11 +293,13 @@ export function DramaStoryboardFields({shots,episodes,assets,expanded,disabled,c
  // true lazy editing lands, they are the authoritative view of pending local
  // structural changes. Server pagination can only be displayed if it exactly
  // agrees with this snapshot; otherwise it may hide newly inserted shots.
- const serverPageMatches=serverPage?.episodeId===activeEpisode&&
+ // An empty storyboard has no active episode. A null page and an undefined
+ // episode would otherwise compare equal before we access page.offset.
+ const serverPageMatches=Boolean(serverPage&&serverPage.episodeId===activeEpisode&&
   serverPage.offset===safePageStart&&serverPage.total===episodeShots.length&&
   serverPage.entries.length===localPage.length&&
-  serverPage.entries.every((shot,index)=>JSON.stringify(shot)===JSON.stringify(localPage[index]));
- const directoryShots=useScopedDirectory?(serverPageMatches?serverPage.entries:localPage):episodeShots;
+  serverPage.entries.every((shot,index)=>JSON.stringify(shot)===JSON.stringify(localPage[index])));
+ const directoryShots=useScopedDirectory?(serverPageMatches&&serverPage?serverPage.entries:localPage):episodeShots;
  const changePage=(offset:number)=>{
   const next=Math.max(0,Math.min(Math.floor(Math.max(0,episodeShots.length-1)/pageSize)*pageSize,offset));
   setPageStart(next);const shot=episodeShots[next];if(shot)chooseShot(shot.id);

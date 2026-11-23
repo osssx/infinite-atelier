@@ -41,24 +41,28 @@ const props:DramaAsset[]=[
 const roots:Root[]=[];
 beforeEach(()=>{vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT",true);useThemeStore.setState({theme:"dark"});});
 afterEach(async()=>{for(const x of roots)await act(async()=>x.unmount());roots.length=0;vi.unstubAllGlobals();});
-async function mount(opts:{expanded?:boolean;initialShotId?:string;initialEpisodeId?:string;initialShots?:DramaShot[];disabled?:boolean;assets?:DramaAsset[]}={}){
+async function mount(opts:{expanded?:boolean;initialShotId?:string;initialEpisodeId?:string;initialShots?:DramaShot[];initialEpisodes?:typeof episodes;disabled?:boolean;assets?:DramaAsset[];scopedCas?:boolean}={}){
  const div=document.createElement("div");document.body.append(div);
  const root=createRoot(div);roots.push(root);
  const changes=vi.fn<(shots:DramaShot[])=>void>();
  let updateShots:Dispatch<SetStateAction<DramaShot[]>>=()=>{};
+ let updateEpisodes:Dispatch<SetStateAction<typeof episodes>>=()=>{};
  function Editor(){
   const [shots,setShots]=useState<DramaShot[]>(opts.initialShots??original);
-  updateShots=setShots;
+  const [episodeData,setEpisodeData]=useState(opts.initialEpisodes??episodes);
+  updateShots=setShots;updateEpisodes=setEpisodeData;
   return <div style={{height:720,width:1150}}>
-   <DramaStoryboardFields shots={shots} episodes={episodes} assets={opts.assets??[...scenes,...characters,...props]}
+   <DramaStoryboardFields shots={shots} episodes={episodeData} assets={opts.assets??[...scenes,...characters,...props]}
     expanded={opts.expanded??true} disabled={opts.disabled??false} initialEpisodeId={opts.initialEpisodeId} initialShotId={opts.initialShotId}
+    projectId={opts.scopedCas?"project":undefined} nodeId={opts.scopedCas?"board":undefined}
+    onPatchShot={opts.scopedCas?async()=>{}:undefined}
     onChange={next=>{changes(next);setShots(next)}}/>
   </div>;
  }
  await act(async()=>root.render(<Editor/>));
  return {div,changes,externalUpdate:async(fn:(shot:DramaShot)=>DramaShot)=>{
   await act(async()=>updateShots(current=>current.map(shot=>shot.id==="shot-1"?fn(shot):shot)));
- }};
+ },updateEpisodes:async(next:typeof episodes)=>{await act(async()=>updateEpisodes(next));}};
 }
 async function click(target:Element|null){
  expect(target).toBeTruthy();
@@ -82,6 +86,30 @@ async function select(div:HTMLElement,selector:string,value:string){
  });
 }
 describe("maximized storyboard editor mirrors episode localized read/edit UX",()=>{
+ it("opens a fully empty storyboard without accessing a null server page",async()=>{
+  const {div,changes,updateEpisodes}=await mount({initialShots:[],initialEpisodes:[],scopedCas:true});
+  expect(div.querySelector('[data-storyboard-editor-layout="expanded"]')).toBeTruthy();
+  expect(div.textContent).toContain("尚无可编辑的分镜");
+  expect(div.textContent).toContain("请先在剧集规划中确认剧集");
+  expect(div.querySelector<HTMLButtonElement>('button[aria-label="添加镜头"]')?.disabled).toBe(true);
+  expect(div.querySelector('[data-drama-scoped-directory]')).toBeNull();
+  expect(changes).not.toHaveBeenCalled();
+
+  // The empty editor remains mounted when an upstream episode appears.
+  await updateEpisodes([episodes[0]]);
+  expect(div.textContent).toContain("当前剧集暂无镜头");
+  expect(div.querySelector<HTMLButtonElement>('button[aria-label="添加镜头"]')?.disabled).toBe(false);
+  await click(div.querySelector('button[aria-label="添加镜头"]'));
+  expect(changes.mock.lastCall?.[0]).toMatchObject([{episodeId:"ep-1",order:1,description:""}]);
+  expect(div.querySelector('[aria-label="当前分镜编辑区"]')).toBeTruthy();
+ });
+ it("renders the no-episode empty state in compact mode without a pagination crash",async()=>{
+  const {div,changes}=await mount({expanded:false,initialShots:[],initialEpisodes:[]});
+  expect(div.querySelector('[data-storyboard-editor-layout="compact"]')).toBeTruthy();
+  expect(div.textContent).toContain("尚无可编辑的分镜");
+  expect(div.querySelector<HTMLButtonElement>('button[aria-label="添加镜头"]')?.disabled).toBe(true);
+  expect(changes).not.toHaveBeenCalled();
+ });
  it("uses a shot directory and read-only surfaces for all properties with no inline inputs",async()=>{
   const {div,changes}=await mount({initialShotId:"shot-1"});
   const root=div.querySelector<HTMLElement>('[data-storyboard-editor-layout="expanded"]')!;

@@ -475,9 +475,10 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
                     </details>
                 </div>
                 {effectiveStoryboardView==="video" && <div className={assetEditorExpanded
-                    ?"thin-scrollbar min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain":"min-w-0"}>
+                    ?"flex min-h-0 min-w-0 flex-1 flex-col":"min-w-0"}>
                     <Suspense fallback={<p role="status">正在加载视频配置…</p>}><DramaVideoConfigFields productionStyle={productionStyle} confirmedRevisionId={node.metadata?.dramaConfirmedVersionId}
-                        inputs={videoInputs} episodes={linkedEpisodes}
+                        inputs={videoInputs} episodes={linkedEpisodes} expanded={assetEditorExpanded}
+                        initialEpisodeId={initialEpisodeId} initialShotId={initialShotId}
                         onRefresh={onRefreshVideoConfig} configs={videoConfigs} missingCount={missingConfigs.length}
                         production={node.metadata?.dramaShotProduction}
                         onProductionChange={(shotId,value)=>onChange({dramaShotProduction:{...node.metadata?.dramaShotProduction,[shotId]:value}})}

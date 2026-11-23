@@ -7,7 +7,6 @@ import {useThemeStore} from "@/stores/use-theme-store";
 import {DramaNodeStatus} from "./drama-node-style";
 import type {DramaWorkspaceTab} from "./drama-pipeline-node-panel";
 const EpisodeBrowser=lazy(()=>import("./drama-creative-scope-browser").then(m=>({default:m.DramaCreativeScopeBrowser})));
-const StoryboardBrowser=lazy(()=>import("./drama-revision-browser").then(m=>({default:m.DramaRevisionBrowser})));
 
 export type DramaWorkspaceFocus={episodeId?:string;sequenceId?:string;shotId?:string};
 export type WorkspacePendingRegistration=(key:string,save:(()=>Promise<void>)|null)=>void;
@@ -115,7 +114,7 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
  };
  const tabs:{id:DramaWorkspaceTab;label:string;icon:typeof BookOpenText}[]=[
   {id:"editor",label:episodeMode?"剧集编辑":"分镜表",icon:LayoutList},
-  {id:"scope",label:"分页与单条 CAS",icon:Database},
+  ...(episodeMode?[{id:"scope" as const,label:"分页与单条 CAS",icon:Database}]:[]),
   ...(episodeMode?[]:[{id:"video" as const,label:"视频配置",icon:Film}]),
   {id:"runs",label:"生成候选",icon:Sparkles},
   {id:"history",label:"影响与历史",icon:History},
@@ -182,12 +181,9 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
     <div data-drama-workspace-content="" className={`thin-scrollbar min-h-0 min-w-0 flex-1 rounded-xl border p-3 sm:p-4 ${tab==="history"?"flex flex-col overflow-hidden":"overflow-y-auto overscroll-contain"}`}
      style={{...subtle}}>
      <Suspense fallback={<p role="status" className="text-xs" style={{color:theme.node.muted}}>正在按需加载工作区…</p>}>
-      {tab==="scope"?(episodeMode?
+      {tab==="scope"&&episodeMode?
        <EpisodeBrowser key={nodeId} projectId={projectId} nodeId={nodeId} kind="episodes"
         initialEntryId={focus.episodeId} onPendingChange={registerPending}/>:
-       <StoryboardBrowser key={nodeId} projectId={projectId} nodeId={nodeId}
-        initialEpisodeId={focus.episodeId} initialShotId={focus.shotId} initialSequenceId={focus.sequenceId}
-        onPendingChange={registerPending}/>):
        tab==="history"&&renderHistoryPanel
          ? <div data-drama-history-layout="" className="grid h-full min-h-0 min-w-0 flex-1 grid-rows-[minmax(0,1fr)_minmax(0,2fr)] gap-3 xl:grid-cols-[minmax(220px,260px)_minmax(0,1fr)] xl:grid-rows-[minmax(0,1fr)]">
             <section aria-label="上游影响面板" className="min-h-0 min-w-0 overflow-hidden">

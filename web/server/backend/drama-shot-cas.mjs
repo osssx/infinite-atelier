@@ -10,8 +10,8 @@ import {assertNoRawCredentials,stableJson} from "./repository.mjs";
 const fail=(code,statusCode=422)=>Object.assign(Error(code),{code,statusCode});
 const digest=value=>createHash("sha256").update(stableJson(value)).digest("hex");
 const allowed=new Set(["description","shotSize","camera","action","dialogue","durationSec",
- "sceneId","sceneVariantId","sourceRefs","characterVariantIds","propIds","keyPropIds"]);
-const nullable=new Set(["sceneId","sceneVariantId","sequenceId","durationSec"]);
+ "sequenceId","sceneId","sceneVariantId","sourceRefs","characterVariantIds","propIds","keyPropIds"]);
+const nullable=new Set(["shotSize","camera","action","dialogue","sceneId","sceneVariantId","sequenceId","durationSec"]);
 const graphNodeSql=`SELECT json_extract(n.value,'$.type') AS type,
  json_extract(n.value,'$.metadata.creativePayloadRef') AS pointer,
  json_extract(n.value,'$.metadata.creativePayloadRef.nodeId') AS refId,

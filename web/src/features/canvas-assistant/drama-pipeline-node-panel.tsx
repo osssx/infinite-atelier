@@ -3,7 +3,8 @@ import { Button, Input, Modal, Popover, Tag } from "antd";
 import { History, Maximize2, RefreshCw, Sparkles, ShieldAlert, SlidersHorizontal } from "lucide-react";
 import type { CanvasNodeData } from "@/types/canvas";
 import { DRAMA_PIPELINE_NODE_TYPES, DRAMA_PIPELINE_STAGE_LABELS, readStoryboardDraft, type DramaPipelineStage } from "./canvas-drama-pipeline";
-import { canvasApi } from "@/features/backend-sync/canvas-api";
+import { canvasApi, type CanvasBackendProject } from "@/features/backend-sync/canvas-api";
+import {commitAssistantCanvasGraphWithSaveBarrier,ensureCreativeNodesLoaded,useCanvasStore} from "@/stores/canvas/use-canvas-sqlite-store";
 import { canvasCasUrl } from "@/features/backend-sync/canvas-cas";
 import { CanvasNodeReferenceBar } from "@/components/canvas/canvas-node-reference-bar";
 import { ensureSqliteModelChannelForExecution, modelChannelProvider } from "@/features/backend-sync/model-channel-autoroute";
@@ -462,6 +463,19 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
                     ? assetEditorExpanded ? "flex min-h-0 min-w-0 flex-1 flex-col gap-3" : "grid min-w-0 gap-3"
                     : "hidden"}>
                     <DramaStoryboardFields shots={shots} episodes={linkedEpisodes} assets={assets} initialEpisodeId={initialEpisodeId} initialShotId={initialShotId}
+                        projectId={workspaceMode?projectId:undefined} nodeId={workspaceMode?node.id:undefined}
+                        onReloadShot={workspaceMode&&projectId&&workspaceTab==="editor"?async()=>{
+                            await useCanvasStore.getState().loadProject(projectId);
+                            await ensureCreativeNodesLoaded(projectId,[node.id]);
+                        }:undefined}
+                        onPatchShot={workspaceMode&&projectId&&workspaceTab==="editor"?async (shotId,expectedDigest,changes)=>{
+                            await commitAssistantCanvasGraphWithSaveBarrier(projectId,()=>
+                                canvasApi<CanvasBackendProject>(
+                                    `/api/v1/projects/${encodeURIComponent(projectId)}/drama-pipeline/shot-draft`,"PATCH",
+                                    {nodeId:node.id,shotId,expectedDigest,operationId:crypto.randomUUID(),changes}),
+                                {keepCreativePointers:true,invalidateCreativeNodeId:node.id});
+                            await ensureCreativeNodesLoaded(projectId,[node.id]);
+                        }:undefined}
                         expanded={assetEditorExpanded} disabled={generating || versionBusy} control={control} onChange={nextShots => {
                             onChange({dramaDraft:JSON.stringify({...storyboardDraft,shots:nextShots})});
                             setValidation("");

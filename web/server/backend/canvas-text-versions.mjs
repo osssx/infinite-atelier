@@ -142,7 +142,8 @@ export function patchDramaShotDraft(db,projectId,nodeId,command,validateDocument
    const shot=parsed?.shots.find(item=>item.id===command.shotId);
   if(!shot||digest(stableJson(shot))!==command.expectedDigest)throw fail("drama_candidate_conflict",409);
   const updated={...shot,...command.changes};
-  for(const key of ["sceneId","sceneVariantId","sequenceId","durationSec"])if(updated[key]===null)delete updated[key];
+  for(const key of ["shotSize","camera","action","dialogue","sceneId","sceneVariantId","sequenceId","durationSec"])
+   if(updated[key]===null)delete updated[key];
   if(!readStoryboardDraft(JSON.stringify({shots:[updated]})))throw fail("drama_draft_invalid",422);
   const body=JSON.stringify({...parsed,shots:parsed.shots.map(item=>item.id===shot.id?updated:item)});
   if(!validStoryboardDraftReferences(node,body,document.nodes,document.connections))throw fail("drama_draft_invalid",422);

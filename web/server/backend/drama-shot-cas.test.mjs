@@ -116,6 +116,20 @@ test("P3.3c CAS is per shot: disjoint edits survive; stale digest fails; operati
   "Slow pan");
 });
 
+
+test("P3 field editor clears optional shot fields atomically with nullable CAS",t=>{
+ const db=createFixture(t);
+ const oldConfig=getProject(db,"cas").document.nodes.find(node=>node.id==="video-config");
+ apply(db,"shot-75","optional-values",{camera:"Pan",shotSize:"近景",action:"走动",dialogue:"你好"});
+ apply(db,"shot-75","clear-optional-values",{
+  camera:null,shotSize:null,action:null,dialogue:null,sequenceId:null
+ });
+ const result=readDramaRevisionScope(db,"cas","board",{draft:true,entryId:"shot-75"}).entries[0];
+ for(const key of ["camera","shotSize","action","dialogue","sequenceId"])
+  assert.equal(Object.hasOwn(result,key),false,key+" should be absent after nullable CAS");
+ assert.deepEqual(getProject(db,"cas").document.nodes.find(node=>node.id==="video-config"),oldConfig);
+ assert.equal(revision(db),3);
+});
 test("P3.3c validates only linked reference parents and rejects foreign/invalid assets without side effects",t=>{
  const db=createFixture(t);
  const revisionBefore=revision(db);

@@ -5,31 +5,25 @@ import {afterEach,beforeEach,describe,expect,it,vi} from "vitest";
 vi.mock("@/stores/use-theme-store",async()=>({
  useThemeStore:(await import("zustand")).create<{theme:"light"|"dark"}>(()=>({theme:"dark"}))
 }));
-const stats=vi.hoisted(()=>({save:vi.fn(async()=>{}),browserMount:vi.fn()}));
+const stats=vi.hoisted(()=>({save:vi.fn(async()=>{})}));
 vi.mock("antd",()=>({
  ConfigProvider:({children}:{children:React.ReactNode})=><>{children}</>,
  Modal:({open,children,title,onCancel,styles}:{open:boolean;children:React.ReactNode;title:React.ReactNode;onCancel:()=>void;styles?:{container?:React.CSSProperties;body?:React.CSSProperties}})=>
   open?<div role="dialog" style={styles?.container}><header>{title}<button aria-label="关闭工作区对话框" onClick={onCancel}>关闭</button></header><div data-test-modal-body="" style={styles?.body}>{children}</div></div>:null,
 }));
-vi.mock("./drama-revision-browser",()=>({
- DramaRevisionBrowser:({onPendingChange,initialShotId}:{onPendingChange:(key:string,save:(()=>Promise<void>)|null)=>void;initialShotId?:string})=>{
-  const [dirty,setDirty]=useState(false);
-  useEffect(()=>{stats.browserMount(initialShotId);},[initialShotId]);
-  useEffect(()=>{
-   onPendingChange("shot-1",dirty?stats.save:null);
-   return ()=>onPendingChange("shot-1",null);
-  },[dirty,onPendingChange]);
-  return <section aria-label="镜头分页表单"><button onClick={()=>setDirty(true)}>修改局部草案</button></section>;
- }
-}));
 vi.mock("./drama-creative-scope-browser",()=>({
- DramaCreativeScopeBrowser:()=> <div aria-label="剧集分页表单">剧集按页读取</div>
+ DramaCreativeScopeBrowser:({onPendingChange}:{onPendingChange:(key:string,save:(()=>Promise<void>)|null)=>void})=>{
+  const [dirty,setDirty]=useState(false);
+  useEffect(()=>{onPendingChange("episode-1",dirty?stats.save:null);
+   return ()=>onPendingChange("episode-1",null);},[dirty,onPendingChange]);
+  return <section aria-label="剧集分页表单"><button onClick={()=>setDirty(true)}>修改局部草案</button></section>;
+ }
 }));
 import {DramaCreativeWorkspace} from "./drama-creative-workspace";
 import {canvasThemes} from "@/lib/canvas-theme";
 import {useThemeStore} from "@/stores/use-theme-store";
 const roots:Root[]=[];
-beforeEach(()=>{stats.save.mockReset();stats.browserMount.mockReset();vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT",true)});
+beforeEach(()=>{stats.save.mockReset();vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT",true)});
 afterEach(async()=>{for(const root of roots)await act(async()=>root.unmount());roots.length=0;vi.unstubAllGlobals()});
 async function mount(kind:"episodes"|"storyboard"="storyboard",withHistory=false,versionConfirmed=false){
  const div=document.createElement("div");document.body.append(div);
@@ -79,12 +73,11 @@ describe("P3.4b3 workspace lifecycle",()=>{
 
   const board=await mount("storyboard");
   const boardTabs=[...board.div.querySelectorAll<HTMLButtonElement>('nav[aria-label="创作工作区功能"] button')];
-  expect(boardTabs).toHaveLength(5);
+  expect(boardTabs).toHaveLength(4);
+  expect(boardTabs.map(tab=>tab.textContent?.trim())).toEqual(["分镜表","视频配置","生成候选","影响与历史"]);
   expect(boardTabs[0].getAttribute("aria-description")).toBe("检查分镜结构与镜头安排");
-  expect(boardTabs[2].getAttribute("aria-description")).toBe("按镜头配置独立的视频生成参数");
-  await press(board.div,"分页与单条 CAS");
-  await press(board.div,"修改局部草案");
-  expect(board.div.querySelector('[data-creative-workspace-node-id="board"] [role="status"]')?.textContent).toContain("1 组尚未保存");
+  expect(boardTabs[1].getAttribute("aria-description")).toBe("按镜头配置独立的视频生成参数");
+  expect(board.div.textContent).not.toContain("分页与单条 CAS");
  });
  it("places the draft or confirmed state beside the workspace title instead of a separate row",async()=>{
   const draft=await mount("episodes");
@@ -140,8 +133,8 @@ describe("P3.4b3 workspace lifecycle",()=>{
   expect(div.querySelector('[aria-label="测试内嵌历史"]')).toBeNull();
   expect(onTabChange).toHaveBeenCalledWith("runs");
  });
- it("blocks history loading while a local CAS draft is dirty",async()=>{
-  const {div,onTabChange}=await mount("storyboard",true);
+ it("blocks history loading while a local episode CAS draft is dirty",async()=>{
+  const {div,onTabChange}=await mount("episodes",true);
   await press(div,"分页与单条 CAS");
   await press(div,"修改局部草案");
   onTabChange.mockClear();
@@ -151,23 +144,23 @@ describe("P3.4b3 workspace lifecycle",()=>{
   expect(div.querySelector('[aria-label="测试内嵌历史"]')).toBeNull();
   await press(div,"继续编辑");
  });
- it("mounts scoped browser only on its tab and passes exact shot selection",async()=>{
-  const {div}=await mount();
-  expect(div.textContent).toContain("editor");
-  expect(stats.browserMount).not.toHaveBeenCalled();
-  await press(div,"分页与单条 CAS");
-  expect(div.querySelector('[aria-label="镜头分页表单"]')).toBeTruthy();
-  expect(stats.browserMount).toHaveBeenCalledWith("shot-2");
-  expect(div.querySelector('[aria-label="完整编辑器内容"]')).toBeNull();
+ it("keeps episode CAS available but removes the storyboard duplicate editor",async()=>{
+  const board=await mount();
+  expect(board.div.textContent).not.toContain("分页与单条 CAS");
+  await press(board.div,"视频配置");
+  expect(board.div.querySelector('[aria-label="完整编辑器内容"]')?.textContent).toBe("video");
+  const episode=await mount("episodes");
+  await press(episode.div,"分页与单条 CAS");
+  expect(episode.div.querySelector('[aria-label="剧集分页表单"]')).toBeTruthy();
  });
- it("gates tab changes and saves local CAS draft before closing",async()=>{
-  const {div,close}=await mount();
+ it("gates tab changes and saves local episode CAS draft before closing",async()=>{
+  const {div,close}=await mount("episodes");
   await press(div,"分页与单条 CAS");
   await press(div,"修改局部草案");
   await press(div,"生成候选");
   expect(div.textContent).toContain("存在未提交的草案修改");
   await press(div,"继续编辑");
-  expect(div.querySelector('[aria-label="镜头分页表单"]')).toBeTruthy();
+  expect(div.querySelector('[aria-label="剧集分页表单"]')).toBeTruthy();
   await press(div,"生成候选");
   await press(div,"保存草案");
   expect(stats.save).toHaveBeenCalledTimes(1);
@@ -175,15 +168,15 @@ describe("P3.4b3 workspace lifecycle",()=>{
   await act(async()=>{div.querySelector<HTMLButtonElement>('[aria-label="关闭工作区对话框"]')?.click();});
   expect(close).toHaveBeenCalledTimes(1);
  });
- it("does not leave the form when CAS save rejects a stale digest",async()=>{
+ it("does not leave the episode form when CAS save rejects a stale digest",async()=>{
   stats.save.mockRejectedValueOnce(new Error("expectedDigest 已过期"));
-  const {div,close}=await mount();
+  const {div,close}=await mount("episodes");
   await press(div,"分页与单条 CAS");
   await press(div,"修改局部草案");
   await press(div,"生成候选");
   await press(div,"保存草案");
   expect(div.textContent).toContain("expectedDigest 已过期");
-  expect(div.querySelector('[aria-label="镜头分页表单"]')).toBeTruthy();
+  expect(div.querySelector('[aria-label="剧集分页表单"]')).toBeTruthy();
   expect(close).not.toHaveBeenCalled();
   await press(div,"继续编辑");
  });

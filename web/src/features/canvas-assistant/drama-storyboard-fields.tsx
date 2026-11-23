@@ -1,4 +1,5 @@
-import {useState,type CSSProperties} from "react";
+import {useEffect,useState,type CSSProperties} from "react";
+import {canvasApi} from "@/features/backend-sync/canvas-api";
 import {AlertTriangle,Clapperboard,Pencil,Plus,Trash2} from "lucide-react";
 import {canvasThemes,type CanvasTheme} from "@/lib/canvas-theme";
 import {useThemeStore} from "@/stores/use-theme-store";
@@ -8,7 +9,7 @@ import {DramaEditActions} from "./drama-edit-actions";
 type Choice={value:string;label:string};
 type ShotFieldProps={
  id:string;label:string;value:string;theme:CanvasTheme;disabled:boolean;
- onConfirm:(value:string)=>void;multiline?:boolean;rows?:number;
+ onConfirm:(value:string)=>void|Promise<void>;multiline?:boolean;rows?:number;
  type?:"text"|"number"|"select";options?:Choice[];placeholder?:string;
 };
 /** This component owns only a temporary field value; the graph changes at explicit confirmation. */
@@ -17,17 +18,23 @@ function ShotEditableField({id,label,value,theme,disabled,onConfirm,multiline=fa
  const [editing,setEditing]=useState(false);
  const [draft,setDraft]=useState(value);
  const [baseline,setBaseline]=useState(value);
+ const [busy,setBusy]=useState(false);
+ const [error,setError]=useState("");
  const stale=editing&&baseline!==value;
  const valid=type!=="number"||draft.trim()===""||
   (Number.isFinite(Number(draft))&&Number(draft)>0);
  const fieldStyle={background:theme.node.panel,borderColor:theme.node.stroke,color:theme.node.text,
   "--tw-ring-color":theme.node.activeStroke} as CSSProperties;
- const begin=()=>{setBaseline(value);setDraft(value);setEditing(true);};
- const cancel=()=>{setEditing(false);setDraft(value);};
- const confirm=()=>{
-  if(disabled||stale||!valid)return;
-  if(draft!==value)onConfirm(draft);
-  setEditing(false);
+ const begin=()=>{setError("");setBaseline(value);setDraft(value);setEditing(true);};
+ const cancel=()=>{if(busy)return;setError("");setEditing(false);setDraft(value);};
+ const confirm=async()=>{
+  if(disabled||busy||stale||!valid)return;
+  setBusy(true);setError("");
+  try{
+   if(draft!==value)await onConfirm(draft);
+   setEditing(false);
+  }catch(error){setError(error instanceof Error?error.message:"保存失败，请检查镜头版本后重试");}
+  finally{setBusy(false);}
  };
  const read=type==="select"?
   options?.find(item=>item.value===value)?.label??(value?"未确认："+value:placeholder):
@@ -71,8 +78,9 @@ function ShotEditableField({id,label,value,theme,disabled,onConfirm,multiline=fa
    {!valid&&<p role="alert" className="text-xs" style={{color:theme.node.muted}}>
     镜头时长必须是大于 0 的数字，或留空。
    </p>}
-   <DramaEditActions theme={theme} label={label} disabled={disabled||stale||!valid}
-    onCancel={cancel} onConfirm={confirm}/>
+   {error&&<p role="alert" className="text-xs" style={{color:theme.node.muted}}>{error}</p>}
+   <DramaEditActions theme={theme} label={label} disabled={disabled||busy||stale||!valid}
+    onCancel={cancel} onConfirm={()=>void confirm()}/>
   </>:
    <div data-shot-readonly={id} aria-label={label+"内容"}
     className="min-w-0 rounded-md border-l-2 px-3 py-2.5 text-sm leading-relaxed"
@@ -89,21 +97,27 @@ function ShotEditableField({id,label,value,theme,disabled,onConfirm,multiline=fa
  */
 function ShotAssetMultiField({id,label,value,options,theme,disabled,onConfirm}:{
  id:string;label:string;value:string[];options:Choice[];theme:CanvasTheme;disabled:boolean;
- onConfirm:(value:string[])=>void;
+ onConfirm:(value:string[])=>void|Promise<void>;
 }){
  const [editing,setEditing]=useState(false);
  const [draft,setDraft]=useState<string[]>(value);
  const [baseline,setBaseline]=useState<string[]>(value);
+ const [busy,setBusy]=useState(false);
+ const [error,setError]=useState("");
  const stale=editing&&JSON.stringify(baseline)!==JSON.stringify(value);
  const choices=[...options,...value.filter(key=>!options.some(option=>option.value===key))
   .map(key=>({value:key,label:"待匹配 · "+key}))];
  const names=value.map(key=>choices.find(option=>option.value===key)?.label??key);
- const begin=()=>{setDraft([...value]);setBaseline([...value]);setEditing(true);};
- const cancel=()=>{setDraft([...value]);setEditing(false);};
- const confirm=()=>{
-  if(disabled||stale)return;
-  if(JSON.stringify(draft)!==JSON.stringify(value))onConfirm(draft);
-  setEditing(false);
+ const begin=()=>{setError("");setDraft([...value]);setBaseline([...value]);setEditing(true);};
+ const cancel=()=>{if(busy)return;setError("");setDraft([...value]);setEditing(false);};
+ const confirm=async()=>{
+  if(disabled||busy||stale)return;
+  setBusy(true);setError("");
+  try{
+   if(JSON.stringify(draft)!==JSON.stringify(value))await onConfirm(draft);
+   setEditing(false);
+  }catch(error){setError(error instanceof Error?error.message:"保存失败，请检查镜头版本后重试");}
+  finally{setBusy(false);}
  };
  const fieldStyle={background:theme.node.panel,borderColor:theme.node.stroke,color:theme.node.text,
   "--tw-ring-color":theme.node.activeStroke} as CSSProperties;
@@ -141,8 +155,9 @@ function ShotAssetMultiField({id,label,value,options,theme,disabled,onConfirm}:{
    {stale&&<p role="alert" className="text-xs" style={{color:theme.node.muted}}>
     内容已在其他位置更新，请取消并重新编辑。
    </p>}
-   <DramaEditActions theme={theme} label={label} disabled={disabled||stale}
-    onCancel={cancel} onConfirm={confirm}/>
+   {error&&<p role="alert" className="text-xs" style={{color:theme.node.muted}}>{error}</p>}
+   <DramaEditActions theme={theme} label={label} disabled={disabled||busy||stale}
+    onCancel={cancel} onConfirm={()=>void confirm()}/>
   </>:
    <div data-shot-readonly={id} aria-label={label+"内容"}
     className="min-w-0 rounded-md border-l-2 px-3 py-2.5 text-sm leading-relaxed"
@@ -153,11 +168,15 @@ function ShotAssetMultiField({id,label,value,options,theme,disabled,onConfirm}:{
  </section>;
 }
 
-export function DramaStoryboardFields({shots,episodes,assets,expanded,disabled,control,onChange,initialEpisodeId,initialShotId}:{
+export function DramaStoryboardFields({shots,episodes,assets,expanded,disabled,control,onChange,initialEpisodeId,initialShotId,
+ projectId,nodeId,onPatchShot,onReloadShot}:{
  shots:DramaShot[];
  episodes:{id:string;title:string;targetDurationSec?:number;sequences?:{id:string;title:string}[]}[];
  assets:DramaAsset[];expanded:boolean;disabled:boolean;control?:CSSProperties;
  onChange:(shots:DramaShot[])=>void;initialEpisodeId?:string;initialShotId?:string;
+ projectId?:string;nodeId?:string;
+ onPatchShot?:(shotId:string,expectedDigest:string,changes:Record<string,unknown>)=>Promise<void>;
+ onReloadShot?:()=>Promise<void>;
 }){
  const appearance=useThemeStore(state=>state.theme);
  const theme=canvasThemes[appearance];
@@ -180,7 +199,7 @@ export function DramaStoryboardFields({shots,episodes,assets,expanded,disabled,c
  const summary=(shot:DramaShot)=>shot.shotSize?.trim()||"未设置景别";
  const smallAction="inline-flex min-h-8 items-center justify-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-medium transition-opacity hover:opacity-80 focus-visible:outline focus-visible:outline-2 disabled:cursor-not-allowed disabled:opacity-40";
  const addShot=()=>{
-  if(disabled||!activeEpisode)return;
+  if(disabled||casBusy||!activeEpisode)return;
   const used=new Set(shots.map(item=>item.id));
   let id:string;
   do{id="shot_"+crypto.randomUUID();}while(used.has(id));
@@ -202,6 +221,70 @@ export function DramaStoryboardFields({shots,episodes,assets,expanded,disabled,c
   setEpisodeId(activeEpisode);setShotId(id);
   onChange(updated);
  };
+ const scopedCas=Boolean(projectId&&nodeId&&onPatchShot);
+ const [shotDigest,setShotDigest]=useState<{id:string;digest:string}|null>(null);
+ const [casBusy,setCasBusy]=useState(false);
+ const [casError,setCasError]=useState("");
+ const [casRefresh,setCasRefresh]=useState(0);
+ useEffect(()=>{
+  if(!scopedCas||!active?.id||!projectId||!nodeId)return;
+  let live=true;
+  const abort=new AbortController();
+  setShotDigest(null);setCasError("");
+  const url=`/api/v1/projects/${encodeURIComponent(projectId)}/drama-pipeline/revision-scope?`+
+   `nodeId=${encodeURIComponent(nodeId)}&draft=true&episodeId=${encodeURIComponent(active.episodeId)}`+
+   `&entryId=${encodeURIComponent(active.id)}&limit=1`;
+  void canvasApi<{entries:DramaShot[];entryDigests:{id:string;digest:string}[]}>(url,"GET",undefined,abort.signal)
+   .then(result=>{
+    if(!live)return;
+    const digest=result.entryDigests.find(item=>item.id===active.id)?.digest;
+    const remote=result.entries[0];
+    if(remote?.id!==active.id||!digest)throw Error("镜头版本无法定位，请重新载入");
+    const keys=["description","shotSize","camera","action","dialogue","durationSec","sequenceId",
+     "sceneId","sceneVariantId","characterVariantIds","propIds","keyPropIds","sourceRefs"] as const;
+    if(keys.some(key=>JSON.stringify(remote[key]??null)!==JSON.stringify(active[key]??null)))
+     throw Error("服务器镜头内容已更新，请重新加载后再编辑，避免覆盖其他修改");
+    setShotDigest({id:active.id,digest});
+   })
+   .catch(error=>{if(live)setCasError(error instanceof Error?error.message:"无法读取镜头版本");});
+  return ()=>{live=false;abort.abort();};
+ },[scopedCas,projectId,nodeId,active?.id,active?.episodeId,casRefresh]);
+ // Paginate large episode directories from the indexed server scope. The loaded
+ // draft remains authoritative for structural insert/delete until that operation
+ // is migrated; pagination limits mounted rows and reads only 15 indexed entries.
+ const pageSize=15;
+ const useScopedDirectory=scopedCas&&expanded&&episodeShots.length>pageSize;
+ const [pageStart,setPageStart]=useState(0);
+ const [serverPage,setServerPage]=useState<{episodeId:string;offset:number;entries:DramaShot[];total:number}|null>(null);
+ const [pageError,setPageError]=useState("");
+ const safePageStart=Math.min(Math.floor(pageStart/pageSize)*pageSize,
+  Math.floor(Math.max(0,episodeShots.length-1)/pageSize)*pageSize);
+ useEffect(()=>{
+  if(!useScopedDirectory||!active)return;
+  if(selectedShotIndex<safePageStart||selectedShotIndex>=safePageStart+pageSize)
+   setPageStart(Math.floor(selectedShotIndex/pageSize)*pageSize);
+ },[useScopedDirectory,active?.id,selectedShotIndex,safePageStart]);
+ useEffect(()=>{
+  if(!useScopedDirectory||!projectId||!nodeId||!activeEpisode)return;
+  let current=true;
+  const abort=new AbortController();
+  setServerPage(null);setPageError("");
+  const path=`/api/v1/projects/${encodeURIComponent(projectId)}/drama-pipeline/revision-scope?`+
+   `nodeId=${encodeURIComponent(nodeId)}&draft=true&episodeId=${encodeURIComponent(activeEpisode)}`+
+   `&offset=${safePageStart}&limit=${pageSize}`;
+  void canvasApi<{total:number;entries:DramaShot[]}>(path,"GET",undefined,abort.signal)
+   .then(result=>{if(current)setServerPage({episodeId:activeEpisode,offset:safePageStart,
+    entries:result.entries,total:result.total});})
+   .catch(error=>{if(current)setPageError(error instanceof Error?error.message:"按页读取失败");});
+  return ()=>{current=false;abort.abort();};
+ },[useScopedDirectory,projectId,nodeId,activeEpisode,safePageStart,casRefresh,shots]);
+ const directoryShots=useScopedDirectory?
+  (serverPage?.episodeId===activeEpisode&&serverPage.offset===safePageStart?
+   serverPage.entries:episodeShots.slice(safePageStart,safePageStart+pageSize)):episodeShots;
+ const changePage=(offset:number)=>{
+  const next=Math.max(0,Math.min(Math.floor(Math.max(0,episodeShots.length-1)/pageSize)*pageSize,offset));
+  setPageStart(next);const shot=episodeShots[next];if(shot)chooseShot(shot.id);
+ };
  if(!active)return <fieldset disabled={disabled} data-storyboard-editor-layout={expanded?"expanded":"compact"}
   className="min-w-0 rounded-xl border p-4" style={{...card,colorScheme:appearance}}>
   <div className="flex min-w-0 flex-wrap items-end justify-between gap-3">
@@ -215,14 +298,14 @@ export function DramaStoryboardFields({shots,episodes,assets,expanded,disabled,c
     </select>}
    </div>
    <button type="button" className={smallAction} style={card} onClick={addShot}
-    disabled={!activeEpisode} aria-label="添加镜头"><Plus size={14} aria-hidden="true"/>添加镜头</button>
+    disabled={!activeEpisode||casBusy} aria-label="添加镜头"><Plus size={14} aria-hidden="true"/>添加镜头</button>
   </div>
  </fieldset>;
  const deleteStale=Boolean(pendingDelete&&(
   pendingDelete.shotId!==active.id||pendingDelete.episodeId!==active.episodeId||
   pendingDelete.snapshot!==JSON.stringify(active)));
  const deleteShot=()=>{
-  if(disabled||!pendingDelete||deleteStale)return;
+  if(disabled||casBusy||!pendingDelete||deleteStale)return;
   const index=episodeShots.findIndex(item=>item.id===active.id);
   const nextSelected=episodeShots[index+1]??episodeShots[index-1];
   const nextOrder=new Map(episodeShots.filter(shot=>shot.id!==active.id)
@@ -234,14 +317,37 @@ export function DramaStoryboardFields({shots,episodes,assets,expanded,disabled,c
    return order!==undefined&&order!==shot.order?{...shot,order}:shot;
   }));
  };
- const write=(next:DramaShot)=>onChange(shots.map(shot=>shot.id===active.id?next:shot));
+ const write=(next:DramaShot):void|Promise<void>=>{
+  if(!scopedCas||!onPatchShot)return onChange(shots.map(shot=>shot.id===active.id?next:shot));
+  if(casBusy||!shotDigest||shotDigest.id!==active.id)throw Error("正在同步当前镜头，请完成后再保存");
+  const fields=["description","shotSize","camera","action","dialogue","durationSec",
+   "sequenceId","sceneId","sceneVariantId","characterVariantIds","propIds","keyPropIds"] as const;
+  const changes:Record<string,unknown>={};
+  for(const key of fields){
+   if(JSON.stringify(active[key])!==JSON.stringify(next[key]))
+    changes[key]=next[key]===undefined?null:next[key];
+  }
+  if(!Object.keys(changes).length)return;
+  setCasBusy(true);setCasError("");
+  return onPatchShot(active.id,shotDigest.digest,changes)
+   .then(()=>{setCasRefresh(value=>value+1);})
+   .catch(error=>{
+    const message=error instanceof Error?error.message:"保存失败";
+    setCasError(message.includes("drama_candidate_conflict")?
+     "镜头草案已被其他操作修改，未覆盖服务器数据。请重新加载后检查。":message);
+    throw Error(message.includes("drama_candidate_conflict")?"镜头内容已发生冲突，请重新加载后编辑":message);
+   })
+   .finally(()=>setCasBusy(false));
+ };
  const patch=<K extends keyof DramaShot>(key:K,value:DramaShot[K])=>write({...active,[key]:value});
  const optional=(key:"shotSize"|"camera"|"action"|"dialogue"|"sequenceId"|"sceneVariantId",value:string)=>{
   const next={...active};
   if(value.trim())next[key]=value;
   else delete next[key];
-  write(next);
+  return write(next);
  };
+ const fieldLocked=disabled||(scopedCas&&(!shotDigest||casBusy||shotDigest.id!==active.id));
+
  const scenes=assets.filter(item=>item.kind==="scene");
  const characters=assets.filter(item=>item.kind==="character");
  const props=assets.filter(item=>item.kind==="prop");
@@ -275,7 +381,7 @@ export function DramaStoryboardFields({shots,episodes,assets,expanded,disabled,c
       <span className="rounded-md px-2 py-1 text-[11px] font-medium tabular-nums"
        style={{background:theme.toolbar.activeBg,color:theme.node.muted}}>{episodeShots.length} 镜</span>
       <button type="button" title="添加镜头" aria-label="添加镜头"
-       className={smallAction} style={card} onClick={addShot} disabled={disabled}>
+       className={smallAction} style={card} onClick={addShot} disabled={disabled||casBusy}>
        <Plus size={13} aria-hidden="true"/>添加
       </button>
      </div>
@@ -288,10 +394,11 @@ export function DramaStoryboardFields({shots,episodes,assets,expanded,disabled,c
     </label>
    </div>
    <nav aria-label="分镜镜头导航" className="thin-scrollbar min-h-0 flex-1 space-y-1 overflow-y-auto p-2" data-canvas-no-zoom="">
-    {episodeShots.map((shot,index)=>{
+    {directoryShots.map((shot,index)=>{
      const current=shot.id===active.id;
+     const globalIndex=useScopedDirectory?safePageStart+index:index;
      return <button type="button" key={shot.id} aria-pressed={current}
-      aria-label={`选择镜头 ${index+1}：${shot.shotSize||shot.id}`}
+      aria-label={`选择镜头 ${globalIndex+1}：${shot.shotSize||shot.id}`}
       onClick={()=>chooseShot(shot.id)}
       className="flex w-full min-w-0 items-start gap-2.5 rounded-lg border px-3 py-3 text-left transition-opacity hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
       style={current?{background:theme.toolbar.activeBg,color:theme.node.text,
@@ -299,7 +406,7 @@ export function DramaStoryboardFields({shots,episodes,assets,expanded,disabled,c
        {background:"transparent",color:theme.node.text,borderColor:"transparent",
         outlineColor:theme.node.activeStroke}}>
       <span className="mt-0.5 shrink-0 text-[11px] font-semibold tabular-nums" style={caption}>
-       {String(index+1).padStart(2,"0")}
+       {String(globalIndex+1).padStart(2,"0")}
       </span>
       <span className="min-w-0 flex-1">
        <span className="block truncate text-xs font-semibold">{summary(shot)}</span>
@@ -310,6 +417,23 @@ export function DramaStoryboardFields({shots,episodes,assets,expanded,disabled,c
      </button>;
     })}
    </nav>
+   {useScopedDirectory&&<div data-drama-scoped-directory="" className="shrink-0 space-y-1.5 border-t px-3 py-2"
+     style={{borderColor:theme.node.stroke}}>
+    <div className="flex items-center justify-between gap-2 text-[11px]" style={caption}>
+     <span>{safePageStart+1}–{Math.min(safePageStart+pageSize,episodeShots.length)} / {episodeShots.length} 镜头</span>
+     <span>每页 {pageSize} 镜</span>
+    </div>
+    <div className="flex items-center gap-2">
+     <button type="button" className={smallAction+" flex-1"} style={card}
+      disabled={safePageStart===0} onClick={()=>changePage(safePageStart-pageSize)}>上一页</button>
+     <button type="button" className={smallAction+" flex-1"} style={card}
+      disabled={safePageStart+pageSize>=episodeShots.length}
+      onClick={()=>changePage(safePageStart+pageSize)}>下一页</button>
+    </div>
+    {pageError&&<p role="status" className="break-words text-[11px]" style={caption}>
+     分页服务不可用，已使用当前加载的草案目录：{pageError}
+    </p>}
+   </div>}
   </aside>:
    <div className="grid grid-cols-2 gap-2">
     <label className="grid min-w-0 gap-1 text-xs">剧集
@@ -339,7 +463,7 @@ export function DramaStoryboardFields({shots,episodes,assets,expanded,disabled,c
       {active.durationSec??"—"} 秒 · {episodeShots.length} 镜
      </span>
      <button type="button" aria-label={`删除镜头 ${selectedShotIndex+1}`}
-      className={smallAction} style={card} disabled={disabled}
+      className={smallAction} style={card} disabled={disabled||casBusy}
       onClick={()=>setPendingDelete({episodeId:active.episodeId,shotId:active.id,snapshot:JSON.stringify(active)})}>
       <Trash2 size={13} aria-hidden="true"/>删除镜头
      </button>
@@ -373,35 +497,46 @@ export function DramaStoryboardFields({shots,episodes,assets,expanded,disabled,c
    {episode?.targetDurationSec&&<p className="text-xs" style={caption}>
     当前剧集镜头时长合计 {duration} 秒 · 目标 {episode.targetDurationSec} 秒
    </p>}
+   {scopedCas&&<div aria-label="当前镜头 CAS 状态" className="flex min-w-0 items-center justify-between gap-2 text-xs">
+    <span role={casError?"alert":"status"} style={caption}>{casError||(!shotDigest||casBusy?"同步镜头版本中…":"单镜头精确保存已启用")}</span>
+    {casError&&<button type="button" className={smallAction} style={card} disabled={casBusy}
+     onClick={()=>{
+      setCasBusy(true);
+      void Promise.resolve().then(()=>onReloadShot?.()).then(()=>{
+       setCasError("");setCasRefresh(value=>value+1);
+      }).catch(error=>setCasError(error instanceof Error?error.message:"重新加载镜头失败"))
+       .finally(()=>setCasBusy(false));
+     }}>重新加载镜头内容</button>}
+   </div>}
    <div className="grid min-w-0 gap-3 md:grid-cols-2">
     <ShotEditableField key={active.id+":duration"} id="duration" label="镜头时长（秒）"
-     theme={theme} disabled={disabled} type="number" placeholder="未设置"
+     theme={theme} disabled={fieldLocked} type="number" placeholder="未设置"
      value={active.durationSec===undefined?"":String(active.durationSec)}
      onConfirm={value=>patch("durationSec",value.trim()?Number(value):undefined)}/>
     {(episode?.sequences?.length||active.sequenceId)?<ShotEditableField
      key={active.id+":sequence"} id="sequence" label="所属场次"
-     theme={theme} disabled={disabled} type="select" options={sceneSequenceOptions}
+     theme={theme} disabled={fieldLocked} type="select" options={sceneSequenceOptions}
      value={active.sequenceId??""} placeholder="未指定场次"
      onConfirm={value=>optional("sequenceId",value)}/>:null}
     <div className="min-w-0 md:col-span-2">
      <ShotEditableField key={active.id+":description"} id="description" label="画面描述"
-      theme={theme} disabled={disabled} multiline rows={expanded?5:3}
+      theme={theme} disabled={fieldLocked} multiline rows={expanded?5:3}
       value={active.description} onConfirm={value=>patch("description",value)}/>
     </div>
     {([{key:"shotSize",label:"景别",rows:1},{key:"camera",label:"机位 / 运镜",rows:2},
       {key:"action",label:"动作",rows:3},{key:"dialogue",label:"对白",rows:3}] as const).map(field=>
      <ShotEditableField key={active.id+":"+field.key} id={field.key} label={field.label}
-      theme={theme} disabled={disabled} multiline rows={field.rows} value={active[field.key]??""}
+      theme={theme} disabled={fieldLocked} multiline rows={field.rows} value={active[field.key]??""}
       onConfirm={value=>optional(field.key,value)}/>)}
     <div role="group" aria-label="当前镜头人物、道具与场景" className="grid min-w-0 gap-3 md:col-span-2 md:grid-cols-2">
      <div className="min-w-0 md:col-span-2">
       <h4 className="text-xs font-semibold" style={caption}>当前镜头资产</h4>
      </div>
      <ShotAssetMultiField key={active.id+":characters"} id="characters" label="人物（角色造型）"
-      value={active.characterVariantIds} options={characterOptions} theme={theme} disabled={disabled}
+      value={active.characterVariantIds} options={characterOptions} theme={theme} disabled={fieldLocked}
       onConfirm={value=>patch("characterVariantIds",value)}/>
      <ShotEditableField key={active.id+":scene"} id="scene" label="场景"
-      theme={theme} disabled={disabled} type="select" options={sceneOptions}
+      theme={theme} disabled={fieldLocked} type="select" options={sceneOptions}
       value={active.sceneId??""} placeholder="未指定场景"
       onConfirm={value=>{
        const next={...active};
@@ -409,18 +544,18 @@ export function DramaStoryboardFields({shots,episodes,assets,expanded,disabled,c
        else delete next.sceneId;
        // Changing the scene invalidates its variant, in the same explicit commit.
        delete next.sceneVariantId;
-       write(next);
+       return write(next);
       }}/>
      <ShotAssetMultiField key={active.id+":props"} id="props" label="可见道具"
-      value={active.propIds} options={propOptions} theme={theme} disabled={disabled}
+      value={active.propIds} options={propOptions} theme={theme} disabled={fieldLocked}
       onConfirm={value=>write({...active,propIds:value,
        keyPropIds:active.keyPropIds.filter(id=>value.includes(id))})}/>
      <ShotAssetMultiField key={active.id+":keyProps"} id="keyProps" label="关键道具"
-      value={active.keyPropIds} options={keyPropOptions} theme={theme} disabled={disabled}
+      value={active.keyPropIds} options={keyPropOptions} theme={theme} disabled={fieldLocked}
       onConfirm={value=>patch("keyPropIds",value)}/>
      {(scene?.variants?.length||active.sceneVariantId)?<ShotEditableField
       key={active.id+":sceneVariant"} id="sceneVariant" label="场景变体"
-      theme={theme} disabled={disabled} type="select" options={sceneVariants}
+      theme={theme} disabled={fieldLocked} type="select" options={sceneVariants}
       value={active.sceneVariantId??""} placeholder="默认场景"
       onConfirm={value=>optional("sceneVariantId",value)}/>:null}
     </div>

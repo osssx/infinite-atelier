@@ -131,10 +131,46 @@ it("rejects source changes during the recovery snapshot, without overwriting the
  expect(container.textContent).toContain("上游内容在备份期间变化");
  expect(container.querySelector<HTMLTextAreaElement>('[aria-label="故事完整正文"]')?.value).toBe("旧草案正文");
 });
+it("renders a single compact row for a disconnected source and expands details only on demand",async()=>{
+ const synced={nodeId:"text-1",edgeId:"edge-1",digest:storyTextDigest("原上游"),
+  baselineDigest:storyTextDigest("旧草案正文")};
+ const {container,patch}=await mount({sync:synced,confirmed:"已确认 V1",sources:[]});
+ const panel=container.querySelector('[data-story-upstream-panel]')!;
+ expect(panel.querySelector('[data-story-upstream-compact]')).toBeTruthy();
+ expect(panel.querySelector('[data-story-upstream-details]')).toBeNull();
+ expect(panel.querySelector('[data-story-upstream-compare]')).toBeNull();
+ expect(panel.querySelectorAll("p")).toHaveLength(0);
+ expect(panel.textContent).toContain("已同步来源断开");
+ expect(panel.textContent).toContain("草案已保留");
+ expect(container.querySelector<HTMLTextAreaElement>('[aria-label="故事完整正文"]')?.value)
+  .toBe("旧草案正文");
+ await click(button(container,"详情"));
+ expect(panel.querySelector('[data-story-upstream-details]')?.textContent).toContain("已确认故事版本不受同步影响");
+ expect(panel.querySelectorAll("p")).toHaveLength(1);
+ await click(button(container,"详情"));
+ expect(panel.querySelector('[data-story-upstream-details]')).toBeNull();
+ expect(patch).not.toHaveBeenCalled();
+});
+it("keeps the default source toolbar compact and opens comparison on request",async()=>{
+ const s=src("上游发生改变");
+ const {container,patch}=await mount({sources:[s]});
+ const panel=container.querySelector('[data-story-upstream-panel]')!;
+ expect(panel.querySelector('[data-story-upstream-details]')).toBeNull();
+ expect(panel.querySelector('[data-story-upstream-compare]')).toBeNull();
+ expect(panel.querySelector('[data-story-upstream-compact]')?.textContent).toContain("可导入新来源");
+ await click(button(container,"刷新草案"));
+ expect(panel.querySelector('[data-story-upstream-compare]')).toBeTruthy();
+ await click(button(container,"取消"));
+ expect(panel.querySelector('[data-story-upstream-compare]')).toBeNull();
+ expect(panel.querySelector('[data-story-upstream-details]')).toBeNull();
+ expect(patch).not.toHaveBeenCalled();
+});
 it("can choose another upstream text explicitly; no source is imported simply by connecting",async()=>{
  const {container,patch}=await mount({sources:[src("第一来源"),src("第二来源","text-2","edge-2")]});
  expect(container.querySelector('[data-story-upstream-panel]')?.textContent).toContain("多个上游");
  expect(patch).not.toHaveBeenCalled();
+ expect(container.querySelector('[aria-label="选择故事上游文本"]')).toBeNull();
+ await click(button(container,"详情"));
  await act(async()=>{
   const select=container.querySelector<HTMLSelectElement>('[aria-label="选择故事上游文本"]')!;
   Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,"value")!.set!.call(select,"edge-2");

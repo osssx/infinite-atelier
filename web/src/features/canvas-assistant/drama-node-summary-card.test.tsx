@@ -9,10 +9,18 @@ vi.mock("@/stores/use-theme-store",async()=>({
 import type {CanvasNodeData} from "@/types/canvas";
 import {canvasThemes} from "@/lib/canvas-theme";
 import {useThemeStore} from "@/stores/use-theme-store";
-const evidence=vi.hoisted(()=>({requests:[] as string[],delayFirst:false}));
-vi.mock("@/features/backend-sync/canvas-api",()=>({
- canvasApi:vi.fn(async(path:string)=>{
+const evidence=vi.hoisted(()=>({requests:[] as string[],delayFirst:false,notFoundUntilSaved:false,alwaysNotFound:false,emptyAfterSave:false,saved:false,persistCalls:0}));
+vi.mock("@/stores/canvas/use-canvas-sqlite-store",()=>({
+ awaitCanvasStorePersistence:vi.fn(async()=>{evidence.persistCalls++;evidence.saved=true;})
+}));
+vi.mock("@/features/backend-sync/canvas-api",async(importOriginal)=>{
+ const original=await importOriginal<typeof import("@/features/backend-sync/canvas-api")>();
+ return {...original,canvasApi:vi.fn(async(path:string)=>{
   evidence.requests.push(path);
+  if(evidence.alwaysNotFound||(evidence.notFoundUntilSaved&&!evidence.saved))
+   throw new original.CanvasApiError("text_node_not_found",404,"GET",path);
+  if(evidence.emptyAfterSave&&evidence.saved)
+   return {versionId:null,total:0,groups:[],entries:[],entryDigests:[]};
   const q=new URL(path,"http://localhost").searchParams;
   const draft=q.get("draft")==="true",board=q.get("nodeId")==="board";
   const ids=board?["ep-one","ep-two"]:["ep-one","ep-two"];
@@ -29,11 +37,12 @@ vi.mock("@/features/backend-sync/canvas-api",()=>({
   return {versionId:draft?null:"confirmation-1",total:board?2:2,groups,
    entries:q.get("summaryOnly")==="true"?[]:entry?[entry]:[],
    entryDigests:entry?[{id:entry.id,digest:"a".repeat(64)}]:[]};
- })
-}));
+ })};
+});
 import {DramaNodeSummaryCard} from "./drama-node-summary-card";
 const activeRoots:Root[]=[];
-beforeEach(()=>{evidence.requests=[];evidence.delayFirst=false;vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT",true)});
+beforeEach(()=>{evidence.requests=[];evidence.delayFirst=false;evidence.notFoundUntilSaved=false;evidence.alwaysNotFound=false;evidence.emptyAfterSave=false;
+ evidence.saved=false;evidence.persistCalls=0;vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT",true)});
 afterEach(async()=>{for(const root of activeRoots)await act(async()=>root.unmount());
  activeRoots.length=0;vi.unstubAllGlobals()});
 function node(kind:"episodes"|"storyboard"):CanvasNodeData{
@@ -48,6 +57,22 @@ async function mount(kind:"episodes"|"storyboard",onOpen=vi.fn(async(_id:string)
  return {container,onOpen,root};
 }
 describe("P3.4b2 lightweight creative cards",()=>{
+ it.each(["episodes","storyboard"] as const)("automatically loads a newly added empty %s node after pending save",async kind=>{
+  evidence.notFoundUntilSaved=true;evidence.emptyAfterSave=true;
+  const {container}=await mount(kind);
+  expect(evidence.persistCalls).toBe(1);
+  expect(evidence.requests.filter(x=>x.includes("summaryOnly=true"))).toHaveLength(4);
+  expect(container.querySelector('[role="alert"]')).toBeNull();
+  expect(container.textContent).not.toContain("text_node_not_found");
+  expect(container.textContent).toContain(kind==="episodes"?"尚无剧集内容":"尚无镜头内容");
+ });
+ it("keeps a genuine missing-node error after one retry",async()=>{
+  evidence.alwaysNotFound=true;
+  const {container}=await mount("episodes");
+  expect(evidence.persistCalls).toBe(1);
+  expect(evidence.requests.filter(x=>x.includes("summaryOnly=true"))).toHaveLength(4);
+  expect(container.querySelector('[role="alert"]')?.textContent).toContain("text_node_not_found");
+ });
  it("reads only scoped index plus one episode; no draft hydrate, video config or editor DOM",async()=>{
   const {container}=await mount("episodes");
   expect(container.textContent).toContain("已规划 2 集 · 已确认 2 集");

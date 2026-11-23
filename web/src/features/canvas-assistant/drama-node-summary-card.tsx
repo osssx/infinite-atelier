@@ -3,7 +3,8 @@ import {BookOpenText,ChevronLeft,ChevronRight,Clapperboard,Pencil,RefreshCw} fro
 import {canvasThemes} from "@/lib/canvas-theme";
 import {useThemeStore} from "@/stores/use-theme-store";
 import type {CanvasNodeData} from "@/types/canvas";
-import {canvasApi} from "@/features/backend-sync/canvas-api";
+import {canvasApi,CanvasApiError} from "@/features/backend-sync/canvas-api";
+import {awaitCanvasStorePersistence} from "@/stores/canvas/use-canvas-sqlite-store";
 
 const DramaNodeQuickEditor=lazy(()=>import("./drama-node-quick-editor").then(m=>({default:m.DramaNodeQuickEditor})));
 type Kind="episodes"|"storyboard";
@@ -47,9 +48,17 @@ export const DramaNodeSummaryCard=memo(function DramaNodeSummaryCard({node,proje
  useEffect(()=>{
   let live=true;const abort=new AbortController();
   setLoading(true);setError("");
-  void Promise.all([false,true].map(draft=>canvasApi<Scope>(
-   scopePath(projectId,node.id,draft,"&summaryOnly=true"),"GET",undefined,abort.signal)))
-   .then(([confirmed,draft])=>{
+  const readSummaries=()=>Promise.all([false,true].map(draft=>canvasApi<Scope>(
+   scopePath(projectId,node.id,draft,"&summaryOnly=true"),"GET",undefined,abort.signal)));
+  // Newly added canvas nodes can render before the debounced project PATCH.
+  // Flush that pending save and retry once instead of requiring a manual refresh.
+  void readSummaries().catch(async error=>{
+   if(!(error instanceof CanvasApiError)||error.code!=="text_node_not_found"||abort.signal.aborted)
+    throw error;
+   await awaitCanvasStorePersistence(projectId);
+   if(abort.signal.aborted)throw error;
+   return readSummaries();
+  }).then(([confirmed,draft])=>{
     if(!live)return;
     setData({confirmed,draft});
     if(initializedFor.current!==scopeKey){

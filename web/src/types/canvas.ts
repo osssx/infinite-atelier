@@ -66,6 +66,8 @@ export type CanvasImageMask = { storageKey:string; width:number; height:number; 
 
 export type CanvasNodeMetadata = {
     dramaDraft?: string;
+    /** Last explicitly imported text source. Confirmed stories are never changed by source sync. */
+    dramaTextSourceSync?: {nodeId:string;edgeId:string;digest:string;baselineDigest:string};
     dramaConfirmed?: string;
     dramaConfirmedVersionId?: string;
     dramaAssetReferenceRevisionId?: string;

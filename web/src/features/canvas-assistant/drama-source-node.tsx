@@ -4,14 +4,17 @@ import { Upload, Maximize2 } from "lucide-react";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
 import type { CanvasNodeData, CanvasNodeMetadata } from "@/types/canvas";
+import type {StoryTextSource} from "./drama-story-upstream";
+import {storySourceState} from "./drama-story-upstream";
 import { dramaInlineNodeClass, dramaNodeControl, dramaNodePrimary, DramaNodeStatus } from "./drama-node-style";
 
-export function DramaSourceNode({node, onChange, onConfirmVersion, versionBusy,onOpenEditor,hideTextEditor=false}: {
+export function DramaSourceNode({node, onChange, onConfirmVersion, versionBusy,onOpenEditor,hideTextEditor=false,upstreamSources=[]}: {
     node: CanvasNodeData;
     onConfirmVersion: (draft: string) => Promise<void>;
     versionBusy: boolean;
     onOpenEditor?:()=>void;
     hideTextEditor?:boolean;
+    upstreamSources?:readonly StoryTextSource[];
     onChange: (patch: Partial<CanvasNodeMetadata>) => void;
 }) {
     const theme = canvasThemes[useThemeStore(state => state.theme)];
@@ -23,6 +26,9 @@ export function DramaSourceNode({node, onChange, onConfirmVersion, versionBusy,o
             (publishedVisual.artDirection[key]??"")===(node.metadata?.dramaArtDirection?.[key]??"")));
     const confirmed = Boolean(source.trim()) && source === node.metadata?.dramaConfirmed&&visualConfirmed;
     const control = dramaNodeControl(theme);
+    const syncStatus=storySourceState(upstreamSources,node.metadata?.dramaTextSourceSync);
+    const sourceHint=({updated:"上游文本有更新",replaced:"原上游来源已替换",disconnected:"上游来源已断开",
+        available:"检测到新上游文本",multiple:"连接多个文本来源",current:"上游文本已同步",none:""} as const)[syncStatus];
     const changeSource = (text: string) => onChange({dramaDraft:text, content:text});
     return <section className={dramaInlineNodeClass}
         style={{color:theme.node.text}} data-canvas-no-zoom
@@ -50,6 +56,10 @@ export function DramaSourceNode({node, onChange, onConfirmVersion, versionBusy,o
             style={control} placeholder="粘贴原文" value={source}
             onPointerDown={event=>event.stopPropagation()} onMouseDown={event=>event.stopPropagation()}
             onKeyDown={event=>event.stopPropagation()} onChange={event=>changeSource(event.target.value)}/>}
+        {!!sourceHint&&onOpenEditor&&<button type="button" aria-label="故事上游同步状态"
+            className="w-full rounded-lg border px-3 py-2 text-left text-xs"
+            style={{...control,background:theme.toolbar.activeBg}}
+            onClick={onOpenEditor}>{sourceHint} · 打开完整编辑器查看</button>}
         <div className="grid grid-cols-[5.5rem_1fr] gap-2 rounded-xl border p-3" style={control}>
             <label className="grid gap-1.5 font-medium">视频比例
                 <select className="h-8 rounded-lg border px-2" style={control} value={node.metadata?.videoRatio ?? ""}

@@ -86,6 +86,7 @@ import type {DramaWorkspaceTab} from "@/features/canvas-assistant/drama-pipeline
 import type {DramaWorkspaceFocus} from "@/features/canvas-assistant/drama-creative-workspace";
 const DramaCreativeWorkspace=lazy(()=>import("@/features/canvas-assistant/drama-creative-workspace").then(m=>({default:m.DramaCreativeWorkspace})));
 import { DramaSourceNode } from "@/features/canvas-assistant/drama-source-node";
+import {importBlankStoryNodes,storyTextSources} from "@/features/canvas-assistant/drama-story-upstream";
 const DramaStoryEditor=lazy(()=>import("@/features/canvas-assistant/drama-story-editor").then(m=>({default:m.DramaStoryEditor})));
 import {LazyCreativeNode} from "@/features/canvas-assistant/lazy-creative-node";
 import {DRAMA_PIPELINE_NODE_TYPES,isInlineDramaNode, readStoryboardDraft } from "@/features/canvas-assistant/canvas-drama-pipeline";const isDramaPipelineNode=(type:string)=>Object.values(DRAMA_PIPELINE_NODE_TYPES).includes(type);
@@ -366,6 +367,8 @@ function AtelierCanvasPage() {
     const currentProjectTitle = useCanvasStore((state) => state.projects.find((project) => project.id === projectId)?.title);
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const [nodes, setNodes] = useState<CanvasNodeData[]>([]);
+    const activeStoryEditorRef=useRef<string|null>(null);
+    const [storySyncEpoch,setStorySyncEpoch]=useState(0);
     const [textVersionBusy,setTextVersionBusy]=useState(false);
     const [textVersionsNodeId,setTextVersionsNodeId]=useState<string|null>(null);
     useEffect(()=>{
@@ -556,6 +559,15 @@ function AtelierCanvasPage() {
     const inputGraphNodes = reuseCanvasSemanticNodes(semanticInputNodesRef.current, nodes);
     semanticInputNodesRef.current = inputGraphNodes;
     const inputGraphIndex = useMemo(() => buildCanvasGraphIndex(inputGraphNodes, connections), [inputGraphNodes, connections]);
+    // A blank story can accept exactly one linked text source automatically.
+    // Never replace an existing draft or a published version when links change.
+    useEffect(()=>{
+        if(!inputGraphNodes.some(node=>node.type==="drama:source"&&
+            node.id!==activeStoryEditorRef.current&&
+            storyTextSources(node.id,inputGraphNodes,connections).length===1))return;
+        setNodes(current=>importBlankStoryNodes(current,connections,activeStoryEditorRef.current));
+    },[inputGraphNodes,connections,storySyncEpoch]);
+
     const graphIndexRef = useRef(graphIndex);
     const directorPanelNode = dialogNodeId && graphIndex.nodeById.get(dialogNodeId)?.type === CanvasNodeType.Director ? graphIndex.nodeById.get(dialogNodeId) : undefined;
     // Container rect cache. Screen-to-world conversion runs on every pointermove during drag,
@@ -4445,13 +4457,18 @@ function AtelierCanvasPage() {
             throw Error("创作节点不存在");
         const request=++creativeWorkspaceRequestRef.current;
         await ensureCreativeNodesLoaded(projectId,[nodeId]);
-        if(creativeWorkspaceRequestRef.current===request){setCreativeWorkspaceFocus(focus??{});setCreativeWorkspaceNodeId(nodeId);}
+        if(creativeWorkspaceRequestRef.current===request){
+            activeStoryEditorRef.current=target.type==="drama:source"?nodeId:null;
+            setCreativeWorkspaceFocus(focus??{});setCreativeWorkspaceNodeId(nodeId);
+        }
     },[projectId]);
     const closeCreativeWorkspace=useCallback(async()=>{
         try{
             await awaitCanvasStorePersistence(projectId);
             creativeWorkspaceRequestRef.current++;
+            activeStoryEditorRef.current=null;
             setCreativeWorkspaceNodeId(null);
+            setStorySyncEpoch(value=>value+1);
             setTextVersionsNodeId(current=>current===creativeWorkspaceNodeId?null:current);
         }catch(error){message.error(error instanceof Error?error.message:"保存失败，编辑器保持打开");}
     },[projectId,message,creativeWorkspaceNodeId]);
@@ -4462,7 +4479,9 @@ function AtelierCanvasPage() {
         (contentNode: CanvasNodeData) => (contentNode.type==="drama:episodes" || contentNode.type==="drama:storyboard") ? (
             <DramaNodeSummaryCard node={contentNode} projectId={projectId} onOpen={openCreativeWorkspace}/>
         ) : contentNode.type === "drama:source" ? (
-            <DramaSourceNode key={contentNode.id} node={contentNode} onChange={patch => handleConfigNodeChange(contentNode.id, patch)}
+            <DramaSourceNode key={contentNode.id} node={contentNode}
+                upstreamSources={storyTextSources(contentNode.id,nodes,connections)}
+                onChange={patch => handleConfigNodeChange(contentNode.id, patch)}
                 onOpenEditor={()=>void openCreativeWorkspace(contentNode.id).catch(error=>message.error(String(error)))}
                 onConfirmVersion={draft => confirmDramaVersion(contentNode.id,draft)}
                 versionBusy={textVersionBusy} />
@@ -4482,7 +4501,7 @@ function AtelierCanvasPage() {
                 }}
             />
         ),
-        [stopConfigGeneration, handleConfigNodeChange, handleGenerateNode,inputGraphNodes,connections,renderNodePanel,openTextVersions,confirmDramaVersion,textVersionBusy,openCreativeWorkspace],
+        [stopConfigGeneration, handleConfigNodeChange, handleGenerateNode,inputGraphNodes,nodes,connections,renderNodePanel,openTextVersions,confirmDramaVersion,textVersionBusy,openCreativeWorkspace],
     );
 
     // Grouped so NodeLayer's prop list stays readable. The node still receives each entry as its own
@@ -4863,10 +4882,13 @@ function AtelierCanvasPage() {
                         }}
                         renderPanel={(tab,onPendingChange)=>creativeWorkspaceNode.type==="drama:source"?
                             tab==="editor"?<DramaStoryEditor node={creativeWorkspaceNode} projectId={projectId}
+                                upstreamSources={storyTextSources(creativeWorkspaceNode.id,nodes,connections)}
                                 onChange={patch=>handleConfigNodeChange(creativeWorkspaceNode.id,patch)}
                                 onConfirmVersion={draft=>confirmDramaVersion(creativeWorkspaceNode.id,draft)}
+                                onSnapshotDraft={()=>saveTextVersion(creativeWorkspaceNode.id,"同步新上游文本前的故事草案")}
                                 versionBusy={textVersionBusy} onPendingChange={onPendingChange}/>:
                             tab==="settings"?<DramaSourceNode node={creativeWorkspaceNode} hideTextEditor
+                                upstreamSources={storyTextSources(creativeWorkspaceNode.id,nodes,connections)}
                                 onChange={patch=>handleConfigNodeChange(creativeWorkspaceNode.id,patch)}
                                 onConfirmVersion={draft=>confirmDramaVersion(creativeWorkspaceNode.id,draft)}
                                 versionBusy={textVersionBusy}/>:

@@ -21,7 +21,11 @@ export function adoptDramaAssetCandidates({db,getProject,validateDocument,emitEv
   if(!candidate||candidate.id!==candidateId||
    candidate.baseline!==(node.metadata?.dramaDraft||node.metadata?.dramaConfirmed||""))
    throw fail("drama_asset_candidate_conflict",409);
-  const current=readAssetDraft(candidate.baseline),suggested=readAssetDraft(stableJson({assets:candidate.assets}));
+  // A newly created asset node has no prior draft; its first reviewed
+  // generation must be able to establish an empty asset collection.
+  // Only the exact empty baseline is accepted; malformed nonempty drafts fail closed.
+  const current=candidate.baseline===""?{assets:[]}:readAssetDraft(candidate.baseline);
+  const suggested=readAssetDraft(stableJson({assets:candidate.assets}));
   if(!current||!suggested||!decisions||typeof decisions!=="object"||Array.isArray(decisions))
    throw fail("drama_asset_candidate_invalid",422);
   const known=new Set(suggested.assets.map(asset=>asset.id));
@@ -85,8 +89,10 @@ export function adoptDramaAssetCandidates({db,getProject,validateDocument,emitEv
    if(!parsed)throw fail("drama_asset_candidate_conflict",409);
    const shots=parsed.shots.map(shot=>({...shot,
     characterVariantIds:shot.characterVariantIds.map(id=>mapped(id,variantMapping)),
-    sceneId:shot.sceneId===undefined?undefined:mapped(shot.sceneId,assetMapping),
-    sceneVariantId:shot.sceneVariantId===undefined?undefined:mapped(shot.sceneVariantId,variantMapping),
+    // JSON drafts omit optional scene fields. Never add explicit undefined:
+    // stableJson rejects it and the endpoint would otherwise return internal_error.
+    ...(shot.sceneId===undefined?{}:{sceneId:mapped(shot.sceneId,assetMapping)}),
+    ...(shot.sceneVariantId===undefined?{}:{sceneVariantId:mapped(shot.sceneVariantId,variantMapping)}),
     propIds:shot.propIds.map(id=>mapped(id,assetMapping)),
     keyPropIds:shot.keyPropIds.map(id=>mapped(id,assetMapping)),
    }));

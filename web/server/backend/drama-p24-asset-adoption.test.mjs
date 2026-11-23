@@ -15,11 +15,11 @@ const assets=[makeAsset("hero","character","兔子",[{id:"hero-day",name:"日常
  makeAsset("home","scene","小屋",[{id:"home-day",name:"白天"}])];
 const suggested=[makeAsset("generated-hero","character","兔子",[{id:"blue-coat",name:"蓝衣"}]),
  makeAsset("generated-prop","prop","星星")];
-function fixture(t,choices=suggested,references=[]){
+function fixture(t,choices=suggested,references=[],boardShots){
  const db=new DatabaseSync(":memory:");initializeSchema(db);t.after(()=>db.close());
  const base=JSON.stringify({assets});
- const board=JSON.stringify({shots:[shot("old","ep-one","hero-day"),
-  shot("new","ep-two","blue-coat",["generated-prop"])]});
+ const board=JSON.stringify({shots:boardShots??[shot("old","ep-one","hero-day"),
+  shot("new","ep-two","blue-coat",["generated-prop"]) ]});
  const nodes=[
   {id:"story",type:"drama:source",metadata:{content:"Story"}},
   {id:"assets",type:"drama:assets",metadata:{
@@ -111,6 +111,99 @@ test("P2.4: reference slots coalesce atomically on reuse, conflicting media slot
  assert.throws(()=>adoptDramaAssetCandidates(other.service,"asset-p24",decision),
   /drama_asset_candidate_reference_conflict/);
  assert.deepEqual(other.get().document,before);
+});
+test("P2.4: 12 reviewed assets adopt atomically when existing board shots omit optional scene fields",t=>{
+ const choices=[...suggested,...Array.from({length:10},(_,index)=>makeAsset(
+  "generated-extra-"+index,"prop","候选道具"+index))];
+ const shots=[
+  {id:"old",episodeId:"ep-one",order:1,description:"有场景但没有场景变体",sceneId:"home",
+   characterVariantIds:["hero-day"],propIds:[],keyPropIds:[]},
+  {id:"new",episodeId:"ep-two",order:2,description:"新候选",
+   characterVariantIds:["blue-coat"],propIds:["generated-prop"],keyPropIds:[]},
+ ];
+ const {find,service,command,get}=fixture(t,choices,[],shots);
+ const decisions=Object.fromEntries(choices.map(asset=>[asset.id,
+  asset.id==="generated-hero"?{action:"variant",targetId:"hero"}:
+   {action:"new"}]));
+ const before=get().document;
+ const result=adoptDramaAssetCandidates(service,"asset-p24",command(decisions));
+ assert.equal(result.revision,2);
+ assert.equal(readAssetDraft(find("assets").metadata.dramaDraft).assets.length,13);
+ const updated=readStoryboardDraft(find("board").metadata.dramaDraft).shots;
+ assert.equal(updated.length,2);
+ assert.equal(updated[0].sceneId,"home");
+ assert.equal(updated[0].sceneVariantId,undefined);
+ assert.equal(updated[1].sceneId,undefined);
+ assert.equal(updated[1].sceneVariantId,undefined);
+ assert.equal(updated[1].characterVariantIds[0],result.mapping.variantIds["blue-coat"]);
+ assert.equal(updated[1].propIds[0],result.mapping.assetIds["generated-prop"]);
+ assert.equal(find("assets").metadata.dramaConfirmed,before.nodes.find(n=>n.id==="assets").metadata.dramaConfirmed);
+});
+test("P2.4: HTTP adoption accepts shots without scene fields and reports domain validation errors",async t=>{
+ const boardShots=[
+  {id:"old",episodeId:"ep-one",order:1,description:"无场景",
+   characterVariantIds:["hero-day"],propIds:[],keyPropIds:[]},
+  {id:"new",episodeId:"ep-two",order:2,description:"只有角色和道具",
+   characterVariantIds:["blue-coat"],propIds:["generated-prop"],keyPropIds:[]},
+ ];
+ const {db,get,command}=fixture(t,suggested,[],boardShots);
+ const app=buildApp({db,authorize:req=>req.headers["x-p24"]==="ok"});
+ t.after(async()=>app.close());
+ const path="/api/v1/projects/asset-p24/drama-pipeline/asset-candidates/adopt";
+ const headers={"x-p24":"ok"};
+ const before=get().document;
+ const invalid=await app.inject({method:"POST",url:path,headers,payload:command({
+  "generated-hero":{action:"reuse",targetId:"missing-asset"},
+  "generated-prop":{action:"new"},
+ })});
+ assert.equal(invalid.statusCode,422,invalid.body);
+ assert.equal(invalid.json().code,"drama_asset_candidate_target_invalid");
+ assert.deepEqual(get().document,before);
+ const incomplete=await app.inject({method:"POST",url:path,headers,payload:command({
+  "generated-prop":{action:"new"},
+ })});
+ assert.equal(incomplete.statusCode,422,incomplete.body);
+ assert.equal(incomplete.json().code,"drama_asset_candidate_invalid");
+ assert.deepEqual(get().document,before);
+ const good=await app.inject({method:"POST",url:path,headers,payload:command({
+  "generated-hero":{action:"variant",targetId:"hero"},
+  "generated-prop":{action:"new"},
+ })});
+ assert.equal(good.statusCode,200,good.body);
+ assert.equal(good.json().revision,2);
+ assert.equal(readStoryboardDraft(get().document.nodes.find(node=>node.id==="board").metadata.dramaDraft).shots[1].sceneId,undefined);
+ const duplicate=await app.inject({method:"POST",url:path,headers,payload:command({
+  "generated-hero":{action:"variant",targetId:"hero"},
+  "generated-prop":{action:"new"},
+ })});
+ assert.equal(duplicate.statusCode,409,duplicate.body);
+ assert.equal(duplicate.json().code,"drama_asset_candidate_conflict");
+});
+test("P2.4: first-time asset creation adopts 12 generated candidates from an empty draft",async t=>{
+ const db=new DatabaseSync(":memory:");initializeSchema(db);t.after(()=>db.close());
+ const proposed=Array.from({length:12},(_,index)=>makeAsset("candidate-"+index,"prop","道具 "+index));
+ createProject(db,{id:"asset-first",document:{title:"First asset review",nodes:[
+  {id:"story",type:"drama:source",metadata:{content:"故事"}},
+  {id:"assets",type:"drama:assets",metadata:{dramaDraft:"",
+   dramaAssetCandidate:{id:"new-candidate",baseline:"",assets:proposed}}},
+ ],connections:[]}});
+ const app=buildApp({db,authorize:req=>req.headers["x-p24"]==="ok"});
+ t.after(async()=>app.close());
+ const path="/api/v1/projects/asset-first/drama-pipeline/asset-candidates/adopt";
+ const payload={nodeId:"assets",candidateId:"new-candidate",
+  decisions:Object.fromEntries(proposed.map(asset=>[asset.id,{action:"new"}]))};
+ const before=getProject(db,"asset-first");
+ const adopted=await app.inject({method:"POST",url:path,headers:{"x-p24":"ok"},payload});
+ assert.equal(adopted.statusCode,200,adopted.body);
+ const after=getProject(db,"asset-first");
+ const created=readAssetDraft(after.document.nodes.find(node=>node.id==="assets").metadata.dramaDraft).assets;
+ assert.equal(created.length,12);
+ assert.deepEqual(created.map(asset=>asset.name),proposed.map(asset=>asset.name));
+ assert.equal(after.document.nodes.find(node=>node.id==="assets").metadata.dramaAssetCandidate,undefined);
+ assert.equal(before.revision+1,after.revision);
+ const stale=await app.inject({method:"POST",url:path,headers:{"x-p24":"ok"},payload});
+ assert.equal(stale.statusCode,409,stale.body);
+ assert.equal(stale.json().code,"drama_asset_candidate_conflict");
 });
 test("P2.4: authenticated adoption endpoint checks identity and rejects duplicate second apply",async t=>{
  const {db,get,service,command}=fixture(t);

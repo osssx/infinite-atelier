@@ -550,7 +550,7 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
         <div aria-label={compactStoryboardActions?"分镜生成与确认工具栏":episodePlanning&&assetEditorExpanded?"剧集生成与确认操作":undefined}
          data-drama-storyboard-toolbar={compactStoryboardActions?"":undefined}
          className={compactStoryboardActions
-            ? "flex min-w-0 shrink-0 flex-wrap items-center gap-1.5 border-t pt-2 sm:gap-2"
+            ? "flex min-w-0 shrink-0 flex-wrap items-center gap-2 border-t pt-3 [&>button]:min-h-9"
             : inlineEditor&&episodePlanning&&assetEditorExpanded
             ? "flex min-w-0 shrink-0 flex-wrap items-center justify-end gap-2 border-t pt-3 [&>button]:min-h-9 [&>select]:min-h-9 [&>select]:min-w-[160px] [&>select]:max-w-full [&>select]:flex-1 [&>select]:rounded-lg [&>select]:border [&>select]:px-3 [&>select]:py-1.5"
             : inlineEditor
@@ -614,15 +614,15 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
                         {migrationPanel}
                     </div>}
                 </div>}>
-                <Button size="small" type="default" style={control} icon={<SlidersHorizontal size={14}/>}
-                    aria-label="设置分镜生成范围" className="shrink-0">生成范围</Button>
+                <Button size="middle" type="default" style={control} icon={<SlidersHorizontal size={14}/>}
+                    aria-label="设置分镜生成范围" className="min-h-9 shrink-0">生成范围</Button>
             </Popover>}
             {compactStoryboardActions && <span data-drama-storyboard-scope-summary="" title={scopeLabel}
                 className="hidden min-w-0 flex-1 truncate text-xs font-medium md:block"
                 style={{color:theme.node.muted}}>{scopeLabel}</span>}
             {!inlineEditor && <Button onClick={() => { onChange({ dramaDraft: draft, ...(stage === "source" ? { content: draft } : {}) }); }}>保存草案</Button>}
-            <Button size={compactStoryboardActions || inlineEditor && !assetEditorExpanded ? "small" : "middle"} className={compactStoryboardActions?"order-last shrink-0":inlineEditor?"order-last":undefined}
-                style={compactStoryboardActions||inlineEditor && inlineReady && !generating ? dramaNodePrimary(theme) : undefined}
+            <Button size={inlineEditor && !assetEditorExpanded ? "small" : "middle"} className={compactStoryboardActions?"order-last shrink-0":inlineEditor?"order-last":undefined}
+                style={inlineEditor && inlineReady && !generating ? dramaNodePrimary(theme) : undefined}
                 type="primary" disabled={inlineEditor ? generating || !inlineReady || (versioned && versionBusy) : !draft.trim()} onClick={async () => {
                 try {
                     if (stage === "assets" || stage === "episodes" || stage === "storyboard") {
@@ -649,7 +649,7 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
                         ...(stage === "source" ? { content } : {}) });
                 } catch (error) { setValidation(error instanceof Error ? error.message : "结构化结果无效"); }
             }}>确认阶段</Button>
-        <Button size={compactStoryboardActions||inlineEditor && !assetEditorExpanded ? "small" : "middle"}
+        <Button size={inlineEditor && !assetEditorExpanded ? "small" : "middle"}
             className={compactStoryboardActions?"ml-auto shrink-0":undefined} style={control} onClick={async () => {
             try {
                 if (episodePlanning) {
@@ -692,7 +692,7 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
             </select>
         </>}
         </>}
-        {stage === "assets" || stage === "episodes" || stage === "storyboard" ? <Button size={compactStoryboardActions||inlineEditor && !assetEditorExpanded ? "small" : "middle"} className={compactStoryboardActions?"shrink-0":undefined} style={control} loading={generating} onClick={async () => {
+        {stage === "assets" || stage === "episodes" || stage === "storyboard" ? <Button size={inlineEditor && !assetEditorExpanded ? "small" : "middle"} className={compactStoryboardActions?"shrink-0":undefined} style={control} loading={generating} onClick={async () => {
             setGenerating(true);
             try {
                 const model = config.textModel;

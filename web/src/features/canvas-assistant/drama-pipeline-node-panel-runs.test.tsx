@@ -47,6 +47,44 @@ it("keeps a real gap between candidate title and unshrunk status label",async()=
  expect(content?.children[0].textContent).toContain("毛毛和豆豆");
  expect(content?.children[1].textContent).toContain("ready · 待采用");
 });
+
+it.each(["dark","light"] as const)("matches episode planning footer button sizing and theme in %s mode",async appearance=>{
+ const {useThemeStore}=await import("@/stores/use-theme-store");
+ const {canvasThemes}=await import("@/lib/canvas-theme");
+ await act(async()=>useThemeStore.setState({theme:appearance}));
+ const cases=[
+  {id:"episodes",type:"drama:episodes",draft:{episodes:[{id:"ep-1",title:"毛毛和豆豆",synopsis:"",ending:"",events:[],sourceRefs:[]}]},
+   label:"剧集生成与确认操作",validate:"校验剧集",generate:"生成剧集候选"},
+  {id:"storyboard",type:"drama:storyboard",draft:{shots:[{id:"shot-1",episodeId:"ep-1",order:1,description:"森林入口",characterVariantIds:[],propIds:[],keyPropIds:[]}]},
+   label:"分镜生成与确认工具栏",validate:"校验分镜",generate:"生成分镜候选"},
+ ];
+ const bars:HTMLElement[]=[];
+ for(const entry of cases){
+  const node={id:entry.id,type:entry.type,title:entry.id,position:{x:0,y:0},metadata:{dramaDraft:JSON.stringify(entry.draft)}} as CanvasNodeData;
+  const container=document.createElement("div");document.body.append(container);
+  const root=createRoot(container);roots.push(root);
+  await act(async()=>root.render(<DramaPipelineNodePanel node={node} onChange={()=>{}}
+   projectId="project-1" workspaceMode workspaceTab="editor" initialEpisodeId="ep-1"/>));
+  const bar=container.querySelector<HTMLElement>(`[aria-label="${entry.label}"]`)!;
+  expect(bar).toBeTruthy();
+  expect(bar.classList.contains("gap-2")).toBe(true);
+  expect(bar.classList.contains("pt-3")).toBe(true);
+  expect(bar.classList.contains("[&>button]:min-h-9")).toBe(true);
+  const actions=[...bar.querySelectorAll<HTMLButtonElement>("button")];
+  expect(actions.find(button=>button.textContent?.includes(entry.validate))).toBeTruthy();
+  expect(actions.find(button=>button.textContent?.includes(entry.generate))).toBeTruthy();
+  expect(actions.find(button=>button.textContent?.includes("确认阶段"))).toBeTruthy();
+  for(const action of actions)expect(action.classList.contains("ant-btn-sm")).toBe(false);
+  const confirm=actions.find(button=>button.textContent?.includes("确认阶段"))!;
+  expect(confirm.classList.contains("order-last")).toBe(true);
+  expect(confirm.style.background).toBe(canvasThemes[appearance].node.activeStroke);
+  bars.push(bar);
+ }
+ const scope=bars[1].querySelector<HTMLButtonElement>('[aria-label="设置分镜生成范围"]')!;
+ expect(scope.classList.contains("min-h-9")).toBe(true);
+ expect(scope.classList.contains("ant-btn-sm")).toBe(false);
+ expect(scope.style.background).toBe(canvasThemes[appearance].node.panel);
+});
 it("keeps the maximized storyboard footer to one themed toolbar; scopes and migration live in a popover",async()=>{
  const {useThemeStore}=await import("@/stores/use-theme-store");
  useThemeStore.setState({theme:"dark"});

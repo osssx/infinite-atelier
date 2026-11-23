@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
-import { Button, Input, Modal, Tag } from "antd";
-import { History, Maximize2, RefreshCw, Sparkles, ShieldAlert } from "lucide-react";
+import { Button, Input, Modal, Popover, Tag } from "antd";
+import { History, Maximize2, RefreshCw, Sparkles, ShieldAlert, SlidersHorizontal } from "lucide-react";
 import type { CanvasNodeData } from "@/types/canvas";
 import { DRAMA_PIPELINE_NODE_TYPES, DRAMA_PIPELINE_STAGE_LABELS, readStoryboardDraft, type DramaPipelineStage } from "./canvas-drama-pipeline";
 import { canvasApi } from "@/features/backend-sync/canvas-api";
@@ -109,6 +109,8 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
     const [localConfirmed, setConfirmed] = useState(String(node.metadata?.dramaConfirmed ?? ""));
     const [validation, setValidation] = useState<string>("");
     const [generating, setGenerating] = useState(false);
+    const [scopeOpen,setScopeOpen]=useState(false);
+    useEffect(()=>{if(!workspaceMode||workspaceTab!=="editor")setScopeOpen(false);},[workspaceMode,workspaceTab]);
     const [storyboardView, setStoryboardView] = useState<"shots" | "video">("shots");
     const [assetEditorExpanded, setAssetEditorExpanded] = useState(workspaceMode);
     const [targetEpisodes, setTargetEpisodes] = useState(Number(node.metadata?.targetEpisodes ?? 10));
@@ -238,7 +240,8 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
         onChange({ dramaDraft: next });
     };
     const config = useEffectiveConfig();
-    const theme = canvasThemes[useThemeStore(state => state.theme)];
+    const appearance = useThemeStore(state => state.theme);
+    const theme = canvasThemes[appearance];
     const control = inlineEditor ? dramaNodeControl(theme) : undefined;
     const assetConfirmed = Boolean(confirmed && draft === confirmed);
     const inlineReady = referenceEditing ? references.length > 0 : episodePlanning ? Boolean(episodeDraft?.episodes.length) : storyboard ? shots.length > 0 : Boolean(previous);
@@ -250,8 +253,57 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
     </section>;
     const ImpactContainer=workspaceMode?"section":"details";
     const ImpactHeading=workspaceMode?"header":"summary";
+    const compactStoryboardActions=storyboard&&workspaceMode&&assetEditorExpanded&&workspaceTab==="editor";
+    const scopeEpisode=linkedEpisodes.find(item=>item.id===selectedEpisode);
+    const scopeLabel=selectedEpisode
+        ? [scopeEpisode?.title||selectedEpisode,
+           selectedSequence?(scopeEpisode?.sequences?.find(item=>item.id===selectedSequence)?.title||selectedSequence):"全部场次",
+           selectedRunShot?("镜头 "+(shots.find(item=>item.id===selectedRunShot)?.order??selectedRunShot)):"全部镜头"].join(" · ")
+        : "请选择要生成的剧集";
+    const migrationPanel=storyboard&&selectedEpisode?(
+        <details data-drama-sequence-migration="" className="min-w-0 space-y-2 rounded-lg border p-2 text-xs" style={{borderColor:theme.node.stroke,background:theme.node.fill,color:theme.node.text}}>
+            <summary className="cursor-pointer py-1 font-medium">场次拆分／合并后的镜头引用迁移</summary>
+            <p className="pt-2 text-xs leading-relaxed" style={{color:theme.node.muted}}>先确认新的剧集场次，再扫描旧镜头。场次一对多拆分时，必须逐镜指定新场次，不自动覆盖人工配置。</p>
+            <Button size="small" style={control} disabled={!projectId||versionBusy} onClick={async()=>{
+                try{
+                    await onBeforeDramaRun?.();
+                    const data=await canvasApi<DramaSequenceMigration>(
+                        `/api/v1/projects/${encodeURIComponent(projectId??"")}/drama-pipeline/sequence-migration?nodeId=${encodeURIComponent(node.id)}&episodeId=${encodeURIComponent(selectedEpisode)}`,"GET");
+                    setSequenceMigration(data);setSequenceChoices({});
+                    setValidation(data.rows.length?"请审核每个旧镜头所属的新场次":"当前剧集没有需要迁移的旧镜头");
+                }catch(error){setValidation(error instanceof Error?error.message:"场次迁移扫描失败");}
+            }}>扫描场次引用</Button>
+            {sequenceMigration?.episodeId===selectedEpisode&&<>
+                {sequenceMigration.rows.map(row=><label key={row.shotId} className="grid min-w-0 gap-1 rounded-lg border p-2 text-xs" style={{borderColor:theme.node.stroke}}>
+                    <span>镜头 {row.shotId} · 旧场次 {row.sourceSequenceId??"未指定"}</span>
+                    <select aria-label={`镜头 ${row.shotId} 迁入场次`} className="min-w-0 rounded-md border p-1.5" style={control}
+                        value={sequenceChoices[row.shotId]??""} onChange={event=>setSequenceChoices(old=>({...old,[row.shotId]:event.target.value}))}>
+                        <option value="">保留原归属，暂不迁移</option>
+                        {row.possibleSequenceIds.map(id=><option value={id} key={id}>{id}</option>)}
+                    </select>
+                    {row.status==="unresolved"&&<span>没有确定的继承关系，请先在剧集规划补充 replaces 关系。</span>}
+                    {row.status==="choice_required"&&<span>拆场存在多个候选归属，必须人工选择。</span>}
+                </label>)}
+                <Button style={control} disabled={versionBusy||!Object.values(sequenceChoices).some(Boolean)} onClick={async()=>{
+                    try{
+                        const changes=sequenceMigration.rows.filter(row=>sequenceChoices[row.shotId]).map(row=>({
+                            shotId:row.shotId,sequenceId:sequenceChoices[row.shotId],
+                            expectedShotDigest:row.shotDigest,
+                        }));
+                        await onMigrateDramaSequences?.(
+                            `/api/v1/projects/${encodeURIComponent(projectId??"")}/drama-pipeline/sequence-migration`,{
+                                nodeId:node.id,episodeId:selectedEpisode,expectedRevision:sequenceMigration.projectRevision,
+                                episodeDigest:sequenceMigration.episodeDigest,changes,
+                            });
+                        setSequenceMigration(undefined);setSequenceChoices({});
+                        setValidation("已原子迁移所选镜头，其他镜头及历史视频 Config 保持原样；请重新检查并确认分镜");
+                    }catch(error){setValidation(error instanceof Error?error.message:"场次引用迁移冲突，请重新扫描");}
+                }}>确认迁移所选镜头</Button>
+            </>}
+        </details>
+    ):null;
     const editor = <section className={inlineEditor ? assetEditorExpanded
-        ? "flex h-full min-h-0 flex-col gap-4 text-sm"
+        ? compactStoryboardActions?"flex h-full min-h-0 flex-col gap-2 text-sm":"flex h-full min-h-0 flex-col gap-4 text-sm"
         : dramaInlineNodeClass
         : "rounded-xl border border-slate-200 bg-white p-4 shadow-xl"}
         style={inlineEditor ? {color:theme.node.text} : undefined} data-canvas-no-zoom={inlineEditor ? "" : undefined}
@@ -495,15 +547,78 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
                 catch { setValidation("无法读取该文本文件"); }
             }} />
         </label> : null}
-        <div aria-label={episodePlanning&&assetEditorExpanded?"剧集生成与确认操作":undefined}
-         className={inlineEditor&&episodePlanning&&assetEditorExpanded
+        <div aria-label={compactStoryboardActions?"分镜生成与确认工具栏":episodePlanning&&assetEditorExpanded?"剧集生成与确认操作":undefined}
+         data-drama-storyboard-toolbar={compactStoryboardActions?"":undefined}
+         className={compactStoryboardActions
+            ? "flex min-w-0 shrink-0 flex-wrap items-center gap-1.5 border-t pt-2 sm:gap-2"
+            : inlineEditor&&episodePlanning&&assetEditorExpanded
             ? "flex min-w-0 shrink-0 flex-wrap items-center justify-end gap-2 border-t pt-3 [&>button]:min-h-9 [&>select]:min-h-9 [&>select]:min-w-[160px] [&>select]:max-w-full [&>select]:flex-1 [&>select]:rounded-lg [&>select]:border [&>select]:px-3 [&>select]:py-1.5"
             : inlineEditor
             ? `grid min-w-0 grid-cols-2 items-center gap-2 pt-2 [&>select]:min-w-0 [&>select]:max-w-full [&>select]:rounded-md [&>select]:border [&>select]:px-2 [&>select]:py-1 [&>button]:min-w-0 ${assetEditorExpanded ? "order-last shrink-0" : ""}`
-            : "mt-3 flex gap-2"} style={episodePlanning&&assetEditorExpanded?{borderColor:theme.node.stroke}:undefined}>
+            : "mt-3 flex gap-2"} style={compactStoryboardActions||episodePlanning&&assetEditorExpanded?{borderColor:theme.node.stroke}:undefined}>
+            {compactStoryboardActions && <Popover trigger="click" placement="topLeft"
+                open={scopeOpen} onOpenChange={setScopeOpen}
+                styles={{content:{padding:0,background:theme.node.panel,borderRadius:12,color:theme.node.text},arrow:{background:theme.node.panel}}}
+                content={<div data-drama-storyboard-options="" aria-label="分镜生成范围设置"
+                    className="thin-scrollbar max-h-[min(65vh,520px)] overflow-y-auto rounded-xl border p-3"
+                    style={{width:"min(430px,calc(100vw - 36px))",maxWidth:"100%",
+                        borderColor:theme.node.stroke,background:theme.node.panel,
+                        color:theme.node.text,colorScheme:appearance}}>
+                    <div className="mb-3 space-y-1">
+                        <strong className="text-sm font-semibold">生成范围设置</strong>
+                        <p className="text-xs leading-relaxed" style={{color:theme.node.muted}}>
+                            选择生成目标，仅影响下一次生成候选，不会修改当前镜头草案。
+                        </p>
+                    </div>
+                    <div className="grid min-w-0 gap-2 sm:grid-cols-2">
+                        <label className="grid min-w-0 gap-1 text-xs sm:col-span-2" style={{color:theme.node.muted}}>
+                            剧集
+                            <select className="h-9 w-full min-w-0 rounded-lg border px-2 text-xs" style={control}
+                                aria-label="生成范围：剧集" value={selectedEpisode} onChange={event=>{
+                                    setSelectedEpisode(event.target.value);setSelectedSequence("");setSelectedRunShot("");
+                                }}>
+                                <option value="">选择要生成的剧集</option>
+                                {linkedEpisodes.map(episode=><option key={episode.id} value={episode.id}>{episode.title}</option>)}
+                            </select>
+                        </label>
+                        {selectedEpisode && <>
+                            <label className="grid min-w-0 gap-1 text-xs" style={{color:theme.node.muted}}>
+                                场次
+                                <select className="h-9 w-full min-w-0 rounded-lg border px-2 text-xs" style={control}
+                                    aria-label="生成范围：场次" value={selectedSequence} onChange={event=>{
+                                        setSelectedSequence(event.target.value);setSelectedRunShot("");
+                                    }}>
+                                    <option value="">全部场次</option>
+                                    {scopeEpisode?.sequences?.map(sequence=>
+                                        <option key={sequence.id} value={sequence.id}>{sequence.title}</option>)}
+                                </select>
+                            </label>
+                            <label className="grid min-w-0 gap-1 text-xs" style={{color:theme.node.muted}}>
+                                镜头
+                                <select className="h-9 w-full min-w-0 rounded-lg border px-2 text-xs" style={control}
+                                    aria-label="生成范围：镜头" value={selectedRunShot}
+                                    onChange={event=>setSelectedRunShot(event.target.value)}>
+                                    <option value="">全部镜头</option>
+                                    {shots.filter(shot=>shot.episodeId===selectedEpisode&&
+                                        (!selectedSequence||shot.sequenceId===selectedSequence))
+                                        .map(shot=><option key={shot.id} value={shot.id}>镜头 {shot.order}</option>)}
+                                </select>
+                            </label>
+                        </>}
+                    </div>
+                    {migrationPanel && <div className="mt-3 min-w-0 border-t pt-3" style={{borderColor:theme.node.stroke}}>
+                        {migrationPanel}
+                    </div>}
+                </div>}>
+                <Button size="small" type="default" style={control} icon={<SlidersHorizontal size={14}/>}
+                    aria-label="设置分镜生成范围" className="shrink-0">生成范围</Button>
+            </Popover>}
+            {compactStoryboardActions && <span data-drama-storyboard-scope-summary="" title={scopeLabel}
+                className="hidden min-w-0 flex-1 truncate text-xs font-medium md:block"
+                style={{color:theme.node.muted}}>{scopeLabel}</span>}
             {!inlineEditor && <Button onClick={() => { onChange({ dramaDraft: draft, ...(stage === "source" ? { content: draft } : {}) }); }}>保存草案</Button>}
-            <Button size={inlineEditor && !assetEditorExpanded ? "small" : "middle"} className={inlineEditor ? "order-last" : undefined}
-                style={inlineEditor && inlineReady && !generating ? dramaNodePrimary(theme) : undefined}
+            <Button size={compactStoryboardActions || inlineEditor && !assetEditorExpanded ? "small" : "middle"} className={compactStoryboardActions?"order-last shrink-0":inlineEditor?"order-last":undefined}
+                style={compactStoryboardActions||inlineEditor && inlineReady && !generating ? dramaNodePrimary(theme) : undefined}
                 type="primary" disabled={inlineEditor ? generating || !inlineReady || (versioned && versionBusy) : !draft.trim()} onClick={async () => {
                 try {
                     if (stage === "assets" || stage === "episodes" || stage === "storyboard") {
@@ -530,7 +645,8 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
                         ...(stage === "source" ? { content } : {}) });
                 } catch (error) { setValidation(error instanceof Error ? error.message : "结构化结果无效"); }
             }}>确认阶段</Button>
-        <Button size={inlineEditor && !assetEditorExpanded ? "small" : "middle"} style={control} onClick={async () => {
+        <Button size={compactStoryboardActions||inlineEditor && !assetEditorExpanded ? "small" : "middle"}
+            className={compactStoryboardActions?"ml-auto shrink-0":undefined} style={control} onClick={async () => {
             try {
                 if (episodePlanning) {
                     if (episodeDraft?.episodes.length !== targetEpisodes) throw Error(`剧集草案必须包含 ${targetEpisodes} 集`);
@@ -550,6 +666,7 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
             <option value="">完整剧集计划</option>
             {episodeDraft?.episodes.map(episode=><option key={episode.id} value={episode.id}>重跑 · {episode.title}</option>)}
         </select>}
+        {!compactStoryboardActions&&<>
         {storyboard && <select aria-label="生成范围：剧集" value={selectedEpisode} onChange={event=>{
             setSelectedEpisode(event.target.value);setSelectedSequence("");setSelectedRunShot("");
         }}>
@@ -570,7 +687,8 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
                     .map(shot=><option key={shot.id} value={shot.id}>镜头 {shot.order}</option>)}
             </select>
         </>}
-        {stage === "assets" || stage === "episodes" || stage === "storyboard" ? <Button size={inlineEditor && !assetEditorExpanded ? "small" : "middle"} style={control} loading={generating} onClick={async () => {
+        </>}
+        {stage === "assets" || stage === "episodes" || stage === "storyboard" ? <Button size={compactStoryboardActions||inlineEditor && !assetEditorExpanded ? "small" : "middle"} className={compactStoryboardActions?"shrink-0":undefined} style={control} loading={generating} onClick={async () => {
             setGenerating(true);
             try {
                 const model = config.textModel;
@@ -622,46 +740,7 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
             finally { setGenerating(false); }
         }} disabled={!projectId || (versioned && versionBusy) || (storyboard && !selectedEpisode)}>{storyboard ? "生成分镜候选" : episodePlanning ? "生成剧集候选" : "生成草案"}</Button> : null}
         </div>
-        {storyboard&&selectedEpisode&&<details className="grid gap-2 rounded-lg border p-2">
-            <summary>场次拆分／合并后的镜头引用迁移</summary>
-            <p className="text-xs">先确认新的剧集场次，再扫描旧镜头。场次一对多拆分时，必须逐镜指定新场次，不自动覆盖人工配置。</p>
-            <Button size="small" disabled={!projectId||versionBusy} onClick={async()=>{
-                try{
-                    await onBeforeDramaRun?.();
-                    const data=await canvasApi<DramaSequenceMigration>(
-                        `/api/v1/projects/${encodeURIComponent(projectId??"")}/drama-pipeline/sequence-migration?nodeId=${encodeURIComponent(node.id)}&episodeId=${encodeURIComponent(selectedEpisode)}`,"GET");
-                    setSequenceMigration(data);setSequenceChoices({});
-                    setValidation(data.rows.length?"请审核每个旧镜头所属的新场次":"当前剧集没有需要迁移的旧镜头");
-                }catch(error){setValidation(error instanceof Error?error.message:"场次迁移扫描失败");}
-            }}>扫描场次引用</Button>
-            {sequenceMigration?.episodeId===selectedEpisode&&<>
-                {sequenceMigration.rows.map(row=><label key={row.shotId} className="grid gap-1 rounded border p-2 text-xs">
-                    <span>镜头 {row.shotId} · 旧场次 {row.sourceSequenceId??"未指定"}</span>
-                    <select aria-label={`镜头 ${row.shotId} 迁入场次`} className="rounded border p-1" style={control}
-                        value={sequenceChoices[row.shotId]??""} onChange={event=>setSequenceChoices(old=>({...old,[row.shotId]:event.target.value}))}>
-                        <option value="">保留原归属，暂不迁移</option>
-                        {row.possibleSequenceIds.map(id=><option value={id} key={id}>{id}</option>)}
-                    </select>
-                    {row.status==="unresolved"&&<span>没有确定的继承关系，请先在剧集规划补充 replaces 关系。</span>}
-                    {row.status==="choice_required"&&<span>拆场存在多个候选归属，必须人工选择。</span>}
-                </label>)}
-                <Button disabled={versionBusy||!Object.values(sequenceChoices).some(Boolean)} onClick={async()=>{
-                    try{
-                        const changes=sequenceMigration.rows.filter(row=>sequenceChoices[row.shotId]).map(row=>({
-                            shotId:row.shotId,sequenceId:sequenceChoices[row.shotId],
-                            expectedShotDigest:row.shotDigest,
-                        }));
-                        await onMigrateDramaSequences?.(
-                            `/api/v1/projects/${encodeURIComponent(projectId??"")}/drama-pipeline/sequence-migration`,{
-                                nodeId:node.id,episodeId:selectedEpisode,expectedRevision:sequenceMigration.projectRevision,
-                                episodeDigest:sequenceMigration.episodeDigest,changes,
-                            });
-                        setSequenceMigration(undefined);setSequenceChoices({});
-                        setValidation("已原子迁移所选镜头，其他镜头及历史视频 Config 保持原样；请重新检查并确认分镜");
-                    }catch(error){setValidation(error instanceof Error?error.message:"场次引用迁移冲突，请重新扫描");}
-                }}>确认迁移所选镜头</Button>
-            </>}
-        </details>}
+        {storyboard && !compactStoryboardActions && migrationPanel}
         </>}
         {(storyboard||episodePlanning) && (!workspaceMode || workspaceTab==="runs") && <>
          {workspaceMode&&<section data-drama-runs-panel="" aria-label="生成候选记录"

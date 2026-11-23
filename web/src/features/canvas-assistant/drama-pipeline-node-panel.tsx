@@ -557,10 +557,14 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
             ? `grid min-w-0 grid-cols-2 items-center gap-2 pt-2 [&>select]:min-w-0 [&>select]:max-w-full [&>select]:rounded-md [&>select]:border [&>select]:px-2 [&>select]:py-1 [&>button]:min-w-0 ${assetEditorExpanded ? "order-last shrink-0" : ""}`
             : "mt-3 flex gap-2"} style={compactStoryboardActions||episodePlanning&&assetEditorExpanded?{borderColor:theme.node.stroke}:undefined}>
             {compactStoryboardActions && <Popover trigger="click" placement="topLeft"
+                arrow={false} autoAdjustOverflow zIndex={1200}
+                getPopupContainer={()=>document.body}
                 open={scopeOpen} onOpenChange={setScopeOpen}
-                styles={{content:{padding:0,background:theme.node.panel,borderRadius:12,color:theme.node.text},arrow:{background:theme.node.panel}}}
+                styles={{content:{padding:0,background:theme.node.panel,borderRadius:12,
+                    border:`1px solid ${theme.node.stroke}`,color:theme.node.text,
+                    boxShadow:appearance==="dark"?"0 16px 38px rgba(0,0,0,.38)":"0 16px 38px rgba(0,0,0,.15)"}}}
                 content={<div data-drama-storyboard-options="" aria-label="分镜生成范围设置"
-                    className="thin-scrollbar max-h-[min(65vh,520px)] overflow-y-auto rounded-xl border p-3"
+                    className="thin-scrollbar max-h-[min(56vh,440px)] min-w-0 overflow-y-auto rounded-xl p-3"
                     style={{width:"min(430px,calc(100vw - 36px))",maxWidth:"100%",
                         borderColor:theme.node.stroke,background:theme.node.panel,
                         color:theme.node.text,colorScheme:appearance}}>

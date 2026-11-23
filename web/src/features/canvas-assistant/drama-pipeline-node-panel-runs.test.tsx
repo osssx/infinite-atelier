@@ -84,6 +84,17 @@ it("keeps the maximized storyboard footer to one themed toolbar; scopes and migr
  });
  const popup=document.querySelector<HTMLElement>('[data-drama-storyboard-options]')!;
  expect(popup).toBeTruthy();
+ const overlay=popup.closest<HTMLElement>(".ant-popover")!;
+ expect(overlay).toBeTruthy();
+ // The AntD arrow and its white tail previously overlapped the footer trigger.
+ expect(overlay.querySelector(".ant-popover-arrow")).toBeNull();
+ expect(overlay.style.zIndex).toBe("1200");
+ expect(container.contains(popup)).toBe(false);
+ expect(popup.classList.contains("max-h-[min(56vh,440px)]")).toBe(true);
+ expect(popup.classList.contains("border")).toBe(false);
+ const surface=overlay.querySelector<HTMLElement>(".ant-popover-content")!;
+ expect(surface).toBeTruthy();
+ expect(surface.style.borderColor).toBe((await import("@/lib/canvas-theme")).canvasThemes.dark.node.stroke);
  expect(popup.querySelector('select[aria-label="生成范围：剧集"]')).toBeTruthy();
  expect(popup.querySelector('select[aria-label="生成范围：场次"]')).toBeTruthy();
  expect(popup.querySelector('select[aria-label="生成范围：镜头"]')).toBeTruthy();
@@ -93,6 +104,7 @@ it("keeps the maximized storyboard footer to one themed toolbar; scopes and migr
  expect(toolbar.style.borderColor).toBe((await import("@/lib/canvas-theme")).canvasThemes.light.node.stroke);
  expect(document.querySelector<HTMLElement>('[data-drama-storyboard-options]')?.style.background)
   .toBe((await import("@/lib/canvas-theme")).canvasThemes.light.node.panel);
+ expect(surface.style.borderColor).toBe((await import("@/lib/canvas-theme")).canvasThemes.light.node.stroke);
  const sequence=popup.querySelector<HTMLSelectElement>('select[aria-label="生成范围：场次"]')!;
  await act(async()=>{
   Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,"value")!.set!.call(sequence,"sequence-1");

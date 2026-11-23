@@ -407,7 +407,7 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
                 <div className={effectiveStoryboardView === "shots"
                     ? assetEditorExpanded ? "flex min-h-0 min-w-0 flex-1 flex-col gap-3" : "grid min-w-0 gap-3"
                     : "hidden"}>
-                    <DramaStoryboardFields shots={shots} episodes={linkedEpisodes} scenes={scenes} initialEpisodeId={initialEpisodeId} initialShotId={initialShotId}
+                    <DramaStoryboardFields shots={shots} episodes={linkedEpisodes} assets={assets} initialEpisodeId={initialEpisodeId} initialShotId={initialShotId}
                         expanded={assetEditorExpanded} disabled={generating || versionBusy} control={control} onChange={nextShots => {
                             onChange({dramaDraft:JSON.stringify({...storyboardDraft,shots:nextShots})});
                             setValidation("");

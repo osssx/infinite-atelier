@@ -83,10 +83,80 @@ function ShotEditableField({id,label,value,theme,disabled,onConfirm,multiline=fa
  </section>;
 }
 
-export function DramaStoryboardFields({shots,episodes,scenes,expanded,disabled,control,onChange,initialEpisodeId,initialShotId}:{
+/** Asset references are edited as one local field transaction, matching the
+ * existing read-only-first shot field UX. Unknown legacy IDs remain visible and
+ * removable rather than silently disappearing on edit.
+ */
+function ShotAssetMultiField({id,label,value,options,theme,disabled,onConfirm}:{
+ id:string;label:string;value:string[];options:Choice[];theme:CanvasTheme;disabled:boolean;
+ onConfirm:(value:string[])=>void;
+}){
+ const [editing,setEditing]=useState(false);
+ const [draft,setDraft]=useState<string[]>(value);
+ const [baseline,setBaseline]=useState<string[]>(value);
+ const stale=editing&&JSON.stringify(baseline)!==JSON.stringify(value);
+ const choices=[...options,...value.filter(key=>!options.some(option=>option.value===key))
+  .map(key=>({value:key,label:"待匹配 · "+key}))];
+ const names=value.map(key=>choices.find(option=>option.value===key)?.label??key);
+ const begin=()=>{setDraft([...value]);setBaseline([...value]);setEditing(true);};
+ const cancel=()=>{setDraft([...value]);setEditing(false);};
+ const confirm=()=>{
+  if(disabled||stale)return;
+  if(JSON.stringify(draft)!==JSON.stringify(value))onConfirm(draft);
+  setEditing(false);
+ };
+ const fieldStyle={background:theme.node.panel,borderColor:theme.node.stroke,color:theme.node.text,
+  "--tw-ring-color":theme.node.activeStroke} as CSSProperties;
+ return <section data-shot-editable-field={id} data-shot-field-mode={editing?"editing":"reading"}
+  aria-label={label+"区域"} className={editing?
+   "min-w-0 space-y-3 rounded-xl border p-3 sm:p-4":"min-w-0 space-y-1.5 border border-transparent"}
+  style={editing?{background:theme.node.fill,borderColor:theme.node.stroke}:undefined}>
+  <div className="flex min-h-7 items-center justify-between gap-2 text-xs font-medium" style={{color:theme.node.muted}}>
+   <div className="flex min-w-0 items-center gap-1.5">
+    <span>{label}</span>
+    {!editing&&<button type="button" title={"编辑"+label} aria-label={"编辑"+label}
+     disabled={disabled} onClick={begin}
+     className="inline-grid size-7 shrink-0 place-items-center rounded-md border border-transparent hover:opacity-80 focus-visible:outline focus-visible:outline-2"
+     style={{color:theme.node.muted,outlineColor:theme.node.activeStroke}}>
+     <Pencil size={13} aria-hidden="true"/>
+    </button>}
+   </div>
+   {editing&&<span className="shrink-0 rounded-md px-2 py-0.5 text-[11px] font-semibold"
+    style={{background:theme.toolbar.activeBg,color:theme.toolbar.activeText}}>编辑中</span>}
+  </div>
+  {editing?<>
+   <div role="group" aria-label={label+"候选"} data-canvas-no-zoom
+    className="thin-scrollbar max-h-48 min-w-0 space-y-1 overflow-y-auto rounded-lg border p-2"
+    style={fieldStyle}>
+    {choices.length?choices.map(option=><label key={option.value}
+     className="flex min-w-0 cursor-pointer items-start gap-2 rounded-md px-2 py-1.5 text-xs hover:opacity-80">
+     <input type="checkbox" className="mt-0.5 shrink-0" checked={draft.includes(option.value)}
+      disabled={disabled} onChange={event=>setDraft(current=>event.target.checked?
+       [...current,option.value]:current.filter(key=>key!==option.value))}/>
+     <span className="min-w-0 break-words">{option.label}</span>
+    </label>):<p className="px-2 py-2 text-xs" style={{color:theme.node.muted}}>
+     暂无可选资产，请先在上游资产规划中确认对应资产。
+    </p>}
+   </div>
+   {stale&&<p role="alert" className="text-xs" style={{color:theme.node.muted}}>
+    内容已在其他位置更新，请取消并重新编辑。
+   </p>}
+   <DramaEditActions theme={theme} label={label} disabled={disabled||stale}
+    onCancel={cancel} onConfirm={confirm}/>
+  </>:
+   <div data-shot-readonly={id} aria-label={label+"内容"}
+    className="min-w-0 rounded-md border-l-2 px-3 py-2.5 text-sm leading-relaxed"
+    style={{background:theme.toolbar.activeBg,color:names.length?theme.node.text:theme.node.muted,
+     borderLeftColor:theme.node.stroke}}>
+    <div className="whitespace-pre-wrap break-words">{names.join("、")||"未指定"}</div>
+   </div>}
+ </section>;
+}
+
+export function DramaStoryboardFields({shots,episodes,assets,expanded,disabled,control,onChange,initialEpisodeId,initialShotId}:{
  shots:DramaShot[];
  episodes:{id:string;title:string;targetDurationSec?:number;sequences?:{id:string;title:string}[]}[];
- scenes:DramaAsset[];expanded:boolean;disabled:boolean;control?:CSSProperties;
+ assets:DramaAsset[];expanded:boolean;disabled:boolean;control?:CSSProperties;
  onChange:(shots:DramaShot[])=>void;initialEpisodeId?:string;initialShotId?:string;
 }){
  const appearance=useThemeStore(state=>state.theme);
@@ -118,6 +188,14 @@ export function DramaStoryboardFields({shots,episodes,scenes,expanded,disabled,c
   else delete next[key];
   write(next);
  };
+ const scenes=assets.filter(item=>item.kind==="scene");
+ const characters=assets.filter(item=>item.kind==="character");
+ const props=assets.filter(item=>item.kind==="prop");
+ const characterOptions:Choice[]=characters.flatMap(item=>[
+  {value:item.id,label:item.name+(item.variants?.length?" · 默认":"")},
+  ...(item.variants??[]).map(variant=>({value:variant.id,label:item.name+" · "+variant.name}))]);
+ const propOptions:Choice[]=props.map(item=>({value:item.id,label:item.name}));
+ const keyPropOptions=propOptions.filter(item=>active.propIds.includes(item.value));
  const scene=scenes.find(item=>item.id===active.sceneId);
  const sceneOptions:Choice[]=[{value:"",label:"未指定场景"},...scenes.map(item=>({value:item.id,label:item.name}))];
  if(active.sceneId&&!scene)sceneOptions.push({value:active.sceneId,label:"未确认："+active.sceneId});
@@ -223,22 +301,37 @@ export function DramaStoryboardFields({shots,episodes,scenes,expanded,disabled,c
      <ShotEditableField key={active.id+":"+field.key} id={field.key} label={field.label}
       theme={theme} disabled={disabled} multiline rows={field.rows} value={active[field.key]??""}
       onConfirm={value=>optional(field.key,value)}/>)}
-    <ShotEditableField key={active.id+":scene"} id="scene" label="场景"
-     theme={theme} disabled={disabled} type="select" options={sceneOptions}
-     value={active.sceneId??""} placeholder="未指定场景"
-     onConfirm={value=>{
-      const next={...active};
-      if(value)next.sceneId=value;
-      else delete next.sceneId;
-      // Changing the scene invalidates its variant, in the same explicit commit.
-      delete next.sceneVariantId;
-      write(next);
-     }}/>
-    {(scene?.variants?.length||active.sceneVariantId)?<ShotEditableField
-     key={active.id+":sceneVariant"} id="sceneVariant" label="场景变体"
-     theme={theme} disabled={disabled} type="select" options={sceneVariants}
-     value={active.sceneVariantId??""} placeholder="默认场景"
-     onConfirm={value=>optional("sceneVariantId",value)}/>:null}
+    <div role="group" aria-label="当前镜头人物、道具与场景" className="grid min-w-0 gap-3 md:col-span-2 md:grid-cols-2">
+     <div className="min-w-0 md:col-span-2">
+      <h4 className="text-xs font-semibold" style={caption}>当前镜头资产</h4>
+     </div>
+     <ShotAssetMultiField key={active.id+":characters"} id="characters" label="人物（角色造型）"
+      value={active.characterVariantIds} options={characterOptions} theme={theme} disabled={disabled}
+      onConfirm={value=>patch("characterVariantIds",value)}/>
+     <ShotEditableField key={active.id+":scene"} id="scene" label="场景"
+      theme={theme} disabled={disabled} type="select" options={sceneOptions}
+      value={active.sceneId??""} placeholder="未指定场景"
+      onConfirm={value=>{
+       const next={...active};
+       if(value)next.sceneId=value;
+       else delete next.sceneId;
+       // Changing the scene invalidates its variant, in the same explicit commit.
+       delete next.sceneVariantId;
+       write(next);
+      }}/>
+     <ShotAssetMultiField key={active.id+":props"} id="props" label="可见道具"
+      value={active.propIds} options={propOptions} theme={theme} disabled={disabled}
+      onConfirm={value=>write({...active,propIds:value,
+       keyPropIds:active.keyPropIds.filter(id=>value.includes(id))})}/>
+     <ShotAssetMultiField key={active.id+":keyProps"} id="keyProps" label="关键道具"
+      value={active.keyPropIds} options={keyPropOptions} theme={theme} disabled={disabled}
+      onConfirm={value=>patch("keyPropIds",value)}/>
+     {(scene?.variants?.length||active.sceneVariantId)?<ShotEditableField
+      key={active.id+":sceneVariant"} id="sceneVariant" label="场景变体"
+      theme={theme} disabled={disabled} type="select" options={sceneVariants}
+      value={active.sceneVariantId??""} placeholder="默认场景"
+      onConfirm={value=>optional("sceneVariantId",value)}/>:null}
+    </div>
    </div>
   </div>
  </fieldset>;

@@ -28,10 +28,20 @@ const scenes:DramaAsset[]=[
  {id:"scene-2",kind:"scene",name:"河畔",description:"",sourceRefs:[],
   variants:[{id:"variant-2",name:"月夜河畔",description:""}]},
 ];
+const characters:DramaAsset[]=[
+ {id:"rabbit",kind:"character",name:"小兔",description:"",sourceRefs:[],
+  variants:[{id:"rabbit-red",name:"红衣",description:""},{id:"rabbit-blue",name:"蓝衣",description:""}]},
+ {id:"turtle",kind:"character",name:"小龟",description:"",sourceRefs:[]},
+];
+const props:DramaAsset[]=[
+ {id:"flower",kind:"prop",name:"花束",description:"",sourceRefs:[]},
+ {id:"basket",kind:"prop",name:"篮子",description:"",sourceRefs:[]},
+];
+
 const roots:Root[]=[];
 beforeEach(()=>{vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT",true);useThemeStore.setState({theme:"dark"});});
 afterEach(async()=>{for(const x of roots)await act(async()=>x.unmount());roots.length=0;vi.unstubAllGlobals();});
-async function mount(opts:{expanded?:boolean;initialShotId?:string;disabled?:boolean}={}){
+async function mount(opts:{expanded?:boolean;initialShotId?:string;disabled?:boolean;assets?:DramaAsset[]}={}){
  const div=document.createElement("div");document.body.append(div);
  const root=createRoot(div);roots.push(root);
  const changes=vi.fn<(shots:DramaShot[])=>void>();
@@ -40,7 +50,7 @@ async function mount(opts:{expanded?:boolean;initialShotId?:string;disabled?:boo
   const [shots,setShots]=useState<DramaShot[]>(original);
   updateShots=setShots;
   return <div style={{height:720,width:1150}}>
-   <DramaStoryboardFields shots={shots} episodes={episodes} scenes={scenes}
+   <DramaStoryboardFields shots={shots} episodes={episodes} assets={opts.assets??[...scenes,...characters,...props]}
     expanded={opts.expanded??true} disabled={opts.disabled??false} initialShotId={opts.initialShotId}
     onChange={next=>{changes(next);setShots(next)}}/>
   </div>;
@@ -82,13 +92,87 @@ describe("maximized storyboard editor mirrors episode localized read/edit UX",()
   expect(content.textContent).toContain("第 1 集 · 镜头 1");
   expect(content.querySelector('[data-shot-editable-field="sourceRefs"]')).toBeNull();
   expect(content.textContent).not.toContain("原文段落 ID（每行一个）");
-  for(const id of ["duration","sequence","description","shotSize","camera","action","dialogue","scene","sceneVariant"]){
+  for(const id of ["duration","sequence","description","shotSize","camera","action","dialogue","scene","sceneVariant","characters","props","keyProps"]){
    const item=content.querySelector<HTMLElement>(`[data-shot-editable-field="${id}"]`)!;
    expect(item?.dataset.shotFieldMode).toBe("reading");
    expect(item?.querySelector(`[data-shot-readonly="${id}"]`)).toBeTruthy();
    expect(item?.querySelector('input,textarea,select')).toBeNull();
   }
   expect(changes).not.toHaveBeenCalled();
+ });
+ it("shows current characters, props and scene as themed read-only fields",async()=>{
+  const {div}=await mount({initialShotId:"shot-1"});
+  const group=div.querySelector<HTMLElement>('[aria-label="当前镜头人物、道具与场景"]')!;
+  expect(group).toBeTruthy();
+  expect(group.querySelector('[data-shot-readonly="characters"]')?.textContent).toContain("小兔");
+  expect(group.querySelector('[data-shot-readonly="props"]')?.textContent).toContain("花束");
+  expect(group.querySelector('[data-shot-readonly="keyProps"]')?.textContent).toContain("花束");
+  expect(group.querySelector('[data-shot-readonly="scene"]')?.textContent).toBe("森林");
+  expect(group.querySelectorAll("input,select,textarea")).toHaveLength(0);
+  await act(async()=>useThemeStore.setState({theme:"light"}));
+  expect(group.querySelector<HTMLElement>('[data-shot-readonly="characters"]')?.style.background)
+   .toBe(canvasThemes.light.toolbar.activeBg);
+ });
+ it("stages character choices, allows cancel, then saves only this shot",async()=>{
+  const {div,changes}=await mount();
+  await click(div.querySelector('[aria-label="编辑人物（角色造型）"]'));
+  const choices=div.querySelector<HTMLElement>('[aria-label="人物（角色造型）候选"]')!;
+  expect(choices.textContent).toContain("小兔 · 红衣");
+  expect(choices.textContent).toContain("小龟");
+  const choose=(name:string)=>[...div.querySelectorAll('[aria-label="人物（角色造型）候选"] label')].find(label=>label.textContent?.includes(name))
+   ?.querySelector<HTMLInputElement>('input[type="checkbox"]')??null;
+  await click(choose("小兔 · 红衣"));
+  expect(changes).not.toHaveBeenCalled();
+  await click(div.querySelector('[aria-label="人物（角色造型）操作"] [data-drama-action="cancel"]'));
+  expect(div.querySelector('[data-shot-readonly="characters"]')?.textContent).not.toContain("红衣");
+  await click(div.querySelector('[aria-label="编辑人物（角色造型）"]'));
+  await click(choose("小兔 · 红衣"));
+  await click(div.querySelector('[aria-label="确认人物（角色造型）"]'));
+  expect(changes).toHaveBeenCalledTimes(1);
+  expect(changes.mock.lastCall?.[0][0].characterVariantIds).toEqual(["rabbit","rabbit-red"]);
+  expect(changes.mock.lastCall?.[0][1]).toEqual(original[1]);
+  expect(changes.mock.lastCall?.[0][0].sceneId).toBe("scene-1");
+  expect(div.querySelector('[data-shot-readonly="characters"]')?.textContent).toContain("红衣");
+ });
+ it("keeps key props within visible props; switching a shot updates displayed assets",async()=>{
+  const {div,changes}=await mount();
+  await click(div.querySelector('[aria-label="编辑可见道具"]'));
+  const checkbox=div.querySelector<HTMLInputElement>('[aria-label="可见道具候选"] input[type="checkbox"]')!;
+  expect(checkbox.checked).toBe(true);
+  await click(checkbox);
+  expect(changes).not.toHaveBeenCalled();
+  await click(div.querySelector('[aria-label="确认可见道具"]'));
+  expect(changes.mock.lastCall?.[0][0].propIds).toEqual([]);
+  expect(changes.mock.lastCall?.[0][0].keyPropIds).toEqual([]);
+  await click(div.querySelector('[aria-label="编辑关键道具"]'));
+  expect(div.querySelector('[aria-label="关键道具候选"]')?.textContent).toContain("暂无可选资产");
+  await click(div.querySelector('[aria-label="关键道具操作"] [data-drama-action="cancel"]'));
+  await click(div.querySelector('[aria-label^="选择镜头 2"]'));
+  expect(div.querySelector('[data-shot-readonly="characters"]')?.textContent).toContain("小龟");
+  expect(div.querySelector('[data-shot-readonly="props"]')?.textContent).toBe("未指定");
+ });
+ it("shows legacy unmatched IDs instead of silently dropping them",async()=>{
+  const {div,changes}=await mount({assets:scenes});
+  expect(div.querySelector('[data-shot-readonly="characters"]')?.textContent).toContain("待匹配 · rabbit");
+  expect(div.querySelector('[data-shot-readonly="props"]')?.textContent).toContain("待匹配 · flower");
+  await click(div.querySelector('[aria-label="编辑人物（角色造型）"]'));
+  const legacy=div.querySelector<HTMLInputElement>('[aria-label="人物（角色造型）候选"] input[type="checkbox"]')!;
+  expect(legacy.checked).toBe(true);
+  expect(legacy.parentElement?.textContent).toContain("待匹配");
+  await click(div.querySelector('[aria-label="人物（角色造型）操作"] [data-drama-action="cancel"]'));
+  expect(changes).not.toHaveBeenCalled();
+ });
+ it("prevents confirming stale asset selections after an external shot update",async()=>{
+  const {div,changes,externalUpdate}=await mount();
+  await click(div.querySelector('[aria-label="编辑可见道具"]'));
+  await click(div.querySelector('[aria-label="可见道具候选"] input[type="checkbox"]'));
+  await externalUpdate(shot=>({...shot,propIds:["basket"],keyPropIds:[]}));
+  expect(div.querySelector('[data-shot-editable-field="props"] [role="alert"]')?.textContent)
+   .toContain("内容已在其他位置更新");
+  expect(div.querySelector<HTMLButtonElement>('[aria-label="确认可见道具"]')?.disabled).toBe(true);
+  expect(changes).not.toHaveBeenCalled();
+  await click(div.querySelector('[aria-label="可见道具操作"] [data-drama-action="cancel"]'));
+  expect(div.querySelector('[data-shot-readonly="props"]')?.textContent).toContain("篮子");
  });
  it("stages synopsis and cancels without writing; confirm updates only the active shot",async()=>{
   const {div,changes}=await mount();

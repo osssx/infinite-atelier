@@ -169,7 +169,7 @@ function ShotAssetMultiField({id,label,value,options,theme,disabled,onConfirm}:{
 }
 
 export function DramaStoryboardFields({shots,episodes,assets,expanded,disabled,control,onChange,initialEpisodeId,initialShotId,
- projectId,nodeId,onPatchShot,onReloadShot}:{
+ projectId,nodeId,onPatchShot,onReloadShot,onWaitForDraftSave}:{
  shots:DramaShot[];
  episodes:{id:string;title:string;targetDurationSec?:number;sequences?:{id:string;title:string}[]}[];
  assets:DramaAsset[];expanded:boolean;disabled:boolean;control?:CSSProperties;
@@ -177,6 +177,7 @@ export function DramaStoryboardFields({shots,episodes,assets,expanded,disabled,c
  projectId?:string;nodeId?:string;
  onPatchShot?:(shotId:string,expectedDigest:string,changes:Record<string,unknown>)=>Promise<void>;
  onReloadShot?:()=>Promise<void>;
+ onWaitForDraftSave?:()=>Promise<void>;
 }){
  const appearance=useThemeStore(state=>state.theme);
  const theme=canvasThemes[appearance];
@@ -234,8 +235,17 @@ export function DramaStoryboardFields({shots,episodes,assets,expanded,disabled,c
   const url=`/api/v1/projects/${encodeURIComponent(projectId)}/drama-pipeline/revision-scope?`+
    `nodeId=${encodeURIComponent(nodeId)}&draft=true&episodeId=${encodeURIComponent(active.episodeId)}`+
    `&entryId=${encodeURIComponent(active.id)}&limit=1`;
-  void canvasApi<{entries:DramaShot[];entryDigests:{id:string;digest:string}[]}>(url,"GET",undefined,abort.signal)
-   .then(result=>{
+  const read=()=>canvasApi<{entries:DramaShot[];entryDigests:{id:string;digest:string}[]}>(url,"GET",undefined,abort.signal);
+  void read().then(async first=>{
+    if(!live)return;
+    let result=first;
+    // A newly inserted shot is visible in the local draft before the debounced
+    // backend save. Flush that draft once before requesting its CAS digest again.
+    if(!result.entries.some(item=>item.id===active.id)&&onWaitForDraftSave){
+     await onWaitForDraftSave();
+     if(!live)return;
+     result=await read();
+    }
     if(!live)return;
     const digest=result.entryDigests.find(item=>item.id===active.id)?.digest;
     const remote=result.entries[0];
@@ -278,9 +288,16 @@ export function DramaStoryboardFields({shots,episodes,assets,expanded,disabled,c
    .catch(error=>{if(current)setPageError(error instanceof Error?error.message:"按页读取失败");});
   return ()=>{current=false;abort.abort();};
  },[useScopedDirectory,projectId,nodeId,activeEpisode,safePageStart,casRefresh,shots]);
- const directoryShots=useScopedDirectory?
-  (serverPage?.episodeId===activeEpisode&&serverPage.offset===safePageStart?
-   serverPage.entries:episodeShots.slice(safePageStart,safePageStart+pageSize)):episodeShots;
+ const localPage=episodeShots.slice(safePageStart,safePageStart+pageSize);
+ // Full creative drafts are still hydrated when opening the workspace. Until
+ // true lazy editing lands, they are the authoritative view of pending local
+ // structural changes. Server pagination can only be displayed if it exactly
+ // agrees with this snapshot; otherwise it may hide newly inserted shots.
+ const serverPageMatches=serverPage?.episodeId===activeEpisode&&
+  serverPage.offset===safePageStart&&serverPage.total===episodeShots.length&&
+  serverPage.entries.length===localPage.length&&
+  serverPage.entries.every((shot,index)=>JSON.stringify(shot)===JSON.stringify(localPage[index]));
+ const directoryShots=useScopedDirectory?(serverPageMatches?serverPage.entries:localPage):episodeShots;
  const changePage=(offset:number)=>{
   const next=Math.max(0,Math.min(Math.floor(Math.max(0,episodeShots.length-1)/pageSize)*pageSize,offset));
   setPageStart(next);const shot=episodeShots[next];if(shot)chooseShot(shot.id);

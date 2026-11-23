@@ -199,3 +199,104 @@ it("falls back to the loaded directory slice when paged API is temporarily unava
  expect(container.querySelector('[data-drama-scoped-directory]')?.textContent)
   .toContain("分页服务不可用");
 });
+function createPagedShots(count:number):DramaShot[]{
+ return Array.from({length:count},(_,index)=>({
+  ...base,id:"shot-"+(index+1),order:index+1,description:"镜头描述 "+(index+1)
+ }));
+}
+async function mountUnsavedPagedEditor(count=45,waitForSave=false){
+ const initial=createPagedShots(count);
+ let persisted=initial;
+ let live=initial;
+ const onChange=vi.fn();
+ const flush=vi.fn(async()=>{persisted=live;});
+ const deferredPages:Array<(value:{entries:DramaShot[];total:number})=>void>=[];
+ let holdNextPage=false;
+ api.read.mockImplementation((path:string)=>{
+  const url=new URL(path,"http://local");
+  const entryId=url.searchParams.get("entryId");
+  if(entryId){
+   const entry=persisted.find(shot=>shot.id===entryId);
+   return Promise.resolve({entries:entry?[entry]:[],entryDigests:entry?[{id:entry.id,digest:api.digest}]:[]});
+  }
+  const offset=Number(url.searchParams.get("offset")??0);
+  const limit=Number(url.searchParams.get("limit")??15);
+  const response={total:persisted.length,entries:persisted.slice(offset,offset+limit)};
+  if(holdNextPage&&offset>=15){
+   holdNextPage=false;
+   return new Promise(resolve=>deferredPages.push(resolve));
+  }
+  return Promise.resolve(response);
+ });
+ const container=document.createElement("div");document.body.append(container);
+ const root=createRoot(container);roots.push(root);
+ function Editor(){
+  const [shots,setShots]=useState(initial);
+  return <DramaStoryboardFields shots={shots} episodes={episodes} assets={assets}
+   expanded disabled={false} projectId="project-1" nodeId="board-1"
+   onPatchShot={async()=>{}} onWaitForDraftSave={waitForSave?flush:undefined}
+   onChange={next=>{live=next;onChange(next);setShots(next);}}/>;
+ }
+ await act(async()=>{root.render(<Editor/>);await Promise.resolve();});
+ const nav=()=>container.querySelector<HTMLElement>('[aria-label="分镜镜头导航"]')!;
+ const pageButtons=()=>container.querySelectorAll<HTMLButtonElement>('[data-drama-scoped-directory] button');
+ const page=async(name:string)=>click([...pageButtons()].find(button=>button.textContent===name));
+ return {container,nav,page,onChange,flush,live:()=>live,holdPage:()=>{holdNextPage=true;},
+  releasePages:async()=>{
+   await act(async()=>{
+    for(const resolve of deferredPages)resolve({total:initial.length,entries:initial.slice(15,30)});
+    await Promise.resolve();
+   });
+  }};
+}
+it("shows a newly inserted shot immediately on page 2 even if the server page remains stale",async()=>{
+ const editor=await mountUnsavedPagedEditor();
+ await editor.page("下一页");
+ await click(editor.nav().querySelector('[aria-label^="选择镜头 20"]'));
+ await click(editor.container.querySelector('[aria-label="添加镜头"]'));
+ const created=editor.live().find(shot=>shot.id.startsWith("shot_"));
+ expect(created).toBeTruthy();
+ expect(created?.order).toBe(21);
+ expect(editor.onChange).toHaveBeenCalledTimes(1);
+ expect(editor.nav().querySelectorAll("button")).toHaveLength(15);
+ expect(editor.nav().querySelector<HTMLButtonElement>('button[aria-pressed="true"]')?.textContent)
+  .toContain("暂无画面描述");
+ expect(editor.nav().querySelector('button[aria-label^="选择镜头 21"]')?.getAttribute("aria-pressed")).toBe("true");
+ expect(editor.container.querySelector('[aria-label="当前分镜编辑区"]')?.textContent).toContain("镜头 21");
+ expect(editor.container.querySelector('[data-drama-scoped-directory]')?.textContent).toContain("16–30 / 46");
+ await editor.page("下一页");
+ await editor.page("上一页");
+ // Paging intentionally focuses the first row; the newly inserted row must still be present.
+ expect(editor.nav().querySelector('button[aria-label^="选择镜头 21"]')).toBeTruthy();
+});
+it("moves to page 3 when a shot is inserted after the last shot on page 2 without requiring a manual refresh",async()=>{
+ const editor=await mountUnsavedPagedEditor();
+ await editor.page("下一页");
+ await click(editor.nav().querySelector('[aria-label^="选择镜头 30"]'));
+ await click(editor.container.querySelector('[aria-label="添加镜头"]'));
+ expect(editor.live().find(shot=>shot.id.startsWith("shot_"))?.order).toBe(31);
+ expect(editor.container.querySelector('[data-drama-scoped-directory]')?.textContent).toContain("31–45 / 46");
+ expect(editor.nav().querySelector('button[aria-label^="选择镜头 31"]')?.getAttribute("aria-pressed")).toBe("true");
+ expect(editor.nav().querySelectorAll("button")).toHaveLength(15);
+});
+it("flushes a newly inserted draft once before requesting its CAS digest",async()=>{
+ const editor=await mountUnsavedPagedEditor(45,true);
+ await editor.page("下一页");
+ await click(editor.nav().querySelector('[aria-label^="选择镜头 20"]'));
+ await click(editor.container.querySelector('[aria-label="添加镜头"]'));
+ expect(editor.flush).toHaveBeenCalledTimes(1);
+ expect(editor.nav().querySelector('button[aria-label^="选择镜头 21"]')?.getAttribute("aria-pressed")).toBe("true");
+ expect(editor.container.querySelector('[aria-label="当前镜头 CAS 状态"]')?.textContent)
+  .toContain("单镜头精确保存已启用");
+ expect(editor.container.querySelector<HTMLButtonElement>('[aria-label="编辑画面描述"]')?.disabled).toBe(false);
+});
+it("ignores a late stale page response when a local structural edit inserts a new shot",async()=>{
+ const editor=await mountUnsavedPagedEditor();
+ editor.holdPage();
+ await editor.page("下一页");
+ await click(editor.nav().querySelector('[aria-label^="选择镜头 20"]'));
+ await click(editor.container.querySelector('[aria-label="添加镜头"]'));
+ expect(editor.nav().querySelector('button[aria-label^="选择镜头 21"]')?.getAttribute("aria-pressed")).toBe("true");
+ await editor.releasePages();
+ expect(editor.nav().querySelector('button[aria-label^="选择镜头 21"]')?.getAttribute("aria-pressed")).toBe("true");
+});

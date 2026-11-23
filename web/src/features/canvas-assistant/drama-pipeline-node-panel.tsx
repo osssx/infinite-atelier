@@ -464,6 +464,9 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
                     : "hidden"}>
                     <DramaStoryboardFields shots={shots} episodes={linkedEpisodes} assets={assets} initialEpisodeId={initialEpisodeId} initialShotId={initialShotId}
                         projectId={workspaceMode?projectId:undefined} nodeId={workspaceMode?node.id:undefined}
+                        onWaitForDraftSave={workspaceMode&&workspaceTab==="editor"&&onBeforeDramaRun?async()=>{
+                            await onBeforeDramaRun();
+                        }:undefined}
                         onReloadShot={workspaceMode&&projectId&&workspaceTab==="editor"?async()=>{
                             await useCanvasStore.getState().loadProject(projectId);
                             await ensureCreativeNodesLoaded(projectId,[node.id]);

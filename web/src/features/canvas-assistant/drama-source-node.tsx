@@ -1,17 +1,19 @@
 import { useState } from "react";
 import { Button } from "antd";
 import { useTranslation } from "react-i18next";
-import { History, Upload } from "lucide-react";
+import { History, Upload, Maximize2 } from "lucide-react";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
 import type { CanvasNodeData, CanvasNodeMetadata } from "@/types/canvas";
 import { dramaInlineNodeClass, dramaNodeControl, dramaNodePrimary, DramaNodeStatus } from "./drama-node-style";
 
-export function DramaSourceNode({node, onChange, onOpenVersions, onConfirmVersion, versionBusy}: {
+export function DramaSourceNode({node, onChange, onOpenVersions, onConfirmVersion, versionBusy,onOpenEditor,hideTextEditor=false}: {
     node: CanvasNodeData;
     onOpenVersions: () => void;
     onConfirmVersion: (draft: string) => Promise<void>;
     versionBusy: boolean;
+    onOpenEditor?:()=>void;
+    hideTextEditor?:boolean;
     onChange: (patch: Partial<CanvasNodeMetadata>) => void;
 }) {
     const {t} = useTranslation();
@@ -29,19 +31,30 @@ export function DramaSourceNode({node, onChange, onOpenVersions, onConfirmVersio
         style={{color:theme.node.text}} data-canvas-no-zoom
         onWheel={event => event.stopPropagation()}>
         <div className="flex items-center justify-between gap-2">
-            <label className="text-sm font-semibold" htmlFor={`drama-source-${node.id}`}>小说或剧本</label>
+            <strong className="text-sm font-semibold">小说或剧本</strong>
             <div className="flex items-center gap-2">
                 <DramaNodeStatus theme={theme} confirmed={confirmed} />
+                {onOpenEditor&&<Button size="small" icon={<Maximize2 size={14}/>} style={control}
+                    onClick={onOpenEditor} onMouseDown={event=>event.stopPropagation()}>完整编辑</Button>}
                 <Button size="small" icon={<History size={14} />} style={control}
                     onMouseDown={event => event.stopPropagation()} onClick={onOpenVersions}>{t("canvas.textVersions.title")}</Button>
             </div>
         </div>
         <div className="thin-scrollbar flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto overscroll-contain"
             onMouseDown={event => event.stopPropagation()} onPointerDown={event => event.stopPropagation()}>
-        <textarea id={`drama-source-${node.id}`} className="thin-scrollbar min-h-20 w-full flex-1 resize-none rounded-xl border px-3 py-2 text-sm leading-relaxed"
+        {onOpenEditor?<button type="button" data-story-inline-summary=""
+            className="min-h-20 w-full shrink-0 rounded-xl border px-3 py-3 text-left text-xs leading-relaxed"
+            style={{...control,background:theme.toolbar.activeBg}}
+            onClick={onOpenEditor}>
+            <span className="mb-1 block font-medium" style={{color:theme.node.muted}}>
+                {source.length} 字符 · 点击打开完整编辑器
+            </span>
+            <span className="line-clamp-4 whitespace-pre-wrap break-words">{source.trim().slice(0,360)||"尚无故事正文，点击开始创作"}</span>
+        </button>:hideTextEditor?null:<textarea id={`drama-source-${node.id}`}
+            className="thin-scrollbar min-h-20 w-full flex-1 resize-none rounded-xl border px-3 py-2 text-sm leading-relaxed"
             style={control} placeholder="粘贴原文" value={source}
-            onPointerDown={event => event.stopPropagation()} onMouseDown={event => event.stopPropagation()}
-            onKeyDown={event => event.stopPropagation()} onChange={event => changeSource(event.target.value)} />
+            onPointerDown={event=>event.stopPropagation()} onMouseDown={event=>event.stopPropagation()}
+            onKeyDown={event=>event.stopPropagation()} onChange={event=>changeSource(event.target.value)}/>}
         <div className="grid grid-cols-[5.5rem_1fr] gap-2 rounded-xl border p-3" style={control}>
             <label className="grid gap-1.5 font-medium">视频比例
                 <select className="h-8 rounded-lg border px-2" style={control} value={node.metadata?.videoRatio ?? ""}

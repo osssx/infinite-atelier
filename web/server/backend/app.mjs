@@ -1,4 +1,5 @@
 import Fastify from "fastify";
+import {buildDramaStoryEditPrompt} from "./drama-story-edit.mjs";
 import {randomUUID,createHash} from "node:crypto";
 import {resolveAuthorizedSkillScript} from "./skill-script-source.mjs";
 import {readTextVersions,mutateTextVersions,readDramaRevisionScope,patchDramaShotDraft} from "./canvas-text-versions.mjs";
@@ -841,6 +842,36 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
  app.post(`${dramaRunPath}/:runId/cancel`,req=>dramaRuns.cancel(req.params.id,req.params.runId));
  app.post(`${dramaRunPath}/:runId/retry`,req=>dramaRuns.retry(req.params.id,req.params.runId));
 
+ app.post("/api/v1/projects/:id/drama-pipeline/story-edit",{schema:{
+  params:{type:"object",required:["id"],additionalProperties:false,properties:{id:idSchema}},
+  body:{type:"object",additionalProperties:false,
+   required:["nodeId","mode","channelId","provider","model"],
+   properties:{nodeId:canvasNodeIdSchema,mode:{enum:["continue","rewrite","polish","selection"]},
+    channelId:idSchema,provider:{enum:["openai","openai_compatible","google_gemini"]},
+    baseUrl:{type:"string",maxLength:1024},model:{type:"string",minLength:1,maxLength:128},
+    sourceText:{type:"string",maxLength:16000},selectedText:{type:"string",maxLength:12000},
+    beforeText:{type:"string",maxLength:5000},afterText:{type:"string",maxLength:2000},
+    instruction:{type:"string",maxLength:2500}}}
+ }},async(req,reply)=>{
+  const project=getProject(db,req.params.id);
+  if(!project?.document?.nodes?.some(node=>node.id===req.body.nodeId&&node.type==="drama:source"))
+   return reply.code(404).send({code:"text_node_not_found"});
+  if(!assistantChat)return reply.code(503).send({code:"assistant_unavailable"});
+  try{
+   const prompt=buildDramaStoryEditPrompt(req.body);
+   const result=await assistantChat({channelId:req.body.channelId,provider:req.body.provider,
+    baseUrl:req.body.baseUrl,model:req.body.model,messages:[{role:"user",content:prompt}],
+    canvasActions:false,semanticCanvasIntent:false,skillContext:"",skillTools:[],
+    selectedCanvasText:"",taskContext:"",plainCanvasChat:true});
+   const candidate=String(result.answer??"").trim();
+   if(!candidate)throw Object.assign(Error("drama_story_edit_empty"),{code:"drama_story_edit_empty",statusCode:422});
+   reply.header("Cache-Control","no-store");
+   return {mode:req.body.mode,candidate};
+  }catch(error){
+   return reply.code(Number(error?.statusCode)||400)
+    .send({code:typeof error?.code==="string"?error.code:"drama_story_edit_failed"});
+  }
+ });
  app.post("/api/v1/projects/:id/drama-pipeline/generate",{schema:{
   params:{type:"object",required:["id"],additionalProperties:false,properties:{id:idSchema}},
   body:{type:"object",required:["stage","channelId","provider","model"],additionalProperties:false,

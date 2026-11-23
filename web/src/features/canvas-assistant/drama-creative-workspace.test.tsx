@@ -16,7 +16,7 @@ import {useThemeStore} from "@/stores/use-theme-store";
 const roots:Root[]=[];
 beforeEach(()=>vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT",true));
 afterEach(async()=>{for(const root of roots)await act(async()=>root.unmount());roots.length=0;vi.unstubAllGlobals()});
-async function mount(kind:"episodes"|"storyboard"="storyboard",withHistory=false,versionConfirmed=false){
+async function mount(kind:"source"|"episodes"|"storyboard"="storyboard",withHistory=false,versionConfirmed=false){
  const div=document.createElement("div");document.body.append(div);
  const root=createRoot(div);roots.push(root);
  const close=vi.fn(async()=>{});
@@ -69,6 +69,17 @@ describe("P3.4b3 workspace lifecycle",()=>{
   expect(boardTabs[1].getAttribute("aria-description")).toBe("按镜头配置独立的视频生成参数");
   expect(board.div.textContent).not.toContain("分页与单条 CAS");
  });
+ it("opens a unified source workspace with story, art settings and history tabs",async()=>{
+  const story=await mount("source",true);
+  const tabs=[...story.div.querySelectorAll<HTMLButtonElement>('nav[aria-label="创作工作区功能"] button')];
+  expect(tabs.map(tab=>tab.textContent?.trim())).toEqual(["故事正文","美术设定","影响与历史"]);
+  expect(story.div.querySelector('[data-drama-workspace-title-row]')?.textContent).toContain("故事");
+  expect(tabs[0].getAttribute("aria-description")).toContain("选区改写");
+  await press(story.div,"美术设定");
+  expect(story.renderPanel).toHaveBeenCalledWith("settings",expect.any(Function));
+  await press(story.div,"影响与历史");
+  expect(story.div.querySelector('[aria-label="测试内嵌历史"]')).toBeTruthy();
+ });
  it("places the draft or confirmed state beside the workspace title instead of a separate row",async()=>{
   const draft=await mount("episodes");
   const root=draft.div.querySelector<HTMLElement>('[data-creative-workspace-node-id="episodes"]')!;
@@ -100,7 +111,7 @@ describe("P3.4b3 workspace lifecycle",()=>{
   expect(active()).toBe("生成候选");
   await act(async()=>{useThemeStore.setState({theme:"dark"});});
   expect(active()).toBe("生成候选");
-  expect(renderPanel).toHaveBeenCalledWith("editor");
+  expect(renderPanel).toHaveBeenCalledWith("editor",expect.any(Function));
  });
  it("renders inline history only in its tab and clears it on exit",async()=>{
   const {div,onTabChange}=await mount("episodes",true);

@@ -6,11 +6,12 @@ import {canvasThemes,type CanvasTheme} from "@/lib/canvas-theme";
 import {useThemeStore} from "@/stores/use-theme-store";
 import {DramaNodeStatus} from "./drama-node-style";
 import type {DramaWorkspaceTab} from "./drama-pipeline-node-panel";
+type StoryWorkspaceTab=DramaWorkspaceTab|"settings";
 
 export type DramaWorkspaceFocus={episodeId?:string;sequenceId?:string;shotId?:string};
 export type WorkspacePendingRegistration=(key:string,save:(()=>Promise<void>)|null)=>void;
 
-type WorkspaceTabItem={id:DramaWorkspaceTab;label:string;icon:typeof BookOpenText};
+type WorkspaceTabItem={id:StoryWorkspaceTab;label:string;icon:typeof BookOpenText};
 
 function WorkspaceTabButton({item,description,active,theme,onSelect}:{
  item:WorkspaceTabItem;description:string;active:boolean;theme:CanvasTheme;onSelect:()=>void;
@@ -66,19 +67,20 @@ function WorkspaceTabButton({item,description,active,theme,onSelect}:{
  * every visual close/tab action.
  */
 export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfirmed,onClose,onTabChange,renderPanel,renderHistoryPanel}:{
- projectId:string;nodeId:string;kind:"episodes"|"storyboard";focus:DramaWorkspaceFocus;
+ projectId:string;nodeId:string;kind:"source"|"episodes"|"storyboard";focus:DramaWorkspaceFocus;
  versionConfirmed:boolean;
  color?:{fill:string;text:string;muted:string};
  onClose:()=>Promise<void>;
- onTabChange?:(tab:DramaWorkspaceTab)=>void;
- renderPanel:(tab:DramaWorkspaceTab)=>ReactNode;
+ onTabChange?:(tab:StoryWorkspaceTab)=>void;
+ renderPanel:(tab:StoryWorkspaceTab,onPendingChange:WorkspacePendingRegistration)=>ReactNode;
  renderHistoryPanel?:()=>ReactNode;
 }){
  const appearance=useThemeStore(state=>state.theme);
  const theme=canvasThemes[appearance];
  const episodeMode=kind==="episodes";
- const [tab,setTab]=useState<DramaWorkspaceTab>("editor");
- const [pendingAction,setPendingAction]=useState<DramaWorkspaceTab|"close"|null>(null);
+ const storyMode=kind==="source";
+ const [tab,setTab]=useState<StoryWorkspaceTab>("editor");
+ const [pendingAction,setPendingAction]=useState<StoryWorkspaceTab|"close"|null>(null);
  const [pendingCount,setPendingCount]=useState(0);
  const [error,setError]=useState("");
  const [busy,setBusy]=useState(false);
@@ -88,11 +90,11 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
   setPendingCount(pending.current.size);
  },[]);
  useEffect(()=>()=>{pending.current.clear()},[nodeId,projectId]);
- const perform=useCallback(async(target:DramaWorkspaceTab|"close")=>{
+ const perform=useCallback(async(target:StoryWorkspaceTab|"close")=>{
   if(target==="close")await onClose();
   else {setTab(target);onTabChange?.(target);}
  },[onClose,onTabChange]);
- const request=useCallback((target:DramaWorkspaceTab|"close")=>{
+ const request=useCallback((target:StoryWorkspaceTab|"close")=>{
   if(target===tab)return;
   if(pending.current.size){setPendingAction(target);return;}
   void perform(target).catch(e=>setError(e instanceof Error?e.message:"操作失败"));
@@ -111,14 +113,16 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
   }catch(e){setError(e instanceof Error?e.message:"草案保存失败，请检查冲突后重试");}
   finally{setBusy(false);}
  };
- const tabs:{id:DramaWorkspaceTab;label:string;icon:typeof BookOpenText}[]=[
-  {id:"editor",label:episodeMode?"剧集编辑":"分镜表",icon:LayoutList},
-  ...(episodeMode?[]:[{id:"video" as const,label:"视频配置",icon:Film}]),
-  {id:"runs",label:"生成候选",icon:Sparkles},
+ const tabs:{id:StoryWorkspaceTab;label:string;icon:typeof BookOpenText}[]=[
+  {id:"editor",label:storyMode?"故事正文":episodeMode?"剧集编辑":"分镜表",icon:LayoutList},
+  ...(storyMode?[{id:"settings" as const,label:"美术设定",icon:BookOpenText}]:
+   episodeMode?[]:[{id:"video" as const,label:"视频配置",icon:Film}]),
+  ...(!storyMode?[{id:"runs" as const,label:"生成候选",icon:Sparkles}]:[]),
   {id:"history",label:"影响与历史",icon:History},
  ];
- const paneDesc:Record<DramaWorkspaceTab,string>={
-  editor:episodeMode?"按集编辑剧情、事件、场次及来源引用":"检查分镜结构与镜头安排",
+ const paneDesc:Record<StoryWorkspaceTab,string>={
+  editor:storyMode?"编写故事、选区改写、AI 续写及全文润色":episodeMode?"按集编辑剧情、事件、场次及来源引用":"检查分镜结构与镜头安排",
+  settings:"故事影片比例、风格、美术指导与原文确认",
   video:"按镜头配置独立的视频生成参数",
   runs:"按运行状态浏览候选，展开查看内容与采用选项",
   history:"版本快照与上游影响直接在工作区内查看",
@@ -131,13 +135,13 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
    closeIcon={<X size={18} style={{color:theme.node.text}}/>}
    title={<div className="flex min-w-0 items-center gap-3 py-0.5" data-drama-workspace-title="">
     <span className="grid size-10 shrink-0 place-items-center rounded-xl border" style={subtle}>
-     {episodeMode?<BookOpenText size={21}/>:<Clapperboard size={21}/>}
+     {storyMode||episodeMode?<BookOpenText size={21}/>:<Clapperboard size={21}/>}
     </span>
     <div className="min-w-0">
      <p className="text-[11px] font-medium tracking-wide" style={{color:theme.node.muted}}>INFINITE ATELIER · 创作工作区</p>
      <div className="flex min-w-0 items-center gap-2" data-drama-workspace-title-row="">
       <span className="truncate text-base font-semibold" style={{color:theme.node.text}}>
-       {episodeMode?"剧集规划":"分镜配置"}
+       {storyMode?"故事":episodeMode?"剧集规划":"分镜配置"}
       </span>
       <span data-drama-workspace-version-status="" className="shrink-0">
        <DramaNodeStatus theme={theme} confirmed={versionConfirmed}/>
@@ -183,18 +187,18 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
             <section aria-label="上游影响面板" className="min-h-0 min-w-0 overflow-hidden">
              <div data-drama-impact-scroll="" className="thin-scrollbar max-h-full min-w-0 overflow-y-auto overscroll-contain" style={{scrollbarGutter:"auto"}}>
               <h3 className="mb-2 px-1 text-sm font-semibold">上游影响</h3>
-              {renderPanel(tab)}
+              {renderPanel(tab,registerPending)}
              </div>
             </section>
             <section aria-label="历史版本面板" className="flex min-h-0 min-w-0 flex-col gap-2">
              <div className="flex shrink-0 items-center justify-between gap-2 px-1">
               <h3 className="text-sm font-semibold">历史版本</h3>
-              <span className="text-[11px]" style={{color:theme.node.muted}}>可查看、保存或恢复剧集草案快照</span>
+              <span className="text-[11px]" style={{color:theme.node.muted}}>可查看、保存或恢复创作内容快照</span>
              </div>
              <div data-drama-history-fill="" className="min-h-0 min-w-0 flex-1">{renderHistoryPanel()}</div>
             </section>
            </div>
-        : renderPanel(tab)}
+        : renderPanel(tab,registerPending)}
      </Suspense>
     </div>
     {error&&<p role="alert" className="shrink-0 rounded-lg border p-2 text-xs"

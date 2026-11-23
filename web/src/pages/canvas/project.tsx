@@ -86,6 +86,7 @@ import type {DramaWorkspaceTab} from "@/features/canvas-assistant/drama-pipeline
 import type {DramaWorkspaceFocus} from "@/features/canvas-assistant/drama-creative-workspace";
 const DramaCreativeWorkspace=lazy(()=>import("@/features/canvas-assistant/drama-creative-workspace").then(m=>({default:m.DramaCreativeWorkspace})));
 import { DramaSourceNode } from "@/features/canvas-assistant/drama-source-node";
+const DramaStoryEditor=lazy(()=>import("@/features/canvas-assistant/drama-story-editor").then(m=>({default:m.DramaStoryEditor})));
 import {LazyCreativeNode} from "@/features/canvas-assistant/lazy-creative-node";
 import {DRAMA_PIPELINE_NODE_TYPES,isInlineDramaNode, readStoryboardDraft } from "@/features/canvas-assistant/canvas-drama-pipeline";const isDramaPipelineNode=(type:string)=>Object.values(DRAMA_PIPELINE_NODE_TYPES).includes(type);
 import { mergeLegacyDramaAssets, mergeLegacyDramaFirstFrames } from "@/features/canvas-assistant/drama-asset-migration";
@@ -4440,7 +4441,7 @@ function AtelierCanvasPage() {
     // a culled/LOD canvas node. This is the only path that hydrates full bodies.
     const openCreativeWorkspace=useCallback(async(nodeId:string,focus?:DramaWorkspaceFocus)=>{
         const target=nodesRef.current.find(node=>node.id===nodeId);
-        if(!target||!["drama:episodes","drama:storyboard"].includes(target.type))
+        if(!target||!["drama:source","drama:episodes","drama:storyboard"].includes(target.type))
             throw Error("创作节点不存在");
         const request=++creativeWorkspaceRequestRef.current;
         await ensureCreativeNodesLoaded(projectId,[nodeId]);
@@ -4460,12 +4461,13 @@ function AtelierCanvasPage() {
     const renderNodeContentPanel = useCallback(
         (contentNode: CanvasNodeData) => (contentNode.type==="drama:episodes" || contentNode.type==="drama:storyboard") ? (
             <DramaNodeSummaryCard node={contentNode} projectId={projectId} onOpen={openCreativeWorkspace}/>
-        ) : contentNode.metadata?.creativePayloadRef ? (
-            <LazyCreativeNode projectId={projectId} nodeId={contentNode.id} stage={contentNode.type}/>
         ) : contentNode.type === "drama:source" ? (
             <DramaSourceNode key={contentNode.id} node={contentNode} onChange={patch => handleConfigNodeChange(contentNode.id, patch)}
+                onOpenEditor={()=>void openCreativeWorkspace(contentNode.id).catch(error=>message.error(String(error)))}
                 onOpenVersions={() => openTextVersions(contentNode.id)} onConfirmVersion={draft => confirmDramaVersion(contentNode.id,draft)}
                 versionBusy={textVersionBusy} />
+        ) : contentNode.metadata?.creativePayloadRef ? (
+            <LazyCreativeNode projectId={projectId} nodeId={contentNode.id} stage={contentNode.type}/>
         ) : isInlineDramaNode(contentNode.type) ? renderNodePanel(contentNode) : (
             <CanvasConfigNodePanel
                 node={contentNode}
@@ -4849,7 +4851,7 @@ function AtelierCanvasPage() {
                 {creativeWorkspaceNode&&<Suspense fallback={<p role="status">正在加载创作工作区…</p>}>
                     <DramaCreativeWorkspace key={projectId+":"+creativeWorkspaceNode.id}
                         projectId={projectId} nodeId={creativeWorkspaceNode.id}
-                        kind={creativeWorkspaceNode.type==="drama:episodes"?"episodes":"storyboard"}
+                        kind={creativeWorkspaceNode.type==="drama:source"?"source":creativeWorkspaceNode.type==="drama:episodes"?"episodes":"storyboard"}
                         focus={creativeWorkspaceFocus}
                         versionConfirmed={Boolean(creativeWorkspaceNode.metadata?.dramaConfirmed &&
                             (creativeWorkspaceNode.metadata.dramaDraft || creativeWorkspaceNode.metadata.dramaConfirmed || creativeWorkspaceNode.metadata.content || "") === creativeWorkspaceNode.metadata.dramaConfirmed)}
@@ -4859,12 +4861,24 @@ function AtelierCanvasPage() {
                             if(tab==="history")openTextVersions(creativeWorkspaceNode.id);
                             else setTextVersionsNodeId(current=>current===creativeWorkspaceNode.id?null:current);
                         }}
-                        renderPanel={tab=>renderNodePanel(creativeWorkspaceNode,true,tab,creativeWorkspaceFocus)}
+                        renderPanel={(tab,onPendingChange)=>creativeWorkspaceNode.type==="drama:source"?
+                            tab==="editor"?<DramaStoryEditor node={creativeWorkspaceNode} projectId={projectId}
+                                onChange={patch=>handleConfigNodeChange(creativeWorkspaceNode.id,patch)}
+                                onConfirmVersion={draft=>confirmDramaVersion(creativeWorkspaceNode.id,draft)}
+                                versionBusy={textVersionBusy} onPendingChange={onPendingChange}/>:
+                            tab==="settings"?<DramaSourceNode node={creativeWorkspaceNode} hideTextEditor
+                                onChange={patch=>handleConfigNodeChange(creativeWorkspaceNode.id,patch)}
+                                onOpenVersions={()=>openTextVersions(creativeWorkspaceNode.id)}
+                                onConfirmVersion={draft=>confirmDramaVersion(creativeWorkspaceNode.id,draft)}
+                                versionBusy={textVersionBusy}/>:
+                            <p className="text-xs" style={{color:theme.node.muted}}>故事是创作流水线的原文入口。下游节点将依据已确认的原文与美术设定生成内容。</p>:
+                            renderNodePanel(creativeWorkspaceNode,true,tab as DramaWorkspaceTab,creativeWorkspaceFocus)}
                         renderHistoryPanel={()=>textVersionsNode?.id===creativeWorkspaceNode.id?
                             <CanvasTextVersionsModal inline key={`${projectId}:${creativeWorkspaceNode.id}:inline`}
                                 open versions={textVersions} listLoading={versionsLoading} listError={versionsLoadError}
                                 loadVersion={loadTextVersion} currentContent={versionNodeContent(textVersionsNode)}
                                 storyboard={textVersionsNode.type==="drama:storyboard"}
+                                story={textVersionsNode.type==="drama:source"}
                                 confirmedContent={textVersionsNode.metadata?.dramaConfirmed??""}
                                 onClose={()=>setTextVersionsNodeId(null)}
                                 onSave={note=>saveTextVersion(textVersionsNode.id,note)}

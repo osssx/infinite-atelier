@@ -2342,7 +2342,7 @@ function AtelierCanvasPage() {
     }, []);
 
     const runTextVersionCommand = useCallback(async (nodeId: string, command: {
-        action: "save" | "delete" | "confirm" | "restore";
+        action: "save" | "backup" | "delete" | "confirm" | "restore";
         versionId?: string;
         note?: string;
         mode?: "direct" | "backup" | "overwrite";
@@ -2403,7 +2403,7 @@ function AtelierCanvasPage() {
                     lastHistoryRef.current = createHistoryEntry();
                     setHistoryState({canUndo:true,canRedo:false});
                 }
-            } else if (command.action === "save") {
+            } else if (command.action === "save" || command.action === "backup") {
                 await awaitCanvasStorePersistence(projectId);
                 const expectedRevision = savedCanvasGraphRevision(projectId);
                 if (expectedRevision === undefined) throw Error("project_not_loaded");
@@ -2427,6 +2427,12 @@ function AtelierCanvasPage() {
         await runTextVersionCommand(nodeId, {action:"save", note}, versionNodeContent(node));
         message.success(t("canvas.textVersions.saved"));
     }, [message, runTextVersionCommand, t]);
+
+    const backupStoryDraftBeforeReplace = useCallback(async (nodeId: string) => {
+        const node = nodesRef.current.find(item => item.id === nodeId);
+        if (!node || node.type !== "drama:source") throw Error("story_snapshot_source_missing");
+        await runTextVersionCommand(nodeId, {action:"backup", note:"同步新上游文本前的故事草案"}, versionNodeContent(node));
+    }, [runTextVersionCommand]);
 
     const deleteTextVersion = useCallback(async (nodeId: string, versionId: string) => {
         try {
@@ -4885,7 +4891,7 @@ function AtelierCanvasPage() {
                                 upstreamSources={storyTextSources(creativeWorkspaceNode.id,nodes,connections)}
                                 onChange={patch=>handleConfigNodeChange(creativeWorkspaceNode.id,patch)}
                                 onConfirmVersion={draft=>confirmDramaVersion(creativeWorkspaceNode.id,draft)}
-                                onSnapshotDraft={()=>saveTextVersion(creativeWorkspaceNode.id,"同步新上游文本前的故事草案")}
+                                onSnapshotDraft={()=>backupStoryDraftBeforeReplace(creativeWorkspaceNode.id)}
                                 versionBusy={textVersionBusy} onPendingChange={onPendingChange}/>:
                             tab==="settings"?<DramaSourceNode node={creativeWorkspaceNode} hideTextEditor
                                 upstreamSources={storyTextSources(creativeWorkspaceNode.id,nodes,connections)}

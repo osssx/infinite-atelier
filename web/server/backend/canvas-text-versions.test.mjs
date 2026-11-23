@@ -10,6 +10,7 @@ import {dramaDependencies,inspectDramaDependencies} from "./drama-dependencies.m
 import {removedDramaAssetUsages} from "./drama-asset-usage.mjs";
 import {readCreativePayload,hydrateCreativeDocument} from "./creative-payloads.mjs";
 import {fingerprintSource} from "./repository.mjs";
+import {buildApp} from "./app.mjs";
 
 const snapshot=(id,content)=>({id,content,createdAt:"2026-11-20T00:00:00Z",source:"manual",note:id});
 const story=(metadata)=>({id:"story",type:"drama:source",metadata});
@@ -335,6 +336,95 @@ test("story confirmation, stale autosave, backup restore and replay are transact
  assert.equal(readTextVersions(db,"p","copy").versions.length,0);
 });
 
+
+test("story pre-replacement backup reuses identical confirmation or history without a redundant manual version",t=>{
+ const db=setup(t);
+ createProject(db,{id:"story-backup-reuse",document:document([story({dramaDraft:"已确认 V1",content:"已确认 V1"})])});
+ const apply=command=>mutateTextVersions(db,"story-backup-reuse","story",command,validateProjectDocument,emitProjectEvent);
+ apply({action:"confirm",operationId:"publish-v1",expectedRevision:1});
+ const before=getProject(db,"story-backup-reuse");
+ assert.equal(before.revision,2);
+ assert.equal(readTextVersions(db,"story-backup-reuse","story").versions.length,1);
+ // Existing manual save intentionally stays strict, but story pre-replacement
+ // backup must recognize that the confirmed version already protects this draft.
+ assert.throws(()=>apply({action:"save",operationId:"manual",expectedRevision:2}),/text_version_save_not_allowed/);
+ assert.deepEqual(apply({action:"backup",operationId:"before-replace",expectedRevision:2,note:"上游替换前"}),{ok:true});
+ assert.deepEqual(apply({action:"backup",operationId:"before-replace",expectedRevision:2,note:"上游替换前"}),{ok:true});
+ assert.deepEqual(apply({action:"backup",operationId:"another-attempt",expectedRevision:2}),{ok:true});
+ assert.equal(readTextVersions(db,"story-backup-reuse","story").versions.length,1);
+ assert.deepEqual(getProject(db,"story-backup-reuse"),before);
+});
+test("story pre-replacement backup writes only unbacked drafts and preserves confirmation for subsequent replacement",t=>{
+ const db=setup(t);
+ createProject(db,{id:"story-backup-new",document:document([story({dramaDraft:"草案 V1",content:"草案 V1",
+  dramaConfirmed:"旧确认",dramaConfirmedVersionId:"v0"})])});
+ const apply=command=>mutateTextVersions(db,"story-backup-new","story",command,validateProjectDocument,emitProjectEvent);
+ const backup={action:"backup",operationId:"backup-v1",expectedRevision:1,note:"上游替换前"};
+ assert.deepEqual(apply(backup),{ok:true});
+ assert.equal(readTextVersions(db,"story-backup-new","story").versions.length,1);
+ assert.deepEqual(apply(backup),{ok:true});
+ assert.equal(readTextVersions(db,"story-backup-new","story").versions.length,1);
+ const before=getProject(db,"story-backup-new");
+ const changed=structuredClone(before.document);
+ changed.nodes[0].metadata.dramaDraft="上游新草案";
+ changed.nodes[0].metadata.content="上游新草案";
+ saveSingleUserCanvas(db,{id:"story-backup-new",expectedRevision:before.revision,document:changed});
+ const after=getProject(db,"story-backup-new");
+ assert.equal(after.document.nodes[0].metadata.dramaConfirmed,"旧确认");
+ assert.equal(after.document.nodes[0].metadata.dramaConfirmedVersionId,"v0");
+ assert.equal(readTextVersions(db,"story-backup-new","story","backup-v1").version.content,"草案 V1");
+ // Older history is also valid: do not create duplicate of an existing version
+ // even when it is not the newest.
+ const older=structuredClone(after.document);
+ older.nodes[0].metadata.dramaDraft="草案 V1";older.nodes[0].metadata.content="草案 V1";
+ saveSingleUserCanvas(db,{id:"story-backup-new",expectedRevision:after.revision,document:older});
+ assert.deepEqual(apply({action:"backup",operationId:"backup-old-reused",expectedRevision:3}),{ok:true});
+ assert.equal(readTextVersions(db,"story-backup-new","story").versions.length,1);
+ assert.throws(()=>apply({action:"backup",operationId:"stale",expectedRevision:1}),/project_revision_conflict/);
+ assert.equal(readTextVersions(db,"story-backup-new","story").versions.length,1);
+});
+test("pre-replacement backup is restricted to story nodes; snapshots remain mandatory for unbacked drafts",t=>{
+ const db=setup(t);
+ createProject(db,{id:"story-backup-scoped",document:document([story({dramaDraft:"",content:""}),
+  {id:"plain",type:"text",metadata:{content:"Hello"}}])});
+ assert.throws(()=>mutateTextVersions(db,"story-backup-scoped","plain",
+  {action:"backup",operationId:"plain-backup",expectedRevision:1},validateProjectDocument,emitProjectEvent),
+  /text_version_backup_not_allowed/);
+ assert.throws(()=>mutateTextVersions(db,"story-backup-scoped","story",
+  {action:"backup",operationId:"empty-backup",expectedRevision:1},validateProjectDocument,emitProjectEvent),
+  /text_version_save_not_allowed/);
+ assert.deepEqual(readTextVersions(db,"story-backup-scoped","story").versions,[]);
+});
+
+test("the story-node HTTP version endpoint permits an idempotent pre-replacement backup even after confirmation",async t=>{
+ const db=setup(t);
+ const nodeId="drama:source-1795142821426-yso6q";
+ createProject(db,{id:"story-http-backup",document:document([{id:nodeId,type:"drama:source",
+  metadata:{dramaDraft:"已确认故事",content:"已确认故事"}}])});
+ const app=buildApp({db,authorize:req=>req.headers["x-test-owner"]==="yes"});
+ t.after(async()=>app.close());
+ const route="/api/v1/projects/story-http-backup/nodes/"+encodeURIComponent(nodeId)+"/text-versions";
+ const auth={"x-test-owner":"yes"};
+ const confirm=await app.inject({method:"POST",url:route,headers:auth,
+  payload:{action:"confirm",operationId:"publish",expectedRevision:1}});
+ assert.equal(confirm.statusCode,200,confirm.body);
+ const manual=await app.inject({method:"POST",url:route,headers:auth,
+  payload:{action:"save",operationId:"manual",expectedRevision:2}});
+ assert.equal(manual.statusCode,409,manual.body);
+ assert.equal(manual.json().code,"text_version_save_not_allowed");
+ const forbidden=await app.inject({method:"POST",url:route,
+  payload:{action:"backup",operationId:"no-auth",expectedRevision:2}});
+ assert.equal(forbidden.statusCode,401);
+ const backup=await app.inject({method:"POST",url:route,headers:auth,
+  payload:{action:"backup",operationId:"story-import-backup",expectedRevision:2,note:"同步新上游文本前的故事草案"}});
+ assert.equal(backup.statusCode,200,backup.body);
+ assert.deepEqual(backup.json(),{ok:true});
+ const again=await app.inject({method:"POST",url:route,headers:auth,
+  payload:{action:"backup",operationId:"story-import-backup",expectedRevision:2,note:"同步新上游文本前的故事草案"}});
+ assert.equal(again.statusCode,200,again.body);
+ assert.equal(readTextVersions(db,"story-http-backup",nodeId).versions.length,1);
+ assert.equal(getProject(db,"story-http-backup").revision,2);
+});
 test("a full manual history permits publication",t=>{
  const db=setup(t);
  const versions=Array.from({length:50},(_,index)=>snapshot("v"+index,"body "+index));

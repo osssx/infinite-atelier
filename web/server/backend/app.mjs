@@ -700,7 +700,7 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
  app.get(versionPath,req=>readTextVersions(db,req.params.id,req.params.nodeId));
  app.get(versionPath+"/:versionId",req=>readTextVersions(db,req.params.id,req.params.nodeId,req.params.versionId));
  app.post(versionPath,{schema:{body:{type:"object",required:["operationId","action"],additionalProperties:false,properties:{
-  operationId:idSchema,action:{enum:["save","delete","restore","confirm"]},
+  operationId:idSchema,action:{enum:["save","backup","delete","restore","confirm"]},
   expectedRevision:{type:"integer",minimum:1},versionId:{type:"string",minLength:1,maxLength:128},
   mode:{enum:["direct","backup","overwrite"]},note:{type:"string",maxLength:100}
  }}}},req=>{

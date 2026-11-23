@@ -205,9 +205,15 @@ export function mutateTextVersions(db,projectId,nodeId,command,validateDocument,
    insertTextVersions(db,projectId,[{nodeId,id:operationId,createdAt:new Date().toISOString(),source,note:versionNote,content:value,provenance}]);
   };
   let patch;
-  if(action==="save"){
-   if(!content.trim()||versions[0]?.digest===digest(content))throw fail("text_version_save_not_allowed",409);
-   add(content,"manual",note);
+  if(action==="save"||action==="backup"){
+   if(!content.trim())throw fail("text_version_save_not_allowed",409);
+   if(action==="backup"&&node.type!=="drama:source")throw fail("text_version_backup_not_allowed",409);
+   // Replacing a story draft requires a recoverable snapshot, not a duplicate
+   // manual save. The same draft may already exist in history or as a published
+   // confirmation. Reuse it atomically instead of failing save_not_allowed.
+   const alreadyBackedUp=versions.some(version=>version.digest===digest(content));
+   if(action==="save"&&versions[0]?.digest===digest(content))throw fail("text_version_save_not_allowed",409);
+   if(action==="save"||!alreadyBackedUp)add(content,action==="backup"?"restore-backup":"manual",note);
   }else if(action==="delete"){
    if(versionId===node.metadata?.dramaConfirmedVersionId||versionId===node.metadata?.dramaAssetReferenceRevisionId||document.nodes.some(item=>
     item.metadata?.dramaVideoSource?.nodeId===nodeId&&item.metadata.dramaVideoSource.revisionId===versionId||

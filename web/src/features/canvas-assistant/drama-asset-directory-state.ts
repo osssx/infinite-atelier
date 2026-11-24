@@ -2,7 +2,7 @@ import {createContext,useContext,useState,type Dispatch,type SetStateAction} fro
 import type {DramaAsset,DramaAssetKind} from "./canvas-drama-pipeline";
 import type {AssetDecision} from "./drama-asset-merge";
 
-export type AssetDirectorySelection={kind:DramaAssetKind;activeId:string;query:string;page:number};
+export type AssetDirectorySelection={kind:DramaAssetKind;activeId:string;query:string;page:number;view?:"list"|"cards"};
 export const initialAssetDirectory:AssetDirectorySelection={kind:"character",activeId:"",query:"",page:0};
 export function selectAssetDirectory(assets:readonly DramaAsset[],assetId?:string):AssetDirectorySelection{
  const active=assets.find(a=>a.id===assetId)??assets[0];

@@ -3,15 +3,18 @@ import {act,useState,type Dispatch,type SetStateAction} from "react";
 import {createRoot,type Root} from "react-dom/client";
 import {afterEach,beforeEach,expect,it,vi} from "vitest";
 import {canvasThemes} from "@/lib/canvas-theme";
-import type {DramaAsset} from "./canvas-drama-pipeline";
+import type {DramaAsset,DramaAssetReference} from "./canvas-drama-pipeline";
+import {assetDirectoryImages} from "./drama-asset-directory-preview";
+const previews=vi.hoisted(()=>({acquire:vi.fn(),release:vi.fn()}));
+vi.mock("@/services/media-preview-storage",()=>({acquireMediaPreview:previews.acquire}));
 import type {AssetEntryPatch} from "./drama-asset-entry-save";
 import {DramaAssetWorkspaceFields} from "./drama-asset-workspace-fields";
 import type {DramaAssetUsage} from "./drama-asset-usage-display";
 const roots:Root[]=[];
 const asset=(i:number):DramaAsset=>({id:"a"+i,kind:"character",name:"角色 "+i,description:"描述 "+i,sourceRefs:["p1"],aliases:["别名 "+i],variants:[{id:"v"+i,name:"造型 "+i,description:"造型描述"}]});
-beforeEach(()=>vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT",true));
+beforeEach(()=>{vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT",true);previews.acquire.mockReset().mockImplementation((_kind,key)=>({promise:Promise.resolve("blob:"+key),release:previews.release}));previews.release.mockClear();});
 afterEach(async()=>{for(const root of roots)await act(async()=>root.unmount());roots.length=0;document.body.replaceChildren();vi.unstubAllGlobals();});
-async function mount(initial:DramaAsset[],cas=false,usage:DramaAssetUsage={}){
+async function mount(initial:DramaAsset[],cas=false,usage:DramaAssetUsage={},references:DramaAssetReference[]=[]){
  const div=document.createElement("div");document.body.append(div);const root=createRoot(div);roots.push(root);
  const pending=new Map<string,()=>Promise<void>>();
  const register=(key:string,save:(()=>Promise<void>)|null)=>{if(save)pending.set(key,save);else pending.delete(key);};
@@ -21,7 +24,7 @@ async function mount(initial:DramaAsset[],cas=false,usage:DramaAssetUsage={}){
   update(current=>current.map(a=>a.id!==base.id?a:variantId?{...a,variants:a.variants?.map(v=>v.id===variantId?{...v,...fields}:v)}:{...a,...fields}));
  });
  function Editor(){const [assets,setAssets]=useState(initial);update=setAssets;return <DramaAssetWorkspaceFields assets={assets} theme={canvasThemes.dark} disabled={false}
-  onChange={next=>{changes(next);setAssets(next)}} onPatchAsset={cas?patch:undefined} usage={usage} onPendingChange={register}
+  onChange={next=>{changes(next);setAssets(next)}} onPatchAsset={cas?patch:undefined} usage={usage} references={references} onPendingChange={register}
   renderReferences={(a,v)=><span data-reference={v??a.id}>参考图</span>}/>;}
  await act(async()=>root.render(<Editor/>));
  return {div,changes,patch,pending,update:async(fn:SetStateAction<DramaAsset[]>)=>{await act(async()=>update(fn))}};
@@ -66,6 +69,49 @@ it("keeps consistent directory spacing and prevents list rows from shrinking in 
  expect(rows.every(row=>row.classList.contains("shrink-0")&&row.classList.contains("min-h-9"))).toBe(true);
  await click(rows[1]);
  expect(rows[1].getAttribute("aria-pressed")).toBe("true");
+});
+it("chooses base then ordered variant images, deduplicating keys and excluding obsolete slots",()=>{
+ const a=asset(1),k1="cas:"+"a".repeat(64),k2="cas:"+"b".repeat(64);
+ const refs:DramaAssetReference[]=[{assetId:a.id,variantId:"old",imageStorageKeys:["cas:"+"c".repeat(64)],requiredForRendering:false},
+  {assetId:a.id,variantId:"v1",imageStorageKeys:[k2,k1],requiredForRendering:true},
+  {assetId:a.id,imageStorageKey:k1,requiredForRendering:false}];
+ expect(assetDirectoryImages(a,refs)).toEqual({cover:k1,count:2});
+ expect(assetDirectoryImages(a,refs.slice(0,2))).toEqual({cover:k2,count:2});
+ expect(assetDirectoryImages(a,refs.slice(0,1))).toEqual({cover:undefined,count:0});
+});
+it("switches between widened card grid and list without losing selection, search or page and releases previews",async()=>{
+ const assets=Array.from({length:12},(_,i)=>asset(i+1));
+ const k1="cas:"+"a".repeat(64),k2="cas:"+"b".repeat(64);
+ const refs=[{assetId:"a11",variantId:"v11",imageStorageKeys:[k1,k2],requiredForRendering:true}];
+ const {div,changes}=await mount(assets,false,{},refs);
+ const workspace=div.querySelector<HTMLElement>("[data-asset-workspace-fields]")!;
+ const list=div.querySelector<HTMLElement>("[data-asset-directory-list]")!;
+ await input(div.querySelector<HTMLInputElement>('input[aria-label="搜索资产"]')!,"角色");
+ await click(button(div,"资产下一页"));
+ await click([...list.querySelectorAll("button")][1]);
+ expect(previews.acquire).not.toHaveBeenCalled();
+ await click(button(div,"卡片视图"));
+ expect(workspace.dataset.assetDirectoryView).toBe("cards");
+ expect(workspace.className).toContain("42%");
+ expect(list.classList.contains("grid-cols-2")).toBe(true);
+ expect(list.querySelectorAll("button")).toHaveLength(2);
+ expect(list.querySelector('button[aria-pressed="true"]')?.textContent).toContain("角色 12");
+ expect(list.querySelector("img")?.getAttribute("src")).toBe("blob:"+k1);
+ expect(list.textContent).toContain("暂无参考图");
+ expect(list.textContent).toContain("2 张参考图");
+ expect(previews.acquire).toHaveBeenCalledExactlyOnceWith("image",k1,"visible");
+ expect(div.querySelector<HTMLInputElement>('input[aria-label="搜索资产"]')?.value).toBe("角色");
+ expect(div.querySelector("aside")?.textContent).toContain("2/2");
+ await click(button(div,"编辑名称"));
+ expect(button(div,"列表视图").disabled).toBe(true);
+ await click(div.querySelector<HTMLButtonElement>('[data-drama-action="cancel"]')!);
+ await click(button(div,"列表视图"));
+ expect(workspace.dataset.assetDirectoryView).toBe("list");
+ expect(workspace.className).toContain("260px");
+ expect(list.querySelector("img")).toBeNull();
+ expect(previews.release).toHaveBeenCalledTimes(1);
+ expect(list.querySelector('button[aria-pressed="true"]')?.textContent).toContain("角色 12");
+ expect(changes).not.toHaveBeenCalled();
 });
 it("pages and adds to the last page without showing stale directory data",async()=>{
  const {div,changes}=await mount(Array.from({length:11},(_,i)=>asset(i+1)));

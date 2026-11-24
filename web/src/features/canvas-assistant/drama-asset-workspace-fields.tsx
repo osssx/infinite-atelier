@@ -1,13 +1,14 @@
 import {useEffect,useRef,useState,type ReactNode} from "react";
-import {Box,ChevronLeft,ChevronRight,Mountain,Pencil,Plus,Trash2,UserRound} from "lucide-react";
+import {Box,ChevronLeft,ChevronRight,LayoutGrid,List,Mountain,Pencil,Plus,Trash2,UserRound} from "lucide-react";
 import type {CanvasTheme} from "@/lib/canvas-theme";
-import {dramaAssetSlots,type DramaAsset,type DramaAssetKind} from "./canvas-drama-pipeline";
+import {dramaAssetSlots,type DramaAsset,type DramaAssetKind,type DramaAssetReference} from "./canvas-drama-pipeline";
 import {useAssetDirectory} from "./drama-asset-directory-state";
 import type {WorkspacePendingRegistration} from "./drama-creative-workspace";
 import {DramaEditActions} from "./drama-edit-actions";
 import {sameAssetEntry,type AssetEntryPatch} from "./drama-asset-entry-save";
 import {collectDramaAssetUsage,type DramaAssetUsage} from "./drama-asset-usage-display";
 import {DramaAssetUsageTags} from "./drama-asset-usage-tags";
+import {assetDirectoryImages,DramaAssetDirectoryPreview} from "./drama-asset-directory-preview";
 const kinds={character:"角色",scene:"场景",prop:"道具"} as const;
 const icons={character:UserRound,scene:Mountain,prop:Box};
 const pageSize=10;
@@ -15,14 +16,15 @@ type Field="name"|"description"|"aliases";
 type Edit={assetId:string;variantId?:string;field:Field;baseline:string;entry:DramaAsset;value:string;label:string};
 const button="inline-flex min-h-8 shrink-0 items-center justify-center gap-1 rounded-lg border px-2.5 text-xs font-medium hover:opacity-80 disabled:opacity-40";
 const fieldClass="thin-scrollbar w-full min-w-0 rounded-lg border px-3 py-2 text-sm focus-visible:outline focus-visible:outline-2";
-export function DramaAssetWorkspaceFields({assets,theme,disabled,onChange,renderReferences,usage={},onPendingChange,onEditingChange,onPatchAsset,onReloadAsset,loading=false}:{
+export function DramaAssetWorkspaceFields({assets,theme,disabled,onChange,renderReferences,references=[],usage={},onPendingChange,onEditingChange,onPatchAsset,onReloadAsset,loading=false}:{
  assets:DramaAsset[];theme:CanvasTheme;disabled:boolean;expanded?:boolean;onChange?:(next:DramaAsset[])=>void;
- renderReferences?:(asset:DramaAsset,variantId?:string)=>ReactNode;usage?:DramaAssetUsage;
+ renderReferences?:(asset:DramaAsset,variantId?:string)=>ReactNode;references?:readonly DramaAssetReference[];usage?:DramaAssetUsage;
  onPendingChange?:WorkspacePendingRegistration;onEditingChange?:(editing:boolean)=>void;
  onPatchAsset?:(baseline:DramaAsset,changes:AssetEntryPatch,variantId?:string)=>Promise<void>;
  onReloadAsset?:()=>Promise<void>;loading?:boolean;
 }){
- const [{kind,activeId,query,page},setDirectory]=useAssetDirectory();
+ const [{kind,activeId,query,page,view="list"},setDirectory]=useAssetDirectory();
+ const cards=view==="cards";
  const setKind=(kind:DramaAssetKind)=>setDirectory(current=>({...current,kind}));
  const setActiveId=(activeId:string)=>setDirectory(current=>({...current,activeId}));
  const setQuery=(query:string)=>setDirectory(current=>({...current,query}));
@@ -147,21 +149,30 @@ export function DramaAssetWorkspaceFields({assets,theme,disabled,onChange,render
    }}>确认删除</button></div>:
    <button type="button" className={button} style={control} aria-label={"删除"+label} title={inUse?"已知分镜引用此条目，暂不可删除":"从草案删除"} disabled={locked||inUse} onClick={()=>setDeletion({assetId:a.id,variantId})}><Trash2 size={13}/></button>;
  };
- return <div data-asset-workspace-fields="" data-asset-workspace-view="editor" className="grid min-h-0 min-w-0 flex-1 gap-3 md:grid-cols-[minmax(210px,260px)_minmax(0,1fr)]">
+ return <div data-asset-workspace-fields="" data-asset-workspace-view="editor" data-asset-directory-view={view} className={"grid min-h-0 min-w-0 flex-1 gap-3 md:grid-rows-[minmax(0,1fr)] "+(cards?"md:grid-cols-[minmax(0,42%)_minmax(0,1fr)]":"md:grid-cols-[minmax(210px,260px)_minmax(0,1fr)]")}>
   <aside aria-label="资产目录" className="flex min-h-0 min-w-0 flex-col gap-3 rounded-xl border p-3" style={control}>
-   <div className="flex items-center justify-between gap-2"><strong className="text-sm">资产目录</strong><button type="button" aria-label="添加资产" className={button} style={control} disabled={locked} onClick={add}><Plus size={14}/>添加</button></div>
+   <div className="flex items-center justify-between gap-2"><strong className="shrink-0 text-sm">资产目录</strong><div className="flex flex-wrap items-center justify-end gap-1.5"><div role="group" aria-label="资产目录显示方式" className="flex shrink-0 items-center gap-0.5 rounded-lg border p-0.5" style={control}>
+    {(["list","cards"] as const).map(mode=>{const Icon=mode==="list"?List:LayoutGrid;const label=mode==="list"?"列表视图":"卡片视图";return <button key={mode} type="button" aria-label={label} title={label} aria-pressed={view===mode} disabled={locked} className="grid size-7 place-items-center rounded-md hover:opacity-80 disabled:opacity-40" style={view===mode?selected:{color:theme.node.muted}} onClick={()=>setDirectory(current=>({...current,view:mode}))}><Icon size={15}/></button>;})}
+   </div><button type="button" aria-label="添加资产" className={button} style={control} disabled={locked} onClick={add}><Plus size={14}/>添加</button></div></div>
    <div role="group" aria-label="资产类别" className="grid shrink-0 grid-cols-3 gap-1.5">
     {(Object.keys(kinds) as DramaAssetKind[]).map(k=>{const Icon=icons[k];return <button key={k} type="button" aria-pressed={kind===k} disabled={locked} onClick={()=>{setKind(k);setActiveId("");setPage(0);setQuery("");setDeletion(null);}}
      className="flex min-w-0 flex-col items-center gap-1 rounded-md border p-1.5 text-[11px] disabled:opacity-50" style={kind===k?selected:control}><Icon size={14}/>{kinds[k]} {assets.filter(a=>a.kind===k).length}</button>;})}
    </div>
    <input aria-label="搜索资产" placeholder="搜索名称或别名" className={fieldClass+" text-xs"} style={control} value={query} disabled={locked}
     onChange={e=>{setQuery(e.target.value);setPage(0);setActiveId("");setDeletion(null);}}/>
-   <div data-asset-directory-list="" className="thin-scrollbar flex min-h-0 max-h-56 flex-1 flex-col gap-1.5 overflow-y-auto overscroll-contain py-0.5 md:max-h-[52dvh]">
-    {pageRows.map(a=><button type="button" key={a.id} aria-pressed={a.id===active?.id} disabled={locked} onClick={()=>{setActiveId(a.id);setDeletion(null);}}
-     className="flex min-h-9 w-full min-w-0 shrink-0 items-center gap-2 rounded-lg border px-2.5 py-2 text-left text-xs disabled:opacity-50" style={a.id===active?.id?selected:control}>
-     <span className="min-w-0 flex-1 truncate">{a.name||"未命名"+kinds[kind]}</span>{a.id===active?.id&&<ChevronRight size={13}/>}
-    </button>)}
-    {!rows.length&&<p className="p-2 text-xs" style={{color:theme.node.muted}}>暂无{kinds[kind]}{query?"匹配项":""}</p>}
+   <div data-asset-directory-list="" className={"thin-scrollbar min-h-0 flex-1 overflow-y-auto overscroll-contain py-0.5 "+(cards?"grid max-h-64 grid-cols-2 content-start gap-2 md:max-h-none":"flex max-h-56 flex-col gap-1.5 md:max-h-[52dvh]")}>
+    {pageRows.map(a=>{
+     const name=a.name||"未命名"+kinds[kind],isSelected=a.id===active?.id;
+     const images=cards?assetDirectoryImages(a,references):undefined;
+     return <button type="button" key={a.id} aria-pressed={isSelected} disabled={locked} onClick={()=>{setActiveId(a.id);setDeletion(null);}}
+      className={cards?"flex min-w-0 flex-col gap-1.5 rounded-lg border p-1.5 text-left text-xs disabled:opacity-50":"flex min-h-9 w-full min-w-0 shrink-0 items-center gap-2 rounded-lg border px-2.5 py-2 text-left text-xs disabled:opacity-50"}
+      style={isSelected?(cards?{...selected,borderColor:theme.node.activeStroke}:selected):control} title={name}>
+      {images?<><DramaAssetDirectoryPreview storageKey={images.cover} theme={theme}/><span className="flex w-full min-w-0 items-center gap-1 px-1"><span className="min-w-0 flex-1 truncate">{name}</span>{isSelected&&<ChevronRight size={13}/>}</span>
+       <span className="px-1 pb-0.5 text-[11px]" style={{color:isSelected?theme.toolbar.activeText:theme.node.muted}}>{images.count} 张参考图</span></>:
+       <><span className="min-w-0 flex-1 truncate">{name}</span>{isSelected&&<ChevronRight size={13}/>}</>}
+     </button>;
+    })}
+    {!rows.length&&<p className="col-span-full p-2 text-xs" style={{color:theme.node.muted}}>暂无{kinds[kind]}{query?"匹配项":""}</p>}
    </div>
    <div className="flex items-center justify-between gap-2 text-xs"><span>{rows.length} 项</span><div className="flex items-center gap-1">
     <button type="button" aria-label="资产上一页" className={button} style={control} disabled={locked||safePage===0} onClick={()=>{setPage(safePage-1);setActiveId(rows[(safePage-1)*pageSize]?.id??"");setDeletion(null);}}><ChevronLeft size={13}/></button>

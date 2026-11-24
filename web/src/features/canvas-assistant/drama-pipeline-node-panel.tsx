@@ -380,7 +380,7 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
                         const saved=(adopted.document.nodes as CanvasNodeData[]).find(item=>item.id===node.id);
                         const savedAssets=readAssetDraft(saved?.metadata?.dramaDraft??"")?.assets;
                         const focus=savedAssets&&adopted.mapping&&adoptedAssetSelection(savedAssets,candidate.assets,adopted.mapping);
-                        if(focus){setAssetDirectory(focus);openAdoptedAsset?.();}
+                        if(focus){setAssetDirectory(current=>({...current,...focus}));openAdoptedAsset?.();}
                     }
                 }catch(error){setValidation(error instanceof Error?error.message:"资产合入失败");throw error;}
             }}/>}
@@ -599,7 +599,7 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
                             onCreateSelected={selected=>onCreateVideoConfigs?.(selected,true)}
                             onCreateBatch={onCreateDramaShotGroup}/>
                     </Suspense>                </div>}
-            </> : <AssetFields key={assetPlanning&&workspaceMode?workspaceTab:undefined} usage={assetUsage} assets={assets} theme={theme} expanded={assetEditorExpanded} disabled={generating||versionBusy} onPendingChange={onPendingChange} onEditingChange={setAssetEditing}
+            </> : <AssetFields key={assetPlanning&&workspaceMode?workspaceTab:undefined} references={references} usage={assetUsage} assets={assets} theme={theme} expanded={assetEditorExpanded} disabled={generating||versionBusy} onPendingChange={onPendingChange} onEditingChange={setAssetEditing}
                 loading={Boolean(node.metadata?.creativePayloadRef)}
                 onPatchAsset={assetPlanning&&workspaceMode&&projectId?(baseline,changes,variantId)=>saveAssetEntry(projectId,node.id,baseline,changes,variantId):undefined}
                 onReloadAsset={assetPlanning&&workspaceMode&&projectId?async()=>{await onBeforeDramaRun?.();await useCanvasStore.getState().loadProject(projectId);await ensureCreativeNodesLoaded(projectId,[node.id]);}:undefined}

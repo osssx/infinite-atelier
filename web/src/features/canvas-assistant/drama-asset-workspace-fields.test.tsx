@@ -107,7 +107,7 @@ it("switches between widened card grid and list without losing selection, search
  await click(div.querySelector<HTMLButtonElement>('[data-drama-action="cancel"]')!);
  await click(button(div,"列表视图"));
  expect(workspace.dataset.assetDirectoryView).toBe("list");
- expect(workspace.className).toContain("260px");
+ expect(workspace.className).toContain("md:grid-cols-[minmax(0,30%)_minmax(0,1fr)]");
  expect(list.querySelector("img")).toBeNull();
  expect(previews.release).toHaveBeenCalledTimes(1);
  expect(list.querySelector('button[aria-pressed="true"]')?.textContent).toContain("角色 12");

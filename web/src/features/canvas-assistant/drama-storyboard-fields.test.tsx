@@ -7,7 +7,10 @@ vi.mock("@/stores/use-theme-store",async()=>({
 }));
 import {useThemeStore} from "@/stores/use-theme-store";
 import {canvasThemes} from "@/lib/canvas-theme";
-import {DramaStoryboardFields} from "./drama-storyboard-fields";
+import {DramaStoryboardFields,shotDirectoryCover} from "./drama-storyboard-fields";
+import type {DramaShotProduction} from "./drama-pipeline-media";
+const previews=vi.hoisted(()=>({acquire:vi.fn(),release:vi.fn()}));
+vi.mock("@/services/media-preview-storage",()=>({acquireMediaPreview:previews.acquire}));
 import type {DramaAsset,DramaShot} from "./canvas-drama-pipeline";
 
 const original:DramaShot[]=[
@@ -39,9 +42,9 @@ const props:DramaAsset[]=[
 ];
 
 const roots:Root[]=[];
-beforeEach(()=>{vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT",true);useThemeStore.setState({theme:"dark"});});
+beforeEach(()=>{vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT",true);useThemeStore.setState({theme:"dark"});previews.acquire.mockReset().mockImplementation((_kind,key)=>({promise:Promise.resolve("blob:"+key),release:previews.release}));previews.release.mockClear();});
 afterEach(async()=>{for(const x of roots)await act(async()=>x.unmount());roots.length=0;vi.unstubAllGlobals();});
-async function mount(opts:{expanded?:boolean;initialShotId?:string;initialEpisodeId?:string;initialShots?:DramaShot[];initialEpisodes?:typeof episodes;disabled?:boolean;assets?:DramaAsset[];scopedCas?:boolean}={}){
+async function mount(opts:{expanded?:boolean;initialShotId?:string;initialEpisodeId?:string;initialShots?:DramaShot[];initialEpisodes?:typeof episodes;disabled?:boolean;assets?:DramaAsset[];scopedCas?:boolean;production?:Record<string,DramaShotProduction>;navigationLocked?:boolean}={}){
  const div=document.createElement("div");document.body.append(div);
  const root=createRoot(div);roots.push(root);
  const changes=vi.fn<(shots:DramaShot[])=>void>();
@@ -53,7 +56,7 @@ async function mount(opts:{expanded?:boolean;initialShotId?:string;initialEpisod
   updateShots=setShots;updateEpisodes=setEpisodeData;
   return <div style={{height:720,width:1150}}>
    <DramaStoryboardFields shots={shots} episodes={episodeData} assets={opts.assets??[...scenes,...characters,...props]}
-    expanded={opts.expanded??true} disabled={opts.disabled??false} initialEpisodeId={opts.initialEpisodeId} initialShotId={opts.initialShotId}
+    production={opts.production} navigationLocked={opts.navigationLocked} videoStatusFor={()=>"待配置"} expanded={opts.expanded??true} disabled={opts.disabled??false} initialEpisodeId={opts.initialEpisodeId} initialShotId={opts.initialShotId}
     projectId={opts.scopedCas?"project":undefined} nodeId={opts.scopedCas?"board":undefined}
     onPatchShot={opts.scopedCas?async()=>{}:undefined}
     onChange={next=>{changes(next);setShots(next)}}/>
@@ -129,6 +132,53 @@ describe("maximized storyboard editor mirrors episode localized read/edit UX",()
   expect(changes).not.toHaveBeenCalled();
  });
 
+ it("switches to four-column cards with shot-specific previews and preserves the selected shot and field edit",async()=>{
+  const first="cas:"+"a".repeat(64),grid="cas:"+"b".repeat(64);
+  const {div,changes}=await mount({initialShotId:"shot-2",production:{"shot-1":{mode:"first_frame",firstFrame:first},"shot-2":{mode:"omni_reference",gridInput:true,gridImage:grid}}});
+  const root=div.querySelector<HTMLElement>('[data-storyboard-editor-layout="expanded"]')!;
+  const nav=div.querySelector<HTMLElement>('[aria-label="分镜镜头导航"]')!;
+  expect(root.className).toContain("30%");
+  expect(previews.acquire).not.toHaveBeenCalled();
+  await click(div.querySelector('[aria-label="编辑画面描述"]'));
+  await enter(div,'textarea[aria-label="画面描述"]',"未保存内容");
+  await click(div.querySelector('[aria-label="卡片视图"]'));
+  expect(root.dataset.shotDirectoryView).toBe("cards");
+  expect(root.className).toContain("55%");
+  expect(nav.classList.contains("grid-cols-4")).toBe(true);
+  expect([...nav.querySelectorAll("img")].map(img=>img.getAttribute("src"))).toEqual(["blob:"+first,"blob:"+grid]);
+  expect(nav.querySelector('button[aria-pressed="true"]')?.getAttribute("aria-label")).toContain("镜头 2");
+  expect(nav.textContent).toContain("待配置");
+  expect(div.querySelector<HTMLTextAreaElement>('textarea[aria-label="画面描述"]')?.value).toBe("未保存内容");
+  await click(div.querySelector('[aria-label="列表视图"]'));
+  expect(root.className).toContain("30%");
+  expect(nav.querySelector("img")).toBeNull();
+  expect(previews.release).toHaveBeenCalledTimes(2);
+  expect(changes).not.toHaveBeenCalled();
+ });
+ it("paginates local card directories, keeps selection and only mounts current-page previews",async()=>{
+  const shots=Array.from({length:18},(_,i)=>({...original[0],id:"s"+i,order:i+1}));
+  const {div,changes}=await mount({initialShots:shots,initialShotId:"s16"});
+  await click(div.querySelector('[aria-label="卡片视图"]'));
+  const nav=div.querySelector('[aria-label="分镜镜头导航"]')!;
+  expect(nav.querySelectorAll("button")).toHaveLength(3);
+  expect(nav.querySelector('button[aria-pressed="true"]')?.getAttribute("aria-label")).toContain("镜头 17");
+  expect(nav.textContent).toContain("暂无画面图");
+  expect(previews.acquire).not.toHaveBeenCalled();
+  await click([...div.querySelectorAll("button")].find(b=>b.textContent==="上一页")??null);
+  expect(nav.querySelectorAll("button")).toHaveLength(15);
+  expect(nav.querySelector('button[aria-pressed="true"]')?.getAttribute("aria-label")).toContain("镜头 1：");
+  await click(div.querySelector('[aria-label="列表视图"]'));
+  expect(nav.querySelector('button[aria-pressed="true"]')?.getAttribute("aria-label")).toContain("镜头 1：");
+  expect(changes).not.toHaveBeenCalled();
+ });
+ it("ignores inactive or invalid image bindings and respects the navigation lock",async()=>{
+  const key="cas:"+"a".repeat(64);
+  expect(shotDirectoryCover({mode:"text_to_video",firstFrame:key})).toBeUndefined();
+  expect(shotDirectoryCover({mode:"first_last_frame",firstFrame:key})).toBe(key);
+  expect(shotDirectoryCover({mode:"first_frame",firstFrame:"bad"})).toBeUndefined();
+  const {div}=await mount({navigationLocked:true});
+  expect(div.querySelector<HTMLButtonElement>('[aria-label="卡片视图"]')?.disabled).toBe(true);
+ });
  it("inserts a new shot after the first selected shot and shifts later orders",async()=>{
   const {div,changes}=await mount({initialShotId:"shot-1"});
   const add=div.querySelector<HTMLButtonElement>('[aria-label="镜头目录"] button[aria-label="添加镜头"]')!;

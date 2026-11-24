@@ -1,10 +1,19 @@
 import {useEffect,useState,type CSSProperties,type ReactNode} from "react";
 import {canvasApi} from "@/features/backend-sync/canvas-api";
-import {AlertTriangle,Clapperboard,Pencil,Plus,Trash2} from "lucide-react";
+import {AlertTriangle,Clapperboard,LayoutGrid,List,Pencil,Plus,Trash2} from "lucide-react";
 import {canvasThemes,type CanvasTheme} from "@/lib/canvas-theme";
 import {useThemeStore} from "@/stores/use-theme-store";
 import type {DramaAsset,DramaShot} from "./canvas-drama-pipeline";
 import {DramaEditActions} from "./drama-edit-actions";
+import {DramaAssetDirectoryPreview} from "./drama-asset-directory-preview";
+import {isCanvasCasKey} from "@/features/backend-sync/canvas-cas";
+import type {DramaShotProduction} from "./drama-pipeline-media";
+
+export function shotDirectoryCover(setting?:DramaShotProduction){
+ const key=setting?.gridInput?setting.gridImage:
+  setting?.mode==="first_frame"||setting?.mode==="first_last_frame"?setting.firstFrame:undefined;
+ return key&&isCanvasCasKey(key)?key:undefined;
+}
 
 type Choice={value:string;label:string};
 type ShotFieldProps={
@@ -169,7 +178,7 @@ function ShotAssetMultiField({id,label,value,options,theme,disabled,onConfirm}:{
 }
 
 export function DramaStoryboardFields({shots,episodes,assets,expanded,disabled,control,onChange,initialEpisodeId,initialShotId,
- projectId,nodeId,onPatchShot,onReloadShot,onWaitForDraftSave,selectedEpisodeId,onEpisodeChange,selectedShotId,onShotChange,renderVideoConfig,videoStatusFor,navigationLocked=false}:{
+ projectId,nodeId,onPatchShot,onReloadShot,onWaitForDraftSave,selectedEpisodeId,onEpisodeChange,selectedShotId,onShotChange,renderVideoConfig,videoStatusFor,production,navigationLocked=false}:{
  shots:DramaShot[];
  episodes:{id:string;title:string;targetDurationSec?:number;sequences?:{id:string;title:string}[]}[];
  assets:DramaAsset[];expanded:boolean;disabled:boolean;control?:CSSProperties;
@@ -178,6 +187,7 @@ export function DramaStoryboardFields({shots,episodes,assets,expanded,disabled,c
  selectedShotId?:string;onShotChange?:(id:string)=>void;
  navigationLocked?:boolean;
  renderVideoConfig?:(shot:DramaShot)=>ReactNode;videoStatusFor?:(shot:DramaShot)=>string;
+ production?:Readonly<Record<string,DramaShotProduction>>;
  projectId?:string;nodeId?:string;
  onPatchShot?:(shotId:string,expectedDigest:string,changes:Record<string,unknown>)=>Promise<void>;
  onReloadShot?:()=>Promise<void>;
@@ -191,6 +201,8 @@ export function DramaStoryboardFields({shots,episodes,assets,expanded,disabled,c
   "--tw-ring-color":theme.node.activeStroke} as CSSProperties;
  const [episodeId,setEpisodeId]=useState(initialEpisodeId||shots.find(shot=>shot.id===initialShotId)?.episodeId||"");
  const [shotId,setShotId]=useState(initialShotId??"");
+ const [directoryView,setDirectoryView]=useState<"list"|"cards">("list");
+ const cards=directoryView==="cards";
  const [pendingDelete,setPendingDelete]=useState<{episodeId:string;shotId:string;snapshot:string}|null>(null);
  const groups=[...new Set([...episodes.map(item=>item.id),...shots.map(shot=>shot.episodeId)])];
  const currentEpisode=selectedEpisodeId??episodeId;
@@ -268,17 +280,18 @@ export function DramaStoryboardFields({shots,episodes,assets,expanded,disabled,c
  // draft remains authoritative for structural insert/delete until that operation
  // is migrated; pagination limits mounted rows and reads only 15 indexed entries.
  const pageSize=15;
- const useScopedDirectory=scopedCas&&expanded&&episodeShots.length>pageSize;
+ const paginatedDirectory=expanded&&episodeShots.length>pageSize&&(scopedCas||cards);
+ const useScopedDirectory=scopedCas&&paginatedDirectory;
  const [pageStart,setPageStart]=useState(0);
  const [serverPage,setServerPage]=useState<{episodeId:string;offset:number;entries:DramaShot[];total:number}|null>(null);
  const [pageError,setPageError]=useState("");
  const safePageStart=Math.min(Math.floor(pageStart/pageSize)*pageSize,
   Math.floor(Math.max(0,episodeShots.length-1)/pageSize)*pageSize);
  useEffect(()=>{
-  if(!useScopedDirectory||!active)return;
+  if(!paginatedDirectory||!active)return;
   if(selectedShotIndex<safePageStart||selectedShotIndex>=safePageStart+pageSize)
    setPageStart(Math.floor(selectedShotIndex/pageSize)*pageSize);
- },[useScopedDirectory,active?.id,selectedShotIndex,safePageStart]);
+ },[paginatedDirectory,active?.id,selectedShotIndex,safePageStart]);
  useEffect(()=>{
   if(!useScopedDirectory||!projectId||!nodeId||!activeEpisode)return;
   let current=true;
@@ -304,7 +317,7 @@ export function DramaStoryboardFields({shots,episodes,assets,expanded,disabled,c
   serverPage.offset===safePageStart&&serverPage.total===episodeShots.length&&
   serverPage.entries.length===localPage.length&&
   serverPage.entries.every((shot,index)=>JSON.stringify(shot)===JSON.stringify(localPage[index])));
- const directoryShots=useScopedDirectory?(serverPageMatches&&serverPage?serverPage.entries:localPage):episodeShots;
+ const directoryShots=paginatedDirectory?(serverPageMatches&&serverPage?serverPage.entries:localPage):episodeShots;
  const changePage=(offset:number)=>{
   if(navigationLocked)return;
   const next=Math.max(0,Math.min(Math.floor(Math.max(0,episodeShots.length-1)/pageSize)*pageSize,offset));
@@ -391,18 +404,21 @@ export function DramaStoryboardFields({shots,episodes,assets,expanded,disabled,c
  if(active.sequenceId&&!episode?.sequences?.some(item=>item.id===active.sequenceId))
   sceneSequenceOptions.push({value:active.sequenceId,label:"未确认："+active.sequenceId});
  const shotName=(shot:DramaShot,index:number)=>`镜头 ${index+1} · ${shot.shotSize||shot.id}`;
- return <fieldset disabled={disabled} data-storyboard-editor-layout={expanded?"expanded":"compact"}
+ return <fieldset disabled={disabled} data-storyboard-editor-layout={expanded?"expanded":"compact"} data-shot-directory-view={expanded?directoryView:undefined}
   className={expanded?
-   "grid min-h-0 min-w-0 flex-1 grid-rows-[minmax(116px,0.28fr)_minmax(0,1fr)] gap-3 lg:grid-cols-[minmax(220px,0.33fr)_minmax(0,1fr)] lg:grid-rows-1":
+   "grid min-h-0 min-w-0 flex-1 grid-rows-[minmax(116px,0.28fr)_minmax(0,1fr)] gap-3 lg:grid-rows-[minmax(0,1fr)] "+(cards?"lg:grid-cols-[minmax(0,55%)_minmax(0,1fr)]":"lg:grid-cols-[minmax(0,30%)_minmax(0,1fr)]"):
    "grid min-w-0 gap-3"}
   style={{color:theme.node.text,colorScheme:appearance}}>
   {expanded?<aside aria-label="镜头目录" className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-xl border" style={card}>
    <div className="grid shrink-0 gap-2 border-b p-3" style={{borderColor:theme.node.stroke}}>
-    <div className="flex items-center justify-between gap-2">
-     <span className="inline-flex items-center gap-2 text-sm font-semibold">
+    <div className="flex flex-wrap items-center justify-between gap-2">
+     <span className="inline-flex shrink-0 items-center gap-2 text-sm font-semibold">
       <Clapperboard size={15} style={caption}/>镜头目录
      </span>
-     <div className="flex shrink-0 items-center gap-1.5">
+     <div className="flex flex-wrap items-center gap-1.5">
+      <div role="group" aria-label="镜头目录显示方式" className="flex shrink-0 items-center gap-0.5 rounded-lg border p-0.5" style={card}>
+       {(["list","cards"] as const).map(mode=>{const Icon=mode==="list"?List:LayoutGrid;const label=mode==="list"?"列表视图":"卡片视图";return <button key={mode} type="button" aria-label={label} title={label} aria-pressed={directoryView===mode} disabled={disabled||navigationLocked||casBusy} className="grid size-7 place-items-center rounded-md hover:opacity-80 disabled:opacity-40" style={directoryView===mode?{background:theme.toolbar.activeBg,color:theme.toolbar.activeText}:caption} onClick={()=>setDirectoryView(mode)}><Icon size={15}/></button>;})}
+      </div>
       <span className="rounded-md px-2 py-1 text-[11px] font-medium tabular-nums"
        style={{background:theme.toolbar.activeBg,color:theme.node.muted}}>{episodeShots.length} 镜</span>
       <button type="button" title="添加镜头" aria-label="添加镜头"
@@ -419,32 +435,36 @@ export function DramaStoryboardFields({shots,episodes,assets,expanded,disabled,c
     </label>
    </div>
    {navigationLocked&&<p role="status" className="shrink-0 px-3 py-1 text-[11px]" style={caption}>请先确认或取消视频输入模式编辑，再切换镜头。</p>}
-   <nav aria-label="分镜镜头导航" className="thin-scrollbar min-h-0 flex-1 space-y-1 overflow-y-auto p-2" data-canvas-no-zoom="">
+   <nav aria-label="分镜镜头导航" className={"thin-scrollbar min-h-0 flex-1 overflow-y-auto overscroll-contain p-2 "+(cards?"grid grid-cols-4 content-start gap-2":"flex flex-col gap-1")} data-canvas-no-zoom="">
     {directoryShots.map((shot,index)=>{
      const current=shot.id===active.id;
-     const globalIndex=useScopedDirectory?safePageStart+index:index;
+     const globalIndex=paginatedDirectory?safePageStart+index:index;
      return <button type="button" key={shot.id} aria-pressed={current}
       aria-label={`选择镜头 ${globalIndex+1}：${shot.shotSize||shot.id}`}
       disabled={navigationLocked} onClick={()=>chooseShot(shot.id)}
-      className="flex w-full min-w-0 items-start gap-2.5 rounded-lg border px-3 py-3 text-left transition-opacity hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
+      className={"flex w-full min-w-0 shrink-0 rounded-lg border text-left transition-opacity hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 "+(cards?"flex-col gap-1.5 p-1.5":"items-start gap-2.5 px-3 py-3")}
       style={current?{background:theme.toolbar.activeBg,color:theme.node.text,
-       borderColor:theme.node.stroke,outlineColor:theme.node.activeStroke}:
-       {background:"transparent",color:theme.node.text,borderColor:"transparent",
+       borderColor:cards?theme.node.activeStroke:theme.node.stroke,outlineColor:theme.node.activeStroke}:
+       {background:cards?theme.node.panel:"transparent",color:theme.node.text,borderColor:cards?theme.node.stroke:"transparent",
         outlineColor:theme.node.activeStroke}}>
+      {cards&&<DramaAssetDirectoryPreview storageKey={shotDirectoryCover(production?.[shot.id])} theme={theme} aspect="16/9" emptyLabel="暂无画面图" loadingLabel="画面图"/>}
+      <span className={cards?"flex w-full min-w-0 items-center gap-1":"contents"}>
       <span className="mt-0.5 shrink-0 text-[11px] font-semibold tabular-nums" style={caption}>
        {String(globalIndex+1).padStart(2,"0")}
       </span>
       <span className="min-w-0 flex-1">
        <span className="block truncate text-xs font-semibold">{summary(shot)}</span>
-       <span className="mt-1 block truncate text-[11px]" style={caption}>{shot.description?.trim()||"暂无画面描述"}</span>
+       {!cards&&<span className="mt-1 block truncate text-[11px]" style={caption}>{shot.description?.trim()||"暂无画面描述"}</span>}
       </span>
-      {videoStatusFor&&<span className="shrink-0 rounded-md border px-1.5 py-0.5 text-[10px]" style={{borderColor:theme.node.stroke,color:theme.node.muted}}>{videoStatusFor(shot)}</span>}
       {current&&<span aria-hidden="true" className="mt-1.5 size-1.5 shrink-0 rounded-full"
        style={{background:theme.node.activeStroke}}/>}
+      </span>
+      {cards&&<span className="w-full min-w-0 truncate text-[11px]" style={caption}>{shot.description?.trim()||"暂无画面描述"}</span>}
+      {videoStatusFor&&<span className="max-w-full shrink-0 truncate rounded-md border px-1.5 py-0.5 text-[10px]" style={{borderColor:theme.node.stroke,color:theme.node.muted}}>{videoStatusFor(shot)}</span>}
      </button>;
     })}
    </nav>
-   {useScopedDirectory&&<div data-drama-scoped-directory="" className="shrink-0 space-y-1.5 border-t px-3 py-2"
+   {paginatedDirectory&&<div data-drama-scoped-directory="" className="shrink-0 space-y-1.5 border-t px-3 py-2"
      style={{borderColor:theme.node.stroke}}>
     <div className="flex items-center justify-between gap-2 text-[11px]" style={caption}>
      <span>{safePageStart+1}–{Math.min(safePageStart+pageSize,episodeShots.length)} / {episodeShots.length} 镜头</span>

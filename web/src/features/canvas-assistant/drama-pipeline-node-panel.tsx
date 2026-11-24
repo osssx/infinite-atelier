@@ -523,6 +523,7 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
                             setSelectedEpisode(id);setSelectedSequence("");setSelectedRunShot("");
                         }}
                         selectedShotId={editorShotId} onShotChange={setEditorShotId} navigationLocked={videoEditing}
+                        production={node.metadata?.dramaShotProduction}
                         videoStatusFor={shot=>{
                             const published=confirmedShots.find(item=>item.id===shot.id);
                             if(!published)return "未确认";

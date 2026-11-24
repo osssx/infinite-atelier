@@ -14,7 +14,7 @@ export function assetDirectoryImages(asset:DramaAsset,references:readonly DramaA
  return {cover:keys[0],count:keys.length};
 }
 
-export function DramaAssetDirectoryPreview({storageKey,theme}:{storageKey?:string;theme:CanvasTheme}){
+export function DramaAssetDirectoryPreview({storageKey,theme,aspect="4/3",emptyLabel="暂无参考图",loadingLabel="参考图"}:{storageKey?:string;theme:CanvasTheme;aspect?:"4/3"|"16/9";emptyLabel?:string;loadingLabel?:string}){
  const [preview,setPreview]=useState<{key:string;url:string}|null>(null);
  useEffect(()=>{
   if(!storageKey)return;
@@ -24,9 +24,9 @@ export function DramaAssetDirectoryPreview({storageKey,theme}:{storageKey?:strin
   return ()=>{active=false;lease.release();};
  },[storageKey]);
  const url=preview?.key===storageKey?preview?.url:undefined;
- return <span className="relative grid aspect-[4/3] w-full place-items-center overflow-hidden rounded-md"
+ return <span className={"relative grid w-full place-items-center overflow-hidden rounded-md "+(aspect==="16/9"?"aspect-video":"aspect-[4/3]")}
   style={{background:theme.node.fill,color:theme.node.muted}}>
   {url?<img data-asset-directory-preview="" src={url} alt="" loading="lazy" decoding="async" className="absolute inset-0 size-full object-contain"/>:
-   <span className="flex flex-col items-center gap-1 text-[11px]"><ImageIcon size={20}/>{storageKey?"参考图":"暂无参考图"}</span>}
+   <span className="flex flex-col items-center gap-1 text-[11px]"><ImageIcon size={20}/>{storageKey?loadingLabel:emptyLabel}</span>}
  </span>;
 }

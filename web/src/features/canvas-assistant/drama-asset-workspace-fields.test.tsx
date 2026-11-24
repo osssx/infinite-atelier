@@ -93,7 +93,7 @@ it("switches between widened card grid and list without losing selection, search
  await click(button(div,"卡片视图"));
  expect(workspace.dataset.assetDirectoryView).toBe("cards");
  expect(workspace.className).toContain("55%");
- expect(list.classList.contains("grid-cols-3")).toBe(true);
+ expect(list.classList.contains("grid-cols-4")).toBe(true);
  expect(list.querySelectorAll("button")).toHaveLength(2);
  expect(list.querySelector('button[aria-pressed="true"]')?.textContent).toContain("角色 12");
  expect(list.querySelector("img")?.getAttribute("src")).toBe("blob:"+k1);

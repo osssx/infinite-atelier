@@ -160,7 +160,7 @@ export function DramaAssetWorkspaceFields({assets,theme,disabled,onChange,render
    </div>
    <input aria-label="搜索资产" placeholder="搜索名称或别名" className={fieldClass+" text-xs"} style={control} value={query} disabled={locked}
     onChange={e=>{setQuery(e.target.value);setPage(0);setActiveId("");setDeletion(null);}}/>
-   <div data-asset-directory-list="" className={"thin-scrollbar min-h-0 flex-1 overflow-y-auto overscroll-contain py-0.5 "+(cards?"grid max-h-64 grid-cols-3 content-start gap-2 md:max-h-none":"flex max-h-56 flex-col gap-1.5 md:max-h-[52dvh]")}>
+   <div data-asset-directory-list="" className={"thin-scrollbar min-h-0 flex-1 overflow-y-auto overscroll-contain py-0.5 "+(cards?"grid max-h-64 grid-cols-4 content-start gap-2 md:max-h-none":"flex max-h-56 flex-col gap-1.5 md:max-h-[52dvh]")}>
     {pageRows.map(a=>{
      const name=a.name||"未命名"+kinds[kind],isSelected=a.id===active?.id;
      const images=cards?assetDirectoryImages(a,references):undefined;

@@ -132,8 +132,8 @@ def main():
         original=find_node(first["data"],"first-config")
         original_links=[e for e in first["data"]["document"]["connections"] if e["toNodeId"]=="first-config"]
 
-        # P3.3: browse the off-graph asset/episode summaries while full editor
-        # content is still unloaded; this must not expand whole drama bodies.
+        # P3.3: the asset node now hydrates automatically when visible, while
+        # its indexed 10-item browser remains available for scoped CAS edits.
         for stage,count,label in (("assets",2,"资产"),("episodes",2,"剧集")):
             if stage=="episodes":
                 check("p34b2_episodes_summary_visible",bool(wait_for(lambda:page.js("""
@@ -164,10 +164,10 @@ def main():
                 })()"""%(json.dumps(stage),json.dumps(label+"独立存储分页浏览",ensure_ascii=False),
                         json.dumps(label+"共 "+str(count)+" 项",ensure_ascii=False))))
             check("p33_lazy_"+stage+"_shows_count_without_editor",bool(wait_for(scope_loaded,"P3.3 count "+stage,25)))
-            check("p33_lazy_"+stage+"_editor_still_unloaded",bool(page.js("""(() => {
-                const node=document.querySelector('[data-node-id=%s]');const portal=document.querySelector('[data-creative-workspace-node-id]');const root=portal?.getAttribute('data-creative-workspace-node-id')===node?.dataset.nodeId?portal:node;
-                return [...(root?.querySelectorAll('button')||[])].some(
-                  btn=>(btn.textContent||'').trim()==='打开创作内容');
+            check("p33_lazy_"+stage+"_direct_content_without_confirmation",bool(page.js("""(() => {
+                const node=document.querySelector('[data-node-id=%s]');
+                return !!node && !(node.textContent||'').includes('打开创作内容') &&
+                    !!node.querySelector('[aria-label="资产独立存储分页浏览"]');
             })()"""%json.dumps(stage))))
 
         check("p34b2_storyboard_summary_without_full_editor",bool(wait_for(lambda:page.js("""
@@ -662,10 +662,9 @@ def main():
         })()"""),"P3.3e clear staged edits",25)))
         # Full creative editors now live outside the canvas; verify the new
         # page-level workspace instead of treating an inline node as an editor.
-        if node_button(page,"assets","打开创作内容"):
-            wait_for(lambda:page.js(
-                "(document.querySelector('[data-node-id=\"assets\"]')?.textContent||'').includes('确认阶段')"),
-                "load assets content",25)
+        check("assets_auto_loaded_editor",bool(wait_for(lambda:page.js(
+            "(document.querySelector('[data-node-id=\"assets\"]')?.textContent||'').includes('确认阶段')"),
+            "assets editor auto hydration",25)))
         check("story_and_episode_nodes_visible",bool(page.js(
               "!!document.querySelector('[data-node-id=\"episodes\"]')&&!!document.querySelector('[data-node-id=\"story\"]')")))
         check("p34b2_episode_full_editor_reopen",bool(wait_for(

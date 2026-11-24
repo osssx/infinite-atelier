@@ -60,6 +60,30 @@ test("P4.7 project-scoped history pages by (createdAt,id), excludes prompts and 
  assert.equal((await f.app.inject({method:"GET",url:"/api/v1/projects/p1/jobs"})).statusCode,401);
  assert.equal((await f.call("/api/v1/projects/p1/jobs",{"x-test-owner":"owner",origin:"http://attacker.test"})).statusCode,200);
 });
+test("image generation times use durable success events, remain project scoped and include hidden jobs",async t=>{
+ const f=fixture(t);
+ const blob="a".repeat(64),other="b".repeat(64),fallback="c".repeat(64);
+ for(const id of [blob,other,fallback])f.db.prepare("INSERT INTO blobs(id,sha256,byte_size,mime,relative_path,status) VALUES(?,?,?,?,?,?)").run(id,id,1,"image/png","cas/"+id,"ready");
+ const add=(key,project,id,time,withEvent=true)=>{
+  const jobId=f.make(key,project);
+  f.db.prepare("UPDATE jobs SET updated_at=? WHERE id=?").run(withEvent?time+10000:time,jobId);
+  appendArtifact(f.db,{id:key+"-artifact",jobId,portId:"image",itemKey:"0",blobId:id,kind:"image",mime:"image/png",sha256:id});
+  if(withEvent)f.db.prepare("INSERT INTO job_events(job_id,kind,payload_json,created_at) VALUES(?,?,?,?)").run(jobId,"job_status",JSON.stringify({to:"succeeded"}),time);
+  return jobId;
+ };
+ add("old","p1",blob,100);
+ const hidden=add("new","p1",blob,200);
+ add("foreign","p2",blob,999);
+ add("foreign-only","p2",other,999);
+ add("fallback","p1",fallback,150,false);
+ hideProjectJobHistory(f.db,{projectId:"p1",jobId:hidden});
+ const url="/api/v1/projects/p1/image-generation-times";
+ const response=await f.call(url);
+ assert.equal(response.statusCode,200,response.body);
+ assert.deepEqual(Object.fromEntries(response.json().images.map(row=>[row.blobId,row.generatedAt])),{[blob]:200,[fallback]:150});
+ assert.equal((await f.call(url,{})).statusCode,401);
+ assert.equal((await f.call("/api/v1/projects/missing/image-generation-times")).statusCode,404);
+});
 test("P4.7 job diagnostics whitelist coordinator outcomes but never arbitrary secrets",async t=>{
  const f=fixture(t),jobId=f.make("diagnostic");
  f.db.prepare("UPDATE jobs SET status='failed' WHERE id=?").run(jobId);

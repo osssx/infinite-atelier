@@ -1,4 +1,4 @@
-import {useEffect,useState,type CSSProperties} from "react";
+import {useEffect,useState,type CSSProperties,type ReactNode} from "react";
 import {canvasApi} from "@/features/backend-sync/canvas-api";
 import {AlertTriangle,Clapperboard,Pencil,Plus,Trash2} from "lucide-react";
 import {canvasThemes,type CanvasTheme} from "@/lib/canvas-theme";
@@ -169,11 +169,15 @@ function ShotAssetMultiField({id,label,value,options,theme,disabled,onConfirm}:{
 }
 
 export function DramaStoryboardFields({shots,episodes,assets,expanded,disabled,control,onChange,initialEpisodeId,initialShotId,
- projectId,nodeId,onPatchShot,onReloadShot,onWaitForDraftSave}:{
+ projectId,nodeId,onPatchShot,onReloadShot,onWaitForDraftSave,selectedEpisodeId,onEpisodeChange,selectedShotId,onShotChange,renderVideoConfig,videoStatusFor,navigationLocked=false}:{
  shots:DramaShot[];
  episodes:{id:string;title:string;targetDurationSec?:number;sequences?:{id:string;title:string}[]}[];
  assets:DramaAsset[];expanded:boolean;disabled:boolean;control?:CSSProperties;
  onChange:(shots:DramaShot[])=>void;initialEpisodeId?:string;initialShotId?:string;
+ selectedEpisodeId?:string;onEpisodeChange?:(id:string)=>void;
+ selectedShotId?:string;onShotChange?:(id:string)=>void;
+ navigationLocked?:boolean;
+ renderVideoConfig?:(shot:DramaShot)=>ReactNode;videoStatusFor?:(shot:DramaShot)=>string;
  projectId?:string;nodeId?:string;
  onPatchShot?:(shotId:string,expectedDigest:string,changes:Record<string,unknown>)=>Promise<void>;
  onReloadShot?:()=>Promise<void>;
@@ -189,18 +193,19 @@ export function DramaStoryboardFields({shots,episodes,assets,expanded,disabled,c
  const [shotId,setShotId]=useState(initialShotId??"");
  const [pendingDelete,setPendingDelete]=useState<{episodeId:string;shotId:string;snapshot:string}|null>(null);
  const groups=[...new Set([...episodes.map(item=>item.id),...shots.map(shot=>shot.episodeId)])];
- const activeEpisode=groups.includes(episodeId)?episodeId:groups[0];
+ const currentEpisode=selectedEpisodeId??episodeId;
+ const activeEpisode=groups.includes(currentEpisode)?currentEpisode:groups[0];
  const episodeShots=shots.filter(shot=>shot.episodeId===activeEpisode).sort((a,b)=>a.order-b.order);
- const active=episodeShots.find(shot=>shot.id===shotId)??episodeShots[0];
+ const active=episodeShots.find(shot=>shot.id===(selectedShotId??shotId))??episodeShots[0];
  const episode=episodes.find(item=>item.id===activeEpisode);
  const duration=episodeShots.reduce((sum,shot)=>sum+(shot.durationSec??0),0);
- const chooseEpisode=(id:string)=>{setPendingDelete(null);setEpisodeId(id);setShotId("");};
- const chooseShot=(id:string)=>{setPendingDelete(null);setShotId(id);};
+ const chooseEpisode=(id:string)=>{if(navigationLocked)return;setPendingDelete(null);setEpisodeId(id);setShotId("");onShotChange?.("");onEpisodeChange?.(id);};
+ const chooseShot=(id:string)=>{if(navigationLocked)return;setPendingDelete(null);setShotId(id);onShotChange?.(id);};
  const selectedShotIndex=active?episodeShots.findIndex(shot=>shot.id===active.id):-1;
  const summary=(shot:DramaShot)=>shot.shotSize?.trim()||"未设置景别";
  const smallAction="inline-flex min-h-8 items-center justify-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-medium transition-opacity hover:opacity-80 focus-visible:outline focus-visible:outline-2 disabled:cursor-not-allowed disabled:opacity-40";
  const addShot=()=>{
-  if(disabled||casBusy||!activeEpisode)return;
+  if(disabled||casBusy||navigationLocked||!activeEpisode)return;
   const used=new Set(shots.map(item=>item.id));
   let id:string;
   do{id="shot_"+crypto.randomUUID();}while(used.has(id));
@@ -219,7 +224,7 @@ export function DramaStoryboardFields({shots,episodes,assets,expanded,disabled,c
   const position=active?shots.findIndex(shot=>shot.id===active.id)+1:updated.length;
   updated.splice(position,0,next);
   setPendingDelete(null);
-  setEpisodeId(activeEpisode);setShotId(id);
+  setEpisodeId(activeEpisode);setShotId(id);onShotChange?.(id);
   onChange(updated);
  };
  const scopedCas=Boolean(projectId&&nodeId&&onPatchShot);
@@ -301,6 +306,7 @@ export function DramaStoryboardFields({shots,episodes,assets,expanded,disabled,c
   serverPage.entries.every((shot,index)=>JSON.stringify(shot)===JSON.stringify(localPage[index])));
  const directoryShots=useScopedDirectory?(serverPageMatches&&serverPage?serverPage.entries:localPage):episodeShots;
  const changePage=(offset:number)=>{
+  if(navigationLocked)return;
   const next=Math.max(0,Math.min(Math.floor(Math.max(0,episodeShots.length-1)/pageSize)*pageSize,offset));
   setPageStart(next);const shot=episodeShots[next];if(shot)chooseShot(shot.id);
  };
@@ -329,7 +335,7 @@ export function DramaStoryboardFields({shots,episodes,assets,expanded,disabled,c
   const nextSelected=episodeShots[index+1]??episodeShots[index-1];
   const nextOrder=new Map(episodeShots.filter(shot=>shot.id!==active.id)
    .map((shot,index)=>[shot.id,index+1]));
-  setShotId(nextSelected?.id??"");
+  setShotId(nextSelected?.id??"");onShotChange?.(nextSelected?.id??"");
   setPendingDelete(null);
   onChange(shots.filter(shot=>shot.id!==active.id).map(shot=>{
    const order=nextOrder.get(shot.id);
@@ -365,7 +371,7 @@ export function DramaStoryboardFields({shots,episodes,assets,expanded,disabled,c
   else delete next[key];
   return write(next);
  };
- const fieldLocked=disabled||(scopedCas&&(!shotDigest||casBusy||shotDigest.id!==active.id));
+ const fieldLocked=disabled||navigationLocked||(scopedCas&&(!shotDigest||casBusy||shotDigest.id!==active.id));
 
  const scenes=assets.filter(item=>item.kind==="scene");
  const characters=assets.filter(item=>item.kind==="character");
@@ -400,25 +406,26 @@ export function DramaStoryboardFields({shots,episodes,assets,expanded,disabled,c
       <span className="rounded-md px-2 py-1 text-[11px] font-medium tabular-nums"
        style={{background:theme.toolbar.activeBg,color:theme.node.muted}}>{episodeShots.length} 镜</span>
       <button type="button" title="添加镜头" aria-label="添加镜头"
-       className={smallAction} style={card} onClick={addShot} disabled={disabled||casBusy}>
+       className={smallAction} style={card} onClick={addShot} disabled={disabled||casBusy||navigationLocked}>
        <Plus size={13} aria-hidden="true"/>添加
       </button>
      </div>
     </div>
     <label className="grid min-w-0 gap-1 text-xs" style={caption}>当前剧集
      <select aria-label="选择分镜剧集" className="w-full min-w-0 rounded-lg border px-2.5 py-2 text-xs"
-      style={fieldStyle} value={activeEpisode} onChange={event=>chooseEpisode(event.target.value)}>
+      style={fieldStyle} disabled={navigationLocked} value={activeEpisode} onChange={event=>chooseEpisode(event.target.value)}>
       {groups.map(id=><option key={id} value={id}>{episodes.find(item=>item.id===id)?.title||id}</option>)}
      </select>
     </label>
    </div>
+   {navigationLocked&&<p role="status" className="shrink-0 px-3 py-1 text-[11px]" style={caption}>请先确认或取消视频输入模式编辑，再切换镜头。</p>}
    <nav aria-label="分镜镜头导航" className="thin-scrollbar min-h-0 flex-1 space-y-1 overflow-y-auto p-2" data-canvas-no-zoom="">
     {directoryShots.map((shot,index)=>{
      const current=shot.id===active.id;
      const globalIndex=useScopedDirectory?safePageStart+index:index;
      return <button type="button" key={shot.id} aria-pressed={current}
       aria-label={`选择镜头 ${globalIndex+1}：${shot.shotSize||shot.id}`}
-      onClick={()=>chooseShot(shot.id)}
+      disabled={navigationLocked} onClick={()=>chooseShot(shot.id)}
       className="flex w-full min-w-0 items-start gap-2.5 rounded-lg border px-3 py-3 text-left transition-opacity hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
       style={current?{background:theme.toolbar.activeBg,color:theme.node.text,
        borderColor:theme.node.stroke,outlineColor:theme.node.activeStroke}:
@@ -431,6 +438,7 @@ export function DramaStoryboardFields({shots,episodes,assets,expanded,disabled,c
        <span className="block truncate text-xs font-semibold">{summary(shot)}</span>
        <span className="mt-1 block truncate text-[11px]" style={caption}>{shot.description?.trim()||"暂无画面描述"}</span>
       </span>
+      {videoStatusFor&&<span className="shrink-0 rounded-md border px-1.5 py-0.5 text-[10px]" style={{borderColor:theme.node.stroke,color:theme.node.muted}}>{videoStatusFor(shot)}</span>}
       {current&&<span aria-hidden="true" className="mt-1.5 size-1.5 shrink-0 rounded-full"
        style={{background:theme.node.activeStroke}}/>}
      </button>;
@@ -444,9 +452,9 @@ export function DramaStoryboardFields({shots,episodes,assets,expanded,disabled,c
     </div>
     <div className="flex items-center gap-2">
      <button type="button" className={smallAction+" flex-1"} style={card}
-      disabled={safePageStart===0} onClick={()=>changePage(safePageStart-pageSize)}>上一页</button>
+      disabled={navigationLocked||safePageStart===0} onClick={()=>changePage(safePageStart-pageSize)}>上一页</button>
      <button type="button" className={smallAction+" flex-1"} style={card}
-      disabled={safePageStart+pageSize>=episodeShots.length}
+      disabled={navigationLocked||safePageStart+pageSize>=episodeShots.length}
       onClick={()=>changePage(safePageStart+pageSize)}>下一页</button>
     </div>
     {pageError&&<p role="status" className="break-words text-[11px]" style={caption}>
@@ -457,13 +465,13 @@ export function DramaStoryboardFields({shots,episodes,assets,expanded,disabled,c
    <div className="grid grid-cols-2 gap-2">
     <label className="grid min-w-0 gap-1 text-xs">剧集
      <select className="w-full min-w-0 rounded-lg border px-3 py-2" style={fieldStyle}
-      value={activeEpisode} onChange={event=>chooseEpisode(event.target.value)}>
+      disabled={navigationLocked} value={activeEpisode} onChange={event=>chooseEpisode(event.target.value)}>
       {groups.map(id=><option key={id} value={id}>{episodes.find(item=>item.id===id)?.title||id}</option>)}
      </select>
     </label>
     <label className="grid min-w-0 gap-1 text-xs">镜头
      <select className="w-full min-w-0 rounded-lg border px-3 py-2" style={fieldStyle}
-      value={active.id} onChange={event=>chooseShot(event.target.value)}>
+      disabled={navigationLocked} value={active.id} onChange={event=>chooseShot(event.target.value)}>
       {episodeShots.map((shot,index)=><option key={shot.id} value={shot.id}>{shotName(shot,index)}</option>)}
      </select>
     </label>
@@ -482,7 +490,7 @@ export function DramaStoryboardFields({shots,episodes,assets,expanded,disabled,c
       {active.durationSec??"—"} 秒 · {episodeShots.length} 镜
      </span>
      <button type="button" aria-label={`删除镜头 ${selectedShotIndex+1}`}
-      className={smallAction} style={card} disabled={disabled||casBusy}
+      className={smallAction} style={card} disabled={disabled||casBusy||navigationLocked}
       onClick={()=>setPendingDelete({episodeId:active.episodeId,shotId:active.id,snapshot:JSON.stringify(active)})}>
       <Trash2 size={13} aria-hidden="true"/>删除镜头
      </button>
@@ -579,6 +587,7 @@ export function DramaStoryboardFields({shots,episodes,assets,expanded,disabled,c
       onConfirm={value=>optional("sceneVariantId",value)}/>:null}
     </div>
    </div>
+   {renderVideoConfig?.(active)}
   </div>
  </fieldset>;
 }

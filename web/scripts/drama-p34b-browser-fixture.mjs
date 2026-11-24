@@ -30,8 +30,10 @@ const assets=Array.from({length:50},(_,i)=>({id:"asset-"+i,kind:"prop",name:"道
 const episodes=Array.from({length:4},(_,i)=>({id:"ep-"+i,title:"第 "+(i+1)+" 集",
  synopsis:("第 "+(i+1)+" 集剧情梗概 ").repeat(17),ending:"结尾",events:[],sourceRefs:[],
  sequences:Array.from({length:3},(_,j)=>({id:"ep-"+i+"-seq-"+j,title:"场次 "+(j+1)}))}));
-const shots=Array.from({length:100},(_,i)=>({id:"shot-"+i,episodeId:"ep-"+Math.floor(i/25),
- sequenceId:"ep-"+Math.floor(i/25)+"-seq-"+(i%25<9?0:i%25<18?1:2),
+const shotCount=process.env.ATELIER_DRAMA_P5_BROWSER_E2E==="1"?200:100;
+const shotsPerEpisode=shotCount/4;
+const shots=Array.from({length:shotCount},(_,i)=>({id:"shot-"+i,episodeId:"ep-"+Math.floor(i/shotsPerEpisode),
+ sequenceId:"ep-"+Math.floor(i/shotsPerEpisode)+"-seq-"+Math.min(2,Math.floor((i%shotsPerEpisode)*3/shotsPerEpisode)),
  order:i+1,shotSize:"中景",description:("镜头 "+i+" 画面描述：角色在场景中行动。").repeat(35),
  action:"镜头移动 "+i,dialogue:"",characterVariantIds:[],propIds:[],keyPropIds:[],sourceRefs:[]}));
 const node=(id,type,index,metadata,width=220,height=180)=>({
@@ -39,10 +41,13 @@ const node=(id,type,index,metadata,width=220,height=180)=>({
  width,height,metadata
 });
 const nodes=[
- node("assets","drama:assets",0,{dramaDraft:JSON.stringify({assets}),dramaConfirmed:JSON.stringify({assets})},340,360),
+ node("assets","drama:assets",0,{dramaDraft:JSON.stringify({assets}),dramaConfirmed:JSON.stringify({assets}),
+  ...(process.env.ATELIER_ASSET_P6_BROWSER_E2E==="1"?{dramaAssetCandidate:{
+   id:"p6-review",baseline:JSON.stringify({assets}),assets:Array.from({length:12},(_,i)=>({id:"candidate-"+i,
+    kind:"prop",name:"待审核道具 "+i,description:"新增道具说明 "+i,sourceRefs:[]}))}}:{})},340,360),
  node("episodes","drama:episodes",1,{dramaDraft:JSON.stringify({episodes}),dramaConfirmed:JSON.stringify({episodes})},340,360),
  node("board","drama:storyboard",2,{dramaDraft:JSON.stringify({shots}),dramaConfirmed:JSON.stringify({shots}),
-  dramaConfirmedVersionId:"p34b-v1"},420,410)
+  dramaConfirmedVersionId:"p34b-v1",...(shotCount===200?{dramaShotProduction:{"shot-50":{mode:"first_frame"},"shot-100":{mode:"first_frame"}}}:{})},420,410)
 ];
 for(let i=0;i<197;i++){
  const k=i+3;
@@ -55,7 +60,7 @@ for(let i=0;i<197;i++){
    mimeType:"video/mp4",naturalWidth:64,naturalHeight:64,status:"success"}));
  else nodes.push(node("config-"+(i-182),"config",k,{generationMode:"video",prompt:"风格一致性 "+i,seconds:"5"}));
 }
-if(nodes.length!==200||shots.length!==100||assets.length!==50)throw Error("fixture_count_mismatch");
+if(nodes.length!==200||shots.length!==shotCount||assets.length!==50)throw Error("fixture_count_mismatch");
 const connections=[
  {id:"l-assets-board",fromNodeId:"assets",toNodeId:"board"},
  {id:"l-episodes-board",fromNodeId:"episodes",toNodeId:"board"}
@@ -72,6 +77,6 @@ for(const sig of ["SIGTERM","SIGINT"])process.on(sig,()=>void (async()=>{
 })());
 const backendOrigin=await startServer(backend.app,{host:"127.0.0.1",port});
 writeFileSync(join(root,"p34b-fixture.json"),JSON.stringify({backendOrigin,projectId,
- nodes:200,assets:50,episodes:4,shots:100,media:{images:70,videos:15},connections:connections.length,
+ nodes:200,assets:50,episodes:4,shots:shotCount,media:{images:70,videos:15},connections:connections.length,
  imageBytes:image.byteSize,videoBytes:video.byteSize}),"utf8");
-console.log("P34B_BROWSER_FIXTURE_READY",JSON.stringify({backendOrigin,projectId,nodes:200,shots:100,assets:50}));
+console.log("P34B_BROWSER_FIXTURE_READY",JSON.stringify({backendOrigin,projectId,nodes:200,shots:shotCount,assets:50}));

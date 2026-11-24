@@ -1,5 +1,5 @@
 import {lazy,memo,Suspense,useEffect,useRef,useState} from "react";
-import {BookOpenText,ChevronLeft,ChevronRight,Clapperboard,Pencil,RefreshCw} from "lucide-react";
+import {BookOpenText,Boxes,ChevronLeft,ChevronRight,Clapperboard,Pencil,RefreshCw} from "lucide-react";
 import {canvasThemes} from "@/lib/canvas-theme";
 import {useThemeStore} from "@/stores/use-theme-store";
 import type {CanvasNodeData} from "@/types/canvas";
@@ -7,7 +7,7 @@ import {canvasApi,CanvasApiError} from "@/features/backend-sync/canvas-api";
 import {awaitCanvasStorePersistence} from "@/stores/canvas/use-canvas-sqlite-store";
 
 const DramaNodeQuickEditor=lazy(()=>import("./drama-node-quick-editor").then(m=>({default:m.DramaNodeQuickEditor})));
-type Kind="episodes"|"storyboard";
+type Kind="assets"|"episodes"|"storyboard";
 type Group={episodeId:string;total:number;sequenceIds:string[]};
 type Scope={versionId:string|null;total:number;groups:Group[];entries:Record<string,unknown>[];
  entryDigests?:{id:string;digest:string}[]};
@@ -27,9 +27,10 @@ function short(value:unknown,max=110){
  */
 export const DramaNodeSummaryCard=memo(function DramaNodeSummaryCard({node,projectId,onOpen}:{
  node:CanvasNodeData;projectId:string;
- onOpen:(nodeId:string,focus?:{episodeId?:string;sequenceId?:string;shotId?:string})=>Promise<void>;
+ onOpen:(nodeId:string,focus?:{episodeId?:string;sequenceId?:string;shotId?:string;assetId?:string})=>Promise<void>;
 }){
- const kind:Kind=node.type==="drama:storyboard"?"storyboard":"episodes";
+ const kind:Kind=node.type==="drama:assets"?"assets":node.type==="drama:storyboard"?"storyboard":"episodes";
+ const isAssets=kind==="assets";
  const appearance=useThemeStore(state=>state.theme);
  const theme=canvasThemes[appearance];
  const [data,setData]=useState<Data|null>(null);
@@ -98,7 +99,7 @@ export const DramaNodeSummaryCard=memo(function DramaNodeSummaryCard({node,proje
  const activeSelection=selected?.key===selectionKey?selected:null;
  const entry=activeSelection?.entry;
  const index=pageOffset;
- const title=kind==="episodes"?"剧集规划":"分镜配置";
+ const title=isAssets?"资产规划":kind==="episodes"?"剧集规划":"分镜配置";
  const isEpisodes=kind==="episodes";
  const prev=()=>setOffset(i=>Math.max(0,i-1));
  const next=()=>setOffset(i=>Math.min(count-1,i+1));
@@ -120,7 +121,7 @@ export const DramaNodeSummaryCard=memo(function DramaNodeSummaryCard({node,proje
    <div className="flex min-w-0 items-center gap-2">
     <span aria-hidden="true" className="grid size-7 shrink-0 place-items-center rounded-lg"
      style={{background:theme.toolbar.activeBg,color:theme.node.text}}>
-     {isEpisodes?<BookOpenText size={15}/>:<Clapperboard size={15}/>}
+     {isAssets?<Boxes size={15}/>:isEpisodes?<BookOpenText size={15}/>:<Clapperboard size={15}/>}
     </span>
     <strong className="truncate text-[13px] font-semibold tracking-tight">{title}</strong>
    </div>
@@ -136,7 +137,7 @@ export const DramaNodeSummaryCard=memo(function DramaNodeSummaryCard({node,proje
     </span>
    </div>
   </header>
-  {editing?<Suspense fallback={<p role="status" className="text-xs" style={{color:theme.node.muted}}>正在加载轻量编辑器…</p>}>
+  {editing&&kind!=="assets"?<Suspense fallback={<p role="status" className="text-xs" style={{color:theme.node.muted}}>正在加载轻量编辑器…</p>}>
    <DramaNodeQuickEditor key={selectionKey+":"+String(editing.entry.id)}
     kind={kind} projectId={projectId} nodeId={node.id} entry={editing.entry} expectedDigest={editing.digest!}
     position={index+1} total={count}
@@ -150,7 +151,7 @@ export const DramaNodeSummaryCard=memo(function DramaNodeSummaryCard({node,proje
    </div>:<>
    <div className="flex shrink-0 items-center justify-between gap-2">
     <p className="truncate text-[11px] tabular-nums" style={{color:theme.node.muted}}>
-     {isEpisodes?`已规划 ${total} 集 · 已确认 ${confirmedTotal} 集`:`${current.groups.length} 集 · ${current.total} 镜头`}
+     {isAssets?`草案 ${data?.draft.total??0} 项 · 已确认 ${confirmedTotal} 项`:isEpisodes?`已规划 ${total} 集 · 已确认 ${confirmedTotal} 集`:`${current.groups.length} 集 · ${current.total} 镜头`}
     </p>
     {(data?.draft.total??0)>0&&confirmedTotal>0&&
      <label className="flex shrink-0 items-center gap-1 text-[11px]" style={{color:theme.node.muted}}>
@@ -173,12 +174,12 @@ export const DramaNodeSummaryCard=memo(function DramaNodeSummaryCard({node,proje
     style={{background:theme.node.panel,borderColor:theme.node.stroke}}>
     {current.total===0?
      <div className="flex min-h-0 flex-1 flex-col justify-center gap-1">
-      <strong className="text-xs">尚无{isEpisodes?"剧集内容":"镜头内容"}</strong>
+      <strong className="text-xs">尚无{isAssets?"资产内容":isEpisodes?"剧集内容":"镜头内容"}</strong>
       <p className="text-[11px] leading-4" style={{color:theme.node.muted}}>打开完整编辑器开始规划</p>
      </div>:<>
      <div className="mb-1.5 flex shrink-0 items-center justify-between gap-2">
       <span className="truncate text-[10px] font-semibold tracking-wide" style={{color:theme.node.muted}}>
-       {isEpisodes?`当前剧集 · 第 ${index+1} 集`:`当前镜头 · 第 ${index+1} 条`}
+       {isAssets?`当前资产 · ${({character:"角色",scene:"场景",prop:"道具"} as Record<string,string>)[String(entry?.kind)]??""}`:isEpisodes?`当前剧集 · 第 ${index+1} 集`:`当前镜头 · 第 ${index+1} 条`}
       </span>
       {count>1&&<nav aria-label="摘要条目切换" className="flex shrink-0 items-center gap-1">
        <button type="button" aria-label="上一条摘要" title="上一条摘要"
@@ -193,28 +194,28 @@ export const DramaNodeSummaryCard=memo(function DramaNodeSummaryCard({node,proje
       </nav>}
      </div>
      <strong className="block shrink-0 truncate text-[13px] font-semibold leading-5" title={isEpisodes?String(entry?.title??""):undefined}>
-      {isEpisodes?short(entry?.title,64)||`第 ${index+1} 集`:
+      {isAssets?short(entry?.name,64)||"未命名资产":isEpisodes?short(entry?.title,64)||`第 ${index+1} 集`:
        `镜头 ${String(entry?.order??index+1)} · ${short(entry?.shotSize,30)||"未设置景别"}`}
      </strong>
      <div className="mt-2 min-h-0 flex-1 overflow-y-auto thin-scrollbar" data-canvas-no-zoom>
       <p className="mb-1 text-[10px] font-medium" style={{color:theme.node.muted}}>
-       {isEpisodes?"剧情概要":"画面描述"}
+       {isAssets?"资产描述":isEpisodes?"剧情概要":"画面描述"}
       </p>
       <p className="break-words text-xs leading-[1.55]" style={{color:theme.node.text,opacity:.85}}>
-       {isEpisodes?short(entry?.synopsis,300)||"暂无概要":short(entry?.description,300)||"暂无画面描述"}
+       {isEpisodes?short(entry?.synopsis,300)||"暂无概要":short(entry?.description,300)||(isAssets?"暂无描述":"暂无画面描述")}
       </p>
       {!isEpisodes&&typeof entry?.durationSec==="number"&&
        <p className="mt-1.5 text-[10px] tabular-nums" style={{color:theme.node.muted}}>时长 {entry.durationSec} 秒</p>}
      </div>
     </>}
    </div>
-   {view==="confirmed"&&(data?.draft.total??0)>0&&
+   {!isAssets&&view==="confirmed"&&(data?.draft.total??0)>0&&
     <button type="button" className="shrink-0 self-start text-[11px] underline underline-offset-2"
      style={{color:theme.node.muted}} onClick={()=>setView("draft")}>
      快速编辑请切换至「草案」。
     </button>}
    <footer className="flex shrink-0 gap-2">
-    {view==="draft"&&activeSelection?.digest&&
+    {!isAssets&&view==="draft"&&activeSelection?.digest&&
      <button type="button" aria-label={"快速编辑"+(isEpisodes?"当前剧集":"当前镜头")}
       className={secondaryButton+" flex-1"} style={buttonSecondaryStyle}
       onClick={()=>setEditing(activeSelection)}><Pencil size={12} aria-hidden="true"/>快速编辑</button>}
@@ -222,7 +223,7 @@ export const DramaNodeSummaryCard=memo(function DramaNodeSummaryCard({node,proje
      className={primaryButton+" flex-[1.25]"} style={buttonPrimaryStyle}
      onClick={()=>{
       setBusy(true);setError("");
-      void onOpen(node.id,isEpisodes?{episodeId:String(entry?.id??"")}:
+      void onOpen(node.id,isAssets?{assetId:typeof entry?.id==="string"?entry.id:undefined}:isEpisodes?{episodeId:String(entry?.id??"")}:
        {episodeId:activeEpisode,sequenceId:String(entry?.sequenceId??""),shotId:String(entry?.id??"")})
        .catch(e=>setError(e instanceof Error?e.message:"打开编辑器失败")).finally(()=>setBusy(false));
      }}>

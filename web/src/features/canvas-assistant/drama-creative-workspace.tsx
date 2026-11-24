@@ -1,14 +1,16 @@
 import {lazy,Suspense,useCallback,useEffect,useId,useRef,useState,type ReactNode} from "react";
 import {createPortal} from "react-dom";
 import {ConfigProvider,Modal} from "antd";
-import {BookOpenText,Clapperboard,Film,History,LayoutList,ShieldAlert,Sparkles,X} from "lucide-react";
+import {BookOpenText,Boxes,Clapperboard,Film,History,LayoutList,ShieldAlert,Sparkles,X} from "lucide-react";
 import {canvasThemes,type CanvasTheme} from "@/lib/canvas-theme";
 import {useThemeStore} from "@/stores/use-theme-store";
 import {DramaNodeStatus} from "./drama-node-style";
+import {AssetDirectoryContext,AssetReviewBusyContext,AssetReviewContext,AssetReviewNavigationContext,emptyAssetReview,initialAssetDirectory,type AssetDirectorySelection} from "./drama-asset-directory-state";
+import {DramaStoryboardNavigationContext} from "./drama-storyboard-navigation";
 import type {DramaWorkspaceTab} from "./drama-pipeline-node-panel";
 type StoryWorkspaceTab=DramaWorkspaceTab|"settings";
 
-export type DramaWorkspaceFocus={episodeId?:string;sequenceId?:string;shotId?:string};
+export type DramaWorkspaceFocus={episodeId?:string;sequenceId?:string;shotId?:string;assetId?:string;assetDirectory?:AssetDirectorySelection};
 export type WorkspacePendingRegistration=(key:string,save:(()=>Promise<void>)|null)=>void;
 
 type WorkspaceTabItem={id:StoryWorkspaceTab;label:string;icon:typeof BookOpenText};
@@ -66,9 +68,9 @@ function WorkspaceTabButton({item,description,active,theme,onSelect}:{
  * mounts only its active feature. The unsaved CAS navigation guard is shared by
  * every visual close/tab action.
  */
-export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfirmed,onClose,onTabChange,renderPanel,renderHistoryPanel}:{
- projectId:string;nodeId:string;kind:"source"|"episodes"|"storyboard";focus:DramaWorkspaceFocus;
- versionConfirmed:boolean;
+export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfirmed,candidateCount=0,onClose,onTabChange,renderPanel,renderHistoryPanel}:{
+ projectId:string;nodeId:string;kind:"source"|"assets"|"episodes"|"storyboard";focus:DramaWorkspaceFocus;
+ versionConfirmed:boolean;candidateCount?:number;
  color?:{fill:string;text:string;muted:string};
  onClose:()=>Promise<void>;
  onTabChange?:(tab:StoryWorkspaceTab)=>void;
@@ -79,7 +81,13 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
  const theme=canvasThemes[appearance];
  const episodeMode=kind==="episodes";
  const storyMode=kind==="source";
+ const assetMode=kind==="assets";
+ const assetDirectory=useState(()=>focus.assetDirectory??initialAssetDirectory);
+ const assetReview=useState(()=>emptyAssetReview(""));
  const [tab,setTab]=useState<StoryWorkspaceTab>("editor");
+ const reviewBusyRef=useRef(false);
+ const [reviewBusy,setReviewBusy]=useState(false);
+ const updateReviewBusy=useCallback((value:boolean)=>{reviewBusyRef.current=value;setReviewBusy(value);},[]);
  const [pendingAction,setPendingAction]=useState<StoryWorkspaceTab|"close"|null>(null);
  const [pendingCount,setPendingCount]=useState(0);
  const [error,setError]=useState("");
@@ -95,7 +103,7 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
   else {setTab(target);onTabChange?.(target);}
  },[onClose,onTabChange]);
  const request=useCallback((target:StoryWorkspaceTab|"close")=>{
-  if(target===tab)return;
+  if(target===tab||reviewBusyRef.current)return;
   if(pending.current.size){setPendingAction(target);return;}
   void perform(target).catch(e=>setError(e instanceof Error?e.message:"操作失败"));
  },[perform,tab]);
@@ -114,16 +122,16 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
   finally{setBusy(false);}
  };
  const tabs:{id:StoryWorkspaceTab;label:string;icon:typeof BookOpenText}[]=[
-  {id:"editor",label:storyMode?"故事正文":episodeMode?"剧集编辑":"分镜表",icon:LayoutList},
+  {id:"editor",label:storyMode?"故事正文":assetMode?"资产编辑":episodeMode?"剧集编辑":"镜头编辑",icon:LayoutList},
   ...(storyMode?[{id:"settings" as const,label:"美术设定",icon:BookOpenText}]:
-   episodeMode?[]:[{id:"video" as const,label:"视频配置",icon:Film}]),
-  ...(!storyMode?[{id:"runs" as const,label:"生成候选",icon:Sparkles}]:[]),
+   assetMode||episodeMode?[]:[{id:"video" as const,label:"批量创建配置",icon:Film}]),
+  ...(!storyMode?[{id:"runs" as const,label:assetMode&&candidateCount>0?`生成候选 · ${candidateCount}`:"生成候选",icon:Sparkles}]:[]),
   {id:"history",label:"影响与历史",icon:History},
  ];
  const paneDesc:Record<StoryWorkspaceTab,string>={
-  editor:storyMode?"编写故事、选区改写、AI 续写及全文润色":episodeMode?"按集编辑剧情、事件、场次及来源引用":"检查分镜结构与镜头安排",
+  editor:storyMode?"编写故事、选区改写、AI 续写及全文润色":assetMode?"编辑角色、场景、道具、造型设定及参考图":episodeMode?"按集编辑剧情、事件、场次及来源引用":"编辑镜头内容、资产引用与单镜头视频配置",
   settings:"故事影片比例、风格、美术指导与原文确认",
-  video:"按镜头配置独立的视频生成参数",
+  video:"批量创建视频配置及组建批量生成镜头组",
   runs:"按运行状态浏览候选，展开查看内容与采用选项",
   history:"版本快照与上游影响直接在工作区内查看",
  };
@@ -131,17 +139,17 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
  const action="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-lg border px-3 text-xs font-medium transition-opacity hover:opacity-80 disabled:cursor-not-allowed disabled:opacity-40";
  const primary={background:theme.node.text,color:theme.node.panel,borderColor:theme.node.text};
  return <>
-  <Modal open centered destroyOnHidden footer={null} onCancel={()=>request("close")}
+  <Modal open centered destroyOnHidden footer={null} closable={!reviewBusy} maskClosable={!reviewBusy} keyboard={!reviewBusy} onCancel={()=>request("close")}
    closeIcon={<X size={18} style={{color:theme.node.text}}/>}
    title={<div className="flex min-w-0 items-center gap-3 py-0.5" data-drama-workspace-title="">
     <span className="grid size-10 shrink-0 place-items-center rounded-xl border" style={subtle}>
-     {storyMode||episodeMode?<BookOpenText size={21}/>:<Clapperboard size={21}/>}
+     {assetMode?<Boxes size={21}/>:storyMode||episodeMode?<BookOpenText size={21}/>:<Clapperboard size={21}/>}
     </span>
     <div className="min-w-0">
      <p className="text-[11px] font-medium tracking-wide" style={{color:theme.node.muted}}>INFINITE ATELIER · 创作工作区</p>
      <div className="flex min-w-0 items-center gap-2" data-drama-workspace-title-row="">
       <span className="truncate text-base font-semibold" style={{color:theme.node.text}}>
-       {storyMode?"故事":episodeMode?"剧集规划":"分镜配置"}
+       {storyMode?"故事":assetMode?"资产规划":episodeMode?"剧集规划":"分镜配置"}
       </span>
       <span data-drama-workspace-version-status="" className="shrink-0">
        <DramaNodeStatus theme={theme} confirmed={versionConfirmed}/>
@@ -173,6 +181,7 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
        description={paneDesc[item.id]} active={tab===item.id} theme={theme}
        onSelect={()=>request(item.id)}/>)}
     </nav>
+    {reviewBusy&&<p role="status" className="shrink-0 text-xs" style={{color:theme.node.muted}}>正在合入资产，请勿关闭工作区或切换页面。</p>}
     {pendingCount>0&&<div className="flex min-h-0 shrink-0 justify-end">
      <span role="status" className="rounded-md border px-2 py-1 text-[11px]"
       style={{...subtle,background:theme.toolbar.activeBg}}>
@@ -181,6 +190,11 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
     </div>}
     <div data-drama-workspace-content="" className={`thin-scrollbar min-h-0 min-w-0 flex-1 rounded-xl border p-3 sm:p-4 ${tab==="history"?"flex flex-col overflow-hidden":"overflow-y-auto overscroll-contain"}`}
      style={{...subtle}}>
+     <DramaStoryboardNavigationContext.Provider value={kind==="storyboard"?()=>request("editor"):null}>
+     <AssetDirectoryContext.Provider value={assetMode?assetDirectory:null}>
+     <AssetReviewContext.Provider value={assetMode?assetReview:null}>
+     <AssetReviewBusyContext.Provider value={assetMode?updateReviewBusy:null}>
+     <AssetReviewNavigationContext.Provider value={assetMode?()=>void perform("editor"):null}>
      <Suspense fallback={<p role="status" className="text-xs" style={{color:theme.node.muted}}>正在按需加载工作区…</p>}>
       {tab==="history"&&renderHistoryPanel
          ? <div data-drama-history-layout="" className="grid h-full min-h-0 min-w-0 flex-1 grid-rows-[minmax(0,1fr)_minmax(0,2fr)] gap-3 xl:grid-cols-[minmax(220px,260px)_minmax(0,1fr)] xl:grid-rows-[minmax(0,1fr)]">
@@ -200,6 +214,11 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
            </div>
         : renderPanel(tab,registerPending)}
      </Suspense>
+     </AssetReviewNavigationContext.Provider>
+     </AssetReviewBusyContext.Provider>
+     </AssetReviewContext.Provider>
+     </AssetDirectoryContext.Provider>
+     </DramaStoryboardNavigationContext.Provider>
     </div>
     {error&&<p role="alert" className="shrink-0 rounded-lg border p-2 text-xs"
       style={{...subtle,background:theme.toolbar.activeBg}}>{error}</p>}

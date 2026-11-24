@@ -83,13 +83,14 @@ import { CanvasToolbar } from "@/components/canvas/canvas-toolbar";
 const DramaPipelineNodePanel = lazy(() => import("@/features/canvas-assistant/drama-pipeline-node-panel").then(m => ({default:m.DramaPipelineNodePanel})));
 import {DramaNodeSummaryCard} from "@/features/canvas-assistant/drama-node-summary-card";
 import type {DramaWorkspaceTab} from "@/features/canvas-assistant/drama-pipeline-node-panel";
-import type {DramaWorkspaceFocus} from "@/features/canvas-assistant/drama-creative-workspace";
+import type {DramaWorkspaceFocus,WorkspacePendingRegistration} from "@/features/canvas-assistant/drama-creative-workspace";
 const DramaCreativeWorkspace=lazy(()=>import("@/features/canvas-assistant/drama-creative-workspace").then(m=>({default:m.DramaCreativeWorkspace})));
 import { DramaSourceNode } from "@/features/canvas-assistant/drama-source-node";
 import {importBlankStoryNodes,storyTextSources} from "@/features/canvas-assistant/drama-story-upstream";
 const DramaStoryEditor=lazy(()=>import("@/features/canvas-assistant/drama-story-editor").then(m=>({default:m.DramaStoryEditor})));
 import {LazyCreativeNode} from "@/features/canvas-assistant/lazy-creative-node";
-import {DRAMA_PIPELINE_NODE_TYPES,isInlineDramaNode, readStoryboardDraft } from "@/features/canvas-assistant/canvas-drama-pipeline";const isDramaPipelineNode=(type:string)=>Object.values(DRAMA_PIPELINE_NODE_TYPES).includes(type);
+import {selectAssetDirectory} from "@/features/canvas-assistant/drama-asset-directory-state";
+import {DRAMA_PIPELINE_NODE_TYPES,isInlineDramaNode, readAssetDraft, readStoryboardDraft } from "@/features/canvas-assistant/canvas-drama-pipeline";const isDramaPipelineNode=(type:string)=>Object.values(DRAMA_PIPELINE_NODE_TYPES).includes(type);
 import { mergeLegacyDramaAssets, mergeLegacyDramaFirstFrames } from "@/features/canvas-assistant/drama-asset-migration";
 import { buildDramaVideoConfigGraph, findDramaVideoConfigs,refreshDramaVideoConfigGraph } from "@/features/canvas-assistant/drama-video-config";
 import {resolveDramaShotGroupConfigs} from "@/features/canvas-assistant/drama-shot-group-plan";
@@ -4221,7 +4222,7 @@ function AtelierCanvasPage() {
     },[cancelComfyWorkflow,executeComfyWorkflow,handleGenerateNode,projectId,projectLoaded,stopConfigGeneration]);
 
     const renderNodePanel = useCallback(
-        (panelNode: CanvasNodeData,workspaceMode=false,workspaceTab:DramaWorkspaceTab="editor",focus:DramaWorkspaceFocus={}) => {
+        (panelNode: CanvasNodeData,workspaceMode=false,workspaceTab:DramaWorkspaceTab="editor",focus:DramaWorkspaceFocus={},onPendingChange?:WorkspacePendingRegistration) => {
             if (panelNode.type === "drama:source") return null;
             const pipelineSource = (() => {
                 if (!isDramaPipelineNode(panelNode.type)) return undefined;
@@ -4248,7 +4249,7 @@ function AtelierCanvasPage() {
             ].filter(Boolean).join("\n");
             const directAssets = panelNode.type === "drama:storyboard" ? nodes.find(item => item.type === "drama:assets" &&
                 connections.some(edge => edge.fromNodeId === item.id && edge.toNodeId === panelNode.id)) : undefined;
-            return Object.values(DRAMA_PIPELINE_NODE_TYPES).includes(panelNode.type) ? <Suspense fallback={<p role="status" className="p-3">正在加载创作编辑器…</p>}><DramaPipelineNodePanel key={panelNode.id} node={panelNode} projectId={projectId} workspaceMode={workspaceMode} workspaceTab={workspaceTab} initialEpisodeId={focus.episodeId} initialShotId={focus.shotId}
+            return Object.values(DRAMA_PIPELINE_NODE_TYPES).includes(panelNode.type) ? <Suspense fallback={<p role="status" className="p-3">正在加载创作编辑器…</p>}><DramaPipelineNodePanel key={panelNode.id} node={panelNode} projectId={projectId} workspaceMode={workspaceMode} workspaceTab={workspaceTab} onPendingChange={onPendingChange} initialEpisodeId={focus.episodeId} initialShotId={focus.shotId}
                 legacyAssetPlanning={panelNode.type === "drama:assets" && connections.some(edge => edge.fromNodeId === panelNode.id &&
                     nodes.some(item => item.id === edge.toNodeId && item.type === "drama:asset_references"))}
                 mergedReferences={directAssets?.metadata?.dramaAssetReferences}
@@ -4319,10 +4320,11 @@ function AtelierCanvasPage() {
                     },{textVersionNodeId:panelNode.id});
                 }}
                 onAdoptDramaAssetCandidate={async(path,command)=>{
-                    await commitAssistantCanvasGraphWithSaveBarrier(projectId,({assertCurrent})=>{
+                    const result=await commitAssistantCanvasGraphWithSaveBarrier(projectId,({assertCurrent})=>{
                         assertCurrent();
-                        return canvasApi<CanvasBackendProject>(path,"POST",command);
+                        return canvasApi<CanvasBackendProject&{mapping:import("@/features/canvas-assistant/drama-asset-directory-state").AssetAdoptionMapping}>(path,"POST",command);
                     },{textVersionNodeId:panelNode.id});
+                    return result as CanvasBackendProject&{mapping:import("@/features/canvas-assistant/drama-asset-directory-state").AssetAdoptionMapping};
                 }}
                 versionBusy={textVersionBusy}
                 onCreateDramaShotGroup={async shotIds=>{
@@ -4459,13 +4461,16 @@ function AtelierCanvasPage() {
     // a culled/LOD canvas node. This is the only path that hydrates full bodies.
     const openCreativeWorkspace=useCallback(async(nodeId:string,focus?:DramaWorkspaceFocus)=>{
         const target=nodesRef.current.find(node=>node.id===nodeId);
-        if(!target||!["drama:source","drama:episodes","drama:storyboard"].includes(target.type))
+        if(!target||!["drama:source","drama:assets","drama:episodes","drama:storyboard"].includes(target.type))
             throw Error("创作节点不存在");
         const request=++creativeWorkspaceRequestRef.current;
         await ensureCreativeNodesLoaded(projectId,[nodeId]);
         if(creativeWorkspaceRequestRef.current===request){
             activeStoryEditorRef.current=target.type==="drama:source"?nodeId:null;
-            setCreativeWorkspaceFocus(focus??{});setCreativeWorkspaceNodeId(nodeId);
+            const hydrated=target.type==="drama:assets"?useCanvasStore.getState().openProject(projectId)?.nodes.find(node=>node.id===nodeId):undefined;
+            const assetDraft=hydrated?readAssetDraft(hydrated.metadata?.dramaDraft||hydrated.metadata?.dramaConfirmed||hydrated.metadata?.content||""):undefined;
+            setCreativeWorkspaceFocus(hydrated?{...focus,assetDirectory:selectAssetDirectory(assetDraft?.assets??[],focus?.assetId)}:focus??{});
+            setCreativeWorkspaceNodeId(nodeId);
         }
     },[projectId]);
     const closeCreativeWorkspace=useCallback(async()=>{
@@ -4482,7 +4487,7 @@ function AtelierCanvasPage() {
         nodes.find(node=>node.id===creativeWorkspaceNodeId):undefined;
 
     const renderNodeContentPanel = useCallback(
-        (contentNode: CanvasNodeData) => (contentNode.type==="drama:episodes" || contentNode.type==="drama:storyboard") ? (
+        (contentNode: CanvasNodeData) => (contentNode.type==="drama:assets" || contentNode.type==="drama:episodes" || contentNode.type==="drama:storyboard") ? (
             <DramaNodeSummaryCard node={contentNode} projectId={projectId} onOpen={openCreativeWorkspace}/>
         ) : contentNode.type === "drama:source" ? (
             <DramaSourceNode key={contentNode.id} node={contentNode}
@@ -4876,8 +4881,9 @@ function AtelierCanvasPage() {
                 {creativeWorkspaceNode&&<Suspense fallback={<p role="status">正在加载创作工作区…</p>}>
                     <DramaCreativeWorkspace key={projectId+":"+creativeWorkspaceNode.id}
                         projectId={projectId} nodeId={creativeWorkspaceNode.id}
-                        kind={creativeWorkspaceNode.type==="drama:source"?"source":creativeWorkspaceNode.type==="drama:episodes"?"episodes":"storyboard"}
+                        kind={creativeWorkspaceNode.type==="drama:source"?"source":creativeWorkspaceNode.type==="drama:assets"?"assets":creativeWorkspaceNode.type==="drama:episodes"?"episodes":"storyboard"}
                         focus={creativeWorkspaceFocus}
+                        candidateCount={creativeWorkspaceNode.metadata?.dramaAssetCandidate?.assets.length??0}
                         versionConfirmed={Boolean(creativeWorkspaceNode.metadata?.dramaConfirmed &&
                             (creativeWorkspaceNode.metadata.dramaDraft || creativeWorkspaceNode.metadata.dramaConfirmed || creativeWorkspaceNode.metadata.content || "") === creativeWorkspaceNode.metadata.dramaConfirmed)}
                         color={{fill:theme.node.fill,text:theme.node.text,muted:theme.node.muted}}
@@ -4899,7 +4905,7 @@ function AtelierCanvasPage() {
                                 onConfirmVersion={draft=>confirmDramaVersion(creativeWorkspaceNode.id,draft)}
                                 versionBusy={textVersionBusy}/>:
                             <p className="text-xs" style={{color:theme.node.muted}}>故事是创作流水线的原文入口。下游节点将依据已确认的原文与美术设定生成内容。</p>:
-                            renderNodePanel(creativeWorkspaceNode,true,tab as DramaWorkspaceTab,creativeWorkspaceFocus)}
+                            renderNodePanel(creativeWorkspaceNode,true,tab as DramaWorkspaceTab,creativeWorkspaceFocus,onPendingChange)}
                         renderHistoryPanel={()=>textVersionsNode?.id===creativeWorkspaceNode.id?
                             <CanvasTextVersionsModal inline key={`${projectId}:${creativeWorkspaceNode.id}:inline`}
                                 open versions={textVersions} listLoading={versionsLoading} listError={versionsLoadError}

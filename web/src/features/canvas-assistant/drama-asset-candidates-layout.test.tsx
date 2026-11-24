@@ -122,6 +122,47 @@ it("submits a candidate review only once while its backend transaction is pendin
  expect(discardButton.disabled).toBe(false);
  expect(discard).not.toHaveBeenCalled();
 });
+
+it("filters expanded reviews, applies bulk decisions only to visible entries, and retains them on rejection",async()=>{
+ const {useState}=await import("react");
+ const {AssetReviewContext,emptyAssetReview}=await import("./drama-asset-directory-state");
+ const all:DramaAsset[]=[...candidates,{id:"scene",kind:"scene",name:"森林",description:"夜景",sourceRefs:[]}];
+ const div=document.createElement("div");document.body.append(div);const root=createRoot(div);roots.push(root);
+ const apply=vi.fn(async()=>{throw Error("drama_asset_candidate_conflict")});
+ function Host(){
+  const [show,setShow]=useState(true),[candidateId,setId]=useState("batch1");
+  const review=useState(()=>emptyAssetReview(""));
+  return <AssetReviewContext.Provider value={review}>
+   <button onClick={()=>setShow(v=>!v)}>切换</button><button onClick={()=>setId("batch2")}>新批次</button>
+   {show&&<DramaAssetCandidates expanded candidateId={candidateId} assets={[]} candidates={all} disabled={false} onApply={apply} onDiscard={()=>{}}/>}
+  </AssetReviewContext.Provider>;
+ }
+ await act(async()=>root.render(<Host/>));
+ const click=async(label:string)=>{const b=[...div.querySelectorAll<HTMLButtonElement>("button")].find(x=>x.textContent===label)!;expect(b).toBeTruthy();await act(async()=>b.click());};
+ const change=async(label:string,value:string)=>{const el=div.querySelector<HTMLSelectElement>('select[aria-label="'+label+'"]')!;
+  await act(async()=>{Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,"value")!.set!.call(el,value);el.dispatchEvent(new Event("change",{bubbles:true}));});};
+ const toolbar=()=>div.querySelector("[data-asset-review-toolbar]")!;
+ expect(toolbar().textContent).toContain("待审核 13");
+ expect([...div.querySelectorAll<HTMLButtonElement>("button")].find(b=>b.textContent==="合入所选资产")?.disabled).toBe(true);
+ await change("候选资产类别","scene");
+ expect(div.querySelectorAll('[data-asset-candidate-scroll-region] section')).toHaveLength(1);
+ await click("筛选项全部新增");
+ expect(toolbar().textContent).toContain("待合入 1");
+ await change("候选资产类别","character");await change("候选审核状态","pending");
+ await click("筛选项全部跳过");
+ expect(toolbar().textContent).toContain("明确跳过 12");
+ expect(toolbar().textContent).toContain("待审核 0");
+ await click("切换");await click("切换");
+ expect(toolbar().textContent).toContain("待合入 1");
+ expect(div.querySelector<HTMLSelectElement>('[aria-label="候选审核状态"]')?.value).toBe("pending");
+ await click("合入所选资产");
+ expect(apply).toHaveBeenCalledWith(expect.objectContaining({scene:{action:"new"},"candidate-1":{action:"skip"}}));
+ expect(div.querySelector('[role="alert"]')?.textContent).toContain("drama_asset_candidate_conflict");
+ expect(toolbar().textContent).toContain("待合入 1");
+ await click("新批次");
+ expect(toolbar().textContent).toContain("待审核 13");
+ expect(toolbar().textContent).toContain("待合入 0");
+});
 it("prevents scroll/drag gestures in candidate list from reaching the canvas and retains the discard action",async()=>{
  const {div,discard,parentWheel,parentPointer}=await mount();
  const scroll=div.querySelector<HTMLElement>('[data-asset-candidate-scroll-region]')!;

@@ -51,6 +51,18 @@ export type DramaAsset = {
     variants?: { id: string; name: string; description: string }[];
 };
 
+export function readAssetDraft(value: string) {
+    let draft:Partial<DramaPipelineSnapshot>|null;
+    try { draft=JSON.parse(value.trim().replace(/^\s*```(?:json)?\s*([\s\S]*?)\s*```\s*$/i, "$1")); } catch { return null; }
+    if (!Array.isArray(draft?.assets) || !draft.assets.every(asset => asset &&
+        ["character","scene","prop"].includes(asset.kind) && typeof asset.id === "string" &&
+        typeof asset.name === "string" && typeof asset.description === "string" &&
+        Array.isArray(asset.sourceRefs) && asset.sourceRefs.every(ref => typeof ref === "string") &&
+        (asset.variants === undefined || (Array.isArray(asset.variants) && asset.variants.every(variant =>
+            variant && typeof variant.id === "string" && typeof variant.name === "string" && typeof variant.description === "string"))))) return null;
+    return draft as typeof draft & {assets: NonNullable<typeof draft.assets>};
+}
+
 export type DramaAssetReference = {
     assetId: string;
     variantId?: string;

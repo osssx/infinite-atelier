@@ -140,7 +140,7 @@ def run_workspace_tab_pressure(page):
     wait_for(lambda:bool(js(page,"!!document.querySelector("+json.dumps(portal)+")")),
              "storyboard workspace mounted",45)
     results=[{"tab":"editor","latencyMs":round((time.monotonic()-start)*1000,1)}]
-    for label,name in (("视频配置","video"),("生成候选","runs"),("影响与历史","history")):
+    for label,name in (("批量创建配置","video"),("生成候选","runs"),("影响与历史","history")):
         start=time.monotonic()
         assert wait_for(lambda:click(label,portal),"open "+name+" tab",20)
         wait_for(lambda:bool(js(page,"""(() => {
@@ -250,23 +250,14 @@ def run(output=None,gpu=False,mode="development",frontend_root=ROOT,rounds=3,cpu
         # P3.3 lazy nodes: browsing one page must issue scoped backend requests.
         for stage,count,label in (("assets",50,"资产"),("episodes",4,"剧集")):
             began=time.monotonic()
-            if stage=="episodes":
-                # P3.4b2: the episode card is now a scoped summary, not a
-                # mounted editor or a manually opened scope browser.
-                wait_for(lambda:bool(js(page,"""(() => {
-                  const card=document.querySelector('[data-node-id=episodes] [aria-label="剧集规划摘要"]');
-                  return card&&(card.textContent||'').includes('已规划 4 集') &&
-                      !card.querySelector('textarea');
-                })()""")),"lightweight episodes summary",40)
-            else:
-                wait_for(lambda:scope_click(page,stage,label),"open "+label+" scope",40)
-                wait_for(lambda:bool(js(page,"""(() => {
-                  const el=document.querySelector('[data-node-id=%s] [aria-label=%s]');
-                  return el&&(el.textContent||'').includes(%s);
-                })()"""%(json.dumps(stage),
-                    json.dumps(label+"独立存储分页浏览",ensure_ascii=False),
-                    json.dumps(label+"共 "+str(count)+" 项",ensure_ascii=False)))),
-                    label+" backend paged scope",35)
+            title="资产规划" if stage=="assets" else "剧集规划"
+            expected="草案 50 项" if stage=="assets" else "已规划 4 集"
+            wait_for(lambda:bool(js(page,"""(() => {
+              const card=document.querySelector(%s);
+              return card&&(card.textContent||'').includes(%s)&&
+                  !card.querySelector('textarea,[data-asset-workspace-fields],[data-asset-reference-slot]');
+            })()"""%(json.dumps('[data-node-id="'+stage+'"] [aria-label="'+title+'摘要"]',ensure_ascii=False),
+                json.dumps(expected,ensure_ascii=False)))),title+" scoped summary",40)
             elapsed=(time.monotonic()-began)*1000
             scoped=[req for req in page.network_requests if
                "/drama-pipeline/revision-scope" in req.get("path","") and "nodeId="+stage in req.get("path","")]
@@ -279,19 +270,20 @@ def run(output=None,gpu=False,mode="development",frontend_root=ROOT,rounds=3,cpu
               f"/api/v1/projects/{fixture['projectId']}/drama-pipeline/revision-scope?nodeId={stage}&draft=false&offset=0&limit=10"))
             assert api["ok"] and api["total"]==count and api["entries"]<=10 and not api["hasWholeDraft"],api
             report["scopes"].append({"stage":stage,"uiVisibleMs":elapsed,"requests":len(scoped),**api})
-        # Change to the next asset page using real React UI.
-        advance=js(page,"""(() => {
-          const s=document.querySelector('[data-node-id=assets] [aria-label="资产独立存储分页浏览"]');
-          const b=[...(s?.querySelectorAll('button')||[])].find(x=>(x.textContent||'').trim()==='下一页');
-          if(!b||b.disabled)return false;
-          b.click();return true;
-        })()""")
-        assert advance,"asset next-page button missing"
+        # P6: lightweight asset card fetches only a single next entry.
         wait_for(lambda:bool(js(page,"""(() => {
-          const s=document.querySelector('[data-node-id=assets] [aria-label="资产独立存储分页浏览"]');
-          return (s?.textContent||'').includes('11–20') && (s?.textContent||'').includes('道具 10');
-        })()""")),"asset page 11–20",30)
-        assert any("offset=10" in req.get("path","") for req in page.network_requests),"asset page did not request paged offset"
+          const card=document.querySelector('[data-node-id="assets"] [data-drama-summary-kind="assets"]');
+          const b=card?.querySelector('button[aria-label="下一条摘要"]');
+          if(!b||b.disabled)return false;b.click();return true;
+        })()""")),"next asset summary",20)
+        wait_for(lambda:bool(js(page,"""(() => {
+          const card=document.querySelector('[data-node-id="assets"] [data-drama-summary-kind="assets"]');
+          return (card?.textContent||'').includes('道具 1')&&
+            (card?.textContent||'').includes('2 / 50');
+        })()""")),"asset summary entry two",30)
+        assert any("nodeId=assets" in req.get("path","") and "offset=1&limit=1" in req.get("path","") for req in page.network_requests),"asset summary did not request bounded entry"
+        assert not js(page,"document.querySelector('[data-creative-workspace-node-id]')!==null"),"unexpected mounted workspace"
+        report["assetSummary"]={"count":50,"nextEntry":True,"fullEditorMounted":False}
         report["memory"]["afterScopeHeapBytes"]=heap(page)
         # P3.4b2: selection lives in a fixed-height summary card. Full
         # storyboard editing, runs and video Config must remain unmounted.

@@ -14,7 +14,11 @@ vi.mock("@/stores/use-theme-store",()=>({
 vi.mock("antd",()=>({Modal:{confirm:vi.fn()}}));
 vi.mock("streamdown",()=>({Streamdown:({children}:{children:unknown})=>children}));
 
-import {CanvasAssistantPanel,canvasAssistantConfirmTheme,canvasAssistantErrorText} from "./canvas-assistant-panel";import {CanvasApiError} from "@/features/backend-sync/canvas-api";
+import {CanvasAssistantPanel,canvasAssistantConfirmTheme,canvasAssistantErrorText,confirmDangerousActions} from "./canvas-assistant-panel";import {CanvasApiError} from "@/features/backend-sync/canvas-api";
+
+import {Modal} from "antd";
+import {readFileSync} from "node:fs";
+const confirmCss=readFileSync("src/features/canvas-assistant/canvas-assistant-panel.css","utf8");
 
 const noop=()=>{};
 const props:ComponentProps<typeof CanvasAssistantPanel>={
@@ -52,7 +56,39 @@ describe("canvas assistant confirm modal theme",()=>{
   expect(vars["--assistant-confirm-text"]).toBe(canvasThemes[name].node.text);
   expect(vars["--assistant-confirm-border"]).toBe(canvasThemes[name].toolbar.border);
   expect(vars["--assistant-confirm-muted"]).toBe(canvasThemes[name].node.muted);
+  expect(vars["--assistant-confirm-scrollbar"]).toBe(canvasThemes[name].node.code.scrollbar);
   expect(theme.styles.mask.backgroundColor).toBeTruthy();
+ });
+ it("bounds long operation details without hiding the warning or changing confirmation",async()=>{
+  const summary="修改角色提示词 "+ "很长的内容".repeat(2000);
+  const controller=new AbortController();
+  const pending=confirmDangerousActions(summary,controller.signal,"light");
+  const config=vi.mocked(Modal.confirm).mock.lastCall![0];
+  expect(config.centered).toBe(true);
+  expect(config.okText).toBe("确认执行");
+  expect(config.cancelText).toBe("取消");
+  const container=document.createElement("div");
+  container.innerHTML=renderToStaticMarkup(config.content as React.ReactElement);
+  const scroll=container.querySelector<HTMLElement>(".canvas-assistant-confirm-scroll")!;
+  expect(scroll.textContent).toBe(summary+"。");
+  expect(scroll.tabIndex).toBe(0);
+  expect(scroll.getAttribute("role")).toBe("region");
+  expect(scroll.nextElementSibling?.textContent).toBe("这些操作会修改或删除已有内容。是否执行？");
+  const rule=confirmCss.match(/\.canvas-assistant-confirm-scroll\s*\{([^}]+)\}/)?.[1];
+  expect(rule).toContain("max-height: min(50dvh, 420px)");
+  expect(rule).toContain("overflow-y: auto");
+  expect(rule).toContain("overscroll-behavior: contain");
+  expect(rule).toContain("overflow-wrap: anywhere");
+  config.onOk?.();
+  await expect(pending).resolves.toBe(true);
+ });
+ it("keeps short operation details and cancellation semantics intact",async()=>{
+  const pending=confirmDangerousActions("解散分组",new AbortController().signal,"dark");
+  const config=vi.mocked(Modal.confirm).mock.lastCall![0];
+  const markup=renderToStaticMarkup(config.content as React.ReactElement);
+  expect(markup).toContain("解散仅移除分组容器，保留组内节点、素材及连线。");
+  config.onCancel?.();
+  await expect(pending).resolves.toBe(false);
  });
  it("keeps dark and light dialog tokens distinct",()=>{
   expect((canvasAssistantConfirmTheme("dark").style as Record<string,string>)["--assistant-confirm-surface"])

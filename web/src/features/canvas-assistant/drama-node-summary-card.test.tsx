@@ -25,7 +25,7 @@ vi.mock("@/features/backend-sync/canvas-api",async(importOriginal)=>{
   const draft=q.get("draft")==="true",board=q.get("nodeId")==="board";
   const ids=board?["ep-one","ep-two"]:["ep-one","ep-two"];
   const groups=board?ids.map(episodeId=>({episodeId,total:1,sequenceIds:[]})):[];
-  const entries=board?[{id:"shot-1",episodeId:"ep-one",order:1,description:"红色参考镜头",shotSize:"中景",durationSec:5},
+  const entries=q.get("nodeId")==="assets"?[{id:"a1",kind:"character",name:"主角",description:"角色描述"},{id:"a2",kind:"scene",name:"草地",description:"场景描述"}]:board?[{id:"shot-1",episodeId:"ep-one",order:1,description:"红色参考镜头",shotSize:"中景",durationSec:5},
    {id:"shot-2",episodeId:"ep-two",order:2,description:"绿色参考镜头",shotSize:"全景",durationSec:7}]:
    [{id:"ep-one",title:"第一集",synopsis:"出发前夜",sequences:[]},
     {id:"ep-two",title:"第二集",synopsis:"第二集概要",sequences:[]}];
@@ -45,11 +45,11 @@ beforeEach(()=>{evidence.requests=[];evidence.delayFirst=false;evidence.notFound
  evidence.saved=false;evidence.persistCalls=0;vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT",true)});
 afterEach(async()=>{for(const root of activeRoots)await act(async()=>root.unmount());
  activeRoots.length=0;vi.unstubAllGlobals()});
-function node(kind:"episodes"|"storyboard"):CanvasNodeData{
- return {id:kind==="episodes"?"episodes":"board",type:"drama:"+kind,title:kind,
+function node(kind:"assets"|"episodes"|"storyboard"):CanvasNodeData{
+ return {id:kind==="storyboard"?"board":kind,type:"drama:"+kind,title:kind,
    position:{x:0,y:0},width:380,height:240,metadata:{creativePayloadRef:{schemaVersion:1,nodeId:kind}}} as CanvasNodeData;
 }
-async function mount(kind:"episodes"|"storyboard",onOpen=vi.fn(async(_id:string)=>{})){
+async function mount(kind:"assets"|"episodes"|"storyboard",onOpen=vi.fn(async(_id:string)=>{})){
  const container=document.createElement("div");document.body.append(container);
  const root=createRoot(container);activeRoots.push(root);
  await act(async()=>{root.render(<DramaNodeSummaryCard node={node(kind)} projectId="p1" onOpen={onOpen}/>);});
@@ -57,14 +57,25 @@ async function mount(kind:"episodes"|"storyboard",onOpen=vi.fn(async(_id:string)
  return {container,onOpen,root};
 }
 describe("P3.4b2 lightweight creative cards",()=>{
- it.each(["episodes","storyboard"] as const)("automatically loads a newly added empty %s node after pending save",async kind=>{
+ it.each(["assets","episodes","storyboard"] as const)("automatically loads a newly added empty %s node after pending save",async kind=>{
   evidence.notFoundUntilSaved=true;evidence.emptyAfterSave=true;
   const {container}=await mount(kind);
   expect(evidence.persistCalls).toBe(1);
   expect(evidence.requests.filter(x=>x.includes("summaryOnly=true"))).toHaveLength(4);
   expect(container.querySelector('[role="alert"]')).toBeNull();
   expect(container.textContent).not.toContain("text_node_not_found");
-  expect(container.textContent).toContain(kind==="episodes"?"尚无剧集内容":"尚无镜头内容");
+  expect(container.textContent).toContain(kind==="assets"?"尚无资产内容":kind==="episodes"?"尚无剧集内容":"尚无镜头内容");
+ });
+ it("shows scoped asset summary without mounting the legacy full editor",async()=>{
+  const {container,onOpen}=await mount("assets");
+  expect(container.textContent).toContain("草案 2 项 · 已确认 2 项");
+  expect(container.textContent).toContain("主角");
+  expect(container.textContent).toContain("角色描述");
+  expect(container.querySelectorAll("textarea")).toHaveLength(0);
+  expect(evidence.requests.every(x=>x.includes("revision-scope"))).toBe(true);
+  const open=container.querySelector<HTMLButtonElement>('button[aria-label="打开资产规划完整编辑器"]')!;
+  await act(async()=>open.click());
+  expect(onOpen).toHaveBeenCalledWith("assets",{assetId:"a1"});
  });
  it("keeps a genuine missing-node error after one retry",async()=>{
   evidence.alwaysNotFound=true;

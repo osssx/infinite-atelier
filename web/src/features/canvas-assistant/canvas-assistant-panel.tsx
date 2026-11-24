@@ -237,6 +237,7 @@ export function canvasAssistantConfirmTheme(themeName:CanvasColorTheme){
    "--assistant-confirm-muted":palette.node.muted,
    "--assistant-confirm-hover":palette.toolbar.itemHover,
    "--assistant-confirm-active":palette.toolbar.activeBg,
+   "--assistant-confirm-scrollbar":palette.node.code.scrollbar,
    "--assistant-confirm-danger":themeName==="dark"?"#fca5a5":"#b91c1c",
    "--assistant-confirm-shadow":themeName==="dark"?"0 24px 72px rgba(0,0,0,.60)":"0 24px 72px rgba(41,37,36,.20)",
   } as CSSProperties,
@@ -244,7 +245,7 @@ export function canvasAssistantConfirmTheme(themeName:CanvasColorTheme){
  };
 }
 /** Confirm only high-risk operations; do not display a generic diff preview. */
-function confirmDangerousActions(summary:string,signal:AbortSignal,themeName:CanvasColorTheme):Promise<boolean>{
+export function confirmDangerousActions(summary:string,signal:AbortSignal,themeName:CanvasColorTheme):Promise<boolean>{
  return new Promise(resolve=>{
   if(signal.aborted){resolve(false);return;}
   let settled=false;
@@ -261,8 +262,11 @@ function confirmDangerousActions(summary:string,signal:AbortSignal,themeName:Can
   dialog=Modal.confirm({
    ...canvasAssistantConfirmTheme(themeName),
    icon:<AlertCircle className="canvas-assistant-confirm-icon" size={19} aria-hidden="true"/>,
-   title:"确认 AI 画布操作",
-   content:summary+"。"+(summary.includes("解散")?"解散仅移除分组容器，保留组内节点、素材及连线。":"这些操作会修改或删除已有内容。")+"是否执行？",
+   title:"确认 AI 画布操作",centered:true,
+   content:<div className="canvas-assistant-confirm-operation">
+    <div className="canvas-assistant-confirm-scroll thin-scrollbar" role="region" aria-label="画布操作详情" tabIndex={0}>{summary}。</div>
+    <p className="canvas-assistant-confirm-warning">{summary.includes("解散")?"解散仅移除分组容器，保留组内节点、素材及连线。":"这些操作会修改或删除已有内容。"}是否执行？</p>
+   </div>,
    okText:"确认执行",okType:"danger",cancelText:"取消",
    onOk:()=>{finish(true);},onCancel:()=>{finish(false);}
   });

@@ -92,11 +92,6 @@ export function DramaAssetFields({assets, theme, expanded, disabled, onChange, r
                 <textarea className={fieldClass} style={control} rows={2} value={(active.aliases??[]).join("\n")}
                     onChange={event=>edit({aliases:event.target.value.split("\n").map(name=>name.trim()).filter(Boolean).slice(0,64)})}/>
             </label>
-            <label className="grid gap-1.5 text-sm">原文段落 ID（每行一个）
-                <textarea className={fieldClass} style={control} rows={2} value={active.sourceRefs.join("\n")}
-                    onChange={event=>edit({sourceRefs:event.target.value.split("\n").map(item=>item.trim()).filter(Boolean)})}/>
-                {active.sourceRefs.some(ref=>/^p\d+$/.test(ref))&&<span>含旧行号引用，请对照故事节点的段落定位核对。</span>}
-            </label>
             {renderReferences && (active.kind !== "character" || !variants.length) && renderReferences(active)}
             {kind !== "prop" && <details key={active.id} className="space-y-3 border-t pt-3" style={{borderColor:theme.node.stroke}}>
                 <summary className="cursor-pointer font-medium">{kind === "character" ? "造型" : "场景变体"} · {variants.length}</summary>

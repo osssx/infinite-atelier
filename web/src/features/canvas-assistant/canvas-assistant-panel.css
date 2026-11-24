@@ -648,6 +648,32 @@
   font-size: 12px;
   line-height: 1.8;
 }
+/* Keep the warning and action buttons outside the bounded operation summary. */
+.canvas-assistant-confirm.ant-modal .canvas-assistant-confirm-operation {
+  min-width: 0;
+}
+.canvas-assistant-confirm.ant-modal .canvas-assistant-confirm-scroll {
+  max-height: min(50vh, 420px);
+  max-height: min(50dvh, 420px);
+  min-width: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  padding-inline-end: 4px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--assistant-confirm-scrollbar) transparent;
+}
+.canvas-assistant-confirm.ant-modal .canvas-assistant-confirm-scroll:focus-visible {
+  outline: 1px solid var(--assistant-confirm-border);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+.canvas-assistant-confirm.ant-modal .canvas-assistant-confirm-warning {
+  margin: 10px 0 0;
+  overflow-wrap: anywhere;
+}
 .canvas-assistant-confirm.ant-modal .canvas-assistant-confirm-icon,
 .canvas-assistant-confirm.ant-modal .ant-modal-confirm-body .anticon {
   color: var(--assistant-confirm-danger);

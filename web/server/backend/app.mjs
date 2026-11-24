@@ -1662,6 +1662,20 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
    metadata:JSON.parse(row.metadata_json)
   }))};
  });
+ // Image picker uses durable completion times, including jobs hidden in task history.
+ app.get("/api/v1/projects/:id/image-generation-times",{schema:{params:{
+  type:"object",required:["id"],properties:{id:idSchema},additionalProperties:false}
+ }},(req,reply)=>{
+  getProject(db,req.params.id,{compact:true});
+  reply.header("Cache-Control","no-store");
+  const rows=db.prepare(`SELECT a.blob_id AS blobId,MAX(COALESCE(
+   (SELECT MAX(e.created_at) FROM job_events e WHERE e.job_id=j.id AND e.kind='job_status'
+    AND json_extract(e.payload_json,'$.to')='succeeded'),j.updated_at)) AS generatedAt
+   FROM artifacts a JOIN jobs j ON j.id=a.job_id
+   WHERE j.project_id=? AND j.status='succeeded' AND a.kind='image'
+   GROUP BY a.blob_id`).all(req.params.id);
+  return {images:rows};
+ });
  app.get("/api/v1/projects/:id/jobs",{
   schema:{
    params:{type:"object",required:["id"],properties:{id:idSchema},additionalProperties:false},

@@ -32,7 +32,7 @@ vi.mock("./drama-production-audit",()=>({
    prompt:input.prompt,engine:"comfy"};
  },
 }));
-import {DramaVideoConfigFields} from "./drama-video-config-fields";
+import {DramaVideoConfigFields,DramaBatchConfigPanel} from "./drama-video-config-fields";
 
 const inputs:DramaVideoInput[]=[
  {shot:{id:"s1",episodeId:"e1",order:1,description:"兔子走进森林",shotSize:"全景",
@@ -49,8 +49,9 @@ beforeEach(()=>{vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT",true);mocks.audit.mockR
 afterEach(async()=>{for(const root of roots)await act(async()=>root.unmount());roots.length=0;vi.unstubAllGlobals();document.body.replaceChildren();});
 
 async function mount(options:{
- expanded?:boolean;theme?:"dark"|"light";initialShotId?:string;
+ expanded?:boolean;theme?:"dark"|"light";initialShotId?:string;embedded?:boolean;confirmedInput?:boolean;
  configs?:ReadonlyMap<string,CanvasNodeData>;onPickImage?:(cb:(key:string)=>void)=>void;
+ images?:{key:string;title:string}[];onPendingChange?:(key:string,save:(()=>Promise<void>)|null)=>void;onWaitForSave?:()=>Promise<void>;
 }={}){
  const el=document.createElement("div");document.body.append(el);
  const root=createRoot(el);roots.push(root);
@@ -67,8 +68,9 @@ async function mount(options:{
     hasUnconfirmedChanges={false} disabled={false} theme={canvasThemes[options.theme??"dark"]}
     onCreateSelected={createSelected} onCreateBatch={createBatch}
     onAction={action} onRefresh={refresh}
-    expanded={options.expanded??true} initialShotId={options.initialShotId}
+    expanded={options.expanded??true} initialShotId={options.initialShotId} embedded={options.embedded} confirmedInput={options.confirmedInput}
     production={production} onPickImage={options.onPickImage??(cb=>cb(imageKey))}
+    images={options.images} onPendingChange={options.onPendingChange} onWaitForSave={options.onWaitForSave}
     onProductionChange={(id,value)=>{change(id,value);setProduction(curr=>({...curr,[id]:value}));}}/>
    </div>;
  }
@@ -106,6 +108,94 @@ it.each(["dark","light"] as const)("matches storyboard split-pane, directory and
  expect(main.querySelector<HTMLDetailsElement>('details[aria-label="逐镜媒体输入预检"]')?.open).toBe(false);
  expect(main.querySelector<HTMLDetailsElement>('details[aria-label="批量创建视频配置"]')?.open).toBe(false);
  expect(main.querySelector<HTMLButtonElement>('button')?.disabled).toBe(false);
+});
+it("embeds one selected shot without a duplicate directory or batch operations",async()=>{
+ const {el,action}=await mount({embedded:true,initialShotId:"s3"});
+ expect(el.querySelector('[aria-label="视频配置镜头目录"]')).toBeNull();
+ expect(el.querySelector('[data-storyboard-video-description]')).toBeNull();
+ expect(el.querySelector('[aria-label="批量创建配置"]')).toBeNull();
+ expect(mocks.audit).toHaveBeenCalledTimes(1);
+ expect(mocks.audit.mock.lastCall?.[0].shot.id).toBe("s3");
+ await click([...el.querySelectorAll("button")].find(b=>b.textContent==="创建视频配置"));
+ expect(action.mock.lastCall?.[0].shot.id).toBe("s3");
+});
+it("allows production settings on an unpublished shot but never audits or creates its config",async()=>{
+ const {el,action,change}=await mount({embedded:true,confirmedInput:false});
+ expect(mocks.audit).not.toHaveBeenCalled();
+ expect(el.querySelector('[aria-label="逐镜媒体输入预检"]')).toBeNull();
+ const create=[...el.querySelectorAll("button")].find(b=>b.textContent==="创建视频配置")!;
+ expect(create.disabled).toBe(true);
+ expect(action).not.toHaveBeenCalled();
+ await click(el.querySelector('[aria-label="编辑视频输入模式"]'));
+ await choose(el.querySelector('select[aria-label="视频输入模式"]'),"omni_reference");
+ await click(el.querySelector('[aria-label="确认视频输入模式"]'));
+ expect(change.mock.lastCall?.[0]).toBe("s1");
+ expect(mocks.audit).not.toHaveBeenCalled();
+});
+it("mounts batch preparation without any individual audit and audits only selected unconfigured shots",async()=>{
+ const el=document.createElement("div");document.body.append(el);
+ const root=createRoot(el);roots.push(root);
+ const create=vi.fn();
+ await act(async()=>root.render(<DramaBatchConfigPanel inputs={inputs} episodes={episodes}
+  configs={new Map([["s1",{id:"cfg-1"} as CanvasNodeData]])} missingCount={2} missingFor={()=>[]}
+  disabled={false} theme={canvasThemes.dark} onCreateSelected={create}/>));
+ expect(mocks.audit).not.toHaveBeenCalled();
+ expect(mocks.capabilities).not.toHaveBeenCalled();
+ expect(el.querySelector('[aria-label="当前视频配置编辑区"]')).toBeNull();
+ expect(el.querySelector('[aria-label="视频配置镜头目录"]')).toBeNull();
+ const checks=el.querySelectorAll('input[type="checkbox"]');
+ expect(checks).toHaveLength(1);
+ await click(checks[0]);
+ await choose(el.querySelector('select[aria-label="批量创建配置剧集"]'),"e2");
+ await click(el.querySelector('input[type="checkbox"]'));
+ await click([...el.querySelectorAll("button")].find(b=>b.textContent?.includes("创建所选视频配置")));
+ expect(mocks.audit.mock.calls.map(call=>call[0].shot.id)).toEqual(["s2","s3"]);
+ expect(create.mock.lastCall?.[0].map((item:DramaVideoInput)=>item.shot.id)).toEqual(["s2","s3"]);
+});
+it("stages both frame selections within the editor, commits once, and renders saved thumbnails",async()=>{
+ const tail="cas:"+"b".repeat(64);
+ const images=[{key:imageKey,title:"首帧候选"},{key:tail,title:"尾帧候选"}];
+ const pick=vi.fn();
+ const pending=new Map<string,()=>Promise<void>>();
+ const persist=vi.fn(async()=>{});
+ const {el,change}=await mount({embedded:true,images,onPickImage:pick,onWaitForSave:persist,onPendingChange:(key,save)=>{if(save)pending.set(key,save);else pending.delete(key);}});
+ const button=(text:string)=>[...el.querySelectorAll("button")].find(b=>b.textContent?.trim()===text);
+ await click(el.querySelector('[aria-label="编辑视频输入模式"]'));
+ await choose(el.querySelector('select[aria-label="视频输入模式"]'),"first_last_frame");
+ expect(pending.size).toBe(1);
+ await click(el.querySelector('[aria-label="选择首帧"]'));
+ await click(el.querySelector('[aria-label="选择图片 首帧候选"]'));
+ await click(button("使用图片"));
+ expect(change).not.toHaveBeenCalled();
+ await click(el.querySelector('[aria-label="选择尾帧"]'));
+ await click(el.querySelector('[aria-label="选择图片 尾帧候选"]'));
+ await click(button("使用图片"));
+ expect(change).not.toHaveBeenCalled();expect(pick).not.toHaveBeenCalled();
+ expect(el.querySelectorAll('[data-video-mode-field="editing"] img')).toHaveLength(2);
+ expect(button("创建视频配置")?.disabled).toBe(true);
+ await act(async()=>{await pending.get("video-production:s1")!();});
+ expect(change).toHaveBeenCalledTimes(1);
+ expect(change.mock.lastCall?.[1]).toMatchObject({mode:"first_last_frame",firstFrame:imageKey,lastFrame:tail});
+ expect(persist).toHaveBeenCalledTimes(1);
+ expect(pending.size).toBe(0);
+ expect(el.querySelectorAll('[data-video-mode-readonly] img')).toHaveLength(2);
+ await click(el.querySelector('[aria-label="编辑视频输入模式"]'));
+ await click(button("清除尾帧"));expect(pending.size).toBe(1);
+ await click(el.querySelector('[data-drama-action="cancel"]'));
+ expect(change).toHaveBeenCalledTimes(1);expect(pending.size).toBe(0);
+ expect(el.querySelectorAll('[data-video-mode-readonly] img')).toHaveLength(2);
+});
+it("supports grid selection and discards the draft without writing on cancellation",async()=>{
+ const {el,change}=await mount({embedded:true,images:[{key:imageKey,title:"网格候选"}]});
+ await click(el.querySelector('[aria-label="编辑视频输入模式"]'));
+ await choose(el.querySelector('select[aria-label="视频输入模式"]'),"grid");
+ await click(el.querySelector('[aria-label="选择分镜网格图"]'));
+ await click(el.querySelector('[aria-label="选择图片 网格候选"]'));
+ await click([...el.querySelectorAll("button")].find(b=>b.textContent==="使用图片"));
+ expect(change).not.toHaveBeenCalled();
+ await click(el.querySelector('[data-drama-action="cancel"]'));
+ expect(change).not.toHaveBeenCalled();
+ expect(el.querySelector('[data-video-mode-readonly]')?.textContent).toContain("纯文本");
 });
 it("stages mode changes and cancels without writes; choosing an image explicitly commits mode and image",async()=>{
  const {el,change}=await mount();

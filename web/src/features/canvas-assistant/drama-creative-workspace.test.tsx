@@ -16,7 +16,7 @@ import {useThemeStore} from "@/stores/use-theme-store";
 const roots:Root[]=[];
 beforeEach(()=>vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT",true));
 afterEach(async()=>{for(const root of roots)await act(async()=>root.unmount());roots.length=0;vi.unstubAllGlobals()});
-async function mount(kind:"source"|"episodes"|"storyboard"="storyboard",withHistory=false,versionConfirmed=false){
+async function mount(kind:"source"|"assets"|"episodes"|"storyboard"="storyboard",withHistory=false,versionConfirmed=false){
  const div=document.createElement("div");document.body.append(div);
  const root=createRoot(div);roots.push(root);
  const close=vi.fn(async()=>{});
@@ -64,10 +64,100 @@ describe("P3.4b3 workspace lifecycle",()=>{
   const board=await mount("storyboard");
   const boardTabs=[...board.div.querySelectorAll<HTMLButtonElement>('nav[aria-label="创作工作区功能"] button')];
   expect(boardTabs).toHaveLength(4);
-  expect(boardTabs.map(tab=>tab.textContent?.trim())).toEqual(["分镜表","视频配置","生成候选","影响与历史"]);
-  expect(boardTabs[0].getAttribute("aria-description")).toBe("检查分镜结构与镜头安排");
-  expect(boardTabs[1].getAttribute("aria-description")).toBe("按镜头配置独立的视频生成参数");
+  expect(boardTabs.map(tab=>tab.textContent?.trim())).toEqual(["镜头编辑","批量创建配置","生成候选","影响与历史"]);
+  expect(boardTabs[0].getAttribute("aria-description")).toBe("编辑镜头内容、资产引用与单镜头视频配置");
+  expect(boardTabs[1].getAttribute("aria-description")).toBe("批量创建视频配置及组建批量生成镜头组");
   expect(board.div.textContent).not.toContain("分页与单条 CAS");
+ });
+ it("opens assets in the shared workspace with distinct candidates and history tabs",async()=>{
+  const {div,renderPanel}=await mount("assets",true);
+  expect(div.querySelector('[data-drama-workspace-kind="assets"]')).toBeTruthy();
+  const tabs=[...div.querySelectorAll<HTMLButtonElement>('nav[aria-label="创作工作区功能"] button')];
+  expect(tabs.map(t=>t.textContent?.trim())).toEqual(["资产编辑","生成候选","影响与历史"]);
+  expect(div.querySelector('[data-drama-workspace-title-row]')?.textContent).toContain("资产规划");
+  await press(div,"生成候选");
+  expect(renderPanel).toHaveBeenCalledWith("runs",expect.any(Function));
+  await press(div,"影响与历史");
+  expect(div.querySelector('[aria-label="测试内嵌历史"]')).toBeTruthy();
+ });
+
+ it("keeps asset pagination, selected identity and search across candidate and history tabs, and guards dirty edits",async()=>{
+  const {DramaAssetWorkspaceFields}=await import("./drama-asset-workspace-fields");
+  const {useState}=await import("react");
+  type Asset=import("./canvas-drama-pipeline").DramaAsset;
+  const initial:Asset[]=Array.from({length:13},(_,i)=>({id:"asset-"+(i+1),kind:"character",name:"角色 "+(i+1),description:"描述 "+(i+1),sourceRefs:[],aliases:["组别"],variants:[{id:"variant-"+(i+1),name:"造型",description:"描述"}]}));
+  const div=document.createElement("div");document.body.append(div);
+  const root=createRoot(div);roots.push(root);
+  const changes=vi.fn();
+  function Host(){
+   const [assets,setAssets]=useState(initial);
+   return <DramaCreativeWorkspace projectId="p1" nodeId="asset-node" kind="assets" focus={{}} versionConfirmed={false}
+    onClose={async()=>{}} renderPanel={(tab,register)=>tab==="editor"?
+     <DramaAssetWorkspaceFields key={tab} assets={assets} theme={canvasThemes.dark} disabled={false}
+      onChange={next=>{changes(next);setAssets(next)}} onPendingChange={register}
+      renderReferences={(_a,v)=><span data-test-reference={v}>已绑定参考图</span>}/>:
+     <section>{tab}</section>} renderHistoryPanel={()=> <div>历史记录</div>}/>;
+  }
+  const click=async(label:string)=>{const b=div.querySelector<HTMLButtonElement>('button[aria-label="'+label+'"]');expect(b).toBeTruthy();await act(async()=>b!.click());};
+  const input=async(label:string,value:string)=>{
+   const el=div.querySelector<HTMLInputElement|HTMLTextAreaElement>('[aria-label="'+label+'"]')!;
+   const proto=el instanceof HTMLTextAreaElement?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;
+   await act(async()=>{Object.getOwnPropertyDescriptor(proto,"value")!.set!.call(el,value);el.dispatchEvent(new Event("input",{bubbles:true}));});
+  };
+  await act(async()=>root.render(<Host/>));
+  await input("搜索资产","组别");
+  await click("资产下一页");
+  await press(div,"角色 12");
+  expect(div.querySelector('[data-test-reference="variant-12"]')).toBeTruthy();
+  expect(div.querySelector<HTMLInputElement>('input[aria-label="搜索资产"]')?.value).toBe("组别");
+  expect(div.querySelector('[data-asset-field]')).toBeTruthy();
+  await press(div,"生成候选");await press(div,"影响与历史");await press(div,"资产编辑");
+  expect(div.querySelector('[aria-label="当前资产编辑区"]')?.textContent).toContain("角色 12");
+  expect(div.querySelector('aside')?.textContent).toContain("2/2");
+  await click("编辑资产描述");await input("资产描述","未提交的修改");
+  await press(div,"生成候选");
+  expect(div.textContent).toContain("存在未提交的草案修改");
+  expect(div.querySelector('[data-asset-workspace-view="editor"]')).toBeTruthy();
+  await press(div,"继续编辑");
+  expect(div.querySelector<HTMLTextAreaElement>('textarea[aria-label="资产描述"]')?.value).toBe("未提交的修改");
+  await press(div,"生成候选");await press(div,"放弃修改");
+  expect(div.querySelector('[data-test-reference="variant-12"]')).toBeNull();
+  expect(changes).not.toHaveBeenCalled();
+  await press(div,"资产编辑");
+  expect(div.querySelector('[data-test-reference="variant-12"]')).toBeTruthy();
+  expect(div.querySelector('textarea[aria-label="资产描述"]')).toBeNull();
+  expect(div.querySelector('[aria-label="当前资产编辑区"]')?.textContent).toContain("描述 12");
+  await click("编辑资产描述");await input("资产描述","确认后的描述");
+  await press(div,"生成候选");await press(div,"保存草案");
+  expect(changes).toHaveBeenCalledTimes(1);
+  expect(div.querySelector('[data-test-reference="variant-12"]')).toBeNull();
+  await press(div,"资产编辑");
+  expect(div.querySelector('[aria-label="当前资产编辑区"]')?.textContent).toContain("确认后的描述");
+  expect(div.querySelector<HTMLInputElement>('input[aria-label="搜索资产"]')?.value).toBe("组别");
+ });
+
+ it("shows the candidate count and prevents close or tab changes while an adoption is in progress",async()=>{
+  const {useContext}=await import("react");
+  const {AssetReviewBusyContext,AssetReviewNavigationContext}=await import("./drama-asset-directory-state");
+  const div=document.createElement("div");document.body.append(div);const root=createRoot(div);roots.push(root);
+  const close=vi.fn(async()=>{});
+  function Review(){
+   const busy=useContext(AssetReviewBusyContext);
+   const navigate=useContext(AssetReviewNavigationContext);
+   return <><button onClick={()=>busy?.(true)}>开始合入</button>
+    <button onClick={()=>{navigate?.();busy?.(false)}}>合入完成</button></>;
+  }
+  await act(async()=>root.render(<DramaCreativeWorkspace projectId="p1" nodeId="assets" kind="assets" focus={{}} versionConfirmed={false}
+   candidateCount={12} onClose={close} renderPanel={tab=>tab==="runs"?<Review/>:<span data-current-tab={tab}>{tab}</span>}/>));
+  await press(div,"生成候选 · 12");await press(div,"开始合入");
+  expect(div.textContent).toContain("正在合入资产");
+  await press(div,"资产编辑");
+  expect(div.textContent).toContain("开始合入");
+  await act(async()=>div.querySelector<HTMLButtonElement>('[aria-label="关闭工作区对话框"]')?.click());
+  expect(close).not.toHaveBeenCalled();
+  await press(div,"合入完成");
+  expect(div.querySelector('[data-current-tab="editor"]')).toBeTruthy();
+  expect(div.textContent).not.toContain("正在合入资产");
  });
  it("opens a unified source workspace with story, art settings and history tabs",async()=>{
   const story=await mount("source",true);

@@ -6,6 +6,8 @@ import {useAssetDirectory} from "./drama-asset-directory-state";
 import type {WorkspacePendingRegistration} from "./drama-creative-workspace";
 import {DramaEditActions} from "./drama-edit-actions";
 import {sameAssetEntry,type AssetEntryPatch} from "./drama-asset-entry-save";
+import {collectDramaAssetUsage,type DramaAssetUsage} from "./drama-asset-usage-display";
+import {DramaAssetUsageTags} from "./drama-asset-usage-tags";
 const kinds={character:"角色",scene:"场景",prop:"道具"} as const;
 const icons={character:UserRound,scene:Mountain,prop:Box};
 const pageSize=10;
@@ -15,7 +17,7 @@ const button="inline-flex min-h-8 shrink-0 items-center justify-center gap-1 rou
 const fieldClass="thin-scrollbar w-full min-w-0 rounded-lg border px-3 py-2 text-sm focus-visible:outline focus-visible:outline-2";
 export function DramaAssetWorkspaceFields({assets,theme,disabled,onChange,renderReferences,usage={},onPendingChange,onEditingChange,onPatchAsset,onReloadAsset,loading=false}:{
  assets:DramaAsset[];theme:CanvasTheme;disabled:boolean;expanded?:boolean;onChange?:(next:DramaAsset[])=>void;
- renderReferences?:(asset:DramaAsset,variantId?:string)=>ReactNode;usage?:Record<string,string[]>;
+ renderReferences?:(asset:DramaAsset,variantId?:string)=>ReactNode;usage?:DramaAssetUsage;
  onPendingChange?:WorkspacePendingRegistration;onEditingChange?:(editing:boolean)=>void;
  onPatchAsset?:(baseline:DramaAsset,changes:AssetEntryPatch,variantId?:string)=>Promise<void>;
  onReloadAsset?:()=>Promise<void>;loading?:boolean;
@@ -91,7 +93,7 @@ export function DramaAssetWorkspaceFields({assets,theme,disabled,onChange,render
   onPendingChange(pendingKey,edit&&edit.value!==edit.baseline?()=>saveRef.current():null);
   return ()=>onPendingChange(pendingKey,null);
  },[pendingKey,edit?.value,edit?.baseline,onPendingChange]);
- const useCount=(a:DramaAsset,variantId?:string)=>[...new Set((variantId?[variantId]:[a.id,...(a.variants??[]).map(v=>v.id)]).flatMap(id=>usage[id]??[]))];
+ const useCount=(a:DramaAsset,variantId?:string)=>collectDramaAssetUsage(usage,variantId?[variantId]:[a.id,...(a.variants??[]).map(v=>v.id)]);
  const add=()=>{
   if(locked)return;
   const id=kind+"_"+crypto.randomUUID();
@@ -156,7 +158,7 @@ export function DramaAssetWorkspaceFields({assets,theme,disabled,onChange,render
     {!edit&&error&&<p role="alert" className="text-xs">{error}</p>}
     {edit&&!assets.some(a=>a.id===edit.assetId)&&!loading&&!saving&&<p role="alert" className="text-xs">资产已不存在，请取消编辑。</p>}
     {field(active,"name","名称")}{field(active,"description","资产描述")}{field(active,"aliases","别名（每行一个）")}
-    {useCount(active).length>0&&<p className="break-words text-xs" style={{color:theme.node.muted}}>使用位置 · {useCount(active).join("、")}</p>}
+    <DramaAssetUsageTags entries={useCount(active)} theme={theme}/>
     {referenceSlot(active)}
     {kind!=="prop"&&<div className="space-y-3 border-t pt-3" style={{borderColor:theme.node.stroke}}>
      <div className="flex items-center justify-between gap-2"><strong className="text-sm">{kind==="character"?"角色造型":"场景变体"} · {variants.length}</strong>

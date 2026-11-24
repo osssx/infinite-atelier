@@ -6,11 +6,12 @@ import {canvasThemes} from "@/lib/canvas-theme";
 import type {DramaAsset} from "./canvas-drama-pipeline";
 import type {AssetEntryPatch} from "./drama-asset-entry-save";
 import {DramaAssetWorkspaceFields} from "./drama-asset-workspace-fields";
+import type {DramaAssetUsage} from "./drama-asset-usage-display";
 const roots:Root[]=[];
 const asset=(i:number):DramaAsset=>({id:"a"+i,kind:"character",name:"角色 "+i,description:"描述 "+i,sourceRefs:["p1"],aliases:["别名 "+i],variants:[{id:"v"+i,name:"造型 "+i,description:"造型描述"}]});
 beforeEach(()=>vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT",true));
 afterEach(async()=>{for(const root of roots)await act(async()=>root.unmount());roots.length=0;document.body.replaceChildren();vi.unstubAllGlobals();});
-async function mount(initial:DramaAsset[],cas=false,usage:Record<string,string[]>={}){
+async function mount(initial:DramaAsset[],cas=false,usage:DramaAssetUsage={}){
  const div=document.createElement("div");document.body.append(div);const root=createRoot(div);roots.push(root);
  const pending=new Map<string,()=>Promise<void>>();
  const register=(key:string,save:(()=>Promise<void>)|null)=>{if(save)pending.set(key,save);else pending.delete(key);};
@@ -63,7 +64,7 @@ it("pages and adds to the last page without showing stale directory data",async(
  expect(div.querySelector('[aria-label="当前资产编辑区"]')?.textContent).toContain("描述 4");
 });
 it("cancels staged edits, preserves IDs and uses CAS for asset and variant fields",async()=>{
- const base=asset(1);const {div,changes,patch,pending}=await mount([base],true,{"v1":["第一集"]});
+ const base=asset(1);const {div,changes,patch,pending}=await mount([base],true,{"v1":[{key:"board-shot",label:"第 1 集 · 镜头 1",rank:0}]});
  expect(button(div,"删除资产").disabled).toBe(true);
  expect(button(div,"删除变体").disabled).toBe(true);
  await click(button(div,"编辑资产描述"));

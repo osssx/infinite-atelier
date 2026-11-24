@@ -95,6 +95,7 @@ import { mergeLegacyDramaAssets, mergeLegacyDramaFirstFrames } from "@/features/
 import { buildDramaVideoConfigGraph, findDramaVideoConfigs,refreshDramaVideoConfigGraph } from "@/features/canvas-assistant/drama-video-config";
 import {resolveDramaShotGroupConfigs} from "@/features/canvas-assistant/drama-shot-group-plan";
 import {readEpisodeDraft} from "../../../server/canvas-text-content.mjs";
+import {buildDramaAssetUsage} from "@/features/canvas-assistant/drama-asset-usage-display";
 import { AssetPickerModal, type InsertAssetPayload } from "@/components/canvas/asset-picker-modal";
 import { CanvasSidePanel } from "@/components/canvas/canvas-side-panel";
 import { CanvasZoomControls } from "@/components/canvas/canvas-zoom-controls";
@@ -4253,16 +4254,7 @@ function AtelierCanvasPage() {
                 legacyAssetPlanning={panelNode.type === "drama:assets" && connections.some(edge => edge.fromNodeId === panelNode.id &&
                     nodes.some(item => item.id === edge.toNodeId && item.type === "drama:asset_references"))}
                 mergedReferences={directAssets?.metadata?.dramaAssetReferences}
-                assetUsage={Object.fromEntries(nodes.filter(item=>item.type==="drama:storyboard"&&connections.some(edge=>
-                    edge.fromNodeId===panelNode.id&&edge.toNodeId===item.id)).flatMap(item=>{
-                        const draftShots=readStoryboardDraft(item.metadata?.dramaDraft??"")?.shots??[];
-                        const publishedShots=readStoryboardDraft(item.metadata?.dramaConfirmed??"")?.shots??[];
-                        const shots=[...draftShots,...publishedShots];
-                        const ids=[...new Set(shots.flatMap(shot=>[...shot.characterVariantIds,...shot.propIds,
-                            ...(shot.sceneId?[shot.sceneId]:[]),...(shot.sceneVariantId?[shot.sceneVariantId]:[])]))];
-                        return ids.map(id=>[id,shots.filter(shot=>[...shot.characterVariantIds,...shot.propIds,shot.sceneId,shot.sceneVariantId]
-                            .includes(id)).map(shot=>`${shot.episodeId} · 镜头 ${shot.order}`)]);
-                    }))}
+                assetUsage={panelNode.type==="drama:assets"?buildDramaAssetUsage(panelNode.id,nodes,connections):{}}
                 supplementalEpisodes={panelNode.type==="drama:assets"&&pipelineSource?nodes.filter(item=>
                     item.type==="drama:episodes"&&connections.some(edge=>edge.fromNodeId===pipelineSource.id&&edge.toNodeId===item.id))
                     .flatMap(item=>readEpisodeDraft(item.metadata?.dramaConfirmed??"")?.episodes??[]):[]}

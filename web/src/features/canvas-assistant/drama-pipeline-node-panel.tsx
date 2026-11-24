@@ -15,6 +15,7 @@ import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { DramaAssetFields } from "./drama-asset-fields";
 import {DramaAssetWorkspaceFields} from "./drama-asset-workspace-fields";
+import type {DramaAssetUsage} from "./drama-asset-usage-display";
 import {saveAssetEntry} from "./drama-asset-entry-save";
 import type {WorkspacePendingRegistration} from "./drama-creative-workspace";
 import {DramaReferenceImagePicker} from "./drama-reference-image-picker";
@@ -82,7 +83,7 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
     upstreamText?: string;
     upstreamContext?: string;
     upstreamArtifacts?: string[];
-    assetUsage?: Record<string,string[]>;
+    assetUsage?: DramaAssetUsage;
     supplementalEpisodes?: {id:string;title:string;synopsis:string;events:string[];ending:string}[];
     confirmedAssetPlan?: string;
     savedAssetReferences?: string;

@@ -2,6 +2,8 @@ import { useState, type CSSProperties, type ReactNode } from "react";
 import { Box, ChevronRight, Mountain, Plus, Trash2, UserRound } from "lucide-react";
 import type { CanvasTheme } from "@/lib/canvas-theme";
 import type { DramaAsset, DramaAssetKind } from "./canvas-drama-pipeline";
+import {collectDramaAssetUsage,type DramaAssetUsage} from "./drama-asset-usage-display";
+import {DramaAssetUsageTags} from "./drama-asset-usage-tags";
 
 const kinds: Record<DramaAssetKind, string> = {character:"角色", scene:"场景", prop:"道具"};
 const kindIcons = {character:UserRound, scene:Mountain, prop:Box};
@@ -14,7 +16,7 @@ export function DramaAssetFields({assets, theme, expanded, disabled, onChange, r
     disabled: boolean;
     onChange?: (assets: DramaAsset[]) => void;
     renderReferences?: (asset: DramaAsset, variantId?: string) => ReactNode;
-    usage?:Record<string,string[]>;
+    usage?:DramaAssetUsage;
 }) {
     const [kind, setKind] = useState<DramaAssetKind>("character");
     const [activeId, setActiveId] = useState("");
@@ -81,9 +83,7 @@ export function DramaAssetFields({assets, theme, expanded, disabled, onChange, r
                 <input className={fieldClass} style={control} value={active.name} maxLength={240}
                     onChange={event => edit({name:event.target.value})} />
             </label>
-            {[...new Set([active.id,...variants.map(variant=>variant.id)].flatMap(id=>usage[id]??[]))].length>0 &&
-                <p className="text-xs">使用位置 · {[...new Set([active.id,...variants.map(variant=>variant.id)]
-                    .flatMap(id=>usage[id]??[]))].join("、")}</p>}
+            <DramaAssetUsageTags entries={collectDramaAssetUsage(usage,[active.id,...variants.map(variant=>variant.id)])} theme={theme}/>
             <label className="grid gap-1.5 font-medium">描述
                 <textarea className={`${fieldClass} resize-y font-normal leading-relaxed`} style={control} value={active.description} rows={expanded ? 6 : 3} maxLength={20000}
                     onChange={event => edit({description:event.target.value})} />

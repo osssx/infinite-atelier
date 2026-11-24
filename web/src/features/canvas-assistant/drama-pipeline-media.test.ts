@@ -21,6 +21,21 @@ const snapshot: DramaPipelineSnapshot = {
     shots: [],
 };
 
+it("creates fully typed Comfy image connections while retaining an untyped storyboard provenance edge",()=>{
+ const source=createCanvasNode("drama:storyboard",{x:0,y:0},{dramaConfirmedVersionId:"published"});
+ const input=applyDramaProduction(buildDramaVideoInput(snapshot,{id:"typed",episodeId:"ep",order:1,description:"Move",characterVariantIds:[],propIds:[],keyPropIds:[]}),{mode:"first_frame",firstFrame:"cas:"+"d".repeat(64)});
+ const prepared={...input,comfyBinding:{templateId:"video",templateRevision:"a".repeat(64),mediaMode:"first_frame" as const,overrides:{},slots:{opening:{nodeId:input.referenceImages[0].id}}}};
+ const graph=buildDramaVideoConfigGraph(source,[prepared],[source],[]);
+ const configId=graph.configIds[0];
+ const imageId=graph.nodes.find(node=>node.id===configId)!.metadata!.comfyWorkflowSelections!.video!.slots.opening.nodeId;
+ expect(graph.connections).toEqual(expect.arrayContaining([
+  expect.objectContaining({fromNodeId:imageId,fromPortId:"image",toNodeId:configId,toPortId:"opening"}),
+  expect.objectContaining({fromNodeId:source.id,toNodeId:configId})
+ ]));
+ expect(graph.connections.find(e=>e.fromNodeId===source.id)?.fromPortId).toBeUndefined();
+ const refreshed=refreshDramaVideoConfigGraph(source,prepared,configId,graph.nodes,graph.connections,{prompt:true,duration:false,references:true,overwrite:false});
+ expect(refreshed.connections.find(e=>e.toNodeId===configId&&e.toPortId==="opening")?.fromPortId).toBe("image");
+});
 it("creates explicit first and last frame assignments for the normal video config entry point",()=>{
     const shot={id:"frames",episodeId:"ep",order:1,description:"Move",durationSec:5,
         characterVariantIds:[],propIds:[],keyPropIds:[]};

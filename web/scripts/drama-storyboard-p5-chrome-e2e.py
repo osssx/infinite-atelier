@@ -1,5 +1,5 @@
 """P5 real SPA + isolated SQLite/CAS, 200 nodes and 200 confirmed shots.
-No model execution. Tests the actual maximized editor and batch UI."""
+Default: no generation. ATELIER_DRAMA_P5_LIVE_COMFY=1 explicitly enables a single local ComfyUI clip."""
 import importlib.util
 import json
 import os
@@ -116,11 +116,51 @@ def run():
                 check("cancel leaves backend unchanged","""(async()=>{const r=await fetch('/api/v1/projects/%s');const d=await r.json();return !d.document.nodes.find(n=>n.id==='board').metadata.dramaShotProduction?.[%s]?.firstFrame})()"""%(fixture["projectId"],json.dumps(shot)))
             check("shot directory unlocked","""(()=>{const r=document.querySelector(%s);const b=[...r.querySelectorAll('[aria-label="分镜镜头导航"] button')];return b.length>0&&b.every(x=>!x.disabled)})()"""%json.dumps(portal))
             close_workspace()
+        # Reopen the real saved shot and create a production Config from the merged editor.
+        open_workspace()
+        button("批量创建配置")
+        choose("批量创建配置剧集","ep-1")
+        button("定位镜头",portal+" tbody")
+        check("saved shot production ready","""(()=>{const r=document.querySelector(%s);return r?.textContent.includes('输入预检通过')&&[...r.querySelectorAll('button')].some(b=>b.textContent.trim()==='创建视频配置'&&!b.disabled)})()"""%json.dumps(portal),35)
+        button("创建视频配置")
+        check("real Config graph persisted","""(async()=>{const r=await fetch('/api/v1/projects/%s');const d=await r.json();const nodes=d.document?.nodes||[],edges=d.document?.connections||[];
+          const configs=nodes.filter(n=>n.type==='config'&&n.metadata?.dramaShotId==='shot-50');if(configs.length!==1)return false;
+          const c=configs[0],m=c.metadata,b=m.comfyWorkflowSelections?.video,source=nodes.find(n=>n.id===b?.slots?.opening?.nodeId);
+          return m.generationMode==='video'&&m.videoMode==='first_frame'&&m.dramaVideoSource?.revisionId==='p34b-v1'&&b?.templateId==='p5-video-fixture'&&b?.mediaMode==='first_frame'&&
+            source?.metadata?.storageKey===m.dramaVideoSource?.referenceKeys?.[0]&&
+            edges.some(e=>e.fromNodeId==='board'&&e.toNodeId===c.id)&&edges.some(e=>e.fromNodeId===source.id&&e.fromPortId==='image'&&e.toNodeId===c.id&&e.toPortId==='opening')})()"""%fixture["projectId"],35)
+        assert not any(req["method"]=="POST" and ("/jobs" in req["path"] or "/shot-batches" in req["path"]) for req in page.network_requests),"Config creation must not submit generation"
+        passed.append("Config created without submitting generation")
+        if os.environ.get("ATELIER_DRAMA_P5_LIVE_COMFY")=="1":
+            # One actual user action; do not retry submission on a slow response.
+            config_id=page.js("""(async()=>{const d=await (await fetch('/api/v1/projects/%s')).json();return d.document.nodes.find(n=>n.type==='config'&&n.metadata?.dramaShotId==='shot-50').id})()"""%fixture["projectId"])
+            check("config panel opened","!document.querySelector("+json.dumps(portal)+")")
+            page.js("""(()=>{window.p5Notices=[];new MutationObserver(()=>{for(const n of document.querySelectorAll('.ant-message-notice,.ant-notification-notice,[role="alert"]')){const s=n.textContent.trim();if(s&&!window.p5Notices.includes(s))window.p5Notices.push(s)}}).observe(document.body,{subtree:true,childList:true,characterData:true});return true})()""")
+            click('button[aria-label="开始生成"]')
+            def submitted():
+                notices=page.js("window.p5Notices||[]")
+                jobs=[r for r in page.network_requests if r["method"]=="POST" and "jobs" in r["path"]]
+                return {"jobs":jobs,"notices":notices} if jobs or notices else False
+            submission=perf.wait_for(submitted,"generation submission or notice",25)
+            print("P5_SUBMISSION",json.dumps(submission,ensure_ascii=False),flush=True)
+            assert submission["jobs"],submission
+            outcome=check("real Comfy video materialized","""(async()=>{const d=await (await fetch('/api/v1/projects/%s')).json();const c=%s;
+              const video=d.document.nodes.find(n=>n.type==='video'&&n.metadata?.comfyArtifact?.workflowNodeId===c);
+              if(!video||!d.document.connections.some(e=>e.fromNodeId===c&&e.toNodeId===video.id))return false;
+              const m=video.metadata,a=m.comfyArtifact;
+              if(!/^cas:[a-f0-9]{64}$/.test(m.storageKey)||!a.runId||!a.artifactId)return false;
+              const rr=await fetch('/api/v1/jobs/'+a.runId+'/materializations');const mm=await rr.json();
+              if(!mm.materializations?.some(x=>x.artifact_id===a.artifactId&&x.status==='materialized'&&x.node_id===video.id))return false;
+              const resp=await fetch('/api/v1/blobs/'+m.storageKey.slice(4));const bytes=(await resp.arrayBuffer()).byteLength;
+              return resp.ok&&bytes>0?{configId:c,jobId:a.runId,artifactId:a.artifactId,videoNodeId:video.id,bytes,mime:resp.headers.get('content-type')}:false})()"""%(fixture["projectId"],json.dumps(config_id)),120)
+            assert outcome["mime"].startswith("video/"),outcome
+            print("P5_LIVE_COMFY_REPORT",json.dumps(outcome),flush=True)
+
         assert not page.exceptions,page.exceptions
-        print("P5_BROWSER_REPORT",json.dumps({"assertions":passed,"metrics":metrics,"browserExceptions":page.exceptions,"isolation":"temporary SQLite/CAS; no generation","shots":200,"nodes":200},ensure_ascii=False),flush=True)
+        print("P5_BROWSER_REPORT",json.dumps({"assertions":passed,"metrics":metrics,"browserExceptions":page.exceptions,"isolation":"temporary SQLite/CAS; local test clip" if os.environ.get("ATELIER_DRAMA_P5_LIVE_COMFY")=="1" else "temporary SQLite/CAS; no generation","shots":200,"nodes":200},ensure_ascii=False),flush=True)
     except Exception:
         if page:
-            try:print("P5_BROWSER_DIAGNOSTIC",page.text()[:3000],flush=True)
+            try:print("P5_BROWSER_DIAGNOSTIC",page.text()[-3000:],page.js("window.p5Notices||[]"),[r for r in page.network_requests if r["method"]=="POST"][-8:],flush=True)
             except Exception:pass
         for log in logs:
             try:log.flush();print(Path(log.name).name,Path(log.name).read_text("utf-8",errors="replace")[-1800:],flush=True)

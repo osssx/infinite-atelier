@@ -8,6 +8,8 @@ import {createLocalBackend} from "../server/backend/runtime.mjs";
 import {createProject} from "../server/backend/projects.mjs";
 import {insertTextVersions} from "../server/backend/canvas-text-versions.mjs";
 import {startServer} from "../server/backend/app.mjs";
+import {createComfyRegistry} from "../server/backend/comfy-registry.mjs";
+import {canonical,sha256} from "../server/comfy-workflow/compiler.mjs";
 if(process.env.ATELIER_P34B_BROWSER_E2E!=="1")throw Error("explicit_test_opt_in_required");
 const root=resolve(process.env.ATELIER_DATA_DIR??"");
 if(dirname(root).toLowerCase()!==resolve(tmpdir()).toLowerCase()||
@@ -15,15 +17,51 @@ if(dirname(root).toLowerCase()!==resolve(tmpdir()).toLowerCase()||
  throw Error("isolated_temp_directory_required");
 const port=Number(process.env.ATELIER_BACKEND_PORT);
 if(!Number.isInteger(port)||port<1024||port>65535)throw Error("invalid_test_port");
-const backend=createLocalBackend({dataDir:root,autoLocalSession:true,autoDispatch:false,
+const liveComfy=process.env.ATELIER_DRAMA_P5_LIVE_COMFY==="1";
+if(liveComfy&&process.env.ATELIER_DRAMA_P5_BROWSER_E2E!=="1")throw Error("live_comfy_requires_p5_fixture");
+const backend=createLocalBackend({dataDir:root,autoLocalSession:true,autoDispatch:liveComfy,
+ ...(liveComfy?{enableComfyManagement:true,comfyInstances:[{id:"comfy-local",url:"http://127.0.0.1:8188"}]}:{}),
  activationRoot:join(root,"activation"),skillsDir:join(root,"skills")});
 const {db,blobStore}=backend;
+if(process.env.ATELIER_DRAMA_P5_BROWSER_E2E==="1"){
+ // Lightweight real Comfy template, isolated registry and UI defaults.
+ // Only explicit live opt-in allows dispatch; the browser must create and execute the Config itself.
+ const apiGraph={
+  "1":{class_type:"EmptyImage",inputs:{width:64,height:64,batch_size:3,color:14417920}},
+  "2":{class_type:"CreateVideo",inputs:{images:["1",0],fps:8}},
+  "3":{class_type:"SaveVideo",inputs:{video:["2",0],filename_prefix:"atelier-p5-acceptance/video",format:"auto","format.codec":"auto",codec:"auto"}},
+  "4":{class_type:"PrimitiveString",inputs:{value:"P5 fixture"}}
+ };
+ const ports=[
+  {id:"video",label:"Video",direction:"source",valueKind:"VIDEO",outputBinding:{nodeId:"2",outputIndex:0},capture:{kind:"video",adapterId:"SaveVideo"}},
+  {id:"prompt",label:"Prompt",direction:"target",valueKind:"STRING",inputBinding:{mode:"literal",targets:[{nodeId:"4",inputName:"value"}]}},
+  {id:"opening",label:"Opening",direction:"target",valueKind:"IMAGE",required:true,inputBinding:{mode:"socket",replaceInternalLink:true,targets:[{nodeId:"2",inputName:"images"}]}}
+ ];
+ const mediaUseCase={channel:"video",primaryOutputKind:"video",promptPortId:"prompt",primaryOutputPortId:"video",
+  slots:[{id:"opening",label:"Opening",valueKind:"IMAGE",required:true}],
+  mediaCapabilities:{schemaVersion:1,kind:"video",defaultMode:"first_frame",modes:[{id:"first_frame",enabled:true,inputs:[{role:"first_frame",kind:"image",minItems:1,maxItems:1}],parameters:[]}]},
+  modeBindings:{first_frame:{promptPortId:"prompt",parameterPorts:{},rolePorts:{first_frame:["opening"]}}}};
+ const payload={name:"P5 local video fixture",apiGraph,ports,requirements:{classTypes:[...new Set(Object.values(apiGraph).map(n=>n.class_type))].sort()},mediaUseCase};
+ const template={id:"p5-video-fixture",revision:sha256(canonical(payload)),...payload};
+ createComfyRegistry(db,{workflowsDir:join(root,"workflows")}).installMany([template]);
+ const row=db.prepare("SELECT value_json FROM ui_settings WHERE name='model_config'").get();
+ const config=JSON.parse(row.value_json);
+ db.prepare("UPDATE ui_settings SET value_json=?,revision=revision+1 WHERE name='model_config'").run(JSON.stringify({...config,
+  comfyWorkflowDefaults:{...config.comfyWorkflowDefaults,video:{templateId:template.id,templateRevision:template.revision}}}));
+}
+
 const png=Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/ywoAAAAASUVORK5CYII=","base64");
-const image=await blobStore.put(Readable.from([png]),{mime:"image/png"});
+let image;
+if(!liveComfy)image=await blobStore.put(Readable.from([png]),{mime:"image/png"});
 const samplePath=join(root,"sample-64x64.mp4");
 const result=spawnSync("ffmpeg",["-hide_banner","-loglevel","error","-y","-f","lavfi","-i","color=c=blue:s=64x64:r=3:d=1",
  "-t","1","-pix_fmt","yuv420p","-c:v","libx264","-movflags","+faststart",samplePath],{timeout:15000});
 if(result.status!==0)throw Error("fixture_ffmpeg_failed:"+String(result.stderr));
+if(liveComfy){
+ const frame=spawnSync("ffmpeg",["-hide_banner","-loglevel","error","-i",samplePath,"-frames:v","1","-f","image2pipe","-vcodec","png","-"],{timeout:15000});
+ if(frame.status!==0||!frame.stdout.length)throw Error("fixture_png_failed");
+ image=await blobStore.put(Readable.from([frame.stdout]),{mime:"image/png"});
+}
 const video=await blobStore.put(createReadStream(samplePath),{mime:"video/mp4"});
 const assets=Array.from({length:50},(_,i)=>({id:"asset-"+i,kind:"prop",name:"道具 "+i,
  description:("资产说明 "+i+" 用于场景分镜的一致性检查。").repeat(8),sourceRefs:[]}));
@@ -54,7 +92,7 @@ for(let i=0;i<197;i++){
  if(i<97)nodes.push(node("text-"+i,"text",k,{content:("说明 "+i+" 输入/资产可见性 ").repeat(8)}));
  else if(i<167)nodes.push(node("image-"+(i-97),"image",k,{
    content:"/api/v1/blobs/"+image.blobId,storageKey:"cas:"+image.blobId,
-   mimeType:"image/png",naturalWidth:1,naturalHeight:1,status:"success"}));
+   mimeType:"image/png",naturalWidth:liveComfy?64:1,naturalHeight:liveComfy?64:1,status:"success"}));
  else if(i<182)nodes.push(node("video-"+(i-167),"video",k,{
    content:"/api/v1/blobs/"+video.blobId,storageKey:"cas:"+video.blobId,
    mimeType:"video/mp4",naturalWidth:64,naturalHeight:64,status:"success"}));

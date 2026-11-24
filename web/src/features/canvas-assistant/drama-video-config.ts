@@ -163,7 +163,7 @@ export function buildDramaVideoConfigGraph(
         configIds.push(config.id);
         for (const fromNodeId of [source.id, ...refs.map(ref => ref.node.id)]) {
             const slot=workflowBinding&&Object.entries(workflowBinding.slots).find(([,value])=>value.nodeId===fromNodeId)?.[0];
-            edges.push({ id: nanoid(), fromNodeId, toNodeId: config.id,...(slot?{toPortId:slot}:{}) });
+            edges.push({ id: nanoid(), fromNodeId, toNodeId: config.id,...(slot?{fromPortId:"image",toPortId:slot}:{}) });
         }
         config.metadata!.dramaVideoSource!.referenceBaseline=referenceBaseline(config,edges,[...nodes,...added]);
     }

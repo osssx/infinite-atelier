@@ -83,6 +83,46 @@ it("cancels staged edits, preserves IDs and uses CAS for asset and variant field
  expect(patch).toHaveBeenLastCalledWith({...base,name:"新名称"},{description:"新造型描述"},"v1");
  expect(div.querySelector('[data-reference="v1"]')).toBeTruthy();
 });
+it("renders aliases as compact tags directly beneath the name, edits only on demand and keeps draft/search semantics",async()=>{
+ const base={...asset(1),aliases:["橘猫","流浪猫"]};
+ const {div,changes,patch,pending}=await mount([base,asset(2)],true);
+ const aliases=()=>div.querySelector<HTMLElement>('[data-asset-field="aliases"]')!;
+ const tags=()=>[...aliases().querySelectorAll<HTMLElement>('[data-asset-alias-tag]')];
+ expect(aliases().previousElementSibling?.getAttribute("data-asset-field")).toBe("name");
+ expect(tags().map(tag=>tag.textContent)).toEqual(["橘猫","流浪猫"]);
+ expect(tags().every(tag=>!!tag.style.background&&!!tag.style.borderColor&&!!tag.style.color)).toBe(true);
+ expect(aliases().querySelector("textarea")).toBeNull();
+ await click(button(div,"编辑别名"));
+ await input(aliases().querySelector("textarea")!,"暂时修改");
+ expect(pending.size).toBe(1);
+ await click(aliases().querySelector<HTMLButtonElement>('[data-drama-action="cancel"]')!);
+ expect(tags().map(tag=>tag.textContent)).toEqual(["橘猫","流浪猫"]);
+ expect(changes).not.toHaveBeenCalled();
+ await click(button(div,"编辑别名"));
+ await input(aliases().querySelector("textarea")!," 小猫 \\n\\n橘猫".replaceAll("\\n","\n"));
+ await click(button(div,"确认别名（每行一个）"));
+ expect(changes.mock.lastCall![0][0]).toEqual({...base,aliases:["小猫","橘猫"]});
+ expect(patch).not.toHaveBeenCalled();expect(pending.size).toBe(0);
+ expect(tags().map(tag=>tag.textContent)).toEqual(["小猫","橘猫"]);
+ await input(div.querySelector<HTMLInputElement>('input[aria-label="搜索资产"]')!,"小猫");
+ expect(div.querySelector('[aria-label="当前资产编辑区"]')?.textContent).toContain(base.name);
+});
+it("shows only a lightweight add alias entry for empty aliases and restores it after clearing",async()=>{
+ const base={...asset(1),aliases:[]};
+ const {div,changes}=await mount([base],true);
+ const aliases=()=>div.querySelector<HTMLElement>('[data-asset-field="aliases"]')!;
+ expect(aliases().textContent).toBe("添加别名");
+ expect(aliases().querySelector("textarea")).toBeNull();
+ await click(button(div,"添加别名"));
+ await input(aliases().querySelector("textarea")!,"小橘");
+ await click(button(div,"确认别名（每行一个）"));
+ expect(aliases().querySelector('[data-asset-alias-tag]')?.textContent).toBe("小橘");
+ await click(button(div,"编辑别名"));
+ await input(aliases().querySelector("textarea")!,"");
+ await click(button(div,"确认别名（每行一个）"));
+ expect(aliases().textContent).toBe("添加别名");
+ expect(changes.mock.lastCall![0][0]).toEqual(base);
+});
 it("keeps unsaved edit on CAS failure without full draft overwrite",async()=>{
  const {div,changes,patch,pending}=await mount([asset(1)],true);
  patch.mockRejectedValueOnce(Error("drama_candidate_conflict"));

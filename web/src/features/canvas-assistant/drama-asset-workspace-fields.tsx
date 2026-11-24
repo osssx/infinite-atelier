@@ -103,11 +103,27 @@ export function DramaAssetWorkspaceFields({assets,theme,disabled,onChange,render
  const field=(a:DramaAsset,key:Field,label:string,variantId?:string)=>{
   const value=valueFor(a,key,variantId)??"";
   const editing=edit?.assetId===a.id&&edit.field===key&&edit.variantId===variantId;
+  const beginEdit=()=>{setDeletion(null);setError("");setEdit({assetId:a.id,variantId,field:key,label,baseline:value,value,entry:structuredClone(a)});};
+  if(key==="aliases"&&!editing){
+   const aliases=(a.aliases??[]).filter(name=>name.trim());
+   return <section data-asset-field="aliases" data-asset-field-mode="reading" className="flex min-w-0 flex-wrap items-center gap-1.5">
+    {aliases.length>0&&<>
+     <span className="shrink-0 text-xs" style={{color:theme.node.muted}}>别名</span>
+     {aliases.map((name,index)=><span key={index} data-asset-alias-tag="" className="max-w-full break-words rounded-md border px-2 py-0.5 text-xs leading-relaxed"
+      style={{background:theme.toolbar.activeBg,borderColor:theme.node.stroke,color:theme.node.text}}>{name}</span>)}
+    </>}
+    <button type="button" aria-label={aliases.length?"编辑别名":"添加别名"} title={aliases.length?"编辑别名":"添加别名"}
+     className="inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-1 text-xs hover:opacity-80 disabled:opacity-40"
+     style={{color:theme.node.muted}} disabled={locked} onClick={beginEdit}>
+     {aliases.length?<Pencil size={13}/>:<><Plus size={13}/>添加别名</>}
+    </button>
+   </section>;
+  }
   return <section data-asset-field={key} data-asset-field-mode={editing?"editing":"reading"} className={editing?"space-y-2 rounded-xl border p-3":"min-w-0 space-y-1.5"}
    style={editing?{background:theme.node.fill,borderColor:theme.node.stroke}:undefined}>
    <div className="flex items-center gap-1 text-xs font-medium" style={{color:theme.node.muted}}>
     {label}{!editing&&<button type="button" aria-label={"编辑"+label} className="grid size-7 place-items-center rounded-md hover:opacity-80" disabled={locked}
-     onClick={()=>{setDeletion(null);setError("");setEdit({assetId:a.id,variantId,field:key,label,baseline:value,value,entry:structuredClone(a)});}}><Pencil size={13}/></button>}
+     onClick={beginEdit}><Pencil size={13}/></button>}
    </div>
    {editing?<>
     {key==="name"?<input aria-label={label} className={fieldClass} style={control} maxLength={240} value={edit.value} disabled={disabled||saving||loading} onChange={e=>setEdit({...edit,value:e.target.value})}/>:
@@ -157,7 +173,8 @@ export function DramaAssetWorkspaceFields({assets,theme,disabled,onChange,render
     {onReloadAsset&&!edit&&<button type="button" className={button} style={control} disabled={disabled||loading||saving} onClick={()=>void onReloadAsset().catch(e=>setError(e instanceof Error?e.message:"刷新失败"))}>重新加载资产</button>}
     {!edit&&error&&<p role="alert" className="text-xs">{error}</p>}
     {edit&&!assets.some(a=>a.id===edit.assetId)&&!loading&&!saving&&<p role="alert" className="text-xs">资产已不存在，请取消编辑。</p>}
-    {field(active,"name","名称")}{field(active,"description","资产描述")}{field(active,"aliases","别名（每行一个）")}
+    <div className="min-w-0 space-y-2">{field(active,"name","名称")}{field(active,"aliases","别名（每行一个）")}</div>
+    {field(active,"description","资产描述")}
     <DramaAssetUsageTags entries={useCount(active)} theme={theme}/>
     {referenceSlot(active)}
     {kind!=="prop"&&<div className="space-y-3 border-t pt-3" style={{borderColor:theme.node.stroke}}>

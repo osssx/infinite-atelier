@@ -55,10 +55,10 @@ it("integrates reference controls within the asset draft editor and updates only
  const click=async(el:HTMLElement)=>{expect(el).toBeTruthy();await act(async()=>el.click())};
  await act(async()=>root.render(<Host/>));
  expect(container.querySelector('[data-asset-field="description"]')).toBeTruthy();
- expect([...container.querySelectorAll("[data-asset-reference-slot]")].map(e=>e.getAttribute("data-asset-reference-slot"))).toEqual(["hero-day","hero-night"]);
+ expect([...container.querySelectorAll("[data-asset-reference-slot]")].map(e=>e.getAttribute("data-asset-reference-slot"))).toEqual(["hero","hero-day","hero-night"]);
  expect(container.querySelector('[aria-label="资产提取范围"]')).toBeTruthy();
  expect(find("生成资产候选")).toBeTruthy();
- expect(container.textContent).toContain("参考图已绑定 2 / 5 个位置");
+ expect(container.textContent).toContain("参考图已绑定 2 / 6 个位置");
  const daily=container.querySelector('[data-asset-reference-slot="hero-day"]')!;
  const select=daily.querySelector<HTMLButtonElement>('button[aria-label="添加日常参考图"]')!;
  expect(daily.closest("section")?.querySelector('[data-asset-field="description"]')).toBeTruthy();

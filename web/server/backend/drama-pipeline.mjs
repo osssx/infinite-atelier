@@ -79,8 +79,10 @@ function shotErrors(shots, assets) {
       continue;
     }
     seen.add(shot.id);
+    // The storyboard editor and draft contract accept both a base character ID
+    // (default appearance) and an explicit outfit/variant ID.
     for (const variantId of shot.characterVariantIds) {
-      const owner = variantOwner.get(variantId);
+      const owner = variantOwner.get(variantId) ?? byId.get(variantId);
       if (!owner || owner.kind !== "character") errors.push({code: "shot_character_invalid", shotId: shot.id, id: variantId});
     }
     if (shot.sceneId !== undefined && (byId.get(shot.sceneId)?.kind !== "scene")) errors.push({code: "shot_scene_invalid", shotId: shot.id, id: shot.sceneId});

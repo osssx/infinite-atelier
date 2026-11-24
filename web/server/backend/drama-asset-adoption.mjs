@@ -95,7 +95,7 @@ export function adoptDramaAssetCandidates({db,getProject,validateDocument,emitEv
    const parsed=readStoryboardDraft(boardBody);
    if(!parsed)throw fail("drama_asset_candidate_conflict",409);
    const shots=parsed.shots.map(shot=>({...shot,
-    characterVariantIds:shot.characterVariantIds.map(id=>mapped(id,variantMapping)),
+    characterVariantIds:[...new Set(shot.characterVariantIds.map(id=>mapped(mapped(id,variantMapping),assetMapping)))],
     // JSON drafts omit optional scene fields. Never add explicit undefined:
     // stableJson rejects it and the endpoint would otherwise return internal_error.
     ...(shot.sceneId===undefined?{}:{sceneId:mapped(shot.sceneId,assetMapping)}),

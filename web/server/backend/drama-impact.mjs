@@ -12,7 +12,7 @@ const incoming=(document,nodeId)=>document.connections
   document.nodes.filter(item=>item.id===edge.fromNodeId&&item.type.startsWith("drama:")));
 const hasAsset=(shot,asset)=>{
  if(!asset)return false;
- return (shot.sceneId===asset.id||shot.propIds?.includes(asset.id)||shot.keyPropIds?.includes(asset.id)||
+ return (shot.sceneId===asset.id||shot.characterVariantIds?.includes(asset.id)||shot.propIds?.includes(asset.id)||shot.keyPropIds?.includes(asset.id)||
   (asset.variants??[]).some(item=>hasVariant(shot,item.id)));
 };
 const hasVariant=(shot,id)=>shot.characterVariantIds?.includes(id)||shot.sceneVariantId===id;

@@ -62,6 +62,14 @@ test("P2.4: atomic asset merge keeps shared hero and remaps new coat + prop only
  assert.equal(find("assets").metadata.dramaAssetCandidate,undefined);
  assert.equal(get().document.connections.length,2);
 });
+test("P2.4: preserves existing base character references and maps candidate base character IDs",t=>{
+ const {find,service,command}=fixture(t,suggested,[],[shot("old","ep-one","hero"),shot("new","ep-two","generated-hero")]);
+ const confirmed=find("board").metadata.dramaConfirmed;
+ const result=adoptDramaAssetCandidates(service,"asset-p24",command({"generated-hero":{action:"new"},"generated-prop":{action:"new"}}));
+ const shots=readStoryboardDraft(find("board").metadata.dramaDraft).shots;
+ assert.deepEqual(shots.map(shot=>shot.characterVariantIds),[["hero"],[result.mapping.assetIds["generated-hero"]]]);
+ assert.equal(find("board").metadata.dramaConfirmed,confirmed);
+});
 test("P2.4: same-named character can explicitly remain separate; no cross-episode aliasing",t=>{
  const {find,service,command}=fixture(t);
  const result=adoptDramaAssetCandidates(service,"asset-p24",command({

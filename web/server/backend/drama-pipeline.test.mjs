@@ -22,6 +22,23 @@ test("accepts a complete first-frame snapshot with character, scene variant and 
   assert.deepEqual(normalizeDramaPipelineSnapshot(base), base);
 });
 
+test("base character ID is a valid default appearance, with or without named outfits", () => {
+  const snapshot=structuredClone(base);
+  snapshot.stage="storyboard";
+  snapshot.shots[0].characterVariantIds=["hero"];
+  assert.deepEqual(validateDramaPipelineSnapshot(snapshot),{valid:true,errors:[]});
+  snapshot.stage="first_frames";
+  assert.deepEqual(validateDramaPipelineSnapshot(snapshot).errors,[{code:"render_reference_missing",shotId:"shot-1",id:"hero",kind:"character"}]);
+  snapshot.references.push({assetId:"hero",imageStorageKey:"cas:base",requiredForRendering:false});
+  assert.equal(validateDramaPipelineSnapshot(snapshot).valid,true);
+  snapshot.assets[0].variants=[];
+  snapshot.references=snapshot.references.filter(ref=>ref.variantId!=="hero-day");
+  assert.equal(validateDramaPipelineSnapshot(snapshot).valid,true);
+  snapshot.shots[0].characterVariantIds=["bridge","bridge-rain","star","missing"];
+  assert.deepEqual(validateDramaPipelineSnapshot(snapshot).errors.map(error=>[error.code,error.id]),
+    ["bridge","bridge-rain","star","missing"].map(id=>["shot_character_invalid",id]));
+});
+
 test("reports missing key prop reference without rejecting the editable storyboard", () => {
   const snapshot = structuredClone(base);
   snapshot.references = snapshot.references.filter(item => item.assetId !== "star");

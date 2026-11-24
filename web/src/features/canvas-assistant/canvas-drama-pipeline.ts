@@ -79,8 +79,11 @@ export function dramaReferenceImageKeys(reference?: DramaAssetReference) {
 export function dramaAssetSlots(assets: readonly DramaAsset[]) {
     return assets.flatMap(asset => {
         const variants = asset.variants ?? [];
-        const slots = asset.kind === "character" && variants.length ? variants : [undefined, ...variants];
-        return slots.map(variant => ({assetId:asset.id, variantId:variant?.id, requiredForRendering:asset.kind !== "prop"}));
+        // Base character IDs are selectable as the default appearance even
+        // when outfits exist. Keep their image slot independent and optional
+        // until a shot actually uses that base appearance.
+        return [undefined, ...variants].map(variant => ({assetId:asset.id, variantId:variant?.id,
+            requiredForRendering:asset.kind !== "prop" && !(asset.kind === "character" && variants.length > 0 && !variant)}));
     });
 }
 

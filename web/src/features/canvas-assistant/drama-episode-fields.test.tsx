@@ -15,20 +15,20 @@ const original:DramaEpisode[]=[
   sourceRefs:["story-1"],ending:"两人见面",targetDurationSec:120,
   sequences:[{id:"scene-1",title:"森林入口",sourceRefs:["story-1"],eventRefs:["event-1"]}]},
  {id:"ep-b",title:"出发",synopsis:"第二天出发",events:["两人出发"],
-  sourceRefs:["story-2"],ending:"天黑",sequences:[]}
+  eventItems:[{id:"event-3",text:"两人出发"}],sourceRefs:["story-2"],ending:"天黑",sequences:[]}
 ];
 const roots:Root[]=[];
 beforeEach(()=>vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT",true));
 afterEach(async()=>{for(const x of roots)await act(async()=>x.unmount());roots.length=0;vi.unstubAllGlobals()});
-async function mount(initialEpisodeId?:string){
+async function mount(initialEpisodeId?:string,initial=original,expanded=true,disabled=false){
  const container=document.createElement("div");document.body.append(container);
  const root=createRoot(container);roots.push(root);
  const changes=vi.fn<(episodes:DramaEpisode[])=>void>();
  function Editor(){
-  const [episodes,setEpisodes]=useState<DramaEpisode[]>(original);
+  const [episodes,setEpisodes]=useState<DramaEpisode[]>(initial);
   return <div style={{height:640,width:1100}}>
    <DramaEpisodeFields episodes={episodes} initialEpisodeId={initialEpisodeId}
-    expanded disabled={false} onChange={next=>{changes(next);setEpisodes(next)}}/>
+    expanded={expanded} disabled={disabled} onChange={next=>{changes(next);setEpisodes(next)}}/>
   </div>;
  }
  await act(async()=>root.render(<Editor/>));
@@ -47,6 +47,45 @@ async function click(button:Element|null){
  expect(button).toBeTruthy();
  await act(async()=>{(button as HTMLElement).click();});
 }
+it("automatically upgrades only the selected legacy episode and preserves unique and ambiguous references",async()=>{
+ const legacy:DramaEpisode={...original[0],eventItems:undefined,events:["相遇","敲门","敲门"],
+  sequences:[{id:"scene-1",title:"第一场",eventRefs:["相遇","敲门","丢失的引用"]}]};
+ const {container,changes}=await mount("ep-a",[legacy,original[1]]);
+ expect(changes).toHaveBeenCalledTimes(1);
+ const migrated=changes.mock.lastCall![0][0];
+ expect(migrated.events).toEqual(legacy.events);
+ expect(new Set(migrated.eventItems?.map(item=>item.id)).size).toBe(3);
+ expect(migrated.sequences?.[0].eventRefs).toEqual([migrated.eventItems![0].id,"敲门","丢失的引用"]);
+ expect(changes.mock.lastCall![0][1]).toEqual(original[1]);
+ expect(container.textContent).not.toContain("补齐旧事件的稳定 ID");
+ await act(async()=>useThemeStore.setState({theme:"light"}));
+ expect(changes).toHaveBeenCalledTimes(1);
+ const scene=container.querySelector<HTMLDetailsElement>('section[aria-label="场次规划"] details')!;
+ expect(scene.textContent).toContain("事件引用缺失或有歧义");
+ await click(scene.querySelector("summary"));
+ await click(scene.querySelector('[aria-label="编辑场次 1 详情"]'));
+ const checks=[...scene.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')];
+ expect(checks.map(x=>x.checked)).toEqual([true,false,false]);
+ await click(checks[2]);
+ await click([...scene.querySelectorAll("button")].find(b=>b.textContent==="移除此引用")??null);
+ await click(scene.querySelector('[aria-label="确认场次 1 详情"]'));
+ expect(changes.mock.lastCall![0][0].sequences?.[0].eventRefs).toEqual([migrated.eventItems![0].id,migrated.eventItems![2].id]);
+ expect(changes.mock.lastCall![0][0].eventItems).toEqual(migrated.eventItems);
+ await act(async()=>useThemeStore.setState({theme:"dark"}));
+});
+it("does not migrate on compact display or while disabled; first compact edit migrates",async()=>{
+ const legacy={...original[0],eventItems:undefined,sequences:[{...original[0].sequences![0],eventRefs:["兔子来了"]}]};
+ const compact=await mount("ep-a",[legacy],false);
+ expect(compact.changes).not.toHaveBeenCalled();
+ await click(compact.container.querySelector('[aria-label="编辑剧情梗概"]'));
+ await enter(compact.container,'textarea[aria-label="剧情梗概"]',"新梗概");
+ await click(compact.container.querySelector('[aria-label="确认剧情梗概"]'));
+ const next=compact.changes.mock.lastCall![0][0];
+ expect(next.eventItems).toHaveLength(2);
+ expect(next.sequences?.[0].eventRefs).toEqual([next.eventItems![0].id]);
+ const disabled=await mount("ep-a",[legacy],true,true);
+ expect(disabled.changes).not.toHaveBeenCalled();
+});
 describe("maximized episode planning layout",()=>{
  it("reads fields by default, keeps each edit local, saves only on confirm and preserves theme",async()=>{
   const {container,changes}=await mount("ep-b");

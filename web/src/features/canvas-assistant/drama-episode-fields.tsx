@@ -4,7 +4,7 @@ import {GitBranch,Layers3,Plus,Split,Merge,BookText,Trash2,AlertTriangle,Pencil}
 import {DramaEditActions as EpisodeEditActions} from "./drama-edit-actions";
 import {canvasThemes} from "@/lib/canvas-theme";
 import {useThemeStore} from "@/stores/use-theme-store";
-import {normalizeEpisodeEvents} from "../../../server/drama-episode-links.mjs";
+import {needsEpisodeEventNormalization,normalizeEpisodeEvents} from "../../../server/drama-episode-links.mjs";
 import {splitEpisodeSequence,mergeEpisodeSequences} from "../../../server/drama-sequence-relations.mjs";
 
 export type DramaEpisode={
@@ -96,8 +96,8 @@ function EpisodeReadEditField({id,label,value,disabled,theme,onConfirm,multiline
  </section>;
 }
 type EpisodeSequence=NonNullable<DramaEpisode["sequences"]>[number];
-function SequenceReadEditFields({sequence,index,events,items,theme,disabled,onConfirm,startEditing=false}:{
- sequence:EpisodeSequence;index:number;events:string[];
+function SequenceReadEditFields({sequence,index,items,theme,disabled,onConfirm,startEditing=false}:{
+ sequence:EpisodeSequence;index:number;
  items:NonNullable<DramaEpisode["eventItems"]>;theme:ReturnType<typeof canvasThemeForField>;disabled:boolean;
  onConfirm:(next:EpisodeSequence)=>void|Promise<void>;startEditing?:boolean;
 }){
@@ -108,6 +108,12 @@ function SequenceReadEditFields({sequence,index,events,items,theme,disabled,onCo
  const [baseline,setBaseline]=useState(sequence);
  const [saving,setSaving]=useState(false);
  const [error,setError]=useState("");
+ const resolveRef=(ref:string)=>{
+  const exact=items.filter(item=>item.id===ref);
+  if(exact.length===1)return exact[0];
+  const text=items.filter(item=>item.text===ref);
+  return text.length===1?text[0]:undefined;
+ };
  const stale=editing&&(baseline.title!==sequence.title||
   (baseline.sourceRefs??[]).join("\n")!==(sequence.sourceRefs??[]).join("\n")||
   (baseline.eventRefs??[]).join("\n")!==(sequence.eventRefs??[]).join("\n"));
@@ -155,15 +161,20 @@ function SequenceReadEditFields({sequence,index,events,items,theme,disabled,onCo
       style={control} rows={2} value={refs} disabled={disabled} onChange={event=>setRefs(event.target.value)}/>
     </label>
     <div className="space-y-1.5">
-     <span style={{color:theme.node.muted}}>本场关联剧情事件（稳定 ID）</span>
+     <span style={{color:theme.node.muted}}>本场关联剧情事件</span>
      {items.filter(item=>item.text.trim()).map((item,index)=>
       <label key={item.id||index} className="flex items-start gap-2">
        <input type="checkbox" className="mt-0.5" disabled={disabled}
-        checked={eventRefs.includes(item.id)||eventRefs.includes(item.text)}
+        checked={eventRefs.some(ref=>resolveRef(ref)?.id===item.id)}
         onChange={change=>setEventRefs(current=>change.target.checked?
-         [...new Set([...current,item.id])]:current.filter(ref=>ref!==item.id&&ref!==item.text))}/>
+         [...new Set([...current.filter(ref=>ref!==item.text||ref===item.id),item.id])]:current.filter(ref=>resolveRef(ref)?.id!==item.id))}/>
        <span className="break-words">{item.text}</span>
       </label>)}
+     {eventRefs.filter(ref=>!resolveRef(ref)).map((ref,index)=><div key={index} className="flex flex-wrap items-center gap-2 text-xs">
+      <span className="break-all">待核对的旧事件引用：{ref}</span>
+      <button type="button" disabled={disabled} className="rounded-md border px-2 py-1" style={control}
+       onClick={()=>setEventRefs(current=>current.filter(item=>item!==ref))}>移除此引用</button>
+     </div>)}
     </div>
     {stale&&<p role="alert" className="text-xs">场次已在其他位置更新，请取消并重新编辑。</p>}
     {error&&<p role="alert" className="text-xs">{error}</p>}
@@ -179,13 +190,13 @@ function SequenceReadEditFields({sequence,index,events,items,theme,disabled,onCo
       <span>{sequence.eventRefs?.length??0} 条</span>
       {sequence.eventRefs?.length? <ul className="mt-1 list-inside list-disc space-y-1">
        {sequence.eventRefs.map(ref=><li key={ref} className="break-words">
-        {items.find(item=>item.id===ref||item.text===ref)?.text??ref}
+        {resolveRef(ref)?.text??ref}
        </li>)}
       </ul>:null}
      </div>
     </div>}
-    {(sequence.eventRefs??[]).some(ref=>!events.includes(ref)&&!items.some(item=>item.id===ref))&&
-      <p role="alert" className="text-[11px]">事件引用缺失或有歧义，请核对稳定 ID 后更新。</p>}
+    {(sequence.eventRefs??[]).some(ref=>!resolveRef(ref))&&
+      <p role="alert" className="text-[11px]">事件引用缺失或有歧义，请重新选择关联的剧情事件。</p>}
     {(sequence.replaces?.length??0)>0&&<p className="text-[11px]">替代旧场次：{sequence.replaces?.join("、")}。请审核旧镜头的场次迁移。</p>}
   </div>;
 }
@@ -208,7 +219,7 @@ export function DramaEpisodeFields({episodes,expanded,disabled,control,onChange,
  const active=episodes.find(episode=>episode.id===selected)??episodes[0];
  const activeIndex=active?episodes.findIndex(episode=>episode.id===active.id):-1;
  const scopedCas=Boolean(expanded&&projectId&&nodeId&&onPatchEpisode);
- const [episodeDigest,setEpisodeDigest]=useState<{id:string;digest:string}|null>(null);
+ const [episodeDigest,setEpisodeDigest]=useState<{id:string;digest:string;baseline:string}|null>(null);
  const [casBusy,setCasBusy]=useState(false);
  const [casError,setCasError]=useState("");
  const [casRefresh,setCasRefresh]=useState(0);
@@ -247,7 +258,7 @@ export function DramaEpisodeFields({episodes,expanded,disabled,control,onChange,
     "sourceRefs","sequences"] as const;
    if(fields.some(key=>JSON.stringify(remote[key]??null)!==JSON.stringify(active[key]??null)))
     throw Error("服务器剧集内容已更新，请重新加载后再编辑，避免覆盖其他修改");
-   setEpisodeDigest({id:active.id,digest});
+   setEpisodeDigest({id:active.id,digest,baseline:JSON.stringify(active)});
   })().catch(error=>{if(current)setCasError(error instanceof Error?error.message:"剧集版本读取失败");});
   return ()=>{current=false;controller.abort();};
  },[scopedCas,active?.id,projectId,nodeId,casRefresh]);
@@ -273,7 +284,9 @@ export function DramaEpisodeFields({episodes,expanded,disabled,control,onChange,
     .map(key=>[key,patch[key as "title"|"synopsis"|"ending"]])) as {title?:string;synopsis?:string;ending?:string};
    return Object.keys(changes).length?patchCas(changes):undefined;
   }
-  onChange(episodes.map(item=>item.id===active.id?{...item,...patch}:item));
+  const next={...active,...patch};
+  const normalized=needsEpisodeEventNormalization(next)?normalizeEpisodeEvents(next,active):next;
+  onChange(episodes.map(item=>item.id===active.id?normalized:item));
   if(scopedCas){
    structuralSync.current=true;
    setEpisodeDigest(null);
@@ -290,7 +303,22 @@ export function DramaEpisodeFields({episodes,expanded,disabled,control,onChange,
    return patchCas({title:updated.title},original.id);
   return edit({sequences:active.sequences?.map(item=>item.id===original.id?updated:item)});
  };
- const scopedLocked=disabled||casBusy||(scopedCas&&(!episodeDigest||!!casError));
+ // The complete workspace can migrate the currently selected legacy draft.
+ // Never write merely because a compact canvas summary is mounted. Wait for
+ // an exact server baseline before a structural autosave in scoped mode.
+ const needsNormalization=Boolean(active&&needsEpisodeEventNormalization(active));
+ const autoNormalize=expanded&&needsNormalization&&(!scopedCas||!!onWaitForDraftSave);
+ const migrated=useRef(new WeakSet<DramaEpisode>());
+ useEffect(()=>{
+  if(!autoNormalize||!active||disabled||casBusy||casError||migrated.current.has(active))return;
+  if(scopedCas&&(episodeDigest?.id!==active.id||episodeDigest.baseline!==JSON.stringify(active)))return;
+  migrated.current.add(active);
+  const normalized=normalizeEpisodeEvents(active,active);
+  if(JSON.stringify(normalized)===JSON.stringify(active))return;
+  if(scopedCas){structuralSync.current=true;setEpisodeDigest(null);setCasRefresh(value=>value+1);}
+  onChange(episodes.map(item=>item.id===active.id?normalized:item));
+ },[autoNormalize,active,disabled,casBusy,casError,scopedCas,episodeDigest,episodes,onChange]);
+ const scopedLocked=disabled||casBusy||autoNormalize||(scopedCas&&(!episodeDigest||!!casError));
  const pageSize=10;
  const [pageStart,setPageStart]=useState(0);
  const [serverPage,setServerPage]=useState<{offset:number;entries:DramaEpisode[];total:number}|null>(null);
@@ -430,7 +458,7 @@ export function DramaEpisodeFields({episodes,expanded,disabled,control,onChange,
      disabled={scopedCas?scopedLocked:disabled} theme={theme} onConfirm={title=>edit({title})}/>
     <EpisodeReadEditField key={active.id+":duration"} id="duration" label="目标时长（秒）"
      value={active.targetDurationSec===undefined?"":String(active.targetDurationSec)} placeholder="未设置"
-     disabled={disabled} theme={theme} type="number"
+     disabled={scopedLocked} theme={theme} type="number"
      onConfirm={duration=>edit({targetDurationSec:duration.trim()?Number(duration):undefined})}/>
    </div>
    <section className="grid min-w-0 gap-3" aria-label="剧情内容">
@@ -438,18 +466,12 @@ export function DramaEpisodeFields({episodes,expanded,disabled,control,onChange,
      value={active.synopsis} disabled={scopedCas?scopedLocked:disabled} theme={theme} multiline rows={expanded?5:3}
      count={value=>value.length+" 字"} onConfirm={synopsis=>edit({synopsis})}/>
     <EpisodeReadEditField key={active.id+":events"} id="events" label="剧情事件（每行一条）"
-     value={active.events.join("\n")} disabled={disabled} theme={theme} multiline rows={expanded?9:4}
+     value={active.events.join("\n")} disabled={scopedLocked} theme={theme} multiline rows={expanded?9:4}
      count={value=>value.split("\n").filter(line=>line.trim()).length+" 条"}
      onConfirm={text=>{
       const normalized=normalizeEpisodeEvents({...active,events:text.split("\n")},active);
       edit({events:normalized.events,eventItems:normalized.eventItems,sequences:normalized.sequences});
      }}/>
-    <div className="flex justify-end">
-     <button type="button" className={smallAction} style={cardStyle} onClick={()=>{
-      const normalized=normalizeEpisodeEvents(active,active);
-      edit({eventItems:normalized.eventItems,sequences:normalized.sequences});
-     }}>补齐旧事件的稳定 ID</button>
-    </div>
     <EpisodeReadEditField key={active.id+":ending"} id="ending" label="本集结尾"
      value={active.ending} disabled={scopedCas?scopedLocked:disabled} theme={theme} multiline rows={2}
      onConfirm={ending=>edit({ending})}/>
@@ -493,7 +515,7 @@ export function DramaEpisodeFields({episodes,expanded,disabled,control,onChange,
      </summary>
      <div className="grid min-w-0 gap-3 border-t p-3 text-xs" style={{borderColor:theme.node.stroke}}>
        <SequenceReadEditFields key={active.id+":"+sequence.id} sequence={sequence}
-        index={index} events={active.events} items={active.eventItems??active.events.map(text=>({id:text,text}))}
+        index={index} items={active.eventItems??active.events.map(text=>({id:text,text}))}
         theme={theme} disabled={scopedCas?scopedLocked:disabled} startEditing={recentlyAdded===sequence.id}
         onConfirm={updated=>editSequence(sequence,updated)}/>
        <div className="flex flex-wrap gap-2 border-t pt-3" style={{borderColor:theme.node.stroke}}>

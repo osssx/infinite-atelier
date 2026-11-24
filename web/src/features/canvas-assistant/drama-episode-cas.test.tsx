@@ -84,6 +84,32 @@ async function textInput(el:HTMLInputElement|HTMLTextAreaElement,value:string){
   el.dispatchEvent(new Event("input",{bubbles:true}));
  });
 }
+it("migrates a legacy draft only after matching the server, flushes once and refreshes the CAS digest",async()=>{
+ const legacy={...first,eventItems:undefined,sequences:[{...first.sequences![0],eventRefs:["兔子出现"]}]};
+ api.data=[legacy,second];
+ const {container,full,patch,wait}=await mount({withWait:true});
+ expect(full).toHaveBeenCalledTimes(1);
+ expect(wait).toHaveBeenCalledTimes(1);
+ const normalized=full.mock.lastCall![0][0];
+ expect(normalized.eventItems).toHaveLength(2);
+ expect(normalized.sequences?.[0].eventRefs).toEqual([normalized.eventItems![0].id]);
+ expect(api.data[0]).toEqual(normalized);
+ expect(container.querySelector('[aria-label="当前剧集 CAS 状态"]')?.textContent).toContain("精确保存");
+ await click(container.querySelector('[aria-label="编辑集标题"]'));
+ await textInput(container.querySelector<HTMLInputElement>('input[aria-label="集标题"]')!,"新标题");
+ await click(container.querySelector('[aria-label="确认集标题"]'));
+ expect(patch).toHaveBeenCalledWith("ep-1",api.digest,{title:"新标题"},undefined);
+ expect(api.data[0].eventItems).toEqual(normalized.eventItems);
+ expect(full).toHaveBeenCalledTimes(1);
+});
+it("never migrates a stale legacy draft over changed server data",async()=>{
+ const legacy={...first,eventItems:undefined};
+ api.data=[{...legacy,title:"远端更新"},second];
+ const {container,full,wait,patch}=await mount({initial:[legacy,second],withWait:true});
+ expect(full).not.toHaveBeenCalled();expect(wait).not.toHaveBeenCalled();expect(patch).not.toHaveBeenCalled();
+ expect(container.querySelector('[aria-label="当前剧集 CAS 状态"]')?.textContent).toContain("服务器剧集内容已更新");
+ expect(container.querySelector<HTMLButtonElement>('[aria-label="编辑剧情事件（每行一条）"]')?.disabled).toBe(true);
+});
 it("patches only the current episode title with expectedDigest and preserves other episodes",async()=>{
  const {container,patch,full}=await mount();
  expect(container.querySelector('[aria-label="当前剧集 CAS 状态"]')?.textContent).toContain("精确保存");

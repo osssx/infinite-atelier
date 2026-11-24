@@ -60,6 +60,15 @@ export function normalizeEpisodeEvents(episode,previous=episode){
  }));
  return {...episode,eventItems:current,...(episode.sequences?{sequences:converted}:{})};
 }
+/** Only migrate missing identities or uniquely resolvable legacy text refs.
+ * Ambiguous or missing refs stay unresolved and must not trigger endless writes. */
+export function needsEpisodeEventNormalization(episode){
+ if(!episode.eventItems)return episode.events.length>0;
+ if(!validEpisodeEventItems(episode))return true;
+ const ids=new Set(episode.eventItems.map(item=>item.id));
+ return (episode.sequences??[]).some(sequence=>(sequence.eventRefs??[]).some(ref=>
+  !ids.has(ref)&&legacyMatches(ref,episode.eventItems)!==null));
+}
 export function unresolvedEventRefs(episode){
  const ids=new Set(episode.eventItems?.map(item=>item.id)??[]);
  return (episode.sequences??[]).flatMap(sequence=>

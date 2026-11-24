@@ -672,10 +672,11 @@ def main():
         wait_for(lambda:page.js(
             "!!document.querySelector('[data-creative-workspace-node-id=\"episodes\"]')"),
             "episodes workspace mounted",30)
-        check("p2_event_identity_edit_action_visible",bool(wait_for(lambda:page.js("""(() => {
+        check("p2_event_identity_automatic_no_manual_action",bool(wait_for(lambda:page.js("""(() => {
             const root=document.querySelector('[data-creative-workspace-node-id="episodes"]');
-            return [...(root?.querySelectorAll('button')||[])].some(btn=>
-              (btn.textContent||'').includes('补齐旧事件的稳定 ID'));
+            return !!root?.querySelector('[data-episode-editable-field="events"]')&&
+              ![...root.querySelectorAll('button')].some(btn=>
+                (btn.textContent||'').includes('补齐旧事件的稳定 ID'));
         })()"""),"episode full editor events",30)))
         page.js("""document.querySelector('.ant-modal-close')?.click();true""")
         wait_for(lambda:page.js("!document.querySelector('[data-creative-workspace-node-id=\"episodes\"]')"),

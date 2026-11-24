@@ -5,7 +5,7 @@ import {initializeSchema} from "./schema.mjs";
 import {createProject,getProject,saveSingleUserCanvas,validateProjectDocument,emitProjectEvent} from "./projects.mjs";
 import {mutateTextVersions} from "./canvas-text-versions.mjs";
 import {readEpisodeDraft} from "../canvas-text-content.mjs";
-import {normalizeEpisodeEvents,reconcileEventItems,unresolvedEventRefs} from "../drama-episode-links.mjs";
+import {needsEpisodeEventNormalization,normalizeEpisodeEvents,reconcileEventItems,unresolvedEventRefs} from "../drama-episode-links.mjs";
 import {splitEpisodeSequence,mergeEpisodeSequences} from "../drama-sequence-relations.mjs";
 import {previewDramaSequenceMigration,applyDramaSequenceMigration} from "./drama-sequence-migration.mjs";
 import {buildApp} from "./app.mjs";
@@ -74,6 +74,20 @@ test("P2.3: duplicate legacy event texts remain explicit unresolved references",
  assert.deepEqual(unresolvedEventRefs(normalized),[{sequenceId:"a",ref:"Knock"}]);
  const changed=reconcileEventItems(["First","Second"],normalized.eventItems);
  assert.deepEqual(changed.map(item=>item.id),normalized.eventItems.map(item=>item.id));
+});
+test("P2.3: automatic normalization is idempotent and preserves existing identities with unresolved references",()=>{
+ const old={events:["Find star","Knock","Knock"],eventItems:[{id:"a",text:"Find star"},{id:"b",text:"Knock"},{id:"c",text:"Knock"}],
+  sequences:[{id:"scene",title:"A",eventRefs:["Find star","Knock","missing"]}]};
+ assert.equal(needsEpisodeEventNormalization(old),true);
+ const normalized=normalizeEpisodeEvents(old,old);
+ assert.deepEqual(normalized.eventItems,old.eventItems);
+ assert.deepEqual(normalized.sequences[0].eventRefs,["a","Knock","missing"]);
+ assert.equal(needsEpisodeEventNormalization(normalized),false);
+ assert.deepEqual(normalizeEpisodeEvents(normalized,normalized),normalized);
+ assert.equal(needsEpisodeEventNormalization({events:[],sequences:[]}),false);
+ const legacy={events:["Find star"],sequences:[]};
+ assert.equal(needsEpisodeEventNormalization(legacy),true);
+ assert.equal(needsEpisodeEventNormalization(normalizeEpisodeEvents(legacy)),false);
 });
 test("P2.3: split creates explicit lineage and requires per-shot 1:N decision",async t=>{
  const {db,get,node,update,confirm,service}=fixture(t);

@@ -143,6 +143,15 @@ it("filters expanded reviews, applies bulk decisions only to visible entries, an
   await act(async()=>{Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,"value")!.set!.call(el,value);el.dispatchEvent(new Event("change",{bubbles:true}));});};
  const toolbar=()=>div.querySelector("[data-asset-review-toolbar]")!;
  expect(toolbar().textContent).toContain("待审核 13");
+ const review=div.querySelector<HTMLElement>("[data-asset-candidate-review]")!;
+ const scroll=review.querySelector<HTMLElement>("[data-asset-candidate-scroll-region]")!;
+ expect(review.tagName).toBe("DIV");
+ expect(review.classList.contains("overflow-hidden")).toBe(true);
+ expect(scroll.parentElement).toBe(review);
+ expect(scroll.classList.contains("flex-1")).toBe(true);
+ expect(scroll.style.maxHeight).toBe("");
+ expect(scroll.nextElementSibling?.hasAttribute("data-asset-review-actions")).toBe(true);
+ expect([...scroll.querySelectorAll("section")].every(row=>row.classList.contains("shrink-0"))).toBe(true);
  expect([...div.querySelectorAll<HTMLButtonElement>("button")].find(b=>b.textContent==="合入所选资产")?.disabled).toBe(true);
  await change("候选资产类别","scene");
  expect(div.querySelectorAll('[data-asset-candidate-scroll-region] section')).toHaveLength(1);

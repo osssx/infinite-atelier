@@ -463,7 +463,7 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
                     在视频配置页逐项选择采用更新。</p>
             </div>}
         </ImpactContainer>}
-        <div className={inlineEditor ? assetEditorExpanded ? "flex min-h-0 flex-1 flex-col gap-4" :
+        <div className={assetPlanning&&workspaceMode&&workspaceTab==="runs"?"contents":inlineEditor ? assetEditorExpanded ? "flex min-h-0 flex-1 flex-col gap-4" :
             "thin-scrollbar min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain px-1" : "contents"}
             onMouseDown={inlineEditor ? event => event.stopPropagation() : undefined}
             onPointerDown={inlineEditor ? event => event.stopPropagation() : undefined}>
@@ -1003,7 +1003,7 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
          </details>)}
          </div>
          </>}
-        {validation ? <p role="status" className={`mt-2 whitespace-pre-wrap text-sm ${assetEditorExpanded ? "thin-scrollbar max-h-24 shrink-0 overflow-y-auto" : ""}`}>{validation}</p> : null}
+        {validation && !(assetPlanning&&workspaceMode&&workspaceTab==="runs"&&validation==="资产候选已保存，请切换至「生成候选」审核") ? <p role="status" className={`mt-2 whitespace-pre-wrap text-sm ${assetEditorExpanded ? "thin-scrollbar max-h-24 shrink-0 overflow-y-auto" : ""}`}>{validation}</p> : null}
         {invalidSceneIds.map(id => <label className="mt-2 block text-sm" key={id}>
             将所有引用 {id} 的镜头改为
             <select className="ml-2" value="" onChange={event => {

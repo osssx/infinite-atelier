@@ -57,10 +57,13 @@ export function DramaAssetCandidates({assets,candidates,onApply,onDiscard,disabl
         catch(error){setSubmitError(error instanceof Error?error.message:"资产合入失败");}
         finally{inFlight.current=false;setReviewBusy?.(false);setSubmitting(false);}
     };
-    return <details open className={expanded?"flex min-h-0 min-w-0 flex-1 flex-col gap-3 rounded-xl border p-3":"min-w-0 space-y-2 rounded-xl border p-3"}
+    // Native details has a special content layout box; use a real flex container in the full workspace.
+    const Container=expanded?"div":"details";
+    return <Container {...(!expanded?{open:true}:{})} className={expanded?"flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-hidden rounded-xl border p-3":"min-w-0 space-y-2 rounded-xl border p-3"}
         data-asset-candidate-review="" style={{...control,colorScheme:appearance}}>
+        {expanded?<h3 className="shrink-0 text-xs font-semibold">审核资产候选 · {candidates.length} 项</h3>:
         <summary className="cursor-pointer rounded-md text-xs font-semibold focus-visible:outline focus-visible:outline-2"
-            style={{outlineColor:theme.node.activeStroke}}>审核资产候选 · {candidates.length} 项</summary>
+            style={{outlineColor:theme.node.activeStroke}}>审核资产候选 · {candidates.length} 项</summary>}
         {expanded&&<div className="shrink-0 space-y-2" data-asset-review-toolbar="">
             <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs" style={{color:theme.node.muted}}>
                 <span>待审核 {candidates.length-reviewed}</span><span>待合入 {selected}</span><span>明确跳过 {reviewed-selected}</span>
@@ -88,15 +91,15 @@ export function DramaAssetCandidates({assets,candidates,onApply,onDiscard,disabl
         </div>}
         <div data-asset-candidate-scroll-region="" role="region" aria-label="待审核资产候选列表"
             tabIndex={0} data-canvas-no-zoom
-            className={expanded?"thin-scrollbar grid min-h-0 min-w-0 flex-1 content-start gap-2 overflow-y-auto overscroll-contain pr-1":"thin-scrollbar grid min-h-0 min-w-0 gap-2 overflow-y-auto overscroll-contain pr-1"}
-            style={{maxHeight:expanded?"min(62dvh, 620px)":"min(42vh, 352px)",scrollbarColor:`${theme.node.code.scrollbar} transparent`,outlineColor:theme.node.activeStroke}}
+            className={expanded?"thin-scrollbar flex min-h-0 min-w-0 flex-1 flex-col gap-2 overflow-y-auto overflow-x-hidden overscroll-contain pr-1":"thin-scrollbar grid min-h-0 min-w-0 gap-2 overflow-y-auto overscroll-contain pr-1"}
+            style={{maxHeight:expanded?undefined:"min(42vh, 352px)",scrollbarColor:`${theme.node.code.scrollbar} transparent`,outlineColor:theme.node.activeStroke}}
             onWheel={event=>event.stopPropagation()}
             onPointerDown={event=>event.stopPropagation()}>
         {(expanded?visible:candidates).map(candidate=>{
             const matches=suggestAssetMatches(candidate,assets);
             const decision=decisions[candidate.id]??{action:"skip"};
             const compatible=assets.filter(asset=>asset.kind===candidate.kind);
-            return <section key={candidate.id} className="grid min-w-0 gap-2 rounded-lg border p-2.5"
+            return <section key={candidate.id} className="grid min-w-0 shrink-0 gap-2 rounded-lg border p-2.5"
                 style={{background:theme.node.code.surface,borderColor:theme.node.stroke}}>
                 <div className="flex min-w-0 items-start justify-between gap-2">
                     <strong className="min-w-0 break-words text-xs font-semibold">{candidate.name}</strong>
@@ -133,11 +136,11 @@ export function DramaAssetCandidates({assets,candidates,onApply,onDiscard,disabl
         })}
         {expanded&&!visible.length&&<p className="p-3 text-xs" style={{color:theme.node.muted}}>没有符合筛选条件的候选资产。</p>}
         </div>
-        <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 border-t pt-2" style={{borderColor:theme.node.stroke}}>
+        <div data-asset-review-actions="" className="flex shrink-0 flex-wrap items-center justify-end gap-2 border-t pt-2" style={{borderColor:theme.node.stroke}}>
             {expanded&&<span className="mr-auto text-xs" style={{color:theme.node.muted}}>未审核项按跳过处理；合入将结束本批审核。</span>}
             <Button size="small" style={primary} className="disabled:opacity-50" disabled={locked||!!invalid||(expanded&&!selected)} loading={submitting} onClick={()=>void submit()}>合入所选资产</Button>
             <Button size="small" style={control} className="disabled:opacity-50" disabled={disabled||submitting} onClick={onDiscard}>丢弃候选</Button>
         </div>
         {submitError&&<p role="alert" className="break-words rounded-md border p-2 text-xs" style={control}>{submitError}</p>}
-    </details>;
+    </Container>;
 }

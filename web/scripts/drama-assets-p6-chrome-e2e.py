@@ -50,6 +50,36 @@ def run():
     def close_workspace():
         click(".ant-modal-close")
         check("workspace unmounted","!document.querySelector("+json.dumps(portal)+")")
+    def check_review_geometry(appearance):
+        for height in (1050, 700):
+            page.call("Emulation.setDeviceMetricsOverride",{"width":1720,"height":height,"deviceScaleFactor":1.25,"mobile":False})
+            check("candidate geometry "+appearance+" "+str(height),"""(()=>{
+              const review=document.querySelector('[data-asset-candidate-review]');
+              const list=review?.querySelector('[data-asset-candidate-scroll-region]');
+              const toolbar=review?.querySelector('[data-asset-review-toolbar]');
+              const actions=review?.querySelector('[data-asset-review-actions]');
+              const content=review?.closest('[data-drama-workspace-content]');
+              if(!list||!toolbar||!actions||!content)return false;
+              const r=review.getBoundingClientRect(),l=list.getBoundingClientRect(),t=toolbar.getBoundingClientRect(),a=actions.getBoundingClientRect(),c=content.getBoundingClientRect();
+              return list.clientHeight>0&&list.scrollHeight>list.clientHeight&&t.bottom<=l.top+1&&l.bottom<=a.top+1&&a.bottom<=r.bottom+1&&r.bottom<=c.bottom+1&&a.bottom<=innerHeight&&content.scrollHeight<=content.clientHeight+1;
+            })()""")
+            print("P6_REVIEW_SCROLL_METRICS",page.js("""(()=>{
+              const list=document.querySelector('[data-asset-candidate-scroll-region]');
+              list.scrollTop=list.scrollHeight;
+              const last=list.querySelector(':scope > section:last-of-type select'),l=list.getBoundingClientRect(),r=last.getBoundingClientRect();
+              const hit=document.elementFromPoint(r.left+r.width/2,r.top+r.height/2);
+              return {scrollTop:list.scrollTop,scrollHeight:list.scrollHeight,clientHeight:list.clientHeight,list:l.toJSON(),last:r.toJSON(),hit:hit?.outerHTML.slice(0,250)};
+            })()"""),flush=True)
+            check("candidate last control reachable "+appearance+" "+str(height),"""(()=>{
+              const list=document.querySelector('[data-asset-candidate-scroll-region]');
+              if(!list)return false;
+              list.scrollTop=list.scrollHeight;
+              const last=list.querySelector(':scope > section:last-of-type select');
+              if(!last)return false;
+              const l=list.getBoundingClientRect(),r=last.getBoundingClientRect();
+              return list.scrollTop>0&&r.top>=l.top-1&&r.bottom<=l.bottom+1&&last.contains(document.elementFromPoint(r.left+r.width/2,r.top+r.height/2));
+            })()""")
+        page.call("Emulation.setDeviceMetricsOverride",{"width":1720,"height":1050,"deviceScaleFactor":1.25,"mobile":False})
     try:
         launch("backend",["node","scripts/drama-p34b-browser-fixture.mjs"])
         fixture=perf.wait_for(lambda:json.loads((root/"p34b-fixture.json").read_text("utf-8")) if (root/"p34b-fixture.json").exists() else None,"fixture",45)
@@ -69,7 +99,10 @@ def run():
             theme(appearance)
             open_workspace()
             check("theme and merged asset reference layout "+appearance,"""(()=>{const r=document.querySelector(%s);const panel=r?.querySelector('[aria-label="当前资产编辑区"]');const slot=panel?.querySelector('[data-asset-reference-slot="asset-1"]');const tabs=[...r.querySelectorAll('nav[aria-label="创作工作区功能"] button')].map(b=>b.textContent.trim());return r.dataset.dramaWorkspaceTheme===%s&&tabs.join('|')==='资产编辑|生成候选 · 12|影响与历史'&&panel?.textContent.includes('道具 1')&&!!slot&&getComputedStyle(panel).backgroundColor===getComputedStyle(r.querySelector('aside')).backgroundColor&&panel.clientHeight>0&&panel.scrollHeight>=panel.clientHeight&&!panel.querySelector('textarea')})()"""%(json.dumps(portal),json.dumps(appearance)))
+            button("生成候选 · 12",portal)
+            check_review_geometry(appearance)
             if appearance=="dark":close_workspace()
+            else:button("资产编辑",portal)
         click(portal+' button[aria-label="资产下一页"]')
         check("directory next page","document.querySelector("+json.dumps(portal+" aside")+")?.textContent.includes('2/5')")
         button("生成候选 · 12",portal)

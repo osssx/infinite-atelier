@@ -149,7 +149,7 @@ export function DramaAssetWorkspaceFields({assets,theme,disabled,onChange,render
    }}>确认删除</button></div>:
    <button type="button" className={button} style={control} aria-label={"删除"+label} title={inUse?"已知分镜引用此条目，暂不可删除":"从草案删除"} disabled={locked||inUse} onClick={()=>setDeletion({assetId:a.id,variantId})}><Trash2 size={13}/></button>;
  };
- return <div data-asset-workspace-fields="" data-asset-workspace-view="editor" data-asset-directory-view={view} className={"grid min-h-0 min-w-0 flex-1 gap-3 md:grid-rows-[minmax(0,1fr)] "+(cards?"md:grid-cols-[minmax(0,42%)_minmax(0,1fr)]":"md:grid-cols-[minmax(210px,260px)_minmax(0,1fr)]")}>
+ return <div data-asset-workspace-fields="" data-asset-workspace-view="editor" data-asset-directory-view={view} className={"grid min-h-0 min-w-0 flex-1 gap-3 md:grid-rows-[minmax(0,1fr)] "+(cards?"md:grid-cols-[minmax(0,55%)_minmax(0,1fr)]":"md:grid-cols-[minmax(210px,260px)_minmax(0,1fr)]")}>
   <aside aria-label="资产目录" className="flex min-h-0 min-w-0 flex-col gap-3 rounded-xl border p-3" style={control}>
    <div className="flex items-center justify-between gap-2"><strong className="shrink-0 text-sm">资产目录</strong><div className="flex flex-wrap items-center justify-end gap-1.5"><div role="group" aria-label="资产目录显示方式" className="flex shrink-0 items-center gap-0.5 rounded-lg border p-0.5" style={control}>
     {(["list","cards"] as const).map(mode=>{const Icon=mode==="list"?List:LayoutGrid;const label=mode==="list"?"列表视图":"卡片视图";return <button key={mode} type="button" aria-label={label} title={label} aria-pressed={view===mode} disabled={locked} className="grid size-7 place-items-center rounded-md hover:opacity-80 disabled:opacity-40" style={view===mode?selected:{color:theme.node.muted}} onClick={()=>setDirectory(current=>({...current,view:mode}))}><Icon size={15}/></button>;})}
@@ -160,7 +160,7 @@ export function DramaAssetWorkspaceFields({assets,theme,disabled,onChange,render
    </div>
    <input aria-label="搜索资产" placeholder="搜索名称或别名" className={fieldClass+" text-xs"} style={control} value={query} disabled={locked}
     onChange={e=>{setQuery(e.target.value);setPage(0);setActiveId("");setDeletion(null);}}/>
-   <div data-asset-directory-list="" className={"thin-scrollbar min-h-0 flex-1 overflow-y-auto overscroll-contain py-0.5 "+(cards?"grid max-h-64 grid-cols-2 content-start gap-2 md:max-h-none":"flex max-h-56 flex-col gap-1.5 md:max-h-[52dvh]")}>
+   <div data-asset-directory-list="" className={"thin-scrollbar min-h-0 flex-1 overflow-y-auto overscroll-contain py-0.5 "+(cards?"grid max-h-64 grid-cols-3 content-start gap-2 md:max-h-none":"flex max-h-56 flex-col gap-1.5 md:max-h-[52dvh]")}>
     {pageRows.map(a=>{
      const name=a.name||"未命名"+kinds[kind],isSelected=a.id===active?.id;
      const images=cards?assetDirectoryImages(a,references):undefined;

@@ -40,6 +40,20 @@ it("opens empty assets and adds a first entry with read-only fields",async()=>{
  expect(div.querySelectorAll("textarea")).toHaveLength(0);
  expect(div.querySelector('[data-reference]')).toBeTruthy();
 });
+it("separates base reference cards from character outfits and scene variants using spacing instead of a second border",async()=>{
+ const {div}=await mount([asset(1),{...asset(2),kind:"scene"}]);
+ for(const [base,variant,title] of [["a1","v1","角色造型"],["a2","v2","场景变体"]]){
+  if(base==="a2")await click([...div.querySelectorAll<HTMLButtonElement>('[aria-label="资产类别"] button')].find(b=>b.textContent?.includes("场景"))!);
+  const reference=div.querySelector('[data-asset-reference-slot="'+base+'"]')!;
+  const group=div.querySelector<HTMLElement>("[data-asset-variant-group]")!;
+  expect(reference.nextElementSibling).toBe(group);
+  expect(group.textContent).toContain(title);
+  expect(group.classList.contains("border-t")).toBe(false);
+  expect(group.style.borderColor).toBe("");
+  expect(group.classList.contains("pt-3")).toBe(true);
+  expect(group.querySelector('[data-asset-reference-slot="'+variant+'"]')).toBeTruthy();
+ }
+});
 it("keeps consistent directory spacing and prevents list rows from shrinking in the scroll region",async()=>{
  const {div}=await mount(Array.from({length:10},(_,i)=>asset(i+1)));
  const list=div.querySelector<HTMLElement>("[data-asset-directory-list]")!;

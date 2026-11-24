@@ -177,7 +177,7 @@ export function DramaAssetWorkspaceFields({assets,theme,disabled,onChange,render
     {field(active,"description","资产描述")}
     <DramaAssetUsageTags entries={useCount(active)} theme={theme}/>
     {referenceSlot(active)}
-    {kind!=="prop"&&<div className="space-y-3 border-t pt-3" style={{borderColor:theme.node.stroke}}>
+    {kind!=="prop"&&<div data-asset-variant-group="" className="min-w-0 space-y-3 pt-3">
      <div className="flex items-center justify-between gap-2"><strong className="text-sm">{kind==="character"?"角色造型":"场景变体"} · {variants.length}</strong>
       <button type="button" className={button} style={control} disabled={locked||variants.length>=32} onClick={()=>onChange?.(assets.map(a=>a.id===active.id?{...a,variants:[...variants,{id:"variant_"+crypto.randomUUID(),name:"",description:""}]}:a))}><Plus size={13}/>添加{kind==="character"?"造型":"变体"}</button></div>
      {variants.map((variant,index)=><section key={variant.id} className="space-y-3 rounded-lg border p-3" style={control}>

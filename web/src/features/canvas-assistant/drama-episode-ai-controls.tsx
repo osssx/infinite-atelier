@@ -1,4 +1,4 @@
-import {useEffect,useRef,useState,type RefObject} from "react";
+import {useEffect,useRef,useState,type RefObject,type ReactNode} from "react";
 import {Sparkles} from "lucide-react";
 import type {CanvasTheme} from "@/lib/canvas-theme";
 import {canvasApi} from "@/features/backend-sync/canvas-api";
@@ -15,10 +15,10 @@ const scopeKey=(scope:EpisodeOptimizeScope,field:EpisodeOptimizeField,sequenceId
 
 /** Only mounted inside a candidate's active local field editor. Never writes
  * the run; applying the result changes just the parent's text buffer. */
-export function DramaEpisodeAiControls({scope,field,sequenceId,draft,inputRef,theme,disabled,onApply,onBlockingChange}:{
+export function DramaEpisodeAiControls({scope,field,sequenceId,draft,inputRef,theme,disabled,onApply,onBlockingChange,children}:{
  scope:EpisodeOptimizeScope;field:EpisodeOptimizeField;sequenceId?:string;draft:string;
  inputRef:RefObject<HTMLInputElement|HTMLTextAreaElement|null>;theme:CanvasTheme;disabled:boolean;
- onApply:(text:string)=>void;onBlockingChange:(blocked:boolean)=>void;
+ onApply:(text:string)=>void;onBlockingChange:(blocked:boolean)=>void;children:ReactNode;
 }){
  const config=useEffectiveConfig();
  const [open,setOpen]=useState(false),[instruction,setInstruction]=useState("");
@@ -100,9 +100,15 @@ export function DramaEpisodeAiControls({scope,field,sequenceId,draft,inputRef,th
  const muted={color:theme.node.muted};
  const action="inline-flex min-h-7 items-center justify-center gap-1 rounded-md border px-2.5 py-1 text-xs font-medium hover:opacity-80 disabled:opacity-40";
  return <div data-episode-ai-optimize="" className="min-w-0 space-y-2">
-  <button type="button" aria-expanded={open} className={action} style={style} disabled={disabled} onClick={toggle}>
-   <Sparkles size={13} aria-hidden="true"/>AI 优化
-  </button>
+  <div data-episode-ai-input="" className="relative min-w-0">
+   {children}
+   <button type="button" aria-label="AI 优化" title="AI 优化" aria-expanded={open}
+    className="absolute right-2 top-2 inline-grid size-7 place-items-center rounded-md border border-transparent transition-colors hover:border-current focus-visible:outline focus-visible:outline-2 disabled:opacity-40"
+    style={{background:open?theme.toolbar.activeBg:theme.node.panel,color:open?theme.toolbar.activeText:theme.node.muted,outlineColor:theme.node.activeStroke}}
+    disabled={disabled} onMouseDown={event=>event.preventDefault()} onClick={toggle}>
+    <Sparkles size={15} aria-hidden="true"/>
+   </button>
+  </div>
   {open&&<div className="min-w-0 space-y-2 rounded-lg border p-3" style={style}>
    <div className="flex flex-wrap items-center gap-2">
     <button type="button" className={action} aria-pressed={mode==="field"} style={{...style,background:mode==="field"?theme.toolbar.activeBg:theme.node.panel}}

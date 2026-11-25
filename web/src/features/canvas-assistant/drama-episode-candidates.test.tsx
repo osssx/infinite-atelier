@@ -99,9 +99,14 @@ describe("P3 local AI candidate optimization",()=>{
   const editor=details.querySelector("[data-episode-candidate-editor]")!;
   await click(editor.querySelector('[aria-label="编辑剧情梗概"]'));
   const field=editor.querySelector<HTMLTextAreaElement>('textarea[aria-label="剧情梗概"]')!;
+  const floating=editor.querySelector<HTMLButtonElement>('[data-episode-ai-input] button[aria-label="AI 优化"]')!;
+  expect(floating.parentElement).toBe(field.parentElement);
+  expect(floating.textContent).toBe("");
+  expect(floating.classList.contains("absolute")).toBe(true);
+  expect(field.classList.contains("pr-12")).toBe(true);
   await input(field,"前文｜人工片段｜后文");
   await act(async()=>{field.focus();field.setSelectionRange(3,7);});
-  await click(button(editor,"AI 优化"));
+  await click(editor.querySelector('[data-episode-ai-input] button[aria-label="AI 优化"]'));
   expect(button(editor,"选区改写").getAttribute("aria-pressed")).toBe("true");
   await input(editor.querySelector<HTMLTextAreaElement>('[aria-label="候选 AI 修改意见"]')!,"增加冲突");
   await click(button(editor,"生成优化建议"));
@@ -133,7 +138,7 @@ describe("P3 local AI candidate optimization",()=>{
   await click(editor.querySelector('[aria-label="编辑集标题"]'));
   const field=editor.querySelector<HTMLInputElement>('input[aria-label="集标题"]')!;
   await input(field,"手写标题");
-  await click(button(editor,"AI 优化"));
+  await click(editor.querySelector('[data-episode-ai-input] button[aria-label="AI 优化"]'));
   const instruction=editor.querySelector<HTMLTextAreaElement>('[aria-label="候选 AI 修改意见"]')!;
   await input(instruction,"更短");
   await click(button(editor,"生成优化建议"));
@@ -162,7 +167,7 @@ describe("P3 local AI candidate optimization",()=>{
   await click(editor.querySelector('[aria-label="编辑本集结尾"]'));
   const field=editor.querySelector<HTMLTextAreaElement>('textarea[aria-label="本集结尾"]')!;
   await input(field,"人工结尾");
-  await click(button(editor,"AI 优化"));
+  await click(editor.querySelector('[data-episode-ai-input] button[aria-label="AI 优化"]'));
   await input(editor.querySelector<HTMLTextAreaElement>('[aria-label="候选 AI 修改意见"]')!,"留下悬念");
   await click(button(editor,"生成优化建议"));
   expect(button(editor,"停止等待")).toBeTruthy();
@@ -188,7 +193,7 @@ describe("P3 local AI candidate optimization",()=>{
   const {details}=await mount({optimize});
   const editor=details.querySelector("[data-episode-candidate-editor]")!;
   await click(editor.querySelector('[aria-label="编辑剧情梗概"]'));
-  await click(button(editor,"AI 优化"));
+  await click(editor.querySelector('[data-episode-ai-input] button[aria-label="AI 优化"]'));
   await input(editor.querySelector<HTMLTextAreaElement>('[aria-label="候选 AI 修改意见"]')!,"优化");
   await click(button(editor,"生成优化建议"));
   await click(button(editor,"停止等待"));
@@ -205,8 +210,10 @@ describe("P3 local AI candidate optimization",()=>{
   await click(sequence.querySelector("summary"));
   await click(sequence.querySelector('[aria-label="编辑场次 1 详情"]'));
   const title=sequence.querySelector<HTMLInputElement>('input[aria-label="场次 1 名称"]')!;
+  expect(sequence.querySelector('[data-episode-ai-input] button[aria-label="AI 优化"]')?.parentElement).toBe(title.parentElement);
+  expect(title.classList.contains("pr-12")).toBe(true);
   await input(title,"人工场名");
-  await click(button(sequence,"AI 优化"));
+  await click(sequence.querySelector('[data-episode-ai-input] button[aria-label="AI 优化"]'));
   await input(sequence.querySelector<HTMLTextAreaElement>('[aria-label="候选 AI 修改意见"]')!,"突出悬念");
   await click(button(sequence,"生成优化建议"));
   expect(optimize.mock.lastCall?.[0]).toMatchObject({field:"sequenceTitle",sequenceId:"ep0-scene",draft:"人工场名"});

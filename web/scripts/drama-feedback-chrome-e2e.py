@@ -90,7 +90,8 @@ def run():
                 check("candidate navigation locked during editing","""(()=>{const r=document.querySelector(%s),d=r?.closest('details');return [...r.querySelectorAll('[aria-label^="选择候选第"]')].every(b=>b.disabled)&&[...d.querySelectorAll('button')].find(b=>b.textContent.trim()==='采用到草案')?.disabled})()"""%json.dumps(candidate))
                 ai_input=candidate+' textarea[aria-label="剧情梗概"]'
                 check("select unsaved candidate substring","(()=>{const e=document.querySelector(%s);if(!e)return false;e.focus();e.setSelectionRange(3,7);return e.value.slice(e.selectionStart,e.selectionEnd)==='人工修订'})()"%json.dumps(ai_input,ensure_ascii=False))
-                click("AI 优化",candidate)
+                check("AI icon inside input bounds","""(()=>{const e=document.querySelector(%s),b=e?.parentElement?.querySelector('button[aria-label="AI 优化"]');if(!b)return false;const a=e.getBoundingClientRect(),r=b.getBoundingClientRect();return !b.textContent.trim()&&getComputedStyle(b).position==='absolute'&&r.left>=a.left&&r.right<=a.right&&r.top>=a.top&&r.bottom<=a.bottom&&parseFloat(getComputedStyle(e).paddingRight)>=r.width+8})()"""%json.dumps(ai_input,ensure_ascii=False))
+                click_selector("open floating AI icon",candidate+' [data-episode-ai-input] button[aria-label="AI 优化"]')
                 check("AI selection mode","""document.querySelector(%s)?.querySelector('[data-episode-ai-optimize] button[aria-pressed="true"]')?.textContent.trim()==='选区改写'"""%json.dumps(candidate))
                 type_value("AI custom instructions",candidate+' textarea[aria-label="候选 AI 修改意见"]',"增强悬念，保持前后文")
                 click("生成优化建议",candidate)

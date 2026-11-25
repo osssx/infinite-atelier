@@ -54,7 +54,7 @@ P2 前端回归：30 文件、225/225 通过（含新增 3 个状态缓存测试
 
 ## P3 实施记录
 
-- AI 优化入口仅在剧集候选的局部编辑态显示。支持集标题、剧情梗概、剧情事件、本集结尾、场次名称的整字段改写或选区改写。时长及原文/事件引用不交给模型修改。输入意见必填（最多 2500 字符），采用现有配置的文本渠道，支持 openai、openai_compatible、google_gemini。沿用 channel autoroute / credential preparation；不在浏览器持久化密钥。
+- AI 优化入口仅在剧集候选的局部编辑态显示，使用编辑框右上角悬浮 Sparkles 图标（无独立文字按钮），输入框预留右侧空间，图标支持 tooltip、键盘访问及选区保留。支持集标题、剧情梗概、剧情事件、本集结尾、场次名称的整字段改写或选区改写。时长及原文/事件引用不交给模型修改。输入意见必填（最多 2500 字符），采用现有配置的文本渠道，支持 openai、openai_compatible、google_gemini。沿用 channel autoroute / credential preparation；不在浏览器持久化密钥。
 - 新接口 POST /api/v1/projects/:id/drama-pipeline/runs/:runId/episodes/:episodeId/optimize。请求 expectedRevision、field、mode（field/selection）、draft（当前未保存文本，最多 12000 UTF-16 code units）、instruction、可选 sequenceId（仅 sequenceTitle）、selection（UTF-16 start/end，拒绝越界、空区间、代理对截断）及文本渠道配置。服务端按项目/run/单集读取已审核 ready 候选，校验目标和版本。上下文使用候选其他已保存字段、有限场次名称、冻结故事前 6000 字符，不发送过期的目标字段。长文本拒绝超限，不静默截断用户当前编辑文本。其他上下文有明确长度上限，不是全文语义检索。
 - 模型沿用 plainCanvasChat，关闭画布动作、语义意图及 Skill 工具，不创建画布任务/聊天记录。输出仅接受 JSON 对象 {replacement:string}（兼容单层 JSON fence），不能修改其他字段或 ID；服务器以原始编辑快照精确合成完整 value，并复用候选字段校验。事件文本继续逐行处理，不由模型生成或提交 eventItems；保存时仍由 P1 服务端维护稳定 ID 和关联。P4 负责多字段及事件/场次联合语义校验。
 - 优化请求不写数据库、候选 revision、正式草案、确认版本或分镜。返回 runId、episodeId、revision、field、sequenceId（场次名称时）、mode、start/end、replacement、value，前端验证全部目标标识、原始快照及合成结果。请求前与模型返回后都校验 ready/revision；每 run 同时只允许一个优化请求，结束或取消后释放占用。客户端停止等待/关闭/修改输入会 abort 请求并隔离迟到结果；后端监听连接中断并向 provider 传递 AbortSignal。实际远端是否及时取消取决于渠道。

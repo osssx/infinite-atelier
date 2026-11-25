@@ -52,6 +52,15 @@ function EpisodeReadEditField({id,label,value,disabled,theme,onConfirm,multiline
   finally{setSaving(false);}
  };
  const fieldSession=useCandidateFieldSession(editing,()=>confirm(true));
+ const optimize=fieldSession.optimization&&id!=="duration"?fieldSession.optimization:undefined;
+ const editorClass="w-full min-w-0 rounded-lg border px-3 py-2.5 text-sm leading-relaxed outline-none transition-shadow focus-visible:ring-2"+(optimize?" pr-12":"");
+ const editor=multiline?
+  <textarea ref={element=>{inputRef.current=element;}} aria-label={label==="剧情事件（每行一条）"?"剧情事件":label}
+   className={"thin-scrollbar block resize-y "+editorClass} style={inputStyle} rows={rows} value={draft} disabled={disabled}
+   onChange={event=>setDraft(event.target.value)}/>:
+  <input ref={element=>{inputRef.current=element;}} aria-label={label} type={type} min={type==="number"?"0.1":undefined}
+   step={type==="number"?"0.1":undefined} maxLength={type==="text"?12000:undefined}
+   className={editorClass} style={inputStyle} value={draft} disabled={disabled} onChange={event=>setDraft(event.target.value)}/>;
  return <section data-episode-editable-field={id} data-episode-field-mode={editing?"editing":"reading"}
   aria-label={label+"区域"} className={editing
    ?"min-w-0 space-y-3 rounded-xl border p-3 sm:p-4"
@@ -72,18 +81,8 @@ function EpisodeReadEditField({id,label,value,disabled,theme,onConfirm,multiline
    </div>
   </div>
   {editing?<>
-   {multiline?
-     <textarea ref={element=>{inputRef.current=element;}} aria-label={label==="剧情事件（每行一条）"?"剧情事件":label}
-      className="thin-scrollbar w-full min-w-0 resize-y rounded-lg border px-3 py-2.5 text-sm leading-relaxed outline-none transition-shadow focus-visible:ring-2"
-      style={inputStyle} rows={rows} value={draft} disabled={disabled}
-      onChange={event=>setDraft(event.target.value)}/>:
-     <input ref={element=>{inputRef.current=element;}} aria-label={label} type={type} min={type==="number"?"0.1":undefined}
-      step={type==="number"?"0.1":undefined} maxLength={type==="text"?12000:undefined}
-      className="w-full min-w-0 rounded-lg border px-3 py-2.5 text-sm leading-relaxed outline-none transition-shadow focus-visible:ring-2"
-      style={inputStyle} value={draft} disabled={disabled}
-      onChange={event=>setDraft(event.target.value)}/>}
-   {fieldSession.optimization&&id!=="duration"&&<DramaEpisodeAiControls scope={fieldSession.optimization} field={id}
-    draft={draft} inputRef={inputRef} theme={theme} disabled={disabled||saving||stale} onApply={setDraft} onBlockingChange={setAiBlocked}/>}
+   {optimize&&id!=="duration"?<DramaEpisodeAiControls scope={optimize} field={id}
+    draft={draft} inputRef={inputRef} theme={theme} disabled={disabled||saving||stale} onApply={setDraft} onBlockingChange={setAiBlocked}>{editor}</DramaEpisodeAiControls>:editor}
    {stale&&<DramaInlineFeedback theme={theme}>内容已在其他位置更新，请取消并重新编辑。</DramaInlineFeedback>}
    {!valid&&<DramaInlineFeedback theme={theme}>目标时长必须是大于 0 的数字，或留空。</DramaInlineFeedback>}
    {error&&<DramaInlineFeedback theme={theme} level="error" error={error}/>}
@@ -149,6 +148,9 @@ function SequenceReadEditFields({sequence,index,items,theme,disabled,onConfirm,s
  const fieldSession=useCandidateFieldSession(editing,()=>confirm(true));
  const control={background:theme.node.panel,color:theme.node.text,borderColor:theme.node.stroke,
   "--tw-ring-color":theme.node.activeStroke} as CSSProperties;
+ const titleEditor=<input ref={element=>{titleRef.current=element;}} aria-label={`场次 ${index+1} 名称`}
+  className={"w-full min-w-0 rounded-lg border px-3 py-2.5 text-sm leading-relaxed outline-none transition-shadow focus-visible:ring-2"+(fieldSession.optimization?" pr-12":"")}
+  style={control} value={title} disabled={disabled} onChange={event=>setTitle(event.target.value)}/>;
  return <div data-episode-sequence-mode={editing?"editing":"reading"}
   className={editing?"min-w-0 space-y-3 rounded-xl border p-3 sm:p-4":"min-w-0 space-y-2"}
   style={editing?{background:theme.node.fill,borderColor:theme.node.stroke}:undefined}
@@ -164,13 +166,11 @@ function SequenceReadEditFields({sequence,index,items,theme,disabled,onConfirm,s
      </button>}
    </div>
    {editing?<>
-    <label className="grid min-w-0 gap-1.5">
+    <div className="grid min-w-0 gap-1.5">
      <span style={{color:theme.node.muted}}>场次名称</span>
-     <input ref={element=>{titleRef.current=element;}} aria-label={`场次 ${index+1} 名称`} className="w-full min-w-0 rounded-lg border px-3 py-2.5 text-sm leading-relaxed outline-none transition-shadow focus-visible:ring-2"
-      style={control} value={title} disabled={disabled} onChange={event=>setTitle(event.target.value)}/>
-    </label>
-    {fieldSession.optimization&&<DramaEpisodeAiControls scope={fieldSession.optimization} field="sequenceTitle" sequenceId={sequence.id}
-     draft={title} inputRef={titleRef} theme={theme} disabled={disabled||saving||stale} onApply={setTitle} onBlockingChange={setAiBlocked}/>}
+     {fieldSession.optimization?<DramaEpisodeAiControls scope={fieldSession.optimization} field="sequenceTitle" sequenceId={sequence.id}
+      draft={title} inputRef={titleRef} theme={theme} disabled={disabled||saving||stale} onApply={setTitle} onBlockingChange={setAiBlocked}>{titleEditor}</DramaEpisodeAiControls>:titleEditor}
+    </div>
     <label className="grid min-w-0 gap-1.5">
      <span style={{color:theme.node.muted}}>场次原文段落 ID（每行一个）</span>
      <textarea aria-label={`场次 ${index+1} 原文段落`} className="thin-scrollbar w-full min-w-0 rounded-lg border px-3 py-2.5 text-sm leading-relaxed outline-none transition-shadow focus-visible:ring-2"

@@ -105,7 +105,7 @@ it.each(["success","invalid","failed"] as const)("navigates to asset candidates 
  const config=await import("@/stores/use-config-store");
  const routing=await import("@/features/backend-sync/model-channel-autoroute");
  const {canvasApi}=await import("@/features/backend-sync/canvas-api");
- const configSpy=vi.spyOn(config,"useEffectiveConfig").mockReturnValue(config.defaultConfig);
+ const configSpy=vi.spyOn(config,"useEffectiveConfig").mockReturnValue({...config.defaultConfig,channelMode:"local"});
  const routingSpy=vi.spyOn(routing,"ensureSqliteModelChannelForExecution").mockResolvedValue(undefined);
  const proposed={id:"new-cat",kind:"character" as const,name:"小猫候选",description:"白色小猫",sourceRefs:[]};
  const draft=JSON.stringify({assets:[]});
@@ -145,13 +145,13 @@ it.each(["success","invalid","failed"] as const)("navigates to asset candidates 
  }finally{configSpy.mockRestore();routingSpy.mockRestore();}
 });
 
-it.each((["episodes","storyboard"] as const).flatMap(kind=>(["ready","failed","cancelled","rejected"] as const).map(outcome=>({kind,outcome}))))(
- "navigates from $kind to candidates only for a ready generation ($outcome)",async({kind,outcome})=>{
+it.each((["episodes","storyboard"] as const).flatMap(kind=>[...(["ready","failed","cancelled","rejected"] as const).map(outcome=>({kind,outcome,visitHistory:false})),{kind,outcome:"ready" as const,visitHistory:true}]))(
+ "navigates from $kind to candidates only for a ready generation ($outcome, history=$visitHistory)",async({kind,outcome,visitHistory})=>{
  const {DramaCreativeWorkspace}=await import("./drama-creative-workspace");
  const config=await import("@/stores/use-config-store");
  const routing=await import("@/features/backend-sync/model-channel-autoroute");
  const {canvasApi}=await import("@/features/backend-sync/canvas-api");
- const configSpy=vi.spyOn(config,"useEffectiveConfig").mockReturnValue(config.defaultConfig);
+ const configSpy=vi.spyOn(config,"useEffectiveConfig").mockReturnValue({...config.defaultConfig,channelMode:"local"});
  const routingSpy=vi.spyOn(routing,"ensureSqliteModelChannelForExecution").mockResolvedValue(undefined);
  const originalApi=vi.mocked(canvasApi).getMockImplementation()!;
  const episode={id:"ep-1",title:"第一集",synopsis:"故事",ending:"",events:[],sourceRefs:[]};
@@ -173,6 +173,8 @@ it.each((["episodes","storyboard"] as const).flatMap(kind=>(["ready","failed","c
    if(outcome==="rejected")throw new Error("生成请求失败");
    completed=true;return result;
   }
+  if(path.includes("/drama-pipeline/dependencies?"))return {status:"current",changes:[]};
+  if(path.endsWith("/new-run"))return result;
   if(path.endsWith("/new-run/preview"))return {runId:"new-run",status:"ready",sourceChanged:false,fullAdoptBlocked:false,manualExtraIds:[],
    items:[{id:shot.id,kind:"added",changed:true,reordered:false,conflict:false,adopted:false,after:{order:1,description:shot.description}}],
    summary:{added:1,replaced:0,deleted:0,reordered:0,unchanged:0,conflicts:0}};
@@ -187,7 +189,7 @@ it.each((["episodes","storyboard"] as const).flatMap(kind=>(["ready","failed","c
    onClose={async()=>{}} onTabChange={tabChanges}
    renderPanel={(tab,onPendingChange)=><DramaPipelineNodePanel node={node} workspaceMode workspaceTab={tab==="settings"?"editor":tab}
     projectId="p" upstreamText="故事原文" upstreamArtifacts={upstreamArtifacts} onPendingChange={onPendingChange}
-    onBeforeDramaRun={saveBeforeRun} onChange={changes}/>}/>));
+    onBeforeDramaRun={saveBeforeRun} onChange={changes}/>} renderHistoryPanel={()=> <div>历史记录</div>}/>));
   const workspace=document.querySelector('[data-creative-workspace-node-id="'+node.id+'"]')!;
   const active=()=>workspace.querySelector('nav button[aria-pressed="true"]')?.textContent?.trim();
   const editor=isEpisode?"剧集编辑":"镜头编辑";
@@ -197,9 +199,18 @@ it.each((["episodes","storyboard"] as const).flatMap(kind=>(["ready","failed","c
   await act(async()=>button.click());
   expect(saveBeforeRun).toHaveBeenCalledTimes(1);
   expect(submit).toHaveBeenCalledTimes(1);
+  expect(document.querySelector("[data-drama-task-status]")?.textContent).toContain("模型生成与校验");
   expect(active()).toBe(editor);
   expect(tabChanges).not.toHaveBeenCalled();
+  if(visitHistory){
+   const history=[...workspace.querySelectorAll<HTMLButtonElement>("nav button")].find(b=>b.textContent?.trim()==="影响与历史")!;
+   await act(async()=>history.click());
+   expect(active()).toBe("影响与历史");
+   expect(document.querySelector("[data-drama-task-status]")?.textContent).toContain("模型生成与校验");
+   tabChanges.mockClear();
+  }
   await act(async()=>finish());
+  expect(document.querySelector("[data-drama-task-status]")).toBeNull();
   if(outcome==="ready"){
    expect(active()).toBe("生成候选");
    expect(tabChanges).toHaveBeenCalledExactlyOnceWith("runs");
@@ -211,7 +222,9 @@ it.each((["episodes","storyboard"] as const).flatMap(kind=>(["ready","failed","c
    expect(newest).toBeTruthy();
    expect(newest.open).toBe(true);
    expect(historical.open).toBe(false);
-   expect(newest.textContent).toContain("ready · 待采用");
+   expect(newest.textContent).toContain("待采用");
+   expect(newest.querySelector("summary")?.textContent).not.toContain("ready");
+   expect(workspace.querySelector('[data-drama-feedback="success"]')?.textContent).toContain("生成成功");
    if(isEpisode)expect(newest.querySelector("article")?.textContent).toContain("故事");
    else{
     expect(newest.querySelector('[aria-label="分镜候选差异预览"]')?.textContent).toContain("新镜头候选");
@@ -223,6 +236,7 @@ it.each((["episodes","storyboard"] as const).flatMap(kind=>(["ready","failed","c
    expect(active()).toBe(editor);
    expect(tabChanges).not.toHaveBeenCalled();
    expect(workspace.textContent).toContain(outcome==="failed"?"drama_candidate_invalid":outcome==="cancelled"?"已取消生成":"生成请求失败");
+   expect(workspace.querySelector(`[data-drama-feedback="${outcome==="cancelled"?"info":"error"}"]`)).toBeTruthy();
   }
   expect(changes).not.toHaveBeenCalled();
  }finally{
@@ -281,7 +295,7 @@ it("keeps a real gap between candidate title and unshrunk status label",async()=
  });
  await act(async()=>await Promise.resolve());
  const summary=[...container.querySelectorAll("details summary")].find(
-  item=>item.textContent?.includes("ready · 待采用"));
+  item=>item.textContent?.includes("待采用"));
  expect(summary).toBeTruthy();
  const content=summary?.querySelector<HTMLElement>("[data-drama-run-summary-content]");
  expect(content?.classList.contains("gap-2")).toBe(true);
@@ -292,7 +306,7 @@ it("keeps a real gap between candidate title and unshrunk status label",async()=
  expect(content?.children[1].classList.contains("shrink-0")).toBe(true);
  expect(content?.children[1].classList.contains("whitespace-nowrap")).toBe(true);
  expect(content?.children[0].textContent).toContain("毛毛和豆豆");
- expect(content?.children[1].textContent).toContain("ready · 待采用");
+ expect(content?.children[1].textContent).toBe("待采用");
 });
 
 it.each(["light","dark"] as const)("keeps long expanded run cards in a single themed scroll region in %s mode",async appearance=>{

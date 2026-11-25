@@ -5,6 +5,7 @@ import {BookOpenText,Boxes,Clapperboard,Film,History,LayoutList,ShieldAlert,Spar
 import {canvasThemes,type CanvasTheme} from "@/lib/canvas-theme";
 import {useThemeStore} from "@/stores/use-theme-store";
 import {DramaNodeStatus} from "./drama-node-style";
+import {DramaFeedbackContext,DramaFeedbackNotices,DramaTaskStatus,useDramaFeedbackController} from "./drama-feedback";
 import {DramaCandidateNavigationContext,AssetDirectoryContext,AssetReviewBusyContext,AssetReviewContext,AssetReviewNavigationContext,emptyAssetReview,initialAssetDirectory,type AssetDirectorySelection} from "./drama-asset-directory-state";
 import {DramaStoryboardNavigationContext} from "./drama-storyboard-navigation";
 import type {DramaWorkspaceTab} from "./drama-pipeline-node-panel";
@@ -82,9 +83,11 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
  const episodeMode=kind==="episodes";
  const storyMode=kind==="source";
  const assetMode=kind==="assets";
+ const feedback=useDramaFeedbackController();
  const assetDirectory=useState(()=>focus.assetDirectory??initialAssetDirectory);
  const assetReview=useState(()=>emptyAssetReview(""));
  const [tab,setTab]=useState<StoryWorkspaceTab>("editor");
+ const tabRef=useRef(tab);tabRef.current=tab;
  const reviewBusyRef=useRef(false);
  const [reviewBusy,setReviewBusy]=useState(false);
  const updateReviewBusy=useCallback((value:boolean)=>{reviewBusyRef.current=value;setReviewBusy(value);},[]);
@@ -103,10 +106,10 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
   else {setTab(target);onTabChange?.(target);}
  },[onClose,onTabChange]);
  const request=useCallback((target:StoryWorkspaceTab|"close")=>{
-  if(target===tab||reviewBusyRef.current)return;
+  if(target===tabRef.current||reviewBusyRef.current)return;
   if(pending.current.size){setPendingAction(target);return;}
   void perform(target).catch(e=>setError(e instanceof Error?e.message:"操作失败"));
- },[perform,tab]);
+ },[perform]);
  const decide=async(save:boolean)=>{
   if(!pendingAction||busy)return;
   setBusy(true);setError("");
@@ -156,6 +159,7 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
       </span>
      </div>
     </div>
+    {!storyMode&&feedback.context.task&&<DramaTaskStatus task={feedback.context.task} theme={theme}/>}
    </div>}
    width="min(1420px, calc(100vw - 24px))"
    styles={{
@@ -173,7 +177,7 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
     colorTextLightSolid:theme.node.panel,controlItemBgActive:theme.toolbar.activeBg,borderRadius:10,
    }}}>
    <div data-creative-workspace-node-id={nodeId} data-drama-workspace-theme={appearance}
-    data-drama-workspace-kind={kind} className="flex h-full min-h-0 flex-col gap-2.5"
+    data-drama-workspace-kind={kind} className="relative flex h-full min-h-0 flex-col gap-2.5"
     style={{color:theme.node.text,colorScheme:appearance}}>
     <nav aria-label="创作工作区功能" className="thin-scrollbar flex shrink-0 gap-1.5 overflow-x-auto border-b pb-2"
      style={{borderColor:theme.node.stroke}}>
@@ -181,6 +185,7 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
        description={paneDesc[item.id]} active={tab===item.id} theme={theme}
        onSelect={()=>request(item.id)}/>)}
     </nav>
+    {!storyMode&&<DramaFeedbackNotices notices={feedback.notices} clear={feedback.clear} theme={theme}/>}
     {reviewBusy&&<p role="status" className="shrink-0 text-xs" style={{color:theme.node.muted}}>正在合入资产，请勿关闭工作区或切换页面。</p>}
     {pendingCount>0&&<div className="flex min-h-0 shrink-0 justify-end">
      <span role="status" className="rounded-md border px-2 py-1 text-[11px]"
@@ -190,6 +195,7 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
     </div>}
     <div data-drama-workspace-content="" className={`thin-scrollbar min-h-0 min-w-0 flex-1 rounded-xl border p-3 sm:p-4 ${tab==="history"?"flex flex-col overflow-hidden":"overflow-y-auto overscroll-contain"}`}
      style={{...subtle}}>
+     <DramaFeedbackContext.Provider value={storyMode?null:feedback.context}>
      <DramaStoryboardNavigationContext.Provider value={kind==="storyboard"?()=>request("editor"):null}>
      <AssetDirectoryContext.Provider value={assetMode?assetDirectory:null}>
      <AssetReviewContext.Provider value={assetMode?assetReview:null}>
@@ -221,6 +227,7 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
      </AssetReviewContext.Provider>
      </AssetDirectoryContext.Provider>
      </DramaStoryboardNavigationContext.Provider>
+     </DramaFeedbackContext.Provider>
     </div>
     {error&&<p role="alert" className="shrink-0 rounded-lg border p-2 text-xs"
       style={{...subtle,background:theme.toolbar.activeBg}}>{error}</p>}

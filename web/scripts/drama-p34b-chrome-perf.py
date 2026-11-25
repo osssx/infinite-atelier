@@ -38,7 +38,7 @@ def get_json(url):
 def js(page,expression):
     return page.js(expression)
 
-def start_probe(page,label):
+def start_probe(page,label,mark_gap=False):
     started=js(page, """(() => {
       if(window.__p34bPerf?.active)return false;
       const state={label:%s,active:true,deltas:[],longTasks:[],last:null,
@@ -49,14 +49,18 @@ def start_probe(page,label):
       catch(e){state.longTaskUnsupported=String(e);}
       function frame(timestamp){
         if(!state.active)return;
-        if(state.last!==null)state.deltas.push(timestamp-state.last);
+        if(state.last!==null){
+          const delta=timestamp-state.last;
+          state.deltas.push(delta);
+          if(%s&&delta>50)performance.mark("P52-gap:"+delta.toFixed(3));
+        }
         state.last=timestamp;
         requestAnimationFrame(frame);
       }
       window.__p34bPerf=state;
       requestAnimationFrame(frame);
       return true;
-    })()"""%json.dumps(label))
+    })()"""%(json.dumps(label),json.dumps(mark_gap)))
     if not started:raise AssertionError("probe_already_running")
 
 def stop_probe(page):
@@ -75,6 +79,84 @@ def stop_probe(page):
        longTaskUnsupported:s.longTaskUnsupported||null,
        wallElapsedMs:Date.now()-s.startWall};
     })()""")
+
+class ZoomTrace:
+    """Separate browser CDP session; stream trace after the measured gesture."""
+    def __init__(self,port):
+        self.ws=cdp.websocket.create_connection(get_json(f"http://127.0.0.1:{port}/json/version")["webSocketDebuggerUrl"],
+            timeout=30,origin=f"http://127.0.0.1:{port}")
+        self.seq=0
+        self.stream=None
+    def receive(self):
+        event=json.loads(self.ws.recv())
+        if event.get("method")=="Tracing.tracingComplete":
+            self.stream=event["params"].get("stream")
+        return event
+    def call(self,method,params=None):
+        self.seq+=1
+        self.ws.send(json.dumps({"id":self.seq,"method":method,"params":params or {}}))
+        while True:
+            event=self.receive()
+            if event.get("id")==self.seq:
+                if "error" in event:raise AssertionError(event["error"])
+                return event.get("result",{})
+    def start(self):
+        self.call("Tracing.start",{"transferMode":"ReturnAsStream","traceConfig":{
+            "recordMode":"recordUntilFull","includedCategories":["devtools.timeline","blink.user_timing","cc","gpu","viz","toplevel","media","v8","disabled-by-default-devtools.timeline.frame"]}})
+    def stop(self,output=None):
+        self.call("Tracing.end")
+        while not self.stream:self.receive()
+        parts=[]
+        while True:
+            part=self.call("IO.read",{"handle":self.stream,"size":1048576})
+            if part.get("base64Encoded"):
+                import base64
+                parts.append(base64.b64decode(part["data"]))
+            else:parts.append(part.get("data","").encode("utf-8"))
+            if part.get("eof"):break
+        self.call("IO.close",{"handle":self.stream})
+        raw=b"".join(parts)
+        if output:
+            output.parent.mkdir(parents=True,exist_ok=True)
+            output.write_bytes(raw)
+        return summarize_zoom_trace(json.loads(raw))
+    def close(self):
+        self.ws.close()
+
+def summarize_zoom_trace(trace):
+    events=trace.get("traceEvents",[])
+    names={(e.get("pid"),e.get("tid")):e.get("args",{}).get("name","") for e in events if e.get("name")=="thread_name"}
+    markers=[e for e in events if e.get("name","").startswith("P52-gap:")]
+    # Mark at callback arrival; the rAF delta is a diagnostic time window,
+    # not an attribution. Report overlapping complete events on every thread.
+    def details(e):
+        return {"name":e.get("name"),"thread":names.get((e.get("pid"),e.get("tid")),""),
+            "pid":e.get("pid"),"tid":e.get("tid"),"ms":round(e.get("dur",0)/1000,2),
+            "startMs":round(e.get("ts",0)/1000,2)}
+    complete=[e for e in events if e.get("ph")=="X" and e.get("dur",0)>0]
+    gaps=[]
+    for marker in markers:
+        try:delta=float(marker["name"].split(":")[1])
+        except (ValueError,IndexError):continue
+        end=marker["ts"]
+        begin=end-delta*1000
+        overlapping=[e for e in complete if e["ts"]<end and e["ts"]+e["dur"]>begin]
+        ranked=sorted(overlapping,key=lambda e:e["dur"],reverse=True)
+        # Nested GPU trace events may describe the same operation. Preserve
+        # individual spans, and include the longest event per actual thread
+        # so a busy GPU thread cannot crowd the renderer out of the summary.
+        per_thread={}
+        for event in ranked:
+            key=(event.get("pid"),event.get("tid"))
+            if key not in per_thread:
+                detail=details(event)
+                detail["overlapMs"]=round((min(end,event["ts"]+event["dur"])-max(begin,event["ts"]))/1000,2)
+                per_thread[key]=detail
+        gaps.append({"deltaMs":delta,"largestEvents":[details(e) for e in ranked[:24]],
+            "longestPerThread":list(per_thread.values())[:24]})
+    return {"events":len(events),"gaps":gaps,
+        "dawnWorkerEvents":sum(e.get("name")=="DawnPlatformImpl::RunWorkerTask" for e in complete),
+        "largestEvents":[details(e) for e in sorted(complete,key=lambda e:e["dur"],reverse=True)[:24]]}
 
 def renderer_metrics(page):
     metrics=page.call("Performance.getMetrics",{}).get("metrics",[])
@@ -165,9 +247,11 @@ def run_workspace_tab_pressure(page):
         "apiRequests":len(page.network_requests)-before,
         "closedEditorUnmounted":True,"afterCloseHeapBytes":heap(page)}
 
-def run(output=None,gpu=False,mode="development",frontend_root=ROOT,rounds=3,cpu_profile=False,label="current",workspace_tabs=False):
+def run(output=None,gpu=False,mode="development",frontend_root=ROOT,rounds=3,cpu_profile=False,label="current",workspace_tabs=False,trace_zoom=None,legacy_raster=False):
     if not cdp.CHROME.exists():raise AssertionError("Chrome not installed:"+str(cdp.CHROME))
     if mode not in ("development","production") or rounds<3 or rounds>12:raise ValueError("invalid p34b measurement configuration")
+    if legacy_raster and not trace_zoom:raise ValueError("legacy_raster_requires_diagnostic_trace")
+    raster_flags=["--disable-features=SkiaGraphite"] if legacy_raster else []
     frontend_root=Path(frontend_root).resolve()
     root=Path(tempfile.mkdtemp(prefix="infinite-atelier-p34b-browser-"))
     chrome_profile=root.parent/(root.name+"-chrome-profile")
@@ -178,6 +262,7 @@ def run(output=None,gpu=False,mode="development",frontend_root=ROOT,rounds=3,cpu
     processes=[]
     logs=[]
     page=None
+    trace=None
     report={"schemaVersion":2,"stage":"P3.4b5","label":label,"mode":mode,"rounds":rounds,
             "frontendRoot":str(frontend_root),"fixture":None,"environment":None,
             "scenarios":[],"scopes":[],"memory":{},"network":{},"strictTargets":
@@ -209,7 +294,7 @@ def run(output=None,gpu=False,mode="development",frontend_root=ROOT,rounds=3,cpu
             launch("static",["node",str(ROOT/"scripts/drama-p34b-static-frontend.mjs"),
               "--port",str(vite_port),"--backend",fixture["backendOrigin"],"--dist",str(dist)],env)
         wait_for(lambda:urllib.request.urlopen(front,timeout=2).status==200,"vite ready",60)
-        launch("chrome",[str(cdp.CHROME),"--headless=new",*([] if gpu else ["--disable-gpu"]),
+        launch("chrome",[str(cdp.CHROME),"--headless=new",*([] if gpu else ["--disable-gpu"]),*raster_flags,
          "--enable-precise-memory-info","--no-default-browser-check","--no-first-run",
          f"--remote-debugging-port={chrome_port}","--remote-allow-origins=*",
          f"--user-data-dir={chrome_profile}","--window-size=2048,1152","about:blank"],env)
@@ -243,7 +328,7 @@ def run(output=None,gpu=False,mode="development",frontend_root=ROOT,rounds=3,cpu
         assert loaded["hasCreativePointers"]==3 and loaded["hasCreativeInlineBodies"] is False,loaded
         report["projectLoad"]=loaded
         report["environment"]={"chrome":chrome_version.get("Browser"),**screenshot_metadata(page),
-          "launchFlags":["--headless=new",*([] if gpu else ["--disable-gpu"]),"--enable-precise-memory-info"],
+          "launchFlags":["--headless=new",*([] if gpu else ["--disable-gpu"]),*raster_flags,"--enable-precise-memory-info"],
           "viewportCss":{"width":2048,"height":1152},"targetDPR":1.25}
         assert report["environment"]["dpr"]==1.25,report["environment"]
         report["memory"]["afterLoadHeapBytes"]=heap(page)
@@ -328,8 +413,11 @@ def run(output=None,gpu=False,mode="development",frontend_root=ROOT,rounds=3,cpu
             page.call("Profiler.start",{})
         for kind in ("pan","zoom"):
             for round_id in range(1,rounds+1):
+                if trace_zoom and kind=="zoom" and round_id==1:
+                    trace=ZoomTrace(chrome_port)
+                    trace.start()
                 cpu_before=renderer_metrics(page)
-                start_probe(page,kind+"-"+str(round_id))
+                start_probe(page,kind+"-"+str(round_id),mark_gap=bool(trace and kind=="zoom" and round_id==1))
                 x,y=center["x"],center["y"]
                 if kind=="pan":
                     page.call("Input.dispatchMouseEvent",{"type":"mousePressed","x":x,"y":y,
@@ -361,6 +449,10 @@ def run(output=None,gpu=False,mode="development",frontend_root=ROOT,rounds=3,cpu
                     measure["longTaskCount"]==0)
                 report["scenarios"].append(measure)
                 print("P34B_BROWSER_ROUND",json.dumps(measure,ensure_ascii=False),flush=True)
+                if trace and kind=="zoom" and round_id==1:
+                    report["zoomTrace"]=trace.stop(trace_zoom)
+                    trace.close();trace=None
+                    print("P52_ZOOM_TRACE",json.dumps(report["zoomTrace"],ensure_ascii=False),flush=True)
         if cpu_profile:
             sampling=page.call("Profiler.stop",{}).get("profile",{})
             nodes={n["id"]:n.get("callFrame",{}) for n in sampling.get("nodes",[])}
@@ -384,6 +476,8 @@ def run(output=None,gpu=False,mode="development",frontend_root=ROOT,rounds=3,cpu
         if workspace_tabs:
             report["workspaceTabs"]=run_workspace_tab_pressure(page)
             print("P34B_WORKSPACE_TAB_PRESSURE",json.dumps(report["workspaceTabs"],ensure_ascii=False),flush=True)
+        report["diagnosticOnly"]=bool(trace_zoom or cpu_profile or legacy_raster)
+        report["rasterBackendExperiment"]="disable-skia-graphite" if legacy_raster else "default"
         report["strictPass"]=all(x["strictPass"] for x in report["scenarios"])
         report["roundsPerGesture"]=rounds
         report["result"]="pass" if report["strictPass"] else "below-target"
@@ -394,6 +488,9 @@ def run(output=None,gpu=False,mode="development",frontend_root=ROOT,rounds=3,cpu
         print("P34B_REAL_CHROME_PERF_REPORT",json.dumps(report,ensure_ascii=False),flush=True)
         return report
     finally:
+        if trace:
+            try:trace.close()
+            except Exception:pass
         if page:
             try:page.close()
             except Exception:pass
@@ -417,11 +514,15 @@ if __name__=="__main__":
     parser.add_argument("--frontend-root",type=Path,default=ROOT)
     parser.add_argument("--rounds",type=int,default=3)
     parser.add_argument("--cpu-profile",action="store_true")
+    parser.add_argument("--trace-zoom",type=Path,help="diagnostic trace of the first zoom; run strict benchmark separately")
+    parser.add_argument("--legacy-raster-diagnostic",action="store_true",help="compare Chrome with SkiaGraphite disabled; requires trace, never strict acceptance")
     parser.add_argument("--workspace-tabs",action="store_true")
     parser.add_argument("--label",default="current")
     args=parser.parse_args()
-    if args.output and not args.output.is_absolute():raise SystemExit("output_path_must_be_absolute")
+    if any(path and not path.is_absolute() for path in (args.output,args.trace_zoom)):raise SystemExit("output_path_must_be_absolute")
+    if (args.trace_zoom or args.cpu_profile or args.legacy_raster_diagnostic) and args.enforce_targets:raise SystemExit("profiling_is_diagnostic_run_strict_separately")
+    if args.legacy_raster_diagnostic and not args.trace_zoom:raise SystemExit("legacy_raster_requires_diagnostic_trace")
     measured=run(args.output,gpu=args.gpu,mode=args.mode,frontend_root=args.frontend_root,
-                 rounds=args.rounds,cpu_profile=args.cpu_profile,label=args.label,workspace_tabs=args.workspace_tabs)
+                 rounds=args.rounds,cpu_profile=args.cpu_profile,label=args.label,workspace_tabs=args.workspace_tabs,trace_zoom=args.trace_zoom,legacy_raster=args.legacy_raster_diagnostic)
     if args.enforce_targets and not measured["strictPass"]:
         raise SystemExit("P34B_STRICT_PERFORMANCE_BELOW_TARGET")

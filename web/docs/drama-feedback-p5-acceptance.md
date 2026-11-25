@@ -12,7 +12,7 @@
 | 三节点真实 Chrome 反馈 | 35/35 PASS，0 browser exceptions | npm run test:drama-feedback-browser |
 | 200 节点 / 200 镜头真实工作区 | PASS，0 browser exceptions | npm run test:drama-storyboard-p5-browser |
 | 真实在线文本候选 | PASS，1 次真实 POST | node scripts/drama-p1-isolated-live.mjs --ack-cost |
-| 生产画布三轮平移、三轮缩放 | 5/6 达标，严格门槛未通过 | npm run benchmark:drama-p34b:production:strict |
+| 生产画布三轮平移、三轮缩放 | P5.2 默认无 Trace 复测 5/6，首次缩放未达标 | npm run benchmark:drama-p34b:production:strict |
 | 真实 ComfyUI 后端集成 | P5.1 修复后串行 16/16 PASS（含新增预检回归），0 SKIP；带计时及默认传输各通过一次 | 见下文 |
 
 Python Chrome CDP 依赖 websocket-client；本机缺少时仅安装至系统临时目录，通过 sys.path/PYTHONPATH 注入，没有修改全局 Python 环境。测试夹具后端、SQLite/CAS、Chrome profile 均独立于用户正式数据，不修改模型渠道或凭据，不主动重启既有服务。生产构建文件不进入版本库。
@@ -102,6 +102,54 @@ Remove-Item Env:ATELIER_TEST_COMFY_TRACE
 
 后端及编译器契约回归 89 PASS、0 FAIL、3 项显式 live SKIP（已由上述真实测试全部补跑）；TypeScript 通过。P5.1 判定 PASS。
 
+### P5.2 首次缩放 GPU 光栅化诊断（基线 3b13630）
+
+相同隔离 200/100/50 fixture、生产构建、Chrome 158 / RTX 4070 SUPER D3D11、2048×1152 CSS / DPR 1.25、空白页约 60 FPS。严格目标、手势序列和计时区间不变。Trace 独立于无采样的严格验收。
+
+第一轮默认 GPU Trace 共 377161 事件，首次缩放帧间隔 283.1ms。按 rAF 间隔对应时间窗的重叠事件检查：
+- CrGpuMain ThreadControllerImpl::RunTask 225.68ms（与该时间窗重叠 202.77ms），内部 RendererRasterWorker 225.64ms / RasterDecoderImpl::DoEndRasterCHROMIUM::Flush 224.95ms。
+- DawnPlatformImpl::RunWorkerTask 217.62ms；所在 worker 外层任务 217.64ms（重叠 202.1ms）。
+- CrRendererMain 最大完整任务 10.13ms（其中 1.31ms 与窗口重叠）；另外 Layerize 6.65ms、React/JS 回调 6.13ms、MinorGC 0.94ms。Long Task=0。
+- GPU Trace 是嵌套且跨线程的事件，不能求和；rAF 标记的时间窗为近似相关范围，不是精确因果链。已定位主要长耗时所在管线，不宣称定位具体 GPU shader 或绘制对象。
+
+对照实验（每种三轮平移、三轮缩放）：
+
+| 构建/环境 | 首次平移 FPS / max | 首次缩放 FPS / P95 / max | 达标轮次 |
+| --- | --- | --- | --- |
+| 默认 GPU Trace | 56.91 / 100.0ms | 54.88 / 16.9 / 283.1ms | 4/6（诊断） |
+| 仅手势期间 world will-change:transform，结束移除 | 54.23 / 133.3ms | 55.91 / 16.9 / 216.7ms | 4/6 |
+| 仅固定工具栏/小地图纯色代替 backdrop blur | 56.29 / 100.1ms | 54.60 / 16.9 / 266.6ms | 4/6 |
+| 原始产品代码，禁用 SkiaGraphite 的 Trace 对照 | 59.45 / 33.3ms | 55.05 / 33.3 / 83.3ms | 5/6（诊断） |
+| 撤回两项产品实验，默认 GPU 无 Trace 严格复测 | 60.01 / 16.9ms | 53.97 / 16.8 / 266.6ms | 5/6，FAIL |
+
+禁用 Graphite 的测试使用独立 Chrome 进程参数 --disable-features=SkiaGraphite；同样显示 ANGLE NVIDIA D3D11，Trace 中 DawnPlatformImpl::RunWorkerTask 由 8 个变为 0 个，首次缩放长帧窗口内最大 GPU 完整任务由 225.68ms 降到 32.46ms。它支持 Graphite/Dawn 光栅化后端参与长帧的判断，但单次对照不能证明具体 shader 编译或驱动缺陷，也未解决持续帧率不足；不是正式产品解决方案。未修改系统 Chrome 配置。两项产品优化实验均撤回，未修改 UI 外观、分辨率或画布手势策略。
+
+恢复默认构建后的无 Trace 正式复测：
+
+| 场景 | FPS | P95 / P99 ms | 最大间隔 ms | 结果 |
+| --- | ---: | ---: | ---: | --- |
+| 平移1 | 60.01 | 16.8 / 16.9 | 16.9 | PASS |
+| 平移2 | 60.01 | 16.9 / 16.9 | 16.9 | PASS |
+| 平移3 | 60.00 | 16.7 / 16.7 | 16.8 | PASS |
+| 缩放1 | 53.97 | 16.8 / 33.3 | 266.6 | FAIL |
+| 缩放2 | 58.84 | 16.9 / 16.9 | 50.1 | PASS |
+| 缩放3 | 60.00 | 16.9 / 16.9 | 17.0 | PASS |
+
+LongTask=0；GC 后 JS Heap 增长 2.38 MiB；51 次 API 请求（27 次 scoped），无写入、无浏览器异常。工作区 editor/video/runs/history 437/204/187/234ms，关闭后新增候选轮询 0。严格脚本实际非零退出，P5.2 **BLOCKED**。
+
+新增诊断入口，使用 Python websocket-client（临时 venv 依赖，不需修改全局环境）。在 web 目录：
+
+```powershell
+npm run build
+python scripts/drama-p34b-chrome-perf.py --gpu --mode production --rounds 3 --workspace-tabs --trace-zoom "$env:TEMP/atelier-p52-default.json"
+python scripts/drama-p34b-chrome-perf.py --gpu --mode production --rounds 3 --workspace-tabs --trace-zoom "$env:TEMP/atelier-p52-legacy.json" --legacy-raster-diagnostic
+npm run benchmark:drama-p34b:production:strict
+```
+
+Trace 在独立浏览器级 CDP websocket 采集，首次缩放后以 ReturnAsStream 读取；保存完整原始 JSON 至指定绝对路径（不入版本库），摘要按时间窗、实际 pid/tid 输出最长事件和重叠时长，记录 Dawn worker 事件数。Trace/CPU Profile/光栅化对照均禁止与 --enforce-targets 混用。严格模式不会添加 Trace 标记、浏览器 feature flag 或预热手势。诊断对照只用于证据，不算严格通过。
+
+后续：针对首次缩放窗口添加更细粒度 layer/tile/raster/Skia pipeline 事件，区分连接位图、媒体裁剪、节点/文本绘制各自贡献；优先在实际桌面 Chrome 与相同驱动重复冷启动对照，必要时测试另一浏览器版本/驱动环境。只有定位可由应用控制的绘制热点并在无 Trace 默认环境稳定复测达标后，才接受产品代码修改。不得用关闭 Graphite、关闭 GPU、额外预热或缩短测量窗口替代验收。
+
 ## 6. 判定
 
-P1–P4 信息反馈改造的前端回归和三节点真实浏览器专项已通过；真实文本生成及工作区大规模分页通过。P5.1 真实 ComfyUI 已通过，历史失败保留为根因证据。P5 完整门槛仍需 P5.2 解决首次缩放掉帧并复测严格性能目标；不以部分通过代替全量验收。
+P1–P4 信息反馈改造的前端回归和三节点真实浏览器专项已通过；真实文本生成及工作区大规模分页通过。P5.1 真实 ComfyUI 已通过，历史失败保留为根因证据。P5.2 已完成 GPU 管线定位及实验诊断工具，但默认生产环境首次缩放仍未达标，整体 P5 继续 BLOCKED；不以部分通过或更改浏览器后端替代全量验收。

@@ -134,12 +134,12 @@ export function buildDramaStagePrompt({stage, sourceText = "", targetEpisodes = 
   const input = [sourceText && `<source>\n${numberedSource}\n</source>`, context && `<confirmed-context>\n${context}\n</confirmed-context>`].filter(Boolean).join("\n");
   const instructions = {
     assets: "提取角色、场景和道具资产。每项给出稳定的短名称、可用于绘图的完整描述、原文段落引用。角色补充关系和造型变体，场景补充地点、时间天气变体，道具标记关键道具。",
-    episodes: `把剧情事件重排为恰好 ${Math.max(1, Math.min(100, Number(targetEpisodes) || 1))} 集。每集给出梗概、有序事件、原文段落引用和结尾。不要删掉关键事件。`,
+    episodes: `把剧情事件重排为恰好 ${Math.max(1, Math.min(100, Number(targetEpisodes) || 1))} 集。每集给出梗概、有序事件、原文段落引用和结尾；已有场次时必须返回 sequences，复用场次 ID 与原文范围。eventRefs 使用已有稳定事件 ID，不自行创建 eventItems。不要删掉关键事件。`,
     storyboard: "为确认的剧集生成可编辑镜头表。每镜给出稳定镜头编号、景别、机位或运镜、地点、动作、对白、出镜角色造型、可见道具和原文段落引用。",
   }[stage];
   const shapes = {
     assets: '{"assets":[{"id":"character_1","kind":"character","name":"名称","description":"完整外观","sourceRefs":["p1"],"variants":[{"id":"outfit_1","name":"默认造型","description":"造型描述"}]}]}',
-    episodes: '{"episodes":[{"id":"ep_1","title":"标题","synopsis":"梗概","events":["事件"],"sourceRefs":["p1"],"ending":"结尾"}]}',
+    episodes: '{"episodes":[{"id":"ep_1","title":"标题","synopsis":"梗概","events":["事件"],"sourceRefs":["p1"],"ending":"结尾","sequences":[{"id":"seq_1","title":"场次名称","sourceRefs":["p1"],"eventRefs":[]}]}]}',
     storyboard: '{"shots":[{"id":"shot_1","episodeId":"ep_1","order":1,"description":"自包含首帧画面描述","shotSize":"景别","camera":"机位或运镜","action":"动作","dialogue":"对白","sourceRefs":["p1"],"characterVariantIds":["outfit_1"],"sceneId":"scene_1","propIds":[],"keyPropIds":[]}]}',
   };
   return `你是短剧制作流水线助手。只依据资料创作，输出一个 JSON 对象，不要使用 Markdown。所有 ID 全局唯一且只含英文字母、数字、下划线或短横线。每个角色都应有至少一个造型。分镜复用上下文中的集、造型、场景和道具 ID；无场景时省略 sceneId，无变体时省略 sceneVariantId；关键道具必须出现在 propIds 中。段落出处必须使用 source 方括号中的完整段落 ID，不得重编号。\n${instructions}\n结构示例：${shapes[stage]}\n${input}`;

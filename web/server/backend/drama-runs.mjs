@@ -154,7 +154,22 @@ export function createDramaRunService({db,getProject,validateDocument,emitEvent,
      const existing=frozen.baseline.find(item=>item.id===episode.id&&!usedIds.has(item.id))??
       frozen.baseline.find((item,offset)=>offset===index&&!usedIds.has(item.id));
      const id=episodeId!=="*"?episodeId:existing?.id??randomUUID();
-     usedIds.add(id);return normalizeEpisodeEvents({...episode,id},existing??episode);
+     usedIds.add(id);
+     // A scoped rewrite is not a structure migration. The model can omit
+     // sequences or invent IDs despite the prompt; retain existing scene
+     // identity/order/lineage and source range, rather than dropping links.
+     if(episodeId!=="*"&&existing){
+      const {eventItems:_untrusted,...fields}=episode;
+      const scenes=existing.sequences?.length?existing.sequences.map(scene=>{
+       const proposed=episode.sequences?.find(item=>item.id===scene.id);
+       return {...scene,...(proposed?{title:proposed.title}:{}),
+        ...(proposed?.eventRefs!==undefined?{eventRefs:proposed.eventRefs}:{})};
+      }):episode.sequences;
+      return normalizeEpisodeEvents({...fields,id,
+       sourceRefs:existing.sourceRefs.length?existing.sourceRefs:fields.sourceRefs,
+       ...(scenes===undefined?{}:{sequences:scenes})},existing);
+     }
+     return normalizeEpisodeEvents({...episode,id},existing??episode);
     });
     db.prepare("UPDATE drama_runs SET state='ready',candidate=? WHERE project_id=? AND id=? AND state='running'")
      .run(stableJson({episodes,revision:0}),projectId,requestId);

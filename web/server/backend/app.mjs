@@ -743,7 +743,7 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
     ...(stage==="episodes"?{existingEpisodes:baseline}:{existingShots:baseline}),
     sourceParagraphs:input.paragraphs,artDirection:input.artDirection,visualStyle:input.visualStyle});
    const prompt=buildDramaStagePrompt({stage,targetEpisodes:input.targetEpisodes,sourceText:input.story,sourceParagraphs:input.paragraphs,context})+
-    (stage==="episodes"?"\n输出 episodes。scope.episodeId 非 * 时仅重写该集，保留该集 ID、场次 ID 和原文范围，不改写其他集。":
+    (stage==="episodes"?"\n输出 episodes。scope.episodeId 非 * 时仅重写该集，保留该集 ID、场次 ID、场次顺序和原文范围，不改写其他集。已有场次逐个返回，不新增或删除场次；已有 eventRefs 用原稳定事件 ID，无法可靠调整时保留原引用供审核。":
     "\n只输出 episode.id 指定集的镜头。scope.sequenceId 存在时只输出该场并为每镜复用该 ID。scope.shotId 存在时只输出该镜头。所有角色造型、场景和道具 ID 都必须来自已确认 assets；不得把原文出现但未登记的道具编造成 propIds/keyPropIds，若无合法道具则这两个数组均为 []。");
    const messages=[{role:"user",content:prompt}];
    if(repair){

@@ -25,7 +25,7 @@ def run():
     backend_port,front_port,chrome_port=p1.port(),p1.port(),p1.port()
     env=dict(os.environ,ATELIER_DATA_DIR=str(root),ATELIER_BACKEND_PORT=str(backend_port),
              ATELIER_DRAMA_P1_BROWSER_E2E="1",ATELIER_DRAMA_FEEDBACK_E2E="1")
-    processes=[];logs=[];page=None;passed=[]
+    processes=[];logs=[];page=None;passed=[];large_metrics={}
     def launch(name,args,e=env):
         log=open(root/(name+".log"),"w",encoding="utf-8",errors="replace");logs.append(log)
         p=subprocess.Popen(args,cwd=ROOT,env=e,stdin=subprocess.DEVNULL,stdout=log,stderr=subprocess.STDOUT)
@@ -183,13 +183,47 @@ def run():
                 click("确认删除候选",active_candidate)
                 check("discarded run removed","document.querySelectorAll("+json.dumps(portal+" [data-drama-run-scroll-region] > details")+").length===1&&!document.querySelector('[data-drama-task-status]')")
             close(portal)
+        # P6: real browser with 100 candidate episodes; deterministic provider,
+        # no publication, and only one detailed editor/diff mounted at a time.
+        if "--large" in sys.argv:
+            card='[data-node-id="episodes"]'
+            portal='[data-creative-workspace-node-id="episodes"]'
+            click("打开完整编辑器 ↗",card)
+            type_value("set 100 target episodes",portal+' input[aria-label="剧集规划目标集数"]',"100")
+            check("select large complete plan","(()=>{const s=document.querySelector("+json.dumps(portal+' select[aria-label="剧集规划生成范围"]',ensure_ascii=False)+");if(!s||s.disabled)return false;Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set.call(s,'');s.dispatchEvent(new Event('change',{bubbles:true}));return true})()")
+            started=time.perf_counter()
+            click("生成剧集候选",portal)
+            candidate=portal+" [data-drama-run-scroll-region] > details[open] [data-episode-candidate-editor]"
+            check("100 candidates loaded","document.querySelector("+json.dumps(candidate)+")?.querySelectorAll('[aria-label^=\"选择候选第\"]').length===100&&!document.querySelector('[data-drama-task-status]')",45)
+            large_metrics["generationToReadyMs"]=round((time.perf_counter()-started)*1000)
+            check("100 candidates single detail mounted","document.querySelector("+json.dumps(candidate)+")?.querySelectorAll('[data-episode-readonly=\"synopsis\"]').length===1")
+            started=time.perf_counter()
+            click_selector("switch to 100th episode",candidate+' button[aria-label^="选择候选第 100 集"]')
+            check("100th candidate selected","document.querySelector("+json.dumps(candidate)+")?.querySelector('button[aria-pressed=\"true\"]')?.textContent.includes('100 集')&&document.querySelector("+json.dumps(candidate)+")?.querySelectorAll('[data-episode-readonly=\"synopsis\"]').length===1")
+            large_metrics["lastEpisodeSwitchMs"]=round((time.perf_counter()-started)*1000)
+            started=time.perf_counter()
+            click("采用到草案",portal)
+            review=portal+" [data-episode-adoption-review]"
+            check("100 episode review ready","document.querySelector("+json.dumps(review)+")?.querySelectorAll('article').length===100")
+            large_metrics["reviewOpenMs"]=round((time.perf_counter()-started)*1000)
+            check("no expanded review by default","document.querySelector("+json.dumps(review)+")?.querySelectorAll('button[aria-expanded=\"true\"]').length===0")
+            started=time.perf_counter()
+            click("查看对比",review)
+            check("one review detail expanded","document.querySelector("+json.dumps(review)+")?.querySelectorAll('button[aria-expanded=\"true\"]').length===1")
+            large_metrics["reviewExpandMs"]=round((time.perf_counter()-started)*1000)
+            large_metrics["workspaceDomElements"]=page.js("document.querySelector("+json.dumps(portal)+").querySelectorAll('*').length")
+            click("关闭审核",review)
+            click("删除生成记录",candidate)
+            click("确认删除候选",candidate)
+            check("large candidate discarded","!document.querySelector("+json.dumps(candidate)+")&&!document.querySelector('[data-drama-task-status]')")
+            close(portal)
         before=len([r for r in page.network_requests if "/drama-pipeline/runs" in r.get("path","")])
         time.sleep(3.4)
         after=len([r for r in page.network_requests if "/drama-pipeline/runs" in r.get("path","")])
         assert after==before,("polling after close",before,after)
         passed.append("no run polling after close")
         assert not page.exceptions,page.exceptions
-        print("FEEDBACK_BROWSER_REPORT",json.dumps({"assertions":passed,"browserExceptions":page.exceptions,"providerPosts":0},ensure_ascii=False),flush=True)
+        print("FEEDBACK_BROWSER_REPORT",json.dumps({"assertions":passed,"browserExceptions":page.exceptions,"providerPosts":0,"largeCandidateMetrics":large_metrics},ensure_ascii=False),flush=True)
     except Exception:
         if page:
             try:print("FEEDBACK_BROWSER_DIAGNOSTIC",page.text()[-2500:],flush=True)

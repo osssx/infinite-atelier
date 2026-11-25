@@ -11,6 +11,7 @@ import {createDramaRunService,exportDramaRuns,importDramaRuns} from "./drama-run
 import {createProjectArchive} from "./project-archive.mjs";
 import {createBlobStore} from "./blob-store.mjs";
 import {buildApp} from "./app.mjs";
+import {createAssistantChatService} from "./assistant-chat.mjs";
 import {buildEpisodeOptimizeTarget,parseEpisodeOptimizeResult,buildWholeEpisodeOptimizeTarget,parseWholeEpisodeOptimizeResult} from "./drama-episode-optimize.mjs";
 import {patchWholeEpisodeCandidateFields} from "./drama-episode-candidate.mjs";
 import {unresolvedEventRefs} from "../drama-episode-links.mjs";
@@ -41,6 +42,27 @@ function fixture(t,{existing=true,target=3,generate}={}){
 }
 const draft=p=>JSON.parse(p.document.nodes.find(n=>n.id==="episodes").metadata.dramaDraft).episodes;
 const patch=(service,runId,episodeId,expectedRevision,changes)=>service.patchEpisode("p",runId,episodeId,{expectedRevision,changes});
+
+test("scoped generation preserves existing scene IDs, order, references and event identity when model omits or invents structure",async t=>{
+ let proposedScenes;
+ const {service,initial,project}=fixture(t,{generate:async(config,input,baseline)=>{
+  const prior=baseline[0],{sequences,eventItems,...body}=prior;
+  const events=["Arrival updated","Discovery"];
+  return JSON.stringify({episodes:[{...body,events,sourceRefs:["invented-source"],eventItems:events.map((text,index)=>({id:"invented-"+index,text})),
+   ...(proposedScenes===undefined?{}:{sequences:proposedScenes})}]});
+ }});
+ const before=project();
+ for(const [index,scenes] of [undefined,[],[{id:"invented-scene",title:"Wrong"}],[{id:"one-scene",title:"Renamed",sourceRefs:["wrong"],eventRefs:["one-arrival"]}]].entries()){
+  proposedScenes=scenes;
+  const result=await service.submit("p",request("scoped-structure-"+index,"one"));
+  const next=result.candidate.episodes[0];
+  assert.equal(next.id,"one");
+  assert.deepEqual(next.sequences,index===3?[{...initial[0].sequences[0],title:"Renamed"}]:initial[0].sequences);
+  assert.deepEqual(next.eventItems.map(item=>item.id),initial[0].eventItems.map(item=>item.id));
+  assert.deepEqual(unresolvedEventRefs(next),[]);
+ }
+ assert.deepEqual(project(),before);
+});
 
 test("candidate editing is isolated, revisioned, bounded and preserves stable event identities",async t=>{
  const {db,service,project,calls}=fixture(t);
@@ -453,6 +475,36 @@ test("review blocks newly dangling events; selected unaffected row remains adopt
  service.adopt("p","relations",undefined,1,["two"],review.reviewToken);
  assert.equal(draft(project())[0].synopsis,"Original one");
  assert.equal(draft(project())[1].synopsis,"Generated two");
+});
+
+test("P6 optimization recovers from actual assistant transport timeout, network rejection and invalid JSON without writes",async t=>{
+ const {db,service,project}=fixture(t);
+ const run=await service.submit("p",request("faults")),before=project();
+ let scenario="timeout",calls=0;
+ const vault={get:()=>({provider:"openai_compatible",hasKey:true,keyVersion:"fixture"}),withSecretVersion:(_,consume)=>consume(Buffer.from("test-only"))};
+ const assistantChat=createAssistantChatService({vault,maxRetries:0,requestTimeoutMs:30,retryDelayMs:0,
+  compatibleUpstreamCall:async(_url,{signal})=>{
+   calls++;
+   if(scenario==="timeout")return new Promise((_,reject)=>{
+    const timer=setTimeout(()=>reject(Error("test_deadline_missing")),500);
+    signal.addEventListener("abort",()=>{clearTimeout(timer);reject(signal.reason);},{once:true});
+   });
+   if(scenario==="network")throw Error("synthetic_network_failure");
+   return Response.json({choices:[{message:{content:scenario==="malformed"?"not JSON":'{"replacement":"恢复后的建议"}'}}]});
+  }});
+ const app=buildApp({db,authorize:()=>true,assistantChat});t.after(()=>app.close());
+ const root="/api/v1/projects/p/drama-pipeline/runs/faults/episodes/one/optimize";
+ const payload={...optimizeBody,provider:"openai_compatible",baseUrl:"https://example.com/v1"};
+ for(const [mode,status,code] of [["timeout",504,"assistant_upstream_retry_exhausted"],["network",502,"assistant_upstream_unavailable"],["malformed",422,"drama_episode_optimize_result_invalid"],["success",200,null]]){
+  scenario=mode;
+  const res=await app.inject({method:"POST",url:root,payload});
+  assert.equal(res.statusCode,status,res.body);
+  if(code)assert.equal(res.json().code,code);
+  else assert.equal(res.json().replacement,"恢复后的建议");
+  assert.deepEqual(service.get("p","faults"),run);
+  assert.deepEqual(project(),before);
+ }
+ assert.equal(calls,4);
 });
 
 test("review token fences changed downstream associations and changed source revision, not unrelated canvas edits",async t=>{

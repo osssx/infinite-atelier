@@ -5,6 +5,7 @@ import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
 import type { DramaAsset, DramaAssetKind } from "./canvas-drama-pipeline";
 import { dramaNodeControl, dramaNodePrimary } from "./drama-node-style";
+import {DramaInlineFeedback,useDramaFeedback} from "./drama-feedback";
 
 import {suggestAssetMatches,type AssetDecision} from "./drama-asset-merge";
 
@@ -23,6 +24,7 @@ export function DramaAssetCandidates({assets,candidates,onApply,onDiscard,disabl
     const [submitError,setSubmitError]=useState("");
     const inFlight=useRef(false);
     const setReviewBusy=useContext(AssetReviewBusyContext);
+    const feedback=useDramaFeedback()?.api;
     const appearance=useThemeStore(state=>state.theme);
     const theme=canvasThemes[appearance];
     const control=dramaNodeControl(theme);
@@ -52,10 +54,13 @@ export function DramaAssetCandidates({assets,candidates,onApply,onDiscard,disabl
     const submit=async()=>{
         // Disable double clicks synchronously, before React commits state.
         if(disabled||inFlight.current||invalid||(expanded&&!selected))return;
+        const task=feedback?.beginTask("正在合入资产候选",`${selected} 项资产`,true);
+        if(feedback&&!task)return;
+        task?.phase("校验并合入草案");
         inFlight.current=true;setReviewBusy?.(true);setSubmitting(true);setSubmitError("");
         try{await onApply(Object.fromEntries(candidates.flatMap(candidate=>decisions[candidate.id]?[[candidate.id,decisions[candidate.id]]]:[])));}
         catch(error){setSubmitError(error instanceof Error?error.message:"资产合入失败");}
-        finally{inFlight.current=false;setReviewBusy?.(false);setSubmitting(false);}
+        finally{task?.end();inFlight.current=false;setReviewBusy?.(false);setSubmitting(false);}
     };
     // Native details has a special content layout box; use a real flex container in the full workspace.
     const Container=expanded?"div":"details";
@@ -141,6 +146,6 @@ export function DramaAssetCandidates({assets,candidates,onApply,onDiscard,disabl
             <Button size="small" style={primary} className="disabled:opacity-50" disabled={locked||!!invalid||(expanded&&!selected)} loading={submitting} onClick={()=>void submit()}>合入所选资产</Button>
             <Button size="small" style={control} className="disabled:opacity-50" disabled={disabled||submitting} onClick={onDiscard}>丢弃候选</Button>
         </div>
-        {submitError&&<p role="alert" className="break-words rounded-md border p-2 text-xs" style={control}>{submitError}</p>}
+        {submitError&&<DramaInlineFeedback theme={theme} level="error" error={submitError}/>}
     </Container>;
 }

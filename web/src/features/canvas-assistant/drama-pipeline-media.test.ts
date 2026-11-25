@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { buildNodeGenerationContext } from "@/components/canvas/canvas-node-generation";
-import { buildDramaVideoConfigGraph,refreshDramaVideoConfig,refreshDramaVideoConfigGraph } from "./drama-video-config";
+import { buildDramaVideoConfigGraph,planDramaBatchVideoConfigs,refreshDramaVideoConfig,refreshDramaVideoConfigGraph } from "./drama-video-config";
 import { createCanvasNode } from "@/lib/canvas/canvas-node-factory";
 import { describe, expect, it } from "vitest";
 import { applyDramaProduction,buildDramaVideoInput, dramaVideoMissingReferenceIds } from "./drama-pipeline-media";
@@ -124,6 +124,18 @@ it("creates editable video configs with real generation inputs and skips existin
 });
 
 
+it("returns actual created shot IDs and rejects stale or already configured shots",()=>{
+ const source=createCanvasNode("drama:storyboard",{x:0,y:0});
+ const first=buildDramaVideoInput(snapshot,shot);
+ const stale=buildDramaVideoInput(snapshot,{...shot,id:"stale"});
+ const fresh=buildDramaVideoInput(snapshot,{...shot,id:"fresh"});
+ const existing=buildDramaVideoConfigGraph(source,[first],[source],[]);
+ const {graph,result}=planDramaBatchVideoConfigs(source,[first.shot,{...stale.shot,description:"已更新"},fresh.shot],[first,stale,fresh],existing.nodes,existing.connections);
+ expect(result.createdShotIds).toEqual(["fresh"]);
+ expect(result.failures.map(item=>item.shotId)).toEqual([first.shot.id,"stale"]);
+ expect(graph.configIds).toHaveLength(1);
+ expect(graph.nodes).toEqual(expect.arrayContaining(existing.nodes));
+});
 it("refreshes selected reference inputs while preserving media, other settings and manual edits",()=>{
     const source=createCanvasNode("drama:storyboard",{x:0,y:0},{dramaConfirmedVersionId:"revision-one"});
     const input=applyDramaProduction(buildDramaVideoInput(snapshot,shot),{mode:"first_frame",firstFrame:"cas:"+"d".repeat(64)});

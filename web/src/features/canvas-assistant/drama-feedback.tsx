@@ -4,12 +4,12 @@ import type {CanvasTheme} from "@/lib/canvas-theme";
 
 export type DramaFeedbackLevel="info"|"success"|"warning"|"error";
 type Notice={key:string;level:DramaFeedbackLevel;title:string;detail?:string;serial:number};
-type Task={id:number;title:string;target?:string;phase:string;startedAt:number};
+type Task={id:number;title:string;target?:string;phase:string;startedAt:number;blockNavigation?:boolean};
 type TaskHandle={phase:(value:string)=>void;end:()=>void};
 type FeedbackApi={
  notify:(key:string,level:DramaFeedbackLevel,title:string,detail?:string)=>void;
  clear:(key:string)=>void;
- beginTask:(title:string,target?:string)=>TaskHandle|null;
+ beginTask:(title:string,target?:string,blockNavigation?:boolean)=>TaskHandle|null;
  focusRun:(id:string)=>void;
  consumeRun:(id:string)=>void;
 };
@@ -58,9 +58,9 @@ export function useDramaFeedbackController(){
   });
   if(level!=="error")timers.current.set(key,setTimeout(()=>clear(key),level==="success"?2000:level==="warning"?4000:3000));
  },[clear]);
- const beginTask=useCallback<FeedbackApi["beginTask"]>((title,target)=>{
+ const beginTask=useCallback<FeedbackApi["beginTask"]>((title,target,blockNavigation)=>{
   if(!live.current||active.current)return null;
-  const value={id:++serial.current,title,target,phase:"准备生成",startedAt:Date.now()};
+  const value={id:++serial.current,title,target,phase:"准备处理",startedAt:Date.now(),blockNavigation};
   active.current=value;setTask(value);
   return {phase:phase=>{if(live.current&&active.current?.id===value.id){active.current={...active.current,phase};setTask(active.current);}},
    end:()=>{if(active.current?.id===value.id){active.current=null;if(live.current)setTask(null);}}};

@@ -5,6 +5,28 @@ import { CanvasNodeType, type CanvasConnection, type CanvasNodeData } from "@/ty
 import type { buildDramaVideoInput } from "./drama-pipeline-media";
 
 export type DramaRefreshFields = {prompt:boolean;duration:boolean;references?:boolean;overwrite:boolean};
+export type DramaBatchCreateResult={createdShotIds:string[];failures:{shotId:string;error:string}[]};
+
+/** Classify every submitted shot against the current confirmed graph before mutating it. */
+export function planDramaBatchVideoConfigs(source:CanvasNodeData|undefined,confirmedShots:readonly ReturnType<typeof buildDramaVideoInput>["shot"][],inputs:ReturnType<typeof buildDramaVideoInput>[],nodes:CanvasNodeData[],connections:CanvasConnection[],style?:string,ratio?:string){
+ const existing=source?findDramaVideoConfigs(source.id,nodes,connections):new Map();
+ const failures:DramaBatchCreateResult["failures"]=[];
+ const seen=new Set<string>();
+ const confirmedById=new Map(confirmedShots.map(shot=>[shot.id,JSON.stringify(shot)]));
+ const valid=inputs.filter(input=>{
+  const id=input.shot.id;
+  if(seen.has(id))return false;
+  seen.add(id);
+  const error=!source?"分镜节点已不存在":existing.has(id)?"视频配置已存在，请刷新列表":confirmedById.get(id)!==JSON.stringify(input.shot)?"确认镜头已变化，请重新预检":undefined;
+  if(error)failures.push({shotId:id,error});
+  return !error;
+ });
+ const graph=source?buildDramaVideoConfigGraph(source,valid,nodes,connections,style,ratio):{nodes,connections,configIds:[]};
+ const createdSet=new Set(graph.configIds);
+ const createdShotIds=graph.nodes.filter(node=>createdSet.has(node.id)).flatMap(node=>node.metadata?.dramaShotId?[node.metadata.dramaShotId]:[]);
+ for(const input of valid)if(!createdShotIds.includes(input.shot.id))failures.push({shotId:input.shot.id,error:"未创建视频配置，请重新预检"});
+ return {graph,result:{createdShotIds,failures} satisfies DramaBatchCreateResult};
+}
 
 function referenceBaseline(node:CanvasNodeData,connections:CanvasConnection[],nodes:CanvasNodeData[]) {
     return JSON.stringify({mode:node.metadata?.videoMode,references:node.metadata?.videoReferences,

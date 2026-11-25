@@ -563,6 +563,110 @@ it("navigates from batch rows into the actual workspace editor and selects the m
  await click(workspace().querySelector<HTMLButtonElement>('[data-video-mode-field="editing"] [data-drama-action="cancel"]')!);
  expect(workspace().querySelector<HTMLButtonElement>('[aria-label^="选择镜头 1："]')?.disabled).toBe(false);
 });
+it("keeps the precise upstream impact scope when history remounts the storyboard editor",async()=>{
+ const {DramaCreativeWorkspace}=await import("./drama-creative-workspace");
+ const {canvasApi}=await import("@/features/backend-sync/canvas-api");
+ const originalApi=vi.mocked(canvasApi).getMockImplementation()!;
+ const shots=[{id:"s1",episodeId:"ep-1",sequenceId:"a",order:1,description:"第一镜",characterVariantIds:[],propIds:[],keyPropIds:[]},{id:"s0",episodeId:"ep-2",sequenceId:"b",order:1,description:"同集其他镜头",characterVariantIds:[],propIds:[],keyPropIds:[]},{id:"s2",episodeId:"ep-2",sequenceId:"b",order:2,description:"受影响镜头",characterVariantIds:[],propIds:[],keyPropIds:[]}];
+ const draft=JSON.stringify({shots});
+ const node={id:"board-impact",type:"drama:storyboard",title:"分镜配置",position:{x:0,y:0},metadata:{dramaDraft:draft,dramaConfirmed:draft}} as CanvasNodeData;
+ const upstreamArtifacts=[JSON.stringify({assets:[]}),JSON.stringify({episodes:[{id:"ep-1",title:"第一集",synopsis:"",ending:"",events:[],sourceRefs:[],sequences:[{id:"a",title:"第一场"}]},{id:"ep-2",title:"第二集",synopsis:"",ending:"",events:[],sourceRefs:[],sequences:[{id:"b",title:"第二场"}]}]})];
+ const impact={assetIds:[],episodeIds:["ep-2"],sequenceIds:["ep-2/b"],shotIds:["s2"],mediaShotIds:[],configIds:[],needsReview:[]};
+ vi.mocked(canvasApi).mockImplementation((async(path:string)=>path.includes("/dependencies?")?{status:"changed",changes:[],impact}:path.includes("/runs?")?[]:{}) as typeof canvasApi);
+ const container=document.createElement("div");document.body.append(container);
+ const root=createRoot(container);roots.push(root);
+ try{
+  await act(async()=>root.render(<DramaCreativeWorkspace projectId="p" nodeId={node.id} kind="storyboard" focus={{}} versionConfirmed onClose={async()=>{}}
+   renderPanel={(tab,onPendingChange)=><DramaPipelineNodePanel node={node} upstreamArtifacts={upstreamArtifacts} projectId="p" workspaceMode workspaceTab={tab==="settings"?"editor":tab} onPendingChange={onPendingChange} onChange={()=>{}}/>} renderHistoryPanel={()=> <div>历史版本</div>}/>));
+  const workspace=document.querySelector('[data-creative-workspace-node-id="board-impact"]')!;
+  const click=async(text:string)=>{const b=[...workspace.querySelectorAll<HTMLButtonElement>("button")].find(b=>b.textContent?.trim()===text)!;expect(b).toBeTruthy();await act(async()=>b.click());};
+  await click("影响与历史");
+  expect(workspace.querySelector('[data-drama-inline-feedback="warning"]')?.textContent).toContain("上游已有更新");
+  await click("按镜重跑 · 第二集 · 镜头 2");
+  expect(workspace.querySelector('nav button[aria-pressed="true"]')?.textContent).toContain("镜头编辑");
+  expect(workspace.querySelector("[data-drama-storyboard-scope-summary]")?.textContent).toBe("第二集 · 第二场 · 镜头 2");
+  expect(workspace.querySelector<HTMLSelectElement>('select[aria-label="选择分镜剧集"]')?.value).toBe("ep-2");
+  expect(workspace.querySelector('[aria-label="选择镜头 2：s2"]')?.getAttribute("aria-pressed")).toBe("true");
+ }finally{await act(async()=>root.unmount());roots.splice(roots.indexOf(root),1);vi.mocked(canvasApi).mockImplementation(originalApi);}
+});
+
+it("allows cancellation during a retry, and reports the returned terminal status",async()=>{
+ const {DramaCreativeWorkspace}=await import("./drama-creative-workspace");
+ const {canvasApi}=await import("@/features/backend-sync/canvas-api");
+ const originalApi=vi.mocked(canvasApi).getMockImplementation()!;
+ const run={id:"retry-run",episodeId:"ep-1",status:"failed",error:"drama_candidate_invalid"};
+ let status="failed";let finish!:()=>void;
+ const pending=new Promise<void>(resolve=>{finish=resolve;});
+ const retry=vi.fn(),cancel=vi.fn();
+ vi.mocked(canvasApi).mockImplementation((async(path:string)=>{
+  if(path.endsWith("/retry")){retry();status="running";await pending;return {...run,status,error:undefined};}
+  if(path.endsWith("/cancel")){cancel();status="cancelled";finish();return {...run,status,error:undefined};}
+  if(path.includes("/runs?")||path.endsWith("/retry-run"))return path.includes("/runs?")?[{...run,status,error:status==="failed"?run.error:undefined}]:{...run,status};
+  return {};
+ }) as typeof canvasApi);
+ const node={id:"retry-episodes",type:"drama:episodes",title:"剧集规划",position:{x:0,y:0},metadata:{dramaDraft:JSON.stringify({episodes:[]})}} as CanvasNodeData;
+ const container=document.createElement("div");document.body.append(container);const root=createRoot(container);roots.push(root);
+ try{
+  await act(async()=>root.render(<DramaCreativeWorkspace projectId="p" nodeId={node.id} kind="episodes" focus={{}} versionConfirmed={false} onClose={async()=>{}}
+   renderPanel={(tab,onPendingChange)=><DramaPipelineNodePanel node={node} projectId="p" workspaceMode workspaceTab={tab==="settings"?"editor":tab} onPendingChange={onPendingChange} onChange={()=>{}}/>}/>));
+  const workspace=document.querySelector('[data-creative-workspace-node-id="retry-episodes"]')!;
+  const button=(text:string)=>[...workspace.querySelectorAll<HTMLButtonElement>("button")].find(b=>b.textContent?.trim()===text)!;
+  await act(async()=>button("生成候选").click());
+  const details=workspace.querySelector<HTMLDetailsElement>("[data-drama-run-scroll-region] details")!;
+  await act(async()=>{details.open=true;details.dispatchEvent(new Event("toggle"));});
+  await act(async()=>button("使用原输入重试").click());
+  expect(retry).toHaveBeenCalledTimes(1);
+  expect(document.querySelector("[data-drama-task-status]")?.textContent).toContain("正在重试候选生成");
+  await act(async()=>{await new Promise(r=>setTimeout(r,3100));});
+  expect(button("取消生成").disabled).toBe(false);
+  await act(async()=>button("取消生成").click());
+  expect(cancel).toHaveBeenCalledTimes(1);
+  expect(document.querySelector("[data-drama-task-status]")).toBeNull();
+  expect(workspace.querySelector('[data-drama-feedback="info"]')?.textContent).toContain("已取消");
+ }finally{finish();await act(async()=>root.unmount());roots.splice(roots.indexOf(root),1);vi.mocked(canvasApi).mockImplementation(originalApi);}
+});
+it("reports committed adoption separately from a failed preview refresh and prevents stale adoption",async()=>{
+ const {DramaCreativeWorkspace}=await import("./drama-creative-workspace");
+ const {canvasApi}=await import("@/features/backend-sync/canvas-api");
+ const originalApi=vi.mocked(canvasApi).getMockImplementation()!;
+ const shot={id:"s1",episodeId:"ep-1",order:1,description:"候选镜头",characterVariantIds:[],propIds:[],keyPropIds:[]};
+ const run={id:"adopt-run",episodeId:"ep-1",status:"ready",candidate:{shots:[shot]}};
+ const preview={items:[{id:shot.id,kind:"added",after:shot,changed:true,conflict:false,adopted:false}],manualExtraIds:[],sourceChanged:false,fullAdoptBlocked:false,summary:{added:1,replaced:0,deleted:0,reordered:0,unchanged:0,conflicts:0}};
+ let committed=false,failRefresh=true;
+ const adopt=vi.fn(async()=>{committed=true;});
+ vi.mocked(canvasApi).mockImplementation((async(path:string)=>{
+  if(path.endsWith("/preview")){
+   if(committed&&failRefresh)throw Error("preview_unavailable");
+   return committed?{...preview,items:[{...preview.items[0],adopted:true}]}:preview;
+  }
+  if(path.includes("/runs?"))return [run];
+  if(path.endsWith("/adopt-run"))return run;
+  return {};
+ }) as typeof canvasApi);
+ const node={id:"board-adopt-recovery",type:"drama:storyboard",title:"分镜配置",position:{x:0,y:0},metadata:{dramaDraft:JSON.stringify({shots:[]})}} as CanvasNodeData;
+ const container=document.createElement("div");document.body.append(container);const root=createRoot(container);roots.push(root);
+ try{
+  await act(async()=>root.render(<DramaCreativeWorkspace projectId="p" nodeId={node.id} kind="storyboard" focus={{}} versionConfirmed={false} onClose={async()=>{}}
+   renderPanel={(tab,onPendingChange)=><DramaPipelineNodePanel node={node} projectId="p" workspaceMode workspaceTab={tab==="settings"?"editor":tab} onPendingChange={onPendingChange} onChange={()=>{}} onAdoptDramaRun={adopt}/>}/>));
+  const workspace=document.querySelector('[data-creative-workspace-node-id="board-adopt-recovery"]')!;
+  const button=(text:string)=>[...workspace.querySelectorAll<HTMLButtonElement>("button")].find(b=>b.textContent?.trim()===text)!;
+  await act(async()=>button("生成候选").click());
+  const details=workspace.querySelector<HTMLDetailsElement>("[data-drama-run-scroll-region] details")!;
+  await act(async()=>{details.open=true;details.dispatchEvent(new Event("toggle"));});
+  await act(async()=>button("选择全部无冲突差异").click());
+  await act(async()=>button("采用所选差异").click());
+  expect(adopt).toHaveBeenCalledTimes(1);
+  expect(workspace.querySelector('[data-drama-feedback="success"]')?.textContent).toContain("已合入所选差异");
+  expect(workspace.querySelector('[data-drama-feedback="error"]')?.textContent).toContain("差异已合入，刷新结果失败");
+  expect(button("采用所选差异").disabled).toBe(true);
+  expect(button("采用到草案").disabled).toBe(true);
+  failRefresh=false;
+  await act(async()=>button("重新加载差异预览").click());
+  expect(workspace.querySelector('[data-drama-feedback="error"]')).toBeNull();
+  expect(workspace.querySelector('[aria-label="分镜候选差异预览"]')?.textContent).toContain("已采用");
+  expect(button("采用所选差异").disabled).toBe(true);
+ }finally{await act(async()=>root.unmount());roots.splice(roots.indexOf(root),1);vi.mocked(canvasApi).mockImplementation(originalApi);}
+});
 it("switches between storyboard and video footer without restoring legacy rows or leaving a stale popup",async()=>{
  const node={id:"storyboard-switch",type:"drama:storyboard",title:"分镜配置",position:{x:0,y:0},
   metadata:{dramaDraft:JSON.stringify({shots:[{

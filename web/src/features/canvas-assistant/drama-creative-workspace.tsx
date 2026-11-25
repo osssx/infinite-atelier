@@ -7,7 +7,7 @@ import {useThemeStore} from "@/stores/use-theme-store";
 import {DramaNodeStatus} from "./drama-node-style";
 import {DramaFeedbackContext,DramaFeedbackNotices,DramaTaskStatus,useDramaFeedbackController} from "./drama-feedback";
 import {DramaCandidateNavigationContext,AssetDirectoryContext,AssetReviewBusyContext,AssetReviewContext,AssetReviewNavigationContext,emptyAssetReview,initialAssetDirectory,type AssetDirectorySelection} from "./drama-asset-directory-state";
-import {DramaStoryboardNavigationContext} from "./drama-storyboard-navigation";
+import {DramaStoryboardNavigationContext,DramaStoryboardScopeContext,type StoryboardScopeFocus} from "./drama-storyboard-navigation";
 import type {DramaWorkspaceTab} from "./drama-pipeline-node-panel";
 type StoryWorkspaceTab=DramaWorkspaceTab|"settings";
 
@@ -16,8 +16,8 @@ export type WorkspacePendingRegistration=(key:string,save:(()=>Promise<void>)|nu
 
 type WorkspaceTabItem={id:StoryWorkspaceTab;label:string;icon:typeof BookOpenText};
 
-function WorkspaceTabButton({item,description,active,theme,onSelect}:{
- item:WorkspaceTabItem;description:string;active:boolean;theme:CanvasTheme;onSelect:()=>void;
+function WorkspaceTabButton({item,description,active,theme,onSelect,disabled=false}:{
+ item:WorkspaceTabItem;description:string;active:boolean;theme:CanvasTheme;onSelect:()=>void;disabled?:boolean;
 }){
  const buttonRef=useRef<HTMLButtonElement>(null);
  const tipId=useId();
@@ -43,7 +43,7 @@ function WorkspaceTabButton({item,description,active,theme,onSelect}:{
  },[visible,updatePosition]);
  const Icon=item.icon;
  return <>
-  <button ref={buttonRef} type="button" aria-pressed={active} aria-description={description}
+  <button ref={buttonRef} type="button" aria-pressed={active} aria-description={description} disabled={disabled}
    aria-describedby={visible&&position?tipId:undefined}
    className="inline-flex min-h-9 shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-lg border px-3 text-xs font-medium transition-opacity hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
    style={active?{background:theme.toolbar.activeBg,color:theme.toolbar.activeText,
@@ -84,7 +84,10 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
  const storyMode=kind==="source";
  const assetMode=kind==="assets";
  const feedback=useDramaFeedbackController();
+ const operationLocked=Boolean(feedback.context.task?.blockNavigation);
+ const operationLockedRef=useRef(operationLocked);operationLockedRef.current=operationLocked;
  const assetDirectory=useState(()=>focus.assetDirectory??initialAssetDirectory);
+ const storyboardScope=useState<StoryboardScopeFocus|null>(null);
  const assetReview=useState(()=>emptyAssetReview(""));
  const [tab,setTab]=useState<StoryWorkspaceTab>("editor");
  const tabRef=useRef(tab);tabRef.current=tab;
@@ -106,7 +109,7 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
   else {setTab(target);onTabChange?.(target);}
  },[onClose,onTabChange]);
  const request=useCallback((target:StoryWorkspaceTab|"close")=>{
-  if(target===tabRef.current||reviewBusyRef.current)return;
+  if(target===tabRef.current||reviewBusyRef.current||operationLockedRef.current)return;
   if(pending.current.size){setPendingAction(target);return;}
   void perform(target).catch(e=>setError(e instanceof Error?e.message:"操作失败"));
  },[perform]);
@@ -142,7 +145,7 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
  const action="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-lg border px-3 text-xs font-medium transition-opacity hover:opacity-80 disabled:cursor-not-allowed disabled:opacity-40";
  const primary={background:theme.node.text,color:theme.node.panel,borderColor:theme.node.text};
  return <>
-  <Modal open centered destroyOnHidden footer={null} closable={!reviewBusy} maskClosable={!reviewBusy} keyboard={!reviewBusy} onCancel={()=>request("close")}
+  <Modal open centered destroyOnHidden footer={null} closable={!reviewBusy&&!operationLocked} maskClosable={!reviewBusy&&!operationLocked} keyboard={!reviewBusy&&!operationLocked} onCancel={()=>request("close")}
    closeIcon={<X size={18} style={{color:theme.node.text}}/>}
    title={<div className="flex min-w-0 items-center gap-3 py-0.5" data-drama-workspace-title="">
     <span className="grid size-10 shrink-0 place-items-center rounded-xl border" style={subtle}>
@@ -182,11 +185,12 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
     <nav aria-label="创作工作区功能" className="thin-scrollbar flex shrink-0 gap-1.5 overflow-x-auto border-b pb-2"
      style={{borderColor:theme.node.stroke}}>
      {tabs.map(item=><WorkspaceTabButton key={item.id} item={item}
-       description={paneDesc[item.id]} active={tab===item.id} theme={theme}
+       description={paneDesc[item.id]} active={tab===item.id} theme={theme} disabled={reviewBusy||operationLocked}
        onSelect={()=>request(item.id)}/>)}
     </nav>
     {!storyMode&&<DramaFeedbackNotices notices={feedback.notices} clear={feedback.clear} theme={theme}/>}
     {reviewBusy&&<p role="status" className="shrink-0 text-xs" style={{color:theme.node.muted}}>正在合入资产，请勿关闭工作区或切换页面。</p>}
+    {operationLocked&&<p role="status" className="shrink-0 text-xs" style={{color:theme.node.muted}}>当前操作完成后可切换页面或关闭工作区。</p>}
     {pendingCount>0&&<div className="flex min-h-0 shrink-0 justify-end">
      <span role="status" className="rounded-md border px-2 py-1 text-[11px]"
       style={{...subtle,background:theme.toolbar.activeBg}}>
@@ -196,7 +200,8 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
     <div data-drama-workspace-content="" className={`thin-scrollbar min-h-0 min-w-0 flex-1 rounded-xl border p-3 sm:p-4 ${tab==="history"?"flex flex-col overflow-hidden":"overflow-y-auto overscroll-contain"}`}
      style={{...subtle}}>
      <DramaFeedbackContext.Provider value={storyMode?null:feedback.context}>
-     <DramaStoryboardNavigationContext.Provider value={kind==="storyboard"?()=>request("editor"):null}>
+     <DramaStoryboardScopeContext.Provider value={kind==="storyboard"?storyboardScope:null}>
+     <DramaStoryboardNavigationContext.Provider value={kind==="storyboard"?(focus)=>{if(focus)storyboardScope[1](focus);request("editor");}:null}>
      <AssetDirectoryContext.Provider value={assetMode?assetDirectory:null}>
      <AssetReviewContext.Provider value={assetMode?assetReview:null}>
      <AssetReviewBusyContext.Provider value={assetMode?updateReviewBusy:null}>
@@ -227,6 +232,7 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
      </AssetReviewContext.Provider>
      </AssetDirectoryContext.Provider>
      </DramaStoryboardNavigationContext.Provider>
+     </DramaStoryboardScopeContext.Provider>
      </DramaFeedbackContext.Provider>
     </div>
     {error&&<p role="alert" className="shrink-0 rounded-lg border p-2 text-xs"

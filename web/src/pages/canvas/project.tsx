@@ -92,7 +92,7 @@ import {LazyCreativeNode} from "@/features/canvas-assistant/lazy-creative-node";
 import {selectAssetDirectory} from "@/features/canvas-assistant/drama-asset-directory-state";
 import {DRAMA_PIPELINE_NODE_TYPES,isInlineDramaNode, readAssetDraft, readStoryboardDraft } from "@/features/canvas-assistant/canvas-drama-pipeline";const isDramaPipelineNode=(type:string)=>Object.values(DRAMA_PIPELINE_NODE_TYPES).includes(type);
 import { mergeLegacyDramaAssets, mergeLegacyDramaFirstFrames } from "@/features/canvas-assistant/drama-asset-migration";
-import { buildDramaVideoConfigGraph, findDramaVideoConfigs,refreshDramaVideoConfigGraph } from "@/features/canvas-assistant/drama-video-config";
+import { planDramaBatchVideoConfigs, findDramaVideoConfigs,refreshDramaVideoConfigGraph } from "@/features/canvas-assistant/drama-video-config";
 import {resolveDramaShotGroupConfigs} from "@/features/canvas-assistant/drama-shot-group-plan";
 import {readEpisodeDraft} from "../../../server/canvas-text-content.mjs";
 import {buildDramaAssetUsage} from "@/features/canvas-assistant/drama-asset-usage-display";
@@ -1386,16 +1386,18 @@ function AtelierCanvasPage() {
             const template=binding&&await getComfyTemplate(binding.templateId,binding.templateRevision);
             return template?.ports.some(port=>port.direction==="source"&&port.capture?.kind==="video"&&port.capture.adapterId)?shot:null;
         }));
-        if(activeProjectIdRef.current!==projectId||!pageMountedRef.current)return;
+        if(activeProjectIdRef.current!==projectId||!pageMountedRef.current)return false;
         const shots=supported.filter((shot):shot is CanvasShot=>shot!==null);
-        if(shots.length<2){message.warning("请选择至少两个视频生成节点");return;}
+        if(explicitNodeIds&&shots.length!==explicitNodeIds.length)return false;
+        if(shots.length<2){if(!explicitNodeIds)message.warning("请选择至少两个视频生成节点");return false;}
         const template=createCanvasNode(CanvasNodeType.Group,{x:0,y:0});
         const group={...template,title:"镜头组",metadata:{...template.metadata,shotGroup:{shots}}};
         const result=groupSelectedCanvasNodes(nodesRef.current,new Set(shots.map(shot=>shot.generationNodeId)),group);
-        if(!result){message.warning("无法将所选节点编入镜头组");return;}
+        if(!result){if(!explicitNodeIds)message.warning("无法将所选节点编入镜头组");return false;}
         setNodes(result.nodes);setSelectedNodeIds(new Set([result.group.id]));setSelectedConnectionId(null);
         setDialogNodeId(null);
         openShotPanel({groupId:result.group.id,shots:[]});
+        return true;
     };
 
     const deleteNodes = useCallback(
@@ -4325,16 +4327,14 @@ function AtelierCanvasPage() {
                     if(!confirmed)throw Error("请先确认分镜后再组建批量任务");
                     const configs=findDramaVideoConfigs(panelNode.id,nodesRef.current,connectionsRef.current);
                     const ids=resolveDramaShotGroupConfigs(confirmed.shots,shotIds,configs);
-                    await createShotGroup(ids);
+                    if(!await createShotGroup(ids))throw Error("未创建镜头组，请检查当前视频配置后重试");
+                    message.success(`已组建 ${ids.length} 个镜头，等待批量预检`);
                     if(workspaceMode)setCreativeWorkspaceNodeId(null);
                 }}                onChange={patch => handleConfigNodeChange(panelNode.id, patch)} onCreateVideoConfigs={(inputs, batch) => {
                     const source = nodesRef.current.find(item => item.id === panelNode.id);
-                    if (!source) return;
-                    const confirmed = readStoryboardDraft(source.metadata?.dramaConfirmed ?? "");
-                    const validInputs = inputs.filter(input => confirmed?.shots.some(shot =>
-                        shot.id === input.shot.id && JSON.stringify(shot) === JSON.stringify(input.shot)));
-                    const graph = buildDramaVideoConfigGraph(source, validInputs, nodesRef.current, connectionsRef.current, style, ratio);
-                    if (!graph.configIds.length) return;
+                    const confirmed = readStoryboardDraft(source?.metadata?.dramaConfirmed ?? "");
+                    const {graph,result}=planDramaBatchVideoConfigs(source,confirmed?.shots??[],inputs,nodesRef.current,connectionsRef.current,style,ratio);
+                    if (!graph.configIds.length) {if(!batch)throw Error(result.failures[0]?.error??"未创建视频配置");return result;}
                     nodesRef.current = graph.nodes;
                     connectionsRef.current = graph.connections;
                     setNodes(graph.nodes);
@@ -4342,7 +4342,8 @@ function AtelierCanvasPage() {
                     setSelectedNodeIds(new Set(graph.configIds));
                     setSelectedConnectionId(null);
                     setDialogNodeId(batch ? null : graph.configIds[0]);
-                    if(workspaceMode)setCreativeWorkspaceNodeId(null);
+                    if(workspaceMode&&!batch)setCreativeWorkspaceNodeId(null);
+                    return result;
                 }} /></Suspense> :
             panelNode.type === CanvasNodeType.Director ? null : panelNode.type === COMFY_WORKFLOW_MOCK_TYPE ? (
                 <Suspense fallback={<div className="rounded-xl p-4">正在加载工作流参数…</div>}>

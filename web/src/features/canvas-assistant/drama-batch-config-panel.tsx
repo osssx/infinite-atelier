@@ -6,16 +6,18 @@ import {useEffectiveConfig} from "@/stores/use-config-store";
 import {applyDramaProduction,type DramaVideoInput,type DramaShotProduction} from "./drama-pipeline-media";
 import {auditDramaProduction,dramaMediaModes,type DramaProductionAudit} from "./drama-production-audit";
 import {dramaNodeControl,dramaNodePrimary} from "./drama-node-style";
+import {DramaInlineFeedback,useDramaFeedback} from "./drama-feedback";
+import type {DramaBatchCreateResult} from "./drama-video-config";
 
 type Props={
  inputs:DramaVideoInput[];episodes:{id:string;title:string;sequences?:{id:string;title:string}[]}[];
  configs?:ReadonlyMap<string,CanvasNodeData>;missingFor:(input:DramaVideoInput)=>string[];
  disabled:boolean;theme:CanvasTheme;production?:Record<string,DramaShotProduction>;
  productionStyle?:string;confirmedRevisionId?:string;initialEpisodeId?:string;
- onCreateSelected:(inputs:DramaVideoInput[])=>void;onCreateBatch?:(shotIds:string[])=>Promise<void>;
+ onCreateSelected:(inputs:DramaVideoInput[])=>DramaBatchCreateResult|void;onCreateBatch?:(shotIds:string[])=>Promise<void>;
  onLocate?:(shotId:string,episodeId:string)=>void;canLocate?:(shotId:string)=>boolean;
 };
-type Result={key:string;state:"pending"|"ready"|"failed";error?:string;audit?:DramaProductionAudit};
+type Result={key:string;state:"pending"|"ready"|"failed";error?:string;audit?:DramaProductionAudit;stage?:"audit"|"create"};
 const pageSize=15;
 const settingFor=(input:DramaVideoInput,production:Record<string,DramaShotProduction>):DramaShotProduction=>
  production[input.shot.id]??{mode:input.referenceImages.length?"omni_reference":"text_to_video"};
@@ -36,6 +38,8 @@ export function DramaBatchConfigPanel({inputs,episodes,configs,missingFor,disabl
  const [results,setResults]=useState<Record<string,Result>>({});
  const [busy,setBusy]=useState(false);
  const [error,setError]=useState("");
+ const feedback=useDramaFeedback()?.api;
+ const [summary,setSummary]=useState<{title:string;level:"success"|"warning"|"error";failedIds:string[]}|null>(null);
  const live=useRef(true),running=useRef(false);
  useEffect(()=>{live.current=true;return()=>{live.current=false;};},[]);
  // A result is valid only for the precise confirmed snapshot, production setting,
@@ -65,7 +69,7 @@ export function DramaBatchConfigPanel({inputs,episodes,configs,missingFor,disabl
   (!sequence||(sequence==="unassigned"?!shot.sequenceId:shot.episodeId+"/"+shot.sequenceId===sequence)));
  const filtered=scope.filter(row=>(mode==="create"||row.configured)&&(status==="all"||
   (status==="missing"&&!row.configured)||(status==="configured"&&row.configured)||
-  (status==="failed"&&!row.configured&&resultFor(row)?.state==="failed")||
+  (status==="failed"&&resultFor(row)?.state==="failed")||
   (status==="ready"&&!row.configured&&resultFor(row)?.state==="ready")));
  const pages=Math.max(1,Math.ceil(filtered.length/pageSize)),safePage=Math.min(page,pages-1);
  const visible=filtered.slice(safePage*pageSize,(safePage+1)*pageSize);
@@ -77,8 +81,12 @@ export function DramaBatchConfigPanel({inputs,episodes,configs,missingFor,disabl
  const lock=disabled||busy;
  const audit=async()=>{
   if(lock||running.current||!chosen.length)return;
-  running.current=true;setBusy(true);setError("");
+  const task=feedback?.beginTask("正在预检所选镜头",`${chosen.length} 个镜头`,true);
+  if(feedback&&!task)return;
+  running.current=true;setBusy(true);setError("");setSummary(null);
   const queue=[...chosen];
+  let completed=0;const outcomes=new Map<string,Result>();
+  task?.phase(`已检查 0 / ${queue.length}`);
   setResults(old=>({...old,...Object.fromEntries(queue.map(row=>[row.id,{key:row.key,state:"pending" as const}]))}));
   let index=0;
   try{
@@ -93,10 +101,20 @@ export function DramaBatchConfigPanel({inputs,episodes,configs,missingFor,disabl
       result=output.ready&&output.input?{key:row.key,state:"ready",audit:output}:
        {key:row.key,state:"failed",error:output.error??"媒体输入预检未通过"};
      }catch(e){result={key:row.key,state:"failed",error:errorText(e)};}
+     outcomes.set(row.id,result);completed++;task?.phase(`已检查 ${completed} / ${queue.length}`);
      if(live.current)setResults(old=>({...old,[row.id]:result}));
     }
    }));
-  }finally{running.current=false;if(live.current)setBusy(false);}
+   if(live.current){
+    const valid=queue.filter(row=>latest.current.rows.some(next=>next.id===row.id&&next.key===row.key&&!next.configured));
+    const pass=valid.filter(row=>outcomes.get(row.id)?.state==="ready").length;
+    const failedIds=valid.filter(row=>outcomes.get(row.id)?.state==="failed").map(row=>row.id);
+    const stale=queue.length-valid.length;
+    const title=`预检完成：通过 ${pass} 项，失败 ${failedIds.length} 项${stale?`，已变化 ${stale} 项需重新预检`:""}`;
+    const level=failedIds.length||stale?"warning":"success";
+    setSummary({title,level,failedIds});feedback?.notify("batch-audit",level,title);
+   }
+  }finally{task?.end();running.current=false;if(live.current)setBusy(false);}
  };
  const create=()=>{
   if(lock||running.current||!passed.length)return;
@@ -106,27 +124,42 @@ export function DramaBatchConfigPanel({inputs,episodes,configs,missingFor,disabl
   }
   try{
    const items=passed.map(row=>resultFor(row)!.audit!.input!);
-   current.onCreateSelected(items);
-   setCreateIds(old=>old.filter(id=>!passed.some(row=>row.id===id)));
-   setResults(old=>Object.fromEntries(Object.entries(old).filter(([id])=>!passed.some(row=>row.id===id))));
+   setError("");setSummary(null);
+   const outcome=current.onCreateSelected(items);
+   if(!outcome)throw Error("创建服务未返回结果，请刷新配置列表后检查。");
+   const created=new Set(outcome.createdShotIds.filter(id=>passed.some(row=>row.id===id)));
+   const failedRows=passed.filter(row=>!created.has(row.id));
+   const failureById=new Map(outcome.failures.map(item=>[item.shotId,item.error]));
+   setCreateIds(old=>old.filter(id=>!created.has(id)));
+   setResults(old=>{
+    const next={...old};for(const id of created)delete next[id];
+    for(const row of failedRows)next[row.id]={key:row.key,state:"failed",stage:"create",error:failureById.get(row.id)??"未收到创建成功结果，请重新预检"};
+    return next;
+   });
+   const remainingFailures=[...new Set([...failed.map(row=>row.id),...failedRows.map(row=>row.id)])];
+   const title=`已创建 ${created.size} 项视频配置，创建失败 ${failedRows.length} 项${failed.length?`，另有 ${failed.length} 项预检未通过`:""}`;
+   const level=remainingFailures.length?"warning":"success";
+   setSummary({title,level,failedIds:remainingFailures});feedback?.notify("batch-create",level,title);
   }catch(e){setError(errorText(e));}
  };
  const group=async()=>{
   if(lock||running.current||chosen.length<2||!latest.current.onCreateBatch)return;
-  running.current=true;setBusy(true);setError("");
-  try{await latest.current.onCreateBatch(chosen.map(row=>row.id));if(live.current)setGroupIds([]);}
+  const task=feedback?.beginTask("正在组建镜头组",`${chosen.length} 个镜头`,true);
+  if(feedback&&!task)return;
+  running.current=true;setBusy(true);setError("");setSummary(null);task?.phase("校验视频配置与组建镜头组");
+  try{await latest.current.onCreateBatch(chosen.map(row=>row.id));if(live.current){setGroupIds([]);setSummary({title:`已组建 ${chosen.length} 个镜头，等待批量预检`,level:"success",failedIds:[]});}}
   catch(e){if(live.current)setError(errorText(e));}
-  finally{running.current=false;if(live.current)setBusy(false);}
+  finally{task?.end();running.current=false;if(live.current)setBusy(false);}
  };
  if(!rows.length)return <p className="rounded-xl border border-dashed p-4 text-xs" style={control}>确认分镜后可批量创建视频配置。</p>;
  return <section aria-label="批量创建配置" className="flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-hidden text-xs" style={{color:theme.node.text}}>
   <div className="flex shrink-0 flex-wrap items-center gap-2">
-   <Button size="small" style={mode==="create"?dramaNodePrimary(theme):control} disabled={lock} onClick={()=>{setMode("create");setStatus("all");setPage(0);}}>批量创建视频配置</Button>
-   {onCreateBatch&&<Button size="small" style={mode==="group"?dramaNodePrimary(theme):control} disabled={lock} onClick={()=>{setMode("group");setStatus("all");setPage(0);}}>组建批量生成镜头组</Button>}
+   <Button size="small" style={mode==="create"?dramaNodePrimary(theme):control} disabled={lock} onClick={()=>{setMode("create");setStatus("all");setPage(0);setSummary(null);setError("");}}>批量创建视频配置</Button>
+   {onCreateBatch&&<Button size="small" style={mode==="group"?dramaNodePrimary(theme):control} disabled={lock} onClick={()=>{setMode("group");setStatus("all");setPage(0);setSummary(null);setError("");}}>组建批量生成镜头组</Button>}
    <span className="ml-auto" style={muted}>仅准备配置，不自动生成媒体</span>
   </div>
   <div className="grid shrink-0 grid-cols-2 gap-2 sm:grid-cols-4">
-   {[["镜头总数",scope.length],["已配置",scope.filter(r=>r.configured).length],["待创建",scope.filter(r=>!r.configured).length],["预检未通过",scope.filter(r=>!r.configured&&resultFor(r)?.state==="failed").length]].map(([label,count])=>
+   {[["镜头总数",scope.length],["已配置",scope.filter(r=>r.configured).length],["待创建",scope.filter(r=>!r.configured).length],["操作未通过",scope.filter(r=>resultFor(r)?.state==="failed").length]].map(([label,count])=>
     <div key={label} className="rounded-lg border px-3 py-2" style={card}><div style={muted}>{label}</div><strong className="text-lg tabular-nums">{count}</strong></div>)}
   </div>
   <div className="flex shrink-0 flex-wrap items-center gap-2">
@@ -137,7 +170,7 @@ export function DramaBatchConfigPanel({inputs,episodes,configs,missingFor,disabl
     <option value="">全部场次</option><option value="unassigned">未指定场次</option>{sequenceOptions.map(([id,title])=><option key={id} value={id}>{title}</option>)}
    </select>
    {mode==="create"&&<select aria-label="批量配置状态" className="rounded-lg border px-2 py-2" style={control} disabled={lock} value={status} onChange={e=>{setStatus(e.target.value);setPage(0);}}>
-    <option value="all">全部状态</option><option value="missing">未配置</option><option value="configured">已配置</option><option value="ready">预检通过</option><option value="failed">预检失败</option>
+    <option value="all">全部状态</option><option value="missing">未配置</option><option value="configured">已配置</option><option value="ready">预检通过</option><option value="failed">操作失败</option>
    </select>}
    <Button size="small" style={control} disabled={lock||!scopeEligible.length} onClick={()=>setMany(scopeEligible.map(r=>r.id),true)}>全选筛选结果</Button>
    <Button size="small" style={control} disabled={lock||!selected.length} onClick={()=>setSelected([])}>清空选择</Button>
@@ -158,8 +191,8 @@ export function DramaBatchConfigPanel({inputs,episodes,configs,missingFor,disabl
       <td className="min-w-0 p-2"><strong className="block truncate" title={shot.description}>镜头 {shot.order} · {shot.description||"未填写"}</strong><span className="block truncate" style={muted}>{ep?.title??shot.episodeId} · {title}</span></td>
       <td className="p-2 break-words">{dramaMediaModes.find(item=>item.id===modeFor(row.setting))?.label??modeFor(row.setting)}</td>
       <td className="p-2 tabular-nums">{shot.durationSec??"—"} 秒</td>
-      <td className="p-2 break-words"><span>{row.configured?"已配置":result?.state==="ready"?"预检通过":result?.state==="failed"?"预检失败":result?.state==="pending"?"核验中":"待创建"}</span>
-       {result?.state==="failed"&&!row.configured&&<p role="status" className="mt-1 whitespace-pre-wrap break-words" style={muted}>{result.error}</p>}
+      <td className="p-2 break-words"><span>{result?.state==="failed"?(result.stage==="create"?"创建失败":"预检失败"):row.configured?"已配置":result?.state==="ready"?"预检通过":result?.state==="pending"?"核验中":"待创建"}</span>
+       {result?.state==="failed"&&<DramaInlineFeedback theme={theme} level="error" error={result.error??"操作未通过"}/>}
        {onLocate&&(!canLocate||canLocate(row.id))&&<button type="button" className="mt-1 block underline underline-offset-2 disabled:opacity-40" disabled={lock} onClick={()=>onLocate(row.id,shot.episodeId)}>定位镜头</button>}
       </td>
      </tr>;
@@ -170,7 +203,8 @@ export function DramaBatchConfigPanel({inputs,episodes,configs,missingFor,disabl
    <span>{filtered.length} 条 · 第 {safePage+1} / {pages} 页 · 每页 {pageSize} 镜</span>
    <div className="flex gap-2"><Button size="small" style={control} disabled={lock||safePage===0} onClick={()=>setPage(safePage-1)}>上一页</Button><Button size="small" style={control} disabled={lock||safePage>=pages-1} onClick={()=>setPage(safePage+1)}>下一页</Button></div>
   </div>
-  {error&&<p role="alert" className="shrink-0 break-words" style={muted}>{error}</p>}
+  {error&&<DramaInlineFeedback theme={theme} level="error" error={error}/>}
+  {summary&&<div data-drama-batch-result="" className="flex shrink-0 items-center gap-2"><div className="min-w-0 flex-1"><DramaInlineFeedback theme={theme} level={summary.level}>{summary.title}</DramaInlineFeedback></div>{summary.failedIds.length>0&&<Button size="small" style={control} disabled={lock} onClick={()=>{setEpisode("");setSequence("");setStatus("failed");setPage(0);}}>查看失败项</Button>}</div>}
   <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-t pt-3" style={{borderColor:theme.node.stroke}}>
    <div><strong>已选 {chosen.length} 镜</strong>{mode==="create"&&<span className="ml-2" style={muted}>通过 {passed.length} · 失败 {failed.length} · 待检 {chosen.length-passed.length-failed.length}</span>}</div>
    <div className="flex flex-wrap gap-2">

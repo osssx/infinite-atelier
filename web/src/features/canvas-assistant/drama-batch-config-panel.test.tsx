@@ -22,7 +22,7 @@ beforeEach(()=>{vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT",true);mock.audit.mockRe
 afterEach(async()=>{for(const root of roots)await act(async()=>root.unmount());roots.length=0;document.body.replaceChildren();vi.unstubAllGlobals();});
 async function mount(){
  const el=document.createElement("div");document.body.append(el);const root=createRoot(el);roots.push(root);
- const create=vi.fn(),group=vi.fn(async()=>{}),locate=vi.fn();
+ const create=vi.fn((items:DramaVideoInput[])=>({createdShotIds:items.map(item=>item.shot.id),failures:[] as {shotId:string;error:string}[]})),group=vi.fn(async()=>{}),locate=vi.fn();
  const configs=new Map([["s0",{id:"cfg0"} as CanvasNodeData],["s1",{id:"cfg1"} as CanvasNodeData]]);
  const render=async(data=inputs,revision="v1",disabled=false)=>act(async()=>root.render(<DramaBatchConfigPanel inputs={data} episodes={episodes}
   configs={configs} missingFor={()=>[]} disabled={disabled} theme={canvasThemes.dark} confirmedRevisionId={revision}
@@ -73,6 +73,23 @@ it("audits with a maximum of four concurrent jobs, reports per-shot failures and
  const ids=h.create.mock.lastCall![0].map((input:DramaVideoInput)=>input.shot.id);
  expect(ids).toHaveLength(16);expect(ids).not.toContain("s3");expect(ids).not.toContain("s4");
  expect(h.el.textContent).toContain("已选 2 镜");
+});
+it("retains failed creation rows, shows exact counts, and retries only selected uncreated shots",async()=>{
+ const h=await mount();await h.selectRow(2);await h.selectRow(3);
+ await h.click(h.button("预检所选镜头"));
+ expect(h.el.querySelector("[data-drama-batch-result]")?.textContent).toContain("通过 2 项，失败 0 项");
+ h.create.mockReturnValueOnce({createdShotIds:["s2"],failures:[{shotId:"s3",error:"确认镜头已变化，请重新预检"}]});
+ await h.click(h.button("创建通过的 2 项"));
+ expect(h.el.querySelector("[data-drama-batch-result]")?.textContent).toContain("已创建 1 项视频配置，创建失败 1 项");
+ await h.click(h.button("查看失败项"));
+ expect(h.el.querySelectorAll("tbody tr")).toHaveLength(1);
+ expect(h.el.querySelector("tbody")?.textContent).toContain("确认镜头已变化");
+ expect(h.el.textContent).toContain("已选 1 镜");
+ mock.audit.mockClear();
+ await h.click(h.button("预检所选镜头"));
+ expect(mock.audit.mock.calls.map(call=>call[0].shot.id)).toEqual(["s3"]);
+ await h.click(h.button("创建通过的 1 项"));
+ expect(h.create.mock.lastCall![0].map(input=>input.shot.id)).toEqual(["s3"]);
 });
 it("invalidates passed audits after the confirmed revision changes and isolates group selection",async()=>{
  const h=await mount();await h.selectRow(2);await h.click(h.button("预检所选镜头"));

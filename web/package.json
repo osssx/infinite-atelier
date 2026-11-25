@@ -12,7 +12,7 @@
         "build:monoform": "node scripts/build-monoform.mjs",
         "typecheck": "tsc --noEmit",
         "test": "vitest run src",
-        "test:drama-p1": "node --test server/backend/drama-p1-acceptance.test.mjs server/backend/drama-p1-semantic-repair.test.mjs server/backend/canvas-text-versions.test.mjs server/backend/project-archive.test.mjs && vitest run src/features/canvas-assistant/drama-pipeline-media.test.ts src/features/canvas-assistant/drama-asset-migration.test.ts",
+        "test:drama-p1": "node --test server/backend/drama-episode-candidate.test.mjs server/backend/drama-p1-acceptance.test.mjs server/backend/drama-p1-semantic-repair.test.mjs server/backend/canvas-text-versions.test.mjs server/backend/project-archive.test.mjs && vitest run src/features/canvas-assistant/drama-pipeline-media.test.ts src/features/canvas-assistant/drama-asset-migration.test.ts",
         "test:drama-p1-browser": "python scripts/drama-p1-chrome-e2e.py",
         "test:drama-feedback-browser": "python scripts/drama-feedback-chrome-e2e.py",
         "test:drama-storyboard-p5-browser": "python scripts/drama-storyboard-p5-chrome-e2e.py",

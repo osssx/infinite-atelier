@@ -5,6 +5,7 @@ import {writeTransaction,stableJson} from "./repository.mjs";
 import {normalizeOpenAiCompatBaseUrl} from "./openai-compat-endpoints.mjs";
 import {planDramaShotDiff,mergeDramaSelectedShots} from "./drama-run-diff.mjs";
 import {normalizeEpisodeEvents} from "../drama-episode-links.mjs";
+import {episodeCandidateRevision,validEpisodeCandidate,assertEpisodeCandidateRevision,editEpisodeCandidate,removeEpisodeCandidate,mergeEpisodeCandidateForAdoption} from "./drama-episode-candidate.mjs";
 
 const digest=value=>createHash("sha256").update(stableJson(value)).digest("hex");
 const fail=(code,statusCode=409)=>Object.assign(Error(code),{code,statusCode});
@@ -41,13 +42,12 @@ export function importDramaRuns(db,projectId,document,runs){
   const target=document.nodes.find(node=>node.id===row?.nodeId);
   if(episodeRun&&(target?.type!=="drama:episodes"||row.frozen.input.scope?.episodeId!==row.episodeId||
      !Number.isInteger(row.frozen.input.targetEpisodes)||row.frozen.input.targetEpisodes<1||row.frozen.input.targetEpisodes>100||
-     (row.candidate&&(!readEpisodeDraft(stableJson(row.candidate))||
-       row.candidate.episodes.length!==row.frozen.input.targetEpisodes||
-       row.episodeId!=="*"&&row.candidate.episodes.some(episode=>episode.id!==row.episodeId)))))
+     (row.candidate!=null&&(!validEpisodeCandidate(row.candidate,row.frozen.input,row.episodeId)||
+      episodeCandidateRevision(row.candidate)>0&&!["ready","adopted","discarded"].includes(row.state)))))
    throw fail("archive_invalid_drama_runs",422);
   if(!episodeRun&&target?.type!=="drama:storyboard")throw fail("archive_invalid_drama_runs",422);
   if(!row||!validId(row.id)||seen.has(row.id)||!ids.has(row.nodeId)||!validId(row.episodeId)||
-   !/^[a-f0-9]{64}$/.test(row.fingerprint)||!["interrupted","ready","failed","adopted","cancelled"].includes(row.state)||
+   !/^[a-f0-9]{64}$/.test(row.fingerprint)||!["interrupted","ready","failed","adopted","cancelled",...(episodeRun?["discarded"]:[])].includes(row.state)||
    !row.frozen?.input||(row.frozen.input.stage!=="episodes"&&row.frozen.input.episode?.id!==row.episodeId)||!Array.isArray(row.frozen.baseline)||
    (row.error!==null&&typeof row.error!=="string")||
    (["ready","adopted"].includes(row.state)&&(!row.candidate||
@@ -119,8 +119,11 @@ export function createDramaRunService({db,getProject,validateDocument,emitEvent,
  const controllers=new Map();
  const runKey=(projectId,id)=>JSON.stringify([projectId,id]);
  const find=(projectId,id)=>db.prepare("SELECT * FROM drama_runs WHERE project_id=? AND id=?").get(projectId,id);
- const view=row=>({id:row.id,nodeId:row.node_id,episodeId:row.episode_id,status:row.state,
-  candidate:row.candidate?JSON.parse(row.candidate):null,error:row.error});
+ const view=row=>{
+  const candidate=row.candidate?JSON.parse(row.candidate):null;
+  if(Array.isArray(candidate?.episodes)&&candidate.revision===undefined)candidate.revision=0;
+  return {id:row.id,nodeId:row.node_id,episodeId:row.episode_id,status:row.state,candidate,error:row.error};
+ };
  const get=(projectId,id)=>{
   getProject(db,projectId);
   const row=find(projectId,id);
@@ -152,7 +155,7 @@ export function createDramaRunService({db,getProject,validateDocument,emitEvent,
      usedIds.add(id);return normalizeEpisodeEvents({...episode,id},existing??episode);
     });
     db.prepare("UPDATE drama_runs SET state='ready',candidate=? WHERE project_id=? AND id=? AND state='running'")
-     .run(stableJson({episodes}),projectId,requestId);
+     .run(stableJson({episodes,revision:0}),projectId,requestId);
     return get(projectId,requestId);
    }
    const sequences=!sequenceId&&!shotId?frozen.input.episode.sequences??[]:[];
@@ -245,6 +248,47 @@ export function createDramaRunService({db,getProject,validateDocument,emitEvent,
   if(!frozen)return get(projectId,requestId);
   return execute(projectId,requestId,frozen);
  }
+  // Candidate-only writes intentionally do not update the project document,
+  // canvas revision, confirmed versions or downstream dependencies.
+  function episodeRow(projectId,id){
+   const project=getProject(db,projectId),row=find(projectId,id);
+   if(!row)throw fail("drama_run_not_found",404);
+   const frozen=JSON.parse(row.frozen);
+   if(frozen.input.stage!=="episodes"||!project.document.nodes.some(node=>node.id===row.node_id&&node.type==="drama:episodes"))
+    throw fail("drama_episode_scope_invalid",422);
+   return {row,frozen,candidate:row.candidate?JSON.parse(row.candidate):null};
+  }
+  function mutateEpisodeCandidate(projectId,id,episodeId,expectedRevision,mutate){
+   return writeTransaction(db,()=>{
+    const {row,frozen,candidate}=episodeRow(projectId,id);
+    if(row.state!=="ready"||!candidate)throw fail("drama_candidate_not_ready");
+    assertEpisodeCandidateRevision(candidate,expectedRevision);
+    const next=mutate(candidate,episodeId);
+    if(!validEpisodeCandidate(next,frozen.input,row.episode_id))throw fail("drama_candidate_edit_invalid",422);
+    if(next!==candidate)db.prepare("UPDATE drama_runs SET candidate=? WHERE project_id=? AND id=? AND state='ready'")
+     .run(stableJson(next),projectId,id);
+    return get(projectId,id);
+   });
+  }
+  function patchEpisode(projectId,id,episodeId,{expectedRevision,changes}={}){
+   return mutateEpisodeCandidate(projectId,id,episodeId,expectedRevision,(candidate,entryId)=>editEpisodeCandidate(candidate,entryId,changes));
+  }
+  function deleteEpisode(projectId,id,episodeId,expectedRevision){
+   return mutateEpisodeCandidate(projectId,id,episodeId,expectedRevision,removeEpisodeCandidate);
+  }
+  function discard(projectId,id,expectedRevision){
+   return writeTransaction(db,()=>{
+    const {row,candidate}=episodeRow(projectId,id);
+    if(row.state==="discarded")return get(projectId,id);
+    if(!["ready","failed","interrupted","cancelled"].includes(row.state)||controllers.has(runKey(projectId,id)))
+     throw fail("drama_candidate_not_discardable");
+    assertEpisodeCandidateRevision(candidate,expectedRevision);
+    // Retain a tombstone (and prior candidate for archive integrity), so the
+    // original request ID cannot regenerate after an explicit discard.
+    db.prepare("UPDATE drama_runs SET state='discarded' WHERE project_id=? AND id=?").run(projectId,id);
+    return get(projectId,id);
+   });
+  }
   function preview(projectId,id){
    const project=getProject(db,projectId),row=find(projectId,id);
    if(!row)throw fail("drama_run_not_found",404);
@@ -258,7 +302,7 @@ export function createDramaRunService({db,getProject,validateDocument,emitEvent,
    return {runId:id,status:row.state,sourceChanged,...diff,
     fullAdoptBlocked:sourceChanged||diff.fullAdoptBlocked};
   }
-  function adopt(projectId,id,shotIds){
+  function adopt(projectId,id,shotIds,expectedRevision){
    return writeTransaction(db,()=>{
     const project=getProject(db,projectId),row=find(projectId,id);
     if(!row)throw fail("drama_run_not_found",404);
@@ -270,11 +314,15 @@ export function createDramaRunService({db,getProject,validateDocument,emitEvent,
     const candidate=JSON.parse(row.candidate);
     if(frozen.input.stage==="episodes"){
      if(shotIds)throw fail("drama_episode_scope_invalid",422);
+     // Old clients may adopt untouched candidates, but must not unknowingly
+     // adopt a changed candidate they have never reviewed.
+     if(expectedRevision!==undefined||episodeCandidateRevision(candidate)>0)
+      assertEpisodeCandidateRevision(candidate,expectedRevision);
      if(digest(baseline)!==digest(frozen.baseline))throw fail("drama_candidate_conflict");
      const preserved=parsed.episodes.filter(episode=>!contains(episode));
      if(candidate.episodes.some(episode=>preserved.some(item=>item.id===episode.id)))throw fail("drama_candidate_conflict");
      const replacements=new Map(candidate.episodes.map(episode=>[episode.id,episode]));
-     const episodes=row.episode_id==="*"?candidate.episodes:parsed.episodes.map(episode=>replacements.get(episode.id)??episode);
+     const episodes=row.episode_id==="*"?mergeEpisodeCandidateForAdoption(candidate,baseline):parsed.episodes.map(episode=>replacements.get(episode.id)??episode);
      node.metadata={...node.metadata,dramaDraft:stableJson({...parsed,episodes})};
      const revision=project.revision+1;
      db.prepare("UPDATE projects SET document_json=?,revision=? WHERE id=?").run(validateDocument(project.document),revision,projectId);
@@ -341,15 +389,16 @@ export function createDramaRunService({db,getProject,validateDocument,emitEvent,
   if(!claimed.changes)return get(projectId,id);
   return execute(projectId,id,JSON.parse(row.frozen));
  }
- return {submit,get,preview,adopt,cancel,retry,list(projectId,nodeId){
+ return {submit,get,preview,adopt,cancel,retry,patchEpisode,deleteEpisode,discard,list(projectId,nodeId){
   getProject(db,projectId);
   return db.prepare(`SELECT id,node_id,episode_id,state,error,
    CASE WHEN candidate IS NULL THEN NULL WHEN json_extract(frozen,'$.input.stage')='episodes' THEN
-    json_object('episodes',json('[]'),'episodeCount',json_array_length(candidate,'$.episodes')) ELSE json_object('shots',json('[]'),
+    json_object('episodes',json('[]'),'episodeCount',json_array_length(candidate,'$.episodes'),
+    'revision',COALESCE(json_extract(candidate,'$.revision'),0),'manualChanges',json_extract(candidate,'$.manualChanges')) ELSE json_object('shots',json('[]'),
     'completedSequenceIds',json_extract(candidate,'$.completedSequenceIds'),
     'adoptedShotIds',json_extract(candidate,'$.adoptedShotIds'),
     'shotCount',json_array_length(candidate,'$.shots')) END AS candidate
-   FROM drama_runs WHERE project_id=? AND node_id=? ORDER BY rowid DESC LIMIT 30`)
+   FROM drama_runs WHERE project_id=? AND node_id=? AND state<>'discarded' ORDER BY rowid DESC LIMIT 30`)
    .all(projectId,nodeId).map(view);
  }};
 }

@@ -28,7 +28,7 @@ const DramaBatchConfigPanel = lazy(() => import("./drama-batch-config-panel").th
 import { DramaStoryboardFields } from "./drama-storyboard-fields";
 import { DramaEpisodeFields } from "./drama-episode-fields";
 import {DramaEpisodeCandidates} from "./drama-episode-candidates";
-import {candidateRevision,hasEpisodeDetails,mergeCandidateRuns,type DramaRun,type EpisodeCandidateChanges} from "./drama-episode-candidate-state";
+import {candidateRevision,hasEpisodeDetails,mergeCandidateRuns,type DramaRun,type EpisodeCandidateChanges,type WholeEpisodeChanges} from "./drama-episode-candidate-state";
 import { readEpisodeDraft } from "../../../server/canvas-text-content.mjs";
 import type {DramaBatchCreateResult} from "./drama-video-config";
 import {useDramaFeedback,describeDramaFeedbackError,dramaRunStatus,DramaInlineFeedback,type DramaFeedbackLevel} from "./drama-feedback";
@@ -192,7 +192,7 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
             .some(key=>upstreamImpact[key].length>0)) ||
         (upstreamImpact?.pending && Object.values(upstreamImpact.pending).some(ids=>ids?.length)));
     const runPath = `/api/v1/projects/${encodeURIComponent(projectId ?? "")}/drama-pipeline/runs`;
-    const changeCandidate=async(run:DramaRun,method:"PATCH"|"DELETE",entryId?:string,changes?:EpisodeCandidateChanges)=>{
+    const changeCandidate=async(run:DramaRun,method:"PATCH"|"DELETE",entryId?:string,changes?:EpisodeCandidateChanges|WholeEpisodeChanges,wholeEpisode=false)=>{
         if(candidateMutationRef.current||runActionRef.current)throw Error("候选操作正在进行");
         const task=feedbackApi?.beginTask(method==="PATCH"?"正在保存剧集候选":"正在删除候选",undefined,true);
         if(feedbackApi&&!task)throw Error("请等待当前操作完成");
@@ -201,7 +201,7 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
         const expectedRevision=candidateRevision(run);
         try{
             const updated=await canvasApi<DramaRun>(method==="DELETE"?base+"?expectedRevision="+expectedRevision:base,method,
-                method==="PATCH"?{expectedRevision,changes}:undefined);
+                method==="PATCH"?{expectedRevision,changes,...(wholeEpisode?{wholeEpisode:true}:{})}:undefined);
             candidateReadEpoch.current++;
             setRuns(current=>updated.status==="discarded"?current.filter(item=>item.id!==run.id):current.map(item=>item.id===run.id?updated:item));
             if(updated.status==="discarded")setExpandedRuns(current=>{const next={...current};delete next[run.id];return next;});
@@ -1065,6 +1065,7 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
                 disabled={!workspaceMode||runActionBusy||candidateMutationBusy||Boolean(feedback?.task)||Boolean(candidateEdit&&candidateEdit.runId!==run.id)}
                 activeKey={candidateEdit?.runId===run.id?candidateEdit.key:null} onEditingChange={changeCandidateEditing}
                 onPendingChange={onPendingChange} onPatch={(target,id,changes)=>changeCandidate(target,"PATCH",id,changes)}
+                onWholePatch={(target,id,changes)=>changeCandidate(target,"PATCH",id,changes,true)}
                 onRemove={(target,id)=>changeCandidate(target,"DELETE",id)}
                 onDiscard={target=>changeCandidate(target,"DELETE")} onReload={()=>readEpisodeRunDetails(run,true)} onConfirmingChange={changeCandidateConfirming}/>}
 

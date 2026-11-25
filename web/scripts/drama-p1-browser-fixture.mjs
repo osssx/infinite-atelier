@@ -91,6 +91,16 @@ const app=buildApp({db,sessionAuth:createLocalSessionAuth(),autoLocalSession:tru
      throw Object.assign(Error("fixture_unexpected_optimize_target"),{code:"fixture_unexpected_optimize_target",statusCode:422});
     return {answer:JSON.stringify({replacement:"增强悬念"})};
    }
+   if(prompt.startsWith("你是剧集候选的整集优化助手")){
+    const target=JSON.parse(prompt.slice(prompt.lastIndexOf("\n")+1));
+    if(target.currentEpisode.synopsis!=="浏览器增强悬念梗概"||!target.fields.includes("ending"))
+     throw Error("fixture_unexpected_whole_optimize_target");
+    if(target.instruction==="强化整集结尾"&&target.previousInstructions.length===0)
+     return {answer:JSON.stringify({changes:{synopsis:"未选中的整集梗概",ending:"整集第一轮结尾"}})};
+    if(target.instruction==="继续优化结尾"&&target.previousInstructions[0]==="强化整集结尾"&&target.currentEpisode.ending==="整集第一轮结尾")
+     return {answer:JSON.stringify({changes:{ending:"整集第二轮结尾"}})};
+    throw Error("fixture_unexpected_whole_optimize_round");
+   }
    if(prompt.includes("提取角色、场景和道具资产"))return {answer:JSON.stringify({assets:[{id:"feedback-prop",kind:"prop",name:"验收道具",description:"蓝色书包",sourceRefs:[]}]})};
    if(prompt.includes("输出 episodes。")){
     const count=Number(prompt.match(/恰好 (\d+) 集/)?.[1]??1);

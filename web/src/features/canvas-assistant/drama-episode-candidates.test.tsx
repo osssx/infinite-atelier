@@ -45,7 +45,7 @@ async function mount({workspaceMode=true,appearance="dark",initialRevision=0,ini
  });
  const summarized=()=>remote.status==="discarded"?[]:[{...remote,candidate:{...remote.candidate,episodeCount:remote.candidate?.episodes?.length,episodes:[]}}];
  vi.mocked(canvasApi).mockImplementation((async(path:string,method="GET",payload?:any,signal?:AbortSignal)=>{
-  if(path.endsWith("/optimize")&&method==="POST"&&optimize)return optimize(payload,signal);
+  if((path.endsWith("/optimize")||path.endsWith("/optimize-episode"))&&method==="POST"&&optimize)return optimize(payload,signal);
   if(path.includes("/dependencies?"))return {status:"current",changes:[]};
   if(path.includes("/runs?")){if(listOverride){const pending=listOverride;listOverride=null;return pending;}return summarized();}
   if(path.endsWith("/runs/run")&&method==="GET")return remote;
@@ -222,6 +222,89 @@ describe("P3 local AI candidate optimization",()=>{
   expect(getRemote().candidate?.revision).toBe(0);
   await click(sequence.querySelector('[aria-label="保存候选场次 1 详情"]'));
   expect(getRemote().candidate?.episodes?.[0].sequences?.[0]).toMatchObject({id:"ep0-scene",title:"悬念场次",eventRefs:["ep0-event"]});
+ });
+});
+describe("P4 multi-round and whole episode optimization",()=>{
+ it("uses only applied local instructions, supports undo and keeps later manual edits",async()=>{
+  await mockTextChannel();
+  const optimize=vi.fn(async payload=>optimizeResult(payload,payload.previousInstructions?.length?"第二轮":"第一轮"));
+  const {details,getRemote}=await mount({optimize});
+  const editor=details.querySelector("[data-episode-candidate-editor]")!;
+  await click(editor.querySelector('[aria-label="编辑剧情梗概"]'));
+  const field=editor.querySelector<HTMLTextAreaElement>('textarea[aria-label="剧情梗概"]')!;
+  await input(field,"人工草稿");
+  const open=()=>click(editor.querySelector('[data-episode-ai-input] button[aria-label="AI 优化"]'));
+  const generate=async(instruction:string)=>{await open();await input(editor.querySelector<HTMLTextAreaElement>('[aria-label="候选 AI 修改意见"]')!,instruction);await click(button(editor,"生成优化建议"));await click(button(editor,"应用到编辑内容"));};
+  await generate("第一条意见");expect(field.value).toBe("第一轮");
+  await generate("第二条意见");expect(field.value).toBe("第二轮");
+  expect(optimize.mock.lastCall?.[0]).toMatchObject({draft:"第一轮",previousInstructions:["第一条意见"],instruction:"第二条意见"});
+  await click(button(editor,"撤销上次 AI 修改"));expect(field.value).toBe("第一轮");
+  await click(button(editor,"撤销上次 AI 修改"));expect(field.value).toBe("人工草稿");
+  await generate("第三条意见");expect(optimize.mock.lastCall?.[0].previousInstructions).toBeUndefined();
+  await input(field,"手工继续修改");expect(button(editor,"撤销上次 AI 修改").disabled).toBe(true);
+  expect(getRemote().candidate?.revision).toBe(0);
+ });
+ it.each(["light","dark"] as const)("previews, groups dependent fields, applies a subset, iterates and saves one atomic patch (%s)",async appearance=>{
+  await mockTextChannel();
+  const changes={synopsis:"整集梗概",events:["新事件"],scenePlans:[{title:"新场次",eventIndices:[0]}],ending:"未选结尾"};
+  const optimize=vi.fn(async(payload:any)=>({runId:"run",episodeId:"ep0",revision:payload.expectedRevision,
+   changes:payload.previousInstructions.length?{synopsis:"二轮梗概"}:changes,linkedFields:payload.previousInstructions.length?[]:["events","scenePlans"],warnings:[]}));
+  const {details,workspace,getRemote,change,setConflict}=await mount({appearance,optimize});
+  const editor=details.querySelector("[data-episode-candidate-editor]")!;
+  await click(button(editor,"整集 AI 优化"));
+  const panel=editor.querySelector("[data-whole-episode-optimize]")!;
+  expect(button(details,"采用到草案").disabled).toBe(true);
+  expect(editor.querySelector<HTMLButtonElement>('[aria-label^="选择候选第 2"]')?.disabled).toBe(true);
+  await click([...panel.querySelectorAll("label")].find(label=>label.textContent==="场次规划")?.querySelector("input"));
+  const instruction=panel.querySelector<HTMLTextAreaElement>('[aria-label="整集 AI 修改意见"]')!;
+  await input(instruction,"第一轮整集优化");
+  await click(button(panel,"生成整集建议"));
+  expect(panel.querySelector("[data-whole-episode-preview]")?.textContent).toContain("新场次");
+  const event=panel.querySelector<HTMLInputElement>('[aria-label="应用剧情事件"]')!,scene=panel.querySelector<HTMLInputElement>('[aria-label="应用场次规划"]')!;
+  await click(event);expect(event.checked).toBe(false);expect(scene.checked).toBe(false);
+  await click(scene);expect(event.checked).toBe(true);expect(scene.checked).toBe(true);
+  // Only accept synopsis for the first round; the dependent pair and ending are excluded.
+  await click(scene);await click(panel.querySelector('[aria-label="应用本集结尾"]'));
+  await click(button(panel,"应用选中修改"));
+  expect(panel.querySelector("[data-whole-episode-draft]")?.textContent).toContain("整集梗概");
+  expect(panel.querySelector("[data-whole-episode-draft]")?.textContent).not.toContain("新事件");
+  expect(getRemote().candidate?.revision).toBe(0);
+  await input(instruction,"第二轮继续");
+  await click(button(panel,"生成整集建议"));
+  expect(optimize.mock.lastCall?.[0]).toMatchObject({draftChanges:{synopsis:"整集梗概"},previousInstructions:["第一轮整集优化"]});
+  await click(button(panel,"应用选中修改"));
+  await click(button(panel,"撤销上轮整集修改"));
+  expect(panel.querySelector("[data-whole-episode-draft]")?.textContent).toContain("整集梗概");
+  setConflict(true);await click(button(panel,"保存整集候选"));
+  expect(panel.textContent).toContain("候选已在其他位置更新");
+  expect(panel.querySelector("[data-whole-episode-draft]")?.textContent).toContain("整集梗概");
+  setConflict(false);await click(button(panel,"保存整集候选"));
+  expect(vi.mocked(canvasApi)).toHaveBeenCalledWith(expect.stringContaining("/episodes/ep0"),"PATCH",{expectedRevision:0,wholeEpisode:true,changes:{synopsis:"整集梗概"}});
+  expect(getRemote().candidate?.revision).toBe(1);
+  expect(getRemote().candidate?.episodes?.[0].ending).toBe("第1集结尾");
+  expect(editor.querySelector("[data-whole-episode-optimize]")).toBeNull();
+  expect(change).not.toHaveBeenCalled();
+  await click(button(workspace,"剧集编辑"));
+ });
+ it("guard blocks unresolved whole preview and aborts a late optimization on cancel",async()=>{
+  await mockTextChannel();
+  const late=deferred<unknown>();let signal:AbortSignal|undefined;
+  const optimize=vi.fn((payload:any,s?:AbortSignal)=>{signal=s;return late.promise;});
+  const {details,workspace,getRemote}=await mount({optimize});
+  const editor=details.querySelector("[data-episode-candidate-editor]")!;
+  await click(button(editor,"整集 AI 优化"));
+  const panel=editor.querySelector("[data-whole-episode-optimize]")!;
+  await input(panel.querySelector<HTMLTextAreaElement>('[aria-label="整集 AI 修改意见"]')!,"优化");
+  await click(button(panel,"生成整集建议"));
+  expect(button(panel,"保存整集候选").disabled).toBe(true);
+  await click(button(workspace,"剧集编辑"));
+  const guard=[...document.querySelectorAll('[role="dialog"]')].find(el=>el.textContent?.includes("存在未提交的候选修改"))!;
+  await click(button(guard,"保存候选"));expect(guard.textContent).toContain("请先处理整集 AI 建议");
+  await click(button(guard,"继续编辑"));
+  await click(button(panel,"取消整集优化"));expect(signal?.aborted).toBe(true);
+  await act(async()=>late.resolve({runId:"run",episodeId:"ep0",revision:0,changes:{synopsis:"迟到"},linkedFields:[],warnings:[]}));
+  expect(editor.querySelector("[data-whole-episode-optimize]")).toBeNull();
+  expect(getRemote().candidate?.revision).toBe(0);
  });
 });
 describe("P2 episode candidate workspace",()=>{

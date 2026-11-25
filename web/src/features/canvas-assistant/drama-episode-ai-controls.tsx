@@ -9,7 +9,7 @@ import type {EpisodeOptimizeField,EpisodeOptimizeScope} from "./drama-episode-ca
 
 type Range={start:number;end:number};
 type Target={draft:string;mode:"field"|"selection";start:number;end:number};
-type Proposal=Target&{replacement:string;value:string};
+type Proposal=Target&{replacement:string;value:string;instruction:string};
 type Result={runId:string;episodeId:string;revision:number;field:EpisodeOptimizeField;sequenceId?:string;mode:Target["mode"];start:number;end:number;replacement:string;value:string};
 const scopeKey=(scope:EpisodeOptimizeScope,field:EpisodeOptimizeField,sequenceId?:string)=>JSON.stringify([scope.projectId,scope.runId,scope.episodeId,scope.revision,field,sequenceId]);
 
@@ -26,6 +26,8 @@ export function DramaEpisodeAiControls({scope,field,sequenceId,draft,inputRef,th
  const [mode,setMode]=useState<Target["mode"]>("field");
  const [proposal,setProposal]=useState<Proposal|null>(null),[busy,setBusy]=useState(false);
  const [error,setError]=useState(""),[notice,setNotice]=useState("");
+ const [history,setHistory]=useState<{before:string;after:string;instruction:string}[]>([]);
+ const lastApplied=history.at(-1);
  const flight=useRef<{id:number;controller:AbortController}|null>(null),serial=useRef(0);
  const key=scopeKey(scope,field,sequenceId);
  const live=useRef({draft,key,disabled});live.current={draft,key,disabled};
@@ -37,6 +39,7 @@ export function DramaEpisodeAiControls({scope,field,sequenceId,draft,inputRef,th
  };
  useEffect(()=>{
   if(previous.current.draft===draft&&previous.current.key===key)return;
+  if(previous.current.key!==key)setHistory([]);
   previous.current={draft,key};
   if(flight.current||proposal){invalidate();setNotice("编辑内容已变化，旧 AI 结果已失效。");}
   setSelection(null);setMode("field");
@@ -72,14 +75,14 @@ export function DramaEpisodeAiControls({scope,field,sequenceId,draft,inputRef,th
     `/api/v1/projects/${encodeURIComponent(scope.projectId)}/drama-pipeline/runs/${encodeURIComponent(scope.runId)}/episodes/${encodeURIComponent(scope.episodeId)}/optimize`,"POST",
     {expectedRevision:scope.revision,field,sequenceId,mode,draft:target.draft,
      selection:mode==="selection"?{start:target.start,end:target.end}:undefined,
-     instruction:instruction.trim(),channelId:channel.id,provider,baseUrl:channel.baseUrl,model:modelOptionName(config.textModel)},controller.signal);
+     instruction:instruction.trim(),...(history.length?{previousInstructions:history.map(round=>round.instruction)}:{}),channelId:channel.id,provider,baseUrl:channel.baseUrl,model:modelOptionName(config.textModel)},controller.signal);
    if(!current()||live.current.disabled)return;
    const value=target.draft.slice(0,target.start)+result.replacement+target.draft.slice(target.end);
    if(result.runId!==scope.runId||result.episodeId!==scope.episodeId||result.revision!==scope.revision||
     result.field!==field||result.sequenceId!==sequenceId||result.mode!==target.mode||result.start!==target.start||result.end!==target.end||
     typeof result.replacement!=="string"||!result.replacement.trim()||value!==result.value||value.length>12000)
     throw Error("drama_episode_optimize_result_invalid");
-   previewReady=true;setProposal({...target,replacement:result.replacement,value});
+   previewReady=true;setProposal({...target,replacement:result.replacement,value,instruction:instruction.trim()});
    setNotice("审核修改前后内容，应用后仍需保存候选。");
   }catch(cause){
    if(current())setError(cause instanceof Error?cause.message:"AI 优化失败");
@@ -94,6 +97,7 @@ export function DramaEpisodeAiControls({scope,field,sequenceId,draft,inputRef,th
  const apply=()=>{
   if(disabled||busy||!proposal||proposal.draft!==draft||live.current.key!==key)return;
   const value=proposal.value;
+  setHistory(old=>[...old,{before:draft,after:value,instruction:proposal.instruction}].slice(-5));
   invalidate();onApply(value);setOpen(false);setNotice("");setError("");
  };
  const style={background:theme.node.panel,color:theme.node.text,borderColor:theme.node.stroke};
@@ -109,6 +113,13 @@ export function DramaEpisodeAiControls({scope,field,sequenceId,draft,inputRef,th
     <Sparkles size={15} aria-hidden="true"/>
    </button>
   </div>
+  {lastApplied&&<div className="flex flex-wrap items-center justify-between gap-2 text-[11px]" style={muted}>
+   <span>已应用 {history.length} 轮 AI 修改</span>
+   <button type="button" className={action} style={style} disabled={disabled||busy||!!proposal||lastApplied.after!==draft}
+    title={lastApplied.after!==draft?"内容已被手动修改，不能覆盖后续输入":undefined} onClick={()=>{
+     invalidate();setHistory(old=>old.slice(0,-1));onApply(lastApplied.before);setNotice("");setError("");
+    }}>撤销上次 AI 修改</button>
+  </div>}
   {open&&<div className="min-w-0 space-y-2 rounded-lg border p-3" style={style}>
    <div className="flex flex-wrap items-center gap-2">
     <button type="button" className={action} aria-pressed={mode==="field"} style={{...style,background:mode==="field"?theme.toolbar.activeBg:theme.node.panel}}
@@ -120,6 +131,7 @@ export function DramaEpisodeAiControls({scope,field,sequenceId,draft,inputRef,th
    {mode==="selection"&&selection&&<div className="max-h-24 overflow-y-auto whitespace-pre-wrap break-words rounded-md border p-2 text-xs" style={style}>{draft.slice(selection.start,selection.end)}</div>}
    <label className="grid gap-1 text-xs">
     <span style={muted}>修改意见</span>
+    {history.length>0&&<span style={muted}>将参考最近 {history.length} 轮已应用的修改意见。</span>}
     <textarea aria-label="候选 AI 修改意见" className="min-h-16 w-full resize-y rounded-md border p-2 text-xs leading-relaxed" style={style}
      value={instruction} maxLength={2500} disabled={disabled||busy} placeholder="例如：增强冲突，但保留现有剧情走向" onChange={e=>setInstruction(e.target.value)}/>
    </label>

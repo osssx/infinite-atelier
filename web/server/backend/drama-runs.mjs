@@ -264,7 +264,8 @@ export function createDramaRunService({db,getProject,validateDocument,emitEvent,
    assertEpisodeCandidateRevision(candidate,expectedRevision);
    const episode=candidate.episodes.find(item=>item.id===episodeId);
    if(!episode)throw fail("drama_episode_candidate_not_found",404);
-   return {episode,input:frozen.input};
+   const index=candidate.episodes.findIndex(item=>item.id===episodeId);
+   return {episode,input:frozen.input,neighbors:{previous:candidate.episodes[index-1],next:candidate.episodes[index+1]}};
   }
   function mutateEpisodeCandidate(projectId,id,episodeId,expectedRevision,mutate){
    return writeTransaction(db,()=>{
@@ -278,8 +279,8 @@ export function createDramaRunService({db,getProject,validateDocument,emitEvent,
     return get(projectId,id);
    });
   }
-  function patchEpisode(projectId,id,episodeId,{expectedRevision,changes}={}){
-   return mutateEpisodeCandidate(projectId,id,episodeId,expectedRevision,(candidate,entryId)=>editEpisodeCandidate(candidate,entryId,changes));
+  function patchEpisode(projectId,id,episodeId,{expectedRevision,changes,wholeEpisode=false}={}){
+   return mutateEpisodeCandidate(projectId,id,episodeId,expectedRevision,(candidate,entryId)=>editEpisodeCandidate(candidate,entryId,changes,wholeEpisode));
   }
   function deleteEpisode(projectId,id,episodeId,expectedRevision){
    return mutateEpisodeCandidate(projectId,id,episodeId,expectedRevision,removeEpisodeCandidate);

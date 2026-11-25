@@ -112,6 +112,36 @@ def run():
                 passed.append("AI apply no candidate write")
                 click_selector("save candidate synopsis",candidate+' button[aria-label="保存候选剧情梗概"]')
                 check("candidate saved and modified","document.querySelector("+json.dumps(candidate)+")?.textContent.includes('浏览器增强悬念梗概')&&document.querySelector("+json.dumps(candidate)+")?.textContent.includes('已手动修改')&&!document.querySelector('[data-drama-task-status]')")
+                whole_before=saved_candidate()["candidate"]
+                click("整集 AI 优化",candidate)
+                whole=candidate+" [data-whole-episode-optimize]"
+                check("whole edit guard","""(()=>{const r=document.querySelector(%s);return r&&[...r.querySelectorAll('[aria-label^="选择候选第"]')].every(b=>b.disabled)&&[...r.closest('details').querySelectorAll('button')].find(b=>b.textContent.trim()==='采用到草案')?.disabled})()"""%json.dumps(candidate))
+                type_value("whole first instruction",whole+' textarea[aria-label="整集 AI 修改意见"]',"强化整集结尾")
+                click("生成整集建议",whole)
+                check("whole first diff","document.querySelector('[data-whole-episode-preview]')?.textContent.includes('整集第一轮结尾')")
+                click_selector("exclude independent synopsis",whole+' input[aria-label="应用剧情梗概"]')
+                click("应用选中修改",whole)
+                check("whole selection applied locally","""(()=>{const p=document.querySelector('[data-whole-episode-draft]');return p?.querySelector('textarea[aria-label="整集编辑本集结尾"]')?.value==='整集第一轮结尾'&&!p.querySelector('textarea[aria-label="整集编辑剧情梗概"]')})()""")
+                assert saved_candidate()["candidate"]==whole_before
+                passed.append("whole apply no candidate write")
+                type_value("whole second instruction",whole+' textarea[aria-label="整集 AI 修改意见"]',"继续优化结尾")
+                click("生成整集建议",whole)
+                check("whole second diff","document.querySelector('[data-whole-episode-preview]')?.textContent.includes('整集第二轮结尾')")
+                click("应用选中修改",whole)
+                check("whole second applied","""document.querySelector('[data-whole-episode-draft] textarea[aria-label="整集编辑本集结尾"]')?.value==='整集第二轮结尾'""")
+                click("撤销上轮整集修改",whole)
+                check("whole undo","""document.querySelector('[data-whole-episode-draft] textarea[aria-label="整集编辑本集结尾"]')?.value==='整集第一轮结尾'""")
+                type_value("manual fine tune whole draft",whole+' textarea[aria-label="整集编辑本集结尾"]',"整集人工微调结尾")
+                check("whole undo protects manual edits","""[...document.querySelector('[data-whole-episode-draft]').querySelectorAll('button')].find(b=>b.textContent.trim()==='撤销上轮整集修改')?.disabled""")
+                assert saved_candidate()["candidate"]==whole_before
+                click("保存整集候选",whole)
+                check("whole save completed","!document.querySelector('[data-whole-episode-optimize]')&&!document.querySelector('[data-drama-task-status]')")
+                whole_saved=saved_candidate()["candidate"]
+                assert whole_saved["revision"]==whole_before["revision"]+1
+                assert whole_saved["episodes"][0]["ending"]=="整集人工微调结尾"
+                assert whole_saved["episodes"][0]["synopsis"]==whole_before["episodes"][0]["synopsis"]
+                assert whole_saved["episodes"][1]==whole_before["episodes"][1]
+                passed.append("whole atomic selected save")
                 click_selector("select second candidate",candidate+' button[aria-label^="选择候选第 2 集"]')
                 click("删除本集",candidate)
                 click("确认删除候选",candidate)
@@ -131,7 +161,7 @@ def run():
                 adopted=p1.graph(page,pid)["data"]
                 new_meta=p1.find_node(adopted,"episodes")["metadata"]
                 adopted_draft=json.loads(new_meta["dramaDraft"])["episodes"]
-                assert adopted_draft[0]["synopsis"]=="浏览器增强悬念梗概" and adopted_draft[1]==old_draft[1]
+                assert adopted_draft[0]["synopsis"]=="浏览器增强悬念梗概" and adopted_draft[0]["ending"]=="整集人工微调结尾" and adopted_draft[1]==old_draft[1]
                 assert new_meta["dramaConfirmed"]==old_confirmed
                 passed.append("adoption preserved excluded draft episode and confirmation")
                 click("剧集编辑",portal)

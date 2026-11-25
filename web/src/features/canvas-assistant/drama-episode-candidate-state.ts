@@ -31,6 +31,9 @@ export function mergeCandidateRuns(current:DramaRun[],incoming:DramaRun[],protec
 
 export type EpisodeOptimizeScope={projectId:string;runId:string;episodeId:string;revision:number};
 export type EpisodeOptimizeField="title"|"synopsis"|"events"|"ending"|"sequenceTitle";
+export type WholeEpisodeChanges=Partial<Pick<DramaEpisode,"title"|"synopsis"|"events"|"ending">>&{
+ targetDurationSec?:number|null;scenePlans?:{title:string;eventIndices:number[]}[]};
+export type WholeEpisodeField=keyof WholeEpisodeChanges;
 export type CandidateFieldSession={activeKey:string|null;setActiveKey:(key:string|null)=>void;register?:WorkspacePendingRegistration;runId:string;optimization?:EpisodeOptimizeScope};
 export const CandidateFieldContext=createContext<CandidateFieldSession|null>(null);
 export function useCandidateFieldSession(editing:boolean,save:()=>Promise<void>){

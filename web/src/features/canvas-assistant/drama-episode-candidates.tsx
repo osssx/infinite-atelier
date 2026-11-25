@@ -1,19 +1,22 @@
 import {useCallback,useEffect,useState} from "react";
-import {Trash2,RefreshCw} from "lucide-react";
+import {Trash2,RefreshCw,Sparkles} from "lucide-react";
+import {DramaWholeEpisodeOptimize} from "./drama-whole-episode-optimize";
 import type {CanvasTheme} from "@/lib/canvas-theme";
 import {DramaEpisodeFields} from "./drama-episode-fields";
-import {CandidateFieldContext,candidateRevision,hasEpisodeDetails,type DramaRun,type EpisodeCandidateChanges} from "./drama-episode-candidate-state";
+import {CandidateFieldContext,candidateRevision,hasEpisodeDetails,type DramaRun,type EpisodeCandidateChanges,type WholeEpisodeChanges} from "./drama-episode-candidate-state";
 import {DramaInlineFeedback} from "./drama-feedback";
 import type {WorkspacePendingRegistration} from "./drama-creative-workspace";
 
-export function DramaEpisodeCandidates({run,projectId,theme,disabled,activeKey,onEditingChange,onPendingChange,onPatch,onRemove,onDiscard,onReload,onConfirmingChange}:{
+export function DramaEpisodeCandidates({run,projectId,theme,disabled,activeKey,onEditingChange,onPendingChange,onPatch,onWholePatch,onRemove,onDiscard,onReload,onConfirmingChange}:{
  run:DramaRun;projectId?:string;theme:CanvasTheme;disabled:boolean;activeKey:string|null;
  onEditingChange:(runId:string,key:string|null)=>void;onPendingChange?:WorkspacePendingRegistration;
  onPatch:(run:DramaRun,id:string,changes:EpisodeCandidateChanges)=>Promise<void>;
+ onWholePatch:(run:DramaRun,id:string,changes:WholeEpisodeChanges)=>Promise<void>;
  onRemove:(run:DramaRun,id:string)=>Promise<void>;onDiscard:(run:DramaRun)=>Promise<void>;onReload:()=>void;
  onConfirmingChange:(runId:string,confirming:boolean)=>void;
 }){
  const [selected,setSelected]=useState("");
+ const [wholeOpen,setWholeOpen]=useState(false);
  const [confirm,setConfirm]=useState<{kind:"episode"|"run";id?:string;revision:number}|null>(null);
  const [error,setError]=useState("");
  const confirming=Boolean(confirm);
@@ -68,13 +71,19 @@ export function DramaEpisodeCandidates({run,projectId,theme,disabled,activeKey,o
     <header className="flex flex-wrap items-center gap-2">
      <strong className="min-w-0 flex-1 truncate text-sm">{active.title}</strong>
      <span className="text-[11px]" style={muted}>{active.sourceRefs?.length??0} 个原文引用</span>
+     {ready&&projectId&&!wholeOpen&&<button type="button" className={action} style={style} disabled={locked||!!confirm}
+      onClick={()=>setWholeOpen(true)}><Sparkles size={13}/>整集 AI 优化</button>}
      {ready&&<button type="button" aria-label={"删除候选剧集 "+active.title} className={action} style={style}
       disabled={locked||episodes.length<=1||!!confirm} title={episodes.length<=1?"最后一集请删除整条生成记录":undefined}
       onClick={()=>{setError("");setConfirm({kind:"episode",id:active.id,revision});}}><Trash2 size={12}/>删除本集</button>}
     </header>
     <CandidateFieldContext.Provider value={{activeKey,setActiveKey,register:onPendingChange,runId:run.id,optimization:projectId&&ready?{projectId,runId:run.id,episodeId:active.id,revision}:undefined}}>
-     <DramaEpisodeFields key={active.id} episodes={[active]} expanded={false} candidateMode disabled={!ready||disabled||!!confirm}
-      onChange={()=>{}} onCandidatePatch={(id,changes)=>onPatch(run,id,changes)}/>
+     {wholeOpen&&projectId&&ready?<DramaWholeEpisodeOptimize key={active.id} episode={active}
+      scope={{projectId,runId:run.id,episodeId:active.id,revision}} theme={theme} disabled={disabled||!!confirm}
+      onSave={changes=>onWholePatch(run,active.id,changes)} onClose={()=>setWholeOpen(false)}/>:
+      <DramaEpisodeFields key={active.id} episodes={[active]} expanded={false} candidateMode disabled={!ready||disabled||!!confirm}
+       onChange={()=>{}} onCandidatePatch={(id,changes)=>onPatch(run,id,changes)}/>}
+
     </CandidateFieldContext.Provider>
    </article>}
   </div>}

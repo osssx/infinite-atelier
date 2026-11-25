@@ -1,5 +1,5 @@
 import {readEpisodeDraft} from "../canvas-text-content.mjs";
-import {normalizeEpisodeEvents} from "../drama-episode-links.mjs";
+import {normalizeEpisodeEvents,unresolvedEventRefs} from "../drama-episode-links.mjs";
 import {stableJson} from "./repository.mjs";
 
 const fail=(code,statusCode=409)=>Object.assign(Error(code),{code,statusCode});
@@ -69,10 +69,39 @@ export function patchEpisodeCandidateFields(episode,changes){
  return next;
 }
 
-export function editEpisodeCandidate(candidate,episodeId,changes){
+// Whole-episode proposals use positional scene plans rather than model-created
+// IDs. Existing scene identity, source refs and lineage are kept verbatim.
+// Event IDs are reconciled exactly once per saved snapshot; indices resolve
+// against that snapshot, including newly created events.
+export const wholeEpisodeFields=["title","synopsis","events","ending","targetDurationSec","scenePlans"];
+export function patchWholeEpisodeCandidateFields(episode,changes){
+ if(!plain(changes)||!Object.keys(changes).length||Object.keys(changes).some(key=>!wholeEpisodeFields.includes(key)))
+  throw fail("drama_candidate_edit_invalid",422);
+ const {scenePlans,...fields}=changes;
+ let next=Object.keys(fields).length?patchEpisodeCandidateFields(episode,fields):episode;
+ if(Object.hasOwn(changes,"scenePlans")){
+  const sequences=episode.sequences??[];
+  if(!Array.isArray(scenePlans)||!sequences.length||scenePlans.length!==sequences.length||
+   !scenePlans.every(plan=>plain(plan)&&Object.keys(plan).length===2&&text(plan.title)&&plan.title.trim()&&
+    !/[\r\n]/.test(plan.title)&&Array.isArray(plan.eventIndices)&&plan.eventIndices.length<=500&&
+    new Set(plan.eventIndices).size===plan.eventIndices.length&&plan.eventIndices.every(index=>Number.isSafeInteger(index)&&index>=0&&index<next.events.length)))
+   throw fail("drama_candidate_edit_invalid",422);
+  // Legacy events may not yet have IDs. Resolve indices after normalization.
+  next=normalizeEpisodeEvents(next,next);
+  next={...next,sequences:sequences.map((sequence,index)=>({...sequence,title:scenePlans[index].title,
+   eventRefs:scenePlans[index].eventIndices.map(eventIndex=>next.eventItems[eventIndex].id)}))};
+ }
+ if(Object.hasOwn(fields,"events")||Object.hasOwn(changes,"scenePlans")){
+  if(unresolvedEventRefs(next).length)throw fail("drama_episode_optimize_relation_conflict",422);
+ }
+ if(!readEpisodeDraft(stableJson({episodes:[next]})))throw fail("drama_candidate_edit_invalid",422);
+ return next;
+}
+
+export function editEpisodeCandidate(candidate,episodeId,changes,wholeEpisode=false){
  const previous=candidate.episodes.find(episode=>episode.id===episodeId);
  if(!previous)throw fail("drama_episode_candidate_not_found",404);
- const next=patchEpisodeCandidateFields(previous,changes);
+ const next=wholeEpisode?patchWholeEpisodeCandidateFields(previous,changes):patchEpisodeCandidateFields(previous,changes);
  if(stableJson(previous)===stableJson(next))return candidate;
  return recordChange(candidate,candidate.episodes.map(episode=>episode.id===episodeId?next:episode),episodeId,false);
 }

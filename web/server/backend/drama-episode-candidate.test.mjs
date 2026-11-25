@@ -11,7 +11,9 @@ import {createDramaRunService,exportDramaRuns,importDramaRuns} from "./drama-run
 import {createProjectArchive} from "./project-archive.mjs";
 import {createBlobStore} from "./blob-store.mjs";
 import {buildApp} from "./app.mjs";
-import {buildEpisodeOptimizeTarget,parseEpisodeOptimizeResult} from "./drama-episode-optimize.mjs";
+import {buildEpisodeOptimizeTarget,parseEpisodeOptimizeResult,buildWholeEpisodeOptimizeTarget,parseWholeEpisodeOptimizeResult} from "./drama-episode-optimize.mjs";
+import {patchWholeEpisodeCandidateFields} from "./drama-episode-candidate.mjs";
+import {unresolvedEventRefs} from "../drama-episode-links.mjs";
 
 const episode=id=>({id,title:id,synopsis:"Original "+id,events:["Arrival","Discovery"],
  eventItems:[{id:id+"-arrival",text:"Arrival"},{id:id+"-discovery",text:"Discovery"}],
@@ -300,4 +302,82 @@ test("optimization rejects duplicate concurrent requests and discards a result w
  service.discard("p","ai-race",1);
  const discarded=await app.inject({method:"POST",url,payload:{...optimizeBody,expectedRevision:1}});
  assert.equal(discarded.statusCode,409,discarded.body);assert.equal(calls,2);
+});
+
+const wholeBody={expectedRevision:0,fields:["synopsis","events","scenePlans","ending"],draftChanges:{},
+ instruction:"强化冲突",previousInstructions:[],channelId:"channel",provider:"openai",model:"model"};
+const wholeChanges={synopsis:"改写梗概",events:["Arrival","New clue","Discovery"],scenePlans:[{title:"线索场次",eventIndices:[0,1]}],ending:"反转"};
+
+test("whole optimization validates selected fields and uses latest accepted edits and bounded applied history",()=>{
+ const ep=episode("one");
+ const command={...wholeBody,draftChanges:{synopsis:"人工已修订"},previousInstructions:["保留主角","加深冲突"]};
+ const target=buildWholeEpisodeOptimizeTarget(command,ep,{story:"Story"},{next:episode("two")});
+ const payload=JSON.parse(target.prompt.slice(target.prompt.lastIndexOf("\n")+1));
+ assert.equal(payload.currentEpisode.synopsis,"人工已修订");
+ assert.deepEqual(payload.previousInstructions,command.previousInstructions);
+ assert.equal(payload.nextEpisode.title,"two");
+ assert.deepEqual(payload.currentEpisode.scenePlans,[{title:"Scene",eventIndices:[0],unresolvedCount:0}]);
+ const result=parseWholeEpisodeOptimizeResult(JSON.stringify({changes:wholeChanges}),target,ep);
+ assert.deepEqual(result.changes,wholeChanges);
+ assert.deepEqual(result.linkedFields,["events","scenePlans"]);
+ assert.ok(result.warnings.length);
+ for(const changes of [{id:"new"},{title:"not allowed"},{scenePlans:[{id:"bad",title:"scene",eventIndices:[0]}]},
+  {scenePlans:[]},{scenePlans:[{title:"scene",eventIndices:[99]}]},{scenePlans:[{title:"scene",eventIndices:[0,0]}]},{events:[12]}]){
+  assert.throws(()=>parseWholeEpisodeOptimizeResult(JSON.stringify({changes}),target,ep),/drama_episode_optimize_result_invalid/);
+ }
+ assert.throws(()=>buildWholeEpisodeOptimizeTarget({...command,previousInstructions:Array(6).fill("x")},ep,{story:"Story"}),/drama_episode_optimize_invalid/);
+ const local=buildEpisodeOptimizeTarget({...optimizeBody,previousInstructions:["第一次"]},ep,{story:"Story"});
+ assert.deepEqual(JSON.parse(local.prompt.slice(local.prompt.lastIndexOf("\n")+1)).previousInstructions,["第一次"]);
+});
+
+test("whole patch preserves scene identity and sources, remaps new events at the final save, rejects dangling associations",()=>{
+ const ep=episode("one");
+ ep.sequences[0].sourceRefs=["paragraph-1"];ep.sequences[0].replaces=["old-scene"];
+ assert.throws(()=>patchWholeEpisodeCandidateFields(ep,{events:["Discovery"]}),/drama_episode_optimize_relation_conflict/);
+ const result=patchWholeEpisodeCandidateFields(ep,wholeChanges);
+ assert.equal(result.id,ep.id);
+ assert.equal(result.sequences[0].id,ep.sequences[0].id);
+ assert.deepEqual(result.sequences[0].sourceRefs,["paragraph-1"]);
+ assert.deepEqual(result.sequences[0].replaces,["old-scene"]);
+ assert.equal(result.eventItems[0].id,ep.eventItems[0].id);
+ assert.equal(result.eventItems[2].id,ep.eventItems[1].id);
+ assert.deepEqual(result.sequences[0].eventRefs,[result.eventItems[0].id,result.eventItems[1].id]);
+ assert.deepEqual(unresolvedEventRefs(result),[]);
+ assert.throws(()=>buildWholeEpisodeOptimizeTarget({...wholeBody,fields:["events"],draftChanges:wholeChanges},ep,{story:"Story"}),/drama_episode_optimize_relation_conflict/);
+ const target=buildWholeEpisodeOptimizeTarget({...wholeBody,draftChanges:wholeChanges},ep,{story:"Story"});
+ assert.throws(()=>parseWholeEpisodeOptimizeResult(JSON.stringify({changes:{events:["Discovery"]}}),target,ep),/drama_episode_optimize_relation_conflict/);
+});
+
+test("whole HTTP preview and repeated rounds are read only; selected fields save atomically with CAS and link validation",async t=>{
+ const {db,service,project}=fixture(t);
+ const run=await service.submit("p",request("whole")),before=project();
+ const prompts=[];
+ let changes=wholeChanges;
+ const app=buildApp({db,authorize:()=>true,assistantChat:async command=>{prompts.push(command.messages[0].content);return {answer:JSON.stringify({changes})};}});
+ t.after(()=>app.close());
+ const root="/api/v1/projects/p/drama-pipeline/runs/whole/episodes/one";
+ const optimize=(payload=wholeBody)=>app.inject({method:"POST",url:root+"/optimize-episode",payload});
+ const save=changes=>app.inject({method:"PATCH",url:root,payload:{expectedRevision:0,wholeEpisode:true,changes}});
+ const preview=await optimize();assert.equal(preview.statusCode,200,preview.body);
+ assert.deepEqual(preview.json().linkedFields,["events","scenePlans"]);
+ assert.deepEqual(service.get("p","whole"),run);
+ changes={ending:"再次优化"};
+ const again=await optimize({...wholeBody,draftChanges:{synopsis:wholeChanges.synopsis},previousInstructions:["强化冲突"]});
+ assert.equal(again.statusCode,200,again.body);
+ const nextPrompt=JSON.parse(prompts.at(-1).slice(prompts.at(-1).lastIndexOf("\n")+1));
+ assert.equal(nextPrompt.currentEpisode.synopsis,wholeChanges.synopsis);
+ assert.deepEqual(nextPrompt.previousInstructions,["强化冲突"]);
+ assert.deepEqual(service.get("p","whole"),run);
+ const invalid=await save({events:["Discovery"],synopsis:"不能部分保存"});
+ assert.equal(invalid.statusCode,422,invalid.body);assert.equal(invalid.json().code,"drama_episode_optimize_relation_conflict");
+ assert.deepEqual(service.get("p","whole"),run);
+ const {ending,...selected}=wholeChanges;
+ const saved=await save(selected);assert.equal(saved.statusCode,200,saved.body);
+ const candidate=saved.json().candidate;
+ assert.equal(candidate.revision,1);assert.equal(candidate.episodes[0].ending,run.candidate.episodes[0].ending);
+ assert.equal(candidate.episodes[0].synopsis,selected.synopsis);
+ assert.deepEqual(unresolvedEventRefs(candidate.episodes[0]),[]);
+ assert.deepEqual(candidate.episodes.slice(1),run.candidate.episodes.slice(1));
+ assert.deepEqual(project(),before);
+ const stale=await save({synopsis:"stale"});assert.equal(stale.statusCode,409,stale.body);
 });

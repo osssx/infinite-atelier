@@ -20,7 +20,7 @@ import {saveAssetEntry} from "./drama-asset-entry-save";
 import type {WorkspacePendingRegistration} from "./drama-creative-workspace";
 import {DramaReferenceImagePicker} from "./drama-reference-image-picker";
 import {DramaAssetCandidates} from "./drama-asset-candidates";
-import {adoptedAssetSelection,AssetCandidateNavigationContext,AssetReviewNavigationContext,useAssetDirectory,type AssetAdoptionMapping} from "./drama-asset-directory-state";
+import {adoptedAssetSelection,DramaCandidateNavigationContext,AssetReviewNavigationContext,useAssetDirectory,type AssetAdoptionMapping} from "./drama-asset-directory-state";
 import {DramaCreativeScopeBrowser} from "./drama-creative-scope-browser";
 import {DramaStoryboardNavigationContext} from "./drama-storyboard-navigation";
 const DramaVideoConfigFields = lazy(() => import("./drama-video-config-fields").then(m=>({default:m.DramaVideoConfigFields})));
@@ -115,7 +115,7 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
     const [videoEditing,setVideoEditing]=useState(false);
     const [,setAssetDirectory]=useAssetDirectory();
     const openAdoptedAsset=useContext(AssetReviewNavigationContext);
-    const openAssetCandidates=useContext(AssetCandidateNavigationContext);
+    const openCandidates=useContext(DramaCandidateNavigationContext);
     const [scopeOpen,setScopeOpen]=useState(false);
     // Both storyboard tabs share the same footer; close an open range menu when switching tabs.
     useEffect(()=>setScopeOpen(false),[workspaceMode,workspaceTab]);
@@ -148,6 +148,15 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
             .some(key=>upstreamImpact[key].length>0)) ||
         (upstreamImpact?.pending && Object.values(upstreamImpact.pending).some(ids=>ids?.length)));
     const runPath = `/api/v1/projects/${encodeURIComponent(projectId ?? "")}/drama-pipeline/runs`;
+    const loadRunDetails=(run:DramaRun)=>{
+        if(!run.candidate?.shots?.length&&!run.candidate?.episodes?.length)void canvasApi<DramaRun>(`${runPath}/${encodeURIComponent(run.id)}`,"GET")
+            .then(updated=>setRuns(current=>current.map(item=>item.id===run.id?updated:item)))
+            .catch(()=>setValidation("无法读取候选详情"));
+        if(storyboard&&["ready","adopted"].includes(run.status))
+            void canvasApi<DramaRunPreview>(`${runPath}/${encodeURIComponent(run.id)}/preview`,"GET")
+                .then(preview=>setRunPreviews(current=>({...current,[run.id]:preview})))
+                .catch(()=>setValidation("无法获取分镜差异预览"));
+    };
     useEffect(() => {
         if ((!storyboard&&!episodePlanning) || !projectId || (workspaceMode && workspaceTab!=="runs" && !generating && !runs.some(run=>run.status==="running"))) return;
         let active = true;
@@ -825,7 +834,12 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
                         episodeId:selectedEpisode||"*",sequenceId:selectedSequence||undefined,shotId:selectedRunShot||undefined,
                         channelId:channel.id,provider,baseUrl:channel.baseUrl,model:modelOptionName(model)});
                     setRuns(current=>[run,...current.filter(item=>item.id!==run.id)]);
-                    setValidation(run.error ?? "运行已记录，请审核候选");
+                    setValidation(run.error ?? (run.status==="ready"?"运行已记录，请审核候选":run.status==="cancelled"?"已取消生成":`运行状态：${run.status}`));
+                    if(workspaceMode&&run.status==="ready"){
+                        setExpandedRuns({[run.id]:true});
+                        loadRunDetails(run);
+                        openCandidates?.();
+                    }
                     return;
                 }
                 const result = await canvasApi<{answer:string}>(`/api/v1/projects/${encodeURIComponent(projectId ?? "")}/drama-pipeline/generate`, "POST", {
@@ -844,7 +858,7 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
                 if(assetPlanning&&assetDraft){
                     onChange({dramaAssetCandidate:{id:crypto.randomUUID(),baseline:storedDraft,assets:assetDraft.assets}});
                     setValidation(workspaceMode?"资产候选已保存，请切换至「生成候选」审核":"资产候选已保存，请逐项选择处理方式");
-                    if(workspaceMode)openAssetCandidates?.();
+                    if(workspaceMode)openCandidates?.();
                     return;
                 }
                 if (episodePlanning && !generatedEpisodes?.episodes.length) throw Error("模型返回的剧集格式有误，已保留原草案");
@@ -894,14 +908,9 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
             style={{background:theme.node.panel,borderColor:theme.node.stroke,color:theme.node.text}}
             open={Boolean(expandedRuns[run.id])} onToggle={event=>{
             const open=event.currentTarget.open;
-            setExpandedRuns(current=>current[run.id]===open?current:{...current,[run.id]:open});
-            if(open&&!run.candidate?.shots?.length&&!run.candidate?.episodes?.length)void canvasApi<DramaRun>(`${runPath}/${encodeURIComponent(run.id)}`,"GET")
-                .then(updated=>setRuns(current=>current.map(item=>item.id===run.id?updated:item)))
-                .catch(()=>setValidation("无法读取候选详情"));
-            if(open&&storyboard&&["ready","adopted"].includes(run.status))
-                void canvasApi<DramaRunPreview>(`${runPath}/${encodeURIComponent(run.id)}/preview`,"GET")
-                    .then(preview=>setRunPreviews(current=>({...current,[run.id]:preview})))
-                    .catch(()=>setValidation("无法获取分镜差异预览"));
+            if(Boolean(expandedRuns[run.id])===open)return;
+            setExpandedRuns(current=>({...current,[run.id]:open}));
+            if(open)loadRunDetails(run);
         }}>
             <summary className="cursor-pointer list-none rounded-xl px-3 py-2.5 transition-colors hover:bg-black/5 dark:hover:bg-white/5 focus-visible:outline focus-visible:outline-1" style={{outlineColor:theme.node.activeStroke}}>
                 <span className="flex w-full min-w-0 items-center gap-2" data-drama-run-summary-content>

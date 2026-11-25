@@ -5,7 +5,7 @@ import {BookOpenText,Boxes,Clapperboard,Film,History,LayoutList,ShieldAlert,Spar
 import {canvasThemes,type CanvasTheme} from "@/lib/canvas-theme";
 import {useThemeStore} from "@/stores/use-theme-store";
 import {DramaNodeStatus} from "./drama-node-style";
-import {AssetCandidateNavigationContext,AssetDirectoryContext,AssetReviewBusyContext,AssetReviewContext,AssetReviewNavigationContext,emptyAssetReview,initialAssetDirectory,type AssetDirectorySelection} from "./drama-asset-directory-state";
+import {DramaCandidateNavigationContext,AssetDirectoryContext,AssetReviewBusyContext,AssetReviewContext,AssetReviewNavigationContext,emptyAssetReview,initialAssetDirectory,type AssetDirectorySelection} from "./drama-asset-directory-state";
 import {DramaStoryboardNavigationContext} from "./drama-storyboard-navigation";
 import type {DramaWorkspaceTab} from "./drama-pipeline-node-panel";
 type StoryWorkspaceTab=DramaWorkspaceTab|"settings";
@@ -195,7 +195,7 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
      <AssetReviewContext.Provider value={assetMode?assetReview:null}>
      <AssetReviewBusyContext.Provider value={assetMode?updateReviewBusy:null}>
      <AssetReviewNavigationContext.Provider value={assetMode?()=>void perform("editor"):null}>
-     <AssetCandidateNavigationContext.Provider value={assetMode?()=>request("runs"):null}>
+     <DramaCandidateNavigationContext.Provider value={!storyMode?()=>request("runs"):null}>
      <Suspense fallback={<p role="status" className="text-xs" style={{color:theme.node.muted}}>正在按需加载工作区…</p>}>
       {tab==="history"&&renderHistoryPanel
          ? <div data-drama-history-layout="" className="grid h-full min-h-0 min-w-0 flex-1 grid-rows-[minmax(0,1fr)_minmax(0,2fr)] gap-3 xl:grid-cols-[minmax(220px,260px)_minmax(0,1fr)] xl:grid-rows-[minmax(0,1fr)]">
@@ -215,7 +215,7 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
            </div>
         : renderPanel(tab,registerPending)}
      </Suspense>
-     </AssetCandidateNavigationContext.Provider>
+     </DramaCandidateNavigationContext.Provider>
      </AssetReviewNavigationContext.Provider>
      </AssetReviewBusyContext.Provider>
      </AssetReviewContext.Provider>

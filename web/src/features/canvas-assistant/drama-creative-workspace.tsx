@@ -98,34 +98,64 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
  const [pendingCount,setPendingCount]=useState(0);
  const [error,setError]=useState("");
  const [busy,setBusy]=useState(false);
+ const busyRef=useRef(false);
+ const [pendingMenu,setPendingMenu]=useState(false);
+ const pendingMenuRef=useRef<HTMLDivElement>(null);
+ const [editorEpoch,setEditorEpoch]=useState(0);
  const pending=useRef(new Map<string,()=>Promise<void>>());
  const registerPending=useCallback<WorkspacePendingRegistration>((key,save)=>{
   if(save)pending.current.set(key,save);else pending.current.delete(key);
   setPendingCount(pending.current.size);
  },[]);
  useEffect(()=>()=>{pending.current.clear()},[nodeId,projectId]);
+ useEffect(()=>{
+  if(!pendingCount&&!busy)setPendingMenu(false);
+ },[pendingCount,busy]);
+ useEffect(()=>{
+  if(!pendingMenu)return;
+  const outside=(event:PointerEvent)=>{
+   if(!busyRef.current&&!pendingMenuRef.current?.contains(event.target as Node)){setPendingMenu(false);setError("");}
+  };
+  const escape=(event:KeyboardEvent)=>{
+   if(event.key!=="Escape")return;
+   event.stopPropagation();event.preventDefault();
+   if(!busyRef.current){setPendingMenu(false);setError("");pendingMenuRef.current?.querySelector("button")?.focus();}
+  };
+  document.addEventListener("pointerdown",outside);
+  document.addEventListener("keydown",escape,true);
+  return ()=>{document.removeEventListener("pointerdown",outside);document.removeEventListener("keydown",escape,true);};
+ },[pendingMenu]);
  const perform=useCallback(async(target:StoryWorkspaceTab|"close")=>{
   if(target==="close")await onClose();
   else {setTab(target);onTabChange?.(target);}
  },[onClose,onTabChange]);
  const request=useCallback((target:StoryWorkspaceTab|"close")=>{
-  if(target===tabRef.current||reviewBusyRef.current||operationLockedRef.current)return;
+  if(target===tabRef.current||reviewBusyRef.current||operationLockedRef.current||busyRef.current)return;
+  setPendingMenu(false);setError("");
   if(pending.current.size){setPendingAction(target);return;}
   void perform(target).catch(e=>setError(e instanceof Error?e.message:"操作失败"));
  },[perform]);
- const decide=async(save:boolean)=>{
-  if(!pendingAction||busy)return;
-  setBusy(true);setError("");
+ const decide=async(save:boolean,target:StoryWorkspaceTab|"close"|"stay"|null=pendingAction)=>{
+  if(!target||busyRef.current||reviewBusyRef.current||operationLockedRef.current)return;
+  busyRef.current=true;setBusy(true);setError("");
   try{
    if(save){
     for(const entry of [...pending.current.values()])await entry();
    }
-   const action=pendingAction;
-   pending.current.clear();setPendingCount(0);
-   setPendingAction(null);
-   await perform(action);
+   // Staying in the current tab must actually discard the local buffers,
+   // not merely clear their registrations. Reset only the content subtree.
+   if(target!=="stay"||!save){
+    pending.current.clear();setPendingCount(0);
+   }
+   if(target==="stay"){
+    if(!save)setEditorEpoch(epoch=>epoch+1);
+    setPendingMenu(false);
+   }else{
+    setPendingAction(null);
+    await perform(target);
+   }
   }catch(e){setError(e instanceof Error?e.message:"草案保存失败，请检查冲突后重试");}
-  finally{setBusy(false);}
+  finally{busyRef.current=false;setBusy(false);}
  };
  const tabs:{id:StoryWorkspaceTab;label:string;icon:typeof BookOpenText}[]=[
   {id:"editor",label:storyMode?"故事正文":assetMode?"资产编辑":episodeMode?"剧集编辑":"镜头编辑",icon:LayoutList},
@@ -145,7 +175,7 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
  const action="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-lg border px-3 text-xs font-medium transition-opacity hover:opacity-80 disabled:cursor-not-allowed disabled:opacity-40";
  const primary={background:theme.node.text,color:theme.node.panel,borderColor:theme.node.text};
  return <>
-  <Modal open centered destroyOnHidden footer={null} closable={!reviewBusy&&!operationLocked} maskClosable={!reviewBusy&&!operationLocked} keyboard={!reviewBusy&&!operationLocked} onCancel={()=>request("close")}
+  <Modal open centered destroyOnHidden footer={null} closable={!reviewBusy&&!operationLocked&&!busy} maskClosable={!reviewBusy&&!operationLocked&&!busy} keyboard={!reviewBusy&&!operationLocked&&!busy&&!pendingMenu} onCancel={()=>request("close")}
    closeIcon={<X size={18} style={{color:theme.node.text}}/>}
    title={<div className="flex min-w-0 items-center gap-3 py-0.5" data-drama-workspace-title="">
     <span className="grid size-10 shrink-0 place-items-center rounded-xl border" style={subtle}>
@@ -182,22 +212,42 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
    <div data-creative-workspace-node-id={nodeId} data-drama-workspace-theme={appearance}
     data-drama-workspace-kind={kind} className="relative flex h-full min-h-0 flex-col gap-2.5"
     style={{color:theme.node.text,colorScheme:appearance}}>
-    <nav aria-label="创作工作区功能" className="thin-scrollbar flex shrink-0 gap-1.5 overflow-x-auto border-b pb-2"
-     style={{borderColor:theme.node.stroke}}>
-     {tabs.map(item=><WorkspaceTabButton key={item.id} item={item}
-       description={paneDesc[item.id]} active={tab===item.id} theme={theme} disabled={reviewBusy||operationLocked}
-       onSelect={()=>request(item.id)}/>)}
-    </nav>
+    <div data-drama-workspace-tab-row="" className="flex min-w-0 shrink-0 items-center gap-2 border-b pb-2" style={{borderColor:theme.node.stroke}}>
+     <nav aria-label="创作工作区功能" className="thin-scrollbar flex min-w-0 flex-1 gap-1.5 overflow-x-auto">
+      {tabs.map(item=><WorkspaceTabButton key={item.id} item={item}
+        description={paneDesc[item.id]} active={tab===item.id} theme={theme} disabled={reviewBusy||operationLocked||busy}
+        onSelect={()=>request(item.id)}/>)}
+     </nav>
+     {pendingCount>0&&<div ref={pendingMenuRef} className="relative ml-auto shrink-0" data-drama-pending-status="">
+      <button type="button" aria-expanded={pendingMenu} aria-label={pendingCount+" 处未保存"}
+       title={pendingCount+" 组尚未保存的局部"+(episodeMode&&tab==="runs"?"候选":"草案")+"修改"}
+       disabled={reviewBusy||operationLocked||busy}
+       className="inline-flex h-7 items-center gap-1.5 whitespace-nowrap rounded-md border px-2 text-[11px] font-medium hover:opacity-80 focus-visible:outline focus-visible:outline-2 disabled:opacity-50"
+       style={{...subtle,outlineColor:theme.node.activeStroke}}
+       onClick={()=>{setError("");setPendingMenu(open=>!open);}}>
+       <span aria-hidden="true" className="size-1.5 rounded-full bg-amber-500"/>
+       <span role="status">{pendingCount} 处未保存</span>
+      </button>
+      {pendingMenu&&<div role="dialog" aria-label="未保存修改" data-drama-pending-menu=""
+       className="absolute right-0 top-full z-40 mt-2 w-[min(320px,calc(100vw-64px))] space-y-3 rounded-lg border p-3 text-xs"
+       style={{...subtle,boxShadow:"0 8px 24px rgba(0,0,0,.18)"}}>
+       <strong className="block text-sm">{pendingCount} 组尚未保存的局部{episodeMode&&tab==="runs"?"候选":"草案"}修改</strong>
+       <p className="leading-relaxed" style={{color:theme.node.muted}}>保存或放弃当前修改后，仍停留在当前页面。</p>
+       {error&&<p role="alert" className="break-words rounded-md border p-2" style={subtle}>{error}</p>}
+       <div className="flex flex-wrap justify-end gap-1.5">
+        <button type="button" className={action+" !min-h-7 !px-2"} style={subtle} disabled={busy} onClick={()=>{setPendingMenu(false);setError("");}}>继续编辑</button>
+        <button type="button" className={action+" !min-h-7 !px-2"} style={subtle} disabled={busy||reviewBusy||operationLocked} onClick={()=>void decide(false,"stay")}>放弃修改</button>
+        <button type="button" className={action+" !min-h-7 !px-2"} style={primary} disabled={busy||reviewBusy||operationLocked} onClick={()=>void decide(true,"stay")}>
+         {busy?"正在保存…":episodeMode&&tab==="runs"?"保存候选":"保存草案"}
+        </button>
+       </div>
+      </div>}
+     </div>}
+    </div>
     {!storyMode&&<DramaFeedbackNotices notices={feedback.notices} clear={feedback.clear} theme={theme}/>}
     {reviewBusy&&<p role="status" className="shrink-0 text-xs" style={{color:theme.node.muted}}>正在合入资产，请勿关闭工作区或切换页面。</p>}
     {operationLocked&&<p role="status" className="shrink-0 text-xs" style={{color:theme.node.muted}}>当前操作完成后可切换页面或关闭工作区。</p>}
-    {pendingCount>0&&<div className="flex min-h-0 shrink-0 justify-end">
-     <span role="status" className="rounded-md border px-2 py-1 text-[11px]"
-      style={{...subtle,background:theme.toolbar.activeBg}}>
-      {pendingCount} 组尚未保存的局部草案修改
-     </span>
-    </div>}
-    <div data-drama-workspace-content="" className={`thin-scrollbar min-h-0 min-w-0 flex-1 rounded-xl border p-3 sm:p-4 ${tab==="history"?"flex flex-col overflow-hidden":"overflow-y-auto overscroll-contain"}`}
+    <div data-drama-workspace-content="" inert={busy&&pendingMenu} className={`thin-scrollbar min-h-0 min-w-0 flex-1 rounded-xl border p-3 sm:p-4 ${tab==="history"?"flex flex-col overflow-hidden":"overflow-y-auto overscroll-contain"}`}
      style={{...subtle}}>
      <DramaFeedbackContext.Provider value={storyMode?null:feedback.context}>
      <DramaStoryboardScopeContext.Provider value={kind==="storyboard"?storyboardScope:null}>
@@ -207,7 +257,7 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
      <AssetReviewBusyContext.Provider value={assetMode?updateReviewBusy:null}>
      <AssetReviewNavigationContext.Provider value={assetMode?()=>void perform("editor"):null}>
      <DramaCandidateNavigationContext.Provider value={!storyMode?()=>request("runs"):null}>
-     <Suspense fallback={<p role="status" className="text-xs" style={{color:theme.node.muted}}>正在按需加载工作区…</p>}>
+     <Suspense key={editorEpoch} fallback={<p role="status" className="text-xs" style={{color:theme.node.muted}}>正在按需加载工作区…</p>}>
       {tab==="history"&&renderHistoryPanel
          ? <div data-drama-history-layout="" className="grid h-full min-h-0 min-w-0 flex-1 grid-rows-[minmax(0,1fr)_minmax(0,2fr)] gap-3 xl:grid-cols-[minmax(220px,260px)_minmax(0,1fr)] xl:grid-rows-[minmax(0,1fr)]">
             <section aria-label="上游影响面板" className="min-h-0 min-w-0 overflow-hidden">
@@ -235,7 +285,7 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
      </DramaStoryboardScopeContext.Provider>
      </DramaFeedbackContext.Provider>
     </div>
-    {error&&<p role="alert" className="shrink-0 rounded-lg border p-2 text-xs"
+    {error&&!pendingMenu&&!pendingAction&&<p role="alert" className="shrink-0 rounded-lg border p-2 text-xs"
       style={{...subtle,background:theme.toolbar.activeBg}}>{error}</p>}
    </div>
    </ConfigProvider>

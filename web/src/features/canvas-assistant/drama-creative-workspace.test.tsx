@@ -135,6 +135,58 @@ describe("P3.4b3 workspace lifecycle",()=>{
   expect(div.querySelector('[aria-label="当前资产编辑区"]')?.textContent).toContain("确认后的描述");
   expect(div.querySelector<HTMLInputElement>('input[aria-label="搜索资产"]')?.value).toBe("组别");
  });
+ it("places pending actions in the tab row and saves or discards in place without navigating",async()=>{
+  const {useState,useEffect}=await import("react");
+  type Register=import("./drama-creative-workspace").WorkspacePendingRegistration;
+  const div=document.createElement("div");document.body.append(div);const root=createRoot(div);roots.push(root);
+  const changes=vi.fn();const navigate=vi.fn();let fail=false;
+  function Editor({register,value,onSave}:{register:Register;value:string;onSave:(value:string)=>void}){
+   const [draft,setDraft]=useState(value);
+   useEffect(()=>{
+    register("draft",draft!==value?async()=>{if(fail)throw Error("版本冲突");onSave(draft);}:null);
+    return ()=>register("draft",null);
+   },[register,draft,value,onSave]);
+   return <input aria-label="测试修改" value={draft} onChange={e=>setDraft(e.target.value)}/>;
+  }
+  function Host(){
+   const [value,setValue]=useState("原内容");
+   return <DramaCreativeWorkspace projectId="p1" nodeId="pending-node" kind="episodes" focus={{}} versionConfirmed={true}
+    onClose={async()=>{}} onTabChange={navigate} renderPanel={(_tab,register)=><Editor register={register} value={value} onSave={next=>{changes(next);setValue(next);}}/>}/>;
+  }
+  await act(async()=>root.render(<Host/>));
+  await press(div,"生成候选");
+  navigate.mockClear();
+  const workspace=div.querySelector('[data-creative-workspace-node-id="pending-node"]')!;
+  const row=workspace.querySelector("[data-drama-workspace-tab-row]")!;
+  const edit=async(value:string)=>{
+   const input=workspace.querySelector<HTMLInputElement>('[aria-label="测试修改"]')!;
+   await act(async()=>{Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value")!.set!.call(input,value);input.dispatchEvent(new Event("input",{bubbles:true}));});
+  };
+  await edit("未保存内容");
+  const chip=row.querySelector<HTMLButtonElement>('[aria-label="1 处未保存"]')!;
+  expect(chip).toBeTruthy();expect(chip.title).toContain("局部候选修改");
+  expect(chip.closest("[data-drama-pending-status]")?.parentElement).toBe(row);
+  expect(workspace.querySelectorAll('[role="status"]')).toHaveLength(1);
+  await press(div,"1 处未保存");
+  expect(row.querySelector('[data-drama-pending-menu]')?.textContent).toContain("局部候选修改");
+  await press(div,"继续编辑");
+  expect(row.querySelector('[data-drama-pending-menu]')).toBeNull();
+  expect(workspace.querySelector<HTMLInputElement>('[aria-label="测试修改"]')?.value).toBe("未保存内容");
+  await press(div,"1 处未保存");
+  fail=true;await press(div,"保存候选");
+  expect(row.querySelector('[role="alert"]')?.textContent).toBe("版本冲突");
+  expect(workspace.querySelector<HTMLInputElement>('[aria-label="测试修改"]')?.value).toBe("未保存内容");
+  expect(changes).not.toHaveBeenCalled();
+  fail=false;await press(div,"保存候选");
+  expect(changes).toHaveBeenCalledWith("未保存内容");
+  expect(row.querySelector('[data-drama-pending-status]')).toBeNull();
+  await edit("放弃的内容");await press(div,"1 处未保存");await press(div,"放弃修改");
+  expect(workspace.querySelector<HTMLInputElement>('[aria-label="测试修改"]')?.value).toBe("未保存内容");
+  expect(row.querySelector('[data-drama-pending-status]')).toBeNull();
+  expect(changes).toHaveBeenCalledTimes(1);expect(navigate).not.toHaveBeenCalled();
+  expect(row.querySelector('nav button[aria-pressed="true"]')?.textContent).toBe("生成候选");
+ });
+
 
  it("shows the candidate count and prevents close or tab changes while an adoption is in progress",async()=>{
   const {useContext}=await import("react");

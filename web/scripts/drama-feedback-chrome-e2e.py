@@ -85,8 +85,15 @@ def run():
                 old_confirmed=original_meta["dramaConfirmed"]
                 run_id=page.js("document.querySelector("+json.dumps(candidate)+").dataset.episodeCandidateEditor")
                 check("candidate two episodes","document.querySelector("+json.dumps(candidate)+")?.textContent.includes('当前候选 2 集')")
+                content_top=page.js("document.querySelector("+json.dumps(portal+" [data-drama-workspace-content]")+").getBoundingClientRect().top")
                 click_selector("edit candidate synopsis",candidate+' button[aria-label="编辑剧情梗概"]')
                 type_value("type local candidate synopsis",candidate+' textarea[aria-label="剧情梗概"]',"浏览器人工修订梗概")
+                pending=portal+" [data-drama-pending-status]"
+                check("pending chip in tab row without shifting content","""(()=>{const p=document.querySelector(%s),r=p?.parentElement,n=r?.querySelector('nav'),c=document.querySelector(%s);if(!n||!c)return false;const a=n.getBoundingClientRect(),b=p.getBoundingClientRect();return b.top>=a.top-1&&b.bottom<=a.bottom+1&&b.left>=a.right&&Math.abs(c.getBoundingClientRect().top-%s)<1})()"""%(json.dumps(pending),json.dumps(portal+" [data-drama-workspace-content]"),content_top))
+                click("1 处未保存",pending)
+                check("pending popup anchored without layout shift","""(()=>{const p=document.querySelector('[data-drama-pending-menu]'),c=document.querySelector(%s);return p&&getComputedStyle(p).position==='absolute'&&Math.abs(c.getBoundingClientRect().top-%s)<1})()"""%(json.dumps(portal+" [data-drama-workspace-content]"),content_top))
+                click("继续编辑",pending)
+
                 check("candidate navigation locked during editing","""(()=>{const r=document.querySelector(%s),d=r?.closest('details');return [...r.querySelectorAll('[aria-label^="选择候选第"]')].every(b=>b.disabled)&&[...d.querySelectorAll('button')].find(b=>b.textContent.trim()==='采用到草案')?.disabled})()"""%json.dumps(candidate))
                 ai_input=candidate+' textarea[aria-label="剧情梗概"]'
                 check("select unsaved candidate substring","(()=>{const e=document.querySelector(%s);if(!e)return false;e.focus();e.setSelectionRange(3,7);return e.value.slice(e.selectionStart,e.selectionEnd)==='人工修订'})()"%json.dumps(ai_input,ensure_ascii=False))
@@ -110,7 +117,9 @@ def run():
                 check("AI applied only to local buffer","document.querySelector(%s)?.value==='浏览器增强悬念梗概'&&!document.querySelector('[data-episode-ai-preview]')"%json.dumps(ai_input,ensure_ascii=False))
                 assert saved_candidate()["candidate"]==original_candidate
                 passed.append("AI apply no candidate write")
-                click_selector("save candidate synopsis",candidate+' button[aria-label="保存候选剧情梗概"]')
+                click("1 处未保存",pending)
+                click("保存候选",pending)
+                check("pending save clears chip and stays on candidates","""!document.querySelector('[data-drama-pending-status]')&&document.querySelector('nav button[aria-pressed="true"]')?.textContent.includes('生成候选')""")
                 check("candidate saved and modified","document.querySelector("+json.dumps(candidate)+")?.textContent.includes('浏览器增强悬念梗概')&&document.querySelector("+json.dumps(candidate)+")?.textContent.includes('已手动修改')&&!document.querySelector('[data-drama-task-status]')")
                 whole_before=saved_candidate()["candidate"]
                 click("整集 AI 优化",candidate)

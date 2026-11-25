@@ -8,6 +8,7 @@ vi.mock("@/stores/use-theme-store",async()=>({
 import {canvasThemes} from "@/lib/canvas-theme";
 import {useThemeStore} from "@/stores/use-theme-store";
 import {DramaEpisodeFields,type DramaEpisode} from "./drama-episode-fields";
+import {DramaFeedbackContext,useDramaFeedbackController,DramaFeedbackNotices} from "./drama-feedback";
 
 const original:DramaEpisode[]=[
  {id:"ep-a",title:"相遇",synopsis:"森林第一天",events:["兔子来了","乌龟来了"],
@@ -26,10 +27,11 @@ async function mount(initialEpisodeId?:string,initial=original,expanded=true,dis
  const changes=vi.fn<(episodes:DramaEpisode[])=>void>();
  function Editor(){
   const [episodes,setEpisodes]=useState<DramaEpisode[]>(initial);
-  return <div style={{height:640,width:1100}}>
+  const feedback=useDramaFeedbackController();
+  return <DramaFeedbackContext.Provider value={feedback.context}><div style={{height:640,width:1100}}>
    <DramaEpisodeFields episodes={episodes} initialEpisodeId={initialEpisodeId}
     expanded={expanded} disabled={disabled} onChange={next=>{changes(next);setEpisodes(next)}}/>
-  </div>;
+  <DramaFeedbackNotices notices={feedback.notices} clear={feedback.clear} theme={canvasThemes.dark}/></div></DramaFeedbackContext.Provider>;
  }
  await act(async()=>root.render(<Editor/>));
  return {container,changes};
@@ -71,6 +73,7 @@ it("automatically upgrades only the selected legacy episode and preserves unique
  await click(scene.querySelector('[aria-label="确认场次 1 详情"]'));
  expect(changes.mock.lastCall![0][0].sequences?.[0].eventRefs).toEqual([migrated.eventItems![0].id,migrated.eventItems![2].id]);
  expect(changes.mock.lastCall![0][0].eventItems).toEqual(migrated.eventItems);
+ expect(container.querySelector('[data-drama-feedback="success"]')?.textContent).toContain("场次详情已更新草案");
  await act(async()=>useThemeStore.setState({theme:"dark"}));
 });
 it("does not migrate on compact display or while disabled; first compact edit migrates",async()=>{
@@ -107,12 +110,14 @@ describe("maximized episode planning layout",()=>{
   await click(container.querySelector('[aria-label="剧情梗概操作"] button:first-child'));
   expect(changes).not.toHaveBeenCalled();
   expect(container.querySelector('[data-episode-readonly="synopsis"]')?.textContent).toBe("第二天出发");
+  expect(container.querySelector('[data-drama-feedback="success"]')).toBeNull();
   await click(container.querySelector('[aria-label="编辑剧情梗概"]'));
   await enter(container,'textarea[aria-label="剧情梗概"]',"出发时下雨");
   await click(container.querySelector('[aria-label="确认剧情梗概"]'));
   expect(changes).toHaveBeenCalledTimes(1);
   expect(changes.mock.lastCall?.[0][0]).toEqual(original[0]);
   expect(changes.mock.lastCall?.[0][1].synopsis).toBe("出发时下雨");
+  expect(container.querySelector('[data-drama-feedback="success"]')?.textContent).toContain("剧情梗概已更新草案");
   expect(container.querySelector('[data-episode-readonly="synopsis"]')?.textContent).toBe("出发时下雨");
   await act(async()=>useThemeStore.setState({theme:"dark"}));
   expect(fieldset.style.color).toBe(canvasThemes.dark.node.text);

@@ -10,6 +10,7 @@ import {prepareDramaProduction} from "./drama-media-preflight";
 import {auditDramaProduction,dramaMediaModes,listDramaProductionCapabilities,type DramaProductionAudit,type DramaProductionCapabilities} from "./drama-production-audit";
 import {canvasCasUrl} from "@/features/backend-sync/canvas-cas";
 import {DramaEditActions} from "./drama-edit-actions";
+import {DramaInlineFeedback,useDramaFieldFeedback} from "./drama-feedback";
 
 import {DramaReferenceImagePicker,DramaImagePreview,type ReferenceImage} from "./drama-reference-image-picker";
 import type {WorkspacePendingRegistration} from "./drama-creative-workspace";
@@ -38,6 +39,7 @@ function VideoModeField({shotId,setting,disabled,theme,capabilities,onChange,onP
  const [edit,setEdit]=useState<{baseline:string;value:DramaShotProduction}|null>(null);
  const [saving,setSaving]=useState(false);
  const [saveError,setSaveError]=useState("");
+ const updated=useDramaFieldFeedback();
  const inline=images!==undefined;
  const dirty=Boolean(edit&&JSON.stringify(edit.value)!==edit.baseline);
  const pendingKey="video-production:"+shotId;
@@ -49,6 +51,7 @@ function VideoModeField({shotId,setting,disabled,theme,capabilities,onChange,onP
   try{
    if(dirty&&JSON.stringify(edit.value)!==JSON.stringify(setting))onChange(shotId,edit.value);
    await onWaitForSave?.();
+   if(dirty)updated("视频输入模式");
    setEdit(null);
   }catch(error){setSaveError(error instanceof Error?error.message:"保存视频输入配置失败");throw error;}
   finally{setSaving(false);}
@@ -146,10 +149,9 @@ function VideoModeField({shotId,setting,disabled,theme,capabilities,onChange,onP
      从画布选择图片后，会立即保存当前输入模式和所选图片，以便返回画布后继续配置。
     </p>}
    </>}
-   {saveError&&<p role="alert" className="text-xs">{saveError}</p>}
-   {stale&&<p role="alert" className="text-xs" style={{color:theme.node.muted}}>
-    视频输入配置已在其他位置更新，请取消并重新编辑。
-   </p>}
+   {saveError&&<DramaInlineFeedback theme={theme} level="error" error={saveError}/>}
+   {saving&&<DramaInlineFeedback theme={theme} level="info" pending>正在保存视频输入配置…</DramaInlineFeedback>}
+   {stale&&<DramaInlineFeedback theme={theme}>视频输入配置已在其他位置更新，请取消并重新编辑。</DramaInlineFeedback>}
    <DramaEditActions label="视频输入模式" theme={theme} disabled={disabled||saving||stale||!onChange}
     onCancel={()=>{if(!saving){setEdit(null);setSaveError("");}}}
     onConfirm={()=>{void commitRef.current().catch(()=>{});}}/>
@@ -473,7 +475,7 @@ export function DramaVideoConfigFields({
             missingFor={missingFor} disabled={disabled} theme={theme} production={production}
             productionStyle={productionStyle} confirmedRevisionId={confirmedRevisionId}
             initialEpisodeId={activeEpisode} onCreateSelected={onCreateSelected} onCreateBatch={onCreateBatch} embedded/>}
-        {error&&<p role="alert" className="rounded-lg border px-3 py-2 text-xs" style={{...card,background:theme.toolbar.activeBg}}>{error}</p>}
+        {error&&<DramaInlineFeedback theme={theme} level="error" error={error}/>}
         </div>
     </section>;
 }
@@ -574,7 +576,7 @@ export function DramaBatchConfigPanel({inputs,episodes,configs,missingCount,miss
             </div>
         </details>}
 
- {error&&<p role="alert" className="rounded-lg border px-3 py-2 text-xs" style={{...card,background:theme.toolbar.activeBg}}>{error}</p>}
+ {error&&<DramaInlineFeedback theme={theme} level="error" error={error}/>}
  </section>;
 }
 

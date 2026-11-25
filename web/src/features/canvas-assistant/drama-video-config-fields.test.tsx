@@ -33,6 +33,7 @@ vi.mock("./drama-production-audit",()=>({
  },
 }));
 import {DramaVideoConfigFields,DramaBatchConfigPanel} from "./drama-video-config-fields";
+import {DramaFeedbackContext,useDramaFeedbackController,DramaFeedbackNotices} from "./drama-feedback";
 
 const inputs:DramaVideoInput[]=[
  {shot:{id:"s1",episodeId:"e1",order:1,description:"兔子走进森林",shotSize:"全景",
@@ -62,7 +63,8 @@ async function mount(options:{
  const refresh=vi.fn<(id:string,input:DramaVideoInput,fields:{prompt:boolean;duration:boolean;references?:boolean;overwrite:boolean})=>void>();
  function TestView(){
   const [production,setProduction]=useState<Record<string,DramaShotProduction>>({});
-  return <div style={{width:1100,height:650}}>
+  const feedback=useDramaFeedbackController();
+  return <DramaFeedbackContext.Provider value={feedback.context}><div style={{width:1100,height:650}}>
    <DramaVideoConfigFields inputs={inputs} episodes={episodes} configs={options.configs}
     missingCount={inputs.length-(options.configs?.size??0)} missingFor={()=>[]}
     hasUnconfirmedChanges={false} disabled={false} theme={canvasThemes[options.theme??"dark"]}
@@ -72,7 +74,7 @@ async function mount(options:{
     production={production} onPickImage={options.onPickImage??(cb=>cb(imageKey))}
     images={options.images} onPendingChange={options.onPendingChange} onWaitForSave={options.onWaitForSave}
     onProductionChange={(id,value)=>{change(id,value);setProduction(curr=>({...curr,[id]:value}));}}/>
-   </div>;
+   <DramaFeedbackNotices notices={feedback.notices} clear={feedback.clear} theme={canvasThemes[options.theme??"dark"]}/></div></DramaFeedbackContext.Provider>;
  }
  await act(async()=>{root.render(<TestView/>);await Promise.resolve();});
  return {el,root,change,action,createSelected,createBatch,refresh};
@@ -177,6 +179,7 @@ it("stages both frame selections within the editor, commits once, and renders sa
  expect(change).toHaveBeenCalledTimes(1);
  expect(change.mock.lastCall?.[1]).toMatchObject({mode:"first_last_frame",firstFrame:imageKey,lastFrame:tail});
  expect(persist).toHaveBeenCalledTimes(1);
+ expect(el.querySelector('[data-drama-feedback="success"]')?.textContent).toContain("视频输入模式已更新草案");
  expect(pending.size).toBe(0);
  expect(el.querySelectorAll('[data-video-mode-readonly] img')).toHaveLength(2);
  await click(el.querySelector('[aria-label="编辑视频输入模式"]'));

@@ -5,6 +5,7 @@ import {canvasThemes,type CanvasTheme} from "@/lib/canvas-theme";
 import {useThemeStore} from "@/stores/use-theme-store";
 import type {DramaAsset,DramaShot} from "./canvas-drama-pipeline";
 import {DramaEditActions} from "./drama-edit-actions";
+import {DramaInlineFeedback,useDramaFieldFeedback} from "./drama-feedback";
 import {DramaAssetDirectoryPreview} from "./drama-asset-directory-preview";
 import {isCanvasCasKey} from "@/features/backend-sync/canvas-cas";
 import type {DramaShotProduction} from "./drama-pipeline-media";
@@ -28,6 +29,7 @@ function ShotEditableField({id,label,value,theme,disabled,onConfirm,multiline=fa
  const [draft,setDraft]=useState(value);
  const [baseline,setBaseline]=useState(value);
  const [busy,setBusy]=useState(false);
+ const updated=useDramaFieldFeedback();
  const [error,setError]=useState("");
  const stale=editing&&baseline!==value;
  const valid=type!=="number"||draft.trim()===""||
@@ -40,7 +42,7 @@ function ShotEditableField({id,label,value,theme,disabled,onConfirm,multiline=fa
   if(disabled||busy||stale||!valid)return;
   setBusy(true);setError("");
   try{
-   if(draft!==value)await onConfirm(draft);
+   if(draft!==value){await onConfirm(draft);updated(label);}
    setEditing(false);
   }catch(error){setError(error instanceof Error?error.message:"保存失败，请检查镜头版本后重试");}
   finally{setBusy(false);}
@@ -81,13 +83,10 @@ function ShotEditableField({id,label,value,theme,disabled,onConfirm,multiline=fa
       step={type==="number"?"0.1":undefined} className={inputClass}
       style={fieldStyle} value={draft} disabled={disabled}
       onChange={event=>setDraft(event.target.value)}/>}
-   {stale&&<p role="alert" className="text-xs" style={{color:theme.node.muted}}>
-    内容已在其他位置更新，请取消并重新编辑。
-   </p>}
-   {!valid&&<p role="alert" className="text-xs" style={{color:theme.node.muted}}>
-    镜头时长必须是大于 0 的数字，或留空。
-   </p>}
-   {error&&<p role="alert" className="text-xs" style={{color:theme.node.muted}}>{error}</p>}
+   {stale&&<DramaInlineFeedback theme={theme}>内容已在其他位置更新，请取消并重新编辑。</DramaInlineFeedback>}
+   {!valid&&<DramaInlineFeedback theme={theme}>镜头时长必须是大于 0 的数字，或留空。</DramaInlineFeedback>}
+   {error&&<DramaInlineFeedback theme={theme} level="error" error={error}/>}
+   {busy&&<DramaInlineFeedback theme={theme} level="info" pending>正在保存镜头草案…</DramaInlineFeedback>}
    <DramaEditActions theme={theme} label={label} disabled={disabled||busy||stale||!valid}
     onCancel={cancel} onConfirm={()=>void confirm()}/>
   </>:
@@ -112,6 +111,7 @@ function ShotAssetMultiField({id,label,value,options,theme,disabled,onConfirm}:{
  const [draft,setDraft]=useState<string[]>(value);
  const [baseline,setBaseline]=useState<string[]>(value);
  const [busy,setBusy]=useState(false);
+ const updated=useDramaFieldFeedback();
  const [error,setError]=useState("");
  const stale=editing&&JSON.stringify(baseline)!==JSON.stringify(value);
  const choices=[...options,...value.filter(key=>!options.some(option=>option.value===key))
@@ -123,7 +123,7 @@ function ShotAssetMultiField({id,label,value,options,theme,disabled,onConfirm}:{
   if(disabled||busy||stale)return;
   setBusy(true);setError("");
   try{
-   if(JSON.stringify(draft)!==JSON.stringify(value))await onConfirm(draft);
+   if(JSON.stringify(draft)!==JSON.stringify(value)){await onConfirm(draft);updated(label);}
    setEditing(false);
   }catch(error){setError(error instanceof Error?error.message:"保存失败，请检查镜头版本后重试");}
   finally{setBusy(false);}
@@ -161,10 +161,9 @@ function ShotAssetMultiField({id,label,value,options,theme,disabled,onConfirm}:{
      暂无可选资产，请先在上游资产规划中确认对应资产。
     </p>}
    </div>
-   {stale&&<p role="alert" className="text-xs" style={{color:theme.node.muted}}>
-    内容已在其他位置更新，请取消并重新编辑。
-   </p>}
-   {error&&<p role="alert" className="text-xs" style={{color:theme.node.muted}}>{error}</p>}
+   {stale&&<DramaInlineFeedback theme={theme}>内容已在其他位置更新，请取消并重新编辑。</DramaInlineFeedback>}
+   {error&&<DramaInlineFeedback theme={theme} level="error" error={error}/>}
+   {busy&&<DramaInlineFeedback theme={theme} level="info" pending>正在保存镜头草案…</DramaInlineFeedback>}
    <DramaEditActions theme={theme} label={label} disabled={disabled||busy||stale}
     onCancel={cancel} onConfirm={()=>void confirm()}/>
   </>:
@@ -545,7 +544,7 @@ export function DramaStoryboardFields({shots,episodes,assets,expanded,disabled,c
     当前剧集镜头时长合计 {duration} 秒 · 目标 {episode.targetDurationSec} 秒
    </p>}
    {scopedCas&&<div aria-label="当前镜头 CAS 状态" className="flex min-w-0 items-center justify-between gap-2 text-xs">
-    <span role={casError?"alert":"status"} style={caption}>{casError||(!shotDigest||casBusy?"同步镜头版本中…":"单镜头精确保存已启用")}</span>
+    {casError?<DramaInlineFeedback theme={theme} level="error" error={casError}/>:!shotDigest||casBusy?<DramaInlineFeedback theme={theme} level="info" pending>同步镜头版本中…</DramaInlineFeedback>:<span role="status" style={caption}>单镜头精确保存已启用</span>}
     {casError&&<button type="button" className={smallAction} style={card} disabled={casBusy}
      onClick={()=>{
       setCasBusy(true);

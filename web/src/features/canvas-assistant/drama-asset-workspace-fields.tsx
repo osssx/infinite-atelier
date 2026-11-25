@@ -5,6 +5,7 @@ import {dramaAssetSlots,type DramaAsset,type DramaAssetKind,type DramaAssetRefer
 import {useAssetDirectory} from "./drama-asset-directory-state";
 import type {WorkspacePendingRegistration} from "./drama-creative-workspace";
 import {DramaEditActions} from "./drama-edit-actions";
+import {DramaInlineFeedback,useDramaFieldFeedback} from "./drama-feedback";
 import {sameAssetEntry,type AssetEntryPatch} from "./drama-asset-entry-save";
 import {collectDramaAssetUsage,type DramaAssetUsage} from "./drama-asset-usage-display";
 import {DramaAssetUsageTags} from "./drama-asset-usage-tags";
@@ -33,6 +34,7 @@ export function DramaAssetWorkspaceFields({assets,theme,disabled,onChange,render
  const [deletion,setDeletion]=useState<{assetId:string;variantId?:string}|null>(null);
  const [error,setError]=useState("");
  const [saving,setSaving]=useState(false);
+ const updated=useDramaFieldFeedback();
  const flight=useRef<Promise<void>|null>(null);
  const control={background:theme.node.panel,color:theme.node.text,borderColor:theme.node.stroke,outlineColor:theme.node.activeStroke};
  const selected={...control,background:theme.toolbar.activeBg,color:theme.toolbar.activeText};
@@ -82,6 +84,7 @@ export function DramaAssetWorkspaceFields({assets,theme,disabled,onChange,render
     const index=filtered.findIndex(item=>item.id===a.id);
     return {...dir,activeId:a.id,query:nextQuery,page:Math.max(0,Math.floor(index/pageSize))};
    });
+   if(pending.value!==pending.baseline)updated(pending.label);
    setEdit(null);setError("");
   };
   setSaving(true);setError("");
@@ -130,9 +133,9 @@ export function DramaAssetWorkspaceFields({assets,theme,disabled,onChange,render
    {editing?<>
     {key==="name"?<input aria-label={label} className={fieldClass} style={control} maxLength={240} value={edit.value} disabled={disabled||saving||loading} onChange={e=>setEdit({...edit,value:e.target.value})}/>:
      <textarea aria-label={label} rows={key==="description"?5:3} maxLength={key==="description"?12000:20000} className={fieldClass+" resize-y"} style={control} value={edit.value} disabled={disabled||saving||loading} onChange={e=>setEdit({...edit,value:e.target.value})}/>}
-    {!saving&&!sameAssetEntry(a,edit.entry)&&<p role="alert" className="text-xs">内容已更新，请取消并重新编辑。</p>}
-    {saving&&<p role="status" className="text-xs">正在保存资产草案…</p>}
-    {error&&<p role="alert" className="text-xs">{error}</p>}
+    {!saving&&!sameAssetEntry(a,edit.entry)&&<DramaInlineFeedback theme={theme}>内容已更新，请取消并重新编辑。</DramaInlineFeedback>}
+    {saving&&<DramaInlineFeedback theme={theme} level="info" pending>正在保存资产草案…</DramaInlineFeedback>}
+    {error&&<DramaInlineFeedback theme={theme} level="error" error={error}/>}
     <DramaEditActions theme={theme} label={label} disabled={disabled||saving||loading||!assets.some(item=>item.id===a.id)||!sameAssetEntry(a,edit.entry)}
      onCancel={()=>{if(!flight.current){setEdit(null);setError("");}}} onConfirm={()=>void save().catch(e=>setError(e instanceof Error?e.message:"保存失败"))}/>
    </>:<div className="min-w-0 whitespace-pre-wrap break-words rounded-md border-l-2 px-3 py-2.5 text-sm leading-relaxed" style={{background:theme.toolbar.activeBg,borderColor:theme.node.stroke,color:value.trim()?theme.node.text:theme.node.muted}}>{value.trim()||"未填写"}</div>}
@@ -182,8 +185,8 @@ export function DramaAssetWorkspaceFields({assets,theme,disabled,onChange,render
   <section aria-label="当前资产编辑区" className="thin-scrollbar min-h-0 min-w-0 space-y-4 overflow-y-auto overscroll-contain rounded-xl border p-3 sm:p-5" style={control}>
    {loading&&!edit?<p role="status" className="text-xs">正在加载资产草案…</p>:active?<><header className="flex items-center justify-between gap-2"><strong className="truncate">{active.name||"未命名"+kinds[kind]}</strong>{deleteControl(active)}</header>
     {onReloadAsset&&!edit&&<button type="button" className={button} style={control} disabled={disabled||loading||saving} onClick={()=>void onReloadAsset().catch(e=>setError(e instanceof Error?e.message:"刷新失败"))}>重新加载资产</button>}
-    {!edit&&error&&<p role="alert" className="text-xs">{error}</p>}
-    {edit&&!assets.some(a=>a.id===edit.assetId)&&!loading&&!saving&&<p role="alert" className="text-xs">资产已不存在，请取消编辑。</p>}
+    {!edit&&error&&<DramaInlineFeedback theme={theme} level="error" error={error}/>}
+    {edit&&!assets.some(a=>a.id===edit.assetId)&&!loading&&!saving&&<DramaInlineFeedback theme={theme}>资产已不存在，请取消编辑。</DramaInlineFeedback>}
     <div className="min-w-0 space-y-2">{field(active,"name","名称")}{field(active,"aliases","别名（每行一个）")}</div>
     {field(active,"description","资产描述")}
     <DramaAssetUsageTags entries={useCount(active)} theme={theme}/>

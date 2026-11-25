@@ -2,6 +2,7 @@ import {useEffect,useRef,useState,type CSSProperties} from "react";
 import {canvasApi} from "@/features/backend-sync/canvas-api";
 import {GitBranch,Layers3,Plus,Split,Merge,BookText,Trash2,AlertTriangle,Pencil} from "lucide-react";
 import {DramaEditActions as EpisodeEditActions} from "./drama-edit-actions";
+import {DramaInlineFeedback,useDramaFieldFeedback} from "./drama-feedback";
 import {canvasThemes} from "@/lib/canvas-theme";
 import {useThemeStore} from "@/stores/use-theme-store";
 import {needsEpisodeEventNormalization,normalizeEpisodeEvents} from "../../../server/drama-episode-links.mjs";
@@ -27,6 +28,7 @@ function EpisodeReadEditField({id,label,value,disabled,theme,onConfirm,multiline
  const [draft,setDraft]=useState(value);
  const [baseline,setBaseline]=useState(value);
  const [saving,setSaving]=useState(false);
+ const updated=useDramaFieldFeedback();
  const [error,setError]=useState("");
  const stale=editing&&baseline!==value;
  const valid=type!=="number"||draft.trim()===""||(Number.isFinite(Number(draft))&&Number(draft)>0);
@@ -40,7 +42,7 @@ function EpisodeReadEditField({id,label,value,disabled,theme,onConfirm,multiline
   if(disabled||saving||stale||!valid)return;
   setSaving(true);setError("");
   try{
-   if(draft!==value)await onConfirm(draft);
+   if(draft!==value){await onConfirm(draft);updated(label);}
    setEditing(false);
   }catch(error){setError(error instanceof Error?error.message:"剧集保存失败，请检查版本后重试");}
   finally{setSaving(false);}
@@ -75,9 +77,10 @@ function EpisodeReadEditField({id,label,value,disabled,theme,onConfirm,multiline
       className="w-full min-w-0 rounded-lg border px-3 py-2.5 text-sm leading-relaxed outline-none transition-shadow focus-visible:ring-2"
       style={inputStyle} value={draft} disabled={disabled}
       onChange={event=>setDraft(event.target.value)}/>}
-   {stale&&<p role="alert" className="text-xs" style={headingStyle}>内容已在其他位置更新，请取消并重新编辑。</p>}
-   {!valid&&<p role="alert" className="text-xs" style={headingStyle}>目标时长必须是大于 0 的数字，或留空。</p>}
-   {error&&<p role="alert" className="text-xs" style={headingStyle}>{error}</p>}
+   {stale&&<DramaInlineFeedback theme={theme}>内容已在其他位置更新，请取消并重新编辑。</DramaInlineFeedback>}
+   {!valid&&<DramaInlineFeedback theme={theme}>目标时长必须是大于 0 的数字，或留空。</DramaInlineFeedback>}
+   {error&&<DramaInlineFeedback theme={theme} level="error" error={error}/>}
+   {saving&&<DramaInlineFeedback theme={theme} level="info" pending>正在保存剧集草案…</DramaInlineFeedback>}
    <EpisodeEditActions theme={theme} label={label} disabled={disabled||saving||stale||!valid}
     onCancel={cancel} onConfirm={()=>void confirm()}/>
   </>:
@@ -107,6 +110,7 @@ function SequenceReadEditFields({sequence,index,items,theme,disabled,onConfirm,s
  const [eventRefs,setEventRefs]=useState([...(sequence.eventRefs??[])]);
  const [baseline,setBaseline]=useState(sequence);
  const [saving,setSaving]=useState(false);
+ const updated=useDramaFieldFeedback();
  const [error,setError]=useState("");
  const resolveRef=(ref:string)=>{
   const exact=items.filter(item=>item.id===ref);
@@ -128,7 +132,7 @@ function SequenceReadEditFields({sequence,index,items,theme,disabled,onConfirm,s
   setSaving(true);setError("");
   try{
    if(title!==sequence.title||sourceRefs.join("\n")!==(sequence.sourceRefs??[]).join("\n")||
-     eventRefs.join("\n")!==(sequence.eventRefs??[]).join("\n"))await onConfirm(next);
+     eventRefs.join("\n")!==(sequence.eventRefs??[]).join("\n")){await onConfirm(next);updated("场次详情");}
    setEditing(false);
   }catch(error){setError(error instanceof Error?error.message:"场次保存失败，请检查版本后重试");}
   finally{setSaving(false);}
@@ -176,8 +180,9 @@ function SequenceReadEditFields({sequence,index,items,theme,disabled,onConfirm,s
        onClick={()=>setEventRefs(current=>current.filter(item=>item!==ref))}>移除此引用</button>
      </div>)}
     </div>
-    {stale&&<p role="alert" className="text-xs">场次已在其他位置更新，请取消并重新编辑。</p>}
-    {error&&<p role="alert" className="text-xs">{error}</p>}
+    {stale&&<DramaInlineFeedback theme={theme}>场次已在其他位置更新，请取消并重新编辑。</DramaInlineFeedback>}
+    {error&&<DramaInlineFeedback theme={theme} level="error" error={error}/>}
+    {saving&&<DramaInlineFeedback theme={theme} level="info" pending>正在保存场次草案…</DramaInlineFeedback>}
     <EpisodeEditActions theme={theme} label={"场次 "+(index+1)+" 详情"}
      disabled={disabled||saving||stale} onCancel={cancel} onConfirm={()=>void confirm()}/>
    </>:
@@ -196,7 +201,7 @@ function SequenceReadEditFields({sequence,index,items,theme,disabled,onConfirm,s
      </div>
     </div>}
     {(sequence.eventRefs??[]).some(ref=>!resolveRef(ref))&&
-      <p role="alert" className="text-[11px]">事件引用缺失或有歧义，请重新选择关联的剧情事件。</p>}
+      <DramaInlineFeedback theme={theme}>事件引用缺失或有歧义，请重新选择关联的剧情事件。</DramaInlineFeedback>}
     {(sequence.replaces?.length??0)>0&&<p className="text-[11px]">替代旧场次：{sequence.replaces?.join("、")}。请审核旧镜头的场次迁移。</p>}
   </div>;
 }
@@ -431,9 +436,7 @@ export function DramaEpisodeFields({episodes,expanded,disabled,control,onChange,
    className={expanded?"thin-scrollbar min-h-0 min-w-0 space-y-4 overflow-y-auto overscroll-contain rounded-xl border p-3 sm:p-5":
     "grid min-w-0 gap-3 rounded-xl border p-3"} style={cardStyle} data-canvas-no-zoom>
    {expanded&&scopedCas&&<div aria-label="当前剧集 CAS 状态" className="flex min-w-0 items-center justify-between gap-2 text-xs">
-    <span role={casError?"alert":"status"} style={captionStyle}>
-     {casError||(!episodeDigest||casBusy?"同步剧集版本中…":"单剧集精确保存已启用")}
-    </span>
+    {casError?<DramaInlineFeedback theme={theme} level="error" error={casError}/>:!episodeDigest||casBusy?<DramaInlineFeedback theme={theme} level="info" pending>同步剧集版本中…</DramaInlineFeedback>:<span role="status" style={captionStyle}>单剧集精确保存已启用</span>}
     {casError&&<button type="button" className={smallAction} style={cardStyle} disabled={casBusy}
      onClick={()=>{
       setCasBusy(true);

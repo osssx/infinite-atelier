@@ -8,6 +8,7 @@ vi.mock("@/stores/use-theme-store",async()=>({
 import {useThemeStore} from "@/stores/use-theme-store";
 import {canvasThemes} from "@/lib/canvas-theme";
 import {DramaStoryboardFields,shotDirectoryCover} from "./drama-storyboard-fields";
+import {DramaFeedbackContext,useDramaFeedbackController,DramaFeedbackNotices} from "./drama-feedback";
 import type {DramaShotProduction} from "./drama-pipeline-media";
 const previews=vi.hoisted(()=>({acquire:vi.fn(),release:vi.fn()}));
 vi.mock("@/services/media-preview-storage",()=>({acquireMediaPreview:previews.acquire}));
@@ -54,13 +55,14 @@ async function mount(opts:{expanded?:boolean;initialShotId?:string;initialEpisod
   const [shots,setShots]=useState<DramaShot[]>(opts.initialShots??original);
   const [episodeData,setEpisodeData]=useState(opts.initialEpisodes??episodes);
   updateShots=setShots;updateEpisodes=setEpisodeData;
-  return <div style={{height:720,width:1150}}>
+  const feedback=useDramaFeedbackController();
+  return <DramaFeedbackContext.Provider value={feedback.context}><div style={{height:720,width:1150}}>
    <DramaStoryboardFields shots={shots} episodes={episodeData} assets={opts.assets??[...scenes,...characters,...props]}
     production={opts.production} navigationLocked={opts.navigationLocked} videoStatusFor={()=>"待配置"} expanded={opts.expanded??true} disabled={opts.disabled??false} initialEpisodeId={opts.initialEpisodeId} initialShotId={opts.initialShotId}
     projectId={opts.scopedCas?"project":undefined} nodeId={opts.scopedCas?"board":undefined}
     onPatchShot={opts.scopedCas?async()=>{}:undefined}
     onChange={next=>{changes(next);setShots(next)}}/>
-  </div>;
+  <DramaFeedbackNotices notices={feedback.notices} clear={feedback.clear} theme={canvasThemes.dark}/></div></DramaFeedbackContext.Provider>;
  }
  await act(async()=>root.render(<Editor/>));
  return {div,changes,externalUpdate:async(fn:(shot:DramaShot)=>DramaShot)=>{
@@ -395,11 +397,13 @@ describe("maximized storyboard editor mirrors episode localized read/edit UX",()
   await click(footer.querySelector('[data-drama-action="cancel"]'));
   expect(changes).not.toHaveBeenCalled();
   expect(field.querySelector('[data-shot-readonly="description"]')?.textContent).toBe("兔子走进森林");
+  expect(div.querySelector('[data-drama-feedback="success"]')).toBeNull();
   await click(field.querySelector('[aria-label="编辑画面描述"]'));
   await enter(div,'textarea[aria-label="画面描述"]',"兔子突然停下");
   await click(field.querySelector('[aria-label="确认画面描述"]'));
   expect(changes).toHaveBeenCalledTimes(1);
   expect(changes.mock.lastCall?.[0][0].description).toBe("兔子突然停下");
+  expect(div.querySelector('[data-drama-feedback="success"]')?.textContent).toContain("画面描述已更新草案");
   expect(changes.mock.lastCall?.[0][1]).toEqual(original[1]);
   expect(changes.mock.lastCall?.[0][2]).toEqual(original[2]);
   expect(field.dataset.shotFieldMode).toBe("reading");
@@ -411,6 +415,7 @@ describe("maximized storyboard editor mirrors episode localized read/edit UX",()
   await enter(div,'input[aria-label="镜头时长（秒）"]',"-3");
   await enter(div,'textarea[aria-label="机位 / 运镜"]',"推镜");
   expect(div.querySelector<HTMLButtonElement>('[aria-label="确认镜头时长（秒）"]')?.disabled).toBe(true);
+  expect(div.querySelector('[data-shot-editable-field="duration"] [data-drama-inline-feedback="warning"]')?.textContent).toContain("大于 0");
   await act(async()=>useThemeStore.setState({theme:"light"}));
   expect(div.querySelector<HTMLElement>('[data-shot-editable-field="camera"]')?.style.background)
    .toBe(canvasThemes.light.node.fill);

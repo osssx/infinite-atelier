@@ -9,6 +9,7 @@ const previews=vi.hoisted(()=>({acquire:vi.fn(),release:vi.fn()}));
 vi.mock("@/services/media-preview-storage",()=>({acquireMediaPreview:previews.acquire}));
 import type {AssetEntryPatch} from "./drama-asset-entry-save";
 import {DramaAssetWorkspaceFields} from "./drama-asset-workspace-fields";
+import {DramaFeedbackContext,useDramaFeedbackController,DramaFeedbackNotices} from "./drama-feedback";
 import type {DramaAssetUsage} from "./drama-asset-usage-display";
 const roots:Root[]=[];
 const asset=(i:number):DramaAsset=>({id:"a"+i,kind:"character",name:"角色 "+i,description:"描述 "+i,sourceRefs:["p1"],aliases:["别名 "+i],variants:[{id:"v"+i,name:"造型 "+i,description:"造型描述"}]});
@@ -23,9 +24,9 @@ async function mount(initial:DramaAsset[],cas=false,usage:DramaAssetUsage={},ref
  const patch=vi.fn(async(base:DramaAsset,fields:AssetEntryPatch,variantId?:string)=>{
   update(current=>current.map(a=>a.id!==base.id?a:variantId?{...a,variants:a.variants?.map(v=>v.id===variantId?{...v,...fields}:v)}:{...a,...fields}));
  });
- function Editor(){const [assets,setAssets]=useState(initial);update=setAssets;return <DramaAssetWorkspaceFields assets={assets} theme={canvasThemes.dark} disabled={false}
+ function Editor(){const [assets,setAssets]=useState(initial);update=setAssets;const feedback=useDramaFeedbackController();return <DramaFeedbackContext.Provider value={feedback.context}><DramaAssetWorkspaceFields assets={assets} theme={canvasThemes.dark} disabled={false}
   onChange={next=>{changes(next);setAssets(next)}} onPatchAsset={cas?patch:undefined} usage={usage} references={references} onPendingChange={register}
-  renderReferences={(a,v)=><span data-reference={v??a.id}>参考图</span>}/>;}
+  renderReferences={(a,v)=><span data-reference={v??a.id}>参考图</span>}/><DramaFeedbackNotices notices={feedback.notices} clear={feedback.clear} theme={canvasThemes.dark}/></DramaFeedbackContext.Provider>;}
  await act(async()=>root.render(<Editor/>));
  return {div,changes,patch,pending,update:async(fn:SetStateAction<DramaAsset[]>)=>{await act(async()=>update(fn))}};
 }
@@ -132,15 +133,18 @@ it("cancels staged edits, preserves IDs and uses CAS for asset and variant field
  expect(pending.size).toBe(1);expect(changes).not.toHaveBeenCalled();
  await click(div.querySelector<HTMLButtonElement>('[data-drama-action="cancel"]')!);
  expect(pending.size).toBe(0);expect(patch).not.toHaveBeenCalled();
+ expect(div.querySelector('[data-drama-feedback="success"]')).toBeNull();
  await click(button(div,"编辑名称"));
  await input(div.querySelector<HTMLInputElement>('input[aria-label="名称"]')!,"新名称");
  await click(button(div,"确认名称"));
  expect(patch).toHaveBeenCalledWith(base,{name:"新名称"},undefined);
+ expect(div.querySelector('[data-drama-feedback="success"]')?.textContent).toContain("名称已更新草案");
  expect(changes).not.toHaveBeenCalled();
  await click(button(div,"编辑变体 1 描述"));
  await input(div.querySelector<HTMLTextAreaElement>('textarea[aria-label="变体 1 描述"]')!,"新造型描述");
  await act(async()=>{await [...pending.values()][0]()});
  expect(patch).toHaveBeenLastCalledWith({...base,name:"新名称"},{description:"新造型描述"},"v1");
+ expect(div.querySelector('[data-drama-feedback="success"]')?.textContent).toContain("变体 1 描述已更新草案");
  expect(div.querySelector('[data-reference="v1"]')).toBeTruthy();
 });
 it("renders aliases as compact tags directly beneath the name, edits only on demand and keeps draft/search semantics",async()=>{
@@ -190,6 +194,8 @@ it("keeps unsaved edit on CAS failure without full draft overwrite",async()=>{
  await input(div.querySelector<HTMLInputElement>('input[aria-label="名称"]')!,"新名称");
  await click(button(div,"确认名称"));
  expect(div.querySelector('[role="alert"]')?.textContent).toContain("drama_candidate_conflict");
+ expect(div.querySelector('[data-asset-field="name"] [data-drama-inline-feedback="error"]')?.textContent).toContain("草案内容已变化");
+ expect(div.querySelector('[data-drama-feedback="success"]')).toBeNull();
  expect(div.querySelector<HTMLInputElement>('input[aria-label="名称"]')?.value).toBe("新名称");
  expect(pending.size).toBe(1);expect(changes).not.toHaveBeenCalled();
 });

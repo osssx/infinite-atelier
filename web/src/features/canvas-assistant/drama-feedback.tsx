@@ -1,4 +1,4 @@
-import {createContext,useCallback,useContext,useEffect,useMemo,useRef,useState} from "react";
+import {createContext,useCallback,useContext,useEffect,useId,useMemo,useRef,useState} from "react";
 import {AlertCircle,AlertTriangle,CheckCircle2,Info,LoaderCircle,X} from "lucide-react";
 import type {CanvasTheme} from "@/lib/canvas-theme";
 
@@ -75,6 +75,27 @@ export function useDramaFeedbackController(){
 function tone(theme:CanvasTheme,level:DramaFeedbackLevel){
  const dark=theme.node.fill==="#292524";
  return level==="success"?(dark?"#86efac":"#15803d"):level==="error"?(dark?"#fca5a5":"#b91c1c"):level==="warning"?(dark?"#fcd34d":"#92400e"):theme.node.muted;
+}
+/** Field feedback stays beside the edited value; success uses the existing workspace Toast. */
+export function useDramaFieldFeedback(){
+ const api=useDramaFeedback()?.api;
+ const id=useId();
+ return (label:string)=>api?.notify("field:"+id,"success",label+"已更新草案");
+}
+export function DramaInlineFeedback({theme,level="warning",children,error,pending=false}:{theme:CanvasTheme;level?:DramaFeedbackLevel;children?:React.ReactNode;error?:string;pending?:boolean}){
+ const message=error?describeDramaFeedbackError(error,"保存或读取失败，请检查后重试"):null;
+ const conflict=error&&/drama_candidate_conflict|project_revision_conflict/.test(error);
+ const title=conflict?"草案内容已变化，请重新加载后编辑。":message?.detail&&/[\u3400-\u9fff]/.test(error??"")&&!/^[a-z_]+(?:\s|:|：|$)/.test(error??"")?error:message?.title;
+ const detail=message?.detail&&message.detail!==title?message.detail:undefined;
+ const Icon=pending?LoaderCircle:level==="error"?AlertCircle:level==="warning"?AlertTriangle:Info;
+ return <div data-drama-inline-feedback={pending?"pending":level} role={level==="error"||level==="warning"?"alert":"status"}
+  className="flex min-w-0 items-start gap-1.5 rounded-md border px-2 py-1.5 text-xs leading-relaxed"
+  style={{background:theme.node.panel,borderColor:theme.node.stroke,color:theme.node.text}}>
+  <Icon size={14} aria-hidden="true" className={"mt-0.5 shrink-0"+(pending?" animate-spin":"")} style={{color:tone(theme,level)}}/>
+  <div className="min-w-0 flex-1 break-words">{title??children}
+   {detail&&<details className="mt-1" style={{color:theme.node.muted}}><summary className="cursor-pointer">技术详情</summary><pre className="max-h-24 overflow-auto whitespace-pre-wrap break-all text-[11px]">{detail}</pre></details>}
+  </div>
+ </div>;
 }
 export function DramaFeedbackNotices({notices,clear,theme}:{notices:Notice[];clear:(key:string)=>void;theme:CanvasTheme}){
  const render=(notice:Notice)=>{

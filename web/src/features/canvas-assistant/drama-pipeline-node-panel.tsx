@@ -1061,7 +1061,7 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
                     cancelFlights.current.add(run.id);setCancelBusyIds([...cancelFlights.current]);
                     void execute().finally(()=>{cancelFlights.current.delete(run.id);setCancelBusyIds([...cancelFlights.current]);});
                 }}>{run.status==="running"?"取消生成":"使用原输入重试"}</Button>}
-            {episodePlanning&&expandedRuns[run.id]&&<DramaEpisodeCandidates run={run} theme={theme}
+            {episodePlanning&&expandedRuns[run.id]&&<DramaEpisodeCandidates run={run} projectId={projectId} theme={theme}
                 disabled={!workspaceMode||runActionBusy||candidateMutationBusy||Boolean(feedback?.task)||Boolean(candidateEdit&&candidateEdit.runId!==run.id)}
                 activeKey={candidateEdit?.runId===run.id?candidateEdit.key:null} onEditingChange={changeCandidateEditing}
                 onPendingChange={onPendingChange} onPatch={(target,id,changes)=>changeCandidate(target,"PATCH",id,changes)}

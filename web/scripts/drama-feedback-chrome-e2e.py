@@ -88,8 +88,29 @@ def run():
                 click_selector("edit candidate synopsis",candidate+' button[aria-label="编辑剧情梗概"]')
                 type_value("type local candidate synopsis",candidate+' textarea[aria-label="剧情梗概"]',"浏览器人工修订梗概")
                 check("candidate navigation locked during editing","""(()=>{const r=document.querySelector(%s),d=r?.closest('details');return [...r.querySelectorAll('[aria-label^="选择候选第"]')].every(b=>b.disabled)&&[...d.querySelectorAll('button')].find(b=>b.textContent.trim()==='采用到草案')?.disabled})()"""%json.dumps(candidate))
+                ai_input=candidate+' textarea[aria-label="剧情梗概"]'
+                check("select unsaved candidate substring","(()=>{const e=document.querySelector(%s);if(!e)return false;e.focus();e.setSelectionRange(3,7);return e.value.slice(e.selectionStart,e.selectionEnd)==='人工修订'})()"%json.dumps(ai_input,ensure_ascii=False))
+                click("AI 优化",candidate)
+                check("AI selection mode","""document.querySelector(%s)?.querySelector('[data-episode-ai-optimize] button[aria-pressed="true"]')?.textContent.trim()==='选区改写'"""%json.dumps(candidate))
+                type_value("AI custom instructions",candidate+' textarea[aria-label="候选 AI 修改意见"]',"增强悬念，保持前后文")
+                click("生成优化建议",candidate)
+                check("AI before and after preview","""(()=>{const r=document.querySelector(%s),p=r?.querySelector('[data-episode-ai-preview]');return p?.textContent.includes('浏览器人工修订梗概')&&p.textContent.includes('浏览器增强悬念梗概')&&r.querySelector('textarea[aria-label="剧情梗概"]')?.value==='浏览器人工修订梗概'&&r.querySelector('button[aria-label="保存候选剧情梗概"]')?.disabled})()"""%json.dumps(candidate))
+                run_url="/api/v1/projects/"+pid+"/drama-pipeline/runs/"+run_id
+                def saved_candidate():
+                    return page.js("(async()=>await (await fetch(%s,{credentials:'same-origin',cache:'no-store'})).json())()"%json.dumps(run_url))
+                original_candidate=saved_candidate()["candidate"]
+                assert original_candidate["revision"]==0 and original_candidate["episodes"][0]["synopsis"]=="剧情梗概 · 验收候选"
+                passed.append("AI preview no candidate write")
+                click("放弃建议",candidate)
+                check("AI discarded preserves manual input","document.querySelector(%s)?.value==='浏览器人工修订梗概'&&!document.querySelector('[data-episode-ai-preview]')"%json.dumps(ai_input,ensure_ascii=False))
+                click("生成优化建议",candidate)
+                check("AI regenerated","document.querySelector('[data-episode-ai-preview]')?.textContent.includes('浏览器增强悬念梗概')")
+                click("应用到编辑内容",candidate)
+                check("AI applied only to local buffer","document.querySelector(%s)?.value==='浏览器增强悬念梗概'&&!document.querySelector('[data-episode-ai-preview]')"%json.dumps(ai_input,ensure_ascii=False))
+                assert saved_candidate()["candidate"]==original_candidate
+                passed.append("AI apply no candidate write")
                 click_selector("save candidate synopsis",candidate+' button[aria-label="保存候选剧情梗概"]')
-                check("candidate saved and modified","document.querySelector("+json.dumps(candidate)+")?.textContent.includes('浏览器人工修订梗概')&&document.querySelector("+json.dumps(candidate)+")?.textContent.includes('已手动修改')&&!document.querySelector('[data-drama-task-status]')")
+                check("candidate saved and modified","document.querySelector("+json.dumps(candidate)+")?.textContent.includes('浏览器增强悬念梗概')&&document.querySelector("+json.dumps(candidate)+")?.textContent.includes('已手动修改')&&!document.querySelector('[data-drama-task-status]')")
                 click_selector("select second candidate",candidate+' button[aria-label^="选择候选第 2 集"]')
                 click("删除本集",candidate)
                 click("确认删除候选",candidate)
@@ -103,13 +124,13 @@ def run():
                 click("打开完整编辑器 ↗",card)
                 click("生成候选",portal)
                 click_selector("reopen persisted episode candidate",portal+" [data-drama-run-scroll-region] > details > summary")
-                check("saved candidate restored","document.querySelector("+json.dumps(candidate)+")?.textContent.includes('浏览器人工修订梗概')&&document.querySelector("+json.dumps(candidate)+")?.textContent.includes('当前候选 1 集')")
+                check("saved candidate restored","document.querySelector("+json.dumps(candidate)+")?.textContent.includes('浏览器增强悬念梗概')&&document.querySelector("+json.dumps(candidate)+")?.textContent.includes('当前候选 1 集')")
                 click("采用到草案",portal)
                 check("adopted persisted candidate","document.querySelector("+json.dumps(portal+" [data-drama-run-scroll-region] > details > summary")+")?.textContent.includes('已采用')&&!document.querySelector('[data-drama-task-status]')")
                 adopted=p1.graph(page,pid)["data"]
                 new_meta=p1.find_node(adopted,"episodes")["metadata"]
                 adopted_draft=json.loads(new_meta["dramaDraft"])["episodes"]
-                assert adopted_draft[0]["synopsis"]=="浏览器人工修订梗概" and adopted_draft[1]==old_draft[1]
+                assert adopted_draft[0]["synopsis"]=="浏览器增强悬念梗概" and adopted_draft[1]==old_draft[1]
                 assert new_meta["dramaConfirmed"]==old_confirmed
                 passed.append("adoption preserved excluded draft episode and confirmation")
                 click("剧集编辑",portal)

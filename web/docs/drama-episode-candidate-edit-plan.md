@@ -3,8 +3,8 @@
 ## 范围与依赖
 
 - P1 候选后端编辑能力：已完成（da07157）。
-- P2 人工候选编辑器：已实现只读/编辑、保存取消、单集/整条删除、dirty guard、轮询隔离及采用版本接线。
-- P3 AI 局部优化：字段/选区、当前未保存快照、结构化输出、应用预览。
+- P2 人工候选编辑器：已完成（6807efe），只读/编辑、保存取消、单集/整条删除、dirty guard、轮询隔离及采用版本接线。
+- P3 AI 局部优化：已完成字段/选区、当前未保存快照、结构化输出、应用预览与重新优化。
 - P4 多轮与整集优化：字段选择、撤销、事件与场次关联联合校验。
 - P5 采用差异与一致性：剧集差异预览、用户显式选择、上游与稳定 ID 校验。
 - P6 综合验收：真实模型、浏览器、主题、并发与恢复。
@@ -37,7 +37,7 @@ ZIP 兼容旧版无 revision；修改后的原始 ID 集合与当前/移除 ID �
 - GET list 继续只返回候选计数与摘要，包含 revision 和 manualChanges；GET detail 返回完整对象（旧候选也补 revision=0）。前端不可以数量相同判断内容相同，按 revision 和请求 epoch 拒绝迟到响应。discarded 从列表隐藏。
 - 候选保存直接调用新 API，不调用 entry-draft 或画布保存屏障；采用操作仍通过项目当前 save barrier，传入已审核的候选 expectedRevision。未改动的前端目前仍可采用 revision=0，修改过的候选不能用旧采用请求绕过版本栅栏。
 - dirty guard 覆盖 Tab 切换、收起候选、切换剧集、关闭；编辑缓冲不得被轮询覆盖。
-- 采用差异预览尚未在 P1 实现，仍安排 P5；P2 至少明确手动移除不会直接删除已有草案集。P3/P4 AI 功能尚未实现。
+- 采用差异预览尚未在 P1 实现，仍安排 P5；P2 至少明确手动移除不会直接删除已有草案集。AI 局部优化由 P3 接入；整集及联合优化仍属于 P4。
 
 ## P2 实施记录
 
@@ -46,11 +46,22 @@ ZIP 兼容旧版无 revision；修改后的原始 ID 集合与当前/移除 ID �
 - 单次仅开放一个字段编辑，阻止换集、收起记录、采用及其他候选编辑；Tab 切换与关闭使用 workspace pending 注册，保存失败保留原输入。删除单集、整条 run 均二次确认，删除确认期间禁止采用当前 run。已采用记录只读，最后一集移除禁用。
 - GET list 按 candidate revision 而非集数缓存详情；编辑期间保留活跃 run 快照，服务端 CAS 拒绝远端冲突。变更、采用及编辑状态切换增加读取 epoch；变更前的迟到请求不能复活记录或覆盖修改。更高 revision 的摘要使详情失效，展开 run 自动按需读取；可主动刷新。生成重试中的取消仍允许轮询。
 - 采用通过既有 project save barrier 传入 expectedRevision（含旧版 0）。手动删除提示采用时保留已有正式草案内容；详细采用差异仍属于 P5。
-- P3 AI 直接接入同一局部字段的当前 draft 缓冲与 CandidateFieldContext，AI 预览/应用不调用 PATCH，只有保存候选时才持久化。P3 尚未实施。
+- P3 AI 直接接入同一局部字段的当前 draft 缓冲与 CandidateFieldContext，AI 预览/应用不调用 PATCH，只有保存候选时才持久化。P3 已按该约束实现。
 
 P2 前端回归：30 文件、225/225 通过（含新增 3 个状态缓存测试、7 个候选交互测试），npm run typecheck 通过；旧版 tooltip 和只读 article 断言已按新布局更新，重试/取消行为保持。真实 Chrome fixture 脚本扩展候选编辑、关闭恢复、删除与采用验证，使用确定性模型，无付费调用。首次浏览器测试需明确选择完整剧集范围，不能假定从画布第一集打开后默认是全部。
 
-真实 Chrome + 隔离后端验收：scripts/drama-feedback-chrome-e2e.py 62/62 检查通过，浏览器异常 0、在线模型请求 0。候选编辑和单集删除后项目 revision、dramaDraft、dramaConfirmed 均保持；关闭重开读取已保存候选；采用后保留被排除原剧集与确认版本；第二次生成记录整条删除成功，关闭后无 runs 轮询。仅确定性 fixture 验证，在线 AI 优化仍待 P3/P6。
+真实 Chrome + 隔离后端验收：scripts/drama-feedback-chrome-e2e.py 62/62 检查通过，浏览器异常 0、在线模型请求 0。候选编辑和单集删除后项目 revision、dramaDraft、dramaConfirmed 均保持；关闭重开读取已保存候选；采用后保留被排除原剧集与确认版本；第二次生成记录整条删除成功，关闭后无 runs 轮询。仅确定性 fixture 验证，在线 AI 优化实测留待 P6。
+
+## P3 实施记录
+
+- AI 优化入口仅在剧集候选的局部编辑态显示。支持集标题、剧情梗概、剧情事件、本集结尾、场次名称的整字段改写或选区改写。时长及原文/事件引用不交给模型修改。输入意见必填（最多 2500 字符），采用现有配置的文本渠道，支持 openai、openai_compatible、google_gemini。沿用 channel autoroute / credential preparation；不在浏览器持久化密钥。
+- 新接口 POST /api/v1/projects/:id/drama-pipeline/runs/:runId/episodes/:episodeId/optimize。请求 expectedRevision、field、mode（field/selection）、draft（当前未保存文本，最多 12000 UTF-16 code units）、instruction、可选 sequenceId（仅 sequenceTitle）、selection（UTF-16 start/end，拒绝越界、空区间、代理对截断）及文本渠道配置。服务端按项目/run/单集读取已审核 ready 候选，校验目标和版本。上下文使用候选其他已保存字段、有限场次名称、冻结故事前 6000 字符，不发送过期的目标字段。长文本拒绝超限，不静默截断用户当前编辑文本。其他上下文有明确长度上限，不是全文语义检索。
+- 模型沿用 plainCanvasChat，关闭画布动作、语义意图及 Skill 工具，不创建画布任务/聊天记录。输出仅接受 JSON 对象 {replacement:string}（兼容单层 JSON fence），不能修改其他字段或 ID；服务器以原始编辑快照精确合成完整 value，并复用候选字段校验。事件文本继续逐行处理，不由模型生成或提交 eventItems；保存时仍由 P1 服务端维护稳定 ID 和关联。P4 负责多字段及事件/场次联合语义校验。
+- 优化请求不写数据库、候选 revision、正式草案、确认版本或分镜。返回 runId、episodeId、revision、field、sequenceId（场次名称时）、mode、start/end、replacement、value，前端验证全部目标标识、原始快照及合成结果。请求前与模型返回后都校验 ready/revision；每 run 同时只允许一个优化请求，结束或取消后释放占用。客户端停止等待/关闭/修改输入会 abort 请求并隔离迟到结果；后端监听连接中断并向 provider 传递 AbortSignal。实际远端是否及时取消取决于渠道。
+- 显示修改前与优化后完整字段预览；放弃、调整意见重新优化均不改变原编辑缓冲。点击应用只更新 draft，未处理预览或生成中禁止保存，workspace pending guard 同样拦截。显式保存候选仍通过 P1 PATCH；采用仍通过 P2 版本栅栏。若输入或 scope 在请求期间变化，清除预览并保留人工输入。
+- P3 不新增数据表、历史记录或跨字段状态机。应用后可再次开启局部优化，但自动保留多轮历史、撤销和整集优化在 P4。此次没有调用真实在线渠道，P6 综合验收须用真实模型检查结构化输出质量及实际取消行为。
+
+P3 验收：后端候选专项 12/12（新增 3 项），相关后端回归 78/78（无跳过）；前端候选专项 13/13（新增 6 项），30 个 drama 前端测试文件 231/231；npm run typecheck 通过。真实 Chrome + 隔离实际后端 76/76，0 浏览器异常，0 在线模型请求。fixture 断言模型收到当前人工修订文本、选区及自定义意见，预览和应用前后候选 JSON 完全相同，显式保存后才改变，关闭重开与采用保留修改、未选中内容、被排除原剧集和确认版本。
 
 ## 测试
 

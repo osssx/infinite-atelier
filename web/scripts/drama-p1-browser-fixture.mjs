@@ -85,6 +85,12 @@ const app=buildApp({db,sessionAuth:createLocalSessionAuth(),autoLocalSession:tru
    const prompt=messages[0]?.content??"";
    // A deterministic short delay makes the actual UI running state observable.
    await new Promise(resolve=>setTimeout(resolve,700));
+   if(prompt.startsWith("你是剧集候选的局部文字编辑助手")){
+    const target=JSON.parse(prompt.slice(prompt.lastIndexOf("\n")+1));
+    if(target.currentDraft!=="浏览器人工修订梗概"||target.selectedText!=="人工修订"||target.mode!=="selection"||target.instruction!=="增强悬念，保持前后文")
+     throw Object.assign(Error("fixture_unexpected_optimize_target"),{code:"fixture_unexpected_optimize_target",statusCode:422});
+    return {answer:JSON.stringify({replacement:"增强悬念"})};
+   }
    if(prompt.includes("提取角色、场景和道具资产"))return {answer:JSON.stringify({assets:[{id:"feedback-prop",kind:"prop",name:"验收道具",description:"蓝色书包",sourceRefs:[]}]})};
    if(prompt.includes("输出 episodes。")){
     const count=Number(prompt.match(/恰好 (\d+) 集/)?.[1]??1);

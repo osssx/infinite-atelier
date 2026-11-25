@@ -8,6 +8,7 @@ import {useThemeStore} from "@/stores/use-theme-store";
 import {needsEpisodeEventNormalization,normalizeEpisodeEvents} from "../../../server/drama-episode-links.mjs";
 import {splitEpisodeSequence,mergeEpisodeSequences} from "../../../server/drama-sequence-relations.mjs";
 import {CandidateFieldContext,useCandidateFieldSession,type EpisodeCandidateChanges} from "./drama-episode-candidate-state";
+import {DramaEpisodeAiControls} from "./drama-episode-ai-controls";
 
 export type DramaEpisode={
  id:string;title:string;synopsis:string;events:string[];
@@ -27,6 +28,8 @@ type EpisodeFieldTheme=ReturnType<typeof canvasThemeForField>;
 function EpisodeReadEditField({id,label,value,disabled,theme,onConfirm,multiline=false,rows=2,type="text",count,placeholder="未填写"}:EpisodeFieldProps){
  const [editing,setEditing]=useState(false);
  const [draft,setDraft]=useState(value);
+ const [aiBlocked,setAiBlocked]=useState(false);
+ const inputRef=useRef<HTMLInputElement|HTMLTextAreaElement|null>(null);
  const [baseline,setBaseline]=useState(value);
  const [saving,setSaving]=useState(false);
  const updated=useDramaFieldFeedback();
@@ -38,9 +41,9 @@ function EpisodeReadEditField({id,label,value,disabled,theme,onConfirm,multiline
  const inputStyle={background:theme.node.panel,color:theme.node.text,borderColor:theme.node.stroke,
   "--tw-ring-color":theme.node.activeStroke} as CSSProperties;
  const begin=()=>{setError("");setBaseline(value);setDraft(value);setEditing(true);};
- const cancel=()=>{if(saving)return;setError("");setEditing(false);setDraft(value);};
+ const cancel=()=>{if(saving)return;setAiBlocked(false);setError("");setEditing(false);setDraft(value);};
  const confirm=async(propagate=false)=>{
-  if(disabled||saving||stale||!valid){if(propagate)throw Error("请先核对当前字段，再保存候选");return;}
+  if(disabled||saving||stale||!valid||aiBlocked){if(propagate)throw Error(aiBlocked?"请先应用或放弃 AI 优化建议，再保存候选":"请先核对当前字段，再保存候选");return;}
   setSaving(true);setError("");
   try{
    if(draft!==value){await onConfirm(draft);if(!fieldSession.candidate)updated(label);}
@@ -70,20 +73,22 @@ function EpisodeReadEditField({id,label,value,disabled,theme,onConfirm,multiline
   </div>
   {editing?<>
    {multiline?
-     <textarea aria-label={label==="剧情事件（每行一条）"?"剧情事件":label}
+     <textarea ref={element=>{inputRef.current=element;}} aria-label={label==="剧情事件（每行一条）"?"剧情事件":label}
       className="thin-scrollbar w-full min-w-0 resize-y rounded-lg border px-3 py-2.5 text-sm leading-relaxed outline-none transition-shadow focus-visible:ring-2"
       style={inputStyle} rows={rows} value={draft} disabled={disabled}
       onChange={event=>setDraft(event.target.value)}/>:
-     <input aria-label={label} type={type} min={type==="number"?"0.1":undefined}
+     <input ref={element=>{inputRef.current=element;}} aria-label={label} type={type} min={type==="number"?"0.1":undefined}
       step={type==="number"?"0.1":undefined} maxLength={type==="text"?12000:undefined}
       className="w-full min-w-0 rounded-lg border px-3 py-2.5 text-sm leading-relaxed outline-none transition-shadow focus-visible:ring-2"
       style={inputStyle} value={draft} disabled={disabled}
       onChange={event=>setDraft(event.target.value)}/>}
+   {fieldSession.optimization&&id!=="duration"&&<DramaEpisodeAiControls scope={fieldSession.optimization} field={id}
+    draft={draft} inputRef={inputRef} theme={theme} disabled={disabled||saving||stale} onApply={setDraft} onBlockingChange={setAiBlocked}/>}
    {stale&&<DramaInlineFeedback theme={theme}>内容已在其他位置更新，请取消并重新编辑。</DramaInlineFeedback>}
    {!valid&&<DramaInlineFeedback theme={theme}>目标时长必须是大于 0 的数字，或留空。</DramaInlineFeedback>}
    {error&&<DramaInlineFeedback theme={theme} level="error" error={error}/>}
    {saving&&<DramaInlineFeedback theme={theme} level="info" pending>正在保存{fieldSession.candidate?"候选":"剧集草案"}…</DramaInlineFeedback>}
-   <EpisodeEditActions theme={theme} label={label} confirmText={fieldSession.candidate?"保存候选":undefined} disabled={disabled||saving||stale||!valid}
+   <EpisodeEditActions theme={theme} label={label} confirmText={fieldSession.candidate?"保存候选":undefined} disabled={disabled||saving||stale||!valid||aiBlocked}
     onCancel={cancel} onConfirm={()=>void confirm()}/>
   </>:
    <div data-episode-readonly={id} aria-label={label+"内容"}
@@ -108,6 +113,8 @@ function SequenceReadEditFields({sequence,index,items,theme,disabled,onConfirm,s
 }){
  const [editing,setEditing]=useState(startEditing);
  const [title,setTitle]=useState(sequence.title);
+ const [aiBlocked,setAiBlocked]=useState(false);
+ const titleRef=useRef<HTMLInputElement|HTMLTextAreaElement|null>(null);
  const [refs,setRefs]=useState((sequence.sourceRefs??[]).join("\n"));
  const [eventRefs,setEventRefs]=useState([...(sequence.eventRefs??[])]);
  const [baseline,setBaseline]=useState(sequence);
@@ -125,10 +132,10 @@ function SequenceReadEditFields({sequence,index,items,theme,disabled,onConfirm,s
   (baseline.eventRefs??[]).join("\n")!==(sequence.eventRefs??[]).join("\n"));
  const begin=()=>{setError("");setBaseline(sequence);setTitle(sequence.title);setRefs((sequence.sourceRefs??[]).join("\n"));
   setEventRefs([...(sequence.eventRefs??[])]);setEditing(true);};
- const cancel=()=>{if(saving)return;setError("");setEditing(false);setTitle(sequence.title);setRefs((sequence.sourceRefs??[]).join("\n"));
+ const cancel=()=>{if(saving)return;setAiBlocked(false);setError("");setEditing(false);setTitle(sequence.title);setRefs((sequence.sourceRefs??[]).join("\n"));
   setEventRefs([...(sequence.eventRefs??[])]);};
  const confirm=async(propagate=false)=>{
-  if(stale||disabled||saving){if(propagate)throw Error("请先核对当前场次，再保存候选");return;}
+  if(stale||disabled||saving||aiBlocked){if(propagate)throw Error(aiBlocked?"请先应用或放弃 AI 优化建议，再保存候选":"请先核对当前场次，再保存候选");return;}
   const sourceRefs=refs.split("\n").map(ref=>ref.trim()).filter(Boolean);
   const next={...sequence,title,sourceRefs,eventRefs};
   setSaving(true);setError("");
@@ -159,9 +166,11 @@ function SequenceReadEditFields({sequence,index,items,theme,disabled,onConfirm,s
    {editing?<>
     <label className="grid min-w-0 gap-1.5">
      <span style={{color:theme.node.muted}}>场次名称</span>
-     <input aria-label={`场次 ${index+1} 名称`} className="w-full min-w-0 rounded-lg border px-3 py-2.5 text-sm leading-relaxed outline-none transition-shadow focus-visible:ring-2"
+     <input ref={element=>{titleRef.current=element;}} aria-label={`场次 ${index+1} 名称`} className="w-full min-w-0 rounded-lg border px-3 py-2.5 text-sm leading-relaxed outline-none transition-shadow focus-visible:ring-2"
       style={control} value={title} disabled={disabled} onChange={event=>setTitle(event.target.value)}/>
     </label>
+    {fieldSession.optimization&&<DramaEpisodeAiControls scope={fieldSession.optimization} field="sequenceTitle" sequenceId={sequence.id}
+     draft={title} inputRef={titleRef} theme={theme} disabled={disabled||saving||stale} onApply={setTitle} onBlockingChange={setAiBlocked}/>}
     <label className="grid min-w-0 gap-1.5">
      <span style={{color:theme.node.muted}}>场次原文段落 ID（每行一个）</span>
      <textarea aria-label={`场次 ${index+1} 原文段落`} className="thin-scrollbar w-full min-w-0 rounded-lg border px-3 py-2.5 text-sm leading-relaxed outline-none transition-shadow focus-visible:ring-2"
@@ -187,7 +196,7 @@ function SequenceReadEditFields({sequence,index,items,theme,disabled,onConfirm,s
     {error&&<DramaInlineFeedback theme={theme} level="error" error={error}/>}
     {saving&&<DramaInlineFeedback theme={theme} level="info" pending>正在保存{fieldSession.candidate?"候选场次":"场次草案"}…</DramaInlineFeedback>}
     <EpisodeEditActions theme={theme} confirmText={fieldSession.candidate?"保存候选":undefined} label={"场次 "+(index+1)+" 详情"}
-     disabled={disabled||saving||stale} onCancel={cancel} onConfirm={()=>void confirm()}/>
+     disabled={disabled||saving||stale||aiBlocked} onCancel={cancel} onConfirm={()=>void confirm()}/>
    </>:
     <div data-episode-sequence-readonly="" className="grid min-w-0 gap-2 rounded-md border-l-2 px-3 py-2.5 text-xs leading-relaxed"
      style={{background:theme.toolbar.activeBg,color:theme.node.text,borderLeftColor:theme.node.stroke}}>

@@ -29,7 +29,9 @@ export function mergeCandidateRuns(current:DramaRun[],incoming:DramaRun[],protec
  return merged;
 }
 
-export type CandidateFieldSession={activeKey:string|null;setActiveKey:(key:string|null)=>void;register?:WorkspacePendingRegistration;runId:string};
+export type EpisodeOptimizeScope={projectId:string;runId:string;episodeId:string;revision:number};
+export type EpisodeOptimizeField="title"|"synopsis"|"events"|"ending"|"sequenceTitle";
+export type CandidateFieldSession={activeKey:string|null;setActiveKey:(key:string|null)=>void;register?:WorkspacePendingRegistration;runId:string;optimization?:EpisodeOptimizeScope};
 export const CandidateFieldContext=createContext<CandidateFieldSession|null>(null);
 export function useCandidateFieldSession(editing:boolean,save:()=>Promise<void>){
  const session=useContext(CandidateFieldContext),key=useId();
@@ -40,5 +42,5 @@ export function useCandidateFieldSession(editing:boolean,save:()=>Promise<void>)
   setActive(key);register?.("episode-candidate:"+runId+":"+key,()=>saveRef.current());
   return ()=>{register?.("episode-candidate:"+runId+":"+key,null);setActive(null);};
  },[editing,setActive,register,runId,key]);
- return {candidate:Boolean(session),otherEditing:Boolean(session?.activeKey&&session.activeKey!==key)};
+ return {candidate:Boolean(session),otherEditing:Boolean(session?.activeKey&&session.activeKey!==key),optimization:session?.optimization};
 }

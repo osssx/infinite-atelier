@@ -17,7 +17,7 @@ import {useThemeStore} from "@/stores/use-theme-store";
 const ep=(id:string,title:string):DramaEpisode=>({id,title,synopsis:title+"梗概",events:["事件"],eventItems:[{id:id+"-event",text:"事件"}],sourceRefs:[],ending:title+"结尾",targetDurationSec:60,sequences:[{id:id+"-scene",title:"场次",eventRefs:[id+"-event"]}]});
 const roots:Root[]=[];
 beforeEach(()=>{vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT",true);vi.mocked(canvasApi).mockReset();});
-afterEach(async()=>{for(const root of roots)await act(async()=>root.unmount());roots.length=0;vi.unstubAllGlobals();});
+afterEach(async()=>{for(const root of roots)await act(async()=>root.unmount());roots.length=0;vi.restoreAllMocks();vi.unstubAllGlobals();});
 function deferred<T>(){let resolve!:(value:T)=>void;const promise=new Promise<T>(r=>resolve=r);return {promise,resolve};}
 async function click(el:Element|null|undefined){expect(el).toBeTruthy();await act(async()=>{(el as HTMLElement).click();});}
 async function input(el:HTMLInputElement|HTMLTextAreaElement,value:string){
@@ -34,7 +34,7 @@ async function openRun(workspace:ParentNode,id="run"){
  await act(async()=>{details.open=true;details.dispatchEvent(new Event("toggle"));});
  return details;
 }
-async function mount({workspaceMode=true,appearance="dark",initialRevision=0,initialCount=2}:{workspaceMode?:boolean;appearance?:"light"|"dark";initialRevision?:number;initialCount?:number}={}){
+async function mount({workspaceMode=true,appearance="dark",initialRevision=0,initialCount=2,optimize}:{workspaceMode?:boolean;appearance?:"light"|"dark";initialRevision?:number;initialCount?:number;optimize?:(payload:any,signal?:AbortSignal)=>Promise<unknown>}={}){
  await act(async()=>useThemeStore.setState({theme:appearance}));
  const episodes=Array.from({length:initialCount},(_,i)=>ep("ep"+i,"第"+(i+1)+"集"));
  let remote:DramaRun={id:"run",episodeId:"*",status:"ready",candidate:{revision:initialRevision,episodes}};
@@ -44,7 +44,8 @@ async function mount({workspaceMode=true,appearance="dark",initialRevision=0,ini
   expect(revision).toBe(remote.candidate?.revision);remote={...remote,status:"adopted"};
  });
  const summarized=()=>remote.status==="discarded"?[]:[{...remote,candidate:{...remote.candidate,episodeCount:remote.candidate?.episodes?.length,episodes:[]}}];
- vi.mocked(canvasApi).mockImplementation((async(path:string,method="GET",payload?:any)=>{
+ vi.mocked(canvasApi).mockImplementation((async(path:string,method="GET",payload?:any,signal?:AbortSignal)=>{
+  if(path.endsWith("/optimize")&&method==="POST"&&optimize)return optimize(payload,signal);
   if(path.includes("/dependencies?"))return {status:"current",changes:[]};
   if(path.includes("/runs?")){if(listOverride){const pending=listOverride;listOverride=null;return pending;}return summarized();}
   if(path.endsWith("/runs/run")&&method==="GET")return remote;
@@ -78,6 +79,144 @@ async function mount({workspaceMode=true,appearance="dark",initialRevision=0,ini
  const details=await openRun(workspace);
  return {workspace,details,change,adopt,getRemote:()=>remote,setConflict:(value:boolean)=>{conflict=value;},setListOverride:(value:Promise<DramaRun[]>)=>{listOverride=value;},summarized};
 }
+async function mockTextChannel(){
+ const config=await import("@/stores/use-config-store"),routing=await import("@/features/backend-sync/model-channel-autoroute");
+ vi.spyOn(config,"useEffectiveConfig").mockReturnValue({...config.defaultConfig,channelMode:"local",textModel:"test-model"});
+ vi.spyOn(config,"resolveModelChannel").mockReturnValue({id:"channel",baseUrl:"http://localhost:1234",name:"测试渠道"} as ReturnType<typeof config.resolveModelChannel>);
+ vi.spyOn(routing,"modelChannelProvider").mockReturnValue("openai_compatible");
+ return vi.spyOn(routing,"ensureSqliteModelChannelForExecution").mockResolvedValue(undefined);
+}
+const optimizeResult=(payload:any,replacement:string,overrides:Record<string,unknown>={})=>{
+ const start=payload.selection?.start??0,end=payload.selection?.end??payload.draft.length;
+ return {runId:"run",episodeId:"ep0",revision:payload.expectedRevision,field:payload.field,sequenceId:payload.sequenceId,
+  mode:payload.mode,start,end,replacement,value:payload.draft.slice(0,start)+replacement+payload.draft.slice(end),...overrides};
+};
+describe("P3 local AI candidate optimization",()=>{
+ it.each(["light","dark"] as const)("uses unsaved selected text, previews before applying, then saves only on explicit confirmation (%s)",async appearance=>{
+  const ensure=await mockTextChannel();
+  const optimize=vi.fn(async payload=>optimizeResult(payload,"新悬念"));
+  const {workspace,details,getRemote,change}=await mount({appearance,optimize});
+  const editor=details.querySelector("[data-episode-candidate-editor]")!;
+  await click(editor.querySelector('[aria-label="编辑剧情梗概"]'));
+  const field=editor.querySelector<HTMLTextAreaElement>('textarea[aria-label="剧情梗概"]')!;
+  await input(field,"前文｜人工片段｜后文");
+  await act(async()=>{field.focus();field.setSelectionRange(3,7);});
+  await click(button(editor,"AI 优化"));
+  expect(button(editor,"选区改写").getAttribute("aria-pressed")).toBe("true");
+  await input(editor.querySelector<HTMLTextAreaElement>('[aria-label="候选 AI 修改意见"]')!,"增加冲突");
+  await click(button(editor,"生成优化建议"));
+  expect(ensure).toHaveBeenCalledTimes(1);
+  expect(optimize).toHaveBeenCalledWith(expect.objectContaining({expectedRevision:0,field:"synopsis",mode:"selection",draft:"前文｜人工片段｜后文",selection:{start:3,end:7},instruction:"增加冲突"}),expect.any(AbortSignal));
+  const preview=editor.querySelector("[data-episode-ai-preview]")!;
+  expect(preview.textContent).toContain("前文｜新悬念｜后文");
+  expect(field.value).toBe("前文｜人工片段｜后文");
+  expect(getRemote().candidate?.revision).toBe(0);
+  expect(editor.querySelector<HTMLButtonElement>('[aria-label="保存候选剧情梗概"]')!.disabled).toBe(true);
+  await click(button(workspace,"剧集编辑"));
+  const guard=[...document.querySelectorAll('[role="dialog"]')].find(el=>el.textContent?.includes("存在未提交的候选修改"))!;
+  await click(button(guard,"保存候选"));
+  expect(guard.textContent).toContain("请先应用或放弃 AI 优化建议");
+  await click(button(guard,"继续编辑"));
+  await click(button(editor,"应用到编辑内容"));
+  expect(field.value).toBe("前文｜新悬念｜后文");
+  expect(vi.mocked(canvasApi).mock.calls.filter(([,method])=>method==="PATCH")).toHaveLength(0);
+  await click(editor.querySelector('[aria-label="保存候选剧情梗概"]'));
+  expect(getRemote().candidate?.episodes?.[0].synopsis).toBe("前文｜新悬念｜后文");
+  expect(getRemote().candidate?.revision).toBe(1);
+  expect(change).not.toHaveBeenCalled();
+ });
+ it("regenerates with new instructions, rejects mismatched responses and permits discarding without writing",async()=>{
+  await mockTextChannel();
+  const optimize=vi.fn(async payload=>optimizeResult(payload,"优化一"));
+  const {details,getRemote}=await mount({optimize});
+  const editor=details.querySelector("[data-episode-candidate-editor]")!;
+  await click(editor.querySelector('[aria-label="编辑集标题"]'));
+  const field=editor.querySelector<HTMLInputElement>('input[aria-label="集标题"]')!;
+  await input(field,"手写标题");
+  await click(button(editor,"AI 优化"));
+  const instruction=editor.querySelector<HTMLTextAreaElement>('[aria-label="候选 AI 修改意见"]')!;
+  await input(instruction,"更短");
+  await click(button(editor,"生成优化建议"));
+  expect(editor.querySelector("[data-episode-ai-preview]")?.textContent).toContain("优化一");
+  await input(instruction,"更具悬念");
+  optimize.mockImplementationOnce(async payload=>optimizeResult(payload,"越权",{episodeId:"ep1"}));
+  await click(button(editor,"重新优化"));
+  expect(editor.querySelector("[data-episode-ai-preview]")).toBeNull();
+  expect(editor.textContent).toContain("模型返回的优化内容格式不正确");
+  expect(editor.querySelector<HTMLButtonElement>('[aria-label="保存候选集标题"]')!.disabled).toBe(false);
+  optimize.mockImplementationOnce(async payload=>optimizeResult(payload,"优化二"));
+  await click(button(editor,"生成优化建议"));
+  expect(optimize.mock.lastCall?.[0]).toMatchObject({draft:"手写标题",instruction:"更具悬念",mode:"field"});
+  await click(button(editor,"放弃建议"));
+  expect(field.value).toBe("手写标题");
+  expect(getRemote().candidate?.revision).toBe(0);
+  await click(editor.querySelector('[data-drama-action="cancel"]'));
+  expect(editor.textContent).not.toContain("手写标题");
+ });
+ it("aborts and ignores an outdated model response after manual typing or cancel",async()=>{
+  await mockTextChannel();
+  const late=deferred<unknown>();let requestPayload:any,requestSignal:AbortSignal|undefined;
+  const optimize=vi.fn((payload:any,signal?:AbortSignal)=>{requestPayload=payload;requestSignal=signal;return late.promise;});
+  const {details,getRemote}=await mount({optimize});
+  const editor=details.querySelector("[data-episode-candidate-editor]")!;
+  await click(editor.querySelector('[aria-label="编辑本集结尾"]'));
+  const field=editor.querySelector<HTMLTextAreaElement>('textarea[aria-label="本集结尾"]')!;
+  await input(field,"人工结尾");
+  await click(button(editor,"AI 优化"));
+  await input(editor.querySelector<HTMLTextAreaElement>('[aria-label="候选 AI 修改意见"]')!,"留下悬念");
+  await click(button(editor,"生成优化建议"));
+  expect(button(editor,"停止等待")).toBeTruthy();
+  await input(field,"后来手工修改");
+  expect(requestSignal?.aborted).toBe(true);
+  await act(async()=>late.resolve(optimizeResult(requestPayload,"迟到结果")));
+  expect(editor.querySelector("[data-episode-ai-preview]")).toBeNull();
+  expect(field.value).toBe("后来手工修改");
+  expect(editor.querySelector<HTMLButtonElement>('[aria-label="保存候选本集结尾"]')!.disabled).toBe(false);
+  const late2=deferred<unknown>();
+  optimize.mockImplementationOnce((payload,signal)=>{requestPayload=payload;requestSignal=signal;return late2.promise;});
+  await click(button(editor,"生成优化建议"));
+  await click(editor.querySelector('[data-drama-action="cancel"]'));
+  expect(requestSignal?.aborted).toBe(true);
+  await act(async()=>late2.resolve(optimizeResult(requestPayload,"关闭后的结果")));
+  expect(editor.querySelector("[data-episode-ai-preview]")).toBeNull();
+  expect(getRemote().candidate?.revision).toBe(0);
+ });
+ it("cancels during channel preparation and never issues a late model POST",async()=>{
+  const ensure=await mockTextChannel(),preparing=deferred<void>();
+  ensure.mockImplementationOnce(()=>preparing.promise);
+  const optimize=vi.fn(async payload=>optimizeResult(payload,"不应发出"));
+  const {details}=await mount({optimize});
+  const editor=details.querySelector("[data-episode-candidate-editor]")!;
+  await click(editor.querySelector('[aria-label="编辑剧情梗概"]'));
+  await click(button(editor,"AI 优化"));
+  await input(editor.querySelector<HTMLTextAreaElement>('[aria-label="候选 AI 修改意见"]')!,"优化");
+  await click(button(editor,"生成优化建议"));
+  await click(button(editor,"停止等待"));
+  await act(async()=>preparing.resolve(undefined));
+  expect(optimize).not.toHaveBeenCalled();
+  expect(editor.querySelector<HTMLButtonElement>('[aria-label="保存候选剧情梗概"]')!.disabled).toBe(false);
+ });
+ it("optimizes only the scene name and keeps existing scene references",async()=>{
+  await mockTextChannel();
+  const optimize=vi.fn(async payload=>optimizeResult(payload,"悬念场次"));
+  const {details,getRemote}=await mount({optimize});
+  const editor=details.querySelector("[data-episode-candidate-editor]")!;
+  const sequence=editor.querySelector('section[aria-label="场次规划"] details')!;
+  await click(sequence.querySelector("summary"));
+  await click(sequence.querySelector('[aria-label="编辑场次 1 详情"]'));
+  const title=sequence.querySelector<HTMLInputElement>('input[aria-label="场次 1 名称"]')!;
+  await input(title,"人工场名");
+  await click(button(sequence,"AI 优化"));
+  await input(sequence.querySelector<HTMLTextAreaElement>('[aria-label="候选 AI 修改意见"]')!,"突出悬念");
+  await click(button(sequence,"生成优化建议"));
+  expect(optimize.mock.lastCall?.[0]).toMatchObject({field:"sequenceTitle",sequenceId:"ep0-scene",draft:"人工场名"});
+  await click(button(sequence,"应用到编辑内容"));
+  expect(title.value).toBe("悬念场次");
+  expect(getRemote().candidate?.revision).toBe(0);
+  await click(sequence.querySelector('[aria-label="保存候选场次 1 详情"]'));
+  expect(getRemote().candidate?.episodes?.[0].sequences?.[0]).toMatchObject({id:"ep0-scene",title:"悬念场次",eventRefs:["ep0-event"]});
+ });
+});
 describe("P2 episode candidate workspace",()=>{
  it.each(["light","dark"] as const)("edits candidate locally and saves exactly one field in %s theme",async appearance=>{
   const {workspace,details,change,adopt}=await mount({appearance});

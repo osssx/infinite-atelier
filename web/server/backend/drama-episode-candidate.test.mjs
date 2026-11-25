@@ -11,6 +11,7 @@ import {createDramaRunService,exportDramaRuns,importDramaRuns} from "./drama-run
 import {createProjectArchive} from "./project-archive.mjs";
 import {createBlobStore} from "./blob-store.mjs";
 import {buildApp} from "./app.mjs";
+import {buildEpisodeOptimizeTarget,parseEpisodeOptimizeResult} from "./drama-episode-optimize.mjs";
 
 const episode=id=>({id,title:id,synopsis:"Original "+id,events:["Arrival","Discovery"],
  eventItems:[{id:id+"-arrival",text:"Arrival"},{id:id+"-discovery",text:"Discovery"}],
@@ -214,4 +215,89 @@ test("HTTP PATCH, DELETE and adopt enforce candidate revisions, authorization an
  await service.submit("p",request("delete-http"));
  res=await call("DELETE","/api/v1/projects/p/drama-pipeline/runs/delete-http?expectedRevision=0");
  assert.equal(res.statusCode,200,res.body);assert.equal(res.json().status,"discarded");
+});
+
+const optimizeBody={expectedRevision:0,field:"synopsis",mode:"selection",draft:"人工作品：旧片段；尾部保持",selection:{start:5,end:8},
+ instruction:"增强悬念，不修改前后文",channelId:"channel",provider:"openai",model:"model"};
+
+test("optimization target uses the unsaved draft, excludes the saved field, and applies only the selected UTF-16 range",()=>{
+ const ep=episode("one"),input={story:"Original story"};
+ const target=buildEpisodeOptimizeTarget(optimizeBody,ep,input);
+ const payload=JSON.parse(target.prompt.slice(target.prompt.lastIndexOf("\n")+1));
+ assert.equal(payload.currentDraft,optimizeBody.draft);
+ assert.equal(payload.selectedText,"旧片段");
+ assert.equal(payload.context.synopsis,undefined);
+ assert.equal(payload.context.storyExcerpt,input.story);
+ assert.equal(payload.instruction,optimizeBody.instruction);
+ assert.deepEqual(parseEpisodeOptimizeResult('{"replacement":"新悬念"}',target,ep),{replacement:"新悬念",value:"人工作品：新悬念；尾部保持"});
+ for(const bad of ["plain","{}",'{"replacement":1}','{"replacement":" "}','{"replacement":"新","id":"bad"}','{"replacement":"x","changes":{}}']){
+  assert.throws(()=>parseEpisodeOptimizeResult(bad,target,ep),/drama_episode_optimize_result_invalid/);
+ }
+ for(const patch of [{field:"targetDurationSec"},{mode:"field"},{selection:{start:4,end:4}},{selection:{start:0,end:100}},
+  {draft:"😀测试",selection:{start:1,end:3}},{instruction:" "},{sequenceId:"one-scene"},{draft:"x".repeat(12001)}]){
+  assert.throws(()=>buildEpisodeOptimizeTarget({...optimizeBody,...patch},ep,input),/drama_episode_optimize_invalid/);
+ }
+ const whole=buildEpisodeOptimizeTarget({...optimizeBody,mode:"field",selection:undefined,field:"events",draft:"人工事件"},ep,input);
+ assert.equal(parseEpisodeOptimizeResult('{"replacement":"事件一\\n事件二"}',whole,ep).value,"事件一\n事件二");
+ const scene=buildEpisodeOptimizeTarget({...optimizeBody,mode:"field",selection:undefined,field:"sequenceTitle",sequenceId:"one-scene",draft:"手动改名"},ep,input);
+ assert.equal(parseEpisodeOptimizeResult('{"replacement":"新场次"}',scene,ep).value,"新场次");
+ assert.throws(()=>parseEpisodeOptimizeResult('{"replacement":"标题\\n下一行"}',scene,ep),/drama_episode_optimize_result_invalid/);
+ assert.throws(()=>buildEpisodeOptimizeTarget({...optimizeBody,field:"sequenceTitle",sequenceId:"missing"},ep,input),/drama_episode_optimize_invalid/);
+});
+
+test("HTTP optimize is a read-only plain model request, validates scope and output, then reuses candidate PATCH",async t=>{
+ const {db,service,project}=fixture(t);
+ await service.submit("p",request("ai"));
+ const before=project(),saved=service.get("p","ai");
+ let calls=[],answer='{"replacement":"新悬念"}';
+ const app=buildApp({db,authorize:req=>req.headers["x-test-owner"]==="yes",assistantChat:async command=>{calls.push(command);return {answer};}});
+ t.after(()=>app.close());
+ const root="/api/v1/projects/p/drama-pipeline/runs/ai/episodes/one",headers={"x-test-owner":"yes"};
+ const optimize=(payload=optimizeBody,url=root+"/optimize")=>app.inject({method:"POST",url,headers,payload});
+ assert.equal((await app.inject({method:"POST",url:root+"/optimize",payload:optimizeBody})).statusCode,401);
+ for(const [payload,url,status] of [[{...optimizeBody,expectedRevision:1},undefined,409],[{...optimizeBody,instruction:" "},undefined,422],
+  [optimizeBody,root.replace("/one","/missing")+"/optimize",404],[{...optimizeBody,selection:{start:9,end:2}},undefined,422]]){
+  const res=await optimize(payload,url);assert.equal(res.statusCode,status,res.body);
+ }
+ assert.equal(calls.length,0);
+ const res=await optimize();assert.equal(res.statusCode,200,res.body);
+ assert.equal(res.headers["cache-control"],"no-store");
+ assert.deepEqual(res.json(),{runId:"ai",episodeId:"one",revision:0,field:"synopsis",mode:"selection",start:5,end:8,replacement:"新悬念",value:"人工作品：新悬念；尾部保持"});
+ assert.equal(calls.length,1);
+ assert.equal(calls[0].canvasActions,false);assert.equal(calls[0].plainCanvasChat,true);assert.deepEqual(calls[0].skillTools,[]);
+ assert.match(calls[0].messages[0].content,/人工作品：旧片段；尾部保持/);
+ assert.deepEqual(project(),before);assert.deepEqual(service.get("p","ai"),saved);
+ answer='{"replacement":"恶意越权","episodes":[]}';
+ const invalid=await optimize();assert.equal(invalid.statusCode,422,invalid.body);
+ assert.equal(invalid.json().code,"drama_episode_optimize_result_invalid");
+ assert.deepEqual(service.get("p","ai"),saved);
+ const patched=await app.inject({method:"PATCH",url:root,headers,payload:{expectedRevision:0,changes:{synopsis:res.json().value}}});
+ assert.equal(patched.statusCode,200,patched.body);assert.equal(patched.json().candidate.revision,1);
+ assert.equal(patched.json().candidate.episodes[0].synopsis,res.json().value);
+ assert.deepEqual(project(),before);
+});
+
+test("optimization rejects duplicate concurrent requests and discards a result when candidate version changes in flight",async t=>{
+ const {db,service,project}=fixture(t);
+ await service.submit("p",request("ai-race"));
+ let release,started;
+ const entered=new Promise(resolve=>started=resolve),pending=new Promise(resolve=>release=resolve);
+ let calls=0;
+ const app=buildApp({db,authorize:()=>true,assistantChat:async()=>{calls++;started();await pending;return {answer:'{"replacement":"新悬念"}'};}});
+ t.after(()=>app.close());
+ const url="/api/v1/projects/p/drama-pipeline/runs/ai-race/episodes/one/optimize";
+ const submit=()=>app.inject({method:"POST",url,payload:optimizeBody});
+ const first=submit();await entered;
+ try{
+  const duplicate=await submit();assert.equal(duplicate.statusCode,409,duplicate.body);assert.equal(duplicate.json().code,"drama_episode_optimize_busy");
+  patch(service,"ai-race","one",0,{synopsis:"另一个修改"});
+ }finally{release();}
+ const stale=await first;assert.equal(stale.statusCode,409,stale.body);assert.equal(stale.json().code,"drama_candidate_revision_conflict");
+ assert.equal(calls,1);assert.equal(service.get("p","ai-race").candidate.episodes[0].synopsis,"另一个修改");
+ assert.equal(project().revision,1);
+ const fresh=await app.inject({method:"POST",url,payload:{...optimizeBody,expectedRevision:1}});
+ assert.equal(fresh.statusCode,200,fresh.body);assert.equal(calls,2);
+ service.discard("p","ai-race",1);
+ const discarded=await app.inject({method:"POST",url,payload:{...optimizeBody,expectedRevision:1}});
+ assert.equal(discarded.statusCode,409,discarded.body);assert.equal(calls,2);
 });

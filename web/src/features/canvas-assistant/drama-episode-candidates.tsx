@@ -6,8 +6,8 @@ import {CandidateFieldContext,candidateRevision,hasEpisodeDetails,type DramaRun,
 import {DramaInlineFeedback} from "./drama-feedback";
 import type {WorkspacePendingRegistration} from "./drama-creative-workspace";
 
-export function DramaEpisodeCandidates({run,theme,disabled,activeKey,onEditingChange,onPendingChange,onPatch,onRemove,onDiscard,onReload,onConfirmingChange}:{
- run:DramaRun;theme:CanvasTheme;disabled:boolean;activeKey:string|null;
+export function DramaEpisodeCandidates({run,projectId,theme,disabled,activeKey,onEditingChange,onPendingChange,onPatch,onRemove,onDiscard,onReload,onConfirmingChange}:{
+ run:DramaRun;projectId?:string;theme:CanvasTheme;disabled:boolean;activeKey:string|null;
  onEditingChange:(runId:string,key:string|null)=>void;onPendingChange?:WorkspacePendingRegistration;
  onPatch:(run:DramaRun,id:string,changes:EpisodeCandidateChanges)=>Promise<void>;
  onRemove:(run:DramaRun,id:string)=>Promise<void>;onDiscard:(run:DramaRun)=>Promise<void>;onReload:()=>void;
@@ -72,7 +72,7 @@ export function DramaEpisodeCandidates({run,theme,disabled,activeKey,onEditingCh
       disabled={locked||episodes.length<=1||!!confirm} title={episodes.length<=1?"最后一集请删除整条生成记录":undefined}
       onClick={()=>{setError("");setConfirm({kind:"episode",id:active.id,revision});}}><Trash2 size={12}/>删除本集</button>}
     </header>
-    <CandidateFieldContext.Provider value={{activeKey,setActiveKey,register:onPendingChange,runId:run.id}}>
+    <CandidateFieldContext.Provider value={{activeKey,setActiveKey,register:onPendingChange,runId:run.id,optimization:projectId&&ready?{projectId,runId:run.id,episodeId:active.id,revision}:undefined}}>
      <DramaEpisodeFields key={active.id} episodes={[active]} expanded={false} candidateMode disabled={!ready||disabled||!!confirm}
       onChange={()=>{}} onCandidatePatch={(id,changes)=>onPatch(run,id,changes)}/>
     </CandidateFieldContext.Provider>

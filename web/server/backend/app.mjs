@@ -1,5 +1,6 @@
 import Fastify from "fastify";
 import {buildDramaStoryEditPrompt} from "./drama-story-edit.mjs";
+import {buildEpisodeOptimizeTarget,parseEpisodeOptimizeResult} from "./drama-episode-optimize.mjs";
 import {randomUUID,createHash} from "node:crypto";
 import {resolveAuthorizedSkillScript} from "./skill-script-source.mjs";
 import {readTextVersions,mutateTextVersions,readDramaRevisionScope,patchDramaShotDraft} from "./canvas-text-versions.mjs";
@@ -223,6 +224,7 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
    "drama_run_not_found","drama_run_id_conflict","drama_candidate_not_ready","drama_candidate_conflict",
    "drama_candidate_revision_required","drama_candidate_revision_conflict","drama_candidate_edit_invalid",
    "drama_episode_candidate_not_found","drama_candidate_last_episode","drama_candidate_not_discardable","drama_episode_scope_invalid",
+   "drama_episode_optimize_invalid","drama_episode_optimize_result_invalid","drama_episode_optimize_context_too_large","drama_episode_optimize_busy",
    "stale_generation_source","cyclic_generation_source","generation_save_barrier_required","invalid_job_request","idempotency_key_conflict","backend_prior_job_not_terminal","job_not_found","invalid_project_job_history_request","invalid_project_job_history_cursor","project_job_not_found","project_job_not_terminal",
    "unknown_model_close_invalid","unknown_model_close_not_eligible","unknown_model_close_state_changed","reconciliation_invalid_input","reconciliation_not_eligible","reconciliation_provider_unsupported","reconciliation_adapter_unavailable","reconciliation_state_changed","reconciliation_upstream_unavailable","reconciliation_remote_already_linked",
    "script_asset_job_not_found","script_asset_job_not_eligible","script_asset_identity_mismatch",
@@ -854,6 +856,45 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
  app.patch(candidateEpisodePath,{schema:{body:{type:"object",additionalProperties:false,required:["expectedRevision","changes"],
   properties:{expectedRevision:candidateRevisionSchema,changes:{type:"object",minProperties:1,maxProperties:7}}}}},
   req=>dramaRuns.patchEpisode(req.params.id,req.params.runId,req.params.episodeId,req.body));
+ // Read-only model request. Never execute canvas tools or persist an AI result.
+ const episodeOptimizeFlights=new Set();
+ app.post(`${candidateEpisodePath}/optimize`,{schema:{body:{type:"object",additionalProperties:false,
+  required:["expectedRevision","field","mode","draft","instruction","channelId","provider","model"],
+  properties:{expectedRevision:candidateRevisionSchema,field:{enum:["title","synopsis","events","ending","sequenceTitle"]},
+   mode:{enum:["field","selection"]},draft:{type:"string",maxLength:12000},instruction:{type:"string",minLength:1,maxLength:2500},
+   sequenceId:{type:"string",minLength:1,maxLength:256},selection:{type:"object",additionalProperties:false,required:["start","end"],
+    properties:{start:{type:"integer",minimum:0,maximum:12000},end:{type:"integer",minimum:0,maximum:12000}}},
+   channelId:idSchema,provider:{enum:["openai","openai_compatible","google_gemini"]},
+   baseUrl:{type:"string",maxLength:1024},model:{type:"string",minLength:1,maxLength:128}}}}},async(req,reply)=>{
+  const {id,runId,episodeId}=req.params,command=req.body;
+  const scope=()=>dramaRuns.readEpisodeOptimizationScope(id,runId,episodeId,command.expectedRevision);
+  const initial=scope(),target=buildEpisodeOptimizeTarget(command,initial.episode,initial.input);
+  if(!assistantChat)return reply.code(503).send({code:"assistant_unavailable"});
+  const key=JSON.stringify([id,runId]);
+  if(episodeOptimizeFlights.has(key))return reply.code(409).send({code:"drama_episode_optimize_busy"});
+  const controller=new AbortController();
+  const abort=()=>controller.abort();
+  const onClose=()=>{if(!reply.raw.writableEnded)abort();};
+  req.raw.once("aborted",abort);reply.raw.once("close",onClose);
+  episodeOptimizeFlights.add(key);
+  try{
+   const result=await assistantChat({channelId:command.channelId,provider:command.provider,
+    baseUrl:command.baseUrl,model:command.model,signal:controller.signal,
+    messages:[{role:"user",content:target.prompt}],canvasActions:false,semanticCanvasIntent:false,
+    skillContext:"",skillTools:[],selectedCanvasText:"",taskContext:"",plainCanvasChat:true});
+   if(controller.signal.aborted)return;
+   const current=scope(); // Never return a proposal against a changed/deleted/adopted candidate.
+   const proposal=parseEpisodeOptimizeResult(result.answer,target,current.episode);
+   reply.header("Cache-Control","no-store");
+   return {runId,episodeId,field:command.field,sequenceId:command.sequenceId,revision:command.expectedRevision,
+    mode:command.mode,start:target.start,end:target.end,...proposal};
+  }catch(error){
+   if(controller.signal.aborted)return;
+   return reply.code(Number(error?.statusCode)||400).send({code:typeof error?.code==="string"?error.code:"drama_episode_optimize_failed"});
+  }finally{
+   episodeOptimizeFlights.delete(key);req.raw.removeListener("aborted",abort);reply.raw.removeListener("close",onClose);
+  }
+ });
  app.delete(candidateEpisodePath,{schema:{querystring:candidateDeleteQuery}},
   req=>dramaRuns.deleteEpisode(req.params.id,req.params.runId,req.params.episodeId,req.query.expectedRevision));
  app.delete(`${dramaRunPath}/:runId`,{schema:{querystring:candidateDeleteQuery}},

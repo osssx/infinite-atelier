@@ -258,6 +258,14 @@ export function createDramaRunService({db,getProject,validateDocument,emitEvent,
     throw fail("drama_episode_scope_invalid",422);
    return {row,frozen,candidate:row.candidate?JSON.parse(row.candidate):null};
   }
+  function readEpisodeOptimizationScope(projectId,id,episodeId,expectedRevision){
+   const {row,frozen,candidate}=episodeRow(projectId,id);
+   if(row.state!=="ready"||!candidate)throw fail("drama_candidate_not_ready");
+   assertEpisodeCandidateRevision(candidate,expectedRevision);
+   const episode=candidate.episodes.find(item=>item.id===episodeId);
+   if(!episode)throw fail("drama_episode_candidate_not_found",404);
+   return {episode,input:frozen.input};
+  }
   function mutateEpisodeCandidate(projectId,id,episodeId,expectedRevision,mutate){
    return writeTransaction(db,()=>{
     const {row,frozen,candidate}=episodeRow(projectId,id);
@@ -389,7 +397,7 @@ export function createDramaRunService({db,getProject,validateDocument,emitEvent,
   if(!claimed.changes)return get(projectId,id);
   return execute(projectId,id,JSON.parse(row.frozen));
  }
- return {submit,get,preview,adopt,cancel,retry,patchEpisode,deleteEpisode,discard,list(projectId,nodeId){
+ return {submit,get,preview,adopt,cancel,retry,patchEpisode,deleteEpisode,discard,readEpisodeOptimizationScope,list(projectId,nodeId){
   getProject(db,projectId);
   return db.prepare(`SELECT id,node_id,episode_id,state,error,
    CASE WHEN candidate IS NULL THEN NULL WHEN json_extract(frozen,'$.input.stage')='episodes' THEN

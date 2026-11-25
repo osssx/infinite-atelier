@@ -485,7 +485,7 @@ export function DramaEpisodeFields({episodes,expanded,disabled,control,onChange,
     <span className="rounded-lg border px-2 py-1 text-[11px] tabular-nums"
      style={cardStyle}>{active.events.length} 条事件 · {active.sequences?.length??0} 场</span>
    </header>}
-   <div className={expanded?"grid min-w-0 gap-3 md:grid-cols-[minmax(0,1fr)_190px]":"grid gap-3"}>
+   <div data-episode-title-duration-row="" className={expanded||candidateMode?"grid min-w-0 gap-3 md:grid-cols-[minmax(0,1fr)_190px]":"grid gap-3"}>
     <EpisodeReadEditField key={active.id+":title"} id="title" label="集标题" value={active.title}
      disabled={scopedCas?scopedLocked:disabled} theme={theme} onConfirm={title=>edit({title})}/>
     <EpisodeReadEditField key={active.id+":duration"} id="duration" label="目标时长（秒）"
@@ -498,7 +498,7 @@ export function DramaEpisodeFields({episodes,expanded,disabled,control,onChange,
      value={active.synopsis} disabled={scopedCas?scopedLocked:disabled} theme={theme} multiline rows={expanded?5:3}
      count={value=>value.length+" 字"} onConfirm={synopsis=>edit({synopsis})}/>
     <EpisodeReadEditField key={active.id+":events"} id="events" label="剧情事件（每行一条）"
-     value={active.events.join("\n")} disabled={scopedLocked} theme={theme} multiline rows={expanded?9:4}
+     value={active.events.join("\n")} disabled={scopedLocked} theme={theme} multiline rows={expanded||candidateMode?9:4}
      count={value=>value.split("\n").filter(line=>line.trim()).length+" 条"}
      onConfirm={text=>{
       if(candidateMode)return edit({events:text.split("\n")});

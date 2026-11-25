@@ -378,6 +378,21 @@ describe("P2 episode candidate workspace",()=>{
   expect(adopt).toHaveBeenCalledWith(expect.stringContaining("/runs/run/adopt"),undefined,1,{reviewToken:"review-1"});
   expect(editor.querySelector<HTMLButtonElement>('[aria-label="编辑剧情梗概"]')?.disabled).toBe(true);
  });
+ it("aligns candidate title and duration with the full episode editor and enlarges the event input",async()=>{
+  const {details,change}=await mount();
+  const editor=details.querySelector("[data-episode-candidate-editor]")!;
+  const row=editor.querySelector("[data-episode-title-duration-row]")!;
+  expect(row.classList.contains("md:grid-cols-[minmax(0,1fr)_190px]")).toBe(true);
+  expect(row.querySelector('[data-episode-editable-field="title"]')).toBeTruthy();
+  expect(row.querySelector('[data-episode-editable-field="duration"]')).toBeTruthy();
+  await click(editor.querySelector('[aria-label="编辑剧情事件（每行一条）"]'));
+  const input=editor.querySelector<HTMLTextAreaElement>('textarea[aria-label="剧情事件"]')!;
+  expect(input.getAttribute("rows")).toBe("9");
+  expect(input.classList.contains("resize-y")).toBe(true);
+  expect(input.parentElement?.querySelector('[aria-label="AI 优化"]')).toBeTruthy();
+  await click(editor.querySelector('[data-drama-action="cancel"]'));
+  expect(change).not.toHaveBeenCalled();
+ });
  it("cancels a field and uses the workspace guard to save or discard before navigation",async()=>{
   const {workspace,details,change}=await mount();
   const editor=details.querySelector("[data-episode-candidate-editor]")!;

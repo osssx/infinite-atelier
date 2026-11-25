@@ -85,6 +85,10 @@ def run():
                 old_confirmed=original_meta["dramaConfirmed"]
                 run_id=page.js("document.querySelector("+json.dumps(candidate)+").dataset.episodeCandidateEditor")
                 check("candidate two episodes","document.querySelector("+json.dumps(candidate)+")?.textContent.includes('当前候选 2 集')")
+                check("candidate title duration share row","""(()=>{const r=document.querySelector(%s),a=r?.querySelector('[data-episode-editable-field="title"]')?.getBoundingClientRect(),b=r?.querySelector('[data-episode-editable-field="duration"]')?.getBoundingClientRect();return a&&b&&Math.abs(a.top-b.top)<1&&a.right<=b.left&&Math.abs(b.width-190)<1})()"""%json.dumps(candidate))
+                click_selector("edit candidate events",candidate+' button[aria-label="编辑剧情事件（每行一条）"]')
+                check("candidate event editor nine rows","""(()=>{const e=document.querySelector(%s);return e?.rows===9&&e.getBoundingClientRect().height>=180&&getComputedStyle(e).resize==='vertical'})()"""%json.dumps(candidate+' textarea[aria-label="剧情事件"]',ensure_ascii=False))
+                click_selector("cancel candidate events",candidate+' [data-episode-editable-field="events"] [data-drama-action="cancel"]')
                 content_top=page.js("document.querySelector("+json.dumps(portal+" [data-drama-workspace-content]")+").getBoundingClientRect().top")
                 click_selector("edit candidate synopsis",candidate+' button[aria-label="编辑剧情梗概"]')
                 type_value("type local candidate synopsis",candidate+' textarea[aria-label="剧情梗概"]',"浏览器人工修订梗概")

@@ -18,6 +18,13 @@ export const useDramaFeedback=()=>useContext(DramaFeedbackContext);
 const errors:Record<string,string>={
  drama_candidate_invalid:"候选内容未通过结构或引用校验，请检查上游内容后重新生成。",
  drama_candidate_conflict:"草案或上游内容已变化，请刷新候选后重新审核。",
+ drama_candidate_revision_conflict:"候选已在其他位置更新，请取消当前编辑并重新加载候选。",
+ drama_candidate_revision_required:"候选版本已变化，请重新加载后采用。",
+ drama_candidate_edit_invalid:"候选字段格式不正确，请检查内容。",
+ drama_candidate_last_episode:"最后一集不能单独移除，请删除整条生成记录。",
+ drama_candidate_not_discardable:"当前生成记录暂不可删除，请等待任务结束。",
+ drama_candidate_not_ready:"候选当前不可编辑或采用，请刷新状态。",
+ drama_episode_candidate_not_found:"该剧集候选已不存在，请重新加载。",
  shot_character_invalid:"镜头引用的角色或造型已失效，请检查资产引用。",
  shot_scene_invalid:"镜头引用的场景已失效，请检查资产引用。",
  project_revision_conflict:"项目内容已更新，请重新加载后保存。",

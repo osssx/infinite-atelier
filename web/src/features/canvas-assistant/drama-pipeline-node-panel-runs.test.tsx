@@ -342,7 +342,8 @@ it.each(["light","dark"] as const)("keeps long expanded run cards in a single th
   expect(card.classList.contains("shrink-0")).toBe(true);
   expect(card.classList.contains("overflow-hidden")).toBe(false);
   await act(async()=>{card.open=true;card.dispatchEvent(new Event("toggle"));});
-  expect(card.querySelectorAll("article p")).toHaveLength(32);
+  expect(card.querySelectorAll('[data-episode-readonly="events"] li')).toHaveLength(30);
+  expect(card.querySelector('[data-episode-readonly="synopsis"]')?.textContent).toContain("长剧情");
  }
  const last=cards[2];
  expect(last.textContent).toContain("结尾 2");
@@ -350,7 +351,7 @@ it.each(["light","dark"] as const)("keeps long expanded run cards in a single th
  expect(action.style.background).toBe(theme.node.activeStroke);
  expect(adopt).not.toHaveBeenCalled();
  await act(async()=>action.click());
- expect(adopt).toHaveBeenCalledWith(expect.stringContaining("/long-2/adopt"));
+ expect(adopt).toHaveBeenCalledWith(expect.stringContaining("/long-2/adopt"),undefined,0);
 });
 
 it.each(["dark","light"] as const)("matches episode planning footer button sizing and theme in %s mode",async appearance=>{

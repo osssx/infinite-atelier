@@ -35,6 +35,10 @@ def run():
         passed.append(name);print("FEEDBACK_BROWSER_ASSERT",name,flush=True);return value
     def click(label,scope):
         check("click "+label,"(()=>{const b=[...(document.querySelector(%s)?.querySelectorAll('button')||[])].find(b=>b.textContent.trim()===%s&&!b.disabled&&b.getClientRects().length);if(!b)return false;b.click();return true})()"%(json.dumps(scope),json.dumps(label,ensure_ascii=False)))
+    def click_selector(name,selector):
+        check(name,"(()=>{const b=document.querySelector(%s);if(!b||b.disabled||!b.getClientRects().length)return false;b.click();return true})()"%json.dumps(selector,ensure_ascii=False))
+    def type_value(name,selector,value):
+        check(name,"(()=>{const e=document.querySelector(%s);if(!e||e.disabled)return false;Object.getOwnPropertyDescriptor(e.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype,'value').set.call(e,%s);e.dispatchEvent(new Event('input',{bubbles:true}));return true})()"%(json.dumps(selector,ensure_ascii=False),json.dumps(value,ensure_ascii=False)))
     def close(portal):
         check("close workspace","(()=>{const b=document.querySelector('.ant-modal-close');if(!b||b.disabled)return false;b.click();return true})()")
         check("workspace and feedback unmounted","!document.querySelector("+json.dumps(portal)+")&&!document.querySelector('[data-drama-feedback-toasts],[data-drama-feedback-errors],[data-drama-task-status]')")
@@ -62,6 +66,8 @@ def run():
             check("no inherited feedback "+node,"!document.querySelector('[data-drama-feedback-toasts],[data-drama-feedback-errors],[data-drama-task-status]')")
             if node=="board":
                 check("select second episode","(()=>{const s=document.querySelector("+json.dumps(portal+' select[aria-label="选择分镜剧集"]',ensure_ascii=False)+");if(!s||s.disabled||!Array.from(s.options).some(o=>o.value==='ep-two'))return false;Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set.call(s,'ep-two');s.dispatchEvent(new Event('change',{bubbles:true}));return true})()")
+            if node=="episodes":
+                check("select complete episode plan","(()=>{const s=document.querySelector("+json.dumps(portal+' select[aria-label="剧集规划生成范围"]',ensure_ascii=False)+");if(!s||s.disabled)return false;Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set.call(s,'');s.dispatchEvent(new Event('change',{bubbles:true}));return true})()")
             click("生成"+label+"候选",portal)
             check("running task "+node,"!!document.querySelector('[data-drama-task-status]')")
             check("success toast themed "+node,"""(()=>{const r=document.querySelector(%s),t=r?.querySelector('[data-drama-feedback="success"]'),layer=r?.querySelector('[data-drama-feedback-toasts]');if(!t||!layer)return false;const a=r.getBoundingClientRect(),b=t.getBoundingClientRect();return b.width>0&&b.right<=a.right&&b.left>=a.left&&b.top>=a.top&&b.bottom<=a.bottom&&getComputedStyle(layer).position==='absolute'&&getComputedStyle(t).backgroundColor===getComputedStyle(r.querySelector('[data-drama-workspace-content]')).backgroundColor})()"""%json.dumps(portal),30)
@@ -70,6 +76,49 @@ def run():
                 check("asset candidate visible","document.querySelector("+json.dumps(portal+" [data-asset-candidate-review]")+")?.textContent.includes('验收道具')")
             else:
                 check("newest run automatically expanded "+node,"""(()=>{const r=document.querySelector(%s),d=r?.querySelector('[data-drama-run-scroll-region] > details[open]');return d?.querySelector('summary')?.textContent.includes('待采用')&&d.textContent.includes(%s)})()"""%(json.dumps(portal),json.dumps("验收候选" if node=="episodes" else "浏览器实际触发",ensure_ascii=False)))
+            if node=="episodes":
+                candidate=portal+" [data-episode-candidate-editor]"
+                pid=fixture["projectId"]
+                before=p1.graph(page,pid)["data"]
+                original_meta=p1.find_node(before,"episodes")["metadata"]
+                old_draft=json.loads(original_meta["dramaDraft"])["episodes"]
+                old_confirmed=original_meta["dramaConfirmed"]
+                run_id=page.js("document.querySelector("+json.dumps(candidate)+").dataset.episodeCandidateEditor")
+                check("candidate two episodes","document.querySelector("+json.dumps(candidate)+")?.textContent.includes('当前候选 2 集')")
+                click_selector("edit candidate synopsis",candidate+' button[aria-label="编辑剧情梗概"]')
+                type_value("type local candidate synopsis",candidate+' textarea[aria-label="剧情梗概"]',"浏览器人工修订梗概")
+                check("candidate navigation locked during editing","""(()=>{const r=document.querySelector(%s),d=r?.closest('details');return [...r.querySelectorAll('[aria-label^="选择候选第"]')].every(b=>b.disabled)&&[...d.querySelectorAll('button')].find(b=>b.textContent.trim()==='采用到草案')?.disabled})()"""%json.dumps(candidate))
+                click_selector("save candidate synopsis",candidate+' button[aria-label="保存候选剧情梗概"]')
+                check("candidate saved and modified","document.querySelector("+json.dumps(candidate)+")?.textContent.includes('浏览器人工修订梗概')&&document.querySelector("+json.dumps(candidate)+")?.textContent.includes('已手动修改')&&!document.querySelector('[data-drama-task-status]')")
+                click_selector("select second candidate",candidate+' button[aria-label^="选择候选第 2 集"]')
+                click("删除本集",candidate)
+                click("确认删除候选",candidate)
+                check("candidate now one episode","""(()=>{const r=document.querySelector(%s);return r?.textContent.includes('当前候选 1 集')&&r.querySelector('button[aria-label^="删除候选剧集"]')?.disabled&&!document.querySelector('[data-drama-task-status]')})()"""%json.dumps(candidate))
+                after=p1.graph(page,pid)["data"]
+                assert after["revision"]==before["revision"],("candidate altered graph revision",before["revision"],after["revision"])
+                assert p1.find_node(after,"episodes")["metadata"]["dramaDraft"]==original_meta["dramaDraft"]
+                assert p1.find_node(after,"episodes")["metadata"]["dramaConfirmed"]==old_confirmed
+                passed.append("candidate only writes")
+                close(portal)
+                click("打开完整编辑器 ↗",card)
+                click("生成候选",portal)
+                click_selector("reopen persisted episode candidate",portal+" [data-drama-run-scroll-region] > details > summary")
+                check("saved candidate restored","document.querySelector("+json.dumps(candidate)+")?.textContent.includes('浏览器人工修订梗概')&&document.querySelector("+json.dumps(candidate)+")?.textContent.includes('当前候选 1 集')")
+                click("采用到草案",portal)
+                check("adopted persisted candidate","document.querySelector("+json.dumps(portal+" [data-drama-run-scroll-region] > details > summary")+")?.textContent.includes('已采用')&&!document.querySelector('[data-drama-task-status]')")
+                adopted=p1.graph(page,pid)["data"]
+                new_meta=p1.find_node(adopted,"episodes")["metadata"]
+                adopted_draft=json.loads(new_meta["dramaDraft"])["episodes"]
+                assert adopted_draft[0]["synopsis"]=="浏览器人工修订梗概" and adopted_draft[1]==old_draft[1]
+                assert new_meta["dramaConfirmed"]==old_confirmed
+                passed.append("adoption preserved excluded draft episode and confirmation")
+                click("剧集编辑",portal)
+                click("生成剧集候选",portal)
+                check("second candidate ready","(()=>{const r=document.querySelector(%s),d=r?.querySelector('[data-drama-run-scroll-region] > details[open]');return d?.querySelector('[data-episode-candidate-editor]')?.dataset.episodeCandidateEditor!==%s&&d?.querySelector('summary')?.textContent.includes('待采用')&&!document.querySelector('[data-drama-task-status]')})()"%(json.dumps(portal),json.dumps(run_id)))
+                active_candidate=portal+" [data-drama-run-scroll-region] > details[open] [data-episode-candidate-editor]"
+                click("删除生成记录",active_candidate)
+                click("确认删除候选",active_candidate)
+                check("discarded run removed","document.querySelectorAll("+json.dumps(portal+" [data-drama-run-scroll-region] > details")+").length===1&&!document.querySelector('[data-drama-task-status]')")
             close(portal)
         before=len([r for r in page.network_requests if "/drama-pipeline/runs" in r.get("path","")])
         time.sleep(3.4)

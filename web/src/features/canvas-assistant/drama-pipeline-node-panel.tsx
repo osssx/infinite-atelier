@@ -1,4 +1,4 @@
-import { lazy, Suspense, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { Button, Input, Modal, Popover, Tag } from "antd";
 import { ChevronRight, History, Maximize2, RefreshCw, Sparkles, ShieldAlert, SlidersHorizontal } from "lucide-react";
 import type { CanvasNodeData } from "@/types/canvas";
@@ -27,13 +27,14 @@ const DramaVideoConfigFields = lazy(() => import("./drama-video-config-fields").
 const DramaBatchConfigPanel = lazy(() => import("./drama-batch-config-panel").then(m=>({default:m.DramaBatchConfigPanel})));
 import { DramaStoryboardFields } from "./drama-storyboard-fields";
 import { DramaEpisodeFields } from "./drama-episode-fields";
+import {DramaEpisodeCandidates} from "./drama-episode-candidates";
+import {candidateRevision,hasEpisodeDetails,mergeCandidateRuns,type DramaRun,type EpisodeCandidateChanges} from "./drama-episode-candidate-state";
 import { readEpisodeDraft } from "../../../server/canvas-text-content.mjs";
 import type {DramaBatchCreateResult} from "./drama-video-config";
 import {useDramaFeedback,describeDramaFeedbackError,dramaRunStatus,DramaInlineFeedback,type DramaFeedbackLevel} from "./drama-feedback";
 import { dramaInlineNodeClass, dramaNodeControl, dramaNodePrimary, DramaNodeStatus } from "./drama-node-style";
 
 const { TextArea } = Input;
-type DramaRun = {id:string; episodeId:string; status:string; error?:string; candidate?:{episodeCount?:number;episodes?:{id:string;title:string;synopsis:string;events:string[];ending:string}[];shots?:{id:string;description:string}[];completedSequenceIds?:string[];adoptedShotIds?:string[];shotCount?:number}};
 type DramaRunChange = {id:string;kind:"added"|"replaced"|"deleted"|"reordered"|"unchanged";
     changed:boolean;reordered:boolean;conflict:boolean;adopted:boolean;
     before?:{order:number;description:string;sequenceId?:string|null}|null;
@@ -96,7 +97,7 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
     onOpenVersions?: () => void;
     onConfirmVersion?: (draft: string) => Promise<void>;
     onBeforeDramaRun?: () => Promise<unknown>;
-    onAdoptDramaRun?: (path:string,shotIds?:string[]) => Promise<void>;
+    onAdoptDramaRun?: (path:string,shotIds?:string[],expectedRevision?:number) => Promise<void>;
     onMigrateDramaSequences?: (path:string,command:Record<string,unknown>) => Promise<void>;
     onAdoptDramaAssetCandidate?: (path:string,command:Record<string,unknown>) => Promise<(CanvasBackendProject&{mapping:AssetAdoptionMapping})|void>;
     versionBusy?: boolean;    /** Full editor only: host outside CanvasNode, no nested Modal. */
@@ -150,6 +151,24 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
     const navigateStoryboardEditor=useContext(DramaStoryboardNavigationContext);
     const scopeFocus=useContext(DramaStoryboardScopeContext);
     const [runs,setRuns] = useState<DramaRun[]>([]);
+    const [candidateEdit,setCandidateEdit]=useState<{runId:string;key:string}|null>(null);
+    const candidateEditRef=useRef<typeof candidateEdit>(null);
+    const candidateReadEpoch=useRef(0);
+    const candidateFlights=useRef(new Set<string>());
+    const [candidateConfirmations,setCandidateConfirmations]=useState<string[]>([]);
+    const changeCandidateConfirming=useCallback((runId:string,confirming:boolean)=>{
+        setCandidateConfirmations(current=>confirming===current.includes(runId)?current:confirming?[...current,runId]:current.filter(id=>id!==runId));
+    },[]);
+    const changeCandidateEditing=useCallback((runId:string,key:string|null)=>{
+        if(!key&&candidateEditRef.current?.runId!==runId)return;
+        const next=key?{runId,key}:null;
+        candidateEditRef.current=next;candidateReadEpoch.current++;setCandidateEdit(next);
+    },[]);
+    // A list/detail response initiated before a mutation cannot revive an
+    // excluded candidate or overwrite the newly saved version.
+    const candidateMutationRef=useRef(false);
+    const [candidateMutationBusy,setCandidateMutationBusy]=useState(false);
+
     const [expandedRuns,setExpandedRuns] = useState<Record<string,boolean>>({});
     const [selectedCandidates,setSelectedCandidates] = useState<Record<string,string[]>>({});
     const [runPreviews,setRunPreviews] = useState<Record<string,DramaRunPreview>>({});
@@ -173,7 +192,41 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
             .some(key=>upstreamImpact[key].length>0)) ||
         (upstreamImpact?.pending && Object.values(upstreamImpact.pending).some(ids=>ids?.length)));
     const runPath = `/api/v1/projects/${encodeURIComponent(projectId ?? "")}/drama-pipeline/runs`;
+    const changeCandidate=async(run:DramaRun,method:"PATCH"|"DELETE",entryId?:string,changes?:EpisodeCandidateChanges)=>{
+        if(candidateMutationRef.current||runActionRef.current)throw Error("候选操作正在进行");
+        const task=feedbackApi?.beginTask(method==="PATCH"?"正在保存剧集候选":"正在删除候选",undefined,true);
+        if(feedbackApi&&!task)throw Error("请等待当前操作完成");
+        candidateMutationRef.current=true;candidateReadEpoch.current++;setCandidateMutationBusy(true);
+        const base=`${runPath}/${encodeURIComponent(run.id)}${entryId?"/episodes/"+encodeURIComponent(entryId):""}`;
+        const expectedRevision=candidateRevision(run);
+        try{
+            const updated=await canvasApi<DramaRun>(method==="DELETE"?base+"?expectedRevision="+expectedRevision:base,method,
+                method==="PATCH"?{expectedRevision,changes}:undefined);
+            candidateReadEpoch.current++;
+            setRuns(current=>updated.status==="discarded"?current.filter(item=>item.id!==run.id):current.map(item=>item.id===run.id?updated:item));
+            if(updated.status==="discarded")setExpandedRuns(current=>{const next={...current};delete next[run.id];return next;});
+            report("candidate-edit:"+run.id,"success",method==="PATCH"?"候选已保存，正式草案未改变":entryId?"已移除本集候选":"已删除生成记录");
+        }catch(error){reportError("candidate-edit:"+run.id,error,"候选操作失败，请检查后重试");throw error;}
+        finally{candidateReadEpoch.current++;candidateMutationRef.current=false;setCandidateMutationBusy(false);task?.end();}
+    };
+    const readEpisodeRunDetails=(run:DramaRun,force=false)=>{
+        if(candidateMutationRef.current||candidateEditRef.current?.runId===run.id||!force&&hasEpisodeDetails(run))return;
+        const epoch=candidateReadEpoch.current,key=run.id+":"+candidateRevision(run)+":"+epoch;
+        if(candidateFlights.current.has(key))return;
+        candidateFlights.current.add(key);
+        void canvasApi<DramaRun>(`${runPath}/${encodeURIComponent(run.id)}`,"GET")
+            .then(updated=>{
+                if(epoch!==candidateReadEpoch.current||candidateMutationRef.current)return;
+                if(updated.id!==run.id)return;
+                setRuns(current=>current.flatMap(item=>item.id!==run.id?[item]:
+                    updated.status==="discarded"?[]:candidateRevision(updated)<candidateRevision(item)||item.status==="adopted"&&updated.status!=="adopted"?[item]:[updated]));
+                feedbackApi?.clear("run-detail:"+run.id);
+            }).catch(error=>{if(epoch===candidateReadEpoch.current)reportError("run-detail:"+run.id,error,"无法读取候选详情");})
+            .finally(()=>candidateFlights.current.delete(key));
+    };
+
     const loadRunDetails=(run:DramaRun)=>{
+        if(episodePlanning){if(run.status==="ready"||run.status==="adopted")readEpisodeRunDetails(run);return;}
         if(!run.candidate?.shots?.length&&!run.candidate?.episodes?.length)void canvasApi<DramaRun>(`${runPath}/${encodeURIComponent(run.id)}`,"GET")
             .then(updated=>{setRuns(current=>current.map(item=>item.id===run.id?updated:item));feedbackApi?.clear("run-detail:"+run.id);})
             .catch(error=>reportError("run-detail:"+run.id,error,"无法读取候选详情"));
@@ -195,19 +248,25 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
         if ((!storyboard&&!episodePlanning) || !projectId || (workspaceMode && workspaceTab!=="runs" && !generating && !runs.some(run=>run.status==="running"))) return;
         let active = true;
         let timer: ReturnType<typeof setTimeout> | undefined;
-        const refresh = () => canvasApi<DramaRun[]>(`${runPath}?nodeId=${encodeURIComponent(node.id)}`,"GET")
-            .then(result => { if(active) {feedbackApi?.clear("run-list");setRuns(current=>result.map(item=>{
-                const loaded=current.find(old=>old.id===item.id);
-                if(loaded?.candidate?.episodes?.length&&item.candidate?.episodeCount===loaded.candidate.episodes.length)
-                    return {...item,candidate:{...item.candidate,episodes:loaded.candidate.episodes}};
-                return loaded?.candidate?.shots?.length&&item.candidate?.shotCount===loaded.candidate.shots?.length
-                    ? {...item,candidate:{...item.candidate,shots:loaded.candidate.shots}}:item;
-            }));} })
+        const refresh = () => {
+            const epoch=candidateReadEpoch.current;
+            if(episodePlanning&&candidateMutationRef.current){timer=setTimeout(refresh,3000);return;}
+            void canvasApi<DramaRun[]>(`${runPath}?nodeId=${encodeURIComponent(node.id)}`,"GET")
+            .then(result => { if(active&&(!episodePlanning||epoch===candidateReadEpoch.current&&!candidateMutationRef.current)) {
+                feedbackApi?.clear("run-list");setRuns(current=>mergeCandidateRuns(current,result,candidateEditRef.current?.runId));
+            } })
             .catch(error => { if(active) reportError("run-list",error,"无法读取候选运行记录"); })
             .finally(() => { if(active) timer=setTimeout(refresh,3000); });
+        };
         void refresh();
         return () => { active = false; clearTimeout(timer); };
     }, [node.id, projectId, runPath, storyboard,episodePlanning,workspaceMode,workspaceTab,generating,runs.some(run=>run.status==="running")]);
+    const missingEpisodeDetails=episodePlanning?runs.filter(run=>expandedRuns[run.id]&&["ready","adopted"].includes(run.status)&&!hasEpisodeDetails(run))
+        .map(run=>run.id+":"+candidateRevision(run)+":"+run.status).join("|"):"";
+    useEffect(()=>{
+        if(!episodePlanning||workspaceMode&&workspaceTab!=="runs"||candidateEdit||candidateMutationBusy)return;
+        for(const run of runs)if(expandedRuns[run.id]&&["ready","adopted"].includes(run.status)&&!hasEpisodeDetails(run))readEpisodeRunDetails(run);
+    },[episodePlanning,workspaceMode,workspaceTab,missingEpisodeDetails,candidateEdit,candidateMutationBusy]);
     const versioned = assetPlanning || episodePlanning || storyboard;
     const [dependencyLoading,setDependencyLoading]=useState(false);
     const [dependencyError,setDependencyError]=useState("");
@@ -966,10 +1025,11 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
             open={Boolean(expandedRuns[run.id])} onToggle={event=>{
             const open=event.currentTarget.open;
             if(Boolean(expandedRuns[run.id])===open)return;
+            if(episodePlanning&&(candidateEditRef.current||candidateMutationRef.current)){event.currentTarget.open=Boolean(expandedRuns[run.id]);return;}
             setExpandedRuns(current=>({...current,[run.id]:open}));
             if(open)loadRunDetails(run);
         }}>
-            <summary className="cursor-pointer list-none rounded-xl px-3 py-2.5 transition-colors hover:bg-black/5 dark:hover:bg-white/5 focus-visible:outline focus-visible:outline-1" style={{outlineColor:theme.node.activeStroke}}>
+            <summary onClick={event=>{if(episodePlanning&&(candidateEditRef.current||candidateMutationRef.current))event.preventDefault();}} className="cursor-pointer list-none rounded-xl px-3 py-2.5 transition-colors hover:bg-black/5 dark:hover:bg-white/5 focus-visible:outline focus-visible:outline-1" style={{outlineColor:theme.node.activeStroke}}>
                 <span className="flex w-full min-w-0 items-center gap-2" data-drama-run-summary-content>
                     <span className="min-w-0 flex-1 truncate text-xs font-semibold">
                       <ChevronRight size={14} aria-hidden="true" className="mr-1.5 inline-block align-text-bottom transition-transform group-open:rotate-90" style={{color:theme.node.muted}}/>
@@ -977,7 +1037,7 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
                     </span>
                     <span className="shrink-0 whitespace-nowrap rounded-md border px-2 py-1 text-[11px] font-medium"
                         style={{borderColor:theme.node.stroke,background:theme.toolbar.activeBg,color:theme.node.text}}>
-                        {dramaRunStatus(run.status)}
+                        {dramaRunStatus(run.status)}{episodePlanning&&run.status==="ready"&&candidateRevision(run)>0?" · 已修改":""}
                     </span>
                 </span>
             </summary>
@@ -985,7 +1045,7 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
             {run.error && <DramaInlineFeedback theme={theme} level="error" error={run.error}/>}
             {!!run.candidate?.completedSequenceIds?.length && <p>已保存 {run.candidate.completedSequenceIds.length} 个场次，重试将继续未完成场次。</p>}
             {(run.status==="running"||["failed","interrupted","cancelled"].includes(run.status)) &&
-                <Button size="small" style={control} disabled={run.status==="running"?cancelBusyIds.includes(run.id):runActionBusy||Boolean(feedback?.task)} onClick={()=>{
+                <Button size="small" style={control} disabled={run.status==="running"?cancelBusyIds.includes(run.id):runActionBusy||Boolean(feedback?.task)||Boolean(candidateEdit)||candidateMutationBusy} onClick={()=>{
                     const action=run.status==="running"?"cancel":"retry";
                     const execute=async()=>{
                     try{
@@ -1001,10 +1061,13 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
                     cancelFlights.current.add(run.id);setCancelBusyIds([...cancelFlights.current]);
                     void execute().finally(()=>{cancelFlights.current.delete(run.id);setCancelBusyIds([...cancelFlights.current]);});
                 }}>{run.status==="running"?"取消生成":"使用原输入重试"}</Button>}
-            {run.candidate?.episodes?.map(episode=><article key={episode.id} className="min-w-0 space-y-2 rounded-lg border p-3 text-xs leading-relaxed" style={{borderColor:theme.node.stroke,background:theme.node.fill}}>
-                <strong className="block text-sm">{episode.title}</strong><p className="whitespace-pre-wrap">{episode.synopsis}</p>
-                {episode.events.map((event,index)=><p key={index}>{index+1}. {event}</p>)}<p>{episode.ending}</p>
-            </article>)}
+            {episodePlanning&&expandedRuns[run.id]&&<DramaEpisodeCandidates run={run} theme={theme}
+                disabled={!workspaceMode||runActionBusy||candidateMutationBusy||Boolean(feedback?.task)||Boolean(candidateEdit&&candidateEdit.runId!==run.id)}
+                activeKey={candidateEdit?.runId===run.id?candidateEdit.key:null} onEditingChange={changeCandidateEditing}
+                onPendingChange={onPendingChange} onPatch={(target,id,changes)=>changeCandidate(target,"PATCH",id,changes)}
+                onRemove={(target,id)=>changeCandidate(target,"DELETE",id)}
+                onDiscard={target=>changeCandidate(target,"DELETE")} onReload={()=>readEpisodeRunDetails(run,true)} onConfirmingChange={changeCandidateConfirming}/>}
+
              {storyboard&&runPreviews[run.id]&&<div className="grid gap-3 rounded-lg border p-3" style={{borderColor:theme.node.stroke,background:theme.node.fill}} aria-label="分镜候选差异预览">
                  <p>差异：新增 {runPreviews[run.id].summary.added} · 替换 {runPreviews[run.id].summary.replaced}
                      · 删除 {runPreviews[run.id].summary.deleted} · 重排 {runPreviews[run.id].summary.reordered}
@@ -1067,11 +1130,12 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
                      setRunPreviews(current=>({...current,[run.id]:preview}));feedbackApi?.clear("run-preview:"+run.id);
                  }catch(error){reportError("run-preview:"+run.id,error,"差异已合入，刷新结果失败，请重新加载预览");}
              })}>采用所选差异</Button>}
-             {run.status==="ready" && <Button size="small" style={dramaNodePrimary(theme)} disabled={runActionBusy||Boolean(feedback?.task)||!onAdoptDramaRun||storyboard&&(!runPreviews[run.id]||
+             {run.status==="ready" && <Button size="small" style={dramaNodePrimary(theme)} disabled={runActionBusy||Boolean(feedback?.task)||!onAdoptDramaRun||episodePlanning&&(Boolean(candidateEdit)||candidateMutationBusy||candidateConfirmations.includes(run.id)||!hasEpisodeDetails(run))||storyboard&&(!runPreviews[run.id]||
                  runPreviews[run.id].fullAdoptBlocked)} onClick={()=>void runAction("正在合入候选草案",async()=>{
                  try{
                      if(!onAdoptDramaRun)throw Error("候选采用服务未连接");
-                     await onAdoptDramaRun(`${runPath}/${encodeURIComponent(run.id)}/adopt`);
+                     if(episodePlanning){candidateReadEpoch.current++;await onAdoptDramaRun(`${runPath}/${encodeURIComponent(run.id)}/adopt`,undefined,candidateRevision(run));candidateReadEpoch.current++;}
+                     else await onAdoptDramaRun(`${runPath}/${encodeURIComponent(run.id)}/adopt`);
                      setRuns(current=>current.map(item=>item.id===run.id?{...item,status:"adopted"}:item));
                      report("adopt-run:"+run.id,"success","已合入候选草案，请检查后确认版本");
                  }catch(error){reportError("adopt-run:"+run.id,error,"候选采用失败，请刷新差异预览");return;}

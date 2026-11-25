@@ -138,7 +138,7 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
   editor:storyMode?"编写故事、选区改写、AI 续写及全文润色":assetMode?"编辑角色、场景、道具、造型设定及参考图":episodeMode?"按集编辑剧情、事件、场次及来源引用":"编辑镜头内容、资产引用与单镜头视频配置",
   settings:"故事影片比例、风格、美术指导与原文确认",
   video:"批量创建视频配置及组建批量生成镜头组",
-  runs:"按运行状态浏览候选，展开查看内容与采用选项",
+  runs:episodeMode?"浏览、编辑或删除生成候选，审核后采用到草案":"按运行状态浏览候选，展开查看内容与采用选项",
   history:"版本快照与上游影响直接在工作区内查看",
  };
  const subtle={background:theme.node.panel,borderColor:theme.node.stroke,color:theme.node.text};
@@ -240,7 +240,7 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
    </div>
    </ConfigProvider>
   </Modal>
-  <Modal title={<span style={{color:theme.node.text}}>存在未提交的草案修改</span>}
+  <Modal title={<span style={{color:theme.node.text}}>存在未提交的{episodeMode&&tab==="runs"?"候选":"草案"}修改</span>}
    open={pendingAction!==null} closable={!busy}
    closeIcon={<X size={17} style={{color:theme.node.text}}/>}
    onCancel={()=>{if(!busy)setPendingAction(null)}} footer={null} centered
@@ -250,7 +250,7 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
    <div className="space-y-3">
     <div className="flex items-start gap-2.5">
      <ShieldAlert size={19} className="mt-0.5 shrink-0" style={{color:theme.node.muted}}/>
-     <p className="text-sm leading-relaxed">离开当前编辑区会丢失尚未保存的局部修改。请选择保存草案、放弃修改或继续编辑。</p>
+     <p className="text-sm leading-relaxed">离开当前编辑区会丢失尚未保存的局部修改。请选择保存{episodeMode&&tab==="runs"?"候选":"草案"}、放弃修改或继续编辑。</p>
     </div>
     {error&&<p role="alert" className="rounded-lg border p-2 text-xs"
      style={{...subtle,background:theme.toolbar.activeBg}}>{error}</p>}
@@ -260,7 +260,7 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
      <button type="button" disabled={busy} className={action} style={subtle}
       onClick={()=>void decide(false)}>放弃修改</button>
      <button type="button" disabled={busy} className={action} style={primary}
-      onClick={()=>void decide(true)}>{busy?"正在保存…":"保存草案"}</button>
+      onClick={()=>void decide(true)}>{busy?"正在保存…":episodeMode&&tab==="runs"?"保存候选":"保存草案"}</button>
     </div>
    </div>
   </Modal>

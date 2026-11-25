@@ -41,7 +41,7 @@ describe("P3.4b3 workspace lifecycle",()=>{
   const workspace=episode.div.querySelector('[data-creative-workspace-node-id="episodes"]')!;
   const expected=[
    ["剧集编辑","按集编辑剧情、事件、场次及来源引用"],
-   ["生成候选","按运行状态浏览候选，展开查看内容与采用选项"],
+   ["生成候选","浏览、编辑或删除生成候选，审核后采用到草案"],
    ["影响与历史","版本快照与上游影响直接在工作区内查看"],
   ];
   const tabs=[...workspace.querySelectorAll<HTMLButtonElement>('nav[aria-label="创作工作区功能"] button')];

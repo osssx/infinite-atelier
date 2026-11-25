@@ -1,4 +1,4 @@
-import {useEffect,useRef,useState,type CSSProperties} from "react";
+import {useContext,useEffect,useRef,useState,type CSSProperties} from "react";
 import {canvasApi} from "@/features/backend-sync/canvas-api";
 import {GitBranch,Layers3,Plus,Split,Merge,BookText,Trash2,AlertTriangle,Pencil} from "lucide-react";
 import {DramaEditActions as EpisodeEditActions} from "./drama-edit-actions";
@@ -7,6 +7,7 @@ import {canvasThemes} from "@/lib/canvas-theme";
 import {useThemeStore} from "@/stores/use-theme-store";
 import {needsEpisodeEventNormalization,normalizeEpisodeEvents} from "../../../server/drama-episode-links.mjs";
 import {splitEpisodeSequence,mergeEpisodeSequences} from "../../../server/drama-sequence-relations.mjs";
+import {CandidateFieldContext,useCandidateFieldSession,type EpisodeCandidateChanges} from "./drama-episode-candidate-state";
 
 export type DramaEpisode={
  id:string;title:string;synopsis:string;events:string[];
@@ -38,15 +39,16 @@ function EpisodeReadEditField({id,label,value,disabled,theme,onConfirm,multiline
   "--tw-ring-color":theme.node.activeStroke} as CSSProperties;
  const begin=()=>{setError("");setBaseline(value);setDraft(value);setEditing(true);};
  const cancel=()=>{if(saving)return;setError("");setEditing(false);setDraft(value);};
- const confirm=async()=>{
-  if(disabled||saving||stale||!valid)return;
+ const confirm=async(propagate=false)=>{
+  if(disabled||saving||stale||!valid){if(propagate)throw Error("请先核对当前字段，再保存候选");return;}
   setSaving(true);setError("");
   try{
-   if(draft!==value){await onConfirm(draft);updated(label);}
+   if(draft!==value){await onConfirm(draft);if(!fieldSession.candidate)updated(label);}
    setEditing(false);
-  }catch(error){setError(error instanceof Error?error.message:"剧集保存失败，请检查版本后重试");}
+  }catch(error){setError(error instanceof Error?error.message:"剧集保存失败，请检查版本后重试");if(propagate)throw error;}
   finally{setSaving(false);}
  };
+ const fieldSession=useCandidateFieldSession(editing,()=>confirm(true));
  return <section data-episode-editable-field={id} data-episode-field-mode={editing?"editing":"reading"}
   aria-label={label+"区域"} className={editing
    ?"min-w-0 space-y-3 rounded-xl border p-3 sm:p-4"
@@ -57,7 +59,7 @@ function EpisodeReadEditField({id,label,value,disabled,theme,onConfirm,multiline
     <span>{label}</span>
     {!editing&&<button type="button" aria-label={"编辑"+label} title={"编辑"+label}
       className="inline-grid size-7 shrink-0 place-items-center rounded-md border border-transparent hover:opacity-80 focus-visible:outline focus-visible:outline-2"
-      style={{color:theme.node.muted,outlineColor:theme.node.activeStroke}} disabled={disabled}
+      style={{color:theme.node.muted,outlineColor:theme.node.activeStroke}} disabled={disabled||fieldSession.otherEditing}
       onClick={begin}><Pencil size={13} aria-hidden="true"/></button>}
    </div>
    <div className="flex shrink-0 items-center gap-2">
@@ -80,8 +82,8 @@ function EpisodeReadEditField({id,label,value,disabled,theme,onConfirm,multiline
    {stale&&<DramaInlineFeedback theme={theme}>内容已在其他位置更新，请取消并重新编辑。</DramaInlineFeedback>}
    {!valid&&<DramaInlineFeedback theme={theme}>目标时长必须是大于 0 的数字，或留空。</DramaInlineFeedback>}
    {error&&<DramaInlineFeedback theme={theme} level="error" error={error}/>}
-   {saving&&<DramaInlineFeedback theme={theme} level="info" pending>正在保存剧集草案…</DramaInlineFeedback>}
-   <EpisodeEditActions theme={theme} label={label} disabled={disabled||saving||stale||!valid}
+   {saving&&<DramaInlineFeedback theme={theme} level="info" pending>正在保存{fieldSession.candidate?"候选":"剧集草案"}…</DramaInlineFeedback>}
+   <EpisodeEditActions theme={theme} label={label} confirmText={fieldSession.candidate?"保存候选":undefined} disabled={disabled||saving||stale||!valid}
     onCancel={cancel} onConfirm={()=>void confirm()}/>
   </>:
    <div data-episode-readonly={id} aria-label={label+"内容"}
@@ -125,18 +127,19 @@ function SequenceReadEditFields({sequence,index,items,theme,disabled,onConfirm,s
   setEventRefs([...(sequence.eventRefs??[])]);setEditing(true);};
  const cancel=()=>{if(saving)return;setError("");setEditing(false);setTitle(sequence.title);setRefs((sequence.sourceRefs??[]).join("\n"));
   setEventRefs([...(sequence.eventRefs??[])]);};
- const confirm=async()=>{
-  if(stale||disabled||saving)return;
+ const confirm=async(propagate=false)=>{
+  if(stale||disabled||saving){if(propagate)throw Error("请先核对当前场次，再保存候选");return;}
   const sourceRefs=refs.split("\n").map(ref=>ref.trim()).filter(Boolean);
   const next={...sequence,title,sourceRefs,eventRefs};
   setSaving(true);setError("");
   try{
    if(title!==sequence.title||sourceRefs.join("\n")!==(sequence.sourceRefs??[]).join("\n")||
-     eventRefs.join("\n")!==(sequence.eventRefs??[]).join("\n")){await onConfirm(next);updated("场次详情");}
+     eventRefs.join("\n")!==(sequence.eventRefs??[]).join("\n")){await onConfirm(next);if(!fieldSession.candidate)updated("场次详情");}
    setEditing(false);
-  }catch(error){setError(error instanceof Error?error.message:"场次保存失败，请检查版本后重试");}
+  }catch(error){setError(error instanceof Error?error.message:"场次保存失败，请检查版本后重试");if(propagate)throw error;}
   finally{setSaving(false);}
  };
+ const fieldSession=useCandidateFieldSession(editing,()=>confirm(true));
  const control={background:theme.node.panel,color:theme.node.text,borderColor:theme.node.stroke,
   "--tw-ring-color":theme.node.activeStroke} as CSSProperties;
  return <div data-episode-sequence-mode={editing?"editing":"reading"}
@@ -148,7 +151,7 @@ function SequenceReadEditFields({sequence,index,items,theme,disabled,onConfirm,s
     {editing&&<span className="rounded-md px-2 py-0.5 text-[11px] font-semibold"
      style={{background:theme.toolbar.activeBg,color:theme.toolbar.activeText}}>编辑中</span>}
     {!editing&&<button type="button" aria-label={"编辑场次 "+(index+1)+" 详情"} title="编辑场次详情"
-      disabled={disabled} className="inline-grid size-7 shrink-0 place-items-center rounded-md border border-transparent hover:opacity-80 focus-visible:outline focus-visible:outline-2"
+      disabled={disabled||fieldSession.otherEditing} className="inline-grid size-7 shrink-0 place-items-center rounded-md border border-transparent hover:opacity-80 focus-visible:outline focus-visible:outline-2"
       style={{color:theme.node.muted,outlineColor:theme.node.activeStroke}} onClick={begin}>
       <Pencil size={13} aria-hidden="true"/>
      </button>}
@@ -182,8 +185,8 @@ function SequenceReadEditFields({sequence,index,items,theme,disabled,onConfirm,s
     </div>
     {stale&&<DramaInlineFeedback theme={theme}>场次已在其他位置更新，请取消并重新编辑。</DramaInlineFeedback>}
     {error&&<DramaInlineFeedback theme={theme} level="error" error={error}/>}
-    {saving&&<DramaInlineFeedback theme={theme} level="info" pending>正在保存场次草案…</DramaInlineFeedback>}
-    <EpisodeEditActions theme={theme} label={"场次 "+(index+1)+" 详情"}
+    {saving&&<DramaInlineFeedback theme={theme} level="info" pending>正在保存{fieldSession.candidate?"候选场次":"场次草案"}…</DramaInlineFeedback>}
+    <EpisodeEditActions theme={theme} confirmText={fieldSession.candidate?"保存候选":undefined} label={"场次 "+(index+1)+" 详情"}
      disabled={disabled||saving||stale} onCancel={cancel} onConfirm={()=>void confirm()}/>
    </>:
     <div data-episode-sequence-readonly="" className="grid min-w-0 gap-2 rounded-md border-l-2 px-3 py-2.5 text-xs leading-relaxed"
@@ -207,13 +210,14 @@ function SequenceReadEditFields({sequence,index,items,theme,disabled,onConfirm,s
 }
 
 export function DramaEpisodeFields({episodes,expanded,disabled,control,onChange,initialEpisodeId,
- projectId,nodeId,onPatchEpisode,onReloadEpisode,onWaitForDraftSave}:{
+ projectId,nodeId,onPatchEpisode,onReloadEpisode,onWaitForDraftSave,candidateMode=false,onCandidatePatch}:{
  episodes:DramaEpisode[];expanded:boolean;disabled:boolean;control?:CSSProperties;
  onChange:(episodes:DramaEpisode[])=>void;initialEpisodeId?:string;
  projectId?:string;nodeId?:string;
  onPatchEpisode?:(entryId:string,expectedDigest:string,changes:{title?:string;synopsis?:string;ending?:string},sequenceId?:string)=>Promise<void>;
  onReloadEpisode?:()=>Promise<void>;
  onWaitForDraftSave?:()=>Promise<void>;
+ candidateMode?:boolean;onCandidatePatch?:(episodeId:string,changes:EpisodeCandidateChanges)=>Promise<void>;
 }){
  const appearance=useThemeStore(state=>state.theme);
  const theme=canvasThemes[appearance];
@@ -224,6 +228,8 @@ export function DramaEpisodeFields({episodes,expanded,disabled,control,onChange,
  const active=episodes.find(episode=>episode.id===selected)??episodes[0];
  const activeIndex=active?episodes.findIndex(episode=>episode.id===active.id):-1;
  const scopedCas=Boolean(expanded&&projectId&&nodeId&&onPatchEpisode);
+ const candidateSession=useContext(CandidateFieldContext);
+ const candidateFieldOpen=Boolean(candidateSession?.activeKey);
  const [episodeDigest,setEpisodeDigest]=useState<{id:string;digest:string;baseline:string}|null>(null);
  const [casBusy,setCasBusy]=useState(false);
  const [casError,setCasError]=useState("");
@@ -284,6 +290,15 @@ export function DramaEpisodeFields({episodes,expanded,disabled,control,onChange,
  const edit=(patch:Partial<DramaEpisode>):void|Promise<void>=>{
   if(!active||disabled||casBusy)return;
   const keys=Object.keys(patch);
+  if(candidateMode&&onCandidatePatch){
+   // Event text is normalized only by the server; never transmit tentative
+   // client-generated event IDs as authoritative candidate identity.
+   if(Object.hasOwn(patch,"events"))return onCandidatePatch(active.id,{events:patch.events});
+   const changes={...patch} as EpisodeCandidateChanges&{id?:string;eventItems?:DramaEpisode["eventItems"]};
+   delete changes.id;delete changes.eventItems;
+   if(Object.hasOwn(patch,"targetDurationSec"))changes.targetDurationSec=patch.targetDurationSec??null;
+   return onCandidatePatch(active.id,changes);
+  }
   if(scopedCas&&keys.length&&keys.every(key=>["title","synopsis","ending"].includes(key))){
    const changes=Object.fromEntries(keys.filter(key=>patch[key as keyof DramaEpisode]!==active[key as keyof DramaEpisode])
     .map(key=>[key,patch[key as "title"|"synopsis"|"ending"]])) as {title?:string;synopsis?:string;ending?:string};
@@ -297,6 +312,11 @@ export function DramaEpisodeFields({episodes,expanded,disabled,control,onChange,
    setEpisodeDigest(null);
    setCasRefresh(value=>value+1);
   }
+ };
+ const structuralEdit=(patch:Partial<DramaEpisode>)=>{
+  // Field confirmations surface their own errors. Structural actions use the
+  // candidate mutation's persistent feedback instead of an unhandled rejection.
+  void Promise.resolve(edit(patch)).catch(()=>{});
  };
  const editSequence=(original:EpisodeSequence,updated:EpisodeSequence):void|Promise<void>=>{
   if(!active)return;
@@ -312,7 +332,7 @@ export function DramaEpisodeFields({episodes,expanded,disabled,control,onChange,
  // Never write merely because a compact canvas summary is mounted. Wait for
  // an exact server baseline before a structural autosave in scoped mode.
  const needsNormalization=Boolean(active&&needsEpisodeEventNormalization(active));
- const autoNormalize=expanded&&needsNormalization&&(!scopedCas||!!onWaitForDraftSave);
+ const autoNormalize=!candidateMode&&expanded&&needsNormalization&&(!scopedCas||!!onWaitForDraftSave);
  const migrated=useRef(new WeakSet<DramaEpisode>());
  useEffect(()=>{
   if(!autoNormalize||!active||disabled||casBusy||casError||migrated.current.has(active))return;
@@ -426,7 +446,7 @@ export function DramaEpisodeFields({episodes,expanded,disabled,control,onChange,
     {pageError&&<p role="status" className="break-words text-[11px]" style={captionStyle}>
      分页服务不可用，已使用当前草案目录：{pageError}</p>}
    </div>}
-  </aside>:<select aria-label="选择剧集" className={field+" pr-7 font-medium"} style={fieldStyle}
+  </aside>:candidateMode?null:<select aria-label="选择剧集" className={field+" pr-7 font-medium"} style={fieldStyle}
    value={active.id} onChange={event=>{setPendingDelete(null);setRecentlyAdded("");setSelected(event.target.value);}}>
    {episodes.map((episode,index)=><option key={episode.id} value={episode.id}>
     第 {index+1} 集 · {episode.title||"未命名"}
@@ -472,6 +492,7 @@ export function DramaEpisodeFields({episodes,expanded,disabled,control,onChange,
      value={active.events.join("\n")} disabled={scopedLocked} theme={theme} multiline rows={expanded?9:4}
      count={value=>value.split("\n").filter(line=>line.trim()).length+" 条"}
      onConfirm={text=>{
+      if(candidateMode)return edit({events:text.split("\n")});
       const normalized=normalizeEpisodeEvents({...active,events:text.split("\n")},active);
       edit({events:normalized.events,eventItems:normalized.eventItems,sequences:normalized.sequences});
      }}/>
@@ -486,7 +507,7 @@ export function DramaEpisodeFields({episodes,expanded,disabled,control,onChange,
       <h4 className="text-sm font-semibold">场次规划</h4>
       <span className="text-[11px] tabular-nums" style={captionStyle}>{active.sequences?.length??0} 场</span>
      </div>
-     <button type="button" className={smallAction} style={cardStyle} disabled={scopedCas?scopedLocked:disabled}
+     <button type="button" className={smallAction} style={cardStyle} disabled={candidateFieldOpen||(scopedCas?scopedLocked:disabled)}
       onClick={()=>{
         const sequences=active.sequences??[];
         const used=new Set(sequences.map(item=>item.title));
@@ -494,7 +515,7 @@ export function DramaEpisodeFields({episodes,expanded,disabled,control,onChange,
         while(used.has(`新场次 ${next}`))next++;
         const id=`sequence_${crypto.randomUUID()}`;
         setPendingDelete(null);setRecentlyAdded(id);
-        edit({sequences:[...sequences,{id,title:`新场次 ${next}`,sourceRefs:[],eventRefs:[]}]});
+        structuralEdit({sequences:[...sequences,{id,title:`新场次 ${next}`,sourceRefs:[],eventRefs:[]}]});
        }}>
       <Plus size={13} aria-hidden="true"/>添加场次
      </button>
@@ -507,7 +528,7 @@ export function DramaEpisodeFields({episodes,expanded,disabled,control,onChange,
       }
      }}
      className="min-w-0 rounded-lg border" style={cardStyle}>
-     <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-3 py-3">
+     <summary onClick={event=>{if(candidateFieldOpen)event.preventDefault();}} className="flex cursor-pointer list-none items-center justify-between gap-2 px-3 py-3">
       <span className="flex min-w-0 items-center gap-2 text-xs font-medium">
        <GitBranch size={14} className="shrink-0" style={captionStyle} aria-hidden="true"/>
        <span className="truncate">场次 {index+1} · {sequence.title||"未命名"}</span>
@@ -519,19 +540,19 @@ export function DramaEpisodeFields({episodes,expanded,disabled,control,onChange,
      <div className="grid min-w-0 gap-3 border-t p-3 text-xs" style={{borderColor:theme.node.stroke}}>
        <SequenceReadEditFields key={active.id+":"+sequence.id} sequence={sequence}
         index={index} items={active.eventItems??active.events.map(text=>({id:text,text}))}
-        theme={theme} disabled={scopedCas?scopedLocked:disabled} startEditing={recentlyAdded===sequence.id}
+        theme={theme} disabled={scopedCas?scopedLocked:disabled} startEditing={!candidateMode&&recentlyAdded===sequence.id}
         onConfirm={updated=>editSequence(sequence,updated)}/>
        <div className="flex flex-wrap gap-2 border-t pt-3" style={{borderColor:theme.node.stroke}}>
-        <button type="button" className={smallAction} style={cardStyle} disabled={scopedCas?scopedLocked:disabled}
-         onClick={()=>edit({sequences:splitEpisodeSequence(active,sequence.id).sequences})}>
+        <button type="button" className={smallAction} style={cardStyle} disabled={candidateFieldOpen||(scopedCas?scopedLocked:disabled)}
+         onClick={()=>structuralEdit({sequences:splitEpisodeSequence(active,sequence.id).sequences})}>
          <Split size={12} aria-hidden="true"/>拆成两场
         </button>
-        {index>0&&<button type="button" className={smallAction} style={cardStyle} disabled={scopedCas?scopedLocked:disabled} onClick={()=>
-         edit({sequences:mergeEpisodeSequences(active,active.sequences![index-1].id,sequence.id).sequences})}>
+        {index>0&&<button type="button" className={smallAction} style={cardStyle} disabled={candidateFieldOpen||(scopedCas?scopedLocked:disabled)} onClick={()=>
+         structuralEdit({sequences:mergeEpisodeSequences(active,active.sequences![index-1].id,sequence.id).sequences})}>
          <Merge size={12} aria-hidden="true"/>并入上一场
         </button>}
          <button type="button" aria-label={`删除场次 ${index+1}：${sequence.title||"未命名"}`}
-          className={smallAction+" ml-auto"} style={cardStyle} disabled={scopedCas?scopedLocked:disabled}
+          className={smallAction+" ml-auto"} style={cardStyle} disabled={candidateFieldOpen||(scopedCas?scopedLocked:disabled)}
           onClick={()=>setPendingDelete({episodeId:active.id,sequenceId:sequence.id})}>
           <Trash2 size={12} aria-hidden="true"/>删除场次
          </button>
@@ -544,7 +565,7 @@ export function DramaEpisodeFields({episodes,expanded,disabled,control,onChange,
            <div className="min-w-0 space-y-1 text-xs">
             <p className="font-semibold">确定删除“{sequence.title||`场次 ${index+1}`}”？</p>
             <p className="leading-relaxed" style={captionStyle}>
-             将仅从当前剧集草案中移除此场次{(sequence.eventRefs?.length??0)>0?`（包含 ${sequence.eventRefs?.length} 项事件关联）`:""}。
+             将仅从当前{candidateMode?"剧集候选":"剧集草案"}中移除此场次{(sequence.eventRefs?.length??0)>0?`（包含 ${sequence.eventRefs?.length} 项事件关联）`:""}。
              剧情事件及其他场次不会删除；已有分镜与视频配置也不会被自动修改。
              如有镜头引用该场次，需在确认新剧集规划后检查并迁移相关镜头。
             </p>
@@ -553,11 +574,11 @@ export function DramaEpisodeFields({episodes,expanded,disabled,control,onChange,
           <div className="flex flex-wrap justify-end gap-2">
            <button type="button" className={smallAction} style={cardStyle}
             onClick={()=>setPendingDelete(null)}>取消</button>
-           <button type="button" aria-label={`确认删除场次 ${index+1}`} disabled={scopedCas?scopedLocked:disabled}
+           <button type="button" aria-label={`确认删除场次 ${index+1}`} disabled={candidateFieldOpen||(scopedCas?scopedLocked:disabled)}
             className={smallAction+" font-semibold"} style={{background:theme.node.text,color:theme.node.panel,borderColor:theme.node.stroke}}
             onClick={()=>{
              if(active.sequences?.some(item=>item.id===sequence.id)){
-              edit({sequences:active.sequences.filter(item=>item.id!==sequence.id)});
+              structuralEdit({sequences:active.sequences.filter(item=>item.id!==sequence.id)});
              }
              setPendingDelete(null);setRecentlyAdded("");
             }}>确认删除</button>

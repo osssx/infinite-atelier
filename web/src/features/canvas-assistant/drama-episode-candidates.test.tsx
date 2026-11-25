@@ -40,14 +40,25 @@ async function mount({workspaceMode=true,appearance="dark",initialRevision=0,ini
  let remote:DramaRun={id:"run",episodeId:"*",status:"ready",candidate:{revision:initialRevision,episodes}};
  let listOverride:Promise<DramaRun[]>|null=null;
  let conflict=false;
- const change=vi.fn(),adopt=vi.fn(async(_path:string,_shots?:string[],revision?:number)=>{
-  expect(revision).toBe(remote.candidate?.revision);remote={...remote,status:"adopted"};
+ const change=vi.fn(),adopt=vi.fn(async(_path:string,_shots?:string[],revision?:number,review?:{reviewToken:string;episodeIds?:string[]})=>{
+  expect(revision).toBe(remote.candidate?.revision);expect(review?.reviewToken).toBe("review-"+revision);
+  if(conflict)throw Error("drama_episode_review_conflict");
+  const ids=review?.episodeIds??remote.candidate!.episodes!.map(item=>item.id);
+  remote={...remote,status:"adopted",candidate:{...remote.candidate,adoption:{mode:review?.episodeIds?"selected":"all",episodeIds:ids,appliedEpisodeIds:ids}}};
  });
  const summarized=()=>remote.status==="discarded"?[]:[{...remote,candidate:{...remote.candidate,episodeCount:remote.candidate?.episodes?.length,episodes:[]}}];
  vi.mocked(canvasApi).mockImplementation((async(path:string,method="GET",payload?:any,signal?:AbortSignal)=>{
   if((path.endsWith("/optimize")||path.endsWith("/optimize-episode"))&&method==="POST"&&optimize)return optimize(payload,signal);
   if(path.includes("/dependencies?"))return {status:"current",changes:[]};
   if(path.includes("/runs?")){if(listOverride){const pending=listOverride;listOverride=null;return pending;}return summarized();}
+  if(path.endsWith("/runs/run/preview")&&method==="GET"){
+   const items=remote.candidate!.episodes!.map((after,index)=>({id:after.id,kind:"replaced",changed:true,reordered:false,
+    beforeIndex:index,afterIndex:index,before:episodes.find(item=>item.id===after.id),after,fields:["synopsis"],issues:[],blocked:false,selectable:true,
+    impact:{storyboards:1,shots:2,configs:1,missingSceneShots:0,missingEpisodeShots:0}}));
+   return {runId:"run",stage:"episodes",status:"ready",revision:remote.candidate?.revision,reviewToken:"review-"+remote.candidate?.revision,
+    sourceChanged:false,baselineChanged:false,identityConflict:false,globalBlocked:false,fullAdoptBlocked:false,impactUnknown:false,
+    summary:{replaced:items.length},items};
+  }
   if(path.endsWith("/runs/run")&&method==="GET")return remote;
   if(method==="PATCH"&&path.includes("/episodes/")){
    if(conflict||payload.expectedRevision!==remote.candidate?.revision)throw Error("drama_candidate_revision_conflict");
@@ -307,6 +318,41 @@ describe("P4 multi-round and whole episode optimization",()=>{
   expect(getRemote().candidate?.revision).toBe(0);
  });
 });
+describe("P5 episode adoption review",()=>{
+ it("requires explicit review and confirmation, shows impact and adopts only selected IDs",async()=>{
+  const {details,adopt,getRemote}=await mount();
+  await click(button(details,"采用到草案"));
+  expect(adopt).not.toHaveBeenCalled();
+  const review=details.querySelector("[data-episode-adoption-review]")!;
+  expect(review.textContent).toContain("2 个镜头");
+  expect(button(review,"采用所选剧集").disabled).toBe(true);
+  await click(button(review,"查看对比"));
+  expect(review.textContent).toContain("当前草案");
+  expect(review.textContent).toContain("全量采用后");
+  await click(review.querySelector('[aria-label="选择采用 第1集"]'));
+  await click(button(review,"采用所选剧集"));
+  expect(adopt).not.toHaveBeenCalled();
+  await click(button(review,"确认采用"));
+  expect(adopt).toHaveBeenCalledWith(expect.stringContaining("/runs/run/adopt"),undefined,0,{reviewToken:"review-0",episodeIds:["ep0"]});
+  expect(getRemote().candidate?.adoption?.mode).toBe("selected");
+  expect(details.textContent).toContain("未采用");
+ });
+ it("invalidates the reviewed snapshot after a conflict and requires a new review",async()=>{
+  const {details,adopt,setConflict}=await mount();
+  await click(button(details,"采用到草案"));
+  const review=details.querySelector("[data-episode-adoption-review]")!;
+  await click(button(review,"选择全部新增和修改"));
+  await click(button(review,"采用所选剧集"));
+  setConflict(true);
+  await click(button(review,"确认采用"));
+  expect(review.textContent).toContain("候选、草案或下游关联已变化");
+  expect(button(review,"确认采用")).toBeUndefined();
+  setConflict(false);
+  await click(button(review,"刷新差异"));
+  expect(button(review,"采用所选剧集").disabled).toBe(true);
+  expect(adopt).toHaveBeenCalledTimes(1);
+ });
+});
 describe("P2 episode candidate workspace",()=>{
  it.each(["light","dark"] as const)("edits candidate locally and saves exactly one field in %s theme",async appearance=>{
   const {workspace,details,change,adopt}=await mount({appearance});
@@ -326,7 +372,10 @@ describe("P2 episode candidate workspace",()=>{
   expect(workspace.querySelector('[data-drama-feedback="success"]')?.textContent).toContain("正式草案未改变");
   expect(change).not.toHaveBeenCalled();
   await click(button(details,"采用到草案"));
-  expect(adopt).toHaveBeenCalledWith(expect.stringContaining("/runs/run/adopt"),undefined,1);
+  expect(adopt).not.toHaveBeenCalled();
+  await click(button(details,"全量采用"));
+  await click(button(details,"确认采用"));
+  expect(adopt).toHaveBeenCalledWith(expect.stringContaining("/runs/run/adopt"),undefined,1,{reviewToken:"review-1"});
   expect(editor.querySelector<HTMLButtonElement>('[aria-label="编辑剧情梗概"]')?.disabled).toBe(true);
  });
  it("cancels a field and uses the workspace guard to save or discard before navigation",async()=>{

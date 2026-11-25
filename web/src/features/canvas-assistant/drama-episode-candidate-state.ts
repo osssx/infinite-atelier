@@ -4,7 +4,8 @@ import type {WorkspacePendingRegistration} from "./drama-creative-workspace";
 
 export type EpisodeCandidateChanges=Partial<Omit<DramaEpisode,"id"|"eventItems"|"targetDurationSec">>&{targetDurationSec?:number|null};
 export type DramaEpisodeCandidate={episodes?:DramaEpisode[];episodeCount?:number;revision?:number;
- manualChanges?:{originalEpisodeIds:string[];editedEpisodeIds:string[];removedEpisodeIds:string[];updatedAt:string}|null};
+ manualChanges?:{originalEpisodeIds:string[];editedEpisodeIds:string[];removedEpisodeIds:string[];updatedAt:string}|null;
+ adoption?:{mode:"all"|"selected";episodeIds:string[];appliedEpisodeIds:string[]}|null};
 export type DramaRun={id:string;episodeId:string;status:string;error?:string;candidate?:DramaEpisodeCandidate&{
  shots?:{id:string;description:string}[];completedSequenceIds?:string[];adoptedShotIds?:string[];shotCount?:number}};
 export const candidateRevision=(run:DramaRun)=>run.candidate?.revision??0;

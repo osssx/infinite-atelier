@@ -54,6 +54,9 @@ export function DramaEpisodeCandidates({run,projectId,theme,disabled,activeKey,o
    <span className="text-xs" style={muted}>尚未加载候选详情，加载后才可查看完整内容。</span>
    <button type="button" className={action} style={style} disabled={locked} onClick={onReload}><RefreshCw size={12}/>重新加载候选</button>
   </div>}
+  {run.status==="adopted"&&run.candidate?.adoption&&<DramaInlineFeedback theme={theme} level="info">
+   {run.candidate.adoption.mode==="selected"?"选择性采用":"全量采用"} · 已合入 {run.candidate.adoption.appliedEpisodeIds.length} 项差异。记录已结束。
+  </DramaInlineFeedback>}
   {removed>0&&<DramaInlineFeedback theme={theme} level="info">手动移除的候选不会进入草案；若对应已有正式草案剧集，采用时保留原内容。</DramaInlineFeedback>}
   {episodes.length>0&&<div className="grid min-w-0 gap-3 lg:grid-cols-[minmax(180px,0.32fr)_minmax(0,1fr)]">
    <div aria-label="候选剧集目录" className="thin-scrollbar max-h-[420px] min-w-0 space-y-1 overflow-y-auto rounded-lg border p-2" style={style}>
@@ -65,6 +68,7 @@ export function DramaEpisodeCandidates({run,projectId,theme,disabled,activeKey,o
      <span className="block truncate font-semibold">第 {index+1} 集 · {episode.title}</span>
      <span className="mt-1 block truncate" style={muted}>{episode.synopsis}</span>
      {run.candidate?.manualChanges?.editedEpisodeIds.includes(episode.id)&&<span className="text-[11px]" style={muted}>已修改</span>}
+     {run.status==="adopted"&&run.candidate?.adoption?.mode==="selected"&&<span className="ml-1 text-[11px]" style={muted}>{run.candidate.adoption.episodeIds.includes(episode.id)?"已采用":"未采用"}</span>}
     </button>)}
    </div>
    {active&&<article className="min-w-0 space-y-2">

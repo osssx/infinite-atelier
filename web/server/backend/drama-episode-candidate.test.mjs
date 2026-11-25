@@ -14,6 +14,7 @@ import {buildApp} from "./app.mjs";
 import {buildEpisodeOptimizeTarget,parseEpisodeOptimizeResult,buildWholeEpisodeOptimizeTarget,parseWholeEpisodeOptimizeResult} from "./drama-episode-optimize.mjs";
 import {patchWholeEpisodeCandidateFields} from "./drama-episode-candidate.mjs";
 import {unresolvedEventRefs} from "../drama-episode-links.mjs";
+import {planEpisodeAdoption,selectEpisodeAdoption} from "./drama-episode-adoption.mjs";
 
 const episode=id=>({id,title:id,synopsis:"Original "+id,events:["Arrival","Discovery"],
  eventItems:[{id:id+"-arrival",text:"Arrival"},{id:id+"-discovery",text:"Discovery"}],
@@ -380,4 +381,110 @@ test("whole HTTP preview and repeated rounds are read only; selected fields save
  assert.deepEqual(candidate.episodes.slice(1),run.candidate.episodes.slice(1));
  assert.deepEqual(project(),before);
  const stale=await save({synopsis:"stale"});assert.equal(stale.statusCode,409,stale.body);
+});
+
+test("episode review differentiates explicit exclusions, actual omissions, reordered rows and downstream impact",()=>{
+ const one=episode("one"),two=episode("two"),three=episode("three"),four=episode("four");
+ const board={id:"board",type:"drama:storyboard",metadata:{dramaDraft:JSON.stringify({shots:[
+  {id:"shot-one",episodeId:"one",order:1,sequenceId:"one-scene",description:"Shot",characterVariantIds:[],propIds:[],keyPropIds:[]},
+  {id:"shot-three",episodeId:"three",order:1,description:"Shot",characterVariantIds:[],propIds:[],keyPropIds:[]}
+ ]})}};
+ const config={id:"config",type:"config",metadata:{dramaShotId:"shot-three",dramaVideoSource:{nodeId:"board"}}};
+ const document={nodes:[board,config],connections:[{fromNodeId:"episodes",toNodeId:"board"}]};
+ const candidate={revision:1,episodes:[{...one,synopsis:"New",sequences:[]},four],manualChanges:{originalEpisodeIds:["two","one","four"],removedEpisodeIds:["two"]}};
+ const current=[one,two,three];
+ const plan=planEpisodeAdoption({document,nodeId:"episodes",scope:"*",current,baseline:current,candidate,sourceChanged:false,inputFence:{}});
+ assert.deepEqual(plan.full.map(item=>item.id),["two","one","four"]);
+ assert.deepEqual(plan.summary,{added:1,replaced:1,deleted:1,reordered:0,unchanged:0,preserved:1});
+ assert.equal(plan.items.find(item=>item.id==="two").selectable,false);
+ assert.equal(plan.items.find(item=>item.id==="one").impact.missingSceneShots,1);
+ assert.equal(plan.items.find(item=>item.id==="three").impact.missingEpisodeShots,1);
+ assert.equal(plan.items.find(item=>item.id==="three").impact.configs,1);
+ const selected=selectEpisodeAdoption(plan,current,["one","four"]);
+ assert.deepEqual(selected.map(item=>item.id),["one","four","two","three"]);
+ assert.deepEqual(selected.find(item=>item.id==="two"),two);
+ assert.deepEqual(selected.find(item=>item.id==="three"),three);
+ assert.throws(()=>selectEpisodeAdoption(plan,current,["two"]),/drama_episode_adoption_invalid/);
+ assert.deepEqual(selectEpisodeAdoption(plan,current).map(item=>item.id),["two","one","four"]);
+});
+
+test("HTTP review is read only, token fences candidate edits, selected adoption is terminal and persists audit",async t=>{
+ const {db,service,project,initial}=fixture(t,{target:2});
+ await service.submit("p",request("review"));
+ const app=buildApp({db,authorize:()=>true});t.after(()=>app.close());
+ const root="/api/v1/projects/p/drama-pipeline/runs/review";
+ const before=project();
+ const preview=async()=>{const res=await app.inject({method:"GET",url:root+"/preview"});assert.equal(res.statusCode,200,res.body);return res.json();};
+ const adopt=payload=>app.inject({method:"POST",url:root+"/adopt",payload});
+ const first=await preview();
+ assert.equal(first.summary.deleted,1);assert.equal(first.summary.replaced,2);
+ assert.deepEqual(project(),before);
+ assert.equal((await adopt({episodeIds:["one"],expectedRevision:0})).statusCode,409);
+ patch(service,"review","one",0,{title:"Reviewed title"});
+ assert.equal((await adopt({episodeIds:["one"],expectedRevision:1,reviewToken:first.reviewToken})).statusCode,409);
+ const second=await preview();
+ const command={episodeIds:["one"],expectedRevision:1,reviewToken:second.reviewToken};
+ assert.equal((await adopt({...command,episodeIds:["unknown"]})).statusCode,422);
+ assert.equal((await adopt(command)).statusCode,200);
+ assert.equal(draft(project())[0].title,"Reviewed title");
+ assert.deepEqual(draft(project()).slice(1),initial.slice(1));
+ assert.equal(project().document.nodes[1].metadata.dramaConfirmed,before.document.nodes[1].metadata.dramaConfirmed);
+ assert.equal(service.get("p","review").status,"adopted");
+ assert.deepEqual(service.get("p","review").candidate.adoption,{mode:"selected",episodeIds:["one"],appliedEpisodeIds:["one"],reviewToken:second.reviewToken});
+ const revision=project().revision;
+ assert.equal((await adopt(command)).statusCode,200);assert.equal(project().revision,revision);
+ assert.equal((await adopt({...command,episodeIds:["two"]})).statusCode,409);
+ const archive=exportDramaRuns(db,"p",project().document);
+ createProject(db,{id:"restore-review",document:project().document});importDramaRuns(db,"restore-review",project().document,archive);
+ assert.deepEqual(service.get("restore-review","review"),service.get("p","review"));
+ createProject(db,{id:"bad-review",document:project().document});
+ assert.throws(()=>importDramaRuns(db,"bad-review",project().document,[{...archive[0],state:"ready"}]),/archive_invalid_drama_runs/);
+});
+
+test("review blocks newly dangling events; selected unaffected row remains adoptable",async t=>{
+ const {service,project}=fixture(t);
+ await service.submit("p",request("relations"));
+ patch(service,"relations","one",0,{events:["Discovery"]});
+ const review=service.preview("p","relations");
+ assert.equal(review.fullAdoptBlocked,true);
+ assert.equal(review.items.find(item=>item.id==="one").blocked,true);
+ assert.throws(()=>service.adopt("p","relations",undefined,1,undefined,review.reviewToken),/drama_episode_adoption_invalid/);
+ assert.throws(()=>service.adopt("p","relations",undefined,1,["one"],review.reviewToken),/drama_episode_adoption_invalid/);
+ service.adopt("p","relations",undefined,1,["two"],review.reviewToken);
+ assert.equal(draft(project())[0].synopsis,"Original one");
+ assert.equal(draft(project())[1].synopsis,"Generated two");
+});
+
+test("review token fences changed downstream associations and changed source revision, not unrelated canvas edits",async t=>{
+ const {db,service,project}=fixture(t);
+ const save=mutate=>{
+  const current=project();mutate(current.document);
+  saveSingleUserCanvas(db,{id:"p",expectedRevision:current.revision,document:current.document});
+ };
+ await service.submit("p",request("fenced"));
+ const initial=service.preview("p","fenced");
+ save(doc=>{doc.title="Unrelated canvas rename";});
+ assert.equal(service.preview("p","fenced").reviewToken,initial.reviewToken);
+ save(doc=>{doc.nodes.find(n=>n.id==="board").metadata.dramaDraft=JSON.stringify({shots:[{
+  id:"one-shot",episodeId:"one",order:1,sequenceId:"one-scene",description:"Shot",characterVariantIds:[],propIds:[],keyPropIds:[]
+ }]});});
+ const changed=service.preview("p","fenced");
+ assert.notEqual(changed.reviewToken,initial.reviewToken);
+ assert.equal(changed.items.find(item=>item.id==="one").impact.shots,1);
+ assert.throws(()=>service.adopt("p","fenced",undefined,0,["one"],initial.reviewToken),/drama_episode_review_conflict/);
+ save(doc=>{doc.nodes.find(n=>n.id==="story").metadata.dramaConfirmedVersionId="source-v2";});
+ assert.equal(service.preview("p","fenced").sourceChanged,true);
+ assert.throws(()=>service.adopt("p","fenced",undefined,0),/drama_candidate_conflict/);
+ assert.equal(service.get("p","fenced").status,"ready");
+ await service.submit("p",request("baseline"));
+ save(doc=>{const node=doc.nodes.find(n=>n.id==="episodes");const draft=JSON.parse(node.metadata.dramaDraft);
+  draft.episodes[1].synopsis="Unrelated human draft edit";node.metadata.dramaDraft=JSON.stringify(draft);});
+ const conflicted=service.preview("p","baseline");
+ assert.equal(conflicted.baselineChanged,true);
+ assert.throws(()=>service.adopt("p","baseline",undefined,0,["one"],conflicted.reviewToken),/drama_candidate_conflict/);
+ await service.submit("p",request("scoped","one"));
+ const scoped=service.preview("p","scoped");
+ assert.deepEqual(scoped.items.map(item=>item.id),["one"]);
+ service.adopt("p","scoped",undefined,0,undefined,scoped.reviewToken);
+ assert.equal(draft(project())[1].synopsis,"Unrelated human draft edit");
 });

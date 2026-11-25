@@ -156,7 +156,18 @@ def run():
                 click("生成候选",portal)
                 click_selector("reopen persisted episode candidate",portal+" [data-drama-run-scroll-region] > details > summary")
                 check("saved candidate restored","document.querySelector("+json.dumps(candidate)+")?.textContent.includes('浏览器增强悬念梗概')&&document.querySelector("+json.dumps(candidate)+")?.textContent.includes('当前候选 1 集')")
+                before_review=saved_candidate()["candidate"]
                 click("采用到草案",portal)
+                review=portal+" [data-episode-adoption-review]"
+                check("review preserves manually excluded episode","document.querySelector(%s)?.textContent.includes('保留原剧集')"%json.dumps(review))
+                check("review shows confirmed downstream impact","document.querySelector(%s)?.textContent.includes('镜头')"%json.dumps(review))
+                click("查看对比",review)
+                check("review before after detail","document.querySelector(%s)?.textContent.includes('当前草案')&&document.querySelector(%s)?.textContent.includes('全量采用后')"%(json.dumps(review),json.dumps(review)))
+                assert saved_candidate()["candidate"]==before_review
+                click("选择全部新增和修改",review)
+                click("采用所选剧集",review)
+                check("explicit adopt confirmation","document.querySelector('[aria-label=\"确认采用剧集\"]')!==null")
+                click("确认采用",review)
                 check("adopted persisted candidate","document.querySelector("+json.dumps(portal+" [data-drama-run-scroll-region] > details > summary")+")?.textContent.includes('已采用')&&!document.querySelector('[data-drama-task-status]')")
                 adopted=p1.graph(page,pid)["data"]
                 new_meta=p1.find_node(adopted,"episodes")["metadata"]

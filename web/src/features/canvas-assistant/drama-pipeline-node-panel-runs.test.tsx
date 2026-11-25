@@ -350,8 +350,15 @@ it.each(["light","dark"] as const)("keeps long expanded run cards in a single th
  const action=[...last.querySelectorAll<HTMLButtonElement>("button")].find(b=>b.textContent==="采用到草案")!;
  expect(action.style.background).toBe(theme.node.activeStroke);
  expect(adopt).not.toHaveBeenCalled();
+ vi.mocked(canvasApi).mockResolvedValueOnce({runId:"long-2",stage:"episodes",status:"ready",revision:0,reviewToken:"review",summary:{},items:[]});
  await act(async()=>action.click());
- expect(adopt).toHaveBeenCalledWith(expect.stringContaining("/long-2/adopt"),undefined,0);
+ expect(adopt).not.toHaveBeenCalled();
+ const review=last.querySelector("[data-episode-adoption-review]")!;
+ const button=(text:string)=>[...review.querySelectorAll<HTMLButtonElement>("button")].find(b=>b.textContent?.trim()===text)!;
+ await act(async()=>button("全量采用").click());
+ await act(async()=>button("确认采用").click());
+ expect(adopt).toHaveBeenCalledWith(expect.stringContaining("/long-2/adopt"),undefined,0,{reviewToken:"review"});
+
 });
 
 it.each(["dark","light"] as const)("matches episode planning footer button sizing and theme in %s mode",async appearance=>{

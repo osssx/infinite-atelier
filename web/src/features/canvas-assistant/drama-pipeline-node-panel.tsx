@@ -28,6 +28,7 @@ const DramaBatchConfigPanel = lazy(() => import("./drama-batch-config-panel").th
 import { DramaStoryboardFields } from "./drama-storyboard-fields";
 import { DramaEpisodeFields } from "./drama-episode-fields";
 import {DramaEpisodeCandidates} from "./drama-episode-candidates";
+import {DramaEpisodeAdoptionReview,type EpisodeAdoptionSelection} from "./drama-episode-adoption-review";
 import {candidateRevision,hasEpisodeDetails,mergeCandidateRuns,type DramaRun,type EpisodeCandidateChanges,type WholeEpisodeChanges} from "./drama-episode-candidate-state";
 import { readEpisodeDraft } from "../../../server/canvas-text-content.mjs";
 import type {DramaBatchCreateResult} from "./drama-video-config";
@@ -97,7 +98,7 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
     onOpenVersions?: () => void;
     onConfirmVersion?: (draft: string) => Promise<void>;
     onBeforeDramaRun?: () => Promise<unknown>;
-    onAdoptDramaRun?: (path:string,shotIds?:string[],expectedRevision?:number) => Promise<void>;
+    onAdoptDramaRun?: (path:string,shotIds?:string[],expectedRevision?:number,episodeReview?:EpisodeAdoptionSelection) => Promise<void>;
     onMigrateDramaSequences?: (path:string,command:Record<string,unknown>) => Promise<void>;
     onAdoptDramaAssetCandidate?: (path:string,command:Record<string,unknown>) => Promise<(CanvasBackendProject&{mapping:AssetAdoptionMapping})|void>;
     versionBusy?: boolean;    /** Full editor only: host outside CanvasNode, no nested Modal. */
@@ -1131,12 +1132,30 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
                      setRunPreviews(current=>({...current,[run.id]:preview}));feedbackApi?.clear("run-preview:"+run.id);
                  }catch(error){reportError("run-preview:"+run.id,error,"差异已合入，刷新结果失败，请重新加载预览");}
              })}>采用所选差异</Button>}
-             {run.status==="ready" && <Button size="small" style={dramaNodePrimary(theme)} disabled={runActionBusy||Boolean(feedback?.task)||!onAdoptDramaRun||episodePlanning&&(Boolean(candidateEdit)||candidateMutationBusy||candidateConfirmations.includes(run.id)||!hasEpisodeDetails(run))||storyboard&&(!runPreviews[run.id]||
+             {episodePlanning&&run.status==="ready"&&expandedRuns[run.id]&&<DramaEpisodeAdoptionReview
+                 key={run.id+":"+candidateRevision(run)} runId={run.id} revision={candidateRevision(run)} path={`${runPath}/${encodeURIComponent(run.id)}`} theme={theme}
+                 disabled={!workspaceMode||runActionBusy||Boolean(feedback?.task)||!onAdoptDramaRun||Boolean(candidateEdit)||candidateMutationBusy||candidateConfirmations.includes(run.id)||!hasEpisodeDetails(run)}
+                 onAdopt={async review=>{
+                     if(!onAdoptDramaRun||runActionRef.current||candidateMutationRef.current||candidateEditRef.current)throw Error("请等待当前操作完成");
+                     const task=feedbackApi?.beginTask("正在合入剧集候选",undefined,true);
+                     if(feedbackApi&&!task)throw Error("请等待当前操作完成");
+                     candidateMutationRef.current=true;candidateReadEpoch.current++;setCandidateMutationBusy(true);
+                     try{
+                         await onAdoptDramaRun(`${runPath}/${encodeURIComponent(run.id)}/adopt`,undefined,candidateRevision(run),review);
+                         setRuns(current=>current.map(item=>item.id===run.id?{...item,status:"adopted"}:item));
+                         report("adopt-run:"+run.id,"success","已合入候选草案，请检查后确认版本");
+                         try{
+                             const updated=await canvasApi<DramaRun>(`${runPath}/${encodeURIComponent(run.id)}`,"GET");
+                             if(updated.status==="adopted")setRuns(current=>current.map(item=>item.id===run.id?updated:item));
+                         }catch(error){reportError("run-detail:"+run.id,error,"候选已采用，刷新记录失败");}
+                     }catch(error){reportError("adopt-run:"+run.id,error,"候选采用失败，请刷新差异预览");throw error;}
+                     finally{candidateReadEpoch.current++;candidateMutationRef.current=false;setCandidateMutationBusy(false);task?.end();}
+                 }}/>}
+             {!episodePlanning&&run.status==="ready" && <Button size="small" style={dramaNodePrimary(theme)} disabled={runActionBusy||Boolean(feedback?.task)||!onAdoptDramaRun||episodePlanning&&(Boolean(candidateEdit)||candidateMutationBusy||candidateConfirmations.includes(run.id)||!hasEpisodeDetails(run))||storyboard&&(!runPreviews[run.id]||
                  runPreviews[run.id].fullAdoptBlocked)} onClick={()=>void runAction("正在合入候选草案",async()=>{
                  try{
                      if(!onAdoptDramaRun)throw Error("候选采用服务未连接");
-                     if(episodePlanning){candidateReadEpoch.current++;await onAdoptDramaRun(`${runPath}/${encodeURIComponent(run.id)}/adopt`,undefined,candidateRevision(run));candidateReadEpoch.current++;}
-                     else await onAdoptDramaRun(`${runPath}/${encodeURIComponent(run.id)}/adopt`);
+                     await onAdoptDramaRun(`${runPath}/${encodeURIComponent(run.id)}/adopt`);
                      setRuns(current=>current.map(item=>item.id===run.id?{...item,status:"adopted"}:item));
                      report("adopt-run:"+run.id,"success","已合入候选草案，请检查后确认版本");
                  }catch(error){reportError("adopt-run:"+run.id,error,"候选采用失败，请刷新差异预览");return;}

@@ -30,6 +30,8 @@ const errors:Record<string,string>={
  drama_episode_optimize_context_too_large:"优化上下文过长，请缩短当前字段或修改意见。",
  drama_episode_optimize_busy:"该候选已有优化请求正在处理，请稍后重试。",
  drama_episode_optimize_relation_conflict:"剧情事件与场次关联需要联合调整，请同时选择剧情事件和场次规划，或先手动修正引用。",
+ drama_episode_review_conflict:"候选、草案或下游关联已变化，请刷新差异后重新审核。",
+ drama_episode_adoption_invalid:"所选剧集存在无效关联或无法形成有效草案，请检查选择。",
  drama_episode_optimize_failed:"AI 优化失败，请检查文本模型渠道后重试。",
  shot_character_invalid:"镜头引用的角色或造型已失效，请检查资产引用。",
  shot_scene_invalid:"镜头引用的场景已失效，请检查资产引用。",

@@ -5,7 +5,8 @@ import {writeTransaction,stableJson} from "./repository.mjs";
 import {normalizeOpenAiCompatBaseUrl} from "./openai-compat-endpoints.mjs";
 import {planDramaShotDiff,mergeDramaSelectedShots} from "./drama-run-diff.mjs";
 import {normalizeEpisodeEvents} from "../drama-episode-links.mjs";
-import {episodeCandidateRevision,validEpisodeCandidate,assertEpisodeCandidateRevision,editEpisodeCandidate,removeEpisodeCandidate,mergeEpisodeCandidateForAdoption} from "./drama-episode-candidate.mjs";
+import {episodeCandidateRevision,validEpisodeCandidate,assertEpisodeCandidateRevision,editEpisodeCandidate,removeEpisodeCandidate} from "./drama-episode-candidate.mjs";
+import {planEpisodeAdoption,selectEpisodeAdoption,validEpisodeAdoptionRecord} from "./drama-episode-adoption.mjs";
 
 const digest=value=>createHash("sha256").update(stableJson(value)).digest("hex");
 const fail=(code,statusCode=409)=>Object.assign(Error(code),{code,statusCode});
@@ -43,6 +44,7 @@ export function importDramaRuns(db,projectId,document,runs){
   if(episodeRun&&(target?.type!=="drama:episodes"||row.frozen.input.scope?.episodeId!==row.episodeId||
      !Number.isInteger(row.frozen.input.targetEpisodes)||row.frozen.input.targetEpisodes<1||row.frozen.input.targetEpisodes>100||
      (row.candidate!=null&&(!validEpisodeCandidate(row.candidate,row.frozen.input,row.episodeId)||
+      !validEpisodeAdoptionRecord(row.candidate.adoption,row.candidate,row.frozen.baseline??[],row.state)||
       episodeCandidateRevision(row.candidate)>0&&!["ready","adopted","discarded"].includes(row.state)))))
    throw fail("archive_invalid_drama_runs",422);
   if(!episodeRun&&target?.type!=="drama:storyboard")throw fail("archive_invalid_drama_runs",422);
@@ -298,11 +300,22 @@ export function createDramaRunService({db,getProject,validateDocument,emitEvent,
     return get(projectId,id);
    });
   }
+  function episodeAdoptionPlan(project,row,frozen,candidate,gathered){
+   const {input,baseline,parsed,revisions}=gathered;
+   return planEpisodeAdoption({document:project.document,nodeId:row.node_id,scope:row.episode_id,current:parsed.episodes,
+    baseline:frozen.baseline,candidate,paragraphs:input.paragraphs,sourceChanged:digest(input)!==digest(frozen.input)||
+    Array.isArray(frozen.revisions)&&digest(revisions)!==digest(frozen.revisions),inputFence:{input,revisions,baseline}});
+  }
   function preview(projectId,id){
    const project=getProject(db,projectId),row=find(projectId,id);
    if(!row)throw fail("drama_run_not_found",404);
    const frozen=JSON.parse(row.frozen),candidate=row.candidate?JSON.parse(row.candidate):null;
-   if(frozen.input.stage==="episodes")throw fail("drama_episode_scope_invalid",422);
+   if(frozen.input.stage==="episodes"){
+    if(!candidate?.episodes||row.state!=="ready")throw fail("drama_candidate_not_ready");
+    const gathered=gather(project.document,row.node_id,row.episode_id,frozen.input.scope);
+    const {full,...review}=episodeAdoptionPlan(project,row,frozen,candidate,gathered);
+    return {runId:id,status:row.state,stage:"episodes",...review};
+   }
    if(!candidate?.shots||row.state==="running")throw fail("drama_candidate_not_ready");
    const {input,baseline}=gather(project.document,row.node_id,row.episode_id,frozen.input.scope);
    const diff=planDramaShotDiff({baseline:frozen.baseline,current:baseline,candidate:candidate.shots,
@@ -311,14 +324,24 @@ export function createDramaRunService({db,getProject,validateDocument,emitEvent,
    return {runId:id,status:row.state,sourceChanged,...diff,
     fullAdoptBlocked:sourceChanged||diff.fullAdoptBlocked};
   }
-  function adopt(projectId,id,shotIds,expectedRevision){
+  function adopt(projectId,id,shotIds,expectedRevision,episodeIds,reviewToken){
    return writeTransaction(db,()=>{
     const project=getProject(db,projectId),row=find(projectId,id);
     if(!row)throw fail("drama_run_not_found",404);
-    if(row.state==="adopted")return project;
+    if(row.state==="adopted"){
+     if(episodeIds!==undefined||reviewToken!==undefined){
+      const saved=JSON.parse(row.candidate??"null"),record=saved?.adoption;
+      if(!record||reviewToken!==record.reviewToken||expectedRevision!==episodeCandidateRevision(saved)||
+       record.mode!==(episodeIds===undefined?"all":"selected")||
+       episodeIds!==undefined&&digest([...episodeIds].sort())!==digest([...record.episodeIds].sort()))
+       throw fail("drama_episode_review_conflict");
+     }
+     return project;
+    }
     if(row.state!=="ready")throw fail("drama_candidate_not_ready");
     const frozen=JSON.parse(row.frozen);
-    const {node,input,baseline,parsed,contains}=gather(project.document,row.node_id,row.episode_id,frozen.input.scope);
+    const gathered=gather(project.document,row.node_id,row.episode_id,frozen.input.scope);
+    const {node,input,baseline,parsed,contains}=gathered;
     if(digest(input)!==digest(frozen.input))throw fail("drama_candidate_conflict");
     const candidate=JSON.parse(row.candidate);
     if(frozen.input.stage==="episodes"){
@@ -330,17 +353,24 @@ export function createDramaRunService({db,getProject,validateDocument,emitEvent,
      if(digest(baseline)!==digest(frozen.baseline))throw fail("drama_candidate_conflict");
      const preserved=parsed.episodes.filter(episode=>!contains(episode));
      if(candidate.episodes.some(episode=>preserved.some(item=>item.id===episode.id)))throw fail("drama_candidate_conflict");
-     const replacements=new Map(candidate.episodes.map(episode=>[episode.id,episode]));
-     const episodes=row.episode_id==="*"?mergeEpisodeCandidateForAdoption(candidate,baseline):parsed.episodes.map(episode=>replacements.get(episode.id)??episode);
+     const plan=episodeAdoptionPlan(project,row,frozen,candidate,gathered);
+     if(episodeIds!==undefined||reviewToken!==undefined){
+      if(expectedRevision===undefined||reviewToken!==plan.reviewToken)throw fail("drama_episode_review_conflict");
+     }
+     const episodes=selectEpisodeAdoption(plan,parsed.episodes,episodeIds);
+     const reviewedIds=episodeIds??plan.items.filter(item=>item.changed&&!item.blocked||item.reordered).map(item=>item.id);
+     const adoption={mode:episodeIds===undefined?"all":"selected",episodeIds:reviewedIds,...(reviewToken?{reviewToken}:{}),
+      appliedEpisodeIds:reviewedIds.filter(id=>plan.items.some(item=>item.id===id&&(item.changed||item.reordered)))};
      node.metadata={...node.metadata,dramaDraft:stableJson({...parsed,episodes})};
      const revision=project.revision+1;
      db.prepare("UPDATE projects SET document_json=?,revision=? WHERE id=?").run(validateDocument(project.document),revision,projectId);
-     db.prepare("UPDATE drama_runs SET state='adopted' WHERE project_id=? AND id=?").run(projectId,id);
+     db.prepare("UPDATE drama_runs SET state='adopted',candidate=? WHERE project_id=? AND id=?").run(stableJson({...candidate,adoption}),projectId,id);
      db.prepare("INSERT INTO canvas_text_version_operations VALUES(?,?,?,?,?)")
       .run(projectId,node.id,`drama-run:${id}`,row.fingerprint,revision);
      emitEvent(db,{id:projectId,revision,kind:"updated"});
      return {...project,revision};
     }
+    if(episodeIds!==undefined||reviewToken!==undefined)throw fail("drama_episode_scope_invalid",422);
     const allShots=candidate.shots;
     const diff=planDramaShotDiff({baseline:frozen.baseline,current:baseline,candidate:allShots,
      adoptedShotIds:candidate.adoptedShotIds,adoptedRemovedShotIds:candidate.adoptedRemovedShotIds});
@@ -403,7 +433,7 @@ export function createDramaRunService({db,getProject,validateDocument,emitEvent,
   return db.prepare(`SELECT id,node_id,episode_id,state,error,
    CASE WHEN candidate IS NULL THEN NULL WHEN json_extract(frozen,'$.input.stage')='episodes' THEN
     json_object('episodes',json('[]'),'episodeCount',json_array_length(candidate,'$.episodes'),
-    'revision',COALESCE(json_extract(candidate,'$.revision'),0),'manualChanges',json_extract(candidate,'$.manualChanges')) ELSE json_object('shots',json('[]'),
+    'revision',COALESCE(json_extract(candidate,'$.revision'),0),'manualChanges',json_extract(candidate,'$.manualChanges'),'adoption',json_extract(candidate,'$.adoption')) ELSE json_object('shots',json('[]'),
     'completedSequenceIds',json_extract(candidate,'$.completedSequenceIds'),
     'adoptedShotIds',json_extract(candidate,'$.adoptedShotIds'),
     'shotCount',json_array_length(candidate,'$.shots')) END AS candidate

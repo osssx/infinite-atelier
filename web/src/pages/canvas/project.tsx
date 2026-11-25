@@ -4301,10 +4301,10 @@ function AtelierCanvasPage() {
                 onOpenVersions={() => openTextVersions(panelNode.id)}
                 onConfirmVersion={draft => confirmDramaVersion(panelNode.id,draft)}
                 onBeforeDramaRun={() => awaitCanvasStorePersistence(projectId)}
-                onAdoptDramaRun={async (path,shotIds,expectedRevision) => {
+                onAdoptDramaRun={async (path,shotIds,expectedRevision,episodeReview) => {
                     await commitAssistantCanvasGraphWithSaveBarrier(projectId, ({assertCurrent}) => {
                         assertCurrent();
-                        return canvasApi<CanvasBackendProject>(path,"POST",{shotIds,expectedRevision});
+                        return canvasApi<CanvasBackendProject>(path,"POST",{shotIds,expectedRevision,...episodeReview});
                     }, {textVersionNodeId:panelNode.id});
                 }}
                 onMigrateDramaSequences={async(path,command)=>{

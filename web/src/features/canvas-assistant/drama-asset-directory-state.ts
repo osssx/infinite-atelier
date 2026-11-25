@@ -16,6 +16,7 @@ export type AssetReviewState={candidateId:string;decisions:Record<string,AssetDe
 export const emptyAssetReview=(candidateId:string):AssetReviewState=>({candidateId,decisions:{},kind:"all",query:"",status:"all"});
 export const AssetReviewContext=createContext<[AssetReviewState,Dispatch<SetStateAction<AssetReviewState>>]|null>(null);
 export const AssetReviewNavigationContext=createContext<(()=>void)|null>(null);
+export const AssetCandidateNavigationContext=createContext<(()=>void)|null>(null);
 export const AssetReviewBusyContext=createContext<((busy:boolean)=>void)|null>(null);
 export function useAssetReview(candidateId:string){
  const shared=useContext(AssetReviewContext);

@@ -99,6 +99,52 @@ it("integrates reference controls within the asset draft editor and updates only
 });
 
 
+it.each(["success","invalid","failed"] as const)("navigates to asset candidates only after successful generation (%s)",async outcome=>{
+ const {useState}=await import("react");
+ const {DramaCreativeWorkspace}=await import("./drama-creative-workspace");
+ const config=await import("@/stores/use-config-store");
+ const routing=await import("@/features/backend-sync/model-channel-autoroute");
+ const {canvasApi}=await import("@/features/backend-sync/canvas-api");
+ const configSpy=vi.spyOn(config,"useEffectiveConfig").mockReturnValue(config.defaultConfig);
+ const routingSpy=vi.spyOn(routing,"ensureSqliteModelChannelForExecution").mockResolvedValue(undefined);
+ const proposed={id:"new-cat",kind:"character" as const,name:"小猫候选",description:"白色小猫",sourceRefs:[]};
+ const draft=JSON.stringify({assets:[]});
+ const initial={id:"generation-assets",type:"drama:assets",title:"资产规划",position:{x:0,y:0},metadata:{dramaDraft:draft}} as CanvasNodeData;
+ const changes=vi.fn(),tabChanges=vi.fn();
+ const container=document.createElement("div");document.body.append(container);
+ const root=createRoot(container);roots.push(root);
+ function Host(){
+  const [node,setNode]=useState(initial);
+  return <DramaCreativeWorkspace projectId="p" nodeId={node.id} kind="assets" focus={{}} versionConfirmed={false}
+   candidateCount={node.metadata?.dramaAssetCandidate?.assets.length??0} onClose={async()=>{}} onTabChange={tabChanges}
+   renderPanel={(tab,onPendingChange)=><DramaPipelineNodePanel node={node} workspaceMode workspaceTab={tab==="settings"?"editor":tab}
+    projectId="p" upstreamText="故事原文" onPendingChange={onPendingChange}
+    onChange={patch=>{changes(patch);setNode(n=>({...n,metadata:{...n.metadata,...patch}}))}}/>}/>;
+ }
+ try{
+  await act(async()=>root.render(<Host/>));
+  const workspace=document.querySelector('[data-creative-workspace-node-id="generation-assets"]')!;
+  const active=()=>workspace.querySelector('nav button[aria-pressed="true"]')?.textContent?.trim();
+  expect(active()).toBe("资产编辑");
+  if(outcome==="failed")vi.mocked(canvasApi).mockRejectedValueOnce(new Error("生成请求失败"));
+  else vi.mocked(canvasApi).mockResolvedValueOnce({answer:outcome==="success"?JSON.stringify({assets:[proposed]}):"invalid"});
+  const button=[...workspace.querySelectorAll<HTMLButtonElement>("button")].find(b=>b.textContent?.trim()==="生成资产候选")!;
+  expect(button).toBeTruthy();
+  await act(async()=>button.click());
+  if(outcome==="success"){
+   expect(changes).toHaveBeenCalledWith({dramaAssetCandidate:{id:expect.any(String),baseline:draft,assets:[proposed]}});
+   expect(active()).toBe("生成候选 · 1");
+   expect(tabChanges).toHaveBeenCalledWith("runs");
+   expect(workspace.querySelector("[data-asset-candidate-review]")?.textContent).toContain("小猫候选");
+  }else{
+   expect(changes).not.toHaveBeenCalled();
+   expect(tabChanges).not.toHaveBeenCalled();
+   expect(active()).toBe("资产编辑");
+   expect(workspace.textContent).toContain(outcome==="failed"?"生成请求失败":"模型返回的资产格式有误");
+  }
+ }finally{configSpy.mockRestore();routingSpy.mockRestore();}
+});
+
 it("focuses the canonical adopted asset on its actual directory page after atomic adoption",async()=>{
  const {useState}=await import("react");
  const {AssetDirectoryContext,AssetReviewNavigationContext,initialAssetDirectory}=await import("./drama-asset-directory-state");

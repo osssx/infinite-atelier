@@ -20,7 +20,7 @@ import {saveAssetEntry} from "./drama-asset-entry-save";
 import type {WorkspacePendingRegistration} from "./drama-creative-workspace";
 import {DramaReferenceImagePicker} from "./drama-reference-image-picker";
 import {DramaAssetCandidates} from "./drama-asset-candidates";
-import {adoptedAssetSelection,AssetReviewNavigationContext,useAssetDirectory,type AssetAdoptionMapping} from "./drama-asset-directory-state";
+import {adoptedAssetSelection,AssetCandidateNavigationContext,AssetReviewNavigationContext,useAssetDirectory,type AssetAdoptionMapping} from "./drama-asset-directory-state";
 import {DramaCreativeScopeBrowser} from "./drama-creative-scope-browser";
 import {DramaStoryboardNavigationContext} from "./drama-storyboard-navigation";
 const DramaVideoConfigFields = lazy(() => import("./drama-video-config-fields").then(m=>({default:m.DramaVideoConfigFields})));
@@ -115,6 +115,7 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
     const [videoEditing,setVideoEditing]=useState(false);
     const [,setAssetDirectory]=useAssetDirectory();
     const openAdoptedAsset=useContext(AssetReviewNavigationContext);
+    const openAssetCandidates=useContext(AssetCandidateNavigationContext);
     const [scopeOpen,setScopeOpen]=useState(false);
     // Both storyboard tabs share the same footer; close an open range menu when switching tabs.
     useEffect(()=>setScopeOpen(false),[workspaceMode,workspaceTab]);
@@ -843,6 +844,7 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
                 if(assetPlanning&&assetDraft){
                     onChange({dramaAssetCandidate:{id:crypto.randomUUID(),baseline:storedDraft,assets:assetDraft.assets}});
                     setValidation(workspaceMode?"资产候选已保存，请切换至「生成候选」审核":"资产候选已保存，请逐项选择处理方式");
+                    if(workspaceMode)openAssetCandidates?.();
                     return;
                 }
                 if (episodePlanning && !generatedEpisodes?.episodes.length) throw Error("模型返回的剧集格式有误，已保留原草案");

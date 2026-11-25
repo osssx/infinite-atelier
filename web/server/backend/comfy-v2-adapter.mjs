@@ -2,7 +2,7 @@ import {randomUUID} from "node:crypto";
 import {createReadStream,openAsBlob} from "node:fs";
 import {createHash} from "node:crypto";
 import {Readable} from "node:stream";
-import {compileSingleWorkflow,verifyTemplate,validateSingleRequest,canonical,sha256} from "../comfy-workflow/compiler.mjs";
+import {compileSingleWorkflow,verifyTemplate,validateSingleRequest,workflowObjectInfoClasses,canonical,sha256} from "../comfy-workflow/compiler.mjs";
 import {resolveMediaCapabilities,validateMediaRequest} from "../../shared/media-capabilities.mjs";
 import {readMediaDurationMs} from "./media-duration.mjs";
 import {extractCapture,detectArtifactMime,captureLimits} from "../comfy-workflow/capture-adapters.mjs";
@@ -64,6 +64,43 @@ export async function comfyUpstream(instance,path,{method="GET",body,receive,tim
   catch{throw fail("comfy_invalid_json",502)}
  }finally{clearTimeout(timer)}
 }
+/** Query only schemas used by this workflow. No cross-job schema cache: a
+ * Comfy restart/model-list change is observed on the next preparation.
+ * Preserve compatibility with servers lacking the per-class route and very
+ * large templates; the full catalog remains available for the settings UI.
+ * All requests (including compatibility fallback) share one original deadline.
+ */
+export async function readComfyWorkflowObjectInfo(instance,classTypes,{upstreamCall=comfyUpstream,timeoutMs=45000}={}){
+ const trusted=validateInstance(instance);
+ const types=[...new Set(classTypes)].sort();
+ const deadline=Date.now()+timeoutMs;
+ const call=async path=>{
+  const remaining=deadline-Date.now();
+  if(remaining<=0)throw fail("comfy_object_info_timeout",502);
+  const result=await upstreamCall(trusted,path,{timeoutMs:remaining});
+  if(!result||typeof result!=="object"||Array.isArray(result))throw fail("comfy_object_info_invalid",502);
+  return result;
+ };
+ if(types.length>32||types.some(type=>typeof type!=="string"||!type||type==="."||type===".."||/[\\/]/.test(type)))
+  return call("/object_info");
+ const info=Object.create(null);
+ for(const type of types){
+  let result;
+  try{result=await call("/object_info/"+encodeURIComponent(type));}
+  catch(error){
+   if(["comfy_upstream_404","comfy_upstream_405"].includes(error?.code))return call("/object_info");
+   throw error;
+  }
+  // Comfy returns {} for an absent class. Do not turn that into a full
+  // directory fetch or silently supply a fabricated schema.
+  if(Object.hasOwn(result,type)){
+   if(!result[type]||typeof result[type]!=="object"||Array.isArray(result[type]))throw fail("comfy_object_info_invalid",502);
+   info[type]=result[type];
+  }
+ }
+ return info;
+}
+
 function snapshotOf(job,instanceId){
  const s=job.snapshot??JSON.parse(job.snapshot_json);
  if(s.adapterKind!=="comfy"||s.instanceId!==instanceId||
@@ -167,8 +204,9 @@ export function createComfyV2Adapter({instance,db,blobStore,upstreamCall=comfyUp
   const snapshot=snapshotOf(job,trusted.id);
   if(getPreparation(db,job.id))return; // immutable compilation, including across restarts
   const request=snapshot.comfyRequest,template=snapshot.comfyTemplate;
-  const info=await upstreamCall(trusted,"/object_info");
-  if(snapshot.localShotBatch&&snapshot.comfyTemplate.requirements.classTypes.some(type=>info?.[type]?.api_node||info?.[type]?.apiNode))
+  const classes=workflowObjectInfoClasses(request,template);
+  const info=await readComfyWorkflowObjectInfo(trusted,classes,{upstreamCall});
+  if(snapshot.localShotBatch&&classes.some(type=>info?.[type]?.api_node||info?.[type]?.apiNode))
    throw fail("shot_local_video_workflow_required",422);
   // Names are content-derived and uploads can safely be repeated before /prompt.
   const mediaFiles={};

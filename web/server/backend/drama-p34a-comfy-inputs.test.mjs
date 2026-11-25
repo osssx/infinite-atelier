@@ -11,12 +11,26 @@ import {Readable} from "node:stream";
 import {deflateSync} from "node:zlib";
 import {spawnSync} from "node:child_process";
 import {createLocalBackend} from "./runtime.mjs";
+import {comfyUpstream} from "./comfy-v2-adapter.mjs";
+import {performance} from "node:perf_hooks";
 import {createProject} from "./projects.mjs";
 import {fingerprintSource} from "./repository.mjs";
 import {canonical,sha256,verifyTemplate,compileSingleWorkflow} from "../comfy-workflow/compiler.mjs";
 
 const instanceId="local";
 const url="http://127.0.0.1:8188";
+// Optional safe timing trace: no graph, media filename, request body or credentials.
+async function tracedComfy(instance,path,options={}){
+ const start=performance.now(),route=path.split("?")[0].replace(/^(\/history\/).+$/,"$1:id");
+ try{
+  const result=await comfyUpstream(instance,path,options);
+  console.log("P34A_COMFY_TIMING "+JSON.stringify({route,method:options.method??"GET",ms:Math.round(performance.now()-start),ok:true}));
+  return result;
+ }catch(error){
+  console.log("P34A_COMFY_TIMING "+JSON.stringify({route,method:options.method??"GET",ms:Math.round(performance.now()-start),ok:false,error:error.code??error.name}));
+  throw error;
+ }
+}
 const configs=[
  {shot:"first",mode:"first_frame",roles:["first_frame"],ports:["first"]},
  {shot:"both",mode:"first_last_frame",roles:["first_frame","last_frame"],ports:["first","last"]},
@@ -142,7 +156,8 @@ test("P3.4a real local Comfy: first, first+last and three-reference CAS images r
  try{
   backend=createLocalBackend({dataDir:folder,activationRoot:join(folder,"activation"),
    skillsDir:join(folder,"skills"),comfyInstances:[{id:instanceId,url}],autoDispatch:true,
-   autoLocalSession:true,dispatchIntervalMs:160});
+   autoLocalSession:true,dispatchIntervalMs:160,
+   ...(process.env.ATELIER_TEST_COMFY_TRACE==="1"?{comfyUpstreamCall:tracedComfy}:{})});
   const assets=[];
   for(const color of colors)assets.push(await backend.blobStore.put(Readable.from([png(color)]),{mime:"image/png"}));
   assert.equal(new Set(assets.map(a=>a.blobId)).size,3);

@@ -351,6 +351,24 @@ function pruneAbsentMediaPort(graph, port, canvasNodeId, info) {
     }
 }
 
+/** Live schemas needed by the compiler, including nodes it may inject.
+ * Call only after verifying the pinned template and validating the request.
+ */
+export function workflowObjectInfoClasses(request,template){
+    const classes=new Set(template.requirements.classTypes);
+    const roots=new Set(request.rootOutputs.map(root=>root.portId));
+    const targets=new Set(request.edges.map(edge=>edge.toPortId));
+    for(const port of template.ports){
+        if(port.direction==="source"&&roots.has(port.id)&&port.capture?.adapterId)
+            classes.add(port.capture.adapterId);
+        if(port.direction==="target"&&targets.has(port.id)&&port.inputBinding?.mode==="socket"){
+            if(port.valueKind==="IMAGE")classes.add("LoadImage");
+            if(port.valueKind==="MASK")classes.add("LoadImageMask");
+        }
+    }
+    return [...classes].sort();
+}
+
 /** One pinned Comfy graph, one /prompt, any selected combination of supported output roots. */
 export function compileSingleWorkflow(req, template, opts = {}) {
     const {node,roots,targetEdges} = validateSingleRequest(req,template);

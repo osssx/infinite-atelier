@@ -64,6 +64,35 @@ function fixture(db,{normalVideo=false,videoConfig=false}={}){
  return {project,body:{groupId:"g",expectedProjectRevision:project.revision,idempotencyKey:"test-batch",items}};
 }
 
+test("preflight shares only matching class scopes and retries a failed schema fetch without queuing jobs",async t=>{
+ const db=new DatabaseSync(":memory:");t.after(()=>db.close());initializeSchema(db);
+ const {project,body}=fixture(db);
+ const schemas={
+  EmptyImage:{input:{required:{width:["INT"],height:["INT"],batch_size:["INT"],color:["INT"]}},output:["IMAGE"]},
+  CreateVideo:{input:{required:{images:["IMAGE"],fps:["FLOAT"]}},output:["VIDEO"]},
+  SaveVideo:{input:{required:{video:["VIDEO"],filename_prefix:["STRING"],format:["STRING"],"format.codec":["STRING"],codec:["STRING"]}},output:[]},
+  PrimitiveString:{input:{required:{value:["STRING"]}},output:["STRING"]},
+  LoadImage:{input:{required:{image:[["sample.png"]]}},output:["IMAGE","MASK"]}
+ };
+ let calls=[],failNext=true,origin="http://127.0.0.1:8188";
+ const service=createShotBatches({db,instanceIds:()=>["local"],instanceOrigin:()=>origin,objectInfo:async(instance,classes)=>{
+  calls.push({instance,classes});
+  if(failNext){failNext=false;throw Error("schema_temporarily_unavailable");}
+  return Object.fromEntries(classes.map(type=>[type,schemas[type]]));
+ }});
+ const input=index=>{const s=body.items[index].snapshot;return {instanceId:s.instanceId,comfyTemplate:s.comfyTemplate,comfyRequest:s.comfyRequest}};
+ await assert.rejects(service.inspect(project.id,input(0)),/schema_temporarily_unavailable/);
+ assert.deepEqual(await Promise.all([service.inspect(project.id,input(0)),service.inspect(project.id,input(2))]),[{ready:true},{ready:true}]);
+ assert.equal(calls.length,2,"identical scope shares the new successful fetch");
+ assert.deepEqual(calls[1].classes,["CreateVideo","EmptyImage","SaveVideo"]);
+ assert.deepEqual(await service.inspect(project.id,input(1)),{ready:true});
+ assert.deepEqual(calls[2].classes,["CreateVideo","EmptyImage","LoadImage","PrimitiveString","SaveVideo"]);
+ origin="http://127.0.0.1:8189";
+ assert.deepEqual(await service.inspect(project.id,input(0)),{ready:true});
+ assert.equal(calls.length,4,"changed instance origin cannot reuse old schemas");
+ assert.equal(db.prepare("SELECT COUNT(*) n FROM jobs").get().n,0);
+});
+
 test("batch queues independent shots once, persists waiting shots, and stops only future submissions",t=>{
  const db=new DatabaseSync(":memory:");t.after(()=>db.close());initializeSchema(db);
  const {project,body}=fixture(db),service=createShotBatches({db,instanceIds:()=>["local"]});

@@ -13,7 +13,7 @@
 | 200 节点 / 200 镜头真实工作区 | PASS，0 browser exceptions | npm run test:drama-storyboard-p5-browser |
 | 真实在线文本候选 | PASS，1 次真实 POST | node scripts/drama-p1-isolated-live.mjs --ack-cost |
 | 生产画布三轮平移、三轮缩放 | 5/6 达标，严格门槛未通过 | npm run benchmark:drama-p34b:production:strict |
-| 真实 ComfyUI 后端集成 | 并发首轮 13/15 PASS；串行 14/15 PASS；均 0 SKIP | 见下文 |
+| 真实 ComfyUI 后端集成 | P5.1 修复后串行 16/16 PASS（含新增预检回归），0 SKIP；带计时及默认传输各通过一次 | 见下文 |
 
 Python Chrome CDP 依赖 websocket-client；本机缺少时仅安装至系统临时目录，通过 sys.path/PYTHONPATH 注入，没有修改全局 Python 环境。测试夹具后端、SQLite/CAS、Chrome profile 均独立于用户正式数据，不修改模型渠道或凭据，不主动重启既有服务。生产构建文件不进入版本库。
 
@@ -69,6 +69,39 @@ node --test --test-concurrency=1 server/backend/drama-p34a-comfy-inputs.test.mjs
 
 串行复测：14 PASS / 1 FAIL / 0 SKIP，总耗时 199.05s。P3.2f 前驱失败后的两次重启恢复通过（30.88s），三镜头跨重启与尾帧提取通过（57.09s）。P3.4a 三种输入模式用例在 109.97s 结束时，首帧与首尾帧 Job 均 succeeded 且 materialized；三参考图 Job 仍 preparing、upstream_task_id=null，尚无 preparation 记录，worker running=true/active=true/lastError=null。尚不能确定具体阻塞请求，不宣称三参考图通过。下一步需隔离跟踪 preparing 阶段的 Comfy 实例探测、模板/object_info 检查与 CAS 上传耗时，确认是否为服务响应或准备阶段阻塞；不要扩大超时掩盖问题。
 
+### P5.1 根因定位与修复（基线 b474fe4）
+
+在相同本地 ComfyUI 0.45.0 服务，队列空闲且测试数据隔离的条件下，直接测量真实 HTTP：完整 /object_info 返回 3066 个节点描述、JSON 5617936 bytes，8918ms；LoadImage/ImageBatch/CreateVideo/SaveVideo 的单类查询分别 9/1/1/2ms。启用 ATELIER_TEST_COMFY_TRACE=1 的修复前用例复现同一失败：12 次完整目录读取，每次 8825–9370ms；图片上传 13–53ms，/prompt 11–14ms。第 3 个 Job 在等待窗口结束时仍 preparing；随后关闭后端等待已在途的请求结束，第三个 Job 实际完成准备并提交。因此根因是反复获取全量节点定义造成的准备阶段延迟，不是三参考图端口、CAS 上传或 GPU 本身无法执行。
+
+实现：
+- compiler.mjs 计算模板 classTypes、选定输出 capture adapter、已连接 IMAGE/MASK socket 所需的 LoadImage/LoadImageMask 集合，去重排序。
+- comfy-v2-adapter.mjs 在 Job 准备时按需读取 /object_info/{class}，不跨 Job 缓存，仍使用实时定义校验编译图、CAS 文件和本地镜头组限制。所有读取共享原 45s 总期限；旧服务 scoped route 404/405、超大类别集合或不适合路径编码的类别可回退全量查询。缺失类别 {} 不触发全量回退，保持编译失败语义。设置页的完整目录接口不变。
+- shot-groups.mjs / runtime.mjs / comfy-instances.mjs：预检采用同一 scoped 查询；5s 缓存按实例 ID、地址、类别集合区分，成功后起算，合并同范围并发请求、失败立即驱逐，最多保留 64 个范围；保持原 10s 总期限。
+- 新增确定性契约回归：捕获节点及 IMAGE/MASK 加载器、缺失类别、实时 schema 更新、旧服务回退、不对 503 回退、预检同范围共享、错误恢复及实例地址隔离。没有修改 Job 状态机、提交屏障、模板格式、数据库或测试超时。
+
+实际复测（串行，不调整原断言）：
+
+| 场景 | 修复前 | 修复后 |
+| --- | ---: | ---: |
+| 三种输入模式真实视频用例 | 109.90s，FAIL | 3.80s（带 trace），3.41s（默认传输），PASS |
+| 完整节点目录调用（同三模式 trace） | 12 次 | 0 次 |
+| 单类节点定义读取 | 不使用 | 1–25ms/次，共 29 次 |
+| 串行镜头组/输入模式全量 | 14/15 PASS（历史） | 16/16 PASS（新增一项），0 SKIP |
+| 串行套件总耗时 | 199.05s（历史） | 11.79s（带 trace）、11.45s（默认传输） |
+
+首帧、首尾帧、三参考图均实际生成并物化视频，逐帧 RGB 与三个原始 CAS PNG 的颜色断言通过；真实前驱重试及跨两次重启恢复、连续镜头尾帧提取通过。带 trace 的用例包装真实 HTTP transport，不记录请求体、图、文件名或密钥（runtime 对自定义 transport 禁用可选 WS 预览）；第二轮关闭 trace 使用默认真实 transport，结果仍通过。无需在线模型调用、不重启正式后端、未取消或清空用户任务。测试为轻量视频工作流，不验证扩散模型推理。
+
+可复测命令（web，PowerShell）：
+
+```powershell
+$env:ATELIER_TEST_LOCAL_COMFY='1'
+$env:ATELIER_TEST_COMFY_TRACE='1'
+node --test --test-concurrency=1 server/backend/drama-p34a-comfy-inputs.test.mjs server/backend/shot-groups.test.mjs
+Remove-Item Env:ATELIER_TEST_COMFY_TRACE
+```
+
+后端及编译器契约回归 89 PASS、0 FAIL、3 项显式 live SKIP（已由上述真实测试全部补跑）；TypeScript 通过。P5.1 判定 PASS。
+
 ## 6. 判定
 
-P1–P4 信息反馈改造的前端回归和三节点真实浏览器专项已通过；真实文本生成及工作区大规模分页通过。P5 完整门槛需保留真实 ComfyUI 及整体画布性能的不通过/待验证项，不以首轮通过的部分代替全量验收。
+P1–P4 信息反馈改造的前端回归和三节点真实浏览器专项已通过；真实文本生成及工作区大规模分页通过。P5.1 真实 ComfyUI 已通过，历史失败保留为根因证据。P5 完整门槛仍需 P5.2 解决首次缩放掉帧并复测严格性能目标；不以部分通过代替全量验收。

@@ -19,7 +19,7 @@ import {buildApp} from "./app.mjs";
 import {createWindowsDpapiProtector} from "./credential-protection.mjs";
 import {createCredentialVault} from "./credential-vault.mjs";
 import {createJobCoordinator} from "./job-coordinator.mjs";
-import {createComfyV2Adapters,comfyUpstream} from "./comfy-v2-adapter.mjs";
+import {createComfyV2Adapters,comfyUpstream,readComfyWorkflowObjectInfo} from "./comfy-v2-adapter.mjs";
 import {createComfyLiveHub} from "./comfy-live.mjs";
 import {createComfyInstanceRegistry} from "./comfy-instances.mjs";
 import {createOpenAiModelAdapter} from "./openai-model-adapter.mjs";
@@ -142,8 +142,8 @@ export function createLocalBackend({dataDir,streamPollMs=200,adapters,comfyInsta
   const shotBatches=autoDispatch?createShotBatches({db,blobStore,tailFrames:createTailFrameExtractionService({dataDir:root,blobStore}),
    instanceIds:()=>comfyRegistry?comfyRegistry.list().map(item=>item.id):comfyInstances?.map(item=>item.id)??[],
    instanceOrigin:id=>(comfyRegistry?comfyRegistry.list():comfyInstances)?.find(instance=>instance.id===id)?.url,
-   objectInfo:async id=>comfyRegistry?(await comfyRegistry.objectInfo(id)).objectInfo:
-    (comfyUpstreamCall??comfyUpstream)(comfyInstances.find(instance=>instance.id===id),"/object_info",{timeoutMs:10000})}):null;
+   objectInfo:async(id,classTypes)=>comfyRegistry?(await comfyRegistry.objectInfo(id,classTypes)).objectInfo:
+    readComfyWorkflowObjectInfo(comfyInstances.find(instance=>instance.id===id),classTypes,{upstreamCall:comfyUpstreamCall??comfyUpstream,timeoutMs:10000})}):null;
   const worker=autoDispatch?createBackendWorker({coordinator,materializer,shotBatches,intervalMs:dispatchIntervalMs}):null;
   const app=buildApp({db,sessionAuth,autoLocalSession,blobStore,mediaPreview,audioExtraction,blobGc,projectArchive,vault,skillRegistry,
     assistantChat:enableOpenAiModels?createAssistantChatService({vault,...(modelUpstreamCall?{upstreamCall:modelUpstreamCall}: {})}):null,

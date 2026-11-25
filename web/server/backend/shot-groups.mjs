@@ -2,7 +2,7 @@
 import {createHash,randomUUID} from "node:crypto";
 import {getProject} from "./projects.mjs";
 import {assertNoRawCredentials,matchesSourceFingerprint,stableJson,submitJobInTransaction,writeTransaction} from "./repository.mjs";
-import {compileSingleWorkflow,validateSingleRequest,verifyTemplate} from "../comfy-workflow/compiler.mjs";
+import {compileSingleWorkflow,validateSingleRequest,verifyTemplate,workflowObjectInfoClasses} from "../comfy-workflow/compiler.mjs";
 
 const fail=(code,statusCode=409)=>Object.assign(Error(code),{code,statusCode});
 const id=value=>typeof value==="string"&&/^[A-Za-z0-9_-]{1,128}$/.test(value);
@@ -19,16 +19,27 @@ export function createShotBatches({db,blobStore,tailFrames,instanceIds,instanceO
  async function inspect(projectId,{instanceId,comfyTemplate,comfyRequest}={}){
   const project=getProject(db,projectId);
   if(!instanceIds().includes(instanceId)||comfyRequest?.instanceId!==instanceId)throw fail("shot_local_video_workflow_required",422);
-  const current=inspections.get(instanceId);
-  if(!current||Date.now()-current.at>5000){
-   inspections.set(instanceId,{at:Date.now(),promise:Promise.resolve().then(()=>objectInfo(instanceId))});
-  }
-  const info=await inspections.get(instanceId).promise;
   verifyTemplate(comfyTemplate);
-  if(comfyTemplate.requirements.classTypes.some(type=>!info[type]))throw fail("shot_comfy_node_missing",422);
-  if(comfyTemplate.requirements.classTypes.some(type=>info[type].api_node||info[type].apiNode))throw fail("shot_online_comfy_node",422);
   const request={...comfyRequest,projectId,canvasRevision:String(project.revision),idempotencyKey:"shot-preflight"};
   validateSingleRequest(request,comfyTemplate);
+  const classes=workflowObjectInfoClasses(request,comfyTemplate);
+  const key=JSON.stringify([instanceId,instanceOrigin(instanceId),classes]);
+  let current=inspections.get(key);
+  // Share in-flight requests for identical scoped schemas. TTL begins after
+  // success; failures are evicted immediately so the user can retry.
+  if(!current||Date.now()-current.at>5000){
+   current={at:Infinity,promise:null};
+   const entry=current;
+   entry.promise=Promise.resolve().then(()=>objectInfo(instanceId,classes)).then(info=>{
+    entry.at=Date.now();return info;
+   },error=>{if(inspections.get(key)===entry)inspections.delete(key);throw error;});
+   inspections.delete(key);inspections.set(key,entry);
+   // Limit distinct cached template scopes, retaining at most 64 entries.
+   while(inspections.size>64)inspections.delete(inspections.keys().next().value);
+  }
+  const info=await current.promise;
+  if(comfyTemplate.requirements.classTypes.some(type=>!info[type]))throw fail("shot_comfy_node_missing",422);
+  if(classes.some(type=>info[type]?.api_node||info[type]?.apiNode))throw fail("shot_online_comfy_node",422);
   const mediaFiles=Object.fromEntries(request.externalInputs.filter(ref=>ref.kind==="asset").map(ref=>[
    ref.assetId,ref.assetId+({IMAGE:".png",MASK:".png",VIDEO:".mp4",AUDIO:".wav"}[ref.valueKind]??".bin")
   ]));

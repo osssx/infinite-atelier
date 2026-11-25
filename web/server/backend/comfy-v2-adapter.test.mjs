@@ -12,11 +12,11 @@ import {submitJob} from "./repository.mjs";
 import {fingerprintSource} from "./repository.mjs";
 import {createJobCoordinator} from "./job-coordinator.mjs";
 import {createBlobStore} from "./blob-store.mjs";
-import {createComfyV2Adapters,comfyUpstream} from "./comfy-v2-adapter.mjs";
+import {createComfyV2Adapters,comfyUpstream,readComfyWorkflowObjectInfo} from "./comfy-v2-adapter.mjs";
 import {createLocalBackend} from "./runtime.mjs";
 import {createProject,getProject} from "./projects.mjs";
 import {createCanvasMaterializer} from "./canvas-materializer.mjs";
-import {canonical,sha256,validateSingleRequest,compileSingleWorkflow} from "../comfy-workflow/compiler.mjs";
+import {canonical,sha256,validateSingleRequest,compileSingleWorkflow,workflowObjectInfoClasses} from "../comfy-workflow/compiler.mjs";
 
 const png=Buffer.from("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000b49444154789c636000020000050001a5f645400000000049454e44ae426082","hex");
 const mp4=Buffer.from("000000186674797069736f6d0000020069736f6d69736f32","hex");
@@ -33,6 +33,11 @@ const info={
  SaveAudio:{input:{required:{audio:["AUDIO",{}],filename_prefix:["STRING",{}]}},output:[]},
  SaveText:{input:{required:{text:["STRING",{}],filename_prefix:["STRING",{}]}},output:[]}
 };
+function mockObjectInfo(path,schemas=info){
+ if(path==="/object_info")return schemas;
+ const type=decodeURIComponent(path.slice("/object_info/".length));
+ return Object.hasOwn(schemas,type)?{[type]:schemas[type]}:{};
+}
 function template({reference=false,mediaContract=false}={}){
  const apiGraph=reference?{
   "1":{class_type:"SolidImage",inputs:{}},
@@ -108,7 +113,7 @@ function mockTransport({errorAt,failDownloadOnce=false,workflowNodeId="wf-1",omi
  const mock=async(instance,path,opts={})=>{
   assert.equal(instance.url,"http://127.0.0.1:8188");
   calls.push(path);
-  if(path==="/object_info")return info;
+  if(path.startsWith("/object_info/")||path==="/object_info")return mockObjectInfo(path);
   if(path==="/system_stats")return {system:{os:"windows"},devices:[]};
   if(path==="/upload/image")return {name:opts.body.get("image").name,type:"input",subfolder:""};
   if(path==="/prompt"){
@@ -401,7 +406,7 @@ test("VIDEO/AUDIO media-file inputs compile only with matching verified staged m
   LoadAudio:{input:{required:{audio:[["author_audio.wav"],{"audio_upload":true}]}},output:["AUDIO"]}
  };
  const mock=async(_instance,path,opts={})=>{
-  if(path==="/object_info")return extraInfo;
+  if(path.startsWith("/object_info/")||path==="/object_info")return mockObjectInfo(path,extraInfo);
   if(path==="/upload/image"){
    const entry=opts.body.get("image");
    upstream.push({name:entry.name,mime:entry.type,bytes:Buffer.from(await entry.arrayBuffer())});
@@ -484,7 +489,7 @@ test("backend rejects a CAS video masquerading as IMAGE before any Comfy upload 
  const calls=[];
  const f=fixture(t,{reference:true,transport:async(_instance,path)=>{
   calls.push(path);
-  if(path==="/object_info")return info;
+  if(path.startsWith("/object_info/")||path==="/object_info")return mockObjectInfo(path);
   throw Error("upstream must never receive invalid media: "+path);
  }});
  const video=await f.blobStore.put(Readable.from([mp4]),{mime:"video/mp4"});
@@ -495,7 +500,7 @@ test("backend rejects a CAS video masquerading as IMAGE before any Comfy upload 
  const coordinator=createJobCoordinator({db:f.db,adapters:{comfy:f.adapters}});
  coordinator.recoverAtStartup();await coordinator.tick();
  assert.equal(f.row(id).status,"failed");
- assert.deepEqual(calls,["/object_info"]);
+ assert.deepEqual(calls,workflowObjectInfoClasses(f.req,f.tplt).map(type=>"/object_info/"+encodeURIComponent(type)));
  assert.equal(f.db.prepare("SELECT COUNT(*) AS n FROM comfy_job_preparations WHERE job_id=?").get(id).n,0);
 });
 test("Comfy compiler preserves colon-prefixed Canvas node IDs in capture mapping",()=>{
@@ -642,7 +647,7 @@ test("Comfy confirmed 422 allows terminal failure; ambiguous POST response survi
 test("reference-image snapshot uses validated blob digest, deterministic Comfy upload filename, and one GPU POST",async t=>{
  const captured=[];
  const transport=async(instance,path,opts={})=>{
-  if(path==="/object_info")return info;
+  if(path.startsWith("/object_info/")||path==="/object_info")return mockObjectInfo(path);
   if(path==="/upload/image"){
    const img=opts.body.get("image");
    captured.push({name:img.name,size:img.size});
@@ -696,6 +701,45 @@ test("runtime HTTP + explicit Comfy adapter wiring never drives old V2 gateway",
   assert.ok(result.json().artifacts.every(x=>x.metadata.comfyArtifact));
   assert.equal(calls.prompts.length,1);
  }finally{if(runtime)await runtime.close();rmSync(dir,{recursive:true,force:true})}
+});
+test("workflow schemas include selected capture sinks and active socket loaders, not unrelated classes",()=>{
+ const t=template({reference:true});
+ const req=request(t,{reference:true,asset:"a".repeat(64)});
+ assert.deepEqual(workflowObjectInfoClasses(req,t),["Generate","LoadImage","SaveImage","SolidImage"]);
+ assert.deepEqual(workflowObjectInfoClasses({...req,edges:[]},t),["Generate","SaveImage","SolidImage"]);
+ const mask={...t,ports:t.ports.map(p=>p.id==="source"?{...p,valueKind:"MASK"}:p)};
+ assert.deepEqual(workflowObjectInfoClasses(req,mask),["Generate","LoadImageMask","SaveImage","SolidImage"]);
+ const multi=template(),selected={...request(multi),rootOutputs:[{nodeId:"wf-1",portId:"video"}]};
+ assert.deepEqual(workflowObjectInfoClasses(selected,multi),multi.requirements.classTypes);
+});
+test("scoped object info reads only requested classes, handles absent class, and does not cache across calls",async()=>{
+ const instance={id:"comfy-local",url:"http://127.0.0.1:8188"};
+ const calls=[];
+ let schemas={...info};
+ const transport=async(_instance,path,opts)=>{
+  calls.push({path,timeout:opts.timeoutMs});
+  return mockObjectInfo(path,schemas);
+ };
+ const result=await readComfyWorkflowObjectInfo(instance,["SaveImage","Missing","LoadImage","LoadImage"],{upstreamCall:transport,timeoutMs:10000});
+ assert.deepEqual(Object.keys(result),["LoadImage","SaveImage"]);
+ assert.deepEqual(calls.map(x=>x.path),["/object_info/LoadImage","/object_info/Missing","/object_info/SaveImage"]);
+ assert.ok(calls.every(x=>x.timeout>0&&x.timeout<=10000));
+ schemas={...schemas,LoadImage:{output:["CHANGED"]}};
+ assert.deepEqual((await readComfyWorkflowObjectInfo(instance,["LoadImage"],{upstreamCall:transport})).LoadImage.output,["CHANGED"]);
+});
+test("scoped object info safely encodes custom classes and falls back only for unsupported routes",async()=>{
+ const instance={id:"comfy-local",url:"http://127.0.0.1:8188"};
+ const calls=[];
+ const transport=async(_instance,path)=>{
+  calls.push(path);
+  if(path==="/object_info")return info;
+  throw Object.assign(Error("not found"),{code:"comfy_upstream_404"});
+ };
+ assert.equal(await readComfyWorkflowObjectInfo(instance,["Custom #1"],{upstreamCall:transport}),info);
+ assert.deepEqual(calls,["/object_info/Custom%20%231","/object_info"]);
+ calls.length=0;
+ await assert.rejects(readComfyWorkflowObjectInfo(instance,["LoadImage"],{upstreamCall:async(_i,path)=>{calls.push(path);throw Object.assign(Error("offline"),{code:"comfy_upstream_503"})}}),/offline/);
+ assert.deepEqual(calls,["/object_info/LoadImage"]);
 });
 test("native Comfy HTTP transport submits exactly once and streams four outputs",async t=>{
  let posts=0,views=0;

@@ -79,8 +79,23 @@ const vault={list:()=>[{id:"p1mock",provider:"openai_compatible",hasKey:true,key
  revoke:()=>{throw Error("fixture_no_credential_mutation")}
 };
 const app=buildApp({db,sessionAuth:createLocalSessionAuth(),autoLocalSession:true,blobStore,projectArchive,vault,
- assistantChat:async()=>{
+ assistantChat:async({messages})=>{
   modelCalls++;
+  if(process.env.ATELIER_DRAMA_FEEDBACK_E2E==="1"){
+   const prompt=messages[0]?.content??"";
+   // A deterministic short delay makes the actual UI running state observable.
+   await new Promise(resolve=>setTimeout(resolve,700));
+   if(prompt.includes("提取角色、场景和道具资产"))return {answer:JSON.stringify({assets:[{id:"feedback-prop",kind:"prop",name:"验收道具",description:"蓝色书包",sourceRefs:[]}]})};
+   if(prompt.includes("输出 episodes。")){
+    const count=Number(prompt.match(/恰好 (\d+) 集/)?.[1]??1);
+    const context=JSON.parse(prompt.match(/<confirmed-context>\n([\s\S]*?)\n<\/confirmed-context>/)?.[1]??"{}");
+    const existing=context.existingEpisodes??[];
+    return {answer:JSON.stringify({episodes:Array.from({length:count},(_,i)=>({
+     ...(existing[i]??{}),id:existing[i]?.id??"fixture-episode-"+i,title:existing[i]?.title??"验收剧集 "+(i+1),
+     synopsis:"剧情梗概 · 验收候选",ending:"验收结尾",events:[],sourceRefs:[],
+    }))})};
+   }
+  }
   return {answer:JSON.stringify({shots:[{...e2,description:"浏览器实际触发的第二集候选"}]})};
  },modelKinds:["text"]});
 let shutdown=false;

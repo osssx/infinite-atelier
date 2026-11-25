@@ -109,16 +109,21 @@ def run():
             check("shot directory locked","""(()=>{const r=document.querySelector(%s);const b=[...r.querySelectorAll('[aria-label="分镜镜头导航"] button')];return b.length>0&&b.every(x=>x.disabled)})()"""%json.dumps(portal))
             if appearance=="dark":
                 click(portal+' button[aria-label="确认视频输入模式"]')
+                check("field success toast within themed workspace","""(()=>{const r=document.querySelector(%s),t=r?.querySelector('[data-drama-feedback="success"]'),layer=r?.querySelector('[data-drama-feedback-toasts]');if(!t||!layer||!t.textContent.includes('视频输入模式已更新草案'))return false;const a=r.getBoundingClientRect(),b=t.getBoundingClientRect(),c=getComputedStyle(layer);return b.width>0&&b.left>=a.left&&b.right<=a.right&&b.top>=a.top&&b.bottom<=a.bottom&&c.position==='absolute'&&c.pointerEvents==='none'&&getComputedStyle(t).backgroundColor===getComputedStyle(r.querySelector('[data-drama-workspace-content]')).backgroundColor})()"""%json.dumps(portal))
                 check("real persisted frame","""(async()=>{const r=await fetch('/api/v1/projects/%s');const d=await r.json();return !!d.document.nodes.find(n=>n.id==='board').metadata.dramaShotProduction?.[%s]?.firstFrame})()"""%(fixture["projectId"],json.dumps(shot)),35)
                 check("read-only preview loaded","""(()=>{const i=document.querySelector(%s);return i&&i.complete&&i.naturalWidth>0})()"""%json.dumps(portal+' [data-video-mode-readonly] img'))
             else:
                 click(portal+' [data-video-mode-field="editing"] [data-drama-action="cancel"]')
+                check("cancel does not show success toast","!document.querySelector("+json.dumps(portal+' [data-drama-feedback="success"]')+")")
                 check("cancel leaves backend unchanged","""(async()=>{const r=await fetch('/api/v1/projects/%s');const d=await r.json();return !d.document.nodes.find(n=>n.id==='board').metadata.dramaShotProduction?.[%s]?.firstFrame})()"""%(fixture["projectId"],json.dumps(shot)))
             check("shot directory unlocked","""(()=>{const r=document.querySelector(%s);const b=[...r.querySelectorAll('[aria-label="分镜镜头导航"] button')];return b.length>0&&b.every(x=>!x.disabled)})()"""%json.dumps(portal))
             close_workspace()
         # Reopen the real saved shot and create a production Config from the merged editor.
+        # Feedback is scoped to the mounted workspace and must not survive closing.
+        check("closed workspace has no feedback or task","!document.querySelector('[data-drama-feedback-toasts],[data-drama-feedback-errors],[data-drama-task-status]')")
         open_workspace()
         button("批量创建配置")
+        check("reopened workspace starts without previous feedback","!document.querySelector('[data-drama-feedback-toasts],[data-drama-feedback-errors],[data-drama-task-status]')")
         choose("批量创建配置剧集","ep-1")
         button("定位镜头",portal+" tbody")
         check("saved shot production ready","""(()=>{const r=document.querySelector(%s);return r?.textContent.includes('输入预检通过')&&[...r.querySelectorAll('button')].some(b=>b.textContent.trim()==='创建视频配置'&&!b.disabled)})()"""%json.dumps(portal),35)

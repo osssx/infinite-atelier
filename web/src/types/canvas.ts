@@ -73,6 +73,8 @@ export type CanvasNodeMetadata = {
     dramaAssetReferenceRevisionId?: string;
     dramaAssetReferenceEntries?: {id:string;digest:string}[];
     creativePayloadRef?: {nodeId:string;schemaVersion:1};
+    /** Read-only projection for an unloaded story; never a draft body. */
+    dramaStorySummary?: {preview:string;length:number;hasText:boolean;confirmedTextMatches:boolean;hadConfirmed:boolean;hasStoredText:boolean};
     dramaShotProduction?: Record<string,import("@/features/canvas-assistant/drama-pipeline-media").DramaShotProduction>;
     dramaAssetCandidate?: {id:string;baseline:string;assets:import("@/features/canvas-assistant/canvas-drama-pipeline").DramaAsset[]};
     dramaSourceParagraphs?: {id:string;text:string;line:number;status:string;replaces?:string[]}[];

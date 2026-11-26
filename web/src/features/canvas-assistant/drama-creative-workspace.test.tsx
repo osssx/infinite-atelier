@@ -222,6 +222,27 @@ describe("P3.4b3 workspace lifecycle",()=>{
   await press(story.div,"影响与历史");
   expect(story.div.querySelector('[aria-label="测试内嵌历史"]')).toBeTruthy();
  });
+ it("saves story fields before version confirmation and leaves failed edits pending",async()=>{
+  const {useEffect}=await import("react");
+  const div=document.createElement("div");document.body.append(div);const root=createRoot(div);roots.push(root);
+  const order:string[]=[];let fail=true;
+  const confirm=vi.fn(async()=>{order.push("confirm");});
+  function Story({register}:{register:import("./drama-creative-workspace").WorkspacePendingRegistration}){
+   useEffect(()=>{register("story:story",async()=>{order.push("save");if(fail)throw Error("草案未落盘");register("story:story",null);});
+    return ()=>register("story:story",null);},[register]);
+   return <div>正文草案</div>;
+  }
+  await act(async()=>root.render(<DramaCreativeWorkspace projectId="p1" nodeId="story" kind="source" focus={{}} versionConfirmed={false}
+   storyVersionAction={{hasText:true,busy:false,confirm}} onClose={async()=>{}} renderPanel={(_tab,register)=><Story register={register}/>}/>));
+  expect(div.querySelectorAll('[data-story-confirm-version]')).toHaveLength(1);
+  await press(div,"保存并确认故事版本");
+  expect(order).toEqual(["save"]);expect(confirm).not.toHaveBeenCalled();
+  expect(div.textContent).toContain("草案未落盘");
+  expect(div.querySelector('[data-drama-pending-status]')).toBeTruthy();
+  fail=false;await press(div,"保存并确认故事版本");
+  expect(order).toEqual(["save","save","confirm"]);
+  expect(div.querySelector('[data-drama-pending-status]')).toBeNull();
+ });
  it("places the draft or confirmed state beside the workspace title instead of a separate row",async()=>{
   const draft=await mount("episodes");
   const root=draft.div.querySelector<HTMLElement>('[data-creative-workspace-node-id="episodes"]')!;

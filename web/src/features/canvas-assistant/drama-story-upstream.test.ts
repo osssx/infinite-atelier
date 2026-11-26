@@ -42,7 +42,17 @@ describe("story upstream text synchronization",()=>{
   expect(initialStoryTextImport(blank,storyTextSources("story",[blank,text,node("text-2","text","另一个")],
    [...source,edge("edge-2","text-2")]))).toBeNull();
  });
+ it("never overwrites an unloaded stored body or unknown compact reference",()=>{
+  const compact={...node("story","drama:source"),metadata:{creativePayloadRef:{nodeId:"story",schemaVersion:1 as const}}};
+  const sources=storyTextSources("story",[compact,node("text-1","text","首次正文")],[edge("edge-1","text-1")]);
+  const summary={preview:"",length:0,hasText:false,confirmedTextMatches:false,hadConfirmed:true,hasStoredText:true};
+  expect(initialStoryTextImport(compact,sources)).toBeNull();
+  expect(initialStoryTextImport({...compact,metadata:{...compact.metadata,dramaStorySummary:summary}},sources)).toBeNull();
+  expect(initialStoryTextImport({...compact,metadata:{...compact.metadata,dramaStorySummary:{...summary,hadConfirmed:false,hasStoredText:false}}},sources)?.dramaDraft).toBe("首次正文");
+ });
  it("detects upstream edits, replacement and disconnection without deleting published content",()=>{
+// Compact bodies must be checked before deciding if automatic import is safe.
+
   const source={nodeId:"a",edgeId:"e1",title:"原稿",content:"初稿",digest:storyTextDigest("初稿")};
   const patch=storyTextSyncPatch(source,"replace","");
   const saved=patch.dramaTextSourceSync!;

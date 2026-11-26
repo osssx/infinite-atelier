@@ -42,7 +42,36 @@ export function readCreativePayload(db,projectId,nodeId){
  return {revision:row.project_revision,projectRevision:project.revision,payload:JSON.parse(row.payload_json)};
 }
 
+/** Read-only canvas projection: never persist previews or expose full creative bodies. */
+export function projectStorySummaries(db,projectId,document){
+ if(!Array.isArray(document?.nodes))return document;
+ if(!document.nodes.some(node=>node?.type==="drama:source"&&node.metadata?.creativePayloadRef))return document;
+ const read=db.prepare("SELECT payload_json FROM creative_node_payloads WHERE project_id=? AND node_id=?");
+ return {...document,nodes:document.nodes.map(node=>{
+  if(node?.type!=="drama:source"||!node.metadata?.creativePayloadRef)return node;
+  const row=read.get(projectId,node.id);
+  if(!row)return node;
+  const payload=JSON.parse(row.payload_json);
+  const draft=payload.dramaDraft??payload.content??payload.dramaConfirmed??"";
+  const confirmed=payload.dramaConfirmed;
+  const summary={preview:draft.slice(0,360),length:draft.length,hasText:Boolean(draft.trim()),
+   confirmedTextMatches:Boolean(draft.trim())&&draft===confirmed,hadConfirmed:Boolean(confirmed?.trim()),
+   hasStoredText:[payload.dramaDraft,payload.content,confirmed].some(value=>Boolean(value?.trim()))};
+  return {...node,metadata:{...node.metadata,dramaStorySummary:summary}};
+ })};
+}
+
+export function stripStorySummaries(document){
+ if(!Array.isArray(document?.nodes)||!document.nodes.some(node=>node?.metadata?.dramaStorySummary!==undefined))return document;
+ return {...document,nodes:document.nodes.map(node=>{
+  if(node?.metadata?.dramaStorySummary===undefined)return node;
+  const {dramaStorySummary,...metadata}=node.metadata;
+  return {...node,metadata};
+ })};
+}
+
 export function hydrateCreativeDocument(db,projectId,document){
+ document=stripStorySummaries(document);
  if(!Array.isArray(document?.nodes))return document;
  if(!document.nodes.some(node=>node?.metadata?.creativePayloadRef))return document;
  const read=db.prepare("SELECT payload_json FROM creative_node_payloads WHERE project_id=? AND node_id=?");

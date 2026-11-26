@@ -32,7 +32,7 @@ afterEach(async()=>{
  roots.length=0;document.body.replaceChildren();vi.unstubAllGlobals();
 });
 const initial="开场\n旧段落\n结局";
-async function mount(raw=initial){
+async function mount(raw=initial,persist:()=>Promise<void>=async()=>{}){
  const container=document.createElement("div");document.body.append(container);
  const root=createRoot(container);roots.push(root);
  const patch=vi.fn<(value:Partial<CanvasNodeMetadata>)=>void>();
@@ -46,7 +46,7 @@ async function mount(raw=initial){
  function View(){
   const [value,setValue]=useState(node);
   return <DramaStoryEditor node={value} projectId="project-1" versionBusy={false}
-   onChange={change=>{patch(change);setValue(old=>({...old,metadata:{...old.metadata,...change}}));}}
+   onChange={async change=>{await persist();patch(change);setValue(old=>({...old,metadata:{...old.metadata,...change}}));}}
    onConfirmVersion={confirm} onPendingChange={track}/>;
  }
  await act(async()=>{root.render(<View/>);});
@@ -62,8 +62,11 @@ async function typeText(el:HTMLTextAreaElement,value:string){
   el.dispatchEvent(new Event("input",{bubbles:true}));
  });
 }
+const byText=(container:Element,label:string)=>[...container.querySelectorAll("button")].find(b=>b.textContent?.trim()===label);
+async function openAI(container:Element){await click(byText(container,"AI 创作"));}
 it("rewrites only the selected story range after preview, accept, and save",async()=>{
  const {container,patch,pending}=await mount();
+ await openAI(container);
  const field=container.querySelector<HTMLTextAreaElement>('[aria-label="故事完整正文"]')!;
  const start=initial.indexOf("旧段落");
  await act(async()=>{
@@ -89,6 +92,7 @@ it("rewrites only the selected story range after preview, accept, and save",asyn
 });
 it("discards AI candidate without touching story, then confirms original version",async()=>{
  const {container,patch,confirm}=await mount();
+ await openAI(container);
  await click(container.querySelector('[aria-label="全文润色"]'));
  await click([...container.querySelectorAll("button")].find(b=>b.textContent==="放弃候选"));
  expect(container.querySelector('[data-story-ai-candidate]')).toBeNull();
@@ -98,7 +102,9 @@ it("discards AI candidate without touching story, then confirms original version
 });
 it("prevents accepting an AI candidate generated for an outdated text snapshot",async()=>{
  const {container,patch}=await mount();
+ await openAI(container);
  await click(container.querySelector('[aria-label="全文改写"]'));
+ await click(container.querySelector('[aria-label="编辑故事正文"]'));
  const field=container.querySelector<HTMLTextAreaElement>('[aria-label="故事完整正文"]')!;
  await typeText(field,"外部手动修改");
  const accept=[...container.querySelectorAll<HTMLButtonElement>("button")].find(b=>b.textContent==="采用候选")!;
@@ -110,10 +116,51 @@ it("cancels a pending AI request without applying a late reply",async()=>{
  let resolve:(value:{candidate:string})=>void=()=>{};
  api.run.mockImplementationOnce(()=>new Promise(resolvePromise=>{resolve=resolvePromise}));
  const {container,patch}=await mount();
+ await openAI(container);
  await click(container.querySelector('[aria-label="AI 续写"]'));
  expect(container.textContent).toContain("AI 生成中");
  await click([...container.querySelectorAll("button")].find(b=>b.textContent?.includes("停止等待")));
  await act(async()=>resolve({candidate:"过期生成"}));
  expect(container.querySelector('[data-story-ai-candidate]')).toBeNull();
  expect(patch).not.toHaveBeenCalled();
+});
+it("starts read-only, stages edits and cancels without a graph write",async()=>{
+ const {container,patch,pending}=await mount();
+ const field=container.querySelector<HTMLTextAreaElement>('[data-story-textarea]')!;
+ expect(field.readOnly).toBe(true);
+ expect(container.querySelector('[aria-label="故事 AI 创作"]')).toBeNull();
+ await click(container.querySelector('[aria-label="编辑故事正文"]'));
+ expect(field.readOnly).toBe(false);
+ await typeText(field,"本地稿");
+ expect(pending.size).toBe(1);expect(patch).not.toHaveBeenCalled();
+ await click(byText(container,"取消"));
+ expect(field.readOnly).toBe(true);expect(field.value).toBe(initial);
+ expect(pending.size).toBe(0);expect(patch).not.toHaveBeenCalled();
+});
+it("keeps a failed save pending, retries, then returns to read-only only after persistence",async()=>{
+ let resolve:()=>void=()=>{};
+ const persist=vi.fn<()=>Promise<void>>().mockRejectedValueOnce(Error("落盘失败"))
+  .mockImplementationOnce(()=>new Promise<void>(r=>{resolve=r;}));
+ const {container,patch,pending}=await mount(initial,persist);
+ const field=container.querySelector<HTMLTextAreaElement>('[data-story-textarea]')!;
+ await click(container.querySelector('[aria-label="编辑故事正文"]'));
+ await typeText(field,"持久化稿");
+ await click(byText(container,"保存草案"));
+ expect(container.textContent).toContain("落盘失败");expect(field.value).toBe("持久化稿");
+ expect(pending.size).toBe(1);expect(field.dataset.storyMode).toBe("editing");expect(patch).not.toHaveBeenCalled();
+ await click(byText(container,"保存草案"));
+ expect(pending.size).toBe(1);expect(field.dataset.storyMode).toBe("editing");
+ await act(async()=>resolve());
+ expect(pending.size).toBe(0);expect(field.readOnly).toBe(true);
+ expect(patch).toHaveBeenCalledWith({dramaDraft:"持久化稿",content:"持久化稿"});
+});
+it("stopping during channel synchronization prevents a late model request",async()=>{
+ let resolve:()=>void=()=>{};
+ api.ensure.mockImplementationOnce(()=>new Promise<void>(r=>{resolve=r;}));
+ const {container}=await mount();
+ await openAI(container);
+ await click(container.querySelector('[aria-label="AI 续写"]'));
+ await click(byText(container,"停止等待"));
+ await act(async()=>resolve());
+ expect(api.run).not.toHaveBeenCalled();
 });

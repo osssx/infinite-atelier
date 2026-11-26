@@ -32,20 +32,21 @@ async function mount(options:{initial?:string;confirmed?:string;sources?:StoryTe
  const confirm=vi.fn(async()=>{});
  const snapshot=vi.fn(options.snapshot??(async()=>{}));
  let updateSources:(sources:StoryTextSource[])=>void=()=>{};
+ let updateStory:(text:string)=>void=()=>{};
  const node={id:"story",type:"drama:source",title:"故事",position:{x:0,y:0},
   metadata:{dramaDraft:initial,content:initial,
    dramaConfirmed:options.confirmed,dramaConfirmedVersionId:options.confirmed?"version-1":undefined,
    dramaTextSourceSync:options.sync}} as CanvasNodeData;
  function View(){
   const [data,setData]=useState(node),[sources,setSources]=useState(options.sources??[]);
-  updateSources=setSources;
+  updateSources=setSources;updateStory=text=>setData(old=>({...old,metadata:{...old.metadata,dramaDraft:text,content:text}}));
   return <DramaStoryEditor node={data} projectId="p" versionBusy={false}
    upstreamSources={sources}
-   onChange={value=>{patch(value);setData(old=>({...old,metadata:{...old.metadata,...value}}));}}
+   onChange={async value=>{patch(value);setData(old=>({...old,metadata:{...old.metadata,...value}}));}}
    onSnapshotDraft={snapshot} onConfirmVersion={confirm}/>;
  }
  await act(async()=>root.render(<View/>));
- return {container,patch,confirm,snapshot,updateSources:async(sources:StoryTextSource[])=>{
+ return {container,patch,confirm,snapshot,updateStory:async(text:string)=>{await act(async()=>updateStory(text));},updateSources:async(sources:StoryTextSource[])=>{
   await act(async()=>updateSources(sources));
  }};
 }
@@ -91,6 +92,7 @@ it("canceling comparison and disconnecting retains draft, and appended content k
 });
 it("blocks refresh while unsaved edits or AI candidate are present",async()=>{
  const {container,patch}=await mount({sources:[src("新故事")]});
+ await click(container.querySelector('[aria-label="编辑故事正文"]'));
  const story=container.querySelector<HTMLTextAreaElement>('[aria-label="故事完整正文"]')!;
  await write(story,"正在手动写的文字");
  expect((button(container,"刷新草案") as HTMLButtonElement)?.disabled).toBe(true);
@@ -109,11 +111,11 @@ it("failed snapshot leaves story unchanged and permits retry",async()=>{
 it("stops stale replacement when the story changes during asynchronous snapshot",async()=>{
  let resolve:()=>void=()=>{};
  const promise=new Promise<void>(r=>{resolve=r;});
- const {container,patch}=await mount({sources:[src("新内容")],snapshot:()=>promise});
+ const {container,patch,updateStory}=await mount({sources:[src("新内容")],snapshot:()=>promise});
  await click(button(container,"比较差异"));
  await act(async()=>{(button(container,"用上游替换当前草案") as HTMLElement).click();await Promise.resolve();});
  const story=container.querySelector<HTMLTextAreaElement>('[aria-label="故事完整正文"]')!;
- await write(story,"另一个修改");
+ await updateStory("另一个修改");
  await act(async()=>{resolve();await promise;});
  expect(patch).not.toHaveBeenCalled();
  expect(story.value).toBe("另一个修改");

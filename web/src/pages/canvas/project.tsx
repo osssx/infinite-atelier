@@ -1,4 +1,5 @@
 import type { CanvasBackendProject } from "@/features/backend-sync/canvas-api";
+import {flushSync} from "react-dom";
 import type { WheelZoomDirection } from "@/lib/canvas/canvas-wheel-pressure";
 import {createVideoAudioExtractionController,extractedAudioMetadata,audioExtractionErrorMessage,type ExtractedAudio} from "@/features/backend-sync/video-audio-extraction";
 import { isResourceNode, buildNodeMentionReferencesFromIndex } from "@/lib/canvas/canvas-resource-references";
@@ -86,7 +87,10 @@ import type {DramaWorkspaceTab} from "@/features/canvas-assistant/drama-pipeline
 import type {DramaWorkspaceFocus,WorkspacePendingRegistration} from "@/features/canvas-assistant/drama-creative-workspace";
 const DramaCreativeWorkspace=lazy(()=>import("@/features/canvas-assistant/drama-creative-workspace").then(m=>({default:m.DramaCreativeWorkspace})));
 import { DramaSourceNode } from "@/features/canvas-assistant/drama-source-node";
-import {importBlankStoryNodes,storyTextSources} from "@/features/canvas-assistant/drama-story-upstream";
+import {buildStoryTextSourceIndex,importBlankStoryNodes,storySourceState} from "@/features/canvas-assistant/drama-story-upstream";
+import {resolveStoryDraft,storyVersionConfirmed,storyDraftStatusLabel,rollbackStoryDraftPatch,storyDraftPatchMatches,type StoryDraftPatch} from "@/features/canvas-assistant/drama-story-state";
+const DramaStoryArtPanel=lazy(()=>import("@/features/canvas-assistant/drama-story-art-panel").then(m=>({default:m.DramaStoryArtPanel})));
+const DramaStoryHistorySummary=lazy(()=>import("@/features/canvas-assistant/drama-story-history-summary").then(m=>({default:m.DramaStoryHistorySummary})));
 const DramaStoryEditor=lazy(()=>import("@/features/canvas-assistant/drama-story-editor").then(m=>({default:m.DramaStoryEditor})));
 import {LazyCreativeNode} from "@/features/canvas-assistant/lazy-creative-node";
 import {selectAssetDirectory} from "@/features/canvas-assistant/drama-asset-directory-state";
@@ -562,14 +566,15 @@ function AtelierCanvasPage() {
     const inputGraphNodes = reuseCanvasSemanticNodes(semanticInputNodesRef.current, nodes);
     semanticInputNodesRef.current = inputGraphNodes;
     const inputGraphIndex = useMemo(() => buildCanvasGraphIndex(inputGraphNodes, connections), [inputGraphNodes, connections]);
+    const storySourceIndex=useMemo(()=>buildStoryTextSourceIndex(inputGraphNodes,connections),[inputGraphNodes,connections]);
     // A blank story can accept exactly one linked text source automatically.
     // Never replace an existing draft or a published version when links change.
     useEffect(()=>{
         if(!inputGraphNodes.some(node=>node.type==="drama:source"&&
             node.id!==activeStoryEditorRef.current&&
-            storyTextSources(node.id,inputGraphNodes,connections).length===1))return;
+            (storySourceIndex.get(node.id)?.length??0)===1))return;
         setNodes(current=>importBlankStoryNodes(current,connections,activeStoryEditorRef.current));
-    },[inputGraphNodes,connections,storySyncEpoch]);
+    },[inputGraphNodes,connections,storySourceIndex,storySyncEpoch]);
 
     const graphIndexRef = useRef(graphIndex);
     const directorPanelNode = dialogNodeId && graphIndex.nodeById.get(dialogNodeId)?.type === CanvasNodeType.Director ? graphIndex.nodeById.get(dialogNodeId) : undefined;
@@ -2579,6 +2584,32 @@ function AtelierCanvasPage() {
         setNodes((prev) => prev.map((node) => (node.id === nodeId ? applyNodeConfigPatch(node, patch, boundWorkflowName) : node)));
     }, []);
 
+    // Commit the React graph before awaiting the store barrier. On failure
+    // restore only unchanged optimistic fields and keep the editor's local draft.
+    const persistStoryPatch=useCallback(async(nodeId:string,patch:StoryDraftPatch)=>{
+        const before=nodesRef.current.find(node=>node.id===nodeId);
+        if(activeProjectIdRef.current!==projectId||before?.type!=="drama:source")throw Error("故事节点已不存在");
+        const commit=(value:StoryDraftPatch)=>{
+            flushSync(()=>handleConfigNodeChange(nodeId,value));
+            updateProject(projectId,{nodes:nodesRef.current,connections:connectionsRef.current});
+        };
+        commit(patch);
+        try{await awaitCanvasStorePersistence(projectId);}
+        catch(error){
+            if(activeProjectIdRef.current===projectId){
+                const current=nodesRef.current.find(node=>node.id===nodeId);
+                if(current?.type==="drama:source"){
+                    const rollback=rollbackStoryDraftPatch(before.metadata,current.metadata,patch);
+                    if(rollback)commit(rollback);
+                }
+            }
+            throw error;
+        }
+        const current=nodesRef.current.find(node=>node.id===nodeId);
+        if(activeProjectIdRef.current!==projectId||current?.type!=="drama:source"||
+            !storyDraftPatchMatches(before.metadata,current.metadata,patch))throw Error("保存期间故事内容已发生变化，请核对最新草案");
+    },[projectId,handleConfigNodeChange,updateProject]);
+
     const downloadNodeImage = useCallback((node: CanvasNodeData) => {
         if ((node.type !== CanvasNodeType.Image && node.type !== CanvasNodeType.Video && node.type !== CanvasNodeType.Audio) || !node.metadata?.content) return;
         saveAs(node.metadata.content, `canvas-${node.type}-${node.id}.${node.type === CanvasNodeType.Video ? "mp4" : node.type === CanvasNodeType.Audio ? audioExtension(node.metadata.mimeType) : imageExtension(node.metadata.content)}`);
@@ -4501,21 +4532,19 @@ function AtelierCanvasPage() {
             setCreativeWorkspaceNodeId(null);
             setStorySyncEpoch(value=>value+1);
             setTextVersionsNodeId(current=>current===creativeWorkspaceNodeId?null:current);
-        }catch(error){message.error(error instanceof Error?error.message:"保存失败，编辑器保持打开");}
+        }catch(error){message.error(error instanceof Error?error.message:"保存失败，编辑器保持打开");throw error;}
     },[projectId,message,creativeWorkspaceNodeId]);
     const creativeWorkspaceNode=creativeWorkspaceNodeId?
         nodes.find(node=>node.id===creativeWorkspaceNodeId):undefined;
 
+    const openStoryWorkspace=useCallback((nodeId:string)=>void openCreativeWorkspace(nodeId).catch(error=>message.error(String(error))),[openCreativeWorkspace,message]);
     const renderNodeContentPanel = useCallback(
         (contentNode: CanvasNodeData) => (contentNode.type==="drama:assets" || contentNode.type==="drama:episodes" || contentNode.type==="drama:storyboard") ? (
             <DramaNodeSummaryCard node={contentNode} projectId={projectId} onOpen={openCreativeWorkspace}/>
         ) : contentNode.type === "drama:source" ? (
             <DramaSourceNode key={contentNode.id} node={contentNode}
-                upstreamSources={storyTextSources(contentNode.id,nodes,connections)}
-                onChange={patch => handleConfigNodeChange(contentNode.id, patch)}
-                onOpenEditor={()=>void openCreativeWorkspace(contentNode.id).catch(error=>message.error(String(error)))}
-                onConfirmVersion={draft => confirmDramaVersion(contentNode.id,draft)}
-                versionBusy={textVersionBusy} />
+                sourceState={storySourceState(storySourceIndex.get(contentNode.id)??[],contentNode.metadata?.dramaTextSourceSync)}
+                onOpenEditor={openStoryWorkspace}/>
         ) : contentNode.metadata?.creativePayloadRef ? (
             <LazyCreativeNode projectId={projectId} nodeId={contentNode.id} stage={contentNode.type}/>
         ) : isInlineDramaNode(contentNode.type) ? renderNodePanel(contentNode) : (
@@ -4532,7 +4561,7 @@ function AtelierCanvasPage() {
                 }}
             />
         ),
-        [stopConfigGeneration, handleConfigNodeChange, handleGenerateNode,inputGraphNodes,nodes,connections,renderNodePanel,openTextVersions,confirmDramaVersion,textVersionBusy,openCreativeWorkspace],
+        [stopConfigGeneration, handleConfigNodeChange, handleGenerateNode,inputGraphNodes,connections,renderNodePanel,storySourceIndex,openCreativeWorkspace,openStoryWorkspace],
     );
 
     // Grouped so NodeLayer's prop list stays readable. The node still receives each entry as its own
@@ -4904,8 +4933,19 @@ function AtelierCanvasPage() {
                         kind={creativeWorkspaceNode.type==="drama:source"?"source":creativeWorkspaceNode.type==="drama:assets"?"assets":creativeWorkspaceNode.type==="drama:episodes"?"episodes":"storyboard"}
                         focus={creativeWorkspaceFocus}
                         candidateCount={creativeWorkspaceNode.metadata?.dramaAssetCandidate?.assets.length??0}
-                        versionConfirmed={Boolean(creativeWorkspaceNode.metadata?.dramaConfirmed &&
+                        versionConfirmed={creativeWorkspaceNode.type==="drama:source"?storyVersionConfirmed(creativeWorkspaceNode):Boolean(creativeWorkspaceNode.metadata?.dramaConfirmed &&
                             (creativeWorkspaceNode.metadata.dramaDraft || creativeWorkspaceNode.metadata.dramaConfirmed || creativeWorkspaceNode.metadata.content || "") === creativeWorkspaceNode.metadata.dramaConfirmed)}
+                        versionDraftLabel={creativeWorkspaceNode.type==="drama:source"?storyDraftStatusLabel(creativeWorkspaceNode):undefined}
+                        storyVersionAction={creativeWorkspaceNode.type==="drama:source"?{
+                            hasText:!!resolveStoryDraft(creativeWorkspaceNode).trim(),busy:textVersionBusy,
+                            allowReconfirm:!creativeWorkspaceNode.metadata?.dramaConfirmedVisual||!creativeWorkspaceNode.metadata?.dramaConfirmedVersionId,
+                            confirm:async()=>{
+                                const current=nodesRef.current.find(node=>node.id===creativeWorkspaceNode.id);
+                                if(!current||!resolveStoryDraft(current).trim())throw Error("请输入非空故事正文后再确认版本");
+                                if(!storyVersionConfirmed(current)||!current.metadata?.dramaConfirmedVisual||!current.metadata?.dramaConfirmedVersionId)
+                                    await confirmDramaVersion(current.id,resolveStoryDraft(current));
+                            }
+                        }:undefined}
                         color={{fill:theme.node.fill,text:theme.node.text,muted:theme.node.muted}}
                         onClose={closeCreativeWorkspace}
                         onTabChange={tab=>{
@@ -4914,17 +4954,14 @@ function AtelierCanvasPage() {
                         }}
                         renderPanel={(tab,onPendingChange)=>creativeWorkspaceNode.type==="drama:source"?
                             tab==="editor"?<DramaStoryEditor node={creativeWorkspaceNode} projectId={projectId}
-                                upstreamSources={storyTextSources(creativeWorkspaceNode.id,nodes,connections)}
-                                onChange={patch=>handleConfigNodeChange(creativeWorkspaceNode.id,patch)}
-                                onConfirmVersion={draft=>confirmDramaVersion(creativeWorkspaceNode.id,draft)}
+                                upstreamSources={storySourceIndex.get(creativeWorkspaceNode.id)??[]}
+                                onChange={patch=>persistStoryPatch(creativeWorkspaceNode.id,patch)}
                                 onSnapshotDraft={()=>backupStoryDraftBeforeReplace(creativeWorkspaceNode.id)}
                                 versionBusy={textVersionBusy} onPendingChange={onPendingChange}/>:
-                            tab==="settings"?<DramaSourceNode node={creativeWorkspaceNode} hideTextEditor
-                                upstreamSources={storyTextSources(creativeWorkspaceNode.id,nodes,connections)}
-                                onChange={patch=>handleConfigNodeChange(creativeWorkspaceNode.id,patch)}
-                                onConfirmVersion={draft=>confirmDramaVersion(creativeWorkspaceNode.id,draft)}
-                                versionBusy={textVersionBusy}/>:
-                            <p className="text-xs" style={{color:theme.node.muted}}>故事是创作流水线的原文入口。下游节点将依据已确认的原文与美术设定生成内容。</p>:
+                            tab==="settings"?<DramaStoryArtPanel node={creativeWorkspaceNode}
+                                onChange={patch=>persistStoryPatch(creativeWorkspaceNode.id,patch)}
+                                onPendingChange={onPendingChange} disabled={textVersionBusy}/>:
+                            <DramaStoryHistorySummary node={creativeWorkspaceNode}/>:
                             renderNodePanel(creativeWorkspaceNode,true,tab as DramaWorkspaceTab,creativeWorkspaceFocus,onPendingChange)}
                         renderHistoryPanel={()=>textVersionsNode?.id===creativeWorkspaceNode.id?
                             <CanvasTextVersionsModal inline key={`${projectId}:${creativeWorkspaceNode.id}:inline`}

@@ -1,0 +1,135 @@
+"""Story S1/S2 real Chrome and isolated SQLite persistence regression."""
+from __future__ import annotations
+import importlib.util
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+import urllib.request
+
+ROOT=Path(__file__).resolve().parents[1]
+sys.dont_write_bytecode=True
+spec=importlib.util.spec_from_file_location("story_browser",ROOT/"scripts/drama-p1-chrome-e2e.py")
+p1=importlib.util.module_from_spec(spec)
+sys.modules[spec.name]=p1
+spec.loader.exec_module(p1)
+
+def run():
+    root=Path(tempfile.mkdtemp(prefix="infinite-atelier-drama-p1-browser-"))
+    profile=root.parent/(root.name+"-chrome-profile")
+    backend_port,front_port,chrome_port=p1.port(),p1.port(),p1.port()
+    env=dict(os.environ,ATELIER_DRAMA_P1_BROWSER_E2E="1",ATELIER_P34B_BROWSER_E2E="1",ATELIER_DATA_DIR=str(root),ATELIER_BACKEND_PORT=str(backend_port))
+    processes=[];logs=[];page=None;passed=[]
+    portal='[data-creative-workspace-node-id="story"]'
+    card='[data-node-id="story"]'
+    field=portal+' [data-story-textarea]'
+    def q(value):return json.dumps(value,ensure_ascii=False)
+    def launch(name,args):
+        log=open(root/(name+".log"),"w",encoding="utf-8",errors="replace");logs.append(log)
+        processes.append(subprocess.Popen(args,cwd=ROOT,env=env,stdin=subprocess.DEVNULL,stdout=log,stderr=subprocess.STDOUT))
+    def check(name,expr,timeout=25):
+        p1.wait_for(lambda:page.js(expr),name,timeout)
+        passed.append(name);print("STORY_BROWSER_ASSERT",name,flush=True)
+    def click(selector):
+        check("click "+selector,"(()=>{const el=document.querySelector(%s);if(!el||el.disabled)return false;el.click();return true})()"%q(selector))
+    def button(label,scope=portal):
+        check("click "+label,"(()=>{const el=[...(document.querySelector(%s)?.querySelectorAll('button')||[])].find(b=>b.textContent.trim()===%s);if(!el||el.disabled)return false;el.click();return true})()"%(q(scope),q(label)))
+    def write(selector,text):
+        check("write "+selector,"(()=>{const el=document.querySelector(%s);if(!el||el.readOnly||el.disabled)return false;Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(el,%s);el.dispatchEvent(new Event('input',{bubbles:true}));return true})()"%(q(selector),q(text)))
+    def meta():
+        result=p1.graph(page,fixture["projectId"])
+        metadata=p1.find_node(result["data"],"story")["metadata"]
+        if "dramaDraft" not in metadata:
+            payload=page.js("(async()=>{const r=await fetch('/api/v1/projects/%s/drama-pipeline/payload?nodeId=story');return (await r.json()).payload})()"%fixture["projectId"])
+            return dict(metadata,**payload)
+        return metadata
+    def backend(name,predicate):
+        p1.wait_for(lambda:predicate(meta()),name,25)
+        passed.append(name);print("STORY_BROWSER_ASSERT",name,flush=True)
+    def pending_modal_button(label):
+        check("pending "+label,"(()=>{const modals=[...document.querySelectorAll('.ant-modal')];const modal=modals.find(m=>m.textContent.includes('存在未提交的草案修改'));const b=[...(modal?.querySelectorAll('button')||[])].find(x=>x.textContent.trim()===%s);if(!b||b.disabled)return false;b.click();return true})()"%q(label))
+    try:
+        launch("backend",["node","scripts/drama-p1-browser-fixture.mjs"])
+        fixture=p1.wait_for(lambda:json.loads((root/"p1-fixture.json").read_text("utf-8")) if (root/"p1-fixture.json").exists() else None,"fixture",45)
+        front=f"http://127.0.0.1:{front_port}"
+        launch("static",["node","scripts/drama-p34b-static-frontend.mjs","--port",str(front_port),"--backend",fixture["backendOrigin"],"--dist",str(ROOT/"dist")])
+        p1.wait_for(lambda:urllib.request.urlopen(front,timeout=2).status==200,"frontend",30)
+        launch("chrome",[str(p1.cdp.CHROME),"--headless=new","--no-first-run","--no-default-browser-check",
+         f"--remote-debugging-port={chrome_port}","--remote-allow-origins=*",f"--user-data-dir={profile}","--window-size=1440,900","about:blank"])
+        p1.wait_for(lambda:p1.http_json(f"http://127.0.0.1:{chrome_port}/json/version"),"Chrome CDP",35)
+        page=p1.ChromeCDP(chrome_port)
+        page.call("Emulation.setDeviceMetricsOverride",{"width":1440,"height":900,"deviceScaleFactor":1.25,"mobile":False})
+        page.call("Page.navigate",{"url":front+"/canvas/"+fixture["projectId"]})
+        check("summary without editing controls","(()=>{const root=document.querySelector(%s);return !!root?.querySelector('[data-story-inline-summary]')&&!root.querySelector('textarea,select,input,details')})()" %q(card),55)
+        original=meta()["dramaConfirmed"]
+        check("actual confirmed text in canvas summary","document.querySelector("+q(card+" [data-story-inline-summary]")+")?.textContent.includes("+q(original[:40])+")")
+        click(card+" [data-story-inline-summary]")
+        check("story starts read-only with AI collapsed","(()=>{const r=document.querySelector(%s);return r?.querySelector('[data-story-textarea]')?.readOnly&&!r.querySelector('[aria-label=\"故事 AI 创作\"]')&&r.querySelectorAll('[data-story-confirm-version]').length===1})()"%q(portal))
+        click(portal+' [aria-label="编辑故事正文"]')
+        write(field,"浏览器故事草案\n第二段")
+        check("dirty registered","!!document.querySelector("+q(portal+" [data-drama-pending-status]")+")")
+        assert meta()["dramaDraft"]==original,"typing must not update the persisted graph"
+        button("美术设定")
+        pending_modal_button("继续编辑")
+        check("continue editing keeps draft","document.querySelector("+q(field)+")?.value===" + q("浏览器故事草案\n第二段"))
+        button("美术设定")
+        pending_modal_button("保存草案")
+        check("settings after successful durable save","!!document.querySelector("+q(portal+" [data-story-art-panel]")+")")
+        backend("story draft saved, published version unchanged",lambda m:m["dramaDraft"]=="浏览器故事草案\n第二段" and m["content"]==m["dramaDraft"] and m["dramaConfirmed"]==original)
+        check("art fields are read-only","!document.querySelector("+q(portal+" [data-story-art-panel] textarea, "+portal+" [data-story-art-panel] select")+")")
+        click(portal+' [aria-label="编辑影片风格"]')
+        write(portal+' [aria-label="影片风格"]',"水彩故事风格")
+        button("保存并确认故事版本")
+        backend("confirmed body and art persisted together",lambda m:m["dramaConfirmed"]=="浏览器故事草案\n第二段" and m.get("dramaConfirmedVisual",{}).get("visualStyle")=="水彩故事风格")
+        check("header confirmed","document.querySelector("+q('[data-drama-workspace-version-status]')+")?.textContent==='已确认'")
+        confirmed_id=meta()["dramaConfirmedVersionId"]
+        click(portal+' [aria-label="编辑视频比例"]')
+        check("select ratio","(()=>{const s=document.querySelector(%s);if(!s)return false;Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set.call(s,'9:16');s.dispatchEvent(new Event('change',{bubbles:true}));return true})()"%q(portal+' [aria-label="视频比例"]'))
+        click(portal+' [aria-label="保存视频比例"]')
+        backend("ratio persisted without changing confirmed revision",lambda m:m.get("videoRatio")=="9:16" and m["dramaConfirmedVisual"]["visualStyle"]=="水彩故事风格" and m["dramaConfirmedVersionId"]==confirmed_id)
+        check("ratio does not dirty the version","document.querySelector("+q('[data-drama-workspace-version-status]')+")?.textContent==='已确认'")
+        button("故事正文")
+        click(portal+' [aria-label="编辑故事正文"]')
+        write(field,"不要保存的正文")
+        button("影响与历史")
+        pending_modal_button("放弃修改")
+        check("history mounted","!!document.querySelector("+q(portal+" [data-drama-history-layout]")+")")
+        check("confirmed paragraphs history entry","!!document.querySelector("+q(portal+" [data-story-history-summary]")+")")
+        click(portal+" [data-story-history-summary] button")
+        check("confirmed paragraphs use readable labels","document.querySelector("+q(portal+" [data-story-history-summary]")+")?.textContent.includes('第 1 段')")
+        backend("discard keeps saved story",lambda m:m["dramaDraft"]=="浏览器故事草案\n第二段")
+        current_theme=page.js("document.querySelector("+q(portal)+")?.dataset.dramaWorkspaceTheme")
+        click(".ant-modal-close")
+        check("workspace closed","!document.querySelector("+q(portal)+")")
+        check("updated real canvas summary","document.querySelector("+q(card+" [data-story-inline-summary]")+")?.textContent.includes('浏览器故事草案')")
+        # Toggle via the existing canvas theme control, then check the workspace token.
+        check("alternate canvas theme","(()=>{const b=[...document.querySelectorAll('button')].find(x=>['切换到浅色主题','切换到深色主题','Switch to light theme','Switch to dark theme'].includes(x.getAttribute('aria-label')));if(!b)return false;b.click();return true})()")
+        click(card+" [data-story-inline-summary]")
+        check("reopened draft matches saved content","document.querySelector("+q(field)+")?.readOnly&&document.querySelector("+q(field)+")?.value==="+q("浏览器故事草案\n第二段"))
+        check("workspace switched theme","document.querySelector("+q(portal)+")?.dataset.dramaWorkspaceTheme==="+q("light" if current_theme=="dark" else "dark"))
+        page.call("Emulation.setDeviceMetricsOverride",{"width":1024,"height":768,"deviceScaleFactor":1.25,"mobile":False})
+        check("narrow workspace remains contained","(()=>{const r=document.querySelector(%s);return r&&r.getBoundingClientRect().right<=innerWidth&&r.querySelector('[data-story-textarea]').clientHeight>0})()"%q(portal))
+        assert not page.exceptions,page.exceptions
+        print("STORY_BROWSER_REPORT",json.dumps({"passed":len(passed),"browserExceptions":page.exceptions,"isolation":"temporary SQLite/CAS; no model calls"},ensure_ascii=False),flush=True)
+    except Exception:
+        for log in logs:log.flush()
+        for filename in ("backend.log","static.log","chrome.log"):
+            file=root/filename
+            if file.exists():print(filename,file.read_text("utf-8",errors="replace")[-4000:],flush=True)
+        if page:
+            print("STORY_BROWSER_DIAGNOSTIC",page.js("document.body.innerText.slice(-3500)"),flush=True)
+        raise
+    finally:
+        if page:
+            try:page.close()
+            except Exception:pass
+        for proc in reversed(processes):
+            try:p1.kill_tree(proc)
+            except Exception:pass
+        for log in logs:log.close()
+        shutil.rmtree(root,ignore_errors=True);shutil.rmtree(profile,ignore_errors=True)
+
+if __name__=="__main__":run()

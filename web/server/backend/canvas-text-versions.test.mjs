@@ -15,6 +15,35 @@ import {buildApp} from "./app.mjs";
 const snapshot=(id,content)=>({id,content,createdAt:"2026-11-20T00:00:00Z",source:"manual",note:id});
 const story=(metadata)=>({id:"story",type:"drama:source",metadata});
 const document=(nodes)=>({title:"History",nodes,connections:[]});
+test("compact story projections show bounded drafts, preserve confirmation and never persist previews",t=>{
+ const db=setup(t);
+ const body="已保存的故事".repeat(200);
+ createProject(db,{id:"story-summary",document:document([
+  story({dramaDraft:body,dramaConfirmed:body,content:body}),
+  {id:"other",type:"drama:source",metadata:{dramaDraft:"",dramaConfirmed:"旧版本",content:"旧正文"}},
+  {id:"asset",type:"drama:assets",metadata:{dramaDraft:"资产正文"}}
+ ])});
+ const compact=getProject(db,"story-summary",{compact:true});
+ const metadata=compact.document.nodes[0].metadata;
+ assert.deepEqual(metadata.dramaStorySummary,{preview:body.slice(0,360),length:body.length,hasText:true,
+  confirmedTextMatches:true,hadConfirmed:true,hasStoredText:true});
+ assert.equal(metadata.dramaDraft,undefined);
+ assert.equal(metadata.dramaConfirmed,undefined);
+ assert.equal(JSON.stringify(compact.document).includes(body),false);
+ assert.deepEqual(compact.document.nodes[1].metadata.dramaStorySummary,{preview:"",length:0,hasText:false,
+  confirmedTextMatches:false,hadConfirmed:true,hasStoredText:true});
+ assert.equal(compact.document.nodes[2].metadata.dramaStorySummary,undefined);
+ metadata.dramaStorySummary.preview="伪造预览";
+ metadata.dramaFilmStyle="动画";
+ saveSingleUserCanvas(db,{id:"story-summary",expectedRevision:1,document:compact.document});
+ const saved=getProject(db,"story-summary");
+ assert.equal(saved.document.nodes[0].metadata.dramaDraft,body);
+ assert.equal(saved.document.nodes[0].metadata.dramaConfirmed,body);
+ assert.equal(saved.document.nodes[0].metadata.dramaFilmStyle,"动画");
+ assert.equal(saved.document.nodes[0].metadata.dramaStorySummary,undefined);
+ assert.equal(JSON.parse(db.prepare("SELECT document_json FROM projects WHERE id=?").get("story-summary").document_json).nodes[0].metadata.dramaStorySummary,undefined);
+ assert.equal(getProject(db,"story-summary",{compact:true}).document.nodes[0].metadata.dramaStorySummary.preview,body.slice(0,360));
+});
 test("reference-only publication retains the asset definition revision",t=>{
  const db=setup(t);
  const body=JSON.stringify({assets:[{id:"prop",kind:"prop",name:"Lamp",description:"Lamp",sourceRefs:[]}]});

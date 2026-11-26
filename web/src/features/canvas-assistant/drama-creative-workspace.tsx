@@ -69,9 +69,10 @@ function WorkspaceTabButton({item,description,active,theme,onSelect,disabled=fal
  * mounts only its active feature. The unsaved CAS navigation guard is shared by
  * every visual close/tab action.
  */
-export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfirmed,candidateCount=0,onClose,onTabChange,renderPanel,renderHistoryPanel}:{
+export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfirmed,versionDraftLabel,candidateCount=0,onClose,onTabChange,renderPanel,renderHistoryPanel,storyVersionAction}:{
  projectId:string;nodeId:string;kind:"source"|"assets"|"episodes"|"storyboard";focus:DramaWorkspaceFocus;
- versionConfirmed:boolean;candidateCount?:number;
+ versionConfirmed:boolean;versionDraftLabel?:string;candidateCount?:number;
+ storyVersionAction?:{hasText:boolean;busy:boolean;allowReconfirm?:boolean;confirm:()=>Promise<void>};
  color?:{fill:string;text:string;muted:string};
  onClose:()=>Promise<void>;
  onTabChange?:(tab:StoryWorkspaceTab)=>void;
@@ -84,7 +85,7 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
  const storyMode=kind==="source";
  const assetMode=kind==="assets";
  const feedback=useDramaFeedbackController();
- const operationLocked=Boolean(feedback.context.task?.blockNavigation);
+ const operationLocked=Boolean(feedback.context.task?.blockNavigation||storyMode&&storyVersionAction?.busy);
  const operationLockedRef=useRef(operationLocked);operationLockedRef.current=operationLocked;
  const assetDirectory=useState(()=>focus.assetDirectory??initialAssetDirectory);
  const storyboardScope=useState<StoryboardScopeFocus|null>(null);
@@ -96,6 +97,7 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
  const updateReviewBusy=useCallback((value:boolean)=>{reviewBusyRef.current=value;setReviewBusy(value);},[]);
  const [pendingAction,setPendingAction]=useState<StoryWorkspaceTab|"close"|null>(null);
  const [pendingCount,setPendingCount]=useState(0);
+ const [storyCandidatePending,setStoryCandidatePending]=useState(false);
  const [error,setError]=useState("");
  const [busy,setBusy]=useState(false);
  const busyRef=useRef(false);
@@ -106,7 +108,8 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
  const registerPending=useCallback<WorkspacePendingRegistration>((key,save)=>{
   if(save)pending.current.set(key,save);else pending.current.delete(key);
   setPendingCount(pending.current.size);
- },[]);
+  if(key===nodeId+":story-candidate")setStoryCandidatePending(!!save);
+ },[nodeId]);
  useEffect(()=>()=>{pending.current.clear()},[nodeId,projectId]);
  useEffect(()=>{
   if(!pendingCount&&!busy)setPendingMenu(false);
@@ -145,7 +148,7 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
    // Staying in the current tab must actually discard the local buffers,
    // not merely clear their registrations. Reset only the content subtree.
    if(target!=="stay"||!save){
-    pending.current.clear();setPendingCount(0);
+    pending.current.clear();setPendingCount(0);setStoryCandidatePending(false);
    }
    if(target==="stay"){
     if(!save)setEditorEpoch(epoch=>epoch+1);
@@ -154,7 +157,20 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
     setPendingAction(null);
     await perform(target);
    }
-  }catch(e){setError(e instanceof Error?e.message:"草案保存失败，请检查冲突后重试");}
+  }catch(e){
+   if(storyMode&&!save&&target!=="stay")setEditorEpoch(epoch=>epoch+1);
+   setError(e instanceof Error?e.message:"草案保存失败，请检查冲突后重试");
+  }
+  finally{busyRef.current=false;setBusy(false);}
+ };
+ const confirmStory=async()=>{
+  if(!storyVersionAction||busyRef.current||operationLockedRef.current||storyVersionAction.busy||pending.current.has(nodeId+":story-candidate"))return;
+  busyRef.current=true;setBusy(true);setError("");
+  try{
+   for(const entry of [...pending.current.values()])await entry();
+   await storyVersionAction.confirm();
+   feedback.context.api.notify("story-confirm","success","故事版本已确认");
+  }catch(e){setError(e instanceof Error?e.message:"故事版本确认失败");}
   finally{busyRef.current=false;setBusy(false);}
  };
  const tabs:{id:StoryWorkspaceTab;label:string;icon:typeof BookOpenText}[]=[
@@ -188,11 +204,11 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
        {storyMode?"故事":assetMode?"资产规划":episodeMode?"剧集规划":"分镜配置"}
       </span>
       <span data-drama-workspace-version-status="" className="shrink-0">
-       <DramaNodeStatus theme={theme} confirmed={versionConfirmed}/>
+       <DramaNodeStatus theme={theme} confirmed={versionConfirmed} draftLabel={versionDraftLabel}/>
       </span>
      </div>
     </div>
-    {!storyMode&&feedback.context.task&&<DramaTaskStatus task={feedback.context.task} theme={theme}/>}
+    {feedback.context.task&&<DramaTaskStatus task={feedback.context.task} theme={theme}/>}
    </div>}
    width="min(1420px, calc(100vw - 24px))"
    styles={{
@@ -218,6 +234,10 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
         description={paneDesc[item.id]} active={tab===item.id} theme={theme} disabled={reviewBusy||operationLocked||busy}
         onSelect={()=>request(item.id)}/>)}
      </nav>
+     {storyMode&&storyVersionAction&&<button type="button" data-story-confirm-version="" className={action+" !min-h-7 shrink-0"}
+      style={primary} title="保存当前草案后确认故事正文及美术设定"
+      disabled={busy||operationLocked||storyVersionAction.busy||storyCandidatePending||(!pendingCount&&(!storyVersionAction.hasText||versionConfirmed&&!storyVersionAction.allowReconfirm))}
+      onClick={()=>void confirmStory()}>{busy||storyVersionAction.busy?"处理中…":pendingCount?"保存并确认故事版本":"确认故事版本"}</button>}
      {pendingCount>0&&<div ref={pendingMenuRef} className="relative ml-auto shrink-0" data-drama-pending-status="">
       <button type="button" aria-expanded={pendingMenu} aria-label={pendingCount+" 处未保存"}
        title={pendingCount+" 组尚未保存的局部"+(episodeMode&&tab==="runs"?"候选":"草案")+"修改"}
@@ -244,12 +264,12 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
       </div>}
      </div>}
     </div>
-    {!storyMode&&<DramaFeedbackNotices notices={feedback.notices} clear={feedback.clear} theme={theme}/>}
+    <DramaFeedbackNotices notices={feedback.notices} clear={feedback.clear} theme={theme}/>
     {reviewBusy&&<p role="status" className="shrink-0 text-xs" style={{color:theme.node.muted}}>正在合入资产，请勿关闭工作区或切换页面。</p>}
     {operationLocked&&<p role="status" className="shrink-0 text-xs" style={{color:theme.node.muted}}>当前操作完成后可切换页面或关闭工作区。</p>}
-    <div data-drama-workspace-content="" inert={busy&&pendingMenu} className={`thin-scrollbar min-h-0 min-w-0 flex-1 rounded-xl border p-3 sm:p-4 ${tab==="history"?"flex flex-col overflow-hidden":"overflow-y-auto overscroll-contain"}`}
+    <div data-drama-workspace-content="" inert={busy&&(storyMode||pendingMenu)} className={`thin-scrollbar min-h-0 min-w-0 flex-1 rounded-xl border p-3 sm:p-4 ${tab==="history"?"flex flex-col overflow-hidden":"overflow-y-auto overscroll-contain"}`}
      style={{...subtle}}>
-     <DramaFeedbackContext.Provider value={storyMode?null:feedback.context}>
+     <DramaFeedbackContext.Provider value={feedback.context}>
      <DramaWorkspaceExitGuardContext.Provider value={()=>{if(pending.current.size||busyRef.current||reviewBusyRef.current||operationLockedRef.current)throw Error("存在未保存修改或正在执行操作，请先完成当前操作。");}}>
      <DramaStoryboardScopeContext.Provider value={kind==="storyboard"?storyboardScope:null}>
      <DramaStoryboardNavigationContext.Provider value={kind==="storyboard"?(focus)=>{if(focus)storyboardScope[1](focus);request("editor");}:null}>

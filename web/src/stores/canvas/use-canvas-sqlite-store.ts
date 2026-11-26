@@ -61,7 +61,7 @@ function preserveLoadedBodies(nodes:CanvasNodeData[],previous:CanvasNodeData[],i
    if(invalidated.has(node.id))return node;
   const old=previous.find(item=>item.id===node.id);
   if(!node.metadata?.creativePayloadRef||!old||old.metadata?.creativePayloadRef)return node;
-  const {creativePayloadRef,...metadata}=node.metadata;
+  const {creativePayloadRef,dramaStorySummary,...metadata}=node.metadata;
   for(const field of creativeFields)if(old.metadata?.[field]!==undefined)Object.assign(metadata,{[field]:old.metadata[field]});
   return {...node,metadata};
  });
@@ -88,7 +88,7 @@ export async function ensureCreativeNodesLoaded(projectId:string,nodeIds?:string
  const nodes=current.nodes.map(node=>{
   const result=payloads.find(item=>item.nodeId===node.id);
   if(!result||!node.metadata?.creativePayloadRef)return node;
-  const {creativePayloadRef,...metadata}=node.metadata;
+  const {creativePayloadRef,dramaStorySummary,...metadata}=node.metadata;
   return {...node,metadata:{...Object.fromEntries(Object.entries(result.payload).filter(([,value])=>value!==null)),...metadata}} as CanvasNodeData;
  });
  useCanvasStore.setState(state=>({projects:state.projects.map(project=>project.id===projectId?{...project,nodes}:project)}));

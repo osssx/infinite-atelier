@@ -9,14 +9,24 @@ export function storyTextDigest(text:string):string{
 export type StoryTextSource={nodeId:string;edgeId:string;title:string;content:string;digest:string};
 export type StoryTextSync=NonNullable<CanvasNodeMetadata["dramaTextSourceSync"]>;
 export type StorySourceState="none"|"available"|"current"|"updated"|"disconnected"|"replaced"|"multiple";
-export function storyTextSources(storyId:string,nodes:readonly CanvasNodeData[],connections:readonly CanvasConnection[]):StoryTextSource[]{
+/** Build once for a semantic graph revision, not once per rendered story card. */
+export function buildStoryTextSourceIndex(nodes:readonly CanvasNodeData[],connections:readonly CanvasConnection[]){
  const byId=new Map(nodes.map(node=>[node.id,node]));
- return connections.filter(edge=>edge.toNodeId===storyId).flatMap(edge=>{
-  const source=byId.get(edge.fromNodeId);
-  if(source?.type!=="text")return [];
+ const index=new Map<string,StoryTextSource[]>(),digests=new Map<string,string>();
+ for(const edge of connections){
+  const source=byId.get(edge.fromNodeId),target=byId.get(edge.toNodeId);
+  if(source?.type!=="text"||target?.type!=="drama:source")continue;
   const content=source.metadata?.content??"";
-  return [{nodeId:source.id,edgeId:edge.id,title:source.title||"文本节点",content,digest:storyTextDigest(content)}];
- });
+  let digest=digests.get(source.id);
+  if(digest===undefined){digest=storyTextDigest(content);digests.set(source.id,digest);}
+  const entry={nodeId:source.id,edgeId:edge.id,title:source.title||"文本节点",content,digest};
+  const previous=index.get(target.id);
+  if(previous)previous.push(entry);else index.set(target.id,[entry]);
+ }
+ return index;
+}
+export function storyTextSources(storyId:string,nodes:readonly CanvasNodeData[],connections:readonly CanvasConnection[]):StoryTextSource[]{
+ return buildStoryTextSourceIndex(nodes,connections).get(storyId)??[];
 }
 export function storySourceState(sources:readonly StoryTextSource[],sync?:StoryTextSync):StorySourceState{
  if(!sources.length)return sync?"disconnected":"none";
@@ -30,15 +40,18 @@ export function initialStoryTextImport(node:CanvasNodeData,sources:readonly Stor
  if(node.type!=="drama:source"||sources.length!==1||!sources[0].content.trim())return null;
  const meta=node.metadata;
  if(meta?.dramaTextSourceSync||meta?.dramaDraft?.trim()||meta?.content?.trim()||meta?.dramaConfirmed?.trim())return null;
+ // A compact node with an unknown or nonempty stored body is never treated as a blank draft.
+ if(meta?.creativePayloadRef&&(!meta.dramaStorySummary||meta.dramaStorySummary.hasStoredText))return null;
  return storyTextSyncPatch(sources[0],"replace","");
 }
 /** Apply on the latest graph state, never based on a cached render snapshot. */
 export function importBlankStoryNodes(nodes:readonly CanvasNodeData[],connections:readonly CanvasConnection[],
  skipStoryId?:string|null):CanvasNodeData[]{
  let changed=false;
+ const index=buildStoryTextSourceIndex(nodes,connections);
  const result=nodes.map(node=>{
   if(node.type!=="drama:source"||node.id===skipStoryId)return node;
-  const patch=initialStoryTextImport(node,storyTextSources(node.id,nodes,connections));
+  const patch=initialStoryTextImport(node,index.get(node.id)??[]);
   if(!patch)return node;
   changed=true;
   return {...node,metadata:{...node.metadata,...patch}};

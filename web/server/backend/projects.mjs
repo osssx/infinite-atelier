@@ -4,7 +4,7 @@ import {stableJson,writeTransaction,assertNoRawCredentials,matchesSourceFingerpr
 import {validCanvasNodeId} from "../canvas-node-id.mjs";
 import {initialCanvasState} from "./canvas-state.mjs";
 import {generatedNodeTitle} from "./generated-node-title.mjs";
-import {hydrateCreativeDocument} from "./creative-payloads.mjs";
+import {hydrateCreativeDocument,projectStorySummaries,stripStorySummaries} from "./creative-payloads.mjs";
 const problem=(code,statusCode=400,details)=>Object.assign(new Error(code),{code,statusCode,details});
 const validId=id=>typeof id==="string"&&/^[A-Za-z0-9_-]{1,128}$/.test(id);
 /** Separate project graph from P2 state. The old document fields never
@@ -12,7 +12,7 @@ const validId=id=>typeof id==="string"&&/^[A-Za-z0-9_-]{1,128}$/.test(id);
 const graphDocument=doc=>{
  if(!doc||typeof doc!=="object"||Array.isArray(doc))return doc;
  const {viewport,chatSessions,activeChatId,...graph}=doc;
- return graph;
+ return stripStorySummaries(graph);
 };
 
 export function validateProjectDocument(document){
@@ -77,7 +77,7 @@ export function createProject(db,args){
 export function getProject(db,id,{compact=false}={}){
  const row=db.prepare("SELECT * FROM projects WHERE id=? AND deleted_at IS NULL").get(id);
  if(!row)throw problem("project_not_found",404);
- return compact?{id:row.id,revision:row.revision,document:JSON.parse(row.document_json),deletedAt:row.deleted_at}:map(row,db);
+ return compact?{id:row.id,revision:row.revision,document:projectStorySummaries(db,id,JSON.parse(row.document_json)),deletedAt:row.deleted_at}:map(row,db);
 }
 export function deleteProject(db,id){
  if(!validId(id))throw problem("invalid_project_id");

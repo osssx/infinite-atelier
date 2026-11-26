@@ -5,7 +5,8 @@ import type { CanvasTheme } from "@/lib/canvas-theme";
 import type { CanvasNodeData } from "@/types/canvas";
 import {applyDramaProduction,type DramaVideoInput,type DramaShotProduction} from "./drama-pipeline-media";
 import { dramaNodeControl, dramaNodePrimary } from "./drama-node-style";
-import {useEffectiveConfig} from "@/stores/use-config-store";
+import {useEffectiveConfig,type AiConfig} from "@/stores/use-config-store";
+import {DramaVideoTargetPicker,DramaVideoParameterFields,dramaVideoTargetLabel} from "./drama-video-generation-settings";
 import {prepareDramaProduction} from "./drama-media-preflight";
 import {auditDramaProduction,dramaMediaModes,listDramaProductionCapabilities,type DramaProductionAudit,type DramaProductionCapabilities} from "./drama-production-audit";
 import {canvasCasUrl} from "@/features/backend-sync/canvas-cas";
@@ -29,9 +30,9 @@ function VideoImageSlot({name,storageKey,images,theme}:{name:string;storageKey?:
 /** Stage mode edits per shot, like the storyboard fields. Canvas image picking
  * closes the editor, so an explicitly picked image commits using its captured shot ID.
  */
-function VideoModeField({shotId,setting,disabled,theme,capabilities,onChange,onPickImage,images,projectId,onPendingChange,onEditingChange,onWaitForSave}:{
+function VideoModeField({shotId,setting,disabled,theme,capabilities,config,shotDuration,onChange,onPickImage,images,projectId,onPendingChange,onEditingChange,onWaitForSave}:{
  shotId:string;setting:DramaShotProduction;disabled:boolean;theme:CanvasTheme;
- capabilities:DramaProductionCapabilities|null;
+ capabilities:DramaProductionCapabilities|null;config:AiConfig;shotDuration?:number;
  onChange?:(shotId:string,value:DramaShotProduction)=>void;
  onPickImage?:(onPick:(storageKey:string)=>void)=>void;
  images?:ReferenceImage[];projectId?:string;onPendingChange?:WorkspacePendingRegistration;onEditingChange?:(editing:boolean)=>void;onWaitForSave?:()=>Promise<void>;
@@ -39,6 +40,21 @@ function VideoModeField({shotId,setting,disabled,theme,capabilities,onChange,onP
  const [edit,setEdit]=useState<{baseline:string;value:DramaShotProduction}|null>(null);
  const [saving,setSaving]=useState(false);
  const [saveError,setSaveError]=useState("");
+ const [draftCapability,setDraftCapability]=useState<{key:string;value:DramaProductionCapabilities|null}|null>(null);
+ const changedTarget=Boolean(edit&&JSON.stringify(edit.value.target??{kind:"inherit"})!==JSON.stringify(setting.target??{kind:"inherit"}));
+ const draftKey=changedTarget?JSON.stringify([edit?.value.target,config]):"";
+ const targetSetting=edit?.value.target;
+ const draftResult=draftCapability?.key===draftKey?draftCapability:null;
+ const checking=changedTarget&&!draftResult;
+ const effectiveCapabilities=changedTarget?draftResult?.value??null:capabilities;
+ useEffect(()=>{
+  if(!draftKey){setDraftCapability(null);return;}
+  let current=true;setDraftCapability(null);
+  void listDramaProductionCapabilities(config,{mode:setting.mode,target:targetSetting}).then(value=>{
+   if(current)setDraftCapability({key:draftKey,value});
+  }).catch(()=>{if(current)setDraftCapability({key:draftKey,value:null});});
+  return ()=>{current=false;};
+ },[draftKey,config]);
  const updated=useDramaFieldFeedback();
  const inline=images!==undefined;
  const dirty=Boolean(edit&&JSON.stringify(edit.value)!==edit.baseline);
@@ -47,6 +63,8 @@ function VideoModeField({shotId,setting,disabled,theme,capabilities,onChange,onP
  commitRef.current=async()=>{
   if(!edit)return;
   if(disabled||saving||!onChange||(edit.baseline!==JSON.stringify(setting)&&JSON.stringify(edit.value)!==JSON.stringify(setting)))throw Error("视频输入配置已变化或暂不可保存，请取消后重试。");
+  if(checking||changedTarget&&!effectiveCapabilities?.modes.some(mode=>mode.available))throw Error("请选择可用的视频渠道，等待能力检查完成。");
+  if(edit.value.durationSec!==undefined&&(!Number.isFinite(edit.value.durationSec)||edit.value.durationSec<=0))throw Error("视频时长必须大于零。");
   setSaving(true);setSaveError("");
   try{
    if(dirty&&JSON.stringify(edit.value)!==JSON.stringify(setting))onChange(shotId,edit.value);
@@ -68,6 +86,9 @@ function VideoModeField({shotId,setting,disabled,theme,capabilities,onChange,onP
  const stale=Boolean(edit&&edit.baseline!==JSON.stringify(setting)&&JSON.stringify(edit.value)!==JSON.stringify(setting));
  const effective=edit?.value??setting;
  const choice=effective.gridInput?"grid":effective.mode;
+ const currentAbility=effectiveCapabilities?.modes.find(mode=>mode.mode===choice);
+ const patchValue=(value:DramaShotProduction)=>setEdit(current=>current?{...current,value}:current);
+ const invalidTarget=checking||changedTarget&&!effectiveCapabilities?.modes.some(mode=>mode.available);
  const label=dramaMediaModes.find(item=>item.id===(setting.gridInput?"grid":setting.mode))?.label??setting.mode;
  const card={background:theme.node.panel,color:theme.node.text,borderColor:theme.node.stroke};
  const field={...card,"--tw-ring-color":theme.node.activeStroke} as CSSProperties;
@@ -75,7 +96,7 @@ function VideoModeField({shotId,setting,disabled,theme,capabilities,onChange,onP
    ...current.value,gridInput:mode==="grid",
    mode:mode==="grid"?"omni_reference":mode as DramaShotProduction["mode"]}}:current);
  const pick=(key:"firstFrame"|"lastFrame"|"gridImage")=>{
-  if(disabled||!onPickImage||!onChange||!edit||stale)return;
+  if(disabled||!onPickImage||!onChange||!edit||stale||invalidTarget)return;
   const pending={...edit.value};
   // Canvas image selection closes the maximized editor before the callback runs.
   // Commit at explicit image selection so the mode and image survive unmount.
@@ -89,7 +110,7 @@ function VideoModeField({shotId,setting,disabled,theme,capabilities,onChange,onP
   className={edit?"min-w-0 space-y-3 rounded-xl border p-3 sm:p-4":"min-w-0 space-y-1.5"}
   style={edit?{...card,background:theme.node.fill}:undefined}>
   <div className="flex min-h-7 items-center gap-1.5 text-xs font-medium" style={{color:theme.node.muted}}>
-   <span>视频输入模式</span>
+   <span>生成设置</span>
    {!edit&&<button type="button" title="编辑视频输入模式" aria-label="编辑视频输入模式"
     className="inline-grid size-7 place-items-center rounded-md border border-transparent hover:opacity-80 focus-visible:outline focus-visible:outline-2"
     style={{color:theme.node.muted,outlineColor:theme.node.activeStroke}}
@@ -101,14 +122,21 @@ function VideoModeField({shotId,setting,disabled,theme,capabilities,onChange,onP
      style={{background:theme.toolbar.activeBg,color:theme.toolbar.activeText}}>编辑中</span>}
   </div>
   {edit?<>
+   <DramaVideoTargetPicker config={config} value={effective} theme={theme} disabled={disabled||saving||stale} onChange={patchValue}/>
+   <label className="block text-xs" style={{color:theme.node.muted}}>视频输入模式</label>
    <select aria-label="视频输入模式" className="w-full min-w-0 rounded-lg border px-3 py-2.5 text-sm"
-    style={field} disabled={disabled||saving||stale} value={choice} onChange={event=>chooseMode(event.target.value)}>
+    style={field} disabled={disabled||saving||stale||checking||!effectiveCapabilities} value={choice} onChange={event=>chooseMode(event.target.value)}>
     {dramaMediaModes.map(item=>{
-     const ability=capabilities?.modes.find(value=>value.mode===item.id);
+     const ability=effectiveCapabilities?.modes.find(value=>value.mode===item.id);
      return <option key={item.id} value={item.id} disabled={ability?!ability.available:false}
       title={ability?.reason}>{item.label}{ability&&!ability.available?"（不支持）":""}</option>;
     })}
    </select>
+   {checking?<DramaInlineFeedback theme={theme} level="info" pending>正在检查所选渠道的输入能力…</DramaInlineFeedback>:
+    changedTarget&&!effectiveCapabilities?<DramaInlineFeedback theme={theme}>无法读取所选渠道的能力，请重新选择。</DramaInlineFeedback>:
+    currentAbility&&!currentAbility.available?<DramaInlineFeedback theme={theme}>{currentAbility.reason??"当前渠道不支持所选输入模式，请手动选择可用模式。"}</DramaInlineFeedback>:null}
+   <DramaVideoParameterFields config={config} value={effective} capabilities={effectiveCapabilities} shotDuration={shotDuration} theme={theme}
+    disabled={disabled||saving||stale||checking} editing onChange={patchValue}/>
    {inline?<div className="grid min-w-0 gap-2">
     {imageSlots(effective).map(slot=><div key={slot.key} className="min-w-0 space-y-2">
      <VideoImageSlot name={slot.label} storageKey={effective[slot.key]} images={images} theme={theme}/>
@@ -138,7 +166,7 @@ function VideoModeField({shotId,setting,disabled,theme,capabilities,onChange,onP
      </button>}
     </div>}
    {effective.gridInput&&effective.gridImage&&<p className="break-all text-[11px]" style={{color:theme.node.muted}}>
-    已选择分镜网格图 · {effective.gridImage}</p>}
+    已选择分镜网格图</p>}
    {!effective.gridInput&&(effective.mode==="first_frame"||effective.mode==="first_last_frame")&&
     <p className="break-all text-[11px]" style={{color:theme.node.muted}}>
      首帧：{effective.firstFrame?"已选择":"未选择"}
@@ -152,10 +180,16 @@ function VideoModeField({shotId,setting,disabled,theme,capabilities,onChange,onP
    {saveError&&<DramaInlineFeedback theme={theme} level="error" error={saveError}/>}
    {saving&&<DramaInlineFeedback theme={theme} level="info" pending>正在保存视频输入配置…</DramaInlineFeedback>}
    {stale&&<DramaInlineFeedback theme={theme}>视频输入配置已在其他位置更新，请取消并重新编辑。</DramaInlineFeedback>}
-   <DramaEditActions label="视频输入模式" theme={theme} disabled={disabled||saving||stale||!onChange}
+   <DramaEditActions label="视频输入模式" theme={theme} disabled={disabled||saving||stale||!onChange||invalidTarget}
     onCancel={()=>{if(!saving){setEdit(null);setSaveError("");}}}
     onConfirm={()=>{void commitRef.current().catch(()=>{});}}/>
-  </>:
+  </>:<>
+   <div className="grid gap-1 text-xs">
+    <span style={{color:theme.node.muted}}>视频渠道</span>
+    <div className="rounded-md px-3 py-2 text-sm break-words" style={{background:theme.toolbar.activeBg}}>{dramaVideoTargetLabel(config,setting,capabilities)}</div>
+   </div>
+   <DramaVideoParameterFields config={config} value={setting} capabilities={capabilities} shotDuration={shotDuration} theme={theme} disabled={disabled} editing={false}/>
+   <span className="block text-xs" style={{color:theme.node.muted}}>视频输入模式</span>
    <div data-video-mode-readonly="" className="rounded-md border-l-2 px-3 py-2.5 text-sm"
     style={{background:theme.toolbar.activeBg,borderLeftColor:theme.node.stroke,color:theme.node.text}}>
     <div>{label}</div>
@@ -166,7 +200,7 @@ function VideoModeField({shotId,setting,disabled,theme,capabilities,onChange,onP
       首帧：{setting.firstFrame?"已选择":"未选择"}
       {setting.mode==="first_last_frame"?" · 尾帧："+(setting.lastFrame?"已选择":"未选择"):""}
      </p>:null}
-   </div>}
+   </div></>}
  </section>;
 }
 
@@ -206,6 +240,7 @@ export function DramaVideoConfigFields({
     const [auditResult,setAudit]=useState<{key:string;value:DramaProductionAudit}|null>(null);
     const [auditing,setAuditing]=useState(false);
     const [modeEditing,setModeEditing]=useState(false);
+    const [videoTab,setVideoTab]=useState<"settings"|"prompt"|"references">("settings");
     useEffect(()=>{onEditingChange?.(modeEditing);return ()=>onEditingChange?.(false);},[modeEditing,onEditingChange]);
 
     const config=useEffectiveConfig();
@@ -346,11 +381,17 @@ export function DramaVideoConfigFields({
                     {active.shot.description?.trim()||"未填写"}
                 </p>
             </div>}
-            {expanded?<VideoModeField key={active.shot.id} shotId={active.shot.id}
-                setting={setting} disabled={disabled} theme={theme} capabilities={capabilities}
+            {expanded&&<nav aria-label="视频配置页面" className="flex min-w-0 gap-1 border-b pb-1" style={{borderColor:theme.node.stroke}}>
+                {([{id:"settings",label:"生成设置"},{id:"prompt",label:"提示词"},{id:"references",label:"参考素材"}] as const).map(item=><button type="button" key={item.id}
+                    aria-pressed={videoTab===item.id} disabled={modeEditing||item.id!=="settings"&&!confirmedInput}
+                    title={modeEditing?"请先保存或取消当前生成设置":undefined} className="min-h-7 rounded-md px-3 text-xs font-medium disabled:opacity-45"
+                    style={videoTab===item.id?{background:theme.toolbar.activeBg,color:theme.node.text}:muted} onClick={()=>setVideoTab(item.id)}>{item.label}</button>)}
+            </nav>}
+            {expanded&&videoTab==="settings"&&<VideoModeField key={active.shot.id} shotId={active.shot.id}
+                setting={setting} disabled={disabled} theme={theme} capabilities={capabilities} config={config} shotDuration={active.shot.durationSec}
                 onPickImage={onPickImage} onChange={onProductionChange} images={images} projectId={projectId}
-                onPendingChange={onPendingChange} onEditingChange={setModeEditing} onWaitForSave={onWaitForSave}/>:
-                <>
+                onPendingChange={onPendingChange} onEditingChange={setModeEditing} onWaitForSave={onWaitForSave}/>}
+            {!expanded&&<>
             <label className="grid gap-1.5 text-xs">视频输入模式
                 <select aria-label="视频输入模式" className={field} style={control} disabled={disabled} value={setting.gridInput?"grid":setting.mode}
                     onChange={event=>onProductionChange?.(active.shot.id,{...setting,
@@ -403,55 +444,26 @@ export function DramaVideoConfigFields({
                 }}>采用所选更新</Button>
                 </div>
             </details>}
-            {confirmedInput&&<details aria-label="逐镜媒体输入预检" className="min-w-0 rounded-lg border p-3 text-xs"
-                style={card}>
-                <summary className="flex cursor-pointer flex-wrap items-center justify-between gap-2 py-1 font-semibold">
-                    <span>媒体输入预检与提示词</span>
-                    <span className="text-[11px] font-normal" style={muted}>
-                        {auditing?"核验中":previewError||audit&&!audit.ready?"需检查":audit?.ready?"预检通过":"待核验"} · 参考图 {preview.referenceImages.length} 张
-                    </span>
-                </summary>
-            <div className="mt-3 grid min-w-0 gap-3 border-t pt-3 md:grid-cols-2" style={{borderColor:theme.node.stroke}}>
-                <div className="grid min-w-0 content-start gap-2">
-                    <strong>确认分镜与绑定素材</strong>
-                    <p className="break-words whitespace-pre-wrap">{active.shot.description}</p>
-                    <p className="text-xs">镜头 {active.shot.order} · 时长 {audit?.durationSeconds??active.shot.durationSec??(Number(config.videoSeconds)||6)} 秒
-                        · 画幅 {audit?.aspectRatio??config.videoRatio} · 角色造型 {active.shot.characterVariantIds.length} 项
-                        · 道具 {active.shot.propIds.length} 项</p>
-                    <p>引用图片 {preview.referenceImages.length} 张
-                        {referenceKeys.length>0?" · 已保存 CAS "+referenceKeys.length+" 张":""}</p>
-                    <div className="flex min-w-0 flex-wrap gap-2">
-                        {preview.referenceImages.map((reference,index)=><div key={reference.id}
-                            className="grid max-w-28 gap-1">
-                            {reference.storageKey&&<img loading="lazy" src={canvasCasUrl(reference.storageKey)??""}
-                                alt={reference.name} className="size-20 rounded object-cover"/>}
-                            <span className="break-words text-xs">{index+1}. {reference.name}</span>
-                        </div>)}
-                    </div>
-                    {!!requiredMissing.length&&<p role="alert">缺少必需参考图：{requiredMissing.join("、")}</p>}
+            {confirmedInput&&expanded&&videoTab==="prompt"&&<section aria-label="视频提示词" className="min-w-0 space-y-2">
+                <div className="flex items-center justify-between text-xs"><strong>视频提示词</strong><span style={muted}>{setting.promptOverride?"已手动修改":"自动生成"}</span></div>
+                <pre className="thin-scrollbar max-h-96 min-w-0 overflow-auto whitespace-pre-wrap break-words rounded-lg border p-3 text-sm"
+                    style={{...card,background:theme.toolbar.activeBg}}>{audit?.prompt??setting.promptOverride?.text??[preview.prompt,productionStyle&&"影片风格："+productionStyle].filter(Boolean).join("\n")}</pre>
+            </section>}
+            {confirmedInput&&expanded&&videoTab==="references"&&<section aria-label="视频参考素材" className="min-w-0 space-y-2 text-xs">
+                <div className="flex justify-between"><strong>绑定素材</strong><span style={muted}>引用图片 {preview.referenceImages.length} 张</span></div>
+                <div className="flex min-w-0 flex-wrap gap-2">
+                    {preview.referenceImages.map((reference,index)=><div key={reference.id} className="grid max-w-28 gap-1">
+                        {reference.storageKey&&<img loading="lazy" src={canvasCasUrl(reference.storageKey)??""} alt={reference.name} className="size-20 rounded object-cover"/>}
+                        <span className="break-words text-xs">{index+1}. {reference.name}</span>
+                    </div>)}
                 </div>
-                <div className="grid min-w-0 content-start gap-2">
-                    <strong>实际提交 Prompt / 能力检查</strong>
-                    <pre className="thin-scrollbar max-h-44 min-w-0 overflow-auto whitespace-pre-wrap break-words rounded-lg border p-2 text-xs"
-                        style={{...card,background:theme.toolbar.activeBg}}>{audit?.prompt??preview.prompt}</pre>
-                    <p className="text-xs">执行渠道：{capabilities?.channel??"检查中"}
-                        · {capabilities?.model??""} · {capabilities?.engine==="comfy"?"ComfyUI 工作流":"在线渠道"}</p>
-                    {auditing&&<p role="status">正在核验工作流端口和媒体约束…</p>}
-                    {!auditing&&!previewError&&audit?.ready&&<p role="status">输入预检通过，创建配置不会自动生成媒体。</p>}
-                    {(previewError||audit&&!audit.ready)&&<p role="alert">
-                        {previewError||audit?.error}。请选择可用模式，补齐素材或调整模板参数。
-                    </p>}
-                    {capabilities&&<p className="text-xs">
-                        可用模式：{capabilities.modes.filter(item=>item.available).map(item=>item.label).join("、")||"无"}
-                    </p>}
-                    {outdated&&source&&<details>
-                        <summary>与旧视频配置的差异（不会自动覆盖）</summary>
-                        <p>旧时长 {source.seconds??"未知"} 秒 · 旧风格 {source.visualStyle??"未记录"}</p>
-                        <pre className="max-h-32 overflow-auto whitespace-pre-wrap break-words">{source.prompt}</pre>
-                    </details>}
-                </div>
-            </div>
-            </details>}
+                {!!requiredMissing.length&&<p role="alert">缺少 {requiredMissing.length} 项必需参考图</p>}
+                {!preview.referenceImages.length&&!requiredMissing.length&&<p style={muted}>当前输入模式没有已绑定参考图。</p>}
+            </section>}
+            {confirmedInput&&<div aria-label="逐镜媒体输入预检" className="min-w-0 space-y-1 text-xs">
+                {auditing&&<p role="status" style={muted}>正在核验工作流端口和媒体约束…</p>}
+                {(previewError||audit&&!audit.ready)&&<DramaInlineFeedback theme={theme}>{!previewError&&requiredMissing.length&&setting.mode==="omni_reference"?`缺少 ${requiredMissing.length} 项必需参考图，请核对素材绑定`:previewError||audit?.error}。请选择可用模式，补齐素材或调整模板参数。</DramaInlineFeedback>}
+            </div>}
             {!confirmedInput&&<p role="status" className="text-xs" style={muted}>请先确认当前镜头，再进行媒体预检和创建视频配置。</p>}
             <div className="flex flex-wrap items-center justify-between gap-2 border-t pt-3" style={{borderColor:theme.node.stroke}}>
                 <span className="min-w-0 text-[11px]" style={muted}>

@@ -91,7 +91,17 @@ def run():
             button("定位镜头",portal+" tbody")
             check("locate shot in editor","!!document.querySelector("+json.dumps(portal+' [aria-label="当前分镜编辑区"]',ensure_ascii=False)+")")
             check("located episode","document.querySelector("+json.dumps(portal+' select[aria-label="选择分镜剧集"]',ensure_ascii=False)+")?.value==="+json.dumps(episode))
+            button("提示词",portal+' [aria-label="视频配置页面"]')
+            check("separate prompt preview","!!document.querySelector('[aria-label=\"视频提示词\"] pre')")
+            button("参考素材",portal+' [aria-label="视频配置页面"]')
+            check("separate reference preview","!!document.querySelector('[aria-label=\"视频参考素材\"]')")
+            button("生成设置",portal+' [aria-label="视频配置页面"]')
             click(portal+' button[aria-label="编辑视频输入模式"]')
+            target=check("installed video workflow choice","""(()=>{const s=document.querySelector('[aria-label="视频渠道"]');return [...(s?.options||[])].find(o=>{try{return JSON.parse(o.value).templateId==='p5-video-fixture'}catch{return false}})?.value||null})()""")
+            choose("视频渠道",target)
+            check("selected workflow capability ready","""(()=>{const s=document.querySelector('[aria-label="视频输入模式"]');return s&&!s.disabled&&s.value==='first_frame'&&[...s.options].some(o=>o.value==='first_frame'&&!o.disabled)})()""")
+            check("inner video tabs locked during settings edit","[...document.querySelectorAll('[aria-label=\"视频配置页面\"] button')].every(b=>b.disabled)")
+
             # The isolated shot starts in first-frame mode, so no configured model is needed to bind a CAS image.
             click(portal+' button[aria-label="选择首帧"]')
             check("real image thumbnail loaded","""(()=>{const s=document.querySelector(%s);const i=s?.querySelector('img');return i&&i.complete&&i.naturalWidth>0})()"""%json.dumps(portal+' [aria-label="首帧图片选择器"]',ensure_ascii=False))

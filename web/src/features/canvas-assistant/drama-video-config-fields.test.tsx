@@ -7,10 +7,14 @@ import {canvasThemes} from "@/lib/canvas-theme";
 import type {DramaShotProduction,DramaVideoInput} from "./drama-pipeline-media";
 
 const mocks=vi.hoisted(()=>({
- config:{videoSeconds:6,videoRatio:"16:9",videoModel:"test",comfyWorkflowDefaults:{}},
+ config:{videoSeconds:6,videoRatio:"16:9",videoModel:"test",comfyWorkflowDefaults:{},channels:[{id:"api",name:"测试在线渠道",models:[{name:"video-v1",capability:"video"},{name:"text-v1",capability:"text"}]}]},
  audit:vi.fn(),capabilities:vi.fn(),
 }));
-vi.mock("@/stores/use-config-store",()=>({useEffectiveConfig:()=>mocks.config}));
+vi.mock("@/stores/use-config-store",()=>({useEffectiveConfig:()=>mocks.config,encodeChannelModel:(channel:string,model:string)=>channel+"::"+model,modelOptionLabel:(_config:unknown,model:string)=>model}));
+vi.mock("@/features/comfy-workflow/template-registry",()=>({listComfyTemplates:async()=>[
+ {id:"video-template",revision:"pinned",name:"本地视频模板",mediaUseCase:{channel:"video"}},
+ {id:"image-template",revision:"pinned",name:"图片模板",mediaUseCase:{channel:"image"}}
+]}));
 vi.mock("./drama-media-preflight",()=>({prepareDramaProduction:async(input:DramaVideoInput)=>input}));
 vi.mock("./drama-production-audit",()=>({
  dramaMediaModes:[
@@ -18,11 +22,13 @@ vi.mock("./drama-production-audit",()=>({
   {id:"first_last_frame",label:"首尾帧"},{id:"omni_reference",label:"资产参考图"},
   {id:"grid",label:"分镜网格参考图"},
  ],
- listDramaProductionCapabilities:async()=>{
-  mocks.capabilities();
-  return {engine:"comfy",channel:"本地 ComfyUI",model:"测试模型",
+ listDramaProductionCapabilities:async(_config:unknown,setting?:DramaShotProduction)=>{
+  mocks.capabilities(setting);
+  const online=setting?.target?.kind==="online";
+  return {engine:online?"online":"comfy",channel:online?"测试在线渠道":"本地 ComfyUI",model:online?"video-v1":"测试模型",
    modes:["text_to_video","first_frame","first_last_frame","omni_reference","grid"].map(mode=>({
-    mode,label:mode,available:true,
+    mode,label:mode,available:!online||mode==="text_to_video",
+    parameters:online?[{id:"duration_seconds",mode:"adjustable",type:"number",min:3,max:10,step:1},{id:"aspect_ratio",mode:"adjustable",type:"enum",values:["16:9","9:16"]}]:[],
    }))};
  },
  auditDramaProduction:async(input:DramaVideoInput)=>{
@@ -107,10 +113,49 @@ it.each(["dark","light"] as const)("matches storyboard split-pane, directory and
  expect(main.querySelector('[data-storyboard-video-description]')?.textContent).toContain("兔子");
  expect(main.querySelector('[data-video-mode-field="reading"]')).toBeTruthy();
  expect(main.querySelector('select[aria-label="视频输入模式"]')).toBeNull();
- expect(main.querySelector<HTMLDetailsElement>('details[aria-label="逐镜媒体输入预检"]')?.open).toBe(false);
+ expect(main.querySelector('[aria-label="视频配置页面"] button[aria-pressed="true"]')?.textContent).toBe("生成设置");
+ expect(main.querySelector('[aria-label="视频提示词"]')).toBeNull();
  expect(main.querySelector<HTMLDetailsElement>('details[aria-label="批量创建视频配置"]')?.open).toBe(false);
  expect(main.querySelector<HTMLButtonElement>('button')?.disabled).toBe(false);
 });
+it("stages channel selection, refreshes capabilities, preserves media settings and opens separate tabs",async()=>{
+ const {el,change,action}=await mount({embedded:true});
+ const tab=(text:string)=>[...el.querySelectorAll('[aria-label="视频配置页面"] button')].find(b=>b.textContent===text);
+ await click(tab("提示词"));
+ expect(el.querySelector('[aria-label="视频提示词"]')?.textContent).toContain("兔子走进森林");
+ await click(tab("参考素材"));
+ expect(el.querySelector('[aria-label="视频参考素材"]')).toBeTruthy();
+ await click(tab("生成设置"));
+ await click(el.querySelector('[aria-label="编辑视频输入模式"]'));
+ const picker=el.querySelector<HTMLSelectElement>('select[aria-label="视频渠道"]')!;
+ expect(picker.textContent).toContain("本地视频模板");
+ expect(picker.textContent).not.toContain("图片模板");
+ expect(picker.textContent).not.toContain("text-v1");
+ await choose(el.querySelector('select[aria-label="视频输入模式"]'),"first_frame");
+ const online=JSON.stringify({kind:"online",modelOption:"api::video-v1"});
+ await choose(picker,online);
+ const mode=el.querySelector<HTMLSelectElement>('select[aria-label="视频输入模式"]')!;
+ expect(mode.value).toBe("first_frame");
+ expect([...mode.options].find(o=>o.value==="first_frame")?.disabled).toBe(true);
+ expect((tab("提示词") as HTMLButtonElement).disabled).toBe(true);
+ expect(change).not.toHaveBeenCalled();
+ await choose(mode,"text_to_video");
+ const duration=el.querySelector<HTMLInputElement>('input[aria-label="视频时长"]')!;
+ expect(duration.max).toBe("10");
+ await act(async()=>{Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value")!.set!.call(duration,"8");duration.dispatchEvent(new Event("input",{bubbles:true}));});
+ await choose(el.querySelector('select[aria-label="视频画幅"]'),"9:16");
+ await click(el.querySelector('[aria-label="确认视频输入模式"]'));
+ expect(change).toHaveBeenCalledTimes(1);
+ expect(change.mock.lastCall?.[1]).toMatchObject({target:{kind:"online",modelOption:"api::video-v1"},mode:"text_to_video",durationSec:8,aspectRatio:"9:16"});
+ await click(el.querySelector('[aria-label="编辑视频输入模式"]'));
+ await choose(el.querySelector('select[aria-label="视频渠道"]'),JSON.stringify({kind:"comfy",templateId:"video-template",templateRevision:"pinned"}));
+ await click(el.querySelector('[data-drama-action="cancel"]'));
+ expect(change).toHaveBeenCalledTimes(1);
+ expect(el.textContent).toContain("测试在线渠道");
+ await click([...el.querySelectorAll("button")].find(b=>b.textContent==="创建视频配置"));
+ expect(action).toHaveBeenCalledTimes(1);
+});
+
 it("embeds one selected shot without a duplicate directory or batch operations",async()=>{
  const {el,action}=await mount({embedded:true,initialShotId:"s3"});
  expect(el.querySelector('[aria-label="视频配置镜头目录"]')).toBeNull();

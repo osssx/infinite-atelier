@@ -520,6 +520,7 @@ it("uses the same shot directory for production editing and separates batch prep
  const video=()=>container.querySelector('[aria-label="镜头视频配置"]');
  expect(video()).toBeTruthy();
  expect(video()?.textContent).toContain("当前使用最近一次确认的分镜");
+ await act(async()=>[...video()!.querySelectorAll("button")].find(b=>b.textContent==="提示词")!.click());
  expect(video()?.textContent).toContain("确认版森林入口");
  expect(container.querySelector('[aria-label="批量创建配置"]')).toBeNull();
  await act(async()=>container.querySelector<HTMLButtonElement>('[aria-label^="选择镜头 2："]')!.click());

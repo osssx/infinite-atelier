@@ -5,6 +5,7 @@ import {getComfyTemplate} from "@/features/comfy-workflow/template-registry";
 import type {DramaShotProduction,DramaVideoInput} from "./drama-pipeline-media";
 import {prepareDramaProduction} from "./drama-media-preflight";
 import {resolveDramaVideoTarget,resolveDramaVideoProduction} from "./drama-video-production-resolver";
+import type {MediaParameterSpec} from "@/services/media-capabilities";
 
 export const dramaMediaModes=[
     {id:"text_to_video",label:"纯文本"},
@@ -14,7 +15,7 @@ export const dramaMediaModes=[
     {id:"grid",label:"分镜网格参考图"},
 ] as const;
 export type DramaMediaModeChoice = typeof dramaMediaModes[number]["id"];
-export type DramaProductionModeState={mode:DramaMediaModeChoice;label:string;available:boolean;reason?:string};
+export type DramaProductionModeState={mode:DramaMediaModeChoice;label:string;available:boolean;reason?:string;parameters?:MediaParameterSpec[]};
 export type DramaProductionCapabilities={engine:"comfy"|"online";channel:string;model:string;modes:DramaProductionModeState[]};
 export type DramaProductionAudit={ready:boolean;input?:DramaVideoInput;error?:string;
     mode:DramaMediaModeChoice;durationSeconds:number;aspectRatio:string;referenceCount:number;
@@ -32,17 +33,25 @@ export async function listDramaProductionCapabilities(globalConfig:AiConfig,sett
     }
     const comfy=config.comfyWorkflowDefaults?.video;
     let allowed:string[]=[],name="",engine:"online"|"comfy"="online",unavailable="";
+    const parameters=new Map<string,MediaParameterSpec[]>();
     if(comfy){
         engine="comfy";
         const template=await getComfyTemplate(comfy.templateId,comfy.templateRevision);
-        name=template?.name??comfy.templateId;
+        name=template?.name??"工作流不可用";
         if(!template?.mediaUseCase||template.mediaUseCase.channel!=="video")
             unavailable="默认 ComfyUI 视频工作流不存在或不是视频模板";
         else{
             const resolved=resolveMediaCapabilities({mediaCapabilities:template.mediaUseCase.mediaCapabilities},{kind:"video"});
             if(!resolved.explicit||resolved.unavailable.length)unavailable="视频模板缺少有效的媒体能力声明";
-            else allowed=resolved.modes.filter(mode=>template.mediaUseCase?.modeBindings?.[mode.id as keyof typeof template.mediaUseCase.modeBindings])
-                .map(mode=>mode.id);
+            else {
+                const modes=resolved.modes.filter(mode=>template.mediaUseCase?.modeBindings?.[mode.id as keyof typeof template.mediaUseCase.modeBindings]);
+                allowed=modes.map(mode=>mode.id);
+                for(const mode of modes){
+                    const binding=template.mediaUseCase.modeBindings?.[mode.id as keyof typeof template.mediaUseCase.modeBindings];
+                    parameters.set(mode.id,mode.parameters.filter(spec=>binding?.parameterPorts?.[spec.id]&&
+                        template.ports.some(port=>port.id===binding.parameterPorts?.[spec.id]&&port.direction==="target"&&port.inputBinding?.mode==="literal")) as MediaParameterSpec[]);
+                }
+            }
         }
     }else{
         const channel=resolveModelChannel(config,config.videoModel);
@@ -57,7 +66,9 @@ export async function listDramaProductionCapabilities(globalConfig:AiConfig,sett
                 supportedParameters:supportedMediaParameters(executor)});
             if(resolved.explicit&&resolved.unavailable.some((item:unknown)=>typeof item==="object"&&item!==null&&"code" in item&&item.code==="media_capability_invalid"))
                 unavailable="视频模型媒体能力声明不合法";
-            else allowed=resolved.explicit?resolved.modes.map(mode=>mode.id):modes;
+            else {allowed=resolved.explicit?resolved.modes.map(mode=>mode.id):modes;
+                if(resolved.explicit)for(const mode of resolved.modes)parameters.set(mode.id,mode.parameters as MediaParameterSpec[]);
+            }
         }
     }
     const modes=dramaMediaModes.map(({id,label})=>{
@@ -66,7 +77,7 @@ export async function listDramaProductionCapabilities(globalConfig:AiConfig,sett
         const reason=available?undefined:unavailable||(id==="grid"&&engine!=="comfy"?
             "分镜网格输入只允许声明了参考图端口的 ComfyUI 视频模板":
             "当前模型或工作流不支持此输入模式（未声明对应媒体能力）");
-        return {mode:id,label,available,reason};
+        return {mode:id,label,available,reason,parameters:available?parameters.get(base):undefined};
     });
     return {engine,channel:comfy?"本地 ComfyUI":resolveModelChannel(config,config.videoModel)?.name??"未配置",
         model:name,modes};

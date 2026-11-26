@@ -64,6 +64,10 @@ before.document.nodes.push(format("legacy-image","image",1360,520,{
 before.document.connections.push({id:"board-config",fromNodeId:"board",toNodeId:"first-config"},
  {id:"image-config",fromNodeId:"legacy-image",toNodeId:"first-config"});
 before.document.connections.push({id:"board-second-config",fromNodeId:"board",toNodeId:"second-config"});
+if(process.env.ATELIER_DRAMA_STORY_HISTORY_E2E==="1"){
+ before.document.nodes.push({...format("history-text","text",-350,40,{content:"上游原稿全文"}),title:"上游剧本"});
+ before.document.connections.push({id:"history-story-link",fromNodeId:"history-text",toNodeId:"story"});
+}
 saveSingleUserCanvas(db,{id:projectId,expectedRevision:before.revision,document:before.document});
 
 const settings={channels:[{id:"p1mock",name:"P1 fixture only",baseUrl:"https://example.com/v1",apiKey:"",

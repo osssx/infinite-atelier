@@ -87,7 +87,7 @@ import type {DramaWorkspaceTab} from "@/features/canvas-assistant/drama-pipeline
 import type {DramaWorkspaceFocus,WorkspacePendingRegistration} from "@/features/canvas-assistant/drama-creative-workspace";
 const DramaCreativeWorkspace=lazy(()=>import("@/features/canvas-assistant/drama-creative-workspace").then(m=>({default:m.DramaCreativeWorkspace})));
 import { DramaSourceNode } from "@/features/canvas-assistant/drama-source-node";
-import {buildStoryTextSourceIndex,importBlankStoryNodes,storySourceState} from "@/features/canvas-assistant/drama-story-upstream";
+import {buildStoryTextSourceIndex,importBlankStoryNodes,storySourceState,storyTextSources} from "@/features/canvas-assistant/drama-story-upstream";
 import {resolveStoryDraft,storyVersionConfirmed,storyDraftStatusLabel,rollbackStoryDraftPatch,storyDraftPatchMatches,type StoryDraftPatch} from "@/features/canvas-assistant/drama-story-state";
 const DramaStoryArtPanel=lazy(()=>import("@/features/canvas-assistant/drama-story-art-panel").then(m=>({default:m.DramaStoryArtPanel})));
 const DramaStoryHistorySummary=lazy(()=>import("@/features/canvas-assistant/drama-story-history-summary").then(m=>({default:m.DramaStoryHistorySummary})));
@@ -4956,14 +4956,23 @@ function AtelierCanvasPage() {
                             tab==="editor"?<DramaStoryEditor node={creativeWorkspaceNode} projectId={projectId}
                                 upstreamSources={storySourceIndex.get(creativeWorkspaceNode.id)??[]}
                                 onChange={patch=>persistStoryPatch(creativeWorkspaceNode.id,patch)}
-                                onSnapshotDraft={()=>backupStoryDraftBeforeReplace(creativeWorkspaceNode.id)}
                                 versionBusy={textVersionBusy} onPendingChange={onPendingChange}/>:
                             tab==="settings"?<DramaStoryArtPanel node={creativeWorkspaceNode}
                                 onChange={patch=>persistStoryPatch(creativeWorkspaceNode.id,patch)}
                                 onPendingChange={onPendingChange} disabled={textVersionBusy}/>:
-                            <DramaStoryHistorySummary node={creativeWorkspaceNode}/>:
+                            <DramaStoryHistorySummary node={creativeWorkspaceNode}
+                                sources={storySourceIndex.get(creativeWorkspaceNode.id)??[]}
+                                nodes={inputGraphNodes} connections={connections} versionBusy={textVersionBusy}
+                                onChange={patch=>persistStoryPatch(creativeWorkspaceNode.id,patch)}
+                                onSnapshotDraft={()=>backupStoryDraftBeforeReplace(creativeWorkspaceNode.id)}
+                                getCurrent={()=>{
+                                    if(activeProjectIdRef.current!==projectId)return null;
+                                    const current=nodesRef.current.find(node=>node.id===creativeWorkspaceNode.id);
+                                    if(current?.type!=="drama:source")return null;
+                                    return {node:current,sources:storyTextSources(current.id,nodesRef.current,connectionsRef.current)};
+                                }}/>:
                             renderNodePanel(creativeWorkspaceNode,true,tab as DramaWorkspaceTab,creativeWorkspaceFocus,onPendingChange)}
-                        renderHistoryPanel={()=>textVersionsNode?.id===creativeWorkspaceNode.id?
+                        renderHistoryPanel={(historyLocked)=>textVersionsNode?.id===creativeWorkspaceNode.id?
                             <CanvasTextVersionsModal inline key={`${projectId}:${creativeWorkspaceNode.id}:inline`}
                                 open versions={textVersions} listLoading={versionsLoading} listError={versionsLoadError}
                                 loadVersion={loadTextVersion} currentContent={versionNodeContent(textVersionsNode)}
@@ -4974,7 +4983,7 @@ function AtelierCanvasPage() {
                                 onSave={note=>saveTextVersion(textVersionsNode.id,note)}
                                 onDelete={versionId=>void deleteTextVersion(textVersionsNode.id,versionId)}
                                 onRestore={version=>restoreTextVersion(textVersionsNode.id,version)}
-                                retryPending={false} busy={textVersionBusy}
+                                retryPending={false} busy={textVersionBusy||historyLocked}
                                 onRetryPersistence={async()=>{refreshVersions(value=>value+1);}}/>:
                             <p role="status" className="p-4 text-xs" style={{color:theme.node.muted}}>正在加载历史版本…</p>}/>
                 </Suspense>}

@@ -8,6 +8,7 @@ import {DramaNodeStatus} from "./drama-node-style";
 import {DramaFeedbackContext,DramaFeedbackNotices,DramaTaskStatus,useDramaFeedbackController} from "./drama-feedback";
 import {DramaCandidateNavigationContext,DramaWorkspaceExitGuardContext,AssetDirectoryContext,AssetReviewBusyContext,AssetReviewContext,AssetReviewNavigationContext,emptyAssetReview,initialAssetDirectory,type AssetDirectorySelection} from "./drama-asset-directory-state";
 import {DramaStoryboardNavigationContext,DramaStoryboardScopeContext,type StoryboardScopeFocus} from "./drama-storyboard-navigation";
+import {DramaStoryHistoryNavigationContext} from "./drama-story-history-navigation";
 import type {DramaWorkspaceTab} from "./drama-pipeline-node-panel";
 type StoryWorkspaceTab=DramaWorkspaceTab|"settings";
 
@@ -79,7 +80,7 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
  onClose:()=>Promise<void>;
  onTabChange?:(tab:StoryWorkspaceTab)=>void;
  renderPanel:(tab:StoryWorkspaceTab,onPendingChange:WorkspacePendingRegistration)=>ReactNode;
- renderHistoryPanel?:()=>ReactNode;
+ renderHistoryPanel?:(locked:boolean)=>ReactNode;
 }){
  const appearance=useThemeStore(state=>state.theme);
  const theme=canvasThemes[appearance];
@@ -209,7 +210,7 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
   settings:"故事影片比例、风格、美术指导与原文确认",
   video:"批量创建视频配置及组建批量生成镜头组",
   runs:episodeMode?"浏览、编辑或删除生成候选，审核后采用到草案":"按运行状态浏览候选，展开查看内容与采用选项",
-  history:"版本快照与上游影响直接在工作区内查看",
+  history:storyMode?"文本来源同步、直接下游及版本历史":"版本快照与上游影响直接在工作区内查看",
  };
  const subtle={background:theme.node.panel,borderColor:theme.node.stroke,color:theme.node.text};
  const action="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-lg border px-3 text-xs font-medium transition-opacity hover:opacity-80 disabled:cursor-not-allowed disabled:opacity-40";
@@ -307,12 +308,13 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
      <AssetReviewBusyContext.Provider value={assetMode?updateReviewBusy:null}>
      <AssetReviewNavigationContext.Provider value={assetMode?()=>void perform("editor"):null}>
      <DramaCandidateNavigationContext.Provider value={!storyMode?()=>request("runs"):null}>
+     <DramaStoryHistoryNavigationContext.Provider value={storyMode?()=>request("history"):null}>
      <Suspense key={editorEpoch} fallback={<p role="status" className="text-xs" style={{color:theme.node.muted}}>正在按需加载工作区…</p>}>
       {tab==="history"&&renderHistoryPanel
          ? <div data-drama-history-layout="" className="grid h-full min-h-0 min-w-0 flex-1 grid-rows-[minmax(0,1fr)_minmax(0,2fr)] gap-3 xl:grid-cols-[minmax(220px,260px)_minmax(0,1fr)] xl:grid-rows-[minmax(0,1fr)]">
-            <section aria-label="上游影响面板" className="min-h-0 min-w-0 overflow-hidden">
+            <section aria-label={storyMode?"来源与下游影响面板":"上游影响面板"} className="min-h-0 min-w-0 overflow-hidden">
              <div data-drama-impact-scroll="" className="thin-scrollbar max-h-full min-w-0 overflow-y-auto overscroll-contain" style={{scrollbarGutter:"auto"}}>
-              <h3 className="mb-2 px-1 text-sm font-semibold">上游影响</h3>
+              <h3 className="mb-2 px-1 text-sm font-semibold">{storyMode?"来源与下游影响":"上游影响"}</h3>
               {renderPanel(tab,registerPending)}
              </div>
             </section>
@@ -321,11 +323,12 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
               <h3 className="text-sm font-semibold">历史版本</h3>
               <span className="text-[11px]" style={{color:theme.node.muted}}>可查看、保存或恢复创作内容快照</span>
              </div>
-             <div data-drama-history-fill="" className="min-h-0 min-w-0 flex-1">{renderHistoryPanel()}</div>
+             <div data-drama-history-fill="" className="min-h-0 min-w-0 flex-1">{renderHistoryPanel(storyMode&&(operationLocked||busy))}</div>
             </section>
            </div>
         : renderPanel(tab,registerPending)}
      </Suspense>
+     </DramaStoryHistoryNavigationContext.Provider>
      </DramaCandidateNavigationContext.Provider>
      </AssetReviewNavigationContext.Provider>
      </AssetReviewBusyContext.Provider>

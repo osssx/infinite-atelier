@@ -1,4 +1,4 @@
-"""Story S1/S2/S3 real Chrome, isolated SQLite and deterministic model-stub regression."""
+"""Story S1/S2/S3/S4 real Chrome, isolated SQLite and deterministic model-stub regression."""
 from __future__ import annotations
 import importlib.util
 import json
@@ -22,7 +22,7 @@ def run():
     root=Path(tempfile.mkdtemp(prefix="infinite-atelier-drama-p1-browser-"))
     profile=root.parent/(root.name+"-chrome-profile")
     backend_port,front_port,chrome_port=p1.port(),p1.port(),p1.port()
-    env=dict(os.environ,ATELIER_DRAMA_P1_BROWSER_E2E="1",ATELIER_P34B_BROWSER_E2E="1",ATELIER_DRAMA_STORY_AI_E2E="1",ATELIER_DATA_DIR=str(root),ATELIER_BACKEND_PORT=str(backend_port))
+    env=dict(os.environ,ATELIER_DRAMA_P1_BROWSER_E2E="1",ATELIER_P34B_BROWSER_E2E="1",ATELIER_DRAMA_STORY_AI_E2E="1",ATELIER_DRAMA_STORY_HISTORY_E2E="1",ATELIER_DATA_DIR=str(root),ATELIER_BACKEND_PORT=str(backend_port))
     processes=[];logs=[];page=None;passed=[]
     portal='[data-creative-workspace-node-id="story"]'
     card='[data-node-id="story"]'
@@ -103,7 +103,7 @@ def run():
         pending_modal_button("放弃修改")
         check("history mounted","!!document.querySelector("+q(portal+" [data-drama-history-layout]")+")")
         check("confirmed paragraphs history entry","!!document.querySelector("+q(portal+" [data-story-history-summary]")+")")
-        click(portal+" [data-story-history-summary] button")
+        click(portal+" [data-story-history-summary] button[aria-expanded]")
         check("confirmed paragraphs use readable labels","document.querySelector("+q(portal+" [data-story-history-summary]")+")?.textContent.includes('第 1 段')")
         backend("discard keeps saved story",lambda m:m["dramaDraft"]=="浏览器故事草案\n第二段")
         current_theme=page.js("document.querySelector("+q(portal)+")?.dataset.dramaWorkspaceTheme")
@@ -166,6 +166,37 @@ def run():
         button("停止等待");time.sleep(1.2)
         check("late response ignored after stop","!document.querySelector('[data-story-ai-candidate]')&&document.querySelector("+q(field)+")?.value==='用户自己的更新'")
         assert meta()["dramaDraft"]==revised and meta()["dramaConfirmed"]==saved
+
+        # S4: actual graph source + recorded dependencies, isolated history backup and restore.
+        original_meta=meta()
+        def downstream():
+            data=p1.graph(page,fixture["projectId"])["data"]
+            return {key:p1.find_node(data,key)["metadata"] for key in ("assets","episodes","board")}
+        downstream_before=downstream()
+        check("one compact source row without mutation controller in story editor","(()=>{const r=document.querySelector("+q(portal)+");return r?.querySelectorAll('[data-story-source-status]').length===1&&r.textContent.includes('上游剧本')&&!r.querySelector('[data-story-upstream-panel]')})()")
+        button("查看来源");pending_modal_button("放弃修改")
+        check("single history source controller","document.querySelectorAll("+q(portal+" [data-story-upstream-panel]")+").length===1")
+        check("actual direct assets and episodes need review, no indirect board","(()=>{const el=document.querySelector('[data-story-direct-downstream]');return el?.querySelectorAll('li').length===2&&el.querySelectorAll('[data-story-downstream-status=review]').length===2&&el.textContent.includes('资产规划')&&el.textContent.includes('剧集规划')&&!el.textContent.includes('分镜配置')})()")
+        button("追加预览")
+        check("exact append preview, not persisted","document.querySelector('[aria-label=\"追加草案预览\"]')?.value==="+q(revised+"\n\n上游原稿全文"))
+        assert meta()["dramaDraft"]==revised
+        button("取消");button("替换预览")
+        check("frozen old draft and source","document.querySelector('[aria-label=\"当前故事对比正文\"]')?.value==="+q(revised)+"&&document.querySelector('[aria-label=\"上游文本对比正文\"]')?.value==='上游原稿全文'")
+        button("用上游替换当前草案")
+        def confirmation_unchanged(m):
+            return all(m.get(key)==original_meta.get(key) for key in ("dramaConfirmed","dramaConfirmedVersionId","dramaConfirmedVisual","dramaSourceParagraphs","visualStyle","artDirection","videoRatio"))
+        backend("source replacement preserves confirmed story, provenance and art",lambda m:m["dramaDraft"]=="上游原稿全文" and m["content"]==m["dramaDraft"] and m.get("dramaTextSourceSync",{}).get("edgeId")=="history-story-link" and confirmation_unchanged(m))
+        assert downstream()==downstream_before
+        check("replacement shows updated source sync status","document.querySelector('[data-story-upstream-panel]')?.textContent.includes('上游已同步')&&!document.querySelector('[data-story-upstream-compare]')")
+        click(portal+' [aria-label="同步新上游文本前的故事草案"]')
+        check("actual recovery backup is available in saved version preview","document.querySelector('[data-canvas-text-versions-inline] pre')?.textContent==="+q(revised))
+        click(portal+' [aria-label="恢复为草案"]')
+        check("restore asks to protect the unbacked current draft","(()=>{const b=[...document.querySelectorAll('.ant-modal button')].find(b=>b.textContent.trim()==='备份后恢复');if(!b||b.disabled)return false;b.click();return true})()")
+        backend("history restore changes only the story draft, not confirmation, art or source mapping",lambda m:m["dramaDraft"]==revised and m["content"]==revised and confirmation_unchanged(m) and m.get("dramaTextSourceSync",{}).get("edgeId")=="history-story-link")
+        assert downstream()==downstream_before
+        check("restore reports draft edited and downstream still pending review","document.querySelector('[data-story-upstream-panel]')?.textContent.includes('草案已编辑')&&document.querySelectorAll('[data-story-downstream-status=review]').length===2")
+        button("故事正文")
+        check("restored text appears in read-only editor","document.querySelector("+q(field)+")?.value==="+q(revised)+"&&document.querySelector("+q(field)+")?.readOnly")
 
         assert not page.exceptions,page.exceptions
         print("STORY_BROWSER_REPORT",json.dumps({"passed":len(passed),"browserExceptions":page.exceptions,"isolation":"temporary SQLite/CAS; in-process deterministic assistantChat stub; no external model calls"},ensure_ascii=False),flush=True)

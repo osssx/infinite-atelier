@@ -1,5 +1,5 @@
-import {useEffect,useMemo,useRef,useState} from "react";
-import {Copy,Pencil,Sparkles,Upload,X} from "lucide-react";
+import {useContext,useEffect,useMemo,useRef,useState} from "react";
+import {ArrowRight,Copy,Pencil,Sparkles,Upload,X} from "lucide-react";
 import type {CanvasNodeData,CanvasNodeMetadata} from "@/types/canvas";
 import {canvasThemes} from "@/lib/canvas-theme";
 import {useThemeStore} from "@/stores/use-theme-store";
@@ -12,25 +12,26 @@ import {DramaEditActions} from "./drama-edit-actions";
 import {useDramaFeedback} from "./drama-feedback";
 import {resolveStoryDraft,storyVersionConfirmed} from "./drama-story-state";
 import type {StoryTextSource} from "./drama-story-upstream";
-import {storyTextSyncPatch} from "./drama-story-upstream";
-import {DramaStoryUpstreamPanel} from "./drama-story-upstream-panel";
+import {storySourceSummary} from "./drama-story-upstream";
+import {DramaStoryHistoryNavigationContext} from "./drama-story-history-navigation";
 import {applyStoryCandidate,storyAssistLabels,storyTargetForOperation,storyTargetLabel,storyAssistRequest,
  type StoryAssistOperation,type StoryContinuationScope,type StorySelection} from "./drama-story-editor-utils";
 import {DramaStoryCandidatePanel,type StoryCandidate} from "./drama-story-candidate-panel";
 
-export function DramaStoryEditor({node,projectId,onChange,onConfirmVersion,onSnapshotDraft,versionBusy,onPendingChange,upstreamSources=[]}:{
+export function DramaStoryEditor({node,projectId,onChange,onConfirmVersion,versionBusy,onPendingChange,upstreamSources=[]}:{
  node:CanvasNodeData;projectId:string;onChange:(patch:Partial<CanvasNodeMetadata>)=>Promise<void>;
- onConfirmVersion?:(draft:string)=>Promise<void>;onSnapshotDraft?:()=>Promise<void>;
+ onConfirmVersion?:(draft:string)=>Promise<void>;
  versionBusy:boolean;onPendingChange?:WorkspacePendingRegistration;
  upstreamSources?:readonly StoryTextSource[];
 }){
  const theme=canvasThemes[useThemeStore(state=>state.theme)];
  const config=useEffectiveConfig();
  const feedback=useDramaFeedback()?.api;
+ const openHistory=useContext(DramaStoryHistoryNavigationContext);
  const source=resolveStoryDraft(node);
  const [editing,setEditing]=useState(false),[aiOpen,setAiOpen]=useState(false);
  const [saving,setSaving]=useState(false),[importing,setImporting]=useState(false);
- const saveLock=useRef(false),syncLock=useRef(false),importLock=useRef(false),aiLock=useRef(false);
+ const saveLock=useRef(false),importLock=useRef(false),aiLock=useRef(false);
  const taskRef=useRef<ReturnType<NonNullable<typeof feedback>["beginTask"]>>(null);
  const mounted=useRef(true);
  const [baseline,setBaseline]=useState(source),[draft,setDraft]=useState(source);
@@ -42,7 +43,6 @@ export function DramaStoryEditor({node,projectId,onChange,onConfirmVersion,onSna
  const [candidateEdit,setCandidateEdit]=useState<string|null>(null);
  const [closeIntent,setCloseIntent]=useState(false);
  const [busy,setBusy]=useState(false),[confirming,setConfirming]=useState(false);
- const [syncing,setSyncing]=useState(false);
  const [error,setError]=useState(""),[notice,setNotice]=useState("");
  const inputRef=useRef<HTMLTextAreaElement>(null);
  const controller=useRef<AbortController|null>(null),requestId=useRef(0);
@@ -50,10 +50,9 @@ export function DramaStoryEditor({node,projectId,onChange,onConfirmVersion,onSna
   links:upstreamSources.map(x=>[x.nodeId,x.edgeId,x.digest]).sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b)))});
  const live=useRef({source,baseline,draft,candidate,sourceContext,candidateEdit});
  live.current={source,baseline,draft,candidate,sourceContext,candidateEdit};
- const linkedSources=useRef(upstreamSources);linkedSources.current=upstreamSources;
  const externalConflict=source!==baseline,dirty=draft!==baseline;
  const confirmed=storyVersionConfirmed(node);
- const locked=saving||syncing||confirming||busy||importing||versionBusy;
+ const locked=saving||confirming||busy||importing||versionBusy;
  const selected=!!selection&&selection.start<selection.end;
  const preview=useMemo(()=>{
   if(!aiOpen)return {target:null,issue:""};
@@ -71,15 +70,15 @@ export function DramaStoryEditor({node,projectId,onChange,onConfirmVersion,onSna
  const control={background:theme.node.panel,borderColor:theme.node.stroke,color:theme.node.text};
  const accent={background:theme.node.text,color:theme.node.panel};
  useEffect(()=>{
-  if(!saving&&!syncing&&source!==baseline&&draft===baseline){
+  if(!saving&&source!==baseline&&draft===baseline){
    setDraft(source);setBaseline(source);setSelection(null);setContinuationScope("end");
   }
- },[source,baseline,draft,saving,syncing]);
+ },[source,baseline,draft,saving]);
  useEffect(()=>{mounted.current=true;return ()=>{mounted.current=false;controller.current?.abort();requestId.current++;taskRef.current?.end();};},[]);
  useEffect(()=>{if(editing)inputRef.current?.focus();},[editing]);
  const save=async()=>{
   const value=live.current;
-  if(saveLock.current||syncLock.current||aiLock.current||importLock.current)throw Error("当前操作尚未完成");
+  if(saveLock.current||aiLock.current||importLock.current)throw Error("当前操作尚未完成");
   if(value.candidate)throw Error("请先采用或舍弃 AI 候选");
   if(value.source!==value.baseline)throw Error("故事已在其他位置更新，请核对新版本，不能覆盖原文");
   if(value.draft===value.baseline){setEditing(false);return;}
@@ -120,7 +119,7 @@ export function DramaStoryEditor({node,projectId,onChange,onConfirmVersion,onSna
  };
  const request=async()=>{
   const value=live.current;
-  if(aiLock.current||saveLock.current||syncLock.current||importLock.current||confirming||value.candidate||value.source!==value.baseline||versionBusy)return;
+  if(aiLock.current||saveLock.current||importLock.current||confirming||value.candidate||value.source!==value.baseline||versionBusy)return;
   if(!preview.target||preview.target.baseline!==value.draft){setError(preview.issue||"正文已变化，请重新定位");return;}
   const target=preview.target,scope=continuationScope;
   const id=++requestId.current,abort=new AbortController();
@@ -161,7 +160,7 @@ export function DramaStoryEditor({node,projectId,onChange,onConfirmVersion,onSna
  };
  const adopt=():{dirty:boolean}|null=>{
   const state=live.current,chosen=state.candidate;
-  if(!chosen||state.candidateEdit!==null||state.source!==state.baseline||locked||aiLock.current||saveLock.current||importLock.current||syncLock.current)return null;
+  if(!chosen||state.candidateEdit!==null||state.source!==state.baseline||locked||aiLock.current||saveLock.current||importLock.current)return null;
   try{
    if(chosen.sourceBaseline!==state.source||chosen.sourceContext!==state.sourceContext)throw Error("正文或关联来源已变化，候选已过期");
    const next=applyStoryCandidate(state.draft,chosen.target,chosen.text);
@@ -197,36 +196,6 @@ export function DramaStoryEditor({node,projectId,onChange,onConfirmVersion,onSna
    candidate?{canAdopt,adopt:()=>candidateResolution.current.adopt(),discard:()=>candidateResolution.current.discard()}:undefined);
   return ()=>onPendingChange(candidateId,null);
  },[!!candidate,canAdopt,onPendingChange,candidateId]);
- const applyUpstream=async(selected:StoryTextSource,mode:"replace"|"append"):Promise<boolean>=>{
-  if(syncLock.current||saveLock.current||aiLock.current||importLock.current)return false;
-  syncLock.current=true;setSyncing(true);
-  const task=feedback?.beginTask("同步上游文本",selected.title,true);
-  try{
-   const state=live.current;
-   if(state.source!==state.baseline||state.draft!==state.baseline||state.candidate||busy||confirming)
-    throw Error("当前故事存在未保存修改或 AI 候选，请先处理再刷新");
-   const current=upstreamSources.find(item=>item.nodeId===selected.nodeId&&item.edgeId===selected.edgeId);
-   if(!current||current.digest!==selected.digest)
-    throw Error("上游连接或内容已变化，请重新比较");
-   const needsBackup=mode==="replace"&&!!state.draft.trim()&&state.draft!==selected.content;
-   if(needsBackup&&onSnapshotDraft){
-    await onSnapshotDraft();
-    const now=live.current;
-    if(now.source!==state.source||now.baseline!==state.baseline||now.draft!==state.draft||
-     now.candidate!==state.candidate)throw Error("备份期间故事内容发生变化，刷新已取消");
-   }
-   const stillConnected=linkedSources.current.find(item=>item.nodeId===selected.nodeId&&item.edgeId===selected.edgeId);
-   if(!stillConnected||stillConnected.digest!==selected.digest)throw Error("上游内容在备份期间变化，请重新比较");
-   const patch=storyTextSyncPatch(selected,mode,state.draft);
-   await onChange(patch);
-   setDraft(patch.dramaDraft??"");setBaseline(patch.dramaDraft??"");
-   live.current={...live.current,source:patch.dramaDraft??"",baseline:patch.dramaDraft??"",draft:patch.dramaDraft??""};
-   setSelection(null);setError("");
-   setNotice(mode==="replace"?(needsBackup&&onSnapshotDraft?"已导入上游新草案，旧草案已备份，确认版本不变":"已导入上游新草案，确认版本不变"):"已追加上游文本到草案，确认版本不变");
-   return true;
-  }catch(error){setError(error instanceof Error?error.message:"无法同步上游文本");return false;}
-  finally{task?.end();syncLock.current=false;setSyncing(false);}
- };
  const confirm=async()=>{
   setError("");setConfirming(true);
   try{
@@ -261,7 +230,7 @@ export function DramaStoryEditor({node,projectId,onChange,onConfirmVersion,onSna
       disabled={locked||dirty||!!candidate||externalConflict}
       onChange={async event=>{
        const file=event.currentTarget.files?.[0];event.currentTarget.value="";
-       if(!file||importLock.current||saveLock.current||syncLock.current||aiLock.current)return;
+       if(!file||importLock.current||saveLock.current||aiLock.current)return;
        const before=live.current;importLock.current=true;setImporting(true);
        const task=feedback?.beginTask("读取故事文件",file.name,true);
        try{
@@ -280,17 +249,21 @@ export function DramaStoryEditor({node,projectId,onChange,onConfirmVersion,onSna
      onClick={()=>void confirm()}>{confirming?"确认中…":"确认故事版本"}</button>}
    </div>
   </div>
-  <DramaStoryUpstreamPanel sources={upstreamSources} sync={node.metadata?.dramaTextSourceSync}
-   draft={draft} blocked={dirty||!!candidate||locked||externalConflict}
-   onApply={applyUpstream} theme={theme}/>
+  {(upstreamSources.length>0||node.metadata?.dramaTextSourceSync)&&<div data-story-source-status="" className="flex min-w-0 shrink-0 items-center gap-2 rounded-md border px-2.5 py-1.5 text-[11px]" style={control}>
+   <span className="shrink-0 font-medium">文本来源</span>
+   <span role="status" className="min-w-0 flex-1 truncate" title={storySourceSummary(upstreamSources,node.metadata?.dramaTextSourceSync)}
+    style={{color:theme.node.muted}}>{storySourceSummary(upstreamSources,node.metadata?.dramaTextSourceSync)}</span>
+   <button type="button" className={secondary+" !min-h-7 shrink-0 !px-2"} style={control} disabled={!openHistory||locked}
+    onClick={()=>openHistory?.()}>查看来源<ArrowRight size={12}/></button>
+  </div>}
   <div className={"grid min-h-0 min-w-0 flex-1 gap-3 "+(aiOpen?"grid-rows-[minmax(240px,1fr)_minmax(280px,1fr)] xl:grid-cols-[minmax(0,2.5fr)_minmax(300px,1fr)] xl:grid-rows-1":"grid-cols-1")}>
    <div className="flex min-h-0 min-w-0 flex-col gap-2">
     <textarea ref={inputRef} aria-label="故事完整正文" data-story-textarea=""
      data-story-mode={editing?"editing":"reading"}
      className={"thin-scrollbar min-h-[240px] w-full min-w-0 flex-1 resize-none rounded-lg px-4 py-3 text-sm leading-7 outline-none focus-visible:ring-2 "+(editing?"border":"border-l-2")}
      style={{...control,background:editing?theme.node.fill:theme.toolbar.activeBg,borderColor:editing?theme.node.stroke:theme.node.activeStroke}}
-     value={draft} readOnly={!editing||saving||importing||syncing||confirming||busy||versionBusy} placeholder={editing?"撰写、粘贴或导入故事原文…":"尚无故事正文，点击编辑开始创作"}
-     onChange={event=>{if(editing&&!saveLock.current&&!importLock.current&&!syncLock.current&&!aiLock.current&&!confirming&&!versionBusy)changeDraft(event.target.value);}}
+     value={draft} readOnly={!editing||saving||importing||confirming||busy||versionBusy} placeholder={editing?"撰写、粘贴或导入故事原文…":"尚无故事正文，点击编辑开始创作"}
+     onChange={event=>{if(editing&&!saveLock.current&&!importLock.current&&!aiLock.current&&!confirming&&!versionBusy)changeDraft(event.target.value);}}
      onSelect={capture} onKeyUp={capture} onMouseUp={capture}
      onKeyDown={event=>{
       if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==="s"){
@@ -299,9 +272,9 @@ export function DramaStoryEditor({node,projectId,onChange,onConfirmVersion,onSna
      }}/>
     {editing&&<DramaEditActions theme={theme} label="故事正文" confirmText="保存草案"
      disabled={locked||!!candidate||externalConflict} onConfirm={()=>void saveRef.current().catch(cause=>setError(cause instanceof Error?cause.message:String(cause)))}
-     onCancel={()=>{if(!saveLock.current&&!syncLock.current&&!aiLock.current&&!importLock.current&&!candidate){setDraft(source);setBaseline(source);setEditing(false);setSelection(null);setContinuationScope("end");setError("");setNotice("");}}}/>}
+     onCancel={()=>{if(!saveLock.current&&!aiLock.current&&!importLock.current&&!candidate){setDraft(source);setBaseline(source);setEditing(false);setSelection(null);setContinuationScope("end");setError("");setNotice("");}}}/>}
     {editing&&<span className="text-right text-[11px]" style={{color:theme.node.muted}}>Ctrl / Cmd + S 保存</span>}
-    {externalConflict&&!saving&&!syncing&&<div role="alert" className="text-xs">故事已在其他位置更新，请取消编辑后核对最新内容。</div>}
+    {externalConflict&&!saving&&<div role="alert" className="text-xs">故事已在其他位置更新，请取消编辑后核对最新内容。</div>}
     {error&&<p role="alert" className="break-words text-xs">{error}</p>}
     {notice&&!error&&<p role="status" className="text-xs" style={{color:theme.node.muted}}>{notice}</p>}
    </div>

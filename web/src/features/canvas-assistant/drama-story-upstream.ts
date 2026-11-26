@@ -9,6 +9,66 @@ export function storyTextDigest(text:string):string{
 export type StoryTextSource={nodeId:string;edgeId:string;title:string;content:string;digest:string};
 export type StoryTextSync=NonNullable<CanvasNodeMetadata["dramaTextSourceSync"]>;
 export type StorySourceState="none"|"available"|"current"|"updated"|"disconnected"|"replaced"|"multiple";
+export const storySourceLabels:Record<StorySourceState,string>={none:"未连接来源",available:"可导入新来源",
+ current:"上游已同步",updated:"上游文本有更新",disconnected:"已同步来源断开",replaced:"原同步来源已替换",
+ multiple:"检测到多个上游文本，请选择"};
+/** Use readable names and ordinal disambiguation, never raw internal IDs. */
+export function readableStoryLabels<T extends {title:string}>(items:readonly T[]){
+ const totals=new Map<string,number>(),seen=new Map<string,number>();
+ for(const item of items)totals.set(item.title,(totals.get(item.title)??0)+1);
+ return items.map(item=>{
+  const count=(seen.get(item.title)??0)+1;seen.set(item.title,count);
+  return (totals.get(item.title)??0)>1?`${item.title}（${count}）`:item.title;
+ });
+}
+export function storySourceSummary(sources:readonly StoryTextSource[],sync?:StoryTextSync){
+ const state=storySourceState(sources,sync);
+ const active=sync&&sources.find(item=>item.nodeId===sync.nodeId&&item.edgeId===sync.edgeId);
+ const base=storySourceLabels[state];
+ if(state==="disconnected")return base+" · 草案已保留";
+ if(state==="multiple")return active?base+" · 上次："+readableStoryLabels(sources)[sources.indexOf(active)]+(active.digest===sync?.digest?"（已同步）":"（有更新）"):base;
+ return sources[0]?base+" · "+sources[0].title:base;
+}
+export type StorySourceComparison={draft:string;source:StoryTextSource;syncKey:string};
+const syncKey=(sync?:StoryTextSync)=>sync?JSON.stringify([sync.nodeId,sync.edgeId,sync.digest,sync.baselineDigest]):"";
+export function createStorySourceComparison(draft:string,source:StoryTextSource,sync?:StoryTextSync):StorySourceComparison{
+ return {draft,source:{...source},syncKey:syncKey(sync)};
+}
+export function storySourceComparisonIssue(compare:StorySourceComparison,draft:string,sources:readonly StoryTextSource[],sync?:StoryTextSync){
+ if(draft!==compare.draft||syncKey(sync)!==compare.syncKey)return "故事草案或同步记录已变化，请重新比较";
+ const current=sources.find(item=>item.nodeId===compare.source.nodeId&&item.edgeId===compare.source.edgeId);
+ if(!current||current.digest!==compare.source.digest||current.content!==compare.source.content)
+  return "上游连接或内容已变化，请重新比较";
+ return "";
+}
+export type StorySyncState={node:CanvasNodeData;sources:readonly StoryTextSource[]};
+export type StorySyncMode="replace"|"append";
+/** Snapshot and recheck the same reviewed draft/source before committing. */
+export async function applyReviewedStorySource({compare,mode,getCurrent,onBackup,onPersist,onPhase}:{
+ compare:StorySourceComparison;mode:StorySyncMode;getCurrent:()=>StorySyncState|null;
+ onBackup:()=>Promise<void>;onPersist:(patch:ReturnType<typeof storyTextSyncPatch>)=>Promise<void>;
+ onPhase?:(phase:string)=>void;
+}){
+ const assertCurrent=(afterBackup=false)=>{
+  const current=getCurrent();
+  if(!current||current.node.type!=="drama:source")throw Error("故事节点已不存在");
+  const metadata=current.node.metadata;
+  const draft=metadata?.dramaDraft??metadata?.content??metadata?.dramaConfirmed??"";
+  const issue=storySourceComparisonIssue(compare,draft,current.sources,metadata?.dramaTextSourceSync);
+  if(issue)throw Error(afterBackup?"备份期间 "+issue+"，刷新已取消":issue);
+ };
+ assertCurrent();
+ if(!compare.source.content.trim())throw Error("上游文本为空，无法同步");
+ const needsBackup=mode==="replace"&&!!compare.draft.trim()&&compare.draft!==compare.source.content;
+ if(needsBackup){
+  onPhase?.("备份当前草案");
+  await onBackup();
+  assertCurrent(true);
+ }
+ onPhase?.("保存同步后的草案");
+ await onPersist(storyTextSyncPatch(compare.source,mode,compare.draft));
+ return needsBackup;
+}
 /** Build once for a semantic graph revision, not once per rendered story card. */
 export function buildStoryTextSourceIndex(nodes:readonly CanvasNodeData[],connections:readonly CanvasConnection[]){
  const byId=new Map(nodes.map(node=>[node.id,node]));

@@ -63,6 +63,13 @@ def run():
         page.call("HeapProfiler.enable",{})
         page.call("Page.navigate",{"url":front+"/canvas/"+fixture["projectId"]})
         check("lightweight canvas summary","!!document.querySelector("+json.dumps(card)+")&&!document.querySelector("+json.dumps(portal)+")",65)
+        open_workspace()
+        button("参考素材",portal+' [aria-label="视频配置页面"]')
+        check("named missing asset with variant no raw id","""(()=>{const p=document.querySelector('[aria-label="视频参考素材"]');return p?.textContent.includes('测试角色糯米')&&p.textContent.includes('日常造型')&&p.textContent.includes('缺少必需参考图')&&!p.textContent.includes('variant-test-missing')&&!p.textContent.includes('asset-0')})()""")
+        button("前往补齐",portal+' [aria-label="视频参考素材"]')
+        check("locate correct asset variant reference slot","""(()=>{const p=document.querySelector('[data-creative-workspace-node-id="assets"]');const slot=p?.querySelector('[data-asset-reference-slot="variant-test-missing"]');return !!slot&&document.activeElement===slot&&!document.querySelector('[data-creative-workspace-node-id="board"]')})()""")
+        click(".ant-modal-close")
+        check("asset workspace closed","""!document.querySelector('[data-creative-workspace-node-id="assets"]')""")
         for appearance in ("dark","light"):
             current=page.js("document.querySelector("+json.dumps(card)+")?.dataset.dramaCardTheme")
             if current!=appearance:

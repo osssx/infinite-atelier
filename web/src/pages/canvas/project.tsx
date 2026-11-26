@@ -4231,6 +4231,24 @@ function AtelierCanvasPage() {
         }
     },[cancelComfyWorkflow,executeComfyWorkflow,handleGenerateNode,projectId,projectLoaded,stopConfigGeneration]);
 
+    // P3.4b2: full editor is a single page-level workspace, never a child of
+    // a culled/LOD canvas node. This is the only path that hydrates full bodies.
+    const openCreativeWorkspace=useCallback(async(nodeId:string,focus?:DramaWorkspaceFocus,guard?:()=>void)=>{
+        const target=nodesRef.current.find(node=>node.id===nodeId);
+        if(!target||!["drama:source","drama:assets","drama:episodes","drama:storyboard"].includes(target.type))
+            throw Error("创作节点不存在");
+        const request=++creativeWorkspaceRequestRef.current;
+        await ensureCreativeNodesLoaded(projectId,[nodeId]);
+        if(creativeWorkspaceRequestRef.current===request){
+            const hydrated=target.type==="drama:assets"?useCanvasStore.getState().openProject(projectId)?.nodes.find(node=>node.id===nodeId):undefined;
+            const assetDraft=hydrated?readAssetDraft(hydrated.metadata?.dramaDraft||hydrated.metadata?.dramaConfirmed||hydrated.metadata?.content||""):undefined;
+            guard?.();
+            if(guard&&focus?.assetId&&(!assetDraft?.assets.some(asset=>asset.id===focus.assetId&&(!focus.variantId||asset.variants?.some(v=>v.id===focus.variantId)))))throw Error("对应资产或造型已不存在，请先检查资产规划。");
+            activeStoryEditorRef.current=target.type==="drama:source"?nodeId:null;
+            setCreativeWorkspaceFocus(hydrated?{...focus,assetDirectory:selectAssetDirectory(assetDraft?.assets??[],focus?.assetId,focus?.variantId)}:focus??{});
+            setCreativeWorkspaceNodeId(nodeId);
+        }
+    },[projectId]);
     const renderNodePanel = useCallback(
         (panelNode: CanvasNodeData,workspaceMode=false,workspaceTab:DramaWorkspaceTab="editor",focus:DramaWorkspaceFocus={},onPendingChange?:WorkspacePendingRegistration) => {
             if (panelNode.type === "drama:source") return null;
@@ -4280,6 +4298,12 @@ function AtelierCanvasPage() {
                     connections.some(edge => edge.fromNodeId === directAssets.id && edge.toNodeId === item.id))
                     ?.metadata?.dramaDraft : undefined}
                 videoConfigs={panelNode.type === "drama:storyboard" ? findDramaVideoConfigs(panelNode.id, nodes, connections) : undefined}
+                onLocateVideoAsset={workspaceMode&&directAssets&&!connections.some(edge=>edge.fromNodeId===directAssets.id&&nodes.some(item=>item.id===edge.toNodeId&&item.type==="drama:asset_references"))?async(assetId,variantId,guard)=>{
+                    guard?.();
+                    await awaitCanvasStorePersistence(projectId);
+                    guard?.();
+                    await openCreativeWorkspace(directAssets.id,{assetId,variantId},guard);
+                }:undefined}
                 onOpenVideoConfig={id => {
                     if(workspaceMode)setCreativeWorkspaceNodeId(null);
                     setSelectedNodeIds(new Set([id]));
@@ -4430,7 +4454,7 @@ function AtelierCanvasPage() {
         },
         [backendComfyEnabled,cancelComfyWorkflow,startNodeReferenceSelection,connections,nodes,executeComfyWorkflow,globalComfyInstanceId,openBboxEditor,
             handleConfigNodeChange,handleGenerateNode,handleNodePromptChange,message,projectId,runningNodeId,stopConfigGeneration,
-            openTextVersions,confirmDramaVersion,textVersionBusy],
+            openTextVersions,confirmDramaVersion,textVersionBusy,openCreativeWorkspace],
     );
 
     const handleDirectorExport = useCallback(
@@ -4457,22 +4481,6 @@ function AtelierCanvasPage() {
         [getCanvasCenter],
     );
 
-    // P3.4b2: full editor is a single page-level workspace, never a child of
-    // a culled/LOD canvas node. This is the only path that hydrates full bodies.
-    const openCreativeWorkspace=useCallback(async(nodeId:string,focus?:DramaWorkspaceFocus)=>{
-        const target=nodesRef.current.find(node=>node.id===nodeId);
-        if(!target||!["drama:source","drama:assets","drama:episodes","drama:storyboard"].includes(target.type))
-            throw Error("创作节点不存在");
-        const request=++creativeWorkspaceRequestRef.current;
-        await ensureCreativeNodesLoaded(projectId,[nodeId]);
-        if(creativeWorkspaceRequestRef.current===request){
-            activeStoryEditorRef.current=target.type==="drama:source"?nodeId:null;
-            const hydrated=target.type==="drama:assets"?useCanvasStore.getState().openProject(projectId)?.nodes.find(node=>node.id===nodeId):undefined;
-            const assetDraft=hydrated?readAssetDraft(hydrated.metadata?.dramaDraft||hydrated.metadata?.dramaConfirmed||hydrated.metadata?.content||""):undefined;
-            setCreativeWorkspaceFocus(hydrated?{...focus,assetDirectory:selectAssetDirectory(assetDraft?.assets??[],focus?.assetId)}:focus??{});
-            setCreativeWorkspaceNodeId(nodeId);
-        }
-    },[projectId]);
     const closeCreativeWorkspace=useCallback(async()=>{
         try{
             await awaitCanvasStorePersistence(projectId);

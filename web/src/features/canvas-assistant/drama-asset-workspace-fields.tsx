@@ -24,7 +24,7 @@ export function DramaAssetWorkspaceFields({assets,theme,disabled,onChange,render
  onPatchAsset?:(baseline:DramaAsset,changes:AssetEntryPatch,variantId?:string)=>Promise<void>;
  onReloadAsset?:()=>Promise<void>;loading?:boolean;
 }){
- const [{kind,activeId,query,page,view="list"},setDirectory]=useAssetDirectory();
+ const [{kind,activeId,query,page,view="list",focusReferenceId},setDirectory]=useAssetDirectory();
  const cards=view==="cards";
  const setKind=(kind:DramaAssetKind)=>setDirectory(current=>({...current,kind}));
  const setActiveId=(activeId:string)=>setDirectory(current=>({...current,activeId}));
@@ -44,10 +44,17 @@ export function DramaAssetWorkspaceFields({assets,theme,disabled,onChange,render
  const active=(edit?(assets.find(a=>a.id===edit.assetId)??edit.entry):undefined)??pageRows.find(a=>a.id===activeId)??pageRows[0];
  const variants=active?.variants??[];
  const slots=active?dramaAssetSlots([active]):[];
+ const editorRef=useRef<HTMLElement>(null);
+ useEffect(()=>{
+  if(loading||!focusReferenceId||active?.id!==activeId)return;
+  const slot=Array.from(editorRef.current?.querySelectorAll<HTMLElement>("[data-asset-reference-slot]")??[]).find(element=>element.dataset.assetReferenceSlot===focusReferenceId);
+  if(slot){slot.scrollIntoView?.({block:"center"});slot.focus({preventScroll:true});}
+  setDirectory(current=>({...current,focusReferenceId:undefined}));
+ },[loading,focusReferenceId,active?.id,activeId,setDirectory]);
  const locked=disabled||loading||saving||!onChange||!!edit;
  const referenceSlot=(a:DramaAsset,variantId?:string)=>{
   if(!renderReferences||!slots.some(slot=>slot.assetId===a.id&&slot.variantId===variantId))return null;
-  return <fieldset disabled={locked} data-asset-reference-slot={variantId??a.id}
+  return <fieldset disabled={locked} tabIndex={-1} data-asset-reference-slot={variantId??a.id}
    className="min-w-0 space-y-2 border-0 p-0 disabled:opacity-75">
    {renderReferences(a,variantId)}
   </fieldset>;
@@ -182,7 +189,7 @@ export function DramaAssetWorkspaceFields({assets,theme,disabled,onChange,render
     <span>{safePage+1}/{maxPage+1}</span><button type="button" aria-label="资产下一页" className={button} style={control} disabled={locked||safePage===maxPage} onClick={()=>{setPage(safePage+1);setActiveId(rows[(safePage+1)*pageSize]?.id??"");setDeletion(null);}}><ChevronRight size={13}/></button>
    </div></div>
   </aside>
-  <section aria-label="当前资产编辑区" className="thin-scrollbar min-h-0 min-w-0 space-y-4 overflow-y-auto overscroll-contain rounded-xl border p-3 sm:p-5" style={control}>
+  <section ref={editorRef} aria-label="当前资产编辑区" className="thin-scrollbar min-h-0 min-w-0 space-y-4 overflow-y-auto overscroll-contain rounded-xl border p-3 sm:p-5" style={control}>
    {loading&&!edit?<p role="status" className="text-xs">正在加载资产草案…</p>:active?<><header className="flex items-center justify-between gap-2"><strong className="truncate">{active.name||"未命名"+kinds[kind]}</strong>{deleteControl(active)}</header>
     {onReloadAsset&&!edit&&<button type="button" className={button} style={control} disabled={disabled||loading||saving} onClick={()=>void onReloadAsset().catch(e=>setError(e instanceof Error?e.message:"刷新失败"))}>重新加载资产</button>}
     {!edit&&error&&<DramaInlineFeedback theme={theme} level="error" error={error}/>}

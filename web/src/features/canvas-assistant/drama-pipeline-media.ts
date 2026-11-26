@@ -10,10 +10,13 @@ export type DramaVideoProductionSnapshot={
     sourceRevisionId?:string;settingFingerprint:string;promptSourceFingerprint:string;manualPrompt:boolean;
 };
 
+export type DramaVideoReferenceSlot={id:string;assetId?:string;variantId?:string;name:string;variantName?:string;kind:"character"|"scene"|"prop";required:boolean;imageKeys:string[]};
 export type DramaVideoInput = {
     shot: DramaShot;
+    episodeTitle?:string;
     prompt: string;
     referenceImages: ReferenceImage[];
+    referenceSlots?:DramaVideoReferenceSlot[];
     mode?: "text_to_video"|"first_frame"|"first_last_frame"|"omni_reference";
     /** Explicit user-provided storyboard grid image, never inferred from a regular reference. */
     gridInput?:boolean;
@@ -56,10 +59,27 @@ function refForId(references: readonly DramaAssetReference[], assets: readonly D
         (variant ? reference.variantId === variant.id : !reference.variantId));
 }
 
+/** UI slot metadata is separate from the deduplicated generation inputs. */
+export function describeDramaVideoReferences(snapshot:DramaPipelineSnapshot,shot:DramaShot):DramaVideoReferenceSlot[]{
+ const slots=new Map<string,{kind:DramaVideoReferenceSlot["kind"];required:boolean}>();
+ const add=(id:string,kind:DramaVideoReferenceSlot["kind"],required:boolean)=>slots.set(id,{kind,required:required||!!slots.get(id)?.required});
+ shot.characterVariantIds.forEach(id=>add(id,"character",true));
+ const scene=shot.sceneVariantId??shot.sceneId;if(scene)add(scene,"scene",true);
+ shot.propIds.forEach(id=>add(id,"prop",shot.keyPropIds.includes(id)));
+ shot.keyPropIds.forEach(id=>add(id,"prop",true));
+ return [...slots].map(([id,{kind,required}])=>{
+  const asset=assetForId(snapshot.assets,id),variant=asset?.variants?.find(v=>v.id===id);
+  const label=kind==="character"?"角色":kind==="scene"?"场景":"道具";
+  return {id,assetId:asset?.id,variantId:variant?.id,name:asset?.name?.trim()||(asset?"未命名"+label:"已失效的"+label),
+   variantName:variant?(variant.name?.trim()||(kind==="character"?"未命名造型":"未命名变体")):undefined,
+   kind,required,imageKeys:dramaReferenceImageKeys(refForId(snapshot.references,snapshot.assets,id))};
+ });
+}
+
 /** Converts the confirmed asset references used by a shot into trusted image
  * inputs for startSqliteModelGeneration. Data URLs are intentionally omitted.
  */
-export function buildDramaVideoInput(snapshot: DramaPipelineSnapshot, shot: DramaShot): DramaVideoInput {
+export function buildDramaVideoInput(snapshot: DramaPipelineSnapshot, shot: DramaShot,episodeTitle?:string): DramaVideoInput {
     const ids = [...shot.characterVariantIds,
         ...(shot.sceneVariantId ? [shot.sceneVariantId] : shot.sceneId ? [shot.sceneId] : []),
         ...shot.propIds];
@@ -72,7 +92,7 @@ export function buildDramaVideoInput(snapshot: DramaPipelineSnapshot, shot: Dram
             seen.add(storageKey);
             referenceImages.push({
                 id: `${shot.id}-${id}-${referenceImages.length + 1}`,
-                name: assetForId(snapshot.assets, id)?.name ?? id,
+                name: assetForId(snapshot.assets, id)?.name?.trim() || "未命名参考素材",
                 type: "image/png",
                 dataUrl: "",
                 storageKey,
@@ -86,7 +106,9 @@ export function buildDramaVideoInput(snapshot: DramaPipelineSnapshot, shot: Dram
     const prompt = [shot.description, propDescriptions.length ? `可见道具：${propDescriptions.join("；")}` : ""].filter(Boolean).join("\n");
     return {
         shot,
+        episodeTitle,
         referenceImages,
+        referenceSlots:describeDramaVideoReferences(snapshot,shot),
         prompt: [
             prompt,
             shot.shotSize?.trim() && `景别：${shot.shotSize}`,

@@ -7,6 +7,7 @@ import {applyDramaProduction,type DramaVideoInput,type DramaShotProduction} from
 import {auditDramaProduction,dramaMediaModes,type DramaProductionAudit} from "./drama-production-audit";
 import {dramaNodeControl,dramaNodePrimary} from "./drama-node-style";
 import {DramaInlineFeedback,useDramaFeedback} from "./drama-feedback";
+import {dramaVideoFeedback} from "./drama-video-feedback";
 import type {DramaBatchCreateResult} from "./drama-video-config";
 
 type Props={
@@ -164,7 +165,7 @@ export function DramaBatchConfigPanel({inputs,episodes,configs,missingFor,disabl
   </div>
   <div className="flex shrink-0 flex-wrap items-center gap-2">
    <select aria-label="批量创建配置剧集" className="rounded-lg border px-2 py-2" style={control} disabled={lock} value={activeEpisode} onChange={e=>{setEpisode(e.target.value);setSequence("");setPage(0);}}>
-    <option value="">全部剧集</option>{episodeIds.map(id=><option key={id} value={id}>{episodes.find(ep=>ep.id===id)?.title??id}</option>)}
+    <option value="">全部剧集</option>{episodeIds.map(id=><option key={id} value={id}>{episodes.find(ep=>ep.id===id)?.title??"未命名剧集"}</option>)}
    </select>
    <select aria-label="批量配置场次" className="rounded-lg border px-2 py-2" style={control} disabled={lock} value={sequence} onChange={e=>{setSequence(e.target.value);setPage(0);}}>
     <option value="">全部场次</option><option value="unassigned">未指定场次</option>{sequenceOptions.map(([id,title])=><option key={id} value={id}>{title}</option>)}
@@ -188,11 +189,11 @@ export function DramaBatchConfigPanel({inputs,episodes,configs,missingFor,disabl
      return <tr key={row.id} className="border-b align-top" style={{borderColor:theme.node.stroke,background:selected.includes(row.id)?theme.toolbar.activeBg:undefined}}>
       <td className="p-2"><input type="checkbox" aria-label={"选择镜头 "+shot.order+" · "+shot.description} style={{accentColor:theme.node.activeStroke}} disabled={lock||!eligible(row)}
        checked={eligible(row)&&selected.includes(row.id)} onChange={e=>setMany([row.id],e.target.checked)}/></td>
-      <td className="min-w-0 p-2"><strong className="block truncate" title={shot.description}>镜头 {shot.order} · {shot.description||"未填写"}</strong><span className="block truncate" style={muted}>{ep?.title??shot.episodeId} · {title}</span></td>
+      <td className="min-w-0 p-2"><strong className="block truncate" title={shot.description}>镜头 {shot.order} · {shot.description||"未填写"}</strong><span className="block truncate" style={muted}>{ep?.title??"未命名剧集"} · {title}</span></td>
       <td className="p-2 break-words">{dramaMediaModes.find(item=>item.id===modeFor(row.setting))?.label??modeFor(row.setting)}</td>
-      <td className="p-2 tabular-nums">{shot.durationSec??"—"} 秒</td>
+      <td className="p-2 tabular-nums">{row.setting.durationSec??shot.durationSec??"—"} 秒</td>
       <td className="p-2 break-words"><span>{result?.state==="failed"?(result.stage==="create"?"创建失败":"预检失败"):row.configured?"已配置":result?.state==="ready"?"预检通过":result?.state==="pending"?"核验中":"待创建"}</span>
-       {result?.state==="failed"&&<DramaInlineFeedback theme={theme} level="error" error={result.error??"操作未通过"}/>}
+       {result?.state==="failed"&&<DramaInlineFeedback theme={theme} level="error">{dramaVideoFeedback(result.error)}</DramaInlineFeedback>}
        {onLocate&&(!canLocate||canLocate(row.id))&&<button type="button" className="mt-1 block underline underline-offset-2 disabled:opacity-40" disabled={lock} onClick={()=>onLocate(row.id,shot.episodeId)}>定位镜头</button>}
       </td>
      </tr>;
@@ -203,7 +204,7 @@ export function DramaBatchConfigPanel({inputs,episodes,configs,missingFor,disabl
    <span>{filtered.length} 条 · 第 {safePage+1} / {pages} 页 · 每页 {pageSize} 镜</span>
    <div className="flex gap-2"><Button size="small" style={control} disabled={lock||safePage===0} onClick={()=>setPage(safePage-1)}>上一页</Button><Button size="small" style={control} disabled={lock||safePage>=pages-1} onClick={()=>setPage(safePage+1)}>下一页</Button></div>
   </div>
-  {error&&<DramaInlineFeedback theme={theme} level="error" error={error}/>}
+  {error&&<DramaInlineFeedback theme={theme} level="error">{dramaVideoFeedback(error)}</DramaInlineFeedback>}
   {summary&&<div data-drama-batch-result="" className="flex shrink-0 items-center gap-2"><div className="min-w-0 flex-1"><DramaInlineFeedback theme={theme} level={summary.level}>{summary.title}</DramaInlineFeedback></div>{summary.failedIds.length>0&&<Button size="small" style={control} disabled={lock} onClick={()=>{setEpisode("");setSequence("");setStatus("failed");setPage(0);}}>查看失败项</Button>}</div>}
   <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-t pt-3" style={{borderColor:theme.node.stroke}}>
    <div><strong>已选 {chosen.length} 镜</strong>{mode==="create"&&<span className="ml-2" style={muted}>通过 {passed.length} · 失败 {failed.length} · 待检 {chosen.length-passed.length-failed.length}</span>}</div>

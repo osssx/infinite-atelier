@@ -8,10 +8,11 @@ import { dramaNodeControl, dramaNodePrimary } from "./drama-node-style";
 import {useEffectiveConfig,type AiConfig} from "@/stores/use-config-store";
 import {DramaVideoTargetPicker,DramaVideoParameterFields,dramaVideoTargetLabel} from "./drama-video-generation-settings";
 import {DramaVideoPromptEditor} from "./drama-video-prompt-editor";
+import {DramaVideoReferencePanel,type LocateVideoAsset} from "./drama-video-reference-panel";
+import {dramaVideoFeedback} from "./drama-video-feedback";
 import {dramaVideoPromptSource} from "./drama-video-production-resolver";
 import {prepareDramaProduction} from "./drama-media-preflight";
 import {auditDramaProduction,dramaMediaModes,listDramaProductionCapabilities,type DramaProductionAudit,type DramaProductionCapabilities} from "./drama-production-audit";
-import {canvasCasUrl} from "@/features/backend-sync/canvas-cas";
 import {DramaEditActions} from "./drama-edit-actions";
 import {DramaInlineFeedback,useDramaFieldFeedback} from "./drama-feedback";
 
@@ -208,7 +209,7 @@ function VideoModeField({shotId,setting,disabled,theme,capabilities,config,shotD
 
 export function DramaVideoConfigFields({
     inputs, episodes, configs, missingCount, missingFor, hasUnconfirmedChanges, disabled, theme, onCreateSelected, onAction,
-    productionStyle,production={},onProductionChange,onPickImage,onRefresh,confirmedRevisionId,onCreateBatch,
+    productionStyle,production={},onProductionChange,onPickImage,onRefresh,confirmedRevisionId,onCreateBatch,onLocateAsset,
     expanded=false,initialEpisodeId,initialShotId,embedded=false,confirmedInput=true,images,projectId,onPendingChange,onEditingChange,onWaitForSave,
 }: {
     inputs: DramaVideoInput[];
@@ -229,6 +230,7 @@ export function DramaVideoConfigFields({
     production?:Record<string,DramaShotProduction>;
     onProductionChange?:(shotId:string,value:DramaShotProduction)=>void;
     onPickImage?:(onPick:(storageKey:string)=>void)=>void;
+    onLocateAsset?:LocateVideoAsset;
     onRefresh?:(id:string,input:DramaVideoInput,fields:{prompt:boolean;duration:boolean;references?:boolean;overwrite:boolean})=>void;
 }) {
     const [episodeId, setEpisodeId] = useState(initialEpisodeId??"");
@@ -313,7 +315,7 @@ export function DramaVideoConfigFields({
                             setEpisodeId(event.target.value);setShotId("");
                         }}>
                         {episodeIds.map(id=><option key={id} value={id}>
-                            {episodes.find(episode=>episode.id===id)?.title||id}</option>)}
+                            {episodes.find(episode=>episode.id===id)?.title||"未命名剧集"}</option>)}
                     </select>
                 </label>
             </div>
@@ -323,7 +325,7 @@ export function DramaVideoConfigFields({
                     const current=shot.id===active.shot.id;
                     const configured=Boolean(configs?.has(shot.id));
                     return <button type="button" key={shot.id} aria-pressed={current} disabled={promptEditing}
-                        aria-label={`选择视频镜头 ${index+1}：${shot.shotSize||shot.id}`}
+                        aria-label={`选择视频镜头 ${index+1}：${shot.shotSize||"未设置景别"}`}
                         onClick={()=>{setShotId(shot.id);setError("");}}
                         className="flex w-full min-w-0 items-start gap-2.5 rounded-lg border px-3 py-3 text-left transition-opacity hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
                         style={current?{background:theme.toolbar.activeBg,color:theme.node.text,borderColor:theme.node.stroke,
@@ -350,13 +352,13 @@ export function DramaVideoConfigFields({
                 <select className={field} style={control} value={activeEpisode} onChange={event=>{
                     setEpisodeId(event.target.value);setShotId("");
                 }}>
-                    {episodeIds.map(id => <option key={id} value={id}>{episodes.find(episode => episode.id === id)?.title || id}</option>)}
+                    {episodeIds.map(id => <option key={id} value={id}>{episodes.find(episode => episode.id === id)?.title || "未命名剧集"}</option>)}
                 </select>
             </label>
             <label className="grid min-w-0 gap-1 text-xs">镜头
                 <select className={field} style={control} value={active.shot.id} onChange={event => setShotId(event.target.value)}>
                     {episodeInputs.map(({shot}, index) => <option key={shot.id} value={shot.id}>
-                        镜头 {index + 1} · {shot.shotSize || shot.id}
+                        镜头 {index + 1} · {shot.shotSize || "未设置景别"}
                     </option>)}
                 </select>
             </label>
@@ -453,20 +455,12 @@ export function DramaVideoConfigFields({
                 {...dramaVideoPromptSource(applyDramaPromptMode(active,setting),productionStyle)}
                 onChange={onProductionChange} onPendingChange={onPendingChange} onEditingChange={setPromptEditing}
                 onWaitForSave={onWaitForSave} existing={Boolean(existing)}/>}
-            {confirmedInput&&expanded&&videoTab==="references"&&<section aria-label="视频参考素材" className="min-w-0 space-y-2 text-xs">
-                <div className="flex justify-between"><strong>绑定素材</strong><span style={muted}>引用图片 {preview.referenceImages.length} 张</span></div>
-                <div className="flex min-w-0 flex-wrap gap-2">
-                    {preview.referenceImages.map((reference,index)=><div key={reference.id} className="grid max-w-28 gap-1">
-                        {reference.storageKey&&<img loading="lazy" src={canvasCasUrl(reference.storageKey)??""} alt={reference.name} className="size-20 rounded object-cover"/>}
-                        <span className="break-words text-xs">{index+1}. {reference.name}</span>
-                    </div>)}
-                </div>
-                {!!requiredMissing.length&&<p role="alert">缺少 {requiredMissing.length} 项必需参考图</p>}
-                {!preview.referenceImages.length&&!requiredMissing.length&&<p style={muted}>当前输入模式没有已绑定参考图。</p>}
-            </section>}
+            {confirmedInput&&expanded&&videoTab==="references"&&<DramaVideoReferencePanel key={active.shot.id}
+                input={active} setting={setting} missingIds={requiredMissing} theme={theme} disabled={disabled||modeEditing}
+                onLocate={onLocateAsset} onSettings={()=>setVideoTab("settings")}/>}
             {confirmedInput&&<div aria-label="逐镜媒体输入预检" className="min-w-0 space-y-1 text-xs">
                 {auditing&&<p role="status" style={muted}>正在核验工作流端口和媒体约束…</p>}
-                {(previewError||audit&&!audit.ready)&&<DramaInlineFeedback theme={theme}>{!previewError&&requiredMissing.length&&setting.mode==="omni_reference"?`缺少 ${requiredMissing.length} 项必需参考图，请核对素材绑定`:previewError||audit?.error}。请选择可用模式，补齐素材或调整模板参数。</DramaInlineFeedback>}
+                {(previewError||audit&&!audit.ready)&&<DramaInlineFeedback theme={theme}>{dramaVideoFeedback(previewError||audit?.error)}</DramaInlineFeedback>}
             </div>}
             {!confirmedInput&&<p role="status" className="text-xs" style={muted}>请先确认当前镜头，再进行媒体预检和创建视频配置。</p>}
             <div className="flex flex-wrap items-center justify-between gap-2 border-t pt-3" style={{borderColor:theme.node.stroke}}>
@@ -491,7 +485,7 @@ export function DramaVideoConfigFields({
             missingFor={missingFor} disabled={disabled} theme={theme} production={production}
             productionStyle={productionStyle} confirmedRevisionId={confirmedRevisionId}
             initialEpisodeId={activeEpisode} onCreateSelected={onCreateSelected} onCreateBatch={onCreateBatch} embedded/>}
-        {error&&<DramaInlineFeedback theme={theme} level="error" error={error}/>}
+        {error&&<DramaInlineFeedback theme={theme} level="error">{dramaVideoFeedback(error)}</DramaInlineFeedback>}
         </div>
     </section>;
 }
@@ -519,7 +513,7 @@ export function DramaBatchConfigPanel({inputs,episodes,configs,missingCount,miss
  {!embedded&&<div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border p-3" style={card}>
   <label className="flex items-center gap-2 text-xs">当前剧集
    <select aria-label="批量创建配置剧集" className="rounded-lg border px-3 py-2 text-xs" style={control} value={activeEpisode} onChange={event=>setEpisodeId(event.target.value)}>
-    {episodeIds.map(id=><option key={id} value={id}>{episodes.find(ep=>ep.id===id)?.title??id}</option>)}
+    {episodeIds.map(id=><option key={id} value={id}>{episodes.find(ep=>ep.id===id)?.title??"未命名剧集"}</option>)}
    </select>
   </label>
   <span className="text-xs" style={muted}>已配置 {inputs.length-missingCount} / {inputs.length} · 仅创建配置，不执行生成</span>
@@ -555,7 +549,7 @@ export function DramaBatchConfigPanel({inputs,episodes,configs,missingCount,miss
                     }));
                     const failures=audits.filter(item=>!item.audit.ready);
                     if(failures.length)throw Error("批量预检不通过："+failures.map(item=>
-                        item.shotId+" · "+item.audit.error).join("；"));
+                        "镜头 "+(inputs.find(input=>input.shot.id===item.shotId)?.shot.order??"—")+" · "+dramaVideoFeedback(item.audit.error)).join("；"));
                     onCreateSelected(audits.map(item=>item.audit.input!));
                     setSelected([]);
                 }catch(error){setError(error instanceof Error?error.message:"输入配置无效");}finally{setBusy(false);}
@@ -576,7 +570,7 @@ export function DramaBatchConfigPanel({inputs,episodes,configs,missingCount,miss
                         <input type="checkbox" className="mt-0.5 shrink-0" style={{accentColor:theme.node.activeStroke}} checked={batchShots.includes(input.shot.id)}
                             disabled={disabled||busy} onChange={event=>setBatchShots(current=>event.target.checked?
                                 [...new Set([...current,input.shot.id])]:current.filter(id=>id!==input.shot.id))}/>
-                        {episodes.find(item=>item.id===input.shot.episodeId)?.title??input.shot.episodeId} · 镜头 {input.shot.order} · {input.shot.description}                    </label>)}
+                        {episodes.find(item=>item.id===input.shot.episodeId)?.title??"未命名剧集"} · 镜头 {input.shot.order} · {input.shot.description}                    </label>)}
             </div>
             <Button size="middle" style={control} disabled={disabled||busy||batchShots.filter(id=>inputs.some(input=>
                 input.shot.id===id&&configs?.has(id))).length<2} onClick={async()=>{
@@ -592,7 +586,7 @@ export function DramaBatchConfigPanel({inputs,episodes,configs,missingCount,miss
             </div>
         </details>}
 
- {error&&<DramaInlineFeedback theme={theme} level="error" error={error}/>}
+ {error&&<DramaInlineFeedback theme={theme} level="error">{dramaVideoFeedback(error)}</DramaInlineFeedback>}
  </section>;
 }
 

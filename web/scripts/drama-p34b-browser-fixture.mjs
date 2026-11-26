@@ -74,6 +74,11 @@ const shots=Array.from({length:shotCount},(_,i)=>({id:"shot-"+i,episodeId:"ep-"+
  sequenceId:"ep-"+Math.floor(i/shotsPerEpisode)+"-seq-"+Math.min(2,Math.floor((i%shotsPerEpisode)*3/shotsPerEpisode)),
  order:i+1,shotSize:"中景",description:("镜头 "+i+" 画面描述：角色在场景中行动。").repeat(35),
  action:"镜头移动 "+i,dialogue:"",characterVariantIds:[],propIds:[],keyPropIds:[],sourceRefs:[]}));
+// Only the video configuration acceptance fixture needs a missing variant slot.
+if(shotCount===200){
+ assets[0]={...assets[0],kind:"character",name:"测试角色糯米",variants:[{id:"variant-test-missing",name:"日常造型",description:"白色毛发"}]};
+ shots[0].characterVariantIds=["variant-test-missing"];
+}
 const node=(id,type,index,metadata,width=220,height=180)=>({
  id,type,title:id,position:{x:36+(index%13)*265,y:36+Math.floor(index/13)*220},
  width,height,metadata
@@ -85,7 +90,7 @@ const nodes=[
     kind:"prop",name:"待审核道具 "+i,description:"新增道具说明 "+i,sourceRefs:[]}))}}:{})},340,360),
  node("episodes","drama:episodes",1,{dramaDraft:JSON.stringify({episodes}),dramaConfirmed:JSON.stringify({episodes})},340,360),
  node("board","drama:storyboard",2,{dramaDraft:JSON.stringify({shots}),dramaConfirmed:JSON.stringify({shots}),
-  dramaConfirmedVersionId:"p34b-v1",...(shotCount===200?{dramaShotProduction:{"shot-50":{mode:"first_frame"},"shot-100":{mode:"first_frame"}}}:{})},420,410)
+  dramaConfirmedVersionId:"p34b-v1",...(shotCount===200?{dramaShotProduction:{"shot-0":{mode:"omni_reference"},"shot-50":{mode:"first_frame"},"shot-100":{mode:"first_frame"}}}:{})},420,410)
 ];
 for(let i=0;i<197;i++){
  const k=i+3;

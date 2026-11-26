@@ -20,7 +20,7 @@ import {saveAssetEntry} from "./drama-asset-entry-save";
 import type {WorkspacePendingRegistration} from "./drama-creative-workspace";
 import {DramaReferenceImagePicker} from "./drama-reference-image-picker";
 import {DramaAssetCandidates} from "./drama-asset-candidates";
-import {adoptedAssetSelection,DramaCandidateNavigationContext,AssetReviewNavigationContext,useAssetDirectory,type AssetAdoptionMapping} from "./drama-asset-directory-state";
+import {adoptedAssetSelection,DramaCandidateNavigationContext,DramaWorkspaceExitGuardContext,AssetReviewNavigationContext,useAssetDirectory,type AssetAdoptionMapping} from "./drama-asset-directory-state";
 import {DramaCreativeScopeBrowser} from "./drama-creative-scope-browser";
 import {DramaStoryboardNavigationContext,DramaStoryboardScopeContext} from "./drama-storyboard-navigation";
 const DramaVideoConfigFields = lazy(() => import("./drama-video-config-fields").then(m=>({default:m.DramaVideoConfigFields})));
@@ -73,13 +73,14 @@ function describeDramaValidation(errors: {code:string;shotId?:string;id?:string}
 
 export type DramaWorkspaceTab="editor"|"video"|"runs"|"history";
 
-export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, videoConfigs, onRefreshVideoConfig, onOpenVideoConfig, onCreateReferenceConfig, onPickCanvasImage, onCreateDramaShotGroup, projectId, upstreamText = "", upstreamContext = "", upstreamArtifacts = [], supplementalEpisodes = [], assetUsage = {}, confirmedAssetPlan, savedAssetReferences, mergedReferences, legacyAssetPlanning = false, imageNodes = [], productionContext = "", productionStyle, onOpenVersions, onConfirmVersion, onBeforeDramaRun, onAdoptDramaRun, onMigrateDramaSequences, onAdoptDramaAssetCandidate, versionBusy = false, workspaceMode = false, workspaceTab = "editor", onPendingChange, initialEpisodeId, initialShotId }: {
+export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, videoConfigs, onRefreshVideoConfig, onOpenVideoConfig, onLocateVideoAsset, onCreateReferenceConfig, onPickCanvasImage, onCreateDramaShotGroup, projectId, upstreamText = "", upstreamContext = "", upstreamArtifacts = [], supplementalEpisodes = [], assetUsage = {}, confirmedAssetPlan, savedAssetReferences, mergedReferences, legacyAssetPlanning = false, imageNodes = [], productionContext = "", productionStyle, onOpenVersions, onConfirmVersion, onBeforeDramaRun, onAdoptDramaRun, onMigrateDramaSequences, onAdoptDramaAssetCandidate, versionBusy = false, workspaceMode = false, workspaceTab = "editor", onPendingChange, initialEpisodeId, initialShotId }: {
     node: CanvasNodeData;
     onChange: (patch: Partial<CanvasNodeData["metadata"]>) => void;
     onCreateVideoConfigs?: (inputs: ReturnType<typeof buildDramaVideoInput>[], batch: boolean) => DramaBatchCreateResult|void;
     onCreateDramaShotGroup?: (shotIds:string[])=>Promise<void>;
     videoConfigs?: ReadonlyMap<string, CanvasNodeData>;
     onOpenVideoConfig?: (id: string) => void;
+    onLocateVideoAsset?:(assetId:string,variantId?:string,guard?:()=>void)=>Promise<void>;
     onRefreshVideoConfig?: (id:string,input:ReturnType<typeof buildDramaVideoInput>,fields:{prompt:boolean;duration:boolean;references?:boolean;overwrite:boolean})=>void;
     onCreateReferenceConfig?: (assetName: string, prompt: string) => void;
     onPickCanvasImage?: (onPick: (storageKey: string) => void) => void;
@@ -130,6 +131,7 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
     const [videoEditing,setVideoEditing]=useState(false);
     const [,setAssetDirectory]=useAssetDirectory();
     const openAdoptedAsset=useContext(AssetReviewNavigationContext);
+    const guardWorkspaceExit=useContext(DramaWorkspaceExitGuardContext);
     const openCandidates=useContext(DramaCandidateNavigationContext);
     const [scopeOpen,setScopeOpen]=useState(false);
     // Both storyboard tabs share the same footer; close an open range menu when switching tabs.
@@ -357,7 +359,7 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
     const confirmedShots = useMemo(()=>storyboard ? readStoryboardDraft(confirmed)?.shots ?? [] : [],[storyboard,confirmed]);
     const videoSnapshot = { ...parsedSnapshot, references };
     const effectiveStoryboardView = workspaceMode ? (workspaceTab==="video"?"video":"shots") : storyboardView;
-    const videoInputs = effectiveStoryboardView==="video"?confirmedShots.map(shot => buildDramaVideoInput(videoSnapshot, shot)):[];
+    const videoInputs = effectiveStoryboardView==="video"?confirmedShots.map(shot => buildDramaVideoInput(videoSnapshot, shot,linkedEpisodes.find(ep=>ep.id===shot.episodeId)?.title)):[];
 
     const images = imageNodes.flatMap(item => {
         const metadata = item.metadata;
@@ -645,12 +647,13 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
                         }}
                         renderVideoConfig={shot=>{
                             const published=confirmedShots.find(item=>item.id===shot.id);
-                            const input=buildDramaVideoInput(videoSnapshot,published??shot);
+                            const input=buildDramaVideoInput(videoSnapshot,published??shot,linkedEpisodes.find(ep=>ep.id===shot.episodeId)?.title);
                             return <Suspense fallback={<p role="status">正在加载视频配置…</p>}>
                                 <DramaVideoConfigFields key={shot.id} embedded expanded confirmedInput={Boolean(published)}
                                     productionStyle={productionStyle} confirmedRevisionId={node.metadata?.dramaConfirmedVersionId}
                                     inputs={[input]} episodes={linkedEpisodes} initialEpisodeId={shot.episodeId} initialShotId={shot.id}
                                     onRefresh={onRefreshVideoConfig} configs={videoConfigs} missingCount={videoConfigs?.has(shot.id)?0:1}
+                                    onLocateAsset={onLocateVideoAsset?async(assetId,variantId)=>{guardWorkspaceExit?.();await onLocateVideoAsset(assetId,variantId,guardWorkspaceExit??undefined);}:undefined}
                                     production={node.metadata?.dramaShotProduction}
                                     onProductionChange={(id,value)=>onChange({dramaShotProduction:{...node.metadata?.dramaShotProduction,[id]:value}})}
                                     images={images} projectId={projectId} onPendingChange={onPendingChange}

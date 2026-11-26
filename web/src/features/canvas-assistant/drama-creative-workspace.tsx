@@ -6,12 +6,12 @@ import {canvasThemes,type CanvasTheme} from "@/lib/canvas-theme";
 import {useThemeStore} from "@/stores/use-theme-store";
 import {DramaNodeStatus} from "./drama-node-style";
 import {DramaFeedbackContext,DramaFeedbackNotices,DramaTaskStatus,useDramaFeedbackController} from "./drama-feedback";
-import {DramaCandidateNavigationContext,AssetDirectoryContext,AssetReviewBusyContext,AssetReviewContext,AssetReviewNavigationContext,emptyAssetReview,initialAssetDirectory,type AssetDirectorySelection} from "./drama-asset-directory-state";
+import {DramaCandidateNavigationContext,DramaWorkspaceExitGuardContext,AssetDirectoryContext,AssetReviewBusyContext,AssetReviewContext,AssetReviewNavigationContext,emptyAssetReview,initialAssetDirectory,type AssetDirectorySelection} from "./drama-asset-directory-state";
 import {DramaStoryboardNavigationContext,DramaStoryboardScopeContext,type StoryboardScopeFocus} from "./drama-storyboard-navigation";
 import type {DramaWorkspaceTab} from "./drama-pipeline-node-panel";
 type StoryWorkspaceTab=DramaWorkspaceTab|"settings";
 
-export type DramaWorkspaceFocus={episodeId?:string;sequenceId?:string;shotId?:string;assetId?:string;assetDirectory?:AssetDirectorySelection};
+export type DramaWorkspaceFocus={episodeId?:string;sequenceId?:string;shotId?:string;assetId?:string;variantId?:string;assetDirectory?:AssetDirectorySelection};
 export type WorkspacePendingRegistration=(key:string,save:(()=>Promise<void>)|null)=>void;
 
 type WorkspaceTabItem={id:StoryWorkspaceTab;label:string;icon:typeof BookOpenText};
@@ -250,6 +250,7 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
     <div data-drama-workspace-content="" inert={busy&&pendingMenu} className={`thin-scrollbar min-h-0 min-w-0 flex-1 rounded-xl border p-3 sm:p-4 ${tab==="history"?"flex flex-col overflow-hidden":"overflow-y-auto overscroll-contain"}`}
      style={{...subtle}}>
      <DramaFeedbackContext.Provider value={storyMode?null:feedback.context}>
+     <DramaWorkspaceExitGuardContext.Provider value={()=>{if(pending.current.size||busyRef.current||reviewBusyRef.current||operationLockedRef.current)throw Error("存在未保存修改或正在执行操作，请先完成当前操作。");}}>
      <DramaStoryboardScopeContext.Provider value={kind==="storyboard"?storyboardScope:null}>
      <DramaStoryboardNavigationContext.Provider value={kind==="storyboard"?(focus)=>{if(focus)storyboardScope[1](focus);request("editor");}:null}>
      <AssetDirectoryContext.Provider value={assetMode?assetDirectory:null}>
@@ -283,6 +284,7 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
      </AssetDirectoryContext.Provider>
      </DramaStoryboardNavigationContext.Provider>
      </DramaStoryboardScopeContext.Provider>
+     </DramaWorkspaceExitGuardContext.Provider>
      </DramaFeedbackContext.Provider>
     </div>
     {error&&!pendingMenu&&!pendingAction&&<p role="alert" className="shrink-0 rounded-lg border p-2 text-xs"

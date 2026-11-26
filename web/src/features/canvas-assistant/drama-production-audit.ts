@@ -57,7 +57,7 @@ export async function listDramaProductionCapabilities(globalConfig:AiConfig,sett
         const channel=resolveModelChannel(config,config.videoModel);
         const model=channel?.models.find(value=>value.name===modelOptionName(config.videoModel));
         const provider=channel&&modelChannelProvider(channel,"video");
-        name=model?.name??modelOptionName(config.videoModel);
+        name=model?.name??"视频模型不可用";
         if(!channel||!provider||!model)unavailable="视频渠道或模型未配置";
         else{
             const executor={provider,kind:"video" as const,customScript:Boolean(resolveModelScript(config,config.videoModel))};

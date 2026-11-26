@@ -1,7 +1,7 @@
 import {useEffect,useState,type CSSProperties} from "react";
 import {listComfyTemplates} from "@/features/comfy-workflow/template-registry";
 import type {ComfyWorkflowTemplate} from "@/features/comfy-workflow/template-schema";
-import {encodeChannelModel,modelOptionLabel,type AiConfig} from "@/stores/use-config-store";
+import {encodeChannelModel,type AiConfig} from "@/stores/use-config-store";
 import type {CanvasTheme} from "@/lib/canvas-theme";
 import type {DramaShotProduction,DramaVideoTarget} from "./drama-pipeline-media";
 import type {DramaProductionCapabilities} from "./drama-production-audit";
@@ -96,5 +96,5 @@ export function DramaVideoParameterFields({config,value,capabilities,shotDuratio
 export function dramaVideoTargetLabel(config:AiConfig,value:DramaShotProduction,capabilities:DramaProductionCapabilities|null){
  const inherited=!value.target||value.target.kind==="inherit";
  return (inherited?"跟随全局默认 · ":"")+(capabilities?[capabilities.channel,capabilities.model].filter(Boolean).join(" · "):
-  value.target?.kind==="online"?modelOptionLabel(config,value.target.modelOption):"正在检查渠道");
+  "正在检查渠道");
 }

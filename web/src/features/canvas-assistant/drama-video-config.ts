@@ -139,7 +139,7 @@ export function buildDramaVideoConfigGraph(
     const top = Math.max(source.position.y, ...Array.from(configs.values(), node => node.position.y + node.height + 32));
     let y = top;
     let imageByKeyAdded = 0;
-    for (const { shot, prompt, referenceImages, mode,comfyBinding,productionSnapshot } of inputs) {
+    for (const { shot, episodeTitle,prompt, referenceImages, mode,comfyBinding,productionSnapshot } of inputs) {
         if (configs.has(shot.id)) continue;
         const refs = referenceImages.flatMap(reference => {
             const key = reference.storageKey;
@@ -191,7 +191,7 @@ export function buildDramaVideoConfigGraph(
         });
         config.position = { x: source.position.x + source.width + 400, y };
         y += config.height + 32;
-        config.title = `${shot.episodeId} · 镜头 ${shot.order} · 视频配置`;
+        config.title = `${episodeTitle?.trim()||"未命名剧集"} · 镜头 ${shot.order} · 视频配置`;
         added.push(config);
         configs.set(shot.id, config);
         configIds.push(config.id);

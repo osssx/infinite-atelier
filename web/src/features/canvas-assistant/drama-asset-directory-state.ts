@@ -2,13 +2,13 @@ import {createContext,useContext,useState,type Dispatch,type SetStateAction} fro
 import type {DramaAsset,DramaAssetKind} from "./canvas-drama-pipeline";
 import type {AssetDecision} from "./drama-asset-merge";
 
-export type AssetDirectorySelection={kind:DramaAssetKind;activeId:string;query:string;page:number;view?:"list"|"cards"};
+export type AssetDirectorySelection={kind:DramaAssetKind;activeId:string;query:string;page:number;view?:"list"|"cards";focusReferenceId?:string};
 export const initialAssetDirectory:AssetDirectorySelection={kind:"character",activeId:"",query:"",page:0};
-export function selectAssetDirectory(assets:readonly DramaAsset[],assetId?:string):AssetDirectorySelection{
+export function selectAssetDirectory(assets:readonly DramaAsset[],assetId?:string,variantId?:string):AssetDirectorySelection{
  const active=assets.find(a=>a.id===assetId)??assets[0];
  if(!active)return initialAssetDirectory;
  const index=assets.filter(a=>a.kind===active.kind).findIndex(a=>a.id===active.id);
- return {kind:active.kind,activeId:active.id,query:"",page:Math.floor(index/10)};
+ return {kind:active.kind,activeId:active.id,query:"",page:Math.floor(index/10),...(assetId===active.id?{focusReferenceId:variantId??active.id}:{})};
 }
 
 export type AssetAdoptionMapping={assetIds:Record<string,string>;variantIds:Record<string,string>};
@@ -36,6 +36,7 @@ export function adoptedAssetSelection(assets:DramaAsset[],candidates:DramaAsset[
  }
 }
 
+export const DramaWorkspaceExitGuardContext=createContext<(()=>void)|null>(null);
 export const AssetDirectoryContext=createContext<[AssetDirectorySelection,Dispatch<SetStateAction<AssetDirectorySelection>>]|null>(null);
 
 /** Workspace owns navigation, not the mounted tab. Local fallback keeps the

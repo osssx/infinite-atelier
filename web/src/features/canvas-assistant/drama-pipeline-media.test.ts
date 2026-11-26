@@ -77,6 +77,20 @@ describe("drama pipeline media inputs", () => {
         ]);
     });
 
+    it("describes asset and variant slots independently of deduplicated media and never uses a missing ID as its name",()=>{
+        const copy=structuredClone(snapshot);
+        copy.references[1].imageStorageKey=copy.references[0].imageStorageKey;
+        copy.references=copy.references.filter(ref=>ref.assetId!=="star");
+        const input=buildDramaVideoInput(copy,{...shot,propIds:["star","asset_missing_123456789"],keyPropIds:["star"]},"森林探险");
+        expect(input.referenceImages).toHaveLength(1);
+        expect(input.referenceSlots).toMatchObject([
+          {name:"主角",variantName:"日常",assetId:"hero",variantId:"hero-day",required:true},
+          {name:"石桥",variantName:"暴雨",required:true},{name:"星星",required:true,imageKeys:[]},
+          {name:"已失效的道具",required:false,imageKeys:[]}
+        ]);
+        const graph=buildDramaVideoConfigGraph(createCanvasNode("drama:storyboard",{x:0,y:0}),[input],[],[]);
+        expect(graph.nodes.find(n=>n.id===graph.configIds[0])?.title).toBe("森林探险 · 镜头 0 · 视频配置");
+    });
     it("reports only required references without images", () => {
         const missing = structuredClone(snapshot);
         missing.references = missing.references.filter(reference => reference.assetId !== "star");

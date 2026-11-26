@@ -77,6 +77,27 @@ describe("P3.1 explicit production mode / media audit",()=>{
         expect(planDramaBatchVideoConfigs(changed,[base.shot],[audit.input!],[changed],[]).result.failures[0].error).toContain("重新预检");
         expect(planDramaBatchVideoConfigs({...source,metadata:{...source.metadata,dramaConfirmedVersionId:"board-v2"}},[base.shot],[audit.input!],[source],[]).result.failures).toHaveLength(1);
     });
+    it("creates mixed online and pinned Comfy batch using each audited prompt, parameters and input mode",async()=>{
+        const first:DramaShotProduction={mode:"text_to_video",target:{kind:"online",modelOption:"audit::model"},promptOverride:{text:"Online manual",sourceFingerprint:"old"},durationSec:8,aspectRatio:"16:9"};
+        const second:DramaShotProduction={mode:"first_frame",firstFrame:key("b"),target:{kind:"comfy",templateId:"chosen",templateRevision:"pinned"},promptOverride:{text:"Comfy manual",sourceFingerprint:"old"},durationSec:4,aspectRatio:"9:16"};
+        const secondShot={...base.shot,id:"second",order:4};
+        const a=await auditDramaProduction(applyDramaProduction(base,first),comfy(),{setting:first,visualStyle:"Ink",sourceRevisionId:"board-v1"});
+        const b=await auditDramaProduction(applyDramaProduction({...base,shot:secondShot},second),comfy(),{setting:second,visualStyle:"Ink",sourceRevisionId:"board-v1"});
+        expect(a.ready&&b.ready).toBe(true);
+        const source=createCanvasNode("drama:storyboard",{x:0,y:0},{dramaConfirmedVersionId:"board-v1",dramaShotProduction:{shot:first,second}});
+        const {graph,result}=planDramaBatchVideoConfigs(source,[base.shot,secondShot],[a.input!,b.input!],[source],[],"Ink");
+        expect(result.createdShotIds).toEqual(["shot","second"]);
+        const nodes=graph.nodes.filter(node=>graph.configIds.includes(node.id));
+        expect(nodes[0].metadata).toMatchObject({model:"audit::model",prompt:"Online manual",seconds:"8",videoRatio:"16:9"});
+        expect(nodes[0].metadata?.comfyWorkflowSelections?.video).toBeUndefined();
+        expect(nodes[1].metadata).toMatchObject({seconds:"4",videoRatio:"9:16",videoMode:"first_frame",
+            comfyWorkflowSelections:{video:{templateId:"chosen",templateRevision:"pinned"}}});
+        expect(nodes[1].metadata?.prompt).toMatch(/^Comfy manual\n首帧：@\[node:/);
+        expect(nodes[1].metadata?.prompt).not.toContain("影片风格");
+        expect(nodes[1].metadata?.dramaVideoSource?.productionSnapshot?.channelLabel).toBe("本地 ComfyUI");
+        const changed={...source,metadata:{...source.metadata,dramaShotProduction:{shot:first,second:{...second,durationSec:9}}}};
+        expect(planDramaBatchVideoConfigs(changed,[base.shot,secondShot],[a.input!,b.input!],[changed],[]).result).toMatchObject({createdShotIds:["shot"],failures:[{shotId:"second"}]});
+    });
     it("uses independent explicit workflow per shot and rejects removed model rather than inheriting Comfy",async()=>{
         const setting:DramaShotProduction={mode:"first_frame",firstFrame:key("a"),target:{kind:"comfy",templateId:"chosen",templateRevision:"pinned"}};
         const input=applyDramaProduction(base,setting);

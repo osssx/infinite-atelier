@@ -92,7 +92,8 @@ import {LazyCreativeNode} from "@/features/canvas-assistant/lazy-creative-node";
 import {selectAssetDirectory} from "@/features/canvas-assistant/drama-asset-directory-state";
 import {DRAMA_PIPELINE_NODE_TYPES,isInlineDramaNode, readAssetDraft, readStoryboardDraft } from "@/features/canvas-assistant/canvas-drama-pipeline";const isDramaPipelineNode=(type:string)=>Object.values(DRAMA_PIPELINE_NODE_TYPES).includes(type);
 import { mergeLegacyDramaAssets, mergeLegacyDramaFirstFrames } from "@/features/canvas-assistant/drama-asset-migration";
-import { planDramaBatchVideoConfigs, findDramaVideoConfigs,refreshDramaVideoConfigGraph } from "@/features/canvas-assistant/drama-video-config";
+import { planDramaBatchVideoConfigs, findDramaVideoConfigs } from "@/features/canvas-assistant/drama-video-config";
+import {applyDramaVideoConfigReview,reviewDramaVideoConfig} from "@/features/canvas-assistant/drama-video-config-review";
 import {resolveDramaShotGroupConfigs} from "@/features/canvas-assistant/drama-shot-group-plan";
 import {readEpisodeDraft} from "../../../server/canvas-text-content.mjs";
 import {buildDramaAssetUsage} from "@/features/canvas-assistant/drama-asset-usage-display";
@@ -4310,12 +4311,22 @@ function AtelierCanvasPage() {
                     setSelectedConnectionId(null);
                     setDialogNodeId(id);
                 }}
-                onRefreshVideoConfig={(id,input,fields)=>{
+                onReviewVideoConfig={(id,input)=>{
                     const current=nodesRef.current.find(node=>node.id===id);
                     if(!current)throw Error("视频配置已删除");
-                    const graph=refreshDramaVideoConfigGraph(panelNode,input,id,nodesRef.current,connectionsRef.current,fields,style,ratio);
+                    return reviewDramaVideoConfig(current,input,nodesRef.current,connectionsRef.current);
+                }}
+                onRefreshVideoConfig={async(id,input,fields)=>{
+                    const source=nodesRef.current.find(node=>node.id===panelNode.id);
+                    const current=nodesRef.current.find(node=>node.id===id);
+                    if(!source||!current)throw Error("视频配置已删除");
+                    if(runningNodeId===id||sqliteGenerationJobsRef.current.has(id)||sqliteModelSubmitLocksRef.current.has(id)||comfyExecuteLocksRef.current.has(id)||assistantExecuteLocksRef.current.has(id)||Array.from(generationRequestsRef.current.values()).some(req=>req.originNodeId===id||req.runningNodeId===id||req.targetNodeId===id))
+                        throw Error("视频配置正在生成，请等待任务结束");
+                    const graph=applyDramaVideoConfigReview(source,input,id,nodesRef.current,connectionsRef.current,fields,style);
                     nodesRef.current=graph.nodes;connectionsRef.current=graph.connections;
                     setNodes(graph.nodes);setConnections(graph.connections);
+                    updateProject(projectId,{nodes:graph.nodes,connections:graph.connections});
+                    try{await awaitCanvasStorePersistence(projectId);}catch{throw Error("配置已在本地更新，但保存失败，请重试保存。");}
                 }}
                 imageNodes={nodes.filter(item => item.type === CanvasNodeType.Image)}
                 onCreateReferenceConfig={(assetName, prompt) => {
@@ -4454,7 +4465,7 @@ function AtelierCanvasPage() {
         },
         [backendComfyEnabled,cancelComfyWorkflow,startNodeReferenceSelection,connections,nodes,executeComfyWorkflow,globalComfyInstanceId,openBboxEditor,
             handleConfigNodeChange,handleGenerateNode,handleNodePromptChange,message,projectId,runningNodeId,stopConfigGeneration,
-            openTextVersions,confirmDramaVersion,textVersionBusy,openCreativeWorkspace],
+            openTextVersions,confirmDramaVersion,textVersionBusy,openCreativeWorkspace,updateProject],
     );
 
     const handleDirectorExport = useCallback(

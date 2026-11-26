@@ -5,7 +5,7 @@ import { CanvasNodeType, type CanvasConnection, type CanvasNodeData } from "@/ty
 import type { buildDramaVideoInput } from "./drama-pipeline-media";
 import {dramaProductionSettingFingerprint,dramaDefaultProduction} from "./drama-video-production-resolver";
 
-export type DramaRefreshFields = {prompt:boolean;duration:boolean;references?:boolean;overwrite:boolean};
+export type DramaRefreshFields = {prompt:boolean;duration:boolean;references?:boolean;aspect?:boolean;overwrite:boolean;expectedReview?:string};
 export type DramaBatchCreateResult={createdShotIds:string[];failures:{shotId:string;error:string}[]};
 
 /** Classify every submitted shot against the current confirmed graph before mutating it. */
@@ -44,6 +44,18 @@ function referenceBaseline(node:CanvasNodeData,connections:CanvasConnection[],no
                 nodes.find(input=>input.id===edge.fromNodeId)?.metadata?.storageKey??""]).sort()});
 }
 
+/** Baseline of the execution fields only; do not treat job completion as an edit. */
+export function dramaVideoExecutionBaseline(node:CanvasNodeData){
+ const m=node.metadata;
+ const clean=(binding:NonNullable<CanvasNodeData["metadata"]>["comfyMediaPreset"])=>binding?{
+  templateId:binding.templateId,templateRevision:binding.templateRevision,instanceId:binding.instanceId,mediaMode:binding.mediaMode,
+  overrides:binding.overrides,slots:binding.slots}:null;
+ return JSON.stringify([m?.generationMode,m?.model,m?.videoMode,m?.videoReferences,m?.seconds,m?.videoRatio,
+  clean(m?.comfyMediaPreset),clean(m?.comfyWorkflowSelections?.video)]);
+}
+export function dramaVideoReferenceBaseline(node:CanvasNodeData,connections:CanvasConnection[],nodes:CanvasNodeData[]){
+ return referenceBaseline(node,connections,nodes);
+}
 export function refreshDramaVideoConfigGraph(source:CanvasNodeData,input:ReturnType<typeof buildDramaVideoInput>,
     configId:string,nodes:CanvasNodeData[],connections:CanvasConnection[],fields:DramaRefreshFields,style?:string,ratio?:string) {
     const current=nodes.find(node=>node.id===configId);
@@ -180,10 +192,11 @@ export function buildDramaVideoConfigGraph(
                 shot: JSON.stringify(shot),
                 referenceKeys: referenceImages.flatMap(reference => reference.storageKey ? [reference.storageKey] : []),
                 prompt: text,
-                basePrompt:productionSnapshot?.manualPrompt?productionSnapshot.prompt:prompt,
+                basePrompt:productionSnapshot?.prompt??prompt,
                 visualStyle:style,
                 seconds:(productionSnapshot?.durationSec??shot.durationSec)?String(productionSnapshot?.durationSec??shot.durationSec):undefined,
                 ...(productionSnapshot?{productionSnapshot}:{}),
+                aspectRatio:productionSnapshot?.aspectRatio??ratio,
             },
             prompt: text,
             composerContent: text,
@@ -200,6 +213,7 @@ export function buildDramaVideoConfigGraph(
             edges.push({ id: nanoid(), fromNodeId, toNodeId: config.id,...(slot?{fromPortId:"image",toPortId:slot}:{}) });
         }
         config.metadata!.dramaVideoSource!.referenceBaseline=referenceBaseline(config,edges,[...nodes,...added]);
+        config.metadata!.dramaVideoSource!.productionBaseline=dramaVideoExecutionBaseline(config);
     }
     return { nodes: [...nodes, ...added], connections: [...connections, ...edges], configIds };
 }

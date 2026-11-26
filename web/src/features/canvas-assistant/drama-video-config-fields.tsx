@@ -11,7 +11,9 @@ import {DramaVideoPromptEditor} from "./drama-video-prompt-editor";
 import {DramaVideoReferencePanel,type LocateVideoAsset} from "./drama-video-reference-panel";
 import {dramaVideoFeedback} from "./drama-video-feedback";
 import {dramaVideoPromptSource} from "./drama-video-production-resolver";
-import {prepareDramaProduction} from "./drama-media-preflight";
+import {DramaVideoConfigReviewPanel} from "./drama-video-config-review-panel";
+import type {DramaVideoConfigReview} from "./drama-video-config-review";
+import type {DramaRefreshFields} from "./drama-video-config";
 import {auditDramaProduction,dramaMediaModes,listDramaProductionCapabilities,type DramaProductionAudit,type DramaProductionCapabilities} from "./drama-production-audit";
 import {DramaEditActions} from "./drama-edit-actions";
 import {DramaInlineFeedback,useDramaFieldFeedback} from "./drama-feedback";
@@ -209,7 +211,7 @@ function VideoModeField({shotId,setting,disabled,theme,capabilities,config,shotD
 
 export function DramaVideoConfigFields({
     inputs, episodes, configs, missingCount, missingFor, hasUnconfirmedChanges, disabled, theme, onCreateSelected, onAction,
-    productionStyle,production={},onProductionChange,onPickImage,onRefresh,confirmedRevisionId,onCreateBatch,onLocateAsset,
+    productionStyle,production={},onProductionChange,onPickImage,onRefresh,onReview,confirmedRevisionId,onCreateBatch,onLocateAsset,
     expanded=false,initialEpisodeId,initialShotId,embedded=false,confirmedInput=true,images,projectId,onPendingChange,onEditingChange,onWaitForSave,
 }: {
     inputs: DramaVideoInput[];
@@ -231,21 +233,19 @@ export function DramaVideoConfigFields({
     onProductionChange?:(shotId:string,value:DramaShotProduction)=>void;
     onPickImage?:(onPick:(storageKey:string)=>void)=>void;
     onLocateAsset?:LocateVideoAsset;
-    onRefresh?:(id:string,input:DramaVideoInput,fields:{prompt:boolean;duration:boolean;references?:boolean;overwrite:boolean})=>void;
+    onRefresh?:(id:string,input:DramaVideoInput,fields:DramaRefreshFields)=>void|Promise<void>;
+    onReview?:(id:string,input:DramaVideoInput)=>DramaVideoConfigReview;
 }) {
     const [episodeId, setEpisodeId] = useState(initialEpisodeId??"");
     const [shotId, setShotId] = useState(initialShotId??"");
     const [error,setError]=useState("");
-    const [refreshPrompt,setRefreshPrompt]=useState(true);
-    const [refreshReferences,setRefreshReferences]=useState(false);
-    const [refreshDuration,setRefreshDuration]=useState(false);
-    const [overwrite,setOverwrite]=useState(false);
+    const [refreshBusy,setRefreshBusy]=useState(false);
     const [capabilities,setCapabilities]=useState<DramaProductionCapabilities|null>(null);
     const [auditResult,setAudit]=useState<{key:string;value:DramaProductionAudit}|null>(null);
     const [auditing,setAuditing]=useState(false);
     const [settingsEditing,setModeEditing]=useState(false);
     const [promptEditing,setPromptEditing]=useState(false);
-    const modeEditing=settingsEditing||promptEditing;
+    const modeEditing=settingsEditing||promptEditing||refreshBusy;
     const [videoTab,setVideoTab]=useState<"settings"|"prompt"|"references">("settings");
     useEffect(()=>{onEditingChange?.(modeEditing);return ()=>onEditingChange?.(false);},[modeEditing,onEditingChange]);
 
@@ -291,9 +291,11 @@ export function DramaVideoConfigFields({
         确认分镜后可创建视频配置。
     </p>;
     const source = existing?.metadata?.dramaVideoSource;
-    const referenceKeys = preview.referenceImages.flatMap(reference=>reference.storageKey?[reference.storageKey]:[]);
-    const outdated = source && (source.visualStyle!==productionStyle||(source.promptShot??source.shot)!==JSON.stringify(active.shot)||
-        JSON.stringify(source.referenceKeys)!==JSON.stringify(referenceKeys));
+    let review:DramaVideoConfigReview|undefined;
+    let reviewError="";
+    if(confirmedInput&&existing&&source&&audit?.ready&&audit.input?.productionSnapshot&&onReview){
+        try{review=onReview(existing.id,audit.input);}catch(e){reviewError=dramaVideoFeedback(e);}
+    }
     const field = "w-full min-w-0 rounded-lg border px-3 py-1.5 leading-relaxed";
     return <section aria-label="镜头视频配置" data-video-config-layout={expanded?"expanded":"compact"}
         className={embedded?"min-w-0 space-y-3":expanded?
@@ -311,7 +313,7 @@ export function DramaVideoConfigFields({
                 </div>
                 <label className="grid min-w-0 gap-1 text-xs" style={muted}>当前剧集
                     <select aria-label="选择视频配置剧集" className="w-full min-w-0 rounded-lg border px-2.5 py-2 text-xs"
-                        style={fieldStyle} value={activeEpisode} disabled={promptEditing} onChange={event=>{
+                        style={fieldStyle} value={activeEpisode} disabled={promptEditing||refreshBusy} onChange={event=>{
                             setEpisodeId(event.target.value);setShotId("");
                         }}>
                         {episodeIds.map(id=><option key={id} value={id}>
@@ -324,7 +326,7 @@ export function DramaVideoConfigFields({
                 {episodeInputs.map(({shot},index)=>{
                     const current=shot.id===active.shot.id;
                     const configured=Boolean(configs?.has(shot.id));
-                    return <button type="button" key={shot.id} aria-pressed={current} disabled={promptEditing}
+                    return <button type="button" key={shot.id} aria-pressed={current} disabled={promptEditing||refreshBusy}
                         aria-label={`选择视频镜头 ${index+1}：${shot.shotSize||"未设置景别"}`}
                         onClick={()=>{setShotId(shot.id);setError("");}}
                         className="flex w-full min-w-0 items-start gap-2.5 rounded-lg border px-3 py-3 text-left transition-opacity hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
@@ -394,7 +396,7 @@ export function DramaVideoConfigFields({
                     style={videoTab===item.id?{background:theme.toolbar.activeBg,color:theme.node.text}:muted} onClick={()=>setVideoTab(item.id)}>{item.label}</button>)}
             </nav>}
             {expanded&&videoTab==="settings"&&<VideoModeField key={active.shot.id} shotId={active.shot.id}
-                setting={setting} disabled={disabled} theme={theme} capabilities={capabilities} config={config} shotDuration={active.shot.durationSec}
+                setting={setting} disabled={disabled||refreshBusy} theme={theme} capabilities={capabilities} config={config} shotDuration={active.shot.durationSec}
                 onPickImage={onPickImage} onChange={onProductionChange} images={images} projectId={projectId}
                 onPendingChange={onPendingChange} onEditingChange={setModeEditing} onWaitForSave={onWaitForSave}/>}
             {!expanded&&<>
@@ -420,38 +422,13 @@ export function DramaVideoConfigFields({
 
                 </>}
             {existing && !source && <p className="rounded-lg border px-3 py-2 text-xs" style={{...card,color:theme.node.muted}}>旧配置来源待核对。</p>}
-            {outdated && <p role="status" className="rounded-lg border px-3 py-2 text-xs"
-                style={{...card,background:theme.toolbar.activeBg}}>分镜或参考图已有更新，现有配置仍保留原设置。</p>}
-            {confirmedInput&&existing&&source?.basePrompt&&onRefresh&&<details key={existing.id} className="min-w-0 rounded-lg border p-3 text-xs"
-                style={card}>
-                <summary className="cursor-pointer py-1 font-medium">选择采用的分镜更新</summary>
-                <div className="mt-3 space-y-2 border-t pt-3" style={{borderColor:theme.node.stroke}}>
-                <label className="flex min-w-0 items-center gap-2"><input type="checkbox" style={{accentColor:theme.node.activeStroke}} checked={refreshPrompt}
-                    disabled={refreshReferences} onChange={event=>setRefreshPrompt(event.target.checked)}/> 镜头提示词</label>
-                <label className="flex min-w-0 items-center gap-2"><input type="checkbox" style={{accentColor:theme.node.activeStroke}} checked={refreshDuration}
-                    onChange={event=>setRefreshDuration(event.target.checked)}/> 镜头时长</label>
-                <label className="flex min-w-0 items-center gap-2"><input type="checkbox" style={{accentColor:theme.node.activeStroke}} checked={refreshReferences}
-                    onChange={event=>{setRefreshReferences(event.target.checked);if(event.target.checked)setRefreshPrompt(true);}}/> 参考图和输入模式</label>
-                <label className="flex min-w-0 items-center gap-2"><input type="checkbox" style={{accentColor:theme.node.activeStroke}} checked={overwrite}
-                    onChange={event=>setOverwrite(event.target.checked)}/> 覆盖所选字段中的人工修改</label>
-                <pre className="thin-scrollbar max-h-36 min-w-0 overflow-auto whitespace-pre-wrap break-words rounded-lg border p-2 text-xs"
-                    style={{...card,background:theme.toolbar.activeBg}}>{active.prompt}</pre>
-                <Button size="middle" style={control} disabled={disabled||modeEditing||(!refreshPrompt&&!refreshDuration)} onClick={async()=>{
-                    try{
-                        if(previewError)throw Error(previewError);
-                        const selectedWorkflow=existing.metadata?.comfyWorkflowSelections?.video;
-                        const prepared=refreshReferences?await prepareDramaProduction(preview,{...config,
-                            videoModel:existing.metadata?.model||config.videoModel,
-                            comfyWorkflowDefaults:{...config.comfyWorkflowDefaults,video:selectedWorkflow}}):preview;
-                        onRefresh(existing.id,prepared,{prompt:refreshPrompt,duration:refreshDuration,references:refreshReferences,overwrite});
-                        setError("");
-                        setOverwrite(false);
-                    }catch(error){setError(error instanceof Error?error.message:"更新失败");}
-                }}>采用所选更新</Button>
-                </div>
-            </details>}
+            {review&&onRefresh&&audit?.input&&existing&&<DramaVideoConfigReviewPanel key={review.token} review={review}
+                theme={theme} disabled={disabled||settingsEditing||promptEditing||auditing} onBusyChange={setRefreshBusy}
+                onApply={fields=>onRefresh(existing.id,audit.input!,fields)}/>}
+            {reviewError&&<DramaInlineFeedback theme={theme}>{reviewError}</DramaInlineFeedback>}
+            {existing&&source&&confirmedInput&&!audit?.ready&&!auditing&&<p className="text-xs" style={muted}>新设置尚未通过预检，现有配置保持原样。</p>}
             {confirmedInput&&expanded&&videoTab==="prompt"&&<DramaVideoPromptEditor key={active.shot.id}
-                shotId={active.shot.id} setting={setting} theme={theme} disabled={disabled}
+                shotId={active.shot.id} setting={setting} theme={theme} disabled={disabled||refreshBusy}
                 {...dramaVideoPromptSource(applyDramaPromptMode(active,setting),productionStyle)}
                 onChange={onProductionChange} onPendingChange={onPendingChange} onEditingChange={setPromptEditing}
                 onWaitForSave={onWaitForSave} existing={Boolean(existing)}/>}

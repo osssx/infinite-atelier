@@ -88,6 +88,9 @@ export type CanvasNodeMetadata = {
         shot: string;
         referenceKeys: string[];
         referenceBaseline?: string;
+        /** Last applied execution settings, excluding runtime job IDs. */
+        productionBaseline?:string;
+        aspectRatio?:string;
         visualStyle?: string;
         prompt: string;
         basePrompt?: string;

@@ -137,6 +137,31 @@ test("P4.5 project archive embeds immutable Comfy versions and restores them in 
  assert.deepEqual(getProject(plannedRestore.db,restoredPlan.id).document.nodes[0].metadata.dramaShotProduction,
   getProject(source.db,"planned").document.nodes[0].metadata.dramaShotProduction);
  assert.deepEqual(createComfyRegistry(plannedRestore.db).find(tmpl.id,revision),tmpl);
+ // A partially adopted config can retain its old pinned workflow while the
+ // storyboard already selects a newer revision. Restore both immutable versions.
+ const newerPayload={...payload,name:"Portable workflow v2"};
+ const newer={id:tmpl.id,revision:createHash("sha256").update(JSON.stringify(stable(newerPayload))).digest("hex"),...newerPayload};
+ createComfyRegistry(source.db).installMany([newer]);
+ const production={shot:{mode:"text_to_video",target:{kind:"comfy",templateId:newer.id,templateRevision:newer.revision},
+  promptOverride:{text:"新版人工提示词",sourceFingerprint:"new"},durationSec:8,aspectRatio:"9:16"}};
+ const applied={target:{kind:"comfy",templateId:tmpl.id,templateRevision:tmpl.revision},prompt:"旧配置更新后提示词",durationSec:5,aspectRatio:"16:9",settingFingerprint:"",promptSourceFingerprint:"old",manualPrompt:true};
+ const configMetadata={generationMode:"video",dramaShotId:"shot",prompt:applied.prompt,composerContent:applied.prompt,
+  comfyWorkflowSelections:{video:{templateId:tmpl.id,templateRevision:tmpl.revision,mediaMode:"text_to_video",overrides:{},slots:{}}},
+  dramaVideoSource:{nodeId:"board",shot:"{}",referenceKeys:[],prompt:applied.prompt,basePrompt:applied.prompt,
+   productionSnapshot:applied,productionBaseline:"preserved baseline",referenceBaseline:"preserved refs",seconds:"5",aspectRatio:"16:9"}};
+ createProject(source.db,{id:"partially-applied",document:{nodes:[
+  {id:"board",type:"drama:storyboard",metadata:{dramaShotProduction:production}},
+  {id:"config",type:"config",metadata:configMetadata}],connections:[{id:"edge",fromNodeId:"board",toNodeId:"config"}]}});
+ const partialZip=Buffer.concat(await Array.fromAsync((await source.archive.exportProject("partially-applied")).stream));
+ const partialManifest=JSON.parse(Buffer.from(unzipSync(partialZip)["manifest.json"]).toString("utf8"));
+ assert.deepEqual(new Set(partialManifest.templates.map(t=>t.revision)),new Set([tmpl.revision,newer.revision]));
+ const partialRestore=await fixture(t);
+ const partialProject=await partialRestore.archive.importProject(Readable.from([partialZip]));
+ const restoredDocument=getProject(partialRestore.db,partialProject.id).document;
+ assert.deepEqual(restoredDocument.nodes,getProject(source.db,"partially-applied").document.nodes);
+ assert.deepEqual(restoredDocument.connections,getProject(source.db,"partially-applied").document.connections);
+ assert.deepEqual(createComfyRegistry(partialRestore.db).find(tmpl.id,tmpl.revision),tmpl);
+ assert.deepEqual(createComfyRegistry(partialRestore.db).find(newer.id,newer.revision),createComfyRegistry(source.db).find(newer.id,newer.revision));
  const zip=Buffer.concat(await Array.fromAsync((await source.archive.exportProject("bound")).stream));
  const entries=unzipSync(zip);
  const manifest=JSON.parse(Buffer.from(entries["manifest.json"]).toString("utf8"));

@@ -181,7 +181,7 @@ export function DramaBatchConfigPanel({inputs,episodes,configs,missingFor,disabl
     <thead className="sticky top-0 z-10" style={{background:theme.node.panel}}><tr className="border-b" style={{borderColor:theme.node.stroke}}>
      <th className="w-10 p-2"><input aria-label="选择当前页" type="checkbox" style={{accentColor:theme.node.activeStroke}} disabled={lock||!pageEligible.length}
       checked={pageEligible.length>0&&pageEligible.every(row=>selected.includes(row.id))} onChange={e=>setMany(pageEligible.map(r=>r.id),e.target.checked)}/></th>
-     <th className="p-2">镜头 / 场次</th><th className="w-28 p-2">输入模式</th><th className="w-16 p-2">时长</th><th className="w-48 p-2">状态 / 预检</th>
+     <th className="p-2">镜头 / 场次</th><th className="w-36 p-2">渠道 / 输入模式</th><th className="w-16 p-2">时长</th><th className="w-48 p-2">状态 / 预检</th>
     </tr></thead>
     <tbody>{visible.map(row=>{
      const shot=row.input.shot,result=resultFor(row),ep=episodes.find(item=>item.id===shot.episodeId);
@@ -190,8 +190,12 @@ export function DramaBatchConfigPanel({inputs,episodes,configs,missingFor,disabl
       <td className="p-2"><input type="checkbox" aria-label={"选择镜头 "+shot.order+" · "+shot.description} style={{accentColor:theme.node.activeStroke}} disabled={lock||!eligible(row)}
        checked={eligible(row)&&selected.includes(row.id)} onChange={e=>setMany([row.id],e.target.checked)}/></td>
       <td className="min-w-0 p-2"><strong className="block truncate" title={shot.description}>镜头 {shot.order} · {shot.description||"未填写"}</strong><span className="block truncate" style={muted}>{ep?.title??"未命名剧集"} · {title}</span></td>
-      <td className="p-2 break-words">{dramaMediaModes.find(item=>item.id===modeFor(row.setting))?.label??modeFor(row.setting)}</td>
-      <td className="p-2 tabular-nums">{row.setting.durationSec??shot.durationSec??"—"} 秒</td>
+      <td className="p-2 break-words"><div>{dramaMediaModes.find(item=>item.id===modeFor(row.setting))?.label??"未设置"}</div>
+       <span className="block text-[11px]" style={muted}>{result?.audit?.input?.productionSnapshot?.channelLabel?
+        [result.audit.input.productionSnapshot.channelLabel,result.audit.input.productionSnapshot.modelLabel].filter(Boolean).join(" · "):
+        row.setting.target?.kind==="comfy"?"独立本地工作流":row.setting.target?.kind==="online"?"独立在线模型":"跟随全局默认"}</span>
+       {row.setting.promptOverride&&<span className="block text-[11px]" style={muted}>人工提示词</span>}</td>
+      <td className="p-2 tabular-nums">{result?.audit?.durationSeconds??row.setting.durationSec??shot.durationSec??"—"} 秒</td>
       <td className="p-2 break-words"><span>{result?.state==="failed"?(result.stage==="create"?"创建失败":"预检失败"):row.configured?"已配置":result?.state==="ready"?"预检通过":result?.state==="pending"?"核验中":"待创建"}</span>
        {result?.state==="failed"&&<DramaInlineFeedback theme={theme} level="error">{dramaVideoFeedback(result.error)}</DramaInlineFeedback>}
        {onLocate&&(!canLocate||canLocate(row.id))&&<button type="button" className="mt-1 block underline underline-offset-2 disabled:opacity-40" disabled={lock} onClick={()=>onLocate(row.id,shot.episodeId)}>定位镜头</button>}

@@ -9,6 +9,8 @@ import { canvasCasUrl } from "@/features/backend-sync/canvas-cas";
 import { CanvasNodeReferenceBar } from "@/components/canvas/canvas-node-reference-bar";
 import { ensureSqliteModelChannelForExecution, modelChannelProvider } from "@/features/backend-sync/model-channel-autoroute";
 import { buildDramaVideoInput, dramaVideoMissingReferenceIds } from "./drama-pipeline-media";
+import type {DramaVideoConfigReview} from "./drama-video-config-review";
+import type {DramaRefreshFields} from "./drama-video-config";
 import { dramaAssetSlots, dramaReferenceImageKeys, referencesForDramaAssets, type DramaAssetReference, type DramaPipelineSnapshot } from "./canvas-drama-pipeline";
 import { useEffectiveConfig, resolveModelChannel, modelOptionName } from "@/stores/use-config-store";
 import { canvasThemes } from "@/lib/canvas-theme";
@@ -73,7 +75,7 @@ function describeDramaValidation(errors: {code:string;shotId?:string;id?:string}
 
 export type DramaWorkspaceTab="editor"|"video"|"runs"|"history";
 
-export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, videoConfigs, onRefreshVideoConfig, onOpenVideoConfig, onLocateVideoAsset, onCreateReferenceConfig, onPickCanvasImage, onCreateDramaShotGroup, projectId, upstreamText = "", upstreamContext = "", upstreamArtifacts = [], supplementalEpisodes = [], assetUsage = {}, confirmedAssetPlan, savedAssetReferences, mergedReferences, legacyAssetPlanning = false, imageNodes = [], productionContext = "", productionStyle, onOpenVersions, onConfirmVersion, onBeforeDramaRun, onAdoptDramaRun, onMigrateDramaSequences, onAdoptDramaAssetCandidate, versionBusy = false, workspaceMode = false, workspaceTab = "editor", onPendingChange, initialEpisodeId, initialShotId }: {
+export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, videoConfigs, onRefreshVideoConfig, onReviewVideoConfig, onOpenVideoConfig, onLocateVideoAsset, onCreateReferenceConfig, onPickCanvasImage, onCreateDramaShotGroup, projectId, upstreamText = "", upstreamContext = "", upstreamArtifacts = [], supplementalEpisodes = [], assetUsage = {}, confirmedAssetPlan, savedAssetReferences, mergedReferences, legacyAssetPlanning = false, imageNodes = [], productionContext = "", productionStyle, onOpenVersions, onConfirmVersion, onBeforeDramaRun, onAdoptDramaRun, onMigrateDramaSequences, onAdoptDramaAssetCandidate, versionBusy = false, workspaceMode = false, workspaceTab = "editor", onPendingChange, initialEpisodeId, initialShotId }: {
     node: CanvasNodeData;
     onChange: (patch: Partial<CanvasNodeData["metadata"]>) => void;
     onCreateVideoConfigs?: (inputs: ReturnType<typeof buildDramaVideoInput>[], batch: boolean) => DramaBatchCreateResult|void;
@@ -81,7 +83,8 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
     videoConfigs?: ReadonlyMap<string, CanvasNodeData>;
     onOpenVideoConfig?: (id: string) => void;
     onLocateVideoAsset?:(assetId:string,variantId?:string,guard?:()=>void)=>Promise<void>;
-    onRefreshVideoConfig?: (id:string,input:ReturnType<typeof buildDramaVideoInput>,fields:{prompt:boolean;duration:boolean;references?:boolean;overwrite:boolean})=>void;
+    onRefreshVideoConfig?: (id:string,input:ReturnType<typeof buildDramaVideoInput>,fields:DramaRefreshFields)=>void|Promise<void>;
+    onReviewVideoConfig?: (id:string,input:ReturnType<typeof buildDramaVideoInput>)=>DramaVideoConfigReview;
     onCreateReferenceConfig?: (assetName: string, prompt: string) => void;
     onPickCanvasImage?: (onPick: (storageKey: string) => void) => void;
     projectId?: string;
@@ -652,7 +655,7 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
                                 <DramaVideoConfigFields key={shot.id} embedded expanded confirmedInput={Boolean(published)}
                                     productionStyle={productionStyle} confirmedRevisionId={node.metadata?.dramaConfirmedVersionId}
                                     inputs={[input]} episodes={linkedEpisodes} initialEpisodeId={shot.episodeId} initialShotId={shot.id}
-                                    onRefresh={onRefreshVideoConfig} configs={videoConfigs} missingCount={videoConfigs?.has(shot.id)?0:1}
+                                    onRefresh={onRefreshVideoConfig} onReview={onReviewVideoConfig} configs={videoConfigs} missingCount={videoConfigs?.has(shot.id)?0:1}
                                     onLocateAsset={onLocateVideoAsset?async(assetId,variantId)=>{guardWorkspaceExit?.();await onLocateVideoAsset(assetId,variantId,guardWorkspaceExit??undefined);}:undefined}
                                     production={node.metadata?.dramaShotProduction}
                                     onProductionChange={(id,value)=>onChange({dramaShotProduction:{...node.metadata?.dramaShotProduction,[id]:value}})}

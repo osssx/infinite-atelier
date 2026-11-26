@@ -35,6 +35,7 @@ export async function prepareDramaProduction(input:DramaVideoInput,config:AiConf
     assertDramaReferences(input);
     const parameters:Record<string,unknown>={};
     const overrides:Record<string,unknown>={};
+    const comfyParameterPorts:NonNullable<DramaVideoInput["comfyParameterPorts"]>={};
     const declaration=capabilities.modes.find(item=>item.id===mode&&item.enabled);
     for(const parameter of declaration?.parameters??[]){
         const portId=mapping.parameterPorts?.[parameter.id];
@@ -43,6 +44,7 @@ export async function prepareDramaProduction(input:DramaVideoInput,config:AiConf
             parameter.id==="aspect_ratio"?config.videoRatio:undefined;
         parameters[parameter.id]=desired??port?.defaultValue??parameter.defaultValue??parameter.fixedValue;
         if(desired!==undefined&&portId)overrides[portId]=desired;
+        if(portId&&port?.inputBinding?.mode==="literal"&&(parameter.id==="duration_seconds"||parameter.id==="aspect_ratio"))comfyParameterPorts[parameter.id]=portId;
     }
     const errors=validateMediaRequest({mode,references:input.referenceImages.map((reference,index)=>({kind:"image",
         role:mode==="first_frame"?"first_frame":mode==="first_last_frame"?(index?"last_frame":"first_frame"):"reference_image",
@@ -57,7 +59,7 @@ export async function prepareDramaProduction(input:DramaVideoInput,config:AiConf
             throw Error("视频工作流缺少所选 "+role+" 图像端口绑定，不能创建不完整的视频配置");
         slots[portId]={nodeId:reference.id};
     });
-    return {...input,comfyBinding:{...selected,mediaMode:mode,overrides,slots}};
+    return {...input,comfyParameterPorts,comfyBinding:{...selected,mediaMode:mode,overrides,slots}};
 }
 
 export function preflightDramaVideo(input:DramaVideoInput,config:AiConfig){

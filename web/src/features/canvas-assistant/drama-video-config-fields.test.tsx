@@ -5,6 +5,8 @@ import {afterEach,beforeEach,expect,it,vi} from "vitest";
 import type {CanvasNodeData} from "@/types/canvas";
 import {canvasThemes} from "@/lib/canvas-theme";
 import type {DramaShotProduction,DramaVideoInput} from "./drama-pipeline-media";
+import type {DramaVideoConfigReview} from "./drama-video-config-review";
+import type {DramaRefreshFields} from "./drama-video-config";
 
 const mocks=vi.hoisted(()=>({
  config:{videoSeconds:6,videoRatio:"16:9",videoModel:"test",comfyWorkflowDefaults:{},channels:[{id:"api",name:"测试在线渠道",models:[{name:"video-v1",capability:"video"},{name:"text-v1",capability:"text"}]}]},
@@ -33,7 +35,7 @@ vi.mock("./drama-production-audit",()=>({
  },
  auditDramaProduction:async(input:DramaVideoInput)=>{
   mocks.audit(input);
-  return {ready:true,input,mode:input.mode??"text_to_video",durationSeconds:6,aspectRatio:"16:9",
+  return {ready:true,input:{...input,productionSnapshot:{target:{kind:"online",modelOption:"api::video-v1"},prompt:input.prompt,durationSec:6,aspectRatio:"16:9",settingFingerprint:"test",promptSourceFingerprint:"test",manualPrompt:false}},mode:input.mode??"text_to_video",durationSeconds:6,aspectRatio:"16:9",
    referenceCount:input.referenceImages.length,referenceKeys:[],missingReferenceIds:[],
    prompt:input.prompt,engine:"comfy"};
  },
@@ -59,6 +61,7 @@ async function mount(options:{
  expanded?:boolean;theme?:"dark"|"light";initialShotId?:string;embedded?:boolean;confirmedInput?:boolean;
  configs?:ReadonlyMap<string,CanvasNodeData>;onPickImage?:(cb:(key:string)=>void)=>void;
  production?:Record<string,DramaShotProduction>;productionStyle?:string;
+ review?:DramaVideoConfigReview;
  images?:{key:string;title:string}[];onPendingChange?:(key:string,save:(()=>Promise<void>)|null)=>void;onWaitForSave?:()=>Promise<void>;
 }={}){
  const el=document.createElement("div");document.body.append(el);
@@ -67,7 +70,7 @@ async function mount(options:{
  const action=vi.fn<(input:DramaVideoInput,existing?:CanvasNodeData)=>void>();
  const createSelected=vi.fn<(items:DramaVideoInput[])=>void>();
  const createBatch=vi.fn<(_ids:string[])=>Promise<void>>(async()=>{});
- const refresh=vi.fn<(id:string,input:DramaVideoInput,fields:{prompt:boolean;duration:boolean;references?:boolean;overwrite:boolean})=>void>();
+ const refresh=vi.fn<(id:string,input:DramaVideoInput,fields:DramaRefreshFields)=>void>();
  function TestView(){
   const [production,setProduction]=useState<Record<string,DramaShotProduction>>(options.production??{});
   const feedback=useDramaFeedbackController();
@@ -76,7 +79,7 @@ async function mount(options:{
     missingCount={inputs.length-(options.configs?.size??0)} missingFor={()=>[]}
     hasUnconfirmedChanges={false} disabled={false} theme={canvasThemes[options.theme??"dark"]}
     onCreateSelected={createSelected} onCreateBatch={createBatch}
-    onAction={action} onRefresh={refresh}
+    onAction={action} onRefresh={refresh} onReview={options.review?()=>options.review!:undefined}
     expanded={options.expanded??true} initialShotId={options.initialShotId} embedded={options.embedded} confirmedInput={options.confirmedInput}
     production={production} productionStyle={options.productionStyle} onPickImage={options.onPickImage??(cb=>cb(imageKey))}
     images={options.images} onPendingChange={options.onPendingChange} onWaitForSave={options.onWaitForSave}
@@ -391,16 +394,26 @@ it("preserves create config, batch create and batch group actions behind collaps
 it("keeps configured shot open, selectively adopt updates and local Comfy batch grouping",async()=>{
  const source={basePrompt:"开场",prompt:"开场",shot:"{}",referenceKeys:[]};
  const cfg=(id:string)=>({id,metadata:{dramaVideoSource:source}} as unknown as CanvasNodeData);
- const {el,action,refresh,createBatch}=await mount({configs:new Map([["s1",cfg("cfg-1")],["s2",cfg("cfg-2")]])});
+ const review:DramaVideoConfigReview={token:"review",routeChanged:false,promptChanged:true,durationChanged:true,aspectChanged:false,promptManual:true,executionManual:false,durationEditable:true,aspectEditable:true,
+ currentPrompt:"旧提示词",nextPrompt:"新提示词",currentDuration:"5",nextDuration:"6",currentAspect:"16:9",nextAspect:"16:9",
+ currentEngine:"在线模型",nextEngine:"在线模型",currentMode:"text_to_video",nextMode:"text_to_video",currentCount:0,nextCount:0};
+ const {el,action,refresh,createBatch}=await mount({review,configs:new Map([["s1",cfg("cfg-1")],["s2",cfg("cfg-2")]])});
  await click([...el.querySelectorAll<HTMLButtonElement>("button")].find(button=>button.textContent==="打开配置"));
  expect(action).toHaveBeenCalledTimes(1);
  expect(action.mock.lastCall?.[1]?.id).toBe("cfg-1");
- await click(el.querySelector('details:not([aria-label]) > summary')!);
- // Only the selected fields are adopted; manual changes are not overwritten by default.
- await click([...el.querySelectorAll<HTMLButtonElement>("button")].find(button=>button.textContent==="采用所选更新"));
+ const panel=el.querySelector('[aria-label="视频配置差异审核"]')!;
+ await click(panel.querySelector("summary"));
+ expect(panel.textContent).toContain("旧提示词");expect(panel.textContent).toContain("新提示词");
+ const apply=[...panel.querySelectorAll<HTMLButtonElement>("button")].find(button=>button.textContent==="采用所选更新")!;
+ expect(apply.disabled).toBe(true);
+ await click([...panel.querySelectorAll("label")].find(label=>label.textContent?.includes("视频提示词"))?.querySelector("input"));
+ expect(apply.disabled).toBe(true);
+ await click([...panel.querySelectorAll("label")].find(label=>label.textContent?.includes("确认覆盖"))?.querySelector("input"));
+ expect(apply.disabled).toBe(false);
+ await click(apply);
  expect(refresh).toHaveBeenCalledTimes(1);
  expect(refresh.mock.lastCall?.[0]).toBe("cfg-1");
- expect(refresh.mock.lastCall?.[2]).toMatchObject({prompt:true,duration:false,references:false,overwrite:false});
+ expect(refresh.mock.lastCall?.[2]).toMatchObject({prompt:true,duration:false,references:false,overwrite:true,expectedReview:"review"});
  await click(el.querySelector('details[aria-label="P3 选镜头组建批量生成"] summary'));
  const checks=el.querySelectorAll<HTMLInputElement>('details[aria-label="P3 选镜头组建批量生成"] input[type="checkbox"]');
  expect(checks).toHaveLength(2);

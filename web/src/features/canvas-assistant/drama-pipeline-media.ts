@@ -8,6 +8,7 @@ export type ResolvedDramaVideoTarget=Exclude<DramaVideoTarget,{kind:"inherit"}>;
 export type DramaVideoProductionSnapshot={
     target:ResolvedDramaVideoTarget;prompt:string;durationSec:number;aspectRatio:string;
     sourceRevisionId?:string;settingFingerprint:string;promptSourceFingerprint:string;manualPrompt:boolean;
+    channelLabel?:string;modelLabel?:string;
 };
 
 export type DramaVideoReferenceSlot={id:string;assetId?:string;variantId?:string;name:string;variantName?:string;kind:"character"|"scene"|"prop";required:boolean;imageKeys:string[]};
@@ -22,6 +23,7 @@ export type DramaVideoInput = {
     gridInput?:boolean;
     comfyBinding?: NonNullable<import("@/types/canvas").CanvasNodeMetadata["comfyMediaPreset"]>;
     productionSnapshot?:DramaVideoProductionSnapshot;
+    comfyParameterPorts?:Partial<Record<"duration_seconds"|"aspect_ratio",string>>;
 };
 export type DramaShotProduction = {mode:NonNullable<DramaVideoInput["mode"]>;firstFrame?:string;lastFrame?:string;gridInput?:boolean;gridImage?:string;target?:DramaVideoTarget;promptOverride?:DramaPromptOverride;durationSec?:number;aspectRatio?:string};
 

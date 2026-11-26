@@ -193,6 +193,29 @@ def run():
             assert outcome["mime"].startswith("video/"),outcome
             print("P5_LIVE_COMFY_REPORT",json.dumps(outcome),flush=True)
 
+        if os.environ.get("ATELIER_DRAMA_P5_LIVE_COMFY")!="1":
+            config_before=check("read original config for update audit","""(async()=>{const d=await (await fetch('/api/v1/projects/%s')).json();const n=d.document.nodes.find(n=>n.metadata?.dramaShotId==='shot-50');return n&&{id:n.id,edges:d.document.connections.filter(e=>e.toNodeId===n.id),binding:n.metadata.comfyWorkflowSelections.video,prompt:n.metadata.prompt}})()"""%fixture["projectId"])
+            open_workspace()
+            button("批量创建配置")
+            choose("批量创建配置剧集","ep-1")
+            button("定位镜头",portal+" tbody")
+            check("review initial config consistent","""document.querySelector('[aria-label="视频配置差异审核"] summary')?.textContent.includes('与当前设置一致')""",35)
+            button("提示词",portal+' [aria-label="视频配置页面"]')
+            click(portal+' [aria-label="编辑视频提示词"]')
+            changed_prompt="P5 人工更新：柔和光线，镜头缓慢推进。"
+            check("edit revised manual prompt","""(()=>{const e=document.querySelector('[data-video-prompt-editor] textarea');if(!e)return false;Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(e,%s);e.dispatchEvent(new Event('input',{bubbles:true}));return true})()"""%json.dumps(changed_prompt,ensure_ascii=False))
+            click(portal+' [aria-label="保存视频提示词"]')
+            check("review detects prompt difference","""document.querySelector('[aria-label="视频配置差异审核"] summary')?.textContent.includes('存在差异')""",35)
+            click(portal+' [aria-label="视频配置差异审核"] summary')
+            check("compare old and new prompts without raw node ids","""(()=>{const p=document.querySelector('[aria-label="视频配置差异审核"]');return p?.textContent.includes(%s)&&p.textContent.includes(%s)&&!p.textContent.includes('@[node:')})()"""%(json.dumps(manual,ensure_ascii=False),json.dumps(changed_prompt,ensure_ascii=False)))
+            check("select prompt only","""(()=>{const p=document.querySelector('[aria-label="视频配置差异审核"]');const c=[...p.querySelectorAll('label')].find(x=>x.textContent.includes('视频提示词'))?.querySelector('input');if(!c||c.disabled)return false;c.click();return c.checked})()""")
+            button("采用所选更新",portal+' [aria-label="视频配置差异审核"]')
+            check("review update persisted with same id, edges and binding","""(async()=>{const d=await (await fetch('/api/v1/projects/%s')).json(),before=%s;const n=d.document.nodes.find(n=>n.id===before.id);return n?.metadata.dramaVideoSource.productionSnapshot.prompt===%s&&n.metadata.prompt.startsWith(%s+'\\n首帧：@[node:')&&n.metadata.composerContent===n.metadata.prompt&&JSON.stringify(n.metadata.comfyWorkflowSelections.video)===JSON.stringify(before.binding)&&JSON.stringify(d.document.connections.filter(e=>e.toNodeId===n.id))===JSON.stringify(before.edges)&&d.document.nodes.filter(n=>n.metadata?.dramaShotId==='shot-50').length===1})()"""%(fixture["projectId"],json.dumps(config_before,ensure_ascii=False),json.dumps(changed_prompt,ensure_ascii=False),json.dumps(changed_prompt,ensure_ascii=False)),35)
+            check("review now consistent","""document.querySelector('[aria-label="视频配置差异审核"] summary')?.textContent.includes('与当前设置一致')""")
+            close_workspace()
+            assert not any(req["method"]=="POST" and ("/jobs" in req["path"] or "/shot-batches" in req["path"]) for req in page.network_requests),"review must not generate"
+            passed.append("review update without media generation")
+
         assert not page.exceptions,page.exceptions
         print("P5_BROWSER_REPORT",json.dumps({"assertions":passed,"metrics":metrics,"browserExceptions":page.exceptions,"isolation":"temporary SQLite/CAS; local test clip" if os.environ.get("ATELIER_DRAMA_P5_LIVE_COMFY")=="1" else "temporary SQLite/CAS; no generation","shots":200,"nodes":200},ensure_ascii=False),flush=True)
     except Exception:

@@ -1,0 +1,1725 @@
+{
+  "stage": "S5",
+  "date": "2026-11-26",
+  "baselineCommit": "bc2442c",
+  "currentCommit": "03da49a",
+  "notes": [
+    "Same deterministic synthetic fixture and browser harness, production builds of both revisions. Each pan/zoom round verifies actual transform changes.",
+    "Primary and repeat runs retained; strict target failures are not hidden. React committed-work diagnostic is a proxy, not an exact count of speculative renders.",
+    "No real project data, external model requests or ComfyUI jobs."
+  ],
+  "primary": {
+    "before": {
+      "label": "pre-S1",
+      "fixture": {
+        "nodes": 200,
+        "stories": 24,
+        "links": 42,
+        "sampleBytes": [
+          10476,
+          102412
+        ],
+        "totalStoryBytes": 620516,
+        "hydratedDocumentBytes": 2733753
+      },
+      "measurements": [
+        {
+          "scenario": "pan-1",
+          "frames": 90,
+          "durationMs": 1499.9,
+          "fps": 60.00400026668444,
+          "p50Ms": 16.699999999999818,
+          "p95Ms": 16.90000000000009,
+          "p99Ms": 17,
+          "maxMs": 17,
+          "over33Ms": 0,
+          "over50Ms": 0,
+          "longTaskCount": 0,
+          "longTaskMaxMs": 0,
+          "longTaskUnsupported": null,
+          "wallElapsedMs": 1496,
+          "verifiedTransformSpread": [
+            180,
+            80,
+            0
+          ],
+          "distinctTransforms": 67,
+          "engineMetricsDelta": {
+            "Nodes": 0,
+            "LayoutCount": 69,
+            "RecalcStyleCount": 73,
+            "LayoutDuration": 0.00836,
+            "RecalcStyleDuration": 0.01925,
+            "ScriptDuration": 0.18034,
+            "TaskDuration": 0.58949
+          },
+          "storyApiRequests": 0,
+          "strictPass": true
+        },
+        {
+          "scenario": "pan-2",
+          "frames": 89,
+          "durationMs": 1483.3000000000002,
+          "fps": 60.00134834490662,
+          "p50Ms": 16.699999999999818,
+          "p95Ms": 16.90000000000009,
+          "p99Ms": 16.900000000000546,
+          "maxMs": 17,
+          "over33Ms": 0,
+          "over50Ms": 0,
+          "longTaskCount": 0,
+          "longTaskMaxMs": 0,
+          "longTaskUnsupported": null,
+          "wallElapsedMs": 1492,
+          "verifiedTransformSpread": [
+            180,
+            80,
+            0
+          ],
+          "distinctTransforms": 67,
+          "engineMetricsDelta": {
+            "Nodes": 0,
+            "LayoutCount": 69,
+            "RecalcStyleCount": 73,
+            "LayoutDuration": 0.00815,
+            "RecalcStyleDuration": 0.01299,
+            "ScriptDuration": 0.14479,
+            "TaskDuration": 0.5329
+          },
+          "storyApiRequests": 0,
+          "strictPass": true
+        },
+        {
+          "scenario": "pan-3",
+          "frames": 87,
+          "durationMs": 1450.0999999999995,
+          "fps": 59.995862354320415,
+          "p50Ms": 16.699999999999818,
+          "p95Ms": 16.899999999999636,
+          "p99Ms": 16.900000000000546,
+          "maxMs": 16.900000000000546,
+          "over33Ms": 0,
+          "over50Ms": 0,
+          "longTaskCount": 0,
+          "longTaskMaxMs": 0,
+          "longTaskUnsupported": null,
+          "wallElapsedMs": 1477,
+          "verifiedTransformSpread": [
+            180,
+            80,
+            0
+          ],
+          "distinctTransforms": 67,
+          "engineMetricsDelta": {
+            "Nodes": 0,
+            "LayoutCount": 69,
+            "RecalcStyleCount": 73,
+            "LayoutDuration": 0.00802,
+            "RecalcStyleDuration": 0.01305,
+            "ScriptDuration": 0.13695,
+            "TaskDuration": 0.51611
+          },
+          "storyApiRequests": 0,
+          "strictPass": true
+        },
+        {
+          "scenario": "zoom-1",
+          "frames": 138,
+          "durationMs": 2516.7,
+          "fps": 54.83371081177733,
+          "p50Ms": 16.699999999999818,
+          "p95Ms": 16.899999999999636,
+          "p99Ms": 16.900000000000546,
+          "maxMs": 183.39999999999964,
+          "over33Ms": 2,
+          "over50Ms": 2,
+          "longTaskCount": 0,
+          "longTaskMaxMs": 0,
+          "longTaskUnsupported": null,
+          "wallElapsedMs": 2519,
+          "verifiedTransformSpread": [
+            99.58540344238452,
+            1.3518400192261009,
+            0.11265003681182861
+          ],
+          "distinctTransforms": 14,
+          "engineMetricsDelta": {
+            "Nodes": 0,
+            "LayoutCount": 86,
+            "RecalcStyleCount": 62,
+            "LayoutDuration": 0.01163,
+            "RecalcStyleDuration": 0.00119,
+            "ScriptDuration": 0.19957,
+            "TaskDuration": 0.53053
+          },
+          "storyApiRequests": 0,
+          "strictPass": false
+        },
+        {
+          "scenario": "zoom-2",
+          "frames": 135,
+          "durationMs": 2250.199999999999,
+          "fps": 59.99466714069863,
+          "p50Ms": 16.69999999999891,
+          "p95Ms": 16.899999999999636,
+          "p99Ms": 16.900000000001455,
+          "maxMs": 17,
+          "over33Ms": 0,
+          "over50Ms": 0,
+          "longTaskCount": 0,
+          "longTaskMaxMs": 0,
+          "longTaskUnsupported": null,
+          "wallElapsedMs": 2280,
+          "verifiedTransformSpread": [
+            99.58540344238713,
+            1.3518400192261293,
+            0.11265003681182861
+          ],
+          "distinctTransforms": 14,
+          "engineMetricsDelta": {
+            "Nodes": 0,
+            "LayoutCount": 85,
+            "RecalcStyleCount": 60,
+            "LayoutDuration": 0.01125,
+            "RecalcStyleDuration": 0.00108,
+            "ScriptDuration": 0.19531,
+            "TaskDuration": 0.51209
+          },
+          "storyApiRequests": 0,
+          "strictPass": true
+        },
+        {
+          "scenario": "zoom-3",
+          "frames": 135,
+          "durationMs": 2249.9000000000015,
+          "fps": 60.002666785190414,
+          "p50Ms": 16.69999999999891,
+          "p95Ms": 16.899999999999636,
+          "p99Ms": 17,
+          "maxMs": 17,
+          "over33Ms": 0,
+          "over50Ms": 0,
+          "longTaskCount": 0,
+          "longTaskMaxMs": 0,
+          "longTaskUnsupported": null,
+          "wallElapsedMs": 2248,
+          "verifiedTransformSpread": [
+            99.5854034423902,
+            1.3518400192261684,
+            0.11265003681182861
+          ],
+          "distinctTransforms": 14,
+          "engineMetricsDelta": {
+            "Nodes": 0,
+            "LayoutCount": 85,
+            "RecalcStyleCount": 60,
+            "LayoutDuration": 0.011,
+            "RecalcStyleDuration": 0.00107,
+            "ScriptDuration": 0.1888,
+            "TaskDuration": 0.51976
+          },
+          "storyApiRequests": 0,
+          "strictPass": true
+        }
+      ],
+      "checks": [
+        "visible story summary cards"
+      ],
+      "isolation": "temporary SQLite/CAS + Chrome; no external model/Comfy calls",
+      "blank": {
+        "scenario": "blank",
+        "frames": 137,
+        "durationMs": 2283.199999999999,
+        "fps": 60.00350385423969,
+        "p50Ms": 16.699999999999932,
+        "p95Ms": 16.700000000000273,
+        "p99Ms": 16.799999999999955,
+        "maxMs": 16.800000000000182,
+        "over33Ms": 0,
+        "over50Ms": 0,
+        "longTaskCount": 0,
+        "longTaskMaxMs": 0,
+        "longTaskUnsupported": null,
+        "wallElapsedMs": 2401
+      },
+      "initialMountMs": 735,
+      "cards": {
+        "visibleStoryCards": 24,
+        "visibleNodes": 24,
+        "storyDomElements": 1416,
+        "storyFormControls": 192,
+        "cardTextChars": 696,
+        "correctPreviewCount": 0
+      },
+      "networkAtMount": [
+        {
+          "method": "GET",
+          "path": "session"
+        },
+        {
+          "method": "GET",
+          "path": "ui-settings/model_config"
+        },
+        {
+          "method": "GET",
+          "path": "ui-settings/theme"
+        },
+        {
+          "method": "GET",
+          "path": "assets"
+        },
+        {
+          "method": "GET",
+          "path": "projects"
+        },
+        {
+          "method": "GET",
+          "path": "projects/story-s5-browser-200?creative=summary"
+        },
+        {
+          "method": "GET",
+          "path": "projects/story-s5-browser-200/viewport"
+        },
+        {
+          "method": "GET",
+          "path": "projects/story-s5-browser-200/chats"
+        },
+        {
+          "method": "GET",
+          "path": "execution/capabilities"
+        },
+        {
+          "method": "GET",
+          "path": "projects/story-s5-browser-200/shot-batches"
+        },
+        {
+          "method": "GET",
+          "path": "jobs/snapshot"
+        }
+      ],
+      "environment": {
+        "chrome": "Chrome/158.0.8127.37",
+        "width": 2048,
+        "height": 1152,
+        "dpr": 1.25,
+        "visibility": "visible",
+        "hardwareConcurrency": 16,
+        "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/158.0.0.0 Safari/537.36",
+        "heap": 23259515,
+        "board": false,
+        "renderedNodes": 24,
+        "canvases": 3,
+        "glRenderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 4070 SUPER (0x00002783) Direct3D11 vs_5_0 ps_5_0, D3D11)"
+      },
+      "heapAfterLoad": 15691172,
+      "compact": {
+        "ok": true,
+        "bytes": 123180,
+        "latencyMs": 5.600000001490116,
+        "nodes": 200,
+        "stories": 24,
+        "projections": 0,
+        "projectedChars": 0,
+        "storiesWithInlineBodies": 0
+      },
+      "gestureNetwork": [
+        {
+          "method": "GET",
+          "path": "execution/capabilities"
+        },
+        {
+          "method": "GET",
+          "path": "execution/capabilities"
+        },
+        {
+          "method": "GET",
+          "path": "projects/story-s5-browser-200/shot-batches"
+        },
+        {
+          "method": "GET",
+          "path": "projects/story-s5-browser-200/shot-batches"
+        },
+        {
+          "method": "GET",
+          "path": "projects/story-s5-browser-200/shot-batches"
+        },
+        {
+          "method": "GET",
+          "path": "projects/story-s5-browser-200/shot-batches"
+        },
+        {
+          "method": "GET",
+          "path": "projects/story-s5-browser-200/shot-batches"
+        },
+        {
+          "method": "GET",
+          "path": "projects/story-s5-browser-200/shot-batches"
+        },
+        {
+          "method": "GET",
+          "path": "projects/story-s5-browser-200/shot-batches"
+        },
+        {
+          "method": "GET",
+          "path": "projects/story-s5-browser-200/shot-batches"
+        }
+      ],
+      "geometry": {
+        "before": [
+          313,
+          32,
+          320
+        ],
+        "after": [
+          313,
+          32,
+          320
+        ]
+      },
+      "committedWorkDiagnostic": {
+        "commits": 71,
+        "storyCommits": 0,
+        "storyWork": 0,
+        "visibleStoryFibers": 24,
+        "hookObserved": true
+      },
+      "heapAfterGestures": 16803884,
+      "finalVisibleCards": 24,
+      "browserExceptions": [],
+      "strictGesturePass": false,
+      "allApiRequests": 24
+    },
+    "after": {
+      "label": "current",
+      "fixture": {
+        "nodes": 200,
+        "stories": 24,
+        "links": 42,
+        "sampleBytes": [
+          10476,
+          102412
+        ],
+        "totalStoryBytes": 620516,
+        "hydratedDocumentBytes": 2733753
+      },
+      "measurements": [
+        {
+          "scenario": "pan-1",
+          "frames": 88,
+          "durationMs": 1466.7,
+          "fps": 59.99863639462739,
+          "p50Ms": 16.699999999999818,
+          "p95Ms": 16.90000000000009,
+          "p99Ms": 17,
+          "maxMs": 17,
+          "over33Ms": 0,
+          "over50Ms": 0,
+          "longTaskCount": 0,
+          "longTaskMaxMs": 0,
+          "longTaskUnsupported": null,
+          "wallElapsedMs": 1479,
+          "verifiedTransformSpread": [
+            180,
+            80,
+            0
+          ],
+          "distinctTransforms": 67,
+          "engineMetricsDelta": {
+            "Nodes": 0,
+            "LayoutCount": 0,
+            "RecalcStyleCount": 73,
+            "LayoutDuration": 0,
+            "RecalcStyleDuration": 0.01281,
+            "ScriptDuration": 0.14889,
+            "TaskDuration": 0.2763
+          },
+          "storyApiRequests": 0,
+          "strictPass": true
+        },
+        {
+          "scenario": "pan-2",
+          "frames": 88,
+          "durationMs": 1466.8999999999996,
+          "fps": 59.99045606380805,
+          "p50Ms": 16.699999999999818,
+          "p95Ms": 16.90000000000009,
+          "p99Ms": 17,
+          "maxMs": 17,
+          "over33Ms": 0,
+          "over50Ms": 0,
+          "longTaskCount": 0,
+          "longTaskMaxMs": 0,
+          "longTaskUnsupported": null,
+          "wallElapsedMs": 1484,
+          "verifiedTransformSpread": [
+            180,
+            80,
+            0
+          ],
+          "distinctTransforms": 67,
+          "engineMetricsDelta": {
+            "Nodes": 0,
+            "LayoutCount": 0,
+            "RecalcStyleCount": 73,
+            "LayoutDuration": 0,
+            "RecalcStyleDuration": 0.01474,
+            "ScriptDuration": 0.14316,
+            "TaskDuration": 0.28
+          },
+          "storyApiRequests": 0,
+          "strictPass": true
+        },
+        {
+          "scenario": "pan-3",
+          "frames": 89,
+          "durationMs": 1483.3000000000002,
+          "fps": 60.00134834490662,
+          "p50Ms": 16.699999999999818,
+          "p95Ms": 16.899999999999636,
+          "p99Ms": 16.899999999999636,
+          "maxMs": 16.899999999999636,
+          "over33Ms": 0,
+          "over50Ms": 0,
+          "longTaskCount": 0,
+          "longTaskMaxMs": 0,
+          "longTaskUnsupported": null,
+          "wallElapsedMs": 1489,
+          "verifiedTransformSpread": [
+            180,
+            80,
+            0
+          ],
+          "distinctTransforms": 67,
+          "engineMetricsDelta": {
+            "Nodes": 0,
+            "LayoutCount": 0,
+            "RecalcStyleCount": 73,
+            "LayoutDuration": 0,
+            "RecalcStyleDuration": 0.01065,
+            "ScriptDuration": 0.12404,
+            "TaskDuration": 0.23834
+          },
+          "storyApiRequests": 0,
+          "strictPass": true
+        },
+        {
+          "scenario": "zoom-1",
+          "frames": 142,
+          "durationMs": 2533.2,
+          "fps": 56.055581872730144,
+          "p50Ms": 16.699999999999818,
+          "p95Ms": 16.900000000000546,
+          "p99Ms": 17,
+          "maxMs": 183.5,
+          "over33Ms": 1,
+          "over50Ms": 1,
+          "longTaskCount": 0,
+          "longTaskMaxMs": 0,
+          "longTaskUnsupported": null,
+          "wallElapsedMs": 2554,
+          "verifiedTransformSpread": [
+            99.58540344238452,
+            1.3518400192261009,
+            0.11265003681182861
+          ],
+          "distinctTransforms": 14,
+          "engineMetricsDelta": {
+            "Nodes": 0,
+            "LayoutCount": 31,
+            "RecalcStyleCount": 62,
+            "LayoutDuration": 0.00309,
+            "RecalcStyleDuration": 0.00174,
+            "ScriptDuration": 0.20226,
+            "TaskDuration": 0.34058
+          },
+          "storyApiRequests": 0,
+          "strictPass": false
+        },
+        {
+          "scenario": "zoom-2",
+          "frames": 141,
+          "durationMs": 2350,
+          "fps": 60,
+          "p50Ms": 16.69999999999891,
+          "p95Ms": 16.899999999999636,
+          "p99Ms": 16.899999999999636,
+          "maxMs": 17,
+          "over33Ms": 0,
+          "over50Ms": 0,
+          "longTaskCount": 0,
+          "longTaskMaxMs": 0,
+          "longTaskUnsupported": null,
+          "wallElapsedMs": 2363,
+          "verifiedTransformSpread": [
+            99.58540344238713,
+            1.3518400192261293,
+            0.11265003681182861
+          ],
+          "distinctTransforms": 14,
+          "engineMetricsDelta": {
+            "Nodes": 0,
+            "LayoutCount": 30,
+            "RecalcStyleCount": 60,
+            "LayoutDuration": 0.00285,
+            "RecalcStyleDuration": 0.00163,
+            "ScriptDuration": 0.18235,
+            "TaskDuration": 0.31641
+          },
+          "storyApiRequests": 0,
+          "strictPass": true
+        },
+        {
+          "scenario": "zoom-3",
+          "frames": 137,
+          "durationMs": 2283.5,
+          "fps": 59.99562075760893,
+          "p50Ms": 16.69999999999891,
+          "p95Ms": 16.899999999999636,
+          "p99Ms": 17,
+          "maxMs": 17,
+          "over33Ms": 0,
+          "over50Ms": 0,
+          "longTaskCount": 0,
+          "longTaskMaxMs": 0,
+          "longTaskUnsupported": null,
+          "wallElapsedMs": 2311,
+          "verifiedTransformSpread": [
+            99.5854034423902,
+            1.3518400192261684,
+            0.11265003681182861
+          ],
+          "distinctTransforms": 14,
+          "engineMetricsDelta": {
+            "Nodes": 0,
+            "LayoutCount": 25,
+            "RecalcStyleCount": 60,
+            "LayoutDuration": 0.00208,
+            "RecalcStyleDuration": 0.0015,
+            "ScriptDuration": 0.15195,
+            "TaskDuration": 0.28606
+          },
+          "storyApiRequests": 0,
+          "strictPass": true
+        }
+      ],
+      "checks": [
+        "visible story summary cards",
+        "fresh canvas stories",
+        "click [data-node-id=\"story-0\"] [data-story-inline-summary]",
+        "full story-0 body, read only and lazy AI/history",
+        "click .ant-modal-close",
+        "10KB workspace unmounted",
+        "click [data-node-id=\"story-1\"] [data-story-inline-summary]",
+        "full story-1 body, read only and lazy AI/history",
+        "click [data-creative-workspace-node-id=\"story-1\"] [aria-label=\"编辑故事正文\"]",
+        "100KB draft changed locally",
+        "Ctrl+S saves long draft",
+        "narrow workspace fits viewport",
+        "click AI 创作",
+        "click 改写",
+        "full 100KB rewrite is blocked before model calls",
+        "bounded selection remains usable on 100KB story",
+        "click 收起 AI 创作",
+        "AI panel unmounted",
+        "click 影响与历史",
+        "history loaded lazily at high DPR",
+        "confirmed paragraphs collapsed by default",
+        "click [data-creative-workspace-node-id=\"story-1\"] [data-story-history-summary] button[aria-expanded]",
+        "history mounts first 30 paragraphs only",
+        "click 查看更多（30/311）",
+        "history loads next 30 paragraphs only",
+        "narrow history scroll regions independently contained",
+        "click 故事正文",
+        "history and AI unmounted on return",
+        "click .ant-modal-close",
+        "100KB workspace unmounted",
+        "toggle alternative canvas theme",
+        "click [data-node-id=story-1] [data-story-inline-summary]",
+        "saved 100KB body reopened after theme change",
+        "click .ant-modal-close",
+        "second-theme workspace closed"
+      ],
+      "isolation": "temporary SQLite/CAS + Chrome; no external model/Comfy calls",
+      "blank": {
+        "scenario": "blank",
+        "frames": 139,
+        "durationMs": 2316.5999999999995,
+        "fps": 60.001726668393346,
+        "p50Ms": 16.699999999999818,
+        "p95Ms": 16.700000000000273,
+        "p99Ms": 16.799999999999955,
+        "maxMs": 16.800000000000182,
+        "over33Ms": 0,
+        "over50Ms": 0,
+        "longTaskCount": 0,
+        "longTaskMaxMs": 0,
+        "longTaskUnsupported": null,
+        "wallElapsedMs": 2401
+      },
+      "initialMountMs": 625,
+      "cards": {
+        "visibleStoryCards": 24,
+        "visibleNodes": 24,
+        "storyDomElements": 696,
+        "storyFormControls": 0,
+        "cardTextChars": 9096,
+        "correctPreviewCount": 24
+      },
+      "networkAtMount": [
+        {
+          "method": "GET",
+          "path": "session"
+        },
+        {
+          "method": "GET",
+          "path": "ui-settings/model_config"
+        },
+        {
+          "method": "GET",
+          "path": "ui-settings/theme"
+        },
+        {
+          "method": "GET",
+          "path": "assets"
+        },
+        {
+          "method": "GET",
+          "path": "projects"
+        },
+        {
+          "method": "GET",
+          "path": "projects/story-s5-browser-200?creative=summary"
+        },
+        {
+          "method": "GET",
+          "path": "projects/story-s5-browser-200/viewport"
+        },
+        {
+          "method": "GET",
+          "path": "projects/story-s5-browser-200/chats"
+        },
+        {
+          "method": "GET",
+          "path": "execution/capabilities"
+        },
+        {
+          "method": "GET",
+          "path": "projects/story-s5-browser-200/shot-batches"
+        },
+        {
+          "method": "GET",
+          "path": "jobs/snapshot"
+        }
+      ],
+      "environment": {
+        "chrome": "Chrome/158.0.8127.37",
+        "width": 2048,
+        "height": 1152,
+        "dpr": 1.25,
+        "visibility": "visible",
+        "hardwareConcurrency": 16,
+        "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/158.0.0.0 Safari/537.36",
+        "heap": 24095798,
+        "board": false,
+        "renderedNodes": 24,
+        "canvases": 3,
+        "glRenderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 4070 SUPER (0x00002783) Direct3D11 vs_5_0 ps_5_0, D3D11)"
+      },
+      "heapAfterLoad": 14799120,
+      "compact": {
+        "ok": true,
+        "bytes": 150196,
+        "latencyMs": 18.800000000745058,
+        "nodes": 200,
+        "stories": 24,
+        "projections": 24,
+        "projectedChars": 8640,
+        "storiesWithInlineBodies": 0
+      },
+      "gestureNetwork": [
+        {
+          "method": "GET",
+          "path": "execution/capabilities"
+        },
+        {
+          "method": "GET",
+          "path": "execution/capabilities"
+        },
+        {
+          "method": "GET",
+          "path": "projects/story-s5-browser-200/shot-batches"
+        },
+        {
+          "method": "GET",
+          "path": "projects/story-s5-browser-200/shot-batches"
+        },
+        {
+          "method": "GET",
+          "path": "projects/story-s5-browser-200/shot-batches"
+        },
+        {
+          "method": "GET",
+          "path": "projects/story-s5-browser-200/shot-batches"
+        },
+        {
+          "method": "GET",
+          "path": "projects/story-s5-browser-200/shot-batches"
+        },
+        {
+          "method": "GET",
+          "path": "projects/story-s5-browser-200/shot-batches"
+        },
+        {
+          "method": "GET",
+          "path": "projects/story-s5-browser-200/shot-batches"
+        },
+        {
+          "method": "GET",
+          "path": "projects/story-s5-browser-200/shot-batches"
+        }
+      ],
+      "geometry": {
+        "before": [
+          313,
+          32,
+          320
+        ],
+        "after": [
+          313,
+          32,
+          320
+        ]
+      },
+      "committedWorkDiagnostic": {
+        "commits": 72,
+        "storyCommits": 0,
+        "storyWork": 0,
+        "visibleStoryFibers": 24,
+        "hookObserved": true
+      },
+      "heapAfterGestures": 15657908,
+      "finalVisibleCards": 24,
+      "workspace10KB": {
+        "node": "story-0",
+        "openMs": 297,
+        "requests": [
+          {
+            "method": "GET",
+            "path": "projects/story-s5-browser-200/drama-pipeline/payload?nodeId=story-0"
+          }
+        ]
+      },
+      "workspace100KB": {
+        "node": "story-1",
+        "openMs": 219,
+        "requests": [
+          {
+            "method": "GET",
+            "path": "projects/story-s5-browser-200/drama-pipeline/payload?nodeId=story-1"
+          }
+        ]
+      },
+      "typingNetwork": [
+        {
+          "method": "GET",
+          "path": "execution/capabilities"
+        },
+        {
+          "method": "GET",
+          "path": "projects/story-s5-browser-200/shot-batches"
+        }
+      ],
+      "saveNetwork": [
+        {
+          "method": "PATCH",
+          "path": "projects/story-s5-browser-200?creative=summary"
+        },
+        {
+          "method": "GET",
+          "path": "projects/story-s5-browser-200/shot-batches"
+        }
+      ],
+      "saveState": {
+        "draft": 37736,
+        "confirmed": 37724,
+        "ends": true
+      },
+      "historyNetwork": [
+        {
+          "method": "GET",
+          "path": "projects/story-s5-browser-200/nodes/story-1/text-versions"
+        },
+        {
+          "method": "GET",
+          "path": "projects/story-s5-browser-200/nodes/story-1/text-versions/story-1-v1"
+        }
+      ],
+      "secondTheme": "light",
+      "heapAfterWorkspace": 16843672,
+      "browserExceptions": [],
+      "strictGesturePass": false,
+      "allApiRequests": 46
+    }
+  },
+  "repeat": {
+    "before": {
+      "label": "pre-S1",
+      "fixture": {
+        "nodes": 200,
+        "stories": 24,
+        "links": 42,
+        "sampleBytes": [
+          10476,
+          102412
+        ],
+        "totalStoryBytes": 620516,
+        "hydratedDocumentBytes": 2733753
+      },
+      "measurements": [
+        {
+          "scenario": "pan-1",
+          "frames": 88,
+          "durationMs": 1544.2999999999997,
+          "fps": 56.98374668134431,
+          "p50Ms": 17.5,
+          "p95Ms": 18.09999999999991,
+          "p99Ms": 18.100000000000136,
+          "maxMs": 18.59999999999991,
+          "over33Ms": 0,
+          "over50Ms": 0,
+          "longTaskCount": 0,
+          "longTaskMaxMs": 0,
+          "longTaskUnsupported": null,
+          "wallElapsedMs": 1549,
+          "verifiedTransformSpread": [
+            180,
+            80,
+            0
+          ],
+          "distinctTransforms": 67,
+          "engineMetricsDelta": {
+            "Nodes": 0,
+            "LayoutCount": 69,
+            "RecalcStyleCount": 73,
+            "LayoutDuration": 0.00722,
+            "RecalcStyleDuration": 0.01809,
+            "ScriptDuration": 0.16206,
+            "TaskDuration": 0.556
+          },
+          "storyApiRequests": 0,
+          "strictPass": false
+        },
+        {
+          "scenario": "pan-2",
+          "frames": 86,
+          "durationMs": 1514.3999999999996,
+          "fps": 56.788166930797686,
+          "p50Ms": 17.5,
+          "p95Ms": 18.09999999999991,
+          "p99Ms": 18.100000000000364,
+          "maxMs": 18.5,
+          "over33Ms": 0,
+          "over50Ms": 0,
+          "longTaskCount": 0,
+          "longTaskMaxMs": 0,
+          "longTaskUnsupported": null,
+          "wallElapsedMs": 1543,
+          "verifiedTransformSpread": [
+            180,
+            80,
+            0
+          ],
+          "distinctTransforms": 67,
+          "engineMetricsDelta": {
+            "Nodes": 0,
+            "LayoutCount": 69,
+            "RecalcStyleCount": 73,
+            "LayoutDuration": 0.00761,
+            "RecalcStyleDuration": 0.01323,
+            "ScriptDuration": 0.14391,
+            "TaskDuration": 0.52778
+          },
+          "storyApiRequests": 0,
+          "strictPass": false
+        },
+        {
+          "scenario": "pan-3",
+          "frames": 86,
+          "durationMs": 1518.6999999999998,
+          "fps": 56.62737867913348,
+          "p50Ms": 17.599999999999454,
+          "p95Ms": 18.100000000000364,
+          "p99Ms": 18.5,
+          "maxMs": 18.5,
+          "over33Ms": 0,
+          "over50Ms": 0,
+          "longTaskCount": 0,
+          "longTaskMaxMs": 0,
+          "longTaskUnsupported": null,
+          "wallElapsedMs": 1550,
+          "verifiedTransformSpread": [
+            180,
+            80,
+            0
+          ],
+          "distinctTransforms": 67,
+          "engineMetricsDelta": {
+            "Nodes": 0,
+            "LayoutCount": 69,
+            "RecalcStyleCount": 73,
+            "LayoutDuration": 0.00834,
+            "RecalcStyleDuration": 0.01327,
+            "ScriptDuration": 0.14966,
+            "TaskDuration": 0.6201
+          },
+          "storyApiRequests": 0,
+          "strictPass": false
+        },
+        {
+          "scenario": "zoom-1",
+          "frames": 136,
+          "durationMs": 2645.800000000001,
+          "fps": 51.40222239020332,
+          "p50Ms": 17.600000000000364,
+          "p95Ms": 18.100000000000364,
+          "p99Ms": 18.5,
+          "maxMs": 210.70000000000073,
+          "over33Ms": 2,
+          "over50Ms": 2,
+          "longTaskCount": 0,
+          "longTaskMaxMs": 0,
+          "longTaskUnsupported": null,
+          "wallElapsedMs": 2664,
+          "verifiedTransformSpread": [
+            99.58540344238452,
+            1.3518400192261009,
+            0.11265003681182861
+          ],
+          "distinctTransforms": 14,
+          "engineMetricsDelta": {
+            "Nodes": 0,
+            "LayoutCount": 86,
+            "RecalcStyleCount": 62,
+            "LayoutDuration": 0.01201,
+            "RecalcStyleDuration": 0.00154,
+            "ScriptDuration": 0.21534,
+            "TaskDuration": 0.57927
+          },
+          "storyApiRequests": 0,
+          "strictPass": false
+        },
+        {
+          "scenario": "zoom-2",
+          "frames": 134,
+          "durationMs": 2347.5,
+          "fps": 57.08200212992545,
+          "p50Ms": 17.5,
+          "p95Ms": 18.100000000000364,
+          "p99Ms": 18.100000000000364,
+          "maxMs": 18.5,
+          "over33Ms": 0,
+          "over50Ms": 0,
+          "longTaskCount": 0,
+          "longTaskMaxMs": 0,
+          "longTaskUnsupported": null,
+          "wallElapsedMs": 2363,
+          "verifiedTransformSpread": [
+            99.58540344238713,
+            1.3518400192261293,
+            0.11265003681182861
+          ],
+          "distinctTransforms": 14,
+          "engineMetricsDelta": {
+            "Nodes": 0,
+            "LayoutCount": 85,
+            "RecalcStyleCount": 60,
+            "LayoutDuration": 0.01237,
+            "RecalcStyleDuration": 0.00134,
+            "ScriptDuration": 0.20598,
+            "TaskDuration": 0.58904
+          },
+          "storyApiRequests": 0,
+          "strictPass": false
+        },
+        {
+          "scenario": "zoom-3",
+          "frames": 134,
+          "durationMs": 2343,
+          "fps": 57.19163465642339,
+          "p50Ms": 17.5,
+          "p95Ms": 18.100000000000364,
+          "p99Ms": 18.100000000000364,
+          "maxMs": 18.299999999999272,
+          "over33Ms": 0,
+          "over50Ms": 0,
+          "longTaskCount": 0,
+          "longTaskMaxMs": 0,
+          "longTaskUnsupported": null,
+          "wallElapsedMs": 2357,
+          "verifiedTransformSpread": [
+            99.5854034423902,
+            1.3518400192261684,
+            0.11265003681182861
+          ],
+          "distinctTransforms": 14,
+          "engineMetricsDelta": {
+            "Nodes": 0,
+            "LayoutCount": 85,
+            "RecalcStyleCount": 60,
+            "LayoutDuration": 0.0103,
+            "RecalcStyleDuration": 0.00102,
+            "ScriptDuration": 0.18148,
+            "TaskDuration": 0.49228
+          },
+          "storyApiRequests": 0,
+          "strictPass": false
+        }
+      ],
+      "checks": [
+        "visible story summary cards"
+      ],
+      "isolation": "temporary SQLite/CAS + Chrome; no external model/Comfy calls",
+      "blank": {
+        "scenario": "blank",
+        "frames": 129,
+        "durationMs": 2260.7999999999993,
+        "fps": 57.05944798301488,
+        "p50Ms": 17.5,
+        "p95Ms": 18.09999999999991,
+        "p99Ms": 18.100000000000023,
+        "maxMs": 18.100000000000136,
+        "over33Ms": 0,
+        "over50Ms": 0,
+        "longTaskCount": 0,
+        "longTaskMaxMs": 0,
+        "longTaskUnsupported": null,
+        "wallElapsedMs": 2401
+      },
+      "initialMountMs": 672,
+      "cards": {
+        "visibleStoryCards": 24,
+        "visibleNodes": 24,
+        "storyDomElements": 1416,
+        "storyFormControls": 192,
+        "cardTextChars": 696,
+        "correctPreviewCount": 0
+      },
+      "networkAtMount": [
+        {
+          "method": "GET",
+          "path": "session"
+        },
+        {
+          "method": "GET",
+          "path": "ui-settings/model_config"
+        },
+        {
+          "method": "GET",
+          "path": "ui-settings/theme"
+        },
+        {
+          "method": "GET",
+          "path": "assets"
+        },
+        {
+          "method": "GET",
+          "path": "projects"
+        },
+        {
+          "method": "GET",
+          "path": "projects/story-s5-browser-200?creative=summary"
+        },
+        {
+          "method": "GET",
+          "path": "projects/story-s5-browser-200/viewport"
+        },
+        {
+          "method": "GET",
+          "path": "projects/story-s5-browser-200/chats"
+        },
+        {
+          "method": "GET",
+          "path": "execution/capabilities"
+        },
+        {
+          "method": "GET",
+          "path": "projects/story-s5-browser-200/shot-batches"
+        },
+        {
+          "method": "GET",
+          "path": "jobs/snapshot"
+        }
+      ],
+      "environment": {
+        "chrome": "Chrome/158.0.8127.37",
+        "width": 2048,
+        "height": 1152,
+        "dpr": 1.25,
+        "visibility": "visible",
+        "hardwareConcurrency": 16,
+        "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/158.0.0.0 Safari/537.36",
+        "heap": 23080819,
+        "board": false,
+        "renderedNodes": 24,
+        "canvases": 3,
+        "glRenderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 4070 SUPER (0x00002783) Direct3D11 vs_5_0 ps_5_0, D3D11)"
+      },
+      "heapAfterLoad": 15782912,
+      "compact": {
+        "ok": true,
+        "bytes": 123180,
+        "latencyMs": 5.5,
+        "nodes": 200,
+        "stories": 24,
+        "projections": 0,
+        "projectedChars": 0,
+        "storiesWithInlineBodies": 0
+      },
+      "gestureNetwork": [
+        {
+          "method": "GET",
+          "path": "execution/capabilities"
+        },
+        {
+          "method": "GET",
+          "path": "execution/capabilities"
+        },
+        {
+          "method": "GET",
+          "path": "projects/story-s5-browser-200/shot-batches"
+        },
+        {
+          "method": "GET",
+          "path": "projects/story-s5-browser-200/shot-batches"
+        },
+        {
+          "method": "GET",
+          "path": "projects/story-s5-browser-200/shot-batches"
+        },
+        {
+          "method": "GET",
+          "path": "projects/story-s5-browser-200/shot-batches"
+        },
+        {
+          "method": "GET",
+          "path": "projects/story-s5-browser-200/shot-batches"
+        },
+        {
+          "method": "GET",
+          "path": "projects/story-s5-browser-200/shot-batches"
+        },
+        {
+          "method": "GET",
+          "path": "projects/story-s5-browser-200/shot-batches"
+        },
+        {
+          "method": "GET",
+          "path": "projects/story-s5-browser-200/shot-batches"
+        }
+      ],
+      "geometry": {
+        "before": [
+          313,
+          32,
+          320
+        ],
+        "after": [
+          313,
+          32,
+          320
+        ]
+      },
+      "committedWorkDiagnostic": {
+        "commits": 61,
+        "storyCommits": 0,
+        "storyWork": 0,
+        "visibleStoryFibers": 24,
+        "hookObserved": true
+      },
+      "heapAfterGestures": 16808036,
+      "finalVisibleCards": 24,
+      "browserExceptions": [],
+      "strictGesturePass": false,
+      "allApiRequests": 25
+    },
+    "after": {
+      "label": "current",
+      "fixture": {
+        "nodes": 200,
+        "stories": 24,
+        "links": 42,
+        "sampleBytes": [
+          10476,
+          102412
+        ],
+        "totalStoryBytes": 620516,
+        "hydratedDocumentBytes": 2733753
+      },
+      "measurements": [
+        {
+          "scenario": "pan-1",
+          "frames": 88,
+          "durationMs": 1466.5,
+          "fps": 60.006818956699625,
+          "p50Ms": 16.699999999999818,
+          "p95Ms": 16.90000000000009,
+          "p99Ms": 16.90000000000009,
+          "maxMs": 17,
+          "over33Ms": 0,
+          "over50Ms": 0,
+          "longTaskCount": 0,
+          "longTaskMaxMs": 0,
+          "longTaskUnsupported": null,
+          "wallElapsedMs": 1484,
+          "verifiedTransformSpread": [
+            180,
+            80,
+            0
+          ],
+          "distinctTransforms": 67,
+          "engineMetricsDelta": {
+            "Nodes": 0,
+            "LayoutCount": 0,
+            "RecalcStyleCount": 73,
+            "LayoutDuration": 0,
+            "RecalcStyleDuration": 0.01935,
+            "ScriptDuration": 0.16692,
+            "TaskDuration": 0.31453
+          },
+          "storyApiRequests": 0,
+          "strictPass": true
+        },
+        {
+          "scenario": "pan-2",
+          "frames": 89,
+          "durationMs": 1483.6000000000004,
+          "fps": 59.989215421946604,
+          "p50Ms": 16.699999999999818,
+          "p95Ms": 16.90000000000009,
+          "p99Ms": 17,
+          "maxMs": 17,
+          "over33Ms": 0,
+          "over50Ms": 0,
+          "longTaskCount": 0,
+          "longTaskMaxMs": 0,
+          "longTaskUnsupported": null,
+          "wallElapsedMs": 1494,
+          "verifiedTransformSpread": [
+            180,
+            80,
+            0
+          ],
+          "distinctTransforms": 67,
+          "engineMetricsDelta": {
+            "Nodes": 0,
+            "LayoutCount": 0,
+            "RecalcStyleCount": 73,
+            "LayoutDuration": 0,
+            "RecalcStyleDuration": 0.01052,
+            "ScriptDuration": 0.13904,
+            "TaskDuration": 0.26578
+          },
+          "storyApiRequests": 0,
+          "strictPass": true
+        },
+        {
+          "scenario": "pan-3",
+          "frames": 91,
+          "durationMs": 1516.6000000000004,
+          "fps": 60.00263747857047,
+          "p50Ms": 16.699999999999818,
+          "p95Ms": 16.899999999999636,
+          "p99Ms": 16.900000000000546,
+          "maxMs": 17,
+          "over33Ms": 0,
+          "over50Ms": 0,
+          "longTaskCount": 0,
+          "longTaskMaxMs": 0,
+          "longTaskUnsupported": null,
+          "wallElapsedMs": 1511,
+          "verifiedTransformSpread": [
+            180,
+            80,
+            0
+          ],
+          "distinctTransforms": 67,
+          "engineMetricsDelta": {
+            "Nodes": 0,
+            "LayoutCount": 0,
+            "RecalcStyleCount": 73,
+            "LayoutDuration": 0,
+            "RecalcStyleDuration": 0.01056,
+            "ScriptDuration": 0.12235,
+            "TaskDuration": 0.23847
+          },
+          "storyApiRequests": 0,
+          "strictPass": true
+        },
+        {
+          "scenario": "zoom-1",
+          "frames": 137,
+          "durationMs": 2675.7999999999993,
+          "fps": 51.19964122879141,
+          "p50Ms": 17.599999999999454,
+          "p95Ms": 18.100000000000364,
+          "p99Ms": 18.600000000000364,
+          "maxMs": 183.10000000000036,
+          "over33Ms": 2,
+          "over50Ms": 2,
+          "longTaskCount": 0,
+          "longTaskMaxMs": 0,
+          "longTaskUnsupported": null,
+          "wallElapsedMs": 2682,
+          "verifiedTransformSpread": [
+            99.58540344238452,
+            1.3518400192261009,
+            0.11265003681182861
+          ],
+          "distinctTransforms": 14,
+          "engineMetricsDelta": {
+            "Nodes": 0,
+            "LayoutCount": 31,
+            "RecalcStyleCount": 62,
+            "LayoutDuration": 0.0033,
+            "RecalcStyleDuration": 0.00177,
+            "ScriptDuration": 0.20974,
+            "TaskDuration": 0.35583
+          },
+          "storyApiRequests": 0,
+          "strictPass": false
+        },
+        {
+          "scenario": "zoom-2",
+          "frames": 134,
+          "durationMs": 2349.4000000000015,
+          "fps": 57.035838937601056,
+          "p50Ms": 17.5,
+          "p95Ms": 18,
+          "p99Ms": 18.299999999999272,
+          "maxMs": 18.5,
+          "over33Ms": 0,
+          "over50Ms": 0,
+          "longTaskCount": 0,
+          "longTaskMaxMs": 0,
+          "longTaskUnsupported": null,
+          "wallElapsedMs": 2367,
+          "verifiedTransformSpread": [
+            99.58540344238713,
+            1.3518400192261293,
+            0.11265003681182861
+          ],
+          "distinctTransforms": 14,
+          "engineMetricsDelta": {
+            "Nodes": 0,
+            "LayoutCount": 25,
+            "RecalcStyleCount": 60,
+            "LayoutDuration": 0.00213,
+            "RecalcStyleDuration": 0.00142,
+            "ScriptDuration": 0.15396,
+            "TaskDuration": 0.28284
+          },
+          "storyApiRequests": 0,
+          "strictPass": false
+        },
+        {
+          "scenario": "zoom-3",
+          "frames": 135,
+          "durationMs": 2352.5999999999985,
+          "fps": 57.38332058148435,
+          "p50Ms": 17.399999999999636,
+          "p95Ms": 18,
+          "p99Ms": 18.099999999998545,
+          "maxMs": 18.100000000000364,
+          "over33Ms": 0,
+          "over50Ms": 0,
+          "longTaskCount": 0,
+          "longTaskMaxMs": 0,
+          "longTaskUnsupported": null,
+          "wallElapsedMs": 2364,
+          "verifiedTransformSpread": [
+            99.5854034423902,
+            1.3518400192261684,
+            0.11265003681182861
+          ],
+          "distinctTransforms": 14,
+          "engineMetricsDelta": {
+            "Nodes": 0,
+            "LayoutCount": 26,
+            "RecalcStyleCount": 60,
+            "LayoutDuration": 0.00331,
+            "RecalcStyleDuration": 0.00194,
+            "ScriptDuration": 0.21537,
+            "TaskDuration": 0.39744
+          },
+          "storyApiRequests": 0,
+          "strictPass": false
+        }
+      ],
+      "checks": [
+        "visible story summary cards",
+        "fresh canvas stories",
+        "click [data-node-id=\"story-0\"] [data-story-inline-summary]",
+        "full story-0 body, read only and lazy AI/history",
+        "click .ant-modal-close",
+        "10KB workspace unmounted",
+        "click [data-node-id=\"story-1\"] [data-story-inline-summary]",
+        "full story-1 body, read only and lazy AI/history",
+        "click [data-creative-workspace-node-id=\"story-1\"] [aria-label=\"编辑故事正文\"]",
+        "100KB draft changed locally",
+        "Ctrl+S saves long draft",
+        "narrow workspace fits viewport",
+        "click AI 创作",
+        "click 改写",
+        "full 100KB rewrite is blocked before model calls",
+        "bounded selection remains usable on 100KB story",
+        "click 收起 AI 创作",
+        "AI panel unmounted",
+        "click 影响与历史",
+        "history loaded lazily at high DPR",
+        "confirmed paragraphs collapsed by default",
+        "click [data-creative-workspace-node-id=\"story-1\"] [data-story-history-summary] button[aria-expanded]",
+        "history mounts first 30 paragraphs only",
+        "click 查看更多（30/311）",
+        "history loads next 30 paragraphs only",
+        "narrow history scroll regions independently contained",
+        "saved long history preview loads",
+        "click 故事正文",
+        "history and AI unmounted on return",
+        "click .ant-modal-close",
+        "100KB workspace unmounted",
+        "toggle alternative canvas theme",
+        "click [data-node-id=story-1] [data-story-inline-summary]",
+        "saved 100KB body reopened after theme change",
+        "click .ant-modal-close",
+        "second-theme workspace closed"
+      ],
+      "isolation": "temporary SQLite/CAS + Chrome; no external model/Comfy calls",
+      "blank": {
+        "scenario": "blank",
+        "frames": 137,
+        "durationMs": 2283.3,
+        "fps": 60.000875925195984,
+        "p50Ms": 16.699999999999818,
+        "p95Ms": 16.700000000000273,
+        "p99Ms": 16.799999999999955,
+        "maxMs": 16.80000000000001,
+        "over33Ms": 0,
+        "over50Ms": 0,
+        "longTaskCount": 0,
+        "longTaskMaxMs": 0,
+        "longTaskUnsupported": null,
+        "wallElapsedMs": 2401
+      },
+      "initialMountMs": 734,
+      "cards": {
+        "visibleStoryCards": 24,
+        "visibleNodes": 24,
+        "storyDomElements": 696,
+        "storyFormControls": 0,
+        "cardTextChars": 9096,
+        "correctPreviewCount": 24
+      },
+      "networkAtMount": [
+        {
+          "method": "GET",
+          "path": "session"
+        },
+        {
+          "method": "GET",
+          "path": "ui-settings/model_config"
+        },
+        {
+          "method": "GET",
+          "path": "ui-settings/theme"
+        },
+        {
+          "method": "GET",
+          "path": "assets"
+        },
+        {
+          "method": "GET",
+          "path": "projects"
+        },
+        {
+          "method": "GET",
+          "path": "projects/story-s5-browser-200?creative=summary"
+        },
+        {
+          "method": "GET",
+          "path": "projects/story-s5-browser-200/viewport"
+        },
+        {
+          "method": "GET",
+          "path": "projects/story-s5-browser-200/chats"
+        },
+        {
+          "method": "GET",
+          "path": "execution/capabilities"
+        },
+        {
+          "method": "GET",
+          "path": "projects/story-s5-browser-200/shot-batches"
+        },
+        {
+          "method": "GET",
+          "path": "jobs/snapshot"
+        }
+      ],
+      "environment": {
+        "chrome": "Chrome/158.0.8127.37",
+        "width": 2048,
+        "height": 1152,
+        "dpr": 1.25,
+        "visibility": "visible",
+        "hardwareConcurrency": 16,
+        "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/158.0.0.0 Safari/537.36",
+        "heap": 20797257,
+        "board": false,
+        "renderedNodes": 24,
+        "canvases": 3,
+        "glRenderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 4070 SUPER (0x00002783) Direct3D11 vs_5_0 ps_5_0, D3D11)"
+      },
+      "heapAfterLoad": 14772076,
+      "compact": {
+        "ok": true,
+        "bytes": 150196,
+        "latencyMs": 26.900000002235174,
+        "nodes": 200,
+        "stories": 24,
+        "projections": 24,
+        "projectedChars": 8640,
+        "storiesWithInlineBodies": 0
+      },
+      "gestureNetwork": [
+        {
+          "method": "GET",
+          "path": "execution/capabilities"
+        },
+        {
+          "method": "GET",
+          "path": "execution/capabilities"
+        },
+        {
+          "method": "GET",
+          "path": "projects/story-s5-browser-200/shot-batches"
+        },
+        {
+          "method": "GET",
+          "path": "projects/story-s5-browser-200/shot-batches"
+        },
+        {
+          "method": "GET",
+          "path": "projects/story-s5-browser-200/shot-batches"
+        },
+        {
+          "method": "GET",
+          "path": "projects/story-s5-browser-200/shot-batches"
+        },
+        {
+          "method": "GET",
+          "path": "projects/story-s5-browser-200/shot-batches"
+        },
+        {
+          "method": "GET",
+          "path": "projects/story-s5-browser-200/shot-batches"
+        },
+        {
+          "method": "GET",
+          "path": "projects/story-s5-browser-200/shot-batches"
+        },
+        {
+          "method": "GET",
+          "path": "projects/story-s5-browser-200/shot-batches"
+        }
+      ],
+      "geometry": {
+        "before": [
+          313,
+          32,
+          320
+        ],
+        "after": [
+          313,
+          32,
+          320
+        ]
+      },
+      "committedWorkDiagnostic": {
+        "commits": 61,
+        "storyCommits": 0,
+        "storyWork": 0,
+        "visibleStoryFibers": 24,
+        "hookObserved": true
+      },
+      "heapAfterGestures": 15611972,
+      "finalVisibleCards": 24,
+      "workspace10KB": {
+        "node": "story-0",
+        "openMs": 469,
+        "requests": [
+          {
+            "method": "GET",
+            "path": "projects/story-s5-browser-200/drama-pipeline/payload?nodeId=story-0"
+          }
+        ]
+      },
+      "workspace100KB": {
+        "node": "story-1",
+        "openMs": 203,
+        "requests": [
+          {
+            "method": "GET",
+            "path": "projects/story-s5-browser-200/drama-pipeline/payload?nodeId=story-1"
+          }
+        ]
+      },
+      "typingNetwork": [
+        {
+          "method": "GET",
+          "path": "execution/capabilities"
+        },
+        {
+          "method": "GET",
+          "path": "projects/story-s5-browser-200/shot-batches"
+        }
+      ],
+      "saveNetwork": [
+        {
+          "method": "PATCH",
+          "path": "projects/story-s5-browser-200?creative=summary"
+        },
+        {
+          "method": "GET",
+          "path": "projects/story-s5-browser-200/shot-batches"
+        }
+      ],
+      "saveState": {
+        "draft": 37736,
+        "confirmed": 37724,
+        "ends": true
+      },
+      "narrowHistoryLayout": {
+        "previewHeight": 40,
+        "listHeight": 91,
+        "restoreHeight": 32,
+        "restoreReachable": true,
+        "restoreEnabled": true
+      },
+      "historyNetwork": [
+        {
+          "method": "GET",
+          "path": "projects/story-s5-browser-200/nodes/story-1/text-versions"
+        },
+        {
+          "method": "GET",
+          "path": "projects/story-s5-browser-200/nodes/story-1/text-versions/story-1-v1"
+        }
+      ],
+      "secondTheme": "light",
+      "heapAfterWorkspace": 16775540,
+      "browserExceptions": [],
+      "strictGesturePass": false,
+      "allApiRequests": 46
+    }
+  }
+}

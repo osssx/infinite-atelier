@@ -7,7 +7,11 @@ vi.mock("@/stores/use-theme-store",async()=>({
  useThemeStore:(await import("zustand")).create<{theme:"light"|"dark"}>(()=>({theme:"dark"}))
 }));
 import {DramaSourceNode} from "./drama-source-node";
-import {resolveStoryDraft,storyVersionConfirmed} from "./drama-story-state";
+vi.mock("./drama-story-state",async importOriginal=>{
+ const actual=await importOriginal<typeof import("./drama-story-state")>();
+ return {...actual,resolveStorySummary:vi.fn(actual.resolveStorySummary)};
+});
+import {resolveStoryDraft,resolveStorySummary,storyVersionConfirmed} from "./drama-story-state";
 const roots:Root[]=[];
 beforeEach(()=>vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT",true));
 afterEach(async()=>{for(const root of roots)await act(async()=>root.unmount());roots.length=0;document.body.replaceChildren();vi.unstubAllGlobals();});
@@ -56,4 +60,25 @@ it("renders compact previews and confirmation status without exposing them as a 
  await act(async()=>root.render(<DramaSourceNode node={node(compact)} onOpenEditor={()=>{}}/>));
  expect(element.textContent).toContain("摘要暂不可用");
  expect(element.textContent).not.toContain("尚无故事正文");
+});
+it("does not recompute a long story summary on geometry-only parent renders; semantic edits still invalidate it",async()=>{
+ const element=document.createElement("div");document.body.append(element);
+ const root=createRoot(element);roots.push(root);
+ const onOpenEditor=vi.fn();
+ const content="长故事段落：主角沿河岸前进。\n".repeat(3000);
+ const original=node({content,dramaDraft:content,dramaConfirmed:content});
+ await act(async()=>root.render(<DramaSourceNode node={original} onOpenEditor={onOpenEditor} sourceState="current"/>));
+ const summary=vi.mocked(resolveStorySummary);summary.mockClear();
+ for(let frame=0;frame<12;frame++){
+  const next={...original,position:{x:frame*4,y:frame*2}};
+  await act(async()=>root.render(<DramaSourceNode node={next} onOpenEditor={onOpenEditor} sourceState="current"/>));
+ }
+ expect(summary).not.toHaveBeenCalled();
+ await act(async()=>root.render(<DramaSourceNode node={original} onOpenEditor={onOpenEditor} sourceState="updated"/>));
+ expect(summary).toHaveBeenCalled();
+ expect(element.textContent).toContain("上游文本有更新");
+ summary.mockClear();
+ const edited={...original,metadata:{...original.metadata,dramaDraft:"新草案"}};
+ await act(async()=>root.render(<DramaSourceNode node={edited} onOpenEditor={onOpenEditor} sourceState="updated"/>));
+ expect(summary).toHaveBeenCalled();expect(element.textContent).toContain("新草案");
 });

@@ -198,6 +198,36 @@ def run():
         button("故事正文")
         check("restored text appears in read-only editor","document.querySelector("+q(field)+")?.value==="+q(revised)+"&&document.querySelector("+q(field)+")?.readOnly")
 
+        # S5: cross the shared workspace boundary in the same real project.
+        # The old monolithic P1 script still expects an obsolete asset canvas browser;
+        # exercise the modern episode editor directly without skipping its actual UI.
+        episode='[data-creative-workspace-node-id="episodes"]'
+        episode_card='[data-node-id="episodes"]'
+        synopsis=episode+' [data-episode-editable-field="synopsis"]'
+        click(".ant-modal-close")
+        check("story closed before episode workspace opens","!document.querySelector("+q(portal)+")")
+        page.call("Emulation.setDeviceMetricsOverride",{"width":1440,"height":900,"deviceScaleFactor":1.25,"mobile":False})
+        button("打开完整编辑器 ↗",episode_card)
+        check("episode has independent active editor and no story pending state","(()=>{const r=document.querySelector("+q(episode)+");return r?.querySelector('nav button[aria-pressed=true]')?.textContent.trim()==='剧集编辑'&&!r.querySelector('[data-story-textarea],[data-drama-pending-status]')&&!document.querySelector("+q(portal)+")})()")
+        check("episode split editor is still read-only and themed","(()=>{const r=document.querySelector("+q(episode)+"),ed=r?.querySelector('[aria-label=\"当前剧集编辑区\"]');return ['dark','light'].includes(r?.dataset.dramaWorkspaceTheme)&&!!r.querySelector('[data-episode-editor-layout=expanded] [aria-label=\"剧集导航\"]')&&ed?.querySelectorAll('[data-episode-editable-field][data-episode-field-mode=reading]').length===5&&!ed.querySelector('textarea')})()")
+        click(synopsis+' [aria-label="编辑剧情梗概"]')
+        write(synopsis+' textarea[aria-label="剧情梗概"]',"S5 临时剧集草稿，不保存")
+        check("episode local edit remains staged without reactivating story pending state","document.querySelector("+q(synopsis)+")?.dataset.episodeFieldMode==='editing'&&document.querySelector("+q(synopsis+" textarea")+")?.value==="+q("S5 临时剧集草稿，不保存")+"&&!document.querySelector("+q(portal)+")")
+        assert downstream()==downstream_before
+        click(synopsis+' [data-episode-action="cancel"]')
+        check("episode cancel restores read-only synopsis","document.querySelector("+q(synopsis)+")?.dataset.episodeFieldMode==='reading'&&!document.querySelector("+q(synopsis+" textarea")+")")
+        button("影响与历史",episode)
+        check("episode history uses its own version layout, not story history","(()=>{const r=document.querySelector("+q(episode)+");return !!r?.querySelector('[data-drama-history-layout] [data-canvas-text-versions-inline]')&&!r.querySelector('[data-story-history-summary],[data-story-upstream-panel]')})()")
+        button("剧集编辑",episode)
+        check("episode history unmounted on return","!document.querySelector("+q(episode+" [data-drama-history-layout]")+")")
+        click(".ant-modal-close")
+        check("episode workspace closed before story reopens","!document.querySelector("+q(episode)+")")
+        click(card+" [data-story-inline-summary]")
+        check("story reopens with restored draft and no episode state","document.querySelector("+q(field)+")?.readOnly&&document.querySelector("+q(field)+")?.value==="+q(revised)+"&&!document.querySelector("+q(episode)+")")
+        assert downstream()==downstream_before and confirmation_unchanged(meta())
+        click(".ant-modal-close")
+        check("all workspaces closed","!document.querySelector('[data-creative-workspace-node-id]')")
+
         assert not page.exceptions,page.exceptions
         print("STORY_BROWSER_REPORT",json.dumps({"passed":len(passed),"browserExceptions":page.exceptions,"isolation":"temporary SQLite/CAS; in-process deterministic assistantChat stub; no external model calls"},ensure_ascii=False),flush=True)
     except Exception:

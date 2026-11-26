@@ -143,7 +143,7 @@ test("P4.5 project archive embeds immutable Comfy versions and restores them in 
  const newer={id:tmpl.id,revision:createHash("sha256").update(JSON.stringify(stable(newerPayload))).digest("hex"),...newerPayload};
  createComfyRegistry(source.db).installMany([newer]);
  const production={shot:{mode:"text_to_video",target:{kind:"comfy",templateId:newer.id,templateRevision:newer.revision},
-  promptOverride:{text:"新版人工提示词",sourceFingerprint:"new"},durationSec:8,aspectRatio:"9:16"}};
+  promptOverride:{text:"新版人工提示词",sourceFingerprint:"new"},durationSec:8,aspectRatio:"9:16",referencePolicies:{scene:"optional",hero:"required",prop:"excluded"}}};
  const applied={target:{kind:"comfy",templateId:tmpl.id,templateRevision:tmpl.revision},prompt:"旧配置更新后提示词",durationSec:5,aspectRatio:"16:9",settingFingerprint:"",promptSourceFingerprint:"old",manualPrompt:true};
  const configMetadata={generationMode:"video",dramaShotId:"shot",prompt:applied.prompt,composerContent:applied.prompt,
   comfyWorkflowSelections:{video:{templateId:tmpl.id,templateRevision:tmpl.revision,mediaMode:"text_to_video",overrides:{},slots:{}}},

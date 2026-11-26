@@ -2,7 +2,7 @@ import {modelOptionName,resolveModelChannel,resolveModelScript,type AiConfig} fr
 import {modelChannelProvider} from "@/features/backend-sync/model-channel-autoroute";
 import {resolveMediaCapabilities,supportedMediaModes,supportedMediaParameters} from "@/services/media-capabilities";
 import {getComfyTemplate} from "@/features/comfy-workflow/template-registry";
-import type {DramaShotProduction,DramaVideoInput} from "./drama-pipeline-media";
+import {applyDramaReferencePolicies,dramaEffectiveMissingReferences,type DramaShotProduction,type DramaVideoInput} from "./drama-pipeline-media";
 import {prepareDramaProduction} from "./drama-media-preflight";
 import {resolveDramaVideoTarget,resolveDramaVideoProduction} from "./drama-video-production-resolver";
 import type {MediaParameterSpec} from "@/services/media-capabilities";
@@ -92,6 +92,11 @@ export async function auditDramaProduction(input:DramaVideoInput,config:AiConfig
     visualStyle?:string;sourceRevisionId?:string;
  }={}):Promise<DramaProductionAudit>{
     const mode:DramaMediaModeChoice=setting?.gridInput?"grid":input.mode??"text_to_video";
+    if(mode==="omni_reference"){
+        missingReferenceIds=dramaEffectiveMissingReferences(input,setting,missingReferenceIds);
+        input=applyDramaReferencePolicies(input,setting);
+    }
+
     const durationSeconds=setting?.durationSec??input.shot.durationSec??(Number(config.videoSeconds)||6);
     const keys=input.referenceImages.flatMap(item=>item.storageKey?[item.storageKey]:[]);
     const base={mode,durationSeconds,aspectRatio:setting?.aspectRatio??config.videoRatio,referenceCount:keys.length,

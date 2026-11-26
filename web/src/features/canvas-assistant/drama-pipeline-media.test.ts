@@ -3,7 +3,8 @@ import { buildNodeGenerationContext } from "@/components/canvas/canvas-node-gene
 import { buildDramaVideoConfigGraph,planDramaBatchVideoConfigs,refreshDramaVideoConfig,refreshDramaVideoConfigGraph } from "./drama-video-config";
 import { createCanvasNode } from "@/lib/canvas/canvas-node-factory";
 import { describe, expect, it } from "vitest";
-import { applyDramaProduction,buildDramaVideoInput, dramaVideoMissingReferenceIds } from "./drama-pipeline-media";
+import { applyDramaProduction,buildDramaVideoInput, dramaVideoMissingReferenceIds,dramaEffectiveMissingReferences,type DramaShotProduction } from "./drama-pipeline-media";
+import {dramaProductionSettingFingerprint} from "./drama-video-production-resolver";
 import type { DramaPipelineSnapshot } from "./canvas-drama-pipeline";
 
 const snapshot: DramaPipelineSnapshot = {
@@ -97,6 +98,35 @@ describe("drama pipeline media inputs", () => {
         expect(dramaVideoMissingReferenceIds(missing, shot)).toEqual(["star"]);
     });
 
+    it("overrides default requirements per shot without modifying the shot or dropping its text",()=>{
+        const missing=structuredClone(snapshot);
+        missing.references=missing.references.filter(ref=>ref.assetId==="hero");
+        const ordinary={...shot,keyPropIds:[]};
+        const input=buildDramaVideoInput(missing,ordinary);
+        const setting:DramaShotProduction={mode:"omni_reference",referencePolicies:{"bridge-rain":"optional",star:"required","hero-day":"excluded"}};
+        expect(dramaEffectiveMissingReferences(input,{mode:"omni_reference"})).toEqual(["bridge-rain"]);
+        expect(dramaEffectiveMissingReferences(input,setting,["bridge-rain"])).toEqual(["star"]);
+        const output=applyDramaProduction(input,setting);
+        expect(output.referenceImages).toEqual([]);
+        expect(output.prompt).toBe(input.prompt);
+        expect(output.shot).toEqual(ordinary);
+        expect(input.referenceImages).toHaveLength(1);
+        expect(dramaEffectiveMissingReferences(input,{...setting,mode:"text_to_video"})).toEqual([]);
+        expect(applyDramaProduction(input,{...setting,mode:"first_frame",firstFrame:"cas:"+"f".repeat(64)}).referenceImages[0].storageKey).toBe("cas:"+"f".repeat(64));
+    });
+    it("excludes only unused image keys, keeps shared keys under participating slot names and restores optional images when bound",()=>{
+        const copy=structuredClone(snapshot);
+        copy.references[1].imageStorageKey=copy.references[0].imageStorageKey;
+        const input=buildDramaVideoInput(copy,shot);
+        const setting:DramaShotProduction={mode:"omni_reference",referencePolicies:{"hero-day":"excluded","bridge-rain":"optional",star:"excluded"}};
+        const output=applyDramaProduction(input,setting);
+        expect(output.referenceImages.map(ref=>[ref.name,ref.storageKey])).toEqual([["石桥","cas:"+"a".repeat(64)]]);
+        expect(applyDramaProduction(output,setting)).toEqual(output);
+        expect(dramaEffectiveMissingReferences(output,setting)).toEqual([]);
+        expect(dramaProductionSettingFingerprint(setting)).not.toBe(dramaProductionSettingFingerprint({mode:"omni_reference"}));
+        expect(dramaProductionSettingFingerprint({mode:"omni_reference",referencePolicies:{}})).toBe(dramaProductionSettingFingerprint({mode:"omni_reference"}));
+        expect(dramaProductionSettingFingerprint({...setting,referencePolicies:{star:"excluded","bridge-rain":"optional","hero-day":"excluded"}})).toBe(dramaProductionSettingFingerprint(setting));
+    });
     it("passes all selected images in order and deduplicates across asset slots", () => {
         const multi = structuredClone(snapshot);
         const first = "cas:" + "a".repeat(64);

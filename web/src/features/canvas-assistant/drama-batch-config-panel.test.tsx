@@ -4,7 +4,7 @@ import {createRoot,type Root} from "react-dom/client";
 import {afterEach,beforeEach,expect,it,vi} from "vitest";
 import type {CanvasNodeData} from "@/types/canvas";
 import {canvasThemes} from "@/lib/canvas-theme";
-import type {DramaVideoInput} from "./drama-pipeline-media";
+import type {DramaVideoInput,DramaShotProduction} from "./drama-pipeline-media";
 const mock=vi.hoisted(()=>({config:{videoSeconds:6,videoRatio:"16:9",videoModel:"test"},audit:vi.fn()}));
 vi.mock("@/stores/use-config-store",()=>({useEffectiveConfig:()=>mock.config}));
 vi.mock("./drama-production-audit",()=>({
@@ -24,7 +24,7 @@ async function mount(){
  const el=document.createElement("div");document.body.append(el);const root=createRoot(el);roots.push(root);
  const create=vi.fn((items:DramaVideoInput[])=>({createdShotIds:items.map(item=>item.shot.id),failures:[] as {shotId:string;error:string}[]})),group=vi.fn(async()=>{}),locate=vi.fn();
  const configs=new Map([["s0",{id:"cfg0"} as CanvasNodeData],["s1",{id:"cfg1"} as CanvasNodeData]]);
- const render=async(data=inputs,revision="v1",disabled=false)=>act(async()=>root.render(<DramaBatchConfigPanel inputs={data} episodes={episodes}
+ const render=async(data=inputs,revision="v1",disabled=false,production?:Record<string,DramaShotProduction>)=>act(async()=>root.render(<DramaBatchConfigPanel inputs={data} episodes={episodes} production={production}
   configs={configs} missingFor={()=>[]} disabled={disabled} theme={canvasThemes.dark} confirmedRevisionId={revision}
   onCreateSelected={create} onCreateBatch={group} onLocate={locate} canLocate={id=>id!=="s19"}/>));
  await render();
@@ -73,6 +73,25 @@ it("audits with a maximum of four concurrent jobs, reports per-shot failures and
  const ids=h.create.mock.lastCall![0].map((input:DramaVideoInput)=>input.shot.id);
  expect(ids).toHaveLength(16);expect(ids).not.toContain("s3");expect(ids).not.toContain("s4");
  expect(h.el.textContent).toContain("已选 2 镜");
+});
+it("audits each shot's reference requirements independently and invalidates a result after its policies change",async()=>{
+ const h=await mount();
+ const key="cas:"+"a".repeat(64);
+ const data=inputs.map(input=>({...input,referenceSlots:[
+  {id:"hero",name:"角色",kind:"character" as const,required:true,imageKeys:[key]},
+  {id:"scene",name:"场景",kind:"scene" as const,required:true,imageKeys:[]},
+ ],referenceImages:[{id:"image",name:"角色",type:"image/png",dataUrl:"",storageKey:key}]}));
+ const production:Record<string,DramaShotProduction>={s2:{mode:"omni_reference",referencePolicies:{scene:"optional"}},s3:{mode:"omni_reference",referencePolicies:{hero:"excluded",scene:"required"}}};
+ mock.audit.mockImplementation(async(input:DramaVideoInput,_config:unknown,options:{missingReferenceIds:string[]})=>options.missingReferenceIds.length?{ready:false,error:"缺少参考图"}:{ready:true,input});
+ await h.render(data,"v1",false,production);
+ await h.selectRow(2);await h.selectRow(3);await h.click(h.button("预检所选镜头"));
+ expect(mock.audit.mock.calls.find(([input])=>input.shot.id==="s2")?.[2].missingReferenceIds).toEqual([]);
+ expect(mock.audit.mock.calls.find(([input])=>input.shot.id==="s3")?.[0].referenceImages).toEqual([]);
+ expect(mock.audit.mock.calls.find(([input])=>input.shot.id==="s3")?.[2].missingReferenceIds).toEqual(["scene"]);
+ expect(h.button("创建通过的 1 项").disabled).toBe(false);
+ await h.render(data,"v1",false,{...production,s2:{mode:"omni_reference",referencePolicies:{scene:"required"}}});
+ expect(h.button("创建通过的 1 项")?.disabled??true).toBe(true);
+ expect(h.create).not.toHaveBeenCalled();
 });
 it("retains failed creation rows, shows exact counts, and retries only selected uncreated shots",async()=>{
  const h=await mount();await h.selectRow(2);await h.selectRow(3);

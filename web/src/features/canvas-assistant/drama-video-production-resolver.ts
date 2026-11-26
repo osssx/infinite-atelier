@@ -26,7 +26,7 @@ export function dramaProductionSettingFingerprint(setting?:DramaShotProduction){
   setting?.target?.kind??"inherit",setting?.target?.kind==="online"?setting.target.modelOption:null,
   setting?.target?.kind==="comfy"?[setting.target.templateId,setting.target.templateRevision]:null,
   setting?.promptOverride?[setting.promptOverride.text,setting.promptOverride.sourceFingerprint]:null,
-  setting?.durationSec??null,setting?.aspectRatio??null]);
+  setting?.durationSec??null,setting?.aspectRatio??null,...(setting?.referencePolicies&&Object.keys(setting.referencePolicies).length?[Object.entries(setting.referencePolicies).sort(([a],[b])=>a.localeCompare(b))]:[])]);
 }
 export function dramaDefaultProduction(input:DramaVideoInput):DramaShotProduction{
  return {mode:input.referenceImages.length?"omni_reference":"text_to_video"};

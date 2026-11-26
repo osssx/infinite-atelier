@@ -3,7 +3,7 @@ import {Button} from "antd";
 import type {CanvasTheme} from "@/lib/canvas-theme";
 import type {CanvasNodeData} from "@/types/canvas";
 import {useEffectiveConfig} from "@/stores/use-config-store";
-import {applyDramaProduction,type DramaVideoInput,type DramaShotProduction} from "./drama-pipeline-media";
+import {applyDramaProduction,dramaEffectiveMissingReferences,type DramaVideoInput,type DramaShotProduction} from "./drama-pipeline-media";
 import {auditDramaProduction,dramaMediaModes,type DramaProductionAudit} from "./drama-production-audit";
 import {dramaNodeControl,dramaNodePrimary} from "./drama-node-style";
 import {DramaInlineFeedback,useDramaFeedback} from "./drama-feedback";
@@ -48,7 +48,7 @@ export function DramaBatchConfigPanel({inputs,episodes,configs,missingFor,disabl
  const configKey=JSON.stringify([config,productionStyle,confirmedRevisionId]);
  const rows=useMemo(()=>inputs.map(input=>{
   const setting=settingFor(input,production);
-  const missing=setting.mode==="omni_reference"&&!setting.gridInput?missingFor(input):[];
+  const missing=dramaEffectiveMissingReferences(input,setting,missingFor(input));
   const key=JSON.stringify([configKey,input,setting,missing]);
   return {input,setting,missing,key,id:input.shot.id,configured:Boolean(configs?.has(input.shot.id))};
  }),[inputs,production,missingFor,configs,configKey]);

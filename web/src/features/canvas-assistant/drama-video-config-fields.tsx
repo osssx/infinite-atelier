@@ -3,7 +3,7 @@ import {Clapperboard,Pencil} from "lucide-react";
 import { Button } from "antd";
 import type { CanvasTheme } from "@/lib/canvas-theme";
 import type { CanvasNodeData } from "@/types/canvas";
-import {applyDramaProduction,applyDramaPromptMode,type DramaVideoInput,type DramaShotProduction} from "./drama-pipeline-media";
+import {applyDramaProduction,applyDramaPromptMode,dramaEffectiveMissingReferences,type DramaVideoInput,type DramaShotProduction} from "./drama-pipeline-media";
 import { dramaNodeControl, dramaNodePrimary } from "./drama-node-style";
 import {useEffectiveConfig,type AiConfig} from "@/stores/use-config-store";
 import {DramaVideoTargetPicker,DramaVideoParameterFields,dramaVideoTargetLabel} from "./drama-video-generation-settings";
@@ -245,7 +245,8 @@ export function DramaVideoConfigFields({
     const [auditing,setAuditing]=useState(false);
     const [settingsEditing,setModeEditing]=useState(false);
     const [promptEditing,setPromptEditing]=useState(false);
-    const modeEditing=settingsEditing||promptEditing||refreshBusy;
+    const [referenceEditing,setReferenceEditing]=useState(false);
+    const modeEditing=settingsEditing||promptEditing||referenceEditing||refreshBusy;
     const [videoTab,setVideoTab]=useState<"settings"|"prompt"|"references">("settings");
     useEffect(()=>{onEditingChange?.(modeEditing);return ()=>onEditingChange?.(false);},[modeEditing,onEditingChange]);
 
@@ -268,7 +269,7 @@ export function DramaVideoConfigFields({
     if(active&&setting)try{preview=applyDramaProduction(active,setting);}
     catch(error){previewError=error instanceof Error?error.message:"输入配置无效";}
     const missing=active?missingFor(active):[];
-    const requiredMissing=setting?.mode==="omni_reference"&&!setting.gridInput?missing:[];
+    const requiredMissing=active&&setting?dramaEffectiveMissingReferences(active,setting,missing):[];
     const auditKey=JSON.stringify([preview,setting,requiredMissing,productionStyle,confirmedRevisionId,previewError,confirmedInput,config]);
     const audit=auditResult?.key===auditKey?auditResult.value:null;
     useEffect(()=>{
@@ -313,7 +314,7 @@ export function DramaVideoConfigFields({
                 </div>
                 <label className="grid min-w-0 gap-1 text-xs" style={muted}>当前剧集
                     <select aria-label="选择视频配置剧集" className="w-full min-w-0 rounded-lg border px-2.5 py-2 text-xs"
-                        style={fieldStyle} value={activeEpisode} disabled={promptEditing||refreshBusy} onChange={event=>{
+                        style={fieldStyle} value={activeEpisode} disabled={promptEditing||referenceEditing||refreshBusy} onChange={event=>{
                             setEpisodeId(event.target.value);setShotId("");
                         }}>
                         {episodeIds.map(id=><option key={id} value={id}>
@@ -326,7 +327,7 @@ export function DramaVideoConfigFields({
                 {episodeInputs.map(({shot},index)=>{
                     const current=shot.id===active.shot.id;
                     const configured=Boolean(configs?.has(shot.id));
-                    return <button type="button" key={shot.id} aria-pressed={current} disabled={promptEditing||refreshBusy}
+                    return <button type="button" key={shot.id} aria-pressed={current} disabled={promptEditing||referenceEditing||refreshBusy}
                         aria-label={`选择视频镜头 ${index+1}：${shot.shotSize||"未设置景别"}`}
                         onClick={()=>{setShotId(shot.id);setError("");}}
                         className="flex w-full min-w-0 items-start gap-2.5 rounded-lg border px-3 py-3 text-left transition-opacity hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
@@ -423,7 +424,7 @@ export function DramaVideoConfigFields({
                 </>}
             {existing && !source && <p className="rounded-lg border px-3 py-2 text-xs" style={{...card,color:theme.node.muted}}>旧配置来源待核对。</p>}
             {review&&onRefresh&&audit?.input&&existing&&<DramaVideoConfigReviewPanel key={review.token} review={review}
-                theme={theme} disabled={disabled||settingsEditing||promptEditing||auditing} onBusyChange={setRefreshBusy}
+                theme={theme} disabled={disabled||modeEditing||auditing} onBusyChange={setRefreshBusy}
                 onApply={fields=>onRefresh(existing.id,audit.input!,fields)}/>}
             {reviewError&&<DramaInlineFeedback theme={theme}>{reviewError}</DramaInlineFeedback>}
             {existing&&source&&confirmedInput&&!audit?.ready&&!auditing&&<p className="text-xs" style={muted}>新设置尚未通过预检，现有配置保持原样。</p>}
@@ -433,7 +434,8 @@ export function DramaVideoConfigFields({
                 onChange={onProductionChange} onPendingChange={onPendingChange} onEditingChange={setPromptEditing}
                 onWaitForSave={onWaitForSave} existing={Boolean(existing)}/>}
             {confirmedInput&&expanded&&videoTab==="references"&&<DramaVideoReferencePanel key={active.shot.id}
-                input={active} setting={setting} missingIds={requiredMissing} theme={theme} disabled={disabled||modeEditing}
+                input={active} setting={setting} missingIds={missing} theme={theme} disabled={disabled||refreshBusy}
+                onChange={onProductionChange} onPendingChange={onPendingChange} onEditingChange={setReferenceEditing} onWaitForSave={onWaitForSave}
                 onLocate={onLocateAsset} onSettings={()=>setVideoTab("settings")}/>}
             {confirmedInput&&<div aria-label="逐镜媒体输入预检" className="min-w-0 space-y-1 text-xs">
                 {auditing&&<p role="status" style={muted}>正在核验工作流端口和媒体约束…</p>}
@@ -459,7 +461,7 @@ export function DramaVideoConfigFields({
             </div>
         {hasUnconfirmedChanges && <p className="text-xs" style={muted}>当前使用最近一次确认的分镜。</p>}
         {!embedded&&<DramaBatchConfigPanel inputs={inputs} episodes={episodes} configs={configs} missingCount={missingCount}
-            missingFor={missingFor} disabled={disabled} theme={theme} production={production}
+            missingFor={missingFor} disabled={disabled||modeEditing} theme={theme} production={production}
             productionStyle={productionStyle} confirmedRevisionId={confirmedRevisionId}
             initialEpisodeId={activeEpisode} onCreateSelected={onCreateSelected} onCreateBatch={onCreateBatch} embedded/>}
         {error&&<DramaInlineFeedback theme={theme} level="error">{dramaVideoFeedback(error)}</DramaInlineFeedback>}
@@ -521,7 +523,7 @@ export function DramaBatchConfigPanel({inputs,episodes,configs,missingCount,miss
                         const transformed=applyDramaProduction(input,chosen);
                         return {shotId:input.shot.id,audit:await auditDramaProduction(transformed,config,{
                             setting:chosen,visualStyle:productionStyle,sourceRevisionId:confirmedRevisionId,
-                            missingReferenceIds:chosen.mode==="omni_reference"&&!chosen.gridInput?missingFor(input):[],
+                            missingReferenceIds:dramaEffectiveMissingReferences(input,chosen,missingFor(input)),
                         })};
                     }));
                     const failures=audits.filter(item=>!item.audit.ready);

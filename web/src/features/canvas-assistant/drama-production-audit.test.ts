@@ -170,6 +170,29 @@ describe("P3.1 explicit production mode / media audit",()=>{
         expect(result.input?.prompt).toContain("从左到右");
         await expect(prepareDramaProduction(input,comfy("bad-port"))).rejects.toThrow("端口绑定");
     });
+    it("applies per-slot policies before media audit, binding and config graph creation",async()=>{
+        const input:DramaVideoInput={...base,mode:"omni_reference",referenceSlots:[
+          {id:"hero-day",name:"角色",kind:"character",required:true,imageKeys:[key("a")]},
+          {id:"scene",name:"草地",kind:"scene",required:true,imageKeys:[]},
+          {id:"star",name:"道具",kind:"prop",required:false,imageKeys:[key("b")]},
+        ],referenceImages:[{id:"actor",name:"角色",dataUrl:"",type:"image/png",storageKey:key("a")},{id:"prop",name:"道具",dataUrl:"",type:"image/png",storageKey:key("b")}]};
+        const setting:DramaShotProduction={mode:"omni_reference",referencePolicies:{scene:"optional",star:"excluded"}};
+        const audit=await auditDramaProduction(input,comfy(),{setting,missingReferenceIds:["scene"],sourceRevisionId:"v1"});
+        expect(audit.ready,audit.error).toBe(true);
+        expect(audit.missingReferenceIds).toEqual([]);
+        expect(audit.input?.referenceImages.map(r=>r.storageKey)).toEqual([key("a")]);
+        expect(Object.keys(audit.input?.comfyBinding?.slots??{})).toEqual(["reference"]);
+        const source=createCanvasNode("drama:storyboard",{x:0,y:0},{dramaConfirmedVersionId:"v1",dramaShotProduction:{shot:setting}});
+        const {graph,result}=planDramaBatchVideoConfigs(source,[base.shot],[audit.input!],[source],[]);
+        expect(result.createdShotIds).toEqual(["shot"]);
+        const node=graph.nodes.find(n=>graph.configIds.includes(n.id))!;
+        expect(node.metadata?.videoReferences).toHaveLength(1);
+        expect(graph.nodes.some(n=>n.metadata?.storageKey===key("b"))).toBe(false);
+        const changed={...source,metadata:{...source.metadata,dramaShotProduction:{shot:{...setting,referencePolicies:{scene:"required" as const}}}}};
+        expect(planDramaBatchVideoConfigs(changed,[base.shot],[audit.input!],[changed],[]).result.failures).toHaveLength(1);
+        const allExcluded={...setting,referencePolicies:{scene:"excluded",star:"excluded","hero-day":"excluded"}} as DramaShotProduction;
+        expect((await auditDramaProduction(input,comfy(),{setting:allExcluded})).ready).toBe(false);
+    });
     it("rejects incomplete asset references and does not silently wire excess images",async()=>{
         const input=applyDramaProduction(base,{mode:"omni_reference"});
         const audit=await auditDramaProduction({...input,referenceImages:[{

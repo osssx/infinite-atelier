@@ -70,6 +70,7 @@ async function mount(options:{
  expanded?:boolean;theme?:"dark"|"light";initialShotId?:string;embedded?:boolean;confirmedInput?:boolean;
  configs?:ReadonlyMap<string,CanvasNodeData>;onPickImage?:(cb:(key:string)=>void)=>void;
  production?:Record<string,DramaShotProduction>;productionStyle?:string;
+ customInputs?:DramaVideoInput[];
  review?:DramaVideoConfigReview;
  images?:{key:string;title:string}[];onPendingChange?:(key:string,save:(()=>Promise<void>)|null)=>void;onWaitForSave?:()=>Promise<void>;
 }={}){
@@ -84,7 +85,7 @@ async function mount(options:{
   const [production,setProduction]=useState<Record<string,DramaShotProduction>>(options.production??{});
   const feedback=useDramaFeedbackController();
   return <DramaFeedbackContext.Provider value={feedback.context}><div style={{width:1100,height:650}}>
-   <DramaVideoConfigFields inputs={inputs} episodes={episodes} configs={options.configs}
+   <DramaVideoConfigFields inputs={options.customInputs??inputs} episodes={episodes} configs={options.configs}
     missingCount={inputs.length-(options.configs?.size??0)} missingFor={()=>[]}
     hasUnconfirmedChanges={false} disabled={false} theme={canvasThemes[options.theme??"dark"]}
     onCreateSelected={createSelected} onCreateBatch={createBatch}
@@ -182,6 +183,43 @@ it("labels unmapped Comfy parameters as workflow-controlled instead of claiming 
  await click(field.querySelector('[aria-label="编辑视频输入模式"]'));
  expect(field.querySelector('[aria-label="视频时长"]')).toBeNull();
  expect(field.querySelector('[aria-label="视频画幅"]')).toBeNull();
+});
+it.each(["dark","light"] as const)("edits reference requirements per shot, stages changes and restores defaults (%s)",async theme=>{
+ const pending=new Map<string,()=>Promise<void>>();
+ const wait=vi.fn(async()=>{});
+ const customInputs=[{...inputs[0],referenceSlots:[
+  {id:"scene",name:"户外草地",kind:"scene" as const,required:true,imageKeys:[]},
+  {id:"hero",name:"糯米",kind:"character" as const,required:true,imageKeys:[imageKey]},
+ ],referenceImages:[{id:"image",name:"糯米",type:"image/png",dataUrl:"",storageKey:imageKey}]},...inputs.slice(1)];
+ const {el,change,action}=await mount({theme,customInputs,production:{s1:{mode:"omni_reference"}},onWaitForSave:wait,onPendingChange:(key,save)=>{if(save)pending.set(key,save);else pending.delete(key);}});
+ const button=(label:string)=>[...el.querySelectorAll("button")].find(b=>b.textContent?.trim()===label);
+ const panel=()=>el.querySelector('[aria-label="视频参考素材"]')!;
+ await click(button("参考素材"));
+ expect(panel().textContent).toContain("场景 · 必需");
+ await click(panel().querySelector('[aria-label="编辑参考素材要求"]'));
+ await choose(panel().querySelector('select[aria-label="户外草地参考图要求"]'),"optional");
+ await choose(panel().querySelector('select[aria-label="糯米参考图要求"]'),"excluded");
+ expect(panel().textContent).toContain("参与生成 0 张图片");
+ expect(panel().textContent).not.toContain("缺少必需参考图");
+ expect(pending.has("video-references:s1")).toBe(true);
+ expect(button("创建视频配置")?.disabled).toBe(true);
+ expect(button("提示词")?.disabled).toBe(true);
+ expect(change).not.toHaveBeenCalled();
+ await click(panel().querySelector('[data-drama-action="cancel"]'));
+ expect(panel().textContent).toContain("场景 · 必需");expect(pending.size).toBe(0);
+ await click(panel().querySelector('[aria-label="编辑参考素材要求"]'));
+ await choose(panel().querySelector('select[aria-label="户外草地参考图要求"]'),"optional");
+ await choose(panel().querySelector('select[aria-label="糯米参考图要求"]'),"excluded");
+ await act(async()=>{await pending.get("video-references:s1")!();});
+ expect(change.mock.lastCall?.[1]).toEqual({mode:"omni_reference",referencePolicies:{scene:"optional",hero:"excluded"}});
+ expect(wait).toHaveBeenCalledTimes(1);expect(pending.size).toBe(0);
+ expect(mocks.audit.mock.lastCall?.[0].referenceImages).toEqual([]);
+ await click(panel().querySelector('[aria-label="编辑参考素材要求"]'));
+ await click(button("恢复默认要求"));
+ await click(panel().querySelector('[aria-label="保存参考素材要求"]'));
+ expect(change.mock.lastCall?.[1]).toEqual({mode:"omni_reference"});
+ expect(panel().textContent).toContain("缺少必需参考图");
+ expect(action).not.toHaveBeenCalled();
 });
 it("saves a usable pinned workflow despite a failed unrelated template",async()=>{
  const {el,change}=await mount({embedded:true});

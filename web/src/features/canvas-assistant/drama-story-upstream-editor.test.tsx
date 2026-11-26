@@ -66,8 +66,10 @@ it("compares and replaces a persisted draft only after a recovery snapshot, whil
  const {container,snapshot,patch,metadata}=await mount({confirmed:"已确认 V1",sources:[src("新故事正文")]});
  expect(container.querySelector('[data-story-upstream-panel]')?.textContent).toContain("可导入新来源");
  await click(button(container,"比较差异"));
+ expect(button(container,"用上游替换当前草案")).toBeUndefined();expect(patch).not.toHaveBeenCalled();
  expect(container.querySelector<HTMLTextAreaElement>('[aria-label="当前故事对比正文"]')?.value).toBe("旧草案正文");
  expect(container.querySelector<HTMLTextAreaElement>('[aria-label="上游文本对比正文"]')?.value).toBe("新故事正文");
+ await click(button(container,"替换预览"));expect(patch).not.toHaveBeenCalled();
  await click(button(container,"用上游替换当前草案"));expect(snapshot).toHaveBeenCalledTimes(1);
  expect(patch).toHaveBeenCalledWith({dramaDraft:"新故事正文",content:"新故事正文",
   dramaTextSourceSync:{nodeId:"text-1",edgeId:"edge-1",digest:storyTextDigest("新故事正文"),baselineDigest:storyTextDigest("新故事正文")}});
@@ -109,7 +111,7 @@ it("a persistence failure keeps the comparison and permits retry",async()=>{
 it("stops replacement if the draft changes while awaiting backup",async()=>{
  let resolve:()=>void=()=>{};const promise=new Promise<void>(r=>{resolve=r;});
  const {container,patch,updateStory,metadata}=await mount({sources:[src("新内容")],snapshot:()=>promise});
- await click(button(container,"比较差异"));await click(button(container,"用上游替换当前草案"));
+ await click(button(container,"比较差异"));await click(button(container,"替换预览"));await click(button(container,"用上游替换当前草案"));
  await updateStory("另一个修改");await act(async()=>{resolve();await promise;});
  expect(patch).not.toHaveBeenCalled();expect(metadata()?.dramaDraft).toBe("另一个修改");expect(container.textContent).toContain("刷新已取消");
  expect(container.querySelector<HTMLTextAreaElement>('[aria-label="当前故事对比正文"]')?.value).toBe("旧草案正文");
@@ -117,7 +119,7 @@ it("stops replacement if the draft changes while awaiting backup",async()=>{
 it("stops replacement if the source changes during backup",async()=>{
  let resolve:()=>void=()=>{};const promise=new Promise<void>(r=>{resolve=r;});
  const {container,patch,updateSources,metadata}=await mount({sources:[src("上游旧内容")],snapshot:()=>promise});
- await click(button(container,"比较差异"));await click(button(container,"用上游替换当前草案"));
+ await click(button(container,"比较差异"));await click(button(container,"替换预览"));await click(button(container,"用上游替换当前草案"));
  await updateSources([src("更新后的上游内容")]);await act(async()=>{resolve();await promise;});
  expect(patch).not.toHaveBeenCalled();expect(container.textContent).toContain("刷新已取消");expect(metadata()?.dramaDraft).toBe("旧草案正文");
  expect(container.querySelector<HTMLTextAreaElement>('[aria-label="上游文本对比正文"]')?.value).toBe("上游旧内容");
@@ -139,7 +141,32 @@ it("does not guess among multiple unlinked sources, disambiguates names without 
  expect(select.textContent).not.toContain("guid-");expect((button(container,"比较差异") as HTMLButtonElement).disabled).toBe(true);
  await act(async()=>{select.value="edge-b";select.dispatchEvent(new Event("change",{bubbles:true}));});
  await click(button(container,"比较差异"));expect(container.querySelector<HTMLTextAreaElement>('[aria-label="上游文本对比正文"]')?.value).toBe("第二来源");
- await click(button(container,"用上游替换当前草案"));expect(patch.mock.lastCall?.[0]).toMatchObject({dramaDraft:"第二来源",dramaTextSourceSync:{nodeId:"guid-b"}});
+ await click(button(container,"替换预览"));await click(button(container,"用上游替换当前草案"));expect(patch.mock.lastCall?.[0]).toMatchObject({dramaDraft:"第二来源",dramaTextSourceSync:{nodeId:"guid-b"}});
+});
+it("does not refresh a frozen preview against a different source when its original connection is gone",async()=>{
+ const {container,patch,updateSources}=await mount({sources:[src("旧来源")]});
+ await click(button(container,"比较差异"));
+ await updateSources([src("其他来源","another-node","another-edge","另一份原稿")]);
+ expect(container.querySelector<HTMLTextAreaElement>('[aria-label="上游文本对比正文"]')?.value).toBe("旧来源");
+ expect((button(container,"重新比较") as HTMLButtonElement).disabled).toBe(true);
+ expect(button(container,"替换预览")).toBeUndefined();
+ expect(container.textContent).toContain("原来源已断开或为空");
+ await click(button(container,"取消"));await click(button(container,"比较差异"));
+ expect(container.querySelector<HTMLTextAreaElement>('[aria-label="上游文本对比正文"]')?.value).toBe("其他来源");
+ expect(patch).not.toHaveBeenCalled();
+});
+it("exposes append result and the frozen source independently without writes",async()=>{
+ const {container,patch}=await mount({sources:[src("新故事")]});
+ await click(button(container,"追加预览"));
+ const result=container.querySelector<HTMLTextAreaElement>('[aria-label="追加草案预览"]')!;
+ const source=container.querySelector<HTMLTextAreaElement>('[aria-label="上游文本对比正文"]')!;
+ expect(result.readOnly).toBe(true);expect(result.value).toBe("旧草案正文\n\n新故事");
+ expect(source.parentElement?.style.display).toBe("none");
+ await click(button(container,"上游文本"));
+ expect(source.readOnly).toBe(true);expect(source.value).toBe("新故事");
+ expect(result.parentElement?.style.display).toBe("none");
+ await click(button(container,"操作后草案"));
+ expect(result.parentElement?.style.display).not.toBe("none");expect(patch).not.toHaveBeenCalled();
 });
 it("shows absent or disconnected sources without opening a preview or rendering writable controls",async()=>{
  const {container,metadata}=await mount({sync:{nodeId:"text-1",edgeId:"edge-1",digest:"old",baselineDigest:"old"},confirmed:"V1",sources:[]});
@@ -168,7 +195,10 @@ it("shows readable paragraph provenance, current visual snapshot and honest dire
   metadata:{dramaSourceParagraphs:[{id:"guid-paragraph",text:"正文第一段",line:1,status:"needs_review",replaces:["guid-previous"]}],
    dramaConfirmedVisual:{visualStyle:"水彩",artDirection:{palette:"暖色"}}}});
  expect(container.querySelector('[data-story-direct-downstream]')?.textContent).toContain("角色规划");
- expect(container.querySelector('[data-story-downstream-status="review"]')).toBeTruthy();
+ const downstream=container.querySelector('[data-story-downstream-status="review"]')!;
+ expect(downstream).toBeTruthy();expect(downstream.textContent).not.toContain("下游记录的是旧故事确认版本");
+ await click(downstream.querySelector("button"));expect(downstream.textContent).toContain("下游记录的是旧故事确认版本");
+ await click(downstream.querySelector("button"));expect(downstream.textContent).not.toContain("下游记录的是旧故事确认版本");
  expect(container.textContent).not.toContain("guid-");
  await click(button(container,"已确认原文定位 · 1 段展开"));
  expect(container.textContent).toContain("第 1 段");expect(container.textContent).toContain("待校对");

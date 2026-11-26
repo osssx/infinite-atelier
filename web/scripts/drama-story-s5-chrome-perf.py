@@ -276,11 +276,17 @@ def run(frontend_root,previous,rounds,gpu,output):
             before=len(page.network_requests);button(portal,"影响与历史")
             check("history loaded lazily at high DPR","!!document.querySelector('[data-story-history-summary]')&&!!document.querySelector('[data-canvas-text-versions-inline]')")
             check("confirmed paragraphs collapsed by default","!document.querySelector('[data-story-history-summary] ol')")
-            click(portal+" [data-story-history-summary] button[aria-expanded]")
+            click(portal+" [data-story-paragraph-toggle]")
             check("history mounts first 30 paragraphs only","document.querySelectorAll('[data-story-history-summary] ol li').length===30")
             button(portal,"查看更多（30/"+str(samples["story-1"]["paragraphs"])+"）")
             check("history loads next 30 paragraphs only","document.querySelectorAll('[data-story-history-summary] ol li').length===60")
-            check("narrow history scroll regions independently contained","(()=>{const r=document.querySelector('[data-drama-history-layout]'),l=r.querySelector('[data-drama-impact-scroll]'),h=r.querySelector('[data-drama-history-fill]');return r.scrollWidth<=r.clientWidth+2&&l.scrollHeight>l.clientHeight&&h.clientHeight>0})()")
+            report["narrowSourceLayout"]=page.js("""(()=>{const r=document.querySelector('[data-drama-history-layout]'),l=r.querySelector('[data-drama-impact-scroll]');return {layoutWidth:r.getBoundingClientRect().width,sourceWidth:l.getBoundingClientRect().width,sourceClientWidth:l.clientWidth,sourceScrollWidth:l.scrollWidth,sourceHeight:l.clientHeight,sourceScrollHeight:l.scrollHeight}})()""")
+            print("STORY_S5_NARROW_SOURCE",q(report["narrowSourceLayout"]),flush=True)
+            # clientWidth excludes a vertical scrollbar; compare the actual outer
+            # boxes instead, then separately check for horizontal content overflow.
+            check("narrow source scroll region uses the available content area","(()=>{const r=document.querySelector('[data-drama-history-layout]'),l=r.querySelector('[data-drama-impact-scroll]');return r.scrollWidth<=r.clientWidth+2&&l.scrollHeight>l.clientHeight&&Math.abs(l.getBoundingClientRect().width-r.getBoundingClientRect().width)<=2&&l.scrollWidth<=l.clientWidth+2})()")
+            button(portal,"历史版本")
+            check("narrow history version panel occupies full height and width","(()=>{const r=document.querySelector('[data-drama-history-layout]'),h=r.querySelector('[data-drama-history-fill]');return h.clientWidth>=r.clientWidth-2&&h.clientHeight>200})()")
             check("saved long history preview loads","!!document.querySelector('[data-canvas-text-versions-inline] pre')")
             report["narrowHistoryLayout"]=page.js("""(() => {
               const root=document.querySelector('[data-canvas-text-versions-inline]'),pre=root.querySelector('pre');

@@ -9,6 +9,7 @@ import {DramaFeedbackContext,DramaFeedbackNotices,DramaTaskStatus,useDramaFeedba
 import {DramaCandidateNavigationContext,DramaWorkspaceExitGuardContext,AssetDirectoryContext,AssetReviewBusyContext,AssetReviewContext,AssetReviewNavigationContext,emptyAssetReview,initialAssetDirectory,type AssetDirectorySelection} from "./drama-asset-directory-state";
 import {DramaStoryboardNavigationContext,DramaStoryboardScopeContext,type StoryboardScopeFocus} from "./drama-storyboard-navigation";
 import {DramaStoryHistoryNavigationContext} from "./drama-story-history-navigation";
+import {DramaStoryHistoryLayout} from "./drama-story-history-layout";
 import type {DramaWorkspaceTab} from "./drama-pipeline-node-panel";
 type StoryWorkspaceTab=DramaWorkspaceTab;
 
@@ -309,7 +310,8 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
      <DramaStoryHistoryNavigationContext.Provider value={storyMode?()=>request("history"):null}>
      <Suspense key={editorEpoch} fallback={<p role="status" className="text-xs" style={{color:theme.node.muted}}>正在按需加载工作区…</p>}>
       {tab==="history"&&renderHistoryPanel
-         ? <div data-drama-history-layout="" className="grid h-full min-h-0 min-w-0 flex-1 grid-rows-[minmax(0,1fr)_minmax(0,2fr)] gap-3 xl:grid-cols-[minmax(220px,260px)_minmax(0,1fr)] xl:grid-rows-[minmax(0,1fr)]">
+         ? storyMode?<DramaStoryHistoryLayout source={renderPanel(tab,registerPending)} history={renderHistoryPanel(operationLocked||busy)} theme={theme} locked={operationLocked||busy}/>
+         : <div data-drama-history-layout="" className="grid h-full min-h-0 min-w-0 flex-1 grid-rows-[minmax(0,1fr)_minmax(0,2fr)] gap-3 xl:grid-cols-[minmax(220px,260px)_minmax(0,1fr)] xl:grid-rows-[minmax(0,1fr)]">
             <section aria-label={storyMode?"来源与下游影响面板":"上游影响面板"} className="min-h-0 min-w-0 overflow-hidden">
              <div data-drama-impact-scroll="" className="thin-scrollbar max-h-full min-w-0 overflow-y-auto overscroll-contain" style={{scrollbarGutter:"auto"}}>
               <h3 className="mb-2 px-1 text-sm font-semibold">{storyMode?"来源与下游影响":"上游影响"}</h3>

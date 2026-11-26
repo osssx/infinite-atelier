@@ -1,4 +1,6 @@
-import {useMemo,useRef,useState} from "react";
+import {useContext,useMemo,useRef,useState} from "react";
+import {ChevronDown,Link2} from "lucide-react";
+import {DramaStoryHistoryLayoutContext} from "./drama-story-history-layout";
 import type {CanvasConnection,CanvasNodeData,CanvasNodeMetadata} from "@/types/canvas";
 import {canvasThemes} from "@/lib/canvas-theme";
 import {useThemeStore} from "@/stores/use-theme-store";
@@ -20,6 +22,9 @@ export function DramaStoryHistorySummary({node,sources,nodes,connections,version
 }){
  const theme=canvasThemes[useThemeStore(state=>state.theme)];
  const feedback=useDramaFeedback();
+ const layout=useContext(DramaStoryHistoryLayoutContext);
+ const [reviewing,setReviewing]=useState(false),[downstreamOpen,setDownstreamOpen]=useState<string|null>(null);
+ const onReviewChange=(active:boolean)=>{setReviewing(active);layout?.setReviewing(active);if(active){setError("");setNotice("");}};
  const [expanded,setExpanded]=useState(false),[visible,setVisible]=useState(30),[visualExpanded,setVisualExpanded]=useState(false);
  const [syncing,setSyncing]=useState(false),[error,setError]=useState(""),[notice,setNotice]=useState("");
  const lock=useRef(false),live=useRef<StorySyncState>({node,sources});live.current={node,sources};
@@ -42,35 +47,44 @@ export function DramaStoryHistorySummary({node,sources,nodes,connections,version
   finally{task?.end();lock.current=false;setSyncing(false);}
  };
  const panelStyle={background:theme.node.panel,borderColor:theme.node.stroke};
- return <section data-story-history-summary="" className="min-w-0 space-y-2 text-xs" style={{color:theme.node.text}}>
+ return <section data-story-history-summary="" className={reviewing?"flex min-h-0 min-w-0 flex-1 flex-col text-xs":"min-w-0 space-y-2 text-xs"} style={{color:theme.node.text}}>
   <DramaStoryUpstreamPanel sources={sources} sync={node.metadata?.dramaTextSourceSync}
-   draft={draft} blocked={versionBusy||syncing||Boolean(feedback?.task)} onApply={apply} theme={theme}/>
+   draft={draft} blocked={versionBusy||syncing||Boolean(feedback?.task)} onApply={apply} theme={theme}
+   onReviewChange={onReviewChange} wideReview={layout?.wideReview??true} error={error}/>
+  <div style={{display:reviewing?"none":undefined}} className="space-y-2">
   {error&&<p role="alert" className="break-words rounded-md border p-2 text-xs" style={panelStyle}>{error}</p>}
   {notice&&!error&&<p role="status" className="break-words rounded-md border p-2 text-xs" style={panelStyle}>{notice}</p>}
-  <section data-story-direct-downstream="" className="min-w-0 space-y-2 rounded-lg border p-2.5" style={panelStyle}>
+  <section data-story-direct-downstream="" className="min-w-0 space-y-2 rounded-lg border p-3" style={panelStyle}>
    <div className="flex flex-wrap items-center justify-between gap-1.5">
     <strong className="text-xs">直接下游</strong>
-    <span className="text-[11px]" style={{color:theme.node.muted}}>{impact.length} 个节点</span>
+    <span className="text-[11px]" style={{color:theme.node.muted}}>{impact.length} 个节点{unresolved>0?` · ${unresolved} 待核对`:""}</span>
    </div>
    <p className="text-[11px] leading-relaxed" style={{color:theme.node.muted}}>
     {!hasConfirmed?"故事尚无已确认版本。":storyVersionConfirmed(node)?"下游引用已确认故事。":"当前草案或美术修改尚未确认，下游仍使用已确认版本。"}
     {" 仅显示实际直连及记录的故事版本，不推断间接影响。"}
    </p>
-   {impact.length?<ul className="space-y-1.5">
-    {impact.map(item=><li key={item.nodeId} data-story-downstream-status={item.status}
-     className="min-w-0 rounded-md p-2" style={{background:theme.toolbar.activeBg}}>
-     <div className="min-w-0 break-words font-medium" style={{overflowWrap:"anywhere"}}>{item.title}</div>
-     <span className="text-[11px]" style={{color:theme.node.muted}}>{item.kind}{item.connections>1?" · "+item.connections+" 条连线":""}</span>
-     <div className="mt-1 flex flex-wrap gap-1">
-      <span className="rounded border px-1.5 py-0.5 text-[11px]" style={{borderColor:theme.node.stroke}}>{statusLabels[item.status]}</span>
-     </div>
-     <p className="mt-1 break-words text-[11px] leading-relaxed" style={{color:theme.node.muted}}>{item.detail}</p>
+   {impact.length?<ul className="min-w-0 divide-y" style={{borderColor:theme.node.stroke}}>
+    {impact.map(item=><li key={item.nodeId} data-story-downstream-status={item.status} className="min-w-0" style={{borderColor:theme.node.stroke}}>
+     <button type="button" aria-expanded={downstreamOpen===item.nodeId} onClick={()=>setDownstreamOpen(current=>current===item.nodeId?null:item.nodeId)}
+      className="flex w-full min-w-0 items-center gap-1.5 rounded-md py-2 text-left hover:opacity-80">
+      <Link2 size={14} className="shrink-0" style={{color:theme.node.muted}} aria-hidden="true"/>
+      <span className="min-w-0 flex-1">
+       <span className="block truncate font-medium" title={item.title}>{item.title}</span>
+       {item.kind!==item.title&&<span className="block truncate text-[11px]" style={{color:theme.node.muted}} title={item.kind}>{item.kind}</span>}
+      </span>
+      <span className="inline-flex max-w-[48%] shrink-0 items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] leading-tight" style={{borderColor:theme.node.stroke,color:theme.node.text}} title={statusLabels[item.status]}>
+       <span aria-hidden="true" className={"size-1.5 shrink-0 rounded-full "+(item.status==="recorded"?"bg-emerald-500":item.status==="unconfirmed"?"bg-stone-400":"bg-amber-500")}/>{statusLabels[item.status]}
+      </span>
+      <ChevronDown size={14} aria-hidden="true" className={"shrink-0 transition-transform "+(downstreamOpen===item.nodeId?"rotate-180":"")} style={{color:theme.node.muted}}/>
+     </button>
+     {downstreamOpen===item.nodeId&&<div className="mb-2 ml-5 space-y-1 rounded-md px-2 py-1.5 text-[11px] leading-relaxed" style={{background:theme.toolbar.activeBg,color:theme.node.muted}}>
+      <p>{item.connections} 条连线 · {item.kind}</p><p>{item.detail}</p>
+     </div>}
     </li>)}
    </ul>:<p className="text-[11px]" style={{color:theme.node.muted}}>暂无直接下游节点。</p>}
-   {!!unresolved&&<p className="text-[11px]" style={{color:theme.node.muted}}>其中 {unresolved} 个待核对或尚未具备完整版本依据。</p>}
   </section>
   <div className="rounded-lg border p-2.5" style={panelStyle}>
-   <button type="button" aria-expanded={expanded} onClick={()=>{setExpanded(value=>!value);setVisible(30);}}
+   <button type="button" data-story-paragraph-toggle="" aria-expanded={expanded} onClick={()=>{setExpanded(value=>!value);setVisible(30);}}
     className="flex w-full items-center justify-between gap-2 text-left font-medium">
     <span>已确认原文定位 · {paragraphs.length} 段</span><span style={{color:theme.node.muted}}>{expanded?"收起":"展开"}</span>
    </button>
@@ -97,5 +111,6 @@ export function DramaStoryHistorySummary({node,sources,nodes,connections,version
    </dl>
    <p className="mt-2 text-[11px]" style={{color:theme.node.muted}}>历史正文恢复不会更改这份快照或当前美术草案。</p></>}
   </div>}
+  </div>
  </section>;
 }

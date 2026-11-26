@@ -21,6 +21,8 @@ describe("Comfy workflow defaults and mode bindings",()=>{
   expect(resolveComfyWorkflowSelection(config,node({}),"text")).toBeUndefined();
   expect(resolveComfyWorkflowSelection(config,node({comfyWorkflowSelections:{image:video}}),"image")).toEqual(video);
   expect(resolveComfyWorkflowSelection(config,node({model:config.imageModel}),"image")).toBeUndefined();
+  expect(resolveComfyWorkflowSelection(config,node({dramaShotId:"shot",model:"removed::video"}),"video")).toBeUndefined();
+  expect(resolveComfyWorkflowSelection(config,node({dramaShotId:"shot",model:"removed::video",comfyWorkflowSelections:{video}}),"video")).toEqual(video);
   expect(resolveComfyWorkflowSelection(config,node({comfyMediaPreset:video}),"image")).toEqual(video);
  });
 });

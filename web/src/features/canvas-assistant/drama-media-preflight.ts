@@ -39,7 +39,7 @@ export async function prepareDramaProduction(input:DramaVideoInput,config:AiConf
     for(const parameter of declaration?.parameters??[]){
         const portId=mapping.parameterPorts?.[parameter.id];
         const port=template.ports.find(item=>item.id===portId);
-        const desired=parameter.id==="duration_seconds"?input.shot.durationSec:
+        const desired=parameter.id==="duration_seconds"?(input.productionSnapshot?.durationSec??input.shot.durationSec):
             parameter.id==="aspect_ratio"?config.videoRatio:undefined;
         parameters[parameter.id]=desired??port?.defaultValue??parameter.defaultValue??parameter.fixedValue;
         if(desired!==undefined&&portId)overrides[portId]=desired;
@@ -78,7 +78,7 @@ export function preflightDramaVideo(input:DramaVideoInput,config:AiConfig){
     const errors=validateMediaRequest({mode,references:input.referenceImages.map((reference,index)=>({
         kind:"image",role:mode==="first_frame"?"first_frame":mode==="first_last_frame"?
             (index?"last_frame":"first_frame"):"reference_image",mimeType:reference.type,
-    })),parameters:{duration_seconds:input.shot.durationSec??(Number(config.videoSeconds)||6),
+    })),parameters:{duration_seconds:input.productionSnapshot?.durationSec??input.shot.durationSec??(Number(config.videoSeconds)||6),
         aspect_ratio:config.videoRatio}},resolved);
     if(errors.length)throw Error("视频输入预检失败 "+errors.map(error=>error.code+(error.role?" · "+error.role:"")).join("，"));
 }

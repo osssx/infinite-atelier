@@ -126,6 +126,17 @@ test("P4.5 project archive embeds immutable Comfy versions and restores them in 
   {id:"w",type:"comfy:workflow",
    metadata:{comfyWorkflow:{templateId:tmpl.id,templateRevision:tmpl.revision}}}
  ],connections:[]}});
+ // The storyboard can reference a pinned template before a Config node exists.
+ createProject(source.db,{id:"planned",document:{nodes:[{id:"board",type:"drama:storyboard",metadata:{
+  dramaShotProduction:{shot:{mode:"text_to_video",target:{kind:"comfy",templateId:tmpl.id,templateRevision:tmpl.revision},
+   promptOverride:{text:"人工视频提示词",sourceFingerprint:"original"}}}}}],connections:[]}});
+ const plannedZip=Buffer.concat(await Array.fromAsync((await source.archive.exportProject("planned")).stream));
+ assert.deepEqual(JSON.parse(Buffer.from(unzipSync(plannedZip)["manifest.json"]).toString("utf8")).templates,[tmpl]);
+ const plannedRestore=await fixture(t);
+ const restoredPlan=await plannedRestore.archive.importProject(Readable.from([plannedZip]));
+ assert.deepEqual(getProject(plannedRestore.db,restoredPlan.id).document.nodes[0].metadata.dramaShotProduction,
+  getProject(source.db,"planned").document.nodes[0].metadata.dramaShotProduction);
+ assert.deepEqual(createComfyRegistry(plannedRestore.db).find(tmpl.id,revision),tmpl);
  const zip=Buffer.concat(await Array.fromAsync((await source.archive.exportProject("bound")).stream));
  const entries=unzipSync(zip);
  const manifest=JSON.parse(Buffer.from(entries["manifest.json"]).toString("utf8"));

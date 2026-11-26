@@ -43,7 +43,7 @@ export function CanvasConfigNodePanel({ node, onConfigChange, onGenerate, onStop
     const mode = node.metadata?.generationMode || "image";
     const config = buildNodeConfig(globalConfig, node, mode);
     const selectedWorkflow=node.metadata?.comfyWorkflowSelections?.[mode as "image"|"video"|"audio"];
-    const explicitChannelModel=Boolean(node.metadata?.model&&modelMatchesCapability(globalConfig,node.metadata.model,mode));
+    const explicitChannelModel=Boolean(node.metadata?.model&&(mode==="video"&&node.metadata.dramaShotId||modelMatchesCapability(globalConfig,node.metadata.model,mode)));
     const inheritedWorkflow=mode!=="text"&&!explicitChannelModel?globalConfig.comfyWorkflowDefaults?.[mode]:undefined;
     const hasComfyWorkflow=Boolean(selectedWorkflow??inheritedWorkflow);
     const workflowNode={...node,metadata:{...node.metadata,comfyMediaPreset:selectedWorkflow}};

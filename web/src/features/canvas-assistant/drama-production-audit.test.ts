@@ -4,6 +4,11 @@ import {defaultConfig,type AiConfig} from "@/stores/use-config-store";
 import {applyDramaProduction,type DramaVideoInput} from "./drama-pipeline-media";
 import {auditDramaProduction,listDramaProductionCapabilities} from "./drama-production-audit";
 import {prepareDramaProduction} from "./drama-media-preflight";
+import {resolveDramaVideoProduction} from "./drama-video-production-resolver";
+import {planDramaBatchVideoConfigs,refreshDramaVideoConfig} from "./drama-video-config";
+import {resolveComfyWorkflowSelection} from "@/features/comfy-workflow/comfy-workflow-selection";
+import {createCanvasNode} from "@/lib/canvas/canvas-node-factory";
+import type {DramaShotProduction} from "./drama-pipeline-media";
 
 vi.mock("@/features/comfy-workflow/template-registry",()=>({
     getComfyTemplate:async(id:string)=>({
@@ -46,6 +51,43 @@ const online:AiConfig={...defaultConfig,videoModel:"audit::model",videoRatio:"9:
 const comfy=(id="template"):AiConfig=>({...online,comfyWorkflowDefaults:{video:{templateId:id,templateRevision:"rev"}}});
 
 describe("P3.1 explicit production mode / media audit",()=>{
+    it("pins online choice over global Comfy, persists exact manual prompt and production parameters without touching the confirmed shot",async()=>{
+        const global=comfy();
+        const setting:DramaShotProduction={mode:"text_to_video",target:{kind:"online",modelOption:"audit::model"},
+          promptOverride:{text:"人工提示词，保持风格",sourceFingerprint:"old"},durationSec:8,aspectRatio:"9:16"};
+        const effective=resolveDramaVideoProduction(base,global,setting,"Ink","board-v1");
+        expect(effective.promptOutdated).toBe(true);
+        expect(global.comfyWorkflowDefaults?.video?.templateId).toBe("template");
+        const audit=await auditDramaProduction(base,global,{setting,visualStyle:"Ink",sourceRevisionId:"board-v1"});
+        expect(audit.ready).toBe(true);
+        expect(audit.engine).toBe("online");
+        expect(audit.input?.comfyBinding).toBeUndefined();
+        expect(audit.prompt).toBe(setting.promptOverride!.text);
+        expect(audit.input?.shot).toEqual(base.shot);
+        expect(audit.input?.productionSnapshot).toMatchObject({target:setting.target,prompt:audit.prompt,durationSec:8,aspectRatio:"9:16",manualPrompt:true});
+        const source=createCanvasNode("drama:storyboard",{x:0,y:0},{dramaConfirmedVersionId:"board-v1",dramaShotProduction:{shot:setting}});
+        const {graph,result}=planDramaBatchVideoConfigs(source,[base.shot],[audit.input!],[source],[],"Other","16:9");
+        expect(result.createdShotIds).toEqual(["shot"]);
+        const node=graph.nodes.find(item=>graph.configIds.includes(item.id))!;
+        expect(node.metadata).toMatchObject({model:"audit::model",prompt:audit.prompt,composerContent:audit.prompt,seconds:"8",videoRatio:"9:16"});
+        expect(resolveComfyWorkflowSelection(global,node,"video")).toBeUndefined();
+        expect(()=>refreshDramaVideoConfig(node,base,{prompt:true,duration:false,overwrite:false})).toThrow("人工修改");
+        const changed={...source,metadata:{...source.metadata,dramaShotProduction:{shot:{...setting,durationSec:9}}}};
+        expect(planDramaBatchVideoConfigs(changed,[base.shot],[audit.input!],[changed],[]).result.failures[0].error).toContain("重新预检");
+        expect(planDramaBatchVideoConfigs({...source,metadata:{...source.metadata,dramaConfirmedVersionId:"board-v2"}},[base.shot],[audit.input!],[source],[]).result.failures).toHaveLength(1);
+    });
+    it("uses independent explicit workflow per shot and rejects removed model rather than inheriting Comfy",async()=>{
+        const setting:DramaShotProduction={mode:"first_frame",firstFrame:key("a"),target:{kind:"comfy",templateId:"chosen",templateRevision:"pinned"}};
+        const input=applyDramaProduction(base,setting);
+        const result=await auditDramaProduction(input,online,{setting});
+        expect(result.ready).toBe(true);
+        expect(result.input?.comfyBinding).toMatchObject({templateId:"chosen",templateRevision:"pinned"});
+        const missing:DramaShotProduction={mode:"text_to_video",target:{kind:"online",modelOption:"removed::model"}};
+        expect((await auditDramaProduction(base,comfy(),{setting:missing})).ready).toBe(false);
+        expect((await listDramaProductionCapabilities(comfy(),missing)).modes.every(item=>!item.available)).toBe(true);
+        const invalid:DramaShotProduction={mode:"text_to_video",promptOverride:{text:"@[node:bad]",sourceFingerprint:"old"}};
+        expect((await auditDramaProduction(base,online,{setting:invalid})).error).toContain("内部节点引用");
+    });
     it("filters unsupported API input modes before Config creation and shows precise failure",async()=>{
         const result=await listDramaProductionCapabilities(online);
         expect(result.engine).toBe("online");

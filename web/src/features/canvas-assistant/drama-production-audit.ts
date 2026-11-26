@@ -4,6 +4,7 @@ import {resolveMediaCapabilities,supportedMediaModes,supportedMediaParameters} f
 import {getComfyTemplate} from "@/features/comfy-workflow/template-registry";
 import type {DramaShotProduction,DramaVideoInput} from "./drama-pipeline-media";
 import {prepareDramaProduction} from "./drama-media-preflight";
+import {resolveDramaVideoTarget,resolveDramaVideoProduction} from "./drama-video-production-resolver";
 
 export const dramaMediaModes=[
     {id:"text_to_video",label:"纯文本"},
@@ -23,7 +24,12 @@ const fail=(error:unknown)=>error instanceof Error?error.message:String(error);
 /** Reads declared capabilities only. This does not execute a model, mutate a
  * graph or submit any media jobs. Legacy channels are limited by their executor.
  */
-export async function listDramaProductionCapabilities(config:AiConfig):Promise<DramaProductionCapabilities>{
+export async function listDramaProductionCapabilities(globalConfig:AiConfig,setting?:DramaShotProduction):Promise<DramaProductionCapabilities>{
+    let config=globalConfig;
+    if(setting?.target&&setting.target.kind!=="inherit"){
+        try{config=resolveDramaVideoTarget(globalConfig,setting).config;}
+        catch(error){return {engine:setting.target.kind==="comfy"?"comfy":"online",channel:"未配置",model:"",modes:dramaMediaModes.map(item=>({mode:item.id,label:item.label,available:false,reason:fail(error)}))};}
+    }
     const comfy=config.comfyWorkflowDefaults?.video;
     let allowed:string[]=[],name="",engine:"online"|"comfy"="online",unavailable="";
     if(comfy){
@@ -75,22 +81,22 @@ export async function auditDramaProduction(input:DramaVideoInput,config:AiConfig
     visualStyle?:string;sourceRevisionId?:string;
  }={}):Promise<DramaProductionAudit>{
     const mode:DramaMediaModeChoice=setting?.gridInput?"grid":input.mode??"text_to_video";
-    const durationSeconds=input.shot.durationSec??(Number(config.videoSeconds)||6);
+    const durationSeconds=setting?.durationSec??input.shot.durationSec??(Number(config.videoSeconds)||6);
     const keys=input.referenceImages.flatMap(item=>item.storageKey?[item.storageKey]:[]);
-    const base={mode,durationSeconds,aspectRatio:config.videoRatio,referenceCount:keys.length,
+    const base={mode,durationSeconds,aspectRatio:setting?.aspectRatio??config.videoRatio,referenceCount:keys.length,
         referenceKeys:keys,missingReferenceIds,sourceRevisionId,
-        prompt:input.prompt+(visualStyle?"\n影片风格："+visualStyle:""),engine:""};
+        prompt:setting?.promptOverride?.text??(input.prompt+(visualStyle?"\n影片风格："+visualStyle:"")),engine:""};
     try{
-        const capabilities=await listDramaProductionCapabilities(config);
+        const resolved=resolveDramaVideoProduction(input,config,setting,visualStyle,sourceRevisionId);
+        const capabilities=await listDramaProductionCapabilities(resolved.config);
         const selected=capabilities.modes.find(item=>item.mode===mode);
         if(!selected?.available)throw Error(selected?.reason??"当前模式不可用");
         if(mode==="omni_reference"&&missingReferenceIds.length)
             throw Error("缺少所选角色/场景/关键道具的参考图："+missingReferenceIds.join("、"));
         if(!Number.isFinite(durationSeconds)||durationSeconds<=0)throw Error("镜头时长必须大于零");
-        if(!input.prompt.trim())throw Error("当前镜头没有有效视频提示词");
-        const prepared=await prepareDramaProduction(input,config);
+        const prepared=await prepareDramaProduction(resolved.input,resolved.config);
         return {...base,engine:capabilities.engine,referenceCount:prepared.referenceImages.length,
             referenceKeys:prepared.referenceImages.flatMap(item=>item.storageKey?[item.storageKey]:[]),
-            prompt:prepared.prompt+(visualStyle?"\n影片风格："+visualStyle:""),input:prepared,ready:true};
+            prompt:resolved.snapshot.prompt,input:prepared,ready:true};
     }catch(error){return {...base,ready:false,error:fail(error)};}
 }

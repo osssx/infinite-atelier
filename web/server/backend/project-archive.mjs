@@ -51,7 +51,8 @@ function boundTemplates(document){
  const refs=new Map();
  for(const node of document.nodes??[]){
   const values=[node?.metadata?.comfyWorkflow,node?.metadata?.comfyMediaPreset,
-   ...Object.values(node?.metadata?.comfyWorkflowSelections??{})];
+   ...Object.values(node?.metadata?.comfyWorkflowSelections??{}),
+   ...Object.values(node?.metadata?.dramaShotProduction??{}).map(setting=>setting?.target).filter(target=>target?.kind==="comfy")];
   for(const value of values){
    if(!value||value.templateId===undefined&&value.templateRevision===undefined)continue;
    if(typeof value.templateId!=="string"||typeof value.templateRevision!=="string")

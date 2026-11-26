@@ -66,7 +66,7 @@ export function CanvasNodePromptPanel({ node, projectId, isRunning, onPromptChan
     },[]);
     const onModelChange=(model:string)=>{onConfigChange(node.id,{model,comfyMediaPreset:undefined});setComfyValue(undefined);};
     const handleComfyConfigChange=useCallback((patch:Partial<CanvasNodeData["metadata"]>)=>onConfigChange(node.id,{...patch,...(patch?.comfyMediaPreset?{model:undefined}:{})}),[node.id,onConfigChange]);
-    const explicitChannelModel=Boolean(node.metadata?.model&&modelMatchesCapability(globalConfig,node.metadata.model,mode));
+    const explicitChannelModel=Boolean(node.metadata?.model&&(mode==="video"&&node.metadata.dramaShotId||modelMatchesCapability(globalConfig,node.metadata.model,mode)));
     const inheritedWorkflow=mode!=="text"&&!explicitChannelModel?globalConfig.comfyWorkflowDefaults?.[mode]:undefined;
     const hasComfyWorkflow=Boolean(node.metadata?.comfyMediaPreset??inheritedWorkflow);
     const comfyMediaControls=useComfyMediaPresetControl({node,nodes,connections,config,theme,mediaMode:node.metadata?.comfyMediaPreset?.mediaMode??(mode==="video"?node.metadata?.videoMode??"text_to_video":mode==="image"?node.metadata?.mediaMode??"text_to_image":undefined),

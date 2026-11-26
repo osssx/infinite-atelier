@@ -3370,6 +3370,13 @@ function AtelierCanvasPage() {
         async (nodeId: string, mode: CanvasNodeGenerationMode, prompt: string, retryConfig?: typeof defaultConfig,
             taskSubmit?:AssistantTaskJobSubmit,assistantInitiated=false) => {
             const sourceNode = nodesRef.current.find((node) => node.id === nodeId);
+            const metadata=sourceNode?.metadata;
+            if(mode==="video"&&metadata?.dramaShotId&&metadata.model&&!metadata.comfyMediaPreset&&!metadata.comfyWorkflowSelections?.video&&
+                !modelMatchesCapability(effectiveConfig,metadata.model,"video")){
+                const reason="此镜头配置的视频模型已不可用，请重新选择渠道和模型。";
+                if(taskSubmit)throw Error(reason);
+                message.error(reason);return;
+            }
             const generationConfig = retryConfig ?? buildGenerationConfig(effectiveConfig, sourceNode, mode);
             const promptText = mode === "text" ? extractSkillMentions(prompt).text : prompt;
             const mediaPreset=resolveComfyWorkflowSelection(effectiveConfig,sourceNode,mode);

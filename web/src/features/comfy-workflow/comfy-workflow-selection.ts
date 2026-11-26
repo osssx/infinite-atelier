@@ -7,7 +7,9 @@ export function resolveComfyWorkflowSelection(config:AiConfig,node:CanvasNodeDat
  if(metadata?.comfyMediaPreset)return metadata.comfyMediaPreset;
  const modeBinding=metadata?.comfyWorkflowSelections?.[mode];
  if(modeBinding)return modeBinding;
- if(metadata?.model&&modelMatchesCapability(config,metadata.model,mode))return undefined;
+ // A storyboard-derived Config with an explicit model must never silently
+ // switch to a global Comfy workflow if its channel is later removed.
+ if(metadata?.model&&(mode==="video"&&metadata.dramaShotId||modelMatchesCapability(config,metadata.model,mode)))return undefined;
  const fallback=config.comfyWorkflowDefaults?.[mode];
  return fallback?{...fallback,overrides:{},slots:{}}:undefined;
 }

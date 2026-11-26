@@ -3,6 +3,7 @@ import { canvasCasUrl } from "@/features/backend-sync/canvas-cas";
 import { createCanvasNode } from "@/lib/canvas/canvas-node-factory";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData } from "@/types/canvas";
 import type { buildDramaVideoInput } from "./drama-pipeline-media";
+import {dramaProductionSettingFingerprint,dramaDefaultProduction} from "./drama-video-production-resolver";
 
 export type DramaRefreshFields = {prompt:boolean;duration:boolean;references?:boolean;overwrite:boolean};
 export type DramaBatchCreateResult={createdShotIds:string[];failures:{shotId:string;error:string}[]};
@@ -18,8 +19,15 @@ export function planDramaBatchVideoConfigs(source:CanvasNodeData|undefined,confi
   if(seen.has(id))return false;
   seen.add(id);
   const error=!source?"分镜节点已不存在":existing.has(id)?"视频配置已存在，请刷新列表":confirmedById.get(id)!==JSON.stringify(input.shot)?"确认镜头已变化，请重新预检":undefined;
-  if(error)failures.push({shotId:id,error});
-  return !error;
+  const snapshot=input.productionSnapshot;
+  const saved=source?.metadata?.dramaShotProduction?.[id];
+  // With no saved setting, the default inferred mode is the audited mode.
+  const setting=saved??(snapshot?{...dramaDefaultProduction(input),mode:input.mode??dramaDefaultProduction(input).mode}:undefined);
+  const stale=snapshot&&((snapshot.sourceRevisionId!==undefined&&snapshot.sourceRevisionId!==source?.metadata?.dramaConfirmedVersionId)||
+   snapshot.settingFingerprint!==dramaProductionSettingFingerprint(setting)&&snapshot.settingFingerprint!==dramaProductionSettingFingerprint(saved));
+  const reason=error??(stale?"镜头生产设置已变化，请重新预检":undefined);
+  if(reason)failures.push({shotId:id,error:reason});
+  return !reason;
  });
  const graph=source?buildDramaVideoConfigGraph(source,valid,nodes,connections,style,ratio):{nodes,connections,configIds:[]};
  const createdSet=new Set(graph.configIds);
@@ -79,7 +87,7 @@ export function refreshDramaVideoConfig(config:CanvasNodeData,input:ReturnType<t
     const metadata={...config.metadata};
     const nextSource={...source};
     if(fields.prompt){
-        if(!fields.overwrite&&(metadata.prompt!==source.prompt||metadata.composerContent!==source.prompt))
+        if(!fields.overwrite&&(source.productionSnapshot?.manualPrompt||metadata.prompt!==source.prompt||metadata.composerContent!==source.prompt))
             throw Error("配置提示词已有人工修改，请明确选择覆盖后再采用");
         const prompt=input.prompt+source.prompt.slice(source.basePrompt.length);
         metadata.prompt=prompt;
@@ -87,6 +95,8 @@ export function refreshDramaVideoConfig(config:CanvasNodeData,input:ReturnType<t
         nextSource.prompt=prompt;
         nextSource.basePrompt=input.prompt;
         nextSource.promptShot=JSON.stringify(input.shot);
+        // A legacy refresh is not a new production audit. Invalidate the old snapshot.
+        delete nextSource.productionSnapshot;
     }
     if(fields.duration&&input.shot.durationSec){
         if(!fields.overwrite&&metadata.seconds!==source.seconds)
@@ -129,7 +139,7 @@ export function buildDramaVideoConfigGraph(
     const top = Math.max(source.position.y, ...Array.from(configs.values(), node => node.position.y + node.height + 32));
     let y = top;
     let imageByKeyAdded = 0;
-    for (const { shot, prompt, referenceImages, mode,comfyBinding } of inputs) {
+    for (const { shot, prompt, referenceImages, mode,comfyBinding,productionSnapshot } of inputs) {
         if (configs.has(shot.id)) continue;
         const refs = referenceImages.flatMap(reference => {
             const key = reference.storageKey;
@@ -146,8 +156,8 @@ export function buildDramaVideoConfigGraph(
             return [{ node: image, name: reference.name }];
         });
         const text = [
-            prompt,
-            style && `影片风格：${style}`,
+            productionSnapshot?.prompt??prompt,
+            !productionSnapshot&&style && `影片风格：${style}`,
             ...refs.map(ref => `${ref.name}：@[node:${ref.node.id}]`),
         ].filter(Boolean).join("\n");
         const workflowBinding=comfyBinding?{...comfyBinding,slots:Object.fromEntries(Object.entries(comfyBinding.slots)
@@ -157,11 +167,12 @@ export function buildDramaVideoConfigGraph(
             }))}:undefined;
         const config = createCanvasNode(CanvasNodeType.Config, { x: 0, y: 0 }, {
             generationMode: "video",
+            ...(productionSnapshot?.target.kind==="online"?{model:productionSnapshot.target.modelOption}:{}),
             ...(workflowBinding?{comfyWorkflowSelections:{video:workflowBinding}}:{}),
             videoMode: mode ?? (refs.length ? "omni_reference" : "text_to_video"),
             videoReferences:refs.map((ref,index)=>({id:ref.node.id,kind:"image",
                 role:mode==="first_frame"?"first_frame":mode==="first_last_frame"?(index?"last_frame":"first_frame"):"reference_image"})),
-            ...(shot.durationSec?{seconds:String(shot.durationSec)}:{}),
+            ...((productionSnapshot?.durationSec??shot.durationSec)?{seconds:String(productionSnapshot?.durationSec??shot.durationSec)}:{}),
             dramaShotId: shot.id,
             dramaVideoSource: {
                 nodeId: source.id,
@@ -169,13 +180,14 @@ export function buildDramaVideoConfigGraph(
                 shot: JSON.stringify(shot),
                 referenceKeys: referenceImages.flatMap(reference => reference.storageKey ? [reference.storageKey] : []),
                 prompt: text,
-                basePrompt:prompt,
+                basePrompt:productionSnapshot?.manualPrompt?productionSnapshot.prompt:prompt,
                 visualStyle:style,
-                seconds:shot.durationSec?String(shot.durationSec):undefined,
+                seconds:(productionSnapshot?.durationSec??shot.durationSec)?String(productionSnapshot?.durationSec??shot.durationSec):undefined,
+                ...(productionSnapshot?{productionSnapshot}:{}),
             },
             prompt: text,
             composerContent: text,
-            ...(ratio ? { videoRatio: ratio } : {}),
+            ...((productionSnapshot?.aspectRatio??ratio) ? { videoRatio: productionSnapshot?.aspectRatio??ratio } : {}),
         });
         config.position = { x: source.position.x + source.width + 400, y };
         y += config.height + 32;

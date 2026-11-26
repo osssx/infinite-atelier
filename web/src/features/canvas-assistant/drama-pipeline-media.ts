@@ -2,6 +2,14 @@ import type { ReferenceImage } from "@/types/image";
 import type { DramaAsset, DramaAssetReference, DramaPipelineSnapshot, DramaShot } from "./canvas-drama-pipeline";
 import { dramaReferenceImageKeys } from "./canvas-drama-pipeline";
 
+export type DramaVideoTarget={kind:"inherit"}|{kind:"online";modelOption:string}|{kind:"comfy";templateId:string;templateRevision:string};
+export type DramaPromptOverride={text:string;sourceFingerprint:string};
+export type ResolvedDramaVideoTarget=Exclude<DramaVideoTarget,{kind:"inherit"}>;
+export type DramaVideoProductionSnapshot={
+    target:ResolvedDramaVideoTarget;prompt:string;durationSec:number;aspectRatio:string;
+    sourceRevisionId?:string;settingFingerprint:string;promptSourceFingerprint:string;manualPrompt:boolean;
+};
+
 export type DramaVideoInput = {
     shot: DramaShot;
     prompt: string;
@@ -10,8 +18,9 @@ export type DramaVideoInput = {
     /** Explicit user-provided storyboard grid image, never inferred from a regular reference. */
     gridInput?:boolean;
     comfyBinding?: NonNullable<import("@/types/canvas").CanvasNodeMetadata["comfyMediaPreset"]>;
+    productionSnapshot?:DramaVideoProductionSnapshot;
 };
-export type DramaShotProduction = {mode:NonNullable<DramaVideoInput["mode"]>;firstFrame?:string;lastFrame?:string;gridInput?:boolean;gridImage?:string};
+export type DramaShotProduction = {mode:NonNullable<DramaVideoInput["mode"]>;firstFrame?:string;lastFrame?:string;gridInput?:boolean;gridImage?:string;target?:DramaVideoTarget;promptOverride?:DramaPromptOverride;durationSec?:number;aspectRatio?:string};
 
 export function applyDramaProduction(input:DramaVideoInput,settings?:DramaShotProduction):DramaVideoInput{
     if(!settings)return input;

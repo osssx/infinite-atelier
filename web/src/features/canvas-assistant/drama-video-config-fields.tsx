@@ -228,12 +228,12 @@ export function DramaVideoConfigFields({
     catch(error){previewError=error instanceof Error?error.message:"输入配置无效";}
     const missing=active?missingFor(active):[];
     const requiredMissing=setting?.mode==="omni_reference"&&!setting.gridInput?missing:[];
-    const auditKey=JSON.stringify([preview,setting,requiredMissing,productionStyle,confirmedRevisionId,previewError,confirmedInput]);
+    const auditKey=JSON.stringify([preview,setting,requiredMissing,productionStyle,confirmedRevisionId,previewError,confirmedInput,config]);
     const audit=auditResult?.key===auditKey?auditResult.value:null;
     useEffect(()=>{
         let current=true;
         setAudit(null);setCapabilities(null);setAuditing(Boolean(confirmedInput&&preview&&!previewError));
-        void listDramaProductionCapabilities(config).then(available=>{
+        void listDramaProductionCapabilities(config,setting).then(available=>{
             if(current)setCapabilities(available);
         }).catch(()=>{if(current)setCapabilities(null);});
         if(confirmedInput&&preview&&setting&&!previewError){

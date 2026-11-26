@@ -93,6 +93,7 @@ export type CanvasNodeMetadata = {
         basePrompt?: string;
         seconds?: string;
         promptShot?: string;
+        productionSnapshot?: import("@/features/canvas-assistant/drama-pipeline-media").DramaVideoProductionSnapshot;
     };
     dramaAssetReferences?: import("@/features/canvas-assistant/canvas-drama-pipeline").DramaAssetReference[];
     targetEpisodes?: number;

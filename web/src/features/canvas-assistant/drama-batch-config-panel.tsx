@@ -195,7 +195,9 @@ export function DramaBatchConfigPanel({inputs,episodes,configs,missingFor,disabl
         [result.audit.input.productionSnapshot.channelLabel,result.audit.input.productionSnapshot.modelLabel].filter(Boolean).join(" · "):
         row.setting.target?.kind==="comfy"?"独立本地工作流":row.setting.target?.kind==="online"?"独立在线模型":"跟随全局默认"}</span>
        {row.setting.promptOverride&&<span className="block text-[11px]" style={muted}>人工提示词</span>}</td>
-      <td className="p-2 tabular-nums">{result?.audit?.durationSeconds??row.setting.durationSec??shot.durationSec??"—"} 秒</td>
+      <td className="p-2 tabular-nums">{result?.audit?.input?.productionSnapshot?.workflowControlledParameters?.includes("duration_seconds")?
+        <><span>工作流决定</span><span className="block text-[11px]" style={muted}>计划 {result.audit.durationSeconds} 秒</span></>:
+        <>{result?.audit?.durationSeconds??row.setting.durationSec??shot.durationSec??"—"} 秒</>}</td>
       <td className="p-2 break-words"><span>{result?.state==="failed"?(result.stage==="create"?"创建失败":"预检失败"):row.configured?"已配置":result?.state==="ready"?"预检通过":result?.state==="pending"?"核验中":"待创建"}</span>
        {result?.state==="failed"&&<DramaInlineFeedback theme={theme} level="error">{dramaVideoFeedback(result.error)}</DramaInlineFeedback>}
        {onLocate&&(!canLocate||canLocate(row.id))&&<button type="button" className="mt-1 block underline underline-offset-2 disabled:opacity-40" disabled={lock} onClick={()=>onLocate(row.id,shot.episodeId)}>定位镜头</button>}

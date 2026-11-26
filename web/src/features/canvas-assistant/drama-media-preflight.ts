@@ -43,7 +43,14 @@ export async function prepareDramaProduction(input:DramaVideoInput,config:AiConf
         const desired=parameter.id==="duration_seconds"?(input.productionSnapshot?.durationSec??input.shot.durationSec):
             parameter.id==="aspect_ratio"?config.videoRatio:undefined;
         parameters[parameter.id]=desired??port?.defaultValue??parameter.defaultValue??parameter.fixedValue;
-        if(desired!==undefined&&portId)overrides[portId]=desired;
+        if(desired!==undefined&&portId){
+            // Capability enums and actual Comfy literal choices must agree. Do
+            // not report ready when the compiler would reject the scalar.
+            if(port?.choices&&!port.choices.some(choice=>Object.is(choice.value,desired))||
+                port?.valueKind==="INT"&&!Number.isInteger(desired))
+                throw Error("工作流输入预检失败 media_parameter_invalid");
+            overrides[portId]=desired;
+        }
         if(portId&&port?.inputBinding?.mode==="literal"&&(parameter.id==="duration_seconds"||parameter.id==="aspect_ratio"))comfyParameterPorts[parameter.id]=portId;
     }
     const errors=validateMediaRequest({mode,references:input.referenceImages.map((reference,index)=>({kind:"image",

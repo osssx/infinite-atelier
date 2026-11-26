@@ -54,3 +54,9 @@
 ### P5 渠道选择修复
 - 本地只读诊断：30 个已注册模板版本中 3 个旧版本未通过当前前端媒体合同校验；全部模板 Promise.all 校验导致有效视频工作流一并不可见。4 个当前预设中 MiniMax H3 FL2V Turbo 视频预设通过校验，具有首帧、首尾帧及文生视频等模式。改为读取当前预设并逐版本独立加载，保留当前绑定与全局默认固定版本；不加载无关历史版本，不放宽执行校验，未声明可用模式的模板标记不可选，部分读取失败提示重试。未改动用户数据库。
 - 回归：33 文件 259 项通过，真实 Chrome 142 项通过且异常 0（隔离数据），类型检查通过；未提交真实生成任务。
+
+## P6 综合验收（部分完成，真实执行阻塞）
+- 本地只读核验当前 MiniMax H3 FL2V Turbo 注册预设与固定版本，前后端模板校验通过。文生视频、首帧及首尾帧模式有效，未使用图片端口已有 auto-prune 策略；不修改编译器裁剪规则，真实 object_info 和执行仍需验收。当前预设实际图内默认 duration=5、aspect_ratio=4:3 (Standard)，但各模式未声明 duration_seconds/aspect_ratio 参数映射。保留镜头计划值，不再显示为实际执行值：生成设置、批量表及差异审核明确标注由工作流决定，快照增加可选 workflowControlledParameters。不猜测端口语义、不修改用户预设或数据库；已映射的字面量枚举与整数端口在预检阶段提前拒绝不兼容值。
+- 新增 opt-in drama-video-p6-configured.test.ts：通过独立 Node 子进程只读获取当前固定版本，在前端实际 audit、批量配置 graph、生成上下文和 prepareBackendComfyWorkflowRun 链路构建三种提交请求，后端 validateSingleRequest 校验请求结构。实际注册模板通过，三种模式对应 0/1/2 张不同的预置 CAS 输入，人工提示词保持完整前缀、无内部节点 token 或自动风格追加。使用合成镜头、模拟 CAS HEAD/桥接就绪，不保存或上传，不提交 Job；不等同真实编译或实际视频质量/时长/画幅验证。单独 opt-in 测试 1/1（包含三种模式）；常规回归默认跳过该本地数据依赖测试。
+- 前端 Vitest 34 文件 278 项通过、1 文件/1 项 opt-in 跳过（已单独通过）；后端 job-coordinator、shot-groups、project-archive、drama-p34a-comfy-inputs 共 49 项通过、3 项真实 Comfy 测试跳过。真实 Chrome 隔离数据 142/142、浏览器异常 0；200 节点/200 镜头、深浅主题、保存取消、已有配置审核及持久化。TypeScript 和生产构建（11.40 秒）通过。
+- 阻塞：已配置实例 comfy-local / 127.0.0.1:8188 两次 /queue 探测均 ECONNREFUSED，未启动或重启用户程序、未提交任何真实生成或付费在线请求。P6 未标记完成。待实例可用且队列空闲后：验证当前真实 MiniMax 模板的 scoped object_info、首帧/首尾帧裁剪及实际执行（含人工 prompt、映射参数和视频产物 ffprobe/CAS 落图）；复用 P3.4a/shot-groups 真机套件验证三类输入、批量接力、失败重试与重启，执行已有 Chrome live 验收。真实停止及实际模型参数映射验收仍待完成；不以模拟测试替代。

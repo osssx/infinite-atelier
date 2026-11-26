@@ -101,7 +101,8 @@ export function DramaVideoParameterFields({config,value,capabilities,shotDuratio
    const spec:MediaParameterSpec|undefined=specs.find(item=>item.id===id);
    const adjustable=spec?.mode==="adjustable"&&(key==="durationSec"&&spec.type==="number"||key==="aspectRatio"&&spec.type==="enum");
    const selected=value[key];
-   const shown=current;
+   const workflowControlled=capabilities?.engine==="comfy"&&!spec;
+   const shown=workflowControlled?"由工作流决定":current;
    const fixedMismatch=spec?.mode==="fixed"&&spec.fixedValue!==undefined&&spec.fixedValue!==current;
    return <div key={id} className="grid min-w-0 content-start gap-1 text-xs">
     <label style={{color:theme.node.muted}}>{label}</label>
@@ -112,8 +113,9 @@ export function DramaVideoParameterFields({config,value,capabilities,shotDuratio
       {selected!==undefined&&!spec?.values?.includes(selected)&&<option value={selected} disabled>{display(selected)}（不支持）</option>}
       {spec?.values?.map(option=><option key={option} value={option}>{display(option)}</option>)}
      </select>:<div className="rounded-md px-3 py-2 text-sm" style={{background:theme.toolbar.activeBg}}>{display(String(shown))}</div>}
+    {workflowControlled&&!editing&&<span style={{color:theme.node.muted}}>镜头计划：{display(String(current))}{key==="durationSec"?" 秒":""}，未映射到工作流</span>}
     {editing&&<div className="flex flex-wrap gap-2" style={{color:theme.node.muted}}>
-     <span>{spec?.mode==="fixed"?"由模型固定":adjustable?"留空继承原设置":"未声明可编辑参数"}</span>
+     <span>{workflowControlled?"未映射到工作流，镜头计划："+display(String(current))+(key==="durationSec"?" 秒":""):spec?.mode==="fixed"?"由模型固定":adjustable?"留空继承原设置":"未声明可编辑参数"}</span>
      {fixedMismatch&&<button type="button" disabled={disabled} onClick={()=>write(key,String(spec.fixedValue))} className="underline">采用固定值 {display(String(spec.fixedValue))}</button>}
      {selected!==undefined&&!adjustable&&<button type="button" disabled={disabled} onClick={()=>write(key,"")} className="underline">清除覆盖</button>}
     </div>}

@@ -9,6 +9,8 @@ export type DramaVideoProductionSnapshot={
     target:ResolvedDramaVideoTarget;prompt:string;durationSec:number;aspectRatio:string;
     sourceRevisionId?:string;settingFingerprint:string;promptSourceFingerprint:string;manualPrompt:boolean;
     channelLabel?:string;modelLabel?:string;
+    /** Requested duration/ratio are planning values when not mapped to execution. */
+    workflowControlledParameters?: ("duration_seconds"|"aspect_ratio")[];
 };
 
 export type DramaVideoReferenceSlot={id:string;assetId?:string;variantId?:string;name:string;variantName?:string;kind:"character"|"scene"|"prop";required:boolean;imageKeys:string[]};

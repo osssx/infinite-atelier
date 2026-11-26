@@ -108,6 +108,7 @@ export async function auditDramaProduction(input:DramaVideoInput,config:AiConfig
         const prepared=await prepareDramaProduction(resolved.input,resolved.config);
         return {...base,engine:capabilities.engine,referenceCount:prepared.referenceImages.length,
             referenceKeys:prepared.referenceImages.flatMap(item=>item.storageKey?[item.storageKey]:[]),
-            prompt:resolved.snapshot.prompt,input:{...prepared,productionSnapshot:{...resolved.snapshot,channelLabel:capabilities.channel,modelLabel:capabilities.model}},ready:true};
+            prompt:resolved.snapshot.prompt,input:{...prepared,productionSnapshot:{...resolved.snapshot,channelLabel:capabilities.channel,modelLabel:capabilities.model,
+                ...(capabilities.engine==="comfy"?{workflowControlledParameters:(["duration_seconds","aspect_ratio"] as const).filter(key=>!prepared.comfyParameterPorts?.[key])}:{})}},ready:true};
     }catch(error){return {...base,ready:false,error:fail(error)};}
 }

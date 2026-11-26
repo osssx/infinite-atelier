@@ -2,8 +2,8 @@
 import {describe,it,expect,vi} from "vitest";
 import {defaultConfig,type AiConfig} from "@/stores/use-config-store";
 import {preflightDramaVideo,prepareDramaProduction} from "./drama-media-preflight";
-vi.mock("@/features/comfy-workflow/template-registry",()=>({getComfyTemplate:async()=>({
-    ports:[{id:"duration",direction:"target",defaultValue:5},{id:"frame",direction:"target",valueKind:"IMAGE"}],mediaUseCase:{channel:"video",modeBindings:{first_frame:{
+vi.mock("@/features/comfy-workflow/template-registry",()=>({getComfyTemplate:async(id:string)=>({
+    ports:[{id:"duration",direction:"target",defaultValue:5,valueKind:id==="int-duration"?"INT":"FLOAT",inputBinding:{mode:"literal"}},{id:"frame",direction:"target",valueKind:"IMAGE"}],mediaUseCase:{channel:"video",modeBindings:{first_frame:{
         rolePorts:{first_frame:["frame"]},parameterPorts:{duration_seconds:"duration"},
     }},mediaCapabilities:{schemaVersion:1,kind:"video",modes:[{id:"first_frame",enabled:true,
         inputs:[{role:"first_frame",kind:"image",minItems:1,maxItems:1}],parameters:[{
@@ -30,6 +30,11 @@ describe("drama production preflight",()=>{
         expect(prepared.comfyBinding?.overrides).toEqual({duration:7});
         expect(prepared.comfyBinding?.slots).toEqual({frame:{nodeId:"reference"}});
         await expect(prepareDramaProduction({...input,mode:"first_last_frame"},comfy)).rejects.toThrow("未声明");
+    });
+    it("rejects fractional duration against an integer literal port before job compilation",async()=>{
+        const comfy={...config,comfyWorkflowDefaults:{video:{templateId:"int-duration",templateRevision:"revision"}}};
+        await expect(prepareDramaProduction({...input,mode:"first_frame",shot:{...input.shot,durationSec:3.5},
+            referenceImages:[{id:"reference",name:"Frame",type:"image/png",dataUrl:"",storageKey:"cas:"+"a".repeat(64)}]},comfy)).rejects.toThrow("media_parameter_invalid");
     });
     it("enforces the declared model input and duration constraints",()=>{
         const declared:AiConfig={...config,channels:[{...config.channels[0],models:[{

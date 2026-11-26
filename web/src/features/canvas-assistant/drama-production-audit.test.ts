@@ -95,6 +95,8 @@ describe("P3.1 explicit production mode / media audit",()=>{
         expect(nodes[1].metadata?.prompt).toMatch(/^Comfy manual\n首帧：@\[node:/);
         expect(nodes[1].metadata?.prompt).not.toContain("影片风格");
         expect(nodes[1].metadata?.dramaVideoSource?.productionSnapshot?.channelLabel).toBe("本地 ComfyUI");
+        expect(nodes[1].metadata?.dramaVideoSource?.productionSnapshot?.workflowControlledParameters).toEqual(["duration_seconds","aspect_ratio"]);
+        expect(nodes[0].metadata?.dramaVideoSource?.productionSnapshot?.workflowControlledParameters).toBeUndefined();
         const changed={...source,metadata:{...source.metadata,dramaShotProduction:{shot:first,second:{...second,durationSec:9}}}};
         expect(planDramaBatchVideoConfigs(changed,[base.shot,secondShot],[a.input!,b.input!],[changed],[]).result).toMatchObject({createdShotIds:["shot"],failures:[{shotId:"second"}]});
     });

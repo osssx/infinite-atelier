@@ -74,8 +74,11 @@ export function reviewDramaVideoConfig(node:CanvasNodeData,input:DramaVideoInput
   connections.filter(e=>e.fromNodeId===node.id||e.toNodeId===node.id),input]);
  return {token,routeChanged,promptChanged,durationChanged,aspectChanged,promptManual,executionManual,durationEditable,aspectEditable,
   currentPrompt:promptManual?(m?.composerContent??m?.prompt??"").replace(/@\[node:[^\]]+\]/g,"[图片引用]"):currentPrompt,
-  nextPrompt:snapshot.prompt,currentDuration:currentDuration||"未设置",nextDuration:String(snapshot.durationSec),
-  currentAspect:currentAspect||"未设置",nextAspect:snapshot.aspectRatio,
+  nextPrompt:snapshot.prompt,
+  currentDuration:old?.workflowControlledParameters?.includes("duration_seconds")||!routeChanged&&old?.target.kind==="comfy"&&!durationEditable?"由工作流决定":currentDuration||"未设置",
+  nextDuration:durationEditable?String(snapshot.durationSec):"由工作流决定",
+  currentAspect:old?.workflowControlledParameters?.includes("aspect_ratio")||!routeChanged&&old?.target.kind==="comfy"&&!aspectEditable?"由工作流决定":currentAspect||"未设置",
+  nextAspect:aspectEditable?snapshot.aspectRatio:"由工作流决定",
   currentEngine:old&&json(old.target)===json(targetFor(node))&&old.channelLabel?[old.channelLabel,old.modelLabel].filter(Boolean).join(" · "):bindingFor(node)?"本地 ComfyUI":m?.model?"在线模型":"旧配置（渠道待核对）",
   nextEngine:snapshot.channelLabel?[snapshot.channelLabel,snapshot.modelLabel].filter(Boolean).join(" · "):snapshot.target.kind==="comfy"?"本地 ComfyUI":"在线模型",
   currentMode:m?.videoMode??"",nextMode:inputMode(input),currentCount:m?.videoReferences?.length??0,nextCount:input.referenceImages.length};

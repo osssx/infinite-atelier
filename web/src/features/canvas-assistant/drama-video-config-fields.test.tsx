@@ -173,6 +173,16 @@ it("stages channel selection, refreshes capabilities, preserves media settings a
  expect(action).toHaveBeenCalledTimes(1);
 });
 
+it("labels unmapped Comfy parameters as workflow-controlled instead of claiming the planned values execute",async()=>{
+ const {el}=await mount({embedded:true,production:{s1:{mode:"first_frame",firstFrame:imageKey,durationSec:9,aspectRatio:"9:16",target:{kind:"comfy",templateId:"video-template",templateRevision:"pinned"}}}});
+ const field=el.querySelector('[data-video-mode-field]')!;
+ expect(field.textContent).toContain("由工作流决定");
+ expect(field.textContent).toContain("镜头计划：9 秒，未映射到工作流");
+ expect(field.textContent).toContain("镜头计划：9:16，未映射到工作流");
+ await click(field.querySelector('[aria-label="编辑视频输入模式"]'));
+ expect(field.querySelector('[aria-label="视频时长"]')).toBeNull();
+ expect(field.querySelector('[aria-label="视频画幅"]')).toBeNull();
+});
 it("saves a usable pinned workflow despite a failed unrelated template",async()=>{
  const {el,change}=await mount({embedded:true});
  await click(el.querySelector('[aria-label="编辑视频输入模式"]'));

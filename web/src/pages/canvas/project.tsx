@@ -4320,7 +4320,8 @@ function AtelierCanvasPage() {
                     const source=nodesRef.current.find(node=>node.id===panelNode.id);
                     const current=nodesRef.current.find(node=>node.id===id);
                     if(!source||!current)throw Error("视频配置已删除");
-                    if(runningNodeId===id||sqliteGenerationJobsRef.current.has(id)||sqliteModelSubmitLocksRef.current.has(id)||comfyExecuteLocksRef.current.has(id)||assistantExecuteLocksRef.current.has(id)||Array.from(generationRequestsRef.current.values()).some(req=>req.originNodeId===id||req.runningNodeId===id||req.targetNodeId===id))
+                    const executionKey=projectId+":"+id;
+                    if(runningNodeId===id||sqliteGenerationJobsRef.current.has(id)||sqliteModelSubmitLocksRef.current.has(executionKey)||comfyExecuteLocksRef.current.has(executionKey)||assistantExecuteLocksRef.current.has(executionKey)||getCanvasTextExecution(id)||["queued","preparing","running","submitting","cancelling"].includes(getCanvasComfyExecution(id)?.status??"")||Array.from(generationRequestsRef.current.values()).some(req=>req.originNodeId===id||req.runningNodeId===id||req.targetNodeId===id))
                         throw Error("视频配置正在生成，请等待任务结束");
                     const graph=applyDramaVideoConfigReview(source,input,id,nodesRef.current,connectionsRef.current,fields,style);
                     nodesRef.current=graph.nodes;connectionsRef.current=graph.connections;

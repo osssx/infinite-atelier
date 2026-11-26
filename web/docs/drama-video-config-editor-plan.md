@@ -55,8 +55,16 @@
 - 本地只读诊断：30 个已注册模板版本中 3 个旧版本未通过当前前端媒体合同校验；全部模板 Promise.all 校验导致有效视频工作流一并不可见。4 个当前预设中 MiniMax H3 FL2V Turbo 视频预设通过校验，具有首帧、首尾帧及文生视频等模式。改为读取当前预设并逐版本独立加载，保留当前绑定与全局默认固定版本；不加载无关历史版本，不放宽执行校验，未声明可用模式的模板标记不可选，部分读取失败提示重试。未改动用户数据库。
 - 回归：33 文件 259 项通过，真实 Chrome 142 项通过且异常 0（隔离数据），类型检查通过；未提交真实生成任务。
 
-## P6 综合验收（部分完成，真实执行阻塞）
+## P6 综合验收（已完成）
 - 本地只读核验当前 MiniMax H3 FL2V Turbo 注册预设与固定版本，前后端模板校验通过。文生视频、首帧及首尾帧模式有效，未使用图片端口已有 auto-prune 策略；不修改编译器裁剪规则，真实 object_info 和执行仍需验收。当前预设实际图内默认 duration=5、aspect_ratio=4:3 (Standard)，但各模式未声明 duration_seconds/aspect_ratio 参数映射。保留镜头计划值，不再显示为实际执行值：生成设置、批量表及差异审核明确标注由工作流决定，快照增加可选 workflowControlledParameters。不猜测端口语义、不修改用户预设或数据库；已映射的字面量枚举与整数端口在预检阶段提前拒绝不兼容值。
 - 新增 opt-in drama-video-p6-configured.test.ts：通过独立 Node 子进程只读获取当前固定版本，在前端实际 audit、批量配置 graph、生成上下文和 prepareBackendComfyWorkflowRun 链路构建三种提交请求，后端 validateSingleRequest 校验请求结构。实际注册模板通过，三种模式对应 0/1/2 张不同的预置 CAS 输入，人工提示词保持完整前缀、无内部节点 token 或自动风格追加。使用合成镜头、模拟 CAS HEAD/桥接就绪，不保存或上传，不提交 Job；不等同真实编译或实际视频质量/时长/画幅验证。单独 opt-in 测试 1/1（包含三种模式）；常规回归默认跳过该本地数据依赖测试。
 - 前端 Vitest 34 文件 278 项通过、1 文件/1 项 opt-in 跳过（已单独通过）；后端 job-coordinator、shot-groups、project-archive、drama-p34a-comfy-inputs 共 49 项通过、3 项真实 Comfy 测试跳过。真实 Chrome 隔离数据 142/142、浏览器异常 0；200 节点/200 镜头、深浅主题、保存取消、已有配置审核及持久化。TypeScript 和生产构建（11.40 秒）通过。
-- 阻塞：已配置实例 comfy-local / 127.0.0.1:8188 两次 /queue 探测均 ECONNREFUSED，未启动或重启用户程序、未提交任何真实生成或付费在线请求。P6 未标记完成。待实例可用且队列空闲后：验证当前真实 MiniMax 模板的 scoped object_info、首帧/首尾帧裁剪及实际执行（含人工 prompt、映射参数和视频产物 ffprobe/CAS 落图）；复用 P3.4a/shot-groups 真机套件验证三类输入、批量接力、失败重试与重启，执行已有 Chrome live 验收。真实停止及实际模型参数映射验收仍待完成；不以模拟测试替代。
+- 首轮本地 ComfyUI 未启动（两次 ECONNREFUSED），因此真实执行暂缓；用户启动后继续验收如下。
+
+### P6 真实执行收尾
+- 本地实例 comfy-local 已连接、队列初始空闲，RTX 4070 SUPER，约 10.26 GiB 可用显存。读取当前注册 MiniMax H3 FL2V Turbo 及实际 scoped object_info（24 类），模型/CLIP/LoRA/视频和音频 VAE 均在实际枚举中。视频 VAE 为 minimax_h3_video_vae_int8_convrot.safetensors。
+- 新增 scripts/drama-video-p6-live.mjs（--probe 仅编译；--live 限两次提交；--resume 仅接受临时测试目录内恰好一个成功并落图的首帧 Job，禁止重发）。原始注册模板只读，隔离副本新增时长、画幅映射；测试使用 1 秒目标、1:1、0.2 MP、Lightning 4 步、seed 42，独立合成红/蓝 448px 输入，人工提示词固定。不修改原预设、实际用户工程或全局配置。真实编译首帧 28 节点、首尾帧 29 节点，未使用尾帧 loader 被裁剪；持久化编译图逐项检查 prompt、duration、aspect_ratio、megapixels、输入 CAS 文件名及角色端口。
+- 两个真实 MiniMax 视频任务均 succeeded 且 CAS materialized、原配置到视频节点连线存在。ffprobe：首帧 448×448 / 24fps / 39 帧 / 1.625 秒 / 116546 bytes，首尾帧 448×448 / 24fps / 39 帧 / 1.625 秒 / 118388 bytes。第一次首帧生成已成功，验收脚本原时长误差断言失败；检查真实 graph 得到帧数表达式 max(5, round(a * 24)) + (5 - (max(5, round(a * 24)) % 17)) % 17，1 秒目标被向上对齐为 39 帧。按已验证表达式校验实际帧数与 24fps 时长，复用首帧成功记录再生成首尾帧，总计两次 /prompt，无重复生成。实际时长不保证严格等于目标秒数。
+- 真机 P3.4a / shot-groups 16/16（0 跳过），含轻量首帧/首尾帧/多参考图视频像素、批量接力、失败重试（预提交故障注入）、后端重启恢复与独立任务不重发。真实 Chrome live storyboard 124/124，浏览器异常 0，200 节点/200 镜头深浅主题、工作流选择、人工提示词保存、CAS 输入、创建 Config 后用户点击开始生成，真实 MP4 2294 bytes 及物化连线；轻量工作流，非 MiniMax GPU 模型。P46D 真实定向停止 14/14（pending/running 两个测试任务，0 全局中断）；P46E Chrome 停止 22/22（pending，已取消落库且刷新后状态保留，未执行被取消的任务）。
+- 修复 project.tsx 中已有配置审核采用时生成提交锁查询漏掉 projectId 前缀的问题，使用与提交端一致的组合键，并检查现有文本/媒体与 Comfy 执行记录。TypeScript、生产构建（10.38 秒）通过。前轮的 278 项前端及 49 项非 live 后端回归、142 项无生成浏览器测试和 ZIP 恢复仍为 P6 基线；本轮新增真机与浏览器验收补齐真实执行。
+- P1–P6 完成。边界：真实 MiniMax 使用隔离的映射副本，原预设仍未声明时长/画幅映射，保持由工作流决定；真实浏览器点击生成使用轻量模板，实际工作流切换、人工覆盖和选择性参数更新在此前专项测试验收，不声称在同一次 Chrome 会话切换真实 MiniMax 版本后再执行；文生视频已验收请求结构但未跑额外 MiniMax GPU 视频；不评价视觉质量，未调用付费在线模型。

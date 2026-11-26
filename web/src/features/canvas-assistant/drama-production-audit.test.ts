@@ -4,7 +4,8 @@ import {defaultConfig,type AiConfig} from "@/stores/use-config-store";
 import {applyDramaProduction,type DramaVideoInput} from "./drama-pipeline-media";
 import {auditDramaProduction,listDramaProductionCapabilities} from "./drama-production-audit";
 import {prepareDramaProduction} from "./drama-media-preflight";
-import {resolveDramaVideoProduction} from "./drama-video-production-resolver";
+import {resolveDramaVideoProduction,dramaVideoPromptSource} from "./drama-video-production-resolver";
+import {applyDramaPromptMode} from "./drama-pipeline-media";
 import {planDramaBatchVideoConfigs,refreshDramaVideoConfig} from "./drama-video-config";
 import {resolveComfyWorkflowSelection} from "@/features/comfy-workflow/comfy-workflow-selection";
 import {createCanvasNode} from "@/lib/canvas/canvas-node-factory";
@@ -87,6 +88,18 @@ describe("P3.1 explicit production mode / media audit",()=>{
         expect((await listDramaProductionCapabilities(comfy(),missing)).modes.every(item=>!item.available)).toBe(true);
         const invalid:DramaShotProduction={mode:"text_to_video",promptOverride:{text:"@[node:bad]",sourceFingerprint:"old"}};
         expect((await auditDramaProduction(base,online,{setting:invalid})).error).toContain("内部节点引用");
+    });
+    it("keeps grid prompt source stable before and after media binding, then preserves manual text on source change",async()=>{
+        const draft:DramaShotProduction={mode:"omni_reference",gridInput:true};
+        const before=dramaVideoPromptSource(applyDramaPromptMode(base,draft),"Ink");
+        const setting={...draft,gridImage:key("c"),promptOverride:{text:"Manual grid direction",sourceFingerprint:before.promptSourceFingerprint}};
+        const input=applyDramaProduction(base,setting);
+        expect(dramaVideoPromptSource(input,"Ink")).toEqual(before);
+        expect(resolveDramaVideoProduction(input,comfy(),setting,"Ink").promptOutdated).toBe(false);
+        const audit=await auditDramaProduction(input,comfy(),{setting,visualStyle:"New style"});
+        expect(audit.ready).toBe(true);
+        expect(audit.prompt).toBe("Manual grid direction");
+        expect(resolveDramaVideoProduction(input,comfy(),setting,"New style").promptOutdated).toBe(true);
     });
     it("filters unsupported API input modes before Config creation and shows precise failure",async()=>{
         const result=await listDramaProductionCapabilities(online);

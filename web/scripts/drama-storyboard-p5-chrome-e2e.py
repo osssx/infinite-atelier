@@ -122,6 +122,19 @@ def run():
                 check("field success toast within themed workspace","""(()=>{const r=document.querySelector(%s),t=r?.querySelector('[data-drama-feedback="success"]'),layer=r?.querySelector('[data-drama-feedback-toasts]');if(!t||!layer||!t.textContent.includes('视频输入模式已更新草案'))return false;const a=r.getBoundingClientRect(),b=t.getBoundingClientRect(),c=getComputedStyle(layer);return b.width>0&&b.left>=a.left&&b.right<=a.right&&b.top>=a.top&&b.bottom<=a.bottom&&c.position==='absolute'&&c.pointerEvents==='none'&&getComputedStyle(t).backgroundColor===getComputedStyle(r.querySelector('[data-drama-workspace-content]')).backgroundColor})()"""%json.dumps(portal))
                 check("real persisted frame","""(async()=>{const r=await fetch('/api/v1/projects/%s');const d=await r.json();return !!d.document.nodes.find(n=>n.id==='board').metadata.dramaShotProduction?.[%s]?.firstFrame})()"""%(fixture["projectId"],json.dumps(shot)),35)
                 check("read-only preview loaded","""(()=>{const i=document.querySelector(%s);return i&&i.complete&&i.naturalWidth>0})()"""%json.dumps(portal+' [data-video-mode-readonly] img'))
+                button("提示词",portal+' [aria-label="视频配置页面"]')
+                click(portal+' [aria-label="编辑视频提示词"]')
+                manual="人工提示词：森林柔和光线，连续镜头。\n保留自然动作。"
+                check("edit tall video prompt","""(()=>{const e=document.querySelector('[data-video-prompt-editor] textarea');if(!e||e.rows!==12||e.getBoundingClientRect().height<240)return false;Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(e,%s);e.dispatchEvent(new Event('input',{bubbles:true}));return true})()"""%json.dumps(manual,ensure_ascii=False))
+                check("prompt edit protects create and navigation","""(()=>{const r=document.querySelector(%s);return !!r.querySelector('[data-drama-pending-status]')&&[...r.querySelectorAll('[aria-label="视频配置页面"] button')].every(b=>b.disabled)&&[...r.querySelectorAll('button')].find(b=>b.textContent.trim()==='创建视频配置')?.disabled})()"""%json.dumps(portal))
+                click(portal+' [aria-label="保存视频提示词"]')
+                check("manual prompt persisted with frame and workflow","""(async()=>{const d=await (await fetch('/api/v1/projects/%s')).json(),s=d.document.nodes.find(n=>n.id==='board').metadata.dramaShotProduction?.[%s];return s?.promptOverride?.text===%s&&!!s.firstFrame&&s.target?.templateId==='p5-video-fixture'})()"""%(fixture["projectId"],json.dumps(shot),json.dumps(manual,ensure_ascii=False)),35)
+                check("manual prompt readonly","document.querySelector('[data-video-prompt-editor] pre')?.textContent==="+json.dumps(manual,ensure_ascii=False))
+                button("恢复自动生成",portal+' [data-video-prompt-editor]')
+                check("restore is staged not persisted","document.querySelector('[data-video-prompt-editor] textarea')?.value!=="+json.dumps(manual,ensure_ascii=False))
+                click(portal+' [data-video-prompt-editor] [data-drama-action="cancel"]')
+                check("cancel restore preserves manual prompt","document.querySelector('[data-video-prompt-editor] pre')?.textContent==="+json.dumps(manual,ensure_ascii=False))
+
             else:
                 click(portal+' [data-video-mode-field="editing"] [data-drama-action="cancel"]')
                 check("cancel does not show success toast","!document.querySelector("+json.dumps(portal+' [data-drama-feedback="success"]')+")")
@@ -137,13 +150,15 @@ def run():
         choose("批量创建配置剧集","ep-1")
         button("定位镜头",portal+" tbody")
         check("saved shot production ready","""(()=>{const r=document.querySelector(%s);return r?.textContent.includes('输入预检通过')&&[...r.querySelectorAll('button')].some(b=>b.textContent.trim()==='创建视频配置'&&!b.disabled)})()"""%json.dumps(portal),35)
+        button("提示词",portal+' [aria-label="视频配置页面"]')
+        check("manual prompt survives workspace reopen","document.querySelector('[data-video-prompt-editor] pre')?.textContent==="+json.dumps(manual,ensure_ascii=False))
         button("创建视频配置")
         check("real Config graph persisted","""(async()=>{const r=await fetch('/api/v1/projects/%s');const d=await r.json();const nodes=d.document?.nodes||[],edges=d.document?.connections||[];
           const configs=nodes.filter(n=>n.type==='config'&&n.metadata?.dramaShotId==='shot-50');if(configs.length!==1)return false;
           const c=configs[0],m=c.metadata,b=m.comfyWorkflowSelections?.video,source=nodes.find(n=>n.id===b?.slots?.opening?.nodeId);
           return m.generationMode==='video'&&m.videoMode==='first_frame'&&m.dramaVideoSource?.revisionId==='p34b-v1'&&b?.templateId==='p5-video-fixture'&&b?.mediaMode==='first_frame'&&
-            source?.metadata?.storageKey===m.dramaVideoSource?.referenceKeys?.[0]&&
-            edges.some(e=>e.fromNodeId==='board'&&e.toNodeId===c.id)&&edges.some(e=>e.fromNodeId===source.id&&e.fromPortId==='image'&&e.toNodeId===c.id&&e.toPortId==='opening')})()"""%fixture["projectId"],35)
+            source?.metadata?.storageKey===m.dramaVideoSource?.referenceKeys?.[0]&&m.dramaVideoSource?.productionSnapshot?.manualPrompt===true&&m.dramaVideoSource?.productionSnapshot?.prompt===%s&&m.prompt.startsWith(%s+'\\n首帧：@[node:')&&m.composerContent===m.prompt&&
+            edges.some(e=>e.fromNodeId==='board'&&e.toNodeId===c.id)&&edges.some(e=>e.fromNodeId===source.id&&e.fromPortId==='image'&&e.toNodeId===c.id&&e.toPortId==='opening')})()"""%(fixture["projectId"],json.dumps(manual,ensure_ascii=False),json.dumps(manual,ensure_ascii=False)),35)
         assert not any(req["method"]=="POST" and ("/jobs" in req["path"] or "/shot-batches" in req["path"]) for req in page.network_requests),"Config creation must not submit generation"
         passed.append("Config created without submitting generation")
         if os.environ.get("ATELIER_DRAMA_P5_LIVE_COMFY")=="1":

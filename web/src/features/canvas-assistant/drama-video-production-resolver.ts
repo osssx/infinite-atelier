@@ -31,14 +31,21 @@ export function dramaProductionSettingFingerprint(setting?:DramaShotProduction){
 export function dramaDefaultProduction(input:DramaVideoInput):DramaShotProduction{
  return {mode:input.referenceImages.length?"omni_reference":"text_to_video"};
 }
-export function resolveDramaVideoProduction(input:DramaVideoInput,globalConfig:AiConfig,setting?:DramaShotProduction,visualStyle?:string,sourceRevisionId?:string){
- const {config,target}=resolveDramaVideoTarget(globalConfig,setting);
+export function dramaVideoPromptSource(input:DramaVideoInput,visualStyle?:string){
  const automaticPrompt=[input.prompt,visualStyle&&"影片风格："+visualStyle].filter(Boolean).join("\n");
  const promptSourceFingerprint=JSON.stringify([input.prompt,visualStyle??null,input.mode??null,!!input.gridInput]);
- const manual=setting?.promptOverride;
- const prompt=manual?.text??automaticPrompt;
+ return {automaticPrompt,promptSourceFingerprint};
+}
+export function validateDramaVideoPrompt(prompt:string,manual:boolean){
  if(typeof prompt!=="string"||!prompt.trim()||prompt.length>24000)throw Error("请输入有效的视频提示词（最多 24000 字符）");
  if(manual&&/@\[node:/.test(prompt))throw Error("请通过参考素材绑定图片，不要在提示词中输入内部节点引用");
+}
+export function resolveDramaVideoProduction(input:DramaVideoInput,globalConfig:AiConfig,setting?:DramaShotProduction,visualStyle?:string,sourceRevisionId?:string){
+ const {config,target}=resolveDramaVideoTarget(globalConfig,setting);
+ const {automaticPrompt,promptSourceFingerprint}=dramaVideoPromptSource(input,visualStyle);
+ const manual=setting?.promptOverride;
+ const prompt=manual?.text??automaticPrompt;
+ validateDramaVideoPrompt(prompt,!!manual);
  const durationSec=setting?.durationSec??input.shot.durationSec??(Number(config.videoSeconds)||6);
  const aspectRatio=setting?.aspectRatio??config.videoRatio;
  if(!Number.isFinite(durationSec)||durationSec<=0)throw Error("镜头时长必须大于零");

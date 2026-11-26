@@ -3,10 +3,12 @@ import {Clapperboard,Pencil} from "lucide-react";
 import { Button } from "antd";
 import type { CanvasTheme } from "@/lib/canvas-theme";
 import type { CanvasNodeData } from "@/types/canvas";
-import {applyDramaProduction,type DramaVideoInput,type DramaShotProduction} from "./drama-pipeline-media";
+import {applyDramaProduction,applyDramaPromptMode,type DramaVideoInput,type DramaShotProduction} from "./drama-pipeline-media";
 import { dramaNodeControl, dramaNodePrimary } from "./drama-node-style";
 import {useEffectiveConfig,type AiConfig} from "@/stores/use-config-store";
 import {DramaVideoTargetPicker,DramaVideoParameterFields,dramaVideoTargetLabel} from "./drama-video-generation-settings";
+import {DramaVideoPromptEditor} from "./drama-video-prompt-editor";
+import {dramaVideoPromptSource} from "./drama-video-production-resolver";
 import {prepareDramaProduction} from "./drama-media-preflight";
 import {auditDramaProduction,dramaMediaModes,listDramaProductionCapabilities,type DramaProductionAudit,type DramaProductionCapabilities} from "./drama-production-audit";
 import {canvasCasUrl} from "@/features/backend-sync/canvas-cas";
@@ -239,7 +241,9 @@ export function DramaVideoConfigFields({
     const [capabilities,setCapabilities]=useState<DramaProductionCapabilities|null>(null);
     const [auditResult,setAudit]=useState<{key:string;value:DramaProductionAudit}|null>(null);
     const [auditing,setAuditing]=useState(false);
-    const [modeEditing,setModeEditing]=useState(false);
+    const [settingsEditing,setModeEditing]=useState(false);
+    const [promptEditing,setPromptEditing]=useState(false);
+    const modeEditing=settingsEditing||promptEditing;
     const [videoTab,setVideoTab]=useState<"settings"|"prompt"|"references">("settings");
     useEffect(()=>{onEditingChange?.(modeEditing);return ()=>onEditingChange?.(false);},[modeEditing,onEditingChange]);
 
@@ -305,7 +309,7 @@ export function DramaVideoConfigFields({
                 </div>
                 <label className="grid min-w-0 gap-1 text-xs" style={muted}>当前剧集
                     <select aria-label="选择视频配置剧集" className="w-full min-w-0 rounded-lg border px-2.5 py-2 text-xs"
-                        style={fieldStyle} value={activeEpisode} onChange={event=>{
+                        style={fieldStyle} value={activeEpisode} disabled={promptEditing} onChange={event=>{
                             setEpisodeId(event.target.value);setShotId("");
                         }}>
                         {episodeIds.map(id=><option key={id} value={id}>
@@ -318,7 +322,7 @@ export function DramaVideoConfigFields({
                 {episodeInputs.map(({shot},index)=>{
                     const current=shot.id===active.shot.id;
                     const configured=Boolean(configs?.has(shot.id));
-                    return <button type="button" key={shot.id} aria-pressed={current}
+                    return <button type="button" key={shot.id} aria-pressed={current} disabled={promptEditing}
                         aria-label={`选择视频镜头 ${index+1}：${shot.shotSize||shot.id}`}
                         onClick={()=>{setShotId(shot.id);setError("");}}
                         className="flex w-full min-w-0 items-start gap-2.5 rounded-lg border px-3 py-3 text-left transition-opacity hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
@@ -384,7 +388,7 @@ export function DramaVideoConfigFields({
             {expanded&&<nav aria-label="视频配置页面" className="flex min-w-0 gap-1 border-b pb-1" style={{borderColor:theme.node.stroke}}>
                 {([{id:"settings",label:"生成设置"},{id:"prompt",label:"提示词"},{id:"references",label:"参考素材"}] as const).map(item=><button type="button" key={item.id}
                     aria-pressed={videoTab===item.id} disabled={modeEditing||item.id!=="settings"&&!confirmedInput}
-                    title={modeEditing?"请先保存或取消当前生成设置":undefined} className="min-h-7 rounded-md px-3 text-xs font-medium disabled:opacity-45"
+                    title={modeEditing?"请先保存或取消当前编辑":undefined} className="min-h-7 rounded-md px-3 text-xs font-medium disabled:opacity-45"
                     style={videoTab===item.id?{background:theme.toolbar.activeBg,color:theme.node.text}:muted} onClick={()=>setVideoTab(item.id)}>{item.label}</button>)}
             </nav>}
             {expanded&&videoTab==="settings"&&<VideoModeField key={active.shot.id} shotId={active.shot.id}
@@ -444,11 +448,11 @@ export function DramaVideoConfigFields({
                 }}>采用所选更新</Button>
                 </div>
             </details>}
-            {confirmedInput&&expanded&&videoTab==="prompt"&&<section aria-label="视频提示词" className="min-w-0 space-y-2">
-                <div className="flex items-center justify-between text-xs"><strong>视频提示词</strong><span style={muted}>{setting.promptOverride?"已手动修改":"自动生成"}</span></div>
-                <pre className="thin-scrollbar max-h-96 min-w-0 overflow-auto whitespace-pre-wrap break-words rounded-lg border p-3 text-sm"
-                    style={{...card,background:theme.toolbar.activeBg}}>{audit?.prompt??setting.promptOverride?.text??[preview.prompt,productionStyle&&"影片风格："+productionStyle].filter(Boolean).join("\n")}</pre>
-            </section>}
+            {confirmedInput&&expanded&&videoTab==="prompt"&&<DramaVideoPromptEditor key={active.shot.id}
+                shotId={active.shot.id} setting={setting} theme={theme} disabled={disabled}
+                {...dramaVideoPromptSource(applyDramaPromptMode(active,setting),productionStyle)}
+                onChange={onProductionChange} onPendingChange={onPendingChange} onEditingChange={setPromptEditing}
+                onWaitForSave={onWaitForSave} existing={Boolean(existing)}/>}
             {confirmedInput&&expanded&&videoTab==="references"&&<section aria-label="视频参考素材" className="min-w-0 space-y-2 text-xs">
                 <div className="flex justify-between"><strong>绑定素材</strong><span style={muted}>引用图片 {preview.referenceImages.length} 张</span></div>
                 <div className="flex min-w-0 flex-wrap gap-2">

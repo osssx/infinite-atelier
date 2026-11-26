@@ -22,12 +22,17 @@ export type DramaVideoInput = {
 };
 export type DramaShotProduction = {mode:NonNullable<DramaVideoInput["mode"]>;firstFrame?:string;lastFrame?:string;gridInput?:boolean;gridImage?:string;target?:DramaVideoTarget;promptOverride?:DramaPromptOverride;durationSec?:number;aspectRatio?:string};
 
+/** Prompt source is independent of whether the required media have been selected. */
+export function applyDramaPromptMode(input:DramaVideoInput,setting:DramaShotProduction):DramaVideoInput{
+    if(setting.gridInput)return {...input,gridInput:true,mode:"omni_reference",prompt:input.prompt+"\n参考图是一张分镜网格。按从左到右、从上到下的顺序展开连续镜头，输出完整连续视频画面。"};
+    return {...input,gridInput:false,mode:setting.mode};
+}
+
 export function applyDramaProduction(input:DramaVideoInput,settings?:DramaShotProduction):DramaVideoInput{
     if(!settings)return input;
     if(settings.gridInput){
         if(!settings.gridImage||!/^cas:[a-f0-9]{64}$/.test(settings.gridImage))throw Error("请先选择分镜网格图");
-        return {...input,gridInput:true,mode:"omni_reference",prompt:input.prompt+"\n参考图是一张分镜网格。按从左到右、从上到下的顺序展开连续镜头，输出完整连续视频画面。",
-            referenceImages:[{id:`${input.shot.id}-grid`,name:"分镜网格",type:"image/png",dataUrl:"",storageKey:settings.gridImage}]};
+        return {...applyDramaPromptMode(input,settings),referenceImages:[{id:`${input.shot.id}-grid`,name:"分镜网格",type:"image/png",dataUrl:"",storageKey:settings.gridImage}]};
     }
     if(settings.mode==="text_to_video")return {...input,gridInput:false,mode:settings.mode,referenceImages:[]};
     if(settings.mode==="omni_reference")return {...input,gridInput:false,mode:settings.mode};

@@ -58,6 +58,7 @@ afterEach(async()=>{for(const root of roots)await act(async()=>root.unmount());r
 async function mount(options:{
  expanded?:boolean;theme?:"dark"|"light";initialShotId?:string;embedded?:boolean;confirmedInput?:boolean;
  configs?:ReadonlyMap<string,CanvasNodeData>;onPickImage?:(cb:(key:string)=>void)=>void;
+ production?:Record<string,DramaShotProduction>;productionStyle?:string;
  images?:{key:string;title:string}[];onPendingChange?:(key:string,save:(()=>Promise<void>)|null)=>void;onWaitForSave?:()=>Promise<void>;
 }={}){
  const el=document.createElement("div");document.body.append(el);
@@ -68,7 +69,7 @@ async function mount(options:{
  const createBatch=vi.fn<(_ids:string[])=>Promise<void>>(async()=>{});
  const refresh=vi.fn<(id:string,input:DramaVideoInput,fields:{prompt:boolean;duration:boolean;references?:boolean;overwrite:boolean})=>void>();
  function TestView(){
-  const [production,setProduction]=useState<Record<string,DramaShotProduction>>({});
+  const [production,setProduction]=useState<Record<string,DramaShotProduction>>(options.production??{});
   const feedback=useDramaFeedbackController();
   return <DramaFeedbackContext.Provider value={feedback.context}><div style={{width:1100,height:650}}>
    <DramaVideoConfigFields inputs={inputs} episodes={episodes} configs={options.configs}
@@ -77,7 +78,7 @@ async function mount(options:{
     onCreateSelected={createSelected} onCreateBatch={createBatch}
     onAction={action} onRefresh={refresh}
     expanded={options.expanded??true} initialShotId={options.initialShotId} embedded={options.embedded} confirmedInput={options.confirmedInput}
-    production={production} onPickImage={options.onPickImage??(cb=>cb(imageKey))}
+    production={production} productionStyle={options.productionStyle} onPickImage={options.onPickImage??(cb=>cb(imageKey))}
     images={options.images} onPendingChange={options.onPendingChange} onWaitForSave={options.onWaitForSave}
     onProductionChange={(id,value)=>{change(id,value);setProduction(curr=>({...curr,[id]:value}));}}/>
    <DramaFeedbackNotices notices={feedback.notices} clear={feedback.clear} theme={canvasThemes[options.theme??"dark"]}/></div></DramaFeedbackContext.Provider>;
@@ -154,6 +155,66 @@ it("stages channel selection, refreshes capabilities, preserves media settings a
  expect(el.textContent).toContain("测试在线渠道");
  await click([...el.querySelectorAll("button")].find(b=>b.textContent==="创建视频配置"));
  expect(action).toHaveBeenCalledTimes(1);
+});
+
+it.each(["dark","light"] as const)("edits and restores video prompts using the shared pending guard (%s)",async theme=>{
+ const pending=new Map<string,()=>Promise<void>>();
+ const wait=vi.fn(async()=>{});
+ const {el,change}=await mount({theme,productionStyle:"水彩",onWaitForSave:wait,onPendingChange:(key,save)=>{if(save)pending.set(key,save);else pending.delete(key);}});
+ const button=(text:string)=>[...el.querySelectorAll("button")].find(b=>b.textContent?.trim()===text);
+ const editor=()=>el.querySelector('[data-video-prompt-editor]')!;
+ const type=async(value:string)=>{
+  const field=editor().querySelector<HTMLTextAreaElement>("textarea")!;
+  await act(async()=>{Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,"value")!.set!.call(field,value);field.dispatchEvent(new Event("input",{bubbles:true}));});
+ };
+ await click(button("提示词"));
+ expect(editor().textContent).toContain("影片风格：水彩");
+ await click(editor().querySelector('[aria-label="编辑视频提示词"]'));
+ expect(editor().querySelector("textarea")?.getAttribute("rows")).toBe("12");
+ await type("  ");
+ expect(editor().querySelector<HTMLButtonElement>('[aria-label="保存视频提示词"]')?.disabled).toBe(true);
+ await type("@[node:bad]");
+ expect(editor().textContent).toContain("内部节点引用");
+ await type("人工提示词\n保持留白");
+ expect(pending.has("video-prompt:s1")).toBe(true);
+ expect((button("生成设置") as HTMLButtonElement).disabled).toBe(true);
+ expect((button("创建视频配置") as HTMLButtonElement).disabled).toBe(true);
+ expect(el.querySelector<HTMLButtonElement>('[aria-label^="选择视频镜头 2"]')?.disabled).toBe(true);
+ expect(change).not.toHaveBeenCalled();
+ await click(editor().querySelector('[data-drama-action="cancel"]'));
+ expect(change).not.toHaveBeenCalled();expect(pending.size).toBe(0);
+ await click(editor().querySelector('[aria-label="编辑视频提示词"]'));
+ await type("人工提示词\n保持留白");
+ await act(async()=>{await pending.get("video-prompt:s1")!();});
+ expect(change.mock.lastCall?.[1]).toMatchObject({mode:"text_to_video",promptOverride:{text:"人工提示词\n保持留白",sourceFingerprint:JSON.stringify(["兔子走进森林","水彩","text_to_video",false])}});
+ expect(wait).toHaveBeenCalledTimes(1);
+ expect(editor().querySelector("pre")?.textContent).toBe("人工提示词\n保持留白");
+ expect(pending.size).toBe(0);
+ await click(button("恢复自动生成"));
+ expect(editor().querySelector("textarea")?.value).toContain("影片风格：水彩");
+ await click(editor().querySelector('[data-drama-action="cancel"]'));
+ expect(change).toHaveBeenCalledTimes(1);
+ await click(button("恢复自动生成"));await click(editor().querySelector('[aria-label="保存视频提示词"]'));
+ expect(change.mock.lastCall?.[1].promptOverride).toBeUndefined();
+ expect(editor().textContent).toContain("自动生成");
+});
+it("preserves outdated manual prompts and retains pending input after save failure",async()=>{
+ const pending=new Map<string,()=>Promise<void>>();
+ let fail=true;
+ const {el,change}=await mount({embedded:true,production:{s1:{mode:"first_frame",firstFrame:imageKey,promptOverride:{text:"旧人工提示",sourceFingerprint:"old"}}},onPendingChange:(key,save)=>{if(save)pending.set(key,save);else pending.delete(key);},onWaitForSave:async()=>{if(fail)throw Error("保存冲突");}});
+ await click([...el.querySelectorAll("button")].find(b=>b.textContent==="提示词"));
+ const editor=()=>el.querySelector('[data-video-prompt-editor]')!;
+ expect(editor().textContent).toContain("已保留人工提示词");
+ expect(editor().querySelector("pre")?.textContent).toBe("旧人工提示");
+ await click(editor().querySelector('[aria-label="编辑视频提示词"]'));
+ await click(editor().querySelector('[aria-label="保存视频提示词"]'));
+ expect(editor().textContent).toContain("保存冲突");
+ expect(editor().querySelector("textarea")?.value).toBe("旧人工提示");
+ expect(pending.size).toBe(1);
+ fail=false;await act(async()=>{await pending.get("video-prompt:s1")!();});
+ expect(change).toHaveBeenCalledTimes(1);
+ expect(editor().textContent).not.toContain("已保留人工提示词");
+ expect(pending.size).toBe(0);
 });
 
 it("embeds one selected shot without a duplicate directory or batch operations",async()=>{

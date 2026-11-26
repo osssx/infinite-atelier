@@ -995,24 +995,21 @@ export function DramaPipelineNodePanel({ node, onChange, onCreateVideoConfigs, v
         </>}
         {(storyboard||episodePlanning) && (!workspaceMode || workspaceTab==="runs") && <>
          {workspaceMode&&<section data-drama-runs-panel="" aria-label="生成候选记录"
-             className="min-w-0 shrink-0 space-y-2 rounded-xl border p-3"
-             style={{background:theme.node.panel,borderColor:theme.node.stroke,color:theme.node.text}}>
-             <div className="flex flex-wrap items-center justify-between gap-2">
-                 <div className="flex items-center gap-2">
-                     <Sparkles size={17} aria-hidden="true" style={{color:theme.node.muted}}/>
-                     <h3 className="text-sm font-semibold">生成候选记录</h3>
+             className="min-w-0 shrink-0 space-y-2" style={{color:theme.node.text}}>
+             <div data-drama-runs-heading="" className="flex min-h-7 min-w-0 items-center justify-between gap-2 px-1">
+                 <div className="flex min-w-0 items-center gap-1.5"
+                   title="仅查看候选不会覆盖现有草案。展开运行记录可预览候选、检查冲突并选择采用；记录在此页面打开期间自动刷新。">
+                     <Sparkles size={15} className="shrink-0" aria-hidden="true" style={{color:theme.node.muted}}/>
+                     <h3 className="m-0 truncate text-sm font-semibold">生成候选记录</h3>
                  </div>
-                 <span className="rounded-md border px-2 py-1 text-[11px] tabular-nums"
-                   style={{borderColor:theme.node.stroke,color:theme.node.muted,background:theme.toolbar.activeBg}}>
+                 <span className="shrink-0 whitespace-nowrap text-[11px] tabular-nums"
+                   style={{color:theme.node.muted}}>
                      共 {runs.length} 条 · 待采用 {runs.filter(run=>run.status==="ready").length} 条
                  </span>
              </div>
-             <p className="text-xs leading-relaxed" style={{color:theme.node.muted}}>
-                 仅查看候选不会覆盖现有草案。展开运行记录可预览候选、检查冲突并选择采用；记录在此页面打开期间自动刷新。
-             </p>
-             {runs.length===0&&<div role="status" className="rounded-lg border border-dashed px-4 py-8 text-center"
+             {runs.length===0&&<div role="status" className="rounded-lg border border-dashed px-4 py-6 text-center text-xs"
                style={{borderColor:theme.node.stroke,color:theme.node.muted}}>
-                 暂无生成候选记录。返回剧集编辑页生成候选后，可在这里查看状态与结果。
+                 暂无生成候选记录。返回{storyboard?"镜头":"剧集"}编辑页生成候选后，可在这里查看状态与结果。
              </div>}
          </section>}
          <div data-drama-run-scroll-region={workspaceMode?"":undefined}

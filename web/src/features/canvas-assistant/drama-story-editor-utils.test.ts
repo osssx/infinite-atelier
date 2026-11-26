@@ -1,5 +1,5 @@
 import {describe,expect,it} from "vitest";
-import {applyStoryCandidate,createStoryTarget,storyAssistRequest} from "./drama-story-editor-utils";
+import {applyStoryCandidate,createStoryTarget,storyAssistRequest,storyTargetForOperation,storyCandidateComparison} from "./drama-story-editor-utils";
 describe("story AI edit target and acceptance",()=>{
  it("replaces only the original selection while preserving its neighbors",()=>{
   const story="开头\n她推开门\n结尾";
@@ -30,6 +30,19 @@ describe("story AI edit target and acceptance",()=>{
   expect(applyStoryCandidate(raw,createStoryTarget("rewrite",raw),"新故事")).toBe("新故事");
   expect(applyStoryCandidate(raw,createStoryTarget("polish",raw),"润色后的故事")).toBe("润色后的故事");
   expect(()=>applyStoryCandidate(raw,createStoryTarget("rewrite",raw),"  ")).toThrow(/为空/);
+ });
+ it("maps explicit scopes to exact targets and a separate selected polish mode",()=>{
+  const raw="开场\n旧段落\n结局";
+  const scoped=storyTargetForOperation("polish",raw,{start:3,end:6},"end");
+  expect(scoped.mode).toBe("selection-polish");
+  expect(storyCandidateComparison(scoped)).toEqual({kind:"replace",original:"旧段落"});
+  expect(storyAssistRequest(scoped,"")).toMatchObject({mode:"selection-polish",selectedText:"旧段落",sourceText:""});
+  expect(applyStoryCandidate(raw,scoped,"新段落")).toBe("开场\n新段落\n结局");
+  expect(storyTargetForOperation("continue",raw,{start:3,end:3},"cursor").start).toBe(3);
+  expect(storyTargetForOperation("continue",raw,{start:3,end:6},"end").start).toBe(raw.length);
+  expect(()=>storyTargetForOperation("continue",raw,null,"cursor")).toThrow(/定位/);
+  expect(()=>storyAssistRequest(createStoryTarget("continue","    "),"")).toThrow(/起始/);
+  expect(()=>storyAssistRequest(createStoryTarget("continue"," ".repeat(5000)+"结束",0),"")).toThrow(/附近/);
  });
  it("rejects overly long full stories and selections without truncating user's text",()=>{
   expect(()=>storyAssistRequest(createStoryTarget("rewrite","中文".repeat(5000)),"")).toThrow(/限制/);

@@ -923,7 +923,7 @@ export function buildApp({db,authorize,sessionAuth,autoLocalSession=false,blobSt
   params:{type:"object",required:["id"],additionalProperties:false,properties:{id:idSchema}},
   body:{type:"object",additionalProperties:false,
    required:["nodeId","mode","channelId","provider","model"],
-   properties:{nodeId:canvasNodeIdSchema,mode:{enum:["continue","rewrite","polish","selection"]},
+   properties:{nodeId:canvasNodeIdSchema,mode:{enum:["continue","rewrite","polish","selection","selection-polish"]},
     channelId:idSchema,provider:{enum:["openai","openai_compatible","google_gemini"]},
     baseUrl:{type:"string",maxLength:1024},model:{type:"string",minLength:1,maxLength:128},
     sourceText:{type:"string",maxLength:16000},selectedText:{type:"string",maxLength:12000},

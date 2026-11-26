@@ -81,6 +81,19 @@ const vault={list:()=>[{id:"p1mock",provider:"openai_compatible",hasKey:true,key
 const app=buildApp({db,sessionAuth:createLocalSessionAuth(),autoLocalSession:true,blobStore,projectArchive,vault,
  assistantChat:async({messages})=>{
   modelCalls++;
+  if(process.env.ATELIER_DRAMA_STORY_AI_E2E==="1"){
+   const prompt=messages[0]?.content??"";
+   if(prompt.startsWith("你是专业中文小说与短剧故事编辑")){
+    await new Promise(resolve=>setTimeout(resolve,900));
+    if(prompt.includes("只润色选中的原文片段")){
+     if(!prompt.includes("<选中原文>\n故事草案\n</选中原文>"))throw Error("fixture_unexpected_story_selection");
+     return {answer:"润色候选"};
+    }
+    if(prompt.includes("只输出新增文字"))return {answer:"续写候选"};
+    if(prompt.includes("输出完整改写正文"))return {answer:"全文改写候选"};
+    throw Error("fixture_unexpected_story_mode");
+   }
+  }
   if(process.env.ATELIER_DRAMA_FEEDBACK_E2E==="1"){
    const prompt=messages[0]?.content??"";
    // A deterministic short delay makes the actual UI running state observable.

@@ -20,12 +20,18 @@ test("story AI prompts separate selection, preceding context and requested rewri
  assert.match(continuing,/她走进树林/);
  const polishing=buildDramaStoryEditPrompt({mode:"polish",sourceText:"这天，他又走了过去。"});
  assert.match(polishing,/不擅自更改情节设定/);
+ const scopedPolish=buildDramaStoryEditPrompt({mode:"selection-polish",selectedText:"选中文字",beforeText:"前文",afterText:"后文"});
+ assert.match(scopedPolish,/只润色选中的原文片段/);
+ assert.match(scopedPolish,/<选中原文>\n选中文字/);
+ assert.doesNotMatch(scopedPolish,/待处理故事全文/);
 });
 test("story AI prompts reject empty selections, missing source and oversized text",()=>{
  assert.throws(()=>buildDramaStoryEditPrompt({mode:"selection",selectedText:"  "}),/drama_story_edit_source_required|drama_story_edit_selection_required/);
  assert.throws(()=>buildDramaStoryEditPrompt({mode:"rewrite",sourceText:" "}),/drama_story_edit_source_required/);
  assert.throws(()=>buildDramaStoryEditPrompt({mode:"invalid",sourceText:"test"}),/drama_story_edit_mode_invalid/);
  assert.throws(()=>buildDramaStoryEditPrompt({mode:"rewrite",sourceText:"字".repeat(7000)}),/drama_story_edit_context_too_large/);
+ assert.throws(()=>buildDramaStoryEditPrompt({mode:"selection-polish",selectedText:" ",beforeText:"前文"}),/source_required|selection_required/);
+ assert.throws(()=>buildDramaStoryEditPrompt({mode:"continue",beforeText:"   ",afterText:"\n"}),/source_required/);
 });
 test("story-edit HTTP checks project, source node and authorization, returns candidate without saving",async t=>{
  const db=new DatabaseSync(":memory:");initializeSchema(db);t.after(()=>db.close());
@@ -49,5 +55,9 @@ test("story-edit HTTP checks project, source node and authorization, returns can
  assert.equal(calls.length,1);
  assert.equal(calls[0].canvasActions,false);
  assert.equal(calls[0].plainCanvasChat,true);
+ const polished=await app.inject({method:"POST",url:path,payload:{...body,mode:"selection-polish"},headers:{"x-test-owner":"yes"}});
+ assert.equal(polished.statusCode,200,polished.body);
+ assert.equal(polished.json().mode,"selection-polish");
+ assert.match(calls[1].messages[0].content,/只润色选中的原文片段/);
  assert.equal(getProject(db,"story-ai").document.nodes[0].metadata.dramaDraft,original);
 });

@@ -1,6 +1,6 @@
 /** Bounded, text-only story edits. Model output is an untrusted candidate, never a committed draft. */
 const fail=code=>Object.assign(Error(code),{code,statusCode:422});
-const modes=new Set(["continue","rewrite","polish","selection"]);
+const modes=new Set(["continue","rewrite","polish","selection","selection-polish"]);
 export function buildDramaStoryEditPrompt({mode,sourceText="",selectedText="",beforeText="",afterText="",instruction=""}={}){
  if(!modes.has(mode))throw fail("drama_story_edit_mode_invalid");
  const inputs=[sourceText,selectedText,beforeText,afterText,instruction];
@@ -9,14 +9,17 @@ export function buildDramaStoryEditPrompt({mode,sourceText="",selectedText="",be
   Buffer.byteLength(selectedText)>12000||Buffer.byteLength(beforeText)>5000||
   Buffer.byteLength(afterText)>2000)throw fail("drama_story_edit_context_too_large");
  if(mode!=="continue"&&!selectedText.trim()&&!sourceText.trim())throw fail("drama_story_edit_source_required");
- if(mode==="selection"&&!selectedText.trim())throw fail("drama_story_edit_selection_required");
+ const scoped=mode==="selection"||mode==="selection-polish";
+ if(scoped&&!selectedText.trim())throw fail("drama_story_edit_selection_required");
+ if(mode==="continue"&&!beforeText.trim()&&!afterText.trim())throw fail("drama_story_edit_source_required");
  const task={
   continue:"从上下文所在位置自然续写故事，保持角色、人物关系、叙事视角和时间线一致。只输出新增文字，禁止重复上文。",
   rewrite:"改写给定完整故事，优化叙事流畅度和结构，保留关键剧情、角色与事件；输出完整改写正文。",
   polish:"润色给定完整故事，改善语言、节奏、错别字和重复表述，不擅自更改情节设定；输出完整润色正文。",
-  selection:"只改写选中的原文片段，保持前后衔接；不能输出上下文中未选中的内容。"
+  selection:"只改写选中的原文片段，保持前后衔接；不能输出上下文中未选中的内容。",
+  "selection-polish":"只润色选中的原文片段，改善语言、节奏、错别字和重复表述，保持前后衔接和剧情设定；不能输出上下文中未选中的内容。"
  }[mode];
- const context=mode==="selection"||mode==="continue"
+ const context=scoped||mode==="continue"
   ?[beforeText&&"<前文参考>\n"+beforeText+"\n</前文参考>",
     selectedText&&"<选中原文>\n"+selectedText+"\n</选中原文>",
     afterText&&"<后文参考>\n"+afterText+"\n</后文参考>"].filter(Boolean).join("\n\n")

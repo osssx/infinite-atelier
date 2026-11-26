@@ -12,7 +12,9 @@ import type {DramaWorkspaceTab} from "./drama-pipeline-node-panel";
 type StoryWorkspaceTab=DramaWorkspaceTab|"settings";
 
 export type DramaWorkspaceFocus={episodeId?:string;sequenceId?:string;shotId?:string;assetId?:string;variantId?:string;assetDirectory?:AssetDirectorySelection};
-export type WorkspacePendingRegistration=(key:string,save:(()=>Promise<void>)|null)=>void;
+/** Story candidates must be resolved separately from saving or discarding draft edits. */
+export type StoryCandidateResolution={canAdopt:boolean;adopt:()=>{dirty:boolean}|null;discard:()=>{dirty:boolean}};
+export type WorkspacePendingRegistration=(key:string,save:(()=>Promise<void>)|null,candidate?:StoryCandidateResolution)=>void;
 
 type WorkspaceTabItem={id:StoryWorkspaceTab;label:string;icon:typeof BookOpenText};
 
@@ -98,6 +100,8 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
  const [pendingAction,setPendingAction]=useState<StoryWorkspaceTab|"close"|null>(null);
  const [pendingCount,setPendingCount]=useState(0);
  const [storyCandidatePending,setStoryCandidatePending]=useState(false);
+ const [storyCandidateAdoptable,setStoryCandidateAdoptable]=useState(false);
+ const storyCandidateResolver=useRef<StoryCandidateResolution|null>(null);
  const [error,setError]=useState("");
  const [busy,setBusy]=useState(false);
  const busyRef=useRef(false);
@@ -105,12 +109,15 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
  const pendingMenuRef=useRef<HTMLDivElement>(null);
  const [editorEpoch,setEditorEpoch]=useState(0);
  const pending=useRef(new Map<string,()=>Promise<void>>());
- const registerPending=useCallback<WorkspacePendingRegistration>((key,save)=>{
+ const registerPending=useCallback<WorkspacePendingRegistration>((key,save,candidate)=>{
   if(save)pending.current.set(key,save);else pending.current.delete(key);
   setPendingCount(pending.current.size);
-  if(key===nodeId+":story-candidate")setStoryCandidatePending(!!save);
+  if(key===nodeId+":story-candidate"){
+   storyCandidateResolver.current=save?candidate??null:null;
+   setStoryCandidatePending(!!save);setStoryCandidateAdoptable(!!save&&!!candidate?.canAdopt);
+  }
  },[nodeId]);
- useEffect(()=>()=>{pending.current.clear()},[nodeId,projectId]);
+ useEffect(()=>()=>{pending.current.clear();storyCandidateResolver.current=null;},[nodeId,projectId]);
  useEffect(()=>{
   if(!pendingCount&&!busy)setPendingMenu(false);
  },[pendingCount,busy]);
@@ -140,6 +147,7 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
  },[perform]);
  const decide=async(save:boolean,target:StoryWorkspaceTab|"close"|"stay"|null=pendingAction)=>{
   if(!target||busyRef.current||reviewBusyRef.current||operationLockedRef.current)return;
+  if(storyMode&&pending.current.has(nodeId+":story-candidate")){setError("请先处理 AI 候选");return;}
   busyRef.current=true;setBusy(true);setError("");
   try{
    if(save){
@@ -162,6 +170,22 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
    setError(e instanceof Error?e.message:"草案保存失败，请检查冲突后重试");
   }
   finally{busyRef.current=false;setBusy(false);}
+ };
+ // Resolve the temporary AI result first. Adopt is a local edit, never a save or confirmation.
+ const resolveStoryCandidate=async(adopt:boolean,target:StoryWorkspaceTab|"close"|"stay"|null=pendingAction)=>{
+  if(!target||busyRef.current||operationLockedRef.current||reviewBusyRef.current)return;
+  const resolver=storyCandidateResolver.current;
+  if(!resolver||adopt&&!resolver.canAdopt)return;
+  const result=adopt?resolver.adopt():resolver.discard();
+  if(!result){setError("候选暂不可采用，请返回查看候选状态。");return;}
+  pending.current.delete(nodeId+":story-candidate");storyCandidateResolver.current=null;
+  setStoryCandidatePending(false);setStoryCandidateAdoptable(false);setPendingCount(pending.current.size);setError("");
+  // The story editor will register its resulting draft when React commits. Keep the
+  // requested navigation open for the separate save/discard decision if needed.
+  if(result.dirty||[...pending.current.keys()].some(key=>key!==nodeId+":story"))return;
+  if(target==="stay"){setPendingMenu(false);return;}
+  setPendingAction(null);
+  try{await perform(target);}catch(e){setError(e instanceof Error?e.message:"操作失败");}
  };
  const confirmStory=async()=>{
   if(!storyVersionAction||busyRef.current||operationLockedRef.current||storyVersionAction.busy||pending.current.has(nodeId+":story-candidate"))return;
@@ -190,6 +214,7 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
  const subtle={background:theme.node.panel,borderColor:theme.node.stroke,color:theme.node.text};
  const action="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-lg border px-3 text-xs font-medium transition-opacity hover:opacity-80 disabled:cursor-not-allowed disabled:opacity-40";
  const primary={background:theme.node.text,color:theme.node.panel,borderColor:theme.node.text};
+ const pendingLabel=storyCandidatePending?(pendingCount>1?`候选待审核 · ${pendingCount-1} 处未保存`:"候选待审核"):`${pendingCount} 处未保存`;
  return <>
   <Modal open centered destroyOnHidden footer={null} closable={!reviewBusy&&!operationLocked&&!busy} maskClosable={!reviewBusy&&!operationLocked&&!busy} keyboard={!reviewBusy&&!operationLocked&&!busy&&!pendingMenu} onCancel={()=>request("close")}
    closeIcon={<X size={18} style={{color:theme.node.text}}/>}
@@ -235,32 +260,36 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
         onSelect={()=>request(item.id)}/>)}
      </nav>
      {storyMode&&storyVersionAction&&<button type="button" data-story-confirm-version="" className={action+" !min-h-7 shrink-0"}
-      style={primary} title="保存当前草案后确认故事正文及美术设定"
+      style={primary} title={storyCandidatePending?"请先采用或舍弃 AI 候选":"保存当前草案后确认故事正文及美术设定"}
       disabled={busy||operationLocked||storyVersionAction.busy||storyCandidatePending||(!pendingCount&&(!storyVersionAction.hasText||versionConfirmed&&!storyVersionAction.allowReconfirm))}
-      onClick={()=>void confirmStory()}>{busy||storyVersionAction.busy?"处理中…":pendingCount?"保存并确认故事版本":"确认故事版本"}</button>}
+      onClick={()=>void confirmStory()}>{busy||storyVersionAction.busy?"处理中…":pendingCount&&!storyCandidatePending?"保存并确认故事版本":"确认故事版本"}</button>}
      {pendingCount>0&&<div ref={pendingMenuRef} className="relative ml-auto shrink-0" data-drama-pending-status="">
-      <button type="button" aria-expanded={pendingMenu} aria-label={pendingCount+" 处未保存"}
-       title={pendingCount+" 组尚未保存的局部"+(episodeMode&&tab==="runs"?"候选":"草案")+"修改"}
+      <button type="button" aria-expanded={pendingMenu} aria-label={pendingLabel}
+       title={storyCandidatePending?"当前 AI 候选尚未处理":pendingCount+" 组尚未保存的局部"+(episodeMode&&tab==="runs"?"候选":"草案")+"修改"}
        disabled={reviewBusy||operationLocked||busy}
        className="inline-flex h-7 items-center gap-1.5 whitespace-nowrap rounded-md border px-2 text-[11px] font-medium hover:opacity-80 focus-visible:outline focus-visible:outline-2 disabled:opacity-50"
        style={{...subtle,outlineColor:theme.node.activeStroke}}
        onClick={()=>{setError("");setPendingMenu(open=>!open);}}>
        <span aria-hidden="true" className="size-1.5 rounded-full bg-amber-500"/>
-       <span role="status">{pendingCount} 处未保存</span>
+       <span role="status">{pendingLabel}</span>
       </button>
       {pendingMenu&&<div role="dialog" aria-label="未保存修改" data-drama-pending-menu=""
        className="absolute right-0 top-full z-40 mt-2 w-[min(320px,calc(100vw-64px))] space-y-3 rounded-lg border p-3 text-xs"
        style={{...subtle,boxShadow:"0 8px 24px rgba(0,0,0,.18)"}}>
-       <strong className="block text-sm">{pendingCount} 组尚未保存的局部{episodeMode&&tab==="runs"?"候选":"草案"}修改</strong>
-       <p className="leading-relaxed" style={{color:theme.node.muted}}>保存或放弃当前修改后，仍停留在当前页面。</p>
+       <strong className="block text-sm">{storyCandidatePending?"AI 候选待审核":`${pendingCount} 组尚未保存的局部${episodeMode&&tab==="runs"?"候选":"草案"}修改`}</strong>
+       <p className="leading-relaxed" style={{color:theme.node.muted}}>{storyCandidatePending?"采用仅写入本地草案；舍弃候选不会丢失现有正文修改。":"保存或放弃当前修改后，仍停留在当前页面。"}</p>
        {error&&<p role="alert" className="break-words rounded-md border p-2" style={subtle}>{error}</p>}
-       <div className="flex flex-wrap justify-end gap-1.5">
+       {storyCandidatePending?<div className="flex flex-wrap justify-end gap-1.5">
+        <button type="button" className={action+" !min-h-7 !px-2"} style={subtle} onClick={()=>{setPendingMenu(false);setError("");}}>继续查看</button>
+        <button type="button" className={action+" !min-h-7 !px-2"} style={subtle} disabled={busy||operationLocked} onClick={()=>void resolveStoryCandidate(false,"stay")}>舍弃候选</button>
+        <button type="button" className={action+" !min-h-7 !px-2"} style={primary} disabled={busy||operationLocked||!storyCandidateAdoptable} onClick={()=>void resolveStoryCandidate(true,"stay")}>采用到草案</button>
+       </div>:<div className="flex flex-wrap justify-end gap-1.5">
         <button type="button" className={action+" !min-h-7 !px-2"} style={subtle} disabled={busy} onClick={()=>{setPendingMenu(false);setError("");}}>继续编辑</button>
         <button type="button" className={action+" !min-h-7 !px-2"} style={subtle} disabled={busy||reviewBusy||operationLocked} onClick={()=>void decide(false,"stay")}>放弃修改</button>
         <button type="button" className={action+" !min-h-7 !px-2"} style={primary} disabled={busy||reviewBusy||operationLocked} onClick={()=>void decide(true,"stay")}>
          {busy?"正在保存…":episodeMode&&tab==="runs"?"保存候选":"保存草案"}
         </button>
-       </div>
+       </div>}
       </div>}
      </div>}
     </div>
@@ -312,7 +341,7 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
    </div>
    </ConfigProvider>
   </Modal>
-  <Modal title={<span style={{color:theme.node.text}}>存在未提交的{episodeMode&&tab==="runs"?"候选":"草案"}修改</span>}
+  <Modal title={<span style={{color:theme.node.text}}>{storyCandidatePending?"存在待审核的 AI 候选":`存在未提交的${episodeMode&&tab==="runs"?"候选":"草案"}修改`}</span>}
    open={pendingAction!==null} closable={!busy}
    closeIcon={<X size={17} style={{color:theme.node.text}}/>}
    onCancel={()=>{if(!busy)setPendingAction(null)}} footer={null} centered
@@ -322,18 +351,24 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
    <div className="space-y-3">
     <div className="flex items-start gap-2.5">
      <ShieldAlert size={19} className="mt-0.5 shrink-0" style={{color:theme.node.muted}}/>
-     <p className="text-sm leading-relaxed">离开当前编辑区会丢失尚未保存的局部修改。请选择保存{episodeMode&&tab==="runs"?"候选":"草案"}、放弃修改或继续编辑。</p>
+     <p className="text-sm leading-relaxed">{storyCandidatePending?
+      "请先处理本次会话的 AI 候选。采用后仍需选择是否保存草案；舍弃候选不影响现有草案。关闭后不会保留候选。":
+      `离开当前编辑区会丢失尚未保存的局部修改。请选择保存${episodeMode&&tab==="runs"?"候选":"草案"}、放弃修改或继续编辑。`}</p>
     </div>
     {error&&<p role="alert" className="rounded-lg border p-2 text-xs"
      style={{...subtle,background:theme.toolbar.activeBg}}>{error}</p>}
-    <div className="flex flex-wrap justify-end gap-2 border-t pt-3" style={{borderColor:theme.node.stroke}}>
+    {storyCandidatePending?<div data-story-candidate-exit="" className="flex flex-wrap justify-end gap-2 border-t pt-3" style={{borderColor:theme.node.stroke}}>
+     <button type="button" disabled={busy} className={action} style={subtle} onClick={()=>setPendingAction(null)}>继续查看</button>
+     <button type="button" disabled={busy||operationLocked} className={action} style={subtle} onClick={()=>void resolveStoryCandidate(false)}>舍弃候选</button>
+     <button type="button" disabled={busy||operationLocked||!storyCandidateAdoptable} className={action} style={primary} onClick={()=>void resolveStoryCandidate(true)}>采用到草案</button>
+    </div>:<div className="flex flex-wrap justify-end gap-2 border-t pt-3" style={{borderColor:theme.node.stroke}}>
      <button type="button" disabled={busy} className={action} style={subtle}
       onClick={()=>setPendingAction(null)}>继续编辑</button>
      <button type="button" disabled={busy} className={action} style={subtle}
       onClick={()=>void decide(false)}>放弃修改</button>
      <button type="button" disabled={busy} className={action} style={primary}
       onClick={()=>void decide(true)}>{busy?"正在保存…":episodeMode&&tab==="runs"?"保存候选":"保存草案"}</button>
-    </div>
+    </div>}
    </div>
   </Modal>
  </>;

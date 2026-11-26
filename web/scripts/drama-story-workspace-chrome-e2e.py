@@ -1,4 +1,4 @@
-"""Story S1/S2 real Chrome and isolated SQLite persistence regression."""
+"""Story S1/S2/S3 real Chrome, isolated SQLite and deterministic model-stub regression."""
 from __future__ import annotations
 import importlib.util
 import json
@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.request
 
 ROOT=Path(__file__).resolve().parents[1]
@@ -21,7 +22,7 @@ def run():
     root=Path(tempfile.mkdtemp(prefix="infinite-atelier-drama-p1-browser-"))
     profile=root.parent/(root.name+"-chrome-profile")
     backend_port,front_port,chrome_port=p1.port(),p1.port(),p1.port()
-    env=dict(os.environ,ATELIER_DRAMA_P1_BROWSER_E2E="1",ATELIER_P34B_BROWSER_E2E="1",ATELIER_DATA_DIR=str(root),ATELIER_BACKEND_PORT=str(backend_port))
+    env=dict(os.environ,ATELIER_DRAMA_P1_BROWSER_E2E="1",ATELIER_P34B_BROWSER_E2E="1",ATELIER_DRAMA_STORY_AI_E2E="1",ATELIER_DATA_DIR=str(root),ATELIER_BACKEND_PORT=str(backend_port))
     processes=[];logs=[];page=None;passed=[]
     portal='[data-creative-workspace-node-id="story"]'
     card='[data-node-id="story"]'
@@ -51,6 +52,10 @@ def run():
         passed.append(name);print("STORY_BROWSER_ASSERT",name,flush=True)
     def pending_modal_button(label):
         check("pending "+label,"(()=>{const modals=[...document.querySelectorAll('.ant-modal')];const modal=modals.find(m=>m.textContent.includes('存在未提交的草案修改'));const b=[...(modal?.querySelectorAll('button')||[])].find(x=>x.textContent.trim()===%s);if(!b||b.disabled)return false;b.click();return true})()"%q(label))
+    def select_range(start,end):
+        check("select story range %d:%d"%(start,end),"(()=>{const el=document.querySelector(%s);if(!el)return false;el.focus();el.setSelectionRange(%d,%d);el.dispatchEvent(new MouseEvent('mouseup',{bubbles:true}));return true})()"%(q(field),start,end))
+    def candidate_modal_button(label):
+        check("candidate exit "+label,"(()=>{const section=document.querySelector('[data-story-candidate-exit]');const b=[...(section?.querySelectorAll('button')||[])].find(x=>x.textContent.trim()===%s);if(!b||b.disabled)return false;b.click();return true})()"%q(label))
     try:
         launch("backend",["node","scripts/drama-p1-browser-fixture.mjs"])
         fixture=p1.wait_for(lambda:json.loads((root/"p1-fixture.json").read_text("utf-8")) if (root/"p1-fixture.json").exists() else None,"fixture",45)
@@ -112,8 +117,58 @@ def run():
         check("workspace switched theme","document.querySelector("+q(portal)+")?.dataset.dramaWorkspaceTheme==="+q("light" if current_theme=="dark" else "dark"))
         page.call("Emulation.setDeviceMetricsOverride",{"width":1024,"height":768,"deviceScaleFactor":1.25,"mobile":False})
         check("narrow workspace remains contained","(()=>{const r=document.querySelector(%s);return r&&r.getBoundingClientRect().right<=innerWidth&&r.querySelector('[data-story-textarea]').clientHeight>0})()"%q(portal))
+        # S3: isolated assistantChat stub, but actual HTTP, model routing, UI and SQLite.
+        saved="浏览器故事草案\n第二段"
+        revised="浏览器人工确认候选\n第二段"
+        button("AI 创作");select_range(3,7);button("润色")
+        check("selected polish range","document.querySelector("+q(portal+" [data-story-ai-scope]")+")?.textContent.includes('4–7')")
+        check("narrow AI layout stays within the workspace","(()=>{const w=document.querySelector(%s);const a=w.querySelector('[aria-label=\"故事 AI 创作\"]');return a&&a.clientWidth>0&&a.scrollWidth<=a.clientWidth+2&&a.getBoundingClientRect().right<=innerWidth})()"%q(portal))
+        button("生成候选")
+        check("running AI blocks tab and version confirmation","(()=>{const r=document.querySelector(%s);return r.textContent.includes('AI 生成中')&&r.querySelector('nav button').disabled&&r.querySelector('[data-story-confirm-version]').disabled})()"%q(portal))
+        check("selection original and candidate","(()=>{const r=document.querySelector('[data-story-ai-candidate]');return r?.querySelector('[data-story-candidate-original]').textContent==='故事草案'&&r.querySelector('[data-story-candidate-text]').textContent==='润色候选'&&!r.querySelector('textarea')})()")
+        assert meta()["dramaDraft"]==saved and meta()["dramaConfirmed"]==saved
+        click(portal+' [aria-label="编辑 AI 候选"]')
+        write(portal+' [data-story-candidate-edit]',"不采用的候选")
+        click(portal+' [aria-label="AI 候选操作"] [data-drama-action="cancel"]')
+        check("candidate cancel retains generated text","document.querySelector('[data-story-candidate-text]')?.textContent==='润色候选'")
+        click(portal+' [aria-label="编辑 AI 候选"]')
+        write(portal+' [data-story-candidate-edit]',"人工确认候选")
+        click(portal+' [aria-label="确认AI 候选"]')
+        check("candidate confirm is local only","document.querySelector('[data-story-candidate-text]')?.textContent==='人工确认候选'")
+        assert meta()["dramaDraft"]==saved
+        button("美术设定");candidate_modal_button("继续查看")
+        check("candidate retained after leaving guard is cancelled","!!document.querySelector('[data-story-ai-candidate]')")
+        button("美术设定");candidate_modal_button("采用到草案")
+        check("candidate adopted locally before separate save","document.querySelector("+q(field)+")?.value==="+q(revised)+"&&!document.querySelector('[data-story-ai-candidate]')")
+        assert meta()["dramaDraft"]==saved
+        pending_modal_button("保存草案")
+        check("second navigation decision leaves editor after save","!!document.querySelector("+q(portal+" [data-story-art-panel]")+")")
+        backend("adoption persists draft only after explicit save",lambda m:m["dramaDraft"]==revised and m["dramaConfirmed"]==saved and m["dramaConfirmedVersionId"]==confirmed_id)
+        button("故事正文");button("AI 创作")
+        select_range(revised.index("\n")+1,revised.index("\n")+1);button("当前光标");button("生成候选")
+        check("insertion preview is explicit","document.querySelector('[data-story-candidate-original]')?.textContent.includes('在此插入续写')")
+        button("收起 AI 创作");button("继续查看")
+        check("collapse guard retains candidate","!!document.querySelector('[data-story-ai-candidate]')")
+        button("收起 AI 创作");button("舍弃候选")
+        check("explicit discard collapses panel","!document.querySelector('[aria-label=\"故事 AI 创作\"]')")
+        assert meta()["dramaDraft"]==revised
+        button("AI 创作");button("改写");button("生成候选")
+        check("full rewrite preview","document.querySelector('[data-story-candidate-original]')?.textContent==="+q(revised))
+        click(portal+' [aria-label="编辑故事正文"]');write(field,"用户自己的更新")
+        check("stale candidate disables adoption","(()=>{const c=document.querySelector('[data-story-ai-candidate]');return c?.textContent.includes('已过期')&&[...c.querySelectorAll('button')].find(b=>b.textContent==='采用到草案').disabled})()")
+        button("美术设定")
+        check("stale candidate cannot be adopted from exit guard","[...document.querySelectorAll('[data-story-candidate-exit] button')].find(b=>b.textContent==='采用到草案')?.disabled===true")
+        candidate_modal_button("舍弃候选")
+        pending_modal_button("继续编辑")
+        check("discarding candidate does not discard user draft","document.querySelector("+q(field)+")?.value==='用户自己的更新'&&!document.querySelector('[data-story-ai-candidate]')")
+        button("生成候选")
+        check("request in progress","document.querySelector("+q(portal)+")?.textContent.includes('AI 生成中')")
+        button("停止等待");time.sleep(1.2)
+        check("late response ignored after stop","!document.querySelector('[data-story-ai-candidate]')&&document.querySelector("+q(field)+")?.value==='用户自己的更新'")
+        assert meta()["dramaDraft"]==revised and meta()["dramaConfirmed"]==saved
+
         assert not page.exceptions,page.exceptions
-        print("STORY_BROWSER_REPORT",json.dumps({"passed":len(passed),"browserExceptions":page.exceptions,"isolation":"temporary SQLite/CAS; no model calls"},ensure_ascii=False),flush=True)
+        print("STORY_BROWSER_REPORT",json.dumps({"passed":len(passed),"browserExceptions":page.exceptions,"isolation":"temporary SQLite/CAS; in-process deterministic assistantChat stub; no external model calls"},ensure_ascii=False),flush=True)
     except Exception:
         for log in logs:log.flush()
         for filename in ("backend.log","static.log","chrome.log"):

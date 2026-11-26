@@ -4,7 +4,7 @@ import {inspectComfyInputSpec} from "./comfy-input-spec";
 import {
     appendComfyInputTarget, bindingTargetKey, enumerateComfyGraphItems, filterComfyGraphItems,
     inferComfyBindingMode, inferComfyInputKind, parseBindingTargetKey, removeComfyInputTarget,
-    resolveComfyInputBindingAction, toggleComfyPortSelection, usedComfyInputTarget,
+    resolveComfyInputBindingAction, toggleComfyPortSelection, usedComfyInputTarget, recommendComfyMediaBinding,
 } from "./binding-picker";
 
 const graph:ComfyApiGraph = {
@@ -111,6 +111,16 @@ describe("Comfy binding picker interactive selection",()=>{
         const key=bindingTargetKey(target("30.16","sampling_mode.top.p"));
         expect(parseBindingTargetKey(key)).toEqual(target("30.16","sampling_mode.top.p"));
         expect(()=>parseBindingTargetKey(JSON.stringify(["node"]))).toThrow(/Invalid/);
+    });
+    it("recommends VIDEO file binding for VHS widgets and H3 reference video sockets, not IMAGE",()=>{
+        const graph:ComfyApiGraph={"139":{class_type:"VHS_LoadVideo",inputs:{video:"sample.mp4"}},
+            "129":{class_type:"MiniMaxH3ReferenceToVideo",inputs:{"ref_videos.ref_video_0":["139",0]}}};
+        const info:ComfyObjectInfo={VHS_LoadVideo:{input:{required:{video:[["sample.mp4"],{}]}},output:["IMAGE","INT","AUDIO","VHS_VIDEOINFO"]}};
+        expect(recommendComfyMediaBinding(graph,target("139","video"),info)).toMatchObject({target:target("139","video"),loader:{mediaKind:"VIDEO"},redirected:false});
+        expect(recommendComfyMediaBinding(graph,target("129","ref_videos.ref_video_0"),info)).toMatchObject({target:target("139","video"),loader:{mediaKind:"VIDEO"},redirected:true});
+        expect(enumerateComfyGraphItems(graph,info).find(item=>item.id==="139")?.fields[0].declaredType).toBe("VIDEO · 媒体文件");
+        info.VHS_LoadVideo.output=["VIDEO"];
+        expect(recommendComfyMediaBinding(graph,target("139","video"),info)).toBeUndefined();
     });
     it("infers scalar and socket inputs from graph values, with authoritative types preferred",()=>{
         expect(inferComfyInputKind("text")).toBe("STRING");

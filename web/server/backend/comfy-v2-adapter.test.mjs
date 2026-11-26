@@ -402,7 +402,7 @@ test("VIDEO/AUDIO media-file inputs compile only with matching verified staged m
  const upstream=[];
  const extraInfo={
   ...info,
-  VHS_LoadVideo:{input:{required:{video:[["author_clip.mp4"],{"video_upload":true}]}},output:["VIDEO"]},
+  VHS_LoadVideo:{input:{required:{video:[["author_clip.mp4"],{}]}},output:["IMAGE","INT","AUDIO","VHS_VIDEOINFO"]},
   LoadAudio:{input:{required:{audio:[["author_audio.wav"],{"audio_upload":true}]}},output:["AUDIO"]}
  };
  const mock=async(_instance,path,opts={})=>{
@@ -420,7 +420,7 @@ test("VIDEO/AUDIO media-file inputs compile only with matching verified staged m
  const audio=await f.blobStore.put(Readable.from([wav]),{mime:"audio/wav"});
  f.tplt.apiGraph["8"]={class_type:"VHS_LoadVideo",inputs:{video:"author_clip.mp4"}};
  f.tplt.apiGraph["9"]={class_type:"LoadAudio",inputs:{audio:"author_audio.wav"}};
- f.tplt.ports.find(port=>port.id==="video").outputBinding={nodeId:"8",outputIndex:0};
+ f.tplt.apiGraph["2"].inputs.image=["8",0]; // VHS returns IMAGE frames, not a VIDEO socket.
  f.tplt.ports.find(port=>port.id==="audio").outputBinding={nodeId:"9",outputIndex:0};
  f.tplt.ports.push(
   {id:"video_input",label:"Clip",direction:"target",valueKind:"VIDEO",required:true,

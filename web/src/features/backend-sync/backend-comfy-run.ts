@@ -136,7 +136,7 @@ export async function prepareBackendComfyWorkflowRun(args:BackendComfyWorkflowAr
     const portId=mapping.parameterPorts?.[spec.id];
     params[spec.id]=(portId?mediaBinding?.overrides?.[portId]:undefined)??(spec.mode==="fixed"?spec.fixedValue:spec.defaultValue);
    }
-   const diagnostics=validateMediaRequest({mode:generationMode,references:refs,parameters:params},resolved);
+   const diagnostics=validateMediaRequest({mode:generationMode,references:refs,parameters:params},resolved,{phase:"structure"});
    if(diagnostics.length)throw Error("Comfy 媒体能力校验失败："+diagnostics.map(item=>item.code).join("、"));
   }
   for(const slot of useCase.slots){

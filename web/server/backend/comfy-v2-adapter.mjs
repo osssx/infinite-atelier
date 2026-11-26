@@ -230,7 +230,7 @@ export function createComfyV2Adapter({instance,db,blobStore,upstreamCall=comfyUp
    trustedMedia.set(item.sourceNodeId+"\0"+item.sourcePortId,{item,blob});
    mediaFiles[item.assetId]="atelier_"+item.sha256+"."+extension;
   }
-  const useCase=template.mediaUseCase,modeId=request.runOptions?.mediaMode;
+  const useCase=template.mediaUseCase,modeId=request.runOptions?.mediaMode??useCase?.mediaCapabilities?.defaultMode;
   const modeSpec=useCase?.mediaCapabilities?.modes.find(mode=>mode.id===modeId);
   if(modeSpec){
    const modeBinding=useCase.modeBindings?.[modeId],refs=[];

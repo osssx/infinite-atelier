@@ -12,7 +12,7 @@ import type { CanvasNodeData, CanvasNodeMetadata, CanvasPortValueKind } from "@/
 import {
     appendComfyInputTarget, bindingTargetKey, enumerateComfyGraphItems, filterComfyGraphItems,
     inferComfyBindingMode, inferComfyInputKind, parseBindingTargetKey, removeComfyInputTarget,
-    resolveComfyInputBindingAction, toggleComfyPortSelection, usedComfyInputTarget,
+    resolveComfyInputBindingAction, toggleComfyPortSelection, usedComfyInputTarget, recommendComfyMediaBinding,
 } from "./binding-picker";
 import { ComfyTemplateBindingError, canonicalComfyJson, createComfyTemplate, templatePayloadFromGraph, validateComfyApiGraph, type ComfyInputBinding, type ComfyNodeTarget, type ComfyObjectInfo, type ComfyTemplatePayload, type ComfyTemplatePort, type ComfyWorkflowTemplate } from "./template-schema";
 import { getComfyTemplate, saveComfyTemplateVersion } from "./template-registry";
@@ -20,6 +20,7 @@ import { getComfyVersionNote, renameComfyTemplate, saveComfyPresetBinding, setCo
 import { listComfyPresetCatalog, type ComfyCatalogPreset } from "./preset-catalog";
 import { buildKrea2TurboTemplate, isKrea2TurboT2IWorkflow, KREA2_TURBO_TEMPLATE_ID } from "./krea2-turbo-preset";
 import { buildMiniMaxH3I2VPreset, isMiniMaxH3I2VWorkflow, MINIMAX_H3_I2V_TEMPLATE_ID } from "./minimax-h3-i2v-preset";
+import { buildMiniMaxH3Ref2VPreset, isMiniMaxH3Ref2VWorkflow, MINIMAX_H3_REF2V_TEMPLATE_ID } from "./minimax-h3-ref2v-preset";
 import {ComfyMediaUseCaseEditor,normalizeComfyTemplateMediaDraft} from "./comfy-media-use-case-editor";
 import {autoFillComfyPortChoices,formatComfyChoiceLines,inferComfyChoicesForPort,parseComfyChoiceLines,type ComfyChoiceKind} from "./choice-options";
 import type {ComfyScalarChoice} from "./template-schema";
@@ -308,7 +309,10 @@ export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,
     };
     const exposeField=(nodeId:string,inputName:string)=>{
         if(!draft) return;
-        const target={nodeId,inputName};
+        const originalTarget={nodeId,inputName};
+        const recommendation=usedComfyInputTarget(draft.ports,originalTarget)?undefined:recommendComfyMediaBinding(draft.apiGraph,originalTarget,objectInfo);
+        const target=recommendation?.target??originalTarget;
+        ({nodeId,inputName}=target);
         const action=resolveComfyInputBindingAction(draft.ports,selectedPortId,target);
         if(action.kind==="existing") {
             const port=draft.ports.find(p=>p.id===action.portId);
@@ -328,16 +332,21 @@ export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,
         const spec=objectInfo?.[nodeType]?.input;
         const meta=spec?.required?.[inputName]??spec?.optional?.[inputName];
         const descriptor=inspectComfyInputSpec(meta);
-        const kind=inferComfyInputKind(value,descriptor.valueKind??descriptor.declaredType);
-        const mode=inferComfyBindingMode(value);
+        const kind=recommendation?.loader.mediaKind??inferComfyInputKind(value,descriptor.valueKind??descriptor.declaredType);
+        const mode=recommendation?"media-file":inferComfyBindingMode(value);
         if (action.kind==="append") {
             const portId=action.portId!;
             const selected=draft.ports.find(p=>p.id===portId)!;
             try {
                 const empty=selected.inputBinding?.targets.length===0;
-                const updated=appendComfyInputTarget(draft.ports,portId,target).map(p=>
-                    p.id===portId&&empty&&p.inputBinding?.mode==="literal"&&mode==="literal"&&
-                      !p.choices&&!Object.prototype.hasOwnProperty.call(p,"defaultValue")?{...p,valueKind:kind}:p);
+                const convertEmpty=empty&&selected.inputBinding?.mode==="literal"&&!selected.choices&&!Object.hasOwn(selected,"defaultValue");
+                if(recommendation&&!convertEmpty&&(selected.valueKind!==kind||selected.inputBinding?.mode!=="media-file"))
+                    throw Error("请先取消当前端口选择，或选择匹配的媒体文件端口。");
+                const updated=appendComfyInputTarget(draft.ports,portId,target).map(p=>{
+                    if(p.id!==portId||!convertEmpty)return p;
+                    if(recommendation)return {...p,valueKind:recommendation.loader.mediaKind,inputBinding:{mode:"media-file" as const,mediaKind:recommendation.loader.mediaKind,targets:p.inputBinding!.targets}};
+                    return mode==="literal"?{...p,valueKind:kind}:p;
+                });
                 const changedPort=updated.find(p=>p.id===portId)!;
                 const inferred=changedPort.choices||suppressedChoiceIds.current.has(portId)?{kind:"none" as const}
                     :inferComfyChoicesForPort(changedPort,draft.apiGraph,objectInfo);
@@ -351,6 +360,10 @@ export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,
             return;
         }
         const port=inputPort(target,kind,mode);
+        if(recommendation){
+            port.label=typeof draft.apiGraph[nodeId]._meta?.title==="string"?draft.apiGraph[nodeId]._meta!.title as string:inputName;
+            if(recommendation.redirected)port.absentPolicy={mode:"auto-prune"};
+        }
         const inferred=inferComfyChoicesForPort(port,draft.apiGraph,objectInfo);
         if(inferred.kind==="choices"){
             port.choices=inferred.choices;replaceableChoiceIds.current.add(port.id);
@@ -397,12 +410,14 @@ export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,
             const graph=validateComfyApiGraph(parsed);
             const krea2=isKrea2TurboT2IWorkflow(graph);
             const minimax=isMiniMaxH3I2VWorkflow(graph);
-            const next=krea2?buildKrea2TurboTemplate(graph):minimax?buildMiniMaxH3I2VPreset(graph)
+            const ref2v=isMiniMaxH3Ref2VWorkflow(graph);
+            const next=krea2?buildKrea2TurboTemplate(graph):minimax?buildMiniMaxH3I2VPreset(graph):ref2v?buildMiniMaxH3Ref2VPreset(graph)
                 :templatePayloadFromGraph(file.name.replace(/\.json$/i,""),graph,objectInfo);
-            setDraft(next);setTemplateId(krea2?KREA2_TURBO_TEMPLATE_ID:minimax?MINIMAX_H3_I2V_TEMPLATE_ID:"comfy-"+newId());setSelectedNodeId(krea2?"55":minimax?"105_104":Object.keys(next.apiGraph)[0]||"");
+            setDraft(next);setTemplateId(krea2?KREA2_TURBO_TEMPLATE_ID:minimax?MINIMAX_H3_I2V_TEMPLATE_ID:ref2v?MINIMAX_H3_REF2V_TEMPLATE_ID:"comfy-"+newId());setSelectedNodeId(krea2?"55":minimax?"105_104":ref2v?"129":Object.keys(next.apiGraph)[0]||"");
             setSelectedPortId(next.ports[0]?.id||null);setNodeSearch("");setError("");
             setStatus(krea2?"已配置 Krea 2 Turbo INT8 端口绑定，请检查并保存模板版本。"
                 :minimax?"MiniMax H3 I2V 已配置图片、提示词与 VIDEO 输出绑定，请检查端口后保存模板。"
+                :ref2v?"MiniMax H3 Ref2V 已配置图片、视频、音频参考端口及 24 fps 视频加载，请检查后保存模板。"
                 :"工作流已加载。点击左侧节点参数即可创建输入端口。");
         }catch(cause){setError(String(cause));}
     };
@@ -851,6 +866,14 @@ export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,
                                             </optgroup>)}
                                         </select>
                                     </div>
+                                    {activePort.inputBinding?.mode==="media-file"?activePort.inputBinding.targets.map(target=>{
+                                        const recommendation=recommendComfyMediaBinding(draft.apiGraph,target,objectInfo);
+                                        if(!recommendation||recommendation.loader.mediaKind!==activePort.valueKind)return null;
+                                        const loader=recommendation.loader;
+                                        return <p key={bindingTargetKey(target)} className="mt-2 rounded-lg bg-[var(--comfy-fill)] px-3 py-2 text-[11px] text-[var(--comfy-muted)]" data-comfy-media-loader-path>
+                                            {loader.mediaKind} 文件 → {loader.classType} → {loader.outputs[0].socketKind}{loader.outputs[0].semantic==="video_frames"?" 帧批次":""} · 工作流内部解码
+                                        </p>;
+                                    }):null}
                                     {activePort.inputBinding?.mode==="socket"?<label className="mt-4 flex items-center gap-2 text-xs">
                                         <input type="checkbox" checked={activePort.inputBinding.replaceInternalLink} onChange={(e)=>patchPort(activePort.id,{inputBinding:{...activePort.inputBinding!,mode:"socket",replaceInternalLink:e.target.checked} as ComfyInputBinding})}/>
                                         覆盖已有的内部插槽连接

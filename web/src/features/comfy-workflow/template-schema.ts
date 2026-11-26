@@ -1,5 +1,6 @@
 import type { CanvasPortValueKind } from "@/types/canvas";
 import {inspectComfyInputSpec} from "./comfy-input-spec";
+import {getComfyMediaLoader,resolveComfyMediaLoader} from "../../../shared/comfy-media-loaders.mjs";
 import {validateComfyMediaContract} from "../../../shared/media-capabilities.mjs";
 import type {MediaCapabilities,MediaModeId,MediaRole} from "@/services/media-capabilities";
 
@@ -287,6 +288,12 @@ export function validateComfyTemplatePayload(raw: unknown, info?: ComfyObjectInf
                 if (claimed.has(key)) failBinding("duplicate input claim: " + key,p,target);
                 claimed.add(key);
                 const existing = graph[target.nodeId].inputs[target.inputName];
+                if(b.mode==="media-file"){
+                    const classType=graph[target.nodeId].class_type;
+                    const loader=getComfyMediaLoader(classType,target.inputName);
+                    if(loader&&(loader.mediaKind!==p.valueKind||!resolveComfyMediaLoader(classType,target.inputName,info?.[classType])))
+                        failBinding("media loader type mismatch",p,target,`加载节点接收 ${loader.mediaKind} 文件，当前端口 ${p.valueKind}`);
+                }
                 if(p.valueKind==="MASK"&&b.mode==="media-file"&&
                     (graph[target.nodeId].class_type!=="LoadImageMask"||target.inputName!=="image"||
                      graph[target.nodeId].inputs.channel!=="alpha"))

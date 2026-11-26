@@ -54,14 +54,14 @@ export function resolveMediaCapabilities(target,{kind,supportedModes,supportedPa
  });
  return {kind,source:"user",explicit:true,modes,unavailable,defaultMode:declared.defaultMode};
 }
-export function validateMediaRequest(request,resolved){
+export function validateMediaRequest(request,resolved,{phase="metadata"}={}){
  const errors=[];
  if(!resolved?.explicit)return errors;
  const mode=resolved.modes.find(item=>item.id===request.mode);
  if(!mode){errors.push({code:"media_mode_unavailable",mode:request.mode});return errors;}
  const refs=Array.isArray(request.references)?request.references:[];
  for(const rule of mode.inputs){const selected=refs.filter(ref=>ref.role===rule.role&&ref.kind===rule.kind),count=selected.length;if(count<rule.minItems||count>rule.maxItems)errors.push({code:"media_input_count",mode:mode.id,role:rule.role,actual:count,min:rule.minItems,max:rule.maxItems});
-  for(const ref of selected){if(rule.mimeTypes?.length&&(!ref.mimeType||!rule.mimeTypes.includes(ref.mimeType)))errors.push({code:"media_input_format",mode:mode.id,role:rule.role});if(rule.maxBytes!==undefined&&(!Number.isFinite(ref.bytes)||ref.bytes>rule.maxBytes))errors.push({code:"media_input_size",mode:mode.id,role:rule.role,max:rule.maxBytes});if(rule.maxDurationSeconds!==undefined&&(!Number.isFinite(ref.durationMs)||ref.durationMs<=0||ref.durationMs>rule.maxDurationSeconds*1000))errors.push({code:"media_input_duration",mode:mode.id,role:rule.role,max:rule.maxDurationSeconds});}
+  if(phase!=="structure")for(const ref of selected){if(rule.mimeTypes?.length&&(!ref.mimeType||!rule.mimeTypes.includes(ref.mimeType)))errors.push({code:"media_input_format",mode:mode.id,role:rule.role});if(rule.maxBytes!==undefined&&(!Number.isFinite(ref.bytes)||ref.bytes>rule.maxBytes))errors.push({code:"media_input_size",mode:mode.id,role:rule.role,max:rule.maxBytes});if(rule.maxDurationSeconds!==undefined&&(!Number.isFinite(ref.durationMs)||ref.durationMs<=0||ref.durationMs>rule.maxDurationSeconds*1000))errors.push({code:"media_input_duration",mode:mode.id,role:rule.role,max:rule.maxDurationSeconds});}
  }
  if(mode.maxTotalReferences!==undefined&&refs.length>mode.maxTotalReferences)errors.push({code:"media_total_references",mode:mode.id,actual:refs.length,max:mode.maxTotalReferences});
  for(const ref of refs)if(!mode.inputs.some(rule=>rule.role===ref.role&&rule.kind===ref.kind))errors.push({code:"media_input_unexpected",mode:mode.id,role:ref.role});

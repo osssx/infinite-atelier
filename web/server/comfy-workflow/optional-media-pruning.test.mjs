@@ -173,3 +173,23 @@ test("invalid auto-prune configuration is rejected at template verification",()=
     const tmpl=versioned(wrong);
     assert.throws(()=>verifyTemplate(tmpl),/template_auto_prune_invalid/);
 });
+test("VHS video file loader produces IMAGE frames and prunes optional H3 AUTOGROW input",()=>{
+    const p=structuredClone(payload),live=structuredClone(info);
+    p.apiGraph["5"]={class_type:"VHS_LoadVideo",inputs:{video:"sample.mp4"}};
+    p.ports.find(port=>port.id==="video").inputBinding.targets=[{nodeId:"5",inputName:"video"}];
+    delete p.apiGraph["10"].inputs.video;
+    p.apiGraph["10"].inputs["ref_videos.ref_video_0"]=["5",0];
+    live.VHS_LoadVideo={input:{required:{video:[["sample.mp4"],{}]}},output:["IMAGE","INT","AUDIO","VHS_VIDEOINFO"]};
+    live.AdaptiveVideo.input.optional.ref_videos=["COMFY_AUTOGROW_V3",{template:{prefix:"ref_video_",min:0,max:3,input:{required:{ref_video:["IMAGE",{}]}}}}];
+    p.requirements.classTypes=[...new Set(Object.values(p.apiGraph).map(n=>n.class_type))].sort();
+    const tmpl=versioned(p);
+    const omitted=compileSingleWorkflow(request([],tmpl),tmpl,{info:live,mediaFiles:{}});
+    assert.equal(omitted.graph[k("5")],undefined);
+    assert.equal(omitted.graph[k("10")].inputs["ref_videos.ref_video_0"],undefined);
+    const linked=compileSingleWorkflow(request(["video"],tmpl),tmpl,{info:live,mediaFiles:{"asset-video":"verified.mp4"}});
+    assert.equal(linked.graph[k("5")].inputs.video,"verified.mp4");
+    assert.deepEqual(linked.graph[k("10")].inputs["ref_videos.ref_video_0"],[k("5"),0]);
+    live.VHS_LoadVideo.output=["VIDEO"];
+    assert.throws(()=>compileSingleWorkflow(request([],tmpl),tmpl,{info:live,mediaFiles:{}}),/comfy_auto_prune_required_input/);
+    assert.throws(()=>compileSingleWorkflow(request(["video"],tmpl),tmpl,{info:live,mediaFiles:{"asset-video":"verified.mp4"}}),/comfy_media_loader_type_mismatch/);
+});

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { prepareCapture } from "./capture-adapters.mjs";
 import {validCanvasNodeId} from "../canvas-node-id.mjs";
 import {validateComfyMediaContract,resolveMediaCapabilities,validateMediaRequest} from "../../shared/media-capabilities.mjs";
+import {getComfyMediaLoader,resolveComfyMediaLoader} from "../../shared/comfy-media-loaders.mjs";
 
 const has = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
 const fail = (code, status = 422) => { throw Object.assign(new Error(code), { code, status }); };
@@ -305,6 +306,12 @@ function isOptionalMediaInput(node,schema,input) {
     const index=slots.names.indexOf(suffix);
     return index>=slots.min;
 }
+function loaderAcceptsFileKind(classType,inputName,valueKind,schema){
+    const known=getComfyMediaLoader(classType,inputName);
+    if(known)return resolveComfyMediaLoader(classType,inputName,schema)?.mediaKind===valueKind;
+    // Preserve existing explicitly bound custom loaders with matching outputs.
+    return schema?.output?.includes(valueKind)===true;
+}
 function pruneAbsentMediaPort(graph, port, canvasNodeId, info) {
     if (!info) fail("comfy_auto_prune_object_info_required:"+port.id);
     const fields = port.inputBinding.targets;
@@ -318,7 +325,7 @@ function pruneAbsentMediaPort(graph, port, canvasNodeId, info) {
             delete n.inputs[field.inputName];
         } else if(port.inputBinding.mode==="media-file" &&
             has(schema.required??{},field.inputName) &&
-            info[n.class_type]?.output?.includes(port.valueKind)) {
+            loaderAcceptsFileKind(n.class_type,field.inputName,port.valueKind,info[n.class_type])) {
             // Loader's file widget is required. Remove it by disconnecting
             // its optional downstream consumers, never by submitting an empty filename.
             pending.push(id);
@@ -392,7 +399,7 @@ export function compileSingleWorkflow(req, template, opts = {}) {
             const portId=modeBinding.parameterPorts[spec.id];
             parameters[spec.id]=nodeInput[portId]??(spec.mode==="fixed"?spec.fixedValue:spec.defaultValue);
         }
-        const diagnostics=validateMediaRequest({mode:modeId,references:refs,parameters},resolved);
+        const diagnostics=validateMediaRequest({mode:modeId,references:refs,parameters},resolved,{phase:"structure"});
         if(diagnostics.length)fail("template_media_request_invalid");
     }
     const outputs=roots.map(root=>{
@@ -459,6 +466,12 @@ export function compileSingleWorkflow(req, template, opts = {}) {
             if (!edge || edge.kind !== "asset" || !["IMAGE","MASK","VIDEO","AUDIO"].includes(p.valueKind) ||
                 binding.mediaKind !== p.valueKind) fail("media_file_binding_invalid:"+p.id);
             if(p.valueKind==="MASK"&&binding.targets.some(t=>graph[nodeKey(node.id,t.nodeId)]?.class_type!=="LoadImageMask"||t.inputName!=="image"||graph[nodeKey(node.id,t.nodeId)]?.inputs?.channel!=="alpha"))fail("mask_media_file_target_invalid:"+p.id);
+            for(const t of binding.targets){
+                const target=graph[nodeKey(node.id,t.nodeId)];
+                const known=getComfyMediaLoader(target?.class_type,t.inputName);
+                if(known&&(known.mediaKind!==p.valueKind||!resolveComfyMediaLoader(target.class_type,t.inputName,opts.info?.[target.class_type])))
+                    fail("comfy_media_loader_type_mismatch:"+p.id+":"+target.class_type+"."+t.inputName);
+            }
             resolved = (opts.mediaFiles??opts.imageFiles)?.[edge.assetId];
             if (!resolved || !/^[A-Za-z0-9_.-]{1,160}$/.test(resolved)) fail("staged_media_not_uploaded");
             for (const t of binding.targets)

@@ -24,6 +24,16 @@ describe("media capability v1",()=>{
   expect(isMediaCapabilities({...base,modes:[{...base.modes[0],parameters:[{id:"count",mode:"adjustable",type:"number",nested:{script:"bad"}}]}]})).toBe(false);
   expect(isMediaCapabilities({schemaVersion:1,kind:"__proto__",modes:[]})).toBe(false);
  });
+ it("structural validation defers file metadata checks but backend metadata validation stays strict",()=>{
+  const cap:MediaCapabilities={schemaVersion:1,kind:"video",defaultMode:"omni_reference",modes:[{id:"omni_reference",enabled:true,inputs:[{role:"reference_video",kind:"video",minItems:0,maxItems:1,maxDurationSeconds:15,mimeTypes:["video/mp4"]}],parameters:[]}]};
+  const resolved=resolveMediaCapabilities({mediaCapabilities:cap},{kind:"video"});
+  const ref={role:"reference_video",kind:"video"};
+  expect(validateMediaRequest({mode:"omni_reference",references:[ref]},resolved,{phase:"structure"})).toEqual([]);
+  expect(validateMediaRequest({mode:"omni_reference",references:[]},resolved,{phase:"structure"})[0]?.code).toBe("media_reference_required");
+  expect(validateMediaRequest({mode:"omni_reference",references:[ref]},resolved).map(e=>e.code)).toEqual(["media_input_format","media_input_duration"]);
+  expect(validateMediaRequest({mode:"omni_reference",references:[{...ref,mimeType:"video/mp4",durationMs:16000}]},resolved)[0]?.code).toBe("media_input_duration");
+  expect(validateMediaRequest({mode:"omni_reference",references:[{...ref,mimeType:"video/mp4",durationMs:5000}]},resolved)).toEqual([]);
+ });
  it("checks runtime parameter type, finite range, and step with the shared executor map",()=>{
   const cap:MediaCapabilities={schemaVersion:1,kind:"video",defaultMode:"text_to_video",modes:[{id:"text_to_video",enabled:true,inputs:[],parameters:[{id:"duration_seconds",mode:"adjustable",type:"number",min:4,max:15,step:1}]}]};
   const resolved=resolveMediaCapabilities({mediaCapabilities:cap},{kind:"video",supportedModes:supportedMediaModes({provider:"volcengine_ark",kind:"video"})});

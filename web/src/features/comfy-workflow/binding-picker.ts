@@ -1,6 +1,7 @@
 import type { CanvasPortValueKind } from "@/types/canvas";
 import type { ComfyApiGraph, ComfyInputBinding, ComfyNodeTarget, ComfyObjectInfo, ComfyTemplatePort } from "./template-schema";
 import {inspectComfyInputSpec} from "./comfy-input-spec";
+import {resolveComfyMediaLoader} from "../../../shared/comfy-media-loaders.mjs";
 
 export type ComfyGraphItem = {
     id: string;
@@ -48,7 +49,8 @@ export function enumerateComfyGraphItems(graph:ComfyApiGraph, objectInfo?:ComfyO
             const descriptor=inspectComfyInputSpec(meta);
             const declaredType=descriptor.declaredType==="COMBO"&&descriptor.valueKind
                 ? `COMBO (${descriptor.valueKind})`:descriptor.declaredType;
-            return {name,value,declaredType};
+            const loader=typeof value==="string"?resolveComfyMediaLoader(node.class_type,name,spec):undefined;
+            return {name,value,declaredType:loader?`${loader.mediaKind} · 媒体文件`:declaredType};
         });
         return {id,classType:node.class_type,title,fields,outputs:(spec?.output||[]).map((valueKind,index)=>({index,valueKind}))};
     });
@@ -61,6 +63,23 @@ export function filterComfyGraphItems(items:readonly ComfyGraphItem[], query:str
         .some((v)=>v.toLocaleLowerCase().includes(q)));
 }
 
+/** Prefer a real file loader over exposing the H3 IMAGE batch as a canvas image. */
+export function recommendComfyMediaBinding(graph:ComfyApiGraph,target:ComfyNodeTarget,info?:ComfyObjectInfo){
+    const node=graph[target.nodeId];
+    if(!node)return undefined;
+    const value=node.inputs[target.inputName];
+    if(node.class_type==="MiniMaxH3ReferenceToVideo"&&/^ref_videos\.ref_video_\d+$/.test(target.inputName)&&
+        Array.isArray(value)&&value.length===2&&typeof value[0]==="string"&&value[1]===0){
+        const upstream=graph[value[0]];
+        if(upstream?.class_type==="VHS_LoadVideo"&&typeof upstream.inputs.video==="string"){
+            const loader=resolveComfyMediaLoader(upstream.class_type,"video",info?.[upstream.class_type]);
+            if(loader)return {target:{nodeId:value[0],inputName:"video"},loader,redirected:true};
+        }
+    }
+    if(typeof value!=="string")return undefined;
+    const loader=resolveComfyMediaLoader(node.class_type,target.inputName,info?.[node.class_type]);
+    return loader?{target,loader,redirected:false}:undefined;
+}
 export function inferComfyInputKind(value:unknown, declaredType?:string):CanvasPortValueKind {
     const recognized:CanvasPortValueKind[]=["STRING","INT","FLOAT","BOOLEAN","IMAGE","MASK","LATENT","CONDITIONING","VIDEO","AUDIO","JSON"];
     if (declaredType && recognized.includes(declaredType as CanvasPortValueKind)) return declaredType as CanvasPortValueKind;

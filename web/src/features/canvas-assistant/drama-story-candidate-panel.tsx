@@ -56,7 +56,7 @@ export function DramaStoryCandidatePanel({candidate,theme,stale,locked,editBuffe
   {stale&&<p role="alert" className="break-words rounded-md border p-2 text-xs leading-relaxed" style={control}>
    正文或关联来源已变化，候选已过期。可复制候选；舍弃后基于最新正文重新生成，不能直接采用。
   </p>}
-  {closeIntent&&<p role="status" className="text-xs leading-relaxed" style={{color:theme.node.muted}}>收起面板前，请先采用或舍弃候选，也可以继续查看。</p>}
+  {closeIntent&&<p role="status" className="text-xs leading-relaxed" style={{color:theme.node.muted}}>收起或切换面板前，请先采用或舍弃候选，也可以继续查看。</p>}
   <div ref={actionsRef} className="flex flex-wrap justify-end gap-1.5">
    {closeIntent&&<button type="button" className={secondary} style={control} onClick={onContinueViewing}>继续查看</button>}
    <button type="button" className={secondary} style={control} disabled={locked} onClick={onDiscard}>舍弃候选</button>

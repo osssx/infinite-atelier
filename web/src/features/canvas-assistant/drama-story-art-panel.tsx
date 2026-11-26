@@ -1,5 +1,5 @@
-import {Fragment,useEffect,useId,useRef,useState} from "react";
-import {ChevronDown,ChevronRight,Copy,Palette,Pencil} from "lucide-react";
+import {Fragment,useEffect,useRef,useState} from "react";
+import {Copy,Palette,Pencil} from "lucide-react";
 import type {CanvasNodeData,CanvasNodeMetadata} from "@/types/canvas";
 import {canvasThemes} from "@/lib/canvas-theme";
 import {useThemeStore} from "@/stores/use-theme-store";
@@ -19,18 +19,24 @@ function fieldPatch(meta:CanvasNodeMetadata|undefined,key:Field,text:string):Par
  if(key==="dramaFilmStyle")return {dramaFilmStyle:text};
  return {dramaArtDirection:{palette:"",lighting:"",characterDesign:"",anchors:"",...meta?.dramaArtDirection,[key]:text}};
 }
-export function DramaStoryArtPanel({node,onChange,onPendingChange,disabled=false,interactionDisabled=false}:{
- node:CanvasNodeData;onChange:PersistStoryDraft;onPendingChange?:WorkspacePendingRegistration;disabled?:boolean;interactionDisabled?:boolean;
+export function storyArtSummary(meta:CanvasNodeMetadata|undefined){
+ const ratio=readValue(meta,"videoRatio"),style=readValue(meta,"dramaFilmStyle");
+ const configured=storyArtFields.filter(({key})=>readValue(meta,key).trim()).length;
+ return `${ratio||"随模型"} · ${style||"未设置影片风格"} · 美术指导 ${configured}/${storyArtFields.length}`;
+}
+export function DramaStoryArtPanel({node,onChange,onPendingChange,onEditingChange,disabled=false,interactionDisabled=false}:{
+ node:CanvasNodeData;onChange:PersistStoryDraft;onPendingChange?:WorkspacePendingRegistration;onEditingChange?:(editing:boolean)=>void;disabled?:boolean;interactionDisabled?:boolean;
 }){
  const theme=canvasThemes[useThemeStore(state=>state.theme)];
  const feedback=useDramaFeedback()?.api;
- const [expanded,setExpanded]=useState(false);
- const panelId=useId();
  const uiDisabled=disabled||interactionDisabled;
  const [edit,setEdit]=useState<Edit|null>(null),[saving,setSaving]=useState(false),[error,setError]=useState("");
  const locked=useRef(false),latest=useRef({edit,node});latest.current={edit,node};
  const commit=useRef<()=>Promise<void>>(async()=>{});
  const dirty=!!edit&&edit.text!==edit.baseline;
+ // Keep the sidebar mounted until an active field is explicitly saved or cancelled.
+ const editing=!!edit||saving;
+ useEffect(()=>{onEditingChange?.(editing);return ()=>onEditingChange?.(false);},[editing,onEditingChange]);
  const stale=!!edit&&readValue(node.metadata,edit.key)!==edit.baseline;
  commit.current=async()=>{
   const {edit:current,node:currentNode}=latest.current;
@@ -58,25 +64,14 @@ export function DramaStoryArtPanel({node,onChange,onPendingChange,disabled=false
   try{await navigator.clipboard.writeText(value);feedback?.notify("story-style-copy","success","影片风格已复制");}
   catch{setError("复制失败，请检查剪贴板权限");}
  };
- const style=readValue(node.metadata,"dramaFilmStyle"),ratio=readValue(node.metadata,"videoRatio");
- const configured=storyArtFields.filter(({key})=>readValue(node.metadata,key).trim()).length;
- return <section data-story-art-section="" className="min-w-0 shrink-0 rounded-lg border" style={{borderColor:theme.node.stroke,color:theme.node.text}}>
-  <button type="button" data-story-art-toggle="" aria-expanded={expanded} aria-controls={expanded?panelId:undefined}
-   aria-label={expanded?"收起美术设定":"展开美术设定"}
-   title={edit?"请先保存或取消当前美术字段":expanded?"收起美术设定":"展开美术设定"}
-   disabled={!!edit||saving}
-   className="flex min-h-9 w-full min-w-0 items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs hover:opacity-80 disabled:cursor-not-allowed focus-visible:outline focus-visible:outline-2"
-   style={{color:theme.node.text,outlineColor:theme.node.activeStroke}} onClick={()=>setExpanded(value=>!value)}>
-   <Palette size={14} className="shrink-0" aria-hidden="true"/>
-   <strong className="shrink-0 font-medium">美术设定</strong>
-   <span data-story-art-summary="" className="min-w-0 flex-1 truncate" title={`${ratio||"随模型"} · ${style||"未设置影片风格"} · 美术指导 ${configured}/${storyArtFields.length}`} style={{color:theme.node.muted}}>
-    {ratio||"随模型"} · {style||"未设置影片风格"} · 美术指导 {configured}/{storyArtFields.length}
-   </span>
-   {edit&&<span className="shrink-0 text-[11px]" style={{color:theme.node.muted}}>{dirty?"未保存":"编辑中"}</span>}
-   {expanded?<ChevronDown size={14} className="shrink-0" aria-hidden="true"/>:<ChevronRight size={14} className="shrink-0" aria-hidden="true"/>}
-  </button>
-  {expanded&&<div id={panelId} data-story-art-panel="" className="thin-scrollbar max-h-[min(36dvh,280px)] min-w-0 overflow-y-auto overscroll-contain border-t p-3" style={{borderColor:theme.node.stroke}}>
-  <div className="grid min-w-0 grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2">
+ const summary=storyArtSummary(node.metadata);
+ return <aside aria-label="故事美术设定" data-story-art-panel="" className="thin-scrollbar flex min-h-0 min-w-0 flex-col gap-3 overflow-y-auto rounded-xl border p-3" style={{background:theme.node.panel,borderColor:theme.node.stroke,color:theme.node.text}}>
+  <div className="flex shrink-0 min-w-0 items-center justify-between gap-2">
+   <strong className="flex shrink-0 items-center gap-1.5 text-sm"><Palette size={16}/>美术设定</strong>
+   {editing&&<span className="text-[11px]" style={{color:theme.node.muted}}>{dirty?"未保存":"编辑中"}</span>}
+  </div>
+  <span data-story-art-summary-text="" className="shrink-0 truncate text-[11px]" title={summary} style={{color:theme.node.muted}}>{summary}</span>
+  <div className="grid shrink-0 min-w-0 grid-cols-1 gap-3">
   {fields.map(({key,label},i)=>{
    const value=readValue(node.metadata,key),active=edit?.key===key;
    return <Fragment key={key}>
@@ -115,6 +110,5 @@ export function DramaStoryArtPanel({node,onChange,onPendingChange,disabled=false
   })}
   </div>
   {error&&<DramaInlineFeedback theme={theme} level="error" error={error}/>}
-  </div>}
- </section>;
+ </aside>;
 }

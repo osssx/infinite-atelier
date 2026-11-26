@@ -227,7 +227,7 @@ it("protects candidates from external saved text and linked source changes",asyn
 });
 it("requires explicit resolution to collapse the panel",async()=>{
  const {container,patch,pending}=await mount();await openAI(container);await generate(container,"改写");
- await click(byText(container,"收起 AI 创作"));expect(container.textContent).toContain("收起面板前");
+ await click(byText(container,"收起 AI 创作"));expect(container.textContent).toContain("收起或切换面板前");
  await click(byText(container,"继续查看"));expect(container.querySelector('[data-story-ai-candidate]')).toBeTruthy();
  await click(byText(container,"收起 AI 创作"));await click(byText(container,"舍弃候选"));
  expect(container.querySelector('[aria-label="故事 AI 创作"]')).toBeNull();expect(pending.size).toBe(0);expect(patch).not.toHaveBeenCalled();
@@ -271,6 +271,9 @@ it("keeps a story draft mounted when art settings open and registers both indepe
  await click(container.querySelector('[aria-label="编辑影片风格"]'));
  await typeText(container.querySelector<HTMLTextAreaElement>('[aria-label="影片风格"]')!,"水彩风格");
  expect([...pending.keys()].sort()).toEqual(["story:story","story:story-art"]);
+ expect((byText(container,"AI 创作") as HTMLButtonElement).disabled).toBe(true);
+ expect(container.querySelector<HTMLButtonElement>("[data-story-art-toggle]")?.disabled).toBe(true);
+ expect(container.querySelector('[aria-label="故事 AI 创作"]')).toBeNull();
  expect(patch).not.toHaveBeenCalled();
  // Workspace save iterates these independently; neither update overwrites the other.
  for(const save of [...pending.values()])await act(async()=>{await save();});
@@ -278,8 +281,31 @@ it("keeps a story draft mounted when art settings open and registers both indepe
  expect(pending.size).toBe(0);
  await click(container.querySelector('[aria-label="收起美术设定"]'));
  expect(container.querySelector("[data-story-art-panel]")).toBeNull();
- expect(container.querySelector("[data-story-art-summary]")?.textContent).toContain("水彩风格");
+ expect(container.querySelector("[data-story-art-toggle]")?.getAttribute("data-story-art-summary")).toContain("水彩风格");
  expect(body.value).toBe("正文草案");expect(body.readOnly).toBe(true);
+});
+it("shares one sidebar and resolves an AI candidate before switching to art",async()=>{
+ const {container,patch,pending}=await mount();
+ const field=container.querySelector("[data-story-textarea]")!;
+ const art=()=>container.querySelector("[data-story-art-panel]");
+ const ai=()=>container.querySelector('[aria-label="故事 AI 创作"]');
+ expect(art()).toBeNull();expect(ai()).toBeNull();
+ await click(container.querySelector('[aria-label="展开美术设定"]'));
+ expect(art()).toBeTruthy();expect(ai()).toBeNull();
+ await openAI(container);
+ expect(art()).toBeNull();expect(ai()).toBeTruthy();
+ await generate(container,"改写");
+ await click(container.querySelector('[aria-label="展开美术设定"]'));
+ expect(art()).toBeNull();expect(container.querySelector("[data-story-ai-candidate]")).toBeTruthy();
+ await click(byText(container,"继续查看"));expect(ai()).toBeTruthy();
+ await click(container.querySelector('[aria-label="展开美术设定"]'));
+ await click(byText(container,"采用到草案"));
+ expect(art()).toBeTruthy();expect(ai()).toBeNull();
+ expect(container.querySelector("[data-story-textarea]")).toBe(field);
+ expect((field as HTMLTextAreaElement).value).toBe("新段落");
+ expect(pending.has("story:story")).toBe(true);expect(patch).not.toHaveBeenCalled();
+ await openAI(container);expect(art()).toBeNull();expect(ai()).toBeTruthy();
+ expect((field as HTMLTextAreaElement).value).toBe("新段落");
 });
 it("disables generation for an empty story",async()=>{
  const {container}=await mount("  ");await openAI(container);

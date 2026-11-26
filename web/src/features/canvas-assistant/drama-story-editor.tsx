@@ -1,5 +1,5 @@
 import {useContext,useEffect,useMemo,useRef,useState} from "react";
-import {ArrowRight,Copy,Pencil,Sparkles,Upload,X} from "lucide-react";
+import {ArrowRight,Copy,Palette,Pencil,Sparkles,Upload,X} from "lucide-react";
 import type {CanvasNodeData,CanvasNodeMetadata} from "@/types/canvas";
 import {canvasThemes} from "@/lib/canvas-theme";
 import {useThemeStore} from "@/stores/use-theme-store";
@@ -17,7 +17,9 @@ import {DramaStoryHistoryNavigationContext} from "./drama-story-history-navigati
 import {applyStoryCandidate,storyAssistLabels,storyTargetForOperation,storyTargetLabel,storyAssistRequest,
  type StoryAssistOperation,type StoryContinuationScope,type StorySelection} from "./drama-story-editor-utils";
 import {DramaStoryCandidatePanel,type StoryCandidate} from "./drama-story-candidate-panel";
-import {DramaStoryArtPanel} from "./drama-story-art-panel";
+import {DramaStoryArtPanel,storyArtSummary} from "./drama-story-art-panel";
+
+type StorySidebar="ai"|"art"|null;
 
 export function DramaStoryEditor({node,projectId,onChange,onConfirmVersion,versionBusy,onPendingChange,upstreamSources=[]}:{
  node:CanvasNodeData;projectId:string;onChange:(patch:Partial<CanvasNodeMetadata>)=>Promise<void>;
@@ -31,7 +33,9 @@ export function DramaStoryEditor({node,projectId,onChange,onConfirmVersion,versi
  const feedback=feedbackContext?.api;
  const openHistory=useContext(DramaStoryHistoryNavigationContext);
  const source=resolveStoryDraft(node);
- const [editing,setEditing]=useState(false),[aiOpen,setAiOpen]=useState(false);
+ const [editing,setEditing]=useState(false),[sidebar,setSidebar]=useState<StorySidebar>(null);
+ const [artEditing,setArtEditing]=useState(false);
+ const aiOpen=sidebar==="ai",artOpen=sidebar==="art";
  const [saving,setSaving]=useState(false),[importing,setImporting]=useState(false);
  const saveLock=useRef(false),importLock=useRef(false),aiLock=useRef(false);
  const taskRef=useRef<ReturnType<NonNullable<typeof feedback>["beginTask"]>>(null);
@@ -43,7 +47,7 @@ export function DramaStoryEditor({node,projectId,onChange,onConfirmVersion,versi
  const [instruction,setInstruction]=useState("");
  const [candidate,setCandidate]=useState<StoryCandidate|null>(null);
  const [candidateEdit,setCandidateEdit]=useState<string|null>(null);
- const [closeIntent,setCloseIntent]=useState(false);
+ const [closeIntent,setCloseIntent]=useState<"close"|"art"|null>(null);
  const [busy,setBusy]=useState(false),[confirming,setConfirming]=useState(false);
  const [error,setError]=useState(""),[notice,setNotice]=useState("");
  const inputRef=useRef<HTMLTextAreaElement>(null);
@@ -56,6 +60,14 @@ export function DramaStoryEditor({node,projectId,onChange,onConfirmVersion,versi
  const confirmed=storyVersionConfirmed(node);
  const artSaving=feedbackContext?.task?.title==="保存美术设定";
  const locked=saving||confirming||busy||importing||versionBusy||artSaving;
+ const requestSidebar=(target:StorySidebar)=>{
+  if(locked||artEditing)return;
+  if(aiOpen&&target!=="ai"&&live.current.candidate){
+   setCloseIntent(target==="art"?"art":"close");return;
+  }
+  setSidebar(target);setCloseIntent(null);
+ };
+ const artSummary=storyArtSummary(node.metadata);
  const selected=!!selection&&selection.start<selection.end;
  const preview=useMemo(()=>{
   if(!aiOpen)return {target:null,issue:""};
@@ -150,7 +162,7 @@ export function DramaStoryEditor({node,projectId,onChange,onConfirmVersion,versi
    if(typeof result.candidate!=="string"||!result.candidate.trim())throw Error("模型没有返回可用的文字");
    const next={target,text:result.candidate,sourceBaseline:value.source,sourceContext:value.sourceContext,continuationScope:scope};
    live.current={...live.current,candidate:next,candidateEdit:null};
-   setCandidate(next);setCandidateEdit(null);setCloseIntent(false);
+   setCandidate(next);setCandidateEdit(null);setCloseIntent(null);
    setNotice("已生成候选。审核并点击采用后才会写入编辑草稿");
   }catch(cause){
    if(!active())return;
@@ -170,7 +182,7 @@ export function DramaStoryEditor({node,projectId,onChange,onConfirmVersion,versi
    live.current={...state,draft:next,candidate:null,candidateEdit:null};
    setEditing(true);setDraft(next);setCandidate(null);setCandidateEdit(null);setSelection(null);setContinuationScope("end");setError("");
    setNotice("已应用到编辑草稿，点击“保存草案”才会更新故事节点");
-   if(closeIntent)setAiOpen(false);setCloseIntent(false);
+   if(closeIntent)setSidebar(closeIntent==="art"?"art":null);setCloseIntent(null);
    return {dirty:next!==state.baseline};
   }catch(cause){setError(cause instanceof Error?cause.message:"候选已失效");return null;}
  };
@@ -178,7 +190,7 @@ export function DramaStoryEditor({node,projectId,onChange,onConfirmVersion,versi
   const state=live.current;
   live.current={...state,candidate:null,candidateEdit:null};
   setCandidate(null);setCandidateEdit(null);setError("");setNotice("已舍弃候选，故事正文未改变");
-  if(closeIntent)setAiOpen(false);setCloseIntent(false);
+  if(closeIntent)setSidebar(closeIntent==="art"?"art":null);setCloseIntent(null);
   return {dirty:state.draft!==state.baseline};
  };
  const updateCandidateEdit=(value:string|null)=>{
@@ -245,8 +257,13 @@ export function DramaStoryEditor({node,projectId,onChange,onConfirmVersion,versi
        finally{task?.end();importLock.current=false;if(mounted.current)setImporting(false);}
       }}/>
     </label>
-    <button type="button" className={secondary} style={control} aria-expanded={aiOpen} disabled={busy}
-     onClick={()=>{if(aiOpen&&live.current.candidate){setCloseIntent(true);return;}setAiOpen(open=>!open);}}><Sparkles size={13}/>{aiOpen?"收起 AI 创作":"AI 创作"}</button>
+    <button type="button" data-story-art-toggle="" className={secondary} style={artOpen?{...control,background:theme.toolbar.activeBg,borderColor:theme.node.activeStroke}:control}
+     aria-label={artOpen?"收起美术设定":"展开美术设定"} aria-expanded={artOpen} data-story-art-summary={artSummary}
+     title={artEditing?"请先保存或取消当前美术字段":artSummary} disabled={locked||artEditing}
+     onClick={()=>requestSidebar(artOpen?null:"art")}><Palette size={13}/>{artOpen?"收起美术设定":"美术设定"}</button>
+    <button type="button" className={secondary} style={aiOpen?{...control,background:theme.toolbar.activeBg,borderColor:theme.node.activeStroke}:control}
+     aria-expanded={aiOpen} disabled={locked||artEditing} title={artEditing?"请先保存或取消当前美术字段":undefined}
+     onClick={()=>requestSidebar(aiOpen?null:"ai")}><Sparkles size={13}/>{aiOpen?"收起 AI 创作":"AI 创作"}</button>
     {onConfirmVersion&&<button className={primary} type="button" style={accent}
      disabled={!draft.trim()||locked||externalConflict||!!candidate||confirmed&&!dirty}
      onClick={()=>void confirm()}>{confirming?"确认中…":"确认故事版本"}</button>}
@@ -259,9 +276,7 @@ export function DramaStoryEditor({node,projectId,onChange,onConfirmVersion,versi
    <button type="button" className={secondary+" !min-h-7 shrink-0 !px-2"} style={control} disabled={!openHistory||locked}
     onClick={()=>openHistory?.()}>查看来源<ArrowRight size={12}/></button>
   </div>}
-  <DramaStoryArtPanel node={node} onChange={onChange} onPendingChange={onPendingChange}
-   disabled={versionBusy} interactionDisabled={locked||!!candidate}/>
-  <div className={"grid min-h-0 min-w-0 flex-1 gap-3 "+(aiOpen?"grid-rows-[minmax(240px,1fr)_minmax(280px,1fr)] xl:grid-cols-[minmax(0,2.5fr)_minmax(300px,1fr)] xl:grid-rows-1":"grid-cols-1")}>
+  <div data-story-sidebar={sidebar??"none"} className={"grid min-h-0 min-w-0 flex-1 gap-3 "+(sidebar?"grid-rows-[minmax(240px,1fr)_minmax(280px,1fr)] xl:grid-cols-[minmax(0,2.5fr)_minmax(300px,1fr)] xl:grid-rows-1":"grid-cols-1")}>
    <div className="flex min-h-0 min-w-0 flex-col gap-2">
     <textarea ref={inputRef} aria-label="故事完整正文" data-story-textarea=""
      data-story-mode={editing?"editing":"reading"}
@@ -283,6 +298,8 @@ export function DramaStoryEditor({node,projectId,onChange,onConfirmVersion,versi
     {error&&<p role="alert" className="break-words text-xs">{error}</p>}
     {notice&&!error&&<p role="status" className="text-xs" style={{color:theme.node.muted}}>{notice}</p>}
    </div>
+   {artOpen&&<DramaStoryArtPanel node={node} onChange={onChange} onPendingChange={onPendingChange}
+    onEditingChange={setArtEditing} disabled={versionBusy} interactionDisabled={locked||!!candidate}/>}
    {aiOpen&&<aside aria-label="故事 AI 创作" className="thin-scrollbar flex min-h-0 min-w-0 flex-col gap-3 overflow-y-auto rounded-xl border p-3" style={control}>
     <div className="flex shrink-0 items-center justify-between gap-2">
      <strong className="flex items-center gap-1.5 text-sm"><Sparkles size={16}/>AI 创作</strong>
@@ -326,10 +343,10 @@ export function DramaStoryEditor({node,projectId,onChange,onConfirmVersion,versi
     </div>:<button type="button" className={primary+" shrink-0"} style={accent}
      disabled={locked||!!candidate||externalConflict||!preview.target} onClick={()=>void request()}>生成候选</button>}
     {candidate?<DramaStoryCandidatePanel candidate={candidate} theme={theme} stale={candidateStale} locked={locked}
-     editBuffer={candidateEdit} closeIntent={closeIntent}
+     editBuffer={candidateEdit} closeIntent={closeIntent!==null}
      onEdit={()=>updateCandidateEdit(candidate.text)} onChange={updateCandidateEdit} onConfirmEdit={confirmCandidateEdit}
      onCancelEdit={()=>updateCandidateEdit(null)} onAdopt={()=>{adopt();}} onDiscard={()=>{discard();}}
-     onContinueViewing={()=>setCloseIntent(false)}
+     onContinueViewing={()=>setCloseIntent(null)}
      onCopy={async()=>{try{await navigator.clipboard.writeText(live.current.candidateEdit??live.current.candidate?.text??"");
        if(feedback)feedback.notify("story-candidate-copy","success","AI 候选已复制");else setNotice("AI 候选已复制");
       }catch{setError("复制失败，请检查剪贴板权限");}}}/>

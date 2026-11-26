@@ -1,11 +1,11 @@
 import {useEffect,useRef,useState} from "react";
-import {Pencil,RotateCcw} from "lucide-react";
+import {Copy,Pencil,RotateCcw} from "lucide-react";
 import type {CanvasTheme} from "@/lib/canvas-theme";
 import type {DramaShotProduction} from "./drama-pipeline-media";
 import type {WorkspacePendingRegistration} from "./drama-creative-workspace";
 import {dramaProductionSettingFingerprint,validateDramaVideoPrompt} from "./drama-video-production-resolver";
 import {DramaEditActions} from "./drama-edit-actions";
-import {DramaInlineFeedback,useDramaFieldFeedback} from "./drama-feedback";
+import {DramaInlineFeedback,useDramaFeedback,useDramaFieldFeedback} from "./drama-feedback";
 
 type Draft={baseline:string;source:string;text:string;restore:boolean};
 export function DramaVideoPromptEditor({shotId,setting,automaticPrompt,promptSourceFingerprint,theme,disabled,onChange,onPendingChange,onEditingChange,onWaitForSave,existing}:{
@@ -18,6 +18,23 @@ export function DramaVideoPromptEditor({shotId,setting,automaticPrompt,promptSou
  const updated=useDramaFieldFeedback();
  const baseline=dramaProductionSettingFingerprint(setting);
  const current=setting.promptOverride?.text??automaticPrompt;
+ const feedback=useDramaFeedback()?.api;
+ const [copying,setCopying]=useState(false),[copyStatus,setCopyStatus]=useState("");
+ const copyText=draft?.text??current;
+ useEffect(()=>{setCopyStatus("");},[copyText]);
+ const copy=async()=>{
+  if(copying||!copyText.trim())return;
+  setCopying(true);setCopyStatus("");
+  try{
+   await navigator.clipboard.writeText(copyText);
+   if(feedback)feedback.notify("video-prompt-copy:"+shotId,"success","视频提示词已复制");
+   else setCopyStatus("已复制");
+  }catch{
+   if(feedback)feedback.notify("video-prompt-copy:"+shotId,"warning","复制失败，请检查剪贴板权限后重试");
+   else setCopyStatus("复制失败，请检查剪贴板权限");
+  }finally{setCopying(false);}
+ };
+
  const outdated=!!setting.promptOverride&&setting.promptOverride.sourceFingerprint!==promptSourceFingerprint;
  const stale=!!draft&&(draft.source!==promptSourceFingerprint||draft.baseline!==baseline&&attempt.current!==baseline);
  const dirty=!!draft&&(draft.restore?!!setting.promptOverride:draft.text!==current||outdated);
@@ -58,6 +75,9 @@ export function DramaVideoPromptEditor({shotId,setting,automaticPrompt,promptSou
    <strong>视频提示词</strong>
    {!draft&&<button type="button" aria-label="编辑视频提示词" title="编辑视频提示词" disabled={disabled||!onChange}
     className="inline-grid size-7 place-items-center rounded-md hover:opacity-80 disabled:opacity-45" style={muted} onClick={()=>start()}><Pencil size={13}/></button>}
+   <button type="button" aria-label="复制视频提示词" title={draft?"复制当前编辑内容":"复制视频提示词"} disabled={copying||!copyText.trim()}
+    className="inline-grid size-7 place-items-center rounded-md hover:opacity-80 disabled:opacity-45" style={muted} onClick={()=>void copy()}><Copy size={13} aria-hidden="true"/></button>
+   {copyStatus&&<span role="status" style={muted}>{copyStatus}</span>}
    <span className="ml-auto" style={muted}>{draft?"编辑中":setting.promptOverride?"已手动修改":"自动生成"}</span>
   </div>
   {outdated&&<DramaInlineFeedback theme={theme}>分镜、影片风格或输入模式已有更新，已保留人工提示词。请核对最新自动提示词。</DramaInlineFeedback>}

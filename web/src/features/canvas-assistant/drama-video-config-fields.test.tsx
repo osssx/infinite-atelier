@@ -111,6 +111,38 @@ async function choose(el:HTMLSelectElement|null,value:string){
  });
 }
 
+it.each(["dark","light"] as const)("copies the full displayed video prompt, including manual and draft edits (%s)",async theme=>{
+ const writeText=vi.spyOn(navigator.clipboard,"writeText").mockResolvedValue(undefined);
+ try{
+  const {el,change}=await mount({theme,productionStyle:"水彩风格",production:{s2:{mode:"text_to_video",promptOverride:{text:"人工提示词\n第二行",sourceFingerprint:"previous"}}}});
+  const button=(label:string)=>[...el.querySelectorAll("button")].find(b=>b.textContent?.trim()===label);
+  const copy=()=>el.querySelector<HTMLButtonElement>('[aria-label="复制视频提示词"]');
+  const panel=()=>el.querySelector('[aria-label="视频提示词"]')!;
+  await click(button("提示词"));
+  expect(copy()?.previousElementSibling?.getAttribute("aria-label")).toBe("编辑视频提示词");
+  expect(copy()?.style.color).toBe(canvasThemes[theme].node.muted);
+  await click(copy());
+  expect(writeText).toHaveBeenLastCalledWith(panel().querySelector("pre")?.textContent);
+  expect(writeText.mock.lastCall?.[0]).toContain("影片风格：水彩风格");
+  expect(el.querySelector('[data-drama-feedback="success"]')?.textContent).toContain("视频提示词已复制");
+  await click(el.querySelector('[aria-label^="选择视频镜头 2"]'));
+  await click(copy());
+  expect(writeText).toHaveBeenLastCalledWith("人工提示词\n第二行");
+  await click(panel().querySelector('[aria-label="编辑视频提示词"]'));
+  const textarea=panel().querySelector("textarea")!;
+  await act(async()=>{
+   Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,"value")!.set!.call(textarea,"未保存的提示词\n换行");
+   textarea.dispatchEvent(new Event("input",{bubbles:true}));
+  });
+  await click(copy());
+  expect(writeText).toHaveBeenLastCalledWith("未保存的提示词\n换行");
+  writeText.mockRejectedValueOnce(new Error("NotAllowedError"));
+  await click(copy());
+  expect(el.querySelector('[data-drama-feedback="warning"]')?.textContent).toContain("复制失败");
+  expect(change).not.toHaveBeenCalled();
+  expect(panel().querySelector("textarea")?.value).toBe("未保存的提示词\n换行");
+ }finally{writeText.mockRestore();}
+});
 it.each(["dark","light"] as const)("matches storyboard split-pane, directory and read-only video mode in %s theme",async theme=>{
  const {el}=await mount({theme,configs:new Map([["s2",{id:"cfg-2",metadata:{}} as CanvasNodeData]])});
  const root=el.querySelector<HTMLElement>('[data-video-config-layout="expanded"]')!;

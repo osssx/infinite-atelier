@@ -89,7 +89,6 @@ const DramaCreativeWorkspace=lazy(()=>import("@/features/canvas-assistant/drama-
 import { DramaSourceNode } from "@/features/canvas-assistant/drama-source-node";
 import {buildStoryTextSourceIndex,importBlankStoryNodes,storySourceState,storyTextSources} from "@/features/canvas-assistant/drama-story-upstream";
 import {resolveStoryDraft,storyVersionConfirmed,storyDraftStatusLabel,rollbackStoryDraftPatch,storyDraftPatchMatches,type StoryDraftPatch} from "@/features/canvas-assistant/drama-story-state";
-const DramaStoryArtPanel=lazy(()=>import("@/features/canvas-assistant/drama-story-art-panel").then(m=>({default:m.DramaStoryArtPanel})));
 const DramaStoryHistorySummary=lazy(()=>import("@/features/canvas-assistant/drama-story-history-summary").then(m=>({default:m.DramaStoryHistorySummary})));
 const DramaStoryEditor=lazy(()=>import("@/features/canvas-assistant/drama-story-editor").then(m=>({default:m.DramaStoryEditor})));
 import {LazyCreativeNode} from "@/features/canvas-assistant/lazy-creative-node";
@@ -4957,9 +4956,6 @@ function AtelierCanvasPage() {
                                 upstreamSources={storySourceIndex.get(creativeWorkspaceNode.id)??[]}
                                 onChange={patch=>persistStoryPatch(creativeWorkspaceNode.id,patch)}
                                 versionBusy={textVersionBusy} onPendingChange={onPendingChange}/>:
-                            tab==="settings"?<DramaStoryArtPanel node={creativeWorkspaceNode}
-                                onChange={patch=>persistStoryPatch(creativeWorkspaceNode.id,patch)}
-                                onPendingChange={onPendingChange} disabled={textVersionBusy}/>:
                             <DramaStoryHistorySummary node={creativeWorkspaceNode}
                                 sources={storySourceIndex.get(creativeWorkspaceNode.id)??[]}
                                 nodes={inputGraphNodes} connections={connections} versionBusy={textVersionBusy}

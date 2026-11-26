@@ -117,7 +117,7 @@ it.each(["success","invalid","failed"] as const)("navigates to asset candidates 
   const [node,setNode]=useState(initial);
   return <DramaCreativeWorkspace projectId="p" nodeId={node.id} kind="assets" focus={{}} versionConfirmed={false}
    candidateCount={node.metadata?.dramaAssetCandidate?.assets.length??0} onClose={async()=>{}} onTabChange={tabChanges}
-   renderPanel={(tab,onPendingChange)=><DramaPipelineNodePanel node={node} workspaceMode workspaceTab={tab==="settings"?"editor":tab}
+   renderPanel={(tab,onPendingChange)=><DramaPipelineNodePanel node={node} workspaceMode workspaceTab={tab}
     projectId="p" upstreamText="故事原文" onPendingChange={onPendingChange}
     onChange={patch=>{changes(patch);setNode(n=>({...n,metadata:{...n.metadata,...patch}}))}}/>}/>;
  }
@@ -187,7 +187,7 @@ it.each((["episodes","storyboard"] as const).flatMap(kind=>[...(["ready","failed
  try{
   await act(async()=>root.render(<DramaCreativeWorkspace projectId="p" nodeId={node.id} kind={kind} focus={{}} versionConfirmed={false}
    onClose={async()=>{}} onTabChange={tabChanges}
-   renderPanel={(tab,onPendingChange)=><DramaPipelineNodePanel node={node} workspaceMode workspaceTab={tab==="settings"?"editor":tab}
+   renderPanel={(tab,onPendingChange)=><DramaPipelineNodePanel node={node} workspaceMode workspaceTab={tab}
     projectId="p" upstreamText="故事原文" upstreamArtifacts={upstreamArtifacts} onPendingChange={onPendingChange}
     onBeforeDramaRun={saveBeforeRun} onChange={changes}/>} renderHistoryPanel={()=> <div>历史记录</div>}/>));
   const workspace=document.querySelector('[data-creative-workspace-node-id="'+node.id+'"]')!;
@@ -546,7 +546,7 @@ it("navigates from batch rows into the actual workspace editor and selects the m
  const root=createRoot(container);roots.push(root);
  await act(async()=>root.render(<DramaCreativeWorkspace projectId="project-1" nodeId={node.id} kind="storyboard" focus={{}} versionConfirmed onClose={async()=>{}}
   renderPanel={(tab,onPendingChange)=><DramaPipelineNodePanel node={node} upstreamArtifacts={upstreamArtifacts}
-   projectId="project-1" workspaceMode workspaceTab={tab==="settings"?"editor":tab} onPendingChange={onPendingChange} onChange={()=>{}}/>}/>));
+   projectId="project-1" workspaceMode workspaceTab={tab} onPendingChange={onPendingChange} onChange={()=>{}}/>}/>));
  const workspace=()=>document.querySelector<HTMLElement>('[data-creative-workspace-node-id="board-locate"]')!;
  const click=async(button:HTMLElement)=>{expect(button).toBeTruthy();await act(async()=>button.click());await act(async()=>{await new Promise(r=>setTimeout(r,35));});};
  await click([...workspace().querySelectorAll("nav button")].find(b=>b.textContent?.trim()==="批量创建配置") as HTMLElement);
@@ -586,7 +586,7 @@ it("keeps the precise upstream impact scope when history remounts the storyboard
  const root=createRoot(container);roots.push(root);
  try{
   await act(async()=>root.render(<DramaCreativeWorkspace projectId="p" nodeId={node.id} kind="storyboard" focus={{}} versionConfirmed onClose={async()=>{}}
-   renderPanel={(tab,onPendingChange)=><DramaPipelineNodePanel node={node} upstreamArtifacts={upstreamArtifacts} projectId="p" workspaceMode workspaceTab={tab==="settings"?"editor":tab} onPendingChange={onPendingChange} onChange={()=>{}}/>} renderHistoryPanel={()=> <div>历史版本</div>}/>));
+   renderPanel={(tab,onPendingChange)=><DramaPipelineNodePanel node={node} upstreamArtifacts={upstreamArtifacts} projectId="p" workspaceMode workspaceTab={tab} onPendingChange={onPendingChange} onChange={()=>{}}/>} renderHistoryPanel={()=> <div>历史版本</div>}/>));
   const workspace=document.querySelector('[data-creative-workspace-node-id="board-impact"]')!;
   const click=async(text:string)=>{const b=[...workspace.querySelectorAll<HTMLButtonElement>("button")].find(b=>b.textContent?.trim()===text)!;expect(b).toBeTruthy();await act(async()=>b.click());};
   await click("影响与历史");
@@ -617,7 +617,7 @@ it("allows cancellation during a retry, and reports the returned terminal status
  const container=document.createElement("div");document.body.append(container);const root=createRoot(container);roots.push(root);
  try{
   await act(async()=>root.render(<DramaCreativeWorkspace projectId="p" nodeId={node.id} kind="episodes" focus={{}} versionConfirmed={false} onClose={async()=>{}}
-   renderPanel={(tab,onPendingChange)=><DramaPipelineNodePanel node={node} projectId="p" workspaceMode workspaceTab={tab==="settings"?"editor":tab} onPendingChange={onPendingChange} onChange={()=>{}}/>}/>));
+   renderPanel={(tab,onPendingChange)=><DramaPipelineNodePanel node={node} projectId="p" workspaceMode workspaceTab={tab} onPendingChange={onPendingChange} onChange={()=>{}}/>}/>));
   const workspace=document.querySelector('[data-creative-workspace-node-id="retry-episodes"]')!;
   const button=(text:string)=>[...workspace.querySelectorAll<HTMLButtonElement>("button")].find(b=>b.textContent?.trim()===text)!;
   await act(async()=>button("生成候选").click());
@@ -656,7 +656,7 @@ it("reports committed adoption separately from a failed preview refresh and prev
  const container=document.createElement("div");document.body.append(container);const root=createRoot(container);roots.push(root);
  try{
   await act(async()=>root.render(<DramaCreativeWorkspace projectId="p" nodeId={node.id} kind="storyboard" focus={{}} versionConfirmed={false} onClose={async()=>{}}
-   renderPanel={(tab,onPendingChange)=><DramaPipelineNodePanel node={node} projectId="p" workspaceMode workspaceTab={tab==="settings"?"editor":tab} onPendingChange={onPendingChange} onChange={()=>{}} onAdoptDramaRun={adopt}/>}/>));
+   renderPanel={(tab,onPendingChange)=><DramaPipelineNodePanel node={node} projectId="p" workspaceMode workspaceTab={tab} onPendingChange={onPendingChange} onChange={()=>{}} onAdoptDramaRun={adopt}/>}/>));
   const workspace=document.querySelector('[data-creative-workspace-node-id="board-adopt-recovery"]')!;
   const button=(text:string)=>[...workspace.querySelectorAll<HTMLButtonElement>("button")].find(b=>b.textContent?.trim()===text)!;
   await act(async()=>button("生成候选").click());

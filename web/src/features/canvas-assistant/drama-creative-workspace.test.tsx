@@ -211,14 +211,14 @@ describe("P3.4b3 workspace lifecycle",()=>{
   expect(div.querySelector('[data-current-tab="editor"]')).toBeTruthy();
   expect(div.textContent).not.toContain("正在合入资产");
  });
- it("opens a unified source workspace with story, art settings and history tabs",async()=>{
+ it("opens a unified source workspace with story and history tabs; art settings belong to the editor",async()=>{
   const story=await mount("source",true);
   const tabs=[...story.div.querySelectorAll<HTMLButtonElement>('nav[aria-label="创作工作区功能"] button')];
-  expect(tabs.map(tab=>tab.textContent?.trim())).toEqual(["故事正文","美术设定","影响与历史"]);
+  expect(tabs.map(tab=>tab.textContent?.trim())).toEqual(["故事正文","影响与历史"]);
   expect(story.div.querySelector('[data-drama-workspace-title-row]')?.textContent).toContain("故事");
   expect(tabs[0].getAttribute("aria-description")).toContain("选区改写");
-  await press(story.div,"美术设定");
-  expect(story.renderPanel).toHaveBeenCalledWith("settings",expect.any(Function));
+  expect(tabs[0].getAttribute("aria-description")).toContain("美术风格");
+  expect(story.renderPanel).toHaveBeenCalledWith("editor",expect.any(Function));
   await press(story.div,"影响与历史");
   expect(story.div.querySelector('[aria-label="测试内嵌历史"]')).toBeTruthy();
  });

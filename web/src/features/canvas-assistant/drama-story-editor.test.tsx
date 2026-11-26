@@ -260,6 +260,27 @@ it("discards a late result after unmount and rejects an empty response",async()=
  await generate(container);const root=roots.pop()!;
  await act(async()=>root.unmount());await act(async()=>resolve({candidate:"迟到"}));expect(patch).not.toHaveBeenCalled();
 });
+it("keeps a story draft mounted when art settings open and registers both independent changes",async()=>{
+ const {container,patch,pending}=await mount();
+ const body=container.querySelector<HTMLTextAreaElement>("[data-story-textarea]")!;
+ await click(container.querySelector('[aria-label="编辑故事正文"]'));
+ await typeText(body,"正文草案");
+ await click(container.querySelector('[aria-label="展开美术设定"]'));
+ expect(container.querySelector("[data-story-textarea]")).toBe(body);
+ expect(body.value).toBe("正文草案");expect(body.readOnly).toBe(false);
+ await click(container.querySelector('[aria-label="编辑影片风格"]'));
+ await typeText(container.querySelector<HTMLTextAreaElement>('[aria-label="影片风格"]')!,"水彩风格");
+ expect([...pending.keys()].sort()).toEqual(["story:story","story:story-art"]);
+ expect(patch).not.toHaveBeenCalled();
+ // Workspace save iterates these independently; neither update overwrites the other.
+ for(const save of [...pending.values()])await act(async()=>{await save();});
+ expect(patch.mock.calls).toEqual([[{dramaDraft:"正文草案",content:"正文草案"}],[{dramaFilmStyle:"水彩风格"}]]);
+ expect(pending.size).toBe(0);
+ await click(container.querySelector('[aria-label="收起美术设定"]'));
+ expect(container.querySelector("[data-story-art-panel]")).toBeNull();
+ expect(container.querySelector("[data-story-art-summary]")?.textContent).toContain("水彩风格");
+ expect(body.value).toBe("正文草案");expect(body.readOnly).toBe(true);
+});
 it("disables generation for an empty story",async()=>{
  const {container}=await mount("  ");await openAI(container);
  expect(container.textContent).toContain("请先输入故事起始文字");expect((byText(container,"生成候选") as HTMLButtonElement).disabled).toBe(true);expect(api.ensure).not.toHaveBeenCalled();

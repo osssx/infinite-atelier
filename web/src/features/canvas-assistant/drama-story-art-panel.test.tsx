@@ -32,6 +32,10 @@ const write=async(el:HTMLTextAreaElement,text:string)=>{await act(async()=>{Obje
 it("keeps settings read-only, changes only one field, and cancels without saving",async()=>{
  const {container,patch,pending}=await mount();
  expect(container.querySelector("select,textarea,input")).toBeNull();
+ expect(container.querySelector("[data-story-art-panel]")).toBeNull();
+ expect(container.querySelector("[data-story-art-summary]")?.textContent).toContain("16:9 · 水彩 · 美术指导 4/4");
+ await click(container.querySelector('[aria-label="展开美术设定"]'));
+ expect(container.querySelector("select,textarea,input")).toBeNull();
  await click(container.querySelector('[aria-label="编辑视频比例"]'));
  const select=container.querySelector("select")!;
  expect(select.value).toBe("16:9");
@@ -42,12 +46,19 @@ it("keeps settings read-only, changes only one field, and cancels without saving
  expect(pending.size).toBe(0);expect(container.querySelector("select")).toBeNull();
  await click(container.querySelector('[aria-label="编辑影片风格"]'));
  await write(container.querySelector("textarea")!,"新风格");
+ // Collapsing must not destroy a registered unsaved field.
+ expect(container.querySelector<HTMLButtonElement>("[data-story-art-toggle]")?.disabled).toBe(true);
+ expect(container.querySelector("textarea")?.value).toBe("新风格");expect(pending.size).toBe(1);
  await click(container.querySelector('[data-drama-action="cancel"]'));
  expect(patch).toHaveBeenCalledTimes(1);expect(pending.size).toBe(0);
+ await click(container.querySelector('[aria-label="收起美术设定"]'));
+ expect(container.querySelector("[data-story-art-panel]")).toBeNull();
+ expect(container.querySelector("[data-story-art-summary]")?.textContent).toContain("9:16 · 水彩");
 });
 it("merges a nested edit with the latest other fields and preserves the draft on failure",async()=>{
  const persist=vi.fn<()=>Promise<void>>().mockRejectedValueOnce(Error("持久化失败")).mockResolvedValueOnce();
  const {container,patch,pending,update}=await mount(persist);
+ await click(container.querySelector('[aria-label="展开美术设定"]'));
  await click(container.querySelector('[aria-label="编辑色彩方案"]'));
  await write(container.querySelector("textarea")!,"蓝");
  await update({dramaArtDirection:{...initial.metadata!.dramaArtDirection!,lighting:"最新光影"}});
@@ -60,6 +71,7 @@ it("merges a nested edit with the latest other fields and preserves the draft on
 });
 it("rejects a concurrent change to the field being edited",async()=>{
  const {container,patch,update}=await mount();
+ await click(container.querySelector('[aria-label="展开美术设定"]'));
  await click(container.querySelector('[aria-label="编辑影片风格"]'));
  await write(container.querySelector("textarea")!,"我的风格");
  await update({dramaFilmStyle:"外部风格"});

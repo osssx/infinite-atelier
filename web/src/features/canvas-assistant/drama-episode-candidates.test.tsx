@@ -83,7 +83,7 @@ async function mount({workspaceMode=true,appearance="dark",initialRevision=0,ini
  const node={id:"candidate-p2-"+Math.random(),type:"drama:episodes",title:"剧集规划",position:{x:0,y:0},metadata:{dramaDraft:JSON.stringify({episodes:[ep("formal","正式草案")]})}} as CanvasNodeData;
  const container=document.createElement("div");document.body.append(container);const root=createRoot(container);roots.push(root);
  await act(async()=>root.render(workspaceMode?<DramaCreativeWorkspace projectId="p" nodeId={node.id} kind="episodes" focus={{}} versionConfirmed={true} onClose={async()=>{}}
-  renderPanel={(tab,register)=><DramaPipelineNodePanel node={node} projectId="p" workspaceMode workspaceTab={tab==="settings"?"editor":tab} onPendingChange={register} onChange={change} onAdoptDramaRun={adopt}/>}/>:
+  renderPanel={(tab,register)=><DramaPipelineNodePanel node={node} projectId="p" workspaceMode workspaceTab={tab} onPendingChange={register} onChange={change} onAdoptDramaRun={adopt}/>}/>:
   <DramaPipelineNodePanel node={node} projectId="p" workspaceMode workspaceTab="runs" onChange={change} onAdoptDramaRun={adopt}/>));
  const workspace=workspaceMode?document.querySelector('[data-creative-workspace-node-id="'+node.id+'"]')!:container;
  if(workspaceMode)await click(button(workspace,"生成候选"));

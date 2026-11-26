@@ -17,6 +17,7 @@ import {DramaStoryHistoryNavigationContext} from "./drama-story-history-navigati
 import {applyStoryCandidate,storyAssistLabels,storyTargetForOperation,storyTargetLabel,storyAssistRequest,
  type StoryAssistOperation,type StoryContinuationScope,type StorySelection} from "./drama-story-editor-utils";
 import {DramaStoryCandidatePanel,type StoryCandidate} from "./drama-story-candidate-panel";
+import {DramaStoryArtPanel} from "./drama-story-art-panel";
 
 export function DramaStoryEditor({node,projectId,onChange,onConfirmVersion,versionBusy,onPendingChange,upstreamSources=[]}:{
  node:CanvasNodeData;projectId:string;onChange:(patch:Partial<CanvasNodeMetadata>)=>Promise<void>;
@@ -26,7 +27,8 @@ export function DramaStoryEditor({node,projectId,onChange,onConfirmVersion,versi
 }){
  const theme=canvasThemes[useThemeStore(state=>state.theme)];
  const config=useEffectiveConfig();
- const feedback=useDramaFeedback()?.api;
+ const feedbackContext=useDramaFeedback();
+ const feedback=feedbackContext?.api;
  const openHistory=useContext(DramaStoryHistoryNavigationContext);
  const source=resolveStoryDraft(node);
  const [editing,setEditing]=useState(false),[aiOpen,setAiOpen]=useState(false);
@@ -52,7 +54,8 @@ export function DramaStoryEditor({node,projectId,onChange,onConfirmVersion,versi
  live.current={source,baseline,draft,candidate,sourceContext,candidateEdit};
  const externalConflict=source!==baseline,dirty=draft!==baseline;
  const confirmed=storyVersionConfirmed(node);
- const locked=saving||confirming||busy||importing||versionBusy;
+ const artSaving=feedbackContext?.task?.title==="保存美术设定";
+ const locked=saving||confirming||busy||importing||versionBusy||artSaving;
  const selected=!!selection&&selection.start<selection.end;
  const preview=useMemo(()=>{
   if(!aiOpen)return {target:null,issue:""};
@@ -256,14 +259,16 @@ export function DramaStoryEditor({node,projectId,onChange,onConfirmVersion,versi
    <button type="button" className={secondary+" !min-h-7 shrink-0 !px-2"} style={control} disabled={!openHistory||locked}
     onClick={()=>openHistory?.()}>查看来源<ArrowRight size={12}/></button>
   </div>}
+  <DramaStoryArtPanel node={node} onChange={onChange} onPendingChange={onPendingChange}
+   disabled={versionBusy} interactionDisabled={locked||!!candidate}/>
   <div className={"grid min-h-0 min-w-0 flex-1 gap-3 "+(aiOpen?"grid-rows-[minmax(240px,1fr)_minmax(280px,1fr)] xl:grid-cols-[minmax(0,2.5fr)_minmax(300px,1fr)] xl:grid-rows-1":"grid-cols-1")}>
    <div className="flex min-h-0 min-w-0 flex-col gap-2">
     <textarea ref={inputRef} aria-label="故事完整正文" data-story-textarea=""
      data-story-mode={editing?"editing":"reading"}
      className={"thin-scrollbar min-h-[240px] w-full min-w-0 flex-1 resize-none rounded-lg px-4 py-3 text-sm leading-7 outline-none focus-visible:ring-2 "+(editing?"border":"border-l-2")}
      style={{...control,background:editing?theme.node.fill:theme.toolbar.activeBg,borderColor:editing?theme.node.stroke:theme.node.activeStroke}}
-     value={draft} readOnly={!editing||saving||importing||confirming||busy||versionBusy} placeholder={editing?"撰写、粘贴或导入故事原文…":"尚无故事正文，点击编辑开始创作"}
-     onChange={event=>{if(editing&&!saveLock.current&&!importLock.current&&!aiLock.current&&!confirming&&!versionBusy)changeDraft(event.target.value);}}
+     value={draft} readOnly={!editing||locked} placeholder={editing?"撰写、粘贴或导入故事原文…":"尚无故事正文，点击编辑开始创作"}
+     onChange={event=>{if(editing&&!locked&&!saveLock.current&&!importLock.current&&!aiLock.current)changeDraft(event.target.value);}}
      onSelect={capture} onKeyUp={capture} onMouseUp={capture}
      onKeyDown={event=>{
       if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==="s"){

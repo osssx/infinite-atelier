@@ -10,7 +10,7 @@ import {DramaCandidateNavigationContext,DramaWorkspaceExitGuardContext,AssetDire
 import {DramaStoryboardNavigationContext,DramaStoryboardScopeContext,type StoryboardScopeFocus} from "./drama-storyboard-navigation";
 import {DramaStoryHistoryNavigationContext} from "./drama-story-history-navigation";
 import type {DramaWorkspaceTab} from "./drama-pipeline-node-panel";
-type StoryWorkspaceTab=DramaWorkspaceTab|"settings";
+type StoryWorkspaceTab=DramaWorkspaceTab;
 
 export type DramaWorkspaceFocus={episodeId?:string;sequenceId?:string;shotId?:string;assetId?:string;variantId?:string;assetDirectory?:AssetDirectorySelection};
 /** Story candidates must be resolved separately from saving or discarding draft edits. */
@@ -200,14 +200,12 @@ export function DramaCreativeWorkspace({projectId,nodeId,kind,focus,versionConfi
  };
  const tabs:{id:StoryWorkspaceTab;label:string;icon:typeof BookOpenText}[]=[
   {id:"editor",label:storyMode?"故事正文":assetMode?"资产编辑":episodeMode?"剧集编辑":"镜头编辑",icon:LayoutList},
-  ...(storyMode?[{id:"settings" as const,label:"美术设定",icon:BookOpenText}]:
-   assetMode||episodeMode?[]:[{id:"video" as const,label:"批量创建配置",icon:Film}]),
+  ...(storyMode||assetMode||episodeMode?[]:[{id:"video" as const,label:"批量创建配置",icon:Film}]),
   ...(!storyMode?[{id:"runs" as const,label:assetMode&&candidateCount>0?`生成候选 · ${candidateCount}`:"生成候选",icon:Sparkles}]:[]),
   {id:"history",label:"影响与历史",icon:History},
  ];
  const paneDesc:Record<StoryWorkspaceTab,string>={
-  editor:storyMode?"编写故事、选区改写、AI 续写及全文润色":assetMode?"编辑角色、场景、道具、造型设定及参考图":episodeMode?"按集编辑剧情、事件、场次及来源引用":"编辑镜头内容、资产引用与单镜头视频配置",
-  settings:"故事影片比例、风格、美术指导与原文确认",
+  editor:storyMode?"编写故事、设置美术风格、选区改写及 AI 续写润色":assetMode?"编辑角色、场景、道具、造型设定及参考图":episodeMode?"按集编辑剧情、事件、场次及来源引用":"编辑镜头内容、资产引用与单镜头视频配置",
   video:"批量创建视频配置及组建批量生成镜头组",
   runs:episodeMode?"浏览、编辑或删除生成候选，审核后采用到草案":"按运行状态浏览候选，展开查看内容与采用选项",
   history:storyMode?"文本来源同步、直接下游及版本历史":"版本快照与上游影响直接在工作区内查看",

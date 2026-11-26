@@ -13,10 +13,19 @@ const mocks=vi.hoisted(()=>({
  audit:vi.fn(),capabilities:vi.fn(),
 }));
 vi.mock("@/stores/use-config-store",()=>({useEffectiveConfig:()=>mocks.config,encodeChannelModel:(channel:string,model:string)=>channel+"::"+model,modelOptionLabel:(_config:unknown,model:string)=>model}));
-vi.mock("@/features/comfy-workflow/template-registry",()=>({listComfyTemplates:async()=>[
- {id:"video-template",revision:"pinned",name:"本地视频模板",mediaUseCase:{channel:"video"}},
- {id:"image-template",revision:"pinned",name:"图片模板",mediaUseCase:{channel:"image"}}
+vi.mock("@/features/comfy-workflow/preset-registry",()=>({listComfyPresets:async()=>[
+ {id:"video",templateId:"video-template",revision:"pinned",name:"本地视频模板"},
+ {id:"image",templateId:"image-template",revision:"pinned",name:"图片模板"},
+ {id:"bad",templateId:"bad-template",revision:"legacy",name:"损坏模板"},
+ {id:"legacy",templateId:"legacy-template",revision:"legacy",name:"未配置能力的旧视频模板"}
 ]}));
+vi.mock("@/features/comfy-workflow/template-registry",()=>({getComfyTemplate:async(id:string,revision:string)=>{
+ if(id==="bad-template")throw Error("invalid media use case");
+ return {id,revision,name:id,mediaUseCase:{channel:id==="image-template"?"image":"video",...(id==="video-template"?{
+ mediaCapabilities:{schemaVersion:1,kind:"video",modes:[{id:"first_frame",enabled:true,inputs:[{role:"first_frame",kind:"image",minItems:1,maxItems:1}],parameters:[]}]},
+ modeBindings:{first_frame:{promptPortId:"prompt",rolePorts:{first_frame:["first"]}}}
+ }: {})}};
+}}));
 vi.mock("./drama-media-preflight",()=>({prepareDramaProduction:async(input:DramaVideoInput)=>input}));
 vi.mock("./drama-production-audit",()=>({
  dramaMediaModes:[
@@ -135,6 +144,10 @@ it("stages channel selection, refreshes capabilities, preserves media settings a
  expect(picker.textContent).toContain("本地视频模板");
  expect(picker.textContent).not.toContain("图片模板");
  expect(picker.textContent).not.toContain("text-v1");
+ expect(picker.textContent).not.toContain("损坏模板");
+ expect([...picker.options].find(o=>o.textContent?.includes("本地视频模板"))?.disabled).toBe(false);
+ expect([...picker.options].find(o=>o.textContent?.includes("未配置能力的旧视频模板"))?.disabled).toBe(true);
+ expect(el.textContent).toContain("其他可用工作流仍可选择");
  await choose(el.querySelector('select[aria-label="视频输入模式"]'),"first_frame");
  const online=JSON.stringify({kind:"online",modelOption:"api::video-v1"});
  await choose(picker,online);
@@ -158,6 +171,17 @@ it("stages channel selection, refreshes capabilities, preserves media settings a
  expect(el.textContent).toContain("测试在线渠道");
  await click([...el.querySelectorAll("button")].find(b=>b.textContent==="创建视频配置"));
  expect(action).toHaveBeenCalledTimes(1);
+});
+
+it("saves a usable pinned workflow despite a failed unrelated template",async()=>{
+ const {el,change}=await mount({embedded:true});
+ await click(el.querySelector('[aria-label="编辑视频输入模式"]'));
+ const picker=el.querySelector<HTMLSelectElement>('[aria-label="视频渠道"]')!;
+ await choose(picker,JSON.stringify({kind:"comfy",templateId:"video-template",templateRevision:"pinned"}));
+ await choose(el.querySelector('select[aria-label="视频输入模式"]'),"first_frame");
+ await click(el.querySelector('[aria-label="确认视频输入模式"]'));
+ expect(change).toHaveBeenCalledTimes(1);
+ expect(change.mock.lastCall?.[1]).toMatchObject({target:{kind:"comfy",templateId:"video-template",templateRevision:"pinned"},mode:"first_frame"});
 });
 
 it.each(["dark","light"] as const)("edits and restores video prompts using the shared pending guard (%s)",async theme=>{
@@ -322,7 +346,7 @@ it("stages mode changes and cancels without writes; choosing an image explicitly
  await choose(field.querySelector('select[aria-label="视频输入模式"]'),"first_frame");
  expect(field.textContent).toContain("从画布选择图片后，会立即保存当前输入模式");
  expect(change).not.toHaveBeenCalled();
- await click(field.querySelector("button:not([data-drama-action]):not([aria-label])"));
+ await click([...field.querySelectorAll("button")].find(button=>button.textContent==="选择首帧"));
  expect(change).toHaveBeenCalledTimes(1);
  expect(change.mock.lastCall?.[0]).toBe("s1");
  expect(change.mock.lastCall?.[1]).toMatchObject({mode:"first_frame",gridInput:false,firstFrame:imageKey});

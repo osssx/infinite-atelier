@@ -1,6 +1,7 @@
-import {useEffect,useState,type CSSProperties} from "react";
-import {listComfyTemplates} from "@/features/comfy-workflow/template-registry";
-import type {ComfyWorkflowTemplate} from "@/features/comfy-workflow/template-schema";
+import {useEffect,useRef,useState,type CSSProperties} from "react";
+import {getComfyTemplate} from "@/features/comfy-workflow/template-registry";
+import {listComfyPresets} from "@/features/comfy-workflow/preset-registry";
+import {resolveMediaCapabilities} from "@/services/media-capabilities";
 import {encodeChannelModel,type AiConfig} from "@/stores/use-config-store";
 import type {CanvasTheme} from "@/lib/canvas-theme";
 import type {DramaShotProduction,DramaVideoTarget} from "./drama-pipeline-media";
@@ -12,23 +13,50 @@ const labels:Record<string,string>={adaptive:"自适应",auto:"自动"};
 const display=(value:string|number)=>labels[String(value)]??String(value);
 export function DramaVideoTargetPicker({config,value,onChange,theme,disabled}:{config:AiConfig;value:DramaShotProduction;
  onChange:(value:DramaShotProduction)=>void;theme:CanvasTheme;disabled:boolean}){
- const [templates,setTemplates]=useState<ComfyWorkflowTemplate[]>([]);
- const [loading,setLoading]=useState(true),[error,setError]=useState(""),[reload,setReload]=useState(0);
+ const [workflows,setWorkflows]=useState<{target:DramaVideoTarget;label:string;disabled?:boolean}[]>([]);
+ const [loading,setLoading]=useState(true),[error,setError]=useState(""),[reload,setReload]=useState(0),[failures,setFailures]=useState(0);
+ // Keep the originally bound version visible even if its preset has since moved.
+ const originalTarget=useRef(value.target);
+ const defaultId=config.comfyWorkflowDefaults?.video?.templateId,defaultRevision=config.comfyWorkflowDefaults?.video?.templateRevision;
  useEffect(()=>{
-  let live=true;setLoading(true);setError("");
-  void Promise.resolve().then(()=>listComfyTemplates()).then(items=>{
-   if(live)setTemplates(items.filter(item=>item.mediaUseCase?.channel==="video"));
-  }).catch(()=>{if(live)setError("无法读取视频工作流，请重试。");}).finally(()=>{if(live)setLoading(false);});
+  let live=true;setLoading(true);setError("");setFailures(0);
+  void (async()=>{
+   let presets:Awaited<ReturnType<typeof listComfyPresets>>=[];
+   let catalogFailed=false;
+   try{presets=await listComfyPresets();}catch{catalogFailed=true;}
+   const entries=new Map<string,{templateId:string;revision:string;name?:string}>();
+   for(const preset of presets){
+    const key=preset.templateId+"@"+preset.revision;
+    if(!entries.has(key))entries.set(key,preset);
+   }
+   const original=originalTarget.current;
+   const pinned=[...(defaultId&&defaultRevision?[{templateId:defaultId,revision:defaultRevision}]:[]),
+    ...(original?.kind==="comfy"?[{templateId:original.templateId,revision:original.templateRevision}]:[])];
+   for(const item of pinned){const key=item.templateId+"@"+item.revision;if(!entries.has(key))entries.set(key,item);}
+   const results=await Promise.all([...entries.values()].map(async item=>{
+    try{
+     const template=await getComfyTemplate(item.templateId,item.revision);
+     if(!template)return {failed:true};
+     if(template.mediaUseCase?.channel!=="video")return {};
+     const resolved=resolveMediaCapabilities({mediaCapabilities:template.mediaUseCase.mediaCapabilities},{kind:"video"});
+     const available=resolved.explicit&&!resolved.unavailable.length&&resolved.modes.some(mode=>
+      ["text_to_video","first_frame","first_last_frame","omni_reference"].includes(mode.id)&&!!template.mediaUseCase?.modeBindings?.[mode.id as keyof typeof template.mediaUseCase.modeBindings]);
+     return {option:{target:{kind:"comfy",templateId:template.id,templateRevision:template.revision} as DramaVideoTarget,
+      label:(item.name??template.name)+(available?"":"（未声明可用视频模式）"),disabled:!available}};
+    }catch{return {failed:true};}
+   }));
+   if(!live)return;
+   setWorkflows(results.flatMap(result=>result.option?[result.option]:[]));
+   setFailures(results.filter(result=>result.failed).length);
+   if(catalogFailed)setError("无法读取工作流预设目录，请重试。");
+  })().finally(()=>{if(live)setLoading(false);});
   return ()=>{live=false;};
- },[reload]);
+ },[reload,defaultId,defaultRevision]);
  const options=[{target:{kind:"inherit"} as DramaVideoTarget,label:"跟随全局默认"}];
  const online=(config.channels??[]).flatMap(channel=>channel.models.filter(model=>model.capability==="video").map(model=>({
   target:{kind:"online",modelOption:encodeChannelModel(channel.id,model.name)} as DramaVideoTarget,label:model.name+" · "+channel.name
  })));
- const comfy=templates.map((template,index)=>({
-  target:{kind:"comfy",templateId:template.id,templateRevision:template.revision} as DramaVideoTarget,
-  label:template.name+(template.revisionName?" · "+template.revisionName:templates.filter(t=>t.name===template.name).length>1?" · 版本 "+(index+1):"")
- }));
+ const comfy=workflows;
  const all=[...options,...online,...comfy],current=targetKey(value.target);
  const unknown=!all.some(item=>targetKey(item.target)===current);
  const style={background:theme.node.panel,color:theme.node.text,borderColor:theme.node.stroke} as CSSProperties;
@@ -37,17 +65,17 @@ export function DramaVideoTargetPicker({config,value,onChange,theme,disabled}:{c
    <select aria-label="视频渠道" className="w-full min-w-0 rounded-lg border px-3 py-2.5 text-sm" style={style}
     disabled={disabled} value={current} onChange={event=>{
      const selected=all.find(item=>targetKey(item.target)===event.target.value);
-     if(selected)onChange({...value,target:selected.target});
+     if(selected&&!("disabled" in selected&&selected.disabled))onChange({...value,target:selected.target});
     }}>
     {unknown&&<option value={current} disabled>{loading?"正在读取已选渠道…":value.target?.kind==="online"?"已选在线模型不可用":"已选工作流不可用"}</option>}
     {options.map(item=><option key={targetKey(item.target)} value={targetKey(item.target)}>{item.label}</option>)}
-    {!!comfy.length&&<optgroup label="本地 ComfyUI">{comfy.map(item=><option key={targetKey(item.target)} value={targetKey(item.target)}>{item.label}</option>)}</optgroup>}
+    {!!comfy.length&&<optgroup label="本地 ComfyUI">{comfy.map(item=><option key={targetKey(item.target)} value={targetKey(item.target)} disabled={item.disabled}>{item.label}</option>)}</optgroup>}
     {!!online.length&&<optgroup label="在线视频模型">{online.map(item=><option key={targetKey(item.target)} value={targetKey(item.target)}>{item.label}</option>)}</optgroup>}
    </select>
   </label>
   {loading&&<span style={{color:theme.node.muted}}>正在读取本地视频工作流…</span>}
-  {error&&<div className="flex items-center gap-2" style={{color:theme.node.muted}}>{error}<button type="button" disabled={disabled} onClick={()=>setReload(n=>n+1)} className="underline">重试</button></div>}
-  {!loading&&!error&&!comfy.length&&!online.length&&<span style={{color:theme.node.muted}}>暂无可选的视频模型或工作流，请先在设置中配置。</span>}
+  {(error||failures>0)&&<div className="flex flex-wrap items-center gap-2" style={{color:theme.node.muted}}>{error||"部分工作流版本无法读取或校验，其他可用工作流仍可选择。"}<button type="button" disabled={disabled||loading} onClick={()=>setReload(n=>n+1)} className="underline">重试</button></div>}
+  {!loading&&!error&&!comfy.some(item=>!item.disabled)&&!online.length&&<span style={{color:theme.node.muted}}>暂无可选的视频模型或工作流，请先在设置中配置。</span>}
  </div>;
 }
 export function DramaVideoParameterFields({config,value,capabilities,shotDuration,theme,disabled,editing,onChange}:{config:AiConfig;

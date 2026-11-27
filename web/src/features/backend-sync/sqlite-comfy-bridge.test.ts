@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import {afterEach,describe,expect,it,vi} from "vitest";
 import {canonicalBackendGraph,fingerprintBackendSource} from "./backend-source-fingerprint";
 import type {CanvasNodeData} from "@/types/canvas";
@@ -151,6 +152,45 @@ describe("P4 SQLite-only Comfy generation bridge",()=>{
   const bridge=createSqliteComfyBridge({projectId:"p1",getLocalGraph:()=>local,api:h.api});
   await expect(bridge.saveProjectNow(graph,"wf")).rejects.toThrow("generation_draft_changed");
   expect(h.api).not.toHaveBeenCalled();
+ });
+
+
+ it("still refuses mismatched persisted metadata and a changed revision when compact nodes are present",async()=>{
+  const story:CanvasNodeData={...node,id:"story",type:"drama:source",metadata:{content:"A story",dramaDraft:"A story"}};
+  const compact:CanvasNodeData={...story,metadata:{creativePayloadRef:{nodeId:"story",schemaVersion:1}}};
+  const target={...node,metadata:{...node.metadata,mediaMode:"first_frame" as const}};
+  const local:BackendCanvasGraph={nodes:[compact,target],connections:[]};
+  const bridge=createSqliteComfyBridge({projectId:"p1",getLocalGraph:()=>local,api:h.api});
+  h.api.mockImplementation(async(path:string)=>path.endsWith("?creative=summary")?
+   project(3,[compact,target]):project(2,[story,target]));
+  await expect(bridge.saveProjectNow(local,target.id)).rejects.toThrow("generation_save_barrier_required");
+  h.api.mockImplementation(async(path:string)=>path.endsWith("?creative=summary")?
+   project(3,[compact,{...target,metadata:{...target.metadata,mediaMode:"last_frame"}}]):
+   project(3,[story,{...target,metadata:{...target.metadata,mediaMode:"last_frame"}}]));
+  await expect(bridge.saveProjectNow(local,target.id)).rejects.toThrow("generation_save_barrier_required");
+ });
+ it("recovers a materialized video while keeping lazy creative nodes and open editor bodies intact",async()=>{
+  const story:CanvasNodeData={...node,id:"story",type:"drama:source",metadata:{content:"A story",dramaDraft:"A story"}};
+  const compactStory:CanvasNodeData={...story,metadata:{creativePayloadRef:{nodeId:"story",schemaVersion:1}}};
+  const assets:CanvasNodeData={...node,id:"assets",type:"drama:assets",metadata:{dramaDraft:"opened asset body"}};
+  const compactAssets:CanvasNodeData={...assets,metadata:{creativePayloadRef:{nodeId:"assets",schemaVersion:1}}};
+  const target:CanvasNodeData={...node,metadata:{comfyPorts:[{id:"video",label:"Video",direction:"source",valueKind:"VIDEO"}]}};
+  const artifact:CanvasNodeData={...node,id:"artifact-video-job",type:"video",metadata:{content:"/api/v1/blobs/"+"a".repeat(64),
+   storageKey:"cas:"+"a".repeat(64),mimeType:"video/mp4",comfyArtifact:{runId:"job-video",artifactId:"video-job",kind:"video",workflowNodeId:target.id,portId:"video",index:0}}};
+  const edges=[{id:"artifact-edge-video",fromNodeId:target.id,toNodeId:artifact.id,fromPortId:"video",toPortId:"comfy-artifact"}];
+  let local:BackendCanvasGraph={nodes:[compactStory,assets,target],connections:[]};
+  h.project=local;
+  h.api.mockImplementation(async(path:string)=>path.endsWith("?creative=summary")?
+   project(4,[compactStory,compactAssets,target,artifact],edges):project(4,[story,assets,target,artifact],edges));
+  h.adopt.mockImplementation((_id:string,_expected:unknown,value:ReturnType<typeof project>)=>{
+   h.project={nodes:value.document.nodes,connections:value.document.connections};return true;
+  });
+  const apply=vi.fn((next:BackendCanvasGraph)=>{local=next});
+  expect(await refreshSqliteComfyArtifacts({projectId:"p1",getLocalGraph:()=>local,applyGraph:apply,api:h.api})).toBe("changed");
+  expect(local.nodes).toEqual([compactStory,assets,target,artifact]);
+  expect(local.connections).toEqual(edges);
+  expect(h.adopt).toHaveBeenCalledOnce();
+  expect(apply).toHaveBeenCalledOnce();
  });
  it("rejects unsaved/mismatched remote source snapshots",async()=>{
   h.api.mockResolvedValue(project(8,[{...node,title:"other"}]));

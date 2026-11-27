@@ -417,7 +417,7 @@ export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,
             setSelectedPortId(next.ports[0]?.id||null);setNodeSearch("");setError("");
             setStatus(krea2?"已配置 Krea 2 Turbo INT8 端口绑定，请检查并保存模板版本。"
                 :minimax?"MiniMax H3 I2V 已配置图片、提示词与 VIDEO 输出绑定，请检查端口后保存模板。"
-                :ref2v?"MiniMax H3 Ref2V 已配置图片、视频、音频参考端口及 24 fps 视频加载，请检查后保存模板。"
+                :ref2v?"MiniMax H3 Ref2V 已配置文生视频、首帧、尾帧、首尾帧及全能参考模式，参考视频按 24 fps 解码，请检查后保存模板。"
                 :"工作流已加载。点击左侧节点参数即可创建输入端口。");
         }catch(cause){setError(String(cause));}
     };

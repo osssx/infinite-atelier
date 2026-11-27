@@ -58,7 +58,7 @@ export type ComfyMediaUseCase = {
     additionalOutputPortIds?: string[];
     /** Opt-in schema v1 contract. Omitted on historical revisions. */
     mediaCapabilities?:MediaCapabilities;
-    modeBindings?:Partial<Record<MediaModeId,{promptPortId?:string;layoutPortId?:string;parameterPorts?:Record<string,string>;rolePorts?:Partial<Record<MediaRole,string[]>>}>>;
+    modeBindings?:Partial<Record<MediaModeId,{promptPortId?:string;layoutPortId?:string;parameterPorts?:Record<string,string>;rolePorts?:Partial<Record<MediaRole,string[]>>;/** @deprecated Historical revision compatibility only; ignored at execution. */ promptTransform?:"minimax_h3_keyframes"}>>;
 };
 export type ComfyWorkflowTemplate = ComfyTemplatePayload & { id: string; revision: string; revisionName?:string };
 

@@ -11,6 +11,8 @@ import {getComfyInstanceScalarFields,parseComfyScalarOverride,type ComfyInstance
 import {COMFY_MEDIA_PARAMETER_POPUP_CLASS,createComfyMediaOverridePatch,createComfyMediaResetPatch} from "./comfy-media-overrides";
 import {resolveComfyMediaAspect} from "./comfy-media-aspect";
 import type {ComfyWorkflowTemplate} from "./template-schema";
+import type {MediaModeId} from "@/services/media-capabilities";
+import {ComfyVideoModeSelector} from "./comfy-video-mode-selector";
 
 type Binding=NonNullable<CanvasNodeMetadata["comfyMediaPreset"]>;
 type ScalarValue=string|number|boolean;
@@ -56,7 +58,7 @@ export function DirectPortControl({field,value,overridden,theme,onSet,onReset}:{
  </div>;
 }
 
-export function ComfyMediaParameters({template,binding,config,theme,onChange,onEditPreset,buttonClassName,placement}:{template:ComfyWorkflowTemplate;binding:Binding;config:AiConfig;theme:CanvasTheme;
+export function ComfyMediaParameters({template,binding,config,theme,onChange,onEditPreset,buttonClassName,placement,activeMode}:{template:ComfyWorkflowTemplate;binding:Binding;config:AiConfig;theme:CanvasTheme;activeMode?:MediaModeId;
  onChange:(patch:Partial<CanvasNodeMetadata>)=>void;onEditPreset?:()=>void;buttonClassName?:string;placement?:"topLeft"|"topRight"}){
  const useCase=template.mediaUseCase!;
  const excluded=new Set([useCase.promptPortId,...useCase.slots.map(slot=>slot.id)]);
@@ -83,6 +85,7 @@ export function ComfyMediaParameters({template,binding,config,theme,onChange,onE
      <Button size="small" disabled={!Object.keys(binding.overrides).length} onClick={resetAll}>恢复默认</Button>
     </div>
    </header>
+   <ComfyVideoModeSelector template={template} value={binding.mediaMode} activeMode={activeMode} onChange={mediaMode=>onChange({comfyMediaPreset:{...binding,mediaMode}})}/>
    {aspectWarning?<p role="status" className="text-xs opacity-70">{aspectWarning}</p>:null}
    {fields.length?<div className="space-y-4" data-comfy-media-parameter-list>
     {fields.map(field=><DirectPortControl key={field.port.id} field={field} value={localValue(field)} theme={theme}

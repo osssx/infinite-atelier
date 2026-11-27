@@ -2,6 +2,7 @@
 import {describe,expect,it,vi} from "vitest";
 import type {CanvasNodeData,CanvasConnection} from "@/types/canvas";
 import type {ComfyWorkflowTemplate} from "@/features/comfy-workflow/template-schema";
+import {minimaxH3Ref2VBundledTemplate} from "@/features/comfy-workflow/minimax-h3-ref2v-preset";
 import {prepareBackendComfyWorkflowRun,startBackendComfyWorkflowRun} from "./backend-comfy-run";
 import {defaultConfig} from "@/stores/use-config-store";
 import {setAssistantWorkflowParameter} from "@/features/canvas-assistant/canvas-assistant-workflow-params";
@@ -28,6 +29,41 @@ const expectedJob:BackendJobView={id:"new-job",projectId:"p1",executionMode:"pol
  attemptId:null,submitMarker:null,submissionStartedAt:null};
 const copy=<T,>(v:T):T=>JSON.parse(JSON.stringify(v)) as T;
 describe("backend save fence + frozen Comfy submission",()=>{
+ it("freezes the explicit H3 reference model keyframe mode for both video presets and regular workflows",async()=>{
+  const h3={...minimaxH3Ref2VBundledTemplate(),id:"h3",revision:"h3-v2"};
+  const first=h3.mediaUseCase!.modeBindings!.first_last_frame!.rolePorts!.first_frame![0];
+  const last=h3.mediaUseCase!.modeBindings!.first_last_frame!.rolePorts!.last_frame![0];
+  const image=(id:string):CanvasNodeData=>({id,type:"image",title:id,width:64,height:64,
+   position:{x:0,y:0},metadata:{storageKey:id,mimeType:"image/png",content:"data:image/png;base64,AAAA"}});
+  const start=image("start"),end=image("end");
+  const bridge={state:{status:"connected"},assertNoActiveJob:vi.fn(async()=>{}),assertComfyReady:vi.fn(async()=>{}),
+   saveProjectNow:vi.fn(async()=>{throw Error("read only")}),
+   uploadFrozenBlob:vi.fn(async()=>{throw Error("read only")}),
+   submitFrozenJob:vi.fn(async()=>{throw Error("read only")})};
+  const regular:CanvasNodeData={...workflow,metadata:{mediaMode:"first_last_frame",
+   comfyWorkflow:{templateId:h3.id,templateRevision:h3.revision,bindingState:"bound",inputOverrides:{prompt:"Scene transition"}},
+   comfyPorts:h3.ports.map(({id,label,direction,valueKind})=>({id,label,direction,valueKind}))}};
+  const preset:CanvasNodeData={...regular,type:"video",metadata:{comfyMediaPreset:{
+   templateId:h3.id,templateRevision:h3.revision,mediaMode:"first_last_frame",overrides:{},slots:{}}}};
+  const edges:CanvasConnection[]=[{id:"first",fromNodeId:start.id,fromPortId:"image",toNodeId:regular.id,toPortId:first},
+   {id:"last",fromNodeId:end.id,fromPortId:"image",toNodeId:regular.id,toPortId:last}];
+  registerCanvasPortResolver("comfy:workflow",node=>node.metadata?.comfyPorts??[]);
+  try{
+   for(const target of [regular,preset]){
+    const args={bridge,projectId:"p1",workflowNode:target,nodes:[start,end,target],connections:edges,
+     template:h3,instanceId:"local",outputPortIds:["video"],prompt:"Scene transition",
+     readBlob:async(key:string)=>new Blob([key],{type:"image/png"})};
+    const result=await prepareBackendComfyWorkflowRun(args,{readOnly:true});
+    expect(result.comfyRequest.runOptions).toEqual({mediaMode:"first_last_frame"});
+    expect(result.comfyRequest.nodes[0].inputOverrides.prompt).toBe("Scene transition");
+    expect(result.comfyRequest.edges.map(edge=>edge.toPortId)).toEqual([first,last]);
+    expect(result.comfyRequest.externalInputs).toHaveLength(2);
+    await expect(prepareBackendComfyWorkflowRun({...args,connections:[edges[0]]},{readOnly:true})).rejects.toThrow(/必填/);
+   }
+   expect(bridge.uploadFrozenBlob).not.toHaveBeenCalled();
+  }finally{registerCanvasPortResolver("comfy:workflow")}
+ });
+
  it("selects an inferred first-frame mode for a video shot with only text connected",async()=>{
   const bridge={state:{status:"connected"},assertNoActiveJob:vi.fn(async()=>{}),assertComfyReady:vi.fn(async()=>{}),
    saveProjectNow:vi.fn(async()=>{throw Error("read-only check saved the canvas")}),

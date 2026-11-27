@@ -84,11 +84,26 @@ export function buildMiniMaxH3Ref2VPreset(raw:unknown):ComfyTemplatePayload{
   aspectSync:{mode:"ratio",portId:"aspect_ratio"},slots:refs.map(ref=>({id:ref.id,label:ref.label,valueKind:ref.kind,required:false})),
   mediaCapabilities:{schemaVersion:1,kind:"video",defaultMode:"text_to_video",modes:[
    {id:"text_to_video",enabled:true,inputs:[],parameters},
+   // Keep automatic reference generation as the default for unclassified images.
    {id:"omni_reference",enabled:true,inputs,parameters}
   ]},modeBindings:{
    text_to_video:{promptPortId:"prompt",rolePorts:{},parameterPorts},
    omni_reference:{promptPortId:"prompt",rolePorts,parameterPorts}
   }};
+ const imagePorts=rolePorts.reference_image??[];
+ const first:MediaInputRule={role:"first_frame",kind:"image",minItems:1,maxItems:1};
+ const last:MediaInputRule={role:"last_frame",kind:"image",minItems:1,maxItems:1};
+ const {mediaCapabilities,modeBindings}=payload.mediaUseCase;
+ if(imagePorts.length){
+  mediaCapabilities!.modes.push({id:"first_frame",enabled:true,inputs:[first],parameters},
+   {id:"last_frame",enabled:true,inputs:[last],parameters});
+  modeBindings!.first_frame={promptPortId:"prompt",rolePorts:{first_frame:[imagePorts[0]]},parameterPorts};
+  modeBindings!.last_frame={promptPortId:"prompt",rolePorts:{last_frame:[imagePorts[0]]},parameterPorts};
+ }
+ if(imagePorts.length>=2){
+  mediaCapabilities!.modes.push({id:"first_last_frame",enabled:true,inputs:[first,last],parameters});
+  modeBindings!.first_last_frame={promptPortId:"prompt",rolePorts:{first_frame:[imagePorts[0]],last_frame:[imagePorts[1]]},parameterPorts};
+ }
  payload.requirements.modelAssets=[...new Set(Object.values(graph).flatMap(node=>Object.entries(node.inputs)
   .filter(([key])=>["unet_name","clip_name","vae_name","lora_name"].includes(key))
   .map(([,value])=>value).filter((value):value is string=>typeof value==="string")))].sort();

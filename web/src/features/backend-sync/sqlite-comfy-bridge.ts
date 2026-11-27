@@ -1,6 +1,7 @@
 import type {CanvasConnection,CanvasNodeData} from "@/types/canvas";
 import type {BlobUploadResponse,BackendJobView} from "@/types/backend-contracts";
-import {canvasApi,canvasSession,CanvasApiError,type CanvasBackendProject} from "./canvas-api";
+import {canvasApi,canvasSession,CanvasApiError} from "./canvas-api";
+import {readSavedCanvasGraph} from "./saved-canvas-graph";
 import {canonicalBackendGraph,fingerprintBackendSource} from "./backend-source-fingerprint";
 import {awaitCanvasStorePersistence,useCanvasStore} from "@/stores/canvas/use-canvas-store";
 import type {BackendCanvasGraph} from "./canvas-backend-sync";
@@ -18,7 +19,6 @@ export function createSqliteComfyBridge({
  api?:typeof canvasApi;
  session?:typeof canvasSession;
 }){
- const projectPath="/api/v1/projects/"+encodeURIComponent(projectId);
  const compare=(graph:BackendCanvasGraph)=>canonicalBackendGraph(graph);
  const getLive=()=>getLocalGraph();
  return {
@@ -49,13 +49,14 @@ export function createSqliteComfyBridge({
    });
    await awaitCanvasStorePersistence(projectId);
    if(compare(getLive())!==expected)throw Error("generation_draft_changed");
-   const result=await api<CanvasBackendProject>(projectPath);
-   const stored={nodes:result.document.nodes,connections:result.document.connections} as BackendCanvasGraph;
-   if(compare(stored)!==expected||compare(getLive())!==expected)
-    throw Error("generation_save_barrier_required");
-   const sourceNodeFingerprint=await fingerprintBackendSource(stored,targetNodeId);
+   const saved=await readSavedCanvasGraph(projectId,JSON.parse(expected) as BackendCanvasGraph,api);
    if(compare(getLive())!==expected)throw Error("generation_draft_changed");
-   return {projectId,revision:result.revision,sourceNodeFingerprint};
+   if(!saved||compare(saved.projected)!==expected)
+    throw Error("generation_save_barrier_required");
+   // The server checks the hydrated ancestry in submitJobInTransaction.
+   const sourceNodeFingerprint=await fingerprintBackendSource(saved.hydrated,targetNodeId);
+   if(compare(getLive())!==expected)throw Error("generation_draft_changed");
+   return {projectId,revision:saved.remote.revision,sourceNodeFingerprint};
   },
   async uploadFrozenBlob(blob:Blob,mimeType:string):Promise<BlobUploadResponse>{
    if(!["image/png","image/jpeg","image/webp","video/mp4","video/quicktime","video/webm","video/x-matroska",

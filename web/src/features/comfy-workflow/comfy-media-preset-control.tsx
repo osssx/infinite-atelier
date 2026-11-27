@@ -107,7 +107,7 @@ export function useComfyMediaPresetControl({node,nodes,connections,config,theme,
  };
  const settings=<>
   {!editor&&template?.mediaUseCase&&activePreset?<ComfyMediaParameters template={template} binding={activePreset} config={config} theme={theme} onChange={patch=>onChange(withComfyMediaAspect(template,patch))} onEditPreset={openPresetEditor}
-   buttonClassName={settingsButtonClassName} placement={settingsPlacement}/>:null}
+   buttonClassName={settingsButtonClassName} placement={settingsPlacement} activeMode={activeMode}/>:null}
   <Modal open={!!editor} title="编辑工作流预设" footer={null} width="min(1200px, 95vw)" destroyOnHidden centered
    styles={{body:{padding:0,height:"min(720px, calc(100dvh - 160px))",minHeight:260,overflow:"hidden"}}}
    onCancel={()=>{setEditor(null);setCatalogRevision(current=>current+1);}}>

@@ -1,6 +1,7 @@
 import {describe,expect,it} from "vitest";
 import {missingComfyMediaInputs} from "./run-types";
 import type {ComfyWorkflowTemplate} from "./template-schema";
+import {minimaxH3Ref2VBundledTemplate} from "./minimax-h3-ref2v-preset";
 
 const template:ComfyWorkflowTemplate={
  id:"minimax",revision:"a".repeat(64),name:"Video I2V",
@@ -15,6 +16,20 @@ const template:ComfyWorkflowTemplate={
  ]
 };
 describe("SQLite Comfy media input preflight",()=>{
+ it("checks the same ordinary reference image ports according to the selected H3 keyframe mode",()=>{
+  const h3={...minimaxH3Ref2VBundledTemplate(),id:"h3",revision:"a".repeat(64)};
+  const first=h3.mediaUseCase!.modeBindings!.first_frame!.rolePorts!.first_frame![0];
+  const last=h3.mediaUseCase!.modeBindings!.first_last_frame!.rolePorts!.last_frame![0];
+  const edge=(portId:string)=>({id:portId,fromNodeId:"image",fromPortId:"image",toNodeId:"wf",toPortId:portId});
+  expect(missingComfyMediaInputs(h3,"wf",[],"first_frame").map(p=>p.id)).toEqual([first]);
+  expect(missingComfyMediaInputs(h3,"wf",[],"last_frame").map(p=>p.id)).toEqual([first]);
+  expect(missingComfyMediaInputs(h3,"wf",[],"first_last_frame").map(p=>p.id)).toEqual([first,last]);
+  expect(missingComfyMediaInputs(h3,"wf",[edge(first)],"first_last_frame").map(p=>p.id)).toEqual([last]);
+  expect(missingComfyMediaInputs(h3,"wf",[edge(first),edge(last)],"first_last_frame")).toEqual([]);
+  expect(missingComfyMediaInputs(h3,"wf",[],"omni_reference")).toEqual([]);
+  expect(missingComfyMediaInputs(h3,"wf",[],"text_to_video")).toEqual([]);
+ });
+
  it("only requires media inputs explicitly marked required, ignoring sample filenames",()=>{
   expect(missingComfyMediaInputs(template,"wf",[]).map(p=>p.id)).toEqual(["first_frame"]);
   expect(missingComfyMediaInputs(template,"wf",[{

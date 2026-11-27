@@ -1,6 +1,7 @@
 import type {CanvasConnection,CanvasNodeData} from "@/types/canvas";
 import type {BackendJobView} from "@/types/backend-contracts";
-import {canvasApi,type CanvasBackendProject} from "./canvas-api";
+import {canvasApi} from "./canvas-api";
+import {readSavedCanvasGraph} from "./saved-canvas-graph";
 import {canonicalBackendGraph} from "./backend-source-fingerprint";
 import {safeRemoteCanvasMerge} from "./canvas-backend-sync";
 import {awaitCanvasStorePersistence,useCanvasStore} from "@/stores/canvas/use-canvas-store";
@@ -38,7 +39,9 @@ export async function refreshSqliteComfyArtifacts({
  if(canonicalBackendGraph(pageGraph)!==frozen&&!isSafeArtifactAdvance(frozenGraph,pageGraph)){
   return "conflict";
  }
- const remote=await api<CanvasBackendProject>("/api/v1/projects/"+encodeURIComponent(projectId));
+ const saved=await readSavedCanvasGraph(projectId,frozenGraph,api);
+ if(!saved)return "conflict";
+ const remote=saved.remote;
  const afterFetch=getLocalGraph();
  if(canonicalBackendGraph(afterFetch)!==canonicalBackendGraph(pageGraph)){
   if(!isSafeArtifactAdvance(frozenGraph,afterFetch)){
@@ -46,8 +49,7 @@ export async function refreshSqliteComfyArtifacts({
   }
   pageGraph=afterFetch;
  }
- const remoteGraph:Graph={nodes:remote.document.nodes as CanvasNodeData[],
-  connections:remote.document.connections as CanvasConnection[]};
+ const remoteGraph=saved.projected;
  if(!isSafeArtifactAdvance(frozenGraph,remoteGraph)){
   return "conflict";
  }

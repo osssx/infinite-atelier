@@ -17,8 +17,8 @@ export type ComfyRunState={
 };
 export type ComfyInstance={id:string;url:string;reachable:boolean;classTypes:string[]};
 
-/** Only explicitly required media ports block submission.
- * Optional media is handled by the compiler's absent policy.
+/** Explicit mode rules supersede required flags on their mapped media slots.
+ * Other optional media is handled by the compiler's absent policy.
  * Template sample filenames are never considered uploaded input.
  */
 /** Explicit mode validation for standalone workflow connections. No automatic
@@ -40,9 +40,20 @@ export function comfyModeConnectionErrors(template:ComfyWorkflowTemplate,workflo
  return errors;
 }
 export function missingComfyMediaInputs(template:ComfyWorkflowTemplate,workflowNodeId:string,
- connections:readonly CanvasConnection[]){
- return template.ports.filter(port=>port.direction==="target"&&port.required===true&&
+ connections:readonly CanvasConnection[],modeId?:MediaModeId){
+ const connected=new Set(connections.filter(edge=>edge.toNodeId===workflowNodeId).map(edge=>edge.toPortId));
+ const useCase=template.mediaUseCase;
+ const mode=useCase?.mediaCapabilities?.modes.find(item=>item.id===modeId&&item.enabled);
+ const binding=mode&&useCase?.modeBindings?.[mode.id];
+ const requiredByMode=new Set<string>();
+ const modeSlots=new Set(binding?useCase?.slots.map(slot=>slot.id):[]);
+ if(mode&&binding)for(const rule of mode.inputs){
+  const ids=binding.rolePorts?.[rule.role]??[];
+  const count=ids.filter(id=>connected.has(id)).length;
+  for(const id of ids.filter(id=>!connected.has(id)).slice(0,Math.max(0,rule.minItems-count)))requiredByMode.add(id);
+ }
+ return template.ports.filter(port=>port.direction==="target"&&
+  (requiredByMode.has(port.id)||(!modeSlots.has(port.id)&&port.required===true))&&
   ["IMAGE","MASK","VIDEO","AUDIO"].includes(port.valueKind)&&
-  ["media-file","socket"].includes(port.inputBinding?.mode??"") &&
-  !connections.some(edge=>edge.toNodeId===workflowNodeId&&edge.toPortId===port.id));
+  ["media-file","socket"].includes(port.inputBinding?.mode??"")&&!connected.has(port.id));
 }

@@ -87,13 +87,12 @@ export function buildMiniMaxH3Ref2VPreset(raw:unknown):ComfyTemplatePayload{
   aspectSync:{mode:"ratio",portId:"aspect_ratio"},slots:refs.map(ref=>({id:ref.id,label:ref.label,valueKind:ref.kind,required:false}))};
  useCase=withComfyMediaMode(useCase,{id:"text_to_video",enabled:true,inputs:[],parameters},{promptPortId:"prompt",rolePorts:{},parameterPorts});
  useCase=withComfyMediaMode(useCase,{id:"omni_reference",enabled:true,inputs,parameters},{promptPortId:"prompt",rolePorts,parameterPorts});
- const hasFirst=rolePorts.reference_image?.includes("reference_image_0");
- const hasLast=hasFirst&&rolePorts.reference_image?.includes("reference_image_1");
- if(hasFirst){
-  useCase=withComfyMediaMode(useCase,{id:"first_frame",enabled:true,inputs:defaultComfyModeInputs("first_frame"),parameters},{promptPortId:"prompt",rolePorts:{first_frame:["reference_image_0"]},parameterPorts});
-  useCase=withComfyMediaMode(useCase,{id:"last_frame",enabled:true,inputs:defaultComfyModeInputs("last_frame"),parameters},{promptPortId:"prompt",rolePorts:{last_frame:["reference_image_0"]},parameterPorts});
+ const imagePorts=rolePorts.reference_image??[];
+ if(imagePorts.length){
+  useCase=withComfyMediaMode(useCase,{id:"first_frame",enabled:true,inputs:defaultComfyModeInputs("first_frame"),parameters},{promptPortId:"prompt",rolePorts:{first_frame:[imagePorts[0]]},parameterPorts});
+  useCase=withComfyMediaMode(useCase,{id:"last_frame",enabled:true,inputs:defaultComfyModeInputs("last_frame"),parameters},{promptPortId:"prompt",rolePorts:{last_frame:[imagePorts[0]]},parameterPorts});
  }
- if(hasLast)useCase=withComfyMediaMode(useCase,{id:"first_last_frame",enabled:true,inputs:defaultComfyModeInputs("first_last_frame"),parameters},{promptPortId:"prompt",rolePorts:{first_frame:["reference_image_0"],last_frame:["reference_image_1"]},parameterPorts});
+ if(imagePorts.length>=2)useCase=withComfyMediaMode(useCase,{id:"first_last_frame",enabled:true,inputs:defaultComfyModeInputs("first_last_frame"),parameters},{promptPortId:"prompt",rolePorts:{first_frame:[imagePorts[0]],last_frame:[imagePorts[1]]},parameterPorts});
  payload.mediaUseCase=useCase;
  payload.requirements.modelAssets=[...new Set(Object.values(graph).flatMap(node=>Object.entries(node.inputs)
   .filter(([key])=>["unet_name","clip_name","vae_name","lora_name"].includes(key))

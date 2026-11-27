@@ -8,6 +8,7 @@ import {comfyModeConnectionErrors} from "./run-types";
 import {ComfyGenerationModeControl} from "./comfy-generation-mode-control";
 import {createElement} from "react";
 import {renderToStaticMarkup} from "react-dom/server";
+import type {MediaModeId} from "@/services/media-capabilities";
 import type {CanvasNodeData} from "@/types/canvas";
 describe("H3 Ref2V imported preset",()=>{
  it("binds all actual optional media loader files with original resource kinds and deterministic 24fps",async()=>{
@@ -57,13 +58,37 @@ describe("H3 Ref2V imported preset",()=>{
   const html=renderToStaticMarkup(createElement(ComfyGenerationModeControl,{template:t,value:"first_last_frame",onChange:()=>{}}));
   expect(html).toContain("首尾帧生成");expect(html).toContain("首帧：参考图片 1；尾帧：参考图片 2");expect(html).toContain("不会自动添加提示词");
  });
- it("does not advertise first/last-frame modes for absent Picture loader positions",()=>{
+ it("exposes five modes, reuses existing image ports and preserves automatic omni behavior",async()=>{
+  const preset=minimaxH3Ref2VBundledTemplate(),t=await createComfyTemplate(MINIMAX_H3_REF2V_TEMPLATE_ID,preset);
+  const use=t.mediaUseCase!;
+  expect(use.mediaCapabilities!.modes.map(m=>m.id).sort()).toEqual(["first_frame","first_last_frame","last_frame","omni_reference","text_to_video"]);
+  expect(use.modeBindings!.first_frame).toMatchObject({rolePorts:{first_frame:["reference_image_0"]}});
+  expect(use.modeBindings!.last_frame).toMatchObject({rolePorts:{last_frame:["reference_image_0"]}});
+  expect(use.modeBindings!.first_last_frame).toMatchObject({rolePorts:{first_frame:["reference_image_0"],last_frame:["reference_image_1"]}});
+  for(const binding of Object.values(use.modeBindings!))expect(binding?.promptTransform).toBeUndefined();
+  expect(t.apiGraph["129"].class_type).toBe("MiniMaxH3ReferenceToVideo");
+  expect(Object.keys(t.apiGraph).sort()).toEqual(Object.keys(source).sort());
+  const make=(id:string,type="image")=>({id,type,title:id,position:{x:0,y:0},width:32,height:32,metadata:{storageKey:"cas:"+"a".repeat(64)}} as CanvasNodeData);
+  const nodes=[make("target","video"),make("start"),make("end"),make("clip","video")];
+  const edges=[{id:"a",fromNodeId:"start",toNodeId:"target"},{id:"b",fromNodeId:"end",toNodeId:"target"}];
+  expect(resolveComfyMediaMode(t,"target",nodes,edges.slice(0,1))).toBe("omni_reference");
+  expect(resolveComfyMediaMode(t,"target",nodes,edges)).toBe("omni_reference");
+  for(const mode of ["first_frame","last_frame"] as MediaModeId[]){
+   expect(resolveComfyMediaMode(t,"target",nodes,edges.slice(0,1),mode)).toBe(mode);
+   expect(assignComfyMediaSlots(t,"target",nodes,edges.slice(0,1),mode)).toEqual({slots:{reference_image_0:{nodeId:"start"}},errors:[]});
+   expect(assignComfyMediaSlots(t,"target",nodes,[],mode).errors.length).toBeGreaterThan(0);
+   expect(assignComfyMediaSlots(t,"target",nodes,edges,mode).errors.length).toBeGreaterThan(0);
+  }
+  expect(assignComfyMediaSlots(t,"target",nodes,edges,"first_last_frame")).toEqual({slots:{reference_image_0:{nodeId:"start"},reference_image_1:{nodeId:"end"}},errors:[]});
+  expect(assignComfyMediaSlots(t,"target",nodes,edges.slice(0,1),"first_last_frame").errors.length).toBeGreaterThan(0);
+  expect(assignComfyMediaSlots(t,"target",nodes,[...edges,{id:"c",fromNodeId:"clip",toNodeId:"target"}],"first_last_frame").errors.length).toBeGreaterThan(0);
+ });
+ it("only exposes endpoint modes when enough ordinary image sockets exist",()=>{
   const graph=validateComfyApiGraph(structuredClone(source));
-  delete graph["129"].inputs["ref_images.ref_image_1"];
-  expect(buildMiniMaxH3Ref2VPreset(graph).mediaUseCase!.modeBindings!.first_last_frame).toBeUndefined();
-  delete graph["129"].inputs["ref_images.ref_image_0"];
-  const bindings=buildMiniMaxH3Ref2VPreset(graph).mediaUseCase!.modeBindings!;
-  expect(bindings.first_frame).toBeUndefined();expect(bindings.last_frame).toBeUndefined();
+  for(const key of Object.keys(graph["129"].inputs))if(/^ref_images\./.test(key)&&key!=="ref_images.ref_image_3")delete graph["129"].inputs[key];
+  const preset=buildMiniMaxH3Ref2VPreset(graph);
+  expect(preset.mediaUseCase!.modeBindings!.first_frame!.rolePorts!.first_frame).toEqual(["reference_image_3"]);
+  expect(preset.mediaUseCase!.modeBindings!.first_last_frame).toBeUndefined();
  });
  it("rejects unrecognized reference loader topology",()=>{
   const graph=validateComfyApiGraph(structuredClone(source));

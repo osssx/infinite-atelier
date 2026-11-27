@@ -144,6 +144,64 @@ test.skipIf(!enabled)("real H3 definitions compile all three keyframe modes with
   expect(()=>compileSingleWorkflow(invalid,template,{info,mediaFiles})).toThrow(/template_media_request_invalid/);
  }
 },30000);
+function userKeyframePrompt(mode){
+ return mode==="first_frame"?"<Picture 1> is the opening frame. Slowly pan across the scene.":
+  mode==="last_frame"?"Slowly pan across the scene, ending on <Picture 1>.":
+  "Begin at <Picture 1> and smoothly transition to <Picture 2> as the final frame.";
+}
+function keyframeRequest(template,mode,tag,images){
+ const req=request(template,null,tag,{prompt:userKeyframePrompt(mode),duration:2,megapixels:0.1,ref_image_size:"match"},mode);
+ for(const [i,asset] of images.entries()){
+  const sourceNodeId="frame-"+i+"-"+tag;
+  req.externalInputs.push({kind:"asset",sourceNodeId,sourcePortId:"image",valueKind:"IMAGE",assetId:asset.blobId,sha256:asset.blobId});
+  req.edges.push({fromNodeId:sourceNodeId,fromPortId:"image",toNodeId:req.nodes[0].id,toPortId:"reference_image_"+i});
+ }
+ return req;
+}
+function expectKeyframeGraph(result,tag,mode){
+ const id="w_workflow-"+tag+"__129",model=result.graph[id];
+ const both=mode==="first_last_frame";
+ expect(model.class_type).toBe("MiniMaxH3ReferenceToVideo");
+ expect(Object.keys(model.inputs).filter(k=>/^ref_images\./.test(k)).sort()).toEqual(both?["ref_images.ref_image_0","ref_images.ref_image_1"]:["ref_images.ref_image_0"]);
+ expect(Object.keys(model.inputs).filter(k=>/^ref_(videos|audios)\./.test(k))).toEqual([]);
+ expect(model.inputs.prompt).toBe(userKeyframePrompt(mode));
+ expect(model.inputs.first_frame).toBeUndefined();
+ expect(model.inputs.last_frame).toBeUndefined();
+}
+test.skipIf(!enabled)("real H3 schemas compile all three keyframe modes with existing reference image sockets and exact user prompts",async()=>{
+ const template=await createComfyTemplate("h3-ref2v-keyframe-live",minimaxH3Ref2VBundledTemplate());
+ const a={blobId:"a".repeat(64)},b={blobId:"b".repeat(64)};
+ const mediaFiles={[a.blobId]:"first.png",[b.blobId]:"last.png"};
+ const info=await readComfyWorkflowObjectInfo(instance,template.requirements.classTypes);
+ for(const mode of ["first_frame","last_frame","first_last_frame"]){
+  const tag="compile-"+mode,req=keyframeRequest(template,mode,tag,mode==="first_last_frame"?[a,b]:[a]);
+  const original=JSON.stringify({template,req});
+  const result=compileSingleWorkflow(req,template,{info,mediaFiles});
+  expectKeyframeGraph(result,tag,mode);
+  expect(JSON.stringify({template,req})).toBe(original);
+  expect(compileSingleWorkflow(req,template,{info,mediaFiles}).graphHash).toBe(result.graphHash);
+  expect(()=>compileSingleWorkflow(keyframeRequest(template,mode,tag,[]),template,{info,mediaFiles})).toThrow(/template_media_request_invalid/);
+ }
+},30000);
+test.skipIf(!gpu)("real H3 Ref2V keyframe modes generate and materialize with exact user prompts",async()=>{
+ await fixture(async f=>{
+  const template=await createComfyTemplate("h3-ref2v-keyframes-gpu",minimaxH3Ref2VBundledTemplate());
+  const assets=[];
+  for(const color of ["blue","red"]){
+   const file=join(f.folder,color+".png");
+   ffmpeg("ffmpeg",["-hide_banner","-loglevel","error","-f","lavfi","-i","color=c="+color+":size=64x64","-frames:v","1","-threads","1","-y",file]);
+   assets.push(await f.blobStore.put(createReadStream(file),{mime:"image/png"}));
+  }
+  for(const mode of ["first_frame","last_frame","first_last_frame"]){
+   const tag="gpu-"+mode,req=keyframeRequest(template,mode,tag,mode==="first_last_frame"?assets:[assets[mode==="last_frame"?1:0]]);
+   const result=await run(f,template,req,600000);
+   expectKeyframeGraph(result,tag,mode);
+   const stream=JSON.parse(ffmpeg("ffprobe",["-v","error","-count_frames","-select_streams","v:0","-show_entries","stream=nb_read_frames,r_frame_rate,width,height","-of","json",result.file.path])).streams[0];
+   expect(stream.r_frame_rate).toBe("24/1");expect(Number(stream.nb_read_frames)).toBeGreaterThanOrEqual(5);
+   console.log("H3_REF2V_KEYFRAME",JSON.stringify({mode,frames:Number(stream.nb_read_frames),fps:stream.r_frame_rate,width:stream.width,height:stream.height,elapsedMs:result.elapsedMs}));
+  }
+ });
+},1850000);
 test.skipIf(!gpu)("real MiniMax H3 reference-to-video generation through CAS and materialization",async()=>{
  await fixture(async f=>{
   const template=await createComfyTemplate("h3-ref2v-live",minimaxH3Ref2VBundledTemplate());

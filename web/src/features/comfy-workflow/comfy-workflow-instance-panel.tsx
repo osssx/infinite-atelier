@@ -162,8 +162,9 @@ export function ComfyWorkflowInstancePanel({node,connections,projectId,comfyInst
     const [savedPresetMessage,setSavedPresetMessage]=useState("");
 
     const outputs=useMemo(()=>template?.ports.filter(p=>p.direction==="source" && !!p.capture?.adapterId && p.capture.kind!=="none")??[],[template]);
-    const missingMedia=useMemo(()=>template?missingComfyMediaInputs(template,node.id,connections):[],[template,node.id,connections]);
-    const modeErrors=template?comfyModeConnectionErrors(template,node.id,connections,binding?.mediaMode):[];
+    const mediaMode=binding?.mediaMode??node.metadata?.mediaMode;
+    const missingMedia=useMemo(()=>template?missingComfyMediaInputs(template,node.id,connections,mediaMode):[],[template,node.id,connections,mediaMode]);
+    const modeErrors=template?comfyModeConnectionErrors(template,node.id,connections,mediaMode):[];
     // The SQLite job table is authoritative. No origin-specific localStorage,
     // no V2 gateway recovery, and no task lifecycle tied to inspector mount.
     useEffect(()=>{
@@ -300,7 +301,7 @@ export function ComfyWorkflowInstancePanel({node,connections,projectId,comfyInst
             {outputs.length>0?<p role="note" className="mb-3 text-[11px] text-[var(--comfy-muted)]">
                 本次执行将捕获 {outputs.map(port=>port.label+" ("+port.valueKind+")").join("、")}，所有输出共享一次 ComfyUI 生成任务。
             </p>:null}
-            {template&&binding?<ComfyGenerationModeControl template={template} value={binding.mediaMode} disabled={active} onChange={mediaMode=>{const {mediaMode:_old,...rest}=binding;onChange({comfyWorkflow:{...rest,...(mediaMode?{mediaMode}:{})}});}}/>:null}
+            {template&&binding?<ComfyGenerationModeControl template={template} value={mediaMode} disabled={active} onChange={mediaMode=>{const {mediaMode:_old,...rest}=binding;onChange({mediaMode:undefined,comfyWorkflow:{...rest,...(mediaMode?{mediaMode}:{})}});}}/>:null}
             {modeErrors.length?<p role="alert" className="mb-3 text-xs text-amber-500">{modeErrors.join("；")}</p>:null}
             {missingMedia.length>0?<p role="alert" className="mb-3 rounded-lg border border-[var(--comfy-border)] bg-[var(--comfy-fill)] px-3 py-2 text-xs text-amber-600 dark:text-amber-400">
                 必填媒体参数未连接：{missingMedia.map(port=>port.label+" ("+port.id+")").join("、")}。请连接对应图片、音频或视频输入；模板示例文件名不能替代必填输入。

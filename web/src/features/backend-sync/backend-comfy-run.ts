@@ -73,7 +73,7 @@ export async function prepareBackendComfyWorkflowRun(args:BackendComfyWorkflowAr
  // visual context only; only edges targeting declared Comfy ports can be sent.
  const incoming=mediaBinding?allIncoming.filter(edge=>!!edge.toPortId&&template.ports.some(port=>port.id===edge.toPortId)):allIncoming;
  const useCase=template.mediaUseCase;
- const explicitMode=mediaBinding?mediaBinding.mediaMode??args.generationMode:regularBinding?.mediaMode??args.generationMode;
+ const explicitMode=mediaBinding?mediaBinding.mediaMode??args.generationMode:regularBinding?.mediaMode??args.generationMode??(regularBinding?workflowNode.metadata?.mediaMode:undefined);
  let generationMode=useCase?.mediaCapabilities?resolveComfyMediaMode(template,workflowNode.id,graph.nodes,graph.connections,explicitMode):undefined;
  let continuityPort:string|undefined;
  const assignmentGraph=continuitySourceId?copy(graph):graph;
@@ -158,11 +158,9 @@ export async function prepareBackendComfyWorkflowRun(args:BackendComfyWorkflowAr
   for(const id of Object.keys(selected))if(!useCase.slots.some(slot=>slot.id===id))throw Error("backend_unknown_media_slot");
  }
  // Use the same required-port validation as the inspector.
- const activeRules=useCase?.mediaCapabilities?.modes.find(item=>item.id===generationMode)?.inputs??[];
- const requiredPortIds=new Set(activeRules.flatMap(rule=>(modeBinding?.rolePorts?.[rule.role]??[]).slice(0,rule.minItems)));
- const validationTemplate=useCase?.mediaCapabilities?{...template,mediaUseCase:{...useCase,
-  slots:useCase.slots.filter(slot=>mappedPorts.has(slot.id)).map(slot=>({...slot,required:requiredPortIds.has(slot.id)}))}}:template;
- const missing=missingComfyMediaInputs(validationTemplate,workflowNode.id,[...incoming,...mediaEdges]);
+ const missing=missingComfyMediaInputs(template,workflowNode.id,[...incoming,...mediaEdges],generationMode);
+ if(modeBinding&&incoming.some(edge=>edge.toPortId&&!mappedPorts.has(edge.toPortId)&&useCase?.slots.some(slot=>slot.id===edge.toPortId)))
+  throw Error("当前模式不接受已连接的媒体槽位");
  if(missing.length)throw Error("请先连接必填媒体输入："+missing.map(p=>p.label).join("、"));
  if(incoming.some(edge=>!edge.toPortId||!edge.fromPortId))
   throw Error("工作流只能使用显式端口连线");

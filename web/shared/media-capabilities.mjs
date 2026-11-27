@@ -99,9 +99,19 @@ export function validateComfyMediaContract(useCase,ports){
  const declaredSlots=new Set((useCase.slots??[]).map(slot=>slot.id));
  for(const mode of capabilities.modes.filter(m=>m.enabled)){
   const binding=bindings[mode.id];
-  if(!keys(binding,["promptPortId","layoutPortId","parameterPorts","rolePorts"])||!keys(binding.parameterPorts??{},mode.parameters.map(p=>p.id))||!keys(binding.rolePorts??{},mode.inputs.map(i=>i.role)))throw Error("comfy_media_mode_binding_invalid");
+  if(!keys(binding,["promptPortId","layoutPortId","parameterPorts","rolePorts","promptTransform"])||!keys(binding.parameterPorts??{},mode.parameters.map(p=>p.id))||!keys(binding.rolePorts??{},mode.inputs.map(i=>i.role)))throw Error("comfy_media_mode_binding_invalid");
   const promptId=binding.promptPortId??useCase.promptPortId;
   if(!target(promptId,["STRING"])||byId.get(promptId)?.inputBinding?.mode!=="literal")throw Error("comfy_media_prompt_binding_invalid");
+  // Accept the retired H3 transform only to preserve immutable historical revisions.
+  // The compiler never rewrites prompts based on this field.
+  if(binding.promptTransform!==undefined){
+   if(binding.promptTransform!=="minimax_h3_keyframes"||capabilities.kind!=="video"||
+      !["first_frame","last_frame","first_last_frame"].includes(mode.id)||
+      byId.get(promptId)?.inputBinding?.targets?.length!==1||
+      mode.inputs.length!==(mode.id==="first_last_frame"?2:1)||
+      mode.inputs.some(rule=>!["first_frame","last_frame"].includes(rule.role)||rule.minItems!==1||rule.maxItems!==1))
+    throw Error("comfy_media_prompt_transform_invalid");
+  }
   if(mode.layout?.delivery==="dedicated_input"&&(!binding.layoutPortId||!target(binding.layoutPortId,["STRING","JSON"])||byId.get(binding.layoutPortId)?.inputBinding?.mode!=="literal")||mode.layout===undefined&&binding.layoutPortId!==undefined)throw Error("comfy_media_layout_binding_invalid");
   const claimed=new Set([promptId]);
   if(binding.layoutPortId)claimed.add(binding.layoutPortId);

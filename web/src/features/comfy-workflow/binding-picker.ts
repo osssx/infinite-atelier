@@ -63,17 +63,20 @@ export function filterComfyGraphItems(items:readonly ComfyGraphItem[], query:str
         .some((v)=>v.toLocaleLowerCase().includes(q)));
 }
 
-/** Prefer a real file loader over exposing the H3 IMAGE batch as a canvas image. */
+/** A registered video-frame loader converts VIDEO files to IMAGE batches, regardless of which node consumes those frames. */
 export function recommendComfyMediaBinding(graph:ComfyApiGraph,target:ComfyNodeTarget,info?:ComfyObjectInfo){
     const node=graph[target.nodeId];
     if(!node)return undefined;
     const value=node.inputs[target.inputName];
-    if(node.class_type==="MiniMaxH3ReferenceToVideo"&&/^ref_videos\.ref_video_\d+$/.test(target.inputName)&&
-        Array.isArray(value)&&value.length===2&&typeof value[0]==="string"&&value[1]===0){
+    if(Array.isArray(value)&&value.length===2&&typeof value[0]==="string"&&Number.isInteger(value[1])){
         const upstream=graph[value[0]];
-        if(upstream?.class_type==="VHS_LoadVideo"&&typeof upstream.inputs.video==="string"){
-            const loader=resolveComfyMediaLoader(upstream.class_type,"video",info?.[upstream.class_type]);
-            if(loader)return {target:{nodeId:value[0],inputName:"video"},loader,redirected:true};
+        if(upstream){
+            for(const [fileInput,fileValue] of Object.entries(upstream.inputs)){
+                if(typeof fileValue!=="string")continue;
+                const loader=resolveComfyMediaLoader(upstream.class_type,fileInput,info?.[upstream.class_type]);
+                if(loader?.mediaKind==="VIDEO"&&loader.outputs.some(output=>output.index===value[1]&&output.semantic==="video_frames"))
+                    return {target:{nodeId:value[0],inputName:fileInput},loader,redirected:true};
+            }
         }
     }
     if(typeof value!=="string")return undefined;

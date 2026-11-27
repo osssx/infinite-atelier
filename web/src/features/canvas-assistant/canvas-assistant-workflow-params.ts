@@ -4,6 +4,7 @@ import {getComfyInstanceScalarFields} from "@/features/comfy-workflow/instance-p
 import {createComfyMediaOverridePatch} from "@/features/comfy-workflow/comfy-media-overrides";
 import {withComfyMediaAspect} from "@/features/comfy-workflow/comfy-media-aspect";
 import type {ComfyWorkflowTemplate} from "@/features/comfy-workflow/template-schema";
+import {comfyMediaManagedPortIds} from "@/features/comfy-workflow/comfy-media-mode-config";
 import {applyNodeConfigPatch} from "@/lib/canvas/canvas-node-factory";
 import {COMFY_WORKFLOW_MOCK_TYPE} from "@/lib/canvas/canvas-ports";
 import {setComfyInstanceOverride} from "@/features/comfy-workflow/instance-parameters";
@@ -58,7 +59,7 @@ export function setAssistantWorkflowParameter(node:CanvasNodeData,portId:string,
  if(!active)throw Error("目标节点没有绑定工作流预设，无法修改工作流参数。"); if(template.id!==active.binding.templateId||template.revision!==active.binding.templateRevision||
   !template.mediaUseCase||template.mediaUseCase.channel!==active.mode)
   throw Error("工作流预设版本或媒体类型已改变，未修改参数。");
- const excluded=new Set([template.mediaUseCase.promptPortId,...template.mediaUseCase.slots.map(slot=>slot.id)]);
+ const excluded=comfyMediaManagedPortIds(template.mediaUseCase);
  if(excluded.has(portId))throw Error("提示词或媒体输入端口须使用专门操作，不支持直接修改覆盖值。");
  const fields=getComfyInstanceScalarFields(template,node,[],active.binding.overrides); const field=fields.find(item=>item.port.id===portId);
  if(!field)throw Error("工作流预设不存在该可编辑的标量输入端口："+portId);
@@ -103,7 +104,7 @@ export function assistantWorkflowTemplateContext(node:CanvasNodeData,config:AiCo
  const active=assistantWorkflowBinding(node,config);
  if(!active||!template.mediaUseCase||template.id!==active.binding.templateId||
   template.revision!==active.binding.templateRevision)return "";
- const excluded=new Set([template.mediaUseCase.promptPortId,...template.mediaUseCase.slots.map(slot=>slot.id)]);
+ const excluded=comfyMediaManagedPortIds(template.mediaUseCase);
  const fields=getComfyInstanceScalarFields(template,node,[],active.binding.overrides)  .filter(field=>!excluded.has(field.port.id)&&!sensitive.test(field.port.id+" "+field.port.label));
  const lines=["工作流预设节点 id="+node.id+"；预设="+template.name+"；version="+template.revision,
   "当前渠道使用 ComfyUI 工作流预设；普通 set_node_param 参数不会作用于该预设。请用 set_workflow_param 指定准确端口 ID。"];

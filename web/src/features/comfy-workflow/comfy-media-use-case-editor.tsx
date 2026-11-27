@@ -1,6 +1,7 @@
 import {Button,Checkbox,Input,InputNumber,Select} from "antd";
 import type {ComfyMediaUseCase,ComfyTemplatePayload,ComfyTemplatePort} from "./template-schema";
-import {MEDIA_MODES,type MediaCapabilities,type MediaInputRule,type MediaKind,type MediaModeId,type MediaParameterSpec,type MediaRole} from "@/services/media-capabilities";
+import {MEDIA_MODES,type MediaCapabilities,type MediaKind,type MediaModeId,type MediaParameterSpec,type MediaRole} from "@/services/media-capabilities";
+import {comfyModeLabels as labels,comfyRoleLabels,createComfyMediaCapabilities,defaultComfyModeInputs,mapComfyMediaRole,setComfyMediaModeEnabled} from "./comfy-media-mode-config";
 
 /** Recover drafts without weakening immutable revision validation. */
 export function normalizeComfyMediaUseCaseOutputSelection(useCase:ComfyMediaUseCase|undefined):ComfyMediaUseCase|undefined{
@@ -19,14 +20,6 @@ const selectProps={className:"mt-1 w-full min-w-0",size:"small" as const,
  classNames:{root:"comfy-media-use-case-select",popup:{root:"comfy-media-use-case-popup"}},
  styles:{popup:{root:{backgroundColor:"var(--comfy-panel)",color:"var(--comfy-text)",borderColor:"var(--comfy-border)"}}}};
 const outputOption=(port:ComfyTemplatePort)=>({value:port.id,label:<span className="block truncate" title={port.label+" · "+port.id+" · "+port.capture?.kind}>{port.label} · {port.id} · {port.capture?.kind}</span>});
-const labels:Record<MediaModeId,string>={text_to_image:"文生图",reference_edit:"参考编辑",inpaint:"局部重绘",text_to_video:"文生视频",first_frame:"首帧生成",last_frame:"尾帧生成",first_last_frame:"首尾帧生成",omni_reference:"全能参考",text_to_speech:"语音合成",voice_clone:"参考音色合成",text_to_music:"音乐生成",text_to_sound:"音效生成"};
-function defaultInputs(id:MediaModeId):MediaInputRule[]{
- const rule=(role:MediaRole,kind:MediaInputRule["kind"],minItems:number,maxItems:number):MediaInputRule=>({role,kind,minItems,maxItems});
- return id==="reference_edit"?[rule("reference_image","image",1,4)]:id==="inpaint"?[rule("source_image","image",1,1),rule("mask","mask",1,1)]:
-  id==="first_frame"?[rule("first_frame","image",1,1)]:id==="last_frame"?[rule("last_frame","image",1,1)]:
-  id==="first_last_frame"?[rule("first_frame","image",1,1),rule("last_frame","image",1,1)]:
-  id==="voice_clone"?[rule("voice_reference","audio",1,1)]:id==="omni_reference"?[rule("reference_image","image",0,9),rule("reference_video","video",0,3),rule("reference_audio","audio",0,3)]:[];
-}
 export function comfyAdditionalOutputOptions(template:ComfyTemplatePayload,useCase:ComfyMediaUseCase|undefined){
  return template.ports.filter(port=>port.direction==="source"&&port.capture&&port.capture.kind!=="none"&&port.capture.adapterId&&port.id!==useCase?.primaryOutputPortId);
 }
@@ -45,17 +38,10 @@ export function ComfyMediaUseCaseEditor({template,onChange}:{template:ComfyTempl
  const patch=(value:Partial<ComfyMediaUseCase>)=>onChange(normalizeComfyMediaUseCaseOutputSelection({...ensure(),...value})!);
  const targetDescription=(port:ComfyTemplatePort)=>port.inputBinding?.targets.map(target=>target.nodeId+"."+target.inputName).join(", ");
  const capability=current?.mediaCapabilities;
- const ensureCapabilities=():MediaCapabilities=>capability??{schemaVersion:1,kind:current?.channel??"image",modes:MEDIA_MODES[current?.channel??"image"].map(id=>({id,enabled:false,inputs:defaultInputs(id),parameters:[]}))};
+ const ensureCapabilities=():MediaCapabilities=>capability??createComfyMediaCapabilities(ensure());
  const enabledModes=capability?.modes.filter(item=>item.enabled)??[];
- const setModeEnabled=(id:MediaModeId,enabled:boolean)=>{const base=ensureCapabilities(),modes=base.modes.map(mode=>mode.id===id?{...mode,enabled}:mode);
-  const nextDefault=base.defaultMode&&modes.some(mode=>mode.id===base.defaultMode&&mode.enabled)?base.defaultMode:enabled?id:modes.find(mode=>mode.enabled)?.id;
-  const bindings={...(current?.modeBindings??{})};
-  if(enabled)bindings[id]=bindings[id]??{promptPortId:current?.promptPortId??"",parameterPorts:{},rolePorts:{}};else delete bindings[id];
-  patch({mediaCapabilities:{schemaVersion:1,kind:base.kind,modes,...(nextDefault?{defaultMode:nextDefault}:{})},modeBindings:bindings});};
- const mapRole=(id:MediaModeId,role:MediaRole,ports:string[])=>{
-  const base=ensureCapabilities(),modes=base.modes.map(mode=>mode.id===id?{...mode,inputs:mode.inputs.map(rule=>rule.role===role?{...rule,maxItems:ports.length}:rule)}:mode);
-  patch({mediaCapabilities:{...base,modes},modeBindings:{...(current?.modeBindings??{}),[id]:{...(current?.modeBindings?.[id]??{promptPortId:current?.promptPortId??"",parameterPorts:{}}),rolePorts:{...(current?.modeBindings?.[id]?.rolePorts??{}),[role]:ports}}}});
- };
+ const setModeEnabled=(id:MediaModeId,enabled:boolean)=>onChange(setComfyMediaModeEnabled(ensure(),id,enabled));
+ const mapRole=(id:MediaModeId,role:MediaRole,ports:string[])=>onChange(mapComfyMediaRole(ensure(),id,role,ports));
  const updateMode=(id:MediaModeId,update:(mode:MediaCapabilities["modes"][number])=>MediaCapabilities["modes"][number])=>{const base=ensureCapabilities();patch({mediaCapabilities:{...base,modes:base.modes.map(mode=>mode.id===id?update(mode):mode)}})};
  const parameterIds:Record<MediaKind,string[]>={image:["width","height","seed","count","negative_prompt","transparent_background","output_format"],video:["duration_seconds","aspect_ratio","resolution","seed","generate_audio","return_last_frame","watermark"],audio:["voice","speed","language","instructions","duration_seconds","sample_rate","channels","output_format"]};
  const addParameter=(modeId:MediaModeId,id:string)=>{const type:MediaParameterSpec["type"]=["generate_audio","return_last_frame","watermark","transparent_background"].includes(id)?"boolean":["aspect_ratio","resolution","voice","language","sample_rate","channels","output_format"].includes(id)?"enum":["negative_prompt","instructions"].includes(id)?"string":"number";
@@ -68,7 +54,7 @@ export function ComfyMediaUseCaseEditor({template,onChange}:{template:ComfyTempl
   <div className="mt-3 grid gap-2 sm:grid-cols-2">
    <label className="min-w-0 text-xs">主输出类型<Select {...selectProps} value={kind}
     options={(["image","video","audio"] as const).map(value=>({value,label:value==="image"?"图片":value==="video"?"视频":"音频"}))}
-    onChange={(value:ComfyMediaUseCase["primaryOutputKind"])=>patch({channel:value,primaryOutputKind:value,primaryOutputPortId:"",additionalOutputPortIds:[]})}/></label>
+    onChange={(value:ComfyMediaUseCase["primaryOutputKind"])=>{if(value===kind)return;patch({channel:value,primaryOutputKind:value,primaryOutputPortId:"",additionalOutputPortIds:[],mediaCapabilities:undefined,modeBindings:undefined});}}/></label>
    <label className="min-w-0 text-xs">固定提示词端口<Select {...selectProps} value={current?.promptPortId||undefined} placeholder="选择 STRING literal 端口" allowClear
     options={promptPorts.map(port=>{const target=targetDescription(port);const label=port.label+(target?" · "+target:"");return {value:port.id,label:<span className="block truncate" title={label}>{label}</span>};})}
     onChange={(value:string|undefined)=>patch({promptPortId:value??""})}/></label>
@@ -105,17 +91,32 @@ export function ComfyMediaUseCaseEditor({template,onChange}:{template:ComfyTempl
   {current?<Button size="small" className="mt-3" onClick={()=>onChange(undefined)}>清除媒体用途配置</Button>:null}
   {current?<div className="mt-4 rounded-md border border-[var(--comfy-border)] p-3" data-media-capabilities-editor>
    <div className="text-xs font-semibold">版本化生成模式</div>
-   {!capability?<Button size="small" className="mt-2" onClick={()=>patch({mediaCapabilities:ensureCapabilities()})}>配置显式能力</Button>:null}
+   <p className="mt-1 text-[11px] text-[var(--comfy-muted)]">按媒体角色映射实际端口，不依赖模型或节点名称。同一普通媒体端口可用于不同模式；同一模式内不能重复分配。需要按模式裁剪的端口应设为可选，并配置未连接时的裁剪策略。用户提示词原样传入。</p>
+   {!capability?<Button size="small" className="mt-2" onClick={()=>patch({mediaCapabilities:ensureCapabilities(),modeBindings:{}})}>配置显式能力</Button>:null}
    {capability?<>
     <label className="mt-2 block text-xs">默认模式<Select {...selectProps} value={capability.defaultMode} placeholder="选择默认模式" options={enabledModes.map(mode=>({value:mode.id,label:labels[mode.id]}))}
      onChange={(value:MediaModeId)=>patch({mediaCapabilities:{...capability,defaultMode:value}})}/></label>
     <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1">{MEDIA_MODES[capability.kind].map(id=><Checkbox key={id} checked={!!capability.modes.find(mode=>mode.id===id)?.enabled} onChange={e=>setModeEnabled(id,e.target.checked)}>{labels[id]}</Checkbox>)}</div>
     {enabledModes.map(mode=>{const binding=current.modeBindings?.[mode.id];return <div key={mode.id} className="mt-3 rounded border border-[var(--comfy-border)] p-2">
      <div className="text-xs font-medium">{labels[mode.id]} · 角色端口映射</div>
-     {mode.inputs.map(rule=><label key={rule.role} className="mt-2 block text-xs">{rule.role} · {rule.minItems}–{rule.maxItems} 项
-      <Select {...selectProps} mode="multiple" value={binding?.rolePorts?.[rule.role]??[]} placeholder="确认角色对应的端口"
-       options={mediaTargets.filter(port=>current.slots.some(slot=>slot.id===port.id)&&port.valueKind===(rule.kind==="image"?"IMAGE":rule.kind==="mask"?"MASK":rule.kind==="video"?"VIDEO":"AUDIO")).map(port=>({value:port.id,label:port.label+" · "+port.id}))}
-       onChange={(values:string[])=>mapRole(mode.id,rule.role,values)}/></label>)}
+     <label className="mt-2 block text-xs">提示词端口<Select {...selectProps} allowClear value={binding?.promptPortId} placeholder="沿用固定提示词端口"
+      options={portOptions(promptPorts)} onChange={(promptPortId:string|undefined)=>patch({modeBindings:{...current.modeBindings,[mode.id]:{...binding,promptPortId}}})}/></label>
+     {mode.inputs.map(rule=>{
+      const assigned=binding?.rolePorts?.[rule.role]??[];
+      const occupied=new Set(Object.entries(binding?.rolePorts??{}).filter(([role])=>role!==rule.role).flatMap(([,ids])=>ids??[]));
+      const min=defaultComfyModeInputs(mode.id).find(item=>item.role===rule.role)?.minItems??0;
+      const frame=rule.role==="first_frame"||rule.role==="last_frame";
+      return <div key={rule.role} className="mt-2" data-comfy-mode-role={mode.id+":"+rule.role}>
+       <label className="block text-xs">{comfyRoleLabels[rule.role]} · {rule.minItems}–{rule.maxItems} 项
+        <Select {...selectProps} mode="multiple" value={assigned} maxCount={frame?1:undefined} placeholder="确认角色对应的端口"
+         options={mediaTargets.filter(port=>current.slots.some(slot=>slot.id===port.id)&&port.valueKind===rule.kind.toUpperCase()).map(port=>({value:port.id,label:port.label+" · "+port.id,disabled:occupied.has(port.id)}))}
+         onChange={(values:string[])=>mapRole(mode.id,rule.role,values)}/></label>
+       {!frame&&assigned.length>min?<label className="mt-1 flex items-center gap-2 text-xs">最少素材数
+        <InputNumber size="small" min={min} max={assigned.length} precision={0} value={rule.minItems}
+         onChange={value=>{if(typeof value==="number")updateMode(mode.id,currentMode=>({...currentMode,inputs:currentMode.inputs.map(item=>item.role===rule.role?{...item,minItems:Math.min(assigned.length,Math.max(min,value))}:item)}));}}/></label>:null}
+       {assigned.length<rule.minItems?<p className="text-[11px] text-amber-500">请映射至少 {rule.minItems} 个有效端口。</p>:null}
+      </div>;
+     })}
      <div className="mt-3 border-t border-[var(--comfy-border)] pt-2"><div className="text-xs font-medium">参数约束与端口</div>
       <Select {...selectProps} className="mt-1 w-full" placeholder="添加可配置参数" value={undefined}
        options={parameterIds[capability.kind].filter(id=>!mode.parameters.some(parameter=>parameter.id===id)).map(id=>({value:id,label:id}))}
@@ -127,7 +128,7 @@ export function ComfyMediaUseCaseEditor({template,onChange}:{template:ComfyTempl
          onChange={(portId:string)=>patch({modeBindings:{...(current.modeBindings??{}),[mode.id]:{...(binding??{promptPortId:current.promptPortId,rolePorts:{},parameterPorts:{}}),parameterPorts:{...(binding?.parameterPorts??{}),[spec.id]:portId}}}})}/>
         <Select size="small" className="w-24" value={spec.mode} options={[{value:"adjustable",label:"可调"},{value:"fixed",label:"固定"}]}
          onChange={(value:"adjustable"|"fixed")=>updateMode(mode.id,currentMode=>({...currentMode,parameters:currentMode.parameters.map(parameter=>{if(parameter.id!==spec.id)return parameter;const {fixedValue,...rest}=parameter;return value==="fixed"?{...rest,mode:value,fixedValue:parameter.defaultValue}:rest.mode==="fixed"?{...rest,mode:value}:{...rest,mode:value};})}))}/>
-        <Button size="small" type="link" danger onClick={()=>{updateMode(mode.id,currentMode=>({...currentMode,parameters:currentMode.parameters.filter(parameter=>parameter.id!==spec.id)}));const next={...(current.modeBindings??{}),[mode.id]:{...(binding??{promptPortId:current.promptPortId,rolePorts:{},parameterPorts:{}}),parameterPorts:{...(binding?.parameterPorts??{})}}};delete next[mode.id]!.parameterPorts?.[spec.id];patch({modeBindings:next});}}>移除</Button>
+        <Button size="small" type="link" danger onClick={()=>{const next={...(current.modeBindings??{}),[mode.id]:{...binding,parameterPorts:{...(binding?.parameterPorts??{})}}};delete next[mode.id]!.parameterPorts?.[spec.id];patch({mediaCapabilities:{...capability,modes:capability.modes.map(item=>item.id===mode.id?{...item,parameters:item.parameters.filter(parameter=>parameter.id!==spec.id)}:item)},modeBindings:next});}}>移除</Button>
        </div><div className="mt-2 flex flex-wrap items-center gap-2">{spec.type==="number"?<><InputNumber size="small" placeholder="默认" value={typeof spec.defaultValue==="number"?spec.defaultValue:undefined} onChange={value=>updateMode(mode.id,currentMode=>({...currentMode,parameters:currentMode.parameters.map(parameter=>parameter.id===spec.id?{...parameter,defaultValue:value??undefined,...(parameter.mode==="fixed"?{fixedValue:value??undefined}:{})}:parameter)}))}/><InputNumber size="small" placeholder="最小" value={spec.min} onChange={value=>updateMode(mode.id,currentMode=>({...currentMode,parameters:currentMode.parameters.map(parameter=>parameter.id===spec.id?{...parameter,min:value??undefined}:parameter)}))}/><InputNumber size="small" placeholder="最大" value={spec.max} onChange={value=>updateMode(mode.id,currentMode=>({...currentMode,parameters:currentMode.parameters.map(parameter=>parameter.id===spec.id?{...parameter,max:value??undefined}:parameter)}))}/></>:spec.type==="enum"?<Input size="small" className="w-60" value={(spec.values??[]).join(",")} placeholder="逗号分隔的允许值" onChange={event=>updateMode(mode.id,currentMode=>({...currentMode,parameters:currentMode.parameters.map(parameter=>{if(parameter.id!==spec.id)return parameter;const values=event.target.value.split(",").map(value=>value.trim()).filter(Boolean),def=values.includes(String(parameter.defaultValue))?parameter.defaultValue:values[0];return {...parameter,values,defaultValue:def,...(parameter.mode==="fixed"?{fixedValue:def}:{})};})}))}/>:spec.type==="string"?<Input size="small" className="w-48" value={typeof spec.defaultValue==="string"?spec.defaultValue:""} placeholder="默认值" onChange={event=>updateMode(mode.id,currentMode=>({...currentMode,parameters:currentMode.parameters.map(parameter=>parameter.id===spec.id?{...parameter,defaultValue:event.target.value,...(parameter.mode==="fixed"?{fixedValue:event.target.value}:{})}:parameter)}))}/>:<Checkbox checked={Boolean(spec.defaultValue)} onChange={event=>updateMode(mode.id,currentMode=>({...currentMode,parameters:currentMode.parameters.map(parameter=>parameter.id===spec.id?{...parameter,defaultValue:event.target.checked,...(parameter.mode==="fixed"?{fixedValue:event.target.checked}:{})}:parameter)}))}>默认 false / true</Checkbox>}</div></div>})}
      </div>
      <div className="mt-3 border-t border-[var(--comfy-border)] pt-2">

@@ -362,7 +362,8 @@ export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,
         const port=inputPort(target,kind,mode);
         if(recommendation){
             port.label=typeof draft.apiGraph[nodeId]._meta?.title==="string"?draft.apiGraph[nodeId]._meta!.title as string:inputName;
-            if(recommendation.redirected)port.absentPolicy={mode:"auto-prune"};
+            // A file adapter does not imply that its downstream consumer is optional.
+            // Set absence handling explicitly in the port editor (or in a known import preset).
         }
         const inferred=inferComfyChoicesForPort(port,draft.apiGraph,objectInfo);
         if(inferred.kind==="choices"){
@@ -417,7 +418,7 @@ export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,
             setSelectedPortId(next.ports[0]?.id||null);setNodeSearch("");setError("");
             setStatus(krea2?"已配置 Krea 2 Turbo INT8 端口绑定，请检查并保存模板版本。"
                 :minimax?"MiniMax H3 I2V 已配置图片、提示词与 VIDEO 输出绑定，请检查端口后保存模板。"
-                :ref2v?"MiniMax H3 Ref2V 已配置图片、视频、音频参考端口及 24 fps 视频加载，请检查后保存模板。"
+                :ref2v?"MiniMax H3 Ref2V 已配置媒体参考端口、可用生成模式及 24 fps 视频加载。首尾帧复用参考图，请检查后保存模板。"
                 :"工作流已加载。点击左侧节点参数即可创建输入端口。");
         }catch(cause){setError(String(cause));}
     };
@@ -426,6 +427,7 @@ export function ComfyWorkflowPanel({node,onChange,onClose,connectedInputPortIds,
         if(!onChange({comfyPorts,comfyWorkflow:{
             templateId:template.id,templateRevision:template.revision,instanceId:undefined,
             bindingState:"needs-instance-binding",inputOverrides:node.metadata?.comfyWorkflow?.inputOverrides??{},
+            ...(node.metadata?.comfyWorkflow?.templateId===template.id&&template.mediaUseCase?.mediaCapabilities?.modes.some(mode=>mode.enabled&&mode.id===node.metadata?.comfyWorkflow?.mediaMode)?{mediaMode:node.metadata.comfyWorkflow.mediaMode}:{}),
             ...(template.previewBinding?{previewBinding:template.previewBinding}:{}),
         }},template.name)) {
             setError("无法应用该模板版本：已有画布连线引用了被删除或类型不兼容的端口。");

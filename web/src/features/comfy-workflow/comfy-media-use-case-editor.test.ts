@@ -5,6 +5,15 @@ import {comfyAdditionalOutputOptions,ComfyMediaUseCaseEditor,normalizeComfyMedia
 import type {ComfyMediaUseCase,ComfyTemplatePayload} from "./template-schema";
 
 describe("Comfy media output editor draft recovery",()=>{
+ it("can add a mode missing entirely from an older preset capability list",()=>{
+  const template={name:"Older video preset",apiGraph:{},ports:[],requirements:{classTypes:[]},mediaUseCase:{channel:"video",primaryOutputKind:"video",promptPortId:"prompt",primaryOutputPortId:"video",slots:[],mediaCapabilities:{schemaVersion:1,kind:"video",defaultMode:"text_to_video",modes:[{id:"text_to_video",enabled:true,inputs:[],parameters:[]}]},modeBindings:{text_to_video:{rolePorts:{},parameterPorts:{}}}}} as ComfyTemplatePayload;
+  let changed:ComfyMediaUseCase|undefined;
+  const walk=(el:unknown):ReactElement[]=>Array.isArray(el)?el.flatMap(walk):el&&typeof el==="object"&&"props" in el?[el as ReactElement,...walk(((el as ReactElement).props as {children?:unknown}).children)]:[];
+  const box=walk(ComfyMediaUseCaseEditor({template,onChange:value=>{changed=value;}})).find(el=>(el.props as {children?:unknown}).children==="首尾帧生成")!;
+  (box.props as {onChange:(e:{target:{checked:boolean}})=>void}).onChange({target:{checked:true}});
+  expect(changed?.mediaCapabilities?.modes.find(m=>m.id==="first_last_frame")).toMatchObject({enabled:true,inputs:[{role:"first_frame",kind:"image",minItems:1,maxItems:1},{role:"last_frame",kind:"image",minItems:1,maxItems:1}]});
+  expect(changed?.modeBindings?.first_last_frame).toBeDefined();
+ });
  it("lets users select manual ratio synchronization and a STRING port",()=>{
   const template:ComfyTemplatePayload={name:"Media",apiGraph:{},requirements:{classTypes:[]},ports:[
    {id:"ratio",label:"Ratio",direction:"target",valueKind:"STRING",inputBinding:{mode:"literal",targets:[{nodeId:"n",inputName:"aspect_ratio"}]}}

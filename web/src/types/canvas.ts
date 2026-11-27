@@ -188,6 +188,7 @@ export type CanvasNodeMetadata = {
         instanceId?: string;
         bindingState: "bound" | "needs-instance-binding" | "incompatible";
         inputOverrides: Record<string, unknown>;
+        mediaMode?: import("@/services/media-capabilities").MediaModeId;
         previewBinding?: {protocol:"kj-preview";nodeId:string};
         lastRunId?: string;
     };

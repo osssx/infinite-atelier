@@ -112,12 +112,14 @@ describe("Comfy binding picker interactive selection",()=>{
         expect(parseBindingTargetKey(key)).toEqual(target("30.16","sampling_mode.top.p"));
         expect(()=>parseBindingTargetKey(JSON.stringify(["node"]))).toThrow(/Invalid/);
     });
-    it("recommends VIDEO file binding for VHS widgets and H3 reference video sockets, not IMAGE",()=>{
+    it("recommends VIDEO file binding for registered frame decoders and any direct consumer, not IMAGE",()=>{
         const graph:ComfyApiGraph={"139":{class_type:"VHS_LoadVideo",inputs:{video:"sample.mp4"}},
-            "129":{class_type:"MiniMaxH3ReferenceToVideo",inputs:{"ref_videos.ref_video_0":["139",0]}}};
+            "129":{class_type:"AnyUnknownSampler",inputs:{"arbitrary_reference":["139",0],"soundtrack":["139",2],"count":["139",1]}}};
         const info:ComfyObjectInfo={VHS_LoadVideo:{input:{required:{video:[["sample.mp4"],{}]}},output:["IMAGE","INT","AUDIO","VHS_VIDEOINFO"]}};
         expect(recommendComfyMediaBinding(graph,target("139","video"),info)).toMatchObject({target:target("139","video"),loader:{mediaKind:"VIDEO"},redirected:false});
-        expect(recommendComfyMediaBinding(graph,target("129","ref_videos.ref_video_0"),info)).toMatchObject({target:target("139","video"),loader:{mediaKind:"VIDEO"},redirected:true});
+        expect(recommendComfyMediaBinding(graph,target("129","arbitrary_reference"),info)).toMatchObject({target:target("139","video"),loader:{mediaKind:"VIDEO"},redirected:true});
+        expect(recommendComfyMediaBinding(graph,target("129","soundtrack"),info)).toBeUndefined();
+        expect(recommendComfyMediaBinding(graph,target("129","count"),info)).toBeUndefined();
         expect(enumerateComfyGraphItems(graph,info).find(item=>item.id==="139")?.fields[0].declaredType).toBe("VIDEO · 媒体文件");
         info.VHS_LoadVideo.output=["VIDEO"];
         expect(recommendComfyMediaBinding(graph,target("139","video"),info)).toBeUndefined();

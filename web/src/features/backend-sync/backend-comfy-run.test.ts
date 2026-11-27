@@ -1,7 +1,8 @@
 // @vitest-environment happy-dom
 import {describe,expect,it,vi} from "vitest";
 import type {CanvasNodeData,CanvasConnection} from "@/types/canvas";
-import type {ComfyWorkflowTemplate} from "@/features/comfy-workflow/template-schema";
+import {createComfyTemplate,type ComfyWorkflowTemplate} from "@/features/comfy-workflow/template-schema";
+import {minimaxH3Ref2VBundledTemplate} from "@/features/comfy-workflow/minimax-h3-ref2v-preset";
 import {prepareBackendComfyWorkflowRun,startBackendComfyWorkflowRun} from "./backend-comfy-run";
 import {defaultConfig} from "@/stores/use-config-store";
 import {setAssistantWorkflowParameter} from "@/features/canvas-assistant/canvas-assistant-workflow-params";
@@ -28,6 +29,32 @@ const expectedJob:BackendJobView={id:"new-job",projectId:"p1",executionMode:"pol
  attemptId:null,submitMarker:null,submissionStartedAt:null};
 const copy=<T,>(v:T):T=>JSON.parse(JSON.stringify(v)) as T;
 describe("backend save fence + frozen Comfy submission",()=>{
+ it("freezes explicit H3 keyframe modes for standalone and media-preset nodes without changing the prompt",async()=>{
+  const t=await createComfyTemplate("h3-test",minimaxH3Ref2VBundledTemplate());
+  const prompt="User's prompt: <Picture 1> turns into <Picture 2>.";
+  const bridge={state:{status:"connected"},assertNoActiveJob:vi.fn(async()=>{}),assertComfyReady:vi.fn(async()=>{}),
+   saveProjectNow:vi.fn(async()=>{throw Error("unexpected save")}),
+   uploadFrozenBlob:vi.fn(async()=>{throw Error("unexpected upload")}),
+   submitFrozenJob:vi.fn(async()=>{throw Error("unexpected submit")})};
+  const sources=["a","b"].map(id=>({id,type:"image",title:id,position:{x:0,y:0},width:100,height:100,metadata:{storageKey:id,mimeType:"image/png",content:"blob:"+id}})) as CanvasNodeData[];
+  registerCanvasPortResolver("comfy:workflow",node=>node.metadata?.comfyPorts??[]);
+  try{
+   for(const mode of ["first_frame","last_frame","first_last_frame"] as const){
+    const count=mode==="first_last_frame"?2:1;
+    for(const media of [false,true]){
+     const binding={templateId:t.id,templateRevision:t.revision,mediaMode:mode,overrides:{},slots:{}};
+     const target={...workflow,type:media?"video":"comfy:workflow",metadata:media?{comfyMediaPreset:binding}:{comfyWorkflow:{templateId:t.id,templateRevision:t.revision,bindingState:"bound",mediaMode:mode,inputOverrides:{prompt}},comfyPorts:t.ports}} as CanvasNodeData;
+     const connections=sources.slice(0,count).map((source,i)=>({id:"edge-"+i,fromNodeId:source.id,fromPortId:"image",toNodeId:target.id,...(media?{}:{toPortId:"reference_image_"+i})}));
+     const args={bridge,projectId:"p1",workflowNode:target,nodes:[target,...sources],connections,template:t,instanceId:"comfy-local",outputPortIds:["video"],prompt,readBlob:async()=>new Blob(["data"],{type:"image/png"})};
+     const result=await prepareBackendComfyWorkflowRun(args,{readOnly:true});
+     expect(result.comfyRequest.runOptions.mediaMode).toBe(mode);
+     expect(result.comfyRequest.nodes[0].inputOverrides.prompt).toBe(prompt);
+     expect(result.comfyRequest.edges.map(edge=>edge.toPortId)).toEqual(Array.from({length:count},(_,i)=>"reference_image_"+i));
+     await expect(prepareBackendComfyWorkflowRun({...args,connections:connections.slice(0,count-1)},{readOnly:true})).rejects.toThrow(/缺少必填/);
+    }
+   }
+  }finally{registerCanvasPortResolver("comfy:workflow")}
+ });
  it("selects an inferred first-frame mode for a video shot with only text connected",async()=>{
   const bridge={state:{status:"connected"},assertNoActiveJob:vi.fn(async()=>{}),assertComfyReady:vi.fn(async()=>{}),
    saveProjectNow:vi.fn(async()=>{throw Error("read-only check saved the canvas")}),

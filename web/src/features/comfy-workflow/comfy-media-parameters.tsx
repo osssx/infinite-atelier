@@ -11,6 +11,9 @@ import {getComfyInstanceScalarFields,parseComfyScalarOverride,type ComfyInstance
 import {COMFY_MEDIA_PARAMETER_POPUP_CLASS,createComfyMediaOverridePatch,createComfyMediaResetPatch} from "./comfy-media-overrides";
 import {resolveComfyMediaAspect} from "./comfy-media-aspect";
 import type {ComfyWorkflowTemplate} from "./template-schema";
+import {ComfyGenerationModeControl} from "./comfy-generation-mode-control";
+import {comfyMediaManagedPortIds} from "./comfy-media-mode-config";
+import type {MediaModeId} from "@/services/media-capabilities";
 
 type Binding=NonNullable<CanvasNodeMetadata["comfyMediaPreset"]>;
 type ScalarValue=string|number|boolean;
@@ -56,10 +59,10 @@ export function DirectPortControl({field,value,overridden,theme,onSet,onReset}:{
  </div>;
 }
 
-export function ComfyMediaParameters({template,binding,config,theme,onChange,onEditPreset,buttonClassName,placement}:{template:ComfyWorkflowTemplate;binding:Binding;config:AiConfig;theme:CanvasTheme;
- onChange:(patch:Partial<CanvasNodeMetadata>)=>void;onEditPreset?:()=>void;buttonClassName?:string;placement?:"topLeft"|"topRight"}){
+export function ComfyMediaParameters({template,binding,config,theme,onChange,onEditPreset,buttonClassName,placement,activeMode}:{template:ComfyWorkflowTemplate;binding:Binding;config:AiConfig;theme:CanvasTheme;
+ onChange:(patch:Partial<CanvasNodeMetadata>)=>void;onEditPreset?:()=>void;buttonClassName?:string;placement?:"topLeft"|"topRight";activeMode?:MediaModeId}){
  const useCase=template.mediaUseCase!;
- const excluded=new Set([useCase.promptPortId,...useCase.slots.map(slot=>slot.id)]);
+ const excluded=comfyMediaManagedPortIds(useCase);
  const node={id:"comfy-media-settings",type:"comfy:workflow",metadata:{comfyWorkflow:{inputOverrides:binding.overrides}}} as CanvasNodeData;
  const fields=getComfyInstanceScalarFields(template,node,[],binding.overrides).filter(field=>!excluded.has(field.port.id));
  const write=(field:ComfyInstanceScalarField,value:ScalarValue)=>onChange(createComfyMediaOverridePatch(binding,field.port.id,value));
@@ -83,6 +86,7 @@ export function ComfyMediaParameters({template,binding,config,theme,onChange,onE
      <Button size="small" disabled={!Object.keys(binding.overrides).length} onClick={resetAll}>恢复默认</Button>
     </div>
    </header>
+   <ComfyGenerationModeControl template={template} value={binding.mediaMode} activeMode={activeMode} onChange={mediaMode=>{const {mediaMode:_old,...rest}=binding;onChange({comfyMediaPreset:{...rest,...(mediaMode?{mediaMode}:{})}});}}/>
    {aspectWarning?<p role="status" className="text-xs opacity-70">{aspectWarning}</p>:null}
    {fields.length?<div className="space-y-4" data-comfy-media-parameter-list>
     {fields.map(field=><DirectPortControl key={field.port.id} field={field} value={localValue(field)} theme={theme}

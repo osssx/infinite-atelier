@@ -122,6 +122,28 @@ test.skipIf(!enabled)("real H3 node definitions compile both prompt-only and pop
  expect(noRef.graph["w_workflow-empty__139"]).toBeUndefined();
  expect(Object.keys(noRef.graph["w_workflow-empty__129"].inputs).filter(k=>k.startsWith("ref_images.")||k.startsWith("ref_videos.")||k.startsWith("ref_audios."))).toEqual([]);
 },30000);
+test.skipIf(!enabled)("real H3 definitions compile all three keyframe modes with the exact user prompt",async()=>{
+ const template=await createComfyTemplate("h3-ref2v-keyframes",minimaxH3Ref2VBundledTemplate());
+ const prompt="User's custom prompt: <Picture 1>\n保持原始提示词。";
+ for(const [mode,count] of [["first_frame",1],["last_frame",1],["first_last_frame",2]]){
+  const req=request(template,null,mode,{prompt},mode);
+  for(let i=0;i<count;i++){
+   const sourceNodeId="picture-"+i,assetId=String(i+1).repeat(64);
+   req.edges.push({fromNodeId:sourceNodeId,fromPortId:"image",toNodeId:req.nodes[0].id,toPortId:"reference_image_"+i});
+   req.externalInputs.push({kind:"asset",sourceNodeId,sourcePortId:"image",valueKind:"IMAGE",assetId,sha256:assetId});
+  }
+  const info=await readComfyWorkflowObjectInfo(instance,workflowObjectInfoClasses(req,template));
+  const mediaFiles=Object.fromEntries(req.externalInputs.map(input=>[input.assetId,"atelier_"+input.assetId+".png"]));
+  const result=compileSingleWorkflow(req,template,{info,mediaFiles});
+  const model=result.graph["w_"+req.nodes[0].id+"__129"].inputs;
+  expect(model.prompt).toBe(prompt);
+  expect(Object.keys(model).filter(k=>/^ref_(images|videos|audios)\./.test(k)).sort()).toEqual(Array.from({length:count},(_,i)=>"ref_images.ref_image_"+i));
+  expect(model["ref_images.ref_image_0"]).toEqual(["w_"+req.nodes[0].id+"__114",0]);
+  if(count===2)expect(model["ref_images.ref_image_1"]).toEqual(["w_"+req.nodes[0].id+"__130",0]);
+  const invalid=structuredClone(req);invalid.edges.pop();invalid.externalInputs.pop();
+  expect(()=>compileSingleWorkflow(invalid,template,{info,mediaFiles})).toThrow(/template_media_request_invalid/);
+ }
+},30000);
 test.skipIf(!gpu)("real MiniMax H3 reference-to-video generation through CAS and materialization",async()=>{
  await fixture(async f=>{
   const template=await createComfyTemplate("h3-ref2v-live",minimaxH3Ref2VBundledTemplate());

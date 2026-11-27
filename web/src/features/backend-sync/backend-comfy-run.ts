@@ -3,7 +3,7 @@ import type {CanvasNodeData,CanvasConnection} from "@/types/canvas";
 import type {ComfyWorkflowTemplate} from "@/features/comfy-workflow/template-schema";
 import type {MediaModeId} from "@/services/media-capabilities";
 import {resolveMediaCapabilities,validateMediaRequest} from "@/services/media-capabilities";
-import {missingComfyMediaInputs} from "@/features/comfy-workflow/run-types";
+import {comfyModeConnectionErrors,missingComfyMediaInputs} from "@/features/comfy-workflow/run-types";
 import {prepareCanvasExternalInputSnapshot} from "@/lib/canvas/canvas-external-input-snapshot";
 import type {BackendCanvasGraph} from "./canvas-backend-sync";
 import {canonicalBackendGraph,fingerprintComfyTargetBinding} from "./backend-source-fingerprint";
@@ -73,7 +73,7 @@ export async function prepareBackendComfyWorkflowRun(args:BackendComfyWorkflowAr
  // visual context only; only edges targeting declared Comfy ports can be sent.
  const incoming=mediaBinding?allIncoming.filter(edge=>!!edge.toPortId&&template.ports.some(port=>port.id===edge.toPortId)):allIncoming;
  const useCase=template.mediaUseCase;
- const explicitMode=mediaBinding?.mediaMode??args.generationMode;
+ const explicitMode=mediaBinding?mediaBinding.mediaMode??args.generationMode:regularBinding?.mediaMode??args.generationMode;
  let generationMode=useCase?.mediaCapabilities?resolveComfyMediaMode(template,workflowNode.id,graph.nodes,graph.connections,explicitMode):undefined;
  let continuityPort:string|undefined;
  const assignmentGraph=continuitySourceId?copy(graph):graph;
@@ -102,6 +102,7 @@ export async function prepareBackendComfyWorkflowRun(args:BackendComfyWorkflowAr
   }
   if(!continuityPort)throw Error(diagnostic);
  }
+ if(!mediaBinding){const diagnostics=comfyModeConnectionErrors(template,workflowNode.id,incoming,generationMode);if(diagnostics.length)throw Error(diagnostics.join("；"));}
  const modeBinding=generationMode?useCase?.modeBindings?.[generationMode]:undefined;
  const mappedPorts=new Set(Object.values(modeBinding?.rolePorts??{}).flat());
  const autoAssignment=mediaBinding&&workflowNode.type!=="comfy:workflow"?assignComfyMediaSlots(template,workflowNode.id,assignmentGraph.nodes,assignmentGraph.connections,generationMode):undefined;

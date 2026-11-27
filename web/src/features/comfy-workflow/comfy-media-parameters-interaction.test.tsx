@@ -15,6 +15,8 @@ vi.mock("@/components/canvas/canvas-audio-settings-popover",()=>({CanvasAudioSet
 
 import {withComfyMediaAspect} from "./comfy-media-aspect";
 import {ComfyMediaParameters,DirectPortControl} from "./comfy-media-parameters";
+import {ComfyGenerationModeControl} from "./comfy-generation-mode-control";
+import {minimaxH3Ref2VBundledTemplate} from "./minimax-h3-ref2v-preset";
 
 const ports=[
  {id:"prompt",label:"Prompt",direction:"target" as const,valueKind:"STRING" as const,inputBinding:{mode:"literal" as const,targets:[{nodeId:"n",inputName:"prompt"}]}},
@@ -40,6 +42,19 @@ const propElements=(element:unknown,predicate:(props:Record<string,unknown>)=>bo
 });
 
 describe("ComfyMediaParameters component events",()=>{
+ it("sets and clears an explicit workflow mode without altering parameters or prompt",()=>{
+  const t={...minimaxH3Ref2VBundledTemplate(),id:"t",revision:"r"};
+  const emitted=vi.fn();const root=ComfyMediaParameters({template:t,binding,config:{} as AiConfig,theme:canvasThemes.light,onChange:emitted,activeMode:"omni_reference"}) as ReactElement;
+  const content=(root.type as (props:unknown)=>unknown)(root.props);
+  const modeControl=childrenOf(content).find(el=>(el as ReactElement).type===ComfyGenerationModeControl) as ReactElement;
+  const control=(modeControl.type as (props:unknown)=>unknown)(modeControl.props);
+  const select=childrenOf(control).find(el=>(el as ReactElement).type==="select") as ReactElement;
+  const change=(select.props as {onChange:(e:{target:{value:string}})=>void}).onChange;
+  change({target:{value:"first_last_frame"}});
+  expect(emitted).toHaveBeenLastCalledWith({comfyMediaPreset:{...binding,mediaMode:"first_last_frame"}});
+  change({target:{value:""}});
+  expect(emitted).toHaveBeenLastCalledWith({comfyMediaPreset:binding});
+ });
  it("emits the effective preview ratio with parameter changes and reset in one patch",()=>{
   const t=template("image");t.mediaUseCase!.aspectSync={mode:"ratio",portId:"text"};
   t.apiGraph.n.inputs.text="1:1";
@@ -72,7 +87,7 @@ describe("ComfyMediaParameters component events",()=>{
   expect((reset.props as Record<string,unknown>).disabled).toBe(true);
   const firstControl=childrenOf(wrapper).find(element=>(element as ReactElement).type===DirectPortControl) as ReactElement;
   const card=(firstControl.type as (props:unknown)=>unknown)(firstControl.props);
-  expect((card as ReactElement).props).toMatchObject({className:"min-w-0 space-y-1.5","data-comfy-media-port":"enum"});
+  expect((card as ReactElement).props).toMatchObject({className:"min-w-0 space-y-2.5","data-comfy-media-port":"enum"});
  });
  it("calls the real control callbacks for enum, boolean, text, and reset actions",()=>{
  const emitted=vi.fn();const root=ComfyMediaParameters({template:template("image"),binding,config:{} as AiConfig,theme:canvasThemes.light,onChange:emitted}) as ReactElement;

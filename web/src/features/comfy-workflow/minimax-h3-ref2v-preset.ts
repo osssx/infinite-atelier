@@ -1,6 +1,7 @@
 import videoWorkflow from "../../../../workflows/video_minimax_h3_ref2v_turbo.json";
 import {templatePayloadFromGraph,validateComfyApiGraph,type ComfyApiGraph,type ComfyTemplatePayload,type ComfyTemplatePort} from "./template-schema";
 import type {MediaInputRule,MediaParameterSpec} from "@/services/media-capabilities";
+import {defaultComfyModeInputs,withComfyMediaMode} from "./comfy-media-mode-config";
 export const MINIMAX_H3_REF2V_TEMPLATE_ID="video-minimax-h3-ref2v-turbo";
 type RefKind="IMAGE"|"VIDEO"|"AUDIO";
 const refGroups=[
@@ -80,15 +81,20 @@ export function buildMiniMaxH3Ref2VPreset(raw:unknown):ComfyTemplatePayload{
  // Align the graph default with the capability default only if the imported value is invalid.
  if(duration!==parameters[0].defaultValue)graph["128"].inputs.value=parameters[0].defaultValue;
  const parameterPorts={duration_seconds:"duration"};
- payload.mediaUseCase={channel:"video",primaryOutputKind:"video",promptPortId:"prompt",primaryOutputPortId:"video",
-  aspectSync:{mode:"ratio",portId:"aspect_ratio"},slots:refs.map(ref=>({id:ref.id,label:ref.label,valueKind:ref.kind,required:false})),
-  mediaCapabilities:{schemaVersion:1,kind:"video",defaultMode:"text_to_video",modes:[
-   {id:"text_to_video",enabled:true,inputs:[],parameters},
-   {id:"omni_reference",enabled:true,inputs,parameters}
-  ]},modeBindings:{
-   text_to_video:{promptPortId:"prompt",rolePorts:{},parameterPorts},
-   omni_reference:{promptPortId:"prompt",rolePorts,parameterPorts}
-  }};
+ // The importer supplies only the known preset's declarative port mapping.
+ // The same configuration function is used by the generic media editor.
+ let useCase:NonNullable<ComfyTemplatePayload["mediaUseCase"]>={channel:"video",primaryOutputKind:"video",promptPortId:"prompt",primaryOutputPortId:"video",
+  aspectSync:{mode:"ratio",portId:"aspect_ratio"},slots:refs.map(ref=>({id:ref.id,label:ref.label,valueKind:ref.kind,required:false}))};
+ useCase=withComfyMediaMode(useCase,{id:"text_to_video",enabled:true,inputs:[],parameters},{promptPortId:"prompt",rolePorts:{},parameterPorts});
+ useCase=withComfyMediaMode(useCase,{id:"omni_reference",enabled:true,inputs,parameters},{promptPortId:"prompt",rolePorts,parameterPorts});
+ const hasFirst=rolePorts.reference_image?.includes("reference_image_0");
+ const hasLast=hasFirst&&rolePorts.reference_image?.includes("reference_image_1");
+ if(hasFirst){
+  useCase=withComfyMediaMode(useCase,{id:"first_frame",enabled:true,inputs:defaultComfyModeInputs("first_frame"),parameters},{promptPortId:"prompt",rolePorts:{first_frame:["reference_image_0"]},parameterPorts});
+  useCase=withComfyMediaMode(useCase,{id:"last_frame",enabled:true,inputs:defaultComfyModeInputs("last_frame"),parameters},{promptPortId:"prompt",rolePorts:{last_frame:["reference_image_0"]},parameterPorts});
+ }
+ if(hasLast)useCase=withComfyMediaMode(useCase,{id:"first_last_frame",enabled:true,inputs:defaultComfyModeInputs("first_last_frame"),parameters},{promptPortId:"prompt",rolePorts:{first_frame:["reference_image_0"],last_frame:["reference_image_1"]},parameterPorts});
+ payload.mediaUseCase=useCase;
  payload.requirements.modelAssets=[...new Set(Object.values(graph).flatMap(node=>Object.entries(node.inputs)
   .filter(([key])=>["unet_name","clip_name","vae_name","lora_name"].includes(key))
   .map(([,value])=>value).filter((value):value is string=>typeof value==="string")))].sort();

@@ -3,6 +3,7 @@ import {getGenerationResourceNodes} from "@/lib/canvas/canvas-resource-reference
 import {resolveCanvasImage,resolveCanvasImageMask} from "@/lib/canvas/canvas-image-mask";
 import type {MediaModeId} from "@/services/media-capabilities";
 import type {ComfyWorkflowTemplate} from "./template-schema";
+import {comfyModeConnectionErrors} from "./run-types";
 
 type Ref={nodeId:string;imageId?:string};
 function mediaResources(template:ComfyWorkflowTemplate,nodeId:string,nodes:readonly CanvasNodeData[],connections:readonly CanvasConnection[]){
@@ -26,25 +27,29 @@ export function resolveComfyMediaMode(template:ComfyWorkflowTemplate,nodeId:stri
  if(explicit)return explicit;
  const useCase=template.mediaUseCase,capabilities=useCase?.mediaCapabilities;
  if(!capabilities)return fallback;
- const resources=[...new Map(mediaResources(template,nodeId,nodes,connections).filter(n=>["image","video","audio"].includes(n.type)).map(n=>[n.id,n])).values()];
- const counts:Record<string,number>={image:0,video:0,audio:0,mask:0};
- for(const source of resources){counts[source.type]++;if(resolveCanvasImageMask(source))counts.mask++;}
+ const standalone=nodes.some(node=>node.id===nodeId&&node.type==="comfy:workflow");
+ const resources=standalone?[]:mediaResources(template,nodeId,nodes,connections);
  const compatible=capabilities.modes.filter(mode=>mode.enabled&&useCase?.modeBindings?.[mode.id]&&
-  ["image","video","audio"].every(kind=>counts[kind]<=mode.inputs.filter(rule=>rule.kind===kind).reduce((sum,rule)=>sum+rule.maxItems,0))&&
-  mode.inputs.every(rule=>counts[rule.kind]>=rule.minItems));
+  (standalone?comfyModeConnectionErrors(template,nodeId,connections,mode.id).length===0:
+   assignWithResources(template,nodeId,nodes,connections,resources,mode.id).errors.length===0));
  return compatible.find(mode=>mode.id===capabilities.defaultMode)?.id??compatible[0]?.id??capabilities.defaultMode??fallback;
 }
 /** Resolve from the live reference graph, never from cached manual slot selections. */
 export function assignComfyMediaSlots(template:ComfyWorkflowTemplate,nodeId:string,nodes:readonly CanvasNodeData[],connections:readonly CanvasConnection[],mode?:MediaModeId){
+ return assignWithResources(template,nodeId,nodes,connections,mediaResources(template,nodeId,nodes,connections),mode);
+}
+function assignWithResources(template:ComfyWorkflowTemplate,nodeId:string,nodes:readonly CanvasNodeData[],connections:readonly CanvasConnection[],resources:CanvasNodeData[],mode?:MediaModeId){
  const slots:Record<string,Ref>={},errors:string[]=[];
  const useCase=template.mediaUseCase;
  if(!useCase)return {slots,errors};
  const activeMode=mode??useCase.mediaCapabilities?.defaultMode;
  const contract=useCase.mediaCapabilities?.modes.find(item=>item.id===activeMode&&item.enabled);
  const mapping=activeMode?useCase.modeBindings?.[activeMode]:undefined;
- const activeIds=new Set(Object.values(mapping?.rolePorts??{}).flat());
- const activeSlots=useCase.slots.filter(slot=>!useCase.mediaCapabilities||activeIds.has(slot.id));
- const resources=mediaResources(template,nodeId,nodes,connections);
+ // Per-mode role order is authoritative, not the order of ports in the original template.
+ // Fill required role mappings before optional mappings of the same media kind.
+ const orderedRolePorts=(contract?.inputs??[]).flatMap(rule=>(mapping?.rolePorts?.[rule.role]??[]).map((id,index)=>({id,required:index<rule.minItems})));
+ const byId=new Map(useCase.slots.map(slot=>[slot.id,slot]));
+ const activeSlots=useCase.mediaCapabilities?[...orderedRolePorts].sort((a,b)=>Number(b.required)-Number(a.required)).flatMap(({id})=>{const slot=byId.get(id);return slot?[slot]:[];}):useCase.slots;
  const used=new Set<string>(),usedMasks=new Set<string>();
  const refFor=(source:CanvasNodeData):Ref=>{const image=resolveCanvasImage(source);return {nodeId:source.id,...(image?.id?{imageId:image.id}:{})}};
  const available=(source:CanvasNodeData,kind:string)=>{
@@ -76,6 +81,7 @@ export function assignComfyMediaSlots(template:ComfyWorkflowTemplate,nodeId:stri
  }
  if(useCase.mediaCapabilities){
   if(!contract||!mapping)errors.push("当前工作流未启用或绑定该生成模式");
+  if(activeMode==="omni_reference"&&!Object.keys(slots).length)errors.push("全能参考至少需要一个参考素材");
   for(const rule of contract?.inputs??[]){
    const ids=mapping?.rolePorts?.[rule.role]??[];
    const count=ids.filter(id=>slots[id]).length;
